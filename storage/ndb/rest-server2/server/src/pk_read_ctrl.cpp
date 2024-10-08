@@ -91,7 +91,7 @@ void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
   }
 
   // Validate
-  status = reqStruct.validate(true);
+  status = reqStruct.validate();
   if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
       drogon::HttpStatusCode::k200OK)) {
     resp->setBody(std::string(status.message));

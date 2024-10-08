@@ -92,6 +92,95 @@ RS_Status validate_db_identifier(const std::string_view &identifier) {
     drogon::HttpStatusCode::k200OK)).status;
 }
 
+RS_Status validate_db(const std::string_view db) {
+  RS_Status status = validate_db_identifier(db);
+  if (unlikely(status.http_code != static_cast<HTTP_CODE>(
+        drogon::HttpStatusCode::k200OK))) {
+    if (status.code == ERROR_CODE_EMPTY_IDENTIFIER)
+      return CRS_Status(static_cast<HTTP_CODE>(
+        drogon::HttpStatusCode::k400BadRequest),
+          ERROR_CODE_EMPTY_IDENTIFIER,
+          (std::string(ERROR_049) + ": " +
+          std::string(db)).c_str()).status;
+    if (status.code == ERROR_CODE_IDENTIFIER_TOO_LONG)
+      return CRS_Status(static_cast<HTTP_CODE>(
+        drogon::HttpStatusCode::k400BadRequest),
+          ERROR_CODE_MAX_DB, (std::string(ERROR_050) + ": " +
+          std::string(db)).c_str()).status;
+    if (status.code == ERROR_CODE_INVALID_IDENTIFIER)
+      return CRS_Status(static_cast<HTTP_CODE>(
+        drogon::HttpStatusCode::k400BadRequest),
+          ERROR_CODE_INVALID_IDENTIFIER,
+          "database name contains invalid characters").status;
+    return CRS_Status(static_cast<HTTP_CODE>(
+      drogon::HttpStatusCode::k400BadRequest),
+        ERROR_CODE_INVALID_DB_NAME,
+        (std::string(ERROR_051) + "; error: " + status.message).c_str()).status;
+  }
+  return CRS_Status(static_cast<HTTP_CODE>(
+    drogon::HttpStatusCode::k200OK)).status;
+}
+
+RS_Status validate_table(const std::string_view table) {
+  RS_Status status = validate_db_identifier(table);
+  if (unlikely(status.http_code != static_cast<HTTP_CODE>(
+        drogon::HttpStatusCode::k200OK))) {
+    if (status.code == ERROR_CODE_EMPTY_IDENTIFIER)
+      return CRS_Status(static_cast<HTTP_CODE>(
+        drogon::HttpStatusCode::k400BadRequest),
+          ERROR_CODE_MIN_TABLE, (std::string(ERROR_052) + ": " +
+          std::string(table)).c_str()).status;
+    if (status.code == ERROR_CODE_IDENTIFIER_TOO_LONG)
+      return CRS_Status(static_cast<HTTP_CODE>(
+        drogon::HttpStatusCode::k400BadRequest),
+          ERROR_CODE_MAX_TABLE, (std::string(ERROR_053) + ": " +
+          std::string(table)).c_str()).status;
+    if (status.code == ERROR_CODE_INVALID_IDENTIFIER)
+      return CRS_Status(static_cast<HTTP_CODE>(
+        drogon::HttpStatusCode::k400BadRequest),
+          ERROR_CODE_INVALID_IDENTIFIER,
+          "table name contains invalid characters").status;
+    return CRS_Status(static_cast<HTTP_CODE>(
+      drogon::HttpStatusCode::k400BadRequest),
+        ERROR_CODE_INVALID_TABLE_NAME,
+        (std::string(ERROR_054) + "; error: " + status.message).c_str()).status;
+  }
+  return CRS_Status(static_cast<HTTP_CODE>(
+    drogon::HttpStatusCode::k200OK)).status;
+}
+
+RS_Status validate_column(const std::string_view column) {
+  // make sure column is valid
+  RS_Status status = validate_db_identifier(column);
+  if (unlikely(status.http_code != static_cast<HTTP_CODE>(
+        drogon::HttpStatusCode::k200OK))) {
+    if (status.code == ERROR_CODE_EMPTY_IDENTIFIER)
+      return CRS_Status(static_cast<HTTP_CODE>(
+        drogon::HttpStatusCode::k400BadRequest),
+          ERROR_CODE_EMPTY_IDENTIFIER,
+          (std::string(ERROR_038) + ": " +
+           std::string(column)).c_str()).status;
+    if (status.code == ERROR_CODE_IDENTIFIER_TOO_LONG)
+      return CRS_Status(static_cast<HTTP_CODE>(
+        drogon::HttpStatusCode::k400BadRequest),
+          ERROR_CODE_IDENTIFIER_TOO_LONG,
+          (std::string(ERROR_039) + ": " +
+           std::string(column)).c_str()).status;
+    if (status.code == ERROR_CODE_INVALID_IDENTIFIER)
+      return CRS_Status(static_cast<HTTP_CODE>(
+        drogon::HttpStatusCode::k400BadRequest),
+          ERROR_CODE_INVALID_IDENTIFIER,
+          "column name: contains invalid characters").status;
+    return CRS_Status(static_cast<HTTP_CODE>(
+      drogon::HttpStatusCode::k400BadRequest),
+        ERROR_CODE_INVALID_READ_COLUMN_NAME,
+        (std::string(ERROR_059) + "; error: " +
+         status.message).c_str()).status;
+  }
+  return CRS_Status(static_cast<HTTP_CODE>(
+    drogon::HttpStatusCode::k200OK)).status;
+}
+
 RS_Status validate_operation_id(const std::string &opId) {
   Uint32 operationIdMaxSize = AllConfigs::get_all().internal.operationIdMaxSize;
   if (static_cast<Uint32>(opId.length()) > operationIdMaxSize) {
@@ -101,58 +190,6 @@ RS_Status validate_operation_id(const std::string &opId) {
        (std::string(ERROR_041) + " " +
         std::to_string(operationIdMaxSize)).c_str()).status;
   }
-  return CRS_Status(static_cast<HTTP_CODE>(
-    drogon::HttpStatusCode::k200OK)).status;
-}
-
-RS_Status PKReadFilter::validate() {
-  if (column.empty()) {
-    return CRS_Status(static_cast<HTTP_CODE>(
-      drogon::HttpStatusCode::k400BadRequest),
-        ERROR_CODE_REQUIRED_FILTER_COLUMN, ERROR_043).status;
-  }
-  // make sure the column name is not null
-  if (std::string(column.begin(), column.end()) == "null") {
-    return CRS_Status(static_cast<HTTP_CODE>(
-      drogon::HttpStatusCode::k400BadRequest),
-        ERROR_CODE_REQUIRED_FILTER_COLUMN, ERROR_043).status;
-  }
-  // make sure the column name is valid
-  RS_Status status = validate_db_identifier(column);
-  if (status.http_code != static_cast<HTTP_CODE>(
-        drogon::HttpStatusCode::k200OK)) {
-    if (status.code == ERROR_CODE_EMPTY_IDENTIFIER)
-      return CRS_Status(static_cast<HTTP_CODE>(
-        drogon::HttpStatusCode::k400BadRequest),
-          ERROR_CODE_EMPTY_IDENTIFIER,
-          (std::string(ERROR_038) + ": " +
-          std::string(column)).c_str()).status;
-    if (status.code == ERROR_CODE_IDENTIFIER_TOO_LONG) {
-      return CRS_Status(static_cast<HTTP_CODE>(
-        drogon::HttpStatusCode::k400BadRequest),
-          ERROR_CODE_MAX_FILTER_COLUMN,
-          (std::string(ERROR_045) + ": " +
-          std::string(column)).c_str()).status;
-    }
-    if (status.code == ERROR_CODE_INVALID_IDENTIFIER)
-      return CRS_Status(static_cast<HTTP_CODE>(
-        drogon::HttpStatusCode::k400BadRequest),
-          ERROR_CODE_INVALID_IDENTIFIER, status.message).status;
-    return CRS_Status(static_cast<HTTP_CODE>(
-      drogon::HttpStatusCode::k400BadRequest),
-        ERROR_CODE_INVALID_COLUMN_NAME,
-        (std::string(ERROR_046) + "; error: " + status.message).c_str()).status;
-  }
-  if (value.empty())
-    return CRS_Status(static_cast<HTTP_CODE>(
-      drogon::HttpStatusCode::k400BadRequest),
-        ERROR_CODE_NULL_FILTER_COLUMN_VALUE, ERROR_048).status;
-  // make sure the value is not null
-  if (std::string(value.begin(), value.end()) == "null")
-    return CRS_Status(static_cast<HTTP_CODE>(
-      drogon::HttpStatusCode::k400BadRequest),
-        ERROR_CODE_NULL_FILTER_COLUMN_VALUE, ERROR_048).status;
-
   return CRS_Status(static_cast<HTTP_CODE>(
     drogon::HttpStatusCode::k200OK)).status;
 }
@@ -199,55 +236,18 @@ std::string PKReadParams::to_string() {
   return ss.str();
 }
 
-RS_Status PKReadParams::validate(bool check_filter) {
+RS_Status PKReadParams::validate() {
   // std::cout << "Validating PKReadParams: " << to_string() << std::endl;
 
-  RS_Status status = validate_db_identifier(path.db);
+  RS_Status status = validate_db(path.db);
   if (unlikely(status.http_code != static_cast<HTTP_CODE>(
         drogon::HttpStatusCode::k200OK))) {
-    if (status.code == ERROR_CODE_EMPTY_IDENTIFIER)
-      return CRS_Status(static_cast<HTTP_CODE>(
-        drogon::HttpStatusCode::k400BadRequest),
-          ERROR_CODE_EMPTY_IDENTIFIER,
-          (std::string(ERROR_049) + ": " +
-          std::string(path.db)).c_str()).status;
-    if (status.code == ERROR_CODE_IDENTIFIER_TOO_LONG)
-      return CRS_Status(static_cast<HTTP_CODE>(
-        drogon::HttpStatusCode::k400BadRequest),
-          ERROR_CODE_MAX_DB, (std::string(ERROR_050) + ": " +
-          std::string(path.db)).c_str()).status;
-    if (status.code == ERROR_CODE_INVALID_IDENTIFIER)
-      return CRS_Status(static_cast<HTTP_CODE>(
-        drogon::HttpStatusCode::k400BadRequest),
-          ERROR_CODE_INVALID_IDENTIFIER,
-          "database name contains invalid characters").status;
-    return CRS_Status(static_cast<HTTP_CODE>(
-      drogon::HttpStatusCode::k400BadRequest),
-        ERROR_CODE_INVALID_DB_NAME,
-        (std::string(ERROR_051) + "; error: " + status.message).c_str()).status;
+    return status;
   }
-  status = validate_db_identifier(path.table);
+  status = validate_table(path.table);
   if (unlikely(status.http_code != static_cast<HTTP_CODE>(
         drogon::HttpStatusCode::k200OK))) {
-    if (status.code == ERROR_CODE_EMPTY_IDENTIFIER)
-      return CRS_Status(static_cast<HTTP_CODE>(
-        drogon::HttpStatusCode::k400BadRequest),
-          ERROR_CODE_MIN_TABLE, (std::string(ERROR_052) + ": " +
-          std::string(path.table)).c_str()).status;
-    if (status.code == ERROR_CODE_IDENTIFIER_TOO_LONG)
-      return CRS_Status(static_cast<HTTP_CODE>(
-        drogon::HttpStatusCode::k400BadRequest),
-          ERROR_CODE_MAX_TABLE, (std::string(ERROR_053) + ": " +
-          std::string(path.table)).c_str()).status;
-    if (status.code == ERROR_CODE_INVALID_IDENTIFIER)
-      return CRS_Status(static_cast<HTTP_CODE>(
-        drogon::HttpStatusCode::k400BadRequest),
-          ERROR_CODE_INVALID_IDENTIFIER,
-          "table name contains invalid characters").status;
-    return CRS_Status(static_cast<HTTP_CODE>(
-      drogon::HttpStatusCode::k400BadRequest),
-        ERROR_CODE_INVALID_TABLE_NAME,
-        (std::string(ERROR_054) + "; error: " + status.message).c_str()).status;
+    return status;
   }
   status = validate_operation_id(operationId);
   if (unlikely(status.http_code != static_cast<HTTP_CODE>(
@@ -257,22 +257,32 @@ RS_Status PKReadParams::validate(bool check_filter) {
         ERROR_CODE_INVALID_OPERATION_ID,
         (std::string(ERROR_055) + "; error: " + status.message).c_str()).status;
 
-  // make sure filters is not empty
-  if (unlikely(check_filter && filters.empty())) {
-    // std::cout << "Filters is empty" << std::endl;
-    return CRS_Status(static_cast<HTTP_CODE>(
-      drogon::HttpStatusCode::k400BadRequest),
-      ERROR_CODE_INVALID_FILTERS,
-      ERROR_056).status;
+  // make sure read columns are valid
+  for (auto &readColumn : readColumns) {
+    status = validate_column(readColumn.column);
+    if (unlikely(status.http_code != static_cast<HTTP_CODE>(
+          drogon::HttpStatusCode::k200OK))) {
+      return status;
+    }
   }
-
   // make sure filter columns are valid
   for (auto &filter : filters) {
-    status = filter.validate();
-    if (unlikely(status.http_code !=
-        static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)))
+    status = validate_column(filter.column);
+    if (unlikely(status.http_code != static_cast<HTTP_CODE>(
+          drogon::HttpStatusCode::k200OK))) {
       return status;
+    }
   }
+  status = validate_columns();
+  if (unlikely(status.http_code != static_cast<HTTP_CODE>(
+        drogon::HttpStatusCode::k200OK))) {
+    return status;
+  }
+  return CRS_Status(static_cast<HTTP_CODE>(
+    drogon::HttpStatusCode::k200OK)).status;
+}
+
+RS_Status PKReadParams::validate_columns(void) {
   // make sure that the columns are unique
   std::unordered_map<std::string_view, bool> existingFilters;
   for (auto &filter : filters) {
@@ -285,35 +295,6 @@ RS_Status PKReadParams::validate(bool check_filter) {
           std::string(filter.column)).c_str()).status;
     }
     existingFilters[filter.column] = true;
-  }
-  // make sure read columns are valid
-  for (auto &readColumn : readColumns) {
-    status = validate_db_identifier(readColumn.column);
-    if (unlikely(status.http_code != static_cast<HTTP_CODE>(
-          drogon::HttpStatusCode::k200OK))) {
-      if (status.code == ERROR_CODE_EMPTY_IDENTIFIER)
-        return CRS_Status(static_cast<HTTP_CODE>(
-          drogon::HttpStatusCode::k400BadRequest),
-            ERROR_CODE_EMPTY_IDENTIFIER,
-            (std::string(ERROR_038) + ": " +
-             std::string(readColumn.column)).c_str()).status;
-      if (status.code == ERROR_CODE_IDENTIFIER_TOO_LONG)
-        return CRS_Status(static_cast<HTTP_CODE>(
-          drogon::HttpStatusCode::k400BadRequest),
-            ERROR_CODE_IDENTIFIER_TOO_LONG,
-            (std::string(ERROR_039) + ": " +
-             std::string(readColumn.column)).c_str()).status;
-      if (status.code == ERROR_CODE_INVALID_IDENTIFIER)
-        return CRS_Status(static_cast<HTTP_CODE>(
-          drogon::HttpStatusCode::k400BadRequest),
-            ERROR_CODE_INVALID_IDENTIFIER,
-            "read column name: contains invalid characters").status;
-      return CRS_Status(static_cast<HTTP_CODE>(
-        drogon::HttpStatusCode::k400BadRequest),
-          ERROR_CODE_INVALID_READ_COLUMN_NAME,
-          (std::string(ERROR_059) + "; error: " +
-           status.message).c_str()).status;
-    }
   }
   // make sure that the filter columns and read columns do not overlap
   // and read cols are unique

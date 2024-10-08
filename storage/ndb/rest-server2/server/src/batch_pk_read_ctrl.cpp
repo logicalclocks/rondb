@@ -24,6 +24,8 @@
 #include "pk_data_structs.hpp"
 #include "api_key.hpp"
 #include "src/constants.hpp"
+#include "error_strings.h"
+#include "rdrs_dal.hpp"
 
 #include <cstring>
 #include <drogon/HttpTypes.h>
@@ -97,10 +99,73 @@ void BatchPKReadCtrl::batchPKRead(
   }
 
   // Validate
+  std::unordered_map<std::string_view, bool> db_map;
+  std::unordered_map<std::string_view, bool> table_map;
+  std::unordered_map<std::string_view, bool> column_map;
+  std::vector<std::string_view> db_vector;
+
   for (auto reqStruct : reqStructs) {
-    status = reqStruct.validate(true);
+    std::string_view db = reqStruct.path.db;
+    std::string_view table = reqStruct.path.table;
+    db_map[db] = true;
+    table_map[table] = true;
+    for (auto readColumn: reqStruct.readColumns) {
+      std::string_view column = readColumn.column;
+      column_map[column] = true;
+    }
+    for (auto filter: reqStruct.filters) {
+      std::string_view column = filter.column;
+      column_map[column] = true;
+    }
+  }
+  for (auto it = db_map.begin(); it != db_map.end(); ++it) {
+    auto db = it->first;
+    status = validate_db_identifier(db);
     if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
         drogon::HttpStatusCode::k200OK)) {
+      resp->setBody(std::string(status.message));
+      resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
+      callback(resp);
+      return;
+    }
+    db_vector.push_back(db);
+  }
+  for (auto it = table_map.begin(); it != table_map.end(); ++it) {
+    auto table = it->first;
+    status = validate_db_identifier(table);
+    if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
+        drogon::HttpStatusCode::k200OK)) {
+      resp->setBody(std::string(status.message));
+      resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
+      callback(resp);
+      return;
+    }
+  }
+  for (auto it = column_map.begin(); it != column_map.end(); ++it) {
+    auto column = it->first;
+    status = validate_column(column);
+    if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
+        drogon::HttpStatusCode::k200OK)) {
+      resp->setBody(std::string(status.message));
+      resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
+      callback(resp);
+      return;
+    }
+  }
+  for (auto reqStruct : reqStructs) {
+    if (reqStruct.filters.size() > 1) {
+      status = reqStruct.validate_columns();
+      if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
+          drogon::HttpStatusCode::k200OK)) {
+        resp->setBody(std::string(status.message));
+        resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
+        callback(resp);
+        return;
+      }
+    }
+    status = validate_operation_id(reqStruct.operationId);
+    if (unlikely(status.http_code != static_cast<HTTP_CODE>(
+          drogon::HttpStatusCode::k200OK))) {
       resp->setBody(std::string(status.message));
       resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
       callback(resp);
@@ -111,15 +176,13 @@ void BatchPKReadCtrl::batchPKRead(
   // Authenticate
   if (likely(globalConfigs.security.apiKey.useHopsworksAPIKeys)) {
     auto api_key = req->getHeader(API_KEY_NAME_LOWER_CASE);
-    for (auto reqStruct : reqStructs) {
-      status = authenticate(api_key, reqStruct);
-      if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
-          drogon::HttpStatusCode::k200OK)) {
-        resp->setBody(std::string(status.message));
-        resp->setStatusCode((drogon::HttpStatusCode)status.http_code);
-        callback(resp);
-        return;
-      }
+    status = authenticate(api_key, db_vector);
+    if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
+        drogon::HttpStatusCode::k200OK)) {
+      resp->setBody(std::string(status.message));
+      resp->setStatusCode((drogon::HttpStatusCode)status.http_code);
+      callback(resp);
+      return;
     }
   }
 

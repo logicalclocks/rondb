@@ -198,7 +198,7 @@ void BatchFeatureStoreCtrl::batch_featureStore(
     // Validate batch pkread
     for (auto readParam : readParams) {
       // The request is always a POST, but not set in request parameters
-      status = readParam.validate(false);
+      status = readParam.validate();
       if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
                      drogon::HttpStatusCode::k200OK)) {
         resp->setBody(

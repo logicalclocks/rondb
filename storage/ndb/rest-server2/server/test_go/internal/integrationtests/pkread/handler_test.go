@@ -100,7 +100,7 @@ func TestPKReadLargeColumns(t *testing.T) {
 		t.Skip("Skipping test as it requires REST and REST Interface is disabled")
 	}
 	// Test. Large filter column names.
-	col := testutils.RandString(65)
+        col := "col12345678901234567890123456789012345678901234567890123456789012"
 	val := "val"
 	param := api.PKReadBody{
 		Filters:     testclient.NewFilter(&col, val),
@@ -110,7 +110,8 @@ func TestPKReadLargeColumns(t *testing.T) {
 	body, _ := json.MarshalIndent(param, "", "\t")
 	url := testutils.NewPKReadURL("db", "table")
 	testclient.SendHttpRequest(t, config.PK_HTTP_VERB, url, string(body),
-		"Field validation for 'Column' failed on the 'max' tag", http.StatusBadRequest)
+                "identifier is too large: col12345678901234567890123456789012345678901234567890123456789012",
+		http.StatusBadRequest)
 
 	// Test. Large read column names.
 	param = api.PKReadBody{
