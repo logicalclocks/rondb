@@ -897,10 +897,8 @@ std::string datumToJson(const avro::GenericDatum &datum,
 class FeatureStoreTest : public ::testing::Test {
  protected:
   static void SetUpTestSuite() {
-    setenv("RUNNING_UNIT_TESTS", "1", 1);
   }
   static void TearDownTestSuite() {
-    unsetenv("RUNNING_UNIT_TESTS");
   }
 };
 
@@ -1196,7 +1194,6 @@ TEST_F(FeatureStoreTest, DISABLED_Test_GetFeatureVector_Success_ComplexType) {
 class BatchFeatureStoreTest : public ::testing::Test {
  protected:
   static void SetUpTestSuite() {
-    setenv("RUNNING_UNIT_TESTS", "1", 1);
     RS_Status status = RonDBConnection::init_rondb_connection(
       globalConfigs.ronDB,
       globalConfigs.ronDBMetadataCluster);
@@ -1208,7 +1205,6 @@ class BatchFeatureStoreTest : public ::testing::Test {
   }
 
   static void TearDownTestSuite() {
-    unsetenv("RUNNING_UNIT_TESTS");
     RS_Status status = RonDBConnection::shutdown_rondb_connection();
     if (status.http_code !=
           static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {

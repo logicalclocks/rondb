@@ -419,7 +419,7 @@
         like this, where fields are separated by one or more spaces.
 
         @verbatim
-  suite_name.test_name [@platform|@!platform] : <BUG|WL>#<XXXX> [<comment>]
+  suite_name.test_name [@platform|@!platform] : <BUG#|WL#|RONDB-><XXXX> [<comment>]
         @endverbatim
 
         Example:

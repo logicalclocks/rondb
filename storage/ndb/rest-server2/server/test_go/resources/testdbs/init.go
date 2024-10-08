@@ -42,6 +42,7 @@ read columns will require more encoding.
 const BENCH_DB_VARBINARY_PK_LENGTH = 3000
 const BENCH_DB_COLUMN_LENGTH = 100
 
+// todo comment 2-way link to cleanup .inc file, or perhaps better, move all the schema init to an .inc file or all cleanup to go test.
 // Mapping database names to their schemes
 var databaseCreateSchemes = map[string]string{
 	// TODO: Fix the ordering of 11, 13 and 19

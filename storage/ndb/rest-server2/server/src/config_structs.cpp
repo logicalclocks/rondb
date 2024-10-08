@@ -36,11 +36,6 @@
 AllConfigs globalConfigs;
 std::mutex globalConfigsMutex;
 
-bool isUnitTest() {
-  const char *env_var = std::getenv("RUNNING_UNIT_TESTS");
-  return (env_var != nullptr && std::string(env_var) == "1");
-}
-
 /*
  * Default constructors with default values
  */

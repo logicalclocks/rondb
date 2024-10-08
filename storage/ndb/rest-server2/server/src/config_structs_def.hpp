@@ -136,11 +136,11 @@ CLASS
  CM(std::string, privateKeyFile, PrivateKeyFile, "")
  CM(std::string, rootCACertFile, RootCACertFile, "")
  CM(TestParameters, testParameters, TestParameters, TestParameters())
- PROBLEM(!isUnitTest() && enableTLS && (certificateFile.empty() ||
+ PROBLEM(enableTLS && (certificateFile.empty() ||
          privateKeyFile.empty()),
          "cannot enable TLS if `CertificateFile` or `PrivateKeyFile` is"
          " not set")
- PROBLEM(!isUnitTest() && !enableTLS && requireAndVerifyClientCert,
+ PROBLEM(!enableTLS && requireAndVerifyClientCert,
          "cannot require client certificates if TLS is not enabled")
 )
 
