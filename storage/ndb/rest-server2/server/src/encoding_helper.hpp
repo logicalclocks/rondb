@@ -35,25 +35,15 @@
 void printCharArray(const char *, size_t);
 
 RS_Status unquote(std::vector<char> &, bool);
-
 RS_Status Unquote(std::vector<char> &);
-
-EN_Status copy_str_to_buffer(const std::string &, void *, uint32_t);
-
-EN_Status copy_ndb_str_to_buffer(std::vector<char> &, void *, uint32_t);
-
+EN_Status copy_str_to_buffer(const std::string_view &, void *, Uint32);
+EN_Status copy_ndb_str_to_buffer(std::vector<char> &, void *, Uint32);
 std::vector<char> string_to_byte_array(std::string);
-
 std::vector<char> string_view_to_byte_array(const std::string_view &);
-
-uint32_t align_word(uint32_t);
-
-uint32_t data_return_type(std::string_view);
-
-std::string quote_if_string(uint32_t, std::string);
-
+Uint32 align_word(Uint32);
+Uint32 data_return_type(std::string_view);
+std::string quote_if_string(Uint32, std::string);
 void printReqBuffer(const RS_Buffer *);
-
 void printStatus(RS_Status);
 
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_ENCODING_HELPER_HPP_

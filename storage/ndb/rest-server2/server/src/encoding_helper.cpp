@@ -26,7 +26,9 @@
 #include <cstring>
 #include <tuple>
 
-EN_Status copy_str_to_buffer(const std::string &src, void *dst, uint32_t offset) {
+EN_Status copy_str_to_buffer(const std::string_view &src,
+                             void *dst,
+                             Uint32 offset) {
   if (dst == nullptr) {
     EN_Status status{};
     status.http_code = static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest);
@@ -35,17 +37,13 @@ EN_Status copy_str_to_buffer(const std::string &src, void *dst, uint32_t offset)
     status.message[EN_STATUS_MSG_LEN - 1] = '\0';
     return status;
   }
-
-  uint32_t src_length = static_cast<uint32_t>(src.size());
-
-  memcpy(static_cast<char *>(dst) + offset, src.c_str(), src_length);
-
+  Uint32 src_length = static_cast<Uint32>(src.size());
+  memcpy(static_cast<char *>(dst) + offset, src.data(), src_length);
   static_cast<char *>(dst)[offset + src_length] = '\0';
-
   return EN_Status(offset + src_length + 1);
 }
 
-EN_Status copy_ndb_str_to_buffer(std::vector<char> &src, void *dst, uint32_t offset) {
+EN_Status copy_ndb_str_to_buffer(std::vector<char> &src, void *dst, Uint32 offset) {
   if (dst == nullptr) {
     return EN_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest), 0,
                      "Destination buffer pointer is null");
@@ -63,11 +61,11 @@ EN_Status copy_ndb_str_to_buffer(std::vector<char> &src, void *dst, uint32_t off
     }
   }
 
-  uint32_t src_length = static_cast<uint32_t>(src.size());
+  Uint32 src_length = static_cast<Uint32>(src.size());
 
   // Write immutable length of the string
-  static const uint32_t MAX_BYTE_VALUE = 256;
-  static_cast<char *>(dst)[offset]     = static_cast<char>(src_length % MAX_BYTE_VALUE);
+  static const Uint32 MAX_BYTE_VALUE = 256;
+  static_cast<char *>(dst)[offset] = static_cast<char>(src_length % MAX_BYTE_VALUE);
   static_cast<char *>(dst)[offset + 1] = static_cast<char>(src_length / MAX_BYTE_VALUE);
   offset += 2;
 
@@ -92,14 +90,14 @@ std::vector<char> string_view_to_byte_array(const std::string_view &str_view) {
   return std::vector<char>(str_view.begin(), str_view.end());
 }
 
-uint32_t align_word(uint32_t head) {
-  uint32_t a = head % 4;
+Uint32 align_word(Uint32 head) {
+  Uint32 a = head % 4;
   if (a != 0)
     head += (4 - a);
   return head;
 }
 
-uint32_t data_return_type(std::string_view drt) {
+Uint32 data_return_type(std::string_view drt) {
   if (drt == to_string(DataReturnType::DEFAULT_DRT)) {
     return DataReturnType::DEFAULT_DRT;
   }
@@ -116,7 +114,7 @@ quotes when we are actually dealing with strings.
 
 Since binary data is encoded as base64 strings, we also add quotes for these.
 */
-std::string quote_if_string(uint32_t dataType, std::string value) {
+std::string quote_if_string(Uint32 dataType, std::string value) {
   if (dataType == RDRS_INTEGER_DATATYPE || dataType == RDRS_FLOAT_DATATYPE) {
     return value;
   }
@@ -133,57 +131,57 @@ void printCharArray(const char *array, size_t length) {
 void printReqBuffer(const RS_Buffer *reqBuff) {
   char *reqData = reqBuff->buffer;
   std::cout << "Request buffer: " << std::endl;
-  std::cout << "OP Type: " << std::hex << "0x" << ((uint32_t *)reqData)[0] << std::endl;
-  std::cout << "Capacity: " << std::hex << "0x" << ((uint32_t *)reqData)[1] << std::endl;
-  std::cout << "Length: " << std::hex << "0x" << ((uint32_t *)reqData)[2] << std::endl;
-  std::cout << "Flags: " << std::hex << "0x" << ((uint32_t *)reqData)[3] << std::endl;
-  std::cout << "DB Idx: " << std::hex << "0x" << ((uint32_t *)reqData)[4] << std::endl;
-  std::cout << "Table Idx: " << std::hex << "0x" << ((uint32_t *)reqData)[5] << std::endl;
-  std::cout << "PK Cols Idx: " << std::hex << "0x" << ((uint32_t *)reqData)[6] << std::endl;
-  std::cout << "Read Cols Idx: " << std::hex << "0x" << ((uint32_t *)reqData)[7] << std::endl;
-  std::cout << "OP ID Idx: " << std::hex << "0x" << ((uint32_t *)reqData)[8] << std::endl;
+  std::cout << "OP Type: " << std::hex << "0x" << ((Uint32 *)reqData)[0] << std::endl;
+  std::cout << "Capacity: " << std::hex << "0x" << ((Uint32 *)reqData)[1] << std::endl;
+  std::cout << "Length: " << std::hex << "0x" << ((Uint32 *)reqData)[2] << std::endl;
+  std::cout << "Flags: " << std::hex << "0x" << ((Uint32 *)reqData)[3] << std::endl;
+  std::cout << "DB Idx: " << std::hex << "0x" << ((Uint32 *)reqData)[4] << std::endl;
+  std::cout << "Table Idx: " << std::hex << "0x" << ((Uint32 *)reqData)[5] << std::endl;
+  std::cout << "PK Cols Idx: " << std::hex << "0x" << ((Uint32 *)reqData)[6] << std::endl;
+  std::cout << "Read Cols Idx: " << std::hex << "0x" << ((Uint32 *)reqData)[7] << std::endl;
+  std::cout << "OP ID Idx: " << std::hex << "0x" << ((Uint32 *)reqData)[8] << std::endl;
   std::cout << "DB: ";
-  uint32_t dbIdx = ((uint32_t *)reqData)[4];
-  std::cout << (char *)((uintptr_t)reqData + dbIdx) << std::endl;
+  Uint32 dbIdx = ((Uint32 *)reqData)[4];
+  std::cout << (char *)((UintPtr)reqData + dbIdx) << std::endl;
   std::cout << "Table: ";
-  uint32_t tableIdx = ((uint32_t *)reqData)[5];
-  std::cout << (char *)((uintptr_t)reqData + tableIdx) << std::endl;
-  uint32_t pkColsIdx = ((uint32_t *)reqData)[6];
+  Uint32 tableIdx = ((Uint32 *)reqData)[5];
+  std::cout << (char *)((UintPtr)reqData + tableIdx) << std::endl;
+  Uint32 pkColsIdx = ((Uint32 *)reqData)[6];
   std::cout << "PK Cols Count: " << std::hex << "0x"
-            << *((uint32_t *)((uintptr_t)reqData + pkColsIdx)) << std::endl;
-  for (uint32_t i = 0; i < *reinterpret_cast<uint32_t *>(reqData + pkColsIdx); i++) {
+            << *((Uint32 *)((UintPtr)reqData + pkColsIdx)) << std::endl;
+  for (Uint32 i = 0; i < *reinterpret_cast<Uint32 *>(reqData + pkColsIdx); i++) {
     int step = (i + 1) * ADDRESS_SIZE;
     std::cout << "KV pair " << i << " Idx: " << std::hex << "0x"
-              << *((uint32_t *)((uintptr_t)reqData + pkColsIdx + step)) << std::endl;
-    uint32_t kvPairIdx = *((uint32_t *)((uintptr_t)reqData + pkColsIdx + step));
-    uint32_t keyIdx    = ((uint32_t *)reqData)[kvPairIdx / ADDRESS_SIZE];
+              << *((Uint32 *)((UintPtr)reqData + pkColsIdx + step)) << std::endl;
+    Uint32 kvPairIdx = *((Uint32 *)((UintPtr)reqData + pkColsIdx + step));
+    Uint32 keyIdx = ((Uint32 *)reqData)[kvPairIdx / ADDRESS_SIZE];
     std::cout << "Key idx: " << std::hex << "0x" << keyIdx << std::endl;
     std::cout << "Key " << i + 1 << ": ";
-    std::cout << (char *)((uintptr_t)reqData + keyIdx) << std::endl;
-    uint32_t valueIdx = ((uint32_t *)reqData)[(kvPairIdx / ADDRESS_SIZE) + 1];
+    std::cout << (char *)((UintPtr)reqData + keyIdx) << std::endl;
+    Uint32 valueIdx = ((Uint32 *)reqData)[(kvPairIdx / ADDRESS_SIZE) + 1];
     std::cout << "Value idx: " << std::hex << "0x" << valueIdx << std::endl;
     std::cout << "Size " << i + 1 << ": ";
-    std::cout << *((uint16_t *)((uintptr_t)reqData + valueIdx)) << std::endl;
+    std::cout << *((Uint16 *)((UintPtr)reqData + valueIdx)) << std::endl;
     std::cout << "Value " << i + 1 << ": ";
-    std::cout << (char *)((uintptr_t)reqData + valueIdx + ADDRESS_SIZE) << std::endl;
+    std::cout << (char *)((UintPtr)reqData + valueIdx + ADDRESS_SIZE) << std::endl;
   }
-  uint32_t readColsIdx = ((uint32_t *)reqData)[7];
+  Uint32 readColsIdx = ((Uint32 *)reqData)[7];
   std::cout << "Read Cols Count: " << std::hex << "0x"
-            << *((uint32_t *)((uintptr_t)reqData + readColsIdx)) << std::endl;
-  for (uint32_t i = 0;
-       i < *reinterpret_cast<uint32_t *>(reinterpret_cast<uintptr_t>(reqData) + readColsIdx); i++) {
+            << *((Uint32 *)((UintPtr)reqData + readColsIdx)) << std::endl;
+  for (Uint32 i = 0;
+       i < *reinterpret_cast<Uint32 *>(reinterpret_cast<UintPtr>(reqData) + readColsIdx); i++) {
     int step = (i + 1) * ADDRESS_SIZE;
     std::cout << "Read Col " << i << " Idx: " << std::hex << "0x"
-              << *((uint32_t *)((uintptr_t)reqData + readColsIdx + step)) << std::endl;
-    uint32_t readColIdx = *((uint32_t *)((uintptr_t)reqData + readColsIdx + step));
-    uint32_t returnType = ((uint32_t *)reqData)[readColIdx / ADDRESS_SIZE];
+              << *((Uint32 *)((UintPtr)reqData + readColsIdx + step)) << std::endl;
+    Uint32 readColIdx = *((Uint32 *)((UintPtr)reqData + readColsIdx + step));
+    Uint32 returnType = ((Uint32 *)reqData)[readColIdx / ADDRESS_SIZE];
     std::cout << "Return type: " << std::hex << "0x" << returnType << std::endl;
     std::cout << "Col " << i + 1 << ": ";
-    std::cout << (char *)((uintptr_t)reqData + readColIdx + ADDRESS_SIZE) << std::endl;
+    std::cout << (char *)((UintPtr)reqData + readColIdx + ADDRESS_SIZE) << std::endl;
   }
-  uint32_t opIDIdx = ((uint32_t *)reqData)[8];
+  Uint32 opIDIdx = ((Uint32 *)reqData)[8];
   std::cout << "Op ID: ";
-  std::cout << (char *)((uintptr_t)reqData + opIDIdx) << std::endl;
+  std::cout << (char *)((UintPtr)reqData + opIDIdx) << std::endl;
 }
 
 void printStatus(RS_Status status) {
@@ -287,9 +285,9 @@ const int surrogateMin = 0xD800;
 const int surrogateMax = 0xDFFF;
 
 // Utility constants for UTF-8 encoding
-const uint8_t t2 = 0xC0, t3 = 0xE0, t4 = 0xF0, tx = 0x80, maskx = 0x3F;
+const Uint8 t2 = 0xC0, t3 = 0xE0, t4 = 0xF0, tx = 0x80, maskx = 0x3F;
 
-int encode_rune(std::vector<char> &p, uint32_t r) {
+int encode_rune(std::vector<char> &p, Uint32 r) {
   if (r <= rune1Max) {
     p.push_back(static_cast<char>(r));
     return 1;
@@ -318,9 +316,9 @@ int encode_rune(std::vector<char> &p, uint32_t r) {
 RS_Status unquote(std::vector<char> &str, bool unescape) {
   // if string to be unquoted is too short
   if (str.size() < 2) {
-    return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                      "invalid syntax: too short string")
-        .status;
+    return CRS_Status(static_cast<HTTP_CODE>(
+      drogon::HttpStatusCode::k400BadRequest),
+      "invalid syntax: too short string").status;
   }
 
   char quote = str.front();
@@ -328,14 +326,16 @@ RS_Status unquote(std::vector<char> &str, bool unescape) {
 
   // if no matching quote
   if (end == str.end()) {
-    return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                      "invalid syntax: no matching quote")
-        .status;
+    return CRS_Status(static_cast<HTTP_CODE>(
+      drogon::HttpStatusCode::k400BadRequest),
+      "invalid syntax: no matching quote").status;
   }
 
+  // position after terminating quote; may be wrong if escape sequences
+  // are present
   auto end_pos =
       std::distance(str.begin(), end) +
-      1;  // position after terminating quote; may be wrong if escape sequences are present
+      1;
 
   std::string_view substring(str.data(), end_pos);
 
@@ -362,40 +362,45 @@ RS_Status unquote(std::vector<char> &str, bool unescape) {
     // Handle quoted strings without any escape sequences.
     std::string in(str.begin(), str.end());
 
-    if (in.find('\\') == std::string::npos && in.find('\n') == std::string::npos) {
+    if (in.find('\\') == std::string::npos && in.find('\n') ==
+        std::string::npos) {
       bool valid = quote == '"' ? is_valid_utf8(in)
-                                : static_cast<std::vector<char>::size_type>(
-                                      std::get<1>(decode_rune_in_string(in))) == in.size();
+        : static_cast<std::vector<char>::size_type>(
+          std::get<1>(decode_rune_in_string(in))) == in.size();
 
       if (valid) {
         if (unescape) {
-          str.erase(str.begin());                               // Remove the first quote
-          str.erase(std::find(str.begin(), str.end(), quote));  // Remove the second quote
+          // Remove the first quote
+          str.erase(str.begin());
+          // Remove the second quote
+          str.erase(std::find(str.begin(), str.end(), quote));
         }
       } else {
         // Invalid UTF-8 or improper single character in single quotes
         return CRS_Status(
           static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-          "invalid syntax: invalid UTF-8 or improper single character in single quotes").status;
+          "invalid syntax: invalid UTF-8 or improper single character in"
+          " single quotes").status;
       }
     } else {
       // Handle quoted strings with escape sequences
       if (unescape) {
+        // Skip starting and ending quotes
         std::string unescaped =
-            unescape_string(in.substr(1, in.size() - 2));  // Skip starting and ending quotes
+            unescape_string(in.substr(1, in.size() - 2));
         str.assign(unescaped.begin(), unescaped.end());
       }
     }
     break;
   }
   default: {
-    return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                      "invalid syntax: unknown quote type")
-        .status;
+    return CRS_Status(static_cast<HTTP_CODE>(
+      drogon::HttpStatusCode::k400BadRequest),
+      "invalid syntax: unknown quote type").status;
   }
   }
-
-  return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)).status;
+  return CRS_Status(static_cast<HTTP_CODE>(
+    drogon::HttpStatusCode::k200OK)).status;
 }
 
 RS_Status Unquote(std::vector<char> &str) {

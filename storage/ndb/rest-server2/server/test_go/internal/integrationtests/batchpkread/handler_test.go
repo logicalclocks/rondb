@@ -432,13 +432,21 @@ func TestBatchMissingReqField(t *testing.T) {
 		t.Skip("Skipping test as REST interface is disabled")
 	}
 	url := testutils.NewBatchReadURL()
+
 	// Test missing method
-	operations := NewOperationsTBD(t, 3)
-	operations[1].Method = nil
+	operations := NewOperationsTBD(t, 0)
 	operationsWrapper := api.BatchOpRequest{Operations: &operations}
 	body, _ := json.Marshal(operationsWrapper)
 	testclient.SendHttpRequest(t, config.BATCH_HTTP_VERB, url, string(body),
-		"Field validation for 'Method' failed", http.StatusBadRequest)
+		"No operations defined", http.StatusBadRequest)
+
+	// Test missing method
+	operations = NewOperationsTBD(t, 3)
+	operations[1].Method = nil
+	operationsWrapper = api.BatchOpRequest{Operations: &operations}
+	body, _ = json.Marshal(operationsWrapper)
+	testclient.SendHttpRequest(t, config.BATCH_HTTP_VERB, url, string(body),
+		"the Method section should be POST", http.StatusBadRequest)
 
 	// Test missing relative URL
 	operations = NewOperationsTBD(t, 3)
@@ -446,7 +454,7 @@ func TestBatchMissingReqField(t *testing.T) {
 	operationsWrapper = api.BatchOpRequest{Operations: &operations}
 	body, _ = json.Marshal(operationsWrapper)
 	testclient.SendHttpRequest(t, config.BATCH_HTTP_VERB, url, string(body),
-		"Field validation for 'RelativeURL' failed", http.StatusBadRequest)
+		"the relativeUrl section is required", http.StatusBadRequest)
 
 	// Test missing body
 	operations = NewOperationsTBD(t, 3)
@@ -462,7 +470,7 @@ func TestBatchMissingReqField(t *testing.T) {
 	operationsWrapper = api.BatchOpRequest{Operations: &operations}
 	body, _ = json.Marshal(operationsWrapper)
 	testclient.SendHttpRequest(t, config.BATCH_HTTP_VERB, url, string(body),
-		"Field validation for 'Filters' failed", http.StatusBadRequest)
+		"the Field section is null", http.StatusBadRequest)
 }
 
 func NewOperationsTBD(t *testing.T, numOps int) []api.BatchSubOp {

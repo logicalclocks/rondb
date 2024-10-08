@@ -17,9 +17,6 @@
  * USA.
  */
 
-
-
-
 /*
  * These class definitions for configuration are wrapped in macros so they can
  * be used for several things:
@@ -52,15 +49,16 @@
  *   }
  *   define_class_including_dependencies(AllConfigs);
  */
+#include <ndb_types.h>
 
 CLASS
 (
  Internal,
- CM(uint32_t, reqBufferSize,       ReqBufferSize,       1024 * 1024)
- CM(uint32_t, respBufferSize,      RespBufferSize,      5 * 1024 * 1024)
- CM(uint32_t, preAllocatedBuffers, PreAllocatedBuffers, 32)
- CM(uint32_t, batchMaxSize,        BatchMaxSize,        256)
- CM(uint32_t, operationIdMaxSize,  OperationIDMaxSize,  256)
+ CM(Uint32, reqBufferSize,       ReqBufferSize,       1024 * 1024)
+ CM(Uint32, respBufferSize,      RespBufferSize,      5 * 1024 * 1024)
+ CM(Uint32, preAllocatedBuffers, PreAllocatedBuffers, 32)
+ CM(Uint32, batchMaxSize,        BatchMaxSize,        256)
+ CM(Uint32, operationIdMaxSize,  OperationIDMaxSize,  256)
  //todo warn (preallocatedbuffers == 0, "preAllocatedBuffers should be > 0")
  PROBLEM(reqBufferSize < 256, "ReqBufferSize should be >= 256")
  PROBLEM(respBufferSize < 256, "RespBufferSize should be >= 256")
@@ -71,7 +69,7 @@ CLASS
  REST,
  CM(bool,        enable,     Enable,     true)
  CM(std::string, serverIP,   ServerIP,   "0.0.0.0")
- CM(uint16_t,    serverPort, ServerPort, 5406)
+ CM(Uint16,    serverPort, ServerPort, 5406)
  CM(unsigned,    numThreads, NumThreads, 16)
  PROBLEM(!enable, "REST must be enabled")
  PROBLEM(enable && serverIP.empty(), "REST server IP cannot be empty")
@@ -81,20 +79,20 @@ CLASS
 CLASS(GRPC,
   CM(bool,        enable,     Enable,     false)
   CM(std::string, serverIP,   ServerIP,   "0.0.0.0")
-  CM(uint16_t,    serverPort, ServerPort, 4406)
+  CM(Uint16,    serverPort, ServerPort, 4406)
   PROBLEM(enable, "gRPC not supported")
 )
 
 CLASS(Mgmd,
   CM(std::string, IP,   IP,   "localhost")
-  CM(uint16_t,    port, Port, 13000)
+  CM(Uint16,    port, Port, 13000)
   PROBLEM(IP.empty(), "the Management server IP cannot be empty")
   PROBLEM(port == 0, "the Management server port cannot be zero")
 )
 
 VECTOR(Mgmd)
 
-VECTOR(uint32_t)
+VECTOR(Uint32)
 
 CLASS
 (RonDB,
@@ -102,19 +100,21 @@ CLASS
  // Connection pool size.
  // Note current implementation only supports 1 connection
  // TODO JIRA RonDB-245
- CM(uint32_t,          connectionPoolSize,            ConnectionPoolSize,            1)
- CM(std::vector<uint32_t>, nodeIDs,                   NodeIDs,                       {0})
- CM(uint32_t,          connectionRetries,             ConnectionRetries,             5)
- CM(uint32_t,          connectionRetryDelayInSec,     ConnectionRetryDelayInSec,     5)
- CM(uint32_t,          opRetryOnTransientErrorsCount, OpRetryOnTransientErrorsCount, 3)
- CM(uint32_t,          opRetryInitialDelayInMS,       OpRetryInitialDelayInMS,       500)
- CM(uint32_t,          opRetryJitterInMS,             OpRetryJitterInMS,             100)
+ CM(Uint32, connectionPoolSize, ConnectionPoolSize, 1)
+ CM(std::vector<Uint32>, nodeIDs, NodeIDs, {0})
+ CM(Uint32, connectionRetries, ConnectionRetries, 5)
+ CM(Uint32, connectionRetryDelayInSec, ConnectionRetryDelayInSec, 5)
+ CM(Uint32, opRetryOnTransientErrorsCount, OpRetryOnTransientErrorsCount, 3)
+ CM(Uint32, opRetryInitialDelayInMS, OpRetryInitialDelayInMS, 500)
+ CM(Uint32, opRetryJitterInMS, OpRetryJitterInMS, 100)
  PROBLEM(Mgmds.empty(), "at least one Management server has to be defined")
- PROBLEM(Mgmds.size() > 1, "we do not support specifying more than one Management server yet")
+ PROBLEM(Mgmds.size() > 1,
+ "we do not support specifying more than one Management server yet")
  PROBLEM(connectionPoolSize != 1,
-         "wrong connection pool size. Currently only 1 RonDB connection is supported")
+ "wrong connection pool size. Currently only 1 RonDB connection is supported")
  PROBLEM(nodeIDs.size() != connectionPoolSize,
-         "wrong number of NodeIDs. The number of node ids must match the connection pool size")
+ "wrong number of NodeIDs. The number of node ids must match the connection"
+ " pool size")
  CLASSDEFS
  (
   bool present_in_config_file = false;
@@ -130,30 +130,35 @@ CLASS
 
 CLASS
 (TLS,
- CM(bool,           enableTLS,                  EnableTLS,                  false)
- CM(bool,           requireAndVerifyClientCert, RequireAndVerifyClientCert, false)
- CM(std::string,    certificateFile,            CertificateFile,            "")
- CM(std::string,    privateKeyFile,             PrivateKeyFile,             "")
- CM(std::string,    rootCACertFile,             RootCACertFile,             "")
- CM(TestParameters, testParameters,             TestParameters,             TestParameters())
- PROBLEM(!isUnitTest() && enableTLS && (certificateFile.empty() || privateKeyFile.empty()),
-         "cannot enable TLS if `CertificateFile` or `PrivateKeyFile` is not set")
+ CM(bool, enableTLS, EnableTLS, false)
+ CM(bool, requireAndVerifyClientCert, RequireAndVerifyClientCert, false)
+ CM(std::string, certificateFile, CertificateFile, "")
+ CM(std::string, privateKeyFile, PrivateKeyFile, "")
+ CM(std::string, rootCACertFile, RootCACertFile, "")
+ CM(TestParameters, testParameters, TestParameters, TestParameters())
+ PROBLEM(!isUnitTest() && enableTLS && (certificateFile.empty() ||
+         privateKeyFile.empty()),
+         "cannot enable TLS if `CertificateFile` or `PrivateKeyFile` is"
+         " not set")
  PROBLEM(!isUnitTest() && !enableTLS && requireAndVerifyClientCert,
          "cannot require client certificates if TLS is not enabled")
 )
 
 CLASS
 (APIKey,
- CM(bool,     useHopsworksAPIKeys,          UseHopsworksAPIKeys,          true)
- CM(uint32_t, cacheRefreshIntervalMS,       CacheRefreshIntervalMS,       10000)
- CM(uint32_t, cacheUnusedEntriesEvictionMS, CacheUnusedEntriesEvictionMS, 60000)
- CM(uint32_t, cacheRefreshIntervalJitterMS, CacheRefreshIntervalJitterMS, 1000)
- PROBLEM(cacheRefreshIntervalMS == 0, "cache refresh interval cannot be 0")
- PROBLEM(cacheUnusedEntriesEvictionMS == 0, "cache unused entries eviction cannot be 0")
+ CM(bool, useHopsworksAPIKeys, UseHopsworksAPIKeys, true)
+ CM(Uint32, cacheRefreshIntervalMS, CacheRefreshIntervalMS, 10000)
+ CM(Uint32, cacheUnusedEntriesEvictionMS, CacheUnusedEntriesEvictionMS, 60000)
+ CM(Uint32, cacheRefreshIntervalJitterMS, CacheRefreshIntervalJitterMS, 1000)
+ PROBLEM(cacheRefreshIntervalMS <= 0,
+   "cache refresh interval must be greater than 0")
+ PROBLEM(cacheUnusedEntriesEvictionMS <= 0,
+   "cache unused entries eviction must be greater than 0")
  PROBLEM(cacheRefreshIntervalMS > cacheUnusedEntriesEvictionMS,
-         "cache refresh interval cannot be greater than cache unused entries eviction")
+   "cache refresh interval cannot be greater than cache unused"
+   " entries eviction")
  PROBLEM(cacheRefreshIntervalJitterMS >= cacheRefreshIntervalMS,
-         "cache refresh interval must be smaller than cache refresh interval jitter")
+   "cache refresh interval must be smaller than cache refresh interval jitter")
 )
 
 CLASS
@@ -175,7 +180,7 @@ CLASS
 CLASS
 (MySQLServer,
  CM(std::string,  IP,   IP,  "localhost")
- CM(uint16_t,     port, Port, 13001)
+ CM(Uint16,     port, Port, 13001)
  PROBLEM(IP.empty(), "the MySQL server IP cannot be empty")
  PROBLEM(port == 0, "the MySQL server port cannot be empty")
 )
@@ -193,7 +198,8 @@ CLASS
   std::string generate_mysqld_connect_string();
  )
  PROBLEM(servers.empty(), "at least one MySQL server has to be defined")
- PROBLEM(servers.size() > 1, "we do not support specifying more than one MySQL server yet")
+ PROBLEM(servers.size() > 1,
+ "we do not support specifying more than one MySQL server yet")
  PROBLEM(user.empty(), "the MySQL user cannot be empty")
 )
 

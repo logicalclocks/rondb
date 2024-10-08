@@ -24,18 +24,35 @@
 #include "pk_data_structs.hpp"
 #include "api_key.hpp"
 #include "src/constants.hpp"
+#include "error_strings.h"
+#include "rdrs_dal.hpp"
 
 #include <cstring>
 #include <drogon/HttpTypes.h>
 #include <iostream>
 #include <memory>
 #include <simdjson.h>
+#include <EventLogger.hpp>
 
-void BatchPKReadCtrl::batchPKRead(const drogon::HttpRequestPtr &req,
-                                  std::function<void(const drogon::HttpResponsePtr &)> &&callback) {
+extern EventLogger *g_eventLogger;
+
+#if (defined(VM_TRACE) || defined(ERROR_INSERT))
+//#define DEBUG_BPK_CTRL 1
+#endif
+
+#ifdef DEBUG_BPK_CTRL
+#define DEB_BPK_CTRL(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_BPK_CTRL(arglist) do { } while (0)
+#endif
+
+
+void BatchPKReadCtrl::batchPKRead(
+  const drogon::HttpRequestPtr &req,
+  std::function<void(const drogon::HttpResponsePtr &)> &&callback) {
   auto resp                 = drogon::HttpResponse::newHttpResponse();
   size_t currentThreadIndex = drogon::app().getCurrentThreadIndex();
-  if (currentThreadIndex >= globalConfigs.rest.numThreads) {
+  if (unlikely(currentThreadIndex >= globalConfigs.rest.numThreads)) {
     resp->setBody("Too many threads");
     resp->setStatusCode(drogon::HttpStatusCode::k500InternalServerError);
     callback(resp);
@@ -45,8 +62,9 @@ void BatchPKReadCtrl::batchPKRead(const drogon::HttpRequestPtr &req,
 
   // Store it to the first string buffer
   const char *json_str = req->getBody().data();
-  size_t length        = req->getBody().length();
-  if (length > globalConfigs.internal.reqBufferSize) {
+  DEB_BPK_CTRL(("\n\n JSON REQUEST: \n %s \n", json_str));
+  size_t length = req->getBody().length();
+  if (unlikely(length > globalConfigs.internal.reqBufferSize)) {
     auto resp = drogon::HttpResponse::newHttpResponse();
     resp->setBody("Request too large");
     resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
@@ -60,17 +78,19 @@ void BatchPKReadCtrl::batchPKRead(const drogon::HttpRequestPtr &req,
 
   RS_Status status = jsonParser.batch_parse(
       simdjson::padded_string_view(jsonParser.get_buffer().get(), length,
-                                   globalConfigs.internal.reqBufferSize + simdjson::SIMDJSON_PADDING),
+                                   globalConfigs.internal.reqBufferSize +
+                                   simdjson::SIMDJSON_PADDING),
       reqStructs);
 
-  if (static_cast<drogon::HttpStatusCode>(status.http_code) != drogon::HttpStatusCode::k200OK) {
+  if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
+      drogon::HttpStatusCode::k200OK)) {
     resp->setBody(std::string(status.message));
     resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
     callback(resp);
     return;
   }
 
-  if (reqStructs.size() > globalConfigs.internal.batchMaxSize) {
+  if (unlikely(reqStructs.size() > globalConfigs.internal.batchMaxSize)) {
     resp->setBody("Batch size exceeds maximum allowed size: " +
                   std::to_string(globalConfigs.internal.batchMaxSize));
     resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
@@ -79,9 +99,74 @@ void BatchPKReadCtrl::batchPKRead(const drogon::HttpRequestPtr &req,
   }
 
   // Validate
+  std::unordered_map<std::string_view, bool> db_map;
+  std::unordered_map<std::string, bool> table_map;
+  std::unordered_map<std::string_view, bool> column_map;
+  std::vector<std::string_view> db_vector;
+
   for (auto reqStruct : reqStructs) {
-    status = reqStruct.validate();
-    if (static_cast<drogon::HttpStatusCode>(status.http_code) != drogon::HttpStatusCode::k200OK) {
+    std::string_view &db = reqStruct.path.db;
+    std::string &table = reqStruct.path.table;
+    db_map[db] = true;
+    table_map[table] = true;
+    for (auto readColumn: reqStruct.readColumns) {
+      std::string_view &column = readColumn.column;
+      column_map[column] = true;
+    }
+    for (auto filter: reqStruct.filters) {
+      std::string_view column = filter.column;
+      column_map[column] = true;
+    }
+  }
+  for (auto it = db_map.begin(); it != db_map.end(); ++it) {
+    auto db = it->first;
+    status = validate_db_identifier(db);
+    if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
+        drogon::HttpStatusCode::k200OK)) {
+      resp->setBody(std::string(status.message));
+      resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
+      callback(resp);
+      return;
+    }
+    db_vector.push_back(db);
+  }
+  for (auto it = table_map.begin(); it != table_map.end(); ++it) {
+    const std::string &table = it->first;
+    const std::string_view table_view = table;
+    status = validate_db_identifier(table_view);
+    if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
+        drogon::HttpStatusCode::k200OK)) {
+      resp->setBody(std::string(status.message));
+      resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
+      callback(resp);
+      return;
+    }
+  }
+  for (auto it = column_map.begin(); it != column_map.end(); ++it) {
+    auto column = it->first;
+    status = validate_column(column);
+    if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
+        drogon::HttpStatusCode::k200OK)) {
+      resp->setBody(std::string(status.message));
+      resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
+      callback(resp);
+      return;
+    }
+  }
+  for (auto reqStruct : reqStructs) {
+    if (reqStruct.filters.size() > 1) {
+      status = reqStruct.validate_columns();
+      if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
+          drogon::HttpStatusCode::k200OK)) {
+        resp->setBody(std::string(status.message));
+        resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
+        callback(resp);
+        return;
+      }
+    }
+    status = validate_operation_id(reqStruct.operationId);
+    if (unlikely(status.http_code != static_cast<HTTP_CODE>(
+          drogon::HttpStatusCode::k200OK))) {
       resp->setBody(std::string(status.message));
       resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
       callback(resp);
@@ -90,21 +175,20 @@ void BatchPKReadCtrl::batchPKRead(const drogon::HttpRequestPtr &req,
   }
 
   // Authenticate
-  if (globalConfigs.security.apiKey.useHopsworksAPIKeys) {
+  if (likely(globalConfigs.security.apiKey.useHopsworksAPIKeys)) {
     auto api_key = req->getHeader(API_KEY_NAME_LOWER_CASE);
-    for (auto reqStruct : reqStructs) {
-      status = authenticate(api_key, reqStruct);
-      if (static_cast<drogon::HttpStatusCode>(status.http_code) != drogon::HttpStatusCode::k200OK) {
-        resp->setBody(std::string(status.message));
-        resp->setStatusCode(drogon::HttpStatusCode::k401Unauthorized);
-        callback(resp);
-        return;
-      }
+    status = authenticate(api_key, db_vector);
+    if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
+        drogon::HttpStatusCode::k200OK)) {
+      resp->setBody(std::string(status.message));
+      resp->setStatusCode((drogon::HttpStatusCode)status.http_code);
+      callback(resp);
+      return;
     }
   }
 
   // Execute
-  if (static_cast<drogon::HttpStatusCode>(status.http_code) == drogon::HttpStatusCode::k200OK) {
+  {
     auto noOps = reqStructs.size();
     std::vector<RS_Buffer> reqBuffs(noOps);
     std::vector<RS_Buffer> respBuffs(noOps);
@@ -116,17 +200,20 @@ void BatchPKReadCtrl::batchPKRead(const drogon::HttpRequestPtr &req,
       reqBuffs[i]  = reqBuff;
       respBuffs[i] = respBuff;
 
-      status = create_native_request(reqStructs[i], reqBuff.buffer, respBuff.buffer);
-      if (static_cast<drogon::HttpStatusCode>(status.http_code) != drogon::HttpStatusCode::k200OK) {
+      status = create_native_request(reqStructs[i],
+                                     reqBuff.buffer,
+                                     respBuff.buffer);
+      if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
+          drogon::HttpStatusCode::k200OK)) {
         resp->setBody(std::string(status.message));
         resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
         callback(resp);
         return;
       }
-      uintptr_t length_ptr = reinterpret_cast<uintptr_t>(reqBuff.buffer) +
-                             static_cast<uintptr_t>(PK_REQ_LENGTH_IDX) * ADDRESS_SIZE;
-      uint32_t *length_ptr_casted = reinterpret_cast<uint32_t *>(length_ptr);
-      reqBuffs[i].size            = *length_ptr_casted;
+      UintPtr length_ptr = reinterpret_cast<UintPtr>(reqBuff.buffer) +
+        static_cast<UintPtr>(PK_REQ_LENGTH_IDX) * ADDRESS_SIZE;
+      Uint32 *length_ptr_casted = reinterpret_cast<Uint32*>(length_ptr);
+      reqBuffs[i].size = *length_ptr_casted;
     }
 
     // pk_batch_read
@@ -134,7 +221,8 @@ void BatchPKReadCtrl::batchPKRead(const drogon::HttpRequestPtr &req,
 
     resp->setStatusCode(static_cast<drogon::HttpStatusCode>(status.http_code));
 
-    if (static_cast<drogon::HttpStatusCode>(status.http_code) != drogon::HttpStatusCode::k200OK) {
+    if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
+        drogon::HttpStatusCode::k200OK)) {
       resp->setBody(std::string(status.message));
     } else {
       resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);

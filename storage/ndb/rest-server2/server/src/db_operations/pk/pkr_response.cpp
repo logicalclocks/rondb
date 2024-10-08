@@ -125,11 +125,15 @@ RS_Status PKRResponse::SetColumnDataNull(const char *colName) {
   return SetColumnDataInt(colName, nullptr, RDRS_UNKNOWN_DATATYPE);
 }
 
-RS_Status PKRResponse::SetColumnData(const char *colName, const char *value, Uint32 type) {
+RS_Status PKRResponse::SetColumnData(const char *colName,
+                                     const char *value,
+                                     Uint32 type) {
   return this->SetColumnDataInt(colName, value, type);
 }
 
-RS_Status PKRResponse::SetColumnDataInt(const char *colName, const char *value, Uint32 type) {
+RS_Status PKRResponse::SetColumnDataInt(const char *colName,
+                                        const char *value,
+                                        Uint32 type) {
   // first index is for column name
   // second index is for column value
   // thrid index is for isNULL
@@ -190,7 +194,9 @@ void PKRResponse::AdvanceWritePointer(Uint32 add) {
   writeHeader += add;
 }
 
-RS_Status PKRResponse::Append_string(const char *colName, std::string value, Uint32 type) {
+RS_Status PKRResponse::Append_string(const char *colName,
+                                     std::string value,
+                                     Uint32 type) {
   if ((value.length() + 1) > GetRemainingCapacity()) {  // +1 null terminator
     return RS_SERVER_ERROR(ERROR_016);
   }
@@ -262,21 +268,26 @@ RS_Status PKRResponse::Append_i64(const char *colName, Int64 num) {
   }
 }
 
-RS_Status PKRResponse::Append_char(const char *colName, const char *fromBuff, Uint32 fromBuffLen,
+RS_Status PKRResponse::Append_char(const char *colName,
+                                   const char *fromBuff,
+                                   Uint32 fromBuffLen,
                                    CHARSET_INFO *fromCS) {
   Uint32 extraSpace = 3;  // +1 for null terminator 
 
   if ((fromBuffLen + extraSpace) > GetRemainingCapacity()) {
-    return RS_SERVER_ERROR(ERROR_010 + std::string(" Response buffer remaining capacity: ") +
-                           std::to_string(GetRemainingCapacity()) + std::string(" Required: ") +
-                           std::to_string(fromBuffLen + extraSpace));
+    return RS_SERVER_ERROR(ERROR_010 +
+      std::string(" Response buffer remaining capacity: ") +
+      std::to_string(GetRemainingCapacity()) + std::string(" Required: ") +
+      std::to_string(fromBuffLen + extraSpace));
   }
   //  from_buffer -> printable string  -> escaped string
 
   // allocate a buffer large enough to hold the formatted string
-  uint64 estimated_bytes = (fromBuffLen / fromCS->mbminlen + 1) * fromCS->mbmaxlen + 1;
-  estimated_bytes        = std::min(estimated_bytes, static_cast<uint64>(UINT_MAX32));
-  std::shared_ptr<char> tempBuff(new char[estimated_bytes], [](const char *buff) {
+  Uint64 estimated_bytes =
+    (fromBuffLen / fromCS->mbminlen + 1) * fromCS->mbmaxlen + 1;
+  estimated_bytes = std::min(estimated_bytes, static_cast<Uint64>(UINT_MAX32));
+  std::shared_ptr<char> tempBuff(new char[estimated_bytes],
+                                 [](const char *buff) {
     delete[] buff;  // Custom deleter to delete the array
   });
 
@@ -285,11 +296,19 @@ RS_Status PKRResponse::Append_char(const char *colName, const char *fromBuff, Ui
   const char *from_end_pos             = nullptr;
   const char *error_pos                = nullptr;
 
-  int bytesFormed = well_formed_copy_nchars(
-      fromCS, tempBuff.get(), estimated_bytes, fromCS, fromBuff, fromBuffLen, UINT32_MAX,
-      &well_formed_error_pos, &cannot_convert_error_pos, &from_end_pos);
+  int bytesFormed = well_formed_copy_nchars(fromCS,
+                                            tempBuff.get(),
+                                            estimated_bytes,
+                                            fromCS,
+                                            fromBuff,
+                                            fromBuffLen,
+                                            UINT32_MAX,
+                                            &well_formed_error_pos,
+                                            &cannot_convert_error_pos,
+                                            &from_end_pos);
 
-  error_pos = well_formed_error_pos ? well_formed_error_pos : cannot_convert_error_pos;
+  error_pos = well_formed_error_pos ?
+    well_formed_error_pos : cannot_convert_error_pos;
   if (error_pos) {
     char printable_buff[32];
     convert_to_printable(printable_buff, sizeof(printable_buff), error_pos,
@@ -314,10 +333,10 @@ RS_Status PKRResponse::Append_char(const char *colName, const char *fromBuff, Ui
 
   std::string escapedstr = escape_string(wellFormedString);
   if ((escapedstr.length() + extraSpace) >= GetRemainingCapacity()) {  // +1 for null terminator 
-    return RS_SERVER_ERROR(ERROR_010 + std::string(" Response buffer remaining capacity: ") +
-                           std::to_string(GetRemainingCapacity()) + std::string(" Required: ") +
-                           std::to_string(escapedstr.length() + extraSpace));
+    return RS_SERVER_ERROR(ERROR_010 +
+      std::string(" Response buffer remaining capacity: ") +
+      std::to_string(GetRemainingCapacity()) + std::string(" Required: ") +
+      std::to_string(escapedstr.length() + extraSpace));
   }
-
   return this->SetColumnData(colName, escapedstr.c_str(), RDRS_STRING_DATATYPE);
 }

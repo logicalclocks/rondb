@@ -31,10 +31,10 @@
 #include <vector>
 
 struct MemoryStats {
-  int64_t allocationsCount;
-  int64_t deallocationsCount;
-  int64_t buffersCount;
-  int64_t freeBuffers;
+  Int64 allocationsCount;
+  Int64 deallocationsCount;
+  Int64 buffersCount;
+  Int64 freeBuffers;
 };
 
 class RS_BufferArrayManager {
@@ -48,7 +48,7 @@ class RS_BufferArrayManager {
       throw std::runtime_error("Buffer size must be a multiple of 4");
     }
 
-    int64_t preAllocateBuffers = globalConfigs.internal.preAllocatedBuffers;
+    Int64 preAllocateBuffers = globalConfigs.internal.preAllocatedBuffers;
     reqBuffersStats            = {preAllocateBuffers, 0, preAllocateBuffers, 0};
     respBuffersStats           = {preAllocateBuffers, 0, preAllocateBuffers, 0};
 
@@ -132,14 +132,14 @@ class RS_BufferArrayManager {
   MemoryStats get_req_buffers_stats() {
     // update the free buffers count
     std::lock_guard<std::mutex> lock(reqBufferMutex);
-    reqBuffersStats.freeBuffers = static_cast<int64_t>(reqBufferArray.size());
+    reqBuffersStats.freeBuffers = static_cast<Int64>(reqBufferArray.size());
     return reqBuffersStats;
   }
 
   MemoryStats get_resp_buffers_stats() {
     // update the free buffers count
     std::lock_guard<std::mutex> lock(respBufferMutex);
-    respBuffersStats.freeBuffers = static_cast<int64_t>(respBufferArray.size());
+    respBuffersStats.freeBuffers = static_cast<Int64>(respBufferArray.size());
     return respBuffersStats;
   }
 
@@ -154,7 +154,7 @@ class RS_BufferArrayManager {
 
 #define EN_STATUS_MSG_LEN 256
 struct EN_Status {
-  uint32_t retValue;
+  Uint32 retValue;
   HTTP_CODE http_code;                // 200 for successful operation
   char message[EN_STATUS_MSG_LEN]{};  // error message.
   EN_Status() : retValue(0), http_code(HTTP_CODE::SUCCESS), message("") {
@@ -162,7 +162,7 @@ struct EN_Status {
   explicit EN_Status(HTTP_CODE http_code) : retValue(0),
                                             http_code(http_code), message("") {
   }
-  explicit EN_Status(uint32_t retValue)
+  explicit EN_Status(Uint32 retValue)
       : retValue(retValue), http_code(HTTP_CODE::SUCCESS), message("") {
   }
   EN_Status(HTTP_CODE http_code, const char *message) : retValue(0),
@@ -170,10 +170,10 @@ struct EN_Status {
     strncpy(this->message, message, EN_STATUS_MSG_LEN - 1);
     this->message[EN_STATUS_MSG_LEN - 1] = '\0';
   }
-  EN_Status(HTTP_CODE http_code, uint32_t retValue)
+  EN_Status(HTTP_CODE http_code, Uint32 retValue)
       : retValue(retValue), http_code(http_code), message("") {
   }
-  EN_Status(HTTP_CODE http_code, uint32_t retValue, const char *message)
+  EN_Status(HTTP_CODE http_code, Uint32 retValue, const char *message)
       : retValue(retValue), http_code(http_code) {
     strncpy(this->message, message, EN_STATUS_MSG_LEN - 1);
     this->message[EN_STATUS_MSG_LEN - 1] = '\0';

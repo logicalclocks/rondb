@@ -23,6 +23,20 @@
 #include "json_parser.hpp"
 #include <drogon/HttpTypes.h>
 #include "storage/ndb/src/ronsql/RonSQLPreparer.hpp"
+#include "api_key.hpp"
+#include <EventLogger.hpp>
+
+extern EventLogger *g_eventLogger;
+
+#if (defined(VM_TRACE) || defined(ERROR_INSERT))
+//#define DEBUG_SQL_CTRL 1
+#endif
+
+#ifdef DEBUG_SQL_CTRL
+#define DEB_SQL_CTRL(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_SQL_CTRL(arglist) do { } while (0)
+#endif
 
 using std::endl;
 
@@ -40,6 +54,8 @@ void RonSQLCtrl::ronsql(const drogon::HttpRequestPtr &req,
 
   // Store it to the first string buffer
   const char *json_str = req->getBody().data();
+  DEB_SQL_CTRL(("\n\n JSON REQUEST: \n %s \n", json_str));
+
   size_t length        = req->getBody().length();
   if (length > globalConfigs.internal.reqBufferSize) {
     resp->setBody("Request too large");
@@ -68,13 +84,25 @@ void RonSQLCtrl::ronsql(const drogon::HttpRequestPtr &req,
   ArenaAllocator aalloc;
   RonSQLExecParams params;
 
-  std::string& database = reqStruct.database;
+  std::string_view& database = reqStruct.database;
   status = ronsql_validate_database_name(database);
   if (static_cast<drogon::HttpStatusCode>(status.http_code) != drogon::HttpStatusCode::k200OK) {
     resp->setBody(std::string(status.message));
     resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
     callback(resp);
     return;
+  }
+
+  if (globalConfigs.security.apiKey.useHopsworksAPIKeys) {
+    auto api_key = req->getHeader(API_KEY_NAME_LOWER_CASE);
+    status = authenticate(api_key, database);
+    if (static_cast<drogon::HttpStatusCode>(status.http_code) !=
+          drogon::HttpStatusCode::k200OK) {
+      resp->setBody(std::string(status.message));
+      resp->setStatusCode((drogon::HttpStatusCode)status.http_code);
+      callback(resp);
+      return;
+    }
   }
 
   std::ostringstream out_stream;
@@ -105,7 +133,7 @@ void RonSQLCtrl::ronsql(const drogon::HttpRequestPtr &req,
     }
   }
 
-  status = ronsql_dal(database.c_str(), &params);
+  status = ronsql_dal(database.data(), &params);
 
   if (json_output) {
     out_stream << "}\n";
@@ -113,8 +141,10 @@ void RonSQLCtrl::ronsql(const drogon::HttpRequestPtr &req,
 
   std::string out_str = out_stream.str();
   std::string err_str = err_stream.str();
+#ifdef VM_TRACE
   bool hasOut = !out_str.empty();
   bool hasErr = !err_str.empty();
+#endif
   if (static_cast<drogon::HttpStatusCode>(status.http_code) == drogon::HttpStatusCode::k200OK) {
     assert(!hasErr);
     assert(hasOut);
@@ -195,7 +225,7 @@ void RonSQLCtrl::ronsql(const drogon::HttpRequestPtr &req,
   callback(resp);
 }
 
-RS_Status ronsql_validate_database_name(std::string& database) {
+RS_Status ronsql_validate_database_name(std::string_view& database) {
   RS_Status status = validate_db_identifier(database);
   if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
     if (status.code == ERROR_CODE_EMPTY_IDENTIFIER) {

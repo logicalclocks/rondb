@@ -21,6 +21,7 @@
 #define STORAGE_NDB_REST_SERVER2_SERVER_SRC_PK_DATA_STRUCTS_HPP_
 
 #include "rdrs_dal.h"
+#include <ndb_types.h>
 
 #include <drogon/HttpTypes.h>
 #include <string>
@@ -32,53 +33,52 @@
 #include <unordered_map>
 
 std::string to_string(DataReturnType);
-
-uint32_t decode_utf8_to_unicode(const std::string &, size_t &);
-
-RS_Status validate_db_identifier(const std::string &);
-
+Uint32 decode_utf8_to_unicode(const std::string_view &, size_t &);
+RS_Status validate_db_identifier(const std::string_view &);
 RS_Status validate_operation_id(const std::string &);
+RS_Status validate_db(const std::string_view);
+RS_Status validate_table(const std::string_view);
+RS_Status validate_column(const std::string_view);
 
 class PKReadFilter {
  public:
-  std::string column;
+  //std::string_view column;
+  std::string_view column;
   std::vector<char> value;
-  RS_Status validate();
 };
 
 class PKReadReadColumn {
  public:
-  std::string column;
-  std::string returnType;
+  std::string_view column;
 };
 
 class PKReadPath {
  public:
   PKReadPath();
-  PKReadPath(const std::string &, const std::string &);
-  std::string db;   // json:"db" uri:"db"  binding:"required,min=1,max=64"
-  std::string table;// Table *string `json:"table" uri:"table"  binding:"required,min=1,max=64"
+  PKReadPath(const std::string_view &, const std::string_view &);
+  // json:"db" uri:"db"  binding:"required,min=1,max=64"
+  std::string_view db;
+  // Table *string `json:"table" uri:"table"  binding:"required,min=1,max=64"
+  std::string table;
 };
 
 class PKReadParams {
  public:
   PKReadParams();
-  explicit PKReadParams(const std::string &);
+  explicit PKReadParams(const std::string_view &);
   explicit PKReadParams(PKReadPath &);
-  PKReadParams(const std::string &, PKReadPath &);
-  PKReadParams(const std::string &, const std::string &, const std::string &);
-  PKReadParams(const std::string &, const std::string &);
-  std::string method;
+  PKReadParams(const std::string_view &, const std::string_view &);
   PKReadPath path;
   std::vector<PKReadFilter> filters;
   std::vector<PKReadReadColumn> readColumns;
   std::string operationId;
   std::string to_string();
   RS_Status validate();
+  RS_Status validate_columns();
 };
 
 struct Column {
-  std::string name;
+  std::string_view name;
   std::vector<char> value;  // Byte array for the value
 };
 
@@ -87,32 +87,36 @@ class PKReadResponse {
   PKReadResponse()= default;
   virtual void init() = 0;
   virtual void setOperationID(std::string &opID)= 0;
-  virtual void setColumnData(std::string &column, const std::vector<char> &value) = 0;
+  virtual void setColumnData(std::string &column,
+                             const std::vector<char> &value) = 0;
   virtual std::string to_string() const = 0;
   virtual ~PKReadResponse() = default;
 };
 
 class PKReadResponseJSON : public PKReadResponse {
  private:
-  drogon::HttpStatusCode code;// json:"code"    form:"code"    binding:"required"
-  std::string operationID;// json:"operationId"    form:"operation-id"    binding:"omitempty"
+  // json:"code"    form:"code"    binding:"required"
+  drogon::HttpStatusCode code;
+  // json:"operationId" form:"operation-id" binding:"omitempty"
+  std::string operationID;
+  // json:"data" form:"data" binding:"omitempty"
   std::map<std::string, std::vector<char>>
-      data;  // json:"data"           form:"data"            binding:"omitempty"
+      data;
 
  public:
   PKReadResponseJSON() : PKReadResponse() {
   }
 
   PKReadResponseJSON(const PKReadResponseJSON &other) : PKReadResponse() {
-    code        = other.code;
+    code = other.code;
     operationID = other.operationID;
-    data        = other.data;
+    data = other.data;
   }
 
   PKReadResponseJSON &operator=(const PKReadResponseJSON &other) {
-    code        = other.code;
+    code = other.code;
     operationID = other.operationID;
-    data        = other.data;
+    data = other.data;
     return *this;
   }
 
@@ -130,7 +134,8 @@ class PKReadResponseJSON : public PKReadResponse {
     operationID = opID;
   }
 
-  void setColumnData(std::string &column, const std::vector<char> &value) override {
+  void setColumnData(std::string &column,
+                     const std::vector<char> &value) override {
     data[column] = value;
   }
 
@@ -147,28 +152,29 @@ class PKReadResponseJSON : public PKReadResponse {
   }
 
   std::string to_string() const override;
-
   std::string to_string(int, bool) const;
-
   static std::string batch_to_string(const std::vector<PKReadResponseJSON> &);
 };
 
 class PKReadResponseWithCodeJSON {
  private:
-  std::string message;      // json:"message"    form:"message"    binding:"required"
-  PKReadResponseJSON body;  // json:"body"    form:"body"    binding:"required"
+  // json:"message"    form:"message"    binding:"required"
+  std::string message;
+  // json:"body"    form:"body"    binding:"required"
+  PKReadResponseJSON body;
 
  public:
   PKReadResponseWithCodeJSON() = default;
 
   PKReadResponseWithCodeJSON(const PKReadResponseWithCodeJSON &other) {
     message = other.message;
-    body    = other.body;
+    body = other.body;
   }
 
-  PKReadResponseWithCodeJSON &operator=(const PKReadResponseWithCodeJSON &other) {
+  PKReadResponseWithCodeJSON &operator=(
+    const PKReadResponseWithCodeJSON &other) {
     message = other.message;
-    body    = other.body;
+    body = other.body;
     return *this;
   }
 
@@ -201,7 +207,8 @@ class PKReadResponseWithCodeJSON {
 
 class BatchResponseJSON {
  private:
-  std::vector<PKReadResponseWithCodeJSON> result;  // json:"result" binding:"required"
+  // json:"result" binding:"required"
+  std::vector<PKReadResponseWithCodeJSON> result;
 
  public:
   BatchResponseJSON() = default;
@@ -233,7 +240,8 @@ class BatchResponseJSON {
     return subResponse;
   }
 
-  void AddSubResponse(unsigned long index, const PKReadResponseWithCodeJSON &subResp) {
+  void AddSubResponse(unsigned long index,
+                      const PKReadResponseWithCodeJSON &subResp) {
     if (index < result.size()) {
       result[index] = subResp;
     }
@@ -251,5 +259,4 @@ class BatchResponseJSON {
     return res;
   }
 };
-
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_PK_DATA_STRUCTS_HPP_

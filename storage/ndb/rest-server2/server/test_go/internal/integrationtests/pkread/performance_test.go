@@ -24,6 +24,7 @@ import (
 	"sort"
 	"testing"
 	"time"
+	"runtime"
 
 	"google.golang.org/grpc"
 	"hopsworks.ai/rdrs2/internal/config"
@@ -67,6 +68,7 @@ func BenchmarkSimple(b *testing.B) {
 
 	b.ResetTimer()
 	start := time.Now()
+	runtime.GOMAXPROCS(16)
 
 	/*
 		Assuming GOMAXPROCS is not set, a 10-core CPU

@@ -21,6 +21,7 @@
 #define STORAGE_NDB_REST_SERVER2_SERVER_SRC_RDRS_DAL_HPP_
 
 #include "rdrs_dal.h"
+#include "rdrs_dal.hpp"
 
 #include <cstring>
 #include <string>

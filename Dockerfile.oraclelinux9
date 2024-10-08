@@ -78,7 +78,7 @@ ENV OPENSSL_ROOT=/usr/local/ssl
 ENV OPENSSL_ROOT_DIR=$OPENSSL_ROOT
 RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
     wget -N --progress=bar:force -P $DOWNLOADS_CACHE_DIR \
-        https://www.openssl.org/source/openssl-${OPEN_SSL_VERSION}.tar.gz \
+        https://github.com/openssl/openssl/releases/download/openssl-$OPENSSL_VERSION/openssl-${OPENSSL_VERSION}.tar.gz \
     && tar xf $DOWNLOADS_CACHE_DIR/openssl-${OPEN_SSL_VERSION}.tar.gz -C . \
     && cd openssl-${OPEN_SSL_VERSION} \
     && source scl_source enable gcc-toolset-12 \

@@ -66,7 +66,8 @@ bool isUnitTest() {
 
 class ConfigValidationError : public std::runtime_error {
 public:
-  ConfigValidationError(std::string message) : std::runtime_error("ConfigValidationError"), m_error_message(message) {}
+  ConfigValidationError(std::string message) : std::runtime_error(
+    "ConfigValidationError"), m_error_message(message) {}
   std::string m_error_message;
 };
 
@@ -77,7 +78,7 @@ public:
 #define CLASSDEFS(...)
 #define VECTOR(DATATYPE) DEFINE_VALIDATOR(std::vector<DATATYPE>, { for (DATATYPE& elem : value) validate(elem); })
 
-DEFINE_VALIDATOR(uint32_t, {})
+DEFINE_VALIDATOR(Uint32, {})
 DEFINE_VALIDATOR(std::string, {})
 
 #include "config_structs_def.hpp"
@@ -114,9 +115,9 @@ RS_Status AllConfigs::set_all(AllConfigs newConfigs) {
   }
   catch (ConfigValidationError &e) {
     return CRS_Status(
-               static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-               ("Failed validating config; error: " + e.m_error_message).c_str())
-        .status;
+      static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+       ("Failed validating config; error: " + e.m_error_message).c_str())
+       .status;
   }
   globalConfigs = newConfigs;
   return CRS_Status::SUCCESS.status;
@@ -129,8 +130,8 @@ RS_Status AllConfigs::set_from_file(const std::string &configFile) {
   if (!file) {
     return CRS_Status(
                static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-               ("failed reading config file " + configFile +"; error: " + std::string(strerror(errno))).c_str())
-        .status;
+               ("failed reading config file " + configFile +"; error: " +
+               std::string(strerror(errno))).c_str()).status;
   }
   std::string configStr((std::istreambuf_iterator<char>(file)), {});
 
@@ -139,7 +140,8 @@ RS_Status AllConfigs::set_from_file(const std::string &configFile) {
   // Parse config file.
   RS_Status status = JSONParser::config_parse(configStr, newConfigs);
 
-  if (static_cast<drogon::HttpStatusCode>(status.http_code) != drogon::HttpStatusCode::k200OK) {
+  if (static_cast<drogon::HttpStatusCode>(status.http_code) !=
+      drogon::HttpStatusCode::k200OK) {
     return status;
   }
 

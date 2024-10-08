@@ -29,6 +29,7 @@
 #include "rdrs_dal.hpp"
 #include "src/constants.hpp"
 #include "metadata.hpp"
+#include "fs_cache.hpp"
 #include "error_strings.h"
 
 #include <cstddef>
@@ -41,8 +42,20 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <EventLogger.hpp>
 
-metadata::FeatureViewMetaDataCache fvMetaCache;
+extern EventLogger *g_eventLogger;
+
+#if (defined(VM_TRACE) || defined(ERROR_INSERT))
+//#define DEBUG_FS_CTRL 1
+#endif
+
+#ifdef DEBUG_FS_CTRL
+#define DEB_FS_CTRL(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_FS_CTRL(arglist) do { } while (0)
+#endif
+
 
 std::shared_ptr<RestErrorCode>
   ValidatePrimaryKey(const std::unordered_map<std::string,
@@ -174,7 +187,7 @@ std::shared_ptr<RestErrorCode>
 
 std::vector<feature_store_data_structs::FeatureMetadata>
   GetFeatureMetadata(
-    const std::shared_ptr<metadata::FeatureViewMetadata> &metadata,
+    const metadata::FeatureViewMetadata *metadata,
     const feature_store_data_structs::MetadataRequest &metaRequest) {
   auto featureMetadataArray =
     std::vector<feature_store_data_structs::FeatureMetadata>(
@@ -398,7 +411,7 @@ GetBatchPkReadParams(
   const std::unordered_map<std::string, std::vector<char>> &entries) {
   auto batchReadParams = std::vector<PKReadParams>();
   for (const auto &fgFeature : metadata.featureGroupFeatures) {
-    std::string testDb = fgFeature.featureStoreName;
+    std::string_view testDb = fgFeature.featureStoreName;
     std::string testTable =
         fgFeature.featureGroupName + "_" +
         std::to_string(fgFeature.featureGroupVersion);
@@ -411,18 +424,24 @@ GetBatchPkReadParams(
           metadata.primaryKeyMap.end()) {
         PKReadReadColumn readCol;
         readCol.column = feature.name;
-        readCol.returnType = to_string(DataReturnType::DEFAULT_DRT);
         columns.push_back(readCol);
       }
     }
     for (const auto &servingKey : fgFeature.primaryKeyMap) {
       // Fill in value of required entry as original entry may not be required.
-      std::string pkCol = servingKey.featureName;
+      std::string_view pkCol = servingKey.featureName;
+      DEB_FS_CTRL(("servingKey.featureName: %s, servingKey.requiredEntry: %s"
+                   ", servingKey.prefix: %s",
+                   servingKey.featureName.c_str(),
+                   servingKey.requiredEntry.c_str(),
+                   servingKey.prefix.c_str()));
       if (entries.find(servingKey.requiredEntry) != entries.end()) {
         PKReadFilter filter;
         filter.column = pkCol;
         filter.value  = entries.at(servingKey.requiredEntry);
         filters.push_back(filter);
+        DEB_FS_CTRL(("Add filter on column %s, line: %u",
+                     std::string(filter.column).c_str(), __LINE__));
       } else if (entries.find(servingKey.prefix + servingKey.featureName) !=
                  entries.end()) {
         // Also Fallback and use feature name with prefix.
@@ -430,6 +449,8 @@ GetBatchPkReadParams(
         filter.column = pkCol;
         filter.value  = entries.at(servingKey.prefix + servingKey.featureName);
         filters.push_back(filter);
+        DEB_FS_CTRL(("Add filter on column %s, line: %u",
+                     std::string(filter.column).c_str(), __LINE__));
       } else if (entries.find(servingKey.featureName) != entries.end()) {
         // Fallback and use the raw feature name so as to be consistent
         // with python client. Also add feature name with prefix.
@@ -437,16 +458,21 @@ GetBatchPkReadParams(
         filter.column = pkCol;
         filter.value  = entries.at(servingKey.featureName);
         filters.push_back(filter);
+        DEB_FS_CTRL(("Add filter on column %s, line: %u",
+                     std::string(filter.column).c_str(), __LINE__));
+      } else {
+        DEB_FS_CTRL(("No filter added"));
       }
     }
     std::string opId = metadata::GetFeatureGroupKeyByTDFeature(fgFeature);
     auto param = PKReadParams();
     param.path.db = testDb;
     param.path.table = testTable;
-    param.filters     = filters;
+    param.filters = filters;
     param.readColumns = columns;
     param.operationId = opId;
     batchReadParams.push_back(param);
+    DEB_FS_CTRL(("Add PKReadParams: %s", param.to_string().c_str()));
   }
   return batchReadParams;
 }
@@ -500,9 +526,29 @@ RS_Status process_responses(std::vector<RS_Buffer> &respBuffs,
 void FeatureStoreCtrl::featureStore(
   const drogon::HttpRequestPtr &req,
   std::function<void(const drogon::HttpResponsePtr &)> &&callback) {
+
+  /**
+   * Processing a Feature Store REST API request goes through a pipeline.
+   * The pipeline steps are:
+   * 1. Receive the HTTP request from Drogon
+   * 2. Parse the JSON request using simdjson
+   * 3. Get the Feature Store metadata from the FS metadata cache
+   * 4. Validate the primary keys
+   * 5. Validate the passed features (Optional)
+   * 6. Validate the Hopsworks API key in API Key cache
+   * 7. Get and validate the columns to read
+   * 8. Prepare the HTTP response packet
+   * 9. Perform the batched PK read
+   * 10. Process the response
+   * 11. Convert response to JSON
+   * 12. Get Feature values
+   * 13. Fill passed features into response
+   * 14. Callback to Drogon to send response HTTP packet
+   */
+
   auto resp = drogon::HttpResponse::newHttpResponse();
   size_t currentThreadIndex = drogon::app().getCurrentThreadIndex();
-  if (currentThreadIndex >= globalConfigs.rest.numThreads) {
+  if (unlikely(currentThreadIndex >= globalConfigs.rest.numThreads)) {
     resp->setBody("Too many threads");
     resp->setStatusCode(drogon::HttpStatusCode::k500InternalServerError);
     callback(resp);
@@ -512,15 +558,16 @@ void FeatureStoreCtrl::featureStore(
 
   // Store it to the first string buffer
   const char *json_str = req->getBody().data();
+  DEB_FS_CTRL(("\n\n JSON REQUEST: \n %s \n", json_str));
   size_t length        = req->getBody().length();
-  if (length > globalConfigs.internal.reqBufferSize) {
+  if (unlikely(length > globalConfigs.internal.reqBufferSize)) {
     auto resp = drogon::HttpResponse::newHttpResponse();
     resp->setBody("Request too large");
     resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
     callback(resp);
     return;
   }
-
+  DEB_FS_CTRL(("Parse Feature Store request"));
   memcpy(jsonParser.get_buffer().get(), json_str, length);
   feature_store_data_structs::FeatureStoreRequest reqStruct;
   RS_Status status = jsonParser.feature_store_parse(
@@ -530,26 +577,40 @@ void FeatureStoreCtrl::featureStore(
       globalConfigs.internal.reqBufferSize + simdjson::SIMDJSON_PADDING),
       reqStruct);
 
-  if (static_cast<drogon::HttpStatusCode>(status.http_code) !=
-        drogon::HttpStatusCode::k200OK) {
+  if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
+                 drogon::HttpStatusCode::k200OK)) {
     resp->setBody(std::string(std::string("Error:") + status.message));
     resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
     callback(resp);
     return;
   }
-  // Validate
-  auto [metadata, err] = fvMetaCache.Get(reqStruct.featureStoreName,
-                                         reqStruct.featureViewName,
-                                         reqStruct.featureViewVersion);
+  // Get metadata for Feature Store request
+  char *metadata_cache_entry = nullptr;
+  DEB_FS_CTRL(("Get metadata for Feature Store request"));
+  auto [metadata, err] =
+    metadata::FeatureViewMetadataCache_Get(reqStruct.featureStoreName,
+                                           reqStruct.featureViewName,
+                                           reqStruct.featureViewVersion,
+                                           &metadata_cache_entry);
 
-  if (err != nullptr) {
+  CacheEntryRefCounter cache_entry_ref_counter(metadata_cache_entry);
+
+  if (unlikely(err != nullptr)) {
     resp->setBody(err->Error());
     resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
     callback(resp);
     return;
   }
+  DEB_FS_CTRL(("Validate PK for Feature Store request"));
+#ifdef DEBUG_FS_CTRL
+  auto feature_stores = metadata->featureStoreNames;
+  for (const auto &db : feature_stores) {
+    g_eventLogger->info("FS_STORE: ptr: %p, str: %s",
+                        db.data(), std::string(db).c_str());
+  }
+#endif
   auto err1 = ValidatePrimaryKey(reqStruct.entries, metadata->validPrimayKeys);
-  if (err1 != nullptr) {
+  if (unlikely(err1 != nullptr)) {
     resp->setBody(err1->Error());
     resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
     callback(resp);
@@ -557,9 +618,10 @@ void FeatureStoreCtrl::featureStore(
   }
 
   if (reqStruct.GetOptions().validatePassedFeatures) {
+    DEB_FS_CTRL(("Validate Passed features for Feature Store request"));
     auto err2 = ValidatePassedFeatures(reqStruct.passedFeatures,
                                        metadata->prefixFeaturesLookup);
-    if (err2 != nullptr) {
+    if (unlikely(err2 != nullptr)) {
       resp->setBody(err2->Error());
       resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
       callback(resp);
@@ -567,9 +629,10 @@ void FeatureStoreCtrl::featureStore(
     }
   }
   // Authenticate
-  if (globalConfigs.security.apiKey.useHopsworksAPIKeys) {
+  DEB_FS_CTRL(("Authenticate Feature Store request"));
+  if (likely(globalConfigs.security.apiKey.useHopsworksAPIKeys)) {
     auto api_key = req->getHeader(API_KEY_NAME_LOWER_CASE);
-    if (err != nullptr) {
+    if (unlikely(err != nullptr)) {
       resp->setBody(err->Error());
       resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
       callback(resp);
@@ -577,21 +640,22 @@ void FeatureStoreCtrl::featureStore(
     }
     // Validate access right to ALL feature stores including shared feature
     auto status = authenticate(api_key, metadata->featureStoreNames);
-    if (static_cast<drogon::HttpStatusCode>(status.http_code) !=
-          drogon::HttpStatusCode::k200OK) {
+    if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
+                   drogon::HttpStatusCode::k200OK)) {
       resp->setBody(std::string(status.message));
-      resp->setStatusCode(drogon::HttpStatusCode::k401Unauthorized);
+      resp->setStatusCode((drogon::HttpStatusCode)status.http_code);
       callback(resp);
       return;
     }
   }
   // Execute
-  if (static_cast<drogon::HttpStatusCode>(status.http_code) ==
-        drogon::HttpStatusCode::k200OK) {
+  if (likely(static_cast<drogon::HttpStatusCode>(status.http_code) ==
+        drogon::HttpStatusCode::k200OK)) {
+    DEB_FS_CTRL(("Get Batch PK Read Params for Feature Store request"));
     auto readParams = GetBatchPkReadParams(*metadata, reqStruct.entries);
     // Perform batch pk read
     auto noOps = readParams.size();
-    if (noOps == 0U) {
+    if (unlikely(noOps == 0U)) {
       auto fsError =
         INCORRECT_PRIMARY_KEY->NewMessage("Feature store does not exist");
       resp->setBody(fsError->Error());
@@ -600,10 +664,14 @@ void FeatureStoreCtrl::featureStore(
       return;
     }
     // Validate
+    DEB_FS_CTRL(("Validate Batch PK Read Params for Feature Store request"));
     for (auto readParam : readParams) {
+
       status = readParam.validate();
-      if (static_cast<drogon::HttpStatusCode>(status.http_code) !=
-            drogon::HttpStatusCode::k200OK) {
+      if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
+                     drogon::HttpStatusCode::k200OK)) {
+        DEB_FS_CTRL(("Failed Validate Batch PK Read Params: %s, code: %d",
+                     status.message, status.code));
         auto fsError =
           TranslateRonDbError(drogon::k400BadRequest, status.message);
         resp->setBody(fsError->Error());
@@ -624,23 +692,24 @@ void FeatureStoreCtrl::featureStore(
 
       status =
         create_native_request(readParams[i], reqBuff.buffer, respBuff.buffer);
-      if (static_cast<drogon::HttpStatusCode>(status.http_code) !=
-            drogon::HttpStatusCode::k200OK) {
+      if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
+                     drogon::HttpStatusCode::k200OK)) {
         resp->setBody(std::string(status.message));
         resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
         callback(resp);
         return;
       }
-      uintptr_t length_ptr =
-        reinterpret_cast<uintptr_t>(reqBuff.buffer) +
-        static_cast<uintptr_t>(PK_REQ_LENGTH_IDX) * ADDRESS_SIZE;
-      uint32_t *length_ptr_casted = reinterpret_cast<uint32_t *>(length_ptr);
-      reqBuffs[i].size            = *length_ptr_casted;
+      UintPtr length_ptr =
+        reinterpret_cast<UintPtr>(reqBuff.buffer) +
+        static_cast<UintPtr>(PK_REQ_LENGTH_IDX) * ADDRESS_SIZE;
+      Uint32 *length_ptr_casted = reinterpret_cast<Uint32*>(length_ptr);
+      reqBuffs[i].size = *length_ptr_casted;
     }
     // pk_batch_read
+    DEB_FS_CTRL(("Perform Batch PK Read for Feature Store request"));
     status = pk_batch_read(noOps, reqBuffs.data(), respBuffs.data());
-    if (static_cast<drogon::HttpStatusCode>(status.http_code) !=
-          drogon::HttpStatusCode::k200OK) {
+    if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
+                   drogon::HttpStatusCode::k200OK)) {
       auto fsError = TranslateRonDbError(status.http_code, status.message);
       resp->setBody(fsError->Error());
       resp->setStatusCode(
@@ -648,8 +717,9 @@ void FeatureStoreCtrl::featureStore(
       callback(resp);
       return;
     }
+    DEB_FS_CTRL(("Ptocess Batch PK Read response for Feature Store request"));
     status = process_responses(respBuffs, dbResponseIntf);
-    if (status.err_file_name[0] != '\0') {
+    if (unlikely(status.err_file_name[0] != '\0')) {
       auto fsError = TranslateRonDbError(status.http_code, status.message);
       resp->setBody(fsError->Error());
       resp->setStatusCode(
@@ -658,6 +728,7 @@ void FeatureStoreCtrl::featureStore(
       return;
     }
     // convert resp to json
+    DEB_FS_CTRL(("Response to JSON for  Feature Store request"));
     std::vector<PKReadResponseWithCodeJSON> responses =
       dbResponseIntf.getResult();
     for (unsigned long i = 0; i < noOps; i++) {
@@ -667,24 +738,26 @@ void FeatureStoreCtrl::featureStore(
     auto rondbResp = std::make_shared<BatchResponseJSON>();
     rondbResp->setResult(responses);
     auto fsError = checkRondbResponse(*rondbResp);
-    if (fsError != nullptr) {
+    if (unlikely(fsError != nullptr)) {
       resp->setBody(fsError->Error());
       resp->setStatusCode(
         static_cast<drogon::HttpStatusCode>(fsError->GetStatus()));
       callback(resp);
       return;
     }
+    DEB_FS_CTRL(("Get Feature values for  Feature Store request"));
     auto [features, status, detailedStatus, fsErr] =
         GetFeatureValues(rondbResp->getResult(),
                          reqStruct.entries, *metadata,
                          reqStruct.GetOptions().includeDetailedStatus);
-    if (fsErr != nullptr) {
+    if (unlikely(fsErr != nullptr)) {
       resp->setBody(fsErr->Error());
       resp->setStatusCode(
         static_cast<drogon::HttpStatusCode>(fsError->GetStatus()));
       callback(resp);
       return;
     }
+    DEB_FS_CTRL(("Fill Passed Feature values for  Feature Store request"));
     auto fsResp = feature_store_data_structs::FeatureStoreResponse();
     fsResp.status = status;
     FillPassedFeatures(features,
@@ -699,6 +772,7 @@ void FeatureStoreCtrl::featureStore(
     if (reqStruct.GetOptions().includeDetailedStatus) {
       fsResp.detailedStatus = detailedStatus;
     }
+    DEB_FS_CTRL(("Send response for  Feature Store request"));
     resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
     resp->setBody(fsResp.to_string());
     resp->setStatusCode(drogon::HttpStatusCode::k200OK);

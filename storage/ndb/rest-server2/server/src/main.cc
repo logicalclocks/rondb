@@ -174,6 +174,7 @@ constexpr const char* const configHelp =
 #include "json_printer.hpp"
 #include "pk_read_ctrl.hpp"
 #include "src/api_key.hpp"
+#include "src/fs_cache.hpp"
 #include "tls_util.hpp"
 #include <ndb_opts.h>
 
@@ -192,6 +193,7 @@ constexpr const char* const configHelp =
 // Cleanup logic
 static bool g_did_ndb_init = false;
 static bool g_did_start_api_key_cache = false;
+static bool g_did_start_fs_cache = false;
 static const char* g_pidfile = nullptr;
 static RonDBConnection* g_rondbConnection = nullptr;
 static bool g_drogon_running = false;
@@ -214,6 +216,8 @@ static void do_exit(int exit_code) {
   }
   if (g_did_start_api_key_cache)
     stop_api_key_cache();
+  if (g_did_start_fs_cache)
+    stop_fs_cache();
   if (g_did_ndb_init)
     ndb_end(0);
   if (exit_code != 0) {
@@ -264,6 +268,8 @@ int main(int argc, char *argv[]) {
   (void)start_api_key_cache();
   g_did_start_api_key_cache = true;
 
+  start_fs_cache();
+  g_did_start_fs_cache = true;
 
   /*
     Config is fetched from:
