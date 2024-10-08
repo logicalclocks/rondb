@@ -263,10 +263,7 @@ FSMetadataCache::allocate_empty_cache_entry(
   }
   DEB_FS(("FS Key %s inserted in cache with refCount: 1", fs_key.c_str()));
   newCacheEntry->m_ref_count = 1;
-  newCacheEntry->m_state = FSCacheEntry::IS_FILLING;
   newCacheEntry->m_key_cache_id = key_cache_id;
-  newCacheEntry->m_data = nullptr;
-  newCacheEntry->m_errorCode = nullptr;
   newCacheEntry->m_key = fs_key;
   m_fs_cache[key_cache_id][fs_key] = newCacheEntry;
 

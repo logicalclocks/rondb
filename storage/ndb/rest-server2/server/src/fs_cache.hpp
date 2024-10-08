@@ -66,6 +66,9 @@ class FSCacheEntry {
   std::atomic<int> m_ref_count;
 
   FSCacheEntry() {
+    m_data = nullptr;
+    m_errorCode = nullptr;
+    m_state = IS_FILLING;
     m_waitLock = NdbMutex_Create();
     m_waitCond = NdbCondition_Create();
   }
@@ -75,8 +78,6 @@ class FSCacheEntry {
     NdbCondition_Destroy(m_waitCond);
     if (m_data) delete m_data;
   }
-  void decRefCount() { m_ref_count--; }
-
 };
 
 metadata::FeatureViewMetadata*
