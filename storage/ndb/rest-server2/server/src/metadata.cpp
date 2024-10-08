@@ -294,20 +294,19 @@ newFeatureViewMetadata(const std::string &featureStoreName,
   metadata->featureGroupFeatures = fgFeaturesArray;
 
   for (const auto &fgf : metadata->featureGroupFeatures) {
-    auto fgName = fgf.featureStoreName;
-    if (!fsNameMap[fgName]) {
-      const std::string_view &fsName = fgName;
+    if (!fsNameMap[fgf.featureStoreName]) {
+      const std::string_view &fsName = fgf.featureStoreName;
       DEB_MD_CACHE(("fsName: ptr: %p, str: %s, from: %s",
                     fsName.data(),
                     std::string(fsName).c_str(),
-                    fgName.c_str()));
+                    fgf.featureStoreName.c_str()));
       fsNames.push_back(fsName);
-      fsNameMap[fgName] = true;
+      fsNameMap[fgf.featureStoreName] = true;
     }
   }
 
   if (!fsNameMap[metadata->featureStoreName]) {
-    const auto &fsName = metadata->featureStoreName;
+    const std::string_view fsName = metadata->featureStoreName;
     fsNames.push_back(fsName);
     fsNameMap[metadata->featureStoreName] = true;
   }
@@ -526,7 +525,7 @@ std::tuple<FeatureViewMetadata*, std::shared_ptr<RestErrorCode>>
                                featureViewName,
                                featureViewVersion);
     if (errorCode) {
-      DEB_MD_CACHE(("Key %s failed with error: %s",
+      DEB_MD_CACHE(("Key %s failed with error",
                     entry->m_key.c_str()));
       fs_metadata_update_cache(nullptr, entry, errorCode);
       return {nullptr, errorCode};
