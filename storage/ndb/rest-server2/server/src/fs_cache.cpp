@@ -34,10 +34,10 @@
 #include <EventLogger.hpp>
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
-#define DEBUG_FS 1
-#define DEBUG_FS_THREAD 1
-#define DEBUG_FS_TIME 1
-#define DEBUG_FS_METADATA 1
+//#define DEBUG_FS 1
+//#define DEBUG_FS_THREAD 1
+//#define DEBUG_FS_TIME 1
+//#define DEBUG_FS_METADATA 1
 #endif
 
 #ifdef DEBUG_FS_METADATA

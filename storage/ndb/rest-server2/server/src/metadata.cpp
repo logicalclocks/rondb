@@ -30,7 +30,7 @@
 extern EventLogger *g_eventLogger;
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
-#define DEBUG_MD_CACHE 1
+//#define DEBUG_MD_CACHE 1
 #endif
 
 #ifdef DEBUG_MD_CACHE
