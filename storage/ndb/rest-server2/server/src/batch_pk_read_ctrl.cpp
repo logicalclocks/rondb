@@ -100,17 +100,17 @@ void BatchPKReadCtrl::batchPKRead(
 
   // Validate
   std::unordered_map<std::string_view, bool> db_map;
-  std::unordered_map<std::string_view, bool> table_map;
+  std::unordered_map<std::string, bool> table_map;
   std::unordered_map<std::string_view, bool> column_map;
   std::vector<std::string_view> db_vector;
 
   for (auto reqStruct : reqStructs) {
-    std::string_view db = reqStruct.path.db;
-    std::string_view table = reqStruct.path.table;
+    std::string_view &db = reqStruct.path.db;
+    std::string &table = reqStruct.path.table;
     db_map[db] = true;
     table_map[table] = true;
     for (auto readColumn: reqStruct.readColumns) {
-      std::string_view column = readColumn.column;
+      std::string_view &column = readColumn.column;
       column_map[column] = true;
     }
     for (auto filter: reqStruct.filters) {
@@ -131,8 +131,9 @@ void BatchPKReadCtrl::batchPKRead(
     db_vector.push_back(db);
   }
   for (auto it = table_map.begin(); it != table_map.end(); ++it) {
-    auto table = it->first;
-    status = validate_db_identifier(table);
+    const std::string &table = it->first;
+    const std::string_view table_view = table;
+    status = validate_db_identifier(table_view);
     if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
         drogon::HttpStatusCode::k200OK)) {
       resp->setBody(std::string(status.message));

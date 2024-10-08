@@ -22,6 +22,7 @@
 #include "config_structs.hpp"
 #include "error_strings.h"
 #include "rdrs_dal.hpp"
+#include <util/require.h>
 
 #include <iostream>
 #include <EventLogger.hpp>

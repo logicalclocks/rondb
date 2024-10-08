@@ -57,7 +57,7 @@ This tests can be run as follows:
 func BenchmarkSimple(b *testing.B) {
 	// Number of total requests
 	numRequests := b.N
-	const batchSize = 250
+	const batchSize = 200
 
 	/*
 		IMPORTANT: This benchmark will run requests against EITHER the REST or
@@ -73,7 +73,7 @@ func BenchmarkSimple(b *testing.B) {
 
 	b.ResetTimer()
 	start := time.Now()
-	runtime.GOMAXPROCS(24)
+	runtime.GOMAXPROCS(8)
 
 	/*
 		Assuming GOMAXPROCS is not set, a 10-core CPU
