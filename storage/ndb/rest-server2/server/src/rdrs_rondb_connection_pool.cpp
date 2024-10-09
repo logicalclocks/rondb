@@ -31,13 +31,15 @@ RDRSRonDBConnectionPool::RDRSRonDBConnectionPool() {
 RDRSRonDBConnectionPool::~RDRSRonDBConnectionPool() {
   delete dataConnection;
   delete metadataConnection;
-  dataConnection     = nullptr;
+  dataConnection = nullptr;
   metadataConnection = nullptr;
-  is_shutdown        = true;
+  is_shutdown = true;
 }
 
 RS_Status RDRSRonDBConnectionPool::Check() {
-  if (dataConnection == nullptr || metadataConnection == nullptr || is_shutdown == true) {
+  if (unlikely(dataConnection == nullptr ||
+               metadataConnection == nullptr ||
+               is_shutdown == true)) {
     return RS_SERVER_ERROR(ERROR_034);
   }
   return RS_OK;
@@ -47,80 +49,89 @@ RS_Status RDRSRonDBConnectionPool::Init() {
   return RS_OK;
 }
 
-RS_Status RDRSRonDBConnectionPool::AddConnections(const char *connection_string,
-                                                  unsigned int connection_pool_size,
-                                                  unsigned int *node_ids, unsigned int node_ids_len,
-                                                  unsigned int connection_retries,
-                                                  unsigned int connection_retry_delay_in_sec) {
+RS_Status RDRSRonDBConnectionPool::AddConnections(
+  const char *connection_string,
+  Uint32 connection_pool_size,
+  Uint32 *node_ids,
+  Uint32 node_ids_len,
+  Uint32 connection_retries,
+  Uint32 connection_retry_delay_in_sec) {
   require(connection_pool_size == 1);
 
-  dataConnection   = new RDRSRonDBConnection(connection_string, node_ids, node_ids_len,
-                                             connection_retries, connection_retry_delay_in_sec);
+  dataConnection = new RDRSRonDBConnection(connection_string,
+                                           node_ids,
+                                           node_ids_len,
+                                           connection_retries,
+                                           connection_retry_delay_in_sec);
   RS_Status status = dataConnection->Connect();
-  if (status.http_code != SUCCESS) {
+  if (unlikely(status.http_code != SUCCESS)) {
     return status;
   }
-
   return RS_OK;
 }
 
-RS_Status RDRSRonDBConnectionPool::AddMetaConnections(const char *connection_string,
-                                                      unsigned int connection_pool_size,
-                                                      unsigned int *node_ids,
-                                                      unsigned int node_ids_len,
-                                                      unsigned int connection_retries,
-                                                      unsigned int connection_retry_delay_in_sec) {
-  require(connection_pool_size == 1);
+RS_Status RDRSRonDBConnectionPool::AddMetaConnections(
+  const char *connection_string,
+  Uint32 connection_pool_size,
+  Uint32 *node_ids,
+  Uint32 node_ids_len,
+  Uint32 connection_retries,
+  Uint32 connection_retry_delay_in_sec) {
 
-  metadataConnection = new RDRSRonDBConnection(connection_string, node_ids, node_ids_len,
-                                               connection_retries, connection_retry_delay_in_sec);
+  require(connection_pool_size == 1);
+  metadataConnection = new RDRSRonDBConnection(connection_string,
+                                               node_ids,
+                                               node_ids_len,
+                                               connection_retries,
+                                               connection_retry_delay_in_sec);
   RS_Status status   = metadataConnection->Connect();
-  if (status.http_code != SUCCESS) {
+  if (unlikely(status.http_code != SUCCESS)) {
     return status;
   }
-
   return RS_OK;
 }
 
 RS_Status RDRSRonDBConnectionPool::GetNdbObject(Ndb **ndb_object) {
   RS_Status status = Check();
-  if (status.http_code != SUCCESS) {
+  if (unlikely(status.http_code != SUCCESS)) {
     return status;
   }
   return dataConnection->GetNdbObject(ndb_object);
 }
 
-RS_Status RDRSRonDBConnectionPool::ReturnNdbObject(Ndb *ndb_object, RS_Status *status) {
+RS_Status RDRSRonDBConnectionPool::ReturnNdbObject(Ndb *ndb_object,
+                                                   RS_Status *status) {
   dataConnection->ReturnNDBObjectToPool(ndb_object, status);
   return RS_OK;
 }
 
 RS_Status RDRSRonDBConnectionPool::GetMetadataNdbObject(Ndb **ndb_object) {
   RS_Status s = Check();
-  if (s.http_code != SUCCESS) {
+  if (unlikely(s.http_code != SUCCESS)) {
     return s;
   }
   RS_Status status = metadataConnection->GetNdbObject(ndb_object);
   return status;
 }
 
-RS_Status RDRSRonDBConnectionPool::ReturnMetadataNdbObject(Ndb *ndb_object, RS_Status *status) {
+RS_Status RDRSRonDBConnectionPool::ReturnMetadataNdbObject(Ndb *ndb_object,
+                                                           RS_Status *status) {
   metadataConnection->ReturnNDBObjectToPool(ndb_object, status);
   return RS_OK;
 }
 
 RS_Status RDRSRonDBConnectionPool::Reconnect() {
   RS_Status s = Check();
-  if (s.http_code != SUCCESS) {
+  if (unlikely(s.http_code != SUCCESS)) {
     return s;
   }
   RS_Status status = dataConnection->Reconnect();
-  if (status.http_code != SUCCESS) {
+  if (unlikely(status.http_code != SUCCESS)) {
     return status;
   }
 
   status = metadataConnection->Reconnect();
-  if (status.http_code != SUCCESS) {
+  if (unlikely(status.http_code != SUCCESS)) {
     return status;
   }
   return RS_OK;
@@ -133,19 +144,26 @@ RonDB_Stats RDRSRonDBConnectionPool::GetStats() {
   RonDB_Stats merged_stats;
 
   merged_stats.connection_state =
-      dataConnectionStats.connection_state > metadataConnectionStats.connection_state
+      dataConnectionStats.connection_state >
+        metadataConnectionStats.connection_state
           ? dataConnectionStats.connection_state
           : metadataConnectionStats.connection_state;
-  merged_stats.is_reconnection_in_progress = dataConnectionStats.is_reconnection_in_progress |
-                                             metadataConnectionStats.is_reconnection_in_progress;
-  merged_stats.is_shutdown = dataConnectionStats.is_shutdown | metadataConnectionStats.is_shutdown;
+  merged_stats.is_reconnection_in_progress =
+    dataConnectionStats.is_reconnection_in_progress |
+      metadataConnectionStats.is_reconnection_in_progress;
+  merged_stats.is_shutdown =
+    dataConnectionStats.is_shutdown | metadataConnectionStats.is_shutdown;
   merged_stats.ndb_objects_available =
-      dataConnectionStats.ndb_objects_available + metadataConnectionStats.ndb_objects_available;
+    dataConnectionStats.ndb_objects_available +
+      metadataConnectionStats.ndb_objects_available;
   merged_stats.ndb_objects_count =
-      dataConnectionStats.ndb_objects_count + metadataConnectionStats.ndb_objects_count;
+      dataConnectionStats.ndb_objects_count +
+        metadataConnectionStats.ndb_objects_count;
   merged_stats.ndb_objects_deleted =
-      dataConnectionStats.ndb_objects_deleted + metadataConnectionStats.ndb_objects_deleted;
+      dataConnectionStats.ndb_objects_deleted +
+        metadataConnectionStats.ndb_objects_deleted;
   merged_stats.ndb_objects_created =
-      dataConnectionStats.ndb_objects_created + metadataConnectionStats.ndb_objects_created;
+      dataConnectionStats.ndb_objects_created +
+        metadataConnectionStats.ndb_objects_created;
   return merged_stats;
 }

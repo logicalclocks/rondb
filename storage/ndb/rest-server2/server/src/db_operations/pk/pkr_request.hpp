@@ -113,7 +113,9 @@ class PKRRequest {
    * @param data [out] data
    * @return 0 if successfull
    */
-  int PKValueNDBStr(Uint32 index, const NdbDictionary::Column *col, void **data);
+  int PKValueNDBStr(Uint32 index,
+                    const NdbDictionary::Column *col,
+                    void **data);
 
   /**
    * Get number of read columns
@@ -159,5 +161,4 @@ class PKRRequest {
    */
   bool IsInvalidOp();
 };
-
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_DB_OPERATIONS_PK_PKR_REQUEST_HPP_

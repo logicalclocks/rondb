@@ -30,9 +30,9 @@
 #include <list>
 
 typedef struct ColRec {
-  ColRec(NdbRecAttr *recVal, NdbBlob *blobVal) : ndbRec(recVal), blob(blobVal) {
+  ColRec(NdbRecAttr *recVal, NdbBlob *blobVal) :
+    ndbRec(recVal), blob(blobVal) {
   }
-
   NdbRecAttr *ndbRec = nullptr;
   NdbBlob *blob = nullptr;
 } ColRec;
@@ -48,13 +48,17 @@ typedef struct ColRec {
  *
  * @return status
  */
-RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *request, Uint32 colIdx,
-                            Int8 **primaryKeyCol, Uint32 *primaryKeySize);
+RS_Status SetOperationPKCol(const NdbDictionary::Column *col,
+                            PKRRequest *request,
+                            Uint32 colIdx,
+                            Int8 **primaryKeyCol,
+                            Uint32 *primaryKeySize);
 
 /**
  * it stores the data read from the DB into the response buffer
  */
-RS_Status WriteColToRespBuff(std::shared_ptr<ColRec> colRec, PKRResponse *response);
+RS_Status WriteColToRespBuff(std::shared_ptr<ColRec> colRec,
+                             PKRResponse *response);
 
 /**
  * return data for array columns
@@ -70,7 +74,9 @@ bool CanRetryOperation(RS_Status status);
 /**
  * Returns exponentially increasing delay with jitter
  */
-Uint32 ExponentialDelayWithJitter(Uint32 retry, Uint32 initialDelayInMS, Uint32 jitterInMS);
+Uint32 ExponentialDelayWithJitter(Uint32 retry,
+                                  Uint32 initialDelayInMS,
+                                  Uint32 jitterInMS);
 
 /**
  * Check error if unload schema is needed
@@ -81,6 +87,9 @@ bool UnloadSchema(RS_Status status);
  * Handle NDB schema releated errors, such as, Invalid schema errors
  * This unloads the tables' schema from the NDB::Dictionary
  */
-RS_Status HandleSchemaErrors(Ndb *ndbObject, RS_Status status, const std::list<std::tuple<std::string, std::string>> &tables);
+RS_Status HandleSchemaErrors(
+  Ndb *ndbObject,
+  RS_Status status,
+  const std::list<std::tuple<std::string, std::string>> &tables);
 
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_DB_OPERATIONS_PK_COMMON_HPP_

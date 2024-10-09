@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Hopsworks AB
+ * Copyright (C) 2023, 2024 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -48,15 +48,17 @@ class PKROperation {
  private:
   Uint32 noOps;
   NdbTransaction *transaction = nullptr;
-  Ndb *ndbObject              = nullptr;
-  bool isBatch                = false;
+  Ndb *ndbObject = nullptr;
+  bool isBatch = false;
   std::vector<SubOpTuple> subOpTuples;
 
  public:
   PKROperation(RS_Buffer *reqBuff, RS_Buffer *respBuff, Ndb *ndbObject);
 
-  PKROperation(Uint32 noOps, RS_Buffer *reqBuffs, RS_Buffer *respBuffs, Ndb *ndbObject);
-
+  PKROperation(Uint32 noOps,
+               RS_Buffer *reqBuffs,
+               RS_Buffer *respBuffs,
+               Ndb *ndbObject);
   ~PKROperation();
 
   /**
@@ -132,13 +134,16 @@ class PKROperation {
    * Append operation records to response buffer
    * @return status
    */
-  RS_Status AppendOpRecs(PKRResponse *resp, std::vector<std::shared_ptr<ColRec>> *recs);
+  RS_Status AppendOpRecs(PKRResponse *resp,
+                         std::vector<std::shared_ptr<ColRec>> *recs);
 
   /**
    * Store NdbRecord or Blob handler in the SubOperation.recs
    * @return status
    */
-  RS_Status GetColValue(const NdbDictionary::Table *tableDict, NdbOperation *ndbOperation,
-                        const char *colName, std::vector<std::shared_ptr<ColRec>> *recs);
+  RS_Status GetColValue(const NdbDictionary::Table *tableDict,
+                        NdbOperation *ndbOperation,
+                        const char *colName,
+                        std::vector<std::shared_ptr<ColRec>> *recs);
 };
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_DB_OPERATIONS_PK_PKR_OPERATION_HPP_

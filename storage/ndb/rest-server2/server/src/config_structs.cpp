@@ -22,6 +22,7 @@
 #include "constants.hpp"
 #include "mysql_com.h"
 #include "rdrs_dal.hpp"
+#include <NdbMutex.h>
 
 #include <cstdlib>
 #include <drogon/HttpAppFramework.h>
@@ -34,7 +35,7 @@
 #include <fstream>
 
 AllConfigs globalConfigs;
-std::mutex globalConfigsMutex;
+extern NdbMutex *globalConfigsMutex;
 
 bool isUnitTest() {
   const char *env_var = std::getenv("RUNNING_UNIT_TESTS");
@@ -109,17 +110,19 @@ AllConfigs AllConfigs::get_all() {
 }
 
 RS_Status AllConfigs::set_all(AllConfigs newConfigs) {
-  std::lock_guard<std::mutex> lock(globalConfigsMutex);
+  NdbMutex_Lock(globalConfigsMutex);
   try {
     validate(newConfigs);
   }
   catch (ConfigValidationError &e) {
+    NdbMutex_Unlock(globalConfigsMutex);
     return CRS_Status(
       static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
        ("Failed validating config; error: " + e.m_error_message).c_str())
        .status;
   }
   globalConfigs = newConfigs;
+  NdbMutex_Unlock(globalConfigsMutex);
   return CRS_Status::SUCCESS.status;
 }
 

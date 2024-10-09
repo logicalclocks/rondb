@@ -23,6 +23,7 @@
 #include "rdrs_dal.h"
 #include "config_structs.hpp"
 #include "rdrs_const.h"
+#include <NdbMutex.h>
 
 #include <cstdint>
 #include <memory>
@@ -47,15 +48,15 @@ class RS_BufferArrayManager {
         globalConfigs.internal.respBufferSize % ADDRESS_SIZE != 0) {
       throw std::runtime_error("Buffer size must be a multiple of 4");
     }
-
     Int64 preAllocateBuffers = globalConfigs.internal.preAllocatedBuffers;
     reqBuffersStats            = {preAllocateBuffers, 0, preAllocateBuffers, 0};
     respBuffersStats           = {preAllocateBuffers, 0, preAllocateBuffers, 0};
-
     for (int i = 0; i < preAllocateBuffers; i++) {
       reqBufferArray.push_back(allocate_req_buffer());
       respBufferArray.push_back(allocate_resp_buffer());
     }
+    reqBufferMutex = NdbMutex_Create();
+    respBufferMutex = NdbMutex_Create();
   }
 
   RS_BufferArrayManager(const RS_BufferArrayManager &)            = delete;
@@ -64,8 +65,8 @@ class RS_BufferArrayManager {
   RS_BufferArrayManager &operator=(RS_BufferArrayManager &&)      = delete;
 
   ~RS_BufferArrayManager() {
-    std::lock_guard<std::mutex> reqLock(reqBufferMutex);
-    std::lock_guard<std::mutex> respLock(respBufferMutex);
+    NdbMutex_Lock(reqBufferMutex);
+    NdbMutex_Lock(respBufferMutex);
 
     for (auto &buffer : reqBufferArray) {
       delete[] buffer.buffer;
@@ -73,74 +74,88 @@ class RS_BufferArrayManager {
     for (auto &buffer : respBufferArray) {
       delete[] buffer.buffer;
     }
+    NdbMutex_Unlock(reqBufferMutex);
+    NdbMutex_Unlock(respBufferMutex);
+    NdbMutex_Destroy(reqBufferMutex);
+    NdbMutex_Destroy(respBufferMutex);
   }
 
   static RS_Buffer allocate_req_buffer() {
     auto reqBufferSize = globalConfigs.internal.reqBufferSize;
-    auto buff          = RS_Buffer();
-    buff.buffer        = new char[reqBufferSize];
-    buff.size          = reqBufferSize;
+    auto buff = RS_Buffer();
+    buff.buffer = new char[reqBufferSize];
+    buff.size = reqBufferSize;
     return buff;
   }
 
   static RS_Buffer allocate_resp_buffer() {
     auto respBufferSize = globalConfigs.internal.respBufferSize;
-    auto buff           = RS_Buffer();
-    buff.buffer         = new char[respBufferSize];
-    buff.size           = respBufferSize;
+    auto buff = RS_Buffer();
+    buff.buffer = new char[respBufferSize];
+    buff.size = respBufferSize;
     return buff;
   }
 
   RS_Buffer get_req_buffer() {
-    std::lock_guard<std::mutex> lock(reqBufferMutex);
+    NdbMutex_Lock(reqBufferMutex);
     auto numBuffersLeft = reqBufferArray.size();
     if (numBuffersLeft > 0) {
       auto buffer = reqBufferArray[numBuffersLeft - 1];
       reqBufferArray.pop_back();
+      NdbMutex_Unlock(reqBufferMutex);
       return buffer;
     }
     auto buffer = allocate_req_buffer();
     reqBuffersStats.buffersCount++;
     reqBuffersStats.allocationsCount++;
+    NdbMutex_Unlock(reqBufferMutex);
     return buffer;
   }
 
   RS_Buffer get_resp_buffer() {
-    std::lock_guard<std::mutex> lock(respBufferMutex);
+    NdbMutex_Lock(respBufferMutex);
     auto numBuffersLeft = respBufferArray.size();
     if (numBuffersLeft > 0) {
       auto buffer = respBufferArray[numBuffersLeft - 1];
       respBufferArray.pop_back();
+      NdbMutex_Unlock(respBufferMutex);
       return buffer;
     }
     auto buffer = allocate_resp_buffer();
     respBuffersStats.buffersCount++;
     respBuffersStats.allocationsCount++;
+    NdbMutex_Unlock(respBufferMutex);
     return buffer;
   }
 
   void return_req_buffer(RS_Buffer buffer) {
-    std::lock_guard<std::mutex> lock(reqBufferMutex);
+    NdbMutex_Lock(reqBufferMutex);
     reqBufferArray.push_back(buffer);
+    NdbMutex_Unlock(reqBufferMutex);
   }
 
   void return_resp_buffer(RS_Buffer buffer) {
-    std::lock_guard<std::mutex> lock(respBufferMutex);
+    NdbMutex_Lock(respBufferMutex);
     respBufferArray.push_back(buffer);
+    NdbMutex_Unlock(respBufferMutex);
   }
 
   MemoryStats get_req_buffers_stats() {
     // update the free buffers count
-    std::lock_guard<std::mutex> lock(reqBufferMutex);
+    NdbMutex_Lock(reqBufferMutex);
     reqBuffersStats.freeBuffers = static_cast<Int64>(reqBufferArray.size());
-    return reqBuffersStats;
+    MemoryStats ret = respBuffersStats;
+    NdbMutex_Unlock(reqBufferMutex);
+    return ret;
   }
 
   MemoryStats get_resp_buffers_stats() {
     // update the free buffers count
-    std::lock_guard<std::mutex> lock(respBufferMutex);
+    NdbMutex_Lock(respBufferMutex);
     respBuffersStats.freeBuffers = static_cast<Int64>(respBufferArray.size());
-    return respBuffersStats;
+    MemoryStats ret = respBuffersStats;
+    NdbMutex_Unlock(respBufferMutex);
+    return ret;
   }
 
  private:
@@ -148,8 +163,8 @@ class RS_BufferArrayManager {
   std::vector<RS_Buffer> respBufferArray;
   MemoryStats reqBuffersStats{};
   MemoryStats respBuffersStats{};
-  std::mutex reqBufferMutex;
-  std::mutex respBufferMutex;
+  NdbMutex *reqBufferMutex;
+  NdbMutex *respBufferMutex;
 };
 
 #define EN_STATUS_MSG_LEN 256

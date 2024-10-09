@@ -25,6 +25,7 @@
 #include "rdrs_hopsworks_dal.h"
 #include "rdrs_rondb_connection.hpp"
 #include "rdrs_rondb_connection_pool.hpp"
+#include <NdbMutex.h>
 
 #include <gtest/gtest.h>
 #include <iostream>
@@ -34,6 +35,7 @@
 #include <condition_variable>
 #include <NdbSleep.h>
 
+NdbMutex *globalConfigsMutex = nullptr;
 template <typename T> class SafeQueue {
  private:
   std::queue<T> queue_;
@@ -449,11 +451,13 @@ TEST_F(APIKeyTest, TestAPIKeyCache4) {
 
 int main(int argc, char **argv) {
   ndb_init();
+  globalConfigsMutex = NdbMutex_Create();
   testing::InitGoogleTest(&argc, argv);
   testing::Environment* const my_env =
     testing::AddGlobalTestEnvironment(new MyEnvironment);
   (void)my_env;
   int rc = RUN_ALL_TESTS();
+  NdbMutex_Destroy(globalConfigsMutex);
   ndb_end(0);
   return rc;
 }

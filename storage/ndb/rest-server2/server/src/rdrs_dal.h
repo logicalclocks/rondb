@@ -24,6 +24,7 @@ extern "C" {
 #ifndef STORAGE_NDB_REST_SERVER2_SERVER_SRC_RDRS_DAL_H_
 #define STORAGE_NDB_REST_SERVER2_SERVER_SRC_RDRS_DAL_H_
 
+#include <ndb_types.h>
 typedef enum HTTP_CODE {
   SUCCESS      = 200,
   CLIENT_ERROR = 400,
@@ -36,7 +37,8 @@ typedef enum HTTP_CODE {
 #define RS_STATUS_MSG_LEN       256
 #define RS_STATUS_FILE_NAME_LEN 256
 typedef struct RS_Status {
-  HTTP_CODE http_code;              // rest server return code. 200 for successful operation
+  // rest server return code. 200 for successful operation
+  HTTP_CODE http_code;
   int status;                       // NdbError.ndberror_status_enum
   int classification;               // NdbError.ndberror_classification_enum
   int code;                         // NdbError.code / ERROR_CODE
@@ -55,7 +57,8 @@ typedef struct RS_LOG_MSG {
 
 // Data return type. You can change the return type for the column data
 // int/floats/decimal are returned as JSON Number type (default),
-// varchar/char are returned as strings (default) and varbinary as base64 (default)
+// varchar/char are returned as strings (default) and varbinary as base64
+// (default)
 // Right now only default return type is supported
 typedef enum DataReturnType {
   DEFAULT_DRT = 1,
@@ -66,7 +69,7 @@ typedef enum DataReturnType {
 
 // Buffer that contain request or response objects
 typedef struct RS_Buffer {
-  unsigned int size;  // Buffer size
+  Uint32 size;  // Buffer size
   char *buffer;       // Buffer
 } RS_Buffer;
 
@@ -76,14 +79,14 @@ typedef enum STATE { CONNECTED, CONNECTING, DISCONNECTED } STATE;
 
 // RonDB stats
 typedef struct RonDB_Stats {
-  unsigned int ndb_objects_created;
-  unsigned int ndb_objects_deleted;
-  unsigned int ndb_objects_count;
-  unsigned int ndb_objects_available;
+  Uint32 ndb_objects_created;
+  Uint32 ndb_objects_deleted;
+  Uint32 ndb_objects_count;
+  Uint32 ndb_objects_available;
   STATE connection_state;
-  unsigned char is_shutdown;
-  unsigned char is_shutting_down;
-  unsigned char is_reconnection_in_progress;
+  Uint8 is_shutdown;
+  Uint8 is_shutting_down;
+  Uint8 is_reconnection_in_progress;
 } RonDB_Stats;
 
 /**
@@ -94,32 +97,36 @@ RS_Status init();
 /**
  * Connect to RonDB Cluster
  */
-RS_Status add_data_connection(const char *connection_string, unsigned int connection_pool_size,
-                              unsigned int *node_ids, unsigned int node_ids_len,
-                              unsigned int connection_retries,
-                              unsigned int connection_retry_delay_in_sec);
+RS_Status add_data_connection(const char *connection_string,
+                              Uint32 connection_pool_size,
+                              Uint32 *node_ids,
+                              Uint32 node_ids_len,
+                              Uint32 connection_retries,
+                              Uint32 connection_retry_delay_in_sec);
 
 /**
  * Connect to RonDB Cluster containing metadata
  */
-RS_Status add_metadata_connection(const char *connection_string, unsigned int connection_pool_size,
-                                  unsigned int *node_ids, unsigned int node_ids_len,
-                                  unsigned int connection_retries,
-                                  unsigned int connection_retry_delay_in_sec);
+RS_Status add_metadata_connection(const char *connection_string,
+                                  Uint32 connection_pool_size,
+                                  Uint32 *node_ids,
+                                  Uint32 node_ids_len,
+                                  Uint32 connection_retries,
+                                  Uint32 connection_retry_delay_in_sec);
 
 /**
  * Set operation retry properties
  */
-RS_Status set_data_cluster_op_retry_props(const unsigned int retry_cont,
-                                          const unsigned int rety_initial_delay,
-                                          const unsigned int jitter);
+RS_Status set_data_cluster_op_retry_props(const Uint32 retry_cont,
+                                          const Uint32 rety_initial_delay,
+                                          const Uint32 jitter);
 
 /**
  * Set operation retry properties for metadata cluster
  */
-RS_Status set_metadata_cluster_op_retry_props(const unsigned int retry_cont,
-                                              const unsigned int rety_initial_delay,
-                                              const unsigned int jitter);
+RS_Status set_metadata_cluster_op_retry_props(const Uint32 retry_cont,
+                                              const Uint32 rety_initial_delay,
+                                              const Uint32 jitter);
 
 /**
  * Shutdown connection
@@ -139,7 +146,9 @@ RS_Status pk_read(RS_Buffer *reqBuff, RS_Buffer *respBuff);
 /**
  * Batched primary key read operation
  */
-RS_Status pk_batch_read(unsigned int no_req, RS_Buffer *req_buffs, RS_Buffer *resp_buffs);
+RS_Status pk_batch_read(Uint32 no_req,
+                        RS_Buffer *req_buffs,
+                        RS_Buffer *resp_buffs);
 
 /**
  * RonSQL query

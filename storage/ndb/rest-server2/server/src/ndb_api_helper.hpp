@@ -26,17 +26,26 @@
 
 RS_Status start_transaction(Ndb *ndb_object, NdbTransaction **tx);
 
-RS_Status select_table(Ndb *ndb_object, const char *database_str, const char *table_str,
+RS_Status select_table(Ndb *ndb_object,
+                       const char *database_str,
+                       const char *table_str,
                        const NdbDictionary::Table **table_dict);
 
-RS_Status get_index_scan_op(Ndb *ndb_object, NdbTransaction *tx,
-                            const NdbDictionary::Table *table_dict, const char *index_name,
+RS_Status get_index_scan_op(Ndb *ndb_object,
+                            NdbTransaction *tx,
+                            const NdbDictionary::Table *table_dict,
+                            const char *index_name,
                             NdbScanOperation **scanOp);
 
-RS_Status get_scan_op(Ndb *ndb_object, NdbTransaction *tx, const char *table_name,
+RS_Status get_scan_op(Ndb *ndb_object,
+                      NdbTransaction *tx,
+                      const char *table_name,
                       NdbScanOperation **scanOp);
 
-RS_Status get_op(Ndb *ndb_object, NdbTransaction *tx, const char *table_name, NdbOperation **ndbOp);
+RS_Status get_op(Ndb *ndb_object,
+                 NdbTransaction *tx,
+                 const char *table_name,
+                 NdbOperation **ndbOp);
 
 RS_Status read_tuples(Ndb *ndb_object, NdbScanOperation *scanOp);
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Hopsworks AB
+ * Copyright (C) 2023, 2024 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -177,7 +177,9 @@ class PKRResponse {
   /**
    * Append to response buffer
    */
-  RS_Status Append_char(const char *colName, const char *from_buffer, Uint32 from_length,
+  RS_Status Append_char(const char *colName,
+                        const char *from_buffer,
+                        Uint32 from_length,
                         CHARSET_INFO *from_cs);
 
   /**
@@ -189,7 +191,9 @@ class PKRResponse {
   /**
    * Set column name and data internal method
    */
-  RS_Status SetColumnDataInt(const char *colName, const char *value, Uint32 type);
+  RS_Status SetColumnDataInt(const char *colName,
+                             const char *value,
+                             Uint32 type);
 
   /**
    * Check capacity if the buffer can hold the
@@ -216,5 +220,4 @@ class PKRResponse {
    */
   RS_Status WriteStringHeaderField(Uint32 index, const char *str);
 };
-
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_DB_OPERATIONS_PK_PKR_RESPONSE_HPP_

@@ -53,60 +53,68 @@ RS_Status init() {
   // Initialize NDB Connection and Object Pool
   rdrsRonDBConnectionPool = new RDRSRonDBConnectionPool();
   RS_Status status = rdrsRonDBConnectionPool->Init();
-  if (status.http_code != SUCCESS) {
+  if (unlikely(status.http_code != SUCCESS)) {
     return status;
   }
   return RS_OK;
 }
 
-RS_Status add_data_connection(const char *connection_string, unsigned int connection_pool_size,
-                              unsigned int *node_ids, unsigned int node_ids_len,
-                              unsigned int connection_retries,
-                              unsigned int connection_retry_delay_in_sec) {
+RS_Status add_data_connection(const char *connection_string,
+                              Uint32 connection_pool_size,
+                              Uint32 *node_ids, unsigned int node_ids_len,
+                              Uint32 connection_retries,
+                              Uint32 connection_retry_delay_in_sec) {
 
   RS_Status status = rdrsRonDBConnectionPool->AddConnections(
-      connection_string, connection_pool_size, node_ids, node_ids_len, connection_retries,
-      connection_retry_delay_in_sec);
+    connection_string,
+    connection_pool_size,
+    node_ids,
+    node_ids_len,
+    connection_retries,
+    connection_retry_delay_in_sec);
 
-  if (status.http_code != SUCCESS) {
+  if (unlikely(status.http_code != SUCCESS)) {
     return status;
   }
-
   return RS_OK;
 }
 
-RS_Status add_metadata_connection(const char *connection_string, unsigned int connection_pool_size,
-                                  unsigned int *node_ids, unsigned int node_ids_len,
-                                  unsigned int connection_retries,
-                                  unsigned int connection_retry_delay_in_sec) {
+RS_Status add_metadata_connection(const char *connection_string,
+                                  Uint32 connection_pool_size,
+                                  Uint32 *node_ids,
+                                  Uint32 node_ids_len,
+                                  Uint32 connection_retries,
+                                  Uint32 connection_retry_delay_in_sec) {
 
   RS_Status status = rdrsRonDBConnectionPool->AddMetaConnections(
-      connection_string, connection_pool_size, node_ids, node_ids_len, connection_retries,
-      connection_retry_delay_in_sec);
-  if (status.http_code != SUCCESS) {
+    connection_string,
+    connection_pool_size,
+    node_ids,
+    node_ids_len,
+    connection_retries,
+    connection_retry_delay_in_sec);
+
+  if (unlikely(status.http_code != SUCCESS)) {
     return status;
   }
-
   return RS_OK;
 }
 
-RS_Status set_data_cluster_op_retry_props(const unsigned int retry_cont,
-                                          const unsigned int rety_initial_delay,
-                                          const unsigned int jitter) {
+RS_Status set_data_cluster_op_retry_props(const Uint32 retry_cont,
+                                          const Uint32 rety_initial_delay,
+                                          const Uint32 jitter) {
   DATA_CONN_OP_RETRY_COUNT = retry_cont;
   DATA_CONN_OP_RETRY_INITIAL_DELAY_IN_MS = rety_initial_delay;
   DATA_CONN_OP_RETRY_JITTER_IN_MS = jitter;
-
   return RS_OK;
 }
 
-RS_Status set_metadata_cluster_op_retry_props(const unsigned int retry_cont,
-                                              const unsigned int rety_initial_delay,
-                                              const unsigned int jitter) {
+RS_Status set_metadata_cluster_op_retry_props(const Uint32 retry_cont,
+                                              const Uint32 rety_initial_delay,
+                                              const Uint32 jitter) {
   METADATA_CONN_OP_RETRY_COUNT = retry_cont;
   METADATA_CONN_OP_RETRY_INITIAL_DELAY_IN_MS = rety_initial_delay;
   METADATA_CONN_OP_RETRY_JITTER_IN_MS = jitter;
-
   return RS_OK;
 }
 
@@ -122,33 +130,29 @@ RS_Status reconnect() {
 RS_Status pk_read(RS_Buffer *reqBuff, RS_Buffer *respBuff) {
   Ndb *ndb_object  = nullptr;
   RS_Status status = rdrsRonDBConnectionPool->GetNdbObject(&ndb_object);
-  if (status.http_code != SUCCESS) {
+  if (unlikely(status.http_code != SUCCESS)) {
     return status;
   }
-
-  /* clang-format off */
   DATA_OP_RETRY_HANDLER(
       PKROperation pkread(reqBuff, respBuff, ndb_object);
       status = pkread.PerformOperation();
   )
-  /* clang-format on */
-
   rdrsRonDBConnectionPool->ReturnNdbObject(ndb_object, &status);
   return status;
 }
 
-RS_Status pk_batch_read(unsigned int no_req, RS_Buffer *req_buffs, RS_Buffer *resp_buffs) {
+RS_Status pk_batch_read(Uint32 no_req,
+                        RS_Buffer *req_buffs,
+                        RS_Buffer *resp_buffs) {
   Ndb *ndb_object  = nullptr;
   RS_Status status = rdrsRonDBConnectionPool->GetNdbObject(&ndb_object);
-  if (status.http_code != SUCCESS) {
+  if (unlikely(status.http_code != SUCCESS)) {
     return status;
   }
-
   DATA_OP_RETRY_HANDLER(
       PKROperation pkread(no_req, req_buffs, resp_buffs, ndb_object);
       status = pkread.PerformOperation();
   )
-
   rdrsRonDBConnectionPool->ReturnNdbObject(ndb_object, &status);
   return status;
 }
@@ -157,7 +161,7 @@ RS_Status ronsql_dal(const char* database, RonSQLExecParams* ep) {
   assert(ep != nullptr);
   Ndb *ndb_object  = nullptr;
   RS_Status status = rdrsRonDBConnectionPool->GetNdbObject(&ndb_object);
-  if (status.http_code != SUCCESS) {
+  if (unlikely(status.http_code != SUCCESS)) {
     return status;
   }
 
@@ -169,7 +173,6 @@ RS_Status ronsql_dal(const char* database, RonSQLExecParams* ep) {
   status = ronsql_op(*ep);
   ndb_object->setDatabaseName(saved_database_name);
   ep->ndb = NULL;
-
   rdrsRonDBConnectionPool->ReturnNdbObject(ndb_object, &status);
   return status;
 }
