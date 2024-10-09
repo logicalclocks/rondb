@@ -66,7 +66,6 @@ class APIKeyTest : public ::testing::Test {
  protected:
   static void SetUpTestSuite() {
     printf("Set up TestSuite\n");
-    setenv("RUNNING_UNIT_TESTS", "1", 1);
     RS_Status status = RonDBConnection::init_rondb_connection(globalConfigs.ronDB,
                                                               globalConfigs.ronDBMetadataCluster);
     if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
@@ -76,7 +75,6 @@ class APIKeyTest : public ::testing::Test {
   }
 
   static void TearDownTestSuite() {
-    unsetenv("RUNNING_UNIT_TESTS");
     stop_api_key_cache();
     RS_Status status = RonDBConnection::shutdown_rondb_connection();
     if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {

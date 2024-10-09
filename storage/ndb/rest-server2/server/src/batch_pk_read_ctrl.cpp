@@ -41,9 +41,9 @@ extern EventLogger *g_eventLogger;
 #endif
 
 #ifdef DEBUG_BPK_CTRL
-#define DEB_BPK_CTRL(arglist) do { g_eventLogger->info arglist ; } while (0)
+#define DEB_BPK_CTRL(...) do { g_eventLogger->info(__VA_ARGS__); } while (0)
 #else
-#define DEB_BPK_CTRL(arglist) do { } while (0)
+#define DEB_BPK_CTRL(...) do { } while (0)
 #endif
 
 
@@ -62,7 +62,7 @@ void BatchPKReadCtrl::batchPKRead(
 
   // Store it to the first string buffer
   const char *json_str = req->getBody().data();
-  DEB_BPK_CTRL(("\n\n JSON REQUEST: \n %s \n", json_str));
+  DEB_BPK_CTRL("\n\n JSON REQUEST: \n %s \n", json_str);
   size_t length = req->getBody().length();
   if (unlikely(length > globalConfigs.internal.reqBufferSize)) {
     auto resp = drogon::HttpResponse::newHttpResponse();

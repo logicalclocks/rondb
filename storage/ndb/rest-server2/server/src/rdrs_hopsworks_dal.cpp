@@ -41,9 +41,9 @@ extern EventLogger *g_eventLogger;
 #endif
 
 #ifdef DEBUG_DAL
-#define DEB_DAL(arglist) do { g_eventLogger->info arglist ; } while (0)
+#define DEB_DAL(...) do { g_eventLogger->info(__VA_ARGS__); } while (0)
 #else
-#define DEB_DAL(arglist) do { } while (0)
+#define DEB_DAL(...) do { } while (0)
 #endif
 
 
@@ -551,8 +551,8 @@ RS_Status find_all_projects(int uid, char ***projects, int *count) {
   malloc_size += (project_vec.size() * sizeof(char*));
   for (Uint32 i = 0; i < project_vec.size(); i++) {
     size_t name_size = (strlen(project_vec[i].projectname) + 1) * sizeof(char);
-    DEB_DAL(("i = %u, db: %s, len(db name): %u",
-             i, project_vec[i].projectname, (Uint32)name_size));
+    DEB_DAL("i = %u, db: %s, len(db name): %u",
+            i, project_vec[i].projectname, (Uint32)name_size);
     malloc_size += name_size;
   }
   *projects = (char **)malloc(malloc_size);

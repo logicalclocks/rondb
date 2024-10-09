@@ -39,9 +39,9 @@ extern EventLogger *g_eventLogger;
 #endif
 
 #ifdef DEBUG_PK_CTRL
-#define DEB_PK_CTRL(arglist) do { g_eventLogger->info arglist ; } while (0)
+#define DEB_PK_CTRL(...) do { g_eventLogger->info(__VA_ARGS__); } while (0)
 #else
-#define DEB_PK_CTRL(arglist) do { } while (0)
+#define DEB_PK_CTRL(...) do { } while (0)
 #endif
 
 void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
@@ -61,7 +61,7 @@ void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
 
   // Store it to the first string buffer
   const char *json_str = req->getBody().data();
-  DEB_PK_CTRL(("\n\n JSON REQUEST: \n %s \n", json_str));
+  DEB_PK_CTRL("\n\n JSON REQUEST: \n %s \n", json_str);
   size_t length = req->getBody().length();
   if (unlikely(length > globalConfigs.internal.reqBufferSize)) {
     auto resp = drogon::HttpResponse::newHttpResponse();

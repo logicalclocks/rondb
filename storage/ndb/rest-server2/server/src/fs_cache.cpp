@@ -41,27 +41,27 @@
 #endif
 
 #ifdef DEBUG_FS_METADATA
-#define DEB_FS_METADATA(arglist) do { g_eventLogger->info arglist ; } while (0)
+#define DEB_FS_METADATA(...) do { g_eventLogger->info(__VA_ARGS__); } while (0)
 #else
-#define DEB_FS_METADATA(arglist) do { } while (0)
+#define DEB_FS_METADATA(...) do { } while (0)
 #endif
 
 #ifdef DEBUG_FS
-#define DEB_FS(arglist) do { g_eventLogger->info arglist ; } while (0)
+#define DEB_FS(...) do { g_eventLogger->info(__VA_ARGS__); } while (0)
 #else
-#define DEB_FS(arglist) do { } while (0)
+#define DEB_FS(...) do { } while (0)
 #endif
 
 #ifdef DEBUG_FS_THREAD
-#define DEB_FS_THREAD(arglist) do { g_eventLogger->info arglist ; } while (0)
+#define DEB_FS_THREAD(...) do { g_eventLogger->info(__VA_ARGS__); } while (0)
 #else
-#define DEB_FS_THREAD(arglist) do { } while (0)
+#define DEB_FS_THREAD(...) do { } while (0)
 #endif
 
 #ifdef DEBUG_FS_TIME
-#define DEB_FS_TIME(arglist) do { g_eventLogger->info arglist ; } while (0)
+#define DEB_FS_TIME(...) do { g_eventLogger->info(__VA_ARGS__); } while (0)
 #else
-#define DEB_FS_TIME(arglist) do { } while (0)
+#define DEB_FS_TIME(...) do { } while (0)
 #endif
 
 #ifndef DEBUG_FS_THREAD
@@ -76,7 +76,7 @@ FSMetadataCache *g_fs_metadata_cache = nullptr;
 void start_fs_cache() {
   g_fs_metadata_cache = new FSMetadataCache();
   require(g_fs_metadata_cache != nullptr);
-  DEB_FS(("FS Metadata Cache started: %p", g_fs_metadata_cache));
+  DEB_FS("FS Metadata Cache started: %p", g_fs_metadata_cache);
   g_fs_metadata_cache->start_fs_cache_thread();
 }
 
@@ -102,7 +102,7 @@ void FSMetadataCache::start_fs_cache_thread() {
 }
 
 void stop_fs_cache() {
-  DEB_FS(("FS Metadata Cache stopped: %p", g_fs_metadata_cache));
+  DEB_FS("FS Metadata Cache stopped: %p", g_fs_metadata_cache);
   if (g_fs_metadata_cache != nullptr) {
     delete g_fs_metadata_cache;
     g_fs_metadata_cache = nullptr;
@@ -123,14 +123,14 @@ FSMetadataCache::FSMetadataCache() : m_fs_cache() {
     m_rwLock[i] = NdbMutex_Create();
     m_queueLock[i] = NdbMutex_Create();
   }
-  DEB_FS(("rwLock: %p, queueLock: %p", m_rwLock[0], m_queueLock[0]));
+  DEB_FS("rwLock: %p, queueLock: %p", m_rwLock[0], m_queueLock[0]);
   m_sleepLock = NdbMutex_Create();
   m_sleepCond = NdbCondition_Create();
 }
 
 void FSMetadataCache::cleanup() {
   /* Start by waking all threads */
-  DEB_FS(("Cleanup started"));
+  DEB_FS("Cleanup started");
   NdbMutex_Lock(m_sleepLock);
   for (int i = 0; i < NUM_FS_CACHES; i++)
     NdbMutex_Lock(m_rwLock[i]);
@@ -148,7 +148,7 @@ void FSMetadataCache::cleanup() {
       Uint32 fs_cache_size = (Uint32)m_fs_cache[i].size();
 #endif
       NdbMutex_Unlock(m_rwLock[i]);
-      DEB_FS(("m_fs_cache[%d].size() = %u", i, fs_cache_size));
+      DEB_FS("m_fs_cache[%d].size() = %u", i, fs_cache_size);
       NdbSleep_MilliSleep(CLEANUP_SLEEP_TIME);
       NdbMutex_Lock(m_rwLock[i]);
     }
@@ -163,7 +163,7 @@ void FSMetadataCache::cleanup() {
       break;
     }
   }
-  DEB_FS(("Cleanup finished"));
+  DEB_FS("Cleanup finished");
 }
 
 metadata::FeatureViewMetadata* fs_metadata_cache_get(
@@ -192,7 +192,7 @@ FSMetadataCache::get_fs_metadata(const std::string &fs_key,
   NdbMutex_Lock(m_rwLock[key_cache_id]);
   if (m_evicted) {
     NdbMutex_Unlock(m_rwLock[key_cache_id]);
-    DEB_FS(("FS Metadata cache shutdown, Line: %u", __LINE__));
+    DEB_FS("FS Metadata cache shutdown, Line: %u", __LINE__);
     return nullptr;
   }
   auto it = m_fs_cache[key_cache_id].find(fs_key);
@@ -200,7 +200,7 @@ FSMetadataCache::get_fs_metadata(const std::string &fs_key,
   if (it == m_fs_cache[key_cache_id].end()) {
     *entry = allocate_empty_cache_entry(fs_key, key_cache_id);
     NdbMutex_Unlock(m_rwLock[key_cache_id]);
-    DEB_FS(("FS Key not found, Line: %u", __LINE__));
+    DEB_FS("FS Key not found, Line: %u", __LINE__);
     return nullptr;
   }
   auto cacheEntry = it->second;
@@ -212,8 +212,8 @@ FSMetadataCache::get_fs_metadata(const std::string &fs_key,
     int ref_count = cacheEntry->m_ref_count;
 #endif
     NdbMutex_Unlock(cacheEntry->m_waitLock);
-    DEB_FS(("FS Key found invalid, Line: %u, refCount: %d",
-              __LINE__, ref_count));
+    DEB_FS("FS Key found invalid, Line: %u, refCount: %d",
+             __LINE__, ref_count);
     require(cacheEntry->m_errorCode != nullptr);
     *entry = cacheEntry;
     return nullptr;
@@ -226,8 +226,8 @@ FSMetadataCache::get_fs_metadata(const std::string &fs_key,
     int ref_count = cacheEntry->m_ref_count;
 #endif
     NdbMutex_Unlock(cacheEntry->m_waitLock);
-    DEB_FS(("FS Key found invalid, Line: %u, refCount: %d",
-             __LINE__, ref_count));
+    DEB_FS("FS Key found invalid, Line: %u, refCount: %d",
+            __LINE__, ref_count);
     require(cacheEntry->m_errorCode != nullptr);
     *entry = cacheEntry;
     return nullptr;
@@ -236,8 +236,8 @@ FSMetadataCache::get_fs_metadata(const std::string &fs_key,
 #ifdef DEBUG_FS
   {
     int ref_count = cacheEntry->m_ref_count;
-    DEB_FS(("Key: %s returned, refCount: %d",
-            cacheEntry->m_key.c_str(), ref_count));
+    DEB_FS("Key: %s returned, refCount: %d",
+           cacheEntry->m_key.c_str(), ref_count);
   }
 #endif
   *entry = cacheEntry;
@@ -258,10 +258,10 @@ FSMetadataCache::allocate_empty_cache_entry(
 
   auto newCacheEntry = new FSCacheEntry();
   if (newCacheEntry == nullptr) {
-    DEB_FS(("FS Key create CacheEntry failed, Line: %u", __LINE__));
+    DEB_FS("FS Key create CacheEntry failed, Line: %u", __LINE__);
     return nullptr;
   }
-  DEB_FS(("FS Key %s inserted in cache with refCount: 1", fs_key.c_str()));
+  DEB_FS("FS Key %s inserted in cache with refCount: 1", fs_key.c_str());
   newCacheEntry->m_ref_count = 1;
   newCacheEntry->m_key_cache_id = key_cache_id;
   newCacheEntry->m_key = fs_key;
@@ -292,20 +292,20 @@ void FSMetadataCache::update_cache(
   entry->m_errorCode = errorCode;
   if (data != nullptr) {
 #ifdef DEBUG_FS_METADATA
-    DEB_FS_METADATA(("Key %s have metadata",
-                     entry->m_key.c_str()));
+    DEB_FS_METADATA("Key %s have metadata",
+                    entry->m_key.c_str());
 #endif
     entry->m_state = FSCacheEntry::IS_VALID;
-    DEB_FS(("FS Key create CacheEntry succeeded, valid, Line: %u", __LINE__));
+    DEB_FS("FS Key create CacheEntry succeeded, valid, Line: %u", __LINE__);
   } else {
-    DEB_FS(("FS Key create CacheEntry succeeded, invalid, Line: %u", __LINE__));
+    DEB_FS("FS Key create CacheEntry succeeded, invalid, Line: %u", __LINE__);
     entry->m_state = FSCacheEntry::IS_INVALID;
   }
 #ifdef DEBUG_FS
   {
     int ref_count = entry->m_ref_count;
-    DEB_FS(("Key: %s set refCount to %d",
-            entry->m_key.c_str(), ref_count));
+    DEB_FS("Key: %s set refCount to %d",
+           entry->m_key.c_str(), ref_count);
   }
 #endif
   NdbCondition_Broadcast(entry->m_waitCond);
@@ -361,7 +361,7 @@ void FSMetadataCache::cache_entry_updater(Uint32 key_cache_id) {
         NDB_TICKS lastUsed = first_entry->m_lastUsed;
         Uint64 milliSeconds = NdbTick_Elapsed(lastUsed, now).milliSec();
         if (m_evicted || (milliSeconds >= eviction_ms)) {
-          DEB_FS(("FS Key %s deleted", first_entry->m_key.c_str()));
+          DEB_FS("FS Key %s deleted", first_entry->m_key.c_str());
           m_fs_cache[key_cache_id].erase(first_entry->m_key);
           NdbMutex_Unlock(m_rwLock[key_cache_id]);
           NdbMutex_Lock(m_queueLock[key_cache_id]);
@@ -374,8 +374,8 @@ void FSMetadataCache::cache_entry_updater(Uint32 key_cache_id) {
       } else {
 #ifdef DEBUG_FS
       int ref_count = first_entry->m_ref_count;
-      DEB_FS(("FS Key %s ready for delete, ref_count: %d",
-              first_entry->m_key.c_str(), ref_count));
+      DEB_FS("FS Key %s ready for delete, ref_count: %d",
+             first_entry->m_key.c_str(), ref_count);
 #endif
       }
       NdbMutex_Unlock(first_entry->m_waitLock);
@@ -385,7 +385,7 @@ void FSMetadataCache::cache_entry_updater(Uint32 key_cache_id) {
       NdbMutex_Lock(m_sleepLock);
       m_is_thread_running = false;
       NdbMutex_Unlock(m_sleepLock);
-      DEB_FS(("Stop FS cache thread"));
+      DEB_FS("Stop FS cache thread");
       return;
     }
     NdbMutex_Unlock(m_rwLock[key_cache_id]);

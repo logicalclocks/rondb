@@ -34,9 +34,9 @@ extern EventLogger *g_eventLogger;
 #endif
 
 #ifdef DEBUG_MD_CACHE
-#define DEB_MD_CACHE(arglist) do { g_eventLogger->info arglist ; } while (0)
+#define DEB_MD_CACHE(...) do { g_eventLogger->info(__VA_ARGS__); } while (0)
 #else
-#define DEB_MD_CACHE(arglist) do { } while (0)
+#define DEB_MD_CACHE(...) do { } while (0)
 #endif
 
 namespace metadata {
@@ -296,10 +296,10 @@ newFeatureViewMetadata(const std::string &featureStoreName,
   for (const auto &fgf : metadata->featureGroupFeatures) {
     if (!fsNameMap[fgf.featureStoreName]) {
       const std::string_view &fsName = fgf.featureStoreName;
-      DEB_MD_CACHE(("fsName: ptr: %p, str: %s, from: %s",
-                    fsName.data(),
-                    std::string(fsName).c_str(),
-                    fgf.featureStoreName.c_str()));
+      DEB_MD_CACHE("fsName: ptr: %p, str: %s, from: %s",
+                   fsName.data(),
+                   std::string(fsName).c_str(),
+                   fgf.featureStoreName.c_str());
       fsNames.push_back(fsName);
       fsNameMap[fgf.featureStoreName] = true;
     }
@@ -473,8 +473,8 @@ std::tuple<FeatureViewMetadata*, std::shared_ptr<RestErrorCode>>
             std::make_shared<RestErrorCode>(
               FV_READ_FAIL->NewMessage("Failed to read serving keys."))};
   }
-  DEB_MD_CACHE(("Create new FeatureViewMetadata for FS: ptr: %p, str: %s",
-                featureStoreName.c_str(), featureStoreName.c_str()));
+  DEB_MD_CACHE("Create new FeatureViewMetadata for FS: ptr: %p, str: %s",
+               featureStoreName.c_str(), featureStoreName.c_str());
   FeatureViewMetadata *featureViewMetadata;
   std::tie(featureViewMetadata, status) = newFeatureViewMetadata(
       featureStoreName,
@@ -508,16 +508,16 @@ std::tuple<FeatureViewMetadata*, std::shared_ptr<RestErrorCode>>
   *metadata_cache_entry = (char*)entry;
   if (entry == nullptr) {
     require(cache_metadata == nullptr);
-    DEB_MD_CACHE(("Cached Key failed with FETCH_METADATA_FROM_CACHE_FAIL"));
+    DEB_MD_CACHE("Cached Key failed with FETCH_METADATA_FROM_CACHE_FAIL");
     return {nullptr, FETCH_METADATA_FROM_CACHE_FAIL};
   } else if (entry->m_errorCode != nullptr) {
-    DEB_MD_CACHE(("Cached Key %s failed with error: %s",
-                  entry->m_key.c_str(),
-                  entry->m_errorCode->ToString().c_str()));
+    DEB_MD_CACHE("Cached Key %s failed with error: %s",
+                 entry->m_key.c_str(),
+                 entry->m_errorCode->ToString().c_str());
     return {nullptr, entry->m_errorCode};
   }
   if (!cache_metadata) {
-    DEB_MD_CACHE(("Failed retrieve from cache, now retrieve from RonDB"));
+    DEB_MD_CACHE("Failed retrieve from cache, now retrieve from RonDB");
     FeatureViewMetadata *metadata;
     std::shared_ptr<RestErrorCode> errorCode;
     std::tie(metadata, errorCode) =
@@ -525,8 +525,8 @@ std::tuple<FeatureViewMetadata*, std::shared_ptr<RestErrorCode>>
                                featureViewName,
                                featureViewVersion);
     if (errorCode) {
-      DEB_MD_CACHE(("Key %s failed with error",
-                    entry->m_key.c_str()));
+      DEB_MD_CACHE("Key %s failed with error",
+                   entry->m_key.c_str());
       fs_metadata_update_cache(nullptr, entry, errorCode);
       return {nullptr, errorCode};
     }

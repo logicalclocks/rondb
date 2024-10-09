@@ -247,10 +247,15 @@ static void handle_signal(int signal) {
       break;
   }
   int exit_code = 128 + signal; // Because it's tradition.
+  if (signal == SIGTERM) {
+    exit_code = 0; // SIGTERM is used for clean exit
+  }
   if (g_drogon_running) {
     printf("Quitting Drogon...\n");
     drogon::app().quit();
-    g_deferred_exit_code = exit_code;
+    if (exit_code != 0) {
+      g_deferred_exit_code = exit_code;
+    }
   }
   else {
     do_exit(exit_code);

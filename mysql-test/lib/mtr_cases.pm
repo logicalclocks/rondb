@@ -132,7 +132,7 @@ sub report_disabled_entry_format_error($$$) {
             "is incorrect. The format must be one of the following: \n\n" .
             "#<comment>\n\n" .
             "<suitename>.<testcasename> [\@platform|\@!platform] : " .
-            "<BUG|WL>#<XXXX> [<comment>]\n\n" . "\@import <path>\n");
+            "<BUG#|WL#|RONDB-><XXXX> [<comment>]\n\n" . "\@import <path>\n");
 }
 
 ## Check if the test name format in a disabled.def file is correct. The
@@ -240,7 +240,7 @@ sub validate_test_existence($) {
 }
 
 ## Check if the comment section in a disabled.def file is correct. The
-## format is "<BUG|WL>#<XXXX> [<comment>]". If the format is incorrect,
+## format is "<BUG#|WL#|RONDB-><XXXX> [<comment>]". If the format is incorrect,
 ## throw an error and abort the test run.
 ##
 ## Arguments:
@@ -254,7 +254,7 @@ sub validate_comment_part($$$$) {
   my $line_number       = shift;
   my $disabled_def_file = shift;
 
-  if ($comment_part =~ /^\s*(BUG|WL)#\d+\s*(\s+(.*))?$/i) {
+  if ($comment_part =~ /^\s*(BUG#|WL#|RONDB-)\d+\s*(\s+(.*))?$/i) {
     my $comment = $3;
     # Length of a comment section can't be more than 80 characters.
     if (length($comment) > 79) {

@@ -4829,6 +4829,12 @@ sub mark_testcase_start_in_logs($$) {
   mark_log($extra_log, $tinfo);
 }
 
+sub mark_testcase_start_in_logs_rdrs($$) {
+  my ($rdrs, $tinfo) = @_;
+  # Write start of testcase to the default log file
+  mark_log($rdrs->value('#log-error'), $tinfo);
+}
+
 sub find_testcase_skipped_reason($) {
   my ($tinfo) = @_;
 
@@ -7313,6 +7319,11 @@ sub start_servers($) {
 
   # Start rdrss
   foreach my $rdrs (rdrss()) {
+    if ($rdrs->{proc}) {
+      # Already started, write start of testcase to log file
+      mark_testcase_start_in_logs_rdrs($rdrs, $tinfo);
+      next;
+    }
     rdrs_start($rdrs, $tinfo);
   }
 
