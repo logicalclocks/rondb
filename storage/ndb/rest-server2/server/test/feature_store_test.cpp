@@ -29,6 +29,7 @@
 #include "rdrs_rondb_connection.hpp"
 #include "rdrs_rondb_connection_pool.hpp"
 #include "base64.h"
+#include <NdbMutex.h>
 
 #include <avro/ValidSchema.hh>
 #include <drogon/HttpClient.h>
@@ -45,6 +46,7 @@
 #include <unordered_map>
 #include <vector>
 
+NdbMutex *globalConfigsMutex = nullptr;
 MYSQL *CreateMySQLConnectionDataCluster() {
   auto conf = globalConfigs;
   auto connection_string =
@@ -1280,11 +1282,13 @@ TEST_F(BatchFeatureStoreTest, DISABLED_Test_GetFeatureVector_Success_ComplexType
 
 int main(int argc, char **argv) {
   ndb_init();
+  globalConfigsMutex = NdbMutex_Create();
   testing::InitGoogleTest(&argc, argv);
   testing::Environment* const my_env =
     testing::AddGlobalTestEnvironment(new MyEnvironment);
   (void)my_env;
   int rc = RUN_ALL_TESTS();
+  NdbMutex_Destroy(globalConfigsMutex);
   ndb_end(0);
   return rc;
 }

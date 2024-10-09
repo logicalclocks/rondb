@@ -177,6 +177,7 @@ constexpr const char* const configHelp =
 #include "src/fs_cache.hpp"
 #include "tls_util.hpp"
 #include <ndb_opts.h>
+#include <NdbMutex.h>
 
 #include <chrono>
 #include <cmath>
@@ -198,6 +199,8 @@ static const char* g_pidfile = nullptr;
 static RonDBConnection* g_rondbConnection = nullptr;
 static bool g_drogon_running = false;
 static int g_deferred_exit_code = 0;
+NdbMutex *globalConfigsMutex = nullptr;
+
 static void do_exit(int exit_code) {
   assert(!g_drogon_running);
   if (g_rondbConnection != nullptr) {
@@ -218,6 +221,7 @@ static void do_exit(int exit_code) {
     stop_api_key_cache();
   if (g_did_start_fs_cache)
     stop_fs_cache();
+  NdbMutex_Destroy(globalConfigsMutex);
   if (g_did_ndb_init)
     ndb_end(0);
   if (exit_code != 0) {
@@ -263,13 +267,13 @@ static void handle_signal(int signal) {
 }
 
 
-
 int main(int argc, char *argv[]) {
   signal(SIGTERM, handle_signal);
   signal(SIGINT, handle_signal);
 
   ndb_init();
   g_did_ndb_init = true;
+  globalConfigsMutex = NdbMutex_Create();
   (void)start_api_key_cache();
   g_did_start_api_key_cache = true;
 

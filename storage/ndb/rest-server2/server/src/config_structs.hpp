@@ -43,7 +43,6 @@
 #undef VECTOR
 
 extern AllConfigs globalConfigs;
-extern std::mutex globalConfigsMutex;
 
 bool isUniteTest();
 
