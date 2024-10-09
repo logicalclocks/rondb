@@ -36,10 +36,10 @@
 #include <util/rondb_hash.hpp>
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
-//#define DEBUG_AUTH 1
-//#define DEBUG_AUTH_THREAD 1
-//#define DEBUG_AUTH_TIME 1
-//#define DEBUG_AUTH_DBS 1
+#define DEBUG_AUTH 1
+#define DEBUG_AUTH_THREAD 1
+#define DEBUG_AUTH_TIME 1
+#define DEBUG_AUTH_DBS 1
 #endif
 
 #ifdef DEBUG_AUTH

@@ -92,10 +92,8 @@ class RDRSRonDBConnection {
 
   /**
    * Get status
-   *
-   * @return RonDB_Stats
    */
-  RonDB_Stats GetStats();
+  void GetStats(RonDB_Stats&);
 
   /**
    * Starts reconnection thread which calls the ReconnectHandler

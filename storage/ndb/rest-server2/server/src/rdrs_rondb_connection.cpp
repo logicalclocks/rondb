@@ -203,12 +203,12 @@ void RDRSRonDBConnection::ReturnNDBObjectToPool(Ndb *ndb_object,
   }
 }
 
-RonDB_Stats RDRSRonDBConnection::GetStats() {
+void RDRSRonDBConnection::GetStats(RonDB_Stats &ret) {
   NdbMutex_Lock(connectionInfoMutex);
   stats.ndb_objects_available = availableNdbObjects.size();
-  RonDB_Stats ret = stats;
+  ret = stats;
   NdbMutex_Unlock(connectionInfoMutex);
-  return ret;
+  return;
 }
 
 RS_Status RDRSRonDBConnection::Shutdown(bool end) {

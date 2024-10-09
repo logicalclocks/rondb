@@ -140,22 +140,22 @@ class RS_BufferArrayManager {
     NdbMutex_Unlock(respBufferMutex);
   }
 
-  MemoryStats get_req_buffers_stats() {
+  void get_req_buffers_stats(MemoryStats &ret) {
     // update the free buffers count
     NdbMutex_Lock(reqBufferMutex);
     reqBuffersStats.freeBuffers = static_cast<Int64>(reqBufferArray.size());
-    MemoryStats ret = respBuffersStats;
+    ret = respBuffersStats;
     NdbMutex_Unlock(reqBufferMutex);
-    return ret;
+    return;
   }
 
-  MemoryStats get_resp_buffers_stats() {
+  void get_resp_buffers_stats(MemoryStats &ret) {
     // update the free buffers count
     NdbMutex_Lock(respBufferMutex);
     respBuffersStats.freeBuffers = static_cast<Int64>(respBufferArray.size());
-    MemoryStats ret = respBuffersStats;
+    ret = respBuffersStats;
     NdbMutex_Unlock(respBufferMutex);
-    return ret;
+    return;
   }
 
  private:

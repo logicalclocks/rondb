@@ -139,8 +139,10 @@ RS_Status RDRSRonDBConnectionPool::Reconnect() {
 
 RonDB_Stats RDRSRonDBConnectionPool::GetStats() {
   // TODO FIXME Do not merge stats
-  RonDB_Stats dataConnectionStats     = dataConnection->GetStats();
-  RonDB_Stats metadataConnectionStats = metadataConnection->GetStats();
+  RonDB_Stats dataConnectionStats;
+  dataConnection->GetStats(dataConnectionStats);
+  RonDB_Stats metadataConnectionStats;
+  metadataConnection->GetStats(metadataConnectionStats);
   RonDB_Stats merged_stats;
 
   merged_stats.connection_state =
