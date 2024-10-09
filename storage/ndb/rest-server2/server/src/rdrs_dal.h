@@ -36,7 +36,8 @@ typedef enum HTTP_CODE {
 #define RS_STATUS_MSG_LEN       256
 #define RS_STATUS_FILE_NAME_LEN 256
 typedef struct RS_Status {
-  HTTP_CODE http_code;              // rest server return code. 200 for successful operation
+  // rest server return code. 200 for successful operation
+  HTTP_CODE http_code;
   int status;                       // NdbError.ndberror_status_enum
   int classification;               // NdbError.ndberror_classification_enum
   int code;                         // NdbError.code / ERROR_CODE
@@ -55,7 +56,8 @@ typedef struct RS_LOG_MSG {
 
 // Data return type. You can change the return type for the column data
 // int/floats/decimal are returned as JSON Number type (default),
-// varchar/char are returned as strings (default) and varbinary as base64 (default)
+// varchar/char are returned as strings (default) and varbinary as base64
+// (default)
 // Right now only default return type is supported
 typedef enum DataReturnType {
   DEFAULT_DRT = 1,
@@ -94,16 +96,20 @@ RS_Status init();
 /**
  * Connect to RonDB Cluster
  */
-RS_Status add_data_connection(const char *connection_string, unsigned int connection_pool_size,
-                              unsigned int *node_ids, unsigned int node_ids_len,
+RS_Status add_data_connection(const char *connection_string,
+                              unsigned int connection_pool_size,
+                              unsigned int *node_ids,
+                              unsigned int node_ids_len,
                               unsigned int connection_retries,
                               unsigned int connection_retry_delay_in_sec);
 
 /**
  * Connect to RonDB Cluster containing metadata
  */
-RS_Status add_metadata_connection(const char *connection_string, unsigned int connection_pool_size,
-                                  unsigned int *node_ids, unsigned int node_ids_len,
+RS_Status add_metadata_connection(const char *connection_string,
+                                  unsigned int connection_pool_size,
+                                  unsigned int *node_ids,
+                                  unsigned int node_ids_len,
                                   unsigned int connection_retries,
                                   unsigned int connection_retry_delay_in_sec);
 
@@ -117,9 +123,10 @@ RS_Status set_data_cluster_op_retry_props(const unsigned int retry_cont,
 /**
  * Set operation retry properties for metadata cluster
  */
-RS_Status set_metadata_cluster_op_retry_props(const unsigned int retry_cont,
-                                              const unsigned int rety_initial_delay,
-                                              const unsigned int jitter);
+RS_Status set_metadata_cluster_op_retry_props(
+  const unsigned int retry_cont,
+  const unsigned int rety_initial_delay,
+  const unsigned int jitter);
 
 /**
  * Shutdown connection
@@ -139,7 +146,9 @@ RS_Status pk_read(RS_Buffer *reqBuff, RS_Buffer *respBuff);
 /**
  * Batched primary key read operation
  */
-RS_Status pk_batch_read(unsigned int no_req, RS_Buffer *req_buffs, RS_Buffer *resp_buffs);
+RS_Status pk_batch_read(unsigned int no_req,
+                        RS_Buffer *req_buffs,
+                        RS_Buffer *resp_buffs);
 
 /**
  * RonSQL query

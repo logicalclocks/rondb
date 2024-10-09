@@ -45,7 +45,9 @@ class CRS_Status {
     initialize(http_code, 0, 0, 0, 0, message, 0, "");
   }
 
-  CRS_Status(HTTP_CODE http_code, const char *message, const std::string &error_file_name) {
+  CRS_Status(HTTP_CODE http_code,
+             const char *message,
+             const std::string &error_file_name) {
     initialize(http_code, 0, 0, 0, 0, message, 0, error_file_name.c_str());
   }
 
@@ -63,7 +65,8 @@ class CRS_Status {
 
   CRS_Status(HTTP_CODE http_code, const char *error, const char *location) {
     std::string msg =
-        "Parsing request failed. Error: " + std::string(error) + " at " + std::string(location);
+        "Parsing request failed. Error: " + std::string(error) +
+        " at " + std::string(location);
     initialize(http_code, 0, 0, 0, 0, msg.c_str(), 0, "");
   }
 
@@ -72,8 +75,14 @@ class CRS_Status {
   }
 
  private:
-  void initialize(HTTP_CODE http_code, int status, int classification, int code, int mysql_code,
-                  const char *message, int err_line_no, const char *err_file_name) {
+  void initialize(HTTP_CODE http_code,
+                  int status,
+                  int classification,
+                  int code,
+                  int mysql_code,
+                  const char *message,
+                  int err_line_no,
+                  const char *err_file_name) {
     this->status.http_code      = http_code;
     this->status.status         = status;
     this->status.classification = classification;
@@ -82,7 +91,9 @@ class CRS_Status {
     strncpy(this->status.message, message, RS_STATUS_MSG_LEN - 1);
     this->status.message[RS_STATUS_MSG_LEN - 1] = '\0';
     this->status.err_line_no                    = err_line_no;
-    strncpy(this->status.err_file_name, err_file_name, RS_STATUS_FILE_NAME_LEN - 1);
+    strncpy(this->status.err_file_name,
+            err_file_name,
+            RS_STATUS_FILE_NAME_LEN - 1);
     this->status.err_file_name[RS_STATUS_FILE_NAME_LEN - 1] = '\0';
   }
 };

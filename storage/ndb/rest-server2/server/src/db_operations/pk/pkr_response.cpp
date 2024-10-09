@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Hopsworks AB
+ * Copyright (C) 2023, 2024 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -20,6 +20,7 @@
 #include "pkr_response.hpp"
 #include "src/mystring.hpp"
 #include "src/rdrs_const.h"
+#include "my_compiler.h"
 
 #include <mysql.h>
 #include <sql_string.h>
@@ -29,7 +30,7 @@
 #include <ndb_limits.h>
 
 PKRResponse::PKRResponse(const RS_Buffer *respBuff) {
-  this->resp        = respBuff;
+  this->resp = respBuff;
   this->writeHeader = PK_RESP_HEADER_END;
   this->WriteHeaderField(PK_RESP_OP_TYPE_IDX, RDRS_PK_RESP_ID);
   this->WriteHeaderField(PK_RESP_CAPACITY_IDX, resp->size);
@@ -37,7 +38,7 @@ PKRResponse::PKRResponse(const RS_Buffer *respBuff) {
 
 RS_Status PKRResponse::WriteHeaderField(Uint32 index, Uint32 value) {
   Uint32 *b = reinterpret_cast<Uint32 *>(this->resp->buffer);
-  b[index]  = value;
+  b[index] = value;
   return RS_OK;
 }
 
@@ -67,9 +68,9 @@ RS_Status PKRResponse::WriteStringHeaderField(Uint32 index, const char *str) {
   if (str == nullptr) {
     this->WriteHeaderField(index, 0);
   } else {
-    Uint32 addr      = this->writeHeader;
+    Uint32 addr = this->writeHeader;
     RS_Status status = this->Append_cstring(str);
-    if (status.http_code != SUCCESS) {
+    if (unlikely(status.http_code != SUCCESS)) {
       return status;
     }
     this->WriteHeaderField(index, addr);
@@ -79,7 +80,7 @@ RS_Status PKRResponse::WriteStringHeaderField(Uint32 index, const char *str) {
 
 bool PKRResponse::HasCapacity(char *str) {
   Uint32 strl = strlen(str) + 1;  // +1 for null terminator
-  if (strl > GetRemainingCapacity()) {
+  if (unlikely(unlikely(strl > GetRemainingCapacity()))) {
     return false;
   }
   return true;
@@ -87,35 +88,33 @@ bool PKRResponse::HasCapacity(char *str) {
 
 RS_Status PKRResponse::Append_cstring(const char *str) {
   Uint32 strl = strlen(str) + 1;  // for null terminator
-  if (strl > GetRemainingCapacity()) {
+  if (unlikely(unlikely(strl > GetRemainingCapacity()))) {
     return RS_SERVER_ERROR(ERROR_016);
   }
-
-  std::memcpy(resp->buffer + writeHeader, str, strl);
+  memcpy(resp->buffer + writeHeader, str, strl);
   writeHeader += strl;
   return RS_OK;
 }
 
 RS_Status PKRResponse::SetNoOfColumns(Uint32 cols) {
-  if (this->writeHeader % ADDRESS_SIZE != 0) {  // 4 bytes alignment
+  // 4 bytes alignment
+  if (this->writeHeader % ADDRESS_SIZE != 0) {
     this->writeHeader += ADDRESS_SIZE - this->writeHeader % ADDRESS_SIZE;
   }
-
   // first index is for column name
   // second index is for column value
   // thrid index is for isNULL
   // forth index is for data type, e.g., string or non-string data
-  Uint32 spaceNeeded4Pointers = 1 * ADDRESS_SIZE + (cols * ADDRESS_SIZE * 4);  // +1 for col count
-  if (spaceNeeded4Pointers > GetRemainingCapacity()) {
+
+  // +1 for col count
+  Uint32 spaceNeeded4Pointers = 1 * ADDRESS_SIZE + (cols * ADDRESS_SIZE * 4);
+  if (unlikely(spaceNeeded4Pointers > GetRemainingCapacity())) {
     return RS_SERVER_ERROR(ERROR_016);
   }
-
   Uint32 colAddr = (this->writeHeader);
   WriteHeaderField(PK_RESP_COLS_IDX, colAddr);
-
   Uint32 *b = reinterpret_cast<Uint32 *>(this->resp->buffer + colAddr);
-  b[0]      = cols;
-
+  b[0] = cols;
   this->writeHeader = (this->writeHeader + spaceNeeded4Pointers);
   this->colsToWrite = cols;
   return RS_OK;
@@ -138,34 +137,30 @@ RS_Status PKRResponse::SetColumnDataInt(const char *colName,
   // second index is for column value
   // thrid index is for isNULL
   // forth index is for data type, e.g., string, int, date etc
-  Uint32 *b    = reinterpret_cast<Uint32 *>(this->resp->buffer);
+  Uint32 *b = reinterpret_cast<Uint32 *>(this->resp->buffer);
   Uint32 start = b[PK_RESP_COLS_IDX];
   start += ADDRESS_SIZE;  // skip the count
-
   int indexWritten = (start + (colsWritten * 4 * ADDRESS_SIZE)) / ADDRESS_SIZE;
-
   Uint32 nameAddress = this->writeHeader;
   RS_Status status   = Append_cstring(colName);
-  if (status.http_code != SUCCESS) {
+  if (unlikely(status.http_code != SUCCESS)) {
     return status;
   }
   b[indexWritten + 0] = nameAddress;
-
   if (value == nullptr) {
     b[indexWritten + 1] = 0;                      // value address not set
     b[indexWritten + 2] = 1;                      // isNULL
     b[indexWritten + 3] = RDRS_UNKNOWN_DATATYPE;  // data type
   } else {
     Uint32 valueAddress = this->writeHeader;
-    RS_Status status    = Append_cstring(value);
-    if (status.http_code != SUCCESS) {
+    RS_Status status = Append_cstring(value);
+    if (unlikely(status.http_code != SUCCESS)) {
       return status;
     }
     b[indexWritten + 1] = valueAddress;  // value address
     b[indexWritten + 2] = 0;             // isNULL
     b[indexWritten + 3] = type;          // data type
   }
-
   colsWritten++;
   return RS_OK;
 }
@@ -197,10 +192,10 @@ void PKRResponse::AdvanceWritePointer(Uint32 add) {
 RS_Status PKRResponse::Append_string(const char *colName,
                                      std::string value,
                                      Uint32 type) {
-  if ((value.length() + 1) > GetRemainingCapacity()) {  // +1 null terminator
+  // +1 null terminator
+  if (unlikely((value.length() + 1) > GetRemainingCapacity())) {
     return RS_SERVER_ERROR(ERROR_016);
   }
-
   return SetColumnData(colName, value.c_str(), type);
 }
 
@@ -274,14 +269,14 @@ RS_Status PKRResponse::Append_char(const char *colName,
                                    CHARSET_INFO *fromCS) {
   Uint32 extraSpace = 3;  // +1 for null terminator 
 
-  if ((fromBuffLen + extraSpace) > GetRemainingCapacity()) {
-    return RS_SERVER_ERROR(ERROR_010 +
+  if (unlikely((fromBuffLen + extraSpace) > GetRemainingCapacity())) {
+    return RS_SERVER_ERROR(
+      ERROR_010 +
       std::string(" Response buffer remaining capacity: ") +
       std::to_string(GetRemainingCapacity()) + std::string(" Required: ") +
       std::to_string(fromBuffLen + extraSpace));
   }
   //  from_buffer -> printable string  -> escaped string
-
   // allocate a buffer large enough to hold the formatted string
   Uint64 estimated_bytes =
     (fromBuffLen / fromCS->mbminlen + 1) * fromCS->mbmaxlen + 1;
@@ -290,12 +285,10 @@ RS_Status PKRResponse::Append_char(const char *colName,
                                  [](const char *buff) {
     delete[] buff;  // Custom deleter to delete the array
   });
-
-  const char *well_formed_error_pos    = nullptr;
+  const char *well_formed_error_pos = nullptr;
   const char *cannot_convert_error_pos = nullptr;
-  const char *from_end_pos             = nullptr;
-  const char *error_pos                = nullptr;
-
+  const char *from_end_pos = nullptr;
+  const char *error_pos = nullptr;
   int bytesFormed = well_formed_copy_nchars(fromCS,
                                             tempBuff.get(),
                                             estimated_bytes,
@@ -306,23 +299,28 @@ RS_Status PKRResponse::Append_char(const char *colName,
                                             &well_formed_error_pos,
                                             &cannot_convert_error_pos,
                                             &from_end_pos);
-
   error_pos = well_formed_error_pos ?
     well_formed_error_pos : cannot_convert_error_pos;
-  if (error_pos) {
+  if (unlikely(error_pos)) {
     char printable_buff[32];
-    convert_to_printable(printable_buff, sizeof(printable_buff), error_pos,
-                         fromBuff + fromBuffLen - error_pos, fromCS, 6);
-    return RS_SERVER_ERROR(ERROR_008 + std::string(" Invalid string: ") +
-                           std::string(printable_buff));
-  } else if (from_end_pos < fromBuff + fromBuffLen) {
+    convert_to_printable(printable_buff,
+                         sizeof(printable_buff),
+                         error_pos,
+                         fromBuff + fromBuffLen - error_pos,
+                         fromCS,
+                         6);
+    return RS_SERVER_ERROR(
+      ERROR_008 + std::string(" Invalid string: ") +
+      std::string(printable_buff));
+  } else if (unlikely(from_end_pos < fromBuff + fromBuffLen)) {
     /*
       result is longer than UINT_MAX32 and doesn't fit into String
     */
-    return RS_SERVER_ERROR(ERROR_021 + std::string(" Buffer size: ") +
-                           std::to_string(MAX_TUPLE_SIZE_IN_BYTES_ESCAPED) +
-                           std::string(". Bytes left to copy: ") +
-                           std::to_string((fromBuff + fromBuffLen) - from_end_pos));
+    return RS_SERVER_ERROR(
+      ERROR_021 + std::string(" Buffer size: ") +
+      std::to_string(MAX_TUPLE_SIZE_IN_BYTES_ESCAPED) +
+      std::string(". Bytes left to copy: ") +
+      std::to_string((fromBuff + fromBuffLen) - from_end_pos));
   }
   std::string wellFormedString = std::string(tempBuff.get(), bytesFormed);
   // remove blank spaces that are padded to the string
@@ -330,11 +328,11 @@ RS_Status PKRResponse::Append_char(const char *colName,
   if (std::string::npos != endpos) {
     wellFormedString = wellFormedString.substr(0, endpos + 1);
   }
-
   std::string escapedstr = escape_string(wellFormedString);
-  if ((escapedstr.length() + extraSpace) >= GetRemainingCapacity()) {  // +1 for null terminator 
-    return RS_SERVER_ERROR(ERROR_010 +
-      std::string(" Response buffer remaining capacity: ") +
+  // +1 for null terminator 
+  if (unlikely((escapedstr.length() + extraSpace) >= GetRemainingCapacity())) {
+    return RS_SERVER_ERROR(
+      ERROR_010 + std::string(" Response buffer remaining capacity: ") +
       std::to_string(GetRemainingCapacity()) + std::string(" Required: ") +
       std::to_string(escapedstr.length() + extraSpace));
   }

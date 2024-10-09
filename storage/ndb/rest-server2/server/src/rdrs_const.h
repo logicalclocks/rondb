@@ -65,7 +65,8 @@ static inline int bytes_for_ndb_str_len(int ndb_str_len) {
 #define PK_REQ_PK_COLS_IDX   6
 #define PK_REQ_READ_COLS_IDX 7
 #define PK_REQ_OP_ID_IDX     8
-#define PK_REQ_HEADER_END    36  // NOTE: Update this when you add / remove fields from  header
+// NOTE: Update this when you add / remove fields from  header
+#define PK_REQ_HEADER_END    36
 
 // Primary Key Read Response Header Indexes
 #define PK_RESP_OP_TYPE_IDX    0
@@ -77,10 +78,10 @@ static inline int bytes_for_ndb_str_len(int ndb_str_len) {
 #define PK_RESP_TABLE_IDX      6
 #define PK_RESP_COLS_IDX       7
 #define PK_RESP_OP_ID_IDX      8
-#define PK_RESP_HEADER_END     36  // NOTE: Update this when you add / remove fields from  header
+#define PK_RESP_HEADER_END     36
+// NOTE: Update this when you add / remove fields from  header
 
 // Hopsworks
-
 #define HOPSWORKS                "hopsworks"
 #define TRAINING_DATASET_FEATURE "training_dataset_feature"
 #define FEATURE_STORE            "feature_store"
@@ -119,10 +120,12 @@ static inline int bytes_for_ndb_str_len(int ndb_str_len) {
 #define FEATURE_GROUP_SCHEMA_SIZE          29000 + 2 /* +2 for ndb len or '\0'*/
 
 // Data types
-#define DECIMAL_MAX_SIZE_IN_BYTES           9 * 4   /*4 bytes per 9 digits. 65/9 + 1 * 4*/
-#define CHAR_MAX_SIZE_IN_BYTES              255 * 4 /*MAX 255 chars. *4 for char set*/
+/*4 bytes per 9 digits. 65/9 + 1 * 4*/
+#define DECIMAL_MAX_SIZE_IN_BYTES           9 * 4
+/*MAX 255 chars. *4 for char set*/
+#define CHAR_MAX_SIZE_IN_BYTES              255 * 4
 #define DECIMAL_MAX_PRECISION_SIZE_IN_BYTES 65
-#define DECIMAL_MAX_STR_LEN_IN_BYTES        DECIMAL_MAX_PRECISION_SIZE_IN_BYTES + 3
+#define DECIMAL_MAX_STR_LEN_IN_BYTES DECIMAL_MAX_PRECISION_SIZE_IN_BYTES + 3
 /*encoding 255 bytes takes max 340 bytes (255*4/3) */
 /*encoding 4092 bytes takes max 5456 bytes (4092*4/3) */
 #define BINARY_MAX_SIZE_IN_BYTES            255
@@ -133,7 +136,7 @@ static inline int bytes_for_ndb_str_len(int ndb_str_len) {
 #define TIMESTAMP2_MAX_SIZE_IN_BYTES        7
 #define MAX_TUPLE_SIZE_IN_BYTES             7501 * 4
 #define MAX_TUPLE_SIZE_IN_BYTES_ENCODED     40008
-#define MAX_TUPLE_SIZE_IN_BYTES_ESCAPED                                                            \
+#define MAX_TUPLE_SIZE_IN_BYTES_ESCAPED \
   MAX_TUPLE_SIZE_IN_BYTES * 2 /*worst cast every character needs to be escaped*/
 #define BIT_MAX_SIZE_IN_BYTES         4096 / 8
 #define BIT_MAX_SIZE_IN_BYTES_ENCODED 686

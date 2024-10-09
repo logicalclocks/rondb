@@ -25,16 +25,17 @@
 #include <list>
 #include <mutex>
 #include <NdbApi.hpp>
+#include <NdbMutex.h>
 
 class RDRSRonDBConnection {
 
  private:
   // this is used when we update the connection, NDB objects etc.
-  std::mutex connectionMutex;
+  NdbMutex *connectionMutex;
   //  this is used togather with connectionMutex to quickly
   //  access simple information such as if the connection is
   //  open or not, if it is in reconnection phase, etc.
-  std::mutex connectionInfoMutex;
+  NdbMutex *connectionInfoMutex;
   RonDB_Stats stats;
 
   Ndb_cluster_connection *ndbConnection;
@@ -56,10 +57,11 @@ class RDRSRonDBConnection {
   std::list<Ndb *> allAvailableNdbObjects;
 
  public:
-  RDRSRonDBConnection(const char *connection_string, unsigned int *node_ids,
-                      unsigned int node_ids_len, unsigned int connection_retries,
+  RDRSRonDBConnection(const char *connection_string,
+                      unsigned int *node_ids,
+                      unsigned int node_ids_len,
+                      unsigned int connection_retries,
                       unsigned int connection_retry_delay_in_sec);
-
   ~RDRSRonDBConnection();
 
   /**
@@ -82,20 +84,19 @@ class RDRSRonDBConnection {
   /**
    * Return resource back to the pool.
    *
-   * @param ndb_object ndb objct
-   * @param status of last operation performed using this ndb object. it can be null
+   * @param ndb_object Ndb object
+   * @param status Status of last operation performed using this ndb object.
+   *        It can be null
    */
   void ReturnNDBObjectToPool(Ndb *ndb_object, RS_Status *status);
 
   /**
    * Get status
-   *
-   * @return RonDB_Stats
    */
-  RonDB_Stats GetStats();
+  void GetStats(RonDB_Stats&);
 
   /**
-   * Starts reconnection therad which calls the ReconnectHandler
+   * Starts reconnection thread which calls the ReconnectHandler
    * Note: This is only made public for testing.
    *
    */

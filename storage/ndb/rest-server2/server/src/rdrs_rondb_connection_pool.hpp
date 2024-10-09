@@ -53,50 +53,61 @@ class RDRSRonDBConnectionPool {
   /**
    * @brief Adds a connection to the RonDB Cluster.
    *
-   * This function allows you to add a connection(s) to a RonDB Cluster. The connection(s) can be
-   * used to read both data and metatdata from RonDB cluster(s)
+   * This function allows you to add a connection(s) to a RonDB Cluster.
+   * The connection(s) can be used to read both data and metatdata from
+   * RonDB cluster(s)
    *
-   * @param connection_string A C-style string representing the connection string.
-   * @param connection_pool_size The size of the connection pool for this connection. Currently you
-   * can have only one connection in the pool.
+   * @param connection_string A C-style string representing the connection
+   *   string.
+   * @param connection_pool_size The size of the connection pool for this
+   *  connection. Currently you can have only one connection in the pool.
    * @param node_ids An array of node IDs to associate with this connection.
    * @param node_ids_len The length of the 'node_ids' array.
-   * @param connection_retries The maximum number of connection retries in case of failure.
-   * @param connection_retry_delay_in_sec The delay in seconds between connection retry attempts.
+   * @param connection_retries The maximum number of connection retries
+   *   in case of failure.
+   * @param connection_retry_delay_in_sec The delay in seconds between
+   *   connection retry attempts.
    *
    * @return RS_Status A struct representing the status of the operation:
    *
    * @note The function will block during connection establishment
    */
-  RS_Status AddConnections(const char *connection_string, unsigned int connection_pool_size,
-                           unsigned int *node_ids, unsigned int node_ids_len,
-                           unsigned int connection_retries,
-                           unsigned int connection_retry_delay_in_sec);
+  RS_Status AddConnections(const char *connection_string,
+                           Uint32 connection_pool_size,
+                           Uint32 *node_ids,
+                           Uint32 node_ids_len,
+                           Uint32 connection_retries,
+                           Uint32 connection_retry_delay_in_sec);
 
   /**
    * @brief Adds a connection to the RonDB Cluster.
    *
-   * This function allows you to add a connection(s) to a RonDB Cluster. These are dedicated
-   * connection(s) for reading metadata. If metadata connection(s) are defined then
-   * the connection added using @ref AddConnection() will only be used for reading data.
+   * This function allows you to add a connection(s) to a RonDB Cluster.
+   * These are dedicated connection(s) for reading metadata. If metadata
+   * connection(s) are defined then the connection added using
+   * @ref AddConnection() will only be used for reading data.
    *
-   * @param connection_string A C-style string representing the connection string.
-   * @param connection_pool_size The size of the connection pool for this connection. Currently you
-   * can have only one connection in the pool.
+   * @param connection_string A C-style string representing the connection
+   *   string.
+   * @param connection_pool_size The size of the connection pool for this
+   *   connection. Currently you can have only one connection in the pool.
    * @param node_ids An array of node IDs to associate with this connection.
    * @param node_ids_len The length of the 'node_ids' array.
-   * @param connection_retries The maximum number of connection retries in case of failure.
-   * @param connection_retry_delay_in_sec The delay in seconds between connection retry attempts.
+   * @param connection_retries The maximum number of connection retries in
+   *   case of failure.
+   * @param connection_retry_delay_in_sec The delay in seconds between
+   *   connection retry attempts.
    *
    * @return RS_Status A struct representing the status of the operation:
    *
    * @note The function will block during connection establishment
    */
-  RS_Status AddMetaConnections(const char *connection_string, unsigned int connection_pool_size,
-                               unsigned int *node_ids, unsigned int node_ids_len,
-                               unsigned int connection_retries,
-                               unsigned int connection_retry_delay_in_sec);
-
+  RS_Status AddMetaConnections(const char *connection_string,
+                                Uint32 connection_pool_size,
+                                Uint32 *node_ids,
+                                Uint32 node_ids_len,
+                                Uint32 connection_retries,
+                                Uint32 connection_retry_delay_in_sec);
   /**
    * @brief Get ndb object for data operation
    *
@@ -148,5 +159,4 @@ class RDRSRonDBConnectionPool {
    */
   RonDB_Stats GetStats();
 };
-
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_RDRS_RONDB_CONNECTION_POOL_

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Hopsworks AB
+ * Copyright (C) 2023, 2024 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -70,30 +70,37 @@ RS_Status find_project_id(const char *feature_store_name, int *project_id);
 
 /**
  * Find feature store ID using the feature store name
- * SELECT id AS feature_store_id FROM feature_store WHERE _name = {feature_store_name}
+ * SELECT id AS feature_store_id FROM feature_store WHERE _name =
+ *   {feature_store_name}
  */
-RS_Status find_feature_store_id(const char *feature_store_name, int *feature_store_id);
+RS_Status find_feature_store_id(const char *feature_store_name,
+                                int *feature_store_id);
 
 /**
  * Find feature view ID using the feature store id
- * SELECT id AS feature_view_id FROM feature_view WHERE name = {feature_view_name} AND version =
+ * SELECT id AS feature_view_id FROM feature_view WHERE name =
+ *   {feature_view_name} AND version =
  * {feature_view_version} AND feature_store_id = {feature_store_id}
  */
-RS_Status find_feature_view_id(int feature_store_id, const char *feature_view_name,
-                               int feature_view_version, int *feature_view_id);
+RS_Status find_feature_view_id(int feature_store_id,
+                               const char *feature_view_name,
+                               int feature_view_version,
+                               int *feature_view_id);
 
 /**
  * Find training dataset join data
- * SELECT id AS td_join_id, feature_group AS feature_group_id, prefix FROM training_dataset_join
+ * SELECT id AS td_join_id, feature_group AS feature_group_id, prefix FROM
+ *   training_dataset_join
  * WHERE feature_view_id = {feature_view_id}
  */
-RS_Status find_training_dataset_join_data(int feature_view_id, Training_Dataset_Join **tdjs,
+RS_Status find_training_dataset_join_data(int feature_view_id,
+                                          Training_Dataset_Join **tdjs,
                                           int *tdjs_size);
 
 /**
  * Find feature group data
- * SELECT name, online_enabled, feature_store_id, version FROM feature_group WHERE id =
- * {feature_group_id}
+ * SELECT name, online_enabled, feature_store_id, version FROM feature_group
+ *   WHERE id = {feature_group_id}
  */
 RS_Status find_feature_group_data(int feature_group_id, Feature_Group *fg);
 
@@ -105,25 +112,31 @@ RS_Status find_feature_store_data(int feature_store_id, char *name);
 
 /**
  * Find training_dataset_feature
- * SELECT * from training_dataset_feature  WHERE feature_view_id = {feature_view_id}
+ * SELECT * from training_dataset_feature
+ *   WHERE feature_view_id = {feature_view_id}
  */
-RS_Status find_training_dataset_data(int feature_view_id, Training_Dataset_Feature **tdf,
+RS_Status find_training_dataset_data(int feature_view_id,
+                                     Training_Dataset_Feature **tdf,
                                      int *tdf_size);
 
 /**
  * Find serving_key_data
  * SELECT * from serving_key  WHERE feature_view_id = {feature_view_id}
  */
-RS_Status find_serving_key_data(int feature_view_id, Serving_Key **serving_keys,
-                                     int *sk_size);
+RS_Status find_serving_key_data(int feature_view_id,
+                                Serving_Key **serving_keys,
+                                int *sk_size);
 
 /**
  * Find schemas
- * SELECT schema_id, version from subjects WHERE project_id = {project_id} AND subject = "{subject_name}" 
+ * SELECT schema_id, version from subjects
+ *   WHERE project_id = {project_id} AND subject = "{subject_name}" 
  * get the schema id of the max version
  * SELECT schema from schemas  WHERE id = {schema_id}
  */
-RS_Status find_feature_group_schema(const char *subject_name, int project_id, char *schema);
+RS_Status find_feature_group_schema(const char *subject_name,
+                                    int project_id,
+                                    char *schema);
 
 #endif
 #ifdef __cplusplus

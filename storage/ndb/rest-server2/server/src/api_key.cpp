@@ -443,6 +443,7 @@ void APIKeyCache::cache_entry_updater(const std::string &apiKey) {
       } else {
         DEB_AUTH("Valid API Key updated: %s", apiKey.c_str());
       }
+      userDBs->m_state = UserDBs::IS_VALID;
       update_record(dbs, userDBs, db_ptrs);
     } else {
       if (first) {
