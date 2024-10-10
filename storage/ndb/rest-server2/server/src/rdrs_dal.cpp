@@ -52,7 +52,7 @@ RS_Status init(unsigned int numThreads) {
 
   // Initialize NDB Connection and Object Pool
   rdrsRonDBConnectionPool = new RDRSRonDBConnectionPool();
-  RS_Status status = rdrsRonDBConnectionPool->Init();
+  RS_Status status = rdrsRonDBConnectionPool->Init(numThreads);
   if (unlikely(status.http_code != SUCCESS)) {
     return status;
   }

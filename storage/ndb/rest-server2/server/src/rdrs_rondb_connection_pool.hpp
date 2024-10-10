@@ -23,10 +23,24 @@
 #include "rdrs_dal.h"
 #include "rdrs_rondb_connection.hpp"
 
+class ThreadContext {
+ public:
+  ThreadContext();
+  ~ThreadContext();
+
+  NdbMutex *m_thread_context_mutex;
+  bool m_is_shutdown;
+  bool m_is_ndb_object_in_use;
+  Ndb *m_ndb_object;
+  void init_thread_context();
+};
+
 class RDRSRonDBConnectionPool {
  private:
   RDRSRonDBConnection *dataConnection;
   RDRSRonDBConnection *metadataConnection;
+  ThreadContext **m_thread_context;
+  Uint32 m_num_threads;
   bool is_shutdown = true;
 
   /**
@@ -48,7 +62,7 @@ class RDRSRonDBConnectionPool {
    * @return RS_Status A struct representing the status of the operation:
    *
    */
-  RS_Status Init();
+  RS_Status Init(Uint32);
 
   /**
    * @brief Adds a connection to the RonDB Cluster.

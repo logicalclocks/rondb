@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Hopsworks AB
+ * Copyright (C) 2023, 2024 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -24,11 +24,28 @@
 
 #include <util/require.h>
 
+ThreadContext::ThreadContext() {
+  m_thread_context_mutex = NdbMutex_Create();
+  require(m_thread_context_mutex);
+  m_is_shutdown = false;
+  m_is_ndb_object_in_use = false;
+  m_ndb_object = nullptr;
+}
+
+ThreadContext::~ThreadContext() {
+  NdbMutex_Destroy(m_thread_context_mutex);
+}
+
 RDRSRonDBConnectionPool::RDRSRonDBConnectionPool() {
   is_shutdown = false;
+  m_num_threads = 0;
 }
 
 RDRSRonDBConnectionPool::~RDRSRonDBConnectionPool() {
+  for (Uint32 i = 0; i < m_num_threads; i++) {
+    delete m_thread_context[i];
+  }
+  free(m_thread_context);
   delete dataConnection;
   delete metadataConnection;
   dataConnection = nullptr;
@@ -45,7 +62,13 @@ RS_Status RDRSRonDBConnectionPool::Check() {
   return RS_OK;
 }
 
-RS_Status RDRSRonDBConnectionPool::Init() {
+RS_Status RDRSRonDBConnectionPool::Init(Uint32 numThreads) {
+  m_num_threads = numThreads;
+  m_thread_context = (ThreadContext**)malloc(sizeof(ThreadContext*) * m_num_threads);
+  for (Uint32 i = 0; i < numThreads; i++) {
+    m_thread_context[i] = new ThreadContext();
+    require(m_thread_context[i]);
+  }
   return RS_OK;
 }
 
