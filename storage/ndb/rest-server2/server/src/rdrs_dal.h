@@ -91,7 +91,7 @@ typedef struct RonDB_Stats {
 /**
  * Initialize RonDB Client API
  */
-RS_Status init(unsigned numThreads);
+RS_Status init(unsigned numThreads, unsigned int num_data_connections);
 
 /**
  * Connect to RonDB Cluster

@@ -110,11 +110,13 @@ CLASS
  PROBLEM(Mgmds.empty(), "at least one Management server has to be defined")
  PROBLEM(Mgmds.size() > 1,
  "we do not support specifying more than one Management server yet")
+/* TODO Fix better checks here
  PROBLEM(connectionPoolSize != 1,
  "wrong connection pool size. Currently only 1 RonDB connection is supported")
  PROBLEM(nodeIDs.size() != connectionPoolSize,
  "wrong number of NodeIDs. The number of node ids must match the connection"
  " pool size")
+*/
  CLASSDEFS
  (
   bool present_in_config_file = false;

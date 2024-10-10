@@ -46,13 +46,14 @@
 
 RDRSRonDBConnectionPool *rdrsRonDBConnectionPool = nullptr;
 
-RS_Status init(unsigned int numThreads) {
+RS_Status init(unsigned int numThreads, unsigned int num_data_connections) {
   // disable buffered stdout
   setbuf(stdout, NULL);
 
   // Initialize NDB Connection and Object Pool
   rdrsRonDBConnectionPool = new RDRSRonDBConnectionPool();
-  RS_Status status = rdrsRonDBConnectionPool->Init(numThreads);
+  RS_Status status = rdrsRonDBConnectionPool->Init(numThreads,
+                                                   num_data_connections);
   if (unlikely(status.http_code != SUCCESS)) {
     return status;
   }

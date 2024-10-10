@@ -37,20 +37,12 @@ class alignas(64) ThreadContext {
 
 class RDRSRonDBConnectionPool {
  private:
-  RDRSRonDBConnection *dataConnection;
+  RDRSRonDBConnection **dataConnections;
   RDRSRonDBConnection *metadataConnection;
   ThreadContext **m_thread_context;
   Uint32 m_num_threads;
+  Uint32 m_num_data_connections;
   bool is_shutdown = true;
-
-  /**
-   * @brief Checks that the connections are initialized and
-   * shutdown has not been called
-   *
-   * @return RS_Status A struct representing the status of the operation:
-   *
-   */
-  RS_Status Check();
 
  public:
   RDRSRonDBConnectionPool();
@@ -62,7 +54,7 @@ class RDRSRonDBConnectionPool {
    * @return RS_Status A struct representing the status of the operation:
    *
    */
-  RS_Status Init(Uint32);
+  RS_Status Init(Uint32, Uint32);
 
   /**
    * @brief Adds a connection to the RonDB Cluster.

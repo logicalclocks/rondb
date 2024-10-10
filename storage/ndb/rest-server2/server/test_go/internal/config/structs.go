@@ -205,17 +205,6 @@ func (r *RonDB) Validate() error {
 			return err
 		}
 	}
-
-	if r.ConnectionPoolSize < 1 || r.ConnectionPoolSize > 1 {
-		return errors.New("wrong connection pool size. Currently only single RonDB connection is supported")
-	}
-
-	if r.NodeIDs != nil && len(r.NodeIDs) != 0 && len(r.NodeIDs) != int(r.ConnectionPoolSize) {
-		return errors.New("wrong number of NodeIDs. The number of node ids must match the connection pool size")
-	} else if r.NodeIDs == nil || len(r.NodeIDs) == 0 {
-		r.NodeIDs = []uint32{uint32(0)}
-	}
-
 	return nil
 }
 

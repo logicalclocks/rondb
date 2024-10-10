@@ -29,7 +29,7 @@ RS_Status RonDBConnection::init_rondb_connection(RonDB &rondbDataCluster,
                                                  Uint32 numThreads) noexcept {
   // init RonDB client API
 
-  RS_Status ret = init(numThreads);
+  RS_Status ret = init(numThreads, rondbDataCluster.connectionPoolSize);
   if (static_cast<drogon::HttpStatusCode>(ret.http_code) !=
         drogon::HttpStatusCode::k200OK) {
     return ret;

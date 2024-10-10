@@ -73,7 +73,7 @@ func BenchmarkSimple(b *testing.B) {
 
 	b.ResetTimer()
 	start := time.Now()
-	runtime.GOMAXPROCS(8)
+	runtime.GOMAXPROCS(7)
 
 	/*
 		Assuming GOMAXPROCS is not set, a 10-core CPU

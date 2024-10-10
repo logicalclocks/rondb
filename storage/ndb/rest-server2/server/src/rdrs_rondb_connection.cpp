@@ -32,12 +32,10 @@
 #include <util/require.h>
 
 RDRSRonDBConnection::RDRSRonDBConnection(const char *connection_string,
-                                         Uint32 *node_ids,
-                                         Uint32 node_ids_len,
+                                         Uint32 node_id,
                                          Uint32 connection_retries,
                                          Uint32 connection_retry_delay_in_sec) {
 
-  require(node_ids_len == 1);
   // __instance = new RDRSRonDBConnection();
 
   connectionMutex = NdbMutex_Create();
@@ -58,12 +56,7 @@ RDRSRonDBConnection::RDRSRonDBConnection(const char *connection_string,
                connection_string,
                connection_string_len + 1);
   this->connection_string[connection_string_len] = '\0';
-
-  this->node_ids =
-    reinterpret_cast<Uint32 *>(malloc(node_ids_len * sizeof(Uint32)));
-  memcpy(this->node_ids, node_ids, node_ids_len * sizeof(Uint32));
-  this->node_ids_len = node_ids_len;
-
+  this->m_node_id = node_id;
   this->connection_retries = connection_retries;
   this->connection_retry_delay_in_sec = connection_retry_delay_in_sec;
 
@@ -87,7 +80,7 @@ RS_Status RDRSRonDBConnection::Connect() {
     NdbMutex_Lock(connectionMutex);
     require(ndbConnection == nullptr);
     int retCode = 0;
-    ndbConnection = new Ndb_cluster_connection(connection_string, node_ids[0]);
+    ndbConnection = new Ndb_cluster_connection(connection_string, m_node_id);
     retCode = ndbConnection->connect(connection_retries,
                                      connection_retry_delay_in_sec,
                                      0);
@@ -304,7 +297,6 @@ RS_Status RDRSRonDBConnection::Shutdown(bool end) {
       stats.is_shutdown = true;
       stats.is_shutting_down = false;
       free(connection_string);
-      free(node_ids);
       if (reconnectionThread != nullptr) {
         NdbThread_Destroy(&reconnectionThread);
         reconnectionThread = nullptr;

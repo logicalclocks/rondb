@@ -40,8 +40,7 @@ class RDRSRonDBConnection {
 
   Ndb_cluster_connection *ndbConnection;
   char *connection_string;
-  Uint32 *node_ids;
-  Uint32 node_ids_len;
+  Uint32 m_node_id;
   Uint32 connection_retries;
   Uint32 connection_retry_delay_in_sec;
   struct NdbThread *reconnectionThread;
@@ -58,10 +57,9 @@ class RDRSRonDBConnection {
 
  public:
   RDRSRonDBConnection(const char *connection_string,
-                      unsigned int *node_ids,
-                      unsigned int node_ids_len,
-                      unsigned int connection_retries,
-                      unsigned int connection_retry_delay_in_sec);
+                      Uint32 node_id,
+                      Uint32 connection_retries,
+                      Uint32 connection_retry_delay_in_sec);
   ~RDRSRonDBConnection();
 
   /**
