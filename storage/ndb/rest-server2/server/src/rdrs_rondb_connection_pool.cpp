@@ -42,15 +42,30 @@ RDRSRonDBConnectionPool::RDRSRonDBConnectionPool() {
 }
 
 RDRSRonDBConnectionPool::~RDRSRonDBConnectionPool() {
+  is_shutdown = true;
   for (Uint32 i = 0; i < m_num_threads; i++) {
-    delete m_thread_context[i];
+    ThreadContext *thread_context = m_thread_context[i];
+    NdbMutex_Lock(thread_context->m_thread_context_mutex);
+    thread_context->m_is_shutdown = true;
+    Ndb *ndb_object = thread_context->m_ndb_object;
+    if (thread_context->m_is_ndb_object_in_use == false &&
+        ndb_object != nullptr) {
+      thread_context->m_ndb_object = nullptr;
+      NdbMutex_Unlock(thread_context->m_thread_context_mutex);
+      RS_Status status;
+      dataConnection->ReturnNDBObjectToPool(ndb_object, &status);
+    } else {
+      NdbMutex_Unlock(thread_context->m_thread_context_mutex);
+    }
   }
-  free(m_thread_context);
   delete dataConnection;
   delete metadataConnection;
   dataConnection = nullptr;
   metadataConnection = nullptr;
-  is_shutdown = true;
+  for (Uint32 i = 0; i < m_num_threads; i++) {
+    delete m_thread_context[i];
+  }
+  free(m_thread_context);
 }
 
 RS_Status RDRSRonDBConnectionPool::Check() {
@@ -120,13 +135,56 @@ RS_Status RDRSRonDBConnectionPool::GetNdbObject(Ndb **ndb_object,
   if (unlikely(status.http_code != SUCCESS)) {
     return status;
   }
-  return dataConnection->GetNdbObject(ndb_object, threadIndex);
+  ThreadContext *thread_context = m_thread_context[threadIndex];
+  require(threadIndex < m_num_threads);
+  NdbMutex_Lock(thread_context->m_thread_context_mutex);
+  if (likely(thread_context->m_is_shutdown == false &&
+             thread_context->m_is_ndb_object_in_use == false &&
+             thread_context->m_ndb_object != nullptr)) {
+    /**
+     * This is by far the most common path through the code. We are not
+     * shutting down, the Ndb object isn't in use and it exists. We only
+     * allocate the Ndb object normally on the first interaction.
+     */
+    *ndb_object = thread_context->m_ndb_object;
+    thread_context->m_is_ndb_object_in_use = true;
+    NdbMutex_Unlock(m_thread_context[threadIndex]->m_thread_context_mutex);
+    return RS_OK;
+  }
+  require(thread_context->m_is_ndb_object_in_use == false);
+  if (thread_context->m_is_shutdown) {
+    NdbMutex_Unlock(thread_context->m_thread_context_mutex);
+    return RS_SERVER_ERROR(ERROR_034);
+  }
+  NdbMutex_Unlock(thread_context->m_thread_context_mutex);
+  status = dataConnection->GetNdbObject(ndb_object);
+  if (unlikely(status.http_code != SUCCESS)) {
+    return status;
+  }
+  NdbMutex_Lock(thread_context->m_thread_context_mutex);
+  thread_context->m_ndb_object = *ndb_object;
+  thread_context->m_is_ndb_object_in_use = true;
+  NdbMutex_Unlock(thread_context->m_thread_context_mutex);
+  return RS_OK;
 }
 
 RS_Status RDRSRonDBConnectionPool::ReturnNdbObject(Ndb *ndb_object,
                                                    RS_Status *status,
                                                    Uint32 threadIndex) {
-  dataConnection->ReturnNDBObjectToPool(ndb_object, status, threadIndex);
+  ThreadContext *thread_context = m_thread_context[threadIndex];
+  NdbMutex_Lock(thread_context->m_thread_context_mutex);
+  if (thread_context->m_is_shutdown == false) {
+    require(ndb_object == thread_context->m_ndb_object);
+    require(thread_context->m_is_ndb_object_in_use);
+    thread_context->m_is_ndb_object_in_use = false;
+    NdbMutex_Unlock(thread_context->m_thread_context_mutex);
+    return RS_OK;
+  }
+  /* We are shutting down, return the Ndb object */
+  thread_context->m_is_ndb_object_in_use = false;
+  thread_context->m_ndb_object = nullptr;
+  NdbMutex_Unlock(thread_context->m_thread_context_mutex);
+  dataConnection->ReturnNDBObjectToPool(ndb_object, status);
   return RS_OK;
 }
 
@@ -135,13 +193,13 @@ RS_Status RDRSRonDBConnectionPool::GetMetadataNdbObject(Ndb **ndb_object) {
   if (unlikely(s.http_code != SUCCESS)) {
     return s;
   }
-  RS_Status status = metadataConnection->GetNdbObject(ndb_object, 0);
+  RS_Status status = metadataConnection->GetNdbObject(ndb_object);
   return status;
 }
 
 RS_Status RDRSRonDBConnectionPool::ReturnMetadataNdbObject(Ndb *ndb_object,
                                                            RS_Status *status) {
-  metadataConnection->ReturnNDBObjectToPool(ndb_object, status, 0);
+  metadataConnection->ReturnNDBObjectToPool(ndb_object, status);
   return RS_OK;
 }
 

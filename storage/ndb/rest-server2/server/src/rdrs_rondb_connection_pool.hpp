@@ -23,7 +23,7 @@
 #include "rdrs_dal.h"
 #include "rdrs_rondb_connection.hpp"
 
-class ThreadContext {
+class alignas(64) ThreadContext {
  public:
   ThreadContext();
   ~ThreadContext();
