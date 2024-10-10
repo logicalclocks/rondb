@@ -237,7 +237,10 @@ void BatchFeatureStoreCtrl::batch_featureStore(
       reqBuffs[i].size = *length_ptr_casted;
     }
     // pk_batch_read
-    status = pk_batch_read(noOps, reqBuffs.data(), respBuffs.data());
+    status = pk_batch_read(noOps,
+                           reqBuffs.data(),
+                           respBuffs.data(),
+                           currentThreadIndex);
     if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
                    drogon::HttpStatusCode::k200OK)) {
       auto fsError = TranslateRonDbError(status.http_code, status.message);

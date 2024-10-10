@@ -25,10 +25,11 @@
 #include <drogon/HttpTypes.h>
 
 RS_Status RonDBConnection::init_rondb_connection(RonDB &rondbDataCluster,
-                                                 RonDB &rondbMetaDataCluster) noexcept {
+                                                 RonDB &rondbMetaDataCluster,
+                                                 Uint32 numThreads) noexcept {
   // init RonDB client API
 
-  RS_Status ret = init();
+  RS_Status ret = init(numThreads);
   if (static_cast<drogon::HttpStatusCode>(ret.http_code) != drogon::HttpStatusCode::k200OK)
     return ret;
 

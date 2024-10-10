@@ -46,7 +46,7 @@
 
 RDRSRonDBConnectionPool *rdrsRonDBConnectionPool = nullptr;
 
-RS_Status init() {
+RS_Status init(unsigned int numThreads) {
   // disable buffered stdout
   setbuf(stdout, NULL);
 
@@ -130,9 +130,12 @@ RS_Status reconnect() {
   return rdrsRonDBConnectionPool->Reconnect();
 }
 
-RS_Status pk_read(RS_Buffer *reqBuff, RS_Buffer *respBuff) {
+RS_Status pk_read(RS_Buffer *reqBuff,
+                  RS_Buffer *respBuff,
+                  unsigned int threadIndex) {
   Ndb *ndb_object  = nullptr;
-  RS_Status status = rdrsRonDBConnectionPool->GetNdbObject(&ndb_object);
+  RS_Status status = rdrsRonDBConnectionPool->GetNdbObject(&ndb_object,
+                                                           threadIndex);
   if (unlikely(status.http_code != SUCCESS)) {
     return status;
   }
@@ -140,15 +143,19 @@ RS_Status pk_read(RS_Buffer *reqBuff, RS_Buffer *respBuff) {
       PKROperation pkread(reqBuff, respBuff, ndb_object);
       status = pkread.PerformOperation();
   )
-  rdrsRonDBConnectionPool->ReturnNdbObject(ndb_object, &status);
+  rdrsRonDBConnectionPool->ReturnNdbObject(ndb_object,
+                                           &status,
+                                           threadIndex);
   return status;
 }
 
 RS_Status pk_batch_read(unsigned int no_req,
                         RS_Buffer *req_buffs,
-                        RS_Buffer *resp_buffs) {
+                        RS_Buffer *resp_buffs,
+                        unsigned int threadIndex) {
   Ndb *ndb_object  = nullptr;
-  RS_Status status = rdrsRonDBConnectionPool->GetNdbObject(&ndb_object);
+  RS_Status status = rdrsRonDBConnectionPool->GetNdbObject(&ndb_object,
+                                                           threadIndex);
   if (unlikely(status.http_code != SUCCESS)) {
     return status;
   }
@@ -156,14 +163,19 @@ RS_Status pk_batch_read(unsigned int no_req,
       PKROperation pkread(no_req, req_buffs, resp_buffs, ndb_object);
       status = pkread.PerformOperation();
   )
-  rdrsRonDBConnectionPool->ReturnNdbObject(ndb_object, &status);
+  rdrsRonDBConnectionPool->ReturnNdbObject(ndb_object,
+                                           &status,
+                                           threadIndex);
   return status;
 }
 
-RS_Status ronsql_dal(const char* database, RonSQLExecParams* ep) {
+RS_Status ronsql_dal(const char* database,
+                     RonSQLExecParams* ep,
+                     unsigned int threadIndex) {
   assert(ep != nullptr);
   Ndb *ndb_object  = nullptr;
-  RS_Status status = rdrsRonDBConnectionPool->GetNdbObject(&ndb_object);
+  RS_Status status = rdrsRonDBConnectionPool->GetNdbObject(&ndb_object,
+                                                           threadIndex);
   if (unlikely(status.http_code != SUCCESS)) {
     return status;
   }
@@ -176,7 +188,9 @@ RS_Status ronsql_dal(const char* database, RonSQLExecParams* ep) {
   status = ronsql_op(*ep);
   ndb_object->setDatabaseName(saved_database_name);
   ep->ndb = NULL;
-  rdrsRonDBConnectionPool->ReturnNdbObject(ndb_object, &status);
+  rdrsRonDBConnectionPool->ReturnNdbObject(ndb_object,
+                                           &status,
+                                           threadIndex);
   return status;
 }
 

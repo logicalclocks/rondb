@@ -112,19 +112,24 @@ class RDRSRonDBConnectionPool {
    * @brief Get ndb object for data operation
    *
    * @param ndb_object Ndb object
+   * @param threadIndex Thread to use the Ndb object
    *
    * @return RS_Status A struct representing the status of the operation:
    */
-  RS_Status GetNdbObject(Ndb **ndb_object);
+  RS_Status GetNdbObject(Ndb **ndb_object,
+                         Uint32 threadIndex);
 
   /**
    * @brief Return NDB Object back to the pool
    *
    * @param ndb_object Ndb object
+   * @param threadIndex Thread that used the Ndb object
    *
    * @return RS_Status A struct representing the status of the operation:
    */
-  RS_Status ReturnNdbObject(Ndb *ndb_object, RS_Status *status);
+  RS_Status ReturnNdbObject(Ndb *ndb_object,
+                            RS_Status *status,
+                            Uint32 threadIndex);
 
   /**
    * @brief Get ndb object for metadata operation

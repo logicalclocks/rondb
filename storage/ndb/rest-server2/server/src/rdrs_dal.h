@@ -91,7 +91,7 @@ typedef struct RonDB_Stats {
 /**
  * Initialize RonDB Client API
  */
-RS_Status init();
+RS_Status init(unsigned numThreads);
 
 /**
  * Connect to RonDB Cluster
@@ -141,14 +141,17 @@ RS_Status reconnect();
 /**
  * Primary key read operation
  */
-RS_Status pk_read(RS_Buffer *reqBuff, RS_Buffer *respBuff);
+RS_Status pk_read(RS_Buffer *reqBuff,
+                  RS_Buffer *respBuff,
+                  unsigned int threadIndex);
 
 /**
  * Batched primary key read operation
  */
 RS_Status pk_batch_read(unsigned int no_req,
                         RS_Buffer *req_buffs,
-                        RS_Buffer *resp_buffs);
+                        RS_Buffer *resp_buffs,
+                        unsigned int threadIndex);
 
 /**
  * RonSQL query
@@ -158,7 +161,9 @@ struct RonSQLExecParams; /*
                              * "storage/ndb/src/ronsql/RonSQLCommon.hpp" but we
                              * can't include a .hpp file here.
                              */
-RS_Status ronsql_dal(const char* database, struct RonSQLExecParams*);
+RS_Status ronsql_dal(const char* database,
+                     struct RonSQLExecParams*,
+                     unsigned int threadIndex);
 
 /**
  * Returns statistis about RonDB connection

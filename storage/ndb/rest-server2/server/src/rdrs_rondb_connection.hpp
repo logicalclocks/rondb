@@ -77,18 +77,23 @@ class RDRSRonDBConnection {
    * New NDB object will be created if all
    * existing NDB Objects are in use
    *
+   * @param threadIndex Thread to use the Ndb object
+   *
    * @return Status and NDB object
    */
-  RS_Status GetNdbObject(Ndb **ndb_object);
+  RS_Status GetNdbObject(Ndb **ndb_object, Uint32 threadIndex);
 
   /**
    * Return resource back to the pool.
    *
    * @param ndb_object Ndb object
+   * @param threadIndex Thread that used the Ndb object
    * @param status Status of last operation performed using this ndb object.
    *        It can be null
    */
-  void ReturnNDBObjectToPool(Ndb *ndb_object, RS_Status *status);
+  void ReturnNDBObjectToPool(Ndb *ndb_object,
+                             RS_Status *status,
+                             Uint32 threadIndex);
 
   /**
    * Get status

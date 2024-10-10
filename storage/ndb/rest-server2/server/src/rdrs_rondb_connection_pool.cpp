@@ -91,17 +91,19 @@ RS_Status RDRSRonDBConnectionPool::AddMetaConnections(
   return RS_OK;
 }
 
-RS_Status RDRSRonDBConnectionPool::GetNdbObject(Ndb **ndb_object) {
+RS_Status RDRSRonDBConnectionPool::GetNdbObject(Ndb **ndb_object,
+                                                Uint32 threadIndex) {
   RS_Status status = Check();
   if (unlikely(status.http_code != SUCCESS)) {
     return status;
   }
-  return dataConnection->GetNdbObject(ndb_object);
+  return dataConnection->GetNdbObject(ndb_object, threadIndex);
 }
 
 RS_Status RDRSRonDBConnectionPool::ReturnNdbObject(Ndb *ndb_object,
-                                                   RS_Status *status) {
-  dataConnection->ReturnNDBObjectToPool(ndb_object, status);
+                                                   RS_Status *status,
+                                                   Uint32 threadIndex) {
+  dataConnection->ReturnNDBObjectToPool(ndb_object, status, threadIndex);
   return RS_OK;
 }
 
@@ -110,13 +112,13 @@ RS_Status RDRSRonDBConnectionPool::GetMetadataNdbObject(Ndb **ndb_object) {
   if (unlikely(s.http_code != SUCCESS)) {
     return s;
   }
-  RS_Status status = metadataConnection->GetNdbObject(ndb_object);
+  RS_Status status = metadataConnection->GetNdbObject(ndb_object, 0);
   return status;
 }
 
 RS_Status RDRSRonDBConnectionPool::ReturnMetadataNdbObject(Ndb *ndb_object,
                                                            RS_Status *status) {
-  metadataConnection->ReturnNDBObjectToPool(ndb_object, status);
+  metadataConnection->ReturnNDBObjectToPool(ndb_object, status, 0);
   return RS_OK;
 }
 

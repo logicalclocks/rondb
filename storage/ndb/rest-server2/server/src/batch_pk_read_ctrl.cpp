@@ -217,7 +217,10 @@ void BatchPKReadCtrl::batchPKRead(
     }
 
     // pk_batch_read
-    status = pk_batch_read(noOps, reqBuffs.data(), respBuffs.data());
+    status = pk_batch_read(noOps,
+                           reqBuffs.data(),
+                           respBuffs.data(),
+                           currentThreadIndex);
 
     resp->setStatusCode(static_cast<drogon::HttpStatusCode>(status.http_code));
 

@@ -707,7 +707,10 @@ void FeatureStoreCtrl::featureStore(
     }
     // pk_batch_read
     DEB_FS_CTRL("Perform Batch PK Read for Feature Store request");
-    status = pk_batch_read(noOps, reqBuffs.data(), respBuffs.data());
+    status = pk_batch_read(noOps,
+                           reqBuffs.data(),
+                           respBuffs.data(),
+                           currentThreadIndex);
     if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
                    drogon::HttpStatusCode::k200OK)) {
       auto fsError = TranslateRonDbError(status.http_code, status.message);

@@ -40,8 +40,10 @@ extern EventLogger *g_eventLogger;
 
 using std::endl;
 
-void RonSQLCtrl::ronsql(const drogon::HttpRequestPtr &req,
-                        std::function<void(const drogon::HttpResponsePtr &)> &&callback) {
+void RonSQLCtrl::ronsql(
+  const drogon::HttpRequestPtr &req,
+  std::function<void(const drogon::HttpResponsePtr &)> &&callback) {
+
   size_t currentThreadIndex = drogon::app().getCurrentThreadIndex();
   auto resp = drogon::HttpResponse::newHttpResponse();
   if (currentThreadIndex >= globalConfigs.rest.numThreads) {
@@ -74,7 +76,8 @@ void RonSQLCtrl::ronsql(const drogon::HttpRequestPtr &req,
         globalConfigs.internal.reqBufferSize + simdjson::SIMDJSON_PADDING),
       reqStruct);
 
-  if (static_cast<drogon::HttpStatusCode>(status.http_code) != drogon::HttpStatusCode::k200OK) {
+  if (static_cast<drogon::HttpStatusCode>(status.http_code) !=
+        drogon::HttpStatusCode::k200OK) {
     resp->setBody(std::string(status.message));
     resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
     callback(resp);
@@ -86,7 +89,8 @@ void RonSQLCtrl::ronsql(const drogon::HttpRequestPtr &req,
 
   std::string_view& database = reqStruct.database;
   status = ronsql_validate_database_name(database);
-  if (static_cast<drogon::HttpStatusCode>(status.http_code) != drogon::HttpStatusCode::k200OK) {
+  if (static_cast<drogon::HttpStatusCode>(status.http_code) !=
+        drogon::HttpStatusCode::k200OK) {
     resp->setBody(std::string(status.message));
     resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
     callback(resp);
@@ -115,25 +119,31 @@ void RonSQLCtrl::ronsql(const drogon::HttpRequestPtr &req,
                                            &err_stream,
                                            &aalloc,
                                            &do_explain);
-  if (static_cast<drogon::HttpStatusCode>(status.http_code) != drogon::HttpStatusCode::k200OK) {
+  if (static_cast<drogon::HttpStatusCode>(status.http_code) !=
+        drogon::HttpStatusCode::k200OK) {
     resp->setBody(std::string(status.message));
     resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
     callback(resp);
     return;
   }
 
-  bool json_output = params.output_format == RonSQLExecParams::OutputFormat::JSON ||
-                     params.output_format == RonSQLExecParams::OutputFormat::JSON_ASCII;
+  bool json_output = params.output_format ==
+                       RonSQLExecParams::OutputFormat::JSON ||
+                     params.output_format ==
+                       RonSQLExecParams::OutputFormat::JSON_ASCII;
   if (json_output) {
     if (reqStruct.operationId.empty()) {
       out_stream << "{\"data\":\n";
     }
     else {
-      out_stream << "{\"operationId\": \"" << reqStruct.operationId << "\",\n\"data\":\n";
+      out_stream << "{\"operationId\": \"" << reqStruct.operationId
+                 << "\",\n\"data\":\n";
     }
   }
 
-  status = ronsql_dal(database.data(), &params);
+  status = ronsql_dal(database.data(),
+                      &params,
+                      currentThreadIndex);
 
   if (json_output) {
     out_stream << "}\n";
@@ -145,7 +155,8 @@ void RonSQLCtrl::ronsql(const drogon::HttpRequestPtr &req,
   bool hasOut = !out_str.empty();
   bool hasErr = !err_str.empty();
 #endif
-  if (static_cast<drogon::HttpStatusCode>(status.http_code) == drogon::HttpStatusCode::k200OK) {
+  if (static_cast<drogon::HttpStatusCode>(status.http_code) ==
+        drogon::HttpStatusCode::k200OK) {
     assert(!hasErr);
     assert(hasOut);
     switch (params.output_format) {
@@ -198,14 +209,16 @@ void RonSQLCtrl::ronsql(const drogon::HttpRequestPtr &req,
          * parameter definitions from the specification for the text/csv media
          * type [2] instead.
          *
-         * [1] https://www.iana.org/assignments/media-types/text/tab-separated-values
+   * [1] https://www.iana.org/assignments/media-types/text/tab-separated-values
          * [2] https://www.iana.org/assignments/media-types/text/csv
          */
         resp->setContentTypeCodeAndCustomString
           (drogon::CT_CUSTOM,
            params.output_format == RonSQLExecParams::OutputFormat::TEXT
-           ? "content-type: text/tab-separated-values; charset=utf-8; header=present\r\n"
-           : "content-type: text/tab-separated-values; charset=utf-8; header=absent\r\n"
+           ? "content-type: text/tab-separated-values; charset=utf-8;"
+             " header=present\r\n"
+           : "content-type: text/tab-separated-values; charset=utf-8;"
+             " header=absent\r\n"
            );
       }
       break;
@@ -229,21 +242,25 @@ RS_Status ronsql_validate_database_name(std::string_view& database) {
   RS_Status status = validate_db_identifier(database);
   if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
     if (status.code == ERROR_CODE_EMPTY_IDENTIFIER) {
-      return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                        ERROR_CODE_EMPTY_IDENTIFIER,
-                        ERROR_049).status;
+      return CRS_Status(static_cast<HTTP_CODE>(
+        drogon::HttpStatusCode::k400BadRequest),
+        ERROR_CODE_EMPTY_IDENTIFIER,
+        ERROR_049).status;
     }
     if (status.code == ERROR_CODE_IDENTIFIER_TOO_LONG) {
-      return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                        ERROR_CODE_MAX_DB, ERROR_050).status;
+      return CRS_Status(static_cast<HTTP_CODE>(
+        drogon::HttpStatusCode::k400BadRequest),
+        ERROR_CODE_MAX_DB, ERROR_050).status;
     }
     if (status.code == ERROR_CODE_INVALID_IDENTIFIER) {
-      return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                        ERROR_CODE_INVALID_IDENTIFIER, ERROR_051).status;
+      return CRS_Status(static_cast<HTTP_CODE>(
+        drogon::HttpStatusCode::k400BadRequest),
+        ERROR_CODE_INVALID_IDENTIFIER, ERROR_051).status;
     }
-    return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                      ERROR_CODE_INVALID_DB_NAME,
-                      (std::string(ERROR_051) + "; error: " + status.message).c_str()).status;
+    return CRS_Status(static_cast<HTTP_CODE>(
+      drogon::HttpStatusCode::k400BadRequest),
+      ERROR_CODE_INVALID_DB_NAME,
+      (std::string(ERROR_051) + "; error: " + status.message).c_str()).status;
   }
   return RS_OK;
 }
@@ -256,9 +273,11 @@ RS_Status ronsql_validate_and_init_params(RonSQLParams& req,
                                           bool* do_explain) {
   // req.query -> ep.sql_buffer and ep.sql_len
   assert(aalloc != NULL);
-  ep.sql_len = req.query.length(); // todo-ronsql what if length is not in bytes?
+  // todo-ronsql what if length is not in bytes?
+  ep.sql_len = req.query.length();
   assert(ep.sql_buffer == NULL);
-  ep.sql_buffer = aalloc->alloc<char>(ep.sql_len + 2); // todo-ronsql catch OOM exception
+  // todo-ronsql catch OOM exception
+  ep.sql_buffer = aalloc->alloc<char>(ep.sql_len + 2);
   memcpy(ep.sql_buffer, req.query.c_str(), req.query.length());
   ep.sql_buffer[ep.sql_len++] = '\0';
   ep.sql_buffer[ep.sql_len++] = '\0';
@@ -310,16 +329,20 @@ RS_Status ronsql_validate_and_init_params(RonSQLParams& req,
   ep.err_stream = err_stream;
   // req.operationId -> ep.operation_id
   RS_Status status = validate_operation_id(req.operationId);
-  if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
-    return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                      ERROR_CODE_INVALID_OPERATION_ID,
-                      (std::string(ERROR_055) + "; error: " + status.message).c_str()).status;
+  if (status.http_code !=
+        static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+    return CRS_Status(static_cast<HTTP_CODE>(
+      drogon::HttpStatusCode::k400BadRequest),
+      ERROR_CODE_INVALID_OPERATION_ID,
+      (std::string(ERROR_055) + "; error: " + status.message).c_str()).status;
   if (!req.operationId.empty()) {
     ep.operation_id = req.operationId.c_str();
     if (ep.output_format == RonSQLExecParams::OutputFormat::TEXT)
-      return RS_CLIENT_ERROR("operationId not supported with output format TEXT");
+      return RS_CLIENT_ERROR(
+        "operationId not supported with output format TEXT");
     if (ep.output_format == RonSQLExecParams::OutputFormat::TEXT_NOHEADER)
-      return RS_CLIENT_ERROR("operationId not supported with output format TEXT_NOHEADER");
+      return RS_CLIENT_ERROR(
+        "operationId not supported with output format TEXT_NOHEADER");
   }
   // do_explain -> ep.do_explain
   assert(do_explain != NULL);

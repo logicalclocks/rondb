@@ -124,7 +124,8 @@ RDRSRonDBConnection::~RDRSRonDBConnection() {
   NdbMutex_Destroy(connectionInfoMutex);
 }
 
-RS_Status RDRSRonDBConnection::GetNdbObject(Ndb **ndb_object) {
+RS_Status RDRSRonDBConnection::GetNdbObject(Ndb **ndb_object,
+                                            Uint32 threadIndex) {
 
   {
     bool is_shutdown;
@@ -182,7 +183,8 @@ RS_Status RDRSRonDBConnection::GetNdbObject(Ndb **ndb_object) {
 }
 
 void RDRSRonDBConnection::ReturnNDBObjectToPool(Ndb *ndb_object,
-                                                RS_Status *status) {
+                                                RS_Status *status,
+                                                Uint32 threadIndex) {
   {
     NdbMutex_Lock(connectionMutex);
     availableNdbObjects.push_back(ndb_object);
