@@ -36,7 +36,7 @@ class RonSQLCtrl : public drogon::HttpController<RonSQLCtrl> {
                      std::function<void(const drogon::HttpResponsePtr &)> &&callback);
 };
 
-RS_Status ronsql_validate_database_name(std::string_view& database);
+RS_Status ronsql_validate_database_name(std::string& database);
 
 RS_Status ronsql_validate_and_init_params(RonSQLParams& input,
                                           RonSQLExecParams& ep,
