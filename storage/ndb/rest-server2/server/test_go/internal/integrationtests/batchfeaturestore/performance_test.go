@@ -22,7 +22,6 @@ import (
 	"math/rand"
 	"net/http"
 	"testing"
-        "sync/atomic"
 
 	"hopsworks.ai/rdrs2/internal/config"
 	"hopsworks.ai/rdrs2/internal/integrationtests/testclient"

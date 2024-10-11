@@ -26,7 +26,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-        "sync/atomic"
 
 	"hopsworks.ai/rdrs2/internal/config"
 	"hopsworks.ai/rdrs2/internal/log"
@@ -79,8 +78,8 @@ func RunRestTemplate(b *testing.B, method, url string, reqs *[]string, numReques
 			}
 			resp.Body.Close()
                         count := ops.Add(1)
-                        if count % 400000 == 0 {
-                                tempTotalBatches := 400000
+                        if count % 200000 == 0 {
+                                tempTotalBatches := 200000
                                 tempBatchesPerSecond := float64(tempTotalBatches) / time.Since(last).Seconds()
                                 b.Logf("Throughput:                 %f batches/second", tempBatchesPerSecond)
                                 last = time.Now()
