@@ -36,8 +36,6 @@ RDRSRonDBConnection::RDRSRonDBConnection(const char *connection_string,
                                          Uint32 connection_retries,
                                          Uint32 connection_retry_delay_in_sec) {
 
-  // __instance = new RDRSRonDBConnection();
-
   connectionMutex = NdbMutex_Create();
   connectionInfoMutex = NdbMutex_Create();
   stats.ndb_objects_available = 0;

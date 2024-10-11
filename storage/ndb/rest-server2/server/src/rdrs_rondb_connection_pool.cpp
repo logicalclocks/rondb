@@ -35,6 +35,14 @@ static void check_startup(bool x) {
   }
 }
 
+static void failed_rondb_connect(RS_Status status) {
+  g_eventLogger->error(
+    "Failed to start, failed connect to RonDB, status.code: %u, message: %s",
+    status.code, status.message);
+  require(false);
+   
+}
+
 ThreadContext::ThreadContext() {
   m_thread_context_mutex = NdbMutex_Create();
   check_startup(m_thread_context_mutex != nullptr);
@@ -81,6 +89,11 @@ RDRSRonDBConnectionPool::~RDRSRonDBConnectionPool() {
     free(m_thread_context);
     m_thread_context = nullptr;
   }
+  if (metadataConnection != dataConnections[0]) {
+    /* We borrowed a data connection for meta data connection */
+    delete metadataConnection;
+  }
+  metadataConnection = nullptr;
   if (dataConnections != nullptr) {
     for (Uint32 i = 0; i < m_num_data_connections; i++) {
       delete dataConnections[i];
@@ -88,8 +101,6 @@ RDRSRonDBConnectionPool::~RDRSRonDBConnectionPool() {
     free(dataConnections);
     dataConnections = nullptr;
   }
-  delete metadataConnection;
-  metadataConnection = nullptr;
 }
 
 RS_Status RDRSRonDBConnectionPool::Init(Uint32 numThreads,
@@ -124,18 +135,26 @@ RS_Status RDRSRonDBConnectionPool::AddConnections(
   Uint32 connection_retries,
   Uint32 connection_retry_delay_in_sec) {
 
-  (void)node_ids_len;
+  if (connection_pool_size == 0) {
+    g_eventLogger->error("At least one RonDB data connection is required, "
+                         "failed startup of REST API Server");
+    require(false);
+  }
   require(connection_pool_size == m_num_data_connections);
+  require(node_ids_len == 0 || node_ids_len == m_num_data_connections);
   for (Uint32 i = 0; i < connection_pool_size; i++) {
+    Uint32 node_id = 0;
+    if (node_ids_len > 0)
+      node_id = node_ids[i];
     dataConnections[i] = new RDRSRonDBConnection(connection_string,
-                                                 0, //node_ids[i],
+                                                 node_id,
                                                  connection_retries,
                                                  connection_retry_delay_in_sec);
   }
   for (Uint32 i = 0; i < connection_pool_size; i++) {
     RS_Status status = dataConnections[i]->Connect();
     if (unlikely(status.http_code != SUCCESS)) {
-      check_startup(false);
+      failed_rondb_connect(status);
       return status;
     }
   }
@@ -150,15 +169,27 @@ RS_Status RDRSRonDBConnectionPool::AddMetaConnections(
   Uint32 connection_retries,
   Uint32 connection_retry_delay_in_sec) {
 
-  (void)node_ids_len;
-  //require(connection_pool_size == 1);
+  if (connection_pool_size == 0) {
+    g_eventLogger->info(
+      "No metadata cluster connection provided, we will use one of "
+      "the data connections instead");
+    metadataConnection = dataConnections[0];
+    return RS_OK;
+  }
+  if (connection_pool_size > 1) {
+    g_eventLogger->error("Only 1 metadata connection is supported");
+    require(false);
+  }
+  Uint32 node_id = 0;
+  if (node_ids_len > 0)
+    node_id = node_ids[0];
   metadataConnection = new RDRSRonDBConnection(connection_string,
-                                               0,//node_ids[0],
+                                               node_id,
                                                connection_retries,
                                                connection_retry_delay_in_sec);
   RS_Status status   = metadataConnection->Connect();
   if (unlikely(status.http_code != SUCCESS)) {
-    check_startup(false);
+    failed_rondb_connect(status);
     return status;
   }
   return RS_OK;
