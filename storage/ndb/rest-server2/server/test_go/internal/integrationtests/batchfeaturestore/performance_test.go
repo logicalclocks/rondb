@@ -22,6 +22,7 @@ import (
 	"math/rand"
 	"net/http"
 	"testing"
+        "sync/atomic"
 
 	"hopsworks.ai/rdrs2/internal/config"
 	"hopsworks.ai/rdrs2/internal/integrationtests/testclient"
@@ -118,7 +119,7 @@ func BenchmarkBatchPkRead(b *testing.B) {
 	table := "table_1"
 	col := "id0"
 	var reqs = make([]string, 0)
-	for i := 0; i < 100; i++ {
+	for i := 0; i < batchSize; i++ {
 		numRows := testdbs.BENCH_DB_NUM_ROWS
 		operations := []api.BatchSubOperationTestInfo{}
 		for i := 0; i < batchSize; i++ {
