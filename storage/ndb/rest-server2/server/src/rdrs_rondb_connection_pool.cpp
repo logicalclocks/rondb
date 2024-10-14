@@ -64,6 +64,9 @@ RDRSRonDBConnectionPool::RDRSRonDBConnectionPool() {
 }
 
 RDRSRonDBConnectionPool::~RDRSRonDBConnectionPool() {
+}
+
+void RDRSRonDBConnectionPool::shutdown() {
   is_shutdown = true;
   if (m_thread_context != nullptr) {
     for (Uint32 i = 0; i < m_num_threads; i++) {
@@ -91,11 +94,13 @@ RDRSRonDBConnectionPool::~RDRSRonDBConnectionPool() {
   }
   if (metadataConnection != dataConnections[0]) {
     /* We borrowed a data connection for meta data connection */
+    metadataConnection->Shutdown(true);
     delete metadataConnection;
   }
   metadataConnection = nullptr;
   if (dataConnections != nullptr) {
     for (Uint32 i = 0; i < m_num_data_connections; i++) {
+      dataConnections[i]->Shutdown(true);
       delete dataConnections[i];
     }
     free(dataConnections);

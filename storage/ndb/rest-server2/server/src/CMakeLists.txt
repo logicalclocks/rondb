@@ -4,11 +4,45 @@ if(NOT WITH_RDRS)
 endif()
 
 file(GLOB_RECURSE SRC
-	*.cc
-	*.c
-	*.cpp
-	*.h
+        api_key.cpp
+        base_ctrl.cpp
+        batch_feature_store_ctrl.cpp
+        batch_pk_read_ctrl.cpp
+        buffer_manager.cpp
+        config_structs.cpp
+        connection.cpp
+        encoding.cpp
+        encoding_helper.cpp
+        feature_store_ctrl.cpp
+        feature_store_data_structs.cpp
+        feature_util.cpp
+        feature_store/feature_store.cpp
 	fs_cache.cpp
+        health_ctrl.cpp
+        json_parser.cpp
+        json_printer.cpp
+        logger.cpp
+        main.cc
+        metadata.cpp
+        mystring.cpp
+        ndb_api_helper.cpp
+        operations_feature_store.cpp
+        ping_ctrl.cpp
+        pk_data_structs.cpp
+        pk_read_ctrl.cpp
+        pk_read_ctrl.cpp
+        rdrs_dal.cpp
+        rdrs_hopsworks_dal.cpp
+        rdrs_rondb_connection.cpp
+        rdrs_rondb_connection_pool.cpp
+        retry_handler.cpp
+        ronsql_ctrl.cpp
+        tls_util.cpp
+        db_operations/pk/common.cpp
+        db_operations/pk/pkr_operation.cpp
+        db_operations/pk/pkr_request.cpp
+        db_operations/pk/pkr_response.cpp
+        db_operations/ronsql/ronsql_operation.cpp
 )
 NDB_ADD_EXECUTABLE(${PROJECT_NAME} ${SRC} STATIC_NDBCLIENT)
 add_dependencies(${PROJECT_NAME} DROGON_IS_BUILD SIMDJSON_IS_BUILD)

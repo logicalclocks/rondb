@@ -106,7 +106,6 @@ class RDRSRonDBConnection {
    */
   RS_Status ReconnectHandler();
 
- private:
   /**
    * Purge. Delete all Ndb objects and shutdown connection
    * @param end If true then it will also free the memory

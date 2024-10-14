@@ -48,6 +48,8 @@ class RDRSRonDBConnectionPool {
   RDRSRonDBConnectionPool();
   ~RDRSRonDBConnectionPool();
 
+  void shutdown();
+
   /**
    * @brief Init RonDB Client API
    *

@@ -62,6 +62,6 @@ func TestMain(m *testing.M) {
 	} else {
 		runtime.GOMAXPROCS(conf.Internal.GOMAXPROCS)
 	}
-
+        fmt.Println("Run test now");
 	retcode = m.Run()
 }

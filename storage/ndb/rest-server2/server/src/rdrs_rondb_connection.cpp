@@ -110,7 +110,6 @@ RS_Status RDRSRonDBConnection::Connect() {
 }
 
 RDRSRonDBConnection::~RDRSRonDBConnection() {
-  Shutdown(true);
   NdbMutex_Destroy(connectionMutex);
   NdbMutex_Destroy(connectionInfoMutex);
 }

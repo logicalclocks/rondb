@@ -123,6 +123,7 @@ RS_Status set_metadata_cluster_op_retry_props(
 }
 
 RS_Status shutdown_connection() {
+  rdrsRonDBConnectionPool->shutdown();
   delete rdrsRonDBConnectionPool;
   return RS_OK;
 }
