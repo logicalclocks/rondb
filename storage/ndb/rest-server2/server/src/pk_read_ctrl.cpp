@@ -132,7 +132,7 @@ void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
     reqBuff.size = *length_ptr_casted;
 
     // pk_read
-    status = pk_read(&reqBuff, &respBuff);
+    status = pk_read(&reqBuff, &respBuff, currentThreadIndex);
 
     resp->setStatusCode(static_cast<drogon::HttpStatusCode>(status.http_code));
     if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=

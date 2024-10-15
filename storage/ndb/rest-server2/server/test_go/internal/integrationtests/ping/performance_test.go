@@ -22,6 +22,7 @@ import (
 	"sort"
 	"testing"
 	"time"
+        "runtime"
 
 	"google.golang.org/grpc"
 	"hopsworks.ai/rdrs2/internal/config"
@@ -48,7 +49,7 @@ func BenchmarkSimple(b *testing.B) {
 	// Number of total requests
 	numRequests := b.N
 
-	runAgainstGrpcServer := true
+	runAgainstGrpcServer := false
 
 	threadId := 0
 
@@ -56,6 +57,7 @@ func BenchmarkSimple(b *testing.B) {
 
 	b.ResetTimer()
 	start := time.Now()
+        runtime.GOMAXPROCS(16)
 
 	/*
 		With 10-core CPU, this will run 10 Go-routines.

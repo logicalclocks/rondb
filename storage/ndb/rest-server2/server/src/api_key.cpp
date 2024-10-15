@@ -126,6 +126,10 @@ RS_Status authenticate(const std::string &apiKey, PKReadParams &params) {
   return apiKeyCache->validate_api_key(apiKey, {params.path.db});
 }
 
+RS_Status authenticate_empty(const std::string &apiKey) {
+  return apiKeyCache->validate_api_key(apiKey, {});
+}
+
 RS_Status authenticate(const std::string &apiKey, const std::string_view & db) {
   return apiKeyCache->validate_api_key(apiKey, {db});
 }
@@ -161,11 +165,6 @@ RS_Status APIKeyCache::validate_api_key(const std::string &apiKey,
   RS_Status status = validate_api_key_format(apiKey);
   if (status.http_code != HTTP_CODE::SUCCESS) {
     return status;
-  }
-  if (dbs.empty()) {
-    DEB_AUTH("Empty database authenticated, Line: %u", __LINE__);
-    return CRS_Status(HTTP_CODE::CLIENT_ERROR,
-                      "Needs at least one database to validate API key for").status;
   }
 
   // Authenticates only using the the cache. No request sent to backend
@@ -275,17 +274,20 @@ RS_Status APIKeyCache::find_and_validate(const std::string &apiKey,
   }
   require(userDBs->m_state == UserDBs::IS_VALID);
   userDBs->m_lastUsed = NdbTick_getCurrentTicks();
-  for (const auto &db : dbs) {
-    if (userDBs->userDBs.find(db) == userDBs->userDBs.end()) {
-      if (inc_refcount_done) userDBs->m_ref_count--;
+  if (!dbs.empty()) {
+    for (const auto &db : dbs) {
+      if (userDBs->userDBs.find(db) == userDBs->userDBs.end()) {
+        if (inc_refcount_done) userDBs->m_ref_count--;
 #ifdef DEBUG_AUTH
-      int ref_count = userDBs->m_ref_count;
+        int ref_count = userDBs->m_ref_count;
 #endif
-      NdbMutex_Unlock(userDBs->m_waitLock);
-      DEB_AUTH("API Key found valid, not authorized, Line: %u, refCount: %d",
-               __LINE__, ref_count);
-      return CRS_Status(HTTP_CODE::AUTH_ERROR,
-        ("API key not authorized to access " + std::string(db)).c_str()).status;
+        NdbMutex_Unlock(userDBs->m_waitLock);
+        DEB_AUTH("API Key found valid, not authorized, Line: %u, refCount: %d",
+                 __LINE__, ref_count);
+        return CRS_Status(HTTP_CODE::AUTH_ERROR,
+          ("API key not authorized to access " +
+          std::string(db)).c_str()).status;
+      }
     }
   }
   // Decrement the reference count such that it can be released again

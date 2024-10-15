@@ -72,8 +72,10 @@ CLASS
  CM(Uint16,    serverPort, ServerPort, 5406)
  CM(unsigned,    numThreads, NumThreads, 16)
  PROBLEM(!enable, "REST must be enabled")
- PROBLEM(enable && serverIP.empty(), "REST server IP cannot be empty")
- PROBLEM(enable && serverPort == 0, "REST server port cannot be zero")
+ PROBLEM(serverIP.empty(), "REST server IP cannot be empty")
+ PROBLEM(serverPort == 0, "REST server port cannot be zero")
+ PROBLEM(numThreads == 0, "Number of threads cannot be zero")
+ PROBLEM(numThreads > 991, "Number of threads too high")
 )
 
 CLASS(GRPC,
@@ -85,7 +87,7 @@ CLASS(GRPC,
 
 CLASS(Mgmd,
   CM(std::string, IP,   IP,   "localhost")
-  CM(Uint16,    port, Port, 13000)
+  CM(Uint16,    port, Port, 1186)
   PROBLEM(IP.empty(), "the Management server IP cannot be empty")
   PROBLEM(port == 0, "the Management server port cannot be zero")
 )
@@ -97,9 +99,6 @@ VECTOR(Uint32)
 CLASS
 (RonDB,
  CM(std::vector<Mgmd>, Mgmds,                         Mgmds,                     {Mgmd()})
- // Connection pool size.
- // Note current implementation only supports 1 connection
- // TODO JIRA RonDB-245
  CM(Uint32, connectionPoolSize, ConnectionPoolSize, 1)
  CM(std::vector<Uint32>, nodeIDs, NodeIDs, {0})
  CM(Uint32, connectionRetries, ConnectionRetries, 5)
@@ -110,11 +109,12 @@ CLASS
  PROBLEM(Mgmds.empty(), "at least one Management server has to be defined")
  PROBLEM(Mgmds.size() > 1,
  "we do not support specifying more than one Management server yet")
- PROBLEM(connectionPoolSize != 1,
- "wrong connection pool size. Currently only 1 RonDB connection is supported")
- PROBLEM(nodeIDs.size() != connectionPoolSize,
+ PROBLEM(connectionPoolSize > 8,
+ "wrong connection pool size. Currently only at most 8 RonDB connections"
+ " are supported")
+ PROBLEM(nodeIDs.size() != connectionPoolSize && nodeIDs.size() != 0,
  "wrong number of NodeIDs. The number of node ids must match the connection"
- " pool size")
+ " pool size or be 0 (in which case the node ids are selected by RonDB")
  CLASSDEFS
  (
   bool present_in_config_file = false;

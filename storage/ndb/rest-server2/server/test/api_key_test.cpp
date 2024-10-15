@@ -69,7 +69,8 @@ class APIKeyTest : public ::testing::Test {
   static void SetUpTestSuite() {
     printf("Set up TestSuite\n");
     RS_Status status = RonDBConnection::init_rondb_connection(globalConfigs.ronDB,
-                                                              globalConfigs.ronDBMetadataCluster);
+                                                              globalConfigs.ronDBMetadataCluster,
+                                                              4);
     if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
       errno = status.http_code;
       exit(errno);

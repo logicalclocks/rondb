@@ -26,6 +26,7 @@ import (
 	"testing"
 	"time"
 	"runtime"
+        "sync/atomic"
 
 	"google.golang.org/grpc"
 	"hopsworks.ai/rdrs2/internal/config"
@@ -73,6 +74,8 @@ func BenchmarkSimple(b *testing.B) {
 
 	b.ResetTimer()
 	start := time.Now()
+        last := time.Now()
+        var ops atomic.Uint64
 	runtime.GOMAXPROCS(8)
 
 	/*
@@ -131,6 +134,13 @@ func BenchmarkSimple(b *testing.B) {
 				batchRESTTestWithClient(b, httpClient, batchTestInfo, false, false)
 			}
 			latenciesChannel <- time.Since(requestStartTime)
+                        count := ops.Add(1)
+                        if count % 20000 == 0 {
+                                tempTotalPkLookups := 20000 * batchSize
+                                tempPkLookupsPerSecond := float64(tempTotalPkLookups) / time.Since(last).Seconds()
+                                b.Logf("Throughput:                 %f pk lookups/second", tempPkLookupsPerSecond)
+                                last = time.Now()
+                        }
 		}
 	})
 	b.StopTimer()

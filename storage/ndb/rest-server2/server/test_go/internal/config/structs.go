@@ -53,11 +53,7 @@ type GRPC struct {
 
 func (g *GRPC) Validate() error {
 	if g.Enable {
-		if g.ServerIP == "" {
-			return errors.New("the gRPC server IP cannot be empty")
-		} else if g.ServerPort == 0 {
-			return errors.New("the gRPC server port cannot be empty")
-		}
+                return errors.New("gRPC not supported in this RonDB version")
 	}
 	return nil
 }
@@ -175,8 +171,6 @@ type RonDB struct {
 	Mgmds []Mgmd
 
 	// Connection pool size. Default 1
-	// Note current implementation only supports 1 connection
-	// TODO JIRA RonDB-245
 	ConnectionPoolSize uint32
 
 	// This is the list of node ids to force the connections to be assigned to specific node ids.
@@ -205,17 +199,6 @@ func (r *RonDB) Validate() error {
 			return err
 		}
 	}
-
-	if r.ConnectionPoolSize < 1 || r.ConnectionPoolSize > 1 {
-		return errors.New("wrong connection pool size. Currently only single RonDB connection is supported")
-	}
-
-	if r.NodeIDs != nil && len(r.NodeIDs) != 0 && len(r.NodeIDs) != int(r.ConnectionPoolSize) {
-		return errors.New("wrong number of NodeIDs. The number of node ids must match the connection pool size")
-	} else if r.NodeIDs == nil || len(r.NodeIDs) == 0 {
-		r.NodeIDs = []uint32{uint32(0)}
-	}
-
 	return nil
 }
 

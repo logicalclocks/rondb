@@ -25,12 +25,15 @@
 #include <drogon/HttpTypes.h>
 
 RS_Status RonDBConnection::init_rondb_connection(RonDB &rondbDataCluster,
-                                                 RonDB &rondbMetaDataCluster) noexcept {
+                                                 RonDB &rondbMetaDataCluster,
+                                                 Uint32 numThreads) noexcept {
   // init RonDB client API
 
-  RS_Status ret = init();
-  if (static_cast<drogon::HttpStatusCode>(ret.http_code) != drogon::HttpStatusCode::k200OK)
+  RS_Status ret = init(numThreads, rondbDataCluster.connectionPoolSize);
+  if (static_cast<drogon::HttpStatusCode>(ret.http_code) !=
+        drogon::HttpStatusCode::k200OK) {
     return ret;
+  }
 
   // Connect to data cluster
   std::string csd = rondbDataCluster.generate_Mgmd_connect_string();
@@ -39,7 +42,8 @@ RS_Status RonDBConnection::init_rondb_connection(RonDB &rondbDataCluster,
       new unsigned int[rondbDataCluster.nodeIDs.size()]);
 
   for (size_t i = 0; i < rondbDataCluster.nodeIDs.size(); ++i) {
-    dataClusterNodeIDsMem[i] = static_cast<unsigned int>(rondbDataCluster.nodeIDs[i]);
+    dataClusterNodeIDsMem[i] =
+      static_cast<unsigned int>(rondbDataCluster.nodeIDs[i]);
   }
 
   ret = add_data_connection(csd.c_str(),
@@ -49,23 +53,27 @@ RS_Status RonDBConnection::init_rondb_connection(RonDB &rondbDataCluster,
                             rondbDataCluster.connectionRetries,
                             rondbDataCluster.connectionRetryDelayInSec);
 
-  if (static_cast<drogon::HttpStatusCode>(ret.http_code) != drogon::HttpStatusCode::k200OK)
+  if (static_cast<drogon::HttpStatusCode>(ret.http_code) !=
+        drogon::HttpStatusCode::k200OK) {
     return ret;
+  }
 
-  ret = set_data_cluster_op_retry_props(rondbDataCluster.opRetryOnTransientErrorsCount,
-                                        rondbDataCluster.opRetryInitialDelayInMS,
-                                        rondbDataCluster.opRetryJitterInMS);
-  if (static_cast<drogon::HttpStatusCode>(ret.http_code) != drogon::HttpStatusCode::k200OK)
+  ret = set_data_cluster_op_retry_props(
+    rondbDataCluster.opRetryOnTransientErrorsCount,
+    rondbDataCluster.opRetryInitialDelayInMS,
+    rondbDataCluster.opRetryJitterInMS);
+  if (static_cast<drogon::HttpStatusCode>(ret.http_code) !=
+        drogon::HttpStatusCode::k200OK) {
     return ret;
-
+  }
   // Connect to metadata cluster
   std::string csmd = rondbMetaDataCluster.generate_Mgmd_connect_string();
-
   std::unique_ptr<unsigned int[]> metaClusterNodeIDsMem(
       new unsigned int[rondbMetaDataCluster.nodeIDs.size()]);
-  for (size_t i = 0; i < rondbMetaDataCluster.nodeIDs.size(); ++i)
-    metaClusterNodeIDsMem[i] = static_cast<unsigned int>(rondbMetaDataCluster.nodeIDs[i]);
-
+  for (size_t i = 0; i < rondbMetaDataCluster.nodeIDs.size(); ++i) {
+    metaClusterNodeIDsMem[i] =
+      static_cast<unsigned int>(rondbMetaDataCluster.nodeIDs[i]);
+  }
   ret = add_metadata_connection(csmd.c_str(),
                                 rondbMetaDataCluster.connectionPoolSize,
                                 metaClusterNodeIDsMem.get(),
@@ -73,28 +81,37 @@ RS_Status RonDBConnection::init_rondb_connection(RonDB &rondbDataCluster,
                                 rondbMetaDataCluster.connectionRetries,
                                 rondbMetaDataCluster.connectionRetryDelayInSec);
 
-  if (static_cast<drogon::HttpStatusCode>(ret.http_code) != drogon::HttpStatusCode::k200OK)
+  if (static_cast<drogon::HttpStatusCode>(ret.http_code) !=
+        drogon::HttpStatusCode::k200OK) {
     return ret;
+  }
+  ret = set_metadata_cluster_op_retry_props(
+    rondbMetaDataCluster.opRetryOnTransientErrorsCount,
+    rondbMetaDataCluster.opRetryInitialDelayInMS,
+    rondbMetaDataCluster.opRetryJitterInMS);
 
-  ret = set_metadata_cluster_op_retry_props(rondbMetaDataCluster.opRetryOnTransientErrorsCount,
-                                            rondbMetaDataCluster.opRetryInitialDelayInMS,
-                                            rondbMetaDataCluster.opRetryJitterInMS);
-
-  if (static_cast<drogon::HttpStatusCode>(ret.http_code) != drogon::HttpStatusCode::k200OK)
+  if (static_cast<drogon::HttpStatusCode>(ret.http_code) !=
+        drogon::HttpStatusCode::k200OK) {
     return ret;
+  }
   return CRS_Status::SUCCESS.status;
 }
 
 RS_Status RonDBConnection::shutdown_rondb_connection() noexcept {
   RS_Status ret = shutdown_connection();
-  if (static_cast<drogon::HttpStatusCode>(ret.http_code) != drogon::HttpStatusCode::k200OK)
+  if (static_cast<drogon::HttpStatusCode>(ret.http_code) !=
+        drogon::HttpStatusCode::k200OK) {
     return ret;
+  }
   return CRS_Status::SUCCESS.status;
 }
 
+/* Reconnect on all cluster connections is currently never used */
 RS_Status RonDBConnection::rondb_reconnect() noexcept {
   RS_Status ret = reconnect();
-  if (static_cast<drogon::HttpStatusCode>(ret.http_code) != drogon::HttpStatusCode::k200OK)
+  if (static_cast<drogon::HttpStatusCode>(ret.http_code) !=
+        drogon::HttpStatusCode::k200OK) {
     return ret;
+  }
   return CRS_Status::SUCCESS.status;
 }

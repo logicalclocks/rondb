@@ -20,6 +20,7 @@ import (
 	"context"
 	"net/http"
 	"testing"
+        "fmt"
 
 	"google.golang.org/grpc"
 	"hopsworks.ai/rdrs2/internal/config"
@@ -59,7 +60,8 @@ func sendRestPingRequestWithClient(t testing.TB, client *http.Client) {
 
 	if err != nil {
 		t.Fatal(err)
-	}
+                fmt.Printf("Err: NewPingURL: %s, err: %s\n", url, err);
+        }
 
 	if conf.Security.APIKey.UseHopsworksAPIKeys {
 		req.Header.Set(config.API_KEY_NAME, testutils.HOPSWORKS_TEST_API_KEY)
@@ -68,11 +70,13 @@ func sendRestPingRequestWithClient(t testing.TB, client *http.Client) {
 	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatal(err)
-	}
+                fmt.Println("Failed Send Ping");
+        }
 	defer resp.Body.Close()
 
 	respCode := resp.StatusCode
 	if respCode != http.StatusOK {
 		t.Fatalf("Status code is %d", respCode)
-	}
+                fmt.Println("Failed Recv Ping");
+        }
 }

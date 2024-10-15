@@ -52,6 +52,7 @@ class APIKeyCache;
 APIKeyCache* start_api_key_cache();
 void stop_api_key_cache();
 
+RS_Status authenticate_empty(const std::string &apiKey);
 RS_Status authenticate(const std::string &apiKey, PKReadParams &params);
 RS_Status authenticate(const std::string &apiKey, const std::string_view & db);
 RS_Status authenticate(const std::string &apiKey,

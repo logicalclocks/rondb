@@ -23,24 +23,32 @@
 #include "rdrs_dal.h"
 #include "rdrs_rondb_connection.hpp"
 
+class alignas(64) ThreadContext {
+ public:
+  ThreadContext();
+  ~ThreadContext();
+
+  NdbMutex *m_thread_context_mutex;
+  bool m_is_shutdown;
+  bool m_is_ndb_object_in_use;
+  Ndb *m_ndb_object;
+  void init_thread_context();
+};
+
 class RDRSRonDBConnectionPool {
  private:
-  RDRSRonDBConnection *dataConnection;
+  RDRSRonDBConnection **dataConnections;
   RDRSRonDBConnection *metadataConnection;
+  ThreadContext **m_thread_context;
+  Uint32 m_num_threads;
+  Uint32 m_num_data_connections;
   bool is_shutdown = true;
-
-  /**
-   * @brief Checks that the connections are initialized and
-   * shutdown has not been called
-   *
-   * @return RS_Status A struct representing the status of the operation:
-   *
-   */
-  RS_Status Check();
 
  public:
   RDRSRonDBConnectionPool();
   ~RDRSRonDBConnectionPool();
+
+  void shutdown();
 
   /**
    * @brief Init RonDB Client API
@@ -48,7 +56,7 @@ class RDRSRonDBConnectionPool {
    * @return RS_Status A struct representing the status of the operation:
    *
    */
-  RS_Status Init();
+  RS_Status Init(Uint32, Uint32);
 
   /**
    * @brief Adds a connection to the RonDB Cluster.
@@ -112,19 +120,24 @@ class RDRSRonDBConnectionPool {
    * @brief Get ndb object for data operation
    *
    * @param ndb_object Ndb object
+   * @param threadIndex Thread to use the Ndb object
    *
    * @return RS_Status A struct representing the status of the operation:
    */
-  RS_Status GetNdbObject(Ndb **ndb_object);
+  RS_Status GetNdbObject(Ndb **ndb_object,
+                         Uint32 threadIndex);
 
   /**
    * @brief Return NDB Object back to the pool
    *
    * @param ndb_object Ndb object
+   * @param threadIndex Thread that used the Ndb object
    *
    * @return RS_Status A struct representing the status of the operation:
    */
-  RS_Status ReturnNdbObject(Ndb *ndb_object, RS_Status *status);
+  RS_Status ReturnNdbObject(Ndb *ndb_object,
+                            RS_Status *status,
+                            Uint32 threadIndex);
 
   /**
    * @brief Get ndb object for metadata operation

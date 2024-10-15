@@ -45,6 +45,8 @@ func RunRestTemplate(b *testing.B, method, url string, reqs *[]string, numReques
 	log.Infof("Starting benchmark test in parallel")
 	b.ResetTimer()
 	start := time.Now()
+        last := time.Now()
+        var ops atomic.Uint64
 
 	b.RunParallel(func(bp *testing.PB) {
 		atomic.AddInt32(&threadId, 1)
@@ -75,6 +77,13 @@ func RunRestTemplate(b *testing.B, method, url string, reqs *[]string, numReques
 				break
 			}
 			resp.Body.Close()
+                        count := ops.Add(1)
+                        if count % 200000 == 0 {
+                                tempTotalBatches := 200000
+                                tempBatchesPerSecond := float64(tempTotalBatches) / time.Since(last).Seconds()
+                                b.Logf("Throughput:                 %f batches/second", tempBatchesPerSecond)
+                                last = time.Now()
+                        }
 		}
 		httpClient.CloseIdleConnections()
 	})

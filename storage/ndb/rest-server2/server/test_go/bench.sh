@@ -32,7 +32,7 @@ set -eu
 BENCHMARK_DURATION=${BENCHMARK_DURATION:-30}
 BENCHMARK_PACKAGE=${BENCHMARK_PACKAGE:-hopsworks.ai/rdrs2/internal/integrationtests/batchpkread}
 go test -v \
-   -test.bench Benchmark \
+   -test.bench BenchmarkSimple \
    -test.run=thisexpressionwontmatchanytest \
    -benchmem \
    -benchtime=${BENCHMARK_DURATION}s \

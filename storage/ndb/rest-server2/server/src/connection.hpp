@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Hopsworks AB
+ * Copyright (C) 2023, 2024 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -22,6 +22,7 @@
 
 #include "config_structs.hpp"
 #include "logger.hpp"
+#include <ndb_types.h>
 
 #include <string>
 #include <exception>
@@ -29,8 +30,12 @@
 
 class RonDBConnection {
  public:
-  RonDBConnection(RonDB &data_cluster, RonDB &meta_data_cluster) {
-    RS_Status status = init_rondb_connection(data_cluster, meta_data_cluster);
+  RonDBConnection(RonDB &data_cluster,
+                  RonDB &meta_data_cluster,
+                  Uint32 numThreads) {
+    RS_Status status = init_rondb_connection(data_cluster,
+                                             meta_data_cluster,
+                                             numThreads);
     if (status.http_code != SUCCESS) {
       RDRSLogger::LOG_ERROR("Failed to initialize RonDB connection: " +
                             std::string(status.message));
@@ -38,8 +43,12 @@ class RonDBConnection {
     }
   }
 
-  RonDBConnection(RonDB &&data_cluster, RonDB &&meta_data_cluster) {
-    RS_Status status = init_rondb_connection(data_cluster, meta_data_cluster);
+  RonDBConnection(RonDB &&data_cluster,
+                  RonDB &&meta_data_cluster,
+                  Uint32 numThreads) {
+    RS_Status status = init_rondb_connection(data_cluster,
+                                             meta_data_cluster,
+                                             numThreads);
     if (status.http_code != SUCCESS) {
       RDRSLogger::LOG_ERROR("Failed to initialize RonDB connection: " +
                             std::string(status.message));
@@ -54,19 +63,12 @@ class RonDBConnection {
         "Failed to shutdown RonDB connection: " + std::string(status.message));
     }
   }
-
   RonDBConnection(const RonDBConnection &other) = default;
-
   RonDBConnection &operator=(const RonDBConnection &other) = default;
-
   RonDBConnection(RonDBConnection &&other) = default;
-
   RonDBConnection &operator=(RonDBConnection &&other) = default;
-
-  static RS_Status init_rondb_connection(RonDB &, RonDB &) noexcept;
-
+  static RS_Status init_rondb_connection(RonDB &, RonDB &, Uint32) noexcept;
   static RS_Status shutdown_rondb_connection() noexcept;
-
   static RS_Status rondb_reconnect() noexcept;
 };
 

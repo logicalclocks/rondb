@@ -354,7 +354,8 @@ int main(int argc, char *argv[]) {
   }
 
   RS_Status status = AllConfigs::init(configFile);
-  if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
+  if (status.http_code !=
+        static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
     std::cerr << "Error while initializing configuration.\n"
               << "HTTP code " << status.http_code << '\n'
               << status.message << '\n';
@@ -392,7 +393,8 @@ int main(int argc, char *argv[]) {
 
   // connect to rondb
   g_rondbConnection = new RonDBConnection(globalConfigs.ronDB,
-                                          globalConfigs.ronDBMetadataCluster);
+                                          globalConfigs.ronDBMetadataCluster,
+                                          globalConfigs.rest.numThreads);
   if (g_rondbConnection == nullptr) {
     std::cerr << "Failed to allocate memory for RonDB connection.\n";
     do_exit(1);
@@ -433,7 +435,9 @@ int main(int argc, char *argv[]) {
     handle_signal(SIGTERM);
   });
   before_drogon_run();
-  drogon::app().run();
+  drogon::app().setLogPath("/Users/mikael/drogon.log")
+               .setLogLevel(trantor::Logger::kDebug)
+               .run();
   after_drogon_run();
   do_exit(0);
 }

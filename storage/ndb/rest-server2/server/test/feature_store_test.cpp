@@ -913,7 +913,8 @@ class MyEnvironment : public ::testing::Environment {
   {
     RS_Status status = RonDBConnection::init_rondb_connection(
       globalConfigs.ronDB,
-      globalConfigs.ronDBMetadataCluster);
+      globalConfigs.ronDBMetadataCluster,
+      64);
     if (status.http_code !=
           static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
       errno = status.http_code;
@@ -1198,7 +1199,8 @@ class BatchFeatureStoreTest : public ::testing::Test {
   static void SetUpTestSuite() {
     RS_Status status = RonDBConnection::init_rondb_connection(
       globalConfigs.ronDB,
-      globalConfigs.ronDBMetadataCluster);
+      globalConfigs.ronDBMetadataCluster,
+      64);
     if (status.http_code !=
           static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
       errno = status.http_code;

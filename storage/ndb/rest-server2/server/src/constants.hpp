@@ -24,12 +24,14 @@
 
 #define API_VERSION "0.1.0"
 #define PING        "ping"
+#define HEALTH      "health"
 #define PKREAD      "pk-read"
 #define BATCH       "batch"
 #define RONSQL      "ronsql"
 
 #define MAKE_PATH(version, endpoint) "/" version "/" endpoint
 
+#define HEALTH_PATH MAKE_PATH(API_VERSION, HEALTH)
 #define PING_PATH  MAKE_PATH(API_VERSION, PING)
 #define BATCH_PATH MAKE_PATH(API_VERSION, BATCH)
 
