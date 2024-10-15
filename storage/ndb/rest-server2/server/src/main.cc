@@ -435,9 +435,7 @@ int main(int argc, char *argv[]) {
     handle_signal(SIGTERM);
   });
   before_drogon_run();
-  drogon::app().setLogPath("/Users/mikael/drogon.log")
-               .setLogLevel(trantor::Logger::kDebug)
-               .run();
+  drogon::app().run();
   after_drogon_run();
   do_exit(0);
 }
