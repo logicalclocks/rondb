@@ -7014,12 +7014,7 @@ sub server_need_restart {
 
   my $is_rdrs = grep ($server eq $_, rdrss());
   if ($is_rdrs) {
-    # Restart if all datanodes go down, otherwise not.
-    foreach my $ndbd_server (ndbds()) {
-      if (!server_need_restart($tinfo, $ndbd_server, $master_restarted)) {
-        return 0;
-      }
-    }
+    # Always restart rdrs servers.
     return 1;
   }
 
@@ -7143,8 +7138,9 @@ sub stop_servers($$) {
 
     mtr_report("Restarting all servers");
 
-    # mysqld processes
-    $ret = My::SafeProcess::shutdown($opt_shutdown_timeout, started(mysqlds()));
+    # rdrs and mysqld processes
+    $ret = My::SafeProcess::shutdown($opt_shutdown_timeout,
+                                     started(rdrss(), mysqlds()));
 
     # cluster processes
     My::SafeProcess::shutdown($opt_shutdown_timeout,
