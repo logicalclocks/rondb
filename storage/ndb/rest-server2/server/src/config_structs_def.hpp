@@ -71,6 +71,8 @@ CLASS
  CM(std::string, serverIP,   ServerIP,   "0.0.0.0")
  CM(Uint16,    serverPort, ServerPort, 5406)
  CM(unsigned,    numThreads, NumThreads, 16)
+ CM(bool,        healthRequiresAPIKey, HealthRequiresAPIKey, false)
+ CM(bool,        pingRequiresAPIKey, PingRequiresAPIKey, false)
  PROBLEM(!enable, "REST must be enabled")
  PROBLEM(serverIP.empty(), "REST server IP cannot be empty")
  PROBLEM(serverPort == 0, "REST server port cannot be zero")
