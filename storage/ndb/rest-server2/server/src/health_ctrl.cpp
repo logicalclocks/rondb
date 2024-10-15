@@ -24,6 +24,7 @@
 #include "api_key.hpp"
 #include "config_structs.hpp"
 #include "constants.hpp"
+#include <rdrs_dal.h>
 
 #include <cstring>
 #include <drogon/HttpTypes.h>
@@ -76,7 +77,13 @@ void HealthCtrl::health(
       return;
     }
   }
-  resp->setBody("1");
+  RonDB_Stats stats;
+  (void)get_rondb_stats(&stats);
+  if (stats.connection_state) {
+    resp->setBody("1");
+  } else {
+    resp->setBody("0");
+  }
   resp->setStatusCode(drogon::HttpStatusCode::k200OK);
   callback(resp);
 }
