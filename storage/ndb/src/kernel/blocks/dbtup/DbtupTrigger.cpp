@@ -2159,7 +2159,7 @@ void Dbtup::removeTuxEntries(Signal *signal, Tablerec *regTabPtr) {
           req->errorCode, req->tableId, req->indexId, req->fragId);
       ndbrequire(req->errorCode == 0);
     }
-    triggerList.next(triggerPtr);
+    ret = triggerList.next(triggerPtr);
   }
 }
 

@@ -23,8 +23,6 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
-#include "config.h"
-
 #ifdef _WIN32
 #include <winsock2.h>
 #endif
@@ -38,25 +36,11 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
-#include <config.h>
-#ifdef HAVE_SYS_SELECT_H
-#include <sys/select.h>
-#endif
+#include <ndb_config.h>
 #include <random>
 #include <fstream>
 #include <AttributeHeader.hpp>
-
-/**
- * Helper sleep function
- */
-static void
-milliSleep(int milliseconds){
-  struct timeval sleeptime;
-  sleeptime.tv_sec = milliseconds / 1000;
-  sleeptime.tv_usec = (milliseconds - (sleeptime.tv_sec * 1000)) * 1000000;
-  select(0, 0, 0, 0, &sleeptime);
-}
-
+#include <NdbSleep.h>
 
 /**
  * Helper debugging macros
@@ -465,7 +449,7 @@ int scan_aggregation(Ndb * myNdb, MYSQL& mysql, bool validation)
 
       if (err.status == NdbError::TemporaryError)
       {
-        milliSleep(50);
+        NdbSleep_MilliSleep(50);
         retryAttempt++;
         continue;
       }
@@ -580,7 +564,7 @@ int scan_aggregation(Ndb * myNdb, MYSQL& mysql, bool validation)
       if(err.status == NdbError::TemporaryError) {
         std::cout << myTrans->getNdbError().message << std::endl;
         myNdb->closeTransaction(myTrans);
-        milliSleep(50);
+        NdbSleep_MilliSleep(50);
         continue;
       }
       std::cout << "DoAggregation failed: " << err.message << std::endl;
