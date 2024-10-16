@@ -29,7 +29,7 @@
 #include <stdexcept>
 #include <functional>
 #include "LexString.hpp"
-#include "ArenaAllocator.hpp"
+#include "ArenaMalloc.hpp"
 #include "DynamicArray.hpp"
 #include "RonSQLCommon.hpp"
 // todo order and remove superfluous includes
@@ -98,7 +98,7 @@ public:
   AggregationAPICompiler(std::function<const char*(uint)> column_idx_to_name,
                          std::basic_ostream<char>& out,
                          std::basic_ostream<char>& err,
-                         ArenaAllocator* aalloc);
+                         ArenaMalloc* amalloc);
   enum class Status
   {
     PROGRAMMING, // High-level API available only in this state
@@ -111,7 +111,7 @@ private:
   std::basic_ostream<char>& m_out;
   std::basic_ostream<char>& m_err;
   Status m_status = Status::PROGRAMMING;
-  ArenaAllocator* m_aalloc;
+  ArenaMalloc* m_amalloc;
 
   // High-level API:
 public:

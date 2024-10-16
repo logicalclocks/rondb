@@ -35,15 +35,15 @@ AggregationAPICompiler::AggregationAPICompiler
     (std::function<const char*(uint)> column_idx_to_name,
      std::basic_ostream<char>& out,
      std::basic_ostream<char>& err,
-     ArenaAllocator* aalloc):
+     ArenaMalloc* amalloc):
   m_out(out),
   m_err(err),
-  m_aalloc(aalloc),
+  m_amalloc(amalloc),
   m_column_idx_to_name(column_idx_to_name),
-  m_exprs(aalloc),
-  m_aggs(aalloc),
-  m_constants(aalloc),
-  m_program(aalloc)
+  m_exprs(amalloc),
+  m_aggs(amalloc),
+  m_constants(amalloc),
+  m_program(amalloc)
 {}
 
 AggregationAPICompiler::Status
@@ -816,7 +816,7 @@ AggregationAPICompiler::dead_code_elimination()
   {
     reg_needed[i] = false;
   }
-  bool* instr_useful = m_aalloc->alloc<bool>(m_program.size());
+  bool* instr_useful = m_amalloc->alloc_exc<bool>(m_program.size());
   for (Uint32 i=0; i<m_program.size(); i++)
   {
     instr_useful[i] = false;

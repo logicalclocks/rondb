@@ -74,10 +74,10 @@ static_assert(REGS == kRegTotal);
 
 RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
   m_conf(conf),
-  m_aalloc(conf.aalloc),
+  m_amalloc(conf.amalloc),
   m_context(*this),
-  m_columns(conf.aalloc),
-  m_index_scan_config_candidates(conf.aalloc)
+  m_columns(conf.amalloc),
+  m_index_scan_config_candidates(conf.amalloc)
 {
   assert(m_status == Status::BEGIN);
   try
@@ -111,7 +111,7 @@ RonSQLPreparer::configure()
   // Validate m_conf
   assert(m_conf.sql_buffer != NULL);
   assert(m_conf.sql_len > 0);
-  assert(m_conf.aalloc != NULL);
+  assert(m_conf.amalloc != NULL);
   RonSQLExecParams::ExplainMode mode = m_conf.explain_mode;
   bool may_query =
     (mode == RonSQLExecParams::ExplainMode::ALLOW ||
@@ -250,8 +250,8 @@ RonSQLPreparer::parse()
      *    not apply to us.
      * 2) Stack depth would exceed YYMAXDEPTH.
      * 3) The allocator used by the parser returns NULL, indicating OOM. Since
-     *    our ArenaAllocator does not return NULL but rather throws an exception
-     *    on OOM, this case does not apply to us.
+     *    the allocation functio we use will never return NULL but rather throw
+     *    an exception on OOM, so this case does not apply to us.
      * Therefore, we know that if we end up here, we are in case 2).
      */
     throw runtime_error("Parser stack exceeded its maximum depth.");
@@ -483,7 +483,7 @@ RonSQLPreparer::load()
     soft_assert(m_table != NULL,
                 "Failed to get table. Note that RonSQL only supports tables with"
                 " ENGINE=NDB.");
-    NdbAttrId* col_id_map = m_aalloc->alloc<NdbAttrId>(m_columns.size());
+    NdbAttrId* col_id_map = m_amalloc->alloc_exc<NdbAttrId>(m_columns.size());
     for (Uint32 col_idx = 0; col_idx < m_columns.size(); col_idx++)
     {
       const char* col_name = m_columns[col_idx].c_str();
@@ -556,7 +556,7 @@ RonSQLPreparer::generate_index_scan_config_candidates()
     Int64 high_bound = ce->args.left->args.right->args.right->constant_integer;
     IndexScanConfig isc;
     isc.col_idx = col_idx;
-    isc.ranges = m_aalloc->alloc<IndexScanConfig::Range>(1);
+    isc.ranges = m_amalloc->alloc_exc<IndexScanConfig::Range>(1);
     isc.ranges[0].ltype = IndexScanConfig::Range::Type::INCLUSIVE;
     isc.ranges[0].lvalue = low_bound;
     isc.ranges[0].htype = IndexScanConfig::Range::Type::EXCLUSIVE;
@@ -655,8 +655,8 @@ RonSQLPreparer::compile()
     }
   }
   // Compile post-processing/printer program
-  m_resultprinter = new (m_aalloc->alloc<ResultPrinter>(1))
-    ResultPrinter(m_aalloc,
+  m_resultprinter = new (m_amalloc->alloc_exc<ResultPrinter>(1))
+    ResultPrinter(m_amalloc,
                   &m_context.ast_root,
                   &m_columns,
                   m_conf.output_format,
@@ -1095,7 +1095,7 @@ RonSQLPreparer::eval_const_expr(ConditionalExpression* ce)
     feature_not_implemented("String constants in WHERE clause");
   case T_INT:
     {
-      Int64* val = m_aalloc->alloc<Int64>(1);
+      Int64* val = m_amalloc->alloc_exc<Int64>(1);
       *val = ce->constant_integer;
       ret.val = val;
       ret.len = sizeof(*val);
@@ -1230,10 +1230,10 @@ RonSQLPreparer::eval_const_expr(ConditionalExpression* ce)
       {
         throw runtime_error("DATE_SUB failed");
       }
-      Uint32* date = m_aalloc->alloc<Uint32>(1);
+      Uint32* date = m_amalloc->alloc_exc<Uint32>(1);
       // todo find and use MySQL conversion function
       *date = ltime.year << 9 | ltime.month << 5 | ltime.day;
-      //ulonglong* timeull = m_aalloc->alloc<ulonglong>(1);
+      //ulonglong* timeull = m_amalloc->alloc_exc<ulonglong>(1);
       //*timeull = TIME_to_ulonglong_datetime(ltime);
       //std::cerr << "==========DBG: In RonSQLPreparer::eval_const_expr DATE_SUB: *timeull=" << *timeull << endl;
       //return raw_value{ timeull, sizeof(*timeull)};
@@ -1615,7 +1615,7 @@ RonSQLPreparer::print(struct ConditionalExpression* ce,
     {
       out << "IS\n"
           << prefix << "+- ";
-      LexString prefix_arg = prefix.concat(LexString{"|  ", 3}, m_aalloc);
+      LexString prefix_arg = prefix.concat(LexString{"|  ", 3}, m_amalloc);
       print(ce->is.arg, prefix_arg);
       out << prefix << "\\- "
           << (ce->is.null ? "NULL\n" : "NOT NULL\n");
@@ -1641,7 +1641,7 @@ RonSQLPreparer::print(struct ConditionalExpression* ce,
     {
       out << "NEGATION\n"
           << prefix << "\\- ";
-      LexString prefix_arg = prefix.concat(LexString{"   ", 3}, m_aalloc);
+      LexString prefix_arg = prefix.concat(LexString{"   ", 3}, m_amalloc);
       print(ce->args.right, prefix_arg);
       return;
     }
@@ -1670,7 +1670,7 @@ RonSQLPreparer::print(struct ConditionalExpression* ce,
     {
       out << "INTERVAL\n"
           << prefix << "+- ";
-      LexString prefix_arg = prefix.concat(LexString{"|  ", 3}, m_aalloc);
+      LexString prefix_arg = prefix.concat(LexString{"|  ", 3}, m_amalloc);
       print(ce->interval.arg, prefix_arg);
       out << prefix << "\\- " <<
         interval_type_name(ce->interval.interval_type) << '\n';
@@ -1688,7 +1688,7 @@ RonSQLPreparer::print(struct ConditionalExpression* ce,
         << prefix << "+- "
         << interval_type_name(ce->extract.interval_type) << '\n'
         << prefix << "\\- ";
-      LexString prefix_arg = prefix.concat(LexString{"   ", 3}, m_aalloc);
+      LexString prefix_arg = prefix.concat(LexString{"   ", 3}, m_amalloc);
       print(ce->extract.arg, prefix_arg);
       return;
     }
@@ -1700,17 +1700,17 @@ RonSQLPreparer::print(struct ConditionalExpression* ce,
   {
     out << opstr << '\n'
         << prefix << "\\- ";
-    LexString prefix_arg = prefix.concat(LexString{"   ", 3}, m_aalloc);
+    LexString prefix_arg = prefix.concat(LexString{"   ", 3}, m_amalloc);
     print(ce->args.left, prefix_arg);
   }
   else
   {
     out << opstr << '\n'
         << prefix << "+- ";
-    LexString prefix_left = prefix.concat(LexString{"|  ", 3}, m_aalloc);
+    LexString prefix_left = prefix.concat(LexString{"|  ", 3}, m_amalloc);
     print(ce->args.left, prefix_left);
     out << prefix << "\\- ";
-    LexString prefix_right = prefix.concat(LexString{"   ", 3}, m_aalloc);
+    LexString prefix_right = prefix.concat(LexString{"   ", 3}, m_amalloc);
     print(ce->args.right, prefix_right);
   }
 }
@@ -1876,16 +1876,16 @@ RonSQLPreparer::Context::get_agg()
    * compilation, a new object will be crafted that holds the information
    * necessary for execution and post-processing.
    */
-  m_parser.m_agg = new (get_allocator()->alloc<AggregationAPICompiler>(1))
+  m_parser.m_agg = new (get_allocator()->alloc_exc<AggregationAPICompiler>(1))
     AggregationAPICompiler(column_idx_to_name,
                            *m_parser.m_conf.out_stream,
                            *m_parser.m_conf.err_stream,
-                           m_parser.m_aalloc);
+                           m_parser.m_amalloc);
   return m_parser.m_agg;
 }
 
-ArenaAllocator*
+ArenaMalloc*
 RonSQLPreparer::Context::get_allocator()
 {
-  return m_parser.m_aalloc;
+  return m_parser.m_amalloc;
 }

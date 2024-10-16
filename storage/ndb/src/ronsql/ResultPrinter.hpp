@@ -27,7 +27,7 @@
 
 #include "NdbAggregator.hpp"
 
-#include "ArenaAllocator.hpp"
+#include "ArenaMalloc.hpp"
 #include "DynamicArray.hpp"
 #include "LexString.hpp"
 #include "RonSQLCommon.hpp"
@@ -37,7 +37,7 @@ class ResultPrinter
 private:
 
   // Configuration provided to constructor
-  ArenaAllocator* m_aalloc;
+  ArenaMalloc* m_amalloc;
   struct SelectStatement* m_query;
   DynamicArray<LexCString>* m_column_names;
   RonSQLExecParams::OutputFormat m_output_format;
@@ -109,7 +109,7 @@ private:
   void print_record(NdbAggregator::ResultRecord& record,
                     std::ostream& out);
 public:
-  ResultPrinter(ArenaAllocator* aalloc,
+  ResultPrinter(ArenaMalloc* amalloc,
                 struct SelectStatement* query,
                 DynamicArray<LexCString>* column_names,
                 RonSQLExecParams::OutputFormat output_format,

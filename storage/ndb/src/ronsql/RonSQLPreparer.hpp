@@ -31,7 +31,7 @@
 #include <NdbApi.hpp>
 
 #include "AggregationAPICompiler.hpp"
-#include "ArenaAllocator.hpp"
+#include "ArenaMalloc.hpp"
 #include "DynamicArray.hpp"
 #include "LexString.hpp"
 #include "ResultPrinter.hpp"
@@ -116,7 +116,7 @@ public:
     {}
     void set_err_state(ErrState state, char* err_pos, size_t err_len);
     AggregationAPICompiler* get_agg();
-    ArenaAllocator* get_allocator();
+    ArenaMalloc* get_allocator();
     Uint32 column_name_to_idx(LexCString);
     SelectStatement ast_root;
   };
@@ -132,7 +132,7 @@ private:
   };
   Status m_status = Status::BEGIN;
   LexString m_sql = {NULL, 0};
-  ArenaAllocator* m_aalloc;
+  ArenaMalloc* m_amalloc;
   Context m_context;
   DynamicArray<LexCString> m_columns;
   NdbAttrId* m_column_attrId_map = NULL;

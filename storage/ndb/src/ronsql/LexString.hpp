@@ -28,7 +28,7 @@
 #include <cstddef>
 #include <cstring>
 #include <iostream>
-#include "ArenaAllocator.hpp"
+#include "ArenaMalloc.hpp"
 
 class LexCString;
 
@@ -44,8 +44,8 @@ public:
   ~LexString() = default;
   friend std::ostream& operator<< (std::ostream& out, const LexString& ls);
   bool operator== (const LexString& other) const;
-  LexString concat(const LexString other, ArenaAllocator* allocator) const;
-  LexCString to_LexCString(ArenaAllocator* allocator) const;
+  LexString concat(const LexString other, ArenaMalloc* allocator) const;
+  LexCString to_LexCString(ArenaMalloc* allocator) const;
 };
 
 class LexCString

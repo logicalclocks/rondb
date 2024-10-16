@@ -45,12 +45,12 @@ ADD_CUSTOM_COMMAND(
 
 ADD_CONVENIENCE_LIBRARY(ronsql
   AggregationAPICompiler.cpp
-  ArenaAllocator.cpp
   LexString.cpp
   ResultPrinter.cpp
   RonSQLPreparer.cpp
   ${CMAKE_CURRENT_BINARY_DIR}/RonSQLParser.y.cpp
   ${CMAKE_CURRENT_BINARY_DIR}/RonSQLLexer.l.cpp
+  LINK_LIBRARIES ndbgeneral
   )
 
 # todo check that ronsql_cli is included in the tarball

@@ -54,23 +54,23 @@ static void print_float_or_double(std::ostream& out, double value, bool is_doubl
 static double convert_result_to_double(NdbAggregator::Result result);
 static float convert_result_to_float(NdbAggregator::Result result);
 
-ResultPrinter::ResultPrinter(ArenaAllocator* aalloc,
+ResultPrinter::ResultPrinter(ArenaMalloc* amalloc,
                              struct SelectStatement* query,
                              DynamicArray<LexCString>* column_names,
                              RonSQLExecParams::OutputFormat output_format,
                              std::basic_ostream<char>* err):
-  m_aalloc(aalloc),
+  m_amalloc(amalloc),
   m_query(query),
   m_column_names(column_names),
   m_output_format(output_format),
   m_err(err),
-  m_program(aalloc),
-  m_groupby_cols(aalloc),
-  m_outputs(aalloc),
-  m_col_idx_groupby_map(aalloc)
+  m_program(amalloc),
+  m_groupby_cols(amalloc),
+  m_outputs(amalloc),
+  m_col_idx_groupby_map(amalloc)
 {
   assert(query != NULL);
-  assert(aalloc != NULL);
+  assert(amalloc != NULL);
   switch (output_format)
   {
   case RonSQLExecParams::OutputFormat::JSON:
@@ -161,8 +161,8 @@ ResultPrinter::compile()
   }
   // Allocate registers. Even if some of them won't be used in an optimized
   // program, the memory waste is minimal.
-  m_regs_g = m_aalloc->alloc<NdbAggregator::Column>(m_groupby_cols.size());
-  m_regs_a = m_aalloc->alloc<NdbAggregator::Result>(number_of_aggregates);
+  m_regs_g = m_amalloc->alloc_exc<NdbAggregator::Column>(m_groupby_cols.size());
+  m_regs_a = m_amalloc->alloc_exc<NdbAggregator::Result>(number_of_aggregates);
   // Create a correct but non-optimized program
   for (Uint32 i = 0; i < m_groupby_cols.size(); i++)
   {

@@ -89,7 +89,7 @@ LexCString::operator== (const LexCString& other) const
  * ends.
  */
 LexString
-LexString::concat(const LexString other, ArenaAllocator* allocator) const
+LexString::concat(const LexString other, ArenaMalloc* allocator) const
 {
   if (this->str == NULL || this->len == 0)
   {
@@ -100,8 +100,8 @@ LexString::concat(const LexString other, ArenaAllocator* allocator) const
   // It's possible that concatenated_str == this->str. The lifetime of the
   // returned LexString will end when the lifetime of either argument or the
   // allocator ends.
-  char* concatenated_str = static_cast<char*>
-    (allocator->realloc(this->str, concatenated_len, this->len));
+  char* concatenated_str =
+    allocator->realloc_exc<char>(this->str, concatenated_len, this->len);
   memcpy(&concatenated_str[this->len], other.str, other.len);
   return LexString{concatenated_str, concatenated_len};
 }
@@ -113,15 +113,15 @@ LexString::concat(const LexString other, ArenaAllocator* allocator) const
  * WARNING: The LexString must not contain a NUL byte.
  */
 LexCString
-LexString::to_LexCString(ArenaAllocator* allocator) const
+LexString::to_LexCString(ArenaMalloc* allocator) const
 {
   if (this->str == NULL || this->len == 0)
   {
     assert(this->str == NULL && this->len == 0);
     return LexCString{ NULL, 0 };
   }
-  char* c_str = static_cast<char*>
-    (allocator->realloc(this->str, this->len + 1, this->len));
+  char* c_str =
+    allocator->realloc_exc<char>(this->str, this->len + 1, this->len);
   c_str[this->len] = '\0';
   return LexCString{ c_str, this->len };
 }

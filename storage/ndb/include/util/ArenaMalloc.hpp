@@ -22,68 +22,141 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
-#ifndef STORAGE_NDB_SRC_RONSQL_ARENAALLOCATOR_HPP
-#define STORAGE_NDB_SRC_RONSQL_ARENAALLOCATOR_HPP 1
+#ifndef STORAGE_NDB_SRC_RONSQL_ARENAMALLOC_HPP
+#define STORAGE_NDB_SRC_RONSQL_ARENAMALLOC_HPP 1
 
 #include <assert.h>
 #include <stdexcept>
+#include <cstddef>
 #include "ndb_types.h"
+#include "my_compiler.h"
 
-using std::byte;
+typedef Uint8 byte;
 
-//#define ARENA_ALLOCATOR_DEBUG 1
+//#define ARENAMALLOC_DEBUG 1
 
-class ArenaAllocator
+class ArenaMalloc
 {
 private:
-  /*
-   * todo: These two parameters could be dynamic. With some statistics, we
-   * should be able to tune these as a function of SQL statement length, which
-   * we'll probably know before we create the arena allocator.
-   */
-  static const size_t DEFAULT_PAGE_SIZE = 256;
-  static const size_t INITIAL_PAGE_SIZE = 80;
-  size_t m_page_size = DEFAULT_PAGE_SIZE;
   struct Page
   {
-    struct Page* next = NULL;
+    struct Page* next = nullptr;
     byte data[1]; // Actually an arbitrary amount
   };
   static const size_t OVERHEAD = offsetof(struct Page, data);
-  static_assert(OVERHEAD < DEFAULT_PAGE_SIZE, "default page size too small");
-  struct Page* m_current_page = NULL;
-  UintPtr m_point = 0;
-  UintPtr m_stop = 0;
-# ifdef ARENA_ALLOCATOR_DEBUG
-  Uint64 m_allocated_by_us = sizeof(ArenaAllocator);
-  Uint64 m_allocated_by_user = 0;
+  static const size_t MINIMUM_PAGE_SIZE = 64;
+  static const size_t MAXIMUM_ALLOCATION_SIZE = SIZE_MAX >> 2;
+  static const size_t MAXIMUM_ALIGNMENT = 16;
+  friend UintPtr aligned(size_t align, UintPtr ptr) noexcept;
+  static_assert(alignof(std::max_align_t) <= MAXIMUM_ALIGNMENT,
+                "MAXIMUM_ALIGNMENT too small");
+  static_assert(OVERHEAD < MINIMUM_PAGE_SIZE, "MINIMUM_PAGE_SIZE too small");
+  static_assert((2 * (OVERHEAD + MAXIMUM_ALIGNMENT)) < MINIMUM_PAGE_SIZE,
+                "MINIMUM_PAGE_SIZE too small");
+  // We need page_size/2 more often than we need page_size.
+  size_t m_half_page_size;
+  struct Page* m_current_page;
+  struct Page* m_large_allocations;
+  UintPtr m_point;
+  UintPtr m_stop;
+# ifdef ARENAMALLOC_DEBUG
+  Uint64 m_allocated_by_us;
+  Uint64 m_allocated_by_user;
+  Uint64 m_page_count;
+  Uint64 m_large_alloc_count;
+  Uint64 m_small_alloc_count;
 # endif
-  byte m_initial_stack_allocated_page[INITIAL_PAGE_SIZE];
 public:
-  ArenaAllocator();
-  ~ArenaAllocator();
-  void* alloc_bytes(size_t size, size_t alignment);
-  template<typename T> inline T* alloc(Uint32 items);
-  void* realloc_bytes(const void* ptr, size_t size, size_t original_size, size_t alignment);
-  template<typename T> inline T* realloc(const T* ptr, Uint32 items, Uint32 original_items);
+  // No default constructor, always require specifying parameters.
+  ArenaMalloc() = delete;
+  ArenaMalloc(size_t page_size) noexcept;
+  ~ArenaMalloc() noexcept;
+  void reset() noexcept;
+  void reset(size_t page_size) noexcept;
+  void* alloc_bytes(size_t size, size_t alignment) noexcept;
+  template<typename T> inline T* alloc(Uint32 items) noexcept;
+  template<typename T> inline T* alloc_exc(Uint32 items);
+  void* realloc_bytes(const void* ptr,
+                      size_t size,
+                      size_t original_size,
+                      size_t alignment
+                     ) noexcept;
+  template<typename T> inline T* realloc(const T* ptr,
+                                         Uint32 items,
+                                         Uint32 original_items
+                                        ) noexcept;
+  template<typename T> inline T* realloc_exc(const T* ptr,
+                                             Uint32 items,
+                                             Uint32 original_items);
 };
 
+/*
+ * Wrapper to allow allocation without type casts. Usage example:
+ *   MyType* variable = arena_malloc->alloc<MyType>(5)
+ * which is equivalent to:
+ *  MyType* variable = (MyType*) arena_malloc->alloc_bytes(5 * sizeof(MyType),
+ *                                                         alignof(MyType))
+ * Return nullptr on failure.
+ */
 template <typename T>
 inline T*
-ArenaAllocator::alloc(Uint32 items)
+ArenaMalloc::alloc(Uint32 items) noexcept
 {
+  static_assert(alignof(T) <= MAXIMUM_ALIGNMENT);
   return static_cast<T*>(alloc_bytes(items * sizeof(T), alignof(T)));
 }
+
+/*
+ * Like ArenaMalloc::alloc(), but throw an exception on failure.
+ */
 template <typename T>
 inline T*
-ArenaAllocator::realloc(const T* ptr, Uint32 items, Uint32 original_items)
+ArenaMalloc::alloc_exc(Uint32 items)
 {
+  T* ret = alloc<T>(items);
+  if(likely(ret)) {
+    return ret;
+  }
+  throw std::runtime_error("ArenaMalloc: Cannot allocate");
+}
+
+/*
+ * Wrapper to allow reallocation without type casts. Usage example:
+ *   MyType* variable = arena_malloc->realloc<MyType>(ptr, 5, 3)
+ * which is equivalent to:
+ *  MyType* variable = (MyType*) arena_malloc->realloc_bytes(ptr,
+ *                                                           5 * sizeof(MyType),
+ *                                                           3 * sizeof(MyType),
+ *                                                           alignof(MyType))
+ * Return nullptr on failure.
+ *
+ * WARNING: Read comment for ArenaMalloc::realloc_bytes().
+ */
+template <typename T>
+inline T*
+ArenaMalloc::realloc(const T* ptr, Uint32 items, Uint32 original_items) noexcept
+{
+  static_assert(alignof(T) <= MAXIMUM_ALIGNMENT);
   return static_cast<T*>
     (realloc_bytes
      (static_cast<const void*>(ptr),
       sizeof(T) * items,
       sizeof(T) * original_items,
       alignof(T)));
+}
+
+/*
+ * Like ArenaMalloc::realloc(), but throw an exception on failure.
+ */
+template <typename T>
+inline T*
+ArenaMalloc::realloc_exc(const T* ptr, Uint32 items, Uint32 original_items)
+{
+  T* ret = realloc<T>(ptr, items, original_items);
+  if(likely(ret)) {
+    return ret;
+  }
+  throw std::runtime_error("ArenaMalloc: Cannot allocate");
 }
 
 #endif
