@@ -200,10 +200,11 @@ bool SimplePropertiesSectionWriter::reset() {
 }
 
 bool SimplePropertiesSectionWriter::putWord(Uint32 val) {
-  return putWords(&val, 1);
+  return putWordsFromChar((char *)&val, 1);
 }
 
-bool SimplePropertiesSectionWriter::putWords(const Uint32 *src, Uint32 len) {
+bool SimplePropertiesSectionWriter::putWordsFromChar(const char *src,
+                                                     Uint32 len) {
   Uint32 left = SectionSegment::DataLength - m_pos;
 
   while (len >= left) {
@@ -216,7 +217,7 @@ bool SimplePropertiesSectionWriter::putWords(const Uint32 *src, Uint32 len) {
       m_currentSegment = next.p;
 
       len -= left;
-      src += left;
+      src += 4 * left;
       m_sz += left;
 
       left = SectionSegment::DataLength;

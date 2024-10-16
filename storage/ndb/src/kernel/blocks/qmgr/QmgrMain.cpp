@@ -134,7 +134,7 @@ extern NodeBitmask g_not_active_nodes;
   } while (0)
 #endif
 
-//#define DEBUG_QMGR_START
+// #define DEBUG_QMGR_START
 #ifdef DEBUG_QMGR_START
 #include <DebuggerNames.hpp>
 #define QMGR_DEBUG(x) ndbout << "QMGR " << __LINE__ << ": " << x << endl

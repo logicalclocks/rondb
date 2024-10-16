@@ -43,7 +43,7 @@
 #include <EventLogger.hpp>
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
-//#define DEBUG_INDEX_BUILD 1
+// #define DEBUG_INDEX_BUILD 1
 #endif
 
 #ifdef DEBUG_INDEX_BUILD
@@ -474,7 +474,7 @@ Dbtup::tuxReadAttrs(EmulatedJamBuffer * jamBuf,
 
 // ordered index build
 
-//#define TIME_MEASUREMENT
+// #define TIME_MEASUREMENT
 #ifdef TIME_MEASUREMENT
 static Uint32 time_events;
 Uint64 tot_time_passed;

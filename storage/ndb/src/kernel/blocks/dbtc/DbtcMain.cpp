@@ -24,7 +24,7 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
-//#define DBTC_MAIN
+// #define DBTC_MAIN
 #define DBTC_C
 
 #include <NdbSpin.h>
@@ -151,7 +151,7 @@
 
 // Use DEBUG to print messages that should be
 // seen only when we debug the product
-//#define USE_TC_DEBUG
+// #define USE_TC_DEBUG
 #ifdef USE_TC_DEBUG
 #define DEBUG(x) ndbout << "DBTC: " << x << endl;
 #else
@@ -16378,10 +16378,11 @@ bool Dbtc::sendDihGetNodeReq(Signal *signal, ScanRecordPtr scanptr,
    * theData[0] is always '0' in a DiGetNodesCONF,
    * else it is a REF, with errorCode in theData[1]
    */
-  const Uint32 errorCode =
-      (signal->theData[0] != 0) ? signal->theData[1] :         // DIH error
-          (ERROR_INSERTED_CLEAR(8095)) ? ZGET_DATAREC_ERROR :  // Fake error
-              0;
+  const Uint32 errorCode = (signal->theData[0] != 0) ? signal->theData[1]
+                                                     :  // DIH error
+                               (ERROR_INSERTED_CLEAR(8095)) ? ZGET_DATAREC_ERROR
+                                                            :  // Fake error
+                               0;
 
   if (errorCode != 0) {
     scanError(signal, scanptr, errorCode);

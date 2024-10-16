@@ -37,7 +37,7 @@
  * with realtime and is thus disabled by default, but can be activated for
  * special builds.
  */
-//#define NDB_USE_SPINLOCK
+// #define NDB_USE_SPINLOCK
 
 /**
  * Use mutex for internal signal communication except in the case of x86

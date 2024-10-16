@@ -3100,8 +3100,8 @@ inline constexpr const decltype(handlerton::flags) HTON_SUPPORTS_DISTANCE_SCAN{
     1 << 23};
 
 /* Whether the engine supports being specified as a default storage engine */
-inline constexpr const decltype(
-    handlerton::flags) HTON_NO_DEFAULT_ENGINE_SUPPORT{1 << 24};
+inline constexpr const decltype(handlerton::flags)
+    HTON_NO_DEFAULT_ENGINE_SUPPORT{1 << 24};
 
 inline bool secondary_engine_supports_ddl(const handlerton *hton) {
   assert(hton->flags & HTON_IS_SECONDARY_ENGINE);
@@ -4192,9 +4192,7 @@ class Ft_hints {
 
      @return pointer to ft_hints struct
    */
-  struct ft_hints *get_hints() {
-    return &hints;
-  }
+  struct ft_hints *get_hints() { return &hints; }
 };
 
 /**
@@ -5396,10 +5394,9 @@ class handler {
   double estimate_in_memory_buffer(ulonglong table_index_size) const;
 
  public:
-  virtual ha_rows multi_range_read_info_const(uint keyno, RANGE_SEQ_IF *seq,
-                                              void *seq_init_param,
-                                              uint n_ranges, uint *bufsz,
-                                              uint *flags, Cost_estimate *cost);
+  virtual ha_rows multi_range_read_info_const(
+      uint keyno, RANGE_SEQ_IF *seq, void *seq_init_param, uint n_ranges,
+      uint *bufsz, uint *flags, bool *force_default_mrr, Cost_estimate *cost);
   virtual ha_rows multi_range_read_info(uint keyno, uint n_ranges, uint keys,
                                         uint *bufsz, uint *flags,
                                         Cost_estimate *cost);

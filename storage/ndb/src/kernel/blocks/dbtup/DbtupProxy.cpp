@@ -35,7 +35,7 @@
 #define JAM_FILE_ID 413
 
 #ifdef VM_TRACE
-//#define DEBUG_TUP_RESTART_ 1
+// #define DEBUG_TUP_RESTART_ 1
 #endif
 
 #ifdef DEBUG_TUP_RESTART

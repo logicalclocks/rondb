@@ -301,6 +301,12 @@ ErrorReporter::WriteMessage(int thrdMessageID,
    * crash handler then we will never return from this first call.
    * Otherwise we will return, write the error log and never return
    * from the second call to prepare_to_crash below.
+   *
+   * In singlethreaded case first call of prepare_to_crash does nothing.
+   * In the second call we ensure that, if there are two threads (watchdog
+   * and signal execution) processing the crash handling in parallel,
+   * only one thread (the first one) will proceed with the crash
+   * handling, the second one will stop immediately.
    */
   prepare_to_crash(true, (nst == NST_ErrorInsert));
 

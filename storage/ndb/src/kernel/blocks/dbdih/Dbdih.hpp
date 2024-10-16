@@ -2528,6 +2528,7 @@ class Dbdih : public SimulatedBlock {
 
     Uint32 clientData;
     BlockReference clientRef;
+    NdbNodeBitmask stoppingNodes;
   };
 
   StopPermProxyRecord c_stopPermProxy;
