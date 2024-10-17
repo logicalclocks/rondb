@@ -84,7 +84,7 @@ void RonSQLCtrl::ronsql(
     return;
   }
 
-  ArenaAllocator aalloc;
+  ArenaMalloc amalloc(RonSQLExecParams::ARENA_MALLOC_PAGE_SIZE);
   RonSQLExecParams params;
 
   std::string& database = reqStruct.database;
@@ -117,7 +117,7 @@ void RonSQLCtrl::ronsql(
                                            params,
                                            &out_stream,
                                            &err_stream,
-                                           &aalloc,
+                                           &amalloc,
                                            &do_explain);
   if (static_cast<drogon::HttpStatusCode>(status.http_code) !=
         drogon::HttpStatusCode::k200OK) {
@@ -269,21 +269,23 @@ RS_Status ronsql_validate_and_init_params(RonSQLParams& req,
                                           RonSQLExecParams& ep,
                                           std::ostringstream* out_stream,
                                           std::ostringstream* err_stream,
-                                          ArenaAllocator* aalloc,
+                                          ArenaMalloc* amalloc,
                                           bool* do_explain) {
   // req.query -> ep.sql_buffer and ep.sql_len
-  assert(aalloc != NULL);
+  assert(amalloc != NULL);
   // todo-ronsql what if length is not in bytes?
   ep.sql_len = req.query.length();
   assert(ep.sql_buffer == NULL);
-  // todo-ronsql catch OOM exception
-  ep.sql_buffer = aalloc->alloc<char>(ep.sql_len + 2);
+  ep.sql_buffer = amalloc->alloc<char>(ep.sql_len + 2);
+  if(unlikely(!ep.sql_buffer)) {
+    return RS_SERVER_ERROR("Out of memory");
+  }
   memcpy(ep.sql_buffer, req.query.c_str(), req.query.length());
   ep.sql_buffer[ep.sql_len++] = '\0';
   ep.sql_buffer[ep.sql_len++] = '\0';
-  // aalloc -> ep.aalloc
-  assert(ep.aalloc == NULL);
-  ep.aalloc = aalloc;
+  // amalloc -> ep.amalloc
+  assert(ep.amalloc == NULL);
+  ep.amalloc = amalloc;
   // req.explainMode -> ep.explain_mode
   if (req.explainMode == "ALLOW") {
     ep.explain_mode = RonSQLExecParams::ExplainMode::ALLOW;

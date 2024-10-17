@@ -34,6 +34,7 @@ INCLUDE_DIRECTORIES(
 
 ADD_DEFINITIONS(-DNO_DUMMY_DECL)
 ADD_CONVENIENCE_LIBRARY(ndbgeneral
+  ArenaMalloc.cpp
   BaseString.cpp
   Bitmask.cpp
   CharsetMap.cpp

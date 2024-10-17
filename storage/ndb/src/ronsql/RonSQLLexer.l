@@ -541,8 +541,12 @@ union rsqlp_alloc_align
 void*
 rsqlp_alloc(size_t bytes, void * scanner)
 {
-  return rsqlp_get_extra(scanner)->get_allocator()->
+  void* ret = rsqlp_get_extra(scanner)->get_allocator()->
     alloc_bytes(bytes, alignof(union rsqlp_alloc_align));
+  if(likely(ret)) {
+    return ret;
+  }
+  throw std::runtime_error("rsqlp_alloc: Cannot allocate");
 }
 
 void*
@@ -561,5 +565,5 @@ rsqlp_free(void * ptr, void * scanner)
 {
     (void)ptr;
     (void)scanner;
-    // Do nothing. ArenaAllocator will free everything at end of its lifetime.
+    // Do nothing. ArenaMalloc will free everything at end of its lifetime.
 }

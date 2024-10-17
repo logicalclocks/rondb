@@ -93,11 +93,11 @@ extern void rsqlp_error(RSQLP_LTYPE* yylloc, yyscan_t yyscanner, const char* s);
  * to be of type SOMETYPE*&, allocate sizeof(SOMETYPE) new memory and set THIS
  * to the address of the new allocation. In other words, it should be equivalent
  * to:
- * THIS = context->get_allocator()->alloc<SOMETYPE>(1);
+ * THIS = context->get_allocator()->alloc_exc<SOMETYPE>(1);
  */
 #define initptr(THIS) do \
   { \
-    THIS = context->get_allocator()->alloc<std::remove_pointer<std::remove_reference<decltype(THIS)>::type>::type>(1); \
+    THIS = context->get_allocator()->alloc_exc<std::remove_pointer<std::remove_reference<decltype(THIS)>::type>::type>(1); \
   } while (0)
 #define init_aggfun(RES,LOC,FUN,ARG) do \
   { \

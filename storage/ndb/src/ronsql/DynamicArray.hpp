@@ -25,7 +25,7 @@
 #ifndef STORAGE_NDB_SRC_RONSQL_DYNAMICARRAY_HPP
 #define STORAGE_NDB_SRC_RONSQL_DYNAMICARRAY_HPP 1
 
-#include "ArenaAllocator.hpp"
+#include "ArenaMalloc.hpp"
 
 /* A simple dynamic array supporting only objects that are trivially
  * constructible/destructible, only arena allocation and no shrinking.
@@ -55,9 +55,9 @@ private:
   T** pages;
   Uint32 item_count;
   Uint32 pages_capacity;
-  ArenaAllocator* allocator;
+  ArenaMalloc* allocator;
 public:
-  DynamicArray(ArenaAllocator* alloc) :
+  DynamicArray(ArenaMalloc* alloc) :
     pages(NULL),
     item_count(0),
     pages_capacity(0),
@@ -88,7 +88,7 @@ public:
         Uint32 newCapacity = (INITIAL_PAGES_CAPACITY) > (pages_capacity * 2)
                              ? (INITIAL_PAGES_CAPACITY)
                              : (pages_capacity * 2);
-        T** newPages = allocator->alloc<T*>(newCapacity);
+        T** newPages = allocator->alloc_exc<T*>(newCapacity);
         if (pages_capacity > 0)
         {
           memcpy(newPages, pages, pages_capacity * sizeof(T*));
@@ -96,7 +96,7 @@ public:
         pages = newPages;
         pages_capacity = newCapacity;
       }
-      pages[page] = allocator->alloc<T>(ITEMS_PER_PAGE);
+      pages[page] = allocator->alloc_exc<T>(ITEMS_PER_PAGE);
     }
     pages[page][idx] = item;
     item_count++;

@@ -42,7 +42,7 @@ RS_Status ronsql_validate_and_init_params(RonSQLParams& input,
                                           RonSQLExecParams& ep,
                                           std::ostringstream* out_stream,
                                           std::ostringstream* err_stream,
-                                          ArenaAllocator* aalloc,
+                                          ArenaMalloc* amalloc,
                                           bool* do_explain);
 
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_RONSQL_CTRL_HPP_

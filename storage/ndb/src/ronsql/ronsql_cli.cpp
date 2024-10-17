@@ -43,7 +43,7 @@ struct Config
 
 static void print_help(const char* argv0);
 static ExitCode parse_cmdline_arguments(int argc, char** argv, Config& config);
-static void read_stdin(ArenaAllocator* aalloc, char** buffer, size_t* buffer_len);
+static void read_stdin(ArenaMalloc* amalloc, char** buffer, size_t* buffer_len);
 static ExitCode run_ronsql(RonSQLExecParams& params);
 
 ExitCode
@@ -51,8 +51,8 @@ main(int argc, char** argv)
 {
   Config config;
   RonSQLExecParams& params = config.params;
-  ArenaAllocator aalloc;
-  params.aalloc = &aalloc;
+  ArenaMalloc amalloc(RonSQLExecParams::ARENA_MALLOC_PAGE_SIZE);
+  params.amalloc = &amalloc;
   params.out_stream = &cout;
   params.err_stream = &cerr;
   params.output_format = isatty(fileno(stdin)) && isatty(fileno(stdout))
@@ -76,7 +76,7 @@ main(int argc, char** argv)
   {
     try
     {
-      read_stdin(params.aalloc, &params.sql_buffer, &params.sql_len);
+      read_stdin(params.amalloc, &params.sql_buffer, &params.sql_len);
       assert(params.sql_buffer != NULL);
     }
     catch (std::runtime_error& e)
@@ -238,7 +238,7 @@ parse_cmdline_arguments(int argc, char** argv, Config& config)
         char* sql_query = optarg;
         size_t sql_query_len = strlen(sql_query);
         size_t parse_len = sql_query_len + 2;
-        char* parse_str = params.aalloc->alloc<char>(parse_len);
+        char* parse_str = params.amalloc->alloc_exc<char>(parse_len);
         memcpy(parse_str, sql_query, sql_query_len);
         parse_str[sql_query_len] = '\0';
         parse_str[sql_query_len+1] = '\0';
@@ -270,7 +270,7 @@ parse_cmdline_arguments(int argc, char** argv, Config& config)
         size_t sql_query_len = ftell(file);
         fseek(file, 0, SEEK_SET);
         size_t parse_len = sql_query_len + 2;
-        char* parse_str = params.aalloc->alloc<char>(parse_len);
+        char* parse_str = params.amalloc->alloc_exc<char>(parse_len);
         size_t read_size = fread(parse_str, 1, parse_len, file);
         if (read_size != sql_query_len)
         {
@@ -330,10 +330,10 @@ parse_cmdline_arguments(int argc, char** argv, Config& config)
 }
 
 static void
-read_stdin(ArenaAllocator* aalloc, char** buffer, size_t* buffer_len)
+read_stdin(ArenaMalloc* amalloc, char** buffer, size_t* buffer_len)
 {
   size_t alloclen = 1024;
-  char* buf = aalloc->alloc<char>(alloclen);
+  char* buf = amalloc->alloc_exc<char>(alloclen);
   size_t contentlen = 0;
   while (true)
   {
@@ -353,13 +353,13 @@ read_stdin(ArenaAllocator* aalloc, char** buffer, size_t* buffer_len)
     }
     if (contentlen == alloclen)
     {
-      buf = aalloc->realloc(buf, alloclen * 2, alloclen);
+      buf = amalloc->realloc_exc<char>(buf, alloclen * 2, alloclen);
       alloclen *= 2;
     }
   }
   if (contentlen + 2 > alloclen)
   {
-    buf = aalloc->realloc(buf, contentlen + 2, alloclen);
+    buf = amalloc->realloc_exc<char>(buf, contentlen + 2, alloclen);
     // alloclen = contentlen + 2;
   }
   buf[contentlen] = '\0';

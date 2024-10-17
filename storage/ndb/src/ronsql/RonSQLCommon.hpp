@@ -28,7 +28,7 @@
 #include "Ndb.hpp"
 #include "NdbOperation.hpp"
 
-#include "ArenaAllocator.hpp"
+#include "ArenaMalloc.hpp"
 #include "LexString.hpp"
 
 #define ARRAY_LEN(x) (sizeof(x) / sizeof(x[0]))
@@ -41,7 +41,7 @@ struct RonSQLExecParams
 {
   char* sql_buffer = NULL;
   size_t sql_len = 0;
-  ArenaAllocator* aalloc = NULL;
+  ArenaMalloc* amalloc = NULL;
   Ndb* ndb = NULL;
   enum class ExplainMode
   {
@@ -74,6 +74,7 @@ struct RonSQLExecParams
   bool* do_explain = NULL; // If not NULL, use this to inform the caller whether
                            // we EXPLAIN. This is needed by RDRS to determine
                            // content type.
+  static const Uint32 ARENA_MALLOC_PAGE_SIZE = 2048;
 };
 
 // Forward declaration used in struct Outputs below
