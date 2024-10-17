@@ -59,13 +59,15 @@ private:
   struct Page* m_large_allocations;
   UintPtr m_point;
   UintPtr m_stop;
-# ifdef ARENAMALLOC_DEBUG
+#ifdef ARENAMALLOC_DEBUG
   Uint64 m_allocated_by_us;
   Uint64 m_allocated_by_user;
   Uint64 m_page_count;
   Uint64 m_large_alloc_count;
   Uint64 m_small_alloc_count;
-# endif
+#endif
+  void free_memory() noexcept;
+  void init_object(size_t) noexcept;
 public:
   // No default constructor, always require specifying parameters.
   ArenaMalloc() = delete;
@@ -159,4 +161,38 @@ ArenaMalloc::realloc_exc(const T* ptr, Uint32 items, Uint32 original_items)
   throw std::runtime_error("ArenaMalloc: Cannot allocate");
 }
 
+/*
+ * reset() will free all allocations and return the object to its initial state
+ * without changing the page size.
+ */
+inline void
+ArenaMalloc::reset() noexcept
+{
+  size_t page_size = m_half_page_size << 1;
+  reset(page_size);
+}
+
+/*
+ * reset(page_size) will free all allocations and return the object to its
+ * initial state and change the page size.
+ */
+inline void
+ArenaMalloc::reset(size_t page_size) noexcept {
+  free_memory();
+  init_object(page_size);
+}
+
+/*
+ * Helper function. Return the lowest pointer `aligned` such that
+ * `ptr <= aligned && aligned % align == 0`. This is similar in purpose to
+ * std::align, but non-destructive. Note that `align` must be a power of two.
+ */
+inline UintPtr
+aligned(size_t align, UintPtr ptr) noexcept
+{
+  assert(align <= ArenaMalloc::MAXIMUM_ALIGNMENT);
+  // Alignment must be power of two
+  assert((align & (align - 1)) == 0);
+  return (ptr - 1u + align) & -align;
+}
 #endif

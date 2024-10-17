@@ -34,20 +34,28 @@
  * allocated using individual calls to malloc(). Allocations smaller than that
  * will be allocated consecutively from a page.
  */
-ArenaMalloc::ArenaMalloc(size_t page_size) noexcept
-  : m_half_page_size(page_size >> 1)
-  , m_current_page(nullptr)
-  , m_large_allocations(nullptr)
-  , m_point(0)
-  , m_stop(0)
-#   ifdef ARENAMALLOC_DEBUG
-  , m_allocated_by_us(0)
-  , m_allocated_by_user(0)
-  , m_page_count(0)
-  , m_large_alloc_count(0)
-  , m_small_alloc_count(0)
-#   endif
+ArenaMalloc::ArenaMalloc(size_t page_size) noexcept {
+  init_object(page_size);
+}
+
+ArenaMalloc::~ArenaMalloc() noexcept
 {
+  free_memory();
+}
+
+void ArenaMalloc::init_object(size_t page_size) noexcept {
+  m_half_page_size = page_size >> 1;
+  m_current_page = nullptr;
+  m_large_allocations = nullptr;
+  m_point = 0;
+  m_stop = 0;
+#ifdef ARENAMALLOC_DEBUG
+  m_allocated_by_us = 0;
+  m_allocated_by_user = 0;
+  m_page_count = 0;
+  m_large_alloc_count = 0;
+  m_small_alloc_count = 0;
+#endif
   // page_size must be sane
   assert(page_size >= MINIMUM_PAGE_SIZE);
   assert(page_size < (SIZE_MAX >> 3));
@@ -57,32 +65,32 @@ ArenaMalloc::ArenaMalloc(size_t page_size) noexcept
   assert((page_size & (page_size - 1)) == 0);
 }
 
-ArenaMalloc::~ArenaMalloc() noexcept
-{
-# ifdef ARENAMALLOC_DEBUG
+void
+ArenaMalloc::free_memory() noexcept {
+#ifdef ARENAMALLOC_DEBUG
   Uint32 page_count = 0;
   Uint32 large_count = 0;
   UintPtr last_page_data = reinterpret_cast<UintPtr>(&m_current_page->data[0]);
-# endif
+#endif
   while (m_current_page)
   {
     Page* next = (Page*)m_current_page->next;
     free(m_current_page);
     m_current_page = next;
-#   ifdef ARENAMALLOC_DEBUG
+#ifdef ARENAMALLOC_DEBUG
     page_count++;
-#   endif
+#endif
   }
   while (m_large_allocations)
   {
     Page* next = m_large_allocations->next;
     free(m_large_allocations);
     m_large_allocations = next;
-#   ifdef ARENAMALLOC_DEBUG
+#ifdef ARENAMALLOC_DEBUG
     large_count++;
-#   endif
+#endif
   }
-# ifdef ARENAMALLOC_DEBUG
+#ifdef ARENAMALLOC_DEBUG
   assert(page_count == m_page_count);
   assert(large_count == m_large_alloc_count);
   if (m_page_count)
@@ -97,44 +105,9 @@ ArenaMalloc::~ArenaMalloc() noexcept
             << "  Total allocated by user: " << m_allocated_by_user << "\n"
             << "  Efficiency: " << 100 * m_allocated_by_user / m_allocated_by_us
             << "%" << std::endl;
-# endif
+#endif
   assert(m_current_page == nullptr);
   assert(m_large_allocations == nullptr);
-}
-
-/*
- * reset() will free all allocations and return the object to its initial state
- * without changing the page size.
- */
-inline void
-ArenaMalloc::reset() noexcept
-{
-  size_t page_size = m_half_page_size << 1;
-  reset(page_size);
-}
-
-/*
- * reset(page_size) will free all allocations and return the object to its
- * initial state and change the page size.
- */
-inline void
-ArenaMalloc::reset(size_t page_size) noexcept {
-  this->~ArenaMalloc();
-  new (this) ArenaMalloc(page_size);
-}
-
-/*
- * Helper function. Return the lowest pointer `aligned` such that
- * `ptr <= aligned && aligned % align == 0`. This is similar in purpose to
- * std::align, but non-destructive. Note that `align` must be a power of two.
- */
-inline UintPtr
-aligned(size_t align, UintPtr ptr) noexcept
-{
-  assert(align <= ArenaMalloc::MAXIMUM_ALIGNMENT);
-  // Alignment must be power of two
-  assert((align & (align - 1)) == 0);
-  return (ptr - 1u + align) & -align;
 }
 
 /*
@@ -154,13 +127,13 @@ ArenaMalloc::alloc_bytes(size_t size, size_t alignment) noexcept
     Page* new_allocation = static_cast<Page*>
       (malloc(new_allocation_size));
     if (likely(new_allocation)) {
-#     ifdef ARENAMALLOC_DEBUG
+#ifdef ARENAMALLOC_DEBUG
       m_allocated_by_us += new_allocation_size;
       m_allocated_by_user += size;
       std::cerr << "ArenaMalloc " << this
                 << ": Large allocation " << size
                 << " / " << new_allocation_size << std::endl;
-#     endif
+#endif
       new_allocation->next = m_large_allocations;
       m_large_allocations = new_allocation;
       void* ret = reinterpret_cast<void*>
@@ -170,17 +143,17 @@ ArenaMalloc::alloc_bytes(size_t size, size_t alignment) noexcept
              (reinterpret_cast<UintPtr>(new_allocation) + new_allocation_size));
       assert((reinterpret_cast<UintPtr>(new_allocation) + new_allocation_size) <
              (reinterpret_cast<UintPtr>(ret) + size + alignment));
-#     ifdef ARENAMALLOC_DEBUG
+#ifdef ARENAMALLOC_DEBUG
       m_large_alloc_count++;
-#     endif
+#endif
       return ret;
     }
     return nullptr;
   }
   // Small allocations
-# ifdef ARENAMALLOC_DEBUG
+#ifdef ARENAMALLOC_DEBUG
   UintPtr orig_point = m_point;
-# endif
+#endif
   m_point = aligned(alignment, m_point);
   UintPtr new_point = m_point + size;
   if (unlikely(m_stop < new_point))
@@ -188,7 +161,7 @@ ArenaMalloc::alloc_bytes(size_t size, size_t alignment) noexcept
     size_t page_size = m_half_page_size << 1;
     Page* new_page = static_cast<Page*>(malloc(page_size));
     if (likely(new_page)) {
-#     ifdef ARENAMALLOC_DEBUG
+#ifdef ARENAMALLOC_DEBUG
       m_allocated_by_us += page_size;
       if (m_page_count)
         std::cerr << "ArenaMalloc " << this << ": Page " << m_page_count
@@ -197,7 +170,7 @@ ArenaMalloc::alloc_bytes(size_t size, size_t alignment) noexcept
                       reinterpret_cast<UintPtr>(&m_current_page->data[0]))
                   << " / " << page_size << std::endl;
       m_page_count++;
-#     endif
+#endif
       new_page->next = m_current_page;
       m_current_page = new_page;
       m_point = reinterpret_cast<UintPtr>(&new_page->data[0]);
@@ -214,10 +187,10 @@ ArenaMalloc::alloc_bytes(size_t size, size_t alignment) noexcept
   }
   void* ret = reinterpret_cast<void*>(m_point);
   m_point = new_point;
-# ifdef ARENAMALLOC_DEBUG
+#ifdef ARENAMALLOC_DEBUG
   m_allocated_by_user += size;
   m_small_alloc_count++;
-# endif
+#endif
   return ret;
 }
 
