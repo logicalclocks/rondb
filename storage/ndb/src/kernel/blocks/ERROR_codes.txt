@@ -33,7 +33,7 @@ Next DBDIH 7249
 Next DBTC 8132
 Next DBTUP 4040
 Next DBLQH 5112
-Next DBDICT 6223
+Next DBDICT 6227
 Next DBDIH 7251
 Next DBTC 8133
 Next CMVMI 9993              Note: CMVMI grows downwards
@@ -47,7 +47,7 @@ Next LGMAN 15002
 Next TSMAN 16002
 Next DBSPJ 17000
 Next TRIX 18004
-Next DBUTIL 19001
+Next DBUTIL 19002
 
 TESTING NODE FAILURE, ARBITRATION
 ---------------------------------
@@ -307,7 +307,8 @@ time-out handling. They can also be used to test multiple node failure
 handling.
 
 5045: Crash in PREPARE_COPY_FRAG_REQ
-5046: Crash if LQHKEYREQ (NrCopy) comes when frag-state is incorrect
+5046: Unused
+
 
 ERROR CODES FOR TESTING TIME-OUT HANDLING IN DBLQH
 -------------------------------------------------
@@ -912,3 +913,4 @@ Index stats:
 DBUTIL
 -------
 19000: fail UTIL_PREPARE_REQ with PREPARE_SEIZE_ERROR
+19001: crash in UTIL_PREPARE_REQ if preparedOperationPool or runningPrepares pool is exhausted

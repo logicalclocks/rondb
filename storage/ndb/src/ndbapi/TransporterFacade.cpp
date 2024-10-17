@@ -58,9 +58,9 @@
 #include "kernel/signaldata/DumpStateOrd.hpp"
 #include "kernel/signaldata/TestOrd.hpp"
 
-//#define REPORT_TRANSPORTER
-//#define API_TRACE
-//#define DEBUG_TRANSPORTER
+// #define REPORT_TRANSPORTER
+// #define API_TRACE
+//  #define DEBUG_TRANSPORTER
 
 static int numberToIndex(int number) { return number - MIN_API_BLOCK_NO; }
 
@@ -491,12 +491,6 @@ int TransporterFacade::start_instance(NodeId nodeId,
     DBUG_RETURN(-1);
   }
 
-  if (!theTransporterRegistry->start_service(m_socket_server,
-                                             m_use_only_ipv4))
-  {
-    DBUG_RETURN(-1);
-  }
-
   /**
    * There are quite a few threads used in an API transporter for one node.
    * At first there is a send thread. The send thread is used to send data
@@ -519,13 +513,10 @@ int TransporterFacade::start_instance(NodeId nodeId,
    *
    * The Cluster manager starts a thread 
    */
-  theReceiveThread = NdbThread_Create(runReceiveResponse_C,
-                                      (void**)this,
-                                      0, // Use default stack size
-                                      "ndb_receive",
-                                      NDB_THREAD_PRIO_LOW);
-  if (theReceiveThread == nullptr)
-  {
+  theReceiveThread = NdbThread_Create(runReceiveResponse_C, (void **)this,
+                                      0,  // Use default stack size
+                                      "ndb_receive", NDB_THREAD_PRIO_LOW);
+  if (theReceiveThread == nullptr) {
     g_eventLogger->info(
         "TransporterFacade::start_instance:"
         " Failed to create thread for receive.");
@@ -817,7 +808,7 @@ void TransporterFacade::calc_recv_thread_wakeup() {
   else if (m_recv_thread_wakeup < min_number)
     m_recv_thread_wakeup = min_number;
 
-//#define DEBUG_THIS_FUNCTION 1
+// #define DEBUG_THIS_FUNCTION 1
 #ifdef DEBUG_THIS_FUNCTION
   fprintf(stderr, "m_recv_thread_wakeup = %u, cpu_usage = %u, factor = %u\n",
           m_recv_thread_wakeup, m_recv_thread_cpu_usage_in_percent, factor);
@@ -1042,7 +1033,6 @@ void TransporterFacade::threadMainSend(void) {
     exit(0);
   }
 
-  m_socket_server.startServer();
   raise_thread_prio(theSendThread);
 
   NDB_TICKS lastActivityCheck = NdbTick_getCurrentTicks();
@@ -1118,9 +1108,6 @@ void TransporterFacade::threadMainSend(void) {
     }
   }
   theTransporterRegistry->stopSending();
-
-  m_socket_server.stopServer();
-  m_socket_server.stopSessions(true);
 
   theTransporterRegistry->stop_clients();
 }
@@ -2718,12 +2705,12 @@ void TransporterFacade::propose_poll_owner() {
         (recv_client && recv_client->m_poll.m_poll_queue &&
          recv_client->m_state == ReceiveThreadClient::ACTIVE)
             ? recv_client
-            // Avoid the recv_client as it is not ACTIVE
-            : (m_poll_queue_tail == recv_client &&
-               m_poll_queue_tail->m_poll.m_prev != nullptr)
-                  // 'tail' is the recv_client, prefer another
-                  ? m_poll_queue_tail->m_poll.m_prev
-                  : m_poll_queue_tail;
+        // Avoid the recv_client as it is not ACTIVE
+        : (m_poll_queue_tail == recv_client &&
+           m_poll_queue_tail->m_poll.m_prev != nullptr)
+            // 'tail' is the recv_client, prefer another
+            ? m_poll_queue_tail->m_poll.m_prev
+            : m_poll_queue_tail;
 
     /**
      * Note: we can only try lock here, to prevent potential deadlock

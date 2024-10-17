@@ -248,8 +248,8 @@ static NDB_TICKS startTime;
 #define DEBUG_OUT(x)
 #endif
 
-//#define DEBUG_ABORT
-//#define dbg globalSignalLoggers.log
+// #define DEBUG_ABORT
+// #define dbg globalSignalLoggers.log
 
 static Uint32 g_TypeOfStart = NodeState::ST_ILLEGAL_TYPE;
 
@@ -433,8 +433,9 @@ void Backup::sendSTTORRY(Signal *signal) {
     signal->theData[7] = 255; // No more start phases from missra
     sig_len = 8;
   }
-  BlockReference cntrRef =
-      !isNdbMtLqh() ? NDBCNTR_REF : m_is_query_block ? QBACKUP_REF : BACKUP_REF;
+  BlockReference cntrRef = !isNdbMtLqh()      ? NDBCNTR_REF
+                           : m_is_query_block ? QBACKUP_REF
+                                              : BACKUP_REF;
   sendSignal(cntrRef, GSN_STTORRY, signal, sig_len, JBB);
 }
 

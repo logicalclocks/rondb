@@ -2050,10 +2050,10 @@ void Dbtup::set_commit_performed(OperationrecPtr firstOperPtr,
 
 #ifdef ERROR_INSERT
 #define MAX_COMMITS 0xFFFFFFFF
-//#define MAX_COMMITS 1
+// #define MAX_COMMITS 1
 #else
 #define MAX_COMMITS 0xFFFFFFFF
-//#define MAX_COMMITS 4
+// #define MAX_COMMITS 4
 #endif
 void Dbtup::continue_report_commit_performed(Signal *signal,
                                              Uint32 firstOperPtrI) {

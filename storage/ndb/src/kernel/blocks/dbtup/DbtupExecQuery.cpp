@@ -1359,9 +1359,9 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
 
     const Uint32 triggers = (flags & Dblqh::TcConnectionrec::OP_NO_TRIGGERS)
                                 ? TupKeyReq::OP_NO_TRIGGERS
-                                : (lqhOpPtrP->seqNoReplica == 0)
-                                      ? TupKeyReq::OP_PRIMARY_REPLICA
-                                      : TupKeyReq::OP_BACKUP_REPLICA;
+                            : (lqhOpPtrP->seqNoReplica == 0)
+                                ? TupKeyReq::OP_PRIMARY_REPLICA
+                                : TupKeyReq::OP_BACKUP_REPLICA;
     op_struct.bit_field.delete_insert_flag = false;
     op_struct.bit_field.m_gci_written = 0;
     op_struct.bit_field.m_reorg = lqhOpPtrP->m_reorg;

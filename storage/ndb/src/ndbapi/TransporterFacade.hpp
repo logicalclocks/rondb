@@ -347,8 +347,7 @@ private:
 
   bool m_use_only_ipv4;
 
-  TransporterRegistry* theTransporterRegistry;
-  SocketServer m_socket_server;
+  TransporterRegistry *theTransporterRegistry;
   int sendPerformedLastInterval;
   TrpId theOwnTrpId;
   NodeId theOwnId;

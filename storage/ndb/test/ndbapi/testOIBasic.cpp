@@ -641,35 +641,28 @@ struct Col {
   void wellformed(const void *addr) const;
 };
 
-Col::Col(const struct Tab& tab,
-         uint num,
-         const char* name,
-         bool pk,
-         Type type,
-         uint length,
-         bool nullable,
-         const Chs* chs) :
-  m_tab(tab),
-  m_num(num),
-  m_name(strcpy(new char [strlen(name) + 1], name)),
-  m_pk(pk),
-  m_type(type),
-  m_length(length),
-  m_bytelength(length * (chs == 0 ? 1 : chs->m_cs->mbmaxlen)),
-  m_attrsize(
-      type == Unsigned ? sizeof(Uint32) :
-      type == Char ? sizeof(char) :
-      type == Varchar ? sizeof(char) :
-      type == Longvarchar ? sizeof(char) : ~0),
-  m_headsize(
-      type == Unsigned ? 0 :
-      type == Char ? 0 :
-      type == Varchar ? 1 :
-      type == Longvarchar ? 2 : ~0),
-  m_bytesize(m_headsize + m_attrsize * m_bytelength),
-  m_nullable(nullable),
-  m_chs(chs)
-{
+Col::Col(const struct Tab &tab, uint num, const char *name, bool pk, Type type,
+         uint length, bool nullable, const Chs *chs)
+    : m_tab(tab),
+      m_num(num),
+      m_name(strcpy(new char[strlen(name) + 1], name)),
+      m_pk(pk),
+      m_type(type),
+      m_length(length),
+      m_bytelength(length * (chs == 0 ? 1 : chs->m_cs->mbmaxlen)),
+      m_attrsize(type == Unsigned      ? sizeof(Uint32)
+                 : type == Char        ? sizeof(char)
+                 : type == Varchar     ? sizeof(char)
+                 : type == Longvarchar ? sizeof(char)
+                                       : ~0),
+      m_headsize(type == Unsigned      ? 0
+                 : type == Char        ? 0
+                 : type == Varchar     ? 1
+                 : type == Longvarchar ? 2
+                                       : ~0),
+      m_bytesize(m_headsize + m_attrsize * m_bytelength),
+      m_nullable(nullable),
+      m_chs(chs) {
   // fix long varchar
   if (type == Varchar && m_bytelength > 255) {
     m_type = Longvarchar;
