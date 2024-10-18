@@ -835,6 +835,14 @@ struct st_handler_tablename {
 */
 #define UNDEF_NODEGROUP 65535
 
+/*
+ * Zart
+ * Turn on them to trace handler
+ */
+#undef TTL_TRACE_HANDLER
+// #define TTL_TRACE_HANDLER 1
+#define TTL_TABLE_NAME "sz"
+
 // FUTURE: Combine these two enums into one enum class
 enum ts_command_type {
   TS_CMD_NOT_DEFINED = -1,

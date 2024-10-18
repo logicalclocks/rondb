@@ -287,6 +287,8 @@ class Dbdict : public SimulatedBlock {
     {
       m_upgrade_trigger_handling.m_upgrade = false;
       fullyReplicatedTriggerId = RNIL;
+      ttlSec = RNIL;
+      ttlColumnNo = RNIL;
     }
     static bool isCompatible(Uint32 type)
     { return DictTabInfo::isTable(type) || DictTabInfo::isIndex(type); }
@@ -482,6 +484,12 @@ class Dbdict : public SimulatedBlock {
 
     // pending background request (IndexStatRep::RequestType)
     Uint32 indexStatBgRequest;
+
+    /*
+     * TTL
+     */
+    Uint32 ttlSec;
+    Uint32 ttlColumnNo;
   };
   typedef TransientPool<TableRecord> TableRecord_pool;
   typedef DLFifoList<TableRecord_pool> TableRecord_list;

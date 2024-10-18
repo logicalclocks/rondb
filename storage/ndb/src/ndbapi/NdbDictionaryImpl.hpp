@@ -399,6 +399,12 @@ class NdbTableImpl : public NdbDictionary::Table, public NdbDictObjectImpl {
 
   Uint32 m_hash_map_id;
   Uint32 m_hash_map_version;
+
+  /**
+   * TTL
+   */
+  Uint32 m_ttl_sec;
+  Uint32 m_ttl_col_no;
 };
 
 class NdbIndexImpl : public NdbDictionary::Index, public NdbDictObjectImpl {

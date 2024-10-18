@@ -154,6 +154,12 @@ void NdbOperation::setRequestInfoTCKEYREQ(bool lastFlag, bool longSignal) {
       requestInfo,
       theReadCommittedBaseIndicator & static_cast<Uint8>(longSignal));
   TcKeyReq::setNoWaitFlag(requestInfo, (m_flags & OF_NOWAIT) != 0);
+  /*
+   * Zart
+   * TTL
+   */
+  TcKeyReq::setTTLIgnoreFlag(requestInfo,
+                          (m_flags & OF_TTL_IGNORE) != 0);
   req->requestInfo = requestInfo;
 }
 

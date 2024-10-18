@@ -707,6 +707,10 @@ void Dbtux::continue_scan(Signal *signal, ScanOpPtr scanPtr, Frag &frag,
   }
 #endif
   const Index &index = *c_ctx.indexPtr.p;
+
+  bool ttl_table = c_lqh->is_ttl_table(index.m_tableId);
+  bool ttl_ignore_for_ral = false;
+
   if (unlikely(scan.m_lockwait || wait_scan_lock_record)) {
     jam();
     /**
@@ -794,6 +798,7 @@ void Dbtux::continue_scan(Signal *signal, ScanOpPtr scanPtr, Frag &frag,
       lockReq->transId2 = scan.m_transId2;
       lockReq->isCopyFragScan = ZFALSE;
       // execute
+      lockReq->ignore_ttl = 0;
       c_acc->execACC_LOCKREQ(signal);
       jamEntryDebug();
       switch (lockReq->returnCode) {
@@ -806,6 +811,13 @@ void Dbtux::continue_scan(Signal *signal, ScanOpPtr scanPtr, Frag &frag,
                         << endl;
           }
 #endif
+          if (ttl_table) {
+            ttl_ignore_for_ral = lockReq->ignore_ttl;
+#ifdef TTL_DEBUG
+            g_eventLogger->info("Zart, Dbtux::continue_scan()[1] check whether needs "
+                                "to ignore TTL: %d", ttl_ignore_for_ral);
+#endif  // TTL_DEBUG
+          }
           break;
         }
         case AccLockReq::IsBlocked: {
@@ -892,6 +904,39 @@ void Dbtux::continue_scan(Signal *signal, ScanOpPtr scanPtr, Frag &frag,
         default:
           ndbabort();
       }
+    } else if (ttl_table) {
+      jamDebug();
+      const TreeEnt ent = scan.m_scanEnt;
+      // read tuple key
+      readTableHashKey(ent, pkData, pkSize);
+      // get read lock or exclusive lock
+      AccLockReq* const lockReq = (AccLockReq*)signal->getDataPtrSend();
+      lockReq->returnCode = RNIL;
+      lockReq->requestInfo =
+        scan.m_lockMode == 0 ? AccLockReq::LockShared : AccLockReq::LockExclusive;
+      lockReq->accOpPtr = RNIL;
+      lockReq->userPtr = scanPtr.i;
+      lockReq->userRef = reference();
+      lockReq->tableId = scan.m_tableId;
+      lockReq->fragId = frag.m_fragId;
+      lockReq->hashValue =
+        rondb_calc_hash_val((const char*)pkData,
+                             pkSize,
+                             frag.m_use_new_hash_function);
+      Uint32 lkey1, lkey2;
+      getTupAddr(ent, lkey1, lkey2);
+      lockReq->page_id = lkey1;
+      lockReq->page_idx = lkey2;
+      lockReq->transId1 = scan.m_transId1;
+      lockReq->transId2 = scan.m_transId2;
+      lockReq->isCopyFragScan = ZFALSE;
+      ttl_ignore_for_ral = c_acc->WhetherSkipTTL(signal);
+#ifdef TTL_DEBUG
+      g_eventLogger->info("Zart, Dbtux::continue_scan()[2] check whether needs "
+                          "to ignore TTL: %d", ttl_ignore_for_ral);
+#endif  // TTL_DEBUG
+      scan.m_state = ScanOp::Locked;
+      jamEntryDebug();
     } else {
       scan.m_state = ScanOp::Locked;
     }
@@ -950,7 +995,12 @@ void Dbtux::continue_scan(Signal *signal, ScanOpPtr scanPtr, Frag &frag,
     // next time look for next entry
     scan.m_state = ScanOp::Next;
     signal->setLength(NextScanConf::SignalLengthNoGCI);
-    c_lqh->exec_next_scan_conf(signal);
+    /*
+     * Zart
+     * TTL
+     * Here we set ScanRecord->m_ignore_ttl_for_ral
+     */
+    c_lqh->exec_next_scan_conf(signal, ttl_ignore_for_ral);
     return;
   }
   // In ACC this is checked before req->checkLcpStop

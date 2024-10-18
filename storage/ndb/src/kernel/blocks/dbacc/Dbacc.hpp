@@ -378,7 +378,8 @@ typedef LocalDLCFifoList<Page8_pool, IA_Page8> LocalContainerPageList;
 /* --------------------------------------------------------------------------------- */
 #define NUM_ACC_FRAGMENT_MUTEXES 4
 struct Fragmentrec {
-  Fragmentrec() {}
+  Fragmentrec() : ttlSec(RNIL), ttlColumnNo(RNIL) {
+  }
   Uint64 tupFragptr;
   Uint32 m_magic;
   Uint32 nextPool;
@@ -672,6 +673,11 @@ struct Fragmentrec {
   };
 
   LockStats m_lockStats;
+  /*
+   * TTL
+   */
+  Uint32 ttlSec;
+  Uint32 ttlColumnNo;
 
 public:
   Uint32 getPageNumber(Uint32 bucket_number) const;
@@ -793,6 +799,11 @@ struct Operationrec {
   Operationrec_pool oprec_pool;
   Operationrec_list m_reserved_copy_frag_lock;
   OperationrecPtr operationRecPtr;
+  /*
+   * Zart
+   * TTL
+   */
+  Operationrec tmp_op_rec;
   OperationrecPtr queOperPtr;
   Uint32 cfreeopRec;
 
@@ -918,6 +929,11 @@ struct Tabrec {
   {
     return sizeof(struct Tabrec);
   }
+  /*
+   * Zart
+   * TTL
+   */
+  bool WhetherSkipTTL(Signal* signal);
 private:
   // Transit signals
   void execDEBUG_SIG(Signal *signal);
@@ -978,7 +994,7 @@ private:
   bool addfragtotab(Uint64 rootIndex, Uint32 fragId) const;
   void drop_fragment_from_table(Uint32 tableId, Uint32 fragId);
   void initOpRec(const AccKeyReq* signal, Uint32 siglen) const;
-  void sendAcckeyconf(Signal* signal) const;
+  void sendAcckeyconf(Signal* signal, bool ignore_ttl = false) const;
   Uint32 getNoParallelTransaction(const Operationrec*) const;
 
 #ifdef VM_TRACE
@@ -1171,10 +1187,12 @@ private:
   void sendholdconfsignalLab(Signal* signal) const;
   void accIsLockedLab(Signal* signal,
                       OperationrecPtr lockOwnerPtr,
-                      Uint32 hash);
+                      Uint32 hash,
+                      bool is_ttl_table);
   void insertExistElemLab(Signal* signal,
                           OperationrecPtr lockOwnerPtr,
-                          Uint32 hash);
+                          Uint32 hash,
+                          bool is_ttl_table);
   void releaseScanLab(Signal* signal);
   void initialiseRecordsLab(Signal* signal, Uint32, Uint32, Uint32);
   void checkNextBucketLab(Signal* signal);
@@ -1191,6 +1209,11 @@ private:
 #else
   void debug_lh_vars(const char *where) const {}
 #endif
+  bool is_ttl_table(Fragmentrec* fragptr) {
+    ndbrequire(fragptr != nullptr);
+    return (c_ttl_enabled &&
+            fragptr->ttlSec != RNIL && fragptr->ttlColumnNo != RNIL);
+  }
 
  public:
   // Variables
@@ -1243,6 +1266,7 @@ private:
   static const Uint32 c_transient_pool_count = 2;
   TransientFastSlotPool *c_transient_pools[c_transient_pool_count];
   Bitmask<1> c_transient_pools_shrinking;
+  Uint32 c_ttl_enabled;
 
 public:
   Dbacc *m_curr_acc;

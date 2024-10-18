@@ -3185,6 +3185,11 @@ static bool table_lock_not_mapped_to_row_lock(enum thr_lock_type lock_type) {
 
 inline int ha_ndbcluster::fetch_next(NdbScanOperation *cursor) {
   DBUG_TRACE;
+#ifdef TTL_TRACE_HANDLER
+  if (strcmp(m_share->table_name, TTL_TABLE_NAME) == 0) {
+    ndb_log_info("Zart, ha_ndbcluster::fetch_next");
+  }
+#endif  // TTL_TRACE_HANDLER
   int local_check;
   int error;
   NdbTransaction *trans = m_thd_ndb->trans;
@@ -3367,6 +3372,11 @@ inline int ha_ndbcluster::next_result(uchar *buf) {
   DBUG_TRACE;
 
   if (m_active_cursor) {
+#ifdef TTL_TRACE_HANDLER
+  if (strcmp(m_share->table_name, TTL_TABLE_NAME) == 0) {
+    ndb_log_info("Zart, ha_ndbcluster::next_result");
+  }
+#endif  // TTL_TRACE_HANDLER
     while ((res = fetch_next(m_active_cursor)) == 0) {
       DBUG_PRINT("info", ("One more record found"));
 
@@ -3528,6 +3538,15 @@ const NdbOperation *ha_ndbcluster::pk_unique_index_read_key(
     assert(m_user_defined_partitioning);
     options.optionsPresent |= NdbOperation::OperationOptions::OO_PARTITION_ID;
     options.partitionId = *ppartition_id;
+    poptions = &options;
+  }
+
+  /*
+   * Zart
+   * TTL
+   */
+  if (m_ttl_ignore) {
+    options.optionsPresent |= NdbOperation::OperationOptions::OO_TTL_IGNORE;
     poptions = &options;
   }
 
@@ -3796,6 +3815,14 @@ int ha_ndbcluster::ordered_index_scan(const key_range *start_key,
       options.optionsPresent |= NdbScanOperation::ScanOptions::SO_PARTITION_ID;
     }
 
+    /*
+     * Zart
+     * TTL
+     */
+    if (m_ttl_ignore) {
+      options.optionsPresent |= NdbScanOperation::ScanOptions::SO_TTL_IGNORE;
+    }
+
     NdbInterpretedCode code(m_table);
     generate_scan_filter(&code, &options);
 
@@ -3853,6 +3880,11 @@ static int guess_scan_flags(NdbOperation::LockMode lm, Ndb_table_map *table_map,
 int ha_ndbcluster::full_table_scan(const KEY *key_info,
                                    const key_range *start_key,
                                    const key_range *end_key, uchar *buf) {
+#ifdef TTL_TRACE_HANDLER
+  if (strcmp(m_share->table_name, TTL_TABLE_NAME) == 0) {
+    ndb_log_info("Zart, ha_ndbcluster::full_table_scan");
+  }
+#endif  // TTL_TRACE_HANDLER
   THD *thd = table->in_use;
   int error;
   NdbTransaction *trans = m_thd_ndb->trans;
@@ -3911,6 +3943,14 @@ int ha_ndbcluster::full_table_scan(const KEY *key_info,
   NdbScanOperation::ScanOptions options;
   options.optionsPresent = (NdbScanOperation::ScanOptions::SO_SCANFLAGS |
                             NdbScanOperation::ScanOptions::SO_PARALLEL);
+  /*
+   * Zart
+   * TTL
+   */
+  if (m_ttl_ignore) {
+    options.optionsPresent = NdbScanOperation::ScanOptions::SO_TTL_IGNORE;
+  }
+
   options.scan_flags =
       guess_scan_flags(lm, m_table_map, m_table, table->read_set);
   options.parallel = DEFAULT_PARALLELISM;
@@ -5665,6 +5705,15 @@ int ha_ndbcluster::ndb_update_row(const uchar *old_data, uchar *new_data,
     options.optionsPresent |= NdbOperation::OperationOptions::OO_DISABLE_FK;
   }
 
+  if (m_ttl_ignore) {
+#ifdef TTL_TRACE_HANDLER
+  if (strcmp(m_share->table_name, TTL_TABLE_NAME) == 0) {
+    ndb_log_info("Zart, ha_ndbcluster::ndb_update_row(), set TTL_IGNORE flag");
+  }
+#endif  // TTL_TRACE_HANDLER
+    options.optionsPresent |= NdbOperation::OperationOptions::OO_TTL_IGNORE;
+  }
+
   if (cursor) {
     /*
       We are scanning records and want to update the record
@@ -5720,6 +5769,16 @@ int ha_ndbcluster::ndb_update_row(const uchar *old_data, uchar *new_data,
 
     if (options.optionsPresent != 0) poptions = &options;
 
+    /*
+     * Zart
+     * TODO (Zhao)
+     * If avoidNdbApiWriteOp is true in INSERT ON DUPLICATE KEY UPDATE statement
+     * here, we need to make the updateTuple can force update tuple even if the
+     * tuple is expired on data node
+     *
+     * Update:
+     * Yes, it is...
+     */
     if (likely(avoidNdbApiWriteOp)) {
       if (!(op =
                 trans->updateTuple(key_rec, (const char *)key_row, m_ndb_record,
@@ -5937,6 +5996,15 @@ int ha_ndbcluster::ndb_delete_row(const uchar *record,
   if (thd_test_options(thd, OPTION_NO_FOREIGN_KEY_CHECKS)) {
     DBUG_PRINT("info", ("Disabling foreign keys"));
     options.optionsPresent |= NdbOperation::OperationOptions::OO_DISABLE_FK;
+  }
+
+  if (m_ttl_ignore) {
+#ifdef TTL_TRACE_HANDLER
+  if (strcmp(m_share->table_name, TTL_TABLE_NAME) == 0) {
+    ndb_log_info("Zart, ha_ndbcluster::ndb_delete_row(), set TTL_IGNORE flag");
+  }
+#endif  // TTL_TRACE_HANDLER
+    options.optionsPresent |= NdbOperation::OperationOptions::OO_TTL_IGNORE;
   }
 
   if (cursor) {
@@ -6239,6 +6307,11 @@ static inline int fail_index_offline(TABLE *t, int index) {
 int ha_ndbcluster::index_init(uint index, bool sorted) {
   DBUG_TRACE;
   DBUG_PRINT("enter", ("index: %u  sorted: %d", index, sorted));
+#ifdef TTL_TRACE_HANDLER
+  if (strcmp(m_share->table_name, TTL_TABLE_NAME) == 0) {
+    ndb_log_info("Zart, ha_ndbcluster::index_init");
+  }
+#endif  // TTL_TRACE_HANDLER
   if (index < MAX_KEY && m_index[index].type == UNDEFINED_INDEX)
     return fail_index_offline(table, index);
 
@@ -6335,6 +6408,11 @@ int ha_ndbcluster::index_read(uchar *buf, const uchar *key, uint key_len,
 
 int ha_ndbcluster::index_next(uchar *buf) {
   DBUG_TRACE;
+#ifdef TTL_TRACE_HANDLER
+  if (strcmp(m_share->table_name, TTL_TABLE_NAME) == 0) {
+    ndb_log_info("Zart, ha_ndbcluster::index_next");
+  }
+#endif  // TTL_TRACE_HANDLER
   ha_statistic_increment(&System_status_var::ha_read_next_count);
   const int error = next_result(buf);
   return error;
@@ -6342,6 +6420,11 @@ int ha_ndbcluster::index_next(uchar *buf) {
 
 int ha_ndbcluster::index_prev(uchar *buf) {
   DBUG_TRACE;
+#ifdef TTL_TRACE_HANDLER
+  if (strcmp(m_share->table_name, TTL_TABLE_NAME) == 0) {
+    ndb_log_info("Zart, ha_ndbcluster::index_prev");
+  }
+#endif  // TTL_TRACE_HANDLER
   ha_statistic_increment(&System_status_var::ha_read_prev_count);
   const int error = next_result(buf);
   return error;
@@ -6349,6 +6432,11 @@ int ha_ndbcluster::index_prev(uchar *buf) {
 
 int ha_ndbcluster::index_first(uchar *buf) {
   DBUG_TRACE;
+#ifdef TTL_TRACE_HANDLER
+  if (strcmp(m_share->table_name, TTL_TABLE_NAME) == 0) {
+    ndb_log_info("Zart, ha_ndbcluster::index_first");
+  }
+#endif  // TTL_TRACE_HANDLER
   if (!m_index[active_index].index)
     return fail_index_offline(table, active_index);
   ha_statistic_increment(&System_status_var::ha_read_first_count);
@@ -6362,6 +6450,11 @@ int ha_ndbcluster::index_first(uchar *buf) {
 
 int ha_ndbcluster::index_last(uchar *buf) {
   DBUG_TRACE;
+#ifdef TTL_TRACE_HANDLER
+  if (strcmp(m_share->table_name, TTL_TABLE_NAME) == 0) {
+    ndb_log_info("Zart, ha_ndbcluster::index_last");
+  }
+#endif  // TTL_TRACE_HANDLER
   if (!m_index[active_index].index)
     return fail_index_offline(table, active_index);
   ha_statistic_increment(&System_status_var::ha_read_last_count);
@@ -6522,6 +6615,11 @@ int ha_ndbcluster::Copying_alter::check_saved_commit_count(
 int ha_ndbcluster::rnd_init(bool) {
   DBUG_TRACE;
 
+#ifdef TTL_TRACE_HANDLER
+  if (strcmp(m_share->table_name, TTL_TABLE_NAME) == 0) {
+    ndb_log_info("Zart, ha_ndbcluster::rnd_init");
+  }
+#endif  // TTL_TRACE_HANDLER
   if (int error = close_scan()) {
     return error;
   }
@@ -6544,6 +6642,11 @@ int ha_ndbcluster::rnd_init(bool) {
 int ha_ndbcluster::close_scan() {
   DBUG_TRACE;
 
+#ifdef TTL_TRACE_HANDLER
+  if (strcmp(m_share->table_name, TTL_TABLE_NAME) == 0) {
+    ndb_log_info("Zart, ha_ndbcluster::close_scan");
+  }
+#endif  // TTL_TRACE_HANDLER
   if (m_active_query) {
     m_active_query->close(m_thd_ndb->m_force_send);
     m_active_query = nullptr;
@@ -6587,6 +6690,11 @@ int ha_ndbcluster::rnd_end() {
 
 int ha_ndbcluster::rnd_next(uchar *buf) {
   DBUG_TRACE;
+#ifdef TTL_TRACE_HANDLER
+  if (strcmp(m_share->table_name, TTL_TABLE_NAME) == 0) {
+    ndb_log_info("Zart, ha_ndbcluster::rnd_next");
+  }
+#endif  // TTL_TRACE_HANDLER
   ha_statistic_increment(&System_status_var::ha_read_rnd_next_count);
 
   int error;
@@ -6606,6 +6714,11 @@ int ha_ndbcluster::rnd_next(uchar *buf) {
 
 int ha_ndbcluster::rnd_pos(uchar *buf, uchar *pos) {
   DBUG_TRACE;
+#ifdef TTL_TRACE_HANDLER
+  if (strcmp(m_share->table_name, TTL_TABLE_NAME) == 0) {
+    ndb_log_info("Zart, ha_ndbcluster::rnd_pos");
+}
+#endif  // TTL_TRACE_HANDLER
   ha_statistic_increment(&System_status_var::ha_read_rnd_count);
   // The primary key for the record is stored in pos
   // Perform a pk_read using primary key "index"
@@ -6634,6 +6747,23 @@ int ha_ndbcluster::rnd_pos(uchar *buf, uchar *pos) {
       DBUG_PRINT("info", ("partition id %u", part_spec.start_part));
     }
     DBUG_DUMP("key", pos, key_length);
+    /*
+     * Zart
+     * TODO (Zhao)
+     * potential optimization:
+     * In "INSERT ON DUPLICATE KEY UPDATE" implementation:
+     * 1. first,
+     *    write_record()->
+     *    ha_ndbcluster::ndb_write_row()->
+     *    ha_ndbcluster::peek_indexed_rows()
+     *    will call readTuple once
+     * 2. then,
+     *    write_record()->
+     *    handler::ha_update_row()
+     *    will go here and call readTuple again
+     *
+     * extra readTuple is expensive
+     */
     int res = pk_read(
         pos, buf,
         (m_user_defined_partitioning) ? &(part_spec.start_part) : nullptr);
@@ -6670,6 +6800,11 @@ void ha_ndbcluster::position(const uchar *record) {
   uint key_length;
 
   DBUG_TRACE;
+#ifdef TTL_TRACE_HANDLER
+  if (strcmp(m_share->table_name, TTL_TABLE_NAME) == 0) {
+    ndb_log_info("Zart, ha_ndbcluster::position");
+  }
+#endif  // TTL_TRACE_HANDLER
 
   if (table_share->primary_key != MAX_KEY) {
     key_length = ref_length;
@@ -7014,6 +7149,20 @@ int ha_ndbcluster::extra(enum ha_extra_function operation) {
       // again for subsequent statement
       DBUG_PRINT("info", ("HA_EXTRA_END_ALTER_COPY"));
       break;
+    /*
+     * Zart
+     * TTL
+     */
+    case HA_EXTRA_IGNORE_TTL:
+      DBUG_PRINT("info", ("HA_EXTRA_IGNORE_TTL"));
+      DBUG_PRINT("info", ("Ignore TTL"));
+      m_ttl_ignore = true;
+      break;
+    case HA_EXTRA_NO_IGNORE_TTL:
+      DBUG_PRINT("info", ("HA_EXTRA_NO_IGNORE_TTL"));
+      DBUG_PRINT("info", ("Don't ignore TTL"));
+      m_ttl_ignore = false;
+      break;
     default:
       break;
   }
@@ -7094,6 +7243,11 @@ int ha_ndbcluster::reset() {
 
   assert(m_is_bulk_delete == false);
   m_is_bulk_delete = false;
+  /*
+   * Zart
+   * TTL
+   */
+  m_ttl_ignore = false;
   return 0;
 }
 
@@ -8028,6 +8182,7 @@ static const struct NDB_Modifier ndb_table_modifiers[] = {
     {NDB_Modifier::M_BOOL, STRING_WITH_LEN("READ_BACKUP"), 0, {0}},
     {NDB_Modifier::M_BOOL, STRING_WITH_LEN("FULLY_REPLICATED"), 0, {0}},
     {NDB_Modifier::M_STRING, STRING_WITH_LEN("PARTITION_BALANCE"), 0, {0}},
+    {NDB_Modifier::M_STRING, STRING_WITH_LEN("TTL"), 0, {0}},
     {NDB_Modifier::M_BOOL, nullptr, 0, 0, {0}}};
 
 static const char *ndb_column_modifier_prefix = "NDB_COLUMN=";
@@ -9527,6 +9682,62 @@ int ha_ndbcluster::create(const char *path [[maybe_unused]],
   const NDB_Modifier *mod_read_backup = table_modifiers.get("READ_BACKUP");
   const NDB_Modifier *mod_fully_replicated =
       table_modifiers.get("FULLY_REPLICATED");
+
+  const NDB_Modifier *mod_ttl = table_modifiers.get("TTL");
+  bool found_ttl = false;
+  uint32_t ttl_sec = RNIL;
+  std::string ttl_column;
+  uint32_t ttl_column_no = RNIL;
+  if (mod_ttl->m_found) {
+    ndb_log_info("Zart, [API]find TTL in comment while "
+                 "creating %s.%s: [%lu] %s, start parsing...",
+                  dbname, tabname, mod_ttl->m_val_str.len,
+                  mod_ttl->m_val_str.str);
+    std::string ttl_comment(mod_ttl->m_val_str.str, mod_ttl->m_val_str.len);
+    std::size_t pos = ttl_comment.find('@');
+    if (pos == std::string::npos) {
+      return create.failed_illegal_create_option(
+          "Invalid TTL format, please use: 'Seconds@Column (uint@string)'");
+    } else {
+      if (pos == 0) {
+        return create.failed_illegal_create_option(
+            "Invalid TTL format, please use: 'Seconds@Column (uint@string)'");
+      }
+      for (std::size_t i = 0; i < pos; i++) {
+        if (ttl_comment.at(i) < '0' || ttl_comment.at(i) > '9') {
+          return create.failed_illegal_create_option(
+              "Invalid TTL format, please use: 'Seconds@Column (uint@string)'");
+        }
+      }
+      ttl_sec = std::stoi(std::string(mod_ttl->m_val_str.str,
+                          mod_ttl->m_val_str.len - pos + 1));
+      ttl_column = ttl_comment.substr(pos + 1);
+      for (uint i = 0; i < table->s->fields; i++) {
+        Field *const field = table->field[i];
+        if (strlen(field->field_name) == ttl_column.length() &&
+            strcmp(field->field_name, ttl_column.data()) == 0) {
+          if (field->real_type() != MYSQL_TYPE_DATETIME2) {
+            return create.failed_illegal_create_option(
+                "Invalid TTL format, column type must be DATETIME");
+          }
+          if (field->is_hidden() || !field->stored_in_db) {
+            return create.failed_illegal_create_option(
+             "Invalid TTL format, column shouldn't be hidden or vitual column");
+          }
+          found_ttl = true;
+          break;
+        }
+      }
+      if (!found_ttl) {
+          return create.failed_illegal_create_option(
+              "Invalid TTL format, column name must match a real column");
+      }
+    }
+  }
+  if (found_ttl) {
+    ndb_log_info("Zart, [API]parse TTL successfully: TTL = %d sec, TTL_COLUMN = %s",
+                  ttl_sec, ttl_column.c_str());
+  }
   NdbDictionary::Object::PartitionBalance part_bal =
       g_default_partition_balance;
   if (parsePartitionBalance(thd, mod_frags, &part_bal) == false) {
@@ -9821,7 +10032,31 @@ int ha_ndbcluster::create(const char *path [[maybe_unused]],
         return create.failed_oom("Failed to add column");
       }
       if (col.getPrimaryKey()) pk_length += (field->pack_length() + 3) / 4;
+
+      if (found_ttl) {
+        if (strlen(col.getName()) == ttl_column.length() &&
+            strcmp(col.getName(), ttl_column.data()) == 0) {
+          NdbDictionary::Column* ttl_col = tab.getColumn(col.getName());
+          if (ttl_col->getStorageType() == NDBCOL::StorageTypeDisk) {
+            return create.failed_illegal_create_option(
+                "TTL column can't be an on-disk column");
+          }
+          // Zart ttl_col->getAttrId() here is always RNIL.
+          ttl_column_no = ttl_col->getColumnNo();
+          int ttl_column_id = ttl_col->getAttrId();
+          ndb_log_info("Zart, [API]TTL will work on column %s, no: %u, "
+                       "id: %d, type: %u",
+                        col.getName(), ttl_column_no, ttl_column_id,
+                        col.getType());
+        }
+      }
     }
+  }
+  if (found_ttl) {
+    assert(ttl_sec != RNIL && ttl_column_no != RNIL);
+    tab.setTTLSec(ttl_sec);
+    tab.setTTLColumnNo(ttl_column_no);
+    assert(tab.isTTLEnabled());
   }
 
   tmp_restore_column_map(table->read_set, old_map);
@@ -11395,7 +11630,8 @@ ha_ndbcluster::ha_ndbcluster(handlerton *hton, TABLE_SHARE *table_arg)
       m_active_query(nullptr),
       m_pushed_operation(nullptr),
       m_cond(this),
-      m_multi_cursor(nullptr) {
+      m_multi_cursor(nullptr),
+      m_ttl_ignore(false) {
   DBUG_TRACE;
 
   stats.records = ~(ha_rows)0;  // uninitialized
@@ -13462,6 +13698,11 @@ int ha_ndbcluster::multi_range_read_init(RANGE_SEQ_IF *seq_funcs,
                                          void *seq_init_param, uint n_ranges,
                                          uint mode, HANDLER_BUFFER *buffer) {
   DBUG_TRACE;
+#ifdef TTL_TRACE_HANDLER
+  if (strcmp(m_share->table_name, TTL_TABLE_NAME) == 0) {
+    ndb_log_info("Zart, ha_ndbcluster::multi_range_read_init");
+  }
+#endif  // TTL_TRACE_HANDLER
 
   /*
     If supplied buffer is smaller than needed for just one range, we cannot do
@@ -13538,6 +13779,11 @@ int ha_ndbcluster::multi_range_start_retrievals(uint starting_range) {
       check_if_pushable(NdbQueryOperationDef::OrderedIndexScan, active_index);
 
   DBUG_TRACE;
+#ifdef TTL_TRACE_HANDLER
+  if (strcmp(m_share->table_name, TTL_TABLE_NAME) == 0) {
+    ndb_log_info("Zart, ha_ndbcluster::multi_range_start_retrievals");
+  }
+#endif  // TTL_TRACE_HANDLER
 
   /*
    * read multi range will read ranges as follows (if not ordered)
@@ -13682,6 +13928,13 @@ int ha_ndbcluster::multi_range_start_retrievals(uint starting_range) {
 
         options.optionsPresent = NdbScanOperation::ScanOptions::SO_SCANFLAGS |
                                  NdbScanOperation::ScanOptions::SO_PARALLEL;
+        /*
+         * Zart
+         * TTL
+         */
+        if (m_ttl_ignore) {
+          options.optionsPresent |= NdbScanOperation::ScanOptions::SO_TTL_IGNORE;
+        }
 
         options.scan_flags =
             NdbScanOperation::SF_ReadRangeNo | NdbScanOperation::SF_MultiRange;
@@ -13925,6 +14178,11 @@ int ha_ndbcluster::multi_range_start_retrievals(uint starting_range) {
 int ha_ndbcluster::multi_range_read_next(char **range_info) {
   DBUG_TRACE;
 
+#ifdef TTL_TRACE_HANDLER
+  if (strcmp(m_share->table_name, TTL_TABLE_NAME) == 0) {
+    ndb_log_info("Zart, ha_ndbcluster::multi_range_read_next");
+  }
+#endif  // TTL_TRACE_HANDLER
   if (m_disable_multi_read) {
     return handler::multi_range_read_next(range_info);
   }
@@ -14078,6 +14336,11 @@ int ha_ndbcluster::multi_range_read_next(char **range_info) {
 int ha_ndbcluster::read_multi_range_fetch_next() {
   DBUG_TRACE;
 
+#ifdef TTL_TRACE_HANDLER
+  if (strcmp(m_share->table_name, TTL_TABLE_NAME) == 0) {
+    ndb_log_info("Zart, ha_ndbcluster::read_multi_range_fetch_next");
+  }
+#endif  // TTL_TRACE_HANDLER
   if (m_active_query) {
     DBUG_PRINT("info",
                ("read_multi_range_fetch_next from pushed join, m_next_row:%p",

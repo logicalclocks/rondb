@@ -753,6 +753,9 @@ class Dblqh : public SimulatedBlock {
                              // that we won't send a scanfragconf with 0 completed_ops
                              // to the TC, which could cause incorrect aggregation result.
     AggInterpreter* m_agg_interpreter;
+    // TTL
+    Uint8 m_ttl_ignore;         // ignore set by API
+    Uint8 m_ttl_ignore_for_ral; // ignore set by Read after lock
   };
   static constexpr Uint32 DBLQH_SCAN_RECORD_TRANSIENT_POOL_INDEX = 1;
   typedef Ptr<ScanRecord> ScanRecordPtr;
@@ -2556,6 +2559,15 @@ class Dblqh : public SimulatedBlock {
   typedef Ptr<PageRefRecord> PageRefRecordPtr;
 
   struct Tablerec {
+    /*
+     * Zart
+     * Initialize m_ttl to RNIL for safety
+     * TODO (Zhao)
+     * Initialize Tablerec of other blocks
+     */
+    Tablerec() : m_ttl_sec(RNIL),
+                 m_ttl_col_no(RNIL) {
+    }
     enum TableStatus {
       TABLE_DEFINED = 0,
       NOT_DEFINED = 1,
@@ -2609,8 +2621,14 @@ class Dblqh : public SimulatedBlock {
     Uint32 m_senderRef;
     Uint32 m_next_index_table;
     bool m_restore_started;
+    /*
+     * TTL
+     */
+    Uint32 m_ttl_sec;
+    Uint32 m_ttl_col_no;
   };  // Size 100 bytes
   typedef Ptr<Tablerec> TablerecPtr;
+  bool is_ttl_table(Uint32 table_id);
   void release_frag_array(Tablerec*);
   Uint32 findFreeFragEntry(Uint32 num_fragments_in_array);
   bool seize_frag_array(Tablerec*,
@@ -2971,6 +2989,8 @@ class Dblqh : public SimulatedBlock {
       Local_key m_disk_ref[2];
     } m_nr_delete;
     Uint32 accOpPtr; /* for scan lock take over */
+    Uint8 original_operation; /* Zart, original operation */
+    Uint8 ttl_ignore; /* Zart, ttl ignore */
   };                 /* p2c: size = 308 bytes */
 
   static constexpr Uint32 DBLQH_OPERATION_RECORD_TRANSIENT_POOL_INDEX = 0;
@@ -3069,7 +3089,7 @@ private:
   void setup_scan_pointers(Uint32 scanPtrI, Uint32 line);
   void setup_scan_pointers_from_tc_con(TcConnectionrecPtr, Uint32 line);
   void setup_key_pointers(Uint32 tcIndex, bool acquire_lock = true);
-  void exec_next_scan_conf(Signal *signal);
+  void exec_next_scan_conf(Signal *signal, bool ttl_ignore_for_ral = false);
   void exec_next_scan_ref(Signal *signal);
   void continue_next_scan_conf(Signal *signal, ScanRecord::ScanState scanState,
                                ScanRecord *const scanPtr);
@@ -4778,6 +4798,7 @@ public:
   Uint64 c_total_rows_copy_fragreq;
   Uint64 c_total_words_copy_fragreq;
 #endif
+  Uint32 c_ttl_enabled;
 
   void update_cpu_usage(Signal*);
   void adjust_copyFragReq_rates(bool);

@@ -583,6 +583,18 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     "true" },
 
   {
+    CFG_DB_ENABLE_TTL,
+    "EnableTTL",
+    DB_TOKEN,
+    "whether enable TTL or not",
+    ConfigInfo::CI_USED,
+    false,
+    ConfigInfo::CI_BOOL,
+    "true",
+    "false",
+    "true" },
+
+  {
     CFG_DB_MAX_NUM_SCHEMA_OBJECTS,
     "MaxNoOfSchemaObjects",
     DB_TOKEN,

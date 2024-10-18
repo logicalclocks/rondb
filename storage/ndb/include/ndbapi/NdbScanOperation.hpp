@@ -162,7 +162,8 @@ class NdbScanOperation : public NdbOperation {
                 SO_PARTITION_ID = 0x10,
                 SO_INTERPRETED  = 0x20,
                 SO_CUSTOMDATA   = 0x40,
-                SO_PART_INFO    = 0x80
+                SO_PART_INFO    = 0x80,
+                SO_TTL_IGNORE   = 0x100
     };
 
     /* Flags controlling scan behaviour

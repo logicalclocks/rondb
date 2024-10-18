@@ -251,6 +251,12 @@ class TcKeyReq {
    */
   static void setNoWaitFlag(UintR &requestInfo, UintR val);
   static UintR getNoWaitFlag(const UintR &requestInfo);
+  /**
+   * Zart
+   * TTL
+   */
+  static void setTTLIgnoreFlag(UintR &requestInfo, UintR val);
+  static UintR getTTLIgnoreFlag(const UintR &requestInfo);
 };
 
 /**
@@ -378,11 +384,12 @@ class TcKeyReq {
  * - Replica applier should not stop due to out of rate limits in database
  * ----------------------------------------------------------------------
  A = Replica applier       - 1  Bit 25
+ I = IgnoreTTL             - 1  Bit 26
 
            1111111111222222222233
  01234567890123456789012345678901
  dnb cooop lsyyeiaaarkkkkkkkkkkkk  (Short TCKEYREQ)
- dnbvcooopqlsyyeixDfrRwBUQA        (Long TCKEYREQ)
+ dnbvcooopqlsyyeixDfrRwBUQAI        (Long TCKEYREQ)
 */
 
 #define TCKEY_NODISK_SHIFT (1)
@@ -423,6 +430,11 @@ class TcKeyReq {
 
 #define TC_PASS_QUEUEING_SHIFT (24)
 #define TC_REPLICA_APPLIER_SHIFT (25)
+/*
+ * Zart
+ * TTL
+ */
+#define TC_TTL_IGNORE_SHIFT (26)
 
 /**
  * Scan Info
@@ -772,6 +784,20 @@ inline void TcKeyReq::setNoWaitFlag(UintR &requestInfo, UintR val) {
 
 inline UintR TcKeyReq::getNoWaitFlag(const UintR &requestInfo) {
   return (requestInfo >> TC_NOWAIT_SHIFT) & 1;
+}
+
+inline
+void
+TcKeyReq::setTTLIgnoreFlag(UintR & requestInfo, UintR flag){
+  ASSERT_BOOL(flag, "TcKeyReq::setTTLIgnoreFlag");
+  requestInfo |= (flag << TC_TTL_IGNORE_SHIFT);
+}
+
+inline
+UintR
+TcKeyReq::getTTLIgnoreFlag(const UintR & requestInfo)
+{
+  return (requestInfo >> TC_TTL_IGNORE_SHIFT) & 1;
 }
 
 #undef JAM_FILE_ID

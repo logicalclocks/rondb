@@ -844,6 +844,8 @@ void NdbTableImpl::init() {
   m_fully_replicated = false;
   m_use_varsized_disk_data = true;
   m_use_new_hash_function = ndbd_support_new_hash_function(NDB_VERSION_D);
+  m_ttl_sec = RNIL;
+  m_ttl_col_no = RNIL;
 
   NdbMutex_Init(&m_primary_node_mutex);
 #ifdef VM_TRACE
@@ -1054,6 +1056,16 @@ bool NdbTableImpl::equal(const NdbTableImpl &obj) const {
     DBUG_RETURN(false);
   }
 
+  if (m_ttl_sec != obj.m_ttl_sec)
+  {
+    DBUG_RETURN(false);
+  }
+
+  if (m_ttl_col_no != obj.m_ttl_col_no)
+  {
+    DBUG_RETURN(false);
+  }
+
   DBUG_RETURN(true);
 }
 
@@ -1125,6 +1137,13 @@ int NdbTableImpl::assign(const NdbTableImpl &org) {
   m_fully_replicated = org.m_fully_replicated;
   m_use_varsized_disk_data = org.m_use_varsized_disk_data;
   m_use_new_hash_function = org.m_use_new_hash_function;
+  /*
+   * Zart
+   * TTL
+   * Used in restoring from backups
+   */
+  m_ttl_sec = org.m_ttl_sec;
+  m_ttl_col_no = org.m_ttl_col_no;
 
   DBUG_PRINT("info", ("NdbTableImpl::assign %u, m_use_new_hash_function: %u",
                        m_primaryTableId,
@@ -3575,7 +3594,15 @@ NdbDictInterface::parseTableInfo(NdbTableImpl ** ret,
   s = SimpleProperties::unpack(it, tableDesc, DictTabInfo::TableMapping,
                                DictTabInfo::TableMappingSize,
                                NdbTableImpl::IndirectReader, impl);
-
+#ifdef TTL_DEBUG
+  if (tableDesc->TTLSec != RNIL && tableDesc->TTLColumnNo != RNIL &&
+      NEED_PRINT(tableDesc->TableId)) {
+    g_eventLogger->info("Zart, NdbDictInterface::parseTableInfo, parsed a TTL table, id: %u, "
+                        ", ttl_sec: %u, ttl_col: %u",
+                        tableDesc->TableId, tableDesc->TTLSec, tableDesc->TTLColumnNo);
+  }
+#endif  // TTL_DEBUG
+  
   if (s != SimpleProperties::Break) {
     free(tableDesc);
     delete impl;
@@ -3675,6 +3702,13 @@ NdbDictInterface::parseTableInfo(NdbTableImpl ** ret,
     tableDesc->UseVarSizedDiskDataFlag == 0 ? false : true;
   impl->m_use_new_hash_function =
     tableDesc->HashFunctionFlag == 0 ? false : true;
+  /*
+   * Zart
+   * TTL
+   * Used in restoring from backups
+   */
+  impl->setTTLSec(tableDesc->TTLSec);
+  impl->setTTLColumnNo(tableDesc->TTLColumnNo);
 
 
   DBUG_PRINT("info", ("parseTableInfo(%u): m_logging: %u, partitionBalance: %d"
@@ -4285,6 +4319,12 @@ int NdbDictInterface::compChangeMask(const NdbTableImpl &old_impl,
   if (!impl.m_range.equal(old_impl.m_range))
     AlterTableReq::setRangeListFlag(change_mask, true);
 
+  /*
+   * Zart
+   * TTL
+   * TODO (Zhao)
+   * Maybe modify here when support Alter TTL in the future
+   */
   /* No other property can be changed in alter table. */
   if (impl.m_logging != old_impl.m_logging ||
       impl.m_temporary != old_impl.m_temporary ||
@@ -4580,6 +4620,15 @@ int NdbDictInterface::serializeTableDesc(NdbTableImpl &impl,
   tmpTab->HashMapObjectId = impl.m_hash_map_id;
   tmpTab->HashMapVersion = impl.m_hash_map_version;
   tmpTab->TableStorageType = impl.m_storageType;
+
+  tmpTab->TTLSec = impl.m_ttl_sec;
+  tmpTab->TTLColumnNo = impl.m_ttl_col_no;
+#ifdef TTL_DEBUG
+  g_eventLogger->info("Zart, [API]serializeTableDesc, table_name: %s, "
+                       "set TTLSec: %u, TTLColumnNo: %u",
+                       impl.m_internalName.c_str(),
+                       impl.m_ttl_sec, impl.m_ttl_col_no);
+#endif  // TTL_DEBUG
 
   const char *tablespace_name = impl.m_tablespace_name.c_str();
 loop:

@@ -55,6 +55,7 @@ struct AccKeyReq {
   static bool getTakeOver(Uint32 requestInfo);
   static bool getLockReq(Uint32 requestInfo);
   static bool getNoWait(Uint32 requestInfo);
+  static bool getTTL(Uint32 requestInfo);
 
   static Uint32 setOperation(Uint32 requestInfo, Uint32 op);
   static Uint32 setLockType(Uint32 requestInfo, Uint32 locktype);
@@ -63,6 +64,7 @@ struct AccKeyReq {
   static Uint32 setTakeOver(Uint32 requestInfo, bool takeover);
   static Uint32 setLockReq(Uint32 requestInfo, bool lockreq);
   static Uint32 setNoWait(Uint32 requestInfo, bool lockreq);
+  static Uint32 setTTL(Uint32 requestInfo, bool is_ttl);
 
  private:
   enum RequestInfo {
@@ -80,6 +82,8 @@ struct AccKeyReq {
     RI_NOWAIT_MASK = 1,
     RI_LOCK_REQ_SHIFT = 31,
     RI_LOCK_REQ_MASK = 1,
+    RI_TTL_SHIFT = 11,
+    RI_TTL_MASK = 1,
   };
 };
 
@@ -109,6 +113,10 @@ inline bool AccKeyReq::getLockReq(Uint32 requestInfo) {
 
 inline bool AccKeyReq::getNoWait(Uint32 requestInfo) {
   return (requestInfo >> RI_NOWAIT_SHIFT) & RI_NOWAIT_MASK;
+}
+
+inline bool AccKeyReq::getTTL(Uint32 requestInfo) {
+  return (requestInfo >> RI_TTL_SHIFT) & RI_TTL_MASK;
 }
 
 inline Uint32 AccKeyReq::setOperation(Uint32 requestInfo, Uint32 op) {
@@ -148,6 +156,14 @@ inline Uint32 AccKeyReq::setLockReq(Uint32 requestInfo, bool lockreq) {
 inline Uint32 AccKeyReq::setNoWait(Uint32 requestInfo, bool nowait) {
   return (requestInfo & ~(RI_NOWAIT_MASK << RI_NOWAIT_SHIFT)) |
          (nowait ? 1U << RI_NOWAIT_SHIFT : 0);
+}
+
+inline
+Uint32
+AccKeyReq::setTTL(Uint32 requestInfo, bool is_ttl)
+{
+  return (requestInfo & ~(RI_TTL_MASK << RI_TTL_SHIFT))
+    | (is_ttl ? 1U << RI_TTL_SHIFT : 0);
 }
 
 #endif

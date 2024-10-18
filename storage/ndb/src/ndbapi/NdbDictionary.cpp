@@ -812,6 +812,31 @@ NdbDictionary::Table::use_new_hash_function() const
   return m_impl.m_use_new_hash_function;
 }
 
+void
+NdbDictionary::Table::setTTLSec(Uint32 sec) {
+  m_impl.m_ttl_sec = sec;
+}
+
+Uint32
+NdbDictionary::Table::getTTLSec() {
+  return m_impl.m_ttl_sec;
+}
+
+void
+NdbDictionary::Table::setTTLColumnNo(Uint32 no) {
+  m_impl.m_ttl_col_no = no;
+}
+
+Uint32
+NdbDictionary::Table::getTTLColumnNo() {
+  return m_impl.m_ttl_col_no;
+}
+
+bool
+NdbDictionary::Table::isTTLEnabled() {
+  return (m_impl.m_ttl_sec != RNIL && m_impl.m_ttl_col_no != RNIL);
+}
+
 /*****************************************************************
  * Index facade
  */
