@@ -2650,11 +2650,11 @@ void Dblqh::execCREATE_TAB_REQ(Signal *signal) {
     jam();
     req->hashFunctionFlag = 0;
   }
-  if (signal->length() < CreateTabReq::NewSignalLengthLDMWithTTL) {
-    jam();
-    req->ttlSec = RNIL;
-    req->ttlColumnNo = RNIL;
-  }
+  /*
+   * CreateTabReq is a local signal, no need to consider
+   * the length compatibility.
+   */
+  ndbassert(signal->length() == CreateTabReq::NewSignalLengthLDMWithTTL);
 
   DEB_HASH(("(%u) lqh_tab(%u) hashFunctionFlag: %u",
             instance(),

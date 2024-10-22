@@ -512,7 +512,7 @@ struct System_variables {
   bool restrict_fk_on_non_standard_key;
 
   long ttl_debug_sleep_secs;
-  bool ttl_expired_rows_visiable_in_delete;
+  bool ttl_expired_rows_visible_in_delete;
 };
 
 static_assert(std::is_trivially_copyable<System_variables>::value);

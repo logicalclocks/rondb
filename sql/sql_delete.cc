@@ -306,7 +306,7 @@ bool Sql_cmd_delete::delete_from_single_table(THD *thd) {
    * Zart
    * TTL
    */
-  if(thd->variables.ttl_expired_rows_visiable_in_delete) {
+  if(thd->variables.ttl_expired_rows_visible_in_delete) {
     table->file->ha_extra(HA_EXTRA_IGNORE_TTL);
   }
 
@@ -615,7 +615,7 @@ bool Sql_cmd_delete::delete_from_single_table(THD *thd) {
       }
 
       assert(!thd->is_error());
-      DEBUG_SYNC(thd, "zhao_wait_for_row_get_expired_after_reading_4");
+      DEBUG_SYNC(thd, "ttl_wait_for_row_get_expired_after_reading_4");
 /*
  * Zart
  * TTL

@@ -2,7 +2,10 @@ import threading
 import pymysql
 import time
 import subprocess
+import os
+import importlib.util
 
+# Default env path
 BIN_DIR="/home/zhao/workspace/kernelmaker/rondb-bin/bin"
 
 MYSQLD_PORT_P=3306
@@ -11,6 +14,9 @@ DATA_DIR_P_2="/home/zhao/workspace/rondb-run/ndbmtd_2"
 
 MGMD_PORT_R=1188
 MYSQLD_PORT_R=3308
+
+# Specify your own env path
+config_path="/tmp/ttl_config.py"
 
 def case_1_thdA(conn):
     global A_succ
@@ -1079,7 +1085,7 @@ def case_23_thdB(conn):
         time.sleep(2)
         cur = conn.cursor()
         cur.execute("BEGIN")
-        cur.execute("SET DEBUG_SYNC = 'zhao_wait_for_row_get_expired_after_reading_4 WAIT_FOR go_ahead'");
+        cur.execute("SET DEBUG_SYNC = 'ttl_wait_for_row_get_expired_after_reading_4 WAIT_FOR go_ahead'");
         cur.execute("DELETE FROM sz")
         changed_rows = conn.affected_rows()
         matched_rows = cur.rowcount
@@ -1134,7 +1140,7 @@ def case_24_thdB(conn):
         time.sleep(5)
         cur = conn.cursor()
         cur.execute("BEGIN")
-        cur.execute("SET DEBUG_SYNC = 'zhao_wait_for_row_get_expired_after_reading_1 WAIT_FOR go_ahead'");
+        cur.execute("SET DEBUG_SYNC = 'ttl_wait_for_row_get_expired_after_reading_1 WAIT_FOR go_ahead'");
         cur.execute("INSERT INTO sz VALUES(1, SYSDATE(), 200) ON DUPLICATE KEY UPDATE col_c = 201, col_b = NOW()")
         changed_rows = conn.affected_rows()
         matched_rows = cur.rowcount
@@ -1197,7 +1203,7 @@ def case_25_thdB(conn):
         time.sleep(5)
         cur = conn.cursor()
         cur.execute("BEGIN")
-        cur.execute("SET DEBUG_SYNC = 'zhao_wait_for_row_get_expired_after_reading_2 WAIT_FOR go_ahead'");
+        cur.execute("SET DEBUG_SYNC = 'ttl_wait_for_row_get_expired_after_reading_2 WAIT_FOR go_ahead'");
         cur.execute("INSERT INTO sz VALUES(1, SYSDATE(), 200) ON DUPLICATE KEY UPDATE col_c = 201, col_b = NOW()")
         changed_rows = conn.affected_rows()
         matched_rows = cur.rowcount
@@ -1287,7 +1293,7 @@ def case_26_thdA(conn):
         # cur.execute("SELECT * FROM sz WHERE col_a >= 3 and col_a <= 5")
         # cur.execute("SELECT * FROM sz WHERE col_a >= 3 and col_c >= 104")
         # cur.execute("UPDATE sz SET col_c = 666 WHERE col_a >= 3 and col_c >= 104")
-        # cur.execute("SET DEBUG_SYNC = 'zhao_wait_for_row_get_expired_after_reading_3 WAIT_FOR go_ahead'");
+        # cur.execute("SET DEBUG_SYNC = 'ttl_wait_for_row_get_expired_after_reading_3 WAIT_FOR go_ahead'");
         # cur.execute("UPDATE sz SET col_c = 666 WHERE col_a <= 1")
         results = cur.fetchall()
         for row in results:
@@ -1338,14 +1344,14 @@ def case_27_thdA(conn):
         changed_rows = conn.affected_rows()
         matched_rows = cur.rowcount
         assert changed_rows == 0 and matched_rows == 0, "ASSERT"
-        cur.execute("SET ttl_expired_rows_visiable_in_delete = ON")
+        cur.execute("SET ttl_expired_rows_visible_in_delete = ON")
         cur.execute("DELETE FROM sz")
         changed_rows = conn.affected_rows()
         matched_rows = cur.rowcount
         assert changed_rows == 5 and matched_rows == 5, "ASSERT"
         cur.execute("COMMIT")
 
-        cur.execute("SET ttl_expired_rows_visiable_in_delete = OFF")
+        cur.execute("SET ttl_expired_rows_visible_in_delete = OFF")
         cur.execute("INSERT INTO sz VALUES(1, SYSDATE(), 101)")
         cur.execute("INSERT INTO sz VALUES(2, SYSDATE(), 102)")
         cur.execute("INSERT INTO sz VALUES(3, SYSDATE(), 103)")
@@ -1361,14 +1367,14 @@ def case_27_thdA(conn):
         changed_rows = conn.affected_rows()
         matched_rows = cur.rowcount
         assert changed_rows == 0 and matched_rows == 0, "ASSERT"
-        cur.execute("SET ttl_expired_rows_visiable_in_delete = ON")
+        cur.execute("SET ttl_expired_rows_visible_in_delete = ON")
         cur.execute("DELETE FROM sz WHERE col_a > 1")
         changed_rows = conn.affected_rows()
         matched_rows = cur.rowcount
         assert changed_rows == 4 and matched_rows == 4, "ASSERT"
         cur.execute("COMMIT")
 
-        cur.execute("SET ttl_expired_rows_visiable_in_delete = OFF")
+        cur.execute("SET ttl_expired_rows_visible_in_delete = OFF")
         cur.execute("BEGIN")
         cur.execute("INSERT INTO sz VALUES(1, SYSDATE(), 101)")
         cur.execute("INSERT INTO sz VALUES(2, SYSDATE(), 102)")
@@ -1385,14 +1391,14 @@ def case_27_thdA(conn):
         changed_rows = conn.affected_rows()
         matched_rows = cur.rowcount
         assert changed_rows == 0 and matched_rows == 0, "ASSERT"
-        cur.execute("SET ttl_expired_rows_visiable_in_delete = ON")
+        cur.execute("SET ttl_expired_rows_visible_in_delete = ON")
         cur.execute("DELETE FROM sz WHERE col_a > 1 and col_c < 104")
         changed_rows = conn.affected_rows()
         matched_rows = cur.rowcount
         assert changed_rows == 2 and matched_rows == 2, "ASSERT"
         cur.execute("COMMIT")
 
-        cur.execute("SET ttl_expired_rows_visiable_in_delete = OFF")
+        cur.execute("SET ttl_expired_rows_visible_in_delete = OFF")
         cur.execute("BEGIN")
         cur.execute("INSERT INTO sz VALUES(1, SYSDATE(), 101)")
         cur.execute("INSERT INTO sz VALUES(2, SYSDATE(), 102)")
@@ -1409,14 +1415,14 @@ def case_27_thdA(conn):
         changed_rows = conn.affected_rows()
         matched_rows = cur.rowcount
         assert changed_rows == 0 and matched_rows == 0, "ASSERT"
-        cur.execute("SET ttl_expired_rows_visiable_in_delete = ON")
+        cur.execute("SET ttl_expired_rows_visible_in_delete = ON")
         cur.execute("DELETE FROM sz WHERE col_a > 1 or col_c < 104")
         changed_rows = conn.affected_rows()
         matched_rows = cur.rowcount
         assert changed_rows == 5 and matched_rows == 5, "ASSERT"
         cur.execute("COMMIT")
 
-        cur.execute("SET ttl_expired_rows_visiable_in_delete = OFF")
+        cur.execute("SET ttl_expired_rows_visible_in_delete = OFF")
         cur.execute("BEGIN")
         cur.execute("INSERT INTO sz VALUES(1, SYSDATE(), 101)")
         cur.execute("INSERT INTO sz VALUES(2, SYSDATE(), 102)")
@@ -1433,14 +1439,14 @@ def case_27_thdA(conn):
         changed_rows = conn.affected_rows()
         matched_rows = cur.rowcount
         assert changed_rows == 0 and matched_rows == 0, "ASSERT"
-        cur.execute("SET ttl_expired_rows_visiable_in_delete = ON")
+        cur.execute("SET ttl_expired_rows_visible_in_delete = ON")
         cur.execute("DELETE FROM sz WHERE col_c > 101 and col_c < 104")
         changed_rows = conn.affected_rows()
         matched_rows = cur.rowcount
         assert changed_rows == 2 and matched_rows == 2, "ASSERT"
         cur.execute("COMMIT")
 
-        cur.execute("SET ttl_expired_rows_visiable_in_delete = OFF")
+        cur.execute("SET ttl_expired_rows_visible_in_delete = OFF")
         cur.execute("BEGIN")
         cur.execute("INSERT INTO sz VALUES(1, SYSDATE(), 101)")
         cur.execute("INSERT INTO sz VALUES(2, SYSDATE(), 102)")
@@ -1457,14 +1463,14 @@ def case_27_thdA(conn):
         changed_rows = conn.affected_rows()
         matched_rows = cur.rowcount
         assert changed_rows == 0 and matched_rows == 0, "ASSERT"
-        cur.execute("SET ttl_expired_rows_visiable_in_delete = ON")
+        cur.execute("SET ttl_expired_rows_visible_in_delete = ON")
         cur.execute("DELETE FROM sz WHERE col_c > 101 or col_c < 104")
         changed_rows = conn.affected_rows()
         matched_rows = cur.rowcount
         assert changed_rows == 5 and matched_rows == 5, "ASSERT"
         cur.execute("COMMIT")
 
-        cur.execute("SET ttl_expired_rows_visiable_in_delete = OFF")
+        cur.execute("SET ttl_expired_rows_visible_in_delete = OFF")
         cur.execute("BEGIN")
         cur.execute("INSERT INTO sz VALUES(1, SYSDATE(), 101)")
         cur.execute("INSERT INTO sz VALUES(2, SYSDATE(), 102)")
@@ -1481,14 +1487,14 @@ def case_27_thdA(conn):
         changed_rows = conn.affected_rows()
         matched_rows = cur.rowcount
         assert changed_rows == 0 and matched_rows == 0, "ASSERT"
-        cur.execute("SET ttl_expired_rows_visiable_in_delete = ON")
+        cur.execute("SET ttl_expired_rows_visible_in_delete = ON")
         cur.execute("DELETE FROM sz WHERE col_c = 103")
         changed_rows = conn.affected_rows()
         matched_rows = cur.rowcount
         assert changed_rows == 1 and matched_rows == 1, "ASSERT"
         cur.execute("COMMIT")
 
-        cur.execute("SET ttl_expired_rows_visiable_in_delete = OFF")
+        cur.execute("SET ttl_expired_rows_visible_in_delete = OFF")
         cur.execute("BEGIN")
         cur.execute("INSERT INTO sz VALUES(1, SYSDATE(), 101)")
         cur.execute("INSERT INTO sz VALUES(2, SYSDATE(), 102)")
@@ -1505,14 +1511,14 @@ def case_27_thdA(conn):
         changed_rows = conn.affected_rows()
         matched_rows = cur.rowcount
         assert changed_rows == 0 and matched_rows == 0, "ASSERT"
-        cur.execute("SET ttl_expired_rows_visiable_in_delete = ON")
+        cur.execute("SET ttl_expired_rows_visible_in_delete = ON")
         cur.execute("DELETE FROM sz WHERE col_a = 4")
         changed_rows = conn.affected_rows()
         matched_rows = cur.rowcount
         assert changed_rows == 1 and matched_rows == 1, "ASSERT"
         cur.execute("COMMIT")
 
-        cur.execute("SET ttl_expired_rows_visiable_in_delete = OFF")
+        cur.execute("SET ttl_expired_rows_visible_in_delete = OFF")
         cur.execute("BEGIN")
         cur.execute("INSERT INTO sz VALUES(1, SYSDATE(), 101)")
         cur.execute("INSERT INTO sz VALUES(2, SYSDATE(), 102)")
@@ -1529,7 +1535,7 @@ def case_27_thdA(conn):
         changed_rows = conn.affected_rows()
         matched_rows = cur.rowcount
         assert changed_rows == 0 and matched_rows == 0, "ASSERT"
-        cur.execute("SET ttl_expired_rows_visiable_in_delete = ON")
+        cur.execute("SET ttl_expired_rows_visible_in_delete = ON")
         cur.execute("DELETE FROM sz WHERE col_c <= 105 LIMIT 2")
         changed_rows = conn.affected_rows()
         matched_rows = cur.rowcount
@@ -3158,6 +3164,17 @@ funcs_thdB = []
 A_succ = False
 B_succ = False
 if __name__ == '__main__':
+    if os.path.exists(config_path):
+        spec = importlib.util.spec_from_file_location("my_config", config_path)
+        my_config = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(my_config)
+        BIN_DIR = getattr(my_config, 'BIN_DIR', BIN_DIR)
+        MYSQLD_PORT_P = getattr(my_config, 'MYSQLD_PORT_P', MYSQLD_PORT_P)
+        DATA_DIR_P_1 = getattr(my_config, 'DATA_DIR_P_1', DATA_DIR_P_1)
+        DATA_DIR_P_2 = getattr(my_config, 'DATA_DIR_P_2', DATA_DIR_P_2)
+        MYSQLD_PORT_R = getattr(my_config, 'MYSQLD_PORT_R', MYSQLD_PORT_R)
+        MGMD_PORT_R = getattr(my_config, 'MGMD_PORT_R', MGMD_PORT_R)
+        MYSQLD_PORT_R = getattr(my_config, 'MYSQLD_PORT_R', MYSQLD_PORT_R)
 
     case_num = 46
     # 1. create database and table

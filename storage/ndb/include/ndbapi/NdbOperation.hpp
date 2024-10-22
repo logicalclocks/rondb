@@ -1127,8 +1127,7 @@ class NdbOperation {
       OO_REPLICA_APPLIER = 0x4000,
       /*
        * Zart
-       * TODO (Zhao)
-       * Force operation ignore TTL
+       * TTL
        */
       OO_TTL_IGNORE    = 0x8000
     };
@@ -1573,7 +1572,7 @@ class NdbOperation {
   };
   /*
    * Zart
-   * Expand it to 16 bits
+   * Expanded it to 16 bits
    */
   Uint16 m_flags;
 

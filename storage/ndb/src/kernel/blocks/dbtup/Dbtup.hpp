@@ -2706,6 +2706,10 @@ private:
                                 LinearSectionPtr ptr[],
                                 Uint32 nptr);
 
+  int checkTTL(Tablerec* regTabPtr,
+               KeyReqStruct *req_struct,
+               bool* has_error,
+               int* err_no);
 // *****************************************************************
 // Setting up the environment for reads, inserts, updates and deletes.
 // *****************************************************************

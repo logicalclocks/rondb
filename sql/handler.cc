@@ -8121,7 +8121,6 @@ int handler::ha_reset() {
   // Forget the record buffer.
   m_record_buffer = nullptr;
   m_unique = nullptr;
-  // fprintf(stderr, "Zart ha_reset, table_name: %s\n", table->s->table_name.str);
 
   const int retval = reset();
   return retval;

@@ -2067,6 +2067,147 @@ inline void Dbtup::returnTUPKEYCONF(Signal *signal, KeyReqStruct *req_struct,
 
 #define MAX_READ (MIN(sizeof(signal->theData), MAX_SEND_MESSAGE_BYTESIZE))
 
+int Dbtup::checkTTL(Tablerec* regTabPtr,
+                    KeyReqStruct *req_struct,
+                    bool* has_error,
+                    int* err_no) {
+  Uint32 attrId = (regTabPtr->m_ttl_col_no);
+  const Uint32* attrDescriptor = regTabPtr->tabDescriptor +
+    (attrId * ZAD_SIZE);
+  const Uint32 TattrDesc1 = attrDescriptor[0];
+  const Uint32 type_id = AttributeDescriptor::getType(TattrDesc1);
+  [[maybe_unused]] const Uint32 size =
+                                AttributeDescriptor::getSize(TattrDesc1);
+  [[maybe_unused]] const Uint32 size_in_bytes =
+                                AttributeDescriptor::getSizeInBytes(TattrDesc1);
+  [[maybe_unused]] const Uint32 size_in_words =
+                                AttributeDescriptor::getSizeInWords(TattrDesc1);
+  ndbrequire(type_id == NDB_TYPE_DATETIME2);
+#ifdef TTL_DEBUG
+  g_eventLogger->info("Zart, handleXXXReq TTL check, table_id: %u, "
+      "type_id: %u, size: %u, size_in_bytes: %u, "
+      "size_in_words: %u",
+      req_struct->fragPtrP->fragTableId, type_id, size,
+      size_in_bytes, size_in_words);
+#endif  // TTL_DEBUG
+  /*
+   * Zart
+   * Prepare correct attribute id format before passing it to readAttributes
+   */
+  attrId = attrId << 16;
+  Uint32 out_buf[3];
+  /*
+   * Zart
+   * TODO (Zhao)
+   * Double check whether it's safe to reuse req_struct here or not.
+   */
+  int ret = readAttributes(req_struct,
+      &attrId,
+      1,
+      out_buf,
+      3);
+  AttributeHeader* ahOut = (AttributeHeader*)out_buf;
+#ifdef TTL_DEBUG
+  g_eventLogger->info("Zart, Get ttl column data, col_id: %u, "
+      "byte_size: %u, data_size: %u, is_null: %u",
+      ahOut->getAttributeId(), ahOut->getByteSize(),
+      ahOut->getDataSize(), ahOut->isNULL());
+#endif  // TTL_DEBUG
+  ndbrequire(regTabPtr->m_ttl_col_no == ahOut->getAttributeId());
+
+  int cmp_ret = 0;
+  *has_error = false;
+  if (ret >= 0) {
+    if (!ahOut->isNULL()) {
+      /*
+       * Zart
+       * Just need to parse to second part.
+       */
+      int64_t dt_bin = my_datetime_packed_from_binary(
+          reinterpret_cast<const unsigned char*>(
+            ahOut->getDataPtr()), 0);
+      MYSQL_TIME dt;
+      TIME_from_longlong_datetime_packed(&dt, dt_bin);
+#ifdef TTL_DEBUG
+      g_eventLogger->info("Zart, Parsed TTL column data: "
+          "%u.%u.%u %u:%u:%u",
+          dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second);
+#endif  // TTL_DEBUG
+      Uint32 ttl_sec = regTabPtr->m_ttl_sec;
+      bool valid_future_dt = true;
+      if (ttl_sec != 0) {
+        Interval interval;
+        memset(&interval, 0, sizeof(interval));
+        interval.second = ttl_sec;
+        bool add_ret = date_add_interval(&dt, INTERVAL_SECOND,
+            interval, nullptr);
+        if (add_ret) {
+          g_eventLogger->warning("Zart, TTL column adds "
+              "interval overflowing");
+          valid_future_dt = false;
+        }
+      }
+      if (valid_future_dt) {
+        /*
+         * Zart
+         * Get current utc time
+         */
+        MYSQL_TIME curr_dt;
+        struct tm tmp_tm;
+        time_t t_now = (time_t)my_micro_time() / 1000000; /* second */
+        gmtime_r(&t_now, &tmp_tm);
+        curr_dt.neg = false;
+        curr_dt.second_part = 0;
+        curr_dt.year = ((tmp_tm.tm_year + 1900) % 10000);
+        curr_dt.month = tmp_tm.tm_mon + 1;
+        curr_dt.day = tmp_tm.tm_mday;
+        curr_dt.hour = tmp_tm.tm_hour;
+        curr_dt.minute = tmp_tm.tm_min;
+        curr_dt.second = tmp_tm.tm_sec;
+        curr_dt.time_zone_displacement = 0;
+        curr_dt.time_type = MYSQL_TIMESTAMP_DATETIME;
+        if (curr_dt.second == 60 || curr_dt.second == 61) {
+          curr_dt.second = 59;
+        }
+
+        /*
+         * Zart
+         * Compare with TTL
+         */
+#ifdef TTL_DEBUG
+        g_eventLogger->info("Zart, Get TTL "
+            "expired time: %u.%u.%u %u:%u:%u, "
+            "current time: %u.%u.%u %u:%u:%u",
+            dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second,
+            curr_dt.year, curr_dt.month, curr_dt.day, curr_dt.hour,
+            curr_dt.minute, curr_dt.second);
+#endif  // TTL_DEBUG
+        cmp_ret = my_time_compare(dt, curr_dt);
+      } else {
+        // future_dt overflows, we assume this row doesn't expire
+        cmp_ret = 1;
+      }
+    } else {
+      /*
+       * Zart
+       * TODO (Zhao)
+       * remove the warning log here.
+       */
+#ifdef TTL_DEBUG
+      g_eventLogger->warning("Zard, Read a NULL TTL column");
+#endif  // TTL_DEBUG
+      ndbassert(*has_error == false);
+      // NULL equals no TTL is set on the row
+      cmp_ret = 1;
+    }
+  } else {
+    jam();
+    *has_error = true;
+    *err_no = ret;
+  }
+  return cmp_ret;
+}
+
 /* ---------------------------------------------------------------- */
 /* ----------------------------- READ  ---------------------------- */
 /* ---------------------------------------------------------------- */
@@ -2100,138 +2241,30 @@ int Dbtup::handleReadReq(
                         "ttl ignore is set");
 #endif  // TTL_DEBUG
   }
+
   if (_regOperPtr->ttl_ignore == 0 &&
       is_ttl_table(regTabPtr)) {
-    Uint32 attrId = (regTabPtr->m_ttl_col_no);
-    const Uint32* attrDescriptor = regTabPtr->tabDescriptor +
-      (attrId * ZAD_SIZE);
-    const Uint32 TattrDesc1 = attrDescriptor[0];
-    const Uint32 type_id = AttributeDescriptor::getType(TattrDesc1);
-    [[maybe_unused]] const Uint32 size = AttributeDescriptor::getSize(TattrDesc1);
-    [[maybe_unused]] const Uint32 size_in_bytes = AttributeDescriptor::getSizeInBytes(TattrDesc1);
-    [[maybe_unused]] const Uint32 size_in_words = AttributeDescriptor::getSizeInWords(TattrDesc1);
-    ndbrequire(type_id == NDB_TYPE_DATETIME2);
+    bool has_error = false;
+    int err_no = 0;
+    int cmp_ret = 0;
 #ifdef TTL_DEBUG
-    g_eventLogger->info("Zart, (READ) handleReadReq TTL check, table_id: %u, "
-                        "type_id: %u, size: %u, size_in_bytes: %u, "
-                        "size_in_words: %u",
-        req_struct->fragPtrP->fragTableId, type_id, size,
-        size_in_bytes, size_in_words);
+    g_eventLogger->info("Zart, (READ) handleReadReq TTL check");
 #endif  // TTL_DEBUG
-    /*
-     * Zart
-     * Prepare correct attribute id format before passing it to readAttributes
-     */
-    attrId = attrId << 16;
-    Uint32 out_buf[3];
-    /*
-     * Zart
-     * TODO (Zhao)
-     * Double check whether it's safe to reuse req_struct here or not.
-     */
-    int ret = readAttributes(req_struct,
-                             &attrId,
-                             1,
-                             out_buf,
-                             3);
-    AttributeHeader* ahOut = (AttributeHeader*)out_buf;
+    cmp_ret = checkTTL(regTabPtr, req_struct, &has_error, &err_no);
+    if (!has_error) {
+      if (cmp_ret <= 0) {
+        // Expired
 #ifdef TTL_DEBUG
-    g_eventLogger->info("Zart, (READ) Get ttl column data, col_id: %u, "
-                        "byte_size: %u, data_size: %u, is_null: %u",
-                        ahOut->getAttributeId(), ahOut->getByteSize(),
-                        ahOut->getDataSize(), ahOut->isNULL());
+        g_eventLogger->info("Zart, (READ) TTL expired");
 #endif  // TTL_DEBUG
-    ndbrequire(regTabPtr->m_ttl_col_no == ahOut->getAttributeId());
-    if (ret >= 0) {
-      if (!ahOut->isNULL()) {
-        /*
-         * Zart
-         * Just need to parse to second part.
-         */
-        int64_t dt_bin = my_datetime_packed_from_binary(
-            reinterpret_cast<const unsigned char*>(
-              ahOut->getDataPtr()), 0);
-        MYSQL_TIME dt;
-        TIME_from_longlong_datetime_packed(&dt, dt_bin);
-#ifdef TTL_DEBUG
-        g_eventLogger->info("Zart, (READ) Parsed TTL column data: "
-                            "%u.%u.%u %u:%u:%u",
-            dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second);
-#endif  // TTL_DEBUG
-        Uint32 ttl_sec = regTabPtr->m_ttl_sec;
-        bool valid_future_dt = true;
-        if (ttl_sec != 0) {
-          Interval interval;
-          memset(&interval, 0, sizeof(interval));
-          interval.second = ttl_sec;
-          bool add_ret = date_add_interval(&dt, INTERVAL_SECOND,
-                             interval, nullptr);
-          if (add_ret) {
-            g_eventLogger->warning("Zart, (READ) TTL column adds "
-                                   "interval overflowing");
-            valid_future_dt = false;
-          }
-        }
-        if (valid_future_dt) {
-          /*
-           * Zart
-           * Get current utc time
-           */
-          MYSQL_TIME curr_dt;
-          struct tm tmp_tm;
-          time_t t_now = (time_t)my_micro_time() / 1000000; /* second */
-          gmtime_r(&t_now, &tmp_tm);
-          curr_dt.neg = false;
-          curr_dt.second_part = 0;
-          curr_dt.year = ((tmp_tm.tm_year + 1900) % 10000);
-          curr_dt.month = tmp_tm.tm_mon + 1;
-          curr_dt.day = tmp_tm.tm_mday;
-          curr_dt.hour = tmp_tm.tm_hour;
-          curr_dt.minute = tmp_tm.tm_min;
-          curr_dt.second = tmp_tm.tm_sec;
-          curr_dt.time_zone_displacement = 0;
-          curr_dt.time_type = MYSQL_TIMESTAMP_DATETIME;
-          if (curr_dt.second == 60 || curr_dt.second == 61) {
-            curr_dt.second = 59;
-          }
-
-          /*
-           * Zart
-           * Compare with TTL
-           */
-#ifdef TTL_DEBUG
-          g_eventLogger->info("Zart, (READ) Get TTL "
-              "expired time: %u.%u.%u %u:%u:%u, "
-              "current time: %u.%u.%u %u:%u:%u",
-              dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second,
-              curr_dt.year, curr_dt.month, curr_dt.day, curr_dt.hour,
-              curr_dt.minute, curr_dt.second);
-#endif  // TTL_DEBUG
-          int cmp_ret = my_time_compare(dt, curr_dt);
-          if (cmp_ret <= 0) {
-            // Expired
-#ifdef TTL_DEBUG
-            g_eventLogger->info("Zart, (READ) TTL expired");
-#endif  // TTL_DEBUG
-            terrorCode = 626;
-            tupkeyErrorLab(req_struct);
-            return -1;
-          }
-        }
-      } else {
-        /*
-         * Zart
-         * TODO (Zhao)
-         * remove the warning log here.
-         */
-#ifdef TTL_DEBUG
-        g_eventLogger->warning("Zard, (READ) Read a NULL TTL column");
-#endif  // TTL_DEBUG
+        terrorCode = 626;
+        tupkeyErrorLab(req_struct);
+        return -1;
       }
     } else {
-      g_eventLogger->warning("Zard, (READ) Failed to read a TTL column");
       jam();
-      terrorCode = Uint32(-ret);
+      ndbrequire(err_no < 0);
+      terrorCode = Uint32(-err_no);
       tupkeyErrorLab(req_struct);
       return -1;
     }
@@ -2316,166 +2349,56 @@ int Dbtup::handleUpdateReq(Signal* signal,
   }
   if (operPtrP->ttl_ignore == 1) {
 #ifdef TTL_DEBUG
-    g_eventLogger->info("Zart, (UPDATE) Skip checking TTL since "
+    g_eventLogger->info("Zart, (Update) Skip checking TTL since "
                         "ttl ignore is set");
 #endif  // TTL_DEBUG
   }
   if (operPtrP->ttl_ignore == 0 &&
       operPtrP->original_op_type != ZWRITE &&
       is_ttl_table(regTabPtr)) {
-    Uint32 attrId = (regTabPtr->m_ttl_col_no);
-    const Uint32* attrDescriptor = regTabPtr->tabDescriptor +
-      (attrId * ZAD_SIZE);
-    const Uint32 TattrDesc1 = attrDescriptor[0];
-    // const Uint32 TattrDesc2 = attrDescriptor[1];
-    const Uint32 type_id = AttributeDescriptor::getType(TattrDesc1);
-    [[maybe_unused]] const Uint32 size = AttributeDescriptor::getSize(TattrDesc1);
-    [[maybe_unused]] const Uint32 size_in_bytes = AttributeDescriptor::getSizeInBytes(TattrDesc1);
-    [[maybe_unused]] const Uint32 size_in_words = AttributeDescriptor::getSizeInWords(TattrDesc1);
-    ndbrequire(type_id == NDB_TYPE_DATETIME2);
+    bool has_error = false;
+    int err_no = 0;
+    int cmp_ret = 0;
 #ifdef TTL_DEBUG
-    g_eventLogger->info("Zart, (UPDATE) handleUpdateReq TTL check, "
-                        "table_id: %u, "
-                        "type_id: %u, size: %u, size_in_bytes: %u, "
-                        "size_in_words: %u",
-        req_struct->fragPtrP->fragTableId, type_id, size,
-        size_in_bytes, size_in_words);
+    g_eventLogger->info("Zart, (UPDATE) handleUpdateReq TTL check");
 #endif  // TTL_DEBUG
-    /*
-     * Zart
-     * Prepare correct attribute id format before passing it to readAttributes
-     */
-    attrId = attrId << 16;
-    Uint32 out_buf[3];
-    /*
-     * Zart
-     * TODO (Zhao)
-     * Double check whether it's safe to reuse req_struct here or not.
-     */
-    int ret = readAttributes(req_struct,
-                             &attrId,
-                             1,
-                             out_buf,
-                             3);
-    AttributeHeader* ahOut = (AttributeHeader*)out_buf;
-#ifdef TTL_DEBUG
-    g_eventLogger->info("Zart, (UPDATE) Get ttl column data, col_id: %u, "
-                        "byte_size: %u, "
-                        "data_size: %u, is_null: %u",
-                        ahOut->getAttributeId(), ahOut->getByteSize(),
-                        ahOut->getDataSize(), ahOut->isNULL());
-#endif  // TTL_DEBUG
-    ndbrequire(regTabPtr->m_ttl_col_no == ahOut->getAttributeId());
-    if (ret >= 0) {
-      if (!ahOut->isNULL()) {
+    cmp_ret = checkTTL(regTabPtr, req_struct, &has_error, &err_no);
+    if (!has_error) {
+      if (cmp_ret <= 0 && operPtrP->op_type != ZINSERT_TTL) {
         /*
          * Zart
-         * Just need to parse to second part.
+         * 1. Normal update on an already existing but expired row
          */
-        int64_t dt_bin = my_datetime_packed_from_binary(
-            reinterpret_cast<const unsigned char*>(
-              ahOut->getDataPtr()), 0);
-        MYSQL_TIME dt;
-        TIME_from_longlong_datetime_packed(&dt, dt_bin);
 #ifdef TTL_DEBUG
-        g_eventLogger->info("Zart, (UPDATE) Parsed TTL column data: "
-                            "%u.%u.%u %u:%u:%u",
-            dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second);
+        g_eventLogger->info("Zart, (UPDATE) TTL expired");
 #endif  // TTL_DEBUG
-        Uint32 ttl_sec = regTabPtr->m_ttl_sec;
-        bool valid_future_dt = true;
-        if (ttl_sec != 0) {
-          Interval interval;
-          memset(&interval, 0, sizeof(interval));
-          interval.second = ttl_sec;
-          bool add_ret = date_add_interval(&dt, INTERVAL_SECOND, interval, nullptr);
-          if (add_ret) {
-            g_eventLogger->warning("Zart, (UPDATE) TTL column adds "
-                                   "interval overflowing");
-            valid_future_dt = false;
-          }
-        }
-        if (valid_future_dt) {
-          /*
-           * Zart
-           * Get current utc time
-           */
-          MYSQL_TIME curr_dt;
-          struct tm tmp_tm;
-          time_t t_now = (time_t)my_micro_time() / 1000000; /* second */
-          gmtime_r(&t_now, &tmp_tm);
-          curr_dt.neg = false;
-          curr_dt.second_part = 0;
-          curr_dt.year = ((tmp_tm.tm_year + 1900) % 10000);
-          curr_dt.month = tmp_tm.tm_mon + 1;
-          curr_dt.day = tmp_tm.tm_mday;
-          curr_dt.hour = tmp_tm.tm_hour;
-          curr_dt.minute = tmp_tm.tm_min;
-          curr_dt.second = tmp_tm.tm_sec;
-          curr_dt.time_zone_displacement = 0;
-          curr_dt.time_type = MYSQL_TIMESTAMP_DATETIME;
-          if (curr_dt.second == 60 || curr_dt.second == 61) {
-            curr_dt.second = 59;
-          }
-
-          /*
-           * Zart
-           * Compare with TTL
-           */
-#ifdef TTL_DEBUG
-          g_eventLogger->info("Zart, (UPDATE) "
-              "Get TTL expired time: %u.%u.%u %u:%u:%u, "
-              "current time: %u.%u.%u %u:%u:%u",
-              dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second,
-              curr_dt.year, curr_dt.month, curr_dt.day, curr_dt.hour,
-              curr_dt.minute, curr_dt.second);
-#endif  // TTL_DEBUG
-          int cmp_ret = my_time_compare(dt, curr_dt);
-          if (cmp_ret <= 0 && operPtrP->op_type != ZINSERT_TTL) {
-            /*
-             * Zart
-             * 1. Normal update on an already existing but expired row
-             */
-#ifdef TTL_DEBUG
-            g_eventLogger->info("Zart, (UPDATE) TTL expired");
-#endif  // TTL_DEBUG
-            terrorCode = 626; // HA_ERR_KEY_NOT_FOUND
-            tupkeyErrorLab(req_struct);
-            return -1;
-          } else if (cmp_ret > 0 && operPtrP->op_type == ZINSERT_TTL) {
-            /*
-             * Zart
-             * 2. Insert an already existing but non-expired row
-             */
-#ifdef TTL_DEBUG
-            g_eventLogger->info("Zart, (UPDATE) ZINSERT_TIL but already "
-                                "existing row hasn't expired");
-#endif  // TTL_DEBUG
-            terrorCode = 630; // HA_ERR_FOUND_DUPP_KEY
-            tupkeyErrorLab(req_struct);
-            return -1;
-          }
-          if (cmp_ret <= 0 && operPtrP->op_type == ZINSERT_TTL) {
-#ifdef TTL_DEBUG
-            g_eventLogger->info("Zart, (UPDATE) ZINSERT_TTL on an duplicated "
-                                "expired row");
-#endif  // TTL_DEBUG
-          }
-        }
-      } else {
+        terrorCode = 626; // HA_ERR_KEY_NOT_FOUND
+        tupkeyErrorLab(req_struct);
+        return -1;
+      } else if (cmp_ret > 0 && operPtrP->op_type == ZINSERT_TTL) {
         /*
          * Zart
-         * TODO (Zhao)
-         * remove the warning log here.
+         * 2. Insert an already existing but non-expired row
          */
 #ifdef TTL_DEBUG
-        g_eventLogger->warning("Zart, (UPDATE) Read a NULL TTL column");
+        g_eventLogger->info("Zart, (UPDATE) ZINSERT_TIL but already "
+                            "existing row hasn't expired");
+#endif  // TTL_DEBUG
+        terrorCode = 630; // HA_ERR_FOUND_DUPP_KEY
+        tupkeyErrorLab(req_struct);
+        return -1;
+      }
+      if (cmp_ret <= 0 && operPtrP->op_type == ZINSERT_TTL) {
+#ifdef TTL_DEBUG
+        g_eventLogger->info("Zart, (UPDATE) ZINSERT_TTL on an duplicated "
+                            "expired row");
 #endif  // TTL_DEBUG
       }
     } else {
       g_eventLogger->warning("Zart, (UPDATE) Failed to read a TTL column");
       jam();
-      terrorCode = Uint32(-ret);
+      ndbrequire(err_no < 0);
+      terrorCode = Uint32(-err_no);
       tupkeyErrorLab(req_struct);
       return -1;
     }
@@ -3624,147 +3547,36 @@ int Dbtup::handleDeleteReq(Signal* signal,
                         "ttl ignore is set");
 #endif  // TTL_DEBUG
   }
-  {
+
   if (regOperPtr->ttl_ignore == 0 &&
       is_ttl_table(regTabPtr)) {
-    Uint32 attrId = (regTabPtr->m_ttl_col_no);
-    const Uint32* attrDescriptor = regTabPtr->tabDescriptor +
-      (attrId * ZAD_SIZE);
-    const Uint32 TattrDesc1 = attrDescriptor[0];
-    const Uint32 type_id = AttributeDescriptor::getType(TattrDesc1);
-    [[maybe_unused]] const Uint32 size = AttributeDescriptor::getSize(TattrDesc1);
-    [[maybe_unused]] const Uint32 size_in_bytes = AttributeDescriptor::getSizeInBytes(TattrDesc1);
-    [[maybe_unused]] const Uint32 size_in_words = AttributeDescriptor::getSizeInWords(TattrDesc1);
-    ndbrequire(type_id == NDB_TYPE_DATETIME2);
+    bool has_error = false;
+    int err_no = 0;
+    int cmp_ret = 0;
 #ifdef TTL_DEBUG
-    g_eventLogger->info("Zart, (DELETE) handleDeleteReq TTL check, "
-        "table_id: %u, "
-        "type_id: %u, size: %u, size_in_bytes: %u, "
-        "size_in_words: %u",
-        req_struct->fragPtrP->fragTableId, type_id, size,
-        size_in_bytes, size_in_words);
+    g_eventLogger->info("Zart, (DELETE) handleDeleteReq TTL check");
 #endif  // TTL_DEBUG
-    /*
-     * Zart
-     * Prepare correct attribute id format before passing it to readAttributes
-     */
-    attrId = attrId << 16;
-    Uint32 out_buf[3];
-    /*
-     * Zart
-     * TODO (Zhao)
-     * Double check whether it's safe to reuse req_struct here or not.
-     */
-    int ret = readAttributes(req_struct,
-        &attrId,
-        1,
-        out_buf,
-        3);
-    AttributeHeader* ahOut = (AttributeHeader*)out_buf;
-#ifdef TTL_DEBUG
-    g_eventLogger->info("Zart, (DELETE) Get ttl column data, col_id: %u, "
-        "byte_size: %u, "
-        "data_size: %u, is_null: %u",
-        ahOut->getAttributeId(), ahOut->getByteSize(),
-        ahOut->getDataSize(), ahOut->isNULL());
-#endif  // TTL_DEBUG
-    ndbrequire(regTabPtr->m_ttl_col_no == ahOut->getAttributeId());
-    if (ret >= 0) {
-      if (!ahOut->isNULL()) {
+    cmp_ret = checkTTL(regTabPtr, req_struct, &has_error, &err_no);
+    if (!has_error) {
+      if (cmp_ret <= 0) {
         /*
          * Zart
-         * Just need to parse to second part.
-         */
-        int64_t dt_bin = my_datetime_packed_from_binary(
-            reinterpret_cast<const unsigned char*>(
-              ahOut->getDataPtr()), 0);
-        MYSQL_TIME dt;
-        TIME_from_longlong_datetime_packed(&dt, dt_bin);
-#ifdef TTL_DEBUG
-        g_eventLogger->info("Zart, (DELETE) Parsed TTL column data: "
-            "%u.%u.%u %u:%u:%u",
-            dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second);
-#endif  // TTL_DEBUG
-        Uint32 ttl_sec = regTabPtr->m_ttl_sec;
-        bool valid_future_dt = true;
-        if (ttl_sec != 0) {
-          Interval interval;
-          memset(&interval, 0, sizeof(interval));
-          interval.second = ttl_sec;
-          bool add_ret = date_add_interval(&dt, INTERVAL_SECOND, interval, nullptr);
-          if (add_ret) {
-            g_eventLogger->warning("Zart, (DELETE) TTL column adds "
-                "interval overflowing");
-            valid_future_dt = false;
-          }
-        }
-        if (valid_future_dt) {
-          /*
-           * Zart
-           * Get current utc time
-           */
-          MYSQL_TIME curr_dt;
-          struct tm tmp_tm;
-          time_t t_now = (time_t)my_micro_time() / 1000000; /* second */
-          gmtime_r(&t_now, &tmp_tm);
-          curr_dt.neg = false;
-          curr_dt.second_part = 0;
-          curr_dt.year = ((tmp_tm.tm_year + 1900) % 10000);
-          curr_dt.month = tmp_tm.tm_mon + 1;
-          curr_dt.day = tmp_tm.tm_mday;
-          curr_dt.hour = tmp_tm.tm_hour;
-          curr_dt.minute = tmp_tm.tm_min;
-          curr_dt.second = tmp_tm.tm_sec;
-          curr_dt.time_zone_displacement = 0;
-          curr_dt.time_type = MYSQL_TIMESTAMP_DATETIME;
-          if (curr_dt.second == 60 || curr_dt.second == 61) {
-            curr_dt.second = 59;
-          }
-
-          /*
-           * Zart
-           * Compare with TTL
-           */
-#ifdef TTL_DEBUG
-          g_eventLogger->info("Zart, (DELETE) "
-              "Get TTL expired time: %u.%u.%u %u:%u:%u, "
-              "current time: %u.%u.%u %u:%u:%u",
-              dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second,
-              curr_dt.year, curr_dt.month, curr_dt.day, curr_dt.hour,
-              curr_dt.minute, curr_dt.second);
-#endif  // TTL_DEBUG
-          int cmp_ret = my_time_compare(dt, curr_dt);
-          if (cmp_ret <= 0) {
-            /*
-             * Zart
-             * 1. Normal deletion on an already existing but expired row
-             */
-#ifdef TTL_DEBUG
-            g_eventLogger->info("Zart, (DELETE) TTL expired");
-#endif  // TTL_DEBUG
-            terrorCode = 626; // HA_ERR_KEY_NOT_FOUND
-            tupkeyErrorLab(req_struct);
-            return -1;
-          }
-        }
-      } else {
-        /*
-         * Zart
-         * TODO (Zhao)
-         * remove the warning log here.
+         * 1. Normal deletion on an already existing but expired row
          */
 #ifdef TTL_DEBUG
-        g_eventLogger->warning("Zart, (DELETE) Read a NULL TTL column");
+        g_eventLogger->info("Zart, (DELETE) TTL expired");
 #endif  // TTL_DEBUG
+        terrorCode = 626; // HA_ERR_KEY_NOT_FOUND
+        tupkeyErrorLab(req_struct);
+        return -1;
       }
     } else {
-      g_eventLogger->warning("Zart, (DELETE) Failed to read a TTL column");
       jam();
-      terrorCode = Uint32(-ret);
+      ndbrequire(err_no < 0);
+      terrorCode = Uint32(-err_no);
       tupkeyErrorLab(req_struct);
       return -1;
     }
-  }
   }
 
   Uint32 copy_bits = 0;
