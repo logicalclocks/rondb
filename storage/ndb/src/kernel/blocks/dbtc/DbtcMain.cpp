@@ -1448,12 +1448,6 @@ void Dbtc::execREAD_CONFIG_REQ(Signal *signal) {
   }
   m_databaseRecordPool.init(RT_DBTC_DATABASE_RECORD, pc);
   m_databaseRecordHash.setSize(16384);
-  c_ttl_enabled = 0;
-  ndb_mgm_get_int_parameter(p, CFG_DB_ENABLE_TTL,
-                            &c_ttl_enabled);
-#ifdef TTL_DEBUG
-  g_eventLogger->info("Zart, [TC]TTL enabled: %u", c_ttl_enabled);
-#endif  // TTL_DEBUG
 }
 
 void Dbtc::execSTTOR(Signal *signal) {

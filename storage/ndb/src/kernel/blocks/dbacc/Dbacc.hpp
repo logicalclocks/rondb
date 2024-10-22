@@ -1211,8 +1211,8 @@ private:
 #endif
   bool is_ttl_table(Fragmentrec* fragptr) {
     ndbrequire(fragptr != nullptr);
-    return (c_ttl_enabled &&
-            fragptr->ttlSec != RNIL && fragptr->ttlColumnNo != RNIL);
+    return (fragptr->ttlSec != RNIL &&
+            fragptr->ttlColumnNo != RNIL);
   }
 
  public:
@@ -1266,7 +1266,6 @@ private:
   static const Uint32 c_transient_pool_count = 2;
   TransientFastSlotPool *c_transient_pools[c_transient_pool_count];
   Bitmask<1> c_transient_pools_shrinking;
-  Uint32 c_ttl_enabled;
 
 public:
   Dbacc *m_curr_acc;

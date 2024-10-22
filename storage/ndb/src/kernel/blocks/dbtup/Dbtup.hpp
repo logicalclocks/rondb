@@ -3952,8 +3952,6 @@ public:
   Uint32 c_min_list_size[MAX_FREE_LIST + 1];
   Uint32 c_max_list_size[MAX_FREE_LIST + 1];
 
-  Uint32 c_ttl_enabled;
-
   void initGlobalTemporaryVars();
   void reportMemoryUsage(Signal *signal, int incDec);
 
@@ -4399,8 +4397,7 @@ public:
 
   bool is_ttl_table(Tablerec* tabptr) {
     ndbassert(tabptr != nullptr);
-    return (c_ttl_enabled &&
-            tabptr->m_ttl_sec != RNIL && tabptr->m_ttl_col_no != RNIL);
+    return (tabptr->m_ttl_sec != RNIL && tabptr->m_ttl_col_no != RNIL);
   }
 
   bool is_ttl_table(Uint32 table_id) {

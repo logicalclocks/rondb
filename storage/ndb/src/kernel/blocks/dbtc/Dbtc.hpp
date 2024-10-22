@@ -3398,7 +3398,6 @@ class Dbtc : public SimulatedBlock {
   Uint32 m_max_writes_per_trans;
   Uint32 c_trans_error_loglevel;
   Uint32 m_take_over_operations;
-  Uint32 c_ttl_enabled;
 
   void dump_trans(ApiConnectRecordPtr transPtr);
   bool hasOp(ApiConnectRecordPtr transPtr, Uint32 op);
@@ -3531,8 +3530,7 @@ class Dbtc : public SimulatedBlock {
 
   bool is_ttl_table(TableRecord* tabptr) {
     ndbrequire(tabptr != nullptr);
-    return (c_ttl_enabled &&
-            tabptr->m_ttl_sec != RNIL &&
+    return (tabptr->m_ttl_sec != RNIL &&
             tabptr->m_ttl_col_no != RNIL);
   }
   bool is_ttl_table(Uint32 table_id) {

@@ -481,10 +481,6 @@ void Dbacc::execREAD_CONFIG_REQ(Signal *signal) {
   initRecords(p);
 
   initialiseRecordsLab(signal, 0, ref, senderData);
-  c_ttl_enabled = 0;
-  ndb_mgm_get_int_parameter(p, CFG_DB_ENABLE_TTL,
-                            &c_ttl_enabled);
-  g_eventLogger->info("Zart, [ACC]TTL enabled: %u", c_ttl_enabled);
   return;
 }
 
