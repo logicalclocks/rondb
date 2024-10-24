@@ -93,6 +93,8 @@ DictTabInfo::TableMapping[] = {
   DTI_MAP_INT(Table, FullyReplicatedTriggerId, FullyReplicatedTriggerId),
   DTI_MAP_INT(Table, UseVarSizedDiskDataFlag, UseVarSizedDiskDataFlag),
   DTI_MAP_INT(Table, HashFunctionFlag, HashFunctionFlag),
+  DTI_MAP_INT(Table, TTLSec, TTLSec),
+  DTI_MAP_INT(Table, TTLColumnNo, TTLColumnNo),
   DTIBREAK(AttributeName)
 };
 
@@ -211,6 +213,9 @@ void DictTabInfo::Table::init() {
   PartitionCount = 0;
   HashFunctionFlag = 0;
   UseVarSizedDiskDataFlag = 0;
+
+  TTLSec = RNIL;
+  TTLColumnNo = RNIL;
 }
 
 void DictTabInfo::Attribute::init() {

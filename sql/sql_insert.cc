@@ -1862,6 +1862,13 @@ bool write_record(THD *thd, TABLE *table, COPY_INFO *info, COPY_INFO *update) {
 
       DEBUG_SYNC(thd, "write_row_replace");
 
+      /*
+       * TODO (Zhao)
+       * ignore ttl in scan?
+       */
+      DEBUG_SYNC(thd, "ttl_wait_for_row_get_expired_after_reading_1");
+      // table->file->ha_extra(HA_EXTRA_IGNORE_TTL);
+
       /* Read all columns for the row we are going to replace */
       table->use_all_columns();
       /*
@@ -2017,6 +2024,12 @@ bool write_record(THD *thd, TABLE *table, COPY_INFO *info, COPY_INFO *update) {
             goto ok_or_after_trg_err;
           }
 
+          DEBUG_SYNC(thd, "ttl_wait_for_row_get_expired_after_reading_2");
+          /*
+           * Zart
+           * Already set before
+           */
+          // table->file->ha_extra(HA_EXTRA_IGNORE_TTL);
           if ((error = table->file->ha_update_row(table->record[1],
                                                   table->record[0])) &&
               error != HA_ERR_RECORD_IS_THE_SAME) {

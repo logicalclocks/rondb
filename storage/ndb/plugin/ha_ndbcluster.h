@@ -738,6 +738,11 @@ class ha_ndbcluster : public handler, public Partition_handler {
   NdbIndexScanOperation *m_multi_cursor;
 
   int update_stats(THD *thd, bool do_read_stat);
+  /*
+   * Zart
+   * TTL
+   */
+  bool m_ttl_ignore;
 };
 
 bool is_cluster_failure_code(int error);

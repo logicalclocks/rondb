@@ -1571,6 +1571,10 @@ class Dbtc : public SimulatedBlock {
 
     Uint32 scanTakeOverInd;
     Uint32 unlockNodeId; /* NodeId for unlock operation */
+    /* Zart
+     * TTL
+     */
+    Uint8 m_ttl_ignore;
     /* End of TCKEYREQ/TCINDXREQ only fields */
   };
 
@@ -1688,6 +1692,9 @@ class Dbtc : public SimulatedBlock {
     Uint8 noOfDistrKeys;
     Uint8 hasVarKeys;
     Uint8 m_disk_based;
+    Uint32 m_ttl_sec;
+    Uint32 m_ttl_col_no;
+    Uint32 m_primary_table_id;
 
     bool checkTable(Uint32 schemaVersion) const {
       return !get_dropping() &&
@@ -2277,7 +2284,8 @@ class Dbtc : public SimulatedBlock {
   void sendDihGetNodesLab(Signal *, ScanRecordPtr, ApiConnectRecordPtr);
   bool sendDihGetNodeReq(Signal *, ScanRecordPtr,
                          ScanFragLocationPtr &fragLocationPtr,
-                         Uint32 scanFragId, bool is_multi_spj_scan);
+                         Uint32 scanFragId, bool is_multi_spj_scan,
+                         bool ttl_can_go_to_replica);
   void get_next_frag_location(ScanFragLocationPtr fragLocationPtr,
                               Uint32 &fragId, Uint32 &primaryBlockRef,
                               Uint32 &preferredBlockRef);
@@ -3519,6 +3527,20 @@ class Dbtc : public SimulatedBlock {
                               ApiConnectRecordPtr apiConnectptr);
 
   void printCrashApiConnectrec(ApiConnectRecordPtr apiConnectptr);
+
+  bool is_ttl_table(TableRecord* tabptr) {
+    ndbrequire(tabptr != nullptr);
+    return (tabptr->m_ttl_sec != RNIL &&
+            tabptr->m_ttl_col_no != RNIL);
+  }
+  bool is_ttl_table(Uint32 table_id) {
+    ndbrequire(table_id != RNIL);
+    TableRecordPtr tmp_tabPtr;
+    tmp_tabPtr.i = table_id;
+    ptrCheckGuard(tmp_tabPtr, ctabrecFilesize, tableRecord);
+    return is_ttl_table(tmp_tabPtr.p);
+  }
+
 public:
   DistributionHandler m_distribution_handle;
 

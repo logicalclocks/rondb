@@ -982,7 +982,9 @@ struct Operationrec {
     m_commit_state(CommitNotStarted),
     m_any_value(0),
     op_type(ZREAD),
-    trans_state(Uint32(TRANS_DISCONNECTED))
+    trans_state(Uint32(TRANS_DISCONNECTED)),
+    original_op_type(ZREAD),
+    ttl_ignore(0)
   {
     op_struct.bit_field.in_active_list = false;
     op_struct.bit_field.tupVersion = ZNIL;
@@ -1144,6 +1146,12 @@ struct Operationrec {
       RF_MULTI_NOT_EXIST = 3,  /* Refresh op !first in trans, row deleted */
       RF_MULTI_EXIST = 4       /* Refresh op !first in trans, row exists */
     };
+    /*
+     * Zart
+     * keep original operation type
+     */
+    Uint32 original_op_type;
+    Uint8 ttl_ignore;
   };
 
   Uint32 m_base_header_bits;
@@ -1307,7 +1315,9 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
           deferredInsertTriggers(triggerPool),
           deferredUpdateTriggers(triggerPool),
           deferredDeleteTriggers(triggerPool),
-          tuxCustomTriggers(triggerPool) {}
+          tuxCustomTriggers(triggerPool),
+          m_ttl_sec(RNIL),
+          m_ttl_col_no(RNIL) {}
 
     AttributeMask notNullAttributeMask;
     AttributeMask blobAttributeMask;
@@ -1493,6 +1503,12 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
     } m_reorg_suma_filter;
     State tableStatus;
     Local_key m_default_value_location;
+
+    /*
+     * TTL
+     */
+    Uint32 m_ttl_sec;
+    Uint32 m_ttl_col_no;
   };
   Uint32 m_read_ctl_file_data[BackupFormat::LCP_CTL_FILE_BUFFER_SIZE_IN_WORDS];
   /*
@@ -2690,6 +2706,10 @@ private:
                                 LinearSectionPtr ptr[],
                                 Uint32 nptr);
 
+  int checkTTL(Tablerec* regTabPtr,
+               KeyReqStruct *req_struct,
+               bool* has_error,
+               int* err_no);
 // *****************************************************************
 // Setting up the environment for reads, inserts, updates and deletes.
 // *****************************************************************
@@ -4374,6 +4394,18 @@ public:
   Bitmask<1> c_transient_pools_shrinking;
 
   void release_scan_lock(ScanLockPtr);
+
+  bool is_ttl_table(Tablerec* tabptr) {
+    ndbassert(tabptr != nullptr);
+    return (tabptr->m_ttl_sec != RNIL && tabptr->m_ttl_col_no != RNIL);
+  }
+
+  bool is_ttl_table(Uint32 table_id) {
+    TablerecPtr tablePtr;
+    tablePtr.i = table_id;
+    ptrCheckGuard(tablePtr, cnoOfTablerec, tablerec);
+    return is_ttl_table(tablePtr.p);
+  }
 
 public:
   Dbtup *m_curr_tup;

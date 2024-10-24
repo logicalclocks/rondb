@@ -104,6 +104,9 @@ bool printTCKEYREQ(FILE *output, const Uint32 *theData, Uint32 len,
     if (sig->getPassQueueingFlag(sig->requestInfo))
       fprintf(output, " passQueue");
 
+    if (sig->getTTLIgnoreFlag(sig->requestInfo))
+      fprintf(output, " ttl_ignore");
+
     fprintf(output, "\n");
   }
 

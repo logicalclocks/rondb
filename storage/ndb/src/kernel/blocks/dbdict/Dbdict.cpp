@@ -1071,6 +1071,8 @@ void Dbdict::packTableIntoPages(SimpleProperties::Writer &w,
   DEB_HASH(("1: dict_tab(%u) HashFunctionFlag: %u",
             tablePtr.p->tableId,
             ((tablePtr.p->m_bits & TableRecord::TR_HashFunction) != 0)));
+  w.add(DictTabInfo::TTLSec, tablePtr.p->ttlSec);
+  w.add(DictTabInfo::TTLColumnNo, tablePtr.p->ttlColumnNo);
 
   D("packTableIntoPages: tableId: "
     << tablePtr.p->tableId << " tablePtr.i = " << tablePtr.i
@@ -2653,6 +2655,12 @@ void Dbdict::initialiseTableRecord(TableRecordPtr tablePtr, Uint32 tableId) {
               sizeof(tablePtr.p->indexStatNodes));
   tablePtr.p->indexStatBgRequest = 0;
   tablePtr.p->m_obj_ptr_i = RNIL;
+  /*
+   * Zart
+   * TTL
+   */
+  tablePtr.p->ttlSec = RNIL;
+  tablePtr.p->ttlColumnNo = RNIL;
 }  // Dbdict::initialiseTableRecord()
 
 void Dbdict::initialiseTriggerRecord(TriggerRecordPtr triggerPtr,
@@ -5479,7 +5487,6 @@ void Dbdict::handleTabInfoInit(Signal *signal, SchemaTransPtr &trans_ptr,
     jam();
     parseP->requestType = DictTabInfo::AddTableFromDict;
   }
-
   TableRecordPtr tablePtr;
   Uint32 schemaFileId;
   switch (parseP->requestType) {
@@ -5679,6 +5686,7 @@ void Dbdict::handleTabInfoInit(Signal *signal, SchemaTransPtr &trans_ptr,
      */
     jam();
   }
+
   parseP->tablePtr = tablePtr;
 
   // Disallow logging of a temporary table.
@@ -5935,6 +5943,23 @@ void Dbdict::handleTabInfoInit(Signal *signal, SchemaTransPtr &trans_ptr,
     jam();
     tablePtr.p->fullyReplicatedTriggerId = c_tableDesc.FullyReplicatedTriggerId;
   }
+
+  tablePtr.p->ttlSec = c_tableDesc.TTLSec;
+  tablePtr.p->ttlColumnNo = c_tableDesc.TTLColumnNo;
+
+#ifdef TTL_DEBUG
+  if (NEED_PRINT(tablePtr.p->tableId)) {
+    g_eventLogger->info("Zart, [DICT]s< parsed c_tableDesc , table_id: %u, "
+                        "TTL sec: %u, TTL column no: %u",
+                       tablePtr.p->tableId,
+                       c_tableDesc.TTLSec,
+                       c_tableDesc.TTLColumnNo);
+    g_eventLogger->info("Zart, [DICT]GEN TableRecord: table_id: %u, "
+                        "TTL sec: %u, TTL column no: %u",
+                       tablePtr.p->tableId, tablePtr.p->ttlSec,
+                       tablePtr.p->ttlColumnNo);
+  }
+#endif  // TTL_DEBUG
 
   handleTabInfo(it, parseP, c_tableDesc);
 
@@ -6270,6 +6295,17 @@ void Dbdict::handleTabInfo(SimpleProperties::Reader &it,
       attrDesc.AttributeStorageType == NDB_STORAGETYPE_DISK);
     AttributeDescriptor::setDynamic(desc, attrDesc.AttributeDynamic);
     attrPtr.p->attributeDescriptor = desc;
+    if (tableDesc.TTLColumnNo != RNIL &&
+        attrPtr.p->attributeId == tableDesc.TTLColumnNo) {
+      ndbrequire(tableDesc.TTLSec != RNIL);
+      ndbrequire(AttributeDescriptor::getType(attrPtr.p->attributeDescriptor)
+                 == DictTabInfo::ExtDatetime2);
+#ifdef TTL_DEBUG
+      g_eventLogger->info("Zart, [DICT]TTL validation on TTL attrId passed. "
+                          "attrId: %u",
+                           attrPtr.p->attributeId);
+#endif  // TTL_DEBUG
+    }
     attrPtr.p->autoIncrement = attrDesc.AttributeAutoIncrement;
     {
       char defaultValueBuf[MAX_ATTR_DEFAULT_VALUE_SIZE];
@@ -7194,8 +7230,10 @@ void Dbdict::createTab_local(Signal *signal, SchemaOpPtr op_ptr,
     ((tabPtr.p->m_bits & TableRecord::TR_UseVarSizedDiskData) == 0) ? 0 : 1;
   req->hashFunctionFlag =
     ((tabPtr.p->m_bits & TableRecord::TR_HashFunction) == 0) ? 0 : 1;
+  req->ttlSec = tabPtr.p->ttlSec;
+  req->ttlColumnNo = tabPtr.p->ttlColumnNo;
   sendSignal(DBLQH_REF, GSN_CREATE_TAB_REQ, signal,
-             CreateTabReq::NewSignalLengthLDM, JBB);
+             CreateTabReq::NewSignalLengthLDMWithTTL, JBB);
 
   /**
    * Create KeyDescriptor
@@ -8030,6 +8068,8 @@ void Dbdict::execTC_SCHVERCONF(Signal *signal) {
     DEB_HASH(("4: dict_tab(%u) HashFunctionFlag: %u",
               tabPtr.p->tableId,
               ((tabPtr.p->m_bits & TableRecord::TR_HashFunction) != 0)));
+    req->ttlSec = tabPtr.p->ttlSec;
+    req->ttlColumnNo = tabPtr.p->ttlColumnNo;
 
 
     if (DictTabInfo::isOrderedIndex(tabPtr.p->tableType)) {
@@ -8049,6 +8089,22 @@ void Dbdict::execTC_SCHVERCONF(Signal *signal) {
           (Uint32) !!(tabPtr.p->m_bits & TableRecord::TR_ReadBackup);
       req->fullyReplicated =
           (Uint32)((tabPtr.p->m_bits & TableRecord::TR_FullyReplicated) != 0);
+    }
+
+    /*
+     * Zart
+     * TTL
+     * send primaryTable to TC to make sure the table record
+     * of non-table table can find its primary table record to
+     * get the TTL info.
+     */
+    if (!DictTabInfo::isTable(tabPtr.p->tableType)) {
+      req->primaryTableId = tabPtr.p->primaryTableId;
+      TableRecordPtr basePtr;
+      bool ok = find_object(basePtr, tabPtr.p->primaryTableId);
+      ndbrequire(ok && basePtr.p->tableId == tabPtr.p->primaryTableId);
+    } else {
+      req->primaryTableId = RNIL;
     }
 
     sendSignal(DBTC_REF, GSN_TC_SCHVERREQ, signal, TcSchVerReq::SignalLength,

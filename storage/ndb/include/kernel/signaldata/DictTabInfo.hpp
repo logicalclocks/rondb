@@ -167,6 +167,12 @@ class DictTabInfo {
 
     HashFunctionFlag   = 163,
 
+    /*
+     * TTL
+     */
+    TTLSec = 164,
+    TTLColumnNo = 165,
+
     TableEnd           = 999,
     
     AttributeName          = 1000, // String, Mandatory
@@ -391,6 +397,9 @@ class DictTabInfo {
 
     Uint32 UseVarSizedDiskDataFlag;
     Uint32 HashFunctionFlag;
+
+    Uint32 TTLSec;
+    Uint32 TTLColumnNo;
 
     Table() {}
     void init();
