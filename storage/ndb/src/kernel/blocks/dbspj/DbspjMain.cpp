@@ -119,10 +119,10 @@ static constexpr Uint32 ResumeCongestedQuota = 32;
  * DEBUG options for different parts of SPJ block.
  * Comment out those part you don't want DEBUG'ed.
  */
-// #define DEBUG(x) ndbout << "DBSPJ: "<< x << endl
-// #define DEBUG_DICT(x) ndbout << "DBSPJ: "<< x << endl
-// #define DEBUG_LQHKEYREQ
-// #define DEBUG_SCAN_FRAGREQ
+#define DEBUG(x) ndbout << "DBSPJ: "<< x << endl
+#define DEBUG_DICT(x) ndbout << "DBSPJ: "<< x << endl
+#define DEBUG_LQHKEYREQ
+#define DEBUG_SCAN_FRAGREQ
 #endif
 
 /**
@@ -1512,11 +1512,11 @@ Dbspj::build(Build_context& ctx,
     }
 
 #if defined(DEBUG_LQHKEYREQ) || defined(DEBUG_SCAN_FRAGREQ)
-    printf("node: ");
+    printf("node: len: %u, ", node_len);
     for (Uint32 i = 0; i < node_len; i++) printf("0x%.8x ", m_buffer0[i]);
     printf("\n");
 
-    printf("param: ");
+    printf("param: param_len: %u, ", param_len);
     for (Uint32 i = 0; i < param_len; i++) printf("0x%.8x ", m_buffer1[i]);
     printf("\n");
 #endif
@@ -9237,14 +9237,17 @@ Uint32 Dbspj::expand(Local_pattern_store &dst, Ptr<TreeNode> treeNodePtr,
       case QueryPattern::P_UNQ_PK:
       case QueryPattern::P_ATTRINFO:
         jam();
+        DEBUG("P_COL/P_UNQ_PK/P_ATTRINFO");
         err = appendToPattern(dst, pattern, 1);
         break;
       case QueryPattern::P_DATA:
         jam();
+        DEBUG("P_DATA");
         err = appendToPattern(dst, pattern, val + 1);
         break;
       case QueryPattern::P_PARAM:
         jam();
+        DEBUG("P_PARAM");
         // NOTE: Converted to P_DATA by appendParamToPattern
         ndbassert(val < paramCnt);
         err = appendParamToPattern(dst, row, val);
@@ -9252,6 +9255,7 @@ Uint32 Dbspj::expand(Local_pattern_store &dst, Ptr<TreeNode> treeNodePtr,
         break;
       case QueryPattern::P_PARAM_HEADER:
         jam();
+        DEBUG("P_PARAM_HEADER");
         // NOTE: Converted to P_DATA by appendParamHeadToPattern
         ndbassert(val < paramCnt);
         err = appendParamHeadToPattern(dst, row, val);
@@ -9260,6 +9264,7 @@ Uint32 Dbspj::expand(Local_pattern_store &dst, Ptr<TreeNode> treeNodePtr,
       case QueryPattern::P_PARENT:  // Prefix to P_COL
       {
         jam();
+        DEBUG("P_PARENT");
         err = appendToPattern(dst, pattern, 1);
         if (unlikely(err)) {
           jam();
@@ -9504,6 +9509,7 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
           (treeNodePtr.p->m_bits & TreeNode::T_ATTR_INTERPRETED);
 
       if (interpreted) {
+        DEBUG("interpreted");
         static constexpr Uint32 sections[5] = {0, 0, 0, 0, 0};
         /**
          * Add section headers for interpreted execution
