@@ -54,12 +54,20 @@ jobs:
       - name: Build RonDB Tarball
         run: |
           BUILD_CORES=$(nproc)
+          echo "Building RonDB tarball with $BUILD_CORES cores"
+
+          EXTRA_ARGS="--build-arg RELEASE_TARBALL=1"
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            # Manual dispatches will only be dev tarballs
+            EXTRA_ARGS=""
+          fi
+
           docker buildx build . \
             -f Dockerfile.oraclelinux8 \
             --target get-package-all \
             --output . \
             --build-arg BUILD_THREADS=$BUILD_CORES \
-            --build-arg RELEASE_TARBALL=1
+            $EXTRA_ARGS
 
           ls -l
 
