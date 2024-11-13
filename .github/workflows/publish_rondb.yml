@@ -1,6 +1,11 @@
 name: Publish RonDB Tarball
 on:
   workflow_dispatch:
+    inputs:
+      release_build:
+        required: true
+        type: boolean
+        default: false
   push:
     branches:
       - "21.04.[0-9]+"
@@ -58,8 +63,9 @@ jobs:
 
           EXTRA_ARGS="--build-arg RELEASE_TARBALL=1"
           if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            # Manual dispatches will only be dev tarballs
-            EXTRA_ARGS=""
+            if [ "${{ github.event.inputs.release_build }}" == "false" ]; then
+              EXTRA_ARGS=""
+            fi
           fi
 
           docker buildx build . \
