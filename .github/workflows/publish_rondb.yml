@@ -122,6 +122,8 @@ jobs:
             user_code_path="${user_code_path}/rondb-dev"            
           fi
 
+          ssh $host_user "mkdir -p $user_code_path"
+
           echo "Copying $tarball to $host_user:$user_code_path"
           scp ./$tarball $host_user:$user_code_path/$tarball
           # Delete the tarball after it has been uploaded
