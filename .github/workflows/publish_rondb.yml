@@ -116,7 +116,7 @@ jobs:
           # We won't upload to repo.hops.works/master directly;
           # This is handled by a cron job that checks whether the
           # tarball already exists first
-          user_code_path="/home/$REPO_HOPSWORKS_USER/upload_area"
+          user_code_path="/home/$REPO_HOPSWORKS_USER/upload_area/master"
           if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
             # This will be copied to /opt/repository/master/rondb-dev
             user_code_path="${user_code_path}/rondb-dev"            
