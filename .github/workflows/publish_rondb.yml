@@ -123,6 +123,6 @@ jobs:
           fi
 
           echo "Copying $tarball to $host_user:$user_code_path"
-          scp ./$tarball $host_user:$user_code_path
+          scp ./$tarball $host_user:$user_code_path/$tarball
           # Delete the tarball after it has been uploaded
           rm -f $tarball
