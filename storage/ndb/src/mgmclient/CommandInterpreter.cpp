@@ -2419,6 +2419,7 @@ int CommandInterpreter::executeStop(Vector<BaseString> &command_list,
   int abort = 0;
   int retval = 0;
   int force = 0;
+  int extended_timeout = 0;
 
   for (; command_pos < command_list.size(); command_pos++) {
     const char *item = command_list[command_pos].c_str();
@@ -2430,7 +2431,11 @@ int CommandInterpreter::executeStop(Vector<BaseString> &command_list,
       force = 1;
       continue;
     }
-    ndbout_c("Invalid option: %s. Expecting -A or -F after STOP", item);
+    if (native_strcasecmp(item, "-X") == 0) {
+      extended_timeout = 1;
+      continue;
+    }
+    ndbout_c("Invalid option: %s. Expecting -A, -F or -X after STOP", item);
     return -1;
   }
 
@@ -2468,8 +2473,8 @@ int CommandInterpreter::executeStop(Vector<BaseString> &command_list,
       }
     }
   }
-  int result= ndb_mgm_stop4(m_mgmsrv, no_of_nodes, node_ids, abort,
-                            force, &need_disconnect);
+  int result= ndb_mgm_stop5(m_mgmsrv, no_of_nodes, node_ids, abort,
+                            force, &need_disconnect, extended_timeout);
   if (result < 0)
   {
     ndbout_c("Shutdown failed.");
@@ -3001,7 +3006,7 @@ CommandInterpreter::stop_node(int processId)
   ndbout_c("Stopping node %d", processId);
   g_stop_state[processId] = StopState::StopIdle;
   int need_disconnect;
-  int result = ndb_mgm_stop4(m_mgmsrv, 1, &processId, 0, 0, &need_disconnect);
+  int result = ndb_mgm_stop5(m_mgmsrv, 1, &processId, 0, 0, &need_disconnect, 1);
   if (result < 0)
   {
     wait_for_stop_report(processId);
@@ -3267,6 +3272,7 @@ int CommandInterpreter::executeRestart(Vector<BaseString> &command_list,
   int abort = 0;
   int need_disconnect = 0;
   int force = 0;
+  int extended_timeout = 0;
 
   for (; command_pos < command_list.size(); command_pos++) {
     const char *item = command_list[command_pos].c_str();
@@ -3284,6 +3290,10 @@ int CommandInterpreter::executeRestart(Vector<BaseString> &command_list,
     }
     if (native_strcasecmp(item, "-F") == 0) {
       force = 1;
+      continue;
+    }
+    if (native_strcasecmp(item, "-X") == 0) {
+      extended_timeout = 1;
       continue;
     }
     ndbout_c("Invalid option: %s. Expecting -A,-N,-I or -F after RESTART",
@@ -3331,9 +3341,9 @@ int CommandInterpreter::executeRestart(Vector<BaseString> &command_list,
     }
   }
 
-  result = ndb_mgm_restart4(m_mgmsrv, no_of_nodes, node_ids, initialstart,
-                            nostart, abort, force, &need_disconnect);
-
+  result = ndb_mgm_restart5(m_mgmsrv, no_of_nodes, node_ids, initialstart,
+                            nostart, abort, force, &need_disconnect,
+			    extended_timeout);
   if (result <= 0) {
     ndbout_c("Restart failed.");
     printError();

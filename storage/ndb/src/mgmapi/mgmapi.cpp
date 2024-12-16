@@ -596,10 +596,13 @@ static const Properties *ndb_mgm_call(
 */
 
 static inline const Properties *ndb_mgm_call_slow(
-    NdbMgmHandle handle, const ParserRow<ParserDummy> *command_reply,
+    NdbMgmHandle handle,
+    const ParserRow<ParserDummy> *command_reply,
     const char *cmd, const Properties *cmd_args,
-    unsigned int min_timeout = 5 * 60 * 1000,  // ms
-    const char *cmd_bulk = nullptr) {
+    unsigned int extended_timeout) {
+  unsigned int min_timeout = extended_timeout ? 
+    60 * 60 * 1000 : 5 * 60 * 60;  // ms
+  const char *cmd_bulk = nullptr;
   const unsigned int save_timeout = handle->timeout;
   if (min_timeout > save_timeout) handle->timeout = min_timeout;
   const Properties *reply =
@@ -1582,15 +1585,18 @@ extern "C" int ndb_mgm_stop3(NdbMgmHandle handle, int no_of_nodes,
 }
 
 extern "C" int ndb_mgm_stop4(NdbMgmHandle handle, int no_of_nodes,
+                             const int *node_list, int abort,
+			     int force, int *disconnect) {
+  return ndb_mgm_stop5(handle, no_of_nodes, node_list, abort, force,
+                       disconnect, 0);
+}
+
+extern "C" int ndb_mgm_stop5(NdbMgmHandle handle, int no_of_nodes,
                              const int *node_list, int abort, int force,
-                             int *disconnect) {
-  DBUG_ENTER("ndb_mgm_stop4");
+                             int *disconnect, int extended_timeout) {
+  DBUG_ENTER("ndb_mgm_stop5");
   CHECK_HANDLE(handle, -1);
-  SET_ERROR(handle, NDB_MGM_NO_ERROR, "Executing: ndb_mgm_stop4");
-  const ParserRow<ParserDummy> stop_reply_v1[] = {
-      MGM_CMD("stop reply", nullptr, ""),
-      MGM_ARG("stopped", Int, Optional, "No of stopped nodes"),
-      MGM_ARG("result", String, Mandatory, "Error message"), MGM_END()};
+  SET_ERROR(handle, NDB_MGM_NO_ERROR, "Executing: ndb_mgm_stop5");
   const ParserRow<ParserDummy> stop_reply_v2[] = {
       MGM_CMD("stop reply", nullptr, ""),
       MGM_ARG("stopped", Int, Optional, "No of stopped nodes"),
@@ -1600,13 +1606,6 @@ extern "C" int ndb_mgm_stop4(NdbMgmHandle handle, int no_of_nodes,
   CHECK_CONNECTED(handle, -1);
 
   if (!get_mgmd_version(handle)) DBUG_RETURN(-1);
-
-  int use_v2 =
-      ((handle->mgmd_version_major == 5) &&
-       ((handle->mgmd_version_minor == 0 && handle->mgmd_version_build >= 21) ||
-        (handle->mgmd_version_minor == 1 && handle->mgmd_version_build >= 12) ||
-        (handle->mgmd_version_minor > 1))) ||
-      (handle->mgmd_version_major > 5);
 
   if (no_of_nodes < -1) {
     SET_ERROR(handle, NDB_MGM_ILLEGAL_NUMBER_OF_NODES,
@@ -1620,13 +1619,14 @@ extern "C" int ndb_mgm_stop4(NdbMgmHandle handle, int no_of_nodes,
      */
     Properties args;
     args.put("abort", abort);
-    if (use_v2) args.put("stop", (no_of_nodes == -1) ? "mgm,db" : "db");
+    args.put("stop", (no_of_nodes == -1) ? "mgm,db" : "db");
     // force has no effect, continue anyway for consistency
     const Properties *reply;
-    if (use_v2)
-      reply = ndb_mgm_call_slow(handle, stop_reply_v2, "stop all", &args);
-    else
-      reply = ndb_mgm_call_slow(handle, stop_reply_v1, "stop all", &args);
+    reply = ndb_mgm_call_slow(handle,
+		              stop_reply_v2,
+			      "stop all",
+			      &args,
+			      extended_timeout);
     CHECK_REPLY(handle, reply, -1);
 
     Uint32 stopped = 0;
@@ -1636,10 +1636,7 @@ extern "C" int ndb_mgm_stop4(NdbMgmHandle handle, int no_of_nodes,
       delete reply;
       DBUG_RETURN(-1);
     }
-    if (use_v2)
-      reply->get("disconnect", (Uint32 *)disconnect);
-    else
-      *disconnect = 0;
+    reply->get("disconnect", (Uint32 *)disconnect);
     BaseString result;
     reply->get("result", result);
     if (strcmp(result.c_str(), "Ok") != 0) {
@@ -1673,10 +1670,11 @@ extern "C" int ndb_mgm_stop4(NdbMgmHandle handle, int no_of_nodes,
               "The connected mgm server does not support 'stop --force'");
 
   const Properties *reply;
-  if (use_v2)
-    reply = ndb_mgm_call_slow(handle, stop_reply_v2, "stop v2", &args);
-  else
-    reply = ndb_mgm_call_slow(handle, stop_reply_v1, "stop", &args);
+  reply = ndb_mgm_call_slow(handle,
+		            stop_reply_v2,
+			    "stop v2",
+			    &args,
+			    extended_timeout);
   CHECK_REPLY(handle, reply, -1);
 
   Uint32 stopped;
@@ -1686,10 +1684,7 @@ extern "C" int ndb_mgm_stop4(NdbMgmHandle handle, int no_of_nodes,
     delete reply;
     DBUG_RETURN(-1);
   }
-  if (use_v2)
-    reply->get("disconnect", (Uint32 *)disconnect);
-  else
-    *disconnect = 0;
+  reply->get("disconnect", (Uint32 *)disconnect);
   BaseString result;
   reply->get("result", result);
   if (strcmp(result.c_str(), "Ok") != 0) {
@@ -1725,9 +1720,17 @@ extern "C" int ndb_mgm_restart3(NdbMgmHandle handle, int no_of_nodes,
 extern "C" int ndb_mgm_restart4(NdbMgmHandle handle, int no_of_nodes,
                                 const int *node_list, int initial, int nostart,
                                 int abort, int force, int *disconnect) {
+  return ndb_mgm_restart5(handle, no_of_nodes, node_list, initial, nostart,
+                          abort, force, disconnect, 0);
+}
+
+extern "C" int ndb_mgm_restart5(NdbMgmHandle handle, int no_of_nodes,
+                                const int *node_list, int initial, int nostart,
+                                int abort, int force, int *disconnect,
+				int extended_timeout) {
   DBUG_ENTER("ndb_mgm_restart");
   CHECK_HANDLE(handle, -1);
-  SET_ERROR(handle, NDB_MGM_NO_ERROR, "Executing: ndb_mgm_restart4");
+  SET_ERROR(handle, NDB_MGM_NO_ERROR, "Executing: ndb_mgm_restart5");
 
   const ParserRow<ParserDummy> restart_reply_v1[] = {
       MGM_CMD("restart reply", nullptr, ""),
@@ -1743,13 +1746,6 @@ extern "C" int ndb_mgm_restart4(NdbMgmHandle handle, int no_of_nodes,
 
   if (!get_mgmd_version(handle)) DBUG_RETURN(-1);
 
-  int use_v2 =
-      ((handle->mgmd_version_major == 5) &&
-       ((handle->mgmd_version_minor == 0 && handle->mgmd_version_build >= 21) ||
-        (handle->mgmd_version_minor == 1 && handle->mgmd_version_build >= 12) ||
-        (handle->mgmd_version_minor > 1))) ||
-      (handle->mgmd_version_major > 5);
-
   if (no_of_nodes < 0) {
     SET_ERROR(handle, NDB_MGM_RESTART_FAILED,
               "Restart requested of negative number of nodes");
@@ -1763,7 +1759,11 @@ extern "C" int ndb_mgm_restart4(NdbMgmHandle handle, int no_of_nodes,
     args.put("nostart", nostart);
     // force has no effect, continue anyway for consistency
     const Properties *reply =
-        ndb_mgm_call_slow(handle, restart_reply_v1, "restart all", &args);
+        ndb_mgm_call_slow(handle,
+			  restart_reply_v1,
+			  "restart all",
+			  &args,
+			  extended_timeout);
     CHECK_REPLY(handle, reply, -1);
 
     BaseString result;
@@ -1807,11 +1807,11 @@ extern "C" int ndb_mgm_restart4(NdbMgmHandle handle, int no_of_nodes,
               "The connected mgm server does not support 'restart --force'");
 
   const Properties *reply;
-  if (use_v2)
-    reply =
-        ndb_mgm_call_slow(handle, restart_reply_v2, "restart node v2", &args);
-  else
-    reply = ndb_mgm_call_slow(handle, restart_reply_v1, "restart node", &args);
+  reply = ndb_mgm_call_slow(handle,
+		            restart_reply_v2,
+			    "restart node v2",
+			    &args,
+			    extended_timeout);
   CHECK_REPLY(handle, reply, -1);
 
   BaseString result;
@@ -1823,10 +1823,7 @@ extern "C" int ndb_mgm_restart4(NdbMgmHandle handle, int no_of_nodes,
   }
   Uint32 restarted;
   reply->get("restarted", &restarted);
-  if (use_v2)
-    reply->get("disconnect", (Uint32 *)disconnect);
-  else
-    *disconnect = 0;
+  reply->get("disconnect", (Uint32 *)disconnect);
   delete reply;
   DBUG_RETURN(restarted);
 }
