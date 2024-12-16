@@ -601,7 +601,7 @@ static inline const Properties *ndb_mgm_call_slow(
     const char *cmd, const Properties *cmd_args,
     unsigned int extended_timeout) {
   unsigned int min_timeout = extended_timeout ? 
-    60 * 60 * 1000 : 5 * 60 * 60;  // ms
+    60 * 60 * 1000 : 5 * 60 * 1000;  // ms
   const char *cmd_bulk = nullptr;
   const unsigned int save_timeout = handle->timeout;
   if (min_timeout > save_timeout) handle->timeout = min_timeout;
