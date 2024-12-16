@@ -69,6 +69,7 @@ INSERT INTO t1 VALUES (1,1);
 --let $rpl_connection_name= replica
 --source include/connection.inc
 --echo # Replica has only source's serverid entry
+sleep 3
 select server_id, log_name from mysql.ndb_apply_status order by server_id;
 
 --disable_result_log
