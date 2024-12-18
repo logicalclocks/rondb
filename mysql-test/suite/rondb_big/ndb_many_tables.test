@@ -1,7 +1,8 @@
 --source include/have_ndb.inc
 
-echo "Create 300 tables with 11 indexes each";
+echo "Create tables with 11 indexes each";
 
+--disable_query_log
 --disable_result_log
 let $loops = 300;
 
@@ -33,6 +34,7 @@ while ($loops)
   dec $loops;
 }
 --enable_result_log
+--enable_query_log
 #echo "Restart node 2";
 #
 # Restart node 2
@@ -56,11 +58,14 @@ while ($loops)
 #
 # Drop all tables
 #
-echo "Drop 300 tables";
+echo "Drop tables";
 --disable_result_log
+--disable_query_log
 let $loops = 300;
 while ($loops)
 {
   eval DROP TABLE t$loops;
   dec $loops;
 }
+--enable_query_log
+--enable_result_log

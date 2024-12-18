@@ -105,9 +105,13 @@
 
 #define JAM_FILE_ID 354
 
-static const Uint32 WaitTableStateChangeMillis = 10;
+static const Uint32 WaitTableStateChangeMillis = 1;
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
+//#define DEBUG_LCP_ONGOING 1
+//#define DEBUG_PAUSE 1
+//#define DEBUG_REMOVE_NODE 1
+//#define DEBUG_LCP_QUEUED 1
 //#define DEBUG_MULTI_TRP 1
 //#define DEBUG_NODE_STOP 1
 //#define DEBUG_REDO_CONTROL 1
@@ -117,8 +121,32 @@ static const Uint32 WaitTableStateChangeMillis = 10;
 //#define DEBUG_TCGETOPSIZE
 //#define DEBUG_ACTIVE_NODES 1
 //#define DEBUG_NODE_STATUS 1
+//#define DEBUG_USED_LOG_PARTS 1
 #endif
-#define DEBUG_USED_LOG_PARTS 1
+
+#ifdef DEBUG_LCP_ONGOING
+#define DEB_LCP_ONGOING(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_LCP_ONGOING(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_REMOVE_NODE
+#define DEB_REMOVE_NODE(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_REMOVE_NODE(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_PAUSE
+#define DEB_PAUSE(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_PAUSE(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_LCP_QUEUED
+#define DEB_LCP_QUEUED(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_LCP_QUEUED(arglist) do { } while (0)
+#endif
 
 #ifdef DEBUG_USED_LOG_PARTS
 #define DEB_USED_LOG_PARTS(arglist) do { g_eventLogger->info arglist ; } while (0)
@@ -580,39 +608,12 @@ void Dbdih::execCONTINUEB(Signal *signal) {
       Uint32 tableId = signal->theData[1];
       packTableIntoPagesLab(signal, tableId);
       return;
-      break;
-    }
-    case DihContinueB::ZPACK_FRAG_INTO_PAGES: {
-      RWFragment wf;
-      jam();
-      wf.rwfTabPtr.i = signal->theData[1];
-      ptrCheckGuard(wf.rwfTabPtr, ctabFileSize, tabRecord);
-      wf.fragId = signal->theData[2];
-      wf.pageIndex = signal->theData[3];
-      wf.wordIndex = signal->theData[4];
-      wf.totalfragments = signal->theData[5];
-      packFragIntoPagesLab(signal, &wf);
-      return;
-      break;
     }
     case DihContinueB::ZREAD_PAGES_INTO_TABLE: {
       jam();
       Uint32 tableId = signal->theData[1];
       readPagesIntoTableLab(signal, tableId);
       return;
-      break;
-    }
-    case DihContinueB::ZREAD_PAGES_INTO_FRAG: {
-      RWFragment rf;
-      jam();
-      rf.rwfTabPtr.i = signal->theData[1];
-      ptrCheckGuard(rf.rwfTabPtr, ctabFileSize, tabRecord);
-      rf.fragId = signal->theData[2];
-      rf.pageIndex = signal->theData[3];
-      rf.wordIndex = signal->theData[4];
-      readPagesIntoFragLab(signal, &rf);
-      return;
-      break;
     }
     case DihContinueB::ZCOPY_TABLE: {
       jam();
@@ -706,7 +707,6 @@ void Dbdih::execCONTINUEB(Signal *signal) {
       tabPtr.p->tabUpdateState = TabRecord::US_ADD_TABLE_MASTER;
       tableUpdateLab(signal, tabPtr);
       return;
-      break;
     }
     case DihContinueB::ZDIH_ADD_TABLE_MASTER: {
       jam();
@@ -731,7 +731,6 @@ void Dbdih::execCONTINUEB(Signal *signal) {
       startGcpLab(signal);
 #endif
       return;
-      break;
     case DihContinueB::ZCOPY_GCI: {
       jam();
       CopyGCIReq::CopyReason reason =
@@ -742,30 +741,47 @@ void Dbdih::execCONTINUEB(Signal *signal) {
       c_copyGCIMaster.m_copyReason = CopyGCIReq::IDLE;
       copyGciLab(signal, reason);
       return;
-    } break;
+    }
     case DihContinueB::ZEMPTY_VERIFY_QUEUE:
       jam();
       emptyverificbuffer(signal, signal->theData[1], true);
       return;
-      break;
     case DihContinueB::ZCHECK_GCP_STOP:
       jam();
 #ifndef NO_GCP
       checkGcpStopLab(signal);
 #endif
       return;
-      break;
     case DihContinueB::ZREMOVE_NODE_FROM_TABLE: {
       jam();
       Uint32 nodeId = signal->theData[1];
+      Uint32 decrement_outstanding = signal->theData[2];
+      removeNodeFromTables(signal, nodeId, decrement_outstanding);
+      return;
+    }
+    case DihContinueB::ZREMOVE_NODE_FROM_TABLE_CONT: {
+      jam();
+      Uint32 nodeId = signal->theData[1];
       Uint32 tableId = signal->theData[2];
-      removeNodeFromTables(signal, nodeId, tableId);
+      TabRecordPtr tabPtr;
+      tabPtr.i = tableId;
+      ptrCheckGuard(tabPtr, ctabFileSize, tabRecord);
+      removeNodeFromTable(signal, nodeId, tabPtr);
       return;
     }
     case DihContinueB::ZCOPY_NODE: {
       jam();
+      Uint32 decrement_outstanding = signal->theData[1];
+      copyNodeLab(signal, decrement_outstanding);
+      return;
+    }
+    case DihContinueB::ZCOPY_NODE_TABLE_CHECK: {
+      jam();
+      TabRecordPtr tabPtr;
       Uint32 tableId = signal->theData[1];
-      copyNodeLab(signal, tableId);
+      tabPtr.i = tableId;
+      ptrCheckGuard(tabPtr, ctabFileSize, tabRecord);
+      copyNodeTable_check(signal, tabPtr);
       return;
     }
     case DihContinueB::ZTO_START_COPY_FRAG: {
@@ -777,8 +793,18 @@ void Dbdih::execCONTINUEB(Signal *signal) {
     case DihContinueB::ZINVALIDATE_NODE_LCP: {
       jam();
       const Uint32 nodeId = signal->theData[1];
+      Uint32 decrement_outstanding = signal->theData[2];
+      invalidateNodeLCP(signal, nodeId, decrement_outstanding);
+      return;
+    }
+    case DihContinueB::ZINVALIDATE_NODE_LCP_TAB: {
+      jam();
+      TabRecordPtr tabPtr;
+      const Uint32 nodeId = signal->theData[1];
       const Uint32 tableId = signal->theData[2];
-      invalidateNodeLCP(signal, nodeId, tableId);
+      tabPtr.i = tableId;
+      ptrCheckGuard(tabPtr, ctabFileSize, tabRecord);
+      invalidateNodeLCP(signal, nodeId, tabPtr);
       return;
     }
     case DihContinueB::ZINITIALISE_RECORDS:
@@ -786,12 +812,10 @@ void Dbdih::execCONTINUEB(Signal *signal) {
       initialiseRecordsLab(signal, signal->theData[1], signal->theData[2],
                            signal->theData[3]);
       return;
-      break;
     case DihContinueB::ZSTART_PERMREQ_AGAIN:
       jam();
       nodeRestartPh2Lab2(signal);
       return;
-      break;
     case DihContinueB::SwitchReplica: {
       jam();
       const Uint32 nodeId = signal->theData[1];
@@ -1095,6 +1119,8 @@ void Dbdih::execCOPY_GCIREQ(Signal *signal) {
       ndbrequire(cstarttype == NodeState::ST_INITIAL_NODE_RESTART ||
                  cstarttype == NodeState::ST_NODE_RESTART);
       jam();
+      g_eventLogger->info("Set up Multi transporter to data nodes in same"
+                          " node group");
       m_set_up_multi_trp_in_node_restart = true;
       signal->theData[0] = reference();
       sendSignal(QMGR_REF, GSN_SET_UP_MULTI_TRP_REQ, signal, 1, JBB);
@@ -1151,6 +1177,7 @@ void Dbdih::complete_restart_nr(Signal *signal) {
   jam();
   c_copyGCISlave.m_copyReason = CopyGCIReq::IDLE;
   signal->theData[0] = c_copyGCISlave.m_senderData;
+  g_eventLogger->info("Wait for LCP completion before Copy Dictionary");
   sendSignal(c_copyGCISlave.m_senderRef, GSN_COPY_GCICONF, signal, 1, JBB);
 }
 
@@ -1600,6 +1627,19 @@ void Dbdih::execREAD_CONFIG_REQ(Signal *signal) {
       ptrAss(nodePtr, nodeRecord);
       initNodeRecord(nodePtr);
       nodePtr.p->nodeGroup = ZNIL;
+
+      nodePtr.p->m_invalidate_node_lcp_ongoing = false;
+      nodePtr.p->m_invalidate_node_lcp_next_table = 0;
+      nodePtr.p->m_invalidate_node_lcp_outstanding = 0;
+
+      nodePtr.p->m_remove_node_from_table_ongoing = false;
+      nodePtr.p->m_remove_node_from_table_id = 0;
+      nodePtr.p->m_remove_node_from_table_outstanding = 0;
+
+      nodePtr.p->m_copy_node_nr_ongoing = false;
+      nodePtr.p->m_copy_node_nr_next_table = 0;
+      nodePtr.p->m_copy_node_nr_outstanding = 0;
+
       DEB_NODE_STATUS(("node[%u].nodeGroup = ZNIL, line: %u",
                        nodePtr.i, __LINE__));
       set_node_group_id(nodePtr.i, ZNIL);
@@ -2784,12 +2824,14 @@ void Dbdih::execSTART_PERMREQ(Signal *signal) {
   /*----------------------------------------------------------------------
    * WE START THE INCLUSION PROCEDURE
    * ---------------------------------------------------------------------*/
+  jam();
   c_nodeStartMaster.failNr = cfailurenr;
   c_nodeStartMaster.wait = ZFALSE;
   c_nodeStartMaster.startInfoErrorCode = 0;
   c_nodeStartMaster.startNode = nodeId;
   c_nodeStartMaster.activeState = true;
   c_nodeStartMaster.m_outstandingGsn = GSN_START_INFOREQ;
+  c_nodeStartMaster.COPY_TABREQs = 0;
 
   setNodeStatus(nodeId, NodeRecord::STARTING);
   DEB_NODE_STATUS(("Node[%u].nodeStatus = STARTING, line: %u",
@@ -3118,9 +3160,6 @@ void Dbdih::init_lcp_pausing_module(void) {
   c_lcp_id_paused = RNIL;
   c_pause_lcp_start_node = RNIL;
   c_last_id_lcp_complete_rep = RNIL;
-
-  /* Starting node state variable */
-  c_lcp_id_while_copy_meta_data = RNIL;
 }
 
 void Dbdih::check_pause_state_lcp_idle(void) {
@@ -3154,8 +3193,13 @@ void Dbdih::queue_lcp_frag_rep(Signal *signal, LcpFragRep *lcpReport) {
   if (tabPtr.p->tabStatus == TabRecord::TS_DROPPING ||
       tabPtr.p->tabStatus == TabRecord::TS_IDLE) {
     jam();
+    DEB_PAUSE(("Skip Queue LCP_FRAG_REP for tab(%u,%u), lcpId: %u",
+      tableId, fragId, lcpReport->lcpId));
     return;
   }
+
+  DEB_PAUSE(("Queue LCP_FRAG_REP for tab(%u,%u), lcpId: %u",
+    tableId, fragId, lcpReport->lcpId));
 
   FragmentstorePtr fragPtr;
   getFragstore(tabPtr.p, fragId, fragPtr);
@@ -3181,6 +3225,8 @@ void Dbdih::queue_lcp_complete_rep(Signal *signal, Uint32 lcpId) {
   ndbrequire(c_lcp_id_paused == RNIL || c_lcp_id_paused == lcpId);
   c_lcp_id_paused = lcpId;
   ndbassert(check_pause_state_sanity());
+  DEB_PAUSE(("Queue LCP_COMPLETE_REP lcpId: %u", lcpId));
+
 }
 
 /* Support function to start copying of meta data */
@@ -3191,10 +3237,15 @@ void Dbdih::start_copy_meta_data(Signal *signal) {
    * dictionary information. We update the node recovery status indicating
    * this. This code only executes in the master node.
    */
+  jam();
   setNodeRecoveryStatus(c_nodeStartMaster.startNode,
                         NodeRecord::COPY_DICT_TO_STARTING_NODE);
 
+  init_copy_node_nr();
+  g_eventLogger->info("Start copying tables to starting node %u",
+    c_nodeStartMaster.startNode);
   c_nodeStartMaster.wait = 10;
+  c_nodeStartMaster.COPY_TABREQs = 0;
   signal->theData[0] = DihContinueB::ZCOPY_NODE;
   signal->theData[1] = 0;
   sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB);
@@ -3253,6 +3304,8 @@ void Dbdih::sendPAUSE_LCP_REQ(Signal *signal, bool pause) {
     req->pauseAction = PauseLcpReq::Pause;
     c_pause_participants = c_lcpState.m_participatingLQH;
     infoEvent("PAUSE LCP for starting node %u", c_nodeStartMaster.startNode);
+    g_eventLogger->info("PAUSE LCP for starting node %u",
+      c_nodeStartMaster.startNode);
   } else {
     /**
      * We are unpausing the LCP again after completing the copy of the meta
@@ -3266,6 +3319,8 @@ void Dbdih::sendPAUSE_LCP_REQ(Signal *signal, bool pause) {
       req->pauseAction = PauseLcpReq::UnPauseIncludedInLcp;
       infoEvent("UNPAUSE LCP for starting node %u, included in LCP",
                 c_nodeStartMaster.startNode);
+      g_eventLogger->info("UNPAUSE LCP for starting node %u, included in LCP",
+        c_nodeStartMaster.startNode);
     } else if (c_pause_lcp_master_state == PAUSE_NOT_IN_LCP_COPY_META_DATA) {
       jam();
       ndbrequire(check_if_lcp_idle());
@@ -3273,6 +3328,9 @@ void Dbdih::sendPAUSE_LCP_REQ(Signal *signal, bool pause) {
       req->pauseAction = PauseLcpReq::UnPauseNotIncludedInLcp;
       infoEvent("UNPAUSE LCP for starting node %u, not included in LCP",
                 c_nodeStartMaster.startNode);
+      g_eventLogger->info("UNPAUSE LCP for starting node %u,"
+                          " not included in LCP",
+        c_nodeStartMaster.startNode);
     } else {
       ndbabort();
     }
@@ -3425,9 +3483,11 @@ void Dbdih::execPAUSE_LCP_REQ(Signal *signal) {
   /* TODO: Insert check that startNode is still alive here */
   if (pauseAction == PauseLcpReq::Pause) {
     jam();
+    DEB_PAUSE(("call pause_lcp, startNode: %u", startNode));
     pause_lcp(signal, startNode, req->senderRef);
   } else {
     jam();
+    DEB_PAUSE(("call unpause_lcp, startNode: %u", startNode));
     unpause_lcp(signal, startNode, req->senderRef, pauseAction);
   }
   return;
@@ -3475,6 +3535,7 @@ void Dbdih::pause_lcp(Signal *signal, Uint32 startNode,
    * to ourselves. We need to keep track of which nodes that have
    * replied to the message.
    */
+  DEB_PAUSE(("Send flush signal as pause action, startNode: %u", startNode));
   FlushLcpRepReq *req = (FlushLcpRepReq *)signal->getDataPtrSend();
   req->senderRef = reference();
   req->startNodeId = startNode;
@@ -3531,6 +3592,8 @@ void Dbdih::check_for_pause_action(Signal *signal,
       jam();
       ndbrequire(c_pause_lcp_master_state == PAUSE_LCP_REQUESTED);
       c_pause_lcp_master_state = PAUSE_START_LCP_INCLUSION;
+      DEB_PAUSE(("Send START_LCP_REQ to starting node: %u",
+        c_nodeStartMaster.startNode));
       Uint32 packed_length1 =
           c_lcpState.m_participatingLQH.getPackedLengthInWords();
       Uint32 packed_length2 =
@@ -3571,6 +3634,8 @@ void Dbdih::check_for_pause_action(Signal *signal,
       ndbrequire(pauseStart == StartLcpReq::PauseLcpStartSecond);
       ndbrequire(c_pause_lcp_master_state == PAUSE_IN_LCP_COPY_META_DATA);
       c_pause_lcp_master_state = PAUSE_COMPLETE_LCP_INCLUSION;
+      DEB_PAUSE(("Completed Copy of metadata, include starting node: %u in LCP",
+        c_nodeStartMaster.startNode));
       req->participatingLQH_v1.clear();
       for (Uint32 nodeId = 1; nodeId <= m_max_node_id; nodeId++) {
         if (c_lcpState.m_LCP_COMPLETE_REP_Counter_LQH.isWaitingFor(nodeId)) {
@@ -3619,6 +3684,8 @@ void Dbdih::check_for_pause_action(Signal *signal,
        */
       ndbrequire(c_pause_lcp_master_state == PAUSE_LCP_REQUESTED);
       c_pause_lcp_master_state = PAUSE_NOT_IN_LCP_COPY_META_DATA;
+      DEB_PAUSE(("Pause completed LCP, start copy metadata, startNode: %u",
+        c_nodeStartMaster.startNode));
       start_copy_meta_data(signal);
     } else {
       jam();
@@ -3629,6 +3696,8 @@ void Dbdih::check_for_pause_action(Signal *signal,
        */
       ndbrequire(pauseStart == StartLcpReq::PauseLcpStartSecond);
       ndbrequire(c_pause_lcp_master_state == PAUSE_NOT_IN_LCP_COPY_META_DATA);
+      DEB_PAUSE(("Pause completed LCP, copy metadata done, startNode: %u",
+        c_nodeStartMaster.startNode));
       sendPAUSE_LCP_REQ(signal, false);
     }
     return;
@@ -3688,6 +3757,7 @@ void Dbdih::stop_pause(Signal *signal) {
   dequeue_lcp_rep(signal);
 
   checkLcpCompletedLab(signal, __LINE__);
+  DEB_PAUSE(("stop_pause, start dequeue"));
 }
 
 /**
@@ -3765,6 +3835,10 @@ void Dbdih::dequeue_lcp_rep(Signal *signal) {
       lcpFragRep->maxGciCompleted = replicaPtr.p->repMaxGciCompleted;
       lcpFragRep->maxGciStarted = replicaPtr.p->repMaxGciStarted;
 
+      DEB_PAUSE(("Dequeue LCP_FRAG_REP for tab(%u,%u) in lcpId: %u",
+        lcpFragRep->tableId,
+        lcpFragRep->fragId,
+        lcpFragRep->lcpId));
       NodeReceiverGroup rg(DBDIH, c_lcpState.m_participatingDIH);
       sendSignal(rg, GSN_LCP_FRAG_REP, signal, LcpFragRep::SignalLength, JBB);
 
@@ -3792,6 +3866,9 @@ void Dbdih::dequeue_lcp_rep(Signal *signal) {
       lcpCompleteRep->nodeId = getOwnNodeId();
       lcpCompleteRep->lcpId = c_lcp_id_paused;
       lcpCompleteRep->blockNo = DBLQH;
+
+      DEB_PAUSE(("Dequeue LCP_COMPLETE_REP in lcpId: %u",
+        lcpCompleteRep->lcpId));
 
       NodeReceiverGroup rg(DBDIH, c_lcpState.m_participatingDIH);
       sendSignal(rg, GSN_LCP_COMPLETE_REP, signal, LcpCompleteRep::SignalLength,
@@ -3839,6 +3916,8 @@ void Dbdih::execFLUSH_LCP_REP_CONF(Signal *signal) {
     return;
   }
 
+  DEB_PAUSE(("FLUSH_LCP_REP_CONF from node: %u for startNode: %u",
+    nodeId, startNode));
   receiveLoopMacro(FLUSH_LCP_REP_REQ, nodeId);
   {
     jam();
@@ -3992,6 +4071,7 @@ void Dbdih::startme_copygci_conf(Signal *signal) {
    * This code is only executed in master nodes.
    */
   if (c_nodeStartMaster.startNode != RNIL) {
+    c_any_node_waiting_for_lcp = true;
     setNodeRecoveryStatus(c_nodeStartMaster.startNode,
                           NodeRecord::WAIT_LCP_TO_COPY_DICT);
 
@@ -4047,6 +4127,7 @@ void Dbdih::lcpBlockedLab(Signal *signal, Uint32 nodeId, Uint32 retVal) {
    * LCP starts up until we have completed the copying of meta data by keeping
    * the Fragment Info mutex until we have completed the copying of meta data.
    */
+  jam();
   start_copy_meta_data(signal);
 }  // Dbdih::lcpBlockedLab()
 
@@ -4466,6 +4547,7 @@ void Dbdih::execSTART_INFOREQ(Signal *signal) {
     jam();
     g_eventLogger->info("Started invalidation of node %u", startNode);
     setAllowNodeStart(startNode, false);
+    init_invalidate_node_lcp(startNode);
     invalidateNodeLCP(signal, startNode, 0);
   } else {
     jam();
@@ -4984,6 +5066,7 @@ void Dbdih::execEND_TOREQ(Signal *signal) {
        * other nodes to reach this state.
        */
       add_lcp_counter(&c_lcpState.ctimer, (1 << 31));
+      c_any_node_waiting_for_lcp = true;
       setNodeRecoveryStatus(nodePtr.i, NodeRecord::WAIT_LCP_FOR_RESTART);
       return;
     }
@@ -5733,6 +5816,10 @@ void Dbdih::setNodeRecoveryStatus(Uint32 nodeId,
                       get_status_str(nodePtr.p->nodeRecoveryStatus),
                       get_status_str(new_status));
 
+  /*
+  ndbrequire(nodePtr.p->nodeRecoveryStatus != NodeRecord::COPY_DICT_TO_STARTING_NODE &&
+             new_status != NodeRecord::NODE_FAILED);
+  */
   NodeRecord::NodeRecoveryStatus old_status =
     nodePtr.p->nodeRecoveryStatus;
   (void)old_status;
@@ -9474,12 +9561,20 @@ void Dbdih::checkCopyTab(Signal *signal, NodeRecordPtr failedNodePtr) {
   switch (c_nodeStartMaster.m_outstandingGsn) {
     case GSN_COPY_TABREQ:
       jam();
-      releaseTabPages(failedNodePtr.p->activeTabptr);
+      /**
+       * If we come here it is a Node Restart since a Cluster restart would
+       * have failed when the node failed.
+       */
       if (c_COPY_TABREQ_Counter.isWaitingFor(failedNodePtr.i)) {
         jam();
         c_COPY_TABREQ_Counter.clearWaitingFor(failedNodePtr.i);
+        ndbrequire(failedNodePtr.p->m_copy_node_nr_outstanding >=
+                   c_nodeStartMaster.COPY_TABREQs);
+        failedNodePtr.p->m_copy_node_nr_outstanding -=
+          c_nodeStartMaster.COPY_TABREQs;
+        c_nodeStartMaster.COPY_TABREQs = 0;
+        jamData(failedNodePtr.p->m_copy_node_nr_outstanding);
       }
-      c_nodeStartMaster.wait = ZFALSE;
       break;
     case GSN_START_INFOREQ:
     case GSN_START_PERMCONF:
@@ -9501,6 +9596,16 @@ void Dbdih::checkCopyTab(Signal *signal, NodeRecordPtr failedNodePtr) {
   }
 
   nodeResetStart(signal);
+  if (failedNodePtr.p->m_copy_node_nr_outstanding > 0) {
+    jam();
+    /* Keep node id of starting node that failed until wait is completed */
+    c_nodeStartMaster.startNode = failedNodePtr.i;
+    ndbrequire(c_nodeStartMaster.wait);
+  } else {
+    failedNodePtr.p->m_copy_node_nr_ongoing = false;
+    failedNodePtr.p->m_copy_node_nr_next_table = 0;
+    c_nodeStartMaster.wait = ZFALSE;
+  }
 }  // Dbdih::checkCopyTab()
 
 void Dbdih::checkStopMe(Signal *signal, NodeRecordPtr failedNodePtr) {
@@ -10074,6 +10179,8 @@ void Dbdih::startRemoveFailedNode(Signal *signal, NodeRecordPtr failedNodePtr) {
   jam();
 
   if (!ERROR_INSERTED(7194) && !ERROR_INSERTED(7221)) {
+    g_eventLogger->info("Start removing node %u from tables", failedNodePtr.i);
+    init_remove_node_from_table(failedNodePtr.i);
     signal->theData[0] = DihContinueB::ZREMOVE_NODE_FROM_TABLE;
     signal->theData[1] = failedNodePtr.i;
     signal->theData[2] = 0;  // Tab id
@@ -10609,10 +10716,26 @@ void Dbdih::handle_send_continueb_invalidate_node_lcp(Signal *signal) {
   }
 }
 
-void Dbdih::invalidateNodeLCP(Signal *signal, Uint32 nodeId, Uint32 tableId) {
+void Dbdih::invalidateNodeLCP(Signal *signal,
+                              Uint32 nodeId,
+                              Uint32 decrement_outstanding) {
   jamEntry();
+  NodeRecordPtr nodePtr;
+  nodePtr.i = nodeId;
+  ptrCheckGuard(nodePtr, MAX_NDB_NODES, nodeRecord);
   TabRecordPtr tabPtr;
-  tabPtr.i = tableId;
+  tabPtr.i = nodePtr.p->m_invalidate_node_lcp_next_table;
+  ndbrequire(nodePtr.p->m_invalidate_node_lcp_ongoing == true);
+  if (decrement_outstanding) {
+    jam();
+    continue_invalidate_node_lcp(nodeId);
+  }
+  if (nodePtr.p->m_invalidate_node_lcp_outstanding >=
+      MAX_OUTSTANDING_TABLE_FILE_OPS) {
+    jam();
+    /* Max parallelism already reached */
+    return;
+  }
   const Uint32 RT_BREAK = 64;
   if (ERROR_INSERTED(7125)) {
     return;
@@ -10629,6 +10752,13 @@ void Dbdih::invalidateNodeLCP(Signal *signal, Uint32 nodeId, Uint32 tableId) {
           ERROR_INSERTED(7246)) {
         CLEAR_ERROR_INSERT_VALUE;
       }
+      if (nodePtr.p->m_invalidate_node_lcp_outstanding > 0) {
+        /* Wait for outstanding requests before finishing off */
+        jam();
+        return;
+      }
+      nodePtr.p->m_invalidate_node_lcp_next_table = 0;
+      nodePtr.p->m_invalidate_node_lcp_ongoing = false;
       setAllowNodeStart(nodeId, true);
       g_eventLogger->info("Completed invalidation of node %u", nodeId);
       if (getNodeStatus(nodeId) == NodeRecord::STARTING) {
@@ -10642,20 +10772,31 @@ void Dbdih::invalidateNodeLCP(Signal *signal, Uint32 nodeId, Uint32 tableId) {
         conf->startingNodeId = nodeId;
         sendSignal(cmasterdihref, GSN_START_INFOCONF, signal,
                    StartInfoConf::SignalLength, JBB);
-      }  // if
+      }
       return;
-    }  // if
+    }
     ptrAss(tabPtr, tabRecord);
     if (tabPtr.p->tabStatus == TabRecord::TS_ACTIVE) {
       jam();
+      nodePtr.p->m_invalidate_node_lcp_outstanding++;
       invalidateNodeLCP(signal, nodeId, tabPtr);
-      return;
+      tabPtr.i++;
+      break;
     }  // if
     tabPtr.i++;
   }  // for
+
+  nodePtr.p->m_invalidate_node_lcp_next_table = tabPtr.i;
+  if (nodePtr.p->m_invalidate_node_lcp_outstanding >=
+      MAX_OUTSTANDING_TABLE_FILE_OPS) {
+    jam();
+    /* Max parallelism already reached */
+    return;
+  }
+  nodePtr.p->m_invalidate_node_lcp_outstanding++;
   signal->theData[0] = DihContinueB::ZINVALIDATE_NODE_LCP;
   signal->theData[1] = nodeId;
-  signal->theData[2] = tabPtr.i;
+  signal->theData[2] = 1;
   sendSignal(reference(), GSN_CONTINUEB, signal, 3, JBB);
 }  // Dbdih::invalidateNodeLCP()
 
@@ -10666,7 +10807,7 @@ void Dbdih::invalidateNodeLCP(Signal *signal, Uint32 nodeId,
    */
   if (tabPtr.p->tabCopyStatus != TabRecord::CS_IDLE) {
     jam();
-    signal->theData[0] = DihContinueB::ZINVALIDATE_NODE_LCP;
+    signal->theData[0] = DihContinueB::ZINVALIDATE_NODE_LCP_TAB;
     signal->theData[1] = nodeId;
     signal->theData[2] = tabPtr.i;
     sendSignalWithDelay(reference(), GSN_CONTINUEB, signal,
@@ -10674,6 +10815,13 @@ void Dbdih::invalidateNodeLCP(Signal *signal, Uint32 nodeId,
     return;
   }  // if
 
+  if (!reservePages()) {
+    signal->theData[0] = DihContinueB::ZINVALIDATE_NODE_LCP_TAB;
+    signal->theData[1] = nodeId;
+    signal->theData[2] = tabPtr.i;
+    sendSignal(reference(), GSN_CONTINUEB, signal, 3, JBB);
+    return;
+  }
   /**
    * For each fragment
    */
@@ -10730,25 +10878,101 @@ void Dbdih::invalidateNodeLCP(Signal *signal, Uint32 nodeId,
   /**
    * Move to next table
    */
-  tabPtr.i++;
+  NodeRecordPtr nodePtr;
+  nodePtr.i = nodeId;
+  ptrCheckGuard(nodePtr, MAX_NDB_NODES, nodeRecord);
+  ndbrequire(nodePtr.p->m_invalidate_node_lcp_outstanding > 0);
+  unreservePages();
+
   signal->theData[0] = DihContinueB::ZINVALIDATE_NODE_LCP;
   signal->theData[1] = nodeId;
-  signal->theData[2] = tabPtr.i;
-
+  signal->theData[2] = 1;
   handle_send_continueb_invalidate_node_lcp(signal);
-
   return;
 }  // Dbdih::invalidateNodeLCP()
+
+void Dbdih::init_invalidate_node_lcp(NodeId nodeId) {
+  NodeRecordPtr nodePtr;
+  nodePtr.i = nodeId;
+  ptrCheckGuard(nodePtr, MAX_NDB_NODES, nodeRecord);
+  ndbrequire(nodePtr.p->m_invalidate_node_lcp_ongoing == false);
+  nodePtr.p->m_invalidate_node_lcp_ongoing = true;
+  nodePtr.p->m_invalidate_node_lcp_next_table = 0;
+  nodePtr.p->m_invalidate_node_lcp_outstanding = 0;
+}
+
+void Dbdih::init_remove_node_from_table(NodeId nodeId) {
+  NodeRecordPtr nodePtr;
+  nodePtr.i = nodeId;
+  ptrCheckGuard(nodePtr, MAX_NDB_NODES, nodeRecord);
+  ndbrequire(nodePtr.p->m_remove_node_from_table_ongoing == false);
+  nodePtr.p->m_remove_node_from_table_ongoing = true;
+  nodePtr.p->m_remove_node_from_table_id = 0;
+  nodePtr.p->m_remove_node_from_table_outstanding = 0;
+}
+
+void Dbdih::init_copy_node_nr() {
+  NodeRecordPtr nodePtr;
+  nodePtr.i = c_nodeStartMaster.startNode;
+  ptrCheckGuard(nodePtr, MAX_NDB_NODES, nodeRecord);
+  nodePtr.p->m_copy_node_nr_next_table = 0;
+  nodePtr.p->m_copy_node_nr_outstanding = 0;
+  nodePtr.p->m_copy_node_nr_ongoing = true;
+}
+
+void Dbdih::continue_invalidate_node_lcp(NodeId nodeId) {
+  NodeRecordPtr nodePtr;
+  nodePtr.i = nodeId;
+  ptrCheckGuard(nodePtr, MAX_NDB_NODES, nodeRecord);
+  ndbrequire(nodePtr.p->m_invalidate_node_lcp_outstanding > 0);
+  nodePtr.p->m_invalidate_node_lcp_outstanding--;
+}
+
+void Dbdih::continue_remove_node_from_table(NodeId nodeId) {
+  NodeRecordPtr nodePtr;
+  nodePtr.i = nodeId;
+  ptrCheckGuard(nodePtr, MAX_NDB_NODES, nodeRecord);
+  ndbrequire(nodePtr.p->m_remove_node_from_table_outstanding > 0);
+  nodePtr.p->m_remove_node_from_table_outstanding--;
+}
+
+void Dbdih::continue_copy_node_nr() {
+  NodeRecordPtr nodePtr;
+  nodePtr.i = c_nodeStartMaster.startNode;
+  ptrCheckGuard(nodePtr, MAX_NDB_NODES, nodeRecord);
+  ndbrequire(nodePtr.p->m_copy_node_nr_outstanding > 0);
+  nodePtr.p->m_copy_node_nr_outstanding--;
+  jam();
+  jamData(nodePtr.p->m_copy_node_nr_outstanding);
+}
 
 /*------------------------------------------------*/
 /*       INPUT:  TABPTR                           */
 /*               TNODEID                          */
 /*------------------------------------------------*/
-void Dbdih::removeNodeFromTables(Signal *signal, Uint32 nodeId,
-                                 Uint32 tableId) {
+void Dbdih::removeNodeFromTables(Signal *signal,
+                                 Uint32 nodeId,
+                                 Uint32 decrement_outstanding) {
   jamEntry();
+  NodeRecordPtr nodePtr;
+  nodePtr.i = nodeId;
+  ptrCheckGuard(nodePtr, MAX_NDB_NODES, nodeRecord);
   TabRecordPtr tabPtr;
-  tabPtr.i = tableId;
+  tabPtr.i = nodePtr.p->m_remove_node_from_table_id;
+  ndbrequire(nodePtr.p->m_remove_node_from_table_ongoing == true);
+  if (decrement_outstanding) {
+    jam();
+    continue_remove_node_from_table(nodeId);
+  }
+  jamData(nodePtr.p->m_remove_node_from_table_outstanding);
+  DEB_REMOVE_NODE(("removeNodeFromTables: out: %u, tab: %u",
+    nodePtr.p->m_remove_node_from_table_outstanding,
+    tabPtr.i));
+  if (nodePtr.p->m_remove_node_from_table_outstanding >=
+      MAX_OUTSTANDING_TABLE_FILE_OPS) {
+    jam();
+    return;
+  }
   const Uint32 RT_BREAK = 64;
   for (Uint32 i = 0; i < RT_BREAK; i++) {
     jam();
@@ -10757,10 +10981,16 @@ void Dbdih::removeNodeFromTables(Signal *signal, Uint32 nodeId,
       if (ERROR_INSERTED(7233)) {
         CLEAR_ERROR_INSERT_VALUE;
       }
-
+      if (nodePtr.p->m_remove_node_from_table_outstanding > 0) {
+        jam();
+        return;
+      }
+      nodePtr.p->m_remove_node_from_table_id = 0;
+      nodePtr.p->m_remove_node_from_table_ongoing = false;
+      g_eventLogger->info("Finished removing node %u from tables", nodePtr.i);
       removeNodeFromTablesComplete(signal, nodeId);
       return;
-    }  // if
+    }
 
     ptrAss(tabPtr, tabRecord);
     if (tabPtr.p->tabStatus == TabRecord::TS_ACTIVE ||
@@ -10768,14 +10998,30 @@ void Dbdih::removeNodeFromTables(Signal *signal, Uint32 nodeId,
          tabPtr.p->connectrec == RNIL))  // Create work done
     {
       jam();
+      nodePtr.p->m_remove_node_from_table_outstanding++;
+      DEB_REMOVE_NODE(("removeNodeFromTable: out: %u, tab: %u",
+        nodePtr.p->m_remove_node_from_table_outstanding,
+        tabPtr.i));
       removeNodeFromTable(signal, nodeId, tabPtr);
-      return;
-    }  // if
+      tabPtr.i++;
+      break;
+    }
     tabPtr.i++;
-  }  // for
+  }
+  jam();
+  nodePtr.p->m_remove_node_from_table_id = tabPtr.i;
+  if (nodePtr.p->m_remove_node_from_table_outstanding >=
+      MAX_OUTSTANDING_TABLE_FILE_OPS) {
+    jam();
+    return;
+  }
+  nodePtr.p->m_remove_node_from_table_outstanding++;
+  DEB_REMOVE_NODE(("removeNodeFromTables end: out: %u, tab: %u",
+    nodePtr.p->m_remove_node_from_table_outstanding,
+    tabPtr.i));
   signal->theData[0] = DihContinueB::ZREMOVE_NODE_FROM_TABLE;
   signal->theData[1] = nodeId;
-  signal->theData[2] = tabPtr.i;
+  signal->theData[2] = 1;
   if (!ERROR_INSERTED(7233))
     sendSignal(reference(), GSN_CONTINUEB, signal, 3, JBB);
   else
@@ -10800,14 +11046,21 @@ void Dbdih::removeNodeFromTable(Signal* signal,
    */
   if (tabPtr.p->tabCopyStatus != TabRecord::CS_IDLE) {
     jam();
-    signal->theData[0] = DihContinueB::ZREMOVE_NODE_FROM_TABLE;
+    signal->theData[0] = DihContinueB::ZREMOVE_NODE_FROM_TABLE_CONT;
     signal->theData[1] = nodeId;
     signal->theData[2] = tabPtr.i;
     sendSignalWithDelay(reference(), GSN_CONTINUEB, signal,
                         WaitTableStateChangeMillis, 3);
     return;
   }  // if
-
+  /* Check that there is sufficient amount of free pages to perform operation*/
+  if (!reservePages()) {
+    signal->theData[0] = DihContinueB::ZREMOVE_NODE_FROM_TABLE_CONT;
+    signal->theData[1] = nodeId;
+    signal->theData[2] = tabPtr.i;
+    sendSignal(reference(), GSN_CONTINUEB, signal, 3, JBB);
+    return;
+  }
   NodeRecordPtr nodePtr;
   nodePtr.i = nodeId;
   ptrCheckGuard(nodePtr, MAX_NDB_NODES, nodeRecord);
@@ -10910,10 +11163,11 @@ void Dbdih::removeNodeFromTable(Signal* signal,
      * The table had no replica on the failed node
      *   continue with next table
      */
-    tabPtr.i++;
+    unreservePages();
+    DEB_REMOVE_NODE(("Finished tab %u for remove node", tabPtr.i));
     signal->theData[0] = DihContinueB::ZREMOVE_NODE_FROM_TABLE;
     signal->theData[1] = nodeId;
-    signal->theData[2] = tabPtr.i;
+    signal->theData[2] = 1;
     if (!ERROR_INSERTED(7233))
       sendSignal(reference(), GSN_CONTINUEB, signal, 3, JBB);
     else
@@ -10945,7 +11199,6 @@ void Dbdih::removeNodeFromTable(Signal* signal,
       signal->theData[1] = tabPtr.i;
       sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB);
       return;
-      break;
     case TabRecord::TLS_ACTIVE:
       ok = true;
       jam();
@@ -11072,6 +11325,7 @@ void Dbdih::checkEmptyLcpComplete(Signal *signal) {
 
     if (ERROR_INSERTED(7194)) {
       g_eventLogger->info("7194 starting ZREMOVE_NODE_FROM_TABLE");
+      init_remove_node_from_table(c_lcpMasterTakeOverState.failedNodeId);
       signal->theData[0] = DihContinueB::ZREMOVE_NODE_FROM_TABLE;
       signal->theData[1] = c_lcpMasterTakeOverState.failedNodeId;
       signal->theData[2] = 0;  // Tab id
@@ -18432,6 +18686,8 @@ void Dbdih::initLcpLab(Signal *signal, Uint32 senderRef, Uint32 tableId) {
 	  jam();
 	  replicaCount++;
 	  replicaPtr.p->lcpOngoingFlag = true;
+          DEB_PAUSE(("Set lcpOngoingFlag for tab(%u,%u) node: %u",
+            tabPtr.i, fragId, nodeId));
 	}
         else if (replicaPtr.p->lcpOngoingFlag)
         {
@@ -19140,7 +19396,11 @@ void Dbdih::execCOPY_TABREQ(Signal *signal) {
      * currently executing LCP id. We also get the current LCP id fromt the
      * master here to ensure that we're up to date with this value.
      */
-    c_lcp_id_while_copy_meta_data = req->currentLcpId;
+    tabPtr.p->c_lcp_id_while_copy_meta_data = req->currentLcpId;
+    DEB_LCP_ONGOING(("currentLcpId = %u for table: %u, with LcpStatus: %u",
+      tabPtr.p->c_lcp_id_while_copy_meta_data,
+      tabPtr.i,
+      tabPtr.p->tabLcpStatus));
     {
       if (req->tabLcpStatus == CopyTabReq::LcpCompleted) {
         jam();
@@ -19179,6 +19439,7 @@ void Dbdih::execCOPY_TABREQ(Signal *signal) {
   tabPtr.p->noOfWords = 0;
   ndbrequire(tabPtr.p->tabCopyStatus == TabRecord::CS_IDLE);
   tabPtr.p->tabCopyStatus = TabRecord::CS_COPY_TAB_REQ;
+  DEB_LCP_ONGOING(("Finished COPY_TAB_REQ for table %u", tabPtr.i));
   signal->theData[0] = DihContinueB::ZREAD_PAGES_INTO_TABLE;
   signal->theData[1] = tabPtr.i;
   sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB);
@@ -19222,7 +19483,9 @@ void Dbdih::copyTabReq_complete(Signal *signal, TabRecordPtr tabPtr) {
       updateNodeInfo(signal, fragPtr);
     }//for
   }//if
-  c_lcp_id_while_copy_meta_data = RNIL;
+  tabPtr.p->c_lcp_id_while_copy_meta_data = RNIL;
+  DEB_LCP_ONGOING(("Set c_lcp_id_while_copy_meta_data to RNIL, tab: %u",
+    tabPtr.i));
   CopyTabConf *conf = (CopyTabConf *)signal->getDataPtrSend();
   conf->nodeId = getOwnNodeId();
   conf->tableId = tabPtr.i;
@@ -19260,26 +19523,23 @@ void Dbdih::readPagesIntoTableLab(Signal *signal, Uint32 tableId) {
   Uint32 noOfFrags = rf.rwfTabPtr.p->totalfragments;
   ndbrequire(noOfFrags > 0);
   ndbrequire(allocFragments(noOfFrags, rf.rwfTabPtr));
-  
-  signal->theData[0] = DihContinueB::ZREAD_PAGES_INTO_FRAG;
-  signal->theData[1] = rf.rwfTabPtr.i;
-  signal->theData[2] = 0;
-  signal->theData[3] = rf.pageIndex;
-  signal->theData[4] = rf.wordIndex;
-  sendSignal(reference(), GSN_CONTINUEB, signal, 5, JBB);
-  return;
+
+  readPagesIntoFragLab(signal, &rf);
 }  // Dbdih::readPagesIntoTableLab()
 
 void Dbdih::readPagesIntoFragLab(Signal *signal, RWFragment *rf) {
-  ndbrequire(rf->pageIndex < NDB_ARRAY_SIZE(rf->rwfTabPtr.p->pageRef));
-  rf->rwfPageptr.i = rf->rwfTabPtr.p->pageRef[rf->pageIndex];
-  ptrCheckGuard(rf->rwfPageptr, cpageFileSize, pageRecord);
-  FragmentstorePtr fragPtr;
-  getFragstore(rf->rwfTabPtr.p, rf->fragId, fragPtr);
-  readFragment(rf, fragPtr);
-  readReplicas(rf, rf->rwfTabPtr.p, fragPtr);
-  rf->fragId++;
-  if (rf->fragId == rf->rwfTabPtr.p->totalfragments) {
+  for (rf->fragId = 0;
+       rf->fragId < rf->rwfTabPtr.p->totalfragments;
+       rf->fragId++) {
+    ndbrequire(rf->pageIndex < NDB_ARRAY_SIZE(rf->rwfTabPtr.p->pageRef));
+    rf->rwfPageptr.i = rf->rwfTabPtr.p->pageRef[rf->pageIndex];
+    ptrCheckGuard(rf->rwfPageptr, cpageFileSize, pageRecord);
+    FragmentstorePtr fragPtr;
+    getFragstore(rf->rwfTabPtr.p, rf->fragId, fragPtr);
+    readFragment(rf, fragPtr);
+    readReplicas(rf, rf->rwfTabPtr.p, fragPtr);
+  }
+  {
     jam();
     switch (rf->rwfTabPtr.p->tabCopyStatus) {
       case TabRecord::CS_SR_PHASE1_READ_PAGES:
@@ -19315,16 +19575,7 @@ void Dbdih::readPagesIntoFragLab(Signal *signal, RWFragment *rf) {
         ndbabort();
         return;
     }  // switch
-  } else {
-    jam();
-    signal->theData[0] = DihContinueB::ZREAD_PAGES_INTO_FRAG;
-    signal->theData[1] = rf->rwfTabPtr.i;
-    signal->theData[2] = rf->fragId;
-    signal->theData[3] = rf->pageIndex;
-    signal->theData[4] = rf->wordIndex;
-    sendSignal(reference(), GSN_CONTINUEB, signal, 5, JBB);
-  }  // if
-  return;
+  }
 }  // Dbdih::readPagesIntoFragLab()
 
 /*****************************************************************************/
@@ -19339,6 +19590,7 @@ void Dbdih::packTableIntoPagesLab(Signal *signal, Uint32 tableId) {
   ptrCheckGuard(tabPtr, ctabFileSize, tabRecord);
   tabPtr.p->pageRef[0] = wf.rwfPageptr.i;
   tabPtr.p->noPages = 1;
+  wf.rwfTabPtr = tabPtr;
   wf.wordIndex = 35;
   wf.pageIndex = 0;
   Uint32 totalfragments = tabPtr.p->totalfragments;
@@ -19362,35 +19614,31 @@ void Dbdih::packTableIntoPagesLab(Signal *signal, Uint32 tableId) {
   writePageWord(&wf, tabPtr.p->method);
   writePageWord(&wf, tabPtr.p->tabStorage);
 
-  signal->theData[0] = DihContinueB::ZPACK_FRAG_INTO_PAGES;
-  signal->theData[1] = tabPtr.i;
-  signal->theData[2] = 0;
-  signal->theData[3] = wf.pageIndex;
-  signal->theData[4] = wf.wordIndex;
-  signal->theData[5] = totalfragments;
-  sendSignal(reference(), GSN_CONTINUEB, signal, 6, JBB);
+  wf.totalfragments = totalfragments;
+  packFragIntoPagesLab(signal, &wf);
 }  // Dbdih::packTableIntoPagesLab()
 
 /*****************************************************************************/
 // execCONTINUEB(ZPACK_FRAG_INTO_PAGES)
 /*****************************************************************************/
 void Dbdih::packFragIntoPagesLab(Signal *signal, RWFragment *wf) {
-  ndbrequire(wf->pageIndex < NDB_ARRAY_SIZE(wf->rwfTabPtr.p->pageRef));
-  wf->rwfPageptr.i = wf->rwfTabPtr.p->pageRef[wf->pageIndex];
-  ptrCheckGuard(wf->rwfPageptr, cpageFileSize, pageRecord);
-  FragmentstorePtr fragPtr;
-  getFragstore(wf->rwfTabPtr.p, wf->fragId, fragPtr);
-  writeFragment(wf, fragPtr);
-  {
-    Uint32 nodeOrder[MAX_REPLICAS];
-    extractNodeInfo(jamBuffer(),
-                    fragPtr.p,
-                    nodeOrder);
-    writeReplicas(wf, nodeOrder[0], fragPtr.p->storedReplicas);
+  for (wf->fragId = 0; wf->fragId < wf->totalfragments; wf->fragId++) {
+    ndbrequire(wf->pageIndex < NDB_ARRAY_SIZE(wf->rwfTabPtr.p->pageRef));
+    wf->rwfPageptr.i = wf->rwfTabPtr.p->pageRef[wf->pageIndex];
+    ptrCheckGuard(wf->rwfPageptr, cpageFileSize, pageRecord);
+    FragmentstorePtr fragPtr;
+    getFragstore(wf->rwfTabPtr.p, wf->fragId, fragPtr);
+    writeFragment(wf, fragPtr);
+    {
+      Uint32 nodeOrder[MAX_REPLICAS];
+      extractNodeInfo(jamBuffer(),
+                      fragPtr.p,
+                      nodeOrder);
+      writeReplicas(wf, nodeOrder[0], fragPtr.p->storedReplicas);
+    }
+    writeReplicas(wf, 0, fragPtr.p->oldStoredReplicas);
   }
-  writeReplicas(wf, 0, fragPtr.p->oldStoredReplicas);
-  wf->fragId++;
-  if (wf->fragId == wf->totalfragments) {
+  {
     jam();
     PageRecordPtr pagePtr;
     pagePtr.i = wf->rwfTabPtr.p->pageRef[0];
@@ -19410,27 +19658,26 @@ void Dbdih::packFragIntoPagesLab(Signal *signal, RWFragment *wf) {
         signal->theData[1] = wf->rwfTabPtr.i;
         sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB);
         return;
-        break;
       case TabRecord::CS_COPY_NODE_STATE:
         jam();
         tableCopyNodeLab(signal, wf->rwfTabPtr);
         return;
-        break;
       case TabRecord::CS_LCP_READ_TABLE:
         jam();
         signal->theData[0] = DihContinueB::ZTABLE_UPDATE;
         signal->theData[1] = wf->rwfTabPtr.i;
         sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB);
         return;
-        break;
-      case TabRecord::CS_REMOVE_NODE:
       case TabRecord::CS_INVALIDATE_NODE_LCP:
+      case TabRecord::CS_REMOVE_NODE:
+      {
         jam();
+        unreservePages();
         signal->theData[0] = DihContinueB::ZTABLE_UPDATE;
         signal->theData[1] = wf->rwfTabPtr.i;
         sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB);
         return;
-        break;
+      }
       case TabRecord::CS_ADD_TABLE_MASTER:
         jam();
         wf->rwfTabPtr.p->tabCopyStatus = TabRecord::CS_IDLE;
@@ -19438,7 +19685,6 @@ void Dbdih::packFragIntoPagesLab(Signal *signal, RWFragment *wf) {
         signal->theData[1] = wf->rwfTabPtr.i;
         sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB);
         return;
-        break;
       case TabRecord::CS_ADD_TABLE_SLAVE:
         jam();
         wf->rwfTabPtr.p->tabCopyStatus = TabRecord::CS_IDLE;
@@ -19461,17 +19707,7 @@ void Dbdih::packFragIntoPagesLab(Signal *signal, RWFragment *wf) {
         ndbabort();
         return;
     }  // switch
-  } else {
-    jam();
-    signal->theData[0] = DihContinueB::ZPACK_FRAG_INTO_PAGES;
-    signal->theData[1] = wf->rwfTabPtr.i;
-    signal->theData[2] = wf->fragId;
-    signal->theData[3] = wf->pageIndex;
-    signal->theData[4] = wf->wordIndex;
-    signal->theData[5] = wf->totalfragments;
-    sendSignal(reference(), GSN_CONTINUEB, signal, 6, JBB);
-  }  // if
-  return;
+  }
 }  // Dbdih::packFragIntoPagesLab()
 
 /*****************************************************************************/
@@ -19769,25 +20005,31 @@ void Dbdih::execSTART_RECCONF(Signal *signal) {
   }
 }  // Dbdih::execSTART_RECCONF()
 
-void Dbdih::copyNodeLab(Signal *signal, Uint32 tableId) {
+void Dbdih::copyNodeLab(Signal *signal, Uint32 decrement_outstanding) {
   /* ----------------------------------------------------------------------- */
   // This code is executed by the master to assist a node restart in receiving
   // the data in the master.
   /* ----------------------------------------------------------------------- */
   Uint32 TloopCount = 0;
-
-  if (!c_nodeStartMaster.activeState) {
-    jam();
-    /* --------------------------------------------------------------------- */
-    // Obviously the node crashed in the middle of its node restart. We will
-    // stop this process simply by returning after resetting the wait indicator.
-    // We also need to handle the pausing of LCPs if it was active.
-    /* ---------------------------------------------------------------------- */
-    c_nodeStartMaster.wait = ZFALSE;
-    return;
-  }  // if
+  NodeRecordPtr nodePtr;
+  nodePtr.i = c_nodeStartMaster.startNode;
+  ptrCheckGuard(nodePtr, MAX_NDB_NODES, nodeRecord);
+  if (copyNode_check_stop(RNIL)) return;
   TabRecordPtr tabPtr;
-  tabPtr.i = tableId;
+  tabPtr.i = nodePtr.p->m_copy_node_nr_next_table;
+  Uint32 max_parallelism = MAX_CONCURRENT_LCP_TAB_DEF_FLUSHES;
+  if (!ndbd_support_parallel_copy_tabreq(
+      getNodeInfo(nodePtr.i).m_version)) {
+    max_parallelism = 1;
+  }
+  if (decrement_outstanding) {
+    jam();
+    continue_copy_node_nr();
+  }
+  if (nodePtr.p->m_copy_node_nr_outstanding >= max_parallelism) {
+    jam();
+    return;
+  }
   while (tabPtr.i < ctabFileSize) {
     ptrAss(tabPtr, tabRecord);
     if (tabPtr.p->tabStatus == TabRecord::TS_ACTIVE) {
@@ -19799,38 +20041,48 @@ void Dbdih::copyNodeLab(Signal *signal, Uint32 tableId) {
       // starting node we will return to this subroutine and continue
       // with the next table.
       /* -------------------------------------------------------------------- */
-      if (!(tabPtr.p->tabCopyStatus == TabRecord::CS_IDLE)) {
+      jam();
+      jamData(tabPtr.i);
+      DEB_LCP_ONGOING(("Table %u metadata copied", tabPtr.i));
+      copyNodeTable_check(signal, tabPtr);
+      nodePtr.p->m_copy_node_nr_outstanding++;
+      if (nodePtr.p->m_copy_node_nr_outstanding >= max_parallelism) {
         jam();
-        signal->theData[0] = DihContinueB::ZCOPY_NODE;
-        signal->theData[1] = tabPtr.i;
-        sendSignalWithDelay(reference(), GSN_CONTINUEB, signal,
-                            WaitTableStateChangeMillis, 2);
+        nodePtr.p->m_copy_node_nr_next_table = tabPtr.i + 1;
         return;
       }
-      tabPtr.p->tabCopyStatus = TabRecord::CS_COPY_NODE_STATE;
-      signal->theData[0] = DihContinueB::ZPACK_TABLE_INTO_PAGES;
-      signal->theData[1] = tabPtr.i;
+      jamData(nodePtr.p->m_copy_node_nr_outstanding);
+    }
+    if (TloopCount > 100) {
+      /* ------------------------------------------------------------------ */
+      // Introduce real-time break after looping through 100 not copied tables
+      /* ----------------------------------------------------------------- */
+      jam();
+      nodePtr.p->m_copy_node_nr_next_table = tabPtr.i + 1;
+      if (nodePtr.p->m_copy_node_nr_outstanding >= max_parallelism) {
+        jam();
+        return;
+      }
+      nodePtr.p->m_copy_node_nr_outstanding++;
+      jamData(tabPtr.i + 1);
+      signal->theData[0] = DihContinueB::ZCOPY_NODE;
+      signal->theData[1] = 1;
       sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB);
       return;
     } else {
-      jam();
-      if (TloopCount > 100) {
-        /* ------------------------------------------------------------------ */
-        // Introduce real-time break after looping through 100 not copied tables
-        /* ----------------------------------------------------------------- */
-        jam();
-        signal->theData[0] = DihContinueB::ZCOPY_NODE;
-        signal->theData[1] = tabPtr.i + 1;
-        sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB);
-        return;
-      } else {
-        jam();
-        TloopCount++;
-        tabPtr.i++;
-      }  // if
-    }    // if
-  }      // while
+      TloopCount++;
+      tabPtr.i++;
+    }
+  }
+
   jam();
+  if (nodePtr.p->m_copy_node_nr_outstanding > 0) return;
+  nodePtr.p->m_copy_node_nr_ongoing = false;
+  nodePtr.p->m_copy_node_nr_next_table = 0;
+  ndbrequire(!c_COPY_TABREQ_Counter.isWaitingFor(nodePtr.i));
+  g_eventLogger->info("Finished copying table to starting node %u",
+    nodePtr.i);
+
   if (is_lcp_paused()) {
     jam();
     /**
@@ -19847,28 +20099,82 @@ void Dbdih::copyNodeLab(Signal *signal, Uint32 tableId) {
   }
 }  // Dbdih::copyNodeLab()
 
+bool Dbdih::copyNode_check_stop(Uint32 tableId) {
+  if (!c_nodeStartMaster.activeState) {
+    jam();
+    if (tableId != RNIL) {
+      jam();
+      releaseTabPages(tableId);
+    }
+    NodeRecordPtr nodePtr;
+    nodePtr.i = c_nodeStartMaster.startNode;
+    ptrCheckGuard(nodePtr, MAX_NDB_NODES, nodeRecord);
+    ndbrequire(c_nodeStartMaster.wait);
+    ndbrequire(nodePtr.p->m_copy_node_nr_ongoing);
+    ndbrequire(nodePtr.p->m_copy_node_nr_outstanding > 0);
+    nodePtr.p->m_copy_node_nr_outstanding--;
+    if (nodePtr.p->m_copy_node_nr_outstanding > 0) {
+      jam();
+      return true;
+    }
+    nodePtr.p->m_copy_node_nr_ongoing = false;
+    nodePtr.p->m_copy_node_nr_next_table = 0;
+    /* --------------------------------------------------------------------- */
+    // Obviously the node crashed in the middle of its node restart. We will
+    // stop this process simply by returning after resetting the wait indicator.
+    // We also need to handle the pausing of LCPs if it was active.
+    /* ---------------------------------------------------------------------- */
+    c_nodeStartMaster.wait = ZFALSE;
+    c_nodeStartMaster.startNode = RNIL;
+    return true;
+  }
+  return false;
+}
+
+void Dbdih::copyNodeTable_check(Signal *signal, TabRecordPtr tabPtr) {
+  if (copyNode_check_stop(RNIL)) {
+    DEB_LCP_ONGOING(("Stop copyNodeTable tab: %u", tabPtr.i));
+    return;
+  }
+  if (!(tabPtr.p->tabCopyStatus == TabRecord::CS_IDLE)) {
+    jam();
+    DEB_LCP_ONGOING(("tabCopyStatus not CS_IDLE: %u, is %u",
+      tabPtr.i, tabPtr.p->tabCopyStatus));
+    signal->theData[0] = DihContinueB::ZCOPY_NODE_TABLE_CHECK;
+    signal->theData[1] = tabPtr.i;
+    sendSignalWithDelay(reference(), GSN_CONTINUEB, signal,
+                        WaitTableStateChangeMillis, 2);
+    return;
+  }
+  if (!reservePages()) {
+    jam();
+    DEB_LCP_ONGOING(("Failed to reserve pages: %u", tabPtr.i));
+    signal->theData[0] = DihContinueB::ZCOPY_NODE_TABLE_CHECK;
+    signal->theData[1] = tabPtr.i;
+    sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB);
+    return;
+  }
+  jam();
+  tabPtr.p->tabCopyStatus = TabRecord::CS_COPY_NODE_STATE;
+  signal->theData[0] = DihContinueB::ZPACK_TABLE_INTO_PAGES;
+  signal->theData[1] = tabPtr.i;
+  sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB);
+}
+
 void Dbdih::tableCopyNodeLab(Signal *signal, TabRecordPtr tabPtr) {
   /* ----------------------------------------------------------------------- */
   /*       COPY PAGES READ TO STARTING NODE.                                 */
   /* ----------------------------------------------------------------------- */
-  if (!c_nodeStartMaster.activeState) {
-    jam();
-    releaseTabPages(tabPtr.i);
-    c_nodeStartMaster.wait = ZFALSE;
-    return;
-  }  // if
-  NodeRecordPtr copyNodePtr;
+  unreservePages();
+  copyNode_check_stop(tabPtr.i);
   PageRecordPtr pagePtr;
-  copyNodePtr.i = c_nodeStartMaster.startNode;
-  ptrCheckGuard(copyNodePtr, MAX_NDB_NODES, nodeRecord);
 
-  copyNodePtr.p->activeTabptr = tabPtr.i;
   pagePtr.i = tabPtr.p->pageRef[0];
   ptrCheckGuard(pagePtr, cpageFileSize, pageRecord);
 
   signal->theData[0] = DihContinueB::ZCOPY_TABLE_NODE;
   signal->theData[1] = tabPtr.i;
-  signal->theData[2] = copyNodePtr.i;
+  signal->theData[2] = c_nodeStartMaster.startNode;
   signal->theData[3] = 0;
   signal->theData[4] = 0;
   signal->theData[5] = pagePtr.p->word[34];
@@ -19979,28 +20285,16 @@ void Dbdih::copyTableNode(Signal *signal, CopyTableNode *ctn,
     // table description to a starting node. We will check that no nodes have
     // crashed in this process.
     /* --------------------------------------------------------------------- */
-    if (!c_nodeStartMaster.activeState) {
-      jam();
-      /** ------------------------------------------------------------------
-       * The starting node crashed. We will release table pages and stop this
-       * copy process and allow new node restarts to start.
-       * ------------------------------------------------------------------ */
-      releaseTabPages(ctn->ctnTabPtr.i);
-      c_nodeStartMaster.wait = ZFALSE;
-      return;
-    }  // if
-  }    // if
-  ndbrequire(ctn->pageIndex < NDB_ARRAY_SIZE(ctn->ctnTabPtr.p->pageRef));
-  ctn->ctnPageptr.i = ctn->ctnTabPtr.p->pageRef[ctn->pageIndex];
-  ptrCheckGuard(ctn->ctnPageptr, cpageFileSize, pageRecord);
+    if (copyNode_check_stop(ctn->ctnTabPtr.i)) return;
+  }
   /**
    * If first page & firstWord reqinfo = 1 (first signal)
    */
   Uint32 reqinfo = (ctn->pageIndex == 0) && (ctn->wordIndex == 0);
-  if (reqinfo == 1) {
-    c_COPY_TABREQ_Counter.setWaitingFor(nodePtr.i);
-  }
-
+  ndbrequire(ctn->pageIndex < NDB_ARRAY_SIZE(ctn->ctnTabPtr.p->pageRef));
+  ctn->ctnPageptr.i = ctn->ctnTabPtr.p->pageRef[ctn->pageIndex];
+  ptrCheckGuard(ctn->ctnPageptr, cpageFileSize, pageRecord);
+  Uint32 max_parallelism = MAX_CONCURRENT_LCP_TAB_DEF_FLUSHES;
   for (Uint32 i = 0; i < 16; i++) {
     jam();
     sendCopyTable(signal, ctn, calcDihBlockRef(nodePtr.i), reqinfo);
@@ -20018,15 +20312,28 @@ void Dbdih::copyTableNode(Signal *signal, CopyTableNode *ctn,
           /* ------------------------------------------------------------------
            */
           jam();
+          c_COPY_TABREQ_Counter.setWaitingFor(nodePtr.i);
           ctn->ctnTabPtr.p->tabCopyStatus = TabRecord::CS_IDLE;
           breakCopyTableLab(signal, ctn->ctnTabPtr, nodePtr.p->nextNode);
           return;
-          break;
         case TabRecord::CS_COPY_NODE_STATE:
           jam();
+          if (!c_COPY_TABREQ_Counter.isWaitingFor(nodePtr.i)) {
+            c_COPY_TABREQ_Counter.setWaitingFor(nodePtr.i);
+          }
+          releaseTabPages(ctn->ctnTabPtr.i);
+          c_nodeStartMaster.COPY_TABREQs++;
+          if (!ndbd_support_parallel_copy_tabreq(
+              getNodeInfo(nodePtr.i).m_version)) {
+            jam();
+            max_parallelism = 1;
+          }
+          jamData(c_nodeStartMaster.COPY_TABREQs);
+          jamData(ctn->ctnTabPtr.i);
+          ndbrequire(c_nodeStartMaster.COPY_TABREQs <= max_parallelism);
           ctn->ctnTabPtr.p->tabCopyStatus = TabRecord::CS_IDLE;
+          DEB_LCP_ONGOING(("Completed copy of table %u", ctn->ctnTabPtr.i));
           return;
-          break;
         default:
           ndbabort();
       }  // switch
@@ -20080,6 +20387,11 @@ void Dbdih::sendCopyTable(Signal *signal, CopyTableNode *ctn,
     }
     req->currentLcpId = SYSFILE->latestLCP_ID;
     sig_len = CopyTabReq::SignalLengthExtra;
+    DEB_LCP_ONGOING(("send COPY_TABREQ, currentLcpId: %u, tab: %u,"
+                     " LcpStatus: %u",
+      req->currentLcpId,
+      ctn->ctnTabPtr.i,
+      req->tabLcpStatus));
   }
   sendSignal(ref, GSN_COPY_TABREQ, signal, sig_len, JBB);
 }  // Dbdih::sendCopyTable()
@@ -20096,12 +20408,15 @@ void Dbdih::execCOPY_TABCONF(Signal *signal) {
     /* --------------------------------------------------------------------- */
     jam();
     ndbrequire(nodeId == c_nodeStartMaster.startNode);
-    c_COPY_TABREQ_Counter.clearWaitingFor(nodeId);
-
-    releaseTabPages(tableId);
-    signal->theData[0] = DihContinueB::ZCOPY_NODE;
-    signal->theData[1] = tableId + 1;
-    sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB);
+    ndbrequire(c_nodeStartMaster.COPY_TABREQs > 0);
+    c_nodeStartMaster.COPY_TABREQs--;
+    jamData(c_nodeStartMaster.COPY_TABREQs);
+    jamData(tableId);
+    if (c_nodeStartMaster.COPY_TABREQs == 0) {
+      jam();
+      c_COPY_TABREQ_Counter.clearWaitingFor(nodeId);
+    }
+    copyNodeLab(signal, 1);
     return;
   } else {
     /* --------------------------------------------------------------------- */
@@ -20635,6 +20950,8 @@ void Dbdih::execSTART_LCP_CONF(Signal *signal) {
        * haven't set it up in this case.
        */
       c_pause_lcp_master_state = PAUSE_IN_LCP_COPY_META_DATA;
+      DEB_PAUSE(("LCP paused, now start copying metadata, startNode: %u",
+        c_nodeStartMaster.startNode));
       start_copy_meta_data(signal);
       return;
     } else {
@@ -20646,6 +20963,8 @@ void Dbdih::execSTART_LCP_CONF(Signal *signal) {
        * We are now ready to continue to the next stage of the node
        * restart handling for the starting node.
        */
+      DEB_PAUSE(("LCP paused, copy metadata done, unpause, startNode: %u",
+        c_nodeStartMaster.startNode));
       sendPAUSE_LCP_REQ(signal, false);
       return;
     }
@@ -20717,7 +21036,26 @@ void Dbdih::master_lcp_fragmentMutex_locked(Signal *signal,
 
   checkLocalNodefailComplete(signal, failedNodePtrI, NF_LCP_TAKE_OVER);
 
+  calculate_any_node_waiting_for_lcp();
+
   startLcpRoundLoopLab(signal, 0, 0);
+}
+
+void Dbdih::calculate_any_node_waiting_for_lcp() {
+  c_any_node_waiting_for_lcp = false;
+  NodeRecordPtr nodePtr;
+  for (nodePtr.i = 1; nodePtr.i <= m_max_node_id; nodePtr.i++) {
+    ptrAss(nodePtr, nodeRecord);
+    if (nodePtr.p->nodeStatus == NodeRecord::ALIVE &&
+        ((nodePtr.p->nodeRecoveryStatus ==
+           NodeRecord::WAIT_LCP_TO_COPY_DICT) ||
+         (nodePtr.p->nodeRecoveryStatus ==
+           NodeRecord::WAIT_LCP_FOR_RESTART))) {
+      jam();
+      jamData(nodePtr.i);
+      c_any_node_waiting_for_lcp = true;
+    }
+  }
 }
 
 // #define DIH_DEBUG_REPLICA_SEARCH
@@ -20966,7 +21304,7 @@ void Dbdih::sendLastLCP_FRAG_ORD(Signal *signal) {
   lcpFragOrd->lcpId = SYSFILE->latestLCP_ID;
   lcpFragOrd->lcpNo = 0;
   lcpFragOrd->keepGci = c_lcpState.keepGci;
-  lcpFragOrd->lastFragmentFlag = true;
+  lcpFragOrd->requestInfo = LcpFragOrd::LastFragmentFlag;
 
   NodeRecordPtr nodePtr;
   for (nodePtr.i = 1; nodePtr.i <= m_max_node_id; nodePtr.i++) {
@@ -21207,11 +21545,24 @@ void Dbdih::execLCP_FRAG_REP(Signal *signal) {
        */
       if (c_lcpTabDefWritesControl.requestMustQueue()) {
         jam();
-        // g_eventLogger->info("DIH : Queueing tab def flush op on table %u",
-        // tabPtr.i);
         /* Mark as queued - will be started when an already running op completes
          */
+        jamData(c_lcpTabDefWritesControl.inUse);
+        jamData(c_lcpTabDefWritesControl.queuedRequests);
+        DEB_LCP_QUEUED(("Table %u is queued before writing checkpoint info",
+          tabPtr.i));
         tabPtr.p->tabUpdateState = TabRecord::US_LOCAL_CHECKPOINT_QUEUED;
+        if (c_start_tab_queued == 0 || c_start_tab_queued > tabPtr.i) {
+          jam();
+          jamData(c_start_tab_queued);
+          c_start_tab_queued = tabPtr.i;
+        }
+        if (c_end_tab_queued == 0 || c_end_tab_queued < tabPtr.i) {
+          jam();
+          jamData(c_end_tab_queued);
+          c_end_tab_queued = tabPtr.i;
+        }
+        ndbrequire(c_start_tab_queued <= c_end_tab_queued);
       } else {
         /* Run immediately */
         jam();
@@ -21361,18 +21712,89 @@ bool Dbdih::checkLcpAllTablesDoneInLqh(Uint32 line) {
   /**
    * Check if finished with all tables
    */
-  for (tabPtr.i = 0; tabPtr.i < ctabFileSize; tabPtr.i++) {
-    // jam(); Removed as it flushed all other jam traces.
+  tabPtr.i = 0;
+  for (; (tabPtr.i + 8) < ctabFileSize; tabPtr.i += 8) {
+    TabRecordPtr tab1Ptr;
+    TabRecordPtr tab2Ptr;
+    TabRecordPtr tab3Ptr;
+    TabRecordPtr tab4Ptr;
+    TabRecordPtr tab5Ptr;
+    TabRecordPtr tab6Ptr;
+    TabRecordPtr tab7Ptr;
+    TabRecordPtr tab8Ptr;
+    tab1Ptr.i = tabPtr.i;
+    tab2Ptr.i = tabPtr.i + 1;
+    tab3Ptr.i = tabPtr.i + 2;
+    tab4Ptr.i = tabPtr.i + 3;
+    tab5Ptr.i = tabPtr.i + 4;
+    tab6Ptr.i = tabPtr.i + 5;
+    tab7Ptr.i = tabPtr.i + 6;
+    tab8Ptr.i = tabPtr.i + 7;
+    ptrAss(tab1Ptr, tabRecord);
+    ptrAss(tab2Ptr, tabRecord);
+    ptrAss(tab3Ptr, tabRecord);
+    ptrAss(tab4Ptr, tabRecord);
+    ptrAss(tab5Ptr, tabRecord);
+    ptrAss(tab6Ptr, tabRecord);
+    ptrAss(tab7Ptr, tabRecord);
+    ptrAss(tab8Ptr, tabRecord);
+
+    Uint32 tab1_active = (tab1Ptr.p->tabStatus == TabRecord::TS_ACTIVE) ? 1 : 0;
+    Uint32 tab1_lcp_active =
+      (tab1Ptr.p->tabLcpStatus == TabRecord::TLS_ACTIVE) ? 1 : 0;
+    Uint32 tab1 = tab1_active & tab1_lcp_active;
+    if (unlikely(tab1)) return false;
+
+    Uint32 tab2_active = (tab2Ptr.p->tabStatus == TabRecord::TS_ACTIVE) ? 1 : 0;
+    Uint32 tab2_lcp_active =
+      (tab2Ptr.p->tabLcpStatus == TabRecord::TLS_ACTIVE) ? 1 : 0;
+    Uint32 tab2 = tab2_active & tab2_lcp_active;
+    if (unlikely(tab2)) return false;
+
+    Uint32 tab3_active = (tab3Ptr.p->tabStatus == TabRecord::TS_ACTIVE) ? 1 : 0;
+    Uint32 tab3_lcp_active =
+      (tab3Ptr.p->tabLcpStatus == TabRecord::TLS_ACTIVE) ? 1 : 0;
+    Uint32 tab3 = tab3_active & tab3_lcp_active;
+    if (unlikely(tab3)) return false;
+
+    Uint32 tab4_active = (tab4Ptr.p->tabStatus == TabRecord::TS_ACTIVE) ? 1 : 0;
+    Uint32 tab4_lcp_active =
+      (tab4Ptr.p->tabLcpStatus == TabRecord::TLS_ACTIVE) ? 1 : 0;
+    Uint32 tab4 = tab4_active & tab4_lcp_active;
+    if (unlikely(tab4)) return false;
+
+    Uint32 tab5_active = (tab5Ptr.p->tabStatus == TabRecord::TS_ACTIVE) ? 1 : 0;
+    Uint32 tab5_lcp_active =
+      (tab5Ptr.p->tabLcpStatus == TabRecord::TLS_ACTIVE) ? 1 : 0;
+    Uint32 tab5 = tab5_active & tab5_lcp_active;
+    if (unlikely(tab5)) return false;
+
+    Uint32 tab6_active = (tab6Ptr.p->tabStatus == TabRecord::TS_ACTIVE) ? 1 : 0;
+    Uint32 tab6_lcp_active =
+      (tab6Ptr.p->tabLcpStatus == TabRecord::TLS_ACTIVE) ? 1 : 0;
+    Uint32 tab6 = tab6_active & tab6_lcp_active;
+    if (unlikely(tab6)) return false;
+
+    Uint32 tab7_active = (tab7Ptr.p->tabStatus == TabRecord::TS_ACTIVE) ? 1 : 0;
+    Uint32 tab7_lcp_active =
+      (tab7Ptr.p->tabLcpStatus == TabRecord::TLS_ACTIVE) ? 1 : 0;
+    Uint32 tab7 = tab7_active & tab7_lcp_active;
+    if (unlikely(tab7)) return false;
+
+    Uint32 tab8_active = (tab8Ptr.p->tabStatus == TabRecord::TS_ACTIVE) ? 1 : 0;
+    Uint32 tab8_lcp_active =
+      (tab8Ptr.p->tabLcpStatus == TabRecord::TLS_ACTIVE) ? 1 : 0;
+    Uint32 tab8 = tab8_active & tab8_lcp_active;
+    if (unlikely(tab8)) return false;
+  }
+  for (; tabPtr.i < ctabFileSize; tabPtr.i++) {
     ptrAss(tabPtr, tabRecord);
-    if ((tabPtr.p->tabStatus == TabRecord::TS_ACTIVE) &&
-        (tabPtr.p->tabLcpStatus == TabRecord::TLS_ACTIVE)) {
-      jam();
-      /**
-       * Nope, not finished with all tables
-       */
-      return false;
-    }  // if
-  }    // for
+    Uint32 tab_active = (tabPtr.p->tabStatus == TabRecord::TS_ACTIVE) ? 1 : 0;
+    Uint32 tab_lcp_active =
+      (tabPtr.p->tabLcpStatus == TabRecord::TLS_ACTIVE) ? 1 : 0;
+    Uint32 tab = tab_active & tab_lcp_active;
+    if (unlikely(tab)) return false;
+  }
 
   CRASH_INSERTION2(7026, isMaster());
   CRASH_INSERTION2(7017, !isMaster());
@@ -21495,10 +21917,13 @@ bool Dbdih::reportLcpCompletion(const LcpFragRep *lcpReport) {
         "lcpNo: %u, lcpId: %u, maxGciStarted: %u, "
         "maxGciCompleted: %u, tableId: %u, fragId: %u, "
         "nodeId: %u, replica->lcpStatus: %u"
-        "replicaPtr->lcpId: %u, replicaPtr->nextLcp: %u",
+        "replicaPtr->lcpId: %u, replicaPtr->nextLcp: %u, "
+        "tabStatus: %u, tabLcpStatus: %u",
         lcpNo, lcpId, maxGciStarted, maxGciCompleted, tableId, fragId, nodeId,
         replicaPtr.p->lcpStatus[lcpNo], replicaPtr.p->lcpId[lcpNo],
-        replicaPtr.p->nextLcp);
+        replicaPtr.p->nextLcp,
+        tabPtr.p->tabStatus,
+        tabPtr.p->tabLcpStatus);
     ndbrequire(replicaPtr.p->lcpOngoingFlag == true);
   }
   if (lcpNo != replicaPtr.p->nextLcp) {
@@ -21608,13 +22033,17 @@ void Dbdih::sendLCP_FRAG_ORD(Signal *signal,
     keepGci = SYSFILE->lastCompletedGCI[replicaPtr.p->procNode];
   }
 
+  Uint32 requestInfo = 0;
+  if (c_any_node_waiting_for_lcp) {
+    requestInfo = LcpFragOrd::LcpWaitFlag;
+  }
   LcpFragOrd *const lcpFragOrd = (LcpFragOrd *)&signal->theData[0];
   lcpFragOrd->tableId = info.tableId;
   lcpFragOrd->fragmentId = info.fragId;
   lcpFragOrd->lcpId = SYSFILE->latestLCP_ID;
   lcpFragOrd->lcpNo = replicaPtr.p->nextLcp;
   lcpFragOrd->keepGci = keepGci;
-  lcpFragOrd->lastFragmentFlag = false;
+  lcpFragOrd->requestInfo = requestInfo;
   sendSignal(ref, GSN_LCP_FRAG_ORD, signal, LcpFragOrd::SignalLength, JBB);
 }
 
@@ -21636,13 +22065,44 @@ void Dbdih::checkLcpCompletedLab(Signal *signal, Uint32 line) {
    * could be bugs in reporting dropped tables properly.
    */
   TabRecordPtr tabPtr;
-  for (tabPtr.i = 0; tabPtr.i < ctabFileSize; tabPtr.i++) {
-    // jam(); Removed as it flushed all other jam traces.
+  tabPtr.i = 0;
+  for (; (tabPtr.i + 8) < ctabFileSize; tabPtr.i += 8) {
+    TabRecordPtr tab1Ptr;
+    TabRecordPtr tab2Ptr;
+    TabRecordPtr tab3Ptr;
+    TabRecordPtr tab4Ptr;
+    TabRecordPtr tab5Ptr;
+    TabRecordPtr tab6Ptr;
+    TabRecordPtr tab7Ptr;
+    TabRecordPtr tab8Ptr;
+    tab1Ptr.i = tabPtr.i;
+    tab2Ptr.i = tabPtr.i + 1;
+    tab3Ptr.i = tabPtr.i + 2;
+    tab4Ptr.i = tabPtr.i + 3;
+    tab5Ptr.i = tabPtr.i + 4;
+    tab6Ptr.i = tabPtr.i + 5;
+    tab7Ptr.i = tabPtr.i + 6;
+    tab8Ptr.i = tabPtr.i + 7;
+    ptrAss(tab1Ptr, tabRecord);
+    ptrAss(tab2Ptr, tabRecord);
+    ptrAss(tab3Ptr, tabRecord);
+    ptrAss(tab4Ptr, tabRecord);
+    ptrAss(tab5Ptr, tabRecord);
+    ptrAss(tab6Ptr, tabRecord);
+    ptrAss(tab7Ptr, tabRecord);
+    ptrAss(tab8Ptr, tabRecord);
+    if (tab1Ptr.p->tabLcpStatus != TabRecord::TLS_COMPLETED) return;
+    if (tab2Ptr.p->tabLcpStatus != TabRecord::TLS_COMPLETED) return;
+    if (tab3Ptr.p->tabLcpStatus != TabRecord::TLS_COMPLETED) return;
+    if (tab4Ptr.p->tabLcpStatus != TabRecord::TLS_COMPLETED) return;
+    if (tab5Ptr.p->tabLcpStatus != TabRecord::TLS_COMPLETED) return;
+    if (tab6Ptr.p->tabLcpStatus != TabRecord::TLS_COMPLETED) return;
+    if (tab7Ptr.p->tabLcpStatus != TabRecord::TLS_COMPLETED) return;
+    if (tab8Ptr.p->tabLcpStatus != TabRecord::TLS_COMPLETED) return;
+  }
+  for (; tabPtr.i < ctabFileSize; tabPtr.i++) {
     ptrAss(tabPtr, tabRecord);
-    if (tabPtr.p->tabLcpStatus != TabRecord::TLS_COMPLETED) {
-      jam();
-      return;
-    }
+    if (tabPtr.p->tabLcpStatus != TabRecord::TLS_COMPLETED) return;
   }
 
   CRASH_INSERTION2(7027, isMaster());
@@ -22232,19 +22692,21 @@ void Dbdih::tableCloseLab(Signal *signal, FileRecordPtr filePtr) {
     return;
   }  // if
   switch (tabPtr.p->tabUpdateState) {
-    case TabRecord::US_LOCAL_CHECKPOINT:
+    case TabRecord::US_LOCAL_CHECKPOINT: {
       jam();
       releaseTabPages(tabPtr.i);
-
       tabPtr.p->tabCopyStatus = TabRecord::CS_IDLE;
       tabPtr.p->tabUpdateState = TabRecord::US_IDLE;
       tabPtr.p->tabLcpStatus = TabRecord::TLS_COMPLETED;
-      jam();
       signal->theData[0] = DihContinueB::ZCHECK_LCP_COMPLETED;
       sendSignal(reference(), GSN_CONTINUEB, signal, 1, JBB);
       /* Check whether there's some queued table definition flush op to start */
       if (c_lcpTabDefWritesControl.releaseMustStartQueued()) {
         jam();
+        jamData(c_lcpTabDefWritesControl.inUse);
+        jamData(c_lcpTabDefWritesControl.queuedRequests);
+        jamData(c_start_tab_queued);
+        jamData(c_end_tab_queued);
         /* Some table write is queued - let's kick it off */
         /* First find it...
          *   By using the tabUpdateState to 'queue' operations, we lose
@@ -22252,14 +22714,19 @@ void Dbdih::tableCloseLab(Signal *signal, FileRecordPtr filePtr) {
          *   In any case, the checkpoint proceeds by table id, as does this
          *   search, so a similar order should result
          */
+        ndbrequire(c_start_tab_queued <= c_end_tab_queued);
         TabRecordPtr tabPtr;
-        for (tabPtr.i = 0; tabPtr.i < ctabFileSize; tabPtr.i++) {
+        for (tabPtr.i = c_start_tab_queued;
+             tabPtr.i <= c_end_tab_queued;
+             tabPtr.i++) {
           ptrAss(tabPtr, tabRecord);
           if (tabPtr.p->tabUpdateState ==
               TabRecord::US_LOCAL_CHECKPOINT_QUEUED) {
             jam();
-            // g_eventLogger->info("DIH : Starting queued table def flush op on
-            // table %u", tabPtr.i);
+            jamData(tabPtr.i);
+            DEB_LCP_QUEUED(("Table %u is dequeued before writing checkpoint"
+                            " info", tabPtr.i));
+            c_start_tab_queued = tabPtr.i + 1;
             tabPtr.p->tabUpdateState = TabRecord::US_LOCAL_CHECKPOINT;
             signal->theData[0] = DihContinueB::ZPACK_TABLE_INTO_PAGES;
             signal->theData[1] = tabPtr.i;
@@ -22275,9 +22742,14 @@ void Dbdih::tableCloseLab(Signal *signal, FileRecordPtr filePtr) {
             c_lcpTabDefWritesControl.queuedRequests,
             c_lcpTabDefWritesControl.totalResources);
         ndbabort();
+      } else {
+        jam();
+        c_start_tab_queued = 0;
+        c_end_tab_queued = 0;
       }
       return;
-    case TabRecord::US_REMOVE_NODE:
+    }
+    case TabRecord::US_REMOVE_NODE: {
       jam();
       releaseTabPages(tabPtr.i);
       tabPtr.p->tabCopyStatus = TabRecord::CS_IDLE;
@@ -22288,34 +22760,44 @@ void Dbdih::tableCloseLab(Signal *signal, FileRecordPtr filePtr) {
         signal->theData[0] = DihContinueB::ZCHECK_LCP_COMPLETED;
         sendSignal(reference(), GSN_CONTINUEB, signal, 1, JBB);
       }  // if
+      NodeRecordPtr nodePtr;
+      nodePtr.i = tabPtr.p->tabRemoveNode;
+      ptrCheckGuard(nodePtr, MAX_NDB_NODES, nodeRecord);
+      ndbrequire(nodePtr.p->m_remove_node_from_table_outstanding > 0);
+      DEB_REMOVE_NODE(("Finished(2) tab %u for remove node", tabPtr.i));
       signal->theData[0] = DihContinueB::ZREMOVE_NODE_FROM_TABLE;
       signal->theData[1] = tabPtr.p->tabRemoveNode;
-      signal->theData[2] = tabPtr.i + 1;
+      signal->theData[2] = 1;
       if (!ERROR_INSERTED(7233))
         sendSignal(reference(), GSN_CONTINUEB, signal, 3, JBB);
       else
         sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 300, 3);
       return;
-      break;
-    case TabRecord::US_INVALIDATE_NODE_LCP:
+    }
+    case TabRecord::US_INVALIDATE_NODE_LCP: {
       jam();
       releaseTabPages(tabPtr.i);
+      NodeRecordPtr nodePtr;
+      nodePtr.i = tabPtr.p->tabRemoveNode;
+      ptrCheckGuard(nodePtr, MAX_NDB_NODES, nodeRecord);
       tabPtr.p->tabCopyStatus = TabRecord::CS_IDLE;
       tabPtr.p->tabUpdateState = TabRecord::US_IDLE;
+      ndbrequire(nodePtr.p->m_invalidate_node_lcp_outstanding > 0);
 
       signal->theData[0] = DihContinueB::ZINVALIDATE_NODE_LCP;
       signal->theData[1] = tabPtr.p->tabRemoveNode;
-      signal->theData[2] = tabPtr.i + 1;
+      signal->theData[2] = 1;
 
       handle_send_continueb_invalidate_node_lcp(signal);
       return;
-    case TabRecord::US_COPY_TAB_REQ:
+    }
+    case TabRecord::US_COPY_TAB_REQ: {
       jam();
       tabPtr.p->tabUpdateState = TabRecord::US_IDLE;
       copyTabReq_complete(signal, tabPtr);
       return;
-      break;
-    case TabRecord::US_ADD_TABLE_MASTER:
+    }
+    case TabRecord::US_ADD_TABLE_MASTER: {
       jam();
       releaseTabPages(tabPtr.i);
       tabPtr.p->tabUpdateState = TabRecord::US_IDLE;
@@ -22323,8 +22805,8 @@ void Dbdih::tableCloseLab(Signal *signal, FileRecordPtr filePtr) {
       signal->theData[1] = tabPtr.i;
       sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB);
       return;
-      break;
-    case TabRecord::US_ADD_TABLE_SLAVE:
+    }
+    case TabRecord::US_ADD_TABLE_SLAVE: {
       jam();
       releaseTabPages(tabPtr.i);
       tabPtr.p->tabUpdateState = TabRecord::US_IDLE;
@@ -22332,7 +22814,7 @@ void Dbdih::tableCloseLab(Signal *signal, FileRecordPtr filePtr) {
       signal->theData[1] = tabPtr.i;
       sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB);
       return;
-      break;
+    }
     case TabRecord::US_CALLBACK: {
       jam();
       releaseTabPages(tabPtr.i);
@@ -22885,7 +23367,48 @@ void Dbdih::allocpage(PageRecordPtr &pagePtr) {
   ptrCheckGuard(pagePtr, cpageFileSize, pageRecord);
   cfirstfreepage = pagePtr.p->nextfreepage;
   pagePtr.p->nextfreepage = RNIL;
+  cpagesAllocated++;
+  ndbrequire(cpagesAllocated <= cpageFileSize);
 }  // Dbdih::allocpage()
+
+void Dbdih::releasePage(Uint32 pageIndex) {
+  PageRecordPtr pagePtr;
+  pagePtr.i = pageIndex;
+  ptrCheckGuard(pagePtr, cpageFileSize, pageRecord);
+  pagePtr.p->nextfreepage = cfirstfreepage;
+  cfirstfreepage = pagePtr.i;
+  ndbrequire(cpagesAllocated > 0);
+  cpagesAllocated--;
+}  // Dbdih::releasePage()
+
+void Dbdih::releaseTabPages(Uint32 tableId) {
+  TabRecordPtr tabPtr;
+  tabPtr.i = tableId;
+  ptrCheckGuard(tabPtr, ctabFileSize, tabRecord);
+  ndbrequire(tabPtr.p->noPages <= NDB_ARRAY_SIZE(tabPtr.p->pageRef));
+  for (Uint32 i = 0; i < tabPtr.p->noPages; i++) {
+    jam();
+    releasePage(tabPtr.p->pageRef[i]);
+  }  // for
+  tabPtr.p->noPages = 0;
+}  // Dbdih::releaseTabPages()
+
+bool Dbdih::reservePages() {
+  Uint32 min_free_pages = 3 * PACK_TABLE_PAGES;
+  Uint32 pages_reserved = cpagesAllocated + cpagesReserved;
+  ndbrequire(pages_reserved <= cpageFileSize);
+  Uint32 pages_free = cpageFileSize - pages_reserved;
+  if (pages_free >= min_free_pages) {
+    cpagesReserved += PACK_TABLE_PAGES;
+    return true;
+  }
+  return false;
+}
+
+void Dbdih::unreservePages() {
+  ndbrequire(cpagesReserved >= PACK_TABLE_PAGES);
+  cpagesReserved -= PACK_TABLE_PAGES;
+}
 
 /*************************************************************************/
 /*                                                                       */
@@ -23906,6 +24429,7 @@ void Dbdih::initTable(TabRecordPtr tabPtr) {
   tabPtr.p->tableType = DictTabInfo::UndefTableType;
   tabPtr.p->schemaTransId = 0;
   tabPtr.p->tabActiveLcpFragments = 0;
+  tabPtr.p->c_lcp_id_while_copy_meta_data = RNIL;
 }  // Dbdih::initTable()
 
 /*************************************************************************/
@@ -24049,6 +24573,8 @@ void Dbdih::initialiseRecordsLab(Signal *signal, Uint32 stepNo, Uint32 retRef,
       ptrAss(pagePtr, pageRecord);
       pagePtr.p->nextfreepage = RNIL;
       cfirstfreepage = 0;
+      cpagesReserved = 0;
+      cpagesAllocated = 0;
       break;
     }
   case 7:
@@ -24880,8 +25406,9 @@ void Dbdih::updateLcpInfo(TabRecord *regTabPtr, Fragmentstore *regFragPtr,
   if (regTabPtr->tabLcpStatus == TabRecord::TLS_ACTIVE) {
     jam();
     Uint32 lastLcpNo = prevLcpNo(regReplicaPtr->nextLcp);
-    if (c_lcp_id_while_copy_meta_data != RNIL &&
-        regReplicaPtr->lcpId[lastLcpNo] < c_lcp_id_while_copy_meta_data &&
+    if (regTabPtr->c_lcp_id_while_copy_meta_data != RNIL &&
+        regReplicaPtr->lcpId[lastLcpNo] <
+        regTabPtr->c_lcp_id_while_copy_meta_data &&
         c_lcpState.m_participatingLQH.get(regReplicaPtr->procNode)) {
       /**
        * If the copy table indicating that the table is participating in
@@ -24901,17 +25428,24 @@ void Dbdih::updateLcpInfo(TabRecord *regTabPtr, Fragmentstore *regFragPtr,
         regTabPtr->tabActiveLcpFragments++;
       }
       regFragPtr->noLcpReplicas++;
-#if 0
-      g_eventLogger->info("LCP Ongoing: TableId: %u, fragId: %u, node: %u"
-                          " lastLcpNo: %u, lastLcpId: %u, lcpId: %u",
+    }
+#ifdef DEBUG_LCP_ONGOING
+    g_eventLogger->info("LCP Ongoing: TableId: %u, fragId: %u, node: %u"
+                        " lastLcpNo: %u, lastLcpId: %u, lcpId: %u",
       regReplicaPtr->tableId,
       regReplicaPtr->fragId,
       regReplicaPtr->procNode,
       lastLcpNo,
       regReplicaPtr->lcpId[lastLcpNo],
-      c_lcp_id_while_copy_meta_data);
+      regTabPtr->c_lcp_id_while_copy_meta_data);
 #endif
-    }
+  } else {
+#ifdef DEBUG_LCP_ONGOING
+    g_eventLogger->info("Skip update since tabLcpStatus is %u for tab(%u,%u)",
+      regTabPtr->tabLcpStatus,
+      regReplicaPtr->tableId,
+      regReplicaPtr->fragId);
+#endif
   }
 }
 
@@ -24988,26 +25522,6 @@ void Dbdih::readTabfile(Signal *signal, TabRecord *tab, FileRecordPtr filePtr) {
   ptr[0].sz = 1 + tab->noPages;
   sendSignal(NDBFS_REF, GSN_FSREADREQ, signal, 6, JBA, ptr, 1);
 }  // Dbdih::readTabfile()
-
-void Dbdih::releasePage(Uint32 pageIndex) {
-  PageRecordPtr pagePtr;
-  pagePtr.i = pageIndex;
-  ptrCheckGuard(pagePtr, cpageFileSize, pageRecord);
-  pagePtr.p->nextfreepage = cfirstfreepage;
-  cfirstfreepage = pagePtr.i;
-}  // Dbdih::releasePage()
-
-void Dbdih::releaseTabPages(Uint32 tableId) {
-  TabRecordPtr tabPtr;
-  tabPtr.i = tableId;
-  ptrCheckGuard(tabPtr, ctabFileSize, tabRecord);
-  ndbrequire(tabPtr.p->noPages <= NDB_ARRAY_SIZE(tabPtr.p->pageRef));
-  for (Uint32 i = 0; i < tabPtr.p->noPages; i++) {
-    jam();
-    releasePage(tabPtr.p->pageRef[i]);
-  }  // for
-  tabPtr.p->noPages = 0;
-}  // Dbdih::releaseTabPages()
 
 /*************************************************************************/
 /*       REMOVE NODE FROM SET OF ALIVE NODES.                            */
@@ -26590,8 +27104,10 @@ void Dbdih::execDUMP_STATE_ORD(Signal *signal) {
       freeCount++;
       tmp.i = tmp.p->nextfreepage;
     };
-    g_eventLogger->info("Pages in use %u/%u", cpageFileSize - freeCount,
-                        cpageFileSize);
+    g_eventLogger->info("Pages in use %u/%u, pages Reserved: %u",
+                        cpageFileSize - freeCount,
+                        cpageFileSize,
+                        cpagesReserved);
     return;
   }
 
@@ -26681,8 +27197,8 @@ void Dbdih::execDUMP_STATE_ORD(Signal *signal) {
         "c_last_id_lcp_complete_rep: %u"
         " c_lcp_runs_with_pause_support: %u",
         c_last_id_lcp_complete_rep, c_lcp_runs_with_pause_support);
-    infoEvent("c_lcp_id_while_copy_meta_data: %u, c_pause_lcp_start_node: %u",
-              c_lcp_id_while_copy_meta_data, c_pause_lcp_start_node);
+    infoEvent("c_pause_lcp_start_node: %u",
+              c_pause_lcp_start_node);
     infoEvent("c_PAUSE_LCP_REQ_Counter: %s", c_PAUSE_LCP_REQ_Counter.getText());
     infoEvent("c_FLUSH_LCP_REP_REQ_Counter: %s",
               c_FLUSH_LCP_REP_REQ_Counter.getText());

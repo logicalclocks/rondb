@@ -273,6 +273,7 @@ class Restore : public SimulatedBlock {
                             [BackupFormat::LCP_CTL_FILE_BUFFER_SIZE_IN_WORDS];
 
   bool c_encrypted_filesystem;
+  Uint32 m_full_restart_logs;
 
  public:
   Uint32 getDBLQH() { return m_lqh_block; }

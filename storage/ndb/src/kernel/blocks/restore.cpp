@@ -267,6 +267,10 @@ void Restore::execREAD_CONFIG_REQ(Signal *signal) {
                             &encrypted_filesystem);
   c_encrypted_filesystem = encrypted_filesystem;
 
+  m_full_restart_logs = 1; //Compatability in upgrade, false from MGM server
+  ndbrequire(!ndb_mgm_get_int_parameter(p, CFG_DB_FULL_RESTART_LOGS, 
+					&m_full_restart_logs));
+
   m_file_pool.setSize(1);
   Uint32 cnt = 2 * MAX_ATTRIBUTES_IN_TABLE;
   cnt += PAGES;
@@ -340,16 +344,18 @@ void Restore::execDUMP_STATE_ORD(Signal *signal) {
       thread_type = "Recover";
     }
 
-    g_eventLogger->info(
+    if (m_full_restart_logs) {
+      g_eventLogger->info(
         "%s instance %u: Restored LCP : %u fragments,"
         " %llu rows, "
         "%llu millis, %llu rows/s",
         thread_type, instance(), m_frags_restored, m_rows_restored,
         m_millis_spent, rate);
-    infoEvent(
+      infoEvent(
         "LDM instance %u: Restored LCP : %u fragments, %llu rows, "
         "%llu millis, %llu rows/s",
         instance(), m_frags_restored, m_rows_restored, m_millis_spent, rate);
+    }
   }
 }
 
@@ -1874,14 +1880,15 @@ void Restore::release_file(FilePtr file_ptr, bool statistics) {
     Uint64 rows_per_sec =
         (file_ptr.p->m_row_operations * Uint64(1000)) / millis;
 
-    g_eventLogger->info(
+    if (m_full_restart_logs) {
+      g_eventLogger->info(
         "LDM instance %u: Restored T%dF%u LCP %llu rows, "
         "%llu row operations, "
         "%llu millis, %llu row operations/sec)",
         instance(), file_ptr.p->m_table_id, file_ptr.p->m_fragment_id,
         file_ptr.p->m_rows_restored, file_ptr.p->m_row_operations, millis,
         rows_per_sec);
-
+    }
     m_millis_spent += millis;
     m_rows_restored += file_ptr.p->m_rows_restored;
     m_frags_restored++;

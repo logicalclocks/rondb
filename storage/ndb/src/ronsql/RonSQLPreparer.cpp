@@ -121,6 +121,7 @@ void
 RonSQLPreparer::configure()
 {
   // Validate m_conf
+#ifdef VM_TRACE
   assert(m_conf.sql_buffer != NULL);
   assert(m_conf.sql_len > 0);
   assert(m_conf.amalloc != NULL);
@@ -144,7 +145,7 @@ RonSQLPreparer::configure()
     assert(m_conf.ndb != NULL);
   }
   assert(m_conf.err_stream != NULL);
-
+#endif
   /*
    * Both `yy_scan_string' and `yy_scan_bytes' create and scan a copy of the
    * input. This may be desirable, since `yylex()' modifies the contents of the

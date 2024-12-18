@@ -110,10 +110,14 @@
 /*
  * Pages are used for flushing table definitions during LCP,
  * and for other operations such as metadata changes etc
+ * To handle a bit of extra parallelism we add 2 more page
+ * sets, these are protected by reservePages and unreservePages
  *
+ * Increased concurrent LCP table flushes to handle many tables
+ * for LCPs from 4 to 8.
  */
-#define MAX_CONCURRENT_LCP_TAB_DEF_FLUSHES 4
-#define MAX_CONCURRENT_DIH_TAB_DEF_OPS (MAX_CONCURRENT_LCP_TAB_DEF_FLUSHES + 2)
+#define MAX_CONCURRENT_LCP_TAB_DEF_FLUSHES 8
+#define MAX_CONCURRENT_DIH_TAB_DEF_OPS (MAX_CONCURRENT_LCP_TAB_DEF_FLUSHES + 2 + 2)
 #define ZCREATE_REPLICA_FILE_SIZE 4
 #define ZPAGEREC (MAX_CONCURRENT_DIH_TAB_DEF_OPS * PACK_TABLE_PAGES)
 #define ZPROXY_MASTER_FILE_SIZE (MAX_NDB_NODES + 1)
@@ -135,6 +139,8 @@
 #define PACK_TABLE_PAGE_WORDS (2048 - 32)
 #define PACK_TABLE_PAGES \
   ((PACK_TABLE_WORDS + PACK_TABLE_PAGE_WORDS - 1) / PACK_TABLE_PAGE_WORDS)
+
+#define MAX_OUTSTANDING_TABLE_FILE_OPS 8
 
 #define MAX_QUEUED_FRAG_CHECKPOINTS_PER_NODE 32
 #define MAX_STARTED_FRAG_CHECKPOINTS_PER_NODE 32
@@ -500,8 +506,25 @@ class Dbdih : public SimulatedBlock {
 
     MasterLCPConf::State lcpStateAtTakeOver;
     Uint32 m_remove_node_from_table_lcp_id;
+
+    Uint32 m_invalidate_node_lcp_next_table;
+    Uint32 m_invalidate_node_lcp_outstanding;
+    bool m_invalidate_node_lcp_ongoing;
+
+    Uint32 m_remove_node_from_table_id;
+    Uint32 m_remove_node_from_table_outstanding;
+    Uint32 m_remove_node_from_table_ongoing;
+
+    Uint32 m_copy_node_nr_next_table;
+    Uint32 m_copy_node_nr_outstanding;
+    Uint32 m_copy_node_nr_ongoing;
   };
   typedef Ptr<NodeRecord> NodeRecordPtr;
+  void init_remove_node_from_table(NodeId);
+  void continue_remove_node_from_table(NodeId);
+  void continue_invalidate_node_lcp(NodeId);
+  void init_invalidate_node_lcp(NodeId);
+
   /**********************************************************************/
   /* THIS RECORD KEEPS THE INFORMATION ABOUT A TABLE AND ITS FRAGMENTS  */
   /**********************************************************************/
@@ -770,6 +793,13 @@ class Dbdih : public SimulatedBlock {
      * contaminating too many CPU cache lines.
      */
     Uint32 m_scan_count[2];
+
+    /**
+     * We set the LCP Id when receiving COPY_TABREQ to be used in the
+     * updateLcpInfo routine.
+     */
+    Uint32 c_lcp_id_while_copy_meta_data; /* State in starting node */
+
 
     /**
      * This mutex protects the changes to m_scan_count to ensure that we
@@ -1234,12 +1264,6 @@ class Dbdih : public SimulatedBlock {
   Uint32 c_lcp_id_paused;
 
   /**
-   * We set the LCP Id when receiving COPY_TABREQ to be used in the
-   * updateLcpInfo routine.
-   */
-  Uint32 c_lcp_id_while_copy_meta_data; /* State in starting node */
-
-  /**
    * A bitmap for outstanding FLUSH_LCP_REP_REQ messages to know
    * when all nodes have sent their reply. This bitmap is used in all nodes
    * that receive the PAUSE_LCP_REQ request.
@@ -1600,12 +1624,19 @@ class Dbdih : public SimulatedBlock {
   bool checkLcpAllTablesDoneInLqh(Uint32 from);
 
   void lcpStateAtNodeFailureLab(Signal *, Uint32 nodeId);
-  void copyNodeLab(Signal *, Uint32 tableId);
+  void copyNodeLab(Signal *, Uint32);
+  void copyNodeTable_check(Signal *, TabRecordPtr);
+  bool copyNode_check_stop(Uint32 tableId);
+  void init_copy_node_nr();
+  void continue_copy_node_nr();
+
   void copyGciReqLab(Signal *);
   void allLab(Signal *, ConnectRecordPtr regConnectPtr, TabRecordPtr regTabPtr);
   void tableCopyNodeLab(Signal *, TabRecordPtr regTabPtr);
 
-  void removeNodeFromTables(Signal *, Uint32 tableId, Uint32 nodeId);
+  void init_remove_node_from_tables(NodeId);
+  void continue_remove_node_from_tables(NodeId);
+  void removeNodeFromTables(Signal *, Uint32 nodeId, Uint32);
   void removeNodeFromTable(Signal *, Uint32 tableId, TabRecordPtr tabPtr);
   void removeNodeFromTablesComplete(Signal *signal, Uint32 nodeId);
 
@@ -1733,11 +1764,6 @@ class Dbdih : public SimulatedBlock {
   void saveTableFile(Signal *, Ptr<ConnectRecord>, Ptr<TabRecord>,
                      TabRecord::CopyStatus, Callback &);
 
-  //------------------------------------
-  // Page Record specific methods
-  //------------------------------------
-  void allocpage(PageRecordPtr &regPagePtr);
-  void releasePage(Uint32 pageIndex);
 
   //------------------------------------
   // Table Record specific methods
@@ -1824,6 +1850,16 @@ class Dbdih : public SimulatedBlock {
   PageRecord *pageRecord;
   Uint32 cfirstfreepage;
   Uint32 cpageFileSize;
+  Uint32 cpagesAllocated;
+  Uint32 cpagesReserved;
+
+  //------------------------------------
+  // Page Record specific methods
+  //------------------------------------
+  void allocpage(PageRecordPtr &regPagePtr);
+  void releasePage(Uint32 pageIndex);
+  bool reservePages();
+  void unreservePages();
 
   Uint32 cnoUsedReplicaRec;
   RSS_OP_SNAPSHOT(cnoUsedReplicaRec);
@@ -2389,6 +2425,7 @@ class Dbdih : public SimulatedBlock {
   BlockReference cndbStartReqBlockref;
   BlockReference cntrlblockref;
   Uint32 con_lineNodes;
+
   Uint32 creceivedfrag;
   Uint32 callocated_frags;
   Uint32 cstarttype;
@@ -2442,6 +2479,7 @@ class Dbdih : public SimulatedBlock {
     Uint32 startInfoErrorCode;
     Uint32 m_outstandingGsn;
     MutexHandle2<DIH_FRAGMENT_INFO> m_fragmentInfoMutex;
+    Uint32 COPY_TABREQs;
   };
   NodeStartMasterRecord c_nodeStartMaster;
 
@@ -2640,7 +2678,7 @@ class Dbdih : public SimulatedBlock {
    *   we have to clear all LCP for that node
    */
   void handle_send_continueb_invalidate_node_lcp(Signal *signal);
-  void invalidateNodeLCP(Signal *, Uint32 nodeId, Uint32 tableId);
+  void invalidateNodeLCP(Signal *, Uint32 nodeId, Uint32);
   void invalidateNodeLCP(Signal *, Uint32 nodeId, TabRecordPtr);
 
   /**
@@ -2810,6 +2848,10 @@ class Dbdih : public SimulatedBlock {
                              Uint32 first_fid,
                              Uint32 limit_fid,
                              Uint32 line);
+  bool c_any_node_waiting_for_lcp;
+  Uint32 c_start_tab_queued;
+  Uint32 c_end_tab_queued;
+  void calculate_any_node_waiting_for_lcp();
 public:
   bool is_master() { return isMaster(); }
 

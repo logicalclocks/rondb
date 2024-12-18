@@ -966,6 +966,7 @@ ResultPrinter::print_float_or_double(std::ostream& out,
     size_t len = my_gcvt(value,
                          is_double ? MY_GCVT_ARG_DOUBLE : MY_GCVT_ARG_FLOAT,
                          128, buffer, &error);
+    (void) len;
     if (error)
     {
       // value is Inf, -Inf or NaN.

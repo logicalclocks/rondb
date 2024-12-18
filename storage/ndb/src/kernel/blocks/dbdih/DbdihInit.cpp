@@ -44,6 +44,9 @@
   { ndbout << "DIH::" << x << endl; }
 
 void Dbdih::initData() {
+  c_any_node_waiting_for_lcp = false;
+  c_start_tab_queued = 0;
+  c_end_tab_queued = 0;
   callocated_frags = 0;
   m_set_up_multi_trp_in_node_restart = false;
   cpageFileSize = ZPAGEREC;

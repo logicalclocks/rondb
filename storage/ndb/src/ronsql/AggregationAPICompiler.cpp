@@ -435,6 +435,7 @@ AggregationAPICompiler::compile()
   {
     m_locked[i] = 0;
   }
+#ifdef VM_TRACE
   for (Uint32 i=0; i<m_exprs.size(); i++)
   {
     Expr* e = &m_exprs[i];
@@ -442,6 +443,7 @@ AggregationAPICompiler::compile()
     assert(e->program_usage == 0);
     assert(e->has_been_compiled == false);
   }
+#endif
   for (Uint32 i=0; i<m_aggs.size(); i++)
   {
     bool res = compile(&m_aggs[i], i);

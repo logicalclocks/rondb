@@ -132,12 +132,14 @@ class LcpFragOrd {
  public:
   static constexpr Uint32 SignalLength = 6;
 
+  static constexpr Uint32 LastFragmentFlag = 1;
+  static constexpr Uint32 LcpWaitFlag = 2;
  private:
   Uint32 tableId;
   Uint32 fragmentId;
   Uint32 lcpNo;
   Uint32 lcpId;
-  Uint32 lastFragmentFlag;
+  Uint32 requestInfo;
   Uint32 keepGci;
 };
 

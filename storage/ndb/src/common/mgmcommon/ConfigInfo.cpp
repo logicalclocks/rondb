@@ -573,6 +573,18 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
   /* RonDB additions */
 
   {
+    CFG_DB_FULL_RESTART_LOGS,
+    "FullRestartLogs",
+    DB_TOKEN,
+    "Enable full restart logs",
+    ConfigInfo::CI_USED,
+    false,
+    ConfigInfo::CI_BOOL,
+    "false",
+    "false",
+    "true" },
+
+  {
     CFG_DB_ACTIVATE_RATE_LIMITS,
     "ActivateRateLimits",
     DB_TOKEN,

@@ -84,8 +84,8 @@ bool printLCP_FRAG_ORD(FILE *output, const Uint32 *theData, Uint32 len,
   fprintf(output, " LcpId: %d LcpNo: %d Table: %d Fragment: %d\n", sig->lcpId,
           sig->lcpNo, sig->tableId, sig->fragmentId);
 
-  fprintf(output, " KeepGCI: %d LastFragmentFlag: %d\n", sig->keepGci,
-          sig->lastFragmentFlag);
+  fprintf(output, " KeepGCI: %d requestInfo: %d\n", sig->keepGci,
+          sig->requestInfo);
   return true;
 }
 

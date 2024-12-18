@@ -317,6 +317,8 @@ void Backup::execSTTOR(Signal *signal) {
     c_initial_start_lcp_not_done_yet = false;
     m_redo_alert_factor = 1;
     m_redo_alert_state = RedoStateRep::NO_REDO_ALERT;
+    c_current_num_empty_fragments = 0;
+    c_prev_num_empty_fragments = 0;
   }
   if (startphase == 2)
   {
@@ -12555,6 +12557,10 @@ void Backup::execLCP_PREPARE_REQ(Signal *signal) {
      * New LCP, reset per-LCP counters. noOfBytes and noOfRecords is other
      * than here handled by the LCP execution phase.
      */
+    c_prev_num_empty_fragments = c_current_num_empty_fragments;
+    c_current_num_empty_fragments = 0;
+    DEB_EMPTY_LCP(("(%u)Empty fragments: %u",
+      instance(), c_prev_num_empty_fragments));
     ptr.p->noOfBytes = 0;
     ptr.p->noOfRecords = 0;
     ptr.p->backupId = req.backupId;
@@ -13690,6 +13696,7 @@ void Backup::handle_idle_lcp(Signal *signal, BackupRecordPtr ptr) {
   Page32Ptr page_ptr;
   BackupFilePtr file_ptr;
   ptr.p->m_empty_lcp = true;
+  c_current_num_empty_fragments++;
   lcp_copy_ctl_page(ptr);
   lcp_update_ctl_page(ptr, page_ptr, file_ptr);
   ptr.p->deleteDataFileNumber = RNIL;
@@ -15217,7 +15224,16 @@ void Backup::finalize_lcp_processing(Signal *signal, BackupRecordPtr ptr) {
   conf->noOfRecordsHigh = (ptr.p->noOfRecords >> 32);
   conf->noOfBytesLow = (ptr.p->noOfBytes & 0xFFFFFFFF);
   conf->noOfBytesHigh = (ptr.p->noOfBytes >> 32);
-  if (ptr.p->m_empty_lcp) {
+
+  /**
+   * Avoid slowdown in case we are starting up, or if another node
+   * is starting up and waiting for this LCP to complete.
+   */
+  Uint32 delay = 0;
+  if (ptr.p->m_empty_lcp &&
+      m_our_node_started &&
+      (c_lqh->is_any_node_waiting_for_lcp() == false) &&
+      (c_lqh->is_local_lcp() == false)) {
     jam();
     /**
      * Slow down things a bit for empty LCPs to avoid that we use too much
@@ -15225,20 +15241,31 @@ void Backup::finalize_lcp_processing(Signal *signal, BackupRecordPtr ptr) {
      * affect traffic performance for short times. We allow longer delays
      * if no urgency in keeping up with the REDO log.
      */
-    Uint32 delay;
-    if (likely(m_redo_alert_state == RedoStateRep::NO_REDO_ALERT))
+    if (likely(m_redo_alert_state == RedoStateRep::NO_REDO_ALERT)) {
       delay = 20;
-    else if (m_redo_alert_state == RedoStateRep::REDO_ALERT_LOW)
+    } else if (m_redo_alert_state == RedoStateRep::REDO_ALERT_LOW) {
       delay = 5;
-    else
+    } else {
       delay = 1;
-
-    sendSignalWithDelay(ptr.p->masterRef, GSN_BACKUP_FRAGMENT_CONF, signal,
-                        delay, BackupFragmentConf::SignalLength);
-  } else {
-    jam();
+    }
+    Uint32 tot_delay = delay * c_prev_num_empty_fragments;
+    if (tot_delay > 5000) {
+      /**
+       * We don't want the empty fragment delay over an LCP to add more
+       * than 5 seconds of delay to the execution of the LCP. If the
+       * number of empty fragments exceed 5000 we will not use any
+       * delays at all since it would increase the total LCP time too
+       * much.
+       */
+      delay = 5000 / c_prev_num_empty_fragments;
+    }
+  }
+  if (delay == 0) {
     sendSignal(ptr.p->masterRef, GSN_BACKUP_FRAGMENT_CONF, signal,
                BackupFragmentConf::SignalLength, JBA);
+  } else {
+    sendSignalWithDelay(ptr.p->masterRef, GSN_BACKUP_FRAGMENT_CONF, signal,
+                        delay, BackupFragmentConf::SignalLength);
   }
 }
 

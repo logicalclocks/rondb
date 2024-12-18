@@ -1498,6 +1498,8 @@ private:
   TransientFastSlotPool* c_transient_pools[c_transient_pool_count];
   Bitmask<1> c_transient_pools_shrinking;
 
+  Uint32 c_current_num_empty_fragments;
+  Uint32 c_prev_num_empty_fragments;
 public:
   bool is_change_part_state(Uint32 page_id);
   Uint32 get_max_words_per_scan_batch(Uint32, Uint32&, Uint32, Uint32);

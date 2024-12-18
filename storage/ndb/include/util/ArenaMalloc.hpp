@@ -28,6 +28,7 @@
 #include <assert.h>
 #include <stdexcept>
 #include <cstddef>
+#include <cstdint>
 #include "ndb_types.h"
 #include "my_compiler.h"
 

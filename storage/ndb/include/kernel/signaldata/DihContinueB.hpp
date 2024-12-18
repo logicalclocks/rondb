@@ -41,9 +41,8 @@ class DihContinueB {
  private:
   enum Type {
     ZPACK_TABLE_INTO_PAGES = 1,
-    ZPACK_FRAG_INTO_PAGES = 2,
+    ZCOPY_NODE_TABLE_CHECK = 2,
     ZREAD_PAGES_INTO_TABLE = 3,
-    ZREAD_PAGES_INTO_FRAG = 4,
     // 5 no longer used
     ZCOPY_TABLE = 6,
     ZCOPY_TABLE_NODE = 7,
@@ -94,7 +93,9 @@ class DihContinueB {
     ZGET_TABINFO = 50,
     ZGET_TABINFO_SEND = 51,
     ZDEQUEUE_LCP_REP = 52,
-    ZPRINT_LCP_STATE = 53
+    ZPRINT_LCP_STATE = 53,
+    ZINVALIDATE_NODE_LCP_TAB = 54,
+    ZREMOVE_NODE_FROM_TABLE_CONT = 55
   };
 };
 

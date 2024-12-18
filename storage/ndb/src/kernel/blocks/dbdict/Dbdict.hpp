@@ -4947,6 +4947,7 @@ class Dbdict : public SimulatedBlock {
   Uint32 c_noOfMetaTables;
   Uint32 c_default_hashmap_size;
   Uint32 m_use_checksum;
+  Uint32 m_full_restart_logs;
 
   /**
    * Pool of SafeCounters reserved for use with schema
@@ -4956,6 +4957,8 @@ class Dbdict : public SimulatedBlock {
    * and handle failure-to-seize
    */
   SafeCounterManager c_reservedCounterMgr;
+  void set_max_check_schema_status();
+  Uint32 c_max_restart_table_id;
 public:
   
   static size_t getTableRecordSize()

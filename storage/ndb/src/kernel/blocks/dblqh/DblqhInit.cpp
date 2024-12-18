@@ -71,6 +71,7 @@ Uint64 Dblqh::getTransactionMemoryNeed(
 
 void Dblqh::initData() 
 {
+  c_any_node_waiting_for_lcp = false;
 #ifdef STATS_PARALLEL_COPY_FRAGMENT
   c_outstanding_words_copy_fragreq = 0;
   c_outstanding_rows_copy_fragreq = 0;

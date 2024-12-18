@@ -539,7 +539,7 @@ void DblqhProxy::execLCP_FRAG_ORD(Signal *signal) {
   const LcpFragOrd *req = (const LcpFragOrd *)signal->getDataPtr();
   const LcpFragOrd req_copy = *req;
 
-  bool lcp_complete_ord = req->lastFragmentFlag;
+  bool lcp_complete_ord = req->requestInfo & LcpFragOrd::LastFragmentFlag;
 
   if (c_lcpRecord.m_state == LcpRecord::L_IDLE) {
     jam();
@@ -561,7 +561,7 @@ void DblqhProxy::execLCP_FRAG_ORD(Signal *signal) {
     c_lcpRecord.m_lcp_frag_rep_cnt = 0;
     c_lcpRecord.m_lcp_frag_ord_cnt = 0;
     c_lcpRecord.m_complete_outstanding = 0;
-    c_lcpRecord.m_lastFragmentFlag = false;
+    c_lcpRecord.m_lastFragmentFlag = 0;
 
     // handle start of LCP in PGMAN and TSMAN
     LcpFragOrd *req = (LcpFragOrd *)signal->getDataPtrSend();
@@ -589,7 +589,7 @@ void DblqhProxy::execLCP_FRAG_ORD(Signal *signal) {
   ndbrequire(c_lcpRecord.m_state == LcpRecord::L_RUNNING);
   if (lcp_complete_ord) {
     jam();
-    c_lcpRecord.m_lastFragmentFlag = true;
+    c_lcpRecord.m_lastFragmentFlag = 1;
     if (getNoOfOutstanding(c_lcpRecord) == 0) {
       jam();
       completeLCP(signal);
@@ -689,7 +689,7 @@ void DblqhProxy::completeLCP(Signal *signal) {
   ord->fragmentId = RNIL;
   ord->lcpNo = RNIL;
   ord->lcpId = c_lcpRecord.m_lcpId;
-  ord->lastFragmentFlag = true;
+  ord->requestInfo = LcpFragOrd::LastFragmentFlag;
   ord->keepGci = c_lcpRecord.m_keepGci;
   for (Uint32 i = 0; i < c_workers; i++) {
     jam();

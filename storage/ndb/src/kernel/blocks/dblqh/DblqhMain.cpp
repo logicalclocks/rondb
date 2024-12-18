@@ -2289,6 +2289,10 @@ void Dblqh::execREAD_CONFIG_REQ(Signal *signal) {
       !ndb_mgm_get_int_parameter(p, CFG_DB_NO_REDOLOG_FILES, &cnoLogFiles));
   ndbrequire(cnoLogFiles > 0);
 
+  m_full_restart_logs = 1; //Compatability in upgrade, false from MGM server
+  ndbrequire(!ndb_mgm_get_int_parameter(p, CFG_DB_FULL_RESTART_LOGS, 
+					&m_full_restart_logs));
+
   m_rate_limits_active = 0;
   ndbrequire(!ndb_mgm_get_int_parameter(p, CFG_DB_ACTIVATE_RATE_LIMITS, 
 					&m_rate_limits_active));
@@ -22327,7 +22331,7 @@ Dblqh::sendLCP_FRAG_ORD(Signal *signal, Uint64 fragPtrI)
   lcpFragOrd->fragmentId = fragptr.p->fragId;
   lcpFragOrd->lcpNo = 0;
   lcpFragOrd->lcpId = m_curr_lcp_id;
-  lcpFragOrd->lastFragmentFlag = false;
+  lcpFragOrd->requestInfo = 0;
   lcpFragOrd->keepGci = 0;
   sendSignal(reference(), GSN_LCP_FRAG_ORD, signal, LcpFragOrd::SignalLength,
              JBB);
@@ -22451,7 +22455,7 @@ void Dblqh::send_lastLCP_FRAG_ORD(Signal *signal) {
   lcpFragOrd->fragmentId = RNIL;
   lcpFragOrd->lcpNo = 0;
   lcpFragOrd->lcpId = c_lcpId;
-  lcpFragOrd->lastFragmentFlag = true;
+  lcpFragOrd->requestInfo = 1;
   lcpFragOrd->keepGci = 0;
   sendSignal(reference(), GSN_LCP_FRAG_ORD, signal, LcpFragOrd::SignalLength,
              JBB);
@@ -23386,6 +23390,9 @@ void Dblqh::execLCP_FRAG_ORD(Signal *signal) {
     lcpPtr.p->firstFragmentFlag = true;
     c_max_gci_in_lcp = 0;
     c_fragments_in_lcp = 0;
+    c_any_node_waiting_for_lcp = 0;
+    DEB_EMPTY_LCP(("(%u)Any node waiting for LCP set to false, LCP start",
+      instance()));
 
 #ifdef ERROR_INSERT
     if (check_ndb_versions()) {
@@ -23440,7 +23447,7 @@ void Dblqh::execLCP_FRAG_ORD(Signal *signal) {
      */
     lcpPtr.p->currentPrepareFragment.lcpFragOrd.lcpId = c_lcpId;
     lcpPtr.p->currentPrepareFragment.lcpFragOrd.keepGci = lcpFragOrd->keepGci;
-    lcpPtr.p->currentPrepareFragment.lcpFragOrd.lastFragmentFlag = false;
+    lcpPtr.p->currentPrepareFragment.lcpFragOrd.requestInfo = 0;
     /* These should be set before each LCP fragment execution */
     lcpPtr.p->currentPrepareFragment.lcpFragOrd.tableId = RNIL;
     lcpPtr.p->currentPrepareFragment.lcpFragOrd.fragmentId = RNIL;
@@ -23515,7 +23522,16 @@ void Dblqh::execLCP_FRAG_ORD(Signal *signal) {
     }
   }
 
-  if (lcpFragOrd->lastFragmentFlag) {
+  if (lcpFragOrd->requestInfo & LcpFragOrd::LcpWaitFlag &&
+      c_any_node_waiting_for_lcp == false) {
+    jam();
+    DEB_EMPTY_LCP(("(%u)Any node waiting for LCP set to true, tab(%u,%u)",
+      instance(),
+      lcpFragOrd->tableId,
+      lcpFragOrd->fragmentId));
+    c_any_node_waiting_for_lcp = true;
+  }
+  if (lcpFragOrd->requestInfo & LcpFragOrd::LastFragmentFlag) {
     jam();
     lcpPtr.p->lastFragmentFlag = true;
     c_lcpId_sent_last_LCP_FRAG_ORD = lcpFragOrd->lcpId;
@@ -28973,7 +28989,10 @@ void Dblqh::execBUILD_INDX_IMPL_CONF(Signal *signal) {
   BuildIndxImplConf *conf = (BuildIndxImplConf *)signal->getDataPtr();
   Uint32 tableId = conf->senderData;
   rebuildOrderedIndexes(signal, tableId + 1);
-  g_eventLogger->info("LDM(%u): index id %u rebuild done", instance(), tableId);
+  if (m_full_restart_logs) {
+    g_eventLogger->info("LDM(%u): index id %u rebuild done",
+      instance(), tableId);
+  }
 }
 
 void
@@ -38075,17 +38094,19 @@ void Dblqh::log_fragment_copied(Signal *signal) {
                            : 0);
 
   /* Have already copied a fragment...report on it now */
-  g_eventLogger->info("LDM(%u): Completed copy of fragment T%uF%u. "
-                      "INS %llu, DEL %llu rows, %llu kBytes. "
-                      "%llu pct churn to %llu rows.",
-                      instance(),
-                      fragptr.p->tabRef,
-                      fragptr.p->fragId,
-                      useStat.m_fragCopyRowsIns,
-                      useStat.m_fragCopyRowsDel,
-                      useStat.m_fragBytesCopied / 1024,
-                      percentChanged,
-                      fragRows);
+  if (m_full_restart_logs) {
+    g_eventLogger->info("LDM(%u): Completed copy of fragment T%uF%u. "
+                        "INS %llu, DEL %llu rows, %llu kBytes. "
+                        "%llu pct churn to %llu rows.",
+                        instance(),
+                        fragptr.p->tabRef,
+                        fragptr.p->fragId,
+                        useStat.m_fragCopyRowsIns,
+                        useStat.m_fragCopyRowsDel,
+                        useStat.m_fragBytesCopied / 1024,
+                        percentChanged,
+                        fragRows);
+  }
 
   c_totalCopyRowsIns+= useStat.m_fragCopyRowsIns;
   c_totalCopyRowsDel+= useStat.m_fragCopyRowsDel;

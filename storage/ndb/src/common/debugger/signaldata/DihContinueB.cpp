@@ -34,22 +34,12 @@ bool printCONTINUEB_DBDIH(FILE *output, const Uint32 *theData, Uint32 len,
       fprintf(output, " Pack Table Into Pages: %d\n", theData[1]);
       return true;
       break;
-    case DihContinueB::ZPACK_FRAG_INTO_PAGES:
-      fprintf(output,
-              " Pack Frag Into Pages: Table: %d Fragment: %d PageIndex: %d "
-              "WordIndex: %d\n",
-              theData[1], theData[2], theData[3], theData[4]);
+    case DihContinueB::ZCOPY_NODE_TABLE_CHECK:
+      fprintf(output, " Copy Node Table Check: %d\n", theData[1]);
       return true;
       break;
     case DihContinueB::ZREAD_PAGES_INTO_TABLE:
       fprintf(output, " Read Pages Into Table: %d\n", theData[1]);
-      return true;
-      break;
-    case DihContinueB::ZREAD_PAGES_INTO_FRAG:
-      fprintf(output,
-              " Read Pages Into Frag: Table: %d Fragment: %d PageIndex: %d "
-              "WordIndex: %d\n",
-              theData[1], theData[2], theData[3], theData[4]);
       return true;
       break;
     case DihContinueB::ZCOPY_TABLE:
