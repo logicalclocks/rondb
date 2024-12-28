@@ -4073,6 +4073,7 @@ public:
   Fragrecord_pool c_fragment_pool;
   RSS_AP_SNAPSHOT(c_fragment_pool);
 
+  Uint32 get_num_fragments() { return cnoOfAllocatedFragrec; }
   CopyFragRecord_pool c_copy_fragment_pool;
   CopyActiveRecord_pool c_copy_active_pool;
 

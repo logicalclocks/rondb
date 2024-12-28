@@ -317,8 +317,6 @@ void Backup::execSTTOR(Signal *signal) {
     c_initial_start_lcp_not_done_yet = false;
     m_redo_alert_factor = 1;
     m_redo_alert_state = RedoStateRep::NO_REDO_ALERT;
-    c_current_num_empty_fragments = 0;
-    c_prev_num_empty_fragments = 0;
   }
   if (startphase == 2)
   {
@@ -12557,10 +12555,8 @@ void Backup::execLCP_PREPARE_REQ(Signal *signal) {
      * New LCP, reset per-LCP counters. noOfBytes and noOfRecords is other
      * than here handled by the LCP execution phase.
      */
-    c_prev_num_empty_fragments = c_current_num_empty_fragments;
-    c_current_num_empty_fragments = 0;
-    DEB_EMPTY_LCP(("(%u)Empty fragments: %u",
-      instance(), c_prev_num_empty_fragments));
+    DEB_EMPTY_LCP(("(%u)Fragments: %u",
+      instance(), c_lqh->get_num_fragments()));
     ptr.p->noOfBytes = 0;
     ptr.p->noOfRecords = 0;
     ptr.p->backupId = req.backupId;
@@ -13696,7 +13692,6 @@ void Backup::handle_idle_lcp(Signal *signal, BackupRecordPtr ptr) {
   Page32Ptr page_ptr;
   BackupFilePtr file_ptr;
   ptr.p->m_empty_lcp = true;
-  c_current_num_empty_fragments++;
   lcp_copy_ctl_page(ptr);
   lcp_update_ctl_page(ptr, page_ptr, file_ptr);
   ptr.p->deleteDataFileNumber = RNIL;
@@ -15248,8 +15243,9 @@ void Backup::finalize_lcp_processing(Signal *signal, BackupRecordPtr ptr) {
     } else {
       delay = 1;
     }
-    Uint32 tot_delay = delay * c_prev_num_empty_fragments;
-    if (tot_delay > 5000) {
+    Uint32 num_fragments = c_lqh->get_num_fragments();
+    Uint32 tot_delay = delay * num_fragments;
+    if (tot_delay > 3000) {
       /**
        * We don't want the empty fragment delay over an LCP to add more
        * than 5 seconds of delay to the execution of the LCP. If the
@@ -15257,7 +15253,7 @@ void Backup::finalize_lcp_processing(Signal *signal, BackupRecordPtr ptr) {
        * delays at all since it would increase the total LCP time too
        * much.
        */
-      delay = 5000 / c_prev_num_empty_fragments;
+      delay = 3000 / num_fragments;
     }
   }
   if (delay == 0) {
