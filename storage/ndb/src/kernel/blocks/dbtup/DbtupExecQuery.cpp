@@ -4706,9 +4706,6 @@ int Dbtup::interpreterNextLab(Signal* signal,
           }
           Uint32 TattrDesc1 =
             req_struct->tablePtrP->tabDescriptor[TattrDescrIndex];
-          if (unlikely((TregType == NULL_INDICATOR))) {
-            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
-          }
           /* --------------------------------------------------------------- */
           // Calculate the number of words of this attribute.
           // We allow writes into arrays as long as they fit into the 64 bit
@@ -4733,7 +4730,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
                 TdataForUpdate[1] = Uint32(* tmp);
                 TdataForUpdate[2] = 0;
               }
-              if (TregType == 0) {
+              if (TregType == NULL_INDICATOR) {
                 /* --------------------------------------------------------- */
                 // Write a NULL value into the attribute
                 /* --------------------------------------------------------- */

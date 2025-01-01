@@ -1269,6 +1269,7 @@ class Dblqh : public SimulatedBlock {
   typedef DLFifo64List<Fragrecord_pool> Fragrecord_fifo;
   RSS_OP_COUNTER(cnoOfAllocatedFragrec);
   RSS_OP_SNAPSHOT(cnoOfAllocatedFragrec);
+  Uint32 c_num_fragments;
   
   /* $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$ */
   /* $$$$$$$                GLOBAL CHECKPOINT RECORD                  $$$$$$ */
@@ -4073,7 +4074,7 @@ public:
   Fragrecord_pool c_fragment_pool;
   RSS_AP_SNAPSHOT(c_fragment_pool);
 
-  Uint32 get_num_fragments() { return cnoOfAllocatedFragrec; }
+  Uint32 get_num_fragments() { return c_num_fragments; }
   CopyFragRecord_pool c_copy_fragment_pool;
   CopyActiveRecord_pool c_copy_active_pool;
 
