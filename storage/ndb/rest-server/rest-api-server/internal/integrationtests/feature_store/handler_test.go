@@ -1376,21 +1376,24 @@ func Test_GetFeatureVector_Date_Array_Success_ComplexType(t *testing.T) {
 		fsReq.MetadataRequest = &api.MetadataRequest{FeatureName: true, FeatureType: true}
 		fsResp := GetFeatureStoreResponse(t, fsReq)
 
-		//indented, err := json.MarshalIndent(fsResp, "", " ")
-		//if err != nil {
-		//	t.Fatalf("Cannot MarshalIndent. Error %s ", err)
-		//}
-		//fmt.Printf("Response: %s", string(indented))
+		// indented, err := json.MarshalIndent(fsResp, "", " ")
+		// if err != nil {
+		// t.Fatalf("Cannot MarshalIndent. Error %s ", err)
+		// }
+		// fmt.Printf("Response: %s", string(indented))
 
-		// convert data to object in json format
-		arrayJson, err := ConvertBinaryToJsonMessage(row[2])
-		if err != nil {
-			t.Fatalf("Cannot convert to json with error %s ", err)
-		}
-		arrayPt, err := feature_store.DeserialiseComplexFeature(arrayJson, &dataSchema) // array
-		row[2] = *arrayPt
-		if err != nil {
-			t.Fatalf("Cannot deserailize feature with error %s ", err)
+		for i := 1; i <= 5; i++ {
+			// convert data to object in json format
+			arrayJson, err := ConvertBinaryToJsonMessage(row[1+i]) // col 0=pk , 1=ts. therefore we start with 2
+			if err != nil {
+				t.Fatalf("Cannot convert to json with error %s ", err)
+			}
+			arrayPt, err := feature_store.DeserialiseComplexFeature(arrayJson, &dataSchema) // array
+			row[1+i] = *arrayPt
+			if err != nil {
+				t.Fatalf("Cannot deserailize feature with error %s ", err)
+			}
+
 		}
 		// validate
 		ValidateResponseWithData(t, &row, &cols, fsResp)
