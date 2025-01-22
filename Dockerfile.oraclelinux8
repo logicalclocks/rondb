@@ -65,8 +65,9 @@ ENV BOOST_V_UNDERSCORE=${BOOST_VERSION_MAJOR}_${BOOST_VERSION_MINOR}_${BOOST_VER
 ENV BOOST_LABEL="boost_${BOOST_V_UNDERSCORE}"
 ENV BOOST_TARBALL="${BOOST_LABEL}.tar.gz"
 RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
+    rm -f $DOWNLOADS_CACHE_DIR/${BOOST_TARBALL} && \
     wget -N --progress=bar:force -P $DOWNLOADS_CACHE_DIR \
-        https://boostorg.jfrog.io/artifactory/main/release/${BOOST_VERSION}/source/${BOOST_TARBALL} \
+       https://archives.boost.io/release/${BOOST_VERSION}/source/${BOOST_TARBALL} \
     && tar xzf $DOWNLOADS_CACHE_DIR/${BOOST_TARBALL} -C .
 # Important env variable for RonDB compilation
 ENV BOOST_ROOT="/${BOOST_LABEL}"
