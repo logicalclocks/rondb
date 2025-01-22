@@ -48,6 +48,10 @@ import (
 
 const totalNumRequest = 100000
 
+func Benchmark_date_arrays(b *testing.B) {
+	run(b, testdbs.FSDB002, "date_array", 1)
+}
+
 func Benchmark(b *testing.B) {
 	run(b, testdbs.FSDB001, "sample_1", 1)
 }
@@ -66,6 +70,8 @@ func getSampleData(fsName string, fvName string, fvVersion int) ([][]interface{}
 		return GetNSampleData(testdbs.FSDB001, "sample_3_1", nrows)
 	case "fsdb001|sample_1n2|1":
 		return GetNSampleDataWithJoin(nrows, testdbs.FSDB001, "sample_1_1", testdbs.FSDB001, "sample_2_1", "fg2_")
+	case "fsdb002|date_array|1":
+		return GetNSampleData(testdbs.FSDB002, "date_array_1", 1)
 	default:
 		return nil, nil, nil, nil
 	}
