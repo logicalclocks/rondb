@@ -4,13 +4,15 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/hamba/avro/v2"
+	"hopsworks.ai/rdrs/internal/feature_store"
 	"hopsworks.ai/rdrs/internal/log"
 )
 
-func DeserialiseComplexFeature(value *json.RawMessage, schema *avro.Schema) (*interface{}, error) {
+func DeserialiseComplexFeature(value *json.RawMessage, complexFeature *feature_store.ComplexFeature) (*interface{}, error) {
 	valueString, err := decodeJSONString(value)
 	if err != nil {
 		if log.IsDebug() {
@@ -26,8 +28,9 @@ func DeserialiseComplexFeature(value *json.RawMessage, schema *avro.Schema) (*in
 		}
 		return nil, err
 	}
-	var avroDeserialized interface{}
-	err = avro.Unmarshal(*schema, jsonDecode, &avroDeserialized)
+	// var avroDeserialized interface{}
+	avroDeserialized := reflect.New(*complexFeature.Struct).Interface()
+	err = avro.Unmarshal(*complexFeature.Schema, jsonDecode, &avroDeserialized)
 	if err != nil {
 		if log.IsDebug() {
 			log.Debugf("Failed to deserialize avro")
@@ -35,7 +38,9 @@ func DeserialiseComplexFeature(value *json.RawMessage, schema *avro.Schema) (*in
 		return nil, err
 	}
 
-	nativeJson := ConvertAvroToJson(avroDeserialized)
+	// disard the top most wapper
+	nativeJson := reflect.ValueOf(avroDeserialized).Elem().Field(0).Interface()
+	// nativeJson := ConvertAvroToJson(avroDeserialized)
 	return &nativeJson, err
 }
 

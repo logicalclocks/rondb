@@ -26,7 +26,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/hamba/avro/v2"
 	"hopsworks.ai/rdrs/internal/common"
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/feature_store"
@@ -359,15 +358,15 @@ func GetFeatureValues(ronDbResult *[]*api.PKReadResponseWithCodeJSON, entries *m
 			featureIndexKey := feature_store.GetFeatureIndexKeyByFgIndexKey(*response.Body.OperationID, featureName)
 			// When only primary key is selected, Rondb will return all columns, so not all value from response are needed.
 			if index, ok := (featureView.FeatureIndexLookup)[featureIndexKey]; ok {
-				if schema, ok := (featureView.ComplexFeatures)[featureIndexKey]; ok {
+				if complexFeature, ok := (featureView.ComplexFeatures)[featureIndexKey]; ok {
 
 					wg.Add(1)
-					go func(idx int, avroSchema *avro.Schema) {
+					go func(idx int, complexFeature *feature_store.ComplexFeature) {
 						//fmt.Printf("Go routine started for index %d\n", idx)
 						defer wg.Done()
 						//defer fmt.Printf("Go routine stopped for index %d\n", idx)
 						myIndex := idx
-						deser, e := DeserialiseComplexFeature(value, avroSchema)
+						deser, e := DeserialiseComplexFeature(value, complexFeature)
 
 						if e != nil {
 							myStatus := api.FEATURE_STATUS_ERROR
@@ -376,7 +375,7 @@ func GetFeatureValues(ronDbResult *[]*api.PKReadResponseWithCodeJSON, entries *m
 						} else {
 							results <- Result{Index: myIndex, Value: deser}
 						}
-					}(index, schema)
+					}(index, complexFeature)
 
 				} else {
 					featureValues[index] = value

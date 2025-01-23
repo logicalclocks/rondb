@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -36,6 +37,11 @@ var DefaultExpiration time.Duration = 15 * time.Minute
 var CleanupInterval time.Duration = 15 * time.Minute
 
 const ERROR_NOT_FOUND = "Not Found"
+
+type ComplexFeature struct {
+	Schema *avro.Schema
+	Struct *reflect.Type
+}
 
 type FeatureViewMetadata struct {
 	FeatureStoreName   string
@@ -56,7 +62,7 @@ type FeatureViewMetadata struct {
 	PrefixJoinKeyMap   map[string][]string        // key: serving-key-prefix + fName, value: list of feature which join on the key. Used for filling in pk value.
 	JoinKeyMap         map[string][]string        // key: fName, value: list of feature which join on the key. Used for filling in pk value.
 	RequiredJoinKeyMap map[string][]string        // key: serving-key-prefix + fName, value: list of feature which join on the key. Used for filling in pk value.
-	ComplexFeatures    map[string]*avro.Schema    // key: joinIndex + fgId + fName, label are excluded. joinIndex is needed because of self-join
+	ComplexFeatures    map[string]*ComplexFeature // key: joinIndex + fgId + fName, label are excluded. joinIndex is needed because of self-join
 }
 
 type FeatureGroupFeatures struct {
@@ -184,8 +190,8 @@ func newFeatureViewMetadata(
 		featureCount++
 	}
 
-	var complexFeatures = make(map[string]*avro.Schema)
-	var fgSchemaCache = make(map[int]*dal.FeatureGroupAvroSchema)
+	var complexFeatures = make(map[string]*ComplexFeature)
+	var fgSchemaCache = make(map[int]*dal.PerFeatureAvroSchema)
 	for _, fgFeature := range fgFeaturesArray {
 		for _, feature := range fgFeature.Features {
 			if (*feature).IsComplex() {
@@ -209,12 +215,17 @@ func newFeatureViewMetadata(
 				if err != nil {
 					return nil, errors.New("Failed to get feature schema for feature: " + feature.Name)
 				}
-				schema, err := avro.Parse(string(schemaStr))
+				avroSchema, err := avro.Parse(string(schemaStr))
 				if err != nil {
 					return nil, errors.New("Failed to parse feature schema.")
 				}
+				avroStruct, err := ConvertAvroSchemaToStruct(avroSchema)
+				if err != nil {
+					return nil, errors.New("Failed to parse avro schema.")
+				}
+
 				featureIndexKey := GetFeatureIndexKeyByFeature(feature)
-				complexFeatures[featureIndexKey] = &schema
+				complexFeatures[featureIndexKey] = &ComplexFeature{Schema: &avroSchema, Struct: &avroStruct}
 			}
 		}
 
@@ -423,4 +434,209 @@ func GetFeatureViewMetadata(featureStoreName, featureViewName string, featureVie
 		return nil, FV_READ_FAIL.NewMessage(err2.Error())
 	}
 	return featureViewMetadata, nil
+}
+
+// parser
+func ConvertAvroSchemaToStruct(schema avro.Schema) (reflect.Type, error) {
+	parserlog(fmt.Sprintf("-----------------------------------------------\n"))
+	parserlog(fmt.Sprintf("Called %v\n", schema))
+
+	switch schema.Type() {
+	case avro.Record:
+		{
+			parserlog(fmt.Sprintf("avro.Record  %T\n", schema))
+			switch schema.(type) {
+			case *avro.PrimitiveSchema:
+				{
+					return nil, errors.New("*avro.PrimitiveSchema ***IMPLEMENT ME***\n")
+				}
+			case *avro.RecordSchema:
+				{
+					parserlog(fmt.Sprintf("*avro.RecordSchema          \n"))
+					rs := schema.(*avro.RecordSchema)
+					var fields []reflect.StructField
+					for _, field := range rs.Fields() {
+						parserlog(fmt.Sprintf("Name: %s, Type: %T\n", field.Name(), field))
+						ret, err := ConvertAvroSchemaToStruct(field.Type())
+						if err != nil {
+							return nil, err
+						} else {
+							fields = append(fields,
+								reflect.StructField{Name: capitalizeMember(field.Name()),
+									Type: ret,
+									Tag:  reflect.StructTag(fmt.Sprintf(`avro:"%s"`, field.Name()))})
+						}
+					}
+					record := reflect.StructOf(fields)
+					parserlog(fmt.Sprintf("RETURNING RecordSchema, Record %v\n", record))
+					return record, nil
+
+				}
+			case *avro.UnionSchema:
+				{
+					return nil, errors.New("**avro.EnumSchema ***IMPLEMENT ME***\n")
+				}
+			case *avro.EnumSchema:
+				{
+					return nil, errors.New("*avro.EnumSchema ***IMPLEMENT ME***\n")
+				}
+			case *avro.ArraySchema:
+				{
+					return nil, errors.New("*avro.ArraySchema ***IMPLEMENT ME***\n")
+				}
+			case *avro.MapSchema:
+				{
+					return nil, errors.New("*avro.MapSchema ***IMPLEMENT ME***\n")
+				}
+			case *avro.FixedSchema:
+				{
+					return nil, errors.New("*avro.FixedSchema ***IMPLEMENT ME***\n")
+				}
+			case *avro.NullSchema:
+				{
+					return nil, errors.New("*avro.NullSchema ***IMPLEMENT ME***\n")
+				}
+			case *avro.RefSchema:
+				{
+					return nil, errors.New("*avro.RefSchema ***IMPLEMENT ME***\n")
+				}
+				//case *avro.PrimitiveLogicalSchema:
+				//case *avro.DecimalLogicalSchema:
+			default:
+				{
+					return nil, errors.New("Unsupported Crap   ***IMPLEMENT ME***          \n")
+				}
+			}
+		}
+	case avro.Error:
+		{
+			return nil, errors.New("*avro.Error ***IMPLEMENT ME***\n")
+		}
+	case avro.Ref:
+		{
+			return nil, errors.New("*avro.Ref ***IMPLEMENT ME***\n")
+		}
+	case avro.Enum:
+		{
+			return nil, errors.New("*avro.Enum ***IMPLEMENT ME***\n")
+		}
+	case avro.Array:
+		{
+			parserlog(fmt.Sprintf("avro.Array   %T\n", schema))
+			as := schema.(*avro.ArraySchema)
+			items := as.Items()
+			ret, err := ConvertAvroSchemaToStruct(items)
+			if err != nil {
+				return nil, err
+			} else {
+				parserlog(fmt.Sprintf("RETURNING Array of  %v\n", ret))
+				return reflect.SliceOf(ret), nil
+			}
+		}
+	case avro.Map:
+		{
+			return nil, errors.New("*avro.Map ***IMPLEMENT ME***\n")
+		}
+	case avro.Union:
+		{
+			parserlog(fmt.Sprintf("avro.Union     %T\n", schema))
+			us := schema.(*avro.UnionSchema)
+
+			if len(us.Types()) != 2 {
+				parserlog(fmt.Sprintf("Case error\n"))
+				return nil, errors.New("Invalid Union")
+			}
+
+			var toConvert avro.Schema
+			if isAvroNullType(us.Types()[0]) {
+				toConvert = us.Types()[1]
+			} else {
+				toConvert = us.Types()[0]
+			}
+
+			ret, err := ConvertAvroSchemaToStruct(toConvert)
+			if err != nil {
+				return nil, err
+			} else {
+				retPtr := reflect.PointerTo(ret)
+				parserlog(fmt.Sprintf("RETURNING UnionSchema %v\n", retPtr))
+				return retPtr, nil
+			}
+		}
+	case avro.Fixed:
+		{
+			return nil, errors.New("*avro.Fixed ***IMPLEMENT ME***\n")
+		}
+	case avro.String:
+		{
+			parserlog(fmt.Sprintf("avro.String  %T\n", schema))
+			return reflect.TypeOf(""), nil
+		}
+	case avro.Bytes:
+		{
+			return nil, errors.New("*avro.Bytes ***IMPLEMENT ME***\n")
+		}
+	case avro.Int:
+		{
+			return nil, errors.New("*avro.Int ***IMPLEMENT ME***\n")
+		}
+	case avro.Long:
+		{
+			parserlog(fmt.Sprintf("avro.Long   %T\n", schema))
+			//TODO handle all logical type
+			if ps, ok := schema.(*avro.PrimitiveSchema); ok {
+				if ps.Logical() != nil {
+					if ps.Logical().Type() == avro.TimestampMicros {
+						parserlog(fmt.Sprintf("time\n"))
+						return reflect.TypeOf(time.Time{}), nil
+					}
+				}
+			}
+			parserlog(fmt.Sprintf("long\n"))
+			return reflect.TypeOf(int64(0)), nil
+		}
+	case avro.Float:
+		{
+			parserlog(fmt.Sprintf("*avro.Float\n"))
+			return reflect.TypeOf(float32(0)), nil
+		}
+	case avro.Double:
+		{
+			parserlog(fmt.Sprintf("*avro.Double\n"))
+			return reflect.TypeOf(float64(0)), nil
+		}
+	case avro.Boolean:
+		{
+			parserlog(fmt.Sprintf("*avro.Boolean\n"))
+			return reflect.TypeOf(bool(false)), nil
+		}
+	case avro.Null:
+		{
+			parserlog(fmt.Sprintf("*avro.Null\n"))
+			return reflect.TypeOf((*interface{})(nil)), nil
+		}
+	default:
+		{
+			return nil, errors.New("unsupported crap ***IMPLEMENT ME*** \n")
+		}
+	}
+}
+
+func parserlog(msg string) {
+	// fmt.Printf(msg)
+}
+
+func isAvroNullType(schema avro.Schema) bool {
+	if primitiveSchema, ok := schema.(*avro.NullSchema); ok {
+		return primitiveSchema.Type() == avro.Null
+	}
+	return false
+}
+
+// This exports Struct's members
+func capitalizeMember(s string) string {
+	if len(s) == 0 {
+		return s
+	}
+	return string(s[0]-32) + s[1:]
 }

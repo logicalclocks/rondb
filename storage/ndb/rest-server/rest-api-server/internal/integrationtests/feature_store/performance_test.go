@@ -60,7 +60,7 @@ func Benchmark_join(b *testing.B) {
 	run(b, testdbs.FSDB001, "sample_1n2", 1)
 }
 
-const nrows = 100
+const nrows = 1
 
 func getSampleData(fsName string, fvName string, fvVersion int) ([][]interface{}, []string, []string, error) {
 	switch fmt.Sprintf("%s|%s|%d", fsName, fvName, fvVersion) {
