@@ -1508,6 +1508,51 @@ func Test_GetFeatureVector_Success_ComplexType(t *testing.T) {
 
 }
 
+func Test_GetFeatureVector_Success_ComplexType_512(t *testing.T) {
+
+	var fsName = testdbs.FSDB002
+	var fvName = "sample_complex_type_512"
+	var fvVersion = 1
+	rows, pks, cols, err := fshelper.GetSampleData(fsName, "sample_complex_type_512_1")
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+
+	arraySchema, err := avro.Parse(`["null",{"type":"array","items":["null","long"]}]`)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+
+	var fsReq = CreateFeatureStoreRequest(
+		fsName,
+		fvName,
+		fvVersion,
+		pks,
+		*GetPkValues(&rows, &pks, &cols),
+		nil,
+		nil,
+	)
+
+	fsReq.MetadataRequest = &api.MetadataRequest{FeatureName: true, FeatureType: true}
+	fsResp := GetFeatureStoreResponse(t, fsReq)
+	for _, row := range rows {
+		// convert data to object in json format
+		arrayJson, err := fshelper.ConvertBinaryToJsonMessage(row[1])
+		if err != nil {
+			t.Fatalf("Cannot convert to json with error %s ", err)
+		}
+		arrayPt, err := feature_store.DeserialiseComplexFeature(arrayJson, &arraySchema) // array
+		row[1] = *arrayPt
+		if err != nil {
+			t.Fatalf("Cannot deserailize feature with error %s ", err)
+		}
+	}
+	// validate
+	ValidateResponseWithData(t, &rows, &cols, fsResp)
+	fshelper.ValidateResponseMetadata(t, &fsResp.Metadata, fsReq.MetadataRequest, fsName, fvName, fvVersion)
+
+}
+
 func Test_GetFeatureVector_WrongPkValue_PartialFail(t *testing.T) {
 	rows, pks, cols, err := fshelper.GetNSampleDataColumns(testdbs.FSDB001, "sample_3_1", 2, []string{"`id1`", "`id2`", "`ts`", "`bigint`"})
 
