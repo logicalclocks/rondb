@@ -68,6 +68,11 @@ func GetSampleData(database string, table string) ([][]interface{}, []string, []
 	return GetNSampleData(database, table, 2)
 }
 
+// N Samples
+func GetSampleDataN(database string, table string, numberOfSamples int) ([][]interface{}, []string, []string, error) {
+	return GetNSampleData(database, table, numberOfSamples)
+}
+
 func GetNSampleData(database string, table string, n int) ([][]interface{}, []string, []string, error) {
 
 	columnName, pks, colTypes, err := getColumnInfo(database, table)
