@@ -827,7 +827,19 @@ VALUES
         62, NULL, 33, 'ts', 'timestamp', 27, 1, 0, 0, 0, 21, NULL
     ),
     (
-        63, NULL, 33, 'data', 'array<struct<sku:string,ts:timestamp>>', 27, 2, 0, 0, 0, 21, NULL
+        63, NULL, 33, 'data0', 'array<struct<sku:string,ts:timestamp>>', 27, 2, 0, 0, 0, 21, NULL
+    ),
+    (
+        64, NULL, 33, 'data1', 'array<struct<sku:string,ts:timestamp>>', 27, 3, 0, 0, 0, 21, NULL
+    ),
+    (
+        65, NULL, 33, 'data2', 'array<struct<sku:string,ts:timestamp>>', 27, 4, 0, 0, 0, 21, NULL
+    ),
+    (
+        66, NULL, 33, 'data3', 'array<struct<sku:string,ts:timestamp>>', 27, 5, 0, 0, 0, 21, NULL
+    ),
+    (
+        67, NULL, 33, 'data4', 'array<struct<sku:string,ts:timestamp>>', 27, 6, 0, 0, 0, 21, NULL
     ),
     (
         5148, NULL, 2069, 'data1', 'bigint', 5133, 2, 0, 0, 0, 4117, NULL
@@ -1084,7 +1096,7 @@ VALUES
 	    22, '{"type":"record","name":"sample_complex_type_512_1","namespace":"test_ken_featurestore.db","fields":[{"name":"id","type":["null","string"]},{"name":"embedding","type":["null",{"type":"array","items":["null","long"]}]}]}', 1001
     ),
     (
-	    23, '{"type":"record","name":"date_array_1","namespace":"salmanap_featurestore.db","fields":[{"name":"pk","type":["null","string"]},{"name":"ts","type":["null",{"type":"long","logicalType":"timestamp-micros"}]},{"name":"data","type":["null",{"type":"array","items":["null",{"type":"record","name":"r515636140","namespace":"data","fields":[{"name":"sku","type":["null","string"]},{"name":"ts","type":["null",{"type":"long","logicalType":"timestamp-micros"}]}]}]}]}]}', 1001
+	    23, '{"type":"record","name":"date_array_1","namespace":"salmanap_featurestore.db","fields":[{"name":"pk","type":["null","string"]},{"name":"ts","type":["null",{"type":"long","logicalType":"timestamp-micros"}]},{"name":"data0","type":["null",{"type":"array","items":["null",{"type":"record","name":"r515636140","namespace":"data","fields":[{"name":"sku","type":["null","string"]},{"name":"ts","type":["null",{"type":"long","logicalType":"timestamp-micros"}]}]}]}]},{"name":"data1","type":["null",{"type":"array","items":["null",{"type":"record","name":"r515636140","namespace":"data","fields":[{"name":"sku","type":["null","string"]},{"name":"ts","type":["null",{"type":"long","logicalType":"timestamp-micros"}]}]}]}]},{"name":"data2","type":["null",{"type":"array","items":["null",{"type":"record","name":"r515636140","namespace":"data","fields":[{"name":"sku","type":["null","string"]},{"name":"ts","type":["null",{"type":"long","logicalType":"timestamp-micros"}]}]}]}]},{"name":"data3","type":["null",{"type":"array","items":["null",{"type":"record","name":"r515636140","namespace":"data","fields":[{"name":"sku","type":["null","string"]},{"name":"ts","type":["null",{"type":"long","logicalType":"timestamp-micros"}]}]}]}]},{"name":"data4","type":["null",{"type":"array","items":["null",{"type":"record","name":"r515636140","namespace":"data","fields":[{"name":"sku","type":["null","string"]},{"name":"ts","type":["null",{"type":"long","logicalType":"timestamp-micros"}]}]}]}]}]}', 1001
     );
 
 INSERT INTO

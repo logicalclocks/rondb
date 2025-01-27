@@ -1463,14 +1463,28 @@ func Test_GetFeatureVector_Success_ComplexType_ST(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Cannot get sample data with error %s ", err)
 	}
-	mapSchema, err := avro.Parse(`["null",{"type":"record","name":"r854762204","namespace":"struct","fields":[{"name":"int1","type":["null","long"]},{"name":"int2","type":["null","long"]}]}]`)
+
+	// Map
+	mapSchema, err := avro.Parse(`{"type":"record","name":"sample_complex_type_1","namespace":"test_ken_featurestore.db","fields":[{"name":"struct","type":["null",{"type":"record","name":"r854762204","namespace":"struct","fields":[{"name":"int1","type":["null","long"]},{"name":"int2","type":["null","long"]}]}]}]}`)
 	if err != nil {
 		t.Fatal(err.Error())
 	}
-	arraySchema, err := avro.Parse(`["null",{"type":"array","items":["null","long"]}]`)
+	mapStruct, err := fsmetadata.ConvertAvroSchemaToStruct(mapSchema)
 	if err != nil {
 		t.Fatal(err.Error())
 	}
+	mapComplexFeature := feature_store.ComplexFeature{Schema: &mapSchema, Struct: &mapStruct}
+
+	// Array
+	arraySchema, err := avro.Parse(`{"type":"record","name":"sample_complex_type_1","namespace":"test_ken_featurestore.db","fields":[{"name":"array","type":["null",{"type":"array","items":["null","long"]}]}]}`)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+	arrayStruct, err := fsmetadata.ConvertAvroSchemaToStruct(arraySchema)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+	arrayComplexFeature := feature_store.ComplexFeature{Schema: &arraySchema, Struct: &arrayStruct}
 
 	var fsReq = CreateBatchFeatureStoreRequest(
 		fsName,
@@ -1489,7 +1503,7 @@ func Test_GetFeatureVector_Success_ComplexType_ST(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Cannot convert to json with error %s ", err)
 		}
-		arrayPt, err := feature_store.DeserialiseComplexFeature(t, arrayJson, &arraySchema) // array
+		arrayPt, err := feature_store.DeserialiseComplexFeature(t, arrayJson, &arrayComplexFeature) // array
 		row[2] = *arrayPt
 		if err != nil {
 			t.Fatalf("Cannot deserailize feature with error %s ", err)
@@ -1499,7 +1513,7 @@ func Test_GetFeatureVector_Success_ComplexType_ST(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Cannot convert to json with error %s ", err)
 		}
-		mapPt, err := feature_store.DeserialiseComplexFeature(t, mapJson, &mapSchema) // map
+		mapPt, err := feature_store.DeserialiseComplexFeature(t, mapJson, &mapComplexFeature) // map
 		row[3] = *mapPt
 		if err != nil {
 			t.Fatalf("Cannot deserailize feature with error %s ", err)
@@ -1522,10 +1536,15 @@ func Test_GetFeatureVector_Success_ComplexType_512(t *testing.T) {
 		t.Fatalf("Cannot get sample data with error %s ", err)
 	}
 
-	arraySchema, err := avro.Parse(`["null",{"type":"array","items":["null","long"]}]`)
+	arraySchema, err := avro.Parse(`{"type":"record","name":"sample_complex_type_512_1","namespace":"test_ken_featurestore.db","fields":[{"name":"embedding","type":["null",{"type":"array","items":["null","long"]}]}]}`)
 	if err != nil {
 		t.Fatal(err.Error())
 	}
+	arrayStruct, err := fsmetadata.ConvertAvroSchemaToStruct(arraySchema)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+	arrayComplexFeature := feature_store.ComplexFeature{Schema: &arraySchema, Struct: &arrayStruct}
 
 	var fsReq = CreateBatchFeatureStoreRequest(
 		fsName,
@@ -1545,7 +1564,7 @@ func Test_GetFeatureVector_Success_ComplexType_512(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Cannot convert to json with error %s ", err)
 		}
-		arrayPt, err := feature_store.DeserialiseComplexFeature(t, arrayJson, &arraySchema) // array
+		arrayPt, err := feature_store.DeserialiseComplexFeature(t, arrayJson, &arrayComplexFeature) // array
 		row[1] = *arrayPt
 		if err != nil {
 			t.Fatalf("Cannot deserailize feature with error %s ", err)

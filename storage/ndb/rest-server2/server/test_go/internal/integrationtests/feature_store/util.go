@@ -20,13 +20,19 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/hamba/avro/v2"
 )
 
-func DeserialiseComplexFeature(t *testing.T, value *json.RawMessage, schema *avro.Schema) (*interface{}, error) {
+type ComplexFeature struct {
+	Schema *avro.Schema
+	Struct *reflect.Type
+}
+
+func DeserialiseComplexFeature(t *testing.T, value *json.RawMessage, complexFeature *ComplexFeature) (*interface{}, error) {
 	valueString, err := decodeJSONString(value)
 	if err != nil {
 		t.Fatalf("Failed to unmarshal. Value: %s", valueString)
@@ -38,14 +44,16 @@ func DeserialiseComplexFeature(t *testing.T, value *json.RawMessage, schema *avr
 		t.Fatalf("Failed to decode base64. Value: %s", valueString)
 		return nil, err
 	}
-	var avroDeserialized interface{}
-	err = avro.Unmarshal(*schema, jsonDecode, &avroDeserialized)
+	// var avroDeserialized interface{}
+	avroDeserialized := reflect.New(*complexFeature.Struct).Interface()
+	err = avro.Unmarshal(*complexFeature.Schema, jsonDecode, &avroDeserialized)
 	if err != nil {
 		t.Fatalf("Failed to deserialize avro")
 		return nil, err
 	}
 
-	nativeJson := ConvertAvroToJson(avroDeserialized)
+	// dicsard the top most wapper
+	nativeJson := reflect.ValueOf(avroDeserialized).Elem().Field(0).Interface()
 	return &nativeJson, err
 }
 
@@ -61,54 +69,4 @@ func decodeJSONString(raw *json.RawMessage) (string, error) {
 	// Replace escape sequences with their actual characters
 	decodedStr := strings.ReplaceAll(unquotedStr, `\"`, `"`)
 	return decodedStr, nil
-}
-
-func ConvertAvroToJson(o interface{}) interface{} {
-	var out interface{}
-	switch o.(type) {
-	case map[string]interface{}: // union or map
-		{
-			m := o.(map[string]interface{})
-			for key := range m {
-				switch m[key].(type) {
-				case map[string]interface{}:
-					{
-						result := make(map[string]interface{})
-						structValue := m[key].(map[string]interface{})
-						for structKey := range structValue {
-							result[structKey] = ConvertAvroToJson(structValue[structKey])
-						}
-						out = result
-					}
-				case []interface{}:
-					{
-						result := make([]interface{}, 0)
-						for _, item := range m[key].([]interface{}) {
-							itemJson := ConvertAvroToJson(item)
-							result = append(result, itemJson)
-						}
-						out = result
-					}
-				default:
-					{
-						out = ConvertAvroToJson(m[key])
-					}
-				}
-			}
-		}
-	case []interface{}:
-		{
-			result := make([]interface{}, 0)
-			for _, item := range o.([]interface{}) {
-				itemJson := ConvertAvroToJson(item)
-				result = append(result, itemJson)
-			}
-			out = result
-		}
-	default:
-		{
-			out = o
-		}
-	}
-	return out
 }
