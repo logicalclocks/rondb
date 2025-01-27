@@ -271,16 +271,22 @@ type FeatureGroupAvroSchema struct {
 	Fields    []AvroField `json:"fields"`
 }
 
-func (c *FeatureGroupAvroSchema) GetSchemaByFeatureName(featureName string) (json.RawMessage, error) {
-	for _, field := range c.Fields {
-		if field.Name == featureName {
-			return field.Type, nil
-		}
-	}
-	return nil, fmt.Errorf("Cannot find schema for feature %s", featureName)
+// Unlike FeatureGroupAvroSchema which contains Avro schema containing all features in the FG
+// this structure stores Avro schema per feature
+type PerFeatureAvroSchema struct {
+	Schemas map[string]string
 }
 
-func GetFeatureGroupAvroSchema(fgName string, fgVersion int, projectId int) (*FeatureGroupAvroSchema, error) {
+func (c *PerFeatureAvroSchema) GetSchemaByFeatureName(featureName string) (string, error) {
+	schema, ok := c.Schemas[featureName]
+	if ok {
+		return schema, nil
+	} else {
+		return "", fmt.Errorf("Cannot find schema for feature %s", featureName)
+	}
+}
+
+func GetFeatureGroupAvroSchema(fgName string, fgVersion int, projectId int) (*PerFeatureAvroSchema, error) {
 	subjectName := fmt.Sprintf("%s_%d", fgName, fgVersion)
 	log.Debugf("subject name is: %s", subjectName)
 	cSubjectName := C.CString(subjectName)
@@ -312,5 +318,25 @@ func GetFeatureGroupAvroSchema(fgName string, fgVersion int, projectId int) (*Fe
 	if err != nil {
 		return nil, err
 	}
-	return &avroSchema, nil
+
+	// FeatureGroupAvroSchema contain all features in on avro schema.
+	// we have to create sepate Avro schemas (PerFeatureAvroSchema) for
+	//the fields as each field is deserialized independently.
+	//  And not all features are encoded using avro
+	var perFeatureAvroSchema PerFeatureAvroSchema
+	perFeatureAvroSchema.Schemas = make(map[string]string)
+	for _, field := range avroSchema.Fields {
+		var schema FeatureGroupAvroSchema // only populate one field
+		schema.Name = avroSchema.Name
+		schema.Namespace = avroSchema.Namespace
+		schema.Type = avroSchema.Type
+		schema.Fields = []AvroField{field}
+		schemaBytes, err := json.Marshal(schema)
+		if err != nil {
+			return nil, err
+		}
+		perFeatureAvroSchema.Schemas[field.Name] = string(schemaBytes)
+	}
+
+	return &perFeatureAvroSchema, nil
 }

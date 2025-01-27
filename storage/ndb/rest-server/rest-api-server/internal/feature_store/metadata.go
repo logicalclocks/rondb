@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -36,6 +37,11 @@ var DefaultExpiration time.Duration = 15 * time.Minute
 var CleanupInterval time.Duration = 15 * time.Minute
 
 const ERROR_NOT_FOUND = "Not Found"
+
+type ComplexFeature struct {
+	Schema *avro.Schema
+	Struct *reflect.Type
+}
 
 type FeatureViewMetadata struct {
 	FeatureStoreName   string
@@ -56,7 +62,7 @@ type FeatureViewMetadata struct {
 	PrefixJoinKeyMap   map[string][]string        // key: serving-key-prefix + fName, value: list of feature which join on the key. Used for filling in pk value.
 	JoinKeyMap         map[string][]string        // key: fName, value: list of feature which join on the key. Used for filling in pk value.
 	RequiredJoinKeyMap map[string][]string        // key: serving-key-prefix + fName, value: list of feature which join on the key. Used for filling in pk value.
-	ComplexFeatures    map[string]*avro.Schema    // key: joinIndex + fgId + fName, label are excluded. joinIndex is needed because of self-join
+	ComplexFeatures    map[string]*ComplexFeature // key: joinIndex + fgId + fName, label are excluded. joinIndex is needed because of self-join
 }
 
 type FeatureGroupFeatures struct {
@@ -184,8 +190,8 @@ func newFeatureViewMetadata(
 		featureCount++
 	}
 
-	var complexFeatures = make(map[string]*avro.Schema)
-	var fgSchemaCache = make(map[int]*dal.FeatureGroupAvroSchema)
+	var complexFeatures = make(map[string]*ComplexFeature)
+	var fgSchemaCache = make(map[int]*dal.PerFeatureAvroSchema)
 	for _, fgFeature := range fgFeaturesArray {
 		for _, feature := range fgFeature.Features {
 			if (*feature).IsComplex() {
@@ -209,16 +215,21 @@ func newFeatureViewMetadata(
 				if err != nil {
 					return nil, errors.New("Failed to get feature schema for feature: " + feature.Name)
 				}
-				schema, err := avro.Parse(string(schemaStr))
+				avroSchema, err := avro.Parse(string(schemaStr))
 				if err != nil {
 					return nil, errors.New("Failed to parse feature schema.")
 				}
+				avroStruct, err := ConvertAvroSchemaToStruct(avroSchema)
+				if err != nil {
+					return nil, errors.New("Failed to parse avro schema.")
+				}
+
 				featureIndexKey := GetFeatureIndexKeyByFeature(feature)
-				complexFeatures[featureIndexKey] = &schema
+				complexFeatures[featureIndexKey] = &ComplexFeature{Schema: &avroSchema, Struct: &avroStruct}
 			}
 		}
-
 	}
+
 	var fsNames = []*string{}
 	var fsNameMap = make(map[string]bool)
 	for _, fgf := range fgFeaturesArray {
