@@ -1,7 +1,7 @@
 /*
 
  * This file is part of the RonDB REST API Server
- * Copyright (c) 2023 Hopsworks AB
+ * Copyright (c) 2023,2025 Hopsworks AB
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -319,7 +319,7 @@ func GetFeatureGroupAvroSchema(fgName string, fgVersion int, projectId int) (*Pe
 		return nil, err
 	}
 
-	// FeatureGroupAvroSchema contain all features in on avro schema.
+	// FeatureGroupAvroSchema contain all features in an avro schema.
 	// we have to create sepate Avro schemas (PerFeatureAvroSchema) for
 	//the fields as each field is deserialized independently.
 	//  And not all features are encoded using avro
