@@ -57,7 +57,7 @@ static bool g_dbg_lcp = false;
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 // #define DEBUG_PAGE_ENTRY 1
-// #define DEBUG_PGMAN_IO 1
+#define DEBUG_PGMAN_IO 1
 // #define DEBUG_PGMAN_WRITE 1
 // #define DEBUG_GET_PAGE 1
 // #define DEBUG_PGMAN_PAGE 1
@@ -3123,7 +3123,8 @@ void Pgman::fsreadconf(Signal *signal, Ptr<Page_entry> ptr) {
       DEB_PGMAN_IO(("(%u)pagein completed: page(%u,%u):%x, "
                     "on_page(%u,%u), tab(%u,%u) lsn(%u,%u)"
                     ", uncommitted_used_space: %u, "
-                    "m_restart_seq: %u",
+                    "m_restart_seq: %u,"
+                    " free_space: %u",
                     instance(),
                     ptr.p->m_file_no,
                     ptr.p->m_page_no,
@@ -3135,7 +3136,8 @@ void Pgman::fsreadconf(Signal *signal, Ptr<Page_entry> ptr) {
                     page->m_page_header.m_page_lsn_hi,
                     page->m_page_header.m_page_lsn_lo,
                     fix_page->uncommitted_used_space,
-                    fix_page->m_restart_seq));
+                    fix_page->m_restart_seq,
+                    fix_page->free_space));
     }
   }
   ndbrequire(m_stats.m_current_io_waits > 0);
@@ -3274,9 +3276,32 @@ void Pgman::fswriteconf(Signal *signal, Ptr<Page_entry> ptr) {
 
   Page_state state = ptr.p->m_state;
 
-  DEB_PGMAN_IO(("(%u)pageout completed, page(%u,%u):%u:%x", instance(),
-                ptr.p->m_file_no, ptr.p->m_page_no, ptr.p->m_real_page_i,
-                state));
+#ifdef DEBUG_PGMAN_IO
+  Ptr<GlobalPage> pagePtr;
+  ndbrequire(m_global_page_pool.getPtr(pagePtr, ptr.p->m_real_page_i));
+  File_formats::Datafile::Data_page *page =
+    (File_formats::Datafile::Data_page *)pagePtr.p;
+  Tup_fixsize_page *fix_page = (Tup_fixsize_page*)page;
+  DEB_PGMAN_IO(("(%u)pageout completed: page(%u,%u):%u,%x, "
+                "on_page(%u,%u), tab(%u,%u) lsn(%u,%u)"
+                ", uncommitted_used_space: %u, "
+                "m_restart_seq: %u,"
+                " free_space: %u",
+                instance(),
+                ptr.p->m_file_no,
+                ptr.p->m_page_no,
+                ptr.p->m_real_page_i,
+                (unsigned int)state,
+                fix_page->m_page_no,
+                fix_page->m_file_no,
+                fix_page->m_table_id,
+                fix_page->m_fragment_id,
+                page->m_page_header.m_page_lsn_hi,
+                page->m_page_header.m_page_lsn_lo,
+                fix_page->uncommitted_used_space,
+                fix_page->m_restart_seq,
+                fix_page->free_space));
+#endif
 
   ndbrequire(state & Page_entry::PAGEOUT);
   ndbrequire(state & Page_entry::DIRTY);

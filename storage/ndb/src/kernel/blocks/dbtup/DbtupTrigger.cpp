@@ -1819,6 +1819,7 @@ bool Dbtup::readTriggerInfo(TupTriggerData *const trigPtr,
      * `DISK_INLINE`.
      */
     jam();
+    /* Could be an INSERT-DELETE pair in which case only copy row has PK */
     req_struct->m_tuple_ptr =
         get_copy_tuple(&req_struct->prevOpPtr.p->m_copy_tuple_location);
   }
