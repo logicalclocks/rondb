@@ -67,15 +67,6 @@ func InitialiseTesting(conf config.AllConfigs, createOnlyTheseDBs ...string) (fu
 		return nil, nil
 	}
 
-	//---------------------------- TLS ----------------------------------------
-	if conf.Security.TLS.EnableTLS {
-		cleanupTLSCerts, err := testutils.CreateAllTLSCerts()
-		if err != nil {
-			return nil, err
-		}
-		cleanupFNs = append(cleanupFNs, cleanupTLSCerts)
-	}
-
 	//---------------------------- DATABASES ----------------------------------
 	var dbsToCreate []string
 	if len(createOnlyTheseDBs) > 0 {

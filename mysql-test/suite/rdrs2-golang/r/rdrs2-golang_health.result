@@ -1,3 +1,8 @@
+## Run rdrs2-golang_health.test without TLS
+ok  	hopsworks.ai/rdrs2/internal/integrationtests/health
+
+Golang test for hopsworks.ai/rdrs2/internal/integrationtests/health exited with code 0
+## Run rdrs2-golang_health.test with TLS and server-side cert
 ok  	hopsworks.ai/rdrs2/internal/integrationtests/health
 
 Golang test for hopsworks.ai/rdrs2/internal/integrationtests/health exited with code 0

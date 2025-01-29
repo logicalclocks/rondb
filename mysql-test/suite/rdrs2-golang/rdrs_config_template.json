@@ -10,8 +10,11 @@
   },
   "Security": {
     "TLS": {
-      "EnableTLS": false,
-      "RequireAndVerifyClientCert": false
+      "EnableTLS": @EnableTLS,
+      "RequireAndVerifyClientCert": false,
+      "CertificateFile": "@std-data/hopsworks_fake_certificates/hw_service_and_intermediate.pem",
+      "PrivateKeyFile": "@std-data/hopsworks_fake_certificates/hw_service.key",
+      "RootCACertFile": "@std-data/hopsworks_fake_certificates/hw_root.pem"
     },
     "APIKey": {
       "UseHopsworksAPIKeys": true

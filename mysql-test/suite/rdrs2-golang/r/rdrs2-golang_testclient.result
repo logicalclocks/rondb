@@ -1,3 +1,8 @@
+## Run rdrs2-golang_testclient.test without TLS
+?   	hopsworks.ai/rdrs2/internal/integrationtests/testclient	[no test files]
+
+Golang test for hopsworks.ai/rdrs2/internal/integrationtests/testclient exited with code 0
+## Run rdrs2-golang_testclient.test with TLS and server-side cert
 ?   	hopsworks.ai/rdrs2/internal/integrationtests/testclient	[no test files]
 
 Golang test for hopsworks.ai/rdrs2/internal/integrationtests/testclient exited with code 0

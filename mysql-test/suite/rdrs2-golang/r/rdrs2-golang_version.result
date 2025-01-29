@@ -1,3 +1,8 @@
+## Run rdrs2-golang_version.test without TLS
+?   	hopsworks.ai/rdrs2/version	[no test files]
+
+Golang test for hopsworks.ai/rdrs2/version exited with code 0
+## Run rdrs2-golang_version.test with TLS and server-side cert
 ?   	hopsworks.ai/rdrs2/version	[no test files]
 
 Golang test for hopsworks.ai/rdrs2/version exited with code 0

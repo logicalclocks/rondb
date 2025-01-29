@@ -83,24 +83,39 @@ if ($go_test_package eq '') {
     die "No Golang test package found for $this_file\n";
 }
 
-# Run Golang test, capture exit code and stdout.
-# * `-p 1` ensures that only one test is run in parallel by the `go test`
-#   process. This is necessary since some of these tests change the database
-#   state. This is unrelated to parallelism in MTR.
-# * `-count 1` is the idiomatic way to prevent `go test` from using cached test
-#   runs. This is necessary since the `go test` logic doesn't look into (all)
-#   C++ sources to detect changes, meaning cache invalidation of test runs
-#   wouldn't work correctly.
-my $stdouterr = `go test -p 1 -count 1 $go_test_package 2>&1`;
-my $exit_code = $? >> 8;
+sub run_test {
 
-# Remove test duration column to achieve deterministic output
-$stdouterr =~ s/\t[0-9.]+s$//g;
+    # Run Golang test, capture exit code and stdout.
+    # * `-p 1` ensures that only one test is run in parallel by the `go test`
+    #   process. This is necessary since some of these tests change the database
+    #   state. This is unrelated to parallelism in MTR.
+    # * `-count 1` is the idiomatic way to prevent `go test` from using cached test
+    #   runs. This is necessary since the `go test` logic doesn't look into (all)
+    #   C++ sources to detect changes, meaning cache invalidation of test runs
+    #   wouldn't work correctly.
+    my $stdouterr = `go test -p 1 -count 1 $go_test_package 2>&1`;
+    my $exit_code = $? >> 8;
 
-print "$stdouterr\n",
-      "Golang test for $go_test_package exited with code $exit_code\n";
+    # Remove test duration column to achieve deterministic output
+    $stdouterr =~ s/\t[0-9.]+s$//g;
 
-exit $exit_code;
+    print "$stdouterr\n",
+          "Golang test for $go_test_package exited with code $exit_code\n";
+
+    if ($exit_code != 0) {
+        exit $exit_code;
+    }
+}
+
+$ENV{'RDRS_CONFIG_FILE'} = $ENV{'RDRS_CONFIG_FILE_NO_TLS'};
+print "## Run $this_file without TLS\n";
+run_test();
+
+$ENV{'RDRS_CONFIG_FILE'} = $ENV{'RDRS_CONFIG_FILE_TLS'};
+print "## Run $this_file with TLS and server-side cert\n";
+run_test();
+
+exit 0;
 END_OF_PERL
 
 # Cleanup

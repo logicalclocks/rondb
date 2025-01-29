@@ -264,18 +264,26 @@ CLASS
 
 CLASS
 (TestParameters,
- CM(std::string, clientCertFile, ClientCertFile, "", "")
- CM(std::string, clientKeyFile, ClientKeyFile, "", "")
+ CM(std::string, clientCertFile, ClientCertFile, "",
+    "Example client certificate used for testing")
+ CM(std::string, clientKeyFile, ClientKeyFile, "",
+    "Example client private key used for testing")
 )
 
 CLASS
 (TLS,
- CM(bool, enableTLS, EnableTLS, false, "")
- CM(bool, requireAndVerifyClientCert, RequireAndVerifyClientCert, false, "")
- CM(std::string, certificateFile, CertificateFile, "", "")
- CM(std::string, privateKeyFile, PrivateKeyFile, "", "")
- CM(std::string, rootCACertFile, RootCACertFile, "", "")
- CM(TestParameters, testParameters, TestParameters, TestParameters(), "")
+ CM(bool, enableTLS, EnableTLS, false,
+    "Whether to enable TLS for the REST server")
+ CM(bool, requireAndVerifyClientCert, RequireAndVerifyClientCert, false,
+    "Whether to require REST clients to provide a client certificate")
+ CM(std::string, certificateFile, CertificateFile, "",
+    "Path to the server certificate file")
+ CM(std::string, privateKeyFile, PrivateKeyFile, "",
+    "Path to the private key corresponding to the server certificate")
+ CM(std::string, rootCACertFile, RootCACertFile, "",
+    "Path to the CA certificate used to sign the server certificate")
+ CM(TestParameters, testParameters, TestParameters, TestParameters(),
+    "Parameters used for testing TLS. rdrs2 will not use these settings.")
  PROBLEM(enableTLS && (certificateFile.empty() ||
          privateKeyFile.empty()),
          "cannot enable TLS if `CertificateFile` or `PrivateKeyFile` is"
