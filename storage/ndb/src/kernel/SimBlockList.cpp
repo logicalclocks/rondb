@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -101,64 +101,29 @@ void SimBlockList::load(EmulatorData &data) {
     }
   }
 
-  const bool mtLqh = globalData.isNdbMtLqh;
-
-  if (!mtLqh)
-    theList[0] = NEW_BLOCK(Pgman)(ctx);
-  else
-    theList[0] = NEW_BLOCK(PgmanProxy)(ctx);
+  theList[0] = NEW_BLOCK(PgmanProxy)(ctx);
   theList[1] = NEW_BLOCK(Lgman)(ctx);
   theList[2] = NEW_BLOCK(Tsman)(ctx);
-  if (!mtLqh)
-    theList[3] = NEW_BLOCK(Dbacc)(ctx);
-  else
-    theList[3] = NEW_BLOCK(DbaccProxy)(ctx);
+  theList[3] = NEW_BLOCK(DbaccProxy)(ctx);
   theList[4] = NEW_BLOCK(Cmvmi)(ctx);
   theList[5] = fs;
   theList[6] = NEW_BLOCK(Dbdict)(ctx);
   theList[7] = NEW_BLOCK(Dbdih)(ctx);
-  if (!mtLqh)
-    theList[8] = NEW_BLOCK(Dblqh)(ctx);
-  else
-    theList[8] = NEW_BLOCK(DblqhProxy)(ctx);
-  if (globalData.ndbMtTcWorkers == 0)
-    theList[9] = NEW_BLOCK(Dbtc)(ctx);
-  else
-    theList[9] = NEW_BLOCK(DbtcProxy)(ctx);
-  if (!mtLqh)
-    theList[10] = NEW_BLOCK(Dbtup)(ctx);
-  else
-    theList[10] = NEW_BLOCK(DbtupProxy)(ctx);
+  theList[8] = NEW_BLOCK(DblqhProxy)(ctx);
+  theList[9] = NEW_BLOCK(DbtcProxy)(ctx);
+  theList[10] = NEW_BLOCK(DbtupProxy)(ctx);
   theList[11] = NEW_BLOCK(Ndbcntr)(ctx);
   theList[12] = NEW_BLOCK(Qmgr)(ctx);
   theList[13] = NEW_BLOCK(Trix)(ctx);
-  if (!mtLqh)
-    theList[14] = NEW_BLOCK(Backup)(ctx);
-  else
-    theList[14] = NEW_BLOCK(BackupProxy)(ctx);
+  theList[14] = NEW_BLOCK(BackupProxy)(ctx);
   theList[15] = NEW_BLOCK(DbUtil)(ctx);
   theList[16] = NEW_BLOCK(Suma)(ctx);
-  if (!mtLqh)
-    theList[17] = NEW_BLOCK(Dbtux)(ctx);
-  else
-    theList[17] = NEW_BLOCK(DbtuxProxy)(ctx);
-  if (!mtLqh)
-    theList[18] = NEW_BLOCK(Restore)(ctx);
-  else
-    theList[18] = NEW_BLOCK(RestoreProxy)(ctx);
+  theList[17] = NEW_BLOCK(DbtuxProxy)(ctx);
+  theList[18] = NEW_BLOCK(RestoreProxy)(ctx);
   theList[19] = NEW_BLOCK(Dbinfo)(ctx);
-  if (globalData.ndbMtTcWorkers == 0)
-    theList[20] = NEW_BLOCK(Dbspj)(ctx);
-  else
-    theList[20] = NEW_BLOCK(DbspjProxy)(ctx);
-  if (NdbIsMultiThreaded() == false)
-    theList[21] = NEW_BLOCK(Thrman)(ctx);
-  else
-    theList[21] = NEW_BLOCK(ThrmanProxy)(ctx);
-  if (NdbIsMultiThreaded() == false)
-    theList[22] = NEW_BLOCK(Trpman)(ctx);
-  else
-    theList[22] = NEW_BLOCK(TrpmanProxy)(ctx);
+  theList[20] = NEW_BLOCK(DbspjProxy)(ctx);
+  theList[21] = NEW_BLOCK(ThrmanProxy)(ctx);
+  theList[22] = NEW_BLOCK(TrpmanProxy)(ctx);
 
   /* Create Query/Recover Blocks */
   theList[23] = NEW_BLOCK(DbqlqhProxy)(ctx);
@@ -182,7 +147,7 @@ void SimBlockList::load(EmulatorData &data) {
     }
   }
 
-  if (globalData.isNdbMt) {
+  {
     /**
       This is where we bind blocks to their respective threads.
       mt_init_thr_map binds the blocks to the two main threads,

@@ -600,17 +600,10 @@ class alignas(NDB_CL) SimulatedBlock
    * thread.
    */
   Uint32 getThrmanInstance() const {
-    if (isNdbMt()) {
-      return m_threadId + 1;
-    } else {
-      return 0;
-    }
+    return m_threadId + 1;
   }
-  static bool isMultiThreaded();
 
   /* Configuration based alternative.  Applies only to this node */
-  static bool isNdbMt() { return globalData.isNdbMt; }
-  static bool isNdbMtLqh() { return globalData.isNdbMtLqh; }
   static Uint32 getLqhWorkers() { return globalData.ndbMtLqhWorkers; }
 
   /**

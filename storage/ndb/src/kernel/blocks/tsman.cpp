@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2005, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2022, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2022, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -116,7 +116,7 @@ Tsman::Tsman(Block_context &ctx)
   ndbrequire((COMMITTED_MASK & UNCOMMITTED_MASK) == 0);
   ndbrequire((COMMITTED_MASK | UNCOMMITTED_MASK) == ((1 << SZ) - 1));
 
-  if (isNdbMtLqh()) {
+  {
     jam();
     for (Uint32 i = 0; i < MAX_NDBMT_LQH_WORKERS + 1; i++) {
       m_client_mutex[i] = NdbMutex_Create();
@@ -164,7 +164,7 @@ Tsman::Tsman(Block_context &ctx)
   
 Tsman::~Tsman()
 {
-  if (isNdbMtLqh()) {
+  {
     for (Uint32 i = 0; i < MAX_NDBMT_LQH_WORKERS + 1; i++) {
       NdbMutex_Destroy(m_client_mutex[i]);
       m_client_mutex[i] = 0;
@@ -3073,7 +3073,7 @@ void Tsman::sendGET_TABINFOREF(Signal *signal, GetTabInfoReq *req,
  */
 void Tsman::client_lock(Uint32 instance) const {
   (void)instance;
-  if (isNdbMtLqh()) {
+  {
     int ret = NdbMutex_Lock(m_client_mutex[instance]);
     ndbrequire(ret == 0);
   }
@@ -3081,7 +3081,7 @@ void Tsman::client_lock(Uint32 instance) const {
 
 void Tsman::client_unlock(Uint32 instance) const {
   (void)instance;
-  if (isNdbMtLqh()) {
+  {
     int ret = NdbMutex_Unlock(m_client_mutex[instance]);
     ndbrequire(ret == 0);
   }
@@ -3089,7 +3089,7 @@ void Tsman::client_unlock(Uint32 instance) const {
 
 void
 Tsman::client_lock() const {
-  if (isNdbMtLqh()) {
+  {
     for (Uint32 i = 0; i < MAX_NDBMT_LQH_WORKERS + 1; i++) {
       int ret = NdbMutex_Lock(m_client_mutex[i]);
       ndbrequire(ret == 0);
@@ -3099,7 +3099,7 @@ Tsman::client_lock() const {
 
 void
 Tsman::client_unlock() const {
-  if (isNdbMtLqh()) {
+  {
     for (Uint32 i = 0; i < MAX_NDBMT_LQH_WORKERS + 1; i++) {
       int ret = NdbMutex_Unlock(m_client_mutex[i]);
       ndbrequire(ret == 0);
@@ -3119,7 +3119,7 @@ bool Tsman::is_datafile_ready(Uint32 file_no) {
 }
 
 void Tsman::lock_extent_page(Uint32 file_no, Uint32 page_no) {
-  if (isNdbMtLqh()) {
+  {
     Ptr<Datafile> file_ptr;
     Datafile file_key;
     file_key.m_file_no = file_no;
@@ -3129,7 +3129,7 @@ void Tsman::lock_extent_page(Uint32 file_no, Uint32 page_no) {
 }
 
 void Tsman::unlock_extent_page(Uint32 file_no, Uint32 page_no) {
-  if (isNdbMtLqh()) {
+  {
     Ptr<Datafile> file_ptr;
     Datafile file_key;
     file_key.m_file_no = file_no;
@@ -3139,28 +3139,28 @@ void Tsman::unlock_extent_page(Uint32 file_no, Uint32 page_no) {
 }
 
 void Tsman::lock_extent_page(Datafile *filePtrP, Uint32 page_no) {
-  if (isNdbMtLqh()) {
+  {
     Uint32 mutex_id = page_no & (NUM_EXTENT_PAGE_MUTEXES - 1);
     NdbMutex_Lock(&filePtrP->m_extent_page_mutex[mutex_id]);
   }
 }
 
 void Tsman::unlock_extent_page(Datafile *filePtrP, Uint32 page_no) {
-  if (isNdbMtLqh()) {
+  {
     Uint32 mutex_id = page_no & (NUM_EXTENT_PAGE_MUTEXES - 1);
     NdbMutex_Unlock(&filePtrP->m_extent_page_mutex[mutex_id]);
   }
 }
 
 void Tsman::lock_alloc_extent() {
-  if (isNdbMtLqh()) {
+  {
     int ret = NdbMutex_Lock(m_alloc_extent_mutex);
     ndbrequire(ret == 0);
   }
 }
 
 void Tsman::unlock_alloc_extent() {
-  if (isNdbMtLqh()) {
+  {
     int ret = NdbMutex_Unlock(m_alloc_extent_mutex);
     ndbrequire(ret == 0);
   }

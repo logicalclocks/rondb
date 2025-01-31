@@ -1,5 +1,5 @@
 /* Copyright (c) 2009, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -326,7 +326,6 @@ static int init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter) {
   Uint32 reserved_jb_pages = jbpages / 4;
   if (jbpages)
   {
-    require(globalData.isNdbMt);
     Resource_limit rl;
     rl.m_min = reserved_jb_pages;
     rl.m_max = jbpages;
@@ -345,7 +344,6 @@ static int init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter) {
 
   Uint32 sbpages = 0;
   Uint32 reserved_sb_pages = 0;
-  require(globalData.isNdbMt);
   {
     /**
      * This path is normally always taken for ndbmtd as the transporter
@@ -606,20 +604,9 @@ static int init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter) {
 
 static int get_multithreaded_config(EmulatorData &ed) {
   // multithreaded is compiled in ndbd/ndbmtd for now
-  if (!globalData.isNdbMt) {
-    g_eventLogger->info("NDBMT: non-mt");
-    g_eventLogger->warning(
-        "Running ndbd with a single thread of signal execution.  "
-        "For multi-threaded signal execution run the ndbmtd binary.");
-
-    return 0;
-  }
-
   THRConfig &conf = ed.theConfiguration->m_thr_config;
   Uint32 threadcount = conf.getThreadCount();
   g_eventLogger->info("NDBMT: MaxNoOfExecutionThreads=%u", threadcount);
-
-  if (!globalData.isNdbMtLqh) return 0;
 
   g_eventLogger->info("NDBMT: ldm_threads=%u ldm_workers=%u"
                       " query_workers=%u\n"

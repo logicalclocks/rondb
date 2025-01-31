@@ -1,5 +1,5 @@
 /* Copyright (c) 2005, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -764,7 +764,7 @@ Lgman::Lgman(Block_context &ctx)
   m_pages_applied = 1;
   m_dropped_undo_log = false;
 
-  if (isNdbMtLqh()) {
+  {
     jam();
     m_client_mutex = NdbMutex_Create();
     ndbrequire(m_client_mutex != 0);
@@ -786,14 +786,14 @@ Lgman::Lgman(Block_context &ctx)
 }
 
 Lgman::~Lgman() {
-  if (isNdbMtLqh()) {
+  {
     NdbMutex_Destroy(m_client_mutex);
     m_client_mutex = NULL;
   }
 }
 
 void Lgman::client_lock(BlockNumber block_no, int line, SimulatedBlock *block) {
-  if (isNdbMtLqh()) {
+  {
     jamBlock(block);
 #if defined (VM_TRACE)
     Uint32 bno = blockToMain(block_no);
@@ -808,7 +808,7 @@ void Lgman::client_lock(BlockNumber block_no, int line, SimulatedBlock *block) {
 
 void Lgman::client_unlock(BlockNumber block_no, int line,
                           SimulatedBlock *block) {
-  if (isNdbMtLqh()) {
+  {
     jamBlock(block);
 #if defined (VM_TRACE)
     Uint32 bno = blockToMain(block_no);
@@ -4629,7 +4629,7 @@ void Lgman::init_run_undo_log(Signal *signal) {
     return;
   }
 
-  if (isNdbMtLqh()) {
+  {
     for (unsigned int i = 0; i <= getLqhWorkers(); i++) {
       m_pending_undo_records[i] = 0;  // initialize
     }
@@ -4848,7 +4848,7 @@ void Lgman::execute_undo_record(Signal *signal) {
 
   Uint64 lsn;
   const Uint32 *ptr = NULL;
-  if (isNdbMtLqh()) {
+  {
     Uint32 block_reference = signal->getSendersBlockRef();
     BlockInstance block_instance = refToInstance(block_reference);
 
@@ -4968,7 +4968,7 @@ void Lgman::execute_undo_record(Signal *signal) {
     switch (mask) {
       case File_formats::Undofile::UNDO_END:
         jam();
-        if (isNdbMtLqh() && wait_pending(lsn, ptr, len)) {
+        if (wait_pending(lsn, ptr, len)) {
           // wait for pending records to complete
           return;
         }
@@ -4987,7 +4987,7 @@ void Lgman::execute_undo_record(Signal *signal) {
       case File_formats::Undofile::UNDO_LCP:
       case File_formats::Undofile::UNDO_LCP_FIRST: {
         jam();
-        if (isNdbMtLqh() && wait_pending(lsn, ptr, len)) {
+        if (wait_pending(lsn, ptr, len)) {
           // wait for pending records to complete
           return;
         }
@@ -5021,7 +5021,7 @@ void Lgman::execute_undo_record(Signal *signal) {
       } break;
       case File_formats::Undofile::UNDO_TUP_DROP:
         jam();
-        if (isNdbMtLqh() && wait_pending(lsn, ptr, len)) {
+        if (wait_pending(lsn, ptr, len)) {
           // wait for pending records to complete
           return;
         }

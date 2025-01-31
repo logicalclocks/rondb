@@ -874,7 +874,7 @@ Dblqh::~Dblqh()
   if (!m_is_query_block) {
     NdbMutex_Destroy(m_lock_tup_page_mutex);
     NdbMutex_Destroy(m_lock_acc_page_mutex);
-    if (!isNdbMtLqh() || instance() == 1)
+    if (instance() == 1)
     {
       NdbMutex_Destroy(m_restore_mutex);
       m_restore_mutex = 0;

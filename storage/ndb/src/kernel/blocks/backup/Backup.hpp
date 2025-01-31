@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1444,14 +1444,14 @@ class Backup : public SimulatedBlock {
   }
 
   bool is_backup_worker() {
-    return isNdbMtLqh() ? (instance() == UserBackupInstanceKey) : true;
+    return (instance() == UserBackupInstanceKey);
   }
   /*
    * Select master instance on any node: LDM1 for ndbmtd, LDM0 for ndbd
    * Used in node-failure aborts when a participant node is promoted to master
    */
   Uint32 masterInstanceKey(BackupRecordPtr ptr) {
-    return isNdbMtLqh() ? UserBackupInstanceKey : NdbdInstanceKey;
+    return UserBackupInstanceKey;
   }
 
   /**

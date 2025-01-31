@@ -422,7 +422,6 @@ void Pgman::execREAD_CONFIG_REQ(Signal *signal) {
       // param name refers to unbound entries ending up on stack
       m_param.m_lirs_stack_mult = entries;
     }
-    if (isNdbMtLqh())
     {
       jam();
       // divide between workers - wl4391_todo give extra worker less
@@ -511,10 +510,7 @@ void Pgman::execSTTOR(Signal *signal) {
   switch (startPhase) {
     case 1: {
       jam();
-      if (!isNdbMtLqh()) {
-        c_tup = (Dbtup *)globalData.getBlock(DBTUP);
-        c_backup = (Backup *)globalData.getBlock(BACKUP);
-      } else if (instance() <= getLqhWorkers()) {
+      if (instance() <= getLqhWorkers()) {
         c_tup = (Dbtup *)globalData.getBlock(DBTUP, instance());
         c_backup = (Backup *)globalData.getBlock(BACKUP, instance());
         ndbrequire(c_tup != 0);
@@ -561,7 +557,7 @@ void Pgman::sendSTTORRY(Signal *signal) {
   signal->theData[3] = 1;
   signal->theData[4] = 3;
   signal->theData[5] = 255;  // No more start phases from missra
-  BlockReference cntrRef = !isNdbMtLqh() ? NDBCNTR_REF : PGMAN_REF;
+  BlockReference cntrRef = PGMAN_REF;
   sendSignal(cntrRef, GSN_STTORRY, signal, 6, JBB);
 }
 
@@ -790,7 +786,7 @@ bool Pgman::get_page_entry(EmulatedJamBuffer *jamBuf, Ptr<Page_entry> &ptr,
                            Uint32 fragmentId, Uint32 flags) {
   if (m_extra_pgman && tableId != RNIL) {
     ndbabort();
-  } else if (!m_extra_pgman && isNdbMtLqh() && tableId == RNIL) {
+  } else if (!m_extra_pgman && tableId == RNIL) {
     ndbabort();
   }
 
@@ -1540,7 +1536,7 @@ void Pgman::execEND_LCPREQ(Signal *signal) {
   m_end_lcp_req = *req;
   ndbrequire(!m_lcp_ongoing);
   if (!get_first_ordered_fragment(fragPtr)) {
-    if (m_extra_pgman || !isNdbMtLqh()) {
+    if (m_extra_pgman) {
       jam();
       sendSYNC_EXTENT_PAGES_REQ(signal);
       return;
@@ -1574,7 +1570,7 @@ void Pgman::execSYNC_PAGE_CACHE_CONF(Signal *signal) {
     NDB_TICKS now = getHighResTimer();
     Uint64 lcp_time = NdbTick_Elapsed(m_lcp_start_time, now).milliSec();
     lcp_end_point(Uint32(lcp_time), true, true);
-    if (isNdbMtLqh()) {
+    {
       jam();
       sendEND_LCPCONF(signal);
       return;
@@ -2825,7 +2821,7 @@ void Pgman::execSYNC_EXTENT_PAGES_REQ(Signal *signal) {
   jamEntry();
   Ptr<Page_entry> ptr;
 
-  ndbrequire(m_extra_pgman || !isNdbMtLqh());
+  ndbrequire(m_extra_pgman);
   ndbrequire(m_lcp_table_id == RNIL);
   if (m_sync_extent_pages_ongoing) {
     /**
@@ -4455,7 +4451,7 @@ Page_cache_client::Page_cache_client(SimulatedBlock *block,
     : m_jamBuf(getThrJamBuf()) {
   m_block = numberToBlock(block->number(), block->instance());
 
-  if (pgman->isNdbMtLqh() && pgman->instance() == 0) {
+  if (pgman->instance() == 0) {
     m_pgman_proxy = (PgmanProxy *)pgman;
     m_pgman = 0;
   } else {

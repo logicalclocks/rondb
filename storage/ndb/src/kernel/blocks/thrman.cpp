@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2011, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -825,7 +825,7 @@ void Thrman::sendSTTORRY(Signal *signal, bool phase2_done) {
   signal->theData[4] = 2;
   signal->theData[5] = 9;
   signal->theData[6] = 255;  // No more start phases from missra
-  BlockReference cntrRef = !isNdbMtLqh() ? NDBCNTR_REF : THRMAN_REF;
+  BlockReference cntrRef = THRMAN_REF;
   sendSignal(cntrRef, GSN_STTORRY, signal, 7, JBB);
 }
 
@@ -2625,7 +2625,6 @@ Thrman::send_query_distribution(Uint32 *weights, Signal *signal, bool low_load)
                      weights[8], weights[9], weights[10], weights[11],
                      weights[12], weights[13], weights[14], weights[15],
                      weights[16], weights[17], weights[18], weights[19]));
-  ndbrequire(isNdbMtLqh());
   Uint32 num_recv_threads = globalData.ndbMtReceiveThreads;
   for (Uint32 i = 0; i < num_recv_threads; i++) {
     ref = numberToRef(TRPMAN, i + 1, getOwnNodeId());

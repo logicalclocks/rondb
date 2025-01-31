@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2005, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -2427,8 +2427,6 @@ void Dbtup::disk_restart_undo(Signal *signal, Uint64 lsn, Uint32 type,
         disk_restart_undo_lcp(tableId, fragId, Fragrecord::UC_LCP, lcpId,
                               localLcpId, lsn);
       }
-      if (!isNdbMtLqh()) disk_restart_undo_next(signal);
-
       DEB_UNDO_LCP(("(%u)UNDO LCP [%u,%u] tab(%u,%u), lsn: %llu",
         instance(), lcpId, localLcpId, tableId, fragId, lsn));
       return;
@@ -2552,7 +2550,7 @@ void Dbtup::disk_restart_undo(Signal *signal, Uint64 lsn, Uint32 type,
   cur_undo_record_page.i = RNIL;
   cur_undo_record_page.p = nullptr;
 
-  if (isNdbMtLqh()) {
+  {
     jam();
     Pending_undo_page key(preq.m_page.m_file_no, preq.m_page.m_page_no);
 
@@ -2607,7 +2605,7 @@ void Dbtup::disk_restart_undo(Signal *signal, Uint64 lsn, Uint32 type,
       jam();
       m_immediate_flag = false;
 
-      if (isNdbMtLqh()) {
+      {
         // initialize page, add to hash table
         new (cur_undo_record_page.p)
             Pending_undo_page(preq.m_page.m_file_no, preq.m_page.m_page_no);
@@ -2637,7 +2635,7 @@ void Dbtup::disk_restart_undo(Signal *signal, Uint64 lsn, Uint32 type,
       ndbrequire(res > 0);
       DEB_UNDO(("LDM(%u) DIRECT_EXECUTE Page:%u lsn:%llu", instance(),
                 preq.m_page.m_page_no, f_undo.m_lsn));
-      if (isNdbMtLqh()) {
+      {
         jam();
         c_pending_undo_page_pool.release(cur_undo_record_page);
         // no page stored in hash, so i = RNIL
@@ -2825,7 +2823,7 @@ void Dbtup::disk_restart_undo_callback(Signal *signal, Uint32 page_i,
 
   bool pending = false;
 
-  if (isNdbMtLqh()) {
+  {
     jam();
     pending = (page_i != RNIL);
 
@@ -3134,7 +3132,7 @@ void Dbtup::disk_restart_undo_callback(Signal *signal, Uint32 page_i,
   }
 
   ndbassert(count_pending != 0);
-  if (isNdbMtLqh() && pending) {
+  if (pending) {
     jam();
     LocalApply_undo_list undoList(c_apply_undo_pool,
                                   pendingPage->m_apply_undo_head);

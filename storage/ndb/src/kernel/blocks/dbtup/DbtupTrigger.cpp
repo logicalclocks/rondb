@@ -1365,7 +1365,7 @@ void Dbtup::executeTrigger(KeyReqStruct *req_struct,
 
   if (refToMain(ref) == getBACKUP()) {
     jam();
-    if (isNdbMtLqh()) {
+    {
       goto out;
     }
 
@@ -1467,7 +1467,6 @@ void Dbtup::executeTrigger(KeyReqStruct *req_struct,
       // Since only backup uses subscription triggers we send to backup directly
       // for now
       ref = trigPtr->m_receiverRef;
-      // executeDirect = !isNdbMtLqh() || (refToMain(ref) != SUMA);
       executeDirect = refToInstance(ref) == instance();
 
       // If we can do execute direct, lets do that, else do long signal (only

@@ -2819,21 +2819,7 @@ void SimulatedBlock::sendCallbackConf(Signal *signal, Uint32 fullBlockNo,
 
   const CallbackEntry &ce = b->getCallbackEntry(cptr.m_callbackIndex);
 
-  if (!isNdbMtLqh()) {
-    Callback c;
-    c.m_callbackFunction = ce.m_function;
-    c.m_callbackData = cptr.m_callbackData;
-    b->execute(signal, c, returnCode);
-
-    if (ce.m_flags & CALLBACK_ACK) {
-      jam();
-      CallbackAck *ack = (CallbackAck *)signal->getDataPtrSend();
-      ack->senderData = senderData;
-      ack->callbackInfo = callbackInfo;
-      EXECUTE_DIRECT(number(), GSN_CALLBACK_ACK, signal,
-                     CallbackAck::SignalLength);
-    }
-  } else {
+  {
     CallbackConf *conf = (CallbackConf *)signal->getDataPtrSend();
     conf->senderData = senderData;
     conf->senderRef = reference();
@@ -4328,14 +4314,6 @@ NodeInfo &SimulatedBlock::setNodeInfo(NodeId nodeId) {
   return globalData.m_nodeInfo[nodeId];
 }
 
-bool SimulatedBlock::isMultiThreaded() {
-#ifdef NDBD_MULTITHREADED
-  return true;
-#else
-  return false;
-#endif
-}
-
 void SimulatedBlock::execUTIL_CREATE_LOCK_REF(Signal *signal) {
   jamEntry();
   c_mutexMgr.execUTIL_CREATE_LOCK_REF(signal);
@@ -5084,13 +5062,8 @@ bool SimulatedBlock::checkNodeFailSequence(Signal *signal) {
   }
 
   Uint32 trpman_ref;
-  if (globalData.ndbMtReceiveThreads == 0) {
+  {
     jam();
-    ndbrequire(!isNdbMt());
-    trpman_ref = TRPMAN_REF;
-  } else {
-    jam();
-    ndbrequire(isNdbMt());
     Uint32 sender_node = refToNode(ref);
     Uint32 inst = (get_recv_thread_idx(sender_node) + /* proxy */ 1);
     if (inst > NDBMT_MAX_BLOCK_INSTANCES) {

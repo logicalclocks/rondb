@@ -361,14 +361,6 @@ void Backup::execSTTOR(Signal *signal) {
     m_our_node_started = true;
     c_initial_start_lcp_not_done_yet = false;
   }
-
-  if (startphase == 7 && g_TypeOfStart == NodeState::ST_INITIAL_START &&
-      c_masterNodeId == getOwnNodeId() && !isNdbMtLqh()) {
-    jam();
-    createSequence(signal);
-    return;
-  }  // if
-
   sendSTTORRY(signal);
   return;
 }  // Dbdict::execSTTOR()
@@ -433,9 +425,8 @@ void Backup::sendSTTORRY(Signal *signal) {
     signal->theData[7] = 255; // No more start phases from missra
     sig_len = 8;
   }
-  BlockReference cntrRef = !isNdbMtLqh()      ? NDBCNTR_REF
-                           : m_is_query_block ? QBACKUP_REF
-                                              : BACKUP_REF;
+  BlockReference cntrRef = m_is_query_block ? QBACKUP_REF
+                                            : BACKUP_REF;
   sendSignal(cntrRef, GSN_STTORRY, signal, sig_len, JBB);
 }
 
@@ -792,7 +783,7 @@ bool Backup::lcp_end_point(BackupRecordPtr ptr) {
   m_lcp_current_cut_point = m_lcp_start_time;
 
   bool ready = true;
-  if (isNdbMt()) {
+  {
     /**
      * Only call for ndbmtd since ndbd has no extra PGMAN worker.
      */
@@ -10148,7 +10139,7 @@ void Backup::execFIRE_TRIG_ORD(Signal *signal) {
     return;
   }  // if
 
-  if (isNdbMtLqh()) {
+  {
     jam();
     /* This is the decision point for including
      * this row change in the log file on ndbmtd
