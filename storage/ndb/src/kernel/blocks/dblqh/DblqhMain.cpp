@@ -23511,17 +23511,6 @@ void Dblqh::execLCP_FRAG_ORD(Signal *signal) {
       lcpPtr.p->m_early_lcps_need_synch = false;
     }
     ndbrequire(lcpPtr.p->m_wait_early_lcp_synch == false);
-    {
-      Logfile_client lgman(this, c_lgman, 0);
-      if (lgman.exists_logfile_group()) {
-        jam();
-        LcpFragOrd *ord = (LcpFragOrd *)signal->getDataPtr();
-        ord->tableId = 0;
-        ord->fragmentId = 0;
-        ord->lcpId = c_lcpId;
-        lgman.exec_lcp_frag_ord(signal, get_current_local_lcp_id());
-      }
-    }
   } else {
     jam();
     ndbrequire(c_lcpId == lcpFragOrd->lcpId);

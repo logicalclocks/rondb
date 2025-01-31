@@ -591,7 +591,7 @@ class Backup : public SimulatedBlock {
     BackupRecord(Backup &b, Table_pool &tp, BackupFile_pool &bp,
                  TriggerRecord_pool &trp)
         : slaveState(b, validSlaveTransitions, validSlaveTransitionsCount, 1),
-          m_first_fragment(false),
+          m_first_disk_fragment(false),
           m_num_fragments(0),
           prepare_table(tp),
           tables(tp),
@@ -648,7 +648,7 @@ class Backup : public SimulatedBlock {
     Uint32 m_prioA_scan_batches_to_execute;
     CompoundState slaveState;
 
-    bool m_first_fragment;
+    bool m_first_disk_fragment;
     Uint32 m_num_fragments;
     /**
      * Which header file is used for this LCP, there are only two 0 and 1.
@@ -709,6 +709,7 @@ class Backup : public SimulatedBlock {
     Uint32 m_current_data_file_ptr;
     Uint32 m_working_data_file_ptr;
     Uint64 m_current_lcp_lsn;
+    Uint64 m_first_lcp_lsn;
 
     Uint32 m_save_error_code;
     Uint32 m_change_page_alloc_after_start;

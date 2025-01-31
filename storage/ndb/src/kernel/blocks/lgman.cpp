@@ -3352,7 +3352,9 @@ void Lgman::execFSWRITECONF(Signal *signal) {
   return;
 }
 
-Uint64 Lgman::exec_lcp_frag_ord(Signal *signal, Uint32 local_lcp_id,
+Uint64 Lgman::exec_lcp_frag_ord(Signal *signal,
+                                bool & first,
+                                Uint32 local_lcp_id,
                                 SimulatedBlock *client_block) {
   jamBlock(client_block);
 
@@ -3360,6 +3362,7 @@ Uint64 Lgman::exec_lcp_frag_ord(Signal *signal, Uint32 local_lcp_id,
   Uint32 lcp_id = ord->lcpId;
   Uint32 frag_id = ord->fragmentId;
   Uint32 table_id = ord->tableId;
+  first = false;
 
   Ptr<Logfile_group> lg_ptr;
   m_logfile_group_list.first(lg_ptr);
@@ -3395,6 +3398,8 @@ Uint64 Lgman::exec_lcp_frag_ord(Signal *signal, Uint32 local_lcp_id,
          ret_lsn, table_id, frag_id, lcp_id, local_lcp_id, entry));
     validate_logfile_group(lg_ptr, "execLCP_FRAG_ORD",
                            client_block->jamBuffer());
+    if (entry == File_formats::Undofile::UNDO_LOCAL_LCP_FIRST)
+      first = true;
   }
   m_latest_lcp = lcp_id;
   m_latest_local_lcp = local_lcp_id;

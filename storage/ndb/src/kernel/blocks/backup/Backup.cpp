@@ -773,7 +773,7 @@ bool Backup::lcp_end_point(BackupRecordPtr ptr) {
   Uint32 num_fragments = ptr.p->m_num_fragments;
   ptr.p->backupId = 0; /* Ensure next LCP_PREPARE_REQ sees a new LCP id */
   ptr.p->m_num_fragments = 0;
-  ptr.p->m_first_fragment = false;
+  ptr.p->m_first_disk_fragment = false;
   NDB_TICKS current_time = getHighResTimer();
 
   if (num_fragments == 0) {
@@ -12215,7 +12215,7 @@ void Backup::execFSREMOVECONF(Signal *signal) {
   |         Flush fragment page cache
   |         SYNC_PAGE_CACHE_CONF
   |          ------------------>|
-  |         If first fragment in LCP then also:
+  |         If first disk fragment in LCP then also:
   |         SYNC_EXTENT_PAGES_REQ
   |          <------------------|
   |         Flush all extent pages
@@ -12515,6 +12515,40 @@ void Backup::execFSREMOVECONF(Signal *signal) {
   1) Node restorable on its own flag is set to 1 (true)
   2) Flag indicating whether local LCPs removed is set to 0 (ignorable)
   3) max GCP recoverable value is set to 0 (ignorable)
+
+  Order of SYNC_EXTENT_PAGES_REQ and UNDO_LOCAL_LCP_FIRST
+  .......................................................
+  It is vital that the write to the UNDO log of the UNDO_LOCAL_LCP_FIRST
+  is completed before we call SYNC_EXTENT_PAGES_REQ, we accomplish this by
+  sending an LSN of the UNDO_LOCAL_LCP_FIRST and using the WAL principle
+  to enforce this condition.
+  
+  Not enforcing this can lead to the following event flow:
+  1) Sync extent page
+  2) Write dirty page of table
+  3) Write UNDO_LOCAL_LCP_FIRST into UNDO log
+
+  Using this flow of events means that the extent pages will not see
+  the write of dirty pages (2 above) and thus the extent pages isn't
+  sync'ed with the tablespace pages.
+
+  The flow of events should be either:
+  1) Write dirty page of table
+  2) Write UNDO_LOCAL_LCP_FIRST into UNDO log
+  3) Sync extent page
+
+  OR
+  1) Write UNDO_LOCAL_LCP_FIRST into UNDO log
+  2) Write dirty page of table
+  3) Sync extent page
+
+  OR
+  1) Write UNDO_LOCAL_LCP_FIRST into UNDO log
+  2) Sync extent page
+  3) Write dirty page of table
+
+  Thus as long as we write UNDO_LOCAL_LCP_FIRST before
+  synching extent pages we can write dirty pages at any time.
 */
 void Backup::execLCP_PREPARE_REQ(Signal *signal) {
   jamEntry();
@@ -12562,11 +12596,12 @@ void Backup::execLCP_PREPARE_REQ(Signal *signal) {
     ptr.p->backupId = req.backupId;
     ptr.p->localLcpId = req.localLcpId;
     ptr.p->m_initial_lcp_started = true;
-    ndbrequire(ptr.p->m_first_fragment == false);
+    ndbrequire(ptr.p->m_first_disk_fragment == false);
     ndbrequire(ptr.p->m_num_fragments == 0);
-    ptr.p->m_first_fragment = true;
+    ptr.p->m_first_disk_fragment = true;
     ptr.p->m_is_lcp_scan_active = false;
     ptr.p->m_current_lcp_lsn = Uint64(0);
+    ptr.p->m_first_lcp_lsn = Uint64(0);
     ptr.p->m_high_res_lcp_start_time = getHighResTimer();
     m_current_dd_time_us = Uint64(0);
     lcp_start_point(signal);
@@ -14426,10 +14461,17 @@ void Backup::lcp_write_undo_log(Signal *signal, BackupRecordPtr ptr) {
     ord->fragmentId = fragPtrP->fragmentId;
     ord->lcpId = ptr.p->backupId;
     {
+      bool first = false;
       Logfile_client lgman(this, c_lgman, 0);
       ptr.p->m_current_lcp_lsn =
-          lgman.exec_lcp_frag_ord(signal, c_lqh->get_current_local_lcp_id());
+          lgman.exec_lcp_frag_ord(signal,
+                                  first,
+                                  c_lqh->get_current_local_lcp_id());
       ndbrequire(ptr.p->m_current_lcp_lsn > Uint64(0));
+      if (first) {
+        jam();
+        ptr.p->m_first_lcp_lsn = ptr.p->m_current_lcp_lsn;
+      }
       DEB_UNDO_LCP(("(%u) tab(%u,%u) LCP %u start at lsn=%llu",
                     instance(),
                     tabPtr.p->tableId,
@@ -14661,11 +14703,6 @@ void Backup::lcp_start_complete_processing(Signal *signal,
      */
     jam();
     ptr.p->m_wait_disk_data_sync = false;
-    if (ptr.p->m_first_fragment) {
-      jam();
-      send_firstSYNC_EXTENT_PAGES_REQ(signal, ptr);
-      return;
-    }
     ptr.p->m_wait_sync_extent = false;
     lcp_write_ctl_file(signal, ptr);
     return;
@@ -14732,7 +14769,7 @@ void Backup::execSYNC_PAGE_CACHE_CONF(Signal *signal) {
     jam();
     ptr.p->m_disk_data_exist = true;
   }
-  if (!ptr.p->m_first_fragment) {
+  if (!ptr.p->m_first_disk_fragment) {
     jam();
     ptr.p->m_wait_sync_extent = false;
     lcp_write_ctl_file(signal, ptr);
@@ -14753,7 +14790,11 @@ void Backup::send_firstSYNC_EXTENT_PAGES_REQ(Signal *signal,
   req->senderData = ptr.i;
   req->senderRef = reference();
   req->lcpOrder = SyncExtentPagesReq::FIRST_LCP;
-  ptr.p->m_first_fragment = false;
+  Uint64 lsn_low = ptr.p->m_first_lcp_lsn & Uint64(0xFFFFFFFF);
+  Uint64 lsn_high = ptr.p->m_first_lcp_lsn >> 32;
+  req->lsn_low = Uint32(lsn_low);
+  req->lsn_high = Uint32(lsn_high);
+  ptr.p->m_first_disk_fragment = false;
   sendSignal(PGMAN_REF, GSN_SYNC_EXTENT_PAGES_REQ, signal,
              SyncExtentPagesReq::SignalLength, JBB);
 }
@@ -16016,15 +16057,17 @@ void Backup::execEND_LCPREQ(Signal *signal) {
     SyncExtentPagesReq *req = (SyncExtentPagesReq *)signal->getDataPtrSend();
     req->senderData = ptr.i;
     req->senderRef = reference();
-    if (ptr.p->m_first_fragment || ptr.p->m_num_fragments == 0) {
+    if (ptr.p->m_first_disk_fragment || ptr.p->m_num_fragments == 0) {
       jam();
-      ptr.p->m_first_fragment = false;
+      ptr.p->m_first_disk_fragment = false;
       DEB_EMPTY_LCP(("(%u)FIRST_AND_END_LCP", instance()));
       req->lcpOrder = SyncExtentPagesReq::FIRST_AND_END_LCP;
     } else {
       jam();
       req->lcpOrder = SyncExtentPagesReq::END_LCP;
     }
+    req->lsn_low = 0;
+    req->lsn_high = 0;
     sendSignal(PGMAN_REF, GSN_SYNC_EXTENT_PAGES_REQ, signal,
                SyncExtentPagesReq::SignalLength, JBB);
   }

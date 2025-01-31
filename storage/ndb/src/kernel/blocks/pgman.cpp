@@ -1514,6 +1514,8 @@ void Pgman::sendSYNC_EXTENT_PAGES_REQ(Signal *signal) {
   req->senderData = 0;
   req->senderRef = reference();
   req->lcpOrder = SyncExtentPagesReq::RESTART_SYNC;
+  req->lsn_low = 0;
+  req->lsn_high = 0;
   sendSignal(reference(), GSN_SYNC_EXTENT_PAGES_REQ, signal,
              SyncExtentPagesReq::SignalLength, JBA);
 }
@@ -1868,6 +1870,15 @@ void Pgman::check_restart_lcp(Signal *signal, bool check_prepare_lcp) {
       Ptr<Page_entry> ptr;
       Page_sublist &pl = *m_page_sublist[Page_entry::SL_LOCKED];
       pl.getPtr(ptr, m_sync_extent_next_page_entry);
+      /**
+       * When writing UNDO_LOCAL_LCP_FIRST it is imperative that
+       * the write of the UNDO log has completed before we
+       * report that the sync of the extent page is completed.
+       */
+      Uint64 lsn_low = m_sync_extent_pages_req.lsn_low;
+      Uint64 lsn_high = m_sync_extent_pages_req.lsn_high;
+      Uint64 min_lsn = lsn_low + (lsn_high << 32);
+      ptr.p->m_lsn = std::max(ptr.p->m_lsn, min_lsn);
       process_lcp_locked(signal, ptr);
     } else if (m_lcp_outstanding == 0) {
       jam();

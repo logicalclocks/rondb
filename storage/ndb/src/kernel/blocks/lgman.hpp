@@ -92,7 +92,10 @@ protected:
 			  GetTabInfoReq * req,
 			  GetTabInfoRef::ErrorCode errorCode);
 
-  Uint64 exec_lcp_frag_ord(Signal*, Uint32, SimulatedBlock* client_block);
+  Uint64 exec_lcp_frag_ord(Signal*,
+                           bool&,
+                           Uint32,
+                           SimulatedBlock* client_block);
 
 public:
   struct Log_waiter
@@ -544,8 +547,13 @@ class Logfile_client {
     return m_lgman->free_log_space(m_logfile_group_id, words, jamBuf);
   }
 
-  Uint64 exec_lcp_frag_ord(Signal *signal, Uint32 local_lcp_id) {
-    return m_lgman->exec_lcp_frag_ord(signal, local_lcp_id, m_client_block);
+  Uint64 exec_lcp_frag_ord(Signal *signal,
+                           bool & first,
+                           Uint32 local_lcp_id) {
+    return m_lgman->exec_lcp_frag_ord(signal,
+                                      first,
+                                      local_lcp_id,
+                                      m_client_block);
   }
 
  private:
