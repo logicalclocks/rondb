@@ -51,9 +51,9 @@ static bool g_use_old_format = false;
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 // #define DEBUG_TSMAN 1
-// #define DEBUG_TSMAN_NUM_EXTENTS 1
-// #define DEBUG_TSMAN_RESTART 1
-// #define DEBUG_TSMAN_IO 1
+#define DEBUG_TSMAN_NUM_EXTENTS 1
+#define DEBUG_TSMAN_RESTART 1
+#define DEBUG_TSMAN_IO 1
 #endif
 
 #ifdef DEBUG_TSMAN
@@ -2284,7 +2284,7 @@ int Tsman::update_page_free_bits(Signal *signal, Local_key *key,
     Uint32 old_uncommitted_bits = old_free_bits & UNCOMMITTED_MASK;
     Uint32 new_free_bits = old_uncommitted_bits | new_committed_bits;
     DEB_TSMAN((
-        "(%u), page:(%u,%u), extent_page: %u, page_no_in_extent: %u,"
+        "(%u), page(%u,%u), extent_page: %u, page_no_in_extent: %u,"
         " old_free_bits: %u, old_uncommitted_bits: %u,"
         " new_free_bits: %u",
         instance(), key->m_file_no, key->m_page_no, preq.m_page.m_page_no,
@@ -2314,7 +2314,7 @@ int Tsman::update_page_free_bits(Signal *signal, Local_key *key,
         ext_data->update_free_bits(page_no_in_extent, new_free_bits);
       } else {
         DEB_TSMAN_IO(
-            ("(%u), page:(%u,%u), extent_page: (%u,%u) "
+            ("(%u), page(%u,%u), extent_page: (%u,%u) "
              "page_no_in_extent: %u,"
              " old_committed_bits: %u,"
              " new_committed_bits: %u",

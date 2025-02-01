@@ -95,16 +95,17 @@ static NDB_TICKS startTime;
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_EMPTY_LCP 1
 //#define DEBUG_END_LCP 1
-//#define DEBUG_LCP_DEL_FILES 1
+#define DEBUG_LCP_DEL_FILES 1
 //#define DEBUG_LCP 1
 //#define DEBUG_EMPTY_LCP 1
+#define DEBUG_LCP_WRITE_CTL 1
 #define DEBUG_UNDO_LCP 1
 //#define DEBUG_LCP_ROW 1
 //#define DEBUG_LCP_DEL 1
 //#define DEBUG_EXTRA_LCP 1
 //#define DEBUG_REDO_CONTROL 1
 //#define DEBUG_REDO_CONTROL_DETAIL 1
-//#define DEBUG_LCP_DD 1
+#define DEBUG_LCP_DD 1
 //#define DEBUG_LCP_STAT 1
 //#define DEBUG_LCP_LAG 1
 //#define DO_TRANSIENT_POOL_STAT 1
@@ -175,6 +176,18 @@ static NDB_TICKS startTime;
   do {                   \
   } while (0)
 #endif
+
+#ifdef DEBUG_LCP_WRITE_CTL
+#define DEB_LCP_WRITE_CTL(arglist)         \
+  do {                           \
+    g_eventLogger->info arglist; \
+  } while (0)
+#else
+#define DEB_LCP_WRITE_CTL(arglist) \
+  do {                   \
+  } while (0)
+#endif
+
 
 #ifdef DEBUG_LCP_DD
 #define DEB_LCP_DD(arglist)      \
@@ -249,6 +262,7 @@ static NDB_TICKS startTime;
 #endif
 
 // #define DEBUG_ABORT
+#define DEBUG_ABORT_RM
 // #define dbg globalSignalLoggers.log
 
 static Uint32 g_TypeOfStart = NodeState::ST_ILLEGAL_TYPE;
@@ -10468,9 +10482,14 @@ void Backup::closeFile(Signal *signal, BackupRecordPtr ptr,
     FsCloseReq::setRemoveFileFlag(req->fileFlag, 1);
   }
 
-#ifdef DEBUG_ABORT
-  g_eventLogger->info("***** a FSCLOSEREQ filePtr.i = %u flags: %x", filePtr.i,
-                      filePtr.p->m_flags);
+#ifdef DEBUG_ABORT_RM
+  g_eventLogger->info("FSCLOSEREQ filePtr.i = %u flags: %x, fileFlag: %u"
+                      ", tab(%u,%u)",
+    filePtr.i,
+    filePtr.p->m_flags,
+    req->fileFlag,
+    filePtr.p->tableId,
+    filePtr.p->fragmentNo);
 #endif
   sendSignal(NDBFS_REF, GSN_FSCLOSEREQ, signal, FsCloseReq::SignalLength, JBA);
 }
@@ -10545,8 +10564,13 @@ void Backup::execFSCLOSECONF(Signal *signal) {
   BackupFilePtr filePtr;
   ndbrequire(c_backupFilePool.getPtr(filePtr, filePtrI));
 
-#ifdef DEBUG_ABORT
-  g_eventLogger->info("***** FSCLOSECONF filePtrI = %u", filePtrI);
+#ifdef DEBUG_ABORT_RM
+  g_eventLogger->info("FSCLOSECONF filePtr.i = %u flags: %x"
+                      ", tab(%u,%u)",
+    filePtr.i,
+    filePtr.p->m_flags,
+    filePtr.p->tableId,
+    filePtr.p->fragmentNo);
 #endif
 
   ndbrequire(filePtr.p->m_flags ==
@@ -14916,7 +14940,7 @@ void Backup::lcp_write_ctl_file(Signal *signal, BackupRecordPtr ptr) {
        * assert here
        * m_row_count 1 == m_lcp_inserts 0
        *
-       * SOVLED
+       * SOLVED
        */
       ndbrequire(ptr.p->m_save_error_code != 0 ||
                  ptr.p->m_row_count == dataFilePtr.p->m_lcp_inserts ||
@@ -14985,22 +15009,27 @@ void Backup::lcp_write_ctl_file(Signal *signal, BackupRecordPtr ptr) {
   ptr.p->m_wait_gci_to_delete = MAX(maxCompletedGci, ptr.p->newestGci);
 
   ndbrequire(m_newestRestorableGci != 0);
-  DEB_LCP(("(%u)tab(%u,%u).%u, use ctl file %u, GCI completed: %u,"
-           " GCI written: %u, createGci: %u",
-           instance(),
-           lcpCtlFilePtr->TableId,
-           lcpCtlFilePtr->FragmentId,
-           lcpCtlFilePtr->CreateTableVersion,
-           (ptr.p->deleteCtlFileNumber == 0 ? 1 : 0),
-           lcpCtlFilePtr->MaxGciCompleted,
-           lcpCtlFilePtr->MaxGciWritten,
-           lcpCtlFilePtr->CreateGci));
-  if (unlikely((lcpCtlFilePtr->MaxGciWritten + 1) < fragPtrP->createGci))
-  {
+  DEB_LCP_WRITE_CTL((
+    "(%u)tab(%u,%u).%u, use ctl file %u, GCI completed: %u,"
+    " GCI written: %u, createGci: %u, valid: %u"
+    ", num_parts: %u, last_file: %u",
+    instance(),
+    lcpCtlFilePtr->TableId,
+    lcpCtlFilePtr->FragmentId,
+    lcpCtlFilePtr->CreateTableVersion,
+    (ptr.p->deleteCtlFileNumber == 0 ? 1 : 0),
+     lcpCtlFilePtr->MaxGciCompleted,
+    lcpCtlFilePtr->MaxGciWritten,
+    lcpCtlFilePtr->CreateGci,
+    valid_flag,
+    ptr.p->m_num_parts_in_lcp,
+    ptr.p->m_last_data_file_number));
+  if (unlikely((lcpCtlFilePtr->MaxGciWritten + 1) < fragPtrP->createGci)) {
     g_eventLogger->info("(%u)tab(%u,%u).%u, use ctl file %u,"
                         " GCI completed: %u,"
                         " GCI written: %u, createGci: %u"
-                        ", ptr.p->newestGci: %u, m_newestRestorableGci: %u",
+                        ", ptr.p->newestGci: %u, m_newestRestorableGci: %u"
+                        ", num_parts: %u, last_file: %u",
                         instance(),
                         lcpCtlFilePtr->TableId,
                         lcpCtlFilePtr->FragmentId,
@@ -15010,7 +15039,9 @@ void Backup::lcp_write_ctl_file(Signal *signal, BackupRecordPtr ptr) {
                         lcpCtlFilePtr->MaxGciWritten,
                         lcpCtlFilePtr->CreateGci,
                         ptr.p->newestGci,
-                        m_newestRestorableGci);
+                        m_newestRestorableGci,
+                        ptr.p->m_num_parts_in_lcp,
+                        ptr.p->m_last_data_file_number);
     ndbrequire((lcpCtlFilePtr->MaxGciWritten + 1) >= fragPtrP->createGci);
   }
   /**
@@ -15320,7 +15351,8 @@ void Backup::execRESTORABLE_GCI_REP(Signal *signal) {
   }
 #ifdef DEBUG_LCP_DEL_FILES
   DeleteLcpFilePtr deleteLcpFilePtr;
-  m_delete_lcp_file_list.first(deleteLcpFilePtr);
+  bool ret = m_delete_lcp_file_list.first(deleteLcpFilePtr);
+  (void)ret;
   Uint32 waitGCI = (deleteLcpFilePtr.i != RNIL64) ? 
            deleteLcpFilePtr.p->waitCompletedGci : 0;
 #endif

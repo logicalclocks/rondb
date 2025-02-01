@@ -50,7 +50,7 @@
 #define JAM_FILE_ID 453
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
-//#define DEBUG_START_RES 1
+#define DEBUG_START_RES 1
 //#define DEBUG_RES 1
 //#define DEBUG_RES_OPEN 1
 //#define DEBUG_RES_PARTS 1
@@ -1411,7 +1411,11 @@ void Restore::read_ctl_file_done(Signal *signal, FilePtr file_ptr,
       lcpCtlFilePtr->LastDataFileNumber == 0 &&
       lcpCtlFilePtr->MaxPageCount == 0) {
     jam();
+#ifdef DEBUG_RES
+    g_eventLogger->info(
+#else
     g_eventLogger->debug(
+#endif
         "Found empty LCP control file, "
         "must have been created by earlier restart,"
         " tab(%u,%u), CTL file: %u",
@@ -1438,7 +1442,11 @@ void Restore::read_ctl_file_done(Signal *signal, FilePtr file_ptr,
       (lcpCtlFilePtr->TableId != file_ptr.p->m_table_id) ||
       (lcpCtlFilePtr->FragmentId != file_ptr.p->m_fragment_id)) {
     jam();
+#ifdef DEBUG_RES
+    g_eventLogger->info(
+#else
     g_eventLogger->debug(
+#endif
         "LCP Control file inconsistency, tab(%u,%u)"
         ", CTL file: %u",
         file_ptr.p->m_table_id, file_ptr.p->m_fragment_id,
@@ -1477,7 +1485,11 @@ void Restore::read_ctl_file_done(Signal *signal, FilePtr file_ptr,
   if (createTableVersion !=
       c_lqh->getCreateSchemaVersion(file_ptr.p->m_table_id)) {
     jam();
+#ifdef DEBUG_RES
+    g_eventLogger->info(
+#else
     g_eventLogger->debug(
+#endif
         "(%u)Found LCP control file from old table"
         ", drop table haven't cleaned up properly"
         ", tab(%u,%u).%u (now %u), createGci:%u,"
@@ -1519,7 +1531,11 @@ void Restore::read_ctl_file_done(Signal *signal, FilePtr file_ptr,
      * but not yet had time to sync the LSN for the LCP. This is flagged
      * by the validFlag not being set in the LCP control file.
      */
+#ifdef DEBUG_RES
+    g_eventLogger->info(
+#else
     g_eventLogger->debug(
+#endif
         "(%u)LCP Control file ok, but not recoverable,"
         " tab(%u,%u), maxGciWritten: %u, restoredGcpId: %u"
         ", CTL file: %u, validFlag: %u",
