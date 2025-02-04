@@ -15945,13 +15945,17 @@ Uint32 Dbtc::initScanrec(ScanRecordPtr scanptr, const ScanTabReq *scanTabReq,
                          UintR scanParallel, const Uint32 apiPtr[],
                          Uint32 apiConnectPtr) {
   const UintR ri = scanTabReq->requestInfo;
-  const Uint32 batchSizeRows = ScanTabReq::getScanBatch(ri);
+  Uint32 batchSizeRows = ScanTabReq::getScanBatch(ri);
   scanptr.p->scanApiRec = apiConnectPtr;
   scanptr.p->scanTableref = tabptr.i;
   scanptr.p->scanSchemaVersion = scanTabReq->tableSchemaVersion;
   scanptr.p->scanNoFrag = 0;
   scanptr.p->scanParallel = scanParallel;
-  scanptr.p->first_batch_size_rows = scanTabReq->first_batch_size;
+  if (batchSizeRows == 0) {
+    /* Use first_batch_size as batch size instead */
+    jam();
+    batchSizeRows = scanTabReq->first_batch_size;
+  }
   scanptr.p->batch_byte_size = scanTabReq->batch_byte_size;
   scanptr.p->batch_size_rows = batchSizeRows;
   scanptr.p->m_scan_block_no = DBLQH;

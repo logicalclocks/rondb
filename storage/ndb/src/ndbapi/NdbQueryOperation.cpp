@@ -3283,7 +3283,16 @@ int NdbQueryImpl::doSend(int nodeId, bool lastFlag) {
         getQueryDef().getQueryType() == NdbQueryDef::MultiScanQuery) {
       batchRows = 1;
     }
-    ScanTabReq::setScanBatch(reqInfo, batchRows);
+    if (batchRows > MAX_PARALLEL_OP_PER_SCAN_WITH_LOCK) {
+      if (ndbd_support_large_batch_size(ndb.getMinDbNodeVersion())) {
+        ScanTabReq::setScanBatch(reqInfo, 0);
+      } else {
+        batchRows = MAX_PARALLEL_OP_PER_SCAN_WITH_LOCK;
+        ScanTabReq::setScanBatch(reqInfo, batchRows);
+      }
+    } else {
+      ScanTabReq::setScanBatch(reqInfo, batchRows);
+    }
     scanTabReq->batch_byte_size = batchByteSize;
     scanTabReq->first_batch_size = batchRows;
 

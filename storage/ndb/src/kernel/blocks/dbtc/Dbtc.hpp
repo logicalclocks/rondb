@@ -1951,13 +1951,10 @@ class Dbtc : public SimulatedBlock {
     Uint32 m_schema_version_scan_cookie;
 
     // Number of operation records per scanned fragment
-    // Number of operations in first batch
     // Max number of bytes per batch
-    union {
-      Uint16 first_batch_size_rows;
-      Uint16 batch_size_rows;
-    };
+    Uint16 batch_size_rows;
     Uint32 batch_byte_size;
+
     Uint32 m_scan_block_no;
 
     Uint32 scanRequestInfo;  // ScanFrag format

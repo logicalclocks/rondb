@@ -2290,9 +2290,20 @@ int NdbScanOperation::prepareSendScan(Uint32 /*aTC_ConnectPtr*/,
   assert(m_scan_buffer == nullptr);
   m_scan_buffer = buf;
 
+  if (batch_size > MAX_PARALLEL_OP_PER_SCAN_WITH_LOCK) {
+    if (ndbd_support_large_batch_size(
+        theReceiver.m_ndb->getMinDbNodeVersion())) {
+      ScanTabReq::setScanBatch(req->requestInfo, 0);
+    } else {
+      batch_size = MAX_PARALLEL_OP_PER_SCAN_WITH_LOCK;
+      ScanTabReq::setScanBatch(req->requestInfo, batch_size);
+    }
+  } else {
+    ScanTabReq::setScanBatch(req->requestInfo, batch_size);
+  }
   req->batch_byte_size = batch_byte_size;
   req->first_batch_size = batch_size;
-  ScanTabReq::setScanBatch(req->requestInfo, batch_size);
+
 
   for (Uint32 i = 0; i < theParallelism; i++) {
     m_receivers[i]->do_setup_ndbrecord(m_attribute_record,
