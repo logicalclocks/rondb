@@ -57,17 +57,17 @@ static bool g_dbg_lcp = false;
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 // #define DEBUG_PAGE_ENTRY 1
-// #define DEBUG_PGMAN_IO 1
+#define DEBUG_PGMAN_IO 1
 // #define DEBUG_PGMAN_WRITE 1
 // #define DEBUG_GET_PAGE 1
-// #define DEBUG_PGMAN_PAGE 1
+#define DEBUG_PGMAN_PAGE 1
 // #define DEBUG_PGMAN_EXTRA 1
 // #define DEBUG_PGMAN_LCP_TIME_STAT 1
 // #define DEBUG_PGMAN 1
 // #define DEBUG_PGMAN_LCP_EXTRA 1
-// #define DEBUG_PGMAN_LCP 1
+#define DEBUG_PGMAN_LCP 1
 // #define DEBUG_PGMAN_LCP_STAT 1
-// #define DEBUG_PGMAN_PREP_PAGE 1
+#define DEBUG_PGMAN_PREP_PAGE 1
 #endif
 
 #ifdef DEBUG_PAGE_ENTRY
@@ -422,7 +422,6 @@ void Pgman::execREAD_CONFIG_REQ(Signal *signal) {
       // param name refers to unbound entries ending up on stack
       m_param.m_lirs_stack_mult = entries;
     }
-    if (isNdbMtLqh())
     {
       jam();
       // divide between workers - wl4391_todo give extra worker less
@@ -511,10 +510,7 @@ void Pgman::execSTTOR(Signal *signal) {
   switch (startPhase) {
     case 1: {
       jam();
-      if (!isNdbMtLqh()) {
-        c_tup = (Dbtup *)globalData.getBlock(DBTUP);
-        c_backup = (Backup *)globalData.getBlock(BACKUP);
-      } else if (instance() <= getLqhWorkers()) {
+      if (instance() <= getLqhWorkers()) {
         c_tup = (Dbtup *)globalData.getBlock(DBTUP, instance());
         c_backup = (Backup *)globalData.getBlock(BACKUP, instance());
         ndbrequire(c_tup != 0);
@@ -561,7 +557,7 @@ void Pgman::sendSTTORRY(Signal *signal) {
   signal->theData[3] = 1;
   signal->theData[4] = 3;
   signal->theData[5] = 255;  // No more start phases from missra
-  BlockReference cntrRef = !isNdbMtLqh() ? NDBCNTR_REF : PGMAN_REF;
+  BlockReference cntrRef = PGMAN_REF;
   sendSignal(cntrRef, GSN_STTORRY, signal, 6, JBB);
 }
 
@@ -790,7 +786,7 @@ bool Pgman::get_page_entry(EmulatedJamBuffer *jamBuf, Ptr<Page_entry> &ptr,
                            Uint32 fragmentId, Uint32 flags) {
   if (m_extra_pgman && tableId != RNIL) {
     ndbabort();
-  } else if (!m_extra_pgman && isNdbMtLqh() && tableId == RNIL) {
+  } else if (!m_extra_pgman && tableId == RNIL) {
     ndbabort();
   }
 
@@ -1514,6 +1510,8 @@ void Pgman::sendSYNC_EXTENT_PAGES_REQ(Signal *signal) {
   req->senderData = 0;
   req->senderRef = reference();
   req->lcpOrder = SyncExtentPagesReq::RESTART_SYNC;
+  req->lsn_low = 0;
+  req->lsn_high = 0;
   sendSignal(reference(), GSN_SYNC_EXTENT_PAGES_REQ, signal,
              SyncExtentPagesReq::SignalLength, JBA);
 }
@@ -1538,7 +1536,7 @@ void Pgman::execEND_LCPREQ(Signal *signal) {
   m_end_lcp_req = *req;
   ndbrequire(!m_lcp_ongoing);
   if (!get_first_ordered_fragment(fragPtr)) {
-    if (m_extra_pgman || !isNdbMtLqh()) {
+    if (m_extra_pgman) {
       jam();
       sendSYNC_EXTENT_PAGES_REQ(signal);
       return;
@@ -1572,7 +1570,7 @@ void Pgman::execSYNC_PAGE_CACHE_CONF(Signal *signal) {
     NDB_TICKS now = getHighResTimer();
     Uint64 lcp_time = NdbTick_Elapsed(m_lcp_start_time, now).milliSec();
     lcp_end_point(Uint32(lcp_time), true, true);
-    if (isNdbMtLqh()) {
+    {
       jam();
       sendEND_LCPCONF(signal);
       return;
@@ -1868,6 +1866,15 @@ void Pgman::check_restart_lcp(Signal *signal, bool check_prepare_lcp) {
       Ptr<Page_entry> ptr;
       Page_sublist &pl = *m_page_sublist[Page_entry::SL_LOCKED];
       pl.getPtr(ptr, m_sync_extent_next_page_entry);
+      /**
+       * When writing UNDO_LOCAL_LCP_FIRST it is imperative that
+       * the write of the UNDO log has completed before we
+       * report that the sync of the extent page is completed.
+       */
+      Uint64 lsn_low = m_sync_extent_pages_req.lsn_low;
+      Uint64 lsn_high = m_sync_extent_pages_req.lsn_high;
+      Uint64 min_lsn = lsn_low + (lsn_high << 32);
+      ptr.p->m_lsn = std::max(ptr.p->m_lsn, min_lsn);
       process_lcp_locked(signal, ptr);
     } else if (m_lcp_outstanding == 0) {
       jam();
@@ -2009,6 +2016,20 @@ Uint32 Pgman::get_num_lcp_pages_to_write(bool is_prepare_phase) {
       jam();
       max_count = m_max_lcp_pages_outstanding - lcp_outstanding;
     }
+#ifdef DEBUG_PGMAN_LCP
+    if (max_count == 0) {
+      DEB_PGMAN_LCP(("current_io_waits: %u, lcp out: %u, prep_lcp out: %u"
+                     ", max_lcp out: %llu, max_prep_lcp out: %llu, prepare: %u"
+                     ", max_io_waits: %u",
+        m_stats.m_current_io_waits,
+        m_lcp_outstanding,
+        m_prep_lcp_outstanding,
+        m_max_lcp_pages_outstanding,
+        m_prep_max_lcp_pages_outstanding,
+        is_prepare_phase,
+        m_param.m_max_io_waits));
+    }
+#endif
     return max_count;
   } else {
     jam();
@@ -2016,6 +2037,16 @@ Uint32 Pgman::get_num_lcp_pages_to_write(bool is_prepare_phase) {
      * Already used up all room for outstanding disk IO. Continue
      * processing LCP when disk IO bandwidth is available again.
      */
+    DEB_PGMAN_LCP(("current_io_waits: %u, lcp out: %u, prep_lcp out: %u"
+                   ", max_lcp out: %llu, max_prep_lcp out: %llu, prepare: %u"
+                   ", max_io_waits: %u",
+      m_stats.m_current_io_waits,
+      m_lcp_outstanding,
+      m_prep_lcp_outstanding,
+      m_max_lcp_pages_outstanding,
+      m_prep_max_lcp_pages_outstanding,
+      is_prepare_phase,
+      m_param.m_max_io_waits));
     return 0;
   }
   ndbassert(max_count > 0);
@@ -2066,6 +2097,7 @@ void Pgman::handle_prepare_lcp(Signal *signal, FragmentRecordPtr fragPtr) {
              ", m_prep_lcp_outstanding = %u",
              instance(), ptr.p->m_file_no, ptr.p->m_page_no, ptr.i,
              (unsigned int)state, m_prep_lcp_outstanding + 1));
+        ndbassert((ptr.p->m_state & Page_entry::PREP_LCP) == 0);
         ptr.p->m_state |= Page_entry::PREP_LCP;
 
         if (c_tup != 0) {
@@ -2221,6 +2253,7 @@ void Pgman::handle_lcp(Signal *signal, Uint32 tableId, Uint32 fragmentId) {
         m_dirty_list_lcp.removeFirst(ptr);
         m_dirty_list_lcp_out.addLast(ptr);
         ptr.p->m_dirty_state = Pgman::IN_LCP_OUT_LIST;
+        ndbassert((ptr.p->m_state & Page_entry::LCP) == 0);
         ptr.p->m_state |= Page_entry::LCP;
         if (c_tup != 0) {
           c_tup->disk_page_unmap_callback(0, ptr.p->m_real_page_i,
@@ -2814,7 +2847,7 @@ void Pgman::execSYNC_EXTENT_PAGES_REQ(Signal *signal) {
   jamEntry();
   Ptr<Page_entry> ptr;
 
-  ndbrequire(m_extra_pgman || !isNdbMtLqh());
+  ndbrequire(m_extra_pgman);
   ndbrequire(m_lcp_table_id == RNIL);
   if (m_sync_extent_pages_ongoing) {
     /**
@@ -2959,6 +2992,7 @@ void Pgman::process_lcp_locked(Signal *signal, Ptr<Page_entry> ptr) {
           memcpy(copy.p, org.p, sizeof(GlobalPage));
           ptr.p->m_copy_page_i = copy.i;
 
+          ndbassert((ptr.p->m_state & Page_entry::LCP) == 0);
           ptr.p->m_state |= Page_entry::LCP;
 
           DEB_PGMAN_PAGE(("(%u)pageout():extent, page(%u,%u):%u:%x", instance(),
@@ -3112,7 +3146,8 @@ void Pgman::fsreadconf(Signal *signal, Ptr<Page_entry> ptr) {
       DEB_PGMAN_IO(("(%u)pagein completed: page(%u,%u):%x, "
                     "on_page(%u,%u), tab(%u,%u) lsn(%u,%u)"
                     ", uncommitted_used_space: %u, "
-                    "m_restart_seq: %u",
+                    "m_restart_seq: %u,"
+                    " free_space: %u",
                     instance(),
                     ptr.p->m_file_no,
                     ptr.p->m_page_no,
@@ -3124,7 +3159,8 @@ void Pgman::fsreadconf(Signal *signal, Ptr<Page_entry> ptr) {
                     page->m_page_header.m_page_lsn_hi,
                     page->m_page_header.m_page_lsn_lo,
                     fix_page->uncommitted_used_space,
-                    fix_page->m_restart_seq));
+                    fix_page->m_restart_seq,
+                    fix_page->free_space));
     }
   }
   ndbrequire(m_stats.m_current_io_waits > 0);
@@ -3263,9 +3299,32 @@ void Pgman::fswriteconf(Signal *signal, Ptr<Page_entry> ptr) {
 
   Page_state state = ptr.p->m_state;
 
-  DEB_PGMAN_IO(("(%u)pageout completed, page(%u,%u):%u:%x", instance(),
-                ptr.p->m_file_no, ptr.p->m_page_no, ptr.p->m_real_page_i,
-                state));
+#ifdef DEBUG_PGMAN_IO
+  Ptr<GlobalPage> pagePtr;
+  ndbrequire(m_global_page_pool.getPtr(pagePtr, ptr.p->m_real_page_i));
+  File_formats::Datafile::Data_page *page =
+    (File_formats::Datafile::Data_page *)pagePtr.p;
+  Tup_fixsize_page *fix_page = (Tup_fixsize_page*)page;
+  DEB_PGMAN_IO(("(%u)pageout completed: page(%u,%u):%u,%x, "
+                "on_page(%u,%u), tab(%u,%u) lsn(%u,%u)"
+                ", uncommitted_used_space: %u, "
+                "m_restart_seq: %u,"
+                " free_space: %u",
+                instance(),
+                ptr.p->m_file_no,
+                ptr.p->m_page_no,
+                ptr.p->m_real_page_i,
+                (unsigned int)state,
+                fix_page->m_page_no,
+                fix_page->m_file_no,
+                fix_page->m_table_id,
+                fix_page->m_fragment_id,
+                page->m_page_header.m_page_lsn_hi,
+                page->m_page_header.m_page_lsn_lo,
+                fix_page->uncommitted_used_space,
+                fix_page->m_restart_seq,
+                fix_page->free_space));
+#endif
 
   ndbrequire(state & Page_entry::PAGEOUT);
   ndbrequire(state & Page_entry::DIRTY);
@@ -4419,7 +4478,7 @@ Page_cache_client::Page_cache_client(SimulatedBlock *block,
     : m_jamBuf(getThrJamBuf()) {
   m_block = numberToBlock(block->number(), block->instance());
 
-  if (pgman->isNdbMtLqh() && pgman->instance() == 0) {
+  if (pgman->instance() == 0) {
     m_pgman_proxy = (PgmanProxy *)pgman;
     m_pgman = 0;
   } else {

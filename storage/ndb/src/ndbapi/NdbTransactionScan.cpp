@@ -151,8 +151,13 @@ int NdbTransaction::receiveSCAN_TABCONF(const NdbApiSignal *aSignal,
             retVal = 0;  // We have result data, wakeup receiver
         } else {
           const Uint32 info = *ops++;
-          const Uint32 opCount = ScanTabConf::getRows(info);
+          Uint32 opCount = ScanTabConf::getRows(info);
+          if (opCount == ScanTabConf::OLD_MAX_BATCH_SIZE) {
+            opCount = *ops++;
+          }
           const Uint32 totalLen = ScanTabConf::getLength(info);
+          DBUG_PRINT("info", ("SCAN_TABCONF rows: %u, totalLen: %u",
+            opCount, totalLen));
           if (tcPtrI == RNIL && opCount == 0) {
             theScanningOp->receiver_completed(tOp);
             retVal = 0;

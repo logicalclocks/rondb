@@ -1,6 +1,6 @@
 /*
   Copyright (c) 2011, 2024, Oracle and/or its affiliates.
-  Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
+  Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
@@ -784,7 +784,7 @@ void Trpman::execSTTOR(Signal *signal) {
   signal->theData[3] = 1;
   signal->theData[4] = 8;
   signal->theData[5] = 255;
-  BlockReference ref = !isNdbMtLqh() ? NDBCNTR_REF : TRPMAN_REF;
+  BlockReference ref = TRPMAN_REF;
   sendSignal(ref, GSN_STTORRY, signal, 6, JBB);
   return;
 }
@@ -1084,7 +1084,7 @@ void Trpman::sendSYNC_THREAD_VIA_CONF(Signal *signal, Uint32 senderData,
   jamEntry();
   SyncThreadViaReqConf *conf = (SyncThreadViaReqConf *)signal->getDataPtr();
   conf->senderData = senderData;
-  const BlockReference receiver = isMultiThreaded() ? TRPMAN_REF : QMGR_REF;
+  const BlockReference receiver = TRPMAN_REF;
   sendSignal(receiver, GSN_SYNC_THREAD_VIA_CONF, signal, signal->getLength(),
              JBA);
 }
@@ -1094,7 +1094,7 @@ void Trpman::execSYNC_THREAD_VIA_REQ(Signal *signal) {
   SyncThreadViaReqConf *req = (SyncThreadViaReqConf *)signal->getDataPtr();
 
   /* Some ugliness as we have nowhere handy to put the sender's reference */
-  ndbassert(refToMain(req->senderRef) == (isMultiThreaded() ? TRPMAN : QMGR));
+  ndbassert(refToMain(req->senderRef) == TRPMAN);
 
   Callback cb = {safe_cast(&Trpman::sendSYNC_THREAD_VIA_CONF), req->senderData};
   /* Make sure all external signals handled by transporters belonging to this

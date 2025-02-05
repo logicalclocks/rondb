@@ -1465,6 +1465,8 @@ int NdbReceiver::execSCANOPCONF(Uint32 tcPtrI, Uint32 len, Uint32 rows) {
 
   const Uint32 tmp = m_received_result_length;
   m_expected_result_length = len;
+  DBUG_PRINT("info", ("execSCANOPCONF: expected_len: %u, len received: %u",
+    len, tmp));
   return (tmp == len ? 1 : 0);
 }
 

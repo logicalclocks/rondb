@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -493,7 +493,7 @@ void Qmgr::execREAD_CONFIG_REQ(Signal *signal) {
   ndbrequire(p != 0);
 
   m_num_multi_trps = 0;
-  if (isNdbMt() && globalData.ndbMtSendThreads) {
+  if (globalData.ndbMtSendThreads) {
     ndb_mgm_get_int_parameter(p, CFG_DB_NODE_GROUP_TRANSPORTERS,
                               &m_num_multi_trps);
     if (m_num_multi_trps == 0) {
@@ -1271,8 +1271,8 @@ void Qmgr::execCM_REGREQ(Signal *signal) {
      */
     g_eventLogger->info(
         "discarding CM_REGREQ from %u "
-        "as we're not yet connected (isNdbMt: %u)",
-        cmRegReq->nodeId, (unsigned)isNdbMt());
+        "as we're not yet connected (ndbmtd: true)",
+        cmRegReq->nodeId);
 
     return;
   }

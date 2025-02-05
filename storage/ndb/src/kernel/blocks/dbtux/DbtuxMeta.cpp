@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -470,7 +470,7 @@ void Dbtux::execALTER_INDX_IMPL_REQ(Signal *signal) {
   ndbassert(!m_is_query_block);
   // Uint32 save = indexPtr.p->m_state;
   if (!(refToBlock(req->senderRef) == DBDICT) &&
-      !(isNdbMt() && refToMain(req->senderRef) == DBTUX &&
+      !(refToMain(req->senderRef) == DBTUX &&
         refToInstance(req->senderRef) == 0)) {
     /**
      * DICT has a really distorted view of the world...

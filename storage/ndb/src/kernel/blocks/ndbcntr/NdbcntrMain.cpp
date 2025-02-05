@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -279,8 +279,7 @@ void Ndbcntr::execAPI_START_REP(Signal *signal) {
   jamEntry();
   if (refToBlock(signal->getSendersBlockRef()) == QMGR) {
     for (Uint32 i = 0; i < ALL_BLOCKS_SZ; i++) {
-      if (isNdbMtLqh() || ALL_BLOCKS[i].in_ndbd)
-        sendSignal(ALL_BLOCKS[i].Ref, GSN_API_START_REP, signal, 1, JBB);
+      sendSignal(ALL_BLOCKS[i].Ref, GSN_API_START_REP, signal, 1, JBB);
     }
   }
 }
@@ -2170,8 +2169,7 @@ void Ndbcntr::execCNTR_START_REP(Signal *signal) {
    * Inform all interested blocks that node has started
    */
   for (Uint32 i = 0; i < ALL_BLOCKS_SZ; i++) {
-    if (isNdbMtLqh() || ALL_BLOCKS[i].in_ndbd)
-      sendSignal(ALL_BLOCKS[i].Ref, GSN_NODE_START_REP, signal, 1, JBB);
+    sendSignal(ALL_BLOCKS[i].Ref, GSN_NODE_START_REP, signal, 1, JBB);
   }
 
   g_eventLogger->info("Node %u has completed its restart", nodeId);
@@ -4216,9 +4214,8 @@ void Ndbcntr::updateNodeState(Signal *signal, const NodeState &newState) const {
   stateRep->nodeState.setNodeGroup(c_nodeGroup);
 
   for (Uint32 i = 0; i < ALL_BLOCKS_SZ; i++) {
-    if (isNdbMtLqh() || ALL_BLOCKS[i].in_ndbd)
-      sendSignal(ALL_BLOCKS[i].Ref, GSN_NODE_STATE_REP, signal,
-                 NodeStateRep::SignalLength, JBB);
+    sendSignal(ALL_BLOCKS[i].Ref, GSN_NODE_STATE_REP, signal,
+               NodeStateRep::SignalLength, JBB);
   }
 }
 
@@ -5419,16 +5416,13 @@ void Ndbcntr::send_restorable_gci_rep_to_backup(Signal *signal, Uint32 gci) {
    */
   Uint32 ldm_workers = globalData.ndbMtLqhWorkers;
   signal->theData[0] = gci;
-  if (isNdbMtLqh()) {
+  {
     jam();
     for (Uint32 i = 1; i <= ldm_workers; i++) {
       jam();
       BlockReference ref = numberToRef(BACKUP, i, getOwnNodeId());
       sendSignal(ref, GSN_RESTORABLE_GCI_REP, signal, 1, JBB);
     }
-  } else {
-    jam();
-    sendSignal(BACKUP_REF, GSN_RESTORABLE_GCI_REP, signal, 1, JBB);
   }
 }
 #define ZVAR_SECRETSFILE_BAT_INDEX 0
@@ -6485,7 +6479,6 @@ Ndbcntr::send_to_all_backup(Signal *signal,
                             Uint32 sig_len)
 {
   Uint32 ldm_workers = globalData.ndbMtLqhWorkers;
-  if (isNdbMtLqh())
   {
     jam();
     for (Uint32 i = 1; i <= ldm_workers; i++) {
@@ -6493,9 +6486,6 @@ Ndbcntr::send_to_all_backup(Signal *signal,
       BlockReference ref = numberToRef(BACKUP, i, getOwnNodeId());
       sendSignal(ref, gsn, signal, sig_len, JBB);
     }
-  } else {
-    jam();
-    sendSignal(BACKUP_REF, gsn, signal, sig_len, JBB);
   }
   return ldm_workers;
 }
@@ -6506,7 +6496,6 @@ Ndbcntr::send_to_all_lqh(Signal *signal,
                          Uint32 sig_len)
 {
   Uint32 ldm_workers = globalData.ndbMtLqhWorkers;
-  if (isNdbMtLqh())
   {
     jam();
     for (Uint32 i = 1; i <= ldm_workers; i++) {
@@ -6514,9 +6503,6 @@ Ndbcntr::send_to_all_lqh(Signal *signal,
       BlockReference ref = numberToRef(DBLQH, i, getOwnNodeId());
       sendSignal(ref, gsn, signal, sig_len, JBB);
     }
-  } else {
-    jam();
-    sendSignal(DBLQH_REF, gsn, signal, sig_len, JBB);
   }
   return ldm_workers;
 }

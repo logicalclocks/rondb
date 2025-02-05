@@ -1,5 +1,5 @@
 /* Copyright (c) 2008, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2022, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2022, 2025, Hopsworks and/or its affiliates.
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
@@ -30,7 +30,7 @@
 Dbtup_client::Dbtup_client(SimulatedBlock *block, SimulatedBlock *dbtup)
     : m_jamBuf(block->jamBuffer()) {
   assert(m_jamBuf == getThrJamBuf());
-  if (dbtup->isNdbMtLqh() && dbtup->instance() == 0) {
+  if (dbtup->instance() == 0) {
     thrjam(m_jamBuf);
     m_dbtup_proxy = (DbtupProxy *)dbtup;
     m_dbtup = 0;

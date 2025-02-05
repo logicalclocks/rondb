@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2008, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2025, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -64,5 +65,3 @@ void APZJobBuffer::signal2buffer(Signal25 *signal, BufferEntry &buf) {}
 TimeQueue::TimeQueue() {}
 
 TimeQueue::~TimeQueue() {}
-
-bool NdbIsMultiThreaded() { return true; }

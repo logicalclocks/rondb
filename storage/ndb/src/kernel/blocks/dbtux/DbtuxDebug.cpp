@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -420,7 +420,6 @@ NdbOut &operator<<(NdbOut &out, const Dbtux::TreePos &pos) {
 }
 
 NdbOut &operator<<(NdbOut &out, const Dbtux::ScanOp &scan) {
-  Dbtux *tux = (Dbtux *)globalData.getBlock(DBTUX);
   out << "[ScanOp " << hex << &scan;
   out << " [state " << dec << scan.m_state << "]";
   out << " [lockwait " << dec << scan.m_lockwait << "]";
@@ -432,35 +431,6 @@ NdbOut &operator<<(NdbOut &out, const Dbtux::ScanOp &scan) {
   out << " [savePointId " << dec << scan.m_savePointId << "]";
   out << " [accLockOp " << hex << scan.m_accLockOp << "]";
   out << " [accLockOps";
-  if (globalData.isNdbMtLqh)  // TODO
-    return out;
-  {
-    const Dbtux::ScanLock_fifo::Head &head = scan.m_accLockOps;
-    Dbtux::ConstLocal_ScanLock_fifo list(tux->c_scanLockPool, head);
-    Dbtux::ScanLockPtr lockPtr;
-    list.first(lockPtr);
-    while (lockPtr.i != RNIL) {
-      out << " " << hex << lockPtr.p->m_accLockOp;
-      list.next(lockPtr);
-    }
-  }
-  out << "]";
-  out << " [readCommitted " << dec << scan.m_readCommitted << "]";
-  out << " [lockMode " << dec << scan.m_lockMode << "]";
-  out << " [descending " << dec << scan.m_descending << "]";
-  out << " [pos " << scan.m_scanPos << "]";
-  out << " [ent " << scan.m_scanEnt << "]";
-  for (unsigned i = 0; i <= 1; i++) {
-    const Dbtux::ScanBound scanBound = scan.m_scanBound[i];
-    const Dbtux::Index &index = *tux->c_indexPool.getPtr(scan.m_indexId);
-    Dbtux::KeyDataC keyBoundData(index.m_keySpec, true);
-    Dbtux::KeyBoundC keyBound(keyBoundData);
-    tux->unpackBound(tux->c_ctx.c_searchKey, scanBound, keyBound);
-    out << " [scanBound " << dec << i;
-    out << " "
-        << keyBound.print(tux->c_ctx.c_debugBuffer, Dbtux::DebugBufferBytes);
-    out << "]";
-  }
   return out;
 }
 

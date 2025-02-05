@@ -260,8 +260,10 @@ struct SyncExtentPagesReq {
   Uint32 senderData;
   Uint32 senderRef;
   LcpOrder lcpOrder;
+  Uint32 lsn_low;
+  Uint32 lsn_high;
 
-  static constexpr Uint32 SignalLength = 3;
+  static constexpr Uint32 SignalLength = 5;
 };
 
 struct SyncExtentPagesConf {

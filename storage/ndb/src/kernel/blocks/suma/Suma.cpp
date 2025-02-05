@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -3164,16 +3164,13 @@ void Suma::SyncRecord::nextScan(Signal *signal) {
   req->tableId = tabPtr.p->m_tableId;
   req->requestInfo = 0;
   req->savePointId = 0;
-  ScanFragReq::setLockMode(req->requestInfo, 0);
   ScanFragReq::setHoldLockFlag(req->requestInfo, 1);
-  ScanFragReq::setKeyinfoFlag(req->requestInfo, 0);
   if (m_requestInfo & SubSyncReq::NoDisk) {
     ScanFragReq::setNoDiskFlag(req->requestInfo, 1);
   }
 
   if (m_requestInfo & SubSyncReq::LM_Exclusive) {
     ScanFragReq::setLockMode(req->requestInfo, 1);
-    ScanFragReq::setHoldLockFlag(req->requestInfo, 1);
     ScanFragReq::setKeyinfoFlag(req->requestInfo, 1);
   }
 
@@ -5039,7 +5036,6 @@ void Suma::execFIRE_TRIG_ORD(Signal *signal) {
   LinearSectionPtr lsptr[3];
   if (signal->getNoOfSections() > 0) {
     jam();
-    ndbassert(isNdbMtLqh());
     SectionHandle handle(this, signal);
 
     ndbrequire(setTriggerBufferLock(trigId));

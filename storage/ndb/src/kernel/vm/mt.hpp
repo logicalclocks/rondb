@@ -1,5 +1,5 @@
 /* Copyright (c) 2008, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -176,11 +176,6 @@ void mt_section_lock();
 void mt_section_unlock();
 
 int mt_checkDoJob(Uint32 receiver_thread_idx);
-
-/**
- * Are we (not) multi threaded
- */
-bool NdbIsMultiThreaded();
 
 /**
  * Get a bitset with a set bit for each thread holding an instance of any block

@@ -1564,27 +1564,10 @@ void Dbdih::execREAD_CONFIG_REQ(Signal *signal) {
    * Ignore AutomaticThreadConfig configuration for single threaded data
    * node (ndbd).
    */
-  if (use_auto_thread_config && !globalData.isNdbMt) {
-    jam();
-    use_auto_thread_config = 0;
-  }
-
   Uint32 use_classic_fragmentation = 1;
   ndb_mgm_get_int_parameter(p, CFG_DB_CLASSIC_FRAGMENTATION,
                             &use_classic_fragmentation);
   m_use_classic_fragmentation = use_classic_fragmentation;
-
-  /**
-   * Ignore ClassicFragmentation configuration for single threaded data
-   * node (ndbd).
-   */
-  if (!m_use_classic_fragmentation && !globalData.isNdbMt) {
-    jam();
-    m_use_classic_fragmentation = 1;
-    g_eventLogger->info(
-        "ClassicFragmentation configuration ignored, "
-        "ndbd does not support non classic fragmentation");
-  }
 
   if (m_use_classic_fragmentation && use_auto_thread_config) {
     jam();
@@ -1593,7 +1576,6 @@ void Dbdih::execREAD_CONFIG_REQ(Signal *signal) {
 
   c_fragments_per_node_ = 0;
   if (!m_use_classic_fragmentation) {
-    ndbrequire(globalData.isNdbMt);
     jam();
     c_fragments_per_node_ = 2;
     ndb_mgm_get_int_parameter(p, CFG_DB_PARTITIONS_PER_NODE,
@@ -2558,7 +2540,7 @@ void Dbdih::execSTART_PERMCONF(Signal *signal) {
     UpgradeProtocolOrd *ord = (UpgradeProtocolOrd *)signal->getDataPtrSend();
     ord->type = UpgradeProtocolOrd::UPO_ENABLE_MICRO_GCP;
     EXECUTE_DIRECT(QMGR, GSN_UPGRADE_PROTOCOL_ORD, signal, signal->getLength());
-  } else if (isMultiThreaded()) {
+  } else {
     /**
      * Prevent this start, as there is some non-thread-safe upgrade code for
      * this case in LQH.
@@ -7576,6 +7558,11 @@ done:
   } else {
     jam();
     if (gci != restorableGCI) {
+      if ((gci + 1) == restorableGCI) {
+        g_eventLogger->info("The master saw us finish GCI: %u, but in reality"
+                            " we finished GCI: %u, we will use the newer",
+                            gci, restorableGCI);
+      }
       g_eventLogger->info("gci: %u, maxLcpIndex = %u, maxLcpId = %u",
         gci, maxLcpIndex, maxLcpId);
       Ptr<TabRecord> tabPtr;
@@ -7586,7 +7573,8 @@ done:
       getFragstore(tabPtr.p, takeOverPtr.p->toCurrentFragid, fragPtr);
       dump_replica_info(fragPtr.p);
     }
-    ndbassert(gci == restorableGCI);
+    ndbassert(gci == restorableGCI || (gci + 1) == restorableGCI);
+    gci = restorableGCI;
     replicaPtr.p->m_restorable_gci = gci;
     Uint32 startGci = replicaPtr.p->maxGciCompleted[maxLcpIndex] + 1;
     if (startGci > gci) startGci = gci;

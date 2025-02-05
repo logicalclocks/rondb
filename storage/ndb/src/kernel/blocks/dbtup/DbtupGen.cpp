@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2024, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -553,7 +553,7 @@ void Dbtup::execSTTOR(Signal *signal) {
     signal->theData[5] = 8;
     signal->theData[6] = 50;
     signal->theData[7] = 255;
-    BlockReference cntrRef = !isNdbMtLqh() ? NDBCNTR_REF : DBTUP_REF;
+    BlockReference cntrRef = DBTUP_REF;
     sendSignal(cntrRef, GSN_STTORRY, signal, 8, JBB);
   }
 }  // Dbtup::execSTTOR()
@@ -858,7 +858,7 @@ void Dbtup::execNDB_STTOR(Signal *signal) {
       break;
   }  // switch
   signal->theData[0] = cownref;
-  BlockReference cntrRef = !isNdbMtLqh() ? NDBCNTR_REF : DBTUP_REF;
+  BlockReference cntrRef = DBTUP_REF;
   sendSignal(cntrRef, GSN_NDB_STTORRY, signal, 1, JBB);
 }  // Dbtup::execNDB_STTOR()
 

@@ -1,0 +1,7 @@
+!include ../my.cnf
+[cluster_config]
+BatchSize=4000
+BatchByteSize=1M
+MaxScanBatchSize=16M
+
+LongMessageBuffer=16M

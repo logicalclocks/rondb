@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1726,7 +1726,7 @@ Configuration::setupConfiguration()
       }
     }
   }
-  if (NdbIsMultiThreaded()) {
+  {
     if (thrconfigstring) {
       g_eventLogger->info(
           "ThreadConfig: input: %s LockExecuteThreadToCPU: %s => parsed: %s",
@@ -1754,9 +1754,6 @@ Configuration::setupConfiguration()
    * This is parts of get_multithreaded_config
    */
   do {
-    globalData.isNdbMt = NdbIsMultiThreaded();
-    require(globalData.isNdbMt);
-
     globalData.ndbMtReceiveThreads =
       m_thr_config.getThreadCount(THRConfig::T_RECV);
     globalData.ndbMtSendThreads =
@@ -1797,7 +1794,6 @@ Configuration::setupConfiguration()
         m_thr_config.getThreadCount(THRConfig::T_REP);
 
     require(globalData.ndbMtMainThreads <= 2);
-    globalData.isNdbMtLqh = true;
     {
       if (m_thr_config.getMtClassic())
       {
@@ -1806,8 +1802,6 @@ Configuration::setupConfiguration()
                    "Multithreaded classic is no longer supported");
       }
     }
-    require(globalData.isNdbMtLqh);
-
     Uint32 ldm_threads = m_thr_config.getThreadCount(THRConfig::T_LDM);
     Uint32 ldm_workers = ldm_threads;
     if (ldm_threads == 0)
@@ -2153,9 +2147,7 @@ Configuration::calcSizeAlt(ConfigValues * ownConfig)
                           globalData.theMaxNoOfUniqueHashIndexes;
 
   Uint32 ldmInstances = 1;
-  if (globalData.isNdbMtLqh) {
-    ldmInstances = globalData.ndbMtLqhWorkers;
-  }
+  ldmInstances = globalData.ndbMtLqhWorkers;
 
   Uint32 tcInstances = 1;
   if (globalData.ndbMtTcWorkers > 1)
@@ -2613,10 +2605,6 @@ int Configuration::setLockCPU(NdbThread *pThread, enum ThreadTypes type) {
        */
       res = m_thr_config.do_bind_watchdog(pThread);
     }
-  } else if (!NdbIsMultiThreaded()) {
-    BlockNumber list[1];
-    list[0] = numberToBlock(TRPMAN, 1);
-    res = m_thr_config.do_bind(pThread, list, 1);
   }
 
   if (res != 0) {
@@ -2652,10 +2640,6 @@ int Configuration::setThreadPrio(NdbThread *pThread, enum ThreadTypes type) {
        */
       res = m_thr_config.do_thread_prio_watchdog(pThread, thread_prio);
     }
-  } else if (!NdbIsMultiThreaded()) {
-    BlockNumber list[1];
-    list[0] = numberToBlock(TRPMAN, 1);
-    res = m_thr_config.do_thread_prio(pThread, list, 1, thread_prio);
   }
 
   if (res != 0) {

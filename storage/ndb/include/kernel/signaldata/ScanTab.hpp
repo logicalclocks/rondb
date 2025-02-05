@@ -509,6 +509,8 @@ class ScanTabConf {
   /** for 3 word conf */
   static Uint32 getLength(Uint32 opDataInfo) { return opDataInfo >> 10; }
   static Uint32 getRows(Uint32 opDataInfo) { return opDataInfo & 1023; }
+
+  static const Uint32 OLD_MAX_BATCH_SIZE = 1023;
 };
 
 /**

@@ -1,0 +1,23 @@
+-- source include/have_ndb.inc
+
+#
+# Create a normal table with primary key
+#
+CREATE TABLE t1 (
+  pk1 INT NOT NULL PRIMARY KEY,
+  attr1 INT NOT NULL
+) ENGINE=ndbcluster PARTITION BY KEY() PARTITIONS 1;
+
+#
+# insert records into table
+#
+let $1=10000;
+disable_query_log;
+while ($1)
+{
+ eval insert into t1 values($1, $1+9);
+ dec $1;
+}
+select * from t1;
+enable_query_log;
+drop table t1;
