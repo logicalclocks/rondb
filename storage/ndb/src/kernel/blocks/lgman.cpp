@@ -57,6 +57,7 @@
 //#define DEBUG_LGMAN_SPLIT 1
 #define DEBUG_DROP_LG 1
 #define DEBUG_SYNC_LSN 1
+#define DEBUG_LGMAN_START 1
 //#define DEBUG_LGMAN_LCP 1
 //#define DEBUG_UNDO_SPACE 1
 //#define DEBUG_UNDO_BUFFER 1
@@ -66,6 +67,17 @@
 #define DEB_CALLBACK_WORDS(arglist) do { g_eventLogger->info arglist ; } while (0)
 #else
 #define DEB_CALLBACK_WORDS(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_LGMAN_START
+#define DEB_LGMAN_START(arglist)       \
+  do {                           \
+    g_eventLogger->info arglist; \
+  } while (0)
+#else
+#define DEB_LGMAN_START(arglist) \
+  do {                     \
+  } while (0)
 #endif
 
 #ifdef DEBUG_SYNC_LSN
@@ -721,7 +733,7 @@ log_buf_print(const Uint32 *ptr, Uint32 len)
  */
 
 #define DEBUG_UNDO_EXECUTION 0
-#define DEBUG_SEARCH_LOG_HEAD 0
+#define DEBUG_SEARCH_LOG_HEAD 1
 
 #define FREE_BUFFER_MARGIN(lgman, ptr) (4 * lgman->get_undo_page_words(ptr))
 
@@ -4228,6 +4240,10 @@ void Lgman::execFSREADCONF(Signal *signal) {
   file_ptr.p->m_online.m_lsn = lsn;
   file_ptr.p->m_start_lsn = lsn;
 
+  DEB_LGMAN_START(("UNDO sort log file: %u, lsn: %llu",
+    lg_ptr.p->m_outstanding_fs,
+    lsn));
+
   /**
    * Insert into m_files in sorted order
    */
@@ -4284,16 +4300,19 @@ void Lgman::find_log_head_in_file(Signal *signal, Ptr<Logfile_group> lg_ptr,
   ndbrequire(head > tail);
   Uint32 diff = head - tail;
 
-  if (DEBUG_SEARCH_LOG_HEAD)
-    printf("tail: %d(%lld) head: %d last: %d(%lld) -> ", tail,
-           file_ptr.p->m_online.m_lsn, head, curr, last_lsn);
+  if (DEBUG_SEARCH_LOG_HEAD) {
+    g_eventLogger->info("tail: %d(%lld) head: %d last: %d(%lld) -> ", tail,
+      file_ptr.p->m_online.m_lsn, head, curr, last_lsn);
+  }
   if (last_lsn > file_ptr.p->m_online.m_lsn) {
     /**
      * Move forward in binary search since page LSN is higher than the largest
      * LSN found so far.
      */
     jam();
-    if (DEBUG_SEARCH_LOG_HEAD) printf("moving tail ");
+    if (DEBUG_SEARCH_LOG_HEAD) {
+      g_eventLogger->info("moving tail ");
+    }
 
     file_ptr.p->m_online.m_lsn = last_lsn;
     lg_ptr.p->m_file_pos[TAIL].m_idx = tail = curr;
@@ -4305,7 +4324,9 @@ void Lgman::find_log_head_in_file(Signal *signal, Ptr<Logfile_group> lg_ptr,
      * left in the log file.
      */
     jam();
-    if (DEBUG_SEARCH_LOG_HEAD) printf("moving head ");
+    if (DEBUG_SEARCH_LOG_HEAD) {
+      g_eventLogger->info("moving head ");
+    }
 
     lg_ptr.p->m_file_pos[HEAD].m_idx = head = curr;
   }
@@ -4315,9 +4336,10 @@ void Lgman::find_log_head_in_file(Signal *signal, Ptr<Logfile_group> lg_ptr,
     // We need to find more pages to be sure...
     lg_ptr.p->m_file_pos[HEAD].m_ptr_i = curr = ((head + tail) >> 1);
 
-    if (DEBUG_SEARCH_LOG_HEAD)
+    if (DEBUG_SEARCH_LOG_HEAD) {
       g_eventLogger->info("-> new search tail: %d(%lld) head: %d -> %d", tail,
                           file_ptr.p->m_online.m_lsn, head, curr);
+    }
 
     Uint32 page_id = lg_ptr.p->m_pos[CONSUMER].m_current_pos.m_ptr_i;
     file_ptr.p->m_online.m_outstanding = page_id;
@@ -4361,8 +4383,9 @@ void Lgman::find_log_head_in_file(Signal *signal, Ptr<Logfile_group> lg_ptr,
    * use the WAL protocol to write pages to disk.
    */
 
-  if (DEBUG_SEARCH_LOG_HEAD)
+  if (DEBUG_SEARCH_LOG_HEAD) {
     g_eventLogger->info("-> found last page in binary search: %d", tail);
+  }
 
   /**
    * m_next_lsn indicates next LSN to write, so we step this forward one
@@ -4373,6 +4396,13 @@ void Lgman::find_log_head_in_file(Signal *signal, Ptr<Logfile_group> lg_ptr,
   lg_ptr.p->m_last_read_lsn = file_ptr.p->m_online.m_lsn;
   lg_ptr.p->m_last_synced_lsn = file_ptr.p->m_online.m_lsn;
 
+  if (DEBUG_SEARCH_LOG_HEAD) {
+    g_eventLogger->info("next_lsn: %llu, last_read_lsn: %llu, "
+                        "last_synced_lsn: %llu",
+                        lg_ptr.p->m_next_lsn,
+                        lg_ptr.p->m_last_read_lsn,
+                        lg_ptr.p->m_last_synced_lsn);
+  }
   /**
    * Set HEAD and TAIL position to use when we start logging again.
    * We might have to change those during the check of the end of
@@ -4425,6 +4455,13 @@ void Lgman::find_log_head_end_check(Signal *signal, Ptr<Logfile_group> lg_ptr,
     lg_ptr.p->m_next_lsn = (file_ptr.p->m_online.m_lsn + 1);
     lg_ptr.p->m_last_read_lsn = file_ptr.p->m_online.m_lsn;
     lg_ptr.p->m_last_synced_lsn = file_ptr.p->m_online.m_lsn;
+    if (DEBUG_SEARCH_LOG_HEAD) {
+      g_eventLogger->info("end_check: next_lsn: %llu, last_read_lsn: %llu, "
+                          "last_synced_lsn: %llu",
+                          lg_ptr.p->m_next_lsn,
+                          lg_ptr.p->m_last_read_lsn,
+                          lg_ptr.p->m_last_synced_lsn);
+    }
   }
 
   curr++;
