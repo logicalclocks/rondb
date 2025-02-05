@@ -141,7 +141,6 @@ void Dbtup::sendAPI_TRANSID_AI(Signal *signal, Uint32 recBlockRef,
   const Uint32 nodeId = refToNode(recBlockRef);
 
   // Test prerequisites:
-  ndbassert(getNodeInfo(nodeId).m_connected);
   ndbassert(getNodeInfo(nodeId).m_type >= NodeInfo::API &&
             getNodeInfo(nodeId).m_type <= NodeInfo::MGM);
 

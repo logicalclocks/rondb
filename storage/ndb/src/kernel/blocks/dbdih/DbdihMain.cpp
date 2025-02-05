@@ -7558,6 +7558,11 @@ done:
   } else {
     jam();
     if (gci != restorableGCI) {
+      if ((gci + 1) == restorableGCI) {
+        g_eventLogger->info("The master saw us finish GCI: %u, but in reality"
+                            " we finished GCI: %u, we will use the newer",
+                            gci, restorableGCI);
+      }
       g_eventLogger->info("gci: %u, maxLcpIndex = %u, maxLcpId = %u",
         gci, maxLcpIndex, maxLcpId);
       Ptr<TabRecord> tabPtr;
@@ -7568,7 +7573,8 @@ done:
       getFragstore(tabPtr.p, takeOverPtr.p->toCurrentFragid, fragPtr);
       dump_replica_info(fragPtr.p);
     }
-    ndbassert(gci == restorableGCI);
+    ndbassert(gci == restorableGCI || (gci + 1) == restorableGCI);
+    gci = restorableGCI;
     replicaPtr.p->m_restorable_gci = gci;
     Uint32 startGci = replicaPtr.p->maxGciCompleted[maxLcpIndex] + 1;
     if (startGci > gci) startGci = gci;
