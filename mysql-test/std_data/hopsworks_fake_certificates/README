@@ -1,0 +1,33 @@
+These certificates and keys are supposed to be representative of certificates used in Hopsworks.
+They are used in at least ../../suite/rdrs2-golang/
+
+Explanation for each file and how to verify it:
+- hw_root.pem is a self-signed certificate.
+  $ openssl verify -CAfile hw_root.pem hw_root.pem
+  Use this in .Security.TLS.RootCACertFile.
+- hw_intermediate.pem is signed by hw_root.pem.
+  $ openssl verify -CAfile hw_root.pem hw_intermediate.pem
+- hw_service.pem is signed by hw_intermediate.pem.
+  $ openssl verify -show_chain -CAfile <(cat hw_root.pem hw_intermediate.pem) hw_service.pem
+- hw_service_and_intermediate.pem is a concatenation of hw_service.pem and hw_intermediate.pem.
+  $ diff <(cat hw_service.pem hw_intermediate.pem) hw_service_and_intermediate.pem
+  Use this in .Security.TLS.CertificateFile.
+- hw_project.pem is signed by hw_intermediate.pem.
+  $ openssl verify -show_chain -CAfile <(cat hw_root.pem hw_intermediate.pem) hw_project.pem
+  "project" refers to a hopsworks project, meaning a database.
+  The subject is "ehlo5__meb10000"
+  $ openssl x509 -in hw_project.pem -noout -subject
+  The project name is "ehlo5" which should be extracted from the subject.
+- hw_project_and_intermediate.pem is a concatenation of hw_project.pem and hw_intermediate.pem.
+  $ diff <(cat hw_project.pem hw_intermediate.pem) hw_project_and_intermediate.pem
+  Use this in .Security.TLS.TestParameters.ClientCertFile.
+- hw_root.key is the private key corresponding to the public key in hw_root.pem.
+  $ diff <(openssl pkey -in hw_root.key -pubout) <(openssl x509 -in hw_root.pem -noout -pubkey)
+- hw_intermediate.key is the private key corresponding to the public key in hw_intermediate.pem.
+  $ diff <(openssl pkey -in hw_intermediate.key -pubout) <(openssl x509 -in hw_intermediate.pem -noout -pubkey)
+- hw_service.key is the private key corresponding to the public key in hw_service.pem.
+  $ diff <(openssl pkey -in hw_service.key -pubout) <(openssl x509 -in hw_service.pem -noout -pubkey)
+  Use this in .Security.TLS.PrivateKeyFile.
+- hw_project.key is the private key corresponding to the public key in hw_project.pem.
+  $ diff <(openssl pkey -in hw_project.key -pubout) <(openssl x509 -in hw_project.pem -noout -pubkey)
+  Use this in .Security.TLS.TestParameters.ClientKeyFile.

@@ -1,3 +1,8 @@
+## Run rdrs2-golang_common.test without TLS
+?   	hopsworks.ai/rdrs2/internal/common	[no test files]
+
+Golang test for hopsworks.ai/rdrs2/internal/common exited with code 0
+## Run rdrs2-golang_common.test with TLS and server-side cert
 ?   	hopsworks.ai/rdrs2/internal/common	[no test files]
 
 Golang test for hopsworks.ai/rdrs2/internal/common exited with code 0

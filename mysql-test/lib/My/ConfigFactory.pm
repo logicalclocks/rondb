@@ -393,9 +393,7 @@ my @rdrs_rules = (
   { 'bind-address'  => \&fix_bind_address_rdrs },
   { 'port'          => \&fix_port },
   { 'rondisport'    => \&fix_rondis_port },
-  { 'ssl-ca'        => \&fix_ssl_ca },
-  { 'ssl-cert'      => \&fix_ssl_server_cert },
-  { 'ssl-key'       => \&fix_ssl_server_key },
+  { 'std-data'      => \&fix_std_data },
 );
 
 if (IS_WINDOWS) {

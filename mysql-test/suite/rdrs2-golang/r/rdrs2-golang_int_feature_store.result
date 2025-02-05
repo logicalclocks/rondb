@@ -1,3 +1,8 @@
+## Run rdrs2-golang_int_feature_store.test without TLS
+ok  	hopsworks.ai/rdrs2/internal/integrationtests/feature_store
+
+Golang test for hopsworks.ai/rdrs2/internal/integrationtests/feature_store exited with code 0
+## Run rdrs2-golang_int_feature_store.test with TLS and server-side cert
 ok  	hopsworks.ai/rdrs2/internal/integrationtests/feature_store
 
 Golang test for hopsworks.ai/rdrs2/internal/integrationtests/feature_store exited with code 0

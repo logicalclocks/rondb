@@ -62,13 +62,5 @@ func TestMain(m *testing.M) {
 	}
 	defer cleanup()
 
-	// serverCleanup, err := testutils.StartServer()
-	// if err != nil {
-	// 	retcode = 1
-	// 	log.Fatalf("Failed to start server: %v", err)
-	// 	return
-	// }
-	// defer serverCleanup()
-
 	retcode = m.Run()
 }
