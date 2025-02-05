@@ -60,14 +60,14 @@ static bool g_dbg_lcp = false;
 #define DEBUG_PGMAN_IO 1
 // #define DEBUG_PGMAN_WRITE 1
 // #define DEBUG_GET_PAGE 1
-// #define DEBUG_PGMAN_PAGE 1
+#define DEBUG_PGMAN_PAGE 1
 // #define DEBUG_PGMAN_EXTRA 1
 // #define DEBUG_PGMAN_LCP_TIME_STAT 1
 // #define DEBUG_PGMAN 1
 // #define DEBUG_PGMAN_LCP_EXTRA 1
 #define DEBUG_PGMAN_LCP 1
 // #define DEBUG_PGMAN_LCP_STAT 1
-// #define DEBUG_PGMAN_PREP_PAGE 1
+#define DEBUG_PGMAN_PREP_PAGE 1
 #endif
 
 #ifdef DEBUG_PAGE_ENTRY
@@ -2016,6 +2016,20 @@ Uint32 Pgman::get_num_lcp_pages_to_write(bool is_prepare_phase) {
       jam();
       max_count = m_max_lcp_pages_outstanding - lcp_outstanding;
     }
+#ifdef DEBUG_PGMAN_LCP
+    if (max_count == 0) {
+      DEB_PGMAN_LCP(("current_io_waits: %u, lcp out: %u, prep_lcp out: %u"
+                     ", max_lcp out: %llu, max_prep_lcp out: %llu, prepare: %u"
+                     ", max_io_waits: %u",
+        m_stats.m_current_io_waits,
+        m_lcp_outstanding,
+        m_prep_lcp_outstanding,
+        m_max_lcp_pages_outstanding,
+        m_prep_max_lcp_pages_outstanding,
+        is_prepare_phase,
+        m_param.m_max_io_waits));
+    }
+#endif
     return max_count;
   } else {
     jam();
@@ -2023,6 +2037,16 @@ Uint32 Pgman::get_num_lcp_pages_to_write(bool is_prepare_phase) {
      * Already used up all room for outstanding disk IO. Continue
      * processing LCP when disk IO bandwidth is available again.
      */
+    DEB_PGMAN_LCP(("current_io_waits: %u, lcp out: %u, prep_lcp out: %u"
+                   ", max_lcp out: %llu, max_prep_lcp out: %llu, prepare: %u"
+                   ", max_io_waits: %u",
+      m_stats.m_current_io_waits,
+      m_lcp_outstanding,
+      m_prep_lcp_outstanding,
+      m_max_lcp_pages_outstanding,
+      m_prep_max_lcp_pages_outstanding,
+      is_prepare_phase,
+      m_param.m_max_io_waits));
     return 0;
   }
   ndbassert(max_count > 0);
@@ -2073,6 +2097,7 @@ void Pgman::handle_prepare_lcp(Signal *signal, FragmentRecordPtr fragPtr) {
              ", m_prep_lcp_outstanding = %u",
              instance(), ptr.p->m_file_no, ptr.p->m_page_no, ptr.i,
              (unsigned int)state, m_prep_lcp_outstanding + 1));
+        ndbassert((ptr.p->m_state & Page_entry::PREP_LCP) == 0);
         ptr.p->m_state |= Page_entry::PREP_LCP;
 
         if (c_tup != 0) {
@@ -2228,6 +2253,7 @@ void Pgman::handle_lcp(Signal *signal, Uint32 tableId, Uint32 fragmentId) {
         m_dirty_list_lcp.removeFirst(ptr);
         m_dirty_list_lcp_out.addLast(ptr);
         ptr.p->m_dirty_state = Pgman::IN_LCP_OUT_LIST;
+        ndbassert((ptr.p->m_state & Page_entry::LCP) == 0);
         ptr.p->m_state |= Page_entry::LCP;
         if (c_tup != 0) {
           c_tup->disk_page_unmap_callback(0, ptr.p->m_real_page_i,
@@ -2966,6 +2992,7 @@ void Pgman::process_lcp_locked(Signal *signal, Ptr<Page_entry> ptr) {
           memcpy(copy.p, org.p, sizeof(GlobalPage));
           ptr.p->m_copy_page_i = copy.i;
 
+          ndbassert((ptr.p->m_state & Page_entry::LCP) == 0);
           ptr.p->m_state |= Page_entry::LCP;
 
           DEB_PGMAN_PAGE(("(%u)pageout():extent, page(%u,%u):%u:%x", instance(),
