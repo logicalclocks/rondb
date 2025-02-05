@@ -3164,16 +3164,13 @@ void Suma::SyncRecord::nextScan(Signal *signal) {
   req->tableId = tabPtr.p->m_tableId;
   req->requestInfo = 0;
   req->savePointId = 0;
-  ScanFragReq::setLockMode(req->requestInfo, 0);
   ScanFragReq::setHoldLockFlag(req->requestInfo, 1);
-  ScanFragReq::setKeyinfoFlag(req->requestInfo, 0);
   if (m_requestInfo & SubSyncReq::NoDisk) {
     ScanFragReq::setNoDiskFlag(req->requestInfo, 1);
   }
 
   if (m_requestInfo & SubSyncReq::LM_Exclusive) {
     ScanFragReq::setLockMode(req->requestInfo, 1);
-    ScanFragReq::setHoldLockFlag(req->requestInfo, 1);
     ScanFragReq::setKeyinfoFlag(req->requestInfo, 1);
   }
 

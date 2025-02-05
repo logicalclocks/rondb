@@ -16811,7 +16811,8 @@ void Dblqh::execSCAN_NEXTREQ(Signal *signal) {
       return;
     }
   }
-  if (unlikely(max_rows > scanPtr->m_max_batch_size_rows)) {
+  if (unlikely(max_rows > scanPtr->m_max_batch_size_rows &&
+               scanPtr->readCommitted == 0)) {
     jam();
     /**
      * Extend list...
@@ -16827,10 +16828,8 @@ void Dblqh::execSCAN_NEXTREQ(Signal *signal) {
       return;
     }
     scanPtr->m_max_batch_size_rows = max_rows;
-  } else if (unlikely(max_rows < scanPtr->m_max_batch_size_rows)) {
-    jam();
-    scanPtr->m_max_batch_size_rows = max_rows;
   }
+  scanPtr->m_max_batch_size_rows = max_rows;
 
   /* --------------------------------------------------------------------
    * If scanLockHold = true we need to unlock previous round of
@@ -17038,20 +17037,12 @@ void Dblqh::scanReleaseLocksLab(Signal *signal,
   ndbrequire(is_scan_ok(scanPtr, fragstatus));
   check_send_scan_hb_rep(signal, scanPtr, regTcPtr);
   while (true) {
-    Uint32 tmp = 0;
-    // Moz
-    if (!scanPtr->m_aggregation) {
-      tmp =
-        get_acc_ptr_from_scan_record(scanPtr,
-                                     scanPtr->scanReleaseCounter-1,
-                                     false);
-    } else {
-      tmp =
-        get_acc_ptr_from_scan_record(scanPtr,
-                                     0,
-                                     false);
-    }
-    const Uint32 sig1 = tmp;
+    const Uint32 accOpPtr = scanPtr->readCommitted ?
+      get_acc_ptr_from_scan_record(scanPtr, 0, false) :
+      get_acc_ptr_from_scan_record(scanPtr,
+                                   scanPtr->scanReleaseCounter-1,
+                                   false);
+    const Uint32 sig1 = accOpPtr;
     const Uint32 sig0 = scanPtr->scanAccPtr;
     SimulatedBlock *block = scanPtr->scanBlock;
     ExecFunction f = scanPtr->scanFunction_NEXT_SCANREQ;
@@ -17341,7 +17332,7 @@ void Dblqh::init_acc_ptr_list(ScanRecord *scanP) { scanP->scan_acc_index = 0; }
 Uint32 Dblqh::get_acc_ptr_from_scan_record(ScanRecord *scanP, Uint32 index,
                                            bool crash_flag) {
   Uint32 *acc_ptr;
-  if (!((index < MAX_PARALLEL_OP_PER_SCAN_WITH_LOCK) &&
+  if (!((index < MAX_PARALLEL_OP_PER_SCAN_RC) &&
          index < scanP->scan_acc_index)) {
     ndbrequire(crash_flag);
     return RNIL;
@@ -17354,7 +17345,7 @@ void Dblqh::set_acc_ptr_in_scan_record(ScanRecord *scanP, Uint32 index,
                                        Uint32 acc) {
   Uint32 *acc_ptr;
   ndbrequire((index == 0 || scanP->scan_acc_index == index) &&
-             (index < MAX_PARALLEL_OP_PER_SCAN_WITH_LOCK));
+             (index < MAX_PARALLEL_OP_PER_SCAN_RC));
   scanP->scan_acc_index = index + 1;
   i_get_acc_ptr(scanP, acc_ptr, index);
   *acc_ptr = acc;
@@ -18548,13 +18539,13 @@ void Dblqh::nextScanConfScanLab(Signal *signal, ScanRecord *const scanPtr,
     jamDebug();
     check_send_scan_hb_rep(signal, scanPtr, tcConnectptr.p);
     scanPtr->scan_check_lcp_stop = 0;
-    if (!scanPtr->m_aggregation) {
+    if (scanPtr->readCommitted) {
       set_acc_ptr_in_scan_record(scanPtr,
-                                 scanPtr->m_curr_batch_size_rows,
+                                 0,
                                  accOpPtr);
     } else {
       set_acc_ptr_in_scan_record(scanPtr,
-                                 0,
+                                 scanPtr->m_curr_batch_size_rows,
                                  accOpPtr);
     }
 
@@ -18938,11 +18929,10 @@ void Dblqh::scanTupkeyConfLab(Signal* signal,
 
   // Moz
   const Uint32 rows = scanPtr->m_curr_batch_size_rows;
-  Uint32 tmp = scanPtr->m_aggregation ?
+  const Uint32 accOpPtr = scanPtr->readCommitted ?
                   get_acc_ptr_from_scan_record(scanPtr, 0, false) :
                   get_acc_ptr_from_scan_record(scanPtr, rows, false);
 
-  const Uint32 accOpPtr= tmp;
   if (accOpPtr != (Uint32)-1) {
     c_acc->execACCKEY_ORD_no_ptr(signal, accOpPtr);
     jamEntry();
@@ -19020,7 +19010,8 @@ void Dblqh::scanTupkeyConfLab(Signal* signal,
     } else {
       jam();
       scanPtr->scanReleaseCounter = rows + 1;
-      scanReleaseLocksLab(signal, regTcPtr);
+      check_send_scan_hb_rep(signal, scanPtr, regTcPtr);
+      scanLockReleasedLab(signal, regTcPtr);
       return;
     }
   }
@@ -19034,7 +19025,7 @@ void Dblqh::scanTupkeyConfLab(Signal* signal,
     jamDebug();
     scanPtr->scanFlag = NextScanReq::ZSCAN_NEXT_COMMIT;
     // Moz DEBUG
-    Uint32 index = scanPtr->m_aggregation ? 0 :
+    Uint32 index = (scanPtr->readCommitted) ? 0 :
                    scanPtr->m_curr_batch_size_rows-1;
     Uint32 accOpPtr= get_acc_ptr_from_scan_record(scanPtr,
 					   index,
@@ -19080,16 +19071,15 @@ void Dblqh::scanTupkeyRefLab(Signal* signal,
 
   Uint32 rows = scanPtr->m_curr_batch_size_rows;
   Uint32 accOpPtr = (Uint32)-1;
-  if (!scanPtr->m_aggregation) {
-    accOpPtr = get_acc_ptr_from_scan_record(scanPtr, rows, false);
-  } else {
+  if (scanPtr->readCommitted) {
     accOpPtr = get_acc_ptr_from_scan_record(scanPtr, 0, false);
+  } else {
+    accOpPtr = get_acc_ptr_from_scan_record(scanPtr, rows, false);
   }
   if (accOpPtr != (Uint32)-1) {
     c_acc->execACCKEY_ORD_no_ptr(signal, accOpPtr);
     jamEntryDebug();
   } else {
-    ndbassert(refToBlock(scanPtr->scanBlockref) != getDBACC());
     jamDebug();
   }
   if (unlikely(scanPtr->scanCompletedStatus == ZTRUE)) {
@@ -19119,16 +19109,18 @@ void Dblqh::scanTupkeyRefLab(Signal* signal,
     if (scanPtr->scanLockHold == ZTRUE && rows > 0) {
       jam();
       scanPtr->scanReleaseCounter = 1;
+      /* --------------------------------------------------------------------
+       *       WE NEED TO RELEASE ALL LOCKS CURRENTLY
+       *       HELD BY THIS SCAN.
+       * -------------------------------------------------------------------- */
+      scanReleaseLocksLab(signal, tcConnectptr.p);
     } else {
       jam();
       scanPtr->m_curr_batch_size_rows = rows + 1;
       scanPtr->scanReleaseCounter = rows + 1;
+      check_send_scan_hb_rep(signal, scanPtr, tcConnectptr.p);
+      scanLockReleasedLab(signal, tcConnectptr.p);
     }  // if
-    /* --------------------------------------------------------------------
-     *       WE NEED TO RELEASE ALL LOCKS CURRENTLY
-     *       HELD BY THIS SCAN.
-     * -------------------------------------------------------------------- */
-    scanReleaseLocksLab(signal, tcConnectptr.p);
     return;
   }  // if
 
@@ -19166,7 +19158,8 @@ void Dblqh::scanTupkeyRefLab(Signal* signal,
      * -----------------------------------------------------------------------
      */
     scanPtr->scanReleaseCounter = rows + 1;
-    scanReleaseLocksLab(signal, tcConnectptr.p);
+    check_send_scan_hb_rep(signal, scanPtr, tcConnectptr.p);
+    scanLockReleasedLab(signal, tcConnectptr.p);
     return;
   } else {
     // MOZ DEBUG PRINT
@@ -19503,7 +19496,7 @@ Uint32 Dblqh::initScanrec(const ScanFragReq *scanFragReq, Uint32 aiLen,
     return ScanFragRef::ZTOO_MANY_ACTIVE_SCAN_ERROR;
   }
 
-  {
+  if (scanPtr->readCommitted == 0) {
     DEBUG_RES_OWNER_GUARD(refToBlock(reference()) << 16 | 999);
 
     if (unlikely(!seize_acc_ptr_list(scanPtr, 0, max_rows))) {
@@ -19741,7 +19734,7 @@ bool Dblqh::finishScanrec(Signal *signal, ScanRecordPtr &restart_scan,
   ScanRecord *const scanPtr = scanptr.p;
   Uint32 reserved = scanPtr->m_reserved;
 
-  if (reserved == 0) {
+  if (reserved == 0 && scanPtr->readCommitted == 0) {
     release_acc_ptr_list(scanPtr);
   }
 
