@@ -33,8 +33,8 @@ func GetClientTLSConfig() (*tls.Config, error) {
 	}
 
 	// For testing, we will connect to a machine, probably localhost, and during
-  // handshake receive a server certificate that is not valid for that machine.
-  // We could set `clientTLSConfig.InsecureSkipVerify = true` to accept the
+	// handshake receive a server certificate that is not valid for that machine.
+	// We could set `clientTLSConfig.InsecureSkipVerify = true` to accept the
 	// certificate anyways, but this will accept any certificate unconditionally,
 	// even if it's e.g. issued via the wrong CA. Instead, we override the
 	// ServerName used for validation.

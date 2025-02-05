@@ -64,21 +64,21 @@ func TestPKReadOmitRequired(t *testing.T) {
 	testclient.SendHttpRequest(t, config.PK_HTTP_VERB, url, string(body),
 		"a Column name in the Field section is null", http.StatusBadRequest)
 
-        col = ""
+	col = ""
 	filter = testclient.NewFilter(&col, val)
 	param.Filters = filter
 	body, _ = json.MarshalIndent(param, "", "\t")
 	testclient.SendHttpRequest(t, config.PK_HTTP_VERB, url, string(body),
 		"a Column name in the Field section is empty", http.StatusBadRequest)
 
-        col = "col"
-        val = ""
+	col = "col"
+	val = ""
 	filter = testclient.NewFilter(&col, val)
 	param.Filters = filter
 	body, _ = json.MarshalIndent(param, "", "\t")
 	testclient.SendHttpRequest(t, config.PK_HTTP_VERB, url, string(body),
 		"Wrong number of primary-key columns. Expecting: 2 Got: 1",
-                http.StatusBadRequest)
+		http.StatusBadRequest)
 
 	// Test. Large filter column names.
 	col = "col"
@@ -92,7 +92,6 @@ func TestPKReadOmitRequired(t *testing.T) {
 	testclient.SendHttpRequest(t, config.PK_HTTP_VERB, url, string(body),
 		"a column to read is missing a name", http.StatusBadRequest)
 
-
 }
 
 func TestPKReadLargeColumns(t *testing.T) {
@@ -100,7 +99,7 @@ func TestPKReadLargeColumns(t *testing.T) {
 		t.Skip("Skipping test as it requires REST and REST Interface is disabled")
 	}
 	// Test. Large filter column names.
-        col := "col12345678901234567890123456789012345678901234567890123456789012"
+	col := "col12345678901234567890123456789012345678901234567890123456789012"
 	val := "val"
 	param := api.PKReadBody{
 		Filters:     testclient.NewFilter(&col, val),
@@ -110,7 +109,7 @@ func TestPKReadLargeColumns(t *testing.T) {
 	body, _ := json.MarshalIndent(param, "", "\t")
 	url := testutils.NewPKReadURL("db", "table")
 	testclient.SendHttpRequest(t, config.PK_HTTP_VERB, url, string(body),
-                "identifier is too large: col12345678901234567890123456789012345678901234567890123456789012",
+		"identifier is too large: col12345678901234567890123456789012345678901234567890123456789012",
 		http.StatusBadRequest)
 
 	// Test. Large read column names.
@@ -238,27 +237,27 @@ func TestPKUniqueParams(t *testing.T) {
 
 // DB/Table does not exist
 func TestPKERROR_011(t *testing.T) {
- 	if !config.GetAll().REST.Enable {
- 		t.Skip("Skipping test as it requires REST and REST Interface is disabled")
- 	}
- 	pkCol := "id0"
- 	pkVal := "1"
- 	param := api.PKReadBody{
- 		Filters:     testclient.NewFilter(&pkCol, pkVal),
- 		ReadColumns: testclient.NewReadColumn("col0"),
- 		OperationID: testclient.NewOperationID(64),
- 	}
+	if !config.GetAll().REST.Enable {
+		t.Skip("Skipping test as it requires REST and REST Interface is disabled")
+	}
+	pkCol := "id0"
+	pkVal := "1"
+	param := api.PKReadBody{
+		Filters:     testclient.NewFilter(&pkCol, pkVal),
+		ReadColumns: testclient.NewReadColumn("col0"),
+		OperationID: testclient.NewOperationID(64),
+	}
 
- 	body, _ := json.MarshalIndent(param, "", "\t")
+	body, _ := json.MarshalIndent(param, "", "\t")
 
- 	// Only works if API key is enabled
- 	url := testutils.NewPKReadURL("DB001_XXX", "table_1")
- 	testclient.SendHttpRequest(t, config.PK_HTTP_VERB, url, string(body),
- 		"", http.StatusUnauthorized)
+	// Only works if API key is enabled
+	url := testutils.NewPKReadURL("DB001_XXX", "table_1")
+	testclient.SendHttpRequest(t, config.PK_HTTP_VERB, url, string(body),
+		"", http.StatusUnauthorized)
 
- 	url = testutils.NewPKReadURL(testdbs.DB001, "table_1_XXX")
- 	testclient.SendHttpRequest(t, config.PK_HTTP_VERB, url, string(body),
- 		common.ERROR_011(), http.StatusNotFound)
+	url = testutils.NewPKReadURL(testdbs.DB001, "table_1_XXX")
+	testclient.SendHttpRequest(t, config.PK_HTTP_VERB, url, string(body),
+		common.ERROR_011(), http.StatusNotFound)
 }
 
 // column does not exist

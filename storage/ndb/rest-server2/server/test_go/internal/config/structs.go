@@ -53,7 +53,7 @@ type GRPC struct {
 
 func (g *GRPC) Validate() error {
 	if g.Enable {
-                return errors.New("gRPC not supported in this RonDB version")
+		return errors.New("gRPC not supported in this RonDB version")
 	}
 	return nil
 }
