@@ -55,7 +55,8 @@
 //#define DEBUG_LGMAN 1
 //#define DEBUG_LGMAN_EXTRA 1
 //#define DEBUG_LGMAN_SPLIT 1
-//#define DEBUG_DROP_LG 1
+#define DEBUG_DROP_LG 1
+#define DEBUG_SYNC_LSN 1
 //#define DEBUG_LGMAN_LCP 1
 //#define DEBUG_UNDO_SPACE 1
 //#define DEBUG_UNDO_BUFFER 1
@@ -65,6 +66,17 @@
 #define DEB_CALLBACK_WORDS(arglist) do { g_eventLogger->info arglist ; } while (0)
 #else
 #define DEB_CALLBACK_WORDS(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_SYNC_LSN
+#define DEB_SYNC_LSN(arglist)       \
+  do {                           \
+    g_eventLogger->info arglist; \
+  } while (0)
+#else
+#define DEB_SYNC_LSN(arglist) \
+  do {                     \
+  } while (0)
 #endif
 
 #ifdef DEBUG_LGMAN
@@ -2488,6 +2500,14 @@ int Logfile_client::sync_lsn(Signal *signal, Uint64 lsn, Request *req,
       m_client_block->sendSignal(m_lgman->reference(), GSN_CONTINUEB, signal, 4,
                                  JBB);
     }
+    DEB_SYNC_LSN(("Wait UNDO log last_synced_lsn: %llu, page lsn: %llu,"
+                  " flush: %u, m_max_sync_req_lsn: %llu,"
+                  " m_last_sync_req_lsn: %llu",
+      ptr.p->m_last_synced_lsn,
+      lsn,
+      send_force_flush,
+      ptr.p->m_max_sync_req_lsn,
+      ptr.p->m_last_sync_req_lsn));
     return 0;
   }
   jamBlock(m_client_block);
