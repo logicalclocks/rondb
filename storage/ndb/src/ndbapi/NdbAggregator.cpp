@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
+ * Copyright (c) 2024, 2025, Hopsworks and/or its affiliates.
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License, version 2.0,
  * as published by the Free Software Foundation.
@@ -43,7 +43,7 @@
 #define DEB(...) do { } while (0)
 #endif
 
-#define PROGRAM_HEADER_SIZE 2
+#define PROGRAM_HEADER_SIZE 8
 #define RESULT_HEADER_SIZE 3
 #define RESULT_ITEM_HEADER_SIZE 1
 
@@ -739,6 +739,14 @@ bool NdbAggregator::Finalize() {
 
   buffer_[0] = (0x0721) << 16 | curr_prog_pos_;
   buffer_[1] = n_gb_cols_ << 16 | n_agg_results_;
+  buffer_[2] = PUSHDOWN_AGGREGATION_VERSION;
+
+  // Initialize the next 5 reserved Uint32 elements to 0
+  buffer_[3] = 0;
+  buffer_[4] = 0;
+  buffer_[5] = 0;
+  buffer_[6] = 0;
+  buffer_[7] = 0;
 
   if (n_gb_cols_) {
     if (n_gb_cols_ >= MAX_AGG_N_GROUPBY_COLS) {

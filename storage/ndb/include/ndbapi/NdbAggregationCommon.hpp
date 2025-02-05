@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
+ * Copyright (c) 2024, 2025, Hopsworks and/or its affiliates.
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License, version 2.0,
  * as published by the Free Software Foundation.
@@ -38,6 +38,8 @@
 #define MAX_AGG_N_GROUPBY_COLS 128
 #define MAX_AGG_N_RESULTS 256
 #define MAX_AGG_PROGRAM_WORD_SIZE 1024
+
+#define PUSHDOWN_AGGREGATION_VERSION 1
 enum InterpreterOp {
   kOpUnknown = 0,
   kOpPlus,

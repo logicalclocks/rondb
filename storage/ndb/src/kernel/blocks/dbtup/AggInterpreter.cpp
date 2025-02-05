@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
+ * Copyright (c) 2024, 2025, Hopsworks and/or its affiliates.
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License, version 2.0,
  * as published by the Free Software Foundation.
@@ -57,6 +57,22 @@ bool AggInterpreter::Init() {
   value = prog_[cur_pos_++];
   n_gb_cols_ = (value >> 16) & 0xFFFF;
   n_agg_results_ = value & 0xFFFF;
+
+  Uint32 version = prog_[cur_pos_++];
+  if (version > PUSHDOWN_AGGREGATION_VERSION) {
+    g_eventLogger->warning("Pushdown aggregation program version(%u) is "
+                           "not compatible with "
+                           "the version (%u) on data node",
+                           version, PUSHDOWN_AGGREGATION_VERSION);
+    /*
+     * Return with inited_ = false, and
+     * ProcessRec() will handle this incompatible issue.
+     */
+    return true;
+  }
+  // Skip the next 5 reserved Uint32 elements
+  assert(prog_[cur_pos_] == 0);
+  cur_pos_ += 5;
 
   /*
    * 3. Get all the group by columns id.
