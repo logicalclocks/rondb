@@ -247,6 +247,7 @@ public:
     Uint64 m_total_log_space;
 
     Uint64 m_next_lsn;
+    Uint64 m_last_lsn;
     Uint64 m_last_sync_req_lsn;  // Outstanding
     Uint64 m_last_synced_lsn;    //
     Uint64 m_max_sync_req_lsn;   // User requested lsn
