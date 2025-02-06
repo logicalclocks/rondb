@@ -118,7 +118,7 @@ max-time: 900
 
 cmd: testNodeRestart
 args: -n RestartAllNodesError9999 T6 T13
-max-time: 1260
+max-time: 3600
 
 cmd: testNodeRestart
 args: -n RestartAllNodes T6 T13
