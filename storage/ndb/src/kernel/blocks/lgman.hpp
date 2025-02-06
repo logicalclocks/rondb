@@ -391,7 +391,7 @@ public:
   Uint64 calc_total_log_space(Ptr<Logfile_group> ptr);
 
   void cut_log_tail(Signal *, Ptr<Logfile_group> ptr);
-  void open_file(Signal *, Ptr<Undofile>, Uint32, SectionHandle *);
+  void open_file(Signal *, Ptr<Undofile>, Uint32, SectionHandle *, bool);
 
   void flush_log(Signal *, Ptr<Logfile_group>, Uint32 force,
                  bool issue_continueb);

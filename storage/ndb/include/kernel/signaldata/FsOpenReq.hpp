@@ -88,7 +88,7 @@ class FsOpenReq {
   /**
    * Length of signal
    */
-  static constexpr Uint32 SignalLength = 11;
+  static constexpr Uint32 SignalLength = 12;
   SECTION(FILENAME = 0);
   SECTION(ENCRYPT_KEY_MATERIAL = 1);
 
@@ -105,8 +105,12 @@ class FsOpenReq {
   Uint32 file_size_hi;
   Uint32 file_size_lo;
   Uint32 auto_sync_size;  // In bytes
+  Uint32 secondFileFlags;
 
  public:
+  /* secondFileFlags */
+  static constexpr Uint32 OM_FIRST_FILE = 1;
+  /* fileFlags */
   static constexpr Uint32 OM_READONLY = 0;
   static constexpr Uint32 OM_WRITEONLY = 1;
   static constexpr Uint32 OM_READWRITE = 2;

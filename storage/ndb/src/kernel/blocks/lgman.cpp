@@ -1600,9 +1600,18 @@ void Lgman::execCREATE_FILE_IMPL_REQ(Signal *signal) {
     }
 
     new (file_ptr.p) Undofile(req, ptr.i);
+    bool first_file = false;
+    {
+      Ptr<Undofile> first_file_ptr;
+      Local_undofile_list tmp(m_file_pool, ptr.p->m_meta_files);
+      tmp.addLast(file_ptr);
+      tmp.first(first_file_ptr);
+      if (first_file_ptr.i == file_ptr.i) {
+        jam();
+        first_file = true;
+      }
 
-    Local_undofile_list tmp(m_file_pool, ptr.p->m_meta_files);
-    tmp.addLast(file_ptr);
+    }
 
     /**
      * Allocate one page for reading zero page, will be deallocated as soon
@@ -1617,7 +1626,7 @@ void Lgman::execCREATE_FILE_IMPL_REQ(Signal *signal) {
       break;
     }
     file_ptr.p->m_zero_page_i = ptrI;
-    open_file(signal, file_ptr, req->requestInfo, &handle);
+    open_file(signal, file_ptr, req->requestInfo, &handle, first_file);
     return;
   } while (0);
 
@@ -1630,8 +1639,11 @@ void Lgman::execCREATE_FILE_IMPL_REQ(Signal *signal) {
              CreateFileImplRef::SignalLength, JBB);
 }
 
-void Lgman::open_file(Signal *signal, Ptr<Undofile> file_ptr,
-                      Uint32 requestInfo, SectionHandle *handle) {
+void Lgman::open_file(Signal *signal,
+                      Ptr<Undofile> file_ptr,
+                      Uint32 requestInfo,
+                      SectionHandle *handle,
+                      bool first_file) {
   FsOpenReq *req = (FsOpenReq *)signal->getDataPtrSend();
   req->userReference = reference();
   req->userPointer = file_ptr.i;
@@ -1657,18 +1669,39 @@ void Lgman::open_file(Signal *signal, Ptr<Undofile> file_ptr,
     jam();
     req->fileFlags |= FsOpenReq::OM_SYNC;
   }
+  req->secondFileFlags = 0;
   switch(requestInfo){
   case CreateFileImplReq::Create:
     jam();
     req->fileFlags |= FsOpenReq::OM_CREATE_IF_NONE;
     req->fileFlags |= FsOpenReq::OM_INIT;
     file_ptr.p->m_state = Undofile::FS_CREATING;
+    if (first_file) {
+      jam();
+      req->secondFileFlags |= FsOpenReq::OM_FIRST_FILE;
+      DEB_LGMAN_START(("Create first file with OM_INIT, file_id: %u",
+        file_ptr.p->m_file_id));
+    } else {
+      jam();
+      DEB_LGMAN_START(("Create non-first file with OM_INIT, file_id: %u",
+        file_ptr.p->m_file_id));
+    }
     break;
   case CreateFileImplReq::CreateForce:
     jam();
     req->fileFlags |= FsOpenReq::OM_CREATE;
     req->fileFlags |= FsOpenReq::OM_INIT;
     file_ptr.p->m_state = Undofile::FS_CREATING;
+    if (first_file) {
+      jam();
+      req->secondFileFlags |= FsOpenReq::OM_FIRST_FILE;
+      DEB_LGMAN_START(("CreateForce first file with OM_INIT, file_id: %u",
+        file_ptr.p->m_file_id));
+    } else {
+      jam();
+      DEB_LGMAN_START(("CreateForce non-first file with OM_INIT, file_id: %u",
+        file_ptr.p->m_file_id));
+    }
     break;
   case CreateFileImplReq::Open:
     jam();
@@ -1717,8 +1750,9 @@ void Lgman::open_file(Signal *signal, Ptr<Undofile> file_ptr,
  * change since they are owned at this moment by the NDB file system thread.
  */
 Uint32
-Lgman::execFSWRITEREQ(const FsReadWriteReq* req) const /* called direct cross threads from Ndbfs */
+Lgman::execFSWRITEREQ(const FsReadWriteReq* req) const
 {
+  /* called direct cross threads from Ndbfs */
   jamNoBlock();
   Ptr<Undofile> ptr;
   Ptr<GlobalPage> page_ptr;
@@ -1729,6 +1763,7 @@ Lgman::execFSWRITEREQ(const FsReadWriteReq* req) const /* called direct cross th
   ndbrequire(m_shared_page_pool.getPtr(page_ptr,
                                        req->data.sharedPage.pageNumber));
   Uint32 init_zero = req->data.zeroPageIndicator.initZero;
+  Uint32 initialLsn = req->data.zeroPageIndicator.initialLsn;
   /**
    * This code is executed when creating a new UNDO logfile group.
    * In this case we always use the new v2 format.
@@ -1768,7 +1803,7 @@ Lgman::execFSWRITEREQ(const FsReadWriteReq* req) const /* called direct cross th
       File_formats::Undofile::Undo_page_v2 *page_v2 =
           (File_formats::Undofile::Undo_page_v2 *)page_ptr.p;
       page_v2->m_page_header.m_page_lsn_hi = 0;
-      page_v2->m_page_header.m_page_lsn_lo = 0;
+      page_v2->m_page_header.m_page_lsn_lo = initialLsn;
       page_v2->m_words_used = 1;
       page_v2->m_checksum = 0;
       page_v2->m_ndb_version = NDB_DISK_V2;
@@ -1784,7 +1819,7 @@ Lgman::execFSWRITEREQ(const FsReadWriteReq* req) const /* called direct cross th
       File_formats::Undofile::Undo_page *page =
           (File_formats::Undofile::Undo_page *)page_ptr.p;
       page->m_page_header.m_page_lsn_hi = 0;
-      page->m_page_header.m_page_lsn_lo = 0;
+      page->m_page_header.m_page_lsn_lo = initialLsn;
       page->m_words_used = 1;
       page->m_data[0] = (File_formats::Undofile::UNDO_END << 16) | 1;
       page->m_page_header.m_page_type = File_formats::PT_Undopage;
@@ -2042,7 +2077,7 @@ void Lgman::create_file_commit(Signal *signal, Ptr<Logfile_group> lg_ptr,
     file_ptr.p->m_state = Undofile::FS_SORTING;
   }
 
-  file_ptr.p->m_online.m_lsn = 0;
+  file_ptr.p->m_online.m_lsn = 1;
   file_ptr.p->m_online.m_outstanding = 0;
 
   Uint64 add = file_ptr.p->m_file_size - 1;
@@ -2150,11 +2185,11 @@ Lgman::Logfile_group::Logfile_group(const CreateFilegroupImplReq *req) {
    * produced, but keep it for now as it is easiest.
    */
   m_total_log_space = 0;
-  m_next_lsn = 1;
-  m_last_synced_lsn = 0;
-  m_last_sync_req_lsn = 0;
-  m_max_sync_req_lsn = 0;
-  m_last_read_lsn = 0;
+  m_next_lsn = 2;
+  m_last_synced_lsn = 1;
+  m_last_sync_req_lsn = 1;
+  m_max_sync_req_lsn = 1;
+  m_last_read_lsn = 1;
   m_file_pos[0].m_ptr_i = m_file_pos[1].m_ptr_i = RNIL;
 
   m_free_log_words = 0;
@@ -3225,7 +3260,9 @@ Uint32 Lgman::write_log_pages(Signal *signal, Ptr<Logfile_group> ptr,
   req->setFormatFlag(req->operationFlag, FsReadWriteReq::fsFormatSharedPage);
 
   DEB_LGMAN(("Writing %u pages, start page: %u", pages, 1 + head.m_idx));
-
+#ifdef DEBUG_LGMAN_START
+  Uint32 first_page_idx = 1 + head.m_idx;
+#endif
   if (max > pages) {
     /**
      * The write will be entirely within the current file, just proceed with
@@ -3252,8 +3289,12 @@ Uint32 Lgman::write_log_pages(Signal *signal, Ptr<Logfile_group> ptr,
     lsn += page->m_page_header.m_page_lsn_lo;
 
 #ifdef DEBUG_LGMAN_START
-    if (head.m_idx == 1) {
+    if (first_page_idx == 1) {
       DEB_LGMAN_START(("Write Page 1 in file id: %u with lsn: %llu",
+        filePtr.p->m_file_id, lsn));
+    }
+    if (first_page_idx == 2) {
+      DEB_LGMAN_START(("Write Page 2 in file id: %u with lsn: %llu",
         filePtr.p->m_file_id, lsn));
     }
 #endif
@@ -3538,7 +3579,7 @@ void Lgman::sendCUT_UNDO_LOG_TAIL_CONF(Signal *signal) {
 
 void Lgman::cut_log_tail(Signal *signal, Ptr<Logfile_group> lg_ptr) {
   bool done = true;
-  if (likely(lg_ptr.p->m_next_lsn > 1)) {
+  if (likely(lg_ptr.p->m_next_lsn > 2)) {
     jam();
     Buffer_idx tmp = lg_ptr.p->m_tail_pos[0];
     Buffer_idx tail = lg_ptr.p->m_file_pos[TAIL];
@@ -4269,7 +4310,7 @@ void Lgman::execFSREADCONF(Signal *signal) {
 
     Ptr<Undofile> loop;
     files.first(loop);
-    while (!loop.isNull() && loop.p->m_online.m_lsn <= lsn) {
+    while (!loop.isNull() && loop.p->m_online.m_lsn < lsn) {
       jam();
       files.next(loop);
     }

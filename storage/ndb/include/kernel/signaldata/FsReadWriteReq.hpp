@@ -131,6 +131,7 @@ class FsReadWriteReq {
     } sharedPage;
     struct {
       Uint32 initZero;
+      Uint32 initialLsn;
     } zeroPageIndicator;
   } data;
 
