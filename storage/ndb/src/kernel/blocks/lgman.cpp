@@ -2011,9 +2011,13 @@ void Lgman::create_file_commit(Signal *signal, Ptr<Logfile_group> lg_ptr,
       ndbrequire(m_file_pool.getPtr(curr, lg_ptr.p->m_file_pos[HEAD].m_ptr_i));
       if (free_list.next(curr)) {
         jam();
+        DEB_LGMAN_START(("CREATE log file %u before %u",
+          file_ptr.p->m_file_id, curr.p->m_file_id));
         free_list.insertBefore(file_ptr, curr);
       } else {
         jam();
+        DEB_LGMAN_START(("CREATE log file %u last",
+          file_ptr.p->m_file_id));
         free_list.addLast(file_ptr);
       }
 
@@ -2023,6 +2027,8 @@ void Lgman::create_file_commit(Signal *signal, Ptr<Logfile_group> lg_ptr,
       /**
        * First file isn't empty as it can be written to at any time
        */
+      DEB_LGMAN_START(("CREATE first==true log file %u last",
+        file_ptr.p->m_file_id));
       free_list.addLast(file_ptr);
       file_ptr.p->m_state = Undofile::FS_ONLINE;
       lg_ptr.p->m_state |= Logfile_group::LG_FLUSH_THREAD;
@@ -3245,6 +3251,12 @@ Uint32 Lgman::write_log_pages(Signal *signal, Ptr<Logfile_group> ptr,
     lsn <<= 32;
     lsn += page->m_page_header.m_page_lsn_lo;
 
+#ifdef DEBUG_LGMAN_START
+    if (head.m_idx == 1) {
+      DEB_LGMAN_START(("Write Page 1 in file id: %u with lsn: %llu",
+        filePtr.p->m_file_id, lsn));
+    }
+#endif
     filePtr.p->m_online.m_lsn = lsn;   // Store last writereq lsn on file
     ptr.p->m_last_sync_req_lsn = lsn;  // And logfile_group
   } else {
@@ -4175,6 +4187,9 @@ void Lgman::execFSREADCONF(Signal *signal) {
   if (page->m_page_header.m_page_type == File_formats::PT_Unallocated)
   {
     jam();
+    DEB_LGMAN_START(("Read page 1 in file %u, PT_Unallocated",
+      file_ptr.p->m_file_id));
+
     page->m_page_header.m_page_lsn_hi = 0;
     page->m_page_header.m_page_lsn_lo = 0;
     page->m_words_used = 1;
@@ -4241,7 +4256,7 @@ void Lgman::execFSREADCONF(Signal *signal) {
   file_ptr.p->m_start_lsn = lsn;
 
   DEB_LGMAN_START(("UNDO sort log file: %u, lsn: %llu",
-    lg_ptr.p->m_outstanding_fs,
+    file_ptr.p->m_file_id,
     lsn));
 
   /**
@@ -4264,12 +4279,15 @@ void Lgman::execFSREADCONF(Signal *signal) {
        * File has highest lsn, add last
        */
       jam();
+      DEB_LGMAN_START(("Insert log file %u last", file_ptr.p->m_file_id));
       files.addLast(file_ptr);
     } else {
       jam();
       /**
        * Insert file in correct position in file list
        */
+      DEB_LGMAN_START(("Insert log file %u before %u",
+        file_ptr.p->m_file_id, loop.p->m_file_id));
       files.insertBefore(file_ptr, loop);
     }
   }
