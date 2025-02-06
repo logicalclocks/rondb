@@ -62,7 +62,7 @@
 //#define DEBUG_DELETE_NR 1
 //#define DEBUG_LCP_LGMAN 1
 //#define DEBUG_LCP_SKIP_DELETE 1
-#define DEBUG_DISK 1
+//#define DEBUG_DISK 1
 //#define DEBUG_ELEM_COUNT 1
 #endif
 

@@ -95,7 +95,7 @@ static NDB_TICKS startTime;
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_EMPTY_LCP 1
 //#define DEBUG_END_LCP 1
-#define DEBUG_LCP_DEL_FILES 1
+//#define DEBUG_LCP_DEL_FILES 1
 //#define DEBUG_LCP 1
 //#define DEBUG_EMPTY_LCP 1
 #define DEBUG_LCP_WRITE_CTL 1

@@ -56,8 +56,8 @@
 //#define DEBUG_LGMAN_EXTRA 1
 //#define DEBUG_LGMAN_SPLIT 1
 #define DEBUG_DROP_LG 1
-#define DEBUG_SYNC_LSN 1
 #define DEBUG_LGMAN_START 1
+//#define DEBUG_SYNC_LSN 1
 //#define DEBUG_LGMAN_LCP 1
 //#define DEBUG_UNDO_SPACE 1
 //#define DEBUG_UNDO_BUFFER 1
