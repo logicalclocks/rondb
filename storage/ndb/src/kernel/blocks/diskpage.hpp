@@ -204,7 +204,8 @@ struct File_formats {
       Uint32 m_words_used;
       Uint32 m_checksum;
       Uint32 m_ndb_version;
-      Uint32 m_unused[6];
+      Uint32 m_last_lsn;
+      Uint32 m_unused[5];
       Uint32 m_data[1];
     };
 

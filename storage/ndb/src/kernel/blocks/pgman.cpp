@@ -2018,9 +2018,10 @@ Uint32 Pgman::get_num_lcp_pages_to_write(bool is_prepare_phase) {
     }
 #ifdef DEBUG_PGMAN_LCP
     if (max_count == 0) {
-      DEB_PGMAN_LCP(("current_io_waits: %u, lcp out: %u, prep_lcp out: %u"
+      DEB_PGMAN_LCP(("(%u)current_io_waits: %u, lcp out: %u, prep_lcp out: %u"
                      ", max_lcp out: %llu, max_prep_lcp out: %llu, prepare: %u"
                      ", max_io_waits: %u",
+        instance(),
         m_stats.m_current_io_waits,
         m_lcp_outstanding,
         m_prep_lcp_outstanding,
@@ -2037,9 +2038,10 @@ Uint32 Pgman::get_num_lcp_pages_to_write(bool is_prepare_phase) {
      * Already used up all room for outstanding disk IO. Continue
      * processing LCP when disk IO bandwidth is available again.
      */
-    DEB_PGMAN_LCP(("current_io_waits: %u, lcp out: %u, prep_lcp out: %u"
+    DEB_PGMAN_LCP(("(%u)current_io_waits: %u, lcp out: %u, prep_lcp out: %u"
                    ", max_lcp out: %llu, max_prep_lcp out: %llu, prepare: %u"
                    ", max_io_waits: %u",
+      instance(),
       m_stats.m_current_io_waits,
       m_lcp_outstanding,
       m_prep_lcp_outstanding,

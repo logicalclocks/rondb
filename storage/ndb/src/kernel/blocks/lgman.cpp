@@ -55,7 +55,9 @@
 //#define DEBUG_LGMAN 1
 //#define DEBUG_LGMAN_EXTRA 1
 //#define DEBUG_LGMAN_SPLIT 1
-//#define DEBUG_DROP_LG 1
+#define DEBUG_DROP_LG 1
+#define DEBUG_LGMAN_START 1
+//#define DEBUG_SYNC_LSN 1
 //#define DEBUG_LGMAN_LCP 1
 //#define DEBUG_UNDO_SPACE 1
 //#define DEBUG_UNDO_BUFFER 1
@@ -65,6 +67,28 @@
 #define DEB_CALLBACK_WORDS(arglist) do { g_eventLogger->info arglist ; } while (0)
 #else
 #define DEB_CALLBACK_WORDS(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_LGMAN_START
+#define DEB_LGMAN_START(arglist)       \
+  do {                           \
+    g_eventLogger->info arglist; \
+  } while (0)
+#else
+#define DEB_LGMAN_START(arglist) \
+  do {                     \
+  } while (0)
+#endif
+
+#ifdef DEBUG_SYNC_LSN
+#define DEB_SYNC_LSN(arglist)       \
+  do {                           \
+    g_eventLogger->info arglist; \
+  } while (0)
+#else
+#define DEB_SYNC_LSN(arglist) \
+  do {                     \
+  } while (0)
 #endif
 
 #ifdef DEBUG_LGMAN
@@ -709,7 +733,7 @@ log_buf_print(const Uint32 *ptr, Uint32 len)
  */
 
 #define DEBUG_UNDO_EXECUTION 0
-#define DEBUG_SEARCH_LOG_HEAD 0
+#define DEBUG_SEARCH_LOG_HEAD 1
 
 #define FREE_BUFFER_MARGIN(lgman, ptr) (4 * lgman->get_undo_page_words(ptr))
 
@@ -1576,9 +1600,18 @@ void Lgman::execCREATE_FILE_IMPL_REQ(Signal *signal) {
     }
 
     new (file_ptr.p) Undofile(req, ptr.i);
+    bool first_file = false;
+    {
+      Ptr<Undofile> first_file_ptr;
+      Local_undofile_list tmp(m_file_pool, ptr.p->m_meta_files);
+      tmp.addLast(file_ptr);
+      tmp.first(first_file_ptr);
+      if (first_file_ptr.i == file_ptr.i) {
+        jam();
+        first_file = true;
+      }
 
-    Local_undofile_list tmp(m_file_pool, ptr.p->m_meta_files);
-    tmp.addLast(file_ptr);
+    }
 
     /**
      * Allocate one page for reading zero page, will be deallocated as soon
@@ -1593,7 +1626,7 @@ void Lgman::execCREATE_FILE_IMPL_REQ(Signal *signal) {
       break;
     }
     file_ptr.p->m_zero_page_i = ptrI;
-    open_file(signal, file_ptr, req->requestInfo, &handle);
+    open_file(signal, file_ptr, req->requestInfo, &handle, first_file);
     return;
   } while (0);
 
@@ -1606,8 +1639,11 @@ void Lgman::execCREATE_FILE_IMPL_REQ(Signal *signal) {
              CreateFileImplRef::SignalLength, JBB);
 }
 
-void Lgman::open_file(Signal *signal, Ptr<Undofile> file_ptr,
-                      Uint32 requestInfo, SectionHandle *handle) {
+void Lgman::open_file(Signal *signal,
+                      Ptr<Undofile> file_ptr,
+                      Uint32 requestInfo,
+                      SectionHandle *handle,
+                      bool first_file) {
   FsOpenReq *req = (FsOpenReq *)signal->getDataPtrSend();
   req->userReference = reference();
   req->userPointer = file_ptr.i;
@@ -1633,18 +1669,39 @@ void Lgman::open_file(Signal *signal, Ptr<Undofile> file_ptr,
     jam();
     req->fileFlags |= FsOpenReq::OM_SYNC;
   }
+  req->secondFileFlags = 0;
   switch(requestInfo){
   case CreateFileImplReq::Create:
     jam();
     req->fileFlags |= FsOpenReq::OM_CREATE_IF_NONE;
     req->fileFlags |= FsOpenReq::OM_INIT;
     file_ptr.p->m_state = Undofile::FS_CREATING;
+    if (first_file) {
+      jam();
+      req->secondFileFlags |= FsOpenReq::OM_FIRST_FILE;
+      DEB_LGMAN_START(("Create first file with OM_INIT, file_id: %u",
+        file_ptr.p->m_file_id));
+    } else {
+      jam();
+      DEB_LGMAN_START(("Create non-first file with OM_INIT, file_id: %u",
+        file_ptr.p->m_file_id));
+    }
     break;
   case CreateFileImplReq::CreateForce:
     jam();
     req->fileFlags |= FsOpenReq::OM_CREATE;
     req->fileFlags |= FsOpenReq::OM_INIT;
     file_ptr.p->m_state = Undofile::FS_CREATING;
+    if (first_file) {
+      jam();
+      req->secondFileFlags |= FsOpenReq::OM_FIRST_FILE;
+      DEB_LGMAN_START(("CreateForce first file with OM_INIT, file_id: %u",
+        file_ptr.p->m_file_id));
+    } else {
+      jam();
+      DEB_LGMAN_START(("CreateForce non-first file with OM_INIT, file_id: %u",
+        file_ptr.p->m_file_id));
+    }
     break;
   case CreateFileImplReq::Open:
     jam();
@@ -1693,8 +1750,9 @@ void Lgman::open_file(Signal *signal, Ptr<Undofile> file_ptr,
  * change since they are owned at this moment by the NDB file system thread.
  */
 Uint32
-Lgman::execFSWRITEREQ(const FsReadWriteReq* req) const /* called direct cross threads from Ndbfs */
+Lgman::execFSWRITEREQ(const FsReadWriteReq* req) const
 {
+  /* called direct cross threads from Ndbfs */
   jamNoBlock();
   Ptr<Undofile> ptr;
   Ptr<GlobalPage> page_ptr;
@@ -1705,6 +1763,7 @@ Lgman::execFSWRITEREQ(const FsReadWriteReq* req) const /* called direct cross th
   ndbrequire(m_shared_page_pool.getPtr(page_ptr,
                                        req->data.sharedPage.pageNumber));
   Uint32 init_zero = req->data.zeroPageIndicator.initZero;
+  Uint32 initialLsn = req->data.zeroPageIndicator.initialLsn;
   /**
    * This code is executed when creating a new UNDO logfile group.
    * In this case we always use the new v2 format.
@@ -1744,23 +1803,23 @@ Lgman::execFSWRITEREQ(const FsReadWriteReq* req) const /* called direct cross th
       File_formats::Undofile::Undo_page_v2 *page_v2 =
           (File_formats::Undofile::Undo_page_v2 *)page_ptr.p;
       page_v2->m_page_header.m_page_lsn_hi = 0;
-      page_v2->m_page_header.m_page_lsn_lo = 0;
+      page_v2->m_page_header.m_page_lsn_lo = initialLsn;
       page_v2->m_words_used = 1;
       page_v2->m_checksum = 0;
       page_v2->m_ndb_version = NDB_DISK_V2;
+      page_v2->m_last_lsn = 1;
       page_v2->m_unused[0] = 0;
       page_v2->m_unused[1] = 0;
       page_v2->m_unused[2] = 0;
       page_v2->m_unused[3] = 0;
       page_v2->m_unused[4] = 0;
-      page_v2->m_unused[5] = 0;
       page_v2->m_data[0] = (File_formats::Undofile::UNDO_END << 16) | 1;
       page_v2->m_page_header.m_page_type = File_formats::PT_Undopage;
     } else {
       File_formats::Undofile::Undo_page *page =
           (File_formats::Undofile::Undo_page *)page_ptr.p;
       page->m_page_header.m_page_lsn_hi = 0;
-      page->m_page_header.m_page_lsn_lo = 0;
+      page->m_page_header.m_page_lsn_lo = initialLsn;
       page->m_words_used = 1;
       page->m_data[0] = (File_formats::Undofile::UNDO_END << 16) | 1;
       page->m_page_header.m_page_type = File_formats::PT_Undopage;
@@ -1783,12 +1842,12 @@ Lgman::execFSWRITEREQ(const FsReadWriteReq* req) const /* called direct cross th
       page_v2->m_words_used = 0;
       page_v2->m_checksum = 0;
       page_v2->m_ndb_version = NDB_DISK_V2;
+      page_v2->m_last_lsn = 1;
       page_v2->m_unused[0] = 0;
       page_v2->m_unused[1] = 0;
       page_v2->m_unused[2] = 0;
       page_v2->m_unused[3] = 0;
       page_v2->m_unused[4] = 0;
-      page_v2->m_unused[5] = 0;
     } else {
       File_formats::Undofile::Undo_page *page =
           (File_formats::Undofile::Undo_page *)page_ptr.p;
@@ -1987,9 +2046,13 @@ void Lgman::create_file_commit(Signal *signal, Ptr<Logfile_group> lg_ptr,
       ndbrequire(m_file_pool.getPtr(curr, lg_ptr.p->m_file_pos[HEAD].m_ptr_i));
       if (free_list.next(curr)) {
         jam();
+        DEB_LGMAN_START(("CREATE log file %u before %u",
+          file_ptr.p->m_file_id, curr.p->m_file_id));
         free_list.insertBefore(file_ptr, curr);
       } else {
         jam();
+        DEB_LGMAN_START(("CREATE log file %u last",
+          file_ptr.p->m_file_id));
         free_list.addLast(file_ptr);
       }
 
@@ -1999,6 +2062,8 @@ void Lgman::create_file_commit(Signal *signal, Ptr<Logfile_group> lg_ptr,
       /**
        * First file isn't empty as it can be written to at any time
        */
+      DEB_LGMAN_START(("CREATE first==true log file %u last",
+        file_ptr.p->m_file_id));
       free_list.addLast(file_ptr);
       file_ptr.p->m_state = Undofile::FS_ONLINE;
       lg_ptr.p->m_state |= Logfile_group::LG_FLUSH_THREAD;
@@ -2012,7 +2077,7 @@ void Lgman::create_file_commit(Signal *signal, Ptr<Logfile_group> lg_ptr,
     file_ptr.p->m_state = Undofile::FS_SORTING;
   }
 
-  file_ptr.p->m_online.m_lsn = 0;
+  file_ptr.p->m_online.m_lsn = 1;
   file_ptr.p->m_online.m_outstanding = 0;
 
   Uint64 add = file_ptr.p->m_file_size - 1;
@@ -2120,11 +2185,12 @@ Lgman::Logfile_group::Logfile_group(const CreateFilegroupImplReq *req) {
    * produced, but keep it for now as it is easiest.
    */
   m_total_log_space = 0;
-  m_next_lsn = 1;
-  m_last_synced_lsn = 0;
-  m_last_sync_req_lsn = 0;
-  m_max_sync_req_lsn = 0;
-  m_last_read_lsn = 0;
+  m_next_lsn = 2;
+  m_last_synced_lsn = 1;
+  m_last_sync_req_lsn = 1;
+  m_max_sync_req_lsn = 1;
+  m_last_lsn = 1;
+  m_last_read_lsn = 1;
   m_file_pos[0].m_ptr_i = m_file_pos[1].m_ptr_i = RNIL;
 
   m_free_log_words = 0;
@@ -2488,6 +2554,14 @@ int Logfile_client::sync_lsn(Signal *signal, Uint64 lsn, Request *req,
       m_client_block->sendSignal(m_lgman->reference(), GSN_CONTINUEB, signal, 4,
                                  JBB);
     }
+    DEB_SYNC_LSN(("Wait UNDO log last_synced_lsn: %llu, page lsn: %llu,"
+                  " flush: %u, m_max_sync_req_lsn: %llu,"
+                  " m_last_sync_req_lsn: %llu",
+      ptr.p->m_last_synced_lsn,
+      lsn,
+      send_force_flush,
+      ptr.p->m_max_sync_req_lsn,
+      ptr.p->m_last_sync_req_lsn));
     return 0;
   }
   jamBlock(m_client_block);
@@ -2536,12 +2610,12 @@ void Lgman::force_log_sync(Signal *signal, Ptr<Logfile_group> ptr,
         jam();
         page_v2->m_ndb_version = NDB_DISK_V2;
         page_v2->m_checksum = 0;
+        page_v2->m_last_lsn = 1;
         page_v2->m_unused[0] = 0;
         page_v2->m_unused[1] = 0;
         page_v2->m_unused[2] = 0;
         page_v2->m_unused[3] = 0;
         page_v2->m_unused[4] = 0;
-        page_v2->m_unused[5] = 0;
       }
 
       /**
@@ -2676,12 +2750,12 @@ Uint32 *Lgman::get_log_buffer(Ptr<Logfile_group> ptr, Uint32 sz,
         (File_formats::Undofile::Undo_page_v2 *)undo;
     page_v2->m_ndb_version = NDB_DISK_V2;
     page_v2->m_checksum = 0;
+    page_v2->m_last_lsn = 1;
     page_v2->m_unused[0] = 0;
     page_v2->m_unused[1] = 0;
     page_v2->m_unused[2] = 0;
     page_v2->m_unused[3] = 0;
     page_v2->m_unused[4] = 0;
-    page_v2->m_unused[5] = 0;
   }
 
   /**
@@ -2865,12 +2939,12 @@ void Lgman::flush_log(Signal *signal, Ptr<Logfile_group> ptr, Uint32 force,
           jam();
           page_v2->m_ndb_version = NDB_DISK_V2;
           page_v2->m_checksum = 0;
+          page_v2->m_last_lsn = 1;
           page_v2->m_unused[0] = 0;
           page_v2->m_unused[1] = 0;
           page_v2->m_unused[2] = 0;
           page_v2->m_unused[3] = 0;
           page_v2->m_unused[4] = 0;
-          page_v2->m_unused[5] = 0;
         }
 
         /**
@@ -3162,12 +3236,12 @@ Uint32 Lgman::write_log_pages(Signal *signal, Ptr<Logfile_group> ptr,
               pageId + i);
       page_v2->m_ndb_version = NDB_DISK_V2;
       page_v2->m_checksum = 0;
+      page_v2->m_last_lsn = 1;
       page_v2->m_unused[0] = 0;
       page_v2->m_unused[1] = 0;
       page_v2->m_unused[2] = 0;
       page_v2->m_unused[3] = 0;
       page_v2->m_unused[4] = 0;
-      page_v2->m_unused[5] = 0;
       Uint32 pos = page_v2->m_words_used;
       Uint32 *record =
           get_undo_data_ptr((Uint32 *)page_v2, ptr, jamBuffer()) + (pos - 1);
@@ -3187,7 +3261,9 @@ Uint32 Lgman::write_log_pages(Signal *signal, Ptr<Logfile_group> ptr,
   req->setFormatFlag(req->operationFlag, FsReadWriteReq::fsFormatSharedPage);
 
   DEB_LGMAN(("Writing %u pages, start page: %u", pages, 1 + head.m_idx));
-
+#ifdef DEBUG_LGMAN_START
+  Uint32 first_page_idx = 1 + head.m_idx;
+#endif
   if (max > pages) {
     /**
      * The write will be entirely within the current file, just proceed with
@@ -3213,6 +3289,16 @@ Uint32 Lgman::write_log_pages(Signal *signal, Ptr<Logfile_group> ptr,
     lsn <<= 32;
     lsn += page->m_page_header.m_page_lsn_lo;
 
+#ifdef DEBUG_LGMAN_START
+    if (first_page_idx == 1) {
+      DEB_LGMAN_START(("Write Page 1 in file id: %u with lsn: %llu",
+        filePtr.p->m_file_id, lsn));
+    }
+    if (first_page_idx == 2) {
+      DEB_LGMAN_START(("Write Page 2 in file id: %u with lsn: %llu",
+        filePtr.p->m_file_id, lsn));
+    }
+#endif
     filePtr.p->m_online.m_lsn = lsn;   // Store last writereq lsn on file
     ptr.p->m_last_sync_req_lsn = lsn;  // And logfile_group
   } else {
@@ -3494,7 +3580,7 @@ void Lgman::sendCUT_UNDO_LOG_TAIL_CONF(Signal *signal) {
 
 void Lgman::cut_log_tail(Signal *signal, Ptr<Logfile_group> lg_ptr) {
   bool done = true;
-  if (likely(lg_ptr.p->m_next_lsn > 1)) {
+  if (likely(lg_ptr.p->m_next_lsn > 2)) {
     jam();
     Buffer_idx tmp = lg_ptr.p->m_tail_pos[0];
     Buffer_idx tail = lg_ptr.p->m_file_pos[TAIL];
@@ -4143,17 +4229,20 @@ void Lgman::execFSREADCONF(Signal *signal) {
   if (page->m_page_header.m_page_type == File_formats::PT_Unallocated)
   {
     jam();
+    DEB_LGMAN_START(("Read page 1 in file %u, PT_Unallocated",
+      file_ptr.p->m_file_id));
+
     page->m_page_header.m_page_lsn_hi = 0;
     page->m_page_header.m_page_lsn_lo = 0;
     page->m_words_used = 1;
     page->m_checksum = 0;
     page->m_ndb_version = NDB_DISK_V2;
+    page->m_last_lsn = 1;
     page->m_unused[0] = 0;
     page->m_unused[1] = 0;
     page->m_unused[2] = 0;
     page->m_unused[3] = 0;
     page->m_unused[4] = 0;
-    page->m_unused[5] = 0;
     page->m_data[0] = (File_formats::Undofile::UNDO_END << 16) | 1 ;
     page->m_page_header.m_page_type = File_formats::PT_Undopage;
   }
@@ -4207,6 +4296,12 @@ void Lgman::execFSREADCONF(Signal *signal) {
   file_ptr.p->m_state = Undofile::FS_EXECUTING;
   file_ptr.p->m_online.m_lsn = lsn;
   file_ptr.p->m_start_lsn = lsn;
+  lg_ptr.p->m_last_lsn = page->m_last_lsn;
+
+  DEB_LGMAN_START(("UNDO sort log file: %u, lsn: %llu, last_lsn: %llu",
+    file_ptr.p->m_file_id,
+    lsn,
+    lg_ptr.p->m_last_lsn));
 
   /**
    * Insert into m_files in sorted order
@@ -4218,7 +4313,7 @@ void Lgman::execFSREADCONF(Signal *signal) {
 
     Ptr<Undofile> loop;
     files.first(loop);
-    while (!loop.isNull() && loop.p->m_online.m_lsn <= lsn) {
+    while (!loop.isNull() && loop.p->m_online.m_lsn < lsn) {
       jam();
       files.next(loop);
     }
@@ -4228,12 +4323,15 @@ void Lgman::execFSREADCONF(Signal *signal) {
        * File has highest lsn, add last
        */
       jam();
+      DEB_LGMAN_START(("Insert log file %u last", file_ptr.p->m_file_id));
       files.addLast(file_ptr);
     } else {
       jam();
       /**
        * Insert file in correct position in file list
        */
+      DEB_LGMAN_START(("Insert log file %u before %u",
+        file_ptr.p->m_file_id, loop.p->m_file_id));
       files.insertBefore(file_ptr, loop);
     }
   }
@@ -4264,16 +4362,19 @@ void Lgman::find_log_head_in_file(Signal *signal, Ptr<Logfile_group> lg_ptr,
   ndbrequire(head > tail);
   Uint32 diff = head - tail;
 
-  if (DEBUG_SEARCH_LOG_HEAD)
-    printf("tail: %d(%lld) head: %d last: %d(%lld) -> ", tail,
-           file_ptr.p->m_online.m_lsn, head, curr, last_lsn);
+  if (DEBUG_SEARCH_LOG_HEAD) {
+    g_eventLogger->info("tail: %d(%lld) head: %d last: %d(%lld) -> ", tail,
+      file_ptr.p->m_online.m_lsn, head, curr, last_lsn);
+  }
   if (last_lsn > file_ptr.p->m_online.m_lsn) {
     /**
      * Move forward in binary search since page LSN is higher than the largest
      * LSN found so far.
      */
     jam();
-    if (DEBUG_SEARCH_LOG_HEAD) printf("moving tail ");
+    if (DEBUG_SEARCH_LOG_HEAD) {
+      g_eventLogger->info("moving tail ");
+    }
 
     file_ptr.p->m_online.m_lsn = last_lsn;
     lg_ptr.p->m_file_pos[TAIL].m_idx = tail = curr;
@@ -4285,7 +4386,9 @@ void Lgman::find_log_head_in_file(Signal *signal, Ptr<Logfile_group> lg_ptr,
      * left in the log file.
      */
     jam();
-    if (DEBUG_SEARCH_LOG_HEAD) printf("moving head ");
+    if (DEBUG_SEARCH_LOG_HEAD) {
+      g_eventLogger->info("moving head ");
+    }
 
     lg_ptr.p->m_file_pos[HEAD].m_idx = head = curr;
   }
@@ -4295,9 +4398,10 @@ void Lgman::find_log_head_in_file(Signal *signal, Ptr<Logfile_group> lg_ptr,
     // We need to find more pages to be sure...
     lg_ptr.p->m_file_pos[HEAD].m_ptr_i = curr = ((head + tail) >> 1);
 
-    if (DEBUG_SEARCH_LOG_HEAD)
+    if (DEBUG_SEARCH_LOG_HEAD) {
       g_eventLogger->info("-> new search tail: %d(%lld) head: %d -> %d", tail,
                           file_ptr.p->m_online.m_lsn, head, curr);
+    }
 
     Uint32 page_id = lg_ptr.p->m_pos[CONSUMER].m_current_pos.m_ptr_i;
     file_ptr.p->m_online.m_outstanding = page_id;
@@ -4341,8 +4445,9 @@ void Lgman::find_log_head_in_file(Signal *signal, Ptr<Logfile_group> lg_ptr,
    * use the WAL protocol to write pages to disk.
    */
 
-  if (DEBUG_SEARCH_LOG_HEAD)
+  if (DEBUG_SEARCH_LOG_HEAD) {
     g_eventLogger->info("-> found last page in binary search: %d", tail);
+  }
 
   /**
    * m_next_lsn indicates next LSN to write, so we step this forward one
@@ -4353,6 +4458,13 @@ void Lgman::find_log_head_in_file(Signal *signal, Ptr<Logfile_group> lg_ptr,
   lg_ptr.p->m_last_read_lsn = file_ptr.p->m_online.m_lsn;
   lg_ptr.p->m_last_synced_lsn = file_ptr.p->m_online.m_lsn;
 
+  if (DEBUG_SEARCH_LOG_HEAD) {
+    g_eventLogger->info("next_lsn: %llu, last_read_lsn: %llu, "
+                        "last_synced_lsn: %llu",
+                        lg_ptr.p->m_next_lsn,
+                        lg_ptr.p->m_last_read_lsn,
+                        lg_ptr.p->m_last_synced_lsn);
+  }
   /**
    * Set HEAD and TAIL position to use when we start logging again.
    * We might have to change those during the check of the end of
@@ -4405,6 +4517,13 @@ void Lgman::find_log_head_end_check(Signal *signal, Ptr<Logfile_group> lg_ptr,
     lg_ptr.p->m_next_lsn = (file_ptr.p->m_online.m_lsn + 1);
     lg_ptr.p->m_last_read_lsn = file_ptr.p->m_online.m_lsn;
     lg_ptr.p->m_last_synced_lsn = file_ptr.p->m_online.m_lsn;
+    if (DEBUG_SEARCH_LOG_HEAD) {
+      g_eventLogger->info("end_check: next_lsn: %llu, last_read_lsn: %llu, "
+                          "last_synced_lsn: %llu",
+                          lg_ptr.p->m_next_lsn,
+                          lg_ptr.p->m_last_read_lsn,
+                          lg_ptr.p->m_last_synced_lsn);
+    }
   }
 
   curr++;
@@ -5112,11 +5231,11 @@ const Uint32 *Lgman::get_next_undo_record(Uint64 *this_lsn) {
   ndbrequire(
       m_file_pool.getPtr(filePtr, lg_ptr.p->m_consumer_file_pos.m_ptr_i));
 
-  if (lg_ptr.p->m_last_read_lsn == (Uint64)1) {
+  if (lg_ptr.p->m_last_read_lsn == (lg_ptr.p->m_last_lsn + 1)) {
     /**
      * End of log, we hadn't concluded any LCPs before the crash.
      * So we find the end of the log by noting that we expect this LSN
-     * number to be 0 which doesn't exist.
+     * number to be 1 (0 old code) which doesn't exist.
      *
      * When initialising we have also written an UNDO_END log record
      * into the first page, so we should not be able to run past that
@@ -5136,12 +5255,12 @@ const Uint32 *Lgman::get_next_undo_record(Uint64 *this_lsn) {
       jam();
       page_v2->m_ndb_version = NDB_DISK_V2;
       page_v2->m_checksum = 0;
+      page_v2->m_last_lsn = 1;
       page_v2->m_unused[0] = 0;
       page_v2->m_unused[1] = 0;
       page_v2->m_unused[2] = 0;
       page_v2->m_unused[3] = 0;
       page_v2->m_unused[4] = 0;
-      page_v2->m_unused[5] = 0;
     }
     this_lsn = 0;
     return get_undo_data_ptr((Uint32 *)pageP, lg_ptr, jamBuffer());

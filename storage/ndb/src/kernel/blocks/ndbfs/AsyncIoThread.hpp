@@ -84,6 +84,7 @@ class Request {
   union {
     struct {
       Uint32 flags;
+      Uint32 sec_flags;
       Uint32 page_size;
       Uint64 file_size;
       Uint32 auto_sync_size;

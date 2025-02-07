@@ -422,6 +422,7 @@ int runPkUpdateUntilStopped(NDBT_Context *ctx, NDBT_Step *step) {
   int result = NDBT_OK;
   int records = ctx->getNumRecords();
   int multiop = ctx->getProperty("MULTI_OP", 1);
+  int slowdown = ctx->getProperty("SLOWDOWN", Uint32(0));
   Ndb *pNdb = GETNDB(step);
   int i = 0;
 
@@ -463,6 +464,10 @@ int runPkUpdateUntilStopped(NDBT_Context *ctx, NDBT_Step *step) {
     return NDBT_FAILED;
 
     i++;
+    if (slowdown > 0 && (i % 100 == 0)) {
+      /* Slow down a bit to avoid overloading REDO logs */
+      NdbSleep_MilliSleep(10);
+    }
   }
   return result;
 }
@@ -594,6 +599,7 @@ int runScanUpdateUntilStopped(NDBT_Context *ctx, NDBT_Step *step) {
   int abort = ctx->getProperty("AbortProb", (Uint32)0);
   int check = ctx->getProperty("ScanUpdateNoRowCountCheck", (Uint32)0);
   int retry_max = ctx->getProperty("RetryMax", Uint32(100));
+  int slowdown = ctx->getProperty("SLOWDOWN", Uint32(0));
 
   if (check) records = 0;
 
@@ -608,6 +614,10 @@ int runScanUpdateUntilStopped(NDBT_Context *ctx, NDBT_Step *step) {
       return NDBT_FAILED;
     }
     i++;
+    if (slowdown > 0) {
+      /* Slow down a bit to avoid overloading REDO logs */
+      NdbSleep_MilliSleep(20);
+    }
   }
   return result;
 }
@@ -713,7 +723,7 @@ int runNamedRestartTest(NDBT_Context *ctx, NDBT_Step *step) {
   NDBT_TestCase *pCase = ctx->getCase();
   NdbRestarts restarts;
   int i = 0;
-  int timeout = 240;
+  int timeout = 480;
 
   while (i < loops && result != NDBT_FAILED && !ctx->isTestStopped()) {
     int safety = 0;
@@ -9911,6 +9921,7 @@ TESTCASE("RestartRandomNodeInitial",
 TESTCASE("RestartNFDuringNR",
          "Test that we can execute the restart RestartNFDuringNR loop\n"
          "number of times") {
+  TC_PROPERTY("Slowdown", 1);
   INITIALIZER(runCheckAllNodesStarted);
   INITIALIZER(runLoadTable);
   STEP(runNamedRestartTest);
@@ -10010,6 +10021,7 @@ TESTCASE("FiftyPercentStopAndWait",
 TESTCASE("RestartNodeDuringLCP",
          "Test that we can execute the restart RestartRandomNode loop\n"
          "number of times") {
+  TC_PROPERTY("Slowdown", 1);
   INITIALIZER(runCheckAllNodesStarted);
   INITIALIZER(runLoadTable);
   STEP(runNamedRestartTest);

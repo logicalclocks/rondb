@@ -679,6 +679,7 @@ void Ndbfs::execFSOPENREQ(Signal *signal) {
   request->file = file;
   request->theTrace = signal->getTrace();
   request->par.open.flags = fsOpenReq->fileFlags;
+  request->par.open.sec_flags = fsOpenReq->secondFileFlags;
 #if defined(NAME_BASED_DISABLING_COMPRESS_ENCRYPT_ODIRECT)
   if (!allow_gz) {
     request->par.open.flags &= ~(FsOpenReq::OM_GZ);

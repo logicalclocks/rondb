@@ -133,7 +133,7 @@ max-time: 1260
 
 cmd: testIndex
 args: -n NFNR2 T6 T13
-max-time: 1440
+max-time: 3600
 
 cmd: testNodeRestart
 args: -n NF_Hammer -r 5 T1

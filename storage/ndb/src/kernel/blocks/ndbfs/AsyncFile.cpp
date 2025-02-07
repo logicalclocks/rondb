@@ -451,6 +451,11 @@ void AsyncFile::openReq(Request *request) {
         req->varIndex = index++;
         req->operationFlag = 0;
         req->data.zeroPageIndicator.initZero = init_zero;
+        if (request->par.open.sec_flags & FsOpenReq::OM_FIRST_FILE) {
+          req->data.zeroPageIndicator.initialLsn = 1;
+        } else {
+          req->data.zeroPageIndicator.initialLsn = 0;
+        }
         FsReadWriteReq::setFormatFlag(req->operationFlag,
                                       FsReadWriteReq::fsFormatSharedPage);
         if (!m_xfile.is_transformed())

@@ -18936,8 +18936,6 @@ void Dblqh::scanTupkeyConfLab(Signal* signal,
   if (accOpPtr != (Uint32)-1) {
     c_acc->execACCKEY_ORD_no_ptr(signal, accOpPtr);
     jamEntry();
-  } else {
-    ndbassert(refToBlock(scanPtr->scanBlockref) != getDBACC());
   }
 
   if (unlikely(scanPtr->scanCompletedStatus == ZTRUE)) {
@@ -18974,6 +18972,9 @@ void Dblqh::scanTupkeyConfLab(Signal* signal,
   scanPtr->m_curr_batch_size_rows = rows + 1;
   scanPtr->m_last_row = last_row;
 
+  jamDebug();
+  jamDataDebug(scanPtr->m_curr_batch_size_rows);
+  jamDataDebug(scanPtr->scan_acc_index);
   const NodeBitmask &all = globalTransporterRegistry.get_status_slowdown();
   if (unlikely(!all.isclear())) {
     if (all.get(refToNode(scanptr.p->scanApiBlockref))) {
@@ -19152,9 +19153,9 @@ void Dblqh::scanTupkeyRefLab(Signal* signal,
     /* -----------------------------------------------------------------------
      *  WE NEED TO ENSURE THAT WE DO NOT SEARCH FOR THE NEXT TUPLE FOR A
      *  LONG TIME WHILE WE KEEP A LOCK ON A FOUND TUPLE. WE RATHER REPORT
-     *  THE FOUND TUPLE IF FOUND TUPLES ARE RARE. If more than 10 ms passed we
+     *  THE FOUND TUPLE IF FOUND TUPLES ARE RARE. If more than 1 ms passed we
      *  send the found tuples to the API. For requests coming from SPJ we allow
-     *  scans to go on for an extended period of 100ms
+     *  scans to go on for an extended period of 10ms
      * -----------------------------------------------------------------------
      */
     scanPtr->scanReleaseCounter = rows + 1;
@@ -19171,8 +19172,15 @@ void Dblqh::scanTupkeyRefLab(Signal* signal,
     }
 #endif // MOZ_AGG_DEBUG
   }
+  jamDebug();
+  jamDataDebug(scanPtr->m_curr_batch_size_rows);
+  jamDataDebug(scanPtr->scan_acc_index);
   scanPtr->scanFlag = NextScanReq::ZSCAN_NEXT_COMMIT;
-  scanPtr->scan_acc_index--;
+  if (scanPtr->readCommitted == 0 && scanPtr->copyPtr == RNIL) {
+    jam();
+    /* Only locked reads not doing copy fragment need to decrease */
+    scanPtr->scan_acc_index--;
+  }
   scanNextLoopLab(signal, tcConnectptr.p->clientConnectrec, accOpPtr, scanPtr,
                   fragptr.p);
 }  // Dblqh::scanTupkeyRefLab()

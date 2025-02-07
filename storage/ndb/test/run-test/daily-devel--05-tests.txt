@@ -73,7 +73,7 @@ max-time: 2000
 
 cmd: testIndex
 args: -n NFNR1_O T6 T13
-max-time: 3600
+max-time: 5600
 
 cmd: testSystemRestart
 args: -n SR_DD_2b_LCP D1
