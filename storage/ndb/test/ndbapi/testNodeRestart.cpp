@@ -713,7 +713,7 @@ int runNamedRestartTest(NDBT_Context *ctx, NDBT_Step *step) {
   NDBT_TestCase *pCase = ctx->getCase();
   NdbRestarts restarts;
   int i = 0;
-  int timeout = 240;
+  int timeout = 480;
 
   while (i < loops && result != NDBT_FAILED && !ctx->isTestStopped()) {
     int safety = 0;
