@@ -86,7 +86,7 @@ TransactionMemory=350M
 MaxNoOfConcurrentScans = 100
 MaxNoOfSavedMessages= 5
 NoOfFragmentLogFiles = 8
-FragmentLogFileSize = 64M
+FragmentLogFileSize = 128M
 CompressedLCP=1
 CompressedBackup=1
 ODirect=1
@@ -109,7 +109,7 @@ InitialTablespace=datafile01.dat:256M;datafile02.dat:256M
 TimeBetweenWatchDogCheckInitial=60000
 
 #
-# .3node_18cpus - three ndbmtd nodes with 6 CPUs
+# .3node_18cpus - three ndbmtd nodes with 18 CPUs
 # No compression of LCP and Backup
 #
 
@@ -124,7 +124,7 @@ TransactionMemory=350M
 MaxNoOfConcurrentScans = 100
 MaxNoOfSavedMessages= 5
 NoOfFragmentLogFiles = 8
-FragmentLogFileSize = 64M
+FragmentLogFileSize = 128M
 ODirect=1
 MaxNoOfAttributes=2000
 Checksum=1
