@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2024 Hopsworks AB
+ * Copyright (C) 2024, 2025 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -25,43 +25,88 @@
 #include <drogon/drogon.h>
 #include <drogon/HttpSimpleController.h>
 #include <ndb_types.h>
+#include <NdbTick.h>
+
+// Classes for Updating the endpoints stats
+class PkReadEndPointMetricsUpdater {
+ private:
+  drogon::HttpResponsePtr m_response;
+  NDB_TICKS m_start_time;
+
+ public:
+  PkReadEndPointMetricsUpdater(drogon::HttpResponsePtr response);
+
+  ~PkReadEndPointMetricsUpdater();
+};
+
+class FsReadEndPointMetricsUpdater {
+ private:
+  drogon::HttpResponsePtr m_response;
+  NDB_TICKS m_start_time;
+
+ public:
+  FsReadEndPointMetricsUpdater(drogon::HttpResponsePtr response);
+
+  ~FsReadEndPointMetricsUpdater();
+};
+
+class BatchPkReadEndPointMetricsUpdater {
+ private:
+  drogon::HttpResponsePtr m_response;
+  NDB_TICKS m_start_time;
+  Uint32 m_key_requests;
+
+ public:
+  BatchPkReadEndPointMetricsUpdater(drogon::HttpResponsePtr response);
+  void set_key_requests(Uint32 key_requests);
+
+  ~BatchPkReadEndPointMetricsUpdater();
+};
+
+class BatchFsReadEndPointMetricsUpdater {
+ private:
+  drogon::HttpResponsePtr m_response;
+  NDB_TICKS m_start_time;
+  Uint32 m_key_requests;
+
+ public:
+  BatchFsReadEndPointMetricsUpdater(drogon::HttpResponsePtr response);
+  void set_key_requests(Uint32 key_requests);
+
+  ~BatchFsReadEndPointMetricsUpdater();
+};
+
+class RonSQLEndPointMetricsUpdater {
+ private:
+  drogon::HttpResponsePtr m_response;
+  NDB_TICKS m_start_time;
+
+ public:
+  RonSQLEndPointMetricsUpdater(drogon::HttpResponsePtr response);
+
+  ~RonSQLEndPointMetricsUpdater();
+};
+
+class PingEndPointMetricsUpdater {
+ public:
+  PingEndPointMetricsUpdater();
+
+  ~PingEndPointMetricsUpdater();
+};
+
+class HealthEndPointMetricsUpdater {
+ public:
+  HealthEndPointMetricsUpdater();
+
+  ~HealthEndPointMetricsUpdater();
+};
+
 
 namespace rdrs_metrics {
 
 void initMetrics();
 void writeMetrics(drogon::HttpResponsePtr resp);
-void incrementEndpointAccessCount(const char *endPointLabel, const char *methodType, Uint32 status);
-void observeEndpointLatency(const char *endPointLabel, const char *methodType, Uint64 latency);
 void setRonDBStats();
-
-// Class for Updating the endpoints stats
-class EndPointMetricsUpdater {
- private:
-  EndPointMetricsUpdater()                                          = delete;
-  EndPointMetricsUpdater(const EndPointMetricsUpdater &)            = delete;
-  EndPointMetricsUpdater &operator=(const EndPointMetricsUpdater &) = delete;
-  EndPointMetricsUpdater(EndPointMetricsUpdater &&)                 = delete;
-  EndPointMetricsUpdater &operator=(EndPointMetricsUpdater &&)      = delete;
-
-  const char *endPointLabel;
-  const char *endPointVerb;
-  drogon::HttpResponsePtr response;
-  std::chrono::high_resolution_clock::time_point start;
-
- public:
-  EndPointMetricsUpdater(const char *endPointLabel, const char *endPointVerb,
-                         drogon::HttpResponsePtr response)
-      : endPointLabel(endPointLabel), endPointVerb(endPointVerb), response(std::move(response)),
-        start(std::chrono::high_resolution_clock::now()) {
-  }
-
-  ~EndPointMetricsUpdater() {
-    std::chrono::high_resolution_clock::time_point end = std::chrono::high_resolution_clock::now();
-    Uint64 elapsed_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
-    observeEndpointLatency(endPointLabel, endPointVerb, elapsed_ns);
-    incrementEndpointAccessCount(endPointLabel, endPointVerb, response->getStatusCode());
-  }
-};
 
 }  // namespace rdrs_metrics
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023, 2024 Hopsworks AB
+ * Copyright (C) 2023, 2025 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -52,7 +52,7 @@ void BatchPKReadCtrl::batchPKRead(
   std::function<void(const drogon::HttpResponsePtr &)> &&callback) {
 
   drogon::HttpResponsePtr resp = drogon::HttpResponse::newHttpResponse();
-  rdrs_metrics::EndPointMetricsUpdater metricsUpdater(BATCH, POST, resp);
+  BatchPkReadEndPointMetricsUpdater metricsUpdater(resp);
 
   size_t currentThreadIndex = drogon::app().getCurrentThreadIndex();
   if (unlikely(currentThreadIndex >= globalConfigs.rest.numThreads)) {
@@ -226,6 +226,8 @@ void BatchPKReadCtrl::batchPKRead(
       Uint32 *length_ptr_casted = reinterpret_cast<Uint32*>(length_ptr);
       reqBuffs[i].size = *length_ptr_casted;
     }
+
+    metricsUpdater.set_key_requests(noOps);
 
     // pk_batch_read
     status = pk_batch_read(&amalloc,

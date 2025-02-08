@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2024, 2024 Hopsworks AB
+ * Copyright (C) 2024, 2025 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -24,6 +24,7 @@
 #include "api_key.hpp"
 #include "config_structs.hpp"
 #include "constants.hpp"
+#include <metrics.hpp>
 
 #include <cstring>
 #include <drogon/HttpTypes.h>
@@ -47,6 +48,7 @@ void PingCtrl::ping(const drogon::HttpRequestPtr &req,
                     std::function<void(
                       const drogon::HttpResponsePtr &)> &&callback) {
   auto resp = drogon::HttpResponse::newHttpResponse();
+  PingEndPointMetricsUpdater metricsUpdater;
 
   // Store it to the first string buffer
   size_t length = req->getBody().length();

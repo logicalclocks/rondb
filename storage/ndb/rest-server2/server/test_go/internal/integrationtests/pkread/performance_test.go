@@ -94,7 +94,7 @@ func BenchmarkSimple(b *testing.B) {
 			pkRESTTestWithClient(b, httpClient, testInfo, false, false)
 			latenciesChannel <- time.Since(requestStartTime)
 			count := ops.Add(1)
-			if count%4000000 == 0 {
+			if count%400000 == 0 {
 				tempTotalPkLookups := 400000
 				tempPkLookupsPerSecond := float64(tempTotalPkLookups) / time.Since(last).Seconds()
 				b.Logf("Throughput:                 %f pk lookups/second", tempPkLookupsPerSecond)
