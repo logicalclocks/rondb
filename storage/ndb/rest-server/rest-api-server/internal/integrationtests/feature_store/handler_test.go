@@ -1,6 +1,6 @@
 /*
  * This file is part of the RonDB REST API Server
- * Copyright (c) 2023 Hopsworks AB
+ * Copyright (c) 2023,2025 Hopsworks AB
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -1294,7 +1294,7 @@ func Test_GetFeatureVector_WrongPkValue(t *testing.T) {
 	}
 }
 
-func Test_GetFeatureVector_Success_ComplexType(t *testing.T) {
+func Test_GetFeatureVector_Success_ComplexType_ST(t *testing.T) {
 	var fsName = testdbs.FSDB002
 	var fvName = "sample_complex_type"
 	var fvVersion = 1
@@ -1302,14 +1302,28 @@ func Test_GetFeatureVector_Success_ComplexType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Cannot get sample data with error %s ", err)
 	}
-	mapSchema, err := avro.Parse(`["null",{"type":"record","name":"r854762204","namespace":"struct","fields":[{"name":"int1","type":["null","long"]},{"name":"int2","type":["null","long"]}]}]`)
+
+	// Map
+	mapSchema, err := avro.Parse(`{"type":"record","name":"sample_complex_type_1","namespace":"test_ken_featurestore.db","fields":[{"name":"struct","type":["null",{"type":"record","name":"r854762204","namespace":"struct","fields":[{"name":"int1","type":["null","long"]},{"name":"int2","type":["null","long"]}]}]}]}`)
 	if err != nil {
 		t.Fatal(err.Error())
 	}
-	arraySchema, err := avro.Parse(`["null",{"type":"array","items":["null","long"]}]`)
+	mapStruct, err := fsmetadata.ConvertAvroSchemaToStruct(mapSchema)
 	if err != nil {
 		t.Fatal(err.Error())
 	}
+	mapComplexFeature := fsmetadata.ComplexFeature{Schema: &mapSchema, Struct: &mapStruct}
+
+	// Array
+	arraySchema, err := avro.Parse(`{"type":"record","name":"sample_complex_type_1","namespace":"test_ken_featurestore.db","fields":[{"name":"array","type":["null",{"type":"array","items":["null","long"]}]}]}`)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+	arrayStruct, err := fsmetadata.ConvertAvroSchemaToStruct(arraySchema)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+	arrayComplexFeature := fsmetadata.ComplexFeature{Schema: &arraySchema, Struct: &arrayStruct}
 
 	for _, row := range rows {
 		var fsReq = CreateFeatureStoreRequest(
@@ -1329,7 +1343,7 @@ func Test_GetFeatureVector_Success_ComplexType(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Cannot convert to json with error %s ", err)
 		}
-		arrayPt, err := feature_store.DeserialiseComplexFeature(arrayJson, &arraySchema) // array
+		arrayPt, err := feature_store.DeserialiseComplexFeature(arrayJson, &arrayComplexFeature) // array
 		row[2] = *arrayPt
 		if err != nil {
 			t.Fatalf("Cannot deserailize feature with error %s ", err)
@@ -1339,11 +1353,116 @@ func Test_GetFeatureVector_Success_ComplexType(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Cannot convert to json with error %s ", err)
 		}
-		mapPt, err := feature_store.DeserialiseComplexFeature(mapJson, &mapSchema) // map
+		mapPt, err := feature_store.DeserialiseComplexFeature(mapJson, &mapComplexFeature) // map
 		row[3] = *mapPt
 		if err != nil {
 			t.Fatalf("Cannot deserailize feature with error %s ", err)
 		}
+		// validate
+		ValidateResponseWithData(t, &row, &cols, fsResp)
+		ValidateResponseMetadata(t, &fsResp.Metadata, fsReq.MetadataRequest, fsName, fvName, fvVersion)
+	}
+}
+
+// a complex feature test with 512 elements
+func Test_GetFeatureVector_Success_ComplexType_512(t *testing.T) {
+	var fsName = testdbs.FSDB002
+	var fvName = "sample_complex_type_512"
+	var fvVersion = 1
+	rows, pks, cols, err := GetSampleData(fsName, "sample_complex_type_512_1")
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+
+	arraySchema, err := avro.Parse(`{"type":"record","name":"sample_complex_type_512_1","namespace":"test_ken_featurestore.db","fields":[{"name":"embedding","type":["null",{"type":"array","items":["null","long"]}]}]}`)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+	arrayStruct, err := fsmetadata.ConvertAvroSchemaToStruct(arraySchema)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+	arrayComplexFeature := fsmetadata.ComplexFeature{Schema: &arraySchema, Struct: &arrayStruct}
+
+	for _, row := range rows {
+		var fsReq = CreateFeatureStoreRequest(
+			fsName,
+			fvName,
+			fvVersion,
+			pks,
+			*GetPkValues(&row, &pks, &cols),
+			nil,
+			nil,
+		)
+		fsReq.MetadataRequest = &api.MetadataRequest{FeatureName: true, FeatureType: true}
+		fsResp := GetFeatureStoreResponse(t, fsReq)
+
+		// convert data to object in json format
+		arrayJson, err := ConvertBinaryToJsonMessage(row[1])
+		if err != nil {
+			t.Fatalf("Cannot convert to json with error %s ", err)
+		}
+		arrayPt, err := feature_store.DeserialiseComplexFeature(arrayJson, &arrayComplexFeature) // array
+		row[1] = *arrayPt
+		if err != nil {
+			t.Fatalf("Cannot deserailize feature with error %s ", err)
+		}
+		// validate
+		ValidateResponseWithData(t, &row, &cols, fsResp)
+		ValidateResponseMetadata(t, &fsResp.Metadata, fsReq.MetadataRequest, fsName, fvName, fvVersion)
+	}
+}
+
+func Test_GetFeatureVector_Date_Array_Success_ComplexType(t *testing.T) {
+	var fsName = testdbs.FSDB002
+	var fvName = "date_array"
+	var fvVersion = 1
+	rows, pks, cols, err := GetSampleData(fsName, "date_array_1")
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+	dataSchema, err := avro.Parse(`{"type":"record","name":"date_array_1","namespace":"salmanap_featurestore.db","fields":[{"name":"data0","type":["null",{"type":"array","items":["null",{"type":"record","name":"r515636140","namespace":"data","fields":[{"name":"sku","type":["null","string"]},{"name":"ts","type":["null",{"type":"long","logicalType":"timestamp-micros"}]}]}]}]}]}`)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+	dataStruct, err := fsmetadata.ConvertAvroSchemaToStruct(dataSchema)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+	dateComplexFeature := fsmetadata.ComplexFeature{Schema: &dataSchema, Struct: &dataStruct}
+
+	for _, row := range rows {
+		var fsReq = CreateFeatureStoreRequest(
+			fsName,
+			fvName,
+			fvVersion,
+			pks,
+			*GetPkValues(&row, &pks, &cols),
+			nil,
+			nil,
+		)
+		fsReq.MetadataRequest = &api.MetadataRequest{FeatureName: true, FeatureType: true}
+		fsResp := GetFeatureStoreResponse(t, fsReq)
+
+		// indented, err := json.MarshalIndent(fsResp, "", " ")
+		// if err != nil {
+		// t.Fatalf("Cannot MarshalIndent. Error %s ", err)
+		// }
+		// fmt.Printf("Response: %s", string(indented))
+
+		for i := 1; i <= 5; i++ {
+			// convert data to object in json format
+			arrayJson, err := ConvertBinaryToJsonMessage(row[1+i]) // col 0=pk , 1=ts. therefore we start with 2
+			if err != nil {
+				t.Fatalf("Cannot convert to json with error %s ", err)
+			}
+			arrayPt, err := feature_store.DeserialiseComplexFeature(arrayJson, &dateComplexFeature) // array
+			row[1+i] = *arrayPt
+			if err != nil {
+				t.Fatalf("Cannot deserailize feature with error %s ", err)
+			}
+		}
+
 		// validate
 		ValidateResponseWithData(t, &row, &cols, fsResp)
 		ValidateResponseMetadata(t, &fsResp.Metadata, fsReq.MetadataRequest, fsName, fvName, fvVersion)
@@ -1899,6 +2018,6 @@ func Test_GetFeatureVector_Success_ComplexType_With_Schema_Change(t *testing.T) 
 func work(t *testing.T, stop *bool, done chan int) {
 	defer func() { done <- 1 }()
 	for !*stop {
-		Test_GetFeatureVector_Success_ComplexType(t)
+		Test_GetFeatureVector_Success_ComplexType_ST(t)
 	}
 }

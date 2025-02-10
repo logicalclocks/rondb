@@ -4116,6 +4116,7 @@ void Qmgr::execSET_HOSTNAME_REQ(Signal *signal)
     g_eventLogger->info("SET_HOSTNAME_REQ failed, state: %u on node: %u",
                         m_activate_state,
                         changeNodeId);
+    releaseSections(handle);
     sendSET_HOSTNAME_REF(signal, senderRef, changeNodeId);
     return;
   }
@@ -4123,6 +4124,7 @@ void Qmgr::execSET_HOSTNAME_REQ(Signal *signal)
   {
     g_eventLogger->info("SET_HOSTNAME_REQ failed, node active, on node: %u",
                         changeNodeId);
+    releaseSections(handle);
     sendSET_HOSTNAME_REF(signal, senderRef, changeNodeId);
     return;
   }

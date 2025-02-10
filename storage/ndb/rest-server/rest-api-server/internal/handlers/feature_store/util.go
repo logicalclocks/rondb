@@ -1,16 +1,34 @@
+/*
+ * This file is part of the RonDB REST API Server
+ * Copyright (c) 2023,2025 Hopsworks AB
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, version 3.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ */
 package feature_store
 
 import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/hamba/avro/v2"
+	"hopsworks.ai/rdrs/internal/feature_store"
 	"hopsworks.ai/rdrs/internal/log"
 )
 
-func DeserialiseComplexFeature(value *json.RawMessage, schema *avro.Schema) (*interface{}, error) {
+func DeserialiseComplexFeature(value *json.RawMessage, complexFeature *feature_store.ComplexFeature) (*interface{}, error) {
 	valueString, err := decodeJSONString(value)
 	if err != nil {
 		if log.IsDebug() {
@@ -18,6 +36,7 @@ func DeserialiseComplexFeature(value *json.RawMessage, schema *avro.Schema) (*in
 		}
 		return nil, err
 	}
+
 	jsonDecode, err := base64.StdEncoding.DecodeString(valueString)
 	if err != nil {
 		if log.IsDebug() {
@@ -25,15 +44,18 @@ func DeserialiseComplexFeature(value *json.RawMessage, schema *avro.Schema) (*in
 		}
 		return nil, err
 	}
-	var avroDeserialized interface{}
-	err = avro.Unmarshal(*schema, jsonDecode, &avroDeserialized)
+	// var avroDeserialized interface{}
+	avroDeserialized := reflect.New(*complexFeature.Struct).Interface()
+	err = avro.Unmarshal(*complexFeature.Schema, jsonDecode, &avroDeserialized)
 	if err != nil {
 		if log.IsDebug() {
 			log.Debugf("Failed to deserialize avro")
 		}
 		return nil, err
 	}
-	nativeJson := ConvertAvroToJson(avroDeserialized)
+
+	// dicsard the top most wapper
+	nativeJson := reflect.ValueOf(avroDeserialized).Elem().Field(0).Interface()
 	return &nativeJson, err
 }
 
@@ -49,42 +71,4 @@ func decodeJSONString(raw *json.RawMessage) (string, error) {
 	// Replace escape sequences with their actual characters
 	decodedStr := strings.ReplaceAll(unquotedStr, `\"`, `"`)
 	return decodedStr, nil
-}
-
-func ConvertAvroToJson(o interface{}) interface{} {
-	var out interface{}
-	switch o.(type) {
-	case map[string]interface{}: // union or map
-		m := o.(map[string]interface{})
-		for key := range m {
-			switch strings.Split(key, ".")[0] {
-			case "struct":
-				result := make(map[string]interface{})
-				structValue := m[key].(map[string]interface{})
-				for structKey := range structValue {
-					result[structKey] = ConvertAvroToJson(structValue[structKey])
-				}
-				out = result
-			case "array":
-				result := make([]interface{}, 0)
-				for _, item := range m[key].([]interface{}) {
-					itemJson := ConvertAvroToJson(item)
-					result = append(result, itemJson)
-				}
-				out = result
-			default:
-				out = ConvertAvroToJson(m[key])
-			}
-		}
-	case []interface{}:
-		result := make([]interface{}, 0)
-		for _, item := range o.([]interface{}) {
-			itemJson := ConvertAvroToJson(item)
-			result = append(result, itemJson)
-		}
-		out = result
-	default:
-		out = o
-	}
-	return out
 }
