@@ -1,0 +1,38 @@
+Node 1 is already activated
+Now activating the node in the cluster
+Node 1 is now activated in the cluster
+
+Node 2 is already activated
+Now activating the node in the cluster
+Node 2 is now activated in the cluster
+
+Node 3 is already activated
+Now activating the node in the cluster
+Node 3 is now activated in the cluster
+
+Node 16 is already activated
+Now activating the node in the cluster
+Node 16 is now activated in the cluster
+
+Node 16 is an API/mysqld node, we cannot stop it from here
+we will proceeed with deactivation still
+Configuration changed to reflect deactivated node
+Now deactivating the node in the cluster
+Node 16 is now deactivated in the cluster
+
+Configuration changed to reflect activated node
+Now activating the node in the cluster
+Node 16 is now activated in the cluster
+
+Node 1 is being restarted
+
+Node 1: NOT_STARTED
+Node 1 is already activated
+Now activating the node in the cluster
+Node 1 is now activated in the cluster
+
+Database node 1 is being started.
+
+Node 1: STARTED
+Node 2: STARTED
+Wait for mysqld to connect to the cluster

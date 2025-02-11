@@ -3008,6 +3008,7 @@ CommandInterpreter::executeDeactivate(int processId,
   ndb_mgm_node_type node_type;
   if (!check_before_config_change(processId, is_node_up, node_type))
   {
+    ndbout_c("Check before config change failed");
     return -1;
   }
 
@@ -3042,21 +3043,25 @@ CommandInterpreter::executeDeactivate(int processId,
   {
     if (node_type == NDB_MGM_NODE_TYPE_MGM)
     {
-      ndbout_c("Cannot deactivate node %d since we need at least"
-               " one active MGM server in a cluster",
-               processId);
-      iter.closeSection();
-      ndb_mgm_destroy_configuration(conf);
-      return -1;
+      if (is_node_up) {
+        ndbout_c("Cannot deactivate node %d since we need at least"
+                 " one active MGM server in a cluster",
+                 processId);
+        iter.closeSection();
+        ndb_mgm_destroy_configuration(conf);
+        return -1;
+      }
     }
     else if (node_type == NDB_MGM_NODE_TYPE_NDB)
     {
-      ndbout_c("Cannot deactivate node %d since we need at least"
-               " one active Data node in a cluster",
-               processId);
-      iter.closeSection();
-      ndb_mgm_destroy_configuration(conf);
-      return -1;
+      if (is_node_up) {
+        ndbout_c("Cannot deactivate node %d since we need at least"
+                 " one active Data node in a cluster",
+                 processId);
+        iter.closeSection();
+        ndb_mgm_destroy_configuration(conf);
+        return -1;
+      }
     }
     else
     {
@@ -3098,6 +3103,7 @@ CommandInterpreter::executeDeactivate(int processId,
   {
     if (node_type == NDB_MGM_NODE_TYPE_NDB)
     {
+      ndbout_c("Data node to deactivate still up, will stop it");
       int result = stop_node(processId);
       if (result < 0)
       {
