@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2024 Hopsworks AB
+ * Copyright (C) 2024, 2025 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -568,7 +568,7 @@ void FeatureStoreCtrl::featureStore(
    */
 
   drogon::HttpResponsePtr resp = drogon::HttpResponse::newHttpResponse();
-  rdrs_metrics::EndPointMetricsUpdater metricsUpdater(FEATURE_STORE, POST, resp);
+  FsReadEndPointMetricsUpdater metricsUpdater(resp);
 
   size_t currentThreadIndex = drogon::app().getCurrentThreadIndex();
   if (unlikely(currentThreadIndex >= globalConfigs.rest.numThreads)) {
