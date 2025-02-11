@@ -1,6 +1,6 @@
 /*
  * This file is part of the RonDB REST API Server
- * Copyright (c) 2023 Hopsworks AB
+ * Copyright (c) 2023,2025 Hopsworks AB
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -24,6 +24,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 
 	"hopsworks.ai/rdrs/internal/common"
 	"hopsworks.ai/rdrs/internal/config"
@@ -337,24 +338,10 @@ func GetFeatureValues(ronDbResult *[]*api.PKReadResponseWithCodeJSON, entries *m
 		} else if *response.Code != http.StatusOK {
 			status = api.FEATURE_STATUS_ERROR
 		}
-		for featureName, value := range *response.Body.Data {
-			featureIndexKey := feature_store.GetFeatureIndexKeyByFgIndexKey(*response.Body.OperationID, featureName)
-			// When only primary key is selected, Rondb will return all columns, so not all value from response are needed.
-			if index, ok := (featureView.FeatureIndexLookup)[featureIndexKey]; ok {
-				if schema, ok := (featureView.ComplexFeatures)[featureIndexKey]; ok {
-					var deser, err1 = DeserialiseComplexFeature(value, schema)
-					if err1 != nil {
-						status = api.FEATURE_STATUS_ERROR
-						err = feature_store.DESERIALISE_FEATURE_FAIL.NewMessage(fmt.Sprintf("Feature name: %s; %s", featureName, err1.Error()))
-					} else {
-						featureValues[index] = deser
-					}
-				} else {
-					featureValues[index] = value
-				}
-			}
-		}
+
+		getFeatureValuesInt(response, featureView, featureValues, &status, err)
 	}
+
 	// Fill in primary key value from request into the vector
 	// If multiple matched entries are found, the priority of the entry follows the order in `GetBatchPkReadParams`
 	// i.e required entry > entry with prefix > entry without prefix
@@ -391,6 +378,68 @@ func GetFeatureValues(ronDbResult *[]*api.PKReadResponseWithCodeJSON, entries *m
 		}
 	}
 	return &featureValues, status, arrDetailedStatus, err
+}
+
+type ComplexFeatureResult struct {
+	Index  int
+	Value  *interface{}
+	Err    *feature_store.RestErrorCode
+	Status api.FeatureStatus
+}
+
+func getFeatureValuesInt(response *api.PKReadResponseWithCodeJSON, featureView *feature_store.FeatureViewMetadata, featureValues []interface{}, status *api.FeatureStatus, err *feature_store.RestErrorCode) {
+	complexFeaturesCount := 0
+	for featureName, _ := range *response.Body.Data {
+		featureIndexKey := feature_store.GetFeatureIndexKeyByFgIndexKey(*response.Body.OperationID, featureName)
+		// When only primary key is selected, Rondb will return all columns, so not all value from response are needed.
+		if _, ok := (featureView.FeatureIndexLookup)[featureIndexKey]; ok {
+			if _, ok := (featureView.ComplexFeatures)[featureIndexKey]; ok {
+				complexFeaturesCount++
+			}
+		}
+	}
+
+	var wg sync.WaitGroup
+	results := make(chan ComplexFeatureResult, complexFeaturesCount)
+
+	for featureName, value := range *response.Body.Data {
+		featureIndexKey := feature_store.GetFeatureIndexKeyByFgIndexKey(*response.Body.OperationID, featureName)
+		// When only primary key is selected, Rondb will return all columns, so not all value from response are needed.
+		if index, ok := (featureView.FeatureIndexLookup)[featureIndexKey]; ok {
+			if complexFeature, ok := (featureView.ComplexFeatures)[featureIndexKey]; ok {
+
+				wg.Add(1)
+				go func(idx int, complexFeature *feature_store.ComplexFeature) {
+					defer wg.Done()
+					myIndex := idx
+					deser, e := DeserialiseComplexFeature(value, complexFeature)
+
+					if e != nil {
+						myStatus := api.FEATURE_STATUS_ERROR
+						myErr := feature_store.DESERIALISE_FEATURE_FAIL.NewMessage(fmt.Sprintf("Feature name: %s; %s", featureName, e.Error()))
+						results <- ComplexFeatureResult{Index: myIndex, Err: myErr, Status: myStatus}
+					} else {
+						results <- ComplexFeatureResult{Index: myIndex, Value: deser}
+					}
+				}(index, complexFeature)
+
+			} else {
+				featureValues[index] = value
+			}
+		}
+	}
+	wg.Wait()
+	close(results)
+
+	for res := range results {
+		if res.Err != nil {
+			fmt.Printf("Failed: %v\n", res.Err)
+			err = res.Err
+			*status = res.Status
+		} else {
+			featureValues[res.Index] = res.Value
+		}
+	}
 }
 
 func FillPrimaryKey(featureView *feature_store.FeatureViewMetadata, featureValues *[]interface{}, joinKeys []string, value *json.RawMessage) {
