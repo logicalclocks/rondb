@@ -2891,24 +2891,22 @@ CommandInterpreter::executeActivate(int processId,
   if (is_active == 1)
   {
     ndbout_c("Node %d is already activated", processId);
-    return 0;
-  }
-  iter.set(CFG_NODE_ACTIVE, Uint32(1));
-  iter.closeSection();
+  } else {
+    iter.set(CFG_NODE_ACTIVE, Uint32(1));
+    iter.closeSection();
 
-  int ret_code = ndb_mgm_set_configuration(m_mgmsrv, conf);
-  if (ret_code != 0)
-  {
-    ndbout_c("Failed to change configuration");
-    printError();
-    ndb_mgm_destroy_configuration(conf);
-    return -1;
+    int ret_code = ndb_mgm_set_configuration(m_mgmsrv, conf);
+    if (ret_code != 0) {
+      ndbout_c("Failed to change configuration");
+      printError();
+      ndb_mgm_destroy_configuration(conf);
+      return -1;
+    }
+    ndbout_c("Configuration changed to reflect activated node");
   }
-
-  ndbout_c("Configuration changed to reflect activated node");
   ndbout_c("Now activating the node in the cluster");
 
-  ret_code = ndb_mgm_activate(m_mgmsrv, processId);
+  int ret_code = ndb_mgm_activate(m_mgmsrv, processId);
   if (ret_code < 0)
   {
     ndbout_c("Failed to activate node %d in the cluster",
@@ -3074,10 +3072,8 @@ CommandInterpreter::executeDeactivate(int processId,
   iter.get(CFG_NODE_ACTIVE, &is_active);
   if (!is_active)
   {
-    ndbout_c("Node %d is already deactivated, need not be deactivated",
+    ndbout_c("Node %d is already deactivated, will deactivate still",
              processId);
-    ndb_mgm_destroy_configuration(conf);
-    return -1;
   }
 
   Uint32 node_count = count_active_nodes(conf, node_type);
@@ -3110,9 +3106,7 @@ CommandInterpreter::executeDeactivate(int processId,
   }
   else if (node_count == 0)
   {
-    ndbout_c("There are no active nodes to deactivate");
-    iter.closeSection();
-    return 0;
+    ndbout_c("There are no active nodes to deactivate, will still proceed");
   }
   else if (node_type == NDB_MGM_NODE_TYPE_MGM)
   {
