@@ -1,0 +1,19 @@
+-- source include/have_multi_ndb.inc
+-- source ndb_mgm.inc
+-- source ndb_waiter.inc
+
+--exec $NDB_MGM -e "1 ACTIVATE"
+--exec $NDB_MGM -e "2 ACTIVATE"
+--exec $NDB_MGM -e "3 ACTIVATE"
+--exec $NDB_MGM -e "16 ACTIVATE"
+
+--exec $NDB_MGM -e "16 DEACTIVATE"
+--exec $NDB_MGM -e "16 ACTIVATE"
+
+--exec $NDB_MGM -e "1 RESTART -n"
+--exec $NDB_WAITER --nowait-nodes=2 --not-started
+--exec $NDB_MGM -e "1 ACTIVATE"
+--exec $NDB_MGM -e "1 START"
+--exec $NDB_WAITER
+--echo Wait for mysqld to connect to the cluster
+--source include/ndb_not_readonly.inc

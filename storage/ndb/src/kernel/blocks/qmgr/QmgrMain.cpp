@@ -3756,8 +3756,7 @@ void Qmgr::execACTIVATE_REQ(Signal *signal)
   Uint32 activateNodeId = req->activateNodeId;
   Uint32 senderRef = req->senderRef;
   Uint32 timeOutCount = 0;
-  if (signal->length() > ActivateReq::SignalLength)
-  {
+  if (signal->length() > ActivateReq::SignalLength) {
     jam();
     timeOutCount = req->timerCount;
   }
@@ -3776,66 +3775,61 @@ void Qmgr::execACTIVATE_REQ(Signal *signal)
   }
   nodePtr.i = activateNodeId;
   ptrAss(nodePtr, nodeRec);
-  if (nodePtr.p->phase == ZFAIL_CLOSING ||
-      nodePtr.p->phase == ZPREPARE_FAIL)
-  {
-    /**
-     * QMGR will handle it in checkStartInterfaces as normal restart of
-     * API node.
-     */
-    jam();
-    g_eventLogger->info("ZFAIL_CLOSING/ZPREPARE_FAIL state %u of node %u at"
-                        " activate request, now waited %u seconds",
-                        nodePtr.p->phase,
-                        nodePtr.i,
-                        timeOutCount);
-    if (timeOutCount < 120)
-    {
-      jam();
-      timeOutCount++;
+  if (g_not_active_nodes.get(activateNodeId)) {
+    if (nodePtr.p->phase == ZFAIL_CLOSING ||
+        nodePtr.p->phase == ZPREPARE_FAIL) {
       /**
-       * We are in a temporary state where we won't activate node, to avoid
-       * complex error handling we will wait for up to 2 minutes before
-       * reporting any error. This should avoid all normal cases where the
-       * node is still handling node failures.
+       * QMGR will handle it in checkStartInterfaces as normal restart of
+       * API node.
        */
-      ActivateReq* const send_req = (ActivateReq*)signal->getDataPtrSend();
-      send_req->activateNodeId = activateNodeId;
-      send_req->senderRef = senderRef;
-      send_req->timerCount = timeOutCount;
-      sendSignalWithDelay(reference(),
-                          GSN_ACTIVATE_REQ,
-                          signal,
-                          1000,
-                          ActivateReq::TimeOutSignalLength);
-    }
-    else
-    {
       jam();
+      g_eventLogger->info("ZFAIL_CLOSING/ZPREPARE_FAIL state %u of node %u at"
+                          " activate request, now waited %u seconds",
+                          nodePtr.p->phase,
+                          nodePtr.i,
+                          timeOutCount);
+      if (timeOutCount < 120) {
+        jam();
+        timeOutCount++;
+        /**
+         * We are in a temporary state where we won't activate node, to avoid
+         * complex error handling we will wait for up to 2 minutes before
+         * reporting any error. This should avoid all normal cases where the
+         * node is still handling node failures.
+         */
+        ActivateReq* const send_req = (ActivateReq*)signal->getDataPtrSend();
+        send_req->activateNodeId = activateNodeId;
+        send_req->senderRef = senderRef;
+        send_req->timerCount = timeOutCount;
+        sendSignalWithDelay(reference(),
+                            GSN_ACTIVATE_REQ,
+                            signal,
+                            1000,
+                            ActivateReq::TimeOutSignalLength);
+      } else {
+        jam();
+        sendACTIVATE_REF(signal, senderRef, activateNodeId);
+      }
+      return;
+    } else if (nodePtr.p->phase == ZINIT || nodePtr.p->phase == ZAPI_INACTIVE) {
+      jam();
+      g_eventLogger->info("Open up communication to node %u after activation",
+                          nodePtr.i);
+      signal->theData[0] = 0;
+      signal->theData[1] = nodePtr.i;
+      sendSignal(TRPMAN_REF, GSN_OPEN_COMORD, signal, 2, JBB);
+    } else if (nodePtr.p->phase != ZRUNNING &&
+               nodePtr.p->phase != ZAPI_ACTIVE) {
+      jam();
+      g_eventLogger->warning("Activated a node in phase %u",
+                             nodePtr.p->phase);
       sendACTIVATE_REF(signal, senderRef, activateNodeId);
+      return;
     }
-    return;
-  }
-  else if (nodePtr.p->phase == ZINIT || nodePtr.p->phase == ZAPI_INACTIVE)
-  {
-    jam();
-    g_eventLogger->info("Open up communication to node %u after activation",
-                        nodePtr.i);
-    signal->theData[0] = 0;
-    signal->theData[1] = nodePtr.i;
-    sendSignal(TRPMAN_REF, GSN_OPEN_COMORD, signal, 2, JBB);
-  }
-  else
-  {
-    jam();
-    g_eventLogger->warning("Activated a node in phase %u",
-                           nodePtr.p->phase);
-    sendACTIVATE_REF(signal, senderRef, activateNodeId);
-    return;
+    g_not_active_nodes.clear(activateNodeId);
+    globalTransporterRegistry.set_active_node(activateNodeId, 1, true);
   }
 
-  g_not_active_nodes.clear(activateNodeId);
-  globalTransporterRegistry.set_active_node(activateNodeId, 1, true);
 
   m_activate_node_id = activateNodeId;
   m_activate_ref = senderRef;
