@@ -65,7 +65,10 @@ std::shared_ptr<PinkConn> RondisConnFactory::NewPinkConn(
     [[maybe_unused]]/*todo remove?*/ PinkEpoll *pink_epoll
 ) const
 {
-    return std::make_shared<RondisConn>(connfd, ip_port, thread, worker_specific_data);
+    return std::make_shared<RondisConn>(connfd,
+                                        ip_port,
+                                        thread,
+                                        worker_specific_data);
 }
 
 std::vector<Ndb *> ndb_objects;

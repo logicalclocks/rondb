@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023, 2024 Hopsworks AB
+ * Copyright (C) 2023, 2025 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -204,6 +204,9 @@ RS_Status ronsql_dal(const char* database,
  * Returns statistis about RonDB connection
  */
 RS_Status get_rondb_stats(RonDB_Stats *stats);
+
+void* get_ndb_object(int thread_index);
+void return_ndb_object(void *ndb_object, int thread_index);
 
 #endif
 

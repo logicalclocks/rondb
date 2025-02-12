@@ -45,6 +45,7 @@ constexpr const char* const usageHelp =
 #include <NdbMutex.h>
 
 #include "rondis_thread.h"
+#include "rondb.h"
 
 #include <cstdio>
 #include <iostream>
@@ -152,7 +153,6 @@ static void handle_signal(int signal) {
   }
   do_exit();
 }
-
 
 int main(int argc, char *argv[]) {
   signal(SIGHUP, handle_signal);
@@ -298,16 +298,16 @@ int main(int argc, char *argv[]) {
     g_rondis_conn_factory = new RondisConnFactory();
     g_rondis_handle = new RondisHandle();
     // todo use globalConfigs.rondis.databases to configure individual databases.
-    // todo let rondis use g_rondbConnection
-    // todo if thread exits on its own accord (without StopThread() called in
-    // do_exit), make sure to set g_rondis_running = false and then call
-    // do_exit().
     g_rondis_thread = NewDispatchThread(globalConfigs.rondis.serverPort,
                                         globalConfigs.rondis.numThreads,
                                         g_rondis_conn_factory,
                                         1000,
                                         1000,
                                         g_rondis_handle);
+    setup_ndb_connection_for_rondis(get_ndb_object,
+                                    return_ndb_object,
+                                    do_exit,
+                                    globalConfigs.rest.numThreads);
     if (g_rondis_thread->StartThread() != 0)
     {
         printf("Error starting rondis thread\n");

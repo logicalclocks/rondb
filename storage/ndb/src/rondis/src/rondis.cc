@@ -67,10 +67,12 @@ int main(int argc, char *argv[])
         connect_string = argv[2];
         worker_threads = atoi(argv[3]);
     }
-    printf("Server will listen to %d and connect to MGMd at %s\n", port, connect_string);
+    printf("Server will listen to %d and connect to MGMd at %s\n",
+      port, connect_string);
 
     if (worker_threads < RONDIS_MAX_CONNECTIONS) {
-        printf("Number of worker threads must be at least %d, otherwise we are wasting resources\n", RONDIS_MAX_CONNECTIONS);
+        printf("Number of worker threads must be at least %d, otherwise"
+               " we are wasting resources\n", RONDIS_MAX_CONNECTIONS);
         return -1;
     }
 
@@ -87,7 +89,8 @@ int main(int argc, char *argv[])
 
     RondisHandle *handle = new RondisHandle();
 
-    ServerThread *my_thread = NewDispatchThread(port, worker_threads, conn_factory, 1000, 1000, handle);
+    ServerThread *my_thread = NewDispatchThread(
+      port, worker_threads, conn_factory, 1000, 1000, handle);
     if (my_thread->StartThread() != 0)
     {
         printf("StartThread error happened!\n");

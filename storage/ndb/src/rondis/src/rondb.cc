@@ -89,8 +89,14 @@ int initialize_ndb_objects(const char *connect_string, int num_ndb_objects) {
   return 0;
 }
 
+#define INSIDE_RDRS2 1
+#define RONDIS_STANDALONE 2
+
+int rondis_execution_variant = 0;
 int setup_rondb(const char *connect_string, int num_ndb_objects) {
   // Creating static thread-safe Ndb objects for all connections
+  assert(rondis_execution_variant == 0);
+  rondis_execution_variant = RONDIS_STANDALONE;
   ndb_init();
   int res = initialize_ndb_objects(connect_string, num_ndb_objects);
   if (res != 0) {
@@ -117,9 +123,76 @@ void print_args(const pink::RedisCmdArgsType &argv) {
   printf("\n");
 }
 
+void* (*g_get_ndb_object_func_ptr)(int);
+void (*g_return_ndb_object_func_ptr)(void*,int);
+void (*g_exit_func_ptr)(void);
+int g_first_thread_id = 0;
+
+void setup_ndb_connection_for_rondis(
+ void* (*get_ndb_object_func_ptr)(int),
+ void (*return_ndb_object_func_ptr)(void*, int),
+ void (*exit_func_ptr)(void),
+ int first_thread_id) {
+  assert(rondis_execution_variant == 0);
+  rondis_execution_variant = INSIDE_RDRS2;
+  g_get_ndb_object_func_ptr = get_ndb_object_func_ptr;
+  g_return_ndb_object_func_ptr = return_ndb_object_func_ptr;
+  g_exit_func_ptr = exit_func_ptr;
+  g_first_thread_id = first_thread_id;
+}
+
+static Ndb* loc_get_ndb_object(int worker_id) {
+  if (rondis_execution_variant == INSIDE_RDRS2) {
+    Ndb *ndb = (Ndb*)g_get_ndb_object_func_ptr(worker_id);
+    ndb->setDatabaseName(REDIS_DB_NAME);
+    return ndb;
+  } else if (rondis_execution_variant == RONDIS_STANDALONE) {
+    return ndb_objects[worker_id];
+  } else {
+    assert(false);
+  }
+  return nullptr;
+}
+
+static void loc_return_ndb_object(void *ndb_object, int worker_id) {
+  worker_id += g_first_thread_id;
+  if (rondis_execution_variant == INSIDE_RDRS2) {
+    g_return_ndb_object_func_ptr(ndb_object, worker_id);
+  }
+}
+
+class NdbObjectGuard {
+  public:
+  NdbObjectGuard(int worker_id) {
+    m_worker_id = worker_id + g_first_thread_id;
+    m_ndb = loc_get_ndb_object(m_worker_id);
+  }
+  ~NdbObjectGuard() {
+    if (m_ndb)
+      loc_return_ndb_object(m_ndb, m_worker_id);
+  }
+  Ndb *get_guard_ndb_object() {
+    return (Ndb*)m_ndb;
+  }
+  void *m_ndb;
+  int m_worker_id;
+};
+
 void unsupported_command(const pink::RedisCmdArgsType &argv,
                          std::string *response) {
   printf("Unsupported command: ");
+  print_args(argv);
+  char error_message[256];
+  snprintf(error_message,
+           sizeof(error_message),
+           REDIS_UNKNOWN_COMMAND,
+           argv[0].c_str());
+  assign_generic_err_to_response(response, error_message);
+}
+
+void unavailable_cluster(const pink::RedisCmdArgsType &argv,
+                         std::string *response) {
+  printf("Cluster unavailble: ");
   print_args(argv);
   char error_message[256];
   snprintf(error_message,
@@ -174,7 +247,12 @@ int rondb_redis_handler(const pink::RedisCmdArgsType &argv,
       unsupported_command(argv, response);
     }
   } else {
-    Ndb *ndb = ndb_objects[worker_id];
+    NdbObjectGuard ndbObjectGuard(worker_id);
+    Ndb *ndb = ndbObjectGuard.get_guard_ndb_object();
+    if (ndb == nullptr) {
+      unavailable_cluster(argv, response);
+      return 0;
+    }
     DEB_NDB_CMD(("cmd: %s, params: %lu\n", command, argv.size()));
 #ifdef DEBUG_NDB_CMD
     for (Uint32 i = 1; i < argv.size(); i++) {
@@ -325,7 +403,12 @@ int rondb_redis_handler(const pink::RedisCmdArgsType &argv,
         ndb->getClientStat(ndb->TransStartCount));
       printf("Number of transactions closed: %lld\n",
         ndb->getClientStat(ndb->TransCloseCount));
-      exit(1);
+      if (rondis_execution_variant == INSIDE_RDRS2) {
+        g_exit_func_ptr();
+      } else {
+        exit(1);
+      }
+      return 0;
     }
   }
   return 0;

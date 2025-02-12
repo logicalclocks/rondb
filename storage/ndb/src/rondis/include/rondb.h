@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2024, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -36,6 +36,12 @@ extern std::vector<Ndb *> ndb_objects;
 int initialize_ndb_objects(const char *connect_string, int num_ndb_objects);
 
 int setup_rondb(const char *connect_string, int num_ndb_objects);
+
+void setup_ndb_connection_for_rondis(
+ void* (*get_ndb_object_func_ptr)(int),
+ void (*return_ndb_object_func_ptr)(void*, int),
+ void (*exit_func)(void),
+ int first_thread_id);
 
 void rondb_end();
 
