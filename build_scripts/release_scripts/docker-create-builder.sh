@@ -160,7 +160,7 @@ EOF
 
 echo "Creating Docker image ${DOCKER_IMAGE_NAME}"
 
-docker buildx build . \
+docker buildx build --load . \
   -f $SRC_DIR_ABS/$DOCKERFILE \
   --tag $DOCKER_IMAGE_NAME \
   --target rondb-build-dependencies \
