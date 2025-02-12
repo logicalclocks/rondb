@@ -106,6 +106,8 @@ CLASS
     " CLUSTER = todo add description."
     " RONDB = todo add description."
     )
+ CM(bool, dirtyIncrDecr, DirtyINCRDECR, false,
+    "Whether to use dirty write for INCR and DECR")
  PROBLEM(mode != "COMPATIBLE" && mode != "CLUSTER" && mode != "RONDB",
          "Invalid rondis database mode")
  CLASSDEFS
