@@ -141,35 +141,27 @@ void setup_ndb_connection_for_rondis(
   g_first_thread_id = first_thread_id;
 }
 
-static Ndb* loc_get_ndb_object(int worker_id) {
-  if (rondis_execution_variant == INSIDE_RDRS2) {
-    Ndb *ndb = (Ndb*)g_get_ndb_object_func_ptr(worker_id);
-    ndb->setDatabaseName(REDIS_DB_NAME);
-    return ndb;
-  } else if (rondis_execution_variant == RONDIS_STANDALONE) {
-    return ndb_objects[worker_id];
-  } else {
-    assert(false);
-  }
-  return nullptr;
-}
-
-static void loc_return_ndb_object(void *ndb_object, int worker_id) {
-  worker_id += g_first_thread_id;
-  if (rondis_execution_variant == INSIDE_RDRS2) {
-    g_return_ndb_object_func_ptr(ndb_object, worker_id);
-  }
-}
-
 class NdbObjectGuard {
   public:
-  NdbObjectGuard(int worker_id) {
-    m_worker_id = worker_id + g_first_thread_id;
-    m_ndb = loc_get_ndb_object(m_worker_id);
+  NdbObjectGuard(int worker_id)
+    : m_worker_id(worker_id + g_first_thread_id)
+  {
+    if (rondis_execution_variant == INSIDE_RDRS2) {
+      Ndb *ndb = (Ndb*)g_get_ndb_object_func_ptr(worker_id);
+      if(likely(ndb != nullptr)) {
+        ndb->setDatabaseName(REDIS_DB_NAME);
+      }
+      m_ndb = ndb;
+    } else if (rondis_execution_variant == RONDIS_STANDALONE) {
+      m_ndb = ndb_objects[worker_id];
+    }
+    assert(false);
+    m_ndb = nullptr;
   }
   ~NdbObjectGuard() {
-    if (m_ndb)
-      loc_return_ndb_object(m_ndb, m_worker_id);
+    if (m_ndb && rondis_execution_variant == INSIDE_RDRS2) {
+      g_return_ndb_object_func_ptr(ndb_object, worker_id);
+    }
   }
   Ndb *get_guard_ndb_object() {
     return (Ndb*)m_ndb;

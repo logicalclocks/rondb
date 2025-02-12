@@ -75,6 +75,7 @@ static TTLPurger* g_ttl_purger = nullptr;
 NdbMutex *globalConfigsMutex = nullptr;
 
 static void do_exit() {
+  // todo Set shutdown flag in RDRS2 connection pool
   if (g_drogon_running) {
     printf("Quitting Drogon...\n");
     drogon::app().quit();
@@ -83,12 +84,6 @@ static void do_exit() {
   if (jsonParsers != nullptr) {
     delete[] jsonParsers;
     jsonParsers = nullptr;
-  }
-  if (g_pidfile != nullptr) {
-    printf("Removing pidfile %s\n", g_pidfile);
-    if(remove(g_pidfile) != 0) {
-      printf("Failed to remove pidfile %s: %s\n", g_pidfile, strerror(errno));
-    }
   }
   if (g_rondis_running) {
     g_rondis_thread->StopThread();
@@ -121,11 +116,23 @@ static void do_exit() {
   NdbMutex_Destroy(globalConfigsMutex);
   if (g_did_ndb_init)
     ndb_end(0);
+  if (g_pidfile != nullptr) {
+    printf("Removing pidfile %s\n", g_pidfile);
+    if(remove(g_pidfile) != 0) {
+      printf("Failed to remove pidfile %s: %s\n", g_pidfile, strerror(errno));
+    }
+  }
   if (g_exit_code != 0) {
     printf("rdrs2: Exit with code %d.\n", g_exit_code);
   }
   exit(g_exit_code);
 }
+
+static void exit_on_rondis_error() {
+  g_exit_code = 1;
+  do_exit();
+}
+
 static void handle_signal(int signal) {
   switch (signal) {
     case SIGHUP:
@@ -306,7 +313,7 @@ int main(int argc, char *argv[]) {
                                         g_rondis_handle);
     setup_ndb_connection_for_rondis(get_ndb_object,
                                     return_ndb_object,
-                                    do_exit,
+                                    exit_on_rondis_error,
                                     globalConfigs.rest.numThreads);
     if (g_rondis_thread->StartThread() != 0)
     {
