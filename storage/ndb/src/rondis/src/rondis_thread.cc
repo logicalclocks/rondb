@@ -42,6 +42,7 @@ RondisConn::RondisConn(
 {
     int worker_id = *static_cast<int *>(worker_specific_data);
     _worker_id = worker_id;
+    set_current_database(worker_id, 0);
 }
 
 int RondisConn::DealMessage(const RedisCmdArgsType &argv, std::string *response)

@@ -108,7 +108,8 @@ void incr_decr_key_row(std::string *response,
                        NdbTransaction *trans,
                        struct key_table *key_row,
                        bool incr_flag,
-                       Uint64 inc_dec_value);
+                       Uint64 inc_dec_value,
+                       bool dirty_flag);
 
 /**
  * Uinique key MODULE for Rondis

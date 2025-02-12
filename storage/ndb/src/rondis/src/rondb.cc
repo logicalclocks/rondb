@@ -127,29 +127,52 @@ void* (*g_get_ndb_object_func_ptr)(int);
 void (*g_return_ndb_object_func_ptr)(void*,int);
 void (*g_exit_func_ptr)(void);
 int g_first_thread_id = 0;
+int *g_current_database_index;
+bool g_is_incr_decr_dirty[MAX_NUM_DATABASES];
+int g_num_databases = 0;
+int g_num_threads = 0;
 
 void setup_ndb_connection_for_rondis(
  void* (*get_ndb_object_func_ptr)(int),
  void (*return_ndb_object_func_ptr)(void*, int),
  void (*exit_func_ptr)(void),
- int first_thread_id) {
+ int first_thread_id,
+ int num_threads,
+ int *database_index,
+ int num_databases,
+ bool *dirty_incr_decr_flag) {
   assert(rondis_execution_variant == 0);
   rondis_execution_variant = INSIDE_RDRS2;
   g_get_ndb_object_func_ptr = get_ndb_object_func_ptr;
   g_return_ndb_object_func_ptr = return_ndb_object_func_ptr;
   g_exit_func_ptr = exit_func_ptr;
   g_first_thread_id = first_thread_id;
+  g_num_threads = num_threads;
+  g_current_database_index = database_index;
+  g_num_databases = num_databases;
+  for (int i = 0; i < MAX_NUM_DATABASES; i++) {
+    g_is_incr_decr_dirty[i] = false;
+  }
+  for (int i = 0; i < num_databases; i++) {
+    g_is_incr_decr_dirty[i] = dirty_incr_decr_flag[i];
+  }
+}
+
+bool get_dirty_incr_decr_flag(int worker_id) {
+  return g_is_incr_decr_dirty[worker_id];
 }
 
 class NdbObjectGuard {
   public:
-  NdbObjectGuard(int worker_id)
+  NdbObjectGuard(int worker_id, int database_id)
     : m_worker_id(worker_id + g_first_thread_id)
   {
     if (rondis_execution_variant == INSIDE_RDRS2) {
       Ndb *ndb = (Ndb*)g_get_ndb_object_func_ptr(worker_id);
-      if(likely(ndb != nullptr)) {
-        ndb->setDatabaseName(REDIS_DB_NAME);
+      if(ndb != nullptr) {
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%s_%u", REDIS_DB_NAME, database_id);
+        ndb->setDatabaseName(buf);
       }
       m_ndb = ndb;
     } else if (rondis_execution_variant == RONDIS_STANDALONE) {
@@ -160,13 +183,13 @@ class NdbObjectGuard {
   }
   ~NdbObjectGuard() {
     if (m_ndb && rondis_execution_variant == INSIDE_RDRS2) {
-      g_return_ndb_object_func_ptr(ndb_object, worker_id);
+      g_return_ndb_object_func_ptr((void*)m_ndb, m_worker_id);
     }
   }
   Ndb *get_guard_ndb_object() {
-    return (Ndb*)m_ndb;
+    return m_ndb;
   }
-  void *m_ndb;
+  Ndb *m_ndb;
   int m_worker_id;
 };
 
@@ -204,6 +227,10 @@ void wrong_number_of_arguments(const pink::RedisCmdArgsType &argv,
   assign_generic_err_to_response(response, error_message);
 }
 
+void set_current_database(int index, int database_index) {
+  g_current_database_index[index] = database_index;
+}
+
 int rondb_redis_handler(const pink::RedisCmdArgsType &argv,
                         std::string *response,
                         int worker_id) {
@@ -215,7 +242,7 @@ int rondb_redis_handler(const pink::RedisCmdArgsType &argv,
       return 0;
     }
     response->append("+PONG\r\n");
-  } else if (argv[0] == "ECHO") {
+  } else if (strcasecmp(command, "echo") == 0) {
     if (argv.size() != 2) {
       wrong_number_of_arguments(argv, response);
       return 0;
@@ -225,7 +252,7 @@ int rondb_redis_handler(const pink::RedisCmdArgsType &argv,
                      "\r\n" +
                      argv[1] +
                      "\r\n");
-  } else if (argv[0] == "CONFIG") {
+  } else if (strcasecmp(command, "config") == 0) {
     if (argv.size() != 3) {
       wrong_number_of_arguments(argv, response);
       return 0;
@@ -238,13 +265,35 @@ int rondb_redis_handler(const pink::RedisCmdArgsType &argv,
     } else {
       unsupported_command(argv, response);
     }
+  } else if (strcasecmp(command, "select") == 0) {
+    if (argv.size() != 2) {
+      wrong_number_of_arguments(argv, response);
+      return 0;
+    }
+    char *end_ptr = nullptr;
+    const char *val_ptr = argv[2].c_str();
+    const char *memory_end = val_ptr + argv[2].size();
+    Int64 val = strtoll(val_ptr,
+                        &end_ptr,
+                        10);
+    if (errno == ERANGE || end_ptr != memory_end || val > 15) {
+      assign_err_to_response(response,
+                             FAILED_SELECT_COMMAND,
+                             1);
+      return 0;
+    }
+    set_current_database(worker_id, (int)val);
+    response->append("+OK\r\n");
+    return 0;
   } else {
-    NdbObjectGuard ndbObjectGuard(worker_id);
+    int database_id = g_current_database_index[worker_id];
+    NdbObjectGuard ndbObjectGuard(worker_id, database_id);
     Ndb *ndb = ndbObjectGuard.get_guard_ndb_object();
     if (ndb == nullptr) {
       unavailable_cluster(argv, response);
       return 0;
     }
+    bool dirty_flag = g_is_incr_decr_dirty[worker_id];
     DEB_NDB_CMD(("cmd: %s, params: %lu\n", command, argv.size()));
 #ifdef DEBUG_NDB_CMD
     for (Uint32 i = 1; i < argv.size(); i++) {
@@ -324,56 +373,56 @@ int rondb_redis_handler(const pink::RedisCmdArgsType &argv,
       }
     } else if (strcasecmp(command, "INCR") == 0) {
       if (argv.size() == 2) {
-        rondb_incr_command(ndb, argv, response);
+        rondb_incr_command(ndb, argv, response, dirty_flag);
       } else {
         wrong_number_of_arguments(argv, response);
         return 0;
       }
     } else if (strcasecmp(command, "INCRBY") == 0) {
       if (argv.size() == 3) {
-        rondb_incrby_command(ndb, argv, response);
+        rondb_incrby_command(ndb, argv, response, dirty_flag);
       } else {
         wrong_number_of_arguments(argv, response);
         return 0;
       }
     } else if (strcasecmp(command, "DECR") == 0) {
       if (argv.size() == 2) {
-        rondb_decr_command(ndb, argv, response);
+        rondb_decr_command(ndb, argv, response, dirty_flag);
       } else {
         wrong_number_of_arguments(argv, response);
         return 0;
       }
     } else if (strcasecmp(command, "DECRBY") == 0) {
       if (argv.size() == 3) {
-        rondb_decrby_command(ndb, argv, response);
+        rondb_decrby_command(ndb, argv, response, dirty_flag);
       } else {
         wrong_number_of_arguments(argv, response);
         return 0;
       }
     } else if (strcasecmp(command, "HINCR") == 0) {
       if (argv.size() == 3) {
-        rondb_hincr_command(ndb, argv, response);
+        rondb_hincr_command(ndb, argv, response, dirty_flag);
       } else {
         wrong_number_of_arguments(argv, response);
         return 0;
       }
     } else if (strcasecmp(command, "HINCRBY") == 0) {
       if (argv.size() == 4) {
-        rondb_hincrby_command(ndb, argv, response);
+        rondb_hincrby_command(ndb, argv, response, dirty_flag);
       } else {
         wrong_number_of_arguments(argv, response);
         return 0;
       }
     } else if (strcasecmp(command, "HDECR") == 0) {
       if (argv.size() == 3) {
-        rondb_hdecr_command(ndb, argv, response);
+        rondb_hdecr_command(ndb, argv, response, dirty_flag);
       } else {
         wrong_number_of_arguments(argv, response);
         return 0;
       }
     } else if (strcasecmp(command, "HDECRBY") == 0) {
       if (argv.size() == 4) {
-        rondb_hdecrby_command(ndb, argv, response);
+        rondb_hdecrby_command(ndb, argv, response, dirty_flag);
       } else {
         wrong_number_of_arguments(argv, response);
         return 0;

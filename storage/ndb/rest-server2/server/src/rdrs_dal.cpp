@@ -215,8 +215,8 @@ RS_Status get_rondb_stats(RonDB_Stats *stats) {
 void*
 get_ndb_object(int thread_index) {
   Ndb *ndb_object  = nullptr;
-  RS_Status status = rdrsRonDBConnectionPool->GetNdbObject(&ndb_object,
-                                                           thread_index);
+  (void)rdrsRonDBConnectionPool->GetNdbObject(&ndb_object,
+                                              thread_index);
   return (void*)ndb_object;
 }
 

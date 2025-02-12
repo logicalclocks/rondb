@@ -31,6 +31,7 @@
 #ifndef RONDIS_RONDB_H
 #define RONDIS_RONDB_H
 
+#define MAX_NUM_DATABASES 16
 extern std::vector<Ndb *> ndb_objects;
 
 int initialize_ndb_objects(const char *connect_string, int num_ndb_objects);
@@ -41,11 +42,17 @@ void setup_ndb_connection_for_rondis(
  void* (*get_ndb_object_func_ptr)(int),
  void (*return_ndb_object_func_ptr)(void*, int),
  void (*exit_func)(void),
- int first_thread_id);
+ int first_thread_id,
+ int num_threads,
+ int *database_index,
+ int num_databases,
+ bool *dirty_incr_decr_flag);
 
 void rondb_end();
 
 int rondb_redis_handler(const pink::RedisCmdArgsType &argv,
                         std::string *response,
                         int fd);
+
+void set_current_database(int index, int database_index);
 #endif

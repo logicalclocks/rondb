@@ -61,6 +61,7 @@ Uint32 get_length(char* buf);
 #define FAILED_EXECUTE_DEL "Failed to execute DEL operation"
 #define FAILED_MALLOC "Failed to allocate memory for operation"
 #define FAILED_INCRBY_DECRBY_PARAMETER "Wrong parameter, should be Int64"
+#define FAILED_SELECT_COMMAND "Wrong parameters to SELECT command"
 
 // Redis errors
 #define REDIS_UNKNOWN_COMMAND "unknown command '%s'"

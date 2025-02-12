@@ -40,12 +40,12 @@ class RDRSRonDBConnectionPool {
   RDRSRonDBConnection **dataConnections;
   RDRSRonDBConnection *metadataConnection;
   ThreadContext **m_thread_context;
-  static const Uint32 kNoTTLPurgeThreads = 2;
   Uint32 m_num_threads;
   Uint32 m_num_data_connections;
   bool is_shutdown = true;
 
  public:
+  static const Uint32 kNoTTLPurgeThreads = 2;
   RDRSRonDBConnectionPool();
   ~RDRSRonDBConnectionPool();
 

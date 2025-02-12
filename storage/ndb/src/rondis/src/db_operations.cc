@@ -916,7 +916,8 @@ void incr_decr_key_row(std::string *response,
                        NdbTransaction *trans,
                        struct key_table *key_row,
                        bool incr_flag,
-                       Uint64 inc_dec_value) {
+                       Uint64 inc_dec_value,
+                       bool dirty_flag) {
   /**
    * The mask specifies which columns is to be updated after the interpreter
    * has finished. The values are set in the key_row.
@@ -963,7 +964,7 @@ void incr_decr_key_row(std::string *response,
   opts.numExtraGetFinalValues = 1;
   opts.extraGetFinalValues = getvals;
 
-  if (1)
+  if (dirty_flag)
     opts.optionsPresent |= NdbOperation::OperationOptions::OO_DIRTY_FLAG;
 
   /* Define the actual operation to be sent to RonDB data node. */

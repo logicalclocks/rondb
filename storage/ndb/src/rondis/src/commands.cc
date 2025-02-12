@@ -1638,7 +1638,8 @@ void rondb_incr_decr(
     std::string *response,
     Uint64 redis_key_id,
     bool incr_flag,
-    Int64 inc_dec_value) {
+    Int64 inc_dec_value,
+    bool dirty_flag) {
   Uint32 arg_index_start = (redis_key_id == STRING_REDIS_KEY_ID) ? 1 : 2;
   const NdbDictionary::Dictionary *dict;
   const NdbDictionary::Table *tab = nullptr;
@@ -1671,14 +1672,16 @@ void rondb_incr_decr(
                     key_store.m_trans,
                     &key_store.m_key_row,
                     incr_flag,
-                    unsigned_value);
+                    unsigned_value,
+                    dirty_flag);
   ndb->closeTransaction(key_store.m_trans);
   return;
 }
 
 void rondb_incr_command(Ndb *ndb,
                         const pink::RedisCmdArgsType &argv,
-                        std::string *response)
+                        std::string *response,
+                        bool dirty_flag)
 {
   DEB_INCR(("INCR command"));
   rondb_incr_decr(ndb,
@@ -1686,12 +1689,14 @@ void rondb_incr_command(Ndb *ndb,
                   response,
                   STRING_REDIS_KEY_ID,
                   true,
-                  1);
+                  1,
+                  dirty_flag);
 }
 
 void rondb_incrby_command(Ndb *ndb,
                         const pink::RedisCmdArgsType &argv,
-                        std::string *response)
+                        std::string *response,
+                        bool dirty_flag)
 {
   DEB_INCR(("INCRBY command"));
   char *end_ptr = nullptr;
@@ -1712,12 +1717,14 @@ void rondb_incrby_command(Ndb *ndb,
                   response,
                   STRING_REDIS_KEY_ID,
                   true,
-                  val);
+                  val,
+                  dirty_flag);
 }
 
 void rondb_decr_command(Ndb *ndb,
                         const pink::RedisCmdArgsType &argv,
-                        std::string *response)
+                        std::string *response,
+                        bool dirty_flag)
 {
   DEB_INCR(("DECR command"));
   rondb_incr_decr(ndb,
@@ -1725,12 +1732,14 @@ void rondb_decr_command(Ndb *ndb,
                   response,
                   STRING_REDIS_KEY_ID,
                   false,
-                  1);
+                  1,
+                  dirty_flag);
 }
 
 void rondb_decrby_command(Ndb *ndb,
                           const pink::RedisCmdArgsType &argv,
-                          std::string *response)
+                          std::string *response,
+                          bool dirty_flag)
 {
   DEB_INCR(("DECRBY command"));
   char *end_ptr = nullptr;
@@ -1751,12 +1760,14 @@ void rondb_decrby_command(Ndb *ndb,
                   response,
                   STRING_REDIS_KEY_ID,
                   false,
-                  val);
+                  val,
+                  dirty_flag);
 }
 
 void rondb_hincr_command(Ndb *ndb,
                          const pink::RedisCmdArgsType &argv,
-                         std::string *response)
+                         std::string *response,
+                         bool dirty_flag)
 {
   DEB_INCR(("HINCR command"));
   Uint64 redis_key_id;
@@ -1773,12 +1784,14 @@ void rondb_hincr_command(Ndb *ndb,
                   response,
                   redis_key_id,
                   true,
-                  1);
+                  1,
+                  dirty_flag);
 }
 
 void rondb_hincrby_command(Ndb *ndb,
                            const pink::RedisCmdArgsType &argv,
-                           std::string *response)
+                           std::string *response,
+                           bool dirty_flag)
 {
   DEB_INCR(("HINCRBY command"));
   Uint64 redis_key_id;
@@ -1808,12 +1821,14 @@ void rondb_hincrby_command(Ndb *ndb,
                   response,
                   redis_key_id,
                   true,
-                  val);
+                  val,
+                  dirty_flag);
 }
 
 void rondb_hdecr_command(Ndb *ndb,
                          const pink::RedisCmdArgsType &argv,
-                         std::string *response)
+                         std::string *response,
+                         bool dirty_flag)
 {
   DEB_INCR(("HDECR command"));
   Uint64 redis_key_id;
@@ -1830,12 +1845,14 @@ void rondb_hdecr_command(Ndb *ndb,
                   response,
                   redis_key_id,
                   false,
-                  1);
+                  1,
+                  dirty_flag);
 }
 
 void rondb_hdecrby_command(Ndb *ndb,
                          const pink::RedisCmdArgsType &argv,
-                         std::string *response)
+                         std::string *response,
+                         bool dirty_flag)
 {
   DEB_INCR(("HDECRBY command"));
   Uint64 redis_key_id;
@@ -1865,5 +1882,6 @@ void rondb_hdecrby_command(Ndb *ndb,
                   response,
                   redis_key_id,
                   false,
-                  val);
+                  val,
+                  dirty_flag);
 }

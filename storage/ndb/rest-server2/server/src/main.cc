@@ -46,6 +46,7 @@ constexpr const char* const usageHelp =
 
 #include "rondis_thread.h"
 #include "rondb.h"
+#include "rdrs_rondb_connection_pool.hpp"
 
 #include <cstdio>
 #include <iostream>
@@ -69,6 +70,7 @@ static bool g_drogon_running = false;
 static ConnFactory* g_rondis_conn_factory = nullptr;
 static RondisHandle* g_rondis_handle = nullptr;
 static ServerThread* g_rondis_thread = nullptr;
+static int *g_database_index = nullptr;
 static bool g_rondis_running = false;
 static int g_exit_code = 0;
 static TTLPurger* g_ttl_purger = nullptr;
@@ -125,6 +127,7 @@ static void do_exit() {
   if (g_exit_code != 0) {
     printf("rdrs2: Exit with code %d.\n", g_exit_code);
   }
+  free(g_database_index);
   exit(g_exit_code);
 }
 
@@ -286,10 +289,29 @@ int main(int argc, char *argv[]) {
     do_exit();
   }
 
-  // connect to rondb
+  Uint32 num_rondis_threads = 0;
+  if (globalConfigs.rondis.enable) {
+    num_rondis_threads = globalConfigs.rondis.numThreads;
+  }
+  Uint32 num_rdrs_threads = globalConfigs.rest.numThreads;
+  Uint32 num_purge_threads = RDRSRonDBConnectionPool::kNoTTLPurgeThreads;
+  Uint32 tot_num_threads =
+    num_rdrs_threads + num_rondis_threads + num_purge_threads;
+  /**
+   * The RDRS server, the Rondis server and the TTL purge threads
+   * all share the same cluster connections. The RDRS server can also
+   * use the metadata connection to connect to another cluster.
+   *
+   * The threads maintained in g_rondbConnection are using thread
+   * ranges to map threads to Ndb objects. The first set of Ndb
+   * objects are used by the RDRS server, the next set of Ndb objects
+   * are used by the Rondis server and the last Ndb objects are used
+   * by the TTL purge object.
+   */
+  // connect to rondb for all services
   g_rondbConnection = new RonDBConnection(globalConfigs.ronDB,
                                           globalConfigs.ronDBMetadataCluster,
-                                          globalConfigs.rest.numThreads);
+                                          tot_num_threads);
   if (g_rondbConnection == nullptr) {
     std::cerr << "Failed to allocate memory for RonDB connection.\n";
     g_exit_code = 1;
@@ -304,8 +326,15 @@ int main(int argc, char *argv[]) {
   if (globalConfigs.rondis.enable) {
     g_rondis_conn_factory = new RondisConnFactory();
     g_rondis_handle = new RondisHandle();
-    // todo use globalConfigs.rondis.databases to configure individual databases.
-    g_rondis_thread = NewDispatchThread(globalConfigs.rondis.serverPort,
+    g_database_index = (int*)malloc(sizeof(int) * num_rondis_threads);
+    memset(g_database_index, 0, sizeof(int) * num_rondis_threads);
+    bool dirty_incr_decr_flag[MAX_NUM_DATABASES];
+    memset(&dirty_incr_decr_flag[0], 0, sizeof(dirty_incr_decr_flag));
+    for (Uint32 i = 0; i < globalConfigs.rondis.numDatabases; i++) {
+      dirty_incr_decr_flag[i] = globalConfigs.rondis.databases[i].dirtyIncrDecr;
+    }
+    g_rondis_thread = NewDispatchThread(globalConfigs.rondis.serverIP,
+                                        globalConfigs.rondis.serverPort,
                                         globalConfigs.rondis.numThreads,
                                         g_rondis_conn_factory,
                                         1000,
@@ -314,7 +343,11 @@ int main(int argc, char *argv[]) {
     setup_ndb_connection_for_rondis(get_ndb_object,
                                     return_ndb_object,
                                     exit_on_rondis_error,
-                                    globalConfigs.rest.numThreads);
+                                    num_rdrs_threads,
+                                    num_rondis_threads,
+                                    g_database_index,
+                                    globalConfigs.rondis.numDatabases,
+                                    &dirty_incr_decr_flag[0]);
     if (g_rondis_thread->StartThread() != 0)
     {
         printf("Error starting rondis thread\n");

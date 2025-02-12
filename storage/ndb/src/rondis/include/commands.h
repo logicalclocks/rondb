@@ -74,19 +74,23 @@ void rondb_mset_command(Ndb *ndb,
 
 void rondb_incr_command(Ndb *ndb,
                         const pink::RedisCmdArgsType &argv,
-                        std::string *response);
+                        std::string *response,
+                        bool dirty_flag);
 
 void rondb_incrby_command(Ndb *ndb,
                           const pink::RedisCmdArgsType &argv,
-                          std::string *response);
+                          std::string *response,
+                          bool dirty_flag);
 
 void rondb_decr_command(Ndb *ndb,
                         const pink::RedisCmdArgsType &argv,
-                        std::string *response);
+                        std::string *response,
+                        bool dirty_flag);
 
 void rondb_decrby_command(Ndb *ndb,
                           const pink::RedisCmdArgsType &argv,
-                          std::string *response);
+                          std::string *response,
+                          bool dirty_flag);
 
 void rondb_hget_command(Ndb *ndb,
                        const pink::RedisCmdArgsType &argv,
@@ -102,17 +106,21 @@ void rondb_hset_command(Ndb *ndb,
 
 void rondb_hincr_command(Ndb *ndb,
                         const pink::RedisCmdArgsType &argv,
-                        std::string *response);
+                        std::string *response,
+                        bool dirty_flag);
 
 void rondb_hincrby_command(Ndb *ndb,
                            const pink::RedisCmdArgsType &argv,
-                           std::string *response);
+                           std::string *response,
+                           bool dirty_flag);
 
 void rondb_hdecr_command(Ndb *ndb,
                         const pink::RedisCmdArgsType &argv,
-                        std::string *response);
+                        std::string *response,
+                        bool dirty_flag);
 
 void rondb_hdecrby_command(Ndb *ndb,
                            const pink::RedisCmdArgsType &argv,
-                           std::string *response);
+                           std::string *response,
+                           bool dirty_flag);
 #endif
