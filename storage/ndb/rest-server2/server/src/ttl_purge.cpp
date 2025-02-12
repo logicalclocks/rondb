@@ -122,7 +122,9 @@ void TTLPurger::SchemaWatcherJob() {
   NdbEventOperation* op = nullptr;
   NdbDictionary::Dictionary::List list;
   const char* message_buf = "API_OK";
+#ifdef DEBUG_EVENT
   Uint32 event_nums = 0;
+#endif
   [[maybe_unused]] char event_name_buf[128];
   char slock_buf_pre[32];
   char slock_buf[32];
@@ -353,11 +355,13 @@ retry:
                                  op->getNdbError().message);
           goto err;
         }
+#ifdef DEBUG_EVENT
         event_nums++;
         DEB_EVENT("EVENT [%u]: %s, GCI = %llu",
                   event_nums,
                   GetEventName(op->getEventType(), event_name_buf),
                   op->getGCI());
+#endif
         char* ptr_pre = nullptr;
         char* ptr = nullptr;
         std::string db_str_pre;
@@ -922,13 +926,15 @@ enum SpecialShardVal {
   kShardFirst = 0
 };
 
+/*
 static const uint mon_lengths[2][MONS_PER_YEAR] = {
     {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31},
     {31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31}};
+static const uint year_lengths[2] = {DAYS_PER_NYEAR, DAYS_PER_LYEAR};
+*/
 static const uint mon_starts[2][MONS_PER_YEAR] = {
     {0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334},
     {0, 31, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335}};
-static const uint year_lengths[2] = {DAYS_PER_NYEAR, DAYS_PER_LYEAR};
 #define LEAPS_THRU_END_OF(y) ((y) / 4 - (y) / 100 + (y) / 400)
 static my_time_t sec_since_epoch(int year, int mon, int mday, int hour, int min,
                                  int sec) {

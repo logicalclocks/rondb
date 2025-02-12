@@ -4,7 +4,7 @@
 // of patent rights can be found in the PATENTS file in the same directory.
 
 /*
-   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2024, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -59,7 +59,7 @@ class WorkerThread : public Thread {
   explicit WorkerThread(ConnFactory *conn_factory, ServerThread* server_thread,
                         int queue_limit_, int cron_interval = 0);
 
-  virtual ~WorkerThread();
+  virtual ~WorkerThread() override;
 
   void set_keepalive_timeout(int timeout) {
     keepalive_timeout_ = timeout;
