@@ -32,6 +32,7 @@
 #include "table_definitions.h"
 #include "commands.h"
 #include <strings.h>
+#include <cassert>
 
 //#define DEBUG_NDB_CMD 1
 
