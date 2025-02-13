@@ -933,7 +933,7 @@ void incr_decr_key_row(std::string *response,
   key_row->null_bits = 1; // Set rondb_key to NULL, first NULL column
   key_row->num_rows = 0;
   key_row->value_data_type = 0;
-  key_row->expiry_date = 0;
+  key_row->expiry_date = -1;
 
   Uint32 code_buffer[128];
   NdbInterpretedCode code(tab, &code_buffer[0], sizeof(code_buffer));

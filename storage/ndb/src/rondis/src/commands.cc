@@ -1078,10 +1078,10 @@ void rondb_mset(Ndb *ndb,
                   get_ctrl->m_num_keys_multi_rows,
                   get_ctrl->m_num_keys_completed_first_pass));
     /**
-     * We have finished the initial round of simple GETs. Now time
-     * to handle those that require multi-row GETs. Since we used
+     * We have finished the initial round of simple SETs. Now time
+     * to handle those that require multi-row SETs. Since we used
      * an optimistic approach we need to start this from scratch
-     * again for these new GETs.
+     * again for these new SETs.
      */
     assert(get_ctrl->m_num_transactions == 0);
     assert(get_ctrl->m_num_keys_outstanding == 0);
@@ -1683,7 +1683,7 @@ void rondb_incr_command(Ndb *ndb,
                         std::string *response,
                         bool dirty_flag)
 {
-  DEB_INCR(("INCR command"));
+  DEB_INCR(("INCR command\n"));
   rondb_incr_decr(ndb,
                   argv,
                   response,
@@ -1698,7 +1698,7 @@ void rondb_incrby_command(Ndb *ndb,
                         std::string *response,
                         bool dirty_flag)
 {
-  DEB_INCR(("INCRBY command"));
+  DEB_INCR(("INCRBY command\n"));
   char *end_ptr = nullptr;
   const char *val_ptr = argv[2].c_str();
   const char *memory_end = val_ptr + argv[2].size();
@@ -1726,7 +1726,7 @@ void rondb_decr_command(Ndb *ndb,
                         std::string *response,
                         bool dirty_flag)
 {
-  DEB_INCR(("DECR command"));
+  DEB_INCR(("DECR command\n"));
   rondb_incr_decr(ndb,
                   argv,
                   response,
@@ -1741,7 +1741,7 @@ void rondb_decrby_command(Ndb *ndb,
                           std::string *response,
                           bool dirty_flag)
 {
-  DEB_INCR(("DECRBY command"));
+  DEB_INCR(("DECRBY command\n"));
   char *end_ptr = nullptr;
   const char *val_ptr = argv[2].c_str();
   const char *memory_end = val_ptr + argv[2].size();
@@ -1769,7 +1769,7 @@ void rondb_hincr_command(Ndb *ndb,
                          std::string *response,
                          bool dirty_flag)
 {
-  DEB_INCR(("HINCR command"));
+  DEB_INCR(("HINCR command\n"));
   Uint64 redis_key_id;
   int ret_code = rondb_get_redis_key_id(ndb,
                                        redis_key_id,
@@ -1793,7 +1793,7 @@ void rondb_hincrby_command(Ndb *ndb,
                            std::string *response,
                            bool dirty_flag)
 {
-  DEB_INCR(("HINCRBY command"));
+  DEB_INCR(("HINCRBY command\n"));
   Uint64 redis_key_id;
   int ret_code = rondb_get_redis_key_id(ndb,
                                        redis_key_id,
@@ -1830,7 +1830,7 @@ void rondb_hdecr_command(Ndb *ndb,
                          std::string *response,
                          bool dirty_flag)
 {
-  DEB_INCR(("HDECR command"));
+  DEB_INCR(("HDECR command\n"));
   Uint64 redis_key_id;
   int ret_code = rondb_get_redis_key_id(ndb,
                                        redis_key_id,
@@ -1854,7 +1854,7 @@ void rondb_hdecrby_command(Ndb *ndb,
                          std::string *response,
                          bool dirty_flag)
 {
-  DEB_INCR(("HDECRBY command"));
+  DEB_INCR(("HDECRBY command\n"));
   Uint64 redis_key_id;
   int ret_code = rondb_get_redis_key_id(ndb,
                                        redis_key_id,
