@@ -949,10 +949,15 @@ static
 void rondb_mset(Ndb *ndb,
                const pink::RedisCmdArgsType &argv,
                std::string *response,
-               Uint64 redis_key_id)
+               Uint64 redis_key_id,
+               bool set_command)
 {
   Int64 ttl = -1;
-  if (redis_key_id == STRING_REDIS_KEY_ID && argv.size() > 3) {
+  Uint32 num_keys = 2;
+  Uint32 arg_index_start = (redis_key_id == STRING_REDIS_KEY_ID) ? 1 : 2;
+  if (set_command &&
+      redis_key_id == STRING_REDIS_KEY_ID &&
+      argv.size() > 3) {
     std::string opt = argv[3];
     std::transform(opt.begin(), opt.end(), opt.begin(),
             [](unsigned char c){ return std::tolower(c); });
@@ -973,10 +978,9 @@ void rondb_mset(Ndb *ndb,
       assign_generic_err_to_response(response, REDIS_SYNTAX_ERROR);
       return;
     }
+  } else {
+    num_keys = argv.size() - arg_index_start;
   }
-  Uint32 arg_index_start = (redis_key_id == STRING_REDIS_KEY_ID) ? 1 : 2;
-  Uint32 num_keys = (redis_key_id == STRING_REDIS_KEY_ID) ?
-                        2 : argv.size() - arg_index_start;
   assert((num_keys & 1) == 0);
   assert(num_keys > 0);
   num_keys = num_keys / 2;
@@ -1025,11 +1029,13 @@ void rondb_mset(Ndb *ndb,
     key_storage[i].m_key_len = key_len;
 
     // todo fix memory handling for m_value_ptr
-    key_storage[i].m_value_ptr = (char*) malloc(argv[arg_index_val].size() + 1);
+    key_storage[i].m_value_ptr = (char*)malloc(argv[arg_index_val].size() + 1);
     if(key_storage[i].m_value_ptr == nullptr) {
       abort();
     }
-    memcpy(key_storage[i].m_value_ptr, argv[arg_index_val].c_str(), argv[arg_index_val].size());
+    memcpy(key_storage[i].m_value_ptr,
+           argv[arg_index_val].c_str(),
+           argv[arg_index_val].size());
     key_storage[i].m_value_ptr[argv[arg_index_val].size()] = '\0';
     key_storage[i].m_value_size = argv[arg_index_val].size();
 
@@ -1131,14 +1137,14 @@ void rondb_set_command(Ndb *ndb,
                        const pink::RedisCmdArgsType &argv,
                        std::string *response)
 {
-  rondb_mset(ndb, argv, response, STRING_REDIS_KEY_ID);
+  rondb_mset(ndb, argv, response, STRING_REDIS_KEY_ID, true);
 }
 
 void rondb_mset_command(Ndb *ndb,
                         const pink::RedisCmdArgsType &argv,
                         std::string *response)
 {
-  rondb_mset(ndb, argv, response, STRING_REDIS_KEY_ID);
+  rondb_mset(ndb, argv, response, STRING_REDIS_KEY_ID, false);
 }
 
 void rondb_hset_command(Ndb *ndb,
@@ -1154,7 +1160,7 @@ void rondb_hset_command(Ndb *ndb,
   if (ret_code != 0) {
       return;
   }
-  rondb_mset(ndb, argv, response, redis_key_id);
+  rondb_mset(ndb, argv, response, redis_key_id, false);
 }
 
 /**
