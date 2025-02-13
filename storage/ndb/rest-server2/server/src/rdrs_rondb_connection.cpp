@@ -158,7 +158,7 @@ RS_Status RDRSRonDBConnection::GetNdbObject(Ndb **ndb_object) {
     RS_Status ret_status = RS_OK;
     if (unlikely(availableNdbObjects.empty())) {
       *ndb_object = new Ndb(ndbConnection);
-      int retCode = (*ndb_object)->init(1024);
+      int retCode = (*ndb_object)->init(RDRSRonDBConnection::MAX_PARALLEL_KEY_OPS);
       if (unlikely(retCode != 0)) {
         delete ndb_object;
         ret_status =

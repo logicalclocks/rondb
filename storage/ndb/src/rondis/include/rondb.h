@@ -38,7 +38,7 @@ int initialize_ndb_objects(const char *connect_string, int num_ndb_objects);
 
 int setup_rondb(const char *connect_string, int num_ndb_objects);
 
-void setup_ndb_connection_for_rondis(
+int setup_ndb_connection_for_rondis(
  void* (*get_ndb_object_func_ptr)(int),
  void (*return_ndb_object_func_ptr)(void*, int),
  void (*exit_func)(void),

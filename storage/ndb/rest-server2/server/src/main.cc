@@ -340,14 +340,20 @@ int main(int argc, char *argv[]) {
                                         1000,
                                         1000,
                                         g_rondis_handle);
-    setup_ndb_connection_for_rondis(get_ndb_object,
-                                    return_ndb_object,
-                                    exit_on_rondis_error,
-                                    num_rdrs_threads,
-                                    num_rondis_threads,
-                                    g_database_index,
-                                    globalConfigs.rondis.numDatabases,
-                                    &dirty_incr_decr_flag[0]);
+    int ret_code = setup_ndb_connection_for_rondis(
+      get_rdrs_ndb_object,
+      return_rdrs_ndb_object,
+      exit_on_rondis_error,
+      num_rdrs_threads,
+      num_rondis_threads,
+      g_database_index,
+      globalConfigs.rondis.numDatabases,
+      &dirty_incr_decr_flag[0]);
+    if (ret_code != 0) {
+      printf("Error setting up Rondis Server\n");
+      g_exit_code = 1;
+      do_exit();
+    }
     if (g_rondis_thread->StartThread() != 0)
     {
         printf("Error starting rondis thread\n");
@@ -355,6 +361,9 @@ int main(int argc, char *argv[]) {
         do_exit();
     }
     g_rondis_running = true;
+    printf("Rondis Server running on %s:%u\n",
+      globalConfigs.rondis.serverIP.c_str(),
+      globalConfigs.rondis.serverPort);
   }
 
   if (globalConfigs.security.tls.enableTLS) {
@@ -383,7 +392,7 @@ int main(int argc, char *argv[]) {
   drogon::app().registerBeginningAdvice([]() {
     auto addresses = drogon::app().getListeners();
     for (auto &address : addresses) {
-      printf("Server running on %s\n", address.toIpPort().c_str());
+      printf("RDRS Server running on %s\n", address.toIpPort().c_str());
     }
   });
   drogon::app().setIntSignalHandler([]() {

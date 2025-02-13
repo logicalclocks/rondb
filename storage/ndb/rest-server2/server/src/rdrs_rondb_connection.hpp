@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023, 2024 Hopsworks AB
+ * Copyright (C) 2023, 2025 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -28,6 +28,7 @@
 #include <NdbMutex.h>
 
 class RDRSRonDBConnection {
+  static constexpr int MAX_PARALLEL_KEY_OPS = 100;
 
  private:
   // this is used when we update the connection, NDB objects etc.

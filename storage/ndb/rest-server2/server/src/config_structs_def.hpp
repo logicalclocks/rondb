@@ -51,7 +51,8 @@
  *   define_class_including_dependencies(AllConfigs);
  */
 #include <ndb_types.h>
-#include <common.h>
+#include "common.h"
+#include "rondb.h"
 
 // todo Add docstring for all CM()
 
@@ -136,9 +137,6 @@ CLASS
     {RondisDatabaseConfig(0)},
     "Database-specific configuration.")
  PROBLEM(serverIP.empty(), "Rondis server IP cannot be empty")
- PROBLEM(serverIP != "0.0.0.0",
-         "Setting rondis server IP to anything else than 0.0.0.0 is not yet"
-         " implemented.")
  PROBLEM(serverPort == 0, "Rondis server port cannot be zero.")
  PROBLEM(numThreads == 0, "Number of rondis threads cannot be zero.")
  PROBLEM(numThreads < RONDIS_MAX_CONNECTIONS,
@@ -146,7 +144,8 @@ CLASS
          TO_STRING_CONSTANT(RONDIS_MAX_CONNECTIONS))
  PROBLEM(numThreads > 991, "Number of rondis threads too high")
  PROBLEM(numDatabases == 0, "Number of rondis databases cannot be zero.")
- PROBLEM(numDatabases > 1000, "Number of rondis databases too high")
+ PROBLEM(numDatabases > MAX_NUM_DATABASES,
+         "Number of rondis databases too high")
  PROBLEM(databases.size() != numDatabases,
          "Rondis.NumDatabases must match the length of Rondis.Databases")
  PROBLEM(value.hasIndexProblem(),

@@ -132,7 +132,40 @@ bool g_is_incr_decr_dirty[MAX_NUM_DATABASES];
 int g_num_databases = 0;
 int g_num_threads = 0;
 
-void setup_ndb_connection_for_rondis(
+class NdbObjectGuard {
+  public:
+  NdbObjectGuard(int worker_id, int database_id)
+    : m_worker_id(worker_id + g_first_thread_id)
+  {
+    if (rondis_execution_variant == INSIDE_RDRS2) {
+      Ndb *ndb = (Ndb*)g_get_ndb_object_func_ptr(m_worker_id);
+      if(ndb != nullptr) {
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%s_%u", REDIS_DB_NAME, database_id);
+        ndb->setDatabaseName(buf);
+      }
+      m_ndb = ndb;
+      return;
+    } else if (rondis_execution_variant == RONDIS_STANDALONE) {
+      m_ndb = ndb_objects[worker_id];
+      return;
+    }
+    assert(false);
+    m_ndb = nullptr;
+  }
+  ~NdbObjectGuard() {
+    if (m_ndb && rondis_execution_variant == INSIDE_RDRS2) {
+      g_return_ndb_object_func_ptr((void*)m_ndb, m_worker_id);
+    }
+  }
+  Ndb *get_guard_ndb_object() {
+    return m_ndb;
+  }
+  Ndb *m_ndb;
+  int m_worker_id;
+};
+
+int setup_ndb_connection_for_rondis(
  void* (*get_ndb_object_func_ptr)(int),
  void (*return_ndb_object_func_ptr)(void*, int),
  void (*exit_func_ptr)(void),
@@ -154,44 +187,23 @@ void setup_ndb_connection_for_rondis(
     g_is_incr_decr_dirty[i] = false;
   }
   for (int i = 0; i < num_databases; i++) {
+    NdbObjectGuard ndbObjectGuard(0, i);
+    Ndb *ndb = ndbObjectGuard.get_guard_ndb_object();
     g_is_incr_decr_dirty[i] = dirty_incr_decr_flag[i];
+    NdbDictionary::Dictionary *dict = ndb->getDictionary();
+    if (init_string_records(dict) != 0) {
+      printf("Failed initializing records for Redis data type STRING;"
+             " error: %s\n",
+           ndb->getNdbError().message);
+      return -1;
+    }
   }
+  return 0;
 }
 
 bool get_dirty_incr_decr_flag(int worker_id) {
   return g_is_incr_decr_dirty[worker_id];
 }
-
-class NdbObjectGuard {
-  public:
-  NdbObjectGuard(int worker_id, int database_id)
-    : m_worker_id(worker_id + g_first_thread_id)
-  {
-    if (rondis_execution_variant == INSIDE_RDRS2) {
-      Ndb *ndb = (Ndb*)g_get_ndb_object_func_ptr(worker_id);
-      if(ndb != nullptr) {
-        char buf[16];
-        snprintf(buf, sizeof(buf), "%s_%u", REDIS_DB_NAME, database_id);
-        ndb->setDatabaseName(buf);
-      }
-      m_ndb = ndb;
-    } else if (rondis_execution_variant == RONDIS_STANDALONE) {
-      m_ndb = ndb_objects[worker_id];
-    }
-    assert(false);
-    m_ndb = nullptr;
-  }
-  ~NdbObjectGuard() {
-    if (m_ndb && rondis_execution_variant == INSIDE_RDRS2) {
-      g_return_ndb_object_func_ptr((void*)m_ndb, m_worker_id);
-    }
-  }
-  Ndb *get_guard_ndb_object() {
-    return m_ndb;
-  }
-  Ndb *m_ndb;
-  int m_worker_id;
-};
 
 void unsupported_command(const pink::RedisCmdArgsType &argv,
                          std::string *response) {

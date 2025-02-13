@@ -155,7 +155,7 @@ enum KeyState {
     CompletedReadError = 9
 };
 
-#define MAX_PARALLEL_KEY_OPS 100
+#define MAX_PARALLEL_KEY_OPS 1024
 #define MAX_VALUES_TO_WRITE 4
 #define STRING_REDIS_KEY_ID 0
 #define MAX_PARALLEL_VALUE_RWS 2

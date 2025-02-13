@@ -205,8 +205,8 @@ RS_Status ronsql_dal(const char* database,
  */
 RS_Status get_rondb_stats(RonDB_Stats *stats);
 
-void* get_ndb_object(int thread_index);
-void return_ndb_object(void *ndb_object, int thread_index);
+void* get_rdrs_ndb_object(int thread_index);
+void return_rdrs_ndb_object(void *ndb_object, int thread_index);
 
 #endif
 
