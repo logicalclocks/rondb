@@ -41,7 +41,8 @@
  * Create NdbRecord's for all table accesses, they can be reused
  * for all Ndb objects.
  */
-int init_hset_key_records(NdbDictionary::Dictionary *dict) {
+int init_hset_key_records(NdbDictionary::Dictionary *dict,
+                          Uint32 database_id) {
     const NdbDictionary::Table *tab = dict->getTable(HSET_KEY_TABLE_NAME);
     if (tab == nullptr) {
         printf("Failed getting Ndb table %s\n", HSET_KEY_TABLE_NAME);
@@ -64,7 +65,10 @@ int init_hset_key_records(NdbDictionary::Dictionary *dict) {
              std::pair<size_t, int>> pk_lookup_column_map = {
         {redis_key_col, {offsetof(struct hset_key_table, redis_key), 0}},
     };
-    if (init_record(dict, tab, pk_lookup_column_map, pk_hset_key_record) != 0) {
+    if (init_record(dict,
+                    tab,
+                    pk_lookup_column_map,
+                    pk_hset_key_record[database_id]) != 0) {
         printf("Failed creating pk-lookup record for table %s\n",
           HSET_KEY_TABLE_NAME);
         return -1;
@@ -79,7 +83,7 @@ int init_hset_key_records(NdbDictionary::Dictionary *dict) {
     if (init_record(dict,
                     tab,
                     read_all_column_map,
-                    entire_hset_key_record) != 0) {
+                    entire_hset_key_record[database_id]) != 0) {
         printf("Failed creating read-all cols record for table %s\n",
           HSET_KEY_TABLE_NAME);
         return -1;
@@ -87,7 +91,8 @@ int init_hset_key_records(NdbDictionary::Dictionary *dict) {
     return 0;
 }
 
-int init_key_records(NdbDictionary::Dictionary *dict) {
+int init_key_records(NdbDictionary::Dictionary *dict,
+                     Uint32 database_id) {
     const NdbDictionary::Table *tab = dict->getTable(KEY_TABLE_NAME);
     if (tab == nullptr) {
         printf("Failed getting Ndb table %s\n", KEY_TABLE_NAME);
@@ -128,7 +133,10 @@ int init_key_records(NdbDictionary::Dictionary *dict) {
         {redis_key_id_col, {offsetof(struct key_table, redis_key_id), 0}},
         {redis_key_col, {offsetof(struct key_table, redis_key), 0}},
     };
-    if (init_record(dict, tab, pk_lookup_column_map, pk_key_record) != 0) {
+    if (init_record(dict,
+                    tab,
+                    pk_lookup_column_map,
+                    pk_key_record[database_id]) != 0) {
         printf("Failed creating pk-lookup record for table %s\n",
           KEY_TABLE_NAME);
         return -1;
@@ -146,7 +154,10 @@ int init_key_records(NdbDictionary::Dictionary *dict) {
         {value_data_type_col, {offsetof(struct key_table, value_data_type), 0}}
     };
 
-    if (init_record(dict, tab, read_all_column_map, entire_key_record) != 0) {
+    if (init_record(dict,
+                    tab,
+                    read_all_column_map,
+                    entire_key_record[database_id]) != 0) {
         printf("Failed creating read-all cols record for table %s\n",
           KEY_TABLE_NAME);
         return -1;
@@ -154,7 +165,8 @@ int init_key_records(NdbDictionary::Dictionary *dict) {
     return 0;
 }
 
-int init_value_records(NdbDictionary::Dictionary *dict) {
+int init_value_records(NdbDictionary::Dictionary *dict,
+                       Uint32 database_id) {
     const NdbDictionary::Table *tab = dict->getTable(VALUE_TABLE_NAME);
     if (tab == nullptr) {
         printf("Failed getting Ndb table %s\n", VALUE_TABLE_NAME);
@@ -182,7 +194,10 @@ int init_value_records(NdbDictionary::Dictionary *dict) {
         {rondb_key_col, {offsetof(struct value_table, rondb_key), 0}},
         {ordinal_col, {offsetof(struct value_table, ordinal), 0}}};
 
-    if (init_record(dict, tab, pk_lookup_column_map, pk_value_record) != 0) {
+    if (init_record(dict,
+                    tab,
+                    pk_lookup_column_map,
+                    pk_value_record[database_id]) != 0) {
         printf("Failed creating pk-lookup record for table %s\n",
           VALUE_TABLE_NAME);
         return -1;
@@ -195,7 +210,10 @@ int init_value_records(NdbDictionary::Dictionary *dict) {
         {expiry_date_col, {offsetof(struct value_table, expiry_date), 1}},
         {value_col, {offsetof(struct value_table, value), 0}}};
 
-    if (init_record(dict, tab, read_all_column_map, entire_value_record) != 0) {
+    if (init_record(dict,
+                    tab,
+                    read_all_column_map,
+                    entire_value_record[database_id]) != 0) {
         printf("Failed creating read-all cols record for table %s\n",
           VALUE_TABLE_NAME);
         return -1;
@@ -233,14 +251,15 @@ int init_record(NdbDictionary::Dictionary *dict,
     return (record == nullptr) ? -1 : 0;
 }
 
-int init_string_records(NdbDictionary::Dictionary *dict) {
-    int res = init_hset_key_records(dict);
+int init_string_records(NdbDictionary::Dictionary *dict,
+                        Uint32 database_id) {
+    int res = init_hset_key_records(dict, database_id);
     if (res != 0) {
         return res;
     }
-    res = init_key_records(dict);
+    res = init_key_records(dict, database_id);
     if (res != 0) {
         return res;
     }
-    return init_value_records(dict);
+    return init_value_records(dict, database_id);
 }

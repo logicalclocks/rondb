@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2024, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -25,6 +25,7 @@
 
 #include <ndbapi/NdbApi.hpp>
 #include <ndbapi/Ndb.hpp>
+#include "rondb.h"
 
 #ifndef STRING_TABLE_DEFINITIONS_H
 #define STRING_TABLE_DEFINITIONS_H
@@ -46,8 +47,8 @@
 
 int init_hset_key_records(NdbDictionary::Dictionary *dict);
 
-extern NdbRecord *pk_hset_key_record;
-extern NdbRecord *entire_hset_key_record;
+extern NdbRecord *pk_hset_key_record[MAX_NUM_DATABASES];
+extern NdbRecord *entire_hset_key_record[MAX_NUM_DATABASES];
 
 #define HSET_KEY_TABLE_COL_redis_key "redis_key"
 #define HSET_KEY_TABLE_COL_redis_key_id "redis_key_id"
@@ -67,8 +68,8 @@ struct hset_key_table
 
 int init_key_records(NdbDictionary::Dictionary *dict);
 
-extern NdbRecord *pk_key_record;
-extern NdbRecord *entire_key_record;
+extern NdbRecord *pk_key_record[MAX_NUM_DATABASES];
+extern NdbRecord *entire_key_record[MAX_NUM_DATABASES];
 
 /*
     Doing this instead of reflection; Keep these the same
@@ -106,8 +107,8 @@ struct key_table
 
 int init_value_records(NdbDictionary::Dictionary *dict);
 
-extern NdbRecord *pk_value_record;
-extern NdbRecord *entire_value_record;
+extern NdbRecord *pk_value_record[MAX_NUM_DATABASES];
+extern NdbRecord *entire_value_record[MAX_NUM_DATABASES];
 
 /*
     Doing this instead of reflection; Keep these the same
@@ -132,10 +133,11 @@ struct value_table
 
 int init_record(NdbDictionary::Dictionary *dict,
                 const NdbDictionary::Table *tab,
-                std::map<const NdbDictionary::Column *, std::pair<size_t, int>> column_info_map,
+                std::map<const NdbDictionary::Column *,
+                std::pair<size_t, int>> column_info_map,
                 NdbRecord *&record);
 
-int init_string_records(NdbDictionary::Dictionary *dict);
+int init_string_records(NdbDictionary::Dictionary *dict, Uint32 database_id);
 
 enum KeyState {
     /* m_value_size undefined */
@@ -207,5 +209,6 @@ struct GetControl {
     Uint32 m_num_keys_failed;
     Uint32 m_num_read_errors;
     Uint32 m_error_code;
+    Uint32 m_database_id;
 };
 #endif

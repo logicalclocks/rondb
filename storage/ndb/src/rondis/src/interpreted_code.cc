@@ -108,7 +108,8 @@ int write_hset_key_table(Ndb *ndb,
                          const NdbDictionary::Table *tab,
                          std::string std_key_str,
                          Uint64 & redis_key_id,
-                         std::string *response) {
+                         std::string *response,
+                         Uint32 database_id) {
   /* Prepare primary key */
   struct hset_key_table key_row;
   const char *key_str = std_key_str.c_str();
@@ -172,9 +173,9 @@ int write_hset_key_table(Ndb *ndb,
   }
   /* Define the actual operation to be sent to RonDB data node. */
   const NdbOperation *op = trans->writeTuple(
-    pk_hset_key_record,
+    pk_hset_key_record[database_id],
     (const char *)&key_row,
-    entire_hset_key_record,
+    entire_hset_key_record[database_id],
     (char *)&key_row,
     mask_ptr,
     &opts,

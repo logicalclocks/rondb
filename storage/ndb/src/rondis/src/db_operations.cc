@@ -80,12 +80,36 @@
 #define DEB_MSET(arglist)
 #endif
 
-NdbRecord *pk_hset_key_record = nullptr;
-NdbRecord *entire_hset_key_record = nullptr;
-NdbRecord *pk_key_record = nullptr;
-NdbRecord *entire_key_record = nullptr;
-NdbRecord *pk_value_record = nullptr;
-NdbRecord *entire_value_record = nullptr;
+NdbRecord *pk_hset_key_record[MAX_NUM_DATABASES] =
+{
+  nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+  nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr
+};
+NdbRecord *entire_hset_key_record[MAX_NUM_DATABASES] =
+{
+  nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+  nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr
+};
+NdbRecord *pk_key_record[MAX_NUM_DATABASES] =
+{
+  nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+  nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr
+};
+NdbRecord *entire_key_record[MAX_NUM_DATABASES] =
+{
+  nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+  nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr
+};
+NdbRecord *pk_value_record[MAX_NUM_DATABASES] =
+{
+  nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+  nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr
+};
+NdbRecord *entire_value_record[MAX_NUM_DATABASES] =
+{
+  nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+  nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr
+};
 
 static void
 delete_value_callback(int result, NdbTransaction *trans, void *aObject) {
@@ -219,11 +243,12 @@ int prepare_complex_delete_row(std::string *response,
   /* Read rondb_key, tot_value_len, num_rows */
   const Uint32 mask = 0x34;
   const unsigned char *mask_ptr = (const unsigned char *)&mask;
+  Uint32 database_id = key_storage->m_get_ctrl->m_database_id;
 
   const NdbOperation *del_op = key_storage->m_trans->deleteTuple(
-    pk_key_record,
+    pk_key_record[database_id],
     (const char *)key_row,
-    entire_key_record,
+    entire_key_record[database_id],
     (char *)key_row,
     mask_ptr);
   if (del_op == nullptr) {
@@ -247,6 +272,7 @@ int prepare_simple_delete_row(std::string *response,
   struct key_table *key_row = &key_storage->m_key_row;
   /* Set primary key row done already in setup_one_transaction */
 
+  Uint32 database_id = key_storage->m_get_ctrl->m_database_id;
   Uint32 code_buffer[64];
   NdbInterpretedCode code(tab, &code_buffer[0], sizeof(code_buffer));
   int ret_code = simple_delete_key_row_code(response, code, tab);
@@ -259,9 +285,9 @@ int prepare_simple_delete_row(std::string *response,
   opts.interpretedCode = &code;
 
   const NdbOperation *del_op = key_storage->m_trans->deleteTuple(
-    pk_key_record,
+    pk_key_record[database_id],
     (const char *)key_row,
-    entire_key_record,
+    entire_key_record[database_id],
     nullptr,
     nullptr,
     &opts,
@@ -328,12 +354,13 @@ int prepare_delete_value_row(std::string *response,
   struct value_table value_row;
   value_row.ordinal = ordinal;
   value_row.rondb_key = key_store->m_rondb_key;
+  Uint32 database_id = key_store->m_get_ctrl->m_database_id;
   DEB_MSET(("Key: %u, delete value row with rondb_key: %llu and ordinal: %u\n",
     key_store->m_index, key_store->m_rondb_key, ordinal));
   const NdbOperation *delete_op = key_store->m_trans->deleteTuple(
-    pk_value_record,
+    pk_value_record[database_id],
     (const char *)&value_row,
-    entire_value_record);
+    entire_value_record[database_id]);
 
   if (delete_op == nullptr) {
     assign_ndb_err_to_response(response,
@@ -382,6 +409,7 @@ void commit_write_value_transaction(struct KeyStorage *key_store) {
 int prepare_set_value_row(std::string *response,
                           KeyStorage *key_store) {
   struct value_table value_row;
+  Uint32 database_id = key_store->m_get_ctrl->m_database_id;
   Uint32 remaining = key_store->m_value_size - key_store->m_current_pos;
   Uint32 len = std::min((Uint32)EXTENSION_VALUE_LEN, remaining);
   memcpy(&value_row.value[2],
@@ -402,9 +430,9 @@ int prepare_set_value_row(std::string *response,
   const Uint32 mask = 0xF;
   const unsigned char *mask_ptr = (const unsigned char *)&mask;
   const NdbOperation *write_op = key_store->m_trans->writeTuple(
-    pk_value_record,
+    pk_value_record[database_id],
     (const char *)&value_row,
-    entire_value_record,
+    entire_value_record[database_id],
     (char *)&value_row,
     mask_ptr);
   if (write_op == nullptr) {
@@ -547,7 +575,8 @@ int write_data_to_key_op(std::string *response,
                          Uint32 row_state,
                          Int32 expire_at,
                          NdbRecAttr **recAttr0,
-                         NdbRecAttr **recAttr1) {
+                         NdbRecAttr **recAttr1,
+                         Uint32 database_id) {
   struct key_table key_row;
   Uint32 mask = 0xFB;
   key_row.null_bits = 0;
@@ -605,9 +634,9 @@ int write_data_to_key_op(std::string *response,
   }
   /* Define the actual operation to be sent to RonDB data node. */
   const NdbOperation *op = trans->writeTuple(
-    pk_key_record,
+    pk_key_record[database_id],
     (const char *)&key_row,
-    entire_key_record,
+    entire_key_record[database_id],
     (char *)&key_row,
     mask_ptr,
     &opts,
@@ -716,7 +745,8 @@ void commit_read_value_transaction(struct KeyStorage *key_store) {
 
 int prepare_get_value_row(std::string *response,
                           NdbTransaction *trans,
-                          struct value_table *value_row) {
+                          struct value_table *value_row,
+                          Uint32 database_id) {
   /**
    * Mask and options means simply reading all columns
    * except primary key columns. In this case only the
@@ -733,9 +763,9 @@ int prepare_get_value_row(std::string *response,
   const Uint32 mask = 0xC;
   const unsigned char *mask_ptr = (const unsigned char *)&mask;
   const NdbOperation *read_op = trans->readTuple(
-    pk_value_record,
+    pk_value_record[database_id],
     (const char *)value_row,
-    entire_value_record,
+    entire_value_record[database_id],
     (char *)value_row,
     NdbOperation::LM_SimpleRead,
     mask_ptr);
@@ -804,7 +834,8 @@ read_callback(int result, NdbTransaction *trans, void *aObject) {
 
 int prepare_get_key_row(std::string *response,
                         NdbTransaction *trans,
-                        struct key_table *key_row) {
+                        struct key_table *key_row,
+                        Uint32 database_id) {
   /**
    * Mask and options means simply reading all columns
    * except primary key columns.
@@ -812,9 +843,9 @@ int prepare_get_key_row(std::string *response,
   const Uint32 mask = 0xFC;
   const unsigned char *mask_ptr = (const unsigned char *)&mask;
   const NdbOperation *read_op = trans->readTuple(
-    pk_key_record,
+    pk_key_record[database_id],
     (const char *)key_row,
-    entire_key_record,
+    entire_key_record[database_id],
     (char *)key_row,
     NdbOperation::LM_Read,
     mask_ptr);
@@ -837,7 +868,8 @@ int prepare_get_simple_key_row(std::string *response,
                                [[maybe_unused]]/*todo remove?*/
                                const NdbDictionary::Table *tab,
                                NdbTransaction *trans,
-                               struct key_table *key_row) {
+                               struct key_table *key_row,
+                               Uint32 database_id) {
   /**
    * Mask and options means simply reading all columns
    * except primary key columns.
@@ -845,9 +877,9 @@ int prepare_get_simple_key_row(std::string *response,
   const Uint32 mask = 0xFC;
   const unsigned char *mask_ptr = (const unsigned char *)&mask;
   const NdbOperation *read_op = trans->readTuple(
-    pk_key_record,
+    pk_key_record[database_id],
     (const char *)key_row,
-    entire_key_record,
+    entire_key_record[database_id],
     (char *)key_row,
     NdbOperation::LM_CommittedRead,
     mask_ptr);
@@ -917,7 +949,8 @@ void incr_decr_key_row(std::string *response,
                        struct key_table *key_row,
                        bool incr_flag,
                        Uint64 inc_dec_value,
-                       bool dirty_flag) {
+                       bool dirty_flag,
+                       Uint32 database_id) {
   /**
    * The mask specifies which columns is to be updated after the interpreter
    * has finished. The values are set in the key_row.
@@ -969,9 +1002,9 @@ void incr_decr_key_row(std::string *response,
 
   /* Define the actual operation to be sent to RonDB data node. */
   const NdbOperation *op = trans->writeTuple(
-    pk_key_record,
+    pk_key_record[database_id],
     (const char *)key_row,
-    entire_key_record,
+    entire_key_record[database_id],
     (char *)key_row,
     mask_ptr,
     &opts,
@@ -1038,7 +1071,8 @@ int rondb_get_redis_key_id(Ndb *ndb,
                            Uint64 &redis_key_id,
                            const char *key_str,
                            Uint32 key_len,
-                           std::string *response) {
+                           std::string *response,
+                           Uint32 database_id) {
   std::string std_key_str = std::string(key_str, key_len);
   auto it = redis_key_id_hash.find(std_key_str);
   if (it == redis_key_id_hash.end()) {
@@ -1067,7 +1101,8 @@ int rondb_get_redis_key_id(Ndb *ndb,
                                     tab,
                                     std_key_str,
                                     redis_key_id,
-                                    response);
+                                    response,
+                                    database_id);
     if (ret_code < 0) {
       DEB_HSET_KEY(("Failed write_hset_key_table, err: %d\n", ret_code));
       return -1;

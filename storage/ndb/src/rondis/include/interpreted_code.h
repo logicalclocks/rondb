@@ -66,7 +66,8 @@ int write_hset_key_table(Ndb *ndb,
                          const NdbDictionary::Table *tab,
                          std::string std_key_str,
                          Uint64 & redis_key_id,
-                         std::string *response);
+                         std::string *response,
+                         Uint32 database_id);
 int write_key_row_commit(std::string *response,
                          NdbInterpretedCode &code,
                          const NdbDictionary::Table *tab);

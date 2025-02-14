@@ -505,7 +505,8 @@ static
 void rondb_del(Ndb *ndb,
               const pink::RedisCmdArgsType &argv,
               std::string *response,
-              Uint64 redis_key_id)
+              Uint64 redis_key_id,
+              Uint32 database_id)
 {
   Uint32 arg_index_start = (redis_key_id == STRING_REDIS_KEY_ID) ? 1 : 2;
   Uint32 num_keys = argv.size() - arg_index_start;
@@ -539,6 +540,7 @@ void rondb_del(Ndb *ndb,
   get_ctrl->m_num_keys_failed = 0;
   get_ctrl->m_num_read_errors = 0;
   get_ctrl->m_error_code = 0;
+  get_ctrl->m_database_id = database_id;
   for (Uint32 i = 0; i < num_keys; i++) {
     Uint32 arg_index_key = i + arg_index_start;
     key_storage[i].m_index = i;
@@ -644,29 +646,30 @@ void rondb_del(Ndb *ndb,
 
 void rondb_del_command(Ndb *ndb,
                        const pink::RedisCmdArgsType &argv,
-                       std::string *response)
-{
+                       std::string *response,
+                       Uint32 database_id) {
   DEB_DEL_CMD(("DEL command with %lu parameters, first_key: %s\n",
                argv.size(),
                argv[1].c_str()));
-  rondb_del(ndb, argv, response, STRING_REDIS_KEY_ID);
+  rondb_del(ndb, argv, response, STRING_REDIS_KEY_ID, database_id);
 }
 
 void rondb_hdel_command(Ndb *ndb,
                         const pink::RedisCmdArgsType &argv,
-                        std::string *response)
-{
+                        std::string *response,
+                        Uint32 database_id) {
   DEB_DEL_CMD(("HDEL command with %lu parameters", argv.size()));
   Uint64 redis_key_id;
   int ret_code = rondb_get_redis_key_id(ndb,
                                        redis_key_id,
                                        argv[1].c_str(),
                                        argv[1].size(),
-                                       response);
+                                       response,
+                                       database_id);
   if (ret_code != 0) {
       return;
   }
-  rondb_del(ndb, argv, response, redis_key_id);
+  rondb_del(ndb, argv, response, redis_key_id, database_id);
 }
 
 /**
@@ -817,7 +820,8 @@ static int set_complex_rows(Ndb *ndb,
                                           row_state,
                                           key_storage[inx].m_expire_at,
                                           &key_storage[inx].m_rec_attr_prev_num_rows,
-                                          &key_storage[inx].m_rec_attr_rondb_key);
+                                          &key_storage[inx].m_rec_attr_rondb_key,
+                                          get_ctrl->m_database_id);
       if (ret_code != 0) {
         return 1;
       }
@@ -917,7 +921,8 @@ static int set_simple_rows(Ndb *ndb,
                                         row_state,
                                         key_storage[inx].m_expire_at,
                                         &key_storage[inx].m_rec_attr_prev_num_rows,
-                                        &key_storage[inx].m_rec_attr_rondb_key);
+                                        &key_storage[inx].m_rec_attr_rondb_key,
+                                        get_ctrl->m_database_id);
     if (ret_code != 0) {
       return 1;
     }
@@ -950,8 +955,8 @@ void rondb_mset(Ndb *ndb,
                const pink::RedisCmdArgsType &argv,
                std::string *response,
                Uint64 redis_key_id,
-               bool set_command)
-{
+               bool set_command,
+               Uint32 database_id) {
   Int64 ttl = -1;
   Uint32 num_keys = 2;
   Uint32 arg_index_start = (redis_key_id == STRING_REDIS_KEY_ID) ? 1 : 2;
@@ -1013,6 +1018,7 @@ void rondb_mset(Ndb *ndb,
   get_ctrl->m_num_keys_failed = 0;
   get_ctrl->m_num_read_errors = 0;
   get_ctrl->m_error_code = 0;
+  get_ctrl->m_database_id = database_id;
   for (Uint32 i = 0; i < num_keys; i++) {
     Uint32 arg_index_key = (2 * i) + arg_index_start;
     Uint32 arg_index_val = ((2 * i) + 1) + arg_index_start;
@@ -1135,32 +1141,36 @@ void rondb_mset(Ndb *ndb,
 
 void rondb_set_command(Ndb *ndb,
                        const pink::RedisCmdArgsType &argv,
-                       std::string *response)
+                       std::string *response,
+                       Uint32 database_id)
 {
-  rondb_mset(ndb, argv, response, STRING_REDIS_KEY_ID, true);
+  rondb_mset(ndb, argv, response, STRING_REDIS_KEY_ID, true, database_id);
 }
 
 void rondb_mset_command(Ndb *ndb,
                         const pink::RedisCmdArgsType &argv,
-                        std::string *response)
+                        std::string *response,
+                        Uint32 database_id)
 {
-  rondb_mset(ndb, argv, response, STRING_REDIS_KEY_ID, false);
+  rondb_mset(ndb, argv, response, STRING_REDIS_KEY_ID, false, database_id);
 }
 
 void rondb_hset_command(Ndb *ndb,
                         const pink::RedisCmdArgsType &argv,
-                        std::string *response)
+                        std::string *response,
+                        Uint32 database_id)
 {
   Uint64 redis_key_id;
   int ret_code = rondb_get_redis_key_id(ndb,
                                         redis_key_id,
                                         argv[1].c_str(),
                                         argv[1].size(),
-                                        response);
+                                        response,
+                                        database_id);
   if (ret_code != 0) {
       return;
   }
-  rondb_mset(ndb, argv, response, redis_key_id, false);
+  rondb_mset(ndb, argv, response, redis_key_id, false, database_id);
 }
 
 /**
@@ -1201,7 +1211,8 @@ static int send_value_read(std::string *response,
     value_row->ordinal = key_store->m_num_rw_rows;
     int ret_code = prepare_get_value_row(response,
                                          key_store->m_trans,
-                                         value_row);
+                                         value_row,
+                                         get_ctrl->m_database_id);
     if (ret_code != 0) return 1;
     i++;
     key_store->m_num_rw_rows++;
@@ -1283,7 +1294,8 @@ static int get_complex_rows(Ndb *ndb,
       get_ctrl->m_num_transactions++;
       if (prepare_get_key_row(response,
                               key_storage[inx].m_trans,
-                              &key_storage[inx].m_key_row) != 0) {
+                              &key_storage[inx].m_key_row,
+                              get_ctrl->m_database_id) != 0) {
         return 1;
       }
       prepare_read_transaction(&key_storage[inx]);
@@ -1353,7 +1365,8 @@ static int get_simple_rows(Ndb *ndb,
     if (prepare_get_simple_key_row(response,
                                    tab,
                                    key_storage[inx].m_trans,
-                                   &key_storage[inx].m_key_row) != 0) {
+                                   &key_storage[inx].m_key_row,
+                                   get_ctrl->m_database_id) != 0) {
       return 1;
     }
     prepare_simple_read_transaction(&key_storage[inx]);
@@ -1409,7 +1422,8 @@ static
 void rondb_mget(Ndb *ndb,
                const pink::RedisCmdArgsType &argv,
                std::string *response,
-               Uint64 redis_key_id)
+               Uint64 redis_key_id,
+               Uint32 database_id)
 {
   Uint32 arg_index_start = (redis_key_id == STRING_REDIS_KEY_ID) ? 1 : 2;
   Uint32 num_keys = argv.size() - arg_index_start;
@@ -1443,6 +1457,7 @@ void rondb_mget(Ndb *ndb,
   get_ctrl->m_num_keys_failed = 0;
   get_ctrl->m_num_read_errors = 0;
   get_ctrl->m_error_code = 0;
+  get_ctrl->m_database_id = database_id;
   for (Uint32 i = 0; i < num_keys; i++) {
     Uint32 arg_index = i + arg_index_start;
     key_storage[i].m_index = i;
@@ -1589,48 +1604,50 @@ void rondb_mget(Ndb *ndb,
 
 void rondb_get_command(Ndb *ndb,
                        const pink::RedisCmdArgsType &argv,
-                       std::string *response)
-{
-  rondb_mget(ndb, argv, response, STRING_REDIS_KEY_ID);
+                       std::string *response,
+                       Uint32 database_id) {
+  rondb_mget(ndb, argv, response, STRING_REDIS_KEY_ID, database_id);
 }
 
 void rondb_mget_command(Ndb *ndb,
                         const pink::RedisCmdArgsType &argv,
-                        std::string *response)
-{
-  rondb_mget(ndb, argv, response, STRING_REDIS_KEY_ID);
+                        std::string *response,
+                        Uint32 database_id) {
+  rondb_mget(ndb, argv, response, STRING_REDIS_KEY_ID, database_id);
 }
 
 void rondb_hget_command(Ndb *ndb,
                         const pink::RedisCmdArgsType &argv,
-                        std::string *response)
-{
+                        std::string *response,
+                        Uint32 database_id) {
   Uint64 redis_key_id;
   int ret_code = rondb_get_redis_key_id(ndb,
                                        redis_key_id,
                                        argv[1].c_str(),
                                        argv[1].size(),
-                                       response);
+                                       response,
+                                       database_id);
   if (ret_code != 0) {
       return;
   }
-  rondb_mget(ndb, argv, response, redis_key_id);
+  rondb_mget(ndb, argv, response, redis_key_id, database_id);
 }
 
 void rondb_hmget_command(Ndb *ndb,
                          const pink::RedisCmdArgsType &argv,
-                         std::string *response)
-{
+                         std::string *response,
+                         Uint32 database_id) {
   Uint64 redis_key_id;
   int ret_code = rondb_get_redis_key_id(ndb,
                                         redis_key_id,
                                         argv[1].c_str(),
                                         argv[1].size(),
-                                        response);
+                                        response,
+                                        database_id);
   if (ret_code != 0) {
       return;
   }
-  rondb_mget(ndb, argv, response, redis_key_id);
+  rondb_mget(ndb, argv, response, redis_key_id, database_id);
 }
 
 /**
@@ -1645,7 +1662,8 @@ void rondb_incr_decr(
     Uint64 redis_key_id,
     bool incr_flag,
     Int64 inc_dec_value,
-    bool dirty_flag) {
+    bool dirty_flag,
+    Uint32 database_id) {
   Uint32 arg_index_start = (redis_key_id == STRING_REDIS_KEY_ID) ? 1 : 2;
   const NdbDictionary::Dictionary *dict;
   const NdbDictionary::Table *tab = nullptr;
@@ -1679,7 +1697,8 @@ void rondb_incr_decr(
                     &key_store.m_key_row,
                     incr_flag,
                     unsigned_value,
-                    dirty_flag);
+                    dirty_flag,
+                    database_id);
   ndb->closeTransaction(key_store.m_trans);
   return;
 }
@@ -1687,8 +1706,8 @@ void rondb_incr_decr(
 void rondb_incr_command(Ndb *ndb,
                         const pink::RedisCmdArgsType &argv,
                         std::string *response,
-                        bool dirty_flag)
-{
+                        bool dirty_flag,
+                        Uint32 database_id) {
   DEB_INCR(("INCR command\n"));
   rondb_incr_decr(ndb,
                   argv,
@@ -1696,14 +1715,15 @@ void rondb_incr_command(Ndb *ndb,
                   STRING_REDIS_KEY_ID,
                   true,
                   1,
-                  dirty_flag);
+                  dirty_flag,
+                  database_id);
 }
 
 void rondb_incrby_command(Ndb *ndb,
                         const pink::RedisCmdArgsType &argv,
                         std::string *response,
-                        bool dirty_flag)
-{
+                        bool dirty_flag,
+                        Uint32 database_id) {
   DEB_INCR(("INCRBY command\n"));
   char *end_ptr = nullptr;
   const char *val_ptr = argv[2].c_str();
@@ -1724,14 +1744,15 @@ void rondb_incrby_command(Ndb *ndb,
                   STRING_REDIS_KEY_ID,
                   true,
                   val,
-                  dirty_flag);
+                  dirty_flag,
+                  database_id);
 }
 
 void rondb_decr_command(Ndb *ndb,
                         const pink::RedisCmdArgsType &argv,
                         std::string *response,
-                        bool dirty_flag)
-{
+                        bool dirty_flag,
+                        Uint32 database_id) {
   DEB_INCR(("DECR command\n"));
   rondb_incr_decr(ndb,
                   argv,
@@ -1739,14 +1760,15 @@ void rondb_decr_command(Ndb *ndb,
                   STRING_REDIS_KEY_ID,
                   false,
                   1,
-                  dirty_flag);
+                  dirty_flag,
+                  database_id);
 }
 
 void rondb_decrby_command(Ndb *ndb,
                           const pink::RedisCmdArgsType &argv,
                           std::string *response,
-                          bool dirty_flag)
-{
+                          bool dirty_flag,
+                          Uint32 database_id) {
   DEB_INCR(("DECRBY command\n"));
   char *end_ptr = nullptr;
   const char *val_ptr = argv[2].c_str();
@@ -1767,21 +1789,23 @@ void rondb_decrby_command(Ndb *ndb,
                   STRING_REDIS_KEY_ID,
                   false,
                   val,
-                  dirty_flag);
+                  dirty_flag,
+                  database_id);
 }
 
 void rondb_hincr_command(Ndb *ndb,
                          const pink::RedisCmdArgsType &argv,
                          std::string *response,
-                         bool dirty_flag)
-{
+                         bool dirty_flag,
+                         Uint32 database_id) {
   DEB_INCR(("HINCR command\n"));
   Uint64 redis_key_id;
   int ret_code = rondb_get_redis_key_id(ndb,
                                        redis_key_id,
                                        argv[1].c_str(),
                                        argv[1].size(),
-                                       response);
+                                       response,
+                                       database_id);
   if (ret_code != 0) {
       return;
   }
@@ -1791,21 +1815,23 @@ void rondb_hincr_command(Ndb *ndb,
                   redis_key_id,
                   true,
                   1,
-                  dirty_flag);
+                  dirty_flag,
+                  database_id);
 }
 
 void rondb_hincrby_command(Ndb *ndb,
                            const pink::RedisCmdArgsType &argv,
                            std::string *response,
-                           bool dirty_flag)
-{
+                           bool dirty_flag,
+                           Uint32 database_id) {
   DEB_INCR(("HINCRBY command\n"));
   Uint64 redis_key_id;
   int ret_code = rondb_get_redis_key_id(ndb,
                                        redis_key_id,
                                        argv[1].c_str(),
                                        argv[1].size(),
-                                       response);
+                                       response,
+                                       database_id);
   if (ret_code != 0) {
       return;
   }
@@ -1828,21 +1854,23 @@ void rondb_hincrby_command(Ndb *ndb,
                   redis_key_id,
                   true,
                   val,
-                  dirty_flag);
+                  dirty_flag,
+                  database_id);
 }
 
 void rondb_hdecr_command(Ndb *ndb,
                          const pink::RedisCmdArgsType &argv,
                          std::string *response,
-                         bool dirty_flag)
-{
+                         bool dirty_flag,
+                         Uint32 database_id) {
   DEB_INCR(("HDECR command\n"));
   Uint64 redis_key_id;
   int ret_code = rondb_get_redis_key_id(ndb,
                                        redis_key_id,
                                        argv[1].c_str(),
                                        argv[1].size(),
-                                       response);
+                                       response,
+                                       database_id);
   if (ret_code != 0) {
       return;
   }
@@ -1852,21 +1880,23 @@ void rondb_hdecr_command(Ndb *ndb,
                   redis_key_id,
                   false,
                   1,
-                  dirty_flag);
+                  dirty_flag,
+                  database_id);
 }
 
 void rondb_hdecrby_command(Ndb *ndb,
                          const pink::RedisCmdArgsType &argv,
                          std::string *response,
-                         bool dirty_flag)
-{
+                         bool dirty_flag,
+                         Uint32 database_id) {
   DEB_INCR(("HDECRBY command\n"));
   Uint64 redis_key_id;
   int ret_code = rondb_get_redis_key_id(ndb,
                                        redis_key_id,
                                        argv[1].c_str(),
                                        argv[1].size(),
-                                       response);
+                                       response,
+                                       database_id);
   if (ret_code != 0) {
       return;
   }
@@ -1889,5 +1919,6 @@ void rondb_hdecrby_command(Ndb *ndb,
                   redis_key_id,
                   false,
                   val,
-                  dirty_flag);
+                  dirty_flag,
+                  database_id);
 }

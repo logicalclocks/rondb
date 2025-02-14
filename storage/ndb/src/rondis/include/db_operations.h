@@ -77,7 +77,8 @@ int write_data_to_key_op(std::string *response,
                          Uint32 row_state,
                          Int32 expire_at,
                          NdbRecAttr**,
-                         NdbRecAttr**);
+                         NdbRecAttr**,
+                         Uint32 database_id);
 
 /* Callback function setup for GET MODULE */
 void prepare_read_value_transaction(struct KeyStorage *key_store);
@@ -88,15 +89,18 @@ void prepare_simple_read_transaction(struct KeyStorage *key_storage);
 /* Setup operation record for GET MODULE */
 int prepare_get_value_row(std::string *response,
                           NdbTransaction *trans,
-                          struct value_table *value_row);
+                          struct value_table *value_row,
+                          Uint32 database_id);
 int prepare_get_key_row(std::string *response,
                         NdbTransaction *trans,
-                        struct key_table *key_row);
+                        struct key_table *key_row,
+                        Uint32 database_id);
 int prepare_get_simple_key_row(std::string *response,
                                [[maybe_unused]]/*todo remove?*/
                                const NdbDictionary::Table *tab,
                                NdbTransaction *trans,
-                               struct key_table *key_row);
+                               struct key_table *key_row,
+                               Uint32 database_id);
 
 /**
  * INCR and DECR MODULE
@@ -109,7 +113,8 @@ void incr_decr_key_row(std::string *response,
                        struct key_table *key_row,
                        bool incr_flag,
                        Uint64 inc_dec_value,
-                       bool dirty_flag);
+                       bool dirty_flag,
+                       Uint32 database_id);
 
 /**
  * Uinique key MODULE for Rondis
@@ -124,5 +129,6 @@ int rondb_get_redis_key_id(Ndb *ndb,
                            Uint64 &redis_key_id,
                            const char *key_str,
                            Uint32 key_len,
-                           std::string *response);
+                           std::string *response,
+                           Uint32 database_id);
 #endif
