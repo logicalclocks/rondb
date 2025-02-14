@@ -285,16 +285,21 @@ int rondb_redis_handler(const pink::RedisCmdArgsType &argv,
       return 0;
     }
     char *end_ptr = nullptr;
-    const char *val_ptr = argv[2].c_str();
-    const char *memory_end = val_ptr + argv[2].size();
+    const char *val_ptr = argv[1].c_str();
+    const char *memory_end = val_ptr + argv[1].size();
     Int64 val = strtoll(val_ptr,
                         &end_ptr,
                         10);
-    if (errno == ERANGE || end_ptr != memory_end || val > 15) {
+    if (errno == ERANGE || end_ptr != memory_end) {
       assign_err_to_response(response,
                              FAILED_SELECT_COMMAND,
                              1);
       return 0;
+    }
+    if (val >= g_num_databases) {
+      assign_err_to_response(response,
+                             FAILLED_SELECT_NO_SUCH_DATABASE,
+                             1);
     }
     set_current_database(worker_id, (int)val);
     response->append("+OK\r\n");

@@ -361,9 +361,10 @@ int main(int argc, char *argv[]) {
         do_exit();
     }
     g_rondis_running = true;
-    printf("Rondis Server running on %s:%u\n",
+    printf("Rondis Server running on %s:%u with %u databases\n",
       globalConfigs.rondis.serverIP.c_str(),
-      globalConfigs.rondis.serverPort);
+      globalConfigs.rondis.serverPort,
+      globalConfigs.rondis.numDatabases);
   }
 
   if (globalConfigs.security.tls.enableTLS) {
