@@ -647,17 +647,17 @@ void rondb_del(Ndb *ndb,
 void rondb_del_command(Ndb *ndb,
                        const pink::RedisCmdArgsType &argv,
                        std::string *response,
-                       Uint32 database_id) {
+                       int worker_id) {
   DEB_DEL_CMD(("DEL command with %lu parameters, first_key: %s\n",
                argv.size(),
                argv[1].c_str()));
-  rondb_del(ndb, argv, response, STRING_REDIS_KEY_ID, database_id);
+  rondb_del(ndb, argv, response, STRING_REDIS_KEY_ID, worker_id);
 }
 
 void rondb_hdel_command(Ndb *ndb,
                         const pink::RedisCmdArgsType &argv,
                         std::string *response,
-                        Uint32 database_id) {
+                        int worker_id) {
   DEB_DEL_CMD(("HDEL command with %lu parameters", argv.size()));
   Uint64 redis_key_id;
   int ret_code = rondb_get_redis_key_id(ndb,
@@ -665,11 +665,11 @@ void rondb_hdel_command(Ndb *ndb,
                                        argv[1].c_str(),
                                        argv[1].size(),
                                        response,
-                                       database_id);
+                                       get_current_database(worker_id));
   if (ret_code != 0) {
       return;
   }
-  rondb_del(ndb, argv, response, redis_key_id, database_id);
+  rondb_del(ndb, argv, response, redis_key_id, worker_id);
 }
 
 /**
@@ -979,6 +979,21 @@ void rondb_mset(Ndb *ndb,
         assign_generic_err_to_response(response, error_message);
         return;
       }
+    } else if (opt == "px" && argv.size() > 4) {
+      std::string opt_val = argv[4];
+      ttl = std::stoi(opt_val);
+      if (ttl > 0) {
+        //Convert to seconds
+        ttl = (ttl + 999) / 1000;
+      } else {
+        char error_message[256];
+        snprintf(error_message,
+                 sizeof(error_message),
+                 REDIS_INVALID_TTL,
+                 argv[0].c_str());
+        assign_generic_err_to_response(response, error_message);
+        return;
+      }
     } else {
       assign_generic_err_to_response(response, REDIS_SYNTAX_ERROR);
       return;
@@ -1142,23 +1157,23 @@ void rondb_mset(Ndb *ndb,
 void rondb_set_command(Ndb *ndb,
                        const pink::RedisCmdArgsType &argv,
                        std::string *response,
-                       Uint32 database_id)
+                       int worker_id)
 {
-  rondb_mset(ndb, argv, response, STRING_REDIS_KEY_ID, true, database_id);
+  rondb_mset(ndb, argv, response, STRING_REDIS_KEY_ID, true, worker_id);
 }
 
 void rondb_mset_command(Ndb *ndb,
                         const pink::RedisCmdArgsType &argv,
                         std::string *response,
-                        Uint32 database_id)
+                        int worker_id)
 {
-  rondb_mset(ndb, argv, response, STRING_REDIS_KEY_ID, false, database_id);
+  rondb_mset(ndb, argv, response, STRING_REDIS_KEY_ID, false, worker_id);
 }
 
 void rondb_hset_command(Ndb *ndb,
                         const pink::RedisCmdArgsType &argv,
                         std::string *response,
-                        Uint32 database_id)
+                        int worker_id)
 {
   Uint64 redis_key_id;
   int ret_code = rondb_get_redis_key_id(ndb,
@@ -1166,11 +1181,11 @@ void rondb_hset_command(Ndb *ndb,
                                         argv[1].c_str(),
                                         argv[1].size(),
                                         response,
-                                        database_id);
+                                        get_current_database(worker_id));
   if (ret_code != 0) {
       return;
   }
-  rondb_mset(ndb, argv, response, redis_key_id, false, database_id);
+  rondb_mset(ndb, argv, response, redis_key_id, false, worker_id);
 }
 
 /**
@@ -1423,8 +1438,7 @@ void rondb_mget(Ndb *ndb,
                const pink::RedisCmdArgsType &argv,
                std::string *response,
                Uint64 redis_key_id,
-               Uint32 database_id)
-{
+               int worker_id) {
   Uint32 arg_index_start = (redis_key_id == STRING_REDIS_KEY_ID) ? 1 : 2;
   Uint32 num_keys = argv.size() - arg_index_start;
   assert(num_keys > 0);
@@ -1457,7 +1471,7 @@ void rondb_mget(Ndb *ndb,
   get_ctrl->m_num_keys_failed = 0;
   get_ctrl->m_num_read_errors = 0;
   get_ctrl->m_error_code = 0;
-  get_ctrl->m_database_id = database_id;
+  get_ctrl->m_database_id = get_current_database(worker_id);
   for (Uint32 i = 0; i < num_keys; i++) {
     Uint32 arg_index = i + arg_index_start;
     key_storage[i].m_index = i;
@@ -1605,49 +1619,49 @@ void rondb_mget(Ndb *ndb,
 void rondb_get_command(Ndb *ndb,
                        const pink::RedisCmdArgsType &argv,
                        std::string *response,
-                       Uint32 database_id) {
-  rondb_mget(ndb, argv, response, STRING_REDIS_KEY_ID, database_id);
+                       int worker_id) {
+  rondb_mget(ndb, argv, response, STRING_REDIS_KEY_ID, worker_id);
 }
 
 void rondb_mget_command(Ndb *ndb,
                         const pink::RedisCmdArgsType &argv,
                         std::string *response,
-                        Uint32 database_id) {
-  rondb_mget(ndb, argv, response, STRING_REDIS_KEY_ID, database_id);
+                        int worker_id) {
+  rondb_mget(ndb, argv, response, STRING_REDIS_KEY_ID, worker_id);
 }
 
 void rondb_hget_command(Ndb *ndb,
                         const pink::RedisCmdArgsType &argv,
                         std::string *response,
-                        Uint32 database_id) {
+                        int worker_id) {
   Uint64 redis_key_id;
   int ret_code = rondb_get_redis_key_id(ndb,
                                        redis_key_id,
                                        argv[1].c_str(),
                                        argv[1].size(),
                                        response,
-                                       database_id);
+                                       get_current_database(worker_id));
   if (ret_code != 0) {
       return;
   }
-  rondb_mget(ndb, argv, response, redis_key_id, database_id);
+  rondb_mget(ndb, argv, response, redis_key_id, worker_id);
 }
 
 void rondb_hmget_command(Ndb *ndb,
                          const pink::RedisCmdArgsType &argv,
                          std::string *response,
-                         Uint32 database_id) {
+                         int worker_id) {
   Uint64 redis_key_id;
   int ret_code = rondb_get_redis_key_id(ndb,
                                         redis_key_id,
                                         argv[1].c_str(),
                                         argv[1].size(),
                                         response,
-                                        database_id);
+                                        get_current_database(worker_id));
   if (ret_code != 0) {
       return;
   }
-  rondb_mget(ndb, argv, response, redis_key_id, database_id);
+  rondb_mget(ndb, argv, response, redis_key_id, worker_id);
 }
 
 /**
@@ -1662,8 +1676,7 @@ void rondb_incr_decr(
     Uint64 redis_key_id,
     bool incr_flag,
     Int64 inc_dec_value,
-    bool dirty_flag,
-    Uint32 database_id) {
+    int worker_id) {
   Uint32 arg_index_start = (redis_key_id == STRING_REDIS_KEY_ID) ? 1 : 2;
   const NdbDictionary::Dictionary *dict;
   const NdbDictionary::Table *tab = nullptr;
@@ -1697,8 +1710,7 @@ void rondb_incr_decr(
                     &key_store.m_key_row,
                     incr_flag,
                     unsigned_value,
-                    dirty_flag,
-                    database_id);
+                    worker_id);
   ndb->closeTransaction(key_store.m_trans);
   return;
 }
@@ -1706,8 +1718,7 @@ void rondb_incr_decr(
 void rondb_incr_command(Ndb *ndb,
                         const pink::RedisCmdArgsType &argv,
                         std::string *response,
-                        bool dirty_flag,
-                        Uint32 database_id) {
+                        int worker_id) {
   DEB_INCR(("INCR command\n"));
   rondb_incr_decr(ndb,
                   argv,
@@ -1715,15 +1726,13 @@ void rondb_incr_command(Ndb *ndb,
                   STRING_REDIS_KEY_ID,
                   true,
                   1,
-                  dirty_flag,
-                  database_id);
+                  worker_id);
 }
 
 void rondb_incrby_command(Ndb *ndb,
                         const pink::RedisCmdArgsType &argv,
                         std::string *response,
-                        bool dirty_flag,
-                        Uint32 database_id) {
+                        int worker_id) {
   DEB_INCR(("INCRBY command\n"));
   char *end_ptr = nullptr;
   const char *val_ptr = argv[2].c_str();
@@ -1744,15 +1753,13 @@ void rondb_incrby_command(Ndb *ndb,
                   STRING_REDIS_KEY_ID,
                   true,
                   val,
-                  dirty_flag,
-                  database_id);
+                  worker_id);
 }
 
 void rondb_decr_command(Ndb *ndb,
                         const pink::RedisCmdArgsType &argv,
                         std::string *response,
-                        bool dirty_flag,
-                        Uint32 database_id) {
+                        int worker_id) {
   DEB_INCR(("DECR command\n"));
   rondb_incr_decr(ndb,
                   argv,
@@ -1760,15 +1767,13 @@ void rondb_decr_command(Ndb *ndb,
                   STRING_REDIS_KEY_ID,
                   false,
                   1,
-                  dirty_flag,
-                  database_id);
+                  worker_id);
 }
 
 void rondb_decrby_command(Ndb *ndb,
                           const pink::RedisCmdArgsType &argv,
                           std::string *response,
-                          bool dirty_flag,
-                          Uint32 database_id) {
+                          int worker_id) {
   DEB_INCR(("DECRBY command\n"));
   char *end_ptr = nullptr;
   const char *val_ptr = argv[2].c_str();
@@ -1789,15 +1794,13 @@ void rondb_decrby_command(Ndb *ndb,
                   STRING_REDIS_KEY_ID,
                   false,
                   val,
-                  dirty_flag,
-                  database_id);
+                  worker_id);
 }
 
 void rondb_hincr_command(Ndb *ndb,
                          const pink::RedisCmdArgsType &argv,
                          std::string *response,
-                         bool dirty_flag,
-                         Uint32 database_id) {
+                         int worker_id) {
   DEB_INCR(("HINCR command\n"));
   Uint64 redis_key_id;
   int ret_code = rondb_get_redis_key_id(ndb,
@@ -1805,7 +1808,7 @@ void rondb_hincr_command(Ndb *ndb,
                                        argv[1].c_str(),
                                        argv[1].size(),
                                        response,
-                                       database_id);
+                                       get_current_database(worker_id));
   if (ret_code != 0) {
       return;
   }
@@ -1815,15 +1818,13 @@ void rondb_hincr_command(Ndb *ndb,
                   redis_key_id,
                   true,
                   1,
-                  dirty_flag,
-                  database_id);
+                  worker_id);
 }
 
 void rondb_hincrby_command(Ndb *ndb,
                            const pink::RedisCmdArgsType &argv,
                            std::string *response,
-                           bool dirty_flag,
-                           Uint32 database_id) {
+                           int worker_id) {
   DEB_INCR(("HINCRBY command\n"));
   Uint64 redis_key_id;
   int ret_code = rondb_get_redis_key_id(ndb,
@@ -1831,7 +1832,7 @@ void rondb_hincrby_command(Ndb *ndb,
                                        argv[1].c_str(),
                                        argv[1].size(),
                                        response,
-                                       database_id);
+                                       get_current_database(worker_id));
   if (ret_code != 0) {
       return;
   }
@@ -1854,15 +1855,13 @@ void rondb_hincrby_command(Ndb *ndb,
                   redis_key_id,
                   true,
                   val,
-                  dirty_flag,
-                  database_id);
+                  worker_id);
 }
 
 void rondb_hdecr_command(Ndb *ndb,
                          const pink::RedisCmdArgsType &argv,
                          std::string *response,
-                         bool dirty_flag,
-                         Uint32 database_id) {
+                         int worker_id) {
   DEB_INCR(("HDECR command\n"));
   Uint64 redis_key_id;
   int ret_code = rondb_get_redis_key_id(ndb,
@@ -1870,7 +1869,7 @@ void rondb_hdecr_command(Ndb *ndb,
                                        argv[1].c_str(),
                                        argv[1].size(),
                                        response,
-                                       database_id);
+                                       get_current_database(worker_id));
   if (ret_code != 0) {
       return;
   }
@@ -1880,15 +1879,13 @@ void rondb_hdecr_command(Ndb *ndb,
                   redis_key_id,
                   false,
                   1,
-                  dirty_flag,
-                  database_id);
+                  worker_id);
 }
 
 void rondb_hdecrby_command(Ndb *ndb,
                          const pink::RedisCmdArgsType &argv,
                          std::string *response,
-                         bool dirty_flag,
-                         Uint32 database_id) {
+                         int worker_id) {
   DEB_INCR(("HDECRBY command\n"));
   Uint64 redis_key_id;
   int ret_code = rondb_get_redis_key_id(ndb,
@@ -1896,7 +1893,7 @@ void rondb_hdecrby_command(Ndb *ndb,
                                        argv[1].c_str(),
                                        argv[1].size(),
                                        response,
-                                       database_id);
+                                       get_current_database(worker_id));
   if (ret_code != 0) {
       return;
   }
@@ -1919,6 +1916,5 @@ void rondb_hdecrby_command(Ndb *ndb,
                   redis_key_id,
                   false,
                   val,
-                  dirty_flag,
-                  database_id);
+                  worker_id);
 }

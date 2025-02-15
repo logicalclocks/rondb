@@ -130,15 +130,16 @@ void (*g_return_ndb_object_func_ptr)(void*,int);
 void (*g_exit_func_ptr)(void);
 void* (*g_start_cmd_func_ptr)(void);
 void (*g_end_cmd_func_ptr)(void*);
-int g_first_thread_id = 0;
-int *g_current_database_index;
+Uint32 g_first_thread_id = 0;
+Uint32 *g_current_database_index;
 bool g_is_incr_decr_dirty[MAX_NUM_DATABASES];
-int g_num_databases = 0;
+bool g_opt_small_values_flag[MAX_NUM_DATABASES];
+Uint32 g_num_databases = 0;
 int g_num_threads = 0;
 
 class NdbObjectGuard {
   public:
-  NdbObjectGuard(int worker_id, int database_id)
+  NdbObjectGuard(int worker_id, Uint32 database_id)
     : m_worker_id(worker_id + g_first_thread_id)
   {
     if (rondis_execution_variant == INSIDE_RDRS2) {
@@ -175,11 +176,12 @@ int setup_ndb_connection_for_rondis(
  void (*exit_func_ptr)(void),
  void* (*start_cmd_func_ptr)(void),
  void (*end_cmd_func_ptr)(void*),
- int first_thread_id,
+ Uint32 first_thread_id,
  int num_threads,
- int *database_index,
- int num_databases,
- bool *dirty_incr_decr_flag) {
+ Uint32 *database_index,
+ Uint32 num_databases,
+ bool *dirty_incr_decr_flag,
+ bool *opt_small_values_flag) {
   assert(rondis_execution_variant == 0);
   rondis_execution_variant = INSIDE_RDRS2;
   g_get_ndb_object_func_ptr = get_ndb_object_func_ptr;
@@ -193,11 +195,13 @@ int setup_ndb_connection_for_rondis(
   g_num_databases = num_databases;
   for (int i = 0; i < MAX_NUM_DATABASES; i++) {
     g_is_incr_decr_dirty[i] = false;
+    g_opt_small_values_flag[i] = true;
   }
-  for (int i = 0; i < num_databases; i++) {
+  for (Uint32 i = 0; i < num_databases; i++) {
     NdbObjectGuard ndbObjectGuard(0, i);
     Ndb *ndb = ndbObjectGuard.get_guard_ndb_object();
     g_is_incr_decr_dirty[i] = dirty_incr_decr_flag[i];
+    g_opt_small_values_flag[i] = opt_small_values_flag[i];
     NdbDictionary::Dictionary *dict = ndb->getDictionary();
     if (init_string_records(dict, i) != 0) {
       printf("Failed initializing records for Redis data type STRING;"
@@ -207,10 +211,6 @@ int setup_ndb_connection_for_rondis(
     }
   }
   return 0;
-}
-
-bool get_dirty_incr_decr_flag(int worker_id) {
-  return g_is_incr_decr_dirty[worker_id];
 }
 
 void unsupported_command(const pink::RedisCmdArgsType &argv,
@@ -245,10 +245,6 @@ void wrong_number_of_arguments(const pink::RedisCmdArgsType &argv,
            REDIS_WRONG_NUMBER_OF_ARGS,
            argv[0].c_str());
   assign_generic_err_to_response(response, error_message);
-}
-
-void set_current_database(int index, int database_index) {
-  g_current_database_index[index] = database_index;
 }
 
 class RondisEndPoint {
@@ -323,14 +319,13 @@ int rondb_redis_handler(const pink::RedisCmdArgsType &argv,
     response->append("+OK\r\n");
     return 0;
   } else {
-    int database_id = g_current_database_index[worker_id];
+    Uint32 database_id = get_current_database(worker_id);
     NdbObjectGuard ndbObjectGuard(worker_id, database_id);
     Ndb *ndb = ndbObjectGuard.get_guard_ndb_object();
     if (ndb == nullptr) {
       unavailable_cluster(argv, response);
       return 0;
     }
-    bool dirty_flag = g_is_incr_decr_dirty[worker_id];
     DEB_NDB_CMD(("cmd: %s, params: %lu\n", command, argv.size()));
 #ifdef DEBUG_NDB_CMD
     for (Uint32 i = 1; i < argv.size(); i++) {
@@ -340,126 +335,126 @@ int rondb_redis_handler(const pink::RedisCmdArgsType &argv,
 #endif
     if (strcasecmp(command, "GET") == 0) {
       if (argv.size() == 2) {
-        rondb_get_command(ndb, argv, response, database_id);
+        rondb_get_command(ndb, argv, response, worker_id);
       } else {
         wrong_number_of_arguments(argv, response);
         return 0;
       }
     } else if (strcasecmp(command, "MGET") == 0) {
       if (argv.size() >= 2) {
-        rondb_mget_command(ndb, argv, response, database_id);
+        rondb_mget_command(ndb, argv, response, worker_id);
       } else {
         wrong_number_of_arguments(argv, response);
         return 0;
       }
     } else if (strcasecmp(command, "SET") == 0) {
       if (argv.size() >= 3) {
-        rondb_set_command(ndb, argv, response, database_id);
+        rondb_set_command(ndb, argv, response, worker_id);
       } else {
         wrong_number_of_arguments(argv, response);
         return 0;
       }
     } else if (strcasecmp(command, "MSET") == 0) {
       if (argv.size() >= 3 && (argv.size() % 2) == 1) {
-        rondb_mset_command(ndb, argv, response, database_id);
+        rondb_mset_command(ndb, argv, response, worker_id);
       } else {
         wrong_number_of_arguments(argv, response);
         return 0;
       }
     } else if (strcasecmp(command, "HGET") == 0) {
       if (argv.size() == 3) {
-        rondb_hget_command(ndb, argv, response, database_id);
+        rondb_hget_command(ndb, argv, response, worker_id);
       } else {
         wrong_number_of_arguments(argv, response);
         return 0;
       }
     } else if (strcasecmp(command, "HMGET") == 0) {
       if (argv.size() >= 3) {
-        rondb_hmget_command(ndb, argv, response, database_id);
+        rondb_hmget_command(ndb, argv, response, worker_id);
       } else {
         wrong_number_of_arguments(argv, response);
         return 0;
       }
     } else if (strcasecmp(command, "HSET") == 0) {
       if (argv.size() >= 4 && (argv.size() % 2) == 0) {
-        rondb_hset_command(ndb, argv, response, database_id);
+        rondb_hset_command(ndb, argv, response, worker_id);
       } else {
         wrong_number_of_arguments(argv, response);
         return 0;
       }
     } else if (strcasecmp(command, "HMSET") == 0) {
       if (argv.size() >= 4 && (argv.size() % 2) == 0) {
-        rondb_hset_command(ndb, argv, response, database_id);
+        rondb_hset_command(ndb, argv, response, worker_id);
       } else {
         wrong_number_of_arguments(argv, response);
         return 0;
       }
     } else if (strcasecmp(command, "DEL") == 0) {
       if (argv.size() >= 2) {
-        rondb_del_command(ndb, argv, response, database_id);
+        rondb_del_command(ndb, argv, response, worker_id);
       } else {
         wrong_number_of_arguments(argv, response);
         return 0;
       }
     } else if (strcasecmp(command, "HDEL") == 0) {
       if (argv.size() >= 2) {
-        rondb_hdel_command(ndb, argv, response, database_id);
+        rondb_hdel_command(ndb, argv, response, worker_id);
       } else {
         wrong_number_of_arguments(argv, response);
         return 0;
       }
     } else if (strcasecmp(command, "INCR") == 0) {
       if (argv.size() == 2) {
-        rondb_incr_command(ndb, argv, response, dirty_flag, database_id);
+        rondb_incr_command(ndb, argv, response, worker_id);
       } else {
         wrong_number_of_arguments(argv, response);
         return 0;
       }
     } else if (strcasecmp(command, "INCRBY") == 0) {
       if (argv.size() == 3) {
-        rondb_incrby_command(ndb, argv, response, dirty_flag, database_id);
+        rondb_incrby_command(ndb, argv, response, worker_id);
       } else {
         wrong_number_of_arguments(argv, response);
         return 0;
       }
     } else if (strcasecmp(command, "DECR") == 0) {
       if (argv.size() == 2) {
-        rondb_decr_command(ndb, argv, response, dirty_flag, database_id);
+        rondb_decr_command(ndb, argv, response, worker_id);
       } else {
         wrong_number_of_arguments(argv, response);
         return 0;
       }
     } else if (strcasecmp(command, "DECRBY") == 0) {
       if (argv.size() == 3) {
-        rondb_decrby_command(ndb, argv, response, dirty_flag, database_id);
+        rondb_decrby_command(ndb, argv, response, worker_id);
       } else {
         wrong_number_of_arguments(argv, response);
         return 0;
       }
     } else if (strcasecmp(command, "HINCR") == 0) {
       if (argv.size() == 3) {
-        rondb_hincr_command(ndb, argv, response, dirty_flag, database_id);
+        rondb_hincr_command(ndb, argv, response, worker_id);
       } else {
         wrong_number_of_arguments(argv, response);
         return 0;
       }
     } else if (strcasecmp(command, "HINCRBY") == 0) {
       if (argv.size() == 4) {
-        rondb_hincrby_command(ndb, argv, response, dirty_flag, database_id);
+        rondb_hincrby_command(ndb, argv, response, worker_id);
       } else {
         wrong_number_of_arguments(argv, response);
         return 0;
       }
     } else if (strcasecmp(command, "HDECR") == 0) {
       if (argv.size() == 3) {
-        rondb_hdecr_command(ndb, argv, response, dirty_flag, database_id);
+        rondb_hdecr_command(ndb, argv, response, worker_id);
       } else {
         wrong_number_of_arguments(argv, response);
         return 0;
       }
     } else if (strcasecmp(command, "HDECRBY") == 0) {
       if (argv.size() == 4) {
-        rondb_hdecrby_command(ndb, argv, response, dirty_flag, database_id);
+        rondb_hdecrby_command(ndb, argv, response, worker_id);
       } else {
         wrong_number_of_arguments(argv, response);
         return 0;
@@ -490,4 +485,29 @@ int rondb_redis_handler(const pink::RedisCmdArgsType &argv,
     }
   }
   return 0;
+}
+
+void set_current_database(int index, Uint32 database_index) {
+  g_current_database_index[index] = database_index;
+}
+
+Uint32 get_current_database(int worker_id) {
+  assert(worker_id < g_num_threads);
+  Uint32 database_id = g_current_database_index[worker_id];
+  assert(database_id < g_num_databases);
+  return database_id;
+}
+
+bool get_dirty_incr_decr_flag(int worker_id) {
+  assert(worker_id < g_num_threads);
+  Uint32 database_id = g_current_database_index[worker_id];
+  assert(database_id < g_num_databases);
+  return g_is_incr_decr_dirty[database_id];
+}
+
+bool get_opt_small_values_flag(int worker_id) {
+  assert(worker_id < g_num_threads);
+  Uint32 database_id = g_current_database_index[worker_id];
+  assert(database_id < g_num_databases);
+  return g_opt_small_values_flag[database_id];
 }

@@ -51,93 +51,85 @@
 void rondb_get_command(Ndb *ndb,
                        const pink::RedisCmdArgsType &argv,
                        std::string *response,
-                       Uint32 database_id);
+                       int worker_id);
 
 void rondb_mget_command(Ndb *ndb,
                         const pink::RedisCmdArgsType &argv,
                         std::string *response,
-                        Uint32 database_id);
+                        int worker_id);
 
 void rondb_set_command(Ndb *ndb,
                        const pink::RedisCmdArgsType &argv,
                        std::string *response,
-                        Uint32 database_id);
+                       int worker_id);
 
 void rondb_del_command(Ndb *ndb,
                        const pink::RedisCmdArgsType &argv,
                        std::string *response,
-                       Uint32 database_id);
+                       int worker_id);
 
 void rondb_hdel_command(Ndb *ndb,
                         const pink::RedisCmdArgsType &argv,
                         std::string *response,
-                        Uint32 database_id);
+                        int worker_id);
 
 void rondb_mset_command(Ndb *ndb,
                         const pink::RedisCmdArgsType &argv,
                         std::string *response,
-                        Uint32 database_id);
+                        int worker_id);
 
 void rondb_incr_command(Ndb *ndb,
                         const pink::RedisCmdArgsType &argv,
                         std::string *response,
-                        bool dirty_flag,
-                        Uint32 database_id);
+                        int worker_id);
 
 void rondb_incrby_command(Ndb *ndb,
                           const pink::RedisCmdArgsType &argv,
                           std::string *response,
-                          bool dirty_flag,
-                          Uint32 database_id);
+                          int worker_id);
 
 void rondb_decr_command(Ndb *ndb,
                         const pink::RedisCmdArgsType &argv,
                         std::string *response,
-                        bool dirty_flag,
-                        Uint32 database_id);
+                        int worker_id);
 
 void rondb_decrby_command(Ndb *ndb,
                           const pink::RedisCmdArgsType &argv,
                           std::string *response,
-                          bool dirty_flag,
-                          Uint32 database_id);
+                          int worker_id);
 
 void rondb_hget_command(Ndb *ndb,
                        const pink::RedisCmdArgsType &argv,
                        std::string *response,
-                       Uint32 database_id);
+                       int worker_id);
 
 void rondb_hmget_command(Ndb *ndb,
                          const pink::RedisCmdArgsType &argv,
                          std::string *response,
-                         Uint32 database_id);
+                         int worker_id);
 
 void rondb_hset_command(Ndb *ndb,
                        const pink::RedisCmdArgsType &argv,
                        std::string *response,
-                       Uint32 database_id);
+                       int worker_id);
 
 void rondb_hincr_command(Ndb *ndb,
                         const pink::RedisCmdArgsType &argv,
                         std::string *response,
-                        bool dirty_flag,
-                        Uint32 database_id);
+                        int worker_id);
 
 void rondb_hincrby_command(Ndb *ndb,
                            const pink::RedisCmdArgsType &argv,
                            std::string *response,
-                           bool dirty_flag,
-                           Uint32 database_id);
+                           int worker_id);
 
 void rondb_hdecr_command(Ndb *ndb,
                         const pink::RedisCmdArgsType &argv,
                         std::string *response,
-                        bool dirty_flag,
-                        Uint32 database_id);
+                        int worker_id);
 
 void rondb_hdecrby_command(Ndb *ndb,
                            const pink::RedisCmdArgsType &argv,
                            std::string *response,
-                           bool dirty_flag,
-                           Uint32 database_id);
+                           int worker_id);
 #endif

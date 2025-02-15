@@ -113,8 +113,7 @@ void incr_decr_key_row(std::string *response,
                        struct key_table *key_row,
                        bool incr_flag,
                        Uint64 inc_dec_value,
-                       bool dirty_flag,
-                       Uint32 database_id);
+                       int worker_id);
 
 /**
  * Uinique key MODULE for Rondis

@@ -40,7 +40,7 @@ CREATE TABLE string_keys(
     num_rows INT UNSIGNED NOT NULL,
     value_start VARBINARY(4096) NOT NULL,
     -- Redis supports get/set of seconds/milliseconds
-    expiry_date TIMESTAMP NOT NULL,
+    expiry_date TIMESTAMP,
     -- Easier to sort and delete keys this way
     KEY ttl_index(expiry_date),
     PRIMARY KEY (redis_key_id, redis_key) USING HASH,

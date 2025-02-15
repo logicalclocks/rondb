@@ -71,7 +71,7 @@ static bool g_drogon_running = false;
 static ConnFactory* g_rondis_conn_factory = nullptr;
 static RondisHandle* g_rondis_handle = nullptr;
 static ServerThread* g_rondis_thread = nullptr;
-static int *g_database_index = nullptr;
+static Uint32 *g_database_index = nullptr;
 static bool g_rondis_running = false;
 static int g_exit_code = 0;
 static TTLPurger* g_ttl_purger = nullptr;
@@ -339,12 +339,16 @@ int main(int argc, char *argv[]) {
   if (globalConfigs.rondis.enable) {
     g_rondis_conn_factory = new RondisConnFactory();
     g_rondis_handle = new RondisHandle();
-    g_database_index = (int*)malloc(sizeof(int) * num_rondis_threads);
-    memset(g_database_index, 0, sizeof(int) * num_rondis_threads);
+    g_database_index = (Uint32*)malloc(sizeof(Uint32) * num_rondis_threads);
+    memset(g_database_index, 0, sizeof(Uint32) * num_rondis_threads);
     bool dirty_incr_decr_flag[MAX_NUM_DATABASES];
+    bool opt_small_values_flag[MAX_NUM_DATABASES];
     memset(&dirty_incr_decr_flag[0], 0, sizeof(dirty_incr_decr_flag));
+    memset(&opt_small_values_flag[0], 0, sizeof(dirty_incr_decr_flag));
     for (Uint32 i = 0; i < globalConfigs.rondis.numDatabases; i++) {
       dirty_incr_decr_flag[i] = globalConfigs.rondis.databases[i].dirtyIncrDecr;
+      opt_small_values_flag[i] =
+        globalConfigs.rondis.databases[i].optimizeSmallValues;
     }
     g_rondis_thread = NewDispatchThread(globalConfigs.rondis.serverIP,
                                         globalConfigs.rondis.serverPort,
@@ -360,10 +364,11 @@ int main(int argc, char *argv[]) {
       rondis_start_cmd,
       rondis_end_cmd,
       num_rdrs_threads,
-      num_rondis_threads,
+      (int)num_rondis_threads,
       g_database_index,
       globalConfigs.rondis.numDatabases,
-      &dirty_incr_decr_flag[0]);
+      &dirty_incr_decr_flag[0],
+      &opt_small_values_flag[0]);
     if (ret_code != 0) {
       printf("Error setting up Rondis Server\n");
       g_exit_code = 1;

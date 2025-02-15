@@ -44,11 +44,12 @@ int setup_ndb_connection_for_rondis(
  void (*exit_func)(void),
  void* (*start_cmd_func_ptr)(void),
  void (*end_cmd_func_ptr)(void*),
- int first_thread_id,
+ Uint32 first_thread_id,
  int num_threads,
- int *database_index,
- int num_databases,
- bool *dirty_incr_decr_flag);
+ Uint32 *database_index,
+ Uint32 num_databases,
+ bool *dirty_incr_decr_flag,
+ bool *opt_small_values_flag);
 
 void rondb_end();
 
@@ -56,5 +57,8 @@ int rondb_redis_handler(const pink::RedisCmdArgsType &argv,
                         std::string *response,
                         int fd);
 
-void set_current_database(int index, int database_index);
+void set_current_database(int index, Uint32 database_index);
+Uint32 get_current_database(int worker_id);
+bool get_dirty_incr_decr_flag(int worker_id);
+bool get_opt_small_values_flag(int worker_id);
 #endif

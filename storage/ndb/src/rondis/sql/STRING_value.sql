@@ -26,7 +26,7 @@
 CREATE TABLE string_values(
     rondb_key BIGINT UNSIGNED NOT NULL,
     ordinal INT UNSIGNED NOT NULL,
-    expiry_date TIMESTAMP NOT NULL,
+    expiry_date TIMESTAMP,
     value VARBINARY(29500) NOT NULL,
     KEY ttl_index(expiry_date),
     PRIMARY KEY (rondb_key, ordinal)

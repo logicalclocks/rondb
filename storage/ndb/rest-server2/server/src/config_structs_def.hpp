@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
+ * Copyright (c) 2024, 2025, Hopsworks and/or its affiliates.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -101,6 +101,8 @@ CLASS
     "The name of the database, in the form of an integer. The first database is"
     " named 0.")
  CM(bool, fastHcount, FastHCOUNT, false, "Whether to optimize for HCOUNT")
+ CM(bool, optimizeSmallValues, OptimizeSmallValues, true,
+    "Whether to optimize for small values")
  CM(std::string, mode, Mode, "RONDB",
     "Database mode."
     " COMPATIBLE = todo add description."

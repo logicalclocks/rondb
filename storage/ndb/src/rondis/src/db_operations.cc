@@ -949,8 +949,7 @@ void incr_decr_key_row(std::string *response,
                        struct key_table *key_row,
                        bool incr_flag,
                        Uint64 inc_dec_value,
-                       bool dirty_flag,
-                       Uint32 database_id) {
+                       int worker_id) {
   /**
    * The mask specifies which columns is to be updated after the interpreter
    * has finished. The values are set in the key_row.
@@ -997,10 +996,11 @@ void incr_decr_key_row(std::string *response,
   opts.numExtraGetFinalValues = 1;
   opts.extraGetFinalValues = getvals;
 
-  if (dirty_flag)
+  if (get_dirty_incr_decr_flag(worker_id))
     opts.optionsPresent |= NdbOperation::OperationOptions::OO_DIRTY_FLAG;
 
   /* Define the actual operation to be sent to RonDB data node. */
+  Uint32 database_id = get_current_database(worker_id);
   const NdbOperation *op = trans->writeTuple(
     pk_key_record[database_id],
     (const char *)key_row,
