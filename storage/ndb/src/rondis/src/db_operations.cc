@@ -504,6 +504,11 @@ write_callback(int result, NdbTransaction *trans, void *aObject) {
       key_storage->m_rec_attr_prev_num_rows->u_32_value();
     key_storage->m_rondb_key =
       key_storage->m_rec_attr_rondb_key->u_32_value();
+    if (key_storage->m_keep_ttl == true &&
+        key_storage->m_num_rows > 0) {
+      Uint32 expiry_date = key_storage->m_rec_attr_expiry_date->u_32_value();
+      key_storage->m_expire_at = (Int64)expiry_date;
+    }
     key_storage->m_current_pos = INLINE_VALUE_LEN;
     key_storage->m_key_state = KeyState::MultiRowRWValue;
     assert(get_ctrl->m_num_keys_outstanding > 0);
@@ -615,7 +620,7 @@ int write_data_to_key_op(std::string *response,
     NdbOperation::OperationOptions::OO_INTERPRETED_INSERT;
   opts.interpretedCode = &code;
 
-  NdbOperation::GetValueSpec getvals[2];
+  NdbOperation::GetValueSpec getvals[3];
   if (commit_flag) {
     getvals[0].appStorage = nullptr;
     getvals[0].recAttr = nullptr;
@@ -631,7 +636,15 @@ int write_data_to_key_op(std::string *response,
     getvals[1].recAttr = nullptr;
     getvals[1].column = NdbDictionary::Column::READ_INTERPRETER_OUTPUT_1;
     opts.optionsPresent |= NdbOperation::OperationOptions::OO_GET_FINAL_VALUE;
-    opts.numExtraGetFinalValues = 2;
+    if (key_store->m_keep_ttl == true &&
+        key_store->m_num_rows > 0) {
+      getvals[1].appStorage = nullptr;
+      getvals[1].recAttr = nullptr;
+      getvals[1].column = NdbDictionary::Column::READ_INTERPRETER_OUTPUT_2;
+      opts.numExtraGetFinalValues = 3;
+    } else {
+      opts.numExtraGetFinalValues = 2;
+    }
     opts.extraGetFinalValues = getvals;
   }
   /* Define the actual operation to be sent to RonDB data node. */
@@ -651,6 +664,7 @@ int write_data_to_key_op(std::string *response,
   }
   key_store->m_rec_attr_prev_num_rows = getvals[0].recAttr;
   key_store->m_rec_attr_rondb_key = getvals[1].recAttr;
+  key_store->m_rec_attr_expiry_date = getvals[2].recAttr;
   return 0;
 }
 

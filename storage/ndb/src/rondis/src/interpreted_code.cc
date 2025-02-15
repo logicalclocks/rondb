@@ -223,6 +223,12 @@ int write_key_row_no_commit(std::string *response,
       const NdbDictionary::Column *expiry_date_col =
         tab->getColumn(KEY_TABLE_COL_expiry_date);
       code.write_attr(expiry_date_col, REG3);
+    } else if (key_store->m_keep_ttl == true &&
+               key_store->m_num_rows > 0) {
+      const NdbDictionary::Column *expiry_date_col =
+        tab->getColumn(KEY_TABLE_COL_expiry_date);
+      code.read_attr(REG7, expiry_date_col);
+      code.write_interpreter_output(REG7, OUTPUT_INDEX_2);
     }
     code.read_attr(REG7, num_rows_col);
     code.read_attr(REG6, rondb_key_col);
