@@ -808,19 +808,10 @@ static int set_complex_rows(Ndb *ndb,
       Uint32 row_state = 0;
       int ret_code = write_data_to_key_op(response,
                                           tab,
-                                          key_storage[inx].m_trans,
+                                          &key_storage[inx],
                                           redis_key_id,
-                                          key_storage[inx].m_rondb_key,
-                                          key_storage[inx].m_key_str,
-                                          key_storage[inx].m_key_len,
-                                          key_storage[inx].m_value_ptr,
-                                          key_storage[inx].m_value_size,
-                                          key_storage[inx].m_num_rows,
                                           false,
                                           row_state,
-                                          key_storage[inx].m_expire_at,
-                                          &key_storage[inx].m_rec_attr_prev_num_rows,
-                                          &key_storage[inx].m_rec_attr_rondb_key,
                                           get_ctrl->m_database_id);
       if (ret_code != 0) {
         return 1;
@@ -909,19 +900,10 @@ static int set_simple_rows(Ndb *ndb,
     Uint32 row_state = 0;
     int ret_code = write_data_to_key_op(response,
                                         tab,
-                                        key_storage[inx].m_trans,
+                                        &key_storage[inx],
                                         redis_key_id,
-                                        key_storage[inx].m_rondb_key,
-                                        key_storage[inx].m_key_str,
-                                        key_storage[inx].m_key_len,
-                                        key_storage[inx].m_value_ptr,
-                                        key_storage[inx].m_value_size,
-                                        key_storage[inx].m_num_rows,
                                         true,
                                         row_state,
-                                        key_storage[inx].m_expire_at,
-                                        &key_storage[inx].m_rec_attr_prev_num_rows,
-                                        &key_storage[inx].m_rec_attr_rondb_key,
                                         get_ctrl->m_database_id);
     if (ret_code != 0) {
       return 1;
@@ -956,18 +938,34 @@ void rondb_mset(Ndb *ndb,
                std::string *response,
                Uint64 redis_key_id,
                bool set_command,
-               Uint32 database_id) {
+               int worker_id) {
   Int64 ttl = -1;
+  bool keep_ttl = false;
   Uint32 num_keys = 2;
+  enum SetType set_type = IsWrite;
+  bool set_ttl = false;
   Uint32 arg_index_start = (redis_key_id == STRING_REDIS_KEY_ID) ? 1 : 2;
   if (set_command &&
       redis_key_id == STRING_REDIS_KEY_ID &&
       argv.size() > 3) {
-    std::string opt = argv[3];
-    std::transform(opt.begin(), opt.end(), opt.begin(),
-            [](unsigned char c){ return std::tolower(c); });
-    if (opt == "ex" && argv.size() > 4) {
-      std::string opt_val = argv[4];
+    Uint32 arg_index = 3;
+    const char *arg = argv[arg_index].c_str();
+    if (strcasecmp(arg, "nx") == 0) {
+      set_type = IsInsert;
+      arg_index++;
+      arg = argv[arg_index].c_str();
+    } else if (strcasecmp(arg, "xx") == 0) {
+      set_type = IsUpdate;
+      arg_index++;
+      arg = argv[arg_index].c_str();
+    }
+    if (strcasecmp(arg, "get") == 0) {
+      arg_index++; //Ignore GET for now
+      arg = argv[arg_index].c_str();
+    }
+    if (strcasecmp(arg, "ex") == 0 && argv.size() > (arg_index + 1)) {
+      set_ttl = true;
+      std::string opt_val = argv[arg_index + 1];
       ttl = std::stoi(opt_val);
       if (ttl > 0) {
       } else {
@@ -979,8 +977,11 @@ void rondb_mset(Ndb *ndb,
         assign_generic_err_to_response(response, error_message);
         return;
       }
-    } else if (opt == "px" && argv.size() > 4) {
-      std::string opt_val = argv[4];
+      arg_index += 2;
+      arg = argv[arg_index].c_str();
+    } else if (strcasecmp(arg, "px") == 0 && argv.size() > (arg_index + 1)) {
+      set_ttl = true;
+      std::string opt_val = argv[arg_index + 1];
       ttl = std::stoi(opt_val);
       if (ttl > 0) {
         //Convert to seconds
@@ -994,7 +995,22 @@ void rondb_mset(Ndb *ndb,
         assign_generic_err_to_response(response, error_message);
         return;
       }
-    } else {
+      arg_index += 2;
+      arg = argv[arg_index].c_str();
+    }
+    if (strcasecmp(arg, "exat") == 0 && argv.size() > (arg_index + 1)) {
+      set_ttl = true;
+      arg_index += 2; // Ignore for now
+    } else if (strcasecmp(arg, "pxat") == 0 && argv.size() > (arg_index + 1)) {
+      set_ttl = true;
+      arg_index += 2; // Ignore for now
+    } else if (strcasecmp(arg, "keepttl") == 0 && argv.size() >
+                 arg_index) {
+      set_ttl = false;
+      keep_ttl = true;
+      arg_index += 1;
+    }
+    if (arg_index != argv.size()) {
       assign_generic_err_to_response(response, REDIS_SYNTAX_ERROR);
       return;
     }
@@ -1033,7 +1049,7 @@ void rondb_mset(Ndb *ndb,
   get_ctrl->m_num_keys_failed = 0;
   get_ctrl->m_num_read_errors = 0;
   get_ctrl->m_error_code = 0;
-  get_ctrl->m_database_id = database_id;
+  get_ctrl->m_database_id = get_current_database(worker_id);
   for (Uint32 i = 0; i < num_keys; i++) {
     Uint32 arg_index_key = (2 * i) + arg_index_start;
     Uint32 arg_index_val = ((2 * i) + 1) + arg_index_start;
@@ -1070,6 +1086,9 @@ void rondb_mset(Ndb *ndb,
     key_storage[i].m_rec_attr_prev_num_rows = nullptr;
     key_storage[i].m_rec_attr_rondb_key = nullptr;
     key_storage[i].m_key_state = KeyState::NotCompleted;
+    key_storage[i].m_set_type = set_type;
+    key_storage[i].m_keep_ttl = keep_ttl;
+    key_storage[i].m_set_ttl = set_ttl;
     generate_expire_at(&(key_storage[i].m_expire_at), ttl);
   }
   if (!setup_metadata(ndb,
@@ -1084,26 +1103,28 @@ void rondb_mset(Ndb *ndb,
   do {
     Uint32 loop_count = std::min(num_keys - current_index,
                                  (Uint32)MAX_PARALLEL_KEY_OPS);
-    int ret_code = set_simple_rows(ndb,
-                                   tab,
-                                   response,
-                                   redis_key_id,
-                                   key_storage,
-                                   get_ctrl,
-                                   loop_count,
-                                   current_index);
-    if (ret_code != 0) {
-      release_mset(get_ctrl);
-      return;
+    if (get_opt_small_values_flag(worker_id)) {
+      int ret_code = set_simple_rows(ndb,
+                                     tab,
+                                     response,
+                                     redis_key_id,
+                                     key_storage,
+                                     get_ctrl,
+                                     loop_count,
+                                     current_index);
+      if (ret_code != 0) {
+        release_mset(get_ctrl);
+        return;
+      }
+      close_finished_transactions(key_storage,
+                                  get_ctrl,
+                                  loop_count,
+                                  current_index);
+      DEB_MSET_CMD(("%u keys, %u multi rows, %u completed\n",
+                    num_keys,
+                    get_ctrl->m_num_keys_multi_rows,
+                    get_ctrl->m_num_keys_completed_first_pass));
     }
-    close_finished_transactions(key_storage,
-                                get_ctrl,
-                                loop_count,
-                                current_index);
-    DEB_MSET_CMD(("%u keys, %u multi rows, %u completed\n",
-                  num_keys,
-                  get_ctrl->m_num_keys_multi_rows,
-                  get_ctrl->m_num_keys_completed_first_pass));
     /**
      * We have finished the initial round of simple SETs. Now time
      * to handle those that require multi-row SETs. Since we used
@@ -1507,34 +1528,36 @@ void rondb_mget(Ndb *ndb,
   do {
     Uint32 loop_count = std::min(num_keys - current_index,
                                  (Uint32)MAX_PARALLEL_KEY_OPS);
-    int ret_code = get_simple_rows(ndb,
-                                   tab,
-                                   response,
-                                   redis_key_id,
-                                   key_storage,
-                                   get_ctrl,
-                                   loop_count,
-                                   current_index);
-    if (ret_code != 0) {
-      release_mget(get_ctrl);
-      return;
+    if (get_opt_small_values_flag(worker_id)) {
+      int ret_code = get_simple_rows(ndb,
+                                     tab,
+                                     response,
+                                     redis_key_id,
+                                     key_storage,
+                                     get_ctrl,
+                                     loop_count,
+                                     current_index);
+      if (ret_code != 0) {
+        release_mget(get_ctrl);
+        return;
+      }
+      DEB_MGET_CMD(("%u keys, %u multi rows, %u completed\n",
+                    num_keys,
+                    get_ctrl->m_num_keys_multi_rows,
+                    get_ctrl->m_num_keys_completed_first_pass));
+      /**
+       * We have finished the initial round of simple GETs. Now time
+       * to handle those that require multi-row GETs. Since we used
+       * an optimistic approach we need to start this from scratch
+       * again for these new GETs.
+       */
+      close_finished_transactions(key_storage,
+                                  get_ctrl,
+                                  loop_count,
+                                  current_index);
+      assert(get_ctrl->m_num_transactions == 0);
+      assert(get_ctrl->m_num_keys_outstanding == 0);
     }
-    DEB_MGET_CMD(("%u keys, %u multi rows, %u completed\n",
-                  num_keys,
-                  get_ctrl->m_num_keys_multi_rows,
-                  get_ctrl->m_num_keys_completed_first_pass));
-    /**
-     * We have finished the initial round of simple GETs. Now time
-     * to handle those that require multi-row GETs. Since we used
-     * an optimistic approach we need to start this from scratch
-     * again for these new GETs.
-     */
-    close_finished_transactions(key_storage,
-                                get_ctrl,
-                                loop_count,
-                                current_index);
-    assert(get_ctrl->m_num_transactions == 0);
-    assert(get_ctrl->m_num_keys_outstanding == 0);
     if (get_ctrl->m_num_keys_multi_rows > 0 &&
         get_ctrl->m_num_keys_failed == 0) {
       int ret_code = get_complex_rows(ndb,

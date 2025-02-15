@@ -164,6 +164,12 @@ enum KeyState {
 #define MAX_OUTSTANDING_BYTES (512 * 1024)
 #define DELETE_BYTES 2000
 
+enum SetType {
+  IsWrite = 0,
+  IsInsert = 1,
+  IsUpdate = 2
+};
+
 struct GetControl;
 struct KeyStorage {
     struct GetControl *m_get_ctrl;
@@ -176,6 +182,8 @@ struct KeyStorage {
     Uint32 m_key_len;
     char m_header_buf[20];
     bool m_close_flag;
+    bool m_keep_ttl;
+    bool m_set_ttl;
     Uint32 m_header_len;
     Uint32 m_index;
     Uint32 m_first_value_row;
@@ -190,6 +198,7 @@ struct KeyStorage {
         Uint32 m_error_code;
     };
     enum KeyState m_key_state;
+    enum SetType m_set_type;
     struct key_table m_key_row;
     char m_key_buf[16];
 };

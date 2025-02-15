@@ -65,19 +65,10 @@ int prepare_set_value_row(std::string *response,
                           KeyStorage *key_store);
 int write_data_to_key_op(std::string *response,
                          const NdbDictionary::Table *tab,
-                         NdbTransaction *trans,
+                         KeyStorage *key_store,
                          Uint64 redis_key_id,
-                         Uint64 rondb_key,
-                         const char *key_str,
-                         Uint32 key_len,
-                         const char *value_str,
-                         Uint32 tot_value_len,
-                         Uint32 num_value_rows,
                          bool commit_flag,
                          Uint32 row_state,
-                         Int32 expire_at,
-                         NdbRecAttr**,
-                         NdbRecAttr**,
                          Uint32 database_id);
 
 /* Callback function setup for GET MODULE */

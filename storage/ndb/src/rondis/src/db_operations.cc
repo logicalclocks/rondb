@@ -563,36 +563,30 @@ void prepare_simple_write_transaction(struct KeyStorage *key_storage) {
 
 int write_data_to_key_op(std::string *response,
                          const NdbDictionary::Table *tab,
-                         NdbTransaction *trans,
+                         KeyStorage *key_store,
                          Uint64 redis_key_id,
-                         Uint64 rondb_key,
-                         const char *key_str,
-                         Uint32 key_len,
-                         const char *value_str,
-                         Uint32 tot_value_len,
-                         Uint32 num_value_rows,
                          bool commit_flag,
                          Uint32 row_state,
-                         Int32 expire_at,
-                         NdbRecAttr **recAttr0,
-                         NdbRecAttr **recAttr1,
                          Uint32 database_id) {
   struct key_table key_row;
+  NdbTransaction *trans = key_store->m_trans;
   Uint32 mask = 0xFB;
   key_row.null_bits = 0;
-  memcpy(&key_row.redis_key[2], key_str, key_len);
-  set_length(&key_row.redis_key[0], key_len);
+  memcpy(&key_row.redis_key[2],
+         key_store->m_key_str,
+         key_store->m_key_len);
+  set_length(&key_row.redis_key[0], key_store->m_key_len);
   key_row.redis_key_id = redis_key_id;
   const unsigned char *mask_ptr = (const unsigned char *)&mask;
-  key_row.tot_value_len = tot_value_len;
-  key_row.num_rows = num_value_rows;
+  key_row.tot_value_len = key_store->m_value_size;
+  key_row.num_rows = key_store->m_num_rows;
   key_row.value_data_type = row_state;
-  key_row.expiry_date = expire_at;
-  Uint32 this_value_len = tot_value_len;
+  key_row.expiry_date = key_store->m_expire_at;
+  Uint32 this_value_len = key_store->m_value_size;
   if (this_value_len > INLINE_VALUE_LEN) {
     this_value_len = INLINE_VALUE_LEN;
   }
-  memcpy(&key_row.value_start[2], value_str, this_value_len);
+  memcpy(&key_row.value_start[2], key_store->m_value_ptr, this_value_len);
   set_length(&key_row.value_start[0], this_value_len);
 
   Uint32 code_buffer[64];
@@ -601,7 +595,10 @@ int write_data_to_key_op(std::string *response,
   if (commit_flag) {
     ret_code = write_key_row_commit(response, code, tab);
   } else {
-    ret_code = write_key_row_no_commit(response, code, tab, rondb_key);
+    ret_code = write_key_row_no_commit(response,
+                                       code,
+                                       tab,
+                                       key_store->m_rondb_key);
   }
   if (ret_code != 0) {
     return ret_code;
@@ -647,8 +644,8 @@ int write_data_to_key_op(std::string *response,
                                trans->getNdbError());
     return -1;
   }
-  *recAttr0 = getvals[0].recAttr;
-  *recAttr1 = getvals[1].recAttr;
+  key_store->m_rec_attr_prev_num_rows = getvals[0].recAttr;
+  key_store->m_rec_attr_rondb_key = getvals[1].recAttr;
   return 0;
 }
 
