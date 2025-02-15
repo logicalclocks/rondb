@@ -581,7 +581,11 @@ int write_data_to_key_op(std::string *response,
   key_row.tot_value_len = key_store->m_value_size;
   key_row.num_rows = key_store->m_num_rows;
   key_row.value_data_type = row_state;
-  key_row.expiry_date = key_store->m_expire_at;
+  if (key_store->m_set_ttl) {
+    key_row.expiry_date = key_store->m_expire_at;
+  } else {
+    mask = 0xF3;
+  }
   Uint32 this_value_len = key_store->m_value_size;
   if (this_value_len > INLINE_VALUE_LEN) {
     this_value_len = INLINE_VALUE_LEN;
@@ -593,12 +597,12 @@ int write_data_to_key_op(std::string *response,
   NdbInterpretedCode code(tab, &code_buffer[0], sizeof(code_buffer));
   int ret_code = 0;
   if (commit_flag) {
-    ret_code = write_key_row_commit(response, code, tab);
+    ret_code = write_key_row_commit(response, code, tab, key_store);
   } else {
     ret_code = write_key_row_no_commit(response,
                                        code,
                                        tab,
-                                       key_store->m_rondb_key);
+                                       key_store);
   }
   if (ret_code != 0) {
     return ret_code;
@@ -607,7 +611,8 @@ int write_data_to_key_op(std::string *response,
   NdbOperation::OperationOptions opts;
   std::memset(&opts, 0, sizeof(opts));
   opts.optionsPresent |= NdbOperation::OperationOptions::OO_INTERPRETED;
-  opts.optionsPresent |= NdbOperation::OperationOptions::OO_INTERPRETED_INSERT;
+  opts.optionsPresent |=
+    NdbOperation::OperationOptions::OO_INTERPRETED_INSERT;
   opts.interpretedCode = &code;
 
   NdbOperation::GetValueSpec getvals[2];

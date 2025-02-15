@@ -206,7 +206,7 @@ int write_hset_key_table(Ndb *ndb,
 int write_key_row_no_commit(std::string *response,
                             NdbInterpretedCode &code,
                             const NdbDictionary::Table *tab,
-                            Uint64 rondb_key) {
+                            KeyStorage *key_store) {
   const NdbDictionary::Column *num_rows_col =
     tab->getColumn(KEY_TABLE_COL_num_rows);
   const NdbDictionary::Column *rondb_key_col =
@@ -214,53 +214,65 @@ int write_key_row_no_commit(std::string *response,
   code.load_op_type(REG1); // Read operation type into register 1
   code.branch_eq_const(REG1, RONDB_INSERT, LABEL3); // Inserts go to label3
   /* UPDATE */
-  code.read_attr(REG7, num_rows_col);
-  code.read_attr(REG6, rondb_key_col);
-  code.load_const_u64(REG5, rondb_key);
-  code.load_const_u16(REG4, 0);
-  code.write_interpreter_output(REG7, OUTPUT_INDEX_0);
-  code.branch_eq_null(REG6, LABEL0);
-  code.branch_eq_const(REG5, Uint16(0), LABEL1);
+  if (key_store->m_set_type == IsInsert) {
+    code.interpret_exit_nok(6000);
+  } else {
+    code.load_const_null(REG3);
+    if (key_store->m_keep_ttl == false &&
+        key_store->m_set_ttl == false) {
+      const NdbDictionary::Column *expiry_date_col =
+        tab->getColumn(KEY_TABLE_COL_expiry_date);
+      code.write_attr(expiry_date_col, REG3);
+    }
+    code.read_attr(REG7, num_rows_col);
+    code.read_attr(REG6, rondb_key_col);
+    code.load_const_u64(REG5, key_store->m_rondb_key);
+    code.load_const_u16(REG4, 0);
+    code.write_interpreter_output(REG7, OUTPUT_INDEX_0);
+    code.branch_eq_null(REG6, LABEL0);
+    code.branch_eq_const(REG5, Uint16(0), LABEL1);
 
-  /* prev_num_rows > 0 and num_rows > 0 */
-  code.write_interpreter_output(REG6, OUTPUT_INDEX_1);
-  code.interpret_exit_ok();
+    /* prev_num_rows > 0 and num_rows > 0 */
+    code.write_interpreter_output(REG6, OUTPUT_INDEX_1);
+    code.interpret_exit_ok();
 
-  /* rondb_key NULL => prev_num_rows == 0 */
-  code.def_label(LABEL0);
-  code.branch_eq_const(REG5, Uint16(0), LABEL2);
+    /* rondb_key NULL => prev_num_rows == 0 */
+    code.def_label(LABEL0);
+    code.branch_eq_const(REG5, Uint16(0), LABEL2);
 
-  /* prev_num_rows == 0 and num_rows > 0 */
-  code.write_interpreter_output(REG5, OUTPUT_INDEX_1);
-  code.write_attr(rondb_key_col, REG5);
-  code.interpret_exit_ok();
+    /* prev_num_rows == 0 and num_rows > 0 */
+    code.write_interpreter_output(REG5, OUTPUT_INDEX_1);
+    code.write_attr(rondb_key_col, REG5);
+    code.interpret_exit_ok();
 
-  code.def_label(LABEL1);
-  /* prev_num_rows > 0 and num_rows == 0 */
-  code.write_interpreter_output(REG6, OUTPUT_INDEX_1);
-  code.load_const_null(REG3);
-  code.write_attr(rondb_key_col, REG3);
-  code.interpret_exit_ok();
+    code.def_label(LABEL1);
+    /* prev_num_rows > 0 and num_rows == 0 */
+    code.write_interpreter_output(REG6, OUTPUT_INDEX_1);
+    code.write_attr(rondb_key_col, REG3);
+    code.interpret_exit_ok();
 
-  code.def_label(LABEL2);
-  /* prev_num_rows == 0 and num_rows == 0 */
-  code.write_interpreter_output(REG4, OUTPUT_INDEX_1);
-  code.interpret_exit_ok();
-
+    code.def_label(LABEL2);
+    /* prev_num_rows == 0 and num_rows == 0 */
+    code.write_interpreter_output(REG4, OUTPUT_INDEX_1);
+    code.interpret_exit_ok();
+  }
   /* INSERT */
   code.def_label(LABEL3);
-  code.load_const_u16(REG7, 0);
-  if (rondb_key != 0) {
-    /* Write rondb_key, we have multi row and it is an INSERT */
-    code.load_const_u64(REG6, rondb_key);
-    code.write_attr(rondb_key_col, REG6);
-    code.write_interpreter_output(REG6, OUTPUT_INDEX_1);
+  if (key_store->m_set_type == IsUpdate) {
+    code.interpret_exit_nok(6000);
   } else {
-    code.write_interpreter_output(REG7, OUTPUT_INDEX_1);
+    code.load_const_u16(REG7, 0);
+    if (key_store->m_rondb_key != 0) {
+      /* Write rondb_key, we have multi row and it is an INSERT */
+      code.load_const_u64(REG6, key_store->m_rondb_key);
+      code.write_attr(rondb_key_col, REG6);
+      code.write_interpreter_output(REG6, OUTPUT_INDEX_1);
+    } else {
+      code.write_interpreter_output(REG7, OUTPUT_INDEX_1);
+    }
+    code.write_interpreter_output(REG7, OUTPUT_INDEX_0);
+    code.interpret_exit_ok();
   }
-  code.write_interpreter_output(REG7, OUTPUT_INDEX_0);
-  code.interpret_exit_ok();
-
   // Program end, now compile code
   int ret_code = code.finalise();
   if (ret_code != 0) {
@@ -274,18 +286,34 @@ int write_key_row_no_commit(std::string *response,
 
 int write_key_row_commit(std::string *response,
                          NdbInterpretedCode &code,
-                         const NdbDictionary::Table *tab) {
-  const NdbDictionary::Column *num_rows_col = tab->getColumn(KEY_TABLE_COL_num_rows);
-  code.load_op_type(REG1);                          // Read operation type into register 1
+                         const NdbDictionary::Table *tab,
+                         KeyStorage *key_store) {
+  const NdbDictionary::Column *num_rows_col =
+    tab->getColumn(KEY_TABLE_COL_num_rows);
+  code.load_op_type(REG1);         // Read operation type into register 1
   code.branch_eq_const(REG1, RONDB_INSERT, LABEL0); // Inserts go to label 0
   /* UPDATE */
-  code.read_attr(REG7, num_rows_col);
-  code.branch_eq_const(REG7, 0, LABEL0);
-  code.interpret_exit_nok(6000);
-
+  if (key_store->m_set_type == IsInsert) {
+    code.interpret_exit_nok();
+  } else {
+    if (key_store->m_keep_ttl == false &&
+        key_store->m_set_ttl == false) {
+      const NdbDictionary::Column *expiry_date_col =
+        tab->getColumn(KEY_TABLE_COL_expiry_date);
+      code.load_const_null(REG3);
+      code.write_attr(expiry_date_col, REG3);
+    }
+    code.read_attr(REG7, num_rows_col);
+    code.branch_eq_const(REG7, 0, LABEL0);
+    code.interpret_exit_nok(6000);
+  }
   /* INSERT */
   code.def_label(LABEL0);
-  code.interpret_exit_ok();
+  if (key_store->m_set_type == IsUpdate) {
+    code.interpret_exit_nok(6000);
+  } else {
+    code.interpret_exit_ok();
+  }
 
   // Program end, now compile code
   int ret_code = code.finalise();

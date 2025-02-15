@@ -70,11 +70,12 @@ int write_hset_key_table(Ndb *ndb,
                          Uint32 database_id);
 int write_key_row_commit(std::string *response,
                          NdbInterpretedCode &code,
-                         const NdbDictionary::Table *tab);
+                         const NdbDictionary::Table *tab,
+                         KeyStorage *key_store);
 int write_key_row_no_commit(std::string *response,
                             NdbInterpretedCode &code,
                             const NdbDictionary::Table *tab,
-                            Uint64 rondb_key);
+                            KeyStorage *key_store);
 int simple_delete_key_row_code(std::string *response,
                                NdbInterpretedCode &code,
                                const NdbDictionary::Table *tab);
