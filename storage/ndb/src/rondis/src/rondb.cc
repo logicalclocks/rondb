@@ -128,6 +128,8 @@ void print_args(const pink::RedisCmdArgsType &argv) {
 void* (*g_get_ndb_object_func_ptr)(int);
 void (*g_return_ndb_object_func_ptr)(void*,int);
 void (*g_exit_func_ptr)(void);
+void* (*g_start_cmd_func_ptr)(void);
+void (*g_end_cmd_func_ptr)(void*);
 int g_first_thread_id = 0;
 int *g_current_database_index;
 bool g_is_incr_decr_dirty[MAX_NUM_DATABASES];
@@ -171,6 +173,8 @@ int setup_ndb_connection_for_rondis(
  void* (*get_ndb_object_func_ptr)(int),
  void (*return_ndb_object_func_ptr)(void*, int),
  void (*exit_func_ptr)(void),
+ void* (*start_cmd_func_ptr)(void),
+ void (*end_cmd_func_ptr)(void*),
  int first_thread_id,
  int num_threads,
  int *database_index,
@@ -181,6 +185,8 @@ int setup_ndb_connection_for_rondis(
   g_get_ndb_object_func_ptr = get_ndb_object_func_ptr;
   g_return_ndb_object_func_ptr = return_ndb_object_func_ptr;
   g_exit_func_ptr = exit_func_ptr;
+  g_start_cmd_func_ptr = start_cmd_func_ptr;
+  g_end_cmd_func_ptr = end_cmd_func_ptr;
   g_first_thread_id = first_thread_id;
   g_num_threads = num_threads;
   g_current_database_index = database_index;
@@ -245,9 +251,21 @@ void set_current_database(int index, int database_index) {
   g_current_database_index[index] = database_index;
 }
 
+class RondisEndPoint {
+  public:
+  RondisEndPoint() {
+    metricsUpdaterObject = g_start_cmd_func_ptr();
+  }
+  ~RondisEndPoint() {
+    g_end_cmd_func_ptr(metricsUpdaterObject);
+  }
+  void *metricsUpdaterObject;
+};
+
 int rondb_redis_handler(const pink::RedisCmdArgsType &argv,
                         std::string *response,
                         int worker_id) {
+  RondisEndPoint rondisEndpoint;
   // First check non-ndb commands
   const char *command = argv[0].c_str();
   if (strcasecmp(command, "ping") == 0) {

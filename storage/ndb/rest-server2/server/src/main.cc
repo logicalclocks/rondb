@@ -47,6 +47,7 @@ constexpr const char* const usageHelp =
 #include "rondis_thread.h"
 #include "rondb.h"
 #include "rdrs_rondb_connection_pool.hpp"
+#include "metrics.hpp"
 
 #include <cstdio>
 #include <iostream>
@@ -134,6 +135,18 @@ static void do_exit() {
 static void exit_on_rondis_error() {
   g_exit_code = 1;
   do_exit();
+}
+
+static void* rondis_start_cmd() {
+  RondisEndPointMetricsUpdater *metricsUpdater =
+    new RondisEndPointMetricsUpdater();
+  return (void*)metricsUpdater;
+}
+
+static void rondis_end_cmd(void *metrics_ptr) {
+  RondisEndPointMetricsUpdater *metricsUpdater =
+    (RondisEndPointMetricsUpdater*)metrics_ptr;
+  delete metricsUpdater;
 }
 
 static void handle_signal(int signal) {
@@ -344,6 +357,8 @@ int main(int argc, char *argv[]) {
       get_rdrs_ndb_object,
       return_rdrs_ndb_object,
       exit_on_rondis_error,
+      rondis_start_cmd,
+      rondis_end_cmd,
       num_rdrs_threads,
       num_rondis_threads,
       g_database_index,

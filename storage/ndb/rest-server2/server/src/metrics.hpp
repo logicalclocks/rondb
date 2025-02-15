@@ -87,6 +87,15 @@ class RonSQLEndPointMetricsUpdater {
   ~RonSQLEndPointMetricsUpdater();
 };
 
+class RondisEndPointMetricsUpdater {
+ private:
+  NDB_TICKS m_start_time;
+
+ public:
+  RondisEndPointMetricsUpdater();
+  ~RondisEndPointMetricsUpdater();
+};
+
 class PingEndPointMetricsUpdater {
  public:
   PingEndPointMetricsUpdater();

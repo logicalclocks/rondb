@@ -42,6 +42,8 @@ int setup_ndb_connection_for_rondis(
  void* (*get_ndb_object_func_ptr)(int),
  void (*return_ndb_object_func_ptr)(void*, int),
  void (*exit_func)(void),
+ void* (*start_cmd_func_ptr)(void),
+ void (*end_cmd_func_ptr)(void*),
  int first_thread_id,
  int num_threads,
  int *database_index,
