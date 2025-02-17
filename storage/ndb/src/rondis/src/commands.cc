@@ -1000,9 +1000,30 @@ void rondb_mset(Ndb *ndb,
     }
     if (strcasecmp(arg, "exat") == 0 && argv.size() > (arg_index + 1)) {
       set_ttl = true;
+      Int64 now;
+      generate_expire_at(&now, Int64(0));
+      std::string opt_val = argv[arg_index + 1];
+      ttl = std::stoi(opt_val);
+      if (now >= ttl) {
+        /* Already expired */
+        ttl = 0;
+      } else {
+        ttl -= now;
+      }
       arg_index += 2; // Ignore for now
     } else if (strcasecmp(arg, "pxat") == 0 && argv.size() > (arg_index + 1)) {
       set_ttl = true;
+      Int64 now;
+      generate_expire_at(&now, Int64(0));
+      std::string opt_val = argv[arg_index + 1];
+      ttl = std::stoi(opt_val);
+      ttl = (ttl + Int64(999)) / Int64(1000);
+      if (now >= ttl) {
+        /* Already expired */
+        ttl = 0;
+      } else {
+        ttl -= now;
+      }
       arg_index += 2; // Ignore for now
     } else if (strcasecmp(arg, "keepttl") == 0 && argv.size() >
                  arg_index) {
