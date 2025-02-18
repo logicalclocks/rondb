@@ -79,12 +79,13 @@ void prepare_simple_read_transaction(struct KeyStorage *key_storage);
 
 /* Setup operation record for GET MODULE */
 int prepare_get_value_row(std::string *response,
-                          NdbTransaction *trans,
+                          KeyStorage *key_store,
+                          bool is_set_command,
                           struct value_table *value_row,
                           Uint32 database_id);
 int prepare_get_key_row(std::string *response,
-                        NdbTransaction *trans,
-                        struct key_table *key_row,
+                        KeyStorage *key_store,
+                        bool is_set_command,
                         Uint32 database_id);
 int prepare_get_simple_key_row(std::string *response,
                                [[maybe_unused]]/*todo remove?*/

@@ -727,7 +727,9 @@ value_callback(int result, NdbTransaction *trans, void *aObject) {
       key_store->m_key_state = KeyState::CompletedMultiRow;
       assert(get_ctrl->m_num_keys_multi_rows > 0);
       get_ctrl->m_num_keys_multi_rows--;
-      key_store->m_close_flag = true;
+      if (get_ctrl->m_is_set_command == false) {
+        key_store->m_close_flag = true;
+      }
     } else {
       key_store->m_key_state = KeyState::MultiRowRWValue;
     }
@@ -760,7 +762,8 @@ void commit_read_value_transaction(struct KeyStorage *key_store) {
 }
 
 int prepare_get_value_row(std::string *response,
-                          NdbTransaction *trans,
+                          KeyStorage *key_store,
+                          bool is_set_command,
                           struct value_table *value_row,
                           Uint32 database_id) {
   /**
@@ -776,6 +779,7 @@ int prepare_get_value_row(std::string *response,
    * never be locked since we hold a lock on the key row
    * at this point.
    */
+  NdbTransaction *trans = key_store->m_trans;
   const Uint32 mask = 0xC;
   const unsigned char *mask_ptr = (const unsigned char *)&mask;
   const NdbOperation *read_op = trans->readTuple(
@@ -783,7 +787,8 @@ int prepare_get_value_row(std::string *response,
     (const char *)value_row,
     entire_value_record[database_id],
     (char *)value_row,
-    NdbOperation::LM_SimpleRead,
+    is_set_command ?
+      NdbOperation::LM_Exclusive : NdbOperation::LM_SimpleRead,
     mask_ptr);
   if (read_op == nullptr) {
     assign_ndb_err_to_response(response,
@@ -849,21 +854,25 @@ read_callback(int result, NdbTransaction *trans, void *aObject) {
 }
 
 int prepare_get_key_row(std::string *response,
-                        NdbTransaction *trans,
-                        struct key_table *key_row,
+                        KeyStorage *key_store,
+                        bool is_set_command,
                         Uint32 database_id) {
   /**
    * Mask and options means simply reading all columns
    * except primary key columns.
    */
+  struct key_table *key_row = &key_store->m_key_row;
+  NdbTransaction *trans = key_store->m_trans;
   const Uint32 mask = 0xFC;
   const unsigned char *mask_ptr = (const unsigned char *)&mask;
+
   const NdbOperation *read_op = trans->readTuple(
     pk_key_record[database_id],
     (const char *)key_row,
     entire_key_record[database_id],
     (char *)key_row,
-    NdbOperation::LM_Read,
+    is_set_command ?
+      NdbOperation::LM_Exclusive : NdbOperation::LM_Read,
     mask_ptr);
   if (read_op == nullptr) {
     assign_ndb_err_to_response(response,

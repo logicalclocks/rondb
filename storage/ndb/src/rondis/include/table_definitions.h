@@ -207,6 +207,7 @@ struct KeyStorage {
 class Ndb;
 struct GetControl {
     Ndb *m_ndb;
+    bool m_is_set_command;
     struct KeyStorage *m_key_store;
     struct value_table *m_value_rows;
     Uint32 m_next_value_row;

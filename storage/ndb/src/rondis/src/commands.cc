@@ -1070,6 +1070,7 @@ void rondb_mset(Ndb *ndb,
   get_ctrl->m_num_keys_failed = 0;
   get_ctrl->m_num_read_errors = 0;
   get_ctrl->m_error_code = 0;
+  get_ctrl->m_is_set_command = set_command;
   get_ctrl->m_database_id = get_current_database(worker_id);
   for (Uint32 i = 0; i < num_keys; i++) {
     Uint32 arg_index_key = (2 * i) + arg_index_start;
@@ -1267,7 +1268,8 @@ static int send_value_read(std::string *response,
       value_row->rondb_key = key_store->m_key_row.rondb_key;
     value_row->ordinal = key_store->m_num_rw_rows;
     int ret_code = prepare_get_value_row(response,
-                                         key_store->m_trans,
+                                         key_store,
+                                         get_ctrl->m_is_set_command,
                                          value_row,
                                          get_ctrl->m_database_id);
     if (ret_code != 0) return 1;
@@ -1278,7 +1280,8 @@ static int send_value_read(std::string *response,
   key_store->m_num_current_rw_rows = i;
   get_ctrl->m_num_bytes_outstanding += i * sizeof(struct value_table);
   get_ctrl->m_num_keys_outstanding++;
-  if (key_store->m_num_rw_rows == key_store->m_num_rows) {
+  if (key_store->m_num_rw_rows == key_store->m_num_rows &&
+      get_ctrl->m_is_set_command == false) {
     commit_read_value_transaction(key_store);
     key_store->m_key_state = KeyState::MultiRowRWAll;
   } else {
@@ -1350,8 +1353,8 @@ static int get_complex_rows(Ndb *ndb,
       }
       get_ctrl->m_num_transactions++;
       if (prepare_get_key_row(response,
-                              key_storage[inx].m_trans,
-                              &key_storage[inx].m_key_row,
+                              &key_storage[inx],
+                              get_ctrl->m_is_set_command,
                               get_ctrl->m_database_id) != 0) {
         return 1;
       }
@@ -1475,6 +1478,148 @@ static int get_simple_rows(Ndb *ndb,
  * that MGET, MSET, HSET and HMGET acts as a number of independent GET
  * and SET commands in Rondis.
  */
+static int
+rondb_get_func(Ndb *ndb,
+               const NdbDictionary::Table *tab,
+               std::string *response,
+               Uint64 redis_key_id,
+               struct GetControl *get_ctrl,
+               KeyStorage *key_storage,
+               int worker_id,
+               Uint32 num_keys) {
+  DEB_MGET_CMD(("MGET of %u keys\n", num_keys));
+  Uint32 current_index = 0;
+  do {
+    Uint32 loop_count = std::min(num_keys - current_index,
+                                 (Uint32)MAX_PARALLEL_KEY_OPS);
+    if (get_opt_small_values_flag(worker_id) &&
+        get_ctrl->m_is_set_command == false) {
+      int ret_code = get_simple_rows(ndb,
+                                     tab,
+                                     response,
+                                     redis_key_id,
+                                     key_storage,
+                                     get_ctrl,
+                                     loop_count,
+                                     current_index);
+      if (ret_code != 0) {
+        release_mget(get_ctrl);
+        return -1;
+      }
+      DEB_MGET_CMD(("%u keys, %u multi rows, %u completed\n",
+                    num_keys,
+                    get_ctrl->m_num_keys_multi_rows,
+                    get_ctrl->m_num_keys_completed_first_pass));
+      /**
+       * We have finished the initial round of simple GETs. Now time
+       * to handle those that require multi-row GETs. Since we used
+       * an optimistic approach we need to start this from scratch
+       * again for these new GETs.
+       */
+      close_finished_transactions(key_storage,
+                                  get_ctrl,
+                                  loop_count,
+                                  current_index);
+      assert(get_ctrl->m_num_transactions == 0);
+      assert(get_ctrl->m_num_keys_outstanding == 0);
+    } else {
+      get_ctrl->m_num_keys_multi_rows = num_keys;
+      for (Uint32 i = current_index; i < current_index + loop_count; i++) {
+        key_storage[i].m_key_state = KeyState::MultiRow;
+      }
+    }
+    if (get_ctrl->m_num_keys_multi_rows > 0 &&
+        get_ctrl->m_num_keys_failed == 0) {
+      int ret_code = get_complex_rows(ndb,
+                                      tab,
+                                      response,
+                                      redis_key_id,
+                                      key_storage,
+                                      get_ctrl,
+                                      loop_count,
+                                      current_index);
+      if (ret_code != 0) {
+        release_mget(get_ctrl);
+        return -1;
+      }
+    }
+    current_index += loop_count;
+  } while (current_index < num_keys && get_ctrl->m_num_keys_failed == 0);
+  /**
+   * We are done with the reading process, now it is time to report the
+   * result based on the KeyStorage array.
+   */
+  if (get_ctrl->m_num_keys_failed > 0) {
+    assign_err_to_response(response,
+                           FAILED_EXECUTE_MGET,
+                           get_ctrl->m_error_code);
+    release_mget(get_ctrl);
+    return-1;
+  }
+  return 0;
+}
+
+static int rondb_get_response(std::string *response,
+                              struct GetControl *get_ctrl,
+                              KeyStorage *key_storage,
+                              Uint32 num_keys) {
+  Uint64 tot_bytes = 0;
+  for (Uint32 i = 0; i < num_keys; i++) {
+    struct KeyStorage *key_store = &key_storage[i];
+    if (key_store->m_key_state == KeyState::CompletedFailed) {
+      /* Report found NULL */
+      key_store->m_header_len = (Uint32)snprintf(
+        key_store->m_header_buf,
+        sizeof(key_store->m_header_buf),
+        "$-1");
+      DEB_MGET_CMD(("Key id %u was NULL, len: %u\n",
+        i, key_store->m_header_len));
+    } else {
+      tot_bytes += key_store->m_value_size;
+      key_store->m_header_len = (Uint32)snprintf(
+        key_store->m_header_buf,
+        sizeof(key_store->m_header_buf),
+        "$%u\r\n",
+        key_store->m_value_size);
+      DEB_MGET_CMD(("Key id %u was of size %u, len: %u\n",
+        i, key_store->m_value_size, key_store->m_header_len));
+    }
+    tot_bytes += 2;
+    tot_bytes += key_store->m_header_len;
+  }
+  char header_buf[20];
+  Uint32 header_len = (Uint32)snprintf(header_buf,
+                                       sizeof(header_buf),
+                                       "*%u\r\n",
+                                       num_keys);
+  tot_bytes += (Uint32)header_len;
+  try {
+    response->reserve(tot_bytes);
+  } catch (const std::exception &e) {
+    return -1;
+  }
+  response->append((const char*)&header_buf[0], header_len);
+  for (Uint32 i = 0; i < num_keys; i++) {
+    struct KeyStorage *key_store = &key_storage[i];
+    response->append((const char*)&key_store->m_header_buf[0],
+                     key_store->m_header_len);
+    if (key_store->m_key_state == KeyState::CompletedSuccess ||
+        key_store->m_key_state == KeyState::CompletedMultiRowSuccess) {
+      response->append((const char*)&key_store->m_key_row.value_start[2],
+                       key_store->m_value_size);
+    }
+    else if (key_store->m_key_state == KeyState::CompletedMultiRow) {
+      response->append((const char*)key_store->m_value_ptr,
+                       key_store->m_value_size);
+    } else {
+      assert(key_store->m_key_state == KeyState::CompletedFailed);
+    }
+    response->append("\r\n");
+  }
+  release_mget(get_ctrl);
+  return 0;
+}
+
 static
 void rondb_mget(Ndb *ndb,
                const pink::RedisCmdArgsType &argv,
@@ -1513,6 +1658,7 @@ void rondb_mget(Ndb *ndb,
   get_ctrl->m_num_keys_failed = 0;
   get_ctrl->m_num_read_errors = 0;
   get_ctrl->m_error_code = 0;
+  get_ctrl->m_is_set_command = false;
   get_ctrl->m_database_id = get_current_database(worker_id);
   for (Uint32 i = 0; i < num_keys; i++) {
     Uint32 arg_index = i + arg_index_start;
@@ -1544,120 +1690,21 @@ void rondb_mget(Ndb *ndb,
     release_mget(get_ctrl);
     return;
   }
-  DEB_MGET_CMD(("MGET of %u keys\n", num_keys));
-  Uint32 current_index = 0;
-  do {
-    Uint32 loop_count = std::min(num_keys - current_index,
-                                 (Uint32)MAX_PARALLEL_KEY_OPS);
-    if (get_opt_small_values_flag(worker_id)) {
-      int ret_code = get_simple_rows(ndb,
-                                     tab,
-                                     response,
-                                     redis_key_id,
-                                     key_storage,
-                                     get_ctrl,
-                                     loop_count,
-                                     current_index);
-      if (ret_code != 0) {
-        release_mget(get_ctrl);
-        return;
-      }
-      DEB_MGET_CMD(("%u keys, %u multi rows, %u completed\n",
-                    num_keys,
-                    get_ctrl->m_num_keys_multi_rows,
-                    get_ctrl->m_num_keys_completed_first_pass));
-      /**
-       * We have finished the initial round of simple GETs. Now time
-       * to handle those that require multi-row GETs. Since we used
-       * an optimistic approach we need to start this from scratch
-       * again for these new GETs.
-       */
-      close_finished_transactions(key_storage,
-                                  get_ctrl,
-                                  loop_count,
-                                  current_index);
-      assert(get_ctrl->m_num_transactions == 0);
-      assert(get_ctrl->m_num_keys_outstanding == 0);
-    }
-    if (get_ctrl->m_num_keys_multi_rows > 0 &&
-        get_ctrl->m_num_keys_failed == 0) {
-      int ret_code = get_complex_rows(ndb,
-                                      tab,
-                                      response,
-                                      redis_key_id,
-                                      key_storage,
-                                      get_ctrl,
-                                      loop_count,
-                                      current_index);
-      if (ret_code != 0) {
-        release_mget(get_ctrl);
-        return;
-      }
-    }
-    current_index += loop_count;
-  } while (current_index < num_keys && get_ctrl->m_num_keys_failed == 0);
-  /**
-   * We are done with the reading process, now it is time to report the
-   * result based on the KeyStorage array.
-   */
-  if (get_ctrl->m_num_keys_failed > 0) {
-    assign_err_to_response(response,
-                           FAILED_EXECUTE_MGET,
-                           get_ctrl->m_error_code);
-    release_mget(get_ctrl);
+  int ret_code = rondb_get_func(ndb,
+                                tab,
+                                response,
+                                redis_key_id,
+                                get_ctrl,
+                                key_storage,
+                                worker_id,
+                                num_keys);
+  if (ret_code < 0) {
     return;
   }
-  Uint64 tot_bytes = 0;
-  for (Uint32 i = 0; i < num_keys; i++) {
-    struct KeyStorage *key_store = &key_storage[i];
-    if (key_store->m_key_state == KeyState::CompletedFailed) {
-      /* Report found NULL */
-      key_store->m_header_len = (Uint32)snprintf(
-        key_store->m_header_buf,
-        sizeof(key_store->m_header_buf),
-        "$-1");
-      DEB_MGET_CMD(("Key id %u was NULL, len: %u\n",
-        i, key_store->m_header_len));
-    } else {
-      tot_bytes += key_store->m_value_size;
-      key_store->m_header_len = (Uint32)snprintf(
-        key_store->m_header_buf,
-        sizeof(key_store->m_header_buf),
-        "$%u\r\n",
-        key_store->m_value_size);
-      DEB_MGET_CMD(("Key id %u was of size %u, len: %u\n",
-        i, key_store->m_value_size, key_store->m_header_len));
-    }
-    tot_bytes += 2;
-    tot_bytes += key_store->m_header_len;
-  }
-  char header_buf[20];
-  Uint32 header_len = (Uint32)snprintf(header_buf,
-                                       sizeof(header_buf),
-                                       "*%u\r\n",
-                                       num_keys);
-  tot_bytes += (Uint32)header_len;
-  response->reserve(tot_bytes);
-  response->append((const char*)&header_buf[0], header_len);
-  for (Uint32 i = 0; i < num_keys; i++) {
-    struct KeyStorage *key_store = &key_storage[i];
-    response->append((const char*)&key_store->m_header_buf[0],
-                     key_store->m_header_len);
-    if (key_store->m_key_state == KeyState::CompletedSuccess ||
-        key_store->m_key_state == KeyState::CompletedMultiRowSuccess) {
-      response->append((const char*)&key_store->m_key_row.value_start[2],
-                       key_store->m_value_size);
-    }
-    else if (key_store->m_key_state == KeyState::CompletedMultiRow) {
-      response->append((const char*)key_store->m_value_ptr,
-                       key_store->m_value_size);
-    } else {
-      assert(key_store->m_key_state == KeyState::CompletedFailed);
-    }
-    response->append("\r\n");
-  }
-  release_mget(get_ctrl);
-  return;
+  rondb_get_response(response,
+                     get_ctrl,
+                     key_storage,
+                     num_keys);
 }
 
 void rondb_get_command(Ndb *ndb,
