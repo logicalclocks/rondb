@@ -506,7 +506,7 @@ void rondb_del(Ndb *ndb,
               const pink::RedisCmdArgsType &argv,
               std::string *response,
               Uint64 redis_key_id,
-              Uint32 database_id)
+              Uint32 worker_id)
 {
   Uint32 arg_index_start = (redis_key_id == STRING_REDIS_KEY_ID) ? 1 : 2;
   Uint32 num_keys = argv.size() - arg_index_start;
@@ -540,7 +540,7 @@ void rondb_del(Ndb *ndb,
   get_ctrl->m_num_keys_failed = 0;
   get_ctrl->m_num_read_errors = 0;
   get_ctrl->m_error_code = 0;
-  get_ctrl->m_database_id = database_id;
+  get_ctrl->m_database_id = get_current_database(worker_id);
   for (Uint32 i = 0; i < num_keys; i++) {
     Uint32 arg_index_key = i + arg_index_start;
     key_storage[i].m_index = i;

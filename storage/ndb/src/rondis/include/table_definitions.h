@@ -121,6 +121,7 @@ extern NdbRecord *entire_value_record[MAX_NUM_DATABASES];
 
 struct value_table
 {
+    Uint32 null_bits;
     Uint64 rondb_key;
     Uint32 ordinal;
     Int32 expiry_date;

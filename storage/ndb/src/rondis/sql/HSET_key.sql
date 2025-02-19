@@ -25,7 +25,7 @@
 
 CREATE TABLE hset_keys(
     redis_key VARBINARY(3000) NOT NULL,
-    redis_key_id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+    redis_key_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     PRIMARY KEY (redis_key) USING HASH,
     UNIQUE KEY (redis_key_id) USING HASH
 ) ENGINE NDB,

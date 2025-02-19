@@ -589,7 +589,7 @@ int write_data_to_key_op(std::string *response,
   if (key_store->m_set_ttl) {
     key_row.expiry_date = key_store->m_expire_at;
   } else {
-    mask = 0xF3;
+    mask = 0x7B;
   }
   Uint32 this_value_len = key_store->m_value_size;
   if (this_value_len > INLINE_VALUE_LEN) {

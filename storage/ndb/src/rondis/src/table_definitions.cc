@@ -76,10 +76,9 @@ int init_hset_key_records(NdbDictionary::Dictionary *dict,
 
     std::map<const NdbDictionary::Column *,
              std::pair<size_t, int>> read_all_column_map = {
-        {redis_key_col, {offsetof(struct key_table, redis_key), 0}},
-        {redis_key_id_col, {offsetof(struct key_table, redis_key_id), 0}},
+        {redis_key_col, {offsetof(struct hset_key_table, redis_key), 0}},
+        {redis_key_id_col, {offsetof(struct hset_key_table, redis_key_id), 0}},
     };
-
     if (init_record(dict,
                     tab,
                     read_all_column_map,
@@ -148,10 +147,10 @@ int init_key_records(NdbDictionary::Dictionary *dict,
         {redis_key_col, {offsetof(struct key_table, redis_key), 0}},
         {rondb_key_col, {offsetof(struct key_table, rondb_key), 0}},
         {expiry_date_col, {offsetof(struct key_table, expiry_date), 1}},
-        {value_start_col, {offsetof(struct key_table, value_start), 0}},
+        {value_data_type_col, {offsetof(struct key_table, value_data_type), 0}},
         {tot_value_len_col, {offsetof(struct key_table, tot_value_len), 0}},
         {num_rows_col, {offsetof(struct key_table, num_rows), 0}},
-        {value_data_type_col, {offsetof(struct key_table, value_data_type), 0}}
+        {value_start_col, {offsetof(struct key_table, value_start), 0}}
     };
 
     if (init_record(dict,
@@ -193,7 +192,6 @@ int init_value_records(NdbDictionary::Dictionary *dict,
              std::pair<size_t, int>> pk_lookup_column_map = {
         {rondb_key_col, {offsetof(struct value_table, rondb_key), 0}},
         {ordinal_col, {offsetof(struct value_table, ordinal), 0}}};
-
     if (init_record(dict,
                     tab,
                     pk_lookup_column_map,
@@ -207,7 +205,7 @@ int init_value_records(NdbDictionary::Dictionary *dict,
              std::pair<size_t, int>> read_all_column_map = {
         {rondb_key_col, {offsetof(struct value_table, rondb_key), 0}},
         {ordinal_col, {offsetof(struct value_table, ordinal), 0}},
-        {expiry_date_col, {offsetof(struct value_table, expiry_date), 1}},
+        {expiry_date_col, {offsetof(struct value_table, expiry_date), 0}},
         {value_col, {offsetof(struct value_table, value), 0}}};
 
     if (init_record(dict,
