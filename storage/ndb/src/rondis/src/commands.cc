@@ -225,6 +225,30 @@ execute_ndb(Ndb *ndb, int min_finished, int line) {
   return finished;
 }
 
+static Int64 get_current_unix_time() {
+  Int64 now = (Int64)my_micro_time() / 1000000;
+  return now;
+}
+
+static Int64 get_ttl(std::string opt_val, std::string *response) {
+  Int64 ttl;
+  try {
+    ttl = std::stoll(opt_val);
+  } catch (const std::exception &e) {
+    char error_message[256];
+    snprintf(error_message,
+             sizeof(error_message),
+             REDIS_INVALID_TTL,
+             opt_val.c_str());
+    assign_generic_err_to_response(response, error_message);
+    return Int64(-1);
+  }
+  if (ttl == 0) {
+    return Int64(-1);
+  }
+  return ttl;
+}
+
 const Int32 g_max_expire_at = 0x7FFFFFFF;
 static void generate_expire_at(Int64* binary, Int64 ttl) {
   *binary = 0;
@@ -966,44 +990,26 @@ void rondb_mset(Ndb *ndb,
     if (strcasecmp(arg, "ex") == 0 && argv.size() > (arg_index + 1)) {
       set_ttl = true;
       std::string opt_val = argv[arg_index + 1];
-      ttl = std::stoi(opt_val);
-      if (ttl > 0) {
-      } else {
-        char error_message[256];
-        snprintf(error_message,
-                 sizeof(error_message),
-                 REDIS_INVALID_TTL,
-                 argv[0].c_str());
-        assign_generic_err_to_response(response, error_message);
-        return;
-      }
+      ttl = get_ttl(opt_val, response);
+      if (ttl < 0) return;
       arg_index += 2;
       arg = argv[arg_index].c_str();
     } else if (strcasecmp(arg, "px") == 0 && argv.size() > (arg_index + 1)) {
       set_ttl = true;
       std::string opt_val = argv[arg_index + 1];
-      ttl = std::stoi(opt_val);
-      if (ttl > 0) {
-        //Convert to seconds
-        ttl = (ttl + 999) / 1000;
-      } else {
-        char error_message[256];
-        snprintf(error_message,
-                 sizeof(error_message),
-                 REDIS_INVALID_TTL,
-                 argv[0].c_str());
-        assign_generic_err_to_response(response, error_message);
-        return;
-      }
+      ttl = get_ttl(opt_val, response);
+      if (ttl < 0) return;
+      //Convert to seconds
+      ttl = (ttl + 999) / 1000;
       arg_index += 2;
       arg = argv[arg_index].c_str();
     }
     if (strcasecmp(arg, "exat") == 0 && argv.size() > (arg_index + 1)) {
       set_ttl = true;
-      Int64 now;
-      generate_expire_at(&now, Int64(0));
+      Int64 now = get_current_unix_time();
       std::string opt_val = argv[arg_index + 1];
-      ttl = std::stoi(opt_val);
+      ttl = get_ttl(opt_val, response);
+      if (ttl < 0) return;
       if (now >= ttl) {
         /* Already expired */
         ttl = 0;
@@ -1013,10 +1019,10 @@ void rondb_mset(Ndb *ndb,
       arg_index += 2; // Ignore for now
     } else if (strcasecmp(arg, "pxat") == 0 && argv.size() > (arg_index + 1)) {
       set_ttl = true;
-      Int64 now;
-      generate_expire_at(&now, Int64(0));
+      Int64 now = get_current_unix_time();
       std::string opt_val = argv[arg_index + 1];
-      ttl = std::stoi(opt_val);
+      ttl = get_ttl(opt_val, response);
+      if (ttl < 0) return;
       ttl = (ttl + Int64(999)) / Int64(1000);
       if (now >= ttl) {
         /* Already expired */
