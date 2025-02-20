@@ -466,6 +466,13 @@ int rondb_redis_handler(const pink::RedisCmdArgsType &argv,
         wrong_number_of_arguments(argv, response);
         return 0;
       }
+    } else if (strcasecmp(command, "GETRANGE") == 0) {
+      if (argv.size() == 2) {
+        rondb_getrange_command(ndb, argv, response, worker_id);
+      } else {
+        wrong_number_of_arguments(argv, response);
+        return 0;
+      }
     } else {
       unsupported_command(argv, response);
     }

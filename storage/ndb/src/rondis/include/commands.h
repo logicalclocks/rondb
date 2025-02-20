@@ -137,4 +137,9 @@ void rondb_strlen_command(Ndb *ndb,
                           const pink::RedisCmdArgsType &argv,
                           std::string *response,
                           int worker_id);
+
+void rondb_getrange_command(Ndb *ndb,
+                            const pink::RedisCmdArgsType &argv,
+                            std::string *response,
+                            int worker_id);
 #endif

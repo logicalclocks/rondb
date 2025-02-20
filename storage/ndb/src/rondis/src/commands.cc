@@ -249,23 +249,23 @@ static Int64 get_current_unix_time() {
   return now;
 }
 
-static Int64 get_ttl(std::string opt_val, std::string *response) {
-  Int64 ttl;
+static bool get_int64(std::string opt_val,
+                      std::string *response,
+                      Int64 *ret_value) {
+  Int64 val;
   try {
-    ttl = std::stoll(opt_val);
+    val = std::stoll(opt_val);
   } catch (const std::exception &e) {
     char error_message[256];
     snprintf(error_message,
              sizeof(error_message),
-             REDIS_INVALID_TTL,
+             REDIS_INVALID_INTEGER,
              opt_val.c_str());
     assign_generic_err_to_response(response, error_message);
-    return Int64(-1);
+    return false;
   }
-  if (ttl == 0) {
-    return Int64(-1);
-  }
-  return ttl;
+  *ret_value = val;
+  return true;
 }
 
 const Int32 g_max_expire_at = 0x7FFFFFFF;
@@ -1033,15 +1033,13 @@ void rondb_mset(Ndb *ndb,
     if (strcasecmp(arg, "ex") == 0 && argv.size() > (arg_index + 1)) {
       set_ttl = true;
       std::string opt_val = argv[arg_index + 1];
-      ttl = get_ttl(opt_val, response);
-      if (ttl < 0) return;
+      if (get_int64(opt_val, response, &ttl) == false) return;
       arg_index += 2;
       DEB_TTL(("ex: ttl: %lld\n", ttl));
     } else if (strcasecmp(arg, "px") == 0 && argv.size() > (arg_index + 1)) {
       set_ttl = true;
       std::string opt_val = argv[arg_index + 1];
-      ttl = get_ttl(opt_val, response);
-      if (ttl < 0) return;
+      if (get_int64(opt_val, response, &ttl) == false) return;
       //Convert to seconds
       ttl = (ttl + 999) / 1000;
       arg_index += 2;
@@ -1050,8 +1048,7 @@ void rondb_mset(Ndb *ndb,
       set_ttl = true;
       Int64 now = get_current_unix_time();
       std::string opt_val = argv[arg_index + 1];
-      ttl = get_ttl(opt_val, response);
-      if (ttl < 0) return;
+      if (get_int64(opt_val, response, &ttl) == false) return;
       if (now >= ttl) {
         /* Already expired */
         ttl = 0;
@@ -1064,8 +1061,7 @@ void rondb_mset(Ndb *ndb,
       set_ttl = true;
       Int64 now = get_current_unix_time();
       std::string opt_val = argv[arg_index + 1];
-      ttl = get_ttl(opt_val, response);
-      if (ttl < 0) return;
+      if (get_int64(opt_val, response, &ttl) == false) return;
       ttl = (ttl + Int64(999)) / Int64(1000);
       if (now >= ttl) {
         /* Already expired */
@@ -1697,30 +1693,27 @@ static int rondb_get_response(std::string *response,
   return 0;
 }
 
-static
-void rondb_mget(Ndb *ndb,
-               const pink::RedisCmdArgsType &argv,
-               std::string *response,
-               Uint64 redis_key_id,
-               int worker_id) {
-  Uint32 arg_index_start = (redis_key_id == STRING_REDIS_KEY_ID) ? 1 : 2;
-  Uint32 num_keys = argv.size() - arg_index_start;
-  assert(num_keys > 0);
-  const NdbDictionary::Dictionary *dict;
-  const NdbDictionary::Table *tab = nullptr;
+static int init_mget(struct KeyStorage **ret_key_storage,
+                     struct GetControl **ret_get_ctrl,
+                     const pink::RedisCmdArgsType &argv,
+                     std::string *response,
+                     Uint32 num_keys,
+                     Ndb *ndb,
+                     int worker_id,
+                     Uint32 arg_index_start) {
   struct KeyStorage *key_storage;
   key_storage = (struct KeyStorage*)malloc(
     sizeof(struct KeyStorage) * num_keys);
   if (key_storage == nullptr) {
     assign_generic_err_to_response(response, FAILED_MALLOC);
-    return;
+    return -1;
   }
   struct GetControl *get_ctrl = (struct GetControl*)
     malloc(sizeof(struct GetControl));
   if (get_ctrl == nullptr) {
     assign_generic_err_to_response(response, FAILED_MALLOC);
-    free(get_ctrl);
-    return;
+    free(key_storage);
+    return -1;
   }
   get_ctrl->m_ndb = ndb;
   get_ctrl->m_key_store = key_storage;
@@ -1767,6 +1760,34 @@ void rondb_mget(Ndb *ndb,
     key_storage[i].m_keep_ttl = false;
     key_storage[i].m_set_ttl = false;
     key_storage[i].m_expire_at = 0;
+  }
+  *ret_key_storage = key_storage;
+  *ret_get_ctrl = get_ctrl;
+  return 0;
+}
+
+static
+void rondb_mget(Ndb *ndb,
+               const pink::RedisCmdArgsType &argv,
+               std::string *response,
+               Uint64 redis_key_id,
+               int worker_id) {
+  Uint32 arg_index_start = (redis_key_id == STRING_REDIS_KEY_ID) ? 1 : 2;
+  Uint32 num_keys = argv.size() - arg_index_start;
+  assert(num_keys > 0);
+  const NdbDictionary::Dictionary *dict;
+  const NdbDictionary::Table *tab = nullptr;
+  struct KeyStorage *key_storage;
+  struct GetControl *get_ctrl;
+  if (init_mget(&key_storage,
+                &get_ctrl,
+                argv,
+                response,
+                num_keys,
+                ndb,
+                worker_id,
+                arg_index_start) < 0) {
+    return;
   }
   if (!setup_metadata(ndb,
                       response,
@@ -2155,5 +2176,99 @@ void rondb_strlen_command(Ndb *ndb,
     return;
   }
   response->append(buf, ret_len);
+  return;
+}
+
+void rondb_getrange_command(Ndb *ndb,
+                            const pink::RedisCmdArgsType &argv,
+                            std::string *response,
+                            int worker_id) {
+  Uint32 arg_index_start = 1;
+  Uint32 num_keys = 1;
+  const NdbDictionary::Dictionary *dict;
+  const NdbDictionary::Table *tab = nullptr;
+  struct KeyStorage *key_store;
+  struct GetControl *get_ctrl;
+  if (init_mget(&key_store,
+                &get_ctrl,
+                argv,
+                response,
+                num_keys,
+                ndb,
+                worker_id,
+                arg_index_start) < 0) {
+    return;
+  }
+  if (!setup_metadata(ndb,
+                      response,
+                      &dict,
+                      &tab)) {
+    release_mget(get_ctrl);
+    return;
+  }
+  Int64 start, end;
+  if (get_int64(argv[2], response, &start) == false) return;
+  if (get_int64(argv[3], response, &end) == false) return;
+  int ret_code = rondb_get_func(ndb,
+                                tab,
+                                response,
+                                STRING_REDIS_KEY_ID,
+                                get_ctrl,
+                                key_store,
+                                num_keys);
+  if (ret_code < 0) {
+    release_mget(get_ctrl);
+    return;
+  }
+  Int64 tot_len = Int64(key_store->m_get_value_size);
+  if (start < 0) {
+    if (tot_len <= (-start)) {
+      start = 0;
+    } else {
+      start = tot_len + start;
+    }
+  } else if (start >= tot_len) {
+    start = tot_len;
+  }
+  if (end < 0) {
+    if (tot_len <= (-end)) {
+      end = start;
+    } else {
+      end = tot_len + end;
+    }
+  } else if (end >= tot_len) {
+    end = tot_len;
+  }
+  Uint32 ret_len;
+  const char *value_ptr = nullptr;
+  char buf[20];
+  if (start >= end ||
+      key_store->m_key_state == KeyState::CompletedFailed) {
+    /* Report found NULL */
+    ret_len = 0;
+  } else if (key_store->m_key_state == KeyState::CompletedSuccess ||
+             key_store->m_key_state == KeyState::CompletedMultiRowSuccess) {
+    value_ptr = &key_store->m_key_row.value_start[2];
+    ret_len = Uint32((end - start));
+  } else {
+    assert(key_store->m_key_state == KeyState::CompletedMultiRow);
+    value_ptr = key_store->m_value_ptr;
+    ret_len = Uint32((end - start));
+  }
+  Uint32 header_len = (Uint32)snprintf(buf,
+                                       sizeof(buf),
+                                       "$%u\r\n",
+                                       ret_len);
+  Uint32 tot_ret_len = ret_len + (2 + header_len);
+  try {
+    response->reserve(tot_ret_len);
+  } catch (const std::exception &e) {
+    assign_generic_err_to_response(response, FAILED_MALLOC);
+    return;
+  }
+  response->append((const char*)&buf[0], header_len);
+  if (value_ptr)
+    response->append(&value_ptr[start], ret_len);
+  response->append("\r\n");
   return;
 }
