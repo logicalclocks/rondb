@@ -897,8 +897,7 @@ void prepare_read_transaction(struct KeyStorage *key_storage) {
 }
 
 int prepare_get_simple_key_row(std::string *response,
-                               [[maybe_unused]]/*todo remove?*/
-                               const NdbDictionary::Table *tab,
+                               const Uint32 mask,
                                NdbTransaction *trans,
                                struct key_table *key_row,
                                Uint32 database_id) {
@@ -906,7 +905,6 @@ int prepare_get_simple_key_row(std::string *response,
    * Mask and options means simply reading all columns
    * except primary key columns.
    */
-  const Uint32 mask = 0xFC;
   const unsigned char *mask_ptr = (const unsigned char *)&mask;
   const NdbOperation *read_op = trans->readTuple(
     pk_key_record[database_id],

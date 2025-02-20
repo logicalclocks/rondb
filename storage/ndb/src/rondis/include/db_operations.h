@@ -88,8 +88,7 @@ int prepare_get_key_row(std::string *response,
                         bool is_set_command,
                         Uint32 database_id);
 int prepare_get_simple_key_row(std::string *response,
-                               [[maybe_unused]]/*todo remove?*/
-                               const NdbDictionary::Table *tab,
+                               const Uint32,
                                NdbTransaction *trans,
                                struct key_table *key_row,
                                Uint32 database_id);

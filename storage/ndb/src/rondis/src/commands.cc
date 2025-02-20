@@ -1506,7 +1506,7 @@ static int get_simple_rows(Ndb *ndb,
     }
     get_ctrl->m_num_transactions++;
     if (prepare_get_simple_key_row(response,
-                                   tab,
+                                   Uint32(0xFC),
                                    key_storage[inx].m_trans,
                                    &key_storage[inx].m_key_row,
                                    get_ctrl->m_database_id) != 0) {
@@ -2062,9 +2062,9 @@ void rondb_hdecr_command(Ndb *ndb,
 }
 
 void rondb_hdecrby_command(Ndb *ndb,
-                         const pink::RedisCmdArgsType &argv,
-                         std::string *response,
-                         int worker_id) {
+                           const pink::RedisCmdArgsType &argv,
+                           std::string *response,
+                           int worker_id) {
   DEB_INCR(("HDECRBY command\n"));
   Uint64 redis_key_id;
   int ret_code = rondb_get_redis_key_id(ndb,
@@ -2096,4 +2096,64 @@ void rondb_hdecrby_command(Ndb *ndb,
                   false,
                   val,
                   worker_id);
+}
+
+void rondb_strlen_command(Ndb *ndb,
+                          const pink::RedisCmdArgsType &argv,
+                          std::string *response,
+                          int worker_id) {
+  const NdbDictionary::Dictionary *dict;
+  const NdbDictionary::Table *tab = nullptr;
+  Uint32 database_id = get_current_database(worker_id);
+  KeyStorage *key_store;
+  key_store = (struct KeyStorage*)malloc(sizeof(struct KeyStorage));
+  if (key_store == nullptr) {
+    assign_generic_err_to_response(response, FAILED_MALLOC);
+    return;
+  }
+
+  const char *key_str = argv[1].c_str();
+  Uint32 key_len = argv[1].size();
+  if (memcmp(key_str, "key:__rand_int__", 16) == 0) {
+    rand_key(key_store, &key_str, key_len);
+  }
+  key_store->m_key_str = key_str;
+  key_store->m_key_len = key_len;
+  if (!setup_transaction(ndb,
+                         response,
+                         STRING_REDIS_KEY_ID,
+                         key_store,
+                         &dict,
+                         &tab)) {
+    free(key_store);
+    return;
+  }
+  int ret_code = prepare_get_simple_key_row(response,
+                                            Uint32(0x10),
+                                            key_store->m_trans,
+                                            &key_store->m_key_row,
+                                            database_id);
+  if (ret_code != 0) {
+    free(key_store);
+    ndb->closeTransaction(key_store->m_trans);
+    return;
+  }
+  if (key_store->m_trans->execute(NdbTransaction::Commit) != 0) {
+    key_store->m_key_row.tot_value_len = 0;
+  }
+  char buf[20];
+  Uint32 ret_len = (Uint32)snprintf(buf,
+                                    sizeof(buf),
+                                    "+%u\r\n",
+                                    key_store->m_key_row.tot_value_len);
+  free(key_store);
+  ndb->closeTransaction(key_store->m_trans);
+  try {
+    response->reserve(ret_len);
+  } catch (const std::exception &e) {
+    assign_generic_err_to_response(response, FAILED_MALLOC);
+    return;
+  }
+  response->append(buf, ret_len);
+  return;
 }
