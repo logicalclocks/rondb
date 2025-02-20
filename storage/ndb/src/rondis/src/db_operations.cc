@@ -39,7 +39,6 @@
 
 //#define DEBUG_DEL_CMD 1
 //#define DEBUG_KS 1
-//#define DEBUG_CTRL 1
 //#define DEBUG_HSET_KEY 1
 //#define DEBUG_MSET 1
 //#define DEBUG_INCR 1
@@ -60,12 +59,6 @@
 #define DEB_KS(arglist) do { printf arglist ; } while (0)
 #else
 #define DEB_KS(arglist)
-#endif
-
-#ifdef DEBUG_CTRL
-#define DEB_CTRL(arglist) do { printf arglist ; } while (0)
-#else
-#define DEB_CTRL(arglist)
 #endif
 
 #ifdef DEBUG_HSET_KEY
@@ -410,7 +403,7 @@ int prepare_set_value_row(std::string *response,
                           KeyStorage *key_store) {
   struct value_table value_row;
   Uint32 database_id = key_store->m_get_ctrl->m_database_id;
-  Uint32 remaining = key_store->m_value_size - key_store->m_current_pos;
+  Uint32 remaining = key_store->m_set_value_size - key_store->m_current_pos;
   Uint32 len = std::min((Uint32)EXTENSION_VALUE_LEN, remaining);
   memcpy(&value_row.value[2],
          &key_store->m_value_ptr[key_store->m_current_pos],
@@ -419,11 +412,12 @@ int prepare_set_value_row(std::string *response,
   value_row.expiry_date = key_store->m_expire_at;
   value_row.ordinal = key_store->m_num_rw_rows;
   value_row.rondb_key = key_store->m_rondb_key;
-  DEB_MSET(("Set value key: %u, rondb_key: %llu, ordinal: %u, expiry_date: %u\n",
-    key_store->m_index,
-    key_store->m_rondb_key,
-    key_store->m_num_rw_rows,
-    value_row.expiry_date));
+  DEB_MSET(("Set value key: %u, rondb_key: %llu, ordinal: %u,"
+            " expiry_date: %u\n",
+            key_store->m_index,
+            key_store->m_rondb_key,
+            key_store->m_num_rw_rows,
+            value_row.expiry_date));
   key_store->m_num_rw_rows++;
   key_store->m_current_pos += len;
   /* Mask means writing all columns. */
@@ -527,43 +521,50 @@ void prepare_write_transaction(struct KeyStorage *key_store) {
                                            (void*)key_store);
 }
 
+void commit_write_transaction(struct KeyStorage *key_store) {
+  key_store->m_trans->executeAsynchPrepare(NdbTransaction::Commit,
+                                           &write_callback,
+                                           (void*)key_store);
+}
+
 static void
 simple_write_callback(int result, NdbTransaction *trans, void *aObject) {
-  struct KeyStorage *key_storage = (struct KeyStorage*)aObject;
-  struct GetControl *get_ctrl = key_storage->m_get_ctrl;
+  struct KeyStorage *key_store = (struct KeyStorage*)aObject;
+  struct GetControl *get_ctrl = key_store->m_get_ctrl;
   (void)result;
-  assert(trans == key_storage->m_trans);
+  DEB_HSET_KEY(("result = %d\n", result));
+  assert(trans == key_store->m_trans);
   assert(get_ctrl->m_num_transactions > 0);
   int code = trans->getNdbError().code;
-  if (code != 0) {
+  if (code != 0 || result != 0) {
     if (code == RESTRICT_VALUE_ROWS_ERROR) {
-      key_storage->m_key_state = KeyState::MultiRow;
+      key_store->m_key_state = KeyState::MultiRow;
       get_ctrl->m_num_keys_multi_rows++;
       DEB_HSET_KEY(("key %u had RESTRICT_VALUE_ROWS_ERROR\n",
-        key_storage->m_index));
+        key_store->m_index));
     } else {
-      key_storage->m_key_state = KeyState::CompletedFailed;
+      key_store->m_key_state = KeyState::CompletedFailed;
       get_ctrl->m_num_keys_failed++;
-      DEB_HSET_KEY(("key %u had ERROR: %d\n", key_storage->m_index, code));
+      DEB_HSET_KEY(("key %u had ERROR: %d\n", key_store->m_index, code));
       if (get_ctrl->m_error_code == 0) {
         get_ctrl->m_error_code = code;
       }
     }
   } else {
     get_ctrl->m_num_keys_completed_first_pass++;
-    key_storage->m_key_state = KeyState::CompletedSuccess;
+    key_store->m_key_state = KeyState::CompletedSuccess;
     DEB_HSET_KEY(("key %u simple write succeeded\n",
-      key_storage->m_index));
+      key_store->m_index));
   }
   assert(get_ctrl->m_num_keys_outstanding > 0);
   get_ctrl->m_num_keys_outstanding--;
-  key_storage->m_close_flag = true;
+  key_store->m_close_flag = true;
 }
 
-void prepare_simple_write_transaction(struct KeyStorage *key_storage) {
-  key_storage->m_trans->executeAsynchPrepare(NdbTransaction::Commit,
-                                             &simple_write_callback,
-                                             (void*)key_storage);
+void commit_simple_write_transaction(struct KeyStorage *key_store) {
+  key_store->m_trans->executeAsynchPrepare(NdbTransaction::Commit,
+                                           &simple_write_callback,
+                                           (void*)key_store);
 }
 
 int write_data_to_key_op(std::string *response,
@@ -583,7 +584,7 @@ int write_data_to_key_op(std::string *response,
   set_length(&key_row.redis_key[0], key_store->m_key_len);
   key_row.redis_key_id = redis_key_id;
   const unsigned char *mask_ptr = (const unsigned char *)&mask;
-  key_row.tot_value_len = key_store->m_value_size;
+  key_row.tot_value_len = key_store->m_set_value_size;
   key_row.num_rows = key_store->m_num_rows;
   key_row.value_data_type = row_state;
   if (key_store->m_set_ttl) {
@@ -591,10 +592,16 @@ int write_data_to_key_op(std::string *response,
   } else {
     mask = 0x7B;
   }
-  Uint32 this_value_len = key_store->m_value_size;
+  Uint32 this_value_len = key_store->m_set_value_size;
   if (this_value_len > INLINE_VALUE_LEN) {
     this_value_len = INLINE_VALUE_LEN;
   }
+
+  DEB_MSET(("PK is %s with len: %u\n",
+    key_store->m_key_str, key_store->m_key_len));
+  DEB_MSET(("Set value to %s with len: %u\n",
+    key_store->m_value_ptr, this_value_len));
+
   memcpy(&key_row.value_start[2], key_store->m_value_ptr, this_value_len);
   set_length(&key_row.value_start[0], this_value_len);
 
@@ -714,7 +721,7 @@ value_callback(int result, NdbTransaction *trans, void *aObject) {
       Uint32 calc_pos = INLINE_VALUE_LEN +
         (value_row->ordinal * EXTENSION_VALUE_LEN);
       assert(calc_pos == current_pos);
-      assert(calc_pos + value_len <= key_store->m_value_size);
+      assert(calc_pos + value_len <= key_store->m_get_value_size);
       memcpy(&complex_value[calc_pos], &value_row->value[2], value_len);
       Uint32 old_pos = current_pos;
       (void)old_pos;
@@ -823,13 +830,13 @@ read_callback(int result, NdbTransaction *trans, void *aObject) {
     get_ctrl->m_num_keys_multi_rows--;
   } else if (key_store->m_key_row.num_rows > 0) {
     key_store->m_key_state = KeyState::MultiRowRWValue;
-    key_store->m_value_size = key_store->m_key_row.tot_value_len;
+    key_store->m_get_value_size = key_store->m_key_row.tot_value_len;
     key_store->m_num_rows = key_store->m_key_row.num_rows;
     key_store->m_rondb_key = key_store->m_key_row.rondb_key;
     DEB_KS(("LockRead Key %u with size: %u, num_rows: %u"
             ", key_state: %u\n",
       key_store->m_index,
-      key_store->m_value_size,
+      key_store->m_get_value_size,
       key_store->m_num_rows,
       key_store->m_key_state));
   } else {
@@ -837,7 +844,7 @@ read_callback(int result, NdbTransaction *trans, void *aObject) {
     Uint32 value_len =
       get_length((char*)&key_store->m_key_row.value_start[0]);
     assert(value_len == key_store->m_key_row.tot_value_len);
-    key_store->m_value_size = value_len;
+    key_store->m_get_value_size = value_len;
     key_store->m_rondb_key = 0;
     DEB_KS(("LockRead Key %u completed, no value rows\n",
       key_store->m_index));
@@ -947,7 +954,7 @@ simple_read_callback(int result, NdbTransaction *trans, void *aObject) {
     Uint32 value_len =
       get_length((char*)&key_storage->m_key_row.value_start[0]);
     assert(value_len == key_storage->m_key_row.tot_value_len);
-    key_storage->m_value_size = value_len;
+    key_storage->m_get_value_size = value_len;
     get_ctrl->m_num_keys_completed_first_pass++;
     DEB_HSET_KEY(("key %u was read, size: %u\n",
       key_storage->m_index, value_len));
@@ -957,7 +964,7 @@ simple_read_callback(int result, NdbTransaction *trans, void *aObject) {
   key_storage->m_close_flag = true;
 }
 
-void prepare_simple_read_transaction(struct KeyStorage *key_storage) {
+void commit_simple_read_transaction(struct KeyStorage *key_storage) {
   key_storage->m_trans->executeAsynchPrepare(NdbTransaction::Commit,
                                              &simple_read_callback,
                                              (void*)key_storage);

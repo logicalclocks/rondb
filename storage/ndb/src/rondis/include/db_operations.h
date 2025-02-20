@@ -55,7 +55,7 @@ int prepare_simple_delete_row(std::string *response,
 void commit_write_value_transaction(struct KeyStorage *key_store);
 void prepare_write_value_transaction(struct KeyStorage *key_store);
 void prepare_write_transaction(struct KeyStorage *key_store);
-void prepare_simple_write_transaction(struct KeyStorage *key_storage);
+void commit_simple_write_transaction(struct KeyStorage *key_storage);
 
 /* Setup operation record for SET MODULE */
 int prepare_delete_value_row(std::string *response,
@@ -75,7 +75,7 @@ int write_data_to_key_op(std::string *response,
 void prepare_read_value_transaction(struct KeyStorage *key_store);
 void commit_read_value_transaction(struct KeyStorage *key_store);
 void prepare_read_transaction(struct KeyStorage *key_storage);
-void prepare_simple_read_transaction(struct KeyStorage *key_storage);
+void commit_simple_read_transaction(struct KeyStorage *key_storage);
 
 /* Setup operation record for GET MODULE */
 int prepare_get_value_row(std::string *response,

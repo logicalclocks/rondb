@@ -168,7 +168,8 @@ enum KeyState {
 enum SetType {
   IsWrite = 0,
   IsInsert = 1,
-  IsUpdate = 2
+  IsUpdate = 2,
+  IsGet = 3
 };
 
 struct GetControl;
@@ -196,10 +197,12 @@ struct KeyStorage {
     Uint32 m_prev_num_rows;
     Int64 m_expire_at;
     union {
-        Uint32 m_value_size;
+        Uint32 m_get_value_size;
         Uint32 m_error_code;
     };
+    Uint32 m_set_value_size;
     enum KeyState m_key_state;
+    enum KeyState m_get_key_state;
     enum SetType m_set_type;
     struct key_table m_key_row;
     char m_key_buf[16];
@@ -209,6 +212,8 @@ class Ndb;
 struct GetControl {
     Ndb *m_ndb;
     bool m_is_set_command;
+    bool m_get_cmd_part;
+    int m_worker_id;
     struct KeyStorage *m_key_store;
     struct value_table *m_value_rows;
     Uint32 m_next_value_row;

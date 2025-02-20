@@ -1518,14 +1518,15 @@ int NdbTransaction::doSend() {
     DBUG_RETURN(0);
     }  // case
   case sendABORT:
-    case sendABORTfail: {
+  case sendABORTfail: {
   /***********************************************************************
    * Rollback have been ordered on a not started transaction. 
    * Simply return OK and set abort status.
    ***********************************************************************/
     if (theSendStatus == sendABORTfail) {
       theReturnStatus = ReturnFailure;
-      }  // if
+      setErrorCode(4114);
+    }  // if
     if (sendROLLBACK() == 0) {
       DBUG_RETURN(0);
       }  // if

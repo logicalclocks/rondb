@@ -31,6 +31,14 @@
 #include "interpreted_code.h"
 #include "table_definitions.h"
 
+//#define DEBUG_MSET_CMD 1
+
+#ifdef DEBUG_MSET_CMD
+#define DEB_MSET_CMD(arglist) do { printf arglist ; } while (0)
+#else
+#define DEB_MSET_CMD(arglist)
+#endif
+
 // Define the interpreted program for the INCR operation
 int initNdbCodeIncrDecr(std::string *response,
                         NdbInterpretedCode *code,
@@ -297,10 +305,18 @@ int write_key_row_commit(std::string *response,
   const NdbDictionary::Column *num_rows_col =
     tab->getColumn(KEY_TABLE_COL_num_rows);
   code.load_op_type(REG1);         // Read operation type into register 1
-  code.branch_eq_const(REG1, RONDB_INSERT, LABEL0); // Inserts go to label 0
+  code.branch_ne_const(REG1, RONDB_INSERT, LABEL0); // Inserts go to label 0
+  /* INSERT */
+  if (key_store->m_set_type == IsUpdate) {
+    code.interpret_exit_nok(6000);
+  } else {
+    code.interpret_exit_ok();
+  }
   /* UPDATE */
+  code.def_label(LABEL0);
   if (key_store->m_set_type == IsInsert) {
-    code.interpret_exit_nok();
+    DEB_MSET_CMD(("IsInsert on existing row\n"));
+    code.interpret_exit_nok(6000);
   } else {
     if (key_store->m_keep_ttl == false &&
         key_store->m_set_ttl == false) {
@@ -310,14 +326,9 @@ int write_key_row_commit(std::string *response,
       code.write_attr(expiry_date_col, REG3);
     }
     code.read_attr(REG7, num_rows_col);
-    code.branch_eq_const(REG7, 0, LABEL0);
+    code.branch_eq_const(REG7, 0, LABEL1);
     code.interpret_exit_nok(6000);
-  }
-  /* INSERT */
-  code.def_label(LABEL0);
-  if (key_store->m_set_type == IsUpdate) {
-    code.interpret_exit_nok(6000);
-  } else {
+    code.def_label(LABEL1);
     code.interpret_exit_ok();
   }
 

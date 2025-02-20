@@ -29,14 +29,19 @@
 
 #include "common.h"
 
+//#define DEBUG_ERROR 1
+
 void assign_ndb_err_to_response(
     std::string *response,
     const char *app_str,
     NdbError error)
 {
     char buf[512];
-    snprintf(buf, sizeof(buf), "-ERR %s; NDB(%u) %s\r\n", app_str, error.code, error.message);
+    snprintf(buf, sizeof(buf), "-ERR %s; NDB(%u) %s\r\n",
+      app_str, error.code, error.message);
+#ifdef DEBUG_ERROR
     std::cout << buf;
+#endif
     response->assign(buf);
 }
 
@@ -47,7 +52,9 @@ void assign_err_to_response(
 {
     char buf[512];
     snprintf(buf, sizeof(buf), "-ERR %s; NDB(%u)\r\n", app_str, code);
+#ifdef DEBUG_ERROR
     std::cout << buf;
+#endif
     response->assign(buf);
 }
 
@@ -57,7 +64,9 @@ void assign_generic_err_to_response(
 {
     char buf[512];
     snprintf(buf, sizeof(buf), "-ERR %s\r\n", app_str);
+#ifdef DEBUG_ERROR
     std::cout << buf;
+#endif
     response->assign(buf);
 }
 

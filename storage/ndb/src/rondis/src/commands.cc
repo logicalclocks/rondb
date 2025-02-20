@@ -50,7 +50,7 @@
 //#define DEBUG_HSET_KEY 1
 //#define DEBUG_INCR 1
 //#define DEBUG_RAND_KEY 1
-
+//#define DEBUG_TTL 1
 #ifdef DEBUG_RAND_KEY
 #define DEB_RAND_KEY(arglist) do { printf arglist ; } while (0)
 #else
@@ -86,6 +86,25 @@
 #else
 #define DEB_HSET_KEY(arglist)
 #endif
+
+#ifdef DEBUG_TTL
+#define DEB_TTL(arglist) do { printf arglist ; } while (0)
+#else
+#define DEB_TTL(arglist)
+#endif
+
+static int
+rondb_get_func(Ndb *ndb,
+               const NdbDictionary::Table *tab,
+               std::string *response,
+               Uint64 redis_key_id,
+               struct GetControl *get_ctrl,
+               KeyStorage *key_storage,
+               Uint32 num_keys);
+
+static int rondb_get_response(std::string *response,
+                              KeyStorage *key_storage,
+                              Uint32 num_keys);
 
 /**
  * GENERIC SUPPORT MODULE
@@ -576,7 +595,8 @@ void rondb_del(Ndb *ndb,
     DEB_DEL_CMD(("DEL key: %u, key_str: %s, key_len: %u\n",
       i, key_storage[i].m_key_str, key_storage[i].m_key_len));
     key_storage[i].m_value_ptr = nullptr;
-    key_storage[i].m_value_size = 0;
+    key_storage[i].m_get_value_size = 0;
+    key_storage[i].m_set_value_size = 0;
     key_storage[i].m_header_len = 0;
     key_storage[i].m_first_value_row = 0;
     key_storage[i].m_current_pos = 0;
@@ -821,14 +841,16 @@ static int set_complex_rows(Ndb *ndb,
     if (key_storage[inx].m_key_state == KeyState::MultiRow) {
       num_complex_writes++;
       DEB_MGET_CMD(("Start complex write of key id %u\n", inx));
-      if (!setup_one_transaction(ndb,
-                                 response,
-                                 redis_key_id,
-                                 &key_storage[inx],
-                                 tab)) {
-        return 1;
+      if (key_storage[i].m_trans == nullptr) {
+        if (!setup_one_transaction(ndb,
+                                   response,
+                                   redis_key_id,
+                                   &key_storage[inx],
+                                   tab)) {
+          return 1;
+        }
+        get_ctrl->m_num_transactions++;
       }
-      get_ctrl->m_num_transactions++;
       Uint32 row_state = 0;
       int ret_code = write_data_to_key_op(response,
                                           tab,
@@ -892,7 +914,7 @@ static int set_simple_rows(Ndb *ndb,
   for (Uint32 i = 0; i < loop_count; i++) {
     Uint32 inx = current_index + i;
     key_storage[inx].m_rondb_key = 0;
-    Uint32 value_len = key_storage[inx].m_value_size;
+    Uint32 value_len = key_storage[inx].m_set_value_size;
     if (value_len > INLINE_VALUE_LEN) {
       Uint32 extended_value_len = value_len - INLINE_VALUE_LEN;
       Uint32 num_value_rows = extended_value_len / EXTENSION_VALUE_LEN;
@@ -913,14 +935,24 @@ static int set_simple_rows(Ndb *ndb,
       continue;
     }
     DEB_MSET_CMD(("Try simple write with value_len: %u\n", value_len));
-    if (!setup_one_transaction(ndb,
-                               response,
-                               redis_key_id,
-                               &key_storage[inx],
-                               tab)) {
-      return 1;
+    if (get_ctrl->m_get_cmd_part) {
+      /* Transaction already started */
+      if (key_storage[inx].m_num_rows > 0) {
+        /* There are rows to delete, not simple transaction */
+        DEB_MSET_CMD(("Multi row detected with SET .. GET\n"));
+        get_ctrl->m_num_keys_multi_rows++;
+        continue;
+      }
+    } else {
+      if (!setup_one_transaction(ndb,
+                                 response,
+                                 redis_key_id,
+                                 &key_storage[inx],
+                                 tab)) {
+        return 1;
+      }
+      get_ctrl->m_num_transactions++;
     }
-    get_ctrl->m_num_transactions++;
     Uint32 row_state = 0;
     int ret_code = write_data_to_key_op(response,
                                         tab,
@@ -932,11 +964,12 @@ static int set_simple_rows(Ndb *ndb,
     if (ret_code != 0) {
       return 1;
     }
-    prepare_simple_write_transaction(&key_storage[inx]);
+    commit_simple_write_transaction(&key_storage[inx]);
   }
   Uint32 current_finished_in_loop = 0;
   assert(loop_count >= get_ctrl->m_num_keys_multi_rows);
- Uint32 count_finished = loop_count - get_ctrl->m_num_keys_multi_rows;
+  Uint32 count_finished = loop_count - get_ctrl->m_num_keys_multi_rows;
+  DEB_MSET_CMD(("count_finished: %u\n", count_finished));
   get_ctrl->m_num_keys_outstanding = count_finished;
   do {
     /**
@@ -968,23 +1001,33 @@ void rondb_mset(Ndb *ndb,
   Uint32 num_keys = 2;
   enum SetType set_type = IsWrite;
   bool set_ttl = false;
+  bool get_cmd_part = false;
+  const char *empty_str = "";
+  size_t arg_size = argv.size();
   Uint32 arg_index_start = (redis_key_id == STRING_REDIS_KEY_ID) ? 1 : 2;
   if (set_command &&
       redis_key_id == STRING_REDIS_KEY_ID &&
-      argv.size() > 3) {
+      arg_size > 3) {
     Uint32 arg_index = 3;
     const char *arg = argv[arg_index].c_str();
     if (strcasecmp(arg, "nx") == 0) {
       set_type = IsInsert;
       arg_index++;
-      arg = argv[arg_index].c_str();
+      arg = empty_str;
     } else if (strcasecmp(arg, "xx") == 0) {
       set_type = IsUpdate;
       arg_index++;
+      arg = empty_str;
+    }
+    if (arg == empty_str && arg_index < arg_size) {
       arg = argv[arg_index].c_str();
     }
     if (strcasecmp(arg, "get") == 0) {
-      arg_index++; //Ignore GET for now
+      arg_index++;
+      arg = empty_str;
+      get_cmd_part = true;
+    }
+    if (arg == empty_str && arg_index < (arg_size + 1)) {
       arg = argv[arg_index].c_str();
     }
     if (strcasecmp(arg, "ex") == 0 && argv.size() > (arg_index + 1)) {
@@ -993,7 +1036,7 @@ void rondb_mset(Ndb *ndb,
       ttl = get_ttl(opt_val, response);
       if (ttl < 0) return;
       arg_index += 2;
-      arg = argv[arg_index].c_str();
+      DEB_TTL(("ex: ttl: %lld\n", ttl));
     } else if (strcasecmp(arg, "px") == 0 && argv.size() > (arg_index + 1)) {
       set_ttl = true;
       std::string opt_val = argv[arg_index + 1];
@@ -1002,9 +1045,8 @@ void rondb_mset(Ndb *ndb,
       //Convert to seconds
       ttl = (ttl + 999) / 1000;
       arg_index += 2;
-      arg = argv[arg_index].c_str();
-    }
-    if (strcasecmp(arg, "exat") == 0 && argv.size() > (arg_index + 1)) {
+      DEB_TTL(("px: ttl: %lld\n", ttl));
+    } else if (strcasecmp(arg, "exat") == 0 && argv.size() > (arg_index + 1)) {
       set_ttl = true;
       Int64 now = get_current_unix_time();
       std::string opt_val = argv[arg_index + 1];
@@ -1016,7 +1058,8 @@ void rondb_mset(Ndb *ndb,
       } else {
         ttl -= now;
       }
-      arg_index += 2; // Ignore for now
+      DEB_TTL(("exat: ttl: %lld\n", ttl));
+      arg_index += 2;
     } else if (strcasecmp(arg, "pxat") == 0 && argv.size() > (arg_index + 1)) {
       set_ttl = true;
       Int64 now = get_current_unix_time();
@@ -1030,19 +1073,20 @@ void rondb_mset(Ndb *ndb,
       } else {
         ttl -= now;
       }
-      arg_index += 2; // Ignore for now
-    } else if (strcasecmp(arg, "keepttl") == 0 && argv.size() >
-                 arg_index) {
+      DEB_TTL(("pxat: ttl: %lld\n", ttl));
+      arg_index += 2;
+    } else if (strcasecmp(arg, "keepttl") == 0 && argv.size() > arg_index) {
       set_ttl = false;
       keep_ttl = true;
       arg_index += 1;
+      DEB_TTL(("keep_ttl set\n"));
     }
-    if (arg_index != argv.size()) {
+    if (arg_index != arg_size) {
       assign_generic_err_to_response(response, REDIS_SYNTAX_ERROR);
       return;
     }
   } else {
-    num_keys = argv.size() - arg_index_start;
+    num_keys = arg_size - arg_index_start;
   }
   assert((num_keys & 1) == 0);
   assert(num_keys > 0);
@@ -1077,6 +1121,8 @@ void rondb_mset(Ndb *ndb,
   get_ctrl->m_num_read_errors = 0;
   get_ctrl->m_error_code = 0;
   get_ctrl->m_is_set_command = set_command;
+  get_ctrl->m_get_cmd_part = get_cmd_part;
+  get_ctrl->m_worker_id = worker_id;
   get_ctrl->m_database_id = get_current_database(worker_id);
   for (Uint32 i = 0; i < num_keys; i++) {
     Uint32 arg_index_key = (2 * i) + arg_index_start;
@@ -1095,14 +1141,15 @@ void rondb_mset(Ndb *ndb,
 
     // todo fix memory handling for m_value_ptr
     key_storage[i].m_value_ptr = (char*)malloc(argv[arg_index_val].size() + 1);
-    if(key_storage[i].m_value_ptr == nullptr) {
-      abort();
+    if (key_storage[i].m_value_ptr == nullptr) {
+      assign_generic_err_to_response(response, FAILED_MALLOC);
+      return;
     }
     memcpy(key_storage[i].m_value_ptr,
            argv[arg_index_val].c_str(),
            argv[arg_index_val].size());
     key_storage[i].m_value_ptr[argv[arg_index_val].size()] = '\0';
-    key_storage[i].m_value_size = argv[arg_index_val].size();
+    key_storage[i].m_set_value_size = argv[arg_index_val].size();
 
     key_storage[i].m_header_len = 0;
     key_storage[i].m_first_value_row = 0;
@@ -1126,40 +1173,56 @@ void rondb_mset(Ndb *ndb,
     release_mset(get_ctrl);
     return;
   }
+  if (get_cmd_part) {
+    int ret_code = rondb_get_func(ndb,
+                                  tab,
+                                  response,
+                                  redis_key_id,
+                                  get_ctrl,
+                                  key_storage,
+                                  num_keys);
+    if (ret_code != 0) {
+      release_mset(get_ctrl);
+      return;
+    }
+    for (Uint32 i = 0; i < num_keys; i++) {
+      key_storage[i].m_get_key_state = key_storage[i].m_key_state;
+      key_storage[i].m_key_state = KeyState::MultiRow;
+    }
+    get_ctrl->m_num_keys_multi_rows = 0;
+  }
   DEB_MSET_CMD(("MSET of %u keys\n", num_keys));
   Uint32 current_index = 0;
   do {
     Uint32 loop_count = std::min(num_keys - current_index,
                                  (Uint32)MAX_PARALLEL_KEY_OPS);
-    if (get_opt_small_values_flag(worker_id)) {
-      int ret_code = set_simple_rows(ndb,
-                                     tab,
-                                     response,
-                                     redis_key_id,
-                                     key_storage,
-                                     get_ctrl,
-                                     loop_count,
-                                     current_index);
-      if (ret_code != 0) {
-        release_mset(get_ctrl);
-        return;
-      }
-      close_finished_transactions(key_storage,
-                                  get_ctrl,
-                                  loop_count,
-                                  current_index);
-      DEB_MSET_CMD(("%u keys, %u multi rows, %u completed\n",
-                    num_keys,
-                    get_ctrl->m_num_keys_multi_rows,
-                    get_ctrl->m_num_keys_completed_first_pass));
+    int ret_code = set_simple_rows(ndb,
+                                   tab,
+                                   response,
+                                   redis_key_id,
+                                   key_storage,
+                                   get_ctrl,
+                                   loop_count,
+                                   current_index);
+    if (ret_code != 0) {
+      release_mset(get_ctrl);
+      return;
     }
+    close_finished_transactions(key_storage,
+                                get_ctrl,
+                                loop_count,
+                                current_index);
+    DEB_MSET_CMD(("%u keys, %u multi rows, %u completed\n",
+                  num_keys,
+                  get_ctrl->m_num_keys_multi_rows,
+                  get_ctrl->m_num_keys_completed_first_pass));
     /**
      * We have finished the initial round of simple SETs. Now time
      * to handle those that require multi-row SETs. Since we used
      * an optimistic approach we need to start this from scratch
      * again for these new SETs.
      */
-    assert(get_ctrl->m_num_transactions == 0);
+    assert(get_ctrl->m_num_transactions == 0 || get_cmd_part == true);
     assert(get_ctrl->m_num_keys_outstanding == 0);
     if (get_ctrl->m_num_keys_multi_rows > 0 &&
       get_ctrl->m_num_keys_failed == 0) {
@@ -1186,6 +1249,19 @@ void rondb_mset(Ndb *ndb,
     assign_err_to_response(response,
                            FAILED_EXECUTE_MSET,
                            get_ctrl->m_error_code);
+    release_mset(get_ctrl);
+    return;
+  }
+  if (get_cmd_part) {
+    for (Uint32 i = 0; i < num_keys; i++) {
+      key_storage[i].m_key_state = key_storage[i].m_get_key_state;
+    }
+    int ret_code = rondb_get_response(response,
+                                      key_storage,
+                                      num_keys);
+    if (ret_code != 0) {
+      assign_generic_err_to_response(response, FAILED_MALLOC);
+    }
     release_mset(get_ctrl);
     return;
   }
@@ -1247,7 +1323,7 @@ static int send_value_read(std::string *response,
   if (key_store->m_num_rw_rows == 0) {
     /* Before we read the data we need to allocate memory for the row */
     key_store->m_value_ptr = (char*)
-      malloc(key_store->m_value_size);
+      malloc(key_store->m_get_value_size);
     if (key_store->m_value_ptr == nullptr) {
       assign_generic_err_to_response(response, FAILED_MALLOC);
       return 1;
@@ -1326,7 +1402,8 @@ static int send_next_read_batch(std::string *response,
       assert(current_finished > 0);
       current_finished--;
     } else if (key_storage[inx].m_key_state ==
-               KeyState::CompletedMultiRowSuccess) {
+               KeyState::CompletedMultiRowSuccess &&
+               get_ctrl->m_is_set_command == false) {
       get_ctrl->m_num_keys_outstanding++;
       commit_read_value_transaction(&key_storage[inx]);
       assert(current_finished > 0);
@@ -1435,7 +1512,7 @@ static int get_simple_rows(Ndb *ndb,
                                    get_ctrl->m_database_id) != 0) {
       return 1;
     }
-    prepare_simple_read_transaction(&key_storage[inx]);
+    commit_simple_read_transaction(&key_storage[inx]);
   }
   Uint32 current_finished_in_loop = 0;
   get_ctrl->m_num_keys_outstanding = loop_count;
@@ -1491,14 +1568,13 @@ rondb_get_func(Ndb *ndb,
                Uint64 redis_key_id,
                struct GetControl *get_ctrl,
                KeyStorage *key_storage,
-               int worker_id,
                Uint32 num_keys) {
   DEB_MGET_CMD(("MGET of %u keys\n", num_keys));
   Uint32 current_index = 0;
   do {
     Uint32 loop_count = std::min(num_keys - current_index,
                                  (Uint32)MAX_PARALLEL_KEY_OPS);
-    if (get_opt_small_values_flag(worker_id) &&
+    if (get_opt_small_values_flag(get_ctrl->m_worker_id) &&
         get_ctrl->m_is_set_command == false) {
       int ret_code = get_simple_rows(ndb,
                                      tab,
@@ -1509,7 +1585,6 @@ rondb_get_func(Ndb *ndb,
                                      loop_count,
                                      current_index);
       if (ret_code != 0) {
-        release_mget(get_ctrl);
         return -1;
       }
       DEB_MGET_CMD(("%u keys, %u multi rows, %u completed\n",
@@ -1545,7 +1620,6 @@ rondb_get_func(Ndb *ndb,
                                       loop_count,
                                       current_index);
       if (ret_code != 0) {
-        release_mget(get_ctrl);
         return -1;
       }
     }
@@ -1559,14 +1633,12 @@ rondb_get_func(Ndb *ndb,
     assign_err_to_response(response,
                            FAILED_EXECUTE_MGET,
                            get_ctrl->m_error_code);
-    release_mget(get_ctrl);
     return-1;
   }
   return 0;
 }
 
 static int rondb_get_response(std::string *response,
-                              struct GetControl *get_ctrl,
                               KeyStorage *key_storage,
                               Uint32 num_keys) {
   Uint64 tot_bytes = 0;
@@ -1581,14 +1653,14 @@ static int rondb_get_response(std::string *response,
       DEB_MGET_CMD(("Key id %u was NULL, len: %u\n",
         i, key_store->m_header_len));
     } else {
-      tot_bytes += key_store->m_value_size;
+      tot_bytes += key_store->m_get_value_size;
       key_store->m_header_len = (Uint32)snprintf(
         key_store->m_header_buf,
         sizeof(key_store->m_header_buf),
         "$%u\r\n",
-        key_store->m_value_size);
+        key_store->m_get_value_size);
       DEB_MGET_CMD(("Key id %u was of size %u, len: %u\n",
-        i, key_store->m_value_size, key_store->m_header_len));
+        i, key_store->m_get_value_size, key_store->m_header_len));
     }
     tot_bytes += 2;
     tot_bytes += key_store->m_header_len;
@@ -1612,17 +1684,16 @@ static int rondb_get_response(std::string *response,
     if (key_store->m_key_state == KeyState::CompletedSuccess ||
         key_store->m_key_state == KeyState::CompletedMultiRowSuccess) {
       response->append((const char*)&key_store->m_key_row.value_start[2],
-                       key_store->m_value_size);
+                       key_store->m_get_value_size);
     }
     else if (key_store->m_key_state == KeyState::CompletedMultiRow) {
       response->append((const char*)key_store->m_value_ptr,
-                       key_store->m_value_size);
+                       key_store->m_get_value_size);
     } else {
       assert(key_store->m_key_state == KeyState::CompletedFailed);
     }
     response->append("\r\n");
   }
-  release_mget(get_ctrl);
   return 0;
 }
 
@@ -1665,6 +1736,8 @@ void rondb_mget(Ndb *ndb,
   get_ctrl->m_num_read_errors = 0;
   get_ctrl->m_error_code = 0;
   get_ctrl->m_is_set_command = false;
+  get_ctrl->m_get_cmd_part = false;
+  get_ctrl->m_worker_id = worker_id;
   get_ctrl->m_database_id = get_current_database(worker_id);
   for (Uint32 i = 0; i < num_keys; i++) {
     Uint32 arg_index = i + arg_index_start;
@@ -1680,14 +1753,20 @@ void rondb_mget(Ndb *ndb,
     key_storage[i].m_key_str = key_str;
     key_storage[i].m_key_len = key_len;
     key_storage[i].m_value_ptr = nullptr;
+    key_storage[i].m_get_value_size = 0;
+    key_storage[i].m_set_value_size = 0;
+
     key_storage[i].m_header_len = 0;
     key_storage[i].m_first_value_row = 0;
     key_storage[i].m_current_pos = 0;
     key_storage[i].m_num_rows = 0;
     key_storage[i].m_num_rw_rows = 0;
     key_storage[i].m_num_current_rw_rows = 0;
-    key_storage[i].m_value_size = 0;
     key_storage[i].m_key_state = KeyState::NotCompleted;
+    key_storage[i].m_set_type = IsGet;
+    key_storage[i].m_keep_ttl = false;
+    key_storage[i].m_set_ttl = false;
+    key_storage[i].m_expire_at = 0;
   }
   if (!setup_metadata(ndb,
                       response,
@@ -1702,15 +1781,18 @@ void rondb_mget(Ndb *ndb,
                                 redis_key_id,
                                 get_ctrl,
                                 key_storage,
-                                worker_id,
                                 num_keys);
   if (ret_code < 0) {
+    release_mget(get_ctrl);
     return;
   }
-  rondb_get_response(response,
-                     get_ctrl,
-                     key_storage,
-                     num_keys);
+  ret_code = rondb_get_response(response,
+                                key_storage,
+                                num_keys);
+  if (ret_code != 0) {
+    assign_generic_err_to_response(response, FAILED_MALLOC);
+  }
+  release_mget(get_ctrl);
 }
 
 void rondb_get_command(Ndb *ndb,
