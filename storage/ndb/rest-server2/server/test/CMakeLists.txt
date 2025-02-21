@@ -12,22 +12,6 @@ set(CMAKE_PREFIX_PATH ${CMAKE_PREFIX_PATH} ${RDRS_SIMDJSON_CMAKE_MODULES_DIR_64}
 find_package(simdjson REQUIRED)
 find_package(Jsoncpp REQUIRED)
 
-find_path(AVROCPP_INCLUDE_DIR avro/ValidSchema.hh
-  PATHS /usr/local/include /usr/include /opt/homebrew/include 
-)
-
-find_library(AVROCPP_LIBRARIES NAMES avrocpp
-  PATHS /usr/local/lib /usr/lib /opt/homebrew/lib
-)
-
-if(AVROCPP_INCLUDE_DIR AND AVROCPP_LIBRARIES)
-    message(STATUS "Found avrocpp: ${AVROCPP_LIBRARIES}")
-else()
-  message(STATUS "avrocpp NOT FOUND")
-  message("Please refer to the latest Avro C++ Installing instructions: https://avro.apache.org/docs/1.12.0/api/cpp/html/")
-  message(FATAL_ERROR "Failed to configure rdrs2. avrocpp NOT FOUND")
-endif()
-
 include_directories(${GMOCK_INCLUDE_DIRS})
 include_directories("../src")
 

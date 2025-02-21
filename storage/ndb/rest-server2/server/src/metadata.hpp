@@ -25,22 +25,13 @@
 #include "feature_store_error_code.hpp"
 #include <ndb_types.h>
 
-#include <avro/Compiler.hh>
-#include <avro/Decoder.hh>
-#include <avro/Encoder.hh>
-#include <avro/Generic.hh>
-#include <avro/GenericDatum.hh>
-#include <avro/Specific.hh>
-#include <avro/Stream.hh>
-#include <avro/ValidSchema.hh>
 #include <string>
 #include <vector>
 #include <unordered_map>
 #include <memory>
-#include <stdexcept>
-#include <fstream>
 #include <sstream>
 #include <optional>
+#include <avro.h>
 
 namespace metadata {
 
@@ -107,27 +98,38 @@ struct FeatureGroupFeatures {
 
 class AvroDecoder {
  private:
-  avro::ValidSchema schema;
+  std::string schemaJson;
+  Int64 schemaID;
 
  public:
   AvroDecoder();
+  ~AvroDecoder();
 
-  explicit AvroDecoder(const std::string &schemaJson);
+  AvroDecoder(const AvroDecoder& other)
+      : schemaJson(other.schemaJson), schemaID(other.schemaID) {}
 
-  avro::ValidSchema getSchema() const {
-    return schema;
+  AvroDecoder& operator=(const AvroDecoder& other) {
+    if (this != &other) {
+      schemaID = other.schemaID;
+      schemaJson = other.schemaJson;
+    }
+    return *this;
   }
 
-  // Decode binary data into a GenericDatum
-  std::pair<RS_Status, std::optional<avro::GenericDatum>> decode(const std::vector<Uint8> &inData) const;
+  RS_Status register_with_go_layer();
+  void unregister_with_go_layer();
 
-  std::tuple<avro::GenericDatum, std::vector<Uint8>, RS_Status>
-  NativeFromBinary(const std::vector<Uint8> &buf);
+  explicit AvroDecoder(const std::string &schemaStr): schemaJson(schemaStr), schemaID(-1){}
+
+  // Decode binary data into a GenericDatum
+  std::pair<RS_Status, std::optional<std::vector<char>>> 
+    decode(std::vector<Uint8> &inData) const;
 
   std::string to_string() const {
     std::ostringstream oss;
     oss << "AvroDecoder {"
-        << "\n  schema: " << schema.toJson() << "\n}";
+        << "\n  schema: " << schemaJson << ",\n"
+        << "\n  id: " << schemaID << "\n}";
     return oss.str();
   }
 };

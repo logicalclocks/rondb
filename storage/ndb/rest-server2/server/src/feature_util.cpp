@@ -85,24 +85,10 @@ DeserialiseComplexFeature(const std::vector<char> &value,
   }
 
   std::vector<Uint8> binaryData(jsonDecode.begin(), jsonDecode.end());
-  auto [native_status, native] = decoder.decode(binaryData);
-  if (native_status.http_code != HTTP_CODE::SUCCESS) {
-    DEB_UTILS("Decode failed. HttpCode: %d, Msg: %s. Schema: %s \n",
-              native_status.http_code,
-              native_status.message,
-              decoder.getSchema().toJson().c_str());
-    return std::make_tuple(
-        std::make_shared<RestErrorCode>(
-            native_status.message, static_cast<int>(drogon::k400BadRequest)),
-        std::vector<char>{});
-  }
-
-  auto [json_status, json] = ConvertAvroToJson(native.value());
+  auto [json_status, json] = decoder.decode(binaryData);
   if (json_status.http_code != HTTP_CODE::SUCCESS) {
     return std::make_tuple(
-        std::make_shared<RestErrorCode>(
-            "Failed to convert Avro to JSON.",
-            static_cast<int>(drogon::k500InternalServerError)),
+        std::make_shared<RestErrorCode>(json_status.message, json_status.http_code),
         std::vector<char>{});
   }
   return std::make_tuple(nullptr, json.value());
@@ -124,120 +110,3 @@ void
 AppendBytesToVector(std::vector<char> &vec, const std::vector<Uint8> &bytes) {
   vec.insert(vec.end(), bytes.begin(), bytes.end());
 }
-
-// Recursive function to process Avro data
-RS_Status
-processDatum(const avro::GenericDatum &datum, std::ostringstream &oss) {
-  switch (datum.type()) {
-  case avro::AVRO_NULL:
-    oss << "null";
-    break;
-  case avro::AVRO_BOOL:
-    oss << (datum.value<bool>() ? "true" : "false");
-    break;
-  case avro::AVRO_INT:
-    oss << datum.value<int32_t>();
-    break;
-  case avro::AVRO_LONG:
-    oss << datum.value<int64_t>();
-    break;
-  case avro::AVRO_FLOAT:
-    oss << std::setprecision(std::numeric_limits<float>::digits10 + 1)
-        << datum.value<float>();
-    break;
-  case avro::AVRO_DOUBLE:
-    oss << std::setprecision(std::numeric_limits<double>::digits10 + 1)
-        << datum.value<double>();
-    break;
-  case avro::AVRO_STRING:
-    oss << "\"" << datum.value<std::string>() << "\"";
-    break;
-  case avro::AVRO_RECORD: {
-    const auto &record = datum.value<avro::GenericRecord>();
-    oss << "{";
-    for (size_t i = 0; i < record.fieldCount(); ++i) {
-      if (i > 0) {
-        oss << ",";
-      }
-      oss << "\"" << record.schema()->nameAt(i) << "\":";
-      processDatum(record.fieldAt(i), oss);
-    }
-    oss << "}";
-    break;
-  }
-  case avro::AVRO_ARRAY: {
-    const auto &array = datum.value<avro::GenericArray>();
-    oss << "[";
-    bool first = true;
-    for (const auto &element : array.value()) {
-      if (!first) {
-        oss << ",";
-      }
-      first = false;
-      processDatum(element, oss);
-    }
-    oss << "]";
-    break;
-  }
-  case avro::AVRO_MAP: {
-    const auto &map = datum.value<avro::GenericMap>();
-    oss << "{";
-    bool first = true;
-    for (const auto &entry : map.value()) {
-      if (!first) {
-        oss << ",";
-      }
-      first = false;
-      oss << "\"" << entry.first << "\":";
-      processDatum(entry.second, oss);
-    }
-    oss << "}";
-    break;
-  }
-  case avro::AVRO_ENUM:
-    oss << "\"" << datum.value<avro::GenericEnum>().symbol() << "\"";
-    break;
-  case avro::AVRO_UNION: {
-    const auto &unionData = datum.value<avro::GenericUnion>();
-    processDatum(unionData.datum(),
-                 oss);  // Unwrap the union and process its actual value
-    break;
-  }
-  case avro::AVRO_FIXED:
-    oss << "\""
-        << std::string(datum.value<avro::GenericFixed>().value().begin(),
-                       datum.value<avro::GenericFixed>().value().end())
-        << "\"";
-    break;
-  default:
-    CRS_Status(HTTP_CODE::SERVER_ERROR,
-               "Failed to convert avro::GenericDatum to JSON");
-  }
-  return CRS_Status::SUCCESS.status;
-}
-
-// Convert Avro data to JSON
-std::pair<RS_Status, std::optional<std::vector<char>>>
-ConvertAvroToJson(const avro::GenericDatum &datum) {
-  try {
-
-    // Convert Avro data to JSON
-    std::ostringstream oss;
-    RS_Status status = processDatum(datum, oss);
-    if (status.http_code != HTTP_CODE::SUCCESS) {
-      return {status, std::nullopt};
-
-    } else {
-      std::string finalJsonStr = oss.str();
-      return {CRS_Status::SUCCESS.status,
-              std::vector<char>{finalJsonStr.begin(), finalJsonStr.end()}};
-    }
-
-  } catch (const std::exception &e) {
-    return {CRS_Status(HTTP_CODE::SERVER_ERROR,
-                       "Exception occurred: " + std::string(e.what()))
-                .status,
-            std::nullopt};
-  }
-}
-

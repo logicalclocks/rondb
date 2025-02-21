@@ -25,6 +25,7 @@ if(NOT WITH_RDRS)
   RETURN()
 endif()
 
+
 file(GLOB_RECURSE SRC
         api_key.cpp
         base_ctrl.cpp
@@ -70,7 +71,7 @@ file(GLOB_RECURSE SRC
         ttl_purge.cpp
 )
 NDB_ADD_EXECUTABLE(${PROJECT_NAME} ${SRC} STATIC_NDBCLIENT)
-add_dependencies(${PROJECT_NAME} DROGON_IS_BUILD SIMDJSON_IS_BUILD)
+ADD_DEPENDENCIES(${PROJECT_NAME} DROGON_IS_BUILD SIMDJSON_IS_BUILD LIBAVRO_BUILD)
 
 set(CMAKE_PREFIX_PATH ${CMAKE_PREFIX_PATH} ${RDRS_DROGON_CMAKE_MODULES_DIR})
 set(CMAKE_PREFIX_PATH ${CMAKE_PREFIX_PATH} ${RDRS_DROGON_CMAKE_MODULES_DIR_64})
@@ -78,21 +79,6 @@ find_package(Drogon CONFIG REQUIRED)
 set(CMAKE_PREFIX_PATH ${CMAKE_PREFIX_PATH} ${RDRS_SIMDJSON_CMAKE_MODULES_DIR})
 set(CMAKE_PREFIX_PATH ${CMAKE_PREFIX_PATH} ${RDRS_SIMDJSON_CMAKE_MODULES_DIR_64})
 find_package(simdjson REQUIRED)
-
-find_path(AVROCPP_INCLUDE_DIR avro/ValidSchema.hh
-  PATHS /usr/local/include /usr/include /opt/homebrew/include
-)
-find_library(AVROCPP_LIBRARIES NAMES libavrocpp_s.a avrocpp
-  PATHS /usr/local/lib /usr/lib /opt/homebrew/lib
-)
-
-if(AVROCPP_INCLUDE_DIR AND AVROCPP_LIBRARIES)
-    message(STATUS "Found avrocpp: ${AVROCPP_LIBRARIES}")
-else()
-  message(STATUS "avrocpp NOT FOUND")
-  message("Please refer to the latest Avro C++ Installing instructions: https://avro.apache.org/docs/1.12.0/api/cpp/html/")
-  message(FATAL_ERROR "Failed to configure rdrs2. avrocpp NOT FOUND")
-endif()
 
 find_library(OSSP_UUID_LIBRARY NAMES ossp-uuid
   PATHS /lib64 /usr/lib64
@@ -143,8 +129,9 @@ else()
   message(FATAL_ERROR "Requested OpenSSL TLS provider but OpenSSL was not found")
 endif()
 
-INCLUDE_DIRECTORIES(${CMAKE_CURRENT_SOURCE_DIR})
-INCLUDE_DIRECTORIES(
+
+TARGET_INCLUDE_DIRECTORIES(${PROJECT_NAME} PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}
   ${PROJECT_SOURCE_DIR}
   ${BASE64_INCLUDE_DIR}
   ${CMAKE_SOURCE_DIR}/include
@@ -152,16 +139,19 @@ INCLUDE_DIRECTORIES(
   ${CMAKE_SOURCE_DIR}/storage/ndb/src/mgmapi
   ${CMAKE_SOURCE_DIR}/storage/ndb/src/rondis/include
   ${CMAKE_SOURCE_DIR}/storage/ndb/include/util
-  ${CMAKE_SOURCE_DIR}/include)
-INCLUDE_DIRECTORIES(${RDRS_DROGON_INCLUDE_DIR})
-#INCLUDE_DIRECTORIES(${RDRS_SIMDJSON_DIR})
-INCLUDE_DIRECTORIES(${RDRS_SIMDJSON_INCLUDE_DIR})
-LINK_DIRECTORIES(${RDRS_DROGON_LIB_DIR})
-INCLUDE_DIRECTORIES(${AVROCPP_INCLUDE_DIR})
+  ${CMAKE_SOURCE_DIR}/include
+  ${RDRS_LIBAVRO_INCLUDE_DIR}
+  ${RDRS_DROGON_INCLUDE_DIR}
+  ${RDRS_SIMDJSON_INCLUDE_DIR}
+  )
+
+TARGET_LINK_DIRECTORIES(${PROJECT_NAME} PRIVATE
+  ${RDRS_DROGON_LIB_DIR}
+  ${RDRS_LIBAVRO_LIB_DIR}
+  )
 
 TARGET_LINK_LIBRARIES(${PROJECT_NAME}
                       base64
-                      ${AVROCPP_LIBRARIES}
                       Jsoncpp_lib
                       Drogon::Drogon
                       Trantor::Trantor
@@ -173,12 +163,14 @@ TARGET_LINK_LIBRARIES(${PROJECT_NAME}
                       rdrs_string
                       mysqlclient
                       ronsql
-                      rondis)
+                      rondis
+                      avro)
 
 INSTALL(TARGETS ${PROJECT_NAME}
     DESTINATION ${INSTALL_BINDIR} COMPONENT Server)
 
 add_library(rdrs2_lib STATIC ${SRC})
+ADD_DEPENDENCIES(rdrs2_lib DROGON_IS_BUILD SIMDJSON_IS_BUILD LIBAVRO_BUILD)
 
 target_include_directories(rdrs2_lib PUBLIC 
 	${CMAKE_CURRENT_SOURCE_DIR} 
@@ -187,22 +179,46 @@ target_include_directories(rdrs2_lib PUBLIC
   ${CMAKE_SOURCE_DIR}/include
   ${CMAKE_SOURCE_DIR}/storage/ndb/src/ndbapi
   ${CMAKE_SOURCE_DIR}/storage/ndb/src/mgmapi
+  ${CMAKE_SOURCE_DIR}/storage/ndb/src/rondis/include
   ${CMAKE_SOURCE_DIR}/storage/ndb/include/util
-  ${CMAKE_SOURCE_DIR}/include)
-target_include_directories(rdrs2_lib PUBLIC ${RDRS_DROGON_INCLUDE_DIR})
-target_include_directories(rdrs2_lib PUBLIC ${RDRS_SIMDJSON_INCLUDE_DIR})
-target_include_directories(rdrs2_lib PUBLIC ${RDRS_AVRO_INCLUDE_DIR})
-target_link_directories(rdrs2_lib PUBLIC ${RDRS_DROGON_LIB_DIR})
+  ${CMAKE_SOURCE_DIR}/include
+  ${RDRS_DROGON_INCLUDE_DIR}
+  ${RDRS_SIMDJSON_INCLUDE_DIR}
+  ${RDRS_AVRO_INCLUDE_DIR}
+  ${RDRS_LIBAVRO_INCLUDE_DIR}
+  )
+
+target_link_directories(rdrs2_lib PUBLIC 
+  ${RDRS_DROGON_LIB_DIR}
+  ${RDRS_LIBAVRO_LIB_DIR}
+  )
+
+# todo-ronsql is ronsql needed for rdrs2_lib? It's used in ../test/api_key_test
+TARGET_LINK_LIBRARIES(rdrs2_lib
+                      base64
+                      Jsoncpp_lib
+                      Drogon::Drogon
+                      Trantor::Trantor
+                      simdjson::simdjson
+                      ${RDRS_OPENSSL_LIBRARY}
+                      ${RDRS_CRYPTO_LIBRARY}
+                      prometheus-cpp::push
+                      ndbclient_so
+                      ndbgeneral
+                      rdrs_string
+                      mysqlclient
+                      ronsql
+                      avro)
 
 # Install jsoncpp library
 EXECUTE_PROCESS(
-       COMMAND readlink "${JSONCPP_LIBRARIES}" OUTPUT_VARIABLE JSONCPP_VERSION_LINK
+      COMMAND readlink "${JSONCPP_LIBRARIES}" OUTPUT_VARIABLE JSONCPP_VERSION_LINK
       OUTPUT_STRIP_TRAILING_WHITESPACE)
 EXECUTE_PROCESS(
-       COMMAND dirname "${JSONCPP_LIBRARIES}" OUTPUT_VARIABLE JSONCPP_VERSION_DIR
+      COMMAND dirname "${JSONCPP_LIBRARIES}" OUTPUT_VARIABLE JSONCPP_VERSION_DIR
       OUTPUT_STRIP_TRAILING_WHITESPACE)
 EXECUTE_PROCESS(
-       COMMAND readlink -f "${JSONCPP_LIBRARIES}" OUTPUT_VARIABLE JSONCPP_VERSION
+      COMMAND readlink -f "${JSONCPP_LIBRARIES}" OUTPUT_VARIABLE JSONCPP_VERSION
       OUTPUT_STRIP_TRAILING_WHITESPACE)
 INSTALL(FILES ${JSONCPP_LIBRARIES} DESTINATION lib)
 INSTALL(FILES ${JSONCPP_VERSION_DIR}/${JSONCPP_VERSION_LINK} DESTINATION lib)
@@ -226,7 +242,7 @@ INSTALL(FILES ${lib_push_path} DESTINATION lib
                   WORLD_READ WORLD_EXECUTE
 )
 EXECUTE_PROCESS(
-       COMMAND dirname "${lib_core_path}" OUTPUT_VARIABLE PROMETHEUS_CPP_DIR
+      COMMAND dirname "${lib_core_path}" OUTPUT_VARIABLE PROMETHEUS_CPP_DIR
       OUTPUT_STRIP_TRAILING_WHITESPACE)
 INSTALL(FILES "${PROMETHEUS_CPP_DIR}/libprometheus-cpp-core.so.1.3" DESTINATION lib)
 INSTALL(FILES "${PROMETHEUS_CPP_DIR}/libprometheus-cpp-push.so.1.3" DESTINATION lib)
@@ -235,10 +251,10 @@ INSTALL(FILES "${PROMETHEUS_CPP_DIR}/libprometheus-cpp-push.so.1.3" DESTINATION 
 if(UUID_LIBRARY)
     message(STATUS "Found uuid_library: ${UUID_LIBRARY}")
     EXECUTE_PROCESS(
-       COMMAND readlink -f "${UUID_LIBRARY}" OUTPUT_VARIABLE UUID_VERSION
+      COMMAND readlink -f "${UUID_LIBRARY}" OUTPUT_VARIABLE UUID_VERSION
       OUTPUT_STRIP_TRAILING_WHITESPACE)
     EXECUTE_PROCESS(
-       COMMAND dirname "${UUID_LIBRARY}" OUTPUT_VARIABLE UUID_VERSION_DIR
+      COMMAND dirname "${UUID_LIBRARY}" OUTPUT_VARIABLE UUID_VERSION_DIR
       OUTPUT_STRIP_TRAILING_WHITESPACE)
     INSTALL(FILES ${UUID_VERSION} DESTINATION lib)
     INSTALL(FILES "${UUID_VERSION_DIR}/libuuid.so.1" DESTINATION lib
@@ -252,10 +268,10 @@ endif()
 if(OSSP_UUID_LIBRARY)
     message(STATUS "Found ossp_uuid_library: ${OSSP_UUID_LIBRARY}")
     EXECUTE_PROCESS(
-       COMMAND readlink -f "${OSSP_UUID_LIBRARY}" OUTPUT_VARIABLE OSSP_UUID_VERSION
+      COMMAND readlink -f "${OSSP_UUID_LIBRARY}" OUTPUT_VARIABLE OSSP_UUID_VERSION
       OUTPUT_STRIP_TRAILING_WHITESPACE)
     EXECUTE_PROCESS(
-       COMMAND dirname "${OSSP_UUID_LIBRARY}" OUTPUT_VARIABLE OSSP_UUID_VERSION_DIR
+      COMMAND dirname "${OSSP_UUID_LIBRARY}" OUTPUT_VARIABLE OSSP_UUID_VERSION_DIR
       OUTPUT_STRIP_TRAILING_WHITESPACE)
     INSTALL(FILES ${OSSP_UUID_VERSION} DESTINATION lib)
     INSTALL(FILES "${OSSP_UUID_VERSION_DIR}/libossp-uuid.so.16" DESTINATION lib
@@ -265,19 +281,3 @@ if(OSSP_UUID_LIBRARY)
     )
 endif()
 
-# todo-ronsql is ronsql needed for rdrs2_lib? It's used in ../test/api_key_test
-TARGET_LINK_LIBRARIES(rdrs2_lib
-                      base64
-                      ${AVROCPP_LIBRARIES}
-                      Jsoncpp_lib
-                      Drogon::Drogon
-                      Trantor::Trantor
-                      simdjson::simdjson
-                      ${RDRS_OPENSSL_LIBRARY}
-                      ${RDRS_CRYPTO_LIBRARY}
-                      prometheus-cpp::push
-                      ndbclient_so
-                      ndbgeneral
-                      rdrs_string
-                      mysqlclient
-                      ronsql)

@@ -26,7 +26,6 @@
 #include "feature_store_data_structs.hpp"
 #include "operations_feature_store.hpp"
 #include "feature_store_error_code.hpp"
-#include "base_ctrl.hpp"
 #include "pk_data_structs.hpp"
 #include "fs_cache.hpp"
 #include <ArenaMalloc.hpp>

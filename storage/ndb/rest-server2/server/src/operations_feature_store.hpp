@@ -31,6 +31,8 @@
 #include <vector>
 #include <string>
 #include <cstring>
+#include <ndb_types.h>
+#include "mystring.hpp"
 
 struct TrainingDatasetFeature {
   int featureID;
@@ -94,8 +96,8 @@ struct ServingKey {
 std::tuple<std::vector<ServingKey>, RS_Status> GetServingKeys(int featureViewId);
 
 struct AvroField {
-  std::string name;  // json:"name"
-  std::string type;  // json:"type"
+  std::string name;  
+  std::string avroSchema;  
 };
 
 struct FeatureGroupAvroSchema {
@@ -108,7 +110,7 @@ struct FeatureGroupAvroSchema {
     getSchemaByFeatureName(const std::string &featureName) const {
     for (const AvroField &field : fields) {
       if (field.name == featureName) {
-        return {field.type, CRS_Status::SUCCESS.status};
+        return {field.avroSchema, CRS_Status::SUCCESS.status};
       }
     }
     return {"", CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
@@ -120,7 +122,8 @@ struct FeatureGroupAvroSchema {
   RS_Status from_json(const simdjson::dom::element &elem) {
     std::string_view type_view;
     std::string_view name_view;
-    std::string_view namespace_view;
+    std::string_view namespace_str_view;
+
     // Parse each field from the JSON object
     simdjson::error_code error = elem["type"].get(type_view);
     if (error != simdjson::SUCCESS) {
@@ -128,46 +131,60 @@ struct FeatureGroupAvroSchema {
                         "Failed to parse type from JSON")
           .status;
     }
+
     error = elem["name"].get(name_view);
     if (error != simdjson::SUCCESS) {
       return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
                         "Failed to parse name from JSON")
           .status;
     }
-    error = elem["namespace"].get(namespace_view);
+
+    error = elem["namespace"].get(namespace_str_view);
     if (error != simdjson::SUCCESS) {
       return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
                         "Failed to parse namespace from JSON")
           .status;
     }
 
-    type = std::string(type_view);
-    name = std::string(name_view);
-    namespace_ = std::string(namespace_view);
-
     // Parse the array of fields
     simdjson::dom::array fields_array = elem["fields"];
     for (simdjson::dom::element field : fields_array) {
       std::string_view field_name_view;
-      std::string field_name;
-      simdjson::dom::element field_type_json_elem;
+      simdjson::dom::element type_dom_elem;
+
+      // entire field
+      std::string field_str = simdjson::to_string(field);
+      
+      // col name
       error = field["name"].get(field_name_view);
       if (error != simdjson::SUCCESS) {
         return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
                           "Failed to parse field name from JSON")
             .status;
       }
-      field_name = std::string(field_name_view);
-      error = field["type"].get(field_type_json_elem);
-      if (error != simdjson::SUCCESS) {
-        return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                          "Failed to parse field type from JSON")
-            .status;
-      }
-      std::string field_type_json = simdjson::to_string(field_type_json_elem);
-      fields.push_back(AvroField{field_name, field_type_json});
+    
+      std::string field_avro_schema = getAvroSchema(std::string(type_view), std::string(name_view),
+          std::string(namespace_str_view), field_str);
+      fields.push_back(AvroField{std::string(field_name_view), field_avro_schema});
     }
     return CRS_Status::SUCCESS.status;
+  }
+
+  std::string getAvroSchema(
+    std::string type,
+    std::string name,
+    std::string schemaNamespaces, 
+    std::string fields) {
+
+    std::ostringstream json;
+    json << "{";
+    json << "\"type\": \"" << escape_string(type) << "\",";
+    json << "\"name\": \"" << escape_string(name) << "\",";
+    json << "\"namespace\": \"" << escape_string(schemaNamespaces) << "\",";
+    json << "\"fields\": [" << fields << "]";
+    json << "}";
+
+    return json.str();
   }
 };
 

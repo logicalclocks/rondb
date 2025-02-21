@@ -26,21 +26,13 @@
 #include "resources/embeddings.hpp"
 #include "rdrs_dal.h"
 #include "rdrs_hopsworks_dal.h"
-#include "rdrs_rondb_connection.hpp"
-#include "rdrs_rondb_connection_pool.hpp"
-#include "base64.h"
 #include <NdbMutex.h>
 
-#include <avro/ValidSchema.hh>
 #include <drogon/HttpClient.h>
 #include <drogon/HttpTypes.h>
-#include <fstream>
 #include <gtest/gtest.h>
 #include <iostream>
 #include <memory>
-#include <chrono>
-#include <queue>
-#include <mutex>
 #include <mysql.h>
 #include <tuple>
 #include <unordered_map>
@@ -844,60 +836,6 @@ void ValidateResponseMetadata(
                                 fvVersion);
 }
 
-void testConvertAvroToJson(const std::string &schema,
-                           const std::vector<Uint8> &data,
-                           std::vector<char> expectedJson) {
-  metadata::AvroDecoder decoder;
-  try {
-    decoder = metadata::AvroDecoder(schema);
-  } catch (const std::exception &e) {
-    FAIL() << "Failed to create avro decoder: " << e.what();
-  }
-  auto [native, _, err] = decoder.NativeFromBinary(data);
-  if (err.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
-    FAIL() << "Failed to convert avro to json with error: " << err.message;
-  }
-  auto [status, actual] = ConvertAvroToJson(native);
-  if (status.http_code !=
-        static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
-    FAIL() << "Failed to convert avro to json with error: " << status.message;
-  }
-  std::string actualStr(actual.value().begin(), actual.value().end());
-  std::string expectedStr(expectedJson.begin(), expectedJson.end());
-  simdjson::dom::parser parser;
-  simdjson::dom::element actualJson;
-  simdjson::dom::element expectedJsonElem;
-  auto error = parser.parse(actualStr).get(actualJson);
-  if (error != 0U) {
-    FAIL() << "Failed to parse actual JSON: " << simdjson::error_message(error);
-  }
-  error = parser.parse(expectedStr).get(expectedJsonElem);
-  if (error != 0U) {
-    FAIL() << "Failed to parse expected JSON: "
-           << simdjson::error_message(error);
-  }
-  // Convert both elements back to strings for comparison
-  std::string actualJsonStr   = simdjson::minify(actualJson);
-  std::string expectedJsonStr = simdjson::minify(expectedJsonElem);
-  EXPECT_EQ(actualJsonStr, expectedJsonStr)
-      << "Expected " << expectedStr << " but got " << actualStr;
-}
-
-static std::vector<char> s2v(const char *str) {
-  return std::vector<char>(str, str + strlen(str));
-}
-
-std::string datumToJson(const avro::GenericDatum &datum,
-                        const avro::ValidSchema &schema) {
-  std::ostringstream oss;
-  auto encoder = avro::jsonEncoder(schema);
-  auto outputStream = avro::ostreamOutputStream(oss);
-  encoder->init(*outputStream);
-  avro::encode(*encoder, datum);
-  outputStream->flush();
-  return oss.str();
-}
-
 class FeatureStoreTest : public ::testing::Test {
  protected:
   static void SetUpTestSuite() {
@@ -992,119 +930,6 @@ TEST_F(FeatureStoreTest, TestMetadata_FvNotExist) {
               std::string::npos)
       << "This should fail with error message: " << FV_NOT_EXIST->GetReason();
 }
-
-namespace c {
-struct cpx {
-  double re;
-  double im;
-};
-
-}  // namespace c
-
-namespace avro {
-template <> struct codec_traits<c::cpx> {
-  static void encode(Encoder &e, const c::cpx &v) {
-    avro::encode(e, v.re);
-    avro::encode(e, v.im);
-  }
-  static void decode(Decoder &d, c::cpx &v) {
-    avro::decode(d, v.re);
-    avro::decode(d, v.im);
-  }
-};
-}  // namespace avro
-
-TEST_F(FeatureStoreTest, DISABLED_TestConvertAvroToJsonCpx) {
-  std::string schemaJson = R"({
-      "type": "record",
-      "name": "cpx",
-      "fields" : [
-          {"name": "re", "type": "double"},
-          {"name": "im", "type" : "double"}
-      ]
-  })";
-
-  avro::ValidSchema cpxSchema = avro::compileJsonSchemaFromString(schemaJson);
-
-  std::unique_ptr<avro::OutputStream> out = avro::memoryOutputStream();
-  avro::EncoderPtr e                      = avro::binaryEncoder();
-  e->init(*out);
-  c::cpx c1;
-  c1.re = 100.23;
-  c1.im = 105.77;
-  avro::encode(*e, c1);
-
-  std::unique_ptr<avro::InputStream> in = avro::memoryInputStream(*out);
-  avro::DecoderPtr d                    = avro::binaryDecoder();
-  d->init(*in);
-
-  avro::GenericDatum datum(cpxSchema);
-  avro::decode(*d, datum);
-  EXPECT_EQ(datum.type(), avro::AVRO_RECORD);
-  const avro::GenericRecord &r = datum.value<avro::GenericRecord>();
-  EXPECT_EQ(r.fieldCount(), 2);
-  if (r.fieldCount() == 2) {
-    const avro::GenericDatum &f0 = r.fieldAt(0);
-    EXPECT_EQ(f0.type(), avro::AVRO_DOUBLE);
-    EXPECT_EQ(f0.value<double>(), 100.23);
-
-    const avro::GenericDatum &f1 = r.fieldAt(1);
-    EXPECT_EQ(f1.type(), avro::AVRO_DOUBLE);
-    EXPECT_EQ(f1.value<double>(), 105.77);
-  }
-}
-
-TEST_F(FeatureStoreTest, DISABLED_TestConvertAvroToJson) {
-  // map
-  testConvertAvroToJson(
-      R"(["null",{"type":"record",
-        "name":"r854762204",
-        "namespace":"struct",
-        "fields":[{"name":"int1",
-        "type":["null",
-        "long"]},{"name":"int2",
-        "type":["null",
-        "long"]}]}])",
-      {0x02, 0x02, 0x56, 0x02, 0x88, 0x01}, s2v(R"({"int1":43,"int2":68})"));
-
-  // array
-  testConvertAvroToJson(R"(["null",{"type":"array","items":["null","long"]}])",
-                        {0x02, 0x06, 0x02, 0x02, 0x00, 0x02, 0x06, 0x00},
-                        s2v(R"([1,null,3])"));
-
-  // array of map
-  testConvertAvroToJson(
-      R"(["null",{"type":"array",
-        "items":["null",
-        {"type":"record",
-        "name":"r854762204",
-        "namespace":"struct",
-        "fields":[{"name":"int1",
-        "type":["null","long"]},
-        {"name":"int2",
-        "type":["null",
-        "long"]}]}]}])",
-      {0x02, 0x06, 0x02, 0x02, 0x22, 0x02, 0x48,
-       0x00, 0x02, 0x02, 0x24, 0x02, 0x4A, 0x00},
-      s2v(R"([{"int1":17,"int2":36},null,{"int1":18,"int2":37}])"));
-
-  // map of array
-  testConvertAvroToJson(
-      R"(["null",{"type":"record",
-        "name":"r854762204","namespace":"struct",
-        "fields":[{"name":"int1",
-        "type":["null",
-        {"type":"array",
-        "items":["null","long"]}]},
-        {"name":"int2","type":["null",
-        {"type":"array",
-        "items":["null",
-        "long"]}]}]}])",
-      {0x02, 0x02, 0x06, 0x02, 0x02, 0x02, 0x04, 0x02, 0x06,
-       0x00, 0x02, 0x06, 0x02, 0x06, 0x00, 0x02, 0x0a, 0x00},
-      s2v(R"({"int1":[1,2,3],"int2":[3,null,5]})"));
-}
-
 
 class BatchFeatureStoreTest : public ::testing::Test {
  protected:

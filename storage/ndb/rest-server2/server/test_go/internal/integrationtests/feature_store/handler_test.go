@@ -1325,7 +1325,7 @@ func Test_GetFeatureVector_Date_Array_Success_ComplexType(t *testing.T) {
 		t.Fatalf("Cannot get sample data with error %s ", err)
 	}
 
-	dataSchema, err := avro.Parse(`{"type":"record","name":"date_array_1","namespace":"salmanap_featurestore.db","fields":[{"name":"data0","type":["null",{"type":"array","items":["null",{"type":"record","name":"r515636140","namespace":"data","fields":[{"name":"sku","type":["null","string"]},{"name":"ts","type":["null",{"type":"long"}]}]}]}]}]}`)
+	dataSchema, err := avro.Parse(`{"type":"record","name":"date_array_1","namespace":"salmanap_featurestore.db","fields":[{"name":"data0","type":["null",{"type":"array","items":["null",{"type":"record","name":"r515636140","namespace":"data","fields":[{"name":"sku","type":["null","string"]},{"name":"ts","type":["null",{"type":"long","logicalType":"timestamp-micros"}]}]}]}]}]}`)
 	if err != nil {
 		t.Fatal(err.Error())
 	}
