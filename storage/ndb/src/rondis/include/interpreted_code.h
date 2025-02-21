@@ -80,4 +80,9 @@ int write_key_row_no_commit(std::string *response,
 int simple_delete_key_row_code(std::string *response,
                                NdbInterpretedCode &code,
                                const NdbDictionary::Table *tab);
+int simple_write_key_row_setrange(NdbInterpretedCode &code,
+                                  const NdbDictionary::Table *tab,
+                                  KeyStorage *key_store,
+                                  Uint32 start,
+                                  Uint32 end);
 #endif

@@ -1162,4 +1162,87 @@ int rondb_get_rondb_key(const NdbDictionary::Table *tab,
   return 0;
 }
 
+void execute_set_range_simple(std::string *response,
+                              KeyStorage *key_store,
+                              Ndb *ndb,
+                              const NdbDictionary::Table *tab,
+                              Uint32 database_id,
+                              Uint32 start,
+                              Uint32 end) {
+  struct key_table key_row;
+  NdbTransaction *trans = key_store->m_trans;
+  Uint32 mask = 0x3;
+  key_row.null_bits = 0;
+  memcpy(&key_row.redis_key[2],
+         key_store->m_key_str,
+         key_store->m_key_len);
+  set_length(&key_row.redis_key[0], key_store->m_key_len);
+  key_row.redis_key_id = STRING_REDIS_KEY_ID;
+  const unsigned char *mask_ptr = (const unsigned char *)&mask;
 
+  Uint32 code_buffer[64];
+  NdbInterpretedCode code(tab, &code_buffer[0], sizeof(code_buffer));
+  int ret_code = simple_write_key_row_setrange(code,
+                                               tab,
+                                               key_store,
+                                               start,
+                                               end);
+  if (ret_code != 0) {
+    assign_err_to_response(response,
+                           "Failed to create interpreted code",
+                           ret_code);
+    return;
+  }
+  // Prepare the interpreted program to be part of the write
+  NdbOperation::OperationOptions opts;
+  std::memset(&opts, 0, sizeof(opts));
+  opts.optionsPresent |= NdbOperation::OperationOptions::OO_INTERPRETED;
+  opts.optionsPresent |=
+    NdbOperation::OperationOptions::OO_INTERPRETED_INSERT;
+  opts.interpretedCode = &code;
+
+  NdbOperation::GetValueSpec getvals[1];
+  getvals[0].appStorage = nullptr;
+  getvals[0].recAttr = nullptr;
+  getvals[0].column = NdbDictionary::Column::READ_INTERPRETER_OUTPUT_0;
+  opts.optionsPresent |= NdbOperation::OperationOptions::OO_GET_FINAL_VALUE;
+  opts.numExtraGetFinalValues = 1;
+  opts.extraGetFinalValues = getvals;
+
+  /* Define the actual operation to be sent to RonDB data node. */
+  const NdbOperation *op = trans->writeTuple(
+    pk_key_record[database_id],
+    (const char *)&key_row,
+    entire_key_record[database_id],
+    (char *)&key_row,
+    mask_ptr,
+    &opts,
+    sizeof(opts));
+  if (op == nullptr) {
+    assign_ndb_err_to_response(response,
+                               "Failed to create NdbOperation",
+                               trans->getNdbError());
+    return;
+  }
+  if (key_store->m_trans->execute(NdbTransaction::Commit) != 0) {
+    assign_ndb_err_to_response(response,
+                               "Failed to execute SETRANGE simple command",
+                               trans->getNdbError());
+    return;
+  }
+  Uint32 new_len = getvals[0].recAttr->u_32_value();
+  char buf[20];
+  [[maybe_unused]] int len =
+  snprintf(buf, sizeof(buf), "+%u\r\n", new_len);
+  response->append(buf);
+  return;
+}
+
+int write_key_row_setrange(std::string *response,
+                           KeyStorage *key_store,
+                           Ndb *ndb,
+                           const NdbDictionary::Table *tab,
+                           Uint32 database_id,
+                           Uint32 start,
+                           Uint32 end) {
+}

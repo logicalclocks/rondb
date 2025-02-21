@@ -179,7 +179,10 @@ struct KeyStorage {
     NdbRecAttr *m_rec_attr_prev_num_rows;
     NdbRecAttr *m_rec_attr_rondb_key;
     NdbRecAttr *m_rec_attr_expiry_date;
-    char *m_value_ptr;
+    union {
+      char *m_value_ptr;
+      const char *m_const_value_ptr;
+    };
     const char *m_key_str;
     Uint64 m_rondb_key;
     Uint32 m_key_len;

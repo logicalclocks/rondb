@@ -305,7 +305,7 @@ int write_key_row_commit(std::string *response,
   const NdbDictionary::Column *num_rows_col =
     tab->getColumn(KEY_TABLE_COL_num_rows);
   code.load_op_type(REG1);         // Read operation type into register 1
-  code.branch_ne_const(REG1, RONDB_INSERT, LABEL0); // Inserts go to label 0
+  code.branch_ne_const(REG1, RONDB_INSERT, LABEL0); // Updates go to label 0
   /* INSERT */
   if (key_store->m_set_type == IsUpdate) {
     code.interpret_exit_nok(6000);
@@ -361,6 +361,124 @@ int simple_delete_key_row_code(std::string *response,
                                "Failed to create Interpreted code",
                                code.getNdbError());
     return -1;
+  }
+  return 0;
+}
+
+int simple_write_key_row_setrange(NdbInterpretedCode &code,
+                                  const NdbDictionary::Table *tab,
+                                  KeyStorage *key_store,
+                                  Uint32 start,
+                                  Uint32 end) {
+  const NdbDictionary::Column *num_rows_col =
+    tab->getColumn(KEY_TABLE_COL_num_rows);
+  const NdbDictionary::Column *value_data_type_col =
+    tab->getColumn(KEY_TABLE_COL_value_data_type);
+  const NdbDictionary::Column *tot_value_len_col =
+    tab->getColumn(KEY_TABLE_COL_tot_value_len);
+  const NdbDictionary::Column *value_start_col =
+    tab->getColumn(KEY_TABLE_COL_value_start);
+  const NdbDictionary::Column *expiry_date_col =
+    tab->getColumn(KEY_TABLE_COL_expiry_date);
+
+  /**
+   * We construct the memory area to write value_start column in the
+   * following manner.
+   *
+   * Byte 0 - 3:
+   * -----------
+   * This area is used by the write_from_mem instruction to load the
+   * attribute header into. Thus we should not store any data here.
+   *
+   * Byte 4 - 5:
+   * -----------
+   * The value_start column is a VARBINARY(4096) column. This means
+   * it will have 2 length bytes stored in little-endian format.
+   * We set those bytes using write_size_mem instruction.
+   *
+   * Byte 6 - end of data
+   * --------------------
+   * Here we will construct the actual data to store in the column.
+   */
+  code.load_const_u16(REG0, 0);
+  code.load_const_u16(REG1, 6);
+  code.load_const_u16(REG2, end);
+  code.load_const_u16(REG3, start);
+  /**
+   * REG0 = Offset 0 where write_from_mem memory starts
+   * REG1 = Offset 6 where column data starts
+   * REG2 = end variable where copying ends
+   * REG3 = start variable where we start copying data from memory
+   */
+  code.load_op_type(REG4);         // Read operation type into register 1
+  code.branch_ne_const(REG4, RONDB_INSERT, LABEL0); // Updates go to label 0
+  /* INSERT */
+  code.write_attr(num_rows_col, REG0);
+  code.write_attr(value_data_type_col, REG0);
+  code.write_attr(tot_value_len_col, REG2);
+  if (start > 0) {
+    /* Need to zero area from 0 to start */
+    code.bzero(REG1, REG3);
+  }
+  code.move_reg(REG7, REG2);
+  code.branch_label(LABEL2);
+
+  /* UPDATE */
+  code.def_label(LABEL0);
+  /**
+   * Start by reading value_start column into memory
+   * We will put the length of the current data into REG7.
+   */
+  code.load_const_null(REG5);
+  code.write_attr(expiry_date_col, REG5);
+  code.read_full(value_start_col, REG0, REG7);
+  code.sub_const_reg(REG7, REG7, Uint16(2));
+  /**
+   * No extension of row size is required
+   * if end of data >= end
+   */
+  code.branch_ge(REG7, REG2, LABEL2);
+
+  /* end is after end of current data, new tot_value_len */
+  code.write_attr(tot_value_len_col, REG2);
+  /**
+   * No need to zero any memory area
+   * if end of data >= start
+   */
+  code.branch_ge(REG7, REG3, LABEL1);
+
+  /* Zero area after end of data until before start */
+  code.add_reg(REG4, REG1, REG7);
+  code.sub_reg(REG5, REG3, REG7);
+  code.bzero(REG4, REG5);
+
+  code.def_label(LABEL1);
+  code.move_reg(REG7, REG2);
+
+  code.def_label(LABEL2);
+  /**
+   * REG0 = Offset 0 where write_from_mem memory starts
+   * REG1 = Offset 6 where column data starts
+   * REG3 = start variable where we start copying data from memory
+   * REG7 = Total size of column data after write_from_mem
+   */
+  code.add_reg(REG6, REG1, REG3);
+  code.load_const_mem(REG6, //Offset to copy to
+                      REG5, // m_set_value_size will be set here
+                      Uint16(key_store->m_set_value_size),
+                      (Uint32*)key_store->m_value_ptr);
+  code.load_const_u16(REG6, 4);
+  code.write_size_mem(REG7, REG6);
+  code.write_interpreter_output(REG7, OUTPUT_INDEX_0);
+  /* Length is size of data + 2 length bytes */
+  code.add_const_reg(REG7, REG7, Uint16(2));
+  code.write_from_mem(value_start_col, REG0, REG7);
+  code.interpret_exit_ok();
+
+  // Program end, now compile code
+  int ret_code = code.finalise();
+  if (ret_code != 0) {
+    return code.getNdbError().code;
   }
   return 0;
 }

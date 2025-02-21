@@ -779,6 +779,14 @@ NdbInterpretedCode::load_const_mem(Uint32 RegMemoryOffset,
 }
 
 int
+NdbInterpretedCode::bzero(Uint32 RegMemoryOffset, Uint32 RegSize) {
+  if ((RegMemoryOffset >= MaxReg) ||
+      (RegSize >= MaxReg))
+    return error(BadRegister);
+  return add1(Interpreter::Bzero(RegMemoryOffset, RegSize));
+}
+
+int
 NdbInterpretedCode::read_attr_impl(const NdbColumnImpl *c, Uint32 RegDest) {
   if (RegDest >= MaxReg)
     return error(BadRegister);

@@ -254,6 +254,11 @@ class NdbInterpretedCode {
                      Uint32 RegDestSize,
                      Uint16 SizeConstant,
                      Uint32 *const_memory);
+  /**
+   * bzero writes zeroes into the memory starting at the offset in
+   * RegMemoryOffset and copies RegSize bytes of zeroes.
+   */
+  int bzero(Uint32 RegMemoryOffset, Uint32 RegSize);
 
   /* Register to / from table attribute load and store
    * -------------------------------------------------

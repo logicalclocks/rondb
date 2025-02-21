@@ -182,6 +182,8 @@ class Interpreter {
   static constexpr Uint32 WRITE_SIZE_MEM =
                           CONVERT_SIZE + OVERFLOW_OPCODE;
   static constexpr Uint32 LOAD_OP_TYPE = 61;
+  static constexpr Uint32 BZERO_MEM =
+                          LOAD_OP_TYPE + OVERFLOW_OPCODE;
   /* 62 free */
 
   static constexpr Uint32 SPECIAL_INSTR = 63;
@@ -219,6 +221,7 @@ class Interpreter {
   static Uint32 LoadConstMem(Uint32 RegMemoryOffset,
                              Uint32 RegSize,
                              Uint16 ConstantSize); //Value in words after
+  static Uint32 Bzero(Uint32 RegMemoryOffset, Uint32 RegSize);
 
   static Uint32 LoadOpType(Uint32 Register);
 
@@ -498,6 +501,11 @@ Interpreter::LoadConstMem(Uint32 RegisterOffset,
          (RegSize << 9) +
          (ConstantSize << 16) +
          LOAD_CONST_MEM;
+}
+
+inline Uint32 Interpreter::Bzero(Uint32 RegMemoryOffset, Uint32 RegSize) {
+  return (RegMemoryOffset << 6) + (RegSize << 9) +
+          LOAD_OP_TYPE + (1 << 15);
 }
 
 inline Uint32 Interpreter::LoadOpType(Uint32 Register) {
@@ -928,6 +936,7 @@ inline Uint32 *Interpreter::getInstructionPreProcessingInfo(
     case WRITE_PARTIAL_ATTR_FROM_MEM:
       return op + 1;
 
+    case BZERO_MEM:
     case LOAD_CONST_NULL:
     case LOAD_CONST16:
     case LOAD_OP_TYPE:

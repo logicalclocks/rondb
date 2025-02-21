@@ -5712,6 +5712,27 @@ int Dbtup::interpreterNextLab(Signal* signal,
                                                TprogramCounter++);
 	  break;
         }
+        case Interpreter::BZERO_MEM:
+        {
+          Uint32 registerOffsetType = TregMemBuffer[theRegister];
+          Uint32 registerSize = Interpreter::getReg2(theInstruction) << 2;
+          Int64 Toffset = * (Int64*)(TregMemBuffer + theRegister + 2);
+          Int64 Tsize = * (Int64*)(TregMemBuffer + registerSize + 2);
+          Uint32 registerSizeType = TregMemBuffer[registerSize];
+          if (unlikely(registerOffsetType == NULL_INDICATOR)) {
+            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
+          }
+          if (unlikely(registerSizeType == NULL_INDICATOR)) {
+            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
+          }
+          Int64 Tend = Toffset + Tsize;
+          if (Toffset < 0 || Tsize < 0 || Tend > MAX_HEAP_OFFSET) {
+            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
+          }
+          Uint32* memory_ptr = (Uint32*)&TheapMemoryChar[Toffset];
+          memset(memory_ptr, 0, Tsize);
+          break;
+        }
         case Interpreter::LOAD_CONST_MEM:
         {
           RnoOfInstructions += 1; //A bit heavier instruction
@@ -5729,7 +5750,6 @@ int Dbtup::interpreterNextLab(Signal* signal,
             return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
           }
           if (unlikely(((Toffset + Int64(words << 2)) > MAX_HEAP_OFFSET) ||
-                        ((Toffset & Int64(3)) != 0) ||
                         (Toffset < Int64(0)))) {
 #ifdef TRACE_INTERPRETER
             g_eventLogger->info("(%u)Line %u, Offset error: %lld",
@@ -5753,8 +5773,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
           Uint32* memory_ptr = (Uint32*)&TheapMemoryChar[Toffset];
           memcpy(memory_ptr,
                  &TcurrentProgram[TprogramCounter],
-                 words << 2);
-          zero32((Uint8*)memory_ptr, Tsize);
+                 Tsize);
 #ifdef TRACE_INTERPRETER
           g_eventLogger->info("(%u) offset: %lld, word: %x, Tsize: %u",
             instance(), Toffset, memory_ptr[0], Tsize);

@@ -93,6 +93,21 @@ int prepare_get_simple_key_row(std::string *response,
                                struct key_table *key_row,
                                Uint32 database_id);
 
+void execute_set_range_simple(std::string *response,
+                              KeyStorage *key_store,
+                              Ndb *ndb,
+                              const NdbDictionary::Table *tab,
+                              Uint32 database_id,
+                              Uint32 start,
+                              Uint32 end);
+
+int write_key_row_setrange(std::string *response,
+                           KeyStorage *key_store,
+                           Ndb *ndb,
+                           const NdbDictionary::Table *tab,
+                           Uint32 database_id,
+                           Uint32 start,
+                           Uint32 end);
 /**
  * INCR and DECR MODULE
  * --------------------

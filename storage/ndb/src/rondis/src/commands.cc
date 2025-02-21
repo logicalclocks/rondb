@@ -1,11 +1,10 @@
 /*
-   Copyright (C) 2024, 2025 Hopsworks AB
- 
-   This program is free software; you can redistribute it and/or
-   modify it under the terms of the GNU General Public License
-   as published by the Free Software Foundation; either version 2
-   of the License, or (at your option) any later version.
-  
+   Copyright (c) 2024, 2025, Hopsworks and/or its affiliates.
+
+   This program is free software; you can redistribute it and/or modify
+   it under the terms of the GNU General Public License, version 2.0,
+   as published by the Free Software Foundation.
+
    This program is designed to work with certain software (including
    but not limited to OpenSSL) that is licensed under separate terms,
    as designated in a particular file or component or in included license
@@ -2271,4 +2270,71 @@ void rondb_getrange_command(Ndb *ndb,
     response->append(&value_ptr[start], ret_len);
   response->append("\r\n");
   return;
+}
+
+void rondb_setrange_command(Ndb *ndb,
+                            const pink::RedisCmdArgsType &argv,
+                            std::string *response,
+                            int worker_id) {
+  Int64 offset;
+  if (get_int64(argv[2], response, &offset) == false) return;
+
+  if (offset < 0) {
+    assign_generic_err_to_response(response, REDIS_SYNTAX_ERROR);
+  }
+  Uint32 start = Uint32(offset);
+  const NdbDictionary::Dictionary *dict;
+  const NdbDictionary::Table *tab = nullptr;
+  Uint32 database_id = get_current_database(worker_id);
+  KeyStorage *key_store;
+  key_store = (struct KeyStorage*)malloc(sizeof(struct KeyStorage));
+  if (key_store == nullptr) {
+    assign_generic_err_to_response(response, FAILED_MALLOC);
+    return;
+  }
+  const char *key_str = argv[1].c_str();
+  Uint32 key_len = argv[1].size();
+  if (memcmp(key_str, "key:__rand_int__", 16) == 0) {
+    rand_key(key_store, &key_str, key_len);
+  }
+  key_store->m_key_str = key_str;
+  key_store->m_key_len = key_len;
+
+  const char *value_str = argv[3].c_str();
+  key_store->m_const_value_ptr = value_str;
+  key_store->m_set_value_size = argv[3].size();
+
+  if (!setup_transaction(ndb,
+                         response,
+                         STRING_REDIS_KEY_ID,
+                         key_store,
+                         &dict,
+                         &tab)) {
+    free(key_store);
+    return;
+  }
+  Uint32 end = key_store->m_set_value_size + start;
+  if (start < INLINE_VALUE_LEN && end <= INLINE_VALUE_LEN) {
+    /* The SETRANGE command only affects the STRING_keys table */
+    execute_set_range_simple(response,
+                             key_store,
+                             ndb,
+                             tab,
+                             database_id,
+                             start,
+                             end);
+    ndb->closeTransaction(key_store->m_trans);
+    free(key_store);
+    return;
+  }
+  int ret_code = write_key_row_setrange(response,
+                                        key_store,
+                                        ndb,
+                                        tab,
+                                        database_id,
+                                        start,
+                                        end);
+  if (ret_code != 0) {
+    return;
+  }
 }
