@@ -326,13 +326,13 @@ std::tuple<std::vector<std::vector<char>>,
             decoderIt != featureView.complexFeatures.end()) {
             auto deserResult =
               DeserialiseComplexFeature(value, decoderIt->second);
-            if (std::get<0>(deserResult) == nullptr) {
-              (featureValues)[it->second] = std::get<1>(deserResult);
-            } else {
+            if (std::get<0>(deserResult) != nullptr) { // error state
               status = feature_store_data_structs::FeatureStatus::Error;
               err = DESERIALISE_FEATURE_FAIL->NewMessage(
                 "Feature name: " + featureName + "; " +
               std::get<0>(deserResult)->Error());
+            } else {
+              (featureValues)[it->second] = std::get<1>(deserResult);
             }
           } else {
             (featureValues)[it->second] = value;
@@ -797,12 +797,17 @@ void FeatureStoreCtrl::featureStore(
                          reqStruct.GetOptions().includeDetailedStatus);
     if (unlikely(fsErr != nullptr)) {
       resp->setBody(fsErr->Error());
-      resp->setStatusCode(
-        static_cast<drogon::HttpStatusCode>(fsError->GetStatus()));
+      if (fsError != nullptr ){
+        resp->setStatusCode(
+          static_cast<drogon::HttpStatusCode>(fsError->GetStatus()));
+      } else {
+        resp->setStatusCode(drogon::k500InternalServerError);
+      }
       callback(resp);
       release_array_buffers(reqBuffs.data(), respBuffs.data(), noOps);
       return;
     }
+
     DEB_FS_CTRL("Fill Passed Feature values for  Feature Store request");
     auto fsResp = feature_store_data_structs::FeatureStoreResponse();
     fsResp.status = status;

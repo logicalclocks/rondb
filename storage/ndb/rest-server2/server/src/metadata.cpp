@@ -18,11 +18,11 @@
  */
 
 #include "metadata.hpp"
+#include "ndb_types.h"
 #include "operations_feature_store.hpp"
 #include "rdrs_dal.hpp"
 #include "fs_cache.hpp"
 
-#include <avro/Exception.hh>
 #include <optional>
 #include <tuple>
 #include <util/require.h>
@@ -59,56 +59,52 @@ bool FeatureMetadata::isComplex() const {
 
 AvroDecoder::AvroDecoder() = default;
 
-AvroDecoder::AvroDecoder(const std::string &schemaJson) {
-  schema = avro::compileJsonSchemaFromString(schemaJson);
+AvroDecoder::~AvroDecoder() {
 }
 
-std::pair<RS_Status, std::optional<avro::GenericDatum>>
-  AvroDecoder::decode(const std::vector<Uint8> &inData) const {
+void AvroDecoder::unregister_with_go_layer() {
+  // unregister_schema
+  if (schemaID != -1) {
+    DEB_MD_CACHE("Removing Schemd %s. ID: %d from the golang layer",
+      schemaStr, schemaID);
+    unregister_schema(schemaID);
+    schemaID = -1;
+  }
+}
 
-  if (!schema.root()) {
-    return {CRS_Status(HTTP_CODE::SERVER_ERROR, "Invalid avro schema").status, std::nullopt} ;
+RS_Status AvroDecoder::register_with_go_layer() {
+  GoString goString;
+  goString.p = schemaJson.c_str();
+  goString.n = schemaJson.length();
+  int64_t id = register_schema(goString);
+  if (id == -1) {
+   return CRS_Status(HTTP_CODE::SERVER_ERROR, "Failed to register avro schema").status;
   }
 
-  auto inStream = avro::memoryInputStream(inData.data(), inData.size());
-  avro::DecoderPtr decoder = avro::binaryDecoder();
-  if(!decoder) {
+  this->schemaID = id;
+  return CRS_Status::SUCCESS.status;
+}
+
+//typedef struct { void *data; GoInt len; GoInt cap; } GoSlice;
+std::pair<RS_Status, std::optional<std::vector<char>>>
+  AvroDecoder::decode(std::vector<Uint8> &inData) const {
+
+  GoSlice goSlice ; 
+  goSlice.data = (void*)inData.data();
+  goSlice.len = inData.size();
+  goSlice.cap = inData.size(); 
+
+  char *out = nullptr;
+  Int32 outLen = 0;
+
+  int ret = unmarshal_avro(schemaID, goSlice, &out, &outLen);
+  if ( ret != 0 ){
     return {CRS_Status(HTTP_CODE::SERVER_ERROR, "Avro failed to decode data").status, std::nullopt};
   }
 
-  decoder->init(*inStream);
-  avro::GenericDatum datum(schema);
-  try {
-    avro::decode(*decoder, datum);
-    return {CRS_Status::SUCCESS.status, datum};
-  } catch (const std::exception &e) {
-    INF_MD_CACHE("Avro decode failed data len %lu, AvroError:   %s.\n", inData.size(),  e.what());
-    return {CRS_Status(HTTP_CODE::SERVER_ERROR, std::string("Decoding failed: ") + e.what()).status, std::nullopt};
-  }
-}
-
-std::tuple<avro::GenericDatum, std::vector<Uint8>, RS_Status>
-AvroDecoder::NativeFromBinary(const std::vector<Uint8> &buf) {
-  try {
-    // std::cout << "Schema: " << schema.toJson() << std::endl;
-    // std::cout << "Buffer size: " << buf.size() << std::endl;
-    auto inStream = avro::memoryInputStream(buf.data(), buf.size());
-    avro::DecoderPtr decoder = avro::binaryDecoder();
-    decoder->init(*inStream);
-
-    avro::GenericDatum datum(schema);
-    // std::cout << "Starting decode..." << std::endl;
-    avro::decode(*decoder, datum);
-    auto bytesRead = inStream->byteCount();
-    std::vector<Uint8> remainingBytes(buf.begin() + bytesRead, buf.end());
-    return {datum, remainingBytes, CRS_Status::SUCCESS.status};
-  } catch (const std::exception &e) {
-    return {avro::GenericDatum(),
-            buf,
-            CRS_Status(
-              static_cast<HTTP_CODE>(
-                drogon::HttpStatusCode::k400BadRequest), e.what()).status};
-  }
+  std::vector<char> jsonString(out, out + outLen);
+  free(out);
+  return {CRS_Status::SUCCESS.status, jsonString};
 }
 
 std::string getFeatureGroupServingKey(int joinIndex, int featureGroupId) {
@@ -283,9 +279,9 @@ newFeatureViewMetadata(const std::string &featureStoreName,
               static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
             return {nullptr, status};
           }
+
           fgSchemaCache[feature.featureGroupId] = newFgSchema;
         }
-
         std::tie(schema, status) =
           fgSchemaCache[feature.featureGroupId].getSchemaByFeatureName(
             feature.name);
@@ -293,14 +289,13 @@ newFeatureViewMetadata(const std::string &featureStoreName,
             static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
           return {nullptr, status};
         }
-        try {
-          codec = AvroDecoder(schema);
-        } catch (avro::Exception &e) {
-          return {nullptr,
-                  CRS_Status(static_cast<HTTP_CODE>(
-                    drogon::HttpStatusCode::k400BadRequest),
-                    "Failed to parse feature schema.").status};
+        codec = AvroDecoder(schema);
+        status = codec.register_with_go_layer();
+        if (status.http_code !=
+            static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
+          return {nullptr, status};
         }
+
         auto featureIndexKey = GetFeatureIndexKeyByFeature(feature);
         complexFeatures[featureIndexKey] = codec;
       }

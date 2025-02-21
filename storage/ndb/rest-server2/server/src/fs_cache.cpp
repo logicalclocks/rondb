@@ -363,6 +363,13 @@ void FSMetadataCache::cache_entry_updater(Uint32 key_cache_id) {
         if (m_evicted || (milliSeconds >= eviction_ms)) {
           DEB_FS("FS Key %s deleted", first_entry->m_key.c_str());
           m_fs_cache[key_cache_id].erase(first_entry->m_key);
+          //unregister complex features from golang layer
+          if (first_entry->m_data != nullptr && 
+              first_entry->m_data->complexFeatures.size() != 0){
+            for (auto& [key, val] : first_entry->m_data->complexFeatures) {
+              val.unregister_with_go_layer();
+            }
+          }
           NdbMutex_Unlock(m_rwLock[key_cache_id]);
           NdbMutex_Lock(m_queueLock[key_cache_id]);
           remove_entry(first_entry, key_cache_id);

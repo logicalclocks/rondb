@@ -51,7 +51,7 @@
  *   define_class_including_dependencies(AllConfigs);
  */
 #include <ndb_types.h>
-#include "common.h"
+#include <common.h>
 
 // todo Add docstring for all CM()
 

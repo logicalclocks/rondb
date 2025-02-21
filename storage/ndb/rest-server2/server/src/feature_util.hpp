@@ -38,8 +38,4 @@ base64_decode(const std::string &encoded_string, std::string &decoded_string);
 std::tuple<std::shared_ptr<RestErrorCode>, std::vector<char>>
 DeserialiseComplexFeature(const std::vector<char> &value,
                           const metadata::AvroDecoder &decoder);
-
-std::pair<RS_Status, std::optional<std::vector<char>>>
-ConvertAvroToJson(const avro::GenericDatum &datum);
-
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_FEATURE_UTIL_HPP_

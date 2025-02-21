@@ -52,6 +52,10 @@ constexpr const char* const usageHelp =
 #include <unistd.h>
 #include <csignal>
 
+extern "C" {
+  #include <avro.h>
+}
+
 using namespace pink;
 
 // Cleanup logic
