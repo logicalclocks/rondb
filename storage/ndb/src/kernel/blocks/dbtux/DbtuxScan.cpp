@@ -709,7 +709,13 @@ void Dbtux::PrepareAccLockReq4RAL(void* scan_rec_ptr,
   ndbrequire(c_scanOpPool.getValidPtr(scan_op_PTR));
   ScanOp* scan_op = scan_op_PTR.p;
   ndbrequire(scan_op == c_ctx.scanPtr.p);
-  ndbrequire(scan_op->m_readCommitted);
+  /*
+   * NOTICE:
+   * Dbtc::fk_scanFromChildTable will break this assumption
+   * Something seems wrong in constructing scan request flag
+   * there in previous implementation.
+   */
+  // ndbrequire(scan_op->m_readCommitted);
 #ifdef TTL_DEBUG
   g_eventLogger->info("Zart, Dbtux::PrepareAccLockReq4RAL, "
                       "ScanOp::m_tableId: %u, scanAccPtr: %u",

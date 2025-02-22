@@ -7163,6 +7163,11 @@ int ha_ndbcluster::extra(enum ha_extra_function operation) {
       DBUG_PRINT("info", ("Don't ignore TTL"));
       m_ttl_ignore = false;
       break;
+    case HA_EXTRA_FK_TTL:
+      DBUG_PRINT("info", ("HA_EXTRA_FK_TTL"));
+      DBUG_PRINT("info", ("Table has FK"));
+      m_ttl_fk = true;
+      break;
     default:
       break;
   }
@@ -11677,7 +11682,7 @@ ha_ndbcluster::ha_ndbcluster(handlerton *hton, TABLE_SHARE *table_arg)
       m_pushed_operation(nullptr),
       m_cond(this),
       m_multi_cursor(nullptr),
-      m_ttl_ignore(false) {
+      m_ttl_ignore(false), m_ttl_fk(false) {
   DBUG_TRACE;
 
   stats.records = ~(ha_rows)0;  // uninitialized
@@ -16196,6 +16201,12 @@ enum_alter_inplace_result ha_ndbcluster::check_inplace_alter_supported(
                                 &unsupported_reason, max_rows_changed)) {
         return inplace_unsupported(ha_alter_info, unsupported_reason);
       }
+      if (new_tab.isTTLEnabled() && m_ttl_fk) {
+        ha_alter_info->unsupported_reason = "Table has fk restrictions, can not add TTL";
+        ha_alter_info->report_unsupported_error("Adding TTL on table which has fk restrictions",
+            "drop the foreign keys from all the children tables");
+        return HA_ALTER_ERROR;
+      }
     }
 
     if (max_rows_changed) {
@@ -16404,6 +16415,7 @@ bool ha_ndbcluster::inplace_parse_comment(NdbDictionary::Table *new_tab,
       ndb_log_info("[API]parse TTL successfully: TTL = %u sec, "
                    "TTL_COLUMN = %s",
           new_ttl_sec, ttl_column.c_str());
+
       // Zart ttl_col->getAttrId() here is always RNIL.
       new_ttl_column_no = ttl_col->getColumnNo();
       int ttl_column_id = ttl_col->getAttrId();

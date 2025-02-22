@@ -3207,6 +3207,13 @@ void Suma::SyncRecord::nextScan(Signal *signal) {
     ScanFragReq::setStatScanFlag(req->requestInfo, 1);
   }
 
+  /*
+   * Zart
+   * TTL
+   * Ignore TTL in suma scan
+   */
+  ScanFragReq::setTTLIgnoreFragFlag(req->requestInfo, 1);
+
   req->fragmentNoKeyLen = fd.m_fragDesc.m_fragmentNo;
   req->schemaVersion = tabPtr.p->m_schemaVersion;
   req->transId1 = 0;

@@ -1592,38 +1592,56 @@ def case_27_thdB(conn):
     B_succ = True
 
 
+def case_28_pre(A_conn, B_conn):
+    try:
+        cur = A_conn.cursor()
+        cur.execute("DROP TABLE IF EXISTS sz1")
+        cur.execute("CREATE TABLE test.sz1 ("
+                    "col_a INT, "
+                    "col_b TIMESTAMP, "
+                    "col_c INT, "
+                    "PRIMARY KEY(col_a), "
+                    "KEY(col_c))"
+                    "ENGINE = NDB, "
+                    "COMMENT=\"NDB_TABLE=FULLY_REPLICATED=1,TTL=10@col_b\"")
+    except Exception as e:
+        print(f"PRE Create DB/TABLE failed: {e}")
+        A_conn.close()
+        B_conn.close()
+        exit (-1)
+
 def case_28_thdA(conn):
     global A_succ
     try:
         cur = conn.cursor()
         cur.execute("BEGIN")
-        cur.execute("INSERT INTO sz VALUES(1, sysdate(), 1), (2, sysdate(), 2), (3, sysdate(), 3), (4, sysdate(), 4), (5, sysdate(), 5), (6, sysdate(), 6), (7, sysdate(), 7), (8, sysdate(), 8), (9, sysdate(), 9), (10, sysdate(), 10)")
+        cur.execute("INSERT INTO sz1 VALUES(1, sysdate(), 1), (2, sysdate(), 2), (3, sysdate(), 3), (4, sysdate(), 4), (5, sysdate(), 5), (6, sysdate(), 6), (7, sysdate(), 7), (8, sysdate(), 8), (9, sysdate(), 9), (10, sysdate(), 10)")
         cur.execute("COMMIT")
         time.sleep(2)
         cur.execute("BEGIN")
-        cur.execute("SELECT * FROM sz")
+        cur.execute("SELECT * FROM sz1")
         results = cur.fetchall()
-        assert len(results) == 10, "ASSERT"
-        cur.execute("SELECT * FROM sz where col_a = 6")
+        assert len(results) == 10, "ASSERT 1"
+        cur.execute("SELECT * FROM sz1 where col_a = 6")
         results = cur.fetchall()
-        assert len(results) == 1, "ASSERT"
-        cur.execute("SELECT * FROM sz where col_a >= 6")
+        assert len(results) == 1, "ASSERT 2"
+        cur.execute("SELECT * FROM sz1 where col_a >= 6")
         results = cur.fetchall()
-        assert len(results) == 5, "ASSERT"
-        cur.execute("SELECT * FROM sz where col_c = 8")
+        assert len(results) == 5, "ASSERT 3"
+        cur.execute("SELECT * FROM sz1 where col_c = 8")
         results = cur.fetchall()
-        assert len(results) == 1, "ASSERT"
-        cur.execute("SELECT * FROM sz where col_c <= 8")
+        assert len(results) == 1, "ASSERT 4"
+        cur.execute("SELECT * FROM sz1 where col_c <= 8")
         results = cur.fetchall()
-        assert len(results) == 8, "ASSERT"
+        assert len(results) == 8, "ASSERT 5"
         time.sleep(9)
-        cur.execute("SELECT * FROM sz")
+        cur.execute("SELECT * FROM sz1")
         results = cur.fetchall()
-        assert len(results) == 0, "ASSERT"
+        assert len(results) == 0, "ASSERT 6"
         cur.execute("COMMIT")
 
         cur.execute("BEGIN")
-        cur.execute("INSERT INTO sz VALUES(1, sysdate(), 1), (2, sysdate(), 2), (3, sysdate(), 3), (4, sysdate(), 4), (5, sysdate(), 5), (6, sysdate(), 6), (7, sysdate(), 7), (8, sysdate(), 8), (9, sysdate(), 9), (10, sysdate(), 10)")
+        cur.execute("INSERT INTO sz1 VALUES(1, sysdate(), 1), (2, sysdate(), 2), (3, sysdate(), 3), (4, sysdate(), 4), (5, sysdate(), 5), (6, sysdate(), 6), (7, sysdate(), 7), (8, sysdate(), 8), (9, sysdate(), 9), (10, sysdate(), 10)")
         cur.execute("COMMIT")
         time.sleep(2)
 
@@ -1640,69 +1658,208 @@ def case_28_thdB(conn):
         time.sleep(15)
         cur = conn.cursor()
         cur.execute("BEGIN")
+        cur.execute("SELECT * FROM sz1 WHERE col_a <= 5 FOR SHARE")
+        results = cur.fetchall()
+        assert len(results) == 5, "ASSERT 1"
+        time.sleep(6)
+        cur.execute("SELECT * FROM sz1")
+        results = cur.fetchall()
+        assert len(results) == 5, "ASSERT 2"
+        cur.execute("SELECT * FROM sz1 WHERE col_a = 3")
+        results = cur.fetchall()
+        assert len(results) == 1, "ASSERT 3"
+        cur.execute("SELECT * FROM sz1 WHERE col_a = 8")
+        results = cur.fetchall()
+        assert len(results) == 0, "ASSERT 4"
+        cur.execute("SELECT * FROM sz1 WHERE col_a >= 3")
+        results = cur.fetchall()
+        assert len(results) == 3, "ASSERT 5"
+        cur.execute("SELECT * FROM sz1 WHERE col_a <= 9")
+        results = cur.fetchall()
+        assert len(results) == 5, "ASSERT 6"
+
+        cur.execute("SELECT * FROM sz1 WHERE col_c = 3")
+        results = cur.fetchall()
+        assert len(results) == 1, "ASSERT 7"
+        cur.execute("SELECT * FROM sz1 WHERE col_c = 8")
+        results = cur.fetchall()
+        assert len(results) == 0, "ASSERT 8"
+        cur.execute("SELECT * FROM sz1 WHERE col_c >= 3")
+        results = cur.fetchall()
+        assert len(results) == 3, "ASSERT 9"
+        cur.execute("SELECT * FROM sz1 WHERE col_c <= 9")
+        results = cur.fetchall()
+        assert len(results) == 5, "ASSERT 10"
+        cur.execute("COMMIT")
+
+        cur.execute("BEGIN")
+        cur.execute("SELECT * FROM sz1")
+        results = cur.fetchall()
+        assert len(results) == 0, "ASSERT 11"
+        cur.execute("SELECT * FROM sz1 WHERE col_a = 3")
+        results = cur.fetchall()
+        assert len(results) == 0, "ASSERT 12"
+        cur.execute("SELECT * FROM sz1 WHERE col_a = 8")
+        results = cur.fetchall()
+        assert len(results) == 0, "ASSERT 13"
+        cur.execute("SELECT * FROM sz1 WHERE col_a >= 3")
+        results = cur.fetchall()
+        assert len(results) == 0, "ASSERT 14"
+        cur.execute("SELECT * FROM sz1 WHERE col_a <= 9")
+        results = cur.fetchall()
+        assert len(results) == 0, "ASSERT 15"
+
+        cur.execute("SELECT * FROM sz1 WHERE col_c = 3")
+        results = cur.fetchall()
+        assert len(results) == 0, "ASSERT 16"
+        cur.execute("SELECT * FROM sz1 WHERE col_c = 8")
+        results = cur.fetchall()
+        assert len(results) == 0, "ASSERT 17"
+        cur.execute("SELECT * FROM sz1 WHERE col_c >= 3")
+        results = cur.fetchall()
+        assert len(results) == 0, "ASSERT 18"
+        cur.execute("SELECT * FROM sz1 WHERE col_c <= 9")
+        results = cur.fetchall()
+        assert len(results) == 0, "ASSERT 19"
+        cur.execute("COMMIT")
+
+    except Exception as e:
+        print(f"Thd B failed: {e}")
+        time.sleep(2)
+        cur.close()
+        return
+
+    cur.close()
+    B_succ = True
+
+def case_28_post(A_conn, B_conn):
+    try:
+        cur = A_conn.cursor()
+        cur.execute("DROP TABLE IF EXISTS sz1")
+    except Exception as e:
+        print(f"POST Drop DB/TABLE failed: {e}")
+        A_conn.close()
+        B_conn.close()
+        exit (-1)
+
+
+def case_48_thdA(conn):
+    # Notice: this case has unique index on col_c
+    global A_succ
+    try:
+        cur = conn.cursor()
+        cur.execute("BEGIN")
+        cur.execute("INSERT INTO sz VALUES(1, sysdate(), 1), (2, sysdate(), 2), (3, sysdate(), 3), (4, sysdate(), 4), (5, sysdate(), 5), (6, sysdate(), 6), (7, sysdate(), 7), (8, sysdate(), 8), (9, sysdate(), 9), (10, sysdate(), 10)")
+        cur.execute("COMMIT")
+        time.sleep(2)
+        cur.execute("BEGIN")
+        cur.execute("SELECT * FROM sz")
+        results = cur.fetchall()
+        assert len(results) == 10, "ASSERT 1"
+        cur.execute("SELECT * FROM sz where col_a = 6")
+        results = cur.fetchall()
+        assert len(results) == 1, "ASSERT 2"
+        cur.execute("SELECT * FROM sz where col_a >= 6")
+        results = cur.fetchall()
+        assert len(results) == 5, "ASSERT 3"
+        # = condition here will use the unique index on col_c
+        # which acquires lock on the row implicitly.
+        cur.execute("SELECT * FROM sz where col_c = 8")
+        results = cur.fetchall()
+        assert len(results) == 1, "ASSERT 4"
+        # <= condition here won't use the unique index on col_c...
+        # so no lock acquires
+        cur.execute("SELECT * FROM sz where col_c <= 8")
+        results = cur.fetchall()
+        assert len(results) == 8, "ASSERT 5"
+        time.sleep(9)
+        cur.execute("SELECT * FROM sz")
+        results = cur.fetchall()
+        # Here is different with the case_28
+        assert len(results) == 1, "ASSERT 6"
+        cur.execute("COMMIT")
+
+        cur.execute("BEGIN")
+        cur.execute("INSERT INTO sz VALUES(1, sysdate(), 1), (2, sysdate(), 2), (3, sysdate(), 3), (4, sysdate(), 4), (5, sysdate(), 5), (6, sysdate(), 6), (7, sysdate(), 7), (8, sysdate(), 8), (9, sysdate(), 9), (10, sysdate(), 10)")
+        cur.execute("COMMIT")
+        time.sleep(2)
+
+    except Exception as e:
+        print(f"Thd A failed: {e}")
+        cur.close()
+        return
+    cur.close()
+    A_succ = True
+
+def case_48_thdB(conn):
+    global B_succ
+    try:
+        time.sleep(15)
+        cur = conn.cursor()
+        cur.execute("BEGIN")
         cur.execute("SELECT * FROM sz WHERE col_a <= 5 FOR SHARE")
         results = cur.fetchall()
-        assert len(results) == 5, "ASSERT"
+        assert len(results) == 5, "ASSERT 1"
         time.sleep(6)
         cur.execute("SELECT * FROM sz")
         results = cur.fetchall()
-        assert len(results) == 5, "ASSERT"
+        assert len(results) == 5, "ASSERT 2"
         cur.execute("SELECT * FROM sz WHERE col_a = 3")
         results = cur.fetchall()
-        assert len(results) == 1, "ASSERT"
+        assert len(results) == 1, "ASSERT 3"
         cur.execute("SELECT * FROM sz WHERE col_a = 8")
         results = cur.fetchall()
-        assert len(results) == 0, "ASSERT"
+        assert len(results) == 0, "ASSERT 4"
         cur.execute("SELECT * FROM sz WHERE col_a >= 3")
         results = cur.fetchall()
-        assert len(results) == 3, "ASSERT"
+        assert len(results) == 3, "ASSERT 5"
         cur.execute("SELECT * FROM sz WHERE col_a <= 9")
         results = cur.fetchall()
-        assert len(results) == 5, "ASSERT"
+        assert len(results) == 5, "ASSERT 6"
 
         cur.execute("SELECT * FROM sz WHERE col_c = 3")
         results = cur.fetchall()
-        assert len(results) == 1, "ASSERT"
+        assert len(results) == 1, "ASSERT 7"
         cur.execute("SELECT * FROM sz WHERE col_c = 8")
         results = cur.fetchall()
-        assert len(results) == 0, "ASSERT"
+        assert len(results) == 0, "ASSERT 8"
         cur.execute("SELECT * FROM sz WHERE col_c >= 3")
         results = cur.fetchall()
-        assert len(results) == 3, "ASSERT"
+        assert len(results) == 3, "ASSERT 9"
         cur.execute("SELECT * FROM sz WHERE col_c <= 9")
         results = cur.fetchall()
-        assert len(results) == 5, "ASSERT"
+        assert len(results) == 5, "ASSERT 10"
         cur.execute("COMMIT")
 
         cur.execute("BEGIN")
         cur.execute("SELECT * FROM sz")
         results = cur.fetchall()
-        assert len(results) == 0, "ASSERT"
+        assert len(results) == 0, "ASSERT 11"
         cur.execute("SELECT * FROM sz WHERE col_a = 3")
         results = cur.fetchall()
-        assert len(results) == 0, "ASSERT"
+        assert len(results) == 0, "ASSERT 12"
         cur.execute("SELECT * FROM sz WHERE col_a = 8")
         results = cur.fetchall()
-        assert len(results) == 0, "ASSERT"
+        assert len(results) == 0, "ASSERT 13"
         cur.execute("SELECT * FROM sz WHERE col_a >= 3")
         results = cur.fetchall()
-        assert len(results) == 0, "ASSERT"
+        assert len(results) == 0, "ASSERT 14"
         cur.execute("SELECT * FROM sz WHERE col_a <= 9")
         results = cur.fetchall()
-        assert len(results) == 0, "ASSERT"
+        assert len(results) == 0, "ASSERT 15"
 
         cur.execute("SELECT * FROM sz WHERE col_c = 3")
         results = cur.fetchall()
-        assert len(results) == 0, "ASSERT"
+        assert len(results) == 0, "ASSERT 16"
         cur.execute("SELECT * FROM sz WHERE col_c = 8")
         results = cur.fetchall()
-        assert len(results) == 0, "ASSERT"
+        assert len(results) == 0, "ASSERT 17"
         cur.execute("SELECT * FROM sz WHERE col_c >= 3")
         results = cur.fetchall()
-        assert len(results) == 0, "ASSERT"
+        assert len(results) == 0, "ASSERT 18"
         cur.execute("SELECT * FROM sz WHERE col_c <= 9")
         results = cur.fetchall()
-        assert len(results) == 0, "ASSERT"
+        assert len(results) == 0, "ASSERT 19"
         cur.execute("COMMIT")
 
     except Exception as e:
@@ -1723,7 +1880,8 @@ def case_29_pre(A_conn, B_conn):
                     "col_a INT, "
                     "col_b TIMESTAMP, "
                     "col_c INT, "
-                    "PRIMARY KEY(col_a)) "
+                    "PRIMARY KEY(col_a), "
+                    "KEY(col_c))"
                     "ENGINE = NDB, "
                     "COMMENT=\"NDB_TABLE=FULLY_REPLICATED=1,TTL=10@col_b\"")
     except Exception as e:
@@ -1859,6 +2017,170 @@ def case_29_post(A_conn, B_conn):
     try:
         cur = A_conn.cursor()
         cur.execute("DROP TABLE IF EXISTS sz1")
+    except Exception as e:
+        print(f"POST Drop DB/TABLE failed: {e}")
+        A_conn.close()
+        B_conn.close()
+        exit (-1)
+
+
+def case_49_pre(A_conn, B_conn):
+    try:
+        cur = A_conn.cursor()
+        cur.execute("DROP TABLE IF EXISTS sz1")
+        cur.execute("CREATE TABLE test.sz1 ("
+                    "col_a INT, "
+                    "col_b TIMESTAMP, "
+                    "col_c INT, "
+                    "PRIMARY KEY(col_a), "
+                    "UNIQUE KEY(col_c))"
+                    "ENGINE = NDB, "
+                    "COMMENT=\"NDB_TABLE=FULLY_REPLICATED=1,TTL=10@col_b\"")
+    except Exception as e:
+        print(f"PRE Create DB/TABLE failed: {e}")
+        A_conn.close()
+        B_conn.close()
+        exit (-1)
+
+def case_49_thdA(conn):
+    # Notice: this case has unique index on col_c
+    global A_succ
+    try:
+        cur = conn.cursor()
+        cur.execute("BEGIN")
+        cur.execute("INSERT INTO sz1 VALUES(1, sysdate(), 1), (2, sysdate(), 2), (3, sysdate(), 3), (4, sysdate(), 4), (5, sysdate(), 5), (6, sysdate(), 6), (7, sysdate(), 7), (8, sysdate(), 8), (9, sysdate(), 9), (10, sysdate(), 10)")
+        cur.execute("COMMIT")
+        time.sleep(2)
+        cur.execute("BEGIN")
+        cur.execute("SELECT * FROM sz1")
+        results = cur.fetchall()
+        assert len(results) == 10, "ASSERT"
+        cur.execute("SELECT * FROM sz1 where col_a = 6")
+        results = cur.fetchall()
+        assert len(results) == 1, "ASSERT"
+        cur.execute("SELECT * FROM sz1 where col_a >= 6")
+        results = cur.fetchall()
+        assert len(results) == 5, "ASSERT"
+        # = condition here will use the unique index on col_c
+        # which acquires lock on the row implicitly.
+        cur.execute("SELECT * FROM sz1 where col_c = 8")
+        results = cur.fetchall()
+        assert len(results) == 1, "ASSERT"
+        # <= condition here won't use the unique index on col_c...
+        # so no lock acquires
+        cur.execute("SELECT * FROM sz1 where col_c <= 8")
+        results = cur.fetchall()
+        assert len(results) == 8, "ASSERT"
+        time.sleep(9)
+        cur.execute("SELECT * FROM sz1")
+        results = cur.fetchall()
+        # Here is different with the case_48
+        assert len(results) == 1, "ASSERT"
+        cur.execute("COMMIT")
+        cur.execute("SELECT * FROM sz1")
+        results = cur.fetchall()
+        assert len(results) == 0, "ASSERT"
+
+        cur.execute("BEGIN")
+        cur.execute("INSERT INTO sz1 VALUES(1, sysdate(), 1), (2, sysdate(), 2), (3, sysdate(), 3), (4, sysdate(), 4), (5, sysdate(), 5), (6, sysdate(), 6), (7, sysdate(), 7), (8, sysdate(), 8), (9, sysdate(), 9), (10, sysdate(), 10)")
+        cur.execute("COMMIT")
+        time.sleep(2)
+        cur.execute("SELECT * FROM sz1")
+        results = cur.fetchall()
+        assert len(results) == 10, "ASSERT"
+
+    except Exception as e:
+        print(f"Thd A failed: {e}")
+        cur.close()
+        return
+    cur.close()
+    A_succ = True
+
+def case_49_thdB(conn):
+    global B_succ
+    try:
+        time.sleep(15)
+        cur = conn.cursor()
+        cur.execute("BEGIN")
+        cur.execute("SELECT * FROM sz1 WHERE col_a <= 5 FOR SHARE")
+        results = cur.fetchall()
+        assert len(results) == 5, "ASSERT"
+        time.sleep(7)
+        cur.execute("SELECT * FROM sz1")
+        results = cur.fetchall()
+        assert len(results) == 5, "ASSERT"
+        cur.execute("SELECT * FROM sz1 WHERE col_a = 3")
+        results = cur.fetchall()
+        assert len(results) == 1, "ASSERT"
+        cur.execute("SELECT * FROM sz1 WHERE col_a = 8")
+        results = cur.fetchall()
+        assert len(results) == 0, "ASSERT"
+        cur.execute("SELECT * FROM sz1 WHERE col_a >= 3")
+        results = cur.fetchall()
+        assert len(results) == 3, "ASSERT"
+        cur.execute("SELECT * FROM sz1 WHERE col_a <= 9")
+        results = cur.fetchall()
+        assert len(results) == 5, "ASSERT"
+
+        cur.execute("SELECT * FROM sz1 WHERE col_c = 3")
+        results = cur.fetchall()
+        assert len(results) == 1, "ASSERT"
+        cur.execute("SELECT * FROM sz1 WHERE col_c = 8")
+        results = cur.fetchall()
+        assert len(results) == 0, "ASSERT"
+        cur.execute("SELECT * FROM sz1 WHERE col_c >= 3")
+        results = cur.fetchall()
+        assert len(results) == 3, "ASSERT"
+        cur.execute("SELECT * FROM sz1 WHERE col_c <= 9")
+        results = cur.fetchall()
+        assert len(results) == 5, "ASSERT"
+        cur.execute("COMMIT")
+
+        cur.execute("BEGIN")
+        cur.execute("SELECT * FROM sz1")
+        results = cur.fetchall()
+        assert len(results) == 0, "ASSERT"
+        cur.execute("SELECT * FROM sz1 WHERE col_a = 3")
+        results = cur.fetchall()
+        assert len(results) == 0, "ASSERT"
+        cur.execute("SELECT * FROM sz1 WHERE col_a = 8")
+        results = cur.fetchall()
+        assert len(results) == 0, "ASSERT"
+        cur.execute("SELECT * FROM sz1 WHERE col_a >= 3")
+        results = cur.fetchall()
+        assert len(results) == 0, "ASSERT"
+        cur.execute("SELECT * FROM sz1 WHERE col_a <= 9")
+        results = cur.fetchall()
+        assert len(results) == 0, "ASSERT"
+
+        cur.execute("SELECT * FROM sz1 WHERE col_c = 3")
+        results = cur.fetchall()
+        assert len(results) == 0, "ASSERT"
+        cur.execute("SELECT * FROM sz1 WHERE col_c = 8")
+        results = cur.fetchall()
+        assert len(results) == 0, "ASSERT"
+        cur.execute("SELECT * FROM sz1 WHERE col_c >= 3")
+        results = cur.fetchall()
+        assert len(results) == 0, "ASSERT"
+        cur.execute("SELECT * FROM sz1 WHERE col_c <= 9")
+        results = cur.fetchall()
+        assert len(results) == 0, "ASSERT"
+        cur.execute("COMMIT")
+
+    except Exception as e:
+        print(f"Thd B failed: {e}")
+        time.sleep(2)
+        cur.close()
+        return
+
+    cur.close()
+    B_succ = True
+
+def case_49_post(A_conn, B_conn):
+    try:
+        cur = A_conn.cursor()
+        cur.execute("DROP TABLE IF EXISTS sz1")
+
     except Exception as e:
         print(f"POST Drop DB/TABLE failed: {e}")
         A_conn.close()
@@ -2247,11 +2569,11 @@ def case_36_thdA(conn):
         cur.execute("COMMIT")
         cur.execute("SELECT * FROM sz")
         results = cur.fetchall()
-        assert len(results) == 1, "ASSERT"
+        assert len(results) == 1, "ASSERT 1"
         time.sleep(11)
         cur.execute("SELECT * FROM sz")
         results = cur.fetchall()
-        assert len(results) == 0, "ASSERT"
+        assert len(results) == 0, "ASSERT 2"
     except Exception as e:
         print(f"Thd A failed: {e}")
         cur.close()
@@ -2266,15 +2588,15 @@ def case_36_thdB(conn):
         cur = conn.cursor()
         cur.execute("SELECT * FROM sz")
         results = cur.fetchall()
-        assert len(results) == 1, "ASSERT"
+        assert len(results) == 1, "ASSERT 3"
         for row in results:
             col_a = row[0]
-            assert col_a == 1, "ASSERT"
+            assert col_a == 1, "ASSERT 4"
         time.sleep(6)
         cur.execute("SELECT * FROM sz")
         results = cur.fetchall()
-        assert len(results) == 0, "ASSERT"
-        assert check_rep(conn) == True, "ASSERT"
+        assert len(results) == 0, "ASSERT 5"
+        assert check_rep(conn) == True, "ASSERT 6"
     except Exception as e:
         print(f"Thd B failed: {e}")
         cur.close()
@@ -2890,20 +3212,23 @@ def case_46_pre(A_conn, B_conn):
                     "col_a INT, "
                     "col_b TIMESTAMP, "
                     "col_c INT, "
-                    "PRIMARY KEY(col_a)) "
+                    "PRIMARY KEY(col_a), "
+                    "UNIQUE KEY(col_c))"
                     "ENGINE = NDB, "
                     "COMMENT=\"NDB_TABLE=TTL=10@col_b\"")
         cur.execute("CREATE TABLE test.sz2 ("
                     "col_a INT, "
                     "col_b TIMESTAMP, "
-                    "col_c INT)"
+                    "col_c INT, "
+                    "KEY(col_c)) "
                     "ENGINE = NDB, "
                     "COMMENT=\"NDB_TABLE=TTL=10@col_b\"")
         cur.execute("CREATE TABLE test.sz3 ("
                     "col_a INT, "
                     "col_b TIMESTAMP, "
                     "col_c INT, "
-                    "PRIMARY KEY(col_a)) "
+                    "PRIMARY KEY(col_a), "
+                    "KEY(col_c)) "
                     "ENGINE = NDB")
     except Exception as e:
         print(f"PRE Create DB/TABLE failed: {e}")
@@ -2978,6 +3303,13 @@ def case_46_thdB(conn):
                     "--ndb-connectstring=127.0.0.1:"+str(MGMD_PORT_R),
                     "--nodeid=2", "--backupid=1",
                     "--backup-path="+DATA_DIR_P_1+"/ndb_data/BACKUP/BACKUP-1",
+                    "--disable-indexes"],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    subprocess.run([BIN_DIR+"/ndb_restore",
+                    "--ndb-connectstring=127.0.0.1:"+str(MGMD_PORT_R),
+                    "--nodeid=2", "--backupid=1",
+                    "--backup-path="+DATA_DIR_P_1+"/ndb_data/BACKUP/BACKUP-1",
                     "--restore-data"],
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     subprocess.run([BIN_DIR+"/ndb_restore",
@@ -2985,6 +3317,13 @@ def case_46_thdB(conn):
                     "--nodeid=3", "--backupid=1",
                     "--backup-path="+DATA_DIR_P_2+"/ndb_data/BACKUP/BACKUP-1",
                     "--restore-data"],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    subprocess.run([BIN_DIR+"/ndb_restore",
+                    "--ndb-connectstring=127.0.0.1:"+str(MGMD_PORT_R),
+                    "--nodeid=2", "--backupid=1",
+                    "--backup-path="+DATA_DIR_P_1+"/ndb_data/BACKUP/BACKUP-1",
+                    "--rebuild-indexes"],
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     time.sleep(10)
     while True:
@@ -2996,19 +3335,19 @@ def case_46_thdB(conn):
             cur.execute("USE test")
             cur.execute("SELECT * FROM sz1")
             results = cur.fetchall()
-            assert len(results) == 1, "ASSERT"
+            assert len(results) == 1, "ASSERT 1"
             for row in results:
                 col_c = row[2]
-                assert col_c == 300, "ASSERT"
+                assert col_c == 300, "ASSERT 2"
             cur.execute("SELECT * FROM sz2")
             results = cur.fetchall()
-            assert len(results) == 1, "ASSERT"
+            assert len(results) == 1, "ASSERT 3"
             for row in results:
                 col_c = row[2]
-                assert col_c == 300, "ASSERT"
+                assert col_c == 300, "ASSERT 4"
             cur.execute("SELECT * FROM sz3")
             results = cur.fetchall()
-            assert len(results) == 4, "ASSERT"
+            assert len(results) == 4, "ASSERT 5"
             break
         except pymysql.MySQLError as e:
             errno = e.args[0]
@@ -3040,6 +3379,1099 @@ def case_46_post(A_conn, B_conn):
         #cur.execute("DROP TABLE IF EXISTS sz1")
         #cur.execute("DROP TABLE IF EXISTS sz2")
         #cur.execute("DROP TABLE IF EXISTS sz3")
+    except Exception as e:
+        print(f"POST Drop DB/TABLE failed: {e}")
+        A_conn.close()
+        B_conn.close()
+        exit (-1)
+
+
+def case_47_thdA(conn):
+    global A_succ
+    try:
+        cur = conn.cursor()
+        cur.execute("BEGIN")
+        cur.execute("INSERT INTO sz VALUES(1, SYSDATE(), 100)")
+        cur.execute("COMMIT")
+        time.sleep(11)
+        cur.execute("SELECT * FROM sz")
+        results = cur.fetchall()
+        assert len(results) == 0, "ASSERT"
+        cur.execute("BEGIN")
+        cur.execute("INSERT INTO sz VALUES(2, SYSDATE(), 100)")
+        cur.execute("COMMIT")
+        time.sleep(11)
+        cur.execute("BEGIN")
+        cur.execute("INSERT INTO sz VALUES(2, SYSDATE(), 100)")
+        cur.execute("COMMIT")
+        cur.execute("SELECT * FROM sz")
+        results = cur.fetchall()
+        assert len(results) == 1, "ASSERT"
+        for row in results:
+            col_a = row[0]
+            assert col_a == 2, "ASSERT"
+
+    except Exception as e:
+        print(f"Thd A failed: {e}")
+        cur.close()
+        return
+    cur.close()
+    A_succ = True
+
+def case_47_thdB(conn):
+    global B_succ
+    try:
+        time.sleep(5)
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM sz")
+        results = cur.fetchall()
+        assert len(results) == 1, "ASSERT"
+        for row in results:
+            col_a = row[0]
+            assert col_a == 1, "ASSERT"
+        time.sleep(10)
+        cur.execute("SELECT * FROM sz")
+        results = cur.fetchall()
+        assert len(results) == 1, "ASSERT"
+        for row in results:
+            col_a = row[0]
+            assert col_a == 2, "ASSERT"
+        time.sleep(6)
+        results = cur.fetchall()
+        assert len(results) == 0, "ASSERT"
+        assert check_rep(conn) == True, "ASSERT"
+    except Exception as e:
+        print(f"Thd B failed: {e}")
+        cur.close()
+        return
+    cur.close()
+    B_succ = True
+
+
+def case_50_pre(A_conn, B_conn):
+    try:
+        cur = A_conn.cursor()
+        cur.execute("DROP TABLE IF EXISTS sz1")
+        cur.execute("CREATE TABLE test.sz1 ("
+                    "col_a INT, "
+                    "col_b TIMESTAMP, "
+                    "col_c INT, "
+                    "PRIMARY KEY(col_a))"
+                    "ENGINE = NDB, "
+                    "COMMENT=\"NDB_TABLE=TTL=10@col_b\"")
+    except Exception as e:
+        print(f"PRE Create DB/TABLE failed: {e}")
+        A_conn.close()
+        B_conn.close()
+        exit (-1)
+
+def case_50_thdA(conn):
+    global A_succ
+    try:
+        cur = conn.cursor()
+        cur.execute("BEGIN")
+        cur.execute("INSERT INTO sz1 VALUES(1, SYSDATE(), 100)")
+        cur.execute("INSERT INTO sz1 VALUES(2, SYSDATE(), 200)")
+        cur.execute("INSERT INTO sz1 VALUES(3, DATE_ADD(SYSDATE(), INTERVAL 1 DAY), 300)")
+        cur.execute("INSERT INTO sz1 VALUES(4, SYSDATE(), 400)")
+        cur.execute("COMMIT")
+        cur.execute("SELECT * FROM sz1")
+        results = cur.fetchall()
+        assert len(results) == 4, "ASSERT"
+        time.sleep(11)
+        cur.execute("SELECT * FROM sz1")
+        results = cur.fetchall()
+        assert len(results) == 1, "ASSERT"
+        for row in results:
+            col_a = row[0]
+            assert col_a == 3, "ASSERT"
+
+        cur.execute("ALTER TABLE sz1 ADD UNIQUE INDEX uk(col_c)");
+        cur.execute("SELECT * FROM sz1")
+        results = cur.fetchall()
+        assert len(results) == 1, "ASSERT"
+        cur.execute("SELECT * FROM sz1 WHERE col_c = 100")
+        results = cur.fetchall()
+        assert len(results) == 0, "ASSERT"
+        cur.execute("SELECT * FROM sz1 WHERE col_c = 200")
+        results = cur.fetchall()
+        assert len(results) == 0, "ASSERT"
+        cur.execute("SELECT * FROM sz1 WHERE col_c = 300")
+        results = cur.fetchall()
+        assert len(results) == 1, "ASSERT"
+        cur.execute("SELECT * FROM sz1 WHERE col_c = 400")
+        results = cur.fetchall()
+        assert len(results) == 0, "ASSERT"
+
+        cur.execute("ALTER TABLE sz1 comment=\"NDB_TABLE=TTL=OFF\"");
+        cur.execute("SELECT * FROM sz1")
+        results = cur.fetchall()
+        assert len(results) == 4, "ASSERT"
+        cur.execute("SELECT * FROM sz1 WHERE col_c = 100")
+        results = cur.fetchall()
+        assert len(results) == 1, "ASSERT"
+        cur.execute("SELECT * FROM sz1 WHERE col_c = 200")
+        results = cur.fetchall()
+        assert len(results) == 1, "ASSERT"
+        cur.execute("SELECT * FROM sz1 WHERE col_c = 300")
+        results = cur.fetchall()
+        assert len(results) == 1, "ASSERT"
+        cur.execute("SELECT * FROM sz1 WHERE col_c = 400")
+        results = cur.fetchall()
+        assert len(results) == 1, "ASSERT"
+
+    except Exception as e:
+        print(f"Thd A failed: {e}")
+        cur.close()
+        return
+    cur.close()
+    A_succ = True
+
+def case_50_thdB(conn):
+    global B_succ
+    try:
+        time.sleep(15)
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM sz1")
+        results = cur.fetchall()
+        assert len(results) == 4, "ASSERT"
+        cur.execute("SELECT * FROM sz1 WHERE col_c = 100")
+        results = cur.fetchall()
+        assert len(results) == 1, "ASSERT"
+        cur.execute("SELECT * FROM sz1 WHERE col_c = 200")
+        results = cur.fetchall()
+        assert len(results) == 1, "ASSERT"
+        cur.execute("SELECT * FROM sz1 WHERE col_c = 300")
+        results = cur.fetchall()
+        assert len(results) == 1, "ASSERT"
+        cur.execute("SELECT * FROM sz1 WHERE col_c = 400")
+        results = cur.fetchall()
+        assert len(results) == 1, "ASSERT"
+
+        assert check_rep(conn) == True, "ASSERT"
+    except Exception as e:
+        print(f"Thd B failed: {e}")
+        cur.close()
+        return
+    cur.close()
+    B_succ = True
+
+def case_50_post(A_conn, B_conn):
+    try:
+        cur = A_conn.cursor()
+        cur.execute("DROP TABLE IF EXISTS sz1")
+    except Exception as e:
+        print(f"POST Drop DB/TABLE failed: {e}")
+        A_conn.close()
+        B_conn.close()
+        exit (-1)
+
+
+def case_51_pre(A_conn, B_conn):
+    # Precondition: ts_1 is pre created
+    try:
+        cur = A_conn.cursor()
+        cur.execute("DROP TABLE IF EXISTS sz1")
+        cur.execute("CREATE TABLE test.sz1 ("
+                    "col_a INT, "
+                    "col_b TIMESTAMP, "
+                    "col_c INT, "
+                    "col_d INT STORAGE DISK, "
+                    "PRIMARY KEY(col_a))"
+                    "ENGINE = NDB, TABLESPACE ts_1, "
+                    "COMMENT=\"NDB_TABLE=TTL=10@col_b\"")
+    except Exception as e:
+        print(f"PRE Create DB/TABLE failed: {e}")
+        A_conn.close()
+        B_conn.close()
+        exit (-1)
+
+def case_51_thdA(conn):
+    global A_succ
+    try:
+        cur = conn.cursor()
+        cur.execute("BEGIN")
+        cur.execute("INSERT INTO sz1 VALUES(1, SYSDATE(), 100, 10000)")
+        cur.execute("INSERT INTO sz1 VALUES(2, SYSDATE(), 200, 20000)")
+        cur.execute("INSERT INTO sz1 VALUES(3, DATE_ADD(SYSDATE(), INTERVAL 1 DAY), 300, 30000)")
+        cur.execute("INSERT INTO sz1 VALUES(4, SYSDATE(), 400, 40000)")
+        cur.execute("COMMIT")
+        cur.execute("SELECT * FROM sz1")
+        results = cur.fetchall()
+        assert len(results) == 4, "ASSERT"
+        time.sleep(11)
+        cur.execute("SELECT * FROM sz1")
+        results = cur.fetchall()
+        assert len(results) == 1, "ASSERT"
+        for row in results:
+            col_a = row[0]
+            assert col_a == 3, "ASSERT"
+
+        cur.execute("ALTER TABLE sz1 ADD UNIQUE INDEX uk(col_c)");
+        cur.execute("SELECT * FROM sz1")
+        results = cur.fetchall()
+        assert len(results) == 1, "ASSERT"
+        cur.execute("SELECT * FROM sz1 WHERE col_c = 100")
+        results = cur.fetchall()
+        assert len(results) == 0, "ASSERT"
+        cur.execute("SELECT * FROM sz1 WHERE col_c = 200")
+        results = cur.fetchall()
+        assert len(results) == 0, "ASSERT"
+        cur.execute("SELECT * FROM sz1 WHERE col_c = 300")
+        results = cur.fetchall()
+        assert len(results) == 1, "ASSERT"
+        cur.execute("SELECT * FROM sz1 WHERE col_c = 400")
+        results = cur.fetchall()
+        assert len(results) == 0, "ASSERT"
+
+        cur.execute("ALTER TABLE sz1 comment=\"NDB_TABLE=TTL=OFF\"");
+        cur.execute("SELECT * FROM sz1")
+        results = cur.fetchall()
+        assert len(results) == 4, "ASSERT"
+        cur.execute("SELECT * FROM sz1 WHERE col_c = 100")
+        results = cur.fetchall()
+        assert len(results) == 1, "ASSERT"
+        cur.execute("SELECT * FROM sz1 WHERE col_c = 200")
+        results = cur.fetchall()
+        assert len(results) == 1, "ASSERT"
+        cur.execute("SELECT * FROM sz1 WHERE col_c = 300")
+        results = cur.fetchall()
+        assert len(results) == 1, "ASSERT"
+        cur.execute("SELECT * FROM sz1 WHERE col_c = 400")
+        results = cur.fetchall()
+        assert len(results) == 1, "ASSERT"
+
+    except Exception as e:
+        print(f"Thd A failed: {e}")
+        cur.close()
+        return
+    cur.close()
+    A_succ = True
+
+def case_51_thdB(conn):
+    global B_succ
+    try:
+        time.sleep(15)
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM sz1")
+        results = cur.fetchall()
+        assert len(results) == 4, "ASSERT"
+        cur.execute("SELECT * FROM sz1 WHERE col_c = 100")
+        results = cur.fetchall()
+        assert len(results) == 1, "ASSERT"
+        cur.execute("SELECT * FROM sz1 WHERE col_c = 200")
+        results = cur.fetchall()
+        assert len(results) == 1, "ASSERT"
+        cur.execute("SELECT * FROM sz1 WHERE col_c = 300")
+        results = cur.fetchall()
+        assert len(results) == 1, "ASSERT"
+        cur.execute("SELECT * FROM sz1 WHERE col_c = 400")
+        results = cur.fetchall()
+        assert len(results) == 1, "ASSERT"
+
+        assert check_rep(conn) == True, "ASSERT"
+    except Exception as e:
+        print(f"Thd B failed: {e}")
+        cur.close()
+        return
+    cur.close()
+    B_succ = True
+
+def case_51_post(A_conn, B_conn):
+    try:
+        cur = A_conn.cursor()
+        cur.execute("DROP TABLE IF EXISTS sz1")
+    except Exception as e:
+        print(f"POST Drop DB/TABLE failed: {e}")
+        A_conn.close()
+        B_conn.close()
+        exit (-1)
+
+
+def case_52_pre(A_conn, B_conn):
+    # Precondition: ts_1 is pre created
+    try:
+        cur = A_conn.cursor()
+        cur.execute("DROP TABLE IF EXISTS sz1")
+        cur.execute("CREATE TABLE test.sz1 ("
+                    "col_a INT, "
+                    "col_b TIMESTAMP, "
+                    "col_c INT, "
+                    "col_d INT STORAGE DISK, "
+                    "PRIMARY KEY(col_a))"
+                    "ENGINE = NDB, TABLESPACE ts_1, "
+                    "COMMENT=\"NDB_TABLE=TTL=10@col_b\"")
+    except Exception as e:
+        print(f"PRE Create DB/TABLE failed: {e}")
+        A_conn.close()
+        B_conn.close()
+        exit (-1)
+
+def case_52_thdA(conn):
+    global A_succ
+    try:
+        cur = conn.cursor()
+        cur.execute("BEGIN")
+        cur.execute("INSERT INTO sz1 VALUES(1, SYSDATE(), 100, 10000)")
+        cur.execute("INSERT INTO sz1 VALUES(2, SYSDATE(), 200, 20000)")
+        cur.execute("INSERT INTO sz1 VALUES(3, DATE_ADD(SYSDATE(), INTERVAL 1 DAY), 300, 30000)")
+        cur.execute("INSERT INTO sz1 VALUES(4, SYSDATE(), 400, 40000)")
+        cur.execute("COMMIT")
+        cur.execute("SELECT * FROM sz1")
+        results = cur.fetchall()
+        assert len(results) == 4, "ASSERT"
+
+        cur.execute("ALTER TABLE sz1 CHANGE COLUMN col_b col_b INT STORAGE DISK");
+    except Exception as e:
+        if e.args[0] != 1478:
+            print(f"Thd A failed: {e}")
+            cur.close()
+            return
+    try:
+        cur.execute("ALTER TABLE sz1 STORAGE DISK");
+    except Exception as e:
+        if e.args[0] != 1478:
+            print(f"Thd A failed: {e}")
+            cur.close()
+            return
+
+    cur.close()
+    A_succ = True
+
+def case_52_thdB(conn):
+    global B_succ
+    try:
+        time.sleep(11)
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM sz1")
+        results = cur.fetchall()
+        assert len(results) == 1, "ASSERT"
+
+        assert check_rep(conn) == True, "ASSERT"
+    except Exception as e:
+        print(f"Thd B failed: {e}")
+        cur.close()
+        return
+    cur.close()
+    B_succ = True
+
+def case_52_post(A_conn, B_conn):
+    try:
+        cur = A_conn.cursor()
+        cur.execute("DROP TABLE IF EXISTS sz1")
+    except Exception as e:
+        print(f"POST Drop DB/TABLE failed: {e}")
+        A_conn.close()
+        B_conn.close()
+        exit (-1)
+
+
+def case_53_pre(A_conn, B_conn):
+    try:
+        cur = A_conn.cursor()
+        cur.execute("DROP TABLE IF EXISTS sz1")
+        cur.execute("CREATE TABLE test.sz1 ("
+                    "col_a INT, "
+                    "col_b TIMESTAMP, "
+                    "col_c INT, "
+                    "PRIMARY KEY(col_a))"
+                    "ENGINE = NDB, "
+                    "COMMENT=\"NDB_TABLE=TTL=10@col_b\"")
+    except Exception as e:
+        print(f"PRE Create DB/TABLE failed: {e}")
+        A_conn.close()
+        B_conn.close()
+        exit (-1)
+
+def case_53_thdA(conn):
+    global A_succ
+    try:
+        cur = conn.cursor()
+        cur.execute("BEGIN")
+        cur.execute("INSERT INTO sz1 VALUES(1, SYSDATE(), 100)")
+        cur.execute("INSERT INTO sz1 VALUES(2, SYSDATE(), 200)")
+        cur.execute("INSERT INTO sz1 VALUES(3, DATE_ADD(SYSDATE(), INTERVAL 1 DAY), 300)")
+        cur.execute("INSERT INTO sz1 VALUES(4, SYSDATE(), 400)")
+        cur.execute("COMMIT")
+        cur.execute("SELECT * FROM sz1")
+        results = cur.fetchall()
+        assert len(results) == 4, "ASSERT"
+        time.sleep(11)
+        cur.execute("SELECT * FROM sz1")
+        results = cur.fetchall()
+        assert len(results) == 1, "ASSERT"
+        for row in results:
+            col_a = row[0]
+            assert col_a == 3, "ASSERT"
+
+        cur.execute("ALTER TABLE sz1 ADD INDEX uk(col_c)");
+        cur.execute("SELECT * FROM sz1")
+        results = cur.fetchall()
+        assert len(results) == 1, "ASSERT"
+        cur.execute("SELECT * FROM sz1 WHERE col_c = 100")
+        results = cur.fetchall()
+        assert len(results) == 0, "ASSERT"
+        cur.execute("SELECT * FROM sz1 WHERE col_c = 200")
+        results = cur.fetchall()
+        assert len(results) == 0, "ASSERT"
+        cur.execute("SELECT * FROM sz1 WHERE col_c = 300")
+        results = cur.fetchall()
+        assert len(results) == 1, "ASSERT"
+        cur.execute("SELECT * FROM sz1 WHERE col_c = 400")
+        results = cur.fetchall()
+        assert len(results) == 0, "ASSERT"
+
+        cur.execute("ALTER TABLE sz1 comment=\"NDB_TABLE=TTL=OFF\"");
+        cur.execute("SELECT * FROM sz1")
+        results = cur.fetchall()
+        assert len(results) == 4, "ASSERT"
+        cur.execute("SELECT * FROM sz1 WHERE col_c = 100")
+        results = cur.fetchall()
+        assert len(results) == 1, "ASSERT"
+        cur.execute("SELECT * FROM sz1 WHERE col_c = 200")
+        results = cur.fetchall()
+        assert len(results) == 1, "ASSERT"
+        cur.execute("SELECT * FROM sz1 WHERE col_c = 300")
+        results = cur.fetchall()
+        assert len(results) == 1, "ASSERT"
+        cur.execute("SELECT * FROM sz1 WHERE col_c = 400")
+        results = cur.fetchall()
+        assert len(results) == 1, "ASSERT"
+
+    except Exception as e:
+        print(f"Thd A failed: {e}")
+        cur.close()
+        return
+    cur.close()
+    A_succ = True
+
+def case_53_thdB(conn):
+    global B_succ
+    try:
+        time.sleep(15)
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM sz1")
+        results = cur.fetchall()
+        assert len(results) == 4, "ASSERT"
+        cur.execute("SELECT * FROM sz1 WHERE col_c = 100")
+        results = cur.fetchall()
+        assert len(results) == 1, "ASSERT"
+        cur.execute("SELECT * FROM sz1 WHERE col_c = 200")
+        results = cur.fetchall()
+        assert len(results) == 1, "ASSERT"
+        cur.execute("SELECT * FROM sz1 WHERE col_c = 300")
+        results = cur.fetchall()
+        assert len(results) == 1, "ASSERT"
+        cur.execute("SELECT * FROM sz1 WHERE col_c = 400")
+        results = cur.fetchall()
+        assert len(results) == 1, "ASSERT"
+
+        assert check_rep(conn) == True, "ASSERT"
+    except Exception as e:
+        print(f"Thd B failed: {e}")
+        cur.close()
+        return
+    cur.close()
+    B_succ = True
+
+def case_53_post(A_conn, B_conn):
+    try:
+        cur = A_conn.cursor()
+        cur.execute("DROP TABLE IF EXISTS sz1")
+    except Exception as e:
+        print(f"POST Drop DB/TABLE failed: {e}")
+        A_conn.close()
+        B_conn.close()
+        exit (-1)
+
+
+def case_54_pre(A_conn, B_conn):
+    try:
+        cur = A_conn.cursor()
+        cur.execute("DROP TABLE IF EXISTS parent")
+        cur.execute("DROP TABLE IF EXISTS sz1")
+        cur.execute("DROP TABLE IF EXISTS child")
+        cur.execute("CREATE TABLE parent ("
+                    "col_a INT, "
+                    "col_b_ui INT, "
+                    "col_c_ui_upd INT, "
+                    "col_d_ui_del INT, "
+                    "PRIMARY KEY(col_a), "
+                    "UNIQUE KEY(col_b_ui), "
+                    "UNIQUE KEY(col_c_ui_upd), "
+                    "UNIQUE KEY(col_d_ui_del)) "
+                    "ENGINE = NDB")
+        cur.execute("CREATE TABLE test.sz1 ("
+                    "col_a INT, "
+                    "col_t TIMESTAMP, "
+                    "col_b_ui INT, "
+                    "col_c_ui_upd INT, "
+                    "col_d_ui_del INT, "
+                    "col_e_ui INT, "
+                    "col_f_ui_upd INT, "
+                    "col_g_ui_del INT, "
+                    "PRIMARY KEY(col_a), "
+                    "UNIQUE KEY(col_e_ui), "
+                    "UNIQUE KEY(col_f_ui_upd), "
+                    "UNIQUE KEY(col_g_ui_del), "
+                    "FOREIGN KEY(col_b_ui) REFERENCES parent(col_b_ui) ON UPDATE CASCADE ON DELETE CASCADE, "
+                    "FOREIGN KEY(col_c_ui_upd) REFERENCES parent(col_c_ui_upd) ON UPDATE CASCADE ON DELETE CASCADE, "
+                    "FOREIGN KEY(col_d_ui_del) REFERENCES parent(col_d_ui_del) ON UPDATE CASCADE ON DELETE CASCADE) "
+                    "ENGINE = NDB, "
+                    "COMMENT=\"NDB_TABLE=TTL=10@col_t\"")
+        cur.execute("CREATE TABLE test.child ("
+                    "col_a INT, "
+                    "col_e_ui INT, "
+                    "col_f_ui_upd INT, "
+                    "col_g_ui_del INT, "
+                    "PRIMARY KEY(col_a), "
+                    "FOREIGN KEY(col_e_ui) REFERENCES sz1(col_e_ui) ON UPDATE CASCADE ON DELETE CASCADE, "
+                    "FOREIGN KEY(col_f_ui_upd) REFERENCES sz1(col_f_ui_upd) ON UPDATE CASCADE ON DELETE CASCADE, "
+                    "FOREIGN KEY(col_g_ui_del) REFERENCES sz1(col_g_ui_del) ON UPDATE CASCADE ON DELETE CASCADE) "
+                    "ENGINE = NDB")
+    except Exception as e:
+        print(f"PRE Create DB/TABLE failed: {e}")
+        A_conn.close()
+        B_conn.close()
+        exit (-1)
+
+def case_54_thdA(conn):
+    global A_succ
+    try:
+        cur = conn.cursor()
+        exit
+        cur.execute("BEGIN")
+        cur.execute("INSERT INTO parent VALUES(1, 11, 12, 13)")
+        cur.execute("INSERT INTO parent VALUES(2, 21, 22, 23)")
+        cur.execute("INSERT INTO parent VALUES(3, 31, 32, 33)")
+        cur.execute("INSERT INTO parent VALUES(4, 41, 42, 43)")
+        cur.execute("INSERT INTO parent VALUES(5, 51, 52, 53)")
+        cur.execute("INSERT INTO parent VALUES(6, 61, 62, 63)")
+        cur.execute("INSERT INTO sz1 VALUES(1, SYSDATE(), 11, 12, 13, 14, 15, 16)")
+        cur.execute("INSERT INTO sz1 VALUES(2, SYSDATE(), 21, 22, 23, 24, 25, 26)")
+        cur.execute("INSERT INTO sz1 VALUES(3, SYSDATE(), 31, 32, 33, 34, 35, 36)")
+        cur.execute("INSERT INTO sz1 VALUES(4, SYSDATE(), 41, 42, 43, 44, 45, 46)")
+        cur.execute("INSERT INTO sz1 VALUES(5, SYSDATE(), 51, 52, 53, 54, 55, 56)")
+        cur.execute("INSERT INTO sz1 VALUES(6, SYSDATE(), 61, 62, 63, 64, 65, 66)")
+        cur.execute("INSERT INTO child VALUES(1, 14, 15, 16)")
+        cur.execute("INSERT INTO child VALUES(2, 24, 25, 26)")
+        cur.execute("INSERT INTO child VALUES(3, 34, 35, 36)")
+        cur.execute("INSERT INTO child VALUES(4, 44, 45, 46)")
+        cur.execute("INSERT INTO child VALUES(5, 54, 55, 56)")
+        cur.execute("INSERT INTO child VALUES(6, 64, 65, 66)")
+        cur.execute("COMMIT")
+        cur.execute("SELECT * FROM parent")
+        results = cur.fetchall()
+        assert len(results) == 6, "ASSERT"
+        cur.execute("SELECT * FROM sz1")
+        results = cur.fetchall()
+        assert len(results) == 6, "ASSERT"
+        cur.execute("SELECT * FROM child")
+        results = cur.fetchall()
+        assert len(results) == 6, "ASSERT"
+
+        cur.execute("BEGIN")
+        cur.execute("UPDATE parent SET col_c_ui_upd = 222 WHERE col_c_ui_upd = 22")
+        cur.execute("DELETE FROM parent WHERE col_d_ui_del = 33")
+        cur.execute("COMMIT")
+
+        cur.execute("SELECT * FROM parent WHERE col_c_ui_upd = 222");
+        results = cur.fetchall()
+        assert len(results) == 1, "ASSERT"
+        cur.execute("SELECT * FROM sz1 WHERE col_c_ui_upd = 222");
+        results = cur.fetchall()
+        assert len(results) == 1, "ASSERT"
+        for row in results:
+            col_a = row[0]
+            assert col_a == 2, "ASSERT"
+
+        cur.execute("SELECT * FROM sz1 WHERE col_d_ui_del = 33");
+        results = cur.fetchall()
+        assert len(results) == 0, "ASSERT"
+        cur.execute("SELECT * FROM child WHERE col_g_ui_del = 36");
+        results = cur.fetchall()
+        assert len(results) == 0, "ASSERT"
+
+
+        cur.execute("BEGIN")
+        cur.execute("UPDATE sz1 SET col_f_ui_upd = 445 WHERE col_f_ui_upd = 45")
+        cur.execute("DELETE FROM sz1 WHERE col_g_ui_del = 56")
+        cur.execute("COMMIT")
+
+        cur.execute("BEGIN")
+        cur.execute("SELECT * FROM sz1 WHERE col_f_ui_upd = 445");
+        results = cur.fetchall()
+        assert len(results) == 1, "ASSERT"
+        cur.execute("SELECT * FROM child WHERE col_f_ui_upd = 445");
+        results = cur.fetchall()
+        assert len(results) == 1, "ASSERT"
+        for row in results:
+            col_a = row[0]
+            assert col_a == 4, "ASSERT"
+        cur.execute("COMMIT")
+
+        cur.execute("BEGIN")
+        cur.execute("SELECT * FROM sz1 WHERE col_g_ui_del = 56");
+        results = cur.fetchall()
+        assert len(results) == 0, "ASSERT"
+        cur.execute("SELECT * FROM child WHERE col_g_ui_del = 56");
+        results = cur.fetchall()
+        assert len(results) == 0, "ASSERT"
+        cur.execute("COMMIT")
+
+        time.sleep(11)
+
+        cur.execute("SELECT * FROM parent")
+        results = cur.fetchall()
+        assert len(results) == 5, "ASSERT1"
+        cur.execute("SELECT * FROM sz1")
+        results = cur.fetchall()
+        assert len(results) == 0, "ASSERT2"
+        cur.execute("SELECT * FROM child")
+        results = cur.fetchall()
+        assert len(results) == 4, "ASSERT3"
+
+        cur.execute("BEGIN")
+        cur.execute("UPDATE parent SET col_c_ui_upd = 112 WHERE col_c_ui_upd = 12")
+        cur.execute("DELETE FROM parent WHERE col_d_ui_del = 63")
+        cur.execute("COMMIT")
+
+        cur.execute("BEGIN")
+        cur.execute("SELECT * FROM sz1 WHERE col_c_ui_upd = 112");
+        results = cur.fetchall()
+        assert len(results) == 0, "ASSERT"
+        cur.execute("SELECT * FROM sz1 WHERE col_d_ui_del = 63");
+        results = cur.fetchall()
+        assert len(results) == 0, "ASSERT"
+
+        cur.execute("SELECT * FROM child WHERE col_g_ui_del = 66");
+        results = cur.fetchall()
+        assert len(results) == 1, "ASSERT"
+        cur.execute("COMMIT")
+
+        cur.execute("BEGIN")
+        # crash
+        cur.execute("INSERT INTO sz1 VALUES(6, SYSDATE(), 61, 62, 63, 664, 65, 66)")
+        cur.execute("COMMIT")
+
+
+    except Exception as e:
+        print(f"Thd A failed: {e}")
+        cur.close()
+        return
+    cur.close()
+    A_succ = True
+
+def case_54_thdB(conn):
+    global B_succ
+    try:
+        time.sleep(15)
+        cur = conn.cursor()
+
+        assert check_rep(conn) == True, "ASSERT"
+    except Exception as e:
+        print(f"Thd B failed: {e}")
+        cur.close()
+        return
+    cur.close()
+    B_succ = True
+
+def case_54_post(A_conn, B_conn):
+    try:
+        cur = A_conn.cursor()
+        #cur.execute("DROP TABLE IF EXISTS sz1")
+    except Exception as e:
+        print(f"POST Drop DB/TABLE failed: {e}")
+        A_conn.close()
+        B_conn.close()
+        exit (-1)
+
+
+def case_55_pre(A_conn, B_conn):
+    try:
+        cur = A_conn.cursor()
+        cur.execute("DROP TABLE IF EXISTS parent")
+        cur.execute("DROP TABLE IF EXISTS sz1")
+        cur.execute("DROP TABLE IF EXISTS child")
+        cur.execute("CREATE TABLE parent ("
+                    "col_a INT, "
+                    "col_b_ui INT, "
+                    "col_c_ui_upd INT, "
+                    "col_d_ui_del INT, "
+                    "PRIMARY KEY(col_a), "
+                    "UNIQUE KEY(col_b_ui), "
+                    "UNIQUE KEY(col_c_ui_upd), "
+                    "UNIQUE KEY(col_d_ui_del)) "
+                    "ENGINE = NDB")
+        cur.execute("CREATE TABLE test.sz1 ("
+                    "col_a INT, "
+                    "col_t TIMESTAMP, "
+                    "col_b_ui INT, "
+                    "col_c_ui_upd INT, "
+                    "col_d_ui_del INT, "
+                    "col_e_ui INT, "
+                    "col_f_ui_upd INT, "
+                    "col_g_ui_del INT, "
+                    "PRIMARY KEY(col_a), "
+                    "UNIQUE KEY(col_e_ui), "
+                    "UNIQUE KEY(col_f_ui_upd), "
+                    "UNIQUE KEY(col_g_ui_del), "
+                    "FOREIGN KEY(col_b_ui) REFERENCES parent(col_b_ui) ON UPDATE CASCADE ON DELETE CASCADE, "
+                    "FOREIGN KEY(col_c_ui_upd) REFERENCES parent(col_c_ui_upd) ON UPDATE CASCADE ON DELETE CASCADE, "
+                    "FOREIGN KEY(col_d_ui_del) REFERENCES parent(col_d_ui_del) ON UPDATE CASCADE ON DELETE CASCADE) "
+                    "ENGINE = NDB, "
+                    "COMMENT=\"NDB_TABLE=TTL=10@col_t\"")
+        cur.execute("CREATE TABLE test.other ("
+                    "col_a INT, "
+                    "col_e_ui INT, "
+                    "col_f_ui_upd INT, "
+                    "col_g_ui_del INT, "
+                    "PRIMARY KEY(col_a)) "
+                    "ENGINE = NDB")
+
+        # should return error
+        cur.execute("CREATE TABLE test.child ("
+                    "col_a INT, "
+                    "col_e_ui INT, "
+                    "col_f_ui_upd INT, "
+                    "col_g_ui_del INT, "
+                    "PRIMARY KEY(col_a), "
+                    "FOREIGN KEY(col_e_ui) REFERENCES sz1(col_e_ui) ON UPDATE CASCADE ON DELETE CASCADE, "
+                    "FOREIGN KEY(col_f_ui_upd) REFERENCES sz1(col_f_ui_upd) ON UPDATE CASCADE ON DELETE CASCADE, "
+                    "FOREIGN KEY(col_g_ui_del) REFERENCES sz1(col_g_ui_del) ON UPDATE CASCADE ON DELETE CASCADE) "
+                    "ENGINE = NDB")
+        assert 0
+    except Exception as e:
+        if e.args[0] != 1215:
+            print(f"PRE Create DB/TABLE failed: {e}")
+            A_conn.close()
+            B_conn.close()
+            exit (-1)
+
+def case_55_thdA(conn):
+    global A_succ
+    try:
+        cur = conn.cursor()
+        exit
+        cur.execute("BEGIN")
+        cur.execute("INSERT INTO parent VALUES(1, 11, 12, 13)")
+        cur.execute("INSERT INTO parent VALUES(2, 21, 22, 23)")
+        cur.execute("INSERT INTO parent VALUES(3, 31, 32, 33)")
+        cur.execute("INSERT INTO parent VALUES(4, 41, 42, 43)")
+        cur.execute("INSERT INTO parent VALUES(5, 51, 52, 53)")
+        cur.execute("INSERT INTO parent VALUES(6, 61, 62, 63)")
+        cur.execute("INSERT INTO sz1 VALUES(1, SYSDATE(), 11, 12, 13, 14, 15, 16)")
+        cur.execute("INSERT INTO sz1 VALUES(2, SYSDATE(), 21, 22, 23, 24, 25, 26)")
+        cur.execute("INSERT INTO sz1 VALUES(3, SYSDATE(), 31, 32, 33, 34, 35, 36)")
+        cur.execute("INSERT INTO sz1 VALUES(4, SYSDATE(), 41, 42, 43, 44, 45, 46)")
+        cur.execute("INSERT INTO sz1 VALUES(5, SYSDATE(), 51, 52, 53, 54, 55, 56)")
+        cur.execute("INSERT INTO sz1 VALUES(6, SYSDATE(), 61, 62, 63, 64, 65, 66)")
+        cur.execute("INSERT INTO other VALUES(1, 14, 15, 16)")
+        cur.execute("INSERT INTO other VALUES(2, 24, 25, 26)")
+        cur.execute("INSERT INTO other VALUES(3, 34, 35, 36)")
+        cur.execute("INSERT INTO other VALUES(4, 44, 45, 46)")
+        cur.execute("INSERT INTO other VALUES(5, 54, 55, 56)")
+        cur.execute("INSERT INTO other VALUES(6, 64, 65, 66)")
+        cur.execute("COMMIT")
+        cur.execute("SELECT * FROM parent")
+        results = cur.fetchall()
+        assert len(results) == 6, "ASSERT 1"
+        cur.execute("SELECT * FROM sz1")
+        results = cur.fetchall()
+        assert len(results) == 6, "ASSERT 2"
+        cur.execute("SELECT * FROM other")
+        results = cur.fetchall()
+        assert len(results) == 6, "ASSERT 3"
+
+        cur.execute("BEGIN")
+        cur.execute("UPDATE parent SET col_c_ui_upd = 222 WHERE col_c_ui_upd = 22")
+        cur.execute("DELETE FROM parent WHERE col_d_ui_del = 33")
+        cur.execute("COMMIT")
+
+        cur.execute("SELECT * FROM parent WHERE col_c_ui_upd = 222");
+        results = cur.fetchall()
+        assert len(results) == 1, "ASSERT 4"
+        cur.execute("SELECT * FROM sz1 WHERE col_c_ui_upd = 222");
+        results = cur.fetchall()
+        assert len(results) == 1, "ASSERT 5"
+        for row in results:
+            col_a = row[0]
+            assert col_a == 2, "ASSERT"
+
+        cur.execute("SELECT * FROM sz1 WHERE col_d_ui_del = 33");
+        results = cur.fetchall()
+        assert len(results) == 0, "ASSERT 6"
+
+
+        cur.execute("BEGIN")
+        cur.execute("UPDATE sz1 SET col_f_ui_upd = 445 WHERE col_f_ui_upd = 45")
+        cur.execute("DELETE FROM sz1 WHERE col_g_ui_del = 56")
+        cur.execute("COMMIT")
+
+        cur.execute("BEGIN")
+        cur.execute("SELECT * FROM sz1 WHERE col_f_ui_upd = 445");
+        results = cur.fetchall()
+        assert len(results) == 1, "ASSERT 7"
+        for row in results:
+            col_a = row[0]
+            assert col_a == 4, "ASSERT 8"
+        cur.execute("COMMIT")
+
+        cur.execute("BEGIN")
+        cur.execute("SELECT * FROM sz1 WHERE col_g_ui_del = 56");
+        results = cur.fetchall()
+        assert len(results) == 0, "ASSERT 9"
+        cur.execute("COMMIT")
+
+        time.sleep(11)
+
+        cur.execute("SELECT * FROM parent")
+        results = cur.fetchall()
+        assert len(results) == 5, "ASSERT 10"
+        cur.execute("SELECT * FROM sz1")
+        results = cur.fetchall()
+        assert len(results) == 0, "ASSERT 11"
+        cur.execute("SELECT * FROM other")
+        results = cur.fetchall()
+        assert len(results) == 6, "ASSERT 12"
+
+        cur.execute("BEGIN")
+        cur.execute("UPDATE parent SET col_c_ui_upd = 112 WHERE col_c_ui_upd = 12")
+        cur.execute("COMMIT")
+
+        cur.execute("BEGIN")
+        cur.execute("SELECT * FROM sz1 WHERE col_c_ui_upd = 112");
+        results = cur.fetchall()
+        assert len(results) == 0, "ASSERT 13"
+
+        cur.execute("BEGIN")
+        cur.execute("DELETE FROM parent WHERE col_d_ui_del = 63")
+        cur.execute("COMMIT")
+
+        cur.execute("BEGIN")
+        cur.execute("SET ttl_expired_rows_visible_in_delete = 1")
+        cur.execute("DELETE FROM sz1");
+        changed_rows = conn.affected_rows()
+        matched_rows = cur.rowcount
+        print(f"changed: {changed_rows}, matched: {matched_rows}")
+        assert changed_rows == 4 and matched_rows == 4, "ASSERT"
+        cur.execute("COMMIT")
+        cur.execute("SET ttl_expired_rows_visible_in_delete = 0")
+
+        # If a row in the TTL child table expires, the parent table cannot update or delete
+        # the related row until the purging thread truly deletes it from the child table.
+        #
+        # The reason is that the scan flag used by the foreign key always includes
+        # the "ignore TTL" flag in SUMA.
+        # add some cases here
+
+        cur.execute("BEGIN")
+        cur.execute("DELETE FROM other");
+        cur.execute("COMMIT")
+        cur.execute("ALTER TABLE test.other "
+                    "ADD FOREIGN KEY(col_e_ui) REFERENCES sz1(col_e_ui) ON UPDATE CASCADE ON DELETE CASCADE, "
+                    "ADD FOREIGN KEY(col_f_ui_upd) REFERENCES sz1(col_f_ui_upd) ON UPDATE CASCADE ON DELETE CASCADE, "
+                    "ADD FOREIGN KEY(col_g_ui_del) REFERENCES sz1(col_g_ui_del) ON UPDATE CASCADE ON DELETE CASCADE")
+        assert 0
+
+    except Exception as e:
+        if e.args[0] != 1215:
+            print(f"Thd A failed: {e}")
+            cur.close()
+            return
+    cur.close()
+    A_succ = True
+
+def case_55_thdB(conn):
+    global B_succ
+    try:
+        time.sleep(15)
+        cur = conn.cursor()
+
+        assert check_rep(conn) == True, "ASSERT"
+    except Exception as e:
+        print(f"Thd B failed: {e}")
+        cur.close()
+        return
+    cur.close()
+    B_succ = True
+
+def case_55_post(A_conn, B_conn):
+    try:
+        cur = A_conn.cursor()
+        #cur.execute("DROP TABLE IF EXISTS sz1")
+    except Exception as e:
+        print(f"POST Drop DB/TABLE failed: {e}")
+        A_conn.close()
+        B_conn.close()
+        exit (-1)
+
+
+def case_56_pre(A_conn, B_conn):
+    try:
+        cur = A_conn.cursor()
+        cur.execute("DROP TABLE IF EXISTS parent")
+        cur.execute("DROP TABLE IF EXISTS parentttl")
+        cur.execute("DROP TABLE IF EXISTS child")
+        cur.execute("DROP TABLE IF EXISTS sz1")
+        cur.execute("CREATE TABLE parent ("
+                    "col_a INT, "
+                    "col_t TIMESTAMP, "
+                    "col_b_ui INT, "
+                    "col_c_ui_upd INT, "
+                    "col_d_ui_del INT, "
+                    "PRIMARY KEY(col_a), "
+                    "UNIQUE KEY(col_b_ui), "
+                    "UNIQUE KEY(col_c_ui_upd), "
+                    "UNIQUE KEY(col_d_ui_del)) "
+                    "ENGINE = NDB")
+        cur.execute("CREATE TABLE parentttl ("
+                    "col_a INT, "
+                    "col_t TIMESTAMP, "
+                    "col_b_ui INT, "
+                    "col_c_ui_upd INT, "
+                    "col_d_ui_del INT, "
+                    "PRIMARY KEY(col_a), "
+                    "UNIQUE KEY(col_b_ui), "
+                    "UNIQUE KEY(col_c_ui_upd), "
+                    "UNIQUE KEY(col_d_ui_del)) "
+                    "ENGINE = NDB, "
+                    "comment=\"NDB_TABLE=TTL=10@col_t\"")
+        cur.execute("CREATE TABLE sz1 ("
+                    "col_a INT, "
+                    "col_t TIMESTAMP, "
+                    "col_b_ui INT, "
+                    "col_c_ui_upd INT, "
+                    "col_d_ui_del INT, "
+                    "PRIMARY KEY(col_a)) "
+                    "ENGINE = NDB")
+
+        cur.execute("CREATE TABLE sz2 ("
+                    "col_a INT, "
+                    "col_t TIMESTAMP, "
+                    "col_b_ui INT, "
+                    "col_c_ui_upd INT, "
+                    "col_d_ui_del INT, "
+                    "PRIMARY KEY(col_a), "
+                    "FOREIGN KEY(col_b_ui) REFERENCES parent(col_b_ui) ON UPDATE CASCADE ON DELETE CASCADE, "
+                    "FOREIGN KEY(col_c_ui_upd) REFERENCES parent(col_c_ui_upd) ON UPDATE CASCADE ON DELETE CASCADE, "
+                    "FOREIGN KEY(col_d_ui_del) REFERENCES parent(col_d_ui_del) ON UPDATE CASCADE ON DELETE CASCADE) "
+                    "ENGINE = NDB")
+
+        # should return error
+        cur.execute("CREATE TABLE child ("
+                    "col_a INT, "
+                    "col_t TIMESTAMP, "
+                    "col_b_ui INT, "
+                    "col_c_ui_upd INT, "
+                    "col_d_ui_del INT, "
+                    "PRIMARY KEY(col_a), "
+                    "FOREIGN KEY(col_b_ui) REFERENCES parentttl(col_b_ui) ON UPDATE CASCADE ON DELETE CASCADE, "
+                    "FOREIGN KEY(col_c_ui_upd) REFERENCES parentttl(col_c_ui_upd) ON UPDATE CASCADE ON DELETE CASCADE, "
+                    "FOREIGN KEY(col_d_ui_del) REFERENCES parentttl(col_d_ui_del) ON UPDATE CASCADE ON DELETE CASCADE) "
+                    "ENGINE = NDB")
+        assert 0
+    except Exception as e:
+        if e.args[0] != 1215:
+            print(f"PRE Create DB/TABLE failed: {e}")
+            A_conn.close()
+            B_conn.close()
+            exit (-1)
+
+def case_56_thdA(conn):
+    global A_succ
+    try:
+        cur = conn.cursor()
+        cur.execute("ALTER TABLE sz1 "
+                    "ADD FOREIGN KEY(col_b_ui) REFERENCES parentttl(col_b_ui) ON UPDATE CASCADE ON DELETE CASCADE, "
+                    "ADD FOREIGN KEY(col_c_ui_upd) REFERENCES parentttl(col_c_ui_upd) ON UPDATE CASCADE ON DELETE CASCADE, "
+                    "ADD FOREIGN KEY(col_d_ui_del) REFERENCES parentttl(col_d_ui_del) ON UPDATE CASCADE ON DELETE CASCADE")
+        assert 0
+    except Exception as e:
+        if e.args[0] != 1215:
+            print(f"Thd A failed: {e}")
+            cur.close()
+            return
+
+    try:
+        cur.execute("ALTER TABLE parent COMMENT=\"NDB_TABLE=TTL=10@col_t\"")
+        assert 0
+    except Exception as e:
+        if e.args[0] != 1846:
+            print(f"Thd A failed: {e}")
+            cur.close()
+            return
+
+    try:
+        cur.execute("ALTER TABLE sz2 COMMENT=\"NDB_TABLE=TTL=10@col_t\"")
+        assert 0
+    except Exception as e:
+        if e.args[0] != 1846:
+            print(f"Thd A failed: {e}")
+            cur.close()
+            return
+
+    try:
+        cur.execute("CREATE TABLE child ("
+                    "col_a INT, "
+                    "col_t TIMESTAMP, "
+                    "col_b_ui INT, "
+                    "col_c_ui_upd INT, "
+                    "col_d_ui_del INT, "
+                    "PRIMARY KEY(col_a), "
+                    "FOREIGN KEY(col_b_ui) REFERENCES parent(col_b_ui) ON UPDATE CASCADE ON DELETE CASCADE, "
+                    "FOREIGN KEY(col_c_ui_upd) REFERENCES parent(col_c_ui_upd) ON UPDATE CASCADE ON DELETE CASCADE, "
+                    "FOREIGN KEY(col_d_ui_del) REFERENCES parent(col_d_ui_del) ON UPDATE CASCADE ON DELETE CASCADE) "
+                    "ENGINE = NDB, "
+                    "comment=\"NDB_TABLE=TTL=10@col_t\"")
+        assert 0
+    except Exception as e:
+        if e.args[0] != 1215:
+            print(f"Thd A failed: {e}")
+            cur.close()
+            return
+
+    try:
+        cur.execute("CREATE TABLE child ("
+                    "col_a INT, "
+                    "col_t TIMESTAMP, "
+                    "col_b_ui INT, "
+                    "col_c_ui_upd INT, "
+                    "col_d_ui_del INT, "
+                    "PRIMARY KEY(col_a), "
+                    "FOREIGN KEY(col_b_ui) REFERENCES parentttl(col_b_ui) ON UPDATE CASCADE ON DELETE CASCADE, "
+                    "FOREIGN KEY(col_c_ui_upd) REFERENCES parentttl(col_c_ui_upd) ON UPDATE CASCADE ON DELETE CASCADE, "
+                    "FOREIGN KEY(col_d_ui_del) REFERENCES parentttl(col_d_ui_del) ON UPDATE CASCADE ON DELETE CASCADE) "
+                    "ENGINE = NDB, "
+                    "comment=\"NDB_TABLE=TTL=10@col_t\"")
+        assert 0
+    except Exception as e:
+        if e.args[0] != 1215:
+            print(f"Thd A failed: {e}")
+            cur.close()
+
+    cur.close()
+    A_succ = True
+
+def case_56_thdB(conn):
+    global B_succ
+    try:
+        cur = conn.cursor()
+    except Exception as e:
+        print(f"Thd B failed: {e}")
+        cur.close()
+        return
+    cur.close()
+    B_succ = True
+
+def case_56_post(A_conn, B_conn):
+    try:
+        cur = A_conn.cursor()
+        cur.execute("DROP TABLE IF EXISTS sz1")
+        cur.execute("DROP TABLE IF EXISTS sz2")
+        cur.execute("DROP TABLE IF EXISTS child")
+        cur.execute("DROP TABLE IF EXISTS parent")
+        cur.execute("DROP TABLE IF EXISTS parentttl")
     except Exception as e:
         print(f"POST Drop DB/TABLE failed: {e}")
         A_conn.close()
@@ -3085,9 +4517,9 @@ def case(num):
     B_succ = False
 
     cases_require_debug_sync = [23, 24, 25]
-    cases_binlog = [36, 37, 38, 39, 40, 41, 42, 43, 44]
+    cases_binlog = [36, 37, 38, 39, 40, 41, 42, 43, 44, 47, 50, 51, 52, 53, 54, 55]
     cases_backup_restore = [46]
-    cases_need_extra_process = [29, 40, 42, 44, 46]
+    cases_need_extra_process = [28, 29, 40, 42, 44, 46, 49, 50, 51, 52, 53, 54, 55, 56]
 
 
     # 1. Connect
@@ -3199,7 +4631,7 @@ if __name__ == '__main__':
         MGMD_PORT_R = getattr(my_config, 'MGMD_PORT_R', MGMD_PORT_R)
         MYSQLD_PORT_R = getattr(my_config, 'MYSQLD_PORT_R', MYSQLD_PORT_R)
 
-    case_num = 46
+    case_num = 56
     # 1. create database and table
     try:
         conn = pymysql.connect(host='127.0.0.1',
@@ -3216,7 +4648,8 @@ if __name__ == '__main__':
                     "col_a INT, "
                     "col_b TIMESTAMP, "
                     "col_c INT, "
-                    "PRIMARY KEY(col_a)) "
+                    "PRIMARY KEY(col_a), "
+                    "UNIQUE KEY(col_c))"
                     "ENGINE = NDB, "
                     "COMMENT=\"NDB_TABLE=TTL=66@col_b\"")
         time.sleep(5)
@@ -3269,13 +4702,17 @@ if __name__ == '__main__':
 
     case(23)
     case(25)
-    ##case(26)
+    #case(26)
     case(24)
 
     #READ LOCKED
     case(28)
+    case(48) # UNIQUE INDEX
     case(29) # FULLY_REPLICATED
-    case(45)
+    #case(49) # FULLY_REPLICATED, UNIQUE INDEX 
+              # NOTICE seems unique index can not work with binlog replication,
+              # which will cause the replica mysql Stuck while applying the DROP TABLE operation
+    #case(45)
 
     #REPLACE INTO
     case(30)
@@ -3297,5 +4734,19 @@ if __name__ == '__main__':
     case(44)
     case(45)
 
-    ##BACKUP RESTORE
+    #Unique index and trigger
+    case(47)
+    case(50)
+    case(53)
+
+    #Disk column
+    case(51)
+    case(52)
+
+    #Foreign key
+    #case(54) #Can only run this case after supporting use a TTL table as the parent table
+    #case(55) #Can only run this case after supporting use a TTL table as the child table
+    case(56)
+
+    #BACKUP RESTORE
     case(46)

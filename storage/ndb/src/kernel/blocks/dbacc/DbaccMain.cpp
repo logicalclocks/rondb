@@ -1520,7 +1520,9 @@ void Dbacc::execACCKEYREQ(Signal *signal, Uint32 opPtrI,
 	  fragrecptr.p->lockCount[hash]++;
 #ifdef TTL_DEBUG
     if (NEED_PRINT(fragrecptr.p->myTableId)) {
-      g_eventLogger->info("Zart, Dbacc::execACCKEYREQ(), lock, table id: %u, frag id: %u",
+      g_eventLogger->info("Zart, Dbacc::execACCKEYREQ(), lock, "
+                          "op: %u table id: %u, frag id: %u",
+                          op,
                           fragrecptr.p->myTableId, fragrecptr.p->fragmentid);
     }
 #endif  // TTL_DEBUG

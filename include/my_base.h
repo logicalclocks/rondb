@@ -428,6 +428,7 @@ enum ha_extra_function {
    */
   HA_EXTRA_IGNORE_TTL,
   HA_EXTRA_NO_IGNORE_TTL,
+  HA_EXTRA_FK_TTL
 };
 
 /* Compatible option, to be deleted in 6.0 */

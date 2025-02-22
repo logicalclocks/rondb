@@ -743,6 +743,7 @@ class ha_ndbcluster : public handler, public Partition_handler {
    * TTL
    */
   bool m_ttl_ignore;
+  bool m_ttl_fk;
 };
 
 bool is_cluster_failure_code(int error);

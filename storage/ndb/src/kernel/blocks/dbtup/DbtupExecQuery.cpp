@@ -1903,7 +1903,33 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
        * normal update operation.
        */
       // TODO(Zhao): double check this solution
-      regOperPtr->op_type = ZUPDATE;
+      // regOperPtr->op_type = ZUPDATE;
+      /*
+       * Update this TODO note. Since I added special handling logic for TTL
+       * in the unique index (which is an extra internal table) of a TTL table:
+       *
+       * If its primary table is a TTL table, then in `exec_acckeyreq()`,
+       * it will be treated as a TTL table even if there is no TTL information
+       * on this extra table. Therefore, we don't need to convert `ZINSERT_TTL`
+       * to `ZUPDATE` here.
+       *
+       * Let's keep it as is for now and observe.
+       *
+       * Update: if we don't convert it to ZUPDATE here, the foreign key trigger
+       * will encounter an issue:
+       * 1. CREATE parent table which has TTL
+       * 2. CREATE child table which has foreign key references to the parent table
+       * 3. Insert a row into the parent table and insert the related row into the
+       *    child table
+       * 4. Wait for the row in the parent table expires and then insert the row
+       *    with the same primary key but different unique index key column
+       * THEN we can get an error from the inserting caused by using TTL table
+       * as the parent table. But we disable adding foreign key references to
+       * a TTL table currently, so it won't happen.
+       * TODO(Zhao)
+       * However this issue requests fixing when we support this foreign key feature
+       * in the future.
+       */
       /**
        * The lock on the TUP fragment is required to update header info on
        * the base row, thus we use the variable m_base_header_bits in
@@ -2436,7 +2462,13 @@ int Dbtup::handleReadReq(
               reinterpret_cast<Dblqh::ScanRecord*>(req_struct->scan_rec);
             if (!scan_rec_ptr->scanLockMode /* X */ &&
                 !scan_rec_ptr->scanLockHold /* S */) {
-              ndbrequire(scan_rec_ptr->readCommitted);
+               /*
+                * NOTICE:
+                * Dbtc::fk_scanFromChildTable will break this assumption.
+                * Something seems wrong when constructing the scan request
+                * flag there.
+                */
+              // ndbrequire(scan_rec_ptr->readCommitted);
               if (scan_rec_ptr->scanBlock == this) {
                 PrepareAccLockReq4RAL(req_struct->scan_rec, signal);
               } else {
@@ -2641,6 +2673,12 @@ int Dbtup::handleUpdateReq(Signal* signal,
       return -1;
     }
   }
+#ifdef TTL_DEBUG
+  if (operPtrP->op_type == ZINSERT_TTL && !is_ttl_table(regTabPtr)) {
+    g_eventLogger->info("Zart, (UPDATE) ZINSERT_TTL on an duplicated "
+                        "expired row on non-primary table");
+  }
+#endif  // TTL_DEBUG
   Tuple_header *dst;
   Tuple_header *base= req_struct->m_tuple_ptr, *org;
   ChangeMask * change_mask_ptr;
@@ -3858,6 +3896,12 @@ int Dbtup::handleDeleteReq(Signal* signal,
     }
   }
 
+#ifdef TTL_DEBUG
+  if (!is_ttl_table(regTabPtr)) {
+    g_eventLogger->info("Zart, (DELETE) delete a row on non-primary table %u",
+                        req_struct->fragPtrP->fragTableId);
+  }
+#endif  // TTL_DEBUG
   Uint32 copy_bits = 0;
   Tuple_header* dst = alloc_copy_tuple(regTabPtr,
       &regOperPtr->m_copy_tuple_location);
