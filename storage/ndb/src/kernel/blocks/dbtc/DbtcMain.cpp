@@ -23418,6 +23418,7 @@ void Dbtc::fk_scanFromChildTable(Signal *signal,
   ScanTabReq::setViaSPJFlag(ri, 0);
   ScanTabReq::setPassAllConfsFlag(ri, 0);
   ScanTabReq::setExtendedConf(ri, 0);
+  // TODO(Zhao) Ignore TTL in some situations maybe?
   req->requestInfo = ri;
   req->transId1 = regApiPtr->transid[0];
   req->transId2 = regApiPtr->transid[1];

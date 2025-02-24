@@ -1381,6 +1381,14 @@ int ha_ndbcluster::create_fks(THD *thd, Ndb *ndb, const char *dbname,
       }
     }
 
+    if (parent_tab.get_table()->isTTLEnabled() ||
+        child_tab.get_table()->isTTLEnabled()) {
+      push_warning_printf(thd, Sql_condition::SL_WARNING,
+                          ER_CANNOT_ADD_FOREIGN,
+                          "Can not use foreign key on TTL table");
+      return err_default;
+    }
+
     const NDBCOL *parentcols[NDB_MAX_ATTRIBUTES_IN_INDEX + 1];
     {
       unsigned pos = 0;

@@ -17611,6 +17611,11 @@ bool mysql_alter_table(THD *thd, const char *new_db, const char *new_name,
       goto end_inplace_noop;
     }
 
+    if (old_table_def &&
+        (!old_table_def->foreign_key_parents().empty() ||
+         !old_table_def->foreign_keys().empty())) {
+      table->file->ha_extra(HA_EXTRA_FK_TTL);
+    }
     // Ask storage engine whether to use copy or in-place
     enum_alter_inplace_result inplace_supported =
         table->file->check_if_supported_inplace_alter(altered_table,

@@ -4579,8 +4579,16 @@ bool Dblqh::is_ttl_table(Uint32 table_id) {
   TablerecPtr t_tabptr;
   t_tabptr.i = table_id;
   ptrCheckGuard(t_tabptr, ctabrecFileSize, tablerec);
-  return (t_tabptr.p->m_ttl_sec != RNIL &&
-          t_tabptr.p->m_ttl_col_no != RNIL);
+  if (t_tabptr.p->primaryTableId != table_id) {
+    TablerecPtr t_primary_tabptr;
+    t_primary_tabptr.i = t_tabptr.p->primaryTableId;
+    ptrCheckGuard(t_primary_tabptr, ctabrecFileSize, tablerec);
+    return (t_primary_tabptr.p->m_ttl_sec != RNIL &&
+            t_primary_tabptr.p->m_ttl_col_no != RNIL);
+  } else {
+    return (t_tabptr.p->m_ttl_sec != RNIL &&
+            t_tabptr.p->m_ttl_col_no != RNIL);
+  }
 }
 void
 Dblqh::release_frag_array(Tablerec *tabPtrP)
