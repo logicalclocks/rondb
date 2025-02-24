@@ -482,3 +482,140 @@ int simple_write_key_row_setrange(NdbInterpretedCode &code,
   }
   return 0;
 }
+
+int write_key_row_setrange(NdbInterpretedCode &code,
+                           const NdbDictionary::Table *tab,
+                           KeyStorage *key_store,
+                           Uint32 start,
+                           Uint32 end,
+                           Uint64 rondb_key) {
+  const NdbDictionary::Column *num_rows_col =
+    tab->getColumn(KEY_TABLE_COL_num_rows);
+  const NdbDictionary::Column *value_data_type_col =
+    tab->getColumn(KEY_TABLE_COL_value_data_type);
+  const NdbDictionary::Column *tot_value_len_col =
+    tab->getColumn(KEY_TABLE_COL_tot_value_len);
+  const NdbDictionary::Column *value_start_col =
+    tab->getColumn(KEY_TABLE_COL_value_start);
+  const NdbDictionary::Column *expiry_date_col =
+    tab->getColumn(KEY_TABLE_COL_expiry_date);
+  const NdbDictionary::Column *rondb_key_col =
+    tab->getColumn(KEY_TABLE_COL_rondb_key);
+
+  Uint32 min_num_rows =
+    1 + ((end - INLINE_VALUE_LEN) / EXTENSION_VALUE_LEN);
+  /**
+   * We construct the memory area to write value_start column in the
+   * following manner.
+   *
+   * Byte 0 - 3:
+   * -----------
+   * This area is used by the write_from_mem instruction to load the
+   * attribute header into. Thus we should not store any data here.
+   *
+   * Byte 4 - 5:
+   * -----------
+   * The value_start column is a VARBINARY(4096) column. This means
+   * it will have 2 length bytes stored in little-endian format.
+   * We set those bytes using write_size_mem instruction.
+   *
+   * Byte 6 - end of data
+   * --------------------
+   * Here we will construct the actual data to store in the column.
+   */
+  code.load_const_u16(REG0, 0);
+  code.load_const_u16(REG1, 6);
+  code.load_const_u16(REG2, INLINE_VALUE_LEN);
+  code.load_const_u32(REG3, start);
+  /**
+   * REG0 = Offset 0 where write_from_mem memory starts
+   * REG1 = Offset 6 where column data starts
+   * REG2 = end variable where copying ends
+   * REG3 = start variable where we start copying data from memory
+   */
+  code.load_op_type(REG4);         // Read operation type into register 1
+  code.branch_ne_const(REG4, RONDB_INSERT, LABEL0); // Updates go to label 0
+  /* INSERT */
+  code.load_const_u16(REG4, min_num_rows);
+  code.write_attr(num_rows_col, REG4);
+  code.write_attr(value_data_type_col, REG0);
+  code.load_const_u32(REG5, end);
+  code.write_attr(tot_value_len_col, REG5);
+  code.bzero(REG1, REG2);
+  code.move_reg(REG6, REG0);
+  code.load_const_u64(REG7, rondb_key);
+  code.write_attr(rondb_key_col, REG7);
+  code.branch_label(LABEL2);
+
+  /* UPDATE */
+  code.def_label(LABEL0);
+  /**
+   * Start by reading value_start column into memory
+   * We will put the length of the current data into REG7.
+   */
+  code.read_attr(REG6, num_rows_col);
+  code.load_const_null(REG5);
+  code.write_attr(expiry_date_col, REG5);
+  code.load_const_u32(REG4, end);
+  code.read_attr(REG5, tot_value_len_col);
+  code.branch_lt(REG5, REG4, LABEL1);
+
+  code.write_attr(tot_value_len_col, REG4);
+  code.move_reg(REG5, REG4);
+  code.def_label(LABEL1);
+  code.read_full(value_start_col, REG0, REG7);
+  code.sub_const_reg(REG7, REG7, Uint16(2));
+  code.branch_ge(REG7, REG3, LABEL2);
+
+  /* end is after end of current data, new tot_value_len */
+  /**
+   * No need to zero any memory area
+   * if end of data >= start
+   */
+
+  /* Zero area after end of data until before start */
+  code.add_reg(REG4, REG1, REG7);
+  code.sub_reg(REG4, REG3, REG7);
+  code.bzero(REG4, REG7);
+
+  code.def_label(LABEL2);
+  /**
+   * REG0 = Offset 0 where write_from_mem memory starts
+   * REG1 = Offset 6 where column data starts
+   * REG2 = Total size of column data after write_from_mem
+   * REG3 = start variable where we start copying data from memory
+   * REG4 = Not used
+   * REG5 = tot_value_len
+   * REG6 = Number of rows before change
+   * REG7 = Not used
+   */
+  code.write_interpreter_output(REG6, OUTPUT_INDEX_0);
+  code.write_interpreter_output(REG5, OUTPUT_INDEX_1);
+  code.read_attr(REG7, rondb_key_col);
+  code.branch_ne_null(REG7, LABEL3);
+  code.load_const_u64(REG7, rondb_key);
+  code.write_attr(rondb_key_col, REG7);
+  code.def_label(LABEL3);
+  code.write_interpreter_output(REG7, OUTPUT_INDEX_2);
+  if (start < INLINE_VALUE_LEN) {
+    code.add_reg(REG6, REG1, REG3);
+    Uint32 size_load = (start - INLINE_VALUE_LEN);
+    code.load_const_mem(REG6, //Offset to copy to
+                        REG4, // m_set_value_size will be set here
+                        Uint16(size_load),
+                        (Uint32*)key_store->m_value_ptr);
+  }
+  code.load_const_u16(REG6, 4);
+  code.write_size_mem(REG2, REG6);
+  /* Length is size of data + 2 length bytes */
+  code.add_const_reg(REG2, REG2, Uint16(2));
+  code.write_from_mem(value_start_col, REG0, REG2);
+  code.interpret_exit_ok();
+
+  // Program end, now compile code
+  int ret_code = code.finalise();
+  if (ret_code != 0) {
+    return code.getNdbError().code;
+  }
+  return 0;
+}

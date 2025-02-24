@@ -60,7 +60,8 @@ void commit_simple_write_transaction(struct KeyStorage *key_storage);
 /* Setup operation record for SET MODULE */
 int prepare_delete_value_row(std::string *response,
                              struct KeyStorage *key_store,
-                             Uint32 ordinal);
+                             Uint32 ordinal,
+                             Uint32 database_id);
 int prepare_set_value_row(std::string *response,
                           KeyStorage *key_store);
 int write_data_to_key_op(std::string *response,
@@ -95,7 +96,6 @@ int prepare_get_simple_key_row(std::string *response,
 
 void execute_set_range_simple(std::string *response,
                               KeyStorage *key_store,
-                              Ndb *ndb,
                               const NdbDictionary::Table *tab,
                               Uint32 database_id,
                               Uint32 start,
@@ -103,11 +103,12 @@ void execute_set_range_simple(std::string *response,
 
 int write_key_row_setrange(std::string *response,
                            KeyStorage *key_store,
-                           Ndb *ndb,
                            const NdbDictionary::Table *tab,
                            Uint32 database_id,
                            Uint32 start,
-                           Uint32 end);
+                           Uint32 end,
+                           Uint32 &num_rows,
+                           Uint32 &tot_value_len);
 /**
  * INCR and DECR MODULE
  * --------------------

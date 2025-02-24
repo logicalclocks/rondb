@@ -348,7 +348,8 @@ static int send_value_delete(std::string *response,
     [[maybe_unused]]/*todo remove?*/ int ret_code =
       prepare_delete_value_row(response,
                                key_store,
-                               key_store->m_num_rw_rows);
+                               key_store->m_num_rw_rows,
+                               get_ctrl->m_database_id);
     key_store->m_num_rw_rows++;
     i++;
     if (key_store->m_num_rw_rows == key_store->m_num_rows) {
@@ -728,7 +729,8 @@ static int send_delete_write(std::string *response,
        i++) {
     int ret_code = prepare_delete_value_row(response,
                                             key_store,
-                                            i);
+                                            i,
+                                            get_ctrl->m_database_id);
     if (ret_code != 0) return 1;
   }
   Uint32 num_delete_rows = key_store->m_prev_num_rows - key_store->m_num_rows;
@@ -2318,7 +2320,6 @@ void rondb_setrange_command(Ndb *ndb,
     /* The SETRANGE command only affects the STRING_keys table */
     execute_set_range_simple(response,
                              key_store,
-                             ndb,
                              tab,
                              database_id,
                              start,
@@ -2327,14 +2328,44 @@ void rondb_setrange_command(Ndb *ndb,
     free(key_store);
     return;
   }
+  Uint32 ret_num_rows = 0;
+  Uint32 ret_tot_value_len = 0;
+  if (rondb_get_rondb_key(tab,
+                          key_store->m_rondb_key,
+                          ndb,
+                          response) != 0) {
+    ndb->closeTransaction(key_store->m_trans);
+    free(key_store);
+    return;
+  }
+
   int ret_code = write_key_row_setrange(response,
                                         key_store,
-                                        ndb,
                                         tab,
                                         database_id,
                                         start,
-                                        end);
+                                        end,
+                                        ret_num_rows,
+                                        ret_tot_value_len);
   if (ret_code != 0) {
     return;
   }
+  Uint32 min_num_rows =
+    1 + ((end - INLINE_VALUE_LEN) / EXTENSION_VALUE_LEN);
+  for (Uint32 i = 0; i < ret_num_rows; i++) {
+    if (i >= min_num_rows) {
+      /* Delete the row */
+      ret_code = prepare_delete_value_row(response,
+                                          key_store,
+                                          i,
+                                          database_id);
+    }
+  }
+  char buf[20];
+  Uint32 header_len = (Uint32)snprintf(buf,
+                                       sizeof(buf),
+                                       "$%u\r\n",
+                                       ret_tot_value_len);
+  response->append((const char*)&buf[0], header_len);
+  return;
 }

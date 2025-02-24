@@ -668,82 +668,82 @@ NdbDictionary::Column *NdbColumnImpl::create_pseudo(const char *name) {
   } else if (!strcmp(name, "NDB$READ_INTERPRETER_OUTPUT_0")) {
     col->setType(NdbDictionary::Column::Unsigned);
     col->m_impl.m_attrId = AttributeHeader::READ_INTERPRETER_OUTPUT_FIRST + 0;
-    col->m_impl.m_attrSize = 4;
+    col->m_impl.m_attrSize = 8;
     col->m_impl.m_arraySize = 1;
   } else if (!strcmp(name, "NDB$READ_INTERPRETER_OUTPUT_1")) {
     col->setType(NdbDictionary::Column::Unsigned);
     col->m_impl.m_attrId = AttributeHeader::READ_INTERPRETER_OUTPUT_FIRST + 1;
-    col->m_impl.m_attrSize = 4;
+    col->m_impl.m_attrSize = 8;
     col->m_impl.m_arraySize = 1;
   } else if (!strcmp(name, "NDB$READ_INTERPRETER_OUTPUT_2")) {
     col->setType(NdbDictionary::Column::Unsigned);
     col->m_impl.m_attrId = AttributeHeader::READ_INTERPRETER_OUTPUT_FIRST + 2;
-    col->m_impl.m_attrSize = 4;
+    col->m_impl.m_attrSize = 8;
     col->m_impl.m_arraySize = 1;
   } else if (!strcmp(name, "NDB$READ_INTERPRETER_OUTPUT_3")) {
     col->setType(NdbDictionary::Column::Unsigned);
     col->m_impl.m_attrId = AttributeHeader::READ_INTERPRETER_OUTPUT_FIRST + 3;
-    col->m_impl.m_attrSize = 4;
+    col->m_impl.m_attrSize = 8;
     col->m_impl.m_arraySize = 1;
   } else if (!strcmp(name, "NDB$READ_INTERPRETER_OUTPUT_4")) {
     col->setType(NdbDictionary::Column::Unsigned);
     col->m_impl.m_attrId = AttributeHeader::READ_INTERPRETER_OUTPUT_FIRST + 4;
-    col->m_impl.m_attrSize = 4;
+    col->m_impl.m_attrSize = 8;
     col->m_impl.m_arraySize = 1;
   } else if (!strcmp(name, "NDB$READ_INTERPRETER_OUTPUT_5")) {
     col->setType(NdbDictionary::Column::Unsigned);
     col->m_impl.m_attrId = AttributeHeader::READ_INTERPRETER_OUTPUT_FIRST + 5;
-    col->m_impl.m_attrSize = 4;
+    col->m_impl.m_attrSize = 8;
     col->m_impl.m_arraySize = 1;
   } else if (!strcmp(name, "NDB$READ_INTERPRETER_OUTPUT_6")) {
     col->setType(NdbDictionary::Column::Unsigned);
     col->m_impl.m_attrId = AttributeHeader::READ_INTERPRETER_OUTPUT_FIRST + 6;
-    col->m_impl.m_attrSize = 4;
+    col->m_impl.m_attrSize = 8;
     col->m_impl.m_arraySize = 1;
   } else if (!strcmp(name, "NDB$READ_INTERPRETER_OUTPUT_7")) {
     col->setType(NdbDictionary::Column::Unsigned);
     col->m_impl.m_attrId = AttributeHeader::READ_INTERPRETER_OUTPUT_FIRST + 7;
-    col->m_impl.m_attrSize = 4;
+    col->m_impl.m_attrSize = 8;
     col->m_impl.m_arraySize = 1;
   } else if (!strcmp(name, "NDB$READ_INTERPRETER_OUTPUT_8")) {
     col->setType(NdbDictionary::Column::Unsigned);
     col->m_impl.m_attrId = AttributeHeader::READ_INTERPRETER_OUTPUT_FIRST + 8;
-    col->m_impl.m_attrSize = 4;
+    col->m_impl.m_attrSize = 8;
     col->m_impl.m_arraySize = 1;
   } else if (!strcmp(name, "NDB$READ_INTERPRETER_OUTPUT_9")) {
     col->setType(NdbDictionary::Column::Unsigned);
     col->m_impl.m_attrId = AttributeHeader::READ_INTERPRETER_OUTPUT_FIRST + 9;
-    col->m_impl.m_attrSize = 4;
+    col->m_impl.m_attrSize = 8;
     col->m_impl.m_arraySize = 1;
   } else if (!strcmp(name, "NDB$READ_INTERPRETER_OUTPUT_10")) {
     col->setType(NdbDictionary::Column::Unsigned);
     col->m_impl.m_attrId = AttributeHeader::READ_INTERPRETER_OUTPUT_FIRST + 10;
-    col->m_impl.m_attrSize = 4;
+    col->m_impl.m_attrSize = 8;
     col->m_impl.m_arraySize = 1;
   } else if (!strcmp(name, "NDB$READ_INTERPRETER_OUTPUT_11")) {
     col->setType(NdbDictionary::Column::Unsigned);
     col->m_impl.m_attrId = AttributeHeader::READ_INTERPRETER_OUTPUT_FIRST + 11;
-    col->m_impl.m_attrSize = 4;
+    col->m_impl.m_attrSize = 8;
     col->m_impl.m_arraySize = 1;
   } else if (!strcmp(name, "NDB$READ_INTERPRETER_OUTPUT_12")) {
     col->setType(NdbDictionary::Column::Unsigned);
     col->m_impl.m_attrId = AttributeHeader::READ_INTERPRETER_OUTPUT_FIRST + 12;
-    col->m_impl.m_attrSize = 4;
+    col->m_impl.m_attrSize = 8;
     col->m_impl.m_arraySize = 1;
   } else if (!strcmp(name, "NDB$READ_INTERPRETER_OUTPUT_13")) {
     col->setType(NdbDictionary::Column::Unsigned);
     col->m_impl.m_attrId = AttributeHeader::READ_INTERPRETER_OUTPUT_FIRST + 13;
-    col->m_impl.m_attrSize = 4;
+    col->m_impl.m_attrSize = 8;
     col->m_impl.m_arraySize = 1;
   } else if (!strcmp(name, "NDB$READ_INTERPRETER_OUTPUT_14")) {
     col->setType(NdbDictionary::Column::Unsigned);
     col->m_impl.m_attrId = AttributeHeader::READ_INTERPRETER_OUTPUT_FIRST + 14;
-    col->m_impl.m_attrSize = 4;
+    col->m_impl.m_attrSize = 8;
     col->m_impl.m_arraySize = 1;
   } else if (!strcmp(name, "NDB$READ_INTERPRETER_OUTPUT_15")) {
     col->setType(NdbDictionary::Column::Unsigned);
     col->m_impl.m_attrId = AttributeHeader::READ_INTERPRETER_OUTPUT_FIRST + 15;
-    col->m_impl.m_attrSize = 4;
+    col->m_impl.m_attrSize = 8;
     col->m_impl.m_arraySize = 1;
   } else {
     abort();

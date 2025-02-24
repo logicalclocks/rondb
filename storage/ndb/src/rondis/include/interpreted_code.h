@@ -85,4 +85,10 @@ int simple_write_key_row_setrange(NdbInterpretedCode &code,
                                   KeyStorage *key_store,
                                   Uint32 start,
                                   Uint32 end);
+int write_key_row_setrange(NdbInterpretedCode &code,
+                           const NdbDictionary::Table *tab,
+                           KeyStorage *key_store,
+                           Uint32 start,
+                           Uint32 end,
+                           Uint64 rondb_key);
 #endif
