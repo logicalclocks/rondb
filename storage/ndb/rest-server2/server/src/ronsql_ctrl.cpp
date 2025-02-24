@@ -263,26 +263,25 @@ void RonSQLCtrl::ronsql(
 RS_Status ronsql_validate_database_name(std::string& database) {
   RS_Status status = validate_db_identifier(database);
   if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
-    if (status.code == ERROR_CODE_EMPTY_IDENTIFIER) {
+    if (status.code == ERROR_EMPTY_IDENTIFIER) {
       return CRS_Status(static_cast<HTTP_CODE>(
         drogon::HttpStatusCode::k400BadRequest),
-        ERROR_CODE_EMPTY_IDENTIFIER,
-        ERROR_049).status;
+        ERROR_EMPTY_IDENTIFIER, std::string(rdrsErrorMessage(ERROR_MIN_DB))).status;
     }
-    if (status.code == ERROR_CODE_IDENTIFIER_TOO_LONG) {
+    if (status.code == ERROR_IDENTIFIER_TOO_LONG) {
       return CRS_Status(static_cast<HTTP_CODE>(
         drogon::HttpStatusCode::k400BadRequest),
-        ERROR_CODE_MAX_DB, ERROR_050).status;
+        ERROR_MAX_DB, std::string(rdrsErrorMessage(ERROR_MAX_DB))).status;
     }
-    if (status.code == ERROR_CODE_INVALID_IDENTIFIER) {
+    if (status.code == ERROR_INVALID_IDENTIFIER) {
       return CRS_Status(static_cast<HTTP_CODE>(
         drogon::HttpStatusCode::k400BadRequest),
-        ERROR_CODE_INVALID_IDENTIFIER, ERROR_051).status;
+        ERROR_INVALID_IDENTIFIER, std::string(rdrsErrorMessage(ERROR_INVALID_DB_NAME))).status;
     }
     return CRS_Status(static_cast<HTTP_CODE>(
       drogon::HttpStatusCode::k400BadRequest),
-      ERROR_CODE_INVALID_DB_NAME,
-      (std::string(ERROR_051) + "; error: " + status.message).c_str()).status;
+      ERROR_INVALID_DB_NAME,
+      (std::string(rdrsErrorMessage(ERROR_INVALID_DB_NAME)) + "; error: " + status.message).c_str()).status;
   }
   return RS_OK;
 }
@@ -357,8 +356,8 @@ RS_Status ronsql_validate_and_init_params(RonSQLParams& req,
         static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
     return CRS_Status(static_cast<HTTP_CODE>(
       drogon::HttpStatusCode::k400BadRequest),
-      ERROR_CODE_INVALID_OPERATION_ID,
-      (std::string(ERROR_055) + "; error: " + status.message).c_str()).status;
+      ERROR_INVALID_OPERATION_ID,
+      (std::string(rdrsErrorMessage(ERROR_INVALID_OPERATION_ID)) + "; error: " + status.message).c_str()).status;
   if (!req.operationId.empty()) {
     ep.operation_id = req.operationId.c_str();
     if (ep.output_format == RonSQLExecParams::OutputFormat::TEXT)

@@ -101,18 +101,18 @@ RS_Status find_project_id_int(Ndb *ndb_object,
                filter.end() < 0)) {
     ndb_error = filter.getNdbError();
     ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_031);
+    return RS_RONDB_SERVER_ERROR(ndb_error, std::string(rdrsErrorMessage(ERROR_SET_FILTER_FAILED)));
   }
   NdbRecAttr *id_attr = scan_op->getValue("id");
   if (unlikely(id_attr == nullptr)) {
     ndb_error = scan_op->getNdbError();
     ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_019);
+    return RS_RONDB_SERVER_ERROR(ndb_error, std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
   }
   if (unlikely(tx->execute(NdbTransaction::NoCommit) != 0)) {
     ndb_error = tx->getNdbError();
     ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_009);
+    return RS_RONDB_SERVER_ERROR(ndb_error, std::string(rdrsErrorMessage(ERROR_TRANSACTION_EXEC_FAILED)));
   }
   bool check   = 0;
   Uint32 count = 0;
@@ -120,7 +120,7 @@ RS_Status find_project_id_int(Ndb *ndb_object,
     do {
       if (unlikely(count > 1)) {
         ndb_object->closeTransaction(tx);
-        return RS_SERVER_ERROR(ERROR_028 + std::string(" Expecting single ID"));
+        return RS_SERVER_ERROR(std::string(rdrsErrorMessage(ERROR_PROGRAMMING_BUG)) + std::string(" Expecting single ID"));
       }
       count++;
       *project_id = id_attr->int32_value();
@@ -210,18 +210,18 @@ RS_Status find_feature_store_id_int(Ndb *ndb_object,
                filter.end() < 0)) {
     ndb_err = filter.getNdbError();
     ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(ndb_err, ERROR_031);
+    return RS_RONDB_SERVER_ERROR(ndb_err, std::string(rdrsErrorMessage(ERROR_SET_FILTER_FAILED)));
   }
   NdbRecAttr *id = scan_op->getValue("id");
   if (unlikely(id == nullptr)) {
     ndb_err = scan_op->getNdbError();
     ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(ndb_err, ERROR_019);
+    return RS_RONDB_SERVER_ERROR(ndb_err, std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
   }
   if (unlikely(tx->execute(NdbTransaction::NoCommit) != 0)) {
     ndb_err = tx->getNdbError();
     ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(ndb_err, ERROR_009);
+    return RS_RONDB_SERVER_ERROR(ndb_err, std::string(rdrsErrorMessage(ERROR_TRANSACTION_EXEC_FAILED)));
   }
   bool check   = 0;
   Uint32 count = 0;
@@ -229,7 +229,8 @@ RS_Status find_feature_store_id_int(Ndb *ndb_object,
     do {
       if (unlikely(count > 1)) {
         ndb_object->closeTransaction(tx);
-        return RS_SERVER_ERROR(ERROR_028 + std::string(" Expecting single ID"));
+        return RS_SERVER_ERROR(std::string(rdrsErrorMessage(ERROR_PROGRAMMING_BUG)) + 
+            std::string(" Expecting single ID"));
       }
       count++;
       *feature_store_id = id->int32_value();
@@ -330,7 +331,8 @@ RS_Status find_feature_view_id_int(Ndb *ndb_object,
                           FEATURE_VIEW_NAME_SIZE) < 0)) {
     ndb_error = filter.getNdbError();
     ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_031);
+    return RS_RONDB_SERVER_ERROR(ndb_error, 
+        std::string(rdrsErrorMessage(ERROR_SET_FILTER_FAILED)));
   }
   // version
   int version_col_id = table_dict->getColumn("version")->getColumnNo();
@@ -342,7 +344,8 @@ RS_Status find_feature_view_id_int(Ndb *ndb_object,
                           version_col_size) < 0)) {
     ndb_error = filter.getNdbError();
     ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_031);
+    return RS_RONDB_SERVER_ERROR(ndb_error, 
+        std::string(rdrsErrorMessage(ERROR_SET_FILTER_FAILED)));
   }
   // feature store id
   int fs_id_col_id = table_dict->getColumn("feature_store_id")->getColumnNo();
@@ -356,18 +359,21 @@ RS_Status find_feature_view_id_int(Ndb *ndb_object,
                filter.end() < 0)) {
     ndb_error = filter.getNdbError();
     ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_031);
+    return RS_RONDB_SERVER_ERROR(ndb_error, 
+        std::string(rdrsErrorMessage(ERROR_SET_FILTER_FAILED)));
   }
   NdbRecAttr *id_attr = scan_op->getValue("id");
   if (unlikely(id_attr == nullptr)) {
     ndb_error = scan_op->getNdbError();
     ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_019);
+    return RS_RONDB_SERVER_ERROR(ndb_error, 
+        std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
   }
   if (unlikely(tx->execute(NdbTransaction::NoCommit) != 0)) {
     ndb_error = tx->getNdbError();
     ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_009);
+    return RS_RONDB_SERVER_ERROR(ndb_error, 
+        std::string(rdrsErrorMessage(ERROR_TRANSACTION_EXEC_FAILED)));
   }
   bool check = 0;
   Uint32 count = 0;
@@ -376,7 +382,8 @@ RS_Status find_feature_view_id_int(Ndb *ndb_object,
       if (unlikely(count > 1)) {
         ndb_object->closeTransaction(tx);
         return RS_SERVER_ERROR(
-          ERROR_028 + std::string(" Expecting single ID"));
+          std::string(rdrsErrorMessage(ERROR_PROGRAMMING_BUG)) + 
+          std::string(" Expecting single ID"));
       }
       count++;
       *feature_view_id = id_attr->int32_value();
@@ -471,7 +478,7 @@ RS_Status find_training_dataset_join_data_int(Ndb *ndb_object,
                filter.end() < 0)) {
     ndb_err = filter.getNdbError();
     ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(ndb_err, ERROR_031);
+    return RS_RONDB_SERVER_ERROR(ndb_err, std::string(rdrsErrorMessage(ERROR_SET_FILTER_FAILED)));
   }
   NdbRecAttr *td_join_id_attr = scan_op->getValue("id", nullptr);
   NdbRecAttr *prefix_attr = scan_op->getValue("prefix", nullptr);
@@ -483,12 +490,12 @@ RS_Status find_training_dataset_join_data_int(Ndb *ndb_object,
                idx_attr == nullptr)) {
     ndb_err = scan_op->getNdbError();
     ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(ndb_err, ERROR_019);
+    return RS_RONDB_SERVER_ERROR(ndb_err, std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
   }
   if (unlikely(tx->execute(NdbTransaction::NoCommit) != 0)) {
     ndb_err = tx->getNdbError();
     ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(ndb_err, ERROR_009);
+    return RS_RONDB_SERVER_ERROR(ndb_err, std::string(rdrsErrorMessage(ERROR_TRANSACTION_EXEC_FAILED)));
   }
   bool check = 0;
   std::vector<Training_Dataset_Join> tdjsv;
@@ -507,7 +514,7 @@ RS_Status find_training_dataset_join_data_int(Ndb *ndb_object,
                                   &prefix_data_start,
                                   &prefix_attr_bytes) != 0)) {
           ndb_object->closeTransaction(tx);
-          return RS_CLIENT_ERROR(ERROR_019);
+          return RS_CLIENT_ERROR(std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
         }
         memcpy(tdj.prefix, prefix_data_start, prefix_attr_bytes);
         tdj.prefix[prefix_attr_bytes] = '\0';
@@ -596,7 +603,8 @@ RS_Status find_feature_group_data_int(Ndb *ndb_object,
   if (unlikely(ndb_op->equal("id", feature_group_id) != 0)) {
     ndb_error = ndb_op->getNdbError();
     ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_023);
+    return RS_RONDB_SERVER_ERROR(ndb_error, 
+        std::string(rdrsErrorMessage(ERROR_SET_EQUAL_FAILED)));
   }
   NdbRecAttr *online_enabled_attr = nullptr;
   // In hopsworks 3.1, there is no column `online_enabled`.
@@ -606,7 +614,8 @@ RS_Status find_feature_group_data_int(Ndb *ndb_object,
     if (unlikely(online_enabled_attr == nullptr)) {
       ndb_error = ndb_op->getNdbError();
       ndb_object->closeTransaction(tx);
-      return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_019);
+      return RS_RONDB_SERVER_ERROR(ndb_error, 
+          std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
     }
   }
   NdbRecAttr *feature_store_id_attr =
@@ -630,12 +639,14 @@ RS_Status find_feature_group_data_int(Ndb *ndb_object,
                stream_feature_group_id_attr == nullptr)) {
     ndb_error = ndb_op->getNdbError();
     ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_019);
+    return RS_RONDB_SERVER_ERROR(ndb_error, 
+        std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
   }
   if (unlikely(tx->execute(NdbTransaction::Commit) != 0)) {
     ndb_error = tx->getNdbError();
     ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_009);
+    return RS_RONDB_SERVER_ERROR(ndb_error, 
+        std::string(rdrsErrorMessage(ERROR_TRANSACTION_EXEC_FAILED)));
   }
   if (unlikely(ndb_op->getNdbError().classification == NdbError::NoDataFound)) {
     ndb_object->closeTransaction(tx);
@@ -654,7 +665,7 @@ RS_Status find_feature_group_data_int(Ndb *ndb_object,
   if (unlikely(GetByteArray(
         name_attr, &name_attr_start, &name_attr_bytes) != 0)) {
     ndb_object->closeTransaction(tx);
-    return RS_CLIENT_ERROR(ERROR_019);
+    return RS_CLIENT_ERROR(std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
   }
   memcpy(fg->name, name_attr_start, name_attr_bytes);
   fg->name[name_attr_bytes] = '\0';
@@ -731,7 +742,8 @@ RS_Status find_training_dataset_data_int(Ndb *ndb_object,
                filter.end() < 0)) {
     ndb_error = filter.getNdbError();
     ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_031);
+    return RS_RONDB_SERVER_ERROR(ndb_error, 
+        std::string(rdrsErrorMessage(ERROR_SET_FILTER_FAILED)));
   }
   assert(TRAINING_DATASET_FEATURE_NAME_SIZE ==
     (Uint32)table_dict->getColumn("name")->getSizeInBytes());
@@ -761,12 +773,14 @@ RS_Status find_training_dataset_data_int(Ndb *ndb_object,
                feature_view_id_attr == nullptr)) {
     ndb_error = scan_op->getNdbError();
     ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_019);
+    return RS_RONDB_SERVER_ERROR(ndb_error, 
+        std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
   }
   if (unlikely(tx->execute(NdbTransaction::NoCommit) != 0)) {
     ndb_error = tx->getNdbError();
     ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_009);
+    return RS_RONDB_SERVER_ERROR(ndb_error, 
+        std::string(rdrsErrorMessage(ERROR_TRANSACTION_EXEC_FAILED)));
   }
   std::vector<Training_Dataset_Feature> tdfsv;
   bool check = 0;
@@ -787,7 +801,7 @@ RS_Status find_training_dataset_data_int(Ndb *ndb_object,
       if (unlikely(GetByteArray(
             name_attr, &name_attr_start, &name_attr_bytes) != 0)) {
         ndb_object->closeTransaction(tx);
-        return RS_CLIENT_ERROR(ERROR_019);
+        return RS_CLIENT_ERROR(std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
       }
       memcpy(tdf.name, name_attr_start, name_attr_bytes);
       tdf.name[name_attr_bytes] = '\0';
@@ -797,7 +811,7 @@ RS_Status find_training_dataset_data_int(Ndb *ndb_object,
       if (unlikely(GetByteArray(
             type_attr, &type_attr_start, &type_attr_bytes) != 0)) {
         ndb_object->closeTransaction(tx);
-        return RS_CLIENT_ERROR(ERROR_019);
+        return RS_CLIENT_ERROR(std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
       }
       memcpy(tdf.data_type, type_attr_start, type_attr_bytes);
       tdf.data_type[type_attr_bytes] = '\0';
@@ -891,7 +905,7 @@ RS_Status find_feature_store_data_int(Ndb *ndb_object,
     return status;
   }
   if (unlikely(ndb_op->equal("id", feature_store_id) != 0)) {
-    return RS_SERVER_ERROR(ERROR_023);
+    return RS_SERVER_ERROR(std::string(rdrsErrorMessage(ERROR_SET_EQUAL_FAILED)));
   }
   NdbRecAttr *name_attr = ndb_op->getValue("name", nullptr);
   assert(FEATURE_STORE_NAME_SIZE ==
@@ -900,12 +914,12 @@ RS_Status find_feature_store_data_int(Ndb *ndb_object,
   if (unlikely(name_attr == nullptr)) {
     ndb_error = ndb_op->getNdbError();
     ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_019);
+    return RS_RONDB_SERVER_ERROR(ndb_error, std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
   }
   if (unlikely(tx->execute(NdbTransaction::Commit) != 0)) {
     ndb_error = tx->getNdbError();
     ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_009);
+    return RS_RONDB_SERVER_ERROR(ndb_error, std::string(rdrsErrorMessage(ERROR_TRANSACTION_EXEC_FAILED)));
   }
   if (unlikely(ndb_op->getNdbError().classification == NdbError::NoDataFound)) {
     ndb_object->closeTransaction(tx);
@@ -916,7 +930,7 @@ RS_Status find_feature_store_data_int(Ndb *ndb_object,
   if (unlikely(GetByteArray(
         name_attr, &name_attr_start, &name_attr_bytes) != 0)) {
     ndb_object->closeTransaction(tx);
-    return RS_CLIENT_ERROR(ERROR_019);
+    return RS_CLIENT_ERROR(std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
   }
   memcpy(name, name_attr_start, name_attr_bytes);
   name[name_attr_bytes] = '\0';
@@ -994,7 +1008,8 @@ RS_Status find_serving_key_data_int(Ndb *ndb_object,
                filter.end() < 0)) {
     ndb_error = filter.getNdbError();
     ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_031);
+    return RS_RONDB_SERVER_ERROR(ndb_error, 
+        std::string(rdrsErrorMessage(ERROR_SET_FILTER_FAILED)));
   }
   assert(SERVING_KEY_FEATURE_NAME_SIZE ==
     (Uint32)table_dict->getColumn("feature_name")->getSizeInBytes());
@@ -1018,12 +1033,14 @@ RS_Status find_serving_key_data_int(Ndb *ndb_object,
                join_index_attr == nullptr)) {
     ndb_error = scan_op->getNdbError();
     ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_019);
+    return RS_RONDB_SERVER_ERROR(ndb_error, 
+        std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
   }
   if (unlikely(tx->execute(NdbTransaction::NoCommit) != 0)) {
     ndb_error = tx->getNdbError();
     ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_009);
+    return RS_RONDB_SERVER_ERROR(ndb_error, 
+        std::string(rdrsErrorMessage(ERROR_TRANSACTION_EXEC_FAILED)));
   }
   std::vector<Serving_Key> serving_keys_vec;
   bool check = 0;
@@ -1041,7 +1058,7 @@ RS_Status find_serving_key_data_int(Ndb *ndb_object,
                                 &feature_name_attr_start,
                                 &feature_name_attr_bytes) != 0)) {
         ndb_object->closeTransaction(tx);
-        return RS_CLIENT_ERROR(ERROR_019);
+        return RS_CLIENT_ERROR(std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
       }
       memcpy(serving_key.feature_name,
              feature_name_attr_start,
@@ -1059,7 +1076,7 @@ RS_Status find_serving_key_data_int(Ndb *ndb_object,
                                   &prefix_attr_start,
                                   &prefix_attr_bytes) != 0)) {
           ndb_object->closeTransaction(tx);
-          return RS_CLIENT_ERROR(ERROR_019);
+          return RS_CLIENT_ERROR(std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
         }
         memcpy(serving_key.prefix, prefix_attr_start, prefix_attr_bytes);
         serving_key.prefix[prefix_attr_bytes] = '\0';
@@ -1075,7 +1092,7 @@ RS_Status find_serving_key_data_int(Ndb *ndb_object,
                                   &join_on_attr_start,
                                   &join_on_attr_bytes) != 0)) {
           ndb_object->closeTransaction(tx);
-          return RS_CLIENT_ERROR(ERROR_019);
+          return RS_CLIENT_ERROR(std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
         }
         memcpy(serving_key.join_on, join_on_attr_start, join_on_attr_bytes);
         serving_key.join_on[join_on_attr_bytes] = '\0';
@@ -1196,7 +1213,7 @@ RS_Status find_feature_group_schema_id_int(Ndb *ndb_object,
                           subject_col_size) < 0)) {
     ndb_error = filter.getNdbError();
     ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_031);
+    return RS_RONDB_SERVER_ERROR(ndb_error, std::string(rdrsErrorMessage(ERROR_SET_FILTER_FAILED)));
   }
   // project id
   int proj_id_col_id = table_dict->getColumn("project_id")->getColumnNo();
@@ -1209,7 +1226,7 @@ RS_Status find_feature_group_schema_id_int(Ndb *ndb_object,
                filter.end() < 0)) {
     ndb_error = filter.getNdbError();
     ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_031);
+    return RS_RONDB_SERVER_ERROR(ndb_error, std::string(rdrsErrorMessage(ERROR_SET_FILTER_FAILED)));
   }
   NdbRecAttr *schema_id_attr = scan_op->getValue("schema_id");
   NdbRecAttr *version_attr = scan_op->getValue("version");
@@ -1217,12 +1234,12 @@ RS_Status find_feature_group_schema_id_int(Ndb *ndb_object,
                version_attr == nullptr)) {
     ndb_error = scan_op->getNdbError();
     ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_019);
+    return RS_RONDB_SERVER_ERROR(ndb_error, std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
   }
   if (unlikely(tx->execute(NdbTransaction::NoCommit) != 0)) {
     ndb_error = tx->getNdbError();
     ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_009);
+    return RS_RONDB_SERVER_ERROR(ndb_error, std::string(rdrsErrorMessage(ERROR_TRANSACTION_EXEC_FAILED)));
   }
   bool check   = 0;
   Int32 max_version = 0;
@@ -1286,20 +1303,20 @@ RS_Status find_feature_group_schema_int(Ndb *ndb_object,
   if (unlikely(ndb_op->equal("id", schema_id) != 0)) {
     ndb_error = ndb_op->getNdbError();
     ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_023);
+    return RS_RONDB_SERVER_ERROR(ndb_error, std::string(rdrsErrorMessage(ERROR_SET_EQUAL_FAILED)));
   }
 
   NdbBlob *schema_blob = ndb_op->getBlobHandle("schema");
   if (schema_blob == nullptr) {
     ndb_error = ndb_op->getNdbError();
     ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_019);
+    return RS_RONDB_SERVER_ERROR(ndb_error, std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
   }
 
   if (tx->execute(NdbTransaction::NoCommit) != 0) {
     ndb_error = tx->getNdbError();
     ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_009);
+    return RS_RONDB_SERVER_ERROR(ndb_error, std::string(rdrsErrorMessage(ERROR_TRANSACTION_EXEC_FAILED)));
   }
   if (unlikely(ndb_op->getNdbError().classification == NdbError::NoDataFound)) {
     ndb_object->closeTransaction(tx);
@@ -1308,7 +1325,8 @@ RS_Status find_feature_group_schema_int(Ndb *ndb_object,
 
   Uint64 length = 0;
   if (schema_blob->getLength(length) == -1) {
-    return RS_SERVER_ERROR(ERROR_037 + std::string(" Reading column length failed.") +
+    return RS_SERVER_ERROR(std::string(rdrsErrorMessage(ERROR_COLUMN_READ_FAILED)) + 
+                           std::string(" Reading column length failed.") +
                            std::string(" Column: ") +
                            std::string(schema_blob->getColumn()->getName()) +
                            " Type: " + std::to_string(schema_blob->getColumn()->getType()));
@@ -1330,18 +1348,20 @@ RS_Status find_feature_group_schema_int(Ndb *ndb_object,
       if (-1 == schema_blob->setPos(pos)) {
         return RS_RONDB_SERVER_ERROR(
             schema_blob->getNdbError(),
-            ERROR_037 + std::string(" Failed to set read position.") + std::string(" Column: ") +
-                std::string(schema_blob->getColumn()->getName()) +
-                " Type: " + std::to_string(schema_blob->getColumn()->getType()));
+            std::string(rdrsErrorMessage(ERROR_COLUMN_READ_FAILED)) + 
+            std::string(" Failed to set read position.") + std::string(" Column: ") +
+            std::string(schema_blob->getColumn()->getName()) +
+            " Type: " + std::to_string(schema_blob->getColumn()->getType()));
       }
 
       if (schema_blob->readData(tmp_buffer, bytes /*to read, also bytes read*/) == -1) {
         return RS_RONDB_SERVER_ERROR(
             schema_blob->getNdbError(),
-            ERROR_037 + std::string(" Read data failed .") + std::string(" Column: ") +
-                std::string(schema_blob->getColumn()->getName()) +
-                " Type: " + std::to_string(schema_blob->getColumn()->getType()) +
-                " Position: " + std::to_string(pos));
+            std::string(rdrsErrorMessage(ERROR_COLUMN_READ_FAILED)) + 
+            std::string(" Read data failed .") + std::string(" Column: ") +
+            std::string(schema_blob->getColumn()->getName()) +
+            " Type: " + std::to_string(schema_blob->getColumn()->getType()) +
+            " Position: " + std::to_string(pos));
       }
 
       if (bytes > 0) {
