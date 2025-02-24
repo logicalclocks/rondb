@@ -74,7 +74,7 @@ RS_Status PKRResponse::WriteStringHeaderField(Uint32 index, const char *str) {
 RS_Status PKRResponse::Append_cstring(const char *str, Uint32 len) {
   Uint32 strl = len + 1;  // for null terminator
   if (unlikely(unlikely(strl > GetRemainingCapacity()))) {
-    return RS_SERVER_ERROR(ERROR_016);
+    return RS_SERVER_ERROR(std::string(rdrsErrorMessage(ERROR_RESPONSE_BUFFER_OVERFLOW)));
   }
   memcpy(resp->buffer + writeHeader, str, strl);
   writeHeader += strl;
@@ -94,7 +94,7 @@ RS_Status PKRResponse::SetNoOfColumns(Uint32 cols) {
   // +1 for col count
   Uint32 spaceNeeded4Pointers = 1 * ADDRESS_SIZE + (cols * ADDRESS_SIZE * 4);
   if (unlikely(spaceNeeded4Pointers > GetRemainingCapacity())) {
-    return RS_SERVER_ERROR(ERROR_016);
+    return RS_SERVER_ERROR(std::string(rdrsErrorMessage(ERROR_RESPONSE_BUFFER_OVERFLOW)));
   }
   Uint32 colAddr = (this->writeHeader);
   WriteHeaderField(PK_RESP_COLS_IDX, colAddr);
@@ -182,7 +182,7 @@ RS_Status PKRResponse::Append_string(std::string value,
                                      Uint32 type) {
   // +1 null terminator
   if (unlikely((value.length() + 1) > GetRemainingCapacity())) {
-    return RS_SERVER_ERROR(ERROR_016);
+    return RS_SERVER_ERROR(std::string(rdrsErrorMessage(ERROR_RESPONSE_BUFFER_OVERFLOW)));
   }
   return SetColumnData(value.c_str(), type, value.size());
 }
@@ -231,7 +231,7 @@ RS_Status PKRResponse::Append_d64(double num) {
                                RDRS_FLOAT_DATATYPE,
                                ss.str().size());
   } catch (...) {
-    return RS_SERVER_ERROR(ERROR_015);
+    return RS_SERVER_ERROR(std::string(rdrsErrorMessage(ERROR_WRONG_DATA_TYPE)));
   }
 }
 
@@ -242,7 +242,7 @@ RS_Status PKRResponse::Append_iu64(Uint64 num) {
                                RDRS_INTEGER_DATATYPE,
                                numStr.size());
   } catch (...) {
-    return RS_SERVER_ERROR(ERROR_015);
+    return RS_SERVER_ERROR(std::string(rdrsErrorMessage(ERROR_WRONG_DATA_TYPE)));
   }
 }
 
@@ -253,7 +253,7 @@ RS_Status PKRResponse::Append_i64(Int64 num) {
                                RDRS_INTEGER_DATATYPE,
                                numStr.size());
   } catch (...) {
-    return RS_SERVER_ERROR(ERROR_015);
+    return RS_SERVER_ERROR(std::string(rdrsErrorMessage(ERROR_WRONG_DATA_TYPE)));
   }
 }
 
@@ -265,7 +265,7 @@ RS_Status PKRResponse::Append_char(const char *fromBuff,
 
   if (unlikely((fromBuffLen + extraSpace) > GetRemainingCapacity())) {
     return RS_SERVER_ERROR(
-      ERROR_010 +
+      std::string(rdrsErrorMessage(ERROR_RESPONSE_BUFFER_COPY_FAILED)) +
       std::string(" Response buffer remaining capacity: ") +
       std::to_string(GetRemainingCapacity()) + std::string(" Required: ") +
       std::to_string(fromBuffLen + extraSpace));
@@ -305,14 +305,16 @@ RS_Status PKRResponse::Append_char(const char *fromBuff,
                          fromCS,
                          6);
     return RS_SERVER_ERROR(
-      ERROR_008 + std::string(" Invalid string: ") +
+      std::string(rdrsErrorMessage(ERROR_INVALID_COLUMN_DATA)) + 
+      std::string(" Invalid string: ") +
       std::string(printable_buff));
   } else if (unlikely(from_end_pos < fromBuff + fromBuffLen)) {
     /*
       result is longer than UINT_MAX32 and doesn't fit into String
     */
     return RS_SERVER_ERROR(
-      ERROR_021 + std::string(" Buffer size: ") +
+      std::string(rdrsErrorMessage(ERROR_PROGRAMMING_BUFFER_TOO_SMALL)) + 
+      std::string(" Buffer size: ") +
       std::to_string(MAX_TUPLE_SIZE_IN_BYTES_ESCAPED) +
       std::string(". Bytes left to copy: ") +
       std::to_string((fromBuff + fromBuffLen) - from_end_pos));
@@ -329,7 +331,8 @@ RS_Status PKRResponse::Append_char(const char *fromBuff,
   // +1 for null terminator 
   if (unlikely((escapedstr.length() + extraSpace) >= GetRemainingCapacity())) {
     return RS_SERVER_ERROR(
-      ERROR_010 + std::string(" Response buffer remaining capacity: ") +
+      std::string(rdrsErrorMessage(ERROR_RESPONSE_BUFFER_COPY_FAILED)) + 
+      std::string(" Response buffer remaining capacity: ") +
       std::to_string(GetRemainingCapacity()) + std::string(" Required: ") +
       std::to_string(escapedstr.length() + extraSpace));
   }

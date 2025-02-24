@@ -69,7 +69,7 @@ RS_Status RDRSRonDBConnection::Connect() {
     NdbMutex_Lock(connectionInfoMutex);
     if (unlikely(stats.is_shutdown || stats.is_shutting_down)) {
       NdbMutex_Unlock(connectionInfoMutex);
-      return RS_SERVER_ERROR(ERROR_034);
+      return RS_SERVER_ERROR(std::string(rdrsErrorMessage(ERROR_PROGRAMMING_CONNECTION_SHUTDOWN)));
     }
     require(stats.connection_state != CONNECTED);
     NdbMutex_Unlock(connectionInfoMutex);
@@ -85,12 +85,14 @@ RS_Status RDRSRonDBConnection::Connect() {
     if (unlikely(retCode != 0)) {
       NdbMutex_Unlock(connectionMutex);
       return RS_SERVER_ERROR(
-        ERROR_002 + std::string(" RetCode: ") + std::to_string(retCode));
+        std::string(rdrsErrorMessage(ERROR_RONDB_MGM_CONNECT_FAILED))
+        + std::string(" RetCode: ") + std::to_string(retCode));
     }
     retCode = ndbConnection->wait_until_ready(30, 30);
     if (retCode != 0) {
       RS_Status status = RS_SERVER_ERROR(
-        ERROR_003 + std::string(" RetCode: ") + std::to_string(retCode) +
+        std::string(rdrsErrorMessage(ERROR_CLUSTER_NOT_READY)) + 
+        std::string(" RetCode: ") + std::to_string(retCode) +
         std::string(" Lastest Error: ") +
         std::to_string(ndbConnection->get_latest_error()) +
         std::string(" Lastest Error Msg: ") +
@@ -128,8 +130,8 @@ RS_Status RDRSRonDBConnection::GetNdbObject(Ndb **ndb_object) {
       NdbMutex_Unlock(connectionInfoMutex);
     }
     if (unlikely(is_shutdown)) {
-      rdrs_logger::error(ERROR_034);
-      return RS_SERVER_ERROR(ERROR_034);
+      rdrs_logger::error(std::string(rdrsErrorMessage(ERROR_PROGRAMMING_CONNECTION_SHUTDOWN)));
+      return RS_SERVER_ERROR(std::string(rdrsErrorMessage(ERROR_PROGRAMMING_CONNECTION_SHUTDOWN)));
     }
     if (unlikely(connection_state != CONNECTED)) {
       if (!reconnection_in_progress) {
@@ -138,11 +140,12 @@ RS_Status RDRSRonDBConnection::GetNdbObject(Ndb **ndb_object) {
         rdrs_logger::debug("GetNdbObject triggered reconnection");
         Reconnect();
       }
-      rdrs_logger::warn(ERROR_033 + std::string(" Connection State: ") +
+      rdrs_logger::warn(std::string(rdrsErrorMessage(ERROR_RONDB_CONNECTION_CLOSED)) + 
+                           std::string(" Connection State: ") +
                            std::to_string(connection_state) +
                            std::string(" Reconnection State: ") +
                            std::to_string(reconnection_in_progress));
-      return RS_SERVER_ERROR(ERROR_033);
+      return RS_SERVER_ERROR(std::string(rdrsErrorMessage(ERROR_RONDB_CONNECTION_CLOSED)));
     }
   }
   {
@@ -156,7 +159,8 @@ RS_Status RDRSRonDBConnection::GetNdbObject(Ndb **ndb_object) {
         delete ndb_object;
         ret_status =
             RS_SERVER_ERROR(
-              ERROR_004 + std::string(" RetCode: ") + std::to_string(retCode));
+              std::string(rdrsErrorMessage(ERROR_NDB_OBJECT_INIT_FAILED)) + 
+              std::string(" RetCode: ") + std::to_string(retCode));
       }
       stats.ndb_objects_created++;
       stats.ndb_objects_count++;
@@ -359,7 +363,7 @@ RS_Status RDRSRonDBConnection::Reconnect() {
     rdrs_logger::info(
       "Ignoring RonDB reconnection request. A reconnection request is"
       " already in progress");
-    return RS_SERVER_ERROR(ERROR_036);
+    return RS_SERVER_ERROR(std::string(rdrsErrorMessage(ERROR_RONDB_RECONNECTION_IN_PROGRESS)));
   }
   stats.is_reconnection_in_progress = true;
   // clean previous failed/completed reconnection thread

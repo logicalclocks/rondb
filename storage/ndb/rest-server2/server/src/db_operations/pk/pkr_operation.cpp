@@ -80,7 +80,8 @@ BatchKeyOperations::init_batch_operations(ArenaMalloc *amalloc,
   m_key_ops = (KeyOperation*)amalloc->alloc_bytes(
     sizeof(KeyOperation) * numOps, 8);
   if (unlikely(m_key_ops == nullptr)) {
-    RS_Status error = RS_SERVER_ERROR(ERROR_067);
+    RS_Status error = RS_SERVER_ERROR(
+        std::string(rdrsErrorMessage(ERROR_MEMORY_ALLOCATION_FAILURE)));
     return error;
   }
   DEB_NDB_BE("m_key_ops: %p, sizeof(KeyOperation): %u",
@@ -90,7 +91,7 @@ BatchKeyOperations::init_batch_operations(ArenaMalloc *amalloc,
     PKRRequest *req = new (&key_op->m_req) PKRRequest(&reqBuffer[i]);
     if (unlikely(ndb_object->setCatalogName(req->DB()) != 0)) {
       RS_Status err = RS_CLIENT_404_WITH_MSG_ERROR(
-        ERROR_011 + std::string(" Database: ") +
+        std::string(rdrsErrorMessage(ERROR_DB_TABLE_NOT_EXIST)) + std::string(" Database: ") +
         std::string(req->DB()) + " Table: " + req->Table());
       if (m_isBatch) {
         req->MarkInvalidOp(err);
@@ -104,8 +105,9 @@ BatchKeyOperations::init_batch_operations(ArenaMalloc *amalloc,
       req->DB(), req->Table(), i, reqBuffer[i].buffer);
     if (unlikely(tableDict == nullptr)) {
       RS_Status err = RS_CLIENT_404_WITH_MSG_ERROR(
-        ERROR_011 + std::string(" Database: ") +
-        std::string(req->DB()) + " Table: " + req->Table());
+        std::string(rdrsErrorMessage(ERROR_DB_TABLE_NOT_EXIST)) + 
+        std::string(" Database: ") + std::string(req->DB()) + 
+        std::string(" Table: ") + req->Table());
       if (m_isBatch) {
         req->MarkInvalidOp(err);
         continue;
@@ -127,8 +129,8 @@ BatchKeyOperations::init_batch_operations(ArenaMalloc *amalloc,
         numPrimaryKeys, req->PKColumnsCount());
       RS_Status err =
         RS_CLIENT_ERROR(
-        ERROR_013 + std::string(" Expecting: ") +
-        std::to_string(numPrimaryKeys) +
+        std::string(rdrsErrorMessage(ERROR_WRONG_PRIMARY_KEY_COUNT)) + 
+        std::string(" Expecting: ") + std::to_string(numPrimaryKeys) +
         " Got: " + std::to_string(req->PKColumnsCount()));
       if (m_isBatch) {
         req->MarkInvalidOp(err);
@@ -137,7 +139,8 @@ BatchKeyOperations::init_batch_operations(ArenaMalloc *amalloc,
       return err;
     }
     if (unlikely(numColumns < req->ReadColumnsCount())) {
-      status = RS_CLIENT_ERROR(ERROR_068);
+      status = RS_CLIENT_ERROR(
+          std::string(rdrsErrorMessage(ERROR_TOO_MANY_COLUMNS)));
       req->MarkInvalidOp(status);
       return status;
     }
@@ -169,7 +172,7 @@ BatchKeyOperations::init_batch_operations(ArenaMalloc *amalloc,
                  pkCols == nullptr ||
                  readCols == nullptr ||
                  row == nullptr)) {
-      status = RS_SERVER_ERROR(ERROR_067);
+      status = RS_SERVER_ERROR(std::string(rdrsErrorMessage(ERROR_MEMORY_ALLOCATION_FAILURE)));
       return status;
     }
     Uint32 pk_bitmap_words[MAX_ATTRIBUTES_IN_TABLE/32];
@@ -203,10 +206,12 @@ BatchKeyOperations::init_batch_operations(ArenaMalloc *amalloc,
       RS_Status err;
       if (failed == 1) {
         err = RS_CLIENT_ERROR(
-          ERROR_014 + std::string(req->PKName(j)));
+          std::string(rdrsErrorMessage(ERROR_WRONG_PRIMARY_KEY_COLUMN)) + 
+          std::string(req->PKName(j)));
       } else {
         err = RS_CLIENT_ERROR(
-          ERROR_070 + std::string(req->PKName(j)));
+          std::string(rdrsErrorMessage(ERROR_SET_PK_MULTIPLE)) + 
+          std::string(req->PKName(j)));
       }
       if (m_isBatch) {
         req->MarkInvalidOp(err);
@@ -251,7 +256,8 @@ BatchKeyOperations::init_batch_operations(ArenaMalloc *amalloc,
             key_op->m_blob_handles = (NdbBlob**)
               amalloc->alloc_bytes(sizeof(NdbBlob*) * numReadColumns, 8);
             if (unlikely(key_op->m_blob_handles == nullptr)) {
-              return RS_SERVER_ERROR(ERROR_067);
+              return RS_SERVER_ERROR(
+                  std::string(rdrsErrorMessage(ERROR_MEMORY_ALLOCATION_FAILURE)));
             }
             DEB_NDB_BE("Allocating memory at %p for"
                        " m_key_ops[%u].m_blob_handles",
@@ -263,11 +269,12 @@ BatchKeyOperations::init_batch_operations(ArenaMalloc *amalloc,
         RS_Status err;
         if (failed == 1) {
           err = RS_CLIENT_ERROR(
-            ERROR_012 + std::string(" Column: ") +
-            std::string(req->ReadColumnName(j)));
+            std::string(rdrsErrorMessage(ERROR_COLUMN_NOT_EXIST)) + 
+            std::string(" Column: ") + std::string(req->ReadColumnName(j)));
         } else {
           err = RS_CLIENT_ERROR(
-            ERROR_037 + std::string(req->ReadColumnName(j)));
+            std::string(rdrsErrorMessage(ERROR_COLUMN_READ_FAILED)) + 
+            std::string(req->ReadColumnName(j)));
         }
         if (m_isBatch) {
           req->MarkInvalidOp(err);
@@ -297,7 +304,8 @@ BatchKeyOperations::init_batch_operations(ArenaMalloc *amalloc,
             key_op->m_blob_handles = (NdbBlob**)
               amalloc->alloc_bytes(sizeof(NdbBlob*) * numReadColumns, 8);
             if (unlikely(key_op->m_blob_handles == nullptr)) {
-              return RS_SERVER_ERROR(ERROR_067);
+              return RS_SERVER_ERROR(
+                  std::string(rdrsErrorMessage(ERROR_MEMORY_ALLOCATION_FAILURE)));
             }
             DEB_NDB_BE("(2)Allocating memory at %p for"
                        " m_key_ops[%u].m_blob_handles",
@@ -319,7 +327,8 @@ RS_Status BatchKeyOperations::setup_transaction() {
   const NdbDictionary::Table *table_dict = m_key_ops[0].m_tableDict;
   m_ndbTransaction = m_ndb_object->startTransaction(table_dict);
   if (unlikely(m_ndbTransaction == nullptr)) {
-    return RS_RONDB_SERVER_ERROR(m_ndb_object->getNdbError(), ERROR_005);
+    return RS_RONDB_SERVER_ERROR(m_ndb_object->getNdbError(), 
+        std::string(rdrsErrorMessage(ERROR_TRANSACTION_START_FAILED)));
   }
   return RS_OK;
 }
@@ -372,7 +381,8 @@ start:
       nullptr,
       0);
     if (unlikely(operation == nullptr)) {
-      return RS_RONDB_SERVER_ERROR(m_ndbTransaction->getNdbError(), ERROR_007);
+      return RS_RONDB_SERVER_ERROR(m_ndbTransaction->getNdbError(), 
+          std::string(rdrsErrorMessage(ERROR_READ_OPERATION_FAILED)));
     }
     key_op->m_ndbOperation = operation;
     if (unlikely(m_key_ops[opIdx].m_blob_handles != nullptr)) {
@@ -391,7 +401,7 @@ start:
             colIdx,
             m_key_ops[opIdx].m_blob_handles[colIdx]);
           if (unlikely(m_key_ops[opIdx].m_blob_handles[colIdx] == nullptr)) {
-            return RS_SERVER_ERROR(ERROR_067);
+            return RS_SERVER_ERROR(std::string(rdrsErrorMessage(ERROR_MEMORY_ALLOCATION_FAILURE)));
           }
         } else {
           DEB_NDB_BE("No Blob handle for %s in op %u in col: %u",
@@ -407,7 +417,7 @@ start:
 RS_Status BatchKeyOperations::execute() {
   if (unlikely(m_ndbTransaction->execute(NdbTransaction::NoCommit) != 0)) {
     return RS_RONDB_SERVER_ERROR(m_ndbTransaction->getNdbError(),
-                                 ERROR_009);
+                                 std::string(rdrsErrorMessage(ERROR_TRANSACTION_EXEC_FAILED)));
   }
   return RS_OK;
 }
@@ -441,7 +451,7 @@ RS_Status BatchKeyOperations::create_response(RS_Buffer *respBuffs) {
       DEB_NDB_BE("Build request when all columns requested");
       Uint32 numColumns = key_op->m_num_table_columns;
       if (unlikely(req->addReadColumns(numColumns))) {
-        return RS_SERVER_ERROR(ERROR_067);
+        return RS_SERVER_ERROR(std::string(rdrsErrorMessage(ERROR_MEMORY_ALLOCATION_FAILURE)));
       }
       for (Uint32 k = 0; k < numColumns; k++) {
         const NdbDictionary::Column *read_col =
@@ -449,7 +459,7 @@ RS_Status BatchKeyOperations::create_response(RS_Buffer *respBuffs) {
         if (unlikely(req->addReadColumnName(k,
                                    read_col->getName(),
                                    DEFAULT_DRT))) {
-          return RS_SERVER_ERROR(ERROR_067);
+          return RS_SERVER_ERROR(std::string(rdrsErrorMessage(ERROR_MEMORY_ALLOCATION_FAILURE)));
         }
       }
     }
@@ -540,8 +550,8 @@ RS_Status KeyOperation::write_col_to_resp(Uint32 colIdx,
   switch (col->getType()) {
   case NdbDictionary::Column::Undefined: {
     ///< 4 bytes + 0-3 fraction
-    return RS_CLIENT_ERROR(ERROR_018 + std::string(" Column: ") +
-      std::string(col_name));
+    return RS_CLIENT_ERROR(std::string(rdrsErrorMessage(ERROR_UNDEFINED_DATA_TYPE)) + 
+        std::string(" Column: ") + std::string(col_name));
   }
   case NdbDictionary::Column::Tinyint: {
     ///< 8 bit. 1 byte signed integer, can be used in array
@@ -610,13 +620,14 @@ RS_Status KeyOperation::write_col_to_resp(Uint32 colIdx,
   case NdbDictionary::Column::Olddecimal: {
     ///< MySQL < 5.0 signed decimal,  Precision, Scale
     return RS_SERVER_ERROR(
-      ERROR_028 + std::string(" Column: ") + std::string(col_name) +
+      std::string(rdrsErrorMessage(ERROR_PROGRAMMING_BUG)) + 
+      std::string(" Column: ") + std::string(col_name) +
       " Type: " + std::to_string(col->getType()));
   }
   case NdbDictionary::Column::Olddecimalunsigned: {
     ///< MySQL < 5.0 signed decimal,  Precision, Scale
     return RS_SERVER_ERROR(
-      ERROR_028 + std::string(" Column: ") + std::string(col_name) +
+      std::string(rdrsErrorMessage(ERROR_PROGRAMMING_BUG)) + std::string(" Column: ") + std::string(col_name) +
       " Type: " + std::to_string(col->getType()));
   }
   case NdbDictionary::Column::Decimal:
@@ -677,7 +688,7 @@ RS_Status KeyOperation::write_col_to_resp(Uint32 colIdx,
                   static_cast<Uint8>(col_ptr[0]);
       break;
     default:
-      return RS_CLIENT_ERROR(ERROR_019);
+      return RS_CLIENT_ERROR(std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
     }
     return response->Append_char(dataStart,
                                  attrBytes,
@@ -721,11 +732,11 @@ RS_Status KeyOperation::write_col_to_resp(Uint32 colIdx,
                   static_cast<Uint8>(col_ptr[0]);
       break;
     default:
-      return RS_CLIENT_ERROR(ERROR_019);
+      return RS_CLIENT_ERROR(std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
     }
     if (unlikely(attrBytes > MAX_TUPLE_SIZE_IN_BYTES)) {
       return RS_SERVER_ERROR(
-        ERROR_069 + std::string(" DB: ") + std::string(request->DB()) +
+        std::string(rdrsErrorMessage(ERROR_TOO_LARGE_ROWS)) + std::string(" DB: ") + std::string(request->DB()) +
         " Table: " + std::string(request->Table()));
     }
     char buffer[MAX_TUPLE_SIZE_IN_BYTES_ENCODED];
@@ -737,7 +748,8 @@ RS_Status KeyOperation::write_col_to_resp(Uint32 colIdx,
   case NdbDictionary::Column::Datetime: {
     ///< Precision down to 1 sec (sizeof(Datetime) == 8 bytes )
     return RS_SERVER_ERROR(
-      ERROR_028 + std::string(" Column: ") + std::string(col_name) +
+      std::string(rdrsErrorMessage(ERROR_PROGRAMMING_BUG)) + 
+      std::string(" Column: ") + std::string(col_name) +
       " Type: " + std::to_string(col->getType()));
   }
   case NdbDictionary::Column::Date: {
@@ -758,7 +770,8 @@ RS_Status KeyOperation::write_col_to_resp(Uint32 colIdx,
     if (unlikely(blobHandle->getNull(isNull) != 0)) {
       return RS_RONDB_SERVER_ERROR(
         blobHandle->getNdbError(),
-          ERROR_037 + std::string(" Failed to check NULL of ") +
+          std::string(rdrsErrorMessage(ERROR_COLUMN_READ_FAILED)) + 
+          std::string(" Failed to check NULL of ") +
           std::string(" Column: ") + std::string(col_name) +
           " Type: " + std::to_string(col->getType()));
     }
@@ -766,7 +779,7 @@ RS_Status KeyOperation::write_col_to_resp(Uint32 colIdx,
       if (unlikely(blobHandle->getLength(length) != 0)) {
         return RS_RONDB_SERVER_ERROR(
           blobHandle->getNdbError(),
-          ERROR_037 + std::string(" NULL column has size != 0 ") +
+          std::string(rdrsErrorMessage(ERROR_COLUMN_READ_FAILED)) + std::string(" NULL column has size != 0 ") +
           std::string(" Column: ") + std::string(col_name) +
           " Type: " + std::to_string(col->getType()));
       }
@@ -774,7 +787,8 @@ RS_Status KeyOperation::write_col_to_resp(Uint32 colIdx,
     }
     if (blobHandle->getLength(length) == -1) {
       return RS_SERVER_ERROR(
-        ERROR_037 + std::string(" Reading column length failed.") +
+        std::string(rdrsErrorMessage(ERROR_COLUMN_READ_FAILED)) + 
+        std::string(" Reading column length failed.") +
           std::string(" Column: ") + std::string(col_name) +
           " Type: " + std::to_string(col->getType()));
     }
@@ -784,7 +798,8 @@ RS_Status KeyOperation::write_col_to_resp(Uint32 colIdx,
     const size_t maxEncodedSize = length / 3 + (length % 3 != 0) * 4;
     if (unlikely(response->GetRemainingCapacity() < maxEncodedSize)) {
       return RS_SERVER_ERROR(
-        ERROR_016 + std::string(" Buffer Remaining Capacity: ") +
+        std::string(rdrsErrorMessage(ERROR_RESPONSE_BUFFER_OVERFLOW)) + 
+        std::string(" Buffer Remaining Capacity: ") +
         std::to_string(response->GetRemainingCapacity()) +
         " Required: " + std::to_string(maxEncodedSize));
     }
@@ -807,7 +822,8 @@ RS_Status KeyOperation::write_col_to_resp(Uint32 colIdx,
         if (unlikely(-1 == blobHandle->setPos(pos))) {
           return RS_RONDB_SERVER_ERROR(
             blobHandle->getNdbError(),
-            ERROR_037 + std::string(" Failed to set read position.") +
+            std::string(rdrsErrorMessage(ERROR_COLUMN_READ_FAILED)) + 
+            std::string(" Failed to set read position.") +
             std::string(" Column: ") + std::string(col_name) +
             " Type: " + std::to_string(col->getType()));
         }
@@ -815,7 +831,8 @@ RS_Status KeyOperation::write_col_to_resp(Uint32 colIdx,
                                  bytes /*to read, also bytes read*/) == -1) {
           return RS_RONDB_SERVER_ERROR(
             blobHandle->getNdbError(),
-            ERROR_037 + std::string(" Read data failed .") +
+            std::string(rdrsErrorMessage(ERROR_COLUMN_READ_FAILED)) + 
+            std::string(" Read data failed .") +
             std::string(" Column: ") + std::string(col_name) +
             " Type: " + std::to_string(col->getType()) +
             " Position: " + std::to_string(pos));
@@ -842,7 +859,8 @@ RS_Status KeyOperation::write_col_to_resp(Uint32 colIdx,
     if (total_read != length) {
       return RS_RONDB_SERVER_ERROR(
         blobHandle->getNdbError(),
-        ERROR_037 + std::string(" Not all of the data was read.") +
+        std::string(rdrsErrorMessage(ERROR_COLUMN_READ_FAILED)) + 
+        std::string(" Not all of the data was read.") +
         std::string(" Column: ") + std::string(col_name) +
         " Expected to read: " + std::to_string(length) +
         " bytes. Read: " + std::to_string(total_read));
@@ -868,7 +886,8 @@ RS_Status KeyOperation::write_col_to_resp(Uint32 colIdx,
     if (unlikely(blobHandle->getNull(isNull) != 0)) {
       return RS_RONDB_SERVER_ERROR(
         blobHandle->getNdbError(),
-          ERROR_037 + std::string(" Failed to check NULL of ") +
+          std::string(rdrsErrorMessage(ERROR_COLUMN_READ_FAILED)) + 
+          std::string(" Failed to check NULL of ") +
           std::string(" Column: ") + std::string(col_name) +
           " Type: " + std::to_string(col->getType()));
     }
@@ -876,7 +895,8 @@ RS_Status KeyOperation::write_col_to_resp(Uint32 colIdx,
       if (unlikely(blobHandle->getLength(length) != 0)) {
         return RS_RONDB_SERVER_ERROR(
           blobHandle->getNdbError(),
-          ERROR_037 + std::string(" NULL column has size != 0 ") +
+          std::string(rdrsErrorMessage(ERROR_COLUMN_READ_FAILED)) + 
+          std::string(" NULL column has size != 0 ") +
           std::string(" Column: ") + std::string(col_name) +
           " Type: " + std::to_string(col->getType()));
       }
@@ -884,14 +904,16 @@ RS_Status KeyOperation::write_col_to_resp(Uint32 colIdx,
     }
     if (blobHandle->getLength(length) == -1) {
       return RS_SERVER_ERROR(
-        ERROR_037 + std::string(" Reading column length failed.") +
+        std::string(rdrsErrorMessage(ERROR_COLUMN_READ_FAILED)) + 
+        std::string(" Reading column length failed.") +
         std::string(" Column: ") + std::string(col_name) +
         " Type: " + std::to_string(col->getType()));
     }
     //+1 for null terminator
     if (unlikely(response->GetRemainingCapacity() < length + 1)) {
       return RS_SERVER_ERROR(
-        ERROR_016 + std::string(" Buffer Remaining Capacity: ") +
+        std::string(rdrsErrorMessage(ERROR_RESPONSE_BUFFER_OVERFLOW)) + 
+        std::string(" Buffer Remaining Capacity: ") +
         std::to_string(response->GetRemainingCapacity()) +
         " Required: " + std::to_string(length + 1));
     }
@@ -912,7 +934,8 @@ RS_Status KeyOperation::write_col_to_resp(Uint32 colIdx,
         if (-1 == blobHandle->setPos(pos)) {
           return RS_RONDB_SERVER_ERROR(
             blobHandle->getNdbError(),
-            ERROR_037 + std::string(" Failed to set read position.") +
+            std::string(rdrsErrorMessage(ERROR_COLUMN_READ_FAILED)) + 
+            std::string(" Failed to set read position.") +
             std::string(" Column: ") + std::string(col_name) +
             " Type: " + std::to_string(col->getType()));
         }
@@ -920,7 +943,8 @@ RS_Status KeyOperation::write_col_to_resp(Uint32 colIdx,
                                  bytes /*to read, also bytes read*/) == -1) {
           return RS_RONDB_SERVER_ERROR(
             blobHandle->getNdbError(),
-            ERROR_037 + std::string(" Read data failed .") +
+            std::string(rdrsErrorMessage(ERROR_COLUMN_READ_FAILED)) + 
+            std::string(" Read data failed .") +
             std::string(" Column: ") + std::string(col_name) +
             " Type: " + std::to_string(col->getType()) +
             " Position: " + std::to_string(pos));
@@ -934,7 +958,8 @@ RS_Status KeyOperation::write_col_to_resp(Uint32 colIdx,
     if (unlikely(total_read != length)) {
       return RS_RONDB_SERVER_ERROR(
         blobHandle->getNdbError(),
-        ERROR_037 + std::string(" Not all of the data was read.") +
+        std::string(rdrsErrorMessage(ERROR_COLUMN_READ_FAILED)) + 
+        std::string(" Not all of the data was read.") +
         std::string(" Column: ") + std::string(col_name) +
         " Expected to read: " + std::to_string(length) +
         " bytes. Read: " + std::to_string(total_read));
@@ -976,7 +1001,8 @@ RS_Status KeyOperation::write_col_to_resp(Uint32 colIdx,
   case NdbDictionary::Column::Time: {
     ///< Time without date
     return RS_SERVER_ERROR(
-      ERROR_028 + std::string(" Column: ") + std::string(col_name) +
+      std::string(rdrsErrorMessage(ERROR_PROGRAMMING_BUG)) + 
+      std::string(" Column: ") + std::string(col_name) +
       " Type: " + std::to_string(col->getType()));
   }
   case NdbDictionary::Column::Year: {
@@ -987,7 +1013,8 @@ RS_Status KeyOperation::write_col_to_resp(Uint32 colIdx,
   case NdbDictionary::Column::Timestamp: {
     ///< Unix time
     return RS_SERVER_ERROR(
-      ERROR_028 + std::string(" Column: ") +
+      std::string(rdrsErrorMessage(ERROR_PROGRAMMING_BUG)) + 
+      std::string(" Column: ") +
       std::string(col_name) +
       " Type: " + std::to_string(col->getType()));
   }
@@ -1043,7 +1070,8 @@ RS_Status KeyOperation::write_col_to_resp(Uint32 colIdx,
   }
   }
   return RS_SERVER_ERROR(
-    ERROR_028 + std::string(" Column: ") + std::string(col_name) +
+    std::string(rdrsErrorMessage(ERROR_PROGRAMMING_BUG)) + 
+    std::string(" Column: ") + std::string(col_name) +
     " Type: " + std::to_string(col->getType()));
 }
 

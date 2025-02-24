@@ -52,7 +52,7 @@ RS_Status ronsql_op(RonSQLExecParams& params) {
       if (is_last_attempt) {
         err << "Caught TemporaryError after " << max_attempts << " attempts."
             << std::endl;
-        return RS_SERVER_ERROR(ERROR_065);
+        return RS_SERVER_ERROR(std::string(rdrsErrorMessage(ERROR_RONSQL_TEMPORARY)));
       } else {
         ndb_retry_sleep(50);
       }
@@ -61,7 +61,7 @@ RS_Status ronsql_op(RonSQLExecParams& params) {
       if (is_last_attempt) {
         err << "Caught ColumnNotFoundError after " << max_attempts
             << " attempts." << std::endl;
-        return RS_SERVER_ERROR(ERROR_066);
+        return RS_SERVER_ERROR(std::string(rdrsErrorMessage(ERROR_RONSQL_PERMANENT)));
       } else {
         ndb_retry_sleep(50);
       }
@@ -69,7 +69,7 @@ RS_Status ronsql_op(RonSQLExecParams& params) {
     catch (std::runtime_error& e) {
       err << "Caught exception: " << e.what() << std::endl;
       DEB_TRACE();
-      return RS_SERVER_ERROR(ERROR_066);
+      return RS_SERVER_ERROR(std::string(rdrsErrorMessage(ERROR_RONSQL_PERMANENT)));
     }
   }
   // Should be unreachable

@@ -220,7 +220,8 @@ std::vector<feature_store_data_structs::FeatureMetadata>
 std::shared_ptr<RestErrorCode>
   TranslateRonDbError(int code, const std::string &err) {
   std::shared_ptr<RestErrorCode> fsError;
-  if (err.find(ERROR_015) != std::string::npos) {  // Wrong data type.
+  if (err.find(std::string(rdrsErrorMessage(ERROR_WRONG_DATA_TYPE))) 
+      != std::string::npos) {  // Wrong data type.
     std::regex regex(R"regex(Expecting (\w+)\. Column: (\w+))regex");
     std::smatch match;
     if (std::regex_search(err, match, regex)) {
@@ -234,13 +235,13 @@ std::shared_ptr<RestErrorCode>
       DEB_FS_CTRL("Wrong data type");
       fsError = WRONG_DATA_TYPE;
     }
-  } else if (err.find(ERROR_014) != std::string::npos ||
-             err.find(ERROR_012) != std::string::npos) {
+  } else if (err.find(std::string(rdrsErrorMessage(ERROR_WRONG_PRIMARY_KEY_COLUMN))) != std::string::npos ||
+     err.find(std::string(rdrsErrorMessage(ERROR_COLUMN_NOT_EXIST))) != std::string::npos) {
     DEB_FS_CTRL("Wrong pk or column not exist");
     // "Column does not exist."
   // "Wrong primay-key column."
     fsError = INCORRECT_PRIMARY_KEY->NewMessage(err);
-  } else if (err.find(ERROR_013) != std::string::npos) {
+  } else if (err.find(std::string(rdrsErrorMessage(ERROR_WRONG_PRIMARY_KEY_COUNT))) != std::string::npos) {
     DEB_FS_CTRL("Wrong number of pk columns");
     // "Wrong number of primary-key columns.")
     fsError = nullptr;
@@ -296,7 +297,7 @@ std::tuple<std::vector<std::vector<char>>,
     if (response.getBody().getStatusCode() == drogon::k404NotFound) {
       status = feature_store_data_structs::FeatureStatus::Missing;
     } else if (response.getBody().getStatusCode() == drogon::k400BadRequest) {
-      if (response.getMessage().find(ERROR_013) !=
+      if (response.getMessage().find(std::string(rdrsErrorMessage(ERROR_WRONG_PRIMARY_KEY_COUNT))) !=
           std::string::npos)
         // "Wrong number of primary-key columns."
         status = feature_store_data_structs::FeatureStatus::Missing;

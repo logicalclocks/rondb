@@ -235,7 +235,7 @@ RS_Status RDRSRonDBConnectionPool::GetNdbObject(Ndb **ndb_object,
   if (thread_context->m_is_shutdown) {
     NdbMutex_Unlock(thread_context->m_thread_context_mutex);
     DEB_POOL("GetNdbObject(%u), fail shutdown", threadIndex);
-    return RS_SERVER_ERROR(ERROR_034);
+    return RS_SERVER_ERROR(std::string(rdrsErrorMessage(ERROR_PROGRAMMING_CONNECTION_SHUTDOWN)));
   }
   NdbMutex_Unlock(thread_context->m_thread_context_mutex);
   Uint32 connection = threadIndex % m_num_data_connections;
