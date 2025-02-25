@@ -95,21 +95,24 @@ RS_Status validate_db(const std::string_view db) {
   RS_Status status = validate_db_identifier(db);
   if (unlikely(status.http_code != static_cast<HTTP_CODE>(
         drogon::HttpStatusCode::k200OK))) {
-    if (status.code == ERROR_MIN_DB)
+    if (status.code == ERROR_EMPTY_IDENTIFIER) {
       return CRS_Status(static_cast<HTTP_CODE>(
         drogon::HttpStatusCode::k400BadRequest),
           ERROR_MIN_DB, (std::string(rdrsErrorMessage(ERROR_MIN_DB)) + 
             ": " + std::string(db)).c_str()).status;
-    if (status.code == ERROR_MAX_DB)
+    }
+    if (status.code == ERROR_IDENTIFIER_TOO_LONG) {
       return CRS_Status(static_cast<HTTP_CODE>(
         drogon::HttpStatusCode::k400BadRequest), 
           ERROR_MAX_DB, (std::string(rdrsErrorMessage(ERROR_MAX_DB)) + 
             ": " + std::string(db)).c_str()).status;
-    if (status.code == ERROR_INVALID_IDENTIFIER)
+    }
+    if (status.code == ERROR_INVALID_IDENTIFIER) {
       return CRS_Status(static_cast<HTTP_CODE>(
         drogon::HttpStatusCode::k400BadRequest),
           ERROR_INVALID_IDENTIFIER,
           "database "+ std::string(rdrsErrorMessage(ERROR_INVALID_IDENTIFIER))).status;
+      }
     return CRS_Status(static_cast<HTTP_CODE>(
       drogon::HttpStatusCode::k400BadRequest),
         ERROR_INVALID_DB_NAME,

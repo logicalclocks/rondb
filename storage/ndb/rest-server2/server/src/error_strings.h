@@ -99,7 +99,13 @@ typedef enum {
   ERROR_TOO_MANY_COLUMNS                = 68,
   ERROR_TOO_LARGE_ROWS                  = 69,
   ERROR_SET_PK_MULTIPLE                 = 70,
-  ERROR_READ_COLUMN_MULTIPLE            = 71
+  ERROR_READ_COLUMN_MULTIPLE            = 71,
+  ERROR_AVRO_SCHEMA_PARSE_FAIL          = 72,
+  ERROR_AVRO_STRUCT_CREATION_FAILED     = 73,
+  ERROR_AVRO_SCHEMA_STRUCT_NOT_FOUND    = 74,
+  ERROR_AVRO_UNMARSHAL_FAILED           = 75,
+  ERROR_AVRO_JSON_CREATION_FAILED       = 76,
+  __MAX_INDEX__                         = 78  // this SHOULD always be last with max index number
 } ErrorCode;
 
 // Struct to tie error codes with messages
@@ -181,13 +187,19 @@ static const ErrorEntry errorTable[] = {
     {ERROR_TOO_MANY_COLUMNS, "Read more columns than table has"},
     {ERROR_TOO_LARGE_ROWS, "Row size read bigger than allowed"},
     {ERROR_SET_PK_MULTIPLE, "Set same PK column several times"},
-    {ERROR_READ_COLUMN_MULTIPLE, "Read column several times"}
+    {ERROR_READ_COLUMN_MULTIPLE, "Read column several times"},
+    {ERROR_AVRO_SCHEMA_PARSE_FAIL, "Failed to parse avro schema"},
+    {ERROR_AVRO_STRUCT_CREATION_FAILED, "Failed to create struct for avro schema"},
+    {ERROR_AVRO_SCHEMA_STRUCT_NOT_FOUND, "Avro schema struct not found"},
+    {ERROR_AVRO_UNMARSHAL_FAILED, "Avro failed to unmarshal data"},
+    {ERROR_AVRO_JSON_CREATION_FAILED, "Avro failed create json string"},
+    {__MAX_INDEX__, "__MAX_INDEX__ Place holder"}
 };
 
 // Fast error message lookup function
 static inline const char *
 rdrsErrorMessage(ErrorCode code) {
-  if (code > 0 && code <= ERROR_READ_COLUMN_MULTIPLE) {
+  if (code > 0 && code <= __MAX_INDEX__) {
     return errorTable[code].message ? errorTable[code].message
                                     : "Unknown error";
   }
