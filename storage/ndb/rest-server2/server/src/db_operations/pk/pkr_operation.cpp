@@ -207,7 +207,7 @@ BatchKeyOperations::init_batch_operations(ArenaMalloc *amalloc,
       if (failed == 1) {
         err = RS_CLIENT_ERROR(
           std::string(rdrsErrorMessage(ERROR_WRONG_PRIMARY_KEY_COLUMN)) + 
-          std::string(req->PKName(j)));
+          " " + std::string(req->PKName(j)));
       } else {
         err = RS_CLIENT_ERROR(
           std::string(rdrsErrorMessage(ERROR_SET_PK_MULTIPLE)) + 

@@ -21,7 +21,7 @@ package main
 
 /*
 #include <string.h>
-#include <stdint.h>
+#include "../src/error_strings.h"
 */
 import "C"
 import (
@@ -46,48 +46,42 @@ type ComplexFeature struct {
 var avroStructs = make(map[int64]*ComplexFeature)
 
 //export register_schema
-func register_schema(schema string) C.int64_t {
+func register_schema(schema string, outSchemaID *C.int64_t) C.ErrorCode {
 
 	avroSchema, err := avro.Parse(string(schema))
 	if err != nil {
-		//fmt.Fprintf(os.Stderr, "Failed to parse avro schemd %s. Error: %v\n", schema, err)
-		return -1
+		return C.ERROR_AVRO_SCHEMA_PARSE_FAIL
 	}
 
 	avroStruct, err := ConvertAvroSchemaToStruct(avroSchema)
 	if err != nil {
-		//fmt.Fprintf(os.Stderr, "Failed to generate strcut for avro schemd %s. Error: %v\n", schema, err)
-		return -1
+		return C.ERROR_AVRO_STRUCT_CREATION_FAILED
 	}
+
 	id := curSchemaID.Add(1)
 	avroStructs[id] = &ComplexFeature{schemaStr: schema, AvroSchema: &avroSchema, AvroStruct: &avroStruct}
+	*outSchemaID = C.int64_t(id)
 
-	//fmt.Printf("Go lang. Registered schema: %s. ID: %d\n", schema, id)
-	return C.int64_t(id)
+	return C.NO_ERROR
 }
 
 //export unregister_schema
 func unregister_schema(schema_id C.int64_t) {
 	delete(avroStructs, int64(schema_id))
-	//fmt.Printf("Go lang. Deleted schema ID: %d\n", schema_id)
 }
 
 //export unmarshal_avro
-func unmarshal_avro(schema_id C.int64_t, data []byte, outStr **C.char, outLen *C.int32_t) C.int64_t {
-	//fmt.Printf("Go lang. Unmarshal: Schema ID:  %d\n", schema_id)
+func unmarshal_avro(schema_id C.int64_t, data []byte, outStr **C.char, outLen *C.int32_t) C.ErrorCode {
 
-	// var avroDeserialized interface{}
 	cf, ok := avroStructs[int64(schema_id)]
 	if !ok {
-		//fmt.Fprintf(os.Stderr, "Failed to unmarshall avro data. Schema ID: %d not found \n", schema_id)
-		return C.int64_t(-1)
+		return C.ERROR_AVRO_SCHEMA_STRUCT_NOT_FOUND
 	}
 
 	avroDeserialized := reflect.New(*cf.AvroStruct).Interface()
 	err := avro.Unmarshal(*cf.AvroSchema, data, &avroDeserialized)
 	if err != nil {
-		//fmt.Fprintf(os.Stderr, "Failed to unmarshall avro data. Schema ID: %d. Error: %v\n", schema_id, err)
-		return C.int64_t(-1)
+		return C.ERROR_AVRO_UNMARSHAL_FAILED
 	}
 
 	// dicsard the top most wrapper
@@ -95,14 +89,13 @@ func unmarshal_avro(schema_id C.int64_t, data []byte, outStr **C.char, outLen *C
 
 	bytes, err := sonic.Marshal(j)
 	if err != nil {
-		//fmt.Fprintf(os.Stderr, "Failed to unmarshall avro data. Schema ID: %d. Error: %v\n", schema_id, err)
-		return C.int64_t(-1)
+		return C.ERROR_AVRO_JSON_CREATION_FAILED
 	}
 
 	heapStr := C.malloc(C.size_t(len(bytes)))
 	if heapStr == nil {
 		fmt.Fprintln(os.Stderr, "Failed to allocate memory\n")
-		return C.int64_t(-1)
+		return C.ERROR_MEMORY_ALLOCATION_FAILURE
 	}
 
 	// Copy Go slice to C heap memory
@@ -111,7 +104,7 @@ func unmarshal_avro(schema_id C.int64_t, data []byte, outStr **C.char, outLen *C
 	*outStr = (*C.char)(heapStr)
 	*outLen = C.int32_t(len(bytes))
 
-	return C.int64_t(0)
+	return C.NO_ERROR
 }
 
 func main() {}

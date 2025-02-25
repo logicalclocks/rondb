@@ -23,49 +23,49 @@ package common
 import "C"
 
 func ERROR_008() string {
-	return C.ERROR_008
+	return C.GoString(C.rdrsErrorMessage(C.ERROR_INVALID_COLUMN_DATA))
 }
 
 func ERROR_011() string {
-	return C.ERROR_011
+	return C.GoString(C.rdrsErrorMessage(C.ERROR_DB_TABLE_NOT_EXIST))
 }
 
 func ERROR_012() string {
-	return C.ERROR_012
+	return C.GoString(C.rdrsErrorMessage(C.ERROR_COLUMN_NOT_EXIST))
 }
 
 func ERROR_013() string {
-	return C.ERROR_013
+	return C.GoString(C.rdrsErrorMessage(C.ERROR_WRONG_PRIMARY_KEY_COUNT))
 }
 
 func ERROR_014() string {
-	return C.ERROR_014
+	return C.GoString(C.rdrsErrorMessage(C.ERROR_WRONG_PRIMARY_KEY_COLUMN))
 }
 
 func ERROR_001() string {
-	return C.ERROR_001
+	return C.GoString(C.rdrsErrorMessage(C.ERROR_WRONG_DATA_TYPE))
 }
 
 func ERROR_015() string {
-	return C.ERROR_015
+	return C.GoString(C.rdrsErrorMessage(C.ERROR_WRONG_DATA_TYPE))
 }
 
 func ERROR_017() string {
-	return C.ERROR_017
+	return C.GoString(C.rdrsErrorMessage(C.ERROR_UNSUPPORTED_HASH_INDEX))
 }
 
 func ERROR_024() string {
-	return C.ERROR_024
+	return C.GoString(C.rdrsErrorMessage(C.ERROR_NO_FREE_API_SLOT))
 }
 
 func ERROR_026() string {
-	return C.ERROR_026
+	return C.GoString(C.rdrsErrorMessage(C.ERROR_UNSUPPORTED_BLOB_TEXT_READ))
 }
 
 func ERROR_027() string {
-	return C.ERROR_027
+	return C.GoString(C.rdrsErrorMessage(C.ERROR_INVALID_DATE_TIME))
 }
 
 func ERROR_036() string {
-	return C.ERROR_036
+	return C.GoString(C.rdrsErrorMessage(C.ERROR_RONDB_RECONNECTION_IN_PROGRESS))
 }

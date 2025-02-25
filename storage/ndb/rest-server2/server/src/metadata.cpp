@@ -18,6 +18,7 @@
  */
 
 #include "metadata.hpp"
+#include "error_strings.h"
 #include "ndb_types.h"
 #include "operations_feature_store.hpp"
 #include "rdrs_dal.hpp"
@@ -76,12 +77,11 @@ RS_Status AvroDecoder::register_with_go_layer() {
   GoString goString;
   goString.p = schemaJson.c_str();
   goString.n = schemaJson.length();
-  int64_t id = register_schema(goString);
-  if (id == -1) {
-   return CRS_Status(HTTP_CODE::SERVER_ERROR, "Failed to register avro schema").status;
+  ErrorCode err = register_schema(goString, &this->schemaID);
+  if (err != NO_ERROR) {
+   return CRS_Status(HTTP_CODE::SERVER_ERROR, std::string(rdrsErrorMessage(err))).status;
   }
 
-  this->schemaID = id;
   return CRS_Status::SUCCESS.status;
 }
 
@@ -97,9 +97,9 @@ std::pair<RS_Status, std::optional<std::vector<char>>>
   char *out = nullptr;
   Int32 outLen = 0;
 
-  int ret = unmarshal_avro(schemaID, goSlice, &out, &outLen);
-  if ( ret != 0 ){
-    return {CRS_Status(HTTP_CODE::SERVER_ERROR, "Avro failed to decode data").status, std::nullopt};
+  ErrorCode err = unmarshal_avro(schemaID, goSlice, &out, &outLen);
+  if ( err != NO_ERROR ){
+    return {CRS_Status(HTTP_CODE::SERVER_ERROR, std::string(rdrsErrorMessage(err))).status, std::nullopt};
   }
 
   std::vector<char> jsonString(out, out + outLen);
