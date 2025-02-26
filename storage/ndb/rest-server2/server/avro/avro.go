@@ -21,6 +21,7 @@ package main
 
 /*
 #include <string.h>
+#include <stdint.h>
 #include "../src/error_strings.h"
 */
 import "C"

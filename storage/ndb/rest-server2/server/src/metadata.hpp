@@ -99,7 +99,7 @@ struct FeatureGroupFeatures {
 class AvroDecoder {
  private:
   std::string schemaJson;
-  Int64 schemaID;
+  int64_t schemaID;
 
  public:
   AvroDecoder();
