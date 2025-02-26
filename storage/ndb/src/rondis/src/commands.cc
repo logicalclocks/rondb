@@ -2328,8 +2328,7 @@ void rondb_setrange_command(Ndb *ndb,
     free(key_store);
     return;
   }
-  Uint32 ret_num_rows = 0;
-  Uint32 ret_tot_value_len = 0;
+  Uint32 old_tot_value_len = 0;
   if (rondb_get_rondb_key(tab,
                           key_store->m_rondb_key,
                           ndb,
@@ -2345,27 +2344,87 @@ void rondb_setrange_command(Ndb *ndb,
                                         database_id,
                                         start,
                                         end,
-                                        ret_num_rows,
-                                        ret_tot_value_len);
+                                        old_tot_value_len);
   if (ret_code != 0) {
     return;
   }
   Uint32 min_num_rows =
     1 + ((end - INLINE_VALUE_LEN) / EXTENSION_VALUE_LEN);
-  for (Uint32 i = 0; i < ret_num_rows; i++) {
-    if (i >= min_num_rows) {
-      /* Delete the row */
-      ret_code = prepare_delete_value_row(response,
-                                          key_store,
-                                          i,
-                                          database_id);
+  Uint32 start_index = INLINE_VALUE_LEN;
+  for (Uint32 i = 0; i < min_num_rows; i++) {
+    /**
+     * Default to writing all zeroes
+     * If old total value len is larger than start it means we have
+     * not introduced any zero filling passages, this is signalled
+     * by having start_zero_index == end_zero_index.
+     * If start happened in an earlier value row there is also no
+     * need for a zeroing effort here.
+     */
+    Uint32 end_index = start_index + EXTENSION_VALUE_LEN;
+    Uint32 start_zero_index = start_index;
+    Uint32 end_zero_index = end_index;
+    if (start < start_index || old_tot_value_len >= start) {
+      end_zero_index = start_zero_index; //No zero writing needed
+    } else {
+      if (start < end_index) {
+        end_zero_index = start;
+      } else if (end < end_index) {
+        end_index = end;
+      }
+      if (old_tot_value_len > start_zero_index) {
+        start_zero_index = old_tot_value_len;
+      }
     }
+    /* Default to no writing of value */
+    Uint32 start_write_index = start_index;
+    Uint32 end_write_index = start_index;
+    const char *start_write_ptr = nullptr;
+    if (start <= start_index) {
+      /* We have already started writing, continue until end */
+      start_write_ptr = value_str + (start_index - start);
+      if (end > end_index) {
+        end_write_index = end_index;
+      } else {
+        end_write_index = end;
+      }
+    } else if (start < end_index) {
+      start_write_index = start;
+      start_write_ptr = value_str;
+      if (end > end_index) {
+        end_write_index = end_index;
+      } else {
+        end_write_index = end;
+      }
+    }
+    start_zero_index -= start_index;
+    end_zero_index -= end_index;
+    start_write_index -= start_index;
+    end_write_index -= end_index;
+    if (start_zero_index != end_zero_index ||
+        start_write_index != end_write_index) {
+      ret_code = write_value_row_setrange(
+        response,
+        key_store,
+        i,
+        dict,
+        start_zero_index,
+        end_zero_index,
+        start_write_index,
+        end_write_index,
+        start_write_ptr,
+        database_id);
+      if (ret_code != 0) {
+        return;
+      }
+    }
+    start_index += EXTENSION_VALUE_LEN;
   }
+  Uint32 tot_value_len = std::max(old_tot_value_len, end);
   char buf[20];
   Uint32 header_len = (Uint32)snprintf(buf,
                                        sizeof(buf),
                                        "$%u\r\n",
-                                       ret_tot_value_len);
+                                       tot_value_len);
   response->append((const char*)&buf[0], header_len);
   return;
 }

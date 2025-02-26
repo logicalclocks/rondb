@@ -91,4 +91,11 @@ int write_key_row_setrange(NdbInterpretedCode &code,
                            Uint32 start,
                            Uint32 end,
                            Uint64 rondb_key);
+int write_value_row_setrange_int(NdbInterpretedCode &code,
+                                 const NdbDictionary::Table *value_tab,
+                                 Uint32 start_zero_index,
+                                 Uint32 end_zero_index,
+                                 Uint32 start_write_index,
+                                 Uint32 end_write_index,
+                                 const char *start_write_ptr);
 #endif

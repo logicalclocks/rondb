@@ -107,8 +107,20 @@ int write_key_row_setrange(std::string *response,
                            Uint32 database_id,
                            Uint32 start,
                            Uint32 end,
-                           Uint32 &num_rows,
-                           Uint32 &tot_value_len);
+                           Uint32 &old_tot_value_len);
+
+
+int write_value_row_setrange(std::string *response,
+                             KeyStorage *key_store,
+                             Uint32 row_id,
+                              const NdbDictionary::Dictionary *dict,
+                             Uint32 start_zero_index,
+                             Uint32 end_zero_index,
+                             Uint32 start_write_index,
+                             Uint32 end_write_index,
+                             const char *start_write_ptr,
+                             Uint32 database_id);
+
 /**
  * INCR and DECR MODULE
  * --------------------

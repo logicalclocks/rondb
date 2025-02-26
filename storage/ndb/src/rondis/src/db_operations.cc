@@ -1244,8 +1244,7 @@ int write_key_row_setrange(std::string *response,
                            Uint32 database_id,
                            Uint32 start,
                            Uint32 end,
-                           Uint32 &num_rows,
-                           Uint32 &tot_value_len) {
+                           Uint32 &old_tot_value_len) {
   struct key_table key_row;
   NdbTransaction *trans = key_store->m_trans;
   Uint32 mask = 0x3;
@@ -1279,18 +1278,15 @@ int write_key_row_setrange(std::string *response,
     NdbOperation::OperationOptions::OO_INTERPRETED_INSERT;
   opts.interpretedCode = &code;
 
-  NdbOperation::GetValueSpec getvals[3];
+  NdbOperation::GetValueSpec getvals[2];
   getvals[0].appStorage = nullptr;
   getvals[0].recAttr = nullptr;
   getvals[0].column = NdbDictionary::Column::READ_INTERPRETER_OUTPUT_0;
   getvals[1].appStorage = nullptr;
   getvals[1].recAttr = nullptr;
   getvals[1].column = NdbDictionary::Column::READ_INTERPRETER_OUTPUT_1;
-  getvals[1].appStorage = nullptr;
-  getvals[1].recAttr = nullptr;
-  getvals[1].column = NdbDictionary::Column::READ_INTERPRETER_OUTPUT_2;
   opts.optionsPresent |= NdbOperation::OperationOptions::OO_GET_FINAL_VALUE;
-  opts.numExtraGetFinalValues = 3;
+  opts.numExtraGetFinalValues = 2;
   opts.extraGetFinalValues = getvals;
 
   /* Define the actual operation to be sent to RonDB data node. */
@@ -1314,8 +1310,70 @@ int write_key_row_setrange(std::string *response,
                                trans->getNdbError());
     return -1;
   }
-  num_rows = (Uint32)getvals[0].recAttr->u_64_value();
-  tot_value_len = (Uint32)getvals[1].recAttr->u_64_value();
-  key_store->m_rondb_key = getvals[2].recAttr->u_64_value();
+  old_tot_value_len = (Uint32)getvals[0].recAttr->u_64_value();
+  key_store->m_rondb_key = getvals[1].recAttr->u_64_value();
+  return 0;
+}
+
+int write_value_row_setrange(std::string *response,
+                             KeyStorage *key_store,
+                             Uint32 row_id,
+                             const NdbDictionary::Dictionary *dict,
+                             Uint32 start_zero_index,
+                             Uint32 end_zero_index,
+                             Uint32 start_write_index,
+                             Uint32 end_write_index,
+                             const char *start_write_ptr,
+                             Uint32 database_id) {
+  struct value_table value_row;
+  value_row.ordinal = row_id;
+  value_row.rondb_key = key_store->m_rondb_key;
+  /* Mask means writing all columns. */
+  const Uint32 mask = 0x3;
+  const unsigned char *mask_ptr = (const unsigned char *)&mask;
+  const NdbDictionary::Table *value_tab = dict->getTable(VALUE_TABLE_NAME);
+  if (value_tab == nullptr) {
+    assign_ndb_err_to_response(response,
+                               FAILED_CREATE_TABLE_OBJECT,
+                               dict->getNdbError());
+    return -1;
+  }
+  Uint32 code_buffer[64];
+  NdbInterpretedCode code(value_tab, &code_buffer[0], sizeof(code_buffer));
+  int ret_code = write_value_row_setrange_int(code,
+                                              value_tab,
+                                              start_zero_index,
+                                              end_zero_index,
+                                              start_write_index,
+                                              end_write_index,
+                                              start_write_ptr);
+  if (ret_code != 0) {
+    assign_err_to_response(response,
+                           "Failed to create interpreted code",
+                           ret_code);
+    return -1;
+  }
+  // Prepare the interpreted program to be part of the write
+  NdbOperation::OperationOptions opts;
+  std::memset(&opts, 0, sizeof(opts));
+  opts.optionsPresent |= NdbOperation::OperationOptions::OO_INTERPRETED;
+  opts.optionsPresent |=
+    NdbOperation::OperationOptions::OO_INTERPRETED_INSERT;
+  opts.interpretedCode = &code;
+
+  const NdbOperation *write_op = key_store->m_trans->writeTuple(
+    pk_value_record[database_id],
+    (const char *)&value_row,
+    entire_value_record[database_id],
+    (char *)&value_row,
+    mask_ptr,
+    &opts,
+    sizeof(opts));
+  if (write_op == nullptr) {
+    assign_ndb_err_to_response(response,
+                               FAILED_GET_OP,
+                               key_store->m_trans->getNdbError());
+    return RONDB_INTERNAL_ERROR;
+  }
   return 0;
 }

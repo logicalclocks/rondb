@@ -237,11 +237,6 @@ class NdbInterpretedCode {
    * to a variable sized column, it can also be used in
    * any other way by the interpreted program.
    *
-   * The memory needs to be aligned on 32-bit boundary.
-   * The size is the size in bytes however. The last bytes
-   * in the last word will be zero-filled if not a multiple
-   * of 4 bytes is sent.
-   *
    * The RegMemoryOffset contains the memory offset where
    * this memory will be saved in the interpreter.
    * The RegDestSize is the register where the size of the
@@ -253,7 +248,7 @@ class NdbInterpretedCode {
   int load_const_mem(Uint32 RegMemoryOffset,
                      Uint32 RegDestSize,
                      Uint16 SizeConstant,
-                     Uint32 *const_memory);
+                     const char *const_memory);
   /**
    * bzero writes zeroes into the memory starting at the offset in
    * RegMemoryOffset and copies RegSize bytes of zeroes.
@@ -1154,7 +1149,7 @@ class NdbInterpretedCode {
   int add1(Uint32 x1);
   int add2(Uint32 x1, Uint32 x2);
   int add3(Uint32 x1, Uint32 x2, Uint32 x3);
-  int addN(const Uint32 *data, Uint32 length);
+  int addN(const char *data, Uint32 length);
   int addMeta(CodeMetaInfo &info);
 
   int add_branch(Uint32 instruction, Uint32 label);

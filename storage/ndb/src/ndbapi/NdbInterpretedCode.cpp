@@ -201,7 +201,7 @@ inline int NdbInterpretedCode::add3(Uint32 x1, Uint32 x2, Uint32 x3) {
   return 0;
 }
 
-inline int NdbInterpretedCode::addN(const Uint32 *data, Uint32 length) {
+inline int NdbInterpretedCode::addN(const char *data, Uint32 length) {
   if (likely(length > 0)) {
     if (unlikely(!have_space_for(length))) return error(TooManyInstructions);
 
@@ -736,34 +736,12 @@ NdbInterpretedCode::load_op_type(Uint32 RegDest) {
 }
 
 
-static inline
-void
-zero32(Uint8* dstPtr, const Uint32 len) {
-  Uint32 odd = len & 3;
-  if (odd != 0)
-  {
-    Uint32 aligned = len & ~3;
-    Uint8* dst = dstPtr+aligned;
-    switch(odd){     /* odd is: {1..3} */
-    case 1:
-      dst[1] = 0;
-      [[fallthrough]];
-    case 2:
-      dst[2] = 0;
-      [[fallthrough]];
-    default:         /* Known to be odd==3 */
-      dst[3] = 0;
-    }
-  }
-} 
-
 int
 NdbInterpretedCode::load_const_mem(Uint32 RegMemoryOffset,
                                    Uint32 RegDestSize,
                                    Uint16 ConstantSize,
-                                   Uint32 *const_memory) {
+                                   const char *const_memory) {
   int ret_code;
-  zero32((Uint8*)const_memory, ConstantSize);
   if ((RegMemoryOffset >= MaxReg) ||
       (RegDestSize >= MaxReg))
     return error(BadRegister);
@@ -775,7 +753,16 @@ NdbInterpretedCode::load_const_mem(Uint32 RegMemoryOffset,
     return ret_code;
   }
   Uint32 words = (ConstantSize + 3) / 4;
-  return addN(const_memory, words);
+  if (words > 1) {
+    ret_code = addN(const_memory, words - 1);
+    if (ret_code != 0) return ret_code;
+  }
+  Uint32 last_word = 0;
+  Uint32 last_index = (words - 1) * 4;
+  memcpy(&last_word,
+         &const_memory[last_index],
+         (ConstantSize - last_index));
+  return add1(last_word);
 }
 
 int
@@ -1374,13 +1361,13 @@ int NdbInterpretedCode::branch_col_val(Uint32 branch_type, Uint32 attrId,
   Uint32 len2 = Interpreter::mod4(len);
   if ((len2 == len) && (lastWordMask == (Uint32)~0)) {
     /* Whole number of 32-bit words */
-    DBUG_RETURN(addN((const Uint32 *)val, len2 >> 2));
+    DBUG_RETURN(addN((const char *)val, len2 >> 2));
   }
 
   /* else */
   /* Partial last word */
   len2 -= 4;
-  if (addN((const Uint32 *)val, len2 >> 2) != 0) DBUG_RETURN(-1);
+  if (addN((const char *)val, len2 >> 2) != 0) DBUG_RETURN(-1);
 
   /* Zero insignificant bytes in last word */
   Uint32 tmp = 0;

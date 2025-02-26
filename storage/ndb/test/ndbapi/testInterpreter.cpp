@@ -903,7 +903,7 @@ runNewInterpreterTest(NDBT_Context* ctx, NDBT_Step* step)
       /* Use table T6 */
       Uint32 mem = 0x12345602;
       code.load_const_u16(0, 4);
-      code.load_const_mem(0, 1, 3, &mem);
+      code.load_const_mem(0, 1, 3, (const char*)&mem);
       code.load_const_u16(2, 0);
       code.write_from_mem(14, 2, 1);
       code.interpret_exit_ok();
@@ -916,7 +916,7 @@ runNewInterpreterTest(NDBT_Context* ctx, NDBT_Step* step)
       /* Use table T6 */
       Uint32 mem = 0x789ABC02;
       code.load_const_u16(0, 8);
-      code.load_const_mem(0, 1, 3, &mem);
+      code.load_const_mem(0, 1, 3, (const char*)&mem);
       code.load_const_u16(2, 0);
       code.append_from_mem(14, 2, 1);
       code.interpret_exit_ok();
@@ -929,7 +929,7 @@ runNewInterpreterTest(NDBT_Context* ctx, NDBT_Step* step)
       /* Use table T6 */
       Uint32 mem = 0x12340001;
       code.load_const_u16(0, 4);
-      code.load_const_mem(0, 1, 3, &mem);
+      code.load_const_mem(0, 1, 3, (const char*)&mem);
       code.load_const_u16(2, 0);
       code.write_from_mem(18, 2, 1);
       code.interpret_exit_ok();
@@ -956,7 +956,7 @@ runNewInterpreterTest(NDBT_Context* ctx, NDBT_Step* step)
       code.branch_ne(4, 5, 0);
       code.load_const_u16(0, 8);
       /* Write 3 bytes into offset 8 */
-      code.load_const_mem(0, 1, 3, &mem);
+      code.load_const_mem(0, 1, 3, (const char*)&mem);
       code.load_const_u16(2, 0);
       /**
        * Append to ATTR18 using memory in offset 0, actually
@@ -990,7 +990,7 @@ runNewInterpreterTest(NDBT_Context* ctx, NDBT_Step* step)
       code.add_const_reg(2, 1, 4);
       /* Copy data after end of data */
       mem = 0x65;
-      code.load_const_mem(2, 1, 1, &mem);
+      code.load_const_mem(2, 1, 1, (const char*)&mem);
       code.load_const_u16(0, 4);
       /* Read size of data exclusive of length bytes */
       code.convert_size(4, 0);
@@ -1023,7 +1023,7 @@ runNewInterpreterTest(NDBT_Context* ctx, NDBT_Step* step)
       /* Use table T6 */
       Uint32 mem = 0x789ABCDE;
       code.load_const_u16(0, 8);
-      code.load_const_mem(0, 1, 3, &mem);
+      code.load_const_mem(0, 1, 3, (const char*)&mem);
       code.load_const_u16(2, 0);
       code.load_const_u16(3, 2);
       code.write_partial_from_mem(14, 2, 1, 3);
@@ -1037,7 +1037,7 @@ runNewInterpreterTest(NDBT_Context* ctx, NDBT_Step* step)
       /* Use table T6 */
       Uint32 mem = 0x789ABCDE;
       code.load_const_u16(0, 8);
-      code.load_const_mem(0, 1, 4, &mem);
+      code.load_const_mem(0, 1, 4, (const char*)&mem);
       code.load_const_u16(2, 0);
       code.load_const_u16(3, 3);
       code.write_partial_from_mem(14, 2, 1, 3);

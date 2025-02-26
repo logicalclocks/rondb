@@ -466,7 +466,7 @@ int simple_write_key_row_setrange(NdbInterpretedCode &code,
   code.load_const_mem(REG6, //Offset to copy to
                       REG5, // m_set_value_size will be set here
                       Uint16(key_store->m_set_value_size),
-                      (Uint32*)key_store->m_value_ptr);
+                      key_store->m_value_ptr);
   code.load_const_u16(REG6, 4);
   code.write_size_mem(REG7, REG6);
   code.write_interpreter_output(REG7, OUTPUT_INDEX_0);
@@ -542,7 +542,6 @@ int write_key_row_setrange(NdbInterpretedCode &code,
   code.load_const_u32(REG5, end);
   code.write_attr(tot_value_len_col, REG5);
   code.bzero(REG1, REG2);
-  code.move_reg(REG6, REG0);
   code.load_const_u64(REG7, rondb_key);
   code.write_attr(rondb_key_col, REG7);
   code.branch_label(LABEL2);
@@ -553,7 +552,6 @@ int write_key_row_setrange(NdbInterpretedCode &code,
    * Start by reading value_start column into memory
    * We will put the length of the current data into REG7.
    */
-  code.read_attr(REG6, num_rows_col);
   code.load_const_null(REG5);
   code.write_attr(expiry_date_col, REG5);
   code.load_const_u32(REG4, end);
@@ -586,24 +584,23 @@ int write_key_row_setrange(NdbInterpretedCode &code,
    * REG3 = start variable where we start copying data from memory
    * REG4 = Not used
    * REG5 = tot_value_len
-   * REG6 = Number of rows before change
+   * REG6 = Not used
    * REG7 = Not used
    */
-  code.write_interpreter_output(REG6, OUTPUT_INDEX_0);
-  code.write_interpreter_output(REG5, OUTPUT_INDEX_1);
+  code.write_interpreter_output(REG5, OUTPUT_INDEX_0);
   code.read_attr(REG7, rondb_key_col);
   code.branch_ne_null(REG7, LABEL3);
   code.load_const_u64(REG7, rondb_key);
   code.write_attr(rondb_key_col, REG7);
   code.def_label(LABEL3);
-  code.write_interpreter_output(REG7, OUTPUT_INDEX_2);
+  code.write_interpreter_output(REG7, OUTPUT_INDEX_1);
   if (start < INLINE_VALUE_LEN) {
     code.add_reg(REG6, REG1, REG3);
     Uint32 size_load = (start - INLINE_VALUE_LEN);
     code.load_const_mem(REG6, //Offset to copy to
                         REG4, // m_set_value_size will be set here
                         Uint16(size_load),
-                        (Uint32*)key_store->m_value_ptr);
+                        key_store->m_value_ptr);
   }
   code.load_const_u16(REG6, 4);
   code.write_size_mem(REG2, REG6);
@@ -612,6 +609,55 @@ int write_key_row_setrange(NdbInterpretedCode &code,
   code.write_from_mem(value_start_col, REG0, REG2);
   code.interpret_exit_ok();
 
+  // Program end, now compile code
+  int ret_code = code.finalise();
+  if (ret_code != 0) {
+    return code.getNdbError().code;
+  }
+  return 0;
+}
+
+int write_value_row_setrange_int(NdbInterpretedCode &code,
+                           const NdbDictionary::Table *value_tab,
+                           Uint32 start_zero_index,
+                           Uint32 end_zero_index,
+                           Uint32 start_write_index,
+                           Uint32 end_write_index,
+                           const char *start_write_ptr) {
+  const NdbDictionary::Column *value_col =
+    value_tab->getColumn(VALUE_TABLE_COL_value);
+  Uint32 write_len = 0;
+  Uint32 start_index = 0;
+  code.load_const_u16(REG0, 0);
+  code.load_const_u16(REG1, 6);
+  code.load_const_u16(REG2, 4);
+  if (start_zero_index != end_zero_index) {
+    start_index = start_zero_index;
+    assert(end_zero_index > start_zero_index);
+    write_len += (end_zero_index - start_zero_index);
+    code.load_const_u16(REG3, write_len);
+    code.bzero(REG3, REG1);
+    code.add_reg(REG1, REG1, REG3);
+  }
+  if (start_write_index != end_write_index) {
+    if (start_zero_index == end_zero_index) {
+      start_index = start_write_index;
+    }
+    assert(end_write_index > start_write_index);
+    Uint32 write_value_len = (end_write_index - start_write_index);
+    write_len += write_value_len;
+    code.load_const_mem(REG1,
+                        REG4,
+                        Uint16(write_value_len),
+                        start_write_ptr);
+  }
+  code.load_const_u16(REG2, 4);
+  code.load_const_u16(REG3, write_len);
+  code.write_size_mem(REG3, REG2);
+  /* Length is size of data + 2 length bytes */
+  code.add_const_reg(REG3, REG3, Uint16(2));
+  code.load_const_u16(REG4, start_index);
+  code.write_partial_from_mem(value_col, REG0, REG3, REG4);
   // Program end, now compile code
   int ret_code = code.finalise();
   if (ret_code != 0) {
