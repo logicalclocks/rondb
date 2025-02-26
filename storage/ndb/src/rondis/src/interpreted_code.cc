@@ -30,6 +30,7 @@
 #include "commands.h"
 #include "interpreted_code.h"
 #include "table_definitions.h"
+#include <assert.h>
 
 //#define DEBUG_MSET_CMD 1
 
