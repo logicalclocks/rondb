@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2007, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2024, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -546,6 +546,7 @@ class NdbInterpretedCode {
    * @return 0 if successful, -1 otherwise
    */
   int write_interpreter_output(Uint32 RegValue, Uint32 outputIndex);
+  int read_interpreter_input(Uint32 RegValue, Uint32 inputIndex);
   int convert_size(Uint32 RegSizeDest, Uint32 RegOffset);
   int write_size_mem(Uint32 RegSize, Uint32 RegOffset);
   int read_uint8_to_reg_const(Uint32 RegDest, Uint32 memory_offset);
@@ -1040,6 +1041,7 @@ class NdbInterpretedCode {
   friend class NdbQueryOptionsImpl;
 
   static const Uint32 MaxReg = 8;
+  static const Uint32 MaxInputIndex = 16;
   static const Uint32 MaxOutputIndex = 16;
   static const Uint32 MaxBranchConst = 64;
   static const Uint32 MaxLabels = 65535;
@@ -1139,7 +1141,7 @@ class NdbInterpretedCode {
     BadSubNumber = 4227,
     BadState = 4231,
     BadRegister = 4570,
-    BadOutputIndex = 4563,
+    BadInOutputIndex = 4563,
     BadConstant = 4564
   };
 

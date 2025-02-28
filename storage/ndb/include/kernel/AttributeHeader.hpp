@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2024, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -112,6 +112,10 @@ class AttributeHeader {
   static constexpr Uint32 READ_INTERPRETER_OUTPUT_FIRST = 0xFFB0;
   static constexpr Uint32 READ_INTERPRETER_OUTPUT_LAST = 0xFFBF;
   static constexpr Uint32 MaxInterpreterOutputIndex = 16;
+
+  static constexpr Uint32 INTERPRETER_INPUT_FIRST = 0xFFA0;
+  static constexpr Uint32 INTERPRETER_INPUT_LAST = 0xFFAF;
+  static constexpr Uint32 MaxInterpreterInputIndex = 16;
 
   static constexpr Uint32 APPEND_COLUMN = 0xFC00;
   static constexpr Uint32 SET_PARTIAL_COLUMN = 0xFC01;

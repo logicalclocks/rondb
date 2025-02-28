@@ -51,6 +51,7 @@
 #include <signaldata/AccLock.hpp>
 #include "rondb_hash.hpp"
 #include "../dbtux/Dbtux.hpp"
+#include <my_byteorder.h>
 
 #define JAM_FILE_ID 422
 
@@ -146,6 +147,480 @@
 
 //#define TRACE_INTERPRETER
 //#define TRACE_INTERPRETER_REGISTERS
+
+#define RET_NULL Uint32(~0)
+static Uint32 binary_uint64_search(Uint64 test_ordinal,
+                                   const char *memory_ptr,
+                                   Uint32 start,
+                                   Uint32 end,
+                                   bool exact_match) {
+  while (1) {
+    Uint32 mid_point = (start + end) / 2;
+    Uint32 test_position = mid_point * 8;
+    Uint64 value = 0;
+    memcpy(&value, memory_ptr + test_position, 8);
+    if (value < test_ordinal) {
+      if (start == end) {
+        if (exact_match) {
+          return RET_NULL;
+        } else {
+          return start;
+        }
+      } else {
+        start = mid_point;
+        continue;
+      }
+    } if (value > test_ordinal) {
+      if (start == end) {
+        if (exact_match) {
+          return RET_NULL;
+        } else {
+          return start;
+        }
+      } else {
+        end = mid_point;
+        continue;
+      }
+    }
+    return mid_point;
+  }
+  return 0;
+}
+
+static Uint32 binary_uint32_search(Uint32 test_ordinal,
+                                   const char *memory_ptr,
+                                   Uint32 start,
+                                   Uint32 end,
+                                   bool exact_match) {
+  /**
+   * start = starting index
+   * end = ending index
+   * test_position = Address within memory for next value to check
+   */
+  while (1) {
+    Uint32 mid_point = (start + end) / 2;
+    Uint32 test_position = mid_point * 4;
+    Uint32 value = 0;
+    memcpy(&value, memory_ptr + test_position, 4);
+    if (value < test_ordinal) {
+      if (start == end) {
+        if (exact_match) {
+          return RET_NULL;
+        } else {
+          return start;
+        }
+      } else {
+        start = mid_point;
+        continue;
+      }
+    } if (value > test_ordinal) {
+      if (start == end) {
+        if (exact_match) {
+          return RET_NULL;
+        } else {
+          return start;
+        }
+      } else {
+        end = mid_point;
+        continue;
+      }
+    }
+    return mid_point;
+  }
+  return 0;
+}
+
+static Uint32 binary_uint16_search(Uint16 test_ordinal,
+                                   const char *memory_ptr,
+                                   Uint32 start,
+                                   Uint32 end,
+                                   bool exact_match) {
+  while (1) {
+    Uint32 mid_point = (start + end) / 2;
+    Uint32 test_position = mid_point * 2;
+    Uint16 value = 0;
+    memcpy(&value, memory_ptr + test_position, 2);
+    if (value < test_ordinal) {
+      if (start == end) {
+        if (exact_match) {
+          return RET_NULL;
+        } else {
+          return start;
+        }
+      } else {
+        start = mid_point;
+        continue;
+      }
+    } if (value > test_ordinal) {
+      if (start == end) {
+        if (exact_match) {
+          return RET_NULL;
+        } else {
+          return start;
+        }
+      } else {
+        end = mid_point;
+        continue;
+      }
+    }
+    return mid_point;
+  }
+  return 0;
+}
+
+static Uint32 binary_bin_search(Uint64 test_ordinal,
+                                const char *memory_ptr,
+                                Uint32 start,
+                                Uint32 end,
+                                Uint32 number_size,
+                                bool exact_match) {
+  /**
+   * start = starting index
+   * end = ending index
+   * test_position = Address within memory for next value to check
+   */
+  while (1) {
+    Uint32 mid_point = (start + end) / 2;
+    Uint32 test_position = mid_point * number_size;
+    Uint64 value = 0;
+    const uchar *number_ptr = (const uchar*)(memory_ptr + test_position);
+    switch (number_size) {
+      case 3: {
+        Uint32 val32 = uint3korr(number_ptr);
+        value = (Uint64)val32;
+        break;
+      }
+      case 5: {
+        value = uint5korr(number_ptr);
+        break;
+      }
+      case 6: {
+        value = uint6korr(number_ptr);
+        break;
+      }
+      case 7: {
+        value = uint7korr(number_ptr);
+        break;
+      }
+      default: {
+        return RET_NULL;
+      }
+    }
+    if (value < test_ordinal) {
+      if (start == end) {
+        if (exact_match) {
+          return RET_NULL;
+        } else {
+          return start;
+        }
+      } else {
+        start = mid_point;
+        continue;
+      }
+    } if (value > test_ordinal) {
+      if (start == end) {
+        if (exact_match) {
+          return RET_NULL;
+        } else {
+          return start;
+        }
+      } else {
+        end = mid_point;
+        continue;
+      }
+    }
+    return mid_point;
+  }
+  return 0;
+}
+
+static Uint32 search_half_open_interval_uint32(Uint32 test_ordinal,
+                                               const char *memory_ptr,
+                                               Uint32 start_pos,
+                                               Uint32 end_pos) {
+  Uint32 ret_val = binary_uint32_search(test_ordinal,
+                                        memory_ptr,
+                                        start_pos,
+                                        end_pos,
+                                        false);
+  if ((ret_val & 1) == 0) return ret_val;
+  if ((ret_val + 1) > end_pos) return RET_NULL;
+  Uint32 value_left = 0;
+  Uint32 value_right = 0;
+  Uint32 test_position_left = ret_val * 4;
+  Uint32 test_position_right = (ret_val + 1) * 4;
+  memcpy(&value_left, memory_ptr + test_position_left, 4);
+  memcpy(&value_right, memory_ptr + test_position_right, 4);
+  if (value_left == value_right) return (ret_val + 1);
+  return RET_NULL;
+}
+
+static Uint32 search_half_open_interval_uint64(Uint64 test_ordinal,
+                                               const char *memory_ptr,
+                                               Uint32 start_pos,
+                                               Uint32 end_pos) {
+  Uint32 ret_val = binary_uint32_search(test_ordinal,
+                                        memory_ptr,
+                                        start_pos,
+                                        end_pos,
+                                        false);
+  if ((ret_val & 1) == 0) return ret_val;
+  if ((ret_val + 1) > end_pos) return RET_NULL;
+  Uint64 value_left = 0;
+  Uint64 value_right = 0;
+  Uint32 test_position_left = ret_val * 8;
+  Uint32 test_position_right = (ret_val + 1) * 8;
+  memcpy(&value_left, memory_ptr + test_position_left, 8);
+  memcpy(&value_right, memory_ptr + test_position_right, 8);
+  if (value_left == value_right) return (ret_val + 1);
+  return RET_NULL;
+}
+
+static Uint32 search_half_open_interval(Uint64 test_ordinal,
+                                        const char *memory_ptr,
+                                        Uint32 start_pos,
+                                        Uint32 end_pos,
+                                        Uint32 number_size) {
+  Uint32 ret_val = binary_bin_search(test_ordinal,
+                                     memory_ptr,
+                                     start_pos,
+                                     end_pos,
+                                     number_size,
+                                     false);
+  if ((ret_val & 1) == 0) return ret_val;
+  if ((ret_val + 1) > end_pos) return RET_NULL;
+  Int64 value_left = 0;
+  Int64 value_right = 0;
+  Uint32 test_position_left = ret_val * number_size;
+  Uint32 test_position_right = (ret_val + 1) * number_size;
+  memcpy(&value_left, memory_ptr + test_position_left, number_size);
+  memcpy(&value_right, memory_ptr + test_position_right, number_size);
+  if (value_left == value_right) return (ret_val + 1);
+  return RET_NULL;
+}
+
+static Uint32 string_search(const char *search_string,
+                            Uint32 search_len,
+                            const char *memory_ptr,
+                            Uint32 start_pos,
+                            Uint32 end_pos) {
+  Uint32 equal_len = 0;
+  for (Uint32 i = start_pos; i < end_pos; i++) {
+    char c_search = search_string[equal_len];
+    char c_memory = memory_ptr[start_pos];
+    if (c_search == c_memory) {
+      equal_len++;
+      if (equal_len == search_len) {
+        return (i - search_len);
+      }
+    } else {
+      equal_len = 0;
+    }
+  }
+  return RET_NULL;
+}
+
+static int compare_8b(const void *left, const void *right) {
+  ulonglong *left_ulong = (ulonglong*)left;
+  ulonglong *right_ulong = (ulonglong*)right;
+  if ((*left_ulong) < (*right_ulong)) return -1;
+  if ((*left_ulong) > (*right_ulong)) return +1;
+  return 0;
+}
+
+static int compare_7b(const void *left, const void *right) {
+  const uchar *left_cmp = (const uchar*)left;
+  const uchar *right_cmp = (const uchar*)right;
+  ulonglong left_ulong = uint7korr(left_cmp);
+  ulonglong right_ulong = uint7korr(right_cmp);
+  if (left_ulong < right_ulong) return -1;
+  if (left_ulong > right_ulong) return +1;
+  return 0;
+}
+
+static int compare_6b(const void *left, const void *right) {
+  const uchar *left_cmp = (const uchar*)left;
+  const uchar *right_cmp = (const uchar*)right;
+  ulonglong left_ulong = uint6korr(left_cmp);
+  ulonglong right_ulong = uint6korr(right_cmp);
+  if (left_ulong < right_ulong) return -1;
+  if (left_ulong > right_ulong) return +1;
+  return 0;
+}
+
+static int compare_5b(const void *left, const void *right) {
+  const uchar *left_cmp = (const uchar*)left;
+  const uchar *right_cmp = (const uchar*)right;
+  ulonglong left_ulong = uint5korr(left_cmp);
+  ulonglong right_ulong = uint5korr(right_cmp);
+  if (left_ulong < right_ulong) return -1;
+  if (left_ulong > right_ulong) return +1;
+  return 0;
+}
+
+static int compare_4b(const void *left, const void *right) {
+  const Uint32 *left_cmp = (const Uint32*)left;
+  const Uint32 *right_cmp = (const Uint32*)right;
+  if ((*left_cmp) < (*right_cmp)) return -1;
+  if ((*left_cmp) > (*right_cmp)) return +1;
+  return 0;
+}
+
+static int compare_3b(const void *left, const void *right) {
+  const uchar *left_cmp = (const uchar*)left;
+  const uchar *right_cmp = (const uchar*)right;
+  uint32 left_uint32 = uint3korr(left_cmp);
+  uint32 right_uint32 = uint3korr(right_cmp);
+  if (left_uint32 < right_uint32) return -1;
+  if (left_uint32 > right_uint32) return +1;
+  return 0;
+}
+
+static int compare_2b(const void *left, const void *right) {
+  const Uint16 *left_cmp = (const Uint16*)left;
+  const Uint16 *right_cmp = (const Uint16*)right;
+  if (left_cmp < right_cmp) return -1;
+  if (left_cmp > right_cmp) return +1;
+  return 0;
+}
+
+static int compare_1b(const void *left, const void *right) {
+  const uchar *left_cmp = (const uchar*)left;
+  const uchar *right_cmp = (const uchar*)right;
+  if (left_cmp < right_cmp) return -1;
+  if (left_cmp > right_cmp) return +1;
+  return 0;
+}
+
+static Uint32 merge_sort_instr(const char *memory_ptr,
+                               Uint32 start_pos,
+                               Uint32 end_pos,
+                               size_t number_size) {
+  if (end_pos < start_pos) return RET_NULL;
+  Uint32 size = end_pos - start_pos;
+  size_t elems = size / number_size;
+  Uint32 elems_size = elems * number_size;
+  if (elems_size != size) return RET_NULL;
+  switch (number_size) {
+    case 1: {
+      return mergesort((void*)(memory_ptr + start_pos),
+                       elems,
+                       number_size,
+                       compare_1b);
+    }
+    case 2: {
+      return mergesort((void*)(memory_ptr + start_pos),
+                       elems,
+                       number_size,
+                       compare_2b);
+    }
+    case 3: {
+      return mergesort((void*)(memory_ptr + start_pos),
+                       elems,
+                       number_size,
+                       compare_3b);
+    }
+    case 4: {
+      return mergesort((void*)(memory_ptr + start_pos),
+                       elems,
+                       number_size,
+                       compare_4b);
+    }
+    case 5: {
+      return mergesort((void*)(memory_ptr + start_pos),
+                       elems,
+                       number_size,
+                       compare_5b);
+    }
+    case 6: {
+      return mergesort((void*)(memory_ptr + start_pos),
+                       elems,
+                       number_size,
+                       compare_6b);
+    }
+    case 7: {
+      return mergesort((void*)(memory_ptr + start_pos),
+                       elems,
+                       number_size,
+                       compare_7b);
+    }
+    case 8: {
+      return mergesort((void*)(memory_ptr + start_pos),
+                       elems,
+                       number_size,
+                       compare_8b);
+    }
+    default: {
+      return RET_NULL;
+    }
+  }
+  return RET_NULL;
+}
+
+static Uint32 qsort_instr(const char *memory_ptr,
+                          Uint32 start_pos,
+                          Uint32 end_pos,
+                          size_t number_size) {
+  if (end_pos < start_pos) return RET_NULL;
+  Uint32 size = end_pos - start_pos;
+  size_t elems = size / number_size;
+  Uint32 elems_size = elems * number_size;
+  if (elems_size != size) return RET_NULL;
+  switch (number_size) {
+    case 1: {
+      qsort((void*)(memory_ptr + start_pos),
+            elems,
+            number_size,
+            compare_1b);
+    }
+    case 2: {
+      qsort((void*)(memory_ptr + start_pos),
+            elems,
+            number_size,
+            compare_2b);
+    }
+    case 3: {
+      qsort((void*)(memory_ptr + start_pos),
+            elems,
+            number_size,
+            compare_3b);
+    }
+    case 4: {
+      qsort((void*)(memory_ptr + start_pos),
+            elems,
+            number_size,
+            compare_4b);
+    }
+    case 5: {
+      qsort((void*)(memory_ptr + start_pos),
+            elems,
+            number_size,
+            compare_5b);
+    }
+    case 6: {
+      qsort((void*)(memory_ptr + start_pos),
+            elems,
+            number_size,
+            compare_6b);
+    }
+    case 7: {
+      qsort((void*)(memory_ptr + start_pos),
+            elems,
+            number_size,
+            compare_7b);
+    }
+    case 8: {
+      qsort((void*)(memory_ptr + start_pos),
+            elems,
+            number_size,
+             compare_8b);
+    }
+    default: {
+      return RET_NULL;
+    }
+  }
+  return 0;
+}
 
 /* For debugging */
 static void dump_hex(const Uint32 *p, Uint32 len) {
@@ -5320,6 +5795,27 @@ int Dbtup::interpreterNextLab(Signal* signal,
           }
           break;
         }
+        case Interpreter::READ_INTERPRETER_INPUT:
+        {
+          /**
+           * Read content of an input register to a register.
+           */
+          Uint32 inputInx = theInstruction >> 16;
+	  Int64 *value_ptr = (Int64*)(TregMemBuffer + theRegister + 2);
+          if (unlikely(inputInx >= AttributeHeader::MaxInterpreterInputIndex)) {
+	    return TUPKEY_abort(req_struct, ZINPUT_OUTPUT_INDEX_ERROR);
+          }
+          memcpy(value_ptr, &m_interpreter_input[inputInx], 8);
+          TregMemBuffer[theRegister]= NOT_NULL_INDICATOR;
+#ifdef TRACE_INTERPRETER
+          g_eventLogger->info("(%u)read_interpreter_output[%u] = %lld, reg: %u",
+                              instance(),
+                              outputInx,
+                              *value_ptr,
+                              theRegister);
+#endif
+          break;
+        }
 
         case Interpreter::WRITE_INTERPRETER_OUTPUT:
         {
@@ -5340,7 +5836,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
 	    return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
           }
           if (unlikely(outputInx >= AttributeHeader::MaxInterpreterOutputIndex)) {
-	    return TUPKEY_abort(req_struct, ZOUTPUT_INDEX_ERROR);
+	    return TUPKEY_abort(req_struct, ZINPUT_OUTPUT_INDEX_ERROR);
           }
           outputInx *= 2;
           memcpy(&c_interpreter_output[outputInx], value_ptr, 8);

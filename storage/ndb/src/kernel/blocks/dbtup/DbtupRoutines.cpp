@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -2220,7 +2220,14 @@ int Dbtup::updateAttributes(KeyReqStruct *req_struct,
           return -ZAI_INCONSISTENCY_ERROR;
         }
       }
-
+    } else if ((attributeId >= AttributeHeader::INTERPRETER_INPUT_FIRST) &&
+               (attributeId <= AttributeHeader::INTERPRETER_INPUT_LAST)) {
+      ndbrequire(sz == 2);
+      Uint32 low = *(inBuffer + inBufIndex + 1);
+      Uint32 high = *(inBuffer + inBufIndex + 2);
+      Uint64 val = Uint64(low) + (Uint64(high) << 32);
+      Uint32 id = attributeId - AttributeHeader::INTERPRETER_INPUT_FIRST;
+      m_interpreter_input[id] = val;
     } else {
       thrjam(req_struct->jamBuffer);
       thrjamDataDebug(req_struct->jamBuffer, attributeId);
@@ -3454,8 +3461,7 @@ int Dbtup::read_pseudo(const Uint32 *inBuffer, Uint32 inPos,
           attrId <= AttributeHeader::READ_INTERPRETER_OUTPUT_LAST) {
         Uint32 inx = attrId - AttributeHeader::READ_INTERPRETER_OUTPUT_FIRST;
         inx *= 2;
-        outBuffer[1] = c_interpreter_output[inx];
-        outBuffer[2] = c_interpreter_output[inx+1];
+        memcpy(outBuffer + 1, &c_interpreter_output[inx], 8);
         sz = 2;
         break;
       }

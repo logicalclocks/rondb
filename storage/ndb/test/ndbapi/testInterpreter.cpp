@@ -921,9 +921,6 @@ runNewInterpreterTest(NDBT_Context* ctx, NDBT_Step* step)
       code.append_from_mem(14, 2, 1);
       code.interpret_exit_ok();
       int ret_code = code.finalise();
-      if (ret_code == -1) {
-        //ndbout_c("error: %d", code.m_error.code);
-      }
       CHK3(ret_code);
     } else if (i == 29) {
       /* Use table T6 */
@@ -934,9 +931,6 @@ runNewInterpreterTest(NDBT_Context* ctx, NDBT_Step* step)
       code.write_from_mem(18, 2, 1);
       code.interpret_exit_ok();
       int ret_code = code.finalise();
-      if (ret_code == -1) {
-        //ndbout_c("error: %d", code.m_error.code);
-      }
       CHK3(ret_code);
     } else if (i == 30) {
       /* Use table T6 */
@@ -1015,9 +1009,6 @@ runNewInterpreterTest(NDBT_Context* ctx, NDBT_Step* step)
       code.def_label(0);
       code.interpret_exit_nok();
       int ret_code = code.finalise();
-      if (ret_code == -1) {
-        ndbout_c("error: %d", code.getNdbError().code);
-      }
       CHK3(ret_code);
     } else if (i == 31) {
       /* Use table T6 */
@@ -1029,9 +1020,6 @@ runNewInterpreterTest(NDBT_Context* ctx, NDBT_Step* step)
       code.write_partial_from_mem(14, 2, 1, 3);
       code.interpret_exit_ok();
       int ret_code = code.finalise();
-      if (ret_code == -1) {
-        //ndbout_c("error: %d", code.m_error.code);
-      }
       CHK3(ret_code);
     } else if (i == 32) {
       /* Use table T6 */
@@ -1043,17 +1031,22 @@ runNewInterpreterTest(NDBT_Context* ctx, NDBT_Step* step)
       code.write_partial_from_mem(14, 2, 1, 3);
       code.interpret_exit_ok();
       int ret_code = code.finalise();
-      if (ret_code == -1) {
-        //ndbout_c("error: %d", code.m_error.code);
-      }
+      CHK3(ret_code);
+    } else if (i == 33) {
+      code.read_interpreter_input(0, 0);
+      code.write_interpreter_output(0, 0);
+      code.interpret_exit_ok();
+      int ret_code = code.finalise();
       CHK3(ret_code);
     }
 
     NdbOperation::GetValueSpec getvals[2];
+    NdbOperation::SetValueSpec setvals[2];
     NdbOperation::OperationOptions opts;
     std::memset(&opts, 0, sizeof(opts));
     opts.optionsPresent = NdbOperation::OperationOptions::OO_INTERPRETED;
     opts.interpretedCode = &code;
+    Uint64 testInputOutput = 0x13579135;
 
     if (i == 27 || i == 28 || i == 31 || i == 32) {
       getvals[0].column = pTab->getColumn(14);
@@ -1079,6 +1072,18 @@ runNewInterpreterTest(NDBT_Context* ctx, NDBT_Step* step)
       opts.optionsPresent |= NdbOperation::OperationOptions::OO_GET_FINAL_VALUE;
       opts.extraGetFinalValues = getvals;
       opts.numExtraGetFinalValues = 2;
+    } else if (i == 33) {
+      getvals[0].column = NdbDictionary::Column::READ_INTERPRETER_OUTPUT_0;
+      getvals[0].appStorage = nullptr;
+      getvals[0].recAttr = nullptr;
+      setvals[0].column = NdbDictionary::Column::INTERPRETER_INPUT_0;
+      setvals[0].value = (const void*)&testInputOutput;
+      opts.optionsPresent |= NdbOperation::OperationOptions::OO_GET_FINAL_VALUE;
+      opts.optionsPresent |= NdbOperation::OperationOptions::OO_SETVALUE;
+      opts.extraGetFinalValues = getvals;
+      opts.numExtraGetFinalValues = 1;
+      opts.extraSetValues = setvals;
+      opts.numExtraSetValues = 1;
     }
 
     const NdbOperation *pOp;

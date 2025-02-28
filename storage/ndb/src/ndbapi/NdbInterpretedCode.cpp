@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2007, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2024, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -474,10 +474,22 @@ NdbInterpretedCode::write_interpreter_output(Uint32 RegValue,
   if (RegValue >= MaxReg)
     return error(BadRegister);
   if (OutputIndex >= MaxOutputIndex)
-    return error(BadOutputIndex);
+    return error(BadInOutputIndex);
   return add1(Interpreter::WriteInterpreterOutput(
               RegValue,
               OutputIndex));
+}
+
+int
+NdbInterpretedCode::read_interpreter_input(Uint32 RegValue,
+                                           Uint32 InputIndex) {
+  if (RegValue >= MaxReg)
+    return error(BadRegister);
+  if (InputIndex >= MaxInputIndex)
+    return error(BadInOutputIndex);
+  return add1(Interpreter::ReadInterpreterInput(
+              RegValue,
+              InputIndex));
 }
 
 int

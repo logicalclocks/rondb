@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2024, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -171,6 +171,8 @@ class Interpreter {
                           WRITE_INT64_REG_TO_MEM + OVERFLOW_OPCODE;
 
   static constexpr Uint32 WRITE_ATTR_FROM_MEM = 57;
+  static constexpr Uint32 READ_INTERPRETER_INPUT =
+                          WRITE_ATTR_FROM_MEM + OVERFLOW_OPCODE;
   static constexpr Uint32 APPEND_ATTR_FROM_MEM = 58;
   static constexpr Uint32 WRITE_PARTIAL_ATTR_FROM_MEM =
                           APPEND_ATTR_FROM_MEM + OVERFLOW_OPCODE;
@@ -258,6 +260,7 @@ class Interpreter {
                            Uint32 RegOffset,
                            Uint32 RegValue);
 
+  static Uint32 ReadInterpreterInput(Uint32 RegValue, Uint32 InputIndex);
   static Uint32 WriteInterpreterOutput(Uint32 RegValue, Uint32 OutputIndex);
   static Uint32 ReadUint8FromMemIntoRegConst(Uint32 DstReg, Uint16 Constant);
   static Uint32 ReadUint16FromMemIntoRegConst(Uint32 DstReg, Uint16 Constant);
@@ -698,6 +701,16 @@ Interpreter::Int64ToStr(Uint32 RegDestSize,
          (RegValue << 9) +
          (RegDestSize << 12) +
          STR_TO_INT64 +
+         (1 << 15);
+}
+
+inline Uint32
+Interpreter::ReadInterpreterInput(Uint32 RegValue,
+                                  Uint32 InputIndex) {
+  /* READ_INTERPRETER_INPUT */
+  return (RegValue << 6) +
+         (InputIndex << 16) +
+         WRITE_ATTR_FROM_MEM +
          (1 << 15);
 }
 
