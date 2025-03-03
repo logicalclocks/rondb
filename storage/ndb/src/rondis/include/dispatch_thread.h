@@ -4,7 +4,7 @@
 // of patent rights can be found in the PATENTS file in the same directory.
 
 /*
-   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2024, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -70,7 +70,7 @@ class DispatchThread : public ServerThread {
                  int queue_limit,
                  const ServerHandle* handle);
 
-  virtual ~DispatchThread();
+  virtual ~DispatchThread() override;
 
   virtual int StartThread() override;
 

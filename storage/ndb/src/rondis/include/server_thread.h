@@ -4,7 +4,7 @@
 // of patent rights can be found in the PATENTS file in the same directory.
 
 /*
-   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2024, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -179,7 +179,7 @@ class ServerThread : public Thread {
   virtual void SetQueueLimit([[maybe_unused]]/*todo remove?*/
                              int queue_limit) { }
 
-  virtual ~ServerThread();
+  virtual ~ServerThread() override;
 
  protected:
   /*
@@ -251,14 +251,11 @@ extern ServerThread *NewHolyThread(
  * This type Dispatch thread just get Connection and then Dispatch the fd to
  * worker thread
  *
- * @brief
- *
  * @param port          the port number
  * @param conn_factory  connection factory object
  * @param cron_interval the cron job interval
  * @param queue_limit   the size limit of workers' connection queue
  * @param handle        the server's handle (e.g. CronHandle, AccessHandle...)
- * @param ehandle       the worker's enviroment setting handle
  */
 extern ServerThread *NewDispatchThread(
     int port,

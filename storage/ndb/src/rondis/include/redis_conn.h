@@ -4,7 +4,7 @@
 // of patent rights can be found in the PATENTS file in the same directory.
 
 /*
-   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2024, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -56,7 +56,7 @@ class RedisConn: public PinkConn {
             PinkEpoll* pink_epoll = nullptr,
             const HandleType& handle_type = kSynchronous,
             const int rbuf_max_len = REDIS_MAX_MESSAGE);
-  virtual ~RedisConn();
+  virtual ~RedisConn() override;
 
   virtual ReadStatus GetRequest() override;
   virtual WriteStatus SendReply() override;

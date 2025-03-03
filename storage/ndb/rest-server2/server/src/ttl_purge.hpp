@@ -70,7 +70,7 @@ class TTLPurger {
   Ndb* worker_ndb_;
   std::atomic<bool> exit_;
 
-  typedef struct {
+  typedef struct TTLInfo {
     Int32 table_id;
     Uint32 ttl_sec;
     Uint32 col_no;

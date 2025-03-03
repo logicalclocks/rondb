@@ -43,7 +43,7 @@ public:
         const std::string &ip_port,
         pink::Thread *thread,
         void *worker_specific_data);
-    virtual ~RondisConn() = default;
+    virtual ~RondisConn() override = default;
 
 protected:
   int DealMessage(const pink::RedisCmdArgsType &argv, std::string *response) override;
