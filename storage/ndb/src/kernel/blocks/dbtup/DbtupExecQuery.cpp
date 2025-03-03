@@ -557,6 +557,64 @@ static Uint32 merge_sort_instr(const char *memory_ptr,
   return RET_NULL;
 }
 
+static int compress_num64_array(char *memory_ptr,
+                                Uint32 start_pos,
+                                Uint32 end_pos,
+                                size_t number_size) {
+  if (end_pos < start_pos) return RET_NULL;
+  Uint32 array_size = (end_pos - start_pos);
+  size_t elems = array_size / 8;
+  size_t elems_size = elems * 8;
+  if (elems_size != array_size) return RET_NULL;
+  switch (number_size) {
+    case 5: {
+      for (size_t i = 0; i < elems; i++) {
+        ulonglong val = 0;
+        memcpy(&val, memory_ptr + start_pos + (8 * elems), 8);
+        int5store(memory_ptr + start_pos + (5 * elems), val);
+      }
+      break;
+    }
+    case 6: {
+      for (size_t i = 0; i < elems; i++) {
+        ulonglong val = 0;
+        memcpy(&val, memory_ptr + start_pos + (8 * elems), 8);
+        int6store(memory_ptr + start_pos + (6 * elems), val);
+      }
+      break;
+    }
+    default: {
+      return RET_NULL;
+    }
+  }
+  return 0;
+}
+
+static int compress_num32_array(char *memory_ptr,
+                                Uint32 start_pos,
+                                Uint32 end_pos,
+                                size_t number_size) {
+  if (end_pos < start_pos) return RET_NULL;
+  Uint32 array_size = (end_pos - start_pos);
+  size_t elems = array_size / 4;
+  size_t elems_size = elems * 4;
+  if (elems_size != array_size) return RET_NULL;
+  switch (number_size) {
+    case 3: {
+      for (size_t i = 0; i < elems; i++) {
+        uint val = 0;
+        memcpy(&val, memory_ptr + start_pos + (4 * elems), 4);
+        int5store(memory_ptr + start_pos + (3 * elems), val);
+      }
+      break;
+    }
+    default: {
+      return RET_NULL;
+    }
+  }
+  return 0;
+}
+
 static Uint32 qsort_instr(const char *memory_ptr,
                           Uint32 start_pos,
                           Uint32 end_pos,
