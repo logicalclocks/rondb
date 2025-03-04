@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023, 2024 Hopsworks AB
+ * Copyright (C) 2023, 2025 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -77,6 +77,7 @@ BatchKeyOperations::init_batch_operations(ArenaMalloc *amalloc,
   m_ndb_object = ndb_object;
   m_numOperations = numOps;
   m_ndbTransaction = nullptr;
+  m_first_success_index = Uint32(~0);
   m_key_ops = (KeyOperation*)amalloc->alloc_bytes(
     sizeof(KeyOperation) * numOps, 8);
   if (unlikely(m_key_ops == nullptr)) {
@@ -282,6 +283,7 @@ BatchKeyOperations::init_batch_operations(ArenaMalloc *amalloc,
         }
         return err;
       }
+      m_first_success_index = i;
     } else {
       /**
        * When we arrive here we have not received any column names from
@@ -318,13 +320,19 @@ BatchKeyOperations::init_batch_operations(ArenaMalloc *amalloc,
         bitmap_words32[j] = 0xFFFFFFFF;
       }
       key_op->m_num_read_columns = numColumns;
+      m_first_success_index = i;
     }
+  }
+  if (unlikely(m_first_success_index == Uint32(~0))) {
+    return RS_SERVER_ERROR(
+        std::string(rdrsErrorMessage(ERROR_NO_SUCCESSFUL_OPERATION)));
   }
   return status;
 }
 
 RS_Status BatchKeyOperations::setup_transaction() {
-  const NdbDictionary::Table *table_dict = m_key_ops[0].m_tableDict;
+  const NdbDictionary::Table *table_dict =
+    m_key_ops[m_first_success_index].m_tableDict;
   m_ndbTransaction = m_ndb_object->startTransaction(table_dict);
   if (unlikely(m_ndbTransaction == nullptr)) {
     return RS_RONDB_SERVER_ERROR(m_ndb_object->getNdbError(), 
@@ -401,7 +409,8 @@ start:
             colIdx,
             m_key_ops[opIdx].m_blob_handles[colIdx]);
           if (unlikely(m_key_ops[opIdx].m_blob_handles[colIdx] == nullptr)) {
-            return RS_SERVER_ERROR(std::string(rdrsErrorMessage(ERROR_MEMORY_ALLOCATION_FAILURE)));
+            return RS_SERVER_ERROR(std::string(
+              rdrsErrorMessage(ERROR_MEMORY_ALLOCATION_FAILURE)));
           }
         } else {
           DEB_NDB_BE("No Blob handle for %s in op %u in col: %u",
@@ -416,8 +425,9 @@ start:
 
 RS_Status BatchKeyOperations::execute() {
   if (unlikely(m_ndbTransaction->execute(NdbTransaction::NoCommit) != 0)) {
-    return RS_RONDB_SERVER_ERROR(m_ndbTransaction->getNdbError(),
-                                 std::string(rdrsErrorMessage(ERROR_TRANSACTION_EXEC_FAILED)));
+    return RS_RONDB_SERVER_ERROR(
+      m_ndbTransaction->getNdbError(),
+      std::string(rdrsErrorMessage(ERROR_TRANSACTION_EXEC_FAILED)));
   }
   return RS_OK;
 }

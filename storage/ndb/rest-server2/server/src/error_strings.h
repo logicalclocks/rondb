@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Hopsworks AB
+ * Copyright (C) 2023, 2025 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -105,6 +105,7 @@ typedef enum {
   ERROR_AVRO_SCHEMA_STRUCT_NOT_FOUND    = 74,
   ERROR_AVRO_UNMARSHAL_FAILED           = 75,
   ERROR_AVRO_JSON_CREATION_FAILED       = 76,
+  ERROR_NO_SUCCESSFUL_OPERATION         = 77,
   __MAX_INDEX__                         = 78  // this SHOULD always be last with max index number
 } ErrorCode;
 
@@ -193,6 +194,7 @@ static const ErrorEntry errorTable[] = {
     {ERROR_AVRO_SCHEMA_STRUCT_NOT_FOUND, "Avro schema struct not found"},
     {ERROR_AVRO_UNMARSHAL_FAILED, "Avro failed to unmarshal data"},
     {ERROR_AVRO_JSON_CREATION_FAILED, "Avro failed create json string"},
+    {ERROR_NO_SUCCESSFUL_OPERATION, "No operation in batch is success"},
     {__MAX_INDEX__, "__MAX_INDEX__ Place holder"}
 };
 

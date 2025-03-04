@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023, 2024, Hopsworks and/or its affiliates.
+ * Copyright (c) 2023, 2025, Hopsworks and/or its affiliates.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -1441,38 +1441,40 @@ RS_Status extract_db_and_table(const std::string_view &relativeUrl,
                                std::string &table) {
   // Find the positions of the last three slashes
   std::string_view request_type;
-  size_t lastSlashPos       = relativeUrl.find_last_of('/');
-  size_t secondLastSlashPos = lastSlashPos !=
-    std::string_view::npos
-    ? relativeUrl.find_last_of('/', lastSlashPos - 1)
-                                  : std::string_view::npos;
-  size_t thirdLastSlashPos  = secondLastSlashPos !=
-    std::string_view::npos
-    ? relativeUrl.find_last_of('/', secondLastSlashPos - 1)
-                                  : std::string_view::npos;
-
-  if (thirdLastSlashPos != std::string_view::npos &&
-      secondLastSlashPos != std::string_view::npos) {
-    // If there are at least three slashes
-    db = relativeUrl.substr(thirdLastSlashPos + 1,
-                            secondLastSlashPos - thirdLastSlashPos - 1);
-    table = relativeUrl.substr(secondLastSlashPos + 1,
-                               lastSlashPos - secondLastSlashPos - 1);
-    request_type = relativeUrl.substr(lastSlashPos);
-  } else if (secondLastSlashPos != std::string_view::npos) {
-    // If there are only two slashes
-    db = relativeUrl.substr(0, secondLastSlashPos);
-    table = relativeUrl.substr(secondLastSlashPos + 1,
-                               lastSlashPos - secondLastSlashPos - 1);
-    request_type = relativeUrl.substr(lastSlashPos);
-  } else {
+  size_t start_pos = 0;
+  size_t len = relativeUrl.length();
+  if (len < 11) {
     return CRS_Status(static_cast<HTTP_CODE>(
       drogon::HttpStatusCode::k400BadRequest),
       ERROR_INVALID_RELATIVE_URL,
       std::string(rdrsErrorMessage(ERROR_INVALID_RELATIVE_URL))).status;
   }
+  size_t end_pos = len - 1;
+  size_t lastSlashPos = relativeUrl.find_last_of('/');
+  size_t firstSlashPos = relativeUrl.find_first_of('/');
+  if (lastSlashPos == end_pos) lastSlashPos--;
+  if (firstSlashPos == 0) firstSlashPos = 1;
+
+  size_t secondLastSlashPos = lastSlashPos != std::string_view::npos ?
+    relativeUrl.find_last_of('/', lastSlashPos - 1) : std::string_view::npos;
+  size_t thirdLastSlashPos  = secondLastSlashPos != std::string_view::npos ?
+    relativeUrl.find_last_of('/', secondLastSlashPos - 1)
+      : std::string_view::npos;
+
+  if (thirdLastSlashPos != std::string_view::npos ||
+      secondLastSlashPos == std::string_view::npos) {
+    return CRS_Status(static_cast<HTTP_CODE>(
+      drogon::HttpStatusCode::k400BadRequest),
+      ERROR_INVALID_RELATIVE_URL,
+      std::string(rdrsErrorMessage(ERROR_INVALID_RELATIVE_URL))).status;
+  }
+  db = relativeUrl.substr(start_pos, secondLastSlashPos);
+  table = relativeUrl.substr(secondLastSlashPos + 1,
+                             lastSlashPos - secondLastSlashPos - 1);
+  request_type = relativeUrl.substr(lastSlashPos);
   if (request_type.length() == strlen(PKREAD) &&
       (memcmp(request_type.data(), PKREAD, request_type.length()) == 0)) {
+    return CRS_Status::SUCCESS.status;
   }
   return CRS_Status(static_cast<HTTP_CODE>(
     drogon::HttpStatusCode::k400BadRequest),

@@ -60,6 +60,7 @@ class BatchKeyOperations {
   Ndb *m_ndb_object;
   bool m_isBatch;
   struct KeyOperation *m_key_ops;
+  Uint32 m_first_success_index;
  public:
    BatchKeyOperations();
    ~BatchKeyOperations();
