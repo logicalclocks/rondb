@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2011, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -377,6 +377,7 @@ int THRConfigApplier::do_bind(NdbThread *thread, const T_Thread *thr) {
              thr->m_bind_type == T_Thread::B_CPUSET_EXCLUSIVE_BIND) {
     const SparseBitmask &tmp = m_cpu_sets[thr->m_bind_no];
     Uint32 num_cpu_ids = tmp.count();
+    errno = 0;
     Uint32 *cpu_ids = (Uint32 *)malloc(sizeof(Uint32) * num_cpu_ids);
     if (!cpu_ids) {
       return -errno;

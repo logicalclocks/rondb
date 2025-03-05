@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -2556,6 +2556,7 @@ int detect_backup_format() {
 }  // detect_backup_format
 
 static void *start_restore_worker(void *data) {
+  errno = 0;
   RestoreThreadData *rdata = (RestoreThreadData *)data;
   rdata->m_result = do_restore(rdata);
   if (rdata->m_result == NdbToolsProgramExitCode::FAILED) {

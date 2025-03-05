@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -586,6 +586,7 @@ Uint32 TransporterFacade::getSendThreadInterval(void) const {
 }
 
 extern "C" void *runSendRequest_C(void *me) {
+  errno = 0;
   ((TransporterFacade *)me)->threadMainSend();
   return nullptr;
 }
@@ -609,6 +610,7 @@ static inline void link_buffer(TFBuffer *dst, const TFBuffer *src) {
 static const Uint32 SEND_THREAD_NO = 0;
 
 extern "C" void *runWakeupThread_C(void *me) {
+  errno = 0;
   ((TransporterFacade *)me)->threadMainWakeup();
   return nullptr;
 }
@@ -1113,6 +1115,7 @@ void TransporterFacade::threadMainSend(void) {
 }
 
 extern "C" void *runReceiveResponse_C(void *me) {
+  errno = 0;
   ((TransporterFacade *)me)->threadMainReceive();
   return nullptr;
 }

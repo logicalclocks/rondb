@@ -827,6 +827,7 @@ void Ndb_move_data::unparse_opts_tries(char *opt, const Opts::Tries &ot) {
 
 static int parse_opts_tries_field(const char *&t, int &out) {
   char *u = 0;
+  errno = 0;
   out = (int)strtol(t, &u, 10);
   if (t == u) return -1;     // empty
   if (out < 0) return -1;    // bad value

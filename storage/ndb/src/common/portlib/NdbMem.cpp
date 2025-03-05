@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2025, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -42,6 +43,7 @@
 #include <NdbMem.h>
 
 int NdbMem_MemLockAll(int i) {
+  errno = 0;
   if (i == 1) {
 #if defined(HAVE_MLOCKALL) && defined(MCL_CURRENT) && defined(MCL_FUTURE)
     return mlockall(MCL_CURRENT | MCL_FUTURE);

@@ -1,5 +1,5 @@
 /* Copyright (c) 2008, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -218,15 +218,18 @@ static inline void thr_wakeup(struct thr_wait *, struct thr_data *thr_ptr);
 
 static inline int futex_wait(volatile unsigned *addr, int val,
                              const struct timespec *timeout) {
+  errno = 0;
   return syscall(SYS_futex, addr, FUTEX_WAIT, val, timeout, 0, 0) == 0 ? 0
                                                                        : errno;
 }
 
 static inline int futex_wake(volatile unsigned *addr) {
+  errno = 0;
   return syscall(SYS_futex, addr, FUTEX_WAKE, 1, 0, 0, 0) == 0 ? 0 : errno;
 }
 
 static inline int futex_wake_all(volatile unsigned *addr) {
+  errno = 0;
   return syscall(SYS_futex, addr, FUTEX_WAKE, INT_MAX, 0, 0, 0) == 0 ? 0
                                                                      : errno;
 }
@@ -2388,6 +2391,7 @@ static char *g_send_threads_mem = NULL;
 static thr_send_threads *g_send_threads = NULL;
 
 extern "C" void *mt_send_thread_main(void *thr_arg) {
+  errno = 0;
   struct thr_send_thread_instance *this_send_thread =
       (thr_send_thread_instance *)thr_arg;
 
@@ -7715,8 +7719,8 @@ static void handle_queue_size_stats(struct thr_data *selfptr, NDB_TICKS now) {
  */
 extern "C"
 void *
-mt_receiver_thread_main(void *thr_arg)
-{
+mt_receiver_thread_main(void *thr_arg) {
+  errno = 0;
   unsigned char signal_buf[SIGBUF_SIZE];
   Signal *signal;
   struct thr_repository* rep = g_thr_repository;
@@ -8133,8 +8137,8 @@ handle_full_job_buffers(struct thr_data* selfptr,
  */
 extern "C"
 void *
-mt_job_thread_main(void *thr_arg)
-{
+mt_job_thread_main(void *thr_arg) {
+  errno = 0;
   unsigned char signal_buf[SIGBUF_SIZE];
   Signal *signal;
 

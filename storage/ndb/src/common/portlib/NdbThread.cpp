@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2025, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -578,6 +579,7 @@ int NdbThread_SetThreadPrioNormal(struct NdbThread *pThread) {
 int NdbThread_SetScheduler(struct NdbThread *pThread, bool rt_prio,
                            bool high_prio) {
   int error_no = 0;
+  errno = 0;
 #if defined HAVE_LINUX_SCHEDULING
   /* Linux */
   int ret, policy, prio;
@@ -679,6 +681,7 @@ int NdbThread_SetThreadPrio(struct NdbThread *pThread, unsigned int prio) {
     default:
       return SET_THREAD_PRIO_OUT_OF_RANGE_ERROR;
   }
+  errno = 0;
   ret = priocntl(P_LWPID, tid, PC_SETXPARMS, "FX", FX_KY_UPRILIM,
                  (pri_t)solaris_prio, FX_KY_UPRI, (pri_t)solaris_prio,
                  FX_KY_TQNSECS, FX_NOCHANGE, FX_KY_TQSECS, FX_TQDEF, 0);
@@ -730,6 +733,7 @@ int NdbThread_SetThreadPrio(struct NdbThread *pThread, unsigned int prio) {
   } else {
     return SET_THREAD_PRIO_OUT_OF_RANGE_ERROR;
   }
+  errno = 0;
   ret = setpriority(PRIO_PROCESS, tid, nice_prio);
   if (ret != 0) {
     error_no = errno;
@@ -1157,6 +1161,7 @@ int NdbThread_UnlockCPU(struct NdbThread *pThread) {
   /* Unix variants */
   int ret;
   int error_no = 0;
+  errno = 0;
 
 #if defined(HAVE_LINUX_SCHEDULING) || defined(HAVE_CPUSET_SETAFFINITY)
   /* Linux or FreeBSD */
@@ -1330,6 +1335,7 @@ int NdbThread_LockCPUSet(struct NdbThread *pThread,
 
   int error_no = 0;
   int ret;
+  errno = 0;
 #if defined(HAVE_LINUX_SCHEDULING)
   /* Linux */
   cpu_set_t *cpu_set_ptr;
@@ -1406,6 +1412,7 @@ int NdbThread_LockCreateCPUSet(const Uint32 *cpu_ids, Uint32 num_cpu_ids,
   int error_no;
   Uint32 cpu_id;
   Uint32 i;
+  errno = 0;
 #if defined(HAVE_LINUX_SCHEDULING)
   /* Linux */
   cpu_set_t *cpu_set_ptr = (cpu_set_t *)malloc(sizeof(cpu_set_t));
@@ -1459,6 +1466,7 @@ int NdbThread_LockCreateCPUSetExclusive(const Uint32 *cpu_ids,
   int ret;
   int error_no;
   Uint32 i;
+  errno = 0;
   psetid_t *cpu_set_ptr = (psetid_t *)malloc(sizeof(psetid_t));
 
   if (!cpu_set_ptr) {
@@ -1507,6 +1515,7 @@ void NdbThread_UnassignFromCPUSet(struct NdbThread *pThread,
 int NdbThread_LockCPUSetExclusive(
     struct NdbThread *pThread, struct NdbCpuSet *ndb_cpu_set,
     const struct processor_set_handler *cpu_set_key) {
+  errno = 0;
 #if defined(HAVE_SOLARIS_AFFINITY)
   /* Solaris */
   int error_no = 0;
@@ -1716,6 +1725,7 @@ int NdbThread_SetHighPrioProperties(const char *spec) {
   f_high_prio_prio = 50;
   if (prio) {
     char *endptr = nullptr;
+    errno = 0;
     long p = strtol(prio, &endptr, 10);
     if (prio == endptr) {
       free(copy);

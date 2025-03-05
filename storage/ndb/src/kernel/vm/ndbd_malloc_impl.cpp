@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2006, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -4230,8 +4230,8 @@ static void **glob_ptrs;
 
 extern "C"
 void*
-release_split_malloc(void* arg)
-{
+release_split_malloc(void* arg) {
+  errno = 0;
   lc_uint64 thread_id = (lc_uint64)arg;
   lc_uint64 num_frees = NUM_ROUNDS / NUM_THREADS;
   lc_uint64 first_free = thread_id * num_frees;
@@ -4244,8 +4244,8 @@ release_split_malloc(void* arg)
 
 extern "C"
 void*
-alloc_split_malloc(void* arg)
-{
+alloc_split_malloc(void* arg) {
+  errno = 0;
   lc_uint64 thread_id = (lc_uint64)arg;
   lc_uint64 num_frees = NUM_ROUNDS / NUM_THREADS;
   lc_uint64 first_free = thread_id * num_frees;
@@ -4385,8 +4385,8 @@ many_malloc_single_thread_long_test_random()
 
 extern "C"
 void*
-release_pool_malloc(void* arg)
-{
+release_pool_malloc(void* arg) {
+  errno = 0;
   lc_uint32 thread_id = (lc_uint64)arg;
   lc_uint32 num_frees = NUM_ROUNDS / NUM_THREADS;
   lc_uint32 first_free = thread_id * num_frees;
@@ -4399,8 +4399,8 @@ release_pool_malloc(void* arg)
 
 extern "C"
 void*
-alloc_pool_malloc(void* arg)
-{
+alloc_pool_malloc(void* arg) {
+  errno = 0;
   lc_uint32 thread_id = (lc_uint64)arg;
   lc_uint32 num_frees = NUM_ROUNDS / NUM_THREADS;
   lc_uint32 pool_id = thread_id % 12;
@@ -4528,8 +4528,8 @@ bench_alloc_split_malloc(void **mem_area,
 
 extern "C"
 void*
-bench_pool_malloc(void *arg)
-{
+bench_pool_malloc(void *arg) {
+  errno = 0;
   lc_uint32 thread_id = (lc_uint64)arg;
   void **ptrs = (void**)malloc(sizeof(void*) * NUM_MALLOC_ROUNDS);
   unsigned int seed = 1;
@@ -4551,8 +4551,8 @@ bench_pool_malloc(void *arg)
 
 extern "C"
 void*
-bench_split_malloc(void *arg)
-{
+bench_split_malloc(void *arg) {
+  errno = 0;
   lc_uint32 thread_id = (lc_uint64)arg;
   void **ptrs = (void**)malloc(sizeof(void*) * NUM_MALLOC_ROUNDS);
   void *mem_area = nullptr;

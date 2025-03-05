@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -98,6 +98,7 @@ extern EventLogger *g_eventLogger;
 
 // Just a C wrapper for threadMain
 extern "C" void *runClusterMgr_C(void *me) {
+  errno = 0;
   ((ClusterMgr *)me)->threadMain();
 
   return nullptr;
@@ -2054,6 +2055,7 @@ void ArbitMgr::doStop(const Uint32 *theData) {
 // private methods
 
 extern "C" void *runArbitMgr_C(void *me) {
+  errno = 0;
   ((ArbitMgr *)me)->threadMain();
   return nullptr;
 }

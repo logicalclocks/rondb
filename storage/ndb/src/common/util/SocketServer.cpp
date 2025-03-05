@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2022, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -241,6 +241,7 @@ bool SocketServer::doAccept() {
 }
 
 extern "C" void *socketServerThread_C(void *_ss) {
+  errno = 0;
   SocketServer *ss = (SocketServer *)_ss;
   ss->doRun();
   return nullptr;
@@ -382,6 +383,7 @@ bool SocketServer::stopSessions(bool wait, unsigned wait_timeout) {
 /***** Session code ******/
 
 extern "C" void *sessionThread_C(void *_sc) {
+  errno = 0;
   SocketServer::Session *si = (SocketServer::Session *)_sc;
 
   assert(si->m_thread_stopped == false);

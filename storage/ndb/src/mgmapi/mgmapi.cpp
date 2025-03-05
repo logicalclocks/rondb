@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -294,6 +294,7 @@ extern "C" int ndb_mgm_set_bindaddress(NdbMgmHandle handle, const char *arg) {
     if (Ndb_split_string_address_port(arg, hostbuf, sizeof(hostbuf), servbuf,
                                       sizeof(servbuf)) == 0) {
       char *endp = nullptr;
+      errno = 0;
       long val = strtol(servbuf, &endp, 10);
       if (*endp != '\0' || val > UINT16_MAX || val < 0) {
         // invalid address

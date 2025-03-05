@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2017, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -950,6 +950,7 @@ static void *start_worker_c(void *data);
 }
 
 static void *start_worker_c(void *data) {
+  errno = 0;
   NdbImportImpl::Worker *w = (NdbImportImpl::Worker *)data;
   require(w != 0);
   w->do_start();
@@ -3732,6 +3733,7 @@ static void *start_job_c(void *data);
 }
 
 static void *start_job_c(void *data) {
+  errno = 0;
   NdbImportImpl::Job *job = (NdbImportImpl::Job *)data;
   require(job != 0);
   job->do_start();

@@ -1,5 +1,5 @@
 /* Copyright (c) 2009, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -391,7 +391,7 @@ static process_waiter spawn_process(const char *progname [[maybe_unused]],
     progname = path;
   }
 #endif
-
+  errno = 0;
   char **argv = create_argv(args);
   if (!argv) {
     g_eventLogger->error("spawn_process: Failed to create argv, errno: %d",
@@ -416,6 +416,7 @@ static process_waiter spawn_process(const char *progname [[maybe_unused]],
   free_argv(argv);
   return {(HANDLE)spawn_handle};
 #else
+  errno = 0;
   pid_t pid = fork();
   if (pid == -1) {
     g_eventLogger->error("Failed to fork, errno: %d", errno);
@@ -532,7 +533,7 @@ static bool configure(const ndb_mgm_configuration *conf, NodeId nodeid) {
   g_eventLogger->debug("Using DataDir: %s", datadir);
 
   NdbConfig_SetPath(datadir);
-
+  errno = 0;
   if (NdbDir::chdir(NdbConfig_get_path(NULL)) != 0) {
     g_eventLogger->warning("Cannot change directory to '%s', error: %d",
                            NdbConfig_get_path(NULL), errno);
@@ -631,6 +632,7 @@ void angel_run(const char *progname, const Vector<BaseString> &original_args,
   while (true) {
     // Create pipe where ndbd process will report extra shutdown status
     int fds[2];
+    errno = 0;
     if (pipe(fds)) {
       g_eventLogger->error("Failed to create pipe, errno: %d (%s)", errno,
                            strerror(errno));

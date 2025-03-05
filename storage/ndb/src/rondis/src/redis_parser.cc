@@ -4,7 +4,7 @@
 // of patent rights can be found in the PATENTS file in the same directory.
 
 /*
-   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2024, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -206,8 +206,9 @@ int RedisParser::GetNextNum(int pos, long* value) {
   }
   char *end_ptr = nullptr;
   const char *calc_end_ptr = start_ptr + len;
+  errno = 0;
   long ret_val = strtol(start_ptr, &end_ptr, 10);
-  if (end_ptr != calc_end_ptr || errno == ERANGE)
+  if (end_ptr != calc_end_ptr || errno == ERANGE || errno == EINVAL)
     return -1; // Failed
   *value = ret_val;
   return 0; // Success

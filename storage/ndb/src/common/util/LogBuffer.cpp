@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2017, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2025, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -446,6 +447,7 @@ void fun(const char *fmt, ...) {
 
 void *thread_producer1(void *) {
   BaseString string;
+  errno = 0;
   for (int i = 1; i <= 1000; i++) {
     if (i % 40 == 0) {
       NdbSleep_SecSleep(1);
@@ -458,6 +460,7 @@ void *thread_producer1(void *) {
 }
 
 void *thread_producer2(void *) {
+  errno = 0;
   for (int i = 1; i <= 1000; i++) {
     if (i % 40 == 0) {
       NdbSleep_SecSleep(1);
@@ -470,6 +473,7 @@ void *thread_producer2(void *) {
 
 void *thread_producer3(void *) {
   char buf[10];
+  errno = 0;
   memset(buf, '$', 10);
   size_t to_write_bytes = 0;
   srand((unsigned int)time(nullptr));
@@ -497,6 +501,7 @@ void *thread_producer3(void *) {
 void *thread_consumer1(void *) {
   char buf[256];
   size_t bytes = 0;
+  errno = 0;
   int i = 0;
   size_t get_bytes = 256;
   setbuf(stdout, nullptr);
@@ -532,6 +537,7 @@ void *thread_consumer1(void *) {
 void *thread_consumer2(void *) {
   total_bytes_read_t3 = 0;
   char buf[10];
+  errno = 0;
   size_t to_read = 0;
   size_t bytes_read = 0;
   size_t bytes_flushed = 0;

@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -2505,6 +2505,7 @@ void TransporterRegistry::setIOState(TrpId trpId, IOState state) {
 }
 
 extern "C" void *run_start_clients_C(void *me) {
+  errno = 0;
   ((TransporterRegistry *)me)->start_clients_thread();
   return nullptr;
 }

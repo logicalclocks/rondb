@@ -813,6 +813,7 @@ struct ThreadData {
  */
 
 void *async_log_func(void *args) {
+  errno = 0;
   ThreadData *data = (ThreadData *)args;
   FILE *f = data->f;
   LogBuffer *logBuf = data->logBuf;
@@ -918,6 +919,7 @@ void ndbd_run(bool foreground, int report_fd, const char *connect_str,
   if (report_fd) {
     g_eventLogger->debug("Opening report stream on fd: %d", report_fd);
     // Open a stream for sending extra status to angel
+    errno = 0;
     if (!(angel_info_w = fdopen(report_fd, "w"))) {
       g_eventLogger->error(
           "Failed to open stream for reporting "
@@ -930,6 +932,7 @@ void ndbd_run(bool foreground, int report_fd, const char *connect_str,
   } else {
     // No reporting requested, open /dev/null
     const char *dev_null = IF_WIN("nul", "/dev/null");
+    errno = 0;
     if (!(angel_info_w = fopen(dev_null, "w"))) {
       g_eventLogger->error(
           "Failed to open stream for reporting to "
@@ -983,6 +986,7 @@ void ndbd_run(bool foreground, int report_fd, const char *connect_str,
   */
   g_eventLogger->info("Changing directory to '%s'", NdbConfig_get_path(NULL));
 
+  errno = 0;
   if (NdbDir::chdir(NdbConfig_get_path(NULL)) != 0) {
     g_eventLogger->warning("Cannot change directory to '%s', error: %d",
                            NdbConfig_get_path(NULL), errno);
@@ -1133,6 +1137,7 @@ void ndbd_run(bool foreground, int report_fd, const char *connect_str,
 
 #ifdef VM_TRACE
   // Initialize signal logger before block constructors
+  errno = 0;
   char *signal_log_name = NdbConfig_SignalLogFileName(globalData.ownId);
   FILE *signalLog = fopen(signal_log_name, "a");
   if (signalLog) {

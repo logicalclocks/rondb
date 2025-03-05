@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2018, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2025, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -36,6 +37,7 @@ struct ThreadData {
 }  // namespace
 
 void *async_log_function(void *args) {
+  errno = 0;
   ThreadData *data = (ThreadData *)args;
   BufferedLogHandler *buf_loghandler = data->buf_loghandler;
 

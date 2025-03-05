@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023, 2024, Hopsworks and/or its affiliates.
+ * Copyright (c) 2023, 2025, Hopsworks and/or its affiliates.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -350,6 +350,7 @@ RS_Status RDRSRonDBConnection::ReconnectHandler() {
 }
 
 static void *reconnect_thread_wrapper(void *arg) {
+  errno = 0;
   rdrs_logger::info("Reconnection thread has started running.");
   RDRSRonDBConnection *rdrsRonDBConnection = (RDRSRonDBConnection *)arg;
   rdrsRonDBConnection->ReconnectHandler();

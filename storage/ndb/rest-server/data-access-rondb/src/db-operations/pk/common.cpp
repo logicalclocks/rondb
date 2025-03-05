@@ -77,6 +77,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
     *primaryKeyCol      = (Int8 *)malloc(sizeof(Int64));
     *primaryKeySize     = sizeof(Int64);
     Int64 *parsedNumber = reinterpret_cast<Int64 *>(*primaryKeyCol);
+    errno = 0;
     *parsedNumber       = strtoll(request->PKValueCStr(colIdx), &parsed, 10);
 
     if (unlikely(*parsed != '\0' || errno != 0 ||
@@ -94,6 +95,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
     *primaryKeyCol      = (Int8 *)malloc(sizeof(Int64));
     *primaryKeySize     = sizeof(Int64);
     Int64 *parsedNumber = reinterpret_cast<Int64 *>(*primaryKeyCol);
+    errno = 0;
     *parsedNumber       = strtoll(request->PKValueCStr(colIdx), &parsed, 10);
 
     if (unlikely(*parsed != '\0' || errno != 0 || !(*parsedNumber >= 0 && *parsedNumber <= 255))) {
@@ -110,6 +112,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
     *primaryKeyCol      = (Int8 *)malloc(sizeof(Int64));
     *primaryKeySize     = sizeof(Int64);
     Int64 *parsedNumber = reinterpret_cast<Int64 *>(*primaryKeyCol);
+    errno = 0;
     *parsedNumber       = strtoll(request->PKValueCStr(colIdx), &parsed, 10);
 
     if (unlikely(*parsed != '\0' || errno != 0 ||
@@ -128,6 +131,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
     *primaryKeyCol      = (Int8 *)malloc(sizeof(Int64));
     *primaryKeySize     = sizeof(Int64);
     Int64 *parsedNumber = reinterpret_cast<Int64 *>(*primaryKeyCol);
+    errno = 0;
     *parsedNumber       = strtoll(request->PKValueCStr(colIdx), &parsed, 10);
 
     if (unlikely(*parsed != '\0' || errno != 0 ||
@@ -146,6 +150,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
     *primaryKeyCol      = (Int8 *)malloc(sizeof(Int64));
     *primaryKeySize     = sizeof(Int64);
     Int64 *parsedNumber = reinterpret_cast<Int64 *>(*primaryKeyCol);
+    errno = 0;
     *parsedNumber       = strtoll(request->PKValueCStr(colIdx), &parsed, 10);
 
     if (unlikely(*parsed != '\0' || errno != 0 ||
@@ -164,6 +169,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
     *primaryKeyCol      = (Int8 *)malloc(sizeof(Int64));
     *primaryKeySize     = sizeof(Int64);
     Int64 *parsedNumber = reinterpret_cast<Int64 *>(*primaryKeyCol);
+    errno = 0;
     *parsedNumber       = strtoll(request->PKValueCStr(colIdx), &parsed, 10);
 
     if (unlikely(*parsed != '\0' || errno != 0 ||
@@ -181,6 +187,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
     *primaryKeyCol      = (Int8 *)malloc(sizeof(Int64));
     *primaryKeySize     = sizeof(Int64);
     Int64 *parsedNumber = reinterpret_cast<Int64 *>(*primaryKeyCol);
+    errno = 0;
     *parsedNumber       = strtoll(request->PKValueCStr(colIdx), &parsed, 10);
 
     if (unlikely(*parsed != '\0' || errno != 0 ||
@@ -199,6 +206,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
     *primaryKeyCol      = (Int8 *)malloc(sizeof(Int64));
     *primaryKeySize     = sizeof(Int64);
     Int64 *parsedNumber = reinterpret_cast<Int64 *>(*primaryKeyCol);
+    errno = 0;
     *parsedNumber       = strtoll(request->PKValueCStr(colIdx), &parsed, 10);
 
     if (unlikely(*parsed != '\0' || errno != 0 ||
@@ -217,6 +225,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
     *primaryKeyCol      = (Int8 *)malloc(sizeof(Int64));
     *primaryKeySize     = sizeof(Int64);
     Int64 *parsedNumber = reinterpret_cast<Int64 *>(*primaryKeyCol);
+    errno = 0;
     *parsedNumber       = strtoll(request->PKValueCStr(colIdx), &parsed, 10);
 
     if (unlikely(*parsed != '\0' || errno != 0)) {
@@ -537,8 +546,8 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
   case NdbDictionary::Column::Year: {
     ///< Year 1901-2155 (1 byte)
 
-    char *parsed       = nullptr;
-    errno              = 0;
+    char *parsed = nullptr;
+    errno = 0;
     Int64 parsedNumber = strtoll(request->PKValueCStr(colIdx), &parsed, 10);
 
     if (unlikely(*parsed != '\0' || errno != 0 ||

@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2010, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2025, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -350,7 +351,7 @@ int ParseThreadConfiguration::parse_unsigned(unsigned *dst) {
   char *endptr = nullptr;
   errno = 0;
   long long val = my_strtoll(m_curr_str, &endptr, 0);
-  if (errno == ERANGE) {
+  if (errno == ERANGE || errno == EINVAL) {
     return -1;
   }
   if (val < 0 || val > Int64(UINT32_MAX)) {

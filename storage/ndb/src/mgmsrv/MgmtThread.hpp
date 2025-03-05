@@ -1,4 +1,5 @@
 /* Copyright (c) 2008, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2025, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -36,6 +37,7 @@ class MgmtThread {
 
   static void *run_C(void *t) {
     MgmtThread *thread = (MgmtThread *)t;
+    errno = 0;
     thread->run();
     return 0;
   }

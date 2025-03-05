@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2004, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -161,6 +161,7 @@ const char *Ndb_cluster_connection::get_connectstring(char *buf,
 }
 
 extern "C" void *run_ndb_cluster_connection_connect_thread(void *me) {
+  errno = 0;
   Ndb_cluster_connection_impl *connection = (Ndb_cluster_connection_impl *)me;
   connection->m_run_connect_thread = 1;
   connection->connect_thread();

@@ -4164,8 +4164,9 @@ static int check_connection(struct InitConfigFileParser::Context &ctx,
   str.split(arr, ",");
   for (Uint32 i = 0; i < arr.size(); i++) {
     char *endptr = nullptr;
+    errno = 0;
     long val = strtol(arr[i].c_str(), &endptr, 10);
-    if (*endptr) {
+    if (*endptr || errno != 0) {
       ctx.reportError(
           "Unable to parse ConnectionMap(\"%s\" for "
           "node: %d, hostname: %s",

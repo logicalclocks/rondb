@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2022, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2022, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -524,6 +524,7 @@ void Ndbfs::execSTTOR(Signal *signal) {
       BaseString &to_dir = (ERROR_INSERTED(2000) ? saved_path : fs_path);
 
       const bool only_contents = true;
+      errno = 0;
       if (NdbDir::remove_recursive(to_dir.c_str(), !only_contents)) {
         g_eventLogger->info("Cleaned destination file system at %s",
                             to_dir.c_str());

@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2024, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -198,6 +198,7 @@ int main(int argc, char **argv) {
   const char *prevfilename = 0;
   Uint32 *prevbuf = 0;
   Uint32 prevbytes = 0;
+  errno = 0;
 
   while (argc > 1) {
     const char *filename = argv[1];
