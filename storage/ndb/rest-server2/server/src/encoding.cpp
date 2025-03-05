@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023, 2024 Hopsworks AB
+ * Copyright (C) 2023, 2025 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -34,12 +34,19 @@ extern EventLogger *g_eventLogger;
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_ENC 1
+//#define DEBUG_ENC_RESP 1
 #endif
 
 #ifdef DEBUG_ENC
 #define DEB_ENC(...) do { g_eventLogger->info(__VA_ARGS__); } while (0)
 #else
 #define DEB_ENC(...) do { } while (0)
+#endif
+
+#ifdef DEBUG_ENC_RESP
+#define DEB_ENC_RESP(...) do { g_eventLogger->info(__VA_ARGS__); } while (0)
+#else
+#define DEB_ENC_RESP(...) do { } while (0)
 #endif
 
 /**
@@ -369,8 +376,17 @@ RS_Status process_pkread_response(ArenaMalloc *amalloc,
     UintPtr messageIDXPtr = (UintPtr)respBuff + (UintPtr)messageIDX;
     message = std::string((char *)messageIDXPtr);
     response.addSizeJsonMessage();
-    DEB_ENC("message: %s", message.c_str());
+#ifdef DEBUG_ENC_RESP
+    if (status != 200) {
+      DEB_ENC_RESP("message: %s", message.c_str());
+    }
+#endif
   }
+#ifdef DEBUG_ENC_RESP
+  if (status != 200) {
+    DEB_ENC_RESP("status: %d", status);
+  }
+#endif
   DEB_ENC("OperationID: %s, view: %s, len_str: %u, len_view: %u",
           response.getOperationIdString().c_str(),
           response.getOperationID().data(),
