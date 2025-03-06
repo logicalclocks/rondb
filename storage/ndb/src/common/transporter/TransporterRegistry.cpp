@@ -2505,7 +2505,6 @@ void TransporterRegistry::setIOState(TrpId trpId, IOState state) {
 }
 
 extern "C" void *run_start_clients_C(void *me) {
-  errno = 0;
   ((TransporterRegistry *)me)->start_clients_thread();
   return nullptr;
 }

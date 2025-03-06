@@ -1,5 +1,5 @@
 /* Copyright (c) 2008, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -536,7 +536,7 @@ bool ConfigManager::prepareConfigChange(const Config *config) {
                          prep_config_name.c_str(), errno);
     return false;
   }
-
+  errno = 0;
   if (fwrite(buf.get_data(), 1, buf.length(), f) != (size_t)buf.length()) {
     g_eventLogger->error("Failed to write file '%s' while preparing, errno: %d",
                          prep_config_name.c_str(), errno);
@@ -600,6 +600,7 @@ ConfigManager::commitConfigChange(void)
   require(m_config_name.length());
   BaseString prep_config_name(m_config_name);
   prep_config_name.append(".tmp");
+  errno = 0;
   if (rename(prep_config_name.c_str(), m_config_name.c_str())) {
     g_eventLogger->error(
         "rename from '%s' to '%s' failed while committing, "

@@ -813,7 +813,6 @@ struct ThreadData {
  */
 
 void *async_log_func(void *args) {
-  errno = 0;
   ThreadData *data = (ThreadData *)args;
   FILE *f = data->f;
   LogBuffer *logBuf = data->logBuf;

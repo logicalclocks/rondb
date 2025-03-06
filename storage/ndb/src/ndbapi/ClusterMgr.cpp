@@ -98,7 +98,6 @@ extern EventLogger *g_eventLogger;
 
 // Just a C wrapper for threadMain
 extern "C" void *runClusterMgr_C(void *me) {
-  errno = 0;
   ((ClusterMgr *)me)->threadMain();
 
   return nullptr;
@@ -2055,7 +2054,6 @@ void ArbitMgr::doStop(const Uint32 *theData) {
 // private methods
 
 extern "C" void *runArbitMgr_C(void *me) {
-  errno = 0;
   ((ArbitMgr *)me)->threadMain();
   return nullptr;
 }

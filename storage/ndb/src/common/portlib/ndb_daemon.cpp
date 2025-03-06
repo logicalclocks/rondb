@@ -350,6 +350,7 @@ int write_real_pid(pid_t new_pid)
   if (g_pidfile_name_set)
   {
     int length = (int)snprintf(buf, sizeof(buf), "%d", new_pid);
+    errno = 0;
     if (pwrite(g_pidfd, buf, length, (off_t)0) != length)
       return ERR1("Failed to write pid to pidfile '%s', errno: %d",
                   g_pidfile_name, errno);

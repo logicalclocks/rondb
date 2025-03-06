@@ -37,7 +37,6 @@ class MgmtThread {
 
   static void *run_C(void *t) {
     MgmtThread *thread = (MgmtThread *)t;
-    errno = 0;
     thread->run();
     return 0;
   }

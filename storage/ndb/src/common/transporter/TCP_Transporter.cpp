@@ -300,6 +300,7 @@ bool TCP_Transporter::doSend(bool need_wakeup [[maybe_unused]]) {
         require(false);
       }
     }
+    errno = 0;
     int nBytesSent = (int)theSocket.writev(iov + pos, iovcnt);
     assert(nBytesSent <= (int)remain);
 

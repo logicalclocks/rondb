@@ -119,7 +119,6 @@ static constexpr bool openssl_version_ok =
     (OPENSSL_VERSION_NUMBER >= NDB_TLS_MINIMUM_OPENSSL);
 
 void *MgmtSrvr::logLevelThread_C(void *m) {
-  errno = 0;
   MgmtSrvr *mgm = (MgmtSrvr *)m;
   mgm->logLevelThreadRun();
   return 0;
@@ -705,6 +704,7 @@ void MgmtSrvr::setClusterLog(const Config *config) {
     g_eventLogger->debug("Using Directory: %s for pid file", pidfile_dir);
   }
 
+  errno = 0;
   if (NdbDir::chdir(NdbConfig_get_path(NULL)) != 0)
   {
     g_eventLogger->warning("Cannot change directory to '%s', error: %d",

@@ -5798,7 +5798,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
             Int64 val = strtoll(&local_heap[0],
                                 &end_ptr,
                                 10);
-            if (unlikely((val == 0 && errno == EINVAL) ||
+            if (unlikely(errno == EINVAL ||
                          errno == ERANGE ||
                          end_ptr != memory_end)) {
               return TUPKEY_abort(req_struct, ZINVALID_LONG_LONG_STRING);

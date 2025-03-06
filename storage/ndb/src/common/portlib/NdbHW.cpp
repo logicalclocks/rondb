@@ -2126,7 +2126,7 @@ static int get_physical_package_ids(struct ndb_hwinfo *hwinfo) {
     errno = 0;
     Uint32 package_id = (Uint32)strtol(read_buf, nullptr, 10);
     int err_code = errno;
-    if ((package_id == 0 && err_code == EINVAL) || err_code == ERANGE) {
+    if (err_code == EINVAL || err_code == ERANGE) {
       snprintf(error_buf, sizeof(error_buf), "Failed to convert %s into number",
                buf);
       perror(error_buf);

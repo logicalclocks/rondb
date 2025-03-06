@@ -4231,7 +4231,6 @@ static void **glob_ptrs;
 extern "C"
 void*
 release_split_malloc(void* arg) {
-  errno = 0;
   lc_uint64 thread_id = (lc_uint64)arg;
   lc_uint64 num_frees = NUM_ROUNDS / NUM_THREADS;
   lc_uint64 first_free = thread_id * num_frees;
@@ -4245,7 +4244,6 @@ release_split_malloc(void* arg) {
 extern "C"
 void*
 alloc_split_malloc(void* arg) {
-  errno = 0;
   lc_uint64 thread_id = (lc_uint64)arg;
   lc_uint64 num_frees = NUM_ROUNDS / NUM_THREADS;
   lc_uint64 first_free = thread_id * num_frees;
@@ -4386,7 +4384,6 @@ many_malloc_single_thread_long_test_random()
 extern "C"
 void*
 release_pool_malloc(void* arg) {
-  errno = 0;
   lc_uint32 thread_id = (lc_uint64)arg;
   lc_uint32 num_frees = NUM_ROUNDS / NUM_THREADS;
   lc_uint32 first_free = thread_id * num_frees;
@@ -4400,7 +4397,6 @@ release_pool_malloc(void* arg) {
 extern "C"
 void*
 alloc_pool_malloc(void* arg) {
-  errno = 0;
   lc_uint32 thread_id = (lc_uint64)arg;
   lc_uint32 num_frees = NUM_ROUNDS / NUM_THREADS;
   lc_uint32 pool_id = thread_id % 12;
@@ -4529,7 +4525,6 @@ bench_alloc_split_malloc(void **mem_area,
 extern "C"
 void*
 bench_pool_malloc(void *arg) {
-  errno = 0;
   lc_uint32 thread_id = (lc_uint64)arg;
   void **ptrs = (void**)malloc(sizeof(void*) * NUM_MALLOC_ROUNDS);
   unsigned int seed = 1;
@@ -4552,7 +4547,6 @@ bench_pool_malloc(void *arg) {
 extern "C"
 void*
 bench_split_malloc(void *arg) {
-  errno = 0;
   lc_uint32 thread_id = (lc_uint64)arg;
   void **ptrs = (void**)malloc(sizeof(void*) * NUM_MALLOC_ROUNDS);
   void *mem_area = nullptr;

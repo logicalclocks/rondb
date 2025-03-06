@@ -89,6 +89,7 @@ bool SocketServer::tryBind(ndb_sockaddr servaddr,
 
   if (ndb_socket_configure_reuseaddr(sock, true) == -1) {
     ndb_socket_close(sock);
+    errno = 0;
     return false;
   }
 
@@ -97,6 +98,7 @@ bool SocketServer::tryBind(ndb_sockaddr servaddr,
       int err_code = ndb_socket_errno();
       snprintf(error, error_size, "%d '%s'", err_code,
                ndb_socket_err_message(err_code).c_str());
+      errno = 0;
     }
     ndb_socket_close(sock);
     return false;
@@ -121,6 +123,7 @@ bool SocketServer::setup(SocketServer::Service *service,
   if (!ndb_socket_valid(sock)) {
     DBUG_PRINT("error",
                ("socket() - %d - %s", socket_errno, strerror(socket_errno)));
+    errno = 0;
     DBUG_RETURN(false);
   }
 
@@ -134,6 +137,7 @@ bool SocketServer::setup(SocketServer::Service *service,
   if (ndb_socket_reuseaddr(sock, true) == -1) {
     DBUG_PRINT("error", ("setsockopt() - %d - %s", errno, strerror(errno)));
     ndb_socket_close(sock);
+    errno = 0;
     DBUG_RETURN(false);
   }
 
@@ -141,6 +145,7 @@ bool SocketServer::setup(SocketServer::Service *service,
     DBUG_PRINT("error",
                ("bind() - %d - %s", socket_errno, strerror(socket_errno)));
     ndb_socket_close(sock);
+    errno = 0;
     DBUG_RETURN(false);
   }
 
@@ -151,6 +156,7 @@ bool SocketServer::setup(SocketServer::Service *service,
         " Error: %d - %s",
         ndb_socket_errno(), strerror(ndb_socket_errno()));
     ndb_socket_close(sock);
+    errno = 0;
     DBUG_RETURN(false);
   }
   setOwnProcessInfoServerAddress(servaddr);
@@ -166,6 +172,7 @@ bool SocketServer::setup(SocketServer::Service *service,
     DEBUG_FPRINTF((stderr, "listen() - %d - %s\n",
                    socket_errno, strerror(socket_errno)));
     ndb_socket_close(sock);
+    errno = 0;
     DBUG_RETURN(false);
   }
 
@@ -222,6 +229,7 @@ bool SocketServer::doAccept() {
       // Could not 'accept' socket(maybe at max fds), indicate error
       // to caller by returning false
       result = false;
+      errno = 0;
       continue;
     }
 

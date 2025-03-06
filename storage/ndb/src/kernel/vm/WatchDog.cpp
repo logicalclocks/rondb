@@ -40,7 +40,6 @@
 #include <NdbTick.h>
 
 extern "C" void *runWatchDog(void *w) {
-  errno = 0;
   ((WatchDog *)w)->run();
   return NULL;
 }
@@ -268,7 +267,6 @@ void WatchDog::run() {
   last_ticks = NdbTick_getCurrentTicks();
 
   while (!theStop) {
-    errno = 0;
     sleep_time = 100;
 
     NdbSleep_MilliSleep(sleep_time);

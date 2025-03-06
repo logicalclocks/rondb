@@ -586,7 +586,6 @@ Uint32 TransporterFacade::getSendThreadInterval(void) const {
 }
 
 extern "C" void *runSendRequest_C(void *me) {
-  errno = 0;
   ((TransporterFacade *)me)->threadMainSend();
   return nullptr;
 }
@@ -610,7 +609,6 @@ static inline void link_buffer(TFBuffer *dst, const TFBuffer *src) {
 static const Uint32 SEND_THREAD_NO = 0;
 
 extern "C" void *runWakeupThread_C(void *me) {
-  errno = 0;
   ((TransporterFacade *)me)->threadMainWakeup();
   return nullptr;
 }
@@ -1115,7 +1113,6 @@ void TransporterFacade::threadMainSend(void) {
 }
 
 extern "C" void *runReceiveResponse_C(void *me) {
-  errno = 0;
   ((TransporterFacade *)me)->threadMainReceive();
   return nullptr;
 }

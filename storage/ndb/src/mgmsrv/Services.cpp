@@ -677,6 +677,7 @@ void MgmApiSession::get_nodeid(Parser_t::Context &,
 
   ndb_sockaddr client_addr;
   {
+    errno = 0;
     int r = ndb_getpeername(m_secure_socket.ndb_socket(), &client_addr);
     if (r != 0) {
       m_output->println("result: getpeername() failed, err= %d",
@@ -2469,6 +2470,7 @@ void MgmApiSession::setConfig(Parser_t::Context &ctx, Properties const &args,
     int r = 0;
     size_t start = 0;
     do {
+      errno = 0;
       if ((r = m_secure_socket.read(SOCKET_TIMEOUT, &buf64[start],
                                     (int)(len64 - start))) < 1) {
         delete[] buf64;

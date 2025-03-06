@@ -40,7 +40,6 @@ bool convert_string_to_uint64(const char* s,
   };
   char* p;
   constexpr int log10base = 0;
-  errno = 0;
   if (negative) {
     if (!allow_negative) {
       return false;

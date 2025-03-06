@@ -296,7 +296,7 @@ extern "C" int ndb_mgm_set_bindaddress(NdbMgmHandle handle, const char *arg) {
       char *endp = nullptr;
       errno = 0;
       long val = strtol(servbuf, &endp, 10);
-      if (*endp != '\0' || val > UINT16_MAX || val < 0) {
+      if (*endp != '\0' || errno != 0 || val > UINT16_MAX || val < 0) {
         // invalid address
         SET_ERROR(handle, NDB_MGM_ILLEGAL_BIND_ADDRESS, "Illegal bind address");
         DBUG_RETURN(-1);

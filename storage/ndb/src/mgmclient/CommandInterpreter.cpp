@@ -883,11 +883,10 @@ convert(const char* s, int& val) {
   if (strlen(s) == 0)
     return false;
 
-  errno = 0;
   char *p;
   errno = 0;
   long v = strtol(s, &p, 10);
-  if (errno != 0) return false;
+  if (errno != 0 || p == s) return false;
 
   if (p != &s[strlen(s)]) return false;
 
@@ -1138,7 +1137,6 @@ static std::atomic<int> do_event_thread;
 static void *event_thread_run(void *p) {
   DBUG_ENTER("event_thread_run");
 
-  errno = 0;
   struct event_thread_param param = *(struct event_thread_param *)p;
   NdbMgmHandle handle = *(param.m);
   NdbMutex *printmutex = *(param.p);
@@ -4354,6 +4352,7 @@ int CommandInterpreter::executeDatabaseQuotaRestore(char* parameters) {
     ndbout << "Expected only a file parameter in this command" << endl;
     return -1;
   }
+  errno = 0;
   const char *restore_file_name = command_list[1].c_str();
   std::ifstream input(restore_file_name);
   std::string str;

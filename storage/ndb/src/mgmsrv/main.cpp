@@ -211,7 +211,6 @@ struct ThdData {
  */
 
 void *async_local_log_func(void *args) {
-  errno = 0;
   ThdData *data = (ThdData *)args;
   FILE *f = data->f;
   LogBuffer *logBuf = data->logBuf;
@@ -459,7 +458,7 @@ static int mgmd_main(int argc, char **argv) {
       delete mgm;
       mgmd_exit(1);
     }
-
+    errno = 0;
     if (NdbDir::chdir(NdbConfig_get_path(NULL)) != 0) {
       g_eventLogger->warning("Cannot change directory to '%s', error: %d",
                              NdbConfig_get_path(NULL), errno);
