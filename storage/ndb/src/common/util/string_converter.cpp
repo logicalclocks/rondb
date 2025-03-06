@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2023, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2023, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -40,24 +40,20 @@ bool convert_string_to_uint64(const char* s,
   };
   char* p;
   constexpr int log10base = 0;
-  errno = 0;
-  if (negative)
-  {
-    if (!allow_negative)
-    {
+  if (negative) {
+    if (!allow_negative) {
       return false;
     }
+    errno = 0;
     vs = std::strtoll(s, &p, log10base);
-    if ((vs == LLONG_MIN || vs == LLONG_MAX) && errno == ERANGE)
-    {
+    if (errno == EINVAL ||
+        ((vs == LLONG_MIN || vs == LLONG_MAX) && errno == ERANGE)) {
       return false;
     }
-  }
-  else
-  {
+  } else {
+    errno = 0;
     vu = std::strtoull(s, &p, log10base);
-    if (vu == ULLONG_MAX && errno == ERANGE)
-    {
+    if (errno == EINVAL || (vu == ULLONG_MAX && errno == ERANGE)) {
       return false;
     }
   }

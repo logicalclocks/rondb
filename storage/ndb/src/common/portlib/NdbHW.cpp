@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2013, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1677,6 +1677,7 @@ static int Ndb_ReloadCPUData(struct ndb_hwinfo *hwinfo) {
     }
     // c + 3 should be a number
     char *endptr = nullptr;
+    errno = 0;
     long val = strtol(c + 3, &endptr, 10);
     if (endptr == c + 3) {
       // no number found...
@@ -2122,9 +2123,10 @@ static int get_physical_package_ids(struct ndb_hwinfo *hwinfo) {
       perror(error_buf);
       return -1;
     }
+    errno = 0;
     Uint32 package_id = (Uint32)strtol(read_buf, nullptr, 10);
     int err_code = errno;
-    if (package_id == 0 && (err_code == EINVAL || err_code == ERANGE)) {
+    if (err_code == EINVAL || err_code == ERANGE) {
       snprintf(error_buf, sizeof(error_buf), "Failed to convert %s into number",
                buf);
       perror(error_buf);

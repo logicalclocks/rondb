@@ -1,5 +1,5 @@
 /* Copyright (c) 2008, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -7715,8 +7715,7 @@ static void handle_queue_size_stats(struct thr_data *selfptr, NDB_TICKS now) {
  */
 extern "C"
 void *
-mt_receiver_thread_main(void *thr_arg)
-{
+mt_receiver_thread_main(void *thr_arg) {
   unsigned char signal_buf[SIGBUF_SIZE];
   Signal *signal;
   struct thr_repository* rep = g_thr_repository;
@@ -8133,8 +8132,7 @@ handle_full_job_buffers(struct thr_data* selfptr,
  */
 extern "C"
 void *
-mt_job_thread_main(void *thr_arg)
-{
+mt_job_thread_main(void *thr_arg) {
   unsigned char signal_buf[SIGBUF_SIZE];
   Signal *signal;
 

@@ -552,11 +552,13 @@ void Dbdict::execDBINFO_SCANREQ(Signal *signal) {
           if (blobNameStart != NULL) {
             jam();
             char *parentIdEnd = NULL;
+            errno = 0;
             const long long num = strtoll(
                 blobNameStart + strlen(blobNamePrefix), &parentIdEnd, 10);
             ndbassert(num > 0);
             ndbassert(num < UINT_MAX32);
             ndbassert(*parentIdEnd == '_');
+            ndbrequire(errno == 0);
 
             parentObjId = static_cast<Uint32>(num);
             parentObjType = ltd.getTableType();  // System or user table.

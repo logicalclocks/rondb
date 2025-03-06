@@ -383,6 +383,7 @@ Vector<ddentry> f_dd;
 static Uint64 parse_size(const char *src) {
   Uint64 num = 0;
   char *endptr = 0;
+  errno = 0;
   num = my_strtoll(src, &endptr, 10);
 
   if (endptr) {

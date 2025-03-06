@@ -107,6 +107,7 @@ static void RandomSleep(int lower_bound, int upper_bound) {
 }
 
 void* TTLPurger::_PurgeWorkerJob(void* arg) {
+  errno = 0;
   TTLPurger* p_this = static_cast<TTLPurger*>(arg);
   p_this->PurgeWorkerJob();
   return nullptr;
@@ -1984,6 +1985,7 @@ bool TTLPurger::IsNodeAlive(const unsigned char* encoded_last_active) {
 }
 
 void* TTLPurger::_SchemaWatcherJob(void* arg) {
+  errno = 0;
   TTLPurger* p_this = static_cast<TTLPurger*>(arg);
   p_this->SchemaWatcherJob();
   return nullptr;

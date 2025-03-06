@@ -384,7 +384,7 @@ static int arg_match_long(struct getargs *args, size_t num_args, char *argv,
         val = 1;
       else {
         char *endstr;
-
+        errno = 0;
         val = strtol(optarg, &endstr, 0);
         if (endstr == optarg) return ARG_ERR_BAD_ARG;
       }

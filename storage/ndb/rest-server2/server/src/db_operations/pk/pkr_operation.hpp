@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023, 2024 Hopsworks AB
+ * Copyright (C) 2023, 2025 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -39,6 +39,7 @@ struct KeyOperation {
   Uint32 m_num_table_columns;
   Uint8 *m_bitmap_read_columns;
   Uint8 *m_row;
+  NdbTransaction *m_ndbTransaction;
   const NdbOperation *m_ndbOperation;
   const NdbDictionary::Table *m_tableDict;
   const NdbDictionary::Column **m_pkColumns;
@@ -56,10 +57,10 @@ struct KeyOperation {
 class BatchKeyOperations {
  private:
   Uint32 m_numOperations;
-  NdbTransaction *m_ndbTransaction;
   Ndb *m_ndb_object;
   bool m_isBatch;
   struct KeyOperation *m_key_ops;
+  Uint32 m_num_sent_operations;
  public:
    BatchKeyOperations();
    ~BatchKeyOperations();

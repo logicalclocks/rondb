@@ -5794,10 +5794,13 @@ int Dbtup::interpreterNextLab(Signal* signal,
              */
             memory_end[0] = 0;
             char *end_ptr = nullptr;
+            errno = 0;
             Int64 val = strtoll(&local_heap[0],
                                 &end_ptr,
                                 10);
-            if (unlikely(errno == ERANGE || end_ptr != memory_end)) {
+            if (unlikely(errno == EINVAL ||
+                         errno == ERANGE ||
+                         end_ptr != memory_end)) {
               return TUPKEY_abort(req_struct, ZINVALID_LONG_LONG_STRING);
             }
             * (Int64*)(TregMemBuffer+destValReg + 2) = val;

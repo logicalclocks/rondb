@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -883,10 +883,10 @@ convert(const char* s, int& val) {
   if (strlen(s) == 0)
     return false;
 
-  errno = 0;
   char *p;
+  errno = 0;
   long v = strtol(s, &p, 10);
-  if (errno != 0) return false;
+  if (errno != 0 || p == s) return false;
 
   if (p != &s[strlen(s)]) return false;
 
@@ -2682,8 +2682,10 @@ CommandInterpreter::executeSetDomain(int processId,
   Uint32 str_len = strlen(new_location_domain_id_str);
   const char *memory_end = new_location_domain_id_str + str_len;
   char *end_ptr = nullptr;
+  errno = 0;
   Int64 val = strtoll(new_location_domain_id_str, &end_ptr, 10);
   if (unlikely(errno == ERANGE ||
+               errno == EINVAL ||
                end_ptr != memory_end ||
                val < 0 ||
                val > MAX_INT)) {
@@ -3471,8 +3473,11 @@ int CommandInterpreter::executeDumpState(int processId, const char *parameters,
 
   for (unsigned i = 0; i < args.size(); i++) {
     const char *arg = args[i].c_str();
-
-    if (my_strtoll(arg, NULL, 0) < 0 || my_strtoll(arg, NULL, 0) > 0xffffffff) {
+    errno = 0;
+    if (my_strtoll(arg, NULL, 0) < 0 ||
+        my_strtoll(arg, NULL, 0) > 0xffffffff ||
+        errno == ERANGE ||
+        errno == EINVAL) {
       ndbout_c(
           "ERROR: Illegal value '%s' in argument to signal.\n"
           "(Value must be between 0 and 0xffffffff.)",
@@ -4347,6 +4352,7 @@ int CommandInterpreter::executeDatabaseQuotaRestore(char* parameters) {
     ndbout << "Expected only a file parameter in this command" << endl;
     return -1;
   }
+  errno = 0;
   const char *restore_file_name = command_list[1].c_str();
   std::ifstream input(restore_file_name);
   std::string str;

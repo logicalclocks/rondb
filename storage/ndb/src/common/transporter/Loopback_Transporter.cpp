@@ -112,6 +112,7 @@ bool Loopback_Transporter::doSend(bool need_wakeup) {
   while (send_cnt < 5) {
     send_cnt++;
     Uint32 iovcnt = cnt > m_os_max_iovec ? m_os_max_iovec : cnt;
+    errno = 0;
     int nBytesSent = (int)ndb_socket_writev(m_send_socket, iov + pos, iovcnt);
     assert(nBytesSent <= (int)remain);
 

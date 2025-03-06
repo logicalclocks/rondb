@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2024 Hopsworks AB
+ * Copyright (C) 2024, 2025 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -81,6 +81,7 @@ void start_fs_cache() {
 }
 
 extern "C" void* fs_key_thread_main(void *thr_arg) {
+  errno = 0;
   Uint64 key_cache_id = (Uint64)thr_arg;
   Uint32 id = Uint32(key_cache_id);
   g_fs_metadata_cache->cache_entry_updater(id);

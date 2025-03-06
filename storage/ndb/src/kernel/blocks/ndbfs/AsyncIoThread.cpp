@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2008, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2022, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -56,6 +56,7 @@ AsyncIoThread::AsyncIoThread(class Ndbfs &fs, bool bound)
 static int numAsyncFiles = 0;
 
 extern "C" void *runAsyncIoThread(void *arg) {
+  errno = 0;
   ((AsyncIoThread *)arg)->run();
   return (NULL);
 }

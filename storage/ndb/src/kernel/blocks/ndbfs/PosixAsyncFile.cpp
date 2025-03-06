@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2007, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2025, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -58,6 +59,7 @@ void PosixAsyncFile::removeReq(Request *request) {
   if (check_inject_and_log_extra_remove(theFileName.c_str()))
     ::remove(theFileName.c_str());
 #endif
+  errno = 0;
   if (-1 == ::remove(theFileName.c_str())) {
 #if UNRELIABLE_DISTRIBUTED_FILESYSTEM
     if (check_and_log_if_remove_failure_ok(theFileName.c_str())) return;
@@ -70,6 +72,7 @@ void PosixAsyncFile::rmrfReq(Request *request, const char *src,
                              bool removePath) {
   if (!request->par.rmrf.directory) {
     // Remove file
+    errno = 0;
     if (unlink(src) != 0 && errno != ENOENT)
       NDBFS_SET_REQUEST_ERROR(request, errno);
     return;
@@ -82,6 +85,7 @@ void PosixAsyncFile::rmrfReq(Request *request, const char *src,
   DIR *dirp;
   struct dirent *dp;
 loop:
+  errno = 0;
   dirp = opendir(path);
   if (dirp == 0) {
     if (errno != ENOENT) NDBFS_SET_REQUEST_ERROR(request, errno);
@@ -121,7 +125,7 @@ loop:
     t[1] = 0;
     goto loop;
   }
-
+  errno = 0;
 #if TEST_UNRELIABLE_DISTRIBUTED_FILESYSTEM
   // Sometimes inject double file delete
   if (removePath && check_inject_and_log_extra_remove(src)) rmdir(src);

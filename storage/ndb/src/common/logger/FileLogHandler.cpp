@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2025, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -185,8 +186,10 @@ bool FileLogHandler::setFilename(const BaseString &filename) {
 
 bool FileLogHandler::setMaxSize(const BaseString &size) {
   char *end;
+  errno = 0;
   long val = strtol(size.c_str(), &end, 0); /* XXX */
-  if (size.c_str() == end || val < 0) {
+  if (size.c_str() == end ||
+      val < 0) {
     setErrorStr("Invalid file size");
     return false;
   }
@@ -200,8 +203,10 @@ bool FileLogHandler::setMaxSize(const BaseString &size) {
 
 bool FileLogHandler::setMaxFiles(const BaseString &files) {
   char *end;
+  errno = 0;
   long val = strtol(files.c_str(), &end, 0);
-  if (files.c_str() == end || val < 1) {
+  if (files.c_str() == end ||
+      val < 1) {
     setErrorStr("Invalid maximum number of files");
     return false;
   }

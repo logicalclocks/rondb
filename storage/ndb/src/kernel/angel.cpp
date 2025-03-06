@@ -1,5 +1,5 @@
 /* Copyright (c) 2009, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -391,7 +391,6 @@ static process_waiter spawn_process(const char *progname [[maybe_unused]],
     progname = path;
   }
 #endif
-
   char **argv = create_argv(args);
   if (!argv) {
     g_eventLogger->error("spawn_process: Failed to create argv, errno: %d",
@@ -532,7 +531,6 @@ static bool configure(const ndb_mgm_configuration *conf, NodeId nodeid) {
   g_eventLogger->debug("Using DataDir: %s", datadir);
 
   NdbConfig_SetPath(datadir);
-
   if (NdbDir::chdir(NdbConfig_get_path(NULL)) != 0) {
     g_eventLogger->warning("Cannot change directory to '%s', error: %d",
                            NdbConfig_get_path(NULL), errno);

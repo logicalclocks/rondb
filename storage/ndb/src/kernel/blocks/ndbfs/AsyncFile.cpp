@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -156,6 +156,7 @@ void AsyncFile::openReq(Request *request) {
   // Create file
   bool created = false;
   if (flags & (FsOpenReq::OM_CREATE | FsOpenReq::OM_CREATE_IF_NONE)) {
+    errno = 0;
     if (m_file.create(theFileName.c_str()) == -1) {
       int error = get_last_os_error();
       int ndbfs_error = Ndbfs::translateErrno(error);
@@ -180,6 +181,7 @@ void AsyncFile::openReq(Request *request) {
     }
   }
   // Open file (OM_READ_WRITE_MASK, OM_APPEND)
+  errno = 0;
   constexpr Uint32 open_flags =
       FsOpenReq::OM_READ_WRITE_MASK | FsOpenReq::OM_APPEND;
   if (m_file.open(theFileName.c_str(), flags & open_flags) == -1) {
@@ -279,6 +281,7 @@ void AsyncFile::openReq(Request *request) {
 		      data_size,
 		      m_file.get_size(),
 		      file_block_size));
+      errno = 0;
       rc = m_xfile.create(
           m_file,
           use_gz,
@@ -296,6 +299,7 @@ void AsyncFile::openReq(Request *request) {
     else
     {
       DEB_FSWRITEREQ(("File %s opened", theFileName.c_str()));
+      errno = 0;
       rc = m_xfile.open(m_file, pwd, pwd_len);
       if (rc < 0) NDBFS_SET_REQUEST_ERROR(request, get_last_os_error());
     }
@@ -321,6 +325,7 @@ void AsyncFile::openReq(Request *request) {
 
   // Verify file size (OM_CHECK_SIZE)
   if (flags & FsOpenReq::OM_CHECK_SIZE) {
+    errno = 0;
     ndb_off_t file_data_size = m_xfile.get_size();
     if (file_data_size == -1) {
       NDBFS_SET_REQUEST_ERROR(request, get_last_os_error());
@@ -351,6 +356,7 @@ void AsyncFile::openReq(Request *request) {
         !m_file.avoid_direct_io_on_append()) {
       const bool direct_sync = flags & FsOpenReq::OM_DIRECT_SYNC;
       const bool tablespace_file = flags & FsOpenReq::OM_THREAD_POOL;
+      errno = 0;
       const int ret = m_file.set_direct_io(direct_sync,
                                            tablespace_file,
                                            theFileName.c_str());
@@ -375,6 +381,7 @@ void AsyncFile::openReq(Request *request) {
       require(file_data_size == data_size);  // Currently do not support neither
                                              // gz or enc on redo-log file
     }
+    errno = 0;
     if (m_file.sync() == -1) {
       NDBFS_SET_REQUEST_ERROR(request, get_last_os_error());
       m_file.close();
@@ -503,6 +510,7 @@ void AsyncFile::openReq(Request *request) {
 #endif
         int n;
         ndbxfrm_input_iterator in = {buf, buf + size, false};
+        errno = 0;
         int rc = m_xfile.write_transformed_pages(start_offset, &in);
         if (rc == -1)
           n = -1;
@@ -527,6 +535,7 @@ void AsyncFile::openReq(Request *request) {
         goto remove_if_created;
       }
     }
+    errno = 0;
     if (m_file.sync() == -1) {
       NDBFS_SET_REQUEST_ERROR(request, get_last_os_error());
       m_file.close();
@@ -542,7 +551,7 @@ void AsyncFile::openReq(Request *request) {
                         Uint32(file_data_size / 1024 / write_cnt),
                         Uint32(file_data_size / diff));
 #endif
-
+    errno = 0;
     if (m_file.set_pos(0) == -1) {
       NDBFS_SET_REQUEST_ERROR(request, get_last_os_error());
       m_file.close();
@@ -557,6 +566,7 @@ void AsyncFile::openReq(Request *request) {
     if (m_file.have_direct_io_support() && m_file.avoid_direct_io_on_append()) {
       const bool direct_sync = flags & FsOpenReq::OM_DIRECT_SYNC;
       const bool tablespace_file = flags & FsOpenReq::OM_THREAD_POOL;
+      errno = 0;
       const int ret = m_file.set_direct_io(direct_sync,
                                  tablespace_file,
                                  theFileName.c_str());
@@ -575,6 +585,7 @@ void AsyncFile::openReq(Request *request) {
 
   // Turn on synchronous mode (OM_SYNC)
   if (flags & FsOpenReq::OM_SYNC) {
+    errno = 0;
     if (m_file.reopen_with_sync(theFileName.c_str()) == -1) {
       /*
        * reopen_with_sync should always succeed, if file can not be open in
@@ -589,6 +600,7 @@ void AsyncFile::openReq(Request *request) {
 
   // Read file size
   if (flags & FsOpenReq::OM_READ_SIZE) {
+    errno = 0;
     ndb_off_t file_data_size = m_xfile.get_size();
     if (file_data_size == -1) {
       NDBFS_SET_REQUEST_ERROR(request, get_last_os_error());
@@ -661,6 +673,7 @@ void AsyncFile::openReq(Request *request) {
   return;
 
 remove_if_created:
+  errno = 0;
   //  require(!created);
 #if TEST_UNRELIABLE_DISTRIBUTED_FILESYSTEM
   // Sometimes inject double file delete
@@ -698,6 +711,7 @@ void AsyncFile::closeReq(Request *request) {
                               FsRef::fsErrUnknown);  // TODO better error
     }
   }
+  errno = 0;
   if (m_file.is_open()) {
     if (!abort) m_file.sync();
     r = m_file.close();
@@ -744,6 +758,7 @@ void AsyncFile::readReq(Request *request) {
       request->par.readWrite.pages[i].size = 0;
 
       ndbxfrm_output_iterator out = {buf, buf + size, false};
+      errno = 0;
       if (m_xfile.read_transformed_pages(current_file_offset, &out) == -1) {
         NDBFS_SET_REQUEST_ERROR(request, get_last_os_error());
         return;
@@ -841,6 +856,7 @@ void AsyncFile::readReq(Request *request) {
       // Likely a speculative read request beyond end when restoring LCP data
       require(m_xfile.get_data_pos() == m_xfile.get_data_size());
     } else {
+      errno = 0;
       require(m_xfile.get_data_pos() == offset);
       int return_value = 0;
       byte *byte_buf = reinterpret_cast<byte *>(buf);
@@ -883,6 +899,7 @@ void AsyncFile::writeReq(Request *request) {
    */
   require(m_xfile.get_random_access_block_size() > 0);
   require(!m_xfile.is_compressed());
+  errno = 0;
 
   const Uint32 cnt = request->par.readWrite.numberOfPages;
   if (!m_xfile.is_transformed() && (cnt == 1 || theWriteBuffer == nullptr)) {
@@ -1009,6 +1026,7 @@ void AsyncFile::writeReq(Request *request) {
       if (file_out.empty()) {
         ndbxfrm_input_iterator in = {file_buffer, file_out.begin(), false};
         const byte *in_cbegin = in.cbegin();
+        errno = 0;
         m_xfile.write_transformed_pages(current_file_offset, &in);
         current_file_offset += (in.cbegin() - in_cbegin);
         if (!in.empty()) {
@@ -1023,6 +1041,7 @@ void AsyncFile::writeReq(Request *request) {
   if (file_out.begin() != file_buffer) {
     ndbxfrm_input_iterator in = {file_buffer, file_out.begin(), false};
     const byte *in_cbegin = in.cbegin();
+    errno = 0;
     m_xfile.write_transformed_pages(current_file_offset, &in);
     current_file_offset += (in.cbegin() - in_cbegin);
     if (!in.empty()) {
@@ -1034,6 +1053,7 @@ void AsyncFile::writeReq(Request *request) {
 }
 
 void AsyncFile::syncReq(Request *request) {
+  errno = 0;
   if (m_file.sync()) {
     NDBFS_SET_REQUEST_ERROR(request, get_last_os_error());
     return;
@@ -1069,6 +1089,7 @@ void AsyncFile::appendReq(Request *request) {
   ndbxfrm_input_iterator in(buf, buf + size, false);
 
   const byte *in_begin = in.cbegin();
+  errno = 0;
   int r = m_xfile.write_forward(&in);
   if (r == -1) {
     NDBFS_SET_REQUEST_ERROR(request, get_last_os_error());
@@ -1275,6 +1296,7 @@ AsyncFile::odirect_set_log_state
 int AsyncFile::probe_directory_direct_io(const char param[],
                                          const char name[]) {
   int ret = -1;  // Could not check ODirect
+  errno = 0;
   ndb_file file;
   file.create(name);  // Ignore failure, allow leftover file to be reused.
   if (file.open(name, FsOpenReq::OM_READWRITE) == 0) {

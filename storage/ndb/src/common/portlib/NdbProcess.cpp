@@ -1,6 +1,6 @@
 /*
   Copyright (c) 2023, 2024, Oracle and/or its affiliates.
-
+  Copyright (c) 2025, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -69,6 +69,7 @@ bool check_call_output(const NdbProcess::Args &args, FILE *rfile) {
     }
     long llen = -1;
     char *endp = nullptr;
+    errno = 0;
     llen = strtol(buf, &endp, 10);
     if (endp == buf) {
       fprintf(stderr, "ERROR: %s: %u: expected length got nothing\n", __func__,
@@ -93,6 +94,12 @@ bool check_call_output(const NdbProcess::Args &args, FILE *rfile) {
       fprintf(stderr,
               "ERROR: %s: %u: expected newline after length got more %d\n",
               __func__, __LINE__, endp[1]);
+      return false;
+    }
+    if (errno != 0) {
+      fprintf(stderr,
+              "ERROR: %s: %u: strtol errno = %d\n",
+              __func__, __LINE__, errno);
       return false;
     }
     len = int(llen);

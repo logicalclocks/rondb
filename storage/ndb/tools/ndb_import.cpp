@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2017, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -585,6 +585,7 @@ static void *doerrins_c(void *data);
 }
 
 static void *doerrins_c(void *data) {
+  errno = 0;
   const char *type = g_opt.m_errins_type;
   uint delay = g_opt.m_errins_delay;
   uint ms = delay / 2 + ndb_rand() % (delay + 1);

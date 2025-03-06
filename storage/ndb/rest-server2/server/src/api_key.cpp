@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2024 Hopsworks AB
+ * Copyright (C) 2024, 2025 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -303,6 +303,7 @@ RS_Status APIKeyCache::find_and_validate(const std::string &apiKey,
 }
 
 extern "C" void* api_key_thread_main(void *thr_arg) {
+  errno = 0;
   char *api_key_str = (char*)thr_arg;
   std::string apiKey = api_key_str;
   free(api_key_str);

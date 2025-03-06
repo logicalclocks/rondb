@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2025, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -131,8 +132,14 @@ bool LocalConfig::parseNodeId(const char *value) {
   if (_ownNodeId != 0) return false;  // already set
 
   char *endp = nullptr;
+  errno = 0;
   long v = strtol(value, &endp, 0);
-  if (endp == nullptr || *endp != 0 || v < 0 || MAX_PORT_NO < v)
+  if (endp == nullptr ||
+      *endp != 0 ||
+      errno == ERANGE ||
+      errno == EINVAL ||
+      v < 0 ||
+      MAX_PORT_NO < v)
     return false;  // bad value
 
   _ownNodeId = v;
@@ -152,8 +159,14 @@ bool LocalConfig::parseHostName(const char *value) {
   int port = 1186;
   if (serv[0] != 0) {
     char *endp = nullptr;
+    errno = 0;
     long v = strtol(serv, &endp, 0);
-    if (endp == nullptr || *endp != 0 || v < 0 || v > MAX_PORT_NO) {
+    if (endp == nullptr ||
+        *endp != 0 ||
+        errno == ERANGE ||
+        errno == EINVAL ||
+        v < 0 ||
+        v > MAX_PORT_NO) {
       return false;  // bad port
     }
     port = v;
@@ -183,8 +196,14 @@ bool LocalConfig::parseBindAddress(const char *value) {
   int port = 0;
   if (serv[0] != 0) {
     char *endp = nullptr;
+    errno = 0;
     long v = strtol(serv, &endp, 0);
-    if (endp == nullptr || *endp != 0 || v < 0 || v > MAX_PORT_NO)
+    if (endp == nullptr ||
+        *endp != 0 ||
+        errno == ERANGE ||
+        errno == EINVAL ||
+        v < 0 ||
+        v > MAX_PORT_NO)
       return false;  // bad port
     port = v;
   }

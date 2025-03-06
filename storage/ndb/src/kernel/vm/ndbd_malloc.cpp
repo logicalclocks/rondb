@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2005, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -63,6 +63,7 @@ const bool debugUinitMemUse = false;
 #endif
 
 static void *touch_mem(void *arg) {
+  errno = 0;
   struct AllocTouchMem *touch_mem_ptr = (struct AllocTouchMem *)arg;
 
 #if defined(VM_TRACE_MEM)

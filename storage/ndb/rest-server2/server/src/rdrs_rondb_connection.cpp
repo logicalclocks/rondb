@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023, 2024, Hopsworks and/or its affiliates.
+ * Copyright (c) 2023, 2025, Hopsworks and/or its affiliates.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -130,8 +130,10 @@ RS_Status RDRSRonDBConnection::GetNdbObject(Ndb **ndb_object) {
       NdbMutex_Unlock(connectionInfoMutex);
     }
     if (unlikely(is_shutdown)) {
-      rdrs_logger::error(std::string(rdrsErrorMessage(ERROR_PROGRAMMING_CONNECTION_SHUTDOWN)));
-      return RS_SERVER_ERROR(std::string(rdrsErrorMessage(ERROR_PROGRAMMING_CONNECTION_SHUTDOWN)));
+      rdrs_logger::error(std::string(
+        rdrsErrorMessage(ERROR_PROGRAMMING_CONNECTION_SHUTDOWN)));
+      return RS_SERVER_ERROR(std::string(
+        rdrsErrorMessage(ERROR_PROGRAMMING_CONNECTION_SHUTDOWN)));
     }
     if (unlikely(connection_state != CONNECTED)) {
       if (!reconnection_in_progress) {
@@ -140,12 +142,14 @@ RS_Status RDRSRonDBConnection::GetNdbObject(Ndb **ndb_object) {
         rdrs_logger::debug("GetNdbObject triggered reconnection");
         Reconnect();
       }
-      rdrs_logger::warn(std::string(rdrsErrorMessage(ERROR_RONDB_CONNECTION_CLOSED)) + 
+      rdrs_logger::warn(std::string(
+        rdrsErrorMessage(ERROR_RONDB_CONNECTION_CLOSED)) + 
                            std::string(" Connection State: ") +
                            std::to_string(connection_state) +
                            std::string(" Reconnection State: ") +
                            std::to_string(reconnection_in_progress));
-      return RS_SERVER_ERROR(std::string(rdrsErrorMessage(ERROR_RONDB_CONNECTION_CLOSED)));
+      return RS_SERVER_ERROR(std::string(
+        rdrsErrorMessage(ERROR_RONDB_CONNECTION_CLOSED)));
     }
   }
   {
@@ -154,7 +158,7 @@ RS_Status RDRSRonDBConnection::GetNdbObject(Ndb **ndb_object) {
     RS_Status ret_status = RS_OK;
     if (unlikely(availableNdbObjects.empty())) {
       *ndb_object = new Ndb(ndbConnection);
-      int retCode = (*ndb_object)->init();
+      int retCode = (*ndb_object)->init(1024);
       if (unlikely(retCode != 0)) {
         delete ndb_object;
         ret_status =
@@ -346,6 +350,7 @@ RS_Status RDRSRonDBConnection::ReconnectHandler() {
 }
 
 static void *reconnect_thread_wrapper(void *arg) {
+  errno = 0;
   rdrs_logger::info("Reconnection thread has started running.");
   RDRSRonDBConnection *rdrsRonDBConnection = (RDRSRonDBConnection *)arg;
   rdrsRonDBConnection->ReconnectHandler();

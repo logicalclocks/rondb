@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2024, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -41,11 +41,12 @@
     From a RonDB perspective, this file is where transactions are created and
     removed again. The data operations inbetween are done in db_operations.
     This avoids redundant calls to `ndb->closeTransaction(trans);` and therefore
-    also reduces the risk to forget calling this function (causing memory leaks).
+    also reduces the risk to forget calling this function (causing memory
+    leaks).
 
-    The db_operations level however handles most of the low-level NdbError handling.
-    Most importantly, it writes Ndb error messages to the response string. This may
-    however change in the future, since this causes redundancy.
+    The db_operations level however handles most of the low-level NdbError
+    handling. Most importantly, it writes Ndb error messages to the response
+    string. This may however change in the future, since this causes redundancy.
 */
 void rondb_get_command(Ndb *ndb,
                        const pink::RedisCmdArgsType &argv,

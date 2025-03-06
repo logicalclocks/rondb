@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -458,7 +458,7 @@ static int mgmd_main(int argc, char **argv) {
       delete mgm;
       mgmd_exit(1);
     }
-
+    errno = 0;
     if (NdbDir::chdir(NdbConfig_get_path(NULL)) != 0) {
       g_eventLogger->warning("Cannot change directory to '%s', error: %d",
                              NdbConfig_get_path(NULL), errno);
