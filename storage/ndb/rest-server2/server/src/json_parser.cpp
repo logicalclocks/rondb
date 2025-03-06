@@ -1468,6 +1468,13 @@ RS_Status extract_db_and_table(const std::string_view &relativeUrl,
     end_pos--;
     lastSlashPos = relativeUrl.find_last_of('/', lastSlashPos - 1);
   }
+  if (len == 0) {
+    DEB_REL_URL(("4:relativeUrl bad: %s", relativeUrl.data()));
+    return CRS_Status(static_cast<HTTP_CODE>(
+      drogon::HttpStatusCode::k400BadRequest),
+      ERROR_INVALID_RELATIVE_URL,
+      std::string(rdrsErrorMessage(ERROR_INVALID_RELATIVE_URL))).status;
+  }
   size_t firstSlashPos = relativeUrl.find_first_of('/');
   Uint32 leading_slashes = 0;
   while (firstSlashPos == leading_slashes) {

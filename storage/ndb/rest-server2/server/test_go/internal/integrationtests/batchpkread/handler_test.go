@@ -481,6 +481,28 @@ func TestBatchMissingReqField(t *testing.T) {
 		"the Method section should be POST", http.StatusBadRequest)
 
 	// Test missing relative URL
+	operations = NewOperationsTBDVar6(t, 1)
+	operationsWrapper = api.BatchOpRequest{Operations: &operations}
+	body, _ = json.Marshal(operationsWrapper)
+	testclient.SendHttpRequest(t, config.BATCH_HTTP_VERB, url, string(body),
+		"Field validation for 'RelativeURL' failed", http.StatusBadRequest)
+
+	// Test missing relative URL
+	operations = NewOperationsTBDVar7(t, 1)
+	operationsWrapper = api.BatchOpRequest{Operations: &operations}
+	body, _ = json.Marshal(operationsWrapper)
+	testclient.SendHttpRequest(t, config.BATCH_HTTP_VERB, url, string(body),
+		"Field validation for 'RelativeURL' failed", http.StatusBadRequest)
+
+	// Test missing relative URL
+	operations = NewOperationsTBDVar8(t, 1)
+	operationsWrapper = api.BatchOpRequest{Operations: &operations}
+	body, _ = json.Marshal(operationsWrapper)
+	testclient.SendHttpRequest(t, config.BATCH_HTTP_VERB, url, string(body),
+		"Field validation for 'RelativeURL' failed", http.StatusBadRequest)
+
+
+	// Test missing relative URL
 	operations = NewOperationsTBD(t, 3)
 	operations[1].RelativeURL = nil
 	operationsWrapper = api.BatchOpRequest{Operations: &operations}
@@ -545,6 +567,31 @@ func NewOperationsTBDVar5(t *testing.T, numOps int) []api.BatchSubOp {
 	return operations
 }
 
+func NewOperationsTBDVar6(t *testing.T, numOps int) []api.BatchSubOp {
+	operations := make([]api.BatchSubOp, numOps)
+	for i := 0; i < numOps; i++ {
+		operations[i] = NewOperationTBDVar6(t)
+	}
+	return operations
+}
+
+func NewOperationsTBDVar7(t *testing.T, numOps int) []api.BatchSubOp {
+	operations := make([]api.BatchSubOp, numOps)
+	for i := 0; i < numOps; i++ {
+		operations[i] = NewOperationTBDVar7(t)
+	}
+	return operations
+}
+
+func NewOperationsTBDVar8(t *testing.T, numOps int) []api.BatchSubOp {
+	operations := make([]api.BatchSubOp, numOps)
+	for i := 0; i < numOps; i++ {
+		operations[i] = NewOperationTBDVar8(t)
+	}
+	return operations
+}
+
+
 func NewOperationTBD(t *testing.T) api.BatchSubOp {
 	pkOp := testclient.NewPKReadReqBodyTBD()
 	method := "POST"
@@ -604,6 +651,43 @@ func NewOperationTBDVar5(t *testing.T) api.BatchSubOp {
 		Body:        &pkOp,
 	}
 }
+
+func NewOperationTBDVar6(t *testing.T) api.BatchSubOp {
+	pkOp := testclient.NewPKReadReqBodyTBD()
+	method := "POST"
+	relativeURL := testutils.NewBatchPKReadURLVar6("db", "table")
+
+	return api.BatchSubOp{
+		Method:      &method,
+		RelativeURL: &relativeURL,
+		Body:        &pkOp,
+	}
+}
+
+func NewOperationTBDVar7(t *testing.T) api.BatchSubOp {
+	pkOp := testclient.NewPKReadReqBodyTBD()
+	method := "POST"
+	relativeURL := testutils.NewBatchPKReadURLVar7("db", "table")
+
+	return api.BatchSubOp{
+		Method:      &method,
+		RelativeURL: &relativeURL,
+		Body:        &pkOp,
+	}
+}
+
+func NewOperationTBDVar8(t *testing.T) api.BatchSubOp {
+	pkOp := testclient.NewPKReadReqBodyTBD()
+	method := "POST"
+	relativeURL := testutils.NewBatchPKReadURLVar8("db", "table")
+
+	return api.BatchSubOp{
+		Method:      &method,
+		RelativeURL: &relativeURL,
+		Body:        &pkOp,
+	}
+}
+
 
 func TestMaxOpID(t *testing.T) {
 	tests := map[string]api.BatchOperationTestInfo{
