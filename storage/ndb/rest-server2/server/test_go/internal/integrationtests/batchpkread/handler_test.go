@@ -1,6 +1,6 @@
 /*
  * This file is part of the RonDB REST API Server
- * Copyright (c) 2023 Hopsworks AB
+ * Copyright (c) 2023, 2025 Hopsworks AB
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -472,6 +472,14 @@ func TestBatchMissingReqField(t *testing.T) {
 	testclient.SendHttpRequest(t, config.BATCH_HTTP_VERB, url, string(body),
 		"the Method section should be POST", http.StatusBadRequest)
 
+	// Test missing method
+	operations = NewOperationsTBDVar5(t, 3)
+	operations[1].Method = nil
+	operationsWrapper = api.BatchOpRequest{Operations: &operations}
+	body, _ = json.Marshal(operationsWrapper)
+	testclient.SendHttpRequest(t, config.BATCH_HTTP_VERB, url, string(body),
+		"the Method section should be POST", http.StatusBadRequest)
+
 	// Test missing relative URL
 	operations = NewOperationsTBD(t, 3)
 	operations[1].RelativeURL = nil
@@ -529,6 +537,14 @@ func NewOperationsTBDVar4(t *testing.T, numOps int) []api.BatchSubOp {
 	return operations
 }
 
+func NewOperationsTBDVar5(t *testing.T, numOps int) []api.BatchSubOp {
+	operations := make([]api.BatchSubOp, numOps)
+	for i := 0; i < numOps; i++ {
+		operations[i] = NewOperationTBDVar5(t)
+	}
+	return operations
+}
+
 func NewOperationTBD(t *testing.T) api.BatchSubOp {
 	pkOp := testclient.NewPKReadReqBodyTBD()
 	method := "POST"
@@ -569,6 +585,18 @@ func NewOperationTBDVar4(t *testing.T) api.BatchSubOp {
 	pkOp := testclient.NewPKReadReqBodyTBD()
 	method := "POST"
 	relativeURL := testutils.NewBatchPKReadURLVar4("db", "table")
+
+	return api.BatchSubOp{
+		Method:      &method,
+		RelativeURL: &relativeURL,
+		Body:        &pkOp,
+	}
+}
+
+func NewOperationTBDVar5(t *testing.T) api.BatchSubOp {
+	pkOp := testclient.NewPKReadReqBodyTBD()
+	method := "POST"
+	relativeURL := testutils.NewBatchPKReadURLVar5("db", "table")
 
 	return api.BatchSubOp{
 		Method:      &method,
