@@ -277,7 +277,7 @@ func TestPKERROR_012(t *testing.T) {
 
 	url := testutils.NewPKReadURL(testdbs.DB001, "table_1")
 	testclient.SendHttpRequest(t, config.PK_HTTP_VERB, url, string(body),
-		common.ERROR_012(), http.StatusBadRequest)
+		common.ERROR_012(), http.StatusNotFound)
 }
 
 // Primary key test.
