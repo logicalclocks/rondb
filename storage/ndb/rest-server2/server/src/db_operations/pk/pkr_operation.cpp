@@ -79,7 +79,6 @@ BatchKeyOperations::init_batch_operations(ArenaMalloc *amalloc,
                                           bool is_batch,
                                           RS_Buffer *reqBuffer,
                                           Ndb *ndb_object) {
-  Uint32 first_success_index = Uint32(~0);
   RS_Status status = RS_OK;
   m_isBatch = is_batch;
   m_ndb_object = ndb_object;
@@ -294,7 +293,6 @@ BatchKeyOperations::init_batch_operations(ArenaMalloc *amalloc,
         }
         return err;
       }
-      first_success_index = i;
     } else {
       /**
        * When we arrive here we have not received any column names from
@@ -332,12 +330,7 @@ BatchKeyOperations::init_batch_operations(ArenaMalloc *amalloc,
         bitmap_words32[j] = 0xFFFFFFFF;
       }
       key_op->m_num_read_columns = numColumns;
-      first_success_index = i;
     }
-  }
-  if (unlikely(first_success_index == Uint32(~0))) {
-    return RS_SERVER_ERROR(
-        std::string(rdrsErrorMessage(ERROR_NO_SUCCESSFUL_OPERATION)));
   }
   return status;
 }

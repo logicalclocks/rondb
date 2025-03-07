@@ -110,10 +110,8 @@ func NewBatchPKReadURLVar5(db string, table string) string {
 	return url
 }
 
-func NewBatchPKReadURLVar6(db string, table string) string {
-	url := fmt.Sprintf("//////////////",
-		db, table, config.PK_DB_OPERATION,
-	)
+func NewBatchPKReadURLVar6() string {
+	url := fmt.Sprintf("//////////////")
 	return url
 }
 
