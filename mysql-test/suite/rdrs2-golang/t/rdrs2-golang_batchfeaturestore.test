@@ -1,1 +1,2 @@
+--source include/not_parallel.inc
 --source suite/rdrs2-golang/include/run_gotest.inc
