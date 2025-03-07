@@ -59,6 +59,7 @@ class BatchKeyOperations {
   Uint32 m_numOperations;
   Ndb *m_ndb_object;
   bool m_isBatch;
+  bool m_single_transaction;
   struct KeyOperation *m_key_ops;
   Uint32 m_num_sent_operations;
  public:
