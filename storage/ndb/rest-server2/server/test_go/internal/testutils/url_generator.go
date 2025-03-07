@@ -1,6 +1,6 @@
 /*
  * This file is part of the RonDB REST API Server
- * Copyright (c) 2023 Hopsworks AB
+ * Copyright (c) 2023, 2025 Hopsworks AB
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -102,6 +102,35 @@ func NewBatchPKReadURLVar4(db string, table string) string {
 	)
 	return url
 }
+
+func NewBatchPKReadURLVar5(db string, table string) string {
+	url := fmt.Sprintf("////%s/%s/%s///",
+		db, table, config.PK_DB_OPERATION,
+	)
+	return url
+}
+
+func NewBatchPKReadURLVar6(db string, table string) string {
+	url := fmt.Sprintf("//////////////",
+		db, table, config.PK_DB_OPERATION,
+	)
+	return url
+}
+
+func NewBatchPKReadURLVar7(db string, table string) string {
+	url := fmt.Sprintf("////%s/%s%s///",
+		db, table, config.PK_DB_OPERATION,
+	)
+	return url
+}
+
+func NewBatchPKReadURLVar8(db string, table string) string {
+	url := fmt.Sprintf("////%s%s/%s///",
+		db, table, config.PK_DB_OPERATION,
+	)
+	return url
+}
+
 
 func NewBatchReadURL() string {
 	conf := config.GetAll()

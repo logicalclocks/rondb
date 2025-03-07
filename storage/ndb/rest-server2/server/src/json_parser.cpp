@@ -1462,17 +1462,29 @@ RS_Status extract_db_and_table(const std::string_view &relativeUrl,
   const char *start_pos = relativeUrl.data();
   size_t end_pos = len - 1;
   size_t lastSlashPos = relativeUrl.find_last_of('/');
-  size_t firstSlashPos = relativeUrl.find_first_of('/');
-  if (lastSlashPos == end_pos) {
+  while (lastSlashPos == end_pos) {
+    /* Remove trailing slashes as is customary in URLs */
     len--;
+    end_pos--;
     lastSlashPos = relativeUrl.find_last_of('/', lastSlashPos - 1);
   }
-  if (firstSlashPos == 0) {
-    start_pos++;
+  if (len == 0) {
+    DEB_REL_URL(("4:relativeUrl bad: %s", relativeUrl.data()));
+    return CRS_Status(static_cast<HTTP_CODE>(
+      drogon::HttpStatusCode::k400BadRequest),
+      ERROR_INVALID_RELATIVE_URL,
+      std::string(rdrsErrorMessage(ERROR_INVALID_RELATIVE_URL))).status;
+  }
+  size_t firstSlashPos = relativeUrl.find_first_of('/');
+  Uint32 leading_slashes = 0;
+  while (firstSlashPos == leading_slashes) {
+    /* Remove leading slashes as is customary in URLs */
     len--;
     lastSlashPos--;
+    leading_slashes++;
+    firstSlashPos = relativeUrl.find_first_of('/', leading_slashes);
   }
-  std::string_view checkUrl(start_pos, len);
+  std::string_view checkUrl(start_pos + leading_slashes, len);
 
   size_t secondLastSlashPos = lastSlashPos != std::string_view::npos ?
     checkUrl.find_last_of('/', lastSlashPos - 1) : std::string_view::npos;

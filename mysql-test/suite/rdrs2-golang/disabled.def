@@ -11,7 +11,5 @@
 #   - Length of a comment section must not be more than 80 characters.
 #
 ##############################################################################
-rdrs2-golang.rdrs2-golang_batchpkread   : RONDB-718 Some error
 rdrs2-golang.rdrs2-golang_stat   : RONDB-718 Not implemented yet
-rdrs2-golang.rdrs2-golang_batchpkread : RONDB-791
 
