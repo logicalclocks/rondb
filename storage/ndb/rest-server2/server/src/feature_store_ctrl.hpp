@@ -89,7 +89,8 @@ std::tuple<std::vector<std::vector<char>>,
 GetFeatureValues(
   const std::vector<PKReadResponseWithCodeJSON> &ronDbResult,
   const std::unordered_map<std::string, std::vector<char>> &entries,
-  const metadata::FeatureViewMetadata &featureView, bool includeDetailedStatus);
+  const metadata::FeatureViewMetadata &featureView, bool includeDetailedStatus,
+  bool & use_compressed);
 
 std::vector<PKReadParams>
 GetBatchPkReadParams(

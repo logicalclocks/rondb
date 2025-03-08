@@ -268,7 +268,8 @@ std::tuple<std::vector<std::vector<char>>,
                    const std::unordered_map<std::string,
                      std::vector<char>> &entries,
                    const metadata::FeatureViewMetadata &featureView,
-                   bool includeDetailedStatus) {
+                   bool includeDetailedStatus,
+                   bool & use_compressed) {
   auto featureValues = std::vector<std::vector<char>>(
     featureView.numOfFeatures);
   feature_store_data_structs::FeatureStatus status =
@@ -333,6 +334,7 @@ std::tuple<std::vector<std::vector<char>>,
                 "Feature name: " + featureName + "; " +
               std::get<0>(deserResult)->Error());
             } else {
+              use_compressed = false;
               (featureValues)[it->second] = std::get<1>(deserResult);
             }
           } else {
@@ -568,6 +570,7 @@ void FeatureStoreCtrl::featureStore(
    * 14. Callback to Drogon to send response HTTP packet
    */
 
+  bool use_compressed = true;
   drogon::HttpResponsePtr resp = drogon::HttpResponse::newHttpResponse();
   FsReadEndPointMetricsUpdater metricsUpdater(resp);
 
@@ -795,7 +798,8 @@ void FeatureStoreCtrl::featureStore(
     auto [features, status, detailedStatus, fsErr] =
         GetFeatureValues(rondbResp->getResult(),
                          reqStruct.entries, *metadata,
-                         reqStruct.GetOptions().includeDetailedStatus);
+                         reqStruct.GetOptions().includeDetailedStatus,
+                         use_compressed);
     if (unlikely(fsErr != nullptr)) {
       resp->setBody(fsErr->Error());
       if (fsError != nullptr ){
@@ -825,7 +829,11 @@ void FeatureStoreCtrl::featureStore(
       fsResp.detailedStatus = detailedStatus;
     }
     DEB_FS_CTRL("Send response for  Feature Store request");
-    resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+    if (use_compressed) {
+      resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+    } else {
+      resp->setContentTypeCode(drogon::CT_APPLICATION_OCTET_STREAM);
+    }
     std::string respBody = fsResp.to_string();
     DEB_FS_CTRL("JSON response: %s", respBody.c_str());
     resp->setBody(std::move(respBody));
