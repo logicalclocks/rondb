@@ -35,7 +35,8 @@ static const std::unordered_map<
     std::pair<std::vector<std::string_view>, std::string_view>>
     mimeTypeDatabase_{
         {CT_NONE, {{""}, ""}},
-        {CT_APPLICATION_OCTET_STREAM, {{"application/octet-stream"}, ""}},
+        {CT_APPLICATION_OCTET_STREAM,
+         {{"application/json"}, "application/json; charset=utf-8"}},
         {CT_APPLICATION_X_FORM, {{"application/x-www-form-urlencoded"}, ""}},
         {CT_MULTIPART_FORM_DATA, {{"multipart/form-data"}, ""}},
         {CT_APPLICATION_GZIP, {{"application/gzip"}, ""}},
