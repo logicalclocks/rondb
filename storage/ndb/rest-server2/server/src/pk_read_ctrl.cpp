@@ -177,15 +177,22 @@ void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
       calc_size_json += respJson.getSizeJson();
       char *json_buf = (char*)amalloc.alloc_bytes(calc_size_json, 8);
       if (likely(json_buf != nullptr)) {
-        size_t size_json = respJson.to_string_single(json_buf);
+        size_t size_json;
+        int ret = respJson.to_string_single(json_buf, &amalloc, size_json);
+        if (unlikely(ret < 0)) {
+          amalloc.reset();
+          resp->setBody("Malloc failure");
+          resp->setStatusCode(drogon::HttpStatusCode::k500InternalServerError);
+        } else {
 #ifdef DEBUG_PK_CTRL
-        printf("JSON response: len: %u, calc_len: %u: \n %s",
-               (Uint32)size_json,
-               (Uint32)calc_size_json,
-               json_buf);
+          printf("JSON response: len: %u, calc_len: %u: \n %s",
+                 (Uint32)size_json,
+                 (Uint32)calc_size_json,
+                 json_buf);
 #endif
-        std::string json(json_buf, size_json);
-        resp->setBody(std::move(json));
+          std::string json(json_buf, size_json);
+          resp->setBody(std::move(json));
+        }
       } else {
         amalloc.reset();
         resp->setBody("Malloc failure");

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2024 Hopsworks AB
+ * Copyright (C) 2024, 2025 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -36,6 +36,6 @@ RS_Status
 base64_decode(const std::string &encoded_string, std::string &decoded_string);
 
 std::tuple<std::shared_ptr<RestErrorCode>, std::vector<char>>
-DeserialiseComplexFeature(const std::vector<char> &value,
+DeserialiseComplexFeature(std::vector<Uint8> &value,
                           const metadata::AvroDecoder &decoder);
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_FEATURE_UTIL_HPP_

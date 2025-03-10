@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2024 Hopsworks AB
+ * Copyright (C) 2024, 2025 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -88,20 +88,24 @@ std::tuple<std::vector<std::vector<char>>,
   std::shared_ptr<RestErrorCode>>
 GetFeatureValues(
   const std::vector<PKReadResponseWithCodeJSON> &ronDbResult,
-  const std::unordered_map<std::string, std::vector<char>> &entries,
-  const metadata::FeatureViewMetadata &featureView, bool includeDetailedStatus,
+  const std::unordered_map<std::string,
+  std::vector<char>> &entries,
+  const metadata::FeatureViewMetadata &featureView,
+  bool includeDetailedStatus,
   bool & use_compressed);
 
 std::vector<PKReadParams>
 GetBatchPkReadParams(
   const metadata::FeatureViewMetadata &metadata,
-  const std::unordered_map<std::string, std::vector<char>> &entries);
+  const std::unordered_map<std::string,
+  std::vector<char>> &entries);
 
 void FillPassedFeatures(
   std::vector<std::vector<char>> &features,
-  const std::unordered_map<std::string, std::vector<char>> &passedFeatures,
-  std::unordered_map<std::string, std::vector<metadata::FeatureMetadata>>
-    featureMetadataMap,
+  const std::unordered_map<std::string,
+  std::vector<char>> &passedFeatures,
+  std::unordered_map<std::string,
+  std::vector<metadata::FeatureMetadata>> featureMetadataMap,
   const std::unordered_map<std::string, int> &indexLookup);
 
 RS_Status process_responses(

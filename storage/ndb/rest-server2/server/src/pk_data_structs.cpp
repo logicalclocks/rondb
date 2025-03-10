@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023, 2024, Hopsworks and/or its affiliates.
+ * Copyright (c) 2023, 2025, Hopsworks and/or its affiliates.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -23,6 +23,7 @@
 #include "error_strings.h"
 #include "rdrs_dal.hpp"
 #include <util/require.h>
+#include <libbase64.h>
 
 #include <iostream>
 #include <EventLogger.hpp>
@@ -325,13 +326,16 @@ RS_Status PKReadParams::validate_columns(void) {
     drogon::HttpStatusCode::k200OK)).status;
 }
 
-size_t PKReadResponseJSON::to_string_single(char *json_buf) const {
+int PKReadResponseJSON::to_string_single(char *json_buf,
+                                         ArenaMalloc *amalloc,
+                                         size_t &ret_size) const {
   char *buf = json_buf;
   memcpy(buf, "{\"code\":", 8);
   buf += 8;
 
   char code_buf[10];
   int code_char_count = sprintf(&code_buf[0], "%d", code);
+  char encode_buffer[MAX_TUPLE_SIZE_IN_BYTES_ENCODED];
   memcpy(buf, &code_buf[0], code_char_count);
   buf += code_char_count;
   memcpy(buf, ",\"operationId\":\"", 16);
@@ -364,8 +368,29 @@ size_t PKReadResponseJSON::to_string_single(char *json_buf) const {
       *buf = '\"';
       buf++;
     }
-    memcpy(buf, res_view.value_ptr, res_view.value_len);
-    buf += res_view.value_len;
+    if (res_view.data_type == RDRS_BINARY_DATATYPE ||
+        res_view.data_type == RDRS_BIT_DATATYPE) {
+      size_t outlen = 0;
+      char *encode_buf_ptr = &encode_buffer[0];
+      if (res_view.value_len >= MAX_TUPLE_SIZE_IN_BYTES) {
+        Uint32 value_len = res_view.value_len;
+        Uint32 max_encoded_len = ((value_len * 4) / 3) + 3;
+        encode_buf_ptr = (char*)amalloc->alloc_bytes(max_encoded_len, 8);
+        if (unlikely(encode_buf_ptr == nullptr)) {
+          return -1;
+        }
+      }
+      base64_encode(res_view.value_ptr,
+                    res_view.value_len,
+                    (char *)encode_buf_ptr,
+                    &outlen,
+                    0);
+      memcpy(buf, encode_buf_ptr, outlen);
+      buf += outlen;
+    } else {
+      memcpy(buf, res_view.value_ptr, res_view.value_len);
+      buf += res_view.value_len;
+    }
     if (res_view.quoted_flag) {
       *buf = '\"';
       buf++;
@@ -375,17 +400,20 @@ size_t PKReadResponseJSON::to_string_single(char *json_buf) const {
   buf += 3;
   *buf = '\0';
   size_t ret = (size_t)(buf - json_buf);
-  return ret;
+  ret_size = ret;
+  return 0;
 }
 
 // Indent the JSON string by `indent` spaces.
-char* PKReadResponseJSON::to_string_batch(char *buf) const {
+char* PKReadResponseJSON::to_string_batch(char *buf,
+                                          ArenaMalloc *amalloc) const {
 
   memcpy(buf, "{\"code\":", 8);
   buf += 8;
 
   char code_buf[10];
   int code_char_count = sprintf(&code_buf[0], "%d", code);
+  char encode_buffer[MAX_TUPLE_SIZE_IN_BYTES_ENCODED];
   memcpy(buf, &code_buf[0], code_char_count);
   buf += code_char_count;
 
@@ -418,8 +446,29 @@ char* PKReadResponseJSON::to_string_batch(char *buf) const {
         *buf = '\"';
         buf++;
       }
-      memcpy(buf, res_view.value_ptr, res_view.value_len);
-      buf += res_view.value_len;
+      if (res_view.data_type == RDRS_BINARY_DATATYPE ||
+          res_view.data_type == RDRS_BIT_DATATYPE) {
+        size_t outlen = 0;
+        char *encode_buf_ptr = &encode_buffer[0];
+        if (unlikely(res_view.value_len >= MAX_TUPLE_SIZE_IN_BYTES)) {
+          Uint32 value_len = res_view.value_len;
+          Uint32 max_encoded_len = ((value_len * 4) / 3) + 3;
+          encode_buf_ptr = (char*)amalloc->alloc_bytes(max_encoded_len, 8);
+          if (unlikely(encode_buf_ptr == nullptr)) {
+            return nullptr;
+          }
+        }
+        base64_encode(res_view.value_ptr,
+                      res_view.value_len,
+                      (char *)encode_buf_ptr,
+                      &outlen,
+                      0);
+        memcpy(buf, encode_buf_ptr, outlen);
+        buf += outlen;
+      } else {
+        memcpy(buf, res_view.value_ptr, res_view.value_len);
+        buf += res_view.value_len;
+      }
       if (res_view.quoted_flag) {
         *buf = '\"';
         buf++;
@@ -431,9 +480,11 @@ char* PKReadResponseJSON::to_string_batch(char *buf) const {
   return buf;
 }
 
-size_t PKReadResponseJSON::batch_to_string(
+int PKReadResponseJSON::batch_to_string(
   const std::vector<PKReadResponseJSON> &responses,
-  char *json_buf) {
+  char *json_buf,
+  ArenaMalloc *amalloc,
+  size_t &ret_size) {
 
   char *buf = json_buf; 
   memcpy(buf, "{\"result\":[", 11);
@@ -447,10 +498,14 @@ size_t PKReadResponseJSON::batch_to_string(
     first = false;
     *buf = '\n';
     buf++;
-    buf = response.to_string_batch(buf);
+    buf = response.to_string_batch(buf, amalloc);
+    if (unlikely(buf == nullptr)) {
+      return -1;
+    }
   }
   memcpy(buf, "\n]}\n", 4);
   buf += 4;
   *buf = '\0';
-  return (size_t)(buf - json_buf);
+  ret_size = (size_t)(buf - json_buf);
+  return 0;
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2024 Hopsworks AB
+ * Copyright (C) 2024, 2025 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -38,10 +38,10 @@ class MetadataRequest {
   std::string to_string() const {
     std::ostringstream oss;
     oss << "MetadataRequest {"
-        << "\n  featureName: "
+        << "\nfeatureName: "
         << (featureName.has_value() ?
           (featureName.value() ? "true" : "false") : "null")
-        << "\n  featureType: "
+        << "\nfeatureType: "
         << (featureType.has_value() ?
           (featureType.value() ? "true" : "false") : "null")
         << "\n}";
@@ -57,11 +57,11 @@ class OptionsRequest {
   std::string to_string() const {
     std::ostringstream oss;
     oss << "OptionsRequest {"
-        << "\n  validatePassedFeatures: "
+        << "\nvalidatePassedFeatures: "
         << (validatePassedFeatures.has_value() ?
            (validatePassedFeatures.value() ?
           "true" : "false") : "null")
-        << "\n  includeDetailedStatus: "
+        << "\nincludeDetailedStatus: "
         << (includeDetailedStatus.has_value() ?
           (includeDetailedStatus.value() ? "true" : "false") : "null")
         << "\n}";
@@ -93,44 +93,44 @@ class BatchFeatureStoreRequest {
   std::string to_string() const {
     std::ostringstream oss;
     oss << "BatchFeatureStoreRequest {"
-        << "\n  featureStoreName: " << featureStoreName
-        << "\n  featureViewName: " << featureViewName
-        << "\n  featureViewVersion: " << featureViewVersion
-        << "\n  passedFeatures: {";
+        << "\nfeatureStoreName: " << featureStoreName
+        << "\nfeatureViewName: " << featureViewName
+        << "\nfeatureViewVersion: " << featureViewVersion
+        << "\npassedFeatures: {";
     for (const auto &passedFeature : passedFeatures) {
-      oss << "\n    {";
+      oss << "\n{";
       for (const auto &[key, value] : passedFeature) {
-        oss << "\n      " << key << ": [";
+        oss << "\n" << key << ": [";
         for (char c : value) {
           oss << c;
         }
         oss << "]";
       }
-      oss << "\n    }";
+      oss << "\n}";
     }
-    oss << "\n  }"
-        << "\n  entries: {";
+    oss << "\n}"
+        << "\nentries: {";
     for (const auto &entry : entries) {
-      oss << "\n    {";
+      oss << "\n{";
       for (const auto &[key, value] : entry) {
-        oss << "\n      " << key << ": [";
+        oss << "\n" << key << ": [";
         for (char c : value) {
           oss << c;
         }
         oss << "]";
       }
-      oss << "\n    }";
+      oss << "\n}";
     }
-    oss << "\n  }"
-        << "\n  metadataRequest: " << metadataRequest.to_string();
-    oss << "\n  }";
-    oss << "\n  optionsRequest: " << optionsRequest.to_string() << "\n}";
+    oss << "\n}"
+        << "\nmetadataRequest: " << metadataRequest.to_string();
+    oss << "\n}";
+    oss << "\noptionsRequest: " << optionsRequest.to_string() << "\n}";
     return oss.str();
   }
   Options GetOptions() const;
 };
 
-// Request of a signle feature vector and optional metadata
+// Request of a single feature vector and optional metadata
 class FeatureStoreRequest {
  public:
   std::string featureStoreName;  // json:"featureStoreName" binding:"required"
@@ -143,35 +143,37 @@ class FeatureStoreRequest {
   MetadataRequest metadataRequest; // json:"metadataOptions"
   OptionsRequest optionsRequest;  // json:"options"
   static RS_Status
-  validate_primary_key(const std::unordered_map<std::string, std::vector<char>> &entries,
-                       const std::unordered_map<std::string, std::vector<char>> &features);
+  validate_primary_key(const std::unordered_map<std::string,
+                       std::vector<char>> &entries,
+                       const std::unordered_map<std::string,
+                       std::vector<char>> &features);
   std::string to_string() const {
     std::ostringstream oss;
     oss << "FeatureStoreRequest {"
-        << "\n  featureStoreName: " << featureStoreName
-        << "\n  featureViewName: " << featureViewName
-        << "\n  featureViewVersion: " << featureViewVersion
-        << "\n  passedFeatures: {";
+        << "\nfeatureStoreName: " << featureStoreName
+        << "\nfeatureViewName: " << featureViewName
+        << "\nfeatureViewVersion: " << featureViewVersion
+        << "\npassedFeatures: {";
     for (const auto &[key, value] : passedFeatures) {
-      oss << "\n    " << key << ": [";
+      oss << "\n" << key << ": [";
       for (char c : value) {
         oss << c;
       }
       oss << "]";
     }
-    oss << "\n  }"
-        << "\n  entries: {";
+    oss << "\n}"
+        << "\nentries: {";
     for (const auto &[key, value] : entries) {
-      oss << "\n    " << key << ": [";
+      oss << "\n" << key << ": [";
       for (char c : value) {
         oss << c;
       }
       oss << "]";
     }
-    oss << "\n  }"
-        << "\n  metadataRequest: " << metadataRequest.to_string();
-    oss << "\n  }";
-    oss << "\n  optionsRequest: " << optionsRequest.to_string() << "\n}";
+    oss << "\n}"
+        << "\nmetadataRequest: " << metadataRequest.to_string();
+    oss << "\n}";
+    oss << "\noptionsRequest: " << optionsRequest.to_string() << "\n}";
     return oss.str();
   }
   Options GetOptions() const;
@@ -190,7 +192,7 @@ class FeatureMetadata {
   std::string toString() const {
     std::ostringstream oss;
     oss << "FeatureMetadata {"
-        << "\n  name: " << name << "\n  type: " << type << "\n}";
+        << "\nname: " << name << "\ntype: " << type << "\n}";
     return oss.str();
   }
 };

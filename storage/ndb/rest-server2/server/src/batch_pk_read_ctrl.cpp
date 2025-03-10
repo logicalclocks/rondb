@@ -265,16 +265,25 @@ void BatchPKReadCtrl::batchPKRead(
       }
       char *json_buf = (char*)amalloc.alloc_bytes(calc_size_json, 8);
       if (likely(json_buf != nullptr)) {
-        size_t size_json =
-          PKReadResponseJSON::batch_to_string(responses, json_buf);
+        size_t size_json;
+        int ret = PKReadResponseJSON::batch_to_string(responses,
+                                                      json_buf,
+                                                      &amalloc,
+                                                      size_json);
+        if (unlikely(ret < 0)) {
+          amalloc.reset();
+          resp->setBody("Malloc failure");
+          resp->setStatusCode(drogon::HttpStatusCode::k500InternalServerError);
+        } else {
 #ifdef DEBUG_BPK_CTRL
-        printf("Response string: len: %u, calc_len: %u: %s",
-          (Uint32)size_json,
-          (Uint32)calc_size_json,
-          json_buf);
+          printf("Response string: len: %u, calc_len: %u: %s",
+            (Uint32)size_json,
+            (Uint32)calc_size_json,
+            json_buf);
 #endif
-        std::string json(json_buf, size_json);
-        resp->setBody(std::move(json));
+          std::string json(json_buf, size_json);
+          resp->setBody(std::move(json));
+        }
       } else {
         amalloc.reset();
         resp->setBody("Malloc failure");

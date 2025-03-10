@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2024 Hopsworks AB
+ * Copyright (C) 2024, 2025 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -24,6 +24,13 @@
 #include <simdjson.h>
 #include <vector>
 #include <iostream>
+#include <EventLogger.hpp>
+
+extern EventLogger *g_eventLogger;
+
+#if (defined(VM_TRACE) || defined(ERROR_INSERT))
+//#define DEBUG_UTILS 1
+#endif
 
 #ifdef DEBUG_UTILS
 #define DEB_UTILS(...)                                                         \
@@ -59,34 +66,18 @@ base64_decode(const std::string &encoded_string, std::string &decoded_string) {
 }
 
 std::tuple<std::shared_ptr<RestErrorCode>, std::vector<char>>
-DeserialiseComplexFeature(const std::vector<char> &value,
+DeserialiseComplexFeature(std::vector<Uint8> &value,
                           const metadata::AvroDecoder &decoder) {
-  std::string valueString(value.begin(), value.end());
-  simdjson::dom::parser parser;
-  simdjson::dom::element element;
-
-  auto error = parser.parse(valueString).get(element);
-  if (error != 0U) {
-    return std::make_tuple(
-        std::make_shared<RestErrorCode>(
-            "Failed to unmarshal JSON value.",
-            static_cast<int>(drogon::k500InternalServerError)),
-        std::vector<char>{});
-  }
-
-  valueString = element.get_string().value();
-  std::string jsonDecode;
-  RS_Status status = base64_decode(valueString, jsonDecode);
-  if (status.http_code != HTTP_CODE::SUCCESS) {
-    return std::make_tuple(
-        std::make_shared<RestErrorCode>(
-            status.message, static_cast<int>(drogon::k500InternalServerError)),
-        std::vector<char>{});
-  }
-
-  std::vector<Uint8> binaryData(jsonDecode.begin(), jsonDecode.end());
-  auto [json_status, json] = decoder.decode(binaryData);
+#ifdef DEBUG_UTILS
+  std::vector<Uint8>::const_iterator it = value.begin();
+  const Uint8* ptr = &(*it);
+  DEB_UTILS("value: %p, len: %zu", ptr, value.size());
+#endif
+  auto [json_status, json] = decoder.decode(value);
   if (json_status.http_code != HTTP_CODE::SUCCESS) {
+    DEB_UTILS("decode error: %u, message: %s",
+      json_status.http_code,
+      &json_status.message[0]);
     return std::make_tuple(
         std::make_shared<RestErrorCode>(json_status.message, json_status.http_code),
         std::vector<char>{});

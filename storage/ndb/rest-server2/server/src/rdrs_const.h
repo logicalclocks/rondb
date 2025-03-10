@@ -54,6 +54,7 @@ static inline int bytes_for_ndb_str_len(int ndb_str_len) {
 #define RDRS_BINARY_DATATYPE   4
 #define RDRS_DATETIME_DATATYPE 5
 #define RDRS_BIT_DATATYPE      6
+#define RDRS_BIN_ENCODED_DATATYPE 7
 
 // Primary Key Read Request Header Indexes
 #define PK_REQ_OP_TYPE_IDX   0

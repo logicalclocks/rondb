@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2024 Hopsworks AB
+ * Copyright (C) 2024, 2025 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -28,7 +28,7 @@ std::string FeatureStoreResponse::to_string() const {
   std::string res = "{";
 
   // Features
-  res += "\"features\": [";
+  res += "\"features\":[";
   for (const auto &feature : features) {
     if (feature.empty())
       res += "null";
@@ -42,7 +42,7 @@ std::string FeatureStoreResponse::to_string() const {
   res += "],";
 
   // Metadata
-  res += "\"metadata\": [";
+  res += "\"metadata\":[";
   for (const auto &metadata : metadata) {
     res += "{";
     if (metadata.name.empty()) {
@@ -51,7 +51,7 @@ std::string FeatureStoreResponse::to_string() const {
       res += "\"featureName\": \"" + metadata.name + "\",";
     }
     if (metadata.type.empty()) {
-      res += "\"featureType\": null";
+      res += "\"featureType\":null";
     } else {
       res += "\"featureType\": \"" + metadata.type + "\"";
     }
@@ -63,7 +63,7 @@ std::string FeatureStoreResponse::to_string() const {
   res += "],";
 
   // Status
-  res += "\"status\": \"" + toString(status) + "\",";
+  res += "\"status\":\"" + toString(status) + "\",";
 
   // DetailedStatus
   res += "\"detailedStatus\": [";
@@ -75,7 +75,7 @@ std::string FeatureStoreResponse::to_string() const {
     res += "{";
     res += "\"featureGroupId\": " + std::to_string(detailed.featureGroupId) +
            ",";
-    res += "\"httpStatus\": " + std::to_string(detailed.httpStatus);
+    res += "\"httpStatus\":" + std::to_string(detailed.httpStatus);
     res += "},";
   }
   if (!detailedStatus.empty()) {
@@ -174,8 +174,8 @@ RS_Status FeatureStoreResponse::parseFeatureStoreResponse(
   fsResp.status = fromString(std::string(status_view));
 
   // Parse detailedStatus
-  uint64_t featureGroupId    = 0;
-  uint64_t httpStatus        = 0;
+  uint64_t featureGroupId = 0;
+  uint64_t httpStatus = 0;
   auto detailed_status_array = doc["detailedStatus"];
   if (detailed_status_array.error() == simdjson::error_code::NO_SUCH_FIELD ||
       detailed_status_array.is_null()) {
@@ -353,7 +353,7 @@ std::string BatchFeatureStoreResponse::to_string() const {
   std::string res = "{";
 
   // Serialize features
-  res += "\"features\": [";
+  res += "\"features\":[";
   for (const auto &feature : features) {
     res += "[";
     for (const auto &entry : feature) {
@@ -374,7 +374,7 @@ std::string BatchFeatureStoreResponse::to_string() const {
   res += "],";
 
   // Serialize metadata
-  res += "\"metadata\": [";
+  res += "\"metadata\":[";
   for (const auto &metadata : metadata) {
     res += "{";
     if (metadata.name.empty()) {
@@ -405,7 +405,7 @@ std::string BatchFeatureStoreResponse::to_string() const {
   res += "],";
 
   // Serialize detailedStatus
-  res += "\"detailedStatus\": [";
+  res += "\"detailedStatus\":[";
   for (const auto &detailed_status_group : detailedStatus) {
     res += "[";
     if (detailed_status_group.empty()) {
@@ -416,7 +416,7 @@ std::string BatchFeatureStoreResponse::to_string() const {
     for (const auto &detailed : detailed_status_group) {
       res += "{";
       res += "\"featureGroupId\": " + std::to_string(detailed.featureGroupId) + ",";
-      res += "\"httpStatus\": " + std::to_string(detailed.httpStatus);
+      res += "\"httpStatus\":" + std::to_string(detailed.httpStatus);
       res += "},";
     }
     if (!detailed_status_group.empty()) {

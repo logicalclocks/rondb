@@ -26,6 +26,8 @@
 #include <ArenaMalloc.hpp>
 #include <EventLogger.hpp>
 #include <util/require.h>
+#include "error_strings.h"
+#include "status.hpp"
 
 #include <cstring>
 #include <string>
@@ -33,8 +35,8 @@
 extern EventLogger *g_eventLogger;
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
-//#define DEBUG_ENC 1
-//#define DEBUG_ENC_RESP 1
+#define DEBUG_ENC 1
+#define DEBUG_ENC_RESP 1
 #endif
 
 #ifdef DEBUG_ENC
@@ -354,19 +356,34 @@ RS_Status process_pkread_response(ArenaMalloc *amalloc,
       Uint32 isNull = colHeaderStart[2];
       Uint32 dataType = colHeaderStart[3];
       if (isNull == 0) {
-        const char * value =
-          (reinterpret_cast<const char*>(respBuff) + value_add);
+        char * value = (reinterpret_cast<char*>(respBuff) + value_add);
         bool quoted = dataType != RDRS_INTEGER_DATATYPE &&
                       dataType != RDRS_FLOAT_DATATYPE;
         DEB_ENC("setColumnData(%u) name: %s, name_len: %u,"
                 " value_len: %u, quoted: %u, value: %s",
-          i, name, name_len, value_len, quoted, value);
-        response.setColumnData(i, name, name_len, value, value_len, quoted);
+          i,
+          name,
+          name_len,
+          value_len,
+          quoted,
+          std::string(value, value_len).c_str());
+        response.setColumnData(i,
+                               name,
+                               name_len,
+                               value,
+                               value_len,
+                               quoted,
+                               dataType);
       } else {
         const char *null_value = "null";
         Uint32 null_value_len = strlen(null_value);
-        response.setColumnData(
-          i, name, name_len, null_value, null_value_len, false);
+        response.setColumnData(i,
+                               name,
+                               name_len,
+                               null_value,
+                               null_value_len,
+                               false,
+                               RDRS_STRING_DATATYPE);
       }
     }
   }
