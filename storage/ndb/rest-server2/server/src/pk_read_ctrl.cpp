@@ -54,6 +54,7 @@ void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
                         const std::string_view &table) {
   drogon::HttpResponsePtr resp = drogon::HttpResponse::newHttpResponse();
   PkReadEndPointMetricsUpdater metricsUpdater(resp);
+  bool use_compressed = globalConfigs.rest.useCompression;
 
   size_t currentThreadIndex = drogon::app().getCurrentThreadIndex();
   if (unlikely(currentThreadIndex >= globalConfigs.rest.numThreads)) {
@@ -162,7 +163,11 @@ void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
       DEB_PK_CTRL("Error message(5): %s", std::string(status.message).c_str());
       resp->setBody(std::string(status.message));
     } else {
-      resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+      if (use_compressed) {
+        resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+      } else {
+        resp->setContentTypeCode(drogon::CT_APPLICATION_OCTET_STREAM);
+      }
       // convert resp to json
       char *respData = respBuff.buffer;
 

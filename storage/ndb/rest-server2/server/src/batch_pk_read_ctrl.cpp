@@ -53,6 +53,7 @@ void BatchPKReadCtrl::batchPKRead(
 
   drogon::HttpResponsePtr resp = drogon::HttpResponse::newHttpResponse();
   BatchPkReadEndPointMetricsUpdater metricsUpdater(resp);
+  bool use_compressed = globalConfigs.rest.useCompression;
 
   size_t currentThreadIndex = drogon::app().getCurrentThreadIndex();
   if (unlikely(currentThreadIndex >= globalConfigs.rest.numThreads)) {
@@ -243,7 +244,11 @@ void BatchPKReadCtrl::batchPKRead(
         drogon::HttpStatusCode::k200OK)) {
       resp->setBody(std::string(status.message));
     } else {
-      resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+      if (use_compressed) {
+        resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+      } else {
+        resp->setContentTypeCode(drogon::CT_APPLICATION_OCTET_STREAM);
+      }
       // convert resp to json
       std::vector<PKReadResponseJSON> responses;
       size_t calc_size_json = 20; // Batch overhead

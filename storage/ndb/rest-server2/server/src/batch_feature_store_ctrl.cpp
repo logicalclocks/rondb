@@ -77,7 +77,7 @@ void BatchFeatureStoreCtrl::batch_featureStore(
    * 14. Callback to Drogon to send response HTTP packet
    */
 
-  bool use_compressed = true;
+  bool use_compressed = globalConfigs.rest.useCompression;
   drogon::HttpResponsePtr resp = drogon::HttpResponse::newHttpResponse();
   BatchFsReadEndPointMetricsUpdater metricsUpdater(resp);
 
