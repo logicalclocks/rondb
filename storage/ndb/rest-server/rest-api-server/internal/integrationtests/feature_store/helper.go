@@ -157,11 +157,17 @@ func fetchRowsInt(query string, colTypes []string, dbConn *sql.DB) (*[][]interfa
 		rawValue := make([]interface{}, nCol)
 		for i := range values {
 			rawBytes := values[i].(*sql.RawBytes)
-			if isColNumerical(colTypes[i]) {
-				rawValue[i] = []byte(*rawBytes)
-			} else {
+			if needsQuotations(colTypes[i]) {
 				rawValue[i] = []byte("\"" + string(*rawBytes) + "\"")
+			} else if needsEncoding(colTypes[i]) {
+				rawValue[i], err = ConvertBinaryToJsonMessage(rawBytes)
+				if err != nil {
+					return nil, err
+				}
+			} else {
+				rawValue[i] = []byte(*rawBytes)
 			}
+
 		}
 		valueBatch = append(valueBatch, rawValue)
 	}
@@ -274,6 +280,27 @@ func isColNumerical(colType string) bool {
 	numericalType["DOUBLE"] = true
 	numericalType["REAL"] = true
 	return numericalType[strings.ToUpper(colType)]
+}
+
+func needsQuotations(colType string) bool {
+	var stringType = make(map[string]bool)
+	stringType["CHAR"] = true
+	stringType["VARCHAR"] = true
+	stringType["TEXT"] = true
+	stringType["DATE"] = true
+	stringType["DATETIME"] = true
+	stringType["TIMESTAMP"] = true
+	stringType["TIME"] = true
+	stringType["YEAR"] = true
+	return stringType[strings.ToUpper(colType)]
+}
+
+func needsEncoding(colType string) bool {
+	var stringType = make(map[string]bool)
+	stringType["BINARY"] = true
+	stringType["VARBINARY"] = true
+	stringType["BIT"] = true
+	return stringType[strings.ToUpper(colType)]
 }
 
 func getColumnInfo(dbName string, tableName string) ([]string, []string, []string, error) {
@@ -433,15 +460,7 @@ func ValidateResponseWithDataExcludeCols(t *testing.T, data *[]interface{}, cols
 		default:
 			t.Fatal("Wrong data type.")
 		}
-		// Decode binary data got from feature vector
-		if strings.Contains((*cols)[i], "binary") {
-			var binary []byte
-			err := json.Unmarshal([]byte(fmt.Sprintf(`"%s"`, got.(string))), &binary)
-			if err != nil {
-				t.Errorf("Cannot unmarshal %s, got error: %s\n", []byte(fmt.Sprintf(`"%s"`, got.(string))), err)
-			}
-			got = string(binary)
-		}
+
 		if !reflect.DeepEqual(got, expectedJson) {
 			t.Errorf("col: %s; Got %s (%s) but expect %s (%s)\n", (*cols)[k], got, reflect.TypeOf(got), expectedJson, reflect.TypeOf(expectedJson))
 			break
@@ -519,13 +538,35 @@ func removeQuotes(input string) string {
 	return input // Return unchanged if not quoted
 }
 
-func ConvertBinaryToJsonMessage(data interface{}) (*json.RawMessage, error) {
-	// string to base64string
-	log.Debug(string(data.([]byte)))
-	base64Str := base64.StdEncoding.EncodeToString([]byte(removeQuotes(string(data.([]byte)))))
-	log.Debug(base64Str)
+func ConvertBinaryToJsonMessage(data *sql.RawBytes) (*json.RawMessage, error) {
+	base64Str := base64.StdEncoding.EncodeToString([]byte(*data))
 	out := json.RawMessage([]byte(fmt.Sprintf(`"%s"`, base64Str)))
 	return &out, nil
+}
+
+func ConvertBase64ToBinary(t *testing.T, data interface{}) []byte {
+	var jsonRaw json.RawMessage
+	if rawMsg, ok := data.(json.RawMessage); ok {
+		jsonRaw = rawMsg
+	} else if rawPtr, ok := data.(*json.RawMessage); ok && rawPtr != nil {
+		jsonRaw = *rawPtr
+	} else {
+		t.Fatalf("Error: data not a valid JSON RawMessage")
+	}
+
+	// remove quotes and decode
+	var quotedString string
+	if err := json.Unmarshal(jsonRaw, &quotedString); err != nil {
+		t.Fatalf("failed to unquote string: %v", err)
+	}
+
+	// Base64 decode the unquoted string
+	decodedBytes, err := base64.StdEncoding.DecodeString(quotedString)
+	if err != nil {
+		t.Fatalf("failed to base64 decode: %v", err)
+	}
+
+	return decodedBytes
 }
 
 func CopyRows(original [][]interface{}) [][]interface{} {

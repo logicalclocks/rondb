@@ -60,6 +60,7 @@ func (s *RonDBServer) Batch(ctx context.Context, reqProto *api.BatchRequestProto
 		return nil, status.Error(statusCode, "")
 	}
 
+	responseIntf.(*api.BatchResponseGRPC).EncodeRawData()
 	respProto := api.ConvertBatchOpResponse(responseIntf.(*api.BatchResponseGRPC))
 	return respProto, nil
 }

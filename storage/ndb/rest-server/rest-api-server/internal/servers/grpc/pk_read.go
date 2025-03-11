@@ -61,6 +61,7 @@ func (s *RonDBServer) PKRead(ctx context.Context, reqProto *api.PKReadRequestPro
 		return nil, status.Error(statusCode, "")
 	}
 
+	responseIntf.(*api.PKReadResponseGRPC).EncodeRawData()
 	respProto := api.ConvertPKReadResponse(responseIntf.(*api.PKReadResponseGRPC))
 	return respProto, nil
 }

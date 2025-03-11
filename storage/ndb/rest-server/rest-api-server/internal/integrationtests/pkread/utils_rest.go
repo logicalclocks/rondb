@@ -50,12 +50,11 @@ func pkRESTTestWithClient(
 
 // This only works if all columns are binary data
 func validateResHttp(t testing.TB, testInfo api.PKTestInfo, response []byte, isBinaryData bool) {
-	t.Helper()
 
 	var pkResponse api.PKReadResponseJSON
 	err := json.Unmarshal(response, &pkResponse)
 	if err != nil {
-		t.Fatalf("Failed to unmarshal response object %v", err)
+		t.Fatalf("Failed to unmarshal response object %v, data %s", err, string(response))
 	}
 
 	parsedData := testclient.ParseColumnDataFromJson(t, pkResponse, isBinaryData)
@@ -65,7 +64,7 @@ func validateResHttp(t testing.TB, testInfo api.PKTestInfo, response []byte, isB
 
 		jsonVal, found := parsedData[key]
 		if !found {
-			t.Fatalf("Key not found in the response. Key %s", key)
+			t.Fatalf("Key not found in the response. Key %s. response %s", key, string(response))
 		}
 
 		integrationtests.CompareDataWithDB(t, testInfo.Db, testInfo.Table, testInfo.PkReq.Filters,

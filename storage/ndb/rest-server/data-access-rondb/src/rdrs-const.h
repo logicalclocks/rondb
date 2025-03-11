@@ -67,6 +67,7 @@ static inline int bytes_for_ndb_str_len(int ndb_str_len) {
 #define PK_REQ_OP_ID_IDX     8
 #define PK_REQ_HEADER_END    36  // NOTE: Update this when you add / remove fields from  header
 
+
 // Primary Key Read Response Header Indexes
 #define PK_RESP_OP_TYPE_IDX    0
 #define PK_RESP_OP_STATUS_IDX  1
@@ -78,6 +79,7 @@ static inline int bytes_for_ndb_str_len(int ndb_str_len) {
 #define PK_RESP_COLS_IDX       7
 #define PK_RESP_OP_ID_IDX      8
 #define PK_RESP_HEADER_END     36  // NOTE: Update this when you add / remove fields from  header
+#define COL_HEADERS_COUNT      5   // Address, Value Address, is Null, data type, data len
 
 // Hopsworks
 

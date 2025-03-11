@@ -153,7 +153,7 @@ RS_Status RDRSRonDBConnection::GetNdbObject(Ndb **ndb_object) {
     RS_Status ret_status = RS_OK;
     if (availableNdbObjects.empty()) {
       *ndb_object = new Ndb(ndbConnection);
-      int retCode = (*ndb_object)->init();
+      int retCode = (*ndb_object)->init(1024);
       if (retCode != 0) {
         delete ndb_object;
         ret_status =

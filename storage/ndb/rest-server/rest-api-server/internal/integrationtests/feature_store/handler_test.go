@@ -1338,22 +1338,17 @@ func Test_GetFeatureVector_Success_ComplexType_ST(t *testing.T) {
 		fsReq.MetadataRequest = &api.MetadataRequest{FeatureName: true, FeatureType: true}
 		fsResp := GetFeatureStoreResponse(t, fsReq)
 
-		// convert data to object in json format
-		arrayJson, err := ConvertBinaryToJsonMessage(row[2])
-		if err != nil {
-			t.Fatalf("Cannot convert to json with error %s ", err)
-		}
-		arrayPt, err := feature_store.DeserialiseComplexFeature(arrayJson, &arrayComplexFeature) // array
-		row[2] = *arrayPt
+		// binary data
+		arrayBin := ConvertBase64ToBinary(t, row[2])
+		arrayPt, err := feature_store.DeserialiseComplexFeature(arrayBin, &arrayComplexFeature) // array
 		if err != nil {
 			t.Fatalf("Cannot deserailize feature with error %s ", err)
 		}
-		// convert data to object in json format
-		mapJson, err := ConvertBinaryToJsonMessage(row[3])
-		if err != nil {
-			t.Fatalf("Cannot convert to json with error %s ", err)
-		}
-		mapPt, err := feature_store.DeserialiseComplexFeature(mapJson, &mapComplexFeature) // map
+		row[2] = *arrayPt
+
+		// binary data
+		mapBin := ConvertBase64ToBinary(t, row[3])
+		mapPt, err := feature_store.DeserialiseComplexFeature(mapBin, &mapComplexFeature) // map
 		row[3] = *mapPt
 		if err != nil {
 			t.Fatalf("Cannot deserailize feature with error %s ", err)
@@ -1398,11 +1393,8 @@ func Test_GetFeatureVector_Success_ComplexType_512(t *testing.T) {
 		fsResp := GetFeatureStoreResponse(t, fsReq)
 
 		// convert data to object in json format
-		arrayJson, err := ConvertBinaryToJsonMessage(row[1])
-		if err != nil {
-			t.Fatalf("Cannot convert to json with error %s ", err)
-		}
-		arrayPt, err := feature_store.DeserialiseComplexFeature(arrayJson, &arrayComplexFeature) // array
+		arrayBin := ConvertBase64ToBinary(t, row[1])
+		arrayPt, err := feature_store.DeserialiseComplexFeature(arrayBin, &arrayComplexFeature) // array
 		row[1] = *arrayPt
 		if err != nil {
 			t.Fatalf("Cannot deserailize feature with error %s ", err)
@@ -1452,11 +1444,8 @@ func Test_GetFeatureVector_Date_Array_Success_ComplexType(t *testing.T) {
 
 		for i := 1; i <= 5; i++ {
 			// convert data to object in json format
-			arrayJson, err := ConvertBinaryToJsonMessage(row[1+i]) // col 0=pk , 1=ts. therefore we start with 2
-			if err != nil {
-				t.Fatalf("Cannot convert to json with error %s ", err)
-			}
-			arrayPt, err := feature_store.DeserialiseComplexFeature(arrayJson, &dateComplexFeature) // array
+			arrayBin := ConvertBase64ToBinary(t, row[1+i]) // col 0=pk , 1=ts. therefore we start with 2
+			arrayPt, err := feature_store.DeserialiseComplexFeature(arrayBin, &dateComplexFeature)
 			row[1+i] = *arrayPt
 			if err != nil {
 				t.Fatalf("Cannot deserailize feature with error %s ", err)
@@ -1594,7 +1583,7 @@ func Test_PassedFeatures_Success_AllTypes(t *testing.T) {
 			[]byte(fmt.Sprintf(`"%s"`, base64.StdEncoding.EncodeToString([]byte("EEFF")))), // binary
 		}
 		copy(row, passedFeatures)
-		row[len(passedFeatures)-1] = []byte(`"EEFF"`)
+		row[len(passedFeatures)-1] = []byte(fmt.Sprintf(`"%s"`, base64.StdEncoding.EncodeToString([]byte("EEFF"))))
 		var fsReq = CreateFeatureStoreRequest(
 			testdbs.FSDB001,
 			"sample_3",
@@ -1764,6 +1753,7 @@ func Test_PassedFeatures_WrongType_NotBoolean_NoValidation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Cannot get sample data with error %s ", err)
 	}
+
 	for _, row := range rows {
 		var fsReq = CreateFeatureStoreRequest(
 			testdbs.FSDB001,

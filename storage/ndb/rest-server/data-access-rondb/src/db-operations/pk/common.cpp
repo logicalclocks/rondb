@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022, 2023 Hopsworks AB
+ * Copyright (C) 2022, 2023, 2025 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -18,6 +18,7 @@
  */
 
 #include "src/db-operations/pk/common.hpp"
+#include <cstring>
 #include <decimal_utils.hpp>
 #include <NdbError.hpp>
 #include <my_time.h>
@@ -835,13 +836,8 @@ RS_Status WriteColToRespBuff(std::shared_ptr<ColRec> colRec, PKRResponse *respon
       return RS_CLIENT_ERROR(ERROR_019);
     } else {
       require(attrBytes <= MAX_TUPLE_SIZE_IN_BYTES);
-      char buffer[MAX_TUPLE_SIZE_IN_BYTES_ENCODED];
-
-      size_t outlen = 0;
-      base64_encode(dataStart, attrBytes, (char *)&buffer[0], &outlen, 0);
-
-      return response->Append_string(colRec->ndbRec->getColumn()->getName(),
-                                     std::string(buffer, outlen), RDRS_BINARY_DATATYPE);
+      return response->Append_bin(colRec->ndbRec->getColumn()->getName(),
+                                     dataStart, attrBytes, RDRS_BINARY_DATATYPE);
     }
   }
   case NdbDictionary::Column::Datetime: {
@@ -861,20 +857,12 @@ RS_Status WriteColToRespBuff(std::shared_ptr<ColRec> colRec, PKRResponse *respon
   case NdbDictionary::Column::Blob: {
     ///< Binary large object (see NdbBlob)
     /// Treat it as binary data
-    Uint64 length = 0;
-    if (colRec->blob->getLength(length) == -1) {
+    Uint32 resp_buff_col_no = -1;
+    Uint64 col_length = 0;
+    if (colRec->blob->getLength(col_length) == -1) {
       return RS_SERVER_ERROR(ERROR_037 + std::string(" Reading column length failed.") +
                              std::string(" Column: ") + std::string(col->getName()) +
                              " Type: " + std::to_string(col->getType()));
-    }
-
-    // check for max length
-    // (4 * ceil(input_size / 3))
-    const size_t maxEncodedSize = length / 3 + (length % 3 != 0) * 4;
-    if (response->GetRemainingCapacity() < maxEncodedSize) {
-      return RS_SERVER_ERROR(ERROR_016 + std::string(" Buffer Remaining Capacity: ") +
-                             std::to_string(response->GetRemainingCapacity()) +
-                             " Required: " + std::to_string(maxEncodedSize));
     }
 
     Uint64 chunk      = 0;
@@ -882,14 +870,13 @@ RS_Status WriteColToRespBuff(std::shared_ptr<ColRec> colRec, PKRResponse *respon
     char buffer[BLOB_MAX_FETCH_SIZE];
 
     struct base64_state state;
-    size_t encodeOutlen = 0;
     base64_stream_encode_init(&state, 0);
 
-    for (chunk = 0; chunk < (length / (BLOB_MAX_FETCH_SIZE)) + 1; chunk++) {
+    for (chunk = 0; chunk < (col_length / (BLOB_MAX_FETCH_SIZE)) + 1; chunk++) {
       Uint64 pos   = chunk * BLOB_MAX_FETCH_SIZE;
       Uint32 bytes = BLOB_MAX_FETCH_SIZE;  // NOTE this is bytes to read and also bytes read.
-      if (pos + bytes > length) {
-        bytes = length - pos;
+      if (pos + bytes > col_length) {
+        bytes = col_length - pos;
       }
 
       if (bytes != 0) {
@@ -911,32 +898,26 @@ RS_Status WriteColToRespBuff(std::shared_ptr<ColRec> colRec, PKRResponse *respon
         if (bytes > 0) {
           total_read += bytes;
           if (chunk == 0) {
-            response->Append_string(colRec->ndbRec->getColumn()->getName(), "",
+            response->Append_bin(colRec->ndbRec->getColumn()->getName(), buffer, 0,
                                     RDRS_BINARY_DATATYPE);
-            // This adds a column to the response buffer. Right now the last byte of the
-            // response buffer is '\0'. Remove the last byte and start appending the
-            // base64 data
-            response->AdvanceWritePointer(-1);
+            // This adds a column to the response buffer.
+            resp_buff_col_no = response->GetCurrentColNumber();
           }
 
-          base64_stream_encode(&state, (const char *)buffer, bytes,
-                               (char *)response->GetWritePointer(), &encodeOutlen);
-          response->AdvanceWritePointer(encodeOutlen);
+          memcpy((void *)response->GetWritePointer(), (void *)buffer, bytes); 
+          response->AdvanceWritePointer(bytes);
         }
       }
     }
 
-    if (total_read != length) {
+    if (total_read != col_length) {
       return RS_RONDB_SERVER_ERROR(colRec->blob->getNdbError(),
                                    ERROR_037 + std::string(" Not all of the data was read.") +
                                        std::string(" Column: ") + std::string(col->getName()) +
-                                       " Expected to read: " + std::to_string(length) +
+                                       " Expected to read: " + std::to_string(col_length) +
                                        " bytes. Read: " + std::to_string(total_read));
     }
-    base64_stream_encode_final(&state, (char *)response->GetWritePointer(), &encodeOutlen);
-    response->AdvanceWritePointer(encodeOutlen);
-    (response->GetResponseBuffer())[response->GetWriteHeader()] = '\0';
-    response->AdvanceWritePointer(1);
+    response->SetColumnLength(resp_buff_col_no, col_length);
 
     return RS_OK;
   }
@@ -1017,14 +998,8 @@ RS_Status WriteColToRespBuff(std::shared_ptr<ColRec> colRec, PKRResponse *respon
     for (int j = words - 1; j >= 0; j--) {
       reversed[i++] = colRec->ndbRec->aRef()[j];
     }
-
-    char buffer[BIT_MAX_SIZE_IN_BYTES_ENCODED];
-
-    size_t outlen = 0;
-    base64_encode(reversed, words, (char *)&buffer[0], &outlen, 0);
-
-    return response->Append_string(colRec->ndbRec->getColumn()->getName(),
-                                   std::string(buffer, outlen), RDRS_BIT_DATATYPE);
+    return response->Append_bin(colRec->ndbRec->getColumn()->getName(),
+                                   reversed, words, RDRS_BIT_DATATYPE);
   }
   case NdbDictionary::Column::Time: {
     ///< Time without date

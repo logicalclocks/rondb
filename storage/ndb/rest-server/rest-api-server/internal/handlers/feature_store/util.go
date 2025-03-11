@@ -17,7 +17,6 @@
 package feature_store
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"reflect"
@@ -28,25 +27,10 @@ import (
 	"hopsworks.ai/rdrs/internal/log"
 )
 
-func DeserialiseComplexFeature(value *json.RawMessage, complexFeature *feature_store.ComplexFeature) (*interface{}, error) {
-	valueString, err := decodeJSONString(value)
-	if err != nil {
-		if log.IsDebug() {
-			log.Debugf("Failed to unmarshal. Value: %s", valueString)
-		}
-		return nil, err
-	}
-
-	jsonDecode, err := base64.StdEncoding.DecodeString(valueString)
-	if err != nil {
-		if log.IsDebug() {
-			log.Debugf("Failed to decode base64. Value: %s", valueString)
-		}
-		return nil, err
-	}
+func DeserialiseComplexFeature(value []byte, complexFeature *feature_store.ComplexFeature) (*interface{}, error) {
 	// var avroDeserialized interface{}
 	avroDeserialized := reflect.New(*complexFeature.Struct).Interface()
-	err = avro.Unmarshal(*complexFeature.Schema, jsonDecode, &avroDeserialized)
+	err := avro.Unmarshal(*complexFeature.Schema, value, &avroDeserialized)
 	if err != nil {
 		if log.IsDebug() {
 			log.Debugf("Failed to deserialize avro")

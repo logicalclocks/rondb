@@ -33,6 +33,7 @@
 typedef struct SubOpTuple {
   PKRRequest *pkRequest;
   PKRResponse *pkResponse;
+  NdbTransaction *transaction;
   NdbOperation *ndbOperation;
   const NdbDictionary::Table *tableDict;
   std::vector<std::shared_ptr<ColRec>> recs;
@@ -45,9 +46,11 @@ typedef struct SubOpTuple {
 class PKROperation {
  private:
   Uint32 noOps;
-  NdbTransaction *transaction = nullptr;
-  Ndb *ndbObject              = nullptr;
-  bool isBatch                = false;
+  Ndb *ndbObject = nullptr;
+  bool isBatch   = false;
+  int numOpsSent = 0;
+  bool singleTransaction = false;
+
   std::vector<SubOpTuple> subOpTuples;
 
  public:
