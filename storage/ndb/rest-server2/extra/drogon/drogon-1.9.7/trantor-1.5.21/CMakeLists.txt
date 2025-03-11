@@ -76,7 +76,7 @@ if(NOT
    "Windows"
    AND CMAKE_CXX_COMPILER_ID MATCHES Clang|GNU
 )
-  target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra)
+  target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Werror)
 endif()
 
 if(${CMAKE_SYSTEM_NAME} STREQUAL "Haiku")
@@ -180,29 +180,18 @@ endif()
 
 set(TRANTOR_TLS_PROVIDER "None")
 if(TRANTOR_USE_TLS STREQUAL "openssl" OR TRANTOR_USE_TLS STREQUAL "")
+  find_package(OpenSSL)
+  if(OpenSSL_FOUND)
+    target_link_libraries(${PROJECT_NAME} PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE USE_OPENSSL)
+    set(TRANTOR_TLS_PROVIDER "OpenSSL")
 
-  if(RDRS_OPENSSL_LIBRARY)
-    MESSAGE(STATUS "RDRS Trantor Using OpenSSL Configured by RonDB") 
-    MESSAGE(STATUS "RDRS Trantor RDRS_OPENSSL_INCLUDE_DIR ${RDRS_OPENSSL_INCLUDE_DIR}") 
-    MESSAGE(STATUS "RDRS Trantor RDRS_OPENSSL_LIBRARY ${RDRS_OPENSSL_LIBRARY}") 
-    MESSAGE(STATUS "RDRS Trantor RDRS_CRYPTO_LIBRARY ${RDRS_CRYPTO_LIBRARY}") 
-    INCLUDE_DIRECTORIES(${RDRS_OPENSSL_INCLUDE_DIR})
-    target_link_libraries(${PROJECT_NAME} PRIVATE ${RDRS_OPENSSL_LIBRARY} ${RDRS_CRYPTO_LIBRARY})
-  else()
-    find_package(OpenSSL)
-    if(OpenSSL_FOUND)
-      target_link_libraries(${PROJECT_NAME} PRIVATE OpenSSL::SSL OpenSSL::Crypto)
-    elseif(TRANTOR_USE_TLS STREQUAL "openssl")
-      message(FATAL_ERROR "Requested OpenSSL TLS provider but OpenSSL was not found")
-    endif()
+    set(TRANTOR_SOURCES ${TRANTOR_SOURCES} trantor/net/inner/tlsprovider/OpenSSLProvider.cc
+                        trantor/utils/crypto/openssl.cc
+    )
+  elseif(TRANTOR_USE_TLS STREQUAL "openssl")
+    message(FATAL_ERROR "Requested OpenSSL TLS provider but OpenSSL was not found")
   endif()
-
-  target_compile_definitions(${PROJECT_NAME} PRIVATE USE_OPENSSL)
-  set(TRANTOR_TLS_PROVIDER "OpenSSL")
-
-  set(TRANTOR_SOURCES ${TRANTOR_SOURCES} trantor/net/inner/tlsprovider/OpenSSLProvider.cc
-                      trantor/utils/crypto/openssl.cc
-  )
 endif()
 
 if(TRANTOR_TLS_PROVIDER STREQUAL "None" AND (TRANTOR_USE_TLS STREQUAL "botan" OR TRANTOR_USE_TLS STREQUAL ""))
