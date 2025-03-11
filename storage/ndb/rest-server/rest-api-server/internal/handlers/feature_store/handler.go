@@ -383,7 +383,7 @@ type ComplexFeatureResult struct {
 
 func getFeatureValuesInt(response *api.PKReadResponseWithCodeJSON, featureView *feature_store.FeatureViewMetadata, featureValues []interface{}, status *api.FeatureStatus, err *feature_store.RestErrorCode) {
 	complexFeaturesCount := 0
-	for featureName, _ := range *response.Body.Data {
+	for featureName, _ := range *response.Body.RawData {
 		featureIndexKey := feature_store.GetFeatureIndexKeyByFgIndexKey(*response.Body.OperationID, featureName)
 		// When only primary key is selected, Rondb will return all columns, so not all value from response are needed.
 		if _, ok := (featureView.FeatureIndexLookup)[featureIndexKey]; ok {
@@ -396,7 +396,8 @@ func getFeatureValuesInt(response *api.PKReadResponseWithCodeJSON, featureView *
 	var wg sync.WaitGroup
 	results := make(chan ComplexFeatureResult, complexFeaturesCount)
 
-	for featureName, value := range *response.Body.Data {
+	// process raw avro data
+	for featureName, value := range *response.Body.RawData {
 		featureIndexKey := feature_store.GetFeatureIndexKeyByFgIndexKey(*response.Body.OperationID, featureName)
 		// When only primary key is selected, Rondb will return all columns, so not all value from response are needed.
 		if index, ok := (featureView.FeatureIndexLookup)[featureIndexKey]; ok {
@@ -406,7 +407,7 @@ func getFeatureValuesInt(response *api.PKReadResponseWithCodeJSON, featureView *
 				go func(idx int, complexFeature *feature_store.ComplexFeature) {
 					defer wg.Done()
 					myIndex := idx
-					deser, e := DeserialiseComplexFeature(value, complexFeature)
+					deser, e := DeserialiseComplexFeature(*value, complexFeature)
 
 					if e != nil {
 						myStatus := api.FEATURE_STATUS_ERROR
@@ -432,6 +433,15 @@ func getFeatureValuesInt(response *api.PKReadResponseWithCodeJSON, featureView *
 			*status = res.Status
 		} else {
 			featureValues[res.Index] = res.Value
+		}
+	}
+
+	// process non avro data
+	for featureName, value := range *response.Body.Data {
+		featureIndexKey := feature_store.GetFeatureIndexKeyByFgIndexKey(*response.Body.OperationID, featureName)
+		// When only primary key is selected, Rondb will return all columns, so not all value from response are needed.
+		if index, ok := (featureView.FeatureIndexLookup)[featureIndexKey]; ok {
+			featureValues[index] = value
 		}
 	}
 }

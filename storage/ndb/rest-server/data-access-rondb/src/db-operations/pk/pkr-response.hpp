@@ -83,7 +83,7 @@ class PKRResponse {
   /**
    * Set column name and data
    */
-  RS_Status SetColumnData(const char *colName, const char *value, Uint32 type);
+  RS_Status SetColumnData(const char *colName, const char *value, Uint32 valueLen, Uint32 type);
 
   /**
    * Get remaining capacity of the response buffer
@@ -179,15 +179,32 @@ class PKRResponse {
                         CHARSET_INFO *from_cs);
 
   /**
+   * Append binary data to response buffer
+   */
+  RS_Status Append_bin(const char *colName, const char *fromBuffer,
+      Uint32 fromBufferLen, Uint32 type);
+  /**
    * Append to response buffer
    */
   RS_Status Append_string(const char *colName, std::string value, Uint32 type);
+
+  /**
+   * Set column length. Needed when we have to update the length 
+   * after writing blobs
+   */
+  RS_Status SetColumnLength(Uint32 colNumber, Uint32 len);
+
+  /**
+   * Get current column number 
+   */
+  Uint32 GetCurrentColNumber();
 
  private:
   /**
    * Set column name and data internal method
    */
-  RS_Status SetColumnDataInt(const char *colName, const char *value, Uint32 type);
+  RS_Status SetColumnDataInt(const char *colName, const char *value,
+      Uint32 valueLen, Uint32 type);
 
   /**
    * Check capacity if the buffer can hold the
@@ -206,7 +223,7 @@ class PKRResponse {
    * write a c_string to the buffer
    *
    */
-  RS_Status Append_cstring(const char *str);
+  RS_Status Append_raw(const char *data, Uint32 data_len);
 
   /**
    * write header field with string value

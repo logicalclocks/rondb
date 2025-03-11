@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022 Hopsworks AB
+ * Copyright (C) 2022, 2025 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -29,6 +29,7 @@
 #include "NdbOperation.hpp"
 #include "NdbRecAttr.hpp"
 #include "NdbTransaction.hpp"
+#include "my_compiler.h"
 #include "src/db-operations/pk/common.hpp"
 #include "src/db-operations/pk/pkr-request.hpp"
 #include "src/db-operations/pk/pkr-response.hpp"
@@ -47,6 +48,7 @@ PKROperation::PKROperation(RS_Buffer *reqBuff, RS_Buffer *respBuff, Ndb *ndbObje
   pkOpTuple.tableDict       = nullptr;
   pkOpTuple.primaryKeysCols = nullptr;
   pkOpTuple.primaryKeySizes = nullptr;
+  pkOpTuple.transaction     = nullptr;
 
   this->subOpTuples.push_back(pkOpTuple);
 
@@ -68,9 +70,11 @@ PKROperation::PKROperation(Uint32 noOps, RS_Buffer *reqBuffs, RS_Buffer *respBuf
     this->subOpTuples.push_back(pkOpTuple);
   }
 
-  this->ndbObject = ndbObject;
-  this->noOps     = noOps;
-  this->isBatch   = true;
+  this->ndbObject  = ndbObject;
+  this->noOps      = noOps;
+  this->isBatch    = true;
+  this->numOpsSent = 0;
+  this->singleTransaction = false;
 }
 
 PKROperation::~PKROperation() {
@@ -110,11 +114,33 @@ PKROperation::~PKROperation() {
  */
 
 RS_Status PKROperation::SetupTransaction() {
-  const NdbDictionary::Table *table_dict = subOpTuples[0].tableDict;
-  transaction                            = ndbObject->startTransaction(table_dict);
-  if (transaction == nullptr) {
-    return RS_RONDB_SERVER_ERROR(ndbObject->getNdbError(), ERROR_005);
+
+  if (unlikely(singleTransaction)) {
+
+    SubOpTuple *subOp = &subOpTuples[0];
+    subOp->transaction = ndbObject->startTransaction(subOp->tableDict);
+    if (unlikely(subOp->transaction == nullptr)) {
+      return RS_RONDB_SERVER_ERROR(ndbObject->getNdbError(), ERROR_005);
+    }
+
+  } else {
+
+    for (size_t i = 0; i < noOps; i++) {
+      PKRRequest *req = subOpTuples[i].pkRequest;
+      if (req->IsInvalidOp()) {
+        // this sub-operation was previously marked invalid.
+        continue;
+      }
+
+      const NdbDictionary::Table *table_dict = subOpTuples[i].tableDict;
+      subOpTuples[i].transaction             = ndbObject->startTransaction(table_dict);
+      if (subOpTuples[i].transaction == nullptr) {
+        return RS_RONDB_SERVER_ERROR(ndbObject->getNdbError(), ERROR_005);
+      }
+    }
+
   }
+
   return RS_OK;
 }
 
@@ -125,8 +151,10 @@ RS_Status PKROperation::SetupTransaction() {
  */
 RS_Status PKROperation::SetupReadOperation() {
 
+  numOpsSent   = 0;
+  size_t opIdx = 0;
 start:
-  for (size_t opIdx = 0; opIdx < noOps; opIdx++) {
+  for (; opIdx < noOps; opIdx++) {
     if (subOpTuples[opIdx].pkRequest->IsInvalidOp()) {  // this sub operation can not be processed
       continue;
     }
@@ -134,6 +162,10 @@ start:
     PKRRequest *req                            = subOpTuples[opIdx].pkRequest;
     const NdbDictionary::Table *tableDict      = subOpTuples[opIdx].tableDict;
     std::vector<std::shared_ptr<ColRec>> *recs = &subOpTuples[opIdx].recs;
+    NdbTransaction *transaction                = subOpTuples[opIdx].transaction;
+    if (unlikely(singleTransaction)) {
+      transaction = subOpTuples[0].transaction;
+    }
 
     // cleaned by destrctor
     Int8 **primaryKeysCols  = (Int8 **)malloc(req->PKColumnsCount() * sizeof(Int8 *));
@@ -149,6 +181,7 @@ start:
       if (status.http_code != SUCCESS) {
         if (isBatch) {
           subOpTuples[opIdx].pkRequest->MarkInvalidOp(status);
+          opIdx++;
           goto start;
         } else {
           return status;
@@ -194,6 +227,11 @@ start:
         it++;
       }
     }
+
+    if (likely(!singleTransaction)) {
+      transaction->executeAsynchPrepare(NdbTransaction::Commit, nullptr, nullptr);
+    }
+    numOpsSent++;
   }
 
   return RS_OK;
@@ -225,8 +263,16 @@ RS_Status PKROperation::GetColValue(const NdbDictionary::Table *tableDict,
 }
 
 RS_Status PKROperation::Execute() {
-  if (transaction->execute(NdbTransaction::NoCommit) != 0) {
-    return RS_RONDB_SERVER_ERROR(transaction->getNdbError(), ERROR_009);
+  
+  if (unlikely(singleTransaction)) {
+    NdbTransaction *trans = subOpTuples[0].transaction;
+    if (unlikely(trans->execute(NdbTransaction::NoCommit) != 0)) {
+      return RS_RONDB_SERVER_ERROR(trans->getNdbError(), ERROR_009);
+    }
+  } else {
+    if (ndbObject->sendPollNdb(WAITFOR_RESPONSE_TIMEOUT, numOpsSent) < numOpsSent) {
+      return RS_RONDB_SERVER_ERROR(ndbObject->getNdbError(), ERROR_009);
+    }
   }
 
   return RS_OK;
@@ -362,6 +408,7 @@ RS_Status PKROperation::ValidateRequest() {
         &subOpTuples[i].allPKCols;
     std::unordered_map<std::string, const NdbDictionary::Column *> *nonPKCols =
         &subOpTuples[i].allNonPKCols;
+    const NdbDictionary::Table *table_dict = subOpTuples[i].tableDict;
 
     if (req->PKColumnsCount() != pkCols->size()) {
       RS_Status error =
@@ -419,15 +466,35 @@ RS_Status PKROperation::ValidateRequest() {
 
           return error;
         }
+        
+        if (table_dict->getColumn(req->ReadColumnName(i))->getType() ==
+                NdbDictionary::Column::Blob ||
+            table_dict->getColumn(req->ReadColumnName(i))->getType() ==
+                NdbDictionary::Column::Text) {
+          singleTransaction = true;
+        }
       }
     }
   }
+
+  //TODO Remove me
+  singleTransaction = true;
 
   return RS_OK;
 }
 
 void PKROperation::CloseTransaction() {
-  ndbObject->closeTransaction(transaction);
+  if (unlikely(singleTransaction)) {
+    if (subOpTuples[0].transaction != nullptr) {
+      ndbObject->closeTransaction(subOpTuples[0].transaction);
+    }
+  } else {
+    for (size_t i = 0; i < noOps; i++) {
+      if (subOpTuples[i].transaction != nullptr){
+        ndbObject->closeTransaction(subOpTuples[i].transaction);
+      }
+    }
+  }
 }
 
 RS_Status PKROperation::PerformOperation() {
@@ -472,12 +539,15 @@ RS_Status PKROperation::PerformOperation() {
 }
 
 RS_Status PKROperation::Abort() {
-  if (transaction != nullptr) {
-    NdbTransaction::CommitStatusType status = transaction->commitStatus();
-    if (status == NdbTransaction::CommitStatusType::Started) {
-      transaction->execute(NdbTransaction::Rollback);
+  for (size_t i = 0; i < noOps; i++) {
+    NdbTransaction *transaction = subOpTuples[i].transaction;
+    if (transaction != nullptr) {
+      NdbTransaction::CommitStatusType status = transaction->commitStatus();
+      if (status == NdbTransaction::CommitStatusType::Started) {
+        transaction->execute(NdbTransaction::Rollback);
+      }
+      ndbObject->closeTransaction(transaction);
     }
-    ndbObject->closeTransaction(transaction);
   }
 
   return RS_OK;

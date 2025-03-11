@@ -69,6 +69,7 @@ func (h *RouteHandler) BatchPkRead(c *gin.Context) {
 		return
 	}
 
+	responseIntf.(*api.BatchResponseJSON).EncodeRawData()
 	output, err := sonic.Marshal(responseIntf.(*api.BatchResponseJSON))
 	if err != nil {
 		c.AbortWithError(status, err)
