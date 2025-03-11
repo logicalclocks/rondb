@@ -119,7 +119,7 @@ func registerHandlers(router *gin.Engine, heap *heap.Heap, apiKeyCache apikey.Ca
 
 	batchPkReadHandler := batchpkread.New(heap, apiKeyCache)
 	var fvMeta = fsmeta.NewFeatureViewMetaDataCache()
-	featureStoreHandler := feature_store.New(fvMeta, apiKeyCache, batchPkReadHandler)
+	featureStoreHandler := feature_store.New(fvMeta, apiKeyCache, batchPkReadHandler, heap)
 
 	routeHandler := &RouteHandler{
 		statsHandler:             stat.New(heap, apiKeyCache),
