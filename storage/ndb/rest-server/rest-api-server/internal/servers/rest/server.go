@@ -128,7 +128,7 @@ func registerHandlers(router *gin.Engine, heap *heap.Heap, apiKeyCache apikey.Ca
 		batchPkReadHandler:       batchPkReadHandler,
 		rdrsMetrics:              rdrsMetrics,
 		featureStoreHandler:      featureStoreHandler,
-		batchFeatureStoreHandler: batchfeaturestore.New(fvMeta, apiKeyCache, batchPkReadHandler),
+		batchFeatureStoreHandler: batchfeaturestore.New(fvMeta, apiKeyCache, batchPkReadHandler, heap),
 	}
 
 	// ping
