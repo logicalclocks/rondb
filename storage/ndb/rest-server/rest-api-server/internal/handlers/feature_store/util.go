@@ -17,10 +17,7 @@
 package feature_store
 
 import (
-	"encoding/json"
-	"fmt"
 	"reflect"
-	"strings"
 
 	"github.com/hamba/avro/v2"
 	"hopsworks.ai/rdrs/internal/feature_store"
@@ -41,18 +38,4 @@ func DeserialiseComplexFeature(value []byte, complexFeature *feature_store.Compl
 	// dicsard the top most wapper
 	nativeJson := reflect.ValueOf(avroDeserialized).Elem().Field(0).Interface()
 	return &nativeJson, err
-}
-
-func decodeJSONString(raw *json.RawMessage) (string, error) {
-	// Convert the raw message to a string
-	rawStr := string(*raw)
-	// Check that the first and last characters are quotes
-	if len(rawStr) < 2 || rawStr[0] != '"' || rawStr[len(rawStr)-1] != '"' {
-		return "", fmt.Errorf("invalid JSON string format")
-	}
-	// Remove the surrounding quotes
-	unquotedStr := rawStr[1 : len(rawStr)-1]
-	// Replace escape sequences with their actual characters
-	decodedStr := strings.ReplaceAll(unquotedStr, `\"`, `"`)
-	return decodedStr, nil
 }
