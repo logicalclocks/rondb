@@ -851,7 +851,7 @@ NdbDictionary::Column *NdbColumnImpl::create_pseudo(const char *name) {
     col->m_impl.m_attrId = AttributeHeader::INTERPRETER_INPUT_FIRST + 7;
     col->m_impl.m_attrSize = 8;
     col->m_impl.m_arraySize = 1;
-  } else if (!strcmp(name, "NDBINTERPRETER_INPUT_8")) {
+  } else if (!strcmp(name, "NDB$INTERPRETER_INPUT_8")) {
     col->setType(NdbDictionary::Column::Unsigned);
     col->m_impl.m_attrId = AttributeHeader::INTERPRETER_INPUT_FIRST + 8;
     col->m_impl.m_attrSize = 8;

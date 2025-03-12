@@ -350,6 +350,11 @@ int main(int argc, char *argv[]) {
       opt_small_values_flag[i] =
         globalConfigs.rondis.databases[i].optimizeSmallValues;
     }
+    printf("Starting %u Rondis databases on %s:%u with %u threads\n",
+      globalConfigs.rondis.numDatabases,
+      globalConfigs.rondis.serverIP.c_str(),
+      globalConfigs.rondis.serverPort,
+      globalConfigs.rondis.numThreads);
     g_rondis_thread = NewDispatchThread(globalConfigs.rondis.serverIP,
                                         globalConfigs.rondis.serverPort,
                                         globalConfigs.rondis.numThreads,
