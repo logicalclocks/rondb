@@ -73,8 +73,11 @@ PKROperation::PKROperation(Uint32 noOps, RS_Buffer *reqBuffs, RS_Buffer *respBuf
   this->ndbObject  = ndbObject;
   this->noOps      = noOps;
   this->isBatch    = true;
-  this->numOpsSent = 0;
+
+#ifdef MULTI_TX_BATCH 
   this->singleTransaction = false;
+  this->numOpsSent = 0;
+#endif
 }
 
 PKROperation::~PKROperation() {
@@ -114,8 +117,9 @@ PKROperation::~PKROperation() {
  */
 
 RS_Status PKROperation::SetupTransaction() {
-
+#ifdef MULTI_TX_BATCH
   if (unlikely(singleTransaction)) {
+#endif
 
     SubOpTuple *subOp = &subOpTuples[0];
     subOp->transaction = ndbObject->startTransaction(subOp->tableDict);
@@ -123,6 +127,7 @@ RS_Status PKROperation::SetupTransaction() {
       return RS_RONDB_SERVER_ERROR(ndbObject->getNdbError(), ERROR_005);
     }
 
+#ifdef MULTI_TX_BATCH
   } else {
 
     for (size_t i = 0; i < noOps; i++) {
@@ -138,8 +143,8 @@ RS_Status PKROperation::SetupTransaction() {
         return RS_RONDB_SERVER_ERROR(ndbObject->getNdbError(), ERROR_005);
       }
     }
-
   }
+#endif
 
   return RS_OK;
 }
@@ -151,7 +156,10 @@ RS_Status PKROperation::SetupTransaction() {
  */
 RS_Status PKROperation::SetupReadOperation() {
 
+#ifdef MULTI_TX_BATCH
   numOpsSent   = 0;
+#endif
+
   size_t opIdx = 0;
 start:
   for (; opIdx < noOps; opIdx++) {
@@ -162,10 +170,13 @@ start:
     PKRRequest *req                            = subOpTuples[opIdx].pkRequest;
     const NdbDictionary::Table *tableDict      = subOpTuples[opIdx].tableDict;
     std::vector<std::shared_ptr<ColRec>> *recs = &subOpTuples[opIdx].recs;
-    NdbTransaction *transaction                = subOpTuples[opIdx].transaction;
-    if (unlikely(singleTransaction)) {
-      transaction = subOpTuples[0].transaction;
+    NdbTransaction *transaction                = subOpTuples[0].transaction;
+      
+#ifdef MULTI_TX_BATCH
+    if (likely(!singleTransaction)) {
+      transaction = subOpTuples[opIdx].transaction;
     }
+#endif
 
     // cleaned by destrctor
     Int8 **primaryKeysCols  = (Int8 **)malloc(req->PKColumnsCount() * sizeof(Int8 *));
@@ -228,10 +239,13 @@ start:
       }
     }
 
+#ifdef MULTI_TX_BATCH
     if (likely(!singleTransaction)) {
       transaction->executeAsynchPrepare(NdbTransaction::Commit, nullptr, nullptr);
     }
     numOpsSent++;
+#endif
+
   }
 
   return RS_OK;
@@ -263,17 +277,22 @@ RS_Status PKROperation::GetColValue(const NdbDictionary::Table *tableDict,
 }
 
 RS_Status PKROperation::Execute() {
-  
+#ifdef MULTI_TX_BATCH
   if (unlikely(singleTransaction)) {
+#endif
+
     NdbTransaction *trans = subOpTuples[0].transaction;
     if (unlikely(trans->execute(NdbTransaction::NoCommit) != 0)) {
       return RS_RONDB_SERVER_ERROR(trans->getNdbError(), ERROR_009);
     }
+
+#ifdef MULTI_TX_BATCH
   } else {
     if (ndbObject->sendPollNdb(WAITFOR_RESPONSE_TIMEOUT, numOpsSent) < numOpsSent) {
       return RS_RONDB_SERVER_ERROR(ndbObject->getNdbError(), ERROR_009);
     }
   }
+#endif
 
   return RS_OK;
 }
@@ -408,7 +427,6 @@ RS_Status PKROperation::ValidateRequest() {
         &subOpTuples[i].allPKCols;
     std::unordered_map<std::string, const NdbDictionary::Column *> *nonPKCols =
         &subOpTuples[i].allNonPKCols;
-    const NdbDictionary::Table *table_dict = subOpTuples[i].tableDict;
 
     if (req->PKColumnsCount() != pkCols->size()) {
       RS_Status error =
@@ -466,28 +484,34 @@ RS_Status PKROperation::ValidateRequest() {
 
           return error;
         }
-        
+
+ #ifdef MULTI_TX_BATCH       
+        const NdbDictionary::Table *table_dict = subOpTuples[i].tableDict;
         if (table_dict->getColumn(req->ReadColumnName(i))->getType() ==
                 NdbDictionary::Column::Blob ||
             table_dict->getColumn(req->ReadColumnName(i))->getType() ==
                 NdbDictionary::Column::Text) {
           singleTransaction = true;
         }
+#endif
+
       }
     }
   }
-
-  //TODO Remove me
-  singleTransaction = true;
 
   return RS_OK;
 }
 
 void PKROperation::CloseTransaction() {
+#ifdef MULTI_TX_BATCH
   if (unlikely(singleTransaction)) {
+#endif
+
     if (subOpTuples[0].transaction != nullptr) {
       ndbObject->closeTransaction(subOpTuples[0].transaction);
     }
+
+#ifdef MULTI_TX_BATCH
   } else {
     for (size_t i = 0; i < noOps; i++) {
       if (subOpTuples[i].transaction != nullptr){
@@ -495,6 +519,7 @@ void PKROperation::CloseTransaction() {
       }
     }
   }
+#endif
 }
 
 RS_Status PKROperation::PerformOperation() {
