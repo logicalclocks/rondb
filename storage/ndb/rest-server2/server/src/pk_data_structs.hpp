@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023, 2024 Hopsworks AB
+ * Copyright (C) 2023, 2025 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -21,11 +21,15 @@
 #define STORAGE_NDB_REST_SERVER2_SERVER_SRC_PK_DATA_STRUCTS_HPP_
 
 #include "rdrs_dal.h"
+#include "rdrs_const.h"
 #include <ndb_types.h>
 
 #include <drogon/HttpTypes.h>
 #include <string>
 #include <vector>
+#include <EventLogger.hpp>
+#include <ArenaMalloc.hpp>
+#include <libbase64.h>
 
 std::string to_string(DataReturnType);
 Uint32 decode_utf8_to_unicode(const std::string_view &, size_t &);
@@ -79,9 +83,10 @@ struct Column {
 
 struct ResultView {
   const char *name_ptr;
-  Uint32 name_len;
   const char *value_ptr;
+  Uint32 name_len;
   Uint32 value_len;
+  Uint32 data_type;
   bool quoted_flag;
 };
 
@@ -96,7 +101,8 @@ class PKReadResponse {
                              Uint32 name_len,
                              const char *value,
                              Uint32 value_len,
-                             bool quoted_flag) = 0;
+                             bool quoted_flag,
+                             Uint32 data_type) = 0;
   virtual ~PKReadResponse() = default;
 };
 
@@ -124,6 +130,7 @@ class PKReadResponseJSON : public PKReadResponse {
     result_view = other.result_view;
     size_json = other.size_json;
   }
+
   PKReadResponseJSON &operator=(const PKReadResponseJSON &other) {
     code = other.code;
     num_values = other.num_values;
@@ -133,6 +140,7 @@ class PKReadResponseJSON : public PKReadResponse {
     size_json = other.size_json;
     return *this;
   }
+
   void init(Uint32 numColumns,
             ResultView *in_result_view) override {
     code = drogon::HttpStatusCode::kUnknown;
@@ -145,75 +153,124 @@ class PKReadResponseJSON : public PKReadResponse {
      */
     size_json = 55;
   }
+
   void setStatusCode(drogon::HttpStatusCode c) {
     code = c;
   }
+
   void setOperationID(const char *opId, Uint32 len) override {
     opIdPtr = opId;
     opIdLen = len;
     size_json += len;
   }
+
   void setOperationID(std::string_view str_view) override {
     opIdPtr = str_view.data();
     opIdLen = str_view.size();
     size_json += str_view.size();
   }
+
   void setColumnData(Uint32 index,
                      const char *name,
                      Uint32 name_len,
                      const char *value,
                      Uint32 value_len,
-                     bool quoted) override {
+                     bool quoted,
+                     Uint32 data_type) override {
     result_view[index].name_ptr = name;
     result_view[index].name_len = name_len;
     result_view[index].value_ptr = value;
     result_view[index].value_len = value_len;
     result_view[index].quoted_flag = quoted;
+    result_view[index].data_type = data_type;
+    Uint32 encoded_value_len = value_len;
+    if (data_type == RDRS_BINARY_DATATYPE ||
+        data_type == RDRS_BIT_DATATYPE) {
+      encoded_value_len *= 4;
+      encoded_value_len /= 3;
+      encoded_value_len += 2;
+    }
     // 8 includes quoting for value
-    size_json += (8 + name_len + value_len);
+    size_json += (8 + name_len + encoded_value_len);
   }
+
   drogon::HttpStatusCode getStatusCode() const {
     return code;
   }
+
   std::string_view getOperationID() const {
     std::string_view opId(opIdPtr, opIdLen);
     return opId;
   }
+
   std::string_view getName(Uint32 index) const {
     std::string_view name(result_view[index].name_ptr,
                           result_view[index].name_len);
     return name;
   }
+
   std::string getOperationIdString() const {
     std::string opId(opIdPtr, opIdLen);
     return opId;
   }
+
   Uint32 getNumValues() const {
     return num_values;
   }
+
   std::string getNameString(Uint32 index) const {
     std::string name(result_view[index].name_ptr,
                      result_view[index].name_len);
     return name;
   }
+
   std::string getValueString(Uint32 index) const {
     std::string value(result_view[index].value_ptr,
                       result_view[index].value_len);
     return value;
   }
+
   std::vector<char> getValueArray(Uint32 index) {
+    const char *value_ptr = result_view[index].value_ptr;
+    Uint32 value_len = result_view[index].value_len;
+    bool quoted_flag = result_view[index].quoted_flag;
+    if (result_view[index].data_type == RDRS_BINARY_DATATYPE ||
+        result_view[index].data_type == RDRS_BIT_DATATYPE) {
+      Uint32 encoded_len = ((value_len * 4) / 3) + 3 + 2;
+      std::vector<char> vec(encoded_len);
+      char* encode_ptr = &vec[1];
+      assert(quoted_flag);
+      size_t encode_len = 0;
+      base64_encode(value_ptr, value_len, encode_ptr, &encode_len, 0);
+      encode_len += 2;
+      vec[0] = '\"';
+      vec[encode_len - 1] = '\"';
+      vec.resize(encode_len);
+      return vec;
+    } else if (quoted_flag) {
+      std::vector<char> vec(value_len + 2);
+      vec[0] = '\"';
+      vec[value_len + 1] = '\"';
+      std::copy(value_ptr, value_ptr + value_len, vec.begin() + 1);
+      return vec;
+    } else {
+      std::vector<char> vec(value_ptr, value_ptr + value_len);
+      return vec;
+    }
+  }
+
+  std::vector<Uint8> getComplexValue(Uint32 index) {
+    assert(result_view[index].quoted_flag);
     const char *ptr = result_view[index].value_ptr;
     Uint32 len = result_view[index].value_len;
-    std::vector<char> vec(ptr, ptr + len);
+    std::vector<Uint8> vec(ptr, ptr + len);
     return vec;
   }
+
   std::string_view getValue(Uint32 index) const {
     std::string_view value(result_view[index].value_ptr,
                            result_view[index].value_len);
     return value;
-  }
-  bool getQuoteFlag(Uint32 index) {
-    return result_view[index].quoted_flag;
   }
 
   void addSizeJsonMessage() {
@@ -225,10 +282,14 @@ class PKReadResponseJSON : public PKReadResponse {
   }
   size_t getSizeJson() const { return size_json; }
 
-  size_t to_string_single(char*) const;
-  char* to_string_batch(char*) const;
-  static size_t batch_to_string(const std::vector<PKReadResponseJSON> &,
-                                char*);
+  int to_string_single(char*,
+                       ArenaMalloc *amalloc,
+                       size_t & size_json) const;
+  char* to_string_batch(char*, ArenaMalloc *amalloc) const;
+  static int batch_to_string(const std::vector<PKReadResponseJSON> &,
+                             char*,
+                             ArenaMalloc *amalloc,
+                             size_t & size_json);
 };
 
 class PKReadResponseWithCodeJSON {

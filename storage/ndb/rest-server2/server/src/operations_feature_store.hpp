@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2024 Hopsworks AB
+ * Copyright (C) 2024, 2025 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -54,7 +54,8 @@ struct TrainingDatasetJoin {
 
 std::tuple<int, RS_Status> GetProjectID(const std::string &featureStoreName);
 
-std::tuple<int, RS_Status> GetFeatureStoreID(const std::string &featureStoreName);
+std::tuple<int, RS_Status> GetFeatureStoreID(
+  const std::string &featureStoreName);
 
 std::tuple<int, RS_Status> GetFeatureViewID(int featureStoreID,
                                             const std::string &featureViewName,
@@ -86,14 +87,17 @@ struct ServingKey {
   std::string to_string() const {
     std::ostringstream oss;
     oss << "ServingKey {"
-        << "\n  featureGroupId: " << featureGroupId << "\n  featureName: " << featureName
-        << "\n  prefix: " << prefix << "\n  required: " << required << "\n  joinOn: " << joinOn
-        << "\n  joinIndex: " << joinIndex << "\n  requiredEntry: " << requiredEntry << "\n}";
+        << "\nfeatureGroupId: " << featureGroupId << "\nfeatureName: "
+        << featureName << "\nprefix: " << prefix << "\nrequired: "
+        << required << "\njoinOn: " << joinOn
+        << "\njoinIndex: " << joinIndex << "\nrequiredEntry: "
+        << requiredEntry << "\n}";
     return oss.str();
   }
 };
 
-std::tuple<std::vector<ServingKey>, RS_Status> GetServingKeys(int featureViewId);
+std::tuple<std::vector<ServingKey>, RS_Status>
+GetServingKeys(int featureViewId);
 
 struct AvroField {
   std::string name;  
@@ -113,9 +117,9 @@ struct FeatureGroupAvroSchema {
         return {field.avroSchema, CRS_Status::SUCCESS.status};
       }
     }
-    return {"", CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                           std::string("Cannot find schema for feature ") + featureName)
-                           .status};
+    return {"", CRS_Status(static_cast<HTTP_CODE>(
+      drogon::HttpStatusCode::k400BadRequest),
+      std::string("Cannot find schema for feature ") + featureName).status};
   }
 
   // Parse from a simdjson document
@@ -127,23 +131,23 @@ struct FeatureGroupAvroSchema {
     // Parse each field from the JSON object
     simdjson::error_code error = elem["type"].get(type_view);
     if (error != simdjson::SUCCESS) {
-      return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                        "Failed to parse type from JSON")
-          .status;
+      return CRS_Status(static_cast<HTTP_CODE>(
+        drogon::HttpStatusCode::k400BadRequest),
+        "Failed to parse type from JSON").status;
     }
 
     error = elem["name"].get(name_view);
     if (error != simdjson::SUCCESS) {
-      return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                        "Failed to parse name from JSON")
-          .status;
+      return CRS_Status(static_cast<HTTP_CODE>(
+        drogon::HttpStatusCode::k400BadRequest),
+        "Failed to parse name from JSON").status;
     }
 
     error = elem["namespace"].get(namespace_str_view);
     if (error != simdjson::SUCCESS) {
-      return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                        "Failed to parse namespace from JSON")
-          .status;
+      return CRS_Status(static_cast<HTTP_CODE>(
+        drogon::HttpStatusCode::k400BadRequest),
+        "Failed to parse namespace from JSON").status;
     }
 
     // Parse the array of fields
@@ -158,14 +162,18 @@ struct FeatureGroupAvroSchema {
       // col name
       error = field["name"].get(field_name_view);
       if (error != simdjson::SUCCESS) {
-        return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
-                          "Failed to parse field name from JSON")
-            .status;
+        return CRS_Status(static_cast<HTTP_CODE>(
+          drogon::HttpStatusCode::k400BadRequest),
+          "Failed to parse field name from JSON").status;
       }
     
-      std::string field_avro_schema = getAvroSchema(std::string(type_view), std::string(name_view),
-          std::string(namespace_str_view), field_str);
-      fields.push_back(AvroField{std::string(field_name_view), field_avro_schema});
+      std::string field_avro_schema =
+        getAvroSchema(std::string(type_view),
+                      std::string(name_view),
+                      std::string(namespace_str_view),
+                      field_str);
+      fields.push_back(AvroField{std::string(field_name_view),
+                       field_avro_schema});
     }
     return CRS_Status::SUCCESS.status;
   }
@@ -189,6 +197,8 @@ struct FeatureGroupAvroSchema {
 };
 
 std::tuple<FeatureGroupAvroSchema, RS_Status>
-GetFeatureGroupAvroSchema(const std::string &fgName, int fgVersion, int projectId);
+GetFeatureGroupAvroSchema(const std::string &fgName,
+                          int fgVersion,
+                          int projectId);
 
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_OPERATIONS_FEATURE_STORE_HPP_

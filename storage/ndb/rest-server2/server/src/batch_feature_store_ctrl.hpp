@@ -55,7 +55,8 @@ getFeatureValuesMultipleEntries(
     const metadata::FeatureViewMetadata &featureView,
     std::vector<feature_store_data_structs::FeatureStatus> &batchStatus,
     std::vector<std::vector<feature_store_data_structs::DetailedStatus>> &detailedStatus,
-    bool includeDetailedStatus);
+    bool includeDetailedStatus,
+    bool & use_compressed);
 std::vector<PKReadParams> getBatchPkReadParamsMultipleEntries(
     const metadata::FeatureViewMetadata &metadata,
     const std::vector<std::unordered_map<std::string, std::vector<char>>> &entries,

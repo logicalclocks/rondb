@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023, 2024 Hopsworks AB
+ * Copyright (C) 2023, 2025 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -179,6 +179,8 @@ class PKRResponse {
    */
   RS_Status Append_string(std::string value, Uint32 type);
 
+  /* Append to response buffer, binary data */
+  RS_Status Append_bin(const char *value, Uint32 value_len, Uint32 type);
   /**
    * Set length of BLOB column
    */

@@ -77,6 +77,7 @@ void BatchFeatureStoreCtrl::batch_featureStore(
    * 14. Callback to Drogon to send response HTTP packet
    */
 
+  bool use_compressed = globalConfigs.rest.useCompression;
   drogon::HttpResponsePtr resp = drogon::HttpResponse::newHttpResponse();
   BatchFsReadEndPointMetricsUpdater metricsUpdater(resp);
 
@@ -284,7 +285,8 @@ void BatchFeatureStoreCtrl::batch_featureStore(
         *metadata,
         featureStatus,
         detailedStatus,
-        reqStruct.GetOptions().includeDetailedStatus);
+        reqStruct.GetOptions().includeDetailedStatus,
+        use_compressed);
     if (unlikely(err != nullptr)) {
       resp->setBody(err->Error());
       resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
@@ -306,7 +308,11 @@ void BatchFeatureStoreCtrl::batch_featureStore(
                                     featureStatus);
   fsResp.features = features;
   fsResp.metadata = GetFeatureMetadata(metadata, reqStruct.metadataRequest);
-  resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+  if (use_compressed) {
+    resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+  } else {
+    resp->setContentTypeCode(drogon::CT_APPLICATION_OCTET_STREAM);
+  }
   std::string fsRespStr = fsResp.to_string();
   DEB_BFS_CTRL("JSON response: %s", fsRespStr.c_str());
   resp->setBody(std::move(fsRespStr));
@@ -351,7 +357,8 @@ getFeatureValuesMultipleEntries(
   std::vector<feature_store_data_structs::FeatureStatus> &batchStatus,
   std::vector<std::vector<
     feature_store_data_structs::DetailedStatus>> &detailedStatus,
-  bool includeDetailedStatus) {
+  bool includeDetailedStatus,
+  bool &use_compressed) {
   auto rondbBatchResult =
     std::vector<std::vector<PKReadResponseWithCodeJSON>>(batchStatus.size());
   auto batchResult =
@@ -385,7 +392,8 @@ getFeatureValuesMultipleEntries(
           GetFeatureValues(rondbBatchResult[i],
                            entries[i],
                            featureView,
-                           includeDetailedStatus);
+                           includeDetailedStatus,
+                           use_compressed);
       batchResult[i] = std::get<0>(result);
       batchStatus[i] = std::get<1>(result);
       if (includeDetailedStatus) {

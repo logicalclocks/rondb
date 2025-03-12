@@ -796,11 +796,8 @@ RS_Status KeyOperation::write_col_to_resp(Uint32 colIdx,
         std::string(" DB: ") + std::string(request->DB()) +
         " Table: " + std::string(request->Table()));
     }
-    char buffer[MAX_TUPLE_SIZE_IN_BYTES_ENCODED];
-    size_t outlen = 0;
-    base64_encode(dataStart, attrBytes, (char *)&buffer[0], &outlen, 0);
-    return response->Append_string(std::string(buffer, outlen),
-                                   RDRS_BINARY_DATATYPE);
+    DEB_NDB_BE("dataStart: %p, len: %u", dataStart, attrBytes);
+    return response->Append_bin(dataStart, attrBytes, RDRS_BINARY_DATATYPE);
   }
   case NdbDictionary::Column::Datetime: {
     ///< Precision down to 1 sec (sizeof(Datetime) == 8 bytes )
@@ -853,21 +850,17 @@ RS_Status KeyOperation::write_col_to_resp(Uint32 colIdx,
     DEB_NDB_BE("Read col_name: %s, BLOB of length: %llu", col_name, length);
     // check for max length
     // (4 * ceil(input_size / 3))
-    const size_t maxEncodedSize = length / 3 + (length % 3 != 0) * 4;
-    if (unlikely(response->GetRemainingCapacity() < maxEncodedSize)) {
+    const size_t maxLength = length + 4;
+    if (unlikely(response->GetRemainingCapacity() < maxLength)) {
       return RS_SERVER_ERROR(
         std::string(rdrsErrorMessage(ERROR_RESPONSE_BUFFER_OVERFLOW)) + 
         std::string(" Buffer Remaining Capacity: ") +
         std::to_string(response->GetRemainingCapacity()) +
-        " Required: " + std::to_string(maxEncodedSize));
+        " Required: " + std::to_string(maxLength));
     }
     Uint64 chunk = 0;
     Uint64 total_read = 0;
     char buffer[BLOB_MAX_FETCH_SIZE];
-    struct base64_state state;
-    size_t encodeOutlen = 0;
-    size_t total_encoded_len = 0;
-    base64_stream_encode_init(&state, 0);
 
     for (chunk = 0; chunk < (length / (BLOB_MAX_FETCH_SIZE)) + 1; chunk++) {
       Uint64 pos = chunk * BLOB_MAX_FETCH_SIZE;
@@ -904,13 +897,10 @@ RS_Status KeyOperation::write_col_to_resp(Uint32 colIdx,
             // start appending the base64 data
             response->AdvanceWritePointer(-1);
           }
-          base64_stream_encode(&state,
-                               (const char *)buffer,
-                               bytes,
-                               (char *)response->GetWritePointer(),
-                               &encodeOutlen);
-          response->AdvanceWritePointer(encodeOutlen);
-          total_encoded_len += encodeOutlen;
+          memcpy((char*)response->GetWritePointer(),
+                 (const char*)buffer,
+                 bytes);
+          response->AdvanceWritePointer(bytes);
         }
       }
     }
@@ -923,16 +913,9 @@ RS_Status KeyOperation::write_col_to_resp(Uint32 colIdx,
         " Expected to read: " + std::to_string(length) +
         " bytes. Read: " + std::to_string(total_read));
     }
-    base64_stream_encode_final(&state,
-                              (char *)response->GetWritePointer(),
-                              &encodeOutlen);
-    total_encoded_len += encodeOutlen;
-    response->AdvanceWritePointer(encodeOutlen);
-    (response->GetResponseBuffer())[response->GetWriteHeader()] = '\0';
-    response->AdvanceWritePointer(1);
-    response->SetBlobLen(total_encoded_len);
-    DEB_NDB_BE("Written a blob of total encoded len: %u",
-      (Uint32)total_encoded_len);
+    response->SetBlobLen(total_read);
+    DEB_NDB_BE("Written a blob of total len: %u",
+      (Uint32)total_read);
     return RS_OK;
   }
   case NdbDictionary::Column::Text: {
@@ -1045,16 +1028,11 @@ RS_Status KeyOperation::write_col_to_resp(Uint32 colIdx,
     for (int j = words - 1; j >= 0; j--) {
       reversed[i++] = (char)col_ptr[j];
     }
-    char buffer[BIT_MAX_SIZE_IN_BYTES_ENCODED];
-    size_t outlen = 0;
-    base64_encode(reversed, words, (char *)&buffer[0], &outlen, 0);
-    DEB_NDB_BE("col_name: %s, col_ptr[words - 1] = %x, outlen: %u, string: %s",
-      col_name,
-      col_ptr[words - 1],
-      Uint32(outlen),
-      std::string(buffer, outlen).c_str());
-    return response->Append_string(std::string(buffer, outlen),
-                                   RDRS_BIT_DATATYPE);
+    DEB_NDB_BE("BIT:col_name: %s, col_ptr[words - 1] = %x, outlen: %u",
+               col_name,
+               col_ptr[words - 1],
+               Uint32(words));
+    return response->Append_bin(reversed, words, RDRS_BIT_DATATYPE);
   }
   case NdbDictionary::Column::Time: {
     ///< Time without date

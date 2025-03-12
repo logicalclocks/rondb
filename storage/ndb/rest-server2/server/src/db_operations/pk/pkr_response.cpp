@@ -187,6 +187,16 @@ RS_Status PKRResponse::Append_string(std::string value,
   return SetColumnData(value.c_str(), type, value.size());
 }
 
+RS_Status PKRResponse::Append_bin(const char *buffer,
+                                  Uint32 value_len,
+                                  Uint32 type) {
+  if (unlikely(value_len > GetRemainingCapacity())) {
+    return RS_SERVER_ERROR(std::string(
+      rdrsErrorMessage(ERROR_RESPONSE_BUFFER_OVERFLOW)));
+  }
+  return SetColumnData(buffer, type, value_len);
+}
+
 RS_Status PKRResponse::Append_i8(Int8 num) {
   return Append_i64(num);
 }
