@@ -37,8 +37,8 @@ class MetadataRequest {
   std::optional<bool> featureType;  // json:"featureType" binding:"required"
   std::string to_string() const {
     std::ostringstream oss;
-    oss << "MetadataRequest {"
-        << "\nfeatureName: "
+    oss << "MetadataRequest{"
+        << "\nfeatureName:"
         << (featureName.has_value() ?
           (featureName.value() ? "true" : "false") : "null")
         << "\nfeatureType: "
@@ -56,8 +56,8 @@ class OptionsRequest {
 
   std::string to_string() const {
     std::ostringstream oss;
-    oss << "OptionsRequest {"
-        << "\nvalidatePassedFeatures: "
+    oss << "OptionsRequest{"
+        << "\nvalidatePassedFeatures:"
         << (validatePassedFeatures.has_value() ?
            (validatePassedFeatures.value() ?
           "true" : "false") : "null")
@@ -93,10 +93,10 @@ class BatchFeatureStoreRequest {
   std::string to_string() const {
     std::ostringstream oss;
     oss << "BatchFeatureStoreRequest {"
-        << "\nfeatureStoreName: " << featureStoreName
-        << "\nfeatureViewName: " << featureViewName
-        << "\nfeatureViewVersion: " << featureViewVersion
-        << "\npassedFeatures: {";
+        << "\nfeatureStoreName:" << featureStoreName
+        << "\nfeatureViewName:" << featureViewName
+        << "\nfeatureViewVersion:" << featureViewVersion
+        << "\npassedFeatures:{";
     for (const auto &passedFeature : passedFeatures) {
       oss << "\n{";
       for (const auto &[key, value] : passedFeature) {
@@ -109,11 +109,11 @@ class BatchFeatureStoreRequest {
       oss << "\n}";
     }
     oss << "\n}"
-        << "\nentries: {";
+        << "\nentries:{";
     for (const auto &entry : entries) {
       oss << "\n{";
       for (const auto &[key, value] : entry) {
-        oss << "\n" << key << ": [";
+        oss << "\n" << key << ":[";
         for (char c : value) {
           oss << c;
         }
@@ -122,9 +122,9 @@ class BatchFeatureStoreRequest {
       oss << "\n}";
     }
     oss << "\n}"
-        << "\nmetadataRequest: " << metadataRequest.to_string();
+        << "\nmetadataRequest:" << metadataRequest.to_string();
     oss << "\n}";
-    oss << "\noptionsRequest: " << optionsRequest.to_string() << "\n}";
+    oss << "\noptionsRequest:" << optionsRequest.to_string() << "\n}";
     return oss.str();
   }
   Options GetOptions() const;
@@ -149,31 +149,31 @@ class FeatureStoreRequest {
                        std::vector<char>> &features);
   std::string to_string() const {
     std::ostringstream oss;
-    oss << "FeatureStoreRequest {"
-        << "\nfeatureStoreName: " << featureStoreName
-        << "\nfeatureViewName: " << featureViewName
-        << "\nfeatureViewVersion: " << featureViewVersion
-        << "\npassedFeatures: {";
+    oss << "FeatureStoreRequest{"
+        << "\nfeatureStoreName:" << featureStoreName
+        << "\nfeatureViewName:" << featureViewName
+        << "\nfeatureViewVersion:" << featureViewVersion
+        << "\npassedFeatures:{";
     for (const auto &[key, value] : passedFeatures) {
-      oss << "\n" << key << ": [";
+      oss << "\n" << key << ":[";
       for (char c : value) {
         oss << c;
       }
       oss << "]";
     }
     oss << "\n}"
-        << "\nentries: {";
+        << "\nentries:{";
     for (const auto &[key, value] : entries) {
-      oss << "\n" << key << ": [";
+      oss << "\n" << key << ":[";
       for (char c : value) {
         oss << c;
       }
       oss << "]";
     }
     oss << "\n}"
-        << "\nmetadataRequest: " << metadataRequest.to_string();
+        << "\nmetadataRequest:" << metadataRequest.to_string();
     oss << "\n}";
-    oss << "\noptionsRequest: " << optionsRequest.to_string() << "\n}";
+    oss << "\noptionsRequest:" << optionsRequest.to_string() << "\n}";
     return oss.str();
   }
   Options GetOptions() const;
@@ -192,7 +192,7 @@ class FeatureMetadata {
   std::string toString() const {
     std::ostringstream oss;
     oss << "FeatureMetadata {"
-        << "\nname: " << name << "\ntype: " << type << "\n}";
+        << "\nname:" << name << "\ntype: " << type << "\n}";
     return oss.str();
   }
 };
@@ -225,8 +225,8 @@ class DetailedStatus {
   std::string to_string() const {
     std::ostringstream oss;
     oss << "{"
-        << "\"httpStatus\": " << httpStatus << ", "
-        << "\"featureGroupId\": " << featureGroupId << "}";
+        << "\"httpStatus\":" << httpStatus << ", "
+        << "\"featureGroupId\":" << featureGroupId << "}";
     return oss.str();
   }
 };

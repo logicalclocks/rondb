@@ -221,21 +221,21 @@ PKReadParams::PKReadParams(const std::string_view &db,
 
 std::string PKReadParams::to_string() {
   std::stringstream ss;
-  ss << "PKReadParams: { path: { db: " << path.db << ", table: " << path.table
-     << " }, filters: [";
+  ss << "PKReadParams:{path:{ db:" << path.db << ",table:" << path.table
+     << "},filters:[";
   for (auto &filter : filters) {
-    ss << "{ column: " << filter.column;
-    ss << ", value with each byte separately: ";
+    ss << "{column:" << filter.column;
+    ss << ",value with each byte separately:";
     for (auto &byte : filter.value) {
       ss << byte << " ";
     }
-    ss << "}, ";
+    ss << "},";
   }
-  ss << "], readColumns: [";
+  ss << "],readColumns:[";
   for (auto &readColumn : readColumns) {
-    ss << "{ column: " << readColumn.column << " }, ";
+    ss << "{column:" << readColumn.column << "},";
   }
-  ss << "], operationId: " << operationId << " }";
+  ss << "],operationId:" << operationId << "}";
   return ss.str();
 }
 

@@ -190,7 +190,7 @@ RS_Status PKRResponse::Append_string(std::string value,
 RS_Status PKRResponse::Append_bin(const char *buffer,
                                   Uint32 value_len,
                                   Uint32 type) {
-  if (unlikely((value_len + 1) > GetRemainingCapacity())) {
+  if (unlikely(value_len > GetRemainingCapacity())) {
     return RS_SERVER_ERROR(std::string(
       rdrsErrorMessage(ERROR_RESPONSE_BUFFER_OVERFLOW)));
   }

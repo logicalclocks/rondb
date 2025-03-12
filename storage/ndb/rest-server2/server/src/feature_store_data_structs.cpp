@@ -46,14 +46,14 @@ std::string FeatureStoreResponse::to_string() const {
   for (const auto &metadata : metadata) {
     res += "{";
     if (metadata.name.empty()) {
-      res += "\"featureName\": null,";
+      res += "\"featureName\":null,";
     } else {
       res += "\"featureName\": \"" + metadata.name + "\",";
     }
     if (metadata.type.empty()) {
       res += "\"featureType\":null";
     } else {
-      res += "\"featureType\": \"" + metadata.type + "\"";
+      res += "\"featureType\":\"" + metadata.type + "\"";
     }
     res += "},";
   }
@@ -378,14 +378,14 @@ std::string BatchFeatureStoreResponse::to_string() const {
   for (const auto &metadata : metadata) {
     res += "{";
     if (metadata.name.empty()) {
-      res += "\"featureName\": null,";
+      res += "\"featureName\":null,";
     } else {
       res += "\"featureName\": \"" + metadata.name + "\",";
     }
     if (metadata.type.empty()) {
-      res += "\"featureType\": null";
+      res += "\"featureType\":null";
     } else {
-      res += "\"featureType\": \"" + metadata.type + "\"";
+      res += "\"featureType\":\"" + metadata.type + "\"";
     }
     res += "},";
   }
@@ -415,7 +415,7 @@ std::string BatchFeatureStoreResponse::to_string() const {
 
     for (const auto &detailed : detailed_status_group) {
       res += "{";
-      res += "\"featureGroupId\": " + std::to_string(detailed.featureGroupId) + ",";
+      res += "\"featureGroupId\":" + std::to_string(detailed.featureGroupId) + ",";
       res += "\"httpStatus\":" + std::to_string(detailed.httpStatus);
       res += "},";
     }
