@@ -163,6 +163,7 @@ enum KeyState {
 #define STRING_REDIS_KEY_ID 0
 #define MAX_PARALLEL_VALUE_RWS 2
 #define MAX_OUTSTANDING_BYTES (512 * 1024)
+#define MAX_REDIS_ROW_SIZE (512 * 1024)
 #define DELETE_BYTES 2000
 
 enum SetType {

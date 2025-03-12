@@ -1258,12 +1258,12 @@ int write_key_row_setrange(std::string *response,
 
   Uint32 code_buffer[64];
   NdbInterpretedCode code(tab, &code_buffer[0], sizeof(code_buffer));
-  int ret_code = write_key_row_setrange(code,
-                                        tab,
-                                        key_store,
-                                        start,
-                                        end,
-                                        key_store->m_rondb_key);
+  int ret_code = write_key_row_setrange_int(code,
+                                            tab,
+                                            key_store,
+                                            start,
+                                            end,
+                                            key_store->m_rondb_key);
   if (ret_code != 0) {
     assign_err_to_response(response,
                            "Failed to create interpreted code",

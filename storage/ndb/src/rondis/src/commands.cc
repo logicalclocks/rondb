@@ -2283,6 +2283,11 @@ void rondb_setrange_command(Ndb *ndb,
 
   if (offset < 0) {
     assign_generic_err_to_response(response, REDIS_SYNTAX_ERROR);
+    return;
+  }
+  if (offset > MAX_REDIS_ROW_SIZE) {
+    assign_generic_err_to_response(response, REDIS_SYNTAX_ERROR);
+    return;
   }
   Uint32 start = Uint32(offset);
   const NdbDictionary::Dictionary *dict;
@@ -2305,7 +2310,11 @@ void rondb_setrange_command(Ndb *ndb,
   const char *value_str = argv[3].c_str();
   key_store->m_const_value_ptr = value_str;
   key_store->m_set_value_size = argv[3].size();
-
+  Uint32 end = key_store->m_set_value_size + start;
+  if (end > MAX_REDIS_ROW_SIZE) {
+    assign_generic_err_to_response(response, REDIS_SYNTAX_ERROR);
+    return;
+  }
   if (!setup_transaction(ndb,
                          response,
                          STRING_REDIS_KEY_ID,
@@ -2315,7 +2324,6 @@ void rondb_setrange_command(Ndb *ndb,
     free(key_store);
     return;
   }
-  Uint32 end = key_store->m_set_value_size + start;
   if (start < INLINE_VALUE_LEN && end <= INLINE_VALUE_LEN) {
     /* The SETRANGE command only affects the STRING_keys table */
     execute_set_range_simple(response,
@@ -2351,6 +2359,11 @@ void rondb_setrange_command(Ndb *ndb,
   Uint32 min_num_rows =
     1 + ((end - INLINE_VALUE_LEN) / EXTENSION_VALUE_LEN);
   Uint32 start_index = INLINE_VALUE_LEN;
+  bool zero_required = false;
+  if (start > old_tot_value_len && start > start_index) {
+    /* Zeroing is required from old_total_value_len to start */
+    zero_required = true;
+  }
   for (Uint32 i = 0; i < min_num_rows; i++) {
     /**
      * Default to writing all zeroes
@@ -2363,61 +2376,70 @@ void rondb_setrange_command(Ndb *ndb,
     Uint32 end_index = start_index + EXTENSION_VALUE_LEN;
     Uint32 start_zero_index = start_index;
     Uint32 end_zero_index = end_index;
-    if (start < start_index || old_tot_value_len >= start) {
-      end_zero_index = start_zero_index; //No zero writing needed
+    const char *start_write_ptr = value_str + start_index;
+    if (zero_required == false) {
+      if (start > end_index) {
+        /* No need to touch this row */
+        start_index = end_index;
+        continue;
+      }
+      start_zero_index = 0;
+      end_zero_index = 0;
     } else {
-      if (start < end_index) {
-        end_zero_index = start;
-      } else if (end < end_index) {
-        end_index = end;
-      }
-      if (old_tot_value_len > start_zero_index) {
-        start_zero_index = old_tot_value_len;
-      }
-    }
-    /* Default to no writing of value */
-    Uint32 start_write_index = start_index;
-    Uint32 end_write_index = start_index;
-    const char *start_write_ptr = nullptr;
-    if (start <= start_index) {
-      /* We have already started writing, continue until end */
-      start_write_ptr = value_str + (start_index - start);
-      if (end > end_index) {
-        end_write_index = end_index;
+      if (old_tot_value_len > end_index) {
+        /* No zeroing required in this round */
+        if (start > end_index) {
+          /* No need to touch this row */
+          start_index = end_index;
+          continue;
+        }
+        start_zero_index = 0;
+        end_zero_index = 0;
       } else {
-        end_write_index = end;
+        if (old_tot_value_len < start_index) {
+          start_zero_index = 0;
+        } else {
+          start_zero_index = start_index - old_tot_value_len;
+        }
+        if (start > end_index) {
+          end_zero_index = EXTENSION_VALUE_LEN;
+        } else {
+          end_zero_index = start - start_index;
+          zero_required = false;
+        }
       }
-    } else if (start < end_index) {
-      start_write_index = start;
-      start_write_ptr = value_str;
-      if (end > end_index) {
-        end_write_index = end_index;
+    }
+    Uint32 start_write_index = 0;
+    Uint32 end_write_index = 0;
+    if (start <= end_index) {
+      if (start < start_index) {
+        start_write_index = 0;
       } else {
-        end_write_index = end;
+        start_write_index = start - start_index;
+      }
+      if (end < end_index) {
+        end_write_index = end - start_index;
+      } else {
+        end_write_index = EXTENSION_VALUE_LEN;
       }
     }
-    start_zero_index -= start_index;
-    end_zero_index -= end_index;
-    start_write_index -= start_index;
-    end_write_index -= end_index;
-    if (start_zero_index != end_zero_index ||
-        start_write_index != end_write_index) {
-      ret_code = write_value_row_setrange(
-        response,
-        key_store,
-        i,
-        dict,
-        start_zero_index,
-        end_zero_index,
-        start_write_index,
-        end_write_index,
-        start_write_ptr,
-        database_id);
-      if (ret_code != 0) {
-        return;
-      }
+    assert(start_zero_index != end_zero_index ||
+           start_write_index != end_write_index);
+    ret_code = write_value_row_setrange(
+      response,
+      key_store,
+      i,
+      dict,
+      start_zero_index,
+      end_zero_index,
+      start_write_index,
+      end_write_index,
+      start_write_ptr,
+      database_id);
+    if (ret_code != 0) {
+      return;
     }
-    start_index += EXTENSION_VALUE_LEN;
+    start_index = end_index;
   }
   Uint32 tot_value_len = std::max(old_tot_value_len, end);
   char buf[20];

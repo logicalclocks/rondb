@@ -148,6 +148,7 @@
 //#define TRACE_INTERPRETER
 //#define TRACE_INTERPRETER_REGISTERS
 
+#if 0
 #define RET_NULL Uint32(~0)
 static Uint32 binary_uint64_search(Uint64 test_ordinal,
                                    const char *memory_ptr,
@@ -679,6 +680,7 @@ static Uint32 qsort_instr(const char *memory_ptr,
   }
   return 0;
 }
+#endif
 
 /* For debugging */
 static void dump_hex(const Uint32 *p, Uint32 len) {

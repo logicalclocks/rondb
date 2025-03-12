@@ -109,7 +109,6 @@ int write_key_row_setrange(std::string *response,
                            Uint32 end,
                            Uint32 &old_tot_value_len);
 
-
 int write_value_row_setrange(std::string *response,
                              KeyStorage *key_store,
                              Uint32 row_id,

@@ -484,12 +484,12 @@ int simple_write_key_row_setrange(NdbInterpretedCode &code,
   return 0;
 }
 
-int write_key_row_setrange(NdbInterpretedCode &code,
-                           const NdbDictionary::Table *tab,
-                           KeyStorage *key_store,
-                           Uint32 start,
-                           Uint32 end,
-                           Uint64 rondb_key) {
+int write_key_row_setrange_int(NdbInterpretedCode &code,
+                               const NdbDictionary::Table *tab,
+                               KeyStorage *key_store,
+                               Uint32 start,
+                               Uint32 end,
+                               Uint64 rondb_key) {
   const NdbDictionary::Column *num_rows_col =
     tab->getColumn(KEY_TABLE_COL_num_rows);
   const NdbDictionary::Column *value_data_type_col =
