@@ -2415,7 +2415,7 @@ void rondb_setrange_command(Ndb *ndb,
         if (old_tot_value_len < start_index) {
           start_zero_index = 0;
         } else {
-          start_zero_index = start_index - old_tot_value_len;
+          start_zero_index = old_tot_value_len - start_index;
         }
         if (start > end_index) {
           end_zero_index = EXTENSION_VALUE_LEN;

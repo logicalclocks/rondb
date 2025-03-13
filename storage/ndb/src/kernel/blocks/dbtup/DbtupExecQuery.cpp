@@ -5593,8 +5593,15 @@ int Dbtup::interpreterNextLab(Signal* signal,
                         (Toffset < Int64(0)))) {
             return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
           }
+          Uint32 length_bytes = 1;
+          if (array == NDB_ARRAYTYPE_MEDIUM_VAR) {
+            length_bytes = 2;
+          } else if (array != NDB_ARRAYTYPE_SHORT_VAR) {
+            return TUPKEY_abort(req_struct, ZAPPEND_ON_FIXED_SIZE_COLUMN_ERROR);
+          }
           if (unlikely((Tsize < Int64(0)) ||
-                       ((Tsize + TstartPos) > Int64(attrNoOfBytes)))) {
+                       ((Tsize + TstartPos) >
+                         Int64(attrNoOfBytes + length_bytes)))) {
             return TUPKEY_abort(req_struct, ZWRITE_SIZE_TOO_BIG_ERROR);
           }
           /**
@@ -5606,10 +5613,6 @@ int Dbtup::interpreterNextLab(Signal* signal,
           }
           if (unlikely(Toptype != ZUPDATE && Toptype != ZINSERT)) {
             return TUPKEY_abort(req_struct, ZTRY_TO_UPDATE_ERROR);
-          }
-          if ((array != NDB_ARRAYTYPE_SHORT_VAR) &&
-              (array != NDB_ARRAYTYPE_MEDIUM_VAR)) {
-            return TUPKEY_abort(req_struct, ZAPPEND_ON_FIXED_SIZE_COLUMN_ERROR);
           }
           AttributeHeader ah(AttributeHeader::SET_PARTIAL_COLUMN, Tsize);
           Uint32 extended_header = attrId + (TstartPos << 16);
@@ -5660,8 +5663,14 @@ int Dbtup::interpreterNextLab(Signal* signal,
                         (Toffset < Int64(0)))) {
             return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
           }
+          Uint32 length_bytes = 1;
+          if (array == NDB_ARRAYTYPE_MEDIUM_VAR) {
+            length_bytes = 2;
+          } else if (array != NDB_ARRAYTYPE_SHORT_VAR) {
+            return TUPKEY_abort(req_struct, ZAPPEND_ON_FIXED_SIZE_COLUMN_ERROR);
+          }
           if (unlikely((Tsize < Int64(0)) ||
-                       (Tsize > Int64(attrNoOfBytes)))) {
+                       (Tsize > Int64(attrNoOfBytes + length_bytes)))) {
             return TUPKEY_abort(req_struct, ZWRITE_SIZE_TOO_BIG_ERROR);
           }
           /**
@@ -5673,10 +5682,6 @@ int Dbtup::interpreterNextLab(Signal* signal,
           }
           if (unlikely(Toptype != ZUPDATE)) {
             return TUPKEY_abort(req_struct, ZTRY_TO_UPDATE_ERROR);
-          }
-          if ((array != NDB_ARRAYTYPE_SHORT_VAR) &&
-              (array != NDB_ARRAYTYPE_MEDIUM_VAR)) {
-            return TUPKEY_abort(req_struct, ZAPPEND_ON_FIXED_SIZE_COLUMN_ERROR);
           }
           AttributeHeader ah(AttributeHeader::APPEND_COLUMN, Tsize);
           Uint32 extended_header = attrId;

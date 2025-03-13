@@ -528,25 +528,26 @@ int write_key_row_setrange_int(NdbInterpretedCode &code,
   code.load_const_u16(REG0, 0);
   code.load_const_u16(REG1, 6);
   code.load_const_u16(REG2, INLINE_VALUE_LEN);
-  code.load_const_u32(REG3, std::max(Uint32(INLINE_VALUE_LEN), start));
+  code.load_const_u32(REG3, std::min(Uint32(INLINE_VALUE_LEN), start));
+  code.load_const_u32(REG4, end);
   /**
    * REG0 = Offset 0 where write_from_mem memory starts
    * REG1 = Offset 6 where column data starts
    * REG2 = end variable where copying ends
    * REG3 = start variable where we start copying data from memory
    */
-  code.load_op_type(REG4);         // Read operation type into register 1
-  code.branch_ne_const(REG4, RONDB_INSERT, LABEL0); // Updates go to label 0
+  code.load_op_type(REG5);         // Read operation type into register 1
+  code.branch_ne_const(REG5, RONDB_INSERT, LABEL0); // Updates go to label 0
   /* INSERT */
-  code.load_const_u16(REG4, min_num_rows);
-  code.write_attr(num_rows_col, REG4);
-  code.write_attr(value_data_type_col, REG0);
-  code.load_const_u32(REG5, end);
-  code.write_attr(tot_value_len_col, REG5);
-  code.bzero(REG1, REG2);
   code.load_const_u64(REG7, rondb_key);
+  code.load_const_u16(REG5, min_num_rows);
+  code.write_attr(tot_value_len_col, REG4);
+  code.write_attr(num_rows_col, REG5);
+  code.write_attr(value_data_type_col, REG0);
   code.write_attr(rondb_key_col, REG7);
-  code.branch_label(LABEL2);
+  code.bzero(REG1, REG2);
+  code.load_const_u16(REG5, 0);
+  code.branch_label(LABEL3);
 
   /* UPDATE */
   code.def_label(LABEL0);
@@ -554,18 +555,24 @@ int write_key_row_setrange_int(NdbInterpretedCode &code,
    * Start by reading value_start column into memory
    * We will put the length of the current data into REG7.
    */
+  code.read_attr(REG7, rondb_key_col);
+  code.branch_ne_null(REG7, LABEL1);
+
+  code.load_const_u64(REG7, rondb_key);
+  code.write_attr(rondb_key_col, REG7);
+
+  code.def_label(LABEL1);
   code.load_const_null(REG5);
   code.write_attr(expiry_date_col, REG5);
-  code.load_const_u32(REG4, end);
   code.read_attr(REG5, tot_value_len_col);
-  code.branch_lt(REG5, REG4, LABEL1);
+  code.branch_le(REG4, REG5, LABEL2);
 
   code.write_attr(tot_value_len_col, REG4);
-  code.move_reg(REG5, REG4);
-  code.def_label(LABEL1);
-  code.read_full(value_start_col, REG0, REG7);
-  code.sub_const_reg(REG7, REG7, Uint16(2));
-  code.branch_ge(REG7, REG3, LABEL2);
+
+  code.def_label(LABEL2);
+  code.read_full(value_start_col, REG0, REG6);
+  code.sub_const_reg(REG6, REG6, Uint16(2));
+  code.branch_ge(REG6, REG3, LABEL3);
 
   /* end is after end of current data, new tot_value_len */
   /**
@@ -574,27 +581,22 @@ int write_key_row_setrange_int(NdbInterpretedCode &code,
    */
 
   /* Zero area after end of data until before start */
-  code.add_reg(REG4, REG1, REG7);
-  code.sub_reg(REG7, REG3, REG7);
-  code.bzero(REG4, REG7);
+  code.add_reg(REG4, REG1, REG6);
+  code.sub_reg(REG6, REG3, REG6);
+  code.bzero(REG4, REG6);
 
-  code.def_label(LABEL2);
+  code.def_label(LABEL3);
   /**
    * REG0 = Offset 0 where write_from_mem memory starts
    * REG1 = Offset 6 where column data starts
    * REG2 = Total size of column data after write_from_mem
    * REG3 = start variable where we start copying data from memory
    * REG4 = Not used
-   * REG5 = tot_value_len
+   * REG5 = old_tot_value_len
    * REG6 = Not used
-   * REG7 = Not used
+   * REG7 = rondb_key
    */
   code.write_interpreter_output(REG5, OUTPUT_INDEX_0);
-  code.read_attr(REG7, rondb_key_col);
-  code.branch_ne_null(REG7, LABEL3);
-  code.load_const_u64(REG7, rondb_key);
-  code.write_attr(rondb_key_col, REG7);
-  code.def_label(LABEL3);
   code.write_interpreter_output(REG7, OUTPUT_INDEX_1);
   if (start < INLINE_VALUE_LEN) {
     code.add_reg(REG6, REG1, REG3);
@@ -641,7 +643,7 @@ int write_value_row_setrange_int(NdbInterpretedCode &code,
     assert(end_zero_index > start_zero_index);
     write_len += (end_zero_index - start_zero_index);
     code.load_const_u16(REG3, write_len);
-    code.bzero(REG3, REG1);
+    code.bzero(REG1, REG3);
     code.add_reg(REG1, REG1, REG3);
   }
   if (start_write_index != end_write_index) {

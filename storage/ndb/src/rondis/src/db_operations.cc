@@ -37,11 +37,20 @@
 #include "table_definitions.h"
 #include "interpreted_code.h"
 
+#if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_DEL_CMD 1
 //#define DEBUG_KS 1
 //#define DEBUG_HSET_KEY 1
 //#define DEBUG_MSET 1
 //#define DEBUG_INCR 1
+#define DEBUG_SETRANGE 1
+#endif
+
+#ifdef DEBUG_SETRANGE
+#define DEB_SETRANGE(arglist) do { printf arglist ; fflush(stdout); } while (0)
+#else
+#define DEB_SETRANGE(arglist)
+#endif
 
 #ifdef DEBUG_DEL_CMD
 #define DEB_DEL_CMD(arglist) do { printf arglist ; fflush(stdout); } while (0)
@@ -1312,6 +1321,9 @@ int write_key_row_setrange(std::string *response,
   }
   old_tot_value_len = (Uint32)getvals[0].recAttr->u_64_value();
   key_store->m_rondb_key = getvals[1].recAttr->u_64_value();
+  DEB_SETRANGE(("old_tot_value_len: %u, rondb_key: %llu\n",
+    old_tot_value_len,
+    key_store->m_rondb_key));
   return 0;
 }
 

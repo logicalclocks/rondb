@@ -2786,7 +2786,7 @@ Dbtup::handle_partial_write(KeyReqStruct *req_struct,
                             Uint32 *size_in_bytes,
                             Uint32 length_bytes) {
   Uint32 startPos = req_struct->start_partial_pos;
-  if (unlikely((startPos + (*size_in_bytes) > max_var_size) ||
+  if (unlikely(((startPos + (*size_in_bytes) - length_bytes) > max_var_size) ||
                ((startPos < length_bytes)))) {
     thrjam(req_struct->jamBuffer);
     req_struct->errorCode = ZAI_INCONSISTENCY_ERROR;
