@@ -118,7 +118,8 @@ int write_value_row_setrange(std::string *response,
                              Uint32 start_write_index,
                              Uint32 end_write_index,
                              const char *start_write_ptr,
-                             Uint32 database_id);
+                             Uint32 database_id,
+                             bool last_row);
 
 /**
  * INCR and DECR MODULE

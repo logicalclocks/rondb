@@ -31,6 +31,7 @@
 #include "interpreted_code.h"
 #include "table_definitions.h"
 #include <assert.h>
+#include <algorithm>
 
 //#define DEBUG_MSET_CMD 1
 
@@ -527,7 +528,7 @@ int write_key_row_setrange_int(NdbInterpretedCode &code,
   code.load_const_u16(REG0, 0);
   code.load_const_u16(REG1, 6);
   code.load_const_u16(REG2, INLINE_VALUE_LEN);
-  code.load_const_u32(REG3, start);
+  code.load_const_u32(REG3, std::max(Uint32(INLINE_VALUE_LEN), start));
   /**
    * REG0 = Offset 0 where write_from_mem memory starts
    * REG1 = Offset 6 where column data starts
@@ -574,7 +575,7 @@ int write_key_row_setrange_int(NdbInterpretedCode &code,
 
   /* Zero area after end of data until before start */
   code.add_reg(REG4, REG1, REG7);
-  code.sub_reg(REG4, REG3, REG7);
+  code.sub_reg(REG7, REG3, REG7);
   code.bzero(REG4, REG7);
 
   code.def_label(LABEL2);
@@ -597,7 +598,7 @@ int write_key_row_setrange_int(NdbInterpretedCode &code,
   code.write_interpreter_output(REG7, OUTPUT_INDEX_1);
   if (start < INLINE_VALUE_LEN) {
     code.add_reg(REG6, REG1, REG3);
-    Uint32 size_load = (start - INLINE_VALUE_LEN);
+    Uint32 size_load = (INLINE_VALUE_LEN - start);
     code.load_const_mem(REG6, //Offset to copy to
                         REG4, // m_set_value_size will be set here
                         Uint16(size_load),
@@ -629,9 +630,12 @@ int write_value_row_setrange_int(NdbInterpretedCode &code,
     value_tab->getColumn(VALUE_TABLE_COL_value);
   Uint32 write_len = 0;
   Uint32 start_index = 0;
+  /* Position of memory used to write partial columns */
   code.load_const_u16(REG0, 0);
-  code.load_const_u16(REG1, 6);
-  code.load_const_u16(REG2, 4);
+  /* Start position of actual data to be partially written to row */
+  code.load_const_u16(REG1, 10);
+  /* Memory position of length bytes in Interpreter memory */
+  code.load_const_u16(REG2, 8);
   if (start_zero_index != end_zero_index) {
     start_index = start_zero_index;
     assert(end_zero_index > start_zero_index);
@@ -652,13 +656,13 @@ int write_value_row_setrange_int(NdbInterpretedCode &code,
                         Uint16(write_value_len),
                         start_write_ptr);
   }
-  code.load_const_u16(REG2, 4);
   code.load_const_u16(REG3, write_len);
   code.write_size_mem(REG3, REG2);
   /* Length is size of data + 2 length bytes */
   code.add_const_reg(REG3, REG3, Uint16(2));
-  code.load_const_u16(REG4, start_index);
+  code.load_const_u16(REG4, start_index + 2);
   code.write_partial_from_mem(value_col, REG0, REG3, REG4);
+  code.interpret_exit_ok();
   // Program end, now compile code
   int ret_code = code.finalise();
   if (ret_code != 0) {

@@ -43,6 +43,7 @@
 
 #define RAND_CONSTANT 10000
 
+#if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_MGET_CMD 1
 //#define DEBUG_MSET_CMD 1
 //#define DEBUG_DEL_CMD 1
@@ -50,6 +51,15 @@
 //#define DEBUG_INCR 1
 //#define DEBUG_RAND_KEY 1
 //#define DEBUG_TTL 1
+#define DEBUG_SETRANGE 1
+#endif
+
+#ifdef DEBUG_SETRANGE
+#define DEB_SETRANGE(arglist) do { printf arglist ; } while (0)
+#else
+#define DEB_SETRANGE(arglist)
+#endif
+
 #ifdef DEBUG_RAND_KEY
 #define DEB_RAND_KEY(arglist) do { printf arglist ; } while (0)
 #else
@@ -2354,8 +2364,14 @@ void rondb_setrange_command(Ndb *ndb,
                                         end,
                                         old_tot_value_len);
   if (ret_code != 0) {
+    ndb->closeTransaction(key_store->m_trans);
+    free(key_store);
     return;
   }
+  DEB_SETRANGE(("old_tot_value_len: %u, start: %u, end: %u\n",
+    old_tot_value_len,
+    start,
+    end));
   Uint32 min_num_rows =
     1 + ((end - INLINE_VALUE_LEN) / EXTENSION_VALUE_LEN);
   Uint32 start_index = INLINE_VALUE_LEN;
@@ -2364,6 +2380,7 @@ void rondb_setrange_command(Ndb *ndb,
     /* Zeroing is required from old_total_value_len to start */
     zero_required = true;
   }
+  const char *start_write_ptr = value_str;
   for (Uint32 i = 0; i < min_num_rows; i++) {
     /**
      * Default to writing all zeroes
@@ -2376,7 +2393,6 @@ void rondb_setrange_command(Ndb *ndb,
     Uint32 end_index = start_index + EXTENSION_VALUE_LEN;
     Uint32 start_zero_index = start_index;
     Uint32 end_zero_index = end_index;
-    const char *start_write_ptr = value_str + start_index;
     if (zero_required == false) {
       if (start > end_index) {
         /* No need to touch this row */
@@ -2425,6 +2441,15 @@ void rondb_setrange_command(Ndb *ndb,
     }
     assert(start_zero_index != end_zero_index ||
            start_write_index != end_write_index);
+    bool last_row = (i == (min_num_rows - 1));
+    DEB_SETRANGE(("write_value_row_setrange: zero[%u,%u]"
+                  " write[%u,%u], last_row: %u\n",
+      start_zero_index,
+      end_zero_index,
+      start_write_index,
+      end_write_index,
+      last_row));
+
     ret_code = write_value_row_setrange(
       response,
       key_store,
@@ -2435,18 +2460,26 @@ void rondb_setrange_command(Ndb *ndb,
       start_write_index,
       end_write_index,
       start_write_ptr,
-      database_id);
+      database_id,
+      (i == (min_num_rows - 1)));
     if (ret_code != 0) {
+      ndb->closeTransaction(key_store->m_trans);
+      free(key_store);
       return;
     }
     start_index = end_index;
+    if (start_write_index != end_write_index) {
+      start_write_ptr += (end_write_index - start_write_index);
+    }
   }
   Uint32 tot_value_len = std::max(old_tot_value_len, end);
   char buf[20];
   Uint32 header_len = (Uint32)snprintf(buf,
                                        sizeof(buf),
-                                       "$%u\r\n",
+                                       "+%u\r\n",
                                        tot_value_len);
   response->append((const char*)&buf[0], header_len);
+  ndb->closeTransaction(key_store->m_trans);
+  free(key_store);
   return;
 }

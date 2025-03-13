@@ -1304,7 +1304,7 @@ int write_key_row_setrange(std::string *response,
                                trans->getNdbError());
     return -1;
   }
-  if (key_store->m_trans->execute(NdbTransaction::Commit) != 0) {
+  if (key_store->m_trans->execute(NdbTransaction::NoCommit) != 0) {
     assign_ndb_err_to_response(response,
                                "Failed to execute SETRANGE command",
                                trans->getNdbError());
@@ -1324,7 +1324,8 @@ int write_value_row_setrange(std::string *response,
                              Uint32 start_write_index,
                              Uint32 end_write_index,
                              const char *start_write_ptr,
-                             Uint32 database_id) {
+                             Uint32 database_id,
+                             bool last_row) {
   struct value_table value_row;
   value_row.ordinal = row_id;
   value_row.rondb_key = key_store->m_rondb_key;
@@ -1374,6 +1375,13 @@ int write_value_row_setrange(std::string *response,
                                FAILED_GET_OP,
                                key_store->m_trans->getNdbError());
     return RONDB_INTERNAL_ERROR;
+  }
+  if (key_store->m_trans->execute(
+    last_row ? NdbTransaction::Commit : NdbTransaction::NoCommit) != 0) {
+    assign_ndb_err_to_response(response,
+                               "Failed to execute SETRANGE command",
+                               key_store->m_trans->getNdbError());
+    return -1;
   }
   return 0;
 }

@@ -145,8 +145,8 @@
   } while (0)
 #endif
 
-//#define TRACE_INTERPRETER
-//#define TRACE_INTERPRETER_REGISTERS
+#define TRACE_INTERPRETER
+#define TRACE_INTERPRETER_REGISTERS
 
 #if 0
 #define RET_NULL Uint32(~0)
@@ -3217,8 +3217,8 @@ int Dbtup::handleUpdateReq(Signal* signal,
   Tuple_header *dst;
   Tuple_header *base= req_struct->m_tuple_ptr, *org;
   ChangeMask * change_mask_ptr;
-  if (unlikely((dst= alloc_copy_tuple(regTabPtr,
-            &operPtrP->m_copy_tuple_location)) == 0))
+  if (unlikely((dst= alloc_copy_tuple(
+    regTabPtr, &operPtrP->m_copy_tuple_location, false)) == 0))
   {
     terrorCode= ZNO_COPY_TUPLE_MEMORY_ERROR;
     goto error;
@@ -3816,7 +3816,9 @@ int Dbtup::handleInsertReq(Signal* signal,
     goto trans_mem_error;
   }
 
-  dst = alloc_copy_tuple(regTabPtr, &regOperPtr.p->m_copy_tuple_location);
+  dst = alloc_copy_tuple(regTabPtr,
+                         &regOperPtr.p->m_copy_tuple_location,
+                         true);
 
   if (unlikely(dst == nullptr))
   {
@@ -4438,8 +4440,8 @@ int Dbtup::handleDeleteReq(Signal* signal,
   }
 #endif  // TTL_DEBUG
   Uint32 copy_bits = 0;
-  Tuple_header* dst = alloc_copy_tuple(regTabPtr,
-      &regOperPtr->m_copy_tuple_location);
+  Tuple_header* dst = alloc_copy_tuple(
+    regTabPtr, &regOperPtr->m_copy_tuple_location, false);
   if (unlikely(dst == 0))
   {
     jam();
@@ -5868,9 +5870,9 @@ int Dbtup::interpreterNextLab(Signal* signal,
           memcpy(value_ptr, &m_interpreter_input[inputInx], 8);
           TregMemBuffer[theRegister]= NOT_NULL_INDICATOR;
 #ifdef TRACE_INTERPRETER
-          g_eventLogger->info("(%u)read_interpreter_output[%u] = %lld, reg: %u",
+          g_eventLogger->info("(%u)read_interpreter_input[%u] = %lld, reg: %u",
                               instance(),
-                              outputInx,
+                              inputInx,
                               *value_ptr,
                               theRegister);
 #endif
@@ -9203,7 +9205,8 @@ Dbtup::nr_delete(Signal* signal, Uint32 senderData,
       req_struct.fragPtrP = fragPtr.p;
       Operationrec oprec;
       Tuple_header *copy;
-      if ((copy = alloc_copy_tuple(tablePtr.p, &oprec.m_copy_tuple_location)) ==
+      if ((copy = alloc_copy_tuple
+         (tablePtr.p, &oprec.m_copy_tuple_location, false)) ==
           0) {
         /**
          * We failed to allocate the copy record, this is a critical error,

@@ -360,6 +360,33 @@ class NdbInterpretedCode {
    * can be executed multiple times with the same result which isn't
    * true for append.
    *
+   * RegMemoryOffset is the starting address of the memory used in the
+   * write_partial_from_mem. This is often 0, but can be any address
+   * in the memory.
+   *
+   * RegSize is the size of the data partially written plus the number
+   * of length bytes.
+   *
+   * RegStartPos is the starting offset in the column, this should never
+   * be smaller than the length bytes since these are included in the
+   * startPos.
+   *
+   * Thus a normal write_partial_from_mem will use RegMemoryOffset = 0,
+   * next ensure that you use write_size_mem to position 8. Partial writes
+   * need 2 words to describe the write internally and thus the memory
+   * should have 2 unused words from 0. Thus the starting address of the
+   * actual data partially written is 10 with 2 length bytes.
+   *
+   * 1) Load constants 0, 8 and 10 into 3 registers.
+   *
+   * So the preparation for this instruction one need the following:
+   * load_const_mem from memory into interpreter memory at position 10.
+   * write_size_mem to position 8 the actual partial write length not
+   * including the length bytes.
+   * Finally call write_partial_from_mem with RegStartPos set to the
+   * place where the partial write should start including the length
+   * bytes.
+   *
    * write_from_mem
    * --------------
    * write_from_mem works very similarly to append_from_mem except for

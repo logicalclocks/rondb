@@ -64,7 +64,7 @@
 #include "AggInterpreter.hpp"
 #endif // MOZ_AGG_TUP_DEBUG
 
-//#define TRACE_INTERPRETER
+#define TRACE_INTERPRETER
 
 void
 Dbtup::setUpQueryRoutines(Tablerec *regTabPtr)
@@ -2673,7 +2673,7 @@ Dbtup::handle_append_write(KeyReqStruct *req_struct,
       (nullFlagCheck(req_struct, attrDes) == true)) {
 #ifdef TRACE_INTERPRETER
     g_eventLogger->info(
-      "(%u)Partial write, before value was NULL, type: %u",
+      "(%u)Append write, before value was NULL, type: %u",
       req_struct->m_dbtup_ptr->instance(),
       req_struct->partial_size);
 #endif
@@ -2828,7 +2828,8 @@ Dbtup::handle_partial_write(KeyReqStruct *req_struct,
                           old_real_dataLen);
 #endif
     }
-    tot_dataLen = startPos + (*size_in_bytes) - length_bytes;
+    /* Start pos includes length bytes and so does size_in_bytes */
+    tot_dataLen = startPos + (*size_in_bytes) - (2 * length_bytes);
     tot_dataLen = MAX(tot_dataLen, old_real_dataLen);
     thrjamData(req_struct->jamBuffer, old_real_dataLen);
     thrjamData(req_struct->jamBuffer, tot_dataLen);
@@ -2852,14 +2853,20 @@ Dbtup::handle_partial_write(KeyReqStruct *req_struct,
 #endif
     }
     if (old_real_dataLen + length_bytes < startPos) {
-      memset(col_ptr + length_bytes,
+#ifdef TRACE_INTERPRETER
+      g_eventLogger->info("(%u) zero from pos %u to %u",
+        req_struct->m_dbtup_ptr->instance(),
+        length_bytes + old_real_dataLen,
+        startPos);
+#endif
+      memset(col_ptr + length_bytes + old_real_dataLen,
              0,
              startPos - (old_real_dataLen + length_bytes));
     }
     char *start_write_pos = (char*)col_ptr + startPos;
     memcpy(start_write_pos,
-           &src[0],
-           (*size_in_bytes));
+           &src[2],
+           (*size_in_bytes) - 2);
   }
   (*size_in_bytes) = tot_dataLen + length_bytes;
   col_ptr[0] = tot_dataLen & 255;

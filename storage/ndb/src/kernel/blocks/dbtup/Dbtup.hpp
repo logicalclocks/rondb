@@ -4004,14 +4004,20 @@ public:
 
   static constexpr Uint32 COPY_TUPLE_HEADER32 = 4;
 
-  Tuple_header* alloc_copy_tuple(const Tablerec* tabPtrP, Local_key* ptr){
+  Tuple_header* alloc_copy_tuple(const Tablerec* tabPtrP,
+                                 Local_key* ptr,
+                                 bool init){
     Uint32 * dst = c_undo_buffer.alloc_copy_tuple(ptr,
                                                   tabPtrP->total_rec_size);
     if (unlikely(dst == 0))
       return nullptr;
+    if (init) {
+      std::memset(dst, 0, tabPtrP->total_rec_size);
+    } else {
 #ifdef HAVE_VALGRIND
-    std::memset(dst, 0, tabPtrP->total_rec_size);
+      std::memset(dst, 0, tabPtrP->total_rec_size);
 #endif
+    }
     Uint32 count = tabPtrP->m_no_of_attributes;
     ChangeMask *mask = (ChangeMask *)(dst + COPY_TUPLE_HEADER32);
     mask->m_cols = count;
