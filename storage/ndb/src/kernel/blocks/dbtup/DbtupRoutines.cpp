@@ -64,7 +64,7 @@
 #include "AggInterpreter.hpp"
 #endif // MOZ_AGG_TUP_DEBUG
 
-#define TRACE_INTERPRETER
+//#define TRACE_INTERPRETER
 
 void
 Dbtup::setUpQueryRoutines(Tablerec *regTabPtr)

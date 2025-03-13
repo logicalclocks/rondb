@@ -331,11 +331,17 @@ class NdbInterpretedCode {
    * RonDB internals. When we update a column we use a method called
    * updateAttributes. This method can update one or more columns in
    * a loop. Appending to a column uses a special format that requires
-   * 8 bytes of header information. The first 32 bytes have a pseudo
+   * 8 bytes of header information. The first 32 bits have a pseudo
    * column id for append column in the lower 16 bits and have the size
    * in the upper 16 bits. In this case the size would be the full size,
    * thus 15 + 2 = 17. The second 32 bits contains the attribute id of
    * the column to be updated.
+   *
+   * Since append_from_mem requires a header the RegMemoryOffset should
+   * start at e.g. position 0, then the little-endian length bytes should
+   * be in position 8 and 9 (with 2 length bytes). Thus the actual data to
+   * append should start in position 10 if the RegMemoryOffset is 0.
+   * RegSize is the size of the data plus the length bytes.
    *
    * write_partial_from_mem
    * ----------------------

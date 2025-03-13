@@ -43,7 +43,7 @@
 //#define DEBUG_HSET_KEY 1
 //#define DEBUG_MSET 1
 //#define DEBUG_INCR 1
-#define DEBUG_SETRANGE 1
+//#define DEBUG_SETRANGE 1
 #endif
 
 #ifdef DEBUG_SETRANGE

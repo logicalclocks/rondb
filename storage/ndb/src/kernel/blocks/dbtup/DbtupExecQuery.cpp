@@ -145,8 +145,8 @@
   } while (0)
 #endif
 
-#define TRACE_INTERPRETER
-#define TRACE_INTERPRETER_REGISTERS
+//#define TRACE_INTERPRETER
+//#define TRACE_INTERPRETER_REGISTERS
 
 #if 0
 #define RET_NULL Uint32(~0)
@@ -5548,8 +5548,9 @@ int Dbtup::interpreterNextLab(Signal* signal,
           memory_ptr[0] = ah.m_value;
 #ifdef TRACE_INTERPRETER
           g_eventLogger->info(
-            "(%u)WRITE_ATTR_FROM_MEM: Tsize: %lld, words: %u, offset: %lld",
-            instance(), Tsize, words, Toffset);
+            "(%u)WRITE_ATTR_FROM_MEM: Toffset: %lld, Tsize: %lld,"
+            " words: %u, max_var_size: %u",
+            instance(), Toffset, Tsize, words, attrNoOfBytes);
 #endif
           int TnoDataRW = updateAttributes(req_struct,
                                            memory_ptr,
@@ -5593,15 +5594,13 @@ int Dbtup::interpreterNextLab(Signal* signal,
                         (Toffset < Int64(0)))) {
             return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
           }
-          Uint32 length_bytes = 1;
-          if (array == NDB_ARRAYTYPE_MEDIUM_VAR) {
-            length_bytes = 2;
-          } else if (array != NDB_ARRAYTYPE_SHORT_VAR) {
+          if (array != NDB_ARRAYTYPE_MEDIUM_VAR &&
+              array != NDB_ARRAYTYPE_SHORT_VAR) {
             return TUPKEY_abort(req_struct, ZAPPEND_ON_FIXED_SIZE_COLUMN_ERROR);
           }
           if (unlikely((Tsize < Int64(0)) ||
                        ((Tsize + TstartPos) >
-                         Int64(attrNoOfBytes + length_bytes)))) {
+                         Int64(attrNoOfBytes)))) {
             return TUPKEY_abort(req_struct, ZWRITE_SIZE_TOO_BIG_ERROR);
           }
           /**
@@ -5622,8 +5621,9 @@ int Dbtup::interpreterNextLab(Signal* signal,
           memory_ptr[1] = extended_header;
 #ifdef TRACE_INTERPRETER
           g_eventLogger->info(
-            "(%u)WRITE_PARTIAL_ATTR_MEM: Toffset: %lld, Tsize: %lld, words: %u",
-            instance(), Toffset, Tsize, words);
+            "(%u)WRITE_PARTIAL_ATTR_MEM: Toffset: %lld, Tsize: %lld,"
+            " words: %u, max_var_size: %u",
+            instance(), Toffset, Tsize, words, attrNoOfBytes);
 #endif
           int TnoDataRW = updateAttributes(req_struct,
                                            memory_ptr,
@@ -5663,14 +5663,12 @@ int Dbtup::interpreterNextLab(Signal* signal,
                         (Toffset < Int64(0)))) {
             return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
           }
-          Uint32 length_bytes = 1;
-          if (array == NDB_ARRAYTYPE_MEDIUM_VAR) {
-            length_bytes = 2;
-          } else if (array != NDB_ARRAYTYPE_SHORT_VAR) {
+          if (array != NDB_ARRAYTYPE_MEDIUM_VAR &&
+              array != NDB_ARRAYTYPE_SHORT_VAR) {
             return TUPKEY_abort(req_struct, ZAPPEND_ON_FIXED_SIZE_COLUMN_ERROR);
           }
           if (unlikely((Tsize < Int64(0)) ||
-                       (Tsize > Int64(attrNoOfBytes + length_bytes)))) {
+                       (Tsize > Int64(attrNoOfBytes)))) {
             return TUPKEY_abort(req_struct, ZWRITE_SIZE_TOO_BIG_ERROR);
           }
           /**
@@ -5691,8 +5689,9 @@ int Dbtup::interpreterNextLab(Signal* signal,
           memory_ptr[1] = extended_header;
 #ifdef TRACE_INTERPRETER
           g_eventLogger->info(
-            "(%u)APPEND_ATTR_MEM: Toffset: %lld, Tsize: %lld, words: %u",
-            instance(), Toffset, Tsize, words);
+            "(%u)APPEND_ATTR_MEM: Toffset: %lld, Tsize: %lld,"
+            " words: %u, max_var_size: %u",
+            instance(), Toffset, Tsize, words, attrNoOfBytes);
 #endif
           int TnoDataRW = updateAttributes(req_struct,
                                            memory_ptr,

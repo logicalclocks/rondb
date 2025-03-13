@@ -51,7 +51,7 @@
 //#define DEBUG_INCR 1
 //#define DEBUG_RAND_KEY 1
 //#define DEBUG_TTL 1
-#define DEBUG_SETRANGE 1
+//#define DEBUG_SETRANGE 1
 #endif
 
 #ifdef DEBUG_SETRANGE
@@ -2461,7 +2461,7 @@ void rondb_setrange_command(Ndb *ndb,
       end_write_index,
       start_write_ptr,
       database_id,
-      (i == (min_num_rows - 1)));
+      last_row);
     if (ret_code != 0) {
       ndb->closeTransaction(key_store->m_trans);
       free(key_store);
