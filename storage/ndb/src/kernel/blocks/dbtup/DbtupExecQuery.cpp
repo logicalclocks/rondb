@@ -52,6 +52,7 @@
 #include "rondb_hash.hpp"
 #include "../dbtux/Dbtux.hpp"
 #include <my_byteorder.h>
+#include <climits>
 
 #define JAM_FILE_ID 422
 
@@ -148,142 +149,296 @@
 //#define TRACE_INTERPRETER
 //#define TRACE_INTERPRETER_REGISTERS
 
-#if 0
 #define RET_NULL Uint32(~0)
-static Uint32 binary_uint64_search(Uint64 test_ordinal,
-                                   const char *memory_ptr,
-                                   Uint32 start,
-                                   Uint32 end,
-                                   bool exact_match) {
-  while (1) {
+#define EQUAL_MATCH 0
+#define SMALLER_MATCH 1
+#define LARGER_MATCH 2
+#define SMALLER_EQUAL_MATCH 3
+#define LARGER_EQUAL_MATCH 4
+
+static Uint32 binary_uint64_search_exact(Uint64 test_ordinal,
+                                         const char *memory_ptr,
+                                         Uint32 num_elems) {
+  Uint32 start = 0;
+  Uint32 end = num_elems;
+  if (num_elems == 0) {
+    return RET_NULL;
+  }
+  Uint64 value = 0;
+  while (start < end) {
     Uint32 mid_point = (start + end) / 2;
     Uint32 test_position = mid_point * 8;
-    Uint64 value = 0;
     memcpy(&value, memory_ptr + test_position, 8);
     if (value < test_ordinal) {
-      if (start == end) {
-        if (exact_match) {
-          return RET_NULL;
-        } else {
-          return start;
-        }
-      } else {
-        start = mid_point;
-        continue;
-      }
-    } if (value > test_ordinal) {
-      if (start == end) {
-        if (exact_match) {
-          return RET_NULL;
-        } else {
-          return start;
-        }
-      } else {
-        end = mid_point;
-        continue;
-      }
+      start = mid_point + 1;
+    } else {
+      end = mid_point;
     }
-    return mid_point;
   }
-  return 0;
+  if (value == test_ordinal) {
+    return start;
+  }
+  return RET_NULL;
 }
 
-static Uint32 binary_uint32_search(Uint32 test_ordinal,
-                                   const char *memory_ptr,
-                                   Uint32 start,
-                                   Uint32 end,
-                                   bool exact_match) {
-  /**
-   * start = starting index
-   * end = ending index
-   * test_position = Address within memory for next value to check
-   */
-  while (1) {
+static Uint32 binary_uint64_search_smaller(Uint64 test_ordinal,
+                                           const char *memory_ptr,
+                                           Uint32 num_elems,
+                                           bool not_include_equal) {
+  Uint32 start = 0;
+  Uint32 end = num_elems;
+  if (num_elems == 0) {
+    return RET_NULL;
+  }
+  Uint64 value = 0;
+  Uint32 test_position;
+  while (start < end) {
+    Uint32 mid_point = (start + end) / 2;
+    test_position = mid_point * 8;
+    memcpy(&value, memory_ptr + test_position, 8);
+    if (value < test_ordinal) {
+      start = mid_point + 1;
+    } else {
+      end = mid_point;
+    }
+  }
+  if (not_include_equal) {
+    test_position = start * 8;
+    memcpy(&value, memory_ptr + test_position, 8);
+    if (value != test_ordinal) {
+      if (start == 0) return RET_NULL;
+      else return start - 1;
+    }
+  }
+  return start;
+}
+
+static Uint32 binary_uint64_search_larger(Uint64 test_ordinal,
+                                          const char *memory_ptr,
+                                          Uint32 num_elems,
+                                          bool not_include_equal) {
+  Uint32 start = 0;
+  Uint32 end = num_elems;
+  if (num_elems == 0) {
+    return RET_NULL;
+  }
+  Uint64 value = 0;
+  Uint32 test_position;
+  while (start < end) {
+    Uint32 mid_point = (start + end) / 2;
+    test_position = mid_point * 8;
+    memcpy(&value, memory_ptr + test_position, 8);
+    if (value > test_ordinal) {
+      end = mid_point;
+    } else {
+      start = mid_point + 1;
+    }
+  }
+  if (not_include_equal == ZTRUE && end > 0) {
+    test_position = (end - 1) * 8;
+    memcpy(&value, memory_ptr + test_position, 8);
+    if (value == test_ordinal) {
+      return end - 1;
+    } else {
+      if (end == num_elems) return RET_NULL;
+    }
+  }
+  return end - 1;
+}
+
+static Uint32 binary_uint32_search_exact(Uint32 test_ordinal,
+                                         const char *memory_ptr,
+                                         Uint32 num_elems) {
+  Uint32 start = 0;
+  Uint32 end = num_elems;
+  if (num_elems == 0) {
+    return RET_NULL;
+  }
+  Uint32 value = 0;
+  while (start < end) {
     Uint32 mid_point = (start + end) / 2;
     Uint32 test_position = mid_point * 4;
-    Uint32 value = 0;
     memcpy(&value, memory_ptr + test_position, 4);
     if (value < test_ordinal) {
-      if (start == end) {
-        if (exact_match) {
-          return RET_NULL;
-        } else {
-          return start;
-        }
-      } else {
-        start = mid_point;
-        continue;
-      }
-    } if (value > test_ordinal) {
-      if (start == end) {
-        if (exact_match) {
-          return RET_NULL;
-        } else {
-          return start;
-        }
-      } else {
-        end = mid_point;
-        continue;
-      }
+      start = mid_point + 1;
+    } else {
+      end = mid_point;
     }
-    return mid_point;
   }
-  return 0;
+  if (value == test_ordinal) {
+    return start;
+  }
+  return RET_NULL;
 }
 
-static Uint32 binary_uint16_search(Uint16 test_ordinal,
-                                   const char *memory_ptr,
-                                   Uint32 start,
-                                   Uint32 end,
-                                   bool exact_match) {
-  while (1) {
+static Uint32 binary_uint32_search_smaller(Uint32 test_ordinal,
+                                           const char *memory_ptr,
+                                           Uint32 num_elems,
+                                           bool not_include_equal) {
+  Uint32 start = 0;
+  Uint32 end = num_elems;
+  if (num_elems == 0) {
+    return RET_NULL;
+  }
+  Uint32 value = 0;
+  Uint32 test_position;
+  while (start < end) {
+    Uint32 mid_point = (start + end) / 2;
+    test_position = mid_point * 4;
+    memcpy(&value, memory_ptr + test_position, 4);
+    if (value < test_ordinal) {
+      start = mid_point + 1;
+    } else {
+      end = mid_point;
+    }
+  }
+  if (not_include_equal) {
+    test_position = start * 4;
+    memcpy(&value, memory_ptr + test_position, 4);
+    if (value != test_ordinal) {
+      if (start == 0) return RET_NULL;
+      else return start - 1;
+    }
+  }
+  return start;
+}
+
+static Uint32 binary_uint32_search_larger(Uint32 test_ordinal,
+                                          const char *memory_ptr,
+                                          Uint32 num_elems,
+                                          bool not_include_equal) {
+  Uint32 start = 0;
+  Uint32 end = num_elems;
+  if (num_elems == 0) {
+    return RET_NULL;
+  }
+  Uint32 value = 0;
+  Uint32 test_position;
+  while (start < end) {
+    Uint32 mid_point = (start + end) / 2;
+    test_position = mid_point * 4;
+    memcpy(&value, memory_ptr + test_position, 4);
+    if (value > test_ordinal) {
+      end = mid_point;
+    } else {
+      start = mid_point + 1;
+    }
+  }
+  if (not_include_equal == ZTRUE && end > 0) {
+    test_position = (end - 1) * 4;
+    memcpy(&value, memory_ptr + test_position, 4);
+    if (value == test_ordinal) {
+      return end - 1;
+    } else {
+      if (end == num_elems) return RET_NULL;
+    }
+  }
+  return end - 1;
+}
+
+static Uint32 binary_uint16_search_exact(Uint16 test_ordinal,
+                                         const char *memory_ptr,
+                                         Uint32 num_elems) {
+  Uint32 start = 0;
+  Uint32 end = num_elems;
+  if (num_elems == 0) {
+    return RET_NULL;
+  }
+  Uint16 value = 0;
+  while (start < end) {
     Uint32 mid_point = (start + end) / 2;
     Uint32 test_position = mid_point * 2;
-    Uint16 value = 0;
     memcpy(&value, memory_ptr + test_position, 2);
     if (value < test_ordinal) {
-      if (start == end) {
-        if (exact_match) {
-          return RET_NULL;
-        } else {
-          return start;
-        }
-      } else {
-        start = mid_point;
-        continue;
-      }
-    } if (value > test_ordinal) {
-      if (start == end) {
-        if (exact_match) {
-          return RET_NULL;
-        } else {
-          return start;
-        }
-      } else {
-        end = mid_point;
-        continue;
-      }
+      start = mid_point + 1;
+    } else {
+      end = mid_point;
     }
-    return mid_point;
   }
-  return 0;
+  if (value == test_ordinal) {
+    return start;
+  }
+  return RET_NULL;
 }
 
-static Uint32 binary_bin_search(Uint64 test_ordinal,
-                                const char *memory_ptr,
-                                Uint32 start,
-                                Uint32 end,
-                                Uint32 number_size,
-                                bool exact_match) {
-  /**
-   * start = starting index
-   * end = ending index
-   * test_position = Address within memory for next value to check
-   */
-  while (1) {
+static Uint32 binary_uint16_search_smaller(Uint16 test_ordinal,
+                                           const char *memory_ptr,
+                                           Uint32 num_elems,
+                                           bool not_include_equal) {
+  Uint32 start = 0;
+  Uint32 end = num_elems;
+  if (num_elems == 0) {
+    return RET_NULL;
+  }
+  Uint16 value = 0;
+  Uint32 test_position;
+  while (start < end) {
+    Uint32 mid_point = (start + end) / 2;
+    test_position = mid_point * 2;
+    memcpy(&value, memory_ptr + test_position, 2);
+    if (value < test_ordinal) {
+      start = mid_point + 1;
+    } else {
+      end = mid_point;
+    }
+  }
+  if (not_include_equal) {
+    test_position = start * 2;
+    memcpy(&value, memory_ptr + test_position, 2);
+    if (value != test_ordinal) {
+      if (start == 0) return RET_NULL;
+      else return start - 1;
+    }
+  }
+  return start;
+}
+
+static Uint32 binary_uint16_search_larger(Uint16 test_ordinal,
+                                          const char *memory_ptr,
+                                          Uint32 num_elems,
+                                          bool not_include_equal) {
+  Uint32 start = 0;
+  Uint32 end = num_elems;
+  if (num_elems == 0) {
+    return RET_NULL;
+  }
+  Uint16 value = 0;
+  Uint32 test_position;
+  while (start < end) {
+    Uint32 mid_point = (start + end) / 2;
+    test_position = mid_point * 2;
+    memcpy(&value, memory_ptr + test_position, 2);
+    if (value > test_ordinal) {
+      end = mid_point;
+    } else {
+      start = mid_point + 1;
+    }
+  }
+  if (not_include_equal == ZTRUE && end > 0) {
+    test_position = (end - 1) * 2;
+    memcpy(&value, memory_ptr + test_position, 2);
+    if (value == test_ordinal) {
+      return end - 1;
+    } else {
+      if (end == num_elems) return RET_NULL;
+    }
+  }
+  return end - 1;
+}
+
+static Uint32 binary_odd_search_exact(Uint64 test_ordinal,
+                                      const char *memory_ptr,
+                                      Uint32 num_elems,
+                                      Uint32 number_size) {
+  Uint32 start = 0;
+  Uint32 end = num_elems;
+  if (num_elems == 0) {
+    return RET_NULL;
+  }
+  Uint64 value = 0;
+  while (start < end) {
     Uint32 mid_point = (start + end) / 2;
     Uint32 test_position = mid_point * number_size;
-    Uint64 value = 0;
     const uchar *number_ptr = (const uchar*)(memory_ptr + test_position);
     switch (number_size) {
       case 3: {
@@ -299,42 +454,167 @@ static Uint32 binary_bin_search(Uint64 test_ordinal,
         value = uint6korr(number_ptr);
         break;
       }
-      case 7: {
-        value = uint7korr(number_ptr);
-        break;
-      }
       default: {
+        require(false);
         return RET_NULL;
       }
     }
     if (value < test_ordinal) {
-      if (start == end) {
-        if (exact_match) {
-          return RET_NULL;
-        } else {
-          return start;
-        }
-      } else {
-        start = mid_point;
-        continue;
-      }
-    } if (value > test_ordinal) {
-      if (start == end) {
-        if (exact_match) {
-          return RET_NULL;
-        } else {
-          return start;
-        }
-      } else {
-        end = mid_point;
-        continue;
-      }
+      start = mid_point + 1;
+    } else {
+      end = mid_point;
     }
-    return mid_point;
   }
-  return 0;
+  if (value == test_ordinal) {
+    return start;
+  }
+  return RET_NULL;
 }
 
+static Uint32 binary_odd_search_smaller(Uint64 test_ordinal,
+                                        const char *memory_ptr,
+                                        Uint32 num_elems,
+                                        Uint32 number_size,
+                                        bool not_include_equal) {
+  Uint32 start = 0;
+  Uint32 end = num_elems;
+  if (num_elems == 0) {
+    return RET_NULL;
+  }
+  Uint64 value = 0;
+  Uint32 test_position;
+  while (start < end) {
+    Uint32 mid_point = (start + end) / 2;
+    test_position = mid_point * number_size;
+    const uchar *number_ptr = (const uchar*)(memory_ptr + test_position);
+    switch (number_size) {
+      case 3: {
+        Uint32 val32 = uint3korr(number_ptr);
+        value = (Uint64)val32;
+        break;
+      }
+      case 5: {
+        value = uint5korr(number_ptr);
+        break;
+      }
+      case 6: {
+        value = uint6korr(number_ptr);
+        break;
+      }
+      default: {
+        require(false);
+        return RET_NULL;
+      }
+    }
+    if (value < test_ordinal) {
+      start = mid_point + 1;
+    } else {
+      end = mid_point;
+    }
+  }
+  if (not_include_equal == ZTRUE && end > 0) {
+    test_position = start * number_size;
+    const uchar *number_ptr = (const uchar*)(memory_ptr + test_position);
+    switch (number_size) {
+      case 3: {
+        Uint32 val32 = uint3korr(number_ptr);
+        value = (Uint64)val32;
+        break;
+      }
+      case 5: {
+        value = uint5korr(number_ptr);
+        break;
+      }
+      case 6: {
+        value = uint6korr(number_ptr);
+        break;
+      }
+      default: {
+        require(false);
+        return RET_NULL;
+      }
+    }
+    if (value == test_ordinal) {
+      return end - 1;
+    } else {
+      if (end == num_elems) return RET_NULL;
+    }
+  }
+  return start;
+}
+
+static Uint32 binary_odd_search_larger(Uint64 test_ordinal,
+                                       const char *memory_ptr,
+                                       Uint32 num_elems,
+                                       Uint32 number_size,
+                                       bool not_include_equal) {
+  Uint32 start = 0;
+  Uint32 end = num_elems;
+  if (num_elems == 0) {
+    return RET_NULL;
+  }
+  Uint64 value = 0;
+  Uint32 test_position;
+  while (start < end) {
+    Uint32 mid_point = (start + end) / 2;
+    test_position = mid_point * number_size;
+    const uchar *number_ptr = (const uchar*)(memory_ptr + test_position);
+    switch (number_size) {
+      case 3: {
+        Uint32 val32 = uint3korr(number_ptr);
+        value = (Uint64)val32;
+        break;
+      }
+      case 5: {
+        value = uint5korr(number_ptr);
+        break;
+      }
+      case 6: {
+        value = uint6korr(number_ptr);
+        break;
+      }
+      default: {
+        require(false);
+        return RET_NULL;
+      }
+    }
+    if (value > test_ordinal) {
+      end = mid_point;
+    } else {
+      start = mid_point + 1;
+    }
+  }
+  if (not_include_equal) {
+    test_position = (end - 1) * number_size;
+    const uchar *number_ptr = (const uchar*)(memory_ptr + test_position);
+    switch (number_size) {
+      case 3: {
+        Uint32 val32 = uint3korr(number_ptr);
+        value = (Uint64)val32;
+        break;
+      }
+      case 5: {
+        value = uint5korr(number_ptr);
+        break;
+      }
+      case 6: {
+        value = uint6korr(number_ptr);
+        break;
+      }
+      default: {
+        require(false);
+        return RET_NULL;
+      }
+    }
+    if (value != test_ordinal) {
+      if (start == (num_elems - 1)) return RET_NULL;
+      else return end;
+    }
+  }
+  return end - 1;
+}
+
+#if 0
 static Uint32 search_half_open_interval_uint32(Uint32 test_ordinal,
                                                const char *memory_ptr,
                                                Uint32 start_pos,
@@ -7376,6 +7656,430 @@ int Dbtup::interpreterNextLab(Signal* signal,
 	  } else {
 	    return TUPKEY_abort(req_struct, ZSTACK_UNDERFLOW_ERROR);
 	  }
+	  break;
+        }
+        case Interpreter::BINARY_SEARCH_64:
+        {
+          RnoOfInstructions += 3; //A bit heavier instruction
+          /**
+           * Input:
+           *   Register 1:
+           *     The number we are looking for
+           *   Register 2:
+           *     The offset in memory where sorted Uint64 array is stored
+           *   Register 3:
+           *     The number of elements in the array
+           *   Enum 5:
+           *     0 means exact match only
+           *     1 means search for nearest that is smaller
+           *       Another name for this is that it is a rank query.
+           *       This query will never return NULL.
+           *     2 means search for nearest that is larger or equal
+           *       This query finds the successor element.
+           *       This query will never return NULL.
+           *     3 means search for nearest that is smaller or equal
+           *     4 means search for nearest that is larger or equal
+           * Output:
+           *   Register 4:
+           *     The position of the found element
+           *     NULL if no element found
+           *
+           */
+          Int64 Tordinal = * (Int64*)(TregMemBuffer + theRegister + 2);
+          Uint32 TregOrdinalType = TregMemBuffer[theRegister];
+
+          Uint32 ToffsetRegister = Interpreter::getReg2(theInstruction) << 2;
+          Int64 Toffset = * (Int64*)(TregMemBuffer + ToffsetRegister + 2);
+          Uint32 TregOffsetType = TregMemBuffer[ToffsetRegister];
+
+          Uint32 TnumElemsRegister = Interpreter::getReg3(theInstruction) << 2;
+          Int64 TnumElems = * (Int64*)(TregMemBuffer + TnumElemsRegister + 2);
+          Uint32 TregNumElemsType = TregMemBuffer[TnumElemsRegister];
+
+          Uint32 TretElemsRegister = Interpreter::getReg4(theInstruction) << 2;
+          Uint32 TexactMatch = Interpreter::enum5(theInstruction);
+          Int64 end_pos = Toffset + (8 * TnumElems);
+
+          if (unlikely((TregOffsetType == NULL_INDICATOR) ||
+                       (TregOrdinalType == NULL_INDICATOR) ||
+                       (TregNumElemsType == NULL_INDICATOR))) {
+            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
+          }
+          if (Toffset < 0 || TnumElems < 0 || end_pos > MAX_HEAP_OFFSET) {
+            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
+          }
+          if (Tordinal < 0) {
+            return TUPKEY_abort(req_struct, ZWRONG_INPUT_TO_BINARY_SEARCH);
+          }
+          Uint32 ret;
+          Uint64 ordinal = Uint64(Tordinal);
+          switch (TexactMatch) {
+          case EQUAL_MATCH: {
+            ret = binary_uint64_search_exact(ordinal,
+                                             &TheapMemoryChar[Toffset],
+                                             TnumElems);
+            break;
+          }
+          case SMALLER_MATCH: {
+            ret = binary_uint64_search_smaller(ordinal,
+                                               &TheapMemoryChar[Toffset],
+                                               TnumElems,
+                                               false);
+            break;
+          }
+          case LARGER_MATCH: {
+            ret = binary_uint64_search_larger(ordinal,
+                                              &TheapMemoryChar[Toffset],
+                                              TnumElems,
+                                              false);
+            break;
+          }
+          case SMALLER_EQUAL_MATCH: {
+            ret = binary_uint64_search_smaller(ordinal,
+                                               &TheapMemoryChar[Toffset],
+                                               TnumElems,
+                                               true);
+            break;
+          }
+          case LARGER_EQUAL_MATCH: {
+            ret = binary_uint64_search_larger(ordinal,
+                                              &TheapMemoryChar[Toffset],
+                                              TnumElems,
+                                              true);
+            break;
+          }
+          default: {
+            return TUPKEY_abort(req_struct, ZNO_SUCH_BINARY_SEARCH_METHOD);
+          }
+          }
+          if (ret == RET_NULL) {
+            TregMemBuffer[TretElemsRegister] = NULL_INDICATOR;
+          } else {
+            TregMemBuffer[TretElemsRegister] = NOT_NULL_INDICATOR;
+            *(Int64*)(TregMemBuffer + TnumElemsRegister + 2) = ret;
+          }
+	  break;
+        }
+        case Interpreter::BINARY_SEARCH_32:
+        {
+          RnoOfInstructions += 3; //A bit heavier instruction
+          /**
+           * Input:
+           *   Register 1:
+           *     The number we are looking for
+           *   Register 2:
+           *     The offset in memory where sorted Uint64 array is stored
+           *   Register 3:
+           *     The number of elements in the array
+           *   Enum 5:
+           *     0 means exact match only
+           *     1 means search for nearest that is smaller or equal
+           *       Another name for this is that it is a rank query.
+           *       This query will never return NULL.
+           *     2 means search for nearest that is larger or equal
+           *       This query finds the successor element.
+           *       This query will never return NULL.
+           * Output:
+           *   Register 4:
+           *     The position of the found element
+           *     NULL if no element found
+           *
+           */
+          Int64 Tordinal = * (Int64*)(TregMemBuffer + theRegister + 2);
+          Uint32 TregOrdinalType = TregMemBuffer[theRegister];
+
+          Uint32 ToffsetRegister = Interpreter::getReg2(theInstruction) << 2;
+          Int64 Toffset = * (Int64*)(TregMemBuffer + ToffsetRegister + 2);
+          Uint32 TregOffsetType = TregMemBuffer[ToffsetRegister];
+
+          Uint32 TnumElemsRegister = Interpreter::getReg3(theInstruction) << 2;
+          Int64 TnumElems = * (Int64*)(TregMemBuffer + TnumElemsRegister + 2);
+          Uint32 TregNumElemsType = TregMemBuffer[TnumElemsRegister];
+
+          Uint32 TretElemsRegister = Interpreter::getReg4(theInstruction) << 2;
+          Uint32 TexactMatch = Interpreter::enum5(theInstruction);
+          Int64 end_pos = Toffset + (4 * TnumElems);
+
+          if (unlikely((TregOffsetType == NULL_INDICATOR) ||
+                       (TregOrdinalType == NULL_INDICATOR) ||
+                       (TregNumElemsType == NULL_INDICATOR))) {
+            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
+          }
+          if (Toffset < 0 || TnumElems < 0 || end_pos > MAX_HEAP_OFFSET) {
+            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
+          }
+          if (TexactMatch > LARGER_EQUAL_MATCH) {
+            return TUPKEY_abort(req_struct, ZNO_SUCH_BINARY_SEARCH_METHOD);
+          }
+          if (Tordinal < 0 ||
+              Tordinal > Int64(std::numeric_limits<Uint32>::max())) {
+            return TUPKEY_abort(req_struct, ZWRONG_INPUT_TO_BINARY_SEARCH);
+          }
+          Uint32 ordinal = Uint32(Tordinal);
+          Uint32 ret;
+          switch (TexactMatch) {
+          case EQUAL_MATCH: {
+            ret = binary_uint32_search_exact(ordinal,
+                                             &TheapMemoryChar[Toffset],
+                                             TnumElems);
+            break;
+          }
+          case SMALLER_MATCH: {
+            ret = binary_uint32_search_smaller(ordinal,
+                                               &TheapMemoryChar[Toffset],
+                                               TnumElems,
+                                               false);
+            break;
+          }
+          case LARGER_MATCH: {
+            ret = binary_uint32_search_larger(ordinal,
+                                              &TheapMemoryChar[Toffset],
+                                              TnumElems,
+                                              false);
+            break;
+          }
+          case SMALLER_EQUAL_MATCH: {
+            ret = binary_uint32_search_smaller(ordinal,
+                                               &TheapMemoryChar[Toffset],
+                                               TnumElems,
+                                               true);
+            break;
+          }
+          case LARGER_EQUAL_MATCH: {
+            ret = binary_uint32_search_larger(ordinal,
+                                              &TheapMemoryChar[Toffset],
+                                              TnumElems,
+                                              true);
+            break;
+          }
+          default: {
+            return TUPKEY_abort(req_struct, ZNO_SUCH_BINARY_SEARCH_METHOD);
+          }
+          }
+          if (ret == RET_NULL) {
+            TregMemBuffer[TretElemsRegister] = NULL_INDICATOR;
+          } else {
+            TregMemBuffer[TretElemsRegister] = NOT_NULL_INDICATOR;
+            *(Int64*)(TregMemBuffer + TnumElemsRegister + 2) = ret;
+          }
+	  break;
+        }
+        case Interpreter::BINARY_SEARCH_16:
+        {
+          RnoOfInstructions += 3; //A bit heavier instruction
+          /**
+           * Input:
+           *   Register 1:
+           *     The number we are looking for
+           *   Register 2:
+           *     The offset in memory where sorted Uint64 array is stored
+           *   Register 3:
+           *     The number of elements in the array
+           *   Enum 5:
+           *     0 means exact match only
+           *     1 means search for nearest that is smaller or equal
+           *       Another name for this is that it is a rank query.
+           *       This query will never return NULL.
+           *     2 means search for nearest that is larger or equal
+           *       This query finds the successor element.
+           *       This query will never return NULL.
+           * Output:
+           *   Register 4:
+           *     The position of the found element
+           *     NULL if no element found
+           *
+           */
+          Int64 Tordinal = * (Int64*)(TregMemBuffer + theRegister + 2);
+          Uint32 TregOrdinalType = TregMemBuffer[theRegister];
+
+          Uint32 ToffsetRegister = Interpreter::getReg2(theInstruction) << 2;
+          Int64 Toffset = * (Int64*)(TregMemBuffer + ToffsetRegister + 2);
+          Uint32 TregOffsetType = TregMemBuffer[ToffsetRegister];
+
+          Uint32 TnumElemsRegister = Interpreter::getReg3(theInstruction) << 2;
+          Int64 TnumElems = * (Int64*)(TregMemBuffer + TnumElemsRegister + 2);
+          Uint32 TregNumElemsType = TregMemBuffer[TnumElemsRegister];
+
+          Uint32 TretElemsRegister = Interpreter::getReg4(theInstruction) << 2;
+          Uint32 TexactMatch = Interpreter::enum5(theInstruction);
+          Int64 end_pos = Toffset + (2 * TnumElems);
+
+          if (unlikely((TregOffsetType == NULL_INDICATOR) ||
+                       (TregOrdinalType == NULL_INDICATOR) ||
+                       (TregNumElemsType == NULL_INDICATOR))) {
+            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
+          }
+          if (Toffset < 0 || TnumElems < 0 || end_pos > MAX_HEAP_OFFSET) {
+            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
+          }
+          if (Tordinal < 0 ||
+              Tordinal > Int64(std::numeric_limits<Uint16>::max())) {
+            return TUPKEY_abort(req_struct, ZWRONG_INPUT_TO_BINARY_SEARCH);
+          }
+          Uint16 ordinal = Uint16(Tordinal);
+          Uint32 ret;
+          switch (TexactMatch) {
+          case EQUAL_MATCH: {
+            ret = binary_uint16_search_exact(ordinal,
+                                             &TheapMemoryChar[Toffset],
+                                             TnumElems);
+            break;
+          }
+          case SMALLER_MATCH: {
+            ret = binary_uint16_search_smaller(ordinal,
+                                               &TheapMemoryChar[Toffset],
+                                               TnumElems,
+                                               false);
+            break;
+          }
+          case LARGER_MATCH: {
+            ret = binary_uint16_search_larger(ordinal,
+                                              &TheapMemoryChar[Toffset],
+                                              TnumElems,
+                                              false);
+            break;
+          }
+          case SMALLER_EQUAL_MATCH: {
+            ret = binary_uint16_search_smaller(ordinal,
+                                               &TheapMemoryChar[Toffset],
+                                               TnumElems,
+                                               true);
+            break;
+          }
+          case LARGER_EQUAL_MATCH: {
+            ret = binary_uint16_search_larger(ordinal,
+                                              &TheapMemoryChar[Toffset],
+                                              TnumElems,
+                                              true);
+            break;
+          }
+          default: {
+            return TUPKEY_abort(req_struct, ZNO_SUCH_BINARY_SEARCH_METHOD);
+          }
+          }
+          if (ret == RET_NULL) {
+            TregMemBuffer[TretElemsRegister] = NULL_INDICATOR;
+          } else {
+            TregMemBuffer[TretElemsRegister] = NOT_NULL_INDICATOR;
+            *(Int64*)(TregMemBuffer + TnumElemsRegister + 2) = ret;
+          }
+	  break;
+        }
+        case Interpreter::BINARY_SEARCH_ODD:
+        {
+          RnoOfInstructions += 3; //A bit heavier instruction
+          /**
+           * Input:
+           *   Register 1:
+           *     The number we are looking for
+           *   Register 2:
+           *     The offset in memory where sorted Uint64 array is stored
+           *   Register 3:
+           *     The number of elements in the array
+           *   Enum 5:
+           *     0 means exact match only
+           *     1 means search for nearest that is smaller or equal
+           *       Another name for this is that it is a rank query.
+           *       This query will never return NULL.
+           *     2 means search for nearest that is larger or equal
+           *       This query finds the successor element.
+           *       This query will never return NULL.
+           *   Enum 6:
+           *     3 Using 3 byte integers stored in little-endian format
+           *     5 Using 5 byte integers stored in little-endian format
+           *     6 Using 6 byte integers stored in little-endian format
+           * Output:
+           *   Register 4:
+           *     The position of the found element
+           *     NULL if no element found
+           *
+           */
+          Int64 Tordinal = * (Int64*)(TregMemBuffer + theRegister + 2);
+          Uint32 TregOrdinalType = TregMemBuffer[theRegister];
+
+          Uint32 ToffsetRegister = Interpreter::getReg2(theInstruction) << 2;
+          Int64 Toffset = * (Int64*)(TregMemBuffer + ToffsetRegister + 2);
+          Uint32 TregOffsetType = TregMemBuffer[ToffsetRegister];
+
+          Uint32 TnumElemsRegister = Interpreter::getReg3(theInstruction) << 2;
+          Int64 TnumElems = * (Int64*)(TregMemBuffer + TnumElemsRegister + 2);
+          Uint32 TregNumElemsType = TregMemBuffer[TnumElemsRegister];
+
+          Uint32 TretElemsRegister = Interpreter::getReg4(theInstruction) << 2;
+          Uint32 TexactMatch = Interpreter::enum5(theInstruction);
+          Uint32 TnumberSize = Interpreter::enum6(theInstruction);
+          Int64 end_pos = Toffset + (TnumberSize * TnumElems);
+
+          if (unlikely((TregOffsetType == NULL_INDICATOR) ||
+                       (TregOrdinalType == NULL_INDICATOR) ||
+                       (TregNumElemsType == NULL_INDICATOR))) {
+            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
+          }
+          if (Toffset < 0 || TnumElems < 0 || end_pos > MAX_HEAP_OFFSET) {
+            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
+          }
+          if (TnumberSize != 3 &&
+              TnumberSize != 5 &&
+              TnumberSize != 6) {
+            return TUPKEY_abort(req_struct, ZNO_SUCH_NUMBER_SIZE_SUPPORTED);
+          }
+          Uint64 max_number = (Uint64(1) << (Uint64(TnumberSize * 8))) - 1;
+          if (Tordinal < 0 ||
+              Tordinal > Int64(max_number)) {
+            return TUPKEY_abort(req_struct, ZWRONG_INPUT_TO_BINARY_SEARCH);
+          }
+          Uint64 ordinal = Uint64(Tordinal);
+          Uint32 ret;
+          switch (TexactMatch) {
+          case EQUAL_MATCH: {
+            ret = binary_odd_search_exact(ordinal,
+                                          &TheapMemoryChar[Toffset],
+                                          TnumElems,
+                                          TnumberSize);
+            break;
+          }
+          case SMALLER_MATCH: {
+            ret = binary_odd_search_smaller(ordinal,
+                                            &TheapMemoryChar[Toffset],
+                                            TnumElems,
+                                            TnumberSize,
+                                            false);
+            break;
+          }
+          case LARGER_MATCH: {
+            ret = binary_odd_search_larger(ordinal,
+                                           &TheapMemoryChar[Toffset],
+                                           TnumElems,
+                                           TnumberSize,
+                                           false);
+            break;
+          }
+          case SMALLER_EQUAL_MATCH: {
+            ret = binary_odd_search_smaller(ordinal,
+                                            &TheapMemoryChar[Toffset],
+                                            TnumElems,
+                                            TnumberSize,
+                                            true);
+            break;
+          }
+          case LARGER_EQUAL_MATCH: {
+            ret = binary_odd_search_larger(ordinal,
+                                           &TheapMemoryChar[Toffset],
+                                           TnumElems,
+                                           TnumberSize,
+                                           true);
+            break;
+          }
+          default: {
+            return TUPKEY_abort(req_struct, ZNO_SUCH_BINARY_SEARCH_METHOD);
+          }
+          }
+          if (ret == RET_NULL) {
+            TregMemBuffer[TretElemsRegister] = NULL_INDICATOR;
+          } else {
+            TregMemBuffer[TretElemsRegister] = NOT_NULL_INDICATOR;
+            *(Int64*)(TregMemBuffer + TnumElemsRegister + 2) = ret;
+          }
 	  break;
         }
         case Interpreter::SPECIAL_INSTR:

@@ -60,9 +60,17 @@ class Interpreter {
    * Instructions
    */
   static constexpr Uint32 READ_ATTR_INTO_REG = 1;
+  static constexpr Uint32 BINARY_SEARCH_64 =
+                          READ_ATTR_INTO_REG + OVERFLOW_OPCODE;
   static constexpr Uint32 WRITE_ATTR_FROM_REG = 2;
+  static constexpr Uint32 BINARY_SEARCH_32 =
+                          WRITE_ATTR_FROM_REG + OVERFLOW_OPCODE;
   static constexpr Uint32 LOAD_CONST_NULL = 3;
+  static constexpr Uint32 BINARY_SEARCH_16 =
+                          LOAD_CONST_NULL + OVERFLOW_OPCODE;
   static constexpr Uint32 LOAD_CONST16 = 4;
+  static constexpr Uint32 BINARY_SEARCH_ODD =
+                          LOAD_CONST16 + OVERFLOW_OPCODE;
   static constexpr Uint32 LOAD_CONST32 = 5;
   static constexpr Uint32 LOAD_CONST64 = 6;
   static constexpr Uint32 ADD_REG_REG = 7;
@@ -395,6 +403,8 @@ class Interpreter {
   static Uint32 getReg2(Uint32 op);
   static Uint32 getReg3(Uint32 op);
   static Uint32 getReg4(Uint32 op);
+  static Uint32 enum5(Uint32 op);
+  static Uint32 enum6(Uint32 op);
   static Uint32 getLabel(Uint32 op);
 
   /**
@@ -928,6 +938,10 @@ inline Uint32 Interpreter::getReg2(Uint32 op) { return (op >> 9) & 0x7; }
 inline Uint32 Interpreter::getReg3(Uint32 op) { return (op >> 12) & 0x7; }
 
 inline Uint32 Interpreter::getReg4(Uint32 op) { return (op >> 16) & 0x7; }
+
+inline Uint32 Interpreter::enum5(Uint32 op) { return (op >> 19) & 0xF; }
+
+inline Uint32 Interpreter::enum6(Uint32 op) { return (op >> 23) & 0xF; }
 
 inline Uint32 Interpreter::getLabel(Uint32 op) { return (op >> 16) & 0xffff; }
 
