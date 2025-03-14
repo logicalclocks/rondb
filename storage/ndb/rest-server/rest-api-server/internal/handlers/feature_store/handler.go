@@ -28,8 +28,10 @@ import (
 
 	"hopsworks.ai/rdrs/internal/common"
 	"hopsworks.ai/rdrs/internal/config"
+	"hopsworks.ai/rdrs/internal/dal/heap"
 	"hopsworks.ai/rdrs/internal/feature_store"
 	"hopsworks.ai/rdrs/internal/handlers/batchpkread"
+	"hopsworks.ai/rdrs/internal/handlers/pkread"
 	"hopsworks.ai/rdrs/internal/log"
 	"hopsworks.ai/rdrs/internal/security/apikey"
 	"hopsworks.ai/rdrs/pkg/api"
@@ -47,10 +49,11 @@ type Handler struct {
 	fvMetaCache   *feature_store.FeatureViewMetaDataCache
 	apiKeyCache   apikey.Cache
 	dbBatchReader batchpkread.Handler
+	heap          *heap.Heap
 }
 
-func New(fvMetaCache *feature_store.FeatureViewMetaDataCache, apiKeyCache apikey.Cache, batchPkReadHandler batchpkread.Handler) Handler {
-	return Handler{fvMetaCache, apiKeyCache, batchPkReadHandler}
+func New(fvMetaCache *feature_store.FeatureViewMetaDataCache, apiKeyCache apikey.Cache, batchPkReadHandler batchpkread.Handler, heap *heap.Heap) Handler {
+	return Handler{fvMetaCache, apiKeyCache, batchPkReadHandler, heap}
 }
 
 func (h *Handler) Validate(request interface{}) error {
@@ -213,8 +216,34 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 		var fsError = TranslateRonDbError(http.StatusBadRequest, ronDbErr.Error())
 		return fsError.GetStatus(), fsError.GetError()
 	}
+
 	var dbResponseIntf = getPkReadResponseJSON(*metadata)
-	code, ronDbErr := h.dbBatchReader.Execute(readParams, *dbResponseIntf)
+	// --- buffers ---
+	// allocate memory buffers. they are allocated here becuase we would like them
+	// to stay valid for the lifetime of the request. Varbinary/Blobs are stored in
+	// buffer and they are read later
+
+	noOps := uint32(len(*readParams))
+	reqPtrs := make([]*heap.NativeBuffer, noOps)
+	respPtrs := make([]*heap.NativeBuffer, noOps)
+
+	for idx, pkOp := range *readParams {
+		reqBuff, releaseReqBuff := h.heap.GetBuffer()
+		defer releaseReqBuff()
+		respBuff, releaseResBuff := h.heap.GetBuffer()
+		defer releaseResBuff()
+
+		reqPtrs[idx] = reqBuff
+		respPtrs[idx] = respBuff
+
+		e := pkread.CreateNativeRequest(pkOp, reqBuff, respBuff)
+		if e != nil {
+			return http.StatusInternalServerError, err
+		}
+	}
+	// --- buffers ---
+	code, ronDbErr := h.dbBatchReader.ExecuteWithBuffers(readParams, *dbResponseIntf, reqPtrs, respPtrs, noOps)
+
 	if ronDbErr != nil {
 		var fsError = TranslateRonDbError(code, ronDbErr.Error())
 		return fsError.GetStatus(), fsError.GetError()
@@ -389,7 +418,7 @@ type ComplexFeatureResult struct {
 
 func getFeatureValuesInt(response *api.PKReadResponseWithCodeJSON, featureView *feature_store.FeatureViewMetadata, featureValues []interface{}, status *api.FeatureStatus, err *feature_store.RestErrorCode) {
 	complexFeaturesCount := 0
-	for featureName, _ := range *response.Body.Data {
+	for featureName, _ := range *response.Body.RawData {
 		featureIndexKey := feature_store.GetFeatureIndexKeyByFgIndexKey(*response.Body.OperationID, featureName)
 		// When only primary key is selected, Rondb will return all columns, so not all value from response are needed.
 		if _, ok := (featureView.FeatureIndexLookup)[featureIndexKey]; ok {
@@ -402,26 +431,28 @@ func getFeatureValuesInt(response *api.PKReadResponseWithCodeJSON, featureView *
 	var wg sync.WaitGroup
 	results := make(chan ComplexFeatureResult, complexFeaturesCount)
 
-	for featureName, value := range *response.Body.Data {
+	// process raw avro data
+	for featureName, value := range *response.Body.RawData {
 		featureIndexKey := feature_store.GetFeatureIndexKeyByFgIndexKey(*response.Body.OperationID, featureName)
-		// When only primary key is selected, Rondb will return all columns, so not all value from response are needed.
-		if index, ok := (featureView.FeatureIndexLookup)[featureIndexKey]; ok {
-			if complexFeature, ok := (featureView.ComplexFeatures)[featureIndexKey]; ok {
 
+		// When only primary key is selected, Rondb will return all columns, so not all value from response are needed.
+		if index, ok := featureView.FeatureIndexLookup[featureIndexKey]; ok {
+			if complexFeature, ok := featureView.ComplexFeatures[featureIndexKey]; ok {
 				wg.Add(1)
-				go func(idx int, complexFeature *feature_store.ComplexFeature) {
+
+				go func(index int, value []byte, complexFeature *feature_store.ComplexFeature, featureName string) {
 					defer wg.Done()
-					myIndex := idx
 					deser, e := DeserialiseComplexFeature(value, complexFeature)
 
 					if e != nil {
 						myStatus := api.FEATURE_STATUS_ERROR
-						myErr := feature_store.DESERIALISE_FEATURE_FAIL.NewMessage(fmt.Sprintf("Feature name: %s; %s", featureName, e.Error()))
-						results <- ComplexFeatureResult{Index: myIndex, Err: myErr, Status: myStatus}
+						myErr := feature_store.DESERIALISE_FEATURE_FAIL.NewMessage(
+							fmt.Sprintf("Feature name: %s; datalen %d; Error %s", featureName, len(value), e.Error()))
+						results <- ComplexFeatureResult{Index: index, Err: myErr, Status: myStatus}
 					} else {
-						results <- ComplexFeatureResult{Index: myIndex, Value: deser}
+						results <- ComplexFeatureResult{Index: index, Value: deser}
 					}
-				}(index, complexFeature)
+				}(index, *value, complexFeature, featureName)
 
 			} else {
 				featureValues[index] = value
@@ -438,6 +469,15 @@ func getFeatureValuesInt(response *api.PKReadResponseWithCodeJSON, featureView *
 			*status = res.Status
 		} else {
 			featureValues[res.Index] = res.Value
+		}
+	}
+
+	// process non avro data
+	for featureName, value := range *response.Body.Data {
+		featureIndexKey := feature_store.GetFeatureIndexKeyByFgIndexKey(*response.Body.OperationID, featureName)
+		// When only primary key is selected, Rondb will return all columns, so not all value from response are needed.
+		if index, ok := (featureView.FeatureIndexLookup)[featureIndexKey]; ok {
+			featureValues[index] = value
 		}
 	}
 }

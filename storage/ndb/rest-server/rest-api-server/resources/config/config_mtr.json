@@ -14,7 +14,7 @@
           "Enable": true
         },
         "GRPC": {
-          "Enable": false
+          "Enable": true
         },
         "Security": {
                 "TLS": {

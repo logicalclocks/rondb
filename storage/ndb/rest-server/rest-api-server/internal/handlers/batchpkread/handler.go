@@ -114,6 +114,12 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 		}
 	}
 
+	return h.ExecuteWithBuffers(request, response, reqPtrs, respPtrs, noOps)
+}
+
+func (h *Handler) ExecuteWithBuffers(request interface{}, response interface{},
+	reqPtrs, respPtrs []*heap.NativeBuffer, noOps uint32) (int, error) {
+
 	dalErr := dal.RonDBBatchedPKRead(noOps, reqPtrs, respPtrs)
 	if dalErr != nil {
 		var message string

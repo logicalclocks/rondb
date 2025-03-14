@@ -38,6 +38,7 @@ type BatchOpResponse interface {
 	Init(numSubResponses int)
 	CreateNewSubResponse() PKReadResponseWithCode
 	AddSubResponse(index int, subResp PKReadResponseWithCode)
+	EncodeRawData()
 	String() string
 }
 
@@ -59,6 +60,14 @@ func (b *BatchResponseJSON) CreateNewSubResponse() PKReadResponseWithCode {
 	subResponse := PKReadResponseWithCodeJSON{}
 	subResponse.Init()
 	return &subResponse
+}
+
+func (b *BatchResponseJSON) EncodeRawData() {
+	if b.Result != nil {
+		for _, res := range *b.Result {
+			(*res).EncodeRawData()
+		}
+	}
 }
 
 func (b *BatchResponseJSON) AddSubResponse(index int, subResp PKReadResponseWithCode) {
@@ -84,6 +93,14 @@ func (b *BatchResponseGRPC) CreateNewSubResponse() PKReadResponseWithCode {
 	subResponse := PKReadResponseWithCodeGRPC{}
 	subResponse.Init()
 	return &subResponse
+}
+
+func (b *BatchResponseGRPC) EncodeRawData() {
+	if b.Result != nil {
+		for _, res := range *b.Result {
+			(*res).EncodeRawData()
+		}
+	}
 }
 
 func (b *BatchResponseGRPC) AddSubResponse(index int, subResp PKReadResponseWithCode) {
