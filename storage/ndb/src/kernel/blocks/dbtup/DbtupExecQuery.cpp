@@ -659,22 +659,57 @@ static Uint32 string_search(const char *search_string,
   return RET_NULL;
 }
 
-#if 0
+static void compress_num32_array(char *memory_ptr,
+                                 Uint32 elems,
+                                 size_t number_size) {
+  switch (number_size) {
+    case 3: {
+      for (size_t i = 0; i < elems; i++) {
+        Uint32 val = 0;
+        memcpy(&val, memory_ptr + (4 * elems), 4);
+        int3store(memory_ptr + (3 * elems), (uint)val);
+      }
+      return;
+    }
+    default: {
+      require(false);
+    }
+  }
+  return;
+}
+
+static void compress_num64_array(char *memory_ptr,
+                                 Uint32 elems,
+                                 size_t number_size) {
+  switch (number_size) {
+    case 5: {
+      for (size_t i = 0; i < elems; i++) {
+        Uint64 val = 0;
+        memcpy(&val, memory_ptr + (8 * elems), 8);
+        int5store(memory_ptr + (5 * elems), (ulonglong)val);
+      }
+      return;
+    }
+    case 6: {
+      for (size_t i = 0; i < elems; i++) {
+        Uint64 val = 0;
+        memcpy(&val, memory_ptr + (8 * elems), 8);
+        int5store(memory_ptr + (6 * elems), (ulonglong)val);
+      }
+      return;
+    }
+    default: {
+      require(false);
+    }
+  }
+  return;
+}
+
 static int compare_8b(const void *left, const void *right) {
   ulonglong *left_ulong = (ulonglong*)left;
   ulonglong *right_ulong = (ulonglong*)right;
   if ((*left_ulong) < (*right_ulong)) return -1;
   if ((*left_ulong) > (*right_ulong)) return +1;
-  return 0;
-}
-
-static int compare_7b(const void *left, const void *right) {
-  const uchar *left_cmp = (const uchar*)left;
-  const uchar *right_cmp = (const uchar*)right;
-  ulonglong left_ulong = uint7korr(left_cmp);
-  ulonglong right_ulong = uint7korr(right_cmp);
-  if (left_ulong < right_ulong) return -1;
-  if (left_ulong > right_ulong) return +1;
   return 0;
 }
 
@@ -732,129 +767,59 @@ static int compare_1b(const void *left, const void *right) {
   return 0;
 }
 
-static int compress_num64_array(char *memory_ptr,
-                                Uint32 start_pos,
-                                Uint32 end_pos,
-                                size_t number_size) {
-  if (end_pos < start_pos) return RET_NULL;
-  Uint32 array_size = (end_pos - start_pos);
-  size_t elems = array_size / 8;
-  size_t elems_size = elems * 8;
-  if (elems_size != array_size) return RET_NULL;
-  switch (number_size) {
-    case 5: {
-      for (size_t i = 0; i < elems; i++) {
-        ulonglong val = 0;
-        memcpy(&val, memory_ptr + start_pos + (8 * elems), 8);
-        int5store(memory_ptr + start_pos + (5 * elems), val);
-      }
-      break;
-    }
-    case 6: {
-      for (size_t i = 0; i < elems; i++) {
-        ulonglong val = 0;
-        memcpy(&val, memory_ptr + start_pos + (8 * elems), 8);
-        int6store(memory_ptr + start_pos + (6 * elems), val);
-      }
-      break;
-    }
-    default: {
-      return RET_NULL;
-    }
-  }
-  return 0;
-}
-
-static int compress_num32_array(char *memory_ptr,
-                                Uint32 start_pos,
-                                Uint32 end_pos,
-                                size_t number_size) {
-  if (end_pos < start_pos) return RET_NULL;
-  Uint32 array_size = (end_pos - start_pos);
-  size_t elems = array_size / 4;
-  size_t elems_size = elems * 4;
-  if (elems_size != array_size) return RET_NULL;
-  switch (number_size) {
-    case 3: {
-      for (size_t i = 0; i < elems; i++) {
-        uint val = 0;
-        memcpy(&val, memory_ptr + start_pos + (4 * elems), 4);
-        int5store(memory_ptr + start_pos + (3 * elems), val);
-      }
-      break;
-    }
-    default: {
-      return RET_NULL;
-    }
-  }
-  return 0;
-}
-
-static Uint32 qsort_instr(const char *memory_ptr,
-                          Uint32 start_pos,
-                          Uint32 end_pos,
-                          size_t number_size) {
-  if (end_pos < start_pos) return RET_NULL;
-  Uint32 size = end_pos - start_pos;
-  size_t elems = size / number_size;
-  Uint32 elems_size = elems * number_size;
-  if (elems_size != size) return RET_NULL;
+static void qsort_instr(const char *memory_ptr,
+                        Uint32 elems,
+                        Uint32 number_size) {
   switch (number_size) {
     case 1: {
-      qsort((void*)(memory_ptr + start_pos),
+      qsort((void*)(memory_ptr),
             elems,
             number_size,
             compare_1b);
     }
     case 2: {
-      qsort((void*)(memory_ptr + start_pos),
+      qsort((void*)(memory_ptr),
             elems,
             number_size,
             compare_2b);
     }
     case 3: {
-      qsort((void*)(memory_ptr + start_pos),
+      qsort((void*)(memory_ptr),
             elems,
             number_size,
             compare_3b);
     }
     case 4: {
-      qsort((void*)(memory_ptr + start_pos),
+      qsort((void*)(memory_ptr),
             elems,
             number_size,
             compare_4b);
     }
     case 5: {
-      qsort((void*)(memory_ptr + start_pos),
+      qsort((void*)(memory_ptr),
             elems,
             number_size,
             compare_5b);
     }
     case 6: {
-      qsort((void*)(memory_ptr + start_pos),
+      qsort((void*)(memory_ptr),
             elems,
             number_size,
             compare_6b);
     }
-    case 7: {
-      qsort((void*)(memory_ptr + start_pos),
-            elems,
-            number_size,
-            compare_7b);
-    }
     case 8: {
-      qsort((void*)(memory_ptr + start_pos),
+      qsort((void*)(memory_ptr),
             elems,
             number_size,
              compare_8b);
     }
     default: {
-      return RET_NULL;
+      require(false);
+      return;
     }
   }
-  return 0;
+  return;
 }
-#endif
 
 /* For debugging */
 static void dump_hex(const Uint32 *p, Uint32 len) {
@@ -8164,6 +8129,100 @@ int Dbtup::interpreterNextLab(Signal* signal,
           } else {
             TregMemBuffer[TretRegister] = NOT_NULL_INDICATOR;
             *(Int64*)(TregMemBuffer + TretRegister + 2) = ret;
+          }
+	  break;
+        }
+        case Interpreter::QSORT:
+        {
+          RnoOfInstructions += 3; //A bit heavier instruction
+          /**
+           * This instruction sorts an array of unsigned integers of a
+           * given size. The size can be 1,2,4,5,6 and 8 bytes.
+           *
+           * Input:
+           *  Reg1: Offset of memory to be sorted
+           *  Reg2: Number of elements in array to be sorted
+           *  Enum5: Number size in bytes
+           */
+          Int64 Toffset = * (Int64*)(TregMemBuffer + theRegister + 2);
+          Uint32 TregoffsetType = TregMemBuffer[theRegister];
+
+          Uint32 TnumElemsRegister = Interpreter::getReg2(theInstruction) << 2;
+          Int64 TnumElems = *(Int64*)(TregMemBuffer + TnumElemsRegister + 2);
+          Uint32 TregnumElemsType = TregMemBuffer[TnumElemsRegister];
+
+          Uint32 TnumberSize = Interpreter::enum5(theInstruction) << 2;
+
+          if (unlikely((TregoffsetType == NULL_INDICATOR) ||
+                       (TregnumElemsType == NULL_INDICATOR))) {
+            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
+          }
+          if (Toffset < 0 ||
+              TnumElems < 0 ||
+              (Toffset + (TnumberSize * TnumElems)) < MAX_HEAP_OFFSET) {
+            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
+          }
+          if (TnumberSize != 1 &&
+              TnumberSize != 2 &&
+              TnumberSize != 3 &&
+              TnumberSize != 4 &&
+              TnumberSize != 5 &&
+              TnumberSize != 6 &&
+              TnumberSize != 8) {
+            return TUPKEY_abort(req_struct, ZNO_SUCH_NUMBER_SIZE_SUPPORTED);
+          }
+          qsort_instr(&TheapMemoryChar[Toffset],
+                      TnumElems,
+                      TnumberSize);
+	  break;
+        }
+        case Interpreter::COMPRESS_NUM_ARRAY:
+        {
+          RnoOfInstructions += 3; //A bit heavier instruction
+          /**
+           * This instruction takes as input an array of Uint32 or Uint64
+           * and converts it into a smaller array of 3, 5 or 6 bytes stored
+           * in little-endian format. This can be used in combination with
+           * binary search of odd sizes and similarly for search intervals.
+           *
+           * Input:
+           *  Reg1: Offset of memory to be sorted
+           *  Reg2: Number of elements in array to be sorted
+           *  Enum5: Number size in bytes of input data (4 or 8)
+           *  Enum6: Number size in bytes of output data (3, 5 or 6)
+           */
+          Int64 Toffset = * (Int64*)(TregMemBuffer + theRegister + 2);
+          Uint32 TregoffsetType = TregMemBuffer[theRegister];
+
+          Uint32 TnumElemsRegister = Interpreter::getReg2(theInstruction) << 2;
+          Int64 TnumElems = *(Int64*)(TregMemBuffer + TnumElemsRegister + 2);
+          Uint32 TregnumElemsType = TregMemBuffer[TnumElemsRegister];
+
+          Uint32 TnumberSizeIn = Interpreter::enum5(theInstruction) << 2;
+          Uint32 TnumberSizeOut = Interpreter::enum6(theInstruction) << 2;
+
+          if (unlikely((TregoffsetType == NULL_INDICATOR) ||
+                       (TregnumElemsType == NULL_INDICATOR))) {
+            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
+          }
+          if (Toffset < 0 ||
+              TnumElems < 0 ||
+              (Toffset + (TnumberSizeIn * TnumElems)) < MAX_HEAP_OFFSET) {
+            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
+          }
+          if (!((TnumberSizeIn == 4 && TnumberSizeOut == 3) ||
+                (TnumberSizeIn == 8 &&
+                 (TnumberSizeOut == 5 || TnumberSizeOut == 6)))) {
+            return TUPKEY_abort(req_struct, ZNO_SUCH_NUMBER_SIZE_SUPPORTED);
+          }
+          if (TnumberSizeIn == 4) {
+            compress_num32_array(&TheapMemoryChar[Toffset],
+                                 TnumElems,
+                                 TnumberSizeOut);
+          } else {
+            compress_num64_array(&TheapMemoryChar[Toffset],
+                                 TnumElems,
+                                 TnumberSizeOut);
           }
 	  break;
         }

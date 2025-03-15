@@ -113,8 +113,12 @@ class Interpreter {
                           BRANCH_GE_REG_REG + OVERFLOW_OPCODE;
 
   static constexpr Uint32 EXIT_OK = 18;
-  /* Overflow constant 18-22 free */
+  static constexpr Uint32 QSORT =
+                          EXIT_OK + OVERFLOW_OPCODE;
   static constexpr Uint32 EXIT_REFUSE = 19;
+  static constexpr Uint32 COMPRESS_NUM_ARRAY =
+                          EXIT_REFUSE + OVERFLOW_OPCODE;
+  /* Overflow constant 20-22 free */
   static constexpr Uint32 CALL = 20;
   static constexpr Uint32 RETURN = 21;
   static constexpr Uint32 EXIT_OK_LAST = 22;
