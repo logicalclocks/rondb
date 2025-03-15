@@ -535,6 +535,327 @@ int createPkIndex_Drop(NDBT_Context *ctx, NDBT_Step *step) {
 }
 
 int
+runInterpreterLibraryTest(NDBT_Context* ctx, NDBT_Step* step)
+{
+#define REG0 0
+#define REG1 1
+#define REG2 2
+#define REG3 3
+#define REG4 4
+#define REG5 5
+#define REG6 6
+#define REG7 7
+
+#define LABEL0 0
+#define LABEL1 1
+#define LABEL2 2
+#define LABEL3 3
+
+#define EQUAL_MATCH 0
+#define SMALLER_MATCH 1
+#define LARGER_MATCH 2
+#define SMALLER_EQUAL_MATCH 3
+#define LARGER_EQUAL_MATCH 4
+
+  const NdbDictionary::Table * pTab = ctx->getTab();
+  Ndb* pNdb = GETNDB(step);
+  NdbDictionary::Dictionary * dict = pNdb->getDictionary();
+
+  /**
+   * Get default record to use for Insert operation.
+   * Next get primary key index and the default record for
+   * this primary key. Next we get the 
+   */
+  const NdbRecord * pRowRecord = pTab->getDefaultRecord();
+  CHK_RET_FAILED(pRowRecord != 0, dict);
+
+  const Uint32 len = NdbDictionary::getRecordRowLength(pRowRecord);
+  Uint8 * pRow = new Uint8[len];
+  std::memset(pRow, 0, len);
+
+  HugoCalculator calc(* pTab);
+  calc.equalForRow(pRow, pRowRecord, 0);
+
+  Uint64 a64[8] = {1,2,5,5,7,12,13,15};
+  Uint32 a32[8] = {1,2,5,5,7,12,13,15};
+  Uint16 a16[8] = {1,2,5,5,7,12,13,15};
+
+  for (Uint32 i = 0; i < 2; i++) {
+    ndbout << "i = " << i << endl;
+    NdbTransaction* pTrans = pNdb->startTransaction();
+    CHK_RET_FAILED(pTrans != 0, pNdb);
+
+    Uint32 buffer[1024];
+    NdbInterpretedCode code(pTab, &buffer[0], 1024);
+    int ret_code = 0;
+    if (i == 0) {
+      code.load_const_u16(REG0, 0);
+      code.load_const_mem(REG0, REG1, 8 * 8, (const char*)&a64[0]);
+      code.load_const_u16(REG3, 8);
+
+      code.load_const_u16(REG2, 1);
+      code.binary_search_64(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+      code.branch_eq_null(REG7, LABEL0);
+      code.branch_ne_const(REG7, 0, LABEL0);
+
+      code.load_const_u16(REG2, 2);
+      code.binary_search_64(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+      code.branch_eq_null(REG7, LABEL0);
+      code.branch_ne_const(REG7, 1, LABEL0);
+
+      code.load_const_u16(REG2, 5);
+      code.binary_search_64(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+      code.branch_eq_null(REG7, LABEL0);
+      code.branch_ne_const(REG7, 2, LABEL0);
+
+      code.load_const_u16(REG2, 7);
+      code.binary_search_64(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+      code.branch_eq_null(REG7, LABEL0);
+      code.branch_ne_const(REG7, 4, LABEL0);
+
+      code.load_const_u16(REG2, 12);
+      code.binary_search_64(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+      code.branch_eq_null(REG7, LABEL0);
+      code.branch_ne_const(REG7, 5, LABEL0);
+
+      code.load_const_u16(REG2, 13);
+      code.binary_search_64(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+      code.branch_eq_null(REG7, LABEL0);
+      code.branch_ne_const(REG7, 6, LABEL0);
+
+      code.load_const_u16(REG2, 15);
+      code.binary_search_64(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+      code.branch_eq_null(REG7, LABEL0);
+      code.branch_ne_const(REG7, 7, LABEL0);
+
+      code.load_const_u16(REG2, 0);
+      code.binary_search_64(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+      code.branch_ne_null(REG7, LABEL0);
+
+      code.load_const_u16(REG2, 3);
+      code.binary_search_64(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+      code.branch_ne_null(REG7, LABEL0);
+
+      code.load_const_u16(REG2, 4);
+      code.binary_search_64(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+      code.branch_ne_null(REG7, LABEL0);
+
+      code.load_const_u16(REG2, 6);
+      code.binary_search_64(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+      code.branch_ne_null(REG7, LABEL0);
+
+      code.load_const_u16(REG2, 8);
+      code.binary_search_64(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+      code.branch_ne_null(REG7, LABEL0);
+
+      code.load_const_u16(REG2, 11);
+      code.binary_search_64(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+      code.branch_ne_null(REG7, LABEL0);
+
+      code.load_const_u16(REG2, 14);
+      code.binary_search_64(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+      code.branch_ne_null(REG7, LABEL0);
+
+      code.load_const_u16(REG2, 16);
+      code.binary_search_64(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+      code.branch_ne_null(REG7, LABEL0);
+
+      code.load_const_u16(REG2, 2000000);
+      code.binary_search_64(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+      code.branch_ne_null(REG7, LABEL0);
+
+      code.interpret_exit_ok();
+      code.def_label(LABEL0);
+      code.interpret_exit_nok(6000);
+      ret_code = code.finalise();
+      CHK3(ret_code);
+    } else if (i == 1) {
+      code.load_const_u16(REG0, 0);
+      code.load_const_mem(REG0, REG1, 8 * 4, (const char*)&a32[0]);
+      code.load_const_u16(REG3, 8);
+
+      code.load_const_u16(REG2, 1);
+      code.binary_search_32(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+      code.branch_eq_null(REG7, LABEL0);
+      code.branch_ne_const(REG7, 0, LABEL0);
+
+      code.load_const_u16(REG2, 2);
+      code.binary_search_32(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+      code.branch_eq_null(REG7, LABEL0);
+      code.branch_ne_const(REG7, 1, LABEL0);
+
+      code.load_const_u16(REG2, 5);
+      code.binary_search_32(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+      code.branch_eq_null(REG7, LABEL0);
+      code.branch_ne_const(REG7, 2, LABEL0);
+
+      code.load_const_u16(REG2, 7);
+      code.binary_search_32(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+      code.branch_eq_null(REG7, LABEL0);
+      code.branch_ne_const(REG7, 4, LABEL0);
+
+      code.load_const_u16(REG2, 12);
+      code.binary_search_32(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+      code.branch_eq_null(REG7, LABEL0);
+      code.branch_ne_const(REG7, 5, LABEL0);
+
+      code.load_const_u16(REG2, 13);
+      code.binary_search_32(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+      code.branch_eq_null(REG7, LABEL0);
+      code.branch_ne_const(REG7, 6, LABEL0);
+
+      code.load_const_u16(REG2, 15);
+      code.binary_search_32(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+      code.branch_eq_null(REG7, LABEL0);
+      code.branch_ne_const(REG7, 7, LABEL0);
+
+      code.load_const_u16(REG2, 0);
+      code.binary_search_32(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+      code.branch_ne_null(REG7, LABEL0);
+
+      code.load_const_u16(REG2, 3);
+      code.binary_search_32(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+      code.branch_ne_null(REG7, LABEL0);
+
+      code.load_const_u16(REG2, 4);
+      code.binary_search_32(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+      code.branch_ne_null(REG7, LABEL0);
+
+      code.load_const_u16(REG2, 6);
+      code.binary_search_32(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+      code.branch_ne_null(REG7, LABEL0);
+
+      code.load_const_u16(REG2, 8);
+      code.binary_search_32(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+      code.branch_ne_null(REG7, LABEL0);
+
+      code.load_const_u16(REG2, 11);
+      code.binary_search_32(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+      code.branch_ne_null(REG7, LABEL0);
+
+      code.load_const_u16(REG2, 14);
+      code.binary_search_32(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+      code.branch_ne_null(REG7, LABEL0);
+
+      code.load_const_u16(REG2, 16);
+      code.binary_search_32(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+      code.branch_ne_null(REG7, LABEL0);
+
+      code.load_const_u16(REG2, 2000000);
+      code.binary_search_32(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+      code.branch_ne_null(REG7, LABEL0);
+
+      code.interpret_exit_ok();
+      code.def_label(LABEL0);
+      code.interpret_exit_nok(6000);
+      ret_code = code.finalise();
+      CHK3(ret_code);
+    } else if (i == 2) {
+      code.load_const_u16(REG0, 0);
+      code.load_const_mem(REG0, REG1, 8 * 2, (const char*)&a16[0]);
+      code.load_const_u16(REG3, 8);
+
+      code.load_const_u16(REG2, 1);
+      code.binary_search_16(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+      code.branch_eq_null(REG7, LABEL0);
+      code.branch_ne_const(REG7, 0, LABEL0);
+
+      code.load_const_u16(REG2, 2);
+      code.binary_search_16(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+      code.branch_eq_null(REG7, LABEL0);
+      code.branch_ne_const(REG7, 1, LABEL0);
+
+      code.load_const_u16(REG2, 5);
+      code.binary_search_16(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+      code.branch_eq_null(REG7, LABEL0);
+      code.branch_ne_const(REG7, 2, LABEL0);
+
+      code.load_const_u16(REG2, 7);
+      code.binary_search_16(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+      code.branch_eq_null(REG7, LABEL0);
+      code.branch_ne_const(REG7, 4, LABEL0);
+
+      code.load_const_u16(REG2, 12);
+      code.binary_search_16(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+      code.branch_eq_null(REG7, LABEL0);
+      code.branch_ne_const(REG7, 5, LABEL0);
+
+      code.load_const_u16(REG2, 13);
+      code.binary_search_16(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+      code.branch_eq_null(REG7, LABEL0);
+      code.branch_ne_const(REG7, 6, LABEL0);
+
+      code.load_const_u16(REG2, 15);
+      code.binary_search_16(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+      code.branch_eq_null(REG7, LABEL0);
+      code.branch_ne_const(REG7, 7, LABEL0);
+
+      code.load_const_u16(REG2, 0);
+      code.binary_search_16(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+      code.branch_ne_null(REG7, LABEL0);
+
+      code.load_const_u16(REG2, 3);
+      code.binary_search_16(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+      code.branch_ne_null(REG7, LABEL0);
+
+      code.load_const_u16(REG2, 4);
+      code.binary_search_16(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+      code.branch_ne_null(REG7, LABEL0);
+
+      code.load_const_u16(REG2, 6);
+      code.binary_search_16(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+      code.branch_ne_null(REG7, LABEL0);
+
+      code.load_const_u16(REG2, 8);
+      code.binary_search_16(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+      code.branch_ne_null(REG7, LABEL0);
+
+      code.load_const_u16(REG2, 11);
+      code.binary_search_16(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+      code.branch_ne_null(REG7, LABEL0);
+
+      code.load_const_u16(REG2, 14);
+      code.binary_search_16(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+      code.branch_ne_null(REG7, LABEL0);
+
+      code.load_const_u16(REG2, 16);
+      code.binary_search_16(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+      code.branch_ne_null(REG7, LABEL0);
+
+      code.load_const_u16(REG2, 2000000);
+      code.binary_search_16(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+      code.branch_ne_null(REG7, LABEL0);
+
+      code.interpret_exit_ok();
+      code.def_label(LABEL0);
+      code.interpret_exit_nok(6000);
+      ret_code = code.finalise();
+      CHK3(ret_code);
+    }
+    NdbOperation::OperationOptions opts;
+    std::memset(&opts, 0, sizeof(opts));
+    opts.optionsPresent = NdbOperation::OperationOptions::OO_INTERPRETED;
+    opts.interpretedCode = &code;
+
+    const NdbOperation *pOp = pTrans->readTuple(
+      pRowRecord,
+      (char*)pRow,
+      pRowRecord, (char*)pRow,
+      NdbOperation::LM_Read,
+      0,
+      &opts,
+      sizeof(opts));
+    CHK_RET_FAILED(pOp, pTrans);
+    int res = pTrans->execute(Commit, AbortOnError);
+
+    CHK_RET_FAILED(res == 0, pTrans);
+    pNdb->closeTransaction(pTrans);
+  }
+  delete [] pRow;
+  return NDBT_OK;
+}
+
+int
 runNewInterpreterTest(NDBT_Context* ctx, NDBT_Step* step)
 {
   const NdbDictionary::Table * pTab = ctx->getTab();
@@ -1971,6 +2292,12 @@ TESTCASE("NewInterpreterTest", "New interpreter tests\n")
   INITIALIZER(runLoadTable);
   INITIALIZER(createPkIndex);
   INITIALIZER(runNewInterpreterTest);
+  FINALIZER(runClearTable);
+}
+TESTCASE("InterpreterLibraryTest", "Interpreter Library tests\n")
+{
+  INITIALIZER(runLoadTable);
+  INITIALIZER(runInterpreterLibraryTest);
   FINALIZER(runClearTable);
 }
 #if 0

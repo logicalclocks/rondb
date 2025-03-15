@@ -146,8 +146,8 @@
   } while (0)
 #endif
 
-//#define TRACE_INTERPRETER
-//#define TRACE_INTERPRETER_REGISTERS
+#define TRACE_INTERPRETER
+#define TRACE_INTERPRETER_REGISTERS
 
 #define RET_NULL Uint32(~0)
 #define EQUAL_MATCH 0
@@ -156,7 +156,7 @@
 #define SMALLER_EQUAL_MATCH 3
 #define LARGER_EQUAL_MATCH 4
 
-static Uint32 binary_uint64_search_exact(Uint64 test_ordinal,
+Uint32 binary_uint64_search_exact(Uint64 test_ordinal,
                                          const char *memory_ptr,
                                          Uint32 num_elems) {
   Uint32 start = 0;
@@ -165,9 +165,10 @@ static Uint32 binary_uint64_search_exact(Uint64 test_ordinal,
     return RET_NULL;
   }
   Uint64 value = 0;
+  Uint32 test_position;
   while (start < end) {
     Uint32 mid_point = (start + end) / 2;
-    Uint32 test_position = mid_point * 8;
+    test_position = mid_point * 8;
     memcpy(&value, memory_ptr + test_position, 8);
     if (value < test_ordinal) {
       start = mid_point + 1;
@@ -175,9 +176,11 @@ static Uint32 binary_uint64_search_exact(Uint64 test_ordinal,
       end = mid_point;
     }
   }
-  if (value == test_ordinal) {
+  if (start == num_elems) return RET_NULL;
+  test_position = start * 8;
+  memcpy(&value, memory_ptr + test_position, 8);
+  if (value == test_ordinal)
     return start;
-  }
   return RET_NULL;
 }
 
@@ -255,9 +258,10 @@ static Uint32 binary_uint32_search_exact(Uint32 test_ordinal,
     return RET_NULL;
   }
   Uint32 value = 0;
+  Uint32 test_position;
   while (start < end) {
     Uint32 mid_point = (start + end) / 2;
-    Uint32 test_position = mid_point * 4;
+    test_position = mid_point * 4;
     memcpy(&value, memory_ptr + test_position, 4);
     if (value < test_ordinal) {
       start = mid_point + 1;
@@ -265,9 +269,11 @@ static Uint32 binary_uint32_search_exact(Uint32 test_ordinal,
       end = mid_point;
     }
   }
-  if (value == test_ordinal) {
+  if (start == num_elems) return RET_NULL;
+  test_position = start * 4;
+  memcpy(&value, memory_ptr + test_position, 4);
+  if (value == test_ordinal)
     return start;
-  }
   return RET_NULL;
 }
 
@@ -336,7 +342,7 @@ static Uint32 binary_uint32_search_larger(Uint32 test_ordinal,
   return end - 1;
 }
 
-static Uint32 binary_uint16_search_exact(Uint16 test_ordinal,
+Uint32 binary_uint16_search_exact(Uint16 test_ordinal,
                                          const char *memory_ptr,
                                          Uint32 num_elems) {
   Uint32 start = 0;
@@ -345,9 +351,10 @@ static Uint32 binary_uint16_search_exact(Uint16 test_ordinal,
     return RET_NULL;
   }
   Uint16 value = 0;
+  Uint32 test_position;
   while (start < end) {
     Uint32 mid_point = (start + end) / 2;
-    Uint32 test_position = mid_point * 2;
+    test_position = mid_point * 2;
     memcpy(&value, memory_ptr + test_position, 2);
     if (value < test_ordinal) {
       start = mid_point + 1;
@@ -355,9 +362,11 @@ static Uint32 binary_uint16_search_exact(Uint16 test_ordinal,
       end = mid_point;
     }
   }
-  if (value == test_ordinal) {
+  if (start == num_elems) return RET_NULL;
+  test_position = start * 2;
+  memcpy(&value, memory_ptr + test_position, 2);
+  if (value == test_ordinal)
     return start;
-  }
   return RET_NULL;
 }
 
@@ -436,9 +445,10 @@ static Uint32 binary_odd_search_exact(Uint64 test_ordinal,
     return RET_NULL;
   }
   Uint64 value = 0;
+  Uint32 test_position;
   while (start < end) {
     Uint32 mid_point = (start + end) / 2;
-    Uint32 test_position = mid_point * number_size;
+    test_position = mid_point * number_size;
     const uchar *number_ptr = (const uchar*)(memory_ptr + test_position);
     switch (number_size) {
       case 1: {
@@ -470,9 +480,35 @@ static Uint32 binary_odd_search_exact(Uint64 test_ordinal,
       end = mid_point;
     }
   }
-  if (value == test_ordinal) {
-    return start;
+  if (start == num_elems) return RET_NULL;
+  test_position = start * number_size;
+  const uchar *number_ptr = (const uchar*)(memory_ptr + test_position);
+  switch (number_size) {
+    case 1: {
+      Uint8 val8 = *number_ptr;
+      value = (Uint64)val8;
+      break;
+    }
+    case 3: {
+      Uint32 val32 = uint3korr(number_ptr);
+      value = (Uint64)val32;
+      break;
+    }
+    case 5: {
+      value = uint5korr(number_ptr);
+      break;
+    }
+    case 6: {
+      value = uint6korr(number_ptr);
+      break;
+    }
+    default: {
+      require(false);
+      return RET_NULL;
+    }
   }
+  if (value == test_ordinal)
+    return start;
   return RET_NULL;
 }
 

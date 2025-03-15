@@ -1232,6 +1232,18 @@ inline Uint32 *Interpreter::getInstructionPreProcessingInfo(
     case READ_PARTIAL_ATTR_TO_MEM:
     case READ_ATTR_TO_MEM:
 
+    case BINARY_SEARCH_64:
+    case BINARY_SEARCH_32:
+    case BINARY_SEARCH_16:
+    case BINARY_SEARCH_ODD:
+    case SEARCH_INTERVAL_64:
+    case SEARCH_INTERVAL_32:
+    case SEARCH_INTERVAL_16:
+    case SEARCH_INTERVAL_ODD:
+    case STRING_SEARCH:
+    case QSORT:
+    case COMPRESS_NUM_ARRAY:
+
     case CONVERT_SIZE:
     case WRITE_SIZE_MEM:
     case READ_UINT8_MEM_TO_REG:
