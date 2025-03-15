@@ -541,6 +541,210 @@ NdbInterpretedCode::int64_to_str(Uint32 RegDestSize,
 }
 
 int
+NdbInterpretedCode::binary_search_64(Uint32 RegOrdinal,
+                                     Uint32 RegOffset,
+                                     Uint32 RegNumElems,
+                                     Uint32 RegResult,
+                                     Uint32 SearchType) {
+  if ((RegOrdinal >= MaxReg) ||
+      (RegOffset >= MaxReg) ||
+      (RegNumElems >= MaxReg) ||
+      (RegResult >= MaxReg) ||
+      (SearchType >= MaxEnum))
+    return error(BadRegister);
+  return add1(Interpreter::BinarySearch64(
+              RegOrdinal,
+              RegOffset,
+              RegNumElems,
+              RegResult,
+              SearchType));
+}
+
+int
+NdbInterpretedCode::binary_search_32(Uint32 RegOrdinal,
+                                     Uint32 RegOffset,
+                                     Uint32 RegNumElems,
+                                     Uint32 RegResult,
+                                     Uint32 SearchType) {
+  if ((RegOrdinal >= MaxReg) ||
+      (RegOffset >= MaxReg) ||
+      (RegNumElems >= MaxReg) ||
+      (RegResult >= MaxReg) ||
+      (SearchType >= MaxEnum))
+    return error(BadRegister);
+  return add1(Interpreter::BinarySearch32(
+              RegOrdinal,
+              RegOffset,
+              RegNumElems,
+              RegResult,
+              SearchType));
+}
+
+int
+NdbInterpretedCode::binary_search_16(Uint32 RegOrdinal,
+                                     Uint32 RegOffset,
+                                     Uint32 RegNumElems,
+                                     Uint32 RegResult,
+                                     Uint32 SearchType) {
+  if ((RegOrdinal >= MaxReg) ||
+      (RegOffset >= MaxReg) ||
+      (RegNumElems >= MaxReg) ||
+      (RegResult >= MaxReg) ||
+      (SearchType >= MaxEnum))
+    return error(BadRegister);
+  return add1(Interpreter::BinarySearch16(
+              RegOrdinal,
+              RegOffset,
+              RegNumElems,
+              RegResult,
+              SearchType));
+}
+
+int
+NdbInterpretedCode::binary_search_odd(Uint32 RegOrdinal,
+                                      Uint32 RegOffset,
+                                      Uint32 RegNumElems,
+                                      Uint32 RegResult,
+                                      Uint32 SearchType,
+                                      Uint32 NumberSize) {
+  if ((RegOrdinal >= MaxReg) ||
+      (RegOffset >= MaxReg) ||
+      (RegNumElems >= MaxReg) ||
+      (RegResult >= MaxReg) ||
+      (SearchType >= MaxEnum) ||
+      (NumberSize >= MaxEnum))
+    return error(BadRegister);
+  return add1(Interpreter::BinarySearch64(
+              RegOrdinal,
+              RegOffset,
+              RegNumElems,
+              RegResult,
+              SearchType));
+}
+
+int
+NdbInterpretedCode::search_interval_64(Uint32 RegOrdinal,
+                                       Uint32 RegOffset,
+                                       Uint32 RegNumElems,
+                                       Uint32 RegResult) {
+  if ((RegOrdinal >= MaxReg) ||
+      (RegOffset >= MaxReg) ||
+      (RegNumElems >= MaxReg) ||
+      (RegResult >= MaxReg))
+    return error(BadRegister);
+  return add1(Interpreter::SearchInterval64(
+              RegOrdinal,
+              RegOffset,
+              RegNumElems,
+              RegResult));
+}
+
+int
+NdbInterpretedCode::search_interval_32(Uint32 RegOrdinal,
+                                       Uint32 RegOffset,
+                                       Uint32 RegNumElems,
+                                       Uint32 RegResult) {
+  if ((RegOrdinal >= MaxReg) ||
+      (RegOffset >= MaxReg) ||
+      (RegNumElems >= MaxReg) ||
+      (RegResult >= MaxReg))
+    return error(BadRegister);
+  return add1(Interpreter::SearchInterval32(
+              RegOrdinal,
+              RegOffset,
+              RegNumElems,
+              RegResult));
+}
+
+int
+NdbInterpretedCode::search_interval_16(Uint32 RegOrdinal,
+                                       Uint32 RegOffset,
+                                       Uint32 RegNumElems,
+                                       Uint32 RegResult) {
+  if ((RegOrdinal >= MaxReg) ||
+      (RegOffset >= MaxReg) ||
+      (RegNumElems >= MaxReg) ||
+      (RegResult >= MaxReg))
+    return error(BadRegister);
+  return add1(Interpreter::SearchInterval16(
+              RegOrdinal,
+              RegOffset,
+              RegNumElems,
+              RegResult));
+}
+
+int
+NdbInterpretedCode::search_interval_odd(Uint32 RegOrdinal,
+                                        Uint32 RegOffset,
+                                        Uint32 RegNumElems,
+                                        Uint32 RegResult,
+                                        Uint32 NumberSize) {
+  if ((RegOrdinal >= MaxReg) ||
+      (RegOffset >= MaxReg) ||
+      (RegNumElems >= MaxReg) ||
+      (RegResult >= MaxReg) ||
+      (NumberSize >= MaxEnum))
+    return error(BadRegister);
+  return add1(Interpreter::SearchIntervalOdd(
+              RegOrdinal,
+              RegOffset,
+              RegNumElems,
+              RegResult,
+              NumberSize));
+}
+
+int
+NdbInterpretedCode::string_search(Uint32 RegOffsetString,
+                                  Uint32 RegStringLen,
+                                  Uint32 RegOffsetSearch,
+                                  Uint32 RegSearchLen,
+                                  Uint32 RegResult) {
+  if ((RegOffsetString >= MaxReg) ||
+      (RegStringLen >= MaxReg) ||
+      (RegOffsetSearch >= MaxReg) ||
+      (RegSearchLen >= MaxReg) ||
+      (RegResult >= MaxReg))
+    return error(BadRegister);
+  return add1(Interpreter::StringSearch(
+              RegOffsetString,
+              RegStringLen,
+              RegOffsetSearch,
+              RegSearchLen,
+              RegResult));
+}
+
+int
+NdbInterpretedCode::qsort_instr(Uint32 RegOffset,
+                                Uint32 RegNumElems,
+                                Uint32 NumberSize) {
+  if ((RegOffset >= MaxReg) ||
+      (RegNumElems >= MaxReg) ||
+      (NumberSize >= MaxEnum))
+    return error(BadRegister);
+  return add1(Interpreter::QSort(
+              RegOffset,
+              RegNumElems,
+              NumberSize));
+}
+
+int
+NdbInterpretedCode::compress_num_array(Uint32 RegOffset,
+                                       Uint32 RegNumElems,
+                                       Uint32 NumberSizeIn,
+                                       Uint32 NumberSizeOut) {
+  if ((RegOffset >= MaxReg) ||
+      (RegNumElems >= MaxReg) ||
+      (NumberSizeIn >= MaxEnum) ||
+      (NumberSizeOut >= MaxEnum))
+    return error(BadRegister);
+  return add1(Interpreter::CompressNumArray(
+              RegOffset,
+              RegNumElems,
+              NumberSizeIn,
+              NumberSizeOut));
+}
+
+int
 NdbInterpretedCode::read_uint8_to_reg_const(Uint32 RegDest,
                                             Uint32 Offset) {
   if (RegDest >= MaxReg)

@@ -616,6 +616,110 @@ class NdbInterpretedCode {
   int str_to_int64(Uint32 RegDestValue, Uint32 RegOffset, Uint32 RegSize);
   int int64_to_str(Uint32 RegDestSize, Uint32 RegOffset, Uint32 RegValue);
 
+  /**
+   * binary_search methods
+   * ---------------------
+   * Input:
+   *   RegOrdinal:
+   *     The number we are looking for
+   *   RegOffset:
+   *     The offset in memory where sorted Uint64 array is stored
+   *   RegNumElems:
+   *     The number of elements in the array
+   *   SearchType:
+   *     0 means exact match only
+   *     1 means search for nearest that is smaller
+   *       Another name for this is that it is a rank query.
+   *       This query will never return NULL.
+   *     2 means search for nearest that is larger or equal
+   *       This query finds the successor element.
+   *       This query will never return NULL.
+   *     3 means search for nearest that is smaller or equal
+   *     4 means search for nearest that is larger or equal
+   * Output:
+   *   RegResult:
+   *     The position of the found element
+   *     NULL if no element found
+   *
+   * search_interval methods
+   * -----------------------
+   * Same as above, but always using smaller or equal => even number
+   * is within an interval, odd or NULL is not within interval.
+   *
+   * Odd methods treat the data as little-endian numbers with odd sizes.
+   */
+  int binary_search_64(Uint32 RegOrdinal,
+                       Uint32 RegOffset,
+                       Uint32 RegNumElems,
+                       Uint32 RegResult,
+                       Uint32 SearchType);
+  int binary_search_32(Uint32 RegOrdinal,
+                       Uint32 RegOffset,
+                       Uint32 RegNumElems,
+                       Uint32 RegResult,
+                       Uint32 SearchType);
+  int binary_search_16(Uint32 RegOrdinal,
+                       Uint32 RegOffset,
+                       Uint32 RegNumElems,
+                       Uint32 RegResult,
+                       Uint32 SearchType);
+  int binary_search_odd(Uint32 RegOrdinal,
+                        Uint32 RegOffset,
+                        Uint32 RegNumElems,
+                        Uint32 RegResult,
+                        Uint32 SearchType,
+                        Uint32 NumberSize);
+  int search_interval_64(Uint32 RegOrdinal,
+                         Uint32 RegOffset,
+                         Uint32 RegNumElems,
+                         Uint32 RegResult);
+  int search_interval_32(Uint32 RegOrdinal,
+                         Uint32 RegOffset,
+                         Uint32 RegNumElems,
+                         Uint32 RegResult);
+  int search_interval_16(Uint32 RegOrdinal,
+                         Uint32 RegOffset,
+                         Uint32 RegNumElems,
+                         Uint32 RegResult);
+  int search_interval_odd(Uint32 RegOrdinal,
+                         Uint32 RegOffset,
+                         Uint32 RegNumElems,
+                         Uint32 RegResult,
+                         Uint32 NumberSize);
+  /**
+   * string_search
+   * -------------
+   * RegOffsetString: Memory to search
+   * RegStringLen: Length of memory
+   * RegOffsetSearch: Search string
+   * RegSearchLen: Search length
+   * RegResult: NULL if not found, otherwise an even number of interval start
+   */
+  int string_search(Uint32 RegOffsetString,
+                    Uint32 RegStringLen,
+                    Uint32 RegOffsetSearch,
+                    Uint32 RegSearchLen,
+                    Uint32 RegResult);
+  /**
+   * qsort_instr
+   * -----------
+   * Sort the array of numbers stored at RegOffset with RegNumElems elements.
+   * NumberSize is any of 1,2,3,4,5,6, 8 bytes.
+   */
+  int qsort_instr(Uint32 RegOffset, Uint32 RegNumElems, Uint32 NumberSize);
+  /**
+   * compress_num_array
+   * ------------------
+   * Compress 4 byte array of numbers to 3 bytes per number stored in little
+   * endian format or compress a 8 byte array of numbers to 5/6 bytes per
+   * number stored in little-endian format. This works with binary search
+   * methods using odd sizes.
+   */
+  int compress_num_array(Uint32 RegOffset,
+                         Uint32 RegNumElems,
+                         Uint32 NumberSizeIn,
+                         Uint32 NumberSizeOut);
+
   /* Control flow
    * ------------
    */
@@ -1074,11 +1178,12 @@ class NdbInterpretedCode {
   friend class NdbQueryOptionsImpl;
 
   static const Uint32 MaxReg = 8;
+  static const Uint32 MaxEnum = 16;
   static const Uint32 MaxInputIndex = 16;
   static const Uint32 MaxOutputIndex = 16;
   static const Uint32 MaxBranchConst = 64;
   static const Uint32 MaxLabels = 65535;
-  static const Uint32 MaxSubs =65535;
+  static const Uint32 MaxSubs = 65535;
   static const Uint32 MaxDynamicBufSize = NDB_MAX_SCANFILTER_SIZE_IN_WORDS;
 
   const NdbTableImpl *m_table_impl;

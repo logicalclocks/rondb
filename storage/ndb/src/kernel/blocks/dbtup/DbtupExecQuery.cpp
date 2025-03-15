@@ -8085,7 +8085,6 @@ int Dbtup::interpreterNextLab(Signal* signal,
         case Interpreter::STRING_SEARCH:
         {
           RnoOfInstructions += 3; //A bit heavier instruction
-          /* See BINARY_SEARCH_64, this is the 16-bit version */
           Int64 ToffsetString = * (Int64*)(TregMemBuffer + theRegister + 2);
           Uint32 TregoffsetStringType = TregMemBuffer[theRegister];
 

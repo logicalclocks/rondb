@@ -285,6 +285,56 @@ class Interpreter {
   static Uint32 Int64ToStr(Uint32 RegDestSize,
                            Uint32 RegOffset,
                            Uint32 RegValue);
+  static Uint32 BinarySearch64(Uint32 RegOrdinal,
+                               Uint32 RegOffset,
+                               Uint32 RegNumElems,
+                               Uint32 RegResult,
+                               Uint32 SearchType);
+  static Uint32 BinarySearch32(Uint32 RegOrdinal,
+                               Uint32 RegOffset,
+                               Uint32 RegNumElems,
+                               Uint32 RegResult,
+                               Uint32 SearchType);
+  static Uint32 BinarySearch16(Uint32 RegOrdinal,
+                               Uint32 RegOffset,
+                               Uint32 RegNumElems,
+                               Uint32 RegResult,
+                               Uint32 SearchType);
+  static Uint32 BinarySearchOdd(Uint32 RegOrdinal,
+                                Uint32 RegOffset,
+                                Uint32 RegNumElems,
+                                Uint32 RegResult,
+                                Uint32 SearchType,
+                                Uint32 NumberSize);
+  static Uint32 SearchInterval64(Uint32 RegOrdinal,
+                                 Uint32 RegOffset,
+                                 Uint32 RegNumElems,
+                                 Uint32 RegResult);
+  static Uint32 SearchInterval32(Uint32 RegOrdinal,
+                                 Uint32 RegOffset,
+                                 Uint32 RegNumElems,
+                                 Uint32 RegResult);
+  static Uint32 SearchInterval16(Uint32 RegOrdinal,
+                                 Uint32 RegOffset,
+                                 Uint32 RegNumElems,
+                                 Uint32 RegResult);
+  static Uint32 SearchIntervalOdd(Uint32 RegOrdinal,
+                                  Uint32 RegOffset,
+                                  Uint32 RegNumElems,
+                                  Uint32 RegResult,
+                                  Uint32 NumberSize);
+  static Uint32 StringSearch(Uint32 RegOffsetString,
+                             Uint32 RegStringLen,
+                             Uint32 RegOffsetSearch,
+                             Uint32 RegSearchLen,
+                             Uint32 RegResult);
+  static Uint32 QSort(Uint32 RegOffset,
+                      Uint32 RegNumElems,
+                      Uint32 NumberSize);
+  static Uint32 CompressNumArray(Uint32 RegOffset,
+                                 Uint32 RegNumElems,
+                                 Uint32 NumberSizeIn,
+                                 Uint32 NumberSizeOut);
 
   static Uint32 ReadInterpreterInput(Uint32 RegValue, Uint32 InputIndex);
   static Uint32 WriteInterpreterOutput(Uint32 RegValue, Uint32 OutputIndex);
@@ -730,6 +780,161 @@ Interpreter::Int64ToStr(Uint32 RegDestSize,
          (RegValue << 9) +
          (RegDestSize << 12) +
          STR_TO_INT64 +
+         (1 << 15);
+}
+
+inline Uint32
+Interpreter::BinarySearch64(Uint32 RegOrdinal,
+                            Uint32 RegOffset,
+                            Uint32 RegNumElems,
+                            Uint32 RegResult,
+                            Uint32 SearchType) {
+  return (RegOrdinal << 6) +
+         (RegOffset << 9) +
+         (RegNumElems << 12) +
+         (RegResult << 16) +
+         (SearchType << 19) +
+         READ_ATTR_INTO_REG +
+         (1 << 15);
+}
+
+inline Uint32
+Interpreter::BinarySearch32(Uint32 RegOrdinal,
+                            Uint32 RegOffset,
+                            Uint32 RegNumElems,
+                            Uint32 RegResult,
+                            Uint32 SearchType) {
+  return (RegOrdinal << 6) +
+         (RegOffset << 9) +
+         (RegNumElems << 12) +
+         (RegResult << 16) +
+         (SearchType << 19) +
+         WRITE_ATTR_FROM_REG +
+         (1 << 15);
+}
+
+inline Uint32
+Interpreter::BinarySearch16(Uint32 RegOrdinal,
+                            Uint32 RegOffset,
+                            Uint32 RegNumElems,
+                            Uint32 RegResult,
+                            Uint32 SearchType) {
+  return (RegOrdinal << 6) +
+         (RegOffset << 9) +
+         (RegNumElems << 12) +
+         (RegResult << 16) +
+         (SearchType << 19) +
+         LOAD_CONST_NULL +
+         (1 << 15);
+}
+
+inline Uint32
+Interpreter::BinarySearchOdd(Uint32 RegOrdinal,
+                             Uint32 RegOffset,
+                             Uint32 RegNumElems,
+                             Uint32 RegResult,
+                             Uint32 SearchType,
+                             Uint32 NumberSize) {
+  return (RegOrdinal << 6) +
+         (RegOffset << 9) +
+         (RegNumElems << 12) +
+         (RegResult << 16) +
+         (SearchType << 19) +
+         (NumberSize << 23) +
+         LOAD_CONST16 +
+         (1 << 15);
+}
+
+inline Uint32
+Interpreter::SearchInterval64(Uint32 RegOrdinal,
+                              Uint32 RegOffset,
+                              Uint32 RegNumElems,
+                              Uint32 RegResult) {
+  return (RegOrdinal << 6) +
+         (RegOffset << 9) +
+         (RegNumElems << 12) +
+         (RegResult << 16) +
+         LOAD_CONST32 +
+         (1 << 15);
+}
+
+inline Uint32
+Interpreter::SearchInterval32(Uint32 RegOrdinal,
+                              Uint32 RegOffset,
+                              Uint32 RegNumElems,
+                              Uint32 RegResult) {
+  return (RegOrdinal << 6) +
+         (RegOffset << 9) +
+         (RegNumElems << 12) +
+         (RegResult << 16) +
+         LOAD_CONST64 +
+         (1 << 15);
+}
+
+inline Uint32
+Interpreter::SearchInterval16(Uint32 RegOrdinal,
+                              Uint32 RegOffset,
+                              Uint32 RegNumElems,
+                              Uint32 RegResult) {
+  return (RegOrdinal << 6) +
+         (RegOffset << 9) +
+         (RegNumElems << 12) +
+         (RegResult << 16) +
+         BRANCH +
+         (1 << 15);
+}
+
+inline Uint32
+Interpreter::SearchIntervalOdd(Uint32 RegOrdinal,
+                               Uint32 RegOffset,
+                               Uint32 RegNumElems,
+                               Uint32 RegResult,
+                               Uint32 NumberSize) {
+  return (RegOrdinal << 6) +
+         (RegOffset << 9) +
+         (RegNumElems << 12) +
+         (RegResult << 16) +
+         (NumberSize << 23) +
+         BRANCH_REG_EQ_NULL +
+         (1 << 15);
+}
+
+inline Uint32
+Interpreter::StringSearch(Uint32 RegOffsetString,
+                          Uint32 RegStringLen,
+                          Uint32 RegOffsetSearch,
+                          Uint32 RegSearchLen,
+                          Uint32 RegResult) {
+  return (RegOffsetString << 6) +
+         (RegStringLen << 9) +
+         (RegOffsetSearch << 12) +
+         (RegSearchLen << 16) +
+         (RegResult << 19) +
+         BRANCH_REG_NE_NULL +
+         (1 << 15);
+}
+
+inline Uint32
+Interpreter::QSort(Uint32 RegOffset,
+                   Uint32 RegNumElems,
+                   Uint32 NumberSize) {
+  return (RegOffset << 6) +
+         (RegNumElems << 9) +
+         (NumberSize << 19) +
+         EXIT_OK +
+         (1 << 15);
+}
+
+inline Uint32
+Interpreter::CompressNumArray(Uint32 RegOffset,
+                              Uint32 RegNumElems,
+                              Uint32 NumberSizeIn,
+                              Uint32 NumberSizeOut) {
+  return (RegOffset << 6) +
+         (RegNumElems << 9) +
+         (NumberSizeIn << 19) +
+         (NumberSizeOut << 23) +
+         EXIT_REFUSE +
          (1 << 15);
 }
 
