@@ -441,6 +441,11 @@ static Uint32 binary_odd_search_exact(Uint64 test_ordinal,
     Uint32 test_position = mid_point * number_size;
     const uchar *number_ptr = (const uchar*)(memory_ptr + test_position);
     switch (number_size) {
+      case 1: {
+        Uint8 val8 = *number_ptr;
+        value = (Uint64)val8;
+        break;
+      }
       case 3: {
         Uint32 val32 = uint3korr(number_ptr);
         value = (Uint64)val32;
@@ -488,6 +493,11 @@ static Uint32 binary_odd_search_smaller(Uint64 test_ordinal,
     test_position = mid_point * number_size;
     const uchar *number_ptr = (const uchar*)(memory_ptr + test_position);
     switch (number_size) {
+      case 1: {
+        Uint8 val8 = *number_ptr;
+        value = (Uint64)val8;
+        break;
+      }
       case 3: {
         Uint32 val32 = uint3korr(number_ptr);
         value = (Uint64)val32;
@@ -516,6 +526,11 @@ static Uint32 binary_odd_search_smaller(Uint64 test_ordinal,
     test_position = start * number_size;
     const uchar *number_ptr = (const uchar*)(memory_ptr + test_position);
     switch (number_size) {
+      case 1: {
+        Uint8 val8 = *number_ptr;
+        value = (Uint64)val8;
+        break;
+      }
       case 3: {
         Uint32 val32 = uint3korr(number_ptr);
         value = (Uint64)val32;
@@ -560,6 +575,11 @@ static Uint32 binary_odd_search_larger(Uint64 test_ordinal,
     test_position = mid_point * number_size;
     const uchar *number_ptr = (const uchar*)(memory_ptr + test_position);
     switch (number_size) {
+      case 1: {
+        Uint8 val8 = *number_ptr;
+        value = (Uint64)val8;
+        break;
+      }
       case 3: {
         Uint32 val32 = uint3korr(number_ptr);
         value = (Uint64)val32;
@@ -588,6 +608,11 @@ static Uint32 binary_odd_search_larger(Uint64 test_ordinal,
     test_position = (end - 1) * number_size;
     const uchar *number_ptr = (const uchar*)(memory_ptr + test_position);
     switch (number_size) {
+      case 1: {
+        Uint8 val8 = *number_ptr;
+        value = (Uint64)val8;
+        break;
+      }
       case 3: {
         Uint32 val32 = uint3korr(number_ptr);
         value = (Uint64)val32;
@@ -614,82 +639,15 @@ static Uint32 binary_odd_search_larger(Uint64 test_ordinal,
   return end - 1;
 }
 
-#if 0
-static Uint32 search_half_open_interval_uint32(Uint32 test_ordinal,
-                                               const char *memory_ptr,
-                                               Uint32 start_pos,
-                                               Uint32 end_pos) {
-  Uint32 ret_val = binary_uint32_search(test_ordinal,
-                                        memory_ptr,
-                                        start_pos,
-                                        end_pos,
-                                        false);
-  if ((ret_val & 1) == 0) return ret_val;
-  if ((ret_val + 1) > end_pos) return RET_NULL;
-  Uint32 value_left = 0;
-  Uint32 value_right = 0;
-  Uint32 test_position_left = ret_val * 4;
-  Uint32 test_position_right = (ret_val + 1) * 4;
-  memcpy(&value_left, memory_ptr + test_position_left, 4);
-  memcpy(&value_right, memory_ptr + test_position_right, 4);
-  if (value_left == value_right) return (ret_val + 1);
-  return RET_NULL;
-}
-
-static Uint32 search_half_open_interval_uint64(Uint64 test_ordinal,
-                                               const char *memory_ptr,
-                                               Uint32 start_pos,
-                                               Uint32 end_pos) {
-  Uint32 ret_val = binary_uint32_search(test_ordinal,
-                                        memory_ptr,
-                                        start_pos,
-                                        end_pos,
-                                        false);
-  if ((ret_val & 1) == 0) return ret_val;
-  if ((ret_val + 1) > end_pos) return RET_NULL;
-  Uint64 value_left = 0;
-  Uint64 value_right = 0;
-  Uint32 test_position_left = ret_val * 8;
-  Uint32 test_position_right = (ret_val + 1) * 8;
-  memcpy(&value_left, memory_ptr + test_position_left, 8);
-  memcpy(&value_right, memory_ptr + test_position_right, 8);
-  if (value_left == value_right) return (ret_val + 1);
-  return RET_NULL;
-}
-
-static Uint32 search_half_open_interval(Uint64 test_ordinal,
-                                        const char *memory_ptr,
-                                        Uint32 start_pos,
-                                        Uint32 end_pos,
-                                        Uint32 number_size) {
-  Uint32 ret_val = binary_bin_search(test_ordinal,
-                                     memory_ptr,
-                                     start_pos,
-                                     end_pos,
-                                     number_size,
-                                     false);
-  if ((ret_val & 1) == 0) return ret_val;
-  if ((ret_val + 1) > end_pos) return RET_NULL;
-  Int64 value_left = 0;
-  Int64 value_right = 0;
-  Uint32 test_position_left = ret_val * number_size;
-  Uint32 test_position_right = (ret_val + 1) * number_size;
-  memcpy(&value_left, memory_ptr + test_position_left, number_size);
-  memcpy(&value_right, memory_ptr + test_position_right, number_size);
-  if (value_left == value_right) return (ret_val + 1);
-  return RET_NULL;
-}
-
 static Uint32 string_search(const char *search_string,
                             Uint32 search_len,
-                            const char *memory_ptr,
-                            Uint32 start_pos,
-                            Uint32 end_pos) {
+                            const char *string_ptr,
+                            Uint32 string_len) {
   Uint32 equal_len = 0;
-  for (Uint32 i = start_pos; i < end_pos; i++) {
+  for (Uint32 i = 0; i < string_len; i++) {
     char c_search = search_string[equal_len];
-    char c_memory = memory_ptr[start_pos];
-    if (c_search == c_memory) {
+    char c_string = string_ptr[i];
+    if (c_search == c_string) {
       equal_len++;
       if (equal_len == search_len) {
         return (i - search_len);
@@ -701,6 +659,7 @@ static Uint32 string_search(const char *search_string,
   return RET_NULL;
 }
 
+#if 0
 static int compare_8b(const void *left, const void *right) {
   ulonglong *left_ulong = (ulonglong*)left;
   ulonglong *right_ulong = (ulonglong*)right;
@@ -771,71 +730,6 @@ static int compare_1b(const void *left, const void *right) {
   if (left_cmp < right_cmp) return -1;
   if (left_cmp > right_cmp) return +1;
   return 0;
-}
-
-static Uint32 merge_sort_instr(const char *memory_ptr,
-                               Uint32 start_pos,
-                               Uint32 end_pos,
-                               size_t number_size) {
-  if (end_pos < start_pos) return RET_NULL;
-  Uint32 size = end_pos - start_pos;
-  size_t elems = size / number_size;
-  Uint32 elems_size = elems * number_size;
-  if (elems_size != size) return RET_NULL;
-  switch (number_size) {
-    case 1: {
-      return mergesort((void*)(memory_ptr + start_pos),
-                       elems,
-                       number_size,
-                       compare_1b);
-    }
-    case 2: {
-      return mergesort((void*)(memory_ptr + start_pos),
-                       elems,
-                       number_size,
-                       compare_2b);
-    }
-    case 3: {
-      return mergesort((void*)(memory_ptr + start_pos),
-                       elems,
-                       number_size,
-                       compare_3b);
-    }
-    case 4: {
-      return mergesort((void*)(memory_ptr + start_pos),
-                       elems,
-                       number_size,
-                       compare_4b);
-    }
-    case 5: {
-      return mergesort((void*)(memory_ptr + start_pos),
-                       elems,
-                       number_size,
-                       compare_5b);
-    }
-    case 6: {
-      return mergesort((void*)(memory_ptr + start_pos),
-                       elems,
-                       number_size,
-                       compare_6b);
-    }
-    case 7: {
-      return mergesort((void*)(memory_ptr + start_pos),
-                       elems,
-                       number_size,
-                       compare_7b);
-    }
-    case 8: {
-      return mergesort((void*)(memory_ptr + start_pos),
-                       elems,
-                       number_size,
-                       compare_8b);
-    }
-    default: {
-      return RET_NULL;
-    }
-  }
-  return RET_NULL;
 }
 
 static int compress_num64_array(char *memory_ptr,
@@ -7658,6 +7552,213 @@ int Dbtup::interpreterNextLab(Signal* signal,
 	  }
 	  break;
         }
+        case Interpreter::SEARCH_INTERVAL_64:
+        {
+          RnoOfInstructions += 3; //A bit heavier instruction
+          /**
+           * This instruction does a binary search in a sorted array of
+           * ranges. This means that each pair of numbers represents a
+           * range. Thus input have an even number of elements in the
+           * array.
+           *
+           * By using binary search with smaller or equal we get the result
+           * that returning an even number means that the number is within
+           * one of the ranges and odd numbers and NULL values means that
+           * the value was not in a range.
+           *
+           * Input:
+           *   Register 1:
+           *     The number we are looking for
+           *   Register 2:
+           *     The offset in memory where sorted Uint64 array is stored
+           *   Register 3:
+           *     The number of elements in the array
+           * Output:
+           *   Register 4:
+           *     The position of the found element
+           *     NULL if no element found
+           *
+           */
+          Int64 Tordinal = * (Int64*)(TregMemBuffer + theRegister + 2);
+          Uint32 TregOrdinalType = TregMemBuffer[theRegister];
+
+          Uint32 ToffsetRegister = Interpreter::getReg2(theInstruction) << 2;
+          Int64 Toffset = * (Int64*)(TregMemBuffer + ToffsetRegister + 2);
+          Uint32 TregOffsetType = TregMemBuffer[ToffsetRegister];
+
+          Uint32 TnumElemsRegister = Interpreter::getReg3(theInstruction) << 2;
+          Int64 TnumElems = * (Int64*)(TregMemBuffer + TnumElemsRegister + 2);
+          Uint32 TregNumElemsType = TregMemBuffer[TnumElemsRegister];
+
+          Uint32 TretElemsRegister = Interpreter::getReg4(theInstruction) << 2;
+          Int64 end_pos = Toffset + (8 * TnumElems);
+
+          if (unlikely((TregOffsetType == NULL_INDICATOR) ||
+                       (TregOrdinalType == NULL_INDICATOR) ||
+                       (TregNumElemsType == NULL_INDICATOR))) {
+            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
+          }
+          if (Toffset < 0 || TnumElems < 0 || end_pos > MAX_HEAP_OFFSET) {
+            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
+          }
+          if (Tordinal < 0) {
+            return TUPKEY_abort(req_struct, ZWRONG_INPUT_TO_BINARY_SEARCH);
+          }
+          Uint32 ret;
+          Uint64 ordinal = Uint64(Tordinal);
+          ret = binary_uint64_search_smaller(ordinal,
+                                             &TheapMemoryChar[Toffset],
+                                             TnumElems,
+                                             true);
+          if (ret == RET_NULL || ((ret & 1) == 1)) {
+            TregMemBuffer[TretElemsRegister] = NULL_INDICATOR;
+          } else {
+            TregMemBuffer[TretElemsRegister] = NOT_NULL_INDICATOR;
+            *(Int64*)(TregMemBuffer + TretElemsRegister + 2) = ret;
+          }
+	  break;
+        }
+        case Interpreter::SEARCH_INTERVAL_32:
+        {
+          RnoOfInstructions += 3; //A bit heavier instruction
+          /* This is the 32-bit version of SEARCH_INTERVAL_64 */
+          Int64 Tordinal = * (Int64*)(TregMemBuffer + theRegister + 2);
+          Uint32 TregOrdinalType = TregMemBuffer[theRegister];
+
+          Uint32 ToffsetRegister = Interpreter::getReg2(theInstruction) << 2;
+          Int64 Toffset = * (Int64*)(TregMemBuffer + ToffsetRegister + 2);
+          Uint32 TregOffsetType = TregMemBuffer[ToffsetRegister];
+
+          Uint32 TnumElemsRegister = Interpreter::getReg3(theInstruction) << 2;
+          Int64 TnumElems = * (Int64*)(TregMemBuffer + TnumElemsRegister + 2);
+          Uint32 TregNumElemsType = TregMemBuffer[TnumElemsRegister];
+
+          Uint32 TretElemsRegister = Interpreter::getReg4(theInstruction) << 2;
+          Int64 end_pos = Toffset + (4 * TnumElems);
+
+          if (unlikely((TregOffsetType == NULL_INDICATOR) ||
+                       (TregOrdinalType == NULL_INDICATOR) ||
+                       (TregNumElemsType == NULL_INDICATOR))) {
+            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
+          }
+          if (Toffset < 0 || TnumElems < 0 || end_pos > MAX_HEAP_OFFSET) {
+            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
+          }
+          if (Tordinal < 0 ||
+              Tordinal > Int64(std::numeric_limits<Uint32>::max())) {
+            return TUPKEY_abort(req_struct, ZWRONG_INPUT_TO_BINARY_SEARCH);
+          }
+          Uint32 ret;
+          Uint32 ordinal = Uint32(Tordinal);
+          ret = binary_uint32_search_smaller(ordinal,
+                                             &TheapMemoryChar[Toffset],
+                                             TnumElems,
+                                             true);
+          if (ret == RET_NULL || ((ret & 1) == 1)) {
+            TregMemBuffer[TretElemsRegister] = NULL_INDICATOR;
+          } else {
+            TregMemBuffer[TretElemsRegister] = NOT_NULL_INDICATOR;
+            *(Int64*)(TregMemBuffer + TretElemsRegister + 2) = ret;
+          }
+	  break;
+        }
+        case Interpreter::SEARCH_INTERVAL_16:
+        {
+          RnoOfInstructions += 3; //A bit heavier instruction
+          /* This is the 16-bit version of SEARCH_INTERVAL_64 */
+          Int64 Tordinal = * (Int64*)(TregMemBuffer + theRegister + 2);
+          Uint32 TregOrdinalType = TregMemBuffer[theRegister];
+
+          Uint32 ToffsetRegister = Interpreter::getReg2(theInstruction) << 2;
+          Int64 Toffset = * (Int64*)(TregMemBuffer + ToffsetRegister + 2);
+          Uint32 TregOffsetType = TregMemBuffer[ToffsetRegister];
+
+          Uint32 TnumElemsRegister = Interpreter::getReg3(theInstruction) << 2;
+          Int64 TnumElems = * (Int64*)(TregMemBuffer + TnumElemsRegister + 2);
+          Uint32 TregNumElemsType = TregMemBuffer[TnumElemsRegister];
+
+          Uint32 TretElemsRegister = Interpreter::getReg4(theInstruction) << 2;
+          Int64 end_pos = Toffset + (2 * TnumElems);
+
+          if (unlikely((TregOffsetType == NULL_INDICATOR) ||
+                       (TregOrdinalType == NULL_INDICATOR) ||
+                       (TregNumElemsType == NULL_INDICATOR))) {
+            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
+          }
+          if (Toffset < 0 || TnumElems < 0 || end_pos > MAX_HEAP_OFFSET) {
+            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
+          }
+          if (Tordinal < 0 ||
+              Tordinal > Int64(std::numeric_limits<Uint16>::max())) {
+            return TUPKEY_abort(req_struct, ZWRONG_INPUT_TO_BINARY_SEARCH);
+          }
+          Uint32 ret;
+          Uint16 ordinal = Uint16(Tordinal);
+          ret = binary_uint16_search_smaller(ordinal,
+                                             &TheapMemoryChar[Toffset],
+                                             TnumElems,
+                                             true);
+          if (ret == RET_NULL || ((ret & 1) == 1)) {
+            TregMemBuffer[TretElemsRegister] = NULL_INDICATOR;
+          } else {
+            TregMemBuffer[TretElemsRegister] = NOT_NULL_INDICATOR;
+            *(Int64*)(TregMemBuffer + TretElemsRegister + 2) = ret;
+          }
+	  break;
+        }
+        case Interpreter::SEARCH_INTERVAL_ODD:
+        {
+          RnoOfInstructions += 3; //A bit heavier instruction
+          /* This is the odd number version of SEARCH_INTERVAL_64 */
+          Int64 Tordinal = * (Int64*)(TregMemBuffer + theRegister + 2);
+          Uint32 TregOrdinalType = TregMemBuffer[theRegister];
+
+          Uint32 ToffsetRegister = Interpreter::getReg2(theInstruction) << 2;
+          Int64 Toffset = * (Int64*)(TregMemBuffer + ToffsetRegister + 2);
+          Uint32 TregOffsetType = TregMemBuffer[ToffsetRegister];
+
+          Uint32 TnumElemsRegister = Interpreter::getReg3(theInstruction) << 2;
+          Int64 TnumElems = * (Int64*)(TregMemBuffer + TnumElemsRegister + 2);
+          Uint32 TregNumElemsType = TregMemBuffer[TnumElemsRegister];
+
+          Uint32 TretElemsRegister = Interpreter::getReg4(theInstruction) << 2;
+          Uint32 TnumberSize = Interpreter::enum6(theInstruction);
+          Int64 end_pos = Toffset + (TnumberSize * TnumElems);
+
+          if (unlikely((TregOffsetType == NULL_INDICATOR) ||
+                       (TregOrdinalType == NULL_INDICATOR) ||
+                       (TregNumElemsType == NULL_INDICATOR))) {
+            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
+          }
+          if (Toffset < 0 || TnumElems < 0 || end_pos > MAX_HEAP_OFFSET) {
+            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
+          }
+          if (TnumberSize != 1 &&
+              TnumberSize != 3 &&
+              TnumberSize != 5 &&
+              TnumberSize != 6) {
+            return TUPKEY_abort(req_struct, ZNO_SUCH_NUMBER_SIZE_SUPPORTED);
+          }
+          Uint64 max_number = (Uint64(1) << (Uint64(TnumberSize * 8))) - 1;
+          if (Tordinal < 0 ||
+              Tordinal > Int64(max_number)) {
+            return TUPKEY_abort(req_struct, ZWRONG_INPUT_TO_BINARY_SEARCH);
+          }
+          Uint32 ret;
+          Uint64 ordinal = Uint64(Tordinal);
+          ret = binary_odd_search_smaller(ordinal,
+                                          &TheapMemoryChar[Toffset],
+                                          TnumElems,
+                                          TnumberSize,
+                                          true);
+          if (ret == RET_NULL || ((ret & 1) == 1)) {
+            TregMemBuffer[TretElemsRegister] = NULL_INDICATOR;
+          } else {
+            TregMemBuffer[TretElemsRegister] = NOT_NULL_INDICATOR;
+            *(Int64*)(TregMemBuffer + TretElemsRegister + 2) = ret;
+          }
+	  break;
+        }
         case Interpreter::BINARY_SEARCH_64:
         {
           RnoOfInstructions += 3; //A bit heavier instruction
@@ -7756,35 +7857,14 @@ int Dbtup::interpreterNextLab(Signal* signal,
             TregMemBuffer[TretElemsRegister] = NULL_INDICATOR;
           } else {
             TregMemBuffer[TretElemsRegister] = NOT_NULL_INDICATOR;
-            *(Int64*)(TregMemBuffer + TnumElemsRegister + 2) = ret;
+            *(Int64*)(TregMemBuffer + TretElemsRegister + 2) = ret;
           }
 	  break;
         }
         case Interpreter::BINARY_SEARCH_32:
         {
           RnoOfInstructions += 3; //A bit heavier instruction
-          /**
-           * Input:
-           *   Register 1:
-           *     The number we are looking for
-           *   Register 2:
-           *     The offset in memory where sorted Uint64 array is stored
-           *   Register 3:
-           *     The number of elements in the array
-           *   Enum 5:
-           *     0 means exact match only
-           *     1 means search for nearest that is smaller or equal
-           *       Another name for this is that it is a rank query.
-           *       This query will never return NULL.
-           *     2 means search for nearest that is larger or equal
-           *       This query finds the successor element.
-           *       This query will never return NULL.
-           * Output:
-           *   Register 4:
-           *     The position of the found element
-           *     NULL if no element found
-           *
-           */
+          /* See BINARY_SEARCH_64, this is the 32-bit version */
           Int64 Tordinal = * (Int64*)(TregMemBuffer + theRegister + 2);
           Uint32 TregOrdinalType = TregMemBuffer[theRegister];
 
@@ -7860,35 +7940,14 @@ int Dbtup::interpreterNextLab(Signal* signal,
             TregMemBuffer[TretElemsRegister] = NULL_INDICATOR;
           } else {
             TregMemBuffer[TretElemsRegister] = NOT_NULL_INDICATOR;
-            *(Int64*)(TregMemBuffer + TnumElemsRegister + 2) = ret;
+            *(Int64*)(TregMemBuffer + TretElemsRegister + 2) = ret;
           }
 	  break;
         }
         case Interpreter::BINARY_SEARCH_16:
         {
           RnoOfInstructions += 3; //A bit heavier instruction
-          /**
-           * Input:
-           *   Register 1:
-           *     The number we are looking for
-           *   Register 2:
-           *     The offset in memory where sorted Uint64 array is stored
-           *   Register 3:
-           *     The number of elements in the array
-           *   Enum 5:
-           *     0 means exact match only
-           *     1 means search for nearest that is smaller or equal
-           *       Another name for this is that it is a rank query.
-           *       This query will never return NULL.
-           *     2 means search for nearest that is larger or equal
-           *       This query finds the successor element.
-           *       This query will never return NULL.
-           * Output:
-           *   Register 4:
-           *     The position of the found element
-           *     NULL if no element found
-           *
-           */
+          /* See BINARY_SEARCH_64, this is the 16-bit version */
           Int64 Tordinal = * (Int64*)(TregMemBuffer + theRegister + 2);
           Uint32 TregOrdinalType = TregMemBuffer[theRegister];
 
@@ -7961,39 +8020,14 @@ int Dbtup::interpreterNextLab(Signal* signal,
             TregMemBuffer[TretElemsRegister] = NULL_INDICATOR;
           } else {
             TregMemBuffer[TretElemsRegister] = NOT_NULL_INDICATOR;
-            *(Int64*)(TregMemBuffer + TnumElemsRegister + 2) = ret;
+            *(Int64*)(TregMemBuffer + TretElemsRegister + 2) = ret;
           }
 	  break;
         }
         case Interpreter::BINARY_SEARCH_ODD:
         {
           RnoOfInstructions += 3; //A bit heavier instruction
-          /**
-           * Input:
-           *   Register 1:
-           *     The number we are looking for
-           *   Register 2:
-           *     The offset in memory where sorted Uint64 array is stored
-           *   Register 3:
-           *     The number of elements in the array
-           *   Enum 5:
-           *     0 means exact match only
-           *     1 means search for nearest that is smaller or equal
-           *       Another name for this is that it is a rank query.
-           *       This query will never return NULL.
-           *     2 means search for nearest that is larger or equal
-           *       This query finds the successor element.
-           *       This query will never return NULL.
-           *   Enum 6:
-           *     3 Using 3 byte integers stored in little-endian format
-           *     5 Using 5 byte integers stored in little-endian format
-           *     6 Using 6 byte integers stored in little-endian format
-           * Output:
-           *   Register 4:
-           *     The position of the found element
-           *     NULL if no element found
-           *
-           */
+          /* See BINARY_SEARCH_64, this is the odd number version version */
           Int64 Tordinal = * (Int64*)(TregMemBuffer + theRegister + 2);
           Uint32 TregOrdinalType = TregMemBuffer[theRegister];
 
@@ -8018,7 +8052,8 @@ int Dbtup::interpreterNextLab(Signal* signal,
           if (Toffset < 0 || TnumElems < 0 || end_pos > MAX_HEAP_OFFSET) {
             return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
           }
-          if (TnumberSize != 3 &&
+          if (TnumberSize != 1 &&
+              TnumberSize != 3 &&
               TnumberSize != 5 &&
               TnumberSize != 6) {
             return TUPKEY_abort(req_struct, ZNO_SUCH_NUMBER_SIZE_SUPPORTED);
@@ -8078,7 +8113,57 @@ int Dbtup::interpreterNextLab(Signal* signal,
             TregMemBuffer[TretElemsRegister] = NULL_INDICATOR;
           } else {
             TregMemBuffer[TretElemsRegister] = NOT_NULL_INDICATOR;
-            *(Int64*)(TregMemBuffer + TnumElemsRegister + 2) = ret;
+            *(Int64*)(TregMemBuffer + TretElemsRegister + 2) = ret;
+          }
+	  break;
+        }
+        case Interpreter::STRING_SEARCH:
+        {
+          RnoOfInstructions += 3; //A bit heavier instruction
+          /* See BINARY_SEARCH_64, this is the 16-bit version */
+          Int64 ToffsetString = * (Int64*)(TregMemBuffer + theRegister + 2);
+          Uint32 TregoffsetStringType = TregMemBuffer[theRegister];
+
+          Uint32 TstringLenRegister = Interpreter::getReg2(theInstruction) << 2;
+          Int64 TstringLen = *(Int64*)(TregMemBuffer + TstringLenRegister + 2);
+          Uint32 TregstringLenType = TregMemBuffer[TstringLenRegister];
+
+          Uint32 ToffsetSearchRegister =
+            Interpreter::getReg3(theInstruction) << 2;
+          Int64 ToffsetSearch =
+            *(Int64*)(TregMemBuffer + ToffsetSearchRegister + 2);
+          Uint32 ToffsetSearchType = TregMemBuffer[ToffsetSearchRegister];
+
+          Uint32 TsearchLenRegister = Interpreter::getReg4(theInstruction) << 2;
+          Int64 TsearchLen = *(Int64*)(TregMemBuffer + TsearchLenRegister + 2);
+          Uint32 TregsearchLenType = TregMemBuffer[TsearchLenRegister];
+
+          Uint32 TretRegister = Interpreter::getReg5(theInstruction) << 2;
+
+          if (unlikely((TregoffsetStringType == NULL_INDICATOR) ||
+                       (TregstringLenType == NULL_INDICATOR) ||
+                       (ToffsetSearchType == NULL_INDICATOR) ||
+                       (TregsearchLenType == NULL_INDICATOR))) {
+            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
+          }
+          if (ToffsetString < 0 ||
+              ToffsetSearch < 0 ||
+              TsearchLen < 0 ||
+              TstringLen < 0 ||
+              (ToffsetString + TstringLen) < MAX_HEAP_OFFSET ||
+              (ToffsetSearch + TsearchLen) < MAX_HEAP_OFFSET) {
+            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
+          }
+          Uint32 ret;
+          ret = string_search(&TheapMemoryChar[ToffsetSearch],
+                              TsearchLen,
+                              &TheapMemoryChar[ToffsetString],
+                              TstringLen);
+          if (ret == RET_NULL) {
+            TregMemBuffer[TretRegister] = NULL_INDICATOR;
+          } else {
+            TregMemBuffer[TretRegister] = NOT_NULL_INDICATOR;
+            *(Int64*)(TregMemBuffer + TretRegister + 2) = ret;
           }
 	  break;
         }

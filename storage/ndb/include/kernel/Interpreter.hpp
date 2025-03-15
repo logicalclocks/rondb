@@ -72,7 +72,11 @@ class Interpreter {
   static constexpr Uint32 BINARY_SEARCH_ODD =
                           LOAD_CONST16 + OVERFLOW_OPCODE;
   static constexpr Uint32 LOAD_CONST32 = 5;
+  static constexpr Uint32 SEARCH_INTERVAL_64 =
+                          LOAD_CONST32 + OVERFLOW_OPCODE;
   static constexpr Uint32 LOAD_CONST64 = 6;
+  static constexpr Uint32 SEARCH_INTERVAL_32 =
+                          LOAD_CONST64 + OVERFLOW_OPCODE;
   static constexpr Uint32 ADD_REG_REG = 7;
   static constexpr Uint32 ADD_REG_CONST =
                           ADD_REG_REG + OVERFLOW_OPCODE;
@@ -81,8 +85,14 @@ class Interpreter {
                           SUB_REG_REG + OVERFLOW_OPCODE;
 
   static constexpr Uint32 BRANCH = 9;
+  static constexpr Uint32 SEARCH_INTERVAL_16 =
+                          BRANCH + OVERFLOW_OPCODE;
   static constexpr Uint32 BRANCH_REG_EQ_NULL = 10;
+  static constexpr Uint32 SEARCH_INTERVAL_ODD =
+                          BRANCH_REG_EQ_NULL + OVERFLOW_OPCODE;
   static constexpr Uint32 BRANCH_REG_NE_NULL = 11;
+  static constexpr Uint32 STRING_SEARCH =
+                          BRANCH_REG_NE_NULL + OVERFLOW_OPCODE;
   static constexpr Uint32 BRANCH_EQ_REG_REG = 12;
   static constexpr Uint32 BRANCH_EQ_REG_CONST =
                           BRANCH_EQ_REG_REG + OVERFLOW_OPCODE;
@@ -103,6 +113,7 @@ class Interpreter {
                           BRANCH_GE_REG_REG + OVERFLOW_OPCODE;
 
   static constexpr Uint32 EXIT_OK = 18;
+  /* Overflow constant 18-22 free */
   static constexpr Uint32 EXIT_REFUSE = 19;
   static constexpr Uint32 CALL = 20;
   static constexpr Uint32 RETURN = 21;
@@ -110,7 +121,9 @@ class Interpreter {
   static constexpr Uint32 BRANCH_ATTR_OP_ARG = 23;
   /* OVERFLOW_OPCODE used */
   static constexpr Uint32 BRANCH_ATTR_EQ_NULL = 24;
+  /* Overflow constant 24 free */
   static constexpr Uint32 BRANCH_ATTR_NE_NULL = 25;
+  /* Overflow constant 25 free */
   static constexpr Uint32 BRANCH_ATTR_OP_PARAM = 26;
   /* OVERFLOW_OPCODE used */
   static constexpr Uint32 BRANCH_ATTR_OP_ATTR = 27;
@@ -143,14 +156,16 @@ class Interpreter {
                           MOD_REG_REG + OVERFLOW_OPCODE;
 
   static constexpr Uint32 NOT_REG_REG = 36;
-
-  /* 37-46 free */
+  /* Overflow constant 36 free */
   static constexpr Uint32 STR_TO_INT64 = 37;
   static constexpr Uint32 INT64_TO_STR =
                           STR_TO_INT64 + OVERFLOW_OPCODE;
 
+  /* 38-46 free, both of them */
   static constexpr Uint32 READ_PARTIAL_ATTR_TO_MEM = 47;
+  /* Overflow constant 47 free */
   static constexpr Uint32 READ_ATTR_TO_MEM = 48;
+  /* Overflow constant 48 free */
 
   static constexpr Uint32 READ_UINT8_MEM_TO_REG = 49;
   static constexpr Uint32 READ_UINT8_REG_TO_REG =
@@ -194,8 +209,7 @@ class Interpreter {
   static constexpr Uint32 LOAD_OP_TYPE = 61;
   static constexpr Uint32 BZERO_MEM =
                           LOAD_OP_TYPE + OVERFLOW_OPCODE;
-  /* 62 free */
-
+  /* 62 free, both of them */
   static constexpr Uint32 SPECIAL_INSTR = 63;
 
   /**
@@ -403,6 +417,7 @@ class Interpreter {
   static Uint32 getReg2(Uint32 op);
   static Uint32 getReg3(Uint32 op);
   static Uint32 getReg4(Uint32 op);
+  static Uint32 getReg5(Uint32 op);
   static Uint32 enum5(Uint32 op);
   static Uint32 enum6(Uint32 op);
   static Uint32 getLabel(Uint32 op);
@@ -938,6 +953,8 @@ inline Uint32 Interpreter::getReg2(Uint32 op) { return (op >> 9) & 0x7; }
 inline Uint32 Interpreter::getReg3(Uint32 op) { return (op >> 12) & 0x7; }
 
 inline Uint32 Interpreter::getReg4(Uint32 op) { return (op >> 16) & 0x7; }
+
+inline Uint32 Interpreter::getReg5(Uint32 op) { return (op >> 19) & 0x7; }
 
 inline Uint32 Interpreter::enum5(Uint32 op) { return (op >> 19) & 0xF; }
 
