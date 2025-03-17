@@ -583,8 +583,14 @@ runInterpreterLibraryTest(NDBT_Context* ctx, NDBT_Step* step)
   Uint32 out_val_exact[18] = {
     RET_NULL, 0, 1, RET_NULL, RET_NULL, 2, RET_NULL, 4, RET_NULL, RET_NULL,
     RET_NULL, RET_NULL, 5, 6, RET_NULL, 7, RET_NULL, RET_NULL };
+  Uint32 out_val_smaller[18] = {
+    0, 0, 1, 2, 2, 2, 4, 4, 5, 5,
+    5, 5, 5, 6, 7, 7, 8, 8 };
+  Uint32 out_val_smaller_equal[18] = {
+    RET_NULL, 0, 1, 1, 1, 2, 3, 4, 4, 4,
+    4, 4, 5, 6, 6, 7, 7, 7 };
 
-  for (Uint32 i = 0; i < 6; i++) {
+  for (Uint32 i = 0; i < 18; i++) {
     ndbout << "i = " << i << endl;
     NdbTransaction* pTrans = pNdb->startTransaction();
     CHK_RET_FAILED(pTrans != 0, pNdb);
@@ -593,16 +599,27 @@ runInterpreterLibraryTest(NDBT_Context* ctx, NDBT_Step* step)
     NdbInterpretedCode code(pTab, &buffer[0], 1024);
     //NdbInterpretedCode *code_ptr = &code;
     int ret_code = 0;
-    if (i == 0) {
-      code.load_const_u16(REG0, 0);
+    code.load_const_u16(REG0, 0);
+    code.load_const_u16(REG3, 8);
+    if (i == 0 || i == 6 || i == 12) {
       code.load_const_mem(REG0, REG1, 8 * 8, (const char*)&a64[0]);
-      code.load_const_u16(REG3, 8);
       code.qsort_instr(REG0, REG3, 8);
 
+      Uint32 expected_val = 0;
+      Uint32 search_type = 0;
       for (Uint32 val = 0; val < 18; val++) {
-        Uint32 expected_val = out_val_exact[val];
         code.load_const_u16(REG2, val);
-        code.binary_search_64(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+        if (i == 0) {
+          expected_val = out_val_exact[val];
+          search_type = EQUAL_MATCH;
+        } else if (i == 6) {
+          expected_val = out_val_smaller[val];
+          search_type = SMALLER_MATCH;
+        } else if (i == 12) {
+          expected_val = out_val_smaller_equal[val];
+          search_type = SMALLER_EQUAL_MATCH;
+        }
+        code.binary_search_64(REG2, REG0, REG3, REG7, search_type);
         if (expected_val != RET_NULL) {
           code.branch_eq_null(REG7, LABEL0);
           code.branch_ne_const(REG7, expected_val, LABEL0);
@@ -610,21 +627,25 @@ runInterpreterLibraryTest(NDBT_Context* ctx, NDBT_Step* step)
           code.branch_ne_null(REG7, LABEL0);
         }
       }
-      code.interpret_exit_ok();
-      code.def_label(LABEL0);
-      code.interpret_exit_nok(6000);
-      ret_code = code.finalise();
-      CHK3(ret_code);
-    } else if (i == 1) {
-      code.load_const_u16(REG0, 0);
+    } else if (i == 1 || i == 7 || i == 13) {
       code.load_const_mem(REG0, REG1, 4 * 8, (const char*)&a32[0]);
-      code.load_const_u16(REG3, 8);
       code.qsort_instr(REG0, REG3, 4);
 
+      Uint32 expected_val = 0;
+      Uint32 search_type = 0;
       for (Uint32 val = 0; val < 18; val++) {
-        Uint32 expected_val = out_val_exact[val];
         code.load_const_u16(REG2, val);
-        code.binary_search_32(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+        if (i == 1) {
+          expected_val = out_val_exact[val];
+          search_type = EQUAL_MATCH;
+        } else if (i == 7) {
+          expected_val = out_val_smaller[val];
+          search_type = SMALLER_MATCH;
+        } else if (i == 13) {
+          expected_val = out_val_smaller_equal[val];
+          search_type = SMALLER_EQUAL_MATCH;
+        }
+        code.binary_search_32(REG2, REG0, REG3, REG7, search_type);
         if (expected_val != RET_NULL) {
           code.branch_eq_null(REG7, LABEL0);
           code.branch_ne_const(REG7, expected_val, LABEL0);
@@ -632,21 +653,25 @@ runInterpreterLibraryTest(NDBT_Context* ctx, NDBT_Step* step)
           code.branch_ne_null(REG7, LABEL0);
         }
       }
-      code.interpret_exit_ok();
-      code.def_label(LABEL0);
-      code.interpret_exit_nok(6000);
-      ret_code = code.finalise();
-      CHK3(ret_code);
-    } else if (i == 2) {
-      code.load_const_u16(REG0, 0);
+    } else if (i == 2 || i == 8 || i == 14) {
       code.load_const_mem(REG0, REG1, 2 * 8, (const char*)&a16[0]);
-      code.load_const_u16(REG3, 8);
       code.qsort_instr(REG0, REG3, 2);
 
+      Uint32 expected_val = 0;
+      Uint32 search_type = 0;
       for (Uint32 val = 0; val < 18; val++) {
-        Uint32 expected_val = out_val_exact[val];
         code.load_const_u16(REG2, val);
-        code.binary_search_16(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+        if (i == 2) {
+          expected_val = out_val_exact[val];
+          search_type = EQUAL_MATCH;
+        } else if (i == 8) {
+          expected_val = out_val_smaller[val];
+          search_type = SMALLER_MATCH;
+        } else if (i == 14) {
+          expected_val = out_val_smaller_equal[val];
+          search_type = SMALLER_EQUAL_MATCH;
+        }
+        code.binary_search_16(REG2, REG0, REG3, REG7, search_type);
         if (expected_val != RET_NULL) {
           code.branch_eq_null(REG7, LABEL0);
           code.branch_ne_const(REG7, expected_val, LABEL0);
@@ -654,29 +679,35 @@ runInterpreterLibraryTest(NDBT_Context* ctx, NDBT_Step* step)
           code.branch_ne_null(REG7, LABEL0);
         }
       }
-      code.interpret_exit_ok();
-      code.def_label(LABEL0);
-      code.interpret_exit_nok(6000);
-      ret_code = code.finalise();
-      CHK3(ret_code);
-    } else if (i >= 3 && i <= 5)  {
+    } else if ((i >= 3 && i <= 5) ||
+               (i >= 9 && i <= 11) ||
+               (i >= 15 && i <= 17))  {
       Uint32 number_size = 0;
       Uint32 number_size_in = 0;
       const char *number_ptr = nullptr;
       switch (i) {
-        case 3: {
+        case 3:
+        case 9:
+        case 15:
+        {
           number_size = 3;
           number_size_in = 4;
           number_ptr = (const char*)&a32[0];
           break;
         }
-        case 4: {
+        case 4:
+        case 10:
+        case 16:
+        {
           number_size = 5;
           number_size_in = 8;
           number_ptr = (const char*)&a64[0];
           break;
         }
-        case 5: {
+        case 5:
+        case 11:
+        case 17:
+        {
           number_size = 6;
           number_size_in = 8;
           number_ptr = (const char*)&a64[0];
@@ -687,18 +718,28 @@ runInterpreterLibraryTest(NDBT_Context* ctx, NDBT_Step* step)
           break;
         }
       }
-      code.load_const_u16(REG0, 0);
       code.load_const_mem(REG0, REG1, number_size_in * 8, number_ptr);
-      code.load_const_u16(REG3, 8);
       code.load_const_u16(REG1, number_size_in);
       code.load_const_u16(REG2, number_size);
       code.compress_num_array(REG0, REG3, number_size_in, number_size);
       code.qsort_instr(REG0, REG3, number_size);
 
+      Uint32 expected_val = 0;
+      Uint32 search_type = 0;
       for (Uint32 val = 0; val < 18; val++) {
-        Uint32 expected_val = out_val_exact[val];
         code.load_const_u16(REG2, val);
-        code.binary_search_odd(REG2, REG0, REG3, REG7, EQUAL_MATCH, number_size);
+        if ((i == 3 || i == 4 || i == 5)) {
+          expected_val = out_val_exact[val];
+          search_type = EQUAL_MATCH;
+        } else if ((i == 9 || i == 10 || i == 11)) {
+          expected_val = out_val_smaller[val];
+          search_type = SMALLER_MATCH;
+        } else if ((i == 15 || i == 16 || i == 17)) {
+          expected_val = out_val_smaller_equal[val];
+          search_type = SMALLER_EQUAL_MATCH;
+        }
+        code.binary_search_odd(
+          REG2, REG0, REG3, REG7, search_type, number_size);
         if (expected_val != RET_NULL) {
           code.branch_eq_null(REG7, LABEL0);
           code.branch_ne_const(REG7, expected_val, LABEL0);
@@ -706,11 +747,14 @@ runInterpreterLibraryTest(NDBT_Context* ctx, NDBT_Step* step)
           code.branch_ne_null(REG7, LABEL0);
         }
       }
-      code.interpret_exit_ok();
-      code.def_label(LABEL0);
-      code.interpret_exit_nok(6000);
-      ret_code = code.finalise();
     }
+
+    code.interpret_exit_ok();
+    code.def_label(LABEL0);
+    code.interpret_exit_nok(6000);
+    ret_code = code.finalise();
+    CHK3(ret_code);
+
     NdbOperation::OperationOptions opts;
     std::memset(&opts, 0, sizeof(opts));
     opts.optionsPresent = NdbOperation::OperationOptions::OO_INTERPRETED;

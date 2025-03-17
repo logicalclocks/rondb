@@ -558,7 +558,7 @@ static Uint32 binary_odd_search_smaller(Uint64 test_ordinal,
       end = mid_point;
     }
   }
-  if (not_include_equal == ZTRUE && end > 0) {
+  if (not_include_equal == ZTRUE) {
     test_position = start * number_size;
     const uchar *number_ptr = (const uchar*)(memory_ptr + test_position);
     switch (number_size) {
@@ -585,10 +585,10 @@ static Uint32 binary_odd_search_smaller(Uint64 test_ordinal,
         return RET_NULL;
       }
     }
-    if (value == test_ordinal) {
+    if (value != test_ordinal) {
+      if (start == 0) return RET_NULL;
+      else return (start - 1);
       return end - 1;
-    } else {
-      if (end == num_elems) return RET_NULL;
     }
   }
   return start;
