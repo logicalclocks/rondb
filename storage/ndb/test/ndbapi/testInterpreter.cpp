@@ -557,6 +557,9 @@ runInterpreterLibraryTest(NDBT_Context* ctx, NDBT_Step* step)
 #define SMALLER_EQUAL_MATCH 3
 #define LARGER_EQUAL_MATCH 4
 
+#define LEFT_CLOSED_RIGHT_OPEN 0
+#define LEFT_OPEN_RIGHT_CLOSED 1
+
   const NdbDictionary::Table * pTab = ctx->getTab();
   Ndb* pNdb = GETNDB(step);
   NdbDictionary::Dictionary * dict = pNdb->getDictionary();
@@ -595,8 +598,14 @@ runInterpreterLibraryTest(NDBT_Context* ctx, NDBT_Step* step)
   Uint32 out_val_larger_equal[18] = {
     0, 0, 1, 2, 2, 3, 4, 4, 5, 5,
     5, 5, 5, 6, 7, 7, 8, 8 };
+  Uint32 search_val_left_closed[18] = {
+    RET_NULL, 0, RET_NULL, RET_NULL, RET_NULL, 2, RET_NULL, 4, 4, 4,
+    4, 4, RET_NULL, 6, 6, RET_NULL, RET_NULL, RET_NULL };
+  Uint32 search_val_left_open[18] = {
+    RET_NULL, RET_NULL, 0, RET_NULL, RET_NULL, 2, RET_NULL, RET_NULL, 4, 4,
+    4, 4, 4, RET_NULL, 6, 6, RET_NULL, RET_NULL };
 
-  for (Uint32 i = 0; i < 30; i++) {
+  for (Uint32 i = 0; i < 42; i++) {
     ndbout << "i = " << i << endl;
     NdbTransaction* pTrans = pNdb->startTransaction();
     CHK_RET_FAILED(pTrans != 0, pNdb);
@@ -639,6 +648,29 @@ runInterpreterLibraryTest(NDBT_Context* ctx, NDBT_Step* step)
           code.branch_ne_null(REG7, LABEL0);
         }
       }
+    } else if (i == 30 || i == 31) {
+      code.load_const_mem(REG0, REG1, 8 * 8, (const char*)&a64[0]);
+      code.qsort_instr(REG0, REG3, 8);
+
+      Uint32 expected_val = 0;
+      Uint32 search_type = 0;
+      for (Uint32 val = 0; val < 18; val++) {
+        code.load_const_u16(REG2, val);
+        if (i == 30) {
+          expected_val = search_val_left_closed[val];
+          search_type = LEFT_CLOSED_RIGHT_OPEN;
+        } else if (i == 31) {
+          expected_val = search_val_left_open[val];
+          search_type = LEFT_OPEN_RIGHT_CLOSED;
+        }
+        code.search_interval_64(REG2, REG0, REG3, REG7, search_type);
+        if (expected_val != RET_NULL) {
+          code.branch_eq_null(REG7, LABEL0);
+          code.branch_ne_const(REG7, expected_val, LABEL0);
+        } else {
+          code.branch_ne_null(REG7, LABEL0);
+        }
+      }
     } else if (i == 1 || i == 7 || i == 13 || i == 19 || i == 25) {
       code.load_const_mem(REG0, REG1, 4 * 8, (const char*)&a32[0]);
       code.qsort_instr(REG0, REG3, 4);
@@ -671,6 +703,29 @@ runInterpreterLibraryTest(NDBT_Context* ctx, NDBT_Step* step)
           code.branch_ne_null(REG7, LABEL0);
         }
       }
+    } else if (i == 32 || i == 33) {
+      code.load_const_mem(REG0, REG1, 8 * 4, (const char*)&a32[0]);
+      code.qsort_instr(REG0, REG3, 4);
+
+      Uint32 expected_val = 0;
+      Uint32 search_type = 0;
+      for (Uint32 val = 0; val < 18; val++) {
+        code.load_const_u16(REG2, val);
+        if (i == 32) {
+          expected_val = search_val_left_closed[val];
+          search_type = LEFT_CLOSED_RIGHT_OPEN;
+        } else if (i == 33) {
+          expected_val = search_val_left_open[val];
+          search_type = LEFT_OPEN_RIGHT_CLOSED;
+        }
+        code.search_interval_32(REG2, REG0, REG3, REG7, search_type);
+        if (expected_val != RET_NULL) {
+          code.branch_eq_null(REG7, LABEL0);
+          code.branch_ne_const(REG7, expected_val, LABEL0);
+        } else {
+          code.branch_ne_null(REG7, LABEL0);
+        }
+      }
     } else if (i == 2 || i == 8 || i == 14 || i == 20 || i == 26) {
       code.load_const_mem(REG0, REG1, 2 * 8, (const char*)&a16[0]);
       code.qsort_instr(REG0, REG3, 2);
@@ -696,6 +751,90 @@ runInterpreterLibraryTest(NDBT_Context* ctx, NDBT_Step* step)
           search_type = LARGER_EQUAL_MATCH;
         }
         code.binary_search_16(REG2, REG0, REG3, REG7, search_type);
+        if (expected_val != RET_NULL) {
+          code.branch_eq_null(REG7, LABEL0);
+          code.branch_ne_const(REG7, expected_val, LABEL0);
+        } else {
+          code.branch_ne_null(REG7, LABEL0);
+        }
+      }
+    } else if (i == 34 || i == 35) {
+      code.load_const_mem(REG0, REG1, 8 * 2, (const char*)&a16[0]);
+      code.qsort_instr(REG0, REG3, 2);
+
+      Uint32 expected_val = 0;
+      Uint32 search_type = 0;
+      for (Uint32 val = 0; val < 18; val++) {
+        code.load_const_u16(REG2, val);
+        if (i == 34) {
+          expected_val = search_val_left_closed[val];
+          search_type = LEFT_CLOSED_RIGHT_OPEN;
+        } else if (i == 35) {
+          expected_val = search_val_left_open[val];
+          search_type = LEFT_OPEN_RIGHT_CLOSED;
+        }
+        code.search_interval_16(REG2, REG0, REG3, REG7, search_type);
+        if (expected_val != RET_NULL) {
+          code.branch_eq_null(REG7, LABEL0);
+          code.branch_ne_const(REG7, expected_val, LABEL0);
+        } else {
+          code.branch_ne_null(REG7, LABEL0);
+        }
+      }
+
+    } else if (i >= 36 && i <= 41) {
+      Uint32 number_size = 0;
+      Uint32 number_size_in = 0;
+      const char *number_ptr = nullptr;
+      switch (i) {
+        case 36:
+        case 39:
+        {
+          number_size = 3;
+          number_size_in = 4;
+          number_ptr = (const char*)&a32[0];
+          break;
+        }
+        case 37:
+        case 40:
+        {
+          number_size = 5;
+          number_size_in = 8;
+          number_ptr = (const char*)&a64[0];
+          break;
+        }
+        case 38:
+        case 41:
+        {
+          number_size = 6;
+          number_size_in = 8;
+          number_ptr = (const char*)&a64[0];
+          break;
+        }
+        default: {
+          require(false);
+          break;
+        }
+      }
+      code.load_const_mem(REG0, REG1, number_size_in * 8, number_ptr);
+      code.load_const_u16(REG1, number_size_in);
+      code.load_const_u16(REG2, number_size);
+      code.compress_num_array(REG0, REG3, number_size_in, number_size);
+      code.qsort_instr(REG0, REG3, number_size);
+
+      Uint32 expected_val = 0;
+      Uint32 search_type = 0;
+      for (Uint32 val = 0; val < 18; val++) {
+        code.load_const_u16(REG2, val);
+        if (i == 36 || i == 38 ||i == 40) {
+          expected_val = search_val_left_closed[val];
+          search_type = LEFT_CLOSED_RIGHT_OPEN;
+        } else if (i == 37 ||i == 39 || i == 41) {
+          expected_val = search_val_left_open[val];
+          search_type = LEFT_OPEN_RIGHT_CLOSED;
+        }
+        code.search_interval_odd(
+          REG2, REG0, REG3, REG7, search_type, number_size);
         if (expected_val != RET_NULL) {
           code.branch_eq_null(REG7, LABEL0);
           code.branch_ne_const(REG7, expected_val, LABEL0);

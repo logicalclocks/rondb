@@ -309,19 +309,23 @@ class Interpreter {
   static Uint32 SearchInterval64(Uint32 RegOrdinal,
                                  Uint32 RegOffset,
                                  Uint32 RegNumElems,
-                                 Uint32 RegResult);
+                                 Uint32 RegResult,
+                                 Uint32 SearchType);
   static Uint32 SearchInterval32(Uint32 RegOrdinal,
                                  Uint32 RegOffset,
                                  Uint32 RegNumElems,
-                                 Uint32 RegResult);
+                                 Uint32 RegResult,
+                                 Uint32 SearchType);
   static Uint32 SearchInterval16(Uint32 RegOrdinal,
                                  Uint32 RegOffset,
                                  Uint32 RegNumElems,
-                                 Uint32 RegResult);
+                                 Uint32 RegResult,
+                                 Uint32 SearchType);
   static Uint32 SearchIntervalOdd(Uint32 RegOrdinal,
                                   Uint32 RegOffset,
                                   Uint32 RegNumElems,
                                   Uint32 RegResult,
+                                  Uint32 SearchType,
                                   Uint32 NumberSize);
   static Uint32 StringSearch(Uint32 RegOffsetString,
                              Uint32 RegStringLen,
@@ -849,11 +853,13 @@ inline Uint32
 Interpreter::SearchInterval64(Uint32 RegOrdinal,
                               Uint32 RegOffset,
                               Uint32 RegNumElems,
-                              Uint32 RegResult) {
+                              Uint32 RegResult,
+                              Uint32 SearchType) {
   return (RegOrdinal << 6) +
          (RegOffset << 9) +
          (RegNumElems << 12) +
          (RegResult << 16) +
+         (SearchType << 19) +
          LOAD_CONST32 +
          (1 << 15);
 }
@@ -862,11 +868,13 @@ inline Uint32
 Interpreter::SearchInterval32(Uint32 RegOrdinal,
                               Uint32 RegOffset,
                               Uint32 RegNumElems,
-                              Uint32 RegResult) {
+                              Uint32 RegResult,
+                              Uint32 SearchType) {
   return (RegOrdinal << 6) +
          (RegOffset << 9) +
          (RegNumElems << 12) +
          (RegResult << 16) +
+         (SearchType << 19) +
          LOAD_CONST64 +
          (1 << 15);
 }
@@ -875,11 +883,13 @@ inline Uint32
 Interpreter::SearchInterval16(Uint32 RegOrdinal,
                               Uint32 RegOffset,
                               Uint32 RegNumElems,
-                              Uint32 RegResult) {
+                              Uint32 RegResult,
+                              Uint32 SearchType) {
   return (RegOrdinal << 6) +
          (RegOffset << 9) +
          (RegNumElems << 12) +
          (RegResult << 16) +
+         (SearchType << 19) +
          BRANCH +
          (1 << 15);
 }
@@ -889,11 +899,13 @@ Interpreter::SearchIntervalOdd(Uint32 RegOrdinal,
                                Uint32 RegOffset,
                                Uint32 RegNumElems,
                                Uint32 RegResult,
+                               Uint32 SearchType,
                                Uint32 NumberSize) {
   return (RegOrdinal << 6) +
          (RegOffset << 9) +
          (RegNumElems << 12) +
          (RegResult << 16) +
+         (SearchType << 19) +
          (NumberSize << 23) +
          BRANCH_REG_EQ_NULL +
          (1 << 15);

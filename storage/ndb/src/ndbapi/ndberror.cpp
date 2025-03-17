@@ -419,6 +419,7 @@ ErrorBundle ErrorCodes[] = {
   { 933,  DMEC, AE, "No such binary search method" },
   { 934,  DMEC, AE, "Wrong input to binary search instruction" },
   { 935,  DMEC, AE, "No such number size supported for binary search" },
+  { 936,  DMEC, AE, "No such search interval method" },
   { 4000, DMEC, IE, "MEMORY ALLOCATION ERROR" },
   { 4001, DMEC, IE, "Signal Definition Error" },
   { 4005, DMEC, IE, "Internal Error in NdbApi" },

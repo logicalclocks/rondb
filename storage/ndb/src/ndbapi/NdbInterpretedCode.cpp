@@ -627,51 +627,60 @@ int
 NdbInterpretedCode::search_interval_64(Uint32 RegOrdinal,
                                        Uint32 RegOffset,
                                        Uint32 RegNumElems,
-                                       Uint32 RegResult) {
+                                       Uint32 RegResult,
+                                       Uint32 SearchType) {
   if ((RegOrdinal >= MaxReg) ||
       (RegOffset >= MaxReg) ||
       (RegNumElems >= MaxReg) ||
-      (RegResult >= MaxReg))
+      (RegResult >= MaxReg) ||
+      (SearchType >= MaxEnum))
     return error(BadRegister);
   return add1(Interpreter::SearchInterval64(
               RegOrdinal,
               RegOffset,
               RegNumElems,
-              RegResult));
+              RegResult,
+              SearchType));
 }
 
 int
 NdbInterpretedCode::search_interval_32(Uint32 RegOrdinal,
                                        Uint32 RegOffset,
                                        Uint32 RegNumElems,
-                                       Uint32 RegResult) {
+                                       Uint32 RegResult,
+                                       Uint32 SearchType) {
   if ((RegOrdinal >= MaxReg) ||
       (RegOffset >= MaxReg) ||
       (RegNumElems >= MaxReg) ||
-      (RegResult >= MaxReg))
+      (RegResult >= MaxReg) ||
+      (SearchType >= MaxEnum))
     return error(BadRegister);
   return add1(Interpreter::SearchInterval32(
               RegOrdinal,
               RegOffset,
               RegNumElems,
-              RegResult));
+              RegResult,
+              SearchType));
 }
 
 int
 NdbInterpretedCode::search_interval_16(Uint32 RegOrdinal,
                                        Uint32 RegOffset,
                                        Uint32 RegNumElems,
-                                       Uint32 RegResult) {
+                                       Uint32 RegResult,
+                                       Uint32 SearchType) {
   if ((RegOrdinal >= MaxReg) ||
       (RegOffset >= MaxReg) ||
       (RegNumElems >= MaxReg) ||
-      (RegResult >= MaxReg))
+      (RegResult >= MaxReg) ||
+      (SearchType >= MaxEnum))
     return error(BadRegister);
   return add1(Interpreter::SearchInterval16(
               RegOrdinal,
               RegOffset,
               RegNumElems,
-              RegResult));
+              RegResult,
+              SearchType));
 }
 
 int
@@ -679,11 +688,13 @@ NdbInterpretedCode::search_interval_odd(Uint32 RegOrdinal,
                                         Uint32 RegOffset,
                                         Uint32 RegNumElems,
                                         Uint32 RegResult,
+                                        Uint32 SearchType,
                                         Uint32 NumberSize) {
   if ((RegOrdinal >= MaxReg) ||
       (RegOffset >= MaxReg) ||
       (RegNumElems >= MaxReg) ||
       (RegResult >= MaxReg) ||
+      (SearchType >= MaxEnum) ||
       (NumberSize >= MaxEnum))
     return error(BadRegister);
   return add1(Interpreter::SearchIntervalOdd(
@@ -691,6 +702,7 @@ NdbInterpretedCode::search_interval_odd(Uint32 RegOrdinal,
               RegOffset,
               RegNumElems,
               RegResult,
+              SearchType,
               NumberSize));
 }
 

@@ -644,7 +644,16 @@ class NdbInterpretedCode {
    * search_interval methods
    * -----------------------
    * Same as above, but always using smaller or equal => even number
-   * is within an interval, odd or NULL is not within interval.
+   * when SearchType == 0, with SearchType == 1 we use larger or equal.
+   * SearchType == 0 thus treats the numbers as pairs with left end being
+   * closed (included in interval) and the right end being open (not
+   * included in interval).
+   * SearchType == 1 is the opposite with left end being open and right
+   * end being closed.
+   *
+   * In both cases we report a number being part of an interval with the
+   * index of the first number in the interval (0, 2, 4, ..). Not being in
+   * interval returns NULL set in the register.
    *
    * Odd methods treat the data as little-endian numbers with odd sizes.
    */
@@ -672,19 +681,23 @@ class NdbInterpretedCode {
   int search_interval_64(Uint32 RegOrdinal,
                          Uint32 RegOffset,
                          Uint32 RegNumElems,
-                         Uint32 RegResult);
+                         Uint32 RegResult,
+                         Uint32 SearchType);
   int search_interval_32(Uint32 RegOrdinal,
                          Uint32 RegOffset,
                          Uint32 RegNumElems,
-                         Uint32 RegResult);
+                         Uint32 RegResult,
+                         Uint32 SearchType);
   int search_interval_16(Uint32 RegOrdinal,
                          Uint32 RegOffset,
                          Uint32 RegNumElems,
-                         Uint32 RegResult);
+                         Uint32 RegResult,
+                         Uint32 searchType);
   int search_interval_odd(Uint32 RegOrdinal,
                          Uint32 RegOffset,
                          Uint32 RegNumElems,
                          Uint32 RegResult,
+                         Uint32 SearchType,
                          Uint32 NumberSize);
   /**
    * string_search
