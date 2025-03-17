@@ -577,9 +577,9 @@ runInterpreterLibraryTest(NDBT_Context* ctx, NDBT_Step* step)
   calc.equalForRow(pRow, pRowRecord, 0);
 
 #define RET_NULL (Uint32(~0))
-  Uint64 a64[8] = {1,2,5,5,7,12,13,15};
-  Uint32 a32[8] = {1,2,5,5,7,12,13,15};
-  Uint16 a16[8] = {1,2,5,5,7,12,13,15};
+  Uint64 a64[8] = {15,12,5,7,1,2,5,13};
+  Uint32 a32[8] = {15,12,5,7,1,2,5,13};
+  Uint16 a16[8] = {15,12,5,7,1,2,5,13};
   Uint32 out_val_exact[18] = {
     RET_NULL, 0, 1, RET_NULL, RET_NULL, 2, RET_NULL, 4, RET_NULL, RET_NULL,
     RET_NULL, RET_NULL, 5, 6, RET_NULL, 7, RET_NULL, RET_NULL };
@@ -597,6 +597,7 @@ runInterpreterLibraryTest(NDBT_Context* ctx, NDBT_Step* step)
       code.load_const_u16(REG0, 0);
       code.load_const_mem(REG0, REG1, 8 * 8, (const char*)&a64[0]);
       code.load_const_u16(REG3, 8);
+      code.qsort_instr(REG0, REG3, 8);
 
       for (Uint32 val = 0; val < 18; val++) {
         Uint32 expected_val = out_val_exact[val];
@@ -618,6 +619,7 @@ runInterpreterLibraryTest(NDBT_Context* ctx, NDBT_Step* step)
       code.load_const_u16(REG0, 0);
       code.load_const_mem(REG0, REG1, 4 * 8, (const char*)&a32[0]);
       code.load_const_u16(REG3, 8);
+      code.qsort_instr(REG0, REG3, 4);
 
       for (Uint32 val = 0; val < 18; val++) {
         Uint32 expected_val = out_val_exact[val];
@@ -639,6 +641,7 @@ runInterpreterLibraryTest(NDBT_Context* ctx, NDBT_Step* step)
       code.load_const_u16(REG0, 0);
       code.load_const_mem(REG0, REG1, 2 * 8, (const char*)&a16[0]);
       code.load_const_u16(REG3, 8);
+      code.qsort_instr(REG0, REG3, 2);
 
       for (Uint32 val = 0; val < 18; val++) {
         Uint32 expected_val = out_val_exact[val];
@@ -690,6 +693,7 @@ runInterpreterLibraryTest(NDBT_Context* ctx, NDBT_Step* step)
       code.load_const_u16(REG1, number_size_in);
       code.load_const_u16(REG2, number_size);
       code.compress_num_array(REG0, REG3, number_size_in, number_size);
+      code.qsort_instr(REG0, REG3, number_size);
 
       for (Uint32 val = 0; val < 18; val++) {
         Uint32 expected_val = out_val_exact[val];

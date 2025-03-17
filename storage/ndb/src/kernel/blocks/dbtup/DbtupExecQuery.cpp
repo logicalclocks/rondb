@@ -742,10 +742,10 @@ static void compress_num64_array(char *memory_ptr,
 }
 
 static int compare_8b(const void *left, const void *right) {
-  ulonglong *left_ulong = (ulonglong*)left;
-  ulonglong *right_ulong = (ulonglong*)right;
-  if ((*left_ulong) < (*right_ulong)) return -1;
-  if ((*left_ulong) > (*right_ulong)) return +1;
+  ulonglong left_ulong = *(ulonglong*)left;
+  ulonglong right_ulong = *(ulonglong*)right;
+  if (left_ulong < right_ulong) return -1;
+  if (left_ulong > right_ulong) return +1;
   return 0;
 }
 
@@ -770,10 +770,10 @@ static int compare_5b(const void *left, const void *right) {
 }
 
 static int compare_4b(const void *left, const void *right) {
-  const Uint32 *left_cmp = (const Uint32*)left;
-  const Uint32 *right_cmp = (const Uint32*)right;
-  if ((*left_cmp) < (*right_cmp)) return -1;
-  if ((*left_cmp) > (*right_cmp)) return +1;
+  const Uint32 left_cmp = *(const Uint32*)left;
+  const Uint32 right_cmp = *(const Uint32*)right;
+  if (left_cmp < right_cmp) return -1;
+  if (left_cmp > right_cmp) return +1;
   return 0;
 }
 
@@ -788,16 +788,16 @@ static int compare_3b(const void *left, const void *right) {
 }
 
 static int compare_2b(const void *left, const void *right) {
-  const Uint16 *left_cmp = (const Uint16*)left;
-  const Uint16 *right_cmp = (const Uint16*)right;
+  const Uint16 left_cmp = *(const Uint16*)left;
+  const Uint16 right_cmp = *(const Uint16*)right;
   if (left_cmp < right_cmp) return -1;
   if (left_cmp > right_cmp) return +1;
   return 0;
 }
 
 static int compare_1b(const void *left, const void *right) {
-  const uchar *left_cmp = (const uchar*)left;
-  const uchar *right_cmp = (const uchar*)right;
+  const uchar left_cmp = *(const uchar*)left;
+  const uchar right_cmp = *(const uchar*)right;
   if (left_cmp < right_cmp) return -1;
   if (left_cmp > right_cmp) return +1;
   return 0;
@@ -812,42 +812,49 @@ static void qsort_instr(const char *memory_ptr,
             elems,
             number_size,
             compare_1b);
+      return;
     }
     case 2: {
       qsort((void*)(memory_ptr),
             elems,
             number_size,
             compare_2b);
+      return;
     }
     case 3: {
       qsort((void*)(memory_ptr),
             elems,
             number_size,
             compare_3b);
+      return;
     }
     case 4: {
       qsort((void*)(memory_ptr),
             elems,
             number_size,
             compare_4b);
+      return;
     }
     case 5: {
       qsort((void*)(memory_ptr),
             elems,
             number_size,
             compare_5b);
+      return;
     }
     case 6: {
       qsort((void*)(memory_ptr),
             elems,
             number_size,
             compare_6b);
+      return;
     }
     case 8: {
       qsort((void*)(memory_ptr),
             elems,
             number_size,
              compare_8b);
+      return;
     }
     default: {
       require(false);
@@ -8205,7 +8212,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
           }
           if (Toffset < 0 ||
               TnumElems < 0 ||
-              (Toffset + (TnumberSize * TnumElems)) < MAX_HEAP_OFFSET) {
+              (Toffset + (TnumberSize * TnumElems)) > MAX_HEAP_OFFSET) {
             return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
           }
           if (TnumberSize != 1 &&
