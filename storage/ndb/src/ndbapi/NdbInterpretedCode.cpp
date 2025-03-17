@@ -614,12 +614,13 @@ NdbInterpretedCode::binary_search_odd(Uint32 RegOrdinal,
       (SearchType >= MaxEnum) ||
       (NumberSize >= MaxEnum))
     return error(BadRegister);
-  return add1(Interpreter::BinarySearch64(
+  return add1(Interpreter::BinarySearchOdd(
               RegOrdinal,
               RegOffset,
               RegNumElems,
               RegResult,
-              SearchType));
+              SearchType,
+              NumberSize));
 }
 
 int

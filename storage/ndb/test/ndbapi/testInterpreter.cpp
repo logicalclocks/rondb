@@ -576,94 +576,39 @@ runInterpreterLibraryTest(NDBT_Context* ctx, NDBT_Step* step)
   HugoCalculator calc(* pTab);
   calc.equalForRow(pRow, pRowRecord, 0);
 
+#define RET_NULL (Uint32(~0))
   Uint64 a64[8] = {1,2,5,5,7,12,13,15};
   Uint32 a32[8] = {1,2,5,5,7,12,13,15};
   Uint16 a16[8] = {1,2,5,5,7,12,13,15};
+  Uint32 out_val_exact[18] = {
+    RET_NULL, 0, 1, RET_NULL, RET_NULL, 2, RET_NULL, 4, RET_NULL, RET_NULL,
+    RET_NULL, RET_NULL, 5, 6, RET_NULL, 7, RET_NULL, RET_NULL };
 
-  for (Uint32 i = 0; i < 2; i++) {
+  for (Uint32 i = 0; i < 6; i++) {
     ndbout << "i = " << i << endl;
     NdbTransaction* pTrans = pNdb->startTransaction();
     CHK_RET_FAILED(pTrans != 0, pNdb);
 
     Uint32 buffer[1024];
     NdbInterpretedCode code(pTab, &buffer[0], 1024);
+    //NdbInterpretedCode *code_ptr = &code;
     int ret_code = 0;
     if (i == 0) {
       code.load_const_u16(REG0, 0);
       code.load_const_mem(REG0, REG1, 8 * 8, (const char*)&a64[0]);
       code.load_const_u16(REG3, 8);
 
-      code.load_const_u16(REG2, 1);
-      code.binary_search_64(REG2, REG0, REG3, REG7, EQUAL_MATCH);
-      code.branch_eq_null(REG7, LABEL0);
-      code.branch_ne_const(REG7, 0, LABEL0);
-
-      code.load_const_u16(REG2, 2);
-      code.binary_search_64(REG2, REG0, REG3, REG7, EQUAL_MATCH);
-      code.branch_eq_null(REG7, LABEL0);
-      code.branch_ne_const(REG7, 1, LABEL0);
-
-      code.load_const_u16(REG2, 5);
-      code.binary_search_64(REG2, REG0, REG3, REG7, EQUAL_MATCH);
-      code.branch_eq_null(REG7, LABEL0);
-      code.branch_ne_const(REG7, 2, LABEL0);
-
-      code.load_const_u16(REG2, 7);
-      code.binary_search_64(REG2, REG0, REG3, REG7, EQUAL_MATCH);
-      code.branch_eq_null(REG7, LABEL0);
-      code.branch_ne_const(REG7, 4, LABEL0);
-
-      code.load_const_u16(REG2, 12);
-      code.binary_search_64(REG2, REG0, REG3, REG7, EQUAL_MATCH);
-      code.branch_eq_null(REG7, LABEL0);
-      code.branch_ne_const(REG7, 5, LABEL0);
-
-      code.load_const_u16(REG2, 13);
-      code.binary_search_64(REG2, REG0, REG3, REG7, EQUAL_MATCH);
-      code.branch_eq_null(REG7, LABEL0);
-      code.branch_ne_const(REG7, 6, LABEL0);
-
-      code.load_const_u16(REG2, 15);
-      code.binary_search_64(REG2, REG0, REG3, REG7, EQUAL_MATCH);
-      code.branch_eq_null(REG7, LABEL0);
-      code.branch_ne_const(REG7, 7, LABEL0);
-
-      code.load_const_u16(REG2, 0);
-      code.binary_search_64(REG2, REG0, REG3, REG7, EQUAL_MATCH);
-      code.branch_ne_null(REG7, LABEL0);
-
-      code.load_const_u16(REG2, 3);
-      code.binary_search_64(REG2, REG0, REG3, REG7, EQUAL_MATCH);
-      code.branch_ne_null(REG7, LABEL0);
-
-      code.load_const_u16(REG2, 4);
-      code.binary_search_64(REG2, REG0, REG3, REG7, EQUAL_MATCH);
-      code.branch_ne_null(REG7, LABEL0);
-
-      code.load_const_u16(REG2, 6);
-      code.binary_search_64(REG2, REG0, REG3, REG7, EQUAL_MATCH);
-      code.branch_ne_null(REG7, LABEL0);
-
-      code.load_const_u16(REG2, 8);
-      code.binary_search_64(REG2, REG0, REG3, REG7, EQUAL_MATCH);
-      code.branch_ne_null(REG7, LABEL0);
-
-      code.load_const_u16(REG2, 11);
-      code.binary_search_64(REG2, REG0, REG3, REG7, EQUAL_MATCH);
-      code.branch_ne_null(REG7, LABEL0);
-
-      code.load_const_u16(REG2, 14);
-      code.binary_search_64(REG2, REG0, REG3, REG7, EQUAL_MATCH);
-      code.branch_ne_null(REG7, LABEL0);
-
-      code.load_const_u16(REG2, 16);
-      code.binary_search_64(REG2, REG0, REG3, REG7, EQUAL_MATCH);
-      code.branch_ne_null(REG7, LABEL0);
-
-      code.load_const_u16(REG2, 2000000);
-      code.binary_search_64(REG2, REG0, REG3, REG7, EQUAL_MATCH);
-      code.branch_ne_null(REG7, LABEL0);
-
+      for (Uint32 val = 0; val < 18; val++) {
+        Uint32 expected_val = out_val_exact[val];
+        code.load_const_u16(REG2, val);
+        code.binary_search_64(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+        if (expected_val != RET_NULL) {
+          code.branch_eq_null(REG7, LABEL0);
+          code.branch_ne_const(REG7, expected_val, LABEL0);
+        } else {
+          code.branch_ne_null(REG7, LABEL0);
+        }
+      }
       code.interpret_exit_ok();
       code.def_label(LABEL0);
       code.interpret_exit_nok(6000);
@@ -671,80 +616,20 @@ runInterpreterLibraryTest(NDBT_Context* ctx, NDBT_Step* step)
       CHK3(ret_code);
     } else if (i == 1) {
       code.load_const_u16(REG0, 0);
-      code.load_const_mem(REG0, REG1, 8 * 4, (const char*)&a32[0]);
+      code.load_const_mem(REG0, REG1, 4 * 8, (const char*)&a32[0]);
       code.load_const_u16(REG3, 8);
 
-      code.load_const_u16(REG2, 1);
-      code.binary_search_32(REG2, REG0, REG3, REG7, EQUAL_MATCH);
-      code.branch_eq_null(REG7, LABEL0);
-      code.branch_ne_const(REG7, 0, LABEL0);
-
-      code.load_const_u16(REG2, 2);
-      code.binary_search_32(REG2, REG0, REG3, REG7, EQUAL_MATCH);
-      code.branch_eq_null(REG7, LABEL0);
-      code.branch_ne_const(REG7, 1, LABEL0);
-
-      code.load_const_u16(REG2, 5);
-      code.binary_search_32(REG2, REG0, REG3, REG7, EQUAL_MATCH);
-      code.branch_eq_null(REG7, LABEL0);
-      code.branch_ne_const(REG7, 2, LABEL0);
-
-      code.load_const_u16(REG2, 7);
-      code.binary_search_32(REG2, REG0, REG3, REG7, EQUAL_MATCH);
-      code.branch_eq_null(REG7, LABEL0);
-      code.branch_ne_const(REG7, 4, LABEL0);
-
-      code.load_const_u16(REG2, 12);
-      code.binary_search_32(REG2, REG0, REG3, REG7, EQUAL_MATCH);
-      code.branch_eq_null(REG7, LABEL0);
-      code.branch_ne_const(REG7, 5, LABEL0);
-
-      code.load_const_u16(REG2, 13);
-      code.binary_search_32(REG2, REG0, REG3, REG7, EQUAL_MATCH);
-      code.branch_eq_null(REG7, LABEL0);
-      code.branch_ne_const(REG7, 6, LABEL0);
-
-      code.load_const_u16(REG2, 15);
-      code.binary_search_32(REG2, REG0, REG3, REG7, EQUAL_MATCH);
-      code.branch_eq_null(REG7, LABEL0);
-      code.branch_ne_const(REG7, 7, LABEL0);
-
-      code.load_const_u16(REG2, 0);
-      code.binary_search_32(REG2, REG0, REG3, REG7, EQUAL_MATCH);
-      code.branch_ne_null(REG7, LABEL0);
-
-      code.load_const_u16(REG2, 3);
-      code.binary_search_32(REG2, REG0, REG3, REG7, EQUAL_MATCH);
-      code.branch_ne_null(REG7, LABEL0);
-
-      code.load_const_u16(REG2, 4);
-      code.binary_search_32(REG2, REG0, REG3, REG7, EQUAL_MATCH);
-      code.branch_ne_null(REG7, LABEL0);
-
-      code.load_const_u16(REG2, 6);
-      code.binary_search_32(REG2, REG0, REG3, REG7, EQUAL_MATCH);
-      code.branch_ne_null(REG7, LABEL0);
-
-      code.load_const_u16(REG2, 8);
-      code.binary_search_32(REG2, REG0, REG3, REG7, EQUAL_MATCH);
-      code.branch_ne_null(REG7, LABEL0);
-
-      code.load_const_u16(REG2, 11);
-      code.binary_search_32(REG2, REG0, REG3, REG7, EQUAL_MATCH);
-      code.branch_ne_null(REG7, LABEL0);
-
-      code.load_const_u16(REG2, 14);
-      code.binary_search_32(REG2, REG0, REG3, REG7, EQUAL_MATCH);
-      code.branch_ne_null(REG7, LABEL0);
-
-      code.load_const_u16(REG2, 16);
-      code.binary_search_32(REG2, REG0, REG3, REG7, EQUAL_MATCH);
-      code.branch_ne_null(REG7, LABEL0);
-
-      code.load_const_u16(REG2, 2000000);
-      code.binary_search_32(REG2, REG0, REG3, REG7, EQUAL_MATCH);
-      code.branch_ne_null(REG7, LABEL0);
-
+      for (Uint32 val = 0; val < 18; val++) {
+        Uint32 expected_val = out_val_exact[val];
+        code.load_const_u16(REG2, val);
+        code.binary_search_32(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+        if (expected_val != RET_NULL) {
+          code.branch_eq_null(REG7, LABEL0);
+          code.branch_ne_const(REG7, expected_val, LABEL0);
+        } else {
+          code.branch_ne_null(REG7, LABEL0);
+        }
+      }
       code.interpret_exit_ok();
       code.def_label(LABEL0);
       code.interpret_exit_nok(6000);
@@ -752,85 +637,75 @@ runInterpreterLibraryTest(NDBT_Context* ctx, NDBT_Step* step)
       CHK3(ret_code);
     } else if (i == 2) {
       code.load_const_u16(REG0, 0);
-      code.load_const_mem(REG0, REG1, 8 * 2, (const char*)&a16[0]);
+      code.load_const_mem(REG0, REG1, 2 * 8, (const char*)&a16[0]);
       code.load_const_u16(REG3, 8);
 
-      code.load_const_u16(REG2, 1);
-      code.binary_search_16(REG2, REG0, REG3, REG7, EQUAL_MATCH);
-      code.branch_eq_null(REG7, LABEL0);
-      code.branch_ne_const(REG7, 0, LABEL0);
-
-      code.load_const_u16(REG2, 2);
-      code.binary_search_16(REG2, REG0, REG3, REG7, EQUAL_MATCH);
-      code.branch_eq_null(REG7, LABEL0);
-      code.branch_ne_const(REG7, 1, LABEL0);
-
-      code.load_const_u16(REG2, 5);
-      code.binary_search_16(REG2, REG0, REG3, REG7, EQUAL_MATCH);
-      code.branch_eq_null(REG7, LABEL0);
-      code.branch_ne_const(REG7, 2, LABEL0);
-
-      code.load_const_u16(REG2, 7);
-      code.binary_search_16(REG2, REG0, REG3, REG7, EQUAL_MATCH);
-      code.branch_eq_null(REG7, LABEL0);
-      code.branch_ne_const(REG7, 4, LABEL0);
-
-      code.load_const_u16(REG2, 12);
-      code.binary_search_16(REG2, REG0, REG3, REG7, EQUAL_MATCH);
-      code.branch_eq_null(REG7, LABEL0);
-      code.branch_ne_const(REG7, 5, LABEL0);
-
-      code.load_const_u16(REG2, 13);
-      code.binary_search_16(REG2, REG0, REG3, REG7, EQUAL_MATCH);
-      code.branch_eq_null(REG7, LABEL0);
-      code.branch_ne_const(REG7, 6, LABEL0);
-
-      code.load_const_u16(REG2, 15);
-      code.binary_search_16(REG2, REG0, REG3, REG7, EQUAL_MATCH);
-      code.branch_eq_null(REG7, LABEL0);
-      code.branch_ne_const(REG7, 7, LABEL0);
-
-      code.load_const_u16(REG2, 0);
-      code.binary_search_16(REG2, REG0, REG3, REG7, EQUAL_MATCH);
-      code.branch_ne_null(REG7, LABEL0);
-
-      code.load_const_u16(REG2, 3);
-      code.binary_search_16(REG2, REG0, REG3, REG7, EQUAL_MATCH);
-      code.branch_ne_null(REG7, LABEL0);
-
-      code.load_const_u16(REG2, 4);
-      code.binary_search_16(REG2, REG0, REG3, REG7, EQUAL_MATCH);
-      code.branch_ne_null(REG7, LABEL0);
-
-      code.load_const_u16(REG2, 6);
-      code.binary_search_16(REG2, REG0, REG3, REG7, EQUAL_MATCH);
-      code.branch_ne_null(REG7, LABEL0);
-
-      code.load_const_u16(REG2, 8);
-      code.binary_search_16(REG2, REG0, REG3, REG7, EQUAL_MATCH);
-      code.branch_ne_null(REG7, LABEL0);
-
-      code.load_const_u16(REG2, 11);
-      code.binary_search_16(REG2, REG0, REG3, REG7, EQUAL_MATCH);
-      code.branch_ne_null(REG7, LABEL0);
-
-      code.load_const_u16(REG2, 14);
-      code.binary_search_16(REG2, REG0, REG3, REG7, EQUAL_MATCH);
-      code.branch_ne_null(REG7, LABEL0);
-
-      code.load_const_u16(REG2, 16);
-      code.binary_search_16(REG2, REG0, REG3, REG7, EQUAL_MATCH);
-      code.branch_ne_null(REG7, LABEL0);
-
-      code.load_const_u16(REG2, 2000000);
-      code.binary_search_16(REG2, REG0, REG3, REG7, EQUAL_MATCH);
-      code.branch_ne_null(REG7, LABEL0);
-
+      for (Uint32 val = 0; val < 18; val++) {
+        Uint32 expected_val = out_val_exact[val];
+        code.load_const_u16(REG2, val);
+        code.binary_search_16(REG2, REG0, REG3, REG7, EQUAL_MATCH);
+        if (expected_val != RET_NULL) {
+          code.branch_eq_null(REG7, LABEL0);
+          code.branch_ne_const(REG7, expected_val, LABEL0);
+        } else {
+          code.branch_ne_null(REG7, LABEL0);
+        }
+      }
       code.interpret_exit_ok();
       code.def_label(LABEL0);
       code.interpret_exit_nok(6000);
       ret_code = code.finalise();
       CHK3(ret_code);
+    } else if (i >= 3 && i <= 5)  {
+      Uint32 number_size = 0;
+      Uint32 number_size_in = 0;
+      const char *number_ptr = nullptr;
+      switch (i) {
+        case 3: {
+          number_size = 3;
+          number_size_in = 4;
+          number_ptr = (const char*)&a32[0];
+          break;
+        }
+        case 4: {
+          number_size = 5;
+          number_size_in = 8;
+          number_ptr = (const char*)&a64[0];
+          break;
+        }
+        case 5: {
+          number_size = 6;
+          number_size_in = 8;
+          number_ptr = (const char*)&a64[0];
+          break;
+        }
+        default: {
+          require(false);
+          break;
+        }
+      }
+      code.load_const_u16(REG0, 0);
+      code.load_const_mem(REG0, REG1, number_size_in * 8, number_ptr);
+      code.load_const_u16(REG3, 8);
+      code.load_const_u16(REG1, number_size_in);
+      code.load_const_u16(REG2, number_size);
+      code.compress_num_array(REG0, REG3, number_size_in, number_size);
+
+      for (Uint32 val = 0; val < 18; val++) {
+        Uint32 expected_val = out_val_exact[val];
+        code.load_const_u16(REG2, val);
+        code.binary_search_odd(REG2, REG0, REG3, REG7, EQUAL_MATCH, number_size);
+        if (expected_val != RET_NULL) {
+          code.branch_eq_null(REG7, LABEL0);
+          code.branch_ne_const(REG7, expected_val, LABEL0);
+        } else {
+          code.branch_ne_null(REG7, LABEL0);
+        }
+      }
+      code.interpret_exit_ok();
+      code.def_label(LABEL0);
+      code.interpret_exit_nok(6000);
+      ret_code = code.finalise();
     }
     NdbOperation::OperationOptions opts;
     std::memset(&opts, 0, sizeof(opts));

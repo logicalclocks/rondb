@@ -702,8 +702,8 @@ static void compress_num32_array(char *memory_ptr,
     case 3: {
       for (size_t i = 0; i < elems; i++) {
         Uint32 val = 0;
-        memcpy(&val, memory_ptr + (4 * elems), 4);
-        int3store(memory_ptr + (3 * elems), (uint)val);
+        memcpy(&val, memory_ptr + (4 * i), 4);
+        int3store(memory_ptr + (3 * i), (uint)val);
       }
       return;
     }
@@ -721,16 +721,16 @@ static void compress_num64_array(char *memory_ptr,
     case 5: {
       for (size_t i = 0; i < elems; i++) {
         Uint64 val = 0;
-        memcpy(&val, memory_ptr + (8 * elems), 8);
-        int5store(memory_ptr + (5 * elems), (ulonglong)val);
+        memcpy(&val, memory_ptr + (8 * i), 8);
+        int5store(memory_ptr + (5 * i), (ulonglong)val);
       }
       return;
     }
     case 6: {
       for (size_t i = 0; i < elems; i++) {
         Uint64 val = 0;
-        memcpy(&val, memory_ptr + (8 * elems), 8);
-        int5store(memory_ptr + (6 * elems), (ulonglong)val);
+        memcpy(&val, memory_ptr + (8 * i), 8);
+        int6store(memory_ptr + (6 * i), (ulonglong)val);
       }
       return;
     }
@@ -8066,6 +8066,17 @@ int Dbtup::interpreterNextLab(Signal* signal,
           }
           Uint64 ordinal = Uint64(Tordinal);
           Uint32 ret;
+#ifdef TRACE_INTERPRETER
+          g_eventLogger->info("theInstruction: %x, TexactMatch: %u, "
+                              "Tordinal: %llu, Toffset: %lld, TnumElems: %lld, "
+                              "TnumberSize: %u",
+           theInstruction,
+           TexactMatch,
+           Tordinal,
+           Toffset,
+           TnumElems,
+           TnumberSize);
+#endif
           switch (TexactMatch) {
           case EQUAL_MATCH: {
             ret = binary_odd_search_exact(ordinal,
@@ -8186,7 +8197,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
           Int64 TnumElems = *(Int64*)(TregMemBuffer + TnumElemsRegister + 2);
           Uint32 TregnumElemsType = TregMemBuffer[TnumElemsRegister];
 
-          Uint32 TnumberSize = Interpreter::enum5(theInstruction) << 2;
+          Uint32 TnumberSize = Interpreter::enum5(theInstruction);
 
           if (unlikely((TregoffsetType == NULL_INDICATOR) ||
                        (TregnumElemsType == NULL_INDICATOR))) {
@@ -8233,16 +8244,26 @@ int Dbtup::interpreterNextLab(Signal* signal,
           Int64 TnumElems = *(Int64*)(TregMemBuffer + TnumElemsRegister + 2);
           Uint32 TregnumElemsType = TregMemBuffer[TnumElemsRegister];
 
-          Uint32 TnumberSizeIn = Interpreter::enum5(theInstruction) << 2;
-          Uint32 TnumberSizeOut = Interpreter::enum6(theInstruction) << 2;
+          Uint32 TnumberSizeIn = Interpreter::enum5(theInstruction);
+          Uint32 TnumberSizeOut = Interpreter::enum6(theInstruction);
 
+#ifdef TRACE_INTERPRETER
+          g_eventLogger->info("Toffset: %lld, TnumElems: %lld, "
+                              "TnumberSizeIn: %u, TnumberSizeOut: %u, "
+                              "theInstruction: %x",
+            Toffset,
+            TnumElems,
+            TnumberSizeIn,
+            TnumberSizeOut,
+            theInstruction);
+#endif
           if (unlikely((TregoffsetType == NULL_INDICATOR) ||
                        (TregnumElemsType == NULL_INDICATOR))) {
             return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
           }
           if (Toffset < 0 ||
               TnumElems < 0 ||
-              (Toffset + (TnumberSizeIn * TnumElems)) < MAX_HEAP_OFFSET) {
+              (Toffset + (TnumberSizeIn * TnumElems)) > MAX_HEAP_OFFSET) {
             return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
           }
           if (!((TnumberSizeIn == 4 && TnumberSizeOut == 3) ||
