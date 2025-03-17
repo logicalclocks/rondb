@@ -589,8 +589,14 @@ runInterpreterLibraryTest(NDBT_Context* ctx, NDBT_Step* step)
   Uint32 out_val_smaller_equal[18] = {
     RET_NULL, 0, 1, 1, 1, 2, 3, 4, 4, 4,
     4, 4, 5, 6, 6, 7, 7, 7 };
+  Uint32 out_val_larger[18] = {
+    0, 1, 2, 2, 2, 4, 4, 5, 5, 5,
+    5, 5, 6, 7, 7, 8, 8, 8 };
+  Uint32 out_val_larger_equal[18] = {
+    0, 0, 1, 2, 2, 3, 4, 4, 5, 5,
+    5, 5, 5, 6, 7, 7, 8, 8 };
 
-  for (Uint32 i = 0; i < 18; i++) {
+  for (Uint32 i = 0; i < 30; i++) {
     ndbout << "i = " << i << endl;
     NdbTransaction* pTrans = pNdb->startTransaction();
     CHK_RET_FAILED(pTrans != 0, pNdb);
@@ -601,7 +607,7 @@ runInterpreterLibraryTest(NDBT_Context* ctx, NDBT_Step* step)
     int ret_code = 0;
     code.load_const_u16(REG0, 0);
     code.load_const_u16(REG3, 8);
-    if (i == 0 || i == 6 || i == 12) {
+    if (i == 0 || i == 6 || i == 12 || i == 18 || i == 24) {
       code.load_const_mem(REG0, REG1, 8 * 8, (const char*)&a64[0]);
       code.qsort_instr(REG0, REG3, 8);
 
@@ -618,6 +624,12 @@ runInterpreterLibraryTest(NDBT_Context* ctx, NDBT_Step* step)
         } else if (i == 12) {
           expected_val = out_val_smaller_equal[val];
           search_type = SMALLER_EQUAL_MATCH;
+        } else if (i == 18) {
+          expected_val = out_val_larger[val];
+          search_type = LARGER_MATCH;
+        } else if (i == 24) {
+          expected_val = out_val_larger_equal[val];
+          search_type = LARGER_EQUAL_MATCH;
         }
         code.binary_search_64(REG2, REG0, REG3, REG7, search_type);
         if (expected_val != RET_NULL) {
@@ -627,7 +639,7 @@ runInterpreterLibraryTest(NDBT_Context* ctx, NDBT_Step* step)
           code.branch_ne_null(REG7, LABEL0);
         }
       }
-    } else if (i == 1 || i == 7 || i == 13) {
+    } else if (i == 1 || i == 7 || i == 13 || i == 19 || i == 25) {
       code.load_const_mem(REG0, REG1, 4 * 8, (const char*)&a32[0]);
       code.qsort_instr(REG0, REG3, 4);
 
@@ -644,6 +656,12 @@ runInterpreterLibraryTest(NDBT_Context* ctx, NDBT_Step* step)
         } else if (i == 13) {
           expected_val = out_val_smaller_equal[val];
           search_type = SMALLER_EQUAL_MATCH;
+        } else if (i == 19) {
+          expected_val = out_val_larger[val];
+          search_type = LARGER_MATCH;
+        } else if (i == 25) {
+          expected_val = out_val_larger_equal[val];
+          search_type = LARGER_EQUAL_MATCH;
         }
         code.binary_search_32(REG2, REG0, REG3, REG7, search_type);
         if (expected_val != RET_NULL) {
@@ -653,7 +671,7 @@ runInterpreterLibraryTest(NDBT_Context* ctx, NDBT_Step* step)
           code.branch_ne_null(REG7, LABEL0);
         }
       }
-    } else if (i == 2 || i == 8 || i == 14) {
+    } else if (i == 2 || i == 8 || i == 14 || i == 20 || i == 26) {
       code.load_const_mem(REG0, REG1, 2 * 8, (const char*)&a16[0]);
       code.qsort_instr(REG0, REG3, 2);
 
@@ -670,6 +688,12 @@ runInterpreterLibraryTest(NDBT_Context* ctx, NDBT_Step* step)
         } else if (i == 14) {
           expected_val = out_val_smaller_equal[val];
           search_type = SMALLER_EQUAL_MATCH;
+        } else if (i == 20) {
+          expected_val = out_val_larger[val];
+          search_type = LARGER_MATCH;
+        } else if (i == 26) {
+          expected_val = out_val_larger_equal[val];
+          search_type = LARGER_EQUAL_MATCH;
         }
         code.binary_search_16(REG2, REG0, REG3, REG7, search_type);
         if (expected_val != RET_NULL) {
@@ -681,7 +705,9 @@ runInterpreterLibraryTest(NDBT_Context* ctx, NDBT_Step* step)
       }
     } else if ((i >= 3 && i <= 5) ||
                (i >= 9 && i <= 11) ||
-               (i >= 15 && i <= 17))  {
+               (i >= 15 && i <= 17) ||
+               (i >= 21 && i <= 23) ||
+               (i >= 27 && i <= 29))  {
       Uint32 number_size = 0;
       Uint32 number_size_in = 0;
       const char *number_ptr = nullptr;
@@ -689,6 +715,8 @@ runInterpreterLibraryTest(NDBT_Context* ctx, NDBT_Step* step)
         case 3:
         case 9:
         case 15:
+        case 21:
+        case 27:
         {
           number_size = 3;
           number_size_in = 4;
@@ -698,6 +726,8 @@ runInterpreterLibraryTest(NDBT_Context* ctx, NDBT_Step* step)
         case 4:
         case 10:
         case 16:
+        case 22:
+        case 28:
         {
           number_size = 5;
           number_size_in = 8;
@@ -707,6 +737,8 @@ runInterpreterLibraryTest(NDBT_Context* ctx, NDBT_Step* step)
         case 5:
         case 11:
         case 17:
+        case 23:
+        case 29:
         {
           number_size = 6;
           number_size_in = 8;
@@ -737,6 +769,12 @@ runInterpreterLibraryTest(NDBT_Context* ctx, NDBT_Step* step)
         } else if ((i == 15 || i == 16 || i == 17)) {
           expected_val = out_val_smaller_equal[val];
           search_type = SMALLER_EQUAL_MATCH;
+        } else if ((i == 21) || (i == 22) || (i == 23)) {
+          expected_val = out_val_larger[val];
+          search_type = LARGER_MATCH;
+        } else if ((i == 27) || (i == 28) || (i == 29)) {
+          expected_val = out_val_larger_equal[val];
+          search_type = LARGER_EQUAL_MATCH;
         }
         code.binary_search_odd(
           REG2, REG0, REG3, REG7, search_type, number_size);

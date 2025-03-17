@@ -242,11 +242,9 @@ static Uint32 binary_uint64_search_larger(Uint64 test_ordinal,
     memcpy(&value, memory_ptr + test_position, 8);
     if (value == test_ordinal) {
       return end - 1;
-    } else {
-      if (end == num_elems) return RET_NULL;
     }
   }
-  return end - 1;
+  return end;
 }
 
 static Uint32 binary_uint32_search_exact(Uint32 test_ordinal,
@@ -330,16 +328,14 @@ static Uint32 binary_uint32_search_larger(Uint32 test_ordinal,
       start = mid_point + 1;
     }
   }
-  if (not_include_equal == ZTRUE && end > 0) {
+  if (not_include_equal && end > 0) {
     test_position = (end - 1) * 4;
     memcpy(&value, memory_ptr + test_position, 4);
     if (value == test_ordinal) {
       return end - 1;
-    } else {
-      if (end == num_elems) return RET_NULL;
     }
   }
-  return end - 1;
+  return end;
 }
 
 Uint32 binary_uint16_search_exact(Uint16 test_ordinal,
@@ -423,16 +419,14 @@ static Uint32 binary_uint16_search_larger(Uint16 test_ordinal,
       start = mid_point + 1;
     }
   }
-  if (not_include_equal == ZTRUE && end > 0) {
+  if (not_include_equal && end > 0) {
     test_position = (end - 1) * 2;
     memcpy(&value, memory_ptr + test_position, 2);
     if (value == test_ordinal) {
       return end - 1;
-    } else {
-      if (end == num_elems) return RET_NULL;
     }
   }
-  return end - 1;
+  return end;
 }
 
 static Uint32 binary_odd_search_exact(Uint64 test_ordinal,
@@ -558,7 +552,7 @@ static Uint32 binary_odd_search_smaller(Uint64 test_ordinal,
       end = mid_point;
     }
   }
-  if (not_include_equal == ZTRUE) {
+  if (not_include_equal) {
     test_position = start * number_size;
     const uchar *number_ptr = (const uchar*)(memory_ptr + test_position);
     switch (number_size) {
@@ -640,7 +634,7 @@ static Uint32 binary_odd_search_larger(Uint64 test_ordinal,
       start = mid_point + 1;
     }
   }
-  if (not_include_equal) {
+  if (not_include_equal && end > 0) {
     test_position = (end - 1) * number_size;
     const uchar *number_ptr = (const uchar*)(memory_ptr + test_position);
     switch (number_size) {
@@ -667,12 +661,11 @@ static Uint32 binary_odd_search_larger(Uint64 test_ordinal,
         return RET_NULL;
       }
     }
-    if (value != test_ordinal) {
-      if (start == (num_elems - 1)) return RET_NULL;
-      else return end;
+    if (value == test_ordinal) {
+      return end - 1;
     }
   }
-  return end - 1;
+  return end;
 }
 
 static Uint32 string_search(const char *search_string,
