@@ -101,11 +101,11 @@ IF(MY_COMPILER_IS_CLANG)
     # require clang-11 or later when enabling -Wdocumentation to workaround
     #
     # https://bugs.llvm.org/show_bug.cgi?id=38905
-    #MY_ADD_C_WARNING_FLAG("Wdocumentation")
+    MY_ADD_C_WARNING_FLAG("Wno-documentation")
 
     # -Wdocumentation enables -Wdocumentation-deprecated-sync
     # which currently raises to many warnings
-    #MY_ADD_C_WARNING_FLAG("Wno-documentation-deprecated-sync")
+    MY_ADD_C_WARNING_FLAG("Wno-documentation-deprecated-sync")
   ENDIF()
 
   # Disable a few default Clang++ warnings

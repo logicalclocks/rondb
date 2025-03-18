@@ -146,8 +146,8 @@
   } while (0)
 #endif
 
-#define TRACE_INTERPRETER
-#define TRACE_INTERPRETER_REGISTERS
+//#define TRACE_INTERPRETER
+//#define TRACE_INTERPRETER_REGISTERS
 
 #define RET_NULL Uint32(~0)
 #define EQUAL_MATCH 0
