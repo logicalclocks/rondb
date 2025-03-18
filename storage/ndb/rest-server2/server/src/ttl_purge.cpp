@@ -1606,7 +1606,9 @@ retry_trx:
       worker_ndb_->closeTransaction(trans);
       trans = nullptr;
       log_buf += " Purged " + std::to_string(deletedRows) + " rows";
+#ifdef DEBUG_EVENT
       g_eventLogger->info("%s", log_buf.c_str());
+#endif
       end_time = my_micro_time();
 
       iter->second.batch_size = AdjustBatchSize(iter->second.batch_size,
@@ -1830,7 +1832,9 @@ bool TTLPurger::GetShard(Int32* shard, Int32* n_purge_nodes,
               "/" + std::to_string(n_nodes) + "]");
   log_buf += (", Active purging nodes: " + active_nodes);
   log_buf += (", Inactive purging nodes: " + inactive_nodes);
+#ifdef DEBUG_EVENT
   g_eventLogger->info("%s", log_buf.c_str());
+#endif
   return true;
 
 err:

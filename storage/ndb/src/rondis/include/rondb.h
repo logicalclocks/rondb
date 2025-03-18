@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2024, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -31,15 +31,34 @@
 #ifndef RONDIS_RONDB_H
 #define RONDIS_RONDB_H
 
+#define MAX_NUM_DATABASES 16
 extern std::vector<Ndb *> ndb_objects;
 
 int initialize_ndb_objects(const char *connect_string, int num_ndb_objects);
 
 int setup_rondb(const char *connect_string, int num_ndb_objects);
 
+int setup_ndb_connection_for_rondis(
+ void* (*get_ndb_object_func_ptr)(int),
+ void (*return_ndb_object_func_ptr)(void*, int),
+ void (*exit_func)(void),
+ void* (*start_cmd_func_ptr)(void),
+ void (*end_cmd_func_ptr)(void*),
+ Uint32 first_thread_id,
+ int num_threads,
+ Uint32 *database_index,
+ Uint32 num_databases,
+ bool *dirty_incr_decr_flag,
+ bool *opt_small_values_flag);
+
 void rondb_end();
 
 int rondb_redis_handler(const pink::RedisCmdArgsType &argv,
                         std::string *response,
                         int fd);
+
+void set_current_database(int index, Uint32 database_index);
+Uint32 get_current_database(int worker_id);
+bool get_dirty_incr_decr_flag(int worker_id);
+bool get_opt_small_values_flag(int worker_id);
 #endif

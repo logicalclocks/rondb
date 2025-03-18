@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2007, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2024, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -237,11 +237,6 @@ class NdbInterpretedCode {
    * to a variable sized column, it can also be used in
    * any other way by the interpreted program.
    *
-   * The memory needs to be aligned on 32-bit boundary.
-   * The size is the size in bytes however. The last bytes
-   * in the last word will be zero-filled if not a multiple
-   * of 4 bytes is sent.
-   *
    * The RegMemoryOffset contains the memory offset where
    * this memory will be saved in the interpreter.
    * The RegDestSize is the register where the size of the
@@ -253,7 +248,12 @@ class NdbInterpretedCode {
   int load_const_mem(Uint32 RegMemoryOffset,
                      Uint32 RegDestSize,
                      Uint16 SizeConstant,
-                     Uint32 *const_memory);
+                     const char *const_memory);
+  /**
+   * bzero writes zeroes into the memory starting at the offset in
+   * RegMemoryOffset and copies RegSize bytes of zeroes.
+   */
+  int bzero(Uint32 RegMemoryOffset, Uint32 RegSize);
 
   /* Register to / from table attribute load and store
    * -------------------------------------------------
@@ -331,11 +331,17 @@ class NdbInterpretedCode {
    * RonDB internals. When we update a column we use a method called
    * updateAttributes. This method can update one or more columns in
    * a loop. Appending to a column uses a special format that requires
-   * 8 bytes of header information. The first 32 bytes have a pseudo
+   * 8 bytes of header information. The first 32 bits have a pseudo
    * column id for append column in the lower 16 bits and have the size
    * in the upper 16 bits. In this case the size would be the full size,
    * thus 15 + 2 = 17. The second 32 bits contains the attribute id of
    * the column to be updated.
+   *
+   * Since append_from_mem requires a header the RegMemoryOffset should
+   * start at e.g. position 0, then the little-endian length bytes should
+   * be in position 8 and 9 (with 2 length bytes). Thus the actual data to
+   * append should start in position 10 if the RegMemoryOffset is 0.
+   * RegSize is the size of the data plus the length bytes.
    *
    * write_partial_from_mem
    * ----------------------
@@ -359,6 +365,33 @@ class NdbInterpretedCode {
    * log as a write_partial_from_mem since this is idempotent and
    * can be executed multiple times with the same result which isn't
    * true for append.
+   *
+   * RegMemoryOffset is the starting address of the memory used in the
+   * write_partial_from_mem. This is often 0, but can be any address
+   * in the memory.
+   *
+   * RegSize is the size of the data partially written plus the number
+   * of length bytes.
+   *
+   * RegStartPos is the starting offset in the column, this should never
+   * be smaller than the length bytes since these are included in the
+   * startPos.
+   *
+   * Thus a normal write_partial_from_mem will use RegMemoryOffset = 0,
+   * next ensure that you use write_size_mem to position 8. Partial writes
+   * need 2 words to describe the write internally and thus the memory
+   * should have 2 unused words from 0. Thus the starting address of the
+   * actual data partially written is 10 with 2 length bytes.
+   *
+   * 1) Load constants 0, 8 and 10 into 3 registers.
+   *
+   * So the preparation for this instruction one need the following:
+   * load_const_mem from memory into interpreter memory at position 10.
+   * write_size_mem to position 8 the actual partial write length not
+   * including the length bytes.
+   * Finally call write_partial_from_mem with RegStartPos set to the
+   * place where the partial write should start including the length
+   * bytes.
    *
    * write_from_mem
    * --------------
@@ -546,6 +579,7 @@ class NdbInterpretedCode {
    * @return 0 if successful, -1 otherwise
    */
   int write_interpreter_output(Uint32 RegValue, Uint32 outputIndex);
+  int read_interpreter_input(Uint32 RegValue, Uint32 inputIndex);
   int convert_size(Uint32 RegSizeDest, Uint32 RegOffset);
   int write_size_mem(Uint32 RegSize, Uint32 RegOffset);
   int read_uint8_to_reg_const(Uint32 RegDest, Uint32 memory_offset);
@@ -581,6 +615,123 @@ class NdbInterpretedCode {
    */
   int str_to_int64(Uint32 RegDestValue, Uint32 RegOffset, Uint32 RegSize);
   int int64_to_str(Uint32 RegDestSize, Uint32 RegOffset, Uint32 RegValue);
+
+  /**
+   * binary_search methods
+   * ---------------------
+   * Input:
+   *   RegOrdinal:
+   *     The number we are looking for
+   *   RegOffset:
+   *     The offset in memory where sorted Uint64 array is stored
+   *   RegNumElems:
+   *     The number of elements in the array
+   *   SearchType:
+   *     0 means exact match only
+   *     1 means search for nearest that is smaller
+   *       Another name for this is that it is a rank query.
+   *       This query will never return NULL.
+   *     2 means search for nearest that is larger or equal
+   *       This query finds the successor element.
+   *       This query will never return NULL.
+   *     3 means search for nearest that is smaller or equal
+   *     4 means search for nearest that is larger or equal
+   * Output:
+   *   RegResult:
+   *     The position of the found element
+   *     NULL if no element found
+   *
+   * search_interval methods
+   * -----------------------
+   * Same as above, but always using smaller or equal => even number
+   * when SearchType == 0, with SearchType == 1 we use larger or equal.
+   * SearchType == 0 thus treats the numbers as pairs with left end being
+   * closed (included in interval) and the right end being open (not
+   * included in interval).
+   * SearchType == 1 is the opposite with left end being open and right
+   * end being closed.
+   *
+   * In both cases we report a number being part of an interval with the
+   * index of the first number in the interval (0, 2, 4, ..). Not being in
+   * interval returns NULL set in the register.
+   *
+   * Odd methods treat the data as little-endian numbers with odd sizes.
+   */
+  int binary_search_64(Uint32 RegOrdinal,
+                       Uint32 RegOffset,
+                       Uint32 RegNumElems,
+                       Uint32 RegResult,
+                       Uint32 SearchType);
+  int binary_search_32(Uint32 RegOrdinal,
+                       Uint32 RegOffset,
+                       Uint32 RegNumElems,
+                       Uint32 RegResult,
+                       Uint32 SearchType);
+  int binary_search_16(Uint32 RegOrdinal,
+                       Uint32 RegOffset,
+                       Uint32 RegNumElems,
+                       Uint32 RegResult,
+                       Uint32 SearchType);
+  int binary_search_odd(Uint32 RegOrdinal,
+                        Uint32 RegOffset,
+                        Uint32 RegNumElems,
+                        Uint32 RegResult,
+                        Uint32 SearchType,
+                        Uint32 NumberSize);
+  int search_interval_64(Uint32 RegOrdinal,
+                         Uint32 RegOffset,
+                         Uint32 RegNumElems,
+                         Uint32 RegResult,
+                         Uint32 SearchType);
+  int search_interval_32(Uint32 RegOrdinal,
+                         Uint32 RegOffset,
+                         Uint32 RegNumElems,
+                         Uint32 RegResult,
+                         Uint32 SearchType);
+  int search_interval_16(Uint32 RegOrdinal,
+                         Uint32 RegOffset,
+                         Uint32 RegNumElems,
+                         Uint32 RegResult,
+                         Uint32 searchType);
+  int search_interval_odd(Uint32 RegOrdinal,
+                         Uint32 RegOffset,
+                         Uint32 RegNumElems,
+                         Uint32 RegResult,
+                         Uint32 SearchType,
+                         Uint32 NumberSize);
+  /**
+   * string_search
+   * -------------
+   * RegOffsetString: Memory to search
+   * RegStringLen: Length of memory
+   * RegOffsetSearch: Search string
+   * RegSearchLen: Search length
+   * RegResult: NULL if not found, otherwise an even number of interval start
+   */
+  int string_search(Uint32 RegOffsetString,
+                    Uint32 RegStringLen,
+                    Uint32 RegOffsetSearch,
+                    Uint32 RegSearchLen,
+                    Uint32 RegResult);
+  /**
+   * qsort_instr
+   * -----------
+   * Sort the array of numbers stored at RegOffset with RegNumElems elements.
+   * NumberSize is any of 1,2,3,4,5,6, 8 bytes.
+   */
+  int qsort_instr(Uint32 RegOffset, Uint32 RegNumElems, Uint32 NumberSize);
+  /**
+   * compress_num_array
+   * ------------------
+   * Compress 4 byte array of numbers to 3 bytes per number stored in little
+   * endian format or compress a 8 byte array of numbers to 5/6 bytes per
+   * number stored in little-endian format. This works with binary search
+   * methods using odd sizes.
+   */
+  int compress_num_array(Uint32 RegOffset,
+                         Uint32 RegNumElems,
+                         Uint32 NumberSizeIn,
+                         Uint32 NumberSizeOut);
 
   /* Control flow
    * ------------
@@ -1040,10 +1191,12 @@ class NdbInterpretedCode {
   friend class NdbQueryOptionsImpl;
 
   static const Uint32 MaxReg = 8;
+  static const Uint32 MaxEnum = 16;
+  static const Uint32 MaxInputIndex = 16;
   static const Uint32 MaxOutputIndex = 16;
   static const Uint32 MaxBranchConst = 64;
   static const Uint32 MaxLabels = 65535;
-  static const Uint32 MaxSubs =65535;
+  static const Uint32 MaxSubs = 65535;
   static const Uint32 MaxDynamicBufSize = NDB_MAX_SCANFILTER_SIZE_IN_WORDS;
 
   const NdbTableImpl *m_table_impl;
@@ -1139,7 +1292,7 @@ class NdbInterpretedCode {
     BadSubNumber = 4227,
     BadState = 4231,
     BadRegister = 4570,
-    BadOutputIndex = 4563,
+    BadInOutputIndex = 4563,
     BadConstant = 4564
   };
 
@@ -1149,7 +1302,7 @@ class NdbInterpretedCode {
   int add1(Uint32 x1);
   int add2(Uint32 x1, Uint32 x2);
   int add3(Uint32 x1, Uint32 x2, Uint32 x3);
-  int addN(const Uint32 *data, Uint32 length);
+  int addN(const char *data, Uint32 length);
   int addMeta(CodeMetaInfo &info);
 
   int add_branch(Uint32 instruction, Uint32 label);

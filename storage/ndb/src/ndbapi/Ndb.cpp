@@ -756,11 +756,12 @@ NdbTransaction *Ndb::startTransaction(const NdbDictionary::Table *table,
                                  &nodes,
                                  primary_node);
     nodeId = theImpl->select_node(impl, nodes, cnt, primary_node);
-    theImpl->incClientStat(TransStartCount, 1);
 
     NdbTransaction *trans = startTransactionLocal(0, nodeId, 0);
     DBUG_PRINT("exit", ("start trans: %p  transid: 0x%lx", trans,
                         (long)(trans ? trans->getTransactionId() : 0)));
+    if (trans)
+      theImpl->incClientStat(TransStartCount, 1);
     DBUG_RETURN(trans);
   }
   DBUG_RETURN(nullptr);
@@ -773,11 +774,11 @@ NdbTransaction *Ndb::startTransaction(Uint32 nodeId, Uint32 instanceId) {
     theError.code = 0;
     checkFailedNode();
 
-    theImpl->incClientStat(TransStartCount, 1);
-
     NdbTransaction *trans = startTransactionLocal(0, nodeId, instanceId);
     DBUG_PRINT("exit", ("start trans: %p  transid: 0x%lx", trans,
                         (long)(trans ? trans->getTransactionId() : 0)));
+    if (trans)
+      theImpl->incClientStat(TransStartCount, 1);
     DBUG_RETURN(trans);
   }
   DBUG_RETURN(nullptr);
@@ -832,12 +833,12 @@ NdbTransaction *Ndb::startTransaction(const NdbDictionary::Table *table,
     /* TODO : Should call method above rather than duplicate call to
      * startTransactionLocal
      */
-    theImpl->incClientStat(TransStartCount, 1);
-
     {
       NdbTransaction *trans = startTransactionLocal(0, nodeId, 0);
       DBUG_PRINT("exit", ("start trans: %p  transid: 0x%lx", trans,
                           (long)(trans ? trans->getTransactionId() : 0)));
+      if (trans)
+        theImpl->incClientStat(TransStartCount, 1);
       DBUG_RETURN(trans);
     }
   } else {

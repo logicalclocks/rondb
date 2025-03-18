@@ -4,7 +4,7 @@
 // of patent rights can be found in the PATENTS file in the same directory.
 
 /*
-   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2024, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -48,7 +48,10 @@ DispatchThread::DispatchThread(int port,
         queue_limit_(queue_limit) {
   worker_thread_ = new WorkerThread*[work_num_];
   for (int i = 0; i < work_num_; i++) {
-    worker_thread_[i] = new WorkerThread(conn_factory, this, queue_limit, cron_interval);
+    worker_thread_[i] = new WorkerThread(conn_factory,
+                                         this,
+                                         queue_limit,
+                                         cron_interval);
   }
 }
 
@@ -62,7 +65,10 @@ DispatchThread::DispatchThread(const std::string &ip, int port,
         queue_limit_(queue_limit) {
   worker_thread_ = new WorkerThread*[work_num_];
   for (int i = 0; i < work_num_; i++) {
-    worker_thread_[i] = new WorkerThread(conn_factory, this, queue_limit, cron_interval);
+    worker_thread_[i] = new WorkerThread(conn_factory,
+                                         this,
+                                         queue_limit,
+                                         cron_interval);
   }
 }
 
@@ -76,7 +82,10 @@ DispatchThread::DispatchThread(const std::set<std::string>& ips, int port,
         queue_limit_(queue_limit) {
   worker_thread_ = new WorkerThread*[work_num_];
   for (int i = 0; i < work_num_; i++) {
-    worker_thread_[i] = new WorkerThread(conn_factory, this, queue_limit, cron_interval);
+    worker_thread_[i] = new WorkerThread(conn_factory,
+                                         this,
+                                         queue_limit,
+                                         cron_interval);
   }
 }
 
@@ -162,7 +171,8 @@ std::shared_ptr<PinkConn> DispatchThread::MoveConnOut(int fd) {
   return nullptr;
 }
 
-void DispatchThread::MoveConnIn(std::shared_ptr<PinkConn> conn, const NotifyType& type) {
+void DispatchThread::MoveConnIn(std::shared_ptr<PinkConn> conn,
+                                const NotifyType& type) {
   WorkerThread* worker_thread = worker_thread_[last_thread_];
   bool success = worker_thread->MoveConnIn(conn, type, true);
   if (success) {

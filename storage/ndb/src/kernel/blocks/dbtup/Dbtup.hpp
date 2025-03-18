@@ -172,7 +172,7 @@ inline const Uint32 *ALIGN_WORD(const void *ptr) {
 #define ZAPPEND_NULL_ERROR 843
 #define ZLOAD_MEM_TOO_BIG_ERROR 844
 #define ZVALUE_OVERFLOW_OUTPUT_REGISTER 845
-#define ZOUTPUT_INDEX_ERROR 846
+#define ZINPUT_OUTPUT_INDEX_ERROR 846
 #define ZANY_VALUE_OPERATION_ERROR 847
 #define ZLOG_BUFFER_OVERFLOW_ERROR 848
 #define ZLONG_LONG_STRING_TOO_LONG 849
@@ -220,6 +220,10 @@ inline const Uint32 *ALIGN_WORD(const void *ptr) {
 #define ZTOO_MANY_BITS_ERROR 791
 
 #define ZDISK_QUOTA_OVERFLOW_ERROR 929
+#define ZNO_SUCH_BINARY_SEARCH_METHOD 933
+#define ZWRONG_INPUT_TO_BINARY_SEARCH 934
+#define ZNO_SUCH_NUMBER_SIZE_SUPPORTED 935
+#define ZNO_SUCH_SEARCH_INTERVAL_METHOD 936
 
 /*
  * Moz
@@ -3940,7 +3944,8 @@ public:
   Uint32 coutBuffer[ZATTR_BUFFER_SIZE + 16];
   Uint32 cinBuffer[ZATTR_BUFFER_SIZE + 16];
   Uint32 cheapMemory[ZATTR_BUFFER_SIZE + 16];
-  Uint32 c_interpreter_output[AttributeHeader::MaxInterpreterOutputIndex];
+  Uint32 c_interpreter_output[2 * AttributeHeader::MaxInterpreterOutputIndex];
+  Uint64 m_interpreter_input[AttributeHeader::MaxInterpreterInputIndex];
 
   /*
    * In executeTrigger()
@@ -4003,14 +4008,20 @@ public:
 
   static constexpr Uint32 COPY_TUPLE_HEADER32 = 4;
 
-  Tuple_header* alloc_copy_tuple(const Tablerec* tabPtrP, Local_key* ptr){
+  Tuple_header* alloc_copy_tuple(const Tablerec* tabPtrP,
+                                 Local_key* ptr,
+                                 bool init){
     Uint32 * dst = c_undo_buffer.alloc_copy_tuple(ptr,
                                                   tabPtrP->total_rec_size);
     if (unlikely(dst == 0))
       return nullptr;
+    if (init) {
+      std::memset(dst, 0, tabPtrP->total_rec_size);
+    } else {
 #ifdef HAVE_VALGRIND
-    std::memset(dst, 0, tabPtrP->total_rec_size);
+      std::memset(dst, 0, tabPtrP->total_rec_size);
 #endif
+    }
     Uint32 count = tabPtrP->m_no_of_attributes;
     ChangeMask *mask = (ChangeMask *)(dst + COPY_TUPLE_HEADER32);
     mask->m_cols = count;

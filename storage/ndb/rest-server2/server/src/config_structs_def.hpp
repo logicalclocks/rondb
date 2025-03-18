@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
+ * Copyright (c) 2024, 2025, Hopsworks and/or its affiliates.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -51,7 +51,8 @@
  *   define_class_including_dependencies(AllConfigs);
  */
 #include <ndb_types.h>
-#include <common.h>
+#include "common.h"
+#include "rondb.h"
 
 // todo Add docstring for all CM()
 
@@ -100,12 +101,16 @@ CLASS
     "The name of the database, in the form of an integer. The first database is"
     " named 0.")
  CM(bool, fastHcount, FastHCOUNT, false, "Whether to optimize for HCOUNT")
+ CM(bool, optimizeSmallValues, OptimizeSmallValues, true,
+    "Whether to optimize for small values")
  CM(std::string, mode, Mode, "RONDB",
     "Database mode."
     " COMPATIBLE = todo add description."
     " CLUSTER = todo add description."
     " RONDB = todo add description."
     )
+ CM(bool, dirtyIncrDecr, DirtyINCRDECR, false,
+    "Whether to use dirty write for INCR and DECR")
  PROBLEM(mode != "COMPATIBLE" && mode != "CLUSTER" && mode != "RONDB",
          "Invalid rondis database mode")
  CLASSDEFS
@@ -134,9 +139,6 @@ CLASS
     {RondisDatabaseConfig(0)},
     "Database-specific configuration.")
  PROBLEM(serverIP.empty(), "Rondis server IP cannot be empty")
- PROBLEM(serverIP != "0.0.0.0",
-         "Setting rondis server IP to anything else than 0.0.0.0 is not yet"
-         " implemented.")
  PROBLEM(serverPort == 0, "Rondis server port cannot be zero.")
  PROBLEM(numThreads == 0, "Number of rondis threads cannot be zero.")
  PROBLEM(numThreads < RONDIS_MAX_CONNECTIONS,
@@ -144,7 +146,8 @@ CLASS
          TO_STRING_CONSTANT(RONDIS_MAX_CONNECTIONS))
  PROBLEM(numThreads > 991, "Number of rondis threads too high")
  PROBLEM(numDatabases == 0, "Number of rondis databases cannot be zero.")
- PROBLEM(numDatabases > 1000, "Number of rondis databases too high")
+ PROBLEM(numDatabases > MAX_NUM_DATABASES,
+         "Number of rondis databases too high")
  PROBLEM(databases.size() != numDatabases,
          "Rondis.NumDatabases must match the length of Rondis.Databases")
  PROBLEM(value.hasIndexProblem(),

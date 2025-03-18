@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023, 2024 Hopsworks AB
+ * Copyright (C) 2023, 2025 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -212,4 +212,19 @@ RS_Status get_rondb_stats(RonDB_Stats *stats) {
   return RS_OK;
 }
 
+void*
+get_rdrs_ndb_object(int thread_index) {
+  Ndb *ndb_object  = nullptr;
+  (void)rdrsRonDBConnectionPool->GetNdbObject(&ndb_object,
+                                              thread_index);
+  return (void*)ndb_object;
+}
+
+void
+return_rdrs_ndb_object(void *ndb_object, int thread_index) {
+  RS_Status status;
+  rdrsRonDBConnectionPool->ReturnNdbObject((Ndb*)ndb_object,
+                                           &status,
+                                           thread_index);
+}
 CRS_Status CRS_Status::SUCCESS = CRS_Status(HTTP_CODE::SUCCESS);

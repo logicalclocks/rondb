@@ -50,6 +50,7 @@
 #define INCREMENT_VALUE 1
 #define OUTPUT_INDEX_0 0
 #define OUTPUT_INDEX_1 1
+#define OUTPUT_INDEX_2 2
 #define RONDB_KEY_NOT_NULL_ERROR 6000
 
 #define INITIAL_INT_VALUE 1
@@ -66,15 +67,35 @@ int write_hset_key_table(Ndb *ndb,
                          const NdbDictionary::Table *tab,
                          std::string std_key_str,
                          Uint64 & redis_key_id,
-                         std::string *response);
+                         std::string *response,
+                         Uint32 database_id);
 int write_key_row_commit(std::string *response,
                          NdbInterpretedCode &code,
-                         const NdbDictionary::Table *tab);
+                         const NdbDictionary::Table *tab,
+                         KeyStorage *key_store);
 int write_key_row_no_commit(std::string *response,
                             NdbInterpretedCode &code,
                             const NdbDictionary::Table *tab,
-                            Uint64 rondb_key);
+                            KeyStorage *key_store);
 int simple_delete_key_row_code(std::string *response,
                                NdbInterpretedCode &code,
                                const NdbDictionary::Table *tab);
+int simple_write_key_row_setrange(NdbInterpretedCode &code,
+                                  const NdbDictionary::Table *tab,
+                                  KeyStorage *key_store,
+                                  Uint32 start,
+                                  Uint32 end);
+int write_key_row_setrange_int(NdbInterpretedCode &code,
+                               const NdbDictionary::Table *tab,
+                               KeyStorage *key_store,
+                               Uint32 start,
+                               Uint32 end,
+                               Uint64 rondb_key);
+int write_value_row_setrange_int(NdbInterpretedCode &code,
+                                 const NdbDictionary::Table *value_tab,
+                                 Uint32 start_zero_index,
+                                 Uint32 end_zero_index,
+                                 Uint32 start_write_index,
+                                 Uint32 end_write_index,
+                                 const char *start_write_ptr);
 #endif

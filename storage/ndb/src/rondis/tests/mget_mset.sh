@@ -1,5 +1,5 @@
 #!/bin/bash
-#  Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
+#  Copyright (c) 2024, 2025, Hopsworks and/or its affiliates.
 #
 #  This program is free software; you can redistribute it and/or modify
 #  it under the terms of the GNU General Public License, version 2.0,
@@ -42,7 +42,6 @@ EOF
         mset_output=$(redis-cli MSET "$key:0" "$value" "$key:1" "$value")
     fi
 
-    #echo $set_output
     if [[ $mset_output == ERR* ]]; then
         echo "FAIL: Could not MSET $key with given value" >&2
         exit 1

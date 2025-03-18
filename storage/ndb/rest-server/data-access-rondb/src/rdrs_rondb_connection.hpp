@@ -25,6 +25,7 @@
 #include <NdbApi.hpp>
 #include "src/rdrs-dal.h"
 
+
 class RDRSRonDBConnection {
 
  private:

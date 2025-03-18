@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2024, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -25,6 +25,7 @@
 
 #include <ndbapi/NdbApi.hpp>
 #include <ndbapi/Ndb.hpp>
+#include "rondb.h"
 
 #ifndef STRING_TABLE_DEFINITIONS_H
 #define STRING_TABLE_DEFINITIONS_H
@@ -46,8 +47,8 @@
 
 int init_hset_key_records(NdbDictionary::Dictionary *dict);
 
-extern NdbRecord *pk_hset_key_record;
-extern NdbRecord *entire_hset_key_record;
+extern NdbRecord *pk_hset_key_record[MAX_NUM_DATABASES];
+extern NdbRecord *entire_hset_key_record[MAX_NUM_DATABASES];
 
 #define HSET_KEY_TABLE_COL_redis_key "redis_key"
 #define HSET_KEY_TABLE_COL_redis_key_id "redis_key_id"
@@ -67,8 +68,8 @@ struct hset_key_table
 
 int init_key_records(NdbDictionary::Dictionary *dict);
 
-extern NdbRecord *pk_key_record;
-extern NdbRecord *entire_key_record;
+extern NdbRecord *pk_key_record[MAX_NUM_DATABASES];
+extern NdbRecord *entire_key_record[MAX_NUM_DATABASES];
 
 /*
     Doing this instead of reflection; Keep these the same
@@ -106,8 +107,8 @@ struct key_table
 
 int init_value_records(NdbDictionary::Dictionary *dict);
 
-extern NdbRecord *pk_value_record;
-extern NdbRecord *entire_value_record;
+extern NdbRecord *pk_value_record[MAX_NUM_DATABASES];
+extern NdbRecord *entire_value_record[MAX_NUM_DATABASES];
 
 /*
     Doing this instead of reflection; Keep these the same
@@ -120,6 +121,7 @@ extern NdbRecord *entire_value_record;
 
 struct value_table
 {
+    Uint32 null_bits;
     Uint64 rondb_key;
     Uint32 ordinal;
     Int32 expiry_date;
@@ -132,10 +134,11 @@ struct value_table
 
 int init_record(NdbDictionary::Dictionary *dict,
                 const NdbDictionary::Table *tab,
-                std::map<const NdbDictionary::Column *, std::pair<size_t, int>> column_info_map,
+                std::map<const NdbDictionary::Column *,
+                std::pair<size_t, int>> column_info_map,
                 NdbRecord *&record);
 
-int init_string_records(NdbDictionary::Dictionary *dict);
+int init_string_records(NdbDictionary::Dictionary *dict, Uint32 database_id);
 
 enum KeyState {
     /* m_value_size undefined */
@@ -155,12 +158,20 @@ enum KeyState {
     CompletedReadError = 9
 };
 
-#define MAX_PARALLEL_KEY_OPS 100
+#define MAX_PARALLEL_KEY_OPS 1024
 #define MAX_VALUES_TO_WRITE 4
 #define STRING_REDIS_KEY_ID 0
 #define MAX_PARALLEL_VALUE_RWS 2
 #define MAX_OUTSTANDING_BYTES (512 * 1024)
+#define MAX_REDIS_ROW_SIZE (512 * 1024)
 #define DELETE_BYTES 2000
+
+enum SetType {
+  IsWrite = 0,
+  IsInsert = 1,
+  IsUpdate = 2,
+  IsGet = 3
+};
 
 struct GetControl;
 struct KeyStorage {
@@ -168,12 +179,18 @@ struct KeyStorage {
     NdbTransaction *m_trans;
     NdbRecAttr *m_rec_attr_prev_num_rows;
     NdbRecAttr *m_rec_attr_rondb_key;
-    char *m_value_ptr;
+    NdbRecAttr *m_rec_attr_expiry_date;
+    union {
+      char *m_value_ptr;
+      const char *m_const_value_ptr;
+    };
     const char *m_key_str;
     Uint64 m_rondb_key;
     Uint32 m_key_len;
     char m_header_buf[20];
     bool m_close_flag;
+    bool m_keep_ttl;
+    bool m_set_ttl;
     Uint32 m_header_len;
     Uint32 m_index;
     Uint32 m_first_value_row;
@@ -184,10 +201,13 @@ struct KeyStorage {
     Uint32 m_prev_num_rows;
     Int64 m_expire_at;
     union {
-        Uint32 m_value_size;
+        Uint32 m_get_value_size;
         Uint32 m_error_code;
     };
+    Uint32 m_set_value_size;
     enum KeyState m_key_state;
+    enum KeyState m_get_key_state;
+    enum SetType m_set_type;
     struct key_table m_key_row;
     char m_key_buf[16];
 };
@@ -195,6 +215,9 @@ struct KeyStorage {
 class Ndb;
 struct GetControl {
     Ndb *m_ndb;
+    bool m_is_set_command;
+    bool m_get_cmd_part;
+    int m_worker_id;
     struct KeyStorage *m_key_store;
     struct value_table *m_value_rows;
     Uint32 m_next_value_row;
@@ -207,5 +230,6 @@ struct GetControl {
     Uint32 m_num_keys_failed;
     Uint32 m_num_read_errors;
     Uint32 m_error_code;
+    Uint32 m_database_id;
 };
 #endif

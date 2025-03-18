@@ -45,6 +45,9 @@ constexpr const char* const usageHelp =
 #include <NdbMutex.h>
 
 #include "rondis_thread.h"
+#include "rondb.h"
+#include "rdrs_rondb_connection_pool.hpp"
+#include "metrics.hpp"
 
 #include <cstdio>
 #include <iostream>
@@ -68,12 +71,14 @@ static bool g_drogon_running = false;
 static ConnFactory* g_rondis_conn_factory = nullptr;
 static RondisHandle* g_rondis_handle = nullptr;
 static ServerThread* g_rondis_thread = nullptr;
+static Uint32 *g_database_index = nullptr;
 static bool g_rondis_running = false;
 static int g_exit_code = 0;
 static TTLPurger* g_ttl_purger = nullptr;
 NdbMutex *globalConfigsMutex = nullptr;
 
 static void do_exit() {
+  // todo Set shutdown flag in RDRS2 connection pool
   if (g_drogon_running) {
     printf("Quitting Drogon...\n");
     drogon::app().quit();
@@ -82,12 +87,6 @@ static void do_exit() {
   if (jsonParsers != nullptr) {
     delete[] jsonParsers;
     jsonParsers = nullptr;
-  }
-  if (g_pidfile != nullptr) {
-    printf("Removing pidfile %s\n", g_pidfile);
-    if(remove(g_pidfile) != 0) {
-      printf("Failed to remove pidfile %s: %s\n", g_pidfile, strerror(errno));
-    }
   }
   if (g_rondis_running) {
     g_rondis_thread->StopThread();
@@ -120,11 +119,36 @@ static void do_exit() {
   NdbMutex_Destroy(globalConfigsMutex);
   if (g_did_ndb_init)
     ndb_end(0);
+  if (g_pidfile != nullptr) {
+    printf("Removing pidfile %s\n", g_pidfile);
+    if(remove(g_pidfile) != 0) {
+      printf("Failed to remove pidfile %s: %s\n", g_pidfile, strerror(errno));
+    }
+  }
   if (g_exit_code != 0) {
     printf("rdrs2: Exit with code %d.\n", g_exit_code);
   }
+  free(g_database_index);
   exit(g_exit_code);
 }
+
+static void exit_on_rondis_error() {
+  g_exit_code = 1;
+  do_exit();
+}
+
+static void* rondis_start_cmd() {
+  RondisEndPointMetricsUpdater *metricsUpdater =
+    new RondisEndPointMetricsUpdater();
+  return (void*)metricsUpdater;
+}
+
+static void rondis_end_cmd(void *metrics_ptr) {
+  RondisEndPointMetricsUpdater *metricsUpdater =
+    (RondisEndPointMetricsUpdater*)metrics_ptr;
+  delete metricsUpdater;
+}
+
 static void handle_signal(int signal) {
   switch (signal) {
     case SIGHUP:
@@ -152,7 +176,6 @@ static void handle_signal(int signal) {
   }
   do_exit();
 }
-
 
 int main(int argc, char *argv[]) {
   signal(SIGHUP, handle_signal);
@@ -279,10 +302,29 @@ int main(int argc, char *argv[]) {
     do_exit();
   }
 
-  // connect to rondb
+  Uint32 num_rondis_threads = 0;
+  if (globalConfigs.rondis.enable) {
+    num_rondis_threads = globalConfigs.rondis.numThreads;
+  }
+  Uint32 num_rdrs_threads = globalConfigs.rest.numThreads;
+  Uint32 num_purge_threads = RDRSRonDBConnectionPool::kNoTTLPurgeThreads;
+  Uint32 tot_num_threads =
+    num_rdrs_threads + num_rondis_threads + num_purge_threads;
+  /**
+   * The RDRS server, the Rondis server and the TTL purge threads
+   * all share the same cluster connections. The RDRS server can also
+   * use the metadata connection to connect to another cluster.
+   *
+   * The threads maintained in g_rondbConnection are using thread
+   * ranges to map threads to Ndb objects. The first set of Ndb
+   * objects are used by the RDRS server, the next set of Ndb objects
+   * are used by the Rondis server and the last Ndb objects are used
+   * by the TTL purge object.
+   */
+  // connect to rondb for all services
   g_rondbConnection = new RonDBConnection(globalConfigs.ronDB,
                                           globalConfigs.ronDBMetadataCluster,
-                                          globalConfigs.rest.numThreads);
+                                          tot_num_threads);
   if (g_rondbConnection == nullptr) {
     std::cerr << "Failed to allocate memory for RonDB connection.\n";
     g_exit_code = 1;
@@ -297,17 +339,46 @@ int main(int argc, char *argv[]) {
   if (globalConfigs.rondis.enable) {
     g_rondis_conn_factory = new RondisConnFactory();
     g_rondis_handle = new RondisHandle();
-    // todo use globalConfigs.rondis.databases to configure individual databases.
-    // todo let rondis use g_rondbConnection
-    // todo if thread exits on its own accord (without StopThread() called in
-    // do_exit), make sure to set g_rondis_running = false and then call
-    // do_exit().
-    g_rondis_thread = NewDispatchThread(globalConfigs.rondis.serverPort,
+    g_database_index = (Uint32*)malloc(sizeof(Uint32) * num_rondis_threads);
+    memset(g_database_index, 0, sizeof(Uint32) * num_rondis_threads);
+    bool dirty_incr_decr_flag[MAX_NUM_DATABASES];
+    bool opt_small_values_flag[MAX_NUM_DATABASES];
+    memset(&dirty_incr_decr_flag[0], 0, sizeof(dirty_incr_decr_flag));
+    memset(&opt_small_values_flag[0], 0, sizeof(dirty_incr_decr_flag));
+    for (Uint32 i = 0; i < globalConfigs.rondis.numDatabases; i++) {
+      dirty_incr_decr_flag[i] = globalConfigs.rondis.databases[i].dirtyIncrDecr;
+      opt_small_values_flag[i] =
+        globalConfigs.rondis.databases[i].optimizeSmallValues;
+    }
+    printf("Starting %u Rondis databases on %s:%u with %u threads\n",
+      globalConfigs.rondis.numDatabases,
+      globalConfigs.rondis.serverIP.c_str(),
+      globalConfigs.rondis.serverPort,
+      globalConfigs.rondis.numThreads);
+    g_rondis_thread = NewDispatchThread(globalConfigs.rondis.serverIP,
+                                        globalConfigs.rondis.serverPort,
                                         globalConfigs.rondis.numThreads,
                                         g_rondis_conn_factory,
                                         1000,
                                         1000,
                                         g_rondis_handle);
+    int ret_code = setup_ndb_connection_for_rondis(
+      get_rdrs_ndb_object,
+      return_rdrs_ndb_object,
+      exit_on_rondis_error,
+      rondis_start_cmd,
+      rondis_end_cmd,
+      num_rdrs_threads,
+      (int)num_rondis_threads,
+      g_database_index,
+      globalConfigs.rondis.numDatabases,
+      &dirty_incr_decr_flag[0],
+      &opt_small_values_flag[0]);
+    if (ret_code != 0) {
+      printf("Error setting up Rondis Server\n");
+      g_exit_code = 1;
+      do_exit();
+    }
     if (g_rondis_thread->StartThread() != 0)
     {
         printf("Error starting rondis thread\n");
@@ -315,6 +386,10 @@ int main(int argc, char *argv[]) {
         do_exit();
     }
     g_rondis_running = true;
+    printf("Rondis Server running on %s:%u with %u databases\n",
+      globalConfigs.rondis.serverIP.c_str(),
+      globalConfigs.rondis.serverPort,
+      globalConfigs.rondis.numDatabases);
   }
 
   if (globalConfigs.security.tls.enableTLS) {
@@ -343,7 +418,7 @@ int main(int argc, char *argv[]) {
   drogon::app().registerBeginningAdvice([]() {
     auto addresses = drogon::app().getListeners();
     for (auto &address : addresses) {
-      printf("Server running on %s\n", address.toIpPort().c_str());
+      printf("RDRS Server running on %s\n", address.toIpPort().c_str());
     }
   });
   drogon::app().setIntSignalHandler([]() {

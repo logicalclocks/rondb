@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2024, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -41,64 +41,79 @@
  * Create NdbRecord's for all table accesses, they can be reused
  * for all Ndb objects.
  */
-int init_hset_key_records(NdbDictionary::Dictionary *dict)
-{
+int init_hset_key_records(NdbDictionary::Dictionary *dict,
+                          Uint32 database_id) {
     const NdbDictionary::Table *tab = dict->getTable(HSET_KEY_TABLE_NAME);
-    if (tab == nullptr)
-    {
+    if (tab == nullptr) {
         printf("Failed getting Ndb table %s\n", HSET_KEY_TABLE_NAME);
         return -1;
     }
 
-    const NdbDictionary::Column *redis_key_col = tab->getColumn(HSET_KEY_TABLE_COL_redis_key);
-    const NdbDictionary::Column *redis_key_id_col = tab->getColumn(HSET_KEY_TABLE_COL_redis_key_id);
+    const NdbDictionary::Column *redis_key_col =
+      tab->getColumn(HSET_KEY_TABLE_COL_redis_key);
+    const NdbDictionary::Column *redis_key_id_col =
+      tab->getColumn(HSET_KEY_TABLE_COL_redis_key_id);
 
     if (redis_key_col == nullptr ||
-        redis_key_id_col == nullptr)
-    {
-        printf("Failed getting Ndb columns for table %s\n", HSET_KEY_TABLE_NAME);
+        redis_key_id_col == nullptr) {
+        printf("Failed getting Ndb columns for table %s\n",
+          HSET_KEY_TABLE_NAME);
         return -1;
     }
 
-    std::map<const NdbDictionary::Column *, std::pair<size_t, int>> pk_lookup_column_map = {
+    std::map<const NdbDictionary::Column *,
+             std::pair<size_t, int>> pk_lookup_column_map = {
         {redis_key_col, {offsetof(struct hset_key_table, redis_key), 0}},
     };
-    if (init_record(dict, tab, pk_lookup_column_map, pk_hset_key_record) != 0)
-    {
-        printf("Failed creating pk-lookup record for table %s\n", HSET_KEY_TABLE_NAME);
+    if (init_record(dict,
+                    tab,
+                    pk_lookup_column_map,
+                    pk_hset_key_record[database_id]) != 0) {
+        printf("Failed creating pk-lookup record for table %s\n",
+          HSET_KEY_TABLE_NAME);
         return -1;
     }
 
-    std::map<const NdbDictionary::Column *, std::pair<size_t, int>> read_all_column_map = {
-        {redis_key_col, {offsetof(struct key_table, redis_key), 0}},
-        {redis_key_id_col, {offsetof(struct key_table, redis_key_id), 0}},
+    std::map<const NdbDictionary::Column *,
+             std::pair<size_t, int>> read_all_column_map = {
+        {redis_key_col, {offsetof(struct hset_key_table, redis_key), 0}},
+        {redis_key_id_col, {offsetof(struct hset_key_table, redis_key_id), 0}},
     };
-
-    if (init_record(dict, tab, read_all_column_map, entire_hset_key_record) != 0)
-    {
-        printf("Failed creating read-all cols record for table %s\n", HSET_KEY_TABLE_NAME);
+    if (init_record(dict,
+                    tab,
+                    read_all_column_map,
+                    entire_hset_key_record[database_id]) != 0) {
+        printf("Failed creating read-all cols record for table %s\n",
+          HSET_KEY_TABLE_NAME);
         return -1;
     }
     return 0;
 }
 
-int init_key_records(NdbDictionary::Dictionary *dict)
-{
+int init_key_records(NdbDictionary::Dictionary *dict,
+                     Uint32 database_id) {
     const NdbDictionary::Table *tab = dict->getTable(KEY_TABLE_NAME);
-    if (tab == nullptr)
-    {
+    if (tab == nullptr) {
         printf("Failed getting Ndb table %s\n", KEY_TABLE_NAME);
         return -1;
     }
 
-    const NdbDictionary::Column *redis_key_id_col = tab->getColumn(KEY_TABLE_COL_redis_key_id);
-    const NdbDictionary::Column *redis_key_col = tab->getColumn(KEY_TABLE_COL_redis_key);
-    const NdbDictionary::Column *rondb_key_col = tab->getColumn(KEY_TABLE_COL_rondb_key);
-    const NdbDictionary::Column *expiry_date_col = tab->getColumn(KEY_TABLE_COL_expiry_date);
-    const NdbDictionary::Column *value_start_col = tab->getColumn(KEY_TABLE_COL_value_start);
-    const NdbDictionary::Column *tot_value_len_col = tab->getColumn(KEY_TABLE_COL_tot_value_len);
-    const NdbDictionary::Column *num_rows_col = tab->getColumn(KEY_TABLE_COL_num_rows);
-    const NdbDictionary::Column *value_data_type_col = tab->getColumn(KEY_TABLE_COL_value_data_type);
+    const NdbDictionary::Column *redis_key_id_col =
+      tab->getColumn(KEY_TABLE_COL_redis_key_id);
+    const NdbDictionary::Column *redis_key_col =
+      tab->getColumn(KEY_TABLE_COL_redis_key);
+    const NdbDictionary::Column *rondb_key_col =
+      tab->getColumn(KEY_TABLE_COL_rondb_key);
+    const NdbDictionary::Column *expiry_date_col =
+      tab->getColumn(KEY_TABLE_COL_expiry_date);
+    const NdbDictionary::Column *value_start_col =
+      tab->getColumn(KEY_TABLE_COL_value_start);
+    const NdbDictionary::Column *tot_value_len_col =
+      tab->getColumn(KEY_TABLE_COL_tot_value_len);
+    const NdbDictionary::Column *num_rows_col =
+      tab->getColumn(KEY_TABLE_COL_num_rows);
+    const NdbDictionary::Column *value_data_type_col =
+      tab->getColumn(KEY_TABLE_COL_value_data_type);
 
     if (redis_key_col == nullptr ||
         redis_key_id_col == nullptr ||
@@ -107,93 +122,108 @@ int init_key_records(NdbDictionary::Dictionary *dict)
         value_start_col == nullptr ||
         tot_value_len_col == nullptr ||
         num_rows_col == nullptr ||
-        value_data_type_col == nullptr)
-    {
+        value_data_type_col == nullptr) {
         printf("Failed getting Ndb columns for table %s\n", KEY_TABLE_NAME);
         return -1;
     }
 
-    std::map<const NdbDictionary::Column *, std::pair<size_t, int>> pk_lookup_column_map = {
+    std::map<const NdbDictionary::Column *,
+             std::pair<size_t, int>> pk_lookup_column_map = {
         {redis_key_id_col, {offsetof(struct key_table, redis_key_id), 0}},
         {redis_key_col, {offsetof(struct key_table, redis_key), 0}},
     };
-    if (init_record(dict, tab, pk_lookup_column_map, pk_key_record) != 0)
-    {
-        printf("Failed creating pk-lookup record for table %s\n", KEY_TABLE_NAME);
+    if (init_record(dict,
+                    tab,
+                    pk_lookup_column_map,
+                    pk_key_record[database_id]) != 0) {
+        printf("Failed creating pk-lookup record for table %s\n",
+          KEY_TABLE_NAME);
         return -1;
     }
 
-    std::map<const NdbDictionary::Column *, std::pair<size_t, int>> read_all_column_map = {
+    std::map<const NdbDictionary::Column *,
+             std::pair<size_t, int>> read_all_column_map = {
         {redis_key_id_col, {offsetof(struct key_table, redis_key_id), 0}},
         {redis_key_col, {offsetof(struct key_table, redis_key), 0}},
         {rondb_key_col, {offsetof(struct key_table, rondb_key), 0}},
         {expiry_date_col, {offsetof(struct key_table, expiry_date), 1}},
-        {value_start_col, {offsetof(struct key_table, value_start), 0}},
+        {value_data_type_col, {offsetof(struct key_table, value_data_type), 0}},
         {tot_value_len_col, {offsetof(struct key_table, tot_value_len), 0}},
         {num_rows_col, {offsetof(struct key_table, num_rows), 0}},
-        {value_data_type_col, {offsetof(struct key_table, value_data_type), 0}}
+        {value_start_col, {offsetof(struct key_table, value_start), 0}}
     };
 
-    if (init_record(dict, tab, read_all_column_map, entire_key_record) != 0)
-    {
-        printf("Failed creating read-all cols record for table %s\n", KEY_TABLE_NAME);
+    if (init_record(dict,
+                    tab,
+                    read_all_column_map,
+                    entire_key_record[database_id]) != 0) {
+        printf("Failed creating read-all cols record for table %s\n",
+          KEY_TABLE_NAME);
         return -1;
     }
     return 0;
 }
 
-int init_value_records(NdbDictionary::Dictionary *dict)
-{
+int init_value_records(NdbDictionary::Dictionary *dict,
+                       Uint32 database_id) {
     const NdbDictionary::Table *tab = dict->getTable(VALUE_TABLE_NAME);
-    if (tab == nullptr)
-    {
+    if (tab == nullptr) {
         printf("Failed getting Ndb table %s\n", VALUE_TABLE_NAME);
         return -1;
     }
 
-    const NdbDictionary::Column *rondb_key_col = tab->getColumn(VALUE_TABLE_COL_rondb_key);
-    const NdbDictionary::Column *ordinal_col = tab->getColumn(VALUE_TABLE_COL_ordinal);
-    const NdbDictionary::Column *value_col = tab->getColumn(VALUE_TABLE_COL_value);
-    const NdbDictionary::Column *expiry_date_col = tab->getColumn(VALUE_TABLE_COL_expiry_date);
+    const NdbDictionary::Column *rondb_key_col =
+      tab->getColumn(VALUE_TABLE_COL_rondb_key);
+    const NdbDictionary::Column *ordinal_col =
+      tab->getColumn(VALUE_TABLE_COL_ordinal);
+    const NdbDictionary::Column *value_col =
+      tab->getColumn(VALUE_TABLE_COL_value);
+    const NdbDictionary::Column *expiry_date_col =
+      tab->getColumn(VALUE_TABLE_COL_expiry_date);
     if (rondb_key_col == nullptr ||
         ordinal_col == nullptr ||
         expiry_date_col == nullptr ||
-        value_col == nullptr)
-    {
+        value_col == nullptr) {
         printf("Failed getting Ndb columns for table %s\n", VALUE_TABLE_NAME);
         return -1;
     }
 
-    std::map<const NdbDictionary::Column *, std::pair<size_t, int>> pk_lookup_column_map = {
+    std::map<const NdbDictionary::Column *,
+             std::pair<size_t, int>> pk_lookup_column_map = {
         {rondb_key_col, {offsetof(struct value_table, rondb_key), 0}},
         {ordinal_col, {offsetof(struct value_table, ordinal), 0}}};
-
-    if (init_record(dict, tab, pk_lookup_column_map, pk_value_record) != 0)
-    {
-        printf("Failed creating pk-lookup record for table %s\n", VALUE_TABLE_NAME);
+    if (init_record(dict,
+                    tab,
+                    pk_lookup_column_map,
+                    pk_value_record[database_id]) != 0) {
+        printf("Failed creating pk-lookup record for table %s\n",
+          VALUE_TABLE_NAME);
         return -1;
     }
 
-    std::map<const NdbDictionary::Column *, std::pair<size_t, int>> read_all_column_map = {
+    std::map<const NdbDictionary::Column *,
+             std::pair<size_t, int>> read_all_column_map = {
         {rondb_key_col, {offsetof(struct value_table, rondb_key), 0}},
         {ordinal_col, {offsetof(struct value_table, ordinal), 0}},
-        {expiry_date_col, {offsetof(struct value_table, expiry_date), 1}},
+        {expiry_date_col, {offsetof(struct value_table, expiry_date), 0}},
         {value_col, {offsetof(struct value_table, value), 0}}};
 
-    if (init_record(dict, tab, read_all_column_map, entire_value_record) != 0)
-    {
-        printf("Failed creating read-all cols record for table %s\n", VALUE_TABLE_NAME);
+    if (init_record(dict,
+                    tab,
+                    read_all_column_map,
+                    entire_value_record[database_id]) != 0) {
+        printf("Failed creating read-all cols record for table %s\n",
+          VALUE_TABLE_NAME);
         return -1;
     }
-
     return 0;
 }
 
 int init_record(NdbDictionary::Dictionary *dict,
                 const NdbDictionary::Table *tab,
-                std::map<const NdbDictionary::Column *, std::pair<size_t, int>> column_info_map,
-                NdbRecord *&record)
-{
+                std::map<const NdbDictionary::Column *,
+                std::pair<size_t, int>> column_info_map,
+                NdbRecord *&record) {
     // todo maybe avoid malloc
     NdbDictionary::RecordSpecification* col_specs =
         reinterpret_cast<NdbDictionary::RecordSpecification*>(malloc(
@@ -219,19 +249,15 @@ int init_record(NdbDictionary::Dictionary *dict,
     return (record == nullptr) ? -1 : 0;
 }
 
-int init_string_records(NdbDictionary::Dictionary *dict)
-{
-    int res = init_hset_key_records(dict);
-    if (res != 0)
-    {
+int init_string_records(NdbDictionary::Dictionary *dict,
+                        Uint32 database_id) {
+    int res = init_hset_key_records(dict, database_id);
+    if (res != 0) {
         return res;
     }
-
-    res = init_key_records(dict);
-    if (res != 0)
-    {
+    res = init_key_records(dict, database_id);
+    if (res != 0) {
         return res;
     }
-
-    return init_value_records(dict);
+    return init_value_records(dict, database_id);
 }

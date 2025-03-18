@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -44,7 +44,7 @@
 #define JAM_FILE_ID 402
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
-#define DEBUG_DISK 1
+//#define DEBUG_DISK 1
 #endif
 
 #ifdef DEBUG_DISK
@@ -2220,7 +2220,14 @@ int Dbtup::updateAttributes(KeyReqStruct *req_struct,
           return -ZAI_INCONSISTENCY_ERROR;
         }
       }
-
+    } else if ((attributeId >= AttributeHeader::INTERPRETER_INPUT_FIRST) &&
+               (attributeId <= AttributeHeader::INTERPRETER_INPUT_LAST)) {
+      ndbrequire(sz == 2);
+      Uint32 low = *(inBuffer + inBufIndex + 1);
+      Uint32 high = *(inBuffer + inBufIndex + 2);
+      Uint64 val = Uint64(low) + (Uint64(high) << 32);
+      Uint32 id = attributeId - AttributeHeader::INTERPRETER_INPUT_FIRST;
+      m_interpreter_input[id] = val;
     } else {
       thrjam(req_struct->jamBuffer);
       thrjamDataDebug(req_struct->jamBuffer, attributeId);
@@ -2666,7 +2673,7 @@ Dbtup::handle_append_write(KeyReqStruct *req_struct,
       (nullFlagCheck(req_struct, attrDes) == true)) {
 #ifdef TRACE_INTERPRETER
     g_eventLogger->info(
-      "(%u)Partial write, before value was NULL, type: %u",
+      "(%u)Append write, before value was NULL, type: %u",
       req_struct->m_dbtup_ptr->instance(),
       req_struct->partial_size);
 #endif
@@ -2779,7 +2786,7 @@ Dbtup::handle_partial_write(KeyReqStruct *req_struct,
                             Uint32 *size_in_bytes,
                             Uint32 length_bytes) {
   Uint32 startPos = req_struct->start_partial_pos;
-  if (unlikely((startPos + (*size_in_bytes) > max_var_size) ||
+  if (unlikely(((startPos + (*size_in_bytes) - length_bytes) > max_var_size) ||
                ((startPos < length_bytes)))) {
     thrjam(req_struct->jamBuffer);
     req_struct->errorCode = ZAI_INCONSISTENCY_ERROR;
@@ -2821,7 +2828,8 @@ Dbtup::handle_partial_write(KeyReqStruct *req_struct,
                           old_real_dataLen);
 #endif
     }
-    tot_dataLen = startPos + (*size_in_bytes) - length_bytes;
+    /* Start pos includes length bytes and so does size_in_bytes */
+    tot_dataLen = startPos + (*size_in_bytes) - (2 * length_bytes);
     tot_dataLen = MAX(tot_dataLen, old_real_dataLen);
     thrjamData(req_struct->jamBuffer, old_real_dataLen);
     thrjamData(req_struct->jamBuffer, tot_dataLen);
@@ -2845,14 +2853,20 @@ Dbtup::handle_partial_write(KeyReqStruct *req_struct,
 #endif
     }
     if (old_real_dataLen + length_bytes < startPos) {
-      memset(col_ptr + length_bytes,
+#ifdef TRACE_INTERPRETER
+      g_eventLogger->info("(%u) zero from pos %u to %u",
+        req_struct->m_dbtup_ptr->instance(),
+        length_bytes + old_real_dataLen,
+        startPos);
+#endif
+      memset(col_ptr + length_bytes + old_real_dataLen,
              0,
              startPos - (old_real_dataLen + length_bytes));
     }
     char *start_write_pos = (char*)col_ptr + startPos;
     memcpy(start_write_pos,
-           &src[0],
-           (*size_in_bytes));
+           &src[2],
+           (*size_in_bytes) - 2);
   }
   (*size_in_bytes) = tot_dataLen + length_bytes;
   col_ptr[0] = tot_dataLen & 255;
@@ -3454,8 +3468,7 @@ int Dbtup::read_pseudo(const Uint32 *inBuffer, Uint32 inPos,
           attrId <= AttributeHeader::READ_INTERPRETER_OUTPUT_LAST) {
         Uint32 inx = attrId - AttributeHeader::READ_INTERPRETER_OUTPUT_FIRST;
         inx *= 2;
-        outBuffer[1] = c_interpreter_output[inx];
-        outBuffer[2] = c_interpreter_output[inx+1];
+        memcpy(outBuffer + 1, &c_interpreter_output[inx], 8);
         sz = 2;
         break;
       }

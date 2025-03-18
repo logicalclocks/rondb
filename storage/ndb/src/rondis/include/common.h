@@ -61,6 +61,8 @@ Uint32 get_length(char* buf);
 #define FAILED_EXECUTE_DEL "Failed to execute DEL operation"
 #define FAILED_MALLOC "Failed to allocate memory for operation"
 #define FAILED_INCRBY_DECRBY_PARAMETER "Wrong parameter, should be Int64"
+#define FAILED_SELECT_COMMAND "Wrong parameter to SELECT command"
+#define FAILLED_SELECT_NO_SUCH_DATABASE "The database selected doesn't exist"
 
 // Redis errors
 #define REDIS_UNKNOWN_COMMAND "unknown command '%s'"
@@ -68,5 +70,5 @@ Uint32 get_length(char* buf);
 #define REDIS_NO_SUCH_KEY "$-1\r\n"
 #define REDIS_KEY_TOO_LARGE "key is too large (3000 bytes max)"
 #define REDIS_SYNTAX_ERROR "syntax error"
-#define REDIS_INVALID_TTL "invalid expire time in '%s' command"
+#define REDIS_INVALID_INTEGER "invalid integer '%s' in command"
 #endif

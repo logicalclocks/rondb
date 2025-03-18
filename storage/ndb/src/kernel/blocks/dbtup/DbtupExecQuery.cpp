@@ -51,6 +51,8 @@
 #include <signaldata/AccLock.hpp>
 #include "rondb_hash.hpp"
 #include "../dbtux/Dbtux.hpp"
+#include <my_byteorder.h>
+#include <climits>
 
 #define JAM_FILE_ID 422
 
@@ -146,6 +148,714 @@
 
 //#define TRACE_INTERPRETER
 //#define TRACE_INTERPRETER_REGISTERS
+
+#define RET_NULL Uint32(~0)
+#define EQUAL_MATCH 0
+#define SMALLER_MATCH 1
+#define LARGER_MATCH 2
+#define SMALLER_EQUAL_MATCH 3
+#define LARGER_EQUAL_MATCH 4
+
+Uint32 binary_uint64_search_exact(Uint64 test_ordinal,
+                                         const char *memory_ptr,
+                                         Uint32 num_elems) {
+  Uint32 start = 0;
+  Uint32 end = num_elems;
+  if (num_elems == 0) {
+    return RET_NULL;
+  }
+  Uint64 value = 0;
+  Uint32 test_position;
+  while (start < end) {
+    Uint32 mid_point = (start + end) / 2;
+    test_position = mid_point * 8;
+    memcpy(&value, memory_ptr + test_position, 8);
+    if (value < test_ordinal) {
+      start = mid_point + 1;
+    } else {
+      end = mid_point;
+    }
+  }
+  if (start == num_elems) return RET_NULL;
+  test_position = start * 8;
+  memcpy(&value, memory_ptr + test_position, 8);
+  if (value == test_ordinal)
+    return start;
+  return RET_NULL;
+}
+
+static Uint32 binary_uint64_search_smaller(Uint64 test_ordinal,
+                                           const char *memory_ptr,
+                                           Uint32 num_elems,
+                                           bool not_include_equal) {
+  Uint32 start = 0;
+  Uint32 end = num_elems;
+  if (num_elems == 0) {
+    return RET_NULL;
+  }
+  Uint64 value = 0;
+  Uint32 test_position;
+  while (start < end) {
+    Uint32 mid_point = (start + end) / 2;
+    test_position = mid_point * 8;
+    memcpy(&value, memory_ptr + test_position, 8);
+    if (value < test_ordinal) {
+      start = mid_point + 1;
+    } else {
+      end = mid_point;
+    }
+  }
+  if (not_include_equal) {
+    test_position = start * 8;
+    memcpy(&value, memory_ptr + test_position, 8);
+    if (value != test_ordinal) {
+      if (start == 0) return RET_NULL;
+      else return start - 1;
+    }
+  }
+  return start;
+}
+
+static Uint32 binary_uint64_search_larger(Uint64 test_ordinal,
+                                          const char *memory_ptr,
+                                          Uint32 num_elems,
+                                          bool not_include_equal) {
+  Uint32 start = 0;
+  Uint32 end = num_elems;
+  if (num_elems == 0) {
+    return RET_NULL;
+  }
+  Uint64 value = 0;
+  Uint32 test_position;
+  while (start < end) {
+    Uint32 mid_point = (start + end) / 2;
+    test_position = mid_point * 8;
+    memcpy(&value, memory_ptr + test_position, 8);
+    if (value > test_ordinal) {
+      end = mid_point;
+    } else {
+      start = mid_point + 1;
+    }
+  }
+  if (not_include_equal == ZTRUE && end > 0) {
+    test_position = (end - 1) * 8;
+    memcpy(&value, memory_ptr + test_position, 8);
+    if (value == test_ordinal) {
+      return end - 1;
+    }
+  }
+  return end;
+}
+
+static Uint32 binary_uint32_search_exact(Uint32 test_ordinal,
+                                         const char *memory_ptr,
+                                         Uint32 num_elems) {
+  Uint32 start = 0;
+  Uint32 end = num_elems;
+  if (num_elems == 0) {
+    return RET_NULL;
+  }
+  Uint32 value = 0;
+  Uint32 test_position;
+  while (start < end) {
+    Uint32 mid_point = (start + end) / 2;
+    test_position = mid_point * 4;
+    memcpy(&value, memory_ptr + test_position, 4);
+    if (value < test_ordinal) {
+      start = mid_point + 1;
+    } else {
+      end = mid_point;
+    }
+  }
+  if (start == num_elems) return RET_NULL;
+  test_position = start * 4;
+  memcpy(&value, memory_ptr + test_position, 4);
+  if (value == test_ordinal)
+    return start;
+  return RET_NULL;
+}
+
+static Uint32 binary_uint32_search_smaller(Uint32 test_ordinal,
+                                           const char *memory_ptr,
+                                           Uint32 num_elems,
+                                           bool not_include_equal) {
+  Uint32 start = 0;
+  Uint32 end = num_elems;
+  if (num_elems == 0) {
+    return RET_NULL;
+  }
+  Uint32 value = 0;
+  Uint32 test_position;
+  while (start < end) {
+    Uint32 mid_point = (start + end) / 2;
+    test_position = mid_point * 4;
+    memcpy(&value, memory_ptr + test_position, 4);
+    if (value < test_ordinal) {
+      start = mid_point + 1;
+    } else {
+      end = mid_point;
+    }
+  }
+  if (not_include_equal) {
+    test_position = start * 4;
+    memcpy(&value, memory_ptr + test_position, 4);
+    if (value != test_ordinal) {
+      if (start == 0) return RET_NULL;
+      else return start - 1;
+    }
+  }
+  return start;
+}
+
+static Uint32 binary_uint32_search_larger(Uint32 test_ordinal,
+                                          const char *memory_ptr,
+                                          Uint32 num_elems,
+                                          bool not_include_equal) {
+  Uint32 start = 0;
+  Uint32 end = num_elems;
+  if (num_elems == 0) {
+    return RET_NULL;
+  }
+  Uint32 value = 0;
+  Uint32 test_position;
+  while (start < end) {
+    Uint32 mid_point = (start + end) / 2;
+    test_position = mid_point * 4;
+    memcpy(&value, memory_ptr + test_position, 4);
+    if (value > test_ordinal) {
+      end = mid_point;
+    } else {
+      start = mid_point + 1;
+    }
+  }
+  if (not_include_equal && end > 0) {
+    test_position = (end - 1) * 4;
+    memcpy(&value, memory_ptr + test_position, 4);
+    if (value == test_ordinal) {
+      return end - 1;
+    }
+  }
+  return end;
+}
+
+Uint32 binary_uint16_search_exact(Uint16 test_ordinal,
+                                         const char *memory_ptr,
+                                         Uint32 num_elems) {
+  Uint32 start = 0;
+  Uint32 end = num_elems;
+  if (num_elems == 0) {
+    return RET_NULL;
+  }
+  Uint16 value = 0;
+  Uint32 test_position;
+  while (start < end) {
+    Uint32 mid_point = (start + end) / 2;
+    test_position = mid_point * 2;
+    memcpy(&value, memory_ptr + test_position, 2);
+    if (value < test_ordinal) {
+      start = mid_point + 1;
+    } else {
+      end = mid_point;
+    }
+  }
+  if (start == num_elems) return RET_NULL;
+  test_position = start * 2;
+  memcpy(&value, memory_ptr + test_position, 2);
+  if (value == test_ordinal)
+    return start;
+  return RET_NULL;
+}
+
+static Uint32 binary_uint16_search_smaller(Uint16 test_ordinal,
+                                           const char *memory_ptr,
+                                           Uint32 num_elems,
+                                           bool not_include_equal) {
+  Uint32 start = 0;
+  Uint32 end = num_elems;
+  if (num_elems == 0) {
+    return RET_NULL;
+  }
+  Uint16 value = 0;
+  Uint32 test_position;
+  while (start < end) {
+    Uint32 mid_point = (start + end) / 2;
+    test_position = mid_point * 2;
+    memcpy(&value, memory_ptr + test_position, 2);
+    if (value < test_ordinal) {
+      start = mid_point + 1;
+    } else {
+      end = mid_point;
+    }
+  }
+  if (not_include_equal) {
+    test_position = start * 2;
+    memcpy(&value, memory_ptr + test_position, 2);
+    if (value != test_ordinal) {
+      if (start == 0) return RET_NULL;
+      else return start - 1;
+    }
+  }
+  return start;
+}
+
+static Uint32 binary_uint16_search_larger(Uint16 test_ordinal,
+                                          const char *memory_ptr,
+                                          Uint32 num_elems,
+                                          bool not_include_equal) {
+  Uint32 start = 0;
+  Uint32 end = num_elems;
+  if (num_elems == 0) {
+    return RET_NULL;
+  }
+  Uint16 value = 0;
+  Uint32 test_position;
+  while (start < end) {
+    Uint32 mid_point = (start + end) / 2;
+    test_position = mid_point * 2;
+    memcpy(&value, memory_ptr + test_position, 2);
+    if (value > test_ordinal) {
+      end = mid_point;
+    } else {
+      start = mid_point + 1;
+    }
+  }
+  if (not_include_equal && end > 0) {
+    test_position = (end - 1) * 2;
+    memcpy(&value, memory_ptr + test_position, 2);
+    if (value == test_ordinal) {
+      return end - 1;
+    }
+  }
+  return end;
+}
+
+static Uint32 binary_odd_search_exact(Uint64 test_ordinal,
+                                      const char *memory_ptr,
+                                      Uint32 num_elems,
+                                      Uint32 number_size) {
+  Uint32 start = 0;
+  Uint32 end = num_elems;
+  if (num_elems == 0) {
+    return RET_NULL;
+  }
+  Uint64 value = 0;
+  Uint32 test_position;
+  while (start < end) {
+    Uint32 mid_point = (start + end) / 2;
+    test_position = mid_point * number_size;
+    const uchar *number_ptr = (const uchar*)(memory_ptr + test_position);
+    switch (number_size) {
+      case 1: {
+        Uint8 val8 = *number_ptr;
+        value = (Uint64)val8;
+        break;
+      }
+      case 3: {
+        Uint32 val32 = uint3korr(number_ptr);
+        value = (Uint64)val32;
+        break;
+      }
+      case 5: {
+        value = uint5korr(number_ptr);
+        break;
+      }
+      case 6: {
+        value = uint6korr(number_ptr);
+        break;
+      }
+      default: {
+        require(false);
+        return RET_NULL;
+      }
+    }
+    if (value < test_ordinal) {
+      start = mid_point + 1;
+    } else {
+      end = mid_point;
+    }
+  }
+  if (start == num_elems) return RET_NULL;
+  test_position = start * number_size;
+  const uchar *number_ptr = (const uchar*)(memory_ptr + test_position);
+  switch (number_size) {
+    case 1: {
+      Uint8 val8 = *number_ptr;
+      value = (Uint64)val8;
+      break;
+    }
+    case 3: {
+      Uint32 val32 = uint3korr(number_ptr);
+      value = (Uint64)val32;
+      break;
+    }
+    case 5: {
+      value = uint5korr(number_ptr);
+      break;
+    }
+    case 6: {
+      value = uint6korr(number_ptr);
+      break;
+    }
+    default: {
+      require(false);
+      return RET_NULL;
+    }
+  }
+  if (value == test_ordinal)
+    return start;
+  return RET_NULL;
+}
+
+static Uint32 binary_odd_search_smaller(Uint64 test_ordinal,
+                                        const char *memory_ptr,
+                                        Uint32 num_elems,
+                                        Uint32 number_size,
+                                        bool not_include_equal) {
+  Uint32 start = 0;
+  Uint32 end = num_elems;
+  if (num_elems == 0) {
+    return RET_NULL;
+  }
+  Uint64 value = 0;
+  Uint32 test_position;
+  while (start < end) {
+    Uint32 mid_point = (start + end) / 2;
+    test_position = mid_point * number_size;
+    const uchar *number_ptr = (const uchar*)(memory_ptr + test_position);
+    switch (number_size) {
+      case 1: {
+        Uint8 val8 = *number_ptr;
+        value = (Uint64)val8;
+        break;
+      }
+      case 3: {
+        Uint32 val32 = uint3korr(number_ptr);
+        value = (Uint64)val32;
+        break;
+      }
+      case 5: {
+        value = uint5korr(number_ptr);
+        break;
+      }
+      case 6: {
+        value = uint6korr(number_ptr);
+        break;
+      }
+      default: {
+        require(false);
+        return RET_NULL;
+      }
+    }
+    if (value < test_ordinal) {
+      start = mid_point + 1;
+    } else {
+      end = mid_point;
+    }
+  }
+  if (not_include_equal) {
+    test_position = start * number_size;
+    const uchar *number_ptr = (const uchar*)(memory_ptr + test_position);
+    switch (number_size) {
+      case 1: {
+        Uint8 val8 = *number_ptr;
+        value = (Uint64)val8;
+        break;
+      }
+      case 3: {
+        Uint32 val32 = uint3korr(number_ptr);
+        value = (Uint64)val32;
+        break;
+      }
+      case 5: {
+        value = uint5korr(number_ptr);
+        break;
+      }
+      case 6: {
+        value = uint6korr(number_ptr);
+        break;
+      }
+      default: {
+        require(false);
+        return RET_NULL;
+      }
+    }
+    if (value != test_ordinal) {
+      if (start == 0) return RET_NULL;
+      else return (start - 1);
+      return end - 1;
+    }
+  }
+  return start;
+}
+
+static Uint32 binary_odd_search_larger(Uint64 test_ordinal,
+                                       const char *memory_ptr,
+                                       Uint32 num_elems,
+                                       Uint32 number_size,
+                                       bool not_include_equal) {
+  Uint32 start = 0;
+  Uint32 end = num_elems;
+  if (num_elems == 0) {
+    return RET_NULL;
+  }
+  Uint64 value = 0;
+  Uint32 test_position;
+  while (start < end) {
+    Uint32 mid_point = (start + end) / 2;
+    test_position = mid_point * number_size;
+    const uchar *number_ptr = (const uchar*)(memory_ptr + test_position);
+    switch (number_size) {
+      case 1: {
+        Uint8 val8 = *number_ptr;
+        value = (Uint64)val8;
+        break;
+      }
+      case 3: {
+        Uint32 val32 = uint3korr(number_ptr);
+        value = (Uint64)val32;
+        break;
+      }
+      case 5: {
+        value = uint5korr(number_ptr);
+        break;
+      }
+      case 6: {
+        value = uint6korr(number_ptr);
+        break;
+      }
+      default: {
+        require(false);
+        return RET_NULL;
+      }
+    }
+    if (value > test_ordinal) {
+      end = mid_point;
+    } else {
+      start = mid_point + 1;
+    }
+  }
+  if (not_include_equal && end > 0) {
+    test_position = (end - 1) * number_size;
+    const uchar *number_ptr = (const uchar*)(memory_ptr + test_position);
+    switch (number_size) {
+      case 1: {
+        Uint8 val8 = *number_ptr;
+        value = (Uint64)val8;
+        break;
+      }
+      case 3: {
+        Uint32 val32 = uint3korr(number_ptr);
+        value = (Uint64)val32;
+        break;
+      }
+      case 5: {
+        value = uint5korr(number_ptr);
+        break;
+      }
+      case 6: {
+        value = uint6korr(number_ptr);
+        break;
+      }
+      default: {
+        require(false);
+        return RET_NULL;
+      }
+    }
+    if (value == test_ordinal) {
+      return end - 1;
+    }
+  }
+  return end;
+}
+
+static Uint32 string_search(const char *search_string,
+                            Uint32 search_len,
+                            const char *string_ptr,
+                            Uint32 string_len) {
+  Uint32 equal_len = 0;
+  for (Uint32 i = 0; i < string_len; i++) {
+    char c_search = search_string[equal_len];
+    char c_string = string_ptr[i];
+    if (c_search == c_string) {
+      equal_len++;
+      if (equal_len == search_len) {
+        return (i - search_len) + 1;
+      }
+    } else {
+      equal_len = 0;
+    }
+  }
+  return RET_NULL;
+}
+
+static void compress_num32_array(char *memory_ptr,
+                                 Uint32 elems,
+                                 size_t number_size) {
+  switch (number_size) {
+    case 3: {
+      for (size_t i = 0; i < elems; i++) {
+        Uint32 val = 0;
+        memcpy(&val, memory_ptr + (4 * i), 4);
+        int3store(memory_ptr + (3 * i), (uint)val);
+      }
+      return;
+    }
+    default: {
+      require(false);
+    }
+  }
+  return;
+}
+
+static void compress_num64_array(char *memory_ptr,
+                                 Uint32 elems,
+                                 size_t number_size) {
+  switch (number_size) {
+    case 5: {
+      for (size_t i = 0; i < elems; i++) {
+        Uint64 val = 0;
+        memcpy(&val, memory_ptr + (8 * i), 8);
+        int5store(memory_ptr + (5 * i), (ulonglong)val);
+      }
+      return;
+    }
+    case 6: {
+      for (size_t i = 0; i < elems; i++) {
+        Uint64 val = 0;
+        memcpy(&val, memory_ptr + (8 * i), 8);
+        int6store(memory_ptr + (6 * i), (ulonglong)val);
+      }
+      return;
+    }
+    default: {
+      require(false);
+    }
+  }
+  return;
+}
+
+static int compare_8b(const void *left, const void *right) {
+  ulonglong left_ulong = *(ulonglong*)left;
+  ulonglong right_ulong = *(ulonglong*)right;
+  if (left_ulong < right_ulong) return -1;
+  if (left_ulong > right_ulong) return +1;
+  return 0;
+}
+
+static int compare_6b(const void *left, const void *right) {
+  const uchar *left_cmp = (const uchar*)left;
+  const uchar *right_cmp = (const uchar*)right;
+  ulonglong left_ulong = uint6korr(left_cmp);
+  ulonglong right_ulong = uint6korr(right_cmp);
+  if (left_ulong < right_ulong) return -1;
+  if (left_ulong > right_ulong) return +1;
+  return 0;
+}
+
+static int compare_5b(const void *left, const void *right) {
+  const uchar *left_cmp = (const uchar*)left;
+  const uchar *right_cmp = (const uchar*)right;
+  ulonglong left_ulong = uint5korr(left_cmp);
+  ulonglong right_ulong = uint5korr(right_cmp);
+  if (left_ulong < right_ulong) return -1;
+  if (left_ulong > right_ulong) return +1;
+  return 0;
+}
+
+static int compare_4b(const void *left, const void *right) {
+  const Uint32 left_cmp = *(const Uint32*)left;
+  const Uint32 right_cmp = *(const Uint32*)right;
+  if (left_cmp < right_cmp) return -1;
+  if (left_cmp > right_cmp) return +1;
+  return 0;
+}
+
+static int compare_3b(const void *left, const void *right) {
+  const uchar *left_cmp = (const uchar*)left;
+  const uchar *right_cmp = (const uchar*)right;
+  uint32 left_uint32 = uint3korr(left_cmp);
+  uint32 right_uint32 = uint3korr(right_cmp);
+  if (left_uint32 < right_uint32) return -1;
+  if (left_uint32 > right_uint32) return +1;
+  return 0;
+}
+
+static int compare_2b(const void *left, const void *right) {
+  const Uint16 left_cmp = *(const Uint16*)left;
+  const Uint16 right_cmp = *(const Uint16*)right;
+  if (left_cmp < right_cmp) return -1;
+  if (left_cmp > right_cmp) return +1;
+  return 0;
+}
+
+static int compare_1b(const void *left, const void *right) {
+  const uchar left_cmp = *(const uchar*)left;
+  const uchar right_cmp = *(const uchar*)right;
+  if (left_cmp < right_cmp) return -1;
+  if (left_cmp > right_cmp) return +1;
+  return 0;
+}
+
+static void qsort_instr(const char *memory_ptr,
+                        Uint32 elems,
+                        Uint32 number_size) {
+  switch (number_size) {
+    case 1: {
+      qsort((void*)(memory_ptr),
+            elems,
+            number_size,
+            compare_1b);
+      return;
+    }
+    case 2: {
+      qsort((void*)(memory_ptr),
+            elems,
+            number_size,
+            compare_2b);
+      return;
+    }
+    case 3: {
+      qsort((void*)(memory_ptr),
+            elems,
+            number_size,
+            compare_3b);
+      return;
+    }
+    case 4: {
+      qsort((void*)(memory_ptr),
+            elems,
+            number_size,
+            compare_4b);
+      return;
+    }
+    case 5: {
+      qsort((void*)(memory_ptr),
+            elems,
+            number_size,
+            compare_5b);
+      return;
+    }
+    case 6: {
+      qsort((void*)(memory_ptr),
+            elems,
+            number_size,
+            compare_6b);
+      return;
+    }
+    case 8: {
+      qsort((void*)(memory_ptr),
+            elems,
+            number_size,
+             compare_8b);
+      return;
+    }
+    default: {
+      require(false);
+      return;
+    }
+  }
+  return;
+}
 
 /* For debugging */
 static void dump_hex(const Uint32 *p, Uint32 len) {
@@ -2682,8 +3392,8 @@ int Dbtup::handleUpdateReq(Signal* signal,
   Tuple_header *dst;
   Tuple_header *base= req_struct->m_tuple_ptr, *org;
   ChangeMask * change_mask_ptr;
-  if (unlikely((dst= alloc_copy_tuple(regTabPtr,
-            &operPtrP->m_copy_tuple_location)) == 0))
+  if (unlikely((dst= alloc_copy_tuple(
+    regTabPtr, &operPtrP->m_copy_tuple_location, false)) == 0))
   {
     terrorCode= ZNO_COPY_TUPLE_MEMORY_ERROR;
     goto error;
@@ -3281,7 +3991,9 @@ int Dbtup::handleInsertReq(Signal* signal,
     goto trans_mem_error;
   }
 
-  dst = alloc_copy_tuple(regTabPtr, &regOperPtr.p->m_copy_tuple_location);
+  dst = alloc_copy_tuple(regTabPtr,
+                         &regOperPtr.p->m_copy_tuple_location,
+                         true);
 
   if (unlikely(dst == nullptr))
   {
@@ -3903,8 +4615,8 @@ int Dbtup::handleDeleteReq(Signal* signal,
   }
 #endif  // TTL_DEBUG
   Uint32 copy_bits = 0;
-  Tuple_header* dst = alloc_copy_tuple(regTabPtr,
-      &regOperPtr->m_copy_tuple_location);
+  Tuple_header* dst = alloc_copy_tuple(
+    regTabPtr, &regOperPtr->m_copy_tuple_location, false);
   if (unlikely(dst == 0))
   {
     jam();
@@ -5011,8 +5723,9 @@ int Dbtup::interpreterNextLab(Signal* signal,
           memory_ptr[0] = ah.m_value;
 #ifdef TRACE_INTERPRETER
           g_eventLogger->info(
-            "(%u)WRITE_ATTR_FROM_MEM: Tsize: %lld, words: %u, offset: %lld",
-            instance(), Tsize, words, Toffset);
+            "(%u)WRITE_ATTR_FROM_MEM: Toffset: %lld, Tsize: %lld,"
+            " words: %u, max_var_size: %u",
+            instance(), Toffset, Tsize, words, attrNoOfBytes);
 #endif
           int TnoDataRW = updateAttributes(req_struct,
                                            memory_ptr,
@@ -5056,8 +5769,13 @@ int Dbtup::interpreterNextLab(Signal* signal,
                         (Toffset < Int64(0)))) {
             return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
           }
+          if (array != NDB_ARRAYTYPE_MEDIUM_VAR &&
+              array != NDB_ARRAYTYPE_SHORT_VAR) {
+            return TUPKEY_abort(req_struct, ZAPPEND_ON_FIXED_SIZE_COLUMN_ERROR);
+          }
           if (unlikely((Tsize < Int64(0)) ||
-                       ((Tsize + TstartPos) > Int64(attrNoOfBytes)))) {
+                       ((Tsize + TstartPos) >
+                         Int64(attrNoOfBytes)))) {
             return TUPKEY_abort(req_struct, ZWRITE_SIZE_TOO_BIG_ERROR);
           }
           /**
@@ -5070,10 +5788,6 @@ int Dbtup::interpreterNextLab(Signal* signal,
           if (unlikely(Toptype != ZUPDATE && Toptype != ZINSERT)) {
             return TUPKEY_abort(req_struct, ZTRY_TO_UPDATE_ERROR);
           }
-          if ((array != NDB_ARRAYTYPE_SHORT_VAR) &&
-              (array != NDB_ARRAYTYPE_MEDIUM_VAR)) {
-            return TUPKEY_abort(req_struct, ZAPPEND_ON_FIXED_SIZE_COLUMN_ERROR);
-          }
           AttributeHeader ah(AttributeHeader::SET_PARTIAL_COLUMN, Tsize);
           Uint32 extended_header = attrId + (TstartPos << 16);
           Uint32* memory_ptr = (Uint32*)&TheapMemoryChar[Toffset];
@@ -5082,8 +5796,9 @@ int Dbtup::interpreterNextLab(Signal* signal,
           memory_ptr[1] = extended_header;
 #ifdef TRACE_INTERPRETER
           g_eventLogger->info(
-            "(%u)WRITE_PARTIAL_ATTR_MEM: Toffset: %lld, Tsize: %lld, words: %u",
-            instance(), Toffset, Tsize, words);
+            "(%u)WRITE_PARTIAL_ATTR_MEM: Toffset: %lld, Tsize: %lld,"
+            " words: %u, max_var_size: %u",
+            instance(), Toffset, Tsize, words, attrNoOfBytes);
 #endif
           int TnoDataRW = updateAttributes(req_struct,
                                            memory_ptr,
@@ -5123,6 +5838,10 @@ int Dbtup::interpreterNextLab(Signal* signal,
                         (Toffset < Int64(0)))) {
             return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
           }
+          if (array != NDB_ARRAYTYPE_MEDIUM_VAR &&
+              array != NDB_ARRAYTYPE_SHORT_VAR) {
+            return TUPKEY_abort(req_struct, ZAPPEND_ON_FIXED_SIZE_COLUMN_ERROR);
+          }
           if (unlikely((Tsize < Int64(0)) ||
                        (Tsize > Int64(attrNoOfBytes)))) {
             return TUPKEY_abort(req_struct, ZWRITE_SIZE_TOO_BIG_ERROR);
@@ -5137,10 +5856,6 @@ int Dbtup::interpreterNextLab(Signal* signal,
           if (unlikely(Toptype != ZUPDATE)) {
             return TUPKEY_abort(req_struct, ZTRY_TO_UPDATE_ERROR);
           }
-          if ((array != NDB_ARRAYTYPE_SHORT_VAR) &&
-              (array != NDB_ARRAYTYPE_MEDIUM_VAR)) {
-            return TUPKEY_abort(req_struct, ZAPPEND_ON_FIXED_SIZE_COLUMN_ERROR);
-          }
           AttributeHeader ah(AttributeHeader::APPEND_COLUMN, Tsize);
           Uint32 extended_header = attrId;
           Uint32* memory_ptr = (Uint32*)&TheapMemoryChar[Toffset];
@@ -5149,8 +5864,9 @@ int Dbtup::interpreterNextLab(Signal* signal,
           memory_ptr[1] = extended_header;
 #ifdef TRACE_INTERPRETER
           g_eventLogger->info(
-            "(%u)APPEND_ATTR_MEM: Toffset: %lld, Tsize: %lld, words: %u",
-            instance(), Toffset, Tsize, words);
+            "(%u)APPEND_ATTR_MEM: Toffset: %lld, Tsize: %lld,"
+            " words: %u, max_var_size: %u",
+            instance(), Toffset, Tsize, words, attrNoOfBytes);
 #endif
           int TnoDataRW = updateAttributes(req_struct,
                                            memory_ptr,
@@ -5320,6 +6036,27 @@ int Dbtup::interpreterNextLab(Signal* signal,
           }
           break;
         }
+        case Interpreter::READ_INTERPRETER_INPUT:
+        {
+          /**
+           * Read content of an input register to a register.
+           */
+          Uint32 inputInx = theInstruction >> 16;
+	  Int64 *value_ptr = (Int64*)(TregMemBuffer + theRegister + 2);
+          if (unlikely(inputInx >= AttributeHeader::MaxInterpreterInputIndex)) {
+	    return TUPKEY_abort(req_struct, ZINPUT_OUTPUT_INDEX_ERROR);
+          }
+          memcpy(value_ptr, &m_interpreter_input[inputInx], 8);
+          TregMemBuffer[theRegister]= NOT_NULL_INDICATOR;
+#ifdef TRACE_INTERPRETER
+          g_eventLogger->info("(%u)read_interpreter_input[%u] = %lld, reg: %u",
+                              instance(),
+                              inputInx,
+                              *value_ptr,
+                              theRegister);
+#endif
+          break;
+        }
 
         case Interpreter::WRITE_INTERPRETER_OUTPUT:
         {
@@ -5340,7 +6077,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
 	    return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
           }
           if (unlikely(outputInx >= AttributeHeader::MaxInterpreterOutputIndex)) {
-	    return TUPKEY_abort(req_struct, ZOUTPUT_INDEX_ERROR);
+	    return TUPKEY_abort(req_struct, ZINPUT_OUTPUT_INDEX_ERROR);
           }
           outputInx *= 2;
           memcpy(&c_interpreter_output[outputInx], value_ptr, 8);
@@ -5712,6 +6449,27 @@ int Dbtup::interpreterNextLab(Signal* signal,
                                                TprogramCounter++);
 	  break;
         }
+        case Interpreter::BZERO_MEM:
+        {
+          Uint32 registerOffsetType = TregMemBuffer[theRegister];
+          Uint32 registerSize = Interpreter::getReg2(theInstruction) << 2;
+          Int64 Toffset = * (Int64*)(TregMemBuffer + theRegister + 2);
+          Int64 Tsize = * (Int64*)(TregMemBuffer + registerSize + 2);
+          Uint32 registerSizeType = TregMemBuffer[registerSize];
+          if (unlikely(registerOffsetType == NULL_INDICATOR)) {
+            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
+          }
+          if (unlikely(registerSizeType == NULL_INDICATOR)) {
+            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
+          }
+          Int64 Tend = Toffset + Tsize;
+          if (Toffset < 0 || Tsize < 0 || Tend > MAX_HEAP_OFFSET) {
+            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
+          }
+          Uint32* memory_ptr = (Uint32*)&TheapMemoryChar[Toffset];
+          memset(memory_ptr, 0, Tsize);
+          break;
+        }
         case Interpreter::LOAD_CONST_MEM:
         {
           RnoOfInstructions += 1; //A bit heavier instruction
@@ -5729,7 +6487,6 @@ int Dbtup::interpreterNextLab(Signal* signal,
             return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
           }
           if (unlikely(((Toffset + Int64(words << 2)) > MAX_HEAP_OFFSET) ||
-                        ((Toffset & Int64(3)) != 0) ||
                         (Toffset < Int64(0)))) {
 #ifdef TRACE_INTERPRETER
             g_eventLogger->info("(%u)Line %u, Offset error: %lld",
@@ -5753,8 +6510,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
           Uint32* memory_ptr = (Uint32*)&TheapMemoryChar[Toffset];
           memcpy(memory_ptr,
                  &TcurrentProgram[TprogramCounter],
-                 words << 2);
-          zero32((Uint8*)memory_ptr, Tsize);
+                 Tsize);
 #ifdef TRACE_INTERPRETER
           g_eventLogger->info("(%u) offset: %lld, word: %x, Tsize: %u",
             instance(), Toffset, memory_ptr[0], Tsize);
@@ -6795,6 +7551,807 @@ int Dbtup::interpreterNextLab(Signal* signal,
 	  } else {
 	    return TUPKEY_abort(req_struct, ZSTACK_UNDERFLOW_ERROR);
 	  }
+	  break;
+        }
+        case Interpreter::SEARCH_INTERVAL_64:
+        {
+          RnoOfInstructions += 3; //A bit heavier instruction
+          /**
+           * This instruction does a binary search in a sorted array of
+           * ranges. This means that each pair of numbers represents a
+           * range. Thus input have an even number of elements in the
+           * array.
+           *
+           * By using binary search with smaller or equal we get the result
+           * that returning an even number means that the number is within
+           * one of the ranges and odd numbers and NULL values means that
+           * the value was not in a range.
+           *
+           * Input:
+           *   Register 1:
+           *     The number we are looking for
+           *   Register 2:
+           *     The offset in memory where sorted Uint64 array is stored
+           *   Register 3:
+           *     The number of elements in the array
+           *   Enum 5:
+           *     0: Left open and Right closed interval
+           *     1: Left closed and Right open interval
+           * Output:
+           *   Register 4:
+           *     The position of the found element
+           *     NULL if no element found
+           *
+           */
+          Int64 Tordinal = * (Int64*)(TregMemBuffer + theRegister + 2);
+          Uint32 TregOrdinalType = TregMemBuffer[theRegister];
+
+          Uint32 ToffsetRegister = Interpreter::getReg2(theInstruction) << 2;
+          Int64 Toffset = * (Int64*)(TregMemBuffer + ToffsetRegister + 2);
+          Uint32 TregOffsetType = TregMemBuffer[ToffsetRegister];
+
+          Uint32 TnumElemsRegister = Interpreter::getReg3(theInstruction) << 2;
+          Int64 TnumElems = * (Int64*)(TregMemBuffer + TnumElemsRegister + 2);
+          Uint32 TregNumElemsType = TregMemBuffer[TnumElemsRegister];
+
+          Uint32 TretElemsRegister = Interpreter::getReg4(theInstruction) << 2;
+          Int64 end_pos = Toffset + (8 * TnumElems);
+          Uint32 TleftOpen = Interpreter::enum5(theInstruction);
+
+          if (unlikely((TregOffsetType == NULL_INDICATOR) ||
+                       (TregOrdinalType == NULL_INDICATOR) ||
+                       (TregNumElemsType == NULL_INDICATOR))) {
+            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
+          }
+          if (Toffset < 0 || TnumElems < 0 || end_pos > MAX_HEAP_OFFSET) {
+            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
+          }
+          if (Tordinal < 0) {
+            return TUPKEY_abort(req_struct, ZWRONG_INPUT_TO_BINARY_SEARCH);
+          }
+          if (TleftOpen > 1) {
+            return TUPKEY_abort(req_struct, ZNO_SUCH_SEARCH_INTERVAL_METHOD);
+          }
+          Uint32 ret;
+          Uint64 ordinal = Uint64(Tordinal);
+          if (TleftOpen == 0) {
+            ret = binary_uint64_search_smaller(ordinal,
+                                               &TheapMemoryChar[Toffset],
+                                               TnumElems,
+                                               true);
+            if (ret == RET_NULL || ((ret & 1) == 1)) {
+              TregMemBuffer[TretElemsRegister] = NULL_INDICATOR;
+            } else {
+              TregMemBuffer[TretElemsRegister] = NOT_NULL_INDICATOR;
+              *(Int64*)(TregMemBuffer + TretElemsRegister + 2) = ret;
+            }
+          } else {
+            ret = binary_uint64_search_larger(ordinal,
+                                              &TheapMemoryChar[Toffset],
+                                              TnumElems,
+                                              true);
+            if ((ret & 1) == 0) {
+              TregMemBuffer[TretElemsRegister] = NULL_INDICATOR;
+            } else {
+              TregMemBuffer[TretElemsRegister] = NOT_NULL_INDICATOR;
+              *(Int64*)(TregMemBuffer + TretElemsRegister + 2) = ret - 1;
+            }
+          }
+	  break;
+        }
+        case Interpreter::SEARCH_INTERVAL_32:
+        {
+          RnoOfInstructions += 3; //A bit heavier instruction
+          /* This is the 32-bit version of SEARCH_INTERVAL_64 */
+          Int64 Tordinal = * (Int64*)(TregMemBuffer + theRegister + 2);
+          Uint32 TregOrdinalType = TregMemBuffer[theRegister];
+
+          Uint32 ToffsetRegister = Interpreter::getReg2(theInstruction) << 2;
+          Int64 Toffset = * (Int64*)(TregMemBuffer + ToffsetRegister + 2);
+          Uint32 TregOffsetType = TregMemBuffer[ToffsetRegister];
+
+          Uint32 TnumElemsRegister = Interpreter::getReg3(theInstruction) << 2;
+          Int64 TnumElems = * (Int64*)(TregMemBuffer + TnumElemsRegister + 2);
+          Uint32 TregNumElemsType = TregMemBuffer[TnumElemsRegister];
+
+          Uint32 TretElemsRegister = Interpreter::getReg4(theInstruction) << 2;
+          Int64 end_pos = Toffset + (4 * TnumElems);
+          Uint32 TleftOpen = Interpreter::enum5(theInstruction);
+
+          if (unlikely((TregOffsetType == NULL_INDICATOR) ||
+                       (TregOrdinalType == NULL_INDICATOR) ||
+                       (TregNumElemsType == NULL_INDICATOR))) {
+            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
+          }
+          if (Toffset < 0 || TnumElems < 0 || end_pos > MAX_HEAP_OFFSET) {
+            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
+          }
+          if (Tordinal < 0 ||
+              Tordinal > Int64(std::numeric_limits<Uint32>::max())) {
+            return TUPKEY_abort(req_struct, ZWRONG_INPUT_TO_BINARY_SEARCH);
+          }
+          if (TleftOpen > 1) {
+            return TUPKEY_abort(req_struct, ZNO_SUCH_SEARCH_INTERVAL_METHOD);
+          }
+          Uint32 ret;
+          Uint32 ordinal = Uint32(Tordinal);
+          if (TleftOpen == 0) {
+            ret = binary_uint32_search_smaller(ordinal,
+                                               &TheapMemoryChar[Toffset],
+                                               TnumElems,
+                                               true);
+            if (ret == RET_NULL || ((ret & 1) == 1)) {
+              TregMemBuffer[TretElemsRegister] = NULL_INDICATOR;
+            } else {
+              TregMemBuffer[TretElemsRegister] = NOT_NULL_INDICATOR;
+              *(Int64*)(TregMemBuffer + TretElemsRegister + 2) = ret;
+            }
+          } else {
+            ret = binary_uint32_search_larger(ordinal,
+                                              &TheapMemoryChar[Toffset],
+                                              TnumElems,
+                                              true);
+            if ((ret & 1) == 0) {
+              TregMemBuffer[TretElemsRegister] = NULL_INDICATOR;
+            } else {
+              TregMemBuffer[TretElemsRegister] = NOT_NULL_INDICATOR;
+              *(Int64*)(TregMemBuffer + TretElemsRegister + 2) = ret - 1;
+            }
+          }
+	  break;
+        }
+        case Interpreter::SEARCH_INTERVAL_16:
+        {
+          RnoOfInstructions += 3; //A bit heavier instruction
+          /* This is the 16-bit version of SEARCH_INTERVAL_64 */
+          Int64 Tordinal = * (Int64*)(TregMemBuffer + theRegister + 2);
+          Uint32 TregOrdinalType = TregMemBuffer[theRegister];
+
+          Uint32 ToffsetRegister = Interpreter::getReg2(theInstruction) << 2;
+          Int64 Toffset = * (Int64*)(TregMemBuffer + ToffsetRegister + 2);
+          Uint32 TregOffsetType = TregMemBuffer[ToffsetRegister];
+
+          Uint32 TnumElemsRegister = Interpreter::getReg3(theInstruction) << 2;
+          Int64 TnumElems = * (Int64*)(TregMemBuffer + TnumElemsRegister + 2);
+          Uint32 TregNumElemsType = TregMemBuffer[TnumElemsRegister];
+
+          Uint32 TretElemsRegister = Interpreter::getReg4(theInstruction) << 2;
+          Int64 end_pos = Toffset + (2 * TnumElems);
+          Uint32 TleftOpen = Interpreter::enum5(theInstruction);
+
+          if (unlikely((TregOffsetType == NULL_INDICATOR) ||
+                       (TregOrdinalType == NULL_INDICATOR) ||
+                       (TregNumElemsType == NULL_INDICATOR))) {
+            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
+          }
+          if (Toffset < 0 || TnumElems < 0 || end_pos > MAX_HEAP_OFFSET) {
+            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
+          }
+          if (Tordinal < 0 ||
+              Tordinal > Int64(std::numeric_limits<Uint16>::max())) {
+            return TUPKEY_abort(req_struct, ZWRONG_INPUT_TO_BINARY_SEARCH);
+          }
+          if (TleftOpen > 1) {
+            return TUPKEY_abort(req_struct, ZNO_SUCH_SEARCH_INTERVAL_METHOD);
+          }
+          Uint32 ret;
+          Uint16 ordinal = Uint16(Tordinal);
+          if (TleftOpen == 0) {
+            ret = binary_uint16_search_smaller(ordinal,
+                                               &TheapMemoryChar[Toffset],
+                                               TnumElems,
+                                               true);
+            if (ret == RET_NULL || ((ret & 1) == 1)) {
+              TregMemBuffer[TretElemsRegister] = NULL_INDICATOR;
+            } else {
+              TregMemBuffer[TretElemsRegister] = NOT_NULL_INDICATOR;
+              *(Int64*)(TregMemBuffer + TretElemsRegister + 2) = ret;
+            }
+          } else {
+            ret = binary_uint16_search_larger(ordinal,
+                                              &TheapMemoryChar[Toffset],
+                                              TnumElems,
+                                              true);
+            if ((ret & 1) == 0) {
+              TregMemBuffer[TretElemsRegister] = NULL_INDICATOR;
+            } else {
+              TregMemBuffer[TretElemsRegister] = NOT_NULL_INDICATOR;
+              *(Int64*)(TregMemBuffer + TretElemsRegister + 2) = ret - 1;
+            }
+          }
+	  break;
+        }
+        case Interpreter::SEARCH_INTERVAL_ODD:
+        {
+          RnoOfInstructions += 3; //A bit heavier instruction
+          /* This is the odd number version of SEARCH_INTERVAL_64 */
+          Int64 Tordinal = * (Int64*)(TregMemBuffer + theRegister + 2);
+          Uint32 TregOrdinalType = TregMemBuffer[theRegister];
+
+          Uint32 ToffsetRegister = Interpreter::getReg2(theInstruction) << 2;
+          Int64 Toffset = * (Int64*)(TregMemBuffer + ToffsetRegister + 2);
+          Uint32 TregOffsetType = TregMemBuffer[ToffsetRegister];
+
+          Uint32 TnumElemsRegister = Interpreter::getReg3(theInstruction) << 2;
+          Int64 TnumElems = * (Int64*)(TregMemBuffer + TnumElemsRegister + 2);
+          Uint32 TregNumElemsType = TregMemBuffer[TnumElemsRegister];
+
+          Uint32 TretElemsRegister = Interpreter::getReg4(theInstruction) << 2;
+          Uint32 TleftOpen = Interpreter::enum5(theInstruction);
+          Uint32 TnumberSize = Interpreter::enum6(theInstruction);
+          Int64 end_pos = Toffset + (TnumberSize * TnumElems);
+
+          if (unlikely((TregOffsetType == NULL_INDICATOR) ||
+                       (TregOrdinalType == NULL_INDICATOR) ||
+                       (TregNumElemsType == NULL_INDICATOR))) {
+            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
+          }
+          if (Toffset < 0 || TnumElems < 0 || end_pos > MAX_HEAP_OFFSET) {
+            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
+          }
+          if (TnumberSize != 1 &&
+              TnumberSize != 3 &&
+              TnumberSize != 5 &&
+              TnumberSize != 6) {
+            return TUPKEY_abort(req_struct, ZNO_SUCH_NUMBER_SIZE_SUPPORTED);
+          }
+          Uint64 max_number = (Uint64(1) << (Uint64(TnumberSize * 8))) - 1;
+          if (Tordinal < 0 ||
+              Tordinal > Int64(max_number)) {
+            return TUPKEY_abort(req_struct, ZWRONG_INPUT_TO_BINARY_SEARCH);
+          }
+          if (TleftOpen > 1) {
+            return TUPKEY_abort(req_struct, ZNO_SUCH_SEARCH_INTERVAL_METHOD);
+          }
+          Uint32 ret;
+          Uint64 ordinal = Uint64(Tordinal);
+          if (TleftOpen == 0) {
+            ret = binary_odd_search_smaller(ordinal,
+                                            &TheapMemoryChar[Toffset],
+                                            TnumElems,
+                                            TnumberSize,
+                                            true);
+            if (ret == RET_NULL || ((ret & 1) == 1)) {
+              TregMemBuffer[TretElemsRegister] = NULL_INDICATOR;
+            } else {
+              TregMemBuffer[TretElemsRegister] = NOT_NULL_INDICATOR;
+              *(Int64*)(TregMemBuffer + TretElemsRegister + 2) = ret;
+            }
+          } else {
+            ret = binary_odd_search_larger(ordinal,
+                                           &TheapMemoryChar[Toffset],
+                                           TnumElems,
+                                           TnumberSize,
+                                           true);
+            if ((ret & 1) == 0) {
+              TregMemBuffer[TretElemsRegister] = NULL_INDICATOR;
+            } else {
+              TregMemBuffer[TretElemsRegister] = NOT_NULL_INDICATOR;
+              *(Int64*)(TregMemBuffer + TretElemsRegister + 2) = ret - 1;
+            }
+          }
+	  break;
+        }
+        case Interpreter::BINARY_SEARCH_64:
+        {
+          RnoOfInstructions += 3; //A bit heavier instruction
+          /**
+           * Input:
+           *   Register 1:
+           *     The number we are looking for
+           *   Register 2:
+           *     The offset in memory where sorted Uint64 array is stored
+           *   Register 3:
+           *     The number of elements in the array
+           *   Enum 5:
+           *     0 means exact match only
+           *     1 means search for nearest that is smaller
+           *       Another name for this is that it is a rank query.
+           *       This query will never return NULL.
+           *     2 means search for nearest that is larger or equal
+           *       This query finds the successor element.
+           *       This query will never return NULL.
+           *     3 means search for nearest that is smaller or equal
+           *     4 means search for nearest that is larger or equal
+           * Output:
+           *   Register 4:
+           *     The position of the found element
+           *     NULL if no element found
+           *
+           */
+          Int64 Tordinal = * (Int64*)(TregMemBuffer + theRegister + 2);
+          Uint32 TregOrdinalType = TregMemBuffer[theRegister];
+
+          Uint32 ToffsetRegister = Interpreter::getReg2(theInstruction) << 2;
+          Int64 Toffset = * (Int64*)(TregMemBuffer + ToffsetRegister + 2);
+          Uint32 TregOffsetType = TregMemBuffer[ToffsetRegister];
+
+          Uint32 TnumElemsRegister = Interpreter::getReg3(theInstruction) << 2;
+          Int64 TnumElems = * (Int64*)(TregMemBuffer + TnumElemsRegister + 2);
+          Uint32 TregNumElemsType = TregMemBuffer[TnumElemsRegister];
+
+          Uint32 TretElemsRegister = Interpreter::getReg4(theInstruction) << 2;
+          Uint32 TexactMatch = Interpreter::enum5(theInstruction);
+          Int64 end_pos = Toffset + (8 * TnumElems);
+
+          if (unlikely((TregOffsetType == NULL_INDICATOR) ||
+                       (TregOrdinalType == NULL_INDICATOR) ||
+                       (TregNumElemsType == NULL_INDICATOR))) {
+            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
+          }
+          if (Toffset < 0 || TnumElems < 0 || end_pos > MAX_HEAP_OFFSET) {
+            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
+          }
+          if (Tordinal < 0) {
+            return TUPKEY_abort(req_struct, ZWRONG_INPUT_TO_BINARY_SEARCH);
+          }
+          Uint32 ret;
+          Uint64 ordinal = Uint64(Tordinal);
+          switch (TexactMatch) {
+          case EQUAL_MATCH: {
+            ret = binary_uint64_search_exact(ordinal,
+                                             &TheapMemoryChar[Toffset],
+                                             TnumElems);
+            break;
+          }
+          case SMALLER_MATCH: {
+            ret = binary_uint64_search_smaller(ordinal,
+                                               &TheapMemoryChar[Toffset],
+                                               TnumElems,
+                                               false);
+            break;
+          }
+          case LARGER_MATCH: {
+            ret = binary_uint64_search_larger(ordinal,
+                                              &TheapMemoryChar[Toffset],
+                                              TnumElems,
+                                              false);
+            break;
+          }
+          case SMALLER_EQUAL_MATCH: {
+            ret = binary_uint64_search_smaller(ordinal,
+                                               &TheapMemoryChar[Toffset],
+                                               TnumElems,
+                                               true);
+            break;
+          }
+          case LARGER_EQUAL_MATCH: {
+            ret = binary_uint64_search_larger(ordinal,
+                                              &TheapMemoryChar[Toffset],
+                                              TnumElems,
+                                              true);
+            break;
+          }
+          default: {
+            return TUPKEY_abort(req_struct, ZNO_SUCH_BINARY_SEARCH_METHOD);
+          }
+          }
+          if (ret == RET_NULL) {
+            TregMemBuffer[TretElemsRegister] = NULL_INDICATOR;
+          } else {
+            TregMemBuffer[TretElemsRegister] = NOT_NULL_INDICATOR;
+            *(Int64*)(TregMemBuffer + TretElemsRegister + 2) = ret;
+          }
+	  break;
+        }
+        case Interpreter::BINARY_SEARCH_32:
+        {
+          RnoOfInstructions += 3; //A bit heavier instruction
+          /* See BINARY_SEARCH_64, this is the 32-bit version */
+          Int64 Tordinal = * (Int64*)(TregMemBuffer + theRegister + 2);
+          Uint32 TregOrdinalType = TregMemBuffer[theRegister];
+
+          Uint32 ToffsetRegister = Interpreter::getReg2(theInstruction) << 2;
+          Int64 Toffset = * (Int64*)(TregMemBuffer + ToffsetRegister + 2);
+          Uint32 TregOffsetType = TregMemBuffer[ToffsetRegister];
+
+          Uint32 TnumElemsRegister = Interpreter::getReg3(theInstruction) << 2;
+          Int64 TnumElems = * (Int64*)(TregMemBuffer + TnumElemsRegister + 2);
+          Uint32 TregNumElemsType = TregMemBuffer[TnumElemsRegister];
+
+          Uint32 TretElemsRegister = Interpreter::getReg4(theInstruction) << 2;
+          Uint32 TexactMatch = Interpreter::enum5(theInstruction);
+          Int64 end_pos = Toffset + (4 * TnumElems);
+
+          if (unlikely((TregOffsetType == NULL_INDICATOR) ||
+                       (TregOrdinalType == NULL_INDICATOR) ||
+                       (TregNumElemsType == NULL_INDICATOR))) {
+            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
+          }
+          if (Toffset < 0 || TnumElems < 0 || end_pos > MAX_HEAP_OFFSET) {
+            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
+          }
+          if (TexactMatch > LARGER_EQUAL_MATCH) {
+            return TUPKEY_abort(req_struct, ZNO_SUCH_BINARY_SEARCH_METHOD);
+          }
+          if (Tordinal < 0 ||
+              Tordinal > Int64(std::numeric_limits<Uint32>::max())) {
+            return TUPKEY_abort(req_struct, ZWRONG_INPUT_TO_BINARY_SEARCH);
+          }
+          Uint32 ordinal = Uint32(Tordinal);
+          Uint32 ret;
+          switch (TexactMatch) {
+          case EQUAL_MATCH: {
+            ret = binary_uint32_search_exact(ordinal,
+                                             &TheapMemoryChar[Toffset],
+                                             TnumElems);
+            break;
+          }
+          case SMALLER_MATCH: {
+            ret = binary_uint32_search_smaller(ordinal,
+                                               &TheapMemoryChar[Toffset],
+                                               TnumElems,
+                                               false);
+            break;
+          }
+          case LARGER_MATCH: {
+            ret = binary_uint32_search_larger(ordinal,
+                                              &TheapMemoryChar[Toffset],
+                                              TnumElems,
+                                              false);
+            break;
+          }
+          case SMALLER_EQUAL_MATCH: {
+            ret = binary_uint32_search_smaller(ordinal,
+                                               &TheapMemoryChar[Toffset],
+                                               TnumElems,
+                                               true);
+            break;
+          }
+          case LARGER_EQUAL_MATCH: {
+            ret = binary_uint32_search_larger(ordinal,
+                                              &TheapMemoryChar[Toffset],
+                                              TnumElems,
+                                              true);
+            break;
+          }
+          default: {
+            return TUPKEY_abort(req_struct, ZNO_SUCH_BINARY_SEARCH_METHOD);
+          }
+          }
+          if (ret == RET_NULL) {
+            TregMemBuffer[TretElemsRegister] = NULL_INDICATOR;
+          } else {
+            TregMemBuffer[TretElemsRegister] = NOT_NULL_INDICATOR;
+            *(Int64*)(TregMemBuffer + TretElemsRegister + 2) = ret;
+          }
+	  break;
+        }
+        case Interpreter::BINARY_SEARCH_16:
+        {
+          RnoOfInstructions += 3; //A bit heavier instruction
+          /* See BINARY_SEARCH_64, this is the 16-bit version */
+          Int64 Tordinal = * (Int64*)(TregMemBuffer + theRegister + 2);
+          Uint32 TregOrdinalType = TregMemBuffer[theRegister];
+
+          Uint32 ToffsetRegister = Interpreter::getReg2(theInstruction) << 2;
+          Int64 Toffset = * (Int64*)(TregMemBuffer + ToffsetRegister + 2);
+          Uint32 TregOffsetType = TregMemBuffer[ToffsetRegister];
+
+          Uint32 TnumElemsRegister = Interpreter::getReg3(theInstruction) << 2;
+          Int64 TnumElems = * (Int64*)(TregMemBuffer + TnumElemsRegister + 2);
+          Uint32 TregNumElemsType = TregMemBuffer[TnumElemsRegister];
+
+          Uint32 TretElemsRegister = Interpreter::getReg4(theInstruction) << 2;
+          Uint32 TexactMatch = Interpreter::enum5(theInstruction);
+          Int64 end_pos = Toffset + (2 * TnumElems);
+
+          if (unlikely((TregOffsetType == NULL_INDICATOR) ||
+                       (TregOrdinalType == NULL_INDICATOR) ||
+                       (TregNumElemsType == NULL_INDICATOR))) {
+            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
+          }
+          if (Toffset < 0 || TnumElems < 0 || end_pos > MAX_HEAP_OFFSET) {
+            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
+          }
+          if (Tordinal < 0 ||
+              Tordinal > Int64(std::numeric_limits<Uint16>::max())) {
+            return TUPKEY_abort(req_struct, ZWRONG_INPUT_TO_BINARY_SEARCH);
+          }
+          Uint16 ordinal = Uint16(Tordinal);
+          Uint32 ret;
+          switch (TexactMatch) {
+          case EQUAL_MATCH: {
+            ret = binary_uint16_search_exact(ordinal,
+                                             &TheapMemoryChar[Toffset],
+                                             TnumElems);
+            break;
+          }
+          case SMALLER_MATCH: {
+            ret = binary_uint16_search_smaller(ordinal,
+                                               &TheapMemoryChar[Toffset],
+                                               TnumElems,
+                                               false);
+            break;
+          }
+          case LARGER_MATCH: {
+            ret = binary_uint16_search_larger(ordinal,
+                                              &TheapMemoryChar[Toffset],
+                                              TnumElems,
+                                              false);
+            break;
+          }
+          case SMALLER_EQUAL_MATCH: {
+            ret = binary_uint16_search_smaller(ordinal,
+                                               &TheapMemoryChar[Toffset],
+                                               TnumElems,
+                                               true);
+            break;
+          }
+          case LARGER_EQUAL_MATCH: {
+            ret = binary_uint16_search_larger(ordinal,
+                                              &TheapMemoryChar[Toffset],
+                                              TnumElems,
+                                              true);
+            break;
+          }
+          default: {
+            return TUPKEY_abort(req_struct, ZNO_SUCH_BINARY_SEARCH_METHOD);
+          }
+          }
+          if (ret == RET_NULL) {
+            TregMemBuffer[TretElemsRegister] = NULL_INDICATOR;
+          } else {
+            TregMemBuffer[TretElemsRegister] = NOT_NULL_INDICATOR;
+            *(Int64*)(TregMemBuffer + TretElemsRegister + 2) = ret;
+          }
+	  break;
+        }
+        case Interpreter::BINARY_SEARCH_ODD:
+        {
+          RnoOfInstructions += 3; //A bit heavier instruction
+          /* See BINARY_SEARCH_64, this is the odd number version version */
+          Int64 Tordinal = * (Int64*)(TregMemBuffer + theRegister + 2);
+          Uint32 TregOrdinalType = TregMemBuffer[theRegister];
+
+          Uint32 ToffsetRegister = Interpreter::getReg2(theInstruction) << 2;
+          Int64 Toffset = * (Int64*)(TregMemBuffer + ToffsetRegister + 2);
+          Uint32 TregOffsetType = TregMemBuffer[ToffsetRegister];
+
+          Uint32 TnumElemsRegister = Interpreter::getReg3(theInstruction) << 2;
+          Int64 TnumElems = * (Int64*)(TregMemBuffer + TnumElemsRegister + 2);
+          Uint32 TregNumElemsType = TregMemBuffer[TnumElemsRegister];
+
+          Uint32 TretElemsRegister = Interpreter::getReg4(theInstruction) << 2;
+          Uint32 TexactMatch = Interpreter::enum5(theInstruction);
+          Uint32 TnumberSize = Interpreter::enum6(theInstruction);
+          Int64 end_pos = Toffset + (TnumberSize * TnumElems);
+
+          if (unlikely((TregOffsetType == NULL_INDICATOR) ||
+                       (TregOrdinalType == NULL_INDICATOR) ||
+                       (TregNumElemsType == NULL_INDICATOR))) {
+            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
+          }
+          if (Toffset < 0 || TnumElems < 0 || end_pos > MAX_HEAP_OFFSET) {
+            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
+          }
+          if (TnumberSize != 1 &&
+              TnumberSize != 3 &&
+              TnumberSize != 5 &&
+              TnumberSize != 6) {
+            return TUPKEY_abort(req_struct, ZNO_SUCH_NUMBER_SIZE_SUPPORTED);
+          }
+          Uint64 max_number = (Uint64(1) << (Uint64(TnumberSize * 8))) - 1;
+          if (Tordinal < 0 ||
+              Tordinal > Int64(max_number)) {
+            return TUPKEY_abort(req_struct, ZWRONG_INPUT_TO_BINARY_SEARCH);
+          }
+          Uint64 ordinal = Uint64(Tordinal);
+          Uint32 ret;
+#ifdef TRACE_INTERPRETER
+          g_eventLogger->info("theInstruction: %x, TexactMatch: %u, "
+                              "Tordinal: %llu, Toffset: %lld, TnumElems: %lld, "
+                              "TnumberSize: %u",
+           theInstruction,
+           TexactMatch,
+           Tordinal,
+           Toffset,
+           TnumElems,
+           TnumberSize);
+#endif
+          switch (TexactMatch) {
+          case EQUAL_MATCH: {
+            ret = binary_odd_search_exact(ordinal,
+                                          &TheapMemoryChar[Toffset],
+                                          TnumElems,
+                                          TnumberSize);
+            break;
+          }
+          case SMALLER_MATCH: {
+            ret = binary_odd_search_smaller(ordinal,
+                                            &TheapMemoryChar[Toffset],
+                                            TnumElems,
+                                            TnumberSize,
+                                            false);
+            break;
+          }
+          case LARGER_MATCH: {
+            ret = binary_odd_search_larger(ordinal,
+                                           &TheapMemoryChar[Toffset],
+                                           TnumElems,
+                                           TnumberSize,
+                                           false);
+            break;
+          }
+          case SMALLER_EQUAL_MATCH: {
+            ret = binary_odd_search_smaller(ordinal,
+                                            &TheapMemoryChar[Toffset],
+                                            TnumElems,
+                                            TnumberSize,
+                                            true);
+            break;
+          }
+          case LARGER_EQUAL_MATCH: {
+            ret = binary_odd_search_larger(ordinal,
+                                           &TheapMemoryChar[Toffset],
+                                           TnumElems,
+                                           TnumberSize,
+                                           true);
+            break;
+          }
+          default: {
+            return TUPKEY_abort(req_struct, ZNO_SUCH_BINARY_SEARCH_METHOD);
+          }
+          }
+          if (ret == RET_NULL) {
+            TregMemBuffer[TretElemsRegister] = NULL_INDICATOR;
+          } else {
+            TregMemBuffer[TretElemsRegister] = NOT_NULL_INDICATOR;
+            *(Int64*)(TregMemBuffer + TretElemsRegister + 2) = ret;
+          }
+	  break;
+        }
+        case Interpreter::STRING_SEARCH:
+        {
+          RnoOfInstructions += 3; //A bit heavier instruction
+          Int64 ToffsetString = * (Int64*)(TregMemBuffer + theRegister + 2);
+          Uint32 TregoffsetStringType = TregMemBuffer[theRegister];
+
+          Uint32 TstringLenRegister = Interpreter::getReg2(theInstruction) << 2;
+          Int64 TstringLen = *(Int64*)(TregMemBuffer + TstringLenRegister + 2);
+          Uint32 TregstringLenType = TregMemBuffer[TstringLenRegister];
+
+          Uint32 ToffsetSearchRegister =
+            Interpreter::getReg3(theInstruction) << 2;
+          Int64 ToffsetSearch =
+            *(Int64*)(TregMemBuffer + ToffsetSearchRegister + 2);
+          Uint32 ToffsetSearchType = TregMemBuffer[ToffsetSearchRegister];
+
+          Uint32 TsearchLenRegister = Interpreter::getReg4(theInstruction) << 2;
+          Int64 TsearchLen = *(Int64*)(TregMemBuffer + TsearchLenRegister + 2);
+          Uint32 TregsearchLenType = TregMemBuffer[TsearchLenRegister];
+
+          Uint32 TretRegister = Interpreter::getReg5(theInstruction) << 2;
+
+          if (unlikely((TregoffsetStringType == NULL_INDICATOR) ||
+                       (TregstringLenType == NULL_INDICATOR) ||
+                       (ToffsetSearchType == NULL_INDICATOR) ||
+                       (TregsearchLenType == NULL_INDICATOR))) {
+            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
+          }
+          if (ToffsetString < 0 ||
+              ToffsetSearch < 0 ||
+              TsearchLen < 0 ||
+              TstringLen < 0 ||
+              (ToffsetString + TstringLen) > MAX_HEAP_OFFSET ||
+              (ToffsetSearch + TsearchLen) > MAX_HEAP_OFFSET) {
+            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
+          }
+          Uint32 ret;
+          ret = string_search(&TheapMemoryChar[ToffsetSearch],
+                              TsearchLen,
+                              &TheapMemoryChar[ToffsetString],
+                              TstringLen);
+          if (ret == RET_NULL) {
+            TregMemBuffer[TretRegister] = NULL_INDICATOR;
+          } else {
+            TregMemBuffer[TretRegister] = NOT_NULL_INDICATOR;
+            *(Int64*)(TregMemBuffer + TretRegister + 2) = ret;
+          }
+	  break;
+        }
+        case Interpreter::QSORT:
+        {
+          RnoOfInstructions += 3; //A bit heavier instruction
+          /**
+           * This instruction sorts an array of unsigned integers of a
+           * given size. The size can be 1,2,4,5,6 and 8 bytes.
+           *
+           * Input:
+           *  Reg1: Offset of memory to be sorted
+           *  Reg2: Number of elements in array to be sorted
+           *  Enum5: Number size in bytes
+           */
+          Int64 Toffset = * (Int64*)(TregMemBuffer + theRegister + 2);
+          Uint32 TregoffsetType = TregMemBuffer[theRegister];
+
+          Uint32 TnumElemsRegister = Interpreter::getReg2(theInstruction) << 2;
+          Int64 TnumElems = *(Int64*)(TregMemBuffer + TnumElemsRegister + 2);
+          Uint32 TregnumElemsType = TregMemBuffer[TnumElemsRegister];
+
+          Uint32 TnumberSize = Interpreter::enum5(theInstruction);
+
+          if (unlikely((TregoffsetType == NULL_INDICATOR) ||
+                       (TregnumElemsType == NULL_INDICATOR))) {
+            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
+          }
+          if (Toffset < 0 ||
+              TnumElems < 0 ||
+              (Toffset + (TnumberSize * TnumElems)) > MAX_HEAP_OFFSET) {
+            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
+          }
+          if (TnumberSize != 1 &&
+              TnumberSize != 2 &&
+              TnumberSize != 3 &&
+              TnumberSize != 4 &&
+              TnumberSize != 5 &&
+              TnumberSize != 6 &&
+              TnumberSize != 8) {
+            return TUPKEY_abort(req_struct, ZNO_SUCH_NUMBER_SIZE_SUPPORTED);
+          }
+          qsort_instr(&TheapMemoryChar[Toffset],
+                      TnumElems,
+                      TnumberSize);
+	  break;
+        }
+        case Interpreter::COMPRESS_NUM_ARRAY:
+        {
+          RnoOfInstructions += 3; //A bit heavier instruction
+          /**
+           * This instruction takes as input an array of Uint32 or Uint64
+           * and converts it into a smaller array of 3, 5 or 6 bytes stored
+           * in little-endian format. This can be used in combination with
+           * binary search of odd sizes and similarly for search intervals.
+           *
+           * Input:
+           *  Reg1: Offset of memory to be sorted
+           *  Reg2: Number of elements in array to be sorted
+           *  Enum5: Number size in bytes of input data (4 or 8)
+           *  Enum6: Number size in bytes of output data (3, 5 or 6)
+           */
+          Int64 Toffset = * (Int64*)(TregMemBuffer + theRegister + 2);
+          Uint32 TregoffsetType = TregMemBuffer[theRegister];
+
+          Uint32 TnumElemsRegister = Interpreter::getReg2(theInstruction) << 2;
+          Int64 TnumElems = *(Int64*)(TregMemBuffer + TnumElemsRegister + 2);
+          Uint32 TregnumElemsType = TregMemBuffer[TnumElemsRegister];
+
+          Uint32 TnumberSizeIn = Interpreter::enum5(theInstruction);
+          Uint32 TnumberSizeOut = Interpreter::enum6(theInstruction);
+
+#ifdef TRACE_INTERPRETER
+          g_eventLogger->info("Toffset: %lld, TnumElems: %lld, "
+                              "TnumberSizeIn: %u, TnumberSizeOut: %u, "
+                              "theInstruction: %x",
+            Toffset,
+            TnumElems,
+            TnumberSizeIn,
+            TnumberSizeOut,
+            theInstruction);
+#endif
+          if (unlikely((TregoffsetType == NULL_INDICATOR) ||
+                       (TregnumElemsType == NULL_INDICATOR))) {
+            return TUPKEY_abort(req_struct, ZREGISTER_INIT_ERROR);
+          }
+          if (Toffset < 0 ||
+              TnumElems < 0 ||
+              (Toffset + (TnumberSizeIn * TnumElems)) > MAX_HEAP_OFFSET) {
+            return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
+          }
+          if (!((TnumberSizeIn == 4 && TnumberSizeOut == 3) ||
+                (TnumberSizeIn == 8 &&
+                 (TnumberSizeOut == 5 || TnumberSizeOut == 6)))) {
+            return TUPKEY_abort(req_struct, ZNO_SUCH_NUMBER_SIZE_SUPPORTED);
+          }
+          if (TnumberSizeIn == 4) {
+            compress_num32_array(&TheapMemoryChar[Toffset],
+                                 TnumElems,
+                                 TnumberSizeOut);
+          } else {
+            compress_num64_array(&TheapMemoryChar[Toffset],
+                                 TnumElems,
+                                 TnumberSizeOut);
+          }
 	  break;
         }
         case Interpreter::SPECIAL_INSTR:
@@ -8628,7 +10185,8 @@ Dbtup::nr_delete(Signal* signal, Uint32 senderData,
       req_struct.fragPtrP = fragPtr.p;
       Operationrec oprec;
       Tuple_header *copy;
-      if ((copy = alloc_copy_tuple(tablePtr.p, &oprec.m_copy_tuple_location)) ==
+      if ((copy = alloc_copy_tuple
+         (tablePtr.p, &oprec.m_copy_tuple_location, false)) ==
           0) {
         /**
          * We failed to allocate the copy record, this is a critical error,

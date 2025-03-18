@@ -42,6 +42,7 @@ RondisConn::RondisConn(
 {
     int worker_id = *static_cast<int *>(worker_specific_data);
     _worker_id = worker_id;
+    set_current_database(worker_id, 0);
 }
 
 int RondisConn::DealMessage(const RedisCmdArgsType &argv, std::string *response)
@@ -65,7 +66,10 @@ std::shared_ptr<PinkConn> RondisConnFactory::NewPinkConn(
     [[maybe_unused]]/*todo remove?*/ PinkEpoll *pink_epoll
 ) const
 {
-    return std::make_shared<RondisConn>(connfd, ip_port, thread, worker_specific_data);
+    return std::make_shared<RondisConn>(connfd,
+                                        ip_port,
+                                        thread,
+                                        worker_specific_data);
 }
 
 std::vector<Ndb *> ndb_objects;

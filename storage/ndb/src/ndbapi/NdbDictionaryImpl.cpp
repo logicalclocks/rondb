@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -478,6 +478,38 @@ void NdbColumnImpl::create_pseudo_columns() {
     NdbColumnImpl::create_pseudo("NDB$READ_INTERPRETER_OUTPUT_14");
   NdbDictionary::Column::READ_INTERPRETER_OUTPUT_15 = 
     NdbColumnImpl::create_pseudo("NDB$READ_INTERPRETER_OUTPUT_15");
+  NdbDictionary::Column::INTERPRETER_INPUT_0 = 
+    NdbColumnImpl::create_pseudo("NDB$INTERPRETER_INPUT_0");
+  NdbDictionary::Column::INTERPRETER_INPUT_1 = 
+    NdbColumnImpl::create_pseudo("NDB$INTERPRETER_INPUT_1");
+  NdbDictionary::Column::INTERPRETER_INPUT_2 = 
+    NdbColumnImpl::create_pseudo("NDB$INTERPRETER_INPUT_2");
+  NdbDictionary::Column::INTERPRETER_INPUT_3 = 
+    NdbColumnImpl::create_pseudo("NDB$INTERPRETER_INPUT_3");
+  NdbDictionary::Column::INTERPRETER_INPUT_4 = 
+    NdbColumnImpl::create_pseudo("NDB$INTERPRETER_INPUT_4");
+  NdbDictionary::Column::INTERPRETER_INPUT_5 = 
+    NdbColumnImpl::create_pseudo("NDB$INTERPRETER_INPUT_5");
+  NdbDictionary::Column::INTERPRETER_INPUT_6 = 
+    NdbColumnImpl::create_pseudo("NDB$INTERPRETER_INPUT_6");
+  NdbDictionary::Column::INTERPRETER_INPUT_7 = 
+    NdbColumnImpl::create_pseudo("NDB$INTERPRETER_INPUT_7");
+  NdbDictionary::Column::INTERPRETER_INPUT_8 = 
+    NdbColumnImpl::create_pseudo("NDB$INTERPRETER_INPUT_8");
+  NdbDictionary::Column::INTERPRETER_INPUT_9 = 
+    NdbColumnImpl::create_pseudo("NDB$INTERPRETER_INPUT_9");
+  NdbDictionary::Column::INTERPRETER_INPUT_10 = 
+    NdbColumnImpl::create_pseudo("NDB$INTERPRETER_INPUT_10");
+  NdbDictionary::Column::INTERPRETER_INPUT_11 = 
+    NdbColumnImpl::create_pseudo("NDB$INTERPRETER_INPUT_11");
+  NdbDictionary::Column::INTERPRETER_INPUT_12 = 
+    NdbColumnImpl::create_pseudo("NDB$INTERPRETER_INPUT_12");
+  NdbDictionary::Column::INTERPRETER_INPUT_13 = 
+    NdbColumnImpl::create_pseudo("NDB$INTERPRETER_INPUT_13");
+  NdbDictionary::Column::INTERPRETER_INPUT_14 = 
+    NdbColumnImpl::create_pseudo("NDB$INTERPRETER_INPUT_14");
+  NdbDictionary::Column::INTERPRETER_INPUT_15 = 
+    NdbColumnImpl::create_pseudo("NDB$READ_INTERPRETER_OUTPUT_15");
 }
 
 void NdbColumnImpl::destory_pseudo_columns() {
@@ -512,6 +544,23 @@ void NdbColumnImpl::destory_pseudo_columns() {
   delete NdbDictionary::Column::READ_INTERPRETER_OUTPUT_13;
   delete NdbDictionary::Column::READ_INTERPRETER_OUTPUT_14;
   delete NdbDictionary::Column::READ_INTERPRETER_OUTPUT_15;
+
+  delete NdbDictionary::Column::INTERPRETER_INPUT_0;
+  delete NdbDictionary::Column::INTERPRETER_INPUT_1;
+  delete NdbDictionary::Column::INTERPRETER_INPUT_2;
+  delete NdbDictionary::Column::INTERPRETER_INPUT_3;
+  delete NdbDictionary::Column::INTERPRETER_INPUT_4;
+  delete NdbDictionary::Column::INTERPRETER_INPUT_5;
+  delete NdbDictionary::Column::INTERPRETER_INPUT_6;
+  delete NdbDictionary::Column::INTERPRETER_INPUT_7;
+  delete NdbDictionary::Column::INTERPRETER_INPUT_8;
+  delete NdbDictionary::Column::INTERPRETER_INPUT_9;
+  delete NdbDictionary::Column::INTERPRETER_INPUT_10;
+  delete NdbDictionary::Column::INTERPRETER_INPUT_11;
+  delete NdbDictionary::Column::INTERPRETER_INPUT_12;
+  delete NdbDictionary::Column::INTERPRETER_INPUT_13;
+  delete NdbDictionary::Column::INTERPRETER_INPUT_14;
+  delete NdbDictionary::Column::INTERPRETER_INPUT_15;
   NdbDictionary::Column::FRAGMENT = nullptr;
   NdbDictionary::Column::FRAGMENT_FIXED_MEMORY = nullptr;
   NdbDictionary::Column::FRAGMENT_VARSIZED_MEMORY = nullptr;
@@ -543,6 +592,23 @@ void NdbColumnImpl::destory_pseudo_columns() {
   NdbDictionary::Column::READ_INTERPRETER_OUTPUT_13 = nullptr;
   NdbDictionary::Column::READ_INTERPRETER_OUTPUT_14 = nullptr;
   NdbDictionary::Column::READ_INTERPRETER_OUTPUT_15 = nullptr;
+
+  NdbDictionary::Column::INTERPRETER_INPUT_0 = nullptr;
+  NdbDictionary::Column::INTERPRETER_INPUT_1 = nullptr;
+  NdbDictionary::Column::INTERPRETER_INPUT_2 = nullptr;
+  NdbDictionary::Column::INTERPRETER_INPUT_3 = nullptr;
+  NdbDictionary::Column::INTERPRETER_INPUT_4 = nullptr;
+  NdbDictionary::Column::INTERPRETER_INPUT_5 = nullptr;
+  NdbDictionary::Column::INTERPRETER_INPUT_6 = nullptr;
+  NdbDictionary::Column::INTERPRETER_INPUT_7 = nullptr;
+  NdbDictionary::Column::INTERPRETER_INPUT_8 = nullptr;
+  NdbDictionary::Column::INTERPRETER_INPUT_9 = nullptr;
+  NdbDictionary::Column::INTERPRETER_INPUT_10 = nullptr;
+  NdbDictionary::Column::INTERPRETER_INPUT_11 = nullptr;
+  NdbDictionary::Column::INTERPRETER_INPUT_12 = nullptr;
+  NdbDictionary::Column::INTERPRETER_INPUT_13 = nullptr;
+  NdbDictionary::Column::INTERPRETER_INPUT_14 = nullptr;
+  NdbDictionary::Column::INTERPRETER_INPUT_15 = nullptr;
 
   delete NdbDictionary::Column::COPY_ROWID;
   NdbDictionary::Column::COPY_ROWID = nullptr;
@@ -668,82 +734,162 @@ NdbDictionary::Column *NdbColumnImpl::create_pseudo(const char *name) {
   } else if (!strcmp(name, "NDB$READ_INTERPRETER_OUTPUT_0")) {
     col->setType(NdbDictionary::Column::Unsigned);
     col->m_impl.m_attrId = AttributeHeader::READ_INTERPRETER_OUTPUT_FIRST + 0;
-    col->m_impl.m_attrSize = 4;
+    col->m_impl.m_attrSize = 8;
     col->m_impl.m_arraySize = 1;
   } else if (!strcmp(name, "NDB$READ_INTERPRETER_OUTPUT_1")) {
     col->setType(NdbDictionary::Column::Unsigned);
     col->m_impl.m_attrId = AttributeHeader::READ_INTERPRETER_OUTPUT_FIRST + 1;
-    col->m_impl.m_attrSize = 4;
+    col->m_impl.m_attrSize = 8;
     col->m_impl.m_arraySize = 1;
   } else if (!strcmp(name, "NDB$READ_INTERPRETER_OUTPUT_2")) {
     col->setType(NdbDictionary::Column::Unsigned);
     col->m_impl.m_attrId = AttributeHeader::READ_INTERPRETER_OUTPUT_FIRST + 2;
-    col->m_impl.m_attrSize = 4;
+    col->m_impl.m_attrSize = 8;
     col->m_impl.m_arraySize = 1;
   } else if (!strcmp(name, "NDB$READ_INTERPRETER_OUTPUT_3")) {
     col->setType(NdbDictionary::Column::Unsigned);
     col->m_impl.m_attrId = AttributeHeader::READ_INTERPRETER_OUTPUT_FIRST + 3;
-    col->m_impl.m_attrSize = 4;
+    col->m_impl.m_attrSize = 8;
     col->m_impl.m_arraySize = 1;
   } else if (!strcmp(name, "NDB$READ_INTERPRETER_OUTPUT_4")) {
     col->setType(NdbDictionary::Column::Unsigned);
     col->m_impl.m_attrId = AttributeHeader::READ_INTERPRETER_OUTPUT_FIRST + 4;
-    col->m_impl.m_attrSize = 4;
+    col->m_impl.m_attrSize = 8;
     col->m_impl.m_arraySize = 1;
   } else if (!strcmp(name, "NDB$READ_INTERPRETER_OUTPUT_5")) {
     col->setType(NdbDictionary::Column::Unsigned);
     col->m_impl.m_attrId = AttributeHeader::READ_INTERPRETER_OUTPUT_FIRST + 5;
-    col->m_impl.m_attrSize = 4;
+    col->m_impl.m_attrSize = 8;
     col->m_impl.m_arraySize = 1;
   } else if (!strcmp(name, "NDB$READ_INTERPRETER_OUTPUT_6")) {
     col->setType(NdbDictionary::Column::Unsigned);
     col->m_impl.m_attrId = AttributeHeader::READ_INTERPRETER_OUTPUT_FIRST + 6;
-    col->m_impl.m_attrSize = 4;
+    col->m_impl.m_attrSize = 8;
     col->m_impl.m_arraySize = 1;
   } else if (!strcmp(name, "NDB$READ_INTERPRETER_OUTPUT_7")) {
     col->setType(NdbDictionary::Column::Unsigned);
     col->m_impl.m_attrId = AttributeHeader::READ_INTERPRETER_OUTPUT_FIRST + 7;
-    col->m_impl.m_attrSize = 4;
+    col->m_impl.m_attrSize = 8;
     col->m_impl.m_arraySize = 1;
   } else if (!strcmp(name, "NDB$READ_INTERPRETER_OUTPUT_8")) {
     col->setType(NdbDictionary::Column::Unsigned);
     col->m_impl.m_attrId = AttributeHeader::READ_INTERPRETER_OUTPUT_FIRST + 8;
-    col->m_impl.m_attrSize = 4;
+    col->m_impl.m_attrSize = 8;
     col->m_impl.m_arraySize = 1;
   } else if (!strcmp(name, "NDB$READ_INTERPRETER_OUTPUT_9")) {
     col->setType(NdbDictionary::Column::Unsigned);
     col->m_impl.m_attrId = AttributeHeader::READ_INTERPRETER_OUTPUT_FIRST + 9;
-    col->m_impl.m_attrSize = 4;
+    col->m_impl.m_attrSize = 8;
     col->m_impl.m_arraySize = 1;
   } else if (!strcmp(name, "NDB$READ_INTERPRETER_OUTPUT_10")) {
     col->setType(NdbDictionary::Column::Unsigned);
     col->m_impl.m_attrId = AttributeHeader::READ_INTERPRETER_OUTPUT_FIRST + 10;
-    col->m_impl.m_attrSize = 4;
+    col->m_impl.m_attrSize = 8;
     col->m_impl.m_arraySize = 1;
   } else if (!strcmp(name, "NDB$READ_INTERPRETER_OUTPUT_11")) {
     col->setType(NdbDictionary::Column::Unsigned);
     col->m_impl.m_attrId = AttributeHeader::READ_INTERPRETER_OUTPUT_FIRST + 11;
-    col->m_impl.m_attrSize = 4;
+    col->m_impl.m_attrSize = 8;
     col->m_impl.m_arraySize = 1;
   } else if (!strcmp(name, "NDB$READ_INTERPRETER_OUTPUT_12")) {
     col->setType(NdbDictionary::Column::Unsigned);
     col->m_impl.m_attrId = AttributeHeader::READ_INTERPRETER_OUTPUT_FIRST + 12;
-    col->m_impl.m_attrSize = 4;
+    col->m_impl.m_attrSize = 8;
     col->m_impl.m_arraySize = 1;
   } else if (!strcmp(name, "NDB$READ_INTERPRETER_OUTPUT_13")) {
     col->setType(NdbDictionary::Column::Unsigned);
     col->m_impl.m_attrId = AttributeHeader::READ_INTERPRETER_OUTPUT_FIRST + 13;
-    col->m_impl.m_attrSize = 4;
+    col->m_impl.m_attrSize = 8;
     col->m_impl.m_arraySize = 1;
   } else if (!strcmp(name, "NDB$READ_INTERPRETER_OUTPUT_14")) {
     col->setType(NdbDictionary::Column::Unsigned);
     col->m_impl.m_attrId = AttributeHeader::READ_INTERPRETER_OUTPUT_FIRST + 14;
-    col->m_impl.m_attrSize = 4;
+    col->m_impl.m_attrSize = 8;
     col->m_impl.m_arraySize = 1;
   } else if (!strcmp(name, "NDB$READ_INTERPRETER_OUTPUT_15")) {
     col->setType(NdbDictionary::Column::Unsigned);
     col->m_impl.m_attrId = AttributeHeader::READ_INTERPRETER_OUTPUT_FIRST + 15;
-    col->m_impl.m_attrSize = 4;
+    col->m_impl.m_attrSize = 8;
+    col->m_impl.m_arraySize = 1;
+  } else if (!strcmp(name, "NDB$INTERPRETER_INPUT_0")) {
+    col->setType(NdbDictionary::Column::Unsigned);
+    col->m_impl.m_attrId = AttributeHeader::INTERPRETER_INPUT_FIRST + 0;
+    col->m_impl.m_attrSize = 8;
+    col->m_impl.m_arraySize = 1;
+  } else if (!strcmp(name, "NDB$INTERPRETER_INPUT_1")) {
+    col->setType(NdbDictionary::Column::Unsigned);
+    col->m_impl.m_attrId = AttributeHeader::INTERPRETER_INPUT_FIRST + 1;
+    col->m_impl.m_attrSize = 8;
+    col->m_impl.m_arraySize = 1;
+  } else if (!strcmp(name, "NDB$INTERPRETER_INPUT_2")) {
+    col->setType(NdbDictionary::Column::Unsigned);
+    col->m_impl.m_attrId = AttributeHeader::INTERPRETER_INPUT_FIRST + 2;
+    col->m_impl.m_attrSize = 8;
+    col->m_impl.m_arraySize = 1;
+  } else if (!strcmp(name, "NDB$INTERPRETER_INPUT_3")) {
+    col->setType(NdbDictionary::Column::Unsigned);
+    col->m_impl.m_attrId = AttributeHeader::INTERPRETER_INPUT_FIRST + 3;
+    col->m_impl.m_attrSize = 8;
+    col->m_impl.m_arraySize = 1;
+  } else if (!strcmp(name, "NDB$INTERPRETER_INPUT_4")) {
+    col->setType(NdbDictionary::Column::Unsigned);
+    col->m_impl.m_attrId = AttributeHeader::INTERPRETER_INPUT_FIRST + 4;
+    col->m_impl.m_attrSize = 8;
+    col->m_impl.m_arraySize = 1;
+  } else if (!strcmp(name, "NDB$INTERPRETER_INPUT_5")) {
+    col->setType(NdbDictionary::Column::Unsigned);
+    col->m_impl.m_attrId = AttributeHeader::INTERPRETER_INPUT_FIRST + 5;
+    col->m_impl.m_attrSize = 8;
+    col->m_impl.m_arraySize = 1;
+  } else if (!strcmp(name, "NDB$INTERPRETER_INPUT_6")) {
+    col->setType(NdbDictionary::Column::Unsigned);
+    col->m_impl.m_attrId = AttributeHeader::INTERPRETER_INPUT_FIRST + 6;
+    col->m_impl.m_attrSize = 8;
+    col->m_impl.m_arraySize = 1;
+  } else if (!strcmp(name, "NDB$INTERPRETER_INPUT_7")) {
+    col->setType(NdbDictionary::Column::Unsigned);
+    col->m_impl.m_attrId = AttributeHeader::INTERPRETER_INPUT_FIRST + 7;
+    col->m_impl.m_attrSize = 8;
+    col->m_impl.m_arraySize = 1;
+  } else if (!strcmp(name, "NDB$INTERPRETER_INPUT_8")) {
+    col->setType(NdbDictionary::Column::Unsigned);
+    col->m_impl.m_attrId = AttributeHeader::INTERPRETER_INPUT_FIRST + 8;
+    col->m_impl.m_attrSize = 8;
+    col->m_impl.m_arraySize = 1;
+  } else if (!strcmp(name, "NDB$INTERPRETER_INPUT_9")) {
+    col->setType(NdbDictionary::Column::Unsigned);
+    col->m_impl.m_attrId = AttributeHeader::INTERPRETER_INPUT_FIRST + 9;
+    col->m_impl.m_attrSize = 8;
+    col->m_impl.m_arraySize = 1;
+  } else if (!strcmp(name, "NDB$INTERPRETER_INPUT_10")) {
+    col->setType(NdbDictionary::Column::Unsigned);
+    col->m_impl.m_attrId = AttributeHeader::INTERPRETER_INPUT_FIRST + 10;
+    col->m_impl.m_attrSize = 8;
+    col->m_impl.m_arraySize = 1;
+  } else if (!strcmp(name, "NDB$INTERPRETER_INPUT_11")) {
+    col->setType(NdbDictionary::Column::Unsigned);
+    col->m_impl.m_attrId = AttributeHeader::INTERPRETER_INPUT_FIRST + 11;
+    col->m_impl.m_attrSize = 8;
+    col->m_impl.m_arraySize = 1;
+  } else if (!strcmp(name, "NDB$INTERPRETER_INPUT_12")) {
+    col->setType(NdbDictionary::Column::Unsigned);
+    col->m_impl.m_attrId = AttributeHeader::INTERPRETER_INPUT_FIRST + 12;
+    col->m_impl.m_attrSize = 8;
+    col->m_impl.m_arraySize = 1;
+  } else if (!strcmp(name, "NDB$INTERPRETER_INPUT_13")) {
+    col->setType(NdbDictionary::Column::Unsigned);
+    col->m_impl.m_attrId = AttributeHeader::INTERPRETER_INPUT_FIRST + 13;
+    col->m_impl.m_attrSize = 8;
+    col->m_impl.m_arraySize = 1;
+  } else if (!strcmp(name, "NDB$INTERPRETER_INPUT_14")) {
+    col->setType(NdbDictionary::Column::Unsigned);
+    col->m_impl.m_attrId = AttributeHeader::INTERPRETER_INPUT_FIRST + 14;
+    col->m_impl.m_attrSize = 8;
+    col->m_impl.m_arraySize = 1;
+  } else if (!strcmp(name, "NDB$INTERPRETER_INPUT_15")) {
+    col->setType(NdbDictionary::Column::Unsigned);
+    col->m_impl.m_attrId = AttributeHeader::INTERPRETER_INPUT_FIRST + 15;
+    col->m_impl.m_attrSize = 8;
     col->m_impl.m_arraySize = 1;
   } else {
     abort();
@@ -9906,5 +10052,22 @@ const NdbDictionary::Column * NdbDictionary::Column::READ_INTERPRETER_OUTPUT_12 
 const NdbDictionary::Column * NdbDictionary::Column::READ_INTERPRETER_OUTPUT_13 = nullptr;
 const NdbDictionary::Column * NdbDictionary::Column::READ_INTERPRETER_OUTPUT_14 = nullptr;
 const NdbDictionary::Column * NdbDictionary::Column::READ_INTERPRETER_OUTPUT_15 = nullptr;
+
+const NdbDictionary::Column * NdbDictionary::Column::INTERPRETER_INPUT_0 = nullptr;
+const NdbDictionary::Column * NdbDictionary::Column::INTERPRETER_INPUT_1 = nullptr;
+const NdbDictionary::Column * NdbDictionary::Column::INTERPRETER_INPUT_2 = nullptr;
+const NdbDictionary::Column * NdbDictionary::Column::INTERPRETER_INPUT_3 = nullptr;
+const NdbDictionary::Column * NdbDictionary::Column::INTERPRETER_INPUT_4 = nullptr;
+const NdbDictionary::Column * NdbDictionary::Column::INTERPRETER_INPUT_5 = nullptr;
+const NdbDictionary::Column * NdbDictionary::Column::INTERPRETER_INPUT_6 = nullptr;
+const NdbDictionary::Column * NdbDictionary::Column::INTERPRETER_INPUT_7 = nullptr;
+const NdbDictionary::Column * NdbDictionary::Column::INTERPRETER_INPUT_8 = nullptr;
+const NdbDictionary::Column * NdbDictionary::Column::INTERPRETER_INPUT_9 = nullptr;
+const NdbDictionary::Column * NdbDictionary::Column::INTERPRETER_INPUT_10 = nullptr;
+const NdbDictionary::Column * NdbDictionary::Column::INTERPRETER_INPUT_11 = nullptr;
+const NdbDictionary::Column * NdbDictionary::Column::INTERPRETER_INPUT_12 = nullptr;
+const NdbDictionary::Column * NdbDictionary::Column::INTERPRETER_INPUT_13 = nullptr;
+const NdbDictionary::Column * NdbDictionary::Column::INTERPRETER_INPUT_14 = nullptr;
+const NdbDictionary::Column * NdbDictionary::Column::INTERPRETER_INPUT_15 = nullptr;
 
 template class Vector<NdbDictInterface::Tx::Op>;

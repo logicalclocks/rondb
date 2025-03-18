@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2007, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2024, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -201,7 +201,7 @@ inline int NdbInterpretedCode::add3(Uint32 x1, Uint32 x2, Uint32 x3) {
   return 0;
 }
 
-inline int NdbInterpretedCode::addN(const Uint32 *data, Uint32 length) {
+inline int NdbInterpretedCode::addN(const char *data, Uint32 length) {
   if (likely(length > 0)) {
     if (unlikely(!have_space_for(length))) return error(TooManyInstructions);
 
@@ -474,10 +474,22 @@ NdbInterpretedCode::write_interpreter_output(Uint32 RegValue,
   if (RegValue >= MaxReg)
     return error(BadRegister);
   if (OutputIndex >= MaxOutputIndex)
-    return error(BadOutputIndex);
+    return error(BadInOutputIndex);
   return add1(Interpreter::WriteInterpreterOutput(
               RegValue,
               OutputIndex));
+}
+
+int
+NdbInterpretedCode::read_interpreter_input(Uint32 RegValue,
+                                           Uint32 InputIndex) {
+  if (RegValue >= MaxReg)
+    return error(BadRegister);
+  if (InputIndex >= MaxInputIndex)
+    return error(BadInOutputIndex);
+  return add1(Interpreter::ReadInterpreterInput(
+              RegValue,
+              InputIndex));
 }
 
 int
@@ -526,6 +538,223 @@ NdbInterpretedCode::int64_to_str(Uint32 RegDestSize,
               RegDestSize,
               RegOffset,
               RegValue));
+}
+
+int
+NdbInterpretedCode::binary_search_64(Uint32 RegOrdinal,
+                                     Uint32 RegOffset,
+                                     Uint32 RegNumElems,
+                                     Uint32 RegResult,
+                                     Uint32 SearchType) {
+  if ((RegOrdinal >= MaxReg) ||
+      (RegOffset >= MaxReg) ||
+      (RegNumElems >= MaxReg) ||
+      (RegResult >= MaxReg) ||
+      (SearchType >= MaxEnum))
+    return error(BadRegister);
+  return add1(Interpreter::BinarySearch64(
+              RegOrdinal,
+              RegOffset,
+              RegNumElems,
+              RegResult,
+              SearchType));
+}
+
+int
+NdbInterpretedCode::binary_search_32(Uint32 RegOrdinal,
+                                     Uint32 RegOffset,
+                                     Uint32 RegNumElems,
+                                     Uint32 RegResult,
+                                     Uint32 SearchType) {
+  if ((RegOrdinal >= MaxReg) ||
+      (RegOffset >= MaxReg) ||
+      (RegNumElems >= MaxReg) ||
+      (RegResult >= MaxReg) ||
+      (SearchType >= MaxEnum))
+    return error(BadRegister);
+  return add1(Interpreter::BinarySearch32(
+              RegOrdinal,
+              RegOffset,
+              RegNumElems,
+              RegResult,
+              SearchType));
+}
+
+int
+NdbInterpretedCode::binary_search_16(Uint32 RegOrdinal,
+                                     Uint32 RegOffset,
+                                     Uint32 RegNumElems,
+                                     Uint32 RegResult,
+                                     Uint32 SearchType) {
+  if ((RegOrdinal >= MaxReg) ||
+      (RegOffset >= MaxReg) ||
+      (RegNumElems >= MaxReg) ||
+      (RegResult >= MaxReg) ||
+      (SearchType >= MaxEnum))
+    return error(BadRegister);
+  return add1(Interpreter::BinarySearch16(
+              RegOrdinal,
+              RegOffset,
+              RegNumElems,
+              RegResult,
+              SearchType));
+}
+
+int
+NdbInterpretedCode::binary_search_odd(Uint32 RegOrdinal,
+                                      Uint32 RegOffset,
+                                      Uint32 RegNumElems,
+                                      Uint32 RegResult,
+                                      Uint32 SearchType,
+                                      Uint32 NumberSize) {
+  if ((RegOrdinal >= MaxReg) ||
+      (RegOffset >= MaxReg) ||
+      (RegNumElems >= MaxReg) ||
+      (RegResult >= MaxReg) ||
+      (SearchType >= MaxEnum) ||
+      (NumberSize >= MaxEnum))
+    return error(BadRegister);
+  return add1(Interpreter::BinarySearchOdd(
+              RegOrdinal,
+              RegOffset,
+              RegNumElems,
+              RegResult,
+              SearchType,
+              NumberSize));
+}
+
+int
+NdbInterpretedCode::search_interval_64(Uint32 RegOrdinal,
+                                       Uint32 RegOffset,
+                                       Uint32 RegNumElems,
+                                       Uint32 RegResult,
+                                       Uint32 SearchType) {
+  if ((RegOrdinal >= MaxReg) ||
+      (RegOffset >= MaxReg) ||
+      (RegNumElems >= MaxReg) ||
+      (RegResult >= MaxReg) ||
+      (SearchType >= MaxEnum))
+    return error(BadRegister);
+  return add1(Interpreter::SearchInterval64(
+              RegOrdinal,
+              RegOffset,
+              RegNumElems,
+              RegResult,
+              SearchType));
+}
+
+int
+NdbInterpretedCode::search_interval_32(Uint32 RegOrdinal,
+                                       Uint32 RegOffset,
+                                       Uint32 RegNumElems,
+                                       Uint32 RegResult,
+                                       Uint32 SearchType) {
+  if ((RegOrdinal >= MaxReg) ||
+      (RegOffset >= MaxReg) ||
+      (RegNumElems >= MaxReg) ||
+      (RegResult >= MaxReg) ||
+      (SearchType >= MaxEnum))
+    return error(BadRegister);
+  return add1(Interpreter::SearchInterval32(
+              RegOrdinal,
+              RegOffset,
+              RegNumElems,
+              RegResult,
+              SearchType));
+}
+
+int
+NdbInterpretedCode::search_interval_16(Uint32 RegOrdinal,
+                                       Uint32 RegOffset,
+                                       Uint32 RegNumElems,
+                                       Uint32 RegResult,
+                                       Uint32 SearchType) {
+  if ((RegOrdinal >= MaxReg) ||
+      (RegOffset >= MaxReg) ||
+      (RegNumElems >= MaxReg) ||
+      (RegResult >= MaxReg) ||
+      (SearchType >= MaxEnum))
+    return error(BadRegister);
+  return add1(Interpreter::SearchInterval16(
+              RegOrdinal,
+              RegOffset,
+              RegNumElems,
+              RegResult,
+              SearchType));
+}
+
+int
+NdbInterpretedCode::search_interval_odd(Uint32 RegOrdinal,
+                                        Uint32 RegOffset,
+                                        Uint32 RegNumElems,
+                                        Uint32 RegResult,
+                                        Uint32 SearchType,
+                                        Uint32 NumberSize) {
+  if ((RegOrdinal >= MaxReg) ||
+      (RegOffset >= MaxReg) ||
+      (RegNumElems >= MaxReg) ||
+      (RegResult >= MaxReg) ||
+      (SearchType >= MaxEnum) ||
+      (NumberSize >= MaxEnum))
+    return error(BadRegister);
+  return add1(Interpreter::SearchIntervalOdd(
+              RegOrdinal,
+              RegOffset,
+              RegNumElems,
+              RegResult,
+              SearchType,
+              NumberSize));
+}
+
+int
+NdbInterpretedCode::string_search(Uint32 RegOffsetString,
+                                  Uint32 RegStringLen,
+                                  Uint32 RegOffsetSearch,
+                                  Uint32 RegSearchLen,
+                                  Uint32 RegResult) {
+  if ((RegOffsetString >= MaxReg) ||
+      (RegStringLen >= MaxReg) ||
+      (RegOffsetSearch >= MaxReg) ||
+      (RegSearchLen >= MaxReg) ||
+      (RegResult >= MaxReg))
+    return error(BadRegister);
+  return add1(Interpreter::StringSearch(
+              RegOffsetString,
+              RegStringLen,
+              RegOffsetSearch,
+              RegSearchLen,
+              RegResult));
+}
+
+int
+NdbInterpretedCode::qsort_instr(Uint32 RegOffset,
+                                Uint32 RegNumElems,
+                                Uint32 NumberSize) {
+  if ((RegOffset >= MaxReg) ||
+      (RegNumElems >= MaxReg) ||
+      (NumberSize >= MaxEnum))
+    return error(BadRegister);
+  return add1(Interpreter::QSort(
+              RegOffset,
+              RegNumElems,
+              NumberSize));
+}
+
+int
+NdbInterpretedCode::compress_num_array(Uint32 RegOffset,
+                                       Uint32 RegNumElems,
+                                       Uint32 NumberSizeIn,
+                                       Uint32 NumberSizeOut) {
+  if ((RegOffset >= MaxReg) ||
+      (RegNumElems >= MaxReg) ||
+      (NumberSizeIn >= MaxEnum) ||
+      (NumberSizeOut >= MaxEnum))
+    return error(BadRegister);
+  return add1(Interpreter::CompressNumArray(
+              RegOffset,
+              RegNumElems,
+              NumberSizeIn,
+              NumberSizeOut));
 }
 
 int
@@ -736,34 +965,12 @@ NdbInterpretedCode::load_op_type(Uint32 RegDest) {
 }
 
 
-static inline
-void
-zero32(Uint8* dstPtr, const Uint32 len) {
-  Uint32 odd = len & 3;
-  if (odd != 0)
-  {
-    Uint32 aligned = len & ~3;
-    Uint8* dst = dstPtr+aligned;
-    switch(odd){     /* odd is: {1..3} */
-    case 1:
-      dst[1] = 0;
-      [[fallthrough]];
-    case 2:
-      dst[2] = 0;
-      [[fallthrough]];
-    default:         /* Known to be odd==3 */
-      dst[3] = 0;
-    }
-  }
-} 
-
 int
 NdbInterpretedCode::load_const_mem(Uint32 RegMemoryOffset,
                                    Uint32 RegDestSize,
                                    Uint16 ConstantSize,
-                                   Uint32 *const_memory) {
+                                   const char *const_memory) {
   int ret_code;
-  zero32((Uint8*)const_memory, ConstantSize);
   if ((RegMemoryOffset >= MaxReg) ||
       (RegDestSize >= MaxReg))
     return error(BadRegister);
@@ -775,7 +982,24 @@ NdbInterpretedCode::load_const_mem(Uint32 RegMemoryOffset,
     return ret_code;
   }
   Uint32 words = (ConstantSize + 3) / 4;
-  return addN(const_memory, words);
+  if (words > 1) {
+    ret_code = addN(const_memory, words - 1);
+    if (ret_code != 0) return ret_code;
+  }
+  Uint32 last_word = 0;
+  Uint32 last_index = (words - 1) * 4;
+  memcpy(&last_word,
+         &const_memory[last_index],
+         (ConstantSize - last_index));
+  return add1(last_word);
+}
+
+int
+NdbInterpretedCode::bzero(Uint32 RegMemoryOffset, Uint32 RegSize) {
+  if ((RegMemoryOffset >= MaxReg) ||
+      (RegSize >= MaxReg))
+    return error(BadRegister);
+  return add1(Interpreter::Bzero(RegMemoryOffset, RegSize));
 }
 
 int
@@ -1366,13 +1590,13 @@ int NdbInterpretedCode::branch_col_val(Uint32 branch_type, Uint32 attrId,
   Uint32 len2 = Interpreter::mod4(len);
   if ((len2 == len) && (lastWordMask == (Uint32)~0)) {
     /* Whole number of 32-bit words */
-    DBUG_RETURN(addN((const Uint32 *)val, len2 >> 2));
+    DBUG_RETURN(addN((const char *)val, len2 >> 2));
   }
 
   /* else */
   /* Partial last word */
   len2 -= 4;
-  if (addN((const Uint32 *)val, len2 >> 2) != 0) DBUG_RETURN(-1);
+  if (addN((const char *)val, len2 >> 2) != 0) DBUG_RETURN(-1);
 
   /* Zero insignificant bytes in last word */
   Uint32 tmp = 0;

@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2024, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -60,11 +60,23 @@ class Interpreter {
    * Instructions
    */
   static constexpr Uint32 READ_ATTR_INTO_REG = 1;
+  static constexpr Uint32 BINARY_SEARCH_64 =
+                          READ_ATTR_INTO_REG + OVERFLOW_OPCODE;
   static constexpr Uint32 WRITE_ATTR_FROM_REG = 2;
+  static constexpr Uint32 BINARY_SEARCH_32 =
+                          WRITE_ATTR_FROM_REG + OVERFLOW_OPCODE;
   static constexpr Uint32 LOAD_CONST_NULL = 3;
+  static constexpr Uint32 BINARY_SEARCH_16 =
+                          LOAD_CONST_NULL + OVERFLOW_OPCODE;
   static constexpr Uint32 LOAD_CONST16 = 4;
+  static constexpr Uint32 BINARY_SEARCH_ODD =
+                          LOAD_CONST16 + OVERFLOW_OPCODE;
   static constexpr Uint32 LOAD_CONST32 = 5;
+  static constexpr Uint32 SEARCH_INTERVAL_64 =
+                          LOAD_CONST32 + OVERFLOW_OPCODE;
   static constexpr Uint32 LOAD_CONST64 = 6;
+  static constexpr Uint32 SEARCH_INTERVAL_32 =
+                          LOAD_CONST64 + OVERFLOW_OPCODE;
   static constexpr Uint32 ADD_REG_REG = 7;
   static constexpr Uint32 ADD_REG_CONST =
                           ADD_REG_REG + OVERFLOW_OPCODE;
@@ -73,8 +85,14 @@ class Interpreter {
                           SUB_REG_REG + OVERFLOW_OPCODE;
 
   static constexpr Uint32 BRANCH = 9;
+  static constexpr Uint32 SEARCH_INTERVAL_16 =
+                          BRANCH + OVERFLOW_OPCODE;
   static constexpr Uint32 BRANCH_REG_EQ_NULL = 10;
+  static constexpr Uint32 SEARCH_INTERVAL_ODD =
+                          BRANCH_REG_EQ_NULL + OVERFLOW_OPCODE;
   static constexpr Uint32 BRANCH_REG_NE_NULL = 11;
+  static constexpr Uint32 STRING_SEARCH =
+                          BRANCH_REG_NE_NULL + OVERFLOW_OPCODE;
   static constexpr Uint32 BRANCH_EQ_REG_REG = 12;
   static constexpr Uint32 BRANCH_EQ_REG_CONST =
                           BRANCH_EQ_REG_REG + OVERFLOW_OPCODE;
@@ -95,14 +113,21 @@ class Interpreter {
                           BRANCH_GE_REG_REG + OVERFLOW_OPCODE;
 
   static constexpr Uint32 EXIT_OK = 18;
+  static constexpr Uint32 QSORT =
+                          EXIT_OK + OVERFLOW_OPCODE;
   static constexpr Uint32 EXIT_REFUSE = 19;
+  static constexpr Uint32 COMPRESS_NUM_ARRAY =
+                          EXIT_REFUSE + OVERFLOW_OPCODE;
+  /* Overflow constant 20-22 free */
   static constexpr Uint32 CALL = 20;
   static constexpr Uint32 RETURN = 21;
   static constexpr Uint32 EXIT_OK_LAST = 22;
   static constexpr Uint32 BRANCH_ATTR_OP_ARG = 23;
   /* OVERFLOW_OPCODE used */
   static constexpr Uint32 BRANCH_ATTR_EQ_NULL = 24;
+  /* Overflow constant 24 free */
   static constexpr Uint32 BRANCH_ATTR_NE_NULL = 25;
+  /* Overflow constant 25 free */
   static constexpr Uint32 BRANCH_ATTR_OP_PARAM = 26;
   /* OVERFLOW_OPCODE used */
   static constexpr Uint32 BRANCH_ATTR_OP_ATTR = 27;
@@ -135,14 +160,16 @@ class Interpreter {
                           MOD_REG_REG + OVERFLOW_OPCODE;
 
   static constexpr Uint32 NOT_REG_REG = 36;
-
-  /* 37-46 free */
+  /* Overflow constant 36 free */
   static constexpr Uint32 STR_TO_INT64 = 37;
   static constexpr Uint32 INT64_TO_STR =
                           STR_TO_INT64 + OVERFLOW_OPCODE;
 
+  /* 38-46 free, both of them */
   static constexpr Uint32 READ_PARTIAL_ATTR_TO_MEM = 47;
+  /* Overflow constant 47 free */
   static constexpr Uint32 READ_ATTR_TO_MEM = 48;
+  /* Overflow constant 48 free */
 
   static constexpr Uint32 READ_UINT8_MEM_TO_REG = 49;
   static constexpr Uint32 READ_UINT8_REG_TO_REG =
@@ -171,6 +198,8 @@ class Interpreter {
                           WRITE_INT64_REG_TO_MEM + OVERFLOW_OPCODE;
 
   static constexpr Uint32 WRITE_ATTR_FROM_MEM = 57;
+  static constexpr Uint32 READ_INTERPRETER_INPUT =
+                          WRITE_ATTR_FROM_MEM + OVERFLOW_OPCODE;
   static constexpr Uint32 APPEND_ATTR_FROM_MEM = 58;
   static constexpr Uint32 WRITE_PARTIAL_ATTR_FROM_MEM =
                           APPEND_ATTR_FROM_MEM + OVERFLOW_OPCODE;
@@ -182,8 +211,9 @@ class Interpreter {
   static constexpr Uint32 WRITE_SIZE_MEM =
                           CONVERT_SIZE + OVERFLOW_OPCODE;
   static constexpr Uint32 LOAD_OP_TYPE = 61;
-  /* 62 free */
-
+  static constexpr Uint32 BZERO_MEM =
+                          LOAD_OP_TYPE + OVERFLOW_OPCODE;
+  /* 62 free, both of them */
   static constexpr Uint32 SPECIAL_INSTR = 63;
 
   /**
@@ -219,6 +249,7 @@ class Interpreter {
   static Uint32 LoadConstMem(Uint32 RegMemoryOffset,
                              Uint32 RegSize,
                              Uint16 ConstantSize); //Value in words after
+  static Uint32 Bzero(Uint32 RegMemoryOffset, Uint32 RegSize);
 
   static Uint32 LoadOpType(Uint32 Register);
 
@@ -254,7 +285,62 @@ class Interpreter {
   static Uint32 Int64ToStr(Uint32 RegDestSize,
                            Uint32 RegOffset,
                            Uint32 RegValue);
+  static Uint32 BinarySearch64(Uint32 RegOrdinal,
+                               Uint32 RegOffset,
+                               Uint32 RegNumElems,
+                               Uint32 RegResult,
+                               Uint32 SearchType);
+  static Uint32 BinarySearch32(Uint32 RegOrdinal,
+                               Uint32 RegOffset,
+                               Uint32 RegNumElems,
+                               Uint32 RegResult,
+                               Uint32 SearchType);
+  static Uint32 BinarySearch16(Uint32 RegOrdinal,
+                               Uint32 RegOffset,
+                               Uint32 RegNumElems,
+                               Uint32 RegResult,
+                               Uint32 SearchType);
+  static Uint32 BinarySearchOdd(Uint32 RegOrdinal,
+                                Uint32 RegOffset,
+                                Uint32 RegNumElems,
+                                Uint32 RegResult,
+                                Uint32 SearchType,
+                                Uint32 NumberSize);
+  static Uint32 SearchInterval64(Uint32 RegOrdinal,
+                                 Uint32 RegOffset,
+                                 Uint32 RegNumElems,
+                                 Uint32 RegResult,
+                                 Uint32 SearchType);
+  static Uint32 SearchInterval32(Uint32 RegOrdinal,
+                                 Uint32 RegOffset,
+                                 Uint32 RegNumElems,
+                                 Uint32 RegResult,
+                                 Uint32 SearchType);
+  static Uint32 SearchInterval16(Uint32 RegOrdinal,
+                                 Uint32 RegOffset,
+                                 Uint32 RegNumElems,
+                                 Uint32 RegResult,
+                                 Uint32 SearchType);
+  static Uint32 SearchIntervalOdd(Uint32 RegOrdinal,
+                                  Uint32 RegOffset,
+                                  Uint32 RegNumElems,
+                                  Uint32 RegResult,
+                                  Uint32 SearchType,
+                                  Uint32 NumberSize);
+  static Uint32 StringSearch(Uint32 RegOffsetString,
+                             Uint32 RegStringLen,
+                             Uint32 RegOffsetSearch,
+                             Uint32 RegSearchLen,
+                             Uint32 RegResult);
+  static Uint32 QSort(Uint32 RegOffset,
+                      Uint32 RegNumElems,
+                      Uint32 NumberSize);
+  static Uint32 CompressNumArray(Uint32 RegOffset,
+                                 Uint32 RegNumElems,
+                                 Uint32 NumberSizeIn,
+                                 Uint32 NumberSizeOut);
 
+  static Uint32 ReadInterpreterInput(Uint32 RegValue, Uint32 InputIndex);
   static Uint32 WriteInterpreterOutput(Uint32 RegValue, Uint32 OutputIndex);
   static Uint32 ReadUint8FromMemIntoRegConst(Uint32 DstReg, Uint16 Constant);
   static Uint32 ReadUint16FromMemIntoRegConst(Uint32 DstReg, Uint16 Constant);
@@ -389,6 +475,9 @@ class Interpreter {
   static Uint32 getReg2(Uint32 op);
   static Uint32 getReg3(Uint32 op);
   static Uint32 getReg4(Uint32 op);
+  static Uint32 getReg5(Uint32 op);
+  static Uint32 enum5(Uint32 op);
+  static Uint32 enum6(Uint32 op);
   static Uint32 getLabel(Uint32 op);
 
   /**
@@ -498,6 +587,11 @@ Interpreter::LoadConstMem(Uint32 RegisterOffset,
          (RegSize << 9) +
          (ConstantSize << 16) +
          LOAD_CONST_MEM;
+}
+
+inline Uint32 Interpreter::Bzero(Uint32 RegMemoryOffset, Uint32 RegSize) {
+  return (RegMemoryOffset << 6) + (RegSize << 9) +
+          LOAD_OP_TYPE + (1 << 15);
 }
 
 inline Uint32 Interpreter::LoadOpType(Uint32 Register) {
@@ -690,6 +784,179 @@ Interpreter::Int64ToStr(Uint32 RegDestSize,
          (RegValue << 9) +
          (RegDestSize << 12) +
          STR_TO_INT64 +
+         (1 << 15);
+}
+
+inline Uint32
+Interpreter::BinarySearch64(Uint32 RegOrdinal,
+                            Uint32 RegOffset,
+                            Uint32 RegNumElems,
+                            Uint32 RegResult,
+                            Uint32 SearchType) {
+  return (RegOrdinal << 6) +
+         (RegOffset << 9) +
+         (RegNumElems << 12) +
+         (RegResult << 16) +
+         (SearchType << 19) +
+         READ_ATTR_INTO_REG +
+         (1 << 15);
+}
+
+inline Uint32
+Interpreter::BinarySearch32(Uint32 RegOrdinal,
+                            Uint32 RegOffset,
+                            Uint32 RegNumElems,
+                            Uint32 RegResult,
+                            Uint32 SearchType) {
+  return (RegOrdinal << 6) +
+         (RegOffset << 9) +
+         (RegNumElems << 12) +
+         (RegResult << 16) +
+         (SearchType << 19) +
+         WRITE_ATTR_FROM_REG +
+         (1 << 15);
+}
+
+inline Uint32
+Interpreter::BinarySearch16(Uint32 RegOrdinal,
+                            Uint32 RegOffset,
+                            Uint32 RegNumElems,
+                            Uint32 RegResult,
+                            Uint32 SearchType) {
+  return (RegOrdinal << 6) +
+         (RegOffset << 9) +
+         (RegNumElems << 12) +
+         (RegResult << 16) +
+         (SearchType << 19) +
+         LOAD_CONST_NULL +
+         (1 << 15);
+}
+
+inline Uint32
+Interpreter::BinarySearchOdd(Uint32 RegOrdinal,
+                             Uint32 RegOffset,
+                             Uint32 RegNumElems,
+                             Uint32 RegResult,
+                             Uint32 SearchType,
+                             Uint32 NumberSize) {
+  return (RegOrdinal << 6) +
+         (RegOffset << 9) +
+         (RegNumElems << 12) +
+         (RegResult << 16) +
+         (SearchType << 19) +
+         (NumberSize << 23) +
+         LOAD_CONST16 +
+         (1 << 15);
+}
+
+inline Uint32
+Interpreter::SearchInterval64(Uint32 RegOrdinal,
+                              Uint32 RegOffset,
+                              Uint32 RegNumElems,
+                              Uint32 RegResult,
+                              Uint32 SearchType) {
+  return (RegOrdinal << 6) +
+         (RegOffset << 9) +
+         (RegNumElems << 12) +
+         (RegResult << 16) +
+         (SearchType << 19) +
+         LOAD_CONST32 +
+         (1 << 15);
+}
+
+inline Uint32
+Interpreter::SearchInterval32(Uint32 RegOrdinal,
+                              Uint32 RegOffset,
+                              Uint32 RegNumElems,
+                              Uint32 RegResult,
+                              Uint32 SearchType) {
+  return (RegOrdinal << 6) +
+         (RegOffset << 9) +
+         (RegNumElems << 12) +
+         (RegResult << 16) +
+         (SearchType << 19) +
+         LOAD_CONST64 +
+         (1 << 15);
+}
+
+inline Uint32
+Interpreter::SearchInterval16(Uint32 RegOrdinal,
+                              Uint32 RegOffset,
+                              Uint32 RegNumElems,
+                              Uint32 RegResult,
+                              Uint32 SearchType) {
+  return (RegOrdinal << 6) +
+         (RegOffset << 9) +
+         (RegNumElems << 12) +
+         (RegResult << 16) +
+         (SearchType << 19) +
+         BRANCH +
+         (1 << 15);
+}
+
+inline Uint32
+Interpreter::SearchIntervalOdd(Uint32 RegOrdinal,
+                               Uint32 RegOffset,
+                               Uint32 RegNumElems,
+                               Uint32 RegResult,
+                               Uint32 SearchType,
+                               Uint32 NumberSize) {
+  return (RegOrdinal << 6) +
+         (RegOffset << 9) +
+         (RegNumElems << 12) +
+         (RegResult << 16) +
+         (SearchType << 19) +
+         (NumberSize << 23) +
+         BRANCH_REG_EQ_NULL +
+         (1 << 15);
+}
+
+inline Uint32
+Interpreter::StringSearch(Uint32 RegOffsetString,
+                          Uint32 RegStringLen,
+                          Uint32 RegOffsetSearch,
+                          Uint32 RegSearchLen,
+                          Uint32 RegResult) {
+  return (RegOffsetString << 6) +
+         (RegStringLen << 9) +
+         (RegOffsetSearch << 12) +
+         (RegSearchLen << 16) +
+         (RegResult << 19) +
+         BRANCH_REG_NE_NULL +
+         (1 << 15);
+}
+
+inline Uint32
+Interpreter::QSort(Uint32 RegOffset,
+                   Uint32 RegNumElems,
+                   Uint32 NumberSize) {
+  return (RegOffset << 6) +
+         (RegNumElems << 9) +
+         (NumberSize << 19) +
+         EXIT_OK +
+         (1 << 15);
+}
+
+inline Uint32
+Interpreter::CompressNumArray(Uint32 RegOffset,
+                              Uint32 RegNumElems,
+                              Uint32 NumberSizeIn,
+                              Uint32 NumberSizeOut) {
+  return (RegOffset << 6) +
+         (RegNumElems << 9) +
+         (NumberSizeIn << 19) +
+         (NumberSizeOut << 23) +
+         EXIT_REFUSE +
+         (1 << 15);
+}
+
+inline Uint32
+Interpreter::ReadInterpreterInput(Uint32 RegValue,
+                                  Uint32 InputIndex) {
+  /* READ_INTERPRETER_INPUT */
+  return (RegValue << 6) +
+         (InputIndex << 16) +
+         WRITE_ATTR_FROM_MEM +
          (1 << 15);
 }
 
@@ -908,6 +1175,12 @@ inline Uint32 Interpreter::getReg3(Uint32 op) { return (op >> 12) & 0x7; }
 
 inline Uint32 Interpreter::getReg4(Uint32 op) { return (op >> 16) & 0x7; }
 
+inline Uint32 Interpreter::getReg5(Uint32 op) { return (op >> 19) & 0x7; }
+
+inline Uint32 Interpreter::enum5(Uint32 op) { return (op >> 19) & 0xF; }
+
+inline Uint32 Interpreter::enum6(Uint32 op) { return (op >> 23) & 0xF; }
+
 inline Uint32 Interpreter::getLabel(Uint32 op) { return (op >> 16) & 0xffff; }
 
 inline Uint32 *Interpreter::getInstructionPreProcessingInfo(
@@ -928,6 +1201,7 @@ inline Uint32 *Interpreter::getInstructionPreProcessingInfo(
     case WRITE_PARTIAL_ATTR_FROM_MEM:
       return op + 1;
 
+    case BZERO_MEM:
     case LOAD_CONST_NULL:
     case LOAD_CONST16:
     case LOAD_OP_TYPE:
@@ -969,6 +1243,18 @@ inline Uint32 *Interpreter::getInstructionPreProcessingInfo(
 
     case READ_PARTIAL_ATTR_TO_MEM:
     case READ_ATTR_TO_MEM:
+
+    case BINARY_SEARCH_64:
+    case BINARY_SEARCH_32:
+    case BINARY_SEARCH_16:
+    case BINARY_SEARCH_ODD:
+    case SEARCH_INTERVAL_64:
+    case SEARCH_INTERVAL_32:
+    case SEARCH_INTERVAL_16:
+    case SEARCH_INTERVAL_ODD:
+    case STRING_SEARCH:
+    case QSORT:
+    case COMPRESS_NUM_ARRAY:
 
     case CONVERT_SIZE:
     case WRITE_SIZE_MEM:
