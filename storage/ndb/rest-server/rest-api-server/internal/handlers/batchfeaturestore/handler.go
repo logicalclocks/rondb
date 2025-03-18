@@ -25,9 +25,11 @@ import (
 	"strings"
 
 	"hopsworks.ai/rdrs/internal/config"
+	"hopsworks.ai/rdrs/internal/dal/heap"
 	"hopsworks.ai/rdrs/internal/feature_store"
 	"hopsworks.ai/rdrs/internal/handlers/batchpkread"
 	fshandler "hopsworks.ai/rdrs/internal/handlers/feature_store"
+	"hopsworks.ai/rdrs/internal/handlers/pkread"
 	"hopsworks.ai/rdrs/internal/log"
 	"hopsworks.ai/rdrs/internal/security/apikey"
 	"hopsworks.ai/rdrs/pkg/api"
@@ -41,10 +43,11 @@ type Handler struct {
 	fvMetaCache    *feature_store.FeatureViewMetaDataCache
 	apiKeyCache    apikey.Cache
 	dbBatchHandler batchpkread.Handler
+	heap           *heap.Heap
 }
 
-func New(fvMetaCache *feature_store.FeatureViewMetaDataCache, apiKeyCache apikey.Cache, batchPkReadHandler batchpkread.Handler) Handler {
-	return Handler{fvMetaCache, apiKeyCache, batchPkReadHandler}
+func New(fvMetaCache *feature_store.FeatureViewMetaDataCache, apiKeyCache apikey.Cache, batchPkReadHandler batchpkread.Handler, heap *heap.Heap) Handler {
+	return Handler{fvMetaCache, apiKeyCache, batchPkReadHandler, heap}
 }
 
 func (h *Handler) Validate(request interface{}) error {
@@ -140,7 +143,32 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 			return fsError.GetStatus(), fsError.GetError()
 		}
 		var dbResponseIntf = getPkReadResponseJSON(numPassed, *metadata)
-		code, ronDbErr := h.dbBatchHandler.Execute(readParams, *dbResponseIntf)
+		// --- buffers ---
+		// allocate memory buffers. they are allocated here becuase we would like them
+		// to stay valid for the lifetime of the request. Varbinary/Blobs are stored in
+		// buffer and they are read later
+
+		noOps := uint32(len(*readParams))
+		reqPtrs := make([]*heap.NativeBuffer, noOps)
+		respPtrs := make([]*heap.NativeBuffer, noOps)
+
+		for idx, pkOp := range *readParams {
+			reqBuff, releaseReqBuff := h.heap.GetBuffer()
+			defer releaseReqBuff()
+			respBuff, releaseResBuff := h.heap.GetBuffer()
+			defer releaseResBuff()
+
+			reqPtrs[idx] = reqBuff
+			respPtrs[idx] = respBuff
+
+			e := pkread.CreateNativeRequest(pkOp, reqBuff, respBuff)
+			if e != nil {
+				return http.StatusInternalServerError, err
+			}
+		}
+		// --- buffers ---
+
+		code, ronDbErr := h.dbBatchHandler.ExecuteWithBuffers(readParams, *dbResponseIntf, reqPtrs, respPtrs, noOps)
 		if log.IsDebug() {
 			log.Debugf("RonDB response: code: %d, error: %s, body: %s", code, ronDbErr, (*dbResponseIntf).String())
 		}

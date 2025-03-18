@@ -23,6 +23,7 @@ package api
 import "C"
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -123,31 +124,54 @@ type Column struct {
 type PKReadResponse interface {
 	Init()
 	SetOperationID(opID *string)
-	SetColumnData(column, value *string, valueType uint32)
+	SetColumnStringData(column, value *string, valueType uint32)
+	SetColumnRawData(column *string, data *[]byte, dataLen uint32, valueType uint32)
+	EncodeRawData()
 	String() string
 }
 
 type PKReadResponseJSON struct {
 	OperationID *string                      `json:"operationId"    form:"operation-id"    binding:"omitempty"`
 	Data        *map[string]*json.RawMessage `json:"data"           form:"data"            binding:"omitempty"`
+	RawData     *map[string]*[]byte          `json:"-"` // binary data. needs to be base64 encode and put in `Data` field before marshalling
 }
 
 type PKReadResponseGRPC struct {
 	OperationID *string             `json:"operationId"    form:"operation-id"    binding:"omitempty"`
 	Data        *map[string]*string `json:"data"           form:"data"            binding:"omitempty"`
+	RawData     *map[string]*[]byte `json:"-"` // binary data. needs to be base64 encode and put in `Data` field before marshalling
 }
 
 func (r *PKReadResponseGRPC) Init() {
-	m := make(map[string]*string)
-	(*r).Data = &m
+	d := make(map[string]*string)
+	(*r).Data = &d
+	rd := make(map[string]*[]byte)
+	(*r).RawData = &rd
 }
 
 func (r *PKReadResponseGRPC) SetOperationID(opID *string) {
 	r.OperationID = opID
 }
 
-func (r *PKReadResponseGRPC) SetColumnData(column, value *string, dataType uint32) {
+func (r *PKReadResponseGRPC) SetColumnStringData(column, value *string, dataType uint32) {
 	(*(*r).Data)[*column] = value
+}
+
+func (r *PKReadResponseGRPC) EncodeRawData() {
+	for key, value := range *r.RawData {
+		if value == nil {
+			(*r.Data)[key] = nil
+		} else {
+			// base64 encode the value
+			encoded := base64.StdEncoding.EncodeToString(*value)
+			quoted := "\"" + encoded + "\""
+			(*(*r).Data)[key] = &quoted
+		}
+	}
+}
+
+func (r *PKReadResponseGRPC) SetColumnRawData(column *string, data *[]byte, dataLen uint32, valueType uint32) {
+	(*(*r).RawData)[*column] = data
 }
 
 func (r *PKReadResponseGRPC) String() string {
@@ -167,20 +191,44 @@ func (r *PKReadResponseGRPC) String() string {
 }
 
 func (r *PKReadResponseJSON) Init() {
-	m := make(map[string]*json.RawMessage)
-	(*r).Data = &m
+	d := make(map[string]*json.RawMessage)
+	(*r).Data = &d
+	rd := make(map[string]*[]byte)
+	(*r).RawData = &rd
 }
 
 func (r *PKReadResponseJSON) SetOperationID(opID *string) {
 	r.OperationID = opID
 }
 
-func (r *PKReadResponseJSON) SetColumnData(column, value *string, dataType uint32) {
+func (r *PKReadResponseJSON) SetColumnStringData(column, value *string, dataType uint32) {
 	if value == nil {
 		(*(*r).Data)[*column] = nil
 	} else {
 		valueBytes := json.RawMessage(*value)
 		(*(*r).Data)[*column] = &valueBytes
+	}
+}
+
+func (r *PKReadResponseJSON) EncodeRawData() {
+	for key, value := range *r.RawData {
+		if value == nil {
+			(*r.Data)[key] = nil
+		} else {
+			// base64 encode the value
+			encoded := base64.StdEncoding.EncodeToString(*value)
+			quoted := "\"" + encoded + "\""
+			valueBytes := json.RawMessage(quoted)
+			(*(*r).Data)[key] = &valueBytes
+		}
+	}
+}
+
+func (r *PKReadResponseJSON) SetColumnRawData(column *string, data *[]byte, dataLen uint32, valueType uint32) {
+	if data == nil {
+		(*(*r).RawData)[*column] = nil
+	} else {
+		(*(*r).RawData)[*column] = data
 	}
 }
 
@@ -197,6 +245,7 @@ type PKReadResponseWithCode interface {
 	Init()
 	GetPKReadResponse() PKReadResponse
 	SetStatus(code *int32, message *string)
+	EncodeRawData()
 	String() string
 }
 
@@ -215,6 +264,10 @@ type PKReadResponseWithCodeGRPC struct {
 func (p *PKReadResponseWithCodeJSON) Init() {
 	p.Body = &PKReadResponseJSON{}
 	p.Body.Init()
+}
+
+func (p *PKReadResponseWithCodeJSON) EncodeRawData() {
+	p.Body.EncodeRawData()
 }
 
 func (p *PKReadResponseWithCodeJSON) GetPKReadResponse() PKReadResponse {
@@ -238,6 +291,10 @@ func (p *PKReadResponseWithCodeJSON) String() string {
 func (p *PKReadResponseWithCodeGRPC) Init() {
 	p.Body = &PKReadResponseGRPC{}
 	p.Body.Init()
+}
+
+func (p *PKReadResponseWithCodeGRPC) EncodeRawData() {
+	p.Body.EncodeRawData()
 }
 
 func (p *PKReadResponseWithCodeGRPC) GetPKReadResponse() PKReadResponse {

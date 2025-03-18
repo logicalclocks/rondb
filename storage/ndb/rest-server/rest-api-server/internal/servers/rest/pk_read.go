@@ -45,6 +45,7 @@ func (h *RouteHandler) PkRead(c *gin.Context) {
 		return
 	}
 
+	responseIntf.(*api.PKReadResponseJSON).EncodeRawData()
 	output, err := sonic.Marshal(responseIntf.(*api.PKReadResponseJSON))
 	if err != nil {
 		c.AbortWithError(status, err)

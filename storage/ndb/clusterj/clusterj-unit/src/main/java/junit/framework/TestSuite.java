@@ -40,6 +40,8 @@
 
 package junit.framework;
 
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 import java.util.ArrayList;
 import java.lang.reflect.Method;
@@ -129,6 +131,19 @@ public class TestSuite implements Test {
 //        System.out.println("    test suite:   " + name);
 //        System.out.println("    test classes: " + testClasses.size());
 //        System.out.println("    test cases:   " + tests.size());
+
+        // sort test
+        Collections.sort(tests, new Comparator<TestCase>() {
+            @Override
+            public int compare(TestCase t1, TestCase t2) {
+                int nameComparison = t1.name.compareTo(t2.name);
+                if (nameComparison != 0) {
+                    return nameComparison;
+                }
+                return t1.method.getName().compareTo(t2.method.getName());
+            }
+        });
+
         for (TestCase test : tests) {
             test.run(result);
         }

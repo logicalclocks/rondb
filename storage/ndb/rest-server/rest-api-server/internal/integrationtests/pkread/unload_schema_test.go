@@ -21,7 +21,7 @@ import (
 	"net/http"
 	"testing"
 
-	// _ "github.com/ianlancetaylor/cgosymbolizer"
+	//_ "github.com/ianlancetaylor/cgosymbolizer"
 
 	"hopsworks.ai/rdrs/internal/integrationtests/testclient"
 	"hopsworks.ai/rdrs/internal/testutils"
@@ -40,7 +40,7 @@ func TestUnloadSchema(t *testing.T) {
 	testDb := testdbs.DB025
 	validateColumns := []interface{}{"col0", "col1", "col2"}
 	tests := map[string]api.PKTestInfo{
-		"simple": {
+		"before_schema_change": {
 			PkReq: api.PKReadBody{Filters: testclient.NewFiltersKVs("id0", "1"),
 				OperationID: testclient.NewOperationID(64),
 			},
@@ -61,7 +61,7 @@ func TestUnloadSchema(t *testing.T) {
 
 	validateColumns = []interface{}{"new_col0", "new_col1", "new_col2"}
 	tests = map[string]api.PKTestInfo{
-		"simple": {
+		"after_schema_change": {
 			PkReq: api.PKReadBody{Filters: testclient.NewFiltersKVs("id0", "1"),
 				OperationID: testclient.NewOperationID(64),
 			},

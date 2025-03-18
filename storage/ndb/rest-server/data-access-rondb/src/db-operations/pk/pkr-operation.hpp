@@ -30,9 +30,12 @@
 #include "src/db-operations/pk/common.hpp"
 #include "src/rdrs-dal.h"
 
+//#define MULTI_TX_BATCH
+
 typedef struct SubOpTuple {
   PKRRequest *pkRequest;
   PKRResponse *pkResponse;
+  NdbTransaction *transaction;
   NdbOperation *ndbOperation;
   const NdbDictionary::Table *tableDict;
   std::vector<std::shared_ptr<ColRec>> recs;
@@ -45,9 +48,14 @@ typedef struct SubOpTuple {
 class PKROperation {
  private:
   Uint32 noOps;
-  NdbTransaction *transaction = nullptr;
-  Ndb *ndbObject              = nullptr;
-  bool isBatch                = false;
+  Ndb *ndbObject = nullptr;
+  bool isBatch   = false;
+
+#ifdef MULTI_TX_BATCH
+  int numOpsSent = 0;
+  bool singleTransaction = false;
+#endif
+
   std::vector<SubOpTuple> subOpTuples;
 
  public:

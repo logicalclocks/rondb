@@ -33,7 +33,7 @@ import (
 	"hopsworks.ai/rdrs/internal/common"
 	"hopsworks.ai/rdrs/internal/dal/heap"
 	"hopsworks.ai/rdrs/pkg/api"
-	// "zappem.net/pub/debug/xxd"
+	//"zappem.net/pub/debug/xxd"
 )
 
 // See internal/router/handler/pkread/encoding-scheme.png
@@ -197,9 +197,9 @@ func ProcessPKReadResponse(respBuff *heap.NativeBuffer, response api.PKReadRespo
 				uintptr(respBuff.Buffer) +
 					uintptr(colIDX+
 						uint32(C.ADDRESS_SIZE)+ // +1 for skipping the column count
-						(i*4*C.ADDRESS_SIZE)))) // 4 number of header fieldse
+						(i*5*C.ADDRESS_SIZE)))) // 4 number of header fieldse
 
-			colHeader := unsafe.Slice((*uint32)(colHeaderStart), 4)
+			colHeader := unsafe.Slice((*uint32)(colHeaderStart), 5)
 
 			nameAdd := colHeader[0]
 			name := C.GoString((*C.char)(unsafe.Pointer(uintptr(respBuff.Buffer) + uintptr(nameAdd))))
@@ -208,13 +208,19 @@ func ProcessPKReadResponse(respBuff *heap.NativeBuffer, response api.PKReadRespo
 
 			isNull := colHeader[2]
 			dataType := colHeader[3]
+			dataLen := colHeader[4]
 
 			if isNull == 0 {
-				value := C.GoString((*C.char)(unsafe.Pointer(uintptr(respBuff.Buffer) + uintptr(valueAdd))))
-				quotedValue := quoteIfString(dataType, &value)
-				response.SetColumnData(&name, &quotedValue, dataType)
+				if dataType == C.RDRS_BIT_DATATYPE || dataType == C.RDRS_BINARY_DATATYPE {
+					slice := unsafe.Slice((*byte)(unsafe.Pointer(uintptr(respBuff.Buffer)+uintptr(valueAdd))), dataLen)
+					response.SetColumnRawData(&name, &slice, dataLen, dataType)
+				} else {
+					value := C.GoString((*C.char)(unsafe.Pointer(uintptr(respBuff.Buffer) + uintptr(valueAdd))))
+					quotedValue := quoteIfString(dataType, &value)
+					response.SetColumnStringData(&name, &quotedValue, dataType)
+				}
 			} else {
-				response.SetColumnData(&name, nil, dataType)
+				response.SetColumnStringData(&name, nil, dataType)
 			}
 		}
 	}
