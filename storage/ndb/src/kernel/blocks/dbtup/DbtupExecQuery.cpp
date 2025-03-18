@@ -679,7 +679,7 @@ static Uint32 string_search(const char *search_string,
     if (c_search == c_string) {
       equal_len++;
       if (equal_len == search_len) {
-        return (i - search_len);
+        return (i - search_len) + 1;
       }
     } else {
       equal_len = 0;
@@ -8233,8 +8233,8 @@ int Dbtup::interpreterNextLab(Signal* signal,
               ToffsetSearch < 0 ||
               TsearchLen < 0 ||
               TstringLen < 0 ||
-              (ToffsetString + TstringLen) < MAX_HEAP_OFFSET ||
-              (ToffsetSearch + TsearchLen) < MAX_HEAP_OFFSET) {
+              (ToffsetString + TstringLen) > MAX_HEAP_OFFSET ||
+              (ToffsetSearch + TsearchLen) > MAX_HEAP_OFFSET) {
             return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
           }
           Uint32 ret;

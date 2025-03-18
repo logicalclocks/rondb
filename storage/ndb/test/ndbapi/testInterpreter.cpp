@@ -605,7 +605,7 @@ runInterpreterLibraryTest(NDBT_Context* ctx, NDBT_Step* step)
     RET_NULL, RET_NULL, 0, RET_NULL, RET_NULL, 2, RET_NULL, RET_NULL, 4, 4,
     4, 4, 4, RET_NULL, 6, 6, RET_NULL, RET_NULL };
 
-  for (Uint32 i = 0; i < 42; i++) {
+  for (Uint32 i = 0; i < 43; i++) {
     ndbout << "i = " << i << endl;
     NdbTransaction* pTrans = pNdb->startTransaction();
     CHK_RET_FAILED(pTrans != 0, pNdb);
@@ -616,7 +616,24 @@ runInterpreterLibraryTest(NDBT_Context* ctx, NDBT_Step* step)
     int ret_code = 0;
     code.load_const_u16(REG0, 0);
     code.load_const_u16(REG3, 8);
-    if (i == 0 || i == 6 || i == 12 || i == 18 || i == 24) {
+    if (i == 42) {
+      const char *string_ptr =
+        "I am a very sure this string will be searchable using string_search";
+      const char *found_search_ptr = "able";
+      const char *not_found_search_ptr = "ables";
+      code.load_const_u16(REG1, 8000);
+      code.load_const_u16(REG2, 16000);
+      code.load_const_mem(REG0, REG3, strlen(string_ptr), string_ptr);
+      code.load_const_mem(
+        REG1, REG4, strlen(found_search_ptr), found_search_ptr);
+      code.string_search(REG0, REG3, REG1, REG4, REG7);
+      code.branch_eq_null(REG7, LABEL0);
+      code.branch_ne_const(REG7, 43, LABEL0);
+      code.load_const_mem(
+        REG1, REG4, strlen(not_found_search_ptr), not_found_search_ptr);
+      code.string_search(REG0, REG3, REG1, REG4, REG7);
+      code.branch_ne_null(REG7, LABEL0);
+    } else if (i == 0 || i == 6 || i == 12 || i == 18 || i == 24) {
       code.load_const_mem(REG0, REG1, 8 * 8, (const char*)&a64[0]);
       code.qsort_instr(REG0, REG3, 8);
 
