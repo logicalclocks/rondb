@@ -181,6 +181,7 @@ RS_Status PKRResponse::SetColumnLength(Uint32 colNumber, Uint32 len) {
   int indexWritten = (start + (colNumber * COL_HEADERS_COUNT * ADDRESS_SIZE)) / ADDRESS_SIZE;
 
   b[indexWritten + 4] = len;  // data len
+  return RS_OK;
 }
 
 Uint32 PKRResponse::GetCurrentColNumber() {
