@@ -1,5 +1,5 @@
 # This file is part of the RonDB REST API Server
-# Copyright (c) 2023,2025 Hopsworks AB
+# Copyright (c) 2025 Hopsworks AB
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -13,10 +13,13 @@
 # You should have received a copy of the GNU General Public License
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 
-SET(SIMDJSON_VERSION "3.12.0") # See ../README.txt for how to upgrade
+Symlink trantor to where drogon expects to find it as a submodule.
 
-set (CMAKE_CXX_STANDARD 17)
-set (CMAKE_CXX_STANDARD_REQUIRED ON)
-
-# Add simdjson subdirectory
-add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/simdjson-${SIMDJSON_VERSION})
+diff --git a/storage/ndb/rest-server2/extra/drogon/drogon-1.9.7/trantor b/storage/ndb/rest-server2/extra/drogon/drogon-1.9.7/trantor
+new file mode 120000
+index 00000000000..c7224976042
+--- /dev/null
++++ b/storage/ndb/rest-server2/extra/drogon/drogon-1.9.7/trantor
+@@ -0,0 +1 @@
++../trantor-1.5.21/
+\ No newline at end of file
