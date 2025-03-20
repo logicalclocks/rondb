@@ -1,0 +1,8 @@
+diff --git a/storage/ndb/rest-server2/extra/drogon/drogon-1.9.7/trantor b/storage/ndb/rest-server2/extra/drogon/drogon-1.9.7/trantor
+new file mode 120000
+index 00000000000..c7224976042
+--- /dev/null
++++ b/storage/ndb/rest-server2/extra/drogon/drogon-1.9.7/trantor
+@@ -0,0 +1 @@
++../trantor-1.5.21/
+\ No newline at end of file

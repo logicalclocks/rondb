@@ -1,0 +1,17 @@
+diff --git a/storage/ndb/rest-server2/extra/drogon/drogon-1.9.7/CMakeLists.txt b/storage/ndb/rest-server2/extra/drogon/drogon-1.9.7/CMakeLists.txt
+index e0e35a291ae..3edf4ed92a1 100644
+--- a/storage/ndb/rest-server2/extra/drogon/drogon-1.9.7/CMakeLists.txt
++++ b/storage/ndb/rest-server2/extra/drogon/drogon-1.9.7/CMakeLists.txt
+@@ -844,12 +844,6 @@ install(FILES
+     DESTINATION "${INSTALL_DROGON_CMAKE_DIR}"
+     COMPONENT dev)
+ 
+-# Install the export set for use with the install-tree
+-install(EXPORT DrogonTargets
+-    DESTINATION "${INSTALL_DROGON_CMAKE_DIR}"
+-    NAMESPACE Drogon::
+-    COMPONENT dev)
+-
+ # Doxygen documentation
+ find_package(Doxygen OPTIONAL_COMPONENTS dot dia)
+ if(DOXYGEN_FOUND)

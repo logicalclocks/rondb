@@ -186,7 +186,22 @@ endif()
 
 
 # jsoncpp
-find_package(Jsoncpp REQUIRED)
+
+find_package(Jsoncpp QUIET)
+if(NOT Jsoncpp_FOUND)
+  message(STATUS "Jsoncpp NOT FOUND")
+    # Provide suggestions for how to install the missing package
+    if(APPLE)
+        message("\n\nOn macOS, you can use Homebrew to install Jsoncpp:")
+        message("   brew install jsoncpp\n\n")
+    elseif(UNIX)
+        message("\n\nOn Linux, you can use your package manager to install Jsoncpp:")
+        message("   sudo apt-get install libjsoncpp-dev         # For Debian/Ubuntu")
+        message("   sudo dnf install jsoncpp-devel              # For Red Hat/Fedora\n\n")
+    endif()
+    message(FATAL_ERROR "Failed to configure drogon. Jsoncpp NOT FOUND")
+endif()
+
 target_link_libraries(${PROJECT_NAME} PUBLIC Jsoncpp_lib)
 list(APPEND INCLUDE_DIRS_FOR_DYNAMIC_VIEW ${JSONCPP_INCLUDE_DIRS})
 
@@ -218,7 +233,22 @@ endif(BUILD_YAML_CONFIG)
 if (NOT ${CMAKE_SYSTEM_NAME} STREQUAL "FreeBSD"
     AND NOT ${CMAKE_SYSTEM_NAME} STREQUAL "OpenBSD"
     AND NOT WIN32)
-    find_package(UUID REQUIRED)
+    find_package(UUID QUIET)
+
+    if(NOT UUID_FOUND)
+      message(STATUS "UUID NOT FOUND")
+        # Provide suggestions for how to install the missing package
+        if(APPLE)
+            message("\n\nOn macOS, you can use Homebrew to install UUID:")
+            message("   brew install ossp-uuid\n\n")
+        elseif(UNIX)
+            message("\n\nOn Linux, you can use your package manager to install UUID:")
+            message("   sudo apt-get install uuid-dev         # For Debian/Ubuntu")
+            message("   sudo dnf install uuid-devel           # For Red Hat/Fedora\n\n")
+        endif()
+        message(FATAL_ERROR "Failed to configure drogon. UUID NOT FOUND")
+    endif()
+
     target_link_libraries(${PROJECT_NAME} PRIVATE UUID_lib)
 
     try_compile(normal_uuid ${CMAKE_BINARY_DIR}/cmaketest
@@ -806,12 +836,6 @@ install(FILES
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/DrogonUtilities.cmake"
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/ParseAndAddDrogonTests.cmake"
     DESTINATION "${INSTALL_DROGON_CMAKE_DIR}"
-    COMPONENT dev)
-
-# Install the export set for use with the install-tree
-install(EXPORT DrogonTargets
-    DESTINATION "${INSTALL_DROGON_CMAKE_DIR}"
-    NAMESPACE Drogon::
     COMPONENT dev)
 
 # Doxygen documentation

@@ -13,37 +13,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 
-if(NOT WITH_RDRS)
-  MESSAGE(STATUS "Skip building Simdjson for REST Server") 
-  RETURN()
-endif()
+SET(SIMDJSON_VERSION "3.12.0") # See ../README.txt for how to upgrade
 
-SET(SIMDJSON_VERSION "3.12.0" CACHE INTERNAL "Simdjson Version" FORCE)
-SET(RDRS_SIMDJSON_DIR ${CMAKE_CURRENT_SOURCE_DIR}/simdjson-${SIMDJSON_VERSION}  CACHE INTERNAL "Simdjson dir" FORCE)
-SET(RDRS_SIMDJSON_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/simdjson-${SIMDJSON_VERSION}  CACHE INTERNAL "Simdjson src dir" FORCE)
-SET(RDRS_SIMDJSON_BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}/simdjson-${SIMDJSON_VERSION}  CACHE INTERNAL "Simdjson binary dir" FORCE)
-SET(RDRS_SIMDJSON_INSTALL_DIR ${CMAKE_CURRENT_BINARY_DIR}/simdjson-${SIMDJSON_VERSION}/install_dir  CACHE INTERNAL "Simdjson install dir" FORCE)
-
-FILE(WRITE "${RDRS_SIMDJSON_BINARY_DIR}/builder.sh"  "
-  set -e
-  if ! [ -f built ]; then
-    cmake \
-      -S${RDRS_SIMDJSON_SOURCE_DIR} \
-      -B${RDRS_SIMDJSON_BINARY_DIR} \
-      -DCMAKE_INSTALL_PREFIX=${RDRS_SIMDJSON_INSTALL_DIR} \
-      -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
-    make -s -j $(nproc) 
-    make install
-    touch built
-  else
-    echo Skipping Simdjson parsing library as it is already built. Delete ${RDRS_SIMDJSON_INSTALL_DIR}/built to rebuilt it
-  fi"
-)
-
-EXECUTE_PROCESS(COMMAND bash builder.sh WORKING_DIRECTORY ${RDRS_SIMDJSON_BINARY_DIR} COMMAND_ERROR_IS_FATAL ANY)
-ADD_CUSTOM_TARGET(SIMDJSON_IS_BUILD DEPENDS ${RDRS_SIMDJSON_BINARY_DIR}/built)
-
-SET(RDRS_SIMDJSON_CMAKE_MODULES_DIR ${RDRS_SIMDJSON_INSTALL_DIR}/lib/cmake CACHE INTERNAL "Simdjson cmake module dir" FORCE)
-SET(RDRS_SIMDJSON_CMAKE_MODULES_DIR_64 ${RDRS_SIMDJSON_INSTALL_DIR}/lib64/cmake CACHE INTERNAL "Simdjson cmake module dir" FORCE)
-SET(RDRS_SIMDJSON_INCLUDE_DIR   ${RDRS_SIMDJSON_INSTALL_DIR}/include  CACHE INTERNAL "(Simdjson include dir" FORCE)
-
+# Add simdjson subdirectory
+add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/simdjson-${SIMDJSON_VERSION})
