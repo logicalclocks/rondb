@@ -28,7 +28,7 @@
 #include <NdbMutex.h>
 
 class RDRSRonDBConnection {
-  static constexpr int MAX_PARALLEL_KEY_OPS = 100;
+  static constexpr int MAX_PARALLEL_KEY_OPS = 1000;
 
  private:
   // this is used when we update the connection, NDB objects etc.
