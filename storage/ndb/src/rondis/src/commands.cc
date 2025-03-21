@@ -2166,8 +2166,8 @@ void rondb_strlen_command(Ndb *ndb,
                                             &key_store->m_key_row,
                                             database_id);
   if (ret_code != 0) {
-    free(key_store);
     ndb->closeTransaction(key_store->m_trans);
+    free(key_store);
     return;
   }
   if (key_store->m_trans->execute(NdbTransaction::Commit) != 0) {
@@ -2178,8 +2178,8 @@ void rondb_strlen_command(Ndb *ndb,
                                     sizeof(buf),
                                     "+%u\r\n",
                                     key_store->m_key_row.tot_value_len);
-  free(key_store);
   ndb->closeTransaction(key_store->m_trans);
+  free(key_store);
   try {
     response->reserve(ret_len);
   } catch (const std::exception &e) {
