@@ -75,6 +75,8 @@ RUN mkdir $DOWNLOADS_CACHE_DIR
 # it in $OPENSSL_ROOT. We will not overwrite the system's OpenSSL library, 
 # but just install the specified version.
 # Commands are from https://linuxpip.org/install-openssl-linux/
+# enable-md2 is required in Rocky Linux 9, so should be used here
+# some parts of the code in new REST server uses deprecated SSL features.
 ENV OPENSSL_ROOT=/usr/local/ssl
 ENV OPENSSL_ROOT_DIR=$OPENSSL_ROOT
 RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
@@ -83,7 +85,7 @@ RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
     && tar xf $DOWNLOADS_CACHE_DIR/openssl-${OPEN_SSL_VERSION}.tar.gz -C . \
     && cd openssl-${OPEN_SSL_VERSION} \
     && source scl_source enable gcc-toolset-12 \
-    && ./config --prefix=$OPENSSL_ROOT --openssldir=$OPENSSL_ROOT shared zlib \
+    && ./config --prefix=$OPENSSL_ROOT --openssldir=$OPENSSL_ROOT enable-md2 shared zlib \
     && make -j$THREADS_ARG \
     && make install \
     && echo "$OPENSSL_ROOT/lib64" >> /etc/ld.so.conf.d/openssl-${OPEN_SSL_VERSION}.conf \
