@@ -156,7 +156,7 @@ func BenchmarkManyColumns(b *testing.B) {
 		operations := []api.BatchSubOperationTestInfo{}
 		for i := 0; i < batchSize; i++ {
 			// We will set the pk to filter later
-			operations = append(operations, createSubOperation(b, table, testdbs.Benchmark, "", http.StatusOK))
+			operations = append(operations, createSubOperation100(b, table, testdbs.Benchmark, "", http.StatusOK))
 		}
 
 		batchTestInfo := api.BatchOperationTestInfo{

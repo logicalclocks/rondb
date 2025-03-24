@@ -323,6 +323,25 @@ func createSubOperation(t testing.TB, table string, database string, pk string, 
 	}
 }
 
+func createSubOperation100(t testing.TB, table string, database string, pk string, expectedStatus int) api.BatchSubOperationTestInfo {
+	respKVs := []interface{}{"col0"}
+	return api.BatchSubOperationTestInfo{
+		SubOperation: api.BatchSubOp{
+			Method:      &[]string{config.PK_HTTP_VERB}[0],
+			RelativeURL: &[]string{string(database + "/" + table + "/" + config.PK_DB_OPERATION)}[0],
+			Body: &api.PKReadBody{
+				Filters:     testclient.NewFiltersKVs("id0", pk),
+				ReadColumns: testclient.NewReadColumns("col", 100),
+				OperationID: testclient.NewOperationID(5),
+			},
+		},
+		Table:    table,
+		DB:       database,
+		HttpCode: []int{expectedStatus},
+		RespKVs:  respKVs,
+	}
+}
+
 func TestBatchArrayTableChar(t *testing.T) {
 	ArrayColumnBatchTest(t, "table1", testdbs.DB012, false, 100, true)
 }
