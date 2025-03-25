@@ -242,9 +242,7 @@ func GetCreationSchemaPerDB(registerAsHopsworksProjects bool, dbs ...string) (ma
 		}
 		createSchemata[db] = schema
 	}
-	if registerAsHopsworksProjects {
-		createSchemata[HOPSWORKS_DB_NAME] = createHopsworksSchema(dbs...)
-	}
+	createSchemata[HOPSWORKS_DB_NAME] = createHopsworksSchema(dbs...)
 	return createSchemata, nil
 }
 
