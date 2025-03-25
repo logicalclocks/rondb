@@ -866,6 +866,17 @@ func TestDataTypesBlob(t *testing.T) {
 			ErrMsgContains: "",
 			RespKVs:        validateColumns,
 		},
+		"simple2": {
+			PkReq: api.PKReadBody{
+				Filters:     testclient.NewFiltersKVs("id0", testclient.EncodePkValue("1", true, 255, false)),
+				OperationID: testclient.NewOperationID(5),
+			},
+			Table:          "blob_table",
+			Db:             testDb,
+			HttpCode:       http.StatusOK,
+			ErrMsgContains: "",
+			RespKVs:        validateColumns,
+		},
 	}
 
 	pkTestMultiple(t, tests, true)
