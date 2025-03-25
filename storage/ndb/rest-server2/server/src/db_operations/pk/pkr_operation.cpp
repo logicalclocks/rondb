@@ -312,6 +312,7 @@ BatchKeyOperations::init_batch_operations(ArenaMalloc *amalloc,
                       read_col->getType() == NdbDictionary::Column::Text))) {
           if (use_blob_values == false) {
             use_blob_values = true;
+            m_single_transaction = true;
             key_op->m_blob_handles = (NdbBlob**)
               amalloc->alloc_bytes(sizeof(NdbBlob*) * numReadColumns, 8);
             if (unlikely(key_op->m_blob_handles == nullptr)) {
