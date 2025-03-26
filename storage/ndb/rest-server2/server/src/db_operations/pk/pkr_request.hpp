@@ -31,8 +31,21 @@ class PKRRequest {
 
   // Is the request bad
   bool isInvalidOp;
+
   // if the request is bad then `error` contains the details
   RS_Status error;
+
+  // Is request modified. 
+  // When no read cols are specified then we build the list 
+  // of possible columns that the user can read and this
+  // information in stored in request buffer to save space. 
+  // If the request fails then we have to revert the changes 
+  // in the req buffer other wise upon retry the execution 
+  // behaviour will be different. For example, upon first 
+  // try we will see that no req columns are set but in the
+  // second retry we will see that req cols are set. 
+  bool isReqModified;
+  Uint32 oldLen;
 
   /**
    * Get offset of nth primary key/value pair
@@ -169,6 +182,11 @@ class PKRRequest {
    * Add columns when user wanted to read all columns
    */
   bool addReadColumns(Uint32 numReadColumns);
+
+  /**
+   * Remove read columns from the req buff 
+   */
+  bool resetReadColumns();
 
   /**
    * Add a read column name

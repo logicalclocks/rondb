@@ -18,6 +18,7 @@
  */
 
 #include "pkr_request.hpp"
+#include "ndb_types.h"
 #include "src/logger.hpp"
 #include "src/rdrs_const.h"
 #include "src/status.hpp"
@@ -201,9 +202,25 @@ bool PKRRequest::addReadColumns(Uint32 numColumns) {
   reinterpret_cast<Uint32 *>(req->buffer)[PK_REQ_READ_COLS_IDX] = head;
   reinterpret_cast<Uint32 *>(req->buffer + head)[0] = numColumns;
   DEB_REQ("ARCol:Num: %u, head: %u", numColumns, head);
-  head += ((numColumns + 1) * ADDRESS_SIZE);
-  reinterpret_cast<Uint32 *>(req->buffer)[PK_REQ_LENGTH_IDX] = head;
-  return false;
+  Uint32 newHead = head + ((numColumns + 1) * ADDRESS_SIZE);
+  reinterpret_cast<Uint32 *>(req->buffer)[PK_REQ_LENGTH_IDX] = newHead;
+
+  // the req buffer is modified. save info for reset
+  isReqModified=true;
+  oldLen = head; 
+
+  return true;
+}
+
+bool PKRRequest::resetReadColumns() {
+  if (isReqModified) {
+    reinterpret_cast<Uint32 *>(req->buffer + oldLen)[0] = 0; 
+    reinterpret_cast<Uint32 *>(req->buffer)[PK_REQ_LENGTH_IDX] = oldLen;
+    isReqModified=false;
+    oldLen=0;
+    return true;
+  }
+  return false; 
 }
 
 bool PKRRequest::addReadColumnName(Uint32 index,

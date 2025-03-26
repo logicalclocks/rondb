@@ -71,6 +71,13 @@ BatchKeyOperations::BatchKeyOperations() {
 }
 
 BatchKeyOperations::~BatchKeyOperations() {
+  if (!m_isSuccess) {
+    for (Uint32 i = 0; i < m_numOperations; i++) {
+      KeyOperation *key_op = &m_key_ops[i];
+      PKRRequest *req = &key_op->m_req;
+      req->resetReadColumns();
+    }
+  }
 }
 
 RS_Status
@@ -80,6 +87,7 @@ BatchKeyOperations::init_batch_operations(ArenaMalloc *amalloc,
                                           RS_Buffer *reqBuffer,
                                           Ndb *ndb_object) {
   RS_Status status = RS_OK;
+  m_isSuccess = false;
   m_isBatch = is_batch;
   m_ndb_object = ndb_object;
   m_numOperations = numOps;
@@ -501,7 +509,7 @@ RS_Status BatchKeyOperations::create_response(RS_Buffer *respBuffs) {
     if (req->ReadColumnsCount() == 0) {
       DEB_NDB_BE("Build request when all columns requested");
       Uint32 numColumns = key_op->m_num_table_columns;
-      if (unlikely(req->addReadColumns(numColumns))) {
+      if (unlikely(!req->addReadColumns(numColumns))) {
         return RS_SERVER_ERROR(std::string(
           rdrsErrorMessage(ERROR_MEMORY_ALLOCATION_FAILURE)));
       }
@@ -1171,6 +1179,9 @@ RS_Status BatchKeyOperations::perform_operation(
   }
   DEB_NDB_BE("close_transaction");
   close_transaction();
+
+  m_isSuccess = true;
+
   return RS_OK;
 }
 
@@ -1195,5 +1206,6 @@ RS_Status BatchKeyOperations::handle_ndb_error(RS_Status status) {
     HandleSchemaErrors(m_ndb_object, status, tables);
   }
   close_transaction();
+
   return RS_OK;
 }
