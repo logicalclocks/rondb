@@ -62,6 +62,8 @@ class BatchKeyOperations {
   bool m_single_transaction;
   struct KeyOperation *m_key_ops;
   Uint32 m_num_sent_operations;
+  bool m_isSuccess;
+  
  public:
    BatchKeyOperations();
    ~BatchKeyOperations();
