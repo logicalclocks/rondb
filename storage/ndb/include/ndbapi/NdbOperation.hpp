@@ -1126,8 +1126,7 @@ class NdbOperation {
       OO_GET_FINAL_VALUE = 0x2000,
       OO_REPLICA_APPLIER = 0x4000,
       /*
-       * Zart
-       * TTL
+       * TTL related
        */
       OO_TTL_IGNORE    = 0x8000,
       OO_INTERPRETED_INSERT = 0x10000,
@@ -1577,7 +1576,7 @@ class NdbOperation {
     OF_TTL_ONLY_EXPIRED = 0x200
   };
   /*
-   * Zart
+   * TTL related
    * Expanded it to 16 bits
    */
   Uint16 m_flags;

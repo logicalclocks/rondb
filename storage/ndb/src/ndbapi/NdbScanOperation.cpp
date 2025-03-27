@@ -480,8 +480,7 @@ inline int NdbScanOperation::scanImpl(
   }
 
   /*
-   * Zart
-   * TTL
+   * TTL related
    */
   if (options != nullptr &&
       (options->optionsPresent & ScanOptions::SO_TTL_IGNORE)) {
@@ -2051,7 +2050,7 @@ int NdbScanOperation::finaliseScanOldApi() {
 
   options.scan_flags = m_savedScanFlagsOldApi;
   /*
-   * Zart
+   * TTL related
    * Here is where we set SO_TTL_ONLY_EXPIRED
    * from OldApi(SF_OnlyExpiredScan)
    */
@@ -2215,8 +2214,7 @@ int NdbScanOperation::prepareSendScan(Uint32 /*aTC_ConnectPtr*/,
     ScanTabReq::setAggregation(reqInfo, 1);
   }
   /*
-   * Zart
-   * TTL
+   * TTL related
    */
   ScanTabReq::setTTLIgnoreFlag(reqInfo, (m_flags & OF_TTL_IGNORE) != 0);
   ScanTabReq::setTTLOnlyExpiredFlag(reqInfo, (m_flags & OF_TTL_ONLY_EXPIRED) != 0);

@@ -8035,8 +8035,7 @@ Backup::sendScanFragReq(Signal* signal,
     ScanFragReq::setTupScanFlag(req->requestInfo, 1);
     ScanFragReq::setNotInterpretedFlag(req->requestInfo, 1);
     /*
-     * Zart
-     * TTL
+     * TTL related
      * Ignore TTL in backup scan
      */
     ScanFragReq::setTTLIgnoreFragFlag(req->requestInfo, 1);
@@ -14935,7 +14934,7 @@ void Backup::lcp_write_ctl_file(Signal *signal, BackupRecordPtr ptr) {
           ptr.p->m_num_parts_in_this_lcp);
       print_extended_lcp_stat();
       /*
-       * Zart
+       * TTL related
        * TODO (Zhao)
        * assert here
        * m_row_count 1 == m_lcp_inserts 0

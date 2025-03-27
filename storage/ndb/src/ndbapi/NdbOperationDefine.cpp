@@ -1542,7 +1542,7 @@ int NdbOperation::handleOperationOptions(const OperationType type,
   }
 
   /*
-   * Zart
+   * TTL related
    * Ignore TTL
    */
   if (opts->optionsPresent & OperationOptions::OO_TTL_IGNORE)

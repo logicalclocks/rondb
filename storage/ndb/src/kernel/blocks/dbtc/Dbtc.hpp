@@ -1560,8 +1560,8 @@ class Dbtc : public SimulatedBlock {
 
     Uint32 scanTakeOverInd;
     Uint32 unlockNodeId; /* NodeId for unlock operation */
-    /* Zart
-     * TTL
+    /*
+     * TTL related
      */
     Uint8 m_ttl_ignore;
     Uint8 m_ttl_only_expired;

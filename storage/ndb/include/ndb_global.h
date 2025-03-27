@@ -276,12 +276,23 @@ struct GenericSectionPtr {
 };
 
 /*
- * Zart
+ * TTL related
  * Turn on them to debug TTL
  */
 #undef TTL_DEBUG
 // #define TTL_DEBUG 1
 #define TTL_TABLE_ID 17
 #define NEED_PRINT(X) ((X) >= TTL_TABLE_ID)
+
+#ifdef TTL_DEBUG
+#define TTL_RONDB_TRACE(table_id, format, ...) {\
+  if (NEED_PRINT(table_id)) {\
+    g_eventLogger->info("[TTL_RONDB_TRACE] " format, ##__VA_ARGS__);\
+  }\
+}
+#else
+#define TTL_RONDB_TRACE(table_id, format, ...) {}
+#endif  // TTL_DEBUG
+
 
 #endif

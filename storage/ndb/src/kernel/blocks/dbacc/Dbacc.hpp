@@ -795,8 +795,7 @@ struct Operationrec {
   Operationrec_list m_reserved_copy_frag_lock;
   OperationrecPtr operationRecPtr;
   /*
-   * Zart
-   * TTL
+   * TTL related
    */
   Operationrec tmp_op_rec;
   OperationrecPtr queOperPtr;
@@ -925,8 +924,7 @@ struct Tabrec {
     return sizeof(struct Tabrec);
   }
   /*
-   * Zart
-   * TTL
+   * TTL related
    */
   bool WhetherSkipTTL(Signal* signal);
 private:

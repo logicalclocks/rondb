@@ -716,11 +716,10 @@ void Dbtux::PrepareAccLockReq4RAL(void* scan_rec_ptr,
    * there in previous implementation.
    */
   // ndbrequire(scan_op->m_readCommitted);
-#ifdef TTL_DEBUG
-  g_eventLogger->info("Zart, Dbtux::PrepareAccLockReq4RAL, "
-                      "ScanOp::m_tableId: %u, scanAccPtr: %u",
-      scan_op->m_tableId, scan_op_PTR.i);
-#endif  // TTL_DEBUG
+
+  TTL_RONDB_TRACE(scan_op->m_tableId, "Dbtux::PrepareAccLockReq4RAL, "
+                  "ScanOp::m_tableId: %u, scanAccPtr: %u",
+                  scan_op->m_tableId, scan_op_PTR.i);
   const Frag &frag = *c_fragPool.getPtr(scan_op->m_fragPtrI);
   ndbrequire(&frag == c_ctx.fragPtr.p);
   ndbrequire(frag.m_tableId == scan_op->m_tableId);
@@ -867,10 +866,8 @@ void Dbtux::continue_scan(Signal *signal, ScanOpPtr scanPtr, Frag &frag,
 #endif
           if (ttl_table) {
             ttl_ignore_for_ral = lockReq->ignore_ttl;
-#ifdef TTL_DEBUG
-            g_eventLogger->info("Zart, Dbtux::continue_scan()[1] check whether needs "
-                                "to ignore TTL: %d", ttl_ignore_for_ral);
-#endif  // TTL_DEBUG
+            TTL_RONDB_TRACE(index.m_tableId, "Dbtux::continue_scan()[1] check whether needs "
+                            "to ignore TTL: %d", ttl_ignore_for_ral);
           }
           break;
         }
@@ -1017,8 +1014,7 @@ void Dbtux::continue_scan(Signal *signal, ScanOpPtr scanPtr, Frag &frag,
     scan.m_state = ScanOp::Next;
     signal->setLength(NextScanConf::SignalLengthNoGCI);
     /*
-     * Zart
-     * TTL
+     * TTL related
      * Here we used to set ScanRecord->m_ignore_ttl_for_ral for
      * locking operations
      */

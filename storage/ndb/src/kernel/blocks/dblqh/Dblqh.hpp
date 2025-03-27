@@ -2566,7 +2566,7 @@ class Dblqh : public SimulatedBlock {
 
   struct Tablerec {
     /*
-     * Zart
+     * TTL related
      * Initialize m_ttl to RNIL for safety
      * TODO (Zhao)
      * Initialize Tablerec of other blocks
@@ -3003,8 +3003,8 @@ class Dblqh : public SimulatedBlock {
       Local_key m_disk_ref[2];
     } m_nr_delete;
     Uint32 accOpPtr; /* for scan lock take over */
-    Uint8 original_operation; /* Zart, original operation */
-    Uint8 ttl_ignore; /* Zart, ttl ignore */
+    Uint8 original_operation; /* TTL related, original operation */
+    Uint8 ttl_ignore; /* TTL related, ttl ignore */
     Uint8 ttl_only_expired;
   };                 /* p2c: size = 308 bytes */
 

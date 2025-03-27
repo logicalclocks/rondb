@@ -910,7 +910,7 @@ void Dbtup::checkDetachedTriggers(KeyReqStruct *req_struct,
     case ZINSERT:
     case ZREFRESH:
     /*
-     * Zart
+     * TTL related
      * Handle ZINSERT_TTL
      */
     case ZINSERT_TTL:
@@ -939,7 +939,7 @@ void Dbtup::checkDetachedTriggers(KeyReqStruct *req_struct,
     regOperPtr->op_type = ZUPDATE;
   } else if (save_type == ZINSERT_TTL) {
     /*
-     * Zart
+     * TTL related
      * TODO (Zhao)
      * We come here in this situation:
      * insert an row which already exists but is expired.
@@ -1607,8 +1607,7 @@ void Dbtup::executeTrigger(KeyReqStruct *req_struct,
   switch (regOperPtr->op_type) {
     case (ZINSERT):
     /* 
-     * Zart
-     * TTL
+     * TTL related
      * crash on fully_replicated table here:
      * 1. insert 1 row
      * 2. wait for it expires
@@ -2194,7 +2193,7 @@ void Dbtup::executeTuxCommitTriggers(Signal *signal, Operationrec *regOperPtr,
   } else if (regOperPtr->op_type == ZUPDATE ||
              regOperPtr->op_type == ZINSERT_TTL) {
     /*
-     * Zart
+     * TTL related
      * ZINSERT_TTL is an update operation, so we
      * need to decrease tup version here as well
      */
@@ -2242,7 +2241,7 @@ void Dbtup::executeTuxAbortTriggers(Signal *signal, Operationrec *regOperPtr,
     return;
   } else if (regOperPtr->op_type == ZINSERT_TTL) {
     /*
-     * Zart
+     * TTL related
      * We come here when transaction rollback or abort:
      * 1. INSERT
      * 2. WAIT UNTIL EXPIRED

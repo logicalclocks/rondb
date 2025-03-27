@@ -544,22 +544,17 @@ void Dbtup::scanReply(Signal *signal, ScanOpPtr scanPtr) {
   bool ttl_ignore_for_ral = false;
   if (scan.m_state == ScanOp::Current) {
     /*
-     * Zart
-     * TTL
+     * TTL related
      */
     bool ttl_table = false;
     {
     TablerecPtr tablePtr;
     tablePtr.i = fragPtr.p->fragTableId;
     ptrCheckGuard(tablePtr, cnoOfTablerec, tablerec);
-#ifdef TTL_DEBUG
-    if (NEED_PRINT(tablePtr.i)) {
-      g_eventLogger->info("Zart, Dbtup::scanReply(), table_id: %u, "
-                          "ttl_sec: %u, ttl_col_no: %u",
-                          tablePtr.i,
-                          tablePtr.p->m_ttl_sec, tablePtr.p->m_ttl_col_no);
-    }
-#endif  // TTL_DEBUG
+    TTL_RONDB_TRACE(tablePtr.i, "Dbtup::scanReply(), table_id: %u, "
+                    "ttl_sec: %u, ttl_col_no: %u",
+                    tablePtr.i,
+                    tablePtr.p->m_ttl_sec, tablePtr.p->m_ttl_col_no);
     if (is_ttl_table(fragPtr.p->fragTableId)) {
       ttl_table = true;
     }
@@ -606,8 +601,7 @@ void Dbtup::scanReply(Signal *signal, ScanOpPtr scanPtr) {
       lockReq->transId2 = scan.m_transId2;
       lockReq->isCopyFragScan = ((scan.m_bits & ScanOp::SCAN_COPY_FRAG) != 0);
       /*
-       * Zart
-       * TTL
+       * TTL related
        * set ignore_ttl = 0 explicitly here
        */
       lockReq->ignore_ttl = 0;
@@ -620,10 +614,9 @@ void Dbtup::scanReply(Signal *signal, ScanOpPtr scanPtr) {
           scan.m_accLockOp = lockReq->accOpPtr;
           if (ttl_table) {
             ttl_ignore_for_ral = lockReq->ignore_ttl;
-#ifdef TTL_DEBUG
-            g_eventLogger->info("Zart, Dbtup::scanReply()[1] check whether needs "
-                              "to ignore TTL: %d", ttl_ignore_for_ral);
-#endif  // TTL_DEBUG
+            TTL_RONDB_TRACE(fragPtr.p->fragTableId,
+                            "Dbtup::scanReply()[1] check whether needs "
+                            "to ignore TTL: %d", ttl_ignore_for_ral);
           }
           break;
         }
@@ -740,8 +733,7 @@ void Dbtup::scanReply(Signal *signal, ScanOpPtr scanPtr) {
      */
     signal->setLength(NextScanConf::SignalLengthNoGCI);
     /*
-     * Zart
-     * TTL
+     * TTL related
      * Here we set ScanRecord->m_ignore_ttl_for_ral for
      * locking operations
      */

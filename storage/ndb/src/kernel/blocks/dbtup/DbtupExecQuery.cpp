@@ -2094,8 +2094,7 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
 #endif
     req_struct.scan_rec = lqhScanPtrP;
     /*
-     * Zart
-     * TTL
+     * TTL related
      */
     regOperPtr->ttl_ignore = lqhScanPtrP->m_ttl_ignore;
     if (lqhScanPtrP->m_ttl_ignore == 1 ||
@@ -2105,28 +2104,23 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
       regOperPtr->ttl_ignore = 0;
     }
     regOperPtr->ttl_only_expired = lqhScanPtrP->m_ttl_only_expired;
-#ifdef TTL_DEBUG
-    if (NEED_PRINT(prepare_fragptr.p->fragTableId)) {
-      g_eventLogger->info("Zart, Dbtup::execTUPKEYREQ(), Ignore TTL[%u, %u]: %u, "
-                          "only expired: %u",
-                           lqhScanPtrP->m_ttl_ignore,
-                           lqhScanPtrP->m_ttl_ignore_for_ral,
-                           regOperPtr->ttl_ignore,
-                           regOperPtr->ttl_only_expired);
-    }
-#endif  // TTL_DEBUG
+
+    TTL_RONDB_TRACE(prepare_fragptr.p->fragTableId,
+                    "Dbtup::execTUPKEYREQ(), Ignore TTL[%u, %u]: %u, "
+                    "only expired: %u",
+                    lqhScanPtrP->m_ttl_ignore,
+                    lqhScanPtrP->m_ttl_ignore_for_ral,
+                    regOperPtr->ttl_ignore,
+                    regOperPtr->ttl_only_expired);
     /*
-     * Zart
+     * TTL related
      * TODO (Zhao)
      * double check here
      */
     if (lqhScanPtrP->m_ttl_ignore == 0 && lqhOpPtrP->ttl_ignore) {
-#ifdef TTL_DEBUG
-      if (NEED_PRINT(prepare_fragptr.p->fragTableId)) {
-        g_eventLogger->info("Zart, Dbtup::execTUPKEYREQ(), Ignore TTL "
-                            "for one operation in a normal scan");
-      }
-#endif  // TTL_DEBUG
+      TTL_RONDB_TRACE(prepare_fragptr.p->fragTableId,
+                      "Dbtup::execTUPKEYREQ(), Ignore TTL "
+                      "for one operation in a normal scan");
       ndbrequire(false);
       regOperPtr->ttl_ignore = lqhOpPtrP->ttl_ignore;
     }
@@ -2164,10 +2158,10 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
     regOperPtr->ttl_ignore = lqhOpPtrP->ttl_ignore;
     regOperPtr->ttl_only_expired = lqhOpPtrP->ttl_only_expired;
 #ifdef TTL_DEBUG
-    if (NEED_PRINT(prepare_fragptr.p->fragTableId) &&
-        regOperPtr->ttl_ignore) {
-      g_eventLogger->info("Zart, Dbtup::execTUPKEYREQ(), Ignore TTL "
-                   "for one operation");
+    if (regOperPtr->ttl_ignore) {
+      TTL_RONDB_TRACE(prepare_fragptr.p->fragTableId,
+                      "Dbtup::execTUPKEYREQ(), Ignore TTL "
+                      "for one operation");
     }
 #endif  // TTL_DEBUG
   }
@@ -2201,26 +2195,22 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
     req_struct.m_reorg = reorg;
     regOperPtr->op_type = op;
     /*
-     * Zart
+     * TTL related
      * We keep original operation type for regOperPtr,
      * so that we can handle HandleUpdateReq() correctly
      * in the future
      */
     regOperPtr->original_op_type = original_op;
-#ifdef TTL_DEBUG
-    if (NEED_PRINT(prepare_fragptr.p->fragTableId)) {
-      g_eventLogger->info("Zart, [TableId: %u]"
-                          "Set Dbtup::Operationrec::original_op_type: %u, "
-                          "current Dbtup::Operationrec::op_type: %u, "
-                          "ignore TTL ?(%u), "
-                          "only expired?(%u)",
-                          prepare_fragptr.p->fragTableId,
-                          regOperPtr->original_op_type,
-                          regOperPtr->op_type,
-                          regOperPtr->ttl_ignore,
-                          regOperPtr->ttl_only_expired);
-    }
-#endif  // TTL_DEBUG
+    TTL_RONDB_TRACE(prepare_fragptr.p->fragTableId, "[TableId: %u]"
+                    "Set Dbtup::Operationrec::original_op_type: %u, "
+                    "current Dbtup::Operationrec::op_type: %u, "
+                    "ignore TTL ?(%u), "
+                    "only expired?(%u)",
+                    prepare_fragptr.p->fragTableId,
+                    regOperPtr->original_op_type,
+                    regOperPtr->op_type,
+                    regOperPtr->ttl_ignore,
+                    regOperPtr->ttl_only_expired);
   }
   {
     /**
@@ -2896,21 +2886,20 @@ int Dbtup::checkTTL(Tablerec* regTabPtr,
   [[maybe_unused]] const Uint32 size_in_words =
                                 AttributeDescriptor::getSizeInWords(TattrDesc1);
   ndbrequire(type_id == NDB_TYPE_DATETIME2 || type_id == NDB_TYPE_TIMESTAMP2);
-#ifdef TTL_DEBUG
-  g_eventLogger->info("Zart, handleXXXReq TTL check, table_id: %u, "
-      "type_id: %u, size: %u, size_in_bytes: %u, "
-      "size_in_words: %u",
-      req_struct->fragPtrP->fragTableId, type_id, size,
-      size_in_bytes, size_in_words);
-#endif  // TTL_DEBUG
+  TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
+                  "handleXXXReq TTL check, table_id: %u, "
+                  "type_id: %u, size: %u, size_in_bytes: %u, "
+                  "size_in_words: %u",
+                  req_struct->fragPtrP->fragTableId, type_id, size,
+                  size_in_bytes, size_in_words);
   /*
-   * Zart
+   * TTL related
    * Prepare correct attribute id format before passing it to readAttributes
    */
   attrId = attrId << 16;
   Uint32 out_buf[3];
   /*
-   * Zart
+   * TTL related
    * TODO (Zhao)
    * Double check whether it's safe to reuse req_struct here or not.
    */
@@ -2920,12 +2909,11 @@ int Dbtup::checkTTL(Tablerec* regTabPtr,
       out_buf,
       3);
   AttributeHeader* ahOut = (AttributeHeader*)out_buf;
-#ifdef TTL_DEBUG
-  g_eventLogger->info("Zart, Get ttl column data, col_id: %u, "
-      "byte_size: %u, data_size: %u, is_null: %u",
-      ahOut->getAttributeId(), ahOut->getByteSize(),
-      ahOut->getDataSize(), ahOut->isNULL());
-#endif  // TTL_DEBUG
+  TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
+                  "Get ttl column data, col_id: %u, "
+                  "byte_size: %u, data_size: %u, is_null: %u",
+                  ahOut->getAttributeId(), ahOut->getByteSize(),
+                  ahOut->getDataSize(), ahOut->isNULL());
   ndbrequire(regTabPtr->m_ttl_col_no == ahOut->getAttributeId());
 
   int cmp_ret = 0;
@@ -2933,7 +2921,7 @@ int Dbtup::checkTTL(Tablerec* regTabPtr,
   if (ret >= 0) {
     if (!ahOut->isNULL()) {
       /*
-       * Zart
+       * TTL related
        * Just need to parse to second part.
        */
       MYSQL_TIME dt;
@@ -2968,11 +2956,11 @@ int Dbtup::checkTTL(Tablerec* regTabPtr,
               ahOut->getDataPtr()), 0);
         TIME_from_longlong_datetime_packed(&dt, dt_bin);
       }
-#ifdef TTL_DEBUG
-      g_eventLogger->info("Zart, Parsed TTL column data: "
-          "%u.%u.%u %u:%u:%u",
-          dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second);
-#endif  // TTL_DEBUG
+      TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
+                      "Parsed TTL column data: "
+                      "%u.%u.%u %u:%u:%u",
+                      dt.year, dt.month, dt.day,
+                      dt.hour, dt.minute, dt.second);
       Uint32 ttl_sec = regTabPtr->m_ttl_sec;
       bool valid_future_dt = true;
       if (ttl_sec != 0) {
@@ -2982,14 +2970,14 @@ int Dbtup::checkTTL(Tablerec* regTabPtr,
         bool add_ret = date_add_interval(&dt, INTERVAL_SECOND,
             interval, nullptr);
         if (add_ret) {
-          g_eventLogger->warning("Zart, TTL column adds "
+          g_eventLogger->warning("TTL column adds "
               "interval overflowing");
           valid_future_dt = false;
         }
       }
       if (valid_future_dt) {
         /*
-         * Zart
+         * TTL related
          * Get current utc time
          */
         MYSQL_TIME curr_dt;
@@ -3011,17 +2999,16 @@ int Dbtup::checkTTL(Tablerec* regTabPtr,
         }
 
         /*
-         * Zart
+         * TTL related
          * Compare with TTL
          */
-#ifdef TTL_DEBUG
-        g_eventLogger->info("Zart, Get TTL "
-            "expired time: %u.%u.%u %u:%u:%u, "
-            "current time: %u.%u.%u %u:%u:%u",
-            dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second,
-            curr_dt.year, curr_dt.month, curr_dt.day, curr_dt.hour,
-            curr_dt.minute, curr_dt.second);
-#endif  // TTL_DEBUG
+        TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
+                        "Get TTL "
+                        "expired time: %u.%u.%u %u:%u:%u, "
+                        "current time: %u.%u.%u %u:%u:%u",
+                        dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second,
+                        curr_dt.year, curr_dt.month, curr_dt.day, curr_dt.hour,
+                        curr_dt.minute, curr_dt.second);
         cmp_ret = my_time_compare(dt, curr_dt);
       } else {
         // future_dt overflows, we assume this row doesn't expire
@@ -3029,7 +3016,7 @@ int Dbtup::checkTTL(Tablerec* regTabPtr,
       }
     } else {
       /*
-       * Zart
+       * TTL related
        * TODO (Zhao)
        * remove the warning log here.
        */
@@ -3057,11 +3044,10 @@ void Dbtup::PrepareAccLockReq4RAL(void* scan_rec_ptr, Signal* signal) {
   ndbrequire(c_scanOpPool.getValidPtr(scan_op_PTR));
   ScanOp* scan_op = scan_op_PTR.p;
   ndbrequire(!(scan_op->m_bits & ScanOp::SCAN_LOCK));
-#ifdef TTL_DEBUG
-  g_eventLogger->info("Zart, Dbtup::PrepareAccLockReq4RAL, "
-                      "ScanOp::m_tableId: %u, scanAccPtr: %u",
-      scan_op->m_tableId, scan_op_PTR.i);
-#endif  // TTL_DEBUG
+  TTL_RONDB_TRACE(scan_op->m_tableId,
+                  "Dbtup::PrepareAccLockReq4RAL, "
+                  "ScanOp::m_tableId: %u, scanAccPtr: %u",
+                  scan_op->m_tableId, scan_op_PTR.i);
   FragrecordPtr fragPtr;
   fragPtr.i = scan_op->m_fragPtrI;
   ndbrequire(c_fragment_pool.getPtr(fragPtr));
@@ -3143,14 +3129,13 @@ int Dbtup::handleReadReq(
   }
 
   /*
-   * Zart
+   * TTL related
    * Here we check whether the row is expired
    */
   if (_regOperPtr->ttl_ignore == 1) {
-#ifdef TTL_DEBUG
-    g_eventLogger->info("Zart, (Read) Skip checking TTL since "
-                        "ttl ignore is set");
-#endif  // TTL_DEBUG
+    TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
+                    "(Read) Skip checking TTL since "
+                    "ttl ignore is set");
   }
 
   if (_regOperPtr->ttl_ignore == 0 &&
@@ -3158,9 +3143,8 @@ int Dbtup::handleReadReq(
     bool has_error = false;
     int err_no = 0;
     int cmp_ret = 0;
-#ifdef TTL_DEBUG
-    g_eventLogger->info("Zart, (READ) handleReadReq TTL check");
-#endif  // TTL_DEBUG
+    TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
+                    "(READ) handleReadReq TTL check");
     cmp_ret = checkTTL(regTabPtr, req_struct, &has_error, &err_no);
     if (!has_error) {
       if (_regOperPtr->ttl_only_expired == 0) {
@@ -3191,22 +3175,18 @@ int Dbtup::handleReadReq(
                       signal);
               }
               ttl_ignore_for_ral = c_acc->WhetherSkipTTL(signal);
-#ifdef TTL_DEBUG
-              g_eventLogger->info("Zart, Dbtup::handleReadReq() check whether needs "
-                  "to ignore TTL: %d", ttl_ignore_for_ral);
-#endif  // TTL_DEBUG
+              TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
+                              "Dbtup::handleReadReq() check whether needs "
+                              "to ignore TTL: %d", ttl_ignore_for_ral);
             } else {
-#ifdef TTL_DEBUG
-              g_eventLogger->info("Zart, Dbtup::handleReadReq() skip TTL "
-                  "checking for locking-scan on TTL "
-                  "table");
-#endif  // TTL_DEBUG
+              TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
+                              "Dbtup::handleReadReq() skip TTL "
+                              "checking for locking-scan on TTL "
+                              "table");
             }
           }
           if (!ttl_ignore_for_ral) {
-#ifdef TTL_DEBUG
-            g_eventLogger->info("Zart, (READ) TTL expired");
-#endif  // TTL_DEBUG
+            TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId, "(READ) TTL expired");
             terrorCode = 626;
             tupkeyErrorLab(req_struct);
             return -1;
@@ -3214,18 +3194,16 @@ int Dbtup::handleReadReq(
         }
       } else {
         if (cmp_ret > 0) {
-#ifdef TTL_DEBUG
-          g_eventLogger->info("Zart, (READ) TTL skip non-expired row "
-                              "since only_expired flag is set");
-#endif  // TTL_DEBUG
+          TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
+                          "(READ) TTL skip non-expired row "
+                          "since only_expired flag is set");
           terrorCode = 626;
           tupkeyErrorLab(req_struct);
           return -1;
         } else {
-#ifdef TTL_DEBUG
-          g_eventLogger->info("Zart, (READ) TTL return expired row "
-                              "since only_expired flag is set");
-#endif  // TTL_DEBUG
+          TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
+                          "(READ) TTL return expired row "
+                          "since only_expired flag is set");
         }
       }
     } else {
@@ -3316,7 +3294,7 @@ int Dbtup::handleUpdateReq(Signal* signal,
 
 #ifdef TTL_DEBUG
   /*
-   * Zart
+   * TTL related
    * Here we check whether the row is expired
    *
    * PRECONDITION:
@@ -3325,12 +3303,14 @@ int Dbtup::handleUpdateReq(Signal* signal,
    */
   if (operPtrP->original_op_type == ZWRITE &&
       is_ttl_table(regTabPtr)) {
-    g_eventLogger->info("Zart, (UPDATE) Skip checking TTL since "
-                        "the original operation is ZWRITE.");
+    TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
+                    "(UPDATE) Skip checking TTL since "
+                    "the original operation is ZWRITE.");
   }
   if (operPtrP->ttl_ignore == 1) {
-    g_eventLogger->info("Zart, (Update) Skip checking TTL since "
-                        "ttl ignore is set");
+    TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
+                    "(Update) Skip checking TTL since "
+                     "ttl ignore is set");
   }
 #endif  // TTL_DEBUG
   if (operPtrP->ttl_ignore == 0 &&
@@ -3339,43 +3319,38 @@ int Dbtup::handleUpdateReq(Signal* signal,
     bool has_error = false;
     int err_no = 0;
     int cmp_ret = 0;
-#ifdef TTL_DEBUG
-    g_eventLogger->info("Zart, (UPDATE) handleUpdateReq TTL check");
-#endif  // TTL_DEBUG
+    TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
+                    "(UPDATE) handleUpdateReq TTL check");
     cmp_ret = checkTTL(regTabPtr, req_struct, &has_error, &err_no);
     if (!has_error) {
       if (cmp_ret <= 0 && operPtrP->op_type != ZINSERT_TTL) {
         /*
-         * Zart
+         * TTL related
          * 1. Normal update on an already existing but expired row
          */
-#ifdef TTL_DEBUG
-        g_eventLogger->info("Zart, (UPDATE) TTL expired");
-#endif  // TTL_DEBUG
+        TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId, "(UPDATE) TTL expired");
         terrorCode = 626; // HA_ERR_KEY_NOT_FOUND
         tupkeyErrorLab(req_struct);
         return -1;
       } else if (cmp_ret > 0 && operPtrP->op_type == ZINSERT_TTL) {
         /*
-         * Zart
+         * TTL related
          * 2. Insert an already existing but non-expired row
          */
-#ifdef TTL_DEBUG
-        g_eventLogger->info("Zart, (UPDATE) ZINSERT_TIL but already "
-                            "existing row hasn't expired");
-#endif  // TTL_DEBUG
+        TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
+                        "(UPDATE) ZINSERT_TIL but already "
+                        "existing row hasn't expired");
         terrorCode = 630; // HA_ERR_FOUND_DUPP_KEY
         tupkeyErrorLab(req_struct);
         return -1;
       }
       if (cmp_ret <= 0 && operPtrP->op_type == ZINSERT_TTL) {
-#ifdef TTL_DEBUG
-        g_eventLogger->info("Zart, (UPDATE) ZINSERT_TTL on an duplicated "
-                            "expired row");
-#endif  // TTL_DEBUG
+        TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
+                        "(UPDATE) ZINSERT_TTL on an duplicated "
+                        "expired row");
       }
     } else {
-      g_eventLogger->warning("Zart, (UPDATE) Failed to read a TTL column");
+      g_eventLogger->warning("(UPDATE) Failed to read a TTL column");
       jam();
       ndbrequire(err_no < 0);
       terrorCode = Uint32(-err_no);
@@ -3385,8 +3360,9 @@ int Dbtup::handleUpdateReq(Signal* signal,
   }
 #ifdef TTL_DEBUG
   if (operPtrP->op_type == ZINSERT_TTL && !is_ttl_table(regTabPtr)) {
-    g_eventLogger->info("Zart, (UPDATE) ZINSERT_TTL on an duplicated "
-                        "expired row on non-primary table");
+    TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
+                    "(UPDATE) ZINSERT_TTL on an duplicated "
+                    "expired row on non-primary table");
   }
 #endif  // TTL_DEBUG
   Tuple_header *dst;
@@ -4567,14 +4543,13 @@ int Dbtup::handleDeleteReq(Signal* signal,
   }
 
   /*
-   * Zart
+   * TTL related
    * Here we check whether the row is expired
    */
   if (regOperPtr->ttl_ignore == 1) {
-#ifdef TTL_DEBUG
-    g_eventLogger->info("Zart, (Delete) Skip checking TTL since "
-                        "ttl ignore is set");
-#endif  // TTL_DEBUG
+    TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
+                    "(Delete) Skip checking TTL since "
+                    "ttl ignore is set");
   }
 
   if (regOperPtr->ttl_ignore == 0 &&
@@ -4582,19 +4557,16 @@ int Dbtup::handleDeleteReq(Signal* signal,
     bool has_error = false;
     int err_no = 0;
     int cmp_ret = 0;
-#ifdef TTL_DEBUG
-    g_eventLogger->info("Zart, (DELETE) handleDeleteReq TTL check");
-#endif  // TTL_DEBUG
+    TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
+                    "(DELETE) handleDeleteReq TTL check");
     cmp_ret = checkTTL(regTabPtr, req_struct, &has_error, &err_no);
     if (!has_error) {
       if (cmp_ret <= 0) {
         /*
-         * Zart
+         * TTL related
          * 1. Normal deletion on an already existing but expired row
          */
-#ifdef TTL_DEBUG
-        g_eventLogger->info("Zart, (DELETE) TTL expired");
-#endif  // TTL_DEBUG
+        TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId, "(DELETE) TTL expired");
         terrorCode = 626; // HA_ERR_KEY_NOT_FOUND
         tupkeyErrorLab(req_struct);
         return -1;
@@ -4610,8 +4582,9 @@ int Dbtup::handleDeleteReq(Signal* signal,
 
 #ifdef TTL_DEBUG
   if (!is_ttl_table(regTabPtr)) {
-    g_eventLogger->info("Zart, (DELETE) delete a row on non-primary table %u",
-                        req_struct->fragPtrP->fragTableId);
+    TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
+                    "(DELETE) delete a row on non-primary table %u",
+                    req_struct->fragPtrP->fragTableId);
   }
 #endif  // TTL_DEBUG
   Uint32 copy_bits = 0;

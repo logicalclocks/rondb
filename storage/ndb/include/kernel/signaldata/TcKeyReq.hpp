@@ -254,8 +254,7 @@ class TcKeyReq {
   static void setNoWaitFlag(UintR &requestInfo, UintR val);
   static UintR getNoWaitFlag(const UintR &requestInfo);
   /**
-   * Zart
-   * TTL
+   * TTL related
    */
   static void setTTLIgnoreFlag(UintR &requestInfo, UintR val);
   static UintR getTTLIgnoreFlag(const UintR &requestInfo);
@@ -436,8 +435,7 @@ class TcKeyReq {
 #define TC_PASS_QUEUEING_SHIFT (24)
 #define TC_REPLICA_APPLIER_SHIFT (25)
 /*
- * Zart
- * TTL
+ * TTL related
  */
 #define TC_TTL_IGNORE_SHIFT (26)
 #define INTERPRETED_INSERT_SHIFT (27)
