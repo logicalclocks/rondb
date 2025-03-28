@@ -2688,9 +2688,9 @@ void Dblqh::execCREATE_TAB_REQ(Signal *signal) {
   tabptr.p->m_ttl_sec = req->ttlSec;
   tabptr.p->m_ttl_col_no = req->ttlColumnNo;
 
-  g_eventLogger->info("[LQH]Gen Tablerec, table_id: %u, TTL sec: %u, "
-                      "TTL column no: %u", tabptr.i,
-                      tabptr.p->m_ttl_sec, tabptr.p->m_ttl_col_no);
+  TTL_RONDB_TRACE(tabptr.i, "[LQH]Gen Tablerec, table_id: %u, TTL sec: %u, "
+                  "TTL column no: %u", tabptr.i,
+                  tabptr.p->m_ttl_sec, tabptr.p->m_ttl_col_no);
 
   if (req->primaryTableId != RNIL)
   {

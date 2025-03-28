@@ -1045,10 +1045,11 @@ void Dbtc::execTC_SCHVERREQ(Signal *signal) {
   tabptr.p->m_ttl_sec = req->ttlSec;
   tabptr.p->m_ttl_col_no = req->ttlColumnNo;
   tabptr.p->m_primary_table_id = req->primaryTableId;
-  g_eventLogger->info("[TC]Gen Tablerec, table_id: %u, TTL sec: %u, "
-                      "TTL column no: %u, primaryTableId: %u",
-                      tabptr.i, tabptr.p->m_ttl_sec, tabptr.p->m_ttl_col_no,
-                      tabptr.p->m_primary_table_id);
+  TTL_RONDB_TRACE(tabptr.p,
+                  "[TC]Gen Tablerec, table_id: %u, TTL sec: %u, "
+                  "TTL column no: %u, primaryTableId: %u",
+                  tabptr.i, tabptr.p->m_ttl_sec, tabptr.p->m_ttl_col_no,
+                  tabptr.p->m_primary_table_id);
 
   tabptr.p->m_disk_based = req->diskBased;
 
