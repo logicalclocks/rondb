@@ -836,12 +836,20 @@ struct st_handler_tablename {
 #define UNDEF_NODEGROUP 65535
 
 /*
- * Zart
- * Turn on them to trace handler
+ * Turn on it to trace handler
  */
 #undef TTL_TRACE_HANDLER
 // #define TTL_TRACE_HANDLER 1
-#define TTL_TABLE_NAME "sz"
+#define TTL_TABLE_NAME "ttl_table"
+
+#ifdef TTL_TRACE_HANDLER
+#define TTL_HANDLER_TRACE(table_name, content) \
+  if (strcmp(table_name, TTL_TABLE_NAME) == 0) { \
+    ndb_log_info("[TTL handler trace] %s", content); \
+  }
+#else
+#define TTL_HANDLER_TRACE(table_name, content) {}
+#endif  // TTL_TRACE_HANDLER
 
 // FUTURE: Combine these two enums into one enum class
 enum ts_command_type {

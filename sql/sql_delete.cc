@@ -303,8 +303,7 @@ bool Sql_cmd_delete::delete_from_single_table(THD *thd) {
   if (lex->is_ignore()) table->file->ha_extra(HA_EXTRA_IGNORE_DUP_KEY);
 
   /*
-   * Zart
-   * TTL
+   * TTL related
    */
   if(thd->variables.ttl_expired_rows_visible_in_delete) {
     table->file->ha_extra(HA_EXTRA_IGNORE_TTL);
@@ -616,23 +615,17 @@ bool Sql_cmd_delete::delete_from_single_table(THD *thd) {
 
       assert(!thd->is_error());
       DEBUG_SYNC(thd, "ttl_wait_for_row_get_expired_after_reading_4");
-/*
- * Zart
- * TTL
- * No need to handle read_removal here since we've already supported
- * RAL
- * TODO (Zhao)
- * remove them in the final release
- */
+      /*
+       * TTL related
+       * No need to handle read_removal here since we've already supported
+       * RAL
+       */
       if (!read_removal) {
         // table->file->ha_extra(HA_EXTRA_IGNORE_TTL);
       } else {
-#ifdef TTL_TRACE_HANDLER
-        if (strcmp(table->s->table_name.str, TTL_TABLE_NAME) == 0) {
-          fprintf(stderr, "Zart Sql_cmd_delete::delete_from_single_table, "
-                          "skip set HA_EXTRA_IGNORE_TTL since read_removal\n");
-        }
-#endif  // TTL_TRACE_HANDLER
+        TTL_HANDLER_TRACE(table->s->table_name.str,
+            "Sql_cmd_delete::delete_from_single_table, "
+            "skip set HA_EXTRA_IGNORE_TTL since read_removal")
       }
       if (DeleteCurrentRowAndProcessTriggers(thd, table, has_before_triggers,
                                              has_after_triggers,

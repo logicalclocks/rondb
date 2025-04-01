@@ -424,8 +424,7 @@ inline void ScanTabReq::setMultiFragFlag(UintR &requestInfo, Uint32 flag) {
 }
 
 /*
- * Zart
- * TTL
+ * TTL related
  */
 inline
 UintR

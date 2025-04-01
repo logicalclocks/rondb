@@ -192,17 +192,14 @@ void Dbtup::execCREATE_TAB_REQ(Signal *signal) {
             regTabPtr.i,
             req->hashFunctionFlag));
 
-  // Zart
+  // TTL related
   regTabPtr.p->m_ttl_sec = req->ttlSec;
   regTabPtr.p->m_ttl_col_no = req->ttlColumnNo;
-#ifdef TTL_DEBUG
-  if (NEED_PRINT(regTabPtr.i)) { /*req->tableId */
-    g_eventLogger->info("Zart, [TUP]Gen Tablerec, table_id: %u, TTL sec: %u, "
-                        "TTL column no: %u", regTabPtr.i,
-                        regTabPtr.p->m_ttl_sec,
-                        regTabPtr.p->m_ttl_col_no);
-  }
-#endif  // TTL_DEBUG
+  TTL_RONDB_TRACE(regTabPtr.i, /* == req->tableId */
+                  "[TUP]Gen Tablerec, table_id: %u, TTL sec: %u, "
+                  "TTL column no: %u", regTabPtr.i,
+                  regTabPtr.p->m_ttl_sec,
+                  regTabPtr.p->m_ttl_col_no);
 
   regTabPtr.p->m_offsets[MM].m_disk_ref_offset = 0;
   regTabPtr.p->m_offsets[MM].m_null_words = 0;

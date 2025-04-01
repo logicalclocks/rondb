@@ -2026,7 +2026,7 @@ bool write_record(THD *thd, TABLE *table, COPY_INFO *info, COPY_INFO *update) {
 
           DEBUG_SYNC(thd, "ttl_wait_for_row_get_expired_after_reading_2");
           /*
-           * Zart
+           * TTL related
            * Already set before
            */
           // table->file->ha_extra(HA_EXTRA_IGNORE_TTL);

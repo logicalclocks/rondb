@@ -1163,7 +1163,7 @@ struct Operationrec {
       RF_MULTI_EXIST = 4       /* Refresh op !first in trans, row exists */
     };
     /*
-     * Zart
+     * TTL related
      * keep original operation type
      */
     Uint32 original_op_type;

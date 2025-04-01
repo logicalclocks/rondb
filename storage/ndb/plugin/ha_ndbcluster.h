@@ -739,8 +739,7 @@ class ha_ndbcluster : public handler, public Partition_handler {
 
   int update_stats(THD *thd, bool do_read_stat);
   /*
-   * Zart
-   * TTL
+   * TTL related
    */
   bool m_ttl_ignore;
   bool m_ttl_fk;

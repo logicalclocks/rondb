@@ -224,8 +224,7 @@ class LqhKeyReq {
   static UintR getNoWaitFlag(const UintR &requestInfo);
   static void setNoWaitFlag(UintR &requestInfo, UintR val);
   /*
-   * Zart
-   * TTL
+   * TTL related
    */
   static void setTTLIgnoreFlag(UintR &requestInfo, UintR val);
   static UintR getTTLIgnoreFlag(const UintR &requestInfo);
@@ -242,8 +241,7 @@ class LqhKeyReq {
     RI_REPLICA_APPLIER_SHIFT = 5,
 
     /*
-     * Zart
-     * TTL
+     * TTL related
      */
     RI_TTL_IGNORE_SHIFT = 6,
     RI_INTERPRETED_INSERT_SHIFT = 7,
@@ -517,7 +515,7 @@ inline void LqhKeyReq::setSimpleFlag(UintR &requestInfo, UintR val) {
 inline void LqhKeyReq::setOperation(UintR &requestInfo, UintR val) {
   ASSERT_MAX(val, RI_OPERATION_MASK, "LqhKeyReq::setOperation");
   /*
-   * Zart
+   * TTL related
    * Need to clear the previous operation bits before setting a
    * new one
    */

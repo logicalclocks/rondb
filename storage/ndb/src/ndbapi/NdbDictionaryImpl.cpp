@@ -1284,8 +1284,7 @@ int NdbTableImpl::assign(const NdbTableImpl &org) {
   m_use_varsized_disk_data = org.m_use_varsized_disk_data;
   m_use_new_hash_function = org.m_use_new_hash_function;
   /*
-   * Zart
-   * TTL
+   * TTL related
    * Used in restoring from backups
    */
   m_ttl_sec = org.m_ttl_sec;
@@ -3742,11 +3741,11 @@ NdbDictInterface::parseTableInfo(NdbTableImpl ** ret,
                                DictTabInfo::TableMappingSize,
                                NdbTableImpl::IndirectReader, impl);
 #ifdef TTL_DEBUG
-  if (tableDesc->TTLSec != RNIL && tableDesc->TTLColumnNo != RNIL &&
-      NEED_PRINT(tableDesc->TableId)) {
-    g_eventLogger->info("Zart, NdbDictInterface::parseTableInfo, parsed a TTL table, id: %u, "
-                        ", ttl_sec: %u, ttl_col: %u",
-                        tableDesc->TableId, tableDesc->TTLSec, tableDesc->TTLColumnNo);
+  if (tableDesc->TTLSec != RNIL && tableDesc->TTLColumnNo != RNIL) {
+    TTL_RONDB_TRACE(tableDesc->TableId,
+                    "NdbDictInterface::parseTableInfo, parsed a TTL table, id: %u, "
+                    ", ttl_sec: %u, ttl_col: %u",
+                    tableDesc->TableId, tableDesc->TTLSec, tableDesc->TTLColumnNo);
   }
 #endif  // TTL_DEBUG
   
@@ -3850,8 +3849,7 @@ NdbDictInterface::parseTableInfo(NdbTableImpl ** ret,
   impl->m_use_new_hash_function =
     tableDesc->HashFunctionFlag == 0 ? false : true;
   /*
-   * Zart
-   * TTL
+   * TTL related
    * Used in restoring from backups
    */
   impl->setTTLSec(tableDesc->TTLSec);
@@ -4467,8 +4465,7 @@ int NdbDictInterface::compChangeMask(const NdbTableImpl &old_impl,
     AlterTableReq::setRangeListFlag(change_mask, true);
 
   /*
-   * Zart
-   * TTL
+   * TTL related
    * TODO (Zhao)
    * Maybe modify here when support Alter TTL in the future
    */
@@ -4777,7 +4774,7 @@ int NdbDictInterface::serializeTableDesc(NdbTableImpl &impl,
   tmpTab->TTLSec = impl.m_ttl_sec;
   tmpTab->TTLColumnNo = impl.m_ttl_col_no;
 #ifdef TTL_DEBUG
-  g_eventLogger->info("Zart, [API]serializeTableDesc, table_name: %s, "
+  g_eventLogger->info("[TTL_RONDB_TRACE] [API]serializeTableDesc, table_name: %s, "
                        "set TTLSec: %u, TTLColumnNo: %u",
                        impl.m_internalName.c_str(),
                        impl.m_ttl_sec, impl.m_ttl_col_no);
