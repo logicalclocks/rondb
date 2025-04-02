@@ -1,0 +1,15 @@
+-- source include/have_ndb.inc
+create table t1 (a int NOT NULL PRIMARY KEY, b int, c text) engine=ndb;
+show variables like '%ndb_use%';
+set ndb_use_transactions=OFF;
+show variables like '%ndb_use%';
+let $1=25001;
+disable_query_log;
+while ($1)
+{
+ eval insert into t1 values($1, 1, 'abc');
+ dec $1;
+}
+enable_query_log;
+alter table t1 modify column b bigint NOT NULL;
+drop table t1;
