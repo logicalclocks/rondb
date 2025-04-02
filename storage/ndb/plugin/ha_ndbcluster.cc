@@ -3202,6 +3202,9 @@ inline int ha_ndbcluster::fetch_next(NdbScanOperation *cursor) {
     if (m_thd_ndb->m_unsent_blob_ops) {
       if (execute_no_commit(m_thd_ndb, trans, m_ignore_no_key) != 0)
         return ndb_err(trans);
+      if (m_thd_ndb->check_trans_option(Thd_ndb::TRANS_TRANSACTIONS_OFF)) {
+        m_thd_ndb->m_unsent_bytes = 12;
+      }
     }
 
     /* Should be no unexamined completed operations
