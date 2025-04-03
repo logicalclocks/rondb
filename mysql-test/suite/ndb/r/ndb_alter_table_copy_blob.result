@@ -1,0 +1,14 @@
+create table t1 (a int NOT NULL PRIMARY KEY, b int, c text) engine=ndb;
+show variables like '%ndb_use%';
+Variable_name	Value
+ndb_use_copying_alter_table	OFF
+ndb_use_exact_count	OFF
+ndb_use_transactions	ON
+set ndb_use_transactions=OFF;
+show variables like '%ndb_use%';
+Variable_name	Value
+ndb_use_copying_alter_table	OFF
+ndb_use_exact_count	OFF
+ndb_use_transactions	OFF
+alter table t1 modify column b bigint NOT NULL;
+drop table t1;
