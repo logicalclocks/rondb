@@ -221,7 +221,7 @@ func (hwc *Cache) FindAndValidate(apiKey *string, dbs ...*string) (keyFoundInCac
 			return
 		}
 
-		if _, found := userDBs.userDBs[*db]; !found {
+		if _, found := userDBs.userDBs[strings.ToLower(*db)]; !found {
 			allowedAccess = false
 			return
 		}
@@ -276,7 +276,7 @@ func (hwc *Cache) updateRecord(apikey *string, dbs []string, udbs *UserDBs) erro
 
 	dbsMap := make(map[string]bool)
 	for _, db := range dbs {
-		dbsMap[db] = true
+		dbsMap[strings.ToLower(db)] = true
 	}
 
 	udbs.userDBs = dbsMap
