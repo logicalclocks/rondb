@@ -56,6 +56,9 @@ VALUES
     ),
     (
         1002, 'fsdb_isolate', 'macho@hopsworks.ai', Timestamp('2023-04-20 16:14:15'), 'Some desc', 'NOLIMIT', Timestamp('2023-04-20 16:14:15'), 100, 'fsdb_isolate', 0, 1
+    ),
+    (
+        1003, 'FSDB003', 'macho@hopsworks.ai', Timestamp('2023-04-20 16:14:15'), 'Some desc', 'NOLIMIT', Timestamp('2023-04-20 16:14:15'), 100, 'SomeDockerImage', 0, 1
     );
 
 INSERT INTO
@@ -75,6 +78,12 @@ VALUES
     ),
     (
         1001,
+        'macho@hopsworks.ai',
+        'Data scientist',
+        '2022-06-01 13:28:05'
+    ),
+    (
+        1003,
         'macho@hopsworks.ai',
         'Data scientist',
         '2022-06-01 13:28:05'
@@ -106,6 +115,9 @@ VALUES
     ),
     (
         67, "fsdb001", 1000, "2023-03-16 14:27:29"
+    ),
+    (
+        68, "fsdb003", 1000, "2023-03-16 14:27:29"
     ),
     (
         1091, "fsdb002", 1001, "2023-03-16 14:27:29"
@@ -184,6 +196,9 @@ VALUES
     ),
     (
         33, 'date_array', 1091, Timestamp('2023-09-26 10:02:58'), 10000, 1, NULL, 2, NULL, NULL, 18, 'ts', 1, NULL, NULL, FALSE, 0
+    ),
+    (
+        34, 'caps', 68, Timestamp('2023-09-26 10:02:58'), 10000, 1, NULL, 2, NULL, NULL, 18, 'ts', 1, NULL, NULL, FALSE, 0
     ),
     (
         3090, 'sample_4', 67, Timestamp('2023-05-08 15:20:51'), 10000, 1, NULL, 2, NULL, NULL, 2065, 'ts', 1, NULL, NULL, FALSE, 0
@@ -320,6 +335,9 @@ VALUES
     (
 	    21, 'date_array', 1091, Timestamp('2023-09-26 10:03:16'), 10000, 1, ''
     ),
+    (
+	    22, 'caps', 68, Timestamp('2023-09-26 10:03:16'), 10000, 1, ''
+    ),
     /**
     SELECT `fg0`.`id1` `id1`, `fg0`.`ts` `ts`, `fg0`.`data1` `data1`, `fg0`.`data2` `data2`, `fg1`.`id1` `id1`, `fg1`.`bigint` `bigint`
     FROM `test_ken_featurestore`.`sample_1_1` `fg0`
@@ -449,6 +467,9 @@ VALUES
     ),
     (
         27, NULL, 33, NULL, NULL, 0, 0, 0, NULL, 21
+    ),
+    (
+        28, NULL, 34, NULL, NULL, 0, 0, 0, NULL, 22
     ),
     (
         5133, NULL, 2069, NULL, NULL, 0, 0, 0, NULL, 4117
@@ -842,6 +863,12 @@ VALUES
         67, NULL, 33, 'data4', 'array<struct<sku:string,ts:timestamp>>', 27, 6, 0, 0, 0, 21, NULL
     ),
     (
+        68, NULL, 34, 'id', 'int', 28, 0, 0, 0, 0, 22, NULL
+    ),
+    (
+        69, NULL, 34, 'data', 'int', 28, 1, 0, 0, 0, 22, NULL
+    ),
+    (
         5148, NULL, 2069, 'data1', 'bigint', 5133, 2, 0, 0, 0, 4117, NULL
     ),
     (
@@ -1081,6 +1108,9 @@ VALUES
     ),
     (
         1521, NULL, 'pk', NULL, 0, 33, 1, 21 
+    ),
+    (
+        1522, NULL, 'id', NULL, 0, 34, 1, 22 
     );
 
 INSERT INTO
@@ -1097,6 +1127,9 @@ VALUES
     ),
     (
 	    23, '{"type":"record","name":"date_array_1","namespace":"salmanap_featurestore.db","fields":[{"name":"pk","type":["null","string"]},{"name":"ts","type":["null",{"type":"long","logicalType":"timestamp-micros"}]},{"name":"data0","type":["null",{"type":"array","items":["null",{"type":"record","name":"r515636140","namespace":"data","fields":[{"name":"sku","type":["null","string"]},{"name":"ts","type":["null",{"type":"long","logicalType":"timestamp-micros"}]}]}]}]},{"name":"data1","type":["null",{"type":"array","items":["null",{"type":"record","name":"r515636140","namespace":"data","fields":[{"name":"sku","type":["null","string"]},{"name":"ts","type":["null",{"type":"long","logicalType":"timestamp-micros"}]}]}]}]},{"name":"data2","type":["null",{"type":"array","items":["null",{"type":"record","name":"r515636140","namespace":"data","fields":[{"name":"sku","type":["null","string"]},{"name":"ts","type":["null",{"type":"long","logicalType":"timestamp-micros"}]}]}]}]},{"name":"data3","type":["null",{"type":"array","items":["null",{"type":"record","name":"r515636140","namespace":"data","fields":[{"name":"sku","type":["null","string"]},{"name":"ts","type":["null",{"type":"long","logicalType":"timestamp-micros"}]}]}]}]},{"name":"data4","type":["null",{"type":"array","items":["null",{"type":"record","name":"r515636140","namespace":"data","fields":[{"name":"sku","type":["null","string"]},{"name":"ts","type":["null",{"type":"long","logicalType":"timestamp-micros"}]}]}]}]}]}', 1001
+    ),
+    (
+	    24, '{"type":"record","name":"caps_1","namespace":"caps_featurestore.db","fields":[{"name":"id","type":["null","int"]},{"name":"data","type":["null","int"]}]}', 1003
     );
 
 INSERT INTO
