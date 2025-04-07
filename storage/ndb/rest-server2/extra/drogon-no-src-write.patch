@@ -1,0 +1,59 @@
+# This file is part of the RonDB REST API Server
+# Copyright (c) 2025 Hopsworks AB
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, version 3.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <http://www.gnu.org/licenses/>.
+
+Prevent drogon build system from writing to source directory
+
+diff --git a/storage/ndb/rest-server2/extra/drogon/drogon-1.9.7/.gitignore b/storage/ndb/rest-server2/extra/drogon/drogon-1.9.7/.gitignore
+index 6f29d6bfc52..f0e263f2680 100755
+--- a/storage/ndb/rest-server2/extra/drogon/drogon-1.9.7/.gitignore
++++ b/storage/ndb/rest-server2/extra/drogon/drogon-1.9.7/.gitignore
+@@ -35,7 +35,6 @@ build/
+ cmake-build-debug/
+ cmake-build-debug-visual-studio/
+ .idea/
+-lib/inc/drogon/version.h
+ html/
+ latex/
+ .vscode
+diff --git a/storage/ndb/rest-server2/extra/drogon/drogon-1.9.7/CMakeLists.txt b/storage/ndb/rest-server2/extra/drogon/drogon-1.9.7/CMakeLists.txt
+index faba28ac336..65c44a36a92 100644
+--- a/storage/ndb/rest-server2/extra/drogon/drogon-1.9.7/CMakeLists.txt
++++ b/storage/ndb/rest-server2/extra/drogon/drogon-1.9.7/CMakeLists.txt
+@@ -121,6 +121,7 @@ endif()
+ target_include_directories(
+     ${PROJECT_NAME}
+     PUBLIC $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/lib/inc>
++    $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/lib/inc>
+     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/orm_lib/inc>
+     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/nosql_lib/redis/inc>
+     $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}>
+@@ -540,7 +541,7 @@ execute_process(COMMAND "git" rev-parse HEAD
+     OUTPUT_VARIABLE GIT_SHA1
+     ERROR_QUIET OUTPUT_STRIP_TRAILING_WHITESPACE)
+ configure_file("${PROJECT_SOURCE_DIR}/cmake/templates/version.h.in"
+-    "${PROJECT_SOURCE_DIR}/lib/inc/drogon/version.h" @ONLY)
++    "${CMAKE_CURRENT_BINARY_DIR}/lib/inc/drogon/version.h" @ONLY)
+ 
+ if (DROGON_CXX_STANDARD EQUAL 20)
+     option(USE_COROUTINE "Enable C++20 coroutine support" ON)
+@@ -613,7 +614,7 @@ set(DROGON_HEADERS
+     lib/inc/drogon/WebSocketConnection.h
+     lib/inc/drogon/WebSocketController.h
+     lib/inc/drogon/drogon.h
+-    lib/inc/drogon/version.h
++    ${CMAKE_CURRENT_BINARY_DIR}/lib/inc/drogon/version.h
+     lib/inc/drogon/drogon_callbacks.h
+     lib/inc/drogon/PubSubService.h
+     lib/inc/drogon/drogon_test.h
