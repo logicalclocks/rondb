@@ -1206,7 +1206,7 @@ public:
     {
       TF_INDEX_OP_RETURN = 1,
       TF_TRIGGER_PENDING = 2, // Used to mark waiting for a CONTINUEB
-      TF_EXEC_FLAG       = 4,
+      TF_EXEC_FLAG = 4,
       TF_COMMIT_ACK_MARKER_RECEIVED = 8,
       TF_DEFERRED_CONSTRAINTS = 16, // check constraints in deferred fashion
       TF_DEFERRED_UK_TRIGGERS = 32, // trans has deferred UK triggers
@@ -1214,7 +1214,7 @@ public:
       TF_DISABLE_FK_CONSTRAINTS = 128,
       TF_LATE_COMMIT = 256 // Wait sending apiCommit until complete phase done
       ,TF_SINGLE_EXEC_FLAG = 512
-
+      ,TF_NOT_OUTSTANDING_FLAG = 1024
       ,TF_END = 0
     };
     Uint32 m_flags;
