@@ -274,6 +274,7 @@
 #define CFG_DB_REQUIRE_TLS 681
 
 /* Start RonDB only configuration parameters */
+#define CFG_DB_QT_READ_LOCKED         685
 #define CFG_DB_FULL_RESTART_LOGS      686
 #define CFG_DB_ACTIVATE_RATE_LIMITS   687
 #define CFG_DB_MAX_NUM_SCHEMA_OBJECTS 688
@@ -281,7 +282,6 @@
 #define CFG_DB_USE_TC_THREADS         689
 #define CFG_DB_USE_LDM_THREADS        690
 
-#define CFG_DB_QT_READ_LOCKED         685
 #define CFG_DB_OS_STATIC_OVERHEAD     691
 #define CFG_DB_OS_CPU_OVERHEAD        692
 
