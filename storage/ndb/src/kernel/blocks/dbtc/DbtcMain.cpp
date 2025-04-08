@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1417,6 +1417,11 @@ void Dbtc::execREAD_CONFIG_REQ(Signal* signal)
   UintR tables;
 
   ndbrequire(!ndb_mgm_get_int_parameter(p, CFG_TC_TABLE, &tables));
+
+  c_use_query_thread_for_locked_reads = true;
+  ndb_mgm_get_int_parameter(p,
+                            CFG_DB_QT_READ_LOCKED,
+                            &c_use_query_thread_for_locked_reads);
 
   m_low_latency_trans = 0;
   ndb_mgm_get_int_parameter(p, CFG_DB_LOW_LATENCY, &m_low_latency_trans);
@@ -5077,6 +5082,7 @@ void Dbtc::tckeyreq050Lab(Signal* signal,
       Uint32 exec_flag =
         tc_testbit(regApiPtr->m_flags, ApiConnectRecord::TF_EXEC_FLAG);
       if ((exec_flag == 0) ||
+          (TopDirty == false && c_use_query_thread_for_locked_reads == false) ||
           regApiPtr->m_exec_count > 0 ||
           ((regTcPtr->m_special_op_flags &
             TcConnectRecord::SOF_BATCH_UNSAFE) != 0))
@@ -8124,6 +8130,7 @@ void Dbtc::copyApi(Signal *signal,
   copyPtr.p->m_transaction_nodes = Tnodes;
   copyPtr.p->num_commit_ack_markers = 0;
   copyPtr.p->singleUserMode = 0;
+  copyPtr.p->tcBlockref = regApiPtr.p->tcBlockref;
 
   GcpRecordPtr gcpPtr;
   gcpPtr.i = TgcpPointer;

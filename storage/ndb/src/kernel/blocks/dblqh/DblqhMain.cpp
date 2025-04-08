@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -9105,7 +9105,7 @@ void Dblqh::execLQHKEYREQ(Signal* signal)
     {
       if (likely(LqhKeyReq::getDirtyFlag(Treqinfo)))
       {
-        jamDebug();
+        jam();
         use_lock = false;
       }
       else
@@ -9122,7 +9122,7 @@ void Dblqh::execLQHKEYREQ(Signal* signal)
         if (likely(instanceNo != RNIL))
         {
           jamDebug();
-          jamLineDebug(Uint16(instanceNo));
+          jamLine(Uint16(instanceNo));
           lqh = (Dblqh*)globalData.getBlock(DBLQH, instanceNo);
         }
         else
@@ -9133,6 +9133,8 @@ void Dblqh::execLQHKEYREQ(Signal* signal)
         c_acc->m_curr_acc = lqh->c_acc;
         c_tup->m_curr_tup = lqh->c_tup;
       }
+    } else {
+      ndbrequire(m_curr_lqh == this);
     }
     bool succ = lqh->seize_op_rec(tcConnectptr,
                                   use_lock,

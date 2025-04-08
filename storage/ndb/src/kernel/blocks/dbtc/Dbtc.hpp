@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -2698,6 +2698,8 @@ protected:
 private:
   Uint32 c_time_track_histogram_boundary[TIME_TRACK_HISTOGRAM_RANGES];
   bool c_time_track_activated;
+
+  Uint32 c_use_query_thread_for_locked_reads;
   // Transit signals
 
 
