@@ -27,7 +27,7 @@ RUN --mount=type=cache,target=/var/cache/apt,id=ubuntu22-apt-$TARGETPLATFORM \
     && apt-get install -y wget tar gzip vim \
     libaio1 libaio-dev \
     libncurses5 libnuma-dev \
-    bc default-jdk maven \
+    bc default-jdk maven libcurl4-openssl-dev \
     sudo iproute2 dnsutils
     # Java & Maven are required by YCSB
     # bc is required by dbt2

@@ -26,6 +26,7 @@
 #include <iostream>
 #include <memory>
 #include <openssl/evp.h>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <functional>
@@ -74,6 +75,8 @@
 extern EventLogger *g_eventLogger;
 
 APIKeyCache *apiKeyCache = nullptr;
+
+bool contains_upper(std::string_view s);
 
 std::vector<std::string> split(const std::string &, char);
 RS_Status computeHash(const std::string &unhashed, std::string &hashed);
@@ -276,7 +279,15 @@ RS_Status APIKeyCache::find_and_validate(const std::string &apiKey,
   userDBs->m_lastUsed = NdbTick_getCurrentTicks();
   if (!dbs.empty()) {
     for (const auto &db : dbs) {
-      if (userDBs->userDBs.find(db) == userDBs->userDBs.end()) {
+      // lower case the database name 
+      // in HW database name comparision is case insensitive
+      std::string lower_db = std::string(db);
+      if (contains_upper(lower_db)) {
+        std::transform(lower_db.begin(), lower_db.end(), lower_db.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+      }
+
+      if (userDBs->userDBs.find(lower_db) == userDBs->userDBs.end()) {
         if (inc_refcount_done) userDBs->m_ref_count--;
 #ifdef DEBUG_AUTH
         int ref_count = userDBs->m_ref_count;
@@ -575,7 +586,15 @@ RS_Status APIKeyCache::get_user_projects(int uid,
   }
   for (int i = 0; i < count; i++) {
     char *db_str = projects[i];
+
+    // lower case the database name inplace
     std::string_view str(db_str, strlen(db_str));
+    if (contains_upper(str)) {
+      for (char* p = db_str; *p != '\0'; ++p) {
+          *p = std::tolower(static_cast<unsigned char>(*p));
+      }
+    }
+
     dbs.push_back(str);
   }
   *db_ptrs = projects;
@@ -692,5 +711,11 @@ Uint64 APIKeyCache::last_updated(const std::string &apiKey) {
   Uint64 lastUpdated = userDBs->m_lastUpdated.getUint64();
   NdbMutex_Unlock(userDBs->m_waitLock);
   return lastUpdated;
+}
+
+bool contains_upper(std::string_view sv) {
+    return std::any_of(sv.begin(), sv.end(), [](unsigned char c) {
+        return std::isupper(c);
+    });
 }
 
