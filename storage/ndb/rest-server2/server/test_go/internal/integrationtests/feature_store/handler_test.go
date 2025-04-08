@@ -1976,3 +1976,30 @@ func work(t *testing.T, stop *bool, done chan int) {
 		Test_GetFeatureVector_Success_ComplexType_ST(t)
 	}
 }
+
+// test caps proj name FSDB003
+func Test_CAPS_Proj_Name(t *testing.T) {
+	var fsName = testdbs.FSDB003
+	var fvName = "caps"
+	var fvVersion = 1
+	rows, pks, cols, err := GetSampleData(fsName, "caps_1")
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+
+	for _, row := range rows {
+		var fsReq = CreateFeatureStoreRequest(
+			fsName,
+			fvName,
+			fvVersion,
+			pks,
+			*GetPkValues(&row, &pks, &cols),
+			nil,
+			nil,
+		)
+		fsReq.MetadataRequest = &api.MetadataRequest{FeatureName: true, FeatureType: true}
+		fsResp := GetFeatureStoreResponse(t, fsReq)
+		ValidateResponseWithData(t, &row, &cols, fsResp)
+		ValidateResponseMetadata(t, &fsResp.Metadata, fsReq.MetadataRequest, fsName, fvName, fvVersion)
+	}
+}

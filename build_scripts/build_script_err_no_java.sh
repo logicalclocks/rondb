@@ -1,3 +1,5 @@
+#!/bin/bash
+set -e
 SRC_DIR=$1
 if [ -z $SRC_DIR ]; then
     SRC_DIR=./..
