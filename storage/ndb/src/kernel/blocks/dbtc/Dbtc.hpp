@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1206,7 +1206,7 @@ public:
     {
       TF_INDEX_OP_RETURN = 1,
       TF_TRIGGER_PENDING = 2, // Used to mark waiting for a CONTINUEB
-      TF_EXEC_FLAG       = 4,
+      TF_EXEC_FLAG = 4,
       TF_COMMIT_ACK_MARKER_RECEIVED = 8,
       TF_DEFERRED_CONSTRAINTS = 16, // check constraints in deferred fashion
       TF_DEFERRED_UK_TRIGGERS = 32, // trans has deferred UK triggers
@@ -1214,7 +1214,7 @@ public:
       TF_DISABLE_FK_CONSTRAINTS = 128,
       TF_LATE_COMMIT = 256 // Wait sending apiCommit until complete phase done
       ,TF_SINGLE_EXEC_FLAG = 512
-
+      ,TF_NOT_OUTSTANDING_FLAG = 1024
       ,TF_END = 0
     };
     Uint32 m_flags;
@@ -2698,6 +2698,8 @@ protected:
 private:
   Uint32 c_time_track_histogram_boundary[TIME_TRACK_HISTOGRAM_RANGES];
   bool c_time_track_activated;
+
+  Uint32 c_use_query_thread_for_locked_reads;
   // Transit signals
 
 

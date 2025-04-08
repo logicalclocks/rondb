@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1417,6 +1417,11 @@ void Dbtc::execREAD_CONFIG_REQ(Signal* signal)
   UintR tables;
 
   ndbrequire(!ndb_mgm_get_int_parameter(p, CFG_TC_TABLE, &tables));
+
+  c_use_query_thread_for_locked_reads = true;
+  ndb_mgm_get_int_parameter(p,
+                            CFG_DB_QT_READ_LOCKED,
+                            &c_use_query_thread_for_locked_reads);
 
   m_low_latency_trans = 0;
   ndb_mgm_get_int_parameter(p, CFG_DB_LOW_LATENCY, &m_low_latency_trans);
@@ -3860,6 +3865,7 @@ void Dbtc::execTCKEYREQ(Signal* signal)
     jamDebug();
     regApiPtr->m_flags |= TexecFlag;
   }
+  tc_clearbit(regApiPtr->m_flags, ApiConnectRecord::TF_NOT_OUTSTANDING_FLAG);
   bool tabSingleUserMode = false;
   TableRecordPtr localTabptr;
   localTabptr.i = TtabIndex;
@@ -5076,6 +5082,7 @@ void Dbtc::tckeyreq050Lab(Signal* signal,
       Uint32 exec_flag =
         tc_testbit(regApiPtr->m_flags, ApiConnectRecord::TF_EXEC_FLAG);
       if ((exec_flag == 0) ||
+          (TopDirty == false && c_use_query_thread_for_locked_reads == false) ||
           regApiPtr->m_exec_count > 0 ||
           ((regTcPtr->m_special_op_flags &
             TcConnectRecord::SOF_BATCH_UNSAFE) != 0))
@@ -7004,13 +7011,14 @@ void Dbtc::sendtckeyconf(Signal* signal, UintR TcommitFlag, ApiConnectRecordPtr 
       return; // No queued TcKeyConf
     }//if
   }//if
-  if(TcommitFlag)
+  if (TcommitFlag)
   {
     jam();
-    tc_clearbit(regApiPtr->m_flags, ApiConnectRecord::TF_EXEC_FLAG);
-    if (TcommitFlag == 1)
-    {
+    if (TcommitFlag == 1) {
+      tc_clearbit(regApiPtr->m_flags, ApiConnectRecord::TF_EXEC_FLAG);
       time_track_complete_transaction(regApiPtr);
+    } else {
+      regApiPtr->m_flags |= ApiConnectRecord::TF_NOT_OUTSTANDING_FLAG;
     }
   }
   regApiPtr->m_tc_hbrep_timer = ctcTimer;
@@ -8122,6 +8130,7 @@ void Dbtc::copyApi(Signal *signal,
   copyPtr.p->m_transaction_nodes = Tnodes;
   copyPtr.p->num_commit_ack_markers = 0;
   copyPtr.p->singleUserMode = 0;
+  copyPtr.p->tcBlockref = regApiPtr.p->tcBlockref;
 
   GcpRecordPtr gcpPtr;
   gcpPtr.i = TgcpPointer;
@@ -9683,6 +9692,7 @@ void Dbtc::execTC_COMMITREQ(Signal* signal)
     const Uint32 transId2      = regApiPtr->transid[1];
     Uint32 errorCode           = 0;
 
+    tc_clearbit(regApiPtr->m_flags, ApiConnectRecord::TF_NOT_OUTSTANDING_FLAG);
     regApiPtr->m_flags |= ApiConnectRecord::TF_EXEC_FLAG;
     regApiPtr->m_simple_read_count = 0;
     regApiPtr->m_exec_count = 0;
@@ -9836,6 +9846,8 @@ void Dbtc::execTCROLLBACKREQ(Signal* signal)
     return;
   }//if
 
+  tc_clearbit(apiConnectptr.p->m_flags,
+    ApiConnectRecord::TF_NOT_OUTSTANDING_FLAG);
   apiConnectptr.p->m_flags |= ApiConnectRecord::TF_EXEC_FLAG;
   apiConnectptr.p->m_tc_hbrep_timer = ctcTimer;
   switch (apiConnectptr.p->apiConnectstate) {
@@ -16168,7 +16180,7 @@ void Dbtc::execSCAN_TABREQ(Signal* signal)
     }
   }
   ndbassert(transP->ndbapiBlockref == apiBlockRef);
-
+  tc_clearbit(transP->m_flags, ApiConnectRecord::TF_NOT_OUTSTANDING_FLAG);
   if (unlikely(ScanTabReq::getMultiFragFlag(ri) &&
                !ScanTabReq::getViaSPJFlag(ri)))
   {
@@ -16193,7 +16205,8 @@ void Dbtc::execSCAN_TABREQ(Signal* signal)
 	       (transid2 == buddyApiPtr.p->transid[1])))
     {
       jamDebug();
-      
+      tc_clearbit(buddyApiPtr.p->m_flags,
+        ApiConnectRecord::TF_NOT_OUTSTANDING_FLAG);
       if (unlikely(buddyApiPtr.p->apiConnectstate == CS_ABORTING ||
                    buddyApiPtr.p->apiConnectstate == CS_RELEASE))
       {
@@ -17890,6 +17903,8 @@ void Dbtc::execSCAN_NEXTREQ(Signal* signal)
     return;
   }
 
+  tc_clearbit(apiConnectptr.p->m_flags,
+    ApiConnectRecord::TF_NOT_OUTSTANDING_FLAG);
   /**
    * Check state of API connection
    */
@@ -19337,7 +19352,9 @@ void Dbtc::releaseAbortResources(Signal* signal,
   apiConnectptr.p->apiConnectstate = CS_ABORTING;
   apiConnectptr.p->abortState = AS_IDLE;
 
-  if (tc_testbit(apiConnectptr.p->m_flags, ApiConnectRecord::TF_EXEC_FLAG) ||
+  if (((tc_testbit(apiConnectptr.p->m_flags,
+                   ApiConnectRecord::TF_NOT_OUTSTANDING_FLAG) == false) &&
+        tc_testbit(apiConnectptr.p->m_flags, ApiConnectRecord::TF_EXEC_FLAG)) ||
       apiConnectptr.p->apiFailState != ApiConnectRecord::AFS_API_OK)
   {
     jam();
@@ -19408,7 +19425,6 @@ void Dbtc::releaseAbortResources(Signal* signal,
       g_eventLogger->info("returnsignal = %d", apiConnectptr.p->returnsignal);
       sendSystemError(signal, __LINE__);
     }//if
-
   }
   setApiConTimer(apiConnectptr, 0,
                  100000 + apiConnectptr.p->m_apiConTimer_line);

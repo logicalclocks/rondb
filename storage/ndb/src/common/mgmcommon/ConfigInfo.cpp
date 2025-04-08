@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -387,6 +387,18 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     "0",
     "0",
     STR_VALUE(MAX_INT_RNIL) },
+
+  {
+    CFG_DB_QT_READ_LOCKED,
+    "UseQueryThreadLockedReads",
+    DB_TOKEN,
+    "Use query threads for locked reads",
+    ConfigInfo::CI_USED,
+    false,
+    ConfigInfo::CI_BOOL,
+    "true",
+    "false",
+    "true" },
 
   {
     CFG_DB_CLASSIC_FRAGMENTATION,
