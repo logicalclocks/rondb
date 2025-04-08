@@ -1403,6 +1403,11 @@ void Dbtc::execREAD_CONFIG_REQ(Signal *signal) {
 
   ndbrequire(!ndb_mgm_get_int_parameter(p, CFG_TC_TABLE, &tables));
 
+  c_use_query_thread_for_locked_reads = true;
+  ndb_mgm_get_int_parameter(p,
+                            CFG_DB_QT_READ_LOCKED,
+                            &c_use_query_thread_for_locked_reads);
+
   m_low_latency_trans = 0;
   ndb_mgm_get_int_parameter(p, CFG_DB_LOW_LATENCY, &m_low_latency_trans);
 
@@ -3758,6 +3763,7 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
     jamDebug();
     regApiPtr->m_flags |= TexecFlag;
   }
+  tc_clearbit(regApiPtr->m_flags, ApiConnectRecord::TF_NOT_OUTSTANDING_FLAG);
   bool tabSingleUserMode = localTabptr.p->singleUserMode;
   bool is_committed_read = ((TcKeyReq::getDirtyFlag(Treqinfo)) &&
                             (TcKeyReq::getOperationType(Treqinfo) == ZREAD));
@@ -5016,6 +5022,7 @@ void Dbtc::tckeyreq050Lab(Signal *signal, CacheRecordPtr const cachePtr,
       Uint32 exec_flag =
         tc_testbit(regApiPtr->m_flags, ApiConnectRecord::TF_EXEC_FLAG);
       if ((exec_flag == 0) ||
+          (TopDirty == false && c_use_query_thread_for_locked_reads == false) ||
           regApiPtr->m_exec_count > 0 ||
           ((regTcPtr->m_special_op_flags &
             TcConnectRecord::SOF_BATCH_UNSAFE) != 0))
@@ -6845,9 +6852,11 @@ void Dbtc::sendtckeyconf(Signal *signal, UintR TcommitFlag,
   }            // if
   if (TcommitFlag) {
     jam();
-    tc_clearbit(regApiPtr->m_flags, ApiConnectRecord::TF_EXEC_FLAG);
     if (TcommitFlag == 1) {
+      tc_clearbit(regApiPtr->m_flags, ApiConnectRecord::TF_EXEC_FLAG);
       time_track_complete_transaction(regApiPtr);
+    } else {
+      regApiPtr->m_flags |= ApiConnectRecord::TF_NOT_OUTSTANDING_FLAG;
     }
   }
   regApiPtr->m_tc_hbrep_timer = ctcTimer;
@@ -7891,6 +7900,7 @@ void Dbtc::copyApi(Signal *signal,
   ndbrequire(copyPtr.p->m_queuedDatabasePtrI == RNIL64);
   copyPtr.p->m_concurrent_overtakeable_operations =
     regApiPtr.p->m_concurrent_overtakeable_operations;
+  copyPtr.p->tcBlockref = regApiPtr.p->tcBlockref;
 
   GcpRecordPtr gcpPtr;
   gcpPtr.i = TgcpPointer;
@@ -9361,6 +9371,7 @@ void Dbtc::execTC_COMMITREQ(Signal *signal) {
     const Uint32 transId2 = regApiPtr->transid[1];
     Uint32 errorCode = 0;
 
+    tc_clearbit(regApiPtr->m_flags, ApiConnectRecord::TF_NOT_OUTSTANDING_FLAG);
     regApiPtr->m_flags |= ApiConnectRecord::TF_EXEC_FLAG;
     regApiPtr->m_simple_read_count = 0;
     regApiPtr->m_exec_count = 0;
@@ -9506,6 +9517,8 @@ void Dbtc::execTCROLLBACKREQ(Signal *signal) {
     return;
   }  // if
 
+  tc_clearbit(apiConnectptr.p->m_flags,
+    ApiConnectRecord::TF_NOT_OUTSTANDING_FLAG);
   apiConnectptr.p->m_flags |= ApiConnectRecord::TF_EXEC_FLAG;
   apiConnectptr.p->m_tc_hbrep_timer = ctcTimer;
   switch (apiConnectptr.p->apiConnectstate) {
@@ -15568,6 +15581,7 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
 
   ptrAss(tabptr, tableRecord);
 
+  tc_clearbit(transP->m_flags, ApiConnectRecord::TF_NOT_OUTSTANDING_FLAG);
   if (unlikely(ScanTabReq::getMultiFragFlag(ri) &&
                !ScanTabReq::getViaSPJFlag(ri))) {
     jam();
@@ -15588,7 +15602,8 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
         likely((transid1 == buddyApiPtr.p->transid[0]) &&
                (transid2 == buddyApiPtr.p->transid[1]))) {
       jamDebug();
-      
+      tc_clearbit(buddyApiPtr.p->m_flags,
+        ApiConnectRecord::TF_NOT_OUTSTANDING_FLAG);
       if (unlikely(buddyApiPtr.p->apiConnectstate == CS_ABORTING ||
                    buddyApiPtr.p->apiConnectstate == CS_RELEASE))
       {
@@ -17420,6 +17435,8 @@ void Dbtc::execSCAN_NEXTREQ(Signal *signal) {
     return;
   }
 
+  tc_clearbit(apiConnectptr.p->m_flags,
+    ApiConnectRecord::TF_NOT_OUTSTANDING_FLAG);
   /**
    * Check state of API connection
    */
@@ -18840,7 +18857,9 @@ void Dbtc::releaseAbortResources(Signal* signal,
   apiConnectptr.p->apiConnectstate = CS_ABORTING;
   apiConnectptr.p->abortState = AS_IDLE;
 
-  if (tc_testbit(apiConnectptr.p->m_flags, ApiConnectRecord::TF_EXEC_FLAG) ||
+  if (((tc_testbit(apiConnectptr.p->m_flags,
+                   ApiConnectRecord::TF_NOT_OUTSTANDING_FLAG) == false) &&
+        tc_testbit(apiConnectptr.p->m_flags, ApiConnectRecord::TF_EXEC_FLAG)) ||
       apiConnectptr.p->apiFailState != ApiConnectRecord::AFS_API_OK) {
     jam();
     bool ok = false;

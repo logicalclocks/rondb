@@ -1113,6 +1113,7 @@ class Dbtc : public SimulatedBlock {
       TF_LATE_COMMIT = 256 // Wait sending apiCommit until complete phase done
       ,TF_SINGLE_EXEC_FLAG = 512
       ,TF_REPLICA_APPLIER = 1024
+      ,TF_NOT_OUTSTANDING_FLAG = 2048
 
       ,TF_END = 0
     };
@@ -2633,6 +2634,8 @@ class Dbtc : public SimulatedBlock {
  private:
   Uint32 c_time_track_histogram_boundary[TIME_TRACK_HISTOGRAM_RANGES];
   bool c_time_track_activated;
+
+  Uint32 c_use_query_thread_for_locked_reads;
   // Transit signals
 
   alignas(64) ApiConnectRecord_pool c_apiConnectRecordPool;

@@ -8826,7 +8826,7 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
     {
       if (likely(LqhKeyReq::getDirtyFlag(Treqinfo)))
       {
-        jamDebug();
+        jam();
         use_lock = false;
       }
       else
@@ -8843,7 +8843,7 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
         if (likely(instanceNo != RNIL))
         {
           jamDebug();
-          jamLineDebug(Uint16(instanceNo));
+          jamLine(Uint16(instanceNo));
           lqh = (Dblqh*)globalData.getBlock(DBLQH, instanceNo);
         }
         else
@@ -8854,6 +8854,8 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
         c_acc->m_curr_acc = lqh->c_acc;
         c_tup->m_curr_tup = lqh->c_tup;
       }
+    } else {
+      ndbrequire(m_curr_lqh == this);
     }
     bool succ = lqh->seize_op_rec(tcConnectptr,
                                   use_lock,

@@ -281,6 +281,7 @@
 #define CFG_DB_USE_TC_THREADS         689
 #define CFG_DB_USE_LDM_THREADS        690
 
+#define CFG_DB_QT_READ_LOCKED         685
 #define CFG_DB_OS_STATIC_OVERHEAD     691
 #define CFG_DB_OS_CPU_OVERHEAD        692
 
