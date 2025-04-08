@@ -573,6 +573,18 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
   /* RonDB additions */
 
   {
+    CFG_DB_QT_READ_LOCKED,
+    "UseQueryThreadLockedReads",
+    DB_TOKEN,
+    "Use query threads for locked reads",
+    ConfigInfo::CI_USED,
+    false,
+    ConfigInfo::CI_BOOL,
+    "true",
+    "false",
+    "true" },
+
+  {
     CFG_DB_FULL_RESTART_LOGS,
     "FullRestartLogs",
     DB_TOKEN,
