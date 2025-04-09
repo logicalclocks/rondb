@@ -89,7 +89,7 @@ void RDRSRonDBConnectionPool::shutdown() {
             ndb_object != nullptr) {
           thread_context->m_ndb_object = nullptr;
           NdbMutex_Unlock(thread_context->m_thread_context_mutex);
-          RS_Status status;
+          RS_Status status = RS_OK;
           Uint32 connection = i % m_num_data_connections;
           dataConnections[connection]->ReturnNDBObjectToPool(ndb_object,
                                                              &status);

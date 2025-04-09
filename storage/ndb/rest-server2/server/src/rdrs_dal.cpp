@@ -222,7 +222,7 @@ get_rdrs_ndb_object(int thread_index) {
 
 void
 return_rdrs_ndb_object(void *ndb_object, int thread_index) {
-  RS_Status status;
+  RS_Status status = RS_OK;
   rdrsRonDBConnectionPool->ReturnNdbObject((Ndb*)ndb_object,
                                            &status,
                                            thread_index);

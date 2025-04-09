@@ -736,7 +736,7 @@ err:
     purge_worker_running_ = false;
   }
   // Return 2 NdbObjects
-  RS_Status status;
+  RS_Status status = RS_OK;
   rdrsRonDBConnectionPool->ReturnTTLSchemaWatcherNdbObject(
                              watcher_ndb_, &status);
   rdrsRonDBConnectionPool->ReturnTTLPurgeWorkerNdbObject(
