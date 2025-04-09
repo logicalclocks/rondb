@@ -39,7 +39,7 @@ class Ndb_cluster_connection_node_iter {
     cur_pos = pos;
   }
   void init_get_next_node() {
-    start_state = 0;
+    start_index = 0;
     start_state = cur_pos;
   }
   void reset_state() {
