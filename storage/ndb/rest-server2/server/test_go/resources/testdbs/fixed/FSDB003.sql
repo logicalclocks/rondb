@@ -14,11 +14,11 @@
 -- along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 -- Signed and unsigned number data types
-DROP DATABASE IF EXISTS FSDB003;
+DROP DATABASE IF EXISTS fsdb003;
 
-CREATE DATABASE FSDB003;
+CREATE DATABASE fsdb003;
 
-USE FSDB003;
+USE fsdb003;
 
 CREATE TABLE `caps_1` (
   `id` int NOT NULL,
