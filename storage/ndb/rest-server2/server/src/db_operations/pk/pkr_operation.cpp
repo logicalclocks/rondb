@@ -166,8 +166,8 @@ BatchKeyOperations::init_batch_operations(ArenaMalloc *amalloc,
     Uint8* bitmap_words = (Uint8*)amalloc->alloc_bytes(num_bitmap_bytes, 4);
     m_key_ops[i].m_bitmap_read_columns = bitmap_words;
     Uint32 row_len = NdbDictionary::getRecordRowLength(ndb_record);
-    Uint8* row = (Uint8*)amalloc->alloc_bytes(row_len, 8);
     Uint32 row_len_aligned = ((row_len + 7) / 8) * 8;
+    Uint8* row = (Uint8*)amalloc->alloc_bytes(row_len_aligned, 8);
     /* Ensure no halfwritten words distort the rows for pk and reading */
     memset(row, 0, row_len_aligned);
     key_op->m_row = row;
