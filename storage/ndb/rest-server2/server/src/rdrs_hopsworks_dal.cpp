@@ -541,11 +541,10 @@ RS_Status find_all_projects_int(
 
 RS_Status find_all_projects(int uid, char ***projects, int *count) {
 
-  RS_Status status;
   std::vector<HopsworksProject> project_vec;
 
   Ndb *ndb_object = nullptr;
-  status = rdrsRonDBConnectionPool->GetMetadataNdbObject(&ndb_object);
+  RS_Status status = rdrsRonDBConnectionPool->GetMetadataNdbObject(&ndb_object);
   if (unlikely(status.http_code != SUCCESS)) {
     return status;
   }

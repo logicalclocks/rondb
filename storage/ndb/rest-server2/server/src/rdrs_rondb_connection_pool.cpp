@@ -286,14 +286,13 @@ RS_Status RDRSRonDBConnectionPool::ReturnMetadataNdbObject(Ndb *ndb_object,
 }
 
 RS_Status RDRSRonDBConnectionPool::Reconnect() {
-  RS_Status status;
   for (Uint32 i = 0; i < m_num_data_connections; i++) {
-    status = dataConnections[i]->Reconnect();
+    RS_Status status = dataConnections[i]->Reconnect();
     if (unlikely(status.http_code != SUCCESS)) {
       return status;
     }
   }
-  status = metadataConnection->Reconnect();
+  RS_Status status = metadataConnection->Reconnect();
   if (unlikely(status.http_code != SUCCESS)) {
     return status;
   }

@@ -73,7 +73,7 @@ RS_Status PKRResponse::WriteStringHeaderField(Uint32 index, const char *str) {
 
 RS_Status PKRResponse::Append_cstring(const char *str, Uint32 len) {
   Uint32 strl = len + 1;  // for null terminator
-  if (unlikely(unlikely(strl > GetRemainingCapacity()))) {
+  if (unlikely(strl > GetRemainingCapacity())) {
     return RS_SERVER_ERROR(std::string(rdrsErrorMessage(ERROR_RESPONSE_BUFFER_OVERFLOW)));
   }
   memcpy(resp->buffer + writeHeader, str, strl);

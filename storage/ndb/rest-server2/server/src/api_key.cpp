@@ -419,7 +419,6 @@ void APIKeyCache::cache_entry_updater(const std::string &apiKey) {
   NdbMutex_Unlock(m_rwLock[key_cache_id]);
   require(userDBs->m_state == UserDBs::IS_VALIDATING);
   NdbMutex_Unlock(userDBs->m_waitLock);
-  RS_Status status;
   bool first = true;
   while (true) {
     bool fail = false;
@@ -427,7 +426,7 @@ void APIKeyCache::cache_entry_updater(const std::string &apiKey) {
     HopsworksAPIKey key;
     std::vector<std::string_view> dbs;
     if (!m_evicted) {
-      status = authenticate_user(apiKey, key);
+      RS_Status status = authenticate_user(apiKey, key);
       if (status.http_code != HTTP_CODE::SUCCESS) {
         fail = true;
       }
@@ -435,7 +434,7 @@ void APIKeyCache::cache_entry_updater(const std::string &apiKey) {
 
     char **db_ptrs = nullptr;
     if (!fail && !m_evicted) {
-      status = get_user_databases(key, dbs, &db_ptrs);
+      RS_Status status = get_user_databases(key, dbs, &db_ptrs);
       if (status.http_code != HTTP_CODE::SUCCESS) {
         fail = true;
       }

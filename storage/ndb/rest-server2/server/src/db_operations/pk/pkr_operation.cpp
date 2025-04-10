@@ -93,8 +93,7 @@ BatchKeyOperations::init_batch_operations(ArenaMalloc *amalloc,
   m_numOperations = numOps;
   m_num_sent_operations = 0;
   m_single_transaction = false;
-  m_key_ops = (KeyOperation*)amalloc->alloc_bytes(
-    sizeof(KeyOperation) * numOps, 8);
+  m_key_ops = amalloc->alloc<KeyOperation>(numOps);
   if (unlikely(m_key_ops == nullptr)) {
     RS_Status error = RS_SERVER_ERROR(
         std::string(rdrsErrorMessage(ERROR_MEMORY_ALLOCATION_FAILURE)));
@@ -164,7 +163,7 @@ BatchKeyOperations::init_batch_operations(ArenaMalloc *amalloc,
     Uint32 num_bitmap_words = (numColumns + 31) / 32;
     Uint32 num_bitmap_bytes = 4 * num_bitmap_words;
     Uint8* bitmap_words = (Uint8*)amalloc->alloc_bytes(num_bitmap_bytes, 4);
-    m_key_ops[i].m_bitmap_read_columns = bitmap_words;
+    key_op->m_bitmap_read_columns = bitmap_words;
     Uint32 row_len = NdbDictionary::getRecordRowLength(ndb_record);
     Uint32 row_len_aligned = ((row_len + 7) / 8) * 8;
     Uint8* row = (Uint8*)amalloc->alloc_bytes(row_len_aligned, 8);
