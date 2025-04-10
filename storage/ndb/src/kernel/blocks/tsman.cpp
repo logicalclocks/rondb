@@ -1039,7 +1039,8 @@ Tsman::execFSWRITEREQ(const FsReadWriteReq* req) const /* called direct cross th
   ndbrequire(m_file_pool.getPtr(ptr, req->userPointer));
   ndbrequire(req->getFormatFlag(req->operationFlag) == req->fsFormatSharedPage);
   ndbrequire(
-      m_shared_page_pool.getPtr(page_ptr, req->data.sharedPage.pageNumber));
+    m_shared_page_pool.getPtr(page_ptr,
+                              req->data.zeroPageIndicator.pageNumber));
 
   Uint32 page_no = req->varIndex;
   Uint32 size = ptr.p->m_extent_size;

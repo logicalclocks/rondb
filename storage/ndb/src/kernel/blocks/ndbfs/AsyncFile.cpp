@@ -466,9 +466,9 @@ void AsyncFile::openReq(Request *request) {
         FsReadWriteReq::setFormatFlag(req->operationFlag,
                                       FsReadWriteReq::fsFormatSharedPage);
         if (!m_xfile.is_transformed())
-          req->data.sharedPage.pageNumber = m_page_ptr.i + cnt;
+          req->data.zeroPageIndicator.pageNumber = m_page_ptr.i + cnt;
         else
-          req->data.sharedPage.pageNumber = m_page_ptr.i + page_cnt;
+          req->data.zeroPageIndicator.pageNumber = m_page_ptr.i + page_cnt;
 
         ret_code = m_fs.callFSWRITEREQ(request->theUserReference, req);
 
