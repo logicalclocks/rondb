@@ -5071,7 +5071,15 @@ private:
                                    NodeId nodeId,
                                    Uint32 startPtrI);
 
-public:
+  /* Frag lock checks */
+  bool have_frag_scan_access() const;
+  /*
+    bool have_frag_read_key_access() const;
+    bool have_frag_write_key_access() const;
+    bool have_frag_exclusve_access() const;
+  */
+
+ public:
   void set_error_value(Uint32 val)
   {
     SET_ERROR_INSERT_VALUE(val);
@@ -5193,6 +5201,9 @@ public:
   static Uint64 getTransactionMemoryNeed(
     const Uint32 ldm_instance_count,
     const ndb_mgm_configuration_iterator * mgm_cfg);
+#if defined(USE_INIT_GLOBAL_VARIABLES)
+  void checkInitGlobalVariables() override;
+#endif
 
   static size_t getFragmentRecordSize()
   {
@@ -5855,6 +5866,13 @@ inline void Dblqh::get_tc_ref(Uint32 tcPtrI,
   tcRef = tcConnectptr.p->tcBlockref;
 }
 
+inline bool Dblqh::have_frag_scan_access() const {
+  if (qt_likely(globalData.ndbMtQueryWorkers > 0))
+    return (m_fragment_lock_status == FRAGMENT_LOCKED_IN_SCAN_MODE);
+
+  return true;
+}
+
 inline void
 Dblqh::lock_log_part(LogPartRecord *logPartPtrP,
                      EmulatedJamBuffer *jamBuf)
@@ -5895,5 +5913,5 @@ inline bool
 Dblqh::is_any_node_waiting_for_lcp() {
   return c_any_node_waiting_for_lcp;
 }
-#endif
 #undef JAM_FILE_ID
+#endif

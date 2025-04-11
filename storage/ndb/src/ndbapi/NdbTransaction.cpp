@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -296,59 +296,60 @@ Remark:        Creates a connection object.
 *****************************************************************************/
 NdbTransaction::NdbTransaction(Ndb *aNdb)
     : theSendStatus(NotInit),
-  theCallbackFunction(nullptr),
-  theCallbackObject(nullptr),
-  theTransArrayIndex(0),
-  theStartTransTime(0),
-  theErrorLine(0),
-  theErrorOperation(nullptr),
-  theNdb(aNdb),
-  theNext(nullptr),
-  theFirstOpInList(nullptr),
-  theLastOpInList(nullptr),
-  theFirstExecOpInList(nullptr),
-  theLastExecOpInList(nullptr),
-  theCompletedFirstOp(nullptr),
-  theCompletedLastOp(nullptr),
-  theNoOfOpSent(0),
-  theNoOfOpCompleted(0),
-  theMyRef(0),
-  theTCConPtr(0),
-  theTransactionId(0),
-  theGlobalCheckpointId(0),
-  p_latest_trans_gci(nullptr),
-  theStatus(NotConnected),
-  theCompletionStatus(NotCompleted), 
-  theCommitStatus(NotStarted),
-  theMagicNumber(0xFE11DC),
-  theTransactionIsStarted(false),
-  theDBnode(0),
-  theReleaseOnClose(false),
-  // Scan operations
-  m_waitForReply(true),
-  m_theFirstScanOperation(nullptr),
-  m_theLastScanOperation(nullptr),
-  m_firstExecutedScanOp(nullptr),
-  // Scan operations
-  theScanningOp(nullptr),
-  theBuddyConPtr(0xFFFFFFFF),
-  theBlobFlag(false),
-  m_userDefinedBlobOps(false),
-  thePendingBlobOps(0),
-  maxPendingBlobReadBytes(~Uint32(0)),
-  maxPendingBlobWriteBytes(~Uint32(0)),
-  pendingBlobReadBytes(0),
-  pendingBlobWriteBytes(0),
-  // Lock handle
-  m_theFirstLockHandle(nullptr),
-  m_theLastLockHandle(nullptr),
-  // Composite query operations
-  m_firstQuery(nullptr),
-  m_firstExecQuery(nullptr),
-  m_firstActiveQuery(nullptr),
-  m_scanningQuery(nullptr),
-  //
-  m_tcRef(numberToRef(DBTC, 0)),
+      theCallbackFunction(nullptr),
+      theCallbackObject(nullptr),
+      theTransArrayIndex(0),
+      theStartTransTime(0),
+      theErrorLine(0),
+      theErrorOperation(nullptr),
+      theNdb(aNdb),
+      theNext(nullptr),
+      theFirstOpInList(nullptr),
+      theLastOpInList(nullptr),
+      theFirstExecOpInList(nullptr),
+      theLastExecOpInList(nullptr),
+      theCompletedFirstOp(nullptr),
+      theCompletedLastOp(nullptr),
+      theNoOfOpSent(0),
+      theNoOfOpCompleted(0),
+      theMyRef(0),
+      theTCConPtr(0),
+      theTransactionId(0),
+      theGlobalCheckpointId(0),
+      p_latest_trans_gci(nullptr),
+      theStatus(NotConnected),
+      theCompletionStatus(NotCompleted),
+      theCommitStatus(NotStarted),
+      theMagicNumber(0xFE11DC),
+      theTransactionIsStarted(false),
+      theDBnode(0),
+      theReleaseOnClose(false),
+      theForceReleaseOnClose(false),
+      // Scan operations
+      m_waitForReply(true),
+      m_theFirstScanOperation(nullptr),
+      m_theLastScanOperation(nullptr),
+      m_firstExecutedScanOp(nullptr),
+      // Scan operations
+      theScanningOp(nullptr),
+      theBuddyConPtr(0xFFFFFFFF),
+      theBlobFlag(false),
+      m_userDefinedBlobOps(false),
+      thePendingBlobOps(0),
+      maxPendingBlobReadBytes(~Uint32(0)),
+      maxPendingBlobWriteBytes(~Uint32(0)),
+      pendingBlobReadBytes(0),
+      pendingBlobWriteBytes(0),
+      // Lock handle
+      m_theFirstLockHandle(nullptr),
+      m_theLastLockHandle(nullptr),
+      // Composite query operations
+      m_firstQuery(nullptr),
+      m_firstExecQuery(nullptr),
+      m_firstActiveQuery(nullptr),
+      m_scanningQuery(nullptr),
+      //
+      m_tcRef(numberToRef(DBTC, 0)),
       m_enable_schema_obj_owner_check(false) {
   theListState = NotInList;
   theError.code = 0;
@@ -1027,6 +1028,8 @@ int NdbTransaction::executeNoBlobs(NdbTransaction::ExecType aTypeOfExec,
                              "occur. You have likely hit a NDB Bug. Please "
                              "file a bug.");
         DBUG_PRINT("error", ("This timeout should never occure, execute()"));
+        // TODO : Consider removing inline rollback, leave until transaction
+        // release time
         g_eventLogger->error(
             "Forcibly trying to rollback txn (0x%x 0x%x"
             ") to try to clean up data node resources.",
@@ -1035,7 +1038,8 @@ int NdbTransaction::executeNoBlobs(NdbTransaction::ExecType aTypeOfExec,
         theError.code = 4012;
         theError.status = NdbError::PermanentError;
         theError.classification = NdbError::TimeoutExpired;
-        setOperationErrorCodeAbort(4012); // ndbd timeout
+        setOperationErrorCodeAbort(4012);  // ndbd timeout
+        theForceReleaseOnClose = true;
         DBUG_RETURN(-1);
       }  // if
 

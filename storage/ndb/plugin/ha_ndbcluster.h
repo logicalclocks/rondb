@@ -750,5 +750,6 @@ bool is_cluster_failure_code(int error);
 //static constexpr int NDB_INVALID_SCHEMA_OBJECT = 241;
 
 int ndb_to_mysql_error(const NdbError *ndberr);
+int fail_index_offline(TABLE *t, int index);
 
 #endif

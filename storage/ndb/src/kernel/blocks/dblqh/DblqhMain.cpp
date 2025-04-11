@@ -18352,6 +18352,14 @@ Uint32 Dblqh::copyNextRange(Uint32 *dst, TcConnectionrec *tcPtrP) {
 
     tcPtrP->primKeyLen -= rangeLen;
 
+    if (ERROR_INSERTED(5112)) {
+      jam();
+      /* Scan with infinite results */
+      g_eventLogger->info("LQH %u : Repeating range scan", instance());
+      tcPtrP->primKeyLen += rangeLen;
+      return rangeLen;
+    }
+
     if (rangeLen == totalLen) {
       /* All range information has been copied, free the section */
       releaseSection(tcPtrP->keyInfoIVal);
@@ -20285,8 +20293,10 @@ void Dblqh::send_next_NEXT_SCANREQ(Signal* signal,
       return;
     }
     jamDebug();
+    /* Request to call again */
     ndbassert(m_in_send_next_scan == 2);
     m_in_send_next_scan = 0;
+    ndbrequire(have_frag_scan_access());
   } while (1);
 }
 
@@ -20866,6 +20876,8 @@ void Dblqh::execCOPY_FRAGREQ(Signal *signal) {
     regTcPtr->transactionState = TcConnectionrec::SCAN_STATE_USED;
   }
 
+  acquire_frag_scan_access_new(prim_tab_fragptr.p, tcConnectptr.p);
+
   {
     AccScanReq *req = (AccScanReq *)&signal->theData[0];
     Uint32 sig_request_info = 0;
@@ -20921,6 +20933,9 @@ void Dblqh::execCOPY_FRAGREQ(Signal *signal) {
       /* ACC_SCANCONF */
       jamEntry();
   accScanConfCopyLab(signal);
+
+  /* release_frag_access if not already released */
+  release_frag_access(prim_tab_fragptr.p);
   return;
 }
 
@@ -36434,7 +36449,8 @@ void Dblqh::execDBINFO_SCANREQ(Signal *signal) {
         TablerecPtr tabPtr;
         tabPtr.i = tableid;
         ptrAss(tabPtr, tablerec);
-        if (tabPtr.p->tableStatus != Tablerec::NOT_DEFINED) {
+        if (tabPtr.p->tableStatus == Tablerec::TABLE_DEFINED ||
+            tabPtr.p->tableStatus == Tablerec::TABLE_READ_ONLY) {
           jam();
           // Loop over all fragments for this table.
           Uint32 num_fragments_in_array = tabPtr.p->num_fragments_in_array;
@@ -36622,7 +36638,8 @@ void Dblqh::execDBINFO_SCANREQ(Signal *signal) {
         TablerecPtr tabPtr;
         tabPtr.i = tableid;
         ptrAss(tabPtr, tablerec);
-        if (tabPtr.p->tableStatus != Tablerec::NOT_DEFINED) {
+        if (tabPtr.p->tableStatus == Tablerec::TABLE_DEFINED ||
+            tabPtr.p->tableStatus == Tablerec::TABLE_READ_ONLY) {
           jam();
           // Loop over the fragments of this table.
           Uint32 num_fragments_in_array = tabPtr.p->num_fragments_in_array;
@@ -38792,3 +38809,28 @@ Dblqh::DatabaseRecord::DatabaseRecord(Dblqh &dblqh,
   m_database_id(databaseId)
 {
 }
+
+#if defined(USE_INIT_GLOBAL_VARIABLES)
+void Dblqh::checkInitGlobalVariables() {
+  /* Called between signal executions in the job buffer */
+  if (qt_likely(globalData.ndbMtQueryThreads > 0)) {
+    if (unlikely(m_fragment_lock_status != FRAGMENT_UNLOCKED)) {
+      jam();
+      jamLine(refToMain(reference()));
+      jamLine(refToInstance(reference()));
+      jamLine(m_fragment_lock_status);
+      jamLine(m_old_fragment_lock_status);
+
+      g_eventLogger->error(
+          "Block %u instance %u should be unlocked but has "
+          "fragment lock status %u "
+          "old status %u",
+          refToMain(reference()), refToInstance(reference()),
+          m_fragment_lock_status, m_old_fragment_lock_status);
+
+      const bool fragmentLockReleased = false;
+      ndbrequire(fragmentLockReleased);
+    }
+  }
+}
+#endif

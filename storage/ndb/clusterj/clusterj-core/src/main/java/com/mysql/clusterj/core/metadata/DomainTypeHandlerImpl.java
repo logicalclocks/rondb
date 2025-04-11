@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2010, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2020, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2020, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -76,6 +76,9 @@ public class DomainTypeHandlerImpl<T> extends AbstractDomainTypeHandlerImpl<T> {
     private Map<String, Method> unmatchedGetMethods = new HashMap<String, Method>();
     private Map<String, Method> unmatchedSetMethods = new HashMap<String, Method>();
 
+    /** The Proxy class for the Domain Class. */
+    private Class<T> proxyClass;
+
     /** The proxy interfaces implemented by the domain object */
     Class<?>[] proxyInterfaces = null;
 
@@ -103,7 +106,7 @@ public class DomainTypeHandlerImpl<T> extends AbstractDomainTypeHandlerImpl<T> {
         this(cls, dictionary, null);
     }
 
-    @SuppressWarnings( "unchecked" )
+    @SuppressWarnings( {"unchecked","deprecation"} )
     public DomainTypeHandlerImpl(Class<T> cls, Dictionary dictionary,
             ValueHandlerFactory smartValueHandlerFactory) {
         this.valueHandlerFactory = smartValueHandlerFactory!=null?
@@ -123,6 +126,8 @@ public class DomainTypeHandlerImpl<T> extends AbstractDomainTypeHandlerImpl<T> {
                         "ERR_Not_Persistence_Capable_Type", name));
             }
             proxyInterfaces = new Class<?>[] {cls};
+            proxyClass = (Class<T>)
+                Proxy.getProxyClass(cls.getClassLoader(), proxyInterfaces);
             // Get the table name from Persistence Capable annotation
             persistenceCapable = cls.getAnnotation(PersistenceCapable.class);
             if (persistenceCapable == null) {
@@ -406,8 +411,8 @@ public class DomainTypeHandlerImpl<T> extends AbstractDomainTypeHandlerImpl<T> {
         handler.markModified(fieldNumber);
     }
 
-    public Class<?>[] getProxyInterfaces() {
-        return proxyInterfaces;
+    public Class<?> getProxyClass() {
+        return proxyClass;
     }
 
     public Class<T> getDomainClass() {
