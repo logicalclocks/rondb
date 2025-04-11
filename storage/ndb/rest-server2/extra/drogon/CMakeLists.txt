@@ -61,13 +61,35 @@ target_compile_options(drogon PUBLIC
     -Wno-unused-function
     -Wno-unused-variable
 )
-target_compile_options(trantor PRIVATE
-    -Wno-logical-op
-)
+
+IF(NOT APPLE)
+  target_compile_options(trantor PRIVATE
+      -Wno-logical-op
+  )
+ENDIF()
+
+IF(APPLE)
 target_compile_options(trantor PUBLIC
     -Wno-cast-qual
     -Wno-extra-semi
     -Wno-ignored-qualifiers
     -Wno-suggest-override
     -Wno-unused-parameter
+    -Wno-documentation
+    -Wno-deprecated-copy-with-user-provided-dtor
+    -Wno-inconsistent-missing-destructor-override
+    -Wno-deprecated-copy-with-dtor
+    -Wno-mismatched-tags
+    -Wno-header-hygiene
+    -Wno-shadow-field
 )
+ELSE()
+target_compile_options(trantor PUBLIC
+    -Wno-cast-qual
+    -Wno-extra-semi
+    -Wno-ignored-qualifiers
+    -Wno-suggest-override
+    -Wno-unused-parameter
+    -Wno-documentation
+)
+ENDIF()
