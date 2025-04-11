@@ -1681,6 +1681,7 @@ void Lgman::open_file(Signal *signal,
     jam();
     req->fileFlags |= FsOpenReq::OM_SYNC;
   }
+  req->fileFlags |= FsOpenReq::OM_ZEROS_ARE_SPARSE;
   req->secondFileFlags = 0;
   switch(requestInfo){
   case CreateFileImplReq::Create:

@@ -1131,7 +1131,9 @@ class NdbOperation {
       OO_TTL_IGNORE    = 0x8000,
       OO_INTERPRETED_INSERT = 0x10000,
       OO_DIRTY_FLAG = 0x20000,
-      OO_TTL_ONLY_EXPIRED = 0x40000
+      OO_TTL_ONLY_EXPIRED = 0x40000,
+      OO_BATCH_SAFE_FLAG = 0x80000,
+      OO_BATCH_UNSAFE_FLAG = 0x100000
     };
 
     /* An operation-specific abort option.
@@ -1546,6 +1548,8 @@ class NdbOperation {
   Uint8 theCommitIndicator;  // Indicator of whether commit operation
   Uint8 theSimpleIndicator;  // Indicator of whether simple operation
   Uint8 theDirtyIndicator;   // Indicator of whether dirty operation
+  Uint8 theBatchSafeFlag;    // Batching is safe
+  Uint8 theBatchUnsafeFlag;  // Batching is unsafe
   /**
    * Indicates that the base operation is ReadCommitted although it has
    * been upgraded to use locking read.
