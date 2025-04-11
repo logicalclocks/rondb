@@ -103,7 +103,9 @@ void RDRSRonDBConnectionPool::shutdown() {
     m_thread_context = nullptr;
   }
   if (metadataConnection != dataConnections[0]) {
-    /* We borrowed a data connection for meta data connection */
+    /* We did not borrow a data connection for meta data connection, so we need
+     * to shut it down separately.
+     */
     metadataConnection->Shutdown(true);
     delete metadataConnection;
   }
