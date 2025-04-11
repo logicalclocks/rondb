@@ -228,7 +228,7 @@ table_id	table_name
 24	threads
 12	threadstat
 13	transactions
-52	transactions_full
+54	transactions_full
 4	transporters
 53	transporter_details
 
