@@ -20,3 +20,7 @@ set (CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Add simdjson subdirectory
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/simdjson-${SIMDJSON_VERSION})
+
+target_compile_options(simdjson PRIVATE
+    -Wno-documentation
+)

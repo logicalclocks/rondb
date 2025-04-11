@@ -2508,20 +2508,20 @@ class Dbtc : public SimulatedBlock {
                              ApiConnectRecordPtr transPtr,
                              Uint32 error);
   // Generated statement blocks
-  void warningHandlerLab(Signal* signal, int line);
-  [[noreturn]] void systemErrorLab(Signal* signal, int line);
-  void sendSignalErrorRefuseLab(Signal* signal, ApiConnectRecordPtr apiConnectptr);
-  void scanTabRefLab(Signal* signal, Uint32 errCode, ApiConnectRecord* regApiPtr);
-  void diFcountReqLab(Signal* signal, ScanRecordPtr, ApiConnectRecordPtr);
-  void signalErrorRefuseLab(Signal* signal, ApiConnectRecordPtr apiConnectptr);
-  void abort080Lab(Signal* signal);
-  void abortScanLab(Signal* signal, ScanRecordPtr, Uint32 errCode, 
-		    bool not_started, ApiConnectRecordPtr apiConnectptr);
-  void abort010Lab(Signal* signal, ApiConnectRecordPtr apiConnectptr);
-  void abort015Lab(Signal* signal, ApiConnectRecordPtr apiConnectptr);
-  void packLqhkeyreq(Signal* signal, 
-                     BlockReference TBRef,
-                     CacheRecordPtr,
+  void warningHandlerLab(Signal *signal, int line);
+  [[noreturn]] void systemErrorLab(Signal *signal, int line);
+  void handleSignalStateProblem(Signal *signal,
+                                ApiConnectRecordPtr apiConnectptr,
+                                NodeId signalNodeId, Uint32 context);
+  void scanTabRefLab(Signal *signal, Uint32 errCode,
+                     ApiConnectRecord *regApiPtr);
+  void diFcountReqLab(Signal *signal, ScanRecordPtr, ApiConnectRecordPtr);
+  void abort080Lab(Signal *signal);
+  void abortScanLab(Signal *signal, ScanRecordPtr, Uint32 errCode,
+                    bool not_started, ApiConnectRecordPtr apiConnectptr);
+  void abort010Lab(Signal *signal, ApiConnectRecordPtr apiConnectptr);
+  void abort015Lab(Signal *signal, ApiConnectRecordPtr apiConnectptr);
+  void packLqhkeyreq(Signal *signal, BlockReference TBRef, CacheRecordPtr,
                      ApiConnectRecordPtr apiConnectptr);
   void packLqhkeyreq040Lab(Signal *signal, BlockReference TBRef, CacheRecordPtr,
                            ApiConnectRecordPtr apiConnectptr);
@@ -3232,7 +3232,7 @@ class Dbtc : public SimulatedBlock {
 
   bool validate_filter(Signal *);
   bool match_and_print(Signal *, ApiConnectRecordPtr);
-  bool ndbinfo_write_trans(Ndbinfo::Row &, ApiConnectRecordPtr);
+  bool ndbinfo_write_trans(Ndbinfo::Row &, ApiConnectRecordPtr, bool);
 
 #ifdef ERROR_INSERT
   bool testFragmentDrop(Signal *signal);
@@ -3391,6 +3391,8 @@ class Dbtc : public SimulatedBlock {
   Uint32 m_max_writes_per_trans;
   Uint32 c_trans_error_loglevel;
   Uint32 m_take_over_operations;
+
+  bool m_dbinfo_full_apiconnectrecord;
 
   void dump_trans(ApiConnectRecordPtr transPtr);
   bool hasOp(ApiConnectRecordPtr transPtr, Uint32 op);

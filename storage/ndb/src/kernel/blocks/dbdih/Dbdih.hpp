@@ -1548,6 +1548,9 @@ class Dbdih : public SimulatedBlock {
   void copyTabReq_complete(Signal *signal, TabRecordPtr tabPtr);
 
   void gcpcommitreqLab(Signal *);
+  bool checkAllNgsRepresented(Signal *, const NdbNodeBitmask *nodes);
+  void validateCopyGci(Signal *);
+  void upgradeAlignCopyGci();
   void copyGciLab(Signal *, CopyGCIReq::CopyReason reason);
   void storeNewLcpIdLab(Signal *);
   void startLcpRoundLoopLab(Signal *, Uint32 startTableId, Uint32 startFragId);
@@ -2176,6 +2179,7 @@ class Dbdih : public SimulatedBlock {
       Uint32 m_new_gci;
       Uint32 m_time_between_gcp; /* Delay between global checkpoints */
       NDB_TICKS m_start_time;
+      NdbNodeBitmask m_saveConfNodes;
     } m_master;
   } m_gcp_save;
 

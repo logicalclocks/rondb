@@ -61,6 +61,7 @@ NdbScanOperation::NdbScanOperation(Ndb *aNdb, NdbOperation::Type aType)
   m_api_receivers = nullptr;
   m_conf_receivers = nullptr;
   m_sent_receivers = nullptr;
+  m_kernel_error_code = 0;
   m_receivers = nullptr;
   m_array = new Uint32[1];  // skip if on delete in fix_receivers
   theSCAN_TABREQ = nullptr;
@@ -89,7 +90,7 @@ NdbScanOperation::~NdbScanOperation() {
  * and propogated to the 'transConnection' as well, unless they are
  * encountered in the asynchronous signal handling part of the scan
  * processing code, in which case the error should be set on
- * 'theError' member variable only.
+ * 'm_kernel_error_code' member variable only.
  *
  *****************************************************************************/
 void NdbScanOperation::setErrorCode(int aErrorCode) const {
@@ -142,6 +143,7 @@ int NdbScanOperation::init(const NdbTableImpl *tab,
   m_current_api_receiver = 0;
   m_sent_receivers_count = 0;
   m_conf_receivers_count = 0;
+  m_kernel_error_code = 0;
   assert(m_scan_buffer == nullptr);
 
   theNdb->theRemainingStartTransactions++;  // will be checked in hupp...
@@ -1541,7 +1543,7 @@ int NdbScanOperation::fix_receivers(Uint32 parallel) {
  * Move receiver from send array to conf:ed array
  */
 void NdbScanOperation::receiver_delivered(NdbReceiver *tRec) {
-  if (theError.code == 0) {
+  if (m_kernel_error_code == 0) {
     if (DEBUG_NEXT_RESULT) g_eventLogger->info("receiver_delivered");
 
     Uint32 idx = tRec->m_list_index;
@@ -1563,7 +1565,7 @@ void NdbScanOperation::receiver_delivered(NdbReceiver *tRec) {
  * Remove receiver as it's completed
  */
 void NdbScanOperation::receiver_completed(NdbReceiver *tRec) {
-  if (theError.code == 0) {
+  if (m_kernel_error_code == 0) {
     if (DEBUG_NEXT_RESULT) g_eventLogger->info("receiver_completed");
 
     Uint32 idx = tRec->m_list_index;
@@ -1748,6 +1750,12 @@ int NdbScanOperation::nextResultNdbRecord(const char *&out_row,
     return 2;
   }
 
+  /* Check if api side error already set */
+  if (theError.code) {
+    /* Scan with error set cannot be scrolled beyond cached results */
+    return -1;
+  }
+
   /* Now we have to wait for more rows (or end-of-file on all receivers). */
   Uint32 nodeId = theNdbCon->theDBnode;
   NdbImpl *theImpl = theNdb->theImpl;
@@ -1762,22 +1770,13 @@ int NdbScanOperation::nextResultNdbRecord(const char *&out_row,
 
   const Uint32 seq = theNdbCon->theNodeSequence;
 
-  if (theError.code) {
-    /**
-     * The scan is already complete (Err_scanAlreadyComplete)
-     * or is in some error.
-     *
-     * Either there is a bug in the api application such that
-     * it calls nextResult()/nextResultNdbRecord() again
-     * after getting return value 1 (meaning end of scan) or
-     * -1 (for error).
-     *
-     * Or an SCAN_TABREF-error have been received into the operation
-     * (asynchronously) between calls.
-     *
-     * In any case, keep and propagate as NdbTransaction error and fail.
+  /* Check if kernel side error set */
+  if (m_kernel_error_code != 0) {
+    /* We have received an error from the kernel side
+     * transfer the error to the api visible error code
+     * so that it appears consistently to the user.
      */
-    if (theError.code != Err_scanAlreadyComplete) setErrorCode(theError.code);
+    setErrorCode(m_kernel_error_code);
     return -1;
   }
 
@@ -1787,8 +1786,9 @@ int NdbScanOperation::nextResultNdbRecord(const char *&out_row,
     last = m_api_receivers_count;
 
     do {
-      if (theError.code) {
-        setErrorCode(theError.code);
+      if (m_kernel_error_code != 0) {
+        /* Kernel side error set, transfer to the api visible error code */
+        setErrorCode(m_kernel_error_code);
         return -1;
       }
 
@@ -1825,7 +1825,7 @@ int NdbScanOperation::nextResultNdbRecord(const char *&out_row,
          * No completed & no sent -> EndOfData
          * Make sure user gets error if he tries again.
          */
-        theError.code = Err_scanAlreadyComplete;
+        setErrorCode(Err_scanAlreadyComplete);
         return 1;
       }
 
@@ -1856,10 +1856,13 @@ int NdbScanOperation::nextResultNdbRecord(const char *&out_row,
       g_eventLogger->info(
           "NdbScanOperation::nextResultNdbRecord() 1:4008 on connection %d",
           theNdbCon->ptr2int());
+      /* Mark scan as failed, needing close at kernel */
+      execCLOSE_SCAN_REP(4008, true);
       setErrorCode(4008);  // Timeout
       break;
     case -2:
       setErrorCode(4028);  // Node fail
+      assert(seq != theImpl->getNodeSequence(nodeId));
       break;
     case -3:  // send_next_scan -> return fail (set error-code self)
       if (theError.code == 0) setErrorCode(4028);  // seq changed = Node fail
@@ -1867,7 +1870,6 @@ int NdbScanOperation::nextResultNdbRecord(const char *&out_row,
   }
 
   theNdbCon->theTransactionIsStarted = false;
-  theNdbCon->theReleaseOnClose = true;
   return -1;
 }
 
@@ -2004,9 +2006,30 @@ void NdbScanOperation::close(bool forceSend, bool releaseOp) {
   DBUG_VOID_RETURN;
 }
 
-void NdbScanOperation::execCLOSE_SCAN_REP() {
+void NdbScanOperation::execCLOSE_SCAN_REP(Uint32 errorCode,
+                                          bool closeScanNeeded) {
   m_conf_receivers_count = 0;
   m_sent_receivers_count = 0;
+  if (errorCode != 0) {
+    m_kernel_error_code = errorCode;
+
+    /**
+     * closeScanNeeded  Meaning
+     * 0                Scan already closed on kernel side, just
+     *                  need to cleanup API side resources
+     *
+     * 1                Scan state exists on kernel side, we need
+     *                  so send a signal with close flag to cleanup
+     */
+    if (closeScanNeeded) {
+      /**
+       * Create a dummy conf receiver so that close
+       * sends a signal to close */
+      m_conf_receivers_count = 1;
+      m_conf_receivers[0] = m_receivers[0];
+      m_conf_receivers[0]->m_tcPtrI = ~0;
+    }
+  }
 }
 
 void NdbScanOperation::release() {
@@ -3565,9 +3588,16 @@ int NdbIndexScanOperation::ordered_send_scan_wait_for_all(bool forceSend) {
   NdbImpl *impl = theNdb->theImpl;
   Uint32 timeout = impl->get_waitfor_timeout();
 
+  /* Check for api side error, cannot scroll with an error set */
+  if (theError.code != 0) {
+    return -1;
+  }
+
   PollGuard poll_guard(*impl);
-  if (theError.code) {
-    if (theError.code != Err_scanAlreadyComplete) setErrorCode(theError.code);
+  /* Check for kernel side error */
+  if (m_kernel_error_code != 0) {
+    /* Transfer error to user side and return */
+    setErrorCode(m_kernel_error_code);
     return -1;
   }
 
@@ -3576,7 +3606,7 @@ int NdbIndexScanOperation::ordered_send_scan_wait_for_all(bool forceSend) {
   if (seq == impl->getNodeSequence(nodeId) &&
       !send_next_scan_ordered(m_current_api_receiver)) {
     impl->incClientStat(Ndb::WaitScanResultCount, 1);
-    while (m_sent_receivers_count > 0 && !theError.code) {      
+    while (m_sent_receivers_count > 0 && (m_kernel_error_code == 0)) {      
       int ret_code= poll_guard.wait_scan(3*timeout,
                                          nodeId,
                                          forceSend,
@@ -3587,6 +3617,8 @@ int NdbIndexScanOperation::ordered_send_scan_wait_for_all(bool forceSend) {
             "NdbIndexScanOperation::ordered_send_scan_wait_for_all() "
             "2:4008 on connection %d",
             theNdbCon->ptr2int());
+        /* Mark scan as failed, needing close at kernel */
+        execCLOSE_SCAN_REP(4008, true);
         setErrorCode(4008);
       } else {
         setErrorCode(4028);
@@ -3594,8 +3626,9 @@ int NdbIndexScanOperation::ordered_send_scan_wait_for_all(bool forceSend) {
       return -1;
     }
 
-    if (theError.code) {
-      setErrorCode(theError.code);
+    if (m_kernel_error_code != 0) {
+      /* Transfer to user side and return */
+      setErrorCode(m_kernel_error_code);
       return -1;
     }
 
@@ -3664,6 +3697,7 @@ int NdbScanOperation::close_impl(bool forceSend, PollGuard *poll_guard) {
   Uint32 timeout = impl->get_waitfor_timeout();
   Uint32 seq = theNdbCon->theNodeSequence;
   Uint32 nodeId = theNdbCon->theDBnode;
+  bool scanTimeoutCase = (theError.code == 4008);
 
   /* Rather nasty way to clean up IndexScan resources if
    * any
@@ -3682,6 +3716,7 @@ int NdbScanOperation::close_impl(bool forceSend, PollGuard *poll_guard) {
   freeInterpretedCodeOldApi();
 
   if (seq != impl->getNodeSequence(nodeId)) {
+    /* Data node has failed, scan has no kernel side resources anymore */
     theNdbCon->theReleaseOnClose = true;
     return -1;
   }
@@ -3692,10 +3727,11 @@ int NdbScanOperation::close_impl(bool forceSend, PollGuard *poll_guard) {
   }
 
   /**
-   * Wait for outstanding
+   * Wait for outstanding if we have not already had/
+   * subsequently receive a kernel error.
    */
   impl->incClientStat(Ndb::WaitScanResultCount, 1);
-  while (theError.code == 0 && m_sent_receivers_count) {
+  while (m_kernel_error_code == 0 && m_sent_receivers_count) {
     int return_code= poll_guard->wait_scan(3*timeout,
                                            nodeId,
                                            forceSend,
@@ -3704,12 +3740,17 @@ int NdbScanOperation::close_impl(bool forceSend, PollGuard *poll_guard) {
       case 0:
         break;
       case -1:
+        /* Timeout */
         g_eventLogger->info(
             "NdbScanOperation::close_impl() 3:4008 on connection %d",
             theNdbCon->ptr2int());
+        /* Mark scan as failed, needing close at kernel */
+        execCLOSE_SCAN_REP(4008, true);
         setErrorCode(4008);
-        [[fallthrough]];
+        scanTimeoutCase = true;
+        break;
       case -2:
+        /* Node failure */
         m_api_receivers_count = 0;
         m_conf_receivers_count = 0;
         m_sent_receivers_count = 0;
@@ -3718,7 +3759,13 @@ int NdbScanOperation::close_impl(bool forceSend, PollGuard *poll_guard) {
     }
   }
 
-  if (theError.code) {
+  if (m_kernel_error_code != 0) {
+    /**
+     * If kernel error is set then there is no need to
+     * consider api side receivers as part of close.
+     * If kernel close is needed, a receiver will exist
+     * in the conf_receivers list.
+     */
     m_api_receivers_count = 0;
     m_current_api_receiver = m_ordered ? theParallelism : 0;
   }
@@ -3748,7 +3795,7 @@ int NdbScanOperation::close_impl(bool forceSend, PollGuard *poll_guard) {
 
   if (api + conf) {
     /**
-     * There's something to close
+     * There's potentially something to close on the kernel
      *   setup m_api_receivers (for send_next_scan)
      */
     memcpy(m_api_receivers + api, m_conf_receivers, conf * sizeof(char *));
@@ -3757,6 +3804,8 @@ int NdbScanOperation::close_impl(bool forceSend, PollGuard *poll_guard) {
   }
 
   // Send close scan
+  //   If all api + conf receivers are already closed on the kernel
+  //   side this may be a no-op.
   if (send_next_scan(api + conf, true) == -1) {
     theNdbCon->theReleaseOnClose = true;
     return -1;
@@ -3776,12 +3825,27 @@ int NdbScanOperation::close_impl(bool forceSend, PollGuard *poll_guard) {
       case 0:
         break;
       case -1:
+        /* Timeout */
         g_eventLogger->info(
-            "NdbScanOperation::close_impl() 4:4008 on connection %d",
+            "NdbScanOperation::close_impl() 4:4008 on connection %d.   "
+            "Failed to close scan after timeout.",
             theNdbCon->ptr2int());
         setErrorCode(4008);
-        [[fallthrough]];
+        /**
+         * Set theForceReleaseOnClose so that we do not reuse kernel
+         * side ApiConnectRecord which is in unknown state
+         */
+        m_api_receivers_count = 0;
+        m_conf_receivers_count = 0;
+        m_sent_receivers_count = 0;
+        theNdbCon->theForceReleaseOnClose = true;
+        return -1;
       case -2:
+        /* Node failure */
+        /**
+         * Set theReleaseOnClose as kernel side ApiConnectRecord
+         * is gone
+         */
         m_api_receivers_count = 0;
         m_conf_receivers_count = 0;
         m_sent_receivers_count = 0;
@@ -3789,6 +3853,12 @@ int NdbScanOperation::close_impl(bool forceSend, PollGuard *poll_guard) {
         return -1;
     }
   }
+
+  if (unlikely(scanTimeoutCase))
+    g_eventLogger->info(
+        "NdbScanOperation::close_impl() Successfully closed Scan on "
+        "connection %d after scan timeout",
+        theNdbCon->ptr2int());
 
   return 0;
 }

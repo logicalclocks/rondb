@@ -41,8 +41,7 @@
 
 Uint64 Dblqh::getTransactionMemoryNeed(
     const Uint32 ldm_instance_count,
-    const ndb_mgm_configuration_iterator * mgm_cfg)
-{
+    const ndb_mgm_configuration_iterator *mgm_cfg) {
   Uint32 lqh_scan_recs = 0;
   Uint32 lqh_op_recs = 0;
   {
@@ -271,6 +270,7 @@ void Dblqh::initRecords(const ndb_mgm_configuration_iterator *mgm_cfg,
     };
     init_global_ptrs(tmp, sizeof(tmp) / sizeof(tmp[0]));
   }
+  init_global_block();
 #endif
   // Records with dynamic sizes
   hostRecord = (HostRecord*)allocRecord("HostRecord",

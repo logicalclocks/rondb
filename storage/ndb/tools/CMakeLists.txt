@@ -231,6 +231,7 @@ NDB_ADD_EXECUTABLE(ndb_sign_keys
   LINK_LIBRARIES ndbmgmapi ndbgeneral ndbportlib
   )
 
+IF(NOT APPLE)
 IF(NOT WIN32)
   IF(HAVE_NCURSESW_CURSES_H OR
      HAVE_NCURSESW_H OR
@@ -264,6 +265,7 @@ IF(NOT WIN32)
     MESSAGE(FATAL_ERROR
       "ndb_top executable could not be built, install ncursesw library")
   ENDIF()
+ENDIF()
 ENDIF()
 
 IF(NOT WIN32)

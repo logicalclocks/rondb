@@ -99,9 +99,10 @@ table_id	table_name	comment
 51	certificates	Certificates in current use for TLS connections
 52	threadblock_details	which blocks are run in which threads and some internal state details
 53	transporter_details	detailed transporter status
+54	transactions_full	transactions_full
 SELECT COUNT(*) FROM ndb$tables;
 COUNT(*)
-54
+55
 SELECT * FROM ndb$tables WHERE table_id = 2;
 table_id	table_name	comment	rows_estimate
 2	test	for testing	8000
@@ -155,6 +156,7 @@ table_id	table_name	comment
 51	certificates	Certificates in current use for TLS connections
 52	threadblock_details	which blocks are run in which threads and some internal state details
 53	transporter_details	detailed transporter status
+54	transactions_full	transactions_full
 SELECT * FROM ndb$tables WHERE table_name = 'LOGDESTINATION';
 table_id	table_name	comment	rows_estimate
 SELECT COUNT(*) FROM ndb$tables t, ndb$columns c
@@ -226,6 +228,7 @@ table_id	table_name
 24	threads
 12	threadstat
 13	transactions
+54	transactions_full
 4	transporters
 53	transporter_details
 
@@ -317,6 +320,7 @@ table_id
 51
 52
 53
+54
 
 TRUNCATE ndb$tables;
 ERROR HY000: Table 'ndb$tables' is read only
