@@ -7684,10 +7684,13 @@ void Suma::release_gci(Signal *signal, Uint32 buck, Uint64 gci) {
 
 static Uint32 g_cnt = 0;
 
-void
-Suma::start_resend(Signal* signal, Uint32 buck)
-{
+void Suma::start_resend(Signal *signal, Uint32 buck) {
   jam();
+  g_eventLogger->info("start_resend(%d,", buck);
+
+  /**
+   * Resend from m_max_acked_gci + 1 until m_max_seen_gci
+   */
   ndbrequire(buck < NO_OF_BUCKETS);
   Bucket* bucket = c_buckets + buck;
   jam();
@@ -7726,7 +7729,6 @@ Suma::start_resend(Signal* signal, Uint32 buck)
     return;
   }
 
-  jam();
   if (resend_start_gci > m_max_seen_gci) {
     jam();
     // Everything seen has been sent + acked by subscribers

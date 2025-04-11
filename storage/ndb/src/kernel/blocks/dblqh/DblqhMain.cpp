@@ -38814,7 +38814,7 @@ Dblqh::DatabaseRecord::DatabaseRecord(Dblqh &dblqh,
 #if defined(USE_INIT_GLOBAL_VARIABLES)
 void Dblqh::checkInitGlobalVariables() {
   /* Called between signal executions in the job buffer */
-  if (qt_likely(globalData.ndbMtQueryThreads > 0)) {
+  if (qt_likely(globalData.ndbMtQueryWorkers > 0)) {
     if (unlikely(m_fragment_lock_status != FRAGMENT_UNLOCKED)) {
       jam();
       jamLine(refToMain(reference()));

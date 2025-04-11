@@ -7896,7 +7896,6 @@ void Dbtc::copyApi(Signal *signal,
 
   copyPtr.p->ndbapiBlockref = regApiPtr.p->ndbapiBlockref;
   copyPtr.p->globalcheckpointid = regApiPtr.p->globalcheckpointid;
-  copyPtr.p->failureNr = regApiPtr.p->failureNr;
   copyPtr.p->ndbapiConnect = TndbapiConnect;
   copyPtr.p->tcConnect = regApiPtr.p->tcConnect;
   copyPtr.p->nextTcOperation = RNIL;

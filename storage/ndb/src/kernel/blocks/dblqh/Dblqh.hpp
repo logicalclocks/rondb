@@ -5199,11 +5199,8 @@ private:
                           Uint32 & index);
 
   static Uint64 getTransactionMemoryNeed(
-    const Uint32 ldm_instance_count,
-    const ndb_mgm_configuration_iterator * mgm_cfg);
-#if defined(USE_INIT_GLOBAL_VARIABLES)
-  void checkInitGlobalVariables() override;
-#endif
+      const Uint32 ldm_instance_count,
+      const ndb_mgm_configuration_iterator *mgm_cfg);
 
   static size_t getFragmentRecordSize()
   {
@@ -5338,6 +5335,9 @@ private:
     tcPtr.p->m_next_block = nullptr;
     NdbMutex_Unlock(&tabPtrP->m_usage_count);
   }
+#endif
+#if defined(USE_INIT_GLOBAL_VARIABLES)
+  void checkInitGlobalVariables() override;
 #endif
 };
 
