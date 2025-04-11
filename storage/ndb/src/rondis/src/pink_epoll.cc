@@ -4,7 +4,7 @@
 // of patent rights can be found in the PATENTS file in the same directory.
 
 /*
-   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2024, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -118,6 +118,7 @@ int PinkEpoll::PinkAddEvent(const int fd, const int mask) {
 }
 
 int PinkEpoll::PinkModEvent(const int fd, const int old_mask, const int mask) {
+  (void)old_mask;
 #ifdef __APPLE__
   int ret = PinkDelEvent(fd, kRead | kWrite);
   if (mask == 0) {

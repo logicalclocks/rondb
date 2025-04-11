@@ -131,6 +131,8 @@ void NdbOperation::setRequestInfoTCKEYREQ(bool lastFlag, bool longSignal) {
   TcKeyReq::setStartFlag(requestInfo, theStartIndicator);
   TcKeyReq::setDirtyFlag(requestInfo, theDirtyIndicator);
   TcKeyReq::setOperationType(requestInfo, theOperationType);
+  TcKeyReq::setBatchSafeFlag(requestInfo, theBatchSafeFlag);
+  TcKeyReq::setBatchUnsafeFlag(requestInfo, theBatchUnsafeFlag);
 
   /**
    * These two operations are not set since init to 0 makes them true,

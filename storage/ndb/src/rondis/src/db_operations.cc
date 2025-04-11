@@ -799,6 +799,9 @@ int prepare_get_value_row(std::string *response,
   NdbTransaction *trans = key_store->m_trans;
   const Uint32 mask = 0xC;
   const unsigned char *mask_ptr = (const unsigned char *)&mask;
+  NdbOperation::OperationOptions opts;
+  std::memset(&opts, 0, sizeof(opts));
+  opts.optionsPresent |= NdbOperation::OperationOptions::OO_BATCH_SAFE_FLAG;
   const NdbOperation *read_op = trans->readTuple(
     pk_value_record[database_id],
     (const char *)value_row,
@@ -806,7 +809,9 @@ int prepare_get_value_row(std::string *response,
     (char *)value_row,
     is_set_command ?
       NdbOperation::LM_Exclusive : NdbOperation::LM_SimpleRead,
-    mask_ptr);
+    mask_ptr,
+    &opts,
+    sizeof(opts));
   if (read_op == nullptr) {
     assign_ndb_err_to_response(response,
                                FAILED_GET_OP,
@@ -882,6 +887,9 @@ int prepare_get_key_row(std::string *response,
   NdbTransaction *trans = key_store->m_trans;
   const Uint32 mask = 0xFC;
   const unsigned char *mask_ptr = (const unsigned char *)&mask;
+  NdbOperation::OperationOptions opts;
+  std::memset(&opts, 0, sizeof(opts));
+  opts.optionsPresent |= NdbOperation::OperationOptions::OO_BATCH_SAFE_FLAG;
 
   const NdbOperation *read_op = trans->readTuple(
     pk_key_record[database_id],
@@ -890,7 +898,9 @@ int prepare_get_key_row(std::string *response,
     (char *)key_row,
     is_set_command ?
       NdbOperation::LM_Exclusive : NdbOperation::LM_Read,
-    mask_ptr);
+    mask_ptr,
+    &opts,
+    sizeof(opts));
   if (read_op == nullptr) {
     assign_ndb_err_to_response(response,
                                FAILED_GET_OP,
@@ -915,6 +925,9 @@ int prepare_get_simple_key_row(std::string *response,
    * Mask and options means simply reading all columns
    * except primary key columns.
    */
+  NdbOperation::OperationOptions opts;
+  std::memset(&opts, 0, sizeof(opts));
+  opts.optionsPresent |= NdbOperation::OperationOptions::OO_BATCH_SAFE_FLAG;
   const unsigned char *mask_ptr = (const unsigned char *)&mask;
   const NdbOperation *read_op = trans->readTuple(
     pk_key_record[database_id],
@@ -922,7 +935,9 @@ int prepare_get_simple_key_row(std::string *response,
     entire_key_record[database_id],
     (char *)key_row,
     NdbOperation::LM_CommittedRead,
-    mask_ptr);
+    mask_ptr,
+    &opts,
+    sizeof(opts));
   if (read_op == nullptr) {
     assign_ndb_err_to_response(response,
                                FAILED_GET_OP,

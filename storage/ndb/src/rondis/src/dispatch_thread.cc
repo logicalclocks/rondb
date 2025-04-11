@@ -249,4 +249,4 @@ extern ServerThread *NewDispatchThread(
                             cron_interval, queue_limit, handle);
 }
 
-};  // namespace pink
+}  // namespace pink

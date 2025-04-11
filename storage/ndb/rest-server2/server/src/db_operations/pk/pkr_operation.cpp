@@ -414,6 +414,9 @@ start:
               opIdx,
               key_op->m_bitmap_read_columns[0],
               key_op->m_bitmap_read_columns[1]);
+    NdbOperation::OperationOptions opts;
+    std::memset(&opts, 0, sizeof(opts));
+    opts.optionsPresent |= NdbOperation::OperationOptions::OO_BATCH_SAFE_FLAG;
     const NdbOperation *operation = trans->readTuple(
       key_op->m_ndb_record,
       (const char*)key_op->m_row,
@@ -421,8 +424,8 @@ start:
       (char*)key_op->m_row,
       NdbOperation::LM_CommittedRead,
       key_op->m_bitmap_read_columns,
-      nullptr,
-      0);
+      &opts,
+      sizeof(opts));
     if (unlikely(operation == nullptr)) {
       return RS_RONDB_SERVER_ERROR(trans->getNdbError(),
           std::string(rdrsErrorMessage(ERROR_READ_OPERATION_FAILED)));

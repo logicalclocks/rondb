@@ -157,6 +157,8 @@ int NdbOperation::init(const NdbTableImpl *tab, NdbTransaction *myConnection) {
   theStartIndicator = 0;
   theCommitIndicator = 0;
   theSimpleIndicator = 0;
+  theBatchSafeFlag = 0;
+  theBatchUnsafeFlag = 0;
   theDirtyIndicator = 0;
   theReadCommittedBaseIndicator = 0;
   theInterpretIndicator = 0;
