@@ -90,7 +90,9 @@ CLASS
  PROBLEM(!enable, "REST must be enabled")
  PROBLEM(serverIP.empty(), "REST server IP cannot be empty")
  PROBLEM(serverPort == 0, "REST server port cannot be zero")
- PROBLEM(numThreads == 0, "Number of REST threads cannot be zero")
+ PROBLEM(numThreads < RDRS_MIN_NUM_THREADS,
+         "Number of REST threads cannot be less than "
+         MACRO_TO_STRING_CONSTANT(RDRS_MIN_NUM_THREADS))
  PROBLEM(numThreads > 991, "Number of REST threads too high")
 )
 
