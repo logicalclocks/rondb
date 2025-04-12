@@ -70,10 +70,14 @@ private:
   void free_memory() noexcept;
   void init_object(size_t) noexcept;
 public:
-  // No default constructor, always require specifying parameters.
+  // No default or implicit constructors, copy or move operators.
   ArenaMalloc() = delete;
-  ArenaMalloc(size_t page_size) noexcept;
+  explicit ArenaMalloc(size_t page_size) noexcept;
   ~ArenaMalloc() noexcept;
+  ArenaMalloc(const ArenaMalloc&) = delete;
+  ArenaMalloc& operator=(const ArenaMalloc&) = delete;
+  ArenaMalloc(ArenaMalloc&&) = delete;
+  ArenaMalloc& operator=(ArenaMalloc&&) = delete;
   void reset() noexcept;
   void reset(size_t page_size) noexcept;
   void* alloc_bytes(size_t size, size_t alignment) noexcept;
@@ -134,6 +138,8 @@ ArenaMalloc::alloc_exc(Uint32 items)
  * Return nullptr on failure.
  *
  * WARNING: Read comment for ArenaMalloc::realloc_bytes().
+ *
+ * WARNING: ArenaMalloc is not thread safe.
  */
 template <typename T>
 inline T*
@@ -150,6 +156,8 @@ ArenaMalloc::realloc(const T* ptr, Uint32 items, Uint32 original_items) noexcept
 
 /*
  * Like ArenaMalloc::realloc(), but throw an exception on failure.
+ *
+ * WARNING: ArenaMalloc is not thread safe.
  */
 template <typename T>
 inline T*
@@ -165,6 +173,8 @@ ArenaMalloc::realloc_exc(const T* ptr, Uint32 items, Uint32 original_items)
 /*
  * reset() will free all allocations and return the object to its initial state
  * without changing the page size.
+ *
+ * WARNING: ArenaMalloc is not thread safe.
  */
 inline void
 ArenaMalloc::reset() noexcept
@@ -176,6 +186,8 @@ ArenaMalloc::reset() noexcept
 /*
  * reset(page_size) will free all allocations and return the object to its
  * initial state and change the page size.
+ *
+ * WARNING: ArenaMalloc is not thread safe.
  */
 inline void
 ArenaMalloc::reset(size_t page_size) noexcept {
