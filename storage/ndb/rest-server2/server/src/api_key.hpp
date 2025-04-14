@@ -29,6 +29,7 @@
 #include <random>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <thread>
 #include <chrono>
@@ -60,8 +61,8 @@ RS_Status authenticate(const std::string &apiKey,
 
 class UserDBs {
  public:
-  std::unordered_map<std::string_view, bool> userDBs;
-  char *m_db_ptrs; // Memory to free for database names
+  std::unordered_set<std::string_view> userDBs;
+  char **m_db_ptrs; // Memory to free for database names
   NDB_TICKS m_lastUsed;
   NDB_TICKS m_lastUpdated;
   NdbMutex *m_waitLock;
@@ -84,7 +85,9 @@ class UserDBs {
   ~UserDBs() {
     NdbMutex_Destroy(m_waitLock);
     NdbCondition_Destroy(m_waitCond);
-    free(m_db_ptrs);
+    if (m_db_ptrs) {
+      free(m_db_ptrs);
+    }
   }
 };
 
@@ -146,9 +149,6 @@ class APIKeyCache {
   RS_Status get_user_databases(HopsworksAPIKey &,
                                std::vector<std::string_view> &,
                                char ***db_ptrs);
-  RS_Status get_user_projects(int,
-                              std::vector<std::string_view> &,
-                              char ***db_ptrs);
   RS_Status get_api_key(const std::string &, HopsworksAPIKey &);
   Int32 refresh_interval_with_jitter();
 };
