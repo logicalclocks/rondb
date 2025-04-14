@@ -23,7 +23,7 @@ ${BOLD}DESCRIPTION${RESET}
     Before using this script, start a cluster and export a variable pointing to
     the rdrs2 config location:
 
-        cd .../rondb/build 
+        cd .../rondb/build
         ./mysql-test/mtr --suite rdrs2-golang --start-and-exit
         export RDRS_CONFIG_FILE=\`realpath mysql-test/var/rdrs.1.1_config.json\`
                                or
@@ -43,7 +43,7 @@ ${BOLD}RUN TESTS${RESET}
 
     ${BOLD}PACKAGE${RESET} default: all packages
         To see available packages, run ${BOLD}./script.sh list${RESET}
-    ${BOLD}TEST_NAME${RESET} Name of the specific test to run 
+    ${BOLD}TEST_NAME${RESET} Name of the specific test to run
         default: run all tests in the go package
 
 ${BOLD}RUN BENCHMARKS${RESET}
@@ -51,9 +51,9 @@ ${BOLD}RUN BENCHMARKS${RESET}
 
         ./script.sh bench [PACKAGE] [BENCHMARK_NAME] [DURATION]
 
-    ${BOLD}PACKAGE${RESET} default: all packages 
+    ${BOLD}PACKAGE${RESET} default: all packages
         To see available packages, run "./script.sh list"
-    ${BOLD}BENCHMARK_NAME${RESET} Name of the specific test to run 
+    ${BOLD}BENCHMARK_NAME${RESET} Name of the specific test to run
         default: run all benchmark tests in the go package
     ${BOLD}DURATION${RESET} default: 30
 
@@ -62,12 +62,28 @@ ${BOLD}LIST GO PACKAGES${RESET}
 
         ./script.sh list
 
-${BOLD}RESTART RDRS${RESET}
-    Restart rdrs2 without restarting the entire cluster. This is useful for
-    quick iteration. Note that stdout/stderr will be discarded
+${BOLD}START/STOP/RESTART RDRS${RESET}
+    Start, stop or restart rdrs2 without restarting the entire cluster. This is
+    useful for quick iteration.
 
-        ./script.sh restart
+        ./script.sh start [--out PATH] [--err PATH] [PREPEND_CMD...]
+        ./script.sh stop
+        ./script.sh restart [--out PATH] [--err PATH] [PREPEND_CMD...]
 
+    ${BOLD}--out PATH${RESET} Redirect stdout to PATH (defaults to /dev/null).
+    ${BOLD}--err PATH${RESET} Redirect stderr to PATH (defaults to /dev/null).
+    ${BOLD}PREPEND_CMD...${RESET} Prepend command/arguments to rdrs.
+        This can e.g. be used to run rdrs2 under valgrind.
+        Example:
+          ./script.sh stop
+          ./script.sh start --err ./rdrs.err valgrind --tool=memcheck \\
+            --num-callers=16 --show-leak-kinds=all --leak-check=full \\
+            --suppressions=../../../../../mysql-test/valgrind.supp
+          ./script.sh bench hopsworks.ai/rdrs2/internal/integrationtests/batchpkread
+          ./script.sh stop
+          # Using stop rather than restart is useful to be able to inspect the
+          # complete valgrind report in ./rdrs.err before it is overwritten.
+          # (Another way to run rdrs under valgrind is ${BOLD}mtr --valgrind-rdrs${RESET})
 EOF
 }
 
@@ -133,23 +149,42 @@ cmd-list() {
   go list ./...
 }
 
-cmd-restart() {
-  [ $# == 0 ] || die "Command $cmd does not take arguments."
+cmd-start() {
   [ -f "${RDRS_CONFIG_FILE}" ] || die 'RDRS_CONFIG_FILE must be set and point to an existing file.'
-  pidfile="$(< ${RDRS_CONFIG_FILE} grep -E '^ *"PIDFile"' |
-             sed -r 's@^ *"PIDFile": *"(/[^"]+)",$@\1@;')"
-  [ -f "$pidfile" ] || die "PID file not found: $pidfile"
-  pid="$(< $pidfile)"
+  local outfile=/dev/null
+  local errfile=/dev/null
+  if [ $# -ge 2 ] && [ "$1" == "--out" ]; then
+    outfile="$2"
+    shift 2
+  fi
+  if [ $# -ge 2 ] && [ "$1" == "--err" ]; then
+      errfile="$2"
+      shift 2
+  fi
   rdrs2confdir="$(dirname ${RDRS_CONFIG_FILE})"
   rdrs2bin="$(realpath ${rdrs2confdir}/../../bin/rdrs2)"
+  echo "Starting rdrs2 server"
   [ -x "$rdrs2bin" ] || die "rdrs2 binary not found: $rdrs2bin"
+  "$@" $rdrs2bin > "$outfile" 2> "$errfile" &
+}
+
+cmd-stop() {
+  [ $# == 0 ] || die "Command $cmd does not take arguments."
+  [ -f "${RDRS_CONFIG_FILE}" ] || die 'RDRS_CONFIG_FILE must be set and point to an existing file.'
+  pidfile="$(< "${RDRS_CONFIG_FILE}" grep -E '^ *"PIDFile"' |
+             sed -r 's@^ *"PIDFile": *"(/[^"]+)",$@\1@;')"
+  [ -f "$pidfile" ] || die "PID file not found: $pidfile"
+  pid="$(< "$pidfile")"
   echo "Killing rdrs2 server PID $pid"
   kill $pid
-  echo -n 'Waiting for PID $pid to exit...'
-  while kill -0 $pid 2> /dev/null; do sleep 1; echo -n .; done
-  echo done
-  echo "Restarting rdrs2 server"
-  $rdrs2bin >/dev/null 2>/dev/null &
+  echo -n "Waiting for PID $pid to exit..."
+  while kill -0 "$pid" 2> /dev/null; do sleep 1; echo -n .; done
+  echo "done"
+}
+
+cmd-restart() {
+  cmd-stop
+  cmd-start "$@"
 }
 
 die() {
@@ -163,7 +198,7 @@ if [ $# -gt 0 ]; then
   shift
 fi
 case "$cmd" in
-  help|test|bench|list|restart)
+  help|test|bench|list|start|stop|restart)
     cmd-$cmd "$@" ;;
   *)
     die "Unknown sub-command: $cmd" ;;
