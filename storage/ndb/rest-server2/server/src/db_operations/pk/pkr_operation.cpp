@@ -499,12 +499,12 @@ RS_Status BatchKeyOperations::create_response(RS_Buffer *respBuffs) {
     PKRRequest *req = &key_op->m_req;
     const NdbOperation *op = key_op->m_ndbOperation;
     resp->SetOperationID(req->OperationId());
-    resp->SetNoOfColumns(key_op->m_num_read_columns);
     if (unlikely(req->IsInvalidOp())) {
       resp->SetStatus(req->GetError().http_code, req->GetError().message);
       resp->Close(response_length);
       continue;
     }
+    resp->SetNoOfColumns(key_op->m_num_read_columns);
     if (req->ReadColumnsCount() == 0) {
       DEB_NDB_BE("Build request when all columns requested");
       Uint32 numColumns = key_op->m_num_table_columns;
