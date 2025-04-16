@@ -105,7 +105,8 @@ typedef enum {
   ERROR_AVRO_SCHEMA_STRUCT_NOT_FOUND    = 74,
   ERROR_AVRO_UNMARSHAL_FAILED           = 75,
   ERROR_AVRO_JSON_CREATION_FAILED       = 76,
-  __MAX_INDEX__                         = 77  // this SHOULD always be last with max index number
+  ERROR_RONDB_SHUTDOWN_IN_PROGRESS      = 77,
+  __MAX_INDEX__                         = 78  // this SHOULD always be last with max index number
 } ErrorCode;
 
 // Struct to tie error codes with messages
@@ -193,6 +194,7 @@ static const ErrorEntry errorTable[] = {
     {ERROR_AVRO_SCHEMA_STRUCT_NOT_FOUND, "Avro schema struct not found"},
     {ERROR_AVRO_UNMARSHAL_FAILED, "Avro failed to unmarshal data"},
     {ERROR_AVRO_JSON_CREATION_FAILED, "Avro failed create json string"},
+    {ERROR_RONDB_SHUTDOWN_IN_PROGRESS, "RonDB connection is shutting down."},
     {__MAX_INDEX__, "__MAX_INDEX__ Place holder"}
 };
 

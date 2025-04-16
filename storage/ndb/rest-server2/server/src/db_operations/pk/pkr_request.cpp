@@ -43,6 +43,7 @@ extern EventLogger *g_eventLogger;
 PKRRequest::PKRRequest(const RS_Buffer *request) {
   this->req = request;
   this->isInvalidOp = false;
+  this->isReqModified = false;
 }
 
 Uint32 PKRRequest::OperationType() {

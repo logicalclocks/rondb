@@ -28,6 +28,8 @@
 #include <string>
 #include <thread>
 #include <NdbThread.h>
+#include <NdbTick.h>
+#include <NdbSleep.h>
 #include <ndb_global.h>
 #include <util/require.h>
 
@@ -35,6 +37,7 @@ RDRSRonDBConnection::RDRSRonDBConnection(const char *connection_string,
                                          Uint32 node_id,
                                          Uint32 connection_retries,
                                          Uint32 connection_retry_delay_in_sec) {
+  require(magic == 0);
 
   connectionMutex = NdbMutex_Create();
   connectionInfoMutex = NdbMutex_Create();
@@ -60,9 +63,12 @@ RDRSRonDBConnection::RDRSRonDBConnection(const char *connection_string,
 
   ndbConnection = nullptr;
   reconnectionThread = nullptr;
+
+  magic = expectedMagic;
 }
 
 RS_Status RDRSRonDBConnection::Connect() {
+  checkMagic();
 
   rdrs_logger::info(std::string("Connecting to ") + connection_string);
   {
@@ -112,6 +118,26 @@ RS_Status RDRSRonDBConnection::Connect() {
 }
 
 RDRSRonDBConnection::~RDRSRonDBConnection() {
+  checkMagic();
+
+  {
+    NdbMutex_Lock(connectionMutex);
+    NdbMutex_Lock(connectionInfoMutex);
+    require(stats.ndb_objects_created == stats.ndb_objects_deleted);
+    require(stats.ndb_objects_count == 0);
+    require(stats.ndb_objects_available == 0);
+    require(stats.connection_state == DISCONNECTED);
+    require(stats.is_shutdown);
+    require(!stats.is_shutting_down);
+    require(!stats.is_reconnection_in_progress);
+    require(ndbConnection == nullptr);
+    require(reconnectionThread == nullptr);
+    NdbMutex_Unlock(connectionMutex);
+    NdbMutex_Unlock(connectionInfoMutex);
+  }
+
+  magic = 0;
+
   NdbMutex_Destroy(connectionMutex);
   NdbMutex_Destroy(connectionInfoMutex);
 }
@@ -210,53 +236,89 @@ void RDRSRonDBConnection::GetStats(RonDB_Stats &ret) {
 }
 
 RS_Status RDRSRonDBConnection::Shutdown(bool end) {
+  checkMagic();
 
-  // wait for all NDB objects to return
-  using namespace std::chrono;
-  Int64 startTime =
-    duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
-  Int64 timeElapsed = 0;
-
-  // We are shutting down for good
   if (end) {
+    // We are shutting down for good
     NdbMutex_Lock(connectionInfoMutex);
     stats.is_shutting_down = true;
     NdbMutex_Unlock(connectionInfoMutex);
   }
 
-  bool allNDBObjectsCountedFor = false;
+  // Wait for all NDB objects to return
+  const NDB_TICKS startTime = NdbTick_getCurrentTicks();
+  Uint64 msElapsed = 0;
+  bool allNDBObjectsAccountedFor = false;
   do {
     size_t expectedSize = 0;
     Uint32 sizeGot = 0;
     {
       NdbMutex_Lock(connectionMutex);
+      NdbMutex_Lock(connectionInfoMutex);
       sizeGot      = availableNdbObjects.size();
       expectedSize = stats.ndb_objects_created;
       NdbMutex_Unlock(connectionMutex);
+      NdbMutex_Unlock(connectionInfoMutex);
     }
-
     if (expectedSize != sizeGot) {
       rdrs_logger::warn(
-        "Waiting to all NDB objects to return before shutdown."
+        "Waiting for all NDB objects to return before shutdown."
         " Expected Size: " + std::to_string(expectedSize) +
         " Have: " + std::to_string(sizeGot));
-      std::this_thread::sleep_for(std::chrono::milliseconds(500));
+      NdbSleep_MilliSleep(500);
     } else {
-      allNDBObjectsCountedFor = true;
+      allNDBObjectsAccountedFor = true;
       break;
     }
-    timeElapsed =
-      duration_cast<milliseconds>(
-      system_clock::now().time_since_epoch()).count() - startTime;
-  } while (timeElapsed < 120 * 1000);
-
-  if (!allNDBObjectsCountedFor) {
-    rdrs_logger::error("Timedout waiting for all NDB objects.");
+    const NDB_TICKS now = NdbTick_getCurrentTicks();
+    msElapsed = NdbTick_Elapsed(startTime, now).milliSec();
+  } while (msElapsed < 120 * 1000);
+  if (!allNDBObjectsAccountedFor) {
+    rdrs_logger::error("Timed out waiting for all NDB objects.");
   } else {
     rdrs_logger::info(
       "All NDB objects are accounted for. Total objects: " +
       std::to_string(stats.ndb_objects_created));
   }
+
+  if (end) {
+    // Wait for reconnection thread to exit
+    const NDB_TICKS rtStartTime = NdbTick_getCurrentTicks();
+    Uint64 rtMsElapsed = 0;
+    bool rtRunning;
+    do {
+      {
+        NdbMutex_Lock(connectionInfoMutex);
+        rtRunning = stats.is_reconnection_in_progress;
+        NdbMutex_Unlock(connectionInfoMutex);
+      }
+      if (rtRunning) {
+        rdrs_logger::warn(
+          "Waiting for reconnection thread to exit.");
+        NdbSleep_MilliSleep(500);
+      } else {
+        break;
+      }
+      const NDB_TICKS now = NdbTick_getCurrentTicks();
+      rtMsElapsed = NdbTick_Elapsed(rtStartTime, now).milliSec();
+    } while (rtMsElapsed < 300 * 1000);
+    if (rtRunning) {
+      rdrs_logger::error("Timed out waiting for reconnection thread to exit. "
+                         "Proceeding with shutdown, which could cause a crash.");
+    } else {
+      rdrs_logger::info(
+        "Reconnection thread has exited. Proceeding with shutdown.");
+    }
+    {
+      NdbMutex_Lock(connectionMutex);
+      if (reconnectionThread != nullptr) {
+        NdbThread_Destroy(&reconnectionThread);
+        reconnectionThread = nullptr;
+      }
+      NdbMutex_Unlock(connectionMutex);
+    }
+  }
+
   rdrs_logger::info("Shutting down RonDB connection and NDB object pool");
   {
     NdbMutex_Lock(connectionInfoMutex);
@@ -315,6 +377,7 @@ RS_Status RDRSRonDBConnection::Shutdown(bool end) {
 }
 
 RS_Status RDRSRonDBConnection::ReconnectHandler() {
+  checkMagic();
 
   {
     NdbMutex_Lock(connectionInfoMutex);
@@ -359,6 +422,7 @@ static void *reconnect_thread_wrapper(void *arg) {
 
 // Note it is only public for testing
 RS_Status RDRSRonDBConnection::Reconnect() {
+  checkMagic();
 
   NdbMutex_Lock(connectionMutex);
   NdbMutex_Lock(connectionInfoMutex);
@@ -367,8 +431,17 @@ RS_Status RDRSRonDBConnection::Reconnect() {
     NdbMutex_Unlock(connectionInfoMutex);
     rdrs_logger::info(
       "Ignoring RonDB reconnection request. A reconnection request is"
-      " already in progress");
-    return RS_SERVER_ERROR(std::string(rdrsErrorMessage(ERROR_RONDB_RECONNECTION_IN_PROGRESS)));
+      " already in progress.");
+    return RS_SERVER_ERROR(
+      std::string(rdrsErrorMessage(ERROR_RONDB_RECONNECTION_IN_PROGRESS)));
+  }
+  if (stats.is_shutting_down) {
+    NdbMutex_Unlock(connectionMutex);
+    NdbMutex_Unlock(connectionInfoMutex);
+    rdrs_logger::info(
+      "Ignoring RonDB reconnection request during shutdown.");
+    return RS_SERVER_ERROR(
+      std::string(rdrsErrorMessage(ERROR_RONDB_SHUTDOWN_IN_PROGRESS)));
   }
   stats.is_reconnection_in_progress = true;
   // clean previous failed/completed reconnection thread

@@ -75,6 +75,10 @@ constexpr const char *SEQUENCE_SEPARATOR       = "#";
 
 constexpr const char *ERROR_NOT_FOUND = "Not Found";
 
+#define RDRS_MIN_NUM_THREADS 2
+#define MACRO_TO_STRING_CONSTANT(X) _MACRO_TO_STRING_CONSTANT(X)
+#define _MACRO_TO_STRING_CONSTANT(X) #X
+
 // Default configuration values are in config_structs.cpp
 
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_CONSTANTS_HPP_

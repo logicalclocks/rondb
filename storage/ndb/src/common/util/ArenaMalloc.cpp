@@ -38,6 +38,9 @@ ArenaMalloc::ArenaMalloc(size_t page_size) noexcept {
   init_object(page_size);
 }
 
+/*
+ * WARNING: ArenaMalloc is not thread safe.
+ */
 ArenaMalloc::~ArenaMalloc() noexcept
 {
   free_memory();
@@ -113,6 +116,8 @@ ArenaMalloc::free_memory() noexcept {
 /*
  * Allocate a certain number of bytes with a given alignment. Return nullptr if
  * allocation was unsuccessful.
+ *
+ * WARNING: ArenaMalloc is not thread safe.
  */
 void*
 ArenaMalloc::alloc_bytes(size_t size, size_t alignment) noexcept
@@ -204,6 +209,8 @@ ArenaMalloc::alloc_bytes(size_t size, size_t alignment) noexcept
  * WARNING: ArenaMalloc::realloc_bytes can return a non-const pointer to the
  *          same memory as the argument `const void* ptr`. Make sure not to
  *          write to return_value[X] for any X<original_size.
+ *
+ * WARNING: ArenaMalloc is not thread safe.
  *
  * This reallocation function differs from the standard by requiring the size of
  * the original allocation. This gives several advantages:

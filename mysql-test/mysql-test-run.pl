@@ -8328,7 +8328,7 @@ Options for valgrind
 
   callgrind             Instruct valgrind to use callgrind.
   helgrind              Instruct valgrind to use helgrind.
-  valgrind              Run the "mysqltest" and "mysqld" executables using
+  valgrind              Run the "mysqltest", "mysqld" and "rdrs2" executables using
                         valgrind with default options.
   valgrind-all          Synonym for --valgrind.
   valgrind-clients      Run clients started by .test files with valgrind.

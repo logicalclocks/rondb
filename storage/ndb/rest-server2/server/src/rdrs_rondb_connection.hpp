@@ -26,16 +26,20 @@
 #include <mutex>
 #include <NdbApi.hpp>
 #include <NdbMutex.h>
+#include <util/require.h>
 
 class RDRSRonDBConnection {
   static constexpr int MAX_PARALLEL_KEY_OPS = 1000;
+  static constexpr Uint32 expectedMagic = 0x52b5cb03;
 
  private:
-  // this is used when we update the connection, NDB objects etc.
+  Uint32 magic = 0;
+  /* connectionMutex protects everything except stats. connectionInfoMutex
+   * protects only stats. When used in combination, order of (un)locking is
+   * 1) connectionMutex
+   * 2) connectionInfoMutex
+   */
   NdbMutex *connectionMutex;
-  //  this is used togather with connectionMutex to quickly
-  //  access simple information such as if the connection is
-  //  open or not, if it is in reconnection phase, etc.
   NdbMutex *connectionInfoMutex;
   RonDB_Stats stats;
 
@@ -55,6 +59,8 @@ class RDRSRonDBConnection {
   // This a list of all the NDB objects whether the objects
   // are in use or not
   std::list<Ndb *> allAvailableNdbObjects;
+
+  inline void checkMagic() { require(magic == expectedMagic); }
 
  public:
   RDRSRonDBConnection(const char *connection_string,

@@ -93,8 +93,7 @@ BatchKeyOperations::init_batch_operations(ArenaMalloc *amalloc,
   m_numOperations = numOps;
   m_num_sent_operations = 0;
   m_single_transaction = false;
-  m_key_ops = (KeyOperation*)amalloc->alloc_bytes(
-    sizeof(KeyOperation) * numOps, 8);
+  m_key_ops = amalloc->alloc<KeyOperation>(numOps);
   if (unlikely(m_key_ops == nullptr)) {
     RS_Status error = RS_SERVER_ERROR(
         std::string(rdrsErrorMessage(ERROR_MEMORY_ALLOCATION_FAILURE)));
@@ -164,10 +163,10 @@ BatchKeyOperations::init_batch_operations(ArenaMalloc *amalloc,
     Uint32 num_bitmap_words = (numColumns + 31) / 32;
     Uint32 num_bitmap_bytes = 4 * num_bitmap_words;
     Uint8* bitmap_words = (Uint8*)amalloc->alloc_bytes(num_bitmap_bytes, 4);
-    m_key_ops[i].m_bitmap_read_columns = bitmap_words;
+    key_op->m_bitmap_read_columns = bitmap_words;
     Uint32 row_len = NdbDictionary::getRecordRowLength(ndb_record);
-    Uint8* row = (Uint8*)amalloc->alloc_bytes(row_len, 8);
     Uint32 row_len_aligned = ((row_len + 7) / 8) * 8;
+    Uint8* row = (Uint8*)amalloc->alloc_bytes(row_len_aligned, 8);
     /* Ensure no halfwritten words distort the rows for pk and reading */
     memset(row, 0, row_len_aligned);
     key_op->m_row = row;
@@ -503,12 +502,12 @@ RS_Status BatchKeyOperations::create_response(RS_Buffer *respBuffs) {
     PKRRequest *req = &key_op->m_req;
     const NdbOperation *op = key_op->m_ndbOperation;
     resp->SetOperationID(req->OperationId());
-    resp->SetNoOfColumns(key_op->m_num_read_columns);
     if (unlikely(req->IsInvalidOp())) {
       resp->SetStatus(req->GetError().http_code, req->GetError().message);
       resp->Close(response_length);
       continue;
     }
+    resp->SetNoOfColumns(key_op->m_num_read_columns);
     if (req->ReadColumnsCount() == 0) {
       DEB_NDB_BE("Build request when all columns requested");
       Uint32 numColumns = key_op->m_num_table_columns;

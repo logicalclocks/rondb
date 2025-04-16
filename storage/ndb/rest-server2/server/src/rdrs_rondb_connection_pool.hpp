@@ -22,6 +22,7 @@
 
 #include "rdrs_dal.h"
 #include "rdrs_rondb_connection.hpp"
+#include "constants.hpp"
 
 class alignas(64) ThreadContext {
  public:
@@ -130,11 +131,13 @@ class RDRSRonDBConnectionPool {
 
   // Get the specific NdbObject to the TTL schema watcher
   RS_Status GetTTLSchemaWatcherNdbObject(Ndb **ndb_object) {
+    static_assert(RDRS_MIN_NUM_THREADS >= 2);
     return GetNdbObject(ndb_object, m_num_threads - 2);
   }
 
   // Get the specific NdbObject to the TTL purge worker
   RS_Status GetTTLPurgeWorkerNdbObject(Ndb **ndb_object) {
+    static_assert(RDRS_MIN_NUM_THREADS >= 1);
     return GetNdbObject(ndb_object, m_num_threads - 1);
   }
   /**

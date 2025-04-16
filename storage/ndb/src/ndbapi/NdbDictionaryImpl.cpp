@@ -2093,7 +2093,7 @@ NdbTableImpl::calculate_primary_replicas(bool initial,
   impl_ndb->lock_node_state();
   NdbMutex_Lock(&m_primary_node_mutex);
   Uint32 node_change_count = impl_ndb->get_node_change_count();
-  if (node_change_count == m_node_change_count && !initial)
+  if (!initial && node_change_count == m_node_change_count)
   {
     /**
      * Already updated with this node change count, thus would

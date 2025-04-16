@@ -89,7 +89,7 @@ void RDRSRonDBConnectionPool::shutdown() {
             ndb_object != nullptr) {
           thread_context->m_ndb_object = nullptr;
           NdbMutex_Unlock(thread_context->m_thread_context_mutex);
-          RS_Status status;
+          RS_Status status = RS_OK;
           Uint32 connection = i % m_num_data_connections;
           dataConnections[connection]->ReturnNDBObjectToPool(ndb_object,
                                                              &status);
@@ -103,7 +103,9 @@ void RDRSRonDBConnectionPool::shutdown() {
     m_thread_context = nullptr;
   }
   if (metadataConnection != dataConnections[0]) {
-    /* We borrowed a data connection for meta data connection */
+    /* We did not borrow a data connection for meta data connection, so we need
+     * to shut it down separately.
+     */
     metadataConnection->Shutdown(true);
     delete metadataConnection;
   }
@@ -286,14 +288,13 @@ RS_Status RDRSRonDBConnectionPool::ReturnMetadataNdbObject(Ndb *ndb_object,
 }
 
 RS_Status RDRSRonDBConnectionPool::Reconnect() {
-  RS_Status status;
   for (Uint32 i = 0; i < m_num_data_connections; i++) {
-    status = dataConnections[i]->Reconnect();
+    RS_Status status = dataConnections[i]->Reconnect();
     if (unlikely(status.http_code != SUCCESS)) {
       return status;
     }
   }
-  status = metadataConnection->Reconnect();
+  RS_Status status = metadataConnection->Reconnect();
   if (unlikely(status.http_code != SUCCESS)) {
     return status;
   }
