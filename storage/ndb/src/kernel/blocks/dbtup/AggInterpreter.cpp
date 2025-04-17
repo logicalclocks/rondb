@@ -37,6 +37,26 @@ Uint32 AggInterpreter::g_buf_len_ = READ_BUF_WORD_SIZE;
 Uint32 AggInterpreter::g_result_header_size_ = 3 * sizeof(Uint32);
 Uint32 AggInterpreter::g_result_header_size_per_group_ = sizeof(Uint32);
 
+
+/*
+ * PA related
+ * Turn on the DEBUG_PA_INTERP
+ * to trace AggInterpreter on partition DEBUG_PA_INTERP_PART_ID
+ */
+#undef DEBUG_PA_INTERP
+// #define DEBUG_PA_INTERP 1
+#define DEBUG_PA_INTERP_PART_ID 0
+#ifdef DEBUG_PA_INTERP
+#define PA_INTERP_TRACE(part_id, format, ...) \
+  do {\
+    if ((part_id == DEBUG_PA_INTERP_PART_ID)) {\
+      g_eventLogger->info("[PA_INTERP_TRACE] " format, ##__VA_ARGS__); \
+    }\
+  } while (0)
+#else
+#define PA_INTERP_TRACE(part_id, format, ...) {}
+#endif // DEBUG_PA_INTERP
+
 bool AggInterpreter::Init() {
   if (inited_) {
     return true;
@@ -78,34 +98,34 @@ bool AggInterpreter::Init() {
    * 3. Get all the group by columns id.
    */
   if (n_gb_cols_) {
-#ifdef MOZ_AGG_MALLOC
+#ifdef PA_MALLOC
     assert(n_gb_cols_ <= MAX_AGG_N_GROUPBY_COLS);
     gb_cols_ = gb_cols_buf_;
 #else
     gb_cols_ = new Uint32[n_gb_cols_];
-#endif // MOZ_AGG_MALLOC
+#endif // PA_MALLOC
 
     Uint32 i = 0;
     while (i < n_gb_cols_ && cur_pos_ < prog_len_) {
       gb_cols_[i++] = prog_[cur_pos_++];
     }
-#ifdef MOZ_AGG_MALLOC
+#ifdef PA_MALLOC
     gb_map_ = &gb_map_buf_;
 #else
     gb_map_ = new std::map<GBHashEntry, GBHashEntry, GBHashEntryCmp>;
-#endif // MOZ_AGG_MALLOC
+#endif // PA_MALLOC
   }
 
   /*
    * 4. Reset all aggregation results
    */
   if (n_agg_results_) {
-#ifdef MOZ_AGG_MALLOC
+#ifdef PA_MALLOC
     assert(n_agg_results_ <= MAX_AGG_N_RESULTS);
     agg_results_ = agg_results_buf_;
 #else
     agg_results_ = new AggResItem[n_agg_results_];
-#endif // MOZ_AGG_MALLOC
+#endif // PA_MALLOC
     Uint32 i = 0;
     while (i < n_agg_results_) {
       agg_results_[i].type = NDB_TYPE_UNDEFINED;
@@ -184,7 +204,7 @@ static DataType AlignedType(DataType type) {
       return NDB_TYPE_DOUBLE;
     /*
      * TODO (Zhao)
-     * Moz
+     * PA related
      * Temporary solultion
      * Currently regard Decimal as a undefined,
      * then decide it as BIGINT/BIGUNSIGNED/DOUBLE in LoadColumn
@@ -199,7 +219,7 @@ static DataType AlignedType(DataType type) {
   return NDB_TYPE_UNDEFINED;
 }
 
-static void PrintValue(const AggResItem* res, char* log_buf) {
+[[maybe_unused]] static void PrintValue(const AggResItem* res, char* log_buf) {
   if (res->type == NDB_TYPE_BIGINT) {
     if (res->is_unsigned) {
       sprintf(log_buf + strlen(log_buf), "[%llu, %d, %d, %d]",
@@ -213,7 +233,7 @@ static void PrintValue(const AggResItem* res, char* log_buf) {
     sprintf(log_buf + strlen(log_buf), "[%lf, %d, %d, %d]",
         res->value.val_double, res->type, res->is_unsigned, res->is_null);
   }
-  g_eventLogger->info("%s", log_buf);
+  g_eventLogger->info("[PA_INTERP_TRACE] %s", log_buf);
 }
 
 static Int32 Sum(const Register& a, AggResItem* res, bool print) {
@@ -221,11 +241,13 @@ static Int32 Sum(const Register& a, AggResItem* res, bool print) {
   if (res->type == NDB_TYPE_UNDEFINED) {
     // Agg result first initialized
     *res = a;
+#ifdef DEBUG_PA_INTERP
     if (print) {
       char log_buf[128];
-      sprintf(log_buf, "Moz, Sum() init AggRes to ");
+      sprintf(log_buf, "Sum() init AggRes to ");
       PrintValue(res, log_buf);
     }
+#endif // DEBUG_PA_INTERP
     assert(res->type != NDB_TYPE_UNDEFINED);
     return 1;
   }
@@ -335,11 +357,13 @@ static Int32 Sum(const Register& a, AggResItem* res, bool print) {
   res->type = res_type;
   res->is_null = false;
 
+#ifdef DEBUG_PA_INTERP
   if (print) {
     char log_buf[128];
-    sprintf(log_buf, "Moz, Sum(), update AggRes to ");
+    sprintf(log_buf, "Sum(), update AggRes to ");
     PrintValue(res, log_buf);
   }
+#endif // DEBUG_PA_INTERP
   return 0;
 }
 
@@ -348,11 +372,13 @@ static Int32 Max(const Register& a, AggResItem* res, bool print) {
   if (res->type == NDB_TYPE_UNDEFINED || res->is_null) {
     // Agg result first initialized
     *res = a;
+#ifdef DEBUG_PA_INTERP
     if (print) {
       char log_buf[128];
-      sprintf(log_buf, "Moz, Max(), init AggRes to ");
+      sprintf(log_buf, "Max(), init AggRes to ");
       PrintValue(res, log_buf);
     }
+#endif // DEBUG_PA_INTERP
     assert(res->type != NDB_TYPE_UNDEFINED);
     return 1;
   }
@@ -407,11 +433,13 @@ static Int32 Max(const Register& a, AggResItem* res, bool print) {
   }
   res->is_null = false;
 
+#ifdef DEBUG_PA_INTERP
   if (print) {
     char log_buf[128];
-    sprintf(log_buf, "Moz, Max(), update AggRes to ");
+    sprintf(log_buf, "Max(), update AggRes to ");
     PrintValue(res, log_buf);
   }
+#endif // DEBUG_PA_INTERP
 
   return 0;
 }
@@ -421,11 +449,13 @@ static Int32 Min(const Register& a, AggResItem* res, bool print) {
   if (res->type == NDB_TYPE_UNDEFINED || res->is_null) {
     // Agg result first initialized
     *res = a;
+#ifdef DEBUG_PA_INTERP
     if (print) {
       char log_buf[128];
-      sprintf(log_buf, "Moz, Min(), init AggRes to ");
+      sprintf(log_buf, "Min(), init AggRes to ");
       PrintValue(res, log_buf);
     }
+#endif // DEBUG_PA_INTERP
     assert(res->type != NDB_TYPE_UNDEFINED);
     return 1;
   }
@@ -483,11 +513,13 @@ static Int32 Min(const Register& a, AggResItem* res, bool print) {
   }
   res->is_null = false;
 
+#ifdef DEBUG_PA_INTERP
   if (print) {
     char log_buf[128];
-    sprintf(log_buf, "Moz, Min(), update AggRes to ");
+    sprintf(log_buf, "Min(), update AggRes to ");
     PrintValue(res, log_buf);
   }
+#endif // DEBUG_PA_INTERP
 
   return 0;
 }
@@ -500,11 +532,13 @@ static Int32 Count(const Register& a, AggResItem* res, bool print) {
     res->value.val_uint64 = 0;
     res->is_unsigned = true;
     res->is_null = false;
+#ifdef DEBUG_PA_INTERP
     if (print) {
       char log_buf[128];
-      sprintf(log_buf, "Moz, Count(), init AggRes to ");
+      sprintf(log_buf, "Count(), init AggRes to ");
       PrintValue(res, log_buf);
     }
+#endif // DEBUG_PA_INTERP
   }
 
   if (a.is_null) {
@@ -516,11 +550,13 @@ static Int32 Count(const Register& a, AggResItem* res, bool print) {
       res->is_null == false && res->is_unsigned == true);
   res->value.val_uint64 += 1;
 
+#ifdef DEBUG_PA_INTERP
   if (print) {
     char log_buf[128];
-    sprintf(log_buf, "Moz, Count(), update AggRes to ");
+    sprintf(log_buf, "Count(), update AggRes to ");
     PrintValue(res, log_buf);
   }
+#endif // DEBUG_PA_INTERP
 
   return 0;
 }
@@ -564,12 +600,11 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
     if (iter != gb_map_->end()) {
       header = reinterpret_cast<AttributeHeader*>(iter->first.ptr);
       agg_res_ptr = reinterpret_cast<AggResItem*>(iter->second.ptr);
-      if (print_) {
-        g_eventLogger->debug("Moz, Found GBHashEntry, id: %u, byte_size: %u, "
-            "data_size: %u, is_null: %u",
-            header->getAttributeId(), header->getByteSize(),
-            header->getDataSize(), header->isNULL());
-      }
+      PA_INTERP_TRACE(frag_id_,
+                      "Found GBHashEntry, id: %u, byte_size: %u, "
+                      "data_size: %u, is_null: %u",
+                      header->getAttributeId(), header->getByteSize(),
+                      header->getDataSize(), header->isNULL());
     } else {
       /*
        * update req_struct->read_length here, which will update the
@@ -589,13 +624,13 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
       // results to API.
       result_size_ += len_in_char +
                        n_agg_results_ * sizeof(AggResItem);
-#ifdef MOZ_AGG_MALLOC
+#ifdef PA_MALLOC
       agg_rec = MemAlloc(len_in_char +
                           n_agg_results_ * sizeof(AggResItem));
 #else
       agg_rec = new char[len_in_char +
                         n_agg_results_ * sizeof(AggResItem)];
-#endif // MOZ_AGG_MALLOC
+#endif // PA_MALLOC
       memset(agg_rec, 0, len_in_char +
                         n_agg_results_ * sizeof(AggResItem));
       memcpy(agg_rec, reinterpret_cast<char*>(buf_), len_in_char);
@@ -647,6 +682,7 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
   ulonglong dec_val_ull = 0;
 
   Uint32 exec_pos = agg_prog_start_pos_;
+  bool debug_print = (frag_id_ == DEBUG_PA_INTERP_PART_ID);
   while (exec_pos < prog_len_) {
     value = prog_[exec_pos++];
     Uint8 op = (value & 0xFC000000) >> 26;
@@ -758,8 +794,9 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
         registers_[reg_index].is_null = header->isNULL();
         if (registers_[reg_index].is_null) {
           // Column has a null value
-          // g_eventLogger->info("Moz-Intp: Load NULL, type: %u",
-          //     registers_[reg_index].type);
+          PA_INTERP_TRACE(frag_id_,
+                          "Load NULL, type: %u",
+                          registers_[reg_index].type);
           registers_[reg_index].value.val_int64 = 0;
           break;
         }
@@ -767,75 +804,87 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
           case NDB_TYPE_TINYINT:
             registers_[reg_index].value.val_int64 =
                 *reinterpret_cast<Int8*>(&buf_[buf_pos_ + 1]);
-            // g_eventLogger->info("Moz-Intp: Load NDB_TYPE_TINYINT %ld",
-            //     registers_[reg_index].value.val_int64);
+            PA_INTERP_TRACE(frag_id_,
+                            "Load NDB_TYPE_TINYINT %lld",
+                            registers_[reg_index].value.val_int64);
             break;
           case NDB_TYPE_SMALLINT:
             registers_[reg_index].value.val_int64 =
                 sint2korr(reinterpret_cast<char*>(&buf_[buf_pos_ + 1]));
-            // g_eventLogger->info("Moz-Intp: Load NDB_TYPE_SMALLINT %ld",
-            //     registers_[reg_index].value.val_int64);
+            PA_INTERP_TRACE(frag_id_,
+                            "Load NDB_TYPE_SMALLINT %lld",
+                            registers_[reg_index].value.val_int64);
             break;
           case NDB_TYPE_MEDIUMINT:
             registers_[reg_index].value.val_int64 =
                 sint3korr(reinterpret_cast<char*>(&buf_[buf_pos_ + 1]));
-            // g_eventLogger->info("Moz-Intp: Load NDB_TYPE_MEDIUM %ld",
-            //     registers_[reg_index].value.val_int64);
+            PA_INTERP_TRACE(frag_id_,
+                            "Load NDB_TYPE_MEDIUM %lld",
+                            registers_[reg_index].value.val_int64);
             break;
           case NDB_TYPE_INT:
             registers_[reg_index].value.val_int64 =
                 sint4korr(reinterpret_cast<char*>(&buf_[buf_pos_ + 1]));
-            // g_eventLogger->info("Moz-Intp: Load NDB_TYPE_INT %ld",
-            //     registers_[reg_index].value.val_int64);
+            PA_INTERP_TRACE(frag_id_,
+                            "Load NDB_TYPE_INT %lld",
+                            registers_[reg_index].value.val_int64);
             break;
           case NDB_TYPE_BIGINT:
             registers_[reg_index].value.val_int64 =
                 sint8korr(reinterpret_cast<char*>(&buf_[buf_pos_ + 1]));
-            // g_eventLogger->info("Moz-Intp: Load NDB_TYPE_BIGINT %ld",
-            //     registers_[reg_index].value.val_int64);
+            PA_INTERP_TRACE(frag_id_,
+                            "Load NDB_TYPE_BIGINT %lld",
+                            registers_[reg_index].value.val_int64);
             break;
           case NDB_TYPE_TINYUNSIGNED:
             registers_[reg_index].value.val_uint64 =
                 *reinterpret_cast<Uint8*>(&buf_[buf_pos_ + 1]);
-            // g_eventLogger->info("Moz-Intp: Load NDB_TYPE_TINYUNSIGNED %lu",
-            //     registers_[reg_index].value.val_uint64);
+            PA_INTERP_TRACE(frag_id_,
+                            "Load NDB_TYPE_TINYUNSIGNED %llu",
+                            registers_[reg_index].value.val_uint64);
             break;
           case NDB_TYPE_SMALLUNSIGNED:
             registers_[reg_index].value.val_uint64 =
                 uint2korr(reinterpret_cast<char*>(&buf_[buf_pos_ + 1]));
-            // g_eventLogger->info("Moz-Intp: Load NDB_TYPE_SMALLUNSIGNED %lu",
-            //     registers_[reg_index].value.val_uint64);
+            PA_INTERP_TRACE(frag_id_,
+                            "Load NDB_TYPE_SMALLUNSIGNED %llu",
+                            registers_[reg_index].value.val_uint64);
             break;
           case NDB_TYPE_MEDIUMUNSIGNED:
             registers_[reg_index].value.val_uint64 =
                 uint3korr(reinterpret_cast<char*>(&buf_[buf_pos_ + 1]));
-            // g_eventLogger->info("Moz-Intp: Load NDB_TYPE_MEDIUMUNSIGNED %lu",
-            //     registers_[reg_index].value.val_uint64);
+            PA_INTERP_TRACE(frag_id_,
+                            "Load NDB_TYPE_MEDIUMUNSIGNED %llu",
+                            registers_[reg_index].value.val_uint64);
             break;
           case NDB_TYPE_UNSIGNED:
             registers_[reg_index].value.val_uint64 =
                 uint4korr(reinterpret_cast<char*>(&buf_[buf_pos_ + 1]));
-            // g_eventLogger->info("Moz-Intp: Load NDB_TYPE_UNSIGNED %lu",
-            //     registers_[reg_index].value.val_uint64);
+            PA_INTERP_TRACE(frag_id_,
+                            "Load NDB_TYPE_UNSIGNED %llu",
+                            registers_[reg_index].value.val_uint64);
             break;
           case NDB_TYPE_BIGUNSIGNED:
             registers_[reg_index].value.val_uint64 =
                 uint8korr(reinterpret_cast<char*>(&buf_[buf_pos_ + 1]));
-            // g_eventLogger->info("Moz-Intp: Load NDB_TYPE_BIGUNSIGNED %lu",
-            //     registers_[reg_index].value.val_uint64);
+            PA_INTERP_TRACE(frag_id_,
+                            "Load NDB_TYPE_BIGUNSIGNED %llu",
+                            registers_[reg_index].value.val_uint64);
             break;
           case NDB_TYPE_FLOAT:
             registers_[reg_index].value.val_double =
                 floatget(reinterpret_cast<unsigned char*>(&buf_[buf_pos_ + 1]));
-            // g_eventLogger->info("Moz-Intp: Load NDB_TYPE_FLOAT %lf",
-            //     registers_[reg_index].value.val_double);
+            PA_INTERP_TRACE(frag_id_,
+                            "Load NDB_TYPE_FLOAT %lf",
+                            registers_[reg_index].value.val_double);
             break;
           case NDB_TYPE_DOUBLE:
             registers_[reg_index].value.val_double =
                 doubleget(reinterpret_cast<unsigned char*>(
                       &buf_[buf_pos_ + 1]));
-            // g_eventLogger->info("Moz-Intp: Load NDB_TYPE_DOUBLE %lf",
-            //     registers_[reg_index].value.val_double);
+            PA_INTERP_TRACE(frag_id_,
+                            "Load NDB_TYPE_DOUBLE %lf",
+                            registers_[reg_index].value.val_double);
             break;
           case NDB_TYPE_DECIMAL:
             decimal_info =
@@ -894,15 +943,17 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
               }
             }
             assert(registers_[reg_index].is_unsigned == false);
-            // if (frag_id_ == 0) {
-            //   if (scale != 0) {
-            //     g_eventLogger->info("Moz-Intp: Load NDB_TYPE_DECIMAL[double] %lf",
-            //         registers_[reg_index].value.val_double);
-            //   } else {
-            //     g_eventLogger->info("Moz-Intp: Load NDB_TYPE_DECIMAL[int64] %ld",
-            //         registers_[reg_index].value.val_int64);
-            //   }
-            // }
+#ifdef DEBUG_PA_INTERP
+            if (scale != 0) {
+              PA_INTERP_TRACE(frag_id_,
+                              "Load NDB_TYPE_DECIMAL[double] %lf",
+                              registers_[reg_index].value.val_double);
+            } else {
+              PA_INTERP_TRACE(frag_id_,
+                              "Load NDB_TYPE_DECIMAL[int64] %lld",
+                              registers_[reg_index].value.val_int64);
+            }
+#endif // DEBUG_PA_INTERP
           break;
         case NDB_TYPE_DECIMALUNSIGNED:
             decimal_info =
@@ -962,15 +1013,17 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
                 return ZAGG_DECIMAL_CONV_ERROR;
               }
             }
-            // if (frag_id_ == 0) {
-            //   if (scale != 0) {
-            //     g_eventLogger->info("Moz-Intp: Load NDB_TYPE_DECIMALUNSIGNED[double] %lf",
-            //         registers_[reg_index].value.val_double);
-            //   } else {
-            //     g_eventLogger->info("Moz-Intp: Load NDB_TYPE_DECIMALUNSIGNED[uin64] %lu",
-            //         registers_[reg_index].value.val_uint64);
-            //   }
-            // }
+#ifdef DEBUG_PA_INTERP
+            if (scale != 0) {
+              PA_INTERP_TRACE(frag_id_,
+                              "Load NDB_TYPE_DECIMALUNSIGNED[double] %lf",
+                              registers_[reg_index].value.val_double);
+            } else {
+              PA_INTERP_TRACE(frag_id_,
+                              "Load NDB_TYPE_DECIMALUNSIGEND[uint64] %llu",
+                              registers_[reg_index].value.val_uint64);
+            }
+#endif // DEBUG_PA_INTERP
           break;
 
           default:
@@ -991,22 +1044,25 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
           case NDB_TYPE_BIGINT:
             registers_[reg_index].value.val_int64 =
                 sint8korr(reinterpret_cast<char*>(&prog_[exec_pos]));
-            // g_eventLogger->info("Moz-Intp: LoadConst[%u] NDB_TYPE_BIGINT %ld",
-            //     reg_index, registers_[reg_index].value.val_int64);
+              PA_INTERP_TRACE(frag_id_,
+                              "LoadConst[%u] NDB_TYPE_BIGINT %lld",
+                              reg_index, registers_[reg_index].value.val_int64);
             break;
           case NDB_TYPE_BIGUNSIGNED:
             registers_[reg_index].value.val_uint64 =
                 uint8korr(reinterpret_cast<char*>(&prog_[exec_pos]));
-            // g_eventLogger->info("Moz-Intp: LoadConst[%u] "
-            //                 "NDB_TYPE_BIGUNSIGNED %lu",
-            //     reg_index, registers_[reg_index].value.val_uint64);
+              PA_INTERP_TRACE(frag_id_,
+                              "LoadConst[%u] "
+                              "NDB_TYPE_BIGUNSIGNED %llu",
+                              reg_index, registers_[reg_index].value.val_uint64);
             break;
           case NDB_TYPE_DOUBLE:
             registers_[reg_index].value.val_double =
                 doubleget(reinterpret_cast<unsigned char*>(
                       &prog_[exec_pos]));
-            // g_eventLogger->info("Moz-Intp: LoadConst[%u] NDB_TYPE_DOUBLE %lf",
-            //     reg_index, registers_[reg_index].value.val_double);
+              PA_INTERP_TRACE(frag_id_,
+                              "LoadConst[%u] NDB_TYPE_DOUBLE %lf",
+                              reg_index, registers_[reg_index].value.val_double);
             break;
           default:
             // assert(0);
@@ -1019,12 +1075,15 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
         reg_index2 = (value >> 8 ) & 0x0F;
 
         registers_[reg_index] = registers_[reg_index2];
+        PA_INTERP_TRACE(frag_id_,
+                        "Move [%u]->[%u]",
+                        reg_index2, reg_index);
         break;
       case kOpSum:
         reg_index = (value & 0x000F0000) >> 16;
         agg_index = (value & 0x0000FFFF);
 
-        ret = Sum(registers_[reg_index], &agg_res_ptr[agg_index], print_);
+        ret = Sum(registers_[reg_index], &agg_res_ptr[agg_index], debug_print);
         // assert(ret >= 0);
         if (ret < 0) {
           g_eventLogger->debug("Overflow[SUM], value is out of range");
@@ -1035,21 +1094,21 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
         reg_index = (value & 0x000F0000) >> 16;
         agg_index = (value & 0x0000FFFF);
 
-        ret = Max(registers_[reg_index], &agg_res_ptr[agg_index], print_);
+        ret = Max(registers_[reg_index], &agg_res_ptr[agg_index], debug_print);
         // assert(ret >= 0);
         break;
       case kOpMin:
         reg_index = (value & 0x000F0000) >> 16;
         agg_index = (value & 0x0000FFFF);
 
-        ret = Min(registers_[reg_index], &agg_res_ptr[agg_index], print_);
+        ret = Min(registers_[reg_index], &agg_res_ptr[agg_index], debug_print);
         // assert(ret >= 0);
         break;
       case kOpCount:
         reg_index = (value & 0x000F0000) >> 16;
         agg_index = (value & 0x0000FFFF);
 
-        ret = Count(registers_[reg_index], &agg_res_ptr[agg_index], print_);
+        ret = Count(registers_[reg_index], &agg_res_ptr[agg_index], debug_print);
         // assert(ret >= 0);
         break;
 
@@ -1063,9 +1122,6 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
 }
 
 void AggInterpreter::Print() {
-  // if (!print_) {
-  //   return;
-  // }
   char log_buf[1024];
   if (n_gb_cols_) {
     if (gb_map_) {
@@ -1438,15 +1494,15 @@ Uint32 AggInterpreter::PrepareAggResIfNeeded(Signal* signal, bool force) {
       MEMCOPY_NO_WORDS(&data_buf[pos], iter->first.ptr,
           (iter->first.len + iter->second.len) >> 2);
       pos += ((iter->first.len + iter->second.len) >> 2);
-#ifndef MOZ_AGG_MALLOC
+#ifndef PA_MALLOC
       delete[] iter->first.ptr;
-#endif // !MOZ_AGG_MALLOC
+#endif // !PA_MALLOC
       gb_map_->erase(iter++);
       result_size_ = 0;
     }
-#ifdef MOZ_AGG_MALLOC
+#ifdef PA_MALLOC
     alloc_len_ = 0;
-#endif // MOZ_AGG_MALLOC
+#endif // PA_MALLOC
     assert(gb_map_->empty());
   } else {
     data_buf[pos++] = AttributeHeader::AGG_RESULT << 16 | 0x0721;
@@ -1459,9 +1515,9 @@ Uint32 AggInterpreter::PrepareAggResIfNeeded(Signal* signal, bool force) {
     pos += ((n_agg_results_ * sizeof(AggResItem)) >> 2);
   }
 
-#if defined(MOZ_AGG_CHECK) && !defined(NDEBUG)
+#if defined(PA_CHECK) && !defined(NDEBUG)
   /*
-   * Moz
+   * PA related
    * Validation
    */
   Uint32 data_len = pos;
@@ -1531,7 +1587,7 @@ Uint32 AggInterpreter::PrepareAggResIfNeeded(Signal* signal, bool force) {
     }
   }
   assert(parse_pos == data_len);
-#endif // MOZ_AGG_CHECK && !NDEBUG
+#endif // PA_CHECK && !NDEBUG
   return pos;
 }
 
@@ -1582,7 +1638,7 @@ Uint32 AggInterpreter::NumOfResRecords(bool last_time) {
   }
 }
 
-#ifdef MOZ_AGG_MALLOC
+#ifdef PA_MALLOC
 char* AggInterpreter::MemAlloc(Uint32 len) {
   if (alloc_len_ + len >= MAX_AGG_RESULT_BATCH_BYTES) {
     return nullptr;
@@ -1604,4 +1660,4 @@ void AggInterpreter::Destruct(AggInterpreter* ptr) {
   */
   lc_ndbd_pool_free(ptr);
 }
-#endif // MOZ_AGG_MALLOC
+#endif // PA_MALLOC

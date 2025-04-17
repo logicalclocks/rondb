@@ -71,8 +71,10 @@ NdbRecAttr::setup(const NdbColumnImpl* anAttrInfo,
 
     m_getVarValue = nullptr; // set in getVarValue() only
   } else {
-    // Moz
-    // Aggregation
+    /*
+     * PA related
+     * Aggregation
+     */
     byteSize = MAX_AGG_RESULT_BATCH_BYTES;
     m_column = nullptr;
     theAttrId = AttributeHeader::AGG_RESULT;

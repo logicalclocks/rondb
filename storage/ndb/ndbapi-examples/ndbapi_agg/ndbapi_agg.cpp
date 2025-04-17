@@ -331,7 +331,7 @@ int populate(Ndb * myNdb, MYSQL& mysql)
   return 1;
 
   /*
-   * Moz
+   * PA related
    * Since we're populating a table with DECIMAL columns, which NDBAPI doesn't
    * support.
    * Here we use mysql client instead.

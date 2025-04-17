@@ -226,7 +226,7 @@ inline const Uint32 *ALIGN_WORD(const void *ptr) {
 #define ZNO_SUCH_SEARCH_INTERVAL_METHOD 936
 
 /*
- * Moz
+ * PA related
  * Aggregation interpreter errors start from 1860
  */
 #define ZAGG_MATH_OVERFLOW 1860

@@ -79,7 +79,7 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
     DEB_TRACE();
   }
   DEB_TRACE();
-  // Moz
+  // PA related
   // Aggregation result
   assert(buf != nullptr);
   Uint32 parse_pos = 0;
@@ -90,8 +90,6 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
   assert(n_gb_cols == n_gb_cols_);
   assert(n_agg_results == n_agg_results_);
   Uint32 n_res_items = data_buf[parse_pos++];
-  //fprintf(stderr, "Moz-ProcessRes, GB cols: %u, AGG results: %u, RES items: %u\n",
-  //    n_gb_cols, n_agg_results, n_res_items);
 
   AggResItem* agg_res_ptr = nullptr;
   DEB_TRACE();
@@ -112,7 +110,7 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
       if (iter != gb_map_->end()) {
         // header = reinterpret_cast<AttributeHeader*>(iter->first.ptr);
         agg_res_ptr = reinterpret_cast<AggResItem*>(iter->second.ptr);
-        // fprintf(stderr, "Moz, Found GBHashEntry, id: %u, byte_size: %u, "
+        // fprintf(stderr, "[PA DEBUG] Found GBHashEntry, id: %u, byte_size: %u, "
         //     "data_size: %u, is_null: %u\n",
         //     header->getAttributeId(), header->getByteSize(),
         //     header->getDataSize(), header->isNULL());
@@ -219,11 +217,11 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
           }
         }
       }
-#if defined(MOZ_AGG_CHECK) && !defined(NDEBUG)
+#if defined(PA_CHECK) && !defined(NDEBUG)
       {
         DEB_TRACE();
         /*
-         * Moz
+         * PA related
          * Validation
          */
         Uint32 pos = parse_pos;
@@ -247,7 +245,7 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
           DEB_TRACE();
         }
       }
-#endif // MOZ_AGG_CHECK && !NDEBUG
+#endif // PA_CHECK && !NDEBUG
       parse_pos += ((gb_cols_len + agg_res_len) >> 2);
     }
   } else {
@@ -778,7 +776,7 @@ bool NdbAggregator::Finalize() {
   if (result_size_est_ >= MAX_AGG_RESULT_BATCH_BYTES - 128) {
     SetError(kErrTooBigResult);
     /*
-     * Moz
+     * PA related
      * No need to release memory here.
      * Destruction will do it.
      * if (gb_map_) {
