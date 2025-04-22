@@ -65,9 +65,9 @@ typedef struct Serving_Key {
 
 /**
  * Find project ID using the feature store name
- * SELECT id AS project_id FROM project WHERE projectname = feature_store_name
+ * SELECT roject_id FROM feature_store WHERE id = feature_store_id
  */
-RS_Status find_project_id(const char *feature_store_name, int *project_id);
+RS_Status find_project_id(const int feature_store_id, int *project_id);
 
 /**
  * Find feature store ID using the feature store name

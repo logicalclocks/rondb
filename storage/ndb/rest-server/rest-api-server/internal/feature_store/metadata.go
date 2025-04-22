@@ -196,7 +196,7 @@ func newFeatureViewMetadata(
 		for _, feature := range fgFeature.Features {
 			if (*feature).IsComplex() {
 				if _, exist := fgSchemaCache[feature.FeatureGroupId]; !exist {
-					projectId, dalErr := dal.GetProjectID(fgFeature.FeatureStoreName)
+					projectId, dalErr := dal.GetProjectID(fgFeature.FeatureStoreId)
 					if dalErr != nil {
 						return nil, fmt.Errorf("Failed to get project id. Feature store name: %s. Error %v ", fgFeature.FeatureStoreName, dalErr.Error())
 					}
