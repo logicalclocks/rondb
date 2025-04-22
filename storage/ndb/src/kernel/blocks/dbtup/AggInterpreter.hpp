@@ -31,39 +31,40 @@
 #include "NdbAggregationCommon.hpp"
 
 /*
- * MOZ
- * Turn off the MOZ_AGG_MOLLOC to use new instead
+ * PA related
+ * Turn off the PA_MALLOC to use new instead
  * of AggInterpreter's memory alloctor
  */
-#define MOZ_AGG_MALLOC 1
+// #undef PA_MALLOC
+#define PA_MALLOC 1
 
 #define READ_BUF_WORD_SIZE 2048
 #define DECIMAL_BUFF_LENGTH 9
 class AggInterpreter {
  public:
-#ifdef MOZ_AGG_MALLOC
-  AggInterpreter(const Uint32* prog, Uint32 prog_len, bool print, Int64 frag_id/*,
+#ifdef PA_MALLOC
+  AggInterpreter(const Uint32* prog, Uint32 prog_len, Int64 frag_id/*,
                  Ndbd_mem_manager* mm, void* page_addr, Uint32 page_ref*/):
 #else
-  AggInterpreter(const Uint32* prog, Uint32 prog_len, bool print, Int64 frag_id):
-#endif // MOZ_AGG_MALLOC
+  AggInterpreter(const Uint32* prog, Uint32 prog_len, Int64 frag_id):
+#endif // PA_MALLOC
     prog_len_(prog_len), cur_pos_(0),
     inited_(false), n_gb_cols_(0), gb_cols_(nullptr),
     n_agg_results_(0),
     agg_results_(nullptr), agg_prog_start_pos_(0),
     gb_map_(nullptr), n_groups_(0),
-    buf_pos_(0), print_(print), processed_rows_(0),
+    buf_pos_(0), processed_rows_(0),
     result_size_(0), frag_id_(frag_id)/*, pcount_(0)*/ {
-#ifdef MOZ_AGG_MALLOC
+#ifdef PA_MALLOC
       assert(prog_len_ <= MAX_AGG_PROGRAM_WORD_SIZE);
       prog_ = prog_buf_;
 #else
       prog_ = new Uint32[prog_len];
-#endif // MOZ_AGG_MALLOC
+#endif // PA_MALLOC
       memcpy(prog_, prog, prog_len * sizeof(Uint32));
       memset(buf_, 0, READ_BUF_WORD_SIZE * sizeof(Uint32));
       memset(decimal_buf_, 0, sizeof(Int32) * DECIMAL_BUFF_LENGTH);
-#ifdef MOZ_AGG_MALLOC
+#ifdef PA_MALLOC
       /* For using Ndbd_mem_manager*/
       /*
       mm_ = mm;
@@ -71,10 +72,10 @@ class AggInterpreter {
       page_ref_ = page_ref;
       */
       alloc_len_ = 0;
-#endif // MOZ_AGG_MALLOC
+#endif // PA_MALLOC
   }
   ~AggInterpreter() {
-#ifdef MOZ_AGG_MALLOC
+#ifdef PA_MALLOC
 #else
     delete[] prog_;
     delete[] gb_cols_;
@@ -97,7 +98,7 @@ class AggInterpreter {
       }
       delete gb_map_;
     }
-#endif // MOZ_AGG_MALLOC
+#endif // PA_MALLOC
   }
 
   bool Init();
@@ -113,7 +114,7 @@ class AggInterpreter {
   Int64 frag_id() {
     return frag_id_;
   }
-#ifdef MOZ_AGG_MALLOC
+#ifdef PA_MALLOC
   static void Destruct(AggInterpreter* ptr);
   /* For using Ndbd_mem_manager*/
   /*
@@ -124,7 +125,7 @@ class AggInterpreter {
     return page_ref_;
   }
   */
-#endif // MOZ_AGG_MALLOC
+#endif // PA_MALLOC
 
  private:
   Uint32* prog_;
@@ -144,7 +145,6 @@ class AggInterpreter {
   Uint32 buf_[READ_BUF_WORD_SIZE];
   Uint32 buf_pos_;
   static Uint32 g_buf_len_;
-  bool print_;
   Uint64 processed_rows_;
   Uint32 result_size_;
   static Uint32 g_result_header_size_;
@@ -153,7 +153,7 @@ class AggInterpreter {
   Int64 frag_id_;
   Int32 decimal_buf_[DECIMAL_BUFF_LENGTH];
 
-#ifdef MOZ_AGG_MALLOC
+#ifdef PA_MALLOC
   /* For using Ndbd_mem_manager */
   /*
   Ndbd_mem_manager* mm_;
@@ -169,6 +169,6 @@ class AggInterpreter {
   char mem_buf_[MAX_AGG_RESULT_BATCH_BYTES];
   Uint32 alloc_len_;
   char* MemAlloc(Uint32 len);
-#endif // MOZ_AGG_MALLOC
+#endif // PA_MALLOC
 };
 #endif  // AGGINTERPRETER_H_

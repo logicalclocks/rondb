@@ -54,15 +54,18 @@
 #endif
 
 /*
- * Moz
- * Turn on MOZ_AGG_TUP_DEBUG to debug
+ * PA related
+ * Turn on DEBUG_PA_TUP to debug
  * attributes
+ * NOTICE: In order to enable DEBUG_PA_TUP,
+ * you have to enable DEBUG_PA first.
  */
-// #define MOZ_AGG_TUP_DEBUG 1
-#ifdef MOZ_AGG_TUP_DEBUG
+#undef DEBUG_PA_TUP
+// #define DEBUG_PA_TUP 1
+#ifdef DEBUG_PA_TUP
 #include "include/my_byteorder.h"
 #include "AggInterpreter.hpp"
-#endif // MOZ_AGG_TUP_DEBUG
+#endif // DEBUG_PA_TUP
 
 //#define TRACE_INTERPRETER
 
@@ -377,10 +380,11 @@ int Dbtup::readAttributes(KeyReqStruct *req_struct, const Uint32 *inBuffer,
     AttributeHeader ahIn(inBuffer[inBufIndex]);
     inBufIndex++;
     attributeId= ahIn.getAttributeId();
- #ifdef MOZ_AGG_TUP_DEBUG
-    if (/*req_struct->fragPtrP->fragTableId == 17 &&
-        req_struct->fragPtrP->fragmentId == 0 && */
-        true) {
+ #ifdef DEBUG_PA_TUP
+    if (req_struct->fragPtrP != nullptr &&
+        PA_NEED_PRINT(true,
+          req_struct->fragPtrP->fragTableId,
+          req_struct->fragPtrP->fragmentId)) {
       const Uint32* attrDescriptor = req_struct->tablePtrP->tabDescriptor +
         (attributeId * ZAD_SIZE);
       const Uint32 TattrDesc1 = attrDescriptor[0];
@@ -396,14 +400,15 @@ int Dbtup::readAttributes(KeyReqStruct *req_struct, const Uint32 *inBuffer,
       const Uint32 primary_key = AttributeDescriptor::getPrimaryKey(TattrDesc1);
       const Uint32 dynamic = AttributeDescriptor::getDynamic(TattrDesc1);
       const Uint32 disk_based = AttributeDescriptor::getDiskBased(TattrDesc1);
-      g_eventLogger->info("Moz-AttributeDescriptor, attributeId: %u, type_id: %u, size: %u, "
+      g_eventLogger->info("[PA_TUP_DEBUG] Dbtup::readAttributes(), "
+             "AttributeDescriptor, attributeId: %u, type_id: %u, size: %u, "
              "size_in_bytes: %u, size_in_words: %u, array_type: %u, "
              "array_size: %u, nullable: %u, distri_key: %u, primary_key: %u "
              "dynamic: %u, disk_based: %u",
              attributeId, type_id, size, size_in_bytes, size_in_words, array_type,
              array_size, nullable, distri_key, primary_key, dynamic, disk_based);
     }
-#endif // MOZ_AGG_TUP_DEBUG
+#endif // DEBUG_PA_TUP
     descr_index= attributeId * ZAD_SIZE;
 
     tmpAttrBufIndex = pad32(tmpAttrBufIndex, tmpAttrBufBits);
@@ -440,73 +445,22 @@ int Dbtup::readAttributes(KeyReqStruct *req_struct, const Uint32 *inBuffer,
                       ahOut,
                       attrDes)))
       {
- #ifdef MOZ_AGG_TUP_DEBUG
-        if (/*req_struct->fragPtrP->fragTableId == 17 &&
-            req_struct->fragPtrP->fragmentId == 1 && */
-            true) {
-          g_eventLogger->info("Moz-AttributeHeader, attributeId: %u, byte_size: %u, "
-                  "data_size: %u, is_null: %u. 4B: %x %x %x %x.",
+ #ifdef DEBUG_PA_TUP
+        if (req_struct->fragPtrP != nullptr &&
+            PA_NEED_PRINT(true,
+              req_struct->fragPtrP->fragTableId,
+              req_struct->fragPtrP->fragmentId)) {
+          g_eventLogger->info("[PA_TUP_DEBUG] Dbtup::readAttributes(), "
+              "AttributeHeader, attributeId: %u, byte_size: %u, "
+              "data_size: %u, is_null: %u. 4B: %x %x %x %x.",
               ahOut->getAttributeId(), ahOut->getByteSize(), ahOut->getDataSize(),
               ahOut->isNULL(),
               *((Uint8*)ahOut->getDataPtr()),
               *((Uint8*)ahOut->getDataPtr() + 1),
               *((Uint8*)ahOut->getDataPtr() + 2),
               *((Uint8*)ahOut->getDataPtr() + 3));
-          /* Example of print
-          if (ahOut->isNULL()) {
-            g_eventLogger->info("VALUE: [NULL]");
-          } else {
-            Int32 tmp_val;
-            Uint32 tmp_uval;
-            switch (attributeId) {
-              case 0:
-                g_eventLogger->info("VALUE: %d", *(int32*)ahOut->getDataPtr());
-                break;
-              case 1:
-                g_eventLogger->info("VALUE: %d", *(int8*)ahOut->getDataPtr());
-                break;
-              case 2:
-                g_eventLogger->info("VALUE: %d", *(int16*)ahOut->getDataPtr());
-                break;
-              case 3:
-                tmp_val = sint3korr((unsigned char*)ahOut->getDataPtr());
-                g_eventLogger->info("VALUE: %d", tmp_val);
-                break;
-              case 4:
-                g_eventLogger->info("VALUE: %ld", *(int64*)ahOut->getDataPtr());
-                break;
-              case 5:
-                g_eventLogger->info("VALUE: %u", *(uint8*)ahOut->getDataPtr());
-                break;
-              case 6:
-                g_eventLogger->info("VALUE: %u", *(uint16*)ahOut->getDataPtr());
-                break;
-              case 7:
-                tmp_uval = uint3korr((unsigned char*)ahOut->getDataPtr());
-                g_eventLogger->info("VALUE: %u", tmp_uval);
-                break;
-              case 8:
-                g_eventLogger->info("VALUE: %u", *(uint32*)ahOut->getDataPtr());
-                break;
-              case 9:
-                g_eventLogger->info("VALUE: %lu", *(uint64*)ahOut->getDataPtr());
-                break;
-              case 10:
-                g_eventLogger->info("VALUE: %f", *(float*)ahOut->getDataPtr());
-                break;
-              case 11:
-                g_eventLogger->info("VALUE: %lf", *(double*)ahOut->getDataPtr());
-                break;
-              case 12:
-                g_eventLogger->info("VALUE: %s", (char*)ahOut->getDataPtr());
-                break;
-              default:
-                break;
-            }
-          }
-          */
         }
-#endif // MOZ_AGG_TUP_DEBUG
+#endif // DEBUG_PA_TUP
 
         if (unlikely(req_struct->partial_size != 0)) {
           thrjam(req_struct->jamBuffer);

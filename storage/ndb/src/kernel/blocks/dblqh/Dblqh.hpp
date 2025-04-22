@@ -79,12 +79,42 @@ class FsReadWriteReq;
 //#define DEBUG_USAGE_COUNT 1
 
 /*
- * Moz
- * Turn on the MOZ_AGG_DEBUG
- * to trace lqh behaviors on partition 0
+ * PA related
+ * Turn on the DEBUG_PA
+ * to trace lqh behaviors on table PA_TABLE_ID partition PA_PART_ID
  */
-#undef MOZ_AGG_DEBUG
-// #define MOZ_AGG_DEBUG 1
+#undef DEBUG_PA
+// #define DEBUG_PA 1
+
+#define PA_TABLE_ID 17
+#define PA_PART_ID 0
+
+#ifdef DEBUG_PA
+
+#define PA_NEED_PRINT(is_pa, table_id, part_id) \
+  ((is_pa) && ((table_id) == PA_TABLE_ID) && ((part_id) == PA_PART_ID))
+
+#define PA_RONDB_TRACE(is_pa, table_id, part_id, format, ...) \
+  do { \
+    if (PA_NEED_PRINT(is_pa, table_id, part_id)) { \
+      g_eventLogger->info("[PA_RONDB_TRACE] " format, ##__VA_ARGS__); \
+    } \
+  } while (0)
+
+#define PA_RONDB_TRACE_2(print, format, ...) \
+  do { \
+    if (print) { \
+      g_eventLogger->info("[PA_RONDB_TRACE] " format, ##__VA_ARGS__); \
+    } \
+  } while (0)
+
+#else
+
+#define PA_NEED_PRINT(is_pa, table_id, part_id) (false)
+#define PA_RONDB_TRACE(is_pa, table_id, part_id, format, ...) do {} while (0)
+#define PA_RONDB_TRACE_2(print, format, ...) do {} while (0)
+
+#endif // DEBUG_PA
 
 #ifdef DBLQH_C
 // Constants
@@ -678,7 +708,7 @@ class Dblqh : public SimulatedBlock {
     Uint32 m_exec_direct_batch_size_words;
     Uint32 m_def_max_batch_size;
 
-    bool check_scan_batch_completed(bool print = false) const;
+    bool check_scan_batch_completed(bool debug_pa_print = false) const;
     
     UintR copyPtr;
     union {
@@ -3359,7 +3389,8 @@ private:
                               SimulatedBlock* block,
                               ExecFunction f,
                               ScanRecord * const scanPtr,
-                              Uint32 clientPtrI, bool debug_print = false);
+                              Uint32 clientPtrI,
+                              bool debug_pa_print = false);
 
   void initCopyrec(Signal *signal);
   void initCopyTc(Signal *signal, Operation_t, TcConnectionrec *);
@@ -5370,11 +5401,7 @@ inline bool Dblqh::is_restore_phase_done() {
 
 inline
 bool
-Dblqh::ScanRecord::check_scan_batch_completed(bool print) const {
-  // Moz
-#ifndef MOZ_AGG_DEBUG
-  (void)print;
-#endif // !MOZ_AGG_DEBUG
+Dblqh::ScanRecord::check_scan_batch_completed(bool debug_pa_print) const {
   // Don't break aggregation
   if (m_aggregation == true) {
     /*
@@ -5384,25 +5411,20 @@ Dblqh::ScanRecord::check_scan_batch_completed(bool print) const {
      * call sendScanFragConf to send GSN_SCAN_FRAGCONF to TC
      */
     if (m_agg_curr_batch_size_bytes) {
-      // MOZ DEBUG PRINT
-#ifdef MOZ_AGG_DEBUG
-      if (print) {
-        g_eventLogger->info("CHECK batch complete:true, rows[%u, %u], bytes[%u, %u], n_res_recs: %u",
-            m_agg_curr_batch_size_rows, m_curr_batch_size_rows,
-            m_agg_curr_batch_size_bytes, m_curr_batch_size_bytes,
-            m_agg_n_res_recs);
-      }
-#endif // MOZ_AGG_DEBUG
+      PA_RONDB_TRACE_2(debug_pa_print,
+          "Dblqh::ScanRecord::check_scan_batch_completed() "
+          "CHECK batch complete:true, rows[%u, %u], bytes[%u, %u], n_res_recs: %u",
+          m_agg_curr_batch_size_rows, m_curr_batch_size_rows,
+          m_agg_curr_batch_size_bytes, m_curr_batch_size_bytes,
+          m_agg_n_res_recs);
       return true;
     } else {
-#ifdef MOZ_AGG_DEBUG
-      if (print) {
-        g_eventLogger->info("CHECK batch complete:false, rows[%u, %u], bytes[%u, %u], n_res_recs: %u",
-            m_agg_curr_batch_size_rows, m_curr_batch_size_rows,
-            m_agg_curr_batch_size_bytes, m_curr_batch_size_bytes,
-            m_agg_n_res_recs);
-      }
-#endif // MOZ_AGG_DEBUG
+      PA_RONDB_TRACE_2(debug_pa_print,
+          "Dblqh::ScanRecord::check_scan_batch_completed() "
+          "CHECK batch complete:false, rows[%u, %u], bytes[%u, %u], n_res_recs: %u",
+          m_agg_curr_batch_size_rows, m_curr_batch_size_rows,
+          m_agg_curr_batch_size_bytes, m_curr_batch_size_bytes,
+          m_agg_n_res_recs);
       return false;
     }
   }

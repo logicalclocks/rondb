@@ -507,7 +507,10 @@ ErrorBundle ErrorCodes[] = {
   { 325,  DMEC, AE, "Invalid node(s) specified for new nodegroup, node ID invalid or undefined" },
   { 326,  DMEC, AE, "Same node(s) specified for new nodegroup" },
   { 417,  DMEC, AE, "Bad operation reference - double unlock" },
-  // Moz pushdown aggregation errors
+  /*
+   * PA related
+   * pushdown aggregation errors
+   */
   { 1860,  DMEC, AE, "arithmetic operation results overflow, check error log on data node for more details" },
   { 1861,  DMEC, AE, "Unsupported column type, check error log on data node for more details" },
   { 1862,  DMEC, AE, "Overflow while parsing decimal column, check error log on data node for more details" },

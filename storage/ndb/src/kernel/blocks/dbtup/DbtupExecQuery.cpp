@@ -997,7 +997,7 @@ Uint32 Dbtup::copyAttrinfo(Uint32 storedProcId,
         ndbrequire((cinBuffer[proc_start] >> 16) == 0x0721);
 
         // 3. construct agg_interpreter
-#ifdef MOZ_AGG_MALLOC
+#ifdef PA_MALLOC
         /*
          * Use Ndbd_mem_manager
          */
@@ -1015,14 +1015,14 @@ Uint32 Dbtup::copyAttrinfo(Uint32 storedProcId,
         ndbrequire(page_ptr != nullptr);
         ndbrequire(page_ptr != nullptr);
         scan_rec_ptr->m_agg_interpreter =
-          new(page_ptr) AggInterpreter(&cinBuffer[proc_start], proc_len, false,
+          new(page_ptr) AggInterpreter(&cinBuffer[proc_start], proc_len,
                               prepare_fragptr.p->fragmentId/*,
                               &m_ctx.m_mm, page_ptr, allocPageRef*/);
 #else
         scan_rec_ptr->m_agg_interpreter =
-          new AggInterpreter(&cinBuffer[proc_start], proc_len, false,
+          new AggInterpreter(&cinBuffer[proc_start], proc_len,
                               prepare_fragptr.p->fragmentId);
-#endif // MOZ_AGG_MALLOC
+#endif // PA_MALLOC
         ndbrequire(scan_rec_ptr->m_agg_interpreter->Init());
       }
     }
