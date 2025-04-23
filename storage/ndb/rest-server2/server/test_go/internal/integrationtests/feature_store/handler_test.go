@@ -2003,3 +2003,74 @@ func Test_CAPS_Proj_Name(t *testing.T) {
 		ValidateResponseMetadata(t, &fsResp.Metadata, fsReq.MetadataRequest, fsName, fvName, fvVersion)
 	}
 }
+
+// test reading a complex feature in project FSDB003
+func Test_GetFeatureVector_Success_ComplexType_CAPS(t *testing.T) {
+	var fsName = testdbs.FSDB003
+	var fvName = "complex_example"
+	var fvVersion = 1
+	rows, pks, cols, err := GetSampleData(fsName, "complex_example_1")
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+
+	// Map
+	mapSchema, err := avro.Parse(`{"type":"record","name":"complex_example_1","namespace":"caps_featurestore.db","fields":[{"name":"struct","type":["null",{"type":"record","name":"r854762204","namespace":"struct","fields":[{"name":"int1","type":["null","long"]},{"name":"int2","type":["null","long"]}]}]}]}`)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+	mapStruct, err := fsmetadata.ConvertAvroSchemaToStruct(mapSchema)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+	mapComplexFeature := ComplexFeature{Schema: &mapSchema, Struct: &mapStruct}
+
+	// Array
+	arraySchema, err := avro.Parse(`{"type":"record","name":"complex_example_1","namespace":"caps_featurestore.db","fields":[{"name":"array","type":["null",{"type":"array","items":["null","long"]}]}]}`)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+	arrayStruct, err := fsmetadata.ConvertAvroSchemaToStruct(arraySchema)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+	arrayComplexFeature := ComplexFeature{Schema: &arraySchema, Struct: &arrayStruct}
+
+	for _, row := range rows {
+		var fsReq = CreateFeatureStoreRequest(
+			fsName,
+			fvName,
+			fvVersion,
+			pks,
+			*GetPkValues(&row, &pks, &cols),
+			nil,
+			nil,
+		)
+		fsReq.MetadataRequest = &api.MetadataRequest{FeatureName: true, FeatureType: true}
+		fsResp := GetFeatureStoreResponse(t, fsReq)
+
+		// convert data to object in json format
+		arrayJson, err := ConvertBinaryToJsonMessage(row[2])
+		if err != nil {
+			t.Fatalf("Cannot convert to json with error %s ", err)
+		}
+		arrayPt, err := DeserialiseComplexFeature(t, arrayJson, &arrayComplexFeature) // array
+		row[2] = *arrayPt
+		if err != nil {
+			t.Fatalf("Cannot deserailize feature with error %s ", err)
+		}
+		// convert data to object in json format
+		mapJson, err := ConvertBinaryToJsonMessage(row[3])
+		if err != nil {
+			t.Fatalf("Cannot convert to json with error %s ", err)
+		}
+		mapPt, err := DeserialiseComplexFeature(t, mapJson, &mapComplexFeature) // map
+		row[3] = *mapPt
+		if err != nil {
+			t.Fatalf("Cannot deserailize feature with error %s ", err)
+		}
+		// validate
+		ValidateResponseWithData(t, &row, &cols, fsResp)
+		ValidateResponseMetadata(t, &fsResp.Metadata, fsReq.MetadataRequest, fsName, fvName, fvVersion)
+	}
+}

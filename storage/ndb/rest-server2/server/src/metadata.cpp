@@ -265,7 +265,7 @@ newFeatureViewMetadata(const std::string &featureStoreName,
         auto it = fgSchemaCache.find(feature.featureGroupId);
         if (it == fgSchemaCache.end()) {
           std::tie(projectId, status) =
-            GetProjectID(feature.featureStoreName);
+            GetProjectID(fgFeature.featureStoreId);
           if (status.http_code !=
               static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
             return {nullptr, status};
