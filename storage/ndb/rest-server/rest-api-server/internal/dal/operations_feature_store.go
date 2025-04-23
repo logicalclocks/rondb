@@ -53,14 +53,12 @@ type TrainingDatasetJoin struct {
 	Index  int
 }
 
-func GetProjectID(featureStoreName string) (int, *DalError) {
-	cFeatureStoreName := C.CString(featureStoreName)
-	defer C.free(unsafe.Pointer(cFeatureStoreName))
+func GetProjectID(featureStoreID int) (int, *DalError) {
 
 	var projectID C.int
 	projectIDPtr := (*C.int)(unsafe.Pointer(&projectID))
 
-	ret := C.find_project_id(cFeatureStoreName, projectIDPtr)
+	ret := C.find_project_id(C.int(featureStoreID), projectIDPtr)
 
 	if ret.http_code != http.StatusOK {
 		return 0, cToGoRet(&ret)

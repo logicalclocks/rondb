@@ -117,7 +117,7 @@ VALUES
         67, "fsdb001", 1000, "2023-03-16 14:27:29"
     ),
     (
-        68, "fsdb003", 1000, "2023-03-16 14:27:29"
+        68, "fsdb003", 1003, "2023-03-16 14:27:29"
     ),
     (
         1091, "fsdb002", 1001, "2023-03-16 14:27:29"
@@ -199,6 +199,9 @@ VALUES
     ),
     (
         34, 'caps', 68, Timestamp('2023-09-26 10:02:58'), 10000, 1, NULL, 2, NULL, NULL, 18, 'ts', 1, NULL, NULL, FALSE, 0
+    ),
+    (
+        35, 'complex_example', 68, Timestamp('2023-09-26 10:02:58'), 10000, 1, NULL, 2, NULL, NULL, 18, 'ts', 1, NULL, NULL, FALSE, 0
     ),
     (
         3090, 'sample_4', 67, Timestamp('2023-05-08 15:20:51'), 10000, 1, NULL, 2, NULL, NULL, 2065, 'ts', 1, NULL, NULL, FALSE, 0
@@ -338,6 +341,9 @@ VALUES
     (
 	    22, 'caps', 68, Timestamp('2023-09-26 10:03:16'), 10000, 1, ''
     ),
+    (
+	    23, 'complex_example', 68, Timestamp('2023-09-26 10:03:16'), 10000, 1, ''
+    ),
     /**
     SELECT `fg0`.`id1` `id1`, `fg0`.`ts` `ts`, `fg0`.`data1` `data1`, `fg0`.`data2` `data2`, `fg1`.`id1` `id1`, `fg1`.`bigint` `bigint`
     FROM `test_ken_featurestore`.`sample_1_1` `fg0`
@@ -470,6 +476,9 @@ VALUES
     ),
     (
         28, NULL, 34, NULL, NULL, 0, 0, 0, NULL, 22
+    ),
+    (
+        29, NULL, 35, NULL, NULL, 0, 0, 0, NULL, 23
     ),
     (
         5133, NULL, 2069, NULL, NULL, 0, 0, 0, NULL, 4117
@@ -869,6 +878,18 @@ VALUES
         69, NULL, 34, 'data', 'int', 28, 1, 0, 0, 0, 22, NULL
     ),
     (
+        70, NULL, 35, 'id', 'bigint', 29, 0, 0, 0, 0, 23, NULL
+    ),
+    (
+        71, NULL, 35, 'ts', 'bigint', 29, 1, 0, 0, 0, 23, NULL
+    ),
+    (
+        72, NULL, 35, 'array', 'array<bigint>', 29, 2, 0, 0, 0, 23, NULL
+    ),
+    (
+        73, NULL, 35, 'struct', 'struct<int1:bigint,int2:bigint>', 29, 3, 0, 0, 0, 23, NULL
+    ),
+    (
         5148, NULL, 2069, 'data1', 'bigint', 5133, 2, 0, 0, 0, 4117, NULL
     ),
     (
@@ -1111,6 +1132,9 @@ VALUES
     ),
     (
         1522, NULL, 'id', NULL, 0, 34, 1, 22 
+    ),
+    (
+        1523, NULL, 'id', NULL, 0, 35, 1, 23 
     );
 
 INSERT INTO
@@ -1130,6 +1154,9 @@ VALUES
     ),
     (
 	    24, '{"type":"record","name":"caps_1","namespace":"caps_featurestore.db","fields":[{"name":"id","type":["null","int"]},{"name":"data","type":["null","int"]}]}', 1003
+    ),
+    (
+	    25, '{"type":"record","name":"complex_example_1","namespace":"caps_featurestore.db","fields":[{"name":"id","type":["null","long"]},{"name":"ts","type":["null","long"]},{"name":"array","type":["null",{"type":"array","items":["null","long"]}]},{"name":"struct","type":["null",{"type":"record","name":"r854762204","namespace":"struct","fields":[{"name":"int1","type":["null","long"]},{"name":"int2","type":["null","long"]}]}]}]}', 1003
     );
 
 INSERT INTO
@@ -1146,4 +1173,7 @@ VALUES
     ),
     (
         24, 'date_array_1', 1, 23, 1001, Timestamp('2023-09-27 10:02:58')
+    ),
+    (
+        25, 'complex_example_1', 1, 25, 1003, Timestamp('2023-09-27 10:02:58')
     );
