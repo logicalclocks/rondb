@@ -23,10 +23,10 @@
 #include <tuple>
 #include <my_compiler.h>
 
-std::tuple<int, RS_Status> GetProjectID(const std::string &featureStoreName) {
+std::tuple<int, RS_Status> GetProjectID(const int featureStoreID) {
   int projectID = 0;
 
-  auto ret = find_project_id(featureStoreName.c_str(), &projectID);
+  auto ret = find_project_id(featureStoreID, &projectID);
 
   if (ret.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
     return {projectID, ret};

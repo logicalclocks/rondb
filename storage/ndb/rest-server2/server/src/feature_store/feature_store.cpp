@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023, 2024 Hopsworks AB
+ * Copyright (C) 2023, 2024,2025 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -42,110 +42,78 @@
 extern RDRSRonDBConnectionPool *rdrsRonDBConnectionPool;
 
 
-RS_Status find_project_id_int(Ndb *ndb_object,
-                              const char *feature_store_name,
+RS_Status find_project_id_int(Ndb *ndb_object, 
+                              const int feature_store_id,
                               Int32 *project_id) {
   NdbError ndb_error;
   const NdbDictionary::Table *table_dict;
   NdbTransaction *tx;
-  NdbScanOperation *scan_op;
+  NdbOperation *ndb_op;
 
-  RS_Status status = select_table(ndb_object, HOPSWORKS, PROJECT, &table_dict);
-  if (unlikely(status.http_code != SUCCESS)) {
+  RS_Status status = select_table(ndb_object, HOPSWORKS, FEATURE_STORE, &table_dict);
+  if (status.http_code != SUCCESS) {
     return status;
   }
+
   status = start_transaction(ndb_object, &tx);
-  if (unlikely(status.http_code != SUCCESS)) {
+  if (status.http_code != SUCCESS) {
     return status;
   }
-  const char* index_name = "projectname";
-  status = get_index_scan_op(ndb_object,
-                             tx,
-                             table_dict,
-                             index_name,
-                             &scan_op);
-  if (unlikely(status.http_code != SUCCESS)) {
-    ndb_object->closeTransaction(tx);
-    return status;
-  }
-  status = read_tuples(ndb_object, scan_op);
-  if (unlikely(status.http_code != SUCCESS)) {
-    ndb_object->closeTransaction(tx);
-    return status;
-  }
-  int projectname_col_id = table_dict->getColumn("projectname")->getColumnNo();
-  Uint32 projectname_col_size =
-    (Uint32)table_dict->getColumn("projectname")->getSizeInBytes();
-  assert(projectname_col_size == PROJECT_PROJECTNAME_SIZE);
 
-  size_t feature_store_name_len = strlen(feature_store_name);
-  if (unlikely(feature_store_name_len >
-      (projectname_col_size -
-         bytes_for_ndb_str_len(PROJECT_PROJECTNAME_SIZE)))) {
+  status = get_op(ndb_object, tx, FEATURE_STORE, &ndb_op);
+  if (status.http_code != SUCCESS) {
     ndb_object->closeTransaction(tx);
-    return RS_CLIENT_ERROR("Wrong length of the projectname");
+    return status;
   }
-  // Note: projectname is varchar column
-  char cmp_str[PROJECT_PROJECTNAME_SIZE];
-  memcpy(cmp_str + bytes_for_ndb_str_len(PROJECT_PROJECTNAME_SIZE),
-         feature_store_name,
-         feature_store_name_len);
-  cmp_str[0] = static_cast<char>(feature_store_name_len);
 
-  NdbScanFilter filter(scan_op);
-  if (unlikely(filter.begin(NdbScanFilter::AND) < 0 ||
-               filter.cmp(NdbScanFilter::COND_EQ,
-                          projectname_col_id,
-                          cmp_str,
-                          PROJECT_PROJECTNAME_SIZE) < 0 ||
-               filter.end() < 0)) {
-    ndb_error = filter.getNdbError();
+  status = read_tuple(ndb_object, ndb_op);
+  if (status.http_code != SUCCESS) {
     ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(ndb_error, std::string(rdrsErrorMessage(ERROR_SET_FILTER_FAILED)));
+    return status;
   }
-  NdbRecAttr *id_attr = scan_op->getValue("id");
-  if (unlikely(id_attr == nullptr)) {
-    ndb_error = scan_op->getNdbError();
+
+  if (ndb_op->equal("id", feature_store_id) != 0) {
+    ndb_error = ndb_op->getNdbError();
     ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(ndb_error, std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
+    return RS_RONDB_SERVER_ERROR(ndb_error, 
+        std::string(rdrsErrorMessage(ERROR_SET_EQUAL_FAILED)));
   }
-  if (unlikely(tx->execute(NdbTransaction::NoCommit) != 0)) {
+
+  NdbRecAttr *projct_id_attr = ndb_op->getValue("project_id", nullptr);
+  if (projct_id_attr == nullptr) {
+    ndb_error = ndb_op->getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(ndb_error, 
+        std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
+  }
+
+  if (tx->execute(NdbTransaction::Commit) != 0) {
     ndb_error = tx->getNdbError();
     ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(ndb_error, std::string(rdrsErrorMessage(ERROR_TRANSACTION_EXEC_FAILED)));
+    return RS_RONDB_SERVER_ERROR(ndb_error, 
+        std::string(rdrsErrorMessage(ERROR_TRANSACTION_EXEC_FAILED)));
   }
-  bool check   = 0;
-  Uint32 count = 0;
-  while ((check = scan_op->nextResult(true)) == 0) {
-    do {
-      if (unlikely(count > 1)) {
-        ndb_object->closeTransaction(tx);
-        return RS_SERVER_ERROR(std::string(rdrsErrorMessage(ERROR_PROGRAMMING_BUG)) + std::string(" Expecting single ID"));
-      }
-      count++;
-      *project_id = id_attr->int32_value();
-    } while ((check = scan_op->nextResult(false)) == 0);
-  }
-  NdbError error = scan_op->getNdbError();
-  ndb_object->closeTransaction(tx);
-  if (unlikely(error.code != 4120 /*Scan already complete*/)) {
-    return RS_RONDB_SERVER_ERROR(
-      error, "Failed Reading Project ID. Fn find_project_id_int");
-  }
-  if (unlikely(count == 0)) {
+
+  if (ndb_op->getNdbError().classification == NdbError::NoDataFound) {
+    ndb_object->closeTransaction(tx);
     return RS_CLIENT_404_ERROR();
   }
+
+  *project_id = projct_id_attr->int32_value();
+
+  ndb_object->closeTransaction(tx);
+
   return RS_OK;
 }
 
-RS_Status find_project_id(const char *feature_store_name, Int32 *project_id) {
+RS_Status find_project_id(const int feature_store_id, Int32 *project_id) {
   Ndb *ndb_object  = nullptr;
   RS_Status status = rdrsRonDBConnectionPool->GetMetadataNdbObject(&ndb_object);
   if (unlikely(status.http_code != SUCCESS)) {
     return status;
   }
   METADATA_OP_RETRY_HANDLER(
-    status = find_project_id_int(ndb_object, feature_store_name, project_id);
+    status = find_project_id_int(ndb_object, feature_store_id, project_id);
     HandleSchemaErrors(ndb_object,
                        status,
                        {std::make_tuple(HOPSWORKS, PROJECT)});

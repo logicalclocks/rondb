@@ -52,7 +52,7 @@ struct TrainingDatasetJoin {
   int index;
 };
 
-std::tuple<int, RS_Status> GetProjectID(const std::string &featureStoreName);
+std::tuple<int, RS_Status> GetProjectID(const int featureStoreID);
 
 std::tuple<int, RS_Status> GetFeatureStoreID(
   const std::string &featureStoreName);
