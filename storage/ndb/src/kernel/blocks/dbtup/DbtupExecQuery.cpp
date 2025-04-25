@@ -2054,6 +2054,8 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
   req_struct.agg_curr_batch_size_bytes = 0;
   req_struct.agg_n_res_recs = 0;
 
+  req_struct.ttl_purge_window_size = 0;
+
   if (unlikely(trans_state != TRANS_IDLE)) {
     TUPKEY_abort(&req_struct, 39);
     return false;
@@ -2124,6 +2126,7 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
       ndbrequire(false);
       regOperPtr->ttl_ignore = lqhOpPtrP->ttl_ignore;
     }
+    req_struct.ttl_purge_window_size = lqhScanPtrP->m_ttl_purge_window_size;
   } else {
     Uint32 attrBufLen = lqhOpPtrP->totReclenAi;
     Uint32 dirtyOp = lqhOpPtrP->dirtyOp;
@@ -2164,6 +2167,12 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
                       "for one operation");
     }
 #endif  // TTL_DEBUG
+  }
+  if (req_struct.ttl_purge_window_size != 0 && !regOperPtr->ttl_only_expired) {
+    g_eventLogger->warning("reset ttl_purge_window_size from %u to 0 "
+                        "since ttl_only_expired is not set",
+                        req_struct.ttl_purge_window_size);
+    req_struct.ttl_purge_window_size = 0;
   }
   req_struct.m_deferred_constraints = deferred_constraints;
   req_struct.m_disable_fk_checks = disable_fk_checks;
@@ -2962,6 +2971,7 @@ int Dbtup::checkTTL(Tablerec* regTabPtr,
                       dt.year, dt.month, dt.day,
                       dt.hour, dt.minute, dt.second);
       Uint32 ttl_sec = regTabPtr->m_ttl_sec;
+      ttl_sec += req_struct->ttl_purge_window_size;
       bool valid_future_dt = true;
       if (ttl_sec != 0) {
         Interval interval;
@@ -3003,9 +3013,11 @@ int Dbtup::checkTTL(Tablerec* regTabPtr,
          * Compare with TTL
          */
         TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
-                        "Get TTL "
+                        "Get TTL [%u + (%u) = %u], "
                         "expired time: %u.%u.%u %u:%u:%u, "
                         "current time: %u.%u.%u %u:%u:%u",
+                        regTabPtr->m_ttl_sec,
+                        req_struct->ttl_purge_window_size, ttl_sec,
                         dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second,
                         curr_dt.year, curr_dt.month, curr_dt.day, curr_dt.hour,
                         curr_dt.minute, curr_dt.second);

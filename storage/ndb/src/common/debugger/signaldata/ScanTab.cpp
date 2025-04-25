@@ -68,6 +68,8 @@ bool printSCANTABREQ(FILE *output, const Uint32 *theData, Uint32 len,
           sig->transId1, sig->transId2, sig->storedProcId);
   fprintf(output, " batch_byte_size: %d, first_batch_size: %d\n",
           sig->batch_byte_size, sig->first_batch_size);
+  fprintf(output, " ttlPurgeWindowSize: %u\n",
+          sig->ttlPurgeWindowSize);
   return false;
 }
 

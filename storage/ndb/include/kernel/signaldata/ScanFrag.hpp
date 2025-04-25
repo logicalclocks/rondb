@@ -47,7 +47,7 @@ class ScanFragReq {
   friend class Dbspj;
 
  public:
-  static constexpr Uint32 SignalLength = 12;
+  static constexpr Uint32 SignalLength = 13;
 
   static constexpr Uint32 AttrInfoSectionNum = 0;  // Mandatory part
   static constexpr Uint32 KeyInfoSectionNum = 1;   // Optional
@@ -80,6 +80,7 @@ class ScanFragReq {
   };
   Uint32 batch_size_rows;
   Uint32 batch_size_bytes;
+  Uint32 ttl_purge_window_size;
   Uint32 variableData[1];
 
   static Uint32 getLockMode(const Uint32 &requestInfo);

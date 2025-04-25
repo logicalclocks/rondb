@@ -19473,6 +19473,7 @@ Uint32 Dblqh::initScanrec(const ScanFragReq *scanFragReq, Uint32 aiLen,
   scanPtr->scanApiOpPtr = scanApiOpPtr;
   scanPtr->m_max_batch_size_rows = max_rows;
   scanPtr->m_max_batch_size_bytes = max_bytes;
+  scanPtr->m_ttl_purge_window_size = scanFragReq->ttl_purge_window_size;
 
   const Uint32 scanPrio = ScanFragReq::getScanPrio(reqinfo);
 

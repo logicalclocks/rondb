@@ -796,7 +796,8 @@ bool TTLPurger::UpdateLocalCache(const std::string& db,
       } else {
         // check mysql.ttl_purge_nodes
         // TODO(zhao): handle ttl_purge_tables as well
-        if (db == kSystemDBName && table == kTTLPurgeNodesTabName) {
+        if (db == kSystemDBName &&
+           (table == kTTLPurgeNodesTabName || table == kTTLPurgeCtrlTabName)) {
           updated = true;
         }
       }
@@ -812,7 +813,8 @@ bool TTLPurger::UpdateLocalCache(const std::string& db,
     } else {
       // check mysql.ttl_purge_nodes
       // TODO(zhao): handle ttl_purge_tables as well
-      if (db == kSystemDBName && table == kTTLPurgeNodesTabName) {
+      if (db == kSystemDBName &&
+           (table == kTTLPurgeNodesTabName || table == kTTLPurgeCtrlTabName)) {
         updated = true;
       }
     }
@@ -994,6 +996,7 @@ void TTLPurger::PurgeWorkerJob() {
   Int64 packed_now = 0;
   NdbRecAttr* rec_attr[3];
   bool use_index = false;
+  Uint32 purge_window = 0;
 
   g_eventLogger->info("[TTL PWorker] Started");
   purged_pos_.clear();
@@ -1067,6 +1070,14 @@ void TTLPurger::PurgeWorkerJob() {
       g_eventLogger->info("Not the configured purging node, skip purging...");
       sleep(2);
       continue;
+    }
+
+    if (GetPurgeWindow(&purge_window, update_objects) == false) {
+      g_eventLogger->info("[TTL PWorker] Failed to get purge window, "
+                          "error: %u(%s). Retry...",
+                          watcher_ndb_->getNdbError().code,
+                          watcher_ndb_->getNdbError().message);
+      goto err;
     }
 
     GetNow(encoded_now, false);
@@ -1227,6 +1238,7 @@ retry_trx:
           goto err;
         }
         index_scan_op->setPartitionId(iter->second.part_id);
+        index_scan_op->setTTLPurgeWindowSize(purge_window);
         /* Index Scan */
         Uint32 scanFlags =
          /*NdbScanOperation::SF_OrderBy |
@@ -1468,6 +1480,7 @@ retry_trx:
           goto err;
         }
         scan_op->setPartitionId(iter->second.part_id);
+        scan_op->setTTLPurgeWindowSize(purge_window);
         Uint32 scanFlags = NdbScanOperation::SF_OnlyExpiredScan;
         if (scan_op->readTuples(NdbOperation::LM_Exclusive, scanFlags,
                                 1, iter->second.batch_size) != 0) {
@@ -1835,6 +1848,138 @@ bool TTLPurger::GetShard(Int32* shard, Int32* n_purge_nodes,
 #ifdef DEBUG_EVENT
   g_eventLogger->info("%s", log_buf.c_str());
 #endif
+  return true;
+
+err:
+  if (trans != nullptr) {
+    worker_ndb_->closeTransaction(trans);
+  }
+  return false;
+}
+
+bool TTLPurger::GetPurgeWindow(Uint32* purge_window, bool update_objects) {
+  uint32_t old_purge_window = *purge_window;
+  if (worker_ndb_->setDatabaseName(kSystemDBName) != 0) {
+    g_eventLogger->warning("[TTL PWorker] Failed to select system database: "
+                          "%s, error: %d(%s). Retry...",
+                           kSystemDBName,
+                           worker_ndb_->getNdbError().code,
+                           worker_ndb_->getNdbError().message);
+    return false;
+  }
+  NdbDictionary::Dictionary* dict = worker_ndb_->getDictionary();
+  if (update_objects) {
+    dict->removeCachedTable(kTTLPurgeCtrlTabName);
+  }
+  const NdbDictionary::Table* tab = dict->getTable(kTTLPurgeCtrlTabName);
+  if (tab == nullptr) {
+    if (dict->getNdbError().code == 723) {
+      // Purge control configuration table not found — no purge window defined
+      *purge_window = 0;
+      return true;
+    } else {
+      g_eventLogger->warning("[TTL PWorker] Failed to get table: "
+                            "%s, error: %d(%s). Retry...",
+                             kTTLPurgeCtrlTabName,
+                             dict->getNdbError().code,
+                             dict->getNdbError().message);
+      return false;
+    }
+  }
+  NdbRecAttr* rec_attr[3];
+  NdbTransaction* trans = nullptr;
+  NdbOperation* op = nullptr;
+  Int32 n_nodes = 0;;
+  std::vector<Int32> purge_nodes;
+  size_t pos = 0;
+  bool check = 0;
+  std::string log_buf = "[TTL PWorker] ";
+  std::string active_nodes = "[";
+  std::string inactive_nodes = "[";
+
+  trans = worker_ndb_->startTransaction();
+  if (trans == nullptr) {
+    g_eventLogger->warning("[TTL PWorker] Failed to start "
+                           "transaction"
+                           ", error: %d(%s). Retry...",
+                           worker_ndb_->getNdbError().code,
+                           worker_ndb_->getNdbError().message);
+    goto err;
+  }
+
+  op = trans->getNdbOperation(tab);
+  if (op == nullptr) {
+    g_eventLogger->warning("[TTL PWorker] Failed to start get "
+                           "operation on table %s"
+                           ", error: %d(%s). Retry...",
+                           tab->getName(),
+                           trans->getNdbError().code,
+                           trans->getNdbError().message);
+    goto err;
+  }
+
+  if (op->readTuple(NdbOperation::LM_CommittedRead) != 0) {
+    g_eventLogger->warning("[TTL PWorker] Failed to readTuple "
+                           "on table %s"
+                           ", error: %d(%s). Retry...",
+                           tab->getName(),
+                           trans->getNdbError().code,
+                           trans->getNdbError().message);
+    goto err;
+  }
+  op->equal(kPurgeCtrlKey, kPurgeCtrlPurgeWindowId);
+
+  rec_attr[0] = op->getValue(kPurgeCtrlKey);
+  if (rec_attr[0] == nullptr) {
+    g_eventLogger->warning("[TTL PWorker] Failed to getValue "
+                           "on table %s"
+                           ", error: %d(%s). Retry...",
+                           tab->getName(),
+                           trans->getNdbError().code,
+                           trans->getNdbError().message);
+    goto err;
+  }
+  rec_attr[1] = op->getValue(kPurgeCtrlValue);
+  if (rec_attr[1] == nullptr) {
+    g_eventLogger->warning("[TTL PWorker] Failed to getValue "
+                           "on table %s"
+                           ", error: %d(%s). Retry...",
+                           tab->getName(),
+                           trans->getNdbError().code,
+                           trans->getNdbError().message);
+    goto err;
+  }
+  if (trans->execute(NdbTransaction::Commit) != 0) {
+    g_eventLogger->warning("[TTL PWorker] Failed to execute transaction "
+                           "on table %s"
+                           ", error: %d(%s). Retry...",
+                           tab->getName(),
+                           trans->getNdbError().code,
+                           trans->getNdbError().message);
+    goto err;
+  }
+  if (trans->getNdbError().classification == NdbError::NoDataFound) {
+    g_eventLogger->warning("[TTL PWorker] ttl_purge_ctrl table found, "
+                           "but missing purge window, [%s = %u]",
+                           kPurgeCtrlKey, kPurgeCtrlPurgeWindowId);
+    *purge_window = 0;
+  } else {
+    Int32 value = rec_attr[1]->isNULL() ? 0 : rec_attr[1]->int32_value();
+    if (value < 0) {
+      g_eventLogger->warning("[TTL PWorker] Negtive purge window size %d "
+                             "is set in the ttl_purge_ctrl, using 0 instead",
+                             value);
+      value = 0;
+    }
+    *purge_window = value;
+  }
+
+  worker_ndb_->closeTransaction(trans);
+  if (old_purge_window != *purge_window) {
+    g_eventLogger->info("[TTL PWorker] purge window size changed from %u "
+                        "to %u seconds",
+                        old_purge_window, *purge_window);
+  }
   return true;
 
 err:

@@ -2241,6 +2241,7 @@ int NdbScanOperation::prepareSendScan(Uint32 /*aTC_ConnectPtr*/,
    */
   ScanTabReq::setTTLIgnoreFlag(reqInfo, (m_flags & OF_TTL_IGNORE) != 0);
   ScanTabReq::setTTLOnlyExpiredFlag(reqInfo, (m_flags & OF_TTL_ONLY_EXPIRED) != 0);
+  req->ttlPurgeWindowSize = theTTLPurgeWindowSize_;
 
   req->requestInfo = reqInfo;
   req->distributionKey = theDistributionKey;

@@ -1045,7 +1045,7 @@ void Dbtc::execTC_SCHVERREQ(Signal *signal) {
   tabptr.p->m_ttl_sec = req->ttlSec;
   tabptr.p->m_ttl_col_no = req->ttlColumnNo;
   tabptr.p->m_primary_table_id = req->primaryTableId;
-  TTL_RONDB_TRACE(tabptr.p,
+  TTL_RONDB_TRACE(tabptr.i,
                   "[TC]Gen Tablerec, table_id: %u, TTL sec: %u, "
                   "TTL column no: %u, primaryTableId: %u",
                   tabptr.i, tabptr.p->m_ttl_sec, tabptr.p->m_ttl_col_no,
@@ -15843,6 +15843,8 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
   scanptr.p->m_scan_dist_key = scanTabReq->distributionKey;
   scanptr.p->m_scan_dist_key_flag = ScanTabReq::getDistributionKeyFlag(ri);
 
+  scanptr.p->m_ttl_purge_window_size = scanTabReq->ttlPurgeWindowSize;
+
   if (ERROR_INSERTED(8119)) {
     jam();
     if (scanptr.p->m_scan_dist_key_flag) {
@@ -18102,6 +18104,7 @@ bool Dbtc::sendScanFragReq(Signal *signal, ScanRecordPtr scanptr,
   req->clientOpPtr = scanFragP.p->m_apiPtr;
   req->batch_size_rows = scanP->batch_size_rows;
   req->batch_size_bytes = scanP->batch_byte_size;
+  req->ttl_purge_window_size = scanP->m_ttl_purge_window_size;
 
   // Encode variable part
   ndbassert(ScanFragReq::getCorrFactorFlag(requestInfo) == 0);
