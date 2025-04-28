@@ -281,9 +281,23 @@ int ndbcluster_connect(ulong wait_connected,  // Timeout in seconds
 
   while ((res = g_ndb_cluster_connection->connect(0, 0, 0)) == 1) {
     const NDB_TICKS now = NdbTick_getCurrentTicks();
-    if (NdbTick_Elapsed(start, now).seconds() > wait_connected) break;
+    if (NdbTick_Elapsed(start, now).seconds() > wait_connected) {
+      if (g_ndb_cluster_connection->get_latest_error() !=
+          1101 /*NDB_MGM_ALLOCID_ERROR*/) {
+        break;
+      } else {
+        ndb_log_error("Connection to ndb_mgmd failed "
+                      "repeatedly due to %s. Terminating mysqld",
+                      g_ndb_cluster_connection->get_latest_error_msg());
+        return -1;
+      }
+    }
     ndb_retry_sleep(100);
     if (connection_events_loop_aborted()) return -1;
+    ndb_log_warning("Failed to connect to ndb_mgmd, retrying..."
+                    "m_latest_error: %u, m_latest_error_msg: %s",
+                    g_ndb_cluster_connection->get_latest_error(),
+                    g_ndb_cluster_connection->get_latest_error_msg());
   }
 
   {
