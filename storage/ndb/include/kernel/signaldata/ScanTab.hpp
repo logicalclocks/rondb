@@ -61,7 +61,7 @@ class ScanTabReq {
   /**
    * Length of signal
    */
-  static constexpr Uint32 StaticLength = 12;
+  static constexpr Uint32 StaticLength = 11;
   static constexpr Uint32 MaxTotalAttrInfo = 0xFFFF;
 
   /**
@@ -95,12 +95,12 @@ class ScanTabReq {
   UintR buddyConPtr;         // DATA 8
   UintR batch_byte_size;     // DATA 9
   UintR first_batch_size;    // DATA 10
-  UintR ttlPurgeWindowSize;  // DATA 11
 
   /**
    * Optional
    */
   Uint32 distributionKey;
+  UintR ttlPurgeWindowSize;
 
   /**
    * Get:ers for requestInfo

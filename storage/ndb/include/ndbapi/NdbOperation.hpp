@@ -1565,7 +1565,7 @@ class NdbOperation {
                                      // to be used
   Int8 theDistrKeyIndicator_;   // Indicates whether distr. key is used
 
-  Uint32 theTTLPurgeWindowSize_;
+  Uint32 theTTLPurgeWindowSize;
   enum OP_FLAGS {
     OF_NO_DISK = 0x1,
 

@@ -620,12 +620,12 @@ void NdbOperation::setTTLPurgeWindowSize(Uint32 size) {
     return;
   }
 
-  theTTLPurgeWindowSize_ = size;
-  DBUG_PRINT("info", ("NdbOperation::setTTLPurgeWindowSize: %u", theTTLPurgeWindowSize_));
+  theTTLPurgeWindowSize = size;
+  DBUG_PRINT("info", ("NdbOperation::setTTLPurgeWindowSize: %u", theTTLPurgeWindowSize));
 }
 
 Uint32 NdbOperation::getTTLPurgeWindowSize() const {
   DBUG_PRINT("info", ("NdbOperation::getTTLPurgeWindowSize: %u",
-                      theTTLPurgeWindowSize_));
-  return theTTLPurgeWindowSize_;
+                      theTTLPurgeWindowSize));
+  return theTTLPurgeWindowSize;
 }

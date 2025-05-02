@@ -47,7 +47,7 @@ class ScanFragReq {
   friend class Dbspj;
 
  public:
-  static constexpr Uint32 SignalLength = 13;
+  static constexpr Uint32 SignalLength = 12;
 
   static constexpr Uint32 AttrInfoSectionNum = 0;  // Mandatory part
   static constexpr Uint32 KeyInfoSectionNum = 1;   // Optional
@@ -80,8 +80,16 @@ class ScanFragReq {
   };
   Uint32 batch_size_rows;
   Uint32 batch_size_bytes;
-  Uint32 ttl_purge_window_size;
   Uint32 variableData[1];
+
+  /*
+   * To maintain compatibility, we can't add a new field here.
+   * Instead, we reuse the `variableData` array.
+   * From what I’ve found, `variableData[0]` and `variableData[1]` are already used,
+   * so we use `variableData[2]` to store `ttl_purge_window_size`.
+   * This field is only valid when TTLOnlyExpiredFragFlag is set
+   */
+  // Uint32 ttl_purge_window_size;
 
   static Uint32 getLockMode(const Uint32 &requestInfo);
   static Uint32 getHoldLockFlag(const Uint32 &requestInfo);

@@ -2241,11 +2241,16 @@ int NdbScanOperation::prepareSendScan(Uint32 /*aTC_ConnectPtr*/,
    */
   ScanTabReq::setTTLIgnoreFlag(reqInfo, (m_flags & OF_TTL_IGNORE) != 0);
   ScanTabReq::setTTLOnlyExpiredFlag(reqInfo, (m_flags & OF_TTL_ONLY_EXPIRED) != 0);
-  req->ttlPurgeWindowSize = theTTLPurgeWindowSize_;
 
   req->requestInfo = reqInfo;
   req->distributionKey = theDistributionKey;
   theSCAN_TABREQ->setLength(ScanTabReq::StaticLength + theDistrKeyIndicator_);
+
+  if ((m_flags & OF_TTL_ONLY_EXPIRED) != 0) {
+    req->ttlPurgeWindowSize = theTTLPurgeWindowSize;
+    theSCAN_TABREQ->setLength(ScanTabReq::StaticLength +
+                              2 /* 1 field padding for theDistributionKey */);
+  }
 
   /* All scans use NdbRecord internally */
   assert(theStatus == UseNdbRecord);

@@ -15843,8 +15843,6 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
   scanptr.p->m_scan_dist_key = scanTabReq->distributionKey;
   scanptr.p->m_scan_dist_key_flag = ScanTabReq::getDistributionKeyFlag(ri);
 
-  scanptr.p->m_ttl_purge_window_size = scanTabReq->ttlPurgeWindowSize;
-
   if (ERROR_INSERTED(8119)) {
     jam();
     if (scanptr.p->m_scan_dist_key_flag) {
@@ -16016,6 +16014,11 @@ Uint32 Dbtc::initScanrec(ScanRecordPtr scanptr, const ScanTabReq *scanTabReq,
   if (unlikely(ScanTabReq::getViaSPJFlag(ri))) {
     jam();
     scanptr.p->m_scan_block_no = DBSPJ;
+  }
+  if (!ScanTabReq::getTTLOnlyExpiredFlag(ri)) {
+    scanptr.p->m_ttl_purge_window_size = 0;
+  } else {
+    scanptr.p->m_ttl_purge_window_size = scanTabReq->ttlPurgeWindowSize;
   }
 
   scanptr.p->scanRequestInfo = tmp;
@@ -18104,7 +18107,13 @@ bool Dbtc::sendScanFragReq(Signal *signal, ScanRecordPtr scanptr,
   req->clientOpPtr = scanFragP.p->m_apiPtr;
   req->batch_size_rows = scanP->batch_size_rows;
   req->batch_size_bytes = scanP->batch_byte_size;
-  req->ttl_purge_window_size = scanP->m_ttl_purge_window_size;
+
+  // set ttl_purge_window_size if needed;
+  Uint32 extra_len = 0;
+  if (ScanFragReq::getTTLOnlyExpiredFragFlag(requestInfo)) {
+    req->variableData[2] = scanP->m_ttl_purge_window_size;
+    extra_len = 3;
+  }
 
   // Encode variable part
   ndbassert(ScanFragReq::getCorrFactorFlag(requestInfo) == 0);
@@ -18203,7 +18212,7 @@ bool Dbtc::sendScanFragReq(Signal *signal, ScanRecordPtr scanptr,
     sendBatchedFragmentedSignal(NodeReceiverGroup(ref),
                                 GSN_SCAN_FRAGREQ,
                                 signal,
-                                ScanFragReq::SignalLength,
+                                ScanFragReq::SignalLength + extra_len,
                                 JBB,
                                 &sections,
                                 !isLastReq);  // Keep sent sections unless
