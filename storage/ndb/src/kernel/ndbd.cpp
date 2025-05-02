@@ -1156,6 +1156,12 @@ ndbd_run(bool foreground, int report_fd,
           "empty password not allowed");
       ndbd_exit(-1);
     }
+    if (pwd_size > MAX_BACKUP_ENCRYPTION_PASSWORD_LENGTH) {
+      g_eventLogger->info(
+          "Invalid filesystem password, "
+          "too long");
+      ndbd_exit(-1);
+    }
 
     memcpy(globalData.filesystemPassword, pwd, pwd_size);
     globalData.filesystemPassword[pwd_size] = '\0';
