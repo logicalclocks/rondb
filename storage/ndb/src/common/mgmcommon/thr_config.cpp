@@ -615,7 +615,7 @@ THRConfig::do_parse_auto(unsigned realtime,
     Uint32 odd_ldms_per_rr_group = num_ldms_per_rr_group & 1;
     Uint32 num_only_ldm_groups =
       num_ldms_per_rr_group - odd_ldms_per_rr_group;
-    Uint32 num_only_ldms_in_group = 2 * num_only_ldm_groups;
+    Uint32 num_only_ldms_in_group = num_rr_groups * num_only_ldm_groups;
     assert(num_only_ldms_in_group <= count_ldm_threads);
 
     for (Uint32 i = 0; i < num_cpus; i++)
