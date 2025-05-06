@@ -83,7 +83,7 @@ func CreateDatabases(
 			return func() {}, err
 		}
 		log.Debugf("successfully ran all queries to instantiate db '%s'", db)
-		dropDatabases += fmt.Sprintf("DROP IF NOT EXISTS DATABASE %s;\n", db)
+		dropDatabases += fmt.Sprintf("DROP DATABASE IF EXISTS %s;\n", db)
 	}
 	return cleanupDbsWrapper(dropDatabases), nil
 }

@@ -379,19 +379,16 @@ RS_Status APIKeyCache::update_record(std::vector<std::string_view> dbs,
                                      UserDBs *userDBs,
                                      char **db_ptrs) {
   NDB_TICKS lastUpdated = NdbTick_getCurrentTicks();
-  std::unordered_map<std::string_view, bool> dbsMap;
-  for (const auto &db : dbs) {
-    DEB_AUTH_DBS("Valid API Key with db: %s", std::string(db).c_str());
-    dbsMap[db] = true;
-  }
-  userDBs->userDBs = dbsMap;
+  userDBs->userDBs.clear();
+  userDBs->userDBs.insert(dbs.begin(), dbs.end());
   userDBs->m_lastUpdated = lastUpdated;
   assert(userDBs->m_state == UserDBs::IS_VALIDATING ||
          userDBs->m_state == UserDBs::IS_VALID);
   userDBs->m_state = UserDBs::IS_VALID;
-  if (userDBs->m_db_ptrs)
+  if (userDBs->m_db_ptrs) {
     free(userDBs->m_db_ptrs);
-  userDBs->m_db_ptrs = (char*)db_ptrs;
+  }
+  userDBs->m_db_ptrs = db_ptrs;
   return CRS_Status::SUCCESS.status;
 }
 
@@ -464,6 +461,7 @@ void APIKeyCache::cache_entry_updater(const std::string &apiKey) {
       }
       DEB_AUTH("Invalid API Key: %s", apiKey.c_str());
       userDBs->m_state = UserDBs::IS_INVALID;
+      free(db_ptrs);
     }
     first = false;
     userDBs->m_lastUpdated = lastUpdated;
@@ -502,6 +500,7 @@ void APIKeyCache::cache_entry_updater(const std::string &apiKey) {
        */
       DEB_AUTH_THREAD("API key %s, delete", apiKey.c_str());
       NdbMutex_Lock(m_rwLock[key_cache_id]);
+      delete m_key_cache[key_cache_id][apiKey];
       m_key_cache[key_cache_id].erase(apiKey);
       NdbMutex_Unlock(m_rwLock[key_cache_id]);
       return;
@@ -567,16 +566,7 @@ RS_Status APIKeyCache::authenticate_user(const std::string &apiKey,
 RS_Status APIKeyCache::get_user_databases(HopsworksAPIKey &key,
                                           std::vector<std::string_view> &dbs,
                                           char ***db_ptrs) {
-  RS_Status status = get_user_projects(key.user_id, dbs, db_ptrs);
-  if (status.http_code != HTTP_CODE::SUCCESS) {
-    return status;
-  }
-  return CRS_Status::SUCCESS.status;
-}
-
-RS_Status APIKeyCache::get_user_projects(int uid,
-                                         std::vector<std::string_view> &dbs,
-                                         char ***db_ptrs) {
+  int uid = key.user_id;
   int count = 0;
   char **projects = nullptr;
   RS_Status status = find_all_projects(uid, &projects, &count);
@@ -680,7 +670,7 @@ std::string APIKeyCache::to_string() {
     for (const auto &entry : m_key_cache[i]) {
       ss << "API Key: " << entry.first << ", UserDBs: ";
       for (const auto &db : entry.second->userDBs) {
-        ss << db.first << ", ";
+        ss << db << ", ";
       }
       ss << std::endl;
     }
