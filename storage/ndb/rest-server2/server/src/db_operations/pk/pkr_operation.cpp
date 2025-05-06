@@ -91,8 +91,10 @@ BatchKeyOperations::init_batch_operations(ArenaMalloc *amalloc,
   m_isBatch = is_batch;
   m_ndb_object = ndb_object;
   m_numOperations = numOps;
+#ifdef MULTI_TX_BATCH
   m_num_sent_operations = 0;
   m_single_transaction = false;
+#endif
   m_key_ops = amalloc->alloc<KeyOperation>(numOps);
   if (unlikely(m_key_ops == nullptr)) {
     RS_Status error = RS_SERVER_ERROR(
@@ -268,7 +270,9 @@ BatchKeyOperations::init_batch_operations(ArenaMalloc *amalloc,
                      (read_col->getType() == NdbDictionary::Column::Blob ||
                       read_col->getType() == NdbDictionary::Column::Text))) {
           use_blob_values = true;
+#ifdef MULTI_TX_BATCH
           m_single_transaction = true;
+#endif
           key_op->m_blob_handles = (NdbBlob**)
             amalloc->alloc_bytes(sizeof(NdbBlob*) * numReadColumns, 8);
           if (unlikely(key_op->m_blob_handles == nullptr)) {
@@ -319,7 +323,9 @@ BatchKeyOperations::init_batch_operations(ArenaMalloc *amalloc,
                       read_col->getType() == NdbDictionary::Column::Text))) {
           if (use_blob_values == false) {
             use_blob_values = true;
+#ifdef MULTI_TX_BATCH
             m_single_transaction = true;
+#endif
             key_op->m_blob_handles = (NdbBlob**)
               amalloc->alloc_bytes(sizeof(NdbBlob*) * numReadColumns, 8);
             if (unlikely(key_op->m_blob_handles == nullptr)) {
@@ -344,13 +350,16 @@ BatchKeyOperations::init_batch_operations(ArenaMalloc *amalloc,
 }
 
 RS_Status BatchKeyOperations::setup_transaction() {
+#ifdef MULTI_TX_BATCH
   if (unlikely(m_single_transaction)) {
+#endif
     KeyOperation *key_op = &m_key_ops[0];
     key_op->m_ndbTransaction = m_ndb_object->startTransaction();
     if (unlikely(key_op->m_ndbTransaction == nullptr)) {
       return RS_RONDB_SERVER_ERROR(m_ndb_object->getNdbError(), 
           std::string(rdrsErrorMessage(ERROR_TRANSACTION_START_FAILED)));
     }
+#ifdef MULTI_TX_BATCH
   } else {
     for (Uint32 i = 0; i < m_numOperations; i++) {
       KeyOperation *key_op = &m_key_ops[i];
@@ -366,6 +375,7 @@ RS_Status BatchKeyOperations::setup_transaction() {
       }
     }
   }
+#endif
   return RS_OK;
 }
 
@@ -386,9 +396,13 @@ start:
       continue;
     }
     NdbTransaction *trans = key_op->m_ndbTransaction;
+#ifdef MULTI_TX_BATCH
     if (unlikely(m_single_transaction)) {
+#endif
       trans = m_key_ops[0].m_ndbTransaction;
+#ifdef MULTI_TX_BATCH
     }
+#endif
     Uint32 numPrimaryKeys = key_op->m_num_pk_columns;
     for (Uint32 colIdx = 0; colIdx < numPrimaryKeys; colIdx++) {
       RS_Status status =
@@ -456,21 +470,26 @@ start:
         }
       }
     }
+#ifdef MULTI_TX_BATCH
     if (likely(!m_single_transaction)) {
       trans->executeAsynchPrepare(NdbTransaction::Commit, nullptr, (void*)key_op);
     }
     m_num_sent_operations++;
+#endif
   }
   return RS_OK;
 }
 
 RS_Status BatchKeyOperations::execute() {
+#ifdef MULTI_TX_BATCH
   if (unlikely(m_single_transaction)) {
+#endif
     NdbTransaction *trans = m_key_ops[0].m_ndbTransaction;
     if (unlikely(trans->execute(NdbTransaction::NoCommit) != 0)) {
       return RS_RONDB_SERVER_ERROR(trans->getNdbError(),
         std::string(rdrsErrorMessage(ERROR_TRANSACTION_EXEC_FAILED)));
     }
+#ifdef MULTI_TX_BATCH
   } else {
     if (m_ndb_object->sendPollNdb(
         WAITFOR_RESPONSE_TIMEOUT, m_num_sent_operations) <
@@ -480,6 +499,7 @@ RS_Status BatchKeyOperations::execute() {
         std::string(rdrsErrorMessage(ERROR_TRANSACTION_EXEC_FAILED)));
     }
   }
+#endif
   return RS_OK;
 }
 
@@ -1123,10 +1143,13 @@ RS_Status KeyOperation::write_col_to_resp(Uint32 colIdx,
 }
 
 void BatchKeyOperations::close_transaction() {
+#ifdef MULTI_TX_BATCH
   if (unlikely(m_single_transaction)) {
+#endif
     if (m_key_ops[0].m_ndbTransaction != nullptr) {
       m_ndb_object->closeTransaction(m_key_ops[0].m_ndbTransaction);
     }
+#ifdef MULTI_TX_BATCH
   } else {
     for (Uint32 i = 0; i < m_numOperations; i++) {
       if (m_key_ops[i].m_ndbTransaction != nullptr) {
@@ -1134,6 +1157,7 @@ void BatchKeyOperations::close_transaction() {
       }
     }
   }
+#endif
 }
 
 RS_Status BatchKeyOperations::perform_operation(
