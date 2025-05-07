@@ -1,11 +1,12 @@
 #!/bin/bash
-set +e
+set -e
 
 mysql_connector=mysql-connector-java-8.0.21-bin.jar
 wget https://repo.hops.works/master/$mysql_connector
 full_path=$(readlink -f $mysql_connector)
 export MTR_CLASSPATH=$full_path
 
+set +e
 ./mtr --suite=ndb --force ndb_basic ndb_dd_basic clusterj
 ./mtr --suite=ndb_opt --force
 ./mtr --suite=ndbcluster --force
