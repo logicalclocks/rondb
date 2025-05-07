@@ -1575,7 +1575,7 @@ TAPTEST(thr_config) {
                                                               separator */
         "main={ cpuset=1,,3 }, ldm={cpubind=2}",           /* empty between , */
         "io={ spintime = 0 }",  /* Spintime on IO thread is not settable */
-        "tc,tc,tc={count=161}", /* More than 160 TCs not allowed */
+        "tc,tc,tc={count=361}", /* More than 160 TCs not allowed */
         "tc,tc,tc={count=3",    /* Missing } at end */
         "tc,tc,tc={count=3,count=3}",  /* count specified twice */
         "tc,tc,tc={count=3,cpuset;3}", /* ; instead of = */
