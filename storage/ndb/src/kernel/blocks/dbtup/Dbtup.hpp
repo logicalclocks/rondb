@@ -1981,6 +1981,7 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
       m_deferred_constraints = true;
       m_disable_fk_checks = false;
       m_tuple_ptr = NULL;
+      ttl_purge_window_size = 0;
     }
 
     KeyReqStruct(EmulatedJamBuffer *_jamBuffer) : changeMask(false) {
@@ -1991,6 +1992,7 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
       m_when = KRS_PREPARE;
       m_deferred_constraints = true;
       m_disable_fk_checks = false;
+      ttl_purge_window_size = 0;
     }
 
     KeyReqStruct(Dbtup *tup) : changeMask(false) {
@@ -2002,6 +2004,7 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
       m_deferred_constraints = true;
       m_disable_fk_checks = false;
       m_dbtup_ptr = tup;
+      ttl_purge_window_size = 0;
     }
 
     KeyReqStruct(Dbtup *tup, When when) : changeMask() {
@@ -2014,6 +2017,7 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
       m_disable_fk_checks = false;
       m_tuple_ptr = NULL;
       m_dbtup_ptr = tup;
+      ttl_purge_window_size = 0;
     }
 
     /**
@@ -2160,6 +2164,7 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
     Uint32 agg_curr_batch_size_rows;
     Uint32 agg_curr_batch_size_bytes;
     Uint32 agg_n_res_recs;
+    Uint32 ttl_purge_window_size;
   };
 
   friend struct Undo_buffer;

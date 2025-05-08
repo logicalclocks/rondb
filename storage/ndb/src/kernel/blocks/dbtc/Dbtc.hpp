@@ -1982,6 +1982,8 @@ class Dbtc : public SimulatedBlock {
     Uint32 m_scan_dist_key;
     Uint32 m_read_any_node;
     NDB_TICKS m_start_ticks;
+
+    Uint32 m_ttl_purge_window_size;
   };
   typedef Ptr<ScanRecord> ScanRecordPtr;
   typedef TransientPool<ScanRecord> ScanRecord_pool;

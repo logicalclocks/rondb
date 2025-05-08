@@ -653,7 +653,8 @@ class Dblqh : public SimulatedBlock {
       m_agg_curr_batch_size_rows(0),
       m_agg_curr_batch_size_bytes(0),
       m_agg_n_res_recs(0),
-      m_agg_interpreter(nullptr)
+      m_agg_interpreter(nullptr),
+      m_ttl_purge_window_size(0)
     {
     }
 
@@ -791,6 +792,7 @@ class Dblqh : public SimulatedBlock {
     Uint8 m_ttl_ignore;         // ignore set by API
     Uint8 m_ttl_ignore_for_ral; // ignore set by Read after lock
     Uint8 m_ttl_only_expired;   // Only be insterested in expired rows
+    Uint32 m_ttl_purge_window_size;
   };
   static constexpr Uint32 DBLQH_SCAN_RECORD_TRANSIENT_POOL_INDEX = 1;
   typedef Ptr<ScanRecord> ScanRecordPtr;

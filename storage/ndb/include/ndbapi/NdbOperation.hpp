@@ -1013,6 +1013,9 @@ class NdbOperation {
   Uint32 getPartitionId() const;
 #endif
 
+  void setTTLPurgeWindowSize(Uint32 size);
+  Uint32 getTTLPurgeWindowSize() const;
+
   /* Specification of an extra value to get
    * as part of an NdbRecord operation.
    * Inputs :
@@ -1562,6 +1565,7 @@ class NdbOperation {
                                      // to be used
   Int8 theDistrKeyIndicator_;   // Indicates whether distr. key is used
 
+  Uint32 theTTLPurgeWindowSize;
   enum OP_FLAGS {
     OF_NO_DISK = 0x1,
 

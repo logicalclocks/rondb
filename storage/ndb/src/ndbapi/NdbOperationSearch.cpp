@@ -611,3 +611,21 @@ Uint32 NdbOperation::getPartitionId() const {
                       theDistributionKey, theDistrKeyIndicator_));
   return theDistributionKey;
 }
+
+void NdbOperation::setTTLPurgeWindowSize(Uint32 size) {
+  if (theStatus == UseNdbRecord) {
+    /* Method not allowed for NdbRecord, use OperationOptions or
+       ScanOptions structure instead */
+    setErrorCodeAbort(4515);
+    return;
+  }
+
+  theTTLPurgeWindowSize = size;
+  DBUG_PRINT("info", ("NdbOperation::setTTLPurgeWindowSize: %u", theTTLPurgeWindowSize));
+}
+
+Uint32 NdbOperation::getTTLPurgeWindowSize() const {
+  DBUG_PRINT("info", ("NdbOperation::getTTLPurgeWindowSize: %u",
+                      theTTLPurgeWindowSize));
+  return theTTLPurgeWindowSize;
+}

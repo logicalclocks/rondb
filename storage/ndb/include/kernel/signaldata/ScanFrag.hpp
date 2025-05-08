@@ -82,6 +82,17 @@ class ScanFragReq {
   Uint32 batch_size_bytes;
   Uint32 variableData[1];
 
+  /*
+   * To maintain compatibility, we can't add a new field here.
+   * Instead, we reuse the `variableData` array.
+   * From what I’ve found, `variableData[0]` and `variableData[1]` are already used,
+   * But it seems like the CorrFactorFlag and the TTLOnlyExpiredFragFlag won't be used
+   * at the same time.
+   * so we use `variableData[0]` to store `ttl_purge_window_size`.
+   * This field is only valid when TTLOnlyExpiredFragFlag is set
+   */
+  // Uint32 ttl_purge_window_size;
+
   static Uint32 getLockMode(const Uint32 &requestInfo);
   static Uint32 getHoldLockFlag(const Uint32 &requestInfo);
   static Uint32 getKeyinfoFlag(const Uint32 &requestInfo);

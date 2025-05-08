@@ -35,6 +35,12 @@ class TTLPurger {
   static constexpr const char* kSchemaTableName = "ndb_schema";
   static constexpr const char* kSchemaResTabName = "ndb_schema_result";
   static constexpr const char* kTTLPurgeNodesTabName = "ttl_purge_nodes";
+
+  static constexpr const char* kTTLPurgeCtrlTabName = "ttl_purge_ctrl";
+  static constexpr const char* kPurgeCtrlKey = "ctrl_id";
+  static constexpr const char* kPurgeCtrlValue = "value";
+  static constexpr int kPurgeCtrlPurgeWindowId = 1;
+
   static constexpr const char* kTTLPurgeIndexName = "ttl_index";
   static constexpr int kNoEventCol = 10;
   static constexpr int kLeaseSeconds = 20;
@@ -98,6 +104,7 @@ class TTLPurger {
   NdbThread* schema_watcher_;
 
   bool GetShard(Int32* shard, Int32* n_purge_nodes, bool update_objects);
+  bool GetPurgeWindow(Uint32* purge_window, bool update_objects);
   static Int64 GetNow(unsigned char* encoded_now, bool timestamp);
   bool UpdateLease(const unsigned char* encoded_now);
   bool IsNodeAlive(const unsigned char* encoded_last_active);

@@ -1045,7 +1045,7 @@ void Dbtc::execTC_SCHVERREQ(Signal *signal) {
   tabptr.p->m_ttl_sec = req->ttlSec;
   tabptr.p->m_ttl_col_no = req->ttlColumnNo;
   tabptr.p->m_primary_table_id = req->primaryTableId;
-  TTL_RONDB_TRACE(tabptr.p,
+  TTL_RONDB_TRACE(tabptr.i,
                   "[TC]Gen Tablerec, table_id: %u, TTL sec: %u, "
                   "TTL column no: %u, primaryTableId: %u",
                   tabptr.i, tabptr.p->m_ttl_sec, tabptr.p->m_ttl_col_no,
@@ -16015,6 +16015,11 @@ Uint32 Dbtc::initScanrec(ScanRecordPtr scanptr, const ScanTabReq *scanTabReq,
     jam();
     scanptr.p->m_scan_block_no = DBSPJ;
   }
+  if (!ScanTabReq::getTTLOnlyExpiredFlag(ri)) {
+    scanptr.p->m_ttl_purge_window_size = 0;
+  } else {
+    scanptr.p->m_ttl_purge_window_size = scanTabReq->ttlPurgeWindowSize;
+  }
 
   scanptr.p->scanRequestInfo = tmp;
   scanptr.p->m_read_committed_base = ScanTabReq::getReadCommittedBaseFlag(ri);
@@ -18103,6 +18108,19 @@ bool Dbtc::sendScanFragReq(Signal *signal, ScanRecordPtr scanptr,
   req->batch_size_rows = scanP->batch_size_rows;
   req->batch_size_bytes = scanP->batch_byte_size;
 
+  // set ttl_purge_window_size if needed;
+  Uint32 extra_len = 0;
+
+  if (ScanFragReq::getTTLOnlyExpiredFragFlag(requestInfo)) {
+    /*
+     * Based on the ndbassert below, it seems that getCorrFactorFlag
+     * won’t be set in this context. That means variableData[0] and
+     * variableData[1] are not used, so we can safely use variableData[0] here.
+     */
+    req->variableData[0] = scanP->m_ttl_purge_window_size;
+    extra_len = 1;
+  }
+
   // Encode variable part
   ndbassert(ScanFragReq::getCorrFactorFlag(requestInfo) == 0);
 
@@ -18200,7 +18218,7 @@ bool Dbtc::sendScanFragReq(Signal *signal, ScanRecordPtr scanptr,
     sendBatchedFragmentedSignal(NodeReceiverGroup(ref),
                                 GSN_SCAN_FRAGREQ,
                                 signal,
-                                ScanFragReq::SignalLength,
+                                ScanFragReq::SignalLength + extra_len,
                                 JBB,
                                 &sections,
                                 !isLastReq);  // Keep sent sections unless

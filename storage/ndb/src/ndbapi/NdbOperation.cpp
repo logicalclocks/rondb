@@ -164,6 +164,7 @@ int NdbOperation::init(const NdbTableImpl *tab, NdbTransaction *myConnection) {
   theInterpretIndicator = 0;
   theInterpretInsertIndicator = 0;
   theDistrKeyIndicator_ = 0;
+  theTTLPurgeWindowSize = 0;
   theScanInfo = 0;
   theTotalNrOfKeyWordInSignal = 8;
   theMagicNumber = getMagicNumber();

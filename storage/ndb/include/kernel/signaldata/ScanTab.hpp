@@ -100,6 +100,7 @@ class ScanTabReq {
    * Optional
    */
   Uint32 distributionKey;
+  UintR ttlPurgeWindowSize;
 
   /**
    * Get:ers for requestInfo
