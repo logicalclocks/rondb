@@ -287,17 +287,14 @@ int ndbcluster_connect(ulong wait_connected,  // Timeout in seconds
         break;
       } else {
         ndb_log_error("Connection to ndb_mgmd failed "
-                      "repeatedly due to %s. Terminating mysqld",
+                      "repeatedly due to %u(%s). Terminating mysqld",
+                      g_ndb_cluster_connection->get_latest_error(),
                       g_ndb_cluster_connection->get_latest_error_msg());
         return -1;
       }
     }
     ndb_retry_sleep(100);
     if (connection_events_loop_aborted()) return -1;
-    ndb_log_warning("Failed to connect to ndb_mgmd, retrying..."
-                    "m_latest_error: %u, m_latest_error_msg: %s",
-                    g_ndb_cluster_connection->get_latest_error(),
-                    g_ndb_cluster_connection->get_latest_error_msg());
   }
 
   {
