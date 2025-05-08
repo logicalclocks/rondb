@@ -18110,9 +18110,15 @@ bool Dbtc::sendScanFragReq(Signal *signal, ScanRecordPtr scanptr,
 
   // set ttl_purge_window_size if needed;
   Uint32 extra_len = 0;
+
   if (ScanFragReq::getTTLOnlyExpiredFragFlag(requestInfo)) {
-    req->variableData[2] = scanP->m_ttl_purge_window_size;
-    extra_len = 3;
+    /*
+     * Based on the ndbassert below, it seems that getCorrFactorFlag
+     * won’t be set in this context. That means variableData[0] and
+     * variableData[1] are not used, so we can safely use variableData[0] here.
+     */
+    req->variableData[0] = scanP->m_ttl_purge_window_size;
+    extra_len = 1;
   }
 
   // Encode variable part

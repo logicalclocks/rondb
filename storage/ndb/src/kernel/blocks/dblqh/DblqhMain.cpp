@@ -19476,7 +19476,13 @@ Uint32 Dblqh::initScanrec(const ScanFragReq *scanFragReq, Uint32 aiLen,
   if (!ttl_only_expired) {
     scanPtr->m_ttl_purge_window_size = 0;
   } else {
-    scanPtr->m_ttl_purge_window_size = scanFragReq->variableData[2];
+    /*
+     * Both the getTTLOnlyExpiredFragFlag and the getCorrFactorFlag may use
+     * the variableData, but they shouldn't be active at the same time.
+     * So here we must make sure variableData[0] isn't set by getCorrFactorFlag;
+     */
+    ndbrequire(!ScanFragReq::getCorrFactorFlag(reqinfo));
+    scanPtr->m_ttl_purge_window_size = scanFragReq->variableData[0];
   }
 
   const Uint32 scanPrio = ScanFragReq::getScanPrio(reqinfo);
