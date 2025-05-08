@@ -38,6 +38,7 @@
 #include <vector>
 #include <EventLogger.hpp>
 #include <ArenaMalloc.hpp>
+#include <util/require.h>
 
 extern EventLogger *g_eventLogger;
 
@@ -221,16 +222,20 @@ void BatchFeatureStoreCtrl::batch_featureStore(
     Uint32 request_buffer_size = globalConfigs.internal.reqBufferSize * 2;
     Uint32 request_buffer_limit = request_buffer_size / 2;
     Uint32 current_head = 0;
-    RS_Buffer current_request_buffer = rsBufferArrayManager.get_req_buffer();
+    reqBuffs[0] = rsBufferArrayManager.get_req_buffer();
     respBuffs[0] = rsBufferArrayManager.get_resp_buffer();
+    Uint32 current_request_buffer_idx = 0;
     for (Uint32 i = 0; i < noOps; i++) {
-      RS_Buffer reqBuff = getNextReqRS_Buffer(current_head,
-                                              request_buffer_limit,
-                                              current_request_buffer,
-                                              i);
-      reqBuffs[i]  = reqBuff;
+      if (i > 0)
+        reqBuffs[i] = getNextReqRS_Buffer(
+          current_head,
+          request_buffer_limit,
+          reqBuffs[current_request_buffer_idx],
+          current_request_buffer_idx,
+          i
+        );
       status = create_native_request(readParams[i],
-                                     (Uint32*)reqBuff.buffer,
+                                     (Uint32*)reqBuffs[i].buffer,
                                      current_head);
       if (static_cast<drogon::HttpStatusCode>(status.http_code) !=
             drogon::HttpStatusCode::k200OK) {
@@ -241,10 +246,12 @@ void BatchFeatureStoreCtrl::batch_featureStore(
         return;
       }
       UintPtr length_ptr =
-        reinterpret_cast<UintPtr>(reqBuff.buffer) +
+        reinterpret_cast<UintPtr>(reqBuffs[i].buffer) +
           static_cast<UintPtr>(PK_REQ_LENGTH_IDX) * ADDRESS_SIZE;
       Uint32 *length_ptr_casted = reinterpret_cast<Uint32*>(length_ptr);
       reqBuffs[i].size = *length_ptr_casted;
+      require(reqBuffs[i].buffer + reqBuffs[i].size <=
+              reqBuffs[current_request_buffer_idx].buffer + current_head);
     }
     metricsUpdater.set_key_requests(noOps);
     // pk_batch_read

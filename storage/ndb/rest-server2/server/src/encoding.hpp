@@ -38,10 +38,12 @@ RS_Status process_pkread_response(ArenaMalloc*,
 RS_Buffer getNextReqRS_Buffer(Uint32 &head,
                               Uint32 request_buffer_limit,
                               RS_Buffer &current_request_buffer,
+                              Uint32 &current_request_buffer_idx,
                               Uint32 index);
 RS_Buffer getNextRespRS_Buffer(Uint32 &head,
                                Uint32 response_buffer_limit,
                                RS_Buffer &current_response_buffer,
+                               Uint32 &current_response_buffer_idx,
                                Uint32 index);
 void release_array_buffers(RS_Buffer *req_buffers,
                            RS_Buffer *resp_buffers,

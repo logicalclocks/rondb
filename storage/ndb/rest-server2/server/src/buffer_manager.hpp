@@ -133,12 +133,14 @@ class RS_BufferArrayManager {
 
   void return_req_buffer(RS_Buffer buffer) {
     NdbMutex_Lock(reqBufferMutex);
+    buffer.next_allocated_buffer = 0;
     reqBufferArray.push_back(buffer);
     NdbMutex_Unlock(reqBufferMutex);
   }
 
   void return_resp_buffer(RS_Buffer buffer) {
     NdbMutex_Lock(respBufferMutex);
+    buffer.next_allocated_buffer = 0;
     respBufferArray.push_back(buffer);
     NdbMutex_Unlock(respBufferMutex);
   }

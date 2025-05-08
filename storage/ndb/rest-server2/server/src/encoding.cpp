@@ -35,8 +35,8 @@
 extern EventLogger *g_eventLogger;
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
-#define DEBUG_ENC 1
-#define DEBUG_ENC_RESP 1
+//#define DEBUG_ENC 1
+//#define DEBUG_ENC_RESP 1
 #endif
 
 #ifdef DEBUG_ENC
@@ -225,48 +225,48 @@ RS_Status create_native_request(PKReadParams &pkReadParams,
 RS_Buffer getNextReqRS_Buffer(Uint32 &current_head,
                               Uint32 request_buffer_limit,
                               RS_Buffer &current_request_buffer,
+                              Uint32 &current_request_buffer_idx,
                               Uint32 index) {
-  RS_Buffer reqBuff;
-  if (index == 0) { // First buffer already allocated
-    return current_request_buffer;
-  } else if (current_head >= request_buffer_limit) {
+  require(index > 0);
+  if (current_head >= request_buffer_limit) {
     current_request_buffer.next_allocated_buffer = index;
-    current_request_buffer = rsBufferArrayManager.get_req_buffer();
+    current_request_buffer_idx = index;
     current_head = 0;
+    RS_Buffer reqBuff = rsBufferArrayManager.get_req_buffer();
     DEB_ENC("Allocating a new request buffer index = %u, ptr: %p",
-      index, current_request_buffer.buffer);
-    return current_request_buffer;
-  } else {
-    reqBuff.next_allocated_buffer = 0xFFFFFFFF; // Garbage
-    reqBuff.buffer = current_request_buffer.buffer + current_head;
-    reqBuff.size = (globalConfigs.internal.reqBufferSize * 2) - current_head;
-    DEB_ENC("Reuse request buffer index = %u at pos: %u, ptr: %p",
-      index, current_head, reqBuff.buffer);
+      index, reqBuff.buffer);
+    return reqBuff;
   }
+  RS_Buffer reqBuff;
+  reqBuff.next_allocated_buffer = 0xFFFFFFFF; // Garbage
+  reqBuff.buffer = current_request_buffer.buffer + current_head;
+  reqBuff.size = (globalConfigs.internal.reqBufferSize * 2) - current_head;
+  DEB_ENC("Reuse request buffer index = %u at pos: %u, ptr: %p",
+    index, current_head, reqBuff.buffer);
   return reqBuff;
 }
 
 RS_Buffer getNextRespRS_Buffer(Uint32 &current_head,
                                Uint32 response_buffer_limit,
                                RS_Buffer &current_response_buffer,
+                               Uint32 &current_response_buffer_idx,
                                Uint32 index) {
-  RS_Buffer respBuff;
-  if (index == 0) { // First buffer already allocated
-    return current_response_buffer;
-  } else if (current_head >= response_buffer_limit) {
+  require(index > 0);
+  if (current_head >= response_buffer_limit) {
     current_response_buffer.next_allocated_buffer = index;
-    current_response_buffer = rsBufferArrayManager.get_resp_buffer();
+    current_response_buffer_idx = index;
     current_head = 0;
+    RS_Buffer respBuff = rsBufferArrayManager.get_resp_buffer();
     DEB_ENC("Allocating a new response buffer index = %u, ptr: %p",
-      index, current_response_buffer.buffer);
-    return current_response_buffer;
-  } else {
-    respBuff.next_allocated_buffer = 0xFFFFFFFF; // Garbage
-    respBuff.buffer = current_response_buffer.buffer + current_head;
-    respBuff.size = (globalConfigs.internal.respBufferSize * 2) - current_head;
-    DEB_ENC("Reuse response buffer index = %u at pos: %u, ptr: %p",
-      index, current_head, respBuff.buffer);
+      index, respBuff.buffer);
+    return respBuff;
   }
+  RS_Buffer respBuff;
+  respBuff.next_allocated_buffer = 0xFFFFFFFF; // Garbage
+  respBuff.buffer = current_response_buffer.buffer + current_head;
+  respBuff.size = (globalConfigs.internal.respBufferSize * 2) - current_head;
+  DEB_ENC("Reuse response buffer index = %u at pos: %u, ptr: %p",
+    index, current_head, respBuff.buffer);
   return respBuff;
 }
 
