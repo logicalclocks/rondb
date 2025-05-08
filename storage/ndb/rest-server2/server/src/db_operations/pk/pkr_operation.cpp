@@ -509,13 +509,17 @@ RS_Status BatchKeyOperations::create_response(RS_Buffer *respBuffs) {
   Uint32 response_buffer_limit = response_buffer_size / 2;
   Uint32 current_head = 0;
   Uint32 response_length = 0;
-  RS_Buffer current_response_buffer = respBuffs[0];;
+  Uint32 current_response_buffer_idx = 0;
   for (size_t i = 0; i < m_numOperations; i++) {
     current_head += response_length;
-    respBuffs[i] = getNextRespRS_Buffer(current_head,
-                                        response_buffer_limit,
-                                        current_response_buffer,
-                                        i);
+    if (i > 0)
+      respBuffs[i] = getNextRespRS_Buffer(
+        current_head,
+        response_buffer_limit,
+        respBuffs[current_response_buffer_idx],
+        current_response_buffer_idx,
+        i
+      );
     KeyOperation *key_op = &m_key_ops[i];
     PKRResponse *resp =
       new (&key_op->m_resp) PKRResponse(&respBuffs[i]);
