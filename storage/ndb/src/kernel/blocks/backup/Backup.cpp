@@ -262,7 +262,7 @@ static NDB_TICKS startTime;
 #endif
 
 // #define DEBUG_ABORT
-#define DEBUG_ABORT_RM
+// #define DEBUG_ABORT_RM
 // #define dbg globalSignalLoggers.log
 
 static Uint32 g_TypeOfStart = NodeState::ST_ILLEGAL_TYPE;
