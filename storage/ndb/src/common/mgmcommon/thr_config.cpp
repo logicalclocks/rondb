@@ -441,7 +441,27 @@ THRConfig::compute_automatic_thread_config(
 
     Uint32 rem_threads = cpu_cnt -
       (ldm_threads + 2 + tc_threads + recv_threads + send_threads);
-    ldm_threads += rem_threads;
+    /* Handle integer division issues and prioritise more send threads */
+    Uint32 loop_count = 0;
+    while (1) {
+      if (rem_threads == 0) break;
+      rem_threads--;
+      send_threads++;
+      if (rem_threads == 0) break;
+      rem_threads--;
+      ldm_threads++;
+      if (rem_threads == 0) break;
+      if ((loop_count & 3) == 0) {
+        rem_threads--;
+        recv_threads++;
+      }
+      if (rem_threads == 0) break;
+      if ((loop_count & 1) == 0) {
+        rem_threads--;
+        tc_threads++;
+      }
+      loop_count++;
+    }
     if ((ldm_threads & 1) == 1)
     {
       /**
