@@ -444,6 +444,23 @@ THRConfig::compute_automatic_thread_config(
     /* Handle integer division issues and prioritise more send threads */
     Uint32 loop_count = 0;
     while (1) {
+      /**
+       * Add more send threads is prioritised since larger nodes will
+       * have more send thread mutex contention. Other than that it
+       * follows the above mathematics, but prioritising recv thread
+       * over tc threads.
+       *
+       * As an example look at cpu_cnt = 63, in this case the above
+       * calculation gives ldm_threads = 31, tc_threads = 15, recv_threads = 7
+       * and send_threads = 5. This means rem_threads will be 3. So
+       * distributing these 3 threads we prioritise first send thread,
+       * next ldm threads and next recv thread. Send thread is most
+       * prioritised for very large CPU counts.
+       *
+       * After this loop we also ensure number of ldm threads is an even
+       * number to ensure Round Robin group balancing. Also here we
+       * prioritise send thread.
+       */
       if (rem_threads == 0) break;
       rem_threads--;
       send_threads++;
