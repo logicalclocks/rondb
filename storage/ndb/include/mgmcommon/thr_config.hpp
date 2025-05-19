@@ -129,7 +129,7 @@ protected:
   BaseString m_cfg_string;
   BaseString m_print_string;
 
-  void add(T_Type, unsigned realtime, unsigned spintime);
+  void add(T_Type, unsigned realtime, unsigned spintime, unsigned nosend);
   int handle_spec(const char *ptr, unsigned real_time, unsigned spin_time);
 
   unsigned createCpuSet(const SparseBitmask &, bool permanent);
