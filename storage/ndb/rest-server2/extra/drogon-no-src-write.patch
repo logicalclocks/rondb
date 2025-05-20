@@ -15,6 +15,10 @@
 
 Prevent drogon build system from writing to source directory
 
+This patch is upstreamed, and will become obsolete once we upgrade
+drogon to a version that includes the fix upstream.
+See https://github.com/drogonframework/drogon/pull/2288
+
 diff --git a/storage/ndb/rest-server2/extra/drogon/drogon-1.9.7/.gitignore b/storage/ndb/rest-server2/extra/drogon/drogon-1.9.7/.gitignore
 index 6f29d6bfc52..f0e263f2680 100755
 --- a/storage/ndb/rest-server2/extra/drogon/drogon-1.9.7/.gitignore
