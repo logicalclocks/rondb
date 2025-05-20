@@ -87,6 +87,8 @@ CLASS
  CM(bool, pingRequiresAPIKey, PingRequiresAPIKey, false,
     "Set to true to authenticate the ping endpoint. Only applies if"
     " .APIKey.UseHopsworksAPIKeys is also set to true.")
+ CM(bool, useSingleTransaction, UseSingleTransaction, true,
+    "Set to true to use single transaction for entire batch.")
  PROBLEM(!enable, "REST must be enabled")
  PROBLEM(serverIP.empty(), "REST server IP cannot be empty")
  PROBLEM(serverPort == 0, "REST server port cannot be zero")
