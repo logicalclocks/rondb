@@ -33,10 +33,6 @@
 #include <NdbApi.hpp>
 #include <ArenaMalloc.hpp>
 
-// MULTI_TX_BATCH must be disabled until ndbapi correctly propagates schema
-// errors for batches with more than one transaction (RONDB-893)
-//#define MULTI_TX_BATCH
-
 struct KeyOperation {
   Uint32 m_num_pk_columns;
   Uint32 m_num_read_columns;
@@ -63,13 +59,9 @@ class BatchKeyOperations {
   Uint32 m_numOperations;
   Ndb *m_ndb_object;
   bool m_isBatch;
-#ifdef MULTI_TX_BATCH
   bool m_single_transaction;
-#endif
   struct KeyOperation *m_key_ops;
-#ifdef MULTI_TX_BATCH
   Uint32 m_num_sent_operations;
-#endif
   bool m_isSuccess;
   
  public:
