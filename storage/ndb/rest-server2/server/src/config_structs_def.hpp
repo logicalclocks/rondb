@@ -64,13 +64,15 @@ CLASS
  CM(Uint32, reqBufferSize, ReqBufferSize, 1024 * 1024, "")
  CM(Uint32, respBufferSize, RespBufferSize, 5 * 1024 * 1024, "")
  CM(Uint32, preAllocatedBuffers, PreAllocatedBuffers, 32, "")
- CM(Uint32, batchMaxSize, BatchMaxSize, 256,
+ CM(Uint32, batchMaxSize, BatchMaxSize, 1024,
     "Maximum number of requests contained in a batch request.")
  CM(Uint32, operationIdMaxSize, OperationIDMaxSize, 256,
     "Maximum length of operation ID strings.")
  //todo warn (preallocatedbuffers == 0, "preAllocatedBuffers should be > 0")
  PROBLEM(reqBufferSize < 256, "ReqBufferSize should be >= 256")
  PROBLEM(respBufferSize < 256, "RespBufferSize should be >= 256")
+ PROBLEM(batchMaxSize > 1024, "BatchMaxSize should be <= 1024")
+ PROBLEM(batchMaxSize < 1, "BatchMaxSize should be >= 1")
 )
 
 CLASS
@@ -78,8 +80,8 @@ CLASS
  CM(bool, enable, Enable, true, "Whether to enable the REST server.")
  CM(bool, useCompression, UseCompression, true, "Whether to send response gzip compressed")
  CM(std::string, serverIP, ServerIP, "0.0.0.0", "The IP address to listen on.")
- CM(Uint16, serverPort, ServerPort, 5406, "TCP port to listen on.")
- CM(unsigned, numThreads, NumThreads, 16,
+ CM(Uint16, serverPort, ServerPort, 4406, "TCP port to listen on.")
+ CM(unsigned, numThreads, NumThreads, 64,
     "Number of threads handling REST requests.")
  CM(bool, healthRequiresAPIKey, HealthRequiresAPIKey, false,
     "Set to true to authenticate the health endpoint. Only applies if"

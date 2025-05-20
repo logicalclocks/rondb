@@ -29,7 +29,7 @@
 #include <util/require.h>
 
 class RDRSRonDBConnection {
-  static constexpr int MAX_PARALLEL_KEY_OPS = 1000;
+  static constexpr int MAX_PARALLEL_KEY_OPS = 1024;
   static constexpr Uint32 expectedMagic = 0x52b5cb03;
 
  private:
