@@ -80,7 +80,7 @@ CLASS
  CM(bool, enable, Enable, true, "Whether to enable the REST server.")
  CM(bool, useCompression, UseCompression, true, "Whether to send response gzip compressed")
  CM(std::string, serverIP, ServerIP, "0.0.0.0", "The IP address to listen on.")
- CM(Uint16, serverPort, ServerPort, 5406, "TCP port to listen on.")
+ CM(Uint16, serverPort, ServerPort, 4406, "TCP port to listen on.")
  CM(unsigned, numThreads, NumThreads, 16,
     "Number of threads handling REST requests.")
  CM(bool, healthRequiresAPIKey, HealthRequiresAPIKey, false,
