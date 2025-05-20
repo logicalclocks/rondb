@@ -64,13 +64,15 @@ CLASS
  CM(Uint32, reqBufferSize, ReqBufferSize, 1024 * 1024, "")
  CM(Uint32, respBufferSize, RespBufferSize, 5 * 1024 * 1024, "")
  CM(Uint32, preAllocatedBuffers, PreAllocatedBuffers, 32, "")
- CM(Uint32, batchMaxSize, BatchMaxSize, 256,
+ CM(Uint32, batchMaxSize, BatchMaxSize, 1024,
     "Maximum number of requests contained in a batch request.")
  CM(Uint32, operationIdMaxSize, OperationIDMaxSize, 256,
     "Maximum length of operation ID strings.")
  //todo warn (preallocatedbuffers == 0, "preAllocatedBuffers should be > 0")
  PROBLEM(reqBufferSize < 256, "ReqBufferSize should be >= 256")
  PROBLEM(respBufferSize < 256, "RespBufferSize should be >= 256")
+ PROBLEM(batchMaxSize > 1024, "BatchMaxSize should be <= 1024")
+ PROBLEM(batchMaxSize < 1, "BatchMaxSize should be >= 1")
 )
 
 CLASS

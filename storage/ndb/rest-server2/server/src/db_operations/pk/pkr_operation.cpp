@@ -92,6 +92,11 @@ BatchKeyOperations::init_batch_operations(ArenaMalloc *amalloc,
   m_ndb_object = ndb_object;
   m_numOperations = numOps;
   m_num_sent_operations = 0;
+  if (numOps > globalConfigs.internal.batchMaxSize) {
+    RS_Status error = RS_CLIENT_ERROR(
+      std::string("Batch size exceeds maximum allowed size: "));
+    return error;
+  }
   m_single_transaction = globalConfigs.rest.useSingleTransaction;
   m_key_ops = amalloc->alloc<KeyOperation>(numOps);
   if (unlikely(m_key_ops == nullptr)) {
