@@ -30,6 +30,12 @@ endif()
 set(BUILD_EXAMPLES ON CACHE BOOL "Build Drogon examples" FORCE)
 set(BUILD_TESTING ON CACHE BOOL "Enable Drogon tests" FORCE)
 
+# Define Jsoncpp_lib target
+set(jsoncpp_SOURCE_DIR "${SIMDJSON_SOURCE_DIR}/dependencies/jsoncppdist")
+add_library(Jsoncpp_lib STATIC ${jsoncpp_SOURCE_DIR}/jsoncpp.cpp)
+target_include_directories(Jsoncpp_lib PUBLIC ${jsoncpp_SOURCE_DIR})
+target_compile_options(Jsoncpp_lib PRIVATE -Wno-implicit-fallthrough)
+
 # Add drogon subdirectory
 add_subdirectory(drogon-${DROGON_VERSION})
 

@@ -1,0 +1,48 @@
+# This file is part of the RonDB REST API Server
+# Copyright (c) 2025 Hopsworks AB
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, version 3.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <http://www.gnu.org/licenses/>.
+
+Add symlinks to simulate unamalgamated jsoncpp headers
+
+jsoncpp is included (vendored) in the source tree under simdjson. drogon
+also depends on it and is modified to use the vendored jsoncpp. However,
+drogon expects to find jsoncpp in source form, whereas the jsoncpp
+library vendored under simdjson is in "amalgamated" form, meaning the
+headers are concatenated into one file. This patch adds symlinks for the
+header files that drogon uses, so that it can find them.
+
+diff --git a/storage/ndb/rest-server2/extra/simdjson/simdjson-3.12.0/dependencies/jsoncppdist/json/value.h b/storage/ndb/rest-server2/extra/simdjson/simdjson-3.12.0/dependencies/jsoncppdist/json/value.h
+new file mode 120000
+index 00000000000..322797181de
+--- /dev/null
++++ b/storage/ndb/rest-server2/extra/simdjson/simdjson-3.12.0/dependencies/jsoncppdist/json/value.h
+@@ -0,0 +1 @@
++json.h
+\ No newline at end of file
+diff --git a/storage/ndb/rest-server2/extra/simdjson/simdjson-3.12.0/dependencies/jsoncppdist/json/version.h b/storage/ndb/rest-server2/extra/simdjson/simdjson-3.12.0/dependencies/jsoncppdist/json/version.h
+new file mode 120000
+index 00000000000..322797181de
+--- /dev/null
++++ b/storage/ndb/rest-server2/extra/simdjson/simdjson-3.12.0/dependencies/jsoncppdist/json/version.h
+@@ -0,0 +1 @@
++json.h
+\ No newline at end of file
+diff --git a/storage/ndb/rest-server2/extra/simdjson/simdjson-3.12.0/dependencies/jsoncppdist/json/writer.h b/storage/ndb/rest-server2/extra/simdjson/simdjson-3.12.0/dependencies/jsoncppdist/json/writer.h
+new file mode 120000
+index 00000000000..322797181de
+--- /dev/null
++++ b/storage/ndb/rest-server2/extra/simdjson/simdjson-3.12.0/dependencies/jsoncppdist/json/writer.h
+@@ -0,0 +1 @@
++json.h
+\ No newline at end of file

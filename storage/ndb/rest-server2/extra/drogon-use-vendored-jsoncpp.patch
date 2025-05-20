@@ -1,0 +1,48 @@
+# This file is part of the RonDB REST API Server
+# Copyright (c) 2025 Hopsworks AB
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, version 3.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <http://www.gnu.org/licenses/>.
+
+Make drogon use Jsoncpp_lib from simdjson
+
+jsoncpp is included in the source tree under simdjson. drogon also
+depends on jsoncpp, but expects to find it installed on the system. This
+patch modifies drogon to use the vendored jsoncpp instead of the system
+jsoncpp if possible.
+
+diff --git a/storage/ndb/rest-server2/extra/drogon/drogon-1.9.7/cmake_modules/FindJsoncpp.cmake b/storage/ndb/rest-server2/extra/drogon/drogon-1.9.7/cmake_modules/FindJsoncpp.cmake
+index 1c60a76e490..97c478e96c8 100755
+--- a/storage/ndb/rest-server2/extra/drogon/drogon-1.9.7/cmake_modules/FindJsoncpp.cmake
++++ b/storage/ndb/rest-server2/extra/drogon/drogon-1.9.7/cmake_modules/FindJsoncpp.cmake
+@@ -10,6 +10,12 @@
+ # false, do not try to use jsoncpp. 
+ # Jsoncpp_lib - The imported target library.
+ 
++# Added by Hopsworks
++if(TARGET Jsoncpp_lib)
++  set(JSONCPP_INCLUDE_DIRS ${jsoncpp_SOURCE_DIR})
++  set(Jsoncpp_FOUND TRUE)
++else()
++
+ # only look in default directories
+ find_path(JSONCPP_INCLUDE_DIRS
+           NAMES json/json.h
+@@ -39,6 +45,8 @@ find_package_handle_standard_args(Jsoncpp
+                                   JSONCPP_LIBRARIES)
+ mark_as_advanced(JSONCPP_INCLUDE_DIRS JSONCPP_LIBRARIES)
+ 
++endif() # Added by Hopsworks
++
+ if(Jsoncpp_FOUND)
+   if(NOT EXISTS ${JSONCPP_INCLUDE_DIRS}/json/version.h)
+     message(FATAL_ERROR "Error: jsoncpp lib is too old.....stop")

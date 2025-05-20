@@ -13,7 +13,6 @@ ARG TARGETARCH
 ARG CMAKE_VERSION=3.25.1
 ARG OPEN_SSL_VERSION=3.0.14
 ARG GO_VERSION=1.22.9
-ARG JSONCPP_VERSION=1.9.5
 ARG PROMETHEUS_CPP_VERSION=1.3.0
 
 # Default build threads to 1; max is defined in Docker config (run `nproc` in Docker container)
@@ -113,20 +112,6 @@ EOF
 # 
 # RDRS2
 #
-
-# Install updated jsoncpp
-RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
-    wget -N --progress=bar:force -P $DOWNLOADS_CACHE_DIR \
-    https://github.com/open-source-parsers/jsoncpp/archive/refs/tags/$JSONCPP_VERSION.tar.gz \
-    && tar xf $DOWNLOADS_CACHE_DIR/$JSONCPP_VERSION.tar.gz -C . \
-    && cd jsoncpp-$JSONCPP_VERSION \
-    && mkdir build \
-    && cd build \
-    && cmake -DCMAKE_BUILD_TYPE=release -DBUILD_SHARED_LIBS=ON -DARCHIVE_INSTALL_DIR=. -G "Unix Makefiles" -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_INSTALL_INCLUDEDIR=include/jsoncpp .. \
-    && make -j$THREADS_ARG  \
-    && make install \
-    && cd ../.. \
-    && rm -rf jsoncpp-$JSONCPP_VERSION $JSONCPP_VERSION.tar.gz
 
 # Run this *after* installing jsoncpp
 RUN --mount=type=cache,target=/var/cache/apt,id=ubuntu22-apt \

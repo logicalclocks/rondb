@@ -10,6 +10,12 @@
 # false, do not try to use jsoncpp. 
 # Jsoncpp_lib - The imported target library.
 
+# Added by Hopsworks
+if(TARGET Jsoncpp_lib)
+  set(JSONCPP_INCLUDE_DIRS ${jsoncpp_SOURCE_DIR})
+  set(Jsoncpp_FOUND TRUE)
+else()
+
 # only look in default directories
 find_path(JSONCPP_INCLUDE_DIRS
           NAMES json/json.h
@@ -38,6 +44,8 @@ find_package_handle_standard_args(Jsoncpp
                                   JSONCPP_INCLUDE_DIRS
                                   JSONCPP_LIBRARIES)
 mark_as_advanced(JSONCPP_INCLUDE_DIRS JSONCPP_LIBRARIES)
+
+endif() # Added by Hopsworks
 
 if(Jsoncpp_FOUND)
   if(NOT EXISTS ${JSONCPP_INCLUDE_DIRS}/json/version.h)

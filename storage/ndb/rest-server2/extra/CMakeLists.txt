@@ -13,5 +13,13 @@
 # You should have received a copy of the GNU General Public License
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 
-add_subdirectory(drogon)
+
+
+# Both simdjson and drogon depend on jsoncpp. simdjson has vendored jsoncpp (see
+# simdjson/simdjson*/dependencies/jsoncppdist) while drogon expects to find it
+# already installed (see drogon/drogon-*/cmake_modules/FindJsoncpp.cmake). We
+# add simdjson first so that drogon can use the version of jsoncpp that is
+# already part of the source tree under simdjson.
+
 add_subdirectory(simdjson)
+add_subdirectory(drogon)
