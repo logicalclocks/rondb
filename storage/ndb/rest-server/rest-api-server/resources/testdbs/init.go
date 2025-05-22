@@ -72,6 +72,7 @@ var databaseCreateSchemes = map[string]string{
 	DB028:      DB028Scheme,
 	FSDB001:    FSDB001Scheme,
 	FSDB002:    FSDB002Scheme,
+	FSDB003:    FSDB003Scheme,
 	SentinelDB: SentinelDBScheme,
 }
 
@@ -241,9 +242,7 @@ func GetCreationSchemaPerDB(registerAsHopsworksProjects bool, dbs ...string) (ma
 		}
 		createSchemata[db] = schema
 	}
-	if registerAsHopsworksProjects {
-		createSchemata[HOPSWORKS_DB_NAME] = createHopsworksSchema(dbs...)
-	}
+	createSchemata[HOPSWORKS_DB_NAME] = createHopsworksSchema(dbs...)
 	return createSchemata, nil
 }
 
