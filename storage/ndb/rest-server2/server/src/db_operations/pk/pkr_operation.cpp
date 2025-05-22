@@ -350,51 +350,13 @@ BatchKeyOperations::init_batch_operations(ArenaMalloc *amalloc,
   return status;
 }
 
-RS_Status BatchKeyOperations::setup_transaction() {
-  if (unlikely(m_single_transaction)) {
-    KeyOperation *key_op = &m_key_ops[0];
-    key_op->m_ndbTransaction = m_ndb_object->startTransaction();
-    if (unlikely(key_op->m_ndbTransaction == nullptr)) {
-      return RS_RONDB_SERVER_ERROR(m_ndb_object->getNdbError(), 
-          std::string(rdrsErrorMessage(ERROR_TRANSACTION_START_FAILED)));
-    }
-  } else {
-    for (Uint32 i = 0; i < m_numOperations; i++) {
-      KeyOperation *key_op = &m_key_ops[i];
-      PKRRequest *req = &key_op->m_req;
-      if (req->IsInvalidOp()) {
-        continue;
-      }
-      const NdbDictionary::Table *table_dict = key_op->m_tableDict;
-      key_op->m_ndbTransaction = m_ndb_object->startTransaction(table_dict);
-      if (unlikely(key_op->m_ndbTransaction == nullptr)) {
-        return RS_RONDB_SERVER_ERROR(m_ndb_object->getNdbError(), 
-            std::string(rdrsErrorMessage(ERROR_TRANSACTION_START_FAILED)));
-      }
-    }
-  }
-  return RS_OK;
-}
-
-/**
- * Set up read operation
- *
- * @return status
- */
-RS_Status BatchKeyOperations::setup_read_operation() {
-
-  Uint32 opIdx = 0;
-start:
-  for (; opIdx < m_numOperations; opIdx++) {
+RS_Status BatchKeyOperations::setup_primary_keys() {
+  for (Uint32 opIdx = 0; opIdx < m_numOperations; opIdx++) {
     // this sub operation can not be processed
     KeyOperation *key_op = &m_key_ops[opIdx];
     PKRRequest *req = &key_op->m_req;
     if (unlikely(req->IsInvalidOp())) {
       continue;
-    }
-    NdbTransaction *trans = key_op->m_ndbTransaction;
-    if (unlikely(m_single_transaction)) {
-      trans = m_key_ops[0].m_ndbTransaction;
     }
     Uint32 numPrimaryKeys = key_op->m_num_pk_columns;
     for (Uint32 colIdx = 0; colIdx < numPrimaryKeys; colIdx++) {
@@ -409,12 +371,78 @@ start:
       if (unlikely(status.http_code != SUCCESS)) {
         if (m_isBatch) {
           req->MarkInvalidOp(status);
-          opIdx++;
-          goto start;
         } else {
           return status;
         }
       }
+    }
+  }
+  return RS_OK;
+}
+
+RS_Status BatchKeyOperations::setup_transactions() {
+  Uint32 tmp[MAX_KEY_SIZE_IN_WORDS * MAX_XFRM_MULTIPLY];
+  char *buf = (char *)&tmp[0];
+  if (unlikely(m_single_transaction)) {
+    KeyOperation *key_op = &m_key_ops[0];
+    KeyOperation *first_key_op = nullptr;
+    for (Uint32 i = 0; i < m_numOperations; i++) {
+      first_key_op = &m_key_ops[i];
+      PKRRequest *req = &first_key_op->m_req;
+      if (req->IsInvalidOp()) {
+        first_key_op = nullptr;
+        continue;
+      }
+      break;
+    }
+    /* Check that at least one operation is valid */
+    if (first_key_op != nullptr) {
+      key_op->m_ndbTransaction = m_ndb_object->startTransaction(
+        first_key_op->m_ndb_record,
+        (const char*)first_key_op->m_row,
+        buf,
+        sizeof(tmp));
+      if (unlikely(key_op->m_ndbTransaction == nullptr)) {
+        return RS_RONDB_SERVER_ERROR(m_ndb_object->getNdbError(), 
+          std::string(rdrsErrorMessage(ERROR_TRANSACTION_START_FAILED)));
+      }
+    }
+  } else {
+    for (Uint32 i = 0; i < m_numOperations; i++) {
+      KeyOperation *key_op = &m_key_ops[i];
+      PKRRequest *req = &key_op->m_req;
+      if (req->IsInvalidOp()) {
+        continue;
+      }
+      key_op->m_ndbTransaction = m_ndb_object->startTransaction(
+        key_op->m_ndb_record,
+        (const char*)key_op->m_row,
+        buf,
+        sizeof(tmp));
+      if (unlikely(key_op->m_ndbTransaction == nullptr)) {
+        return RS_RONDB_SERVER_ERROR(m_ndb_object->getNdbError(), 
+            std::string(rdrsErrorMessage(ERROR_TRANSACTION_START_FAILED)));
+      }
+    }
+  }
+  return RS_OK;
+}
+
+/**
+ * Set up read operation
+ *
+ * @return status
+ */
+RS_Status BatchKeyOperations::setup_read_operations() {
+  for (Uint32 opIdx = 0; opIdx < m_numOperations; opIdx++) {
+    KeyOperation *key_op = &m_key_ops[opIdx];
+    PKRRequest *req = &key_op->m_req;
+    if (unlikely(req->IsInvalidOp())) {
+      continue;
+    }
+    NdbTransaction *trans = key_op->m_ndbTransaction;
+    if (unlikely(m_single_transaction)) {
+      trans = m_key_ops[0].m_ndbTransaction;
     }
     DEB_NDB_BE("readTuple: read_columns[%u]: 0x%x,0x%x",
               opIdx,
@@ -474,19 +502,21 @@ start:
 }
 
 RS_Status BatchKeyOperations::execute() {
-  if (unlikely(m_single_transaction)) {
-    NdbTransaction *trans = m_key_ops[0].m_ndbTransaction;
-    if (unlikely(trans->execute(NdbTransaction::NoCommit) != 0)) {
-      return RS_RONDB_SERVER_ERROR(trans->getNdbError(),
-        std::string(rdrsErrorMessage(ERROR_TRANSACTION_EXEC_FAILED)));
-    }
-  } else {
-    if (m_ndb_object->sendPollNdb(
-        WAITFOR_RESPONSE_TIMEOUT, m_num_sent_operations) <
-          (int)m_num_sent_operations) {
-      return RS_RONDB_SERVER_ERROR(
-        m_ndb_object->getNdbError(),
-        std::string(rdrsErrorMessage(ERROR_TRANSACTION_EXEC_FAILED)));
+  if (m_num_sent_operations > 0) {
+    if (unlikely(m_single_transaction)) {
+      NdbTransaction *trans = m_key_ops[0].m_ndbTransaction;
+      if (unlikely(trans->execute(NdbTransaction::NoCommit) != 0)) {
+        return RS_RONDB_SERVER_ERROR(trans->getNdbError(),
+          std::string(rdrsErrorMessage(ERROR_TRANSACTION_EXEC_FAILED)));
+      }
+    } else {
+      if (m_ndb_object->sendPollNdb(
+          WAITFOR_RESPONSE_TIMEOUT, m_num_sent_operations) <
+            (int)m_num_sent_operations) {
+        return RS_RONDB_SERVER_ERROR(
+          m_ndb_object->getNdbError(),
+          std::string(rdrsErrorMessage(ERROR_TRANSACTION_EXEC_FAILED)));
+      }
     }
   }
   return RS_OK;
@@ -1168,14 +1198,20 @@ RS_Status BatchKeyOperations::perform_operation(
     handle_ndb_error(status);
     return status;
   }
-  DEB_NDB_BE("setup_transaction");
-  status = setup_transaction();
+  DEB_NDB_BE("setup_primary_keys");
+  status = setup_primary_keys();
   if (unlikely(status.http_code != SUCCESS)) {
     handle_ndb_error(status);
     return status;
   }
-  DEB_NDB_BE("setup_read_operation");
-  status = setup_read_operation();
+  DEB_NDB_BE("setup_transactions");
+  status = setup_transactions();
+  if (unlikely(status.http_code != SUCCESS)) {
+    handle_ndb_error(status);
+    return status;
+  }
+  DEB_NDB_BE("setup_read_operations");
+  status = setup_read_operations();
   if (unlikely(status.http_code != SUCCESS)) {
     handle_ndb_error(status);
     return status;

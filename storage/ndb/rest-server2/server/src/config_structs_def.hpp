@@ -18,6 +18,11 @@
  */
 
 /*
+ * NOTE:
+ * -----
+ * When updating the default setting of a config variable, ensure that you also
+ * set the same default in init_defaults.go in the test_go directory.
+ *
  * These class definitions for configuration are wrapped in macros so they can
  * be used for several things:
  * 1) Define the class
