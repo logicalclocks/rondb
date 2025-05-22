@@ -43,7 +43,7 @@ class JSONParser {
   simdjson::ondemand::parser parser;
   simdjson::ondemand::document doc;
   /*
-    We initialize and pre-allocate Internal.batchMaxSize number of char* string buffers
+    We initialize and pre-allocate Internal.MaxReqSize-sized string buffer
     for each thread, which we could reuse when passing to parser.iterate().
   */
   std::unique_ptr<char[]> buffer;

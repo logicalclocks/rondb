@@ -96,15 +96,6 @@ void BatchPKReadCtrl::batchPKRead(
     callback(resp);
     return;
   }
-
-  if (unlikely(reqStructs.size() > globalConfigs.internal.batchMaxSize)) {
-    resp->setBody("Batch size exceeds maximum allowed size: " +
-                  std::to_string(globalConfigs.internal.batchMaxSize));
-    resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
-    callback(resp);
-    return;
-  }
-
   // Validate
   std::unordered_map<std::string_view, bool> db_map;
   std::unordered_map<std::string, bool> table_map;

@@ -92,11 +92,6 @@ BatchKeyOperations::init_batch_operations(ArenaMalloc *amalloc,
   m_ndb_object = ndb_object;
   m_numOperations = numOps;
   m_num_sent_operations = 0;
-  if (numOps > globalConfigs.internal.batchMaxSize) {
-    RS_Status error = RS_CLIENT_ERROR(
-      std::string("Batch size exceeds maximum allowed size: "));
-    return error;
-  }
   m_single_transaction = globalConfigs.rest.useSingleTransaction;
   m_key_ops = amalloc->alloc<KeyOperation>(numOps);
   if (unlikely(m_key_ops == nullptr)) {
@@ -384,9 +379,13 @@ RS_Status BatchKeyOperations::setup_transactions() {
   Uint32 tmp[MAX_KEY_SIZE_IN_WORDS * MAX_XFRM_MULTIPLY];
   char *buf = (char *)&tmp[0];
   if (unlikely(m_single_transaction)) {
+    if (m_key_ops[0].m_ndbTransaction != nullptr) {
+      /* Transaction started already in previous loop */
+      return RS_OK;
+    }
     KeyOperation *key_op = &m_key_ops[0];
     KeyOperation *first_key_op = nullptr;
-    for (Uint32 i = 0; i < m_numOperations; i++) {
+    for (Uint32 i = m_first_key; i < m_last_key; i++) {
       first_key_op = &m_key_ops[i];
       PKRRequest *req = &first_key_op->m_req;
       if (req->IsInvalidOp()) {
@@ -408,7 +407,7 @@ RS_Status BatchKeyOperations::setup_transactions() {
       }
     }
   } else {
-    for (Uint32 i = 0; i < m_numOperations; i++) {
+    for (Uint32 i = m_first_key; i < m_last_key; i++) {
       KeyOperation *key_op = &m_key_ops[i];
       PKRRequest *req = &key_op->m_req;
       if (req->IsInvalidOp()) {
@@ -434,7 +433,7 @@ RS_Status BatchKeyOperations::setup_transactions() {
  * @return status
  */
 RS_Status BatchKeyOperations::setup_read_operations() {
-  for (Uint32 opIdx = 0; opIdx < m_numOperations; opIdx++) {
+  for (Uint32 opIdx = m_first_key; opIdx < m_last_key; opIdx++) {
     KeyOperation *key_op = &m_key_ops[opIdx];
     PKRRequest *req = &key_op->m_req;
     if (unlikely(req->IsInvalidOp())) {
@@ -443,6 +442,7 @@ RS_Status BatchKeyOperations::setup_read_operations() {
     NdbTransaction *trans = key_op->m_ndbTransaction;
     if (unlikely(m_single_transaction)) {
       trans = m_key_ops[0].m_ndbTransaction;
+      require(trans);
     }
     DEB_NDB_BE("readTuple: read_columns[%u]: 0x%x,0x%x",
               opIdx,
@@ -1204,23 +1204,60 @@ RS_Status BatchKeyOperations::perform_operation(
     handle_ndb_error(status);
     return status;
   }
-  DEB_NDB_BE("setup_transactions");
-  status = setup_transactions();
-  if (unlikely(status.http_code != SUCCESS)) {
-    handle_ndb_error(status);
-    return status;
-  }
-  DEB_NDB_BE("setup_read_operations");
-  status = setup_read_operations();
-  if (unlikely(status.http_code != SUCCESS)) {
-    handle_ndb_error(status);
-    return status;
-  }
-  DEB_NDB_BE("execute");
-  status = execute();
-  if (unlikely(status.http_code != SUCCESS)) {
-    handle_ndb_error(status);
-    return status;
+  m_first_key = 0;
+  Uint32 last_key = 0;
+  Uint32 min_keys_for_last_loop = 50;
+  Uint32 max_keys_in_one_loop = 1024;
+  while (m_last_key < m_numOperations) {
+    /**
+     * Handle loop of operations.
+     * 1. Use batchMaxSize as a suggested maximum batch size although not
+     *    a hard limit. Preferrably this should be e.g. 128 and is configurable
+     * 2. We are allowed to add up to 50 operations to this batch size for the
+     *    last loop. The reason for this is to avoid a weird situation where we
+     *    have batchMaxSize and need to send 129 operations. In this case it is
+     *    preferrable to run all operations in one loop to avoid that the second
+     *    loop only runs one operation. We set the minimum operations to handle
+     *    in one loop to 50 as a hard coded constant here.
+     * 3. NDB API can handle at most 1024 transactions in parallel and this is
+     *    already way too much, we will set the maximum batchMaxSize to e.g.
+     *    512 to avoid even coming close to this. Experiments have shown that
+     *    optimal batch size is around 100 operations. Thus we set the default
+     *    to 128.
+     */
+    Uint32 numOps = m_numOperations;
+    Uint32 start = m_first_key;
+    last_key = m_last_key;
+    Uint32 max_keys = globalConfigs.internal.batchMaxSize;
+    Uint32 keys_this_loop = std::min(max_keys, (numOps - start));
+    last_key += keys_this_loop;
+    Uint32 remaining_keys = numOps - last_key;
+    if (last_key < numOps &&
+        remaining_keys < 50) {
+      last_key += remaining_keys;
+    }
+    m_last_key = last_key;
+
+    DEB_NDB_BE("setup_transactions");
+    status = setup_transactions();
+    if (unlikely(status.http_code != SUCCESS)) {
+      handle_ndb_error(status);
+      return status;
+    }
+    DEB_NDB_BE("setup_read_operations");
+    status = setup_read_operations();
+    if (unlikely(status.http_code != SUCCESS)) {
+      handle_ndb_error(status);
+      return status;
+    }
+    DEB_NDB_BE("execute");
+    status = execute();
+    if (unlikely(status.http_code != SUCCESS)) {
+      handle_ndb_error(status);
+      return status;
+    }
+    m_first_key = m_last_key;
+    m_num_sent_operations = 0;
   }
   DEB_NDB_BE("create_response");
   status = create_response(respBuffer);
