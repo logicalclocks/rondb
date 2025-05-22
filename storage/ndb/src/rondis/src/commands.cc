@@ -157,6 +157,7 @@ bool setup_one_transaction(Ndb *ndb,
   }
   key_row->redis_key_id = redis_key_id;
   memcpy(&key_row->redis_key[2], key_str, key_len);
+  memset(&key_row->redis_key[2 + key_len], 0, 3);
   set_length((char*)&key_row->redis_key[0], key_len);
   NdbTransaction *trans =
     ndb->startTransaction(tab,

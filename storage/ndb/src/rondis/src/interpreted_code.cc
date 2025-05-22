@@ -126,6 +126,7 @@ int write_hset_key_table(Ndb *ndb,
   Uint32 key_len = std_key_str.size();
   set_length(&key_row.redis_key[0], key_len);
   memcpy(&key_row.redis_key[2], key_str, key_len);
+  memset(&key_row.redis_key[2 + key_len], 0, 3);
 
   const Uint32 mask = 0x1; // Write primary key
   const unsigned char *mask_ptr = (const unsigned char *)&mask;
@@ -173,7 +174,7 @@ int write_hset_key_table(Ndb *ndb,
   /* Start a transaction */
   NdbTransaction *trans =
     ndb->startTransaction(tab,
-                          (const char*)&key_row.redis_key_id,
+                          (const char*)&key_row.redis_key[0],
                           key_len + 2);
   if (trans == nullptr) {
     assign_ndb_err_to_response(response,
