@@ -143,5 +143,5 @@ RUN chmod 777 -R $RONDB_DATA_DIR \
 RUN echo "PS1='${debian_chroot:+(\$debian_chroot)}\h:\w\$ '" >> /etc/bash.bashrc
 
 ENTRYPOINT ["./docker/rondb_standalone/entrypoints/main.sh"]
-EXPOSE 3306 33060 11860 1186 4406 5406
+EXPOSE 3306 33060 11860 1186 4406 5406 6379
 CMD ["mysqld"]

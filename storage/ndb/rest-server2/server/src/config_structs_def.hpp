@@ -176,7 +176,7 @@ CLASS
 (GRPC,
  CM(bool, enable, Enable, false, "Whether to enable the gRPC server.")
  CM(std::string, serverIP, ServerIP, "0.0.0.0", "The IP address to listen on.")
- CM(Uint16, serverPort, ServerPort, 4406, "TCP port to listen on.")
+ CM(Uint16, serverPort, ServerPort, 5406, "TCP port to listen on.")
  PROBLEM(enable, "gRPC not supported")
 )
 
