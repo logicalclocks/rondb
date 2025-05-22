@@ -78,8 +78,9 @@ class BatchKeyOperations {
                                    bool is_batch,
                                    RS_Buffer *reqBuffer,
                                    Ndb *ndb_object);
-   RS_Status setup_transaction();
-   RS_Status setup_read_operation();
+   RS_Status setup_primary_keys();
+   RS_Status setup_transactions();
+   RS_Status setup_read_operations();
    RS_Status execute();
    RS_Status create_response(RS_Buffer *respBuffer);
    RS_Status append_op_recs(Uint32);
