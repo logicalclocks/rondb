@@ -58,12 +58,12 @@ func newWithDefaults() AllConfigs {
 		GRPC: GRPC{
 			Enable:     true,
 			ServerIP:   "0.0.0.0",
-			ServerPort: 4406,
+			ServerPort: 5406,
 		},
 		REST: REST{
 			Enable:     true,
 			ServerIP:   "0.0.0.0",
-			ServerPort: 5406,
+			ServerPort: 4406,
 		},
 		RonDB: RonDB{
 			Mgmds: []Mgmd{
