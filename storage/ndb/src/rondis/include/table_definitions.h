@@ -87,15 +87,19 @@ extern NdbRecord *entire_key_record[MAX_NUM_DATABASES];
 struct key_table
 {
     Uint32 null_bits;
-    Uint64 redis_key_id;
     Uint64 rondb_key;
     Int32 expiry_date;
     Uint32 value_data_type;
     Uint32 tot_value_len;
     // Technically implicit
     Uint32 num_rows;
-    char redis_key[MAX_KEY_VALUE_LEN + 4];
-    char value_start[INLINE_VALUE_LEN + 4];
+    /**
+     * redis_key_id and redis_key must be in this order and next
+     * to each other to ensure startTransaction with hint works.
+     */
+    Uint64 redis_key_id;
+    char redis_key[MAX_KEY_VALUE_LEN + 8];
+    char value_start[INLINE_VALUE_LEN + 8];
 };
 
 /*
@@ -125,7 +129,7 @@ struct value_table
     Uint64 rondb_key;
     Uint32 ordinal;
     Int32 expiry_date;
-    char value[EXTENSION_VALUE_LEN + 2];
+    char value[EXTENSION_VALUE_LEN + 8];
 };
 
 /*
