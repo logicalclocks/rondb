@@ -76,7 +76,7 @@ CLASS
  //todo warn (preallocatedbuffers == 0, "preAllocatedBuffers should be > 0")
  PROBLEM(reqBufferSize < 256, "ReqBufferSize should be >= 256")
  PROBLEM(respBufferSize < 256, "RespBufferSize should be >= 256")
- PROBLEM(batchMaxSize > 512, "BatchMaxSize should be <= 1024")
+ PROBLEM(batchMaxSize > 512, "BatchMaxSize should be <= 512")
  PROBLEM(batchMaxSize < 50, "BatchMaxSize should be >= 50")
 )
 

@@ -1205,6 +1205,7 @@ RS_Status BatchKeyOperations::perform_operation(
     return status;
   }
   m_first_key = 0;
+  m_last_key = 0;
   Uint32 last_key = 0;
   Uint32 min_keys_for_last_loop = 50;
   Uint32 max_keys_in_one_loop = 1024;
@@ -1227,7 +1228,6 @@ RS_Status BatchKeyOperations::perform_operation(
      */
     Uint32 numOps = m_numOperations;
     Uint32 start = m_first_key;
-    last_key = m_last_key;
     Uint32 max_keys = globalConfigs.internal.batchMaxSize;
     Uint32 keys_this_loop = std::min(max_keys, (numOps - start));
     last_key += keys_this_loop;

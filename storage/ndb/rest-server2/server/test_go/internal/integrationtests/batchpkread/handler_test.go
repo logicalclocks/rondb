@@ -752,14 +752,14 @@ func TestLargeBatch(t *testing.T) {
 			},
 			Table:    "int_table",
 			DB:       testdbs.DB004,
-			HttpCode: []int{http.StatusBadRequest},
+			HttpCode: []int{http.StatusOK},
 			RespKVs:  []interface{}{"col0", "col1"},
 		}
 	}
 
 	tests := map[string]api.BatchOperationTestInfo{
 		"simple1": { // single operation batch
-			HttpCode:       []int{http.StatusOk},
+			HttpCode:       []int{http.StatusOK},
 			Operations:     subOperations,
 			ErrMsgContains: "",
 		},
