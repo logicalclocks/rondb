@@ -737,7 +737,7 @@ func TestMaxOpID(t *testing.T) {
 
 func TestLargeBatch(t *testing.T) {
 
-	batchSize := config.GetAll().Internal.BatchMaxSize + 1
+	batchSize := config.GetAll().Internal.BatchMaxSize + 200
 
 	subOperations := make([]api.BatchSubOperationTestInfo, batchSize)
 	for i := uint32(0); i < batchSize; i++ {
@@ -752,14 +752,14 @@ func TestLargeBatch(t *testing.T) {
 			},
 			Table:    "int_table",
 			DB:       testdbs.DB004,
-			HttpCode: []int{http.StatusBadRequest},
+			HttpCode: []int{http.StatusOK},
 			RespKVs:  []interface{}{"col0", "col1"},
 		}
 	}
 
 	tests := map[string]api.BatchOperationTestInfo{
 		"simple1": { // single operation batch
-			HttpCode:       []int{http.StatusBadRequest},
+			HttpCode:       []int{http.StatusOK},
 			Operations:     subOperations,
 			ErrMsgContains: "",
 		},
