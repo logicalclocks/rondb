@@ -1207,8 +1207,7 @@ RS_Status BatchKeyOperations::perform_operation(
   m_first_key = 0;
   m_last_key = 0;
   Uint32 last_key = 0;
-  Uint32 min_keys_for_last_loop = 50;
-  Uint32 max_keys_in_one_loop = 1024;
+  static const Uint32 min_keys_for_last_loop = 50;
   while (m_last_key < m_numOperations) {
     /**
      * Handle loop of operations.
@@ -1233,7 +1232,7 @@ RS_Status BatchKeyOperations::perform_operation(
     last_key += keys_this_loop;
     Uint32 remaining_keys = numOps - last_key;
     if (last_key < numOps &&
-        remaining_keys < 50) {
+        remaining_keys < min_keys_for_last_loop) {
       last_key += remaining_keys;
     }
     m_last_key = last_key;
