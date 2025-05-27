@@ -484,6 +484,7 @@ struct st_ndb_status {
   long long api_client_stats[Ndb::NumClientStatistics];
   const char *system_name;
   long fetch_table_stats;
+  long db_nodes_all_alive;
 };
 
 /* Status variables shown with 'show status like 'Ndb%' */
@@ -510,6 +511,7 @@ static int update_status_variables(Thd_ndb *thd_ndb, st_ndb_status *ns,
   ns->connect_count = c->get_connect_count();
   ns->system_name = c->get_system_name();
   ns->last_commit_epoch_server = ndb_get_latest_trans_gci();
+  ns->db_nodes_all_alive = c->db_nodes_all_alive();
   if (thd_ndb) {
     ns->execute_count = thd_ndb->m_execute_count;
     ns->trans_hint_count = thd_ndb->hinted_trans_count();
@@ -644,6 +646,8 @@ static SHOW_VAR ndb_status_vars_dynamic[] = {
      SHOW_SCOPE_GLOBAL},
     {"fetch_table_stats", (char *)&g_ndb_status.fetch_table_stats, SHOW_LONG,
      SHOW_SCOPE_GLOBAL},
+    {"is_db_nodes_all_alive", (char *)&g_ndb_status.db_nodes_all_alive,
+     SHOW_LONG, SHOW_SCOPE_GLOBAL},
     {NullS, NullS, SHOW_LONG, SHOW_SCOPE_GLOBAL}};
 
 // Global instance of stats for the default replication channel, populated

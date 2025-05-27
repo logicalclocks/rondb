@@ -279,6 +279,7 @@ public:
   Uint32 get_node_change_count();
   void lock_node_state();
   void unlock_node_state();
+  int db_nodes_all_alive();
 };
 
 inline const trp_node &ClusterMgr::getNodeInfo(NodeId nodeId) const {
