@@ -237,8 +237,9 @@ void Ndb_GetCoreCPUIds(Uint32 cpu_id, Uint32 *cpu_ids, Uint32 &num_cpus) {
   return;
 }
 
-Uint32 Ndb_GetRRGroups(Uint32 num_query_instances) {
-  return (num_query_instances + MAX_RR_GROUP_SIZE) / MAX_RR_GROUP_SIZE;
+Uint32 Ndb_GetRRGroups(Uint32 num_query_instances, Uint32 max_rr_group_size) {
+  return (num_query_instances + max_rr_group_size) /
+          max_rr_group_size;
 }
 
 Uint32 Ndb_GetFirstCPUInMap(Uint32 &rr_group) {
@@ -974,7 +975,8 @@ create_virt_l3_cache_list(struct ndb_hwinfo *hwinfo,
   return 0;
 }
 
-Uint32 Ndb_CreateCPUMap(Uint32 num_query_instances) {
+Uint32 Ndb_CreateCPUMap(Uint32 num_query_instances,
+                        Uint32 max_rr_group_size) {
   struct ndb_hwinfo *hwinfo = g_ndb_hwinfo;
   /**
    * We have set up HW information and now we need to set up the CPU map
@@ -991,7 +993,7 @@ Uint32 Ndb_CreateCPUMap(Uint32 num_query_instances) {
    */
   g_create_cpu_map = true;
   num_query_instances = (num_query_instances == 0) ? 1 : num_query_instances;
-  Uint32 optimal_group_size = MAX_RR_GROUP_SIZE;
+  Uint32 optimal_group_size = max_rr_group_size;
   Uint32 min_group_size = MIN(MIN_RR_GROUP_SIZE, num_query_instances);
   Uint32 max_num_groups =
     (num_query_instances + (min_group_size - 1)) / min_group_size;
@@ -3113,6 +3115,7 @@ test_create_cpumap()
   expected_res[24] = 2;
   expected_res[25] = 4;
   struct test_cpumap_data test_map;
+  Uint32 max_rr_group_size = 16;
   for (Uint32 i = 0; i < NUM_TESTS; i++) {
     printf("Start test %u\n", i + 1);
     test_create(&test_map, i);
@@ -3120,7 +3123,7 @@ test_create_cpumap()
     create_hwinfo_test_cpu_map(&test_map);
     printf("Create CPUMap for test %u\n", i + 1);
     Uint32 num_rr_groups =
-      Ndb_CreateCPUMap(test_map.num_query_instances);
+      Ndb_CreateCPUMap(test_map.num_query_instances, max_rr_group_size);
     for (Uint32 id = 0; id < g_ndb_hwinfo->cpu_cnt_max; id++)
     {
       Uint32 cpu_ids[MAX_USED_NUM_CPUS];

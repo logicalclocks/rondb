@@ -258,6 +258,14 @@ void Configuration::fetch_configuration(
   iter.get(CFG_TCP_ONLY_IPV4, &use_only_ipv4);
   globalData.theUseOnlyIPv4Flag = use_only_ipv4;
 
+  Uint32 use_tc_in_same_rr_group = 0;
+  iter.get(CFG_DB_USE_TC_IN_RR_GROUP, &use_tc_in_same_rr_group);
+  globalData.theUseTcInSameRRGroup = use_tc_in_same_rr_group;
+
+  Uint32 max_rr_group_size = DEF_MAX_RR_GROUP_SIZE;
+  iter.get(CFG_DB_MAX_RR_GROUP_SIZE, &max_rr_group_size);
+  globalData.theMaxRRGroupSize = max_rr_group_size;
+
   const char * pidfile_dir;
   if(iter.get(CFG_NODE_PIDFILE_DIR, &pidfile_dir) == 0)
   {
@@ -1700,7 +1708,8 @@ Configuration::setupConfiguration()
                                  num_cpus,
                                  globalData.ndbRRGroups,
                                  use_tc_threads,
-                                 use_ldm_threads);
+                                 use_ldm_threads,
+                                 globalData.theMaxRRGroupSize);
     }
     else
     {
@@ -1865,7 +1874,8 @@ Configuration::setupConfiguration()
        * ndbRRGroups haven't been set yet, means we didn't use
        * do_parse_auto. Calculate it here.
        */
-      globalData.ndbRRGroups = Ndb_GetRRGroups(globalData.ndbMtQueryWorkers);
+      globalData.ndbRRGroups = Ndb_GetRRGroups(globalData.ndbMtQueryWorkers,
+                                               globalData.theMaxRRGroupSize);
     }
   } while (0);
 

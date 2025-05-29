@@ -124,11 +124,14 @@ struct GlobalData {
   Uint32     theMaxNoOfTables;
   Uint32     theMaxNoOfOrderedIndexes;
   Uint32     theMaxNoOfUniqueHashIndexes;
+  Uint32     theMaxRRGroupSize;
 
+  bool       theUseTcInSameRRGroup;
   bool       theGracefulShutdownFlag;
   bool       theUseOnlyIPv4Flag;
   bool       theUseContainerMemoryFlag;
 
+  Uint8      theNextTcThreadPerRecv[MAX_NDBMT_RECEIVE_THREADS];
 
   NdbMutex   *theIO_lag_mutex;
   ndb_openssl_evp::byte nodeMasterKey[MAX_NODE_MASTER_KEY_LENGTH];
@@ -157,7 +160,10 @@ struct GlobalData {
     theBufferFullMicrosSleep = 0;
     theMicrosSend = 0;
     theMicrosSpin = 0;
+    std::memset(theNextTcThreadPerRecv, 0, sizeof(theNextTcThreadPerRecv));
     std::memset(m_hb_count, 0, sizeof(m_hb_count));
+    theMaxRRGroupSize = MIN_MAX_RR_GROUP_SIZE;
+    theUseTcInSameRRGroup = false;
 #ifdef GCP_TIMER_HACK
     gcp_timer_limit = 0;
 #endif

@@ -293,6 +293,10 @@
 #define CFG_DB_UNDO_BUFFER            697
 #define CFG_DB_TOTAL_MEMORY_CONFIG    698
 #define CFG_DB_AUTO_MEMORY_CONFIG     699
+
+#define CFG_DB_USE_TC_IN_RR_GROUP     700
+#define CFG_DB_MAX_RR_GROUP_SIZE      701
+
 /* End RonDB only configuration parameters */
 
 #define CFG_NODE_ARBIT_RANK           200
