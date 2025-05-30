@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -689,6 +689,7 @@ NdbImpl::select_node(NdbTableImpl *table_impl,
     DBUG_RETURN(m_ndb_cluster_connection.select_any(this));
   }
 
+  Uint16 *node_hint_count = &m_node_hint_count[0];
   Uint32 nodeId;
   bool readBackup = table_impl->m_read_backup;
   bool fullyReplicated = table_impl->m_fully_replicated;
@@ -718,7 +719,11 @@ NdbImpl::select_node(NdbTableImpl *table_impl,
      */
     cnt = table_impl->m_fragments.size();
     nodes = table_impl->m_fragments.getBase();
-    nodeId = m_ndb_cluster_connection.select_node(this, nodes, cnt, 0);
+    nodeId = m_ndb_cluster_connection.select_node(this,
+                                                  nodes,
+                                                  cnt,
+                                                  0,
+                                                  node_hint_count);
   } else if (cnt == 0) {
     /**
      * For unhinted select, let caller select node.
@@ -732,7 +737,11 @@ NdbImpl::select_node(NdbTableImpl *table_impl,
      * Consider one fragment and any replica for readBackup
      */
     require(readBackup);
-    nodeId = m_ndb_cluster_connection.select_node(this, nodes, cnt, 0);
+    nodeId = m_ndb_cluster_connection.select_node(this,
+                                                  nodes,
+                                                  cnt,
+                                                  0,
+                                                  node_hint_count);
     DBUG_PRINT("exit",("select_node: nodeId: %u", nodeId));
   }
   DBUG_RETURN(nodeId);
