@@ -24,8 +24,8 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
-#ifndef MGMAPI_CONFIG_PARAMTERS_H
-#define MGMAPI_CONFIG_PARAMTERS_H
+#ifndef MGMAPI_CONFIG_PARAMETERS_H
+#define MGMAPI_CONFIG_PARAMETERS_H
 
 #define CFG_SYS_NAME                  3
 #define CFG_SYS_PRIMARY_MGM_NODE      1
@@ -296,6 +296,8 @@
 
 #define CFG_DB_USE_TC_IN_RR_GROUP     700
 #define CFG_DB_MAX_RR_GROUP_SIZE      701
+#define CFG_DB_NUM_LQHKEYREQ_COUNTS   702
+#define CFG_DB_NUM_SCAN_FRAGREQ_COUNTS 703
 
 /* End RonDB only configuration parameters */
 

@@ -270,6 +270,14 @@ void Configuration::fetch_configuration(
   iter.get(CFG_DB_MAX_SEND_DELAY, &max_send_delay);
   globalData.theMaxSendDelay = max_send_delay;
 
+  Uint32 num_lqhkeyreq_counts = NUM_LQHKEYREQ_COUNTS;
+  iter.get(CFG_DB_NUM_LQHKEYREQ_COUNTS, &num_lqhkeyreq_counts);
+  globalData.theNumLqhKeyReqCounts = num_lqhkeyreq_counts;
+
+  Uint32 num_scan_fragreq_counts = NUM_SCAN_FRAGREQ_COUNTS;
+  iter.get(CFG_DB_NUM_SCAN_FRAGREQ_COUNTS, &num_scan_fragreq_counts);
+  globalData.theNumScanFragReqCounts = num_scan_fragreq_counts;
+
   const char * pidfile_dir;
   if(iter.get(CFG_NODE_PIDFILE_DIR, &pidfile_dir) == 0)
   {

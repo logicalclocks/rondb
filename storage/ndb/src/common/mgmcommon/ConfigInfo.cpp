@@ -626,6 +626,32 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     "true" },
 
   {
+    CFG_DB_NUM_LQHKEYREQ_COUNTS,
+    "KeyBatchSizeQueryWorker",
+    DB_TOKEN,
+    "Number of LQHKEYREQ signals sent to query worker before next"
+    " worker is used",
+    ConfigInfo::CI_USED,
+    false,
+    ConfigInfo::CI_INT,
+    STR_VALUE(NUM_LQHKEYREQ_COUNTS),
+    "1",
+    "64" },
+
+  {
+    CFG_DB_NUM_SCAN_FRAGREQ_COUNTS,
+    "ScanBatchSizeQueryWorker",
+    DB_TOKEN,
+    "Number of SCAN_FRAGREQ signals sent to query worker before next"
+    " worker is used",
+    ConfigInfo::CI_USED,
+    false,
+    ConfigInfo::CI_INT,
+    STR_VALUE(NUM_SCAN_FRAGREQ_COUNTS),
+    "1",
+    "16" },
+
+  {
     CFG_DB_MAX_RR_GROUP_SIZE,
     "MaxRRGroupSize",
     DB_TOKEN,

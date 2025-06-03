@@ -140,6 +140,9 @@ struct GlobalData {
   unsigned char filesystemPassword[MAX_BACKUP_ENCRYPTION_PASSWORD_LENGTH];
   Uint32 filesystemPasswordLength;
 
+  Uint32     theNumLqhKeyReqCounts;
+  Uint32     theNumScanFragReqCounts;
+
   GlobalData() {
     theSignalId = 0;
     theStartLevel = NodeState::SL_NOTHING;
@@ -165,6 +168,8 @@ struct GlobalData {
     std::memset(m_hb_count, 0, sizeof(m_hb_count));
     theMaxRRGroupSize = MIN_MAX_RR_GROUP_SIZE;
     theMaxSendDelay = 0;
+    theNumLqhKeyReqCounts = 0;
+    theNumScanFragReqCounts = 0;
     theUseTcInSameRRGroup = false;
 #ifdef GCP_TIMER_HACK
     gcp_timer_limit = 0;
