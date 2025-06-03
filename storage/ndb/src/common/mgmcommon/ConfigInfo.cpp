@@ -449,7 +449,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
 
     {CFG_DB_MAX_SEND_DELAY, "MaxSendDelay", DB_TOKEN,
      "Max number of microseconds to delay sending in ndbmtd",
-     ConfigInfo::CI_DEPRECATED, false, ConfigInfo::CI_INT, "125", "0", "1000"},
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "0", "0", "1000"},
 
     {CFG_DB_SCHED_SPIN_TIME, "SchedulerSpinTimer", DB_TOKEN,
      "Number of microseconds to execute in scheduler before sleeping",

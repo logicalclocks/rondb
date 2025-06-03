@@ -125,6 +125,7 @@ struct GlobalData {
   Uint32     theMaxNoOfOrderedIndexes;
   Uint32     theMaxNoOfUniqueHashIndexes;
   Uint32     theMaxRRGroupSize;
+  Uint32     theMaxSendDelay;
 
   bool       theUseTcInSameRRGroup;
   bool       theGracefulShutdownFlag;
@@ -163,6 +164,7 @@ struct GlobalData {
     std::memset(theNextTcThreadPerRecv, 0, sizeof(theNextTcThreadPerRecv));
     std::memset(m_hb_count, 0, sizeof(m_hb_count));
     theMaxRRGroupSize = MIN_MAX_RR_GROUP_SIZE;
+    theMaxSendDelay = 0;
     theUseTcInSameRRGroup = false;
 #ifdef GCP_TIMER_HACK
     gcp_timer_limit = 0;

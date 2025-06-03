@@ -2847,7 +2847,6 @@ extend_send_delay(struct thr_send_trps &trp_state, NDB_TICKS now)
     /**
      * No need to change timer when no send delay or when all
      * changes have already been performed.
-     * changes have already been performed.
      */
     return;
   }
@@ -8706,8 +8705,10 @@ mt_setConfMaxSignalsBeforeFlushReceiver(Uint32 max_signals_before_flush_receiver
 void
 mt_setMinSendDelay(Uint32 min_send_delay)
 {
-  g_min_send_delay = min_send_delay;
-  g_min_send_delay_available = (2 * g_min_send_delay) / 3;
+  if (min_send_delay >= globalData.theMaxSendDelay) {
+    g_min_send_delay = min_send_delay;
+    g_min_send_delay_available = (2 * g_min_send_delay) / 3;
+  }
 }
 
 void
@@ -9717,6 +9718,8 @@ static
 void
 rep_init(struct thr_repository* rep, unsigned int cnt, Ndbd_mem_manager *mm)
 {
+  mt_setMinSendDelay(globalData.theMaxSendDelay);
+
   rep->m_mm = mm;
 
   rep->m_thread_count = cnt;

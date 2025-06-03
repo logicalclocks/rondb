@@ -266,6 +266,10 @@ void Configuration::fetch_configuration(
   iter.get(CFG_DB_MAX_RR_GROUP_SIZE, &max_rr_group_size);
   globalData.theMaxRRGroupSize = max_rr_group_size;
 
+  Uint32 max_send_delay = 0;
+  iter.get(CFG_DB_MAX_SEND_DELAY, &max_send_delay);
+  globalData.theMaxSendDelay = max_send_delay;
+
   const char * pidfile_dir;
   if(iter.get(CFG_NODE_PIDFILE_DIR, &pidfile_dir) == 0)
   {
