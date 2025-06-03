@@ -613,6 +613,30 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     "true" },
 
   {
+    CFG_DB_USE_TC_THREADS,
+    "UseTcThreads",
+    DB_TOKEN,
+    "Use tc threads",
+    ConfigInfo::CI_USED,
+    false,
+    ConfigInfo::CI_BOOL,
+    "true",
+    "false",
+    "true" },
+
+  {
+    CFG_DB_USE_LDM_THREADS,
+    "UseLdmThreads",
+    DB_TOKEN,
+    "Use ldm threads, not using it implies only recv threads",
+    ConfigInfo::CI_USED,
+    false,
+    ConfigInfo::CI_BOOL,
+    "true",
+    "false",
+    "true" },
+
+  {
     CFG_DB_USE_TC_IN_RR_GROUP,
     "UseTcInRRGroup",
     DB_TOKEN,
