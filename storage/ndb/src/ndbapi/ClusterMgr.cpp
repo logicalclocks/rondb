@@ -1938,6 +1938,27 @@ void ClusterMgr::print_nodes(const char *where, NdbOut &out) {
   out << "<<" << endl;
 }
 
+int ClusterMgr::db_nodes_all_alive() {
+  int all_alive = 1;
+  TransporterRegistry *tr = theFacade.get_registry();
+  for (NodeId n = 1; n < MAX_NODES; n++) {
+    const trp_node node = getNodeInfo(n);
+    if (!node.defined) continue;
+    /*
+     * Note:
+     * We don’t use node.m_node_active to determine whether the node is
+     * activated or deactivated, because the node info in ClusterMgr
+     * may be outdated.
+     */
+    if (node.m_info.getType() == NODE_TYPE_DB
+        && tr->get_active_node(n) &&!node.m_alive) {
+      all_alive = 0;
+      break;
+    }
+  }
+  return all_alive;
+}
+
 void ClusterMgr::setProcessInfoUri(const char *scheme,
                                    const char *address_string, int port,
                                    const char *path) {

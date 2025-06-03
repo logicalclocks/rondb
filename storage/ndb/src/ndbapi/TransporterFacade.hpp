@@ -681,6 +681,12 @@ inline unsigned Ndb_cluster_connection_impl::get_connect_count() const {
   return 0;
 }
 
+inline int Ndb_cluster_connection_impl::db_nodes_all_alive() {
+  if (m_transporter_facade->theClusterMgr)
+    return m_transporter_facade->theClusterMgr->db_nodes_all_alive();
+  return false;
+}
+
 inline unsigned Ndb_cluster_connection_impl::get_min_db_version() const {
   return m_transporter_facade->getMinDbNodeVersion();
 }

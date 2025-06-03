@@ -85,6 +85,7 @@ class Ndb_cluster_connection_impl : public Ndb_cluster_connection {
  public:
   inline Uint64 *get_latest_trans_gci() { return &m_latest_trans_gci; }
   int set_location_domain_id(Uint32 nodeId, Uint32 location_domain_id);
+  int db_nodes_all_alive();
 
  private:
   friend class Ndb;
