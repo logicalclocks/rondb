@@ -2015,14 +2015,26 @@ int do_restore(RestoreThreadData *thrdata) {
     }
   }
 
-  restoreLogger.log_debug("Handling index stat tables");
-  for (i = 0; i < g_consumers.size(); i++) {
-    if (!g_consumers[i]->handle_index_stat_tables()) {
-      restoreLogger.log_error(
-          "Restore: Failed to handle index stat tables ... Exiting ");
-      return NdbToolsProgramExitCode::FAILED;
-    }
-  }
+  /*
+   * NOTE:
+   *
+   * There’s a bug here: the restore tool doesn’t create the related
+   * event for the index_stat table — it only creates the table itself.
+   * This causes mysqld to get stuck when it fails to retrieve the event
+   * on restart after data has been restored on data nodes.
+   * So, here we skip creating the index_stat table and leave it to
+   * mysqld to handle instead.
+   *
+   * restoreLogger.log_debug("Handling index stat tables");
+   * for (i = 0; i < g_consumers.size(); i++) {
+   *   if (!g_consumers[i]->handle_index_stat_tables()) {
+   *     restoreLogger.log_error(
+   *         "Restore: Failed to handle index stat tables ... Exiting ");
+   *     return NdbToolsProgramExitCode::FAILED;
+   *   }
+   * }
+   *
+   */
 
   Vector<OutputStream *> table_output(metaData.getNoOfTables());
   restoreLogger.log_debug("Restoring tables");
