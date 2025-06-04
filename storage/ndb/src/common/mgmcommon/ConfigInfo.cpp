@@ -449,7 +449,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
 
     {CFG_DB_MAX_SEND_DELAY, "MaxSendDelay", DB_TOKEN,
      "Max number of microseconds to delay sending in ndbmtd",
-     ConfigInfo::CI_DEPRECATED, false, ConfigInfo::CI_INT, "125", "0", "1000"},
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "0", "0", "1000"},
 
     {CFG_DB_SCHED_SPIN_TIME, "SchedulerSpinTimer", DB_TOKEN,
      "Number of microseconds to execute in scheduler before sleeping",
@@ -611,6 +611,81 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     "false",
     "false",
     "true" },
+
+  {
+    CFG_DB_USE_TC_THREADS,
+    "UseTcThreads",
+    DB_TOKEN,
+    "Use tc threads",
+    ConfigInfo::CI_USED,
+    false,
+    ConfigInfo::CI_BOOL,
+    "true",
+    "false",
+    "true" },
+
+  {
+    CFG_DB_USE_LDM_THREADS,
+    "UseLdmThreads",
+    DB_TOKEN,
+    "Use ldm threads, not using it implies only recv threads",
+    ConfigInfo::CI_USED,
+    false,
+    ConfigInfo::CI_BOOL,
+    "true",
+    "false",
+    "true" },
+
+  {
+    CFG_DB_USE_TC_IN_RR_GROUP,
+    "UseTcInRRGroup",
+    DB_TOKEN,
+    "Each recv thread will distribute connections only to tc threads "
+    "in the same RR group, false means distribute to all",
+    ConfigInfo::CI_USED,
+    false,
+    ConfigInfo::CI_BOOL,
+    "false",
+    "false",
+    "true" },
+
+  {
+    CFG_DB_NUM_LQHKEYREQ_COUNTS,
+    "KeyBatchSizeQueryWorker",
+    DB_TOKEN,
+    "Number of LQHKEYREQ signals sent to query worker before next"
+    " worker is used",
+    ConfigInfo::CI_USED,
+    false,
+    ConfigInfo::CI_INT,
+    STR_VALUE(NUM_LQHKEYREQ_COUNTS),
+    "1",
+    "64" },
+
+  {
+    CFG_DB_NUM_SCAN_FRAGREQ_COUNTS,
+    "ScanBatchSizeQueryWorker",
+    DB_TOKEN,
+    "Number of SCAN_FRAGREQ signals sent to query worker before next"
+    " worker is used",
+    ConfigInfo::CI_USED,
+    false,
+    ConfigInfo::CI_INT,
+    STR_VALUE(NUM_SCAN_FRAGREQ_COUNTS),
+    "1",
+    "16" },
+
+  {
+    CFG_DB_MAX_RR_GROUP_SIZE,
+    "MaxRRGroupSize",
+    DB_TOKEN,
+    "Max size of a Round Robin group",
+    ConfigInfo::CI_USED,
+    false,
+    ConfigInfo::CI_INT,
+    STR_VALUE(MAX_RR_GROUPS),
+    STR_VALUE(MIN_MAX_RR_GROUPS),
+    STR_VALUE(MAX_RR_GROUPS) },
 
   {
     CFG_DB_MAX_NUM_SCHEMA_OBJECTS,

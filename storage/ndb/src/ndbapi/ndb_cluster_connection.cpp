@@ -895,11 +895,6 @@ void Ndb_cluster_connection_impl::adjust_node_comm_group(Uint32 node_id,
   node.adjusted_group += adjustment;
   DBUG_PRINT("info", ("Set adjusted_group to %u for node_index: %u, node: %u",
     node.adjusted_group, inx, node_id));
-  /**
-   * Clear hint count since the node adjusted will not have a
-   * hint count in sync with its new group.
-   */
-  m_node_hint_count[inx - 1] = 0;
   DBUG_VOID_RETURN;
 }
 
@@ -1575,7 +1570,8 @@ Uint32 Ndb_cluster_connection_impl::select_any(NdbImpl *impl_ndb) {
     DBUG_RETURN(select_node(impl_ndb,
                             prospective_node_ids,
                             num_prospective_nodes,
-                            0));
+                            0,
+                            &impl_ndb->m_node_hint_count[0]));
   }
 }
 
@@ -1590,6 +1586,7 @@ Ndb_cluster_connection_impl::select_location_based(NdbImpl *impl_ndb,
                                                    Uint32 cnt,
                                                    Uint32 primary_node)
 {
+  Uint16 *node_hint_count = &impl_ndb->m_node_hint_count[0];
   Uint16 prospective_node_ids[MAX_NDB_NODES];
   Uint32 num_prospective_nodes = 0;
   Uint32 my_location_domain_id = m_my_location_domain_id;
@@ -1598,7 +1595,11 @@ Ndb_cluster_connection_impl::select_location_based(NdbImpl *impl_ndb,
              cnt, primary_node, my_location_domain_id));
 
   if (my_location_domain_id == 0) {
-    DBUG_RETURN(select_node(impl_ndb, nodes, cnt, primary_node));
+    DBUG_RETURN(select_node(impl_ndb,
+                            nodes,
+                            cnt,
+                            primary_node,
+                            node_hint_count));
   }
   for (Uint32 i = 0; i < cnt; i++) {
     DBUG_PRINT("info",("Location domain id: %u of node: %u, avail: %u",
@@ -1616,14 +1617,19 @@ Ndb_cluster_connection_impl::select_location_based(NdbImpl *impl_ndb,
     }
   }
   if (num_prospective_nodes == 0) {
-    DBUG_RETURN(select_node(impl_ndb, nodes, cnt, primary_node));
+    DBUG_RETURN(select_node(impl_ndb,
+                            nodes,
+                            cnt,
+                            primary_node,
+                            node_hint_count));
   } else if (num_prospective_nodes == 1) {
     DBUG_RETURN(prospective_node_ids[0]);
   } else {
     DBUG_RETURN(select_node(impl_ndb,
                             prospective_node_ids,
                             num_prospective_nodes,
-                            primary_node));
+                            primary_node,
+                            node_hint_count));
   }
 }
 
@@ -1631,7 +1637,8 @@ Uint32
 Ndb_cluster_connection_impl::select_node(NdbImpl *impl_ndb,
                                          const Uint16 * nodes,
                                          Uint32 cnt,
-                                         Uint32 primary_node)
+                                         Uint32 primary_node,
+                                         Uint16 *node_hint_count)
 {
   DBUG_ENTER("Ndb_cluster_connection_impl::select_node");
   DBUG_PRINT("enter",("cnt: %u, primary: %u, my_domain: %u, my_node: %u",
@@ -1642,7 +1649,12 @@ Ndb_cluster_connection_impl::select_node(NdbImpl *impl_ndb,
     DBUG_RETURN(0);
   }
 
-  Uint32 best_node = nodes[0];
+  /**
+   * The node_hint_count is now stored on the NdbImpl object, this means
+   * that we remove any concurrent access to this variable which could easily
+   * hurt scalability.
+   */
+  Uint32 best_node = 0;
   Uint32 best_idx = Uint32(~0);
   Uint32 best_usage = 0;
   Int32 best_score = MAX_PROXIMITY_GROUP; // Lower is better
@@ -1670,12 +1682,12 @@ Ndb_cluster_connection_impl::select_node(NdbImpl *impl_ndb,
       best_idx = node_index;
       best_node = candidate_node;
       best_score = node.adjusted_group;
-      best_usage = m_node_hint_count[best_idx - 1];
+      best_usage = node_hint_count[best_idx - 1];
       DBUG_PRINT("info",("1: node: %u, best_score: %u, best_usage: %u,"
                  " node_index: %u",
         candidate_node, best_score, best_usage, node_index));
     } else if (node.adjusted_group == best_score) {
-      Uint32 usage = m_node_hint_count[node_index - 1];
+      Uint32 usage = node_hint_count[node_index - 1];
       if (candidate_node == primary_node) {
         /**
          * hint_count may wrap, for this calculation it is assumed that
@@ -1689,10 +1701,13 @@ Ndb_cluster_connection_impl::select_node(NdbImpl *impl_ndb,
                    " node_index: %u",
           candidate_node, best_score, best_usage, node_index));
       } else {
-        if (best_usage - usage < HINT_COUNT_HALF &&
-            best_node != primary_node) {
+        bool best_usage_larger = best_usage > usage;
+        best_usage_larger = best_usage_larger ?
+          best_usage - usage < HINT_COUNT_HALF :
+          usage - best_usage > HINT_COUNT_HALF;
+        if (best_usage_larger && best_node != primary_node) {
           /**
-           * hint_count may wrap, for this calculation it is assummed that
+           * hint_count may wrap, for this calculation it is assumed that
            * the two counts should be near each other, and so if the
            * difference is small above, best_usage is greater than usage.
            */
@@ -1706,13 +1721,9 @@ Ndb_cluster_connection_impl::select_node(NdbImpl *impl_ndb,
       }
     }
   }
-  if (!impl_ndb->get_node_available(best_node)) {
-    DBUG_RETURN(0);
-  }
-
   if (best_idx != Uint32(~0)) {
-    m_node_hint_count[best_idx - 1] =
-      (m_node_hint_count[best_idx - 1]) & HINT_COUNT_MASK;
+    node_hint_count[best_idx - 1] =
+      (node_hint_count[best_idx - 1] + 1) & HINT_COUNT_MASK;
   }
   DBUG_RETURN(best_node);
 }

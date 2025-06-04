@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2004, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -120,7 +120,6 @@ class Ndb_cluster_connection_impl : public Ndb_cluster_connection {
   NdbMutex *m_nodes_comm_group_mutex;
   Vector<Node> m_nodes_comm_group;
   Uint16 m_node_index[MAX_NDB_NODES];
-  Uint32 m_node_hint_count[MAX_NDB_NODES];
   Uint16 m_location_domain_id[MAX_NODES];
   int init_nodes_vector(Uint32 nodeid, const ndb_mgm_configuration *config);
   int configure(Uint32 nodeid, const ndb_mgm_configuration *config);
@@ -140,7 +139,8 @@ class Ndb_cluster_connection_impl : public Ndb_cluster_connection {
   Uint32 select_node(NdbImpl *impl_ndb,
                      const Uint16* nodes,
                      Uint32 cnt,
-                     Uint32 primary);
+                     Uint32 primary,
+                     Uint16 *node_hint_count);
   /**
    * Select primary or if primary in other location domain
    * choose a node in the same location domain

@@ -1994,6 +1994,8 @@ public:
     Uint32 num_rr_groups = globalData.ndbRRGroups;
     Uint32 num_distr_threads = num_query_instances;
 
+    m_num_lqhkeyreq_counts = globalData.theNumLqhKeyReqCounts;
+    m_num_scan_fragreq_counts = globalData.theNumScanFragReqCounts;
     m_num_rr_groups = num_rr_groups;
     m_num_distribution_threads = num_distr_threads;
     if (!Ndb_InitRRGroups(&m_rr_group[0],

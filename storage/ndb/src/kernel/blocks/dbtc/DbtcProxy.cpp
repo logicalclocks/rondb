@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2011, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -185,34 +185,125 @@ void DbtcProxy::execTCSEIZEREQ(Signal *signal) {
     return;
   }
 
-  if (globalData.ndbMtTcThreads == 0)
-  {
-    jam();
-    BlockReference sender_ref = signal->senderBlockRef();
-    NodeId node_id = refToNode(sender_ref);
-    Uint32 instance;
-    if (node_id == getOwnNodeId())
-    {
-      instance = 0; /* Handle Startup */
-    }
-    else
-    {
-      instance = map_api_node_to_recv_instance(node_id);
-      ndbrequire(instance != RNIL);
-      ndbrequire(instance < globalData.ndbMtReceiveThreads);
-    }
-    signal->theData[2] = (1 + instance);
-    sendSignal(workerRef(instance), GSN_TCSEIZEREQ, signal,
-               signal->getLength(), JBB);
-  }
-  else
+  if (globalData.ndbMtTcThreads > 0 &&
+      !globalData.theUseTcInSameRRGroup)
   {
     jam();
     signal->theData[2] = 1 + m_tc_seize_req_instance;
+    m_tc_seize_req_instance = (m_tc_seize_req_instance + 1) % c_workers;
     sendSignal(workerRef(m_tc_seize_req_instance), GSN_TCSEIZEREQ, signal,
                signal->getLength(), JBB);
-    m_tc_seize_req_instance = (m_tc_seize_req_instance + 1) % c_workers;
+    return;
   }
+  jam();
+  BlockReference sender_ref = signal->senderBlockRef();
+  NodeId node_id = refToNode(sender_ref);
+  Uint32 instance;
+  if (node_id == getOwnNodeId()) {
+    instance = 0; /* Handle Startup */
+    signal->theData[2] = (1 + instance);
+    sendSignal(workerRef(instance), GSN_TCSEIZEREQ, signal,
+                         signal->getLength(), JBB);
+    return;
+  } else {
+    instance = map_api_node_to_recv_instance(node_id);
+    ndbrequire(instance != RNIL);
+    ndbrequire(instance < globalData.ndbMtReceiveThreads);
+  }
+  if (globalData.ndbMtTcThreads > 0) {
+    /**
+     * Coming here means that theUseTcInSameRRGroup is true and we should
+     * distribute only to a subset of the tc threads from each
+     * recv thread. The idea is that this will decrease the amount
+     * of wakeups that need to happen from recv threads to tc
+     * threads. We only use tc threads in the same Round Robin group to
+     * increase chance of using the same CPU cache lines. In case there
+     * isn't enough tc threads in the same RR group we will select another.
+     *
+     * The best case here is that we have the number of tc threads
+     * divisible by the number of recv threads, normally twice as
+     * many. Otherwise certain imbalance might happen, but this
+     * should be handled by the scheduler for reads that will
+     * distribute more load to the less active tc threads.
+     *
+     * So normally setting TcThreadPerRecv to 2 or 4 would be the
+     * normal setting that should give best result.
+     *
+     * As an example if we have 16 tc threads and we have TcThreadPerRecv
+     * set to 4 with 8 recv threads. In 
+     */
+    Uint32 first_tc_instance = globalData.ndbMtLqhThreads;
+    Uint32 first_recv_instance = first_tc_instance +
+                                 globalData.ndbMtTcThreads;
+    Uint32 recv_instance = first_recv_instance + instance;
+    Uint32 recv_rr_group = m_rr_group[recv_instance];
+    Uint32 found_tc_instances = 0;
+    Uint32 instances_found[MAX_RR_GROUP_SIZE];
+
+    for (Uint32 i = first_tc_instance; i < first_recv_instance; i++) {
+      if (m_rr_group[i] == recv_rr_group) {
+        instances_found[found_tc_instances] = i - first_tc_instance;
+        found_tc_instances++;
+      }
+    }
+    if (found_tc_instances >= 2) {
+      /**
+       * At least 2 TC instances in this RR group, we will assume that
+       * the potential imbalance can be handled by read scheduler. Pick
+       * one of the tc instances using round robin for this recv thread.
+       */
+      Uint32 next_tc_thread = globalData.theNextTcThreadPerRecv[instance];
+      next_tc_thread++;
+      if (next_tc_thread >= found_tc_instances) {
+        next_tc_thread = 0;
+      }
+      globalData.theNextTcThreadPerRecv[instance] = next_tc_thread;
+      instance = instances_found[next_tc_thread];
+    } else if (found_tc_instances == 1) {
+      /**
+       * Only one tc thread in this RR group, we will pick this one in
+       * 2/3 of the cases, but the last 1/3 we will pick another based
+       * on the recv instance.
+       */
+      Uint32 next_tc_thread = globalData.theNextTcThreadPerRecv[instance];
+      next_tc_thread++;
+      if (next_tc_thread >= 3) {
+        next_tc_thread = 0;
+      }
+      globalData.theNextTcThreadPerRecv[instance] = next_tc_thread;
+      if (next_tc_thread < 2) {
+        instance = instances_found[0];
+      } else if (instance == instances_found[0]) {
+        /**
+         * By default we use the same tc instance number as recv, here
+         * this is the found one, so we have to use another.
+         */
+        if (instance > 0)
+          instance--;
+        else if (globalData.ndbMtTcThreads == 1)
+          instance = 0;
+        else
+          instance = 1;
+        if (instance > 0) 
+          instance--;
+      } else if (instance >= globalData.ndbMtTcThreads) {
+        instance = instances_found[0];
+      } else {
+        /* Here we will simply use the same tc instance number is recv */
+      }
+    } else {
+      /**
+       * The number of tc threads is very limited, simply use normal
+       * round robin approach.
+       */
+       
+      m_tc_seize_req_instance = (m_tc_seize_req_instance + 1) % c_workers;
+      instance = m_tc_seize_req_instance;
+    }
+  }
+  signal->theData[2] = (1 + instance);
+  sendSignal(workerRef(instance), GSN_TCSEIZEREQ, signal,
+             signal->getLength(), JBB);
 }
 
 // GSN_SET_DOMAIN_ID_REQ

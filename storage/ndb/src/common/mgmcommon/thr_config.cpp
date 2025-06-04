@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2022, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2020, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2020, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -524,7 +524,8 @@ THRConfig::do_parse_auto(unsigned realtime,
                          unsigned num_cpus,
                          unsigned &num_rr_groups,
                          bool use_tc_threads,
-                         bool use_ldm_threads) {
+                         bool use_ldm_threads,
+                         unsigned max_rr_group_size) {
   Uint32 tc_threads = 0;
   Uint32 ldm_threads = 0;
   Uint32 main_threads = 0;
@@ -658,12 +659,13 @@ THRConfig::do_parse_auto(unsigned realtime,
      * which L3 cache a Round Robin group belongs to.
      */
     num_rr_groups =
-      Ndb_CreateCPUMap(num_query_instances);
+      Ndb_CreateCPUMap(num_query_instances, max_rr_group_size);
     Uint32 count_ldm_threads = ldm_threads;
     Uint32 count_tc_threads = tc_threads;
     Uint32 count_main_threads = main_threads;
     Uint32 count_rep_threads = rep_threads;
     Uint32 count_recv_threads = recv_threads;
+    Uint32 count_send_threads = send_threads;
     g_eventLogger->info("Number of RR Groups = %u", num_rr_groups);
     Uint32 rr_group = 0;
     Uint32 next_cpu_id = Ndb_GetFirstCPUInMap(rr_group);
@@ -680,24 +682,19 @@ THRConfig::do_parse_auto(unsigned realtime,
     Uint32 num_only_ldms_in_group = num_rr_groups * num_only_ldm_groups;
     assert(num_only_ldms_in_group <= count_ldm_threads);
 
-    for (Uint32 i = 0; i < num_cpus; i++)
-    {
+    for (Uint32 i = 0; i < num_cpus; i++) {
       Uint32 thread_type = T_SEND; // T_SEND silences compiler
       Uint32 inx = RNIL;
       Uint32 odd = (i & 1) == 1;
-      if (i != 0)
-      {
+      if (i != 0) {
         next_cpu_id = Ndb_GetNextCPUInMap(next_cpu_id, rr_group);
       }
-      if (num_only_ldms_in_group > 0)
-      {
+      if (num_only_ldms_in_group > 0) {
         thread_type = T_LDM;
         count_ldm_threads--;
         num_only_ldms_in_group--;
         inx = count_ldm_threads;
-      }
-      else
-      {
+      } else {
         /**
          * We want to balance the CPU load on the non-LDM CPU cores and
          * similarly we want to achieve a balanced load on the Round Robin
@@ -714,64 +711,52 @@ THRConfig::do_parse_auto(unsigned realtime,
          * core and thus we should have a fairly good balance also on
          * Round Robin groups.
          */
-        if (odd)
-        {
-          if (count_main_threads > 0)
-          {
-            thread_type = T_MAIN;
-            count_main_threads--;
-            inx = count_main_threads;
-          }
-          else if (count_rep_threads > 0)
-          {
+        if (odd) {
+          if (count_tc_threads > 0) {
+            thread_type = T_TC;
+            count_tc_threads--;
+            inx = count_tc_threads;
+          } else if (count_rep_threads > 0) {
             thread_type = T_REP;
             count_rep_threads--;
             inx = count_rep_threads;
-          }
-          else if (count_tc_threads > 0)
-          {
-            thread_type = T_TC;
-            count_tc_threads--;
-            inx = count_tc_threads;
-          }
-          else if (count_recv_threads > 0)
-          {
+          } else if (count_recv_threads > 0) {
             thread_type = T_RECV;
             count_recv_threads--;
             inx = count_recv_threads;
-          }
-          else
-          {
-            /* Send thread handled in non-odd part */
-            odd = false;
+          } else {
+            require(send_threads > 0);
+            thread_type = T_SEND;
+            count_send_threads--;
+            inx = count_send_threads;
           }
         }
-        if (!odd)
-        {
-          if (count_ldm_threads > 0)
-          {
+        if (!odd) {
+          if (count_ldm_threads > 0) {
             thread_type = T_LDM;
             count_ldm_threads--;
             inx = count_ldm_threads;
-          }
-          else if (count_recv_threads > 0)
-          {
+          } else if (count_recv_threads > 0) {
             thread_type = T_RECV;
             count_recv_threads--;
             inx = count_recv_threads;
-          }
-          else if (count_tc_threads > 0)
-          {
+          } else if (count_main_threads > 0) {
+            thread_type = T_MAIN;
+            count_main_threads--;
+            inx = count_main_threads;
+          } else if (count_send_threads > 0) {
+            thread_type = T_SEND;
+            count_send_threads--;
+            inx = count_send_threads;
+          } else if (count_rep_threads > 0) {
+            thread_type = T_REP;
+            count_rep_threads--;
+            inx = count_rep_threads;
+          } else {
+            require(tc_threads > 0);
             thread_type = T_TC;
             count_tc_threads--;
             inx = count_tc_threads;
-          }
-          else
-          {
-            require(send_threads > 0);
-            thread_type = T_SEND;
-            send_threads--;
-            inx = send_threads;
           }
         }
       }
@@ -852,7 +837,7 @@ THRConfig::do_parse_auto(unsigned realtime,
       }
     }
   } else {
-    num_rr_groups = Ndb_GetRRGroups(num_query_instances);
+    num_rr_groups = Ndb_GetRRGroups(num_query_instances, max_rr_group_size);
   }
   return 0;
 }

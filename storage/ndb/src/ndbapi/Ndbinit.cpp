@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2025, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -235,9 +236,8 @@ NdbImpl::NdbImpl(Ndb_cluster_connection *ndb_cluster_connection, Ndb &ndb)
       customData(0),
       send_TC_COMMIT_ACK_immediate_flag(false) {
   int i;
-  for (i = 0; i < MAX_NDB_NODES; i++) {
-    the_release_ind[i] = 0;
-  }
+  memset(the_release_ind, 0, sizeof(the_release_ind));
+  memset(m_node_hint_count, 0, sizeof(m_node_hint_count));
   m_optimized_node_selection =
       m_ndb_cluster_connection.m_conn_default_optimized_node_selection;
 

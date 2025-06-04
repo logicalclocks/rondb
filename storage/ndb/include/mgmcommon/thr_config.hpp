@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2022, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2022, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -70,7 +70,8 @@ public:
                     unsigned num_cpus,
                     unsigned &num_rr_groups,
                     bool use_tc_threads,
-                    bool use_ldm_threads);
+                    bool use_ldm_threads,
+                    unsigned max_rr_group_size);
   int do_parse_thrconfig(const char * ThreadConfig,
                          unsigned realtime,
                          unsigned spintime);

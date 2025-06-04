@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2013, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -148,7 +148,7 @@ extern "C"
    * Round Robin groups of LDM groups that are contained in the same
    * virtual L3 cache groups.
    */
-  Uint32 Ndb_CreateCPUMap(Uint32 num_query_instances);
+  Uint32 Ndb_CreateCPUMap(Uint32 num_query_instances, Uint32 max_rr_group_size);
   bool Ndb_InitRRGroups(Uint32 *rr_group,
                         Uint32 num_rr_groups,
                         Uint32 num_query_instances,
@@ -156,7 +156,7 @@ extern "C"
   Uint32 Ndb_GetFirstCPUInMap(Uint32 & rr_group);
   Uint32 Ndb_GetNextCPUInMap(Uint32 cpu_id, Uint32 & rr_group);
 
-  Uint32 Ndb_GetRRGroups(Uint32 query_instances);
+  Uint32 Ndb_GetRRGroups(Uint32 query_instances, Uint32 max_rr_group_size);
 
   /**
    * Get the CPU id of all the CPUs in the CPU core of the

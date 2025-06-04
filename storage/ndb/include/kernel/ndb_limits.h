@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -51,7 +51,9 @@
 #define MAX_USED_NUM_CPUS 800
 #define MAX_QUERY_THREAD_PER_LDM 3
 #define MIN_RR_GROUP_SIZE 4
-#define MAX_RR_GROUP_SIZE 16
+#define MIN_MAX_RR_GROUP_SIZE 8
+#define DEF_MAX_RR_GROUP_SIZE 16
+#define MAX_RR_GROUP_SIZE 32
 
 /**************************************************************************
  * IT SHOULD BE (MAX_NDB_NODES - 1).
