@@ -2443,3 +2443,71 @@ func Test_IncludeDetailedStatus_JoinedTablePartialKeyAndMissingRow(t *testing.T)
 	}
 
 }
+
+func Test_GetFeatureVector_Shared_ComplexType(t *testing.T) {
+	// Get sample data with join between sample_1_1 from fsdb001 and sample_complex_type_1 from fsdb002
+	rows, pks, cols, err := fshelper.GetNSampleDataWithJoin(5, testdbs.FSDB001, "sample_1_1", testdbs.FSDB002, "sample_complex_type_1", "fg2_")
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+
+	// Map schema for struct type
+	mapSchema, err := avro.Parse(`{"type":"record","name":"sample_complex_type_1","namespace":"test_ken_featurestore.db","fields":[{"name":"struct","type":["null",{"type":"record","name":"r854762204","namespace":"struct","fields":[{"name":"int1","type":["null","long"]},{"name":"int2","type":["null","long"]}]}]}]}`)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+	mapStruct, err := fsmetadata.ConvertAvroSchemaToStruct(mapSchema)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+	mapComplexFeature := fsmetadata.ComplexFeature{Schema: &mapSchema, Struct: &mapStruct}
+
+	// Array schema
+	arraySchema, err := avro.Parse(`{"type":"record","name":"sample_complex_type_1","namespace":"test_ken_featurestore.db","fields":[{"name":"array","type":["null",{"type":"array","items":["null","long"]}]}]}`)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+	arrayStruct, err := fsmetadata.ConvertAvroSchemaToStruct(arraySchema)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+	arrayComplexFeature := fsmetadata.ComplexFeature{Schema: &arraySchema, Struct: &arrayStruct}
+
+	var fsReq = CreateFeatureStoreRequest(
+		testdbs.FSDB001,
+		"sample_share_complex",
+		1,
+		pks,
+		*GetPkValues(&rows, &pks, &cols),
+		nil,
+		nil,
+	)
+	fsReq.MetadataRequest = &api.MetadataRequest{FeatureName: true, FeatureType: true}
+	fsResp := GetFeatureStoreResponse(t, fsReq)
+
+	// Process complex type data for each row
+	for i := range rows {
+		// Convert array feature
+		if rows[i][6] != nil {
+			arrayBin := fshelper.ConvertBase64ToBinary(t, rows[i][6])
+			arrayPt, err := feature_store.DeserialiseComplexFeature(arrayBin, &arrayComplexFeature)
+			if err != nil {
+				t.Fatalf("Cannot deserialize array feature with error %s ", err)
+			}
+			rows[i][6] = *arrayPt
+		}
+
+		// Convert struct feature
+		if rows[i][7] != nil {
+			structBin := fshelper.ConvertBase64ToBinary(t, rows[i][7])
+			structPt, err := feature_store.DeserialiseComplexFeature(structBin, &mapComplexFeature)
+			if err != nil {
+				t.Fatalf("Cannot deserialize struct feature with error %s ", err)
+			}
+			rows[i][7] = *structPt
+		}
+	}
+
+	ValidateResponseWithData(t, &rows, &cols, fsResp)
+	fshelper.ValidateResponseMetadata(t, &fsResp.Metadata, fsReq.MetadataRequest, testdbs.FSDB001, "sample_share_complex", 1)
+}
