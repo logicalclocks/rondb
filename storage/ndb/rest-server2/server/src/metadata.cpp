@@ -209,7 +209,7 @@ newFeatureViewMetadata(const std::string &featureStoreName,
 
     auto fgFeature = FeatureGroupFeatures();
     fgFeature.featureStoreName = feature.featureStoreName;
-    fgFeature.featureStoreId = featureStoreId;
+    fgFeature.featureStoreId = feature.featureStoreId;
     fgFeature.featureGroupName = feature.featureGroupName;
     fgFeature.featureGroupVersion = feature.featureGroupVersion;
     fgFeature.featureGroupId = feature.featureGroupId;
@@ -470,6 +470,7 @@ std::tuple<FeatureViewMetadata*, std::shared_ptr<RestErrorCode>>
     feature.featureGroupName = featureGroup.name;
     feature.featureGroupVersion = featureGroup.version;
     feature.featureGroupId = tdf.featureGroupID;
+    feature.featureStoreId = featureGroup.featureStoreId;
     feature.id = tdf.featureID;
     feature.name = tdf.name;
     feature.type = tdf.type;

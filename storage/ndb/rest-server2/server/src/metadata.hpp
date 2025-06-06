@@ -40,6 +40,7 @@ struct FeatureMetadata {
   std::string featureGroupName;
   int featureGroupVersion;
   int featureGroupId;
+  int featureStoreId;
   int id;
   std::string name;
   std::string type;
