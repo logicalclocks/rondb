@@ -2259,7 +2259,6 @@ ConfigInfo::ConfigInfo() : m_info(true), m_systemDefaults(true) {
     }
 
     // Create pinfo (parameter info) entry
-    printf("paramId = %u", param._paramId);
     Properties pinfo(true);
     pinfo.put("Id", param._paramId);
     pinfo.put("Fname", param._fname);
