@@ -1455,6 +1455,83 @@ func Test_GetFeatureVector_WrongPkValue(t *testing.T) {
 	ValidateResponseWithData(t, &rows, &cols, fsResp)
 }
 
+func Test_GetFeatureVector_Shared_ComplexType(t *testing.T) {
+	var fsName = testdbs.FSDB001
+	var fvName = "sample_share_complex"
+        var fvVersion = 1
+	// Get sample data with join between sample_1_1 from fsdb001 and sample_complex_type_1 from fsdb002
+	rows, pks, cols, err := fshelper.GetNSampleDataWithJoin(5, testdbs.FSDB001, "sample_1_1", testdbs.FSDB002, "sample_complex_type_1", "fg2_")
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+
+	// Map schema for struct type
+	mapSchema, err := avro.Parse(`{"type":"record","name":"sample_complex_type_1","namespace":"test_ken_featurestore.db","fields":[{"name":"struct","type":["null",{"type":"record","name":"r854762204","namespace":"struct","fields":[{"name":"int1","type":["null","long"]},{"name":"int2","type":["null","long"]}]}]}]}`)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+	mapStruct, err := fsmetadata.ConvertAvroSchemaToStruct(mapSchema)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+	mapComplexFeature := feature_store.ComplexFeature{Schema: &mapSchema, Struct: &mapStruct}
+
+	// Array schema
+	arraySchema, err := avro.Parse(`{"type":"record","name":"sample_complex_type_1","namespace":"test_ken_featurestore.db","fields":[{"name":"array","type":["null",{"type":"array","items":["null","long"]}]}]}`)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+	arrayStruct, err := fsmetadata.ConvertAvroSchemaToStruct(arraySchema)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+	arrayComplexFeature := feature_store.ComplexFeature{Schema: &arraySchema, Struct: &arrayStruct}
+
+	var fsReq = CreateBatchFeatureStoreRequest(
+                fsName,
+                fvName,
+		fvVersion,
+		pks,
+		*GetPkValues(&rows, &pks, &cols),
+		nil,
+		nil,
+	)
+	fsReq.MetadataRequest = &api.MetadataRequest{FeatureName: true, FeatureType: true}
+	fsResp := GetFeatureStoreResponse(t, fsReq)
+
+	// Process complex type data for each row
+	for i := range rows {
+		// Convert array feature
+		if rows[i][6] != nil {
+			arrayBin, err := fshelper.ConvertBinaryToJsonMessage(rows[i][6])
+			if err != nil {
+				t.Fatalf("Cannot convert to json with error %s ", err)
+			}
+			arrayPt, err := feature_store.DeserialiseComplexFeature(t, arrayBin, &arrayComplexFeature)
+			if err != nil {
+				t.Fatalf("Cannot deserialize array feature with error %s ", err)
+			}
+			rows[i][6] = *arrayPt
+		}
+
+		// Convert struct feature
+		if rows[i][7] != nil {
+			structBin, err := fshelper.ConvertBinaryToJsonMessage(rows[i][7])
+			if err != nil {
+				t.Fatalf("Cannot convert to json with error %s ", err)
+			}
+			structPt, err := feature_store.DeserialiseComplexFeature(t, structBin, &mapComplexFeature)
+			if err != nil {
+				t.Fatalf("Cannot deserialize struct feature with error %s ", err)
+			}
+			rows[i][7] = *structPt
+		}
+	}
+
+	ValidateResponseWithData(t, &rows, &cols, fsResp)
+	fshelper.ValidateResponseMetadata(t, &fsResp.Metadata, fsReq.MetadataRequest, testdbs.FSDB001, "sample_share_complex", 1)
+}
+
 func Test_GetFeatureVector_Success_ComplexType_ST(t *testing.T) {
 	var fsName = testdbs.FSDB002
 	var fvName = "sample_complex_type"
