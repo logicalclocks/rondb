@@ -658,7 +658,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     ConfigInfo::CI_USED,
     false,
     ConfigInfo::CI_INT,
-    STR_VALUE(NUM_LQHKEYREQ_COUNTS),
+    "4",
     "1",
     "64" },
 
@@ -671,7 +671,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     ConfigInfo::CI_USED,
     false,
     ConfigInfo::CI_INT,
-    STR_VALUE(NUM_SCAN_FRAGREQ_COUNTS),
+    "1",
     "1",
     "16" },
 
@@ -683,9 +683,9 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     ConfigInfo::CI_USED,
     false,
     ConfigInfo::CI_INT,
-    STR_VALUE(MAX_RR_GROUPS),
-    STR_VALUE(MIN_MAX_RR_GROUPS),
-    STR_VALUE(MAX_RR_GROUPS) },
+    "16",
+    "8",
+    "32" },
 
   {
     CFG_DB_MAX_NUM_SCHEMA_OBJECTS,
@@ -2259,6 +2259,7 @@ ConfigInfo::ConfigInfo() : m_info(true), m_systemDefaults(true) {
     }
 
     // Create pinfo (parameter info) entry
+    printf("paramId = %u", param._paramId);
     Properties pinfo(true);
     pinfo.put("Id", param._paramId);
     pinfo.put("Fname", param._fname);

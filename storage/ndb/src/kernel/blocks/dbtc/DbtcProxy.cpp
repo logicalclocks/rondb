@@ -190,9 +190,9 @@ void DbtcProxy::execTCSEIZEREQ(Signal *signal) {
   {
     jam();
     signal->theData[2] = 1 + m_tc_seize_req_instance;
-    m_tc_seize_req_instance = (m_tc_seize_req_instance + 1) % c_workers;
     sendSignal(workerRef(m_tc_seize_req_instance), GSN_TCSEIZEREQ, signal,
                signal->getLength(), JBB);
+    m_tc_seize_req_instance = (m_tc_seize_req_instance + 1) % c_workers;
     return;
   }
   jam();
@@ -200,17 +200,20 @@ void DbtcProxy::execTCSEIZEREQ(Signal *signal) {
   NodeId node_id = refToNode(sender_ref);
   Uint32 instance;
   if (node_id == getOwnNodeId()) {
+    jam();
     instance = 0; /* Handle Startup */
     signal->theData[2] = (1 + instance);
     sendSignal(workerRef(instance), GSN_TCSEIZEREQ, signal,
                          signal->getLength(), JBB);
     return;
   } else {
+    jam();
     instance = map_api_node_to_recv_instance(node_id);
     ndbrequire(instance != RNIL);
     ndbrequire(instance < globalData.ndbMtReceiveThreads);
   }
   if (globalData.ndbMtTcThreads > 0) {
+    jam();
     /**
      * Coming here means that theUseTcInSameRRGroup is true and we should
      * distribute only to a subset of the tc threads from each
@@ -246,15 +249,18 @@ void DbtcProxy::execTCSEIZEREQ(Signal *signal) {
         found_tc_instances++;
       }
     }
+    jamData(found_tc_instances);
     if (found_tc_instances >= 2) {
       /**
        * At least 2 TC instances in this RR group, we will assume that
        * the potential imbalance can be handled by read scheduler. Pick
        * one of the tc instances using round robin for this recv thread.
        */
+      jam();
       Uint32 next_tc_thread = globalData.theNextTcThreadPerRecv[instance];
       next_tc_thread++;
       if (next_tc_thread >= found_tc_instances) {
+        jam();
         next_tc_thread = 0;
       }
       globalData.theNextTcThreadPerRecv[instance] = next_tc_thread;
@@ -265,30 +271,41 @@ void DbtcProxy::execTCSEIZEREQ(Signal *signal) {
        * 2/3 of the cases, but the last 1/3 we will pick another based
        * on the recv instance.
        */
+      jam();
       Uint32 next_tc_thread = globalData.theNextTcThreadPerRecv[instance];
       next_tc_thread++;
       if (next_tc_thread >= 3) {
+        jam();
         next_tc_thread = 0;
       }
       globalData.theNextTcThreadPerRecv[instance] = next_tc_thread;
       if (next_tc_thread < 2) {
+        jam();
         instance = instances_found[0];
       } else if (instance == instances_found[0]) {
         /**
          * By default we use the same tc instance number as recv, here
          * this is the found one, so we have to use another.
          */
-        if (instance > 0)
+        if (instance > 0) {
+          jam();
           instance--;
-        else if (globalData.ndbMtTcThreads == 1)
+        } else if (globalData.ndbMtTcThreads == 1) {
+          jam();
           instance = 0;
-        else
+        } else {
+          jam();
           instance = 1;
-        if (instance > 0) 
+        }
+        if (instance > 0) {
+          jam();
           instance--;
+        }
       } else if (instance >= globalData.ndbMtTcThreads) {
+        jam();
         instance = instances_found[0];
       } else {
+        jam();
         /* Here we will simply use the same tc instance number is recv */
       }
     } else {
@@ -296,7 +313,7 @@ void DbtcProxy::execTCSEIZEREQ(Signal *signal) {
        * The number of tc threads is very limited, simply use normal
        * round robin approach.
        */
-       
+      jam(); 
       m_tc_seize_req_instance = (m_tc_seize_req_instance + 1) % c_workers;
       instance = m_tc_seize_req_instance;
     }
