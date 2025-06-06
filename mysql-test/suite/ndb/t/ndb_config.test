@@ -65,7 +65,9 @@ echo == 19 == bug12712109;
 
 # Read config generation number from nodes
 # From management server
+--disable_result_log
 --exec $NDB_CONFIG --system --query=ConfigGenerationNumber
+--enable_result_log
 # From a data node
 --exec $NDB_CONFIG --system --config-from-node=2 --query=ConfigGenerationNumber
 --disable_result_log
