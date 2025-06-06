@@ -3997,50 +3997,50 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
                                refToNode(sendersBlockRef), 3);
       return;
   }  // switch
-  if (unlikely(ERROR_INSERTED(8120) || (TtabIndex >= TtabMaxIndex)))
+  if (unlikely(ERROR_INSERTED(8300) || (TtabIndex >= TtabMaxIndex)))
   {
     releaseSections(handle);
     TCKEY_abort(signal, 7, apiConnectptr);
     return;
   }
-  if (ERROR_INSERTED(8121))
+  if (ERROR_INSERTED(8301))
   {
     releaseSections(handle);
     TCKEY_abort(signal, 0, apiConnectptr);
     return;
   }
-  if (ERROR_INSERTED(8122))
+  if (ERROR_INSERTED(8302))
   {
     releaseSections(handle);
     TCKEY_abort(signal, TexecFlag ? 60 : 57, apiConnectptr);
     return;
   }
-  if (ERROR_INSERTED(8123))
+  if (ERROR_INSERTED(8303))
   {
     releaseSections(handle);
     TCKEY_abort(signal, 1, apiConnectptr);
     return;
   }
-  if (ERROR_INSERTED(8124))
+  if (ERROR_INSERTED(8304))
   {
     releaseSections(handle);
     TCKEY_abort(signal, 59, apiConnectptr);
     return;
   }
-  if (ERROR_INSERTED(8126))
+  if (ERROR_INSERTED(8305))
   {
     releaseSections(handle);
     TCKEY_abort(signal, 55, apiConnectptr);
     return;
   }
-  if (ERROR_INSERTED(8127))
+  if (ERROR_INSERTED(8306))
   {
     releaseSections(handle);
     terrorCode = ZSEIZE_API_COPY_ERROR;
     abortErrorLab(signal, apiConnectptr);
     return;
   }
-  if (ERROR_INSERTED(8128))
+  if (ERROR_INSERTED(8307))
   {
     releaseSections(handle);
     terrorCode = ZWRONG_SCHEMA_VERSION_ERROR;
@@ -7489,7 +7489,7 @@ void Dbtc::commit020Lab(Signal *signal,
       if (Tcount < ZMAX_COMMIT_PER_RT_BREAK &&
           !(ERROR_INSERTED(8057) || ERROR_INSERTED(8073) ||
             ERROR_INSERTED(8089) ||
-            (ERROR_INSERTED(8132) && ((apiConnectptr.i & 0x1) == 0)))) {
+            (ERROR_INSERTED(8123) && ((apiConnectptr.i & 0x1) == 0)))) {
         jam();
         continue;
       }
@@ -7507,7 +7507,7 @@ void Dbtc::commit020Lab(Signal *signal,
           sendSignalWithDelay(CMVMI_REF, GSN_NDB_TAMPER, signal, 100, 1);
           return;
         }
-        if (ERROR_INSERTED(8089) || ERROR_INSERTED(8132)) {
+        if (ERROR_INSERTED(8089) || ERROR_INSERTED(8123)) {
           jam();
           apiConnectptr.p->nextTcOperation = localTcConnectptr.i;
           setApiConTimer(apiConnectptr, ctcTimer, __LINE__);
@@ -8007,7 +8007,7 @@ void Dbtc::complete010Lab(Signal *signal,
     apiConnectptr.p->finish_trans_counter++;
     if (tcConList.next(localTcConnectptr)) {
       if (Tcount < ZMAX_COMMIT_PER_RT_BREAK && !ERROR_INSERTED(8112) &&
-          !(ERROR_INSERTED(8132) && ((apiConnectptr.i & 0x1) != 0))) {
+          !(ERROR_INSERTED(8123) && ((apiConnectptr.i & 0x1) != 0))) {
         jamDebug();
         continue;
       }
@@ -8019,7 +8019,7 @@ void Dbtc::complete010Lab(Signal *signal,
           CLEAR_ERROR_INSERT_VALUE;
           return;
         }  // if
-        if (ERROR_INSERTED(8112) || ERROR_INSERTED(8132)) {
+        if (ERROR_INSERTED(8112) || ERROR_INSERTED(8123)) {
           jam();
           apiConnectptr.p->nextTcOperation = localTcConnectptr.i;
           setApiConTimer(apiConnectptr, ctcTimer, __LINE__);
@@ -10294,7 +10294,7 @@ int Dbtc::releaseAndAbort(Signal *signal, ApiConnectRecord *const regApiPtr) {
       abo->transid1 = regApiPtr->transid[0];
       abo->transid2 = regApiPtr->transid[1];
       Uint32 len = Abort::SignalLength;
-      if (ERROR_INSERTED(8120))
+      if (ERROR_INSERTED(8300))
       {
         Uint32 nodeId = refToNode(blockRef);
         if (getNodeInfo(nodeId).m_query_threads > 0)
@@ -16437,14 +16437,14 @@ void Dbtc::sendDihGetNodesLab(Signal *signal, ScanRecordPtr scanptr,
      * for more than 5-10 microseconds per signal.
      */
     if (fragCnt >= DiGetNodesReq::MAX_DIGETNODESREQS ||
-        ERROR_INSERTED(8129))
+        ERROR_INSERTED(8120))
     {
       jam();
       signal->theData[0] = TcContinueB::ZSTART_FRAG_SCANS;
       signal->theData[1] = apiConnectptr.i;
       signal->theData[2] = apiConnectptr.p->transid[0];
       signal->theData[3] = apiConnectptr.p->transid[1];
-      if (ERROR_INSERTED(8129))
+      if (ERROR_INSERTED(8120))
       {
         jam();
         // Delay CONTINUEB
@@ -17018,8 +17018,8 @@ void Dbtc::sendFragScansLab(Signal *signal, ScanRecordPtr scanptr,
            * If we are about to produce more, we have to continue later.
            */
 	  if ((cntLocSignals > 4) ||
-              (ERROR_INSERTED(8130)) ||
-              (ERROR_INSERTED(8131) && fragCnt >= 1))
+              (ERROR_INSERTED(8121)) ||
+              (ERROR_INSERTED(8122) && fragCnt >= 1))
           {
             jam();
             signal->theData[0] = TcContinueB::ZSEND_FRAG_SCANS;
@@ -17027,8 +17027,8 @@ void Dbtc::sendFragScansLab(Signal *signal, ScanRecordPtr scanptr,
             signal->theData[2] = apiConnectptr.p->transid[0];
             signal->theData[3] = apiConnectptr.p->transid[1];
 
-            if (ERROR_INSERTED(8130) ||
-                ERROR_INSERTED(8131))
+            if (ERROR_INSERTED(8121) ||
+                ERROR_INSERTED(8122))
             {
               jam();
               /* Delay CONTINUEB */

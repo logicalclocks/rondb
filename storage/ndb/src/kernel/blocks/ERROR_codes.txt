@@ -30,7 +30,8 @@ Next DBTUP 4040
 Next DBLQH 5113
 Next DBDICT 6227
 Next DBDIH 7251
-Next DBTC 8133
+Next DBTC 8125
+Next DBTC 8308 (RonDB)
 Next CMVMI 9993              Note: CMVMI grows downwards
 Next TRPMAN 9007 // Ndb numbers
 Next TRPMAN 9501 // RonDB numbers
