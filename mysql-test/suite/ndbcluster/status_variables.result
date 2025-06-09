@@ -121,6 +121,7 @@ Ndb_index_stat_cache_clean	#
 Ndb_index_stat_cache_query	#
 Ndb_index_stat_event_count	#
 Ndb_index_stat_status	#
+Ndb_is_db_nodes_all_alive	#
 Ndb_last_commit_epoch_server	#
 Ndb_last_commit_epoch_session	#
 Ndb_log_purge_queue_size	#

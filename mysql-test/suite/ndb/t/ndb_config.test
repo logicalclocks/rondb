@@ -65,18 +65,21 @@ echo == 19 == bug12712109;
 
 # Read config generation number from nodes
 # From management server
+--disable_result_log
 --exec $NDB_CONFIG --system --query=ConfigGenerationNumber
 # From a data node
 --exec $NDB_CONFIG --system --config-from-node=2 --query=ConfigGenerationNumber
-
+--enable_result_log
 --echo #
 --echo # Bug#32247424 SHOW CLUSTER CONFIG GENERATION
 --echo # - Config generation number used to configure the NdbApi
 --echo #   is available as status variable in mysqld
 --echo #
+--disable_result_log
 SELECT VARIABLE_VALUE FROM performance_schema.global_status
   WHERE VARIABLE_NAME = 'Ndb_config_generation';
 SHOW STATUS LIKE 'Ndb_config_generation';
+--enable_result_log
 
 echo == 21 == ThreadConfig;
 --replace_regex /.*\[ndb_config\]//

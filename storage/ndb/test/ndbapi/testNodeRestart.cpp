@@ -9760,7 +9760,7 @@ int runRestartsWithSlowCommitComplete(NDBT_Context *ctx, NDBT_Step *step) {
   }
 
   for (int i = 0; i < numRestarts && !ctx->isTestStopped(); i++) {
-    int errorCode = 8132;  // Slow commit and complete sending at TC
+    int errorCode = 8123;  // Slow commit and complete sending at TC
     ndbout << "Injecting error " << errorCode << " for slow commits + completes"
            << endl;
     restarter.insertErrorInAllNodes(errorCode);
