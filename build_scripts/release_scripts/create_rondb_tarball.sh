@@ -12,6 +12,19 @@ cd $TEMP_BUILD_DIR_ABS
 rm -rf $TARBALL_NAME
 mv rondb_bin_use $TARBALL_NAME
 
+# Copy the mysqlpump binary from 22.10
+if [[ "$TARBALL_NAME" == *"x86_64"* ]]; then
+  wget -O mysqlpump https://repo.hops.works/master/mysqlpump_rondb_22.10.11/mysqlpump_x86_64
+  chmod +x mysqlpump
+  mv mysqlpump $TARBALL_NAME/bin/
+elif [[ "$TARBALL_NAME" == *"arm64"* ]]; then
+  wget -O mysqlpump https://repo.hops.works/master/mysqlpump_rondb_22.10.11/mysqlpump_arm
+  chmod +x mysqlpump
+  mv mysqlpump $TARBALL_NAME/bin/
+else
+  echo "Unknown architecture $TARBALL_NAME for downloading the mysqlpump"
+fi
+
 set +e
 which pigz >/dev/null
 if [[ "$?" -ne "0" ]]; then
