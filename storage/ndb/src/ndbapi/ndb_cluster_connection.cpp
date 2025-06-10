@@ -324,6 +324,10 @@ Ndb_cluster_connection::no_db_nodes()
   return m_impl.m_nodes_proximity.size();
 }
 
+int Ndb_cluster_connection::db_nodes_all_alive() {
+  return m_impl.db_nodes_all_alive();
+}
+
 Uint32
 Ndb_cluster_connection::max_api_nodeid() const
 {
