@@ -4656,6 +4656,12 @@ bool MgmtSrvr::alloc_node_id_impl(NodeId &nodeid, enum ndb_mgm_node_type type,
       if (error_code == 0) {
         const char *alias, *str = nullptr;
         alias = ndb_mgm_get_node_type_alias_string(type, &str);
+        /*
+         * WARNING:
+         * MySQL server uses this specific error message to determine
+         * whether it should terminate during startup.
+         * DO NOT modify or remove this error message.
+         */
         error_string.appfmt("No free node id found for %s(%s).", alias, str);
       }
     }
