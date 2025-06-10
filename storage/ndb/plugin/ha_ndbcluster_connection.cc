@@ -275,7 +275,20 @@ int ndbcluster_connect(ulong wait_connected,  // Timeout in seconds
 
   while ((res = g_ndb_cluster_connection->connect(0, 0, 0)) == 1) {
     const NDB_TICKS now = NdbTick_getCurrentTicks();
-    if (NdbTick_Elapsed(start, now).seconds() > wait_connected) break;
+    if (NdbTick_Elapsed(start, now).seconds() > wait_connected) {
+      if (g_ndb_cluster_connection->get_latest_error() ==
+          1101 /*NDB_MGM_ALLOCID_ERROR*/) {
+        std::string error_msg(g_ndb_cluster_connection->get_latest_error_msg());
+        if (error_msg.find("No free node id") != std::string::npos) {
+          ndb_log_error("Connection to ndb_mgmd failed "
+                        "repeatedly due to %u(%s). Terminating mysqld",
+                        g_ndb_cluster_connection->get_latest_error(),
+                        g_ndb_cluster_connection->get_latest_error_msg());
+          return -1;
+        }
+      }
+      break;
+    }
     ndb_retry_sleep(100);
     if (connection_events_loop_aborted()) return -1;
   }
