@@ -334,6 +334,7 @@ public:
    * @return #nodes connected, or -1 on error
    */
   int wait_until_ready(const int * nodes, int cnt, int timeout);
+  int db_nodes_all_alive();
 #endif
 
 private:
