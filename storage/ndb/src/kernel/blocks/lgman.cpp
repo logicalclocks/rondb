@@ -1715,6 +1715,7 @@ Lgman::open_file(Signal* signal,
     jam();
     req->fileFlags |= FsOpenReq::OM_SYNC;
   }
+  req->fileFlags |= FsOpenReq::OM_ZEROS_ARE_SPARSE;
   switch(requestInfo){
   case CreateFileImplReq::Create:
     jam();
@@ -1787,7 +1788,7 @@ Lgman::execFSWRITEREQ(const FsReadWriteReq* req) const /* called direct cross th
   ndbrequire(req->getFormatFlag(req->operationFlag) ==
                req->fsFormatSharedPage);
   ndbrequire(m_shared_page_pool.getPtr(page_ptr,
-                                       req->data.sharedPage.pageNumber));
+                                       req->data.zeroPageIndicator.pageNumber));
   Uint32 init_zero = req->data.zeroPageIndicator.initZero;
   /**
    * This code is executed when creating a new UNDO logfile group.
@@ -2722,6 +2723,7 @@ Lgman::force_log_sync(Signal* signal,
         File_formats::Undofile::Undo_page_v2 *page_v2 =
           (File_formats::Undofile::Undo_page_v2*)undo;
         jam();
+        page_v2->m_page_header.m_page_type = File_formats::PT_Undopage;
         page_v2->m_ndb_version = NDB_DISK_V2;
         page_v2->m_checksum = 0;
         page_v2->m_unused[0] = 0;
@@ -2882,6 +2884,7 @@ next:
     thrjam(jamBuf);
     File_formats::Undofile::Undo_page_v2 *page_v2 =
       (File_formats::Undofile::Undo_page_v2*)undo;
+    page_v2->m_page_header.m_page_type = File_formats::PT_Undopage;
     page_v2->m_ndb_version = NDB_DISK_V2;
     page_v2->m_checksum = 0;
     page_v2->m_unused[0] = 0;
@@ -3105,6 +3108,7 @@ Lgman::flush_log(Signal* signal,
           File_formats::Undofile::Undo_page_v2 *page_v2 =
             (File_formats::Undofile::Undo_page_v2*)undo;
           jam();
+          page_v2->m_page_header.m_page_type = File_formats::PT_Undopage;
           page_v2->m_ndb_version = NDB_DISK_V2;
           page_v2->m_checksum = 0;
           page_v2->m_unused[0] = 0;
@@ -3444,6 +3448,7 @@ Lgman::write_log_pages(Signal* signal, Ptr<Logfile_group> ptr,
       File_formats::Undofile::Undo_page_v2 *page_v2 =
         (File_formats::Undofile::Undo_page_v2*)
           m_shared_page_pool.getPtr(pageId + i);
+      page_v2->m_page_header.m_page_type = File_formats::PT_Undopage;
       page_v2->m_ndb_version = NDB_DISK_V2;
       page_v2->m_checksum = 0;
       page_v2->m_unused[0] = 0;
@@ -5623,6 +5628,7 @@ Lgman::get_next_undo_record(Uint64 * this_lsn)
       File_formats::Undofile::Undo_page_v2 *page_v2 =
         (File_formats::Undofile::Undo_page_v2*)pageP;
       jam();
+      page_v2->m_page_header.m_page_type = File_formats::PT_Undopage;
       page_v2->m_ndb_version = NDB_DISK_V2;
       page_v2->m_checksum = 0;
       page_v2->m_unused[0] = 0;

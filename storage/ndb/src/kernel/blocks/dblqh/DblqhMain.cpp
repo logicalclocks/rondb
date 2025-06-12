@@ -27918,7 +27918,7 @@ Dblqh::execFSWRITEREQ(const FsReadWriteReq* req) const /* called direct cross th
   ndbrequire(req->getFormatFlag(req->operationFlag) ==
                req->fsFormatSharedPage);
   ndbrequire(m_shared_page_pool.getPtr(page_ptr,
-                                       req->data.sharedPage.pageNumber));
+                                       req->data.zeroPageIndicator.pageNumber));
 
   LogFileRecordPtr currLogFilePtr;
   currLogFilePtr.i = req->userPointer;
