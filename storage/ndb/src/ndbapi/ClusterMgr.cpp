@@ -1960,7 +1960,8 @@ int ClusterMgr::db_nodes_all_alive() {
 }
 
 void ClusterMgr::setProcessInfoUri(const char *scheme,
-                                   const char *address_string, int port,
+                                   const char *address_string,
+                                   int port,
                                    const char *path) {
   Guard g(clusterMgrThreadMutex);
 

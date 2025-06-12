@@ -367,6 +367,9 @@ VALUES
     */
     (
         4120, 'sample_4n3_on_id', 67, Timestamp('2023-08-08 14:00:53'), 10000, 1, ''    
+    ),
+    (
+        4121, 'sample_share_complex', 67, Timestamp('2023-09-26 10:03:16'), 10000, 1, ''
     );
 
 INSERT INTO 
@@ -503,6 +506,12 @@ VALUES
     ),
     (
         5140, NULL, 2076, 2069, NULL, 0, 1, 0, 'right_', 4120
+    ),
+    (
+        5141, NULL, 2069, NULL, NULL, 0, 0, 0, NULL, 4121
+    ),
+    (
+        5142, NULL, 31, NULL, NULL, 0, 1, 0, "fg2_", 4121
     );
 
 INSERT INTO
@@ -975,6 +984,30 @@ VALUES
     ),
     (
         5176, NULL, 2076, 'id2', 'varchar(100)', 5140, 5, 0, 0, 0, 4120, NULL
+    ),
+    (
+        5177, NULL, 2069, 'id1', 'bigint', 5141, 0, 0, 0, 0, 4121, NULL
+    ),
+    (
+        5178, NULL, 2069, 'ts', 'timestamp', 5141, 1, 0, 0, 0, 4121, NULL
+    ),
+    (
+        5179, NULL, 2069, 'data1', 'bigint', 5141, 2, 0, 0, 0, 4121, NULL
+    ),
+    (
+        5180, NULL, 2069, 'data2', 'bigint', 5141, 3, 0, 0, 0, 4121, NULL
+    ),
+    (
+        5181, NULL, 31, 'id1', 'bigint', 5142, 4, 0, 0, 0, 4121, NULL
+    ),
+    (
+        5182, NULL, 31, 'ts', 'bigint', 5142, 5, 0, 0, 0, 4121, NULL
+    ),
+    (
+        5183, NULL, 31, 'array', 'array<bigint>', 5142, 6, 0, 0, 0, 4121, NULL
+    ),
+    (
+        5184, NULL, 31, 'struct', 'struct<int1:bigint,int2:bigint>', 5142, 7, 0, 0, 0, 4121, NULL
     );
 
 INSERT INTO 
@@ -1135,6 +1168,12 @@ VALUES
     ),
     (
         1523, NULL, 'id', NULL, 0, 35, 1, 23 
+    ),
+    (
+        1524, NULL, 'id1', NULL, 0, 2069, 1, 4121
+    ),
+    (
+        1525, 'fg2_', 'id1', 'id1', 1, 31, 0, 4121
     );
 
 INSERT INTO
