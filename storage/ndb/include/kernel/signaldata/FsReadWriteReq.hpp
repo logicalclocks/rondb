@@ -130,6 +130,7 @@ private:
       Uint32 pageNumber;
     } sharedPage;
     struct {
+      Uint32 pageNumber;
       Uint32 initZero;
     } zeroPageIndicator;
   } data;
