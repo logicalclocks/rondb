@@ -2104,3 +2104,65 @@ func Test_GetFeatureVector_Success_ComplexType_CAPS(t *testing.T) {
 		ValidateResponseMetadata(t, &fsResp.Metadata, fsReq.MetadataRequest, fsName, fvName, fvVersion)
 	}
 }
+
+func Test_GetFeatureVector_Shared_ComplexType(t *testing.T) {
+	var fsName = testdbs.FSDB001
+	var fvName = "sample_share_complex"
+	var fvVersion = 1
+
+	// Map schema
+	mapSchema, err := avro.Parse(`{"type":"record","name":"sample_complex_type_1","namespace":"test_ken_featurestore.db","fields":[{"name":"struct","type":["null",{"type":"record","name":"r854762204","namespace":"struct","fields":[{"name":"int1","type":["null","long"]},{"name":"int2","type":["null","long"]}]}]}]}`)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+	mapStruct, err := fsmetadata.ConvertAvroSchemaToStruct(mapSchema)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+	mapComplexFeature := fsmetadata.ComplexFeature{Schema: &mapSchema, Struct: &mapStruct}
+
+	// Array schema
+	arraySchema, err := avro.Parse(`{"type":"record","name":"sample_complex_type_1","namespace":"test_ken_featurestore.db","fields":[{"name":"array","type":["null",{"type":"array","items":["null","long"]}]}]}`)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+	arrayStruct, err := fsmetadata.ConvertAvroSchemaToStruct(arraySchema)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+	arrayComplexFeature := fsmetadata.ComplexFeature{Schema: &arraySchema, Struct: &arrayStruct}
+
+	rows, pks, cols, err := GetSampleDataWithJoin(fsName, "sample_1_1", testdbs.FSDB002, "sample_complex_type_1", "fg2_")
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+
+	for _, row := range rows {
+		// Process complex type data
+		arrayBin := ConvertBase64ToBinary(t, row[6]) // Adjust index based on joined data
+		arrayPt, err := feature_store.DeserialiseComplexFeature(arrayBin, &arrayComplexFeature)
+		if err != nil {
+			t.Fatalf("Cannot deserailize array feature with error %s ", err)
+		}
+		row[6] = *arrayPt
+
+		mapBin := ConvertBase64ToBinary(t, row[7]) // Adjust index based on joined data
+		mapPt, err := feature_store.DeserialiseComplexFeature(mapBin, &mapComplexFeature)
+		if err != nil {
+			t.Fatalf("Cannot deserailize struct feature with error %s ", err)
+		}
+		row[7] = *mapPt
+
+		var fsReq = CreateFeatureStoreRequest(
+			fsName,
+			fvName,
+			fvVersion,
+			pks,
+			*GetPkValues(&row, &pks, &cols),
+			nil,
+			nil,
+		)
+		fsResp := GetFeatureStoreResponse(t, fsReq)
+		ValidateResponseWithData(t, &row, &cols, fsResp)
+	}
+}

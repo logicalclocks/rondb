@@ -87,6 +87,7 @@ func (fgf *FeatureGroupFeatures) String() string {
 
 type FeatureMetadata struct {
 	FeatureStoreName    string
+	FeatureStoreId      int
 	FeatureGroupName    string
 	FeatureGroupVersion int
 	FeatureGroupId      int
@@ -171,7 +172,7 @@ func newFeatureViewMetadata(
 		var feature = featureValue[0]
 		var fgFeature = FeatureGroupFeatures{}
 		fgFeature.FeatureStoreName = feature.FeatureStoreName
-		fgFeature.FeatureStoreId = featureStoreId
+		fgFeature.FeatureStoreId = feature.FeatureStoreId
 		fgFeature.FeatureGroupName = feature.FeatureGroupName
 		fgFeature.FeatureGroupVersion = feature.FeatureGroupVersion
 		fgFeature.FeatureGroupId = feature.FeatureGroupId
@@ -414,6 +415,7 @@ func GetFeatureViewMetadata(featureStoreName, featureViewName string, featureVie
 			fsIdToName[featureGroup.FeatureStoreId] = featureStoreName
 			feature.FeatureStoreName = featureStoreName
 		}
+		feature.FeatureStoreId = featureGroup.FeatureStoreId
 		feature.FeatureGroupName = featureGroup.Name
 		feature.FeatureGroupVersion = featureGroup.Version
 		feature.FeatureGroupId = tdf.FeatureGroupID

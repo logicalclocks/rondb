@@ -7971,10 +7971,10 @@ void Dblqh::handle_acquire_scan_frag_access(Fragrecord *fragPtrP) {
   m_scan_frag_access_contended++;
   do
   {
+    Uint64 waited = 0;
 #ifdef NDB_HAVE_CPU_PAUSE
     Uint32 num_spins = 1;
     Uint64 elapsed = 0;
-    Uint64 waited = 0;
     NdbMutex_Unlock(&fragPtrP->frag_mutex);
     start_spin_time = NdbTick_getCurrentTicks();
     NdbSpin();
@@ -8078,10 +8078,10 @@ void Dblqh::handle_acquire_read_key_frag_access(Fragrecord *fragPtrP,
   m_read_key_frag_access_contended++;
   do
   {
+    Uint64 waited = 0;
 #ifdef NDB_HAVE_CPU_PAUSE
     Uint32 num_spins = 1;
     Uint64 elapsed = 0;
-    Uint64 waited = 0;
     NdbMutex_Unlock(&fragPtrP->frag_mutex);
     start_spin_time = NdbTick_getCurrentTicks();
     NdbSpin();
@@ -8167,12 +8167,12 @@ void Dblqh::handle_acquire_write_key_frag_access(Fragrecord *fragPtrP,
   m_write_key_frag_access_contended++;
   do
   {
+    Uint64 waited = 0;
     ndbrequire(fragPtrP->m_cond_write_key_waiters == 0);
     fragPtrP->m_cond_write_key_waiters = 1;
 #ifdef NDB_HAVE_CPU_PAUSE
     Uint32 num_spins = 1;
     Uint64 elapsed = 0;
-    Uint64 waited = 0;
     ndbrequire(fragPtrP->m_spin_write_key_waiters == 0);
     fragPtrP->m_spin_write_key_waiters = 1;
     NdbMutex_Unlock(&fragPtrP->frag_mutex);
@@ -8277,12 +8277,12 @@ void Dblqh::handle_acquire_exclusive_frag_access(Fragrecord *fragPtrP,
      * We only perform spinning on platforms that actually support
      * spinning in some fashion.
      */
+    Uint64 waited = 0;
     ndbrequire(fragPtrP->m_cond_exclusive_waiters == 0);
     fragPtrP->m_cond_exclusive_waiters = 1;
 #ifdef NDB_HAVE_CPU_PAUSE
     Uint32 num_spins = 1;
     Uint64 elapsed = 0;
-    Uint64 waited = 0;
     ndbrequire(fragPtrP->m_spin_exclusive_waiters == 0);
     fragPtrP->m_spin_exclusive_waiters = 1;
     NdbMutex_Unlock(&fragPtrP->frag_mutex);

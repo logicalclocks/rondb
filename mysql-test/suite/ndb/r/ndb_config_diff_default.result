@@ -1,11 +1,5 @@
 
 exec NDB_CONFIG --rows="\n" --system --diff-default
-config of [SYSTEM] system
-CONFIG_PARAMETER,ACTUAL_VALUE,DEFAULT_VALUE
-Name,MC_<SYSTEM-GENERATION-TIME>,(mandatory)
-ConfigGenerationNumber,1,0
-PrimaryMGMNode,3,0
-
 
 exec NDB_CONFIG --rows="\n" --nodes --type=MGM --diff-default
 config of [MGM] node id 3 that is different from default

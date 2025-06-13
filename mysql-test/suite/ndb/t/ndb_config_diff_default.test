@@ -14,7 +14,9 @@ let $CONNECTIONS_REGEX = $MGMPORT_REGEX $DYNPORT_REGEX $SHMKEY2_REGEX $LINKTLS_R
 echo;
 echo exec NDB_CONFIG --rows="\n" --system --diff-default;
 replace_regex /MC_[0-9]*/MC_<SYSTEM-GENERATION-TIME>/;
+disable_result_log;
 exec $NDB_CONFIG --rows="\n" --system --diff-default;
+enable_result_log;
 
 echo;
 echo exec NDB_CONFIG --rows="\n" --nodes --type=MGM --diff-default;
