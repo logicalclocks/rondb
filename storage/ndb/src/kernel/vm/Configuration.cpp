@@ -967,7 +967,8 @@ Configuration::get_and_set_redo_buffer(const ndb_mgm_configuration_iterator *p)
     Uint32 num_ldm_threads = globalData.ndbMtLqhWorkers;
     redo_buffer64 = Uint64(num_ldm_threads) * Uint64(32) * MBYTE64;
     redo_buffer64 /= Uint64(num_log_parts);
-    redo_buffer64 = MIN(redo_buffer64, Uint64(128) * MBYTE64);
+    /* Set the min to be 64 MB per log part, should be more than sufficient */
+    redo_buffer64 = MIN(redo_buffer64, Uint64(64) * MBYTE64);
   }
   globalData.theRedoBuffer = redo_buffer64;
   Uint64 ret_size = redo_buffer64 * Uint64(num_log_parts);
