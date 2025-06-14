@@ -22211,7 +22211,11 @@ void Dbdih::sendLCP_FRAG_ORD(Signal *signal,
 
   Uint32 requestInfo = 0;
   if (c_any_node_waiting_for_lcp) {
-    requestInfo = LcpFragOrd::LcpWaitFlag;
+    if (ndbd_support_lcp_wait_flag(
+        getNodeInfo(replicaPtr.p->procNode).m_version)) {
+      jam();
+      requestInfo = LcpFragOrd::LcpWaitFlag;
+    }
   }
   LcpFragOrd *const lcpFragOrd = (LcpFragOrd *)&signal->theData[0];
   lcpFragOrd->tableId = info.tableId;
