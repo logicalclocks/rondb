@@ -2938,16 +2938,6 @@ void Dbdict::execSTTOR(Signal *signal) {
     indexStatBg_sendContinueB(signal);
     break;
   }
-  case 8:
-  {
-    D("Phase 8 in DBDICT reached");
-    break;
-  }
-  case 103:
-  {
-    D("Phase 103 in DBDICT reached");
-    break;
-  }
   default:
   {
     ndbabort();
@@ -2968,10 +2958,8 @@ void Dbdict::sendSTTORRY(Signal *signal) {
   signal->theData[7] = 5;
   signal->theData[8] = 6;
   signal->theData[9] = 7; /* start index stat bg loop */
-  signal->theData[10] = 8;
-  signal->theData[11] = 103;
-  signal->theData[12] = ZNOMOREPHASES;
-  sendSignal(NDBCNTR_REF, GSN_STTORRY, signal, 13, JBB);
+  signal->theData[10] = ZNOMOREPHASES;
+  sendSignal(NDBCNTR_REF, GSN_STTORRY, signal, 11, JBB);
 }
 
 /* ---------------------------------------------------------------- */
