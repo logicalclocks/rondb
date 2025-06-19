@@ -9991,6 +9991,7 @@ assign_receiver_threads(void)
   Uint32 num_recv_threads = globalData.ndbMtReceiveThreads;
   Uint32 recv_thread_idx = 0;
   Uint32 recv_thread_idx_shm = 0;
+  Uint32 max_trp_id = 0;
   for (Uint32 i = 0; i < MAX_NODES; i++)
   {
     g_api_node_to_recv_instance_map[i] = RNIL;
@@ -9999,37 +10000,60 @@ assign_receiver_threads(void)
   {
     Transporter *trp =
       globalTransporterRegistry.get_transporter(trp_id);
+    if (trp) {
+      max_trp_id = std::max(max_trp_id, trp_id);
+    }
+  }
+  /**
+   * We sort the assignment after LocationDomainId. This ensures that we
+   * are well distributed on the receive threads for each of the location
+   * domains. In particular this is important for the API nodes that resides
+   * in the same location domain id as us.
+   *
+   * We implement by first assigning all transporters belonging to location
+   * domain id 0, next to 1 and so forth. In this manner we distribute the
+   * connections over all receive threads.
+   *
+   * Shared memory transporters are by definition local and distributed
+   * separately, we handle this by handling shared memory transporters in
+   * the first loop with location domain id equal to 0.
+   */
+  for (Uint32 ld_id = 0; ld_id <= globalData.theMaxLocationDomainId; ld_id++) {
+    for (Uint32 trp_id = 1; trp_id <= max_trp_id; trp_id++) {
 
     /**
      * Ensure that shared memory transporters are well distributed
      * over all receive threads, so distribute those independent of
      * rest of transporters.
      */
-    if (trp)
-    {
-      Uint32 node_id =
-        globalTransporterRegistry.get_transporter_node_id(trp_id);
-      if (globalTransporterRegistry.is_shm_transporter(trp_id))
-      {
-        g_trp_to_recv_thr_map[trp_id] = recv_thread_idx_shm;
-        g_api_node_to_recv_instance_map[node_id] = recv_thread_idx_shm;
-        globalTransporterRegistry.set_recv_thread_idx(trp,recv_thread_idx_shm);
-        DEB_MULTI_TRP(("SHM trp %u uses recv_thread_idx: %u",
-                       trp_id, recv_thread_idx_shm));
-        recv_thread_idx_shm++;
-        if (recv_thread_idx_shm == num_recv_threads) recv_thread_idx_shm = 0;
+      Transporter *trp =
+        globalTransporterRegistry.get_transporter(trp_id);
+      if (trp) {
+        Uint32 node_id =
+          globalTransporterRegistry.get_transporter_node_id(trp_id);
+        if (globalTransporterRegistry.is_shm_transporter(trp_id)) {
+          if (ld_id != 0) continue;
+          g_trp_to_recv_thr_map[trp_id] = recv_thread_idx_shm;
+          g_api_node_to_recv_instance_map[node_id] = recv_thread_idx_shm;
+          globalTransporterRegistry.set_recv_thread_idx(trp,recv_thread_idx_shm);
+          DEB_MULTI_TRP(("SHM trp %u uses recv_thread_idx: %u",
+                         trp_id, recv_thread_idx_shm));
+          recv_thread_idx_shm++;
+          if (recv_thread_idx_shm == num_recv_threads) recv_thread_idx_shm = 0;
+        } else {
+          if (globalData.theLocationDomainId[node_id] != ld_id) continue;
+          g_trp_to_recv_thr_map[trp_id] = recv_thread_idx;
+          g_api_node_to_recv_instance_map[node_id] = recv_thread_idx;
+          DEB_MULTI_TRP(("TCP trp %u uses recv_thread_idx: %u",
+                         trp_id, recv_thread_idx));
+          globalTransporterRegistry.set_recv_thread_idx(trp,recv_thread_idx);
+          recv_thread_idx++;
+          if (recv_thread_idx == num_recv_threads) recv_thread_idx = 0;
+         }
       } else {
-        g_trp_to_recv_thr_map[trp_id] = recv_thread_idx;
-        g_api_node_to_recv_instance_map[node_id] = recv_thread_idx;
-        DEB_MULTI_TRP(("TCP trp %u uses recv_thread_idx: %u",
-                       trp_id, recv_thread_idx));
-        globalTransporterRegistry.set_recv_thread_idx(trp,recv_thread_idx);
-        recv_thread_idx++;
-        if (recv_thread_idx == num_recv_threads) recv_thread_idx = 0;
+        /* Flag for no transporter */
+        g_trp_to_recv_thr_map[trp_id] = MAX_NTRANSPORTERS;
       }
-    } else {
-      /* Flag for no transporter */
-      g_trp_to_recv_thr_map[trp_id] = MAX_NTRANSPORTERS;
     }
   }
   return;

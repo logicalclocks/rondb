@@ -366,6 +366,42 @@ Configuration::get_total_memory(const ndb_mgm_configuration_iterator *p,
 }
 
 void
+Configuration::set_location_domain_id() {
+  const char * msg = "Invalid configuration fetched";
+  char buf[255];
+  ndb_mgm_configuration_iterator * p = m_clusterConfigIter;
+  g_eventLogger->info("Set LocationDomainId's");
+
+  Uint32 max_location_domain_id = 0;
+  for (ndb_mgm_first(p); ndb_mgm_valid(p); ndb_mgm_next(p)) {
+    Uint32 nodeId;
+    Uint32 location_domain_id = 0;
+    if (ndb_mgm_get_int_parameter(p, CFG_NODE_ID, &nodeId)) {
+      ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG, msg,
+                "Node data (Id) missing");
+    }
+    if(nodeId > MAX_NODES || nodeId == 0) {
+      BaseString::snprintf(buf, sizeof(buf),
+	       "Invalid node id: %d", nodeId);
+      ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG, msg, buf);
+    }
+    if (ndb_mgm_get_int_parameter(p,
+                                  CFG_LOCATION_DOMAIN_ID,
+                                  &location_domain_id)) {
+      location_domain_id = 0;
+    }
+    if (location_domain_id > 16) {
+      ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG, msg,
+                "LocationDomainId > 16");
+    }
+    globalData.theLocationDomainId[nodeId] = location_domain_id;
+    max_location_domain_id =
+      std::max(max_location_domain_id, location_domain_id);
+  }
+  globalData.theMaxLocationDomainId = max_location_domain_id;
+}
+
+void
 Configuration::set_not_active_nodes()
 {
   const char * msg = "Invalid configuration fetched";
@@ -1894,6 +1930,7 @@ Configuration::setupConfiguration()
 
   calcSizeAlt(cf);
   set_not_active_nodes();
+  set_location_domain_id();
   DBUG_VOID_RETURN;
 }
 
