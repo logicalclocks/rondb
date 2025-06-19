@@ -131,8 +131,10 @@ struct GlobalData {
   bool       theGracefulShutdownFlag;
   bool       theUseOnlyIPv4Flag;
   bool       theUseContainerMemoryFlag;
+  Uint8      theMaxLocationDomainId;
 
   Uint8      theNextTcThreadPerRecv[MAX_NDBMT_RECEIVE_THREADS];
+  Uint8      theLocationDomainId[MAX_NODES];
 
   NdbMutex   *theIO_lag_mutex;
   ndb_openssl_evp::byte nodeMasterKey[MAX_NODE_MASTER_KEY_LENGTH];
@@ -165,6 +167,8 @@ struct GlobalData {
     theMicrosSend = 0;
     theMicrosSpin = 0;
     std::memset(theNextTcThreadPerRecv, 0, sizeof(theNextTcThreadPerRecv));
+    theMaxLocationDomainId = 0;
+    std::memset(theLocationDomainId, 0, sizeof(theLocationDomainId));
     std::memset(m_hb_count, 0, sizeof(m_hb_count));
     theMaxRRGroupSize = MIN_MAX_RR_GROUP_SIZE;
     theMaxSendDelay = 0;

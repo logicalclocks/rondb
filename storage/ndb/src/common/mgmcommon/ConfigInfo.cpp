@@ -1259,7 +1259,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
 
     {CFG_LOCATION_DOMAIN_ID, "LocationDomainId", DB_TOKEN,
      "LocationDomainId for node", ConfigInfo::CI_USED, false,
-     ConfigInfo::CI_INT, nullptr, "0", STR_VALUE(MAX_SIGNED_INT)},
+     ConfigInfo::CI_INT, nullptr, "0", "16"},
 
     {CFG_DB_NODEGROUP, "Nodegroup", DB_TOKEN,
      "Nodegroup for node, only used during initial cluster start",
