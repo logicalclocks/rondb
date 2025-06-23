@@ -224,6 +224,11 @@ inline const Uint32 *ALIGN_WORD(const void *ptr) {
 #define ZWRONG_INPUT_TO_BINARY_SEARCH 934
 #define ZNO_SUCH_NUMBER_SIZE_SUPPORTED 935
 #define ZNO_SUCH_SEARCH_INTERVAL_METHOD 936
+#define ZINCONSISTENCY_INPUT_PARAM 937
+#define ZTOO_MUCH_INPUT_PARAM 938
+#define ZWRONG_INPUT_PARAM_COLUMN 939
+
+#define MAX_INPUT_PARAMS 16
 
 /*
  * PA related
@@ -2852,6 +2857,10 @@ private:
   int readKeyAttributes(KeyReqStruct *req_struct, const Uint32 *inBuffer,
                         Uint32 inBufLen, Uint32 *outBuffer, Uint32 TmaxRead,
                         bool xfrmFlag);
+
+  int setInputParameters(KeyReqStruct *req_struct,
+                         Uint32 *inBuffer,
+                         Uint32 inBufLen);
 
   //------------------------------------------------------------------
   //------------------------------------------------------------------

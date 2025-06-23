@@ -1937,6 +1937,42 @@ Dbtup::readDiskBitsNULLable(Uint8* outBuffer,
                      bitCount);
 }
 
+int Dbtup::setInputParameters(KeyReqStruct *req_struct,
+                              Uint32 *inBuffer,
+                              Uint32 inBufLen) {
+  inBufLen--;
+  inBuffer++;
+  while (inBufLen > 2) {
+    AttributeHeader ahIn(*inBuffer);
+    Uint32 attributeId = ahIn.getAttributeId();
+    Uint32 sz = ahIn.getByteSize();
+    if ((attributeId >= AttributeHeader::INTERPRETER_INPUT_FIRST) &&
+        (attributeId <= AttributeHeader::INTERPRETER_INPUT_LAST)) {
+      if (sz != 8) {
+        return -ZINCONSISTENCY_INPUT_PARAM;
+      }
+      Uint32 low = *(inBuffer + 1);
+      Uint32 high = *(inBuffer + 2);
+      Uint64 val = Uint64(low) + (Uint64(high) << 32);
+      Uint32 id = attributeId - AttributeHeader::INTERPRETER_INPUT_FIRST;
+      m_interpreter_input[id] = val;
+#ifdef TRACE_INTERPRETER
+      g_eventLogger->info("(%u)Setting input param(%u) to %llx, low: %x,"
+                          " high: %x",
+                          instance(), id, val, low, high);
+#endif
+      inBuffer += 3;
+      inBufLen -= 3;
+    } else {
+      return -ZWRONG_INPUT_PARAM_COLUMN;
+    }
+  }
+  if (inBufLen != 0) {
+    return -ZINCONSISTENCY_INPUT_PARAM;
+  }
+  return 0;
+}
+
 /* ---------------------------------------------------------------------- */
 /*       THIS ROUTINE IS USED TO UPDATE A NUMBER OF ATTRIBUTES. IT IS     */
 /*       USED BY THE INSERT ROUTINE, THE UPDATE ROUTINE AND IT CAN BE     */
@@ -2054,6 +2090,14 @@ int Dbtup::updateAttributes(KeyReqStruct *req_struct,
           req_struct->m_write_log_memory_in_update = true;
           req_struct->log_size = 0;
           Dbtup *tup = req_struct->m_dbtup_ptr;
+#ifdef TRACE_INTERPRETER
+          g_eventLogger->info("(%u):1 writeLogMemory(%u) (%x,%x,%x)",
+            instance(),
+            inBufIndex * 4,
+            inBuffer[0],
+            inBuffer[1],
+            inBuffer[2]);
+#endif
           bool succ = tup->writeLogMemory(req_struct,
                                           (const char*)&inBuffer[0],
                                            inBufIndex * 4);
@@ -2064,6 +2108,15 @@ int Dbtup::updateAttributes(KeyReqStruct *req_struct,
       } else if (req_struct->m_write_log_memory_in_update == true) {
         thrjamDebug(req_struct->jamBuffer);
         Dbtup *tup = req_struct->m_dbtup_ptr;
+#ifdef TRACE_INTERPRETER
+      g_eventLogger->info("(%u):2 writeLogMemory(%u) (%x,%x,%x)",
+        instance(),
+        (4 * sz) + 8,
+        inBuffer[inBufIndex],
+        inBuffer[inBufIndex + 1],
+        inBuffer[inBufIndex + 2]);
+#endif
+
         bool succ = tup->writeLogMemory(req_struct,
                             (const char*)&inBuffer[inBufIndex],
                             (4 * sz) + 8);
@@ -2098,6 +2151,15 @@ int Dbtup::updateAttributes(KeyReqStruct *req_struct,
           return -ZTRY_UPDATE_PRIMARY_KEY;
         }
       }
+#ifdef TRACE_INTERPRETER
+      g_eventLogger->info("(%u) Partial write sz: %u, ext_head: %x (%x,%x,%x)",
+        instance(),
+        ahIn.getByteSize(),
+        extended_header,
+        inBuffer[inBufIndex],
+        inBuffer[inBufIndex + 1],
+        inBuffer[inBufIndex + 2]);
+#endif
       UpdateFunction f = regTabPtr->updateFunctionArray[attributeId];
       thrjamLineDebug(req_struct->jamBuffer, attributeId);
       req_struct->changeMask.set(attributeId);
@@ -2174,14 +2236,6 @@ int Dbtup::updateAttributes(KeyReqStruct *req_struct,
           return -ZAI_INCONSISTENCY_ERROR;
         }
       }
-    } else if ((attributeId >= AttributeHeader::INTERPRETER_INPUT_FIRST) &&
-               (attributeId <= AttributeHeader::INTERPRETER_INPUT_LAST)) {
-      ndbrequire(sz == 2);
-      Uint32 low = *(inBuffer + inBufIndex + 1);
-      Uint32 high = *(inBuffer + inBufIndex + 2);
-      Uint64 val = Uint64(low) + (Uint64(high) << 32);
-      Uint32 id = attributeId - AttributeHeader::INTERPRETER_INPUT_FIRST;
-      m_interpreter_input[id] = val;
     } else {
       thrjam(req_struct->jamBuffer);
       thrjamDataDebug(req_struct->jamBuffer, attributeId);
@@ -2191,6 +2245,14 @@ int Dbtup::updateAttributes(KeyReqStruct *req_struct,
     if (req_struct->m_write_log_memory_in_update == true) {
       thrjamDebug(req_struct->jamBuffer);
       Dbtup *tup = req_struct->m_dbtup_ptr;
+#ifdef TRACE_INTERPRETER
+      g_eventLogger->info("(%u):3 writeLogMemory(%u) (%x,%x,%x)",
+        instance(),
+        (4 * sz) + 4,
+        inBuffer[inBufIndex],
+        inBuffer[inBufIndex + 1],
+        inBuffer[inBufIndex + 2]);
+#endif
       bool succ = tup->writeLogMemory(req_struct,
                           (const char*)&inBuffer[inBufIndex],
                           (4 * sz) + 4);
@@ -2635,6 +2697,16 @@ Dbtup::handle_append_write(KeyReqStruct *req_struct,
     memcpy(col_ptr, src, *size_in_bytes);
     AttributeHeader ah(attrId, (*size_in_bytes));
     Dbtup *tup = req_struct->m_dbtup_ptr;
+#ifdef TRACE_INTERPRETER
+    Uint32 *u32_ptr = (Uint32*)col_ptr;
+    g_eventLogger->info("(%u):4 writeLogMemory(%u) (%x,%x,%x,%x)",
+      req_struct->m_dbtup_ptr->instance(),
+      (*size_in_bytes) + 4,
+      (Uint32)ah.m_value,
+      u32_ptr[0],
+      u32_ptr[1],
+      u32_ptr[2]);
+#endif
     tup->writeLogMemory(req_struct,
                         (char*)&ah,
                         4);
@@ -2681,7 +2753,7 @@ Dbtup::handle_append_write(KeyReqStruct *req_struct,
       thrjam(req_struct->jamBuffer);
       col_ptr[0] = tot_dataLen;
 #ifdef TRACE_INTERPRETER
-      g_eventLogger->info("((%u)append, 1 byte length, new_len: %u",
+      g_eventLogger->info("(%u)append, 1 byte length, new_len: %u",
                           req_struct->m_dbtup_ptr->instance(),
                           tot_dataLen);
 #endif
@@ -2711,10 +2783,17 @@ Dbtup::handle_append_write(KeyReqStruct *req_struct,
     header[0] = ah.m_value;
     header[1] = extended_header;
 #ifdef TRACE_INTERPRETER
-    g_eventLogger->info("(%u) writeLogMemory: size: %u",
-      req_struct->m_dbtup_ptr->instance(), new_writeLen);
-      
+    Uint32 *u32_ptr = (Uint32*)start_write_pos;
+    g_eventLogger->info("(%u):5 writeLogMemory(%u) (%x,%x,%x,%x,%x)",
+      req_struct->m_dbtup_ptr->instance(),
+      new_writeLen + 8,
+      (Uint32)header[0],
+      (Uint32)header[1],
+      u32_ptr[0],
+      u32_ptr[1],
+      u32_ptr[2]);
 #endif
+
     bool ret = tup->writeLogMemory(req_struct,
                                    (char*)&header[0],
                                    8);
@@ -2782,8 +2861,8 @@ Dbtup::handle_partial_write(KeyReqStruct *req_struct,
                           old_real_dataLen);
 #endif
     }
-    /* Start pos includes length bytes and so does size_in_bytes */
-    tot_dataLen = startPos + (*size_in_bytes) - (2 * length_bytes);
+    /* Start pos includes length bytes */
+    tot_dataLen = startPos + (*size_in_bytes) - length_bytes;
     tot_dataLen = MAX(tot_dataLen, old_real_dataLen);
     thrjamData(req_struct->jamBuffer, old_real_dataLen);
     thrjamData(req_struct->jamBuffer, tot_dataLen);
@@ -2791,7 +2870,7 @@ Dbtup::handle_partial_write(KeyReqStruct *req_struct,
       thrjam(req_struct->jamBuffer);
       col_ptr[0] = tot_dataLen;
 #ifdef TRACE_INTERPRETER
-      g_eventLogger->info("((%u)append, 1 byte length, new_len: %u",
+      g_eventLogger->info("(%u)append, 1 byte length, new_len: %u",
                           req_struct->m_dbtup_ptr->instance(),
                           tot_dataLen);
 #endif
@@ -2819,8 +2898,8 @@ Dbtup::handle_partial_write(KeyReqStruct *req_struct,
     }
     char *start_write_pos = (char*)col_ptr + startPos;
     memcpy(start_write_pos,
-           &src[2],
-           (*size_in_bytes) - 2);
+           &src[0],
+           (*size_in_bytes));
   }
   (*size_in_bytes) = tot_dataLen + length_bytes;
   col_ptr[0] = tot_dataLen & 255;
@@ -3424,6 +3503,10 @@ int Dbtup::read_pseudo(const Uint32 *inBuffer, Uint32 inPos,
         inx *= 2;
         memcpy(outBuffer + 1, &c_interpreter_output[inx], 8);
         sz = 2;
+#ifdef TRACE_INTERPRETER
+        g_eventLogger->info("(%u) Write interpreter output[%u]=(0x%x,0x%x)",
+          instance(), inx / 2, outBuffer[1], outBuffer[2]);
+#endif
         break;
       }
       return -ZATTRIBUTE_ID_ERROR;

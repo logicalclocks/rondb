@@ -165,7 +165,8 @@ class NdbScanOperation : public NdbOperation {
                 SO_CUSTOMDATA   = 0x40,
                 SO_PART_INFO    = 0x80,
                 SO_TTL_IGNORE   = 0x100,
-                SO_TTL_ONLY_EXPIRED = 0x200
+                SO_TTL_ONLY_EXPIRED = 0x200,
+                SO_SET_INPUT_PARAM = 0x400
     };
 
     /* Flags controlling scan behaviour
@@ -183,7 +184,11 @@ class NdbScanOperation : public NdbOperation {
      * Default == 0 == Automatically chosen size
      */
     Uint32 batch;
-    
+
+    /* Handling of input parameters */
+    NdbOperation::SetValueSpec *inputParams;
+    Uint32                     numInputParams;
+
     /* Extra values to be read for each row meeting
      * scan criteria
      */
@@ -544,12 +549,14 @@ class NdbScanOperation : public NdbOperation {
   int addAggregationCode();
   int handleScanOptionsVersion(const ScanOptions *&optionsPtr,
                                Uint32 sizeOfOptions, ScanOptions &currOptions);
+  int handleInterpreterOptions(const ScanOptions *options);
   int handleScanOptions(const ScanOptions *options);
   int validatePartInfoPtr(const Ndb::PartitionSpec *&partInfo,
                           Uint32 sizeOfPartInfo, Ndb::PartitionSpec &partValue);
   int getPartValueFromInfo(const Ndb::PartitionSpec *partInfo,
                            const NdbTableImpl *table, Uint32 *partValue);
-  int generatePackedReadAIs(const NdbRecord *reseult_record, bool &haveBlob,
+  int generatePackedReadAIs(const NdbRecord *reseult_record,
+                            bool &haveBlob,
                             const Uint32 *readMask);
   int scanImpl(const NdbScanOperation::ScanOptions *options, 
                const Uint32 *readMask);

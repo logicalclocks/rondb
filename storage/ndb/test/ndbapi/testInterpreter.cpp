@@ -581,8 +581,15 @@ runInterpreterLibraryTest(NDBT_Context* ctx, NDBT_Step* step)
 
 #define RET_NULL (Uint32(~0))
   Uint64 a64[8] = {15,12,5,7,1,2,5,13};
+  Uint64 a64_2[3] = {4,5,5};
+  Uint64 a64_3[4] = {2,3,3,5};
   Uint32 a32[8] = {15,12,5,7,1,2,5,13};
+  Uint32 a32_2[3] = {4,5,5};
+  Uint32 a32_3[4] = {2,3,3,5};
+  Uint32 a32_4[1] = {4};
   Uint16 a16[8] = {15,12,5,7,1,2,5,13};
+  Uint16 a16_2[3] = {4,5,5};
+  Uint16 a16_3[4] = {2,3,3,5};
   Uint32 out_val_exact[18] = {
     RET_NULL, 0, 1, RET_NULL, RET_NULL, 2, RET_NULL, 4, RET_NULL, RET_NULL,
     RET_NULL, RET_NULL, 5, 6, RET_NULL, 7, RET_NULL, RET_NULL };
@@ -599,13 +606,25 @@ runInterpreterLibraryTest(NDBT_Context* ctx, NDBT_Step* step)
     0, 0, 1, 2, 2, 3, 4, 4, 5, 5,
     5, 5, 5, 6, 7, 7, 8, 8 };
   Uint32 search_val_left_closed[18] = {
-    RET_NULL, 0, RET_NULL, RET_NULL, RET_NULL, 2, RET_NULL, 4, 4, 4,
+    RET_NULL, 0, RET_NULL, RET_NULL, RET_NULL, RET_NULL, RET_NULL, 4, 4, 4,
     4, 4, RET_NULL, 6, 6, RET_NULL, RET_NULL, RET_NULL };
+  Uint32 search_val_left_closed_2[7] = {
+    RET_NULL, RET_NULL, RET_NULL, RET_NULL, 0, 2, 2 };
+  Uint32 search_val_left_closed_3[7] = {
+    RET_NULL, RET_NULL, 0, 2, 2, RET_NULL, RET_NULL };
+  Uint32 search_val_left_closed_4[7] = {
+    RET_NULL, RET_NULL, RET_NULL, RET_NULL, 0, 0, 0};
   Uint32 search_val_left_open[18] = {
-    RET_NULL, RET_NULL, 0, RET_NULL, RET_NULL, 2, RET_NULL, RET_NULL, 4, 4,
-    4, 4, 4, RET_NULL, 6, 6, RET_NULL, RET_NULL };
+    RET_NULL, RET_NULL, 0, RET_NULL, RET_NULL, RET_NULL, RET_NULL, RET_NULL,
+    4, 4, 4, 4, 4, RET_NULL, 6, 6, RET_NULL, RET_NULL };
+  Uint32 search_val_left_open_2[7] = {
+    RET_NULL, RET_NULL, RET_NULL, RET_NULL, RET_NULL, 0, 2 };
+  Uint32 search_val_left_open_3[7] = {
+    RET_NULL, RET_NULL, RET_NULL, 0, 2, 2, RET_NULL };
+  Uint32 search_val_left_open_4[7] = {
+    RET_NULL, RET_NULL, RET_NULL, RET_NULL, RET_NULL, 0, 0};
 
-  for (Uint32 i = 0; i < 43; i++) {
+  for (Uint32 i = 0; i < 70; i++) {
     ndbout << "i = " << i << endl;
     NdbTransaction* pTrans = pNdb->startTransaction();
     CHK_RET_FAILED(pTrans != 0, pNdb);
@@ -658,6 +677,174 @@ runInterpreterLibraryTest(NDBT_Context* ctx, NDBT_Step* step)
           search_type = LARGER_EQUAL_MATCH;
         }
         code.binary_search_64(REG2, REG0, REG3, REG7, search_type);
+        if (expected_val != RET_NULL) {
+          code.branch_eq_null(REG7, LABEL0);
+          code.branch_ne_const(REG7, expected_val, LABEL0);
+        } else {
+          code.branch_ne_null(REG7, LABEL0);
+        }
+      }
+    } else if (i == 43 || i == 44) {
+      code.load_const_mem(REG0, REG1, 3 * 4, (const char*)&a32_2[0]);
+      code.load_const_u16(REG3, 3);
+      code.qsort_instr(REG0, REG3, 4);
+
+      Uint32 expected_val = 0;
+      Uint32 search_type = 0;
+      for (Uint32 val = 0; val < 7; val++) {
+        code.load_const_u16(REG2, val);
+        if (i == 43) {
+          expected_val = search_val_left_closed_2[val];
+          search_type = LEFT_CLOSED_RIGHT_OPEN;
+        } else if (i == 44) {
+          expected_val = search_val_left_open_2[val];
+          search_type = LEFT_OPEN_RIGHT_CLOSED;
+        }
+        code.search_interval_32(REG2, REG0, REG3, REG7, search_type);
+        if (expected_val != RET_NULL) {
+          code.branch_eq_null(REG7, LABEL0);
+          code.branch_ne_const(REG7, expected_val, LABEL0);
+        } else {
+          code.branch_ne_null(REG7, LABEL0);
+        }
+      }
+    } else if (i == 68 || i == 69) {
+      code.load_const_mem(REG0, REG1, 1 * 4, (const char*)&a32_4[0]);
+      code.load_const_u16(REG3, 1);
+      code.qsort_instr(REG0, REG3, 4);
+
+      Uint32 expected_val = 0;
+      Uint32 search_type = 0;
+      for (Uint32 val = 0; val < 7; val++) {
+        code.load_const_u16(REG2, val);
+        if (i == 68) {
+          expected_val = search_val_left_closed_4[val];
+          search_type = LEFT_CLOSED_RIGHT_OPEN;
+        } else if (i == 69) {
+          expected_val = search_val_left_open_4[val];
+          search_type = LEFT_OPEN_RIGHT_CLOSED;
+        }
+        code.search_interval_32(REG2, REG0, REG3, REG7, search_type);
+        if (expected_val != RET_NULL) {
+          code.branch_eq_null(REG7, LABEL0);
+          code.branch_ne_const(REG7, expected_val, LABEL0);
+        } else {
+          code.branch_ne_null(REG7, LABEL0);
+        }
+      }
+    } else if (i == 45 || i == 46) {
+      code.load_const_mem(REG0, REG1, 3 * 2, (const char*)&a16_2[0]);
+      code.load_const_u16(REG3, 3);
+      code.qsort_instr(REG0, REG3, 2);
+
+      Uint32 expected_val = 0;
+      Uint32 search_type = 0;
+      for (Uint32 val = 0; val < 7; val++) {
+        code.load_const_u16(REG2, val);
+        if (i == 45) {
+          expected_val = search_val_left_closed_2[val];
+          search_type = LEFT_CLOSED_RIGHT_OPEN;
+        } else if (i == 46) {
+          expected_val = search_val_left_open_2[val];
+          search_type = LEFT_OPEN_RIGHT_CLOSED;
+        }
+        code.search_interval_16(REG2, REG0, REG3, REG7, search_type);
+        if (expected_val != RET_NULL) {
+          code.branch_eq_null(REG7, LABEL0);
+          code.branch_ne_const(REG7, expected_val, LABEL0);
+        } else {
+          code.branch_ne_null(REG7, LABEL0);
+        }
+      }
+    } else if (i == 47 || i == 48) {
+      code.load_const_mem(REG0, REG1, 3 * 8, (const char*)&a64_2[0]);
+      code.load_const_u16(REG3, 3);
+      code.qsort_instr(REG0, REG3, 8);
+
+      Uint32 expected_val = 0;
+      Uint32 search_type = 0;
+      for (Uint32 val = 0; val < 7; val++) {
+        code.load_const_u16(REG2, val);
+        if (i == 47) {
+          expected_val = search_val_left_closed_2[val];
+          search_type = LEFT_CLOSED_RIGHT_OPEN;
+        } else if (i == 48) {
+          expected_val = search_val_left_open_2[val];
+          search_type = LEFT_OPEN_RIGHT_CLOSED;
+        }
+        code.search_interval_64(REG2, REG0, REG3, REG7, search_type);
+        if (expected_val != RET_NULL) {
+          code.branch_eq_null(REG7, LABEL0);
+          code.branch_ne_const(REG7, expected_val, LABEL0);
+        } else {
+          code.branch_ne_null(REG7, LABEL0);
+        }
+      }
+    } else if (i == 49 || i == 50) {
+      code.load_const_mem(REG0, REG1, 4 * 4, (const char*)&a32_3[0]);
+      code.load_const_u16(REG3, 4);
+      code.qsort_instr(REG0, REG3, 4);
+
+      Uint32 expected_val = 0;
+      Uint32 search_type = 0;
+      for (Uint32 val = 0; val < 7; val++) {
+        code.load_const_u16(REG2, val);
+        if (i == 49) {
+          expected_val = search_val_left_closed_3[val];
+          search_type = LEFT_CLOSED_RIGHT_OPEN;
+        } else if (i == 50) {
+          expected_val = search_val_left_open_3[val];
+          search_type = LEFT_OPEN_RIGHT_CLOSED;
+        }
+        code.search_interval_32(REG2, REG0, REG3, REG7, search_type);
+        if (expected_val != RET_NULL) {
+          code.branch_eq_null(REG7, LABEL0);
+          code.branch_ne_const(REG7, expected_val, LABEL0);
+        } else {
+          code.branch_ne_null(REG7, LABEL0);
+        }
+      }
+    } else if (i == 51 || i == 52) {
+      code.load_const_mem(REG0, REG1, 4 * 2, (const char*)&a16_3[0]);
+      code.load_const_u16(REG3, 4);
+      code.qsort_instr(REG0, REG3, 2);
+
+      Uint32 expected_val = 0;
+      Uint32 search_type = 0;
+      for (Uint32 val = 0; val < 7; val++) {
+        code.load_const_u16(REG2, val);
+        if (i == 51) {
+          expected_val = search_val_left_closed_3[val];
+          search_type = LEFT_CLOSED_RIGHT_OPEN;
+        } else if (i == 52) {
+          expected_val = search_val_left_open_3[val];
+          search_type = LEFT_OPEN_RIGHT_CLOSED;
+        }
+        code.search_interval_16(REG2, REG0, REG3, REG7, search_type);
+        if (expected_val != RET_NULL) {
+          code.branch_eq_null(REG7, LABEL0);
+          code.branch_ne_const(REG7, expected_val, LABEL0);
+        } else {
+          code.branch_ne_null(REG7, LABEL0);
+        }
+      }
+    } else if (i == 53 || i == 54) {
+      code.load_const_mem(REG0, REG1, 4 * 8, (const char*)&a64_3[0]);
+      code.load_const_u16(REG3, 4);
+      code.qsort_instr(REG0, REG3, 8);
+
+      Uint32 expected_val = 0;
+      Uint32 search_type = 0;
+      for (Uint32 val = 0; val < 7; val++) {
+        code.load_const_u16(REG2, val);
+        if (i == 53) {
+          expected_val = search_val_left_closed_3[val];
+          search_type = LEFT_CLOSED_RIGHT_OPEN;
+        } else if (i == 54) {
+          expected_val = search_val_left_open_3[val];
+          search_type = LEFT_OPEN_RIGHT_CLOSED;
+        }
+        code.search_interval_64(REG2, REG0, REG3, REG7, search_type);
         if (expected_val != RET_NULL) {
           code.branch_eq_null(REG7, LABEL0);
           code.branch_ne_const(REG7, expected_val, LABEL0);
@@ -798,7 +985,6 @@ runInterpreterLibraryTest(NDBT_Context* ctx, NDBT_Step* step)
           code.branch_ne_null(REG7, LABEL0);
         }
       }
-
     } else if (i >= 36 && i <= 41) {
       Uint32 number_size = 0;
       Uint32 number_size_in = 0;
@@ -848,6 +1034,128 @@ runInterpreterLibraryTest(NDBT_Context* ctx, NDBT_Step* step)
           search_type = LEFT_CLOSED_RIGHT_OPEN;
         } else if (i == 37 ||i == 39 || i == 41) {
           expected_val = search_val_left_open[val];
+          search_type = LEFT_OPEN_RIGHT_CLOSED;
+        }
+        code.search_interval_odd(
+          REG2, REG0, REG3, REG7, search_type, number_size);
+        if (expected_val != RET_NULL) {
+          code.branch_eq_null(REG7, LABEL0);
+          code.branch_ne_const(REG7, expected_val, LABEL0);
+        } else {
+          code.branch_ne_null(REG7, LABEL0);
+        }
+      }
+    } else if (i >= 56 && i <= 61) {
+      Uint32 number_size = 0;
+      Uint32 number_size_in = 0;
+      const char *number_ptr = nullptr;
+      switch (i) {
+        case 56:
+        case 59:
+        {
+          number_size = 3;
+          number_size_in = 4;
+          number_ptr = (const char*)&a32_2[0];
+          break;
+        }
+        case 57:
+        case 60:
+        {
+          number_size = 5;
+          number_size_in = 8;
+          number_ptr = (const char*)&a64_2[0];
+          break;
+        }
+        case 58:
+        case 61:
+        {
+          number_size = 6;
+          number_size_in = 8;
+          number_ptr = (const char*)&a64_2[0];
+          break;
+        }
+        default: {
+          require(false);
+          break;
+        }
+      }
+      code.load_const_mem(REG0, REG1, number_size_in * 8, number_ptr);
+      code.load_const_u16(REG1, number_size_in);
+      code.load_const_u16(REG2, number_size);
+      code.load_const_u16(REG3, 3);
+      code.compress_num_array(REG0, REG3, number_size_in, number_size);
+      code.qsort_instr(REG0, REG3, number_size);
+
+      Uint32 expected_val = 0;
+      Uint32 search_type = 0;
+      for (Uint32 val = 0; val < 7; val++) {
+        code.load_const_u16(REG2, val);
+        if (i == 56 || i == 58 ||i == 60) {
+          expected_val = search_val_left_closed_2[val];
+          search_type = LEFT_CLOSED_RIGHT_OPEN;
+        } else if (i == 57 ||i == 59 || i == 61) {
+          expected_val = search_val_left_open_2[val];
+          search_type = LEFT_OPEN_RIGHT_CLOSED;
+        }
+        code.search_interval_odd(
+          REG2, REG0, REG3, REG7, search_type, number_size);
+        if (expected_val != RET_NULL) {
+          code.branch_eq_null(REG7, LABEL0);
+          code.branch_ne_const(REG7, expected_val, LABEL0);
+        } else {
+          code.branch_ne_null(REG7, LABEL0);
+        }
+      }
+    } else if (i >= 62 && i <= 67) {
+      Uint32 number_size = 0;
+      Uint32 number_size_in = 0;
+      const char *number_ptr = nullptr;
+      switch (i) {
+        case 62:
+        case 65:
+        {
+          number_size = 3;
+          number_size_in = 4;
+          number_ptr = (const char*)&a32_3[0];
+          break;
+        }
+        case 63:
+        case 66:
+        {
+          number_size = 5;
+          number_size_in = 8;
+          number_ptr = (const char*)&a64_3[0];
+          break;
+        }
+        case 64:
+        case 67:
+        {
+          number_size = 6;
+          number_size_in = 8;
+          number_ptr = (const char*)&a64_3[0];
+          break;
+        }
+        default: {
+          require(false);
+          break;
+        }
+      }
+      code.load_const_mem(REG0, REG1, number_size_in * 8, number_ptr);
+      code.load_const_u16(REG1, number_size_in);
+      code.load_const_u16(REG2, number_size);
+      code.load_const_u16(REG3, 4);
+      code.compress_num_array(REG0, REG3, number_size_in, number_size);
+      code.qsort_instr(REG0, REG3, number_size);
+
+      Uint32 expected_val = 0;
+      Uint32 search_type = 0;
+      for (Uint32 val = 0; val < 7; val++) {
+        code.load_const_u16(REG2, val);
+        if (i == 62 || i == 64 ||i == 66) {
+          expected_val = search_val_left_closed_3[val];
+          search_type = LEFT_CLOSED_RIGHT_OPEN;
+        } else if (i == 63 ||i == 65 || i == 67) {
+          expected_val = search_val_left_open_3[val];
           search_type = LEFT_OPEN_RIGHT_CLOSED;
         }
         code.search_interval_odd(
@@ -999,7 +1307,7 @@ runNewInterpreterTest(NDBT_Context* ctx, NDBT_Step* step)
   HugoCalculator calc(* pTab);
   calc.equalForRow(pRow, pRowRecord, 0);
 
-  for (Uint32 i = 0; i < 33; i++) {
+  for (Uint32 i = 0; i < 35; i++) {
     ndbout << "i = " << i << endl;
     NdbTransaction* pTrans = pNdb->startTransaction();
     CHK_RET_FAILED(pTrans != 0, pNdb);
@@ -1392,7 +1700,7 @@ runNewInterpreterTest(NDBT_Context* ctx, NDBT_Step* step)
       code.load_const_u16(2, 0);
       /**
        * Append to ATTR18 using memory in offset 0, actually
-       * the appended data starts at position 4, the first 4
+       * the appended data starts at position 8, the first 8
        * bytes are used by the append instruction and will
        * be overwritten.
        */
@@ -1470,7 +1778,7 @@ runNewInterpreterTest(NDBT_Context* ctx, NDBT_Step* step)
       code.interpret_exit_ok();
       int ret_code = code.finalise();
       CHK3(ret_code);
-    } else if (i == 33) {
+    } else if (i == 33 || i == 34) {
       code.read_interpreter_input(0, 0);
       code.write_interpreter_output(0, 0);
       code.interpret_exit_ok();
@@ -1484,6 +1792,12 @@ runNewInterpreterTest(NDBT_Context* ctx, NDBT_Step* step)
     std::memset(&opts, 0, sizeof(opts));
     opts.optionsPresent = NdbOperation::OperationOptions::OO_INTERPRETED;
     opts.interpretedCode = &code;
+
+    NdbScanOperation::SetValueSpec in_param;
+    NdbScanOperation::ScanOptions scan_opts;
+    std::memset(&scan_opts, 0, sizeof(scan_opts));
+    scan_opts.optionsPresent = NdbScanOperation::ScanOptions::SO_INTERPRETED;
+    scan_opts.interpretedCode = &code;
     Uint64 testInputOutput = 0x13579135;
 
     if (i == 27 || i == 28 || i == 31 || i == 32) {
@@ -1514,17 +1828,33 @@ runNewInterpreterTest(NDBT_Context* ctx, NDBT_Step* step)
       getvals[0].column = NdbDictionary::Column::READ_INTERPRETER_OUTPUT_0;
       getvals[0].appStorage = nullptr;
       getvals[0].recAttr = nullptr;
-      setvals[0].column = NdbDictionary::Column::INTERPRETER_INPUT_0;
-      setvals[0].value = (const void*)&testInputOutput;
       opts.optionsPresent |= NdbOperation::OperationOptions::OO_GET_FINAL_VALUE;
-      opts.optionsPresent |= NdbOperation::OperationOptions::OO_SETVALUE;
       opts.extraGetFinalValues = getvals;
       opts.numExtraGetFinalValues = 1;
-      opts.extraSetValues = setvals;
-      opts.numExtraSetValues = 1;
+      setvals[0].column = NdbDictionary::Column::INTERPRETER_INPUT_0;
+      setvals[0].value = (const void*)&testInputOutput;
+      opts.optionsPresent |= NdbOperation::OperationOptions::OO_SET_INPUT_PARAM;
+      opts.inputParams = setvals;
+      opts.numInputParams = 1;
+    } else if (i == 34) {
+      getvals[0].column = NdbDictionary::Column::READ_INTERPRETER_OUTPUT_0;
+      getvals[0].appStorage = nullptr;
+      getvals[0].recAttr = nullptr;
+      scan_opts.optionsPresent |=
+        NdbScanOperation::ScanOptions::SO_GETVALUE;
+      scan_opts.extraGetValues = getvals;
+      scan_opts.numExtraGetValues = 1;
+
+      in_param.column = NdbDictionary::Column::INTERPRETER_INPUT_0;
+      in_param.value = (const void*)&testInputOutput;
+      scan_opts.optionsPresent |=
+        NdbScanOperation::ScanOptions::SO_SET_INPUT_PARAM;
+      scan_opts.inputParams = &in_param;
+      scan_opts.numInputParams = 1;
     }
 
-    const NdbOperation *pOp;
+    const NdbOperation *pOp = nullptr;
+    NdbScanOperation *pScanOp = nullptr;
     if (i <= 26) {
       pOp = pTrans->readTuple(pRowRecord, (char*)pRow,
                               pRowRecord, (char*)pRow,
@@ -1532,6 +1862,13 @@ runNewInterpreterTest(NDBT_Context* ctx, NDBT_Step* step)
                               0,
                               &opts,
                               sizeof(opts));
+    } else if (i == 34) {
+      pScanOp = pTrans->scanTable(pRowRecord,
+                                  NdbOperation::LM_CommittedRead,
+                                  NULL,
+                                  &scan_opts,
+                                  sizeof(scan_opts));
+      CHK_RET_FAILED((pScanOp != nullptr), pTrans);
     } else {
       unsigned char mask[60];
       memset(&mask[0], 0, 60);
@@ -1542,7 +1879,9 @@ runNewInterpreterTest(NDBT_Context* ctx, NDBT_Step* step)
                                 sizeof(opts));
     }
 
-    CHK_RET_FAILED(pOp, pTrans);
+    if (i != 34) {
+      CHK_RET_FAILED(pOp, pTrans);
+    }
     int res = pTrans->execute(Commit, AbortOnError);
 
     if (i == 27 || i == 28 || i == 31 || i == 32) {
@@ -1566,7 +1905,20 @@ runNewInterpreterTest(NDBT_Context* ctx, NDBT_Step* step)
                check);
       check -= recAttr->u_64_value();
       CHK3(Uint32(check));
-    } else if (i == 29 || i == 30) {
+    } else if (i == 34) {
+      CHK_RET_FAILED(res == 0, pTrans);
+      const char *anyRow;
+      int queryRes = pScanOp->nextResult(&anyRow, true, false);
+      CHK_RET_FAILED(queryRes == 0, pTrans);
+      NdbRecAttr *recAttr = getvals[0].recAttr;
+      Uint64 check = testInputOutput;
+      ndbout_c("Length: %u, val: 0x%llx, check: 0x%llx",
+               recAttr->get_size_in_bytes(),
+               recAttr->u_64_value(),
+               check);
+      check -= recAttr->u_64_value();
+      CHK3(Uint32(check));
+    } else if (i == 29 || i == 30 || i == 33) {
       CHK_RET_FAILED(res == 0, pTrans);
       NdbRecAttr *recAttr = getvals[0].recAttr;
       Uint64 check = 0;
@@ -1574,6 +1926,8 @@ runNewInterpreterTest(NDBT_Context* ctx, NDBT_Step* step)
         check = 0x340001ULL;
       } else if (i == 30) {
         check = 0x659a340003ULL;
+      } else if (i == 33) {
+        check = testInputOutput;
       }
       ndbout_c("Length: %u, val: 0x%llx, check: 0x%llx",
                recAttr->get_size_in_bytes(),
@@ -1604,6 +1958,7 @@ runNewInterpreterTest(NDBT_Context* ctx, NDBT_Step* step)
     }
     pNdb->closeTransaction(pTrans);
   }
+  ndbout_c("Test finished ok");
   delete [] pRow;
   return NDBT_OK;
 }

@@ -1248,6 +1248,31 @@ int NdbOperation::handleOperationOptions(const OperationType type,
     }
   }
 
+  if ((opts->optionsPresent & OperationOptions::OO_SET_INPUT_PARAM) &&
+       opts->numInputParams > 0) {
+    if (opts->inputParams == nullptr) {
+      return 4354;
+    }
+    // Validate SetValuesSpec
+    for (Uint32 i = 0; i < opts->numInputParams; i++) {
+      const NdbDictionary::Column *pcol = opts->inputParams[i].column;
+      const void *pvalue = opts->inputParams[i].value;
+
+      if (pcol == nullptr) {
+        // Column is NULL in inputParams structure
+        return 4355;
+      }
+
+      if (pvalue == nullptr) {
+        if (!pcol->getNullable()) {
+          // Trying to set a NOT NULL attribute to NULL
+          return 4203;
+        }
+      }
+    }
+    op->m_inputParams = opts->inputParams;
+    op->m_numInputParams = opts->numInputParams;
+  }
   if ((opts->optionsPresent & OperationOptions::OO_GETVALUE) &&
       (opts->numExtraGetValues > 0)) {
     if (opts->extraGetValues == nullptr) {

@@ -1136,7 +1136,8 @@ class NdbOperation {
       OO_DIRTY_FLAG = 0x20000,
       OO_TTL_ONLY_EXPIRED = 0x40000,
       OO_BATCH_SAFE_FLAG = 0x80000,
-      OO_BATCH_UNSAFE_FLAG = 0x100000
+      OO_BATCH_UNSAFE_FLAG = 0x100000,
+      OO_SET_INPUT_PARAM = 0x200000
     };
 
     /* An operation-specific abort option.
@@ -1156,6 +1157,10 @@ class NdbOperation {
     /* Extra column values to be set  */
     const SetValueSpec *extraSetValues;
     Uint32 numExtraSetValues;
+
+    /* Input parameters  */
+    const SetValueSpec *inputParams;
+    Uint32 numInputParams;
 
     /* Specific partition to execute this operation on */
     Uint32 partitionId;
@@ -1633,6 +1638,10 @@ class NdbOperation {
   /* Ptr to supplied SetValueSpec for NdbRecord */
   const SetValueSpec *m_extraSetValues;
   Uint32 m_numExtraSetValues;
+
+  /* Ptr to supplied InputParams for NdbRecord */
+  const SetValueSpec *m_inputParams;
+  Uint32 m_numInputParams;
 
   Uint32 m_any_value;  // Valid if m_use_any_value!=0
 
