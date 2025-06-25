@@ -325,30 +325,6 @@ int NdbScanOperation::handleScanOptions(const ScanOptions *options) {
                         theDistributionKey));
   }
 
-  if (options->optionsPresent & ScanOptions::SO_INTERPRETED) {
-    /* Check the program's for the same table as the
-     * operation, within a major version number
-     * Perhaps NdbInterpretedCode should not contain the table
-     */
-    const NdbDictionary::Table *codeTable =
-        options->interpretedCode->getTable();
-    if (codeTable != nullptr) {
-      NdbTableImpl *impl = &NdbTableImpl::getImpl(*codeTable);
-
-      if ((impl->m_id != (int)m_attribute_record->tableId) ||
-          (table_version_major(impl->m_version) !=
-           table_version_major(m_attribute_record->tableVersion)))
-        return 4524;  // NdbInterpretedCode is for different table`
-    }
-
-    if ((options->interpretedCode->m_flags & NdbInterpretedCode::Finalised) ==
-        0) {
-      setErrorCodeAbort(4519);
-      return -1;  // NdbInterpretedCode::finalise() not called.
-    }
-    m_interpreted_code = options->interpretedCode;
-  }
-
 
   /* User's operation 'tag' data. */
   if (options->optionsPresent & ScanOptions::SO_CUSTOMDATA) {
@@ -377,15 +353,94 @@ int NdbScanOperation::handleScanOptions(const ScanOptions *options) {
   return 0;
 }
 
+int NdbScanOperation::handleInterpreterOptions(
+      const NdbScanOperation::ScanOptions *opts) {
+
+  if (opts->optionsPresent & ScanOptions::SO_INTERPRETED) {
+    /* Check the program's for the same table as the
+     * operation, within a major version number
+     * Perhaps NdbInterpretedCode should not contain the table
+     */
+    const NdbDictionary::Table *codeTable =
+        opts->interpretedCode->getTable();
+    if (codeTable != nullptr) {
+      NdbTableImpl *impl = &NdbTableImpl::getImpl(*codeTable);
+
+      if ((impl->m_id != (int)m_attribute_record->tableId) ||
+          (table_version_major(impl->m_version) !=
+           table_version_major(m_attribute_record->tableVersion)))
+        return 4524;  // NdbInterpretedCode is for different table`
+    }
+
+    if ((opts->interpretedCode->m_flags & NdbInterpretedCode::Finalised) ==
+        0) {
+      setErrorCodeAbort(4519);
+      return -1;  // NdbInterpretedCode::finalise() not called.
+    }
+    m_interpreted_code = opts->interpretedCode;
+  }
+  if ((opts->optionsPresent & ScanOptions::SO_SET_INPUT_PARAM) &&
+       opts->numInputParams > 0) {
+    if (opts->inputParams == nullptr) {
+      setErrorCodeAbort(4354);
+      return -1;
+    }
+    if (m_interpreted_code == nullptr) {
+      setErrorCodeAbort(4356);
+      return -1;
+    }
+    Uint32 len = 1 + 3 * opts->numInputParams;
+    int res = insertATTRINFOHdr_NdbRecord(Uint32(0xFFFF), len);
+    if (res) return res;
+    // Validate SetValuesSpec
+    for (Uint32 i = 0; i < opts->numInputParams; i++) {
+      const NdbDictionary::Column *pcol = opts->inputParams[i].column;
+      const void *pvalue = opts->inputParams[i].value;
+
+      if (pcol == nullptr) {
+        // Column is NULL in inputParams structure
+        setErrorCodeAbort(4355);
+        return -1;
+      }
+
+      if (pvalue == nullptr) {
+        if (!pcol->getNullable()) {
+          // Trying to set a NOT NULL attribute to NULL
+          setErrorCodeAbort(4203);
+          return -1;
+        }
+      }
+      Uint32 attrId = pcol->getAttrId();
+
+      if (attrId >= AttributeHeader::INTERPRETER_INPUT_FIRST &&
+          attrId <= AttributeHeader::INTERPRETER_INPUT_LAST) {
+        if (pcol->getType() != NdbDictionary::Column::Unsigned ||
+            pcol->getSize() != 8 ||
+            pcol->getSizeInBytes() != 8) {
+          // Error
+          setErrorCodeAbort(4352);
+          return -1;
+        }
+        res = insertATTRINFOHdr_NdbRecord(attrId, 8);
+        if (res) return res;
+        res = insertATTRINFOData_NdbRecord((const char*)pvalue, 8);
+        if (res) return res;
+      }
+    }
+  }
+  return 0;
+}
+
 /**
  * generatePackedReadAIs
  * This method is adds AttrInfos to the current signal train to perform
  * a packed read of the requested columns.
  * It is used by table scan and index scan.
  */
-int NdbScanOperation::generatePackedReadAIs(const NdbRecord *result_record,
-                                            bool &haveBlob,
-                                            const Uint32 *m_read_mask) {
+int NdbScanOperation::generatePackedReadAIs(
+      const NdbRecord *result_record,
+      bool &haveBlob,
+      const Uint32 *m_read_mask) {
   Bitmask<MAXNROFATTRIBUTESINWORDS> readMask;
   Uint32 columnCount = 0;
   Uint32 maxAttrId = 0;
@@ -457,8 +512,19 @@ inline int NdbScanOperation::scanImpl(
     const NdbScanOperation::ScanOptions *options, const Uint32 *readMask) {
   bool haveBlob = false;
 
+  /**
+   * Need to handle interpreter options before generating read packed
+   * since the interpreter depends on input parameters being added before
+   * packed read instructions.
+   */
+  if (handleInterpreterOptions(options) != 0) {
+    return -1;
+  }
+
   /* Add AttrInfos for packed read of cols in result_record */
-  if (generatePackedReadAIs(m_attribute_record, haveBlob, readMask) != 0)
+  if (generatePackedReadAIs(m_attribute_record,
+                            haveBlob,
+                            readMask) != 0)
     return -1;
 
   theInitialReadSize = theTotalCurrAI_Len - AttrInfo::SectionSizeInfoLength;

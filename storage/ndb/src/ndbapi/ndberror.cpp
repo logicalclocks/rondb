@@ -420,6 +420,9 @@ ErrorBundle ErrorCodes[] = {
   { 934,  DMEC, AE, "Wrong input to binary search instruction" },
   { 935,  DMEC, AE, "No such number size supported for binary search" },
   { 936,  DMEC, AE, "No such search interval method" },
+  { 937,  DMEC, AE, "Inconsistency in input parameters" },
+  { 938,  DMEC, AE, "Too much input parameters" },
+  { 939,  DMEC, AE, "Wrong column for input parameters" },
   { 4000, DMEC, IE, "MEMORY ALLOCATION ERROR" },
   { 4001, DMEC, IE, "Signal Definition Error" },
   { 4005, DMEC, IE, "Internal Error in NdbApi" },
@@ -440,6 +443,7 @@ ErrorBundle ErrorCodes[] = {
   { 4349, DMEC, IE, "Inconsistency detected at index usage" },
   { 4350, DMEC, IE, "Transaction already aborted" },
   { 4351, HA_ERR_LOCK_WAIT_TIMEOUT, TO, "Timeout/deadlock during index build" },
+  { 4352, DMEC, IE, "Wrong type for input parameter" },
   { 294,  DMEC, IE, "Unlocked operation has out of range index" },
   { 295,  DMEC, IE, "Unlocked operation has invalid state" },
   { 298,  DMEC, IE, "Invalid distribution key" },
@@ -449,6 +453,10 @@ ErrorBundle ErrorCodes[] = {
   /**
    * Application error
    */
+  { 4353, DMEC, AE, "Wrong column for input parameter" },
+  { 4354, DMEC, AE, "Incorrect combination of OperationOptions optionsPresent, inputParams ptr and numInputParams" },
+  { 4355, DMEC, AE, "Column is NULL in inputParams structure" },
+  { 4356, DMEC, AE, "Input parameter without interpreted code" },
   { 281,  HA_ERR_NO_CONNECTION, AE, "Operation not allowed due to cluster shutdown in progress" },
   { 299,  DMEC, AE, "Operation not allowed or aborted due to single user mode" },
   { 261,  DMEC, AE,

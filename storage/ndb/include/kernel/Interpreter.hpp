@@ -1206,6 +1206,7 @@ inline Uint32 *Interpreter::getInstructionPreProcessingInfo(
     case LOAD_CONST16:
     case LOAD_OP_TYPE:
     case WRITE_INTERPRETER_OUTPUT:
+    case READ_INTERPRETER_INPUT:
       return op + 1;
     case LOAD_CONST32:
       return op + 2;
