@@ -517,8 +517,10 @@ inline int NdbScanOperation::scanImpl(
    * since the interpreter depends on input parameters being added before
    * packed read instructions.
    */
-  if (handleInterpreterOptions(options) != 0) {
-    return -1;
+  if (options != nullptr) {
+    if (handleInterpreterOptions(options) != 0) {
+      return -1;
+    }
   }
 
   /* Add AttrInfos for packed read of cols in result_record */
