@@ -101,8 +101,17 @@ static bool check_sdi_compatibility(const dd::RJ_Document &doc) {
   assert(doc.HasMember("mysqld_version_id"));
   const dd::RJ_Value &mysqld_version_id = doc["mysqld_version_id"];
   assert(mysqld_version_id.IsUint64());
-  if (mysqld_version_id.GetUint64() > std::uint64_t(MYSQL_VERSION_ID)) {
-    // Cannot deserialize SDIs from newer versions
+  if ((mysqld_version_id.GetUint64() > std::uint64(221100) &&
+       mysqld_version_id.GetUint64() < std::uint64(241000)) ||
+      mysqld_version_id.GetUint64() >= std::uint64(241100) ||
+      mysqld_version_id.GetUint64() < std::uint64(221003)) {
+    /**
+     * We cannot handle deserialize from version before 22.10.3
+     * and also not for versions after 24.10 series. We can handle
+     * deserialisation from 22.10.3 and newer versions in the 22.10
+     * series, we can also handle all 24.10 versions. These should
+     * using a compatible serialisation of the SDI.
+     */
     my_error(ER_IMP_INCOMPATIBLE_MYSQLD_VERSION, MYF(0),
              mysqld_version_id.GetUint64(), std::uint64_t(MYSQL_VERSION_ID));
     return true;
