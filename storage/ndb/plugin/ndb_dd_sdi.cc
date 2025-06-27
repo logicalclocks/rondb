@@ -102,7 +102,7 @@ static bool check_sdi_compatibility(const dd::RJ_Document &doc) {
   assert(doc.HasMember("mysqld_version_id"));
   const dd::RJ_Value &mysqld_version_id = doc["mysqld_version_id"];
   assert(mysqld_version_id.IsUint64());
-  if ((mysqld_version_id.GetUint64() > std::uint64(241100)) {
+  if (mysqld_version_id.GetUint64() > std::uint64_t(241100)) {
     /**
      * We cannot handle deserialize from version newer than 24.10.
      * We can handle tables created in earlier versions always.
