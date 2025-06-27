@@ -28,6 +28,21 @@ ndb.test_mgmd             : WL#12345678 Requires fixing
 ndb.ndb_basic_3rpl_2ng    : WL#12345678 Only intended for start-and-exit
 ndb.ndb_restore_encrypted_backups :BUG#11761083 NDB : MYSQLD DEFAULT VALUES IN FRM EMBEDDED IN BACKUP NOT ENDIAN-CONVERTE
 ndb.ndb_suma_handover     : Bug#35539093 Error insert 13048 never hit in ndb.ndb_suma_handover 
+# Disable the below tests if running with mixed data node versions
+#ndb.ndb_autosize          : WL#87654321
+#ndb.ndb_backup_nowait     : WL#87654321
+#ndb.ndbinfo_plans         : WL#87654321
+#ndb.test_ndbinfo          : WL#87654321
+#ndb.ndbinfo_tables        : WL#87654321
+#ndb.ndb_restart2          : WL#87654321
+#ndb.ndb_basic_3rpl        : WL#87654321
+#ndb.ndb_basic             : WL#87654321
+#ndb.ndb_basic_4rpl        : WL#87654321
+#ndb.bug_rondb-852         : WL#87654321
+#ndb.ndb_err899            : WL#87654321
+#ndb.ndb_restore_conv_pk_slice_remap : WL#87654321
+#ndb.ndb_basic_ndbd_shm : WL#87654321
+#End mixed version disabling
 
 # ndb_tls suite tests
 ndb_tls.clusterj  @windows: Bug#35645569 Cluster/J on Windows needs OpenSSL Applink

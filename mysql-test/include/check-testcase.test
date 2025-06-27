@@ -139,6 +139,7 @@ if (`SELECT COUNT(*) = 1 FROM INFORMATION_SCHEMA.ENGINES
   # To allow test with ndbcluster but without any data nodes allow error
   # ER_GET_ERRMSG.
   error 0, ER_GET_ERRMSG;
+  # Disable the below check if running with mixed data node versions
   SELECT * FROM ndbinfo.ndb$threadblock_details;
 }
 
