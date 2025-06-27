@@ -102,12 +102,14 @@ static bool check_sdi_compatibility(const dd::RJ_Document &doc) {
   assert(doc.HasMember("mysqld_version_id"));
   const dd::RJ_Value &mysqld_version_id = doc["mysqld_version_id"];
   assert(mysqld_version_id.IsUint64());
-  if (mysqld_version_id.GetUint64() > std::uint64_t(MYSQL_VERSION_ID) &&
-      (mysqld_version_id.GetUint64() >= std::uint64_t(221100))) {
-    // Cannot deserialize SDIs from newer versions.
-    // RonDB 22.10.3 is assumed compatible with new versions of the
-    // 22.10 class, only bug fixes are supposed to happen in the
-    // 22.10 version after 22.10.3.
+  if (mysqld_version_id.GetUint64() > std::uint64_t(241100)) {
+    /**
+     * We cannot handle deserialize from version newer than 24.10.
+     * We can handle tables created in earlier versions always.
+     *
+     * Since this code is only used in 24.10.7 and newer we need
+     * not check any more.
+     */
     my_error(ER_IMP_INCOMPATIBLE_MYSQLD_VERSION, MYF(0),
              mysqld_version_id.GetUint64(), std::uint64_t(MYSQL_VERSION_ID));
     return true;
