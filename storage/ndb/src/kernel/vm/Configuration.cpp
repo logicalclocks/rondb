@@ -1927,10 +1927,15 @@ Configuration::setupConfiguration()
                                                globalData.theMaxRRGroupSize);
     }
   } while (0);
-
   calcSizeAlt(cf);
   set_not_active_nodes();
   set_location_domain_id();
+  Uint32 tot_num_threads = get_num_threads() + globalData.ndbMtSendThreads;
+  if (tot_num_threads > 32 &&
+      globalData.theMaxSendDelay == 0) {
+    /* Change default of MaxSendDelay in large data nodes to 200 us */
+    globalData.theMaxSendDelay = 200;
+  }
   DBUG_VOID_RETURN;
 }
 
