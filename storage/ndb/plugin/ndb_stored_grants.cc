@@ -996,16 +996,20 @@ bool Ndb_stored_grants::setup(THD *thd, Thd_ndb *thd_ndb) {
     ndb_log_info("Ndb_stored_grants::setup() -- normal setup");
   }
 
+  ndb_log_info("[TRACE][binlog][Ndb_stored_grants::setup][4 steps expected for successful completion]");
   /* Create or upgrade the ndb_sql_metadata table.
      If this fails, create_or_upgrade() will log an error message,
      and we return false, which will cause the whole binlog setup
      routine to be retried.
   */
   Ndb_sql_metadata_table sql_metadata_table(thd_ndb);
+  ndb_log_info("[TRACE][binlog][Ndb_stored_grants::setup][1] Calling Ndb_sql_metadata_table::create_or_upgrade");
   if (!sql_metadata_table.create_or_upgrade(thd, true)) return false;
 
+  ndb_log_info("[TRACE][binlog][Ndb_stored_grants::setup][2] Calling Ndb_sql_metadata_table::setup");
   metadata_table.setup(thd_ndb->ndb->getDictionary(),
                        sql_metadata_table.get_table());
+  ndb_log_info("[TRACE][binlog][Ndb_stored_grants::setup][3] Calling Ndb_sql_metadata_table::initializeSnapshotLock");
   const NdbError &err = metadata_table.initializeSnapshotLock(thd_ndb->ndb);
   if (err.status != NdbError::Success) {
     ndb_log_error("ndb_stored_grants initalizeSnapshotLock failure: %d %s",
@@ -1013,6 +1017,7 @@ bool Ndb_stored_grants::setup(THD *thd, Thd_ndb *thd_ndb) {
     return false;
   }
 
+  ndb_log_info("[TRACE][binlog][Ndb_stored_grants::setup][4] Done!");
   return true;
 }
 
