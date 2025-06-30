@@ -468,6 +468,7 @@ void Ndb_metadata_change_monitor::do_run() {
     // Outer loop to ensure that if the connection to NDB is lost, a fresh
     // connection is established before the thread continues its processing
     while (!ndb_connection_is_ready(thd_ndb->connection, 1)) {
+      log_info("Retrying: checking ndb_connection_is_ready");
       // No connection to NDB yet. Retry until connection is established while
       // checking if stop has been requested at 1 second intervals
       if (is_stop_requested()) {

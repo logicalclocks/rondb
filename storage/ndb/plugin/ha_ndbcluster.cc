@@ -12527,7 +12527,7 @@ Ndb_metadata_change_monitor ndb_metadata_change_monitor_thread;
 // Functionality used for delaying MySQL Server startup until
 // connection to NDB and setup (of index stat plus binlog) has completed
 //
-static bool wait_setup_completed(ulong max_wait_seconds) {
+static bool wait_setup_completed(ulong max_wait_seconds, const std::string info_tag) {
   DBUG_TRACE;
 
   const auto timeout_time =
@@ -12536,8 +12536,15 @@ static bool wait_setup_completed(ulong max_wait_seconds) {
   while (std::chrono::steady_clock::now() < timeout_time) {
     if (ndb_binlog_is_initialized() &&
         ndb_index_stat_thread.is_setup_complete()) {
+      ndb_log_info("[TRACE][%s][wait_setup_completed] Done!",
+                   info_tag.c_str());
       return true;
     }
+    ndb_log_info("[TRACE][%s][wait_setup_completed], "
+                 "ndb_binlog_is_ready: %u ndb_index_stat_allow_flag: %u",
+                 info_tag.c_str(),
+                 ndb_binlog_is_initialized(),
+                 ndb_index_stat_thread.is_setup_complete());
     ndb_milli_sleep(100);
   }
 
@@ -12561,7 +12568,7 @@ static int ndb_wait_setup_server_startup(void *) {
   ndb_metadata_change_monitor_thread.set_server_started();
 
   // Wait for connection to NDB and thread(s) setup
-  if (wait_setup_completed(opt_ndb_wait_setup) == false) {
+  if (wait_setup_completed(opt_ndb_wait_setup, "main") == false) {
     ndb_log_error(
         "Tables not available after %lu seconds. Consider "
         "increasing --ndb-wait-setup value",
@@ -12851,6 +12858,7 @@ static int ndbcluster_init(void *handlerton_ptr) {
     return 0;  // Return before init will disable ndbcluster-SE.
   }
 
+  ndb_log_info("[TRACE][main][ndbcluster_init][13 steps expected for successful completion]");
   /* Check const alignment */
   static_assert(DependencyTracker::InvalidTransactionId ==
                 Ndb_binlog_extra_row_info::InvalidTransactionId);
@@ -12871,7 +12879,7 @@ static int ndbcluster_init(void *handlerton_ptr) {
       assert(dd_client.change_version_for_table("test", "t1", 37));
     });
 
-    if (!wait_setup_completed(opt_ndb_wait_setup)) {
+    if (!wait_setup_completed(opt_ndb_wait_setup, "channel")) {
       ndb_log_error(
           "Replica: Connection to NDB not ready after %lu seconds. "
           "Consider increasing --ndb-wait-setup value",
@@ -12881,15 +12889,18 @@ static int ndbcluster_init(void *handlerton_ptr) {
     return true;
   };
 
+  ndb_log_info("[TRACE][main][ndbcluster_init][1] Calling Ndb_replica::init");
   if (Ndb_replica::init(start_channel_func, &g_default_channel_stats)) {
     return ndbcluster_init_abort("Failed to initialize NDB Replica");
   }
 
+  ndb_log_info("[TRACE][main][ndbcluster_init][2] Calling Ndb_index_stat_thread::init");
   if (ndb_index_stat_thread.init() ||
       DBUG_EVALUATE_IF("ndbcluster_init_fail1", true, false)) {
     return ndbcluster_init_abort("Failed to initialize NDB Index Stat");
   }
 
+  ndb_log_info("[TRACE][main][ndbcluster_init][3] Calling Ndb_metadata_change_monitor::init");
   if (ndb_metadata_change_monitor_thread.init()) {
     return ndbcluster_init_abort(
         "Failed to initialize NDB Metadata Change Monitor");
@@ -12913,6 +12924,7 @@ static int ndbcluster_init(void *handlerton_ptr) {
   hton->get_tablespace_statistics =
       ndbcluster_get_tablespace_statistics;           /* Provide data to I_S */
   hton->partition_flags = ndbcluster_partition_flags; /* Partition flags */
+  ndb_log_info("[TRACE][main][ndbcluster_init][4] Calling ndbcluster_binlog_init");
   if (!ndbcluster_binlog_init(hton))
     return ndbcluster_init_abort("Failed to initialize NDB Binlog");
   hton->flags = HTON_TEMPORARY_NOT_SUPPORTED | HTON_NO_BINLOG_ROW_OPT |
@@ -12942,20 +12954,24 @@ static int ndbcluster_init(void *handlerton_ptr) {
   // SO, that GSL will not be held unnecessary for non-NDB tables.
   hton->post_ddl = ndbcluster_post_ddl;
 
+  ndb_log_info("[TRACE][main][ndbcluster_init][5] Calling ndb_init_internal");
   // Initialize NdbApi
   ndb_init_internal(1);
 
+  ndb_log_info("[TRACE][main][ndbcluster_init][6] Calling Ndb_server_hooks::register_server_hooks");
   if (!ndb_server_hooks.register_server_hooks(ndb_wait_setup_server_startup,
                                               ndb_dd_upgrade_hook)) {
     return ndbcluster_init_abort("Failed to register server start hook");
   }
 
+  ndb_log_info("[TRACE][main][ndbcluster_init][7] Calling NDB_SHARE::initialize");
   // Initialize NDB_SHARE factory
   NDB_SHARE::initialize(table_alias_charset);
 
   /* allocate connection resources and connect to cluster */
   const uint global_opti_node_select =
       THDVAR(nullptr, optimized_node_selection);
+  ndb_log_info("[TRACE][main][ndbcluster_init][8] Calling ndbcluster_connect");
   if (ndbcluster_connect(
           opt_ndb_wait_connected, opt_ndb_cluster_connection_pool,
           opt_connection_pool_nodeids_str, (global_opti_node_select & 1),
@@ -12975,22 +12991,26 @@ static int ndbcluster_init(void *handlerton_ptr) {
     }
   }
 
+  ndb_log_info("[TRACE][main][ndbcluster_init][9] Calling ndbcluster_binlog_start");
   /* start the ndb injector thread */
   if (ndbcluster_binlog_start()) {
     return ndbcluster_init_abort("Failed to start NDB Binlog");
   }
 
+  ndb_log_info("[TRACE][main][ndbcluster_init][10] Calling Ndb_index_stat_thread::start");
   // Create index statistics thread
   if (ndb_index_stat_thread.start() ||
       DBUG_EVALUATE_IF("ndbcluster_init_fail2", true, false)) {
     return ndbcluster_init_abort("Failed to start NDB Index Stat");
   }
 
+  ndb_log_info("[TRACE][main][ndbcluster_init][11] Calling Ndb_metadata_change_monitor::start");
   // Create metadata change monitor thread
   if (ndb_metadata_change_monitor_thread.start()) {
     return ndbcluster_init_abort("Failed to start NDB Metadata Change Monitor");
   }
 
+  ndb_log_info("[TRACE][main][ndbcluster_init][12] Calling ndb_pfs_init");
   if (ndb_pfs_init()) {
     return ndbcluster_init_abort("Failed to init pfs");
   }
@@ -13016,6 +13036,7 @@ static int ndbcluster_init(void *handlerton_ptr) {
     opt_ndb_slave_conflict_role = opt_ndb_applier_conflict_role;
   }
 
+  ndb_log_info("[TRACE][main][ndbcluster_init][13] Done!");
   ndbcluster_inited = 1;
 
   return 0;  // OK
