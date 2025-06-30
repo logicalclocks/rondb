@@ -2194,6 +2194,7 @@ void Ndb_index_stat_thread::do_run() {
     Wait for cluster to start
   */
   while (!ndb_connection_is_ready(g_ndb_cluster_connection, 1)) {
+    log_info("Retrying: checking ndb_connection_is_ready");
     /* NDB not connected yet */
     if (is_stop_requested()) {
       /* Terminated with a stop_request */
@@ -2287,13 +2288,24 @@ void Ndb_index_stat_thread::do_run() {
 
       // the Ndb object is needed first
       if (pr.ndb == nullptr) {
-        if (create_ndb(&pr, g_ndb_cluster_connection) == -1) break;
+        if (create_ndb(&pr, g_ndb_cluster_connection) == -1) {
+          log_info("Retrying: create_ndb failed");
+          break;
+        }
       }
 
       // sys objects
       if (check_sys) {
         // at enable check or create stats tables and events
-        if (check_systables(pr) == -1 || check_sysevents(pr) == -1) break;
+        int check_table_ret = 0;
+        int check_event_ret = 0;
+        if ((check_table_ret = check_systables(pr)) == -1 ||
+            (check_event_ret = check_sysevents(pr)) == -1) {
+          log_info("Retrying: checking both check_systable and check_sysevent, "
+                   "last check result: [%d, %d]",
+                    check_table_ret, check_event_ret);
+          break;
+        }
       }
 
       // listener is not critical but error means something is wrong
