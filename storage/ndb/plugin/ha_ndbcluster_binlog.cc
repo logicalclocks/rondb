@@ -777,6 +777,8 @@ class Ndb_binlog_setup {
       ndb_log_info(" <- sleep");
     }
 
+    ndb_log_info("[TRACE][binlog][Ndb_binlog_setup][11 steps expected for successful completion]");
+    ndb_log_info("[TRACE][binlog][Ndb_binlog_setup][1] Calling Ndb_global_schema_lock_guard");
     // Protect the schema synchronization with GSL(Global Schema Lock)
     Ndb_global_schema_lock_guard global_schema_lock_guard(m_thd);
     if (global_schema_lock_guard.lock()) {
@@ -792,6 +794,7 @@ class Ndb_binlog_setup {
       }
     });
 
+    ndb_log_info("[TRACE][binlog][Ndb_binlog_setup][2] Calling Ndb_binlog_setup::detect_initial_restart");
     // Check if this is a initial restart/start
     bool initial_system_restart = false;
     if (!detect_initial_restart(thd_ndb, &initial_system_restart)) {
@@ -812,11 +815,13 @@ class Ndb_binlog_setup {
 
     Ndb_dd_sync dd_sync(m_thd, thd_ndb);
     if (initial_system_restart) {
+      ndb_log_info("[TRACE][binlog][Ndb_binlog_setup][3] Calling Ndb_dd_sync::remove_all_metadata");
       // Remove all NDB metadata from DD since this is an initial restart
       if (!dd_sync.remove_all_metadata()) {
         return false;
       }
     } else {
+      ndb_log_info("[TRACE][binlog][Ndb_binlog_setup][3] Calling Ndb_dd_sync::remove_deleted_tables");
       /*
         Not an initial restart. Delete DD table definitions corresponding to NDB
         tables that no longer exist in NDB Dictionary. This is to ensure that
@@ -834,6 +839,7 @@ class Ndb_binlog_setup {
 
     const bool ndb_schema_dist_upgrade_allowed = ndb_allow_ndb_schema_upgrade();
     Ndb_schema_dist_table schema_dist_table(thd_ndb);
+    ndb_log_info("[TRACE][binlog][Ndb_binlog_setup][4] Calling Ndb_schema_dist_table::create_or_upgrade");
     if (!schema_dist_table.create_or_upgrade(m_thd,
                                              ndb_schema_dist_upgrade_allowed))
       return false;
@@ -862,6 +868,7 @@ class Ndb_binlog_setup {
       assert(false);
     }
 
+    ndb_log_info("[TRACE][binlog][Ndb_binlog_setup][5] Calling Ndb_schema_result_table::create_or_upgrade");
     Ndb_schema_result_table schema_result_table(thd_ndb);
     if (!schema_result_table.create_or_upgrade(m_thd,
                                                ndb_schema_dist_upgrade_allowed))
@@ -878,9 +885,11 @@ class Ndb_binlog_setup {
     }
 
     Ndb_index_stat_head_table index_stat_head_table(thd_ndb);
+    ndb_log_info("[TRACE][binlog][Ndb_binlog_setup][6] Calling Ndb_index_stat_head_table::create_or_upgrade");
     if (!index_stat_head_table.create_or_upgrade(m_thd, true)) return false;
 
     Ndb_index_stat_sample_table index_stat_sample_table(thd_ndb);
+    ndb_log_info("[TRACE][binlog][Ndb_binlog_setup][7] Calling Ndb_index_stat_sample_table::create_or_upgrade");
     if (!index_stat_sample_table.create_or_upgrade(m_thd, true)) return false;
 
     if (initial_system_restart) {
@@ -891,13 +900,16 @@ class Ndb_binlog_setup {
     }
 
     Ndb_apply_status_table apply_status_table(thd_ndb);
+    ndb_log_info("[TRACE][binlog][Ndb_binlog_setup][8] Calling Ndb_apply_status_table::create_or_upgrade");
     if (!apply_status_table.create_or_upgrade(m_thd, true)) return false;
 
+    ndb_log_info("[TRACE][binlog][Ndb_binlog_setup][9] Calling Ndb_dd_sync::synchronize");
     if (!dd_sync.synchronize()) {
       ndb_log_verbose(9, "Failed to synchronize DD with NDB");
       return false;
     }
 
+    ndb_log_info("[TRACE][binlog][Ndb_binlog_setup][10] Calling Ndb_dd_sync::Ndb_stored_grants::setup");
     if (!Ndb_stored_grants::setup(m_thd, thd_ndb)) {
       ndb_log_warning("Failed to setup synchronized privileges");
       return false;
@@ -910,6 +922,7 @@ class Ndb_binlog_setup {
     // nodes run a version that has support for the Data Dictionary.
     Ndb_schema_dist_client::block_ddl(!ndb_all_nodes_support_mysql_dd());
 
+    ndb_log_info("[TRACE][binlog][Ndb_binlog_setup][11] Done!");
     return true;  // Setup completed OK
   }
 };
@@ -7305,8 +7318,13 @@ restart_cluster_failure:
 
     assert(m_apply_status_share == nullptr);
 
-    while (!ndb_connection_is_ready(thd_ndb->connection, 1) ||
-           !binlog_setup.setup(thd_ndb)) {
+    bool ret_conn_is_ready = false;
+    bool ret_binlog_setup = false;
+    while (!(ret_conn_is_ready = ndb_connection_is_ready(thd_ndb->connection, 1)) ||
+           !(ret_binlog_setup = binlog_setup.setup(thd_ndb))) {
+      log_info("Retrying: checking both ndb_connection_is_ready "
+               "and Ndb_binlog_setup::setup, last check result: [%d, %d]",
+               ret_conn_is_ready, ret_binlog_setup);
       // Failed to complete binlog_setup, remove all existing event
       // operations from potential partial setup
       remove_all_event_operations(s_ndb, i_ndb);
