@@ -1458,7 +1458,7 @@ func Test_GetFeatureVector_WrongPkValue(t *testing.T) {
 func Test_GetFeatureVector_Shared_ComplexType(t *testing.T) {
 	var fsName = testdbs.FSDB001
 	var fvName = "sample_share_complex"
-        var fvVersion = 1
+	var fvVersion = 1
 	// Get sample data with join between sample_1_1 from fsdb001 and sample_complex_type_1 from fsdb002
 	rows, pks, cols, err := fshelper.GetNSampleDataWithJoin(5, testdbs.FSDB001, "sample_1_1", testdbs.FSDB002, "sample_complex_type_1", "fg2_")
 	if err != nil {
@@ -1488,8 +1488,8 @@ func Test_GetFeatureVector_Shared_ComplexType(t *testing.T) {
 	arrayComplexFeature := feature_store.ComplexFeature{Schema: &arraySchema, Struct: &arrayStruct}
 
 	var fsReq = CreateBatchFeatureStoreRequest(
-                fsName,
-                fvName,
+		fsName,
+		fvName,
 		fvVersion,
 		pks,
 		*GetPkValues(&rows, &pks, &cols),
@@ -2382,7 +2382,7 @@ func Test_IncludeDetailedStatus_SingleTable(t *testing.T) {
 	fsResp := GetFeatureStoreResponse(t, fsReq)
 
 	ValidateResponseWithData(t, &rows, &cols, fsResp)
-	if fsResp.DetailedStatus == nil {
+	if fsResp.DetailedStatus == nil || len(fsResp.DetailedStatus) == 0 {
 		t.Fatalf("Detailed status has been explicitly requested but not returned")
 	}
 	for _, list_ds := range fsResp.DetailedStatus {
