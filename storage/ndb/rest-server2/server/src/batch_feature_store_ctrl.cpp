@@ -315,6 +315,12 @@ void BatchFeatureStoreCtrl::batch_featureStore(
                                     featureStatus);
   fsResp.features = features;
   fsResp.metadata = GetFeatureMetadata(metadata, reqStruct.metadataRequest);
+
+  // return detailed response 
+  if (reqStruct.GetOptions().includeDetailedStatus) {
+    fsResp.detailedStatus =  detailedStatus;
+  }
+
   if (use_compressed) {
     resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
   } else {
