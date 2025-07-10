@@ -17479,14 +17479,15 @@ void Dbtc::execSCAN_NEXTREQ(Signal *signal) {
        *  We will send a SCAN_TABREF to indicate a time-out occurred.
        *********************************************************************/
       DEBUG("scanTabRefLab: ZSCANTIME_OUT_ERROR2");
-      g_eventLogger->info("apiConnectptr(%d) -> abort", apiConnectptr.i);
-      ndbabort();  // B2 indication of strange things going on
+      g_eventLogger->info("apiConnectptr(%d) -> abort ZSCANTIMEOUT_ERROR2", apiConnectptr.i);
+      ndbassert(false);  // B2 indication of strange things going on
       scanTabRefLab(signal, ZSCANTIME_OUT_ERROR2, apiConnectptr.p);
       return;
     }
     DEBUG("scanTabRefLab: ZSTATE_ERROR");
     DEBUG("  apiConnectstate=" << apiConnectptr.p->apiConnectstate);
-    ndbabort();  // B2 indication of strange things going on
+    g_eventLogger->info("apiConnectptr(%d) -> abort ZSTATE_ERROR", apiConnectptr.i);
+    ndbassert(false);  // B2 indication of strange things going on
     scanTabRefLab(signal, ZSTATE_ERROR, apiConnectptr.p);
     return;
   }  // if
