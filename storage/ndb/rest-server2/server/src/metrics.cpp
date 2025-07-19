@@ -50,7 +50,7 @@ using namespace prometheus;
  * requests, since that can already be determined from the pk_read_histogram
  * total.
 */
-std::atomic<Uint64> m_key_request_counter;
+std::atomic<Uint64> m_ndb_key_request_counter;
 /*
  * Number of started ping HTTP requests.
  */
@@ -78,7 +78,7 @@ std::atomic<Uint64> batch_pk_read_histogram[64];
 std::atomic<Uint64> fs_histogram[64];
 std::atomic<Uint64> batch_fs_histogram[64];
 std::atomic<Uint64> ronsql_histogram[64];
-std::atomic<Uint64> rondis_histogram[64];
+std::atomic<Uint64> rondis_histogram[61]; // not 64, rondis errors not counted
 
 /*
  * Histogram totals. This holds the totals of all latencies with precision, so
@@ -102,16 +102,16 @@ std::atomic<Uint64> rondis_histogram_total;
  *   NAME_histogram_boundaries[i-1] < latency <= NAME_histogram_boundaries[i]
  * which means that we technically overestimate all latencies by 1 µs.
  */
-Uint32 pk_histogram_boundaries[60];
-Uint32 batch_pk_histogram_boundaries[60];
+Uint32 pk_read_histogram_boundaries[60];
+Uint32 batch_pk_read_histogram_boundaries[60];
 Uint32 fs_histogram_boundaries[60];
 Uint32 batch_fs_histogram_boundaries[60];
 Uint32 ronsql_histogram_boundaries[60];
 Uint32 rondis_histogram_boundaries[60];
 
 static void
-init_hist_boundaries() {
-  m_key_request_counter = 0;
+init_metrics_intermediate_variables() {
+  m_ndb_key_request_counter = 0;
   m_ping_request_counter = 0;
   m_health_request_counter = 0;
   m_metrics_request_counter = 0;
@@ -130,7 +130,7 @@ init_hist_boundaries() {
   for (Uint32 i = 0; i < 64; i++) {
     ronsql_histogram[i] = 0;
   }
-  for (Uint32 i = 0; i < 64; i++) {
+  for (Uint32 i = 0; i < 61 /* not 64, rondis errors not counted */ ; i++) {
     rondis_histogram[i] = 0;
   }
   pk_read_histogram_total = 0;
@@ -141,32 +141,32 @@ init_hist_boundaries() {
   rondis_histogram_total = 0;
 
   for (Uint32 i = 0; i < 10; i++) {
-    pk_histogram_boundaries[i] = 40 * (i + 1);
+    pk_read_histogram_boundaries[i] = 40 * (i + 1);
   }
   for (Uint32 i = 0; i < 10; i++) {
-    pk_histogram_boundaries[10 + i] = 400 + 100 * (i + 1);
+    pk_read_histogram_boundaries[10 + i] = 400 + 100 * (i + 1);
   }
   for (Uint32 i = 0; i < 10; i++) {
-    pk_histogram_boundaries[20 + i] = 1400 + 200 * (i + 1);
+    pk_read_histogram_boundaries[20 + i] = 1400 + 200 * (i + 1);
   }
   for (Uint32 i = 0; i < 10; i++) {
-    pk_histogram_boundaries[30 + i] = 3400 + 260 * (i + 1);
+    pk_read_histogram_boundaries[30 + i] = 3400 + 260 * (i + 1);
   }
   Uint32 pk_boundary = 7500;
   for (Uint32 i = 0; i < 20; i++) {
-    pk_histogram_boundaries[40 + i] = pk_boundary;
+    pk_read_histogram_boundaries[40 + i] = pk_boundary;
     pk_boundary = (pk_boundary / 2) * 3;
   }
 
   for (Uint32 i = 0; i < 20; i++) {
-    batch_pk_histogram_boundaries[i] = 200 * (i + 1);
+    batch_pk_read_histogram_boundaries[i] = 200 * (i + 1);
   }
   for (Uint32 i = 0; i < 20; i++) {
-    batch_pk_histogram_boundaries[20 + i] = 4000 + 500 * (i + 1);
+    batch_pk_read_histogram_boundaries[20 + i] = 4000 + 500 * (i + 1);
   }
   Uint32 batch_pk_boundary = 21000;
   for (Uint32 i = 0; i < 20; i++) {
-    batch_pk_histogram_boundaries[40 + i] = batch_pk_boundary;
+    batch_pk_read_histogram_boundaries[40 + i] = batch_pk_boundary;
     batch_pk_boundary = (batch_pk_boundary / 2) * 3;
   }
 
@@ -248,7 +248,7 @@ static Uint32 calculate_pk_index(Uint64 micros) {
     return ((micros - Uint64(3400)) / Uint64(260)) + 30;
   } else {
     for (Uint32 i = 40; i < 60; i++) {
-      if (micros < pk_histogram_boundaries[i]) return i;
+      if (micros < pk_read_histogram_boundaries[i]) return i;
     }
     return Uint32(60);
   }
@@ -261,7 +261,7 @@ static Uint32 calculate_batch_pk_index(Uint64 micros) {
     return ((micros - Uint64(4000)) / Uint64(500)) + 20;
   } else {
     for (Uint32 i = 40; i < 60; i++) {
-      if (micros < batch_pk_histogram_boundaries[i]) return i;
+      if (micros < batch_pk_read_histogram_boundaries[i]) return i;
     }
     return Uint32(60);
   }
@@ -385,7 +385,7 @@ BatchPkReadEndPointMetricsUpdater::~BatchPkReadEndPointMetricsUpdater() {
   }
   batch_pk_read_histogram[hist].fetch_add(1, std::memory_order_relaxed);
   batch_pk_read_histogram_total.fetch_add(elapsed_us, std::memory_order_relaxed);
-  m_key_request_counter.fetch_add(key_requests, std::memory_order_relaxed);
+  m_ndb_key_request_counter.fetch_add(key_requests, std::memory_order_relaxed);
 }
 
 
@@ -443,7 +443,7 @@ BatchFsReadEndPointMetricsUpdater::~BatchFsReadEndPointMetricsUpdater() {
   }
   batch_fs_histogram[hist].fetch_add(1, std::memory_order_relaxed);
   batch_fs_histogram_total.fetch_add(elapsed_us, std::memory_order_relaxed);
-  m_key_request_counter.fetch_add(key_requests, std::memory_order_relaxed);
+  m_ndb_key_request_counter.fetch_add(key_requests, std::memory_order_relaxed);
 }
 
 RonSQLEndPointMetricsUpdater::RonSQLEndPointMetricsUpdater(
@@ -508,12 +508,6 @@ namespace rdrs_metrics {
 namespace {
 
 std::shared_ptr<Registry> registry = std::make_shared<Registry>();
-prometheus::Family<prometheus::Counter> *requestCounter = nullptr;
-
-prometheus::Counter *keyRequestCounter = nullptr;
-prometheus::Counter *pingCounter = nullptr;
-prometheus::Counter *healthCounter = nullptr;
-prometheus::Counter *metricsCounter = nullptr;
 
 prometheus::Counter *pkReadCounter = nullptr;
 prometheus::Counter *pkReadCounter400 = nullptr;
@@ -542,6 +536,11 @@ prometheus::Counter *ronSQLReadCounterOther = nullptr;
 
 prometheus::Counter *rondisCmdCounter = nullptr;
 
+prometheus::Counter *ndbKeyRequestCounter = nullptr;
+prometheus::Counter *pingCounter = nullptr;
+prometheus::Counter *healthCounter = nullptr;
+prometheus::Counter *metricsCounter = nullptr;
+
 prometheus::Histogram *pkReadHistogram = nullptr;
 prometheus::Histogram *batchPkReadHistogram = nullptr;
 prometheus::Histogram *fsReadHistogram = nullptr;
@@ -554,12 +553,14 @@ prometheus::Gauge *ndbObjectsTotalCountGauge            = nullptr;
 }  // namespace
 
 void initMetrics() {
-  init_hist_boundaries();
-  /* RDRS Endpoint Request Counters */
-  requestCounter = &BuildCounter()
-                        .Name("rdrs_endpoints_response_status_count")
-                        .Help("Number of response status returned by REST API")
-                        .Register(*registry);
+  init_metrics_intermediate_variables();
+
+  /* Request Counters (RDRS, Rondis and NDB) */
+  prometheus::Family<prometheus::Counter> *requestCounter =
+    &BuildCounter()
+      .Name("rdrs_endpoints_response_status_count")
+      .Help("Number of response status returned by REST API")
+      .Register(*registry);
 
   /* RDRS pk-read Request Counters */
   pkReadCounter =
@@ -613,32 +614,6 @@ void initMetrics() {
                           {"status", "300"}});
 
 
-  /* RDRS batch_feature_store Request Counters */
-  batchFsReadCounter =
-    &requestCounter->Add({{"api_type", "REST"},
-                          {"end_point", BATCH_FEATURE_STORE},
-                          {"method", POST},
-                          {"status", "200"}});
-
-  batchFsReadCounter400 =
-    &requestCounter->Add({{"api_type", "REST"},
-                          {"end_point", BATCH_FEATURE_STORE},
-                          {"method", POST},
-                          {"status", "400"}});
-
-  batchFsReadCounter500 =
-    &requestCounter->Add({{"api_type", "REST"},
-                          {"end_point", BATCH_FEATURE_STORE},
-                          {"method", POST},
-                          {"status", "500"}});
-
-  batchFsReadCounterOther =
-    &requestCounter->Add({{"api_type", "REST"},
-                          {"end_point", BATCH_FEATURE_STORE},
-                          {"method", POST},
-                          {"status", "300"}});
-
-
   /* RDRS feature_store Request Counters */
   fsReadCounter =
     &requestCounter->Add({{"api_type", "REST"},
@@ -661,6 +636,32 @@ void initMetrics() {
   fsReadCounterOther =
     &requestCounter->Add({{"api_type", "REST"},
                           {"end_point", FEATURE_STORE},
+                          {"method", POST},
+                          {"status", "300"}});
+
+
+  /* RDRS batch_feature_store Request Counters */
+  batchFsReadCounter =
+    &requestCounter->Add({{"api_type", "REST"},
+                          {"end_point", BATCH_FEATURE_STORE},
+                          {"method", POST},
+                          {"status", "200"}});
+
+  batchFsReadCounter400 =
+    &requestCounter->Add({{"api_type", "REST"},
+                          {"end_point", BATCH_FEATURE_STORE},
+                          {"method", POST},
+                          {"status", "400"}});
+
+  batchFsReadCounter500 =
+    &requestCounter->Add({{"api_type", "REST"},
+                          {"end_point", BATCH_FEATURE_STORE},
+                          {"method", POST},
+                          {"status", "500"}});
+
+  batchFsReadCounterOther =
+    &requestCounter->Add({{"api_type", "REST"},
+                          {"end_point", BATCH_FEATURE_STORE},
                           {"method", POST},
                           {"status", "300"}});
 
@@ -696,7 +697,7 @@ void initMetrics() {
                           {"end_point", "Rondis"}});
 
   /* NDB Key Request Counter */
-  keyRequestCounter =
+  ndbKeyRequestCounter =
     &requestCounter->Add({{"api_type", "NDB"},
                           {"end_point", "key"}});
 
@@ -730,7 +731,7 @@ void initMetrics() {
     std::vector<double> hist_boundaries(60);
     for (Uint32 i = 0; i < 60; i++) {
       double hist_boundary = double(1);
-      hist_boundary *= (double)pk_histogram_boundaries[i];
+      hist_boundary *= (double)pk_read_histogram_boundaries[i];
       hist_boundary /= (double)1000000;
       hist_boundaries[i] = hist_boundary;
     }
@@ -742,7 +743,7 @@ void initMetrics() {
     std::vector<double> hist_boundaries(60);
     for (Uint32 i = 0; i < 60; i++) {
       double hist_boundary = double(1);
-      hist_boundary *= (double)batch_pk_histogram_boundaries[i];
+      hist_boundary *= (double)batch_pk_read_histogram_boundaries[i];
       hist_boundary /= (double)1000000;
       hist_boundaries[i] = hist_boundary;
     }
@@ -852,7 +853,7 @@ void writeMetrics(drogon::HttpResponsePtr resp) {
   if (hist_counters[63] > 0) {
     pkReadCounterOther->Increment(hist_counters[63]);
   }
-  Uint64 tot_value = pk_histogram_total.exchange(0, std::memory_order_relaxed);
+  Uint64 tot_value = pk_read_histogram_total.exchange(0, std::memory_order_relaxed);
   pkReadHistogram->ObserveMultiple(hist_counters_dbl,
                                    (double)tot_value / (double)1000000);
 
@@ -880,7 +881,7 @@ void writeMetrics(drogon::HttpResponsePtr resp) {
   if (hist_counters[63] > 0) {
     batchPkReadCounterOther->Increment(hist_counters[63]);
   }
-  tot_value = batch_pk_histogram_total.exchange(0, std::memory_order_relaxed);
+  tot_value = batch_pk_read_histogram_total.exchange(0, std::memory_order_relaxed);
   batchPkReadHistogram->ObserveMultiple(hist_counters_dbl,
                                         (double)tot_value / (double)1000000);
 
@@ -967,7 +968,7 @@ void writeMetrics(drogon::HttpResponsePtr resp) {
                                        (double)tot_value / (double)1000000);
 
   // rondis
-  for (Uint32 i = 0; i < 64; i++) {
+  for (Uint32 i = 0; i < 61 /* not 64, rondis errors not counted */; i++) {
     Uint64 count = rondis_histogram[i].exchange(0, std::memory_order_relaxed);
     hist_counters[i] = count;
     // (i < 61) is always true
@@ -985,8 +986,8 @@ void writeMetrics(drogon::HttpResponsePtr resp) {
                                    (double)tot_value / (double)1000000);
 
   // NDB
-  Uint64 count = m_key_request_counter.exchange(0, std::memory_order_relaxed);
-  keyRequestCounter->Increment(count);
+  Uint64 count = m_ndb_key_request_counter.exchange(0, std::memory_order_relaxed);
+  ndbKeyRequestCounter->Increment(count);
 
   // ping
   count = m_ping_request_counter.exchange(0, std::memory_order_relaxed);
