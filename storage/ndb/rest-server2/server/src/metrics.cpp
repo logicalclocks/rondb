@@ -668,25 +668,25 @@ void initMetrics() {
   /* RDRS ronsql Request Counters */
   ronSQLReadCounter =
     &requestCounter->Add({{"api_type", "REST"},
-                          {"end_point", FEATURE_STORE},
+                          {"end_point", RONSQL},
                           {"method", POST},
                           {"status", "200"}});
 
   ronSQLReadCounter400 =
     &requestCounter->Add({{"api_type", "REST"},
-                          {"end_point", FEATURE_STORE},
+                          {"end_point", RONSQL},
                           {"method", POST},
                           {"status", "400"}});
 
   ronSQLReadCounter500 =
     &requestCounter->Add({{"api_type", "REST"},
-                          {"end_point", FEATURE_STORE},
+                          {"end_point", RONSQL},
                           {"method", POST},
                           {"status", "500"}});
 
   ronSQLReadCounterOther =
     &requestCounter->Add({{"api_type", "REST"},
-                          {"end_point", FEATURE_STORE},
+                          {"end_point", RONSQL},
                           {"method", POST},
                           {"status", "300"}});
 
