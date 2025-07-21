@@ -829,11 +829,11 @@ void writeMetrics(drogon::HttpResponsePtr resp) {
     double hist_boundary = double(1);
     hist_boundary *= (double)pk_histogram_boundaries[i];
     hist_boundary /= (double)1000000;
-    low_boundary = hist_boundary;
     double reported_val = low_boundary + ((hist_boundary - low_boundary) * 0.99);
     for (Uint32 j = 0; j < hist_counters[i]; j++) {
       pkReadHistogram->Observe(reported_val);
     }
+    low_boundary = hist_boundary;
   }
 
   // batch
@@ -863,11 +863,11 @@ void writeMetrics(drogon::HttpResponsePtr resp) {
     double hist_boundary = double(1);
     hist_boundary *= (double)batch_pk_histogram_boundaries[i];
     hist_boundary /= (double)1000000;
-    low_boundary = hist_boundary;
     double reported_val = low_boundary + ((hist_boundary - low_boundary) * 0.99);
     for (Uint32 j = 0; j < hist_counters[i]; j++) {
       batchPkReadHistogram->Observe(reported_val);
     }
+    low_boundary = hist_boundary;
   }
 
   // feature_store
@@ -896,11 +896,11 @@ void writeMetrics(drogon::HttpResponsePtr resp) {
     double hist_boundary = double(1);
     hist_boundary *= (double)fs_histogram_boundaries[i];
     hist_boundary /= (double)1000000;
-    low_boundary = hist_boundary;
     double reported_val = low_boundary + ((hist_boundary - low_boundary) * 0.99);
     for (Uint32 j = 0; j < hist_counters[i]; j++) {
       fsReadHistogram->Observe(reported_val);
     }
+    low_boundary = hist_boundary;
   }
 
   // batch_feature_store
@@ -930,11 +930,11 @@ void writeMetrics(drogon::HttpResponsePtr resp) {
     double hist_boundary = double(1);
     hist_boundary *= (double)batch_fs_histogram_boundaries[i];
     hist_boundary /= (double)1000000;
-    low_boundary = hist_boundary;
     double reported_val = low_boundary + ((hist_boundary - low_boundary) * 0.99);
     for (Uint32 j = 0; j < hist_counters[i]; j++) {
       batchFsReadHistogram->Observe(reported_val);
     }
+    low_boundary = hist_boundary;
   }
 
   // ronsql
@@ -963,11 +963,11 @@ void writeMetrics(drogon::HttpResponsePtr resp) {
     double hist_boundary = double(1);
     hist_boundary *= (double)ronsql_histogram_boundaries[i];
     hist_boundary /= (double)1000000;
-    low_boundary = hist_boundary;
     double reported_val = low_boundary + ((hist_boundary - low_boundary) * 0.99);
     for (Uint32 j = 0; j < hist_counters[i]; j++) {
       ronSQLReadHistogram->Observe(reported_val);
     }
+    low_boundary = hist_boundary;
   }
 
   // rondis
@@ -987,11 +987,11 @@ void writeMetrics(drogon::HttpResponsePtr resp) {
     double hist_boundary = double(1);
     hist_boundary *= (double)rondis_histogram_boundaries[i];
     hist_boundary /= (double)1000000;
-    low_boundary = hist_boundary;
     double reported_val = low_boundary + ((hist_boundary - low_boundary) * 0.99);
     for (Uint32 j = 0; j < hist_counters[i]; j++) {
       rondisHistogram->Observe(reported_val);
     }
+    low_boundary = hist_boundary;
   }
 
   // NDB
