@@ -110,6 +110,13 @@ class HealthEndPointMetricsUpdater {
   ~HealthEndPointMetricsUpdater();
 };
 
+class MetricsEndPointMetricsUpdater {
+ public:
+  MetricsEndPointMetricsUpdater();
+
+  ~MetricsEndPointMetricsUpdater();
+};
+
 
 namespace rdrs_metrics {
 

@@ -471,6 +471,13 @@ HealthEndPointMetricsUpdater::HealthEndPointMetricsUpdater() {
 HealthEndPointMetricsUpdater::~HealthEndPointMetricsUpdater() {
 }
 
+MetricsEndPointMetricsUpdater::MetricsEndPointMetricsUpdater() {
+  m_metrics_request_counter.fetch_add(1, std::memory_order_relaxed);
+}
+
+MetricsEndPointMetricsUpdater::~MetricsEndPointMetricsUpdater() {
+}
+
 namespace rdrs_metrics {
 
 namespace {
@@ -1000,7 +1007,7 @@ void writeMetrics(drogon::HttpResponsePtr resp) {
   healthCounter->Increment(count);
 
   // metrics
-  count = m_metrics_request_counter;
+  count = m_metrics_request_counter.exchange(0, std::memory_order_relaxed);
   metricsCounter->Increment(count);
 
   // Update RonDB Metrics, including
