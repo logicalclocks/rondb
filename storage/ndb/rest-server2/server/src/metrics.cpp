@@ -36,10 +36,42 @@
 
 using namespace prometheus;
 
+/* Much of this code deals with accumulating metrics into intermediate variables
+ * in a fast way. These intermediate variables are defined below, named
+ * *_counter, *_histogram and *_histogram_boundaries. They are initialized in
+ * init_metrics_intermediate_variables().
+ *
+ * Only when the /metrics endpoint is called, will prometheus
+ * data be updated through e.g. prometheus::Histogram::Observe calls.
+ */
+
+/* Number of NDB key requests contained in finished batch and
+ * batch_feature_store HTTP requests. Does NOT include number of pk-read HTTP
+ * requests, since that can already be determined from the pk_read_histogram
+ * total.
+*/
 std::atomic<Uint64> m_key_request_counter;
+/*
+ * Number of started ping HTTP requests.
+ */
 std::atomic<Uint64> m_ping_request_counter;
+/*
+ * Number of started health HTTP requests.
+ */
 std::atomic<Uint64> m_health_request_counter;
+/*
+ * Number of finished metrics HTTP requests.
+ */
 std::atomic<Uint64> m_metrics_request_counter;
+
+/*
+ * Histogram count buckets.
+ * - Indexes 0-60 hold counts of successful requests in buckets defined by
+ *   *_histogram_boundaries variables below.
+ * - Index 61 holds number of HTTP 400 responses.
+ * - Index 62 holds number of HTTP 500 responses.
+ * - Index 63 holds number of HTTP error responses other than 400 & 500.
+ */
 std::atomic<Uint64> pk_read_histogram[64];
 std::atomic<Uint64> batch_pk_read_histogram[64];
 std::atomic<Uint64> fs_histogram[64];
@@ -47,6 +79,16 @@ std::atomic<Uint64> batch_fs_histogram[64];
 std::atomic<Uint64> ronsql_histogram[64];
 std::atomic<Uint64> rondis_histogram[64];
 
+/*
+ * Histogram boundaries. NAME_histogram[i] holds the number of requests such
+ * that
+ *   NAME_histogram_boundaries[i-1] <= latency < NAME_histogram_boundaries[i]
+ * (where 0 is used in place of NAME_histogram_boundars[-1])
+ * The prometheus histogram will however interpret the bucket as containing the
+ * number of requests such that
+ *   NAME_histogram_boundaries[i-1] < latency <= NAME_histogram_boundaries[i]
+ * which means that we technically overestimate all latencies by 1 µs.
+ */
 Uint32 pk_histogram_boundaries[61];
 Uint32 batch_pk_histogram_boundaries[61];
 Uint32 fs_histogram_boundaries[61];
@@ -486,7 +528,7 @@ void initMetrics() {
                         .Help("Number of response status returned by REST API")
                         .Register(*registry);
 
-  /* RDRS pk_read Request Counters */
+  /* RDRS pk-read Request Counters */
   pkReadCounter =
     &requestCounter->Add({{"api_type", "REST"},
                           {"end_point", PKREAD},
@@ -620,11 +662,12 @@ void initMetrics() {
     &requestCounter->Add({{"api_type", "Rondis"},
                           {"end_point", "Rondis"}});
 
-  /* RDRS ping Request Counters */
+  /* NDB Key Request Counter */
   keyRequestCounter =
     &requestCounter->Add({{"api_type", "NDB"},
                           {"end_point", "key"}});
 
+  /* RDRS ping Request Counter */
   pingCounter =
     &requestCounter->Add({{"api_type", "REST"},
                           {"end_point", PING},
@@ -718,6 +761,7 @@ void initMetrics() {
       hist_boundary /= (double)1000000;
       hist_boundaries[i] = hist_boundary;
     }
+    // Rondis does not use HTTP. Use placeholder values for method and endpoint.
     rondisHistogram =
       &request_duration.Add({{"method", "Rondis"}, {"endpoint", "Rondis"}},
         hist_boundaries);
@@ -750,6 +794,7 @@ void setRonDBStats() {
 
 void writeMetrics(drogon::HttpResponsePtr resp) {
 
+  // pk-read
   Uint64 hist_counters[64];
   for (Uint32 i = 0; i < 64; i++) {
     Uint64 count = pk_read_histogram[i].exchange(0, std::memory_order_relaxed);
@@ -783,6 +828,7 @@ void writeMetrics(drogon::HttpResponsePtr resp) {
     }
   }
 
+  // batch
   for (Uint32 i = 0; i < 64; i++) {
     Uint64 count =
       batch_pk_read_histogram[i].exchange(0, std::memory_order_relaxed);
@@ -816,6 +862,7 @@ void writeMetrics(drogon::HttpResponsePtr resp) {
     }
   }
 
+  // feature_store
   for (Uint32 i = 0; i < 64; i++) {
     Uint64 count = fs_histogram[i].exchange(0, std::memory_order_relaxed);
     hist_counters[i] = count;
@@ -848,6 +895,7 @@ void writeMetrics(drogon::HttpResponsePtr resp) {
     }
   }
 
+  // batch_feature_store
   for (Uint32 i = 0; i < 64; i++) {
     Uint64 count =
       batch_fs_histogram[i].exchange(0, std::memory_order_relaxed);
@@ -881,6 +929,7 @@ void writeMetrics(drogon::HttpResponsePtr resp) {
     }
   }
 
+  // ronsql
   for (Uint32 i = 0; i < 64; i++) {
     Uint64 count = ronsql_histogram[i].exchange(0, std::memory_order_relaxed);
     hist_counters[i] = count;
@@ -913,6 +962,7 @@ void writeMetrics(drogon::HttpResponsePtr resp) {
     }
   }
 
+  // rondis
   for (Uint32 i = 0; i < 64; i++) {
     Uint64 count = rondis_histogram[i].exchange(0, std::memory_order_relaxed);
     hist_counters[i] = count;
@@ -936,19 +986,25 @@ void writeMetrics(drogon::HttpResponsePtr resp) {
     }
   }
 
+  // NDB
   Uint64 count = m_key_request_counter.exchange(0, std::memory_order_relaxed);
   keyRequestCounter->Increment(count);
 
+  // ping
   count = m_ping_request_counter.exchange(0, std::memory_order_relaxed);
   pingCounter->Increment(count);
 
+  // health
   count = m_health_request_counter.exchange(0, std::memory_order_relaxed);
   healthCounter->Increment(count);
 
+  // metrics
   count = m_metrics_request_counter;
   metricsCounter->Increment(count);
 
-  // Update RonDB Metrics
+  // Update RonDB Metrics, including
+  // - ndbObjectsTotalCountGauge
+  // - ronDBConnectionStateGauge
   setRonDBStats();
 
   prometheus::TextSerializer serializer;
