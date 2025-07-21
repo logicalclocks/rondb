@@ -67,7 +67,8 @@ std::atomic<Uint64> m_metrics_request_counter;
 /*
  * Histogram count buckets.
  * - Indexes 0-60 hold counts of successful requests in buckets defined by
- *   *_histogram_boundaries variables below.
+ *   *_histogram_boundaries variables below. This means that index 60 holds the
+ *   overflow bucket, which has no upper bound.
  * - Index 61 holds number of HTTP 400 responses.
  * - Index 62 holds number of HTTP 500 responses.
  * - Index 63 holds number of HTTP error responses other than 400 & 500.
@@ -80,21 +81,33 @@ std::atomic<Uint64> ronsql_histogram[64];
 std::atomic<Uint64> rondis_histogram[64];
 
 /*
+ * Histogram totals. This holds the totals of all latencies with precision, so
+ * that we do not need to rely on heuristics based on bucket limits.
+ */
+std::atomic<Uint64> pk_read_histogram_total;
+std::atomic<Uint64> batch_pk_read_histogram_total;
+std::atomic<Uint64> fs_histogram_total;
+std::atomic<Uint64> batch_fs_histogram_total;
+std::atomic<Uint64> ronsql_histogram_total;
+std::atomic<Uint64> rondis_histogram_total;
+
+/*
  * Histogram boundaries. NAME_histogram[i] holds the number of requests such
  * that
  *   NAME_histogram_boundaries[i-1] <= latency < NAME_histogram_boundaries[i]
- * (where 0 is used in place of NAME_histogram_boundars[-1])
+ * (where 0 is used in place of NAME_histogram_boundars[-1], and +Inf is used in
+ * place of NAME_histogram_boundars[60])
  * The prometheus histogram will however interpret the bucket as containing the
  * number of requests such that
  *   NAME_histogram_boundaries[i-1] < latency <= NAME_histogram_boundaries[i]
  * which means that we technically overestimate all latencies by 1 µs.
  */
-Uint32 pk_histogram_boundaries[61];
-Uint32 batch_pk_histogram_boundaries[61];
-Uint32 fs_histogram_boundaries[61];
-Uint32 batch_fs_histogram_boundaries[61];
-Uint32 ronsql_histogram_boundaries[61];
-Uint32 rondis_histogram_boundaries[61];
+Uint32 pk_histogram_boundaries[60];
+Uint32 batch_pk_histogram_boundaries[60];
+Uint32 fs_histogram_boundaries[60];
+Uint32 batch_fs_histogram_boundaries[60];
+Uint32 ronsql_histogram_boundaries[60];
+Uint32 rondis_histogram_boundaries[60];
 
 static void
 init_hist_boundaries() {
@@ -120,6 +133,12 @@ init_hist_boundaries() {
   for (Uint32 i = 0; i < 64; i++) {
     rondis_histogram[i] = 0;
   }
+  pk_read_histogram_total = 0;
+  batch_pk_read_histogram_total = 0;
+  fs_histogram_total = 0;
+  batch_fs_histogram_total = 0;
+  ronsql_histogram_total = 0;
+  rondis_histogram_total = 0;
 
   for (Uint32 i = 0; i < 10; i++) {
     pk_histogram_boundaries[i] = 40 * (i + 1);
@@ -134,7 +153,7 @@ init_hist_boundaries() {
     pk_histogram_boundaries[30 + i] = 3400 + 260 * (i + 1);
   }
   Uint32 pk_boundary = 7500;
-  for (Uint32 i = 0; i < 21; i++) {
+  for (Uint32 i = 0; i < 20; i++) {
     pk_histogram_boundaries[40 + i] = pk_boundary;
     pk_boundary = (pk_boundary / 2) * 3;
   }
@@ -146,7 +165,7 @@ init_hist_boundaries() {
     batch_pk_histogram_boundaries[20 + i] = 4000 + 500 * (i + 1);
   }
   Uint32 batch_pk_boundary = 21000;
-  for (Uint32 i = 0; i < 21; i++) {
+  for (Uint32 i = 0; i < 20; i++) {
     batch_pk_histogram_boundaries[40 + i] = batch_pk_boundary;
     batch_pk_boundary = (batch_pk_boundary / 2) * 3;
   }
@@ -164,7 +183,7 @@ init_hist_boundaries() {
     fs_histogram_boundaries[30 + i] = 3500 + 300 * (i + 1);
   }
   Uint32 fs_boundary = 9750;
-  for (Uint32 i = 0; i < 21; i++) {
+  for (Uint32 i = 0; i < 20; i++) {
     fs_histogram_boundaries[40 + i] = fs_boundary;
     fs_boundary = (fs_boundary / 2) * 3;
   }
@@ -176,7 +195,7 @@ init_hist_boundaries() {
     batch_fs_histogram_boundaries[20 + i] = 5000 + 600 * (i + 1);
   }
   Uint32 batch_fs_boundary = 25500;
-  for (Uint32 i = 0; i < 21; i++) {
+  for (Uint32 i = 0; i < 20; i++) {
     batch_fs_histogram_boundaries[40 + i] = batch_fs_boundary;
     batch_fs_boundary = (batch_fs_boundary / 2) * 3;
   }
@@ -194,7 +213,7 @@ init_hist_boundaries() {
     ronsql_histogram_boundaries[30 + i] = 8000 + 2000 * (i + 1);
   }
   Uint32 ronsql_boundary = 72000;
-  for (Uint32 i = 0; i < 21; i++) {
+  for (Uint32 i = 0; i < 20; i++) {
     ronsql_histogram_boundaries[40 + i] = ronsql_boundary;
     ronsql_boundary = (ronsql_boundary / 2) * 3;
   }
@@ -212,7 +231,7 @@ init_hist_boundaries() {
     rondis_histogram_boundaries[30 + i] = 3400 + 260 * (i + 1);
   }
   Uint32 rondis_boundary = 7500;
-  for (Uint32 i = 0; i < 21; i++) {
+  for (Uint32 i = 0; i < 20; i++) {
     rondis_histogram_boundaries[40 + i] = rondis_boundary;
     rondis_boundary = (rondis_boundary / 2) * 3;
   }
@@ -333,6 +352,7 @@ PkReadEndPointMetricsUpdater::~PkReadEndPointMetricsUpdater() {
     hist = 63; // Other error
   }
   pk_read_histogram[hist].fetch_add(1, std::memory_order_relaxed);
+  pk_read_histogram_total.fetch_add(elapsed_us, std::memory_order_relaxed);
 }
 
 BatchPkReadEndPointMetricsUpdater::BatchPkReadEndPointMetricsUpdater(
@@ -364,6 +384,7 @@ BatchPkReadEndPointMetricsUpdater::~BatchPkReadEndPointMetricsUpdater() {
     hist = 63; // Other error
   }
   batch_pk_read_histogram[hist].fetch_add(1, std::memory_order_relaxed);
+  batch_pk_read_histogram_total.fetch_add(elapsed_us, std::memory_order_relaxed);
   m_key_request_counter.fetch_add(key_requests, std::memory_order_relaxed);
 }
 
@@ -389,6 +410,7 @@ FsReadEndPointMetricsUpdater::~FsReadEndPointMetricsUpdater() {
     hist = 63; // Other error
   }
   fs_histogram[hist].fetch_add(1, std::memory_order_relaxed);
+  fs_histogram_total.fetch_add(elapsed_us, std::memory_order_relaxed);
 }
 
 BatchFsReadEndPointMetricsUpdater::BatchFsReadEndPointMetricsUpdater(
@@ -420,6 +442,7 @@ BatchFsReadEndPointMetricsUpdater::~BatchFsReadEndPointMetricsUpdater() {
     hist = 63; // Other error
   }
   batch_fs_histogram[hist].fetch_add(1, std::memory_order_relaxed);
+  batch_fs_histogram_total.fetch_add(elapsed_us, std::memory_order_relaxed);
   m_key_request_counter.fetch_add(key_requests, std::memory_order_relaxed);
 }
 
@@ -444,6 +467,7 @@ RonSQLEndPointMetricsUpdater::~RonSQLEndPointMetricsUpdater() {
     hist = 63; // Other error
   }
   ronsql_histogram[hist].fetch_add(1, std::memory_order_relaxed);
+  ronsql_histogram_total.fetch_add(elapsed_us, std::memory_order_relaxed);
 }
 
 RondisEndPointMetricsUpdater::RondisEndPointMetricsUpdater() {
@@ -455,6 +479,7 @@ RondisEndPointMetricsUpdater::~RondisEndPointMetricsUpdater() {
   Uint64 elapsed_us = NdbTick_Elapsed(m_start_time, now).microSec();
   Uint32 hist = calculate_rondis_index(elapsed_us);
   rondis_histogram[hist].fetch_add(1, std::memory_order_relaxed);
+  rondis_histogram_total.fetch_add(elapsed_us, std::memory_order_relaxed);
 }
 
 PingEndPointMetricsUpdater::PingEndPointMetricsUpdater() {
@@ -702,8 +727,8 @@ void initMetrics() {
       .Help("Histogram of response times")
       .Register(*registry);
   {
-    std::vector<double> hist_boundaries(61);
-    for (Uint32 i = 0; i < 61; i++) {
+    std::vector<double> hist_boundaries(60);
+    for (Uint32 i = 0; i < 60; i++) {
       double hist_boundary = double(1);
       hist_boundary *= (double)pk_histogram_boundaries[i];
       hist_boundary /= (double)1000000;
@@ -714,8 +739,8 @@ void initMetrics() {
         hist_boundaries);
   }
   {
-    std::vector<double> hist_boundaries(61);
-    for (Uint32 i = 0; i < 61; i++) {
+    std::vector<double> hist_boundaries(60);
+    for (Uint32 i = 0; i < 60; i++) {
       double hist_boundary = double(1);
       hist_boundary *= (double)batch_pk_histogram_boundaries[i];
       hist_boundary /= (double)1000000;
@@ -726,8 +751,8 @@ void initMetrics() {
         hist_boundaries);
   }
   {
-    std::vector<double> hist_boundaries(61);
-    for (Uint32 i = 0; i < 61; i++) {
+    std::vector<double> hist_boundaries(60);
+    for (Uint32 i = 0; i < 60; i++) {
       double hist_boundary = double(1);
       hist_boundary *= (double)fs_histogram_boundaries[i];
       hist_boundary /= (double)1000000;
@@ -738,8 +763,8 @@ void initMetrics() {
         hist_boundaries);
   }
   {
-    std::vector<double> hist_boundaries(61);
-    for (Uint32 i = 0; i < 61; i++) {
+    std::vector<double> hist_boundaries(60);
+    for (Uint32 i = 0; i < 60; i++) {
       double hist_boundary = double(1);
       hist_boundary *= (double)batch_fs_histogram_boundaries[i];
       hist_boundary /= (double)1000000;
@@ -750,8 +775,8 @@ void initMetrics() {
         hist_boundaries);
   }
   {
-    std::vector<double> hist_boundaries(61);
-    for (Uint32 i = 0; i < 61; i++) {
+    std::vector<double> hist_boundaries(60);
+    for (Uint32 i = 0; i < 60; i++) {
       double hist_boundary = double(1);
       hist_boundary *= (double)ronsql_histogram_boundaries[i];
       hist_boundary /= (double)1000000;
@@ -762,8 +787,8 @@ void initMetrics() {
         hist_boundaries);
   }
   {
-    std::vector<double> hist_boundaries(61);
-    for (Uint32 i = 0; i < 61; i++) {
+    std::vector<double> hist_boundaries(60);
+    for (Uint32 i = 0; i < 60; i++) {
       double hist_boundary = double(1);
       hist_boundary *= (double)rondis_histogram_boundaries[i];
       hist_boundary /= (double)1000000;
@@ -804,9 +829,12 @@ void writeMetrics(drogon::HttpResponsePtr resp) {
 
   // pk-read
   Uint64 hist_counters[64];
+  std::vector<double> hist_counters_dbl(61);
   for (Uint32 i = 0; i < 64; i++) {
     Uint64 count = pk_read_histogram[i].exchange(0, std::memory_order_relaxed);
     hist_counters[i] = count;
+    if (i < 61)
+      hist_counters_dbl[i] = (double)count / (double)1000000;
   }
   Uint64 tot_count = 0;
   for (Uint32 i = 0; i < 61; i++) {
@@ -824,23 +852,17 @@ void writeMetrics(drogon::HttpResponsePtr resp) {
   if (hist_counters[63] > 0) {
     pkReadCounterOther->Increment(hist_counters[63]);
   }
-  double low_boundary = 0.0;
-  for (Uint32 i = 0; i < 61; i++) {
-    double hist_boundary = double(1);
-    hist_boundary *= (double)pk_histogram_boundaries[i];
-    hist_boundary /= (double)1000000;
-    double reported_val = low_boundary + ((hist_boundary - low_boundary) * 0.99);
-    for (Uint32 j = 0; j < hist_counters[i]; j++) {
-      pkReadHistogram->Observe(reported_val);
-    }
-    low_boundary = hist_boundary;
-  }
+  Uint64 tot_value = pk_histogram_total.exchange(0, std::memory_order_relaxed);
+  pkReadHistogram->ObserveMultiple(hist_counters_dbl,
+                                   (double)tot_value / (double)1000000);
 
   // batch
   for (Uint32 i = 0; i < 64; i++) {
     Uint64 count =
       batch_pk_read_histogram[i].exchange(0, std::memory_order_relaxed);
     hist_counters[i] = count;
+    if (i < 61)
+      hist_counters_dbl[i] = (double)count / (double)1000000;
   }
   tot_count = 0;
   for (Uint32 i = 0; i < 61; i++) {
@@ -858,22 +880,16 @@ void writeMetrics(drogon::HttpResponsePtr resp) {
   if (hist_counters[63] > 0) {
     batchPkReadCounterOther->Increment(hist_counters[63]);
   }
-  low_boundary = 0.0;
-  for (Uint32 i = 0; i < 61; i++) {
-    double hist_boundary = double(1);
-    hist_boundary *= (double)batch_pk_histogram_boundaries[i];
-    hist_boundary /= (double)1000000;
-    double reported_val = low_boundary + ((hist_boundary - low_boundary) * 0.99);
-    for (Uint32 j = 0; j < hist_counters[i]; j++) {
-      batchPkReadHistogram->Observe(reported_val);
-    }
-    low_boundary = hist_boundary;
-  }
+  tot_value = batch_pk_histogram_total.exchange(0, std::memory_order_relaxed);
+  batchPkReadHistogram->ObserveMultiple(hist_counters_dbl,
+                                        (double)tot_value / (double)1000000);
 
   // feature_store
   for (Uint32 i = 0; i < 64; i++) {
     Uint64 count = fs_histogram[i].exchange(0, std::memory_order_relaxed);
     hist_counters[i] = count;
+    if (i < 61)
+      hist_counters_dbl[i] = (double)count / (double)1000000;
   }
   tot_count = 0;
   for (Uint32 i = 0; i < 61; i++) {
@@ -891,23 +907,17 @@ void writeMetrics(drogon::HttpResponsePtr resp) {
   if (hist_counters[63] > 0) {
     fsReadCounterOther->Increment(hist_counters[63]);
   }
-  low_boundary = 0.0;
-  for (Uint32 i = 0; i < 61; i++) {
-    double hist_boundary = double(1);
-    hist_boundary *= (double)fs_histogram_boundaries[i];
-    hist_boundary /= (double)1000000;
-    double reported_val = low_boundary + ((hist_boundary - low_boundary) * 0.99);
-    for (Uint32 j = 0; j < hist_counters[i]; j++) {
-      fsReadHistogram->Observe(reported_val);
-    }
-    low_boundary = hist_boundary;
-  }
+  tot_value = fs_histogram_total.exchange(0, std::memory_order_relaxed);
+  fsReadHistogram->ObserveMultiple(hist_counters_dbl,
+                                   (double)tot_value / (double)1000000);
 
   // batch_feature_store
   for (Uint32 i = 0; i < 64; i++) {
     Uint64 count =
       batch_fs_histogram[i].exchange(0, std::memory_order_relaxed);
     hist_counters[i] = count;
+    if (i < 61)
+      hist_counters_dbl[i] = (double)count / (double)1000000;
   }
   tot_count = 0;
   for (Uint32 i = 0; i < 61; i++) {
@@ -925,22 +935,16 @@ void writeMetrics(drogon::HttpResponsePtr resp) {
   if (hist_counters[63] > 0) {
     batchFsReadCounterOther->Increment(hist_counters[63]);
   }
-  low_boundary = 0.0;
-  for (Uint32 i = 0; i < 61; i++) {
-    double hist_boundary = double(1);
-    hist_boundary *= (double)batch_fs_histogram_boundaries[i];
-    hist_boundary /= (double)1000000;
-    double reported_val = low_boundary + ((hist_boundary - low_boundary) * 0.99);
-    for (Uint32 j = 0; j < hist_counters[i]; j++) {
-      batchFsReadHistogram->Observe(reported_val);
-    }
-    low_boundary = hist_boundary;
-  }
+  tot_value = batch_fs_histogram_total.exchange(0, std::memory_order_relaxed);
+  batchFsReadHistogram->ObserveMultiple(hist_counters_dbl,
+                                        (double)tot_value / (double)1000000);
 
   // ronsql
   for (Uint32 i = 0; i < 64; i++) {
     Uint64 count = ronsql_histogram[i].exchange(0, std::memory_order_relaxed);
     hist_counters[i] = count;
+    if (i < 61)
+      hist_counters_dbl[i] = (double)count / (double)1000000;
   }
   tot_count = 0;
   for (Uint32 i = 0; i < 61; i++) {
@@ -958,22 +962,16 @@ void writeMetrics(drogon::HttpResponsePtr resp) {
   if (hist_counters[63] > 0) {
     ronSQLReadCounterOther->Increment(hist_counters[63]);
   }
-  low_boundary = 0.0;
-  for (Uint32 i = 0; i < 61; i++) {
-    double hist_boundary = double(1);
-    hist_boundary *= (double)ronsql_histogram_boundaries[i];
-    hist_boundary /= (double)1000000;
-    double reported_val = low_boundary + ((hist_boundary - low_boundary) * 0.99);
-    for (Uint32 j = 0; j < hist_counters[i]; j++) {
-      ronSQLReadHistogram->Observe(reported_val);
-    }
-    low_boundary = hist_boundary;
-  }
+  tot_value = ronsql_histogram_total.exchange(0, std::memory_order_relaxed);
+  ronSQLReadHistogram->ObserveMultiple(hist_counters_dbl,
+                                       (double)tot_value / (double)1000000);
 
   // rondis
   for (Uint32 i = 0; i < 64; i++) {
     Uint64 count = rondis_histogram[i].exchange(0, std::memory_order_relaxed);
     hist_counters[i] = count;
+    // (i < 61) is always true
+    hist_counters_dbl[i] = (double)count / (double)1000000;
   }
   tot_count = 0;
   for (Uint32 i = 0; i < 61; i++) {
@@ -982,17 +980,9 @@ void writeMetrics(drogon::HttpResponsePtr resp) {
   if (tot_count > 0) {
     rondisCmdCounter->Increment(tot_count);
   }
-  low_boundary = 0.0;
-  for (Uint32 i = 0; i < 61; i++) {
-    double hist_boundary = double(1);
-    hist_boundary *= (double)rondis_histogram_boundaries[i];
-    hist_boundary /= (double)1000000;
-    double reported_val = low_boundary + ((hist_boundary - low_boundary) * 0.99);
-    for (Uint32 j = 0; j < hist_counters[i]; j++) {
-      rondisHistogram->Observe(reported_val);
-    }
-    low_boundary = hist_boundary;
-  }
+  tot_value = rondis_histogram_total.exchange(0, std::memory_order_relaxed);
+  rondisHistogram->ObserveMultiple(hist_counters_dbl,
+                                   (double)tot_value / (double)1000000);
 
   // NDB
   Uint64 count = m_key_request_counter.exchange(0, std::memory_order_relaxed);
