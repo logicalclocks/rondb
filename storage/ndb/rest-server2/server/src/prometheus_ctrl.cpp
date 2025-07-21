@@ -26,6 +26,7 @@ void PrometheusCtrl::metrics(const drogon::HttpRequestPtr &req,
   (void)req;  // to get rid of unsed param warning
 
   drogon::HttpResponsePtr resp = drogon::HttpResponse::newHttpResponse();
+  MetricsEndPointMetricsUpdater metricsUpdater;
 
   rdrs_metrics::writeMetrics(resp);
 
