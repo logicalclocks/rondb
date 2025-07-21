@@ -565,160 +565,161 @@ void initMetrics() {
   /* RDRS pk-read Request Counters */
   pkReadCounter =
     &requestCounter->Add({{"api_type", "REST"},
-                          {"end_point", PKREAD},
+                          {"endpoint", PKREAD},
                           {"method", POST},
                           {"status", "200"}});
 
   pkReadCounter400 =
     &requestCounter->Add({{"api_type", "REST"},
-                          {"end_point", PKREAD},
+                          {"endpoint", PKREAD},
                           {"method", POST},
                           {"status", "400"}});
 
   pkReadCounter500 =
     &requestCounter->Add({{"api_type", "REST"},
-                          {"end_point", PKREAD},
+                          {"endpoint", PKREAD},
                           {"method", POST},
                           {"status", "500"}});
 
   pkReadCounterOther =
     &requestCounter->Add({{"api_type", "REST"},
-                          {"end_point", PKREAD},
+                          {"endpoint", PKREAD},
                           {"method", POST},
-                          {"status", "300"}});
+                          {"status", "other"}});
 
 
   /* RDRS batch Request Counters */
   batchPkReadCounter =
     &requestCounter->Add({{"api_type", "REST"},
-                          {"end_point", BATCH},
+                          {"endpoint", BATCH},
                           {"method", POST},
                           {"status", "200"}});
 
   batchPkReadCounter400 =
     &requestCounter->Add({{"api_type", "REST"},
-                          {"end_point", BATCH},
+                          {"endpoint", BATCH},
                           {"method", POST},
                           {"status", "400"}});
 
   batchPkReadCounter500 =
     &requestCounter->Add({{"api_type", "REST"},
-                          {"end_point", BATCH},
+                          {"endpoint", BATCH},
                           {"method", POST},
                           {"status", "500"}});
 
   batchPkReadCounterOther =
     &requestCounter->Add({{"api_type", "REST"},
-                          {"end_point", BATCH},
+                          {"endpoint", BATCH},
                           {"method", POST},
-                          {"status", "300"}});
+                          {"status", "other"}});
 
 
   /* RDRS feature_store Request Counters */
   fsReadCounter =
     &requestCounter->Add({{"api_type", "REST"},
-                          {"end_point", FEATURE_STORE},
+                          {"endpoint", FEATURE_STORE},
                           {"method", POST},
                           {"status", "200"}});
 
   fsReadCounter400 =
     &requestCounter->Add({{"api_type", "REST"},
-                          {"end_point", FEATURE_STORE},
+                          {"endpoint", FEATURE_STORE},
                           {"method", POST},
                           {"status", "400"}});
 
   fsReadCounter500 =
     &requestCounter->Add({{"api_type", "REST"},
-                          {"end_point", FEATURE_STORE},
+                          {"endpoint", FEATURE_STORE},
                           {"method", POST},
                           {"status", "500"}});
 
   fsReadCounterOther =
     &requestCounter->Add({{"api_type", "REST"},
-                          {"end_point", FEATURE_STORE},
+                          {"endpoint", FEATURE_STORE},
                           {"method", POST},
-                          {"status", "300"}});
+                          {"status", "other"}});
 
 
   /* RDRS batch_feature_store Request Counters */
   batchFsReadCounter =
     &requestCounter->Add({{"api_type", "REST"},
-                          {"end_point", BATCH_FEATURE_STORE},
+                          {"endpoint", BATCH_FEATURE_STORE},
                           {"method", POST},
                           {"status", "200"}});
 
   batchFsReadCounter400 =
     &requestCounter->Add({{"api_type", "REST"},
-                          {"end_point", BATCH_FEATURE_STORE},
+                          {"endpoint", BATCH_FEATURE_STORE},
                           {"method", POST},
                           {"status", "400"}});
 
   batchFsReadCounter500 =
     &requestCounter->Add({{"api_type", "REST"},
-                          {"end_point", BATCH_FEATURE_STORE},
+                          {"endpoint", BATCH_FEATURE_STORE},
                           {"method", POST},
                           {"status", "500"}});
 
   batchFsReadCounterOther =
     &requestCounter->Add({{"api_type", "REST"},
-                          {"end_point", BATCH_FEATURE_STORE},
+                          {"endpoint", BATCH_FEATURE_STORE},
                           {"method", POST},
-                          {"status", "300"}});
+                          {"status", "other"}});
 
 
   /* RDRS ronsql Request Counters */
   ronSQLReadCounter =
     &requestCounter->Add({{"api_type", "REST"},
-                          {"end_point", RONSQL},
+                          {"endpoint", RONSQL},
                           {"method", POST},
                           {"status", "200"}});
 
   ronSQLReadCounter400 =
     &requestCounter->Add({{"api_type", "REST"},
-                          {"end_point", RONSQL},
+                          {"endpoint", RONSQL},
                           {"method", POST},
                           {"status", "400"}});
 
   ronSQLReadCounter500 =
     &requestCounter->Add({{"api_type", "REST"},
-                          {"end_point", RONSQL},
+                          {"endpoint", RONSQL},
                           {"method", POST},
                           {"status", "500"}});
 
   ronSQLReadCounterOther =
     &requestCounter->Add({{"api_type", "REST"},
-                          {"end_point", RONSQL},
+                          {"endpoint", RONSQL},
                           {"method", POST},
-                          {"status", "300"}});
+                          {"status", "other"}});
 
   /* Rondis Request Counter */
   rondisCmdCounter =
     &requestCounter->Add({{"api_type", "Rondis"},
-                          {"end_point", "Rondis"}});
+                          {"endpoint", "Rondis"},
+                          {"method", "Rondis"}});
 
   /* NDB Key Request Counter */
   ndbKeyRequestCounter =
     &requestCounter->Add({{"api_type", "NDB"},
-                          {"end_point", "key"}});
+                          {"endpoint", "key"}});
 
   /* RDRS ping Request Counter */
   pingCounter =
     &requestCounter->Add({{"api_type", "REST"},
-                          {"end_point", PING},
+                          {"endpoint", PING},
                           {"method", POST},
                           {"status", "200"}});
 
   /* RDRS health Request Counters */
   healthCounter =
     &requestCounter->Add({{"api_type", "REST"},
-                          {"end_point", HEALTH},
+                          {"endpoint", HEALTH},
                           {"method", POST},
                           {"status", "200"}});
 
   /* RDRS metrics Request Counters */
   metricsCounter =
     &requestCounter->Add({{"api_type", "REST"},
-                          {"end_point", METRICS},
+                          {"endpoint", METRICS},
                           {"method", POST},
                           {"status", "200"}});
 
@@ -736,7 +737,9 @@ void initMetrics() {
       hist_boundaries[i] = hist_boundary;
     }
     pkReadHistogram =
-      &request_duration.Add({{"method", "POST"}, {"endpoint", PKREAD}},
+      &request_duration.Add({{"api_type", "REST"},
+                             {"method", "POST"},
+                             {"endpoint", PKREAD}},
         hist_boundaries);
   }
   {
@@ -748,7 +751,9 @@ void initMetrics() {
       hist_boundaries[i] = hist_boundary;
     }
     batchPkReadHistogram =
-      &request_duration.Add({{"method", "POST"}, {"endpoint", BATCH}},
+      &request_duration.Add({{"api_type", "REST"},
+                             {"method", "POST"},
+                             {"endpoint", BATCH}},
         hist_boundaries);
   }
   {
@@ -760,7 +765,9 @@ void initMetrics() {
       hist_boundaries[i] = hist_boundary;
     }
     fsReadHistogram =
-      &request_duration.Add({{"method", "POST"}, {"endpoint", FEATURE_STORE}},
+      &request_duration.Add({{"api_type", "REST"},
+                             {"method", "POST"},
+                             {"endpoint", FEATURE_STORE}},
         hist_boundaries);
   }
   {
@@ -772,7 +779,9 @@ void initMetrics() {
       hist_boundaries[i] = hist_boundary;
     }
     batchFsReadHistogram =
-      &request_duration.Add({{"method", "POST"}, {"endpoint", BATCH_FEATURE_STORE}},
+      &request_duration.Add({{"api_type", "REST"},
+                             {"method", "POST"},
+                             {"endpoint", BATCH_FEATURE_STORE}},
         hist_boundaries);
   }
   {
@@ -784,7 +793,9 @@ void initMetrics() {
       hist_boundaries[i] = hist_boundary;
     }
     ronSQLReadHistogram =
-      &request_duration.Add({{"method", "POST"}, {"endpoint", RONSQL}},
+      &request_duration.Add({{"api_type", "REST"},
+                             {"method", "POST"},
+                             {"endpoint", RONSQL}},
         hist_boundaries);
   }
   {
@@ -797,7 +808,9 @@ void initMetrics() {
     }
     // Rondis does not use HTTP. Use placeholder values for method and endpoint.
     rondisHistogram =
-      &request_duration.Add({{"method", "Rondis"}, {"endpoint", "Rondis"}},
+      &request_duration.Add({{"api_type", "Rondis"},
+                             {"method", "Rondis"},
+                             {"endpoint", "Rondis"}},
         hist_boundaries);
   }
 
