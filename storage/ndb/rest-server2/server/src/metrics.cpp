@@ -101,6 +101,7 @@ init_hist_boundaries() {
   m_key_request_counter = 0;
   m_ping_request_counter = 0;
   m_health_request_counter = 0;
+  m_metrics_request_counter = 0;
   for (Uint32 i = 0; i < 64; i++) {
     pk_read_histogram[i] = 0;
   }
