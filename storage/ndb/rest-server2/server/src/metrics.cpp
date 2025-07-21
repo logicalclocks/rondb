@@ -691,7 +691,7 @@ void initMetrics() {
                           {"status", "300"}});
 
   /* Rondis Request Counter */
-  ronSQLReadCounter =
+  rondisCmdCounter =
     &requestCounter->Add({{"api_type", "Rondis"},
                           {"end_point", "Rondis"}});
 
