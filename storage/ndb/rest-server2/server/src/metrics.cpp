@@ -362,7 +362,7 @@ BatchPkReadEndPointMetricsUpdater::BatchPkReadEndPointMetricsUpdater(
   drogon::HttpResponsePtr response) {
   m_start_time = NdbTick_getCurrentTicks();
   m_response = response;
-  m_key_requests = 1;
+  m_key_requests = 0;
 }
 
 void
@@ -378,7 +378,7 @@ BatchPkReadEndPointMetricsUpdater::~BatchPkReadEndPointMetricsUpdater() {
   Uint32 key_requests = 0;
   if (status == drogon::HttpStatusCode::k200OK) {
     hist = calculate_batch_pk_index(elapsed_us);
-    key_requests = m_key_requests - 1;
+    key_requests = m_key_requests;
   } else if (status == drogon::HttpStatusCode::k400BadRequest) {
     hist = 61;
   } else if (status == drogon::HttpStatusCode::k500InternalServerError) {
@@ -424,7 +424,7 @@ BatchFsReadEndPointMetricsUpdater::BatchFsReadEndPointMetricsUpdater(
   drogon::HttpResponsePtr response) {
   m_start_time = NdbTick_getCurrentTicks();
   m_response = response;
-  m_key_requests = 1;
+  m_key_requests = 0;
 }
 
 void
@@ -440,7 +440,7 @@ BatchFsReadEndPointMetricsUpdater::~BatchFsReadEndPointMetricsUpdater() {
   Uint32 key_requests = 0;
   if (status == drogon::HttpStatusCode::k200OK) {
     hist = calculate_batch_fs_index(elapsed_us);
-    key_requests = m_key_requests - 1;
+    key_requests = m_key_requests;
   } else if (status == drogon::HttpStatusCode::k400BadRequest) {
     hist = 61;
   } else if (status == drogon::HttpStatusCode::k500InternalServerError) {
