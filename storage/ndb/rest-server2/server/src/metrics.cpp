@@ -46,11 +46,13 @@ using namespace prometheus;
  */
 
 /* Number of NDB key requests contained in finished batch and
- * batch_feature_store HTTP requests. Does NOT include number of pk-read HTTP
- * requests, since that can already be determined from the pk_read_histogram
- * total.
+ * batch_feature_store HTTP requests, respectively. We do not need a similar
+ * variable for pk-read or fs, since that can already be determined from the
+ * pk_read_histogram and fs_histogram totals.
+ * Todo: Track number of NDB key lookups caused by Rondis.
 */
-std::atomic<Uint64> m_ndb_key_request_counter;
+std::atomic<Uint64> m_ndb_key_request_from_batch_counter;
+std::atomic<Uint64> m_ndb_key_request_from_fs_batch_counter;
 /*
  * Number of started ping HTTP requests.
  */
@@ -111,7 +113,8 @@ Uint32 rondis_histogram_boundaries[60];
 
 static void
 init_metrics_intermediate_variables() {
-  m_ndb_key_request_counter = 0;
+  m_ndb_key_request_from_batch_counter = 0;
+  m_ndb_key_request_from_fs_batch_counter = 0;
   m_ping_request_counter = 0;
   m_health_request_counter = 0;
   m_metrics_request_counter = 0;
@@ -387,7 +390,9 @@ BatchPkReadEndPointMetricsUpdater::~BatchPkReadEndPointMetricsUpdater() {
   batch_pk_read_histogram_total.fetch_add(
     elapsed_us,
     std::memory_order_relaxed);
-  m_ndb_key_request_counter.fetch_add(key_requests, std::memory_order_relaxed);
+  m_ndb_key_request_from_batch_counter.fetch_add(
+    key_requests,
+    std::memory_order_relaxed);
 }
 
 
@@ -445,7 +450,9 @@ BatchFsReadEndPointMetricsUpdater::~BatchFsReadEndPointMetricsUpdater() {
   }
   batch_fs_histogram[hist].fetch_add(1, std::memory_order_relaxed);
   batch_fs_histogram_total.fetch_add(elapsed_us, std::memory_order_relaxed);
-  m_ndb_key_request_counter.fetch_add(key_requests, std::memory_order_relaxed);
+  m_ndb_key_request_from_fs_batch_counter.fetch_add(
+    key_requests,
+    std::memory_order_relaxed);
 }
 
 RonSQLEndPointMetricsUpdater::RonSQLEndPointMetricsUpdater(
@@ -538,7 +545,10 @@ prometheus::Counter *ronSQLReadCounterOther = nullptr;
 
 prometheus::Counter *rondisCmdCounter = nullptr;
 
-prometheus::Counter *ndbKeyRequestCounter = nullptr;
+prometheus::Counter *ndbKeyRequestFromPkReadCounter = nullptr;
+prometheus::Counter *ndbKeyRequestFromBatchCounter = nullptr;
+prometheus::Counter *ndbKeyRequestFromFsCounter = nullptr;
+prometheus::Counter *ndbKeyRequestFromBatchFsCounter = nullptr;
 prometheus::Counter *pingCounter = nullptr;
 prometheus::Counter *healthCounter = nullptr;
 prometheus::Counter *metricsCounter = nullptr;
@@ -699,9 +709,22 @@ void initMetrics() {
                           {"endpoint", "Rondis"},
                           {"method", "Rondis"}});
 
-  /* NDB Key Request Counter */
-  ndbKeyRequestCounter =
+  /* NDB Key Request Counters */
+  ndbKeyRequestFromPkReadCounter =
     &requestCounter->Add({{"api_type", "NDB"},
+                          {"caused_by_endpoint", PKREAD},
+                          {"endpoint", "key"}});
+  ndbKeyRequestFromBatchCounter =
+    &requestCounter->Add({{"api_type", "NDB"},
+                          {"caused_by_endpoint", BATCH},
+                          {"endpoint", "key"}});
+  ndbKeyRequestFromFsCounter =
+    &requestCounter->Add({{"api_type", "NDB"},
+                          {"caused_by_endpoint", FEATURE_STORE},
+                          {"endpoint", "key"}});
+  ndbKeyRequestFromBatchFsCounter =
+    &requestCounter->Add({{"api_type", "NDB"},
+                          {"caused_by_endpoint", BATCH_FEATURE_STORE},
                           {"endpoint", "key"}});
 
   /* RDRS ping Request Counter */
@@ -858,6 +881,7 @@ void writeMetrics(drogon::HttpResponsePtr resp) {
   }
   if (tot_count > 0) {
     pkReadCounter->Increment(tot_count);
+    ndbKeyRequestFromPkReadCounter->Increment(tot_count);
   }
   if (hist_counters[61] > 0) {
     pkReadCounter400->Increment(hist_counters[61]);
@@ -917,6 +941,7 @@ void writeMetrics(drogon::HttpResponsePtr resp) {
   }
   if (tot_count > 0) {
     fsReadCounter->Increment(tot_count);
+    ndbKeyRequestFromFsCounter->Increment(tot_count);
   }
   if (hist_counters[61] > 0) {
     fsReadCounter400->Increment(hist_counters[61]);
@@ -1005,10 +1030,16 @@ void writeMetrics(drogon::HttpResponsePtr resp) {
                                    (double)tot_value / (double)1000000);
 
   // NDB
-  Uint64 count = m_ndb_key_request_counter.exchange(
+  // ndbKeyRequestFromPkReadCounter and ndbKeyRequestFromFsCounter already
+  // incremented above.
+  Uint64 count = m_ndb_key_request_from_batch_counter.exchange(
     0,
     std::memory_order_relaxed);
-  ndbKeyRequestCounter->Increment(count);
+  ndbKeyRequestFromBatchCounter->Increment(count);
+  count = m_ndb_key_request_from_fs_batch_counter.exchange(
+    0,
+    std::memory_order_relaxed);
+  ndbKeyRequestFromBatchFsCounter->Increment(count);
 
   // ping
   count = m_ping_request_counter.exchange(0, std::memory_order_relaxed);
