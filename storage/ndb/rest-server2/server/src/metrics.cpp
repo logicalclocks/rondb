@@ -347,6 +347,7 @@ PkReadEndPointMetricsUpdater::~PkReadEndPointMetricsUpdater() {
   Uint32 hist;
   if (status == drogon::HttpStatusCode::k200OK) {
     hist = calculate_pk_index(elapsed_us);
+    pk_read_histogram_total.fetch_add(elapsed_us, std::memory_order_relaxed);
   } else if (status == drogon::HttpStatusCode::k400BadRequest) {
     hist = 61;
   } else if (status == drogon::HttpStatusCode::k500InternalServerError) {
@@ -355,7 +356,6 @@ PkReadEndPointMetricsUpdater::~PkReadEndPointMetricsUpdater() {
     hist = 63; // Other error
   }
   pk_read_histogram[hist].fetch_add(1, std::memory_order_relaxed);
-  pk_read_histogram_total.fetch_add(elapsed_us, std::memory_order_relaxed);
 }
 
 BatchPkReadEndPointMetricsUpdater::BatchPkReadEndPointMetricsUpdater(
@@ -375,10 +375,14 @@ BatchPkReadEndPointMetricsUpdater::~BatchPkReadEndPointMetricsUpdater() {
   Uint64 elapsed_us = NdbTick_Elapsed(m_start_time, now).microSec();
   auto status = m_response->getStatusCode();
   Uint32 hist;
-  Uint32 key_requests = 0;
   if (status == drogon::HttpStatusCode::k200OK) {
     hist = calculate_batch_pk_index(elapsed_us);
-    key_requests = m_key_requests;
+    batch_pk_read_histogram_total.fetch_add(
+      elapsed_us,
+      std::memory_order_relaxed);
+    m_ndb_key_request_from_batch_counter.fetch_add(
+      m_key_requests,
+      std::memory_order_relaxed);
   } else if (status == drogon::HttpStatusCode::k400BadRequest) {
     hist = 61;
   } else if (status == drogon::HttpStatusCode::k500InternalServerError) {
@@ -387,12 +391,6 @@ BatchPkReadEndPointMetricsUpdater::~BatchPkReadEndPointMetricsUpdater() {
     hist = 63; // Other error
   }
   batch_pk_read_histogram[hist].fetch_add(1, std::memory_order_relaxed);
-  batch_pk_read_histogram_total.fetch_add(
-    elapsed_us,
-    std::memory_order_relaxed);
-  m_ndb_key_request_from_batch_counter.fetch_add(
-    key_requests,
-    std::memory_order_relaxed);
 }
 
 
@@ -409,6 +407,7 @@ FsReadEndPointMetricsUpdater::~FsReadEndPointMetricsUpdater() {
   Uint32 hist;
   if (status == drogon::HttpStatusCode::k200OK) {
     hist = calculate_fs_index(elapsed_us);
+    fs_histogram_total.fetch_add(elapsed_us, std::memory_order_relaxed);
   } else if (status == drogon::HttpStatusCode::k400BadRequest) {
     hist = 61;
   } else if (status == drogon::HttpStatusCode::k500InternalServerError) {
@@ -417,7 +416,6 @@ FsReadEndPointMetricsUpdater::~FsReadEndPointMetricsUpdater() {
     hist = 63; // Other error
   }
   fs_histogram[hist].fetch_add(1, std::memory_order_relaxed);
-  fs_histogram_total.fetch_add(elapsed_us, std::memory_order_relaxed);
 }
 
 BatchFsReadEndPointMetricsUpdater::BatchFsReadEndPointMetricsUpdater(
@@ -437,10 +435,12 @@ BatchFsReadEndPointMetricsUpdater::~BatchFsReadEndPointMetricsUpdater() {
   Uint64 elapsed_us = NdbTick_Elapsed(m_start_time, now).microSec();
   auto status = m_response->getStatusCode();
   Uint32 hist;
-  Uint32 key_requests = 0;
   if (status == drogon::HttpStatusCode::k200OK) {
     hist = calculate_batch_fs_index(elapsed_us);
-    key_requests = m_key_requests;
+    batch_fs_histogram_total.fetch_add(elapsed_us, std::memory_order_relaxed);
+    m_ndb_key_request_from_fs_batch_counter.fetch_add(
+      m_key_requests,
+      std::memory_order_relaxed);
   } else if (status == drogon::HttpStatusCode::k400BadRequest) {
     hist = 61;
   } else if (status == drogon::HttpStatusCode::k500InternalServerError) {
@@ -449,10 +449,6 @@ BatchFsReadEndPointMetricsUpdater::~BatchFsReadEndPointMetricsUpdater() {
     hist = 63; // Other error
   }
   batch_fs_histogram[hist].fetch_add(1, std::memory_order_relaxed);
-  batch_fs_histogram_total.fetch_add(elapsed_us, std::memory_order_relaxed);
-  m_ndb_key_request_from_fs_batch_counter.fetch_add(
-    key_requests,
-    std::memory_order_relaxed);
 }
 
 RonSQLEndPointMetricsUpdater::RonSQLEndPointMetricsUpdater(
@@ -468,6 +464,7 @@ RonSQLEndPointMetricsUpdater::~RonSQLEndPointMetricsUpdater() {
   Uint32 hist;
   if (status == drogon::HttpStatusCode::k200OK) {
     hist = calculate_ronsql_index(elapsed_us);
+    ronsql_histogram_total.fetch_add(elapsed_us, std::memory_order_relaxed);
   } else if (status == drogon::HttpStatusCode::k400BadRequest) {
     hist = 61;
   } else if (status == drogon::HttpStatusCode::k500InternalServerError) {
@@ -476,7 +473,6 @@ RonSQLEndPointMetricsUpdater::~RonSQLEndPointMetricsUpdater() {
     hist = 63; // Other error
   }
   ronsql_histogram[hist].fetch_add(1, std::memory_order_relaxed);
-  ronsql_histogram_total.fetch_add(elapsed_us, std::memory_order_relaxed);
 }
 
 RondisEndPointMetricsUpdater::RondisEndPointMetricsUpdater() {
@@ -873,7 +869,7 @@ void writeMetrics(drogon::HttpResponsePtr resp) {
     Uint64 count = pk_read_histogram[i].exchange(0, std::memory_order_relaxed);
     hist_counters[i] = count;
     if (i < 61)
-      hist_counters_dbl[i] = (double)count / (double)1000000;
+      hist_counters_dbl[i] = (double)count;
   }
   Uint64 tot_count = 0;
   for (Uint32 i = 0; i < 61; i++) {
@@ -904,7 +900,7 @@ void writeMetrics(drogon::HttpResponsePtr resp) {
       batch_pk_read_histogram[i].exchange(0, std::memory_order_relaxed);
     hist_counters[i] = count;
     if (i < 61)
-      hist_counters_dbl[i] = (double)count / (double)1000000;
+      hist_counters_dbl[i] = (double)count;
   }
   tot_count = 0;
   for (Uint32 i = 0; i < 61; i++) {
@@ -933,7 +929,7 @@ void writeMetrics(drogon::HttpResponsePtr resp) {
     Uint64 count = fs_histogram[i].exchange(0, std::memory_order_relaxed);
     hist_counters[i] = count;
     if (i < 61)
-      hist_counters_dbl[i] = (double)count / (double)1000000;
+      hist_counters_dbl[i] = (double)count;
   }
   tot_count = 0;
   for (Uint32 i = 0; i < 61; i++) {
@@ -962,7 +958,7 @@ void writeMetrics(drogon::HttpResponsePtr resp) {
       batch_fs_histogram[i].exchange(0, std::memory_order_relaxed);
     hist_counters[i] = count;
     if (i < 61)
-      hist_counters_dbl[i] = (double)count / (double)1000000;
+      hist_counters_dbl[i] = (double)count;
   }
   tot_count = 0;
   for (Uint32 i = 0; i < 61; i++) {
@@ -989,7 +985,7 @@ void writeMetrics(drogon::HttpResponsePtr resp) {
     Uint64 count = ronsql_histogram[i].exchange(0, std::memory_order_relaxed);
     hist_counters[i] = count;
     if (i < 61)
-      hist_counters_dbl[i] = (double)count / (double)1000000;
+      hist_counters_dbl[i] = (double)count;
   }
   tot_count = 0;
   for (Uint32 i = 0; i < 61; i++) {
@@ -1016,7 +1012,7 @@ void writeMetrics(drogon::HttpResponsePtr resp) {
     Uint64 count = rondis_histogram[i].exchange(0, std::memory_order_relaxed);
     hist_counters[i] = count;
     // (i < 61) is always true
-    hist_counters_dbl[i] = (double)count / (double)1000000;
+    hist_counters_dbl[i] = (double)count;
   }
   tot_count = 0;
   for (Uint32 i = 0; i < 61; i++) {
