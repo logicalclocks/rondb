@@ -384,7 +384,9 @@ BatchPkReadEndPointMetricsUpdater::~BatchPkReadEndPointMetricsUpdater() {
     hist = 63; // Other error
   }
   batch_pk_read_histogram[hist].fetch_add(1, std::memory_order_relaxed);
-  batch_pk_read_histogram_total.fetch_add(elapsed_us, std::memory_order_relaxed);
+  batch_pk_read_histogram_total.fetch_add(
+    elapsed_us,
+    std::memory_order_relaxed);
   m_ndb_key_request_counter.fetch_add(key_requests, std::memory_order_relaxed);
 }
 
@@ -815,16 +817,16 @@ void initMetrics() {
   }
 
   ronDBConnectionStateGauge = &prometheus::BuildGauge()
-                                   .Name("rdrs_rondb_connection_state")
-                                   .Help("Connection state (0: connected, > 0  not connected)")
-                                   .Register(*registry)
-                                   .Add({});
+    .Name("rdrs_rondb_connection_state")
+    .Help("Connection state (0: connected, > 0  not connected)")
+    .Register(*registry)
+    .Add({});
 
   ndbObjectsTotalCountGauge = &prometheus::BuildGauge()
-                                   .Name("rdrs_rondb_total_ndb_objects")
-                                   .Help("Total NDB objects")
-                                   .Register(*registry)
-                                   .Add({});
+    .Name("rdrs_rondb_total_ndb_objects")
+    .Help("Total NDB objects")
+    .Register(*registry)
+    .Add({});
 }
 
 void setRonDBStats() {
@@ -866,7 +868,9 @@ void writeMetrics(drogon::HttpResponsePtr resp) {
   if (hist_counters[63] > 0) {
     pkReadCounterOther->Increment(hist_counters[63]);
   }
-  Uint64 tot_value = pk_read_histogram_total.exchange(0, std::memory_order_relaxed);
+  Uint64 tot_value = pk_read_histogram_total.exchange(
+    0,
+    std::memory_order_relaxed);
   pkReadHistogram->ObserveMultiple(hist_counters_dbl,
                                    (double)tot_value / (double)1000000);
 
@@ -894,7 +898,9 @@ void writeMetrics(drogon::HttpResponsePtr resp) {
   if (hist_counters[63] > 0) {
     batchPkReadCounterOther->Increment(hist_counters[63]);
   }
-  tot_value = batch_pk_read_histogram_total.exchange(0, std::memory_order_relaxed);
+  tot_value = batch_pk_read_histogram_total.exchange(
+    0,
+    std::memory_order_relaxed);
   batchPkReadHistogram->ObserveMultiple(hist_counters_dbl,
                                         (double)tot_value / (double)1000000);
 
@@ -999,7 +1005,9 @@ void writeMetrics(drogon::HttpResponsePtr resp) {
                                    (double)tot_value / (double)1000000);
 
   // NDB
-  Uint64 count = m_ndb_key_request_counter.exchange(0, std::memory_order_relaxed);
+  Uint64 count = m_ndb_key_request_counter.exchange(
+    0,
+    std::memory_order_relaxed);
   ndbKeyRequestCounter->Increment(count);
 
   // ping
