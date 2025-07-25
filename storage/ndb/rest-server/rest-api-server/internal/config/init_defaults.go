@@ -105,6 +105,13 @@ func newWithDefaults() AllConfigs {
 				CacheRefreshIntervalJitterMS: 1000,
 			},
 		},
+		FeatureStore: FeatureStore{
+			FeatureStoreMetadataCache: FeatureStoreMetadataCache{
+				CacheRefreshIntervalMS:       600000,  // 10 min
+				CacheUnusedEntriesEvictionMS: 1800000, // 30 min
+				CacheRefreshIntervalJitterMS: 1000,
+			},
+		},
 		Log: log.LogConfig{
 			Level:      "warn",
 			FilePath:   "",

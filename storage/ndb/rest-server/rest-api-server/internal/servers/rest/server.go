@@ -54,13 +54,14 @@ func New(
 	tlsConfig *tls.Config,
 	heap *heap.Heap,
 	apiKeyCache apikey.Cache,
+	featureViewMetaDataCache *fsmeta.FeatureViewMetaDataCache,
 	rdrsMetrics *metrics.RDRSMetrics,
 ) *RonDBRestServer {
 	restApiAddress := fmt.Sprintf("%s:%d", host, port)
 	log.Infof("Initialising REST API server with network address: '%s'", restApiAddress)
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New() // gin.Default() for better logging
-	registerHandlers(router, heap, apiKeyCache, rdrsMetrics)
+	registerHandlers(router, heap, apiKeyCache, featureViewMetaDataCache, rdrsMetrics)
 	return &RonDBRestServer{
 		server: &http.Server{
 			Addr:      restApiAddress,
@@ -111,14 +112,14 @@ type RouteHandler struct {
 	batchFeatureStoreHandler batchfeaturestore.Handler
 }
 
-func registerHandlers(router *gin.Engine, heap *heap.Heap, apiKeyCache apikey.Cache, rdrsMetrics *metrics.RDRSMetrics) {
+func registerHandlers(router *gin.Engine, heap *heap.Heap, apiKeyCache apikey.Cache,
+	fvMeta *fsmeta.FeatureViewMetaDataCache, rdrsMetrics *metrics.RDRSMetrics) {
 	router.Use(ErrorHandler)
 	router.Use(RestMetricsHandler(rdrsMetrics.EndPointMetrics))
 
 	versionGroup := router.Group(config.VERSION_GROUP)
 
 	batchPkReadHandler := batchpkread.New(heap, apiKeyCache)
-	var fvMeta = fsmeta.NewFeatureViewMetaDataCache()
 	featureStoreHandler := feature_store.New(fvMeta, apiKeyCache, batchPkReadHandler, heap)
 
 	routeHandler := &RouteHandler{
