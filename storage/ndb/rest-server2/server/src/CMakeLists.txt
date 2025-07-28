@@ -67,6 +67,12 @@ file(GLOB_RECURSE SRC
 )
 NDB_ADD_EXECUTABLE(${PROJECT_NAME} ${SRC} STATIC_NDBCLIENT)
 
+# Create symlink bin/rdrs -> bin/rdrs2
+ADD_CUSTOM_COMMAND(TARGET ${PROJECT_NAME} POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E cmake_symlink_executable
+          $<TARGET_FILE:${PROJECT_NAME}>
+          $<TARGET_FILE_DIR:${PROJECT_NAME}>/rdrs)
+
 find_library(OSSP_UUID_LIBRARY NAMES ossp-uuid
   PATHS /lib64 /usr/lib64
 )
@@ -116,7 +122,12 @@ TARGET_LINK_LIBRARIES(${PROJECT_NAME}
                       rondis
                       libavro)
 
+# Install rdrs2 binary
 INSTALL(TARGETS ${PROJECT_NAME}
+    DESTINATION ${INSTALL_BINDIR} COMPONENT Server)
+
+# Install rdrs symlink
+INSTALL(FILES "$<TARGET_FILE_DIR:${PROJECT_NAME}>/rdrs"
     DESTINATION ${INSTALL_BINDIR} COMPONENT Server)
 
 add_library(rdrs2_lib STATIC ${SRC})
