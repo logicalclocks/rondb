@@ -10,29 +10,32 @@ At Hopsworks, we use `Dockerfile.oraclelinux8` for our production builds in Cent
 
 To build RonDB with the aim of **extracting the tarball**, use the Dockerfiles as follows:
 ```bash
-BUILD_CORES=$(nproc)  # Default will be 1
-
 # Run this from the root directory of the repository
 # Use any of the above Dockerfiles whether running this on an x86\_64 or ARM64 platform
+# Omit the RELEASE_TARBALL argument to create a simple build
 BUILDKIT_ENABLED=1 docker build . \
     -f Dockerfile.oraclelinux8 \
     --target get-package-all \
     --output <local-path-to-place-tarball> \
-    --build-arg BUILD_THREADS=$BUILD_CORES \  # To accelerate the build
-    --build-arg RELEASE_TARBALL=1  # Omit this entirely to create a simple build
+    --build-arg BUILD_THREADS=$(nproc) \
+    --build-arg RELEASE_TARBALL=1
 ```
 
 This will create the RonDB tarball as part of the Docker build process. It will also use Docker's mounted build caches to save the intermediate binaries. See the statements such as `--mount=type=cache,target=rondb-bin,id=ubuntu22-rondb2210-bin` in the Dockerfile. These will largely accelerate consecutive builds. To clear the cache, run `docker builder prune`. You can also add the flag `--no-cache` to the Docker build command to create an absolutely clean build.
 
-If you want to build RDRS docker image than run the following command
+# Building RDRS docker image
+Run the following command from the repository root directory
 
-# Run this from the root directory of the repository
+```
+# Update the tag and version
+# Omit the RELEASE_TARBALL argument to create a simple build
 BUILDKIT_ENABLED=1 docker build . \
-    -f Dockerfile.oraclelinux7 \
+    -f Dockerfile.oraclelinux8 \
     --target rdrs \
-    --tag rdrs:22.10 \ # Update the tag and version
-    --build-arg BUILD_THREADS=$BUILD_CORES \  # To accelerate the build
-    --build-arg RELEASE_TARBALL=1  # Omit this entirely to create a simple build
+    --tag rdrs:24.10 \
+    --build-arg BUILD_THREADS=$(nproc) \
+    --build-arg RELEASE_TARBALL=1
+```
 
 Use the `docker images` and `docker save` commands to list and save docker images
 
