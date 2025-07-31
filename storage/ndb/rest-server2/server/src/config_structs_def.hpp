@@ -346,8 +346,6 @@ CLASS
  CM(FeatureStoreMetadataCache, featureStoreMetadataCache, FeatureStoreMetadataCache, FeatureStoreMetadataCache(), "")
 )
 
-
-
 CLASS
 (LogConfig,
  CM(std::string, level, Level, "warn", "")

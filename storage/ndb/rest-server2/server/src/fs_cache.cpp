@@ -349,10 +349,10 @@ void FSMetadataCache::remove_entry(FSCacheEntry *entry, Uint32 key_cache_id) {
 
 void FSMetadataCache::cache_entry_updater(Uint32 key_cache_id) {
   m_is_thread_running = true;
+  const Uint64 eviction_ms =
+   (Uint64)globalConfigs.featureStore.featureStoreMetadataCache.cacheUnusedEntriesEvictionMS;
   while (true) {
     Uint32 sleepMillis = 100;
-    Uint64 eviction_ms =
-     (Uint64)globalConfigs.featureStore.featureStoreMetadataCache.cacheUnusedEntriesEvictionMS;
     NdbMutex_Lock(m_rwLock[key_cache_id]);
     FSCacheEntry* first_entry = m_first_cache_entry[key_cache_id];
     if (first_entry != nullptr) {
