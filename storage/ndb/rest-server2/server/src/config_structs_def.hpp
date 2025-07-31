@@ -334,6 +334,19 @@ CLASS
 )
 
 CLASS
+(FeatureStoreMetadataCache,
+ CM(Uint32, cacheUnusedEntriesEvictionMS, CacheUnusedEntriesEvictionMS, 1800000,
+    "") // 30 min
+ PROBLEM(cacheUnusedEntriesEvictionMS <= 0,
+         "cache unused entries eviction must be greater than 0")
+)
+
+CLASS
+(FeatureStore,
+ CM(FeatureStoreMetadataCache, featureStoreMetadataCache, FeatureStoreMetadataCache, FeatureStoreMetadataCache(), "")
+)
+
+CLASS
 (LogConfig,
  CM(std::string, level, Level, "warn", "")
  CM(std::string, filePath, FilePath, "", "")
@@ -401,6 +414,7 @@ CLASS
     " metadata. It has the same schema as .RonDB. If it is not present in the"
     " config file, then it will be set to .RonDB")
  CM(Security, security, Security, Security(), "")
+ CM(FeatureStore, featureStore, FeatureStore, FeatureStore(), "")
  CM(LogConfig, log, Log, LogConfig(), "")
  CM(Testing, testing, Testing, Testing(),
     "Connetivity necessary for testing. rdrs2 will validate but not use these"
