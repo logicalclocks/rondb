@@ -352,7 +352,7 @@ void FSMetadataCache::cache_entry_updater(Uint32 key_cache_id) {
   while (true) {
     Uint32 sleepMillis = 100;
     Uint64 eviction_ms =
-      (Uint64)globalConfigs.security.apiKey.cacheUnusedEntriesEvictionMS;
+     (Uint64)globalConfigs.featureStore.featureStoreMetadataCache.cacheUnusedEntriesEvictionMS;
     NdbMutex_Lock(m_rwLock[key_cache_id]);
     FSCacheEntry* first_entry = m_first_cache_entry[key_cache_id];
     if (first_entry != nullptr) {
