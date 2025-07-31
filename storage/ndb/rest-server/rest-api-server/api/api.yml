@@ -25,7 +25,7 @@ info:
     name: Apache 2.0
     url: http://www.apache.org/licenses/LICENSE-2.0.html
 servers:
-  - url: https://localhost:5406/0.1.0
+  - url: https://localhost:4406/0.1.0
     description: Local Development Server
   - url: https://virtserver.swaggerhub.com/SIYAOL641/RonDB-REST/0.1.0
     description: SwaggerHub API Auto Mocking
