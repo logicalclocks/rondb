@@ -517,9 +517,6 @@ RS_Status find_training_dataset_join_data_int(Ndb *ndb_object, int feature_view_
   if (ptr == nullptr) {
     return RS_SERVER_ERROR(ERROR_038);
   }
-  if (ptr == nullptr) {
-    return RS_SERVER_ERROR(ERROR_038);
-  }
   *tdjs      = (Training_Dataset_Join *)ptr;
   for (Uint64 i = 0; i < tdjsv.size(); i++) {
     (*tdjs + i)->id  = tdjsv[i].id;
