@@ -32,7 +32,7 @@ RDRSRonDBConnectionPool::~RDRSRonDBConnectionPool() {
   delete metadataConnection;
   dataConnection     = nullptr;
   metadataConnection = nullptr;
-  is_shutdown = true;
+  is_shutdown        = true;
   ndb_end(1);  // sometimes causes seg faults when called repeatedly from unit tests
 }
 
@@ -59,8 +59,12 @@ RS_Status RDRSRonDBConnectionPool::AddConnections(const char *connection_string,
                                                   unsigned int connection_retry_delay_in_sec) {
   require(connection_pool_size == 1);
 
-  dataConnection   = new RDRSRonDBConnection(connection_string, node_ids, node_ids_len,
+  try {
+    dataConnection = new RDRSRonDBConnection(connection_string, node_ids, node_ids_len,
                                              connection_retries, connection_retry_delay_in_sec);
+  } catch (const std::bad_alloc &e) {
+    return RS_SERVER_ERROR(ERROR_038);
+  } 
   RS_Status status = dataConnection->Connect();
   if (status.http_code != SUCCESS) {
     return status;

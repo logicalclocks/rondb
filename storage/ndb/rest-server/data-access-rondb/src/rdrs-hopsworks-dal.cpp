@@ -545,10 +545,22 @@ RS_Status find_all_projects(int uid, char ***projects, int *count) {
   *count = project_vec.size();
   HopsworksProject dummy;
   *projects = (char **)malloc(*count * sizeof(char *));  // freed by CGO
+  if (*projects == nullptr) {
+    return RS_SERVER_ERROR(ERROR_038);
+  }
 
   char **ease = *projects;
   for (Uint32 i = 0; i < project_vec.size(); i++) {
     ease[i] = (char *)malloc(sizeof(dummy.projectname) * sizeof(char));  // freed by CGO
+    if (ease[i] == nullptr) {
+      // Free already allocated pointers before returning
+      for (Uint32 j = 0; j < i; j++) {
+        free(ease[j]);
+      }
+      free(ease);
+      *projects = nullptr;
+      return RS_SERVER_ERROR(ERROR_038);
+    }
     memcpy(ease[i], project_vec[i].projectname, strlen(project_vec[i].projectname) + 1);
   }
   return RS_OK;

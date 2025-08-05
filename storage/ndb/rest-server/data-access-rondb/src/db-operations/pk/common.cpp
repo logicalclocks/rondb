@@ -76,6 +76,9 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
     char *parsed        = nullptr;
     errno               = 0;
     *primaryKeyCol      = (Int8 *)malloc(sizeof(Int64));
+    if (*primaryKeyCol == nullptr) {
+      return RS_SERVER_ERROR(ERROR_038);
+    }
     *primaryKeySize     = sizeof(Int64);
     Int64 *parsedNumber = reinterpret_cast<Int64 *>(*primaryKeyCol);
     *parsedNumber       = strtoll(request->PKValueCStr(colIdx), &parsed, 10);
@@ -93,6 +96,9 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
     char *parsed        = nullptr;
     errno               = 0;
     *primaryKeyCol      = (Int8 *)malloc(sizeof(Int64));
+    if (*primaryKeyCol == nullptr) {
+      return RS_SERVER_ERROR(ERROR_038);
+    }
     *primaryKeySize     = sizeof(Int64);
     Int64 *parsedNumber = reinterpret_cast<Int64 *>(*primaryKeyCol);
     *parsedNumber       = strtoll(request->PKValueCStr(colIdx), &parsed, 10);
@@ -109,6 +115,9 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
     char *parsed        = nullptr;
     errno               = 0;
     *primaryKeyCol      = (Int8 *)malloc(sizeof(Int64));
+    if (*primaryKeyCol == nullptr) {
+      return RS_SERVER_ERROR(ERROR_038);
+    }
     *primaryKeySize     = sizeof(Int64);
     Int64 *parsedNumber = reinterpret_cast<Int64 *>(*primaryKeyCol);
     *parsedNumber       = strtoll(request->PKValueCStr(colIdx), &parsed, 10);
@@ -127,6 +136,9 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
     char *parsed        = nullptr;
     errno               = 0;
     *primaryKeyCol      = (Int8 *)malloc(sizeof(Int64));
+    if (*primaryKeyCol == nullptr) {
+      return RS_SERVER_ERROR(ERROR_038);
+    }
     *primaryKeySize     = sizeof(Int64);
     Int64 *parsedNumber = reinterpret_cast<Int64 *>(*primaryKeyCol);
     *parsedNumber       = strtoll(request->PKValueCStr(colIdx), &parsed, 10);
@@ -145,6 +157,9 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
     char *parsed        = nullptr;
     errno               = 0;
     *primaryKeyCol      = (Int8 *)malloc(sizeof(Int64));
+    if (*primaryKeyCol == nullptr) {
+      return RS_SERVER_ERROR(ERROR_038);
+    }
     *primaryKeySize     = sizeof(Int64);
     Int64 *parsedNumber = reinterpret_cast<Int64 *>(*primaryKeyCol);
     *parsedNumber       = strtoll(request->PKValueCStr(colIdx), &parsed, 10);
@@ -163,6 +178,9 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
     char *parsed        = nullptr;
     errno               = 0;
     *primaryKeyCol      = (Int8 *)malloc(sizeof(Int64));
+    if (*primaryKeyCol == nullptr) {
+      return RS_SERVER_ERROR(ERROR_038);
+    }
     *primaryKeySize     = sizeof(Int64);
     Int64 *parsedNumber = reinterpret_cast<Int64 *>(*primaryKeyCol);
     *parsedNumber       = strtoll(request->PKValueCStr(colIdx), &parsed, 10);
@@ -180,6 +198,9 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
     char *parsed        = nullptr;
     errno               = 0;
     *primaryKeyCol      = (Int8 *)malloc(sizeof(Int64));
+    if (*primaryKeyCol == nullptr) {
+      return RS_SERVER_ERROR(ERROR_038);
+    }
     *primaryKeySize     = sizeof(Int64);
     Int64 *parsedNumber = reinterpret_cast<Int64 *>(*primaryKeyCol);
     *parsedNumber       = strtoll(request->PKValueCStr(colIdx), &parsed, 10);
@@ -198,6 +219,9 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
     char *parsed        = nullptr;
     errno               = 0;
     *primaryKeyCol      = (Int8 *)malloc(sizeof(Int64));
+    if (*primaryKeyCol == nullptr) {
+      return RS_SERVER_ERROR(ERROR_038);
+    }
     *primaryKeySize     = sizeof(Int64);
     Int64 *parsedNumber = reinterpret_cast<Int64 *>(*primaryKeyCol);
     *parsedNumber       = strtoll(request->PKValueCStr(colIdx), &parsed, 10);
@@ -216,6 +240,9 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
     char *parsed        = nullptr;
     errno               = 0;
     *primaryKeyCol      = (Int8 *)malloc(sizeof(Int64));
+    if (*primaryKeyCol == nullptr) {
+      return RS_SERVER_ERROR(ERROR_038);
+    }
     *primaryKeySize     = sizeof(Int64);
     Int64 *parsedNumber = reinterpret_cast<Int64 *>(*primaryKeyCol);
     *parsedNumber       = strtoll(request->PKValueCStr(colIdx), &parsed, 10);
@@ -232,6 +259,9 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
     char *parsed         = nullptr;
     errno                = 0;
     *primaryKeyCol       = (Int8 *)malloc(sizeof(Int64));
+    if (*primaryKeyCol == nullptr) {
+      return RS_SERVER_ERROR(ERROR_038);
+    }
     *primaryKeySize      = sizeof(Int64);
     Uint64 *parsedNumber = reinterpret_cast<Uint64 *>(*primaryKeyCol);
     *parsedNumber        = strtoull(request->PKValueCStr(colIdx), &parsed, 10);
@@ -283,6 +313,9 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
     const char *decStr = request->PKValueCStr(colIdx);
 
     *primaryKeyCol  = (Int8 *)malloc(DECIMAL_MAX_SIZE_IN_BYTES);
+    if (*primaryKeyCol == nullptr) {
+      return RS_SERVER_ERROR(ERROR_038);
+    }
     *primaryKeySize = DECIMAL_MAX_SIZE_IN_BYTES;
     if (unlikely(decimal_str2bin(decStr, strlen(decStr), precision, scale, *primaryKeyCol,
                                  *primaryKeySize) != 0)) {
@@ -309,6 +342,9 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
 
     // operation->equal expects a zero-padded char string
     *primaryKeyCol  = (Int8 *)malloc(colMaxLen);
+    if (*primaryKeyCol == nullptr) {
+      return RS_SERVER_ERROR(ERROR_038);
+    }
     *primaryKeySize = colMaxLen;
     memcpy(*primaryKeyCol, dataStr, dataStrLen);
     memset(*primaryKeyCol + dataStrLen, 0, colMaxLen - dataStrLen);
@@ -336,6 +372,9 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
     }
 
     *primaryKeyCol = (Int8 *)malloc((*primaryKeySize + additionalLen) * sizeof(Int8));
+    if (*primaryKeyCol == nullptr) {
+      return RS_SERVER_ERROR(ERROR_038);
+    }
     memcpy(*primaryKeyCol + additionalLen, request->PKValueCStr(colIdx), *primaryKeySize);
 
     if (col->getType() == NdbDictionary::Column::Varchar) {
@@ -374,6 +413,9 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
 
     *primaryKeySize = col->getSizeInBytes();
     *primaryKeyCol  = (Int8 *)malloc(*primaryKeySize);
+    if (*primaryKeyCol == nullptr) {
+      return RS_SERVER_ERROR(ERROR_038);
+    }
     memset(*primaryKeyCol, 0, *primaryKeySize);
 
     size_t outlen = 0;
@@ -432,6 +474,9 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
       additionalLen = 2;
     }
     *primaryKeyCol = (Int8 *)malloc(maxColLen);
+    if (*primaryKeyCol == nullptr) {
+      return RS_SERVER_ERROR(ERROR_038);
+    }
 
     size_t outlen = 0;
     // leave first 1-2 bytes free for saving length bytes
@@ -507,6 +552,9 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
     }
 
     *primaryKeyCol  = (Int8 *)malloc(DATE_MAX_SIZE_IN_BYTES);
+    if (*primaryKeyCol == nullptr) {
+      return RS_SERVER_ERROR(ERROR_038);
+    }
     *primaryKeySize = col->getSizeInBytes();
     my_date_to_binary(&lTime, (uchar *)*primaryKeyCol);
     break;
@@ -551,6 +599,9 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
     }
 
     *primaryKeyCol  = (Int8 *)malloc(4);
+    if (*primaryKeyCol == nullptr) {
+      return RS_SERVER_ERROR(ERROR_038);
+    }
     *primaryKeySize = 4;
     Int32 *year     = reinterpret_cast<Int32 *>(*primaryKeyCol);
     *year           = static_cast<Int32>((parsedNumber - 1900));
@@ -585,6 +636,9 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
     }
 
     *primaryKeyCol  = (Int8 *)malloc(TIME2_MAX_SIZE_IN_BYTES);
+    if (*primaryKeyCol == nullptr) {
+      return RS_SERVER_ERROR(ERROR_038);
+    }
     *primaryKeySize = col->getSizeInBytes();
     int precision   = col->getPrecision();
 
@@ -629,6 +683,9 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
     longlong numericDateTime = TIME_to_longlong_datetime_packed(lTime);
 
     *primaryKeyCol  = (Int8 *)malloc(DATETIME_MAX_SIZE_IN_BYTES);
+    if (*primaryKeyCol == nullptr) {
+      return RS_SERVER_ERROR(ERROR_038);
+    }
     *primaryKeySize = col->getSizeInBytes();
     my_datetime_packed_to_binary(numericDateTime, (uchar *)*primaryKeyCol, precision);
 
@@ -695,6 +752,9 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
     }
 
     *primaryKeyCol  = (Int8 *)malloc(TIMESTAMP2_MAX_SIZE_IN_BYTES);
+    if (*primaryKeyCol == nullptr) {
+      return RS_SERVER_ERROR(ERROR_038);
+    }
     *primaryKeySize = col->getSizeInBytes();
 
     // On Mac timeval.tv_usec is Int32 and on linux it is Int64.
