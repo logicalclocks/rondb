@@ -150,6 +150,15 @@ DEFINE_PRINTER(std::string, {
       << INDENT_INC() << "\"" << #JSONKEYNAME << "\": "; \
   printJson(value.VARIABLENAME, out, indent + INDENT_INCREASE, printDoc); \
   is_first_field = false;
+#define ALIAS(ACTUALVARIABLENAME, ACTUALJSONKEYNAME, ALIASJSONKEYNAME) \
+  if (printDoc) { \
+    printDocString( \
+      out, \
+      indent + INDENT_INCREASE, \
+      #ALIASJSONKEYNAME " is an alias for " #ACTUALJSONKEYNAME ".", \
+      is_first_field); \
+    is_first_field = false; \
+  }
 #define PROBLEM(CONDITION, MESSAGE)
 #define CLASSDEFS(...)
 #define VECTOR(DATATYPE) \
@@ -171,6 +180,7 @@ DEFINE_PRINTER(std::string, {
 
 #undef CLASS
 #undef CM
+#undef ALIAS
 #undef PROBLEM
 #undef CLASSDEFS
 #undef VECTOR

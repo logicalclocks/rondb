@@ -66,7 +66,7 @@ void PingCtrl::ping(const drogon::HttpRequestPtr &req,
   }
   // Authenticate
   if (globalConfigs.security.apiKey.useHopsworksAPIKeys &&
-      globalConfigs.rest.pingRequiresAPIKey) {
+      globalConfigs.rest.pingRequiresAuth) {
     auto api_key = req->getHeader(API_KEY_NAME_LOWER_CASE);
     auto status = authenticate_empty(api_key);
     if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=

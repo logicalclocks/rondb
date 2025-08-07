@@ -9,6 +9,7 @@
                    "Port": @cluster_config.ndb_mgmd.1.1.PortNumber } ]
   },
   "Security": {
+    "InsecureAllowAll": @InsecureAllowAll,
     "TLS": {
       "EnableTLS": false,
       "RequireAndVerifyClientCert": false
