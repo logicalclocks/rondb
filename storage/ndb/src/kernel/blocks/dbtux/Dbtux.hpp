@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -773,9 +773,9 @@ private:
   bool scanCheck(ScanOp &scan, TreeEnt ent);
   bool scanVisible(ScanOp &scan, TreeEnt ent);
   void scanClose(Signal *signal, ScanOpPtr scanPtr);
-  void abortAccLockOps(Signal *signal, ScanOpPtr scanPtr);
-  void addAccLockOp(ScanOpPtr scanPtr, Uint32 accLockOp);
-  void removeAccLockOp(ScanOpPtr scanPtr, Uint32 accLockOp);
+  void abortAccLockOps(Signal *signal, ScanOp &scan);
+  void addAccLockOp(ScanOp &scan, Uint32 accLockOp);
+  void removeAccLockOp(ScanOp &scan, Uint32 accLockOp);
   void releaseScanOp(ScanOpPtr &scanPtr);
 
   /*
