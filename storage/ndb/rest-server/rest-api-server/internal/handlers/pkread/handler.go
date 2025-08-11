@@ -69,12 +69,18 @@ func (h *Handler) Authenticate(apiKey *string, request interface{}) error {
 func (h *Handler) Execute(request interface{}, response interface{}) (int, error) {
 	pkReadParams := request.(*api.PKReadParams)
 
-	reqBuff, releaseReqBuff := h.heap.GetBuffer()
+	reqBuff, releaseReqBuff, err := h.heap.GetBuffer()
 	defer releaseReqBuff()
-	respBuff, releaseResBuff := h.heap.GetBuffer()
+	if err != nil {
+		return http.StatusServiceUnavailable, err
+	}
+	respBuff, releaseResBuff, err := h.heap.GetBuffer()
 	defer releaseResBuff()
+	if err != nil {
+		return http.StatusServiceUnavailable, err
+	}
 
-	err := CreateNativeRequest(pkReadParams, reqBuff, respBuff)
+	err = CreateNativeRequest(pkReadParams, reqBuff, respBuff)
 	if err != nil {
 		return http.StatusInternalServerError, err
 	}

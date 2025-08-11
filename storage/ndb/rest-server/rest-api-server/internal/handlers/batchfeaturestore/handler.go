@@ -144,10 +144,16 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 		respPtrs := make([]*heap.NativeBuffer, noOps)
 
 		for idx, pkOp := range *readParams {
-			reqBuff, releaseReqBuff := h.heap.GetBuffer()
+			reqBuff, releaseReqBuff, err := h.heap.GetBuffer()
 			defer releaseReqBuff()
-			respBuff, releaseResBuff := h.heap.GetBuffer()
+			if err != nil {
+				return http.StatusServiceUnavailable, err
+			}
+			respBuff, releaseResBuff, err := h.heap.GetBuffer()
 			defer releaseResBuff()
+			if err != nil {
+				return http.StatusServiceUnavailable, err
+			}
 
 			reqPtrs[idx] = reqBuff
 			respPtrs[idx] = respBuff
