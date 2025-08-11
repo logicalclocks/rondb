@@ -34,9 +34,10 @@ import (
 )
 
 type Heap struct {
-	buffers      []*NativeBuffer
-	buffersStats MemoryStats
-	mutex        *sync.Mutex
+	buffers             []*NativeBuffer
+	buffersStats        MemoryStats
+	mutex               *sync.Mutex
+	minAllocatedBuffers int64
 }
 
 type NativeBuffer struct {
@@ -62,8 +63,9 @@ func New() (heap *Heap, releaseBuffers func(), err error) {
 	preAllocatedBuffers := int64(conf.Internal.PreAllocatedBuffers)
 
 	heap = &Heap{
-		buffers: []*NativeBuffer{},
-		mutex:   &sync.Mutex{},
+		buffers:             []*NativeBuffer{},
+		mutex:               &sync.Mutex{},
+		minAllocatedBuffers: preAllocatedBuffers,
 		buffersStats: MemoryStats{
 			AllocationsCount:   preAllocatedBuffers,
 			BuffersCount:       preAllocatedBuffers,
@@ -81,6 +83,7 @@ func allocateBuffer() *NativeBuffer {
 	conf := config.GetAll()
 	bufferSize := conf.Internal.BufferSize
 
+	// TODO: Handle C.malloc failure
 	buff := NativeBuffer{
 		Buffer: C.malloc(C.size_t(bufferSize)),
 		Size:   uint32(bufferSize),
@@ -94,9 +97,10 @@ func (heap *Heap) releaseAllBuffers() {
 	heap.mutex.Lock()
 	defer heap.mutex.Unlock()
 
-	if heap.buffersStats.AllocationsCount != int64(len(heap.buffers)) {
+	stats := heap.GetNativeBuffersStats()
+	if stats.BuffersCount != int64(len(heap.buffers)) {
 		log.Warnf("Shutting down heap. Number of free buffers do not match. Expecting: %d, Got: %d.",
-			heap.buffersStats.AllocationsCount, int64(len(heap.buffers)))
+			stats.BuffersCount, int64(len(heap.buffers)))
 	}
 
 	for _, buffer := range heap.buffers {
@@ -117,7 +121,6 @@ func (heap *Heap) GetBuffer() (buff *NativeBuffer, returnBuff func()) {
 	} else {
 		// we're going beyond the pre-allocated buffers here
 		buff = allocateBuffer()
-		heap.buffersStats.BuffersCount++
 		heap.buffersStats.AllocationsCount++
 	}
 
@@ -128,19 +131,22 @@ func (heap *Heap) returnBuffer(buffer *NativeBuffer) {
 	heap.mutex.Lock()
 	defer heap.mutex.Unlock()
 
-	// TODO: Should we not run this as well?
-	// C.free(buffer.Buffer)
-
-	// TODO: Also, shouldn't we only return if we're beneath #preAllocatedBuffers?
-
-	heap.buffers = append(heap.buffers, buffer)
+	if int64(len(heap.buffers)) < heap.minAllocatedBuffers {
+		heap.buffers = append(heap.buffers, buffer)
+	} else {
+		C.free(buffer.Buffer)
+		heap.buffersStats.DeallocationsCount++
+	}
 }
 
 func (heap *Heap) GetNativeBuffersStats() MemoryStats {
-	// update the free buffers count
 	heap.mutex.Lock()
 	defer heap.mutex.Unlock()
 
+	// Only (De)AllocationsCount are updated continuously. Update the others now.
+	heap.buffersStats.BuffersCount = (
+		heap.buffersStats.AllocationsCount -
+			heap.buffersStats.DeallocationsCount)
 	heap.buffersStats.FreeBuffers = int64(len(heap.buffers))
 	return heap.buffersStats
 }
