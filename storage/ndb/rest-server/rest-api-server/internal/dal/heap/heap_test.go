@@ -41,7 +41,7 @@ func TestHeap(t *testing.T) {
 			preAllocatedBuffers, stats.AllocationsCount)
 	}
 
-	_, returnBuff := heap.GetBuffer()
+	_, returnBuff, _ := heap.GetBuffer()
 
 	stats = heap.GetNativeBuffersStats()
 	if stats.FreeBuffers != initialTotalBuffers-1 {
@@ -63,7 +63,7 @@ func TestHeap(t *testing.T) {
 	allocations := stats.FreeBuffers + 100
 	returnBuffFuncs := []func(){}
 	for i := int64(0); i < allocations; i++ {
-		_, returnBuff := heap.GetBuffer()
+		_, returnBuff, _ := heap.GetBuffer()
 		returnBuffFuncs = append(returnBuffFuncs, returnBuff)
 	}
 

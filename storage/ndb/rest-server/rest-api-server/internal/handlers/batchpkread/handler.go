@@ -97,12 +97,17 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 	reqPtrs := make([]*heap.NativeBuffer, noOps)
 	respPtrs := make([]*heap.NativeBuffer, noOps)
 
-	var err error
 	for idx, pkOp := range *pkOperations {
-		reqBuff, releaseReqBuff := h.heap.GetBuffer()
+		reqBuff, releaseReqBuff, err := h.heap.GetBuffer()
 		defer releaseReqBuff()
-		respBuff, releaseResBuff := h.heap.GetBuffer()
+		if err != nil {
+			return http.StatusServiceUnavailable, err
+		}
+		respBuff, releaseResBuff, err := h.heap.GetBuffer()
 		defer releaseResBuff()
+		if err != nil {
+			return http.StatusServiceUnavailable, err
+		}
 
 		reqPtrs[idx] = reqBuff
 		respPtrs[idx] = respBuff

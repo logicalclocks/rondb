@@ -28,6 +28,7 @@ import (
 type Internal struct {
 	BufferSize          uint32
 	PreAllocatedBuffers uint32
+	MaxAllocatedBuffers uint32
 	GOMAXPROCS          int
 	BatchMaxSize        uint32
 	OperationIDMaxSize  uint32
@@ -38,6 +39,10 @@ type Internal struct {
 func (i *Internal) Validate() error {
 	if i.PreAllocatedBuffers == 0 {
 		log.Warnf("PreAllocatedBuffers is set to 0. It may impact performance")
+	}
+
+	if i.MaxAllocatedBuffers < i.PreAllocatedBuffers {
+		return errors.New("MaxAllocatedBuffers must be greater than or equal to PreAllocatedBuffers")
 	}
 
 	if i.BufferSize < 256 {
