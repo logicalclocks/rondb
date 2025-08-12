@@ -63,7 +63,8 @@ func (h *RouteHandler) BatchPkRead(c *gin.Context) {
 	var responseIntf api.BatchOpResponse = (api.BatchOpResponse)(&api.BatchResponseJSON{})
 	responseIntf.Init(numOperations)
 
-	status, err := handlers.Handle(&h.batchPkReadHandler, &apiKey, &pkOperations, responseIntf)
+	status, release, err := handlers.Handle(&h.batchPkReadHandler, &apiKey, &pkOperations, responseIntf)
+	defer release()
 	if err != nil {
 		c.AbortWithError(status, err)
 		return

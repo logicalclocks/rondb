@@ -48,7 +48,8 @@ func (s *RonDBServer) Stat(ctx context.Context, reqProto *api.StatRequestProto) 
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	statResp := api.StatResponse{}
-	httpStatus, err := handlers.Handle(&s.statsHandler, &apiKey, nil, &statResp)
+	httpStatus, release, err := handlers.Handle(&s.statsHandler, &apiKey, nil, &statResp)
+	defer release()
 	statusCode = common.HttpStatusToGrpcCode(httpStatus)
 	if err != nil {
 		return nil, status.Error(statusCode, err.Error())

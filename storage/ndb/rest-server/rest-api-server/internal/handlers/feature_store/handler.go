@@ -198,19 +198,24 @@ func (h *Handler) Authenticate(apiKey *string, request interface{}) error {
 	return nil
 }
 
-func (h *Handler) Execute(request interface{}, response interface{}) (int, error) {
-
+func (h *Handler) Execute(request interface{}, response interface{}) (int, func(), error) {
+	releaseFuncs := []func(){}
+	release := func() {
+		for _, releaseFunc := range releaseFuncs {
+			releaseFunc()
+		}
+	}
 	fsReq := request.(*api.FeatureStoreRequest)
 	metadata, err := h.fvMetaCache.Get(
 		*fsReq.FeatureStoreName, *fsReq.FeatureViewName, *fsReq.FeatureViewVersion)
 	if err != nil {
-		return err.GetStatus(), err.GetError()
+		return err.GetStatus(), release, err.GetError()
 	}
 	var readParams = GetBatchPkReadParams(metadata, fsReq.Entries)
 	ronDbErr := h.dbBatchReader.Validate(readParams)
 	if ronDbErr != nil {
 		var fsError = TranslateRonDbError(http.StatusBadRequest, ronDbErr.Error())
-		return fsError.GetStatus(), fsError.GetError()
+		return fsError.GetStatus(), release, fsError.GetError()
 	}
 
 	var dbResponseIntf = getPkReadResponseJSON(*metadata)
@@ -225,14 +230,14 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 
 	for idx, pkOp := range *readParams {
 		reqBuff, releaseReqBuff, err := h.heap.GetBuffer()
-		defer releaseReqBuff()
+		releaseFuncs = append(releaseFuncs, releaseReqBuff)
 		if err != nil {
-			return http.StatusServiceUnavailable, err
+			return http.StatusServiceUnavailable, release, err
 		}
 		respBuff, releaseResBuff, err := h.heap.GetBuffer()
-		defer releaseResBuff()
+		releaseFuncs = append(releaseFuncs, releaseResBuff)
 		if err != nil {
-			return http.StatusServiceUnavailable, err
+			return http.StatusServiceUnavailable, release, err
 		}
 
 		reqPtrs[idx] = reqBuff
@@ -240,7 +245,7 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 
 		e := pkread.CreateNativeRequest(pkOp, reqBuff, respBuff)
 		if e != nil {
-			return http.StatusInternalServerError, err
+			return http.StatusInternalServerError, release, err
 		}
 	}
 	// --- buffers ---
@@ -248,7 +253,7 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 
 	if ronDbErr != nil {
 		var fsError = TranslateRonDbError(code, ronDbErr.Error())
-		return fsError.GetStatus(), fsError.GetError()
+		return fsError.GetStatus(), release, fsError.GetError()
 	}
 	if log.IsDebug() {
 		jsonResponse := (*dbResponseIntf).String()
@@ -257,11 +262,11 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 	rondbResp := (*dbResponseIntf).(*api.BatchResponseJSON)
 	fsError := checkRondbResponse(rondbResp)
 	if fsError != nil {
-		return fsError.GetStatus(), fsError.GetError()
+		return fsError.GetStatus(), release, fsError.GetError()
 	}
 	features, status, detailedStatus, fsError := GetFeatureValues(rondbResp.Result, fsReq.Entries, metadata, fsReq.GetOptions().IncludeDetailedStatus)
 	if fsError != nil {
-		return fsError.GetStatus(), fsError.GetError()
+		return fsError.GetStatus(), release, fsError.GetError()
 	}
 	if log.IsDebug() {
 		log.Debugf("Detailed Status : %s", detailedStatus)
@@ -276,7 +281,7 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 	if fsReq.GetOptions().IncludeDetailedStatus {
 		fsResp.DetailedStatus = detailedStatus
 	}
-	return http.StatusOK, nil
+	return http.StatusOK, release, nil
 }
 
 func checkRondbResponse(rondbResp *api.BatchResponseJSON) *feature_store.RestErrorCode {

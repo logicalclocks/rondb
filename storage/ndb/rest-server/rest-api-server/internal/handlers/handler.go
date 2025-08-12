@@ -22,17 +22,17 @@ import "net/http"
 type Handler interface {
 	Validate(request interface{}) error
 	Authenticate(apiKey *string, request interface{}) error
-	Execute(request interface{}, response interface{}) (int, error)
+	Execute(request interface{}, response interface{}) (int, func(), error)
 }
 
-func Handle(h Handler, apiKey *string, request interface{}, response interface{}) (int, error) {
+func Handle(h Handler, apiKey *string, request interface{}, response interface{}) (int, func(), error) {
 
 	if err := h.Validate(request); err != nil {
-		return http.StatusBadRequest, err
+		return http.StatusBadRequest, func() {}, err
 	}
 
 	if err := h.Authenticate(apiKey, request); err != nil {
-		return http.StatusUnauthorized, err
+		return http.StatusUnauthorized, func() {}, err
 	}
 
 	return h.Execute(request, response)
