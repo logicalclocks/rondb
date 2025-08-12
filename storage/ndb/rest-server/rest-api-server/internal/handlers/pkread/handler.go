@@ -66,35 +66,38 @@ func (h *Handler) Authenticate(apiKey *string, request interface{}) error {
 	return h.apiKeyCache.ValidateAPIKey(apiKey, pkReadParams.DB)
 }
 
-func (h *Handler) Execute(request interface{}, response interface{}) (int, error) {
+func (h *Handler) Execute(request interface{}, response interface{}) (int, func(), error) {
 	pkReadParams := request.(*api.PKReadParams)
 
 	reqBuff, releaseReqBuff, err := h.heap.GetBuffer()
-	defer releaseReqBuff()
+	release := releaseReqBuff
 	if err != nil {
-		return http.StatusServiceUnavailable, err
+		return http.StatusServiceUnavailable, release, err
 	}
 	respBuff, releaseResBuff, err := h.heap.GetBuffer()
-	defer releaseResBuff()
+	release = func() {
+		releaseReqBuff()
+		releaseResBuff()
+	}
 	if err != nil {
-		return http.StatusServiceUnavailable, err
+		return http.StatusServiceUnavailable, release, err
 	}
 
 	err = CreateNativeRequest(pkReadParams, reqBuff, respBuff)
 	if err != nil {
-		return http.StatusInternalServerError, err
+		return http.StatusInternalServerError, release, err
 	}
 
 	dalErr := dal.RonDBPKRead(reqBuff, respBuff)
 	if dalErr != nil && dalErr.HttpCode != http.StatusOK { // any other error return immediately
-		return dalErr.HttpCode, dalErr
+		return dalErr.HttpCode, release, dalErr
 	}
 
 	pkReadResponse := response.(api.PKReadResponse)
 	status, _, err := ProcessPKReadResponse(respBuff, pkReadResponse)
 	if err != nil {
-		return http.StatusInternalServerError, err
+		return http.StatusInternalServerError, release, err
 	}
 
-	return int(status), nil
+	return int(status), release, nil
 }

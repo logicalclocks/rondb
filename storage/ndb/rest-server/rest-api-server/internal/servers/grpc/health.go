@@ -44,7 +44,8 @@ func (s *RonDBServer) Health(ctx context.Context, reqProto *api.HealthRequestPro
 	defer updateMetrics(config.STAT_OPERATION)
 
 	healthResp := api.HealthResponse{}
-	httpStatus, err := handlers.Handle(&s.healthHandler, nil, nil, &healthResp)
+	httpStatus, release, err := handlers.Handle(&s.healthHandler, nil, nil, &healthResp)
+	defer release()
 	statusCode = common.HttpStatusToGrpcCode(httpStatus)
 	if err != nil {
 		return nil, status.Error(statusCode, err.Error())
