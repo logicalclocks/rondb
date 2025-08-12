@@ -1529,17 +1529,16 @@ int NdbTransaction::doSend() {
    ***********************************************************************/
     if (theSendStatus == sendABORTfail) {
       theReturnStatus = ReturnFailure;
-      setErrorCode(4114);
     }  // if
     if (sendROLLBACK() == 0) {
       DBUG_RETURN(0);
-      }  // if
+    }  // if
     break;
     }  // case
   case sendCOMMITstate:
     if (sendCOMMIT() == 0) {
       DBUG_RETURN(0);
-      }  // if
+    }  // if
     break;
   case sendCompleted:
     theNdb->insert_completed_list(this); 
