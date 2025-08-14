@@ -17003,9 +17003,21 @@ void Dblqh::scanReleaseLocksLab(Signal *signal,
   Fragrecord::FragStatus fragstatus = fragptr.p->fragStatus;
   ndbrequire(is_scan_ok(scanPtr, fragstatus));
   check_send_scan_hb_rep(signal, scanPtr, regTcPtr);
+  if (scanPtr->readCommitted) {
+    jamDebug();
+    Uint32 release_counter = scanPtr->scanReleaseCounter;
+    Uint32 curr_rows = scanPtr->m_curr_batch_size_rows;
+    Uint32 num_releases = (curr_rows - release_counter) + 1;
+    if (release_counter >= curr_rows) {
+      num_releases = 1;
+    }
+    scanPtr->scanReleaseCounter += (num_releases - 1);
+    scanLockReleasedLab(signal, regTcPtr);
+    return;
+  }
   while (true) {
-    const Uint32 accOpPtr = scanPtr->readCommitted ?
-      get_acc_ptr_from_scan_record(scanPtr, 0, false) :
+    jamDebug();
+    const Uint32 accOpPtr =
       get_acc_ptr_from_scan_record(scanPtr,
                                    scanPtr->scanReleaseCounter-1,
                                    false);
@@ -18989,8 +19001,7 @@ void Dblqh::scanTupkeyConfLab(Signal* signal,
     } else {
       jam();
       scanPtr->scanReleaseCounter = rows + 1;
-      check_send_scan_hb_rep(signal, scanPtr, regTcPtr);
-      scanLockReleasedLab(signal, regTcPtr);
+      scanReleaseLocksLab(signal, regTcPtr);
       return;
     }
   }
@@ -19091,14 +19102,12 @@ void Dblqh::scanTupkeyRefLab(Signal* signal,
        *       WE NEED TO RELEASE ALL LOCKS CURRENTLY
        *       HELD BY THIS SCAN.
        * -------------------------------------------------------------------- */
-      scanReleaseLocksLab(signal, tcConnectptr.p);
     } else {
       jam();
       scanPtr->m_curr_batch_size_rows = rows + 1;
       scanPtr->scanReleaseCounter = rows + 1;
-      check_send_scan_hb_rep(signal, scanPtr, tcConnectptr.p);
-      scanLockReleasedLab(signal, tcConnectptr.p);
     }  // if
+    scanReleaseLocksLab(signal, tcConnectptr.p);
     return;
   }  // if
 
@@ -19137,8 +19146,7 @@ void Dblqh::scanTupkeyRefLab(Signal* signal,
      * -----------------------------------------------------------------------
      */
     scanPtr->scanReleaseCounter = rows + 1;
-    check_send_scan_hb_rep(signal, scanPtr, tcConnectptr.p);
-    scanLockReleasedLab(signal, tcConnectptr.p);
+    scanReleaseLocksLab(signal, tcConnectptr.p);
     return;
   } else {
 #ifdef DEBUG_PA

@@ -635,7 +635,7 @@ void Dbtux::execNEXT_SCANREQ(Signal *signal) {
         c_acc->execACC_LOCKREQ(signal);
         jamEntryDebug();
         ndbrequire(lockReq->returnCode == AccLockReq::Success);
-        removeAccLockOp(c_ctx.scanPtr, accOperationPtr);
+        removeAccLockOp(scan, accOperationPtr);
       }
       if (scanFlag == NextScanReq::ZSCAN_COMMIT) {
         jamDebug();
@@ -985,7 +985,7 @@ void Dbtux::continue_scan(Signal *signal, ScanOpPtr scanPtr, Frag &frag,
     if (unlikely(accLockOp != RNIL)) {
       scan.m_accLockOp = RNIL;
       // remember it until LQH unlocks it
-      addAccLockOp(scanPtr, accLockOp);
+      addAccLockOp(scan, accLockOp);
     } else {
       ndbrequire(scan.m_readCommitted);
       // operation RNIL in LQH would signal no tuple returned
@@ -1649,7 +1649,7 @@ void Dbtux::scanClose(Signal *signal, ScanOpPtr scanPtr) {
   // unlock all not unlocked by LQH
   if (!scan.m_accLockOps.isEmpty()) {
     jam();
-    abortAccLockOps(signal, scanPtr);
+    abortAccLockOps(signal, scan);
   }
   Uint32 blockNo = refToMain(scanPtr.p->m_userRef);
   if (scanPtr.p->m_errorCode == 0) {
@@ -1677,11 +1677,10 @@ void Dbtux::scanClose(Signal *signal, ScanOpPtr scanPtr) {
   }
 }
 
-void Dbtux::abortAccLockOps(Signal *signal, ScanOpPtr scanPtr) {
-  ScanOp &scan = *scanPtr.p;
+void Dbtux::abortAccLockOps(Signal *signal, ScanOp &scan) {
 #ifdef VM_TRACE
   if (debugFlags & (DebugScan | DebugLock)) {
-    tuxDebugOut << "Abort locks in scan " << scanPtr.i << " " << scan << endl;
+    tuxDebugOut << "Abort locks in scan " << scan << endl;
   }
 #endif
   Local_ScanLock_fifo list(c_scanLockPool, scan.m_accLockOps);
@@ -1701,12 +1700,11 @@ void Dbtux::abortAccLockOps(Signal *signal, ScanOpPtr scanPtr) {
   checkPoolShrinkNeed(DBTUX_SCAN_LOCK_TRANSIENT_POOL_INDEX, c_scanLockPool);
 }
 
-void Dbtux::addAccLockOp(ScanOpPtr scanPtr, Uint32 accLockOp) {
-  ScanOp &scan = *scanPtr.p;
+void Dbtux::addAccLockOp(ScanOp &scan, Uint32 accLockOp) {
 #ifdef VM_TRACE
   if (debugFlags & (DebugScan | DebugLock)) {
     tuxDebugOut << "Add lock " << hex << accLockOp << dec << " to scan "
-                << scanPtr.i << " " << scan << endl;
+                << scan << endl;
   }
 #endif
   Local_ScanLock_fifo list(c_scanLockPool, scan.m_accLockOps);
@@ -1726,12 +1724,11 @@ void Dbtux::addAccLockOp(ScanOpPtr scanPtr, Uint32 accLockOp) {
   list.addLast(lockPtr);
 }
 
-void Dbtux::removeAccLockOp(ScanOpPtr scanPtr, Uint32 accLockOp) {
-  ScanOp &scan = *scanPtr.p;
+void Dbtux::removeAccLockOp(ScanOp &scan, Uint32 accLockOp) {
 #ifdef VM_TRACE
   if (debugFlags & (DebugScan | DebugLock)) {
     tuxDebugOut << "Remove lock " << hex << accLockOp << dec << " from scan "
-                << scanPtr.i << " " << scan << endl;
+                << scan << endl;
   }
 #endif
   Local_ScanLock_fifo list(c_scanLockPool, scan.m_accLockOps);
