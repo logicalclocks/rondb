@@ -35,6 +35,8 @@
  * CLASS(Name, Contents) for class definition
  * CM(Datatype, Variablename, JSONKeyname, init expression, docstring) for data
  *     member included in parsing and printing
+ * ALIAS(ActualVariableName, ActualJSONKeyname, AliasJSONKeyname) for aliases,
+ *     e.g. for backward compatibility
  * PROBLEM(condition, message) for validation
  * CLASSDEFS(Contents) for all other class definition content
  * VECTOR(Datatype) to indicate that a vector of this datatype will be used
@@ -88,12 +90,12 @@ CLASS
  CM(Uint16, serverPort, ServerPort, 4406, "TCP port to listen on.")
  CM(unsigned, numThreads, NumThreads, 64,
     "Number of threads handling REST requests.")
- CM(bool, healthRequiresAPIKey, HealthRequiresAPIKey, false,
-    "Set to true to authenticate the health endpoint. Only applies if"
-    " .APIKey.UseHopsworksAPIKeys is also set to true.")
- CM(bool, pingRequiresAPIKey, PingRequiresAPIKey, false,
-    "Set to true to authenticate the ping endpoint. Only applies if"
-    " .APIKey.UseHopsworksAPIKeys is also set to true.")
+ CM(bool, healthRequiresAuth, HealthRequiresAuth, false,
+    "Set to true to require authentication for the health endpoint.")
+ ALIAS(healthRequiresAuth, HealthRequiresAuth, HealthRequiresAPIKey)
+ CM(bool, pingRequiresAuth, PingRequiresAuth, false,
+    "Set to true to require authentication for the ping endpoint.")
+ ALIAS(pingRequiresAuth, PingRequiresAuth, PingRequiresAPIKey)
  CM(bool, useSingleTransaction, UseSingleTransaction, true,
     "Set to true to use single transaction for entire batch.")
  PROBLEM(!enable, "REST must be enabled")
@@ -289,8 +291,9 @@ CLASS
 (TLS,
  CM(bool, enableTLS, EnableTLS, false,
     "Whether to enable TLS for the REST server")
- CM(bool, requireAndVerifyClientCert, RequireAndVerifyClientCert, false,
+ CM(bool, requireClientCert, RequireClientCert, false,
     "Whether to require REST clients to provide a client certificate")
+ ALIAS(requireClientCert, RequireClientCert, RequireAndVerifyClientCert)
  CM(std::string, certificateFile, CertificateFile, "",
     "Path to the server certificate file")
  CM(std::string, privateKeyFile, PrivateKeyFile, "",
@@ -303,13 +306,14 @@ CLASS
          privateKeyFile.empty()),
          "cannot enable TLS if `CertificateFile` or `PrivateKeyFile` is"
          " not set")
- PROBLEM(!enableTLS && requireAndVerifyClientCert,
+ PROBLEM(!enableTLS && requireClientCert,
          "cannot require client certificates if TLS is not enabled")
 )
 
 CLASS
 (APIKey,
- CM(bool, useHopsworksAPIKeys, UseHopsworksAPIKeys, true, "")
+ CM(bool, useHopsworksAPIKeys, UseHopsworksAPIKeys, true,
+    "Whether to allow authentication via Hopsworks API keys")
  CM(Uint32, cacheRefreshIntervalMS, CacheRefreshIntervalMS, 10000, "")
  CM(Uint32, cacheUnusedEntriesEvictionMS, CacheUnusedEntriesEvictionMS, 60000,
     "")
@@ -329,8 +333,19 @@ CLASS
 
 CLASS
 (Security,
+ CM(bool, insecureAllowAll, InsecureAllowAll, false,
+    "WARNING, INSECURE! Authorize everyone to do everything, even"
+    " without authentication")
  CM(TLS, tls, TLS, TLS(), "")
  CM(APIKey, apiKey, APIKey, APIKey(), "")
+ PROBLEM(insecureAllowAll && apiKey.useHopsworksAPIKeys,
+         "When .Security.InsecureAllowAll is set,"
+         " .Security.APIKey.UseHopsworksAPIKeys must be turned off")
+ PROBLEM(!insecureAllowAll && !apiKey.useHopsworksAPIKeys,
+         "When all authentication methods are turned off,"
+         " .Security.InsecureAllowAll must be set. (The only authentication"
+         " method supported in this version is"
+         " .Security.APIKey.UseHopsworksAPIKeys)")
 )
 
 CLASS
@@ -419,6 +434,12 @@ CLASS
  CM(Testing, testing, Testing, Testing(),
     "Connetivity necessary for testing. rdrs2 will validate but not use these"
     " settings.")
+ PROBLEM(security.insecureAllowAll && rest.healthRequiresAuth,
+         "Combining .Security.InsecureAllowAll and"
+         " .REST.HealthRequiresAuth is not allowed")
+ PROBLEM(security.insecureAllowAll && rest.pingRequiresAuth,
+         "Combining .Security.InsecureAllowAll and"
+         " .REST.PingRequiresAuth is not allowed")
  CLASSDEFS
  (
   static AllConfigs get_all();

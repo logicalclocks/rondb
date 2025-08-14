@@ -394,7 +394,7 @@ int main(int argc, char *argv[]) {
 
   if (globalConfigs.security.tls.enableTLS) {
     status = GenerateTLSConfig(
-      globalConfigs.security.tls.requireAndVerifyClientCert,
+      globalConfigs.security.tls.requireClientCert,
       globalConfigs.security.tls.rootCACertFile,
       globalConfigs.security.tls.certificateFile,
       globalConfigs.security.tls.privateKeyFile);

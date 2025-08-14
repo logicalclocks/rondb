@@ -45,6 +45,7 @@ extern NdbMutex *globalConfigsMutex;
 #define CLASS(NAME, ...) NAME::NAME() : REMOVE_FIRST_COMMA(__VA_ARGS__) {}
 #define CM(DATATYPE, VARIABLENAME, JSONKEYNAME, INITEXPR, DOCSTRING) \
   ,VARIABLENAME(INITEXPR)
+#define ALIAS(ACTUALVARIABLENAME, ACTUALJSONKEYNAME, ALIASJSONKEYNAME)
 #define PROBLEM(CONDITION, MESSAGE)
 #define CLASSDEFS(...)
 #define VECTOR(DATATYPE)
@@ -53,6 +54,7 @@ extern NdbMutex *globalConfigsMutex;
 
 #undef CLASS
 #undef CM
+#undef ALIAS
 #undef PROBLEM
 #undef CLASSDEFS
 #undef VECTOR
@@ -72,6 +74,7 @@ public:
 #define CLASS(NAME, ...) DEFINE_VALIDATOR(NAME, { __VA_ARGS__ })
 #define CM(DATATYPE, VARIABLENAME, JSONKEYNAME, INITEXPR, DOCSTRING) \
   DATATYPE& VARIABLENAME = value.VARIABLENAME; validate(VARIABLENAME);
+#define ALIAS(ACTUALVARIABLENAME, ACTUALJSONKEYNAME, ALIASJSONKEYNAME)
 #define PROBLEM(CONDITION, MESSAGE) if (CONDITION) { throw ConfigValidationError(MESSAGE); }
 #define CLASSDEFS(...)
 #define VECTOR(DATATYPE) DEFINE_VALIDATOR(std::vector<DATATYPE>, { for (DATATYPE& elem : value) validate(elem); })
@@ -83,6 +86,7 @@ DEFINE_VALIDATOR(std::string, {})
 
 #undef CLASS
 #undef CM
+#undef ALIAS
 #undef PROBLEM
 #undef CLASSDEFS
 #undef VECTOR
