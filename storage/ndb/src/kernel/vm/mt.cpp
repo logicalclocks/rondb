@@ -7941,6 +7941,9 @@ mt_receiver_thread_main(void *thr_arg) {
         buffersFull = false;
       }
     }
+    if (unlikely(selfptr->m_max_signals_per_jb == 0 && glob_num_threads > 1)) {
+      handle_full_job_buffers(selfptr, send_sum);
+    }
     selfptr->m_stat.m_loop_cnt++;
   }
 
