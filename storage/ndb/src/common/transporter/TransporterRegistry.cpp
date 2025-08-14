@@ -2303,7 +2303,7 @@ TransporterRegistry::performReceive(TransporterReceiveHandle& recvdata,
   }
   recvdata.m_handled_transporters.clear();
   recvdata.m_last_trp_id = 0;
-  return (Uint32)stopReceiving;
+  return (Uint32)(stopReceiving || stop_unpacking);
 }
 
 void TransporterRegistry::consume_extra_sockets() {
