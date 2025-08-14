@@ -39,14 +39,14 @@ func (h *Handler) Validate(request interface{}) error {
 	return nil
 }
 
-func (h *Handler) Execute(request interface{}, response interface{}) (int, error) {
+func (h *Handler) Execute(request interface{}, response interface{}) (int, func(), error) {
 	rondbHealth, dalErr := dal.GetRonDBStats()
 	if dalErr != nil {
-		return http.StatusInternalServerError, dalErr
+		return http.StatusInternalServerError, func(){}, dalErr
 	}
 
 	healthResponse := response.(*api.HealthResponse)
 	healthResponse.RonDBHealth = int(rondbHealth.NdbConnectionState)
 
-	return http.StatusOK, nil
+	return http.StatusOK, func(){}, nil
 }

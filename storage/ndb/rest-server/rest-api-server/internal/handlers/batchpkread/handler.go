@@ -90,30 +90,42 @@ func (h *Handler) Authenticate(apiKey *string, request interface{}) error {
 	return err
 }
 
-func (h *Handler) Execute(request interface{}, response interface{}) (int, error) {
+func (h *Handler) Execute(request interface{}, response interface{}) (int, func(), error) {
+	releaseFuncs := []func(){}
+	release := func() {
+		for _, releaseFunc := range releaseFuncs {
+			releaseFunc()
+		}
+	}
 	pkOperations := request.(*[]*api.PKReadParams)
 
 	noOps := uint32(len(*pkOperations))
 	reqPtrs := make([]*heap.NativeBuffer, noOps)
 	respPtrs := make([]*heap.NativeBuffer, noOps)
 
-	var err error
 	for idx, pkOp := range *pkOperations {
-		reqBuff, releaseReqBuff := h.heap.GetBuffer()
-		defer releaseReqBuff()
-		respBuff, releaseResBuff := h.heap.GetBuffer()
-		defer releaseResBuff()
+		reqBuff, releaseReqBuff, err := h.heap.GetBuffer()
+		releaseFuncs = append(releaseFuncs, releaseReqBuff)
+		if err != nil {
+			return http.StatusServiceUnavailable, release, err
+		}
+		respBuff, releaseResBuff, err := h.heap.GetBuffer()
+		releaseFuncs = append(releaseFuncs, releaseResBuff)
+		if err != nil {
+			return http.StatusServiceUnavailable, release, err
+		}
 
 		reqPtrs[idx] = reqBuff
 		respPtrs[idx] = respBuff
 
 		err = pkread.CreateNativeRequest(pkOp, reqBuff, respBuff)
 		if err != nil {
-			return http.StatusInternalServerError, err
+			return http.StatusInternalServerError, release, err
 		}
 	}
 
-	return h.ExecuteWithBuffers(request, response, reqPtrs, respPtrs, noOps)
+	status, err := h.ExecuteWithBuffers(request, response, reqPtrs, respPtrs, noOps)
+	return status, release, err
 }
 
 func (h *Handler) ExecuteWithBuffers(request interface{}, response interface{},

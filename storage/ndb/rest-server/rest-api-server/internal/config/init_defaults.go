@@ -50,6 +50,7 @@ func newWithDefaults() AllConfigs {
 			BufferSize:          5 * 1024 * 1024,
 			GOMAXPROCS:          -1,
 			PreAllocatedBuffers: 32,
+			MaxAllocatedBuffers: 8192,
 			BatchMaxSize:        256,
 			OperationIDMaxSize:  256,
 			EnablePPROF:         false,

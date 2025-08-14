@@ -36,7 +36,8 @@ func (h *RouteHandler) BatchFeatureStore(c *gin.Context) {
 	}
 
 	fsResp := api.BatchFeatureStoreResponse{}
-	status, err := handlers.Handle(&h.batchFeatureStoreHandler, &apiKey, fsReq, &fsResp)
+	status, release, err := handlers.Handle(&h.batchFeatureStoreHandler, &apiKey, fsReq, &fsResp)
+	defer release()
 	if err != nil {
 		c.AbortWithError(status, err)
 		return
