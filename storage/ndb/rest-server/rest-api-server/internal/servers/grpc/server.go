@@ -31,6 +31,7 @@ import (
 	"google.golang.org/grpc/status"
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/dal/heap"
+	"hopsworks.ai/rdrs/internal/feature_store"
 	"hopsworks.ai/rdrs/internal/handlers/batchpkread"
 	"hopsworks.ai/rdrs/internal/handlers/health"
 	"hopsworks.ai/rdrs/internal/handlers/pkread"
@@ -41,14 +42,16 @@ import (
 	"hopsworks.ai/rdrs/pkg/api"
 )
 
-func New(serverTLS *tls.Config, heap *heap.Heap, apiKeyCache apikey.Cache, rdrsMetrics *metrics.RDRSMetrics) *grpc.Server {
+func New(serverTLS *tls.Config, heap *heap.Heap, apiKeyCache apikey.Cache,
+	featureViewMetaDataCache *feature_store.FeatureViewMetaDataCache,
+	rdrsMetrics *metrics.RDRSMetrics) *grpc.Server {
 	var grpcServer *grpc.Server
 	if serverTLS != nil {
 		grpcServer = grpc.NewServer(grpc.Creds(credentials.NewTLS(serverTLS)), grpc.StatsHandler(&rdrsMetrics.GRPCMetrics.GRPCStatistics))
 	} else {
 		grpcServer = grpc.NewServer(grpc.StatsHandler(&rdrsMetrics.GRPCMetrics.GRPCStatistics))
 	}
-	RonDBServer := NewRonDBServer(heap, apiKeyCache, rdrsMetrics)
+	RonDBServer := NewRonDBServer(heap, apiKeyCache, featureViewMetaDataCache, rdrsMetrics)
 	api.RegisterRonDBRESTServer(grpcServer, RonDBServer)
 	return grpcServer
 }
@@ -89,7 +92,8 @@ type RonDBServer struct {
 	//TODO FeatureStore
 }
 
-func NewRonDBServer(heap *heap.Heap, apiKeyCache apikey.Cache, rdrsMetrics *metrics.RDRSMetrics) *RonDBServer {
+func NewRonDBServer(heap *heap.Heap, apiKeyCache apikey.Cache,
+	featureViewMetaDataCache *feature_store.FeatureViewMetaDataCache, rdrsMetrics *metrics.RDRSMetrics) *RonDBServer {
 	return &RonDBServer{
 		statsHandler:       stat.New(heap, apiKeyCache),
 		healthHandler:      health.New(),

@@ -27,6 +27,7 @@ import (
 
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/dal/heap"
+	"hopsworks.ai/rdrs/internal/feature_store"
 	"hopsworks.ai/rdrs/internal/log"
 	"hopsworks.ai/rdrs/internal/metrics"
 	"hopsworks.ai/rdrs/internal/security/apikey/hopsworkscache"
@@ -116,6 +117,10 @@ func InitialiseTesting(conf config.AllConfigs, createOnlyTheseDBs ...string) (fu
 		}
 	})
 
+	//---------------------------- FS Metadata Cache --------------------------
+	featureViewMetaDataCache := feature_store.NewFeatureViewMetaDataCache()
+	defer featureViewMetaDataCache.Cleanup()
+
 	//---------------------------- Prometheus metrics -------------------------
 	rdrsMetrics, rdrsMetricsCleanup := metrics.NewRDRSMetrics()
 	cleanupFNs = append(cleanupFNs, rdrsMetricsCleanup)
@@ -124,7 +129,7 @@ func InitialiseTesting(conf config.AllConfigs, createOnlyTheseDBs ...string) (fu
 	// Wait for interrupt signal to gracefully shutdown the server
 	quit := make(chan os.Signal)
 	cleanupServers, err := servers.CreateAndStartDefaultServers(newHeap, apiKeyCache,
-		rdrsMetrics, quit)
+		featureViewMetaDataCache, rdrsMetrics, quit)
 	if err != nil {
 		cleanupWrapper(cleanupFNs)()
 		return nil, err

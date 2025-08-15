@@ -1983,9 +1983,6 @@ func Test_IncludeDetailedStatus_JoinedTablePartialKeyAndMissingRow(t *testing.T)
 
 func Test_GetFeatureVector_Success_ComplexType_With_Schema_Change(t *testing.T) {
 
-	fsmetadata.DefaultExpiration = 1 * time.Second
-	fsmetadata.CleanupInterval = 1 * time.Second
-
 	doneCh := make(chan int)
 	stop := false
 	go work(t, &stop, doneCh)
