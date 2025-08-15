@@ -152,7 +152,7 @@ func (fvmdc *FeatureViewMetaDataCache) cacheEntryUpdater(fvKey string, started *
 
 	for {
 
-		// read the out of the lock block
+		// read the metadata outside the lock-block
 		fvmd, beErr := GetFeatureViewMetadata(entry.featureStoreName,
 			entry.featureViewName, entry.featureViewVersion)
 
@@ -178,7 +178,7 @@ func (fvmdc *FeatureViewMetaDataCache) cacheEntryUpdater(fvKey string, started *
 			return
 		}
 
-		// if the entry has not been used for some time the evict this
+		// if the entry has not been used for some time then evict this
 		entry.rowLock.RLock()
 		lastUsed := entry.lastUsed
 		entry.rowLock.RUnlock()
@@ -202,10 +202,10 @@ func (fvmdc *FeatureViewMetaDataCache) getInt(featureStoreName, featureViewName 
 		return nil, FS_NOT_EXIST
 	}
 
-	fvmde.rowLock.RLock()
+	fvmde.rowLock.Lock()
 	// update TS
 	fvmde.lastUsed = time.Now()
-	fvmde.rowLock.RUnlock()
+	fvmde.rowLock.Unlock()
 
 	if fvmde.fvMetadata == nil {
 		if fvmde.err != nil {
