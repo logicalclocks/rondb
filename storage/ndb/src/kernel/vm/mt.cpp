@@ -7935,7 +7935,7 @@ mt_receiver_thread_main(void *thr_arg) {
       flush_all_local_signals_and_wakeup(selfptr);
       do_flush(selfptr);
     }
-    if (buffersFull) {
+    if (unlikely(buffersFull)) {
       recheck_congested_job_buffers(selfptr);
       if (selfptr->m_congested_threads_mask.isclear()) {
         buffersFull = false;
