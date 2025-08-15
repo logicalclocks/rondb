@@ -146,30 +146,22 @@ func (hwc *Cache) cacheEntryUpdater(apiKey *string, started *bool) {
 	}
 
 	for {
-		udbs.rowLock.Lock()
-		*started = true
-		fail := false
 
-		var hopsKey *dal.HopsworksAPIKey
-		var err error
+		var beErr error
 		var dbs []string
+
+		// read the out of the lock block
 		if !udbs.evicted {
-			hopsKey, err = hwc.authenticateUser(apiKey)
-			if err != nil {
-				log.Debugf("Cache updater failed to read API Key. API Key: %s, Error: %v", *apiKey, err)
-				fail = true
-			}
+			dbs, beErr = hwc.readFromBackend(apiKey)
 		}
 
-		if !fail && !udbs.evicted {
-			dbs, err = hwc.getUserDatabases(apiKey, hopsKey)
-			if err != nil {
-				log.Debugf("Cache updater failed to reads user projects.  API Key: %s, Error: %v", *apiKey, err)
-			}
+		udbs.rowLock.Lock()
+		*started = true
 
+		if !udbs.evicted && beErr == nil {
 			setErr := hwc.updateRecord(apiKey, dbs, udbs)
 			if setErr != nil {
-				log.Debugf("Cache updater failed to update projects.  API Key: %s, Error: %v", *apiKey, err)
+				log.Debugf("Cache updater failed to update projects.  API Key: %s, Error: %v", *apiKey, setErr)
 			}
 		}
 
@@ -193,6 +185,22 @@ func (hwc *Cache) cacheEntryUpdater(apiKey *string, started *bool) {
 			return
 		}
 	}
+}
+
+func (hwc *Cache) readFromBackend(apiKey *string) ([]string, error) {
+	hopsKey, err := hwc.authenticateUser(apiKey)
+	if err != nil {
+		log.Debugf("Cache updater failed to read API Key. API Key: %s, Error: %v", *apiKey, err)
+		return nil, err
+	}
+
+	dbs, err := hwc.getUserDatabases(apiKey, hopsKey)
+	if err != nil {
+		log.Debugf("Cache updater failed to reads user projects.  API Key: %s, Error: %v", *apiKey, err)
+		return nil, err
+	}
+
+	return dbs, nil
 }
 
 // Authenticates only using the the cache. No request sent to backend
