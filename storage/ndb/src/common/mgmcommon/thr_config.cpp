@@ -498,7 +498,7 @@ THRConfig::compute_automatic_thread_config(
     tc_threads = table[used_map_id].tc_threads;
     send_threads = table[used_map_id].send_threads;
     recv_threads = table[used_map_id].recv_threads;
-    if (cpu_cnt % 2 != 0)
+    if (cpu_cnt % 2 != 0 && cpu_cnt != 1)
     {
       recv_threads++;
     }

@@ -979,7 +979,7 @@ struct alignas(NDB_CL) thr_job_queue {
    * threads waiting for buffers to become available. In such cases these are
    * allocated as 'extra_signals' allowed to execute.
    */
-  static constexpr unsigned RESERVED = 4;  // In addition to 'SAFETY'
+  static constexpr unsigned RESERVED = SAFETY + 8;  // In addition to 'SAFETY'
 
   /**
    * We start being CONGESTED a bit before reaching the RESERVED limit.
@@ -990,7 +990,7 @@ struct alignas(NDB_CL) thr_job_queue {
    * congested state (Smaller JB quotas, tighter checking of JB-state,
    * optionally requiring the write_lock to be taken.)
    */
-  static constexpr unsigned CONGESTED = RESERVED + 4;  // 4+4
+  static constexpr unsigned CONGESTED = RESERVED + 4;  // 10+4
 
   /**
    * As there are multiple writers, 'm_write_lock' has to be set before
@@ -1176,6 +1176,11 @@ is_recv_thread(unsigned thr_no)
   return thr_no >= recv_base &&
          thr_no < recv_base + globalData.ndbMtReceiveThreads;
 }
+
+static
+bool
+handle_full_job_buffers(struct thr_data* selfptr,
+                        Uint32 & send_sum);
 
 /**
  * thr_jb_read_state is tightly associated with thr_job_queue.
@@ -4909,18 +4914,6 @@ static unsigned get_free_in_queue(const thr_job_queue *q) {
  * Check if the specified congested waitfor-thread (arg) still has
  * job buffer congestion (-> outgoing JBs too full), return true if so.
  */
-static bool check_congested_job_queue(thr_job_queue *waitfor) {
-  unsigned free;
-  if (unlikely(glob_use_write_lock_mutex)) {
-    lock(&waitfor->m_write_lock);
-    free = get_free_estimate_out_queue(waitfor);
-    unlock(&waitfor->m_write_lock);
-  } else {
-    free = get_free_estimate_out_queue(waitfor);
-  }
-  return (free <= thr_job_queue::CONGESTED);
-}
-
 static bool check_full_job_queue(thr_job_queue *waitfor) {
   unsigned free;
   if (unlikely(glob_use_write_lock_mutex)) {
@@ -7727,6 +7720,7 @@ mt_receiver_thread_main(void *thr_arg) {
   bool has_received = false;
   int cnt = 0;
   bool real_time = false;
+  bool buffersFull = false;
   Uint64 min_spin_timer_us;
   NDB_TICKS yield_ticks;
   NDB_TICKS before;
@@ -7862,6 +7856,7 @@ mt_receiver_thread_main(void *thr_arg) {
      *    This check is performed in check_recv_yield as well as in
      *    recv_yield, so no need to do it before everything as well.
      * 4) There are no 'min_spin' configured or min_spin has elapsed
+     * 5) Job buffer isn't full
      * We will not check spin timer until we have checked the
      * transporters at least one loop and discovered no data. We also
      * ensure that we have not executed any signals before we start
@@ -7875,6 +7870,7 @@ mt_receiver_thread_main(void *thr_arg) {
     if (lagging_timers == 0 &&          // 1)
         pending_send  == false &&       // 2)
         send_sum == 0 &&                // 2)
+        !buffersFull &&                 // 5)
         (min_spin_timer_us == 0 ||      // 4)
          (sum == 0 &&
           !has_received &&
@@ -7902,7 +7898,9 @@ mt_receiver_thread_main(void *thr_arg) {
       {
         slept = true;
       }
-      num_events = globalTransporterRegistry.pollReceive(delay, recvdata);
+      if (likely(buffersFull == false)) {
+        num_events = globalTransporterRegistry.pollReceive(delay, recvdata);
+      }
       if (slept)
       {
         recv_awake(&selfptr->m_waiter);
@@ -7920,60 +7918,31 @@ mt_receiver_thread_main(void *thr_arg) {
     {
       watchDogCounter = 8;
       lock(&rep->m_receive_lock[recv_thread_idx]);
-      const bool buffersFull =
+      buffersFull =
         (globalTransporterRegistry.performReceive(recvdata,
                                                   recv_thread_idx,
                                                   true) != 0);
       unlock(&rep->m_receive_lock[recv_thread_idx]);
       has_received = true;
-
-      if (buffersFull)       /* Receive queues(s) are full */
-      {
-        /**
-         * Will wait for congestion to disappear or 1 ms has passed.
-         */
-        watchDogCounter = 18;  // "Yielding to OS"
-        static constexpr Uint32 nano_wait_1ms = 1000*1000;    /* -> 1 ms */
-        NDB_TICKS before = NdbTick_getCurrentTicks();
-
-        /**
-         * Find (one of) the congested receive queues we need to wait for
-         * in order to get out of 'buffersFull' state. We will be woken up
-         * when consumer has freed a JB-page from the 'congested_queue'.
-         */
-        assert(!selfptr->m_congested_threads_mask.isclear());
-        const unsigned thr_no = selfptr->m_congested_threads_mask.find_first();
-        struct thr_data *congested_thr = &rep->m_thread[thr_no];
-        const unsigned self_jbb = thr_no % NUM_JOB_BUFFERS_PER_THREAD;
-        thr_job_queue *congested_queue = &congested_thr->m_jbb[self_jbb];
-
-        const bool waited = yield(&congested_thr->m_congestion_waiter,
-                                  nano_wait_1ms,
-                                  check_congested_job_queue,
-                                  congested_queue);
-        if (waited)
-        {
-          NDB_TICKS after = NdbTick_getCurrentTicks();
-          selfptr->m_read_jbb_state_consumed = true;
-          selfptr->m_buffer_full_nanos_sleep +=
-            NdbTick_Elapsed(before, after).nanoSec();
-        }
-        /**
-         * We waited due to congestion, or didn't find the expected congestion.
-         * Recheck if it cleared while we (not-)waited.
-         */
-        recheck_congested_job_buffers(selfptr);
-      }
     }
     /**
      * Ensure that all received signals are sent to the receivers before
      * we start processing local signals to ourselves.
      */
-    if (has_received)
+    if (has_received || buffersFull)
     {
       watchDogCounter = 6;
       flush_all_local_signals_and_wakeup(selfptr);
       do_flush(selfptr);
+    }
+    if (unlikely(buffersFull)) {
+      recheck_congested_job_buffers(selfptr);
+      if (selfptr->m_congested_threads_mask.isclear()) {
+        buffersFull = false;
+      }
+    }
+    if (unlikely(selfptr->m_max_signals_per_jb == 0 && glob_num_threads > 1)) {
+      handle_full_job_buffers(selfptr, send_sum);
     }
     selfptr->m_stat.m_loop_cnt++;
   }
