@@ -101,10 +101,9 @@ func (heap *Heap) releaseAllBuffers() {
 	heap.mutex.Lock()
 	defer heap.mutex.Unlock()
 
-	stats := heap.GetNativeBuffersStats()
-	if stats.BuffersCount != int64(len(heap.buffers)) {
+	if heap.buffersStats.BuffersCount != int64(len(heap.buffers)) {
 		log.Warnf("Shutting down heap. Number of free buffers do not match. Expecting: %d, Got: %d.",
-			stats.BuffersCount, int64(len(heap.buffers)))
+			heap.buffersStats.BuffersCount, int64(len(heap.buffers)))
 	}
 
 	for _, buffer := range heap.buffers {
