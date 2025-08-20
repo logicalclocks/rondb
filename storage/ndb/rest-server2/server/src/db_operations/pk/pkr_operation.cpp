@@ -581,7 +581,9 @@ RS_Status BatchKeyOperations::create_response(RS_Buffer *respBuffs) {
       resp->Close(response_length);
       return RS_RONDB_SERVER_ERROR(
         op->getNdbError(), std::string("SubOperation ") +
-        std::string(req->OperationId()) +
+        std::string(req->OperationId()
+                    ? req->OperationId()
+                    : "(Unidentified Operation)") +
         std::string(" failed"));
     }
     if (likely(found)) {
