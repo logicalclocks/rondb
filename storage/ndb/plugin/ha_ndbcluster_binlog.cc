@@ -838,6 +838,7 @@ class Ndb_binlog_setup {
     thd_ndb_options.set(Thd_ndb::ALLOW_BINLOG_SETUP);
 
     const bool ndb_schema_dist_upgrade_allowed = ndb_allow_ndb_schema_upgrade();
+    ndb_log_info("[TRACE][binlog][Ndb_binlog_setup][4] Calling Ndb_schema_dist_table::create_or_upgrade");
     Ndb_schema_dist_table schema_dist_table(thd_ndb);
     ndb_log_info("[TRACE][binlog][Ndb_binlog_setup][4] Calling Ndb_schema_dist_table::create_or_upgrade");
     if (!schema_dist_table.create_or_upgrade(m_thd,
@@ -884,10 +885,12 @@ class Ndb_binlog_setup {
       return false;
     }
 
+    ndb_log_info("[TRACE][binlog][Ndb_binlog_setup][6] Calling Ndb_index_stat_head_table::create_or_upgrade");
     Ndb_index_stat_head_table index_stat_head_table(thd_ndb);
     ndb_log_info("[TRACE][binlog][Ndb_binlog_setup][6] Calling Ndb_index_stat_head_table::create_or_upgrade");
     if (!index_stat_head_table.create_or_upgrade(m_thd, true)) return false;
 
+    ndb_log_info("[TRACE][binlog][Ndb_binlog_setup][7] Calling Ndb_index_stat_sample_table::create_or_upgrade");
     Ndb_index_stat_sample_table index_stat_sample_table(thd_ndb);
     ndb_log_info("[TRACE][binlog][Ndb_binlog_setup][7] Calling Ndb_index_stat_sample_table::create_or_upgrade");
     if (!index_stat_sample_table.create_or_upgrade(m_thd, true)) return false;
@@ -899,6 +902,7 @@ class Ndb_binlog_setup {
       ndb_index_stat_restart();
     }
 
+    ndb_log_info("[TRACE][binlog][Ndb_binlog_setup][8] Calling Ndb_apply_status_table::create_or_upgrade");
     Ndb_apply_status_table apply_status_table(thd_ndb);
     ndb_log_info("[TRACE][binlog][Ndb_binlog_setup][8] Calling Ndb_apply_status_table::create_or_upgrade");
     if (!apply_status_table.create_or_upgrade(m_thd, true)) return false;
