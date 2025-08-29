@@ -3685,7 +3685,8 @@ wait_time_tracking(thr_data *selfptr, Uint64 wait_time_in_ns)
       return;
     }
   }
-  require(false);
+  Uint64 secs_waited = wait_time_in_ns / Uint64(1000000000);
+  g_eventLogger->info("Time forward by %llu seconds", secs_waited);
 }
 
 static bool check_queues_empty(thr_data *selfptr);
