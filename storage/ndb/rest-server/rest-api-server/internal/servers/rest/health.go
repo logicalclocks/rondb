@@ -28,7 +28,8 @@ import (
 
 func (h *RouteHandler) Health(c *gin.Context) {
 	healthResp := api.HealthResponse{}
-	stats, err := handlers.Handle(&h.healthHandler, nil, nil, &healthResp)
+	stats, release, err := handlers.Handle(&h.healthHandler, nil, nil, &healthResp)
+	defer release()
 	if err != nil {
 		c.AbortWithError(stats, err)
 		return

@@ -36,7 +36,8 @@ func (h *RouteHandler) FeatureStore(c *gin.Context) {
 	}
 
 	fsResp := api.FeatureStoreResponse{}
-	status, err := handlers.Handle(&h.featureStoreHandler, &apiKey, fsReq, &fsResp)
+	status, release, err := handlers.Handle(&h.featureStoreHandler, &apiKey, fsReq, &fsResp)
+	defer release()
 	if err != nil {
 		c.AbortWithError(status, err)
 		return

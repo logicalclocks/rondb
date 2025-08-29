@@ -494,9 +494,11 @@ RS_Status find_training_dataset_join_data_int(Ndb *ndb_object,
     return RS_CLIENT_404_ERROR();
   }
   *tdjs_size = tdjsv.size();
-  void *ptr = (Training_Dataset_Join *)malloc(tdjsv.size() *
-              sizeof(Training_Dataset_Join));
-  *tdjs = (Training_Dataset_Join *)ptr;
+  void *ptr  = (Training_Dataset_Join *)malloc(tdjsv.size() * sizeof(Training_Dataset_Join));
+  if (ptr == nullptr) {
+    return RS_SERVER_ERROR(ERROR_038);
+  }
+  *tdjs      = (Training_Dataset_Join *)ptr;
   for (Uint64 i = 0; i < tdjsv.size(); i++) {
     (*tdjs + i)->id  = tdjsv[i].id;
     (*tdjs + i)->idx = tdjsv[i].idx;
@@ -784,9 +786,11 @@ RS_Status find_training_dataset_data_int(Ndb *ndb_object,
     return RS_CLIENT_404_ERROR();
   }
   *tdfs_size = tdfsv.size();
-  void *ptr = (Training_Dataset_Feature *)malloc(tdfsv.size() *
-               sizeof(Training_Dataset_Feature));
-  *tdfs = (Training_Dataset_Feature *)ptr;
+  void *ptr  = (Training_Dataset_Feature *)malloc(tdfsv.size() * sizeof(Training_Dataset_Feature));
+  if (ptr == nullptr) {
+    return RS_SERVER_ERROR(ERROR_038);
+  }
+  *tdfs      = (Training_Dataset_Feature *)ptr;
   for (Uint64 i = 0; i < tdfsv.size(); i++) {
     (*tdfs + i)->feature_id = tdfsv[i].feature_id;
     (*tdfs + i)->training_dataset = tdfsv[i].training_dataset;
@@ -1062,9 +1066,13 @@ RS_Status find_serving_key_data_int(Ndb *ndb_object,
   if (serving_keys_vec.size() == 0) {
     return RS_CLIENT_404_ERROR();
   }
-  *sk_size = serving_keys_vec.size();
-  void *ptr =
-    (Serving_Key *)malloc(serving_keys_vec.size() * sizeof(Serving_Key));
+
+  // freed by CGO
+  *sk_size      = serving_keys_vec.size();
+  void *ptr     = (Serving_Key *)malloc(serving_keys_vec.size() * sizeof(Serving_Key));
+  if (ptr == nullptr) {
+    return RS_SERVER_ERROR(ERROR_038);
+  }
   *serving_keys = (Serving_Key *)ptr;
   for (Uint64 i = 0; i < serving_keys_vec.size(); i++) {
     (*serving_keys + i)->feature_group_id =
@@ -1298,6 +1306,9 @@ RS_Status find_feature_group_schema_int(Ndb *ndb_object,
   Uint64 chunk      = 0;
   Uint64 total_read = 0;
   *schema           = (char *)malloc(length + 1); // +1 for \0
+  if (*schema == nullptr) {
+    return RS_SERVER_ERROR(ERROR_038);
+  }
   char *tmp_buffer  = static_cast<char *>(*schema);
 
   for (chunk = 0; chunk < (length / (BLOB_MAX_FETCH_SIZE)) + 1; chunk++) {

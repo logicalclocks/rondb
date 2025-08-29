@@ -89,10 +89,8 @@ PKROperation::~PKROperation() {
     if (subOp.primaryKeysCols != nullptr) {
 
       for (int pkPtrIdx = 0; pkPtrIdx < pkColsCount; pkPtrIdx++) {
-        if (subOp.primaryKeysCols[pkPtrIdx] == nullptr) {
-          break;
-        } else {
-          free(subOp.primaryKeysCols[pkPtrIdx]);
+        if (subOp.primaryKeysCols[pkPtrIdx] != nullptr) {
+           free(subOp.primaryKeysCols[pkPtrIdx]);
         }
       }
       free(subOp.primaryKeysCols);
@@ -180,7 +178,16 @@ start:
 
     // cleaned by destrctor
     Int8 **primaryKeysCols  = (Int8 **)malloc(req->PKColumnsCount() * sizeof(Int8 *));
+    if (primaryKeysCols == nullptr) {
+      return RS_SERVER_ERROR(ERROR_038);
+    }
+
     Uint32 *primaryKeySizes = (Uint32 *)malloc(req->PKColumnsCount() * sizeof(Uint32));
+    if (primaryKeySizes == nullptr) {
+      free(primaryKeysCols);
+      return RS_SERVER_ERROR(ERROR_038);
+    }
+
     memset(primaryKeysCols, 0, req->PKColumnsCount() * sizeof(Int8 *));
     memset(primaryKeySizes, 0, req->PKColumnsCount() * sizeof(Uint32));
     subOpTuples[opIdx].primaryKeysCols = primaryKeysCols;

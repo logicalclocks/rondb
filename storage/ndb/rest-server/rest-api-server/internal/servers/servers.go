@@ -29,6 +29,7 @@ import (
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/dal"
 	"hopsworks.ai/rdrs/internal/dal/heap"
+	"hopsworks.ai/rdrs/internal/feature_store"
 	"hopsworks.ai/rdrs/internal/log"
 	"hopsworks.ai/rdrs/internal/metrics"
 
@@ -41,6 +42,7 @@ import (
 func CreateAndStartDefaultServers(
 	heap *heap.Heap,
 	apiKeyCache apikey.Cache,
+	featureViewMetaDataCache *feature_store.FeatureViewMetaDataCache,
 	rdrsMetrics *metrics.RDRSMetrics,
 	quit chan os.Signal,
 ) (cleanup func(), err error) {
@@ -99,7 +101,7 @@ func CreateAndStartDefaultServers(
 	}
 
 	if conf.GRPC.Enable {
-		grpcServer := grpc.New(tlsConfig, heap, apiKeyCache, rdrsMetrics)
+		grpcServer := grpc.New(tlsConfig, heap, apiKeyCache, featureViewMetaDataCache, rdrsMetrics)
 		cleanupGrpc, err := grpc.Start(
 			grpcServer,
 			conf.GRPC.ServerIP,
@@ -120,6 +122,7 @@ func CreateAndStartDefaultServers(
 			tlsConfig,
 			heap,
 			apiKeyCache,
+			featureViewMetaDataCache,
 			rdrsMetrics,
 		)
 

@@ -18,23 +18,17 @@
 package feature_store
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/hamba/avro/v2"
-	"github.com/patrickmn/go-cache"
 
 	"hopsworks.ai/rdrs/internal/dal"
 	"hopsworks.ai/rdrs/internal/log"
 )
-
-var DefaultExpiration time.Duration = 15 * time.Minute
-var CleanupInterval time.Duration = 15 * time.Minute
 
 const ERROR_NOT_FOUND = "Not Found"
 
@@ -305,39 +299,6 @@ func getFeatureGroupIndexKey(joinIndex int, fgId int) *string {
 func getFeatureIndexKey(joinIndex int, fgId int, f string) *string {
 	var featureIndexKey = GetFeatureIndexKeyByFgIndexKey(*getFeatureGroupIndexKey(joinIndex, fgId), f)
 	return &featureIndexKey
-}
-
-type FeatureViewMetaDataCache struct {
-	metadataCache cache.Cache
-}
-
-func NewFeatureViewMetaDataCache() *FeatureViewMetaDataCache {
-	var c = cache.New(DefaultExpiration, CleanupInterval)
-	return &FeatureViewMetaDataCache{*c}
-}
-
-func (fvmeta *FeatureViewMetaDataCache) Get(featureStoreName, featureViewName string, featureViewVersion int) (*FeatureViewMetadata, *RestErrorCode) {
-	var fvCacheKey = getFeatureViewCacheKey(featureStoreName, featureViewName, featureViewVersion)
-	var metadataInf, exist = fvmeta.metadataCache.Get(fvCacheKey)
-	if !exist {
-		var metadata, err = GetFeatureViewMetadata(featureStoreName, featureViewName, featureViewVersion)
-		if err != nil {
-			return nil, err
-		} else {
-			fvmeta.metadataCache.SetDefault(fvCacheKey, metadata)
-			if log.IsDebug() {
-				metadataJson, _ := json.MarshalIndent(metadata, "", "  ")
-				log.Debugf("Feature store metadata is %s", metadataJson)
-			}
-			return metadata, nil
-		}
-	} else {
-		var metadata, ok = metadataInf.(*FeatureViewMetadata)
-		if !ok {
-			return nil, FETCH_METADATA_FROM_CACHE_FAIL
-		}
-		return metadata, nil
-	}
 }
 
 func getFeatureViewCacheKey(featureStoreName, featureViewName string, featureViewVersion int) string {

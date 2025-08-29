@@ -50,6 +50,7 @@ func newWithDefaults() AllConfigs {
 			BufferSize:          5 * 1024 * 1024,
 			GOMAXPROCS:          -1,
 			PreAllocatedBuffers: 32,
+			MaxAllocatedBuffers: 8192,
 			BatchMaxSize:        256,
 			OperationIDMaxSize:  256,
 			EnablePPROF:         false,
@@ -102,6 +103,13 @@ func newWithDefaults() AllConfigs {
 				UseHopsworksAPIKeys:          true,
 				CacheRefreshIntervalMS:       10000,
 				CacheUnusedEntriesEvictionMS: 60000,
+				CacheRefreshIntervalJitterMS: 1000,
+			},
+		},
+		FeatureStore: FeatureStore{
+			FeatureStoreMetadataCache: FeatureStoreMetadataCache{
+				CacheRefreshIntervalMS:       600000,  // 10 min
+				CacheUnusedEntriesEvictionMS: 1800000, // 30 min
 				CacheRefreshIntervalJitterMS: 1000,
 			},
 		},
