@@ -52,10 +52,19 @@ RDRSRonDBConnection::RDRSRonDBConnection(const char *connection_string, Uint32 *
 
   size_t connection_string_len = strlen(connection_string);
   this->connection_string      = reinterpret_cast<char *>(malloc(connection_string_len + 1));
+  if (!this->connection_string) {
+    LOG_ERROR("Error: failed to allocate memory for connection_string\n");
+    throw std::bad_alloc(); 
+  }
   std::strncpy(this->connection_string, connection_string, connection_string_len + 1);
   this->connection_string[connection_string_len] = '\0';
 
   this->node_ids = reinterpret_cast<Uint32 *>(malloc(node_ids_len * sizeof(Uint32)));
+  if (!this->node_ids) {
+    LOG_ERROR("Error: failed to allocate memory for node_ids\n");
+    free(this->connection_string); 
+    throw std::bad_alloc();
+  }
   memcpy(this->node_ids, node_ids, node_ids_len * sizeof(Uint32));
   this->node_ids_len = node_ids_len;
 

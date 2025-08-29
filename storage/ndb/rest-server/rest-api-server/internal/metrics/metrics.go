@@ -165,7 +165,7 @@ func newEndPointMetrics() (*EndPointMetrics, func()) {
 			prometheus.SummaryOpts{
 				Name:       protocol + "_response_time_summary",
 				Help:       "Summary for response time handled by " + protocol + " handler. Time is in nanoseconds",
-				Objectives: map[float64]float64{0.5: 0.05, 0.9: 0.01, 0.95: 0.01, 0.99: 0.001},
+				Objectives: map[float64]float64{0.5: 0.05, 0.9: 0.01, 0.95: 0.01, 0.99: 0.001, 0.999: 0.0005},
 			},
 			[]string{ENDPOINT, API_TYPE, METHOD},
 		)

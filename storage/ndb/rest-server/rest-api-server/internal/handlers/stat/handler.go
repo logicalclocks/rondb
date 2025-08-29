@@ -48,10 +48,10 @@ func (h *Handler) Validate(request interface{}) error {
 	return nil
 }
 
-func (h *Handler) Execute(request interface{}, response interface{}) (int, error) {
+func (h *Handler) Execute(request interface{}, response interface{}) (int, func(), error) {
 	rondbStats, dalErr := dal.GetRonDBStats()
 	if dalErr != nil {
-		return http.StatusInternalServerError, dalErr
+		return http.StatusInternalServerError, func(){}, dalErr
 	}
 
 	stats := h.heap.GetNativeBuffersStats()
@@ -60,5 +60,5 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 	statsResponse.MemoryStats = stats
 	statsResponse.RonDBStats = *rondbStats
 
-	return http.StatusOK, nil
+	return http.StatusOK, func(){}, nil
 }

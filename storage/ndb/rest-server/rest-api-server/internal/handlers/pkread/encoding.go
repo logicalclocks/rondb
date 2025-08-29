@@ -164,7 +164,7 @@ func ProcessPKReadResponse(respBuff *heap.NativeBuffer, response api.PKReadRespo
 	// bBuf := unsafe.Slice((*byte)(respBuff.Buffer), respBuff.Size)
 	// xxd.Print(0, bBuf[:512])
 
-	iBuf := unsafe.Slice((*uint32)(respBuff.Buffer), respBuff.Size)
+	iBuf := unsafe.Slice((*uint32)(respBuff.Buffer), respBuff.Size/C.ADDRESS_SIZE)
 
 	responseType := iBuf[C.PK_RESP_OP_TYPE_IDX]
 	if responseType != C.RDRS_PK_RESP_ID {

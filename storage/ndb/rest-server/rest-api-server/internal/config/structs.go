@@ -28,6 +28,7 @@ import (
 type Internal struct {
 	BufferSize          uint32
 	PreAllocatedBuffers uint32
+	MaxAllocatedBuffers uint32
 	GOMAXPROCS          int
 	BatchMaxSize        uint32
 	OperationIDMaxSize  uint32
@@ -38,6 +39,10 @@ type Internal struct {
 func (i *Internal) Validate() error {
 	if i.PreAllocatedBuffers == 0 {
 		log.Warnf("PreAllocatedBuffers is set to 0. It may impact performance")
+	}
+
+	if i.MaxAllocatedBuffers < i.PreAllocatedBuffers {
+		return errors.New("MaxAllocatedBuffers must be greater than or equal to PreAllocatedBuffers")
 	}
 
 	if i.BufferSize < 256 {
@@ -242,11 +247,37 @@ func (t *TestParameters) Validate() error {
 	return nil
 }
 
+type FeatureStoreMetadataCache struct {
+	CacheRefreshIntervalMS       uint32
+	CacheUnusedEntriesEvictionMS uint32
+	CacheRefreshIntervalJitterMS uint32
+}
+
 type APIKey struct {
 	UseHopsworksAPIKeys          bool
 	CacheRefreshIntervalMS       uint32
 	CacheUnusedEntriesEvictionMS uint32
 	CacheRefreshIntervalJitterMS uint32
+}
+
+func (fsmdc *FeatureStoreMetadataCache) Validate() error {
+	if fsmdc.CacheRefreshIntervalMS == 0 {
+		return errors.New("CacheRefreshIntervalMS cannot be 0")
+	}
+
+	if fsmdc.CacheUnusedEntriesEvictionMS == 0 {
+		return errors.New("CacheUnusedEntriesEvictionMS cannot be 0")
+	}
+
+	if fsmdc.CacheRefreshIntervalMS > fsmdc.CacheUnusedEntriesEvictionMS {
+		return errors.New("CacheRefreshIntervalMS can not be more that CacheUnusedEntriesEvictionMS")
+	}
+
+	if fsmdc.CacheRefreshIntervalJitterMS >= fsmdc.CacheRefreshIntervalMS {
+		return errors.New("CacheRefreshIntervalJitterMS must be smaller than CacheRefreshIntervalMS")
+	}
+
+	return nil
 }
 
 func (a *APIKey) Validate() error {
@@ -297,6 +328,10 @@ func (t *TLS) Validate() error {
 	return t.TestParameters.Validate()
 }
 
+type FeatureStore struct {
+	FeatureStoreMetadataCache FeatureStoreMetadataCache
+}
+
 type Security struct {
 	TLS    TLS
 	APIKey APIKey
@@ -309,6 +344,15 @@ func (c *Security) Validate() error {
 	}
 
 	err = c.APIKey.Validate()
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (fs *FeatureStore) Validate() error {
+	err := fs.FeatureStoreMetadataCache.Validate()
 	if err != nil {
 		return err
 	}
@@ -330,6 +374,7 @@ type AllConfigs struct {
 	RonDB                RonDB
 	RonDBMetadataCluster RonDB
 	Security             Security
+	FeatureStore         FeatureStore
 	Log                  log.LogConfig
 	Testing              Testing
 }
@@ -345,6 +390,8 @@ func (c *AllConfigs) Validate() error {
 	} else if err = c.Testing.Validate(); err != nil {
 		return err
 	} else if err = c.Security.Validate(); err != nil {
+		return err
+	} else if err = c.FeatureStore.Validate(); err != nil {
 		return err
 	}
 

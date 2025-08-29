@@ -34,9 +34,12 @@ import (
 )
 
 type Heap struct {
-	buffers      []*NativeBuffer
-	buffersStats MemoryStats
-	mutex        *sync.Mutex
+	buffers             []*NativeBuffer
+	buffersStats        MemoryStats
+	mutex               *sync.Mutex
+	minAllocatedBuffers int64
+	allocatedBuffers    int64
+	maxAllocatedBuffers int64
 }
 
 type NativeBuffer struct {
@@ -60,10 +63,14 @@ func New() (heap *Heap, releaseBuffers func(), err error) {
 	}
 
 	preAllocatedBuffers := int64(conf.Internal.PreAllocatedBuffers)
+	maxAllocatedBuffers := int64(conf.Internal.MaxAllocatedBuffers)
 
 	heap = &Heap{
-		buffers: []*NativeBuffer{},
-		mutex:   &sync.Mutex{},
+		buffers:             []*NativeBuffer{},
+		mutex:               &sync.Mutex{},
+		minAllocatedBuffers: preAllocatedBuffers,
+		allocatedBuffers:    preAllocatedBuffers,
+		maxAllocatedBuffers: maxAllocatedBuffers,
 		buffersStats: MemoryStats{
 			AllocationsCount:   preAllocatedBuffers,
 			BuffersCount:       preAllocatedBuffers,
@@ -94,9 +101,9 @@ func (heap *Heap) releaseAllBuffers() {
 	heap.mutex.Lock()
 	defer heap.mutex.Unlock()
 
-	if heap.buffersStats.AllocationsCount != int64(len(heap.buffers)) {
+	if heap.buffersStats.BuffersCount != int64(len(heap.buffers)) {
 		log.Warnf("Shutting down heap. Number of free buffers do not match. Expecting: %d, Got: %d.",
-			heap.buffersStats.AllocationsCount, int64(len(heap.buffers)))
+			heap.buffersStats.BuffersCount, int64(len(heap.buffers)))
 	}
 
 	for _, buffer := range heap.buffers {
@@ -106,7 +113,7 @@ func (heap *Heap) releaseAllBuffers() {
 	heap.buffersStats = MemoryStats{}
 }
 
-func (heap *Heap) GetBuffer() (buff *NativeBuffer, returnBuff func()) {
+func (heap *Heap) GetBuffer() (buff *NativeBuffer, returnBuff func(), err error) {
 	heap.mutex.Lock()
 	defer heap.mutex.Unlock()
 
@@ -114,33 +121,37 @@ func (heap *Heap) GetBuffer() (buff *NativeBuffer, returnBuff func()) {
 	if numBuffersLeft > 0 {
 		buff = heap.buffers[numBuffersLeft-1]
 		heap.buffers = heap.buffers[:numBuffersLeft-1]
-	} else {
+	} else if heap.allocatedBuffers < heap.maxAllocatedBuffers {
 		// we're going beyond the pre-allocated buffers here
 		buff = allocateBuffer()
-		heap.buffersStats.BuffersCount++
+		heap.allocatedBuffers++
 		heap.buffersStats.AllocationsCount++
+	} else {
+		return nil, func() {}, fmt.Errorf("maxAllocatedBuffers reached")
 	}
 
-	return buff, func() { heap.returnBuffer(buff) }
+	return buff, func() { heap.returnBuffer(buff) }, nil
 }
 
 func (heap *Heap) returnBuffer(buffer *NativeBuffer) {
 	heap.mutex.Lock()
 	defer heap.mutex.Unlock()
 
-	// TODO: Should we not run this as well?
-	// C.free(buffer.Buffer)
-
-	// TODO: Also, shouldn't we only return if we're beneath #preAllocatedBuffers?
-
-	heap.buffers = append(heap.buffers, buffer)
+	if int64(len(heap.buffers)) < heap.minAllocatedBuffers {
+		heap.buffers = append(heap.buffers, buffer)
+	} else {
+		C.free(buffer.Buffer)
+		heap.allocatedBuffers--
+		heap.buffersStats.DeallocationsCount++
+	}
 }
 
 func (heap *Heap) GetNativeBuffersStats() MemoryStats {
-	// update the free buffers count
 	heap.mutex.Lock()
 	defer heap.mutex.Unlock()
 
+	// Only (De)AllocationsCount are updated continuously. Update the others now.
+	heap.buffersStats.BuffersCount = heap.allocatedBuffers
 	heap.buffersStats.FreeBuffers = int64(len(heap.buffers))
 	return heap.buffersStats
 }

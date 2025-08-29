@@ -61,6 +61,7 @@ extern "C" {
 #define ERROR_035 "RonDB connection and object pool is not initialized."
 #define ERROR_036 "RonDB reconnection already in progress."
 #define ERROR_037 "Failed to read column."
+#define ERROR_038 "Failed to allocate memory using malloc"
 
 #ifdef __cplusplus
 }
