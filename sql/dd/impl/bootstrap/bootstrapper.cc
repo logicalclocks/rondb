@@ -1181,52 +1181,71 @@ bool initialize_dd_properties(THD *thd) {
       Get information from DD properties. Do this after 8.2.0 / 8.0.35.
       Older versions do not have the required information available.
     */
-    String_type mysql_version_maturity{"INNOVATION"};
-    uint server_downgrade_threshold = 0;
-    uint server_upgrade_threshold = 0;
-    /* purecov: begin inspected */
-    if (actual_server_version >= 80035 && actual_server_version != 80100) {
-      (void)getprop(thd, "MYSQL_VERSION_STABILITY", &mysql_version_maturity,
-                    false, WARNING_LEVEL);
-      (void)getprop(thd, "SERVER_DOWNGRADE_THRESHOLD",
-                    &server_downgrade_threshold, false, WARNING_LEVEL);
-      (void)getprop(thd, "SERVER_UPGRADE_THRESHOLD", &server_upgrade_threshold,
-                    false, WARNING_LEVEL);
-    }
+		/*
+     * RonDB notes:
+     *   - MySQL upstream introduced this complex version check based on its own
+     *     version series (80XXX, 9XXXXX...).
+     *   - RonDB 22.10 is based on upstream 8.0.34.
+     *   - RonDB 24.10 is based on upstream 8.4.4.
+     *
+     * From the upstream MySQL perspective, upgrading RonDB 22.10 -> 24.10 is
+     * equivalent to upgrading 8.0.34 -> 8.4.4.
+     *
+     * Therefore, it doesn’t make sense to apply the upstream rule directly to RonDB.
+     * For example, the version gap between RonDB 22 -> 24 corresponds only to a
+     * MySQL minor upgrade (8.0 -> 8.4). As long as upgrading 8.0.34 -> 8.4.4 passes
+     * the check below, we can skip this check in the RonDB 22 -> 24 upgrade.
+     *
+     * NOTICE:
+     * If RonDB rebases to a newer upstream version in the future, this check must be
+     * revisited and verified again.
+     */
+    // String_type mysql_version_maturity{"INNOVATION"};
+    // uint server_downgrade_threshold = 0;
+    // uint server_upgrade_threshold = 0;
+    // /* purecov: begin inspected */
+    // if (actual_server_version >= 80035 && actual_server_version != 80100) {
+    //   (void)getprop(thd, "MYSQL_VERSION_STABILITY", &mysql_version_maturity,
+    //                 false, WARNING_LEVEL);
+    //   (void)getprop(thd, "SERVER_DOWNGRADE_THRESHOLD",
+    //                 &server_downgrade_threshold, false, WARNING_LEVEL);
+    //   (void)getprop(thd, "SERVER_UPGRADE_THRESHOLD", &server_upgrade_threshold,
+    //                 false, WARNING_LEVEL);
+    // }
 
-    /* Is there a server version change? */
-    if (MYSQL_VERSION_ID != actual_server_version) {
-      if (MYSQL_VERSION_ID > actual_server_version) {
-        // This is an upgrade attempt.
-        if ((MYSQL_VERSION_ID / 10000) != (actual_server_version / 10000) &&
-            (mysql_version_maturity != "LTS" ||
-             actual_server_version / 100 == 800 ||
-             MYSQL_VERSION_ID / 10000 != actual_server_version / 10000 + 1)) {
-          LogErr(ERROR_LEVEL, ER_INVALID_SERVER_UPGRADE_NOT_LTS,
-                 actual_server_version, MYSQL_VERSION_ID,
-                 actual_server_version);
-          return true;
-        } else if (MYSQL_VERSION_ID < server_upgrade_threshold &&
-                   MYSQL_VERSION_ID / 100 != actual_server_version / 100) {
-          LogErr(ERROR_LEVEL, ER_BEYOND_SERVER_UPGRADE_THRESHOLD,
-                 actual_server_version, MYSQL_VERSION_ID,
-                 server_upgrade_threshold);
-          return true;
-        }
-      } else {
-        // This is a downgrade attempt.
-        if (MYSQL_VERSION_ID / 100 != actual_server_version / 100) {
-          LogErr(ERROR_LEVEL, ER_INVALID_SERVER_DOWNGRADE_NOT_PATCH,
-                 actual_server_version, MYSQL_VERSION_ID);
-          return true;
-        } else if (MYSQL_VERSION_ID < server_downgrade_threshold) {
-          LogErr(ERROR_LEVEL, ER_BEYOND_SERVER_DOWNGRADE_THRESHOLD,
-                 actual_server_version, MYSQL_VERSION_ID,
-                 server_downgrade_threshold);
-          return true;
-        }
-      }
-    }
+    // /* Is there a server version change? */
+    // if (MYSQL_VERSION_ID != actual_server_version) {
+    //   if (MYSQL_VERSION_ID > actual_server_version) {
+    //     // This is an upgrade attempt.
+    //     if ((MYSQL_VERSION_ID / 10000) != (actual_server_version / 10000) &&
+    //         (mysql_version_maturity != "LTS" ||
+    //          actual_server_version / 100 == 800 ||
+    //          MYSQL_VERSION_ID / 10000 != actual_server_version / 10000 + 1)) {
+    //       LogErr(ERROR_LEVEL, ER_INVALID_SERVER_UPGRADE_NOT_LTS,
+    //              actual_server_version, MYSQL_VERSION_ID,
+    //              actual_server_version);
+    //       return true;
+    //     } else if (MYSQL_VERSION_ID < server_upgrade_threshold &&
+    //                MYSQL_VERSION_ID / 100 != actual_server_version / 100) {
+    //       LogErr(ERROR_LEVEL, ER_BEYOND_SERVER_UPGRADE_THRESHOLD,
+    //              actual_server_version, MYSQL_VERSION_ID,
+    //              server_upgrade_threshold);
+    //       return true;
+    //     }
+    //   } else {
+    //     // This is a downgrade attempt.
+    //     if (MYSQL_VERSION_ID / 100 != actual_server_version / 100) {
+    //       LogErr(ERROR_LEVEL, ER_INVALID_SERVER_DOWNGRADE_NOT_PATCH,
+    //              actual_server_version, MYSQL_VERSION_ID);
+    //       return true;
+    //     } else if (MYSQL_VERSION_ID < server_downgrade_threshold) {
+    //       LogErr(ERROR_LEVEL, ER_BEYOND_SERVER_DOWNGRADE_THRESHOLD,
+    //              actual_server_version, MYSQL_VERSION_ID,
+    //              server_downgrade_threshold);
+    //       return true;
+    //     }
+    //   }
+    // }
 
     if (actual_dd_version != dd::DD_VERSION) {
       bootstrap::DD_bootstrap_ctx::instance().set_actual_dd_version(
