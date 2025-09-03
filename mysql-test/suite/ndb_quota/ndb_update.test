@@ -1,4 +1,4 @@
 --source include/have_ndb.inc
---exec $NDB_MGM -e "DATABASE QUOTA SET test --rate-per-sec = 500"
+--exec $NDB_MGM -e "DATABASE QUOTA SET test --rate-per-sec = 500 --in-memory-size=1"
 --source suite/ndb/t/ndb_update.test
 --exec $NDB_MGM -e "DATABASE QUOTA DROP test"

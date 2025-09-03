@@ -726,8 +726,8 @@ class Dbdict : public SimulatedBlock {
   Uint32 m_current_allocated_memory_quota_mb;
   Uint32 m_allocated_memory_quota_limit;
 
-  Uint32 m_current_allocated_disk_quota_gb;
-  Uint32 m_allocated_disk_quota_limit_gb;
+  Uint32 m_current_allocated_disk_quota_mb;
+  Uint32 m_allocated_disk_quota_limit_mb;
   Uint64 m_allocated_disk_quota_limit;
 
 

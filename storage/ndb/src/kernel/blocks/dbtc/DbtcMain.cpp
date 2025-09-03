@@ -142,6 +142,8 @@
 //#define DEBUG_RATE_QUEUE_SET 1
 //#define DEBUG_QUOTAS 1
 //#define DEBUG_RATE_QUEUE_DROP 1
+//#define DEBUG_QUOTA_ABORT 1
+//#define DEBUG_TRACK_EXEC_FLAG 1
 //#define DEBUG_SCAN_MANY 1
 #endif
 
@@ -158,6 +160,18 @@
 #define DEBUG(x) ndbout << "DBTC: " << x << endl;
 #else
 #define DEBUG(x)
+#endif
+
+#ifdef DEBUG_TRACK_EXEC_FLAG
+#define DEB_TRACK_EXEC_FLAG(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_TRACK_EXEC_FLAG(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_QUOTA_ABORT
+#define DEB_QUOTA_ABORT(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_QUOTA_ABORT(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_RATE_QUEUE_DROP
@@ -774,6 +788,8 @@ void Dbtc::execCONTINUEB(Signal *signal) {
       check_tc_hbrep(signal, apiConnectptr);
       apiConnectptr.p->counter--;
       tcConnectptr.i = Tdata1;
+      DEB_RATE_QUEUE(("(%u) apiPtrI: %u, ZABORT_BREAK, counter = %u",
+        instance(), apiConnectptr.i, apiConnectptr.p->counter));
       abort015Lab(signal, apiConnectptr);
       return;
     }
@@ -2580,11 +2596,6 @@ Dbtc::TCKEY_abort(Signal* signal, int place, ApiConnectRecordPtr const apiConnec
     terrorCode = ZERO_KEYLEN_ERROR;
     releaseAtErrorLab(signal, apiConnectptr);
     return;
-  case 5:
-    jam();
-    terrorCode = ZNO_AI_WITH_UPDATE;
-    releaseAtErrorLab(signal, apiConnectptr);
-    return;
   case 7:
     jam();
     /* Table out of range */
@@ -2603,107 +2614,10 @@ Dbtc::TCKEY_abort(Signal* signal, int place, ApiConnectRecordPtr const apiConnec
       releaseAtErrorLab(signal, apiConnectptr);
       return;
 
-    case 10:
-      jam();
-      systemErrorLab(signal, __LINE__);
-      return;
-
     case 11:
       jam();
       terrorCode = ZMORE_AI_IN_TCKEYREQ_ERROR;
       releaseAtErrorLab(signal, apiConnectptr);
-      return;
-
-    case 12:
-      jam();
-      terrorCode = ZSIMPLE_READ_WITHOUT_AI;
-      releaseAtErrorLab(signal, apiConnectptr);
-      return;
-
-    case 13:
-      jam();
-      switch (tcConnectptr.p->tcConnectstate) {
-        case OS_WAIT_KEYINFO:
-          jam();
-          printState(signal, 8, apiConnectptr);
-          terrorCode = ZSTATE_ERROR;
-          abortErrorLab(signal, apiConnectptr);
-          return;
-        default:
-          jam();
-          /********************************************************************/
-          /*       MISMATCH BETWEEN STATE ON API CONNECTION AND THIS          */
-          /*       PARTICULAR TC CONNECT RECORD. THIS MUST BE CAUSED BY NDB   */
-          /*       INTERNAL ERROR.                                            */
-          /********************************************************************/
-          systemErrorLab(signal, __LINE__);
-          return;
-      }  // switch
-      return;
-
-    case 15:
-      jam();
-      terrorCode = ZSCAN_NODE_ERROR;
-      releaseAtErrorLab(signal, apiConnectptr);
-      return;
-
-    case 16:
-      jam();
-      systemErrorLab(signal, __LINE__);
-      return;
-
-    case 17:
-      jam();
-      systemErrorLab(signal, __LINE__);
-      return;
-
-    case 20:
-      jam();
-      warningHandlerLab(signal, __LINE__);
-      return;
-
-    case 21:
-      jam();
-      systemErrorLab(signal, __LINE__);
-      return;
-
-    case 22:
-      jam();
-      systemErrorLab(signal, __LINE__);
-      return;
-
-    case 23:
-      jam();
-      systemErrorLab(signal, __LINE__);
-      return;
-
-    case 24:
-      jam();
-      appendToSectionErrorLab(signal, apiConnectptr);
-      return;
-
-    case 25:
-      jam();
-      warningHandlerLab(signal, __LINE__);
-      return;
-
-    case 26:
-      jam();
-      return;
-
-    case 27:
-      systemErrorLab(signal, __LINE__);
-      jam();
-      return;
-
-    case 28:
-      jam();
-      // NOT USED
-      return;
-
-    case 29:
-      jam();
-      systemErrorLab(signal, __LINE__);
       return;
 
     case 30:
@@ -2726,42 +2640,7 @@ Dbtc::TCKEY_abort(Signal* signal, int place, ApiConnectRecordPtr const apiConnec
       systemErrorLab(signal, __LINE__);
       return;
 
-    case 34:
-      jam();
-      systemErrorLab(signal, __LINE__);
-      return;
-
-    case 35:
-      jam();
-      systemErrorLab(signal, __LINE__);
-      return;
-
-    case 36:
-      jam();
-      systemErrorLab(signal, __LINE__);
-      return;
-
     case 37:
-      jam();
-      systemErrorLab(signal, __LINE__);
-      return;
-
-    case 38:
-      jam();
-      systemErrorLab(signal, __LINE__);
-      return;
-
-    case 39:
-      jam();
-      systemErrorLab(signal, __LINE__);
-      return;
-
-    case 40:
-      jam();
-      systemErrorLab(signal, __LINE__);
-      return;
-
-    case 42:
       jam();
       systemErrorLab(signal, __LINE__);
       return;
@@ -2781,44 +2660,7 @@ Dbtc::TCKEY_abort(Signal* signal, int place, ApiConnectRecordPtr const apiConnec
       systemErrorLab(signal, __LINE__);
       return;
 
-    case 47:
-      jam();
-      terrorCode = apiConnectptr.p->returncode;
-      releaseAtErrorLab(signal, apiConnectptr);
-      return;
-
-    case 48:
-      jam();
-      terrorCode = ZCOMMIT_TYPE_ERROR;
-      releaseAtErrorLab(signal, apiConnectptr);
-      return;
-
     case 49:
-      jam();
-      abortErrorLab(signal, apiConnectptr);
-      return;
-
-    case 50:
-      jam();
-      systemErrorLab(signal, __LINE__);
-      return;
-
-    case 51:
-      jam();
-      abortErrorLab(signal, apiConnectptr);
-      return;
-
-    case 52:
-      jam();
-      abortErrorLab(signal, apiConnectptr);
-      return;
-
-    case 53:
-      jam();
-      abortErrorLab(signal, apiConnectptr);
-      return;
-
-    case 54:
       jam();
       abortErrorLab(signal, apiConnectptr);
       return;
@@ -2889,17 +2731,13 @@ Dbtc::TCKEY_abort(Signal* signal, int place, ApiConnectRecordPtr const apiConnec
       jam();
       initApiConnectRec(signal, apiConnectptr.p, true);
       apiConnectptr.p->m_flags |= ApiConnectRecord::TF_EXEC_FLAG;
+      DEB_TRACK_EXEC_FLAG(("(%u) Set TF_EXEC_FLAG, apiPtrI: %u, line: %u",
+        instance(), apiConnectptr.i, __LINE__));
       goto start_failure;
     }
     case 61: {
       jam();
       terrorCode = ZUNLOCKED_IVAL_TOO_HIGH;
-      abortErrorLab(signal, apiConnectptr);
-      return;
-    }
-    case 62: {
-      jam();
-      terrorCode = ZUNLOCKED_OP_HAS_BAD_STATE;
       abortErrorLab(signal, apiConnectptr);
       return;
     }
@@ -2920,13 +2758,6 @@ Dbtc::TCKEY_abort(Signal* signal, int place, ApiConnectRecordPtr const apiConnec
     case 65: {
       jam();
       terrorCode = ZTRANS_TOO_BIG;
-      abortErrorLab(signal, apiConnectptr);
-      return;
-    }
-    case 66: {
-      jam();
-      /* Function not implemented yet */
-      terrorCode = 4003;
       abortErrorLab(signal, apiConnectptr);
       return;
     }
@@ -3591,7 +3422,6 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
   }
   UintR compare_transid1, compare_transid2;
   const TcKeyReq *const tcKeyReq = (TcKeyReq *)signal->getDataPtr();
-  UintR Treqinfo;
   SectionHandle handle(this, signal);
   jamEntryDebug();
   /*-------------------------------------------------------------------------
@@ -3601,12 +3431,15 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
   const UintR TapiIndex = tcKeyReq->apiConnectPtr;
   const UintR TtabIndex = tcKeyReq->tableId;
   const UintR TtabMaxIndex = ctabrecFilesize;
+  Uint32 Treqinfo = tcKeyReq->requestInfo;
 
+  Uint32 passQueueingFlag = TcKeyReq::getPassQueueingFlag(Treqinfo);
   ttransid_ptr = 6;
   ApiConnectRecordPtr apiConnectptr;
   apiConnectptr.i = TapiIndex;
   if (unlikely(!c_apiConnectRecordPool.getValidPtr(apiConnectptr))) {
     jam();
+    ndbrequire(!passQueueingFlag);
     releaseSections(handle);
     warningHandlerLab(signal, __LINE__);
     return;
@@ -3623,7 +3456,6 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
   }
 #endif
 
-  Treqinfo = tcKeyReq->requestInfo;
   //--------------------------------------------------------------------------
   // Optimised version of ptrAss(tabptr, tableRecord)
   // Optimised version of ptrAss(apiConnectptr, apiConnectRecord)
@@ -3635,6 +3467,8 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
   localTabptr.i = TtabIndex;
   localTabptr.p = &tableRecord[TtabIndex];
   if (unlikely(TtabIndex > TtabMaxIndex)) {
+    jam();
+    ndbrequire(!passQueueingFlag);
     releaseSections(handle);
     warningHandlerLab(signal, __LINE__);
     if (!is_transaction_to_start(regApiPtr, TstartFlag)) {
@@ -3650,7 +3484,6 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
   databaseRecordPtr.i = localTabptr.p->databaseRecord;
   databaseRecordPtr.p = nullptr;
 
-  Uint32 passQueueingFlag = TcKeyReq::getPassQueueingFlag(Treqinfo);
   passQueueingFlag = passQueueingFlag &&
                      handle.m_cnt > 0;
 
@@ -3662,6 +3495,7 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
                                 handle,
                                 Treqinfo,
                                 apiConnectptr)) {
+        jam();
         return;
       }
     }
@@ -3670,12 +3504,17 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
       /**
        * Added original senders block reference at end of signal.
        */
+      ndbrequire(regApiPtr->m_num_queued_outstanding > 0);
+      regApiPtr->m_num_queued_outstanding--;
       ndbrequire(databaseRecordPtr.p->m_outstanding_queries > 0);
       databaseRecordPtr.p->m_outstanding_queries--;
-      DEB_RATE_QUEUE(("(%u):%u, outstanding_queries dec,tk: %u",
+      DEB_RATE_QUEUE(("(%u):%u, outstanding_queries dec,tk: %u,"
+                      " apiPtrI: %u, api: %u",
                       instance(),
                       databaseRecordPtr.p->m_database_id,
-                      databaseRecordPtr.p->m_outstanding_queries));
+                      databaseRecordPtr.p->m_outstanding_queries,
+                      apiConnectptr.i,
+                      regApiPtr->m_num_queued_outstanding));
     } else if (unlikely(regApiPtr->m_first_queued_req != nullptr)) {
       jam();
       handle_queue_tckeyreq(signal,
@@ -3738,8 +3577,7 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
   bool isExecutingTrigger = Tspecial_op_flags & TcConnectRecord::SOF_TRIGGER;
   regApiPtr->m_special_op_flags = 0;  // Reset marker
   Uint32 prevExecFlag = regApiPtr->m_flags & ApiConnectRecord::TF_EXEC_FLAG;
-  if ((!(isExecutingTrigger || isIndexOpReturn)) && prevExecFlag)
-  {
+  if ((!(isExecutingTrigger || isIndexOpReturn)) && prevExecFlag) {
     /**
      * Only operations originating from NDB API with exec flag not
      * set will clear the Execute flag. This is the first signal
@@ -3769,13 +3607,21 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
       jamDebug();
       flags |= TexecFlag;
       flags |= ApiConnectRecord::TF_SINGLE_EXEC_FLAG;
+      DEB_TRACK_EXEC_FLAG(("(%u) TF_EXEC_FLAG = %u, apiPtrI: %u, line: %u",
+        instance(),
+        tc_testbit(regApiPtr->m_flags, ApiConnectRecord::TF_EXEC_FLAG),
+        apiConnectptr.i,
+        __LINE__));
     }
     regApiPtr->m_flags = flags;
-  }
-  else
-  {
+  } else {
     jamDebug();
     regApiPtr->m_flags |= TexecFlag;
+    DEB_TRACK_EXEC_FLAG(("(%u) TF_EXEC_FLAG = %u, apiPtrI: %u, line: %u",
+      instance(),
+      tc_testbit(regApiPtr->m_flags, ApiConnectRecord::TF_EXEC_FLAG),
+      apiConnectptr.i,
+      __LINE__));
   }
   tc_clearbit(regApiPtr->m_flags, ApiConnectRecord::TF_NOT_OUTSTANDING_FLAG);
   bool tabSingleUserMode = localTabptr.p->singleUserMode;
@@ -3800,6 +3646,11 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
         jam();
         initApiConnectRec(signal, regApiPtr);
         regApiPtr->m_flags |= TexecFlag;
+        DEB_TRACK_EXEC_FLAG(("(%u) TF_EXEC_FLAG = %u, apiPtrI: %u, line: %u",
+          instance(),
+          tc_testbit(regApiPtr->m_flags, ApiConnectRecord::TF_EXEC_FLAG),
+          apiConnectptr.i,
+          __LINE__));
       } else {
         jam();
         releaseSections(handle);
@@ -3845,6 +3696,11 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
         }
         initApiConnectRec(signal, regApiPtr);
         regApiPtr->m_flags |= TexecFlag;
+        DEB_TRACK_EXEC_FLAG(("(%u) TF_EXEC_FLAG = %u, apiPtrI: %u, line: %u",
+          instance(),
+          tc_testbit(regApiPtr->m_flags, ApiConnectRecord::TF_EXEC_FLAG),
+          apiConnectptr.i,
+          __LINE__));
       } else {
         //----------------------------------------------------------------------
         // Transaction is started already.
@@ -3915,6 +3771,11 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
           jam();
           initApiConnectRec(signal, regApiPtr);
           regApiPtr->m_flags |= TexecFlag;
+          DEB_TRACK_EXEC_FLAG(("(%u) TF_EXEC_FLAG = %u, apiPtrI: %u, line: %u",
+            instance(),
+            tc_testbit(regApiPtr->m_flags, ApiConnectRecord::TF_EXEC_FLAG),
+            apiConnectptr.i,
+            __LINE__));
         } else if (TexecFlag) {
           releaseSections(handle);
           TCKEY_abort(signal, 59, apiConnectptr);
@@ -3958,13 +3819,10 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
     case CS_RELEASE:
     {
       releaseSections(handle);
-      if (TstartFlag == 1)
-      {
+      if (TstartFlag == 1) {
         TCKEY_abort(signal, 2, apiConnectptr);
         return;
-      }
-      else if (TexecFlag)
-      {
+      } else if (TexecFlag) {
         TCKEY_abort(signal, 59, apiConnectptr);
         return;
       }
@@ -4284,7 +4142,6 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
     TCKEY_abort(signal, 70, apiConnectptr);
     return;
   }
-  Uint8 TexecuteFlag        = TexecFlag;
   Uint8 Treorg              = TcKeyReq::getReorgFlag(Treqinfo);
   Uint8 batchSafe           = TcKeyReq::getBatchSafeFlag(Treqinfo);
   Uint8 batchUnsafe         = TcKeyReq::getBatchUnsafeFlag(Treqinfo);
@@ -4426,8 +4283,10 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
     if (databaseRecordPtr.p != nullptr &&
         (abort_code = databaseRecordPtr.p->startNewOperation(regApiPtr,
                                                    localTabptr.p->m_disk_based,
-                                                   TOperationType)) != 0) {
-      TCKEY_abort(signal, abort_code, apiConnectptr);
+                                                   TOperationType,
+                                                   instance())) != 0) {
+      terrorCode = abort_code;
+      releaseAtErrorLab(signal, apiConnectptr);
       return;
     }
   } else if (TOperationType == ZREAD || TOperationType == ZREAD_EX) {
@@ -4436,8 +4295,10 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
     if (databaseRecordPtr.p != nullptr &&
         (abort_code = (databaseRecordPtr.p->startNewOperation(regApiPtr,
                        localTabptr.p->m_disk_based,
-                       TOperationType))) != 0) {
-      TCKEY_abort(signal, abort_code, apiConnectptr);
+                       TOperationType,
+                       instance()))) != 0) {
+      terrorCode = abort_code;
+      releaseAtErrorLab(signal, apiConnectptr);
       return;
     }
     c_counters.creadCount++;
@@ -4475,8 +4336,10 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
         (abort_code = databaseRecordPtr.p->startNewOperation(
           regApiPtr,
           localTabptr.p->m_disk_based,
-          TOperationType)) != 0) {
-      TCKEY_abort(signal, abort_code, apiConnectptr);
+          TOperationType,
+          instance())) != 0) {
+      terrorCode = abort_code;
+      releaseAtErrorLab(signal, apiConnectptr);
       return;
     }
     if (!tc_testbit(regApiPtr->m_flags,
@@ -4580,7 +4443,7 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
    * If CommitFlag is set state accordingly and check for early abort
    *------------------------------------------------------------------------*/
   if (TcKeyReq::getCommitFlag(Treqinfo) == 1) {
-    ndbrequire(TexecuteFlag);
+    ndbrequire(TexecFlag);
     regApiPtr->apiConnectstate = CS_REC_COMMITTING;
   } else {
     /* ---------------------------------------------------------------------
@@ -6162,6 +6025,12 @@ void Dbtc::execSIGNAL_DROPPED_REP(Signal *signal) {
               ? ApiConnectRecord::TF_EXEC_FLAG
               : 0;
 
+      DEB_TRACK_EXEC_FLAG(("(%u) TF_EXEC_FLAG = %u, apiPtrI: %u, line: %u",
+        instance(),
+        tc_testbit(regApiPtr->m_flags, ApiConnectRecord::TF_EXEC_FLAG),
+        apiConnectptr.i,
+        __LINE__));
+
       DEBUG(" Execute flag set to "
             << tc_testbit(regApiPtr->m_flags, ApiConnectRecord::TF_EXEC_FLAG));
 
@@ -6869,6 +6738,8 @@ void Dbtc::sendtckeyconf(Signal *signal, UintR TcommitFlag,
   if (TcommitFlag) {
     jam();
     if (TcommitFlag == 1) {
+      DEB_TRACK_EXEC_FLAG(("(%u) Clear TF_EXEC_FLAG, apiPtrI: %u, line: %u",
+        instance(), apiConnectptr.i, __LINE__));
       tc_clearbit(regApiPtr->m_flags, ApiConnectRecord::TF_EXEC_FLAG);
       time_track_complete_transaction(regApiPtr);
     } else {
@@ -7187,6 +7058,7 @@ Dbtc::ApiConnectRecord::ApiConnectRecord()
       accumulatingIndexOp(RNIL),
   executingIndexOp(RNIL),
   m_num_queued(0),
+  m_num_queued_outstanding(0),
   m_queuedDatabasePtrI(RNIL64),
   m_parallel_transactions_db(RNIL64),
   m_first_queued_req(nullptr),
@@ -9088,12 +8960,16 @@ void Dbtc::execLQHKEYREF(Signal *signal) {
 
       if (unlikely(TapiConnectstate == CS_ABORTING || needAbort)) {
         jam();
+        DEB_RATE_QUEUE(("(%u) tcPtrI %u, apiPtrI: %u, do_abort",
+                  instance(), tcConnectptr.i, apiConnectptr.i));
         goto do_abort;
       }
       if (unlikely(TapiConnectstate == CS_RELEASE))
       {
         jam();
 	warningReport(signal, 25, tcConnectptr.i);
+        DEB_RATE_QUEUE(("(%u) tcPtrI %u, apiPtrI: %u, CS_RELEASE",
+                  instance(), tcConnectptr.i, apiConnectptr.i));
         return;
       }
 
@@ -9243,6 +9119,8 @@ void Dbtc::execLQHKEYREF(Signal *signal) {
         /**
          * We're already aborting' so don't send an "extra" TCKEYREF
          */
+        DEB_RATE_QUEUE(("(%u) tcPtrI %u, apiPtrI: %u, CS_ABORTING",
+                  instance(), tcConnectptr.i, apiConnectptr.i));
         jam();
         return;
       }
@@ -9253,6 +9131,8 @@ void Dbtc::execLQHKEYREF(Signal *signal) {
         /**
          * No error is allowed on this operation
          */
+        DEB_RATE_QUEUE(("(%u) tcPtrI %u, apiPtrI: %u, TCKEY_abort(49)",
+                  instance(), tcConnectptr.i, apiConnectptr.i));
         logAbortingOperation(signal, apiConnectptr, tcConnectptr, errCode);
         TCKEY_abort(signal, 49, apiConnectptr);
         return;
@@ -9287,6 +9167,8 @@ void Dbtc::execLQHKEYREF(Signal *signal) {
         jam();
         tcKeyRef->connectPtr = clientData;
         tcKeyRef->errorData = indexId;
+        DEB_QUOTA_ABORT(("(%u) Sending TCKEYREF to 0x%x",
+          instance(), regApiPtr->ndbapiBlockref));
         sendSignal(regApiPtr->ndbapiBlockref, GSN_TCKEYREF, signal,
                    TcKeyRef::SignalLength, JBB);
       }  // if
@@ -9389,6 +9271,8 @@ void Dbtc::execTC_COMMITREQ(Signal *signal) {
 
     tc_clearbit(regApiPtr->m_flags, ApiConnectRecord::TF_NOT_OUTSTANDING_FLAG);
     regApiPtr->m_flags |= ApiConnectRecord::TF_EXEC_FLAG;
+    DEB_TRACK_EXEC_FLAG(("(%u) Set TF_EXEC_FLAG, apiPtrI: %u, line: %u",
+      instance(), apiConnectptr.i, __LINE__));
     regApiPtr->m_simple_read_count = 0;
     regApiPtr->m_exec_count = 0;
     regApiPtr->m_tc_hbrep_timer = ctcTimer;
@@ -9536,6 +9420,8 @@ void Dbtc::execTCROLLBACKREQ(Signal *signal) {
   tc_clearbit(apiConnectptr.p->m_flags,
     ApiConnectRecord::TF_NOT_OUTSTANDING_FLAG);
   apiConnectptr.p->m_flags |= ApiConnectRecord::TF_EXEC_FLAG;
+  DEB_TRACK_EXEC_FLAG(("(%u) Set TF_EXEC_FLAG, apiPtrI: %u, line: %u",
+    instance(), apiConnectptr.i, __LINE__));
   apiConnectptr.p->m_tc_hbrep_timer = ctcTimer;
   switch (apiConnectptr.p->apiConnectstate) {
     case CS_STARTED:
@@ -9933,6 +9819,8 @@ void Dbtc::execABORTED(Signal *signal) {
    *-------------------------------------------------------------------------*/
   if (unlikely(!tcConnectRecord.getValidPtr(tcConnectptr)))
   {
+    DEB_RATE_QUEUE(("(%u) ABORTED from node: %u, tcPtrI: %u not valid",
+      instance(), Tnodeid, tcConnectptr.i));
     warningReport(signal, 2, tcConnectptr.i);
     return;
     /*-----------------------------------------------------------------------*/
@@ -9947,6 +9835,9 @@ void Dbtc::execABORTED(Signal *signal) {
   compare_transid1 = compare_transid1 | compare_transid2;
   if (unlikely(compare_transid1 != 0)) {
     jam();
+    DEB_RATE_QUEUE(("(%u) ABORTED from node: %u, tcPtrI: %u, apiPtrI: %u"
+                    " not valid trans",
+      instance(), Tnodeid, tcConnectptr.i, apiConnectptr.i));
     warningReport(signal, 1, tcConnectptr.i);
     return;
   }
@@ -9960,6 +9851,9 @@ void Dbtc::execABORTED(Signal *signal) {
       apiConnectptr.p->apiConnectstate == CS_WAIT_ABORT_CONF)
   {
     jam();
+    DEB_RATE_QUEUE(("(%u) ABORTED from node: %u, tcPtrI: %u apiPtrI: %u,"
+                    " CS_WAIT_ABORT_CONF",
+      instance(), Tnodeid, tcConnectptr.i, apiConnectptr.i));
     /**
      * Take over abort handling has taken over. Ignore any signals
      * received from the old process that returns ABORTED signals.
@@ -9993,6 +9887,9 @@ void Dbtc::execABORTED(Signal *signal) {
   }
   if (unlikely(Tfound == 0))
   {
+    DEB_RATE_QUEUE(("(%u) ABORTED from node: %u, tcPtrI: %u, apiPtrI: %u,"
+                    " Not found",
+      instance(), Tnodeid, tcConnectptr.i, apiConnectptr.i));
     warningReport(signal, 3, tcConnectptr.i);
     return;
   }
@@ -10003,6 +9900,9 @@ void Dbtc::execABORTED(Signal *signal) {
       /*--------------------------------------------------------------------
        * There are still outstanding ABORTED's to wait for.
        *--------------------------------------------------------------------*/
+      DEB_RATE_QUEUE(("(%u) ABORTED from node: %u, tcPtrI: %u, apiPtrI: %u,"
+                      " Wait for more",
+        instance(), Tnodeid, tcConnectptr.i, apiConnectptr.i));
       jam();
       return;
     }
@@ -10020,6 +9920,9 @@ void Dbtc::execABORTED(Signal *signal) {
      * limit where it is ok to resume sending again.
      */
     jam();
+    DEB_RATE_QUEUE(("(%u) ABORTED from node: %u, tcPtrI: %u, apiPtrI: %u,"
+                    " send_abort_break(2)",
+      instance(), Tnodeid, tcConnectptr.i, apiConnectptr.i));
     send_abort_break(signal,
                      apiConnectptr,
                      apiConnectptr.p->nextTcOperation,
@@ -10036,11 +9939,26 @@ void Dbtc::execABORTED(Signal *signal) {
       apiConnectptr.p->nextTcOperation != RNIL)
   {
     jam();
+    DEB_RATE_QUEUE(("(%u) ABORTED from node: %u, tcPtrI: %u, apiPtrI: %u,"
+                    " counter = %u, nextTcOp = %u",
+      instance(),
+      Tnodeid,
+      tcConnectptr.i,
+      apiConnectptr.i,
+      apiConnectptr.p->counter,
+      apiConnectptr.p->nextTcOperation));
     /*----------------------------------------------------------------------
      *       WE ARE STILL WAITING FOR MORE PARTICIPANTS TO SEND ABORTED.
      *----------------------------------------------------------------------*/
     return;
   }
+  DEB_RATE_QUEUE(("(%u) ABORTED from node: %u, tcPtrI: %u, apiPtrI: %u,"
+                  " counter = %u, call releaseAbortResources",
+    instance(),
+    Tnodeid,
+    tcConnectptr.i,
+    apiConnectptr.i,
+    apiConnectptr.p->counter));
   /*------------------------------------------------------------------------*/
   /*                                                                        */
   /*     WE HAVE NOW COMPLETED THE ABORT PROCESS. WE HAVE RECEIVED ABORTED  */
@@ -10072,17 +9990,23 @@ void Dbtc::abortErrorLab(Signal *signal,
                 transP->abortState != AS_IDLE)))
   {
     jam();
+    DEB_RATE_QUEUE(("(%u) tcPtrI %u, apiPtrI: %u, abortError(1)",
+      instance(), tcConnectptr.i, apiConnectptr.i));
     return;
   }
   if (unlikely(transP->apiConnectstate == CS_RELEASE))
   {
     jam();
+    DEB_RATE_QUEUE(("(%u) tcPtrI %u, apiPtrI: %u, abortError(2)",
+      instance(), tcConnectptr.i, apiConnectptr.i));
     return;
   }
   transP->returnsignal = RS_TCROLLBACKREP;
   if(transP->returncode == 0)
   {
     jam();
+    DEB_RATE_QUEUE(("(%u) tcPtrI %u, apiPtrI: %u, abortError(3), error: %u",
+      instance(), tcConnectptr.i, apiConnectptr.i, terrorCode));
     transP->returncode = terrorCode;
   }
   abort010Lab(signal, apiConnectptr);
@@ -10114,6 +10038,8 @@ void Dbtc::abort010Lab(Signal *signal,
     /*--------------------------------------------------------------------*/
     /* WE HAVE NO PARTICIPANTS IN THE TRANSACTION.                        */
     /*--------------------------------------------------------------------*/
+    DEB_RATE_QUEUE(("(%u) tcPtrI %u, apiPtrI: %u, abortError(4)",
+      instance(), tcConnectptr.i, apiConnectptr.i));
     releaseAbortResources(signal, apiConnectptr);
     return;
   }  // if
@@ -10139,6 +10065,11 @@ ABORT020:
   jam();
   TloopCount++;
   ndbrequire(tcConnectRecord.getValidPtr(tcConnectptr));
+  DEB_RATE_QUEUE(("(%u) tcPtrI %u, apiPtrI: %u, abort015, connectState: %u",
+    instance(),
+    tcConnectptr.i,
+    apiConnectptr.i,
+    tcConnectptr.p->tcConnectstate));
   switch (tcConnectptr.p->tcConnectstate)
   {
   case OS_WAIT_DIH:
@@ -10220,6 +10151,8 @@ ABORT020:
     {
       jam();
       send_abort_break(signal, apiConnectptr, tcConnectptr.i, __LINE__);
+      DEB_RATE_QUEUE(("(%u) apiPtrI: %u, send_abort_break, counter = %u",
+        instance(), apiConnectptr.i, apiConnectptr.p->counter));
       return;
     }
     else
@@ -10231,6 +10164,8 @@ ABORT020:
        * We abort in steps if transaction sizes go beyond 1024 operations.
        */
       apiConnectptr.p->nextTcOperation = tcConnectptr.i;
+      DEB_RATE_QUEUE(("(%u) apiPtrI: %u, wait abort, counter = %u",
+        instance(), apiConnectptr.i, apiConnectptr.p->counter));
     }
   }
 
@@ -10243,6 +10178,8 @@ ABORT020:
     jam();
     apiConnectptr.p->send_abort_done = true;
     setApiConTimer(apiConnectptr, ctcTimer, __LINE__);
+    DEB_RATE_QUEUE(("(%u) apiPtrI: %u, counter = %u",
+      instance(), apiConnectptr.i, apiConnectptr.p->counter));
     return;
   }
   /*-----------------------------------------------------------------------
@@ -10312,7 +10249,7 @@ int Dbtc::releaseAndAbort(Signal *signal, ApiConnectRecord *const regApiPtr) {
         len = Abort::SignalLengthKey;
         abo->instanceKey = instanceKey;
       }
-      DEB_ABORT_TRANS(("(%u)Send ABORT tcRef(%u,%x) transid(%u,%u)"
+      DEB_ABORT_TRANS(("(%u)TC: Send ABORT tcRef(%u,0x%x) transid(0x%x,0x%x)"
                        " to ref: %x",
                        instance(),
                        tcConnectptr.i,
@@ -10328,8 +10265,8 @@ int Dbtc::releaseAndAbort(Signal *signal, ApiConnectRecord *const regApiPtr) {
       prevAlive = true;
     } else {
       jam();
-      DEB_ABORT_TRANS(("(%u)Send ABORTED(dead) tcRef(%u,%x) transid(%u,%u)"
-                       ", node: %u",
+      DEB_ABORT_TRANS(("(%u)TC: Send ABORTED(dead) tcRef(%u,%x)"
+                       " transid(0x%x,0x%x), node: %u",
                        instance(),
                        tcConnectptr.i,
                        reference(),
@@ -15501,6 +15438,7 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
   const Uint32 transid2 = scanTabReq->transId2;
   const Uint32 tmpXX = scanTabReq->buddyConPtr;
   const Uint32 buddyPtr = (tmpXX == 0xFFFFFFFF ? RNIL : tmpXX);
+  Uint32 passQueueingFlag = ScanTabReq::getPassQueueingFlag(ri);
   Uint32 currSavePointId = 0;
   ApiConnectRecordPtr transOwnerPtr;
 
@@ -15551,13 +15489,13 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
 
   if (unlikely(!c_apiConnectRecordPool.getValidPtr(apiConnectptr))) {
     jam();
+    ndbrequire(!passQueueingFlag);
     releaseSections(handle);
     warningHandlerLab(signal, __LINE__);
     return;
   }  // if
 
   ApiConnectRecord *transP = apiConnectptr.p;
-  Uint32 passQueueingFlag = ScanTabReq::getPassQueueingFlag(ri);
   passQueueingFlag = passQueueingFlag &&
                      (refToMain(sendersBlockRef) == DBTC);
   if (unlikely(passQueueingFlag)) {
@@ -15570,6 +15508,7 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
 #endif
 
   if (unlikely(tabptr.i >= ctabrecFilesize)) {
+    ndbrequire(!passQueueingFlag);
     errCode = ZUNKNOWN_TABLE_ERROR;
     goto SCAN_TAB_error;
   }
@@ -15634,7 +15573,7 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
     } else {
       jam();
 #ifdef DEBUG_RATE_QUEUE
-    start_flag = false;
+      start_flag = false;
 #endif
     }
   }
@@ -15757,12 +15696,17 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
        * Added original senders block reference at end of signal.
        * Commented out since not used hereafter.
        */
+      ndbrequire(transOwnerPtr.p->m_num_queued_outstanding > 0);
+      transOwnerPtr.p->m_num_queued_outstanding--;
       ndbrequire(databaseRecordPtr.p->m_outstanding_queries > 0);
       databaseRecordPtr.p->m_outstanding_queries--;
-      DEB_RATE_QUEUE(("(%u):%u, outstanding_queries dec,st: %u",
+      DEB_RATE_QUEUE(("(%u):%u, outstanding_queries dec,st: %u,"
+                      " apiPtrI: %u, api: %u",
                       instance(),
                       databaseRecordPtr.p->m_database_id,
-                      databaseRecordPtr.p->m_outstanding_queries));
+                      databaseRecordPtr.p->m_outstanding_queries,
+                      transOwnerPtr.i,
+                      transOwnerPtr.p->m_num_queued_outstanding));
     } else if (unlikely(transOwnerPtr.p->m_first_queued_req != nullptr)) {
       /**
        * Transaction is already in queueing mode, have to run the
@@ -15791,10 +15735,10 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
                 instance(),
                 databaseRecordPtr.p->m_database_id,
                 passQueueingFlag,
-                databaseRecordPtr.p->m_api_ref_count,
                 databaseRecordPtr.p->m_first_queued_req,
                 databaseRecordPtr.p->m_is_queueing_start,
                 databaseRecordPtr.p->m_is_queueing_all,
+                databaseRecordPtr.p->m_api_ref_count,
                 transOwnerPtr.p->m_first_queued_req,
                 transOwnerPtr.p->tcConnect.isEmpty(),
                 is_transaction_to_start(transOwnerPtr.p, start_flag),
@@ -17439,6 +17383,7 @@ void Dbtc::execSCAN_NEXTREQ(Signal *signal) {
   apiConnectptr.i = req->apiConnectPtr;
   if (unlikely(!c_apiConnectRecordPool.getValidPtr(apiConnectptr))) {
     jam();
+    ndbrequire(!sent_from_queue);
     releaseSections(handle);
     warningHandlerLab(signal, __LINE__);
     return;
@@ -17451,6 +17396,7 @@ void Dbtc::execSCAN_NEXTREQ(Signal *signal) {
   const UintR ctransid2 = apiConnectptr.p->transid[1] ^ transid2;
   if (unlikely((ctransid1 | ctransid2) != 0)) {
     jam();
+    ndbrequire(!sent_from_queue);
     releaseSections(handle);
     ScanTabRef *ref = (ScanTabRef *)&signal->theData[0];
     ref->apiConnectPtr = apiConnectptr.p->ndbapiConnect;
@@ -17481,12 +17427,14 @@ void Dbtc::execSCAN_NEXTREQ(Signal *signal) {
       DEBUG("scanTabRefLab: ZSCANTIME_OUT_ERROR2");
       g_eventLogger->info("apiConnectptr(%d) -> abort ZSCANTIMEOUT_ERROR2", apiConnectptr.i);
       ndbassert(false);  // B2 indication of strange things going on
+      ndbrequire(!sent_from_queue);
       scanTabRefLab(signal, ZSCANTIME_OUT_ERROR2, apiConnectptr.p);
       return;
     }
     DEBUG("scanTabRefLab: ZSTATE_ERROR");
     DEBUG("  apiConnectstate=" << apiConnectptr.p->apiConnectstate);
     g_eventLogger->info("apiConnectptr(%d) -> abort ZSTATE_ERROR", apiConnectptr.i);
+    ndbrequire(!sent_from_queue);
     ndbassert(false);  // B2 indication of strange things going on
     scanTabRefLab(signal, ZSTATE_ERROR, apiConnectptr.p);
     return;
@@ -17503,6 +17451,7 @@ void Dbtc::execSCAN_NEXTREQ(Signal *signal) {
     // How can this happen?
     // Assert to catch if path is tested, remove if hit and analyzed.
     jam();
+    ndbrequire(!sent_from_queue);
     ndbassert(false);
     releaseSections(handle);
     ScanTabRef *ref = (ScanTabRef *)&signal->theData[0];
@@ -17558,12 +17507,17 @@ void Dbtc::execSCAN_NEXTREQ(Signal *signal) {
     DatabaseRecordPtr databaseRecordPtr;
     databaseRecordPtr.i = apiConnectptr.p->m_queuedDatabasePtrI;
     ndbrequire(m_databaseRecordPool.getPtr(databaseRecordPtr));
+    ndbrequire(apiConnectptr.p->m_num_queued_outstanding > 0);
+    apiConnectptr.p->m_num_queued_outstanding--;
     ndbrequire(databaseRecordPtr.p->m_outstanding_queries > 0);
     databaseRecordPtr.p->m_outstanding_queries--;
-    DEB_RATE_QUEUE(("(%u):%u, outstanding_queries dec,sn: %u",
+    DEB_RATE_QUEUE(("(%u):%u, outstanding_queries dec,sn: %u,"
+                    " apiPtrI: %u, api: %u",
                     instance(),
                     databaseRecordPtr.p->m_database_id,
-                    databaseRecordPtr.p->m_outstanding_queries));
+                    databaseRecordPtr.p->m_outstanding_queries,
+                    apiConnectptr.i,
+                    apiConnectptr.p->m_num_queued_outstanding));
   }
 
   ScanRecord *scanP = scanptr.p;
@@ -18877,6 +18831,30 @@ void Dbtc::releaseAbortResources(Signal* signal,
   }
   jamDebug();
 
+  if (apiConnectptr.p->m_num_queued_outstanding > 0) {
+    jam();
+    /**
+     * We are aborting a transaction that still have outstanding
+     * signals in job buffer. Send another CONTINUEB to give those
+     * signals a chance to be handled before we sent the response
+     * to the API. Otherwise those signals could be mixed up with
+     * signals arriving for the next transaction.
+     */
+    DEB_RATE_QUEUE(("(%u) Wait due to m_num_queued_outstanding = %u"
+                    " for apiPtrI: %u",
+      instance(), apiConnectptr.p->m_num_queued_outstanding, apiConnectptr.i));
+
+    setApiConTimer(apiConnectptr, ctcTimer, __LINE__);
+    signal->theData[0] = TcContinueB::ZRELEASE_ABORT_RESOURCES;
+    signal->theData[1] = apiConnectptr.i;
+    sendSignal(reference(),
+               GSN_CONTINUEB,
+               signal,
+               2,
+               JBB);
+    return;
+  }
+
   release_queue_record_tc(signal, apiConnectptr, loop_count);
   if (loop_count > ZMAX_RELEASE_PER_RT_BREAK) {
     jam();
@@ -18909,7 +18887,18 @@ void Dbtc::releaseAbortResources(Signal* signal,
     Uint32 blockRef = apiConnectptr.p->ndbapiBlockref;
     ReturnSignal ret = apiConnectptr.p->returnsignal;
     apiConnectptr.p->returnsignal = RS_NO_RETURN;
+
+    DEB_ABORT_TRANS(("(%u) apiPtrI: %u, returnsignal: %u, flags: 0x%x, "
+                     "apiFailState: %u",
+      instance(),
+      apiConnectptr.i,
+      Uint32(ret),
+      apiConnectptr.p->m_flags,
+      apiConnectptr.p->apiFailState));
     tc_clearbit(apiConnectptr.p->m_flags, ApiConnectRecord::TF_EXEC_FLAG);
+    DEB_TRACK_EXEC_FLAG(("(%u) Clear TF_EXEC_FLAG, apiPtrI: %u, line: %u",
+      instance(), apiConnectptr.i, __LINE__));
+
     switch(ret){
     case RS_TCROLLBACKCONF:
       jam();
@@ -18952,6 +18941,14 @@ void Dbtc::releaseAbortResources(Signal* signal,
       g_eventLogger->info("returnsignal = %d", apiConnectptr.p->returnsignal);
       sendSystemError(signal, __LINE__);
     }  // if
+  } else {
+    DEB_ABORT_TRANS(("(%u) apiPtrI: %u, returnsignal: %u, flags: 0x%x"
+                     ", apiFailState: %u, No ret signal sent",
+      instance(),
+      apiConnectptr.i,
+      apiConnectptr.p->returnsignal,
+      apiConnectptr.p->m_flags,
+      apiConnectptr.p->apiFailState));
   }
   setApiConTimer(apiConnectptr, 0,
                  100000 + apiConnectptr.p->m_apiConTimer_line);
@@ -21341,12 +21338,14 @@ void Dbtc::execTCINDXREQ(Signal *signal) {
   Uint32 tcIndxRequestInfo = tcIndxReq->requestInfo;
   Uint32 startFlag = tcIndxReq->getStartFlag(tcIndxRequestInfo);
   ApiConnectRecordPtr transPtr;
+  Uint32 passQueueingFlag = TcKeyReq::getPassQueueingFlag(tcIndxRequestInfo);
   bool isLongTcIndxReq = (signal->getNoOfSections() != 0);
   SectionHandle handle(this, signal);
 
   transPtr.i = TapiIndex;
   if (unlikely(!c_apiConnectRecordPool.getValidPtr(transPtr))) {
     jam();
+    ndbrequire(!passQueueingFlag);
     warningHandlerLab(signal, __LINE__);
     releaseSections(handle);
     return;
@@ -21354,6 +21353,8 @@ void Dbtc::execTCINDXREQ(Signal *signal) {
   ApiConnectRecord * const regApiPtr = transPtr.p;  
   if (unlikely(regApiPtr->apiConnectstate == CS_RELEASE))
   {
+    jam();
+    ndbrequire(!passQueueingFlag);
     warningHandlerLab(signal, __LINE__);
     releaseSections(handle);
     return;
@@ -21375,6 +21376,7 @@ void Dbtc::execTCINDXREQ(Signal *signal) {
   localTabptr.i = TtabIndex;
   localTabptr.p = &tableRecord[TtabIndex];
   if (unlikely(TtabIndex > TtabMaxIndex)) {
+    ndbrequire(!passQueueingFlag);
     releaseSections(handle);
     warningHandlerLab(signal, __LINE__);
     if (!is_transaction_to_start(regApiPtr, startFlag)) {
@@ -21385,7 +21387,6 @@ void Dbtc::execTCINDXREQ(Signal *signal) {
   databaseRecordPtr.i = localTabptr.p->databaseRecord;
   databaseRecordPtr.p = nullptr;
 
-  Uint32 passQueueingFlag = TcKeyReq::getPassQueueingFlag(tcIndxRequestInfo);
   passQueueingFlag = passQueueingFlag &&
                      handle.m_cnt > 0;
 
@@ -21396,6 +21397,7 @@ void Dbtc::execTCINDXREQ(Signal *signal) {
                               handle,
                               tcIndxRequestInfo,
                               transPtr)) {
+      jam();
       return;
     }
   }
@@ -21404,12 +21406,17 @@ void Dbtc::execTCINDXREQ(Signal *signal) {
     /**
      * Added original senders block reference at end of signal.
      */
+    ndbrequire(transPtr.p->m_num_queued_outstanding > 0);
+    transPtr.p->m_num_queued_outstanding--;
     ndbrequire(databaseRecordPtr.p->m_outstanding_queries > 0);
     databaseRecordPtr.p->m_outstanding_queries--;
-    DEB_RATE_QUEUE(("(%u):%u, outstanding_queries dec,ti: %u",
+    DEB_RATE_QUEUE(("(%u):%u, outstanding_queries dec,ti: %u,"
+                    " apiPtrI: %u, api: %u",
                     instance(),
                     databaseRecordPtr.p->m_database_id,
-                    databaseRecordPtr.p->m_outstanding_queries));
+                    databaseRecordPtr.p->m_outstanding_queries,
+                    transPtr.i,
+                    transPtr.p->m_num_queued_outstanding));
   } else if (unlikely(regApiPtr->m_first_queued_req != nullptr)) {
     jam();
     handle_queue_tckeyreq(signal,
@@ -21455,6 +21462,11 @@ void Dbtc::execTCINDXREQ(Signal *signal) {
     regApiPtr->m_flags |= TcKeyReq::getExecuteFlag(tcIndxRequestInfo)
                               ? ApiConnectRecord::TF_EXEC_FLAG
                               : 0;
+    DEB_TRACK_EXEC_FLAG(("(%u) TF_EXEC_FLAG = %u, apiPtrI: %u, line: %u",
+      instance(),
+      tc_testbit(regApiPtr->m_flags, ApiConnectRecord::TF_EXEC_FLAG),
+      transPtr.i,
+      __LINE__));
     abortErrorLab(signal, transPtr);
     return;
   }
@@ -21468,6 +21480,11 @@ void Dbtc::execTCINDXREQ(Signal *signal) {
       regApiPtr->m_flags |= TcKeyReq::getExecuteFlag(tcIndxRequestInfo)
                                 ? ApiConnectRecord::TF_EXEC_FLAG
                                 : 0;
+      DEB_TRACK_EXEC_FLAG(("(%u) TF_EXEC_FLAG = %u, apiPtrI: %u, line: %u",
+        instance(),
+        tc_testbit(regApiPtr->m_flags, ApiConnectRecord::TF_EXEC_FLAG),
+        transPtr.i,
+        __LINE__));
       abortErrorLab(signal, transPtr);
       return;
     }
@@ -21481,6 +21498,11 @@ void Dbtc::execTCINDXREQ(Signal *signal) {
     regApiPtr->m_flags |= TcKeyReq::getExecuteFlag(tcIndxRequestInfo)
                               ? ApiConnectRecord::TF_EXEC_FLAG
                               : 0;
+    DEB_TRACK_EXEC_FLAG(("(%u) TF_EXEC_FLAG = %u, apiPtrI: %u, line: %u",
+      instance(),
+      tc_testbit(regApiPtr->m_flags, ApiConnectRecord::TF_EXEC_FLAG),
+      transPtr.i,
+      __LINE__));
     abortErrorLab(signal, transPtr);
     return;
   }
@@ -21676,8 +21698,11 @@ int Dbtc::saveINDXKEYINFO(Signal *signal, TcIndexOperation *indexOp,
     c_apiConnectRecordPool.getPtr(apiConnectptr);
     releaseIndexOperation(apiConnectptr.p, indexOp);
     terrorCode = 289;
-    if (TcKeyReq::getExecuteFlag(indexOp->tcIndxReq.requestInfo))
+    if (TcKeyReq::getExecuteFlag(indexOp->tcIndxReq.requestInfo)) {
       apiConnectptr.p->m_flags |= ApiConnectRecord::TF_EXEC_FLAG;
+      DEB_TRACK_EXEC_FLAG(("(%u) Set  TF_EXEC_FLAG, apiPtrI: %u, line: %u",
+        instance(), apiConnectptr.i, __LINE__));
+    }
     abortErrorLab(signal, apiConnectptr);
     return -1;
   }
@@ -21712,8 +21737,11 @@ int Dbtc::saveINDXATTRINFO(Signal *signal, TcIndexOperation *indexOp,
     c_apiConnectRecordPool.getPtr(apiConnectptr);
     releaseIndexOperation(apiConnectptr.p, indexOp);
     terrorCode = 289;
-    if (TcKeyReq::getExecuteFlag(indexOp->tcIndxReq.requestInfo))
+    if (TcKeyReq::getExecuteFlag(indexOp->tcIndxReq.requestInfo)) {
       apiConnectptr.p->m_flags |= ApiConnectRecord::TF_EXEC_FLAG;
+      DEB_TRACK_EXEC_FLAG(("(%u) Set  TF_EXEC_FLAG, apiPtrI: %u, line: %u",
+        instance(), apiConnectptr.i, __LINE__));
+    }
     abortErrorLab(signal, apiConnectptr);
     return -1;
   }
@@ -22238,6 +22266,11 @@ void Dbtc::readIndexTable(Signal *signal, ApiConnectRecordPtr transPtr,
     regApiPtr->m_flags |= TcKeyReq::getExecuteFlag(tcKeyRequestInfo)
                               ? ApiConnectRecord::TF_EXEC_FLAG
                               : 0;
+    DEB_TRACK_EXEC_FLAG(("(%u) TF_EXEC_FLAG = %u, apiPtrI: %u, line: %u",
+      instance(),
+      tc_testbit(regApiPtr->m_flags, ApiConnectRecord::TF_EXEC_FLAG),
+      transPtr.i,
+      __LINE__));
     abortErrorLab(signal, transPtr);
     return;
   }
@@ -25414,7 +25447,9 @@ Dbtc::query_thread_usage(Signal *signal)
 Uint32
 Dbtc::DatabaseRecord::startNewOperation(ApiConnectRecord *regApiPtr,
                                         bool is_disk_based,
-                                        Uint32 op_type) {
+                                        Uint32 op_type,
+                                        Uint32 instance) {
+  (void)instance;
   if (!m_is_quota_committed) {
     return 0;
   }
@@ -25423,6 +25458,12 @@ Dbtc::DatabaseRecord::startNewOperation(ApiConnectRecord *regApiPtr,
        m_max_transaction_size)) {
     return ZTOO_MANY_OPERATIONS_IN_TRANSACTION_ERROR;
   }
+#ifdef DEBUG_QUOTAS
+  if (m_is_memory_quota_exceeded) {
+    DEB_QUOTAS(("(%u) startNewOperation(%u)",
+      instance, op_type));
+  }
+#endif
   if ((m_is_memory_quota_exceeded ||
        (is_disk_based && m_is_disk_quota_exceeded)) &&
       (op_type == ZINSERT || op_type == ZUPDATE || op_type == ZWRITE)) {
@@ -25502,6 +25543,13 @@ void Dbtc::sendQUOTA_OVERLOAD_REP(Signal *signal,
     sendSignal(DBTC_REF, GSN_QUOTA_OVERLOAD_REP, signal,
                QuotaOverloadRep::SignalLength, JBB);
   }
+  DEB_QUOTAS(("(%u) db: %u, Send Change memory quota to %u, disk quota to %u"
+              ", send_tc_flag: %u",
+    instance(),
+    dbPtrP->m_database_id,
+    rep->is_memory_quota_exceeded,
+    rep->is_disk_quota_exceeded,
+    send_tc));
 }
 
 #define RELEASE_QUOTA_EXCEED_LIMIT 105
@@ -25527,6 +25575,9 @@ bool Dbtc::check_quota_exceeded(Signal *signal, DatabaseRecord *dbPtrP) {
     if (memory_percentage <= RELEASE_QUOTA_EXCEED_LIMIT) {
       jam();
       report = true;
+      DEB_QUOTAS_REP(("(%u) Memory Quota no longer exceeded for Db: %u,"
+                      " perc: %llu",
+        instance(), dbPtrP->m_database_id, memory_percentage));
       dbPtrP->m_is_memory_quota_exceeded_reported = false;
     }
   } else {
@@ -25534,6 +25585,8 @@ bool Dbtc::check_quota_exceeded(Signal *signal, DatabaseRecord *dbPtrP) {
       jam();
       report = true;
       dbPtrP->m_is_memory_quota_exceeded_reported = true;
+      DEB_QUOTAS_REP(("(%u) Memory Quota exceeded for Db: %u, perc: %llu",
+        instance(), dbPtrP->m_database_id, memory_percentage));
     }
   }
   if (dbPtrP->m_is_disk_quota_exceeded_reported) {
@@ -25542,12 +25595,18 @@ bool Dbtc::check_quota_exceeded(Signal *signal, DatabaseRecord *dbPtrP) {
       jam();
       report = true;
       dbPtrP->m_is_disk_quota_exceeded_reported = false;
+      DEB_QUOTAS_REP(("(%u) Disk Quota no longer exceeded for Db: %u,"
+                      " perc: %llu",
+        instance(), dbPtrP->m_database_id, disk_percentage));
     }
   } else {
     if (disk_percentage >= SET_QUOTA_EXCEED_LIMIT) {
       jam();
       report = true;
       dbPtrP->m_is_disk_quota_exceeded_reported = true;
+      DEB_QUOTAS_REP(("(%u) Disk Quota exceeded for Db: %u,"
+                      " perc: %llu",
+        instance(), dbPtrP->m_database_id, disk_percentage));
     }
   }
   return report;
@@ -25721,12 +25780,13 @@ Dbtc::send_queued_query(Signal *signal, QueueRecord *queue_record) {
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
     m_tot_send_queued_tckeyreq++;
 #endif
-    DEB_RATE_QUEUE(("(%u) Send Queued %s, tick: %llu, ptr: %p"
+    DEB_RATE_QUEUE(("(%u) Send Queued %s, apiPtrI: %u, tick: %llu, ptr: %p"
               ", sections: %u, sig_len: %u, key_len: %u, ai_len: %u"
               ", queued: %llu, send_queued: %llu, key[%u,%u,%u,%u,%u,%u]",
               instance(),
               queue_record->m_gsn == GSN_TCKEYREQ ?
                 "TCKEYREQ" : "TCINDXREQ",
+              queue_record->apiPtrI,
               queue_record->m_queued_ticks.getUint64(),
               queue_record,
               num_sections,
@@ -25755,10 +25815,11 @@ Dbtc::send_queued_query(Signal *signal, QueueRecord *queue_record) {
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
     m_tot_send_queued_scan_tabreq++;
 #endif
-    DEB_RATE_QUEUE(("(%u) Send Queued SCAN_TABREQ, tick: %llu, ptr: %p"
-              ", num_sections: %u, rec_id_len: %u, ai_len: %u, "
+    DEB_RATE_QUEUE(("(%u) Send Queued SCAN_TABREQ, apiPtrI: %u, tick: %llu,"
+              " ptr: %p, num_sections: %u, rec_id_len: %u, ai_len: %u, "
               "key_len: %u, queued: %llu, send_queued: %llu",
               instance(),
+              queue_record->apiPtrI,
               queue_record->m_queued_ticks.getUint64(),
               queue_record,
               num_sections,
@@ -25856,12 +25917,29 @@ Dbtc::handleBackgroundRateQueues(Signal *signal, Uint32 databaseId) {
     dbPtr.p->m_is_delayed_signal_sent = false;
   }
   if (queue_record != nullptr) {
-    dbPtr.p->m_outstanding_queries++;
-    DEB_RATE_QUEUE(("(%u): %u, outstanding_queries: %u",
-                    instance(),
-                    dbPtr.p->m_database_id,
-                    dbPtr.p->m_outstanding_queries));
-    send_queued_query(signal, queue_record);
+    ApiConnectRecordPtr transPtr;
+    transPtr.i = queue_record->apiPtrI;
+    ndbrequire(c_apiConnectRecordPool.getValidPtr(transPtr));
+    if (transPtr.p->apiConnectstate != CS_RELEASE) {
+      jam();
+      dbPtr.p->m_outstanding_queries++;
+      transPtr.p->m_num_queued_outstanding++;
+
+      DEB_RATE_QUEUE(("(%u): %u, outstanding_queries: %u, apiPtrI: %u, api: %u",
+        instance(),
+        dbPtr.p->m_database_id,
+        dbPtr.p->m_outstanding_queries,
+        transPtr.i,
+        transPtr.p->m_num_queued_outstanding));
+
+      jam();
+      /* No need to send while releaseAbortResources are ongoing */
+      send_queued_query(signal, queue_record);
+    } else {
+      DEB_RATE_QUEUE(("(%u): Skip queued record due to CS_RELEASE state"
+                      ", apiPtrI: %u",
+        instance(), transPtr.i));
+    }
     release_queue_record(queue_record);
     if (!cont) {
       if (dbPtr.p->m_queueing_time_us == 0) {
@@ -26062,12 +26140,12 @@ void Dbtc::set_queueing_environment(Signal *signal,
     } else {
 #ifdef DEBUG_RATE_QUEUE_SET
       NDB_TICKS now = getHighResTimer();
-      NDB_TICKS start = dbPtr.p->m_last_rate_decrement;
+      NDB_TICKS start = dbPtrP->m_last_rate_decrement;
       Uint64 milliSec = NdbTick_Elapsed(start, now).milliSec();
       g_eventLogger->info("(%u:%u), Overload=1, Queueing already, millis: %llu",
                           instance(),
                           dbPtrP->m_database_id,
-                          millliSec);
+                          milliSec);
 #endif
     }
   }
@@ -26725,6 +26803,16 @@ void Dbtc::execQUOTA_OVERLOAD_REP(Signal *signal) {
     jam();
     return;
   }
+#ifdef DEBUG_QUOTAS
+  if (dbPtr.p->m_is_memory_quota_exceeded != rep.is_memory_quota_exceeded ||
+      dbPtr.p->m_is_disk_quota_exceeded != rep.is_disk_quota_exceeded) {
+    DEB_QUOTAS(("(%u) db: %u, Changing memory quota to %u, disk quota to %u",
+      instance(),
+      dbPtr.p->m_database_id,
+      rep.is_memory_quota_exceeded,
+      rep.is_disk_quota_exceeded));
+  }
+#endif
   dbPtr.p->m_is_memory_quota_exceeded = rep.is_memory_quota_exceeded;
   dbPtr.p->m_is_disk_quota_exceeded = rep.is_disk_quota_exceeded;
 }
@@ -26807,11 +26895,15 @@ void Dbtc::db_abort_handling(Signal *signal,
     if (execFlag) {
       jam();
       apiConnectptr.p->m_flags |= ApiConnectRecord::TF_EXEC_FLAG;
+      DEB_TRACK_EXEC_FLAG(("(%u) Set  TF_EXEC_FLAG, apiPtrI: %u, line: %u",
+        instance(), apiConnectptr.i, __LINE__));
     }
   } else {
     if (execFlag) {
       jam();
       apiConnectptr.p->m_flags |= ApiConnectRecord::TF_EXEC_FLAG;
+      DEB_TRACK_EXEC_FLAG(("(%u) Set  TF_EXEC_FLAG, apiPtrI: %u, line: %u",
+        instance(), apiConnectptr.i, __LINE__));
     }
   }
   terrorCode = errorCode;
@@ -26861,12 +26953,13 @@ bool Dbtc::get_next_queue_record(DatabaseRecordPtr dbPtr,
     jam();
     return true;
   }
-  DEB_RATE_QUEUE(("(%u) Send Queued %s: %p after %llu us wait",
+  DEB_RATE_QUEUE(("(%u) Send Queued %s: apiPtrI: %u, %p after %llu us wait",
                   instance(),
                   queue_record->m_gsn == GSN_TCKEYREQ ? "TCKEYREQ" :
                     queue_record->m_gsn == GSN_SCAN_TABREQ ? "SCAN_TABREQ" :
                     queue_record->m_gsn == GSN_SCAN_NEXTREQ ? "SCAN_NEXTREQ" :
                     "Other",
+                  queue_record->apiPtrI,
                   queue_record,
                   elapsed_us));
   ApiConnectRecordPtr transPtr;
@@ -26975,6 +27068,16 @@ void Dbtc::release_queue_record_tc(Signal *signal,
     if (loop_count > ZMAX_RELEASE_PER_RT_BREAK) {
       transPtr.p->m_first_queued_req = queue_record;
       return;
+    }
+    char *signal_area = ((char*)queue_record) + sizeof(QueueRecord);
+    TcKeyReq *const tcKeyReq = (TcKeyReq *)signal_area;
+    Uint32 requestInfo = tcKeyReq->requestInfo;
+    Uint32 TexecFlag = TcKeyReq::getExecuteFlag(requestInfo) ?
+      ApiConnectRecord::TF_EXEC_FLAG : 0;
+    if (TexecFlag) {
+      transPtr.p->m_flags |= ApiConnectRecord::TF_EXEC_FLAG;
+      DEB_TRACK_EXEC_FLAG(("(%u) Set TF_EXEC_FLAG, apiPtrI: %u, line: %u",
+        instance(), transPtr.i, __LINE__));
     }
     ndbrequire(transPtr.p->m_num_queued > 0);
     transPtr.p->m_num_queued--;

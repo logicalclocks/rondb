@@ -1,4 +1,13 @@
 DATABASE QUOTA SET successfully executed
+Database Quotas for test
+databaseId = 13
+databaseVersion = 13
+InMemorySize = 1 MByte
+DiskSpaceSize = 0 GByte
+RatePerSec = 1000
+MaxTransactionSize = 0
+MaxParallelTransactions = 0
+MaxParallelComplexQueries = 0
 DROP TABLE IF EXISTS t1;
 CREATE TABLE t1 (
 pk1 INT NOT NULL PRIMARY KEY,

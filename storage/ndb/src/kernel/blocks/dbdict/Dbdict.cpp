@@ -139,7 +139,7 @@
 //#define DO_TRANSIENT_POOL_STAT 1
 //#define DEBUG_HASH 1
 //#define DEBUG_QUOTAS_EXTRA 1
-//#define DEBUG_QUOTAS 1
+#define DEBUG_QUOTAS 1
 //#define DEBUG_RESTART 1
 #endif
 
@@ -2483,7 +2483,7 @@ void Dbdict::initCommonData() {
 
   m_current_allocated_rate = 0;
   m_current_allocated_memory_quota_mb = 0;
-  m_current_allocated_disk_quota_gb = 0;
+  m_current_allocated_disk_quota_mb = 0;
 
   Uint32 num_threads = getNumThreads() + getNumSendThreads();
   Uint32 tot_rates = num_threads * 1000000;
@@ -2494,7 +2494,9 @@ void Dbdict::initCommonData() {
   Uint32 max_dm_mb = (Uint32(tot_dm_mb) / 10) * 8;
   m_allocated_memory_quota_limit = max_dm_mb;
 
-  m_allocated_disk_quota_limit_gb = 0;
+  DEB_QUOTAS(("m_allocated_memory_quota_limit init:ed to %u MBytes",
+    m_allocated_memory_quota_limit));
+  m_allocated_disk_quota_limit_mb = 0;
   m_allocated_disk_quota_limit = 0;
 
   c_outstanding_sub_startstop = 0;
@@ -22878,11 +22880,11 @@ void Dbdict::createFile_fromLocal(Signal *signal, Uint32 op_key, Uint32 ret) {
     CreateFileImplReq *impl_req = &createFilePtr.p->m_request;
     ndbrequire(find_object(f_ptr, impl_req->file_id));
     m_allocated_disk_quota_limit += f_ptr.p->m_file_size;
-    Uint64 allocated_disk_quota_gb =
-      m_allocated_disk_quota_limit / (1024 * 1024 * 1024);
-    allocated_disk_quota_gb *= 8;
-    allocated_disk_quota_gb /= 10;
-    m_allocated_disk_quota_limit_gb = Uint32(allocated_disk_quota_gb);
+    Uint64 allocated_disk_quota_mb =
+      m_allocated_disk_quota_limit / (1024 * 1024);
+    allocated_disk_quota_mb *= 8;
+    allocated_disk_quota_mb /= 10;
+    m_allocated_disk_quota_limit_mb = Uint32(allocated_disk_quota_mb);
 
     sendTransConf(signal, op_ptr);
   } else {
@@ -23541,7 +23543,7 @@ void Dbdict::dropFile_parse(Signal *signal, bool master, SchemaOpPtr op_ptr,
   getOpRec(op_ptr, dropFileRecPtr);
   DropFileImplReq *impl_req = &dropFileRecPtr.p->m_request;
 
-  if (m_current_allocated_disk_quota_gb > 0) {
+  if (m_current_allocated_disk_quota_mb > 0) {
     jam();
     setError(error, CreateTableRef::NotAllowedToDropFileWithQuotas, __LINE__);
     return;
@@ -32527,14 +32529,19 @@ Dbdict::createDatabase_parse(Signal* signal, bool master,
                           "will not fail since it is a restart");
     } else {
       jam();
+      DEB_QUOTAS(("Create Database Mem failed: Requested: %llu, curr: %u,"
+                  " avail: %u",
+        db.InMemorySize,
+        m_current_allocated_memory_quota_mb,
+        m_allocated_memory_quota_limit));
       setError(error, CreateTableRef::CreateDbNoAvailableMemoryQuota, __LINE__);
       return;
     }
   }
   Uint32 available_disk_quota_limit =
-    m_allocated_disk_quota_limit_gb - m_current_allocated_disk_quota_gb;
+    m_allocated_disk_quota_limit_mb - m_current_allocated_disk_quota_mb;
   if (db.DiskSpaceSize > 0 &&
-      (m_allocated_disk_quota_limit_gb < m_current_allocated_disk_quota_gb ||
+      (m_allocated_disk_quota_limit_mb < m_current_allocated_disk_quota_mb ||
        db.DiskSpaceSize > available_disk_quota_limit)) {
     if (op_ptr.p->m_restart) {
       jam();
@@ -32542,6 +32549,11 @@ Dbdict::createDatabase_parse(Signal* signal, bool master,
                           "will not fail since it is a restart");
     } else {
       jam();
+      DEB_QUOTAS(("Create Database Disk failed: Requested: %llu, curr: %u,"
+                  " avail: %u",
+        db.InMemorySize,
+        m_current_allocated_memory_quota_mb,
+        m_allocated_disk_quota_limit_mb));
       setError(error, CreateTableRef::CreateDbNoAvailableDiskQuota, __LINE__);
       return;
     }
@@ -32809,11 +32821,8 @@ Dbdict::createDb_local(Signal* signal,
   req->databaseId = db_ptr.p->key;
   req->databaseVersion = db_ptr.p->m_version;
   req->requestType = 0;
-  req->inMemorySizeMB = (Uint32)
-    (db_ptr.p->m_in_memory_size / (Uint64(1024) * Uint64(1024)));
-  req->diskSpaceSizeGB = (Uint32)
-    (db_ptr.p->m_disk_space_size /
-    (Uint64(1024) * Uint64(1024) * Uint64(1024)));
+  req->inMemorySizeMB = (Uint32)(db_ptr.p->m_in_memory_size);
+  req->diskSpaceSizeGB = (Uint32)(db_ptr.p->m_disk_space_size);
   req->ratePerSec = db_ptr.p->m_rate_per_sec;
   sendSignal(DBLQH_REF, GSN_CREATE_DB_REQ, signal,
              CreateDbReq::SignalLengthLQH, JBB);
@@ -32847,11 +32856,8 @@ Dbdict::execCREATE_DB_CONF(Signal *signal) {
     req->databaseId = db_ptr.p->key;
     req->databaseVersion = db_ptr.p->m_version;
     req->requestType = 0;
-    req->inMemorySizeMB = (Uint32)
-      (db_ptr.p->m_in_memory_size / (Uint64(1024) * Uint64(1024)));
-    req->diskSpaceSizeGB = (Uint32)
-      (db_ptr.p->m_disk_space_size /
-      (Uint64(1024) * Uint64(1024) * Uint64(1024)));
+    req->inMemorySizeMB = (Uint32)(db_ptr.p->m_in_memory_size);
+    req->diskSpaceSizeGB = (Uint32)(db_ptr.p->m_disk_space_size);
     req->ratePerSec = db_ptr.p->m_rate_per_sec;
     req->maxTransactionSize = db_ptr.p->m_max_transaction_size;
     req->maxParallelTransactions =
@@ -33216,11 +33222,15 @@ void Dbdict::execCOMMIT_DB_CONF(Signal *signal) {
                m_allocated_memory_quota_limit) ||
              op_ptr.p->m_restart);
 
-  m_current_allocated_disk_quota_gb += db_ptr.p->m_disk_space_size;
-  ndbrequire((m_current_allocated_disk_quota_gb <=
-               m_allocated_disk_quota_limit_gb) ||
+  m_current_allocated_disk_quota_mb += db_ptr.p->m_disk_space_size;
+  ndbrequire((m_current_allocated_disk_quota_mb <=
+               m_allocated_disk_quota_limit_mb) ||
              op_ptr.p->m_restart);
 
+  DEB_QUOTAS(("New m_current_allocated_memory_quota_mb = %u MBytes"
+              ", m_current_allocated_disk_quota_mb = %u MBytes",
+    m_current_allocated_memory_quota_mb,
+    m_current_allocated_disk_quota_mb));
   /* Finished commit phase of create database */
   execute(signal, createDbPtr.p->m_callback, db_ptr.p->key);
 }
@@ -33792,9 +33802,13 @@ void Dbdict::dropDatabase_complete(Signal* signal, SchemaOpPtr op_ptr) {
   ndbrequire(m_current_allocated_memory_quota_mb >= db_ptr.p->m_in_memory_size);
   m_current_allocated_memory_quota_mb -= db_ptr.p->m_in_memory_size;
 
-  ndbrequire(m_current_allocated_disk_quota_gb >= db_ptr.p->m_disk_space_size);
-  m_current_allocated_disk_quota_gb -= db_ptr.p->m_disk_space_size;
+  ndbrequire(m_current_allocated_disk_quota_mb >= db_ptr.p->m_disk_space_size);
+  m_current_allocated_disk_quota_mb -= db_ptr.p->m_disk_space_size;
 
+  DEB_QUOTAS(("New after drop m_current_allocated_memory_quota_mb = %u MBytes"
+              ", m_current_allocated_disk_quota_mb = %u MBytes",
+    m_current_allocated_memory_quota_mb,
+    m_current_allocated_disk_quota_mb));
   c_database_pool.release(db_ptr);
   sendTransConf(signal, op_ptr);
 }
@@ -34037,6 +34051,11 @@ Dbdict::alterDatabase_parse(Signal* signal, bool master,
             (m_current_allocated_memory_quota_mb >
               m_allocated_memory_quota_limit)) {
         jam();
+        DEB_QUOTAS(("Alter Database Mem failed: Requested: %u, curr: %u,"
+                    " avail: %u",
+          increase_memory_quota_mb,
+          m_current_allocated_memory_quota_mb,
+          m_allocated_memory_quota_limit));
         setError(error,
                  CreateTableRef::AlterDbNoAvailableMemoryQuota,
                  __LINE__);
@@ -34045,15 +34064,20 @@ Dbdict::alterDatabase_parse(Signal* signal, bool master,
     }
     if (db.DiskSpaceSize != RNIL &&
         db_ptr.p->m_disk_space_size < db.DiskSpaceSize) {
-      Uint32 increase_disk_quota_gb =
+      Uint32 increase_disk_quota_mb =
         db.DiskSpaceSize - db_ptr.p->m_disk_space_size;
-      Uint32 available_disk_quota_limit_gb =
-        m_allocated_disk_quota_limit_gb - m_current_allocated_disk_quota_gb;
-      if (increase_disk_quota_gb > available_disk_quota_limit_gb ||
-            (m_current_allocated_disk_quota_gb >
-              m_allocated_disk_quota_limit_gb)) {
+      Uint32 available_disk_quota_limit_mb =
+        m_allocated_disk_quota_limit_mb - m_current_allocated_disk_quota_mb;
+      if (increase_disk_quota_mb > available_disk_quota_limit_mb ||
+            (m_current_allocated_disk_quota_mb >
+              m_allocated_disk_quota_limit_mb)) {
         jam();
-        setError(error,
+        DEB_QUOTAS(("Create Database Disk failed: Requested: %u, curr: %u,"
+                    " avail: %u",
+          increase_disk_quota_mb,
+          m_current_allocated_disk_quota_mb,
+          m_allocated_disk_quota_limit_mb));
+          setError(error,
                  CreateTableRef::AlterDbNoAvailableDiskQuota,
                  __LINE__);
         return;
@@ -34235,11 +34259,8 @@ Dbdict::alterDatabase_commit(Signal* signal, SchemaOpPtr op_ptr)
   req->databaseId = alter_db_ptr.p->key;
   req->databaseVersion = alter_db_ptr.p->m_version;
   req->requestType = 0;
-  req->inMemorySizeMB = (Uint32)
-    (alter_db_ptr.p->m_in_memory_size / (Uint64(1024) * Uint64(1024)));
-  req->diskSpaceSizeGB = (Uint32)
-    (alter_db_ptr.p->m_disk_space_size /
-    (Uint64(1024) * Uint64(1024) * Uint64(1024)));
+  req->inMemorySizeMB = (Uint32)(alter_db_ptr.p->m_in_memory_size);
+  req->diskSpaceSizeGB = (Uint32)(alter_db_ptr.p->m_disk_space_size);
   req->ratePerSec = alter_db_ptr.p->m_rate_per_sec;
   req->maxTransactionSize = alter_db_ptr.p->m_max_transaction_size;
   req->maxParallelTransactions =
@@ -34279,11 +34300,8 @@ Dbdict::execALTER_DB_CONF(Signal *signal)
     req->databaseId = alter_db_ptr.p->key;
     req->databaseVersion = alter_db_ptr.p->m_version;
     req->requestType = 0;
-    req->inMemorySizeMB = (Uint32)
-      (alter_db_ptr.p->m_in_memory_size / (Uint64(1024) * Uint64(1024)));
-    req->diskSpaceSizeGB = (Uint32)
-      (alter_db_ptr.p->m_disk_space_size /
-      (Uint64(1024) * Uint64(1024) * Uint64(1024)));
+    req->inMemorySizeMB = (Uint32)(alter_db_ptr.p->m_in_memory_size);
+    req->diskSpaceSizeGB = (Uint32)(alter_db_ptr.p->m_disk_space_size);
     req->ratePerSec = alter_db_ptr.p->m_rate_per_sec;
     sendSignal(DBLQH_REF, GSN_ALTER_DB_REQ, signal,
                AlterDbReq::SignalLengthLQH, JBB);
@@ -34302,12 +34320,12 @@ Dbdict::execALTER_DB_CONF(Signal *signal)
   ndbrequire(m_current_allocated_memory_quota_mb <=
              m_allocated_memory_quota_limit);
 
-  ndbrequire(m_current_allocated_disk_quota_gb >=
+  ndbrequire(m_current_allocated_disk_quota_mb >=
              db_ptr.p->m_disk_space_size);
-  m_current_allocated_disk_quota_gb -= db_ptr.p->m_disk_space_size;
-  m_current_allocated_disk_quota_gb += alter_db_ptr.p->m_disk_space_size;
-  ndbrequire(m_current_allocated_disk_quota_gb <=
-             m_allocated_disk_quota_limit_gb);
+  m_current_allocated_disk_quota_mb -= db_ptr.p->m_disk_space_size;
+  m_current_allocated_disk_quota_mb += alter_db_ptr.p->m_disk_space_size;
+  ndbrequire(m_current_allocated_disk_quota_mb <=
+             m_allocated_disk_quota_limit_mb);
 
   db_ptr.p->m_in_memory_size = alter_db_ptr.p->m_in_memory_size;
   db_ptr.p->m_disk_space_size = alter_db_ptr.p->m_disk_space_size;
@@ -34502,11 +34520,8 @@ void Dbdict::execGET_DATABASE_REQ(Signal *signal) {
   conf->clientData = req->senderData;
   conf->databaseId = db_ptr.p->key;
   conf->databaseVersion = db_ptr.p->m_version;
-  conf->InMemorySizeMB = (Uint32)
-    (db_ptr.p->m_in_memory_size / (Uint64(1024) * Uint64(1024)));
-  conf->DiskSpaceSizeGB = (Uint32)
-    (db_ptr.p->m_disk_space_size /
-    (Uint64(1024) * Uint64(1024) * Uint64(1024)));
+  conf->InMemorySizeMB = (Uint32)(db_ptr.p->m_in_memory_size);
+  conf->DiskSpaceSizeGB = (Uint32)(db_ptr.p->m_disk_space_size);
   conf->RatePerSec = db_ptr.p->m_rate_per_sec;
   conf->MaxTransactionSize =
     db_ptr.p->m_max_transaction_size;
@@ -34567,11 +34582,8 @@ void Dbdict::execLIST_DATABASE_REQ(Signal *signal) {
   conf->clientData = req->senderData;
   conf->databaseId = db_ptr.p->key;
   conf->databaseVersion = db_ptr.p->m_version;
-  conf->InMemorySizeMB = (Uint32)
-    (db_ptr.p->m_in_memory_size / (Uint64(1024) * Uint64(1024)));
-  conf->DiskSpaceSizeGB = (Uint32)
-    (db_ptr.p->m_disk_space_size /
-    (Uint64(1024) * Uint64(1024) * Uint64(1024)));
+  conf->InMemorySizeMB = (Uint32)(db_ptr.p->m_in_memory_size);
+  conf->DiskSpaceSizeGB = (Uint32)(db_ptr.p->m_disk_space_size);
   conf->RatePerSec = db_ptr.p->m_rate_per_sec;
   conf->MaxTransactionSize =
     db_ptr.p->m_max_transaction_size;
