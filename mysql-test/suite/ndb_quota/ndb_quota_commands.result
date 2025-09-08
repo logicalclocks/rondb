@@ -2,17 +2,14 @@ DATABASE QUOTA SET successfully executed
 DATABASE QUOTA SET command failed: Error:
 *  1235: Error
 *        Create Database failed
-DATABASE QUOTA SET command failed: Error:
-*  1238: Error
-*        Create Database failed
-DATABASE QUOTA SET command failed: Error:
-*  1240: Error
-*        Create Database failed
 DATABASE QUOTA SET successfully executed
+DATABASE QUOTA SET command failed: Error:
+*   721: Error
+*        Create Database failed
 Database Quotas for test
 databaseId = 13
 databaseVersion = 13
-InMemorySize = 0 MByte
+InMemorySize = 2 MByte
 DiskSpaceSize = 0 GByte
 RatePerSec = 500
 MaxTransactionSize = 4
@@ -21,7 +18,7 @@ MaxParallelComplexQueries = 0
 Database Quotas for test2
 databaseId = 14
 databaseVersion = 14
-InMemorySize = 0 MByte
+InMemorySize = 10 MByte
 DiskSpaceSize = 0 GByte
 RatePerSec = 500
 MaxTransactionSize = 0
@@ -40,7 +37,7 @@ DATABASE QUOTA ALTER successfully executed
 Database Quotas for test2
 databaseId = 14
 databaseVersion = 14
-InMemorySize = 0 MByte
+InMemorySize = 12 MByte
 DiskSpaceSize = 0 GByte
 RatePerSec = 1500
 MaxTransactionSize = 0
@@ -49,7 +46,7 @@ MaxParallelComplexQueries = 0
 Database Quotas for test
   databaseId = 13
   databaseVersion = 13
-  InMemorySize = 0 MByte
+  InMemorySize = 2 MByte
   DiskSpaceSize = 0 GByte
   RatePerSec = 500
   MaxTransactionSize = 4
@@ -59,7 +56,7 @@ Database Quotas for test
 Database Quotas for test2
   databaseId = 14
   databaseVersion = 14
-  InMemorySize = 0 MByte
+  InMemorySize = 12 MByte
   DiskSpaceSize = 0 GByte
   RatePerSec = 1500
   MaxTransactionSize = 0
@@ -67,13 +64,107 @@ Database Quotas for test2
   MaxParallelComplexQueries = 0
 
 Database Quota List command completed
+DROP TABLE IF EXISTS t1;
+CREATE TABLE t1 (
+pk1 INT NOT NULL PRIMARY KEY,
+b1 CHAR(255),
+b2 CHAR(255),
+b3 CHAR(255),
+b4 CHAR(255),
+b5 CHAR(255) NULL,
+b6 CHAR(255) NULL,
+b7 CHAR(255) NULL,
+b8 CHAR(255) NULL,
+b9 CHAR(255) NULL,
+b10 CHAR(255) NULL,
+b11 CHAR(255) NULL,
+b12 CHAR(255) NULL,
+b13 CHAR(255) NULL,
+b14 CHAR(255) NULL,
+b15 CHAR(255) NULL,
+b16 CHAR(255) NULL,
+b17 CHAR(255) NULL,
+b18 CHAR(255) NULL,
+b19 CHAR(255) NULL,
+b20 CHAR(255) NULL,
+b21 CHAR(255) NULL,
+b22 CHAR(255) NULL,
+b23 CHAR(255) NULL,
+b24 CHAR(255) NULL,
+b25 CHAR(255) NULL,
+b26 CHAR(255) NULL,
+b27 CHAR(255) NULL,
+b28 VARCHAR(20000) NULL
+) engine ndb character set latin1;
+INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (0, '0', '0', '0', '0',REPEAT('a', 19000)),(30,'30', '0', '0', '0',REPEAT('a', 19000));
+INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (1, '0', '0', '0', '0',REPEAT('a', 19000)),(31,'30', '0', '0', '0',REPEAT('a', 19000));
+INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (2, '0', '0', '0', '0',REPEAT('a', 19000)),(32,'30', '0', '0', '0',REPEAT('a', 19000));
+INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (3, '0', '0', '0', '0',REPEAT('a', 19000)),(33,'30', '0', '0', '0',REPEAT('a', 19000));
+INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (4, '0', '0', '0', '0',REPEAT('a', 19000)),(34,'30', '0', '0', '0',REPEAT('a', 19000));
+INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (5, '0', '0', '0', '0',REPEAT('a', 19000)),(35,'30', '0', '0', '0',REPEAT('a', 19000));
+INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (6, '0', '0', '0', '0',REPEAT('a', 19000)),(36,'30', '0', '0', '0',REPEAT('a', 19000));
+INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (7, '0', '0', '0', '0',REPEAT('a', 19000)),(37,'30', '0', '0', '0',REPEAT('a', 19000));
+INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (8, '0', '0', '0', '0',REPEAT('a', 19000)),(38,'30', '0', '0', '0',REPEAT('a', 19000));
+INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (9, '0', '0', '0', '0',REPEAT('a', 19000)),(39,'30', '0', '0', '0',REPEAT('a', 19000));
+INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (10, '0', '0', '0', '0',REPEAT('a', 19000)),(40,'30', '0', '0', '0',REPEAT('a', 19000));
+INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (11, '0', '0', '0', '0',REPEAT('a', 19000)),(41,'30', '0', '0', '0',REPEAT('a', 19000));
+INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (12, '0', '0', '0', '0',REPEAT('a', 19000)),(42,'30', '0', '0', '0',REPEAT('a', 19000));
+INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (13, '0', '0', '0', '0',REPEAT('a', 19000)),(43,'30', '0', '0', '0',REPEAT('a', 19000));
+INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (14, '0', '0', '0', '0',REPEAT('a', 19000)),(44,'30', '0', '0', '0',REPEAT('a', 19000));
+INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (15, '0', '0', '0', '0',REPEAT('a', 19000)),(45,'30', '0', '0', '0',REPEAT('a', 19000));
+INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (16, '0', '0', '0', '0',REPEAT('a', 19000)),(46,'30', '0', '0', '0',REPEAT('a', 19000));
+INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (17, '0', '0', '0', '0',REPEAT('a', 19000)),(47,'30', '0', '0', '0',REPEAT('a', 19000));
+INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (18, '0', '0', '0', '0',REPEAT('a', 19000)),(48,'30', '0', '0', '0', '0');
+INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (19, '0', '0', '0', '0',REPEAT('a', 19000)),(49,'30', '0', '0', '0', '0');
+INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (20, '0', '0', '0', '0',REPEAT('a', 19000)),(50,'30', '0', '0', '0', '0');
+INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (21, '0', '0', '0', '0',REPEAT('a', 19000)),(51,'30', '0', '0', '0', '0');
+INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (22, '0', '0', '0', '0',REPEAT('a', 19000)),(52,'30', '0', '0', '0', '0');
+INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (23, '0', '0', '0', '0',REPEAT('a', 19000)),(53,'30', '0', '0', '0', '0');
+INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (24, '0', '0', '0', '0',REPEAT('a', 19000)),(54,'30', '0', '0', '0', '0');
+INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (25, '0', '0', '0', '0',REPEAT('a', 19000)),(55,'30', '0', '0', '0', '0');
+INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (26, '0', '0', '0', '0',REPEAT('a', 19000)),(56,'30', '0', '0', '0', '0');
+INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (27, '0', '0', '0', '0',REPEAT('a', 19000)),(57,'30', '0', '0', '0', '0');
+INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (28, '0', '0', '0', '0',REPEAT('a', 19000)),(58,'30', '0', '0', '0', '0');
+INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (29, '0', '0', '0', '0',REPEAT('a', 19000)),(59,'30', '0', '0', '0', '0');
+INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (60, '0', '0', '0', '0',REPEAT('a', 19000)),(61,'30', '0', '0', '0', '0');
+INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (62, '0', '0', '0', '0',REPEAT('a', 19000)),(63,'30', '0', '0', '0', '0');
+INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (64, '0', '0', '0', '0',REPEAT('a', 19000)),(65,'30', '0', '0', '0', '0');
+UPDATE t1 SET b28 = REPEAT('b', 19000) WHERE pk1 = 48;
+ERROR HY000: Got temporary error 239 'Memory quota reached for database, delete data before write again' from NDBCLUSTER
+DELETE from t1 WHERE pk1 = 47;
+DELETE from t1 WHERE pk1 = 46;
+DELETE from t1 WHERE pk1 = 45;
+DELETE from t1 WHERE pk1 = 44;
+DELETE from t1 WHERE pk1 = 43;
+DELETE from t1 WHERE pk1 = 42;
+DELETE from t1 WHERE pk1 = 41;
+DELETE from t1 WHERE pk1 = 40;
+DELETE from t1 WHERE pk1 = 39;
+DELETE from t1 WHERE pk1 = 38;
+DELETE from t1 WHERE pk1 = 37;
+DELETE from t1 WHERE pk1 = 36;
+UPDATE t1 SET b28 = REPEAT('b', 19000) WHERE pk1 = 48;
+DELETE from t1 WHERE pk1 = 35;
+UPDATE t1 SET b28 = REPEAT('b', 19000) WHERE pk1 = 48;
+DELETE from t1 WHERE pk1 = 34;
+UPDATE t1 SET b28 = REPEAT('b', 19000) WHERE pk1 = 48;
+DELETE from t1 WHERE pk1 = 33;
+UPDATE t1 SET b28 = REPEAT('b', 19000) WHERE pk1 = 48;
+DELETE from t1 WHERE pk1 = 32;
+UPDATE t1 SET b28 = REPEAT('b', 19000) WHERE pk1 = 48;
+UPDATE t1 SET b28 = REPEAT('b', 19000) WHERE pk1 = 48;
+DELETE from t1 WHERE pk1 = 31;
+UPDATE t1 SET b28 = REPEAT('b', 19000) WHERE pk1 = 48;
+DELETE from t1 WHERE pk1 = 30;
+UPDATE t1 SET b28 = REPEAT('b', 19000) WHERE pk1 = 48;
+DROP TABLE t1;
 Database Quota Backup command completed
 DATABASE QUOTA DROP successfully executed
 DATABASE QUOTA DROP successfully executed
-Execute DATABASE QUOTA SET test --in-memory-size = 0M --on-disk-size = 0G --rate-per-sec = 500 --max-transaction-size = 4 --max-parallel-transactions = 4 --max-parallel-complex-queries = 0
+Execute DATABASE QUOTA SET test --in-memory-size = 2 --on-disk-size = 0 --rate-per-sec = 500 --max-transaction-size = 4 --max-parallel-transactions = 4 --max-parallel-complex-queries = 0
 DATABASE QUOTA SET successfully executed
 DATABASE QUOTA SET command succeeded for RESTORE
-Execute DATABASE QUOTA SET test2 --in-memory-size = 0M --on-disk-size = 0G --rate-per-sec = 1500 --max-transaction-size = 0 --max-parallel-transactions = 0 --max-parallel-complex-queries = 0
+Execute DATABASE QUOTA SET test2 --in-memory-size = 12 --on-disk-size = 0 --rate-per-sec = 1500 --max-transaction-size = 0 --max-parallel-transactions = 0 --max-parallel-complex-queries = 0
 DATABASE QUOTA SET successfully executed
 DATABASE QUOTA SET command succeeded for RESTORE
 DATABASE QUOTA DROP successfully executed

@@ -5846,8 +5846,12 @@ void Dblqh::execSEND_PACKED(Signal *signal) {
   /* Send buffered DATABASE_QUOTA_REP signals */
   Uint32 num_tc_threads = globalData.ndbMtTcWorkers;
   Uint32 num_send_database_quota_rep = m_num_send_database_quota_rep;
-  DEB_RATE_SEND(("(%u) Send %u DATABASE_QUOTA_REP signals",
-    instance(), num_send_database_quota_rep));
+#ifdef DEBUG_RATE_SEND
+  if (num_send_database_quota_rep > 0) {
+    DEB_RATE_SEND(("(%u) Send %u DATABASE_QUOTA_REP signals",
+      instance(), num_send_database_quota_rep));
+  }
+#endif
   for (Uint32 i = 0; i < num_send_database_quota_rep; i++) {
     jam();
     DatabaseQuotaRep *rep = (DatabaseQuotaRep*)signal->getDataPtrSend();
@@ -9727,6 +9731,8 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
       ndbrequire(m_databaseRecordPool.getPtr(dbPtr));
       if (unlikely(dbPtr.p->m_is_memory_quota_exceeded))
       {
+        DEB_QUOTAS(("(%u) Transaction aborted due to quota exceeded",
+          instance()));
         LQHKEY_abort(signal, 7, tcConnectptr);
         return;
       }
@@ -14551,12 +14557,13 @@ void Dblqh::execABORT(Signal *signal) {
 //THE TRANSACTION MIGHT NEVER HAVE ARRIVED HERE.
 /* ------------------------------------------------------------------------- */
     DEB_ABORT_TRANS(("(%u)ABORTED not here: trans(H'%.8x,H'%.8x), tcOprec: %u"
-                     ", tcRef: %x",
+                     ", tcRef: %x, tcPtrI: %u",
                      instance(),
                      transid1,
                      transid2,
                      tcOprec,
-                     tcBlockref));
+                     tcBlockref,
+                     tcConnectptr.i));
     if (refToNode(tcBlockref) != getOwnNodeId())
     {
       signal->m_send_wakeups++;
@@ -14607,20 +14614,29 @@ void Dblqh::execABORT(Signal *signal) {
     abo->transid2 = regTcPtr->transid[1];
     signal->m_send_wakeups++;
     sendSignal(TLqhRef, GSN_ABORT, signal, Abort::SignalLength, JBB);
+    DEB_ABORT_TRANS(("(%u) LDM: Send ABORT to nextReplica node: %u, "
+                     "trans(H'%.8x',H'%.8x), tcOprec: %u, tcPtrI: %u",
+      instance(),
+      Tnode,
+      transid1,
+      transid2,
+      tcOprec,
+      tcConnectptr.i));
   }//if
   regTcPtr->abortState = TcConnectionrec::ABORT_FROM_TC;
 
   remove_commit_marker(regTcPtr);
   TRACE_OP(regTcPtr, "ABORT");
 
-  DEB_ABORT_TRANS(("(%u)Start ABORT handling: trans(H'%.8x',H'%.8x),"
-                   " tcOprec: %u, tcRef: %x, tcPtrIAcc: %u",
+  DEB_ABORT_TRANS(("(%u)LDM: Start ABORT handling: trans(H'%.8x',H'%.8x),"
+                   " tcOprec: %u, tcRef: %x, tcPtrIAcc: %u, tcPtrI: %u",
                    instance(),
                    transid1,
                    transid2,
                    tcOprec,
                    tcBlockref,
-                   tcConnectptr.p->accConnectrec));
+                   tcConnectptr.p->accConnectrec,
+                   tcConnectptr.i));
   abortStateHandlerLab(signal, tcConnectptr);
 }
 
@@ -14828,6 +14844,8 @@ void Dblqh::abortStateHandlerLab(Signal* signal,
                                  const TcConnectionrecPtr tcConnectptr)
 {
   TcConnectionrec * const regTcPtr = tcConnectptr.p;
+  DEB_ABORT_TRANS(("(%u) tcPtrI: %u, state: %u",
+    instance(), tcConnectptr.i, regTcPtr->transactionState));
   switch (regTcPtr->transactionState) {
     case TcConnectionrec::PREPARED:
       jam();
@@ -34225,7 +34243,7 @@ void Dblqh::sendAborted(Signal *signal, const TcConnectionrecPtr tcConnectptr) {
   conf->transid2 = tcConnectptr.p->transid[1];
   conf->nodeId = cownNodeid;
   conf->lastLqhIndicator = TlastInd;
-  DEB_ABORT_TRANS(("(%u)ABORTED: trans(H'%.8x,H'%.8x), tcOprec: %u"
+  DEB_ABORT_TRANS(("(%u)LDM: ABORTED: trans(H'%.8x,H'%.8x), tcOprec: %u"
                    ", tcRef: %x, tcPtrIAcc: %u",
                    instance(),
                    tcConnectptr.p->transid[0],
@@ -38780,7 +38798,7 @@ Dblqh::send_database_quota_rep(DatabaseRecordPtr dbPtr,
   dbPtr.p->m_rate_usage = 0;
 
   {
-    DEB_RATE(("(%u)(%u) db: %u, Added rate_usage: %u us",
+    DEB_RATE(("(%u)(%u) db: %u, Added rate_usage: %llu us",
               m_is_query_block,
               instance(),
               dbPtr.p->m_database_id,

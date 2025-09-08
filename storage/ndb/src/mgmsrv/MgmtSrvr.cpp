@@ -6294,8 +6294,8 @@ void MgmtSrvr::backup_quotas(Uint32 nextDatabaseId, NdbOut& out) {
         /* Next send the result data with 9 rows */
         const char *databaseName = (const char*)signal->ptr[0].p;
         out << "DATABASE QUOTA SET " << databaseName;
-        out << " --in-memory-size = " << conf->InMemorySizeMB << "M";
-        out << " --on-disk-size = " << conf->DiskSpaceSizeGB << "G";
+        out << " --in-memory-size = " << conf->InMemorySizeMB;
+        out << " --on-disk-size = " << conf->DiskSpaceSizeGB;
         out << " --rate-per-sec = " << conf->RatePerSec;
         out << " --max-transaction-size = " << conf->MaxTransactionSize;
         out << " --max-parallel-transactions = ";

@@ -192,12 +192,9 @@
 #define ZTOO_MANY_OPERATIONS_IN_TRANSACTION_ERROR 247
 #define ZTOO_MANY_CONCURRENT_TRANSACTIONS_ERRROR 248
 #define ZDISK_QUOTA_OVERFLOW_ERROR 239
-#define ZSCAN_NODE_ERROR 250
 #define ZNO_FRAG_LOCATION_RECORD_ERROR 251
 #define ZTRANS_STATUS_ERROR 253
 #define ZTIME_OUT_ERROR 266
-#define ZSIMPLE_READ_WITHOUT_AI 271
-#define ZNO_AI_WITH_UPDATE 272
 #define ZSEIZE_API_COPY_ERROR 275
 #define ZSCANINPROGRESS 276
 #define ZABORT_ERROR 277
@@ -239,7 +236,6 @@
 
 #define ZINVALID_KEY 290
 #define ZUNLOCKED_IVAL_TOO_HIGH 294
-#define ZUNLOCKED_OP_HAS_BAD_STATE 295
 #define ZBAD_DIST_KEY 298
 #define ZTRANS_TOO_BIG 261
 #define ZLQH_NO_SUCH_FRAGMENT_ID 1235
@@ -1300,6 +1296,7 @@ class Dbtc : public SimulatedBlock {
      * one transaction at a time.
      */
     Uint32 m_num_queued;
+    Uint32 m_num_queued_outstanding;
     Uint64 m_queuedDatabasePtrI;
     Uint64 m_parallel_transactions_db;
     QueueRecord *m_first_queued_req;
@@ -3114,7 +3111,8 @@ class Dbtc : public SimulatedBlock {
     }
     Uint32 startNewOperation(ApiConnectRecord *regApiPtr,
                              bool is_disk_based,
-                             Uint32 op_type);
+                             Uint32 op_type,
+                             Uint32 instance);
 
     void closeAllowedTransaction() {
       NdbMutex_Lock(theDatabaseConcurrentTransactionMutex);
