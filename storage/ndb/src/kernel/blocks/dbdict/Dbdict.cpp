@@ -34228,6 +34228,7 @@ Dbdict::alterDb_writeTableConf(Signal* signal,
   AlterDatabaseRecPtr alterDbPtr;
   ndbrequire(findSchemaOp(op_ptr, alterDbPtr, op_key));
   D("alterDb_writeTableConf");
+  DEB_QUOTAS(("alterDb_writeTableConf"));
   sendTransConf(signal, op_ptr);
 }
 
@@ -34238,6 +34239,7 @@ Dbdict::alterDatabase_commit(Signal* signal, SchemaOpPtr op_ptr)
   AlterDatabaseRecPtr alterDbPtr;
   getOpRec(op_ptr, alterDbPtr);
   D("alterDatabase_commit" << *op_ptr.p);
+  DEB_QUOTAS(("Send ALTER_DB_REQ to DBTC"));
 
   Uint32 databaseId = alterDbPtr.p->m_request.databaseId;
   DatabasePtr db_ptr;
@@ -34277,6 +34279,7 @@ Dbdict::execALTER_DB_CONF(Signal *signal)
   jamEntry();
 
   D("execALTER_DB_CONF");
+  DEB_QUOTAS(("execALTER_DB_CONF"));
   AlterDbConf conf = *(AlterDbConf*)signal->getDataPtr();
 
   SchemaOpPtr op_ptr;
@@ -34294,6 +34297,7 @@ Dbdict::execALTER_DB_CONF(Signal *signal)
 
   if (refToBlock(signal->getSendersBlockRef()) == DBTC) {
     jam();
+    DEB_QUOTAS(("Send ALTER_DB_REQ to DBLQH"));
     AlterDbReq* req = (AlterDbReq*)signal->getDataPtrSend();
     req->senderRef = reference();
     req->senderData = op_ptr.p->op_key;
@@ -34338,6 +34342,12 @@ Dbdict::execALTER_DB_CONF(Signal *signal)
 
   c_database_pool.release(alter_db_ptr);
   db_ptr.p->m_alter_db_ref = RNIL;
+
+  DEB_QUOTAS(("ALTER: New m_current_allocated_memory_quota_mb = %u MBytes"
+              ", m_current_allocated_disk_quota_mb = %u MBytes",
+    m_current_allocated_memory_quota_mb,
+    m_current_allocated_disk_quota_mb));
+
   execute(signal, alterDbPtr.p->m_callback, db_ptr.p->key);
 }
 
@@ -34345,6 +34355,7 @@ void
 Dbdict::execALTER_DB_REF(Signal *signal)
 {
   jamEntry();
+  DEB_QUOTAS(("execALTER_DB_REF"));
   ndbabort();
 }
 
@@ -34358,6 +34369,7 @@ Dbdict::alterDb_alterComplete(Signal* signal,
   AlterDatabaseRecPtr alterDbPtr;
   ndbrequire(findSchemaOp(op_ptr, alterDbPtr, op_key));
   D("alterDb_alterComplete");
+  DEB_QUOTAS(("alterDb_alterComplete"));
   sendTransConf(signal, op_ptr);
 }
 
@@ -34366,6 +34378,7 @@ Dbdict::alterDatabase_complete(Signal* signal, SchemaOpPtr op_ptr)
 {
   jam();
   D("alterDatabase_complete");
+  DEB_QUOTAS(("alterDb_complete"));
   sendTransConf(signal, op_ptr);
 }
 
