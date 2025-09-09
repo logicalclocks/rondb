@@ -33959,6 +33959,7 @@ Dbdict::alterDatabase_parse(Signal* signal, bool master,
                             SectionHandle& handle, ErrorInfo& error) {
   jam();
   D("alterDatabase_parse");
+  DEB_QUOTAS(("alterDatabase_parse"));
   (void)handle;
 
   AlterDatabaseRecPtr alterDbPtr;
@@ -34090,6 +34091,7 @@ Dbdict::alterDatabase_parse(Signal* signal, bool master,
       setError(error, CreateTableRef::NoMoreTableRecords, __LINE__);
       return;
     }
+    new (alter_db_ptr.p) Database();
     ndbrequire(db_ptr.p->m_alter_db_ref == RNIL);
     db_ptr.p->m_alter_db_ref = alter_db_ptr.i;
     if (db.InMemorySize != RNIL) {
@@ -34125,22 +34127,47 @@ Dbdict::alterDatabase_parse(Signal* signal, bool master,
       alter_db_ptr.p->m_max_parallel_complex_queries =
         db_ptr.p->m_max_parallel_complex_queries;
     }
+    alter_db_ptr.p->m_type = db_ptr.p->m_type;
+    alter_db_ptr.p->m_obj_ptr_i = db_ptr.p->m_obj_ptr_i;
+    alter_db_ptr.p->m_table_id_check = db_ptr.p->m_table_id_check;
+    alter_db_ptr.p->m_name = db_ptr.p->m_name;
     alter_db_ptr.p->key = db_ptr.p->key;
     alter_db_ptr.p->m_version = db_ptr.p->m_version;
-
-    SchemaFile::TableEntry te; te.init();
-    te.m_tableState = SchemaFile::SF_ALTER;
-    te.m_transId = trans_ptr.p->m_transId;
-    err = trans_log_schema_op(op_ptr, databaseId, &te);
-    if (err) {
+    if (master) {
       jam();
-      c_database_pool.release(alter_db_ptr);
-      setError(error, err, __LINE__);
-      return;
+      releaseSections(handle);
+      SimplePropertiesSectionWriter w(*this);
+      packDatabaseIntoPages(w, alter_db_ptr);
+      w.getPtr(objInfoPtr);
+      handle.m_ptr[0] = objInfoPtr;
+      handle.m_cnt = 1;
+    }
+    {
+      SchemaFile::TableEntry te; te.init();
+      te.m_tableState = SchemaFile::SF_ALTER;
+      te.m_transId = trans_ptr.p->m_transId;
+      te.m_tableType = db_ptr.p->m_type;
+      te.m_info_words = objInfoPtr.sz;
+      te.m_gcp = 0;
+      err = trans_log_schema_op(op_ptr, databaseId, &te);
+      if (err) {
+        jam();
+        db_ptr.p->m_alter_db_ref = RNIL;
+        c_database_pool.release(alter_db_ptr);
+        setError(error, err, __LINE__);
+        return;
+      }
     }
   }
   // save sections to DICT memory
   saveOpSection(op_ptr, handle, AlterDatabaseReq::DICT_TAB_INFO);
+#if defined VM_TRACE || defined ERROR_INSERT
+  g_eventLogger->info("Dbdict: %u: alter database name=%s,id=%u,obj_ptr_i=%d",
+                      __LINE__,
+                      db.DatabaseName,
+                      impl_req->databaseId,
+                      db_ptr.p->m_obj_ptr_i);
+#endif
 }
 
 bool Dbdict::alterDatabase_subOps(Signal* signal, SchemaOpPtr op_ptr) {
@@ -34148,6 +34175,7 @@ bool Dbdict::alterDatabase_subOps(Signal* signal, SchemaOpPtr op_ptr) {
   AlterDatabaseRecPtr alterDbPtr;
   getOpRec(op_ptr, alterDbPtr);
   D("alterDatabase_subOps" << V(op_ptr.i) << *op_ptr.p);
+  DEB_QUOTAS(("alterDatabase_subOps"));
 
   Uint32 databaseId = alterDbPtr.p->m_request.databaseId;
   DatabasePtr db_ptr;
@@ -34165,6 +34193,7 @@ Dbdict::alterDatabase_reply(Signal* signal,
   AlterDatabaseRecPtr alterDbPtr;
   getOpRec(op_ptr, alterDbPtr);
   D("alterDatabase_reply" << V(op_ptr.i) << *op_ptr.p);
+  DEB_QUOTAS(("alterDatabase_reply"));
 
   if (!hasError(error)) {
     jam();
@@ -34180,6 +34209,7 @@ Dbdict::alterDatabase_reply(Signal* signal,
     Uint32 clientRef = op_ptr.p->m_clientRef;
     sendSignal(clientRef, GSN_ALTER_DATABASE_CONF, signal,
                AlterDatabaseConf::SignalLength, JBB);
+    DEB_QUOTAS(("sent ALTER_DATABASE_CONF"));
   } else {
     jam();
     AlterDatabaseRef* ref = (AlterDatabaseRef*)signal->getDataPtrSend();
@@ -34189,6 +34219,15 @@ Dbdict::alterDatabase_reply(Signal* signal,
     getError(error, ref);
     ref->errorStatus = error.errorStatus;
     ref->errorKey = error.errorKey;
+    DEB_QUOTAS(("sent ALTER_DATABASE_REF:"
+                " error_key: %u, error_status: %u"
+                ", count: %u, code: %u, line: %u, node: %u",
+      ref->errorKey,
+      ref->errorStatus,
+      error.errorCount,
+      error.errorCode,
+      error.errorLine,
+      error.errorNodeId));
 
     Uint32 clientRef = op_ptr.p->m_clientRef;
     sendSignal(clientRef, GSN_ALTER_DATABASE_REF, signal,
@@ -34201,6 +34240,7 @@ void Dbdict::alterDatabase_prepare(Signal* signal, SchemaOpPtr op_ptr) {
   AlterDatabaseRecPtr alterDbPtr;
   getOpRec(op_ptr, alterDbPtr);
   D("alterDatabase_prepare" << V(op_ptr.i) << *op_ptr.p);
+  DEB_QUOTAS(("alterDatabase_prepare"));
 
   Uint32 databaseId = alterDbPtr.p->m_request.databaseId;
   DatabasePtr db_ptr;

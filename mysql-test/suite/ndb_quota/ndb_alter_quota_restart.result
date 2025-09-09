@@ -24,10 +24,86 @@ RatePerSec = 1500
 MaxTransactionSize = 4
 MaxParallelTransactions = 4
 MaxParallelComplexQueries = 0
+Node 1 is being restarted
+
+Node 1: NOT_STARTED
+Database node 1 is being started.
+
+Node 1: STARTED
+Node 2: STARTED
+Database Quotas for test
+databaseId = 25
+databaseVersion = 25
+InMemorySize = 12 MByte
+DiskSpaceSize = 0 GByte
+RatePerSec = 1500
+MaxTransactionSize = 4
+MaxParallelTransactions = 4
+MaxParallelComplexQueries = 0
 Database Quotas for test
   databaseId = 25
   databaseVersion = 25
   InMemorySize = 12 MByte
+  DiskSpaceSize = 0 GByte
+  RatePerSec = 1500
+  MaxTransactionSize = 4
+  MaxParallelTransactions = 4
+  MaxParallelComplexQueries = 0
+
+Database Quota List command completed
+DATABASE QUOTA ALTER successfully executed
+Node 1 is being restarted
+
+Node 1: NOT_STARTED
+Database node 1 is being started.
+
+Node 1: STARTED
+Node 2: STARTED
+Database Quotas for test
+databaseId = 25
+databaseVersion = 25
+InMemorySize = 8 MByte
+DiskSpaceSize = 0 GByte
+RatePerSec = 1500
+MaxTransactionSize = 4
+MaxParallelTransactions = 4
+MaxParallelComplexQueries = 0
+Database Quotas for test
+  databaseId = 25
+  databaseVersion = 25
+  InMemorySize = 8 MByte
+  DiskSpaceSize = 0 GByte
+  RatePerSec = 1500
+  MaxTransactionSize = 4
+  MaxParallelTransactions = 4
+  MaxParallelComplexQueries = 0
+
+Database Quota List command completed
+DATABASE QUOTA ALTER successfully executed
+Executing RESTART on all nodes.
+Starting shutdown. This may take a while. Please wait...
+All DB nodes are being restarted.
+
+Node 1: NOT_STARTED
+Node 2: NOT_STARTED
+RonDB is being started.
+RonDB is being started.
+
+Node 1: STARTED
+Node 2: STARTED
+Database Quotas for test
+databaseId = 25
+databaseVersion = 25
+InMemorySize = 10 MByte
+DiskSpaceSize = 0 GByte
+RatePerSec = 1500
+MaxTransactionSize = 4
+MaxParallelTransactions = 4
+MaxParallelComplexQueries = 0
+Database Quotas for test
+  databaseId = 25
+  databaseVersion = 25
+  InMemorySize = 10 MByte
   DiskSpaceSize = 0 GByte
   RatePerSec = 1500
   MaxTransactionSize = 4
