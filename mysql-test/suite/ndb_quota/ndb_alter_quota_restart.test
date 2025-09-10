@@ -1,0 +1,53 @@
+--source include/have_ndb.inc
+CREATE TABLE t100 (a int primary key) engine ndb;
+CREATE TABLE t101 (a int primary key) engine ndb;
+CREATE TABLE t102 (a int primary key) engine ndb;
+CREATE TABLE t103 (a int primary key) engine ndb;
+CREATE TABLE t104 (a int primary key) engine ndb;
+CREATE TABLE t105 (a int primary key) engine ndb;
+
+--exec $NDB_MGM -e "DATABASE QUOTA SET test --rate-per-sec = 500 --in-memory-size=2 --max-transaction-size=4 --max-parallel-transactions=4"
+--exec $NDB_MGM -e "DATABASE QUOTA GET test"
+--exec $NDB_MGM -e "DATABASE QUOTA ALTER test --rate-per-sec = 1500 --in-memory-size=12"
+--exec $NDB_MGM -e "DATABASE QUOTA GET test"
+
+# Restart node 1
+--exec $NDB_MGM -e "1 RESTART -n"
+--exec $NDB_WAITER --nowait-nodes=2 --not-started
+--exec $NDB_MGM -e "1 START"
+--exec $NDB_WAITER
+
+--exec $NDB_MGM -e "DATABASE QUOTA GET test"
+--exec $NDB_MGM -e "DATABASE QUOTA LIST"
+--exec $NDB_MGM -e "DATABASE QUOTA ALTER test --rate-per-sec = 1500 --in-memory-size=8"
+
+# Restart node 1 with initial
+--exec $NDB_MGM -e "1 RESTART -n -I"
+--exec $NDB_WAITER --nowait-nodes=2 --not-started
+--exec $NDB_MGM -e "1 START"
+--exec $NDB_WAITER
+
+--exec $NDB_MGM -e "DATABASE QUOTA GET test"
+--exec $NDB_MGM -e "DATABASE QUOTA LIST"
+--exec $NDB_MGM -e "DATABASE QUOTA ALTER test --rate-per-sec = 1500 --in-memory-size=10"
+
+# Cluster restart
+--exec $NDB_MGM -e "ALL RESTART -N"
+--exec $NDB_WAITER --not-started
+--exec $NDB_MGM -e "ALL START"
+--exec $NDB_WAITER
+
+--exec $NDB_MGM -e "DATABASE QUOTA GET test"
+--exec $NDB_MGM -e "DATABASE QUOTA LIST"
+
+--exec $NDB_MGM -e "DATABASE QUOTA DROP test"
+
+# Wait for mysqld to reconnect
+--source include/ndb_not_readonly.inc
+
+DROP TABLE t100;
+DROP TABLE t101;
+DROP TABLE t102;
+DROP TABLE t103;
+DROP TABLE t104;
+DROP TABLE t105;
