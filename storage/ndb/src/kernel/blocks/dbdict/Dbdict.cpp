@@ -139,7 +139,7 @@
 //#define DO_TRANSIENT_POOL_STAT 1
 //#define DEBUG_HASH 1
 //#define DEBUG_QUOTAS_EXTRA 1
-#define DEBUG_QUOTAS 1
+//#define DEBUG_QUOTAS 1
 //#define DEBUG_RESTART 1
 #endif
 
@@ -11903,7 +11903,6 @@ void Dbdict::doGET_TABINFOREQ(Signal *signal) {
     ndbrequire(ssPtr.sz <= NDB_ARRAY_SIZE(tableName));
     copy(tableName, ssPtr);
 
-    tableName[len] = 0;
     DictObject *old_ptr_p = get_object((char *)tableName, len);
     if (old_ptr_p) obj_id = old_ptr_p->m_id;
   } else {
@@ -34513,11 +34512,12 @@ void Dbdict::execGET_DATABASE_REQ(Signal *signal) {
   Uint32 error = 0;
   Uint32 errorLine = 0;
   DatabasePtr db_ptr;
+  Uint32 name_len = 0;
+  static constexpr Uint32 MAX_DB32 = (MAX_DB_NAME_SIZE / 4) + 1;
+  Uint32 dbName[MAX_DB32];
+  const char *dbNamePtr = (const char *)&dbName[0];
   do {
     SegmentedSectionPtr objInfoPtr;
-    static constexpr Uint32 MAX_DB32 = (MAX_DB_NAME_SIZE / 4) + 1;
-    Uint32 dbName[MAX_DB32];
-    const char *dbNamePtr = (const char *)&dbName[0];
     {
       bool ok = handle.getSection(objInfoPtr, 0);
       if (!ok) {
@@ -34528,8 +34528,16 @@ void Dbdict::execGET_DATABASE_REQ(Signal *signal) {
       }
     }
     releaseSections(handle);
+    if (objInfoPtr.sz > MAX_DB32) {
+      jam();
+      error = CreateTableRef::InvalidFormat;
+      errorLine = __LINE__;
+      break;
+    }
     copy(&dbName[0], objInfoPtr);
-    Uint32 name_len = strnlen(dbNamePtr, MAX_DB32 * 4);
+    DEB_QUOTAS(("dbNamePtr: %s, objInfoPtr.sz: %u",
+      dbNamePtr, objInfoPtr.sz));
+    name_len = strnlen(dbNamePtr, MAX_DB32 * 4);
     if (name_len > MAX_DB_NAME_SIZE ||
         name_len == 0) {
       jam();
@@ -34543,8 +34551,8 @@ void Dbdict::execGET_DATABASE_REQ(Signal *signal) {
       errorLine = __LINE__;
       break;
     }
-    Uint32 hash = LcLocalRope::hash(dbNamePtr, name_len);
-    DictObject *obj_ptr = get_object(dbNamePtr, name_len, hash);
+    Uint32 hash = LcLocalRope::hash(dbNamePtr, name_len + 1);
+    DictObject *obj_ptr = get_object(dbNamePtr, name_len + 1, hash);
     if (obj_ptr == nullptr) {
       jam();
       error = DropTableRef::NoSuchTable;
@@ -34561,6 +34569,8 @@ void Dbdict::execGET_DATABASE_REQ(Signal *signal) {
   } while (false);
   if (error != 0) {
     jam();
+    DEB_QUOTAS(("name_len: %u, name: %s, error: %u, errorLine: %u",
+      name_len, dbNamePtr, error, errorLine));
     GetDatabaseRef* ref = (GetDatabaseRef*)signal->getDataPtrSend();
     ref->senderRef = reference();
     ref->clientData = req->senderData;

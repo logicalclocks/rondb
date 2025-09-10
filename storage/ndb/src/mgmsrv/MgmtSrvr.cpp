@@ -5975,9 +5975,11 @@ void MgmtSrvr::get_quotas(const char *database_name, NdbOut& out) {
   Uint32 db_name_len = strnlen(database_name, MAX_DB_NAME_SIZE + 1);
   memcpy((char*)&databaseName[0], database_name, db_name_len);
   databaseNamePtr[db_name_len] = 0;
+  g_eventLogger->info("database_name: %s, databaseNamePtr: %s, db_name_len: %u",
+    database_name, databaseNamePtr, db_name_len);
 
   ssig.ptr[0].p = (const Uint32*)&databaseName[0];
-  ssig.ptr[0].sz = (db_name_len + 3) / 4;
+  ssig.ptr[0].sz = (db_name_len + 4) / 4;
 
   if (ss.sendFragmentedSignal(nodeId,
                               ssig,
