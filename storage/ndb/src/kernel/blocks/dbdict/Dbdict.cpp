@@ -34515,7 +34515,8 @@ void Dbdict::execGET_DATABASE_REQ(Signal *signal) {
   DatabasePtr db_ptr;
   do {
     SegmentedSectionPtr objInfoPtr;
-    Uint32 dbName[MAX_DB_NAME_SIZE / 4 + 1];
+    static constexpr Uint32 MAX_DB32 = (MAX_DB_NAME_SIZE / 4) + 1;
+    Uint32 dbName[MAX_DB32];
     const char *dbNamePtr = (const char *)&dbName[0];
     {
       bool ok = handle.getSection(objInfoPtr, 0);
@@ -34527,16 +34528,16 @@ void Dbdict::execGET_DATABASE_REQ(Signal *signal) {
       }
     }
     releaseSections(handle);
-    Uint32 name_len = objInfoPtr.sz;
-    if (name_len > (MAX_DB_NAME_SIZE + 1) ||
-        name_len < 2) {
+    copy(&dbName[0], objInfoPtr);
+    Uint32 name_len = strnlen(dbNamePtr, MAX_DB32 * 4);
+    if (name_len > MAX_DB_NAME_SIZE ||
+        name_len == 0) {
       jam();
       error = CreateTableRef::InvalidFormat;
       errorLine = __LINE__;
       break;
     }
-    copy(&dbName[0], objInfoPtr);
-    if (dbNamePtr[name_len - 1] != 0) {
+    if (dbNamePtr[name_len] != 0) {
       jam();
       error = CreateTableRef::InvalidFormat;
       errorLine = __LINE__;
@@ -34545,6 +34546,7 @@ void Dbdict::execGET_DATABASE_REQ(Signal *signal) {
     Uint32 hash = LcLocalRope::hash(dbNamePtr, name_len);
     DictObject *obj_ptr = get_object(dbNamePtr, name_len, hash);
     if (obj_ptr == nullptr) {
+      jam();
       error = DropTableRef::NoSuchTable;
       errorLine = __LINE__;
       break;
@@ -34558,6 +34560,7 @@ void Dbdict::execGET_DATABASE_REQ(Signal *signal) {
     }
   } while (false);
   if (error != 0) {
+    jam();
     GetDatabaseRef* ref = (GetDatabaseRef*)signal->getDataPtrSend();
     ref->senderRef = reference();
     ref->clientData = req->senderData;
@@ -34568,6 +34571,7 @@ void Dbdict::execGET_DATABASE_REQ(Signal *signal) {
                GetDatabaseRef::SignalLength, JBB);
     return;
   }
+  jam();
   GetDatabaseConf* conf = (GetDatabaseConf*)signal->getDataPtrSend();
   conf->senderRef = reference();
   conf->clientData = req->senderData;
