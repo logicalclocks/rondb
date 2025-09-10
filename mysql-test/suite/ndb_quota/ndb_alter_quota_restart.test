@@ -10,6 +10,7 @@ CREATE TABLE t105 (a int primary key) engine ndb;
 --exec $NDB_MGM -e "DATABASE QUOTA GET test"
 --exec $NDB_MGM -e "DATABASE QUOTA ALTER test --rate-per-sec = 1500 --in-memory-size=12"
 --exec $NDB_MGM -e "DATABASE QUOTA GET test"
+--exec $NDB_MGM -e "DATABASE QUOTA SET test_1234567890_1234567890_1234567890_1234567890 --in-memory-size=3"
 
 # Restart node 1
 --exec $NDB_MGM -e "1 RESTART -n"
@@ -18,8 +19,10 @@ CREATE TABLE t105 (a int primary key) engine ndb;
 --exec $NDB_WAITER
 
 --exec $NDB_MGM -e "DATABASE QUOTA GET test"
+--exec $NDB_MGM -e "DATABASE QUOTA GET test_1234567890_1234567890_1234567890_1234567890"
 --exec $NDB_MGM -e "DATABASE QUOTA LIST"
 --exec $NDB_MGM -e "DATABASE QUOTA ALTER test --rate-per-sec = 1500 --in-memory-size=8"
+--exec $NDB_MGM -e "DATABASE QUOTA ALTER test_1234567890_1234567890_1234567890_1234567890 --max-transaction-size=2"
 
 # Restart node 1 with initial
 --exec $NDB_MGM -e "1 RESTART -n -I"
@@ -28,8 +31,12 @@ CREATE TABLE t105 (a int primary key) engine ndb;
 --exec $NDB_WAITER
 
 --exec $NDB_MGM -e "DATABASE QUOTA GET test"
+--exec $NDB_MGM -e "DATABASE QUOTA GET test_1234567890_1234567890_1234567890_1234567890"
 --exec $NDB_MGM -e "DATABASE QUOTA LIST"
 --exec $NDB_MGM -e "DATABASE QUOTA ALTER test --rate-per-sec = 1500 --in-memory-size=10"
+--exec $NDB_MGM -e "DATABASE QUOTA DROP test_1234567890_1234567890_1234567890_1234567890"
+--exec $NDB_MGM -e "DATABASE QUOTA SET test_1234567890_1234567890_1234567890_1234567890 --max-parallel-transactions=4"
+--exec $NDB_MGM -e "DATABASE QUOTA SET test_1234567890_1234567890_1234567890_1234567890_12 --max-parallel-transactions=4"
 
 # Cluster restart
 --exec $NDB_MGM -e "ALL RESTART -N"
@@ -37,10 +44,15 @@ CREATE TABLE t105 (a int primary key) engine ndb;
 --exec $NDB_MGM -e "ALL START"
 --exec $NDB_WAITER
 
+--exec $NDB_MGM -e "DATABASE QUOTA GET test_1234567890_1234567890_1234567890_1234567890"
 --exec $NDB_MGM -e "DATABASE QUOTA GET test"
+--exec $NDB_MGM -e "DATABASE QUOTA GET test_1234567890_1234567890_1234567890_1234567890_12"
 --exec $NDB_MGM -e "DATABASE QUOTA LIST"
 
 --exec $NDB_MGM -e "DATABASE QUOTA DROP test"
+--exec $NDB_MGM -e "DATABASE QUOTA DROP test_1234567890_1234567890_1234567890_1234567890"
+--exec $NDB_MGM -e "DATABASE QUOTA DROP test_1234567890_1234567890_1234567890_1234567890_12"
+--exec $NDB_MGM -e "DATABASE QUOTA LIST"
 
 # Wait for mysqld to reconnect
 --source include/ndb_not_readonly.inc

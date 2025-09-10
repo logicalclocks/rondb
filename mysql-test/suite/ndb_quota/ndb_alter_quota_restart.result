@@ -24,6 +24,7 @@ RatePerSec = 1500
 MaxTransactionSize = 4
 MaxParallelTransactions = 4
 MaxParallelComplexQueries = 0
+DATABASE QUOTA SET successfully executed
 Node 1 is being restarted
 
 Node 1: NOT_STARTED
@@ -40,6 +41,15 @@ RatePerSec = 1500
 MaxTransactionSize = 4
 MaxParallelTransactions = 4
 MaxParallelComplexQueries = 0
+Database Quotas for test_1234567890_1234567890_1234567890_1234567890
+databaseId = 26
+databaseVersion = 26
+InMemorySize = 3 MByte
+DiskSpaceSize = 0 GByte
+RatePerSec = 0
+MaxTransactionSize = 0
+MaxParallelTransactions = 0
+MaxParallelComplexQueries = 0
 Database Quotas for test
   databaseId = 25
   databaseVersion = 25
@@ -50,7 +60,18 @@ Database Quotas for test
   MaxParallelTransactions = 4
   MaxParallelComplexQueries = 0
 
+Database Quotas for test_1234567890_1234567890_1234567890_1234567890
+  databaseId = 26
+  databaseVersion = 26
+  InMemorySize = 3 MByte
+  DiskSpaceSize = 0 GByte
+  RatePerSec = 0
+  MaxTransactionSize = 0
+  MaxParallelTransactions = 0
+  MaxParallelComplexQueries = 0
+
 Database Quota List command completed
+DATABASE QUOTA ALTER successfully executed
 DATABASE QUOTA ALTER successfully executed
 Node 1 is being restarted
 
@@ -68,6 +89,15 @@ RatePerSec = 1500
 MaxTransactionSize = 4
 MaxParallelTransactions = 4
 MaxParallelComplexQueries = 0
+Database Quotas for test_1234567890_1234567890_1234567890_1234567890
+databaseId = 26
+databaseVersion = 26
+InMemorySize = 3 MByte
+DiskSpaceSize = 0 GByte
+RatePerSec = 0
+MaxTransactionSize = 2
+MaxParallelTransactions = 0
+MaxParallelComplexQueries = 0
 Database Quotas for test
   databaseId = 25
   databaseVersion = 25
@@ -78,8 +108,21 @@ Database Quotas for test
   MaxParallelTransactions = 4
   MaxParallelComplexQueries = 0
 
+Database Quotas for test_1234567890_1234567890_1234567890_1234567890
+  databaseId = 26
+  databaseVersion = 26
+  InMemorySize = 3 MByte
+  DiskSpaceSize = 0 GByte
+  RatePerSec = 0
+  MaxTransactionSize = 2
+  MaxParallelTransactions = 0
+  MaxParallelComplexQueries = 0
+
 Database Quota List command completed
 DATABASE QUOTA ALTER successfully executed
+DATABASE QUOTA DROP successfully executed
+DATABASE QUOTA SET successfully executed
+DATABASE QUOTA SET successfully executed
 Executing RESTART on all nodes.
 Starting shutdown. This may take a while. Please wait...
 All DB nodes are being restarted.
@@ -91,6 +134,15 @@ RonDB is being started.
 
 Node 1: STARTED
 Node 2: STARTED
+Database Quotas for test_1234567890_1234567890_1234567890_1234567890
+databaseId = 26
+databaseVersion = 26
+InMemorySize = 0 MByte
+DiskSpaceSize = 0 GByte
+RatePerSec = 0
+MaxTransactionSize = 0
+MaxParallelTransactions = 4
+MaxParallelComplexQueries = 0
 Database Quotas for test
 databaseId = 25
 databaseVersion = 25
@@ -98,6 +150,15 @@ InMemorySize = 10 MByte
 DiskSpaceSize = 0 GByte
 RatePerSec = 1500
 MaxTransactionSize = 4
+MaxParallelTransactions = 4
+MaxParallelComplexQueries = 0
+Database Quotas for test_1234567890_1234567890_1234567890_1234567890_12
+databaseId = 27
+databaseVersion = 27
+InMemorySize = 0 MByte
+DiskSpaceSize = 0 GByte
+RatePerSec = 0
+MaxTransactionSize = 0
 MaxParallelTransactions = 4
 MaxParallelComplexQueries = 0
 Database Quotas for test
@@ -110,8 +171,31 @@ Database Quotas for test
   MaxParallelTransactions = 4
   MaxParallelComplexQueries = 0
 
+Database Quotas for test_1234567890_1234567890_1234567890_1234567890
+  databaseId = 26
+  databaseVersion = 26
+  InMemorySize = 0 MByte
+  DiskSpaceSize = 0 GByte
+  RatePerSec = 0
+  MaxTransactionSize = 0
+  MaxParallelTransactions = 4
+  MaxParallelComplexQueries = 0
+
+Database Quotas for test_1234567890_1234567890_1234567890_1234567890_12
+  databaseId = 27
+  databaseVersion = 27
+  InMemorySize = 0 MByte
+  DiskSpaceSize = 0 GByte
+  RatePerSec = 0
+  MaxTransactionSize = 0
+  MaxParallelTransactions = 4
+  MaxParallelComplexQueries = 0
+
 Database Quota List command completed
 DATABASE QUOTA DROP successfully executed
+DATABASE QUOTA DROP successfully executed
+DATABASE QUOTA DROP successfully executed
+Database Quota List command completed
 DROP TABLE t100;
 DROP TABLE t101;
 DROP TABLE t102;
