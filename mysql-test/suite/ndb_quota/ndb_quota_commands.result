@@ -108,6 +108,9 @@ b26 CHAR(255) NULL,
 b27 CHAR(255) NULL,
 b28 VARCHAR(20000) NULL
 ) engine ndb character set latin1;
+CREATE TABLE t2 (a int not null primary key) engine ndb;
+INSERT INTO t2 VALUES (1),(2),(3),(4),(5);
+ERROR HY000: Got temporary error 247 'Too many operations in a transaction in database' from NDBCLUSTER
 INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (0, '0', '0', '0', '0',REPEAT('a', 19000)),(30,'30', '0', '0', '0',REPEAT('a', 19000));
 INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (1, '0', '0', '0', '0',REPEAT('a', 19000)),(31,'30', '0', '0', '0',REPEAT('a', 19000));
 INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (2, '0', '0', '0', '0',REPEAT('a', 19000)),(32,'30', '0', '0', '0',REPEAT('a', 19000));
@@ -170,6 +173,7 @@ UPDATE t1 SET b28 = REPEAT('b', 19000) WHERE pk1 = 48;
 DELETE from t1 WHERE pk1 = 30;
 UPDATE t1 SET b28 = REPEAT('b', 19000) WHERE pk1 = 48;
 DROP TABLE t1;
+DROP TABLE t2;
 Database Quota Backup command completed
 DATABASE QUOTA DROP successfully executed
 DATABASE QUOTA DROP successfully executed
