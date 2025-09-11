@@ -139,7 +139,7 @@
 //#define DO_TRANSIENT_POOL_STAT 1
 //#define DEBUG_HASH 1
 //#define DEBUG_QUOTAS_EXTRA 1
-//#define DEBUG_QUOTAS 1
+#define DEBUG_QUOTAS 1
 //#define DEBUG_RESTART 1
 #endif
 
@@ -34527,7 +34527,6 @@ void Dbdict::execGET_DATABASE_REQ(Signal *signal) {
         break;
       }
     }
-    releaseSections(handle);
     if (objInfoPtr.sz > MAX_DB32) {
       jam();
       error = CreateTableRef::InvalidFormat;
@@ -34537,6 +34536,7 @@ void Dbdict::execGET_DATABASE_REQ(Signal *signal) {
     copy(&dbName[0], objInfoPtr);
     DEB_QUOTAS(("dbNamePtr: %s, objInfoPtr.sz: %u",
       dbNamePtr, objInfoPtr.sz));
+    releaseSections(handle);
     name_len = strnlen(dbNamePtr, MAX_DB32 * 4);
     if (name_len > MAX_DB_NAME_SIZE ||
         name_len == 0) {
