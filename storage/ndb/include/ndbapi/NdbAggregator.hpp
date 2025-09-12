@@ -26,7 +26,9 @@
 
 #include "NdbDictionary.hpp"
 #include "NdbAggregationCommon.hpp"
+#include "NdbRecAttr.hpp"
 #include <map>
+#include <queue>
 
 class NdbTableImpl;
 
@@ -275,10 +277,57 @@ class NdbAggregator {
     return gb_map_;
   }
 
+  class VectorSearchResult {
+   #define MAX_N 20
+   public:
+    VectorSearchResult(double distance, int n_columns, NdbRecAttr** src)
+      : distance_(distance), n_columns_(n_columns) {
+      for (int i = 0; i < MAX_N; i++) {
+        attrs_[i] = nullptr;
+        if (i < n_columns) {
+          attrs_[i] = (src[i])->clone();
+        }
+      }
+    }
+    ~VectorSearchResult() {
+      for (int i = 0; i < MAX_N; i++) {
+        if (attrs_[i] != nullptr) {
+          delete attrs_[i];
+          attrs_[i] = nullptr;
+        }
+      }
+    }
+    double distance_;
+    int n_columns_;
+    NdbRecAttr* attrs_[MAX_N];
+  };
+
+  struct ByDistance {
+    bool operator()(const VectorSearchResult* lhs, const VectorSearchResult* rhs) {
+      return lhs->distance_ < rhs->distance_ ? true : false;
+    }
+  };
+
+
+  bool VectorSearch(const char* name, const float* vec, Uint32 dims,
+                    Uint32 top_n);
+  bool VecProcessRes(NdbRecAttr** userAttrs, Uint32 n_userAttrs,
+                     NdbRecAttr* vecDistanceAttr);
+  bool VecPrepareResults(NdbRecAttr** userAttrs, Uint32 n_userAttrs);
+  bool VecFetchNextResult();
+
+  enum Type {
+    kAggregation = 0,
+    kVectorSearch
+  };
+  Type type() {
+    return type_;
+  }
+
  private:
   bool TypeSupported(NdbDictionary::Column::Type type);
   const NdbTableImpl* table_impl_;
-  Uint32 buffer_[MAX_AGG_PROGRAM_WORD_SIZE];
+  Uint32 buffer_[MAX_VEC_SEARCH_PROGRAM_WORD_SIZE];
 
   Uint32 n_gb_cols_;
   Uint32 n_agg_results_;
@@ -301,5 +350,18 @@ class NdbAggregator {
   bool result_record_fetched_;
   Uint32 result_size_est_;
   bool disk_columns_;
+
+  // Vector Search
+  Uint32 vec_top_n_;
+  std::priority_queue<VectorSearchResult*,
+    std::vector<VectorSearchResult*>,
+    ByDistance>* vec_result_;
+
+  std::vector<VectorSearchResult*> vec_result_final_;
+  NdbRecAttr** userAttrs_;
+  Uint32 n_userAttrs_;
+  bool results_prepared_;
+  Uint32 results_left_;
+  Type type_;
 };
 #endif  // NDBAGGREGATOR_H_

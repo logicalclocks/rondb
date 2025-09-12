@@ -108,6 +108,7 @@ class AttributeHeader {
 
   // Aggregation result "columns"
   static constexpr Uint32 AGG_RESULT = 0xFF00;
+  static constexpr Uint32 VEC_DISTANCE = 0xFF01;
 
   static constexpr Uint32 READ_INTERPRETER_OUTPUT_FIRST = 0xFFB0;
   static constexpr Uint32 READ_INTERPRETER_OUTPUT_LAST = 0xFFBF;

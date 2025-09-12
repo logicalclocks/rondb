@@ -742,6 +742,7 @@ class NdbDictionary {
     static const Column *INTERPRETER_INPUT_13;
     static const Column *INTERPRETER_INPUT_14;
     static const Column *INTERPRETER_INPUT_15;
+    static const Column *VEC_DISTANCE;
 
     int getSizeInBytes() const;
 

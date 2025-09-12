@@ -38,8 +38,18 @@
 #define MAX_AGG_N_GROUPBY_COLS 128
 #define MAX_AGG_N_RESULTS 256
 #define MAX_AGG_PROGRAM_WORD_SIZE 1024
+/*
+ * VS related
+ * Currently, we allocate only one page (32 KB) to store
+ * the vector search (VS) program. This limits the maximum
+ * program word size to 8192, which in turn determines the
+ * upper limit of the vector dimension.
+ * Therefore, we set the dimension slightly below 8192 — currently 8100.
+ */
+#define MAX_VEC_SEARCH_PROGRAM_WORD_SIZE 8192
+#define MAX_VEC_DIMS 8100
 
-#define PUSHDOWN_AGGREGATION_VERSION 1
+#define PUSHDOWN_AGGREGATION_VERSION 2
 enum InterpreterOp {
   kOpUnknown = 0,
   kOpPlus,

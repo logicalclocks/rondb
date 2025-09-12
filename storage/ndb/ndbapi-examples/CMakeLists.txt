@@ -37,6 +37,8 @@ FOREACH(warning
   ENDIF()
 ENDFOREACH()
 
+add_compile_definitions(SIMSIMD_DYNAMIC_DISPATCH=1)
+
 # NdbApi examples
 ADD_EXECUTABLE(ndb_ndbapi_array_simple
   ndbapi_array_simple/ndbapi_array_simple.cpp)
@@ -60,6 +62,9 @@ ADD_EXECUTABLE(ndb_ndbapi_simple_dual ndbapi_simple_dual/main.cpp)
 ADD_EXECUTABLE(ndb_ndbapi_simple_index ndbapi_simple_index/main.cpp)
 ADD_EXECUTABLE(ndb_ndbapi_agg ndbapi_agg/ndbapi_agg.cpp)
 ADD_EXECUTABLE(ndb_ndbapi_agg_update ndbapi_agg/update.cpp)
+if(WITH_SIMSIMD)
+ADD_EXECUTABLE(ndb_ndbapi_vss ndbapi_vss/ndbapi_vss.cpp)
+endif()
 
 # MgmApi examples
 ADD_EXECUTABLE(ndb_mgmapi_logevent mgmapi_logevent/main.cpp)
@@ -87,6 +92,7 @@ SET(EXAMPLES
   ndb_ndbapi_simple_index
   ndb_ndbapi_agg
   ndb_ndbapi_agg_update
+  ndb_ndbapi_vss
 
   ndb_mgmapi_logevent
   ndb_mgmapi_logevent2
@@ -95,4 +101,8 @@ FOREACH(EXAMPLE ${EXAMPLES})
   SET_TARGET_PROPERTIES(${EXAMPLE} PROPERTIES ENABLE_EXPORTS TRUE)
   TARGET_LINK_LIBRARIES(${EXAMPLE} libmysql)
   TARGET_LINK_LIBRARIES(${EXAMPLE} ndbclient_so)
+
+  if(WITH_SIMSIMD)
+  TARGET_LINK_LIBRARIES(${EXAMPLE} simsimd::simsimd)
+  endif()
 ENDFOREACH()

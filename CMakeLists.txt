@@ -2294,6 +2294,64 @@ ADD_SUBDIRECTORY(libs/mysql)
 ADD_SUBDIRECTORY(libchangestreams)
 ADD_SUBDIRECTORY(sql-common/oci)
 
+# Enable SimSIMD integration across the tree (we’ll only *use* it from NDB).
+option(WITH_SIMSIMD "Enable SimSIMD integration" ON)
+
+if (WITH_SIMSIMD)
+  # Build SimSIMD as a shared library so multiple ISA backends are packed
+  # and chosen at runtime (dynamic dispatch).
+  option(SIMSIMD_BUILD_SHARED "Enable SimSIMD integration" ON)
+  # set(SIMSIMD_BUILD_SHARED ON CACHE BOOL "" FORCE)
+
+  # Bring in upstream SimSIMD CMake (keeps its own -march=native defaults).
+  add_subdirectory(extra/SimSIMD)
+
+  # Provide a stable alias that the rest of the tree can link to.
+  if (TARGET simsimd_shared)
+    add_library(simsimd::simsimd ALIAS simsimd_shared)
+
+    # Allow linking this into shared objects/plugins.
+    set_target_properties(simsimd_shared PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+    # CRITICAL: Make the dynamic-dispatch define PUBLIC so consumers
+    # (compiled in other dirs) see it when including SimSIMD headers.
+    target_compile_definitions(simsimd_shared PUBLIC SIMSIMD_DYNAMIC_DISPATCH=1)
+
+    # If upstream Debug adds ASan, disable it here to avoid link/load-order
+    # problems with non-ASan main binaries (ndbd/ndbmtd).
+    target_compile_options(simsimd_shared PRIVATE -fno-sanitize=address)
+    target_link_options(simsimd_shared PRIVATE -fno-sanitize=address)
+
+    # GCC-only: keep Clang-specific pragmas and a few benign warnings
+    # from turning into build-stoppers under -Werror.
+    if (CMAKE_C_COMPILER_ID STREQUAL "GNU")
+      # For SimSIMD itself…
+      target_compile_options(simsimd_shared PRIVATE
+        -Wno-unknown-pragmas -Wno-error=unknown-pragmas
+        -Wno-unused-variable -Wno-error=unused-variable
+        -Wno-unused-const-variable
+        -Wno-error=unused-but-set-variable -Wno-error=unused-function
+        -Wno-error=cpp -Wno-cpp
+      )
+      # …and propagate minimal relaxation to consumers that include the headers.
+      target_compile_options(simsimd_shared PUBLIC
+        -Wno-unknown-pragmas -Wno-error=unknown-pragmas
+        -Wno-error=cpp -Wno-cpp
+      )
+    endif()
+
+  else()
+    # Header-only fallback (no runtime dispatch). Still provide an alias.
+    add_library(simsimd::simsimd ALIAS simsimd)
+    if (CMAKE_C_COMPILER_ID STREQUAL "GNU")
+      target_compile_options(simsimd INTERFACE
+        -Wno-unknown-pragmas -Wno-error=unknown-pragmas
+        -Wno-error=cpp -Wno-cpp
+      )
+    endif()
+  endif()
+endif()
+
 IF(NOT WITHOUT_SERVER)
   IF(WITH_UNIT_TESTS)
     IF(WIN32)

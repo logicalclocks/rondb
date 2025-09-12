@@ -60,8 +60,8 @@
  * NOTICE: In order to enable DEBUG_PA_TUP,
  * you have to enable DEBUG_PA first.
  */
-#undef DEBUG_PA_TUP
-// #define DEBUG_PA_TUP 1
+// #undef DEBUG_PA_TUP
+#define DEBUG_PA_TUP 1
 #ifdef DEBUG_PA_TUP
 #include "include/my_byteorder.h"
 #include "AggInterpreter.hpp"
@@ -356,7 +356,8 @@ static inline Uint32 pad32(Uint32 bytepos, Uint32 bitsused) {
 // max_read      Size of output buffer
 /* ---------------------------------------------------------------- */
 int Dbtup::readAttributes(KeyReqStruct *req_struct, const Uint32 *inBuffer,
-                          Uint32 inBufLen, Uint32 *outBuf, Uint32 maxRead) {
+                          Uint32 inBufLen, Uint32 *outBuf, Uint32 maxRead,
+                          Uint32* vec_max_rec_size) {
   Uint32 attributeId, descr_index, tmpAttrBufIndex, tmpAttrBufBits, inBufIndex;
   AttributeHeader *ahOut;
 
@@ -374,17 +375,23 @@ int Dbtup::readAttributes(KeyReqStruct *req_struct, const Uint32 *inBuffer,
   thrjamDebug(req_struct->jamBuffer);
   thrjamDataDebug(req_struct->jamBuffer, inBufLen);
   while (inBufIndex < inBufLen) {
+    // g_eventLogger->info("Hello[1], table: %u, frag_id: %u, thread: %ld\n",
+    //     req_struct->fragPtrP->fragTableId, req_struct->fragPtrP->fragmentId, pthread_self());
     thrjamDebug(req_struct->jamBuffer);
     tmpAttrBufIndex = req_struct->out_buf_index;
     tmpAttrBufBits = req_struct->out_buf_bits;
     AttributeHeader ahIn(inBuffer[inBufIndex]);
     inBufIndex++;
     attributeId= ahIn.getAttributeId();
- #ifdef DEBUG_PA_TUP
+#ifdef DEBUG_PA_TUP
+    // g_eventLogger->info("Hello[2], table: %u, frag_id: %u, thread: %ld\n",
+    //     req_struct->fragPtrP->fragTableId, req_struct->fragPtrP->fragmentId, pthread_self());
     if (req_struct->fragPtrP != nullptr &&
         PA_NEED_PRINT(true,
           req_struct->fragPtrP->fragTableId,
           req_struct->fragPtrP->fragmentId)) {
+    // g_eventLogger->info("Hello[3], table: %u, frag_id: %u, thread: %ld\n",
+    //     req_struct->fragPtrP->fragTableId, req_struct->fragPtrP->fragmentId, pthread_self());
       const Uint32* attrDescriptor = req_struct->tablePtrP->tabDescriptor +
         (attributeId * ZAD_SIZE);
       const Uint32 TattrDesc1 = attrDescriptor[0];
@@ -421,6 +428,12 @@ int Dbtup::readAttributes(KeyReqStruct *req_struct, const Uint32 *inBuffer,
     if (likely(attributeId < numAttributes)) {
       thrjamDebug(req_struct->jamBuffer);
       Uint32 attrDescriptor = attr_descr[descr_index];
+      {
+      const Uint32* attrDescr = req_struct->tablePtrP->tabDescriptor +
+        (attributeId * ZAD_SIZE);
+      const Uint32 TattrDesc1 = attrDescr[0];
+      ndbassert(attrDescriptor == TattrDesc1);
+      }
       Uint32 attrDes2 = attr_descr[descr_index + 1];
       Uint64 attrDes = (Uint64(attrDes2) << 32) +
                         Uint64(attrDescriptor);
@@ -466,6 +479,21 @@ int Dbtup::readAttributes(KeyReqStruct *req_struct, const Uint32 *inBuffer,
           thrjam(req_struct->jamBuffer);
           return -(int)ZPARTIAL_READ_ERROR;
         }
+        // VS related
+        if (vec_max_rec_size != nullptr) {
+          *vec_max_rec_size += (1 /* AttributeHeader */
+               + AttributeDescriptor::getSizeInWords(attrDescriptor));
+ #ifdef DEBUG_PA_TUP
+          if (req_struct->fragPtrP != nullptr &&
+              PA_NEED_PRINT(true,
+                req_struct->fragPtrP->fragTableId,
+                req_struct->fragPtrP->fragmentId)) {
+            g_eventLogger->info("[VS_TUP_DEBUG] Dbtup::readAttributes(), "
+                "update vec_max_rec_size[1] to %u",
+                *vec_max_rec_size);
+          }
+#endif // DEBUG_PA_TUP
+        }
         continue;
       } else {
         thrjam(req_struct->jamBuffer);
@@ -474,7 +502,8 @@ int Dbtup::readAttributes(KeyReqStruct *req_struct, const Uint32 *inBuffer,
     } else if (likely(attributeId & AttributeHeader::PSEUDO)) {
       thrjamDebug(req_struct->jamBuffer);
       int sz =
-          read_pseudo(inBuffer, inBufIndex, req_struct, (Uint32 *)outBuffer);
+          read_pseudo(inBuffer, inBufIndex, req_struct, (Uint32 *)outBuffer,
+              vec_max_rec_size);
       if (likely(sz >= 0)) {
         inBufIndex += Uint32(sz);
       } else {
@@ -3262,7 +3291,8 @@ Dbtup::updateDynVarSizeNULLable(Uint32* inBuffer,
 }
 
 int Dbtup::read_pseudo(const Uint32 *inBuffer, Uint32 inPos,
-                       KeyReqStruct *req_struct, Uint32 *outBuf) {
+                       KeyReqStruct *req_struct, Uint32 *outBuf,
+                       Uint32* vec_max_rec_size) {
   ndbassert(inPos);
   ndbassert(req_struct->out_buf_index);
   ndbassert(req_struct->out_buf_bits == 0);
@@ -3279,7 +3309,8 @@ int Dbtup::read_pseudo(const Uint32 *inBuffer, Uint32 inPos,
     case AttributeHeader::AGG_RESULT:
     case AttributeHeader::READ_PACKED:
     case AttributeHeader::READ_ALL:
-      return (int)read_packed(inBuffer, inPos, req_struct, outBuf);
+      return (int)read_packed(inBuffer, inPos, req_struct, outBuf,
+                              vec_max_rec_size);
     case AttributeHeader::FRAGMENT:
       outBuffer[1] = req_struct->fragPtrP->partitionId;
       sz = 1;
@@ -3496,6 +3527,33 @@ int Dbtup::read_pseudo(const Uint32 *inBuffer, Uint32 inPos,
       sz = 2;
       break;
     }
+    case AttributeHeader::VEC_DISTANCE: {
+      /*
+       * VEC_SEARCH
+       * Here we do nothing.
+       * TODO (Zhao)
+       */
+      {
+        // g_eventLogger->info("VEC_DISTANCE");
+        double tmp = 721.721;
+        memcpy(outBuffer + 1, &tmp, 8);
+        if (vec_max_rec_size) {
+          *vec_max_rec_size += (1 + 2);
+ #ifdef DEBUG_PA_TUP
+          if (req_struct->fragPtrP != nullptr &&
+              PA_NEED_PRINT(true,
+                req_struct->fragPtrP->fragTableId,
+                req_struct->fragPtrP->fragmentId)) {
+            g_eventLogger->info("[VS_TUP_DEBUG] Dbtup::readAttributes(), "
+                "update vec_max_rec_size[2] to %u",
+                *vec_max_rec_size);
+          }
+#endif // DEBUG_PA_TUP
+        }
+      }
+      sz = 2;
+      break;
+    }
     default:
       if (attrId >= AttributeHeader::READ_INTERPRETER_OUTPUT_FIRST &&
           attrId <= AttributeHeader::READ_INTERPRETER_OUTPUT_LAST) {
@@ -3518,7 +3576,8 @@ int Dbtup::read_pseudo(const Uint32 *inBuffer, Uint32 inPos,
 }
 
 Uint32 Dbtup::read_packed(const Uint32 *inBuf, Uint32 inPos,
-                          KeyReqStruct *req_struct, Uint32 *outBuffer) {
+                          KeyReqStruct *req_struct, Uint32 *outBuffer,
+                          Uint32* vec_max_rec_size) {
   ndbassert(req_struct->out_buf_index >= 4);
   ndbassert((req_struct->out_buf_index & 3) == 0);
   ndbassert(req_struct->out_buf_bits == 0);
@@ -3559,6 +3618,9 @@ Uint32 Dbtup::read_packed(const Uint32 *inBuf, Uint32 inPos,
   AttributeHeader ahOut;
   Uint8* outBuf = (Uint8*)outBuffer;
   outPos += 4*masksz;
+  if (vec_max_rec_size) {
+    *vec_max_rec_size += (1 /* AttributeHeader */ + masksz);
+  }
   if (likely(outPos <= maxRead))
   {
     for (Uint32 attrId = 0, maskpos = 0; attrId<cnt; attrId++, maskpos++)
@@ -3601,6 +3663,9 @@ Uint32 Dbtup::read_packed(const Uint32 *inBuf, Uint32 inPos,
 
         req_struct->out_buf_index = outPos;
         req_struct->out_buf_bits = outBits;
+        if (vec_max_rec_size) {
+          *vec_max_rec_size += AttributeDescriptor::getSizeInWords(attrDescriptor);
+        }
         if (likely((*f)(outBuf, req_struct, &ahOut, attrDes)))
         {
           thrjamDebug(req_struct->jamBuffer);
@@ -3626,6 +3691,18 @@ Uint32 Dbtup::read_packed(const Uint32 *inBuf, Uint32 inPos,
         }  // if
       }
     }
+ #ifdef DEBUG_PA_TUP
+    if (vec_max_rec_size) {
+      if (req_struct->fragPtrP != nullptr &&
+          PA_NEED_PRINT(true,
+            req_struct->fragPtrP->fragTableId,
+            req_struct->fragPtrP->fragmentId)) {
+        g_eventLogger->info("[VS_TUP_DEBUG] Dbtup::readAttributes(), "
+            "update vec_max_rec_size[3] to %u",
+            *vec_max_rec_size);
+      }
+    }
+#endif // DEBUG_PA_TUP
     thrjamDebug(req_struct->jamBuffer);
     req_struct->out_buf_index = pad32(outPos, outBits);
     req_struct->out_buf_bits = 0;

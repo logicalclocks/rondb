@@ -194,6 +194,23 @@
 #define dbg(x)
 #endif
 
+#undef DEBUG_VS_TUP_SCAN
+// #define DEBUG_VS_TUP_SCAN 1
+#define DEBUG_VS_TUP_SCAN_TABLE_ID 17
+#define DEBUG_VS_TUP_SCAN_PART_ID 0
+
+#ifdef DEBUG_VS_TUP_SCAN
+#define VS_TUP_SCAN_TRACE(table_id, part_id, format, ...) \
+  do {\
+    if ((table_id == DEBUG_VS_TUP_SCAN_TABLE_ID) && \
+        (part_id == DEBUG_VS_TUP_SCAN_PART_ID)) {\
+      g_eventLogger->info("[VS_TUP_SCAN_TRACE] " format, ##__VA_ARGS__); \
+    }\
+  } while (0)
+#else
+#define VS_TUP_SCAN_TRACE(table_id, part_id, format, ...) {}
+#endif //  DEBUG_VS_TUP_SCAN
+
 void Dbtup::prepare_scan_ctx(Uint32 scanPtrI) { (void)scanPtrI; }
 
 void Dbtup::execACC_SCANREQ(Signal *signal) {
@@ -417,6 +434,7 @@ void Dbtup::execACC_CHECK_SCAN(Signal *signal) {
   scanPtr.i = req->accPtr;
   ndbrequire(c_scanOpPool.getValidPtr(scanPtr));
   ScanOp &scan = *scanPtr.p;
+
   // fragment
   FragrecordPtr fragPtr;
   fragPtr.i = scan.m_fragPtrI;
@@ -492,6 +510,7 @@ void Dbtup::execACC_CHECK_SCAN(Signal *signal) {
     conf->scanPtr = scan.m_userPtr;
     conf->accOperationPtr = RNIL;  // no tuple returned
     conf->fragId = frag.fragmentId;
+    conf->vectorScanDone = false;
     // if TC has ordered scan close, it will be detected here
     /* WE ARE ENTERING A REAL-TIME BREAK FOR A SCAN HERE */
     sendSignal(scan.m_userRef, GSN_NEXT_SCANCONF, signal,
@@ -500,6 +519,16 @@ void Dbtup::execACC_CHECK_SCAN(Signal *signal) {
   }
 
   const bool lcp = (scan.m_bits & ScanOp::SCAN_LCP);
+
+#ifdef DEBUG_VS_TUP_SCAN
+  if (scan.m_state == ScanOp::Last) {
+    ndbrequire(scan.m_aggregation);
+    VS_TUP_SCAN_TRACE(scan.m_tableId, frag.fragmentId,
+        "Jump into DBTUP from realtime break");
+    Dblqh::ScanRecord* ptr = c_lqh->get_scan_ptr(scan.m_userPtr);
+    ndbrequire(ptr->m_agg_interpreter->vec_search_scan_done());
+  }
+#endif // DEBUG_VS_TUP_SCAN
 
   if (scan.m_state == ScanOp::First) {
     if (lcp && !fragPtr.p->m_lcp_keep_list_head.isNull()) {
@@ -529,6 +558,7 @@ void Dbtup::execACC_CHECK_SCAN(Signal *signal) {
     }
     jam();
   }
+
   scanReply(signal, scanPtr);
 }
 
@@ -704,6 +734,7 @@ void Dbtup::scanReply(Signal *signal, ScanOpPtr scanPtr) {
     // conf signal
     NextScanConf *const conf = (NextScanConf *)signal->getDataPtrSend();
     conf->scanPtr = scan.m_userPtr;
+    conf->vectorScanDone = false;
     // the lock is passed to LQH
     Uint32 accLockOp = scan.m_accLockOp;
     if (accLockOp != RNIL) {
@@ -748,6 +779,36 @@ void Dbtup::scanReply(Signal *signal, ScanOpPtr scanPtr) {
     conf->scanPtr = scan.m_userPtr;
     conf->accOperationPtr = RNIL;
     conf->fragId = RNIL;
+    conf->vectorScanDone = false;
+    /*
+     * VS related
+     * [For sending vector search result]
+     *
+     * 1.a. The normal scan operation is done, so set NextScanConf::vecScanDone
+     * to true to help the following Dblqh::exec_next_scan_conf() to
+     * distinguish it and do the actions properly
+     *
+     */
+    if (scan.m_aggregation) {
+      VS_TUP_SCAN_TRACE(scan.m_tableId, frag.fragmentId,
+          "Vector search scan completed");
+      /*
+       * VS related
+       * In a normal read-committed scan, NextScanConf::accOperationPtr is
+       * always -1. Therefore, in the vector-search sending phase (the second
+       * scan round), we must also set it to -1; otherwise,
+       * get_acc_ptr_in_scan_record() will fail.
+       *
+       * NOTICE:
+       * We cannot directly set accOperationPtr to -1 here because normal
+       * pushdown aggregation also goes through this path, and in that case
+       * it must remain RNIL. Instead, we handle this in the following calls:
+       *
+       *   Dblqh::exec_next_scan_conf() -> Dblqh::continue_next_scan_conf()
+       */
+      // conf->accOperationPtr = Uint32(-1);
+      conf->vectorScanDone = true;
+    }
     signal->setLength(NextScanConf::SignalLengthNoTuple);
     c_lqh->exec_next_scan_conf(signal);
     return;
@@ -2767,6 +2828,7 @@ void Dbtup::record_delete_by_rowid(Signal *signal, Uint32 tableId,
   conf->localKey[0] = key.m_page_no;
   conf->localKey[1] = key.m_page_idx;
   conf->gci = foundGCI;
+  conf->vectorScanDone = false;
   if (set_scan_state)
     scan.m_state = ScanOp::Next;
   scan.m_last_seen = __LINE__;
@@ -2796,6 +2858,7 @@ void Dbtup::record_delete_by_pageid(Signal *signal, Uint32 tableId,
   conf->localKey[0] = page_no;
   conf->localKey[1] = page_idx;
   conf->gci = record_size; /* Used to transport record size */
+  conf->vectorScanDone = false;
   if (set_scan_state) scan.m_state = ScanOp::Next;
   signal->setLength(NextScanConf::SignalLengthNoKeyInfo);
   c_lqh->exec_next_scan_conf(signal);
@@ -2920,6 +2983,7 @@ void Dbtup::handle_lcp_keep(Signal *signal, FragrecordPtr fragPtr,
     conf->scanPtr = scanPtrP->m_userPtr;
     conf->accOperationPtr = (Uint32)-1;
     conf->fragId = fragPtr.p->fragmentId;
+    conf->vectorScanDone = false;
     conf->localKey[0] = tmp.m_page_no;
     conf->localKey[1] = tmp.m_page_idx;
     signal->setLength(NextScanConf::SignalLengthNoGCI);
@@ -3222,6 +3286,7 @@ void Dbtup::scanClose(Signal *signal, ScanOpPtr scanPtr) {
   conf->scanPtr = scanPtr.p->m_userPtr;
   conf->accOperationPtr = RNIL;
   conf->fragId = RNIL;
+  conf->vectorScanDone = false;
   releaseScanOp(scanPtr);
   signal->setLength(NextScanConf::SignalLengthNoTuple);
   c_lqh->exec_next_scan_conf(signal);

@@ -8591,6 +8591,7 @@ void Dbacc::releaseScanLab(Signal* signal)
   conf->scanPtr = scanPtr.p->scanUserptr;
   conf->accOperationPtr = RNIL;
   conf->fragId = RNIL;
+  conf->vectorScanDone = false;
   fragrecptr.p->activeScanMask &= ~scanPtr.p->scanMask;
   releaseScanRec();
   signal->setLength(NextScanConf::SignalLengthNoTuple);
@@ -8761,6 +8762,7 @@ void Dbacc::execACC_CHECK_SCAN(Signal *signal) {
     conf->scanPtr = scanPtr.p->scanUserptr;
     conf->accOperationPtr = RNIL;
     conf->fragId = RNIL;
+    conf->vectorScanDone = false;
     signal->setLength(NextScanConf::SignalLengthNoTuple);
     c_lqh->exec_next_scan_conf(signal);
     return;
@@ -8834,6 +8836,7 @@ void Dbacc::execACC_CHECK_SCAN(Signal *signal) {
     conf->scanPtr = scanPtr.p->scanUserptr;
     conf->accOperationPtr = RNIL;
     conf->fragId = 512;  // MASV
+    conf->vectorScanDone = false;
     /* WE ARE ENTERING A REAL-TIME BREAK FOR A SCAN HERE */
     sendSignal(scanPtr.p->scanUserblockref, GSN_NEXT_SCANCONF, signal,
                NextScanConf::SignalLengthNoTuple, JBB);
@@ -9363,6 +9366,7 @@ void Dbacc::sendNextScanConf(Signal *signal) {
   conf->scanPtr = scanUserPtr;
   conf->accOperationPtr = opPtrI;
   conf->fragId = fid;
+  conf->vectorScanDone = false;
   conf->localKey[0] = localKey.m_page_no;
   conf->localKey[1] = localKey.m_page_idx;
   signal->setLength(NextScanConf::SignalLengthNoGCI);

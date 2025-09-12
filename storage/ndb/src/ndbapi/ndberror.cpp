@@ -529,6 +529,8 @@ ErrorBundle ErrorCodes[] = {
   { 1867,  DMEC, AE, "Invalid const type in LoadConst, check error log on data node for more details" },
   { 1868,  DMEC, AE, "Invalid Operation in aggregation interpreter, check error log on data node for more details" },
   { 1869,  DMEC, AE, "Error in aggregation interpreter, check error log on data node for more details" },
+  { 1870,  DMEC, AE, "Failed to allocate memory, check error log on data node for more details" },
+  { 1871,  DMEC, AE, "The vector search results size is too big, check error log on data node for more details" },
   { 2200,  DMEC, AE, "Dirty reads and dirty writes are supported, not other operation types" },
   { 2201,  DMEC, AE, "Parallel Ordered Index scan flag set requires even number of receiver ids" },
   { 2202,  DMEC, AE, "Parallel Ordered Index scan flag set requires ReadCommittedMode" },

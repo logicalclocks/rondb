@@ -108,11 +108,27 @@ class FsReadWriteReq;
     } \
   } while (0)
 
+#define VS_NEED_PRINT(scanPtr) \
+  ((scanPtr != nullptr) && (scanPtr->m_aggregation) && \
+   (scanPtr->m_agg_interpreter->vec_search()) && \
+   (scanPtr->m_agg_interpreter->table_id() == PA_TABLE_ID) && \
+   (scanPtr->m_agg_interpreter->frag_id() == PA_PART_ID))
+
+#define VS_RONDB_TRACE(scanPtr, format, ...) \
+  do { \
+    if (VS_NEED_PRINT(scanPtr)) { \
+      g_eventLogger->info("[VS_RONDB_TRACE] " format, ##__VA_ARGS__); \
+    } \
+  } while (0)
+
+
 #else
 
 #define PA_NEED_PRINT(is_pa, table_id, part_id) (false)
 #define PA_RONDB_TRACE(is_pa, table_id, part_id, format, ...) do {} while (0)
 #define PA_RONDB_TRACE_2(print, format, ...) do {} while (0)
+#define VS_NEED_PRINT(scanPtr) (false)
+#define VS_RONDB_TRACE(scanPtr, format, ...) do {} while (0)
 
 #endif // DEBUG_PA
 
@@ -3138,6 +3154,7 @@ private:
   void execLOCAL_LATEST_LCP_ID_REP(Signal *);
   void execTUPKEYCONF(Signal *signal);
   Uint32 get_scan_api_op_ptr(Uint32 scan_ptr_i);
+  ScanRecord* get_scan_ptr(Uint32 scan_api_ptr_i);
 
   Uint32 rt_break_is_scan_prioritised(Uint32 scan_ptr_i);
   Uint32 getCreateSchemaVersion(Uint32 tableId);
@@ -4082,7 +4099,8 @@ public:
 
   void next_scanconf_tupkeyreq(Signal *signal, ScanRecord *const scanPtr,
                                TcConnectionrec *regTcPtr,
-                               Fragrecord *fragPtrP);
+                               Fragrecord *fragPtrP,
+                               Uint32 ptrI = RNIL);
 
  public:
   void next_scanconf_load_diskpage_callback(Signal *signal, Uint32, Uint32);
@@ -5409,43 +5427,6 @@ inline bool Dblqh::is_full_local_lcp_running() {
 
 inline bool Dblqh::is_restore_phase_done() {
   return (csrExecUndoLogState != EULS_IDLE);
-}
-
-inline
-bool
-Dblqh::ScanRecord::check_scan_batch_completed(bool debug_pa_print) const {
-  // Don't break aggregation
-  if (m_aggregation == true) {
-    /*
-     * if m_agg_curr_batch_size_bytes != 0, means some aggregation
-     * results have been sent to API as a batch because of group hash
-     * is going to be full. so we return true here to make sure that we
-     * call sendScanFragConf to send GSN_SCAN_FRAGCONF to TC
-     */
-    if (m_agg_curr_batch_size_bytes) {
-      PA_RONDB_TRACE_2(debug_pa_print,
-          "Dblqh::ScanRecord::check_scan_batch_completed() "
-          "CHECK batch complete:true, rows[%u, %u], bytes[%u, %u], n_res_recs: %u",
-          m_agg_curr_batch_size_rows, m_curr_batch_size_rows,
-          m_agg_curr_batch_size_bytes, m_curr_batch_size_bytes,
-          m_agg_n_res_recs);
-      return true;
-    } else {
-      PA_RONDB_TRACE_2(debug_pa_print,
-          "Dblqh::ScanRecord::check_scan_batch_completed() "
-          "CHECK batch complete:false, rows[%u, %u], bytes[%u, %u], n_res_recs: %u",
-          m_agg_curr_batch_size_rows, m_curr_batch_size_rows,
-          m_agg_curr_batch_size_bytes, m_curr_batch_size_bytes,
-          m_agg_n_res_recs);
-      return false;
-    }
-  }
-  Uint32 max_rows = m_max_batch_size_rows;
-  Uint32 max_bytes = m_max_batch_size_bytes;
-
-  return m_stop_batch ||
-         (max_rows > 0 && (m_curr_batch_size_rows >= max_rows)) ||
-         (max_bytes > 0 && (m_curr_batch_size_bytes >= max_bytes));
 }
 
 inline void Dblqh::i_get_acc_ptr(ScanRecord *scanP, Uint32 *&acc_ptr,
