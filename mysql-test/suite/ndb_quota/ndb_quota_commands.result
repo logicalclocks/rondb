@@ -76,7 +76,7 @@ DATABASE QUOTA GET command failed: Error:
 DATABASE QUOTA GET command failed: Error:
 *   703: Error
 *        Get database quotas failed with error
-DROP TABLE IF EXISTS t1;
+DROP TABLE IF EXISTS t1, t2;
 CREATE TABLE t1 (
 pk1 INT NOT NULL PRIMARY KEY,
 b1 CHAR(255),
@@ -111,6 +111,7 @@ b28 VARCHAR(20000) NULL
 CREATE TABLE t2 (a int not null primary key) engine ndb;
 INSERT INTO t2 VALUES (1),(2),(3),(4),(5);
 ERROR HY000: Got temporary error 247 'Too many operations in a transaction in database' from NDBCLUSTER
+INSERT INTO t2 VALUES (1),(2),(3);
 INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (0, '0', '0', '0', '0',REPEAT('a', 19000)),(30,'30', '0', '0', '0',REPEAT('a', 19000));
 INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (1, '0', '0', '0', '0',REPEAT('a', 19000)),(31,'30', '0', '0', '0',REPEAT('a', 19000));
 INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (2, '0', '0', '0', '0',REPEAT('a', 19000)),(32,'30', '0', '0', '0',REPEAT('a', 19000));

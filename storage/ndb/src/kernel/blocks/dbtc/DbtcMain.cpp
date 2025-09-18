@@ -3490,6 +3490,7 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
   if (!is_immediate) {
     if (unlikely(databaseRecordPtr.i != RNIL64 ||
                  apiConnectptr.p->m_queuedDatabasePtrI != RNIL64)) {
+      jam();
       if (!check_tckey_queueing(signal,
                                 databaseRecordPtr,
                                 handle,
@@ -5828,6 +5829,7 @@ void Dbtc::releaseDirtyRead(Signal *signal,
       jam();
       release_count_parallel_transactions(apiConnectptr.p);
     }
+    jam();
     release_api_ref(signal, apiConnectptr, __LINE__);
     return;
   }
@@ -8709,6 +8711,7 @@ void Dbtc::releaseTransResources(Signal* signal,
     jam();
     release_count_parallel_transactions(apiConnectptr.p);
   }
+  jam();
   release_api_ref(signal, apiConnectptr, __LINE__);
   ndbrequire(apiConnectptr.p->m_num_queued == 0);
   handleGcp(signal, apiConnectptr);
@@ -15597,6 +15600,7 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
                  databaseRecordPtr.i != RNIL64 ||
                  transOwnerPtr.p->m_queuedDatabasePtrI != RNIL64)) {
       if (passQueueingFlag) {
+        jam();
         ndbrequire(apiConnectptr.p->m_queuedDatabasePtrI != RNIL64);
         databaseRecordPtr.i = apiConnectptr.p->m_queuedDatabasePtrI;
         ndbrequire(m_databaseRecordPool.getPtr(databaseRecordPtr));
@@ -15615,6 +15619,12 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
           /* A new database is touched, use this one */
           jam();
           ndbrequire(m_databaseRecordPool.getPtr(databaseRecordPtr));
+          if (databaseRecordPtr.p->m_is_queueing_abort_read) {
+            jam();
+            releaseSections(handle);
+            errCode = ZRATE_OVERFLOW_ERROR;
+            goto SCAN_TAB_error;
+          }
           databaseRecordPtr.p->m_api_ref_count++;
           apiConnectptr.p->m_queuedDatabasePtrI = databaseRecordPtr.i;
           DEB_RATE_QUEUE_DROP(("(%u):%u INC api_ref_count: %u, LINE: %u,"
@@ -15642,6 +15652,12 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
           /* Use database from buddy transaction instead of table in this */
           databaseRecordPtr.i = transOwnerPtr.p->m_queuedDatabasePtrI;
           ndbrequire(m_databaseRecordPool.getPtr(databaseRecordPtr));
+          if (databaseRecordPtr.p->m_is_queueing_abort_read) {
+            jam();
+            releaseSections(handle);
+            errCode = ZRATE_OVERFLOW_ERROR;
+            goto SCAN_TAB_error;
+          }
           apiConnectptr.p->m_queuedDatabasePtrI = databaseRecordPtr.i;
           databaseRecordPtr.p->m_api_ref_count++;
           DEB_RATE_QUEUE_DROP(("(%u):%u INC api_ref_count: %u, LINE: %u,"
@@ -15651,12 +15667,6 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
                                databaseRecordPtr.p->m_api_ref_count,
                                __LINE__,
                                transOwnerPtr.i));
-        }
-        if (databaseRecordPtr.p->m_is_queueing_abort_read) {
-          jam();
-          releaseSections(handle);
-          errCode = ZRATE_OVERFLOW_ERROR;
-          goto SCAN_TAB_error;
         }
         /**
          * If database is in queueing mode, the transaction have not yet
@@ -15679,6 +15689,7 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
                                         databaseRecordPtr,
                                         transOwnerPtr);
           if (succ) {
+            jam();
             releaseSections(handle);
             return;
           }
@@ -15720,6 +15731,7 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
                                     databaseRecordPtr,
                                     transOwnerPtr);
       if (succ) {
+        jam();
         releaseSections(handle);
         return;
       }
@@ -15773,6 +15785,7 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
     jam();
     CacheRecordPtr cachePtr;
     if (seizeCacheRecord(signal, cachePtr, apiConnectptr.p) != 0) {
+      jam();
       transP->apiScanRec = scanptr.i;
       releaseScanResources(signal, scanptr, apiConnectptr,
                            true /* NotStarted */);
@@ -16607,6 +16620,7 @@ void Dbtc::releaseScanResources(Signal *signal, ScanRecordPtr scanPtr,
     jam();
     release_count_parallel_transactions(apiConnectptr.p);
   }
+  jam();
   release_api_ref(signal, apiConnectptr, __LINE__);
   apiConnectptr.p->apiScanRec = RNIL;
   apiConnectptr.p->apiConnectstate = CS_CONNECTED;
@@ -17425,7 +17439,8 @@ void Dbtc::execSCAN_NEXTREQ(Signal *signal) {
        *  We will send a SCAN_TABREF to indicate a time-out occurred.
        *********************************************************************/
       DEBUG("scanTabRefLab: ZSCANTIME_OUT_ERROR2");
-      g_eventLogger->info("apiConnectptr(%d) -> abort ZSCANTIMEOUT_ERROR2", apiConnectptr.i);
+      g_eventLogger->info("apiConnectptr(%d) -> abort ZSCANTIMEOUT_ERROR2",
+        apiConnectptr.i);
       ndbassert(false);  // B2 indication of strange things going on
       ndbrequire(!sent_from_queue);
       scanTabRefLab(signal, ZSCANTIME_OUT_ERROR2, apiConnectptr.p);
@@ -17497,6 +17512,7 @@ void Dbtc::execSCAN_NEXTREQ(Signal *signal) {
                                      databaseRecordPtr,
                                      apiConnectptr);
       if (succ) {
+        jam();
         releaseSections(handle);
         return;
       }
@@ -18957,6 +18973,7 @@ void Dbtc::releaseAbortResources(Signal* signal,
     jam();
     release_count_parallel_transactions(apiConnectptr.p);
   }
+  jam();
   release_api_ref(signal, apiConnectptr, __LINE__);
   if (apiConnectptr.p->apiFailState != ApiConnectRecord::AFS_API_OK) {
     jam();
@@ -18983,6 +19000,7 @@ void Dbtc::releaseApiCon(Signal *signal, UintR TapiConnectPtr) {
     // Should never happen
     release_count_parallel_transactions(TlocalApiConnectptr.p);
   }
+  jam();
   release_api_ref(signal, TlocalApiConnectptr, __LINE__);
   ndbassert(TlocalApiConnectptr.p->nextApiConnect == RNIL);
   ndbrequire(TlocalApiConnectptr.p->apiConnectkind ==
@@ -21392,6 +21410,7 @@ void Dbtc::execTCINDXREQ(Signal *signal) {
 
   if (unlikely(databaseRecordPtr.i != RNIL64 ||
                regApiPtr->m_queuedDatabasePtrI != RNIL64)) {
+    jam();
     if (!check_tckey_queueing(signal,
                               databaseRecordPtr,
                               handle,
@@ -27054,6 +27073,7 @@ void Dbtc::release_queue_record_tc(Signal *signal,
                                    Uint32 & loop_count) {
   QueueRecord *queue_record = transPtr.p->m_first_queued_req;
   if (queue_record == nullptr) {
+    jam();
     loop_count++;
     release_api_ref(signal, transPtr, __LINE__);
     ndbrequire(transPtr.p->m_num_queued == 0);
@@ -27090,6 +27110,7 @@ void Dbtc::release_queue_record_tc(Signal *signal,
   ndbrequire(transPtr.p->m_num_queued == 0);
   transPtr.p->m_first_queued_req = nullptr;
   transPtr.p->m_last_queued_req = nullptr;
+  jam();
   release_api_ref(signal, transPtr, apiDbPtr, __LINE__);
 }
               
@@ -27164,6 +27185,7 @@ bool Dbtc::queue_tckeyreq(Signal *signal,
   ndbrequire(handle->getSection(key_ptr, TcKeyReq::KeyInfoSectionNum));
   key_length = key_ptr.sz;
   if (likely(num_sections > 1)) {
+    jam();
     ndbrequire(num_sections == 2);
     ndbrequire(handle->getSection(ai_ptr, TcKeyReq::AttrInfoSectionNum));
     ai_length = ai_ptr.sz;
@@ -27430,6 +27452,7 @@ bool Dbtc::queue_scan_nextreq(Signal *signal,
   memcpy(signal_area, &signal->theData[0], signal_length * 4);
   /* Copy receiver id to QueueRecord */
   if (likely(num_sections > 0)) {
+    jam();
     char *receiver_id_area = signal_area + signal_length * 4;
     copy((Uint32*)receiver_id_area, receiver_id_ptr);
   }
@@ -27457,6 +27480,7 @@ bool Dbtc::check_tckey_queueing(Signal *signal,
   }
   ndbrequire(m_databaseRecordPool.getPtr(databaseRecordPtr));
   if (apiConnectptr.p->m_queuedDatabasePtrI == RNIL64) {
+    jam();
     databaseRecordPtr.p->m_api_ref_count++;
     apiConnectptr.p->m_queuedDatabasePtrI = databaseRecordPtr.i;
     DEB_RATE_QUEUE_DROP(("(%u):%u INC api_ref_count: %u, LINE: %u, ApiPtrI: %u",
@@ -27579,6 +27603,7 @@ void Dbtc::release_api_ref(Signal *signal,
   if (likely(dbPtrI == RNIL64)) {
     return;
   }
+  jam();
   apiPtr.p->m_queuedDatabasePtrI = RNIL64;
   DatabaseRecordPtr dbPtr;
   dbPtr.i = dbPtrI;
@@ -27603,6 +27628,7 @@ void Dbtc::release_api_ref(Signal *signal,
                            DatabaseRecordPtr dbPtr,
                            Uint32 line) {
   (void)line;
+  jam();
   Uint32 api_ref_count = dbPtr.p->m_api_ref_count;
   ndbrequire(api_ref_count > 0);
   api_ref_count--;
