@@ -145,6 +145,7 @@
 //#define DEBUG_QUOTA_ABORT 1
 //#define DEBUG_TRACK_EXEC_FLAG 1
 //#define DEBUG_SCAN_MANY 1
+//#define DEBUG_RATE_OVERFLOW 1
 #endif
 
 #define MAX_QUEUE_TIME_MS 60
@@ -160,6 +161,12 @@
 #define DEBUG(x) ndbout << "DBTC: " << x << endl;
 #else
 #define DEBUG(x)
+#endif
+
+#ifdef DEBUG_RATE_OVERFLOW
+#define DEB_RATE_OVERFLOW(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_RATE_OVERFLOW(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_TRACK_EXEC_FLAG
@@ -6159,11 +6166,6 @@ Dbtc::CommitAckMarker::insert_in_commit_ack_marker_all(Dbtc *tc,
 void Dbtc::execLQHKEYCONF(Signal *signal) {
   const LqhKeyConf *lqhKeyConf =
       CAST_CONSTPTR(LqhKeyConf, signal->getDataPtr());
-#ifdef UNUSED
-  ndbout << "TC: Received LQHKEYCONF"
-         << " transId1=" << lqhKeyConf->transId1
-         << " transId2=" << lqhKeyConf->transId2 << endl;
-#endif /*UNUSED*/
   UintR compare_transid1, compare_transid2;
   BlockReference tlastLqhBlockref;
   UintR tlastLqhConnect;
@@ -6213,6 +6215,14 @@ void Dbtc::execLQHKEYCONF(Signal *signal) {
 
   apiConnectptr.i = regTcPtr->apiConnect;
   commitAckMarker.i = regTcPtr->commitAckMarker;
+
+  DEB_RATE_QUEUE(("(%u) LQHKEYCONF: tcPtrI: %u, apiPtrI: %u,"
+                  " transid[0x%x,0x%x]",
+                  instance(),
+                  tcConnectptr.i,
+                  regTcPtr->apiConnect,
+                  lqhKeyConf->transId1,
+                  lqhKeyConf->transId2));
 
   OperationState TtcConnectstate = regTcPtr->tcConnectstate;
   if (unlikely(TtcConnectstate != OS_OPERATING))
@@ -6593,6 +6603,14 @@ void Dbtc::lqhKeyConf_checkTransactionState(Signal *signal,
   UintR Tlqhkeyconfrec = apiConnectptr.p->lqhkeyconfrec;
   UintR Tlqhkeyreqrec = apiConnectptr.p->lqhkeyreqrec;
   int TnoOfOutStanding = Tlqhkeyreqrec - Tlqhkeyconfrec;
+
+  DEB_RATE_QUEUE(("(%u) LQHKEYCONF(2): apiPtrI: %u, state: %u,"
+                  " transid[0x%x,0x%x]",
+                  instance(),
+                  apiConnectptr.i,
+                  TapiConnectstate,
+                  apiConnectptr.p->transid[0],
+                  apiConnectptr.p->transid[1]));
 
   switch (TapiConnectstate) {
     case CS_START_COMMITTING:
@@ -7567,6 +7585,13 @@ void Dbtc::execCOMMITTED(Signal *signal) {
      */
     return;
   }
+  DEB_RATE_QUEUE(("(%u) COMMITTED: tcPtrI: %u, apiPtrI: %u,"
+                  " transid[0x%x,0x%x]",
+                  instance(),
+                  localTcConnectptr.i,
+                  localTcConnectptr.p->apiConnect,
+                  conf->transid1,
+                  conf->transid2));
   UintR Tcounter = localApiConnectptr.p->counter - 1;
   ConnectionState TapiConnectstate = localApiConnectptr.p->apiConnectstate;
   UintR Tdata1 = localApiConnectptr.p->transid[0] - conf->transid1;
@@ -8532,6 +8557,13 @@ void Dbtc::execCOMPLETED(Signal *signal) {
     warningReport(signal, 6, localTcConnectptr.i);
     return;
   }
+  DEB_RATE_QUEUE(("(%u) COMPLETED: tcPtrI: %u, apiPtrI: %u,"
+                  " transid[0x%x,0x%x]",
+                  instance(),
+                  localTcConnectptr.i,
+                  localTcConnectptr.p->apiConnect,
+                  conf->transid1,
+                  conf->transid2));
   bool Tcond1 = (localTcConnectptr.p->tcConnectstate != OS_COMPLETING);
   localApiConnectptr.i = localTcConnectptr.p->apiConnect;
   if (Tcond1) {
@@ -8915,8 +8947,14 @@ void Dbtc::execLQHKEYREF(Signal *signal) {
     warningReport(signal, 25, tcConnectptr.i);
     return;
   }
-  DEB_RATE_QUEUE(("(%u) LQHKEYREF: %u, errCode: %u",
-                  instance(), tcConnectptr.i, errCode));
+  DEB_RATE_QUEUE(("(%u) LQHKEYREF: tcPtrI: %u, apiPtrI: %u, errCode: %u,"
+                  " transid[0x%x,0x%x]",
+    instance(),
+    tcConnectptr.i,
+    tcConnectptr.p->apiConnect,
+    errCode,
+    lqhKeyRef->transId1,
+    lqhKeyRef->transId2));
   {
     /*-----------------------------------------------------------------------
      * WE HAVE TO CHECK THAT THE TRANSACTION IS STILL VALID. FIRST WE CHECK
@@ -9272,6 +9310,12 @@ void Dbtc::execTC_COMMITREQ(Signal *signal) {
     const Uint32 transId2 = regApiPtr->transid[1];
     Uint32 errorCode = 0;
 
+    DEB_RATE_QUEUE(("(%u) TC_COMMITREQ: apiPtrI: %u,"
+                    " transid[0x%x,0x%x]",
+      instance(),
+      apiConnectptr.i,
+      regApiPtr->transid[0],
+      regApiPtr->transid[1]));
     tc_clearbit(regApiPtr->m_flags, ApiConnectRecord::TF_NOT_OUTSTANDING_FLAG);
     regApiPtr->m_flags |= ApiConnectRecord::TF_EXEC_FLAG;
     DEB_TRACK_EXEC_FLAG(("(%u) Set TF_EXEC_FLAG, apiPtrI: %u, line: %u",
@@ -15621,6 +15665,8 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
           ndbrequire(m_databaseRecordPool.getPtr(databaseRecordPtr));
           if (databaseRecordPtr.p->m_is_queueing_abort_read) {
             jam();
+            DEB_RATE_OVERFLOW(("(%u) db: %llu, apiPtrI: %u",
+              instance(), databaseRecordPtr.i, apiConnectptr.i));
             releaseSections(handle);
             errCode = ZRATE_OVERFLOW_ERROR;
             goto SCAN_TAB_error;
@@ -15655,6 +15701,8 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
           if (databaseRecordPtr.p->m_is_queueing_abort_read) {
             jam();
             releaseSections(handle);
+            DEB_RATE_OVERFLOW(("(%u) db: %llu, transOwnerPtrI: %u",
+              instance(), databaseRecordPtr.i, transOwnerPtr.i));
             errCode = ZRATE_OVERFLOW_ERROR;
             goto SCAN_TAB_error;
           }
@@ -27237,9 +27285,11 @@ bool Dbtc::queue_tckeyreq(Signal *signal,
       char *ai_area = key_area + 4 * key_length;
       copy((Uint32*)ai_area, ai_ptr);
     }
+#ifdef DEBUG_RATE_QUEUE
+    const TcKeyReq * const tcKeyReq = (TcKeyReq *)&signal->theData[0];
     DEB_RATE_QUEUE(("(%u) Queue TCKEYREQ, now: %llu, ptr: %p, apiPtr.i: %u"
               ", sig_len: %u, sections: %u, key_len: %u, ai_len: %u"
-              ", key[%u,%u,%u,%u,%u,%u]",
+              ", key[%u,%u,%u,%u,%u,%u], transid[0x%x,0x%x)]",
               instance(),
               now.getUint64(),
               queue_record,
@@ -27253,7 +27303,10 @@ bool Dbtc::queue_tckeyreq(Signal *signal,
               key_length > 2 ? ((Uint32*)key_area)[2] : 0xFFFF,
               key_length > 3 ? ((Uint32*)key_area)[3] : 0xFFFF,
               key_length > 4 ? ((Uint32*)key_area)[4] : 0xFFFF,
-              key_length > 5 ? ((Uint32*)key_area)[5] : 0xFFFF ));
+              key_length > 5 ? ((Uint32*)key_area)[5] : 0xFFFF,
+              tcKeyReq->transId1,
+              tcKeyReq->transId2));
+#endif
   }
 
   insert_queue_record_tc(transPtr.p, queue_record);
@@ -27661,7 +27714,8 @@ void Dbtc::debug_db_no_queue(DatabaseRecordPtr databaseRecordPtr,
     DEB_RATE_QUEUE(("(%u):%u TCKEYREQ no queueing, passQueueFlag: %u,"
               " DB:first_queue: %p, start_queued: %u, all_queued: %u,"
               " tcPtrI: %u, Trans:first_queue: %p,"
-              " startTrans: %u, op_type: %s, tableId: %u",
+              " startTrans: %u, op_type: %s, tableId: %u"
+              ", transid[0x%x,0x%x]",
               instance(),
               databaseRecordPtr.p->m_database_id,
               passQueueingFlag,
@@ -27679,6 +27733,8 @@ void Dbtc::debug_db_no_queue(DatabaseRecordPtr databaseRecordPtr,
                 opType == ZREAD_EX ? "ReadEx" :
                 opType == ZUNLOCK ? "Unlock" :
                 opType == ZREFRESH ? "Refresh" : "Other",
-              tableId));
+              tableId,
+              regApiPtr->transid[0],
+              regApiPtr->transid[1]));
   }
 }

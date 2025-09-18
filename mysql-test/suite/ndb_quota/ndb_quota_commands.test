@@ -60,10 +60,10 @@ CREATE TABLE t1 (
   b28 VARCHAR(20000) NULL
 ) engine ndb character set latin1;
 
-CREATE TABLE t2 (a int not null primary key) engine ndb;
+CREATE TABLE t2 (a int not null primary key, b int) engine ndb;
 --error 1297
-INSERT INTO t2 VALUES (1),(2),(3),(4),(5);
-INSERT INTO t2 VALUES (1),(2),(3);
+INSERT INTO t2 VALUES (1,0),(2,0),(3,0),(4,0),(5,0);
+INSERT INTO t2 VALUES (1,0),(2,0),(3,0);
 
 INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (0, '0', '0', '0', '0',REPEAT('a', 19000)),(30,'30', '0', '0', '0',REPEAT('a', 19000));
 INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (1, '0', '0', '0', '0',REPEAT('a', 19000)),(31,'30', '0', '0', '0',REPEAT('a', 19000));
@@ -155,8 +155,6 @@ while ($c)
   SELECT * from t2;
   dec $c;
 }
---enable_result_log
---enable_query_log
 
 connect(mysqld2,127.0.0.1,root,,test,$MASTER_MYPORT1);
 connect(mysqld3,127.0.0.1,root,,test,$MASTER_MYPORT1);
@@ -166,30 +164,30 @@ connect(mysqld6,127.0.0.1,root,,test,$MASTER_MYPORT1);
 
 connection default;
 BEGIN;
-INSERT INTO t2 VALUES (4);
+INSERT INTO t2 VALUES (4,0);
 
 connection mysqld2;
 BEGIN;
-INSERT INTO t2 VALUES (5);
+INSERT INTO t2 VALUES (5,0);
 
 connection mysqld3;
 BEGIN;
-INSERT INTO t2 VALUES (6);
+INSERT INTO t2 VALUES (6,0);
 
 connection mysqld4;
 BEGIN;
 --error 1297
-INSERT INTO t2 VALUES (7);
+INSERT INTO t2 VALUES (7,0);
 
 connection mysqld5;
 BEGIN;
 --error 1297
-INSERT INTO t2 VALUES (8);
+INSERT INTO t2 VALUES (8,0);
 
 connection mysqld6;
 BEGIN;
 --error 1297
-INSERT INTO t2 VALUES (9);
+INSERT INTO t2 VALUES (9,0);
 
 connection default;
 COMMIT;
@@ -202,6 +200,56 @@ COMMIT;
 
 connection default;
 SELECT * FROM t2;
+
+--exec $NDB_MGM -e "DATABASE QUOTA ALTER test --rate-per-sec = 5 --in-memory-size=2 --max-transaction-size=100 --max-parallel-transactions=10"
+
+--error 0,1297
+SELECT * from t2;
+--error 0,1297
+SELECT * from t2;
+--error 0,1297
+UPDATE t2 SET b = 0 where a = 4;
+COMMIT;
+
+connection mysqld2;
+--error 0,1297
+SELECT * from t2;
+--error 0,1297
+UPDATE t2 SET b = 0 where a = 5;
+COMMIT;
+
+connection mysqld3;
+--error 0,1297
+SELECT * from t2;
+--error 0,1297
+UPDATE t2 SET b = 0 where a = 6;
+COMMIT;
+
+connection mysqld4;
+--error 0,1297
+SELECT * from t2;
+--error 0,1297
+UPDATE t2 SET b = 0 where a = 0;
+COMMIT;
+
+connection mysqld5;
+--error 0,1297
+SELECT * from t2;
+--error 0,1297
+UPDATE t2 SET b = 0 where a = 1;
+COMMIT;
+
+connection mysqld6;
+--error 0,1297
+SELECT * from t2;
+--error 0,1297
+UPDATE t2 SET b = 0 where a = 2;
+COMMIT;
+
+--enable_result_log
+--enable_query_log
+
+connection default;
 
 DROP TABLE t1;
 DROP TABLE t2;

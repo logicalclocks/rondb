@@ -13,7 +13,7 @@ InMemorySize = 2 MByte
 DiskSpaceSize = 0 GByte
 RatePerSec = 500
 MaxTransactionSize = 4
-MaxParallelTransactions = 4
+MaxParallelTransactions = 3
 MaxParallelComplexQueries = 0
 Database Quotas for test2
 databaseId = 14
@@ -50,7 +50,7 @@ Database Quotas for test
   DiskSpaceSize = 0 GByte
   RatePerSec = 500
   MaxTransactionSize = 4
-  MaxParallelTransactions = 4
+  MaxParallelTransactions = 3
   MaxParallelComplexQueries = 0
 
 Database Quotas for test2
@@ -108,10 +108,10 @@ b26 CHAR(255) NULL,
 b27 CHAR(255) NULL,
 b28 VARCHAR(20000) NULL
 ) engine ndb character set latin1;
-CREATE TABLE t2 (a int not null primary key) engine ndb;
-INSERT INTO t2 VALUES (1),(2),(3),(4),(5);
+CREATE TABLE t2 (a int not null primary key, b int) engine ndb;
+INSERT INTO t2 VALUES (1,0),(2,0),(3,0),(4,0),(5,0);
 ERROR HY000: Got temporary error 247 'Too many operations in a transaction in database' from NDBCLUSTER
-INSERT INTO t2 VALUES (1),(2),(3);
+INSERT INTO t2 VALUES (1,0),(2,0),(3,0);
 INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (0, '0', '0', '0', '0',REPEAT('a', 19000)),(30,'30', '0', '0', '0',REPEAT('a', 19000));
 INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (1, '0', '0', '0', '0',REPEAT('a', 19000)),(31,'30', '0', '0', '0',REPEAT('a', 19000));
 INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (2, '0', '0', '0', '0',REPEAT('a', 19000)),(32,'30', '0', '0', '0',REPEAT('a', 19000));
@@ -178,7 +178,7 @@ DROP TABLE t2;
 Database Quota Backup command completed
 DATABASE QUOTA DROP successfully executed
 DATABASE QUOTA DROP successfully executed
-Execute DATABASE QUOTA SET test --in-memory-size = 2 --on-disk-size = 0 --rate-per-sec = 500 --max-transaction-size = 4 --max-parallel-transactions = 4 --max-parallel-complex-queries = 0
+Execute DATABASE QUOTA SET test --in-memory-size = 2 --on-disk-size = 0 --rate-per-sec = 5 --max-transaction-size = 100 --max-parallel-transactions = 10 --max-parallel-complex-queries = 0
 DATABASE QUOTA SET successfully executed
 DATABASE QUOTA SET command succeeded for RESTORE
 Execute DATABASE QUOTA SET test2 --in-memory-size = 11 --on-disk-size = 0 --rate-per-sec = 1500 --max-transaction-size = 0 --max-parallel-transactions = 0 --max-parallel-complex-queries = 0

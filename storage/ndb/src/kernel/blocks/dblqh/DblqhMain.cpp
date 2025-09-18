@@ -3795,7 +3795,7 @@ void Dblqh::execTAB_COMMITREQ(Signal *signal) {
   NdbMutex_Unlock(&tabptr.p->m_usage_count);
 #endif
   tabptr.p->usageCountR = 0;
-  D(tabptr.i << "Init2 usageCountR = 0");
+  D(tabptr.i << "Init2 usageCountR and W = 0");
   tabptr.p->usageCountW = 0;
   tabptr.p->tableStatus = Tablerec::TABLE_DEFINED;
   DEB_SCHEMA_VERSION(
@@ -4118,7 +4118,8 @@ void Dblqh::dropTab_wait_usage(Signal *signal) {
 
   if (tabPtr.p->usageCountR > 0 || tabPtr.p->usageCountW > 0) {
     jam();
-    D(tabPtr.i << "usageCountR = " << tabPtr.p->usageCountR);
+    D(tabPtr.i << "usageCountR = " << tabPtr.p->usageCountR
+      << "usageCountW = " << tabPtr.p->usageCountW);
 #ifdef DEBUG_USAGE_COUNT
     NdbMutex_Lock(&tabPtr.p->m_usage_count);
     TcConnectionrecPtr tcPtr;
@@ -9384,6 +9385,9 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
   else
   {
     tabptr.p->usageCountW++;
+    D("++usageCountW[" << tabptr.i << "] = " << tabptr.p->usageCountW
+      << " transid[0x" << hex << tcConnectptr.p->transid[0]
+      << ",0x" << hex << tcConnectptr.p->transid[1] << "]");
   }
 
   if (LqhKeyReq::getNrCopyFlag(Treqinfo) &&
@@ -14099,6 +14103,9 @@ void Dblqh::releaseTcrec(Signal *signal, TcConnectionrecPtr locTcConnectptr) {
     {
       Uint32 pre_usageCountW = tabPtr.p->usageCountW--;
       ndbrequire(pre_usageCountW > 0);
+      D("--usageCountW[" << tabPtr.i << "] = " << tabPtr.p->usageCountW
+        << " transid: 0x" << hex << locTcConnectptr.p->transid[0]
+        << ", 0x" << hex << locTcConnectptr.p->transid[1]);
     }
   }
   locTcConnectptr.p->original_operation = 0xFF;
@@ -33049,7 +33056,7 @@ Dblqh::initTable(Tablerec *tabPtrP)
   tabPtrP->tableStatus = Tablerec::NOT_DEFINED;
   tabPtrP->usageCountR = 0;
   tabPtrP->usageCountW = 0;
-  D(tabptr.i << "Init usageCountR = 0");
+  D(tabptr.i << "Init usageCountR and W = 0");
   tabPtrP->m_addfragptr_i = RNIL;
   tabPtrP->num_fragments_in_array = 0;
   tabPtrP->num_fragments = 0;
