@@ -1,5 +1,5 @@
 --source include/have_ndb.inc
---exec $NDB_MGM -e "DATABASE QUOTA SET test --rate-per-sec = 500 --in-memory-size=2 --max-transaction-size=4 --max-parallel-transactions=4"
+--exec $NDB_MGM -e "DATABASE QUOTA SET test --rate-per-sec = 500 --in-memory-size=2 --max-transaction-size=4 --max-parallel-transactions=3"
 --error 255,65280
 --exec $NDB_MGM -e "DATABASE QUOTA SET test2 --rate-per-sec = 50000000 --in-memory-size=100 --on-disk-size=0"
 --exec $NDB_MGM -e "DATABASE QUOTA SET test2 --rate-per-sec = 500 --in-memory-size=10 --on-disk-size=0"
@@ -25,7 +25,7 @@
 --error 255,65280
 --exec $NDB_MGM -e "DATABASE QUOTA GET test_1234567890_1234567890_1234567890_1234567890_1234567890_1234567890_1234567890_1234567890_1234567890_1234567890_1234567890_100"
 --disable_warnings
-DROP TABLE IF EXISTS t1;
+DROP TABLE IF EXISTS t1, t2;
 --enable_warnings
 
 CREATE TABLE t1 (
@@ -60,9 +60,10 @@ CREATE TABLE t1 (
   b28 VARCHAR(20000) NULL
 ) engine ndb character set latin1;
 
-CREATE TABLE t2 (a int not null primary key) engine ndb;
+CREATE TABLE t2 (a int not null primary key, b int) engine ndb;
 --error 1297
-INSERT INTO t2 VALUES (1),(2),(3),(4),(5);
+INSERT INTO t2 VALUES (1,0),(2,0),(3,0),(4,0),(5,0);
+INSERT INTO t2 VALUES (1,0),(2,0),(3,0);
 
 INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (0, '0', '0', '0', '0',REPEAT('a', 19000)),(30,'30', '0', '0', '0',REPEAT('a', 19000));
 INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (1, '0', '0', '0', '0',REPEAT('a', 19000)),(31,'30', '0', '0', '0',REPEAT('a', 19000));
@@ -84,11 +85,17 @@ INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (16, '0', '0', '0', '0',REPEAT('a', 
 INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (17, '0', '0', '0', '0',REPEAT('a', 19000)),(47,'30', '0', '0', '0',REPEAT('a', 19000));
 INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (18, '0', '0', '0', '0',REPEAT('a', 19000)),(48,'30', '0', '0', '0', '0');
 INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (19, '0', '0', '0', '0',REPEAT('a', 19000)),(49,'30', '0', '0', '0', '0');
+--error 0, 1297
 INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (20, '0', '0', '0', '0',REPEAT('a', 19000)),(50,'30', '0', '0', '0', '0');
+--error 0, 1297
 INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (21, '0', '0', '0', '0',REPEAT('a', 19000)),(51,'30', '0', '0', '0', '0');
+--error 0, 1297
 INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (22, '0', '0', '0', '0',REPEAT('a', 19000)),(52,'30', '0', '0', '0', '0');
+--error 0, 1297
 INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (23, '0', '0', '0', '0',REPEAT('a', 19000)),(53,'30', '0', '0', '0', '0');
+--error 0, 1297
 INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (24, '0', '0', '0', '0',REPEAT('a', 19000)),(54,'30', '0', '0', '0', '0');
+--error 0, 1297
 INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (25, '0', '0', '0', '0',REPEAT('a', 19000)),(55,'30', '0', '0', '0', '0');
 --error 0, 1297
 INSERT INTO t1 (pk1,b1,b2,b3,b4,b28) VALUES (26, '0', '0', '0', '0',REPEAT('a', 19000)),(56,'30', '0', '0', '0', '0');
@@ -140,16 +147,118 @@ UPDATE t1 SET b28 = REPEAT('b', 19000) WHERE pk1 = 48;
 DELETE from t1 WHERE pk1 = 30;
 UPDATE t1 SET b28 = REPEAT('b', 19000) WHERE pk1 = 48;
 
+--disable_query_log
+--disable_result_log
+let $c = 100;
+while ($c)
+{
+  SELECT * from t2;
+  dec $c;
+}
+
+connect(mysqld2,127.0.0.1,root,,test,$MASTER_MYPORT1);
+connect(mysqld3,127.0.0.1,root,,test,$MASTER_MYPORT1);
+connect(mysqld4,127.0.0.1,root,,test,$MASTER_MYPORT1);
+connect(mysqld5,127.0.0.1,root,,test,$MASTER_MYPORT1);
+connect(mysqld6,127.0.0.1,root,,test,$MASTER_MYPORT1);
+
+connection default;
+BEGIN;
+INSERT INTO t2 VALUES (4,0);
+
+connection mysqld2;
+BEGIN;
+INSERT INTO t2 VALUES (5,0);
+
+connection mysqld3;
+BEGIN;
+INSERT INTO t2 VALUES (6,0);
+
+connection mysqld4;
+BEGIN;
+--error 1297
+INSERT INTO t2 VALUES (7,0);
+
+connection mysqld5;
+BEGIN;
+--error 1297
+INSERT INTO t2 VALUES (8,0);
+
+connection mysqld6;
+BEGIN;
+--error 1297
+INSERT INTO t2 VALUES (9,0);
+
+connection default;
+COMMIT;
+
+connection mysqld2;
+COMMIT;
+
+connection mysqld3;
+COMMIT;
+
+connection default;
+SELECT * FROM t2;
+
+--exec $NDB_MGM -e "DATABASE QUOTA ALTER test --rate-per-sec = 5 --in-memory-size=2 --max-transaction-size=100 --max-parallel-transactions=10"
+
+--error 0,1297
+SELECT * from t2;
+--error 0,1297
+SELECT * from t2;
+--error 0,1297
+UPDATE t2 SET b = 0 where a = 4;
+COMMIT;
+
+connection mysqld2;
+--error 0,1297
+SELECT * from t2;
+--error 0,1297
+UPDATE t2 SET b = 0 where a = 5;
+COMMIT;
+
+connection mysqld3;
+--error 0,1297
+SELECT * from t2;
+--error 0,1297
+UPDATE t2 SET b = 0 where a = 6;
+COMMIT;
+
+connection mysqld4;
+--error 0,1297
+SELECT * from t2;
+--error 0,1297
+UPDATE t2 SET b = 0 where a = 0;
+COMMIT;
+
+connection mysqld5;
+--error 0,1297
+SELECT * from t2;
+--error 0,1297
+UPDATE t2 SET b = 0 where a = 1;
+COMMIT;
+
+connection mysqld6;
+--error 0,1297
+SELECT * from t2;
+--error 0,1297
+UPDATE t2 SET b = 0 where a = 2;
+COMMIT;
+
+--enable_result_log
+--enable_query_log
+
+connection default;
+
 DROP TABLE t1;
 DROP TABLE t2;
 
---disable_query_log
 if (!$NDB_BACKUP_DIR)
 {
   --die Need NDB_BACKUP_DIR variable
 }
 --let BACKUP_FILE=$NDB_BACKUP_DIR/backup.txt
---disable_query_log
 --exec $NDB_MGM -e "DATABASE QUOTA BACKUP $BACKUP_FILE"
 --exec $NDB_MGM -e "DATABASE QUOTA DROP test"
 --exec $NDB_MGM -e "DATABASE QUOTA DROP test2"

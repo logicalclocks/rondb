@@ -183,8 +183,14 @@ int NdbOperation::doSendKeyReq(int aNodeId, GenericSectionPtr *secs,
 
   setRequestInfoTCKEYREQ(lastFlag, sendLong);
 
-  DBUG_PRINT("info", ("Send TCKEYREQ: NdbOperation"));
-
+#ifdef VM_TRACE
+  {
+    TcKeyReq *tcKeyReq = (TcKeyReq *)request->getDataPtrSend();
+    DBUG_PRINT("info", ("Send TCKEYREQ: NdbOperation, transid[0x%x,0x%x]",
+      tcKeyReq->transId1,
+      tcKeyReq->transId2));
+  }
+#endif
   Uint32 keyInfoLen = secs[0].sz;
   Uint32 attrInfoLen = (numSecs == 2) ? secs[1].sz : 0;
   if (likely(sendLong)) {
