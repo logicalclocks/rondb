@@ -443,6 +443,7 @@ class FsReadWriteReq;
 /*       ERROR CODES FROM DBTC                                               */
 /* ------------------------------------------------------------------------- */
 #define ZMEMORY_QUOTA_OVERFLOW_ERROR 239
+#define ZSCAN_CONTINOUS_SCAN_LOCK_ERROR 2202
 #endif
 
 /**
@@ -679,6 +680,12 @@ class Dblqh : public SimulatedBlock {
       WAIT_SCAN_NEXTREQ_ending = 14
     };
     enum ScanType { ST_IDLE = 0, SCAN = 1, COPY = 2 };
+    enum ContinousScanState {
+      CONTINOUS_SCAN_IDLE = 0,
+      CONTINOUS_SCAN_ACTIVE = 1,
+      CONTINOUS_SCAN_READY = 2,
+      CONTINOUS_SCAN_CLOSE = 3
+    };
 
     /* A single scan of each fragment can have
      * MAX_PARALLEL_OP_PER_SCAN_WITH_LOCK read operations in progress
@@ -697,7 +704,8 @@ class Dblqh : public SimulatedBlock {
     UintR scan_acc_op_ptr[MaxScanAccSegments];
     Uint32 scan_acc_index;
     Uint32 scan_acc_segments;
-    UintR scanApiOpPtr;
+    Uint32 scanApiOpPtr[4];
+    Uint32 scanApiOpPtr_index;
     Local_key m_row_id;
 
     Uint32 m_max_batch_size_rows;
@@ -772,6 +780,8 @@ class Dblqh : public SimulatedBlock {
     Uint8 prioAFlag;
     Uint8 m_first_match_flag;
     Uint8 m_send_early_hbrep;
+    Uint8 m_par_ordered_scan_flag;
+    Uint8 m_continous_scan_state;
     // Aggregation
     Uint8 m_aggregation;
     Uint32 m_agg_curr_batch_size_rows; // [0, 1], 1 indicates a "aggregation
@@ -3371,8 +3381,10 @@ private:
   void sendAttrinfoLoop(Signal *signal);
   void sendAttrinfoSignal(Signal *signal);
   void sendLqhAttrinfoSignal(Signal *signal);
-  Uint32 initScanrec(const class ScanFragReq *, Uint32 aiLen,
-                     TcConnectionrecPtr);
+  Uint32 initScanrec(const class ScanFragReq *,
+                     Uint32 aiLen,
+                     TcConnectionrecPtr,
+                     Uint32 sig_len);
   void initScanTc(const class ScanFragReq *, Uint32 transid1, Uint32 transid2,
                   Uint32 fragId, Uint32 nodeId, Uint32 hashHi,
                   TcConnectionrecPtr);
