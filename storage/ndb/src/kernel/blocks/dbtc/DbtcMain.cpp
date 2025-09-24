@@ -15826,6 +15826,20 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
   ndbrequire(transP->apiScanRec == RNIL);
   ndbrequire(scanptr.p->scanApiRec == RNIL);
 
+#ifdef DEBUG_CONT_SCAN
+  g_eventLogger->info("(%u) TC scanPtrI: %u, scanParallel: %u",
+    instance(), scanptr.i, scanParallel);
+  for (Uint32 i = 0; i < scanParallel; i += 4) {
+    g_eventLogger->info("(%u) TC Recv ids"
+                        " [%u]=0x%x,[%u]=0x%x,[%u]=0x%x,[%u]=0x%x",
+      instance(),
+      i, apiPtr[i],
+      i+1, apiPtr[i+1],
+      i+2, apiPtr[i+2],
+      i+3, apiPtr[i+3]);
+  }
+#endif
+
   errCode =
       initScanrec(scanptr, scanTabReq, scanParallel, apiPtr, apiConnectptr.i);
   if (unlikely(errCode)) {
@@ -17147,6 +17161,9 @@ void Dbtc::sendFragScansLab(Signal *signal, ScanRecordPtr scanptr,
 
     ndbassert(scanptr.p->m_booked_fragments_count > 0);
     scanptr.p->m_booked_fragments_count--;
+    DEB_CONT_SCAN(("(%u) TC send SCAN_FRAGREQ scanNextFragId: %u",
+      instance(), scanptr.p->scanNextFragId));
+
     const bool success = sendScanFragReq(signal, scanptr, scanFragP,
                                          fragLocationPtr, apiConnectptr);
     if (unlikely(!success)) {
@@ -17370,6 +17387,16 @@ void Dbtc::execSCAN_FRAGCONF(Signal *signal) {
     return;
   }  // if
 
+  DEB_CONT_SCAN(("(%u) TC receive SCAN_FRAGCONF, status: %u, scanPtrI: %u"
+                 ", apiPtr(0x%x,0x%x,0x%x,0x%x)",
+    instance(),
+    status,
+    scanptr.i,
+    scanFragptr.p->m_apiPtr[0],
+    scanFragptr.p->m_apiPtr[1],
+    scanFragptr.p->m_apiPtr[2],
+    scanFragptr.p->m_apiPtr[3]));
+
   BlockReference lqhRef = scanFragptr.p->lqhBlockref;
   if (sig_len == ScanFragConf::SignalLength_query) {
     jamDebug();
@@ -17402,6 +17429,9 @@ void Dbtc::execSCAN_FRAGCONF(Signal *signal) {
       return;
     } else {
       jam();
+      DEB_CONT_SCAN(("(%u) TC scanPtrI: %u, scanFragPtrI: %u,"
+                     " Completed  fragment scan",
+        instance(), scanptr.i, scanFragptr.i));
       scanFragptr.p->stopFragTimer();
       scanFragptr.p->scanFragState = ScanFragRec::COMPLETED;
       {
@@ -17419,6 +17449,19 @@ void Dbtc::execSCAN_FRAGCONF(Signal *signal) {
 
   scanFragptr.p->stopFragTimer();
 
+  DEB_CONT_SCAN(("(%u) TC receive SCAN_FRAGCONF scanPtrI: %u,"
+                 " scanNextFragId: %u, booked_fragments_count: %u, "
+                 "scanNoFrag: %u, scanParallel: %u, m_pass_all_confs: %u"
+                 ", noCompletedOps: %u",
+    instance(),
+    scanptr.i,
+    scanptr.p->scanNextFragId,
+    scanptr.p->m_booked_fragments_count,
+    scanptr.p->scanNoFrag,
+    scanptr.p->scanParallel,
+    scanptr.p->m_pass_all_confs,
+    noCompletedOps));
+
   if (noCompletedOps == 0 && status != 0 && !scanptr.p->m_pass_all_confs &&
       scanptr.p->scanNextFragId + scanptr.p->m_booked_fragments_count <
           scanptr.p->scanNoFrag) {
@@ -17431,6 +17474,10 @@ void Dbtc::execSCAN_FRAGCONF(Signal *signal) {
      * send SCAN_TABCONF and let the API ask for the next batch.
      */
     jamDebug();
+    DEB_CONT_SCAN(("(%u) TC scanPtrI: %u, send SCAN_FRAGREQ from"
+                   " execSCAN_FRAGCONF",
+      instance(), scanptr.i));
+
     scanFragptr.p->scanFragState = ScanFragRec::IDLE;
     ScanFragLocationPtr fragLocationPtr;
     {
@@ -17478,10 +17525,13 @@ void Dbtc::execSCAN_FRAGCONF(Signal *signal) {
   scanFragptr.p->m_hasMore = activeMask;
   scanFragptr.p->scanFragState = ScanFragRec::QUEUED_FOR_DELIVERY;
 
-  DEB_SCAN_MANY(("(%u) SCAN_FRAGCONF, completed: %u, tot_len: %u",
+  DEB_SCAN_MANY(("(%u) TC scanPtrI: %u, SCAN_FRAGCONF, completed: %u,"
+                 " tot_len: %u, status: %u",
                  instance(),
+                 scanptr.i,
                  noCompletedOps,
-                 total_len));
+                 total_len,
+                 status));
   if (scanptr.p->m_queued_count > /** Min */ 0) {
     jamDebug();
     sendScanTabConf(signal, scanptr, apiConnectptr);
@@ -17668,12 +17718,29 @@ void Dbtc::execSCAN_NEXTREQ(Signal *signal) {
 
     copy(signal->getDataPtrSend() + 25, receiverIdsSection);
     releaseSections(handle);
+
   } else {
     jam();
     len = signal->getLength() - ScanNextReq::SignalLength;
     memcpy(signal->getDataPtrSend() + 25,
            signal->getDataPtr() + ScanNextReq::SignalLength, 4 * len);
   }
+#ifdef DEBUG_CONT_SCAN
+  Uint32 *apiPtr = signal->theData + 25;
+  g_eventLogger->info("(%u) len: %u", instance(), len);
+  for (Uint32 i = 0; i < len; i += 4) {
+    g_eventLogger->info("(%u) Recids [%u]=0x%x,[%u]=0x%x,[%u]=0x%x,[%u]=0x%x",
+     instance(),
+     i, apiPtr[i], i+1, apiPtr[i+1], i+2, apiPtr[i+2], i+3, apiPtr[i+3]);
+  }
+#endif
+
+  DEB_CONT_SCAN(("(%u) TC scanPtrI: %u, SCAN_NEXTREQ: stopScan: %u,"
+                 " scanState: %u",
+    instance(),
+    scanptr.i,
+    stopScan,
+    scanP->scanState));
 
   if (stopScan == ZTRUE) {
     jam();
@@ -17702,8 +17769,9 @@ void Dbtc::execSCAN_NEXTREQ(Signal *signal) {
   tmp.batch_size_rows = scanP->batch_size_rows;
   tmp.batch_size_bytes = scanP->batch_byte_size;
 
-  DEB_SCAN_MANY(("(%u) SCAN_NEXTREQ, batch_size: %u",
+  DEB_SCAN_MANY(("(%u) scanPtrI: %u, SCAN_NEXTREQ, batch_size: %u",
     instance(),
+    scanptr.i,
     scanP->batch_size_rows));
 
   for (Uint32 i = 0; i < len; i++) {
@@ -17730,6 +17798,12 @@ void Dbtc::execSCAN_NEXTREQ(Signal *signal) {
        * Reuse this ScanFragRec 'thread' for scanning 'scanNextFragId'
        */
       jamDebug();
+      DEB_CONT_SCAN(("(%u) TC scanPtrI: %u, scanNextFragId: %u, scanNoFrag: %u",
+        instance(),
+        scanptr.i,
+        scanptr.p->scanNextFragId,
+        scanptr.p->scanNoFrag));
+
       ndbrequire(scanptr.p->scanNextFragId < scanptr.p->scanNoFrag);
       ndbassert(scanptr.p->m_booked_fragments_count);
       scanptr.p->m_booked_fragments_count--;
@@ -17750,6 +17824,13 @@ void Dbtc::execSCAN_NEXTREQ(Signal *signal) {
       }
     } else {
       jamDebug();
+      DEB_CONT_SCAN(("(%u) TC scanPtrI: %u, send SCAN_NEXTREQ to node: %u"
+                     ", fragId: %u apiIndex: %u",
+        instance(),
+        scanptr.i,
+        refToNode(scanFragptr.p->lqhBlockref),
+        scanFragptr.p->lqhScanFragId,
+        scanFragptr.p->m_apiPtr_index));
       check_blockref(scanFragptr.p->lqhBlockref);
       scanFragptr.p->scanFragState = ScanFragRec::LQH_ACTIVE;
       scanFragptr.p->m_start_ticks = getHighResTimer();
@@ -17956,7 +18037,8 @@ void Dbtc::close_scan_req_send_conf(Signal *signal, ScanRecordPtr scanPtr,
     {
       signal->m_send_wakeups++;
     }
-    DEB_SCAN_MANY(("(%u) Send SCAN_TABCONF, endOfData", instance()));
+    DEB_SCAN_MANY(("(%u) TC scanPtrI: %u, Send SCAN_TABCONF, endOfData",
+      instance(), scanPtr.i));
     sendSignal(ref, GSN_SCAN_TABCONF, signal, ScanTabConf::SignalLength, JBB);
     time_track_complete_scan(scanPtr.p, refToNode(ref));
   }
@@ -18426,6 +18508,20 @@ void Dbtc::sendScanTabConf(Signal *signal, const ScanRecordPtr scanPtr,
         *ops++ = curr.p->m_ops;
         extra_words++;
       }
+      DEB_CONT_SCAN(("(%u) TC scanPtrI: %u, done: %u,"
+                     " scan_frag_conf_status: %u, scanFragPtrI: %u"
+                     " booked: %u, left: %d, apiPtr: 0x%x, apiPtr_index: %u,"
+                     " words_per_op: %u",
+        instance(),
+        scanPtr.i,
+        done,
+        curr.p->m_scan_frag_conf_status,
+        curr.i,
+        booked,
+        left,
+        apiPtr,
+        apiPtr_index_used,
+        words_per_op));
 
       curr.p->stopFragTimer();
       queued.remove(curr);
@@ -18448,12 +18544,17 @@ void Dbtc::sendScanTabConf(Signal *signal, const ScanRecordPtr scanPtr,
     jam();
     release = true;
     conf->requestInfo = op_count | ScanTabConf::EndOfData;
+    DEB_CONT_SCAN(("(%u) TC scanPtr.i: %u, Send EndOfData with op_count: %u",
+      instance(), scanPtr.i, op_count));
   } else {
     if (scanPtr.p->m_running_scan_frags.isEmpty()) {
       jam();
       /**
        * All scan frags delivered...waiting for API
        */
+      DEB_CONT_SCAN(("(%u) TC scanPtrI: %u, Send SCAN_TABCONF and wait for API",
+        instance(),
+        scanPtr.i));
       setApiConTimer(apiConnectptr, ctcTimer, __LINE__);
     } else {
       jam();
@@ -18468,16 +18569,18 @@ void Dbtc::sendScanTabConf(Signal *signal, const ScanRecordPtr scanPtr,
     LinearSectionPtr ptr[3];
     ptr[0].p = signal->getDataPtrSend() + 25;
     ptr[0].sz = words_per_op * op_count + extra_words;
-    DEB_SCAN_MANY(("(%u) Send SCAN_TABCONF with %u words",
-      instance(), ptr[0].sz));
+    DEB_SCAN_MANY(("(%u) TC scanPtrI: %u, Send SCAN_TABCONF with %u words"
+                   ", op_count: %u",
+      instance(), scanPtr.i, ptr[0].sz, op_count));
     sendSignal(ref, GSN_SCAN_TABCONF, signal, ScanTabConf::SignalLength, JBB,
                ptr, 1);
   } else {
     jamDebug();
     Uint32 sig_len = ScanTabConf::SignalLength + extra_words;
     sig_len += words_per_op * op_count;
-    DEB_SCAN_MANY(("(%u) Send SCAN_TABCONF with short signal, sig_len: %u",
-      instance(), sig_len));
+    DEB_SCAN_MANY(("(%u) TC scanPtrI: %u, Send SCAN_TABCONF with short"
+                   " signal, sig_len: %u, op_count: %u",
+      instance(), scanPtr.i, sig_len, op_count));
     sendSignal(ref, GSN_SCAN_TABCONF, signal, sig_len, JBB);
   }
   scanPtr.p->m_queued_count = 0;
