@@ -181,6 +181,12 @@
 #define DEB_QUOTA_ABORT(arglist) do { } while (0)
 #endif
 
+#ifdef DEBUG_CONT_SCAN
+#define DEB_CONT_SCAN(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_CONT_SCAN(arglist) do { } while (0)
+#endif
+
 #ifdef DEBUG_RATE_QUEUE_DROP
 #define DEB_RATE_QUEUE_DROP(arglist) do { g_eventLogger->info arglist ; } while (0)
 #else
@@ -11441,6 +11447,8 @@ void Dbtc::logScanTimeout(Signal *signal, ScanFragRecPtr scanFragPtr,
   bool nodisk = ScanFragReq::getNoDiskFlag(scanPtr.p->scanRequestInfo);
   bool aggregation = ScanFragReq::getAggregationFlag(scanPtr.p->scanRequestInfo);
   bool ttl_ignore = ScanFragReq::getTTLIgnoreFragFlag(scanPtr.p->scanRequestInfo);
+  bool par_ordered =
+    ScanFragReq::getParallelOrderedScanFlag(scanPtr.p->scanRequestInfo);
 
   Uint32 runningCount = 0, deliveredCount = 0, queuedCount = 0;
   {
@@ -11460,7 +11468,7 @@ void Dbtc::logScanTimeout(Signal *signal, ScanFragRecPtr scanFragPtr,
 
   g_eventLogger->info("TC %u : Scan timeout "
                       "[0x%08x 0x%08x] state %u tab %u dist %u ri 0x%x "
-                      " (%s%s%s%s%s%s%s%s) frags r %u d %u q %u "
+                      " (%s%s%s%s%s%s%s%s%s) frags r %u d %u q %u "
                       "frag state %u, fid %u node %u instance %u",
                       instance(),
                       apiPtr.p->transid[0],
@@ -11476,7 +11484,8 @@ void Dbtc::logScanTimeout(Signal *signal, ScanFragRecPtr scanFragPtr,
                       (range?"range ":""),
                       (nodisk?"nodisk ":"disk "),
                       (aggregation?"aggregation ":"noaggregation "),
-                      (ttl_ignore?"ttl ignore" : "ttl"),
+                      (ttl_ignore?"ttl ignore " : "ttl"),
+                      (par_ordered?"par_ordered" : "no_par_ordered"),
                       runningCount,
                       deliveredCount,
                       queuedCount,
@@ -15506,7 +15515,13 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
   SegmentedSectionPtr api_op_ptr;
   ndbrequire(handle.getSection(api_op_ptr, ScanTabReq::ReceiverIdSectionNum));
 
-  // Scan parallelism is determined by the number of receiver ids sent
+  /**
+   * Scan parallelism is determined by the number of receiver ids sent
+   * If the flag ParallelOrderedScan is set we will have 2 receiver ids
+   * times the parallelism. This will ensure that we can continue scanning
+   * even after delivering a batch to the NDB API. We will handle this
+   * below after acquiring a scan record.
+   */
   Uint32 scanParallel = api_op_ptr.sz;
   Uint32 scanConcurrency = scanParallel;
   Uint32 *apiPtr = signal->theData + 25;  // temp storage
@@ -15966,7 +15981,6 @@ Dbtc::ScanFragRec::ScanFragRec()
       scanRec(RNIL),
       m_scan_frag_conf_status(0),
       m_ops(0),
-      m_apiPtr(RNIL),
       m_totalLen(0),
       m_hasMore(0),
       nextList(RNIL),
@@ -15979,8 +15993,45 @@ Uint32 Dbtc::initScanrec(ScanRecordPtr scanptr, const ScanTabReq *scanTabReq,
                          UintR scanParallel, const Uint32 apiPtr[],
                          Uint32 apiConnectPtr) {
   const UintR ri = scanTabReq->requestInfo;
-  Uint32 batchSizeRows = ScanTabReq::getScanBatch(ri);
+  bool par_ordered_scan_flag = false;
+  /* Ensure variables with impact on releaseScanResources are init:ed */
+  scanptr.p->m_running_scan_frags.init();
+  scanptr.p->m_queued_scan_frags.init();
+  scanptr.p->m_delivered_scan_frags.init();
+  scanptr.p->m_fragLocations.init();
+  scanptr.p->scanKeyInfoPtr = RNIL;
+  scanptr.p->scanAttrInfoPtr = RNIL;
+  scanptr.p->m_scan_cookie = DihScanTabConf::InvalidCookie;
   scanptr.p->scanApiRec = apiConnectPtr;
+  if (ScanTabReq::getParallelOrderedScanFlag(ri)) {
+    /**
+     * This new feature introduces a second receiver id for each parallelism.
+     * This enables the scan in each partition to continue while waiting for
+     * DBTC and the NDB API to return SCAN_NEXTREQ. It will decrease latency
+     * for normal scans, also partition pruned scans, but it will have a
+     * significant impact on handling of ordered index scans using OrderBy
+     * flag. In this case the impact might be very significant since we avoid
+     * becoming single-threaded in this case.
+     */
+    if (unlikely((scanParallel & 3) != 0 ||
+        scanParallel == 0)) {
+      jam();
+      return ZSCAN_PAR_RECEIVER_ID_ERROR;
+    }
+    if (unlikely(ScanTabReq::getReadCommittedFlag(ri) == 0)) {
+      jam();
+      return ZSCAN_CONTINOUS_SCAN_LOCK_ERROR;
+    }
+    scanParallel /= 4;
+    par_ordered_scan_flag = true;
+    DEB_CONT_SCAN(("(%u) TC scanPtrI: %u, Use Continous scan with"
+                   " scanParallel: %u",
+      instance(),
+      scanptr.i,
+      scanParallel));
+  }
+  Uint32 batchSizeRows = ScanTabReq::getScanBatch(ri);
+  scanptr.p->m_par_ordered_scan_flag = par_ordered_scan_flag;
   scanptr.p->scanTableref = tabptr.i;
   scanptr.p->scanSchemaVersion = scanTabReq->tableSchemaVersion;
   scanptr.p->scanNoFrag = 0;
@@ -15999,8 +16050,6 @@ Uint32 Dbtc::initScanrec(ScanRecordPtr scanptr, const ScanTabReq *scanTabReq,
   DEB_SCAN_MANY(("(%u) SCAN_TABREQ, batch_size: %u",
     instance(), scanptr.p->batch_size_rows));
 
-  scanptr.p->m_running_scan_frags.init();
-
   Uint32 tmp = 0;
   ScanFragReq::setLockMode(tmp, ScanTabReq::getLockMode(ri));
   ScanFragReq::setHoldLockFlag(tmp, ScanTabReq::getHoldLockFlag(ri));
@@ -16015,6 +16064,7 @@ Uint32 Dbtc::initScanrec(ScanRecordPtr scanptr, const ScanTabReq *scanTabReq,
   ScanFragReq::setTTLIgnoreFragFlag(tmp, ScanTabReq::getTTLIgnoreFlag(ri));
   ScanFragReq::setTTLOnlyExpiredFragFlag(tmp,
                       ScanTabReq::getTTLOnlyExpiredFlag(ri));
+  ScanFragReq::setParallelOrderedScanFlag(tmp, par_ordered_scan_flag);
 
   if (unlikely(ScanTabReq::getViaSPJFlag(ri))) {
     jam();
@@ -16032,13 +16082,10 @@ Uint32 Dbtc::initScanrec(ScanRecordPtr scanptr, const ScanTabReq *scanTabReq,
   scanptr.p->scanState = ScanRecord::RUNNING;
   scanptr.p->m_queued_count = 0;
   scanptr.p->m_booked_fragments_count = 0;
-  scanptr.p->m_scan_cookie = DihScanTabConf::InvalidCookie;
   scanptr.p->m_schema_version_scan_cookie = DihScanTabConf::InvalidCookie;
   scanptr.p->m_close_scan_req = false;
   scanptr.p->m_pass_all_confs = ScanTabReq::getPassAllConfsFlag(ri);
   scanptr.p->m_extended_conf = ScanTabReq::getExtendedConf(ri);
-  scanptr.p->scanKeyInfoPtr = RNIL;
-  scanptr.p->scanAttrInfoPtr = RNIL;
 
   Local_ScanFragRec_dllist list(c_scan_frag_pool,
                                 scanptr.p->m_running_scan_frags);
@@ -16052,7 +16099,24 @@ Uint32 Dbtc::initScanrec(ScanRecordPtr scanptr, const ScanTabReq *scanTabReq,
     list.addFirst(ptr);
     ptr.p->scanRec = scanptr.i;
     ptr.p->lqhScanFragId = 0;
-    ptr.p->m_apiPtr = apiPtr[i];
+    ptr.p->m_apiPtr_index = 0;
+    if (par_ordered_scan_flag) {
+      ptr.p->m_apiPtr[0] = apiPtr[4*i];
+      ptr.p->m_apiPtr[1] = apiPtr[4*i + 1];
+      ptr.p->m_apiPtr[2] = apiPtr[4*i + 2];
+      ptr.p->m_apiPtr[3] = apiPtr[4*i + 3];
+      DEB_CONT_SCAN(("(%u) scanFragNextId: %u, scanFragPtrI: %u,"
+                     " apiPtr(0x%x,0x%x,0x%x,0x%x)",
+        instance(),
+        i,
+        ptr.i,
+        ptr.p->m_apiPtr[0],
+        ptr.p->m_apiPtr[1],
+        ptr.p->m_apiPtr[2],
+        ptr.p->m_apiPtr[3]));
+    } else {
+      ptr.p->m_apiPtr[0] = apiPtr[i];
+    }
   }  // for
   scanptr.p->m_booked_fragments_count = scanParallel;
 
@@ -18123,7 +18187,7 @@ bool Dbtc::sendScanFragReq(Signal *signal, ScanRecordPtr scanptr,
   req->savePointId = apiConnectptr.p->currSavePointId;
   req->transId1 = apiConnectptr.p->transid[0];
   req->transId2 = apiConnectptr.p->transid[1];
-  req->clientOpPtr = scanFragP.p->m_apiPtr;
+  req->clientOpPtr = scanFragP.p->m_apiPtr[0];
   req->batch_size_rows = scanP->batch_size_rows;
   req->batch_size_bytes = scanP->batch_byte_size;
 
@@ -18137,7 +18201,13 @@ bool Dbtc::sendScanFragReq(Signal *signal, ScanRecordPtr scanptr,
      * variableData[1] are not used, so we can safely use variableData[0] here.
      */
     req->variableData[0] = scanP->m_ttl_purge_window_size;
-    extra_len = 1;
+    extra_len++;
+  }
+  if (ScanFragReq::getParallelOrderedScanFlag(requestInfo)) {
+    req->variableData[extra_len] = scanFragP.p->m_apiPtr[1];
+    req->variableData[extra_len + 1] = scanFragP.p->m_apiPtr[2];
+    req->variableData[extra_len + 2] = scanFragP.p->m_apiPtr[3];
+    extra_len+= 3;
   }
 
   // Encode variable part
@@ -18251,6 +18321,8 @@ bool Dbtc::sendScanFragReq(Signal *signal, ScanRecordPtr scanptr,
     /* Clear handle, section deallocation handled elsewhere. */
     sections.clear();
   }
+  /* We always start with the first receiver object */
+  scanFragP.p->m_apiPtr_index = 0;
   scanFragP.p->scanFragState = ScanFragRec::LQH_ACTIVE;
   scanFragP.p->startFragTimer(ctcTimer);
   scanFragP.p->m_start_ticks = getHighResTimer();
@@ -18328,7 +18400,17 @@ void Dbtc::sendScanTabConf(Signal *signal, const ScanRecordPtr scanPtr,
       bool done = curr.p->m_scan_frag_conf_status && (left <= (int)booked);
       if (curr.p->m_scan_frag_conf_status) booked++;
 
-      *ops++ = curr.p->m_apiPtr;
+      Uint32 apiPtr_index_used = curr.p->m_apiPtr_index;
+      Uint32 apiPtr = curr.p->m_apiPtr[apiPtr_index_used];
+      *ops++ = apiPtr;
+      if (scanPtr.p->m_par_ordered_scan_flag) {
+        /**
+         * If we will continue scanning the same fragment, we need to swap
+         * to the next receiver object.
+         */
+        Uint32 apiPtr_index_new = (apiPtr_index_used + 1) % 4;
+        curr.p->m_apiPtr_index = apiPtr_index_new;
+      }
       *ops++ = done ? RNIL : curr.i;
       if (words_per_op == 5) {
         *ops++ = curr.p->m_ops;

@@ -169,6 +169,9 @@
 #define ZSCANTIME_OUT_ERROR 296
 #define ZSCANTIME_OUT_ERROR2 297
 
+#define ZSCAN_PAR_RECEIVER_ID_ERROR 2201
+#define ZSCAN_CONTINOUS_SCAN_LOCK_ERROR 2202
+
 // ----------------------------------------
 // Error Codes for transactions
 // ----------------------------------------
@@ -1811,11 +1814,13 @@ class Dbtc : public SimulatedBlock {
     // The value of fragmentCompleted in the last received SCAN_FRAGCONF
     Uint8 m_scan_frag_conf_status;
 
+    Uint8 m_apiPtr_index;
+
     inline void startFragTimer(Uint32 timeVal) { scanFragTimer = timeVal; }
     inline void stopFragTimer(void) { scanFragTimer = 0; }
 
     Uint32 m_ops;
-    Uint32 m_apiPtr;
+    Uint32 m_apiPtr[4];
     Uint32 m_totalLen;
     Uint32 m_hasMore;
     Uint32 nextList;
@@ -1976,6 +1981,7 @@ class Dbtc : public SimulatedBlock {
      *
      */
     bool m_scan_dist_key_flag;
+    bool m_par_ordered_scan_flag;
     Uint32 m_scan_dist_key;
     Uint32 m_read_any_node;
     NDB_TICKS m_start_ticks;
