@@ -23558,7 +23558,6 @@ void Dbtc::fk_scanFromChildTable(Signal *signal,
   const Uint32 parallelism = SCAN_FROM_CHILD_PARALLELISM;
   ScanTabReq *req = CAST_PTR(ScanTabReq, signal->getDataPtrSend());
   Uint32 ri = 0;
-  ScanTabReq::setParallelism(ri, parallelism);
   ScanTabReq::setDescendingFlag(ri, 0);
   ScanTabReq::setRangeScanFlag(ri, 1);
   ScanTabReq::setTupScanFlag(ri, 0);
