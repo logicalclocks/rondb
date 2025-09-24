@@ -112,6 +112,7 @@ bool ndb_get_table_statistics(THD *thd, Ndb *ndb,
       goto retry;
     }
 
+    DBUG_PRINT("info", ("Call nextResult(row, true, true)"));
     const char *dummyRowPtr;
     while ((check = pOp->nextResult(&dummyRowPtr, true, true)) == 0) {
       DBUG_PRINT("info",
@@ -137,7 +138,7 @@ bool ndb_get_table_statistics(THD *thd, Ndb *ndb,
         break;
       }
     }
-
+    DBUG_PRINT("info", ("nextResult returned: %d", check));
     if (check == -1) {
       ndb_error = pOp->getNdbError();
       goto retry;

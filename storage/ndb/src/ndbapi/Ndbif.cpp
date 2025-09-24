@@ -648,6 +648,8 @@ void NdbImpl::trp_deliver_signal(const NdbApiSignal *aSignal,
       if (tReturnCode != -1 && tWaitState == WAIT_SCAN) {
         tNewState = NO_WAIT;
       }
+      DBUG_PRINT("info", ("tReturnCode: %u, tWaitState: %u, tNewState: %u",
+        tReturnCode, tWaitState, tNewState));
       break;
     }
     case GSN_TC_COMMITCONF: {
