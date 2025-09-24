@@ -319,11 +319,13 @@ class NdbIndexScanOperation : public NdbScanOperation {
                           Uint32 *distKey);
   void fix_get_values();
   int next_result_ordered(bool fetchAllowed, bool forceSend = false);
-  int next_result_ordered_ndbrecord(const char *&out_row, bool fetchAllowed,
+  int next_result_ord_ndbrecord(const char *&out_row, bool fetchAllowed,
+                                bool forceSend);
+  int next_result_ord_ndbrecord_par(const char *&out_row, bool fetchAllowed,
                                     bool forceSend);
   void ordered_insert_receiver(Uint32 start, NdbReceiver *receiver);
   int ordered_send_scan_wait_for_all(bool forceSend);
-  int send_next_scan_ordered(Uint32 idx);
+  int send_next_scan_ordered(Uint32 idx, bool stopFlag);
   int compare(Uint32 key, Uint32 cols, const NdbReceiver *,
               const NdbReceiver *);
   Uint32 m_sort_columns;

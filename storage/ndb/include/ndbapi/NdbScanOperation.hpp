@@ -618,11 +618,24 @@ class NdbScanOperation : public NdbOperation {
   
   int fix_receivers(Uint32 parallel);
   void reset_receivers(Uint32 parallel, Uint32 ordered);
+  bool m_waiting_for_data;
   Uint32 *m_array;  // containing all arrays below
   Uint32 m_allocated_receivers;
   NdbReceiver **m_receivers;  // All receivers
+  void close_ndb_receiver(Uint32 inx, Uint32 state);
+  enum {
+    ReceiverEmpty = 0,
+    ReceiverPrepared = 1,
+    ReceiverSentWaitingForResponse = 2,
+    ReceiverDataAvailable = 3,
+    ReceiverDataReady = 4,
+    ReceiverDataReadyToBeClosed = 5,
+    ReceiverClosed = 6
+  };
+  Uint8 *m_receiver_state;
 
   Uint32 *m_prepared_receivers;  // These are to be sent
+  Uint32 m_prepared_receivers_count;
 
   /*
     Owned by API/user thread.
@@ -733,6 +746,7 @@ class NdbScanOperation : public NdbOperation {
   ScanPruningState m_pruneState;
   Uint32 m_pruningKey;  // Can be distr key hash or actual partition id.
 
+  bool m_continousScan;
   /**
    * This flag indicates whether a scan operation was 
    * successfully finalised

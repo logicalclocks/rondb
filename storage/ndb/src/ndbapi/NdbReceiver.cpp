@@ -323,6 +323,7 @@ NdbReceiver::NdbReceiver(Ndb *aNdb)
       m_lastFinalRecAttr(nullptr),
       m_rec_attr_data(nullptr),
       m_rec_attr_len(0),
+      m_index(Uint32(~0)),
       m_current_row(beforeFirstRow),
       m_expected_result_length(0),
       m_received_result_length(0) {}

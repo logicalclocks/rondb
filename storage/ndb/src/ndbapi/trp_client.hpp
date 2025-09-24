@@ -212,6 +212,7 @@ class PollGuard {
                 bool forceSend,
                 NDB_TICKS *start_time);
   void unlock_and_signal();
+  void flush_send();
 private:
   int wait_for_input_in_loop(int wait_time,
                              bool forceSend,

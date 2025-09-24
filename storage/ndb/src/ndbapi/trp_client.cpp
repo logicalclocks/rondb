@@ -474,6 +474,10 @@ int PollGuard::wait_scan(int wait_time,
                                 start_time);
 }
 
+void PollGuard::flush_send() {
+  m_clnt->do_forceSend(true);
+}
+
 int PollGuard::wait_for_input_in_loop(int max_wait_ms,
                                       bool forceSend,
                                       NDB_TICKS *start_time)
