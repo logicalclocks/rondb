@@ -18195,7 +18195,7 @@ bool Dbtc::sendScanFragReq(Signal *signal, ScanRecordPtr scanptr,
           for (Uint32 i = 0; i < sections.m_cnt; i++) {
             signal_size += sections.m_ptr[i].sz;
           }
-          signal_size += ScanFragReq::SignalLength;
+          signal_size += (ScanFragReq::SignalLength + extra_len);
           if (signal_size > MAX_SIZE_SINGLE_SIGNAL) {
             jam();
             /**
