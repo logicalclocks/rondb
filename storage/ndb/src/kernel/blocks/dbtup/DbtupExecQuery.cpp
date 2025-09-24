@@ -2069,7 +2069,7 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
     Uint32 attrBufLen = lqhScanPtrP->scanAiLength;
     Uint32 dirtyOp = (lqhScanPtrP->scanLockHold == ZFALSE);
     Uint32 prioAFlag = lqhScanPtrP->prioAFlag;
-    Uint32 opRef = lqhScanPtrP->scanApiOpPtr;
+    Uint32 opRef = lqhScanPtrP->scanApiOpPtr[lqhScanPtrP->scanApiOpPtr_index];
     Uint32 applRef = lqhScanPtrP->scanApiBlockref;
     Uint32 interpreted_exec = lqhOpPtrP->opExec;
     Uint32 interpreted_insert = lqhOpPtrP->m_interpreted_insert;
