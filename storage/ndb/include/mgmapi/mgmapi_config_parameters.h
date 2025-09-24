@@ -397,6 +397,7 @@
 #define CFG_CONNECT_BACKOFF_MAX_TIME 807
 #define CFG_START_CONNECT_BACKOFF_MAX_TIME 808
 #define CFG_API_VERBOSE               809
+#define CFG_API_CONTINOUS_SCAN        899
 
 /**
  * Internal

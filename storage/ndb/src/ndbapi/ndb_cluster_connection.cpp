@@ -1191,6 +1191,10 @@ int Ndb_cluster_connection_impl::configure(
     if (!iter.get(CFG_API_VERBOSE, &verbose)) {
       m_ndbapiconfig.m_verbose = verbose;
     }
+    Uint32 continous_scan = 0;
+    if (!iter.get(CFG_API_CONTINOUS_SCAN, &continous_scan)) {
+      m_ndbapiconfig.m_continous_scan = continous_scan;
+    }
 
     // If DefaultHashmapSize is not set or zero, use the minimum
     // value set (not zero) for any other node, since this size
