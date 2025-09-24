@@ -16566,6 +16566,22 @@ void Dblqh::execACC_CHECK_SCAN(Signal *signal) {
   Uint32 sig_number = signal->theData[1];
   ScanRecord *scanPtr = scanptr.p;
   SimulatedBlock *block = scanPtr->scanBlock;
+#ifdef DEBUG_CONT_SCAN
+  if (scanPtr->scanCompletedStatus ||
+      scanPtr->m_continous_scan_state != ScanRecord::CONTINOUS_SCAN_IDLE) {
+    DEB_CONT_SCAN(("(%u) LQH scanPtrI: %u, scanState: %u, sig: %u, "
+                   "completed: %u, cont_state: %u, lastSeen: %u"
+                   ", api_ref: %u",
+      instance(),
+      scanptr.i,
+      scanPtr->scanState,
+      sig_number,
+      scanPtr->scanCompletedStatus,
+      scanPtr->m_continous_scan_state,
+      scanPtr->scan_lastSeen,
+      scanPtr->scanApiOpPtr[scanPtr->scanApiOpPtr_index]));
+  }
+#endif
   if (sig_number == GSN_NEXT_SCANREQ) {
     jamDebug();
     ExecFunction f = block->getExecuteFunction(GSN_NEXT_SCANREQ);
@@ -16630,6 +16646,7 @@ void Dblqh::exec_next_scan_conf(Signal *signal, bool ttl_ignore_for_ral) {
   scanPtr->m_row_id.m_page_idx = pageIdx;
   scanPtr->m_row_id.m_page_no = pageNo;
   scanPtr->m_ttl_ignore_for_ral = ttl_ignore_for_ral;
+  scanPtr->scan_lastSeen = __LINE__;
   continue_next_scan_conf(signal, scanPtr->scanState, scanPtr);
 }
 
@@ -16759,6 +16776,8 @@ void Dblqh::execSCAN_NEXTREQ(Signal *signal) {
 
   setup_scan_pointers_from_tc_con(tcConnectptr, __LINE__);
   scanptr.p->scanTcWaiting = cLqhTimeOutCount;
+  DEB_CONT_SCAN(("(%u) LQH: scanPtrI: %u, execSCAN_NEXTREQ",
+    instance(), scanptr.i));
   /* ------------------------------------------------------------------
    * If close flag is set this scan should be closed
    * If we are waiting for SCAN_NEXTREQ set flag to stop scanning and
@@ -16770,6 +16789,32 @@ void Dblqh::execSCAN_NEXTREQ(Signal *signal) {
     if (ERROR_INSERTED(5034)) {
       CLEAR_ERROR_INSERT_VALUE;
     }
+    /**
+     * We need no special handling of continous scan when closing the
+     * scan, scanState is the current state of the scan.
+     */
+#ifdef DEBUG_CONT_SCAN
+    bool tup = false;
+    Uint32 last_seen = 0;
+    if (scanptr.p->scanBlock == c_tup) {
+      last_seen = c_tup->get_lastSeen(scanptr.p->scanAccPtr);
+      tup = true;
+    }
+    DEB_CONT_SCAN(("(%u) LQH: DBTC sent close flag on scanPtrI: %u"
+                   ", transState: %u, scanState: %u, lastSeen: %u"
+                   ", cont_state: %u, tuptux_last_seen: %u, tup: %u"
+                   ", api_ref: %u",
+      instance(),
+      scanptr.i,
+      tcConnectptr.p->transactionState,
+      scanptr.p->scanState,
+      scanptr.p->scan_lastSeen,
+      scanptr.p->m_continous_scan_state,
+      last_seen,
+      tup,
+      scanptr.p->scanApiOpPtr[scanptr.p->scanApiOpPtr_index]));
+#endif
+    scanptr.p->m_continous_scan_state = ScanRecord::CONTINOUS_SCAN_IDLE;
     closeScanRequestLab(signal, tcConnectptr);
     release_frag_access(prim_tab_fragptr.p);
     return;
@@ -16981,6 +17026,7 @@ void Dblqh::scanNextLoopLab(Signal *signal, Uint32 clientPtrI, Uint32 accOpPtr,
    * We indicate that we have another signal to process by setting
    * m_in_send_next_scan to 2.
    */
+  scanPtr->scan_lastSeen = __LINE__;
   ndbassert(in_send_next_scan == 1);
   m_in_send_next_scan = 2;
 }  // Dblqh::scanNextLoopLab()
@@ -17898,6 +17944,8 @@ void Dblqh::execSCAN_FRAGREQ(Signal *signal) {
       releaseSections(handle);
       goto error_handler;
     }
+    DEB_CONT_SCAN(("(%u) LQH Start scan, scanPtrI: %u",
+      instance(), scanptr.i));
     scanptr.p->m_def_max_batch_size = def_max_batch_size;
     initScanTc(scanFragReq, transid1, transid2, fragId, ZNIL, senderBlockRef,
                tcConnectptr);
@@ -18688,6 +18736,14 @@ void Dblqh::nextScanConfScanLab(Signal *signal, ScanRecord *const scanPtr,
       scanPtr->m_last_row = false;
       scanPtr->scanFlag = NextScanReq::ZSCAN_NEXT;
 
+      DEB_CONT_SCAN(("(%u):1 ScanPtrI: %u, readLen: %u, batch_bytes: %u,"
+                     " rows: %u",
+        instance(),
+        scanptr.i,
+        readLength,
+        scanPtr->m_curr_batch_size_bytes,
+        scanPtr->m_curr_batch_size_rows));
+
       if (!scanPtr->check_scan_batch_completed()) {
         jam();
         scanNextLoopLab(signal, regTcPtr->clientConnectrec, RNIL, scanPtr,
@@ -19057,6 +19113,10 @@ void Dblqh::scanTupkeyConfLab(Signal* signal,
       return;
     }  // if
     jam();
+    scanPtr->scan_lastSeen = __LINE__;
+    DEB_CONT_SCAN(("(%u) LQH scanPtrI: %u, 1:closeScanLab",
+      instance(),
+      scanptr.i));
     closeScanLab(signal, regTcPtr);
     return;
   }  // if
@@ -19079,6 +19139,14 @@ void Dblqh::scanTupkeyConfLab(Signal* signal,
   scanPtr->m_curr_batch_size_bytes += read_len * sizeof(Uint32);
   scanPtr->m_curr_batch_size_rows = rows + 1;
   scanPtr->m_last_row = last_row;
+
+  DEB_CONT_SCAN(("(%u):2 ScanPtrI: %u, readLen: %u, batch_bytes: %u,"
+                 " rows: %u",
+    instance(),
+    scanptr.i,
+    read_len,
+    scanPtr->m_curr_batch_size_bytes,
+    scanPtr->m_curr_batch_size_rows));
 
   jamDebug();
   jamDataDebug(scanPtr->m_curr_batch_size_rows);
@@ -19116,6 +19184,10 @@ void Dblqh::scanTupkeyConfLab(Signal* signal,
       return;
     } else {
       jam();
+      DEB_CONT_SCAN(("(%u) LQH scanPtrI: %u, 1: scan completed",
+        instance(),
+        scanptr.i));
+      scanPtr->scan_lastSeen = __LINE__;
       scanPtr->scanReleaseCounter = rows + 1;
       scanReleaseLocksLab(signal, regTcPtr);
       return;
@@ -19123,12 +19195,14 @@ void Dblqh::scanTupkeyConfLab(Signal* signal,
   }
   if (unlikely(scanPtr->scanLockHold == ZTRUE)) {
     jamDebug();
+    scanPtr->scan_lastSeen = __LINE__;
     scanPtr->scanFlag = NextScanReq::ZSCAN_NEXT;
     scanNextLoopLab(signal, regTcPtr->clientConnectrec, RNIL, scanPtr,
                     fragptr.p);
     return;
   } else {
     jamDebug();
+    scanPtr->scan_lastSeen = __LINE__;
     scanPtr->scanFlag = NextScanReq::ZSCAN_NEXT_COMMIT;
     Uint32 index = (scanPtr->readCommitted) ? 0 :
                    scanPtr->m_curr_batch_size_rows-1;
@@ -19193,11 +19267,16 @@ void Dblqh::scanTupkeyRefLab(Signal* signal,
      * --------------------------------------------------------------------- */
     if ((scanPtr->scanLockHold == ZTRUE) && rows) {
       jam();
+      scanPtr->scan_lastSeen = __LINE__;
       scanPtr->scanReleaseCounter = 1;
       scanReleaseLocksLab(signal, tcConnectptr.p);
       return;
     }  // if
     jam();
+    scanPtr->scan_lastSeen = __LINE__;
+    DEB_CONT_SCAN(("(%u) LQH scanPtrI: %u, 2:closeScanLab",
+      instance(),
+      scanptr.i));
     closeScanLab(signal, tcConnectptr.p);
     return;
   }  // if
@@ -19214,12 +19293,14 @@ void Dblqh::scanTupkeyRefLab(Signal* signal,
     if (scanPtr->scanLockHold == ZTRUE && rows > 0) {
       jam();
       scanPtr->scanReleaseCounter = 1;
+      scanPtr->scan_lastSeen = __LINE__;
       /* --------------------------------------------------------------------
        *       WE NEED TO RELEASE ALL LOCKS CURRENTLY
        *       HELD BY THIS SCAN.
        * -------------------------------------------------------------------- */
     } else {
       jam();
+      scanPtr->scan_lastSeen = __LINE__;
       scanPtr->m_curr_batch_size_rows = rows + 1;
       scanPtr->scanReleaseCounter = rows + 1;
     }  // if
@@ -19441,6 +19522,9 @@ void Dblqh::handle_finish_scan(Signal *signal,
     scanptr.p->scan_lastSeen = __LINE__;
     scanptr.p->scan_startLine = tcConnectptr.i;
   }
+  DEB_CONT_SCAN(("(%u) LQH scanPtrI: %u, releaseScanrec(%u)",
+    instance(), scanptr.i, release_scan));
+
   TcConnectionrecPtr tcPtr = tcConnectptr;
   deleteTransidHash(signal, tcPtr);
   tcConnectptr.p->tcScanRec = RNIL;
@@ -20412,6 +20496,12 @@ void Dblqh::send_next_NEXT_SCANREQ(Signal* signal,
           /* Normal user scans */
           jamDebug();
           scanPtr->scan_lastSeen = __LINE__;
+#ifdef DEBUG_CONT_SCAN
+          if (scanPtr->m_continous_scan_state != ScanRecord::CONTINOUS_SCAN_IDLE) {
+            DEB_CONT_SCAN(("(%u) LQH scanPtrI: %u, ACC_CHECK_SCAN",
+              instance(), scanptr.i));
+          }
+#endif
           Uint32 delay =
             m_ldm_instance_used->get_delay(prim_tab_fragptr.p->tabRef);
           if (likely(delay == 0))
@@ -37052,6 +37142,8 @@ void Dblqh::ndbinfo_write_op(Ndbinfo::Row &row, TcConnectionrecPtr tcPtr) {
     sp.i = tcPtr.p->tcScanRec;
     c_scanRecordPool.getPtr(sp);
 
+    DEB_CONT_SCAN(("(%u) LQH Found ongoing operation scanPtrI: %u",
+      instance(), sp.i));
     Uint32 op = NDB_INFO_OP_SCAN_UNKNOWN;
     if (sp.p->scanLockMode)
       op = NDB_INFO_OP_SCAN_EX;
