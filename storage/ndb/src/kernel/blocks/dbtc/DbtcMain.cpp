@@ -18195,7 +18195,7 @@ bool Dbtc::sendScanFragReq(Signal *signal, ScanRecordPtr scanptr,
           for (Uint32 i = 0; i < sections.m_cnt; i++) {
             signal_size += sections.m_ptr[i].sz;
           }
-          signal_size += ScanFragReq::SignalLength;
+          signal_size += (ScanFragReq::SignalLength + extra_len);
           if (signal_size > MAX_SIZE_SINGLE_SIGNAL) {
             jam();
             /**
@@ -23558,7 +23558,6 @@ void Dbtc::fk_scanFromChildTable(Signal *signal,
   const Uint32 parallelism = SCAN_FROM_CHILD_PARALLELISM;
   ScanTabReq *req = CAST_PTR(ScanTabReq, signal->getDataPtrSend());
   Uint32 ri = 0;
-  ScanTabReq::setParallelism(ri, parallelism);
   ScanTabReq::setDescendingFlag(ri, 0);
   ScanTabReq::setRangeScanFlag(ri, 1);
   ScanTabReq::setTupScanFlag(ri, 0);
