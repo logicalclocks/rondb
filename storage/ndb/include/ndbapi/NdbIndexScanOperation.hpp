@@ -323,6 +323,9 @@ class NdbIndexScanOperation : public NdbScanOperation {
                                 bool forceSend);
   int next_result_ord_ndbrecord_par(const char *&out_row, bool fetchAllowed,
                                     bool forceSend);
+  int get_first_sorted_batch(const char *&out_row, bool forceSend);
+  int get_next_sorted_row(const char *&out_row);
+  int get_next_sorted_batch(const char *&out_row, bool forceSend);
   void ordered_insert_receiver(Uint32 start, NdbReceiver *receiver);
   int ordered_send_scan_wait_for_all(bool forceSend);
   int send_next_scan_ordered(Uint32 idx, bool stopFlag);
