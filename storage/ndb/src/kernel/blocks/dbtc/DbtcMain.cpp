@@ -26307,7 +26307,6 @@ void Dbtc::set_queueing_environment(Signal *signal,
   Uint32 old_queueing_time_us = dbPtrP->m_queueing_time_us;
   Uint32 rate_per_sec = dbPtrP->m_rate_per_sec;
   Uint64 current_used_rate = dbPtrP->m_current_used_rate_us;
-  Uint32 overload = current_used_rate / rate_per_sec;
   if (dbPtrP->m_is_db_dropping || !dbPtrP->m_is_quota_committed) {
     /* Ignore when dropping/starting database */
     DEB_RATE_QUEUE_DROP(("(%u:%u), Ignore set queue env while dropping and"
@@ -26321,6 +26320,7 @@ void Dbtc::set_queueing_environment(Signal *signal,
     /* rate_per_sec == 0 means no rate limit */
     return;
   }
+  Uint32 overload = current_used_rate / rate_per_sec;
   if (overload > MAX_QUEUE_TIME_MS) {
     jam();
     dbPtrP->m_queueing_time_us = MAX_QUEUE_TIME_MS * 1000;

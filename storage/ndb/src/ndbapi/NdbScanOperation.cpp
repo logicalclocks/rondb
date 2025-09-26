@@ -1660,7 +1660,6 @@ void NdbScanOperation::receiver_delivered(NdbReceiver *tRec) {
  * Remove receiver as it's completed
  */
 void NdbScanOperation::receiver_completed(NdbReceiver *tRec) {
-  tRec->m_tcPtrI = RNIL;
   if (m_kernel_error_code == 0) {
     DBUG_PRINT("info", ("theNdb(%p) receiver_completed(%u),"
                " m_ordered: %u, id: %u",
@@ -3703,6 +3702,8 @@ int NdbIndexScanOperation::next_result_ord_ndbrecord(const char *&out_row,
 void NdbScanOperation::close_ndb_receiver(Uint32 index,
                                           Uint32 state) {
   Uint32 first_index = index & 0xFFFFFFFC;
+  DBUG_PRINT("info", ("close_ndb_receiver(%u - %u)",
+    first_index, first_index + 3));
   for (Uint32 i = 0; i < 4; i++) {
     Uint32 inx = first_index + i;
     if (m_receiver_state[inx] == ReceiverEmpty) {
@@ -4315,81 +4316,55 @@ int NdbScanOperation::close_impl(bool forceSend, PollGuard *poll_guard) {
       m_current_api_receiver, __LINE__));
   }
 
-  if (m_ordered && m_continousScan) {
-    DBUG_PRINT("info", ("close continous scan"));
-    Uint32 prep_count = 0;
-    m_prepared_receivers_count = 0;
-    for (Uint32 i = 0; i < (theParallelism / 4); i++) {
-      bool closed = false;
-      for (Uint32 j = 0; j < 4; j++) {
-        Uint32 inx = i * 4 + j;
-        if (m_receivers[inx]->m_tcPtrI == RNIL) {
-          closed = true;
-          break;
-        }
-      }
-      for (Uint32 j = 0; j < 4; j++) {
-        if (!closed && j == 0) {
-          m_api_receivers[prep_count++] = m_receivers[i * 4];
-          DBUG_PRINT("info", ("Still need to close receiver %u",
-            i * 4));
-          m_receiver_state[i * 4] = ReceiverSentWaitingForResponse;
-        } else {
-          Uint32 inx = i * 4 + j;
-          m_receivers[inx]->m_tcPtrI = RNIL;
-        }
-      }
-    }
-    m_api_receivers_count = 0;
-    m_conf_receivers_count = 0;
-    if (prep_count > 0) {
-      int ret_code = send_next_scan(prep_count, true);
-      poll_guard->flush_send();
-      if (ret_code == -1) {
-        theNdbCon->theReleaseOnClose = true;
-        return -1;
-      }
-    }
-  } else {
+  /**
+   * move all conf'ed into api
+   *   so that send_next_scan can check if they needs to be closed
+   */
+  Uint32 api = m_api_receivers_count;
+  Uint32 conf = m_conf_receivers_count;
+
+  if (m_ordered) {
     /**
-     * move all conf'ed into api
-     *   so that send_next_scan can check if they needs to be closed
+     * Ordered scan, keep the m_api_receivers "to the right"
      */
-    Uint32 api = m_api_receivers_count;
-    Uint32 conf = m_conf_receivers_count;
-
-    if (m_ordered) {
-      /**
-       * Ordered scan, keep the m_api_receivers "to the right"
-       */
-      memmove(m_api_receivers, m_api_receivers + m_current_api_receiver,
-              (theParallelism - m_current_api_receiver) * sizeof(char *));
-      api = (theParallelism - m_current_api_receiver);
-      m_api_receivers_count = api;
+    memmove(m_api_receivers, m_api_receivers + m_current_api_receiver,
+            (theParallelism - m_current_api_receiver) * sizeof(char *));
+    api = (theParallelism - m_current_api_receiver);
+    m_api_receivers_count = api;
+    if (m_continousScan) {
+      for (Uint32 i = 0; i < (theParallelism / 4); i++) {
+        for (Uint32 j = 0; j < 4; j++) {
+          Uint32 inx = i * 4 + j;
+          if (m_receivers[inx]->m_tcPtrI == RNIL) {
+            close_ndb_receiver(inx, ReceiverClosed);
+            break;
+          }
+        }
+      }
     }
+  }
 
-    DBUG_PRINT("info", ("close_impl: [order api conf sent"
-                        " curr parr] %d %d %d %d %d %d",
-      m_ordered, api, conf, m_sent_receivers_count, m_current_api_receiver,
-      theParallelism));
+  DBUG_PRINT("info", ("close_impl: [order api conf sent"
+                      " curr parr] %d %d %d %d %d %d",
+    m_ordered, api, conf, m_sent_receivers_count, m_current_api_receiver,
+    theParallelism));
 
-    if (api + conf) {
-      /**
-       * There's potentially something to close on the kernel
-       *   setup m_api_receivers (for send_next_scan)
-       */
-      memcpy(m_api_receivers + api, m_conf_receivers, conf * sizeof(char *));
-      m_api_receivers_count = api + conf;
-      m_conf_receivers_count = 0;
-    }
+  if (api + conf) {
+    /**
+     * There's potentially something to close on the kernel
+     *   setup m_api_receivers (for send_next_scan)
+     */
+    memcpy(m_api_receivers + api, m_conf_receivers, conf * sizeof(char *));
+    m_api_receivers_count = api + conf;
+    m_conf_receivers_count = 0;
+  }
 
-    // Send close scan
-    //   If all api + conf receivers are already closed on the kernel
-    //   side this may be a no-op.
-    if (send_next_scan(api + conf, true) == -1) {
-      theNdbCon->theReleaseOnClose = true;
-      return -1;
-    }
+  // Send close scan
+  //   If all api + conf receivers are already closed on the kernel
+  //   side this may be a no-op.
+  if (send_next_scan(api + conf, true) == -1) {
+    theNdbCon->theReleaseOnClose = true;
+    return -1;
   }
 
   /**
