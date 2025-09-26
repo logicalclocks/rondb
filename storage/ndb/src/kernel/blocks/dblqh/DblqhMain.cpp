@@ -20742,6 +20742,7 @@ void Dblqh::sendScanFragConf(Signal *signal,
     ndbrequire(!aggregation ||
                (scanPtr->scanState == ScanRecord::WAIT_NEXT_SCAN ||
                scanPtr->scanState == ScanRecord::WAIT_ACC_SCAN ||
+               scanPtr->scanState == ScanRecord::WAIT_SCAN_NEXTREQ ||
                (scanPtr->scanState == ScanRecord::WAIT_CLOSE_SCAN &&
                 scanCompleted == ZSCAN_FRAG_CLOSED)));
     if (!scanCompleted)
