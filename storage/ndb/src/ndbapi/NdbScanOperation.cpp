@@ -3881,89 +3881,95 @@ int NdbIndexScanOperation::get_next_sorted_batch(const char *&out_row,
                                                  bool forceSend) {
   DBUG_ENTER("NdbIndexScanOperation::get_next_sorted_batch");
   Uint32 current_index = m_api_receivers[m_current_api_receiver]->m_index;
-  int count = ordered_send_scan_wait_for_all(forceSend);
-  if (count == -1) { DBUG_RETURN(-1); }
-  for (int i = 0; i < count; i++) {
-    NdbReceiver *conf_receiver = m_conf_receivers[i];
-    Uint32 conf_receiver_index = conf_receiver->m_index;
-    Uint32 next_receiver_index = get_next_index(conf_receiver_index);
-    DBUG_PRINT("info", ("theNdb(%p) NdbReceiver: %u, DataReady",
-      theNdb, conf_receiver_index));
-    const char *nextRow = conf_receiver->getNextRow();  // Fetch first
-    assert(nextRow != nullptr);
-    ((void)nextRow);
-    assert(m_receiver_state[conf_receiver_index] == ReceiverDataAvailable);
-    if (conf_receiver->m_tcPtrI == RNIL) {
-      close_ndb_receiver(conf_receiver_index, ReceiverDataReadyToBeClosed);
-    } else {
-      m_receiver_state[conf_receiver_index] = ReceiverDataReady;
-      /**
-       * We have four NdbReceiver's, if we request scanning of
-       * the next receiver we will also start scanning of a
-       * second NdbReceiver, thus we need to ensure that the
-       * we always have one NdbReceiver empty, Thus we check
-       * the NdbReceiver which is the next after the next is
-       * empty before we put it into the prepared queue.
-       */
-      Uint32 next_next_index = get_next_index(next_receiver_index);
-      DBUG_PRINT("info", ("theNdb(%p) next_next_index: %u, its state is: %u",
-        theNdb, next_next_index, m_receiver_state[next_next_index]));
-      if (m_receiver_state[next_next_index] == ReceiverEmpty) {
-        DBUG_PRINT("info", ("theNdb(%p) ReceiverPrepared(%u) (2)",
-        theNdb, next_next_index));
-        m_prepared_receivers[m_prepared_receivers_count++] =
-          m_receivers[next_receiver_index]->m_index;
-        m_receiver_state[next_receiver_index] = ReceiverPrepared;
+  Uint32 loop_count = 0;
+  Uint32 next_state = 0;
+  Uint32 next_index = get_next_index(current_index);
+  Uint32 current = m_current_api_receiver;
+  do {
+    if (unlikely(loop_count >= 2)) {
+      next_state = m_receiver_state[next_index];
+      DBUG_PRINT("info", ("theNdb(%p) next_index: %u, next_state: %u",
+        theNdb, next_index, next_state));
+      require(false);
+    }
+    int count = ordered_send_scan_wait_for_all(forceSend);
+    if (count == -1) { DBUG_RETURN(-1); }
+    for (int i = 0; i < count; i++) {
+      NdbReceiver *conf_receiver = m_conf_receivers[i];
+      Uint32 conf_receiver_index = conf_receiver->m_index;
+      Uint32 next_receiver_index = get_next_index(conf_receiver_index);
+      DBUG_PRINT("info", ("theNdb(%p) NdbReceiver: %u, DataReady",
+        theNdb, conf_receiver_index));
+      const char *nextRow = conf_receiver->getNextRow();  // Fetch first
+      assert(nextRow != nullptr);
+      ((void)nextRow);
+      assert(m_receiver_state[conf_receiver_index] == ReceiverDataAvailable);
+      if (conf_receiver->m_tcPtrI == RNIL) {
+        close_ndb_receiver(conf_receiver_index, ReceiverDataReadyToBeClosed);
+      } else {
+        m_receiver_state[conf_receiver_index] = ReceiverDataReady;
+        /**
+         * We have four NdbReceiver's, if we request scanning of
+         * the next receiver we will also start scanning of a
+         * second NdbReceiver, thus we need to ensure that the
+         * we always have one NdbReceiver empty, Thus we check
+         * the NdbReceiver which is the next after the next is
+         * empty before we put it into the prepared queue.
+         */
+        Uint32 next_next_index = get_next_index(next_receiver_index);
+        DBUG_PRINT("info", ("theNdb(%p) next_next_index: %u, its state is: %u",
+          theNdb, next_next_index, m_receiver_state[next_next_index]));
+        if (m_receiver_state[next_next_index] == ReceiverEmpty) {
+          DBUG_PRINT("info", ("theNdb(%p) ReceiverPrepared(%u) (2)",
+            theNdb, next_next_index));
+          m_prepared_receivers[m_prepared_receivers_count++] =
+            m_receivers[next_receiver_index]->m_index;
+          m_receiver_state[next_receiver_index] = ReceiverPrepared;
+        }
       }
     }
-  }
-  Uint32 next_index = get_next_index(current_index);
-  theNdb->theImpl->incClientStat(Ndb::ScanBatchCount, count);
-  Uint32 next_state = m_receiver_state[next_index];
-  assert(!m_waiting_for_data);
-  {
-    /**
-     * Start retrieving the next batch while we are processing
-     * the current batch.
-     */
-    NdbImpl *impl = theNdb->theImpl;
-    PollGuard poll_guard(*impl);
-    int ret = send_next_scan_ordered(0, false);
-    if (ret == -1) {
-      DBUG_RETURN(-1);
+    theNdb->theImpl->incClientStat(Ndb::ScanBatchCount, count);
+    next_state = m_receiver_state[next_index];
+    assert(!m_waiting_for_data);
+    {
+      /**
+       * Start retrieving the next batch while we are processing
+       * the current batch.
+       */
+      NdbImpl *impl = theNdb->theImpl;
+      PollGuard poll_guard(*impl);
+      int ret = send_next_scan_ordered(0, false);
+      if (ret == -1) {
+        DBUG_RETURN(-1);
+      }
+      poll_guard.flush_send();
     }
-    poll_guard.flush_send();
-  }
-  Uint32 current = m_current_api_receiver;
-  if (unlikely(next_state == ReceiverClosed)) {
-    /**
-     * The scan protocol received a response on this NdbReceiver that the
-     * scan was completed and there was no more rows to report. The previous
-     * batch was sent and the scan wasn't completed and the final scan part
-     * didn't contain any rows, thus we simply increment m_current_api_receiver
-     * and return the top row since this is already sorted as it should be.
-     */
-    close_ndb_receiver(next_index, ReceiverClosed);
-    current++;
-    m_current_api_receiver = current;
-    if (current == theParallelism) {
-      theError.code = Err_scanAlreadyComplete;
-      DBUG_PRINT("info", ("theNdb(%p) Completed(2)",
-        theNdb));
-      DBUG_RETURN(1); // End of file
+    if (unlikely(next_state == ReceiverClosed)) {
+      /**
+       * The scan protocol received a response on this NdbReceiver that the
+       * scan was completed and there was no more rows to report. The previous
+       * batch was sent and the scan wasn't completed and the final scan part
+       * didn't contain any rows, thus we simply increment m_current_api_receiver
+       * and return the top row since this is already sorted as it should be.
+       */
+      close_ndb_receiver(next_index, ReceiverClosed);
+      current++;
+      m_current_api_receiver = current;
+      if (current == theParallelism) {
+        theError.code = Err_scanAlreadyComplete;
+        DBUG_PRINT("info", ("theNdb(%p) Completed(2)",
+          theNdb));
+        DBUG_RETURN(1); // End of file
+      }
+      DBUG_PRINT("info", ("theNdb(%p) return(3) from %u, current: %u",
+        theNdb, m_api_receivers[current]->m_index, current));
+      NdbReceiver *top_receiver = m_api_receivers[current];
+      out_row = top_receiver->getCurrentRow();
+      DBUG_RETURN(0);
     }
-    DBUG_PRINT("info", ("theNdb(%p) return(3) from %u, current: %u",
-      theNdb, m_api_receivers[current]->m_index, current));
-    NdbReceiver *top_receiver = m_api_receivers[current];
-    out_row = top_receiver->getCurrentRow();
-    DBUG_RETURN(0);
-  }
-  if (unlikely(next_state != ReceiverDataReady &&
-               next_state != ReceiverDataReadyToBeClosed)) {
-    DBUG_PRINT("info", ("theNdb(%p) next_index: %u, next_state: %u",
-      theNdb, next_index, next_state));
-    require(false);
-  }
+    loop_count++;
+  } while (next_state != ReceiverDataReady &&
+           next_state != ReceiverDataReadyToBeClosed);
   NdbReceiver *next_receiver = m_receivers[next_index];
   m_api_receivers[current] = next_receiver;
   ordered_insert_receiver(current + 1, next_receiver);
