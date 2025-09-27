@@ -3554,8 +3554,8 @@ static void report_events(const ndb_logevent &event) {
         event.SavedEvent.len);
 
   char timestamp_str[64];
-  Logger::format_timestamp(event.SavedEvent.time, timestamp_str,
-                           sizeof(timestamp_str));
+  Logger::format_timestamp_time_t(event.SavedEvent.time, timestamp_str,
+                                  sizeof(timestamp_str));
 
   ndbout_c("%s %s", timestamp_str, out);
 }

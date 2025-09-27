@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -2436,7 +2436,8 @@ void RestoreLogger::log_error(const char *fmt, ...) {
 
   NdbMutex_Lock(m_mutex);
   if (print_timestamp) {
-    Logger::format_timestamp(time(NULL), timestamp, sizeof(timestamp));
+    NDB_TICKS now = NdbTick_getCurrentTicks(true);
+    Logger::format_timestamp(now, timestamp, sizeof(timestamp));
     err << timestamp << " ";
   }
 
@@ -2453,7 +2454,8 @@ void RestoreLogger::log_info(const char *fmt, ...) {
 
   NdbMutex_Lock(m_mutex);
   if (print_timestamp) {
-    Logger::format_timestamp(time(NULL), timestamp, sizeof(timestamp));
+    NDB_TICKS now = NdbTick_getCurrentTicks(true);
+    Logger::format_timestamp(now, timestamp, sizeof(timestamp));
     info << timestamp << " ";
   }
 
@@ -2470,7 +2472,8 @@ void RestoreLogger::log_debug(const char *fmt, ...) {
 
   NdbMutex_Lock(m_mutex);
   if (print_timestamp) {
-    Logger::format_timestamp(time(NULL), timestamp, sizeof(timestamp));
+    NDB_TICKS now = NdbTick_getCurrentTicks(true);
+    Logger::format_timestamp(now, timestamp, sizeof(timestamp));
     debug << timestamp << " ";
   }
 

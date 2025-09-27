@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2025, 2025, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -77,7 +78,7 @@ class InternalLogListHandler : public LogHandler {
    * Here we pass the message to all bound in LogHandlers
    */
   void append(const char *pCategory, Logger::LoggerLevel level,
-              const char *pMsg, time_t now) override {
+              const char *pMsg, NDB_TICKS now) override {
     Guard g(m_listMutex);
 
     LogHandler *pHandler = nullptr;
@@ -120,7 +121,7 @@ class InternalLogListHandler : public LogHandler {
 
  protected:
   void writeHeader(const char * /*pCategory*/, Logger::LoggerLevel /*level*/,
-                   time_t /*now*/) override {}
+                   NDB_TICKS /*now*/) override {}
   void writeMessage(const char * /*pMsg*/) override {}
   void writeFooter() override {}
 
@@ -385,7 +386,7 @@ void Logger::log(LoggerLevel logLevel, const char *pMsg, va_list ap) const {
   if (m_logLevels[LL_ON] && m_logLevels[logLevel]) {
     char buf[MAX_LOG_MESSAGE_SIZE];
     BaseString::vsnprintf(buf, sizeof(buf), pMsg, ap);
-    time_t now = ::time((time_t *)nullptr);
+    NDB_TICKS now = NdbTick_getCurrentTicks(true);
     m_logHandler->append(m_pCategory, logLevel, buf, now);
   }
 }
@@ -396,10 +397,42 @@ void Logger::setRepeatFrequency(unsigned val) {
 }
 
 Logger::Timestamp::Timestamp() {
-  Logger::format_timestamp(time(nullptr), buff, TsLen);
+  NDB_TICKS now = NdbTick_getCurrentTicks(true);
+  Logger::format_timestamp(now, buff, TsLen);
 }
 
-void Logger::format_timestamp(const time_t epoch, char *str, size_t len) {
+void Logger::format_timestamp(const NDB_TICKS ts, char *str, size_t len) {
+  assert(len > 0);  // Assume buffer has size
+
+  Uint64 sec_since_start = ts.getSeconds();
+  time_t start_time = NdbTick_getStartingTime();
+  time_t current_time = start_time + (time_t)sec_since_start;
+  // convert to local timezone
+  tm tm_buf;
+  if (ndb_localtime_r(&current_time, &tm_buf) == nullptr) {
+    // Failed to convert to local timezone.
+    // Fill with bogus time stamp value in order
+    // to ensure buffer can be safely printed
+    strncpy(str, "2001-01-01 00:00:00", len);
+    str[len - 1] = 0;
+    return;
+  }
+
+  // Print the broken down time in timestamp format
+  // to the string buffer
+  BaseString::snprintf(
+      str, len, "%d-%.2d-%.2d %.2d:%.2d:%.2d.%.6llu", tm_buf.tm_year + 1900,
+      tm_buf.tm_mon + 1,  // month is [0,11]. +1 -> [1,12]
+      tm_buf.tm_mday,
+      tm_buf.tm_hour,
+      tm_buf.tm_min,
+      tm_buf.tm_sec,
+      ts.getMicroSeconds());
+  str[len - 1] = 0;
+  return;
+}
+
+void Logger::format_timestamp_time_t(const time_t epoch, char *str, size_t len) {
   assert(len > 0);  // Assume buffer has size
 
   // convert to local timezone
@@ -418,10 +451,14 @@ void Logger::format_timestamp(const time_t epoch, char *str, size_t len) {
   BaseString::snprintf(
       str, len, "%d-%.2d-%.2d %.2d:%.2d:%.2d", tm_buf.tm_year + 1900,
       tm_buf.tm_mon + 1,  // month is [0,11]. +1 -> [1,12]
-      tm_buf.tm_mday, tm_buf.tm_hour, tm_buf.tm_min, tm_buf.tm_sec);
+      tm_buf.tm_mday,
+      tm_buf.tm_hour,
+      tm_buf.tm_min,
+      tm_buf.tm_sec);
   str[len - 1] = 0;
   return;
 }
+
 
 #ifdef TEST_LOGGER
 
@@ -449,7 +486,8 @@ class Ndb_log_consumer : public NdbApiLogConsumer {
   void log(LogLevel level, const char *category, const char *message) override {
     char timestamp[64];
     std::ofstream ofs(filename);
-    Logger::format_timestamp(time(nullptr), timestamp, sizeof(timestamp));
+    NDB_TICKS now = NdbTick_getCurrentTicks(true);
+    Logger::format_timestamp(now, timestamp, sizeof(timestamp));
     ofs << timestamp << " [" << category << "]"
         << " [" << level << "] " << message << std::endl;
     ofs.close();

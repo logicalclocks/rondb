@@ -492,7 +492,7 @@ class NdbApiInternalLogHandler : public LogHandler {
   }
 
   virtual void append(const char *pCategory, Logger::LoggerLevel level,
-                      const char *pMsg, time_t now) override {
+                      const char *pMsg, NDB_TICKS now) override {
     {
       if (m_userConsumer) {
         Guard g(m_consumer_mutex);
@@ -526,7 +526,7 @@ class NdbApiInternalLogHandler : public LogHandler {
     return true;
   }
   bool checkParams() override { return true; }
-  void writeHeader(const char *, Logger::LoggerLevel, time_t) override {
+  void writeHeader(const char *, Logger::LoggerLevel, NDB_TICKS) override {
     return;
   }
   void writeMessage(const char *) override { return; }

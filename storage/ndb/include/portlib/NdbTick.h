@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2024, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -27,9 +27,17 @@
 #ifndef NDB_TICK_H
 #define NDB_TICK_H
 
+#include <time.h>
 #include <assert.h>
 #include <ndb_types.h>
 #include <time.h>
+
+#define MICROSEC_PER_SEC 1000000
+#define NANOSEC_PER_SEC 1000000000
+#define MILLISEC_PER_SEC 1000
+#define MICROSEC_PER_MILLISEC 1000
+#define NANOSEC_PER_MILLISEC 1000000
+#define NANOSEC_PER_MICROSEC 1000
 
 void NdbTick_Init();
 
@@ -61,6 +69,11 @@ typedef struct NDB_TICKS {
 
   explicit NDB_TICKS(Uint64 val) { t = val; }
 
+  Uint64 getSeconds() const { return t / NANOSEC_PER_SEC; }
+  Uint64 getMicroSeconds() const {
+    return (t % NANOSEC_PER_SEC) / NANOSEC_PER_MICROSEC;
+  }
+
 } NDB_TICKS;
 
 /**
@@ -73,11 +86,13 @@ bool NdbTick_IsMonotonic();
 int NdbTick_GetMonotonicClockId(clockid_t *clk);
 #endif
 
+time_t NdbTick_getStartingTime();
+
 /**
  * Returns number of 'ticks' since some
  * platforms dependent epoch start.
  */
-const NDB_TICKS NdbTick_getCurrentTicks(void);
+const NDB_TICKS NdbTick_getCurrentTicks(bool actual_time = false);
 
 /**
  * Add specified number of milliseconds to a 'ticks' value.

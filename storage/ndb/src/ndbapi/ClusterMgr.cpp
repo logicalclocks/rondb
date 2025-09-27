@@ -83,7 +83,7 @@ error_printer(const char * fmt, ...)
   char buf[400];
 
   char timestamp[64];
-  time_t now = ::time((time_t*)nullptr);
+  NDB_TICKS now = NdbTick_getCurrentTicks(true);
   Logger::format_timestamp(now, timestamp, sizeof(timestamp));
   va_start(ap, fmt);
   size_t len = BaseString::vsnprintf(buf, sizeof(buf)-1, fmt, ap);

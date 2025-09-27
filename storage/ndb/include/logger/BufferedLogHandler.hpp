@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2018, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2025, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -26,9 +27,8 @@
 #ifndef STORAGE_NDB_INCLUDE_LOGGER_BUFFEREDLOGHANDLER_HPP_
 #define STORAGE_NDB_INCLUDE_LOGGER_BUFFEREDLOGHANDLER_HPP_
 
-#include <time.h>
-
 #include <NdbThread.h>
+#include <NdbTick.h>
 #include <LogBuffer.hpp>
 #include "LogHandler.hpp"
 
@@ -72,7 +72,7 @@ class BufferedLogHandler : public LogHandler {
 
   struct LogMessageFixedPart {
     Logger::LoggerLevel level;
-    time_t log_timestamp;
+    NDB_TICKS log_timestamp;
     size_t varpart_length[2];  // 0: length of category, 1: length of message
   };
   static constexpr Uint32 MAX_VARPART_SIZE =
@@ -80,7 +80,7 @@ class BufferedLogHandler : public LogHandler {
 
  protected:
   void writeHeader(const char *pCategory, Logger::LoggerLevel level,
-                   time_t now) override;
+                   NDB_TICKS now) override;
   void writeMessage(const char *pMsg) override;
   void writeFooter() override;
 

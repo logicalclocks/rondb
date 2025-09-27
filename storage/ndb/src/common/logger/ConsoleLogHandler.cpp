@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2025, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -41,7 +42,7 @@ bool ConsoleLogHandler::is_open() { return true; }
 // PROTECTED
 //
 void ConsoleLogHandler::writeHeader(const char *pCategory,
-                                    Logger::LoggerLevel level, time_t now) {
+                                    Logger::LoggerLevel level, NDB_TICKS now) {
   char str[MAX_HEADER_LENGTH];
   _out << getDefaultHeader(str, pCategory, level, now);
 }

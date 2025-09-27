@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2025, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -38,14 +39,14 @@ LogHandler::LogHandler() : m_errorCode(0), m_errorStr(nullptr) {
   m_count_repeated_messages = 0;
   m_last_category[0] = 0;
   m_last_message[0] = 0;
-  m_last_log_time = 0;
+  m_last_log_time = NDB_TICKS(0);
   m_last_level = Logger::LL_UNDEFINED_LEVEL;
 }
 
 LogHandler::~LogHandler() {}
 
 void LogHandler::append(const char *pCategory, Logger::LoggerLevel level,
-                        const char *pMsg, time_t now) {
+                        const char *pMsg, NDB_TICKS now) {
   if (m_max_repeat_frequency == 0 || level != m_last_level ||
       strcmp(pCategory, m_last_category) || strcmp(pMsg, m_last_message)) {
     if (m_count_repeated_messages > 0)  // print that message
@@ -60,7 +61,9 @@ void LogHandler::append(const char *pCategory, Logger::LoggerLevel level,
     }
   } else  // repeated message
   {
-    if (now < (time_t)(m_last_log_time + m_max_repeat_frequency)) {
+    if (now.getUint64() < (m_last_log_time.getUint64() +
+                          (Uint64(m_max_repeat_frequency) *
+                            Uint64(MICROSEC_PER_SEC)))) {
       m_count_repeated_messages++;
       return;
     }
@@ -71,7 +74,7 @@ void LogHandler::append(const char *pCategory, Logger::LoggerLevel level,
 }
 
 void LogHandler::append_impl(const char *pCategory, Logger::LoggerLevel level,
-                             const char *pMsg, time_t now) {
+                             const char *pMsg, NDB_TICKS now) {
   writeHeader(pCategory, level, now);
   if (m_count_repeated_messages <= 1)
     writeMessage(pMsg);
@@ -86,7 +89,7 @@ void LogHandler::append_impl(const char *pCategory, Logger::LoggerLevel level,
 
 const char *LogHandler::getDefaultHeader(char *pStr, const char *pCategory,
                                          Logger::LoggerLevel level,
-                                         time_t now) const {
+                                         NDB_TICKS now) const {
   char timestamp[64];
   Logger::format_timestamp(now, timestamp, sizeof(timestamp));
 

@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2025, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -30,7 +31,6 @@
 #include "util/require.h"
 
 #define NANOSEC_PER_SEC 1000000000
-#define MICROSEC_PER_SEC 1000000
 #define MILLISEC_PER_SEC 1000
 #define MICROSEC_PER_MILLISEC 1000
 #define NANOSEC_PER_MILLISEC 1000000
@@ -43,6 +43,9 @@ static bool isInited = false;
 #ifdef HAVE_CLOCK_GETTIME
 static clockid_t NdbTick_clk_id;
 #endif
+
+static time_t starting_time_t;
+static Uint64 starting_ticks = 0;
 
 void NdbTick_Init() {
   isInited = true;
@@ -122,6 +125,10 @@ void NdbTick_Init() {
 #endif
 }
 
+time_t NdbTick_getStartingTime() {
+  return starting_time_t;
+}
+
 bool NdbTick_IsMonotonic() {
   assert(isInited);
   return isMonotonic;
@@ -142,12 +149,17 @@ int NdbTick_GetMonotonicClockId(clockid_t *clk) {
 }
 #endif
 
-const NDB_TICKS NdbTick_getCurrentTicks(void) {
+const NDB_TICKS NdbTick_getCurrentTicks(bool actual_time) {
   assert(isInited);
 
 #if defined(HAVE_CLOCK_GETTIME)
   struct timespec tick_time;
-  const int res = clock_gettime(NdbTick_clk_id, &tick_time);
+  int res;
+  if (unlikely(actual_time)) {
+    res = clock_gettime(CLOCK_REALTIME, &tick_time);
+  } else {
+    res = clock_gettime(NdbTick_clk_id, &tick_time);
+  }
   /**
    * The only possible errors returned from clock_gettime()
    * are EINVAL in case of invalid clk_id arg, or EFAULT if
@@ -179,7 +191,7 @@ const NDB_TICKS NdbTick_getCurrentTicks(void) {
   }
 #endif
 
-  const Uint64 val = ((Uint64)tick_time.tv_sec) * ((Uint64)NANOSEC_PER_SEC) +
+  Uint64 val = ((Uint64)tick_time.tv_sec) * ((Uint64)NANOSEC_PER_SEC) +
                      ((Uint64)tick_time.tv_nsec);
 
 #elif defined(_WIN32)
@@ -190,7 +202,7 @@ const NDB_TICKS NdbTick_getCurrentTicks(void) {
    * Thus, it should not fail later.
    */
   assert(res != 0);
-  const Uint64 val = (Uint64)(t_cnt.QuadPart);
+  Uint64 val = (Uint64)(t_cnt.QuadPart);
   assert(val != 0);
 
 #else
@@ -205,10 +217,24 @@ const NDB_TICKS NdbTick_getCurrentTicks(void) {
   require(res == 0);
   (void)res;
 
-  const Uint64 val = ((Uint64)tick_time.tv_sec) * ((Uint64)MICROSEC_PER_SEC) +
-                     ((Uint64)tick_time.tv_usec);
+  Uint64 val = ((Uint64)tick_time.tv_sec) * ((Uint64)MICROSEC_PER_SEC) +
+                ((Uint64)tick_time.tv_usec);
 #endif
 
+  if (unlikely(actual_time)) {
+    Uint64 start = starting_ticks;
+    if (start != 0) {
+      if (unlikely(val < start)) {
+        val = 0;
+      } else {
+        val = val - start;
+      }
+    } else {
+      starting_ticks = val;
+      starting_time_t = time(nullptr);
+      val = 0;
+    }
+  }
   {
     const NDB_TICKS ticks(val);
     return ticks;

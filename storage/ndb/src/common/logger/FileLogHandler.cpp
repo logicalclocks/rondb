@@ -79,7 +79,7 @@ bool FileLogHandler::close() {
 }
 
 void FileLogHandler::writeHeader(const char *pCategory,
-                                 Logger::LoggerLevel level, time_t now) {
+                                 Logger::LoggerLevel level, NDB_TICKS now) {
   char str[MAX_HEADER_LENGTH];
   m_pLogFile->writeChar(getDefaultHeader(str, pCategory, level, now));
 }

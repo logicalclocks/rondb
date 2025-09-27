@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2025, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -27,7 +28,7 @@
 #define Logger_H
 
 #include <ndb_global.h>
-#include <time.h>
+#include <NdbTick.h>
 #include <BaseString.hpp>
 #include <NdbOut.hpp>
 #include "portlib/ndb_compiler.h"
@@ -121,7 +122,10 @@ class Logger {
       @len max length of result buffer
 
   */
-  static void format_timestamp(const time_t epoch, char *str, size_t len);
+  static void format_timestamp(const NDB_TICKS epoch, char *str, size_t len);
+  static void format_timestamp_time_t(const time_t epoch,
+                                      char *str,
+                                      size_t len);
 
   // Timestamp - handy class for getting a timestamp string
   class Timestamp {

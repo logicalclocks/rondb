@@ -106,7 +106,7 @@ bool BufferedLogHandler::is_open() {
 // PROTECTED
 //
 void BufferedLogHandler::writeHeader(const char *pCategory,
-                                     Logger::LoggerLevel level, time_t now) {
+                                     Logger::LoggerLevel level, NDB_TICKS now) {
   /**
    * Add log level, timestamp, category length to m_log_fixedpart and
    * category to m_log_varpart.
@@ -179,7 +179,7 @@ void BufferedLogHandler::writeLostMsgDestLogHandler() {
     cstrbuf<LostMsgHandler::MAX_LOST_MESSAGE_SIZE> msg;
     require(msg.appendf(LostMsgHandler::LOST_MESSAGES_FMT, lost_count) != -1);
     assert(!msg.is_truncated());
-    const time_t now = ::time(nullptr);
+    const NDB_TICKS now = NdbTick_getCurrentTicks(true);
     m_dest_loghandler->append(m_buffer_msg_category, Logger::LL_INFO,
                               msg.c_str(), now);
   }
@@ -200,7 +200,7 @@ bool MessageStreamLostMsgHandler::writeLostMsg(char *buf, size_t buf_size,
                                                size_t lost_msgs) {
   BufferedLogHandler::LogMessageFixedPart lost_message_fixedpart;
   lost_message_fixedpart.level = Logger::LL_WARNING;
-  lost_message_fixedpart.log_timestamp = time((time_t *)nullptr);
+  lost_message_fixedpart.log_timestamp = NdbTick_getCurrentTicks(true);
 
   const size_t sz_fixedpart = sizeof(lost_message_fixedpart);
   require(sz_fixedpart <= buf_size);

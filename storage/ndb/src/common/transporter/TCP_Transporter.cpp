@@ -469,8 +469,8 @@ int TCP_Transporter::doReceive(TransporterReceiveHandle &recvdata) {
 #endif
         if (DISCONNECT_ERRNO(err, nBytesRead)) {
           DBUG_PRINT("info", ("doSend(2) calls start_disconnecting, node: %u,"
-                     " errno: %u",
-            remoteNodeId, err));
+                     " errno: %u, nBytesRead: %d",
+            remoteNodeId, err, nBytesRead));
           if (!start_disconnecting(err, false)) {
             return 0;
           }

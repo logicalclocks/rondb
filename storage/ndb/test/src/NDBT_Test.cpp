@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2025, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -26,10 +27,9 @@
 #include <ndb_global.h>
 #include "util/require.h"
 
-#include <time.h>
-
 #include <ndb_opts.h>
 
+#include <NdbTick.h>
 #include <portlib/NdbEnv.h>
 #include <NdbIndexStat.hpp>
 #include <logger/Logger.hpp>
@@ -1635,8 +1635,8 @@ void NDBT_TestSuite::printCases() {
 
 const char *NDBT_TestSuite::getDate(char *str, size_t len) {
   // Get current time
-  time_t now;
-  time(&now);
+  NDB_TICKS now;
+  now = NdbTick_getCurrentTicks(true);
 
   // Print as timestamp to buf
   Logger::format_timestamp(now, str, len);

@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2025, 2025, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -26,9 +27,8 @@
 #ifndef CONSOLELOGHANDLER_H
 #define CONSOLELOGHANDLER_H
 
-#include <time.h>
-
 #include <NdbOut.hpp>
+#include <NdbTick.h>
 #include "LogHandler.hpp"
 
 /**
@@ -58,7 +58,7 @@ class ConsoleLogHandler : public LogHandler {
 
  protected:
   void writeHeader(const char *pCategory, Logger::LoggerLevel level,
-                   time_t now) override;
+                   NDB_TICKS now) override;
   void writeMessage(const char *pMsg) override;
   void writeFooter() override;
   NdbOut &_out;
