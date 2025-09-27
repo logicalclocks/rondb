@@ -3469,6 +3469,7 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
   }
 #endif
 
+  g_eventLogger->info("execTCKEYREQ: state: %u", regApiPtr->apiConnectstate);
   //--------------------------------------------------------------------------
   // Optimised version of ptrAss(tabptr, tableRecord)
   // Optimised version of ptrAss(apiConnectptr, apiConnectRecord)
