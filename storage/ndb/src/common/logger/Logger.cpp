@@ -407,6 +407,11 @@ void Logger::format_timestamp(const NDB_TICKS ts, char *str, size_t len) {
   Uint64 sec_since_start = ts.getSeconds();
   time_t start_time = NdbTick_getStartingTime();
   time_t current_time = start_time + (time_t)sec_since_start;
+  Uint64 micros = ts.getMicroSeconds() + NdbTick_getStartingMicros();
+  if (micros >= MICROSEC_PER_SEC) {
+    current_time += (time_t)1;
+    micros -= MICROSEC_PER_SEC;
+  }
   // convert to local timezone
   tm tm_buf;
   if (ndb_localtime_r(&current_time, &tm_buf) == nullptr) {
@@ -427,7 +432,7 @@ void Logger::format_timestamp(const NDB_TICKS ts, char *str, size_t len) {
       tm_buf.tm_hour,
       tm_buf.tm_min,
       tm_buf.tm_sec,
-      ts.getMicroSeconds());
+      micros);
   str[len - 1] = 0;
   return;
 }

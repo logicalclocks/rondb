@@ -87,6 +87,7 @@ int NdbTick_GetMonotonicClockId(clockid_t *clk);
 #endif
 
 time_t NdbTick_getStartingTime();
+Uint64 NdbTick_getStartingMicros();
 
 /**
  * Returns number of 'ticks' since some

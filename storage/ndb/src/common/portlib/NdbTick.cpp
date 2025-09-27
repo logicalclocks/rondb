@@ -30,12 +30,6 @@
 #include "ndb_config.h"
 #include "util/require.h"
 
-#define NANOSEC_PER_SEC 1000000000
-#define MILLISEC_PER_SEC 1000
-#define MICROSEC_PER_MILLISEC 1000
-#define NANOSEC_PER_MILLISEC 1000000
-#define NANOSEC_PER_MICROSEC 1000
-
 Uint64 NdbDuration::tick_frequency = 0;
 static bool isMonotonic = true;
 static bool isInited = false;
@@ -46,6 +40,7 @@ static clockid_t NdbTick_clk_id;
 
 static time_t starting_time_t;
 static Uint64 starting_ticks = 0;
+static Uint64 starting_micros = 0;
 
 void NdbTick_Init() {
   isInited = true;
@@ -127,6 +122,10 @@ void NdbTick_Init() {
 
 time_t NdbTick_getStartingTime() {
   return starting_time_t;
+}
+
+Uint64 NdbTick_getStartingMicros() {
+  return starting_micros;
 }
 
 bool NdbTick_IsMonotonic() {
@@ -231,6 +230,7 @@ const NDB_TICKS NdbTick_getCurrentTicks(bool actual_time) {
       }
     } else {
       starting_ticks = val;
+      starting_micros = (val % NANOSEC_PER_SEC) / NANOSEC_PER_MILLISEC;
       starting_time_t = time(nullptr);
       val = 0;
     }
