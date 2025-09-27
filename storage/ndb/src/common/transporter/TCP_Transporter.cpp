@@ -368,6 +368,8 @@ bool TCP_Transporter::doSend(bool need_wakeup [[maybe_unused]]) {
 #endif
       if ((DISCONNECT_ERRNO(err, nBytesSent))) {
         remain = 0;                           // Will stop retries of this send.
+        DBUG_PRINT("info", ("doSend calls start_disconnecting, node: %u, errno: %u",
+          remoteNodeId, ndb_socket_errno()));
         if (!start_disconnecting(err, true))  // Initiate pending disconnect
         {
           // We are 'DISCONNECTING' asynch -> We may still attempt more sends.
@@ -466,6 +468,9 @@ int TCP_Transporter::doReceive(TransporterReceiveHandle &recvdata) {
             (char *)ndbstrerror(err));
 #endif
         if (DISCONNECT_ERRNO(err, nBytesRead)) {
+          DBUG_PRINT("info", ("doSend(2) calls start_disconnecting, node: %u,"
+                     " errno: %u",
+            remoteNodeId, err));
           if (!start_disconnecting(err, false)) {
             return 0;
           }
