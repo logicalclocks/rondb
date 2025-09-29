@@ -253,7 +253,7 @@ class NdbIndexScanOperation : public NdbScanOperation {
   ~NdbIndexScanOperation() override;
 
   int processIndexScanDefs(LockMode lm, Uint32 scan_flags, Uint32 parallel,
-                           Uint32 batch);
+                           Uint32 batch, bool allow_continous_scan);
   int scanIndexImpl(const NdbRecord *key_record, const NdbRecord *result_record,
                     NdbOperation::LockMode lock_mode,
                     const unsigned char *result_mask,

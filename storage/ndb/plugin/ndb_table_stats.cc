@@ -90,6 +90,7 @@ bool ndb_get_table_statistics(THD *thd, Ndb *ndb,
     NdbScanOperation::ScanOptions options;
     options.optionsPresent = NdbScanOperation::ScanOptions::SO_BATCH |
                              NdbScanOperation::ScanOptions::SO_GETVALUE |
+                             NdbScanOperation::ScanOptions::SO_USE_STD_SORTED |
                              NdbScanOperation::ScanOptions::SO_INTERPRETED;
     /* Set batch=1, as we need only one row per fragment. */
     options.batch = 1;

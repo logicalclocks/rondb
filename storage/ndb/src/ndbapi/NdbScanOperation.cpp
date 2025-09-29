@@ -635,6 +635,7 @@ int NdbScanOperation::scanTableImpl(
   Uint32 scan_flags = 0;
   Uint32 parallel = 0;
   Uint32 batch = 0;
+  bool allow_continous_scan = true;
 
   ScanOptions currentOptions;
 
@@ -645,6 +646,8 @@ int NdbScanOperation::scanTableImpl(
     /* Process some initial ScanOptions - most are
      * handled later
      */
+    if (options->optionsPresent & ScanOptions::SO_USE_STD_SORTED)
+      allow_continous_scan = false;
     if (options->optionsPresent & ScanOptions::SO_SCANFLAGS)
       scan_flags = options->scan_flags;
     if (options->optionsPresent & ScanOptions::SO_PARALLEL)
@@ -664,7 +667,11 @@ int NdbScanOperation::scanTableImpl(
   m_attribute_record->copyMask(readMask.rep.data, result_mask);
 
   /* Process scan definition info */
-  res = processTableScanDefs(lock_mode, scan_flags, parallel, batch);
+  res = processTableScanDefs(lock_mode,
+                             scan_flags,
+                             parallel,
+                             batch,
+                             allow_continous_scan);
   if (res == -1) return -1;
 
   theStatus = NdbOperation::UseNdbRecord;
@@ -1179,6 +1186,7 @@ int NdbIndexScanOperation::scanIndexImpl(
   Uint32 scan_flags = 0;
   Uint32 parallel = 0;
   Uint32 batch = 0;
+  bool allow_continous_scan = true;
 
   ScanOptions currentOptions;
 
@@ -1189,6 +1197,8 @@ int NdbIndexScanOperation::scanIndexImpl(
     /* Process some initial ScanOptions here
      * The rest will be handled later
      */
+    if (options->optionsPresent & ScanOptions::SO_USE_STD_SORTED)
+      allow_continous_scan = false;
     if (options->optionsPresent & ScanOptions::SO_SCANFLAGS)
       scan_flags = options->scan_flags;
     if (options->optionsPresent & ScanOptions::SO_PARALLEL)
@@ -1253,7 +1263,11 @@ int NdbIndexScanOperation::scanIndexImpl(
   m_key_record = key_record;
   m_attribute_record = result_record;
 
-  res = processIndexScanDefs(lock_mode, scan_flags, parallel, batch);
+  res = processIndexScanDefs(lock_mode,
+                             scan_flags,
+                             parallel,
+                             batch,
+                             allow_continous_scan);
   if (res == -1) return -1;
 
   /* Fix theStatus as set in processIndexScanDefs(). */
@@ -1309,7 +1323,8 @@ int NdbScanOperation::readTuples(NdbScanOperation::LockMode lm,
  */
 int NdbScanOperation::processTableScanDefs(NdbScanOperation::LockMode lm,
                                            Uint32 scan_flags, Uint32 parallel,
-                                           Uint32 batch) {
+                                           Uint32 batch,
+                                           bool allow_continous_scan) {
   m_ordered = m_descending = false;
   m_pruneState = SPS_UNKNOWN;
   Uint32 fragCount = m_currentTable->m_fragmentCount;
@@ -1365,11 +1380,17 @@ int NdbScanOperation::processTableScanDefs(NdbScanOperation::LockMode lm,
     theNdb->theImpl->get_ndbapi_config_parameters().m_continous_scan;
 
   if (rangeScan && (scan_flags & (SF_OrderBy | SF_OrderByFull))) {
-    parallel = 4 * fragCount; /* Frag count of ordered index ==
-                               * Frag count of base table
-                               */
-    continousScan = 1;
+    if (!allow_continous_scan) {
+      parallel = fragCount;
+      continousScan = 0;
+    } else {
+      parallel = 4 * fragCount; /* Frag count of ordered index ==
+                                 * Frag count of base table
+                                 */
+      continousScan = 1;
+    }
   } else if (continousScan != 0 &&
+             allow_continous_scan &&
              lm == LM_CommittedRead) {
     parallel *= 4;
   } else {
@@ -3528,7 +3549,8 @@ int NdbIndexScanOperation::readTuples(LockMode lm, Uint32 scan_flags,
  * Index scans is done in this method
  */
 int NdbIndexScanOperation::processIndexScanDefs(LockMode lm, Uint32 scan_flags,
-                                                Uint32 parallel, Uint32 batch) {
+                                                Uint32 parallel, Uint32 batch,
+                                                bool allow_continous_scan) {
   const bool order_by = scan_flags & (SF_OrderBy | SF_OrderByFull);
   const bool order_desc = scan_flags & SF_Descending;
   const bool read_range_no = scan_flags & SF_ReadRangeNo;
@@ -3536,7 +3558,11 @@ int NdbIndexScanOperation::processIndexScanDefs(LockMode lm, Uint32 scan_flags,
 
   /* Defer to table scan method */
   int res =
-      NdbScanOperation::processTableScanDefs(lm, scan_flags, parallel, batch);
+      NdbScanOperation::processTableScanDefs(lm,
+                                             scan_flags,
+                                             parallel,
+                                             batch,
+                                             allow_continous_scan);
   if (!res && read_range_no) {
     m_read_range_no = 1;
     if (insertATTRINFOHdr_NdbRecord(AttributeHeader::RANGE_NO, 0) == -1)

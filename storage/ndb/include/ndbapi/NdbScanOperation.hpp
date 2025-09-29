@@ -166,7 +166,8 @@ class NdbScanOperation : public NdbOperation {
                 SO_PART_INFO    = 0x80,
                 SO_TTL_IGNORE   = 0x100,
                 SO_TTL_ONLY_EXPIRED = 0x200,
-                SO_SET_INPUT_PARAM = 0x400
+                SO_SET_INPUT_PARAM = 0x400,
+                SO_USE_STD_SORTED = 0x800
     };
 
     /* Flags controlling scan behaviour
@@ -717,7 +718,8 @@ class NdbScanOperation : public NdbOperation {
   
   /* Initialise scan operation with user provided information */
   virtual int processTableScanDefs(LockMode lock_mode, Uint32 scan_flags,
-                                   Uint32 parallel, Uint32 batch);
+                                   Uint32 parallel, Uint32 batch,
+                                   bool allow_continous_scan);
 
   /* This flag indicates whether a scan operation is using the old API */
   bool  m_scanUsingOldApi;
