@@ -631,6 +631,7 @@ int NdbScanOperation::scanTableImpl(
     const NdbRecord *result_record, NdbOperation::LockMode lock_mode,
     const unsigned char *result_mask,
     const NdbScanOperation::ScanOptions *options, Uint32 sizeOfOptions) {
+  DBUG_ENTER("NdbScanOperation::scanTableImpl");
   int res;
   Uint32 scan_flags = 0;
   Uint32 parallel = 0;
@@ -640,8 +641,9 @@ int NdbScanOperation::scanTableImpl(
   ScanOptions currentOptions;
 
   if (options != nullptr) {
-    if (handleScanOptionsVersion(options, sizeOfOptions, currentOptions))
-      return -1;
+    if (handleScanOptionsVersion(options, sizeOfOptions, currentOptions)) {
+      DBUG_RETURN(-1);
+    }
 
     /* Process some initial ScanOptions - most are
      * handled later
@@ -653,6 +655,10 @@ int NdbScanOperation::scanTableImpl(
     if (options->optionsPresent & ScanOptions::SO_PARALLEL)
       parallel = options->parallel;
     if (options->optionsPresent & ScanOptions::SO_BATCH) batch = options->batch;
+  }
+  if (getNdbTransaction()->getBuddyConPtr() != 0xFFFFFFFF) {
+    DBUG_PRINT("info", ("Disable continous when buddy exists"));
+    allow_continous_scan = false;
   }
 #if 0  // ToDo: this breaks optimize index, but maybe there is a better solution
   if (result_record->flags & NdbRecord::RecIsIndex)
@@ -672,11 +678,13 @@ int NdbScanOperation::scanTableImpl(
                              parallel,
                              batch,
                              allow_continous_scan);
-  if (res == -1) return -1;
+  if (res == -1) {
+    DBUG_RETURN(-1);
+  }
 
   theStatus = NdbOperation::UseNdbRecord;
   /* Call generic scan code */
-  return scanImpl(options, readMask.rep.data);
+  DBUG_RETURN(scanImpl(options, readMask.rep.data));
 }
 
 int NdbScanOperation::getPartValueFromInfo(const Ndb::PartitionSpec *partInfo,
@@ -1206,6 +1214,8 @@ int NdbIndexScanOperation::scanIndexImpl(
     if (options->optionsPresent & ScanOptions::SO_BATCH) batch = options->batch;
   }
 
+  //allow_continous_scan = false;
+
   if (!(key_record->flags & NdbRecord::RecHasAllKeys)) {
     setErrorCodeAbort(4292);
     return -1;
@@ -1378,6 +1388,10 @@ int NdbScanOperation::processTableScanDefs(NdbScanOperation::LockMode lm,
 
   Uint32 continousScan =
     theNdb->theImpl->get_ndbapi_config_parameters().m_continous_scan;
+
+  if (continousScan && allow_continous_scan && lm != LM_CommittedRead) {
+    allow_continous_scan = false;
+  }
 
   if (rangeScan && (scan_flags & (SF_OrderBy | SF_OrderByFull))) {
     if (!allow_continous_scan) {
@@ -2322,7 +2336,7 @@ void NdbScanOperation::finaliseScan() {
       m_sent_receivers_count = theParallelism / 4;
     } else {
       /**
-       * No need to have twice as many receivers when not using
+       * No need to have four times as many receivers when not using
        * continous scan, probably a BLOB query that was converted.
        */
       theParallelism /= 4;
@@ -2500,6 +2514,8 @@ int NdbScanOperation::prepareSendScan(Uint32 /*aTC_ConnectPtr*/,
   req->batch_byte_size = batch_byte_size;
   req->first_batch_size = batch_size;
 
+  DBUG_PRINT("info", ("do_setup_ndbrecord on %u receiver objects",
+    theParallelism));
 
   for (Uint32 i = 0; i < theParallelism; i++) {
     m_receivers[i]->do_setup_ndbrecord(m_attribute_record,
@@ -2563,8 +2579,10 @@ int NdbScanOperation::doSendScan(int aProcessorId) {
   ScanTabReq *scanTabReq =
     CAST_PTR(ScanTabReq, theSCAN_TABREQ->getDataPtrSend());
 
-  DBUG_PRINT("info", ("Send SCAN_TABREQ: NdbScanOperation, reqinfo: 0x%x",
-    scanTabReq->requestInfo));
+  DBUG_PRINT("info", ("Send SCAN_TABREQ: NdbScanOperation, reqinfo: 0x%x"
+                      ", theParallelism: %u",
+    scanTabReq->requestInfo,
+    theParallelism));
 
   /* SCANTABREQ always has 2 mandatory sections and an optional
    * third section
