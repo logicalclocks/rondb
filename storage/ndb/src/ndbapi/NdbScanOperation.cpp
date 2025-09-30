@@ -1337,7 +1337,7 @@ int NdbScanOperation::processTableScanDefs(NdbScanOperation::LockMode lm,
                                            bool allow_continous_scan) {
   m_ordered = m_descending = false;
   m_pruneState = SPS_UNKNOWN;
-  Uint32 fragCount = m_currentTable->m_fragmentCount;
+  Uint32 fragCount = m_currentTable->m_partitionCount;
 
   assert(fragCount > 0);
 
@@ -1394,7 +1394,7 @@ int NdbScanOperation::processTableScanDefs(NdbScanOperation::LockMode lm,
   }
 
   if (rangeScan && (scan_flags & (SF_OrderBy | SF_OrderByFull))) {
-    if (!allow_continous_scan) {
+    if (!allow_continous_scan || m_currentTable->m_fully_replicated) {
       parallel = fragCount;
       continousScan = 0;
     } else {
@@ -1406,7 +1406,8 @@ int NdbScanOperation::processTableScanDefs(NdbScanOperation::LockMode lm,
   } else if (continousScan != 0 &&
              allow_continous_scan &&
              lm == LM_CommittedRead) {
-    parallel *= 4;
+    continousScan = 0;
+    //parallel *= 4;
   } else {
     continousScan = 0;
   }
@@ -2449,7 +2450,8 @@ int NdbScanOperation::prepareSendScan(Uint32 /*aTC_ConnectPtr*/,
   theReceiver.calculate_batch_size(theParallelism,
                                    batch_size,
                                    batch_byte_size,
-                                   def_max_batch_size);
+                                   def_max_batch_size,
+                                   m_continousScan);
 
   /**
    * Calculate memory req. for the NdbReceiverBuffer and its row buffer:
@@ -3746,17 +3748,27 @@ int NdbIndexScanOperation::next_result_ord_ndbrecord(const char *&out_row,
 void NdbScanOperation::close_ndb_receiver(Uint32 index,
                                           Uint32 state) {
   Uint32 first_index = index & 0xFFFFFFFC;
-  DBUG_PRINT("info", ("close_ndb_receiver(%u - %u)",
-    first_index, first_index + 3));
+  DBUG_PRINT("info", ("close_ndb_receiver(%u)(%u - %u)",
+    index, first_index, first_index + 3));
   for (Uint32 i = 0; i < 4; i++) {
     Uint32 inx = first_index + i;
     if (m_receiver_state[inx] == ReceiverEmpty) {
       m_receiver_state[inx] = ReceiverClosed;
       DBUG_PRINT("info", ("Receiver %u set to ReceiverClosed", inx));
+    } else if (m_receiver_state[inx] == ReceiverClosed) {
+      DBUG_PRINT("info", ("Receiver %u already set to ReceiverClosed", inx));
+    } else {
+      DBUG_PRINT("info", ("Receiver %u set to %u",
+        inx, m_receiver_state[inx]));
     }
     m_receivers[inx]->m_tcPtrI = RNIL;
   }
-  DBUG_PRINT("info", ("Receiver %u set to %u", index, state));
+  DBUG_PRINT("info", ("Receiver %u set to %u = %s",
+    index,
+    state,
+    state == ReceiverClosed ? "ReceiverClosed" :
+      state == ReceiverDataReadyToBeClosed ?
+        "ReceiveDataReadyToBeClosed" : ""));
   m_receiver_state[index] = state;
 }
 

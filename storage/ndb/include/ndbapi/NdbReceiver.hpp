@@ -132,12 +132,14 @@ class NdbReceiver {
                                    Uint32 parallelism,
                                    Uint32 &batch_size,
                                    Uint32 &batch_byte_size,
-                                   Uint32 def_max_batch_size);
+                                   Uint32 def_max_batch_size,
+                                   bool continous_scan);
 
   void calculate_batch_size(Uint32 parallelism,
                             Uint32 &batch_size,
                             Uint32 &batch_byte_size,
-                            Uint32 def_max_batch_size) const;
+                            Uint32 def_max_batch_size,
+                            bool continous_scan) const;
 
   /**
    * Calculate size of result buffer which has to be

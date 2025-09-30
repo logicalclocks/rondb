@@ -16109,10 +16109,8 @@ void Dbdih::start_scan_on_table(TabRecordPtr tabPtr, Signal *signal,
     conf->senderData = 0; /* 0 indicates success */
     /**
      * For Fully replicated tables the totalfragments means the total
-     * number of fragments including the copy fragment. Here however
-     * we should respond with the real fragment count which is either
-     * 1 or the number of LDMs dependent on which partition balance
-     * the table was created with.
+     * number of fragments including the copy fragments. Here however
+     * we should respond with the partition count.
      *
      * partitionCount works also for other tables. We always scan
      * the real fragments when scanning all fragments and those
