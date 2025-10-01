@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 1997, 2024, Oracle and/or its affiliates.
+Copyright (c) 1997, 2025, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License, version 2.0, as published by the
@@ -911,7 +911,7 @@ void ibuf_update_free_bits_for_two_pages_low(
     mtr_t *mtr)          /*!< in: mtr */
 {
   ulint state;
-
+  ut_ad(!fsp_is_system_temporary(block1->page.id.space()));
   ut_ad(block1->page.id.space() == block2->page.id.space());
 
   /* As we have to x-latch two random bitmap pages, we have to acquire
@@ -2844,6 +2844,7 @@ void ibuf_update_max_tablespace_id(void) {
     max_space_id = mach_read_from_4(field);
   }
 
+  pcur.close();
   ibuf_mtr_commit(&mtr);
 
   /* printf("Maximum space id in insert buffer %lu\n", max_space_id); */

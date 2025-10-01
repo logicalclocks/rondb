@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 1995, 2024, Oracle and/or its affiliates.
+Copyright (c) 1995, 2025, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License, version 2.0, as published by the
@@ -640,12 +640,9 @@ static void log_index_column_counts(const dict_index_t *index, uint16_t n,
   }
 
   /* log n_uniq */
-  uint16_t n_uniq;
-  if (page_is_leaf(page_align(rec))) {
-    n_uniq = dict_index_get_n_unique_in_tree(index);
-  } else {
-    n_uniq = dict_index_get_n_unique_in_tree_nonleaf(index);
-  }
+  const auto n_uniq = page_is_leaf(page_align(rec))
+                          ? dict_index_get_n_unique_in_tree(index)
+                          : dict_index_get_n_unique_in_tree_nonleaf(index);
   ut_ad(n_uniq <= n);
   mach_write_to_2(log_ptr, n_uniq);
   log_ptr += 2;

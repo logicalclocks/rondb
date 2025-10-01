@@ -1,4 +1,4 @@
-# Copyright (c) 2019, 2024, Oracle and/or its affiliates.
+# Copyright (c) 2019, 2025, Oracle and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -71,7 +71,7 @@ FUNCTION(FIND_SYSTEM_ZSTD)
   ENDIF()
 ENDFUNCTION(FIND_SYSTEM_ZSTD)
 
-SET(ZSTD_VERSION_DIR "zstd-1.5.5")
+SET(ZSTD_VERSION_DIR "zstd-1.5.7")
 SET(BUNDLED_ZSTD_PATH ${CMAKE_SOURCE_DIR}/extra/zstd/${ZSTD_VERSION_DIR}/lib)
 
 FUNCTION(MYSQL_USE_BUNDLED_ZSTD)

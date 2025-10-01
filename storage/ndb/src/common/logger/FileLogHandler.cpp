@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
    Copyright (c) 2025, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -79,7 +79,8 @@ bool FileLogHandler::close() {
 }
 
 void FileLogHandler::writeHeader(const char *pCategory,
-                                 Logger::LoggerLevel level, time_t now) {
+                                 Logger::LoggerLevel level,
+                                 const std::timespec *now) {
   char str[MAX_HEADER_LENGTH];
   m_pLogFile->writeChar(getDefaultHeader(str, pCategory, level, now));
 }

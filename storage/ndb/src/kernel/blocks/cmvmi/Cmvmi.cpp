@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
    Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -30,10 +30,12 @@
 #include <NdbTick.h>
 #include <kernel_types.h>
 #include <portlib/NdbMem.h>
+#include <portlib/NdbTimestamp.h>
 #include <signal.h>
 #include <Configuration.hpp>
 #include <NdbOut.hpp>
 #include <cstring>
+#include <ctime>
 #include <util/ConfigValues.hpp>
 
 #include <FastScheduler.hpp>
@@ -229,17 +231,20 @@ void Cmvmi::execNDB_TAMPER(Signal *signal) {
     ndbabort();
   }
 
+#ifdef ERROR_INSERT
 #ifndef _WIN32
   if (ERROR_INSERTED(9996)) {
-    simulate_error_during_shutdown = SIGSEGV;
+    globalEmulatorData.theConfiguration->setShutdownHandlingFault(
+        Configuration::SHF_UNIX_SIGNAL, SIGSEGV);
     ndbabort();
   }
 
   if (ERROR_INSERTED(9995)) {
-    simulate_error_during_shutdown = SIGSEGV;
+    globalEmulatorData.theConfiguration->setShutdownHandlingFault(
+        Configuration::SHF_UNIX_SIGNAL, SIGSEGV);
     kill(getpid(), SIGABRT);
   }
-
+#endif
 #endif
 
 }  // execNDB_TAMPER()
@@ -442,10 +447,11 @@ void SavedEventBuffer::save(const Uint32 *theData, Uint32 len) {
   Uint32 total = len + SavedEvent::HeaderLength;
   alloc(total);
 
+  std::timespec now = NdbTimestamp_GetCurrentTime();
   SavedEvent s;
   s.m_len = len;  // size of SavedEvent
   s.m_seq = m_saved_event_sequence++;
-  s.m_time = (Uint32)time(0);
+  s.m_time = (Uint32)now.tv_sec;
   const Uint32 *src = (const Uint32 *)&s;
   Uint32 *dst = m_data + m_write_pos;
 
@@ -2115,11 +2121,16 @@ void Cmvmi::execDUMP_STATE_ORD(Signal *signal) {
 #ifdef ERROR_INSERT
   if (arg == DumpStateOrd::CmvmiSetErrorHandlingError) {
     Uint32 val = 0;
+    Uint32 extra = 0;
     if (signal->length() >= 2) {
       val = signal->theData[1];
+      if (signal->length() >= 3) {
+        extra = signal->theData[2];
+      }
     }
-    g_eventLogger->info("Cmvmi : Setting ErrorHandlingError to %u", val);
-    simulate_error_during_error_reporting = val;
+    g_eventLogger->info("Cmvmi : Setting ShutdownErrorHandling to %u %u", val,
+                        extra);
+    globalEmulatorData.theConfiguration->setShutdownHandlingFault(val, extra);
   }
 #endif
 

@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 2011, 2024, Oracle and/or its affiliates.
+Copyright (c) 2011, 2025, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License, version 2.0, as published by the
@@ -50,6 +50,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
 #include "row0mysql.h"
 #include "row0row.h"
 #include "row0upd.h"
+#include "scope_guard.h"
 #include "srv0mon.h"
 #include "trx0rec.h"
 #include "ut0new.h"
@@ -1819,7 +1820,7 @@ flag_ok:
   ulint *offsets;
   ulint num_v = new_table->n_v_cols;
 
-  ut_ad(rec_offs_n_fields(moffsets) == dict_index_get_n_unique(index) + 2);
+  ut_ad(rec_offs_n_fields(moffsets) == dict_index_get_n_unique(index) + 2U);
   ut_ad(!rec_offs_any_extern(moffsets));
 
   /* Convert the row to a search tuple. */
@@ -1842,6 +1843,7 @@ flag_ok:
 
   pcur.open(index, 0, old_pk, PAGE_CUR_LE,
             BTR_MODIFY_TREE | BTR_LATCH_FOR_DELETE, &mtr, UT_LOCATION_HERE);
+  const auto guard = create_scope_guard([&pcur]() { pcur.close(); });
 #ifdef UNIV_DEBUG
   switch (pcur.get_btr_cur()->flag) {
     case BTR_CUR_UNSET:
@@ -2030,7 +2032,7 @@ flag_ok:
 
   ut_ad(dtuple_get_n_fields_cmp(old_pk) == dict_index_get_n_unique(index));
   ut_ad(dtuple_get_n_fields(old_pk) ==
-        dict_index_get_n_unique(index) + (log->same_pk ? 0 : 2));
+        dict_index_get_n_unique(index) + (log->same_pk ? 0U : 2U));
 
   row = row_log_table_apply_convert_mrec(mrec, dup->m_index, offsets, log, heap,
                                          &error);
@@ -2065,6 +2067,7 @@ flag_ok:
 
   pcur.open(index, 0, old_pk, PAGE_CUR_LE, BTR_MODIFY_TREE, &mtr,
             UT_LOCATION_HERE);
+  const auto guard = create_scope_guard([&pcur]() { pcur.close(); });
 #ifdef UNIV_DEBUG
   switch (pcur.get_btr_cur()->flag) {
     case BTR_CUR_UNSET:
@@ -2571,7 +2574,7 @@ flag_ok:
           dict_table_copy_v_types(old_pk, new_index->table);
         }
 
-        for (ulint i = 0; i < dict_index_get_n_unique(new_index) + 2; i++) {
+        for (ulint i = 0; i < dict_index_get_n_unique(new_index) + 2U; i++) {
           const void *field;
           ulint len;
           dfield_t *dfield;

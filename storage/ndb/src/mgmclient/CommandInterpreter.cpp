@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
    Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -25,6 +25,7 @@
 */
 
 #include <atomic>
+#include <ctime>
 
 #include <ndb_global.h>
 
@@ -3554,8 +3555,8 @@ static void report_events(const ndb_logevent &event) {
         event.SavedEvent.len);
 
   char timestamp_str[64];
-  Logger::format_timestamp(event.SavedEvent.time, timestamp_str,
-                           sizeof(timestamp_str));
+  std::timespec t = {event.SavedEvent.time, 0};
+  Logger::format_timestamp(&t, timestamp_str, sizeof(timestamp_str));
 
   ndbout_c("%s %s", timestamp_str, out);
 }

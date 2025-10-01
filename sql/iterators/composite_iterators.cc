@@ -1,4 +1,4 @@
-/* Copyright (c) 2018, 2024, Oracle and/or its affiliates.
+/* Copyright (c) 2018, 2025, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -39,12 +39,12 @@
 
 #include <ankerl/unordered_dense.h>
 
+#include "extra/xxhash/my_xxhash.h"
 #include "field_types.h"
 #include "mem_root_deque.h"
 #include "my_dbug.h"
 #include "my_inttypes.h"
 #include "my_sys.h"
-#include "my_xxhash.h"
 #include "mysql_com.h"
 #include "mysqld_error.h"
 #include "prealloced_array.h"
@@ -3826,6 +3826,8 @@ bool TemptableAggregateIterator<Profiler>::Init() {
   trace_exec.add_select_number(m_join->query_block->select_number);
   Opt_trace_array trace_steps(trace, "steps");
   const typename Profiler::TimeStamp start_time = Profiler::Now();
+  // The input to the aggregation should be read from the base slice.
+  m_join->set_ref_item_slice(REF_SLICE_SAVED_BASE);
 
   if (m_subquery_iterator->Init()) {
     return true;
@@ -4240,7 +4242,9 @@ int RemoveDuplicatesOnIndexIterator::Read() {
       return 1;
     }
 
-    if (!m_first_row && key_cmp(m_key->key_part, m_key_buf, m_key_len) == 0) {
+    if (!m_first_row &&
+        key_cmp(m_key->key_part, m_key_buf, m_key_len,
+                /*is_reverse_multi_valued_index_scan=*/false) == 0) {
       // Same as previous row, so keep scanning.
       continue;
     }
@@ -4292,7 +4296,8 @@ int NestedLoopSemiJoinWithDuplicateRemovalIterator::Read() {
       }
 
       if (m_deduplicate_against_previous_row &&
-          key_cmp(m_key->key_part, m_key_buf, m_key_len) == 0) {
+          key_cmp(m_key->key_part, m_key_buf, m_key_len,
+                  /*is_reverse_multi_valued_index_scan=*/false) == 0) {
         // Same as previous row, so keep scanning.
         continue;
       }

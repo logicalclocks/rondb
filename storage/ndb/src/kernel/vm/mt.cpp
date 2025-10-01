@@ -1,4 +1,4 @@
-/* Copyright (c) 2008, 2024, Oracle and/or its affiliates.
+/* Copyright (c) 2008, 2025, Oracle and/or its affiliates.
    Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -10378,6 +10378,13 @@ static bool crash_started = false;
 
 void ErrorReporter::prepare_to_crash(bool first_phase,
                                      bool error_insert_crash) {
+  {
+    thr_data *selfptr = NDB_THREAD_TLS_THREAD;
+    if (selfptr != NULL) {
+      selfptr->m_watchdog_counter = 22;
+    }
+  }
+
   if (first_phase) {
     NdbMutex_Lock(&g_thr_repository->stop_for_crash_mutex);
     if (crash_started && error_insert_crash) {
@@ -10607,9 +10614,25 @@ FastScheduler::dumpSignalMemoryAndJam(Uint32 thr_no, FILE* out)
     memcpy(&signal.header, s, 4*siglen);
 
     const Uint32 *posptr = reinterpret_cast<const Uint32 *>(s);
-    signal.m_sectionPtrI[0] = posptr[siglen + 0];
-    signal.m_sectionPtrI[1] = posptr[siglen + 1];
-    signal.m_sectionPtrI[2] = posptr[siglen + 2];
+    signal.m_sectionPtrI[0] = RNIL;
+    signal.m_sectionPtrI[1] = RNIL;
+    signal.m_sectionPtrI[2] = RNIL;
+    switch (s->m_noOfSections) {
+      case 3:
+        signal.m_sectionPtrI[2] = posptr[siglen + 2];
+        [[fallthrough]];
+      case 2:
+        signal.m_sectionPtrI[1] = posptr[siglen + 1];
+        [[fallthrough]];
+      case 1:
+        signal.m_sectionPtrI[0] = posptr[siglen + 0];
+        [[fallthrough]];
+      case 0:
+        break;
+      default:
+        /* Out of range - ignore */
+        break;
+    };
     bool prioa = signalSequence[seq_end].prioa;
 
     /* Make sure to display clearly when there is a gap in the dump. */
