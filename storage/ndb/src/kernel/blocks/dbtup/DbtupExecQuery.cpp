@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -2192,7 +2192,11 @@ int Dbtup::handleUpdateReq(Signal* signal,
   if (regTabPtr->need_expand(disk))
   {
     jamDebug();
-    expand_tuple(req_struct, sizes, org, regTabPtr, disk);
+    if (!expand_tuple(req_struct, sizes, org, regTabPtr, disk)) {
+      jam();
+      terrorCode = ZINCONSISTENCY_ERROR;
+      goto error;
+    }
     if (disk && operPtrP->m_undo_buffer_space == 0)
     {
       jam();
@@ -2781,7 +2785,9 @@ int Dbtup::handleInsertReq(Signal* signal,
     if (regTabPtr->need_expand())
     {
       jamDebug();
-      expand_tuple(req_struct, sizes, org, regTabPtr, !disk_insert);
+      if (!expand_tuple(req_struct, sizes, org, regTabPtr, !disk_insert)) {
+        goto inconsistency_error;
+      }
       std::memset(req_struct->m_disk_ptr->m_null_bits+
           regTabPtr->m_offsets[DD].m_null_offset, 0xFF,
           4*regTabPtr->m_offsets[DD].m_null_words);
@@ -3253,6 +3259,12 @@ int Dbtup::handleInsertReq(Signal* signal,
   }
   set_tuple_state(regOperPtr.p, TUPLE_PREPARED);
   return 0;
+
+inconsistency_error:
+  jam();
+  terrorCode = ZINCONSISTENCY_ERROR;
+  regOperPtr.p->m_undo_buffer_space = 0;
+  goto exit_error;
 
 size_change_error:
   jam();
@@ -5085,9 +5097,9 @@ expand_var_part(Dbtup::KeyReqStruct::Var_data *dst,
   return ALIGN_WORD(dst_ptr);
 }
 
-void
+bool
 Dbtup::expand_tuple(KeyReqStruct* req_struct, 
-                    Uint32 sizes[2],
+                    Uint32 sizes[4],
                     Tuple_header* src, 
                     const Tablerec* tabPtrP,
                     bool disk,
@@ -5149,7 +5161,7 @@ Dbtup::expand_tuple(KeyReqStruct* req_struct,
       {
         jamDebug();
         ptr->m_header_bits= (bits | Tuple_header::COPY_TUPLE);
-        return;
+        return true;
       }
       jamDebug();
       Uint32 disk_fix_header_size = tabPtrP->m_offsets[DD].m_fix_header_size;
@@ -5239,20 +5251,27 @@ Dbtup::expand_tuple(KeyReqStruct* req_struct,
         Local_key key;
         const Uint32 *disk_ref= src->get_disk_ref_ptr(tabPtrP);
         memcpy(&key, disk_ref, sizeof(key));
-        g_eventLogger->info("(%u) Crash on error in disk ref on row(%u,%u)"
-            ", disk_page(%u,%u).%u, disk_page_ptr.i = %u"
-            ", size: %u, disk_ptr: %p",
+        g_eventLogger->info("(%u) Inconistency error in disk ref on row(%u,%u)"
+            ", disk_page(%u,%u).%u, index: %u, header_size: %u, disk_page_ptr.i = %u"
+            ", size: 0x%x, disk_page_ptr.p: 0x%p, disk_ptr: 0x%p, src_ptr: 0x%p",
             instance(),
             req_struct->frag_page_id,
             req_struct->operPtrP->m_tuple_location.m_page_idx,
             key.m_file_no,
             key.m_page_no,
             key.m_page_idx,
+            ((Tup_varsize_page*)req_struct->m_disk_page_ptr.p)->get_index_word(key.m_page_idx) & 0x7fff,
+            disk_fix_header_size,
             req_struct->m_disk_page_ptr.i,
             req_struct->m_disk_ptr->m_base_record_page_idx,
-            req_struct->m_disk_ptr);
-        ndbrequire(req_struct->m_disk_ptr->m_base_record_page_idx <
-            Tup_page::DATA_WORDS);
+            req_struct->m_disk_page_ptr.p,
+            req_struct->m_disk_ptr,
+            src_ptr);
+        g_eventLogger->info("(%u)Table id: %u is corrupted, you need to drop this"
+                            " table after successful restart",
+          instance(),
+          req_struct->fragPtrP->fragTableId);
+        return false;
       }
     }
     else
@@ -5365,6 +5384,7 @@ Dbtup::expand_tuple(KeyReqStruct* req_struct,
   ptr->m_header_bits = (bits |
                         Tuple_header::COPY_TUPLE |
                         Tuple_header::DISK_INLINE);
+  return true;
 }
 
 void

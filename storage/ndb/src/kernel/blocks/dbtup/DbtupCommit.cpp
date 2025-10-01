@@ -655,7 +655,7 @@ Dbtup::handle_lcp_keep_commit(const Local_key* rowid,
     setup_fixed_tuple_ref(req_struct, opPtrP, regTabPtr);
     setup_fixed_part(req_struct, opPtrP, regTabPtr);
     req_struct->m_tuple_ptr = dst;
-    expand_tuple(req_struct, sizes, org, regTabPtr, disk, true);
+    ndbrequire(expand_tuple(req_struct, sizes, org, regTabPtr, disk, true));
     shrink_tuple(req_struct, sizes+2, regTabPtr, disk);
   }
   else

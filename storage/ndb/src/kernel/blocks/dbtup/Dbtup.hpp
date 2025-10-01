@@ -190,6 +190,7 @@ inline const Uint32* ALIGN_WORD(const void* ptr)
 #define ZNO_UNDO_BUFFER_MEMORY_ERROR 923
 #define ZOUT_OF_STORED_PROC_MEMORY_ERROR 924
 #define ZOP_DISK_WITH_FLAG_NOT_SET 927
+#define ZINCONSISTENCY_ERROR 869
 
 #define ZINVALID_CHAR_FORMAT 744
 #define ZROWID_ALLOCATED 899
@@ -4081,7 +4082,7 @@ private:
   friend class NdbOut& operator<<(NdbOut&, const Th&);
 #endif
 
-  void expand_tuple(KeyReqStruct*,
+  bool expand_tuple(KeyReqStruct*,
                     Uint32 sizes[4],
                     Tuple_header *org, 
 		    const Tablerec*,

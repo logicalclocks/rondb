@@ -32868,7 +32868,8 @@ void Dblqh::logLqhkeyrefLab(Signal* signal,
   case ZUPDATE:
   case ZDELETE:
     jam();
-    if (unlikely(terrorCode != ZNO_TUPLE_FOUND))
+    if (unlikely((terrorCode != ZNO_TUPLE_FOUND) ||
+                 (terrorCode != 869)))
       goto error;
     break;
   case ZINSERT:

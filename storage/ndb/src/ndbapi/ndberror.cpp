@@ -316,6 +316,7 @@ ErrorBundle ErrorCodes[] = {
   {  783, DMEC, TR, "Too many schema operations" },
   {  785, DMEC, TR, "Schema object is busy with another schema transaction" },
   {  291, DMEC, TR, "Out of scanfrag records in TC (increase SharedGlobalMemory)" },
+  {  869, DMEC, TR, "Data inconsistency error" },
 
   /**
    * InsufficientSpace
