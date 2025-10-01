@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
    Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -1586,6 +1586,16 @@ class Dbtc : public SimulatedBlock {
 
     Uint32 m_location_domain_id;
 
+    /* Discrete states of API failure handling for logs etc */
+    enum ApiFailStates {
+      AF_IDLE,
+      AF_CHECK_TRANS,
+      AF_CHECK_MARKERS,
+      AF_CHECK_MARKERS_WAIT_TC_TAKEOVER,
+      AF_CHECK_MARKERS_WAIT_TRANS
+    };
+    Uint32 m_af_state;
+    /* Independent steps of Data node failure handling */
     enum NodeFailBits {
       NF_TAKEOVER = 0x1,
       NF_CHECK_SCAN = 0x2,
@@ -1593,7 +1603,7 @@ class Dbtc : public SimulatedBlock {
       NF_BLOCK_HANDLE = 0x8,
       NF_NODE_FAIL_BITS = 0xF  // All bits...
     };
-    Uint32 m_nf_bits;
+    Uint32 m_nf_bits; /* Node fail handling state */
     NdbNodeBitmask _m_lqh_trans_conf;
     /**
      * Indicator if any history to track yet
@@ -2585,8 +2595,6 @@ class Dbtc : public SimulatedBlock {
 
   void checkScanActiveInFailedLqh(Signal *signal, Uint32 scanPtrI,
                                   Uint32 failedNodeId);
-  void checkScanFragList(Signal *, Uint32 failedNodeId, ScanRecord *scanP,
-                         Local_ScanFragRec_dllist::Head &);
 
   void nodeFailCheckTransactions(Signal *, Uint32 transPtrI,
                                  Uint32 failedNodeId);
@@ -3395,6 +3403,7 @@ class Dbtc : public SimulatedBlock {
   bool m_dbinfo_full_apiconnectrecord;
 
   void dump_trans(ApiConnectRecordPtr transPtr);
+  void dump_scan_state(ApiConnectRecordPtr scanTransPtr);
   bool hasOp(ApiConnectRecordPtr transPtr, Uint32 op);
   bool is_transaction_to_start(ApiConnectRecord*, Uint32);
   bool check_tckey_queueing(Signal *signal,

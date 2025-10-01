@@ -1,4 +1,4 @@
-# Copyright (c) 2017, 2024, Oracle and/or its affiliates.
+# Copyright (c) 2017, 2025, Oracle and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -54,7 +54,7 @@ SET (DEB_RULES_DEBUG_MAKE
 SET (DEB_RULES_DEBUG_EXTRA
 "
 	# The ini file isn't built for debug, so copy over from the standard build
-	install -g root -o root -m 0755 debian/tmp/usr/lib/mysql/plugin/daemon_example.ini debian/tmp/usr/lib/mysql/plugin/debug
+	install -m 0755 debian/tmp/usr/lib/mysql/plugin/daemon_example.ini debian/tmp/usr/lib/mysql/plugin/debug
 ")
 
 SET (DEB_INSTALL_DEBUG_SERVER

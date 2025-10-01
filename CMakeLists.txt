@@ -1,5 +1,5 @@
-# Copyright (c) 2006, 2024, Oracle and/or its affiliates.
-# Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+# Copyright (c) 2006, 2025, Oracle and/or its affiliates.
+# Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 # 
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -246,8 +246,11 @@ ENDIF()
 IF(MY_HOST_SYSTEM_NAME MATCHES "Linux")
   # Trust 'rpm -qf /' rather than 'uname -s'
   STRING(REGEX MATCH "\\.el([6789])\\." MATCH_FSYS "${MY_HOST_FILESYSTEM_NAME}")
+  IF(NOT CMAKE_MATCH_1)
+    STRING(REGEX MATCH "\\.el(10)\\." MATCH_FSYS "${MY_HOST_FILESYSTEM_NAME}")
+  ENDIF()
 
-  # Set LINUX_RHEL6, LINUX_RHEL7, LINUX_RHEL8 or LINUX_RHEL9
+  # Set LINUX_RHEL6, LINUX_RHEL7, LINUX_RHEL8 or LINUX_RHEL9 or LINUX_RHEL10
   IF(CMAKE_MATCH_1)
     SET(LINUX_RHEL 1)
     SET(LINUX_RHEL${CMAKE_MATCH_1} 1)
@@ -307,7 +310,7 @@ IF(CMAKE_HOST_UNIX AND NOT FORCE_UNSUPPORTED_COMPILER
     IF(LINUX_RHEL)
       MESSAGE(STATUS "This is ${MATCH_FSYS} as found from 'rpm -qf /'")
     ENDIF()
-    IF(LINUX_RHEL)
+    IF(LINUX_RHEL AND NOT LINUX_RHEL10)
       MESSAGE(STATUS "Looking for a devtoolset compiler")
       IF(LINUX_RHEL7)
         # gcc11 not available yet
@@ -318,6 +321,8 @@ IF(CMAKE_HOST_UNIX AND NOT FORCE_UNSUPPORTED_COMPILER
         ENDIF()
       ELSEIF(LINUX_RHEL8 OR LINUX_RHEL9)
         SET(ALTERNATIVE_PATHS "/opt/rh/gcc-toolset-12")
+      ELSEIF(LINUX_RHEL10)
+        # Use default /usr/bin/gcc which is 14.2.1
       ENDIF()
 
       FOREACH(OPT_PATH ${ALTERNATIVE_PATHS})
@@ -782,13 +787,15 @@ INCLUDE(install_macros)
 INCLUDE(mysql_add_executable)
 INCLUDE(curl)
 INCLUDE(rapidjson)
-INCLUDE(fprofile)
 INCLUDE(fido2)
 INCLUDE(win_jemalloc)
 INCLUDE(msvc_cppcheck)
 INCLUDE(base64)
 INCLUDE(libs_mysql_create_library)
 INCLUDE(libcno)
+# Do this last, so that most feature checks are done, and not affected by
+# -fprofile-use or -fprofile-generate
+INCLUDE(fprofile) # Do this last !!
 
 # To simplify building of JET, skip all dependencies for other targets.
 IF(EXISTS ${CMAKE_SOURCE_DIR}/internal/CMakeLists.txt)
@@ -864,8 +871,25 @@ OPTION(WITH_AUTHENTICATION_LDAP
   "Report error if the LDAP authentication plugin cannot be built."
   ${WITH_AUTHENTICATION_LDAP_DEFAULT})
 
-# Currently only supported on Linux
-IF(WITH_INTERNAL AND LINUX)
+# Add option WITH_KERBEROS_MAC which will be ignored on older branches.
+UNSET(CUSTOM_KERBEROS_SPECIFIED)
+IF(APPLE)
+  IF(DEFINED WITH_KERBEROS_MAC AND IS_DIRECTORY ${WITH_KERBEROS_MAC})
+    SET(CUSTOM_KERBEROS_SPECIFIED 1)
+  ELSEIF(DEFINED WITH_KERBEROS AND IS_DIRECTORY ${WITH_KERBEROS})
+    SET(CUSTOM_KERBEROS_SPECIFIED 1)
+  ENDIF()
+ENDIF()
+
+# Enable it by default for Linux(system) and MacOS(custom path)
+IF(WITH_INTERNAL AND
+    (LINUX OR
+      (APPLE AND
+        CUSTOM_KERBEROS_SPECIFIED)))
+  # The validity of the WITH_KERBEROS path will be verified later,
+  # in MYSQL_CHECK_KERBEROS
+  # Enabling WITH_AUTHENTICATION_KERBEROS, will also enable
+  # WITH_AUTHENTICATION_CLIENT_PLUGINS_DEFAULT, see below.
   SET(WITH_AUTHENTICATION_KERBEROS_DEFAULT ON)
 ELSE()
   SET(WITH_AUTHENTICATION_KERBEROS_DEFAULT OFF)
@@ -1670,6 +1694,13 @@ IF(APPLE)
   OPTION(WITH_DEVELOPER_ENTITLEMENTS "Add developer entitlements" OFF)
 ENDIF()
 
+# Utility target to copy all "custom" libraries into the build directory.
+ADD_CUSTOM_TARGET(copy_custom_libraries)
+IF(APPLE)
+  # Utility target, to inspect all the symlinks created.
+  ADD_CUSTOM_TARGET(symlink_custom_libraries)
+ENDIF()
+
 # Utility target to build every executable tagged with ADD_TEST.
 ADD_CUSTOM_TARGET(unittest_all)
 
@@ -1830,7 +1861,6 @@ MYSQL_CHECK_ZSTD()
 IF(LINUX)
   # Look up patchelf(1) here, before doing SSL/KERBEROS/SASL/LDAP config.
   FIND_PROGRAM(PATCHELF_EXECUTABLE patchelf)
-  ADD_CUSTOM_TARGET(copy_linux_custom_dlls)
   SET(KNOWN_CUSTOM_LIBRARIES "" CACHE INTERNAL "" FORCE)
 ENDIF()
 
@@ -2255,6 +2285,7 @@ ADD_DEPENDENCIES(clang_tidy_prerequisites GenError)
 ADD_SUBDIRECTORY(include)
 ADD_SUBDIRECTORY(strings)
 ADD_SUBDIRECTORY(extra/unordered_dense)
+ADD_SUBDIRECTORY(extra/xxhash)
 ADD_SUBDIRECTORY(vio)
 ADD_SUBDIRECTORY(mysys)
 ADD_SUBDIRECTORY(libmysql)

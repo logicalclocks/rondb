@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 2020, 2024, Oracle and/or its affiliates.
+Copyright (c) 2020, 2025, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License, version 2.0, as published by the
@@ -272,6 +272,10 @@ dberr_t Parallel_cursor::scan(Builders &builders) noexcept {
 
   /* Called when a thread finishes traversing a page and when it completes. */
   reader.set_finish_callback([&](Thread_ctx *thread_ctx) {
+    if (reader.is_error_set()) {
+      return reader.get_error_state();
+    }
+
     dberr_t err{DB_SUCCESS};
     const auto thread_id = thread_ctx->m_thread_id;
 

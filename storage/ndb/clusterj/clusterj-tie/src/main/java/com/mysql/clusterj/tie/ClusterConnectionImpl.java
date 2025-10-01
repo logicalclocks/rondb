@@ -1,6 +1,6 @@
 /*
- *  Copyright (c) 2010, 2024, Oracle and/or its affiliates.
- *  Copyright (c) 2020, 2023, Hopsworks and/or its affiliates.
+ *  Copyright (c) 2010, 2025, Oracle and/or its affiliates.
+ *  Copyright (c) 2020, 2025, Hopsworks and/or its affiliates.
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License, version 2.0,
@@ -73,7 +73,7 @@ public class ClusterConnectionImpl
     final String connectString;
 
     /** The node id requested for this connection; 0 for default */
-    final int nodeId;
+    int nodeId;
 
     /** The timeout value to connect to mgm */
     final int connectTimeoutMgm;
@@ -149,6 +149,7 @@ public class ClusterConnectionImpl
         checkConnection();
         int returnCode = clusterConnection.connect(connectRetries, connectDelay, verbose?1:0);
         handleError(returnCode, clusterConnection, connectString, nodeId);
+        nodeId = clusterConnection.node_id();
     }
 
     public Db createDb(String databaseName, boolean defaultDatabase, int maxTransactions) {

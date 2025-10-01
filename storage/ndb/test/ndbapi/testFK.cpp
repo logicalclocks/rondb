@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2013, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2013, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1026,7 +1026,7 @@ static int runMixedCascade(NDBT_Context *ctx, NDBT_Step *step) {
             NdbOperation::OperationOptions::OO_DEFERRED_CONSTAINTS;
         }
 
-        const NdbOperation *pOp = 0, *pOp1 = 0;
+        const NdbOperation *pOp = nullptr, *pOp1 = nullptr;
         switch (ndb_rand_r(&seed) % 3) {
         case 0:
             pOp = pTrans->writeTuple(pRowRecord, (char *)pRow, pRowRecord,
@@ -1035,7 +1035,8 @@ static int runMixedCascade(NDBT_Context *ctx, NDBT_Step *step) {
             if (result != 0) goto found_error;
             pOp1 = pTrans->writeTuple(pRowRecord1, (char *)pRow, pRowRecord1,
                                       (char *)pRow, 0, &opts, sizeof(opts));
-          break;
+            CHK_RET_FAILED(pOp1 != nullptr);
+            break;
         case 1:
             pOp = pTrans->deleteTuple(pRowRecord, (char *)pRow, pRowRecord,
                                       (char *)pRow, 0, &opts, sizeof(opts));
@@ -1045,7 +1046,7 @@ static int runMixedCascade(NDBT_Context *ctx, NDBT_Step *step) {
                                       (char *)pRow, 0, &opts, sizeof(opts));
           break;
         }
-        CHK_RET_FAILED(pOp != 0);
+        CHK_RET_FAILED(pOp != nullptr);
         result = pTrans->execute(NoCommit, AO_IgnoreError);
         if (result != 0) {
           goto found_error;

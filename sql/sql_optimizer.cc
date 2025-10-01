@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2025, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
@@ -4423,6 +4423,13 @@ static bool build_equal_items_for_cond(THD *thd, Item *cond, Item **retcond,
     }
 
     if (do_inherit) {
+      // Range optimizer expects the LHS of an IN predicate to be columns
+      // from a table. Doing constant propagation for these columns would
+      // skip the range analysis leading to less performant queries.
+      // So we disable constant propagation for this case.
+      if (is_function_of_type(cond, Item_func::IN_FUNC)) {
+        down_cast<Item_func_in *>(cond)->set_no_constant_propagation();
+      }
       /*
         For each field reference in cond, not from equal item predicates,
         set a pointer to the multiple equality it belongs to (if there is any)
@@ -5696,12 +5703,16 @@ bool JOIN::extract_const_tables() {
            1. are dependent upon other tables, or
            2. have no exact statistics, or
            3. are full-text searched
+           4. a derived table which has a stored function
         */
+        const bool explain_mode = thd->lex->is_explain();
         if ((table->s->system || table->file->stats.records <= 1 ||
              all_partitions_pruned_away) &&
             !tab->dependent &&                                              // 1
             (table->file->ha_table_flags() & HA_STATS_RECORDS_IS_EXACT) &&  // 2
-            !tl->is_fulltext_searched())                                    // 3
+            !tl->is_fulltext_searched() &&                                  // 3
+            !(explain_mode && tl->is_view_or_derived() &&
+              tl->has_stored_program()))  // 4
           mark_const_table(tab, nullptr);
         break;
     }
@@ -5855,6 +5866,7 @@ bool JOIN::extract_func_dependent_tables() {
              6. are not going to be used, typically because they are streamed
                 instead of materialized
                 (see Query_expression::can_materialize_directly_into_result()).
+             7. key evaluated in stored program in EXPLAIN mode
           */
           if (eq_part.is_prefix(table->key_info[key].user_defined_key_parts) &&
               !tl->is_fulltext_searched() &&                            // 1
@@ -5863,7 +5875,9 @@ bool JOIN::extract_func_dependent_tables() {
               !(tab->join_cond() &&
                 tab->join_cond()->cost().IsExpensive()) &&                // 4
               !(table->file->ha_table_flags() & HA_BLOCK_CONST_TABLE) &&  // 5
-              table->is_created()) {                                      // 6
+              table->is_created() &&                                      // 6
+              !(thd->lex->is_explain() &&
+                start_keyuse->val->has_stored_program())) {  // 7
             if (table->key_info[key].flags & HA_NOSAME) {
               if (const_ref == eq_part) {  // Found everything for ref.
                 ref_changed = true;
@@ -6296,7 +6310,7 @@ static ha_rows get_quick_record_count(THD *thd, JOIN_TAB *tab, ha_rows limit,
       return 0;
     }
     DBUG_PRINT("warning", ("Couldn't use record count on const keypart"));
-  } else if (tl->is_table_function() || tl->materializable_is_const()) {
+  } else if (tl->is_table_function() || tl->materializable_is_const(thd)) {
     tl->fetch_number_of_rows();
     return tl->table->file->stats.records;
   }
@@ -11510,6 +11524,13 @@ bool evaluate_during_optimization(const Item *item, const Query_block *select) {
   // If the Item does not access any tables, it can always be evaluated.
   if (item->const_item()) return true;
 
+  // Do not evaluate stored procedure in EXPLAIN
+  if (current_thd->lex->is_explain() &&
+      WalkItem(item, enum_walk::PREFIX, [](const Item *curitem) {
+        return curitem->has_stored_program();
+      }))
+    return false;
+
   return !item->has_subquery() || (select->active_options() &
                                    OPTION_NO_SUBQUERY_DURING_OPTIMIZATION) == 0;
 }
@@ -11629,8 +11650,15 @@ static double EstimateRowAccessesInItem(Item *item, double num_evaluations) {
       } else {
         path = qe->item->root_access_path();
       }
-      rows += EstimateRowAccesses(
-          path, query_block->is_cacheable() ? 1.0 : num_evaluations, kNoLimit);
+      // In some cases, for old optimizer, when subtitem is a
+      // Item_singlerow_subselect, its Query_expression::root_access_path has
+      // not been set, and Item_singlerow_subselect::root_access_path() always
+      // returns nullptr, so we need to check:
+      if (path != nullptr) {
+        rows += EstimateRowAccesses(
+            path, query_block->is_cacheable() ? 1.0 : num_evaluations,
+            kNoLimit);
+      }
     }
     return false;
   });

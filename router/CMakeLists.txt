@@ -1,4 +1,4 @@
-# Copyright (c) 2015, 2024, Oracle and/or its affiliates.
+# Copyright (c) 2015, 2025, Oracle and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -53,8 +53,8 @@ IF(POLICY CMP0075)
 ENDIF()
 
 # Too many error: empty paragraph passed to '@throws'
-IF(MY_COMPILER_IS_CLANG AND
-    CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 19)
+IF(MY_COMPILER_IS_CLANG AND (APPLE OR
+      CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 19))
   DISABLE_DOCUMENTATION_WARNINGS()
 ENDIF()
 

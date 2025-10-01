@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2025, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -643,21 +643,24 @@ AccessPath *MakeRowIdOrderedIndexScanAccessPath(ROR_SCAN_INFO *scan,
       order R by (E(#records_matched) * key_record_length).
 
       S= first(R); -- set of scans that will be used for ROR-intersection
-      R= R-first(S);
+      R= R - S;
       min_cost= cost(S);
       min_scan= make_scan(S);
       while (R is not empty)
       {
-        firstR= R - first(R);
-        if (!selectivity(S + firstR < selectivity(S)))
+        firstR= first(R);
+        if (!selectivity(S + firstR) < selectivity(S))
+        {
+          R= R - firstR;
           continue;
-
+        }
         S= S + first(R);
         if (cost(S) < min_cost)
         {
           min_cost= cost(S);
           min_scan= make_scan(S);
         }
+        R= R - firstR; --  Remove the processed scan from R
       }
       return min_scan;
     }
