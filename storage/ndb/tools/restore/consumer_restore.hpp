@@ -74,10 +74,9 @@ class BackupRestore : public BackupConsumer {
                 Uint32 parallelism)
       : m_ndb(NULL),
         m_cluster_connection(conn),
-        m_fatal_error(false),
+        m_fatal_error(false)
 #ifdef ERROR_INSERT
-        ,
-        m_error_insert(0)
+        ,m_error_insert(0)
 #endif
   {
     m_n_tablespace = 0;
