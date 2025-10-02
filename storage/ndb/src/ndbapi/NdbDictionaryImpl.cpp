@@ -3310,7 +3310,7 @@ int NdbDictInterface::dictSignal(NdbApiSignal *sig, LinearSectionPtr ptr[3],
   for (Uint32 i = 0; i < RETRIES; i++) {
     if (i > 0) {
       Uint32 t = sleep + 10 * (rand() % mod);
-#ifdef VM_TRACE
+#if 0
       g_eventLogger->info(
           "NdbDictionary::dictSignal() : retry sleep %ums on error %u", t,
           m_error.code);
