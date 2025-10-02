@@ -75,7 +75,6 @@ class BackupRestore : public BackupConsumer {
       : m_ndb(NULL),
         m_cluster_connection(conn),
         m_fatal_error(false),
-        m_data_error(false)
 #ifdef ERROR_INSERT
         ,
         m_error_insert(0)
@@ -276,7 +275,6 @@ class BackupRestore : public BackupConsumer {
   restore_callback_t *m_free_callback;
   Uint64 m_pk_update_warning_count;
   bool m_fatal_error;
-  bool m_data_error;
 
   /**
    * m_new_table_ids[X] = Y;
