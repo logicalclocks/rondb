@@ -2291,12 +2291,12 @@ void Dblqh::execREAD_CONFIG_REQ(Signal *signal) {
   ndbrequire(cnoLogFiles > 0);
 
   m_full_restart_logs = 1; //Compatability in upgrade, false from MGM server
-  ndbrequire(!ndb_mgm_get_int_parameter(p, CFG_DB_FULL_RESTART_LOGS, 
-					&m_full_restart_logs));
+  ndb_mgm_get_int_parameter(p, CFG_DB_FULL_RESTART_LOGS, 
+                            &m_full_restart_logs);
 
   m_rate_limits_active = 0;
-  ndbrequire(!ndb_mgm_get_int_parameter(p, CFG_DB_ACTIVATE_RATE_LIMITS, 
-					&m_rate_limits_active));
+  ndb_mgm_get_int_parameter(p, CFG_DB_ACTIVATE_RATE_LIMITS, 
+                            &m_rate_limits_active);
 
   Uint64 log_page_size = globalData.theRedoBuffer;
 
