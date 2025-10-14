@@ -2980,8 +2980,8 @@ void Dbdict::execREAD_CONFIG_REQ(Signal *signal) {
   ndbrequire(p != 0);
 
   m_full_restart_logs = 1; //Compatability in upgrade, false from MGM server
-  ndbrequire(!ndb_mgm_get_int_parameter(p, CFG_DB_FULL_RESTART_LOGS, 
-					&m_full_restart_logs));
+  ndb_mgm_get_int_parameter(p, CFG_DB_FULL_RESTART_LOGS, 
+                            &m_full_restart_logs);
 
   Uint32 max_schema_objects = OLD_NDB_MAX_TABLES;
   ndb_mgm_get_int_parameter(p, CFG_DB_MAX_NUM_SCHEMA_OBJECTS,
