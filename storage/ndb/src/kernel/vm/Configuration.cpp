@@ -2159,6 +2159,8 @@ Configuration::calcSizeAlt(ConfigValues * ownConfig)
     if (ndb_mgm_get_int_parameter(&db, tmp[i].paramId, tmp[i].storage)) {
       if (tmp[i].computable) {
         *tmp[i].storage = 0;
+      } else if (tmp[i].paramId == CFG_DB_MAX_NUM_SCHEMA_OBJECTS) {
+        *tmp[i].storage = OLD_NDB_MAX_TABLES;
       } else {
         BaseString::snprintf(buf, sizeof(buf), "ConfigParam: %d not found",
                              tmp[i].paramId);

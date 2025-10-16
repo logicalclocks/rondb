@@ -5258,7 +5258,9 @@ const Uint32 *Lgman::get_next_undo_record(Uint64 *this_lsn) {
   ndbrequire(
       m_file_pool.getPtr(filePtr, lg_ptr.p->m_consumer_file_pos.m_ptr_i));
 
-  if (lg_ptr.p->m_last_read_lsn == (lg_ptr.p->m_last_lsn + 1)) {
+  if (lg_ptr.p->m_last_read_lsn == (lg_ptr.p->m_last_lsn + 1) ||
+      (filePtr.p->m_start_lsn == 0 &&
+       lg_ptr.p->m_last_read_lsn == Uint64(1))) {
     /**
      * End of log, we hadn't concluded any LCPs before the crash.
      * So we find the end of the log by noting that we expect this LSN

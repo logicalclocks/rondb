@@ -268,8 +268,8 @@ void Restore::execREAD_CONFIG_REQ(Signal *signal) {
   c_encrypted_filesystem = encrypted_filesystem;
 
   m_full_restart_logs = 1; //Compatability in upgrade, false from MGM server
-  ndbrequire(!ndb_mgm_get_int_parameter(p, CFG_DB_FULL_RESTART_LOGS, 
-					&m_full_restart_logs));
+  ndb_mgm_get_int_parameter(p, CFG_DB_FULL_RESTART_LOGS, 
+                            &m_full_restart_logs);
 
   m_file_pool.setSize(1);
   Uint32 cnt = 2 * MAX_ATTRIBUTES_IN_TABLE;
