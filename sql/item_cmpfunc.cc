@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2025, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -2565,6 +2565,22 @@ void Item_in_optimizer::update_used_tables() {
   } else {
     not_null_tables_cache &= subqpred->left_expr->not_null_tables();
   }
+}
+
+bool Item_func_eq::clean_up_after_removal(uchar *arg) {
+  Cleanup_after_removal_context *const ctx =
+      pointer_cast<Cleanup_after_removal_context *>(arg);
+
+  if (ctx->is_stopped(this)) return false;
+
+  if (reference_count() > 1) {
+    (void)decrement_ref_count();
+    ctx->stop_at(this);
+  }
+
+  ctx->m_root->prune_sj_exprs(this, nullptr);
+
+  return false;
 }
 
 longlong Item_func_eq::val_int() {
@@ -5161,6 +5177,21 @@ bool Item_func_in::list_contains_null() {
     if ((*arg)->null_inside()) return true;
   }
   return false;
+}
+
+void Item_func_in::set_no_constant_propagation() {
+  // Only when the LHS is a ROW_ITEM that constant propagation
+  // could skip range analysis.
+  if (args[0]->type() != Item::ROW_ITEM) {
+    return;
+  }
+  Item_row *row_predicand = down_cast<Item_row *>(args[0]);
+  for (uint i = 0; i < row_predicand->cols(); ++i) {
+    Item *item = row_predicand->element_index(i)->real_item();
+    if (item->type() == Item::FIELD_ITEM) {
+      item->disable_constant_propagation(nullptr);
+    }
+  }
 }
 
 /**

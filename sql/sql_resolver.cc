@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2025, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -811,17 +811,22 @@ bool Query_block::apply_local_transforms(THD *thd, bool prune) {
   DBUG_TRACE;
 
   assert(first_execution);
-
+  assert(thd->lex->current_query_block() == this);
   /*
     If query block contains one or more merged derived tables/views,
     walk through lists of columns in select lists and remove unused columns.
   */
-  if (derived_table_count) delete_unused_merged_columns(&m_table_nest);
-
+  if (derived_table_count != 0) {
+    delete_unused_merged_columns(&m_table_nest);
+  }
   for (Query_expression *unit = first_inner_query_expression(); unit;
-       unit = unit->next_query_expression())
-    for (auto qt : unit->query_terms<>())
+       unit = unit->next_query_expression()) {
+    for (auto qt : unit->query_terms<>()) {
+      thd->lex->set_current_query_block(qt->query_block());
       if (qt->query_block()->apply_local_transforms(thd, true)) return true;
+    }
+  }
+  thd->lex->set_current_query_block(this);
 
   // Convert all outer joins to inner joins if possible
   if (simplify_joins(thd, &m_table_nest, true, false, &m_where_cond))
@@ -2239,23 +2244,22 @@ void Query_block::clear_sj_expressions(NESTED_JOIN *nested_join) {
 }
 
 /**
-  Build equality conditions using outer expressions and inner
-  expressions. If the equality condition is not constant, add
-  it to the semi-join condition. Otherwise, evaluate it and
-  remove the constant expressions from the
-  outer/inner expressions list if the result is true. If the
-  result is false, remove all the expressions in outer/inner
-  expression list and attach an always false condition
-  to semijoin condition.
+  Build equality predicates using outer expressions and inner expressions.
+  If an equality predicate is not constant, add it to the semi-join condition.
+  Otherwise, evaluate the predicate. If the result of the predicate is true,
+  remove the expressions of the constant predicate from the outer/inner
+  expressions list. If the result is false, remove all the expressions in
+  outer/inner expression list and attach an always false condition to
+  semijoin condition.
 
-  @param thd            Thread context
-  @param nested_join    Join nest
-  @param subq_query_block    Query block for the subquery
-  @param outer_tables_map Map of tables from original outer query block
+  @param thd               Thread context
+  @param nested_join       Join nest
+  @param subq_query_block  Query block for the subquery
+  @param outer_tables_map  Map of tables from original outer query block
   @param[in,out] sj_cond   Semi-join condition to be constructed
                            Contains non-equalities on input.
-  @param[out]    simple_const true if the returned semi-join condition is
-                              a simple true or false predicate, false otherwise.
+  @param[out] simple_const true if the returned semi-join condition is
+                           a simple true or false predicate, false otherwise.
 
   @return false if success, true if error
 */
@@ -2266,12 +2270,13 @@ bool Query_block::build_sj_cond(THD *thd, NESTED_JOIN *nested_join,
   *simple_const = false;
 
   Item *new_cond = nullptr;
+  bool remove_condition = false;
 
   auto ii = nested_join->sj_inner_exprs.begin();
   auto oi = nested_join->sj_outer_exprs.begin();
   while (ii != nested_join->sj_inner_exprs.end() &&
          oi != nested_join->sj_outer_exprs.end()) {
-    bool should_remove = false;
+    bool remove_predicate = false;
     Item *inner = *ii;
     Item *outer = *oi;
     /*
@@ -2286,7 +2291,7 @@ bool Query_block::build_sj_cond(THD *thd, NESTED_JOIN *nested_join,
     Item *predicate = item_eq;
     if (!item_eq->fixed && item_eq->fix_fields(thd, &predicate)) return true;
 
-    // Evaluate if the condition is on const expressions
+    // Evaluate if the predicate is a const value:
     if (predicate->const_item() &&
         !(predicate)->walk(&Item::is_non_const_over_literals,
                            enum_walk::POSTFIX, nullptr)) {
@@ -2313,20 +2318,14 @@ bool Query_block::build_sj_cond(THD *thd, NESTED_JOIN *nested_join,
           const condition evaluates to true as Item_cond::fix_fields will
           remove the condition later.
         */
-        should_remove = true;
+        remove_predicate = true;
       } else {
         /*
-          Remove all the expressions in inner/outer expression list if
-          one of condition evaluates to always false. Add an always false
-          condition to semi-join condition.
+          Predicate is false, and thus condition is false. However, generate
+          the full condition so that it can be removed completely when all
+          predicates have been processed.
         */
-        nested_join->sj_inner_exprs.clear();
-        nested_join->sj_outer_exprs.clear();
-        Item *new_item = new Item_func_false();
-        if (new_item == nullptr) return true;
-        (*sj_cond) = new_item;
-        *simple_const = true;
-        return false;
+        remove_condition = true;
       }
     }
     /*
@@ -2344,7 +2343,7 @@ bool Query_block::build_sj_cond(THD *thd, NESTED_JOIN *nested_join,
     */
     nested_join->sj_corr_tables |= inner->used_tables() & outer_tables_map;
 
-    if (should_remove) {
+    if (remove_predicate) {
       ii = nested_join->sj_inner_exprs.erase(ii);
       oi = nested_join->sj_outer_exprs.erase(oi);
     } else {
@@ -2353,6 +2352,25 @@ bool Query_block::build_sj_cond(THD *thd, NESTED_JOIN *nested_join,
 
       ++ii, ++oi;
     }
+  }
+  if (remove_condition) {
+    /*
+      Condition is false.
+      Clean up the synthesized condition.
+      Remove all the expressions in inner/outer expression list.
+      Add an always false predicate to semi-join condition.
+    */
+    Item::Cleanup_after_removal_context ctx(this);
+    new_cond->walk(&Item::clean_up_after_removal, walk_options,
+                   pointer_cast<uchar *>(&ctx));
+
+    nested_join->sj_inner_exprs.clear();
+    nested_join->sj_outer_exprs.clear();
+    Item *new_item = new Item_func_false();
+    if (new_item == nullptr) return true;
+    (*sj_cond) = new_item;
+    *simple_const = true;
+    return false;
   }
   /*
     Semijoin processing expects at least one inner/outer expression
@@ -4425,29 +4443,25 @@ bool setup_order(THD *thd, Ref_item_array ref_item_array, Table_ref *tables,
       continue;
     }
 
+    select->m_current_order_by_number = number;
     if (find_order_in_list(thd, ref_item_array, tables, order, fields, false,
                            false))
       return true;
+
     if ((*order->item)->has_aggregation()) {
       /*
         Aggregated expressions in ORDER BY are not supported by SQL standard,
-        but MySQL has some limited support for them. The limitations are
-        checked below:
+        but MySQL has some limited support for them.
 
         1. A set operation query is not aggregated, so ordering by a set
-           function is always wrong.
-      */
-      if (for_set_operation) {
-        my_error(ER_AGGREGATE_ORDER_FOR_UNION, MYF(0), number);
-        return true;
-      }
+           function which aggregates in the set operation's query block is
+           always wrong. Checked in check_sum_func.
 
-      /*
-        2. A non-aggregated query combined with a set function in ORDER BY
-           that does not contain an outer reference is illegal, because it
-           would cause the query to become aggregated.
-           (Since is_aggregated is false, this expression would cause
-            agg_func_used() to become true).
+        2. A non-aggregated query combined with a grouped aggregate function in
+           ORDER BY that does not contain an outer reference is illegal,
+           because it would cause the query to become aggregated.  (Since
+           is_aggregated is false, this expression would cause agg_func_used()
+           to become true). This limitation is checked below.
       */
       if (!is_aggregated && select->agg_func_used()) {
         my_error(ER_AGGREGATE_ORDER_NON_AGG_QUERY, MYF(0), number);
@@ -4630,6 +4644,14 @@ int Query_block::group_list_size() const {
     ++size;
   }
   return size;
+}
+
+bool Query_block::has_wfs() {
+  List_iterator<Window> wi1(m_windows);
+  for (Window *w1 = wi1++; w1 != nullptr; w1 = wi1++) {
+    if (w1->functions().elements > 0) return true;
+  }
+  return false;
 }
 
 /**
@@ -5122,6 +5144,43 @@ bool validate_gc_assignment(const mem_root_deque<Item *> &fields,
     }
   }
   return false;
+}
+
+/// Minion of prune_sj_exprs, q.v.
+static void prune_sj_exprs_from_nest(Item_func_eq *item, Table_ref *nest) {
+  auto it1 = nest->nested_join->sj_outer_exprs.begin();
+  auto it2 = nest->nested_join->sj_inner_exprs.begin();
+  while (it1 != nest->nested_join->sj_outer_exprs.end() &&
+         it2 != nest->nested_join->sj_inner_exprs.end()) {
+    Item *outer = *it1;
+    Item *inner = *it2;
+    if ((outer == item->arguments()[0] && inner == item->arguments()[1]) ||
+        (outer == item->arguments()[1] && inner == item->arguments()[0])) {
+      nest->nested_join->sj_outer_exprs.erase(it1);
+      nest->nested_join->sj_inner_exprs.erase(it2);
+      break;
+    }
+    it1++;
+    it2++;
+  }
+}
+
+/**
+  Recursively look for removed item inside any nested joins'
+  sj_{inner,outer}_exprs. If target for removal is found, remove such entries
+  because the corresponding equality condition has been eliminated.
+
+  @param item   the equality which is being removed.
+  @param nest   the table nest (nullptr means top nest)
+*/
+void Query_block::prune_sj_exprs(Item_func_eq *item,
+                                 mem_root_deque<Table_ref *> *nest) {
+  if (nest == nullptr) nest = &m_table_nest;
+  for (Table_ref *table : *nest) {
+    if (table->nested_join == nullptr) continue;
+    prune_sj_exprs_from_nest(item, table);
+    prune_sj_exprs(item, &table->nested_join->m_tables);
+  }
 }
 
 /**
@@ -6275,13 +6334,18 @@ bool Query_block::transform_grouped_to_derived(THD *thd, bool *break_off) {
     for (auto field_class : field_classes) {
       for (auto pair : *field_class) {
         Item_field *f = pair.second;
-        Item *sl_item = f;
-        if (f->type() == Item::FIELD_ITEM && f->protected_by_any_value()) {
-          // The field was mentioned only ever inside arguments to ANY_VALUE, so
+        Item_field *der_field = f->type() != Item::DEFAULT_VALUE_ITEM
+                                    ? new (thd->mem_root) Item_field(f->field)
+                                    : f;
+        if (der_field == nullptr) return true;
+
+        Item *sl_item = der_field;
+        if (f->protected_by_any_value()) {  // The field was mentioned only ever
+                                            // inside arguments to ANY_VALUE, so
           // protect it likewise in new_derived, lest we get a
           // ER_MIX_OF_GROUP_FUNC_AND_FIELDS_V2. If not, we let the check
           // proceed, i.e. we do not add ANY_VALUE for the column.
-          sl_item = new (thd->mem_root) Item_func_any_value(f);
+          sl_item = new (thd->mem_root) Item_func_any_value(der_field);
           if (sl_item == nullptr) return true;
           if (sl_item->fix_fields(thd, &sl_item)) return true;
         }
@@ -6636,7 +6700,27 @@ bool Query_block::nest_derived(THD *thd, Item *join_cond,
       *nested_join_list,
       [join_cond, &nested_join_list](Table_ref *tr) mutable -> bool {
         if (tr->join_cond() == join_cond) {
-          nested_join_list = &tr->embedding->nested_join->m_tables;
+          // In certain cases, we can have a degenerate join (after other
+          // transformations, i.e. we have a join clause, but only table.
+          // In optimizer trace, this is printed as e.g.
+          //     <constant table> join
+          //     cte2
+          //     on (select 3 from cte2) <> 0             <-- scalar subquery
+          // In such a case there will be no join nest, so tr->embedding will
+          // be empty. The resulting join after we add the new derived table:
+          //   ( <constant table>
+          //     left join
+          //     (select 3 AS `3` from cte2) derived_2_5  <-- new derived table
+          //     on true )
+          //   join cte2
+          //   on derived_2_5.`3` <> 0
+          // which will be simplified in due course to
+          //   (select 3 AS `3` from `cte2`) derived_2_5
+          //   join cte2
+          //   where derived_2_5.`3` <> 0
+          if (tr->embedding != nullptr) {
+            nested_join_list = &tr->embedding->nested_join->m_tables;
+          }
           return true;  // break off walk
         }
         return false;

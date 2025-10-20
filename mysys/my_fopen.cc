@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2025, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -187,7 +187,7 @@ int my_fclose(FILE *stream, myf MyFlags) {
 
   int err = -1;
 #ifndef _WIN32
-  err = mysys_priv::RetryOnEintr([&]() { return fclose(stream); }, -1);
+  err = fclose(stream);
 #else
   err = my_win_fclose(stream);
 #endif

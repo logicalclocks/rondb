@@ -1,4 +1,4 @@
-/* Copyright (c) 2016, 2024, Oracle and/or its affiliates.
+/* Copyright (c) 2016, 2025, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License, version 2.0, as published by the
@@ -40,8 +40,7 @@ static handler *create_handler(handlerton *hton, TABLE_SHARE *table_share, bool,
 
 static int close_connection(handlerton *hton, THD *thd) {
   (void)hton;
-  temptable::kv_store_shards_debug_dump();
-  temptable::shared_block_pool_release(thd);
+  temptable::close_connection(thd);
   return 0;
 }
 

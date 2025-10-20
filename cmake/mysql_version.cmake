@@ -1,5 +1,5 @@
-# Copyright (c) 2009, 2024, Oracle and/or its affiliates.
-# Copyright (c) 2023, 2024, Hopsworks and/or its affiliates.
+# Copyright (c) 2009, 2025, Oracle and/or its affiliates.
+# Copyright (c) 2023, 2025, Hopsworks and/or its affiliates.
 # 
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -26,7 +26,7 @@
 # Global constants, only to be changed between major releases.
 #
 
-SET(SHARED_LIB_MAJOR_VERSION "24")
+SET(SHARED_LIB_MAJOR_VERSION "25")
 SET(SHARED_LIB_MINOR_VERSION "0")
 SET(PROTOCOL_VERSION "10")
 

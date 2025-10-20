@@ -1,4 +1,4 @@
-/* Copyright (c) 2009, 2024, Oracle and/or its affiliates.
+/* Copyright (c) 2009, 2025, Oracle and/or its affiliates.
    Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -680,6 +680,12 @@ void angel_run(const char *progname, const Vector<BaseString> &original_args,
 
     one_arg.assfmt("--angel-pid=%d", getpid());
     args.push_back(one_arg);
+
+    if (opt_ndb_log_timestamps < std::size(NdbStdOpt::timestamps_names) - 1) {
+      one_arg.assfmt("--ndb-log-timestamps=%s",
+                     NdbStdOpt::timestamps_names[opt_ndb_log_timestamps]);
+      args.push_back(one_arg);
+    }
 
     if (have_password_option) {
       /**

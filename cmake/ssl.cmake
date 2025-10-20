@@ -1,4 +1,4 @@
-# Copyright (c) 2009, 2024, Oracle and/or its affiliates.
+# Copyright (c) 2009, 2025, Oracle and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -698,6 +698,7 @@ MACRO(MYSQL_CHECK_SSL_DLLS)
         ${CRYPTO_VERSION} ${OPENSSL_VERSION}
         openssl_exe_target)
       ADD_DEPENDENCIES(${openssl_exe_target} copy_openssl_dlls)
+      ADD_DEPENDENCIES(copy_custom_libraries copy_openssl_dlls)
 
       # Create symlinks for plugins, see MYSQL_ADD_PLUGIN/install_name_tool
       ADD_CUSTOM_TARGET(link_openssl_dlls ALL
@@ -711,6 +712,7 @@ MACRO(MYSQL_CHECK_SSL_DLLS)
         "${CMAKE_BINARY_DIR}/plugin_output_directory/${CRYPTO_VERSION}"
         "${CMAKE_BINARY_DIR}/plugin_output_directory/${OPENSSL_VERSION}"
         )
+      ADD_DEPENDENCIES(symlink_custom_libraries link_openssl_dlls)
       # Create symlinks for plugins built with Xcode
       IF(NOT BUILD_IS_SINGLE_CONFIG)
         ADD_CUSTOM_TARGET(link_openssl_dlls_cmake_cfg_intdir ALL
@@ -725,6 +727,7 @@ MACRO(MYSQL_CHECK_SSL_DLLS)
           "${CMAKE_BINARY_DIR}/plugin_output_directory/${CMAKE_CFG_INTDIR}/${CRYPTO_VERSION}"
           "${CMAKE_BINARY_DIR}/plugin_output_directory/${CMAKE_CFG_INTDIR}/${OPENSSL_VERSION}"
         )
+        ADD_DEPENDENCIES(symlink_custom_libraries link_openssl_dlls_cmake_cfg_intdir)
       ENDIF()
 
       # Directory layout after 'make install' is different.
@@ -737,6 +740,7 @@ MACRO(MYSQL_CHECK_SSL_DLLS)
           "../../lib/${OPENSSL_VERSION}" "${OPENSSL_VERSION}"
         WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/plugin_output_directory/plugin"
         )
+      ADD_DEPENDENCIES(symlink_custom_libraries link_openssl_dlls_for_install)
       # See INSTALL_DEBUG_TARGET used for installing debug versions of plugins.
       IF(EXISTS ${DEBUGBUILDDIR})
         FILE(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/plugin_output_directory/plugin/debug")
@@ -747,6 +751,7 @@ MACRO(MYSQL_CHECK_SSL_DLLS)
             "../../../lib/${OPENSSL_VERSION}" "${OPENSSL_VERSION}"
           WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/plugin_output_directory/plugin/debug"
         )
+        ADD_DEPENDENCIES(symlink_custom_libraries link_openssl_dlls_for_install_debug)
       ENDIF()
 
       MESSAGE(STATUS "INSTALL ${CRYPTO_NAME} to ${INSTALL_LIBDIR}")

@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2025, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1563,7 +1563,9 @@ void append_identifier(const THD *thd, String *packet, const char *name,
     if (!to_length) to_length = 1;
     if (to_length == 1 && chr == static_cast<uchar>(quote_char))
       packet->append(&quote_char, 1, system_charset_info);
-    packet->append(to_name, to_length, system_charset_info);
+    packet->append(to_name,
+                   std::min(to_length, static_cast<size_t>(name_end - to_name)),
+                   system_charset_info);
   }
   packet->append(&quote_char, 1, system_charset_info);
 }
@@ -2308,11 +2310,24 @@ bool store_create_info(THD *thd, Table_ref *table_list, String *packet,
   packet->append(STRING_WITH_LEN("\n)"));
 
   /**
-    Append START TRANSACTION for CREATE SELECT on SE supporting atomic DDL.
-    This is done only while binlogging CREATE TABLE AS SELECT.
+    Append START TRANSACTION clause for:
+    a. CREATE TABLE AS SELECT if the SE supports atomic DDL.
+    b. CREATE TABLE ... START TRANSACTION
+      - HA_CREATE_INFO::m_transactional_ddl indicates if the table should be
+        created and not committed at the end of the statement. This flag is
+        set for CREATE TABLE ... START TRANSACTION statement only.
+
+    These checks also ensure we do not append 'START TRANSACTION' clause for
+    'SHOW CREATE TABLE' query or the normal 'CREATE TABLE' query without the
+    'START TRANSACTION' clause where the query needs to be rewritten (for eg:
+    adding GIPK information on a table without primary key when
+    sql_generate_invisible_primary_key is enabled).
   */
-  if (!thd->lex->query_block->field_list_is_empty() &&
-      (create_info_arg->db_type->flags & HTON_SUPPORTS_ATOMIC_DDL)) {
+  if ((!thd->lex->query_block->field_list_is_empty()  // contains SELECT clause
+       &&
+       (create_info_arg->db_type->flags & HTON_SUPPORTS_ATOMIC_DDL))  // case a
+      || (create_info_arg && create_info_arg->m_transactional_ddl)    // case b
+  ) {
     packet->append(STRING_WITH_LEN(" START TRANSACTION"));
   }
 
@@ -2774,8 +2789,8 @@ class thread_info_compare {
 
 static const char *thread_state_info(THD *invoking_thd, THD *inspected_thd) {
   DBUG_TRACE;
-  if (inspected_thd->get_protocol()->get_rw_status()) {
-    if (inspected_thd->get_protocol()->get_rw_status() == 2)
+  if (inspected_thd->get_protocol_rw_status()) {
+    if (inspected_thd->get_protocol_rw_status() == 2)
       return "Sending to client";
     if (inspected_thd->get_command() == COM_SLEEP) return "";
     return "Receiving from client";

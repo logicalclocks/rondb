@@ -1,7 +1,7 @@
 #ifndef ITEM_CMPFUNC_INCLUDED
 #define ITEM_CMPFUNC_INCLUDED
 
-/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2025, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1065,6 +1065,7 @@ class Item_func_eq final : public Item_eq_base {
   Item *negated_item() override;
   bool equality_substitution_analyzer(uchar **) override { return true; }
   Item *equality_substitution_transformer(uchar *arg) override;
+  bool clean_up_after_removal(uchar *arg) override;
   bool gc_subst_analyzer(uchar **) override { return true; }
 
   float get_filtering_effect(THD *thd, table_map filter_for_table,
@@ -2162,6 +2163,9 @@ class Item_func_in final : public Item_func_opt_neg {
       not_null_tables_cache &= (*arg)->not_null_tables();
     not_null_tables_cache |= args[0]->not_null_tables();
   }
+
+  // Disable constant propagation.
+  void set_no_constant_propagation();
 
  private:
   /**

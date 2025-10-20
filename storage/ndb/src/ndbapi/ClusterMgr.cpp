@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
    Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -33,6 +33,7 @@
 
 #include <NdbSleep.h>
 #include <NdbTick.h>
+#include <NdbTimestamp.h>
 #include <Logger.hpp>
 #include <EventLogger.hpp>
 #include <IPCConfig.hpp>
@@ -83,8 +84,8 @@ error_printer(const char * fmt, ...)
   char buf[400];
 
   char timestamp[64];
-  time_t now = ::time((time_t*)nullptr);
-  Logger::format_timestamp(now, timestamp, sizeof(timestamp));
+  std::timespec now = NdbTimestamp_GetCurrentTime();
+  Logger::format_timestamp(&now, timestamp, sizeof(timestamp));
   va_start(ap, fmt);
   size_t len = BaseString::vsnprintf(buf, sizeof(buf)-1, fmt, ap);
   if (len > sizeof(buf) - 2) len = sizeof(buf) - 2;

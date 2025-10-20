@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2017, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2017, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -60,8 +60,9 @@ class TransientPagePool {
   friend class Test;
 
   TransientPagePool();
-  TransientPagePool(Uint32 type_id, Ndbd_mem_manager *mem_manager);
-  void init(Uint32 type_id, Ndbd_mem_manager *mem_manager);
+  TransientPagePool(Uint32 type_id, Ndbd_mem_manager *mem_manager,
+                    Uint32 max_page_id);
+  void init(Uint32 type_id, Ndbd_mem_manager *mem_manager, Uint32 max_page_id);
 
   bool seize(Ptr<Page> &p);
   bool release(Uint32 i);
@@ -92,6 +93,7 @@ class TransientPagePool {
   MapPage *m_root_page;
   Uint32 m_top;
   Uint32 m_type_id;
+  Uint32 m_max_page_id;
 };
 
 class TransientPagePool::MapPage {

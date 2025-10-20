@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2025, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
@@ -1241,6 +1241,7 @@ bool opt_no_monitor = false;
 #endif
 
 long opt_upgrade_mode = UPGRADE_AUTO;
+long opt_check_table_funs = CHECK_TABLE_FUN_ABORT;
 bool opt_initialize = false;
 bool opt_skip_replica_start = false;  ///< If set, slave is not autostarted
 bool opt_enable_named_pipe = false;
@@ -4751,6 +4752,7 @@ static inline const char *rpl_make_log_name(PSI_memory_key key, const char *opt,
     return nullptr;
 }
 
+#ifdef HAVE_PSI_METRICS_INTERFACE
 static void get_metric_connections(void * /* measurement_context */,
                                    measurement_delivery_callback_t delivery,
                                    void *delivery_context) {
@@ -6405,13 +6407,18 @@ static PSI_meter_info_v1 core_meters[] = {
      std::size(ssl_metrics)},
     {"mysql.myisam", "MySql MyISAM storage engine stats", 10, 0, 0,
      myisam_metrics, std::size(myisam_metrics)}};
+#endif /* HAVE_PSI_METRICS_INTERFACE */
 
 void register_server_metric_sources() {
+#ifdef HAVE_PSI_METRICS_INTERFACE
   mysql_meter_register(core_meters, std::size(core_meters));
+#endif /* HAVE_PSI_METRICS_INTERFACE */
 }
 
 void unregister_server_metric_sources() {
+#ifdef HAVE_PSI_METRICS_INTERFACE
   mysql_meter_unregister(core_meters, std::size(core_meters));
+#endif /* HAVE_PSI_METRICS_INTERFACE */
 }
 
 int init_common_variables() {
@@ -10480,6 +10487,15 @@ struct my_option my_long_early_options[] = {
      "tables.",
      &opt_noacl, &opt_noacl, nullptr, GET_BOOL, NO_ARG, 0, 0, 0, nullptr, 0,
      nullptr},
+    {"check-table-functions", 0,
+     "On upgrade, the server attempts to open tables with SQL functions in "
+     "their DEFAULT, INDEX, and PARTITION clauses, virtual columns, and "
+     "CONSTRAINTs. "
+     "WARN runs the test but proceeds even if potential issues are found; "
+     "ABORT (default) stops the server if potential issues are found.",
+     &opt_check_table_funs, &opt_check_table_funs,
+     &check_table_fun_mode_typelib, GET_ENUM, REQUIRED_ARG,
+     CHECK_TABLE_FUN_ABORT, 0, 0, nullptr, 0, nullptr},
     {"help", '?', "Display this help and exit.", &opt_help, &opt_help, nullptr,
      GET_BOOL, NO_ARG, 0, 0, 0, nullptr, 0, nullptr},
     {"verbose", 'v', "Used with --help option for detailed help.", &opt_verbose,

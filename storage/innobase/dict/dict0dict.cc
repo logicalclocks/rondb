@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 1996, 2024, Oracle and/or its affiliates.
+Copyright (c) 1996, 2025, Oracle and/or its affiliates.
 Copyright (c) 2012, Facebook Inc.
 
 This program is free software; you can redistribute it and/or modify it under
@@ -2406,9 +2406,9 @@ static void dict_index_try_cache_rec_offsets(dict_index_t *index) {
   This is not an assert crucial for correctness. It's just to show that there's
   no obvious regression w.r.t intrinsic tables. */
   if (index->table->is_intrinsic() && index->n_uniq != n_unique_in_tree) {
-    ut_a(index->n_uniq == n_unique_in_tree - 1);
+    ut_a(index->n_uniq == n_unique_in_tree - 1U);
     ut_a(!index->is_clustered());
-    ut_a(index->get_field(n_unique_in_tree - 1)->fixed_len);
+    ut_a(index->get_field(n_unique_in_tree - 1U)->fixed_len);
   }
 #endif
   for (size_t i = 0; i < n_unique_in_tree; i++) {
@@ -5355,6 +5355,7 @@ dberr_t DDTableBuffer::replace(table_id_t id, uint64_t version,
     static const ulint flags = (BTR_CREATE_FLAG | BTR_NO_LOCKING_FLAG |
                                 BTR_NO_UNDO_LOG_FLAG | BTR_KEEP_SYS_FLAG);
 
+    pcur.close();
     mtr.commit();
 
     error =
@@ -5388,6 +5389,7 @@ dberr_t DDTableBuffer::replace(table_id_t id, uint64_t version,
     ut_ad(!big_rec);
   }
 
+  pcur.close();
   mtr.commit();
   mem_heap_empty(m_dynamic_heap);
   mem_heap_empty(m_replace_heap);
@@ -5422,6 +5424,7 @@ dberr_t DDTableBuffer::remove(table_id_t id) {
     ut_ad(error == DB_SUCCESS);
   }
 
+  pcur.close();
   mtr.commit();
 
   return (DB_SUCCESS);

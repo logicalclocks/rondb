@@ -1,4 +1,4 @@
-/* Copyright (c) 2005, 2024, Oracle and/or its affiliates.
+/* Copyright (c) 2005, 2025, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -213,16 +213,25 @@ static uint32 get_list_array_idx_for_endpoint(partition_info *part_info,
 
 Item *convert_charset_partition_constant(Item *item, const CHARSET_INFO *cs) {
   THD *thd = current_thd;
-  Name_resolution_context *context = &thd->lex->current_query_block()->context;
-  Table_ref *save_list = context->table_list;
+  Query_block *qb = thd->lex->current_query_block();
+  Name_resolution_context *context = nullptr;
+  Table_ref *save_list = nullptr;
   const char *save_where = thd->where;
 
   item = item->safe_charset_converter(thd, cs);
-  context->table_list = nullptr;
+
+  // Only save the table_list when a query block exists.
+  if (qb != nullptr) {
+    context = &qb->context;
+    save_list = context->table_list;
+    context->table_list = nullptr;
+  }
   thd->where = "convert character set partition constant";
   if (!item || item->fix_fields(thd, (Item **)nullptr)) item = nullptr;
   thd->where = save_where;
-  context->table_list = save_list;
+  if (qb != nullptr) {
+    context->table_list = save_list;
+  }
   return item;
 }
 
@@ -767,6 +776,11 @@ static bool handle_list_of_fields(List_iterator<char> it, TABLE *table,
       */
       for (i = 0; i < num_key_parts; i++) {
         Field *field = table->key_info[primary_key].key_part[i].field;
+        // BLOB/TEXT columns are not allowed in partitioning keys.
+        if (field->is_flag_set(BLOB_FLAG)) {
+          my_error(ER_BLOB_FIELD_IN_PART_FUNC_ERROR, MYF(0));
+          return true;
+        }
         field->set_flag(GET_FIXED_FIELDS_FLAG);
       }
     } else {
