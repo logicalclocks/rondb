@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2002, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2002, 2025, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1942,8 +1942,15 @@ Field *sp_head::create_result_field(THD *thd, size_t field_max_length,
                             ? field_max_length
                             : m_return_field_def.max_display_width_in_bytes();
 
-  auto field_name =
-      field_name_or_null != nullptr ? field_name_or_null : m_name.str;
+  const char *field_name = field_name_or_null;
+  if (field_name == nullptr) {
+    // No field name was provided, so we use the name of the stored program. The
+    // sp_head could have a different lifespan than the Field, so we copy the
+    // name to the same MEM_ROOT as the Field to ensure that it stays alive as
+    // long as the Field itself.
+    field_name = thd->strmake(m_name.str, m_name.length);
+    if (field_name == nullptr) return nullptr;
+  }
 
   // Add 1 for null byte.
   table->record[0] =
@@ -2756,8 +2763,16 @@ bool sp_head::execute_function(THD *thd, Item **argp, uint argcount,
   // Resetting THD::where to its default value
   thd->where = THD::DEFAULT_WHERE;
 
-  // Number of arguments has been checked during resolving
-  assert(argcount == m_root_parsing_ctx->context_var_count());
+  /*
+    Re-validate the argument count to verify the Stored Function definition has
+    not changed since preparation.
+  */
+  uint params = m_root_parsing_ctx->context_var_count();
+  if (argcount != params) {
+    my_error(ER_SP_WRONG_NO_OF_ARGS, MYF(0), "FUNCTION", m_qname.str, params,
+             argcount);
+    return true;
+  }
 
   thd->swap_query_arena(call_arena, &backup_arena);
 
@@ -2955,8 +2970,16 @@ bool sp_head::execute_procedure(THD *thd, mem_root_deque<Item *> *args) {
   DBUG_TRACE;
   DBUG_PRINT("info", ("procedure %s", m_name.str));
 
-  // Argument count has been validated in prepare function.
-  assert((args != nullptr ? args->size() : 0) == params);
+  /*
+    Re-validate the argument count to verify the Stored Procedure definition has
+    not changed since preparation.
+  */
+  uint argcount = args != nullptr ? args->size() : 0;
+  if (argcount != params) {
+    my_error(ER_SP_WRONG_NO_OF_ARGS, MYF(0), "PROCEDURE", m_qname.str, params,
+             argcount);
+    return true;
+  }
 
   if (!parent_sp_runtime_ctx) {
     // Create a temporary old context. We need it to pass OUT-parameter values.

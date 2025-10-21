@@ -1,4 +1,4 @@
-/*  Copyright (c) 2015, 2024, Oracle and/or its affiliates.
+/*  Copyright (c) 2015, 2025, Oracle and/or its affiliates.
 
     This program is free software; you can redistribute it and/or modify
     it under the terms of the GNU General Public License, version 2.0,
@@ -183,6 +183,7 @@ void *parser_service_start_routine(void *arg) {
     (tt->m_fun)(tt->m_arg);
 
     trans_commit_stmt(thd);
+    trans_commit(thd);
     close_thread_tables(thd);
     thd->mdl_context.release_transactional_locks();
     close_mysql_tables(thd);

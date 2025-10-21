@@ -1,4 +1,4 @@
-# Copyright (c) 2010, 2024, Oracle and/or its affiliates.
+# Copyright (c) 2010, 2025, Oracle and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -70,3 +70,8 @@ FOREACH(googletest_library
     TARGET_COMPILE_OPTIONS(${googletest_library} PRIVATE ${HAS_MISSING_PROFILE})
   ENDIF()
 ENDFOREACH()
+
+# googletest/src/gtest-internal-inl.h: In member function 'OnTestEnd'
+IF(MY_COMPILER_IS_GNU AND FPROFILE_USE)
+  TARGET_LINK_OPTIONS(gtest INTERFACE -Wno-error=stringop-overflow)
+ENDIF()

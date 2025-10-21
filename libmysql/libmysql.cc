@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2024, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2025, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -819,9 +819,9 @@ int STDCALL mysql_refresh(MYSQL *mysql, uint options) {
   int error = 0;
   std::vector<std::string> commands;
 
-  if (options & REFRESH_GRANT) commands.push_back("PRIVILEGES");
-  if (options & REFRESH_LOG) commands.push_back("LOGS");
-  if (options & REFRESH_STATUS) commands.push_back("STATUS");
+  if (options & REFRESH_GRANT) commands.emplace_back("PRIVILEGES");
+  if (options & REFRESH_LOG) commands.emplace_back("LOGS");
+  if (options & REFRESH_STATUS) commands.emplace_back("STATUS");
 
   if (!commands.empty()) {
     std::string flush_command = "FLUSH ";

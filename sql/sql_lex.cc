@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2000, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2000, 2025, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -2044,6 +2044,8 @@ static int lex_one_token(Lexer_yystype *yylval, THD *thd) {
         state = MY_LEX_CHAR;
         break;
       case MY_LEX_END:
+        /* Unclosed special comments result in a syntax error */
+        if (lip->in_comment == DISCARD_COMMENT) return (ABORT_SYM);
         lip->next_state = MY_LEX_END;
         return (0);  // We found end of input last time
 
@@ -3926,7 +3928,7 @@ bool Query_expression::is_mergeable() const {
   Query_block *const select = first_query_block();
   return !select->is_grouped() && select->having_cond() == nullptr &&
          !select->is_distinct() && select->has_tables() &&
-         !select->has_limit() && !select->has_windows();
+         !select->has_limit() && !select->has_wfs();
 }
 
 /**

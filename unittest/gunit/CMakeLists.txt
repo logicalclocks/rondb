@@ -1,4 +1,4 @@
-# Copyright (c) 2010, 2024, Oracle and/or its affiliates.
+# Copyright (c) 2010, 2025, Oracle and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -367,6 +367,7 @@ MYSQL_ADD_EXECUTABLE(merge_large_tests-t ${ALL_LARGE_TESTS}
 IF(MY_COMPILER_IS_GNU)
   MY_TARGET_LINK_OPTIONS(merge_large_tests-t "-Wno-alloc-size-larger-than")
 ENDIF()
+DOWNGRADE_STRINGOP_WARNINGS(merge_large_tests-t)
 
 FOREACH(test ${TESTS})
   MYSQL_ADD_EXECUTABLE(${test}-t ${test}-t.cc
@@ -385,11 +386,6 @@ IF(HAVE_NO_BUILTIN_MEMCMP)
     COMPILE_FLAGS "-fno-builtin-memcmp"
     )
 ENDIF()
-
-ADD_COMPILE_FLAGS(
-  hash_join-t.cc
-  COMPILE_FLAGS -I${CMAKE_SOURCE_DIR}/extra/lz4 -I${BUNDLED_LZ4_PATH}
-  )
 
 FOREACH(test ${SERVER_TESTS})
   SET(SRC_FILES ${test}-t.cc)
@@ -423,6 +419,12 @@ MYSQL_ADD_EXECUTABLE(rpl_commit_order_queue-t rpl_commit_order_queue-t.cc
   ADD_TEST rpl_commit_order_queue
   LINK_LIBRARIES rpl_commit_order_queue_lib gunit_small sqlgunitlib
 )
+
+IF(MY_COMPILER_IS_GNU AND FPROFILE_USE)
+  ADD_COMPILE_FLAGS(dd_string_type-t.cc COMPILE_FLAGS
+    "-Wno-alloc-size-larger-than"
+    )
+ENDIF()
 
 ADD_SUBDIRECTORY(ddl_rewriter)
 ADD_SUBDIRECTORY(innodb)

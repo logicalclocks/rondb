@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 1994, 2024, Oracle and/or its affiliates.
+Copyright (c) 1994, 2025, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License, version 2.0, as published by the
@@ -383,7 +383,7 @@ current index.
       return n;
     }
 
-    uint16_t n_uniq = dict_index_get_n_unique_in_tree_nonleaf(index);
+    auto n_uniq = dict_index_get_n_unique_in_tree_nonleaf(index);
 
     ut_ad(index->is_clustered());
     ut_ad(n <= dict_index_get_n_fields(index));

@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 2016, 2024, Oracle and/or its affiliates.
+Copyright (c) 2016, 2025, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License, version 2.0, as published by the
@@ -77,7 +77,8 @@ static dberr_t replace_inline(InsertContext &ctx, trx_t *trx,
 that the LOB partial update feature code is hit.
 @param[in]      uf      the update field information
 @param[in]      index   index where partial update happens.*/
-static void print_partial_update_hit(upd_field_t *uf, dict_index_t *index) {
+static void print_partial_update_hit(const upd_field_t *uf,
+                                     const dict_index_t *index) {
   ib::info(ER_IB_MSG_632) << "LOB partial update of field=("
                           << uf->mysql_field->field_name << ") on index=("
                           << index->name << ") in table=(" << index->table_name
@@ -109,7 +110,7 @@ dberr_t update(InsertContext &ctx, trx_t *trx, dict_index_t *index,
   const bool small_change =
       (bytes_changed <= ref_t::LOB_SMALL_CHANGE_THRESHOLD);
 
-  upd_field_t *uf = upd->get_field_by_field_no(field_no, index);
+  const upd_field_t *const uf = upd->get_field_by_field_no(field_no, index);
 
 #ifdef UNIV_DEBUG
   /* Print information on server error log file, which can be
