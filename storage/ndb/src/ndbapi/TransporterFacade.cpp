@@ -92,6 +92,7 @@ static int indexToNumber(int index) { return index + MIN_API_BLOCK_NO; }
  *****************************************************************************/
 void TransporterFacade::reportError(NodeId nodeId, TransporterError errorCode,
                                     const char *info) {
+  DBUG_ENTER("TransporterFacade::reportError");
 #ifdef REPORT_TRANSPORTER
   g_eventLogger->info("REPORT_TRANSP: reportError (nodeId=%d, errorCode=%d) %s",
                       (int)nodeId, (int)errorCode, info ? info : "");
@@ -106,8 +107,11 @@ void TransporterFacade::reportError(NodeId nodeId, TransporterError errorCode,
     }
     DEBUG_FPRINTF((stderr, "(%u)FAC:reportError(%u, %d, %s)\n", ownId(), nodeId,
                    (int)errorCode, info));
+    DBUG_PRINT("info", ("reportError(%u,%u), %s",
+      nodeId, errorCode, info ? info : ""));
     startDisconnecting(nodeId);
   }
+  DBUG_VOID_RETURN;
 }
 
 /**

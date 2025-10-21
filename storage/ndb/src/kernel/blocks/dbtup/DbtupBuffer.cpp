@@ -36,6 +36,16 @@
 
 #define JAM_FILE_ID 410
 
+#if (defined(VM_TRACE) || defined(ERROR_INSERT))
+#define DEBUG_CONT_SCAN 1
+#endif
+
+#ifdef DEBUG_CONT_SCAN
+#define DEB_CONT_SCAN(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_CONT_SCAN(arglist) do { } while (0)
+#endif
+
 void Dbtup::execSEND_PACKED(Signal *signal) {
   Uint16 hostId;
   Uint32 i;
@@ -258,6 +268,9 @@ void Dbtup::sendReadAttrinfo(Signal *signal, KeyReqStruct *req_struct,
     connectedToNode = false;
   }
 
+  DEB_CONT_SCAN(("(%u) TUP Sending TRANSID_AI with api_ref: %u, len: %u",
+    instance(), req_struct->tc_operation_ptr, ToutBufIndex));
+
   Uint32 sig0 = req_struct->tc_operation_ptr;
   Uint32 sig1 = req_struct->trans_id1;
   Uint32 sig2 = req_struct->trans_id2;
@@ -461,7 +474,7 @@ void Dbtup::SendAggResToAPI(Signal* signal, const void* lqhTcConnectrec,
   if (res_len != 0) {
     ndbrequire(lqhScanPtrP->m_agg_n_res_recs == 0);
     TransIdAI * transIdAI=  (TransIdAI *)signal->getDataPtrSend();
-    transIdAI->connectPtr = lqhScanPtrP->scanApiOpPtr;
+    transIdAI->connectPtr = lqhScanPtrP->scanApiOpPtr[lqhScanPtrP->scanApiOpPtr_index];
     transIdAI->transId[0] = lqhOpPtrP->transid[0];
     transIdAI->transId[1] = lqhOpPtrP->transid[1];
     ndbrequire(lqhScanPtrP->m_agg_curr_batch_size_bytes == 0);
@@ -477,8 +490,10 @@ void Dbtup::SendAggResToAPI(Signal* signal, const void* lqhTcConnectrec,
       " trans[0]: %u, trans[2]: %u, connectPtr: %u, blockref: %u"
       ", size_rows[%u, %u], size_bytes: [%u, %u], n_res_recs: %u\n",
       res_len,
-      lqhOpPtrP->transid[0], lqhOpPtrP->transid[1],
-      lqhScanPtrP->scanApiOpPtr, lqhScanPtrP->scanApiBlockref,
+      lqhOpPtrP->transid[0],
+      lqhOpPtrP->transid[1],
+      lqhScanPtrP->scanApiOpPtr[lqhScanPtrP->scanApiOpPtr_index],
+      lqhScanPtrP->scanApiBlockref,
       lqhScanPtrP->m_agg_curr_batch_size_rows,
       lqhScanPtrP->m_curr_batch_size_rows,
       lqhScanPtrP->m_agg_curr_batch_size_bytes,
