@@ -90,6 +90,7 @@ bool ndb_get_table_statistics(THD *thd, Ndb *ndb,
     NdbScanOperation::ScanOptions options;
     options.optionsPresent = NdbScanOperation::ScanOptions::SO_BATCH |
                              NdbScanOperation::ScanOptions::SO_GETVALUE |
+                             NdbScanOperation::ScanOptions::SO_USE_STD_SORTED |
                              NdbScanOperation::ScanOptions::SO_INTERPRETED;
     /* Set batch=1, as we need only one row per fragment. */
     options.batch = 1;
@@ -112,6 +113,7 @@ bool ndb_get_table_statistics(THD *thd, Ndb *ndb,
       goto retry;
     }
 
+    DBUG_PRINT("info", ("Call nextResult(row, true, true)"));
     const char *dummyRowPtr;
     while ((check = pOp->nextResult(&dummyRowPtr, true, true)) == 0) {
       DBUG_PRINT("info",
@@ -137,7 +139,7 @@ bool ndb_get_table_statistics(THD *thd, Ndb *ndb,
         break;
       }
     }
-
+    DBUG_PRINT("info", ("nextResult returned: %d", check));
     if (check == -1) {
       ndb_error = pOp->getNdbError();
       goto retry;

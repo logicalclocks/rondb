@@ -1663,6 +1663,7 @@ void ClusterMgr::reportDisconnected(NodeId nodeId) {
 
 void ClusterMgr::execNODE_FAILREP(const NdbApiSignal *sig,
                                   const LinearSectionPtr ptr[]) {
+  DBUG_ENTER("ClusterMgr::execNODE_FAILREP");
   const NodeFailRep *rep = CAST_CONSTPTR(NodeFailRep, sig->getDataPtr());
   NodeBitmask mask;
   if (sig->getLength() == NodeFailRep::SignalLengthLong_v1) {
@@ -1707,6 +1708,8 @@ void ClusterMgr::execNODE_FAILREP(const NdbApiSignal *sig,
                       i);
       }
     }
+    DBUG_PRINT("info", ("set_node_dead(%u), connected: %u",
+      i, connected));
     set_node_dead(theNode);
     NdbMutex_Unlock(m_node_state_mutex);
 
@@ -1751,6 +1754,7 @@ void ClusterMgr::execNODE_FAILREP(const NdbApiSignal *sig,
       }
     }
   }
+  DBUG_VOID_RETURN;
 }
 
 void ClusterMgr::set_node_dead(trp_node &theNode) {

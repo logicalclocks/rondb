@@ -253,7 +253,7 @@ class NdbIndexScanOperation : public NdbScanOperation {
   ~NdbIndexScanOperation() override;
 
   int processIndexScanDefs(LockMode lm, Uint32 scan_flags, Uint32 parallel,
-                           Uint32 batch);
+                           Uint32 batch, bool allow_continous_scan);
   int scanIndexImpl(const NdbRecord *key_record, const NdbRecord *result_record,
                     NdbOperation::LockMode lock_mode,
                     const unsigned char *result_mask,
@@ -319,11 +319,16 @@ class NdbIndexScanOperation : public NdbScanOperation {
                           Uint32 *distKey);
   void fix_get_values();
   int next_result_ordered(bool fetchAllowed, bool forceSend = false);
-  int next_result_ordered_ndbrecord(const char *&out_row, bool fetchAllowed,
+  int next_result_ord_ndbrecord(const char *&out_row, bool fetchAllowed,
+                                bool forceSend);
+  int next_result_ord_ndbrecord_par(const char *&out_row, bool fetchAllowed,
                                     bool forceSend);
+  int get_first_sorted_batch(const char *&out_row, bool forceSend);
+  int get_next_sorted_row(const char *&out_row);
+  int get_next_sorted_batch(const char *&out_row, bool forceSend);
   void ordered_insert_receiver(Uint32 start, NdbReceiver *receiver);
   int ordered_send_scan_wait_for_all(bool forceSend);
-  int send_next_scan_ordered(Uint32 idx);
+  int send_next_scan_ordered(Uint32 idx, bool stopFlag);
   int compare(Uint32 key, Uint32 cols, const NdbReceiver *,
               const NdbReceiver *);
   Uint32 m_sort_columns;

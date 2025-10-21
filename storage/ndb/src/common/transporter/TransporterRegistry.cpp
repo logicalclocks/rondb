@@ -1396,6 +1396,8 @@ TransporterRegistry::check_TCP(TransporterReceiveHandle& recvdata,
         ndb_socket_t sock_fd = allTransporters[trpid]->getSocket();
         epoll_ctl(recvdata.m_epoll_fd, EPOLL_CTL_DEL,
                   ndb_socket_get_native(sock_fd), nullptr);
+        DBUG_PRINT("info", ("start_disconnecting(4), trp_id: %u",
+          trpid));
         start_disconnecting(trpid);
       } else if (recvdata.m_epoll_events[i].events & EPOLLIN) {
         recvdata.m_read_transporters.set(trpid);
@@ -2614,7 +2616,8 @@ bool TransporterRegistry::start_disconnecting(TrpId trp_id, int errnum,
         send_source ? "send" : "recv", errnum, performStates[trp_id]);
   }
   DBUG_ENTER("TransporterRegistry::start_disconnecting");
-  DBUG_PRINT("info", ("performStates[trp:%u]=DISCONNECTING", trp_id));
+  DBUG_PRINT("info", ("performStates[trp:%u]=DISCONNECTING, errnum: %d",
+    trp_id, errnum));
   DEBUG_FPRINTF((stderr, "(%u)performStates[trp:%u] = DISCONNECTING\n",
                  localNodeId, trp_id));
   performStates[trp_id] = DISCONNECTING;
@@ -2761,8 +2764,11 @@ void TransporterRegistry::report_disconnect(TransporterReceiveHandle &recvdata,
       Transporter *other_trp = multi_trp->get_active_transporter(i);
       const TrpId other_trp_id = other_trp->getTransporterIndex();
       if (performStates[other_trp_id] != DISCONNECTED) {
-        if (this_trp->m_is_active)  // 1)
+        if (this_trp->m_is_active)  { // 1)
+          DBUG_PRINT("info", ("start_disconnecting(2), trp_id: %u",
+            other_trp_id));
           start_disconnecting(other_trp_id);
+        }
 
         ready_to_disconnect = false;  // 2)
         DEBUG_FPRINTF((stderr,
@@ -2780,8 +2786,11 @@ void TransporterRegistry::report_disconnect(TransporterReceiveHandle &recvdata,
       Transporter *other_trp = multi_trp->get_inactive_transporter(i);
       const TrpId other_trp_id = other_trp->getTransporterIndex();
       if (performStates[other_trp_id] != DISCONNECTED) {
-        if (this_trp->m_is_active)  // 1)
+        if (this_trp->m_is_active) {  // 1)
+          DBUG_PRINT("info", ("start_disconnecting(3), trp_id: %u",
+            other_trp_id));
           start_disconnecting(other_trp_id);
+        }
 
         ready_to_disconnect = false;  // 2)
         DEBUG_FPRINTF((stderr,

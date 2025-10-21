@@ -166,7 +166,8 @@ class NdbScanOperation : public NdbOperation {
                 SO_PART_INFO    = 0x80,
                 SO_TTL_IGNORE   = 0x100,
                 SO_TTL_ONLY_EXPIRED = 0x200,
-                SO_SET_INPUT_PARAM = 0x400
+                SO_SET_INPUT_PARAM = 0x400,
+                SO_USE_STD_SORTED = 0x800
     };
 
     /* Flags controlling scan behaviour
@@ -618,11 +619,24 @@ class NdbScanOperation : public NdbOperation {
   
   int fix_receivers(Uint32 parallel);
   void reset_receivers(Uint32 parallel, Uint32 ordered);
+  bool m_waiting_for_data;
   Uint32 *m_array;  // containing all arrays below
   Uint32 m_allocated_receivers;
   NdbReceiver **m_receivers;  // All receivers
+  void close_ndb_receiver(Uint32 inx, Uint32 state);
+  enum {
+    ReceiverEmpty = 0,
+    ReceiverPrepared = 1,
+    ReceiverSentWaitingForResponse = 2,
+    ReceiverDataAvailable = 3,
+    ReceiverDataReady = 4,
+    ReceiverDataReadyToBeClosed = 5,
+    ReceiverClosed = 6
+  };
+  Uint8 *m_receiver_state;
 
   Uint32 *m_prepared_receivers;  // These are to be sent
+  Uint32 m_prepared_receivers_count;
 
   /*
     Owned by API/user thread.
@@ -669,6 +683,7 @@ class NdbScanOperation : public NdbOperation {
   NdbReceiver **m_sent_receivers;  // receive thread puts them here
   
   int send_next_scan(Uint32 cnt, bool close);
+  int send_next_scan_cont(Uint32 idx, Uint32 last);
   void receiver_delivered(NdbReceiver *);
   void receiver_completed(NdbReceiver *);
   void execCLOSE_SCAN_REP(Uint32 errorCode, bool needClose);
@@ -704,7 +719,8 @@ class NdbScanOperation : public NdbOperation {
   
   /* Initialise scan operation with user provided information */
   virtual int processTableScanDefs(LockMode lock_mode, Uint32 scan_flags,
-                                   Uint32 parallel, Uint32 batch);
+                                   Uint32 parallel, Uint32 batch,
+                                   bool allow_continous_scan);
 
   /* This flag indicates whether a scan operation is using the old API */
   bool  m_scanUsingOldApi;
@@ -733,6 +749,7 @@ class NdbScanOperation : public NdbOperation {
   ScanPruningState m_pruneState;
   Uint32 m_pruningKey;  // Can be distr key hash or actual partition id.
 
+  bool m_continousScan;
   /**
    * This flag indicates whether a scan operation was 
    * successfully finalised

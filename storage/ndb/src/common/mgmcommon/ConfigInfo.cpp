@@ -1850,6 +1850,18 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
 
   /* RonDB additions */
   {
+    CFG_API_CONTINOUS_SCAN,
+    "ContinousScan",
+    "API",
+    "Use two receivers per parallelism to enable continous scans",
+     ConfigInfo::CI_USED,
+     false,
+     ConfigInfo::CI_BOOL,
+     "true",
+     "false",
+     "true"},
+
+  {
     CFG_NODE_ACTIVE,
     "NodeActive",
     MGM_TOKEN,
