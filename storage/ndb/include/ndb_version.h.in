@@ -1104,4 +1104,21 @@ ndbd_support_lcp_wait_flag(Uint32 x) {
   }
   return false;
 }
+
+static inline
+bool
+ndbd_support_continous_scan(Uint32 x) {
+  const Uint32 major = (x >> 16) & 0xFF;
+  const Uint32 minor = (x >>  8) & 0xFF;
+  const Uint32 patch = x & 0xFF;
+  if (major > 25)
+  {
+    return true;
+  }
+  if ((major == 25) && (minor == 10) && (patch >= 1))
+  {
+    return true;
+  }
+  return false;
+}
 #endif
