@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2021, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2025, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -88,10 +89,12 @@ bool ndb_get_table_statistics(THD *thd, Ndb *ndb,
     }
 
     NdbScanOperation::ScanOptions options;
-    options.optionsPresent = NdbScanOperation::ScanOptions::SO_BATCH |
-                             NdbScanOperation::ScanOptions::SO_GETVALUE |
-                             NdbScanOperation::ScanOptions::SO_USE_STD_SORTED |
-                             NdbScanOperation::ScanOptions::SO_INTERPRETED;
+    options.optionsPresent =
+      NdbScanOperation::ScanOptions::SO_BATCH |
+        NdbScanOperation::ScanOptions::SO_GETVALUE |
+        NdbScanOperation::ScanOptions::SO_USE_STANDARD_SCAN |
+        NdbScanOperation::ScanOptions::SO_INTERPRETED;
+
     /* Set batch=1, as we need only one row per fragment. */
     options.batch = 1;
     options.extraGetValues = &extraGets[0];

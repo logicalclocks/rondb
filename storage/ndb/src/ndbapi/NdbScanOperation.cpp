@@ -648,7 +648,7 @@ int NdbScanOperation::scanTableImpl(
     /* Process some initial ScanOptions - most are
      * handled later
      */
-    if (options->optionsPresent & ScanOptions::SO_USE_STD_SORTED)
+    if (options->optionsPresent & ScanOptions::SO_USE_STANDARD_SCAN)
       allow_continous_scan = false;
     if (options->optionsPresent & ScanOptions::SO_SCANFLAGS)
       scan_flags = options->scan_flags;
@@ -1201,7 +1201,7 @@ int NdbIndexScanOperation::scanIndexImpl(
     /* Process some initial ScanOptions here
      * The rest will be handled later
      */
-    if (options->optionsPresent & ScanOptions::SO_USE_STD_SORTED)
+    if (options->optionsPresent & ScanOptions::SO_USE_STANDARD_SCAN)
       allow_continous_scan = false;
     if (options->optionsPresent & ScanOptions::SO_SCANFLAGS)
       scan_flags = options->scan_flags;
@@ -1380,28 +1380,25 @@ int NdbScanOperation::processTableScanDefs(NdbScanOperation::LockMode lm,
   }
 
   Uint32 continousScan =
-    theNdb->theImpl->get_ndbapi_config_parameters().m_continous_scan;
+    theNdb->theImpl->get_ndbapi_config_parameters().m_continous_scan &&
+    allow_continous_scan;
 
-  if (continousScan && allow_continous_scan && lm != LM_CommittedRead) {
-    allow_continous_scan = false;
+  if (continousScan &&
+      (lm != LM_CommittedRead ||
+      !ndbd_support_continous_scan(theNdb->getMinDbNodeVersion()))) {
+    continousScan = 0;
   }
 
   if (rangeScan && (scan_flags & (SF_OrderBy | SF_OrderByFull))) {
-    if (!allow_continous_scan || continousScan == 0) {
+    if (continousScan == 0) {
       parallel = fragCount;
-      continousScan = 0;
     } else {
       parallel = 4 * fragCount; /* Frag count of ordered index ==
                                  * Frag count of base table
                                  */
-      continousScan = 1;
     }
-  } else if (continousScan != 0 &&
-             allow_continous_scan &&
-             lm == LM_CommittedRead) {
+  } else if (continousScan != 0) {
     parallel *= 4;
-  } else {
-    continousScan = 0;
   }
 
   m_continousScan = (continousScan != 0);
@@ -3880,6 +3877,70 @@ static Uint32 get_next_index(Uint32 index) {
   return next_index;
 }
 
+/**
+ * Sorted index scan state machine:
+ *
+ * When using continous scans for sorted index scans we use 4 NdbReceiver
+ * objects for each fragment. Each of those objects follows a state machine
+ * that keeps track of their progress.
+ *
+ * When the SCAN_TABREQ is sent, the first NdbReceiver object for each
+ * fragment is given the state ReceiverSentWaitingForResponse. This state
+ * indicates that we have sent a request for data to this NdbReceiver
+ * object and we are waiting for SCAN_TABCONF and TRANSID_AI signals for
+ * this object. The other objects are given the ReceiverEmpty state.
+ *
+ * From the state ReceiverSentWaitingForResponse we move to the state
+ * ReceiverDataAvailable when receiving a SCAN_TABCONF signal and all
+ * TRANSID_AI belonging to this SCAN_TABCONF signal. This state indicates
+ * that the receiver thread has completed its task of receiving a batch for
+ * this NdbReceiver object.
+ *
+ * Since a sorted index scan need data from all fragments we have to wait
+ * until all fragments have responded until we can proceed. In the first
+ * batch we have to wait until all fragments have received its first
+ * SCAN_TABCONF and its corresponding TRANSID_AI signals. After that we
+ * can start processing the rows.
+ *
+ * In SCAN_TABCONF an array of NdbReceiver objects will get an update and
+ * there are three possible scenarios.
+ * 1) The batch contains rows and there are no more rows to fetch.
+ * => ReceiverDataReadyToBeClosed
+ * 2) The batch contains rows and there might be more rows to fetch.
+ * => ReceiverDataReady
+ * 3) The batch is empty and there are no more rows to be fetched.
+ * => ReceiverClosed
+ *
+ * The state ReceiverDataAvailable is mainly used to assert that we received
+ * all data for NdbReceiver when we received rows from the data nodes.
+ *
+ * Each top row of the NdbReceiver will be sorted into the array of
+ * NdbReceiver objects as part execution. As soon as we received the first
+ * batch from each fragment we will immediately request the next batch from
+ * all fragments not yet completed. We use a state ReceiverPrepared for
+ * NdbReceiver objects to be sent in SCAN_NEXTREQ signal and they are placed
+ * into the prepare queue.
+ *
+ * Next we start processing rows from NdbReceiver objects either in the state
+ * ReceiverDataReady or ReceiverDataReadyToBeClosed. When an NdbReceiver
+ * object becomes empty it is either closed (ReceiverDataReadyToBeClosed),
+ * or if the state is ReceiverDataReady the next next NdbReceiver object is
+ * placed in ReceiverPrepared and from there passed to
+ * ReceiverSentWaitingForResponse and from there to ReceiverDataAvailable
+ * and the cycle proceeds.
+ *
+ * DBLQH can collect rows from one batch ahead. This means that 3 batches
+ * can be in different positions. One batch can be in the current
+ * NdbReceiver object being processed. One can be in a state where
+ * SCAN_NEXTREQ have been sent and either all data have been received or is
+ * in the process of being received. The third have not yet sent its
+ * SCAN_NEXTREQ signal, but can still receive TRANSID_AI signals from
+ * DBLQH. As soon as the first is empty and processed we can send
+ * SCAN_NEXTREQ for the third one as well.
+ *
+ * Before sending a SCAN_NEXTREQ we need to call prepareSend on the fourth
+ * NdbReceiver object to clear the object before receiving new rows.
+ */
 int NdbIndexScanOperation::get_first_sorted_batch(const char *&out_row,
                                                   bool forceSend) {
   /**
