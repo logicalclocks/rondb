@@ -15777,9 +15777,13 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
           ndbrequire(m_databaseRecordPool.getPtr(databaseRecordPtr));
           if (databaseRecordPtr.p->m_is_queueing_abort_read) {
             jam();
-            DEB_RATE_OVERFLOW(("(%u) db: %llu, apiPtrI: %u",
-              instance(), databaseRecordPtr.i, apiConnectptr.i));
             releaseSections(handle);
+            DEB_RATE_OVERFLOW(("(%u) Rate Overflow db: %llu, apiPtrI: %u"
+                               ", line: %u",
+              instance(),
+              databaseRecordPtr.p->m_database_id,
+              apiConnectptr.i,
+              __LINE__));
             errCode = ZRATE_OVERFLOW_ERROR;
             goto SCAN_TAB_error;
           }
@@ -15813,8 +15817,12 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
           if (databaseRecordPtr.p->m_is_queueing_abort_read) {
             jam();
             releaseSections(handle);
-            DEB_RATE_OVERFLOW(("(%u) db: %llu, transOwnerPtrI: %u",
-              instance(), databaseRecordPtr.i, transOwnerPtr.i));
+            DEB_RATE_OVERFLOW(("(%u) Rate Overflow: db: %llu,"
+              " transOwnerPtrI: %u, line: %u",
+              instance(),
+              databaseRecordPtr.p->m_database_id,
+              transOwnerPtr.i,
+              __LINE__));
             errCode = ZRATE_OVERFLOW_ERROR;
             goto SCAN_TAB_error;
           }
@@ -26053,6 +26061,10 @@ Dbtc::execDATABASE_RATE_ORD(Signal *signal) {
       dbPtr.p->m_is_queueing_all = false;
       dbPtr.p->m_queueing_time_us = 0;
     }
+    dbPtr.p->m_is_queueing_abort_read = false;
+    dbPtr.p->m_is_queueing_abort = false;
+    DEB_RATE_QUEUE_SET(("(%u):%u No Aborted actions (0)",
+      instance(), databaseId));
   } else {
     jam();
     dbPtr.p->m_is_queueing_start = true;
@@ -26060,11 +26072,33 @@ Dbtc::execDATABASE_RATE_ORD(Signal *signal) {
     if (delay_us >= 2000) {
       jam();
       dbPtr.p->m_is_queueing_all = true;
-      DEB_RATE_QUEUE_SET(("(%u):%u No Set m_is_queueing_all"
+      DEB_RATE_QUEUE_SET(("(%u):%u Set m_is_queueing_all"
                           ", set m_queueing_time_us: %u",
                           instance(), databaseId, delay_us));
+      if (delay_us >= (MAX_QUEUE_TIME_MS * 1000)) {
+        jam();
+        dbPtr.p->m_is_queueing_abort_read = true;
+        dbPtr.p->m_is_queueing_abort = true;
+        DEB_RATE_QUEUE_SET(("(%u):%u Abort all actions (%u)",
+          instance(), databaseId, delay_us));
+      } else if (delay_us >= (MAX_READ_QUEUE_TIME_MS * 1000)) {
+        jam();
+        dbPtr.p->m_is_queueing_abort_read = true;
+        dbPtr.p->m_is_queueing_abort = false;
+        DEB_RATE_QUEUE_SET(("(%u):%u Abort read actions (%u)",
+          instance(), databaseId, delay_us));
+      } else {
+        jam();
+        dbPtr.p->m_is_queueing_abort_read = false;
+        dbPtr.p->m_is_queueing_abort = false;
+        DEB_RATE_QUEUE_SET(("(%u):%u No Aborted actions (%u)",
+          instance(), databaseId, delay_us));
+      }
     } else {
-      DEB_RATE_QUEUE_SET(("(%u):%u No Set m_is_queueing_start"
+      jam();
+      dbPtr.p->m_is_queueing_abort_read = false;
+      dbPtr.p->m_is_queueing_abort = false;
+      DEB_RATE_QUEUE_SET(("(%u):%u Not Set m_is_queueing_start"
                           ", set m_queueing_time_us = %u",
                           instance(), databaseId, delay_us));
     }
@@ -26472,7 +26506,7 @@ void Dbtc::set_queueing_environment(Signal *signal,
     return;
   }
   Uint32 overload = current_used_rate / rate_per_sec;
-  if (overload > MAX_QUEUE_TIME_MS) {
+  if (overload >= MAX_QUEUE_TIME_MS) {
     jam();
     dbPtrP->m_queueing_time_us = MAX_QUEUE_TIME_MS * 1000;
     dbPtrP->m_is_queueing_abort = true;
@@ -26482,7 +26516,7 @@ void Dbtc::set_queueing_environment(Signal *signal,
                         instance(),
                         dbPtrP->m_database_id,
                         dbPtrP->m_queueing_time_us));
-  } else if (overload > MAX_READ_QUEUE_TIME_MS) {
+  } else if (overload >= MAX_READ_QUEUE_TIME_MS) {
     jam();
     dbPtrP->m_is_queueing_abort_read = true;
     dbPtrP->m_is_queueing_abort = false;
@@ -26497,6 +26531,11 @@ void Dbtc::set_queueing_environment(Signal *signal,
     dbPtrP->m_is_queueing_abort_read = false;
     dbPtrP->m_queueing_time_us =
       (overload * Uint64(1000)) + dbPtrP->m_derivative_delay_us;
+    DEB_RATE_QUEUE_SET(("(%u):%u overload: %u, queueing_time: %u",
+                        instance(),
+                        dbPtrP->m_database_id,
+                        overload,
+                        dbPtrP->m_queueing_time_us));
   }
   if (overload == 0) {
     /**
@@ -27886,6 +27925,12 @@ bool Dbtc::check_tckey_queueing(Signal *signal,
     if (unlikely(databaseRecordPtr.p->m_is_queueing_abort)) {
       jam();
       releaseSections(handle);
+      DEB_RATE_OVERFLOW(("(%u) Rate Overflow: db: %llu, apiConnectptr.i: %u"
+                         ", line: %u",
+        instance(),
+        databaseRecordPtr.p->m_database_id,
+        apiConnectptr.i,
+        __LINE__));
       db_abort_handling(signal,
                         apiConnectptr,
                         TstartFlag,
@@ -27903,6 +27948,12 @@ bool Dbtc::check_tckey_queueing(Signal *signal,
           op_type != ZUNLOCK) {
         jam();
         releaseSections(handle);
+        DEB_RATE_OVERFLOW(("(%u) Rate Overflow: db: %llu, apiConnectptr.i: %u"
+                           ", line: %u",
+          instance(),
+          databaseRecordPtr.p->m_database_id,
+          apiConnectptr.i,
+          __LINE__));
         db_abort_handling(signal,
                           apiConnectptr,
                           TstartFlag,
@@ -27931,6 +27982,12 @@ bool Dbtc::check_tckey_queueing(Signal *signal,
                                    apiConnectptr))) {
         jam();
         releaseSections(handle);
+        DEB_RATE_OVERFLOW(("(%u) Rate Overflow: db: %llu, apiConnectptr.i: %u"
+                           ", line: %u",
+          instance(),
+          databaseRecordPtr.p->m_database_id,
+          apiConnectptr.i,
+          __LINE__));
         db_abort_handling(signal,
                           apiConnectptr,
                           TstartFlag,
@@ -27961,6 +28018,12 @@ void Dbtc::handle_queue_tckeyreq(Signal *signal,
                                apiConnectptr))) {
     jam();
     releaseSections(handle);
+    DEB_RATE_OVERFLOW(("(%u) Rate Overflow: db: %llu, apiConnectptr.i: %u"
+                       ", line: %u",
+      instance(),
+      databaseRecordPtr.p->m_database_id,
+      apiConnectptr.i,
+      __LINE__));
     db_abort_handling(signal,
                       apiConnectptr,
                       TstartFlag,
