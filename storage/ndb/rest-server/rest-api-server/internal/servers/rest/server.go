@@ -40,6 +40,7 @@ import (
 	"hopsworks.ai/rdrs/internal/handlers/stat"
 	"hopsworks.ai/rdrs/internal/log"
 	"hopsworks.ai/rdrs/internal/metrics"
+	"hopsworks.ai/rdrs/internal/middleware"
 	"hopsworks.ai/rdrs/internal/security/apikey"
 )
 
@@ -115,6 +116,13 @@ type RouteHandler struct {
 func registerHandlers(router *gin.Engine, heap *heap.Heap, apiKeyCache apikey.Cache,
 	fvMeta *fsmeta.FeatureViewMetaDataCache, rdrsMetrics *metrics.RDRSMetrics) {
 	router.Use(ErrorHandler)
+
+	// Apply concurrency limiter if configured (0 = unlimited, no limiter)
+	conf := config.GetAll()
+	if conf.REST.MaxConcurrentReqs > 0 {
+		router.Use(middleware.ConcurrencyLimiterWithQueue(conf.REST.MaxConcurrentReqs))
+	}
+
 	router.Use(RestMetricsHandler(rdrsMetrics.EndPointMetrics))
 
 	versionGroup := router.Group(config.VERSION_GROUP)

@@ -74,9 +74,10 @@ func (g *GRPC) Validate() error {
 }
 
 type REST struct {
-	Enable     bool
-	ServerIP   string
-	ServerPort uint16
+	Enable              bool
+	ServerIP            string
+	ServerPort          uint16
+	MaxConcurrentReqs   uint32 // Maximum concurrent requests (0 = unlimited)
 }
 
 func (g *REST) Validate() error {
