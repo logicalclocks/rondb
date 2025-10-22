@@ -142,21 +142,25 @@ struct NdbUpGradeCompatible {
 };
 
 struct NdbUpGradeCompatible ndbCompatibleTable_schema_table[] = {
+  { MAKE_VERSION(25,10,NDB_VERSION_BUILD),MAKE_VERSION(22,10,3), UG_Range },
   { MAKE_VERSION(24,10,NDB_VERSION_BUILD),MAKE_VERSION(22,10,3), UG_Range },
   { 0, 0, UG_Null }
 };
 
 struct NdbUpGradeCompatible ndbCompatibleTable_backup_table[] = {
+  { MAKE_VERSION(25,10,NDB_VERSION_BUILD),MAKE_VERSION(22,10,3), UG_Range },
   { MAKE_VERSION(24,10,NDB_VERSION_BUILD),MAKE_VERSION(22,10,3), UG_Range },
   { 0, 0, UG_Null }
 };
 
 struct NdbUpGradeCompatible ndbCompatibleTable_full[] = {
+  { MAKE_VERSION(25,10,NDB_VERSION_BUILD),MAKE_VERSION(22,10,3), UG_Range },
   { MAKE_VERSION(24,10,NDB_VERSION_BUILD),MAKE_VERSION(22,10,3), UG_Range },
   { 0, 0, UG_Null }
 };
 
 struct NdbUpGradeCompatible ndbCompatibleTable_upgrade[] = {
+  { MAKE_VERSION(25,10,NDB_VERSION_BUILD),MAKE_VERSION(22,10,3), UG_Range },
   { MAKE_VERSION(24,10,NDB_VERSION_BUILD),MAKE_VERSION(22,10,3), UG_Range },
   { 0, 0, UG_Null }
 };

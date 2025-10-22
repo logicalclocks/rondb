@@ -3097,10 +3097,13 @@ int runTestNdbApiConfig(NDBT_Context *ctx, NDBT_Step *step) {
       {CFG_DEFAULT_HASHMAP_SIZE,
        &NdbApiConfig::m_default_hashmap_size,
        {240, 3840}},
+      {CFG_API_CONTINOUS_SCAN,
+       &NdbApiConfig::m_continous_scan,
+       {0,1}},
   };
   // Catch if new members are added to NdbApiConfig,
   // if so add tests and adjust expected size
-  static_assert(sizeof(NdbApiConfig) == 7 * sizeof(Uint32));
+  static_assert(sizeof(NdbApiConfig) == 8 * sizeof(Uint32));
 
   Config savedconf;
   if (!mgmd.get_config(savedconf)) return NDBT_FAILED;

@@ -115,6 +115,7 @@ class ScanFragReq {
    * to use interpreted execution based on that.
    */
   static Uint32 getNotInterpretedFlag(const Uint32 &requestInfo);
+  static Uint32 getParallelOrderedScanFlag(const Uint32 &requestInfo);
 
   static void setLockMode(Uint32 &requestInfo, Uint32 lockMode);
   static void setHoldLockFlag(Uint32 &requestInfo, Uint32 holdLock);
@@ -131,6 +132,7 @@ class ScanFragReq {
   static void setStatScanFlag(Uint32 &requestInfo, Uint32 val);
   static void setPrioAFlag(Uint32 &requestInfo, Uint32 val);
   static void setNotInterpretedFlag(Uint32 &requestInfo, Uint32 val);
+  static void setParallelOrderedScanFlag(Uint32 &requestInfo, Uint32 val);
 
   static void setReorgFlag(Uint32 &requestInfo, Uint32 val);
   static Uint32 getReorgFlag(const Uint32 &requestInfo);
@@ -352,7 +354,7 @@ class ScanFragNextReq {
  * z = descending            - 1  Bit 10
  * t = tup scan              - 1  Bit 11 (implies x=z=0)
  * p = Scan prio             - 4  Bits (12-15) -> max 15
- * r = Reorg flag            - 2  Bits (1-2)
+ * o = Reorg flag            - 2  Bits (1-2)
  * C = corr value flag       - 1  Bit  (16)
  * s = Stat scan             - 1  Bit 17
  * a = Prio A scan           - 1  Bit 18
@@ -363,11 +365,12 @@ class ScanFragNextReq {
  * g = Aggregation flag      - 1  Bit 23
  * I = TTL ignore flag       - 1  Bit 24
  * e = TTL only expired flag - 1  Bit 25
+ * P = Parallel ordered flag - 1  Bit 26
  *
  *           1111111111222222222233
  * 01234567890123456789012345678901
- *  rrcdlxhkrztppppaaaaaaaaaaaaaaaa   Short variant ( < 6.4.0)
- *  rrcdlxhkrztppppCsaim  gIe         Long variant (6.4.0 +)
+ *  oocdlxhkrztppppaaaaaaaaaaaaaaaa   Short variant ( < 6.4.0)
+ *  oocdlxhkrztppppCsaimfqgIeP        Long variant (6.4.0 +)
  */
 #define SF_LOCK_MODE_SHIFT (5)
 #define SF_LOCK_MODE_MASK (1)
@@ -401,6 +404,7 @@ class ScanFragNextReq {
 #define SF_AGGREGATION_SHIFT (23)
 #define SF_TTL_IGNORE_SHIFT (24)
 #define SF_TTL_ONLY_EXPIRED_SHIFT (25)
+#define SF_PAR_ORDERED_SCAN_SHIFT (26)
 
 inline Uint32 ScanFragReq::getLockMode(const Uint32 &requestInfo) {
   return (requestInfo >> SF_LOCK_MODE_SHIFT) & SF_LOCK_MODE_MASK;
@@ -602,8 +606,17 @@ inline Uint32 ScanFragReq::getNotInterpretedFlag(const Uint32 &requestInfo) {
 }
 
 inline void ScanFragReq::setNotInterpretedFlag(UintR &requestInfo, UintR val) {
-  ASSERT_BOOL(val, "ScanFragReq::setStatScanFlag");
+  ASSERT_BOOL(val, "ScanFragReq::setNotInterpretedFlag");
   requestInfo |= (val << SF_NOT_INTERPRETED_SHIFT);
+}
+
+inline Uint32 ScanFragReq::getParallelOrderedScanFlag(const Uint32 &requestInfo) {
+  return (requestInfo >> SF_PAR_ORDERED_SCAN_SHIFT) & 1;
+}
+
+inline void ScanFragReq::setParallelOrderedScanFlag(UintR &requestInfo, UintR val) {
+  ASSERT_BOOL(val, "ScanFragReq::setParallelOrderedScanFlag");
+  requestInfo |= (val << SF_PAR_ORDERED_SCAN_SHIFT);
 }
 
 inline

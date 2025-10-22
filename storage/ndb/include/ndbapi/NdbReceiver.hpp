@@ -221,6 +221,7 @@ class NdbReceiver {
   const Uint32 *m_rec_attr_data;
   Uint32 m_rec_attr_len;
 
+  Uint32 m_index;
   /*
     When an NdbReceiver is sitting in the NdbScanOperation::m_sent_receivers
     array, waiting to receive TRANSID_AI data from the kernel, its index into
