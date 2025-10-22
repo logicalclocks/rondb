@@ -62,9 +62,10 @@ func newWithDefaults() AllConfigs {
 			ServerPort: 5406,
 		},
 		REST: REST{
-			Enable:     true,
-			ServerIP:   "0.0.0.0",
-			ServerPort: 4406,
+			Enable:            true,
+			ServerIP:          "0.0.0.0",
+			ServerPort:        4406,
+			MaxConcurrentReqs: 0, // 0 = unlimited (default for backward compatibility)
 		},
 		RonDB: RonDB{
 			Mgmds: []Mgmd{
