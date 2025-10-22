@@ -438,7 +438,7 @@ func TestBatchMissingReqField(t *testing.T) {
 	operationsWrapper := api.BatchOpRequest{Operations: &operations}
 	body, _ := json.Marshal(operationsWrapper)
 	testclient.SendHttpRequest(t, config.BATCH_HTTP_VERB, url, string(body),
-		"Error:Field validation for 'Method' failed ", http.StatusBadRequest)
+		"Error:Field validation for 'Method' failed", http.StatusBadRequest)
 
 	// Test missing relative URL
 	operations = NewOperationsTBD(t, 3)
@@ -446,7 +446,7 @@ func TestBatchMissingReqField(t *testing.T) {
 	operationsWrapper = api.BatchOpRequest{Operations: &operations}
 	body, _ = json.Marshal(operationsWrapper)
 	testclient.SendHttpRequest(t, config.BATCH_HTTP_VERB, url, string(body),
-		"Error:Field validation for 'RelativeURL' failed ", http.StatusBadRequest)
+		"Error:Field validation for 'RelativeURL' failed", http.StatusBadRequest)
 
 	// Test missing body
 	operations = NewOperationsTBD(t, 3)
@@ -454,7 +454,7 @@ func TestBatchMissingReqField(t *testing.T) {
 	operationsWrapper = api.BatchOpRequest{Operations: &operations}
 	body, _ = json.Marshal(operationsWrapper)
 	testclient.SendHttpRequest(t, config.BATCH_HTTP_VERB, url, string(body),
-		"Error:Field validation for 'Body' failed ", http.StatusBadRequest)
+		"Error:Field validation for 'Body' failed", http.StatusBadRequest)
 
 	// Test missing filter in an operation
 	operations = NewOperationsTBD(t, 3)
@@ -476,8 +476,7 @@ func NewOperationsTBD(t *testing.T, numOps int) []api.BatchSubOp {
 func NewOperationTBD(t *testing.T) api.BatchSubOp {
 	pkOp := testclient.NewPKReadReqBodyTBD()
 	method := "POST"
-	relativeURL := testutils.NewPKReadURL("db", "table")
-
+	relativeURL := testutils.NewPKReadRelativeURL("db", "table")
 	return api.BatchSubOp{
 		Method:      &method,
 		RelativeURL: &relativeURL,

@@ -22,10 +22,19 @@ if(WITH_RDRS)
     message(FATAL_ERROR "Install Golang")
   endif()
 
-  add_custom_target(rdrs ALL 
-                     COMMAND ${CMAKE_MAKE_PROGRAM} RDRS_LIB_DIR=${RDRS_CLIENT_LIB_DIR}  OUTPUT_DIR=${RDRS_OUTPUT_DIR}
+  # Use PGO for release builds, skip for debug builds (faster compilation)
+  if(WITH_DEBUG)
+    set(RDRS_MAKE_TARGET rdrs)
+    set(RDRS_BUILD_COMMENT "Building RonDB REST API Server (Debug - no PGO)")
+  else()
+    set(RDRS_MAKE_TARGET pgo-build)
+    set(RDRS_BUILD_COMMENT "Building RonDB REST API Server with PGO")
+  endif()
+
+  add_custom_target(rdrs ALL
+                     COMMAND ${CMAKE_MAKE_PROGRAM} ${RDRS_MAKE_TARGET} RDRS_LIB_DIR=${RDRS_CLIENT_LIB_DIR}  OUTPUT_DIR=${RDRS_OUTPUT_DIR}
                      WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-                     COMMENT "Building RonDB REST API Server"
+                     COMMENT "${RDRS_BUILD_COMMENT}"
                      DEPENDS rdrclient)
   
   INSTALL(FILES ${RDRS_OUTPUT_DIR}/rdrs 

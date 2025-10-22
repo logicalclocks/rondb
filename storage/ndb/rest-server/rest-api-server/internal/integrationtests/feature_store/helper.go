@@ -112,7 +112,7 @@ func GetNSampleDataColumns(database string, table string, n int, cols []string) 
 func fetchDataRows(query string, colTypes []string) (*[][]interface{}, error) {
 	dbConn, err := testutils.CreateMySQLConnectionDataCluster()
 	if err != nil {
-		return nil, fmt.Errorf("Cannot create MYSQLConnection" + err.Error())
+		return nil, fmt.Errorf("Cannot create MYSQLConnection %v", err.Error())
 	}
 	defer dbConn.Close()
 
@@ -122,7 +122,7 @@ func fetchDataRows(query string, colTypes []string) (*[][]interface{}, error) {
 func fetchMetadataRows(query string, colTypes []string) (*[][]interface{}, error) {
 	dbConn, err := testutils.CreateMySQLConnectionMetadataCluster()
 	if err != nil {
-		return nil, fmt.Errorf("Cannot create MYSQLConnection" + err.Error())
+		return nil, fmt.Errorf("Cannot create MYSQLConnection %v", err.Error())
 	}
 	defer dbConn.Close()
 

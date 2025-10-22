@@ -64,8 +64,13 @@ func parsePkReadRequest(c *gin.Context) (*api.PKReadParams, error) {
 		return nil, err
 	}
 
+	body, err := c.GetRawData()
+	if err != nil {
+		return nil, err
+	}
+
 	postParams := api.PKReadBody{}
-	if err := c.BindJSON(&postParams); err != nil {
+	if err := sonic.Unmarshal(body, &postParams); err != nil {
 		return nil, err
 	}
 

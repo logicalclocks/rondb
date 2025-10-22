@@ -255,7 +255,7 @@ func testLoad(t *testing.T, cache Cache, conf config.AllConfigs) {
 	}
 
 	if !pass {
-		t.Fatalf(fmt.Sprintf("%d key validations failed", failCount))
+		t.Fatalf("%d key validations failed", failCount)
 	}
 
 	time.Sleep((time.Duration(conf.Security.APIKey.CacheRefreshIntervalMS) +

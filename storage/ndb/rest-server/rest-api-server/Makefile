@@ -58,12 +58,16 @@ MY_CGO_LDFLAGS := "-g -O3 -L${RDRS_LIB_DIR}/ -Wl,-rpath,../lib${ALLOW_MULTIPLE_D
 
 all: rdrs
 
+PGO_PROFILE?=default.pgo
+
 BUILD_COMMAND=go build -ldflags="-w \
      -X hopsworks.ai/rdrs/version.GITCOMMIT=${GITCOMMIT} \
      -X hopsworks.ai/rdrs/version.BUILDTIME=${BUILDTIME} \
      -X hopsworks.ai/rdrs/version.HOSTNAME=${HOSTNAME} \
      -X hopsworks.ai/rdrs/version.BRANCH=${BRANCH}" \
-     -o ${OUTPUT_DIR}/rdrs ./cmd/server/main.go
+     -o ${OUTPUT_DIR}/rdrs \
+     $(shell test -f $(PGO_PROFILE) && echo "-pgo=$(PGO_PROFILE)") \
+     ./cmd/server/main.go
 
 rdrs:
 	export DYLD_LIBRARY_PATH=$DYLD_LIBRARY_PATH:${RDRS_LIB_DIR} && \
@@ -108,6 +112,33 @@ bench:
 		-memprofile mem.out \
 		$(BENCHMARK_PACKAGE)
 
+# Profile-Guided Optimization build
+# Runs benchmarks from key packages, collects CPU profiles, merges them, and rebuilds with PGO
+pgo-build:
+	@echo "=== Collecting PGO profiles from benchmarks ==="
+	@echo "Running batchfeaturestore benchmarks..."
+	@$(MAKE) bench BENCHMARK_PACKAGE=hopsworks.ai/rdrs/internal/integrationtests/batchfeaturestore && \
+		mv cpu.out batchfeaturestore.pprof
+	@echo "Running batchpkread benchmarks..."
+	@$(MAKE) bench BENCHMARK_PACKAGE=hopsworks.ai/rdrs/internal/integrationtests/batchpkread && \
+		mv cpu.out batchpkread.pprof
+	@echo "Running feature_store benchmarks..."
+	@$(MAKE) bench BENCHMARK_PACKAGE=hopsworks.ai/rdrs/internal/integrationtests/feature_store && \
+		mv cpu.out featurestore.pprof
+	@echo "Running pkread benchmarks..."
+	@$(MAKE) bench BENCHMARK_PACKAGE=hopsworks.ai/rdrs/internal/integrationtests/pkread && \
+		mv cpu.out pkread.pprof
+	@echo "=== Merging profiles ==="
+	@go tool pprof -proto \
+		batchfeaturestore.pprof \
+		batchpkread.pprof \
+		featurestore.pprof \
+		pkread.pprof \
+		> $(PGO_PROFILE)
+	@echo "=== PGO profile created: $(PGO_PROFILE) ==="
+	@echo "=== Building with PGO ==="
+	@$(MAKE) rdrs
+	@echo "=== PGO build complete! ==="
 
 # Otherwise use e.g. `go tool pprof cpu.out` for an interactive CLI
 create-profiling-pdfs:
