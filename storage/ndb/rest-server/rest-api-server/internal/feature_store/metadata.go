@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/hamba/avro/v2"
@@ -68,6 +69,8 @@ type FeatureGroupFeatures struct {
 	JoinIndex           int
 	Features            []*FeatureMetadata
 	PrimaryKeyMap       []*dal.ServingKey
+	TableName           string
+	FeatureGroupKey     string // joinIndex|featureGroupId
 }
 
 type FeatureMetadata struct {
@@ -83,6 +86,8 @@ type FeatureMetadata struct {
 	Label               bool
 	Prefix              string
 	JoinIndex           int
+	IndexKey            string // joinIndex|fgId|Name
+	ServingKey          string // joinIndex|Name
 }
 
 var COMPLEX_FEATURE = map[string]bool{
@@ -167,6 +172,8 @@ func newFeatureViewMetadata(
 			fgFeature.PrimaryKeyMap = fgPk
 		}
 		fgFeature.JoinIndex = feature.JoinIndex
+		fgFeature.TableName = fmt.Sprintf("%s_%d", feature.FeatureGroupName, feature.FeatureGroupVersion)
+		fgFeature.FeatureGroupKey = fmt.Sprintf("%d|%d", feature.JoinIndex, feature.FeatureGroupId)
 		fgFeaturesArray = append(fgFeaturesArray, &fgFeature)
 	}
 	less := func(i, j int) bool {
@@ -263,7 +270,12 @@ func getFeatureGroupServingKey(joinIndex int, featureGroupId int) string {
 }
 
 func GetServingKey(joinIndex int, featureName string) string {
-	return fmt.Sprintf("%d|%s", joinIndex, featureName)
+	var sb strings.Builder
+	sb.Grow(12 + len(featureName)) // Pre-allocate: max 10 digits + "|" + feature name
+	sb.WriteString(strconv.Itoa(joinIndex))
+	sb.WriteByte('|')
+	sb.WriteString(featureName)
+	return sb.String()
 }
 
 func GetFeatureGroupKeyByFeature(feature *FeatureMetadata) string {
@@ -271,15 +283,20 @@ func GetFeatureGroupKeyByFeature(feature *FeatureMetadata) string {
 }
 
 func GetFeatureGroupKeyByTDFeature(feature *FeatureGroupFeatures) string {
-	return *getFeatureGroupIndexKey(feature.JoinIndex, feature.FeatureGroupId)
+	return feature.FeatureGroupKey
 }
 
 func GetFeatureIndexKeyByFeature(feature *FeatureMetadata) string {
-	return *getFeatureIndexKey(feature.JoinIndex, feature.FeatureGroupId, feature.Name)
+	return feature.IndexKey
 }
 
 func GetFeatureIndexKeyByFgIndexKey(fgKey string, featureName string) string {
-	return fmt.Sprintf("%s|%s", fgKey, featureName)
+	var sb strings.Builder
+	sb.Grow(len(fgKey) + 1 + len(featureName)) // Pre-allocate exact size
+	sb.WriteString(fgKey)
+	sb.WriteByte('|')
+	sb.WriteString(featureName)
+	return sb.String()
 }
 
 func getFeatureGroupIndexKey(joinIndex int, fgId int) *string {
@@ -288,7 +305,7 @@ func getFeatureGroupIndexKey(joinIndex int, fgId int) *string {
 }
 
 func getFeatureIndexKey(joinIndex int, fgId int, f string) *string {
-	var featureIndexKey = GetFeatureIndexKeyByFgIndexKey(*getFeatureGroupIndexKey(joinIndex, fgId), f)
+	var featureIndexKey = fmt.Sprintf("%d|%d|%s", joinIndex, fgId, f)
 	return &featureIndexKey
 }
 
@@ -378,6 +395,8 @@ func GetFeatureViewMetadata(featureStoreName, featureViewName string, featureVie
 		feature.Label = tdf.Label == 1
 		feature.Prefix = joinIdToJoin[tdf.TDJoinID].Prefix
 		feature.JoinIndex = joinIdToJoin[tdf.TDJoinID].Index
+		feature.IndexKey = fmt.Sprintf("%d|%d|%s", feature.JoinIndex, feature.FeatureGroupId, feature.Name)
+		feature.ServingKey = GetServingKey(feature.JoinIndex, feature.Name)
 		features[i] = &feature
 	}
 	var servingKeys, err1 = dal.GetServingKeys(fvID)

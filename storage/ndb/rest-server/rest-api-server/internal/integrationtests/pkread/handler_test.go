@@ -80,7 +80,7 @@ func TestPKReadLargeColumns(t *testing.T) {
 	body, _ := json.MarshalIndent(param, "", "\t")
 	url := testutils.NewPKReadURL("db", "table")
 	testclient.SendHttpRequest(t, config.PK_HTTP_VERB, url, string(body),
-		"Field validation for 'Column' failed on the 'max' tag", http.StatusBadRequest)
+		"filter column name is invalid; error: identifier is too large", http.StatusBadRequest)
 
 	// Test. Large read column names.
 	param = api.PKReadBody{

@@ -15,7 +15,7 @@ ARG OPEN_SSL_VERSION=3.0.11
 ARG BOOST_VERSION_MAJOR=1
 ARG BOOST_VERSION_MINOR=77
 ARG BOOST_VERSION_PATCH=0
-ARG GO_VERSION=1.22.9
+ARG GO_VERSION=1.25.3
 ARG JSONCPP_VERSION=1.9.5
 
 # Default build threads to 1; max is defined in Docker config (run `nproc` in Docker container)

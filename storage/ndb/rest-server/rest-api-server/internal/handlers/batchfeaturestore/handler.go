@@ -19,7 +19,6 @@ package batchfeaturestore
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -233,7 +232,13 @@ func getBatchPkReadParamsMutipleEntries(metadata *feature_store.FeatureViewMetad
 	for i, entry := range *entries {
 		if (*status)[i] != api.FEATURE_STATUS_ERROR {
 			for _, param := range *fshandler.GetBatchPkReadParams(metadata, entry) {
-				var oid = fmt.Sprintf("%d%s%s", i, SEQUENCE_SEPARATOR, *(*param).OperationID)
+				opID := *(*param).OperationID
+				var sb strings.Builder
+				sb.Grow(12 + len(SEQUENCE_SEPARATOR) + len(opID)) // Pre-allocate
+				sb.WriteString(strconv.Itoa(i))
+				sb.WriteString(SEQUENCE_SEPARATOR)
+				sb.WriteString(opID)
+				oid := sb.String()
 				(*param).OperationID = &oid
 				batchReadParams = append(batchReadParams, param)
 			}

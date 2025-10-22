@@ -382,10 +382,13 @@ func GetFeatureValues(ronDbResult *[]*api.PKReadResponseWithCodeJSON, entries *m
 	// Reason why it has to loop all entries for each `*JoinKeyMap` is to make sure the value are filled in according to the priority.
 	// Otherwise the lower priority one can overwrite the previous assigned entry if the later entry exists only in the lower priority map.
 	// Check `Test_GetFeatureVector_TestCorrectPkValue*` for more detail.
+
+	isDebug := log.IsDebug()
+
 	for featureName, value := range *entries {
 		// Get all join key linked to the provided feature name without prefix
 		if joinKeysWithoutPrefix, ok := featureView.JoinKeyMap[featureName]; ok {
-			if log.IsDebug() {
+			if isDebug {
 				log.Debugf("Filled primary key by JoinKeyMap")
 			}
 			FillPrimaryKey(featureView, &featureValues, joinKeysWithoutPrefix, value)
@@ -395,7 +398,7 @@ func GetFeatureValues(ronDbResult *[]*api.PKReadResponseWithCodeJSON, entries *m
 		// Get all join key linked to the provided feature name with prefix.
 		// Entry with prefix is prioritised and the value overwrites the previous assignment if available.
 		if joinKeysWithPrefix, ok := featureView.PrefixJoinKeyMap[featureName]; ok {
-			if log.IsDebug() {
+			if isDebug {
 				log.Debugf("Filled primary key by PrefixJoinKeyMap")
 			}
 			FillPrimaryKey(featureView, &featureValues, joinKeysWithPrefix, value)
@@ -405,7 +408,7 @@ func GetFeatureValues(ronDbResult *[]*api.PKReadResponseWithCodeJSON, entries *m
 		// Get all join key linked to the provided feature name with prefix.
 		// Entry in RequiredJoinKeyMap is prioritised and the value overwrites the previous assignment if available.
 		if joinKeysRequired, ok := featureView.RequiredJoinKeyMap[featureName]; ok {
-			if log.IsDebug() {
+			if isDebug {
 				log.Debugf("Filled primary key by RequiredJoinKeyMap")
 			}
 			FillPrimaryKey(featureView, &featureValues, joinKeysRequired, value)
@@ -488,11 +491,12 @@ func getFeatureValuesInt(response *api.PKReadResponseWithCodeJSON, featureView *
 }
 
 func FillPrimaryKey(featureView *feature_store.FeatureViewMetadata, featureValues *[]interface{}, joinKeys []string, value *json.RawMessage) {
-	var indexKey string
-	// Get all join key linked to the provided feature name
-	if log.IsDebug() {
+	isDebug := log.IsDebug()
+	if isDebug {
 		log.Debugf("Join keys are: %s", strings.Join(joinKeys, ", "))
 	}
+
+	var indexKey string
 	for _, joinKey := range joinKeys {
 		// Check if the join key are valid feature
 		if prefixFeaturesLookups, ok := featureView.PrefixFeaturesLookup[joinKey]; ok {
@@ -501,7 +505,7 @@ func FillPrimaryKey(featureView *feature_store.FeatureViewMetadata, featureValue
 				// Get the index of the feature
 				if index, ok := (featureView.FeatureIndexLookup)[indexKey]; ok {
 					(*featureValues)[index] = value
-					if log.IsDebug() {
+					if isDebug {
 						log.Debugf("Filled primary key %s with value %s", joinKey, *value)
 					}
 				}
@@ -511,20 +515,24 @@ func FillPrimaryKey(featureView *feature_store.FeatureViewMetadata, featureValue
 }
 
 func GetBatchPkReadParams(metadata *feature_store.FeatureViewMetadata, entries *map[string]*json.RawMessage) *[]*api.PKReadParams {
+	isDebug := log.IsDebug()
 
 	var batchReadParams = make([]*api.PKReadParams, 0, len(metadata.FeatureGroupFeatures))
+
 	for _, fgFeature := range metadata.FeatureGroupFeatures {
 		testDb := fgFeature.FeatureStoreName
-		testTable := fmt.Sprintf("%s_%d", fgFeature.FeatureGroupName, fgFeature.FeatureGroupVersion)
+		testTable := fgFeature.TableName
+
 		var filters = make([]api.Filter, 0, len(fgFeature.Features))
 		var columns = make([]api.ReadColumn, 0, len(fgFeature.Features))
+
 		for _, feature := range fgFeature.Features {
-			if _, ok := metadata.PrimaryKeyMap[feature_store.GetServingKey(feature.JoinIndex, feature.Name)]; !ok {
+			if _, ok := metadata.PrimaryKeyMap[feature.ServingKey]; !ok {
 				var colName = feature.Name
 				var colType = api.DRT_DEFAULT
 				readCol := api.ReadColumn{Column: &colName, DataReturnType: &colType}
 				columns = append(columns, readCol)
-				if log.IsDebug() {
+				if isDebug {
 					log.Debugf("Add to column: %s", feature.Name)
 				}
 			}
@@ -535,7 +543,7 @@ func GetBatchPkReadParams(metadata *feature_store.FeatureViewMetadata, entries *
 				// Fill in value of required entry as original entry may not be required.
 				var filter = api.Filter{Column: &pkCol, Value: (*entries)[servingKey.RequiredEntry]}
 				filters = append(filters, filter)
-				if log.IsDebug() {
+				if isDebug {
 					var entryValue interface{}
 					err := json.Unmarshal(*(*entries)[servingKey.RequiredEntry], &entryValue)
 					if err == nil {
@@ -548,7 +556,7 @@ func GetBatchPkReadParams(metadata *feature_store.FeatureViewMetadata, entries *
 				// Also Fallback and use feature name with prefix.
 				var filter = api.Filter{Column: &pkCol, Value: (*entries)[servingKey.Prefix+servingKey.FeatureName]}
 				filters = append(filters, filter)
-				if log.IsDebug() {
+				if isDebug {
 					var entryValue interface{}
 					err := json.Unmarshal(*(*entries)[servingKey.Prefix+servingKey.FeatureName], &entryValue)
 					if err == nil {
@@ -563,7 +571,7 @@ func GetBatchPkReadParams(metadata *feature_store.FeatureViewMetadata, entries *
 				var filter = api.Filter{Column: &pkCol, Value: (*entries)[servingKey.FeatureName]}
 				filters = append(filters, filter)
 
-				if log.IsDebug() {
+				if isDebug {
 					var entryValue interface{}
 					err := json.Unmarshal(*(*entries)[servingKey.FeatureName], &entryValue)
 					if err == nil {

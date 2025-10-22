@@ -75,7 +75,7 @@ func BenchmarkBatchSimple(b *testing.B) {
 		fvName:    "sample_1",
 		tableName: "sample_1_1",
 		fvVersion: 1,
-		batchSize: 10,
+		batchSize: 128,
 	}
 
 	integrationtests.WrapperBenchmark(b, req)
@@ -97,6 +97,19 @@ func BenchmarkBatchComplex512(b *testing.B) {
 
 	// Uncomment this if you want to generate more random data in the test table
 	// generateRandomComplexData(10/*number of rows*/, 512/*number of cols*/)
+
+	req := RandomBatchFSRequester{
+		fsName:    testdbs.FSDB002,
+		fvName:    "sample_complex_type_512",
+		tableName: "sample_complex_type_512_1",
+		fvVersion: 1,
+		batchSize: 1,
+	}
+
+	integrationtests.WrapperBenchmark(b, req)
+}
+
+func BenchmarkBatchComplex512Batch(b *testing.B) {
 
 	req := RandomBatchFSRequester{
 		fsName:    testdbs.FSDB002,
