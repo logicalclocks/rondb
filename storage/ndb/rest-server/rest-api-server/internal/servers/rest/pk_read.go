@@ -37,7 +37,6 @@ func (h *RouteHandler) PkRead(c *gin.Context) {
 	}
 
 	var responseIntf api.PKReadResponse = (api.PKReadResponse)(&api.PKReadResponseJSON{})
-	responseIntf.Init()
 
 	status, release, err := handlers.Handle(&h.pkReadHandler, &apiKey, pkReadParams, responseIntf)
 	defer release()

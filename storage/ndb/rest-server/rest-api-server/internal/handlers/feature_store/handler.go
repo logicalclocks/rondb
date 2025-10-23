@@ -426,66 +426,70 @@ type ComplexFeatureResult struct {
 
 func getFeatureValuesInt(response *api.PKReadResponseWithCodeJSON, featureView *feature_store.FeatureViewMetadata, featureValues []interface{}, status *api.FeatureStatus, err *feature_store.RestErrorCode) {
 	complexFeaturesCount := 0
-	for featureName, _ := range *response.Body.RawData {
-		featureIndexKey := feature_store.GetFeatureIndexKeyByFgIndexKey(*response.Body.OperationID, featureName)
-		// When only primary key is selected, Rondb will return all columns, so not all value from response are needed.
-		if _, ok := (featureView.FeatureIndexLookup)[featureIndexKey]; ok {
-			if _, ok := (featureView.ComplexFeatures)[featureIndexKey]; ok {
-				complexFeaturesCount++
+	if response.Body.RawData != nil {
+		for featureName, _ := range *response.Body.RawData {
+			featureIndexKey := feature_store.GetFeatureIndexKeyByFgIndexKey(*response.Body.OperationID, featureName)
+			// When only primary key is selected, Rondb will return all columns, so not all value from response are needed.
+			if _, ok := (featureView.FeatureIndexLookup)[featureIndexKey]; ok {
+				if _, ok := (featureView.ComplexFeatures)[featureIndexKey]; ok {
+					complexFeaturesCount++
+				}
 			}
 		}
-	}
 
-	var wg sync.WaitGroup
-	results := make(chan ComplexFeatureResult, complexFeaturesCount)
+		var wg sync.WaitGroup
+		results := make(chan ComplexFeatureResult, complexFeaturesCount)
 
-	// process raw avro data
-	for featureName, value := range *response.Body.RawData {
-		featureIndexKey := feature_store.GetFeatureIndexKeyByFgIndexKey(*response.Body.OperationID, featureName)
+		// process raw avro data
+		for featureName, value := range *response.Body.RawData {
+			featureIndexKey := feature_store.GetFeatureIndexKeyByFgIndexKey(*response.Body.OperationID, featureName)
 
-		// When only primary key is selected, Rondb will return all columns, so not all value from response are needed.
-		if index, ok := featureView.FeatureIndexLookup[featureIndexKey]; ok {
-			if complexFeature, ok := featureView.ComplexFeatures[featureIndexKey]; ok {
-				wg.Add(1)
+			// When only primary key is selected, Rondb will return all columns, so not all value from response are needed.
+			if index, ok := featureView.FeatureIndexLookup[featureIndexKey]; ok {
+				if complexFeature, ok := featureView.ComplexFeatures[featureIndexKey]; ok {
+					wg.Add(1)
 
-				go func(index int, value []byte, complexFeature *feature_store.ComplexFeature, featureName string) {
-					defer wg.Done()
-					deser, e := DeserialiseComplexFeature(value, complexFeature)
+					go func(index int, value []byte, complexFeature *feature_store.ComplexFeature, featureName string) {
+						defer wg.Done()
+						deser, e := DeserialiseComplexFeature(value, complexFeature)
 
-					if e != nil {
-						myStatus := api.FEATURE_STATUS_ERROR
-						myErr := feature_store.DESERIALISE_FEATURE_FAIL.NewMessage(
-							fmt.Sprintf("Feature name: %s; datalen %d; Error %s", featureName, len(value), e.Error()))
-						results <- ComplexFeatureResult{Index: index, Err: myErr, Status: myStatus}
-					} else {
-						results <- ComplexFeatureResult{Index: index, Value: deser}
-					}
-				}(index, *value, complexFeature, featureName)
+						if e != nil {
+							myStatus := api.FEATURE_STATUS_ERROR
+							myErr := feature_store.DESERIALISE_FEATURE_FAIL.NewMessage(
+								fmt.Sprintf("Feature name: %s; datalen %d; Error %s", featureName, len(value), e.Error()))
+							results <- ComplexFeatureResult{Index: index, Err: myErr, Status: myStatus}
+						} else {
+							results <- ComplexFeatureResult{Index: index, Value: deser}
+						}
+					}(index, *value, complexFeature, featureName)
 
+				} else {
+					featureValues[index] = value
+				}
+			}
+		}
+		wg.Wait()
+		close(results)
+
+		for res := range results {
+			if res.Err != nil {
+				fmt.Printf("Failed: %v\n", res.Err)
+				err = res.Err
+				*status = res.Status
 			} else {
-				featureValues[index] = value
+				featureValues[res.Index] = res.Value
 			}
-		}
-	}
-	wg.Wait()
-	close(results)
-
-	for res := range results {
-		if res.Err != nil {
-			fmt.Printf("Failed: %v\n", res.Err)
-			err = res.Err
-			*status = res.Status
-		} else {
-			featureValues[res.Index] = res.Value
 		}
 	}
 
 	// process non avro data
-	for featureName, value := range *response.Body.Data {
-		featureIndexKey := feature_store.GetFeatureIndexKeyByFgIndexKey(*response.Body.OperationID, featureName)
-		// When only primary key is selected, Rondb will return all columns, so not all value from response are needed.
-		if index, ok := (featureView.FeatureIndexLookup)[featureIndexKey]; ok {
-			featureValues[index] = value
+	if response.Body.Data != nil {
+		for featureName, value := range *response.Body.Data {
+			featureIndexKey := feature_store.GetFeatureIndexKeyByFgIndexKey(*response.Body.OperationID, featureName)
+			// When only primary key is selected, Rondb will return all columns, so not all value from response are needed.
+			if index, ok := (featureView.FeatureIndexLookup)[featureIndexKey]; ok {
+				featureValues[index] = value
+			}
 		}
 	}
 }
