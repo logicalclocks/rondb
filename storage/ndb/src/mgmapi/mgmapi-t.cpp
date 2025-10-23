@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2015, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2025, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -29,6 +30,8 @@
 #include <mgmapi/mgmapi_debug.h>
 #include "mgmapi_internal.h"
 #include "mgmcommon/NdbMgm.hpp"
+#include <version.h>
+
 
 TAPTEST(mgmapi) {
   // Check behaviour of error translation functions with NULL handle
@@ -96,7 +99,10 @@ TAPTEST(mgmapi) {
     OK(ndb_mgm_start_backup2(h, 1, nullptr, nullptr, 2) == -1);
     OK(ndb_mgm_start_backup(h, 1, nullptr, nullptr) == -1);
     OK(ndb_mgm_abort_backup(h, 1, nullptr) == -1);
-    OK(ndb_mgm_get_configuration2(h, 1, NDB_MGM_NODE_TYPE_API, 2) == nullptr);
+    OK(ndb_mgm_get_configuration2(h,
+                                  NDB_VERSION,
+                                  NDB_MGM_NODE_TYPE_API,
+                                  2) == nullptr);
     OK(ndb_mgm_get_configuration(h, 1) == nullptr);
 
     OK(ndb_mgm_alloc_nodeid(h, 1, 2, 3) == -1);

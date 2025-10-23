@@ -107,10 +107,10 @@ class Ndbcntr : public SimulatedBlock {
     struct {
       Uint32 m_nodeId;
       Uint32 m_lastGci;
-    } m_logNodes[MAX_NDB_NODES];
+    } m_logNodes[ABS_MAX_NDB_NODES];
     Uint32 m_logNodesCount;
 
-    Uint32 m_wait_sp[MAX_NDB_NODES];
+    Uint32 m_wait_sp[ABS_MAX_NDB_NODES];
   } c_start;
 
   struct LocalSysfile {

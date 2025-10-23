@@ -807,7 +807,7 @@ static ndb_mgm_configuration *fetch_configuration(int from_node) {
   if (from_node == INT_MIN) {
     // from_node option is not requested.
     // Retrieve config from the default src: mgmd
-    conf = ndb_mgm_get_configuration(mgm, 0);
+    conf = ndb_mgm_get_configuration(mgm, NDB_VERSION);
   } else if (from_node < 1) {
     fprintf(stderr, "Invalid node number %d is given for --config_from_node.\n",
             from_node);

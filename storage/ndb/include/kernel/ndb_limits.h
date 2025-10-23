@@ -40,10 +40,10 @@
  * Note that actual value = MAX_NODES - 1,
  *  since NodeId = 0 can not be used
  */
-#define MAX_NDB_NODES 145
+#define MAX_NDB_NODES (SimulatedBlock::get_max_ndb_nodeid())
+#define ABS_MAX_NDB_NODES 145
 #define MAX_NDB_NODES_v1 49
 #define MAX_NDB_NODE_GROUPS 72
-#define MAX_NODES 256
 #define NDB_UNDEF_NODEGROUP 0xFFFF
 #define MAX_BACKUPS 0xFFFFFFFF
 #define MAX_INSTANCE_KEYS 1024
@@ -64,7 +64,10 @@
  * IT SHOULD BE (MAX_NODES - 1).
  * WHEN MAX_NODES IS CHANGED, IT SHOULD BE CHANGED ALSO
  **************************************************************************/
-#define MAX_NODES_ID 255
+#define OLD_MAX_NODES 255
+#define MAX_NODES (SimulatedBlock::get_max_nodeid())
+#define ABS_MAX_NODES 2040
+#define MAX_NODES_ID 2039
 
 /**
  * MAX_API_NODES = MAX_NODES - No of NDB Nodes in use
@@ -82,7 +85,7 @@
  */
 #define MAX_NODE_GROUP_TRANSPORTERS 32
 #define MAX_NTRANSPORTERS \
-  (MAX_NODES + ((MAX_REPLICAS - 1) * MAX_NODE_GROUP_TRANSPORTERS))
+  (ABS_MAX_NODES + ((MAX_REPLICAS - 1) * MAX_NODE_GROUP_TRANSPORTERS))
 
 /**
  * The maximum number of local checkpoints stored at a time
@@ -153,7 +156,7 @@
  */
 #define MAX_SUB_DATA_STREAMS \
   (MAX_SUB_DATA_STREAMS_PER_GROUP * MAX_SUB_DATA_STREAM_GROUPS)
-#define MAX_SUB_DATA_STREAM_GROUPS (MAX_NDB_NODES - 1)
+#define MAX_SUB_DATA_STREAM_GROUPS (ABS_MAX_NDB_NODES - 1)
 #define MAX_SUB_DATA_STREAMS_PER_GROUP (MAX_SUMA_BUCKETS_PER_NG / MAX_REPLICAS)
 
 /*
@@ -446,7 +449,7 @@ static_assert(MAX_NDB_PARTITIONS - 1 <= NDB_PARTITION_MASK);
 
 // MAX_NDB_NODES should be 48, but code assumes it is 49
 static constexpr Uint32 MAX_NDB_DATA_NODES = MAX_DATA_NODE_ID;
-static_assert(MAX_NDB_NODES == MAX_NDB_DATA_NODES + 1);
+static_assert(ABS_MAX_NDB_NODES == MAX_NDB_DATA_NODES + 1);
 
 // Default partitioning is 1 partition per LDM
 static_assert(MAX_NDB_DATA_NODES * NDB_MAX_LOG_PARTS <= MAX_NDB_PARTITIONS);

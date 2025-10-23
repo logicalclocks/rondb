@@ -91,7 +91,7 @@ public class ConnectionPoolTest extends AbstractClusterJTest {
 
         // with connection.pool.size set to 0 and test node ids property
         modifiedProperties.put(Constants.PROPERTY_CONNECTION_POOL_SIZE, 0);
-        modifiedProperties.put(Constants.PROPERTY_CONNECTION_POOL_NODEIDS, "51,52");
+        modifiedProperties.put(Constants.PROPERTY_CONNECTION_POOL_NODEIDS, "511,512");
         sessionFactory1 = null;
         msg = "Creating SessionFactory with connection pool disabled but with multiple node ids";
         try {
@@ -101,7 +101,7 @@ public class ConnectionPoolTest extends AbstractClusterJTest {
         }
         errorIfNotEqual(msg, null, sessionFactory1);
 
-        modifiedProperties.put(Constants.PROPERTY_CONNECTION_POOL_NODEIDS, "51");
+        modifiedProperties.put(Constants.PROPERTY_CONNECTION_POOL_NODEIDS, "511");
         sessionFactory1 = ClusterJHelper.getSessionFactory(modifiedProperties);
         Session session1 = sessionFactory1.getSession();
         Employee e1 = session1.find(Employee.class, 0);
@@ -123,7 +123,7 @@ public class ConnectionPoolTest extends AbstractClusterJTest {
         Properties modifiedProperties = new Properties();
         modifiedProperties.putAll(props);
         modifiedProperties.put(Constants.PROPERTY_CONNECTION_POOL_SIZE, 2);
-        modifiedProperties.put(Constants.PROPERTY_CONNECTION_POOL_NODEIDS, "51;52");
+        modifiedProperties.put(Constants.PROPERTY_CONNECTION_POOL_NODEIDS, "511;512");
         checkConnectionPoolSize2("testConnectionPoolSizeAndNodeIds", modifiedProperties);        
         failOnError();
     }
@@ -131,7 +131,7 @@ public class ConnectionPoolTest extends AbstractClusterJTest {
     public void testConnectionNodeIds() {
         Properties modifiedProperties = new Properties();
         modifiedProperties.putAll(props);
-        modifiedProperties.put(Constants.PROPERTY_CONNECTION_POOL_NODEIDS, "51,52");
+        modifiedProperties.put(Constants.PROPERTY_CONNECTION_POOL_NODEIDS, "511,512");
         checkConnectionPoolSize2("testConnectionNodeIds", modifiedProperties);        
         failOnError();
     }
@@ -140,7 +140,7 @@ public class ConnectionPoolTest extends AbstractClusterJTest {
         Properties modifiedProperties = new Properties();
         modifiedProperties.putAll(props);
         modifiedProperties.put(Constants.PROPERTY_CONNECTION_POOL_SIZE, 2);
-        modifiedProperties.put(Constants.PROPERTY_CONNECTION_POOL_NODEIDS, "51");
+        modifiedProperties.put(Constants.PROPERTY_CONNECTION_POOL_NODEIDS, "511");
         checkConnectionPoolSize2("testConnectionSingleNodeIdAndConnectionPoolSize", modifiedProperties);
         failOnError();
     }
@@ -227,7 +227,7 @@ public class ConnectionPoolTest extends AbstractClusterJTest {
         Properties modifiedProperties = new Properties();
         modifiedProperties.putAll(props);
         modifiedProperties.put(Constants.PROPERTY_CLUSTER_CONNECT_RETRIES, 0);
-        modifiedProperties.put(Constants.PROPERTY_CONNECTION_POOL_NODEIDS, "256");
+        modifiedProperties.put(Constants.PROPERTY_CONNECTION_POOL_NODEIDS, "2048");
         try {
             ClusterJHelper.getSessionFactory(modifiedProperties);
         } catch (ClusterJFatalUserException ex) {

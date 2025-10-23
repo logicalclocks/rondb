@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2025, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -374,7 +375,7 @@ int NdbRestarter::waitClusterNoStart(unsigned int _timeout) {
 
 int NdbRestarter::waitClusterState(ndb_mgm_node_status _status,
                                    unsigned int _timeout, int _startphase) {
-  int nodes[MAX_NDB_NODES];
+  int nodes[ABS_MAX_NDB_NODES];
   int numNodes = 0;
 
   if (getStatus() != 0) {
@@ -895,7 +896,7 @@ const ndb_mgm_configuration *NdbRestarter::getConfig() {
   if (m_config) return m_config.get();
 
   if (!isConnected()) return 0;
-  m_config.reset(ndb_mgm_get_configuration(handle, 0));
+  m_config.reset(ndb_mgm_get_configuration(handle, NDB_VERSION));
   return m_config.get();
 }
 

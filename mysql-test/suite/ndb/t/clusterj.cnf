@@ -12,28 +12,28 @@ MaxNoOfOrderedIndexes = 150
 ClassicFragmentation  = 1
 
 [cluster_config.mysqld.1.1]
-NodeId=64
+NodeId=640
 Dedicated=1
 
 [cluster_config.ndbapi.1.1]
-NodeId=49
+NodeId=490
 
 [cluster_config.ndbapi.2.1]
-NodeId=50
+NodeId=500
 
 # Dedicated ndbapi node ids to
 # be used by the ConnectionPoolTest
 [cluster_config.ndbapi.3.1]
-NodeId=51
+NodeId=511
 Dedicated=1
 
 [cluster_config.ndbapi.4.1]
-NodeId=52
+NodeId=512
 Dedicated=1
 
 [mysqld.1.1]
 ndbcluster
-ndb-nodeid=64
+ndb-nodeid=640
 ndb-wait-connected=30
 ndb-wait-setup=120
 ndb-extra-logging=99

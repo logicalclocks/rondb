@@ -459,7 +459,7 @@ class Suma : public SimulatedBlock {
   Uint32 c_maxBufferedEpochs;
 
   NodeBitmask c_failedApiNodes;
-  Uint32 c_failedApiNodesState[MAX_NODES];
+  Uint32 c_failedApiNodesState[ABS_MAX_NODES];
 
   /**
    * Functions
@@ -745,7 +745,7 @@ class Suma : public SimulatedBlock {
   static constexpr Uint32 NO_OF_BUCKETS = 24;  // 24 = 4*3*2*1!
   Uint32 c_no_of_buckets;
   struct Bucket c_buckets[NO_OF_BUCKETS];
-  Uint32 c_subscriber_per_node[MAX_NODES];
+  Uint32 c_subscriber_per_node[ABS_MAX_NODES];
 
   static constexpr Uint32 BUCKET_MASK_SIZE = (((NO_OF_BUCKETS + 31) >> 5));
   typedef Bitmask<BUCKET_MASK_SIZE> Bucket_mask;

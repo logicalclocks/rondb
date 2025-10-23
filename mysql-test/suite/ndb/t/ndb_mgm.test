@@ -66,8 +66,8 @@ SELECT a as 'ndb_mgmd(s)' FROM ndb_mgm_show
 --replace_regex /id=[0-9]+/id=X/
 --replace_result $mysql_version MYSQL_VERSION $ndb_version NDB_VERSION @127.0.0.1 LOCALHOST @::1 LOCALHOST
 SELECT a as 'mysqld(s)' FROM ndb_mgm_show
-  WHERE SUBSTR(a, 4, 3)
-    IN (16,32,48,49,63,127,192,228,229,230,231,232,233,255)
+  WHERE SUBSTR(a, 4, 4)
+    IN (192,228,229,230,231,232,233,255,322,483,494,563,1271,1600)
       ORDER BY LOCATE("accepting", a);
 
 --enable_warnings

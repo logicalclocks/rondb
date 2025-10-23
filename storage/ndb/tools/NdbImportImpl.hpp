@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2017, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2025, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -101,8 +102,8 @@ class NdbImportImpl : public NdbImport {
 
   // node
 
-  static const uint g_max_ndb_nodes = MAX_NDB_NODES;
-  static const uint g_max_nodes = MAX_NODES;
+  static const uint g_max_ndb_nodes = ABS_MAX_NDB_NODES;
+  static const uint g_max_nodes = ABS_MAX_NODES;
 
   struct Node {
     Node();

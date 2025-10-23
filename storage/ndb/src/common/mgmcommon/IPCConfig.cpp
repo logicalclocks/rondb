@@ -88,7 +88,7 @@ bool IPCConfig::configureTransporters(Uint32 nodeId,
   }
 
   /* Remove transporter to nodes that does not exist anymore */
-  for (int i = 1; i < MAX_NODES; i++) {
+  for (int i = 1; i < ABS_MAX_NODES; i++) {
     ndb_mgm_configuration_iterator iter(config, CFG_SECTION_NODE);
     if (tr.get_node_transporter(i) && iter.find(CFG_NODE_ID, i)) {
       // Transporter exist in TransporterRegistry but not
@@ -105,7 +105,7 @@ bool IPCConfig::configureTransporters(Uint32 nodeId,
    * word that they are being activated. Also non-existing nodes
    * are set to non-active just in case.
    */
-  for (int i= 1; i < MAX_NODES; i++)
+  for (int i= 1; i < ABS_MAX_NODES; i++)
   {
     ndb_mgm_configuration_iterator iter(config, CFG_SECTION_NODE);
     if (!iter.find(CFG_NODE_ID, i))

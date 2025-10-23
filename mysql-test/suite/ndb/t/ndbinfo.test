@@ -284,12 +284,12 @@ create table t1 (a int primary key) engine = ndb;
 begin;
 insert into t1 values (1);
 select state, count_operations, outstanding_operations,
-IF(client_node_id <= 255, "<client_node_id>", "<incorrect node id>") 
+IF(client_node_id <= 2039, "<client_node_id>", "<incorrect node id>") 
   client_node_id
 from server_transactions;
 select node_id, operation_type, state,
 IF(tc_node_id <= 48, "<tc_node_id>", "<incorrect nodeid>") tc_node_id,
-IF(client_node_id <= 255, "<client_node_id>", "<incorrect node id>") 
+IF(client_node_id <= 2039, "<client_node_id>", "<incorrect node id>") 
   client_node_id
 from server_operations
 order by 1;

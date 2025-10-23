@@ -4,10 +4,10 @@
 *   325: Error
 *        325-Invalid node(s) specified for new nodegroup, node ID invalid or undefined: Permanent error: Application error
 "Create nodegroup with in-range but inactive node ID"
-*   322: Error
-*        322-Invalid node(s) specified for new nodegroup, node already in nodegroup: Permanent error: Application error
-*   322: Error
-*        322-Invalid node(s) specified for new nodegroup, node already in nodegroup: Permanent error: Application error
+*   325: Error
+*        325-Invalid node(s) specified for new nodegroup, node ID invalid or undefined: Permanent error: Application error
+*   325: Error
+*        325-Invalid node(s) specified for new nodegroup, node ID invalid or undefined: Permanent error: Application error
 *   326: Error
 *        326-Same node(s) specified for new nodegroup: Permanent error: Application error
 ndbd(s)
@@ -18,12 +18,6 @@ id=4	LOCALHOST  (NDB_VERSION, no nodegroup)
 ndb_mgmd(s)
 id=5	LOCALHOST  (NDB_VERSION)
 mysqld(s)
-id=16	LOCALHOST  (NDB_VERSION)
-id=32	LOCALHOST  (NDB_VERSION)
-id=48	LOCALHOST  (NDB_VERSION)
-id=49	LOCALHOST  (NDB_VERSION)
-id=63	LOCALHOST  (NDB_VERSION)
-id=127	LOCALHOST  (NDB_VERSION)
 id=192 (not connected, accepting connect from localhost)
 id=228 (not connected, accepting connect from localhost)
 id=229 (not connected, accepting connect from localhost)
@@ -32,6 +26,12 @@ id=231 (not connected, accepting connect from localhost)
 id=232 (not connected, accepting connect from localhost)
 id=233 (not connected, accepting connect from localhost)
 id=255 (not connected, accepting connect from localhost)
+id=322	LOCALHOST  (NDB_VERSION)
+id=483	LOCALHOST  (NDB_VERSION)
+id=494	LOCALHOST  (NDB_VERSION)
+id=563	LOCALHOST  (NDB_VERSION)
+id=1271	LOCALHOST  (NDB_VERSION)
+id=1600	LOCALHOST  (NDB_VERSION)
 CREATE LOGFILE GROUP lg_1
 ADD UNDOFILE 'undo_1.dat'
     INITIAL_SIZE 4M
@@ -143,12 +143,6 @@ id=4	LOCALHOST  (NDB_VERSION, Nodegroup: 1)
 ndb_mgmd(s)
 id=5	LOCALHOST  (NDB_VERSION)
 mysqld(s)
-id=16	LOCALHOST  (NDB_VERSION)
-id=32	LOCALHOST  (NDB_VERSION)
-id=48	LOCALHOST  (NDB_VERSION)
-id=49	LOCALHOST  (NDB_VERSION)
-id=63	LOCALHOST  (NDB_VERSION)
-id=127	LOCALHOST  (NDB_VERSION)
 id=192 (not connected, accepting connect from localhost)
 id=228 (not connected, accepting connect from localhost)
 id=229 (not connected, accepting connect from localhost)
@@ -157,6 +151,12 @@ id=231 (not connected, accepting connect from localhost)
 id=232 (not connected, accepting connect from localhost)
 id=233 (not connected, accepting connect from localhost)
 id=255 (not connected, accepting connect from localhost)
+id=322	LOCALHOST  (NDB_VERSION)
+id=483	LOCALHOST  (NDB_VERSION)
+id=494	LOCALHOST  (NDB_VERSION)
+id=563	LOCALHOST  (NDB_VERSION)
+id=1271	LOCALHOST  (NDB_VERSION)
+id=1600	LOCALHOST  (NDB_VERSION)
 Drop Node Group 1 done
 Nodegroup 1 created
 create table t7(id int primary key, uk int) engine=ndb
@@ -451,12 +451,6 @@ id=4	LOCALHOST  (NDB_VERSION, Nodegroup: 1)
 ndb_mgmd(s)
 id=5	LOCALHOST  (NDB_VERSION)
 mysqld(s)
-id=16	LOCALHOST  (NDB_VERSION)
-id=32	LOCALHOST  (NDB_VERSION)
-id=48	LOCALHOST  (NDB_VERSION)
-id=49	LOCALHOST  (NDB_VERSION)
-id=63	LOCALHOST  (NDB_VERSION)
-id=127	LOCALHOST  (NDB_VERSION)
 id=192 (not connected, accepting connect from localhost)
 id=228 (not connected, accepting connect from localhost)
 id=229 (not connected, accepting connect from localhost)
@@ -465,6 +459,12 @@ id=231 (not connected, accepting connect from localhost)
 id=232 (not connected, accepting connect from localhost)
 id=233 (not connected, accepting connect from localhost)
 id=255 (not connected, accepting connect from localhost)
+id=322	LOCALHOST  (NDB_VERSION)
+id=483	LOCALHOST  (NDB_VERSION)
+id=494	LOCALHOST  (NDB_VERSION)
+id=563	LOCALHOST  (NDB_VERSION)
+id=1271	LOCALHOST  (NDB_VERSION)
+id=1600	LOCALHOST  (NDB_VERSION)
 drop table t1,t2,t3,t4,t5,t6,t10;
 Drop Node Group 1 done
 ndbd(s)
@@ -475,12 +475,6 @@ id=4	LOCALHOST  (NDB_VERSION, no nodegroup)
 ndb_mgmd(s)
 id=5	LOCALHOST  (NDB_VERSION)
 mysqld(s)
-id=16	LOCALHOST  (NDB_VERSION)
-id=32	LOCALHOST  (NDB_VERSION)
-id=48	LOCALHOST  (NDB_VERSION)
-id=49	LOCALHOST  (NDB_VERSION)
-id=63	LOCALHOST  (NDB_VERSION)
-id=127	LOCALHOST  (NDB_VERSION)
 id=192 (not connected, accepting connect from localhost)
 id=228 (not connected, accepting connect from localhost)
 id=229 (not connected, accepting connect from localhost)
@@ -489,6 +483,12 @@ id=231 (not connected, accepting connect from localhost)
 id=232 (not connected, accepting connect from localhost)
 id=233 (not connected, accepting connect from localhost)
 id=255 (not connected, accepting connect from localhost)
+id=322	LOCALHOST  (NDB_VERSION)
+id=483	LOCALHOST  (NDB_VERSION)
+id=494	LOCALHOST  (NDB_VERSION)
+id=563	LOCALHOST  (NDB_VERSION)
+id=1271	LOCALHOST  (NDB_VERSION)
+id=1600	LOCALHOST  (NDB_VERSION)
 ALTER TABLESPACE ts_1 DROP DATAFILE 'data_1.dat';
 DROP TABLESPACE ts_1;
 DROP LOGFILE GROUP lg_1 ENGINE NDB;

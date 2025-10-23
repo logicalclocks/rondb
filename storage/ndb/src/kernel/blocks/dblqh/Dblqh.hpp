@@ -4408,9 +4408,9 @@ public:
   /* -------------------------------------------------------------------------
    */
   UintR cpackedListIndex;
-  Uint16 cpackedList[MAX_NDB_NODES];
-  UintR cnodeData[MAX_NDB_NODES];
-  UintR cnodeStatus[MAX_NDB_NODES];
+  Uint16 cpackedList[ABS_MAX_NDB_NODES];
+  UintR cnodeData[ABS_MAX_NDB_NODES];
+  UintR cnodeStatus[ABS_MAX_NDB_NODES];
   UintR cnoOfNodes;
 
   NdbNodeBitmask m_sr_nodes;

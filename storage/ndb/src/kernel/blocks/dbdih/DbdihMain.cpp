@@ -1624,11 +1624,13 @@ void Dbdih::execREAD_CONFIG_REQ(Signal *signal) {
 
       DEB_NODE_STATUS(("node[%u].nodeGroup = ZNIL, line: %u",
                        nodePtr.i, __LINE__));
-      set_node_group_id(nodePtr.i, ZNIL);
+      if (nodePtr.i < MAX_NODES) {
+        set_node_group_id(nodePtr.i, ZNIL);
+      }
     }
     initNodeRecoveryStatus();
 
-    Uint16 nodegroup_mapping[MAX_NDB_NODES];
+    Uint16 nodegroup_mapping[ABS_MAX_NDB_NODES];
     create_nodegroup_mapping(&nodegroup_mapping[0]);
 
     ndb_mgm_configuration_iterator * iter =
@@ -1785,7 +1787,7 @@ void Dbdih::execDIH_RESTARTREQ(Signal *signal) {
     NdbNodeBitmask mask;
     mask.assign(NdbNodeBitmask::Size, req->nodemask);
     const Uint32 *node_gcis = req->node_gcis;
-    Uint32 node_group_gcis[MAX_NDB_NODES + 1];
+    Uint32 node_group_gcis[ABS_MAX_NDB_NODES + 1];
     memset(node_group_gcis, 0, sizeof(node_group_gcis));
     for (i = 0; i < MAX_NDB_NODES; i++) {
       if (mask.get(i)) {
@@ -1842,7 +1844,7 @@ void Dbdih::execDIH_RESTARTREQ(Signal *signal) {
       }
       if (!return_flag) {
         jam();
-        signal->theData[0] = MAX_NDB_NODES;
+        signal->theData[0] = ABS_MAX_NDB_NODES;
       }
     }
     memcpy(req->node_gcis, &node_group_gcis[0], 4 * MAX_NDB_NODES);
@@ -2310,7 +2312,7 @@ void Dbdih::execREAD_NODESCONF(Signal *signal) {
   unsigned i;
   ReadNodesConf *const readNodes = (ReadNodesConf *)&signal->theData[0];
   jamEntry();
-  Uint32 nodeArray[MAX_NDB_NODES + 1];
+  Uint32 nodeArray[ABS_MAX_NDB_NODES + 1];
 
   {
     ndbrequire(signal->getNoOfSections() == 1);
@@ -2639,7 +2641,7 @@ void Dbdih::execSTART_MECONF(Signal *signal) {
    * But dont copy lastCompletedGCI:s
    */
   Uint32 key = SYSFILE->m_restart_seq;
-  Uint32 tempGCP[MAX_NDB_NODES];
+  Uint32 tempGCP[ABS_MAX_NDB_NODES];
   for (Uint32 i = 1; i <= m_max_node_id; i++) {
     tempGCP[i] = SYSFILE->lastCompletedGCI[i];
   }
@@ -9082,7 +9084,7 @@ void Dbdih::selectMasterCandidateAndSend(Signal *signal) {
   setNodeGroups();
 
   NodeRecordPtr nodePtr;
-  Uint32 node_groups[MAX_NDB_NODES];
+  Uint32 node_groups[ABS_MAX_NDB_NODES];
   memset(node_groups, 0, sizeof(node_groups));
   NdbNodeBitmask no_nodegroup_mask;
   for (nodePtr.i = 1; nodePtr.i <= m_max_node_id; nodePtr.i++) {
@@ -9276,7 +9278,7 @@ void Dbdih::log_setNoSend() {
 /*---------------------------------------------------------------------------*/
 void Dbdih::execNODE_FAILREP(Signal *signal) {
   Uint32 i;
-  Uint32 failedNodes[MAX_NDB_NODES];
+  Uint32 failedNodes[ABS_MAX_NDB_NODES];
   jamEntry();
   NodeFailRep *const nodeFail = (NodeFailRep *)&signal->theData[0];
   NdbNodeBitmask allFailed;
@@ -13574,10 +13576,10 @@ bool Dbdih::verify_fragmentation(Uint16 *fragments, Uint32 partition_count,
   Uint32 const replica_count = fragments[0];
   Uint32 const fragment_count = fragments[1];
 
-  Uint16 fragments_per_node[MAX_NDB_NODES];
-  Uint16 primary_replica_per_node[MAX_NDB_NODES];
-  Uint16 fragments_per_ldm[MAX_NDB_NODES][NDBMT_MAX_WORKER_INSTANCES];
-  Uint16 primary_replica_per_ldm[MAX_NDB_NODES][NDBMT_MAX_WORKER_INSTANCES];
+  Uint16 fragments_per_node[ABS_MAX_NDB_NODES];
+  Uint16 primary_replica_per_node[ABS_MAX_NDB_NODES];
+  Uint16 fragments_per_ldm[ABS_MAX_NDB_NODES][NDBMT_MAX_WORKER_INSTANCES];
+  Uint16 primary_replica_per_ldm[ABS_MAX_NDB_NODES][NDBMT_MAX_WORKER_INSTANCES];
 
   memset(fragments_per_node, 0, sizeof(fragments_per_node));
   memset(fragments_per_ldm, 0, sizeof(fragments_per_ldm));
@@ -13615,7 +13617,7 @@ bool Dbdih::verify_fragmentation(Uint16 *fragments, Uint32 partition_count,
    * fragments ensures condition 4) above.
    * ~0 are used as a still unset partition set indicator.
    */
-  Uint32 partition_set_for_node[MAX_NDB_NODES];
+  Uint32 partition_set_for_node[ABS_MAX_NDB_NODES];
   for (Uint32 node = 1; node <= m_max_node_id; node++) {
     partition_set_for_node[node] = ~Uint32(0);
   }
@@ -29229,9 +29231,9 @@ Dbdih::create_nodegroup_mapping(Uint16 *nodegroup_mapping)
 {
   ndb_mgm_configuration_iterator * iter =
     m_ctx.m_config.getClusterConfigIterator();
-  Uint16 num_data_nodes_in_group[MAX_NDB_NODES];
+  Uint16 num_data_nodes_in_group[ABS_MAX_NDB_NODES];
   memset(num_data_nodes_in_group, 0, sizeof(num_data_nodes_in_group));
-  memset(nodegroup_mapping, 0xFF, sizeof(Uint16)*MAX_NDB_NODES);
+  memset(nodegroup_mapping, 0xFF, sizeof(Uint16)*ABS_MAX_NDB_NODES);
   Uint32 num_data_nodes = 0;
   Uint32 num_data_nodes_with_nodegroup = 0;
   Uint32 num_data_nodes_no_nodegroup = 0;

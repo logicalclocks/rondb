@@ -5565,7 +5565,7 @@ Dbspj::computePartitionHash(Signal* signal,
  * always selecting the first one we find.
  */
 Uint32 Dbspj::check_own_location_domain(const Uint32 *nodes, Uint32 end) {
-  Uint32 loc_nodes[MAX_NDB_NODES];
+  Uint32 loc_nodes[ABS_MAX_NDB_NODES];
   Uint32 loc_node_count = 0;
   Uint32 my_location_domain_id = m_location_domain_id[getOwnNodeId()];
 

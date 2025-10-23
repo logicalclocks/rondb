@@ -18410,7 +18410,7 @@ static MYSQL_SYSVAR_ULONG(
     ndb_data_node_neighbour_update_func, /* update func. */
     0,                                   /* default      */
     0,                                   /* min          */
-    MAX_NDB_NODES,                       /* max          */
+    ABS_MAX_NDB_NODES,                   /* max          */
     0                                    /* block        */
 );
 

@@ -1015,7 +1015,7 @@ void crash_first_node_group(NdbRestarter &restarter, int *dead_nodes,
  */
 void crash_one_node_per_node_group(NdbRestarter &restarter, int *dead_nodes,
                                    int &num_dead_nodes, int index) {
-  int local_dead_nodes[MAX_NDB_NODES];
+  int local_dead_nodes[ABS_MAX_NDB_NODES];
   int num_local_dead_nodes = 0;
 
   for (int i = 0; i < numNodeGroups; i++) {
@@ -1090,7 +1090,7 @@ int runMultiCrashTest(NDBT_Context *ctx, NDBT_Step *step) {
   int numDbNodes = restarter.getNumDbNodes();
   getNodeGroups(restarter);
   int num_replicas = (numDbNodes - numNoNodeGroups) / numNodeGroups;
-  int dead_nodes[MAX_NDB_NODES];
+  int dead_nodes[ABS_MAX_NDB_NODES];
   int num_dead_nodes = 0;
 
   ndbout_c(
@@ -2220,7 +2220,7 @@ int run_test_multi_socket(NDBT_Context *ctx, NDBT_Step *step) {
                                957, 958, 959, 960, 0};
   static const int delay_nos[] = {970, 971, 972, 973, 974, 975, 976, 977, 978,
                                   979, 980, 981, 982, 983, 984, 985, 0};
-  int nodegroup_nodes[MAX_NDB_NODES];
+  int nodegroup_nodes[ABS_MAX_NDB_NODES];
   NdbRestarter res;
   getNodeGroups(res);
   int node_id = getFirstNodeInNodeGroup(res, NO_NODE_GROUP);
@@ -2787,7 +2787,7 @@ int runPnr(NDBT_Context *ctx, NDBT_Step *step) {
   NdbRestarter res(0, &ctx->m_cluster_connection);
   bool lcp = ctx->getProperty("LCP", (unsigned)0);
 
-  int nodegroups[MAX_NDB_NODES];
+  int nodegroups[ABS_MAX_NDB_NODES];
   std::memset(nodegroups, 0, sizeof(nodegroups));
 
   for (int i = 0; i < res.getNumDbNodes(); i++) {
@@ -2798,7 +2798,7 @@ int runPnr(NDBT_Context *ctx, NDBT_Step *step) {
     }
   }
 
-  for (int i = 0; i < MAX_NDB_NODES; i++) {
+  for (int i = 0; i < ABS_MAX_NDB_NODES; i++) {
     if (nodegroups[i] && nodegroups[i] == 1) {
       /**
        * nodegroup with only 1 member, can't run test
@@ -2814,12 +2814,12 @@ int runPnr(NDBT_Context *ctx, NDBT_Step *step) {
       res.dumpStateAllNodes(&lcpdump, 1);
     }
 
-    int ng_copy[MAX_NDB_NODES];
+    int ng_copy[ABS_MAX_NDB_NODES];
     memcpy(ng_copy, nodegroups, sizeof(ng_copy));
 
     Vector<int> nodes;
     printf("restarting ");
-    while (max_cnt(ng_copy, MAX_NDB_NODES) > 1) {
+    while (max_cnt(ng_copy, ABS_MAX_NDB_NODES) > 1) {
       int node = res.getNode(NdbRestarter::NS_RANDOM);
       if (res.getNodeGroup(node) == NDBT_NO_NODE_GROUP_ID) continue;
       bool found = false;
@@ -5889,7 +5889,7 @@ static Uint32 setConfigValueAndRestartNode(NdbMgmd *mgmd, Uint32 *keys,
   }
   require(num_values <= 4);
   bool first = true;
-  for (int i = 0; i < MAX_NODES; i++)
+  for (int i = 0; i < ABS_MAX_NODES; i++)
   {
     if (!iter.openSection(CFG_SECTION_NODE, i))
       continue;
@@ -9818,7 +9818,7 @@ int runRestartsWithSlowCommitComplete(NDBT_Context *ctx, NDBT_Step *step) {
   return result;
 }
 
-static constexpr Uint32 MAX_EXTRA_CONNECTIONS = MAX_NODES;
+static constexpr Uint32 MAX_EXTRA_CONNECTIONS = ABS_MAX_NODES;
 static Uint32 g_numExtraConnections = 0;
 static Ndb_cluster_connection *g_extraConnections[MAX_EXTRA_CONNECTIONS];
 
@@ -10000,7 +10000,7 @@ int runFailExtraConnections(NDBT_Context *ctx, NDBT_Step *step) {
 
   /* Get list of data nodes */
   const int numDataNodes = restarter.getNumDbNodes();
-  int dataNodes[MAX_NDB_NODES];
+  int dataNodes[ABS_MAX_NDB_NODES];
   for (int i = 0; i < numDataNodes; i++) {
     dataNodes[i] = restarter.getDbNodeId(i);
   }

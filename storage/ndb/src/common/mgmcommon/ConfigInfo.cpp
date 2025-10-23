@@ -3148,9 +3148,9 @@ bool transformNode(InitConfigFileParser::Context &ctx, const char *) {
     return false;
   }
 
-  if (id >= MAX_NODES) {
+  if (id >= ABS_MAX_NODES) {
     ctx.reportError("too many nodes configured, only up to %d nodes supported.",
-                    MAX_NODES);
+                    ABS_MAX_NODES);
     return false;
   }
 
@@ -3501,7 +3501,7 @@ static bool fixNodeId(InitConfigFileParser::Context &ctx, const char *data) {
     errno = 0;
     char *p;
     id = strtol(token1, &p, 10);
-    if (errno != 0 || id <= 0x0 || id > MAX_NODES) {
+    if (errno != 0 || id <= 0x0 || id > ABS_MAX_NODES) {
       ctx.reportError(
           "Illegal value for mandatory parameter %s from section "
           "[%s] starting at line: %d",
@@ -3516,7 +3516,7 @@ static bool fixNodeId(InitConfigFileParser::Context &ctx, const char *data) {
     errno = 0;
     char *p;
     id = strtol(token2, &p, 10);
-    if (errno != 0 || id <= 0x0 || id > MAX_NODES) {
+    if (errno != 0 || id <= 0x0 || id > ABS_MAX_NODES) {
       ctx.reportError(
           "Illegal value for mandatory parameter %s from section "
           "[%s] starting at line: %d",
@@ -4263,7 +4263,7 @@ static bool sanity_checks(Vector<ConfigInfo::ConfigRuleSection> &,
 static int check_connection(struct InitConfigFileParser::Context &ctx,
                             const char *map, Uint32 nodeId1,
                             const char *hostname, Uint32 nodeId2) {
-  Bitmask<(MAX_NODES + 31) / 32> bitmap;
+  Bitmask<(ABS_MAX_NODES + 31) / 32> bitmap;
 
   BaseString str(map);
   Vector<BaseString> arr;
@@ -4279,7 +4279,7 @@ static int check_connection(struct InitConfigFileParser::Context &ctx,
           map, nodeId1, hostname);
       return -1;
     }
-    if (!(val > 0 && val < MAX_NDB_NODES)) {
+    if (!(val > 0 && val < ABS_MAX_NDB_NODES)) {
       ctx.reportError(
           "Invalid node in in ConnectionMap(\"%s\" for "
           "node: %d, hostname: %s",
@@ -4496,7 +4496,7 @@ static bool check_node_vs_replicas(Vector<ConfigInfo::ConfigRuleSection> &,
    * Register user supplied values
    */
   Uint8 ng_cnt[MAX_NDB_NODE_GROUPS];
-  Bitmask<(MAX_NDB_NODES + 31) / 32> nodes_wo_ng;
+  Bitmask<(ABS_MAX_NDB_NODES + 31) / 32> nodes_wo_ng;
   std::memset(ng_cnt, 0, sizeof(ng_cnt));
 
   for (i = 0, n = 0; n < n_nodes; i++) {

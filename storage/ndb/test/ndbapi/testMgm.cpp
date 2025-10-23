@@ -366,7 +366,7 @@ int runTestMgmApiGetConfigTimeout(NDBT_Context *ctx, NDBT_Step *step) {
     ndb_mgm_set_timeout(h, 2500);
 
     // Get configuration, will fail when error has been inserted
-    const ndb_mgm::config_ptr c(ndb_mgm_get_configuration(h, 0));
+    const ndb_mgm::config_ptr c(ndb_mgm_get_configuration(h, NDB_VERSION));
 
     if (error_ins != 0 && c) {
       ndbout << "FAILED: got a ndb_mgm_configuration back" << endl;
@@ -751,7 +751,8 @@ int runSetConfig(NDBT_Context *ctx, NDBT_Step *step) {
   for (int l = 0; l < loops; l++) {
     g_info << l << ": ";
 
-    const ndb_mgm::config_ptr conf(ndb_mgm_get_configuration(mgmd.handle(), 0));
+    const ndb_mgm::config_ptr conf(ndb_mgm_get_configuration(mgmd.handle(),
+                                                             NDB_VERSION));
     if (!conf) {
       g_err << "ndb_mgm_get_configuration failed, error: "
             << ndb_mgm_get_latest_error_msg(mgmd.handle()) << endl;
@@ -786,7 +787,8 @@ int runGetConfig(NDBT_Context *ctx, NDBT_Step *step) {
   int loops = ctx->getNumLoops();
   for (int l = 0; l < loops; l++) {
     g_info << l << ": ";
-    const ndb_mgm::config_ptr conf(ndb_mgm_get_configuration(mgmd.handle(), 0));
+    const ndb_mgm::config_ptr conf(ndb_mgm_get_configuration(mgmd.handle(),
+                                                             NDB_VERSION));
     if (!conf) return NDBT_FAILED;
   }
   return NDBT_OK;
@@ -859,7 +861,7 @@ static bool check_get_config_illegal_node(NdbMgmd &mgmd) {
   if (!mgmd.get_config(conf)) return false;
 
   int nodeId = 0;
-  for (Uint32 i = 1; i < MAX_NODES; i++) {
+  for (Uint32 i = 1; i < ABS_MAX_NODES; i++) {
     ConfigIter iter(&conf, CFG_SECTION_NODE);
     if (iter.find(CFG_NODE_ID, i) != 0) {
       nodeId = i;
@@ -888,7 +890,7 @@ static bool check_get_config_wrong_type(NdbMgmd &mgmd) {
 /* Find management node or a random data node, and get config from it.
  * Also ensure failure when getting config from
  * an illegal node (a non-NDB/MGM type, nodeid not defined,
- * or nodeid > MAX_NODES).
+ * or nodeid > ABS_MAX_NODES).
  */
 int runGetConfigFromNode(NDBT_Context *ctx, NDBT_Step *step) {
   NdbMgmd mgmd;
@@ -897,7 +899,7 @@ int runGetConfigFromNode(NDBT_Context *ctx, NDBT_Step *step) {
 
   if (!check_get_config_wrong_type(mgmd) ||
       !check_get_config_illegal_node(mgmd) ||
-      !get_config_from_illegal_node(mgmd, MAX_NODES + 2)) {
+      !get_config_from_illegal_node(mgmd, ABS_MAX_NODES + 2)) {
     return NDBT_FAILED;
   }
 
@@ -1105,7 +1107,7 @@ static bool check_get_nodeid_invalid_nodetype1(NdbMgmd &mgmd) {
 }
 
 static bool check_get_nodeid_invalid_nodeid(NdbMgmd &mgmd) {
-  for (int nodeId = MAX_NODES; nodeId < MAX_NODES + 2; nodeId++) {
+  for (int nodeId = ABS_MAX_NODES; nodeId < ABS_MAX_NODES + 2; nodeId++) {
     g_info << "Testing invalid node " << nodeId << endl;
     ;
 
@@ -1159,7 +1161,7 @@ static bool check_get_nodeid_nonode(NdbMgmd &mgmd) {
   if (!mgmd.get_config(conf)) return false;
 
   Uint32 nodeId = 0;
-  for (Uint32 i = 1; i < MAX_NODES; i++) {
+  for (Uint32 i = 1; i < ABS_MAX_NODES; i++) {
     ConfigIter iter(&conf, CFG_SECTION_NODE);
     if (iter.find(CFG_NODE_ID, i) != 0) {
       nodeId = i;
@@ -1189,7 +1191,7 @@ check_get_nodeid_nodeid1(NdbMgmd& mgmd)
 
   Uint32 nodeId = 0;
   Uint32 nodeType = NDB_MGM_NODE_TYPE_UNKNOWN;
-  for(Uint32 i= 1; i < MAX_NODES; i++){
+  for(Uint32 i= 1; i < ABS_MAX_NODES; i++){
     ConfigIter iter(&conf, CFG_SECTION_NODE);
     if (iter.find(CFG_NODE_ID, i) == 0){
       nodeId = i;
@@ -1221,7 +1223,7 @@ static bool check_get_nodeid_wrong_nodetype(NdbMgmd &mgmd) {
 
   Uint32 nodeId = 0;
   Uint32 nodeType = NDB_MGM_NODE_TYPE_UNKNOWN;
-  for (Uint32 i = 1; i < MAX_NODES; i++) {
+  for (Uint32 i = 1; i < ABS_MAX_NODES; i++) {
     ConfigIter iter(&conf, CFG_SECTION_NODE);
     if (iter.find(CFG_NODE_ID, i) == 0) {
       nodeId = i;
@@ -1853,7 +1855,7 @@ static bool set_connection_parameter(NdbMgmd &mgmd, const Properties &args,
 }
 
 static bool check_connection_parameter_invalid_nodeid(NdbMgmd &mgmd) {
-  for (int nodeId = MAX_NODES; nodeId < MAX_NODES + 2; nodeId++) {
+  for (int nodeId = ABS_MAX_NODES; nodeId < ABS_MAX_NODES + 2; nodeId++) {
     g_info << "Testing invalid node " << nodeId << endl;
     ;
 
@@ -1885,7 +1887,7 @@ static bool check_connection_parameter(NdbMgmd &mgmd) {
   if (!mgmd.get_config(conf)) return false;
 
   Uint32 nodeId1 = 0;
-  for (Uint32 i = 1; i < MAX_NODES; i++) {
+  for (Uint32 i = 1; i < ABS_MAX_NODES; i++) {
     Uint32 nodeType;
     ConfigIter iter(&conf, CFG_SECTION_NODE);
     if (iter.find(CFG_NODE_ID, i) == 0 &&
@@ -1900,7 +1902,7 @@ static bool check_connection_parameter(NdbMgmd &mgmd) {
   BaseString original_value;
 
   // Get current value of first connection between mgmd and other node
-  for (int nodeId = 1; nodeId < MAX_NODES; nodeId++) {
+  for (int nodeId = 1; nodeId < ABS_MAX_NODES; nodeId++) {
     g_info << "Checking if connection between " << nodeId1 << " and " << nodeId
            << " exists" << endl;
 
@@ -2040,7 +2042,7 @@ static bool set_ports(NdbMgmd &mgmd, const Properties &args,
 }
 
 static bool check_set_ports_invalid_nodeid(NdbMgmd &mgmd) {
-  for (int nodeId = MAX_NODES; nodeId < MAX_NODES + 2; nodeId++) {
+  for (int nodeId = ABS_MAX_NODES; nodeId < ABS_MAX_NODES + 2; nodeId++) {
     g_err << "Testing invalid node " << nodeId << endl;
 
     Properties args;
@@ -2063,7 +2065,7 @@ static bool check_set_ports_invalid_num_ports(NdbMgmd &mgmd) {
 
   Properties args;
   args.put("node", 1);
-  args.put("num_ports", MAX_NODES + 37);
+  args.put("num_ports", ABS_MAX_NODES + 37);
 
   Properties set_result;
   if (!set_ports(mgmd, args, "", set_result)) return false;
@@ -2164,8 +2166,8 @@ static bool check_set_ports_mgmapi(NdbMgmd &mgmd) {
   int ret;
   int nodeid = 1;
   unsigned num_ports = 1;
-  ndb_mgm_dynamic_port ports[MAX_NODES * 10];
-  static_assert(MAX_NODES < NDB_ARRAY_SIZE(ports));
+  ndb_mgm_dynamic_port ports[ABS_MAX_NODES * 10];
+  static_assert(ABS_MAX_NODES < NDB_ARRAY_SIZE(ports));
   ports[0].nodeid = 1;
   ports[0].port = -1;
 
@@ -2226,7 +2228,7 @@ static bool check_set_ports_mgmapi(NdbMgmd &mgmd) {
 
   ndbout_c("Max number of ports exceeded");
   nodeid = 1;
-  num_ports = MAX_NODES; // <<
+  num_ports = ABS_MAX_NODES; // <<
   for (unsigned i = 0; i < num_ports; i++) {
     ports[i].nodeid = i + 1;
     ports[i].port = -37;
@@ -2254,7 +2256,7 @@ static bool check_set_ports_mgmapi(NdbMgmd &mgmd) {
 // Return name value pair of nodeid/ports which can be sent
 // verbatim back to ndb_mgmd
 static bool get_all_ports(NdbMgmd &mgmd, Uint32 nodeId1, BaseString &values) {
-  for (int nodeId = 1; nodeId < MAX_NODES; nodeId++) {
+  for (int nodeId = 1; nodeId < ABS_MAX_NODES; nodeId++) {
     Properties args;
     args.put("node1", nodeId1);
     args.put("node2", nodeId);
@@ -2281,7 +2283,7 @@ static bool check_set_ports(NdbMgmd &mgmd) {
   if (!mgmd.get_config(conf)) return false;
 
   Uint32 nodeId1 = 0;
-  for (Uint32 i = 1; i < MAX_NODES; i++) {
+  for (Uint32 i = 1; i < ABS_MAX_NODES; i++) {
     Uint32 nodeType;
     ConfigIter iter(&conf, CFG_SECTION_NODE);
     if (iter.find(CFG_NODE_ID, i) == 0 &&
@@ -2787,8 +2789,8 @@ int runTestDumpEvents(NDBT_Context *ctx, NDBT_Step *step) {
     }
   }
 
-  // Test with nodes >= MAX_NDB_NODES
-  for (int i = MAX_NDB_NODES; i < MAX_NDB_NODES + 3; i++) {
+  // Test with nodes >= ABS_MAX_NDB_NODES
+  for (int i = ABS_MAX_NDB_NODES; i < ABS_MAX_NDB_NODES + 3; i++) {
     g_info << "ndb_mgm_dump_events(NDB_LE_MemoryUsage, 1, " << i << ")" << endl;
 
     const struct ndb_mgm_events *events =
@@ -2962,7 +2964,7 @@ int runBug12928429(NDBT_Context *ctx, NDBT_Step *step) {
     return NDBT_OK;
   }
 
-  int nodes[MAX_NODES];
+  int nodes[ABS_MAX_NODES];
   int cnt = 0;
   for (int i = 0; i < cs->no_of_nodes; i += replicas) {
     printf("%u ", cs->node_states[i].node_id);

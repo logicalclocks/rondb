@@ -150,7 +150,7 @@ class Qmgr : public SimulatedBlock {
     Uint32 m_president_candidate_gci;
     Uint16 m_regReqReqSent;
     Uint16 m_regReqReqRecv;
-    Uint32 m_node_gci[MAX_NDB_NODES];
+    Uint32 m_node_gci[ABS_MAX_NDB_NODES];
   } c_start;
 
   NdbNodeBitmask c_definedNodes;  // DB nodes in config
@@ -604,7 +604,7 @@ class Qmgr : public SimulatedBlock {
   Uint32 m_activate_error_code;
 
   // Arbitration signals
-  void execARBIT_CFG(Signal *signal);
+  void execARBIT_CFG(Signal *signal, NodeBitmaskPOD);
   void execARBIT_PREPREQ(Signal *signal);
   void execARBIT_PREPCONF(Signal *signal);
   void execARBIT_PREPREF(Signal *signal);
@@ -716,7 +716,7 @@ class Qmgr : public SimulatedBlock {
   void computeBeforeFailNdbMask(NdbNodeBitmaskPOD &aMask);
   void computeNonDiedNdbMask(NdbNodeBitmaskPOD &aMask);
   void reportArbitEvent(Signal *signal, Ndb_logevent_type type,
-                        const NodeBitmask mask = NodeBitmask());
+                        const NdbNodeBitmask mask = NdbNodeBitmask());
 
   // Interface to Connectivity Check
   void startConnectivityCheck(Signal *signal, Uint32 reason, Uint32 node);
@@ -805,7 +805,7 @@ class Qmgr : public SimulatedBlock {
   Timer hb_api_timer;
   Timer ka_send_timer;
 
-  Int16 processInfoNodeIndex[MAX_NODES];
+  Int16 processInfoNodeIndex[ABS_MAX_NODES];
   ProcessInfo *receivedProcessInfo = nullptr;
   Uint16 max_api_node_id;
 
@@ -914,6 +914,7 @@ class Qmgr : public SimulatedBlock {
   void dec_get_num_multi_trps_sent(NodeId);
   void inc_get_num_multi_trps_sent(NodeId);
   void handle_graceful_shutdown(Signal*);
+  bool check_all_nodes_support_high_node_ids();
 };
 #undef JAM_FILE_ID
 

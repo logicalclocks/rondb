@@ -12,21 +12,21 @@ ndb-schema-dist-lock-wait-timeout=1200
 
 [mysqld.1.1]
 log-bin=mysqld-bin
-ndb-cluster-connection-pool-nodeids=49
+ndb-cluster-connection-pool-nodeids=494
 
 [mysqld.2.1]
 log-bin=mysqld-bin
-ndb-cluster-connection-pool-nodeids=16
+ndb-cluster-connection-pool-nodeids=1600
 
 [mysqld.3.1]
 skip-log-bin
 skip-log-replica-updates
-ndb-cluster-connection-pool-nodeids=32
+ndb-cluster-connection-pool-nodeids=322
 
 [mysqld.4.1]
 skip-log-bin
 skip-log-replica-updates
-ndb-cluster-connection-pool-nodeids=48
+ndb-cluster-connection-pool-nodeids=483
 
 [ENV]
 NDB_CONNECTSTRING=             @mysql_cluster.1.ndb_connectstring

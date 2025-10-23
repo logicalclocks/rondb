@@ -2521,13 +2521,13 @@ static int runMulti_NR(NDBT_Context *ctx, NDBT_Step *step) {
   DBUG_RETURN(NDBT_OK);
 }
 
-typedef Bitmask<(MAX_NDB_NODES + 31) / 32> NdbNodeBitmask;
+typedef Bitmask<(ABS_MAX_NDB_NODES + 31) / 32> NdbNodeBitmask;
 
 static int restartNodes(NdbNodeBitmask mask) {
   int cnt = 0;
-  int nodes[MAX_NDB_NODES];
+  int nodes[ABS_MAX_NDB_NODES];
   NdbRestarter res;
-  for (Uint32 i = 0; i < MAX_NDB_NODES; i++) {
+  for (Uint32 i = 0; i < ABS_MAX_NDB_NODES; i++) {
     if (mask.get(i)) {
       nodes[cnt++] = i;
       res.restartOneDbNode(i,
@@ -6372,8 +6372,8 @@ int runSubscriptionChecker(NDBT_Context *ctx, NDBT_Step *step, Ndb *pNdb,
     return NDBT_FAILED;
   }
 
-  NodeBitmask subscriberViews[MAX_NDB_NODES];
-  for (Uint32 n = 0; n < MAX_NDB_NODES; n++) {
+  NodeBitmask subscriberViews[ABS_MAX_NDB_NODES];
+  for (Uint32 n = 0; n < ABS_MAX_NDB_NODES; n++) {
     subscriberViews[n].clear();
   }
 
@@ -6462,7 +6462,7 @@ int runSubscriptionChecker(NDBT_Context *ctx, NDBT_Step *step, Ndb *pNdb,
     unionView.clear();
     // maxSubscribers = 0;
 
-    for (Uint32 n = 0; n < MAX_NDB_NODES; n++) {
+    for (Uint32 n = 0; n < ABS_MAX_NDB_NODES; n++) {
       NodeBitmask &nodeView = subscriberViews[n];
 
       if (!nodeView.isclear()) {

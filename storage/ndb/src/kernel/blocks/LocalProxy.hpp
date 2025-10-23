@@ -1,4 +1,5 @@
 /* Copyright (c) 2008, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2025, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -588,7 +589,7 @@ class LocalProxy : public SimulatedBlock {
       m_sendREQ = (SsFUNCREQ)&LocalProxy::sendAPI_FAILREQ;
       m_sendCONF = (SsFUNCREP)&LocalProxy::sendAPI_FAILCONF;
     }
-    enum { poolSize = MAX_NODES };
+    enum { poolSize = ABS_MAX_NODES };
     static SsPool<Ss_API_FAILREQ> &pool(LocalProxy *proxy) {
       return proxy->c_ss_API_FAILREQ;
     }

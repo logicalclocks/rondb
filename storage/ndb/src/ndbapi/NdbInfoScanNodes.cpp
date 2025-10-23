@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2009, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2025, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -65,7 +66,7 @@ int NdbInfoScanNodes::init(Uint32 id) {
     connected and have been API_REGCONFed. Don't include
     own node since it will always be "connected"
   */
-  for (Uint32 i = 1; i < MAX_NDB_NODES; i++) m_nodes_to_scan.set(i);
+  for (Uint32 i = 1; i < ABS_MAX_NDB_NODES; i++) m_nodes_to_scan.set(i);
   m_nodes_to_scan.clear(refToNode(m_result_ref));
 
   m_state = Initial;

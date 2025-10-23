@@ -169,7 +169,7 @@ void ClusterMgr::configure(Uint32 nodeId, const ndb_mgm_configuration *config) {
     if (iter.get(CFG_NODE_ID, &nodeId)) continue;
 
     // Check array bounds + don't allow node 0 to be touched
-    assert(nodeId > 0 && nodeId < MAX_NODES);
+    assert(nodeId > 0 && nodeId < ABS_MAX_NODES);
     trp_node &theNode = theNodes[nodeId];
     theNode.defined = true;
 
@@ -195,7 +195,7 @@ void ClusterMgr::configure(Uint32 nodeId, const ndb_mgm_configuration *config) {
   }
 
   /* Mark all non existing nodes as not defined */
-  for (Uint32 i = 0; i < MAX_NODES; i++) {
+  for (Uint32 i = 0; i < ABS_MAX_NODES; i++) {
     if (iter.first()) continue;
 
     if (iter.find(CFG_NODE_ID, i)) theNodes[i] = Node();
@@ -412,14 +412,14 @@ void ClusterMgr::threadMain() {
     nodeFailRep->noOfNodes = 0;
     NodeBitmask::clear(theAllNodes);
 
-    for (int i = 1; i < MAX_NODES; i++) {
+    for (int i = 1; i < ABS_MAX_NODES; i++) {
       /**
        * Send register request (heartbeat) to all available nodes
        * at specified timing intervals
        */
       const NodeId nodeId = i;
       // Check array bounds + don't allow node 0 to be touched
-      assert(nodeId > 0 && nodeId < MAX_NODES);
+      assert(nodeId > 0 && nodeId < ABS_MAX_NODES);
       Node &cm_node = theNodes[nodeId];
       trp_node &theNode = cm_node;
 
@@ -660,7 +660,7 @@ ClusterMgr::Node::Node() : hbFrequency(0), hbCounter(0), processInfoSent(0) {}
 void ClusterMgr::recalcMinDbVersion() {
   Uint32 newMinDbVersion = ~(Uint32)0;
 
-  for (Uint32 i = 0; i < MAX_NODES; i++) {
+  for (Uint32 i = 0; i < ABS_MAX_NODES; i++) {
     trp_node &node = theNodes[i];
 
     if (node.is_connected() && node.is_confirmed() &&
@@ -710,7 +710,7 @@ void ClusterMgr::recalcMinDbVersion() {
 void ClusterMgr::recalcMinApiVersion() {
   Uint32 newMinApiVersion = ~(Uint32)0;
 
-  for (Uint32 i = 0; i < MAX_NODES; i++) {
+  for (Uint32 i = 0; i < ABS_MAX_NODES; i++) {
     trp_node &node = theNodes[i];
 
     if (node.is_connected() && node.is_confirmed() &&
@@ -825,7 +825,7 @@ ClusterMgr::execACTIVATE_REQ(const Uint32 *theData)
   Uint32 activateNodeId = activateReq->activateNodeId;
   Uint32 ref = numberToRef(API_CLUSTERMGR, theFacade.ownId());
   NdbApiSignal signal(ref);
-  if (activateNodeId > MAX_NODES)
+  if (activateNodeId > ABS_MAX_NODES)
   {
     ActivateRef * const ref_sig =
       CAST_PTR(ActivateRef, signal.getDataPtrSend());
@@ -867,7 +867,7 @@ ClusterMgr::execDEACTIVATE_REQ(const Uint32 *theData)
   Uint32 deactivateNodeId = deactivateReq->deactivateNodeId;
   Uint32 ref = numberToRef(API_CLUSTERMGR, theFacade.ownId());
   NdbApiSignal signal(ref);
-  if (deactivateNodeId > MAX_NODES)
+  if (deactivateNodeId > ABS_MAX_NODES)
   {
     DeactivateRef * const ref_sig =
       CAST_PTR(DeactivateRef, signal.getDataPtrSend());
@@ -911,7 +911,7 @@ ClusterMgr::execSET_HOSTNAME_REQ(const NdbApiSignal* sig,
   Uint32 senderRef = setHostnameReq->senderRef;
   Uint32 changeNodeId = setHostnameReq->changeNodeId;
   bool ok = true;
-  if (changeNodeId > MAX_NODES)
+  if (changeNodeId > ABS_MAX_NODES)
   {
     ok = false;
   }
@@ -1020,7 +1020,7 @@ void ClusterMgr::execAPI_REGREQ(const Uint32 *theData) {
   g_eventLogger->info("ClusterMgr: Recd API_REGREQ from node %d", nodeId);
 #endif
 
-  assert(nodeId > 0 && nodeId < MAX_NODES);
+  assert(nodeId > 0 && nodeId < ABS_MAX_NODES);
 
   Node &cm_node = theNodes[nodeId];
   trp_node &node = cm_node;
@@ -1081,11 +1081,12 @@ void ClusterMgr::execAPI_REGCONF(const NdbApiSignal *signal,
       CAST_CONSTPTR(ApiRegConf, signal->getDataPtr());
   const NodeId nodeId = refToNode(apiRegConf->qmgrRef);
 
+  DBUG_PRINT("info", ("API_REGCONF from node %u", nodeId));
 #ifdef DEBUG_REG
   g_eventLogger->info("ClusterMgr: Recd API_REGCONF from node %d", nodeId);
 #endif
 
-  assert(nodeId > 0 && nodeId < MAX_NODES);
+  assert(nodeId > 0 && nodeId < ABS_MAX_NODES);
   
   Node & cm_node = theNodes[nodeId];
   trp_node & node = cm_node;
@@ -1094,6 +1095,7 @@ void ClusterMgr::execAPI_REGCONF(const NdbApiSignal *signal,
   assert(node.is_connected() == true);
 
   if (node.m_info.m_version != apiRegConf->version) {
+    DBUG_PRINT("info", ("Incompatible versions"));
     node.m_info.m_version = apiRegConf->version;
     node.m_info.m_mysql_version = apiRegConf->mysql_version;
 
@@ -1127,6 +1129,8 @@ void ClusterMgr::execAPI_REGCONF(const NdbApiSignal *signal,
     /**
      * Only set DB nodes to "alive"
      */
+    DBUG_PRINT("info", ("DB node, startLevel: %u, singleMode: %u",
+      node.m_state.startLevel, node.m_state.getSingleUserMode()));
     if (node.compatible && (node.m_state.startLevel == NodeState::SL_STARTED ||
                             node.m_state.getSingleUserMode()))
     {
@@ -1274,7 +1278,7 @@ void ClusterMgr::execAPI_REGREF(const Uint32 *theData) {
 
   const NodeId nodeId = refToNode(ref->ref);
 
-  assert(nodeId > 0 && nodeId < MAX_NODES);
+  assert(nodeId > 0 && nodeId < ABS_MAX_NODES);
 
   Node &cm_node = theNodes[nodeId];
   trp_node &node = cm_node;
@@ -1457,7 +1461,7 @@ void ClusterMgr::execNF_COMPLETEREP(const NdbApiSignal *signal,
   const NFCompleteRep *nfComp =
       CAST_CONSTPTR(NFCompleteRep, signal->getDataPtr());
   const NodeId nodeId = nfComp->failedNodeId;
-  assert(nodeId > 0 && nodeId < MAX_NODES);
+  assert(nodeId > 0 && nodeId < ABS_MAX_NODES);
 
   trp_node &node = theNodes[nodeId];
   if (node.nfCompleteRep == false) {
@@ -1484,7 +1488,7 @@ void ClusterMgr::reportConnected(NodeId nodeId) {
 
   if (theFacade.m_poll_owner != this) lock();
 
-  assert(nodeId > 0 && nodeId < MAX_NODES);
+  assert(nodeId > 0 && nodeId < ABS_MAX_NODES);
   if (nodeId != getOwnNodeId()) {
     noOfConnectedNodes++;
   }
@@ -1528,7 +1532,7 @@ void ClusterMgr::reportConnected(NodeId nodeId) {
   DEBUG_FPRINTF((stderr, "(%u)theNode.set_connected(true) for node: %u\n",
                  getOwnNodeId(), nodeId));
   theNode.set_connected(true);
-  theNode.m_state.m_connected_nodes.set(nodeId);
+  //theNode.m_state.m_connected_nodes.set(nodeId);
   theNode.m_info.m_version = 0;
   theNode.compatible = true;
   theNode.nfCompleteRep = true;
@@ -1559,7 +1563,7 @@ void ClusterMgr::reportConnected(NodeId nodeId) {
 
 void ClusterMgr::reportDisconnected(NodeId nodeId) {
   assert(theFacade.is_poll_owner_thread());
-  assert(nodeId > 0 && nodeId < MAX_NODES);
+  assert(nodeId > 0 && nodeId < ABS_MAX_NODES);
   if (theFacade.m_poll_owner != this)
     lock();
 
@@ -1746,7 +1750,7 @@ void ClusterMgr::execNODE_FAILREP(const NdbApiSignal *sig,
     rep->unused = 0;
     rep->from = __LINE__;
 
-    for (Uint32 i = 1; i < MAX_NODES; i++) {
+    for (Uint32 i = 1; i < ABS_MAX_NODES; i++) {
       trp_node &theNode = theNodes[i];
       if (theNode.defined && theNode.nfCompleteRep == false) {
         rep->failedNodeId = i;
@@ -1785,7 +1789,7 @@ ClusterMgr::is_cluster_completely_unavailable(Int32 &error,
    * to bug#19524096, to understand what prevents us from locking (yet)
    */
   NdbMutex_Lock(m_node_state_mutex);
-  for (NodeId n = 1; n < MAX_NDB_NODES ; n++)
+  for (NodeId n = 1; n < ABS_MAX_NDB_NODES ; n++)
   {
     const trp_node& node = theNodes[n];
     if (!node.defined)
@@ -1925,7 +1929,7 @@ ClusterMgr::is_cluster_completely_unavailable(Int32 &error,
 
 void ClusterMgr::print_nodes(const char *where, NdbOut &out) {
   out << where << " >>" << endl;
-  for (NodeId n = 1; n < MAX_NODES; n++) {
+  for (NodeId n = 1; n < ABS_MAX_NODES; n++) {
     const trp_node node = getNodeInfo(n);
     if (!node.defined) continue;
     out << "node: " << n << endl;
@@ -1946,7 +1950,7 @@ void ClusterMgr::print_nodes(const char *where, NdbOut &out) {
 int ClusterMgr::db_nodes_all_alive() {
   int all_alive = 1;
   TransporterRegistry *tr = theFacade.get_registry();
-  for (NodeId n = 1; n < MAX_NODES; n++) {
+  for (NodeId n = 1; n < ABS_MAX_NODES; n++) {
     const trp_node node = getNodeInfo(n);
     if (!node.defined) continue;
     /*
@@ -1976,7 +1980,7 @@ void ClusterMgr::setProcessInfoUri(const char *scheme,
   m_process_info->setUriPath(path);
 
   /* Set flag to resend ProcessInfo Report */
-  for (int i = 1; i < MAX_NODES; i++) {
+  for (int i = 1; i < ABS_MAX_NODES; i++) {
     Node &node = theNodes[i];
     if (node.is_connected()) node.processInfoSent = false;
   }

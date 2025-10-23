@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2025, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -479,7 +480,7 @@ int get50PercentOfNodes(NdbRestarter &restarter, int *_nodes) {
   // TODO Check nodegroup and return one node from each
 
   int num50Percent = restarter.getNumDbNodes() / 2;
-  require(num50Percent <= MAX_NDB_NODES);
+  require(num50Percent <= ABS_MAX_NDB_NODES);
 
   // Calculate which nodes to stop, select all even nodes
   for (int i = 0; i < num50Percent; i++) {
@@ -489,7 +490,7 @@ int get50PercentOfNodes(NdbRestarter &restarter, int *_nodes) {
 }
 
 int fiftyPercentFail(F_ARGS) {
-  int nodes[MAX_NDB_NODES];
+  int nodes[ABS_MAX_NDB_NODES];
 
   int numNodes = get50PercentOfNodes(_restarter, nodes);
 
@@ -550,7 +551,7 @@ int restartAllNodesError9999(F_ARGS) {
 }
 
 int fiftyPercentStopAndWait(F_ARGS) {
-  int nodes[MAX_NDB_NODES];
+  int nodes[ABS_MAX_NDB_NODES];
   int numNodes = get50PercentOfNodes(_restarter, nodes);
 
   // Stop the nodes, with nostart and abort

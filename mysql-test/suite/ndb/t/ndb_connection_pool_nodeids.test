@@ -62,9 +62,9 @@ let SEARCH_FILE= $error_log;
 --source include/search_pattern.inc
 --remove_file $SEARCH_FILE
 
---echo # - Check valid nodeid(<= 255)
---exec $MYSQLD_CMD_11 --ndb-cluster-connection-pool-nodeids="2,256,5" --ndb-nodeid=1 $args
-let SEARCH_PATTERN= Invalid nodeid 256;
+--echo # - Check valid nodeid(<= 2039)
+--exec $MYSQLD_CMD_11 --ndb-cluster-connection-pool-nodeids="2,2040,5" --ndb-nodeid=1 $args
+let SEARCH_PATTERN= Invalid nodeid 2040;
 let SEARCH_FILE= $error_log;
 --source include/search_pattern.inc
 --remove_file $SEARCH_FILE

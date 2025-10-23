@@ -124,7 +124,7 @@ int Ndb::init(int aMaxNoOfTransactions) {
      */
     const Uint32 tcNodeChoiceOffset =
         (nodeId + theImpl->theCurrentConnectIndex) %
-        (theImpl->theNoOfDBnodes ? theImpl->theNoOfDBnodes : MAX_NDB_NODES);
+        (theImpl->theNoOfDBnodes ? theImpl->theNoOfDBnodes : ABS_MAX_NDB_NODES);
 
     /* Configure RR + proximity aware unhinted iterators */
     theImpl->theCurrentConnectIndex = tcNodeChoiceOffset;
@@ -938,12 +938,26 @@ void NdbImpl::trp_deliver_signal(const NdbApiSignal *aSignal,
       if (tFirstDataPtr != nullptr) {
         const NdbReceiver *const receiver = void2rec(tFirstDataPtr);
         if (!receiver->checkMagicNumber()) {
+          if (tFirstData & 1) {
+            NdbTransaction::sendTC_COMMIT_ACK(
+              this, myNdb->theCommitAckSignal, failConf->transId1,
+              failConf->transId2, aTCRef, send_TC_COMMIT_ACK_immediate_flag);
+          }
           goto InvalidSignal;
         }
         tOp = (NdbOperation *)(receiver->getOwner());
         if (tOp->checkMagicNumber(false) == 0) {
           tCon = tOp->theNdbCon;
           if (tCon != nullptr) {
+#if 1
+            g_eventLogger->info(
+              "TCKEY_FAILCONF trans(H'%.8x,H'%.8x), stat: %u,"
+              " tFirstData: 0x%x\n",
+              failConf->transId1,
+              failConf->transId2,
+              tCon->theSendStatus,
+              tFirstData);
+#endif
             if ((tCon->theSendStatus == NdbTransaction::sendTC_OP) ||
                 (tCon->theSendStatus == NdbTransaction::sendTC_COMMIT)) {
               tReturnCode = tCon->receiveTCKEY_FAILCONF(failConf);
@@ -982,6 +996,15 @@ void NdbImpl::trp_deliver_signal(const NdbApiSignal *aSignal,
         if (tOp->checkMagicNumber(false) == 0) {
           tCon = tOp->theNdbCon;
           if (tCon != nullptr) {
+#if 1
+            g_eventLogger->info(
+              "TCKEY_FAILREF trans(H'%.8x,H'%.8x), stat: %u,"
+              " tFirstData: 0x%x\n",
+              tDataPtr[1],
+              tDataPtr[2],
+              tCon->theSendStatus,
+              tFirstData);
+#endif
             if ((tCon->theSendStatus == NdbTransaction::sendTC_OP) ||
                 (tCon->theSendStatus == NdbTransaction::sendTC_ROLLBACK)) {
               tReturnCode = tCon->receiveTCKEY_FAILREF(aSignal);

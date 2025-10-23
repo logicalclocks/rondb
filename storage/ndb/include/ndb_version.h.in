@@ -1111,12 +1111,25 @@ ndbd_support_continous_scan(Uint32 x) {
   const Uint32 major = (x >> 16) & 0xFF;
   const Uint32 minor = (x >>  8) & 0xFF;
   const Uint32 patch = x & 0xFF;
-  if (major > 25)
-  {
+  if (major > 25) {
     return true;
   }
-  if ((major == 25) && (minor == 10) && (patch >= 1))
-  {
+  if ((major == 25) && (minor == 10) && (patch >= 1)) {
+    return true;
+  }
+  return false;
+}
+
+static inline
+bool
+ndbd_support_2k_api_nodes(Uint32 x) {
+  const Uint32 major = (x >> 16) & 0xFF;
+  const Uint32 minor = (x >>  8) & 0xFF;
+  const Uint32 rel = x & 0xFF;
+  if (major > 25) {
+    return true;
+  }
+  if ((major == 25) && (minor == 10) && (rel >= 1)) {
     return true;
   }
   return false;

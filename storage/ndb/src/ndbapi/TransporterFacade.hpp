@@ -71,9 +71,9 @@ class TransporterFacade : public TransporterCallback,
 
   /**
    * The clients does not use the MultiTransporters. Thus the max number
-   * of client transporters are limited by 'MAX_NODES'.
+   * of client transporters are limited by 'ABS_MAX_NODES'.
    */
-  static constexpr Uint32 MAX_TRPS = MAX_NODES;
+  static constexpr Uint32 MAX_TRPS = ABS_MAX_NODES;
 
   TransporterFacade(GlobalDictCache *cache, Ndb_cluster_connection_impl*);
   ~TransporterFacade() override;

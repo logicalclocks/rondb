@@ -1664,7 +1664,7 @@ void DblqhProxy::sendEXEC_SR_2(Signal *signal, Uint32 ssId) {
     return;
   }
 
-  NodeBitmask nodes;
+  NdbNodeBitmask nodes;
   nodes.assign(NdbNodeBitmask::Size, ss.m_sig.sr_nodes);
   NodeReceiverGroup rg(DBLQH, nodes);
 

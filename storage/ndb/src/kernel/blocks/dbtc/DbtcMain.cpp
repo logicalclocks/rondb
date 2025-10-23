@@ -130,6 +130,7 @@
 //#define DEBUG_ABORT_TRANS 1
 //#define DEBUG_NODE_STATUS 1
 //#define DEBUG_NODE_FAILURE 1
+//#define DEBUG_NODE_FAILURE_CMA 1
 //#define DEBUG_RR_INIT 1
 //#define DEBUG_EXEC_WRITE_COUNT 1
 //#define DEBUG_TCGETOPSIZE 1
@@ -297,6 +298,17 @@
   } while (0)
 #else
 #define DEB_NODE_FAILURE(arglist) \
+  do {                            \
+  } while (0)
+#endif
+
+#ifdef DEBUG_NODE_FAILURE_CMA
+#define DEB_NODE_FAILURE_CMA(arglist) \
+  do {                            \
+    g_eventLogger->info arglist;  \
+  } while (0)
+#else
+#define DEB_NODE_FAILURE_CMA(arglist) \
   do {                            \
   } while (0)
 #endif
@@ -2167,6 +2179,7 @@ void Dbtc::removeMarkerForFailedAPI(Signal *signal, NodeId nodeId,
 
     if (iter.curr.p->apiNodeId == nodeId) {
       jam();
+      jamData(nodeId);
 
       /**
        * Check so that the record is not still in use
@@ -4461,9 +4474,10 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
     }
     if (!tc_testbit(regApiPtr->m_flags,
                     ApiConnectRecord::TF_COMMIT_ACK_MARKER_RECEIVED)) {
-      if (regApiPtr->commitAckMarker != RNIL)
+      if (regApiPtr->commitAckMarker != RNIL) {
+        jamDebug();
         regTcPtr->commitAckMarker = regApiPtr->commitAckMarker;
-      else {
+      } else {
         jamDebug();
         CommitAckMarkerPtr tmp;
         if (ERROR_INSERTED(8087)) {
@@ -4632,7 +4646,7 @@ static void handle_reorg_trigger(DiGetNodesConf *conf) {
  * always selecting the first one we find.
  */
 Uint32 Dbtc::check_own_location_domain(Uint16 *nodes, Uint32 end) {
-  Uint32 loc_nodes[MAX_NDB_NODES];
+  Uint32 loc_nodes[ABS_MAX_NDB_NODES];
   Uint32 loc_node_count = 0;
   Uint32 my_location_domain_id = m_my_location_domain_id;
 
@@ -11970,7 +11984,7 @@ void Dbtc::execNODE_FAILREP(Signal *signal) {
   cfailure_nr = nodeFail->failNo;
   const Uint32 tnoOfNodes = nodeFail->noOfNodes;
   const Uint32 tnewMasterId = nodeFail->masterNodeId;
-  Uint32 cdata[MAX_NDB_NODES];
+  Uint32 cdata[ABS_MAX_NDB_NODES];
 
   arrGuard(tnoOfNodes, MAX_NDB_NODES);
   Uint32 i;
@@ -12625,6 +12639,7 @@ void Dbtc::releaseMarker(ApiConnectRecord *const regApiPtr) {
   Ptr<CommitAckMarker> marker;
   marker.i = regApiPtr->commitAckMarker;
   if (marker.i != RNIL) {
+    jamDebug();
     regApiPtr->commitAckMarker = RNIL;
     m_commitAckMarkerPool.getPtr(marker);
     CommitAckMarkerBuffer::DataBufferPool &pool =
@@ -13342,11 +13357,11 @@ void Dbtc::completeTransAtTakeOverDoOne(Signal* signal,
                       apiConnectptr.p->globalcheckpointid,
                       apiConnectptr,
                       __LINE__);
-    DEB_NODE_FAILURE(("apiConnectptr.i: %u, trans(H'%.8x,H'%.8x):"
-                      " toCompleteHandling",
-                     apiConnectptr.i,
-                     apiConnectptr.p->transid[0],
-                     apiConnectptr.p->transid[1]));
+    DEB_NODE_FAILURE_CMA(("apiConnectptr.i: %u, trans(H'%.8x,H'%.8x):"
+                          " toCompleteHandling",
+      apiConnectptr.i,
+      apiConnectptr.p->transid[0],
+      apiConnectptr.p->transid[1]));
     init_finish_processing(apiConnectptr.p);
     toCompleteHandlingLab(signal, apiConnectptr);
     return;
@@ -13363,11 +13378,11 @@ void Dbtc::completeTransAtTakeOverDoOne(Signal* signal,
                       apiConnectptr.p->globalcheckpointid,
                       apiConnectptr,
                       __LINE__);
-    DEB_NODE_FAILURE(("apiConnectptr.i: %u, trans(H'%.8x,H'%.8x):"
-                      " toCommitHandling",
-                     apiConnectptr.i,
-                     apiConnectptr.p->transid[0],
-                     apiConnectptr.p->transid[1]));
+    DEB_NODE_FAILURE_CMA(("apiConnectptr.i: %u, trans(H'%.8x,H'%.8x):"
+                          " toCommitHandling",
+      apiConnectptr.i,
+      apiConnectptr.p->transid[0],
+      apiConnectptr.p->transid[1]));
     init_finish_processing(apiConnectptr.p);
     toCommitHandlingLab(signal, apiConnectptr);
     return;
@@ -13387,8 +13402,8 @@ void Dbtc::completeTransAtTakeOverDoOne(Signal* signal,
     /*------------------------------------------------------------*/
     tcConnectptr.i = apiConnectptr.p->tcConnect.getFirst();
     ndbrequire(tcConnectRecord.getValidPtr(tcConnectptr));
-    DEB_NODE_FAILURE(("apiConnectptr.i: %u, trans(H'%.8x,H'%.8x):"
-                      " toAbortHandling",
+    DEB_NODE_FAILURE_CMA(("apiConnectptr.i: %u, trans(H'%.8x,H'%.8x):"
+                          " toAbortHandling",
                      apiConnectptr.i,
                      apiConnectptr.p->transid[0],
                      apiConnectptr.p->transid[1]));
@@ -13399,11 +13414,11 @@ void Dbtc::completeTransAtTakeOverDoOne(Signal* signal,
     jam();
     sendTCKEY_FAILREF(signal, apiConnectptr.p);
     
-    DEB_NODE_FAILURE(("apiConnectptr.i: %u, trans(H'%.8x,H'%.8x):"
-                      " sendTCKEY_FAILREF",
-                      apiConnectptr.i,
-                      apiConnectptr.p->transid[0],
-                      apiConnectptr.p->transid[1]));
+    DEB_NODE_FAILURE_CMA(("apiConnectptr.i: %u, trans(H'%.8x,H'%.8x):"
+                          " sendTCKEY_FAILREF",
+      apiConnectptr.i,
+      apiConnectptr.p->transid[0],
+      apiConnectptr.p->transid[1]));
     signal->theData[0] = TcContinueB::ZCOMPLETE_TRANS_AT_TAKE_OVER;
     signal->theData[1] = apiConnectptr.p->takeOverRec;
     signal->theData[2] = apiConnectptr.p->takeOverInd;
@@ -13414,11 +13429,11 @@ void Dbtc::completeTransAtTakeOverDoOne(Signal* signal,
     jam();
     sendTCKEY_FAILCONF(signal, apiConnectptr.p);
     
-    DEB_NODE_FAILURE(("apiConnectptr.i: %u, trans(H'%.8x,H'%.8x):"
-                      " sendTCKEY_FAILCONF",
-                      apiConnectptr.i,
-                      apiConnectptr.p->transid[0],
-                      apiConnectptr.p->transid[1]));
+    DEB_NODE_FAILURE_CMA(("apiConnectptr.i: %u, trans(H'%.8x,H'%.8x):"
+                          " sendTCKEY_FAILCONF",
+      apiConnectptr.i,
+      apiConnectptr.p->transid[0],
+      apiConnectptr.p->transid[1]));
     signal->theData[0] = TcContinueB::ZCOMPLETE_TRANS_AT_TAKE_OVER;
     signal->theData[1] = apiConnectptr.p->takeOverRec;
     signal->theData[2] = apiConnectptr.p->takeOverInd;
@@ -13444,6 +13459,12 @@ void Dbtc::sendTCKEY_FAILREF(Signal *signal, ApiConnectRecord *regApiPtr) {
     signal->theData[1] = regApiPtr->transid[0];
     signal->theData[2] = regApiPtr->transid[1];
 
+    DEB_LQH_TRANS_CMA(("TCKEY_FAILREF trans(H'%.8x,H'%.8x), marker: %u, conn: %u",
+      regApiPtr->transid[0],
+      regApiPtr->transid[1],
+      regApiPtr->commitAckMarker,
+      connectedToNode));
+
     if (likely(connectedToNode)) {
       jam();
       sendSignal(ref, GSN_TCKEY_FAILREF, signal, 3, JBB);
@@ -13468,6 +13489,15 @@ void Dbtc::sendTCKEY_FAILCONF(Signal *signal, ApiConnectRecord *regApiPtr) {
     failConf->transId2 = regApiPtr->transid[1];
 
     bool connectedToNode = getNodeInfo(nodeId).m_connected;
+    DEB_LQH_TRANS_CMA(("TCKEY_FAILCONF trans(H'%.8x,H'%.8x), ref: 0x%x"
+                       "apiConnectPtr: %u, marker: %u, conn: %u",
+      failConf->transId1,
+      failConf->transId2,
+      ref,
+      failConf->apiConnectPtr,
+      marker,
+      connectedToNode));
+
     if (likely(connectedToNode)) {
       jam();
       sendSignal(ref, GSN_TCKEY_FAILCONF, signal, TcKeyFailConf::SignalLength,
@@ -14867,9 +14897,10 @@ void Dbtc::initApiConnectFail(Signal *signal, Uint32 transid1, Uint32 transid2,
         tmp.p->transid1      = transid1;
         tmp.p->transid2      = transid2;
         DEB_LQH_TRANS_CMA(("Insert trans(H'%.8x,H'%.8x) into "
-                       "CommitAckMarker::initApiConnectFail",
+                       "CommitAckMarker::initApiConnectFail, marker: %u",
                        transid1,
-                       transid2));
+                       transid2,
+                       tmp.i));
         m_commitAckMarkerHash.add(tmp);
       }
     }

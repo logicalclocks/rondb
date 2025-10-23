@@ -190,6 +190,7 @@ struct sysTab_NDBEVENTS_0 {
   Uint32 ATTRIBUTE_MASK2[(MAX_ATTRIBUTES_IN_TABLE / 32) + 1];
 };
 
+#define MaxExternalReqs MAX_NODES
 /**
  *  DICT - This blocks handles all metadata
  */
@@ -1592,7 +1593,7 @@ class Dbdict : public SimulatedBlock {
      * Needs updated if more concurrency or use cases are added
      */
     static const uint MaxInternalReqs =
-        MAX_NDB_NODES +               /* restartCreateObj() forward to Master */
+        ABS_MAX_NDB_NODES +           /* restartCreateObj() forward to Master */
         1 +                           /* SUMA SUB_CREATE_REQ */
         (2 * MAX_NDBMT_LQH_WORKERS) + /* Backup - 1 LCP + 1 Backup per LDM
                                          instance */
@@ -1630,7 +1631,7 @@ class Dbdict : public SimulatedBlock {
      * Max of 1 req per node on average, can be
      * less in overload.
      */
-    static const Uint32 MaxExternalReqs = MAX_NODES;
+    //static const Uint32 MaxExternalReqs = MAX_NODES;
     SegmentUtils &m_externalSegmentPool;
     SegmentListHead m_externalQueueHead;
     LocalSegmentList m_externalQueue;

@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2025, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -36,12 +37,12 @@ void Ndb::checkFailedNode() {
 
   DBUG_PRINT("enter", ("theNoOfDBnodes: %d", tNoOfDbNodes));
 
-  assert(tNoOfDbNodes < MAX_NDB_NODES);
+  assert(tNoOfDbNodes < ABS_MAX_NDB_NODES);
   for (Uint32 i = 0; i < tNoOfDbNodes; i++) {
     const NodeId node_id = theDBnodes[i];
     DBUG_PRINT("info", ("i: %d, node_id: %d", i, node_id));
 
-    assert(node_id < MAX_NDB_NODES);
+    assert(node_id < ABS_MAX_NDB_NODES);
     if (the_release_ind[node_id] == 1) {
       /**
        * Release all connections in idle list (for node)

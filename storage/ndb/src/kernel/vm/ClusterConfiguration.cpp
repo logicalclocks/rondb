@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2025, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -375,7 +376,7 @@ void ClusterConfiguration::init(const Properties &p, const Properties &db) {
       if (nodeId > MAX_NODES) {
         char buf[255];
         snprintf(buf, sizeof(buf), "Maximum DB node id allowed is: %d",
-                 MAX_NDB_NODES);
+                 ABS_MAX_NDB_NODES);
         ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG, msg, buf);
       }
 
@@ -411,18 +412,18 @@ void ClusterConfiguration::init(const Properties &p, const Properties &db) {
         cd.nodeData[nodeNo].nodeType = NodeInfo::DB;
         cd.SizeAltData.noOfNDBNodes++;  // No of NDB processes
 
-        if (nodeId > MAX_NDB_NODES) {
+        if (nodeId > ABS_MAX_NDB_NODES) {
           char buf[255];
           BaseString::snprintf(buf, sizeof(buf),
                                "Maximum node id for a ndb node is: %d",
-                               MAX_NDB_NODES);
+                               ABS_MAX_NDB_NODES);
           ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG, msg, buf);
         }
-        if (cd.SizeAltData.noOfNDBNodes > MAX_NDB_NODES) {
+        if (cd.SizeAltData.noOfNDBNodes > ABS_MAX_NDB_NODES) {
           char buf[255];
           BaseString::snprintf(buf, sizeof(buf),
                                "Maximum %d ndb nodes is allowed in the cluster",
-                               MAX_NDB_NODES);
+                               ABS_MAX_NDB_NODES);
           ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG, msg, buf);
         }
       } else if (strcmp("API", nodeType) == 0) {

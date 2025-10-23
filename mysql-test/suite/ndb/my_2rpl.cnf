@@ -12,31 +12,31 @@ SchemaMemory=80M
 DataMemory=200M
 
 [cluster_config.mysqld.1.1]
-NodeId=49
+NodeId=449
 
 [cluster_config.mysqld.2.1]
-NodeId=16
+NodeId=416
 
 [cluster_config.ndbapi.1.1]
-NodeId=32
+NodeId=432
 
 [cluster_config.ndbapi.2.1]
-NodeId=48
+NodeId=448
 
 [cluster_config.ndbapi.3.1]
-NodeId=63
+NodeId=463
 
 [cluster_config.ndbapi.4.1]
-NodeId=127
+NodeId=1274
 
 [cluster_config.ndbapi.5.1]
-NodeId=192
+NodeId=1924
 
 [cluster_config.ndbapi.6.1]
-NodeId=228
+NodeId=1228
 
 [cluster_config.ndbapi.12.1]
-NodeId=255
+NodeId=2039
 
 [mysqld]
 # Make all mysqlds use cluster
@@ -54,7 +54,7 @@ local-infile=true
 
 [mysqld.1.1]
 # Specify which nodeids the connection pool on first mysqld should use
-ndb-cluster-connection-pool-nodeids=49,63,127
+ndb-cluster-connection-pool-nodeids=449,463,1274
 # This suite(--suite=ndb) is designed to be run without binogging,
 # turn off binlogging(and thus also slave updates) for this mysqld
 skip-log-bin
@@ -62,7 +62,7 @@ skip-log-replica-updates
 
 [mysqld.2.1]
 # Specify which nodeids the connection pool on second mysqld should use
-ndb-cluster-connection-pool-nodeids=16,32,48
+ndb-cluster-connection-pool-nodeids=416,432,448
 # This suite(--suite=ndb) is designed to be run without binogging,
 # turn off binlogging(and thus also slave updates) for this mysqld
 skip-log-bin
