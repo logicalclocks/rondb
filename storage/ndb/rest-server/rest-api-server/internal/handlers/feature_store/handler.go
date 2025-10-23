@@ -251,6 +251,11 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, func(
 	// --- buffers ---
 	code, ronDbErr := h.dbBatchReader.ExecuteWithBuffers(readParams, *dbResponseIntf, reqPtrs, respPtrs, noOps)
 
+	// Clear Go references to prevent use-after-free when release() calls C.free()
+	// The NativeBuffer structs contain unsafe.Pointer to C memory that will be freed
+	reqPtrs = nil
+	respPtrs = nil
+
 	if ronDbErr != nil {
 		var fsError = TranslateRonDbError(code, ronDbErr.Error())
 		return fsError.GetStatus(), release, fsError.GetError()
