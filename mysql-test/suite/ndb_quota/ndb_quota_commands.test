@@ -246,6 +246,25 @@ SELECT * from t2;
 UPDATE t2 SET b = 0 where a = 2;
 COMMIT;
 
+connection default;
+
+let $i_def = 10;
+while ($i_def)
+{
+--error 0,1297
+  SELECT pk1,b1 from t1 limit 10;
+  dec $i_def;
+}
+
+connection mysqld2;
+let $i_2 = 10;
+while ($i_2)
+{
+--error 0,1297
+  SELECT pk1, b1 from t1 limit 10;
+  dec $i_2;
+}
+
 --enable_result_log
 --enable_query_log
 
