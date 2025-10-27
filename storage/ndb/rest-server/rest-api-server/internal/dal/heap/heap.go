@@ -1,7 +1,7 @@
 /*
 
  * This file is part of the RonDB REST API Server
- * Copyright (c) 2023 Hopsworks AB
+ * Copyright (c) 2025 Hopsworks AB
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -37,7 +37,6 @@ type Heap struct {
 	buffers             []*NativeBuffer
 	buffersStats        MemoryStats
 	mutex               *sync.Mutex
-	minAllocatedBuffers int64
 	allocatedBuffers    int64
 	maxAllocatedBuffers int64
 }
@@ -68,7 +67,6 @@ func New() (heap *Heap, releaseBuffers func(), err error) {
 	heap = &Heap{
 		buffers:             []*NativeBuffer{},
 		mutex:               &sync.Mutex{},
-		minAllocatedBuffers: preAllocatedBuffers,
 		allocatedBuffers:    preAllocatedBuffers,
 		maxAllocatedBuffers: maxAllocatedBuffers,
 		buffersStats: MemoryStats{
@@ -101,9 +99,10 @@ func (heap *Heap) releaseAllBuffers() {
 	heap.mutex.Lock()
 	defer heap.mutex.Unlock()
 
-	if heap.buffersStats.BuffersCount != int64(len(heap.buffers)) {
+	stats := heap.getNativeBuffersStatsInt()
+	if stats.BuffersCount != int64(len(heap.buffers)) {
 		log.Warnf("Shutting down heap. Number of free buffers do not match. Expecting: %d, Got: %d.",
-			heap.buffersStats.BuffersCount, int64(len(heap.buffers)))
+			stats.BuffersCount, int64(len(heap.buffers)))
 	}
 
 	for _, buffer := range heap.buffers {
@@ -136,21 +135,19 @@ func (heap *Heap) GetBuffer() (buff *NativeBuffer, returnBuff func(), err error)
 func (heap *Heap) returnBuffer(buffer *NativeBuffer) {
 	heap.mutex.Lock()
 	defer heap.mutex.Unlock()
-
-	if int64(len(heap.buffers)) < heap.minAllocatedBuffers {
-		heap.buffers = append(heap.buffers, buffer)
-	} else {
-		C.free(buffer.Buffer)
-		heap.allocatedBuffers--
-		heap.buffersStats.DeallocationsCount++
-	}
+	heap.buffers = append(heap.buffers, buffer)
 }
 
 func (heap *Heap) GetNativeBuffersStats() MemoryStats {
 	heap.mutex.Lock()
 	defer heap.mutex.Unlock()
+	return heap.getNativeBuffersStatsInt()
+}
 
-	// Only (De)AllocationsCount are updated continuously. Update the others now.
+/*
+*	with out locks
+ */
+func (heap *Heap) getNativeBuffersStatsInt() MemoryStats {
 	heap.buffersStats.BuffersCount = heap.allocatedBuffers
 	heap.buffersStats.FreeBuffers = int64(len(heap.buffers))
 	return heap.buffersStats
