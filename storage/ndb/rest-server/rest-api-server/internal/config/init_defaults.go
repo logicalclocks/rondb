@@ -65,7 +65,7 @@ func newWithDefaults() AllConfigs {
 			Enable:            true,
 			ServerIP:          "0.0.0.0",
 			ServerPort:        4406,
-			MaxConcurrentReqs: 0, // 0 = unlimited (default for backward compatibility)
+			MaxConcurrentReqs: 0, // 0 = auto (set to GOMAXPROCS), >0 = user-defined limit
 		},
 		RonDB: RonDB{
 			Mgmds: []Mgmd{

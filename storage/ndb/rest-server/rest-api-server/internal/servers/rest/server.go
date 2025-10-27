@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -117,9 +118,22 @@ func registerHandlers(router *gin.Engine, heap *heap.Heap, apiKeyCache apikey.Ca
 	fvMeta *fsmeta.FeatureViewMetaDataCache, rdrsMetrics *metrics.RDRSMetrics) {
 	router.Use(ErrorHandler)
 
-	// Apply concurrency limiter if configured (0 = unlimited, no limiter)
+	// Apply concurrency limiter
+	// 0 = auto (set to GOMAXPROCS), >0 = user-defined limit
 	conf := config.GetAll()
-	if conf.REST.MaxConcurrentReqs > 0 {
+	if conf.REST.MaxConcurrentReqs == 0 {
+		// Auto mode: use GOMAXPROCS
+		var gomaxprocs int
+		if conf.Internal.GOMAXPROCS > 0 {
+			gomaxprocs = conf.Internal.GOMAXPROCS
+		} else {
+			gomaxprocs = runtime.GOMAXPROCS(0) // 0 means query current value without changing it
+		}
+		log.Infof("MaxConcurrentReqs set to auto mode: using GOMAXPROCS=%d", gomaxprocs)
+		router.Use(middleware.ConcurrencyLimiterWithQueue(uint32(gomaxprocs)))
+	} else {
+		// User-defined limit
+		log.Infof("MaxConcurrentReqs set to %d", conf.REST.MaxConcurrentReqs)
 		router.Use(middleware.ConcurrencyLimiterWithQueue(conf.REST.MaxConcurrentReqs))
 	}
 
