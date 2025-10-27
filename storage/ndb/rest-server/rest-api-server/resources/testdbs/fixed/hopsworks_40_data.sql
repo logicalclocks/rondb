@@ -59,6 +59,9 @@ VALUES
     ),
     (
         1003, 'FSDB003', 'macho@hopsworks.ai', Timestamp('2023-04-20 16:14:15'), 'Some desc', 'NOLIMIT', Timestamp('2023-04-20 16:14:15'), 100, 'SomeDockerImage', 0, 1
+    ),
+    (
+        1004, 'FSDB004', 'macho@hopsworks.ai', Timestamp('2023-04-20 16:14:15'), 'Some desc', 'NOLIMIT', Timestamp('2023-04-20 16:14:15'), 100, 'SomeDockerImage', 0, 1
     );
 
 INSERT INTO
@@ -84,6 +87,12 @@ VALUES
     ),
     (
         1003,
+        'macho@hopsworks.ai',
+        'Data scientist',
+        '2022-06-01 13:28:05'
+    ),
+    (
+        1004,
         'macho@hopsworks.ai',
         'Data scientist',
         '2022-06-01 13:28:05'
@@ -120,6 +129,9 @@ VALUES
         68, "fsdb003", 1003, "2023-03-16 14:27:29"
     ),
     (
+        69, "fsdb004", 1004, "2023-03-16 14:27:29"
+    ),
+    (
         1091, "fsdb002", 1001, "2023-03-16 14:27:29"
     );
 
@@ -129,6 +141,14 @@ VALUES
     (
         1025, 1
     );
+
+INSERT INTO
+    `on_demand_feature_group`
+VALUES
+    (
+        1, NULL, NULL, NULL, NULL, 1
+    );
+
 
 INSERT INTO
     `stream_feature_group`
@@ -203,8 +223,23 @@ VALUES
     (
         35, 'complex_example', 68, Timestamp('2023-09-26 10:02:58'), 10000, 1, NULL, 2, NULL, NULL, 18, 'ts', 1, NULL, NULL, FALSE, 0
     ),
+
+        --id , name                      , fs_id , created                          , creator , version , description , fg_type , od_fg_id , c_fg_id , s_fg_id , event_time , online_enabled , topic_name , noti_topic_name , deprecated , for_log
     (
-        3090, 'sample_4', 67, Timestamp('2023-05-08 15:20:51'), 10000, 1, NULL, 2, NULL, NULL, 2065, 'ts', 1, NULL, NULL, FALSE, 0
+        36   , 'iris_modal'              , 69    , Timestamp('2023-09-26 10:02:58') , 10000   , 1       , NULL        , 2       , NULL     , NULL    , 18      , NULL       , 1              , NULL       , NULL            , FALSE      , 0
+    )    ,
+    (
+        37   , 'spine'                   , 69    , Timestamp('2023-09-26 10:02:58') , 10000   , 1       , NULL        , 1       , 1        , NULL    , 18      , 'ts'       , 1              , NULL       , NULL            , FALSE      , 0
+    )    ,
+    (
+        38   , 'fg1'                     , 69    , Timestamp('2023-09-26 10:02:58') , 10000   , 1       , NULL        , 2       , NULL     , NULL    , 18      , 'ts'       , 1              , NULL       , NULL            , FALSE      , 0
+    )    ,
+    (
+        39   , 'fg2'                     , 69    , Timestamp('2023-09-26 10:02:58') , 10000   , 1       , NULL        , 2       , NULL     , NULL    , 18      , 'ts'       , 1              , NULL       , NULL            , FALSE      , 0
+    )    ,
+
+    (
+        3090 , 'sample_4'                , 67    , Timestamp('2023-05-08 15:20:51') , 10000   , 1       , NULL        , 2       , NULL     , NULL    , 2065    , 'ts'       , 1              , NULL       , NULL            , FALSE      , 0
     );
 
 INSERT INTO
@@ -343,6 +378,9 @@ VALUES
     ),
     (
 	    23, 'complex_example', 68, Timestamp('2023-09-26 10:03:16'), 10000, 1, ''
+    ),
+    (
+	    24, 'fv_spine_group', 69, Timestamp('2023-09-26 10:03:16'), 10000, 1, ''
     ),
     /**
     SELECT `fg0`.`id1` `id1`, `fg0`.`ts` `ts`, `fg0`.`data1` `data1`, `fg0`.`data2` `data2`, `fg1`.`id1` `id1`, `fg1`.`bigint` `bigint`
@@ -483,6 +521,17 @@ VALUES
     (
         29, NULL, 35, NULL, NULL, 0, 0, 0, NULL, 23
     ),
+
+    (
+        30, NULL, 37, NULL, NULL, 0, 0, 0, NULL, 24
+    ),
+    (
+        31, NULL, 38, 30,   NULL, 0, 3, 1, 'fg1_', 24
+    ),
+    (
+        32, NULL, 39, 30,   NULL, 0, 3, 2, 'fg2_', 24
+    ),
+
     (
         5133, NULL, 2069, NULL, NULL, 0, 0, 0, NULL, 4117
     ),
@@ -898,6 +947,26 @@ VALUES
     (
         73, NULL, 35, 'struct', 'struct<int1:bigint,int2:bigint>', 29, 3, 0, 0, 0, 23, NULL
     ),
+
+    (
+        74 , NULL , 38 , 'id'   , 'bigint'                                      , 31 , 2 , 0 , 0 , 0 , 24 , NULL
+    )  ,
+    (
+        75 , NULL , 37 , 'f1'   , 'struct<key1:string,key2:string,key3:string>' , 30 , 1 , 0 , 0 , 0 , 24 , NULL
+    )  ,
+    (
+        76 , NULL , 38 , 'col2' , 'bigint'                                      , 31 , 3 , 0 , 0 , 0 , 24 , NULL
+    )  ,
+    (
+        77 , NULL , 39 , 'col2' , 'double'                                      , 32 , 5 , 0 , 0 , 0 , 24 , NULL
+    )  ,
+    (
+        78 , NULL , 39 , 'id'   , 'bigint'                                      , 32 , 4 , 0 , 0 , 0 , 24 , NULL
+    )  ,
+    (
+        79 , NULL , 37 , 'id'   , 'bigint'                                      , 30 , 0 , 0 , 0 , 0 , 24 , NULL
+    )  ,
+
     (
         5148, NULL, 2069, 'data1', 'bigint', 5133, 2, 0, 0, 0, 4117, NULL
     ),
@@ -1174,7 +1243,18 @@ VALUES
     ),
     (
         1525, 'fg2_', 'id1', 'id1', 1, 31, 0, 4121
+    ),
+
+    (
+    1526 , 'fg1_' , 'id' , 'id' , 1 , 38   , 0 , 24
+    )    ,
+    (
+    1527 , 'fg2_' , 'id' , 'id' , 2 , 39   , 0 , 24
+    )    ,
+    (
+    1528 , NULL   , 'id' , NULL , 0 , 37   , 1 , 24
     );
+
 
 INSERT INTO
     `schemas`
@@ -1196,7 +1276,31 @@ VALUES
     ),
     (
 	    25, '{"type":"record","name":"complex_example_1","namespace":"caps_featurestore.db","fields":[{"name":"id","type":["null","long"]},{"name":"ts","type":["null","long"]},{"name":"array","type":["null",{"type":"array","items":["null","long"]}]},{"name":"struct","type":["null",{"type":"record","name":"r854762204","namespace":"struct","fields":[{"name":"int1","type":["null","long"]},{"name":"int2","type":["null","long"]}]}]}]}', 1003
+    ),
+
+    ( 
+      26, '{"type":"record","name":"inferencelog","fields":[{"name":"modelId","type":"int"},{"name":"modelName","type":"string"},{"name":"modelVersion","type":"int"},{"name":"requestTimestamp","type":"long"},{"name":"responseHttpCode","type":"int"},{"name":"inferenceRequest","type":"string"},{"name":"inferenceResponse","type":"string"}]}',1004
+    ),
+    ( 
+      27, '{"type":"record","name":"inferencelog","fields":[{"name":"modelId","type":"int"},{"name":"modelName","type":"string"},{"name":"modelVersion","type":"int"},{"name":"requestTimestamp","type":"long"},{"name":"responseHttpCode","type":"int"},{"name":"inferenceRequest","type":"string"},{"name":"inferenceResponse","type":"string"},{"name":"servingType","type":"string"}]}',1004
+    ),
+    ( 
+      28, '{"type":"record","name":"inferencelog","fields":[{"name":"modelId","type":"int"},{"name":"modelName","type":"string"},{"name":"modelVersion","type":"int"},{"name":"requestTimestamp","type":"long"},{"name":"responseHttpCode","type":"int"},{"name":"inferenceRequest","type":"string"},{"name":"inferenceResponse","type":"string"},{"name":"modelServer","type":"string"},{"name":"servingTool","type":"string"}]}',1004
+    ),
+    ( 
+      29, '{"type":"record","name":"inferencelog","fields":[{"name":"servingId","type":"int"},{"name":"modelName","type":"string"},{"name":"modelVersion","type":"int"},{"name":"requestTimestamp","type":"long"},{"name":"responseHttpCode","type":"int"},{"name":"inferenceId","type":"string"},{"name":"messageType","type":"string"},{"name":"payload","type":"string"}]}',1004
+    ),
+    ( 
+      30, '{"type":"record","name":"iris_modal_1","namespace":"project_featurestore.db","fields":[{"name":"index","type":["null","long"]},{"name":"sepal_length","type":["null","double"]},{"name":"sepal_width","type":["null","double"]},{"name":"petal_length","type":["null","double"]},{"name":"petal_width","type":["null","double"]},{"name":"variety","type":["null","string"]}]}',1004
+    ),
+    ( 
+      31, '{"type":"record","name":"fg1_1","namespace":"project_featurestore.db","fields":[{"name":"id","type":["null","long"]},{"name":"ts","type":["null",{"type":"int","logicalType":"date"}]},{"name":"col2","type":["null","long"]}]}',1004
+    ),
+    ( 
+      32, '{"type":"record","name":"fg2_1","namespace":"project_featurestore.db","fields":[{"name":"id","type":["null","long"]},{"name":"ts","type":["null",{"type":"int","logicalType":"date"}]},{"name":"col2","type":["null","double"]}]}',1004
     );
+
+
 
 INSERT INTO
     `subjects`
@@ -1215,4 +1319,26 @@ VALUES
     ),
     (
         25, 'complex_example_1', 1, 25, 1003, Timestamp('2023-09-27 10:02:58')
-    );
+    ),
+    (
+        26  , 'inferenceschema' , 1 , 26 , 1004 , Timestamp('2025-10-08 14:32:22')
+    )   ,
+    (
+        27  , 'inferenceschema' , 2 , 27 , 1004 , Timestamp('2025-10-08 14:32:22')
+    )   ,
+    (
+        28  , 'inferenceschema' , 3 , 28 , 1004 , Timestamp('2025-10-08 14:32:22')
+    )   ,
+    (
+        29  , 'inferenceschema' , 4 , 29 , 1004 , Timestamp('2025-10-08 14:32:22')
+    )   ,
+    (
+        30  , 'iris_modal_1'    , 1 , 30 , 1004 , Timestamp('2025-10-08 14:34:11')
+    )   ,
+    (
+        31  , 'fg1_1'           , 1 , 31 , 1004 , Timestamp('2025-10-15 12:19:14')
+    )   ,
+    (
+        32  , 'fg2_1'           , 1 , 32 , 1004 , Timestamp('2025-10-15 12:19:21')
+    ) ;
+

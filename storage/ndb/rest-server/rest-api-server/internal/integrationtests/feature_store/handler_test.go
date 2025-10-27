@@ -2163,3 +2163,28 @@ func Test_GetFeatureVector_Shared_ComplexType(t *testing.T) {
 		ValidateResponseWithData(t, &row, &cols, fsResp)
 	}
 }
+
+func Test_GetSpineFeatureVector_WithMetadata_All_Success(t *testing.T) {
+	var fsName = testdbs.FSDB004
+	var fvName = "fv_spine_group"
+	var fvVersion = 1
+	rows, pks, cols, err := GetSampleData(fsName, "fg1_1")
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+	for _, row := range rows {
+		var fsReq = CreateFeatureStoreRequest(
+			fsName,
+			fvName,
+			fvVersion,
+			pks,
+			*GetPkValues(&row, &pks, &cols),
+			nil,
+			nil,
+		)
+		fsReq.MetadataRequest = &api.MetadataRequest{FeatureName: true, FeatureType: true}
+		fsResp := GetFeatureStoreResponse(t, fsReq)
+		ValidateResponseWithData(t, &row, &cols, fsResp)
+		ValidateResponseMetadata(t, &fsResp.Metadata, fsReq.MetadataRequest, fsName, fvName, fvVersion)
+	}
+}
