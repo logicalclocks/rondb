@@ -23,13 +23,13 @@ if(WITH_RDRS)
   endif()
 
   # Use PGO for release builds, skip for debug builds (faster compilation)
-  if(WITH_DEBUG)
+  # if(WITH_DEBUG)
     set(RDRS_MAKE_TARGET rdrs)
     set(RDRS_BUILD_COMMENT "Building RonDB REST API Server (Debug - no PGO)")
-  else()
-    set(RDRS_MAKE_TARGET pgo-build)
-    set(RDRS_BUILD_COMMENT "Building RonDB REST API Server with PGO")
-  endif()
+  # else()
+    # set(RDRS_MAKE_TARGET pgo-build)
+    # set(RDRS_BUILD_COMMENT "Building RonDB REST API Server with PGO")
+  # endif()
 
   add_custom_target(rdrs ALL
                      COMMAND ${CMAKE_MAKE_PROGRAM} ${RDRS_MAKE_TARGET} RDRS_LIB_DIR=${RDRS_CLIENT_LIB_DIR}  OUTPUT_DIR=${RDRS_OUTPUT_DIR}
