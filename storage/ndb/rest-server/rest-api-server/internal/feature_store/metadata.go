@@ -61,16 +61,21 @@ type FeatureViewMetadata struct {
 }
 
 type FeatureGroupFeatures struct {
-	FeatureStoreName    string
-	FeatureStoreId      int
-	FeatureGroupName    string
-	FeatureGroupVersion int
-	FeatureGroupId      int
-	JoinIndex           int
-	Features            []*FeatureMetadata
-	PrimaryKeyMap       []*dal.ServingKey
-	TableName           string
-	FeatureGroupKey     string // joinIndex|featureGroupId
+	FeatureStoreName       string
+	FeatureStoreId         int
+	FeatureGroupName       string
+	FeatureGroupVersion    int
+	FeatureGroupId         int
+	JoinIndex              int
+	Features               []*FeatureMetadata
+	PrimaryKeyMap          []*dal.ServingKey
+	TableName              string
+	FeatureGroupKey        string // joinIndex|featureGroupId
+	OnDemandFeatureGroupID int
+}
+
+func (f *FeatureGroupFeatures) IsOnDemand() bool {
+	return f.OnDemandFeatureGroupID != 0
 }
 
 type FeatureMetadata struct {
@@ -179,6 +184,7 @@ func newFeatureViewMetadata(
 		fgFeature.JoinIndex = feature.JoinIndex
 		fgFeature.TableName = fmt.Sprintf("%s_%d", feature.FeatureGroupName, feature.FeatureGroupVersion)
 		fgFeature.FeatureGroupKey = fmt.Sprintf("%d|%d", feature.JoinIndex, feature.FeatureGroupId)
+		fgFeature.OnDemandFeatureGroupID = feature.OnDemandFeatureGroupID
 		fgFeaturesArray = append(fgFeaturesArray, &fgFeature)
 	}
 	less := func(i, j int) bool {

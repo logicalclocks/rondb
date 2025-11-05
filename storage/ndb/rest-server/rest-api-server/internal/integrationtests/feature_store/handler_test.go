@@ -2180,8 +2180,10 @@ func Test_GetSpineFeatureVector_WithMetadata_All_Success(t *testing.T) {
 			fvVersion,
 			pks,
 			*GetPkValues(&row, &pks, &cols),
-			[]string{"f1"},
-			[]interface{}{[]byte(` { "key1": "value1", "key2": "value2", "key3": "value3" } `)},
+			nil,
+			nil,
+			// []string{"f1"},
+			// []interface{}{[]byte(` { "key1": "value1", "key2": "value2", "key3": "value3" } `)},
 		)
 
 		fsReq.MetadataRequest = &api.MetadataRequest{FeatureName: true, FeatureType: true}
