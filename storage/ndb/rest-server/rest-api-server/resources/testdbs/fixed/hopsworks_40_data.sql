@@ -149,6 +149,19 @@ VALUES
         1, NULL, NULL, NULL, NULL, 1
     );
 
+INSERT INTO
+    `on_demand_feature`
+VALUES
+    (
+        1, 1, 'f1', 0, NULL, 'struct<key1:string,key2:string,key3:string>', 2, NULL
+    ),
+    (
+        2, 1, 'ts', 0, NULL, 'date', 1, NULL
+    ),
+    (
+        3, 1, 'id', 1, NULL, 'bigint', 0, NULL
+    );
+
 
 INSERT INTO
     `stream_feature_group`
@@ -179,6 +192,12 @@ VALUES
     ),
     (
         2065, 1
+    ),
+    (
+        2066, 1
+    ),
+    (
+        2067, 1
     );
 
 INSERT INTO
@@ -229,13 +248,13 @@ VALUES
         36   , 'iris_modal'              , 69    , Timestamp('2023-09-26 10:02:58') , 10000   , 1       , NULL        , 2       , NULL     , NULL    , 18      , NULL       , 1              , NULL       , NULL            , FALSE      , 0
     )    ,
     (
-        37   , 'spine'                   , 69    , Timestamp('2023-09-26 10:02:58') , 10000   , 1       , NULL        , 1       , 1        , NULL    , 18      , 'ts'       , 1              , NULL       , NULL            , FALSE      , 0
+        37   , 'spine'                   , 69    , Timestamp('2023-09-26 10:02:58') , 10000   , 1       , NULL        , 1       , 1        , NULL    , NULL    , 'ts'       , 1              , NULL       , NULL            , FALSE      , 0
     )    ,
     (
-        38   , 'fg1'                     , 69    , Timestamp('2023-09-26 10:02:58') , 10000   , 1       , NULL        , 2       , NULL     , NULL    , 18      , 'ts'       , 1              , NULL       , NULL            , FALSE      , 0
+        38   , 'fg1'                     , 69    , Timestamp('2023-09-26 10:02:58') , 10000   , 1       , NULL        , 2       , NULL     , NULL    , 2066    , 'ts'       , 1              , NULL       , NULL            , FALSE      , 0
     )    ,
     (
-        39   , 'fg2'                     , 69    , Timestamp('2023-09-26 10:02:58') , 10000   , 1       , NULL        , 2       , NULL     , NULL    , 18      , 'ts'       , 1              , NULL       , NULL            , FALSE      , 0
+        39   , 'fg2'                     , 69    , Timestamp('2023-09-26 10:02:58') , 10000   , 1       , NULL        , 2       , NULL     , NULL    , 2067    , 'ts'       , 1              , NULL       , NULL            , FALSE      , 0
     )    ,
 
     (
@@ -410,7 +429,20 @@ VALUES
         4121, 'sample_share_complex', 67, Timestamp('2023-09-26 10:03:16'), 10000, 1, ''
     );
 
-INSERT INTO 
+INSERT INTO
+    `feature_view_link`
+VALUES
+    (
+        1, 24, 37, 'FSDB004', 'spine', 1
+    ),
+    (
+        2, 24, 38, 'FSDB004', 'fg1', 1
+    ),
+    (
+        3, 24, 39, 'FSDB004', 'fg2', 1
+    );
+
+INSERT INTO
     `training_dataset_join`
 VALUES
     (
@@ -526,10 +558,10 @@ VALUES
         30, NULL, 37, NULL, NULL, 0, 0, 0, NULL, 24
     ),
     (
-        31, NULL, 38, 30,   NULL, 0, 3, 1, 'fg1_', 24
+        31, NULL, 38, 37,   NULL, 3, 1, 0, 'fg1_', 24
     ),
     (
-        32, NULL, 39, 30,   NULL, 0, 3, 2, 'fg2_', 24
+        32, NULL, 39, 37,   NULL, 3, 2, 0, 'fg2_', 24
     ),
 
     (

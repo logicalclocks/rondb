@@ -132,11 +132,16 @@ func GetTrainingDatasetJoinData(featureViewID int) ([]TrainingDatasetJoin, *DalE
 }
 
 type FeatureGroup struct {
-	Name           string
-	FeatureStoreId int
-	Version        int
-	OnlineEnabled  bool
-	NumOfPk        int
+	Name                   string
+	FeatureStoreId         int
+	Version                int
+	OnlineEnabled          bool
+	NumOfPk                int
+	OnDemandFeatureGroupID int
+}
+
+func (fg *FeatureGroup) IsOnDemandFG() bool {
+	return fg.OnDemandFeatureGroupID != 0
 }
 
 func GetFeatureGroupData(featureGroupID int) (*FeatureGroup, *DalError) {
@@ -151,10 +156,11 @@ func GetFeatureGroupData(featureGroupID int) (*FeatureGroup, *DalError) {
 	}
 
 	var fgGo = FeatureGroup{
-		Name:           C.GoString(&fg.name[0]),
-		FeatureStoreId: int(fg.feature_store_id),
-		Version:        int(fg.version),
-		OnlineEnabled:  int(fg.online_enabled) != 0,
+		Name:                   C.GoString(&fg.name[0]),
+		FeatureStoreId:         int(fg.feature_store_id),
+		Version:                int(fg.version),
+		OnlineEnabled:          int(fg.online_enabled) != 0,
+		OnDemandFeatureGroupID: int(fg.on_demand_feature_group_id),
 	}
 	return &fgGo, nil
 }

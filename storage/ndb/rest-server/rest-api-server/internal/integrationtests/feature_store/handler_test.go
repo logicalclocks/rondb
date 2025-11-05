@@ -19,6 +19,7 @@ package feature_store
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -2179,12 +2180,33 @@ func Test_GetSpineFeatureVector_WithMetadata_All_Success(t *testing.T) {
 			fvVersion,
 			pks,
 			*GetPkValues(&row, &pks, &cols),
-			nil,
-			nil,
+			[]string{"f1"},
+			[]interface{}{[]byte(` { "key1": "value1", "key2": "value2", "key3": "value3" } `)},
 		)
+
 		fsReq.MetadataRequest = &api.MetadataRequest{FeatureName: true, FeatureType: true}
+		includeDetailedStatus := true
+		fsReq.OptionsRequest = &api.OptionsRequest{IncludeDetailedStatus: &includeDetailedStatus}
+
+		indented, err := json.MarshalIndent(fsReq, "", " ")
+		if err != nil {
+			t.Fatalf("Cannot MarshalIndent. Error %s ", err)
+		}
+		fmt.Printf("Request: %s", string(indented))
+
 		fsResp := GetFeatureStoreResponse(t, fsReq)
-		ValidateResponseWithData(t, &row, &cols, fsResp)
-		ValidateResponseMetadata(t, &fsResp.Metadata, fsReq.MetadataRequest, fsName, fvName, fvVersion)
+
+		indented, err = json.MarshalIndent(fsResp, "", " ")
+		if err != nil {
+			t.Fatalf("Cannot MarshalIndent. Error %s ", err)
+		}
+		fmt.Printf("Response: %s", string(indented))
+
+		var exCols = make(map[string]bool)
+		exCols["ts"] = true
+		exCols["col2"] = true
+		ValidateResponseWithDataExcludeCols(t, &row, &cols, &exCols, fsResp)
+		ValidateResponseMetadataExCol(t, &fsResp.Metadata, fsReq.MetadataRequest, &exCols, testdbs.FSDB004, fvName, fvVersion)
+
 	}
 }

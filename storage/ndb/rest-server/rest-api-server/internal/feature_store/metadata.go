@@ -74,20 +74,21 @@ type FeatureGroupFeatures struct {
 }
 
 type FeatureMetadata struct {
-	FeatureStoreName    string
-	FeatureStoreId      int
-	FeatureGroupName    string
-	FeatureGroupVersion int
-	FeatureGroupId      int
-	Id                  int
-	Name                string
-	Type                string
-	Index               int
-	Label               bool
-	Prefix              string
-	JoinIndex           int
-	IndexKey            string // joinIndex|fgId|Name
-	ServingKey          string // joinIndex|Name
+	FeatureStoreName       string
+	FeatureStoreId         int
+	FeatureGroupName       string
+	FeatureGroupVersion    int
+	FeatureGroupId         int
+	OnDemandFeatureGroupID int
+	Id                     int
+	Name                   string
+	Type                   string
+	Index                  int
+	Label                  bool
+	Prefix                 string
+	JoinIndex              int
+	IndexKey               string // joinIndex|fgId|Name
+	ServingKey             string // joinIndex|Name
 }
 
 var COMPLEX_FEATURE = map[string]bool{
@@ -99,6 +100,10 @@ var COMPLEX_FEATURE = map[string]bool{
 
 func (f *FeatureMetadata) IsComplex() bool {
 	return COMPLEX_FEATURE[strings.ToUpper(strings.Split(f.Type, "<")[0])]
+}
+
+func (f *FeatureMetadata) IsOnDemand() bool {
+	return f.OnDemandFeatureGroupID != 0
 }
 
 func newFeatureViewMetadata(
@@ -196,7 +201,7 @@ func newFeatureViewMetadata(
 	var fgSchemaCache = make(map[int]*dal.PerFeatureAvroSchema)
 	for _, fgFeature := range fgFeaturesArray {
 		for _, feature := range fgFeature.Features {
-			if (*feature).IsComplex() {
+			if (*feature).IsComplex() && !(*feature).IsOnDemand() {
 				if _, exist := fgSchemaCache[feature.FeatureGroupId]; !exist {
 					projectId, dalErr := dal.GetProjectID(fgFeature.FeatureStoreId)
 					if dalErr != nil {
@@ -370,6 +375,7 @@ func GetFeatureViewMetadata(featureStoreName, featureViewName string, featureVie
 			}
 			fgCache[tdf.FeatureGroupID] = featureGroup
 		}
+
 		feature := FeatureMetadata{}
 		if featureStoreName, exist := fsIdToName[featureGroup.FeatureStoreId]; exist {
 			feature.FeatureStoreName = featureStoreName
@@ -388,6 +394,7 @@ func GetFeatureViewMetadata(featureStoreName, featureViewName string, featureVie
 		feature.FeatureGroupName = featureGroup.Name
 		feature.FeatureGroupVersion = featureGroup.Version
 		feature.FeatureGroupId = tdf.FeatureGroupID
+		feature.OnDemandFeatureGroupID = featureGroup.OnDemandFeatureGroupID
 		feature.Id = tdf.FeatureID
 		feature.Name = tdf.Name
 		feature.Type = tdf.Type

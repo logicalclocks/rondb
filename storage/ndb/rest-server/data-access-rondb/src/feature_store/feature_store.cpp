@@ -643,6 +643,12 @@ RS_Status find_feature_group_data_int(Ndb *ndb_object, int feature_group_id, Fea
 
   fg->feature_store_id = feature_store_id_attr->int32_value();
   fg->version          = feature_group_version_attr->int32_value();
+  
+  if (on_demand_feature_group_id_attr->isNULL()) {
+    fg->on_demand_feature_group_id = 0;
+  } else {
+    fg->on_demand_feature_group_id = on_demand_feature_group_id_attr->int32_value();
+  }
 
   Uint32 name_attr_bytes;
   const char *name_attr_start = nullptr;
