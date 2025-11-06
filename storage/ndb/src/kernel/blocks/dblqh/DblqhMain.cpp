@@ -157,7 +157,7 @@
 //#define DEBUG_RATE_SEND 1
 //#define DEBUG_RATE_DETAIL 1
 //#define DEBUG_QUOTAS 1
-#define DEBUG_CONT_SCAN 1
+//#define DEBUG_CONT_SCAN 1
 #endif
 
 #ifdef DEBUG_CONT_SCAN 
