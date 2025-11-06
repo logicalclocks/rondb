@@ -37,7 +37,7 @@
 #define JAM_FILE_ID 410
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
-#define DEBUG_CONT_SCAN 1
+//#define DEBUG_CONT_SCAN 1
 #endif
 
 #ifdef DEBUG_CONT_SCAN

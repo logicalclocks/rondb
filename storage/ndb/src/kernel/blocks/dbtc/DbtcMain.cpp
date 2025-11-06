@@ -144,9 +144,9 @@
 //#define DEBUG_RATE_QUEUE_DROP 1
 //#define DEBUG_QUOTA_ABORT 1
 //#define DEBUG_TRACK_EXEC_FLAG 1
-#define DEBUG_SCAN_MANY 1
+//#define DEBUG_SCAN_MANY 1
 //#define DEBUG_RATE_OVERFLOW 1
-#define DEBUG_CONT_SCAN 1
+//#define DEBUG_CONT_SCAN 1
 #endif
 
 #define MAX_QUEUE_TIME_MS 60
