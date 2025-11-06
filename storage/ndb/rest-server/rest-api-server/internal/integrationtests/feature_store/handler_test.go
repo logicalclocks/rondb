@@ -19,7 +19,6 @@ package feature_store
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -2180,35 +2179,52 @@ func Test_GetSpineFeatureVector_WithMetadata_All_Success(t *testing.T) {
 			fvVersion,
 			pks,
 			*GetPkValues(&row, &pks, &cols),
-			nil,
-			nil,
-			// []string{"f1"},
-			// []interface{}{[]byte(` { "key1": "value1", "key2": "value2", "key3": "value3" } `)},
+			// nil,
+			// nil,
+			[]string{"f1"},
+			[]interface{}{[]byte(` { "key1": "value1", "key2": "value2", "key3": "value3" } `)},
 		)
 
 		fsReq.MetadataRequest = &api.MetadataRequest{FeatureName: true, FeatureType: true}
 		includeDetailedStatus := true
 		fsReq.OptionsRequest = &api.OptionsRequest{IncludeDetailedStatus: &includeDetailedStatus}
 
-		indented, err := json.MarshalIndent(fsReq, "", " ")
-		if err != nil {
-			t.Fatalf("Cannot MarshalIndent. Error %s ", err)
-		}
-		fmt.Printf("Request: %s", string(indented))
-
 		fsResp := GetFeatureStoreResponse(t, fsReq)
-
-		indented, err = json.MarshalIndent(fsResp, "", " ")
-		if err != nil {
-			t.Fatalf("Cannot MarshalIndent. Error %s ", err)
-		}
-		fmt.Printf("Response: %s", string(indented))
 
 		var exCols = make(map[string]bool)
 		exCols["ts"] = true
 		exCols["col2"] = true
 		ValidateResponseWithDataExcludeCols(t, &row, &cols, &exCols, fsResp)
 		ValidateResponseMetadataExCol(t, &fsResp.Metadata, fsReq.MetadataRequest, &exCols, testdbs.FSDB004, fvName, fvVersion)
+	}
+}
 
+func Test_GetSpineFeatureVector_WithMetadata_Missing_Spine(t *testing.T) {
+	var fsName = testdbs.FSDB004
+	var fvName = "fv_spine_group"
+	var fvVersion = 1
+	rows, pks, cols, err := GetSampleData(fsName, "fg1_1")
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+	for _, row := range rows {
+		var fsReq = CreateFeatureStoreRequest(
+			fsName,
+			fvName,
+			fvVersion,
+			pks,
+			*GetPkValues(&row, &pks, &cols),
+			nil,
+			nil,
+		)
+
+		fsReq.MetadataRequest = &api.MetadataRequest{FeatureName: true, FeatureType: true}
+		includeDetailedStatus := true
+		fsReq.OptionsRequest = &api.OptionsRequest{IncludeDetailedStatus: &includeDetailedStatus}
+
+		fsResp := GetFeatureStoreResponse(t, fsReq)
+		if fsResp.Status != "MISSING" {
+			t.Fatalf("Status should be MISSING")
+		}
 	}
 }

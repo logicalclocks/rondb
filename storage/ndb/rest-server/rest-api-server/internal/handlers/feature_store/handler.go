@@ -276,10 +276,18 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, func(
 	if log.IsDebug() {
 		log.Debugf("Detailed Status : %s", detailedStatus)
 	}
+
 	fsResp := response.(*api.FeatureStoreResponse)
+	onDemandFeaturedPassed := FillPassedFeatures(features, fsReq.PassedFeatures, &metadata.PrefixFeaturesLookup, &metadata.FeatureIndexLookup)
+	if !onDemandFeaturedPassed {
+		// set status error if not already set to some error
+		if status == api.FEATURE_STATUS_COMPLETE {
+			status = api.FEATURE_STATUS_MISSING
+		}
+	}
 	fsResp.Status = status
-	FillPassedFeatures(features, fsReq.PassedFeatures, &metadata.PrefixFeaturesLookup, &metadata.FeatureIndexLookup)
 	fsResp.Features = *features
+
 	if fsReq.MetadataRequest != nil {
 		fsResp.Metadata = *GetFeatureMetadata(metadata, fsReq.MetadataRequest)
 	}
@@ -611,7 +619,28 @@ func getPkReadResponseJSON(metadata feature_store.FeatureViewMetadata) *api.Batc
 	return &response
 }
 
-func FillPassedFeatures(features *[]interface{}, passedFeatures *map[string]*json.RawMessage, featureMetadataMap *map[string][]*feature_store.FeatureMetadata, indexLookup *map[string]int) {
+// Return false if OnDemand features were not passed
+// Otherwise return true
+func FillPassedFeatures(features *[]interface{}, passedFeatures *map[string]*json.RawMessage,
+	featureMetadataMap *map[string][]*feature_store.FeatureMetadata, indexLookup *map[string]int) bool {
+
+	// count features that MUST be filled
+	// On demand / spine features must be supplied by the user.
+	var onDemandFeaturesCount = 0
+	var passedOnDemandFeaturesCount = 0
+	for _, featureMetadata := range *featureMetadataMap {
+		for _, fmd := range featureMetadata {
+			if fmd != nil {
+				var lookupKey = feature_store.GetFeatureIndexKeyByFeature(fmd)
+				if index, ok := (*indexLookup)[lookupKey]; ok {
+					if (*features)[index] == nil && fmd.IsOnDemand() {
+						onDemandFeaturesCount++
+					}
+				}
+			}
+		}
+	}
+
 	if passedFeatures != nil {
 		for featureName, passFeature := range *passedFeatures {
 
@@ -621,9 +650,14 @@ func FillPassedFeatures(features *[]interface{}, passedFeatures *map[string]*jso
 					var lookupKey = feature_store.GetFeatureIndexKeyByFeature(featureMetadata)
 					if index, ok := (*indexLookup)[lookupKey]; ok {
 						(*features)[index] = passFeature
+						if featureMetadata.IsOnDemand() {
+							passedOnDemandFeaturesCount++
+						}
 					}
 				}
 			}
 		}
 	}
+
+	return onDemandFeaturesCount == passedOnDemandFeaturesCount
 }
