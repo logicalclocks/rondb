@@ -212,13 +212,15 @@ func getFeatureValuesMultipleEntries(batchResponse *api.BatchOpResponse, entries
 	ronDbBatchResult := make([][]*api.PKReadResponseWithCodeJSON, len(*batchStatus))
 	batchResult := make([][]interface{}, len(*batchStatus))
 	for _, response := range *rondbResp.Result {
-		splitOperationId := strings.Split(*response.Body.OperationID, SEQUENCE_SEPARATOR)
-		seqNum, err := strconv.Atoi(splitOperationId[0])
-		if err != nil {
-			return nil, feature_store.READ_FROM_DB_FAIL
+		if response != nil {
+			splitOperationId := strings.Split(*response.Body.OperationID, SEQUENCE_SEPARATOR)
+			seqNum, err := strconv.Atoi(splitOperationId[0])
+			if err != nil {
+				return nil, feature_store.READ_FROM_DB_FAIL
+			}
+			*response.Body.OperationID = splitOperationId[1]
+			ronDbBatchResult[seqNum] = append(ronDbBatchResult[seqNum], response)
 		}
-		*response.Body.OperationID = splitOperationId[1]
-		ronDbBatchResult[seqNum] = append(ronDbBatchResult[seqNum], response)
 	}
 	for i, ronDbResult := range ronDbBatchResult {
 		if len(ronDbResult) != 0 {
@@ -259,11 +261,24 @@ func getPkReadResponseJSON(numEntries int, metadata feature_store.FeatureViewMet
 	return &response
 }
 
-func fillPassedFeaturesMultipleEntries(features *[][]interface{}, passedFeatures *[]*map[string]*json.RawMessage, featureMetadata *map[string][]*feature_store.FeatureMetadata, indexLookup *map[string]int, status *[]api.FeatureStatus) {
-	if passedFeatures != nil && len(*passedFeatures) != 0 {
-		for i, feature := range *features {
-			if (*status)[i] != api.FEATURE_STATUS_ERROR {
-				fshandler.FillPassedFeatures(&feature, (*passedFeatures)[i], featureMetadata, indexLookup)
+func fillPassedFeaturesMultipleEntries(features *[][]interface{},
+	passedFeatures *[]*map[string]*json.RawMessage,
+	featureMetadata *map[string][]*feature_store.FeatureMetadata,
+	indexLookup *map[string]int, status *[]api.FeatureStatus) {
+
+	for i, feature := range *features {
+		if (*status)[i] != api.FEATURE_STATUS_ERROR {
+
+			var passedFeature *map[string]*json.RawMessage = nil
+			if passedFeatures != nil && len(*passedFeatures) != 0 {
+				passedFeature = (*passedFeatures)[i]
+			}
+			onDemandFeaturedPassed := fshandler.FillPassedFeatures(&feature, passedFeature, featureMetadata, indexLookup)
+			if !onDemandFeaturedPassed {
+				// set status error if not already set to some error
+				if (*status)[i] == api.FEATURE_STATUS_COMPLETE {
+					(*status)[i] = api.FEATURE_STATUS_MISSING
+				}
 			}
 		}
 	}

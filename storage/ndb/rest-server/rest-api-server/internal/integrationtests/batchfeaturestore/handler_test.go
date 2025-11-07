@@ -2511,3 +2511,61 @@ func Test_GetFeatureVector_Shared_ComplexType(t *testing.T) {
 	ValidateResponseWithData(t, &rows, &cols, fsResp)
 	fshelper.ValidateResponseMetadata(t, &fsResp.Metadata, fsReq.MetadataRequest, testdbs.FSDB001, "sample_share_complex", 1)
 }
+
+func Test_GetSpineFeatureVector_WithMetadata_All_Success(t *testing.T) {
+	var fsName = testdbs.FSDB004
+	var fvName = "fv_spine_group"
+	var fvVersion = 1
+	rows, pks, cols, err := fshelper.GetNSampleData(fsName, "fg1_1", 2)
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+
+	var fsReq = CreateFeatureStoreRequest(
+		fsName,
+		fvName,
+		fvVersion,
+		pks,
+		*GetPkValues(&rows, &pks, &cols),
+		// nil,
+		// nil,
+		[]string{"f1"},
+		[][]interface{}{{[]byte(` { "key1": "value1", "key2": "value2", "key3": "value3" } `)}, {[]byte(` { "key1": "value1", "key2": "value2", "key3": "value3" } `)}},
+	)
+	fsReq.MetadataRequest = &api.MetadataRequest{FeatureName: true, FeatureType: true}
+
+	fsResp := GetFeatureStoreResponse(t, fsReq)
+
+	var exCols = make(map[string]bool)
+	exCols["ts"] = true
+	exCols["col2"] = true
+	ValidateResponseWithDataExcludeCols(t, &rows, &cols, &exCols, fsResp)
+}
+
+func Test_GetSpineFeatureVector_WithMetadata_Missing_Spine(t *testing.T) {
+	var fsName = testdbs.FSDB004
+	var fvName = "fv_spine_group"
+	var fvVersion = 1
+	rows, pks, cols, err := fshelper.GetNSampleData(fsName, "fg1_1", 2)
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+
+	var fsReq = CreateFeatureStoreRequest(
+		fsName,
+		fvName,
+		fvVersion,
+		pks,
+		*GetPkValues(&rows, &pks, &cols),
+		nil,
+		nil,
+	)
+	fsResp := GetFeatureStoreResponse(t, fsReq)
+
+	if fsResp.Status[0] != "MISSING" {
+		t.Fatalf("Status should be MISSING")
+	}
+	if fsResp.Status[1] != "MISSING" {
+		t.Fatalf("Status should be MISSING")
+	}
+}
