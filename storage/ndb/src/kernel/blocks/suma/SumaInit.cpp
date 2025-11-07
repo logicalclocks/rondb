@@ -185,7 +185,7 @@ bool Suma::getParam(const char *param, Uint32 *retVal) {
        * being subscribers
        */
 
-      *retVal = MAX_NODES;
+      *retVal = ABS_MAX_NODES;
       return true;
     }
   }

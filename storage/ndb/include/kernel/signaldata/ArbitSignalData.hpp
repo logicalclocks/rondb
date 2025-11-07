@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2025, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -151,10 +152,10 @@ class ArbitSignalData {
   Uint32 code;          // result code or other info
   Uint32 node;          // arbitrator node id
   ArbitTicket ticket;   // ticket
-  NodeBitmaskPOD mask;  // set of nodes
+  NdbNodeBitmaskPOD mask;  // set of nodes
 
   static constexpr Uint32 SignalLength =
-      3 + ArbitTicket::DataLength + NodeBitmask::Size;
+      3 + ArbitTicket::DataLength + NdbNodeBitmask::Size;
 
   inline bool match(ArbitSignalData &aData) const {
     return node == aData.node && ticket.match(aData.ticket);

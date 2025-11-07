@@ -371,7 +371,7 @@ class NdbMgmd {
       return false;
     }
 
-    ndb_mgm::config_ptr conf(ndb_mgm_get_configuration(m_handle, 0));
+    ndb_mgm::config_ptr conf(ndb_mgm_get_configuration(m_handle, NDB_VERSION));
     if (!conf) {
       error("get_config: ndb_mgm_get_configuration failed");
       return false;

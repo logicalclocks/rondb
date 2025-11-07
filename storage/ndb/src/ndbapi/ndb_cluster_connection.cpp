@@ -339,7 +339,7 @@ unsigned Ndb_cluster_connection::max_nodegroup() {
     // If any node is answering, ndb is answering
     //************************************************
     trp_node n = tp->theClusterMgr->getNodeInfo(node_id);
-    if (n.is_confirmed() && n.m_state.nodeGroup <= MAX_NDB_NODES)
+    if (n.is_confirmed() && n.m_state.nodeGroup <= ABS_MAX_NDB_NODES)
       ng.set(n.m_state.nodeGroup);
   }
   tp->unlock_poll_mutex();
@@ -832,7 +832,7 @@ Ndb_cluster_connection_impl::set_location_domain_id(Uint32 nodeId,
   if (nodeId == m_my_node_id) {
     m_my_location_domain_id = locationDomainId;
   } else {
-    if (nodeId >=  MAX_NDB_NODES ||
+    if (nodeId >=  ABS_MAX_NDB_NODES ||
         m_db_nodes.get(nodeId) == 0) { // Thus it is another API node
       DBUG_RETURN(0);
     }
@@ -859,7 +859,7 @@ Ndb_cluster_connection_impl::set_location_domain_id(Uint32 nodeId,
     }
   } else {
     /* We move to a new LocationDomainId for our node */
-    for (Uint32 i = 1; i < MAX_NDB_NODES; i++) {
+    for (Uint32 i = 1; i < ABS_MAX_NDB_NODES; i++) {
       if (m_db_nodes.get(i) == 0) continue;
       Int32 adjustment = 0;
       if (old_locationDomainId == m_location_domain_id[i] &&
@@ -1097,8 +1097,8 @@ int Ndb_cluster_connection_impl::init_nodes_vector(
 }
 
 Uint32 Ndb_cluster_connection_impl::get_db_nodes(
-    Uint8 arr[MAX_NDB_NODES]) const {
-  require(m_db_nodes.count() < MAX_NDB_NODES);
+    Uint8 arr[ABS_MAX_NDB_NODES]) const {
+  require(m_db_nodes.count() < ABS_MAX_NDB_NODES);
   Uint32 cnt = 0;
   for (Uint32 node_id = m_db_nodes.find_first();
        node_id != NdbNodeBitmask::NotFound;
@@ -1113,6 +1113,7 @@ Uint32
 Ndb_cluster_connection_impl::get_unconnected_db_nodes(
   Uint32 & num_connected_db_nodes) const
 {
+  DBUG_ENTER("Ndb_cluster_connection_impl::get_unconnected_db_nodes");
   TransporterFacade *tp = m_transporter_facade;
 
   NdbNodeBitmask not_active;// All nodes not_active
@@ -1127,16 +1128,19 @@ Ndb_cluster_connection_impl::get_unconnected_db_nodes(
     const trp_node& node = tp->theClusterMgr->getNodeInfo(node_id);
     if (!node.m_node_active)
     {
+      DBUG_PRINT("info", ("Node %u not active", node_id));
       not_active.set(node_id);
       continue;
     }
     if (!node.m_alive)
     {
+      DBUG_PRINT("info", ("Node %u not alive", node_id));
       continue;
     }
+    DBUG_PRINT("info", ("Node %u alive", node_id));
     connected.set(node_id);
     NdbNodeBitmask nodes;
-    // Truncate NodeBitmask to NdbNodeBitmask, data nodes are in lower bits
+    // Truncate NodeBitmask255 to NdbNodeBitmask, data nodes are in lower bits
     nodes.assign(nodes.Size, node.m_state.m_connected_nodes.rep.data);
     started.bitOR(nodes);
   }
@@ -1147,7 +1151,7 @@ Ndb_cluster_connection_impl::get_unconnected_db_nodes(
      * No db nodes connected, means all unconnected.
      */
     assert(m_db_nodes.count() == m_nodes_comm_group.size());
-    return m_nodes_comm_group.size();
+    DBUG_RETURN(m_nodes_comm_group.size());
   }
 
   /**
@@ -1157,10 +1161,12 @@ Ndb_cluster_connection_impl::get_unconnected_db_nodes(
    */
   connected.bitAND(m_db_nodes);
   num_connected_db_nodes = connected.count();
+  DBUG_PRINT("info", ("num_connected_db_nodes: %u",
+    num_connected_db_nodes));
   not_active.bitAND(m_db_nodes);
   started.bitAND(m_db_nodes);
   started.bitANDC(not_active);
-  return started.bitANDC(connected).count();
+  DBUG_RETURN(started.bitANDC(connected).count());
 }
 
 int Ndb_cluster_connection_impl::configure(
@@ -1554,7 +1560,7 @@ bool Ndb_cluster_connection::release_ndb_wait_group(NdbWaitGroup *group) {
 }
 
 Uint32 Ndb_cluster_connection_impl::select_any(NdbImpl *impl_ndb) {
-  Uint16 prospective_node_ids[MAX_NDB_NODES];
+  Uint16 prospective_node_ids[ABS_MAX_NDB_NODES];
   Uint32 num_prospective_nodes = 0;
   Uint32 my_location_domain_id = m_my_location_domain_id;
   DBUG_ENTER("Ndb_cluster_connection_impl::select_any");
@@ -1599,7 +1605,7 @@ Ndb_cluster_connection_impl::select_location_based(NdbImpl *impl_ndb,
                                                    Uint32 primary_node)
 {
   Uint16 *node_hint_count = &impl_ndb->m_node_hint_count[0];
-  Uint16 prospective_node_ids[MAX_NDB_NODES];
+  Uint16 prospective_node_ids[ABS_MAX_NDB_NODES];
   Uint32 num_prospective_nodes = 0;
   Uint32 my_location_domain_id = m_my_location_domain_id;
   DBUG_ENTER("Ndb_cluster_connection_impl::select_location_based");
@@ -1752,6 +1758,7 @@ int Ndb_cluster_connection::wait_until_ready(const int *nodes, int cnt,
       DBUG_RETURN(-1);
     }
     mask.set(nodes[i]);
+    DBUG_PRINT("info", ("Starting node %u", nodes[i]));
   }
 
   TransporterFacade *tp = m_impl.m_transporter_facade;
@@ -1776,10 +1783,13 @@ int Ndb_cluster_connection::wait_until_ready(const int *nodes, int cnt,
       //************************************************
       // If any node is answering, ndb is answering
       //************************************************
-      if (tp->get_node_alive(node_id) != 0)
+      if (tp->get_node_alive(node_id) != 0) {
+        DBUG_PRINT("info", ("Node %u is alive", node_id));
         alive.set(node_id);
-      else
+      } else {
+        DBUG_PRINT("info", ("Node %u is dead", node_id));
         dead.set(node_id);
+      }
     }
     tp->unlock_poll_mutex();
 

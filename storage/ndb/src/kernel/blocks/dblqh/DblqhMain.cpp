@@ -157,7 +157,7 @@
 //#define DEBUG_RATE_SEND 1
 //#define DEBUG_RATE_DETAIL 1
 //#define DEBUG_QUOTAS 1
-#define DEBUG_CONT_SCAN 1
+//#define DEBUG_CONT_SCAN 1
 #endif
 
 #ifdef DEBUG_CONT_SCAN 
@@ -15460,7 +15460,7 @@ void Dblqh::sendTCKEYREF(Signal *signal, Uint32 ref, Uint32 routeRef,
 void Dblqh::execNODE_FAILREP(Signal *signal) {
   UintR TfoundNodes = 0;
   UintR TnoOfNodes;
-  UintR Tdata[MAX_NDB_NODES];
+  UintR Tdata[ABS_MAX_NDB_NODES];
   Uint32 i;
 
   NodeFailRep const nodeFail = *(NodeFailRep *)&signal->theData[0];

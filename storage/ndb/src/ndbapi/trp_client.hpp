@@ -47,9 +47,9 @@ class trp_client : TransporterSendBufferHandle {
  public:
   /**
    * The clients does not use MultiTransporters. Thus the max number
-   * of client transporters are limited by 'MAX_NODES'.
+   * of client transporters are limited by 'ABS_MAX_NODES'.
    */
-  static constexpr Uint32 MAX_TRPS = MAX_NODES;
+  static constexpr Uint32 MAX_TRPS = ABS_MAX_NODES;
 
   trp_client();
   ~trp_client() override;

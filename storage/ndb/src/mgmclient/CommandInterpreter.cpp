@@ -53,7 +53,7 @@ enum StopState
   StopStarted = 2,
   StopCompleted = 3
 };
-static StopState g_stop_state[MAX_NDB_NODES];
+static StopState g_stop_state[ABS_MAX_NDB_NODES];
 
 #include "portlib/ndb_password.h"
 #include "util/TlsKeyManager.hpp"
@@ -1357,7 +1357,7 @@ class ClusterInfo {
 
   bool is_valid_ndb_nodeid(int nodeid) const {
     // Check valid NDB nodeid
-    if (nodeid < 1 || nodeid >= MAX_NDB_NODES) {
+    if (nodeid < 1 || nodeid >= ABS_MAX_NDB_NODES) {
       ndbout_c("ERROR: illegal nodeid %d!", nodeid);
       return false;
     }
@@ -1604,12 +1604,12 @@ bool CommandInterpreter::execute_impl(const char *_line, bool interactive) {
     /**
      * First tokens should be digits, node ID's
      */
-    int node_ids[MAX_NODES];
+    int node_ids[ABS_MAX_NODES];
     unsigned pos;
     for (pos = 0; pos < command_list.size(); pos++) {
       int node_id;
       if (convert(command_list[pos].c_str(), node_id)) {
-        if (node_id <= 0 || node_id > MAX_NODES) {
+        if (node_id <= 0 || node_id > ABS_MAX_NODES) {
           ndbout << "Invalid node ID: " << command_list[pos].c_str() << "."
                  << endl;
           DBUG_RETURN(true);
@@ -2112,7 +2112,8 @@ int CommandInterpreter::executeShow(char *parameters) {
     }
     NdbAutoPtr<char> ap1((char *)state);
 
-    const ndb_mgm::config_ptr conf(ndb_mgm_get_configuration(m_mgmsrv, 0));
+    const ndb_mgm::config_ptr conf(ndb_mgm_get_configuration(m_mgmsrv,
+                                                             NDB_VERSION));
     if (!conf) {
       ndbout_c("Could not get configuration");
       printError();
@@ -2443,7 +2444,8 @@ int CommandInterpreter::executeStop(Vector<BaseString> &command_list,
   if (no_of_nodes > 0)
   {
     /* Check that nodes to stop are not already deactivated */
-    ndb_mgm_configuration * conf = ndb_mgm_get_configuration(m_mgmsrv,0);
+    ndb_mgm_configuration * conf = ndb_mgm_get_configuration(m_mgmsrv,
+                                                             NDB_VERSION);
     if (conf == 0)
     {
       ndbout_c("Could not get configuration");
@@ -2546,7 +2548,7 @@ CommandInterpreter::get_node_section(ConfigValues::Iterator & iter,
 {
   bool ret;
   Uint32 check_node_id = 0;
-  for (int i = 0; i < MAX_NODES; i++)
+  for (int i = 0; i < ABS_MAX_NODES; i++)
   {
     if (!iter.openSection(CFG_SECTION_NODE, i))
       continue;
@@ -2583,7 +2585,7 @@ CommandInterpreter::count_active_nodes(ndb_mgm_configuration *conf,
 {
   Uint32 node_count = 0;
   ConfigValues::Iterator iter(conf->m_config_values);
-  for (int i = 0; i < MAX_NODES; i++)
+  for (int i = 0; i < ABS_MAX_NODES; i++)
   {
     if (!iter.openSection(CFG_SECTION_NODE, i))
       continue;
@@ -2662,7 +2664,8 @@ CommandInterpreter::executeSetDomain(int processId,
     return -1;
   }
 
-  ndb_mgm_configuration * conf = ndb_mgm_get_configuration(m_mgmsrv,0);
+  ndb_mgm_configuration * conf = ndb_mgm_get_configuration(m_mgmsrv,
+                                                           NDB_VERSION);
   if (conf == 0)
   {
     ndbout_c("Could not get configuration");
@@ -2763,7 +2766,8 @@ CommandInterpreter::executeHostname(int processId,
     return -1;
   }
 
-  ndb_mgm_configuration * conf = ndb_mgm_get_configuration(m_mgmsrv,0);
+  ndb_mgm_configuration * conf = ndb_mgm_get_configuration(m_mgmsrv,
+                                                           NDB_VERSION);
   if (conf == 0)
   {
     ndbout_c("Could not get configuration");
@@ -2872,7 +2876,8 @@ CommandInterpreter::executeActivate(int processId,
   (void)is_node_up;
   (void)node_type;
 
-  ndb_mgm_configuration * conf = ndb_mgm_get_configuration(m_mgmsrv,0);
+  ndb_mgm_configuration * conf = ndb_mgm_get_configuration(m_mgmsrv,
+                                                           NDB_VERSION);
   if (conf == 0)
   {
     ndbout_c("Could not get configuration");
@@ -3054,7 +3059,8 @@ CommandInterpreter::executeDeactivate(int processId,
     return -1;
   }
 
-  ndb_mgm_configuration * conf = ndb_mgm_get_configuration(m_mgmsrv,0);
+  ndb_mgm_configuration * conf = ndb_mgm_get_configuration(m_mgmsrv,
+                                                           NDB_VERSION);
   if (conf == 0)
   {
     ndbout_c("Could not get configuration");

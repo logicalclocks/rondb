@@ -151,7 +151,7 @@ NodeBitmask SignalSender::broadcastSignal(NodeBitmask mask, SimpleSignal &sig,
   sig.set(*this, TestOrd::TraceAPI, recBlock, gsn, len);
 
   NodeBitmask result;
-  for (Uint32 i = 0; i < MAX_NODES; i++) {
+  for (Uint32 i = 0; i < ABS_MAX_NODES; i++) {
     if (mask.get(i) && sendSignal(i, &sig) == SEND_OK) result.set(i);
   }
   return result;
@@ -281,7 +281,7 @@ NodeId SignalSender::find_node(const NodeBitmask &mask,
 
     if (n == NodeBitmask::NotFound) return 0;
 
-    assert(n < MAX_NODES);
+    assert(n < ABS_MAX_NODES);
 
   } while (!cond(getNodeInfo(n)));
 

@@ -104,7 +104,7 @@ class TrpmanProxy : public LocalProxy {
       m_sendREQ = (SsFUNCREQ)&TrpmanProxy::sendCLOSE_COMREQ;
       m_sendCONF = (SsFUNCREP)&TrpmanProxy::sendCLOSE_COMCONF;
     }
-    enum { poolSize = MAX_NODES };
+    enum { poolSize = ABS_MAX_NODES };
     static SsPool<Ss_CLOSE_COMREQ> &pool(LocalProxy *proxy) {
       return ((TrpmanProxy *)proxy)->c_ss_CLOSE_COMREQ;
     }
@@ -122,7 +122,7 @@ class TrpmanProxy : public LocalProxy {
       m_sendREQ = (SsFUNCREQ)&TrpmanProxy::sendENABLE_COMREQ;
       m_sendCONF = (SsFUNCREP)&TrpmanProxy::sendENABLE_COMCONF;
     }
-    enum { poolSize = MAX_NODES };
+    enum { poolSize = ABS_MAX_NODES };
     static SsPool<Ss_ENABLE_COMREQ> &pool(LocalProxy *proxy) {
       return ((TrpmanProxy *)proxy)->c_ss_ENABLE_COMREQ;
     }

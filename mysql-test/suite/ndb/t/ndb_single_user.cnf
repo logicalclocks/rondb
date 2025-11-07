@@ -9,8 +9,8 @@ ndb-cluster-connection-pool=1
 
 [mysqld.1.1]
 # Specify which nodeid the connection pool on first mysqld should use
-ndb-cluster-connection-pool-nodeids=49
+ndb-cluster-connection-pool-nodeids=494
 
 [mysqld.2.1]
 # Specify which nodeid the connection pool on second mysqld should use
-ndb-cluster-connection-pool-nodeids=16
+ndb-cluster-connection-pool-nodeids=1600

@@ -189,11 +189,11 @@ class NdbImpl : public trp_client {
   NdbObjectIdMap theNdbObjectIdMap;
 
   Uint32 theNoOfDBnodes;            // The number of DB nodes
-  Uint8 theDBnodes[MAX_NDB_NODES];  // The node number of the DB nodes
+  Uint8 theDBnodes[ABS_MAX_NDB_NODES];  // The node number of the DB nodes
 
   // 1 indicates to release all connections to node
-  Uint32 the_release_ind[MAX_NDB_NODES];
-  Uint16 m_node_hint_count[MAX_NDB_NODES];
+  Uint32 the_release_ind[ABS_MAX_NDB_NODES];
+  Uint16 m_node_hint_count[ABS_MAX_NDB_NODES];
 
   NdbWaiter theWaiter;
 
@@ -205,7 +205,7 @@ class NdbImpl : public trp_client {
    */
   NDB_TICKS m_start_time;
 
-  AssembleBatchedFragments m_suma_fragmented_signals[MAX_NDB_NODES];
+  AssembleBatchedFragments m_suma_fragmented_signals[ABS_MAX_NDB_NODES];
   NdbEventOperationImpl *m_ev_op;
 
   int m_optimized_node_selection;

@@ -50,7 +50,7 @@
 #define JAM_FILE_ID 453
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
-#define DEBUG_START_RES 1
+//#define DEBUG_START_RES 1
 //#define DEBUG_RES 1
 //#define DEBUG_RES_OPEN 1
 //#define DEBUG_RES_PARTS 1

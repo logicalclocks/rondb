@@ -2106,11 +2106,11 @@ NdbTableImpl::calculate_primary_replicas(bool initial,
   /**
    * Prepare local data structures for this function
    */
-  TmpNodeGroup ng_data[MAX_NDB_NODES];
-  bool node_found[MAX_NDB_NODES];
-  NodeId node_ng_map[MAX_NDB_NODES];
+  TmpNodeGroup ng_data[ABS_MAX_NDB_NODES];
+  bool node_found[ABS_MAX_NDB_NODES];
+  NodeId node_ng_map[ABS_MAX_NDB_NODES];
   Uint32 *primary_nodes = m_primary_nodes.getBase();
-  for (Uint32 i = 0; i < MAX_NDB_NODES; i++)
+  for (Uint32 i = 0; i < ABS_MAX_NDB_NODES; i++)
   {
     node_found[i] = false;
     node_ng_map[i] = ZNIL;
@@ -2142,7 +2142,7 @@ NdbTableImpl::calculate_primary_replicas(bool initial,
     for (Uint32 j = 0; j < m_replicaCount; j++)
     {
       Uint32 node = nodes[j];
-      require(node < MAX_NDB_NODES);
+      require(node < ABS_MAX_NDB_NODES);
       if (first)
       {
         require(node_found[node] == false);
@@ -2194,9 +2194,9 @@ NdbTableImpl::calculate_primary_replicas(bool initial,
   {
     Uint32 pos = i * m_replicaCount;
     Uint16 *nodes = m_fragments.getBase() + pos;
-    require(nodes[0] < MAX_NDB_NODES);
+    require(nodes[0] < ABS_MAX_NDB_NODES);
     Uint32 ng_i = node_ng_map[nodes[0]];
-    require(ng_i < MAX_NDB_NODES);
+    require(ng_i < ABS_MAX_NDB_NODES);
     require(ng_i < next_ng);
     if (ng_data[ng_i].num_nodes_alive == 0)
     {
@@ -2240,7 +2240,7 @@ NdbTableImpl::calculate_node_groups()
 {
   m_numNodeGroups = 0;
   Uint16 *nodes = m_fragments.getBase();
-  bool node_array[MAX_NDB_NODES];
+  bool node_array[ABS_MAX_NDB_NODES];
 
 #ifdef DEBUG_PRIMARY_KEY_DISTRIBUTION
   fprintf(stderr, "Table: %s", getMysqlName());
@@ -2252,7 +2252,7 @@ NdbTableImpl::calculate_node_groups()
   {
     return;
   }
-  for (Uint32 i = 0; i < MAX_NDB_NODES; i++)
+  for (Uint32 i = 0; i < ABS_MAX_NDB_NODES; i++)
     node_array[i] = false;
   Uint32 num_fragments = m_fragmentCount;
   Uint32 fragment_array_size = num_fragments * m_replicaCount;
@@ -2281,7 +2281,7 @@ NdbTableImpl::calculate_node_groups()
   fprintf(stderr, "\n");
 #endif
   Uint32 num_nodes = 0;
-  for (Uint32 i = 1; i < MAX_NDB_NODES; i++)
+  for (Uint32 i = 1; i < ABS_MAX_NDB_NODES; i++)
   {
     if (node_array[i])
       num_nodes++;
@@ -9889,7 +9889,7 @@ int NdbDictionaryImpl::getDefaultHashmapSize() const {
 }
 
 bool NdbDictInterface::checkAllNodeVersionsMin(Uint32 minNdbVersion) const {
-  for (Uint32 nodeId = 1; nodeId < MAX_NODES; nodeId++) {
+  for (Uint32 nodeId = 1; nodeId < ABS_MAX_NODES; nodeId++) {
     if (m_impl->getIsDbNode(nodeId) && m_impl->getIsNodeSendable(nodeId) &&
         (m_impl->getNodeNdbVersion(nodeId) < minNdbVersion)) {
       /* At least 1 sendable data node has lower-than-min

@@ -71,6 +71,7 @@ ConfigManager::ConfigManager(const MgmtSrvr::MgmtOpts& opts,
   m_prepared_config(NULL),
   m_prepared_already(false),
   m_node_id(0),
+  m_max_node_id(0),
   m_configdir(configdir),
   m_retry(0)
 {
@@ -652,6 +653,8 @@ void ConfigManager::set_config(Config *new_config) {
   m_packed_config_v1.clear();
   m_packed_config_v2.clear();
 
+  get_max_node_id(new_config);
+
   /* Currrently the only subscriber is the MgmtSrvr object. */
   for (unsigned i = 0; i < m_subscribers.size(); i++)
     m_subscribers[i]->config_changed(m_node_id, new_config);
@@ -659,6 +662,18 @@ void ConfigManager::set_config(Config *new_config) {
 
 int ConfigManager::add_config_change_subscriber(ConfigSubscriber *subscriber) {
   return m_subscribers.push_back(subscriber);
+}
+
+void ConfigManager::get_max_node_id(const Config *conf) {
+  Uint32 max_node_id = 0;
+  ConfigIter it(conf, CFG_SECTION_NODE);
+  for (it.first(); it.valid(); it.next()) {
+    Uint32 node_id = 0;
+    require(it.get(CFG_NODE_ID, &node_id) == 0);
+    if (node_id > max_node_id)
+      max_node_id = node_id;
+  }
+  m_max_node_id = max_node_id;
 }
 
 bool ConfigManager::config_ok(const Config *conf) {
@@ -2407,8 +2422,8 @@ bool ConfigManager::DynamicPorts::check(int &node1, int &node2) const {
   }
 
   // Only NDB nodes can be dynamic port server
-  if (node1 <= 0 || node1 >= MAX_NDB_NODES) return false;
-  if (node2 <= 0 || node2 >= MAX_NODES) return false;
+  if (node1 <= 0 || node1 >= ABS_MAX_NDB_NODES) return false;
+  if (node2 <= 0 || node2 >= ABS_MAX_NODES) return false;
   if (node1 == node2) return false;
 
   return true;

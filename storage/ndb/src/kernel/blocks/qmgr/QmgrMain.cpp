@@ -1256,7 +1256,11 @@ void Qmgr::execCM_REGREQ(Signal *signal) {
   Uint32 gci = 1;
   Uint32 start_type = ~0;
 
-  ndbrequire(cmRegReq->nodeId < MAX_NODES);
+  if (cmRegReq->nodeId >= MAX_NDB_NODES) {
+    jam();
+    sendCmRegrefLab(signal, Tblockref, CmRegRef::ZNOT_IN_CFG, startingVersion);
+    return;
+  }
 
   if (!c_connectedNodes.get(cmRegReq->nodeId)) {
     jam();
@@ -1305,6 +1309,20 @@ void Qmgr::execCM_REGREQ(Signal *signal) {
     sendCmRegrefLab(signal, Tblockref, CmRegRef::ZINCOMPATIBLE_VERSION,
                     startingVersion);
     return;
+  }
+
+  if (MAX_NODES > ABS_MAX_NODES) {
+    jam();
+    if (!ndbd_support_2k_api_nodes(startingVersion)) {
+      /**
+       * If configuration contains nodes with high node ids we must have higher
+       * requirements on the version used.
+       */
+      jam();
+      sendCmRegrefLab(signal, Tblockref, CmRegRef::ZINCOMPATIBLE_VERSION,
+                      startingVersion);
+      return;
+    }
   }
 
   if (check_start_type(start_type, c_start.m_start_type)) {
@@ -2082,7 +2100,7 @@ Uint32 Qmgr::check_startup(Signal *signal) {
   wait.bitANDC(tmp);
 
   Uint32 retVal = 0;
-  Uint32 incompleteng = MAX_NDB_NODES;  // Illegal value
+  Uint32 incompleteng = ABS_MAX_NDB_NODES;  // Illegal value
   NdbNodeBitmask report_mask;
 
   if ((c_start.m_latest_gci == 0) ||
@@ -2287,7 +2305,7 @@ check_log:
     incompleteng = signal->theData[0];
     memcpy(signal->theData, save, sizeof(save));
 
-    if (incompleteng != MAX_NDB_NODES) {
+    if (incompleteng != ABS_MAX_NDB_NODES) {
       jam();
       if (retVal == 1) {
         jam();
@@ -3153,12 +3171,13 @@ void Qmgr::initData(Signal *signal) {
 
   Uint32 sum = 0;
   ArbitSignalData *const sd = (ArbitSignalData *)&signal->theData[0];
+  NodeBitmaskPOD arbit_mask;
   for (unsigned rank = 1; rank <= 2; rank++) {
     sd->sender = getOwnNodeId();
     sd->code = rank;
     sd->node = 0;
     sd->ticket.clear();
-    sd->mask.clear();
+    arbit_mask.clear();
     ndb_mgm_configuration_iterator *iter =
         m_ctx.m_config.getClusterConfigIterator();
     for (ndb_mgm_first(iter); ndb_mgm_valid(iter); ndb_mgm_next(iter)) {
@@ -3167,11 +3186,11 @@ void Qmgr::initData(Signal *signal) {
           tmp == rank) {
         Uint32 nodeId = 0;
         ndbrequire(!ndb_mgm_get_int_parameter(iter, CFG_NODE_ID, &nodeId));
-        sd->mask.set(nodeId);
+        arbit_mask.set(nodeId);
       }
     }
-    sum += sd->mask.count();
-    execARBIT_CFG(signal);
+    sum += arbit_mask.count();
+    execARBIT_CFG(signal, arbit_mask);
   }
 
   if (arbitRec.method == ArbitRec::METHOD_DEFAULT && sum == 0) {
@@ -5130,6 +5149,37 @@ void Qmgr::api_failed(Signal *signal, Uint32 nodeId) {
              CloseComReqConf::SignalLength, JBB);
 }  // api_failed
 
+bool Qmgr::check_all_nodes_support_high_node_ids() {
+  Uint32 min_version = 0xFFFFFFFF;
+  /**
+   * If a node with a high node id tries to connect, then all nodes
+   * in the cluster must run the version supporting it no matter
+   * what node type they are.
+   */
+  for (Uint32 node = 1; node < MAX_NODES; node++) {
+    if (node > OLD_MAX_NODES) {
+      /* Nodes with high node ids obviously have support for it */
+      break;
+    }
+    if (!c_connectedNodes.get(node)) {
+      /* Node isn't connected, so no need to check its version */
+      continue;
+    }
+    Uint32 node_version = getNodeInfo(node).m_version;
+    if (node_version != 0 && node_version < min_version) {
+      jam();
+      jamData(node);
+      min_version = node_version;
+    }
+  }
+  if (!ndbd_support_2k_api_nodes(min_version)) {
+    g_eventLogger->info("Min Version 0x%x of is not compatible",
+      min_version);
+    return false;
+  }
+  return true;
+}
+
 /**--------------------------------------------------------------------------
  * AN API NODE IS REGISTERING. IF FOR THE FIRST TIME WE WILL ENABLE
  * COMMUNICATION WITH ALL NDB BLOCKS.
@@ -5148,7 +5198,15 @@ void Qmgr::execAPI_REGREQ(Signal *signal) {
 
   NodeRecPtr apiNodePtr;
   apiNodePtr.i = refToNode(ref);
-  ptrCheckGuard(apiNodePtr, MAX_NODES, nodeRec);
+  if (apiNodePtr.i >= MAX_NODES) {
+    infoEvent("Connection attempt from not configured node %u",
+      apiNodePtr.i);
+    g_eventLogger->info("Connection attempt from not configured node: %u",
+      apiNodePtr.i);
+    sendApiRegRef(signal, ref, ApiRegRef::UnconfiguredNode);
+    return;
+  }
+  ptrAss(apiNodePtr, nodeRec);
 
   if (apiNodePtr.p->phase == ZFAIL_CLOSING) {
     jam();
@@ -5195,6 +5253,24 @@ void Qmgr::execAPI_REGREQ(Signal *signal) {
     compatability_check = false;
   }
 
+  if (compatability_check && apiNodePtr.i > OLD_MAX_NODES) {
+    if (!check_all_nodes_support_high_node_ids()) {
+      compatability_check = false;
+    }
+  }
+  if (compatability_check && (MAX_NODES > OLD_MAX_NODES)) {
+    /**
+     * This node is expecting nodes with high node ids due to the
+     * configuration. This means that no API nodes are allowed to
+     * get into the cluster unless they have a version that
+     * supports high node ids.
+     */
+    if (!ndbd_support_2k_api_nodes(version)) {
+      g_eventLogger->info("Version 0x%x of node %u is not compatible",
+        version, apiNodePtr.i);
+      compatability_check = false;
+    }
+  }
   if (!compatability_check) {
     jam();
     char buf[NDB_VERSION_STRING_BUF_SZ];
@@ -5372,7 +5448,14 @@ void Qmgr::sendApiRegConf(Signal *signal, Uint32 node) {
   NodeVersionInfo info = getNodeVersionInfo();
   apiRegConf->minDbVersion = info.m_type[NodeInfo::DB].m_min_version;
   apiRegConf->minApiVersion = info.m_type[NodeInfo::API].m_min_version;
-  apiRegConf->nodeState.m_connected_nodes.assign(c_connectedNodes);
+  /**
+   * Ignore sending connect status of API nodes, the API isn't interested
+   * in this information. Send 8 words of connect status for backwards
+   * compatability.
+   */
+  memcpy(&apiRegConf->nodeState.m_connected_nodes,
+         c_connectedNodes.rep.data,
+         NodeBitmask255::Size * 4);
   sendSignal(ref, GSN_API_REGCONF, signal, ApiRegConf::SignalLength, JBB);
 }
 
@@ -6784,13 +6867,13 @@ void Qmgr::sendPrepFailReq(Signal *signal, Uint16 aNode) {
 /**
  * Config signals are logically part of CM_REG.
  */
-void Qmgr::execARBIT_CFG(Signal *signal) {
+void Qmgr::execARBIT_CFG(Signal *signal, NodeBitmaskPOD arbit_mask) {
   jamEntry();
   ArbitSignalData *sd = (ArbitSignalData *)&signal->theData[0];
   unsigned rank = sd->code;
   ndbrequire(1 <= rank && rank <= 2);
-  arbitRec.apiMask[0].bitOR(sd->mask);
-  arbitRec.apiMask[rank].assign(sd->mask);
+  arbitRec.apiMask[0].bitOR(arbit_mask);
+  arbitRec.apiMask[rank].assign(arbit_mask);
 }
 
 /**
@@ -7699,7 +7782,7 @@ void Qmgr::stateArbitChoose(Signal *signal) {
         // Arbitration timeout has expired
         ndbrequire(arbitRec.node == 0);  // No arbitrator selected
 
-        NodeBitmask nodes;
+        NdbNodeBitmask nodes;
         computeArbitNdbMask(nodes);
         arbitRec.code = ArbitCode::WinWaitExternal;
         reportArbitEvent(signal, NDB_LE_ArbitResult, nodes);
@@ -7886,6 +7969,7 @@ void Qmgr::computeArbitNdbMask(NodeBitmaskPOD &aMask) {
   }
 }
 
+
 void Qmgr::computeArbitNdbMask(NdbNodeBitmaskPOD &aMask) {
   NodeRecPtr aPtr;
   aMask.clear();
@@ -7919,7 +8003,7 @@ void Qmgr::computeBeforeFailNdbMask(NdbNodeBitmaskPOD &aMask) {
  * where sender (word 0) is event type.
  */
 void Qmgr::reportArbitEvent(Signal *signal, Ndb_logevent_type type,
-                            const NodeBitmask mask) {
+                            const NdbNodeBitmask mask) {
   ArbitSignalData *sd = (ArbitSignalData *)&signal->theData[0];
   sd->sender = type;
   sd->code = arbitRec.code | (arbitRec.state << 16);
@@ -9184,7 +9268,7 @@ void Qmgr::execDBINFO_SCANREQ(Signal *signal) {
       NodeRecPtr aPtr;
       // buf_size: Node nr (max 3 chars) and ', '  + trailing '\0'
       const int buf_size = 5 * MAX_NODES + 1;
-      char buf[buf_size];
+      char buf[5 * ABS_MAX_NODES + 1];
 
       for (unsigned rank = 1; rank <= 2; rank++) {
         jam();

@@ -37,7 +37,7 @@
 #define JAM_FILE_ID 410
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
-#define DEBUG_CONT_SCAN 1
+//#define DEBUG_CONT_SCAN 1
 #endif
 
 #ifdef DEBUG_CONT_SCAN
@@ -54,7 +54,7 @@ void Dbtup::execSEND_PACKED(Signal *signal) {
   for (i = 0; i < TpackedListIndex; i++) {
     jam();
     hostId = cpackedList[i];
-    ndbrequire((hostId - 1) < (MAX_NODES - 1));  // Also check not zero
+    ndbrequire(Uint32((hostId - 1)) < Uint32((MAX_NODES - 1)));  // Also check not zero
     HostBuffer *const buffer = &hostBuffer[hostId];
     Uint32 TpacketTA = buffer->noOfPacketsTA;
     if (TpacketTA != 0) {

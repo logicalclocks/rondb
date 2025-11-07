@@ -2572,17 +2572,17 @@ NodeId TransporterFacade::get_an_alive_node() {
 #endif
 #endif
   NodeId i;
-  for (i = theStartNodeId; i < MAX_NDB_NODES; i++) {
+  for (i = theStartNodeId; i < ABS_MAX_NDB_NODES; i++) {
     if (get_node_alive(i)) {
       DBUG_PRINT("info", ("Node %d is alive", i));
-      theStartNodeId = ((i + 1) % MAX_NDB_NODES);
+      theStartNodeId = ((i + 1) % ABS_MAX_NDB_NODES);
       DBUG_RETURN(i);
     }
   }
   for (i = 1; i < theStartNodeId; i++) {
     if (get_node_alive(i)) {
       DBUG_PRINT("info", ("Node %d is alive", i));
-      theStartNodeId = ((i + 1) % MAX_NDB_NODES);
+      theStartNodeId = ((i + 1) % ABS_MAX_NDB_NODES);
       DBUG_RETURN(i);
     }
   }

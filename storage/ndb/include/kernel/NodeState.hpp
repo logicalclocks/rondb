@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2025, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -108,8 +109,8 @@ struct NodeStatePOD {
   /**
    * Length in 32-bit words
    */
-  static_assert(NodeBitmask::Size == 8);
-  static constexpr Uint32 DataLength = 8 + NodeBitmask::Size;
+  static_assert(NodeBitmask255::Size == 8);
+  static constexpr Uint32 DataLength = 8 + NodeBitmask255::Size;
 
   /**
    * Constructor(s)
@@ -153,7 +154,7 @@ struct NodeStatePOD {
   Uint32 singleUserMode;
   Uint32 singleUserApi;  // the single user node
 
-  BitmaskPOD<NodeBitmask::Size> m_connected_nodes;
+  BitmaskPOD<NodeBitmask255::Size> m_connected_nodes;
 
   void setDynamicId(Uint32 dynamic);
   void setNodeGroup(Uint32 group);

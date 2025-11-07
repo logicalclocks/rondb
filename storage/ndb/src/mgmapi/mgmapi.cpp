@@ -2321,7 +2321,9 @@ extern "C" int ndb_mgm_dump_state(NdbMgmHandle handle, int nodeId,
 
 extern "C" struct ndb_mgm_configuration *ndb_mgm_get_configuration_from_node(
     NdbMgmHandle handle, int nodeid) {
-  return ndb_mgm_get_configuration2(handle, 0, NDB_MGM_NODE_TYPE_UNKNOWN,
+  return ndb_mgm_get_configuration2(handle,
+                                    NDB_VERSION,
+                                    NDB_MGM_NODE_TYPE_UNKNOWN,
                                     nodeid);
 }
 

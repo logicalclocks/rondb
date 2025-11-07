@@ -2033,8 +2033,8 @@ class Dbtc : public SimulatedBlock {
    *       TC NODE.       */
   /*************************************************************************>*/
   struct TcFailRecord {
-    Uint16 queueList[MAX_NDB_NODES];
-    Uint8 takeOverProcState[MAX_NDB_NODES];
+    Uint16 queueList[ABS_MAX_NDB_NODES];
+    Uint8 takeOverProcState[ABS_MAX_NDB_NODES];
     UintR completedTakeOver;
     UintR currentHashIndexTakeOver;
     Uint32 maxInstanceId;
@@ -2834,8 +2834,8 @@ class Dbtc : public SimulatedBlock {
 
   BlockReference capiFailRef;
   UintR cpackedListIndex;
-  Uint16 cpackedList[MAX_NODES];
-  UintR capiConnectClosing[MAX_NODES];
+  Uint16 cpackedList[ABS_MAX_NODES];
+  UintR capiConnectClosing[ABS_MAX_NODES];
   UintR con_lineNodes;
 
   UintR tabortInd;

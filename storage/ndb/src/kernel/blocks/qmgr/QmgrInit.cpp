@@ -187,7 +187,7 @@ void Qmgr::initData() {
      configured MGM and API nodes.
   */
   int numOfApiAndMgmNodes = 0;
-  for (int i = 1; i < MAX_NODES; i++) {
+  for (Uint32 i = 1; i < MAX_NODES; i++) {
     Uint32 type = getNodeInfo(i).m_type;
     switch (type) {
       case NodeInfo::API:

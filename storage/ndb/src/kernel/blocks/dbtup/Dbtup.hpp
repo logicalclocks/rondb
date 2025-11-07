@@ -3937,7 +3937,7 @@ public:
   Uint32 cdata[32];
   Uint32 cdataPages[16];
   Uint32 cpackedListIndex;
-  Uint32 cpackedList[MAX_NODES];
+  Uint32 cpackedList[ABS_MAX_NODES];
   Uint32 cerrorPackedDelay;
   Uint32 cfreeTdList[16];
   Uint32 clastBitMask;

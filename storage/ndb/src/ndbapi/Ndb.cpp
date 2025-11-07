@@ -2111,7 +2111,7 @@ void Ndb::printState(const char *fmt, ...) {
   NdbMutex_Lock(ndb_print_state_mutex);
   unsigned i;
   ndbout << buf << " ndb=" << hex << (void *)this << endl;
-  for (unsigned n = 0; n < MAX_NDB_NODES; n++) {
+  for (unsigned n = 0; n < ABS_MAX_NDB_NODES; n++) {
     NdbTransaction *con = theConnectionArray[n];
     if (con != nullptr) {
       ndbout << "conn " << n << ":" << endl;

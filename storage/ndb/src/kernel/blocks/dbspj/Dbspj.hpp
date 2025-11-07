@@ -1247,7 +1247,7 @@ class Dbspj : public SimulatedBlock {
         m_suspended_tree_nodes;  // Nodes suspended by SPJ congestion control
     Uint32 m_rows;               // Rows accumulated in current batch
     Uint32 m_outstanding;        // Outstanding signals, when 0, batch is done
-    Uint16 m_lookup_node_data[MAX_NDB_NODES];
+    Uint16 m_lookup_node_data[ABS_MAX_NDB_NODES];
     ArenaHead m_arena;
 
 #ifdef SPJ_TRACE_TIME
@@ -1670,7 +1670,7 @@ class Dbspj : public SimulatedBlock {
 
   Dbtc *c_tc;
 
-  Uint32 m_location_domain_id[MAX_NODES];
+  Uint32 m_location_domain_id[ABS_MAX_NODES];
   Uint32 m_load_balancer_location;
   /**
    * Scratch buffers...

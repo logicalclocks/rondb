@@ -4,4 +4,4 @@
 ndb-cluster-connection-pool=1
 
 # Specify which nodeids the connection pool should use
-ndb-cluster-connection-pool-nodeids=49
+ndb-cluster-connection-pool-nodeids=494

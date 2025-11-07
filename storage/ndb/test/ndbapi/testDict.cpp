@@ -4922,26 +4922,26 @@ struct ST_Restarter : public NdbRestarter {
   const ndb_mgm_node_state &get_state(int node_id);
   ST_Restarter() {
     int i;
-    for (i = 0; i < MAX_NODES; i++)
+    for (i = 0; i < ABS_MAX_NODES; i++)
       state[i].node_type = NDB_MGM_NODE_TYPE_UNKNOWN;
     first_time = true;
   }
 
  protected:
   void set_state(const ndb_mgm_node_state &state);
-  ndb_mgm_node_state state[MAX_NODES];
+  ndb_mgm_node_state state[ABS_MAX_NODES];
   bool first_time;
 };
 
 const ndb_mgm_node_state &ST_Restarter::get_state(int node_id) {
-  require(node_id > 0 && node_id < MAX_NODES);
+  require(node_id > 0 && node_id < ABS_MAX_NODES);
   require(!first_time);
   return state[node_id];
 }
 
 void ST_Restarter::set_state(const ndb_mgm_node_state &new_state) {
   int node_id = new_state.node_id;
-  require(1 <= node_id && node_id < MAX_NODES);
+  require(1 <= node_id && node_id < ABS_MAX_NODES);
 
   require(new_state.node_type == NDB_MGM_NODE_TYPE_MGM ||
           new_state.node_type == NDB_MGM_NODE_TYPE_NDB ||
@@ -5152,7 +5152,7 @@ static int st_report_db_nodes(ST_Con &c, NdbOut &out) {
   char r3[100];  // unknown
   r1[0] = r2[0] = r3[0] = 0;
   int i;
-  for (i = 1; i < MAX_NODES; i++) {
+  for (i = 1; i < ABS_MAX_NODES; i++) {
     const ndb_mgm_node_state &state = c.restarter->get_state(i);
     if (state.node_type == NDB_MGM_NODE_TYPE_NDB) {
       char *r = 0;
@@ -5178,7 +5178,7 @@ err:
 static int st_check_db_nodes(ST_Con &c, int ignore_node_id = -1) {
   chk1(c.restarter->get_status() == 0);
   int i;
-  for (i = 1; i < MAX_NODES; i++) {
+  for (i = 1; i < ABS_MAX_NODES; i++) {
     const ndb_mgm_node_state &state = c.restarter->get_state(i);
     if (state.node_type == NDB_MGM_NODE_TYPE_NDB && i != ignore_node_id) {
       chk2(state.node_status == NDB_MGM_NODE_STATUS_STARTED, " node:" << i);
@@ -9030,7 +9030,7 @@ static int runGetTabInfoRef(NDBT_Context *ctx, NDBT_Step *step) {
 
   /* Find a node in each nodegroup to restart. */
   Vector<int> nodeSet;
-  Bitmask<MAX_NDB_NODES / 32> nodeGroupMap;
+  Bitmask<ABS_MAX_NDB_NODES / 32> nodeGroupMap;
   for (int i = 0; i < restarter.getNumDbNodes(); i++) {
     const int node = restarter.getDbNodeId(i);
     const int ng = restarter.getNodeGroup(node);

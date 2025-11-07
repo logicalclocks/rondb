@@ -1,4 +1,5 @@
 /* Copyright (c) 2022, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2025, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -25,7 +26,7 @@
 #ifndef NDB_UTIL_TLS_KEY_MANAGER_H
 #define NDB_UTIL_TLS_KEY_MANAGER_H
 
-#include "ndb_limits.h"  // MAX_NODES
+#include "ndb_limits.h"  // ABS_MAX_NODES
 
 #include "portlib/NdbMutex.h"
 #include "util/NdbSocket.h"
@@ -155,7 +156,7 @@ class TlsKeyManager {
   PkiFile::PathName m_key_file, m_cert_file;
   char *m_path_string{nullptr};
   TlsSearchPath *m_search_path{nullptr};
-  cert_record m_cert_table[MAX_NODES];
+  cert_record m_cert_table[ABS_MAX_NODES];
   NodeCertificate m_node_cert;
   NdbMutex m_cert_table_mutex;
   int m_error{0};

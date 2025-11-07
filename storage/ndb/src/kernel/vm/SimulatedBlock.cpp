@@ -5984,6 +5984,8 @@ Uint32 SimulatedBlock::m_num_scan_fragreq_counts = NUM_SCAN_FRAGREQ_COUNTS;
 Uint32 SimulatedBlock::m_rr_load_refresh_count = RR_LOAD_REFRESH_COUNT;
 Uint32 SimulatedBlock::m_num_rr_groups = 0;
 Uint32 SimulatedBlock::m_num_distribution_threads = 0;
+Uint32 SimulatedBlock::m_max_nodeid = 0;
+Uint32 SimulatedBlock::m_max_ndb_nodeid = 0;
 bool SimulatedBlock::m_inited_rr_groups = false;
 
 #if defined(USE_INIT_GLOBAL_VARIABLES)

@@ -109,14 +109,14 @@ static bool
 set_inactive_nodes_as_nowait(NdbMgmHandle mgmsrv)
 {
   int ret;
-  ndb_mgm_configuration * conf = ndb_mgm_get_configuration(mgmsrv,0);
+  ndb_mgm_configuration * conf = ndb_mgm_get_configuration(mgmsrv, NDB_VERSION);
   if (conf == 0)
   {
     ndbout_c("Could not get configuration from MGM Server, exiting");
     return false;
   }
   ConfigValues::Iterator iter(conf->m_config_values);
-  for (Uint32 i = 0; i < MAX_NODES; i++)
+  for (Uint32 i = 0; i < ABS_MAX_NODES; i++)
   {
     if (!iter.openSection(CFG_SECTION_NODE, i))
       continue;

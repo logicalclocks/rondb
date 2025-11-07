@@ -2686,7 +2686,7 @@ bool Ndbcntr::trySystemRestart(Signal *signal) {
                       c_start.m_starting.getText(buf));
 
   Uint32 recNode = 0;
-  NodeBitmask tmp_m_starting;
+  NdbNodeBitmask tmp_m_starting;
   tmp_m_starting = c_start.m_starting;
   while (!tmp_m_starting.isclear()) {
     recNode = tmp_m_starting.find(recNode + 1);

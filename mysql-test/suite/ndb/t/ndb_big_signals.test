@@ -3,7 +3,7 @@ source include/have_ndb.inc;
 # Nodes:
 #   NDB 1,2
 #   MGM 3
-#   API 16,32,48,49,63,127
+#   API 1600,322,483,494,563,1274
 
 # Save now to only look at new info in EventLog
 select now() into @now;
@@ -42,9 +42,9 @@ exec $NDB_MGM
   -e "1 DUMP 103003 3 103005 1 3 1234567890 0 1 $section_size";
 exec $NDB_MGM -e "ALL REPORT EventLog" >> $NDB_TOOLS_OUTPUT;
 
-echo size $msg_size: API(16) -> API(16);
+echo size $msg_size: API(1600) -> API(1600);
 exec $NDB_MGM
-  -e "1 DUMP 103003 16 103005 1 16 1234567890 0 1 $section_size";
+  -e "1 DUMP 103003 1600 103005 1 1600 1234567890 0 1 $section_size";
 exec $NDB_MGM -e "ALL REPORT EventLog" >> $NDB_TOOLS_OUTPUT;
 
 # For external signals signal id and checksum are used in messages.
@@ -56,8 +56,8 @@ echo size $msg_size: DB(2) -> DB(1);
 exec $NDB_MGM -e "2 DUMP 103005 1 1 1234567890 0 1 $section_size";
 exec $NDB_MGM -e "ALL REPORT EventLog" >> $NDB_TOOLS_OUTPUT;
 
-echo size $msg_size: DB(1) -> API(32);
-exec $NDB_MGM -e "1 DUMP 103005 1 32 1234567890 0 1 $section_size";
+echo size $msg_size: DB(1) -> API(322);
+exec $NDB_MGM -e "1 DUMP 103005 1 322 1234567890 0 1 $section_size";
 exec $NDB_MGM -e "ALL REPORT EventLog" >> $NDB_TOOLS_OUTPUT;
 
 let $section_size=8175;
@@ -68,9 +68,9 @@ exec $NDB_MGM
   -e "1 DUMP 103003 3 103005 1 1 1234567890 0 1 $section_size";
 exec $NDB_MGM -e "ALL REPORT EventLog" >> $NDB_TOOLS_OUTPUT;
 
-echo size $msg_size: API(16) -> DB(1);
+echo size $msg_size: API(1600) -> DB(1);
 exec $NDB_MGM
-  -e "1 DUMP 103003 16 103005 1 1 1234567890 0 1 $section_size";
+  -e "1 DUMP 103003 1600 103005 1 1 1234567890 0 1 $section_size";
 exec $NDB_MGM -e "ALL REPORT EventLog" >> $NDB_TOOLS_OUTPUT;
 
 sleep 1;
@@ -88,9 +88,9 @@ exec $NDB_MGM
   -e "1 DUMP 103003 3 103005 1 3 1234567890 0 1 $section_size";
 exec $NDB_MGM -e "ALL REPORT EventLog" >> $NDB_TOOLS_OUTPUT;
 
-echo size $msg_size: API(16) -> API(16);
+echo size $msg_size: API(1600) -> API(1600);
 exec $NDB_MGM
-  -e "1 DUMP 103003 16 103005 1 16 1234567890 0 1 $section_size";
+  -e "1 DUMP 103003 1600 103005 1 1600 1234567890 0 1 $section_size";
 exec $NDB_MGM -e "ALL REPORT EventLog" >> $NDB_TOOLS_OUTPUT;
 
 # For external signals signal id and checksum are used in messages.
@@ -102,8 +102,8 @@ echo size $msg_size: DB(2) -> DB(1);
 exec $NDB_MGM -e "2 DUMP 103005 1 1 1234567890 0 1 $section_size";
 exec $NDB_MGM -e "ALL REPORT EventLog" >> $NDB_TOOLS_OUTPUT;
 
-echo size $msg_size: DB(1) -> API(32);
-exec $NDB_MGM -e "1 DUMP 103005 1 32 1234567890 0 1 $section_size";
+echo size $msg_size: DB(1) -> API(322);
+exec $NDB_MGM -e "1 DUMP 103005 1 322 1234567890 0 1 $section_size";
 exec $NDB_MGM -e "ALL REPORT EventLog" >> $NDB_TOOLS_OUTPUT;
 
 let $section_size=8179;
@@ -114,9 +114,9 @@ exec $NDB_MGM
   -e "1 DUMP 103003 3 103005 1 1 1234567890 0 1 $section_size";
 exec $NDB_MGM -e "ALL REPORT EventLog" >> $NDB_TOOLS_OUTPUT;
 
-echo size $msg_size: API(16) -> DB(1);
+echo size $msg_size: API(1600) -> DB(1);
 exec $NDB_MGM
-  -e "1 DUMP 103003 16 103005 1 1 1234567890 0 1 $section_size";
+  -e "1 DUMP 103003 1600 103005 1 1 1234567890 0 1 $section_size";
 exec $NDB_MGM -e "ALL REPORT EventLog" >> $NDB_TOOLS_OUTPUT;
 
 sleep 1;
@@ -134,9 +134,9 @@ exec $NDB_MGM
   -e "1 DUMP 103003 3 103005 1 3 1234567890 0 1 $section_size";
 exec $NDB_MGM -e "ALL REPORT EventLog" >> $NDB_TOOLS_OUTPUT;
 
-echo size $msg_size: API(16) -> API(16);
+echo size $msg_size: API(1600) -> API(1600);
 exec $NDB_MGM
-  -e "1 DUMP 103003 16 103005 1 16 1234567890 0 1 $section_size";
+  -e "1 DUMP 103003 1600 103005 1 1600 1234567890 0 1 $section_size";
 exec $NDB_MGM -e "ALL REPORT EventLog" >> $NDB_TOOLS_OUTPUT;
 
 # For external signals signal id and checksum are used in messages.
@@ -148,8 +148,8 @@ echo size $msg_size: DB(2) -> DB(1);
 exec $NDB_MGM -e "2 DUMP 103005 1 1 1234567890 0 1 $section_size";
 exec $NDB_MGM -e "ALL REPORT EventLog" >> $NDB_TOOLS_OUTPUT;
 
-echo size $msg_size: DB(1) -> API(32);
-exec $NDB_MGM -e "1 DUMP 103005 1 32 1234567890 0 1 $section_size";
+echo size $msg_size: DB(1) -> API(322);
+exec $NDB_MGM -e "1 DUMP 103005 1 322 1234567890 0 1 $section_size";
 exec $NDB_MGM -e "ALL REPORT EventLog" >> $NDB_TOOLS_OUTPUT;
 
 let $section_size=8179;
@@ -160,9 +160,9 @@ exec $NDB_MGM
   -e "1 DUMP 103003 3 103005 1 1 1234567890 0 1 $section_size";
 exec $NDB_MGM -e "ALL REPORT EventLog" >> $NDB_TOOLS_OUTPUT;
 
-echo size $msg_size: API(16) -> DB(1);
+echo size $msg_size: API(1600) -> DB(1);
 exec $NDB_MGM
-  -e "1 DUMP 103003 16 103005 1 1 1234567890 0 1 $section_size";
+  -e "1 DUMP 103003 1600 103005 1 1 1234567890 0 1 $section_size";
 exec $NDB_MGM -e "ALL REPORT EventLog" >> $NDB_TOOLS_OUTPUT;
 
 sleep 1;

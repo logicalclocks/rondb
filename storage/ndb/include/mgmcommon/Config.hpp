@@ -71,7 +71,7 @@ class Config {
     become obsolete and a reload from those would revert to an
     old config.
     0 => config updated from mgmapi, no node is primary anymore
-    1 - MAX_NODES => only node with specified nodeid can reload
+    1 - ABS_MAX_NODES => only node with specified nodeid can reload
                      config without force
    */
   Uint32 getPrimaryMgmNode() const;

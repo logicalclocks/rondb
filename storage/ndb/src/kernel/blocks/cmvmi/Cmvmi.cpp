@@ -1906,10 +1906,12 @@ void Cmvmi::execDUMP_STATE_ORD(Signal *signal) {
     {
       // Dump data and index memory to specific ref
       Uint32 result_ref = signal->theData[1];
+      Uint32 node = refToNode(result_ref);
       /* Validate ref */
       {
-        Uint32 node = refToNode(result_ref);
-        if (node == 0 || node >= MAX_NODES) {
+        if (node == 0 ||
+            node >= MAX_NODES ||
+            getNodeInfo(node).m_type == NodeInfo::INVALID) {
           g_eventLogger->info("Bad node in ref to DUMP %u : %u %u",
                               DumpStateOrd::DumpPageMemory, node, result_ref);
           return;
