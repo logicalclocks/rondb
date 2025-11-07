@@ -807,7 +807,7 @@ void Dbtup::checkDeferredTriggers(KeyReqStruct *req_struct,
   case ZINSERT:
     jam();
     req_struct->m_tuple_ptr =
-      get_copy_tuple(&regOperPtr->m_copy_tuple_location);
+      get_copy_tuple(regOperPtr->m_copy_tuple_location);
     break;
   }
 
@@ -915,7 +915,7 @@ void Dbtup::checkDetachedTriggers(KeyReqStruct *req_struct,
      */
     case ZINSERT_TTL:
       req_struct->m_tuple_ptr =
-          get_copy_tuple(&regOperPtr->m_copy_tuple_location);
+          get_copy_tuple(regOperPtr->m_copy_tuple_location);
       break;
   }
 
@@ -997,7 +997,7 @@ void Dbtup::checkDetachedTriggers(KeyReqStruct *req_struct,
        * triggers to simulate the effect of arriving at the tuple's
        * current state.
        */
-      switch (regOperPtr->m_copy_tuple_location.m_file_no) {
+      switch (regOperPtr->m_refresh_case) {
         case Operationrec::RF_SINGLE_NOT_EXIST:
         case Operationrec::RF_MULTI_NOT_EXIST:
           fireDetachedTriggers(req_struct,
@@ -1573,7 +1573,7 @@ void Dbtup::executeTrigger(KeyReqStruct *req_struct,
       case ZREFRESH:
         jam();
         /* Reuse Insert/Delete trigger firing code as necessary */
-        switch (regOperPtr->m_copy_tuple_location.m_file_no) {
+        switch (regOperPtr->m_refresh_case) {
           case Operationrec::RF_SINGLE_NOT_EXIST:
             jam();
             [[fallthrough]];
@@ -1627,7 +1627,7 @@ void Dbtup::executeTrigger(KeyReqStruct *req_struct,
       break;
     case ZREFRESH:
       jam();
-      switch (regOperPtr->m_copy_tuple_location.m_file_no) {
+      switch (regOperPtr->m_refresh_case) {
         case Operationrec::RF_SINGLE_NOT_EXIST:
           jam();
           [[fallthrough]];
@@ -1819,7 +1819,7 @@ bool Dbtup::readTriggerInfo(TupTriggerData *const trigPtr,
     jam();
     /* Could be an INSERT-DELETE pair in which case only copy row has PK */
     req_struct->m_tuple_ptr =
-        get_copy_tuple(&req_struct->prevOpPtr.p->m_copy_tuple_location);
+        get_copy_tuple(req_struct->prevOpPtr.p->m_copy_tuple_location);
   }
 
   if (regTabPtr->need_expand(disk)) {
@@ -1914,7 +1914,7 @@ bool Dbtup::readTriggerInfo(TupTriggerData *const trigPtr,
     jam();
     ndbassert(regOperPtr->op_type == ZREFRESH);
     /* Refresh specific before/after value hacks */
-    switch (regOperPtr->m_copy_tuple_location.m_file_no) {
+    switch (regOperPtr->m_refresh_case) {
       case Operationrec::RF_SINGLE_NOT_EXIST:
       case Operationrec::RF_MULTI_NOT_EXIST:
         return true;  // generate ZDELETE...no before values
@@ -1970,7 +1970,7 @@ bool Dbtup::readTriggerInfo(TupTriggerData *const trigPtr,
       req_struct->m_tuple_ptr = (Tuple_header *)ptr;
     } else {
       req_struct->m_tuple_ptr =
-          get_copy_tuple(&req_struct->prevOpPtr.p->m_copy_tuple_location);
+          get_copy_tuple(req_struct->prevOpPtr.p->m_copy_tuple_location);
     }
 
     if (regTabPtr->need_expand(disk)) {

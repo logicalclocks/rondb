@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -35,6 +35,13 @@
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 // #define DEBUG_LCP 1
+#define DEBUG_COPY_TUPLE 1
+#endif
+
+#ifdef DEBUG_COPY_TUPLE
+#define DEB_COPY_TUPLE(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_COPY_TUPLE(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_LCP
@@ -59,9 +66,9 @@ void Dbtup::handle_disk_reorg_flag(OperationrecPtr operPtr,
   ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(prevOperPtr));
 
   Tuple_header *copy_last =
-    get_copy_tuple(&lastOperPtr.p->m_copy_tuple_location);
+    get_copy_tuple(lastOperPtr.p->m_copy_tuple_location);
   Tuple_header *copy_prev =
-    get_copy_tuple(&prevOperPtr.p->m_copy_tuple_location);
+    get_copy_tuple(prevOperPtr.p->m_copy_tuple_location);
   Local_key key;
   memcpy(&key, copy_last->get_disk_ref_ptr(regTabPtr), sizeof(key));
   memcpy(copy_prev->get_disk_ref_ptr(regTabPtr), &key, sizeof(key));
@@ -127,7 +134,7 @@ Dbtup::do_tup_abort_operation(Signal* signal,
       opPtrP->op_struct.bit_field.m_disk_preallocated) {
     jam();
     Local_key key;
-    Tuple_header *copy = get_copy_tuple(&opPtrP->m_copy_tuple_location);
+    Tuple_header *copy = get_copy_tuple(opPtrP->m_copy_tuple_location);
     memcpy(&key, copy->get_disk_ref_ptr(tablePtrP), sizeof(key));
     disk_page_abort_prealloc(signal, fragPtrP, &key, key.m_page_idx);
   }
@@ -148,7 +155,7 @@ Dbtup::do_tup_abort_operation(Signal* signal,
         lgman.free_log_space(undo_insert_len, jamBuffer());
  
         Local_key key;
-        Tuple_header *copy= get_copy_tuple(&opPtrP->m_copy_tuple_location);
+        Tuple_header *copy= get_copy_tuple(opPtrP->m_copy_tuple_location);
         memcpy(&key, copy->get_disk_ref_ptr(tablePtrP), sizeof(key));
         Uint32 row_size = key.m_page_idx;
         disk_page_abort_prealloc(signal, fragPtrP, &key, row_size);
@@ -502,9 +509,13 @@ void Dbtup::removeActiveOpList(Operationrec *const regOperPtr,
   OperationrecPtr nextOperPtr;
   OperationrecPtr prevOperPtr;
 
-  if (!regOperPtr->m_copy_tuple_location.isNull()) {
+  if (regOperPtr->m_copy_tuple_location != nullptr) {
     jam();
-    c_undo_buffer.free_copy_tuple(&regOperPtr->m_copy_tuple_location);
+
+    DEB_COPY_TUPLE(("(%u), free_copy_tuple: 0x%p, line: %u",
+      instance(), regOperPtr->m_copy_tuple_location, __LINE__));
+
+    free_copy_tuple(&regOperPtr->m_copy_tuple_location);
   }
 
   prevOperPtr.i = regOperPtr->prevActiveOp;

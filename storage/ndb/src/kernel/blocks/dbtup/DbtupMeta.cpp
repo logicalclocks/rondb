@@ -67,7 +67,7 @@ extern EventLogger * g_eventLogger;
 //#define DEBUG_DROP_TAB 1
 //#define DEBUG_DYN_META 1
 //#define DEBUG_HASH 1
-//#define DEBUG_ROW_SIZE 1
+#define DEBUG_ROW_SIZE 1
 #endif
 
 #ifdef DEBUG_ROW_SIZE
@@ -873,8 +873,8 @@ void Dbtup::execTUPFRAGREQ(Signal *signal) {
   regFragPtr.p->m_tablespace_id = tablespace_id;
   regFragPtr.p->m_undo_complete = 0;
   regFragPtr.p->m_lcp_scan_op = RNIL;
-  regFragPtr.p->m_lcp_keep_list_head.setNull();
-  regFragPtr.p->m_lcp_keep_list_tail.setNull();
+  regFragPtr.p->m_lcp_keep_list_head = nullptr;
+  regFragPtr.p->m_lcp_keep_list_tail = nullptr;
   regFragPtr.p->noOfPages = 0;
   regFragPtr.p->noOfVarPages = 0;
   regFragPtr.p->m_varWordsFree = 0;

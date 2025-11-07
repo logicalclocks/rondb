@@ -66,6 +66,13 @@
 //#define DEBUG_LCP_SKIP_DELETE 1
 //#define DEBUG_DISK 1
 //#define DEBUG_ELEM_COUNT 1
+#define DEBUG_COPY_TUPLE 1
+#endif
+
+#ifdef DEBUG_COPY_TUPLE
+#define DEB_COPY_TUPLE(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_COPY_TUPLE(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_REORG
@@ -1381,7 +1388,7 @@ Dbtup::setup_read(KeyReqStruct *req_struct,
     } else {
       jamDebug();
       req_struct->m_tuple_ptr =
-          get_copy_tuple(&currOpPtr.p->m_copy_tuple_location);
+          get_copy_tuple(currOpPtr.p->m_copy_tuple_location);
     }
 
     if (regTabPtr->need_expand(disk)) {
@@ -1572,8 +1579,8 @@ Dbtup::load_extra_diskpage(Signal *signal, Uint32 opRec, Uint32 flags)
   ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(prevOpPtr));
 
   PagePtr page_ptr;
-  ndbassert(!prevOpPtr.p->m_copy_tuple_location.isNull());
-  Tuple_header *ptr = get_copy_tuple(&prevOpPtr.p->m_copy_tuple_location);
+  ndbassert(prevOpPtr.p->m_copy_tuple_location != nullptr);
+  Tuple_header *ptr = get_copy_tuple(prevOpPtr.p->m_copy_tuple_location);
   jamEntry();
   /**
    * We will never need an extra disk page if the first operation was an
@@ -1899,9 +1906,7 @@ void Dbtup::prepare_scanTUPKEYREQ(Uint32 page_id, Uint32 page_idx) {
   prepare_orig_local_key.m_page_no = page_id;
   prepare_orig_local_key.m_page_idx = page_idx;
 #endif
-  bool is_page_key = (!(Local_key::isInvalid(page_id, page_idx) ||
-        isCopyTuple(page_id, page_idx)));
-
+  bool is_page_key = (!(Local_key::isInvalid(page_id, page_idx)));
   if (is_page_key) {
     Uint32 fixed_part_size_in_words =
       prepare_tabptr.p->m_offsets[MM].m_fix_header_size;
@@ -1931,9 +1936,7 @@ void Dbtup::prepare_scan_tux_TUPKEYREQ(Uint32 page_id, Uint32 page_idx) {
   prepare_orig_local_key.m_page_no = page_id;
   prepare_orig_local_key.m_page_idx = page_idx;
 #endif
-  bool is_page_key = (!(Local_key::isInvalid(page_id, page_idx) ||
-        isCopyTuple(page_id, page_idx)));
-
+  bool is_page_key = (!(Local_key::isInvalid(page_id, page_idx)));
   ndbrequire(is_page_key);
   {
     Uint32 fixed_part_size_in_words =
@@ -2188,8 +2191,9 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
     op_struct.bit_field.tupVersion = ZNIL;
     op_struct.bit_field.m_triggers = triggers;
 
-    regOperPtr->m_copy_tuple_location.setNull();
+    regOperPtr->m_copy_tuple_location = nullptr;
     regOperPtr->op_struct.op_bit_fields = op_struct.op_bit_fields;
+    regOperPtr->m_refresh_case = 0;
   }
   {
     Uint32 reorg = lqhOpPtrP->m_reorg;
@@ -2331,7 +2335,7 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
     regOperPtr->op_struct.bit_field.m_tuple_existed_at_start = 0;
     ndbassert(!Local_key::isInvalid(pageid, pageidx));
 
-    if (unlikely(isCopyTuple(pageid, pageidx))) {
+    if (unlikely(m_copy_tuple_used != nullptr)) {
       jamDebug();
       /**
        * Only LCP reads a copy-tuple "directly"
@@ -2429,7 +2433,6 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
     }
     ndbabort();
   }
-  ndbassert(!isCopyTuple(pageid, pageidx));
   /**
    * Get pointer to tuple
    */
@@ -2806,17 +2809,8 @@ void Dbtup::setup_fixed_part(KeyReqStruct *req_struct, Operationrec *regOperPtr,
 void Dbtup::setup_lcp_read_copy_tuple(KeyReqStruct *req_struct,
                                       Operationrec *regOperPtr,
                                       Tablerec *regTabPtr) {
-  Local_key tmp;
-  tmp.m_page_no = req_struct->frag_page_id;
-  tmp.m_page_idx = regOperPtr->m_tuple_location.m_page_idx;
-  clearCopyTuple(tmp.m_page_no, tmp.m_page_idx);
-
-  Uint32 *copytuple = get_copy_tuple_raw(&tmp);
-  Local_key rowid;
-  memcpy(&rowid, copytuple + 0, sizeof(Local_key));
-
-  req_struct->frag_page_id = rowid.m_page_no;
-  regOperPtr->m_tuple_location.m_page_idx = rowid.m_page_idx;
+  Uint32 *copytuple = m_copy_tuple_used;
+  m_copy_tuple_used = nullptr;
 
   Uint32* tab_descr = regTabPtr->tabDescriptor;
   Tuple_header *th = get_copy_tuple(copytuple);
@@ -3382,6 +3376,9 @@ int Dbtup::handleUpdateReq(Signal* signal,
     goto error;
   }
 
+  DEB_COPY_TUPLE(("(%u) alloc_copy_tuple: 0x%p, line: %u",
+    instance(), operPtrP->m_copy_tuple_location, __LINE__));
+
   Uint32 tup_version;
   change_mask_ptr = get_change_mask_ptr(regTabPtr, dst);
   if (likely(operPtrP->is_first_operation())) {
@@ -3393,7 +3390,7 @@ int Dbtup::handleUpdateReq(Signal* signal,
     jam();
     Operationrec* prevOp= req_struct->prevOpPtr.p;
     tup_version= prevOp->op_struct.bit_field.tupVersion;
-    Uint32 * rawptr = get_copy_tuple_raw(&prevOp->m_copy_tuple_location);
+    Uint32 * rawptr = prevOp->m_copy_tuple_location;
     org= get_copy_tuple(rawptr);
     copy_change_mask_info(regTabPtr,
         change_mask_ptr,
@@ -3982,6 +3979,10 @@ int Dbtup::handleInsertReq(Signal* signal,
   {
     goto trans_mem_error;
   }
+
+  DEB_COPY_TUPLE(("(%u) alloc_copy_tuple: 0x%p, line: %u",
+    instance(), regOperPtr.p->m_copy_tuple_location, __LINE__));
+
   tuple_ptr= req_struct->m_tuple_ptr = dst;
   set_change_mask_info(regTabPtr, get_change_mask_ptr(regTabPtr, dst));
 
@@ -3997,7 +3998,7 @@ int Dbtup::handleInsertReq(Signal* signal,
     if(unlikely(!prevOp->is_first_operation()))
     {
       jam();
-      org = get_copy_tuple(&prevOp->m_copy_tuple_location);
+      org = get_copy_tuple(prevOp->m_copy_tuple_location);
     } else {
       jamDebug();
     }
@@ -4480,7 +4481,7 @@ trans_mem_error:
   terrorCode = ZNO_COPY_TUPLE_MEMORY_ERROR;
   regOperPtr.p->m_undo_buffer_space = 0;
   if (mem_insert) regOperPtr.p->m_tuple_location.setNull();
-  regOperPtr.p->m_copy_tuple_location.setNull();
+  regOperPtr.p->m_copy_tuple_location = nullptr;
   tupkeyErrorLab(req_struct);
   return -1;
 
@@ -4604,6 +4605,9 @@ int Dbtup::handleDeleteReq(Signal* signal,
     goto error;
   }
 
+  DEB_COPY_TUPLE(("(%u) alloc_copy_tuple: 0x%p. line: %u",
+    instance(), regOperPtr->m_copy_tuple_location, __LINE__));
+
   // delete must set but not increment tupVersion
   if (unlikely(!regOperPtr->is_first_operation())) {
     jam();
@@ -4611,10 +4615,9 @@ int Dbtup::handleDeleteReq(Signal* signal,
     regOperPtr->op_struct.bit_field.tupVersion =
         prevOp->op_struct.bit_field.tupVersion;
     // make copy since previous op is committed before this one
-    const Tuple_header *org = get_copy_tuple(&prevOp->m_copy_tuple_location);
+    const Tuple_header *org = get_copy_tuple(prevOp->m_copy_tuple_location);
     Uint32 len = regTabPtr->total_rec_size -
-      Uint32(((Uint32*)dst) -
-          get_copy_tuple_raw(&regOperPtr->m_copy_tuple_location));
+      Uint32(((Uint32*)dst) - regOperPtr->m_copy_tuple_location);
     memcpy(dst, org, 4 * len);
     req_struct->m_tuple_ptr = dst;
     copy_bits = org->m_header_bits;
@@ -4913,10 +4916,7 @@ Dbtup::handleRefreshReq(Signal* signal,
       return -1;
     }
   }
-
-  /* Store the refresh scenario in the copy tuple location */
-  // TODO : Verify this is never used as a copy tuple location!
-  regOperPtr.p->m_copy_tuple_location.m_file_no = refresh_case;
+  regOperPtr.p->m_refresh_case = refresh_case;
   return 0;
 }
 
@@ -10127,8 +10127,8 @@ Dbtup::nr_read_pk(Uint64 fragPtrI,
       OperationrecPtr opPtr;
       opPtr.i = req_struct.m_tuple_ptr->m_operation_ptr_i;
       ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(opPtr));
-      ndbassert(!opPtr.p->m_copy_tuple_location.isNull());
-      req_struct.m_tuple_ptr = get_copy_tuple(&opPtr.p->m_copy_tuple_location);
+      ndbassert(opPtr.p->m_copy_tuple_location != nullptr);
+      req_struct.m_tuple_ptr = get_copy_tuple(opPtr.p->m_copy_tuple_location);
       copy = true;
     }
     Uint32 *tab_descr = tablePtr.p->tabDescriptor;
@@ -10259,6 +10259,10 @@ Dbtup::nr_delete(Signal* signal, Uint32 senderData,
                              " LCP keep list, increase SharedGlobalMemory");
         progError(__LINE__, NDBD_EXIT_RESOURCE_ALLOC_ERROR, buf);
       }
+
+      DEB_COPY_TUPLE(("(%u) alloc_copy_tuple: 0x%p, line: %u",
+        instance(), oprec.m_copy_tuple_location, __LINE__));
+
       req_struct.m_tuple_ptr = ptr;
       oprec.m_tuple_location = tmp;
       oprec.op_type = ZDELETE;

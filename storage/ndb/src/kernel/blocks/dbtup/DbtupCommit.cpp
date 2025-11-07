@@ -39,7 +39,7 @@
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_REORG 1
-#define DEBUG_DISK 1
+//#define DEBUG_DISK 1
 //#define DEBUG_LCP 1
 //#define DEBUG_LCP_SKIP_DELETE_EXTRA 1
 //#define DEBUG_INSERT_EXTRA 1
@@ -53,6 +53,13 @@
 //#define DEBUG_LCP_DEL 1
 //#define DEBUG_LCP_SKIP 1
 //#define DEBUG_LCP_SKIP_DELETE 1
+#define DEBUG_COPY_TUPLE 1
+#endif
+
+#ifdef DEBUG_COPY_TUPLE
+#define DEB_COPY_TUPLE(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_COPY_TUPLE(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_REORG
@@ -427,7 +434,7 @@ void Dbtup::dealloc_tuple(Signal *signal, Uint32 gci_hi, Uint32 gci_lo,
       lgman.free_log_space(undo_insert_len, jamBuffer());
 
       /* Free the space on the extra disk page that we allocated */
-      Tuple_header *copy= get_copy_tuple(&regOperPtr->m_copy_tuple_location);
+      Tuple_header *copy= get_copy_tuple(regOperPtr->m_copy_tuple_location);
       Local_key key;
       memcpy(&key, copy->get_disk_ref_ptr(regTabPtr), sizeof(key));
       {
@@ -633,19 +640,18 @@ void Dbtup::handle_disk_reorg_lcp_keep(const Local_key *rowid,
                                        Operationrec *opPtrP,
                                        Fragrecord *regFragPtr,
                                        Tablerec *regTabPtr) {
-  Uint32 *copytuple = get_copy_tuple_raw(&opPtrP->m_copy_tuple_location);
+  Uint32 *copytuple = opPtrP->m_copy_tuple_location;
   Tuple_header *dst = get_copy_tuple(copytuple);
   memcpy(dst->get_disk_ref_ptr(regTabPtr), disk_row, sizeof(Local_key));
   setChecksum(dst, regTabPtr);
   /**
    * Link it to lcp_keep list
    */
-  insert_lcp_keep_list(regFragPtr, opPtrP->m_copy_tuple_location, copytuple,
-                       rowid);
+  insert_lcp_keep_list(regFragPtr, copytuple, rowid);
   /**
    * And finally clear m_copy_tuple_location so that it won't be freed
    */
-  opPtrP->m_copy_tuple_location.setNull();
+  opPtrP->m_copy_tuple_location = nullptr;
 }
 
 void Dbtup::handle_lcp_keep_commit(const Local_key *rowid,
@@ -656,7 +662,7 @@ void Dbtup::handle_lcp_keep_commit(const Local_key *rowid,
   bool disk = false;
   /* Coverage tested */
   Uint32 sizes[4];
-  Uint32 *copytuple = get_copy_tuple_raw(&opPtrP->m_copy_tuple_location);
+  Uint32 *copytuple = opPtrP->m_copy_tuple_location;
   Tuple_header *dst = get_copy_tuple(copytuple);
   Tuple_header *org = req_struct->m_tuple_ptr;
   if (regTabPtr->need_expand(disk)) {
@@ -679,12 +685,11 @@ void Dbtup::handle_lcp_keep_commit(const Local_key *rowid,
   /**
    * Link it to list
    */
-  insert_lcp_keep_list(regFragPtr, opPtrP->m_copy_tuple_location, copytuple,
-                       rowid);
+  insert_lcp_keep_list(regFragPtr, copytuple, rowid);
   /**
    * And finally clear m_copy_tuple_location so that it won't be freed
    */
-  opPtrP->m_copy_tuple_location.setNull();
+  opPtrP->m_copy_tuple_location = nullptr;
 }
 
 #if 0
@@ -826,7 +831,7 @@ void Dbtup::commit_operation(Signal *signal, Uint32 gci_hi, Uint32 gci_lo,
   Uint32 bits= tuple_ptr->m_header_bits;
 
   Uint32 *disk_ptr= 0;
-  Tuple_header *copy= get_copy_tuple(&regOperPtr->m_copy_tuple_location);
+  Tuple_header *copy= get_copy_tuple(regOperPtr->m_copy_tuple_location);
   
   Uint32 copy_bits= copy->m_header_bits;
 
@@ -1907,10 +1912,10 @@ Dbtup::prepare_disk_page_for_commit(Signal *signal,
     /**
      * Check for page
      */
-    if (!leaderOperPtr.p->m_copy_tuple_location.isNull()) {
+    if (leaderOperPtr.p->m_copy_tuple_location != nullptr) {
       jam();
       Tuple_header* tmp =
-        get_copy_tuple(&leaderOperPtr.p->m_copy_tuple_location);
+        get_copy_tuple(leaderOperPtr.p->m_copy_tuple_location);
       
 
       if (unlikely(leaderOperPtr.p->op_type == ZDELETE &&
@@ -2013,7 +2018,7 @@ Dbtup::prepare_disk_page_for_commit(Signal *signal,
     ndbassert(tuple_ptr->m_operation_ptr_i == leaderOperPtr.i);
 
     Tuple_header* tmp =
-      get_copy_tuple(&leaderOperPtr.p->m_copy_tuple_location);
+      get_copy_tuple(leaderOperPtr.p->m_copy_tuple_location);
     
     if (retrieve_log_page(signal,
                           regFragPtr,
@@ -2665,9 +2670,13 @@ void Dbtup::execute_real_commit(Signal *signal, KeyReqStruct &req_struct,
 }
 
 void Dbtup::finalize_commit(Operationrec *regOperPtrP, Fragrecord *fragPtrP) {
-  if (!regOperPtrP->m_copy_tuple_location.isNull()) {
+  if (regOperPtrP->m_copy_tuple_location != nullptr) {
     jam();
-    c_undo_buffer.free_copy_tuple(&regOperPtrP->m_copy_tuple_location);
+
+    DEB_COPY_TUPLE(("(%u), free_copy_tuple: 0x%p, line: %u",
+      instance(), regOperPtrP->m_copy_tuple_location, __LINE__));
+
+    free_copy_tuple(&regOperPtrP->m_copy_tuple_location);
   }
   fragPtrP->m_committed_changes++;
   initOpConnection(regOperPtrP);
@@ -2677,12 +2686,12 @@ void Dbtup::set_commit_change_mask_info(const Tablerec *regTabPtr,
                                         KeyReqStruct *req_struct,
                                         const Operationrec *regOperPtr) {
   Uint32 masklen = (regTabPtr->m_no_of_attributes + 31) >> 5;
-  if (regOperPtr->m_copy_tuple_location.isNull()) {
+  if (regOperPtr->m_copy_tuple_location == nullptr) {
     ndbassert(regOperPtr->op_type == ZDELETE);
     req_struct->changeMask.set();
   } else {
     Uint32 *dst = req_struct->changeMask.rep.data;
-    Uint32 *rawptr = get_copy_tuple_raw(&regOperPtr->m_copy_tuple_location);
+    Uint32 *rawptr = regOperPtr->m_copy_tuple_location;
     ChangeMask *maskptr = get_change_mask_ptr(rawptr);
     Uint32 cols = maskptr->m_cols;
     if (cols == regTabPtr->m_no_of_attributes) {
@@ -2709,7 +2718,7 @@ void Dbtup::commit_refresh(Signal *signal, Uint32 gci_hi, Uint32 gci_lo,
    * This is achieved by making special calls to ACC to get
    * it to forget, before deallocating the tuple locally.
    */
-  switch (regOperPtr->m_copy_tuple_location.m_file_no) {
+  switch (regOperPtr->m_refresh_case) {
     case Operationrec::RF_SINGLE_NOT_EXIST:
     case Operationrec::RF_MULTI_NOT_EXIST:
       break;

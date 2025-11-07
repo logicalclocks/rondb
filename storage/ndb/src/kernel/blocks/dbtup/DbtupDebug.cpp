@@ -589,7 +589,7 @@ NdbOut &operator<<(NdbOut &out, const Dbtup::Operationrec &op) {
   // tuples
   out << " [tupVersion " << hex << op.op_struct.bit_field.tupVersion << "]";
   out << " [m_tuple_location " << op.m_tuple_location << "]";
-  out << " [m_copy_tuple_location " << op.m_copy_tuple_location << "]";
+  out << " [m_copy_tuple_location " << hex << op.m_copy_tuple_location << "]";
   out << "]";
   return out;
 }

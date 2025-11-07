@@ -3273,6 +3273,7 @@ int Dbtup::read_pseudo(const Uint32 *inBuffer, Uint32 inPos,
   Uint32* outBuffer = outBuf + ((outPos - 1) >> 2);
 
   Uint32 sz;
+  Uint64 val;
   switch (attrId) {
     case AttributeHeader::READ_LCP:
       return read_lcp(inBuffer, inPos, req_struct, outBuf);
@@ -3435,8 +3436,9 @@ int Dbtup::read_pseudo(const Uint32 *inBuffer, Uint32 inPos,
     }
     case AttributeHeader::COPY_ROWID:
       sz = 2;
-      outBuffer[1] = req_struct->operPtrP->m_copy_tuple_location.m_page_no;
-      outBuffer[2] = req_struct->operPtrP->m_copy_tuple_location.m_page_idx;
+      val = Uint64(&req_struct->operPtrP->m_copy_tuple_location);
+      outBuffer[1] = Uint32(val & 0xFFFFFFFF);
+      outBuffer[2] = Uint32(val >> 32);
       break;
     case AttributeHeader::FLUSH_AI: {
       thrjam(req_struct->jamBuffer);
