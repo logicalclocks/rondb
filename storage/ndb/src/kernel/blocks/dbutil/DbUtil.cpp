@@ -2541,6 +2541,10 @@ void DbUtil::getTransId(Transaction *transP) {
  *       TransidAI::DataLength = ResultSetBuffer::getSegmentSize() * n
  */
 void DbUtil::execTRANSID_AI(Signal *signal) {
+  if (!assembleFragments(signal)) {
+    jam();
+    return;
+  }
   jamEntry();
 #if 0  // def EVENT_DEBUG
   g_eventLogger->info("File: %s line: %u",__FILE__,__LINE__);

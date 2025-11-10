@@ -6635,10 +6635,11 @@ void Qmgr::failReport(Signal *signal, Uint16 aFailedNode, UintR aSendFailRep,
       if (nodeFailCount > (nodeCount / 4)) {
         g_eventLogger->info(
             "QMGR : execFAIL_REP > 25%% nodes failed, resuming comms");
-        Signal save = *signal;
+        Signal25 save;
+        std::memcpy(&save, signal, sizeof(save));
         signal->theData[0] = 9991;
         sendSignal(CMVMI_REF, GSN_DUMP_STATE_ORD, signal, 1, JBB);
-        *signal = save;
+        std::memcpy(signal, &save, sizeof(save));
         nodeFailCount = 0;
         SET_ERROR_INSERT_VALUE(932);
       }

@@ -3100,20 +3100,10 @@ int Dbtup::handleReadReq(
     Operationrec *_regOperPtr,
     Tablerec *regTabPtr, KeyReqStruct *req_struct) {
   Uint32 *dst;
-  Uint32 dstLen, start_index;
-  const BlockReference sendBref = req_struct->rec_blockref;
-  const Uint32 node = refToNode(sendBref);
-  if (node != 0 && node != getOwnNodeId()) {
-    start_index = 25;
-  } else {
-    jamDebug();
-    /**
-     * execute direct
-     */
-    start_index = AttrInfo::HeaderLength;  // 3;
-  }
-  dst = &signal->theData[start_index];
-  dstLen = (MAX_READ / 4) - start_index;
+  Uint32 dstLen;
+
+  dst = &signal->theData[25];
+  dstLen = (MAX_READ / 4) - 25;
 
   if (unlikely(_regOperPtr->ttl_ignore == 0 &&
                _regOperPtr->ttl_only_expired == 1)) {
@@ -5023,7 +5013,7 @@ Dbtup::checkNullAttributes(KeyReqStruct * req_struct,
 int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
   Operationrec *const regOperPtr = req_struct->operPtrP;
   int TnoDataRW;
-  Uint32 RtotalLen, start_index, dstLen;
+  Uint32 RtotalLen, dstLen;
   Uint32 *dst;
 
   Uint32 RinitReadLen = cinBuffer[0];
@@ -5035,20 +5025,9 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
   jamDebug();
 
   Uint32 RattrinbufLen = req_struct->attrinfo_len;
-  const BlockReference sendBref = req_struct->rec_blockref;
 
-  const Uint32 node = refToNode(sendBref);
-  if (node != 0 && node != getOwnNodeId()) {
-    start_index = 25;
-  } else {
-    jamDebug();
-    /**
-     * execute direct
-     */
-    start_index = TransIdAI::HeaderLength;  // 3;
-  }
-  dst= &signal->theData[start_index];
-  dstLen= (MAX_READ / 4) - start_index;
+  dst = &signal->theData[25];
+  dstLen = (MAX_READ / 4) - 25;
 
   RtotalLen= RinitReadLen;
   RtotalLen += RexecRegionLen;
@@ -5355,8 +5334,15 @@ void Dbtup::SendAggregationResult(Signal* signal, Uint32 res_len,
   LinearSectionPtr ptr[3];
   ptr[0].p = const_cast<Uint32*>(&signal->theData[25]);
   ptr[0].sz = res_len;
-  sendSignal(api_blockref, GSN_TRANSID_AI, signal,
-             TransIdAI::HeaderLength, JBB, ptr, 1);
+  if (res_len <= MAX_TRANSID_AI_SIZE) {
+    sendSignal(api_blockref, GSN_TRANSID_AI, signal,
+               TransIdAI::HeaderLength, JBB, ptr, 1);
+  } else {
+    TransIdAILong *const transIdAILong = (TransIdAILong*)signal->getDataPtr();
+    transIdAILong->totalLen = res_len;
+    sendBatchedFragmentedSignal(api_blockref, GSN_TRANSID_AI, signal,
+       TransIdAILong::HeaderLength, JBB, ptr, 1);
+  }
 }
 
 bool

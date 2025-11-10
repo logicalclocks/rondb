@@ -45,12 +45,19 @@
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_DISK 1
+#define DEBUG_TRANSID_AI 1
 #endif
 
 #ifdef DEBUG_DISK
 #define DEB_DISK(arglist) do { g_eventLogger->info arglist ; } while (0)
 #else
 #define DEB_DISK(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_TRANSID_AI
+#define DEB_TRANSID_AI(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_TRANSID_AI(arglist) do { } while (0)
 #endif
 
 /*
@@ -3456,6 +3463,7 @@ int Dbtup::read_pseudo(const Uint32 *inBuffer, Uint32 inPos,
                                  AttributeHeader::CORR_FACTOR64, outBuffer + 1,
                                  out_words);
       sz = 1;
+      req_struct->m_use_corr_factor = 1;
       break;
     }
     case AttributeHeader::CORR_FACTOR64: {
@@ -3466,6 +3474,7 @@ int Dbtup::read_pseudo(const Uint32 *inBuffer, Uint32 inPos,
                                  AttributeHeader::CORR_FACTOR64, outBuffer + 1,
                                  out_words);
       sz = 2;
+      req_struct->m_use_corr_factor = 2;
       break;
     }
     case AttributeHeader::FRAGMENT_EXTENT_SPACE: {
@@ -3671,33 +3680,53 @@ void Dbtup::flush_read_buffer(KeyReqStruct *req_struct, const Uint32 *outBuf,
              */
             (destNode == getOwnNodeId() && connectedToNode));
 
+  ndbassert(outBuf == &signal->theData[25]);
   if (unlikely(!connectedToNode)) {
     thrjam(req_struct->jamBuffer);
-    if (outBuf == signal->theData + TransIdAI::HeaderLength) {
-      thrjam(req_struct->jamBuffer);
-      /**
-       * TUP guessed incorrectly that it could EXECUTE_DIRECT
-       *  it then puts outBuf == signal->theData+AttrInfo::HeaderLength
-       * (Use  memmove as src & dest may overlap)       */
-      memmove(&signal->theData[25], outBuf, 4 * len);
-      outBuf = &signal->theData[25];
-    }
 
     LinearSectionPtr ptr[3];
     ptr[0].p = const_cast<Uint32 *>(outBuf);
     ptr[0].sz = len;
-    transIdAI->attrData[0] = resultRef;
-    sendSignal(routeRef, GSN_TRANSID_AI_R, signal, TransIdAI::HeaderLength + 1,
-               JBB, ptr, 1);
-  } else if (is_api && ndbd_spj_api_support_short_TRANSID_AI(
-                           getNodeInfo(destNode).m_version)) {
-    sendAPI_TRANSID_AI(signal, resultRef, outBuf, len);
+#ifdef DEBUG_TRANSID_AI
+    print_checksum(outBuf, resultRef, len, __LINE__);
+    DEB_TRANSID_AI(("(%u) flush_read_buffer: AI_R len: %u, route: 0x%x"
+                    ", ref: 0x%x, map: %u",
+      instance(), len, routeRef, resultRef, signal->theData[0]));
+#endif
+    if (len <= MAX_TRANSID_AI_SIZE) {
+      jamDebug();
+      transIdAI->attrData[0] = resultRef;
+      sendSignal(routeRef, GSN_TRANSID_AI_R, signal,
+                 TransIdAI::HeaderLength + 1, JBB, ptr, 1);
+    } else {
+      jam();
+      TransIdAILong *const transIdAILong =
+        (TransIdAILong *)signal->getDataPtr();
+      Uint32 sig_len;
+      if (req_struct->m_use_corr_factor && is_api) {
+        ndbrequire(req_struct->m_use_corr_factor == 2);
+        sig_len = TransIdAILong::HeaderWithCorrelationLength + 1;
+        std::memcpy(&transIdAILong->correlationData[0],
+                    &outBuf[len - 3],
+                    3 * 4);
+        transIdAILong->attrData[0] = resultRef;
+      } else {
+        ndbabort(); //TODO can this happen?
+        sig_len = TransIdAILong::HeaderLength + 1;
+        transIdAILong->correlationData[0] = resultRef;
+      }
+      transIdAILong->totalLen = len;
+      sendBatchedFragmentedSignal(routeRef, GSN_TRANSID_AI_R, signal,
+        sig_len, JBB, ptr, 1);
+    }
+
   } else {
-    LinearSectionPtr ptr[3];
-    ptr[0].p = const_cast<Uint32 *>(outBuf);
-    ptr[0].sz = len;
-    sendSignal(resultRef, GSN_TRANSID_AI, signal, TransIdAI::HeaderLength, JBB,
-               ptr, 1);
+    jamDebug();
+    ndbrequire(is_api);
+    DEB_TRANSID_AI(("(%u) flush_read_buffer: API AI len: %u, ref: 0x%x,"
+                    " map: %u",
+      instance(), len, resultRef, signal->theData[0]));
+    sendAPI_TRANSID_AI(signal, resultRef, outBuf, len, req_struct);
   }
 
   req_struct->out_buf_index = 0;  // Reset buffer

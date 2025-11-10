@@ -4605,6 +4605,10 @@ static bool checkTriggerBufferLock(Uint32 triggerId) {
 }
 
 void Suma::execTRANSID_AI(Signal *signal) {
+  if (!assembleFragments(signal)) {
+    jam();
+    return;
+  }
   jamEntry();
   DBUG_ENTER("Suma::execTRANSID_AI");
 
@@ -4743,8 +4747,18 @@ void Suma::sendScanSubTableData(Signal *signal, Ptr<SyncRecord> syncPtr,
                       getSectionSz(syncPtr.p->m_headersSection),
                       getSectionSz(syncPtr.p->m_dataSection));
 #else
-  sendSignal(ref, GSN_SUB_TABLE_DATA, signal, SubTableData::SignalLength, JBB,
-             &sh);
+  Uint32 ptrLen = 0;
+  for (Uint32 i = 0; i < 2; i++) ptrLen += sh.m_ptr[i].sz;
+  sdata->totalLen = ptrLen;
+  const Uint32 version =
+    getNodeInfo(refToNode(ref)).m_version;
+  if (ndbd_support_long_transid_ai(version)) {
+    sendBatchedFragmentedSignal(ref, GSN_SUB_TABLE_DATA, signal,
+      SubTableData::SignalLength, JBB, &sh, false);
+  } else {
+    sendSignal(ref, GSN_SUB_TABLE_DATA, signal,
+      SubTableData::SignalLength, JBB, &sh);
+  }
 #endif
 
   /* Clear section references */

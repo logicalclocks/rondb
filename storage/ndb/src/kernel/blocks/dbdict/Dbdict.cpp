@@ -28094,6 +28094,7 @@ void Dbdict::handleClientReq(Signal *signal, SchemaOpPtr op_ptr,
   req->requestInfo = requestInfo;
   req->transId = trans_ptr.p->m_transId;
   req->parse.gsn = gsn;
+  //Signal doesn't fit in fragmented signal as it is now
   sendFragmentedSignal(rg, GSN_SCHEMA_TRANS_IMPL_REQ, signal,
                        SchemaTransImplReq::SignalLength + extra_length, JBB,
                        &handle);

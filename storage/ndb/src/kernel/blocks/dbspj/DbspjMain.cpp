@@ -62,6 +62,13 @@
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_HASH 1
+#define DEBUG_TRANSID_AI 1
+#endif
+
+#ifdef DEBUG_TRANSID_AI
+#define DEB_TRANSID_AI(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_TRANSID_AI(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_HASH
@@ -3520,6 +3527,10 @@ void Dbspj::execSCAN_NEXTREQ(Signal *signal) {
 }
 
 void Dbspj::execTRANSID_AI(Signal *signal) {
+  if (!assembleFragments(signal)) {
+    jam();
+    return;
+  }
   jamEntry();
   TransIdAI *req = (TransIdAI *)signal->getDataPtr();
   Uint32 ptrI = req->connectPtr;
@@ -3544,12 +3555,14 @@ void Dbspj::execTRANSID_AI(Signal *signal) {
   LinearSectionPtr linearPtr;
   if (signal->getNoOfSections() == 0)  // Short signal
   {
+    jamDebug();
     ndbrequire(signal->getLength() >= TransIdAI::HeaderLength);
     memcpy(m_buffer1, &signal->theData[TransIdAI::HeaderLength],
            4 * (signal->getLength() - TransIdAI::HeaderLength));
     linearPtr.p = m_buffer1;
     linearPtr.sz = signal->getLength() - TransIdAI::HeaderLength;
   } else {
+    jamDebug();
     SegmentedSectionPtr dataPtr;
     SectionHandle handle(this, signal);
     ndbrequire(handle.getSection(dataPtr, 0));
@@ -3562,7 +3575,9 @@ void Dbspj::execTRANSID_AI(Signal *signal) {
     linearPtr.p = m_buffer1;
     linearPtr.sz = dataPtr.sz;
     releaseSections(handle);
+    DEB_TRANSID_AI(("(%u) Dbspj::TRANSID_AI: len: %u", instance(), dataPtr.sz));
   }
+  jamDataDebug(linearPtr.sz);
 
 #if defined(DEBUG_LQHKEYREQ) || defined(DEBUG_SCAN_FRAGREQ)
   printf("execTRANSID_AI: ");
@@ -3592,6 +3607,8 @@ void Dbspj::execTRANSID_AI(Signal *signal) {
   row.m_row_data.m_header = header;
   row.m_row_data.m_data = linearPtr.p;
 
+  jamDebug();
+  jamDataDebug(cnt);
   getCorrelationData(row.m_row_data, cnt - 1, row.m_src_correlation);
 
   do  // Dummy loop to allow 'break' into error handling
@@ -8673,7 +8690,9 @@ Uint32 Dbspj::buildRowHeader(RowPtr::Header *header, LinearSectionPtr ptr) {
   Uint32 *dst = header->m_offset;
   const Uint32 *const save = dst;
   Uint32 offset = 0;
+  jamDebug();
   do {
+    jamDataDebug(offset);
     *dst++ = offset;
     const Uint32 tmp = *src++;
     const Uint32 tmp_len = AttributeHeader::getDataSize(tmp);
@@ -8805,6 +8824,8 @@ void Dbspj::getCorrelationData(const RowPtr::Row &row, Uint32 col,
    * TODO handle errors
    */
   Uint32 offset = row.m_header->m_offset[col];
+  jamDebug();
+  jamDataDebug(offset);
   Uint32 tmp = row.m_data[offset];
   Uint32 len = AttributeHeader::getDataSize(tmp);
   ndbrequire(len == 1);
@@ -9608,9 +9629,6 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
         param.ptr += len;
         sum_read += len;
 
-        const NodeId API_node = refToNode(ctx.m_resultRef);
-        const Uint32 API_version = getNodeInfo(API_node).m_version;
-
         /**
          * We have just added a 'USER_PROJECTION' which is the
          * result row to the SPJ-API. If we will also add a
@@ -9630,8 +9648,7 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
          * older API versions assumed that all SPJ results were
          * returned as 'long' signals.
          */
-        if (treeBits & DABits::NI_LINKED_ATTR || requestPtr.p->isScan() ||
-            !ndbd_spj_api_support_short_TRANSID_AI(API_version)) {
+        if (treeBits & DABits::NI_LINKED_ATTR || requestPtr.p->isScan()) {
           /**
            * Insert a FLUSH_AI of 'USER_PROJECTION' result (to client)
            * before 'LINKED_ATTR' results to SPJ is produced.

@@ -123,6 +123,17 @@
 #define MAX_LONG_LONG_STRING 32
 
 /**
+ * The maximum size of a TRANSID_AI signal in words before we break it up
+ * into a batched fragment signal. We use batched signals to
+ * retain the order of TRANSID_AI signals.
+ */
+#ifdef VM_TRACE
+#define MAX_TRANSID_AI_SIZE 240
+#else
+#define MAX_TRANSID_AI_SIZE 7400
+#endif
+
+/**
  * There is no real reason for a limit to the log records, but
  * normally one should not need more than the max record size
  * plus a 4-byte header for each column.
@@ -282,6 +293,7 @@
  * sent via a load balancing receive thread to different blocks.
  */
 #define MAX_SIZE_SINGLE_SIGNAL 7400
+#define DEB_MAX_SIZE_SINGLE_SIGNAL 240
 
 /*
  * Restore Buffer in pages

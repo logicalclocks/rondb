@@ -8333,6 +8333,7 @@ void Backup::execTRANSID_AI(Signal *signal) {
       memcpy(dst + 1, src, 4 * dataLen);
     } else {
       jam();
+      ndbabort(); // Temporary to check if this is ever used
       SectionHandle handle(this, signal);
       SegmentedSectionPtr dataPtr;
       ndbrequire(handle.getSection(dataPtr, 0));

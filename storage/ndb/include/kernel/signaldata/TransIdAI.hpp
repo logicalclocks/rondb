@@ -62,6 +62,33 @@ class TransIdAI {
   Uint32 attrData[DataLength];
 };
 
+class TransIdAILong {
+  /**
+   * Sender(s)
+   */
+  friend class Dbtup;
+
+  /**
+   * Receiver(s)
+   */
+  friend class NdbTransaction;
+  friend class Dbtc;
+  friend class Dbutil;
+  friend class Dblqh;
+  friend class Suma;
+
+ public:
+  static constexpr Uint32 HeaderLength = 4;
+  static constexpr Uint32 HeaderWithCorrelationLength = 7;
+
+ public:
+  Uint32 connectPtr;
+  Uint32 transId[2];
+  Uint32 totalLen;
+  Uint32 correlationData[3];
+  Uint32 attrData[1];
+};
+
 inline const Uint32 *TransIdAI::getData() const { return attrData; }
 
 #undef JAM_FILE_ID

@@ -297,7 +297,6 @@ void Backup::execREAD_CONFIG_REQ(Signal *signal) {
   ndb_mgm_get_int_parameter(p, CFG_DB_INSERT_RECOVERY_WORK,
                             &m_insert_recovery_work);
 
-  m_cfg_mt_backup = 1; /* Default to enabled */
   m_skew_disk_speed = true;
   calculate_real_disk_write_speed_parameters();
 
@@ -320,9 +319,11 @@ void Backup::execREAD_CONFIG_REQ(Signal *signal) {
    *
    * If EnableMultithreadedBackup=0, backup will always be single-threaded.
    * The default is EnableMultithreadedBackup=1.
+   *
+   * Disabled old configuration, even if configured to be used.
    */
-  m_cfg_mt_backup = 0;
-  ndb_mgm_get_int_parameter(p, CFG_DB_ENABLE_MT_BACKUP, &m_cfg_mt_backup);
+  m_cfg_mt_backup = 1; /* Default to enabled */
+  //ndb_mgm_get_int_parameter(p, CFG_DB_ENABLE_MT_BACKUP, &m_cfg_mt_backup);
 
   //  ndbrequire(!ndb_mgm_get_int_parameter(p, CFG_DB_NO_TABLES, &noTables));
   ndbrequire(!ndb_mgm_get_int_parameter(p, CFG_DICT_TABLE, &noTables));

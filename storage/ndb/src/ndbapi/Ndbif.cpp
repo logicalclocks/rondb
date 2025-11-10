@@ -528,14 +528,39 @@ void NdbImpl::trp_deliver_signal(const NdbApiSignal *aSignal,
           void *owner = (void *)tRec->getOwner();
           Uint32 com;
           if (num_sections > 0) {
-            if (type == NdbReceiver::NDB_QUERY_OPERATION) {
-              NdbQueryOperationImpl *impl_owner =
-                  (NdbQueryOperationImpl *)owner;
-              com = impl_owner->execTRANSID_AI(ptr[0].p, ptr[0].sz);
+            DBUG_PRINT("info", ("Long TRANSID_AI from 0x%x, sig_len: %u, map: %u",
+              aSignal->theSendersBlockRef, tLen, tFirstData));
+            if (likely(aSignal->isFragmented() == false)) {
+              if (type == NdbReceiver::NDB_QUERY_OPERATION) {
+                NdbQueryOperationImpl *impl_owner =
+                    (NdbQueryOperationImpl *)owner;
+                com = impl_owner->execTRANSID_AI(ptr[0].p, ptr[0].sz);
+              } else {
+                com = tRec->execTRANSID_AI(ptr[0].p, ptr[0].sz);
+              }
             } else {
-              com = tRec->execTRANSID_AI(ptr[0].p, ptr[0].sz);
+              const TransIdAILong *sig = (const TransIdAILong*)tDataPtr;
+              Uint32 totalLen = sig->totalLen;
+              if (type == NdbReceiver::NDB_QUERY_OPERATION) {
+                NdbQueryOperationImpl *impl_owner =
+                    (NdbQueryOperationImpl *)owner;
+                com = impl_owner->execTRANSID_AI(ptr[0].p,
+                                                 ptr[0].sz,
+                                                 aSignal,
+                                                 totalLen);
+              } else {
+                com = tRec->execTRANSID_AI(ptr[0].p,
+                                           ptr[0].sz,
+                                           aSignal,
+                                           totalLen);
+              }
             }
           } else {
+            DBUG_PRINT("info", ("Short TRANSID_AI from 0x%x, sig_len: %u,"
+                                " map: %u",
+              aSignal->theSendersBlockRef,
+              tLen - TransIdAI::HeaderLength,
+              tFirstData));
             DBUG_EXECUTE_IF("ndb_delay_transid_ai", {
               fprintf(stderr,
                       "NdbImpl::trp_deliver_signal() (%p)"
@@ -545,13 +570,6 @@ void NdbImpl::trp_deliver_signal(const NdbApiSignal *aSignal,
               fprintf(stderr, "NdbImpl::trp_deliver_signal() resuming\n");
             });
 
-            /**
-             * Note that prior to V7.6.2 we assumed that all 'QUERY'
-             * results were returned as 'long' signals. The version
-             * check ndbd_spj_api_support_short_TRANSID_AI() function
-             * has been added to allow the sender to check if the
-             * QUERY-receiver support short (and 'packed') TRANSID_AI.
-             */
             if (type == NdbReceiver::NDB_QUERY_OPERATION) {
               NdbQueryOperationImpl *impl_owner =
                   (NdbQueryOperationImpl *)owner;

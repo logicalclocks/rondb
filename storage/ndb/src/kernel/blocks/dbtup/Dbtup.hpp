@@ -2000,6 +2000,7 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
       m_disable_fk_checks = false;
       m_tuple_ptr = NULL;
       ttl_purge_window_size = 0;
+      m_use_corr_factor = 0;
     }
 
     KeyReqStruct(EmulatedJamBuffer *_jamBuffer) : changeMask(false) {
@@ -2011,6 +2012,7 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
       m_deferred_constraints = true;
       m_disable_fk_checks = false;
       ttl_purge_window_size = 0;
+      m_use_corr_factor = 0;
     }
 
     KeyReqStruct(Dbtup *tup) : changeMask(false) {
@@ -2023,6 +2025,7 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
       m_disable_fk_checks = false;
       m_dbtup_ptr = tup;
       ttl_purge_window_size = 0;
+      m_use_corr_factor = 0;
     }
 
     KeyReqStruct(Dbtup *tup, When when) : changeMask() {
@@ -2036,6 +2039,7 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
       m_tuple_ptr = NULL;
       m_dbtup_ptr = tup;
       ttl_purge_window_size = 0;
+      m_use_corr_factor = 0;
     }
 
     /**
@@ -2092,6 +2096,7 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
     bool is_expanded;
     bool m_is_lcp;
     enum When m_when;
+    Uint8 m_use_corr_factor;
 
 
 #ifdef ERROR_INSERT
@@ -3315,7 +3320,8 @@ public:
                         const Uint32 *dataBuf, Uint32 lenOfData);
 
   void sendAPI_TRANSID_AI(Signal *signal, BlockReference recBlockRef,
-                          const Uint32 *dataBuf, Uint32 lenOfData);
+                          const Uint32 *dataBuf, Uint32 lenOfData,
+                          KeyReqStruct* req_struct);
 
   //------------------------------------------------------------------
   // Trigger handling routines
@@ -4457,6 +4463,11 @@ public:
     ptrCheckGuard(tablePtr, cnoOfTablerec, tablerec);
     return is_ttl_table(tablePtr.p);
   }
+
+  void print_checksum(const Uint32* data,
+                      const Uint32 ref,
+                      const Uint32 len,
+                      const Uint32 line);
 
 public:
   Dbtup *m_curr_tup;
