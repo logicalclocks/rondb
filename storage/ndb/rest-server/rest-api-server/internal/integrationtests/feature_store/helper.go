@@ -411,6 +411,11 @@ func ValidateResponseWithData(t *testing.T, data *[]interface{}, cols *[]string,
 }
 
 func ValidateResponseWithDataExcludeCols(t *testing.T, data *[]interface{}, cols *[]string, exCols *map[string]bool, resp *api.FeatureStoreResponse) {
+	ValidateResponseWithDataExcludeColsWithStatusCheck(t, data, cols, exCols, resp, false)
+}
+
+func ValidateResponseWithDataExcludeColsWithStatusCheck(t *testing.T, data *[]interface{}, cols *[]string, exCols *map[string]bool, resp *api.FeatureStoreResponse,
+	ignoreStatusCheck bool) {
 	var status = api.FEATURE_STATUS_COMPLETE
 	if len(*data) == 0 {
 		status = api.FEATURE_STATUS_ERROR
@@ -466,7 +471,7 @@ func ValidateResponseWithDataExcludeCols(t *testing.T, data *[]interface{}, cols
 			break
 		}
 	}
-	if resp.Status != status {
+	if !ignoreStatusCheck && resp.Status != status {
 		t.Errorf("Got status %s but expect %s", resp.Status, status)
 	}
 }

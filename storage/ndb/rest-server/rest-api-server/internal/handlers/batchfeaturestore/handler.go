@@ -198,6 +198,10 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, func(
 	fsResp.Status = featureStatus
 	fillPassedFeaturesMultipleEntries(features, fsReq.PassedFeatures, &metadata.PrefixFeaturesLookup, &metadata.FeatureIndexLookup, &featureStatus)
 	fsResp.Features = *features
+
+	//Set status for spine FG
+	fixSpineFGStatus(features, fsReq.PassedFeatures, &metadata.PrefixFeaturesLookup, &metadata.FeatureIndexLookup, &featureStatus)
+
 	if fsReq.MetadataRequest != nil {
 		fsResp.Metadata = *fshandler.GetFeatureMetadata(metadata, fsReq.MetadataRequest)
 	}
@@ -261,7 +265,17 @@ func getPkReadResponseJSON(numEntries int, metadata feature_store.FeatureViewMet
 	return &response
 }
 
-func fillPassedFeaturesMultipleEntries(features *[][]interface{},
+func fillPassedFeaturesMultipleEntries(features *[][]interface{}, passedFeatures *[]*map[string]*json.RawMessage, featureMetadata *map[string][]*feature_store.FeatureMetadata, indexLookup *map[string]int, status *[]api.FeatureStatus) {
+	if passedFeatures != nil && len(*passedFeatures) != 0 {
+		for i, feature := range *features {
+			if (*status)[i] != api.FEATURE_STATUS_ERROR {
+				fshandler.FillPassedFeatures(&feature, (*passedFeatures)[i], featureMetadata, indexLookup)
+			}
+		}
+	}
+}
+
+func fixSpineFGStatus(features *[][]interface{},
 	passedFeatures *[]*map[string]*json.RawMessage,
 	featureMetadata *map[string][]*feature_store.FeatureMetadata,
 	indexLookup *map[string]int, status *[]api.FeatureStatus) {
@@ -273,8 +287,7 @@ func fillPassedFeaturesMultipleEntries(features *[][]interface{},
 			if passedFeatures != nil && len(*passedFeatures) != 0 {
 				passedFeature = (*passedFeatures)[i]
 			}
-			onDemandFeaturedPassed := fshandler.FillPassedFeatures(&feature, passedFeature, featureMetadata, indexLookup)
-			if !onDemandFeaturedPassed {
+			if fshandler.ContainsSpineFeatures(&feature, passedFeature, featureMetadata, indexLookup) {
 				// set status error if not already set to some error
 				if (*status)[i] == api.FEATURE_STATUS_COMPLETE {
 					(*status)[i] = api.FEATURE_STATUS_MISSING
