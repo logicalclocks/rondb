@@ -138,10 +138,11 @@ type FeatureGroup struct {
 	OnlineEnabled          bool
 	NumOfPk                int
 	OnDemandFeatureGroupID int
+	Spine                  bool
 }
 
-func (fg *FeatureGroup) IsOnDemandFG() bool {
-	return fg.OnDemandFeatureGroupID != 0
+func (fg *FeatureGroup) IsSpine() bool {
+	return fg.Spine
 }
 
 func GetFeatureGroupData(featureGroupID int) (*FeatureGroup, *DalError) {
@@ -161,7 +162,23 @@ func GetFeatureGroupData(featureGroupID int) (*FeatureGroup, *DalError) {
 		Version:                int(fg.version),
 		OnlineEnabled:          int(fg.online_enabled) != 0,
 		OnDemandFeatureGroupID: int(fg.on_demand_feature_group_id),
+		Spine:                  false,
 	}
+
+	if fgGo.OnDemandFeatureGroupID != 0 {
+		// get FG spine data
+		var odfg C.OnDemandFeatureGroup
+		odfgPtr := (*C.OnDemandFeatureGroup)(unsafe.Pointer(&odfg))
+
+		ret = C.find_on_demand_feature_group(C.int(fgGo.OnDemandFeatureGroupID), odfgPtr)
+
+		if ret.http_code != http.StatusOK {
+			return nil, cToGoRet(&ret)
+		}
+
+		fgGo.Spine = int8(odfg.spine) != 0
+	}
+
 	return &fgGo, nil
 }
 

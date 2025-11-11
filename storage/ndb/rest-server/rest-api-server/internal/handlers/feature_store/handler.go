@@ -544,7 +544,7 @@ func GetBatchPkReadParams(metadata *feature_store.FeatureViewMetadata, entries *
 		testDb := fgFeature.FeatureStoreName
 		testTable := fgFeature.TableName
 
-		if fgFeature.IsOnDemand() {
+		if fgFeature.IsSpine() {
 			continue
 		}
 
@@ -646,7 +646,7 @@ func ContainsSpineFeatures(features *[]interface{}, passedFeatures *map[string]*
 			if fmd != nil {
 				var lookupKey = feature_store.GetFeatureIndexKeyByFeature(fmd)
 				if _, ok := (*indexLookup)[lookupKey]; ok {
-					if fmd.IsOnDemand() {
+					if fmd.IsSpine() {
 						return true
 					}
 				}

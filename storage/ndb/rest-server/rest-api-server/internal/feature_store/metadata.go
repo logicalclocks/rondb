@@ -72,10 +72,11 @@ type FeatureGroupFeatures struct {
 	TableName              string
 	FeatureGroupKey        string // joinIndex|featureGroupId
 	OnDemandFeatureGroupID int
+	Spine                  bool
 }
 
-func (f *FeatureGroupFeatures) IsOnDemand() bool {
-	return f.OnDemandFeatureGroupID != 0
+func (f *FeatureGroupFeatures) IsSpine() bool {
+	return f.Spine
 }
 
 type FeatureMetadata struct {
@@ -85,6 +86,7 @@ type FeatureMetadata struct {
 	FeatureGroupVersion    int
 	FeatureGroupId         int
 	OnDemandFeatureGroupID int
+	Spine                  bool
 	Id                     int
 	Name                   string
 	Type                   string
@@ -107,8 +109,8 @@ func (f *FeatureMetadata) IsComplex() bool {
 	return COMPLEX_FEATURE[strings.ToUpper(strings.Split(f.Type, "<")[0])]
 }
 
-func (f *FeatureMetadata) IsOnDemand() bool {
-	return f.OnDemandFeatureGroupID != 0
+func (f *FeatureMetadata) IsSpine() bool {
+	return f.Spine
 }
 
 func newFeatureViewMetadata(
@@ -185,6 +187,7 @@ func newFeatureViewMetadata(
 		fgFeature.TableName = fmt.Sprintf("%s_%d", feature.FeatureGroupName, feature.FeatureGroupVersion)
 		fgFeature.FeatureGroupKey = fmt.Sprintf("%d|%d", feature.JoinIndex, feature.FeatureGroupId)
 		fgFeature.OnDemandFeatureGroupID = feature.OnDemandFeatureGroupID
+		fgFeature.Spine = feature.Spine
 		fgFeaturesArray = append(fgFeaturesArray, &fgFeature)
 	}
 	less := func(i, j int) bool {
@@ -207,7 +210,7 @@ func newFeatureViewMetadata(
 	var fgSchemaCache = make(map[int]*dal.PerFeatureAvroSchema)
 	for _, fgFeature := range fgFeaturesArray {
 		for _, feature := range fgFeature.Features {
-			if (*feature).IsComplex() && !(*feature).IsOnDemand() {
+			if (*feature).IsComplex() && !(*feature).IsSpine() {
 				if _, exist := fgSchemaCache[feature.FeatureGroupId]; !exist {
 					projectId, dalErr := dal.GetProjectID(fgFeature.FeatureStoreId)
 					if dalErr != nil {
@@ -401,6 +404,7 @@ func GetFeatureViewMetadata(featureStoreName, featureViewName string, featureVie
 		feature.FeatureGroupVersion = featureGroup.Version
 		feature.FeatureGroupId = tdf.FeatureGroupID
 		feature.OnDemandFeatureGroupID = featureGroup.OnDemandFeatureGroupID
+		feature.Spine = featureGroup.Spine
 		feature.Id = tdf.FeatureID
 		feature.Name = tdf.Name
 		feature.Type = tdf.Type
