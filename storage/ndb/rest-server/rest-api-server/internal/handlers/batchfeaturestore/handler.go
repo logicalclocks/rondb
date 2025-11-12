@@ -198,6 +198,10 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, func(
 	fsResp.Status = featureStatus
 	fillPassedFeaturesMultipleEntries(features, fsReq.PassedFeatures, &metadata.PrefixFeaturesLookup, &metadata.FeatureIndexLookup, &featureStatus)
 	fsResp.Features = *features
+
+	//Set status for spine FG
+	fixSpineFGStatus(features, fsReq.PassedFeatures, metadata, &metadata.FeatureIndexLookup, &featureStatus)
+
 	if fsReq.MetadataRequest != nil {
 		fsResp.Metadata = *fshandler.GetFeatureMetadata(metadata, fsReq.MetadataRequest)
 	}
@@ -212,13 +216,15 @@ func getFeatureValuesMultipleEntries(batchResponse *api.BatchOpResponse, entries
 	ronDbBatchResult := make([][]*api.PKReadResponseWithCodeJSON, len(*batchStatus))
 	batchResult := make([][]interface{}, len(*batchStatus))
 	for _, response := range *rondbResp.Result {
-		splitOperationId := strings.Split(*response.Body.OperationID, SEQUENCE_SEPARATOR)
-		seqNum, err := strconv.Atoi(splitOperationId[0])
-		if err != nil {
-			return nil, feature_store.READ_FROM_DB_FAIL
+		if response != nil {
+			splitOperationId := strings.Split(*response.Body.OperationID, SEQUENCE_SEPARATOR)
+			seqNum, err := strconv.Atoi(splitOperationId[0])
+			if err != nil {
+				return nil, feature_store.READ_FROM_DB_FAIL
+			}
+			*response.Body.OperationID = splitOperationId[1]
+			ronDbBatchResult[seqNum] = append(ronDbBatchResult[seqNum], response)
 		}
-		*response.Body.OperationID = splitOperationId[1]
-		ronDbBatchResult[seqNum] = append(ronDbBatchResult[seqNum], response)
 	}
 	for i, ronDbResult := range ronDbBatchResult {
 		if len(ronDbResult) != 0 {
@@ -264,6 +270,21 @@ func fillPassedFeaturesMultipleEntries(features *[][]interface{}, passedFeatures
 		for i, feature := range *features {
 			if (*status)[i] != api.FEATURE_STATUS_ERROR {
 				fshandler.FillPassedFeatures(&feature, (*passedFeatures)[i], featureMetadata, indexLookup)
+			}
+		}
+	}
+}
+
+func fixSpineFGStatus(features *[][]interface{},
+	passedFeatures *[]*map[string]*json.RawMessage,
+	fvMetadata *feature_store.FeatureViewMetadata,
+	indexLookup *map[string]int, status *[]api.FeatureStatus) {
+
+	if fvMetadata.HasSpine {
+		for i, _ := range *status {
+			if (*status)[i] != api.FEATURE_STATUS_ERROR {
+				// set status to MISSING if not already set to some error
+				(*status)[i] = api.FEATURE_STATUS_MISSING
 			}
 		}
 	}

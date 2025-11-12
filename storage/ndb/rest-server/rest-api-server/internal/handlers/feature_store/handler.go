@@ -276,10 +276,20 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, func(
 	if log.IsDebug() {
 		log.Debugf("Detailed Status : %s", detailedStatus)
 	}
+
 	fsResp := response.(*api.FeatureStoreResponse)
-	fsResp.Status = status
 	FillPassedFeatures(features, fsReq.PassedFeatures, &metadata.PrefixFeaturesLookup, &metadata.FeatureIndexLookup)
+
+	if metadata.HasSpine {
+		// Spine FG are external. We alway return MISSING when reading Spine FG
+		if status == api.FEATURE_STATUS_COMPLETE {
+			status = api.FEATURE_STATUS_MISSING
+		}
+	}
+
 	fsResp.Features = *features
+	fsResp.Status = status
+
 	if fsReq.MetadataRequest != nil {
 		fsResp.Metadata = *GetFeatureMetadata(metadata, fsReq.MetadataRequest)
 	}
@@ -291,7 +301,7 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, func(
 
 func checkRondbResponse(rondbResp *api.BatchResponseJSON) *feature_store.RestErrorCode {
 	for _, result := range *rondbResp.Result {
-		if *result.Code != http.StatusOK && *result.Code != http.StatusNotFound {
+		if result != nil && *result.Code != http.StatusOK && *result.Code != http.StatusNotFound {
 			return TranslateRonDbError(int(*result.Code), *result.Message)
 		}
 	}
@@ -355,30 +365,32 @@ func GetFeatureValues(ronDbResult *[]*api.PKReadResponseWithCodeJSON, entries *m
 	var arrDetailedStatus = make([]*api.DetailedStatus, 0, len(*ronDbResult))
 	var err *feature_store.RestErrorCode
 	for _, response := range *ronDbResult {
-		if includeDetailedStatus {
-			fgInt, err := strconv.Atoi(strings.Split(*response.Body.OperationID, "|")[1])
-			if err != nil {
-				log.Errorf("Failed to convert feature group id to int: %s", *response.Body.OperationID)
-				fgInt = -1
+		if response != nil {
+			if includeDetailedStatus {
+				fgInt, err := strconv.Atoi(strings.Split(*response.Body.OperationID, "|")[1])
+				if err != nil {
+					log.Errorf("Failed to convert feature group id to int: %s", *response.Body.OperationID)
+					fgInt = -1
+				}
+				arrDetailedStatus = append(arrDetailedStatus, &api.DetailedStatus{
+					FeatureGroupId: fgInt,
+					HttpStatus:     *response.Code,
+				})
 			}
-			arrDetailedStatus = append(arrDetailedStatus, &api.DetailedStatus{
-				FeatureGroupId: fgInt,
-				HttpStatus:     *response.Code,
-			})
-		}
-		if *response.Code == http.StatusNotFound {
-			status = api.FEATURE_STATUS_MISSING
-		} else if *response.Code == http.StatusBadRequest {
-			if strings.Contains(*response.Message, common.ERROR_013()) { // "Wrong number of primary-key columns."
-				status = api.FEATURE_STATUS_MISSING // Missing entry can happen and users can fill up missing features by passed featues
-			} else {
+			if *response.Code == http.StatusNotFound {
+				status = api.FEATURE_STATUS_MISSING
+			} else if *response.Code == http.StatusBadRequest {
+				if strings.Contains(*response.Message, common.ERROR_013()) { // "Wrong number of primary-key columns."
+					status = api.FEATURE_STATUS_MISSING // Missing entry can happen and users can fill up missing features by passed featues
+				} else {
+					status = api.FEATURE_STATUS_ERROR
+				}
+			} else if *response.Code != http.StatusOK {
 				status = api.FEATURE_STATUS_ERROR
 			}
-		} else if *response.Code != http.StatusOK {
-			status = api.FEATURE_STATUS_ERROR
-		}
 
-		getFeatureValuesInt(response, featureView, featureValues, &status, err)
+			getFeatureValuesInt(response, featureView, featureValues, &status, err)
+		}
 	}
 
 	// Fill in primary key value from request into the vector
@@ -531,6 +543,10 @@ func GetBatchPkReadParams(metadata *feature_store.FeatureViewMetadata, entries *
 	for _, fgFeature := range metadata.FeatureGroupFeatures {
 		testDb := fgFeature.FeatureStoreName
 		testTable := fgFeature.TableName
+
+		if fgFeature.IsSpine() {
+			continue
+		}
 
 		var filters = make([]api.Filter, 0, len(fgFeature.Features))
 		var columns = make([]api.ReadColumn, 0, len(fgFeature.Features))
