@@ -200,7 +200,7 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, func(
 	fsResp.Features = *features
 
 	//Set status for spine FG
-	fixSpineFGStatus(features, fsReq.PassedFeatures, &metadata.PrefixFeaturesLookup, &metadata.FeatureIndexLookup, &featureStatus)
+	fixSpineFGStatus(features, fsReq.PassedFeatures, metadata, &metadata.FeatureIndexLookup, &featureStatus)
 
 	if fsReq.MetadataRequest != nil {
 		fsResp.Metadata = *fshandler.GetFeatureMetadata(metadata, fsReq.MetadataRequest)
@@ -277,17 +277,12 @@ func fillPassedFeaturesMultipleEntries(features *[][]interface{}, passedFeatures
 
 func fixSpineFGStatus(features *[][]interface{},
 	passedFeatures *[]*map[string]*json.RawMessage,
-	featureMetadata *map[string][]*feature_store.FeatureMetadata,
+	fvMetadata *feature_store.FeatureViewMetadata,
 	indexLookup *map[string]int, status *[]api.FeatureStatus) {
 
-	for i, feature := range *features {
+	for i, _ := range *features {
 		if (*status)[i] != api.FEATURE_STATUS_ERROR {
-
-			var passedFeature *map[string]*json.RawMessage = nil
-			if passedFeatures != nil && len(*passedFeatures) != 0 {
-				passedFeature = (*passedFeatures)[i]
-			}
-			if fshandler.ContainsSpineFeatures(&feature, passedFeature, featureMetadata, indexLookup) {
+			if fvMetadata.HasSpine {
 				// set status error if not already set to some error
 				if (*status)[i] == api.FEATURE_STATUS_COMPLETE {
 					(*status)[i] = api.FEATURE_STATUS_MISSING

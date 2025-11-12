@@ -280,7 +280,7 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, func(
 	fsResp := response.(*api.FeatureStoreResponse)
 	FillPassedFeatures(features, fsReq.PassedFeatures, &metadata.PrefixFeaturesLookup, &metadata.FeatureIndexLookup)
 
-	if ContainsSpineFeatures(features, fsReq.PassedFeatures, &metadata.PrefixFeaturesLookup, &metadata.FeatureIndexLookup) {
+	if metadata.HasSpine {
 		// Spine FG are external. We alway return MISSING when reading Spine FG
 		if status == api.FEATURE_STATUS_COMPLETE {
 			status = api.FEATURE_STATUS_MISSING
@@ -636,23 +636,4 @@ func FillPassedFeatures(features *[]interface{}, passedFeatures *map[string]*jso
 			}
 		}
 	}
-}
-
-// Return true if the FV contains spine FG
-func ContainsSpineFeatures(features *[]interface{}, passedFeatures *map[string]*json.RawMessage,
-	featureMetadataMap *map[string][]*feature_store.FeatureMetadata, indexLookup *map[string]int) bool {
-	for _, featureMetadata := range *featureMetadataMap {
-		for _, fmd := range featureMetadata {
-			if fmd != nil {
-				var lookupKey = feature_store.GetFeatureIndexKeyByFeature(fmd)
-				if _, ok := (*indexLookup)[lookupKey]; ok {
-					if fmd.IsSpine() {
-						return true
-					}
-				}
-			}
-		}
-	}
-
-	return false
 }

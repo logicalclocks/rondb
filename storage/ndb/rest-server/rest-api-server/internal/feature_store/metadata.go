@@ -58,6 +58,7 @@ type FeatureViewMetadata struct {
 	JoinKeyMap         map[string][]string        // key: fName, value: list of feature which join on the key. Used for filling in pk value.
 	RequiredJoinKeyMap map[string][]string        // key: serving-key-prefix + fName, value: list of feature which join on the key. Used for filling in pk value.
 	ComplexFeatures    map[string]*ComplexFeature // key: joinIndex + fgId + fName, label are excluded. joinIndex is needed because of self-join
+	HasSpine           bool                       // Does this FV contains spine FGs
 }
 
 type FeatureGroupFeatures struct {
@@ -206,10 +207,16 @@ func newFeatureViewMetadata(
 		featureCount++
 	}
 
+	var hasSpine = false
 	var complexFeatures = make(map[string]*ComplexFeature)
 	var fgSchemaCache = make(map[int]*dal.PerFeatureAvroSchema)
 	for _, fgFeature := range fgFeaturesArray {
 		for _, feature := range fgFeature.Features {
+
+			if (*feature).IsSpine() {
+				hasSpine = true
+			}
+
 			if (*feature).IsComplex() && !(*feature).IsSpine() {
 				if _, exist := fgSchemaCache[feature.FeatureGroupId]; !exist {
 					projectId, dalErr := dal.GetProjectID(fgFeature.FeatureStoreId)
@@ -276,6 +283,7 @@ func newFeatureViewMetadata(
 	metadata.RequiredJoinKeyMap = requiredJoinKeyMap
 	metadata.JoinKeyMap = joinKeyMap
 	metadata.ComplexFeatures = complexFeatures
+	metadata.HasSpine = hasSpine
 	return &metadata, nil
 }
 
