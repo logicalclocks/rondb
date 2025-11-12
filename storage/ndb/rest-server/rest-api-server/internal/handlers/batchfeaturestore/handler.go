@@ -280,13 +280,11 @@ func fixSpineFGStatus(features *[][]interface{},
 	fvMetadata *feature_store.FeatureViewMetadata,
 	indexLookup *map[string]int, status *[]api.FeatureStatus) {
 
-	for i, _ := range *features {
-		if (*status)[i] != api.FEATURE_STATUS_ERROR {
-			if fvMetadata.HasSpine {
-				// set status error if not already set to some error
-				if (*status)[i] == api.FEATURE_STATUS_COMPLETE {
-					(*status)[i] = api.FEATURE_STATUS_MISSING
-				}
+	if fvMetadata.HasSpine {
+		for i, _ := range *status {
+			if (*status)[i] != api.FEATURE_STATUS_ERROR {
+				// set status to MISSING if not already set to some error
+				(*status)[i] = api.FEATURE_STATUS_MISSING
 			}
 		}
 	}
