@@ -4362,7 +4362,7 @@ int NdbIndexScanOperation::send_next_scan_ordered(Uint32 idx,
 
   Uint32 last = m_sent_receivers_count;
   Uint32 *theData = tSignal.getDataPtrSend();
-  Uint32 *prep_array = theData + 4;
+  Uint32 *prep_array;
 
   theData[0] = theNdbCon->theTCConPtr;
   theData[1] = stopFlag == true ? 1 : 0;
@@ -4380,6 +4380,7 @@ int NdbIndexScanOperation::send_next_scan_ordered(Uint32 idx,
       return 0;
     }
     Uint32 cnt = m_prepared_receivers_count;
+    prep_array = (cnt > 21 ? m_prepared_receivers : theData + 4);
     for (Uint32 i = 0; i < cnt; i++) {
       /**
        * We always get the tcPtrI from the first NdbReceiver, this NdbReceiver
@@ -4423,6 +4424,7 @@ int NdbIndexScanOperation::send_next_scan_ordered(Uint32 idx,
       cnt, nodeId));
     m_sent_receivers_count = last + cnt;
   } else {
+    prep_array = theData + 4;
     NdbReceiver *tRec = m_api_receivers[idx];
     Uint32 index = tRec->m_index;
     m_current_api_receiver = idx + 1;
