@@ -99,6 +99,7 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
     configure();
     parse();
     load();
+    plan_index_and_filter();
     compile();
     determine_explain();
     m_status = Status::PREPARED;
@@ -485,8 +486,8 @@ RonSQLPreparer::load()
    * instead, RonSQLPreparer::programAggregator will read the program from m_agg
    * and map col_idx to attrId before speaking to NdbAggregator.
    */
-  // Populate m_dict, m_table, m_column_attrId_map and m_column_charset_map, on
-  // the condition that m_conf.ndb is available. If m_conf.ndb is not available,
+  // Populate m_dict, m_table, m_column_attrId_map and m_column_map, on the
+  // condition that m_conf.ndb is available. If m_conf.ndb is not available,
   // we'll still be able to do a (partial) EXPLAIN SELECT, so no need to fail
   // yet.
   Ndb* ndb = m_conf.ndb;
@@ -498,8 +499,8 @@ RonSQLPreparer::load()
                 "Failed to get table. Note that RonSQL only supports tables with"
                 " ENGINE=NDB.");
     NdbAttrId* col_id_map = m_amalloc->alloc_exc<NdbAttrId>(m_columns.size());
-    CHARSET_INFO** charset_map =
-      m_amalloc->alloc_exc<CHARSET_INFO*>(m_columns.size());
+    const NdbDictionary::Column** col_map =
+        m_amalloc->alloc_exc<const NdbDictionary::Column*>(m_columns.size());
     for (Uint32 col_idx = 0; col_idx < m_columns.size(); col_idx++)
     {
       const char* col_name = m_columns[col_idx].c_str();
@@ -518,12 +519,16 @@ RonSQLPreparer::load()
         throw ColumnNotFoundError();
       }
       col_id_map[col_idx] = col->getAttrId();
-      charset_map[col_idx] = col->getCharset();
+      col_map[col_idx] = col;
     }
     m_column_attrId_map = col_id_map;
-    m_column_charset_map = charset_map;
+    m_column_map = col_map;
   }
+}
 
+void
+RonSQLPreparer::plan_index_and_filter()
+{
   /*
    * The scan can be performed in two ways:
    * A) A table scan, which will scan all rows in the table. A table scan can
@@ -541,20 +546,21 @@ RonSQLPreparer::load()
    * 2) We search the ndb dictionary for an ordered index on any of the columns
    *    identified among the candidates, and try to choose the best index.
    */
-  generate_index_scan_config_candidates();
+  ConditionalExpression* ce = simplify_ce(m_context.ast_root.where_expression,
+                                          -1 /* no max depth */);
+  generate_index_scan_config_candidates(ce);
   choose_index_scan_config();
   if (!m_do_index_scan)
   {
     // Fallback to table scan
     m_do_table_scan = true;
-    m_table_scan_filter = m_context.ast_root.where_expression;
+    m_table_scan_filter = ce;
   }
 }
 
 void
-RonSQLPreparer::generate_index_scan_config_candidates()
+RonSQLPreparer::generate_index_scan_config_candidates(ConditionalExpression* ce)
 {
-  struct ConditionalExpression* ce = m_context.ast_root.where_expression;
   if (ce == NULL)
   {
     // No WHERE clause
@@ -684,7 +690,7 @@ RonSQLPreparer::compile()
     ResultPrinter(m_amalloc,
                   &m_context.ast_root,
                   &m_columns,
-                  m_column_charset_map,
+                  m_column_map,
                   m_conf.output_format,
                   m_conf.err_stream);
 }
@@ -1061,31 +1067,22 @@ RonSQLPreparer::apply_filter(NdbScanFilter* filter,
   assert (ce != NULL);
   switch (ce->op)
   {
-  case T_IDENTIFIER:
-    feature_not_implemented("Column name in WHERE clause outside of comparison");
-  case T_STRING:
-    feature_not_implemented("String constant in WHERE clause");
-  case T_INT:
-    feature_not_implemented("Integer constant in WHERE clause outside of comparison");
   case T_OR:
     return (filter->begin(NdbScanFilter::OR) >= 0 &&
             apply_filter(filter, ce->args.left) &&
             apply_filter(filter, ce->args.right) &&
             filter->end() >= 0);
   case T_XOR:
-    feature_not_implemented("XOR in WHERE clause");
+    abort(); // This should have been "simplified" away
   case T_AND:
     return (filter->begin(NdbScanFilter::AND) >= 0 &&
             apply_filter(filter, ce->args.left) &&
             apply_filter(filter, ce->args.right) &&
             filter->end() >= 0);
   case T_NOT:
-    feature_not_implemented("NOT in WHERE clause");
-    /*
-    return (apply_filter(filter, ce->args.left) &&
-            // todo no idea if this is correct
-            filter->isfalse() >= 0);
-    */
+    return (filter->begin(NdbScanFilter::NAND) >= 0 &&
+            apply_filter(filter, ce->args.left) &&
+            filter->end() >= 0);
   case T_EQUALS:
     return apply_filter_cmp(filter, NdbScanFilter::COND_EQ, ce->args.left, ce->args.right);
   case T_GE:
@@ -1098,43 +1095,8 @@ RonSQLPreparer::apply_filter(NdbScanFilter* filter,
     return apply_filter_cmp(filter, NdbScanFilter::COND_LT, ce->args.left, ce->args.right);
   case T_NOT_EQUALS:
     return apply_filter_cmp(filter, NdbScanFilter::COND_NE, ce->args.left, ce->args.right);
-  case T_IS:
-    feature_not_implemented("IS in WHERE clause");
-  case T_BITWISE_OR:
-    feature_not_implemented("| in WHERE clause");
-  case T_BITWISE_AND:
-    feature_not_implemented("&& in WHERE clause");
-  case T_BITSHIFT_LEFT:
-    feature_not_implemented("<< in WHERE clause");
-  case T_BITSHIFT_RIGHT:
-    feature_not_implemented(">> in WHERE clause");
-  case T_PLUS:
-    feature_not_implemented("+ (addition) in WHERE clause");
-  case T_MINUS:
-    feature_not_implemented("- (subtraction) in WHERE clause");
-  case T_MULTIPLY:
-    feature_not_implemented("* in WHERE clause");
-  case T_SLASH:
-    feature_not_implemented("/ in WHERE clause");
-  case T_DIV:
-    feature_not_implemented("DIV in WHERE clause");
-  case T_MODULO:
-    feature_not_implemented("% in WHERE clause");
-  case T_BITWISE_XOR:
-    feature_not_implemented("^ in WHERE clause");
-  case T_EXCLAMATION:
-    feature_not_implemented("! in WHERE clause");
-  case T_INTERVAL:
-    feature_not_implemented("INTERVAL in WHERE clause");
-  case T_DATE_ADD:
-    feature_not_implemented("DATE_ADD in WHERE clause");
-  case T_DATE_SUB:
-    feature_not_implemented("DATE_SUB in WHERE clause");
-  case T_EXTRACT:
-    feature_not_implemented("EXTRACT in WHERE clause");
   default:
-    // Unknown operator
-    abort();
+    throw runtime_error("Non-boolean term in WHERE condition");
   }
 }
 
@@ -1144,8 +1106,10 @@ RonSQLPreparer::apply_filter_cmp(NdbScanFilter* filter,
                                    struct ConditionalExpression* left,
                                    struct ConditionalExpression* right)
 {
-  if (left->op == T_IDENTIFIER &&
-           right->op == T_IDENTIFIER)
+  if (left->op != T_IDENTIFIER) {
+    throw runtime_error("For comparison operators, at least one of the operands must be a column name");
+  }
+  if (right->op == T_IDENTIFIER)
   {
     assert(m_column_attrId_map != NULL);
     // todo This only works in simple expressions. For full correctness, the
@@ -1158,199 +1122,415 @@ RonSQLPreparer::apply_filter_cmp(NdbScanFilter* filter,
                         m_column_attrId_map[right->col_idx]) >= 0 &&
             filter->end() >= 0);
   }
-  if (left->op == T_IDENTIFIER)
-  {
-    assert(m_column_attrId_map != NULL);
-    raw_value rv = eval_const_expr(right);
-    return (filter->begin(NdbScanFilter::AND) >= 0 &&
-            filter->isnotnull(m_column_attrId_map[left->col_idx]) >=0 &&
-            filter->cmp(cond,
-                        m_column_attrId_map[left->col_idx],
-                        rv.val, rv.len) >= 0 &&
-            filter->end() >= 0);
+  assert(m_column_attrId_map != NULL);
+  assert(m_column_map != NULL);
+  raw_value rv = encode_constant(right, m_column_map[left->col_idx]);
+  return (filter->begin(NdbScanFilter::AND) >= 0 &&
+          filter->isnotnull(m_column_attrId_map[left->col_idx]) >=0 &&
+          filter->cmp(cond,
+                      m_column_attrId_map[left->col_idx],
+                      rv.val, rv.len) >= 0 &&
+          filter->end() >= 0);
+}
+
+void
+rondb_str_to_mysql_time(MYSQL_TIME *mt, LexString str) {
+  my_time_flags_t flags = 0; // todo
+  MYSQL_TIME_STATUS status;
+  bool err = str_to_datetime(str.str, str.len, mt, flags, &status);
+  if (unlikely(err)) {
+    throw runtime_error("Failed to interpret string literal as a date or"
+                        " timestamp");
   }
-  throw runtime_error("Failed to apply filter.");
+  if (status.warnings) {
+    throw runtime_error("String literal interpreted as date or timestamp with"
+                        " warnings");
+  }
+  if (status.m_deprecation.m_kind !=
+      MYSQL_TIME_STATUS::DEPRECATION::DEPR_KIND::DP_NONE) {
+    throw runtime_error("String literal interpreted as date or timestamp with"
+                        " weird delimiters or spaces");
+  }
+  // todo test nanosecond rounding, see status->nanoseconds
 }
 
-bool rv_bool(raw_value rv)
-{
-  for (Uint32 i = 0; i < rv.len; i++)
-    if (((const Uint8*)rv.val)[i] != 0)
-      return true;
-  return false;
-}
-
-raw_value bool_rv(bool b)
-{
-  static const struct raw_value rv_true8 = {(const void *)"\001", 1};
-  static const struct raw_value rv_false8 = {(const void *)"\000", 1};
-  return b ? rv_true8 : rv_false8;
-}
-
-// todo, perhaps eval_const_expr is better made part of a filter simplification
-// stage, where data types can be matched etc. Or maybe it should even be made
-// part of apply_filter.
 raw_value
-RonSQLPreparer::eval_const_expr(ConditionalExpression* ce)
+RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
+                                const NdbDictionary::Column* col) {
+  static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__,
+                "RonSQLPreparer::encode_constant assumes little endian architecture.");
+  TokenKind op = ce->op;
+  Int64 min = 0, max = 0, bytes = 0;
+  int maxlen = 0, lenbytes = 0;
+  Uint32 binlen = 0;
+  enum_mysql_timestamp_type timetype = MYSQL_TIMESTAMP_NONE;
+  int tk = 0;
+  const int INT = 1, STR = 2, TIME = 3;
+  NdbDictionary::Column::Type type = col->getType();
+  switch (type) {
+  case NdbDictionary::Column::Type::Tinyint:
+    tk = INT; min = -128; max = 127; bytes = 1; break;
+  case NdbDictionary::Column::Type::Tinyunsigned:
+    tk = INT; min = 0; max = 255; bytes = 1; break;
+  case NdbDictionary::Column::Type::Smallint:
+    tk = INT; min = -32768; max = 32767; bytes = 2; break;
+  case NdbDictionary::Column::Type::Smallunsigned:
+    tk = INT; min = 0; max = 65535; bytes = 2; break;
+  case NdbDictionary::Column::Type::Mediumint:
+    tk = INT; min = -8388608; max = 8388607; bytes = 3; break;
+  case NdbDictionary::Column::Type::Mediumunsigned:
+    tk = INT; min = 0; max = 16777215; bytes = 3; break;
+  case NdbDictionary::Column::Type::Int:
+    tk = INT; min = -2147483647LL; max = 2147483648LL; bytes = 4; break;
+  case NdbDictionary::Column::Type::Unsigned:
+    tk = INT; min = 0; max = 4294967295LL; bytes = 4; break;
+  case NdbDictionary::Column::Type::Bigint:
+    tk = INT; min = INT64_MIN; max = INT64_MAX; bytes = 8; break;
+  case NdbDictionary::Column::Type::Bigunsigned:
+    // Values greater than INT64_MAX can be represented by Bigunsigned but not
+    // by ConditionalExpression::integer_constant, so we restrict it to the
+    // narrower range.
+    tk = INT; min = 0; max = INT64_MAX; bytes = 8; break;
+  case NdbDictionary::Column::Type::Varchar:
+    tk = STR; maxlen = 255; lenbytes = 1; break;
+  case NdbDictionary::Column::Type::Longvarchar:
+    tk = STR; maxlen = 65535; lenbytes = 2; break;
+  case NdbDictionary::Column::Type::Date:
+    tk = TIME; binlen = 4; timetype = MYSQL_TIMESTAMP_DATE; break;
+  case NdbDictionary::Column::Type::Datetime2:
+    tk = TIME; binlen = 8; timetype = MYSQL_TIMESTAMP_DATETIME; break;
+  case NdbDictionary::Column::Type::Timestamp2:
+    tk = TIME; binlen = 7; timetype = MYSQL_TIMESTAMP_DATETIME; break;
+  default:
+    throw runtime_error("Unsupported column type in comparison condition."
+                        " Supported types are integer types, VARCHAR, DATE,"
+                        " DATETIME and TIMESTAMP.");
+  }
+  if (op == T_INT && tk == INT) {
+    if (ce->constant_integer < min || ce->constant_integer > max) {
+      throw runtime_error("Integer type column compared to an integer literal"
+                          " out of range.");
+    }
+    Int64* val = m_amalloc->alloc_exc<Int64>(1);
+    *val = ce->constant_integer;
+    return raw_value{ val, static_cast<Uint32>(bytes) };
+  }
+  if (tk == INT) {
+    throw runtime_error("Integer type column compared to an incompatible value."
+                        " Only integer literals are supported.");
+  }
+  if (op == T_INT) {
+    throw runtime_error("Non-integer type column compared to an integer"
+                        " literal.");
+  }
+  if (op == T_STRING && tk == STR) {
+    if (ce->string.len > static_cast<size_t>(maxlen)) {
+      throw runtime_error("VARCHAR column compared to a string literal that is"
+                          " too long. Note that if the column length is less"
+                          " than 256, then the length of the string literal"
+                          " must also be less than 256.");
+    }
+    Uint8* val = m_amalloc->alloc_exc<Uint8>(lenbytes + ce->string.len);
+    memcpy(val, &ce->string.len, lenbytes);
+    memcpy(val + lenbytes, ce->string.str, ce->string.len);
+    return raw_value{ val, static_cast<Uint32>(lenbytes + ce->string.len) };
+  }
+  if (tk == STR) {
+    throw runtime_error("VARCHAR column compared to an incompatible value. Only"
+                        " string literals are supported.");
+  }
+  if (tk == TIME) {
+    MYSQL_TIME mt;
+    if (op == T_STRING) {
+      rondb_str_to_mysql_time(&mt, ce->string);
+    } else if (op == I_MYSQL_TIME) {
+      mt = ce->mysql_time;
+    } else {
+      throw runtime_error("DATE/DATETIME/TIMESTAMP column compared to an"
+                          " incompatible value. Only string literals and calls"
+                          " to DATE_ADD and DATE_SUB are supported.");
+    }
+    uchar* bindate = m_amalloc->alloc_exc<uchar>(binlen);
+    int precision = col->getPrecision();
+    int warnings = 0;
+    if (unlikely(mt.time_type != timetype)) {
+      throw runtime_error("DATE/DATETIME/TIMESTAMP column compared to a valid"
+                          " date/time constant of the wrong type. Note that"
+                          " presence/absence of the time part must match.");
+    }
+    switch (type) {
+    case NdbDictionary::Column::Type::Date: {
+      my_date_to_binary(&mt, bindate);
+      break;
+    }
+    case NdbDictionary::Column::Type::Datetime2: {
+      my_datetime_adjust_frac(&mt, precision, &warnings, true);
+      if (unlikely(warnings != 0)) {
+        // Actually won't ever happen when truncate argument is set
+        throw runtime_error("Perhaps an invalid DATETIME constant. Please"
+                            " report a bug.");
+      }
+      longlong numericDateTime = TIME_to_longlong_datetime_packed(mt);
+      my_datetime_packed_to_binary(numericDateTime, bindate, precision);
+      break;
+    }
+    case NdbDictionary::Column::Type::Timestamp2: {
+      // todo See ../../rest-server2/server/src/db_operations/pk/common.cpp for
+      // timezone issues with Timestamp2. Currently this acts as if the server
+      // is always in UTC.
+      time_t epoch = 0;
+      errno = 0;
+      struct tm time_info;
+      time_info.tm_year = mt.year - 1900;  // tm_year is years since 1900
+      time_info.tm_mon = mt.month - 1;     // tm_mon is 0-based
+      time_info.tm_mday = mt.day;
+      time_info.tm_hour = mt.hour;
+      time_info.tm_min = mt.minute;
+      time_info.tm_sec = mt.second;
+      time_info.tm_isdst = -1; // Daylight saving t
+      epoch = timegm(&time_info);
+      if (unlikely(epoch <= 0 || epoch > 2147483647)) {
+        throw runtime_error("TIMESTAMP column compared to a constant out of"
+                            " range (valid range is '1970-01-01 00:00:01' UTC"
+                            " to '2038-01-19 03:14:07' UTC)");
+      }
+      my_datetime_adjust_frac(&mt, precision, &warnings, true);
+      if (unlikely(warnings != 0)) {
+        // Actually won't ever happen when truncate argument is set
+        throw runtime_error("Perhaps an invalid TIMESTAMP constant. Please"
+                            " report a bug.");
+      }
+      // On Mac timeval.tv_usec is Int32 and on linux it is Int64.
+      // Inorder to be compatible we cast l_time.second_part to Int32
+      // This will not create problems as only six digit nanoseconds
+      // are stored in Timestamp2
+      my_timeval myTV{epoch, (Int32)mt.second_part};
+      my_timestamp_to_binary(&myTV, bindate, precision);
+      break;
+    }
+    default:
+      abort();
+    }
+    return raw_value{bindate, binlen};
+  }
+  throw runtime_error("Bug in RonSQLPreparer::encode_constant");
+}
+
+struct ConditionalExpression*
+RonSQLPreparer::simplify_ce(struct ConditionalExpression* ce, int maxdepth)
 {
-  raw_value ret;
+  if (maxdepth == 0 || ce == NULL) {
+    return ce;
+  }
+  TokenKind op = ce->op;
   switch(ce->op)
   {
-  case T_IDENTIFIER:
-    throw runtime_error("Expected constant expression"); // todo track code location
-  case T_STRING:
-    feature_not_implemented("String constants in WHERE clause");
-  case T_INT:
+  case T_EQUALS:
+    [[fallthrough]];
+  case T_GE:
+    [[fallthrough]];
+  case T_GT:
+    [[fallthrough]];
+  case T_LE:
+    [[fallthrough]];
+  case T_LT:
+    [[fallthrough]];
+  case T_NOT_EQUALS:
     {
-      Int64* val = m_amalloc->alloc_exc<Int64>(1);
-      *val = ce->constant_integer;
-      ret.val = val;
-      ret.len = sizeof(*val);
+      struct ConditionalExpression* left =
+        simplify_ce(ce->args.left, maxdepth - 1);
+      struct ConditionalExpression* right =
+        simplify_ce(ce->args.right, maxdepth - 1);
+      if (left->op != T_IDENTIFIER && right->op == T_IDENTIFIER ) {
+        if      (op == T_GE) op = T_LE;
+        else if (op == T_GT) op = T_LT;
+        else if (op == T_LE) op = T_GE;
+        else if (op == T_LT) op = T_GT;
+        ConditionalExpression* tmp = left; left = right; right = tmp;
+      }
+      if (op == ce->op && left == ce->args.left && right == ce->args.right) {
+        return ce;
+      }
+      ConditionalExpression* ret = m_amalloc->alloc_exc<ConditionalExpression>(1);
+      ret->op = op;
+      ret->args.left = left;
+      ret->args.right = right;
       return ret;
     }
-  case T_OR:
-    return bool_rv(rv_bool(eval_const_expr(ce->args.left)) ||
-                   rv_bool(eval_const_expr(ce->args.right)));
-  case T_XOR:
-    {
-      bool left = rv_bool(eval_const_expr(ce->args.left));
-      bool right = rv_bool(eval_const_expr(ce->args.right));
-      return bool_rv(left != right);
-    }
-  case T_AND:
-    return bool_rv(rv_bool(eval_const_expr(ce->args.left)) &&
-                   rv_bool(eval_const_expr(ce->args.right)));
-  case T_NOT:
-    return bool_rv(!rv_bool(eval_const_expr(ce->args.left)));
-  case T_EQUALS:
-    feature_not_implemented("Constant evaluation of equals (=) expression");
-  case T_GE:
-    feature_not_implemented("Constant evaluation of greater or equal (>=) expression");
-  case T_GT:
-    feature_not_implemented("Constant evaluation of greater than (>) expression");
-  case T_LE:
-    feature_not_implemented("Constant evaluation of less or equal (<=) expression");
-  case T_LT:
-    feature_not_implemented("Constant evaluation of less than (<) expression");
-  case T_NOT_EQUALS:
-    feature_not_implemented("Constant evaluation of not equals (<> or !=) expression");
-  case T_IS:
-    feature_not_implemented("Constant evaluation of IS expression");
-  case T_BITWISE_OR:
-    feature_not_implemented("Constant evaluation of bitwise or (|) expression");
-  case T_BITWISE_AND:
-    feature_not_implemented("Constant evaluation of bitwise and (&) expression");
-  case T_BITSHIFT_LEFT:
-    feature_not_implemented("Constant evaluation of bitshift left (<<) expression");
-  case T_BITSHIFT_RIGHT:
-    feature_not_implemented("Constant evaluation of bitshift right (>>) expression");
-  case T_PLUS:
-    feature_not_implemented("Constant evaluation of addition (+) expression");
-  case T_MINUS:
-    feature_not_implemented("Constant evaluation of subtraction (-) expression");
-  case T_MULTIPLY:
-    feature_not_implemented("Constant evaluation of multiplication (*) expression");
-  case T_SLASH:
-    feature_not_implemented("Constant evaluation of division (/) expression");
-  case T_DIV:
-    feature_not_implemented("Constant evaluation of DIV expression");
-  case T_MODULO:
-    feature_not_implemented("Constant evaluation of modulo (%) expression");
-  case T_BITWISE_XOR:
-    feature_not_implemented("Constant evaluation of bitwise xor (^) expression");
-  case T_EXCLAMATION:
-    feature_not_implemented("Constant evaluation of negation (!) expression");
-  case T_INTERVAL:
-    feature_not_implemented("Constant evaluation of INTERVAL expression");
   case T_DATE_ADD:
-    feature_not_implemented("Constant evaluation of DATE_ADD expression");
+    [[fallthrough]];
   case T_DATE_SUB:
     {
-      ConditionalExpression* date_ce = ce->args.left;
+      bool neg = ce->op == T_DATE_SUB;
+      ConditionalExpression* date_ce = simplify_ce(ce->args.left, maxdepth - 1);
       ConditionalExpression* interval_ce = ce->args.right;
-      if (date_ce->op != T_STRING)
-      {
-        throw runtime_error("DATE_SUB expected date string as first argument");
+      MYSQL_TIME ltime;
+      if (date_ce->op == T_STRING) {
+        rondb_str_to_mysql_time(&ltime, date_ce->string);
+      } else if (date_ce->op == I_MYSQL_TIME) {
+        ltime = date_ce->mysql_time;
+      } else {
+        throw runtime_error("The first argument to DATE_ADD and DATE_SUB must be a string literal or another call to DATE_ADD or DATE_SUB");
       }
       if (interval_ce->op != T_INTERVAL)
       {
-        throw runtime_error("DATE_SUB expected interval as second argument");
+        throw runtime_error("The second argument to DATE_ADD and DATE_SUB must be an INTERVAL literal");
       }
-      LexString datestr = date_ce->string;
-      if (interval_ce->interval.interval_type != T_DAY)
-      {
-        // todo support all kinds of intervals.
-        throw runtime_error("DATE_SUB only supports DAY intervals");
-      }
-      Int64 days;
-      ConditionalExpression* days_ce = interval_ce->interval.arg;
-      if (days_ce->op == T_INT)
-      {
-        days = days_ce->constant_integer;
-      }
-      else if (days_ce->op == T_STRING)
-      {
-        LexString ls = days_ce->string;
-        static const size_t maxchars = 15;
-        if (ls.len > maxchars)
+      ConditionalExpression* amount_ce = interval_ce->interval.arg;
+      Int64 constant_integer;
+      switch (amount_ce->op) {
+      case T_INT:
+        constant_integer = amount_ce->constant_integer;
+        break;
+      case T_STRING:
         {
-          throw runtime_error("Too many characters in interval string");
-        }
-        char buf[maxchars+1];
-        memcpy(buf, ls.str, ls.len);
-        buf[ls.len] = '\0';
-        for (Uint32 i = 0; i < ls.len; i++)
-        {
-          if (buf[i] < '0' || buf[i] > '9')
-          {
-            throw runtime_error("Non-digit character in interval string");
+          const char* string_literal = amount_ce->string.to_LexCString(m_amalloc).c_str();
+          char* endptr;
+          constant_integer = strtoll(string_literal, &endptr, 10);
+          if (*endptr != '\0') {
+            throw runtime_error("Failed to convert INTERVAL string literal amount to an integer");
           }
         }
-        days = atol(buf); // todo or atoll?
+        break;
+      default:
+        throw runtime_error("INTERVAL literal requires an amount in the form of an integer literal or a string literal representing an integer");
       }
-      else
-      {
-        throw runtime_error("DATE_SUB only supports constant integers and strings for specifying days");
+      // Member variables in Interval are unsigned long int or unsigned long long int
+      if (constant_integer < 0) {
+        neg = !neg;
+        constant_integer = -constant_integer;
       }
-      if (days < 0)
-      {
-        // todo support negative intervals.
-        throw runtime_error("DATE_SUB only supports positive days in interval");
+      unsigned long long int amount = constant_integer;
+      Interval interval = {0, 0, 0, 0, 0, 0, 0, neg};
+      enum interval_type interval_type;
+      switch(interval_ce->interval.interval_type) {
+      case T_MICROSECOND:
+        interval.second_part = amount;
+        interval_type = INTERVAL_MICROSECOND;
+        break;
+      case T_SECOND:
+        interval.second = amount;
+        interval_type = INTERVAL_SECOND;
+        break;
+      case T_MINUTE:
+        interval.minute = amount;
+        interval_type = INTERVAL_MINUTE;
+        break;
+      case T_HOUR:
+        interval.hour = amount;
+        interval_type = INTERVAL_HOUR;
+        break;
+      case T_DAY:
+        interval.day = amount;
+        interval_type = INTERVAL_DAY;
+        break;
+      case T_WEEK:
+        interval.day = amount * 7;
+        interval_type = INTERVAL_WEEK;
+        break;
+      case T_MONTH:
+        interval.month = amount;
+        interval_type = INTERVAL_MONTH;
+        break;
+      case T_QUARTER:
+        interval.month = amount * 3;
+        interval_type = INTERVAL_QUARTER;
+        break;
+      case T_YEAR:
+        interval.year = amount;
+        interval_type = INTERVAL_YEAR;
+        break;
+      default:
+        throw runtime_error("INTERVAL literals support only interval types MICROSECOND, SECOND, MINUTE, HOUR, DAY, WEEK, MONTH, QUARTER, and YEAR");
       }
-      unsigned long int udays = days; // datatype matches Interval.day
-      MYSQL_TIME ltime;
-      my_time_flags_t flags = 0; // todo
-      MYSQL_TIME_STATUS status;
-      bool err = str_to_datetime(datestr.str, datestr.len, &ltime,
-                                 flags, &status);
-      if (err)
-      {
-        throw runtime_error("DATE_SUB failed to parse date string");
+      int warnings = 0;
+      bool err = date_add_interval(&ltime,
+                                   interval_type,
+                                   interval,
+                                   &warnings);
+      if (err || warnings) {
+        throw runtime_error("DATE_ADD or DATE_SUB failed");
       }
-      bool neg = true;
-      Interval interval = {0, 0, udays, 0, 0, 0, 0, neg};
-      err = date_add_interval(&ltime,
-                              interval_type::INTERVAL_DAY,
-                              interval,
-                              NULL);
-      if (err)
-      {
-        throw runtime_error("DATE_SUB failed");
-      }
-      Uint32* date = m_amalloc->alloc_exc<Uint32>(1);
-      // todo find and use MySQL conversion function
-      *date = ltime.year << 9 | ltime.month << 5 | ltime.day;
-      //ulonglong* timeull = m_amalloc->alloc_exc<ulonglong>(1);
-      //*timeull = TIME_to_ulonglong_datetime(ltime);
-      //std::cerr << "==========DBG: In RonSQLPreparer::eval_const_expr DATE_SUB: *timeull=" << *timeull << endl;
-      //return raw_value{ timeull, sizeof(*timeull)};
-      return raw_value{ date, sizeof(*date)};
+      ConditionalExpression* ret = m_amalloc->alloc_exc<ConditionalExpression>(1);
+      ret->op = I_MYSQL_TIME;
+      ret->mysql_time = ltime;
+      return ret;
     }
-  case T_EXTRACT:
-    feature_not_implemented("Constant evaluation of EXTRACT expression");
+  case T_XOR:
+    {
+      // Conjunctive Normal Form expansion of XOR:
+      // x XOR y ->
+      // (x OR   y) AND  (NOT  x    OR   NOT y)
+      //    r[1]    r[0]  r[3]      r[2] r[4]
+      ConditionalExpression* x = simplify_ce(ce->args.left, maxdepth - 1);
+      ConditionalExpression* y = simplify_ce(ce->args.right, maxdepth - 1);
+      ConditionalExpression* r = m_amalloc->alloc_exc<ConditionalExpression>(5);
+      r[4].op = T_NOT;
+      r[4].args.left = y;
+      r[3].op = T_NOT;
+      r[3].args.left = x;
+      r[2].args.left = simplify_ce(&r[3], 1);
+      r[2].op = T_OR;
+      r[2].args.right = simplify_ce(&r[4], 1);
+      r[1].args.left = x;
+      r[1].op = T_OR;
+      r[1].args.right = y;
+      r[0].args.left = &r[1];
+      r[0].op = T_AND;
+      r[0].args.right = &r[2];
+      return &r[0];
+    }
+  case T_NOT:
+    {
+      ConditionalExpression* l = simplify_ce(ce->args.left, maxdepth - 1);
+      if (l->op == T_NOT) {
+        // Simplify NOT NOT x -> x
+        return simplify_ce(l->args.left, maxdepth - 1);
+      }
+      if (l->op == T_OR) {
+        // Simplify towards conjunctive normal form:
+        // NOT (x OR y) ->
+        // (NOT  x) AND (NOT  y)
+        //  r[1]    r[0] r[2]
+        ConditionalExpression* x = simplify_ce(l->args.left, maxdepth - 1);
+        ConditionalExpression* y = simplify_ce(l->args.right, maxdepth - 1);
+        ConditionalExpression* r =
+          m_amalloc->alloc_exc<ConditionalExpression>(3);
+        r[2].op = T_NOT;
+        r[2].args.left = y;
+        r[1].op = T_NOT;
+        r[1].args.left = x;
+        r[0].args.left = simplify_ce(&r[1], 1);
+        r[0].op = T_AND;
+        r[0].args.right = simplify_ce(&r[2], 1);
+        return &r[0];
+      }
+      if (l != ce->args.left) {
+        ConditionalExpression* r = m_amalloc->alloc_exc<ConditionalExpression>(1);
+        r->op = T_NOT;
+        r->args.left = l;
+        return r;
+      }
+      return ce;
+    }
+  case T_AND:
+    [[fallthrough]];
+  case T_OR:
+    {
+      ConditionalExpression* x = simplify_ce(ce->args.left, maxdepth - 1);
+      ConditionalExpression* y = simplify_ce(ce->args.right, maxdepth - 1);
+      if (x == ce->args.left && y == ce->args.right) {
+        return ce;
+      }
+      ConditionalExpression* r = m_amalloc->alloc_exc<ConditionalExpression>(1);
+      r->op = ce->op;
+      r->args.left = x;
+      r->args.right = y;
+      return r;
+    }
   default:
-    // Unknown operator
-    abort();
+    // No simplification to do
+    return ce;
   }
 }
 
