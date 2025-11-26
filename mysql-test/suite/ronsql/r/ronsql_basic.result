@@ -288,5 +288,21 @@ Number of output lines, including header: 42
 
 
 
+Short VARCHAR filter:
+== Query ==
+SELECT cchar
+     , sint8
+     , count(*)
+FROM api_scan
+WHERE cchar = 'GROUPxxx_0' OR cchar > 'GROUPxxx_1'
+GROUP BY cchar, sint8;
+
+Number of output lines, including header: 769
+
+== Diff ==
+================================================================================
+
+
+
 Cleanup
 DROP TABLE api_scan;

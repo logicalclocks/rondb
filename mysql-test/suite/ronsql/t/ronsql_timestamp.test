@@ -1,0 +1,103 @@
+--source include/have_ndb.inc
+
+# RonSQL doesn't support time zones yet, and works as if in UTC. MySQL uses
+# system time zone, but it seems mtr somehow sets it to +03:00 before this test
+# starts. Until RonSQL and RDRS supports time zones, we'll run this test in UTC.
+SET time_zone = "+00:00";
+
+--echo ==============
+--echo Generate data:
+--echo ==============
+
+CREATE TABLE tbl (
+  pk INT          PRIMARY KEY AUTO_INCREMENT,
+  d  DATE         NOT NULL,
+  dt DATETIME(6)  NOT NULL,
+  ts TIMESTAMP(3) NOT NULL
+) ENGINE=NDB;
+
+INSERT INTO tbl (d, dt, ts) VALUES ('2025-11-24', '2025-11-24 11:47:03.000000', '2025-11-24 11:47:03.000000');
+
+INSERT INTO tbl (d, dt, ts) SELECT d, DATE_ADD(dt, INTERVAL 1 MICROSECOND), DATE_ADD(ts, INTERVAL 1 MICROSECOND) FROM tbl ORDER BY pk;
+INSERT INTO tbl (d, dt, ts) SELECT d, DATE_ADD(dt, INTERVAL 1000 MICROSECOND), DATE_ADD(ts, INTERVAL 1000 MICROSECOND) FROM tbl ORDER BY pk;
+INSERT INTO tbl (d, dt, ts) SELECT d, DATE_ADD(dt, INTERVAL 1 SECOND), DATE_ADD(ts, INTERVAL 1 SECOND) FROM tbl ORDER BY pk;
+INSERT INTO tbl (d, dt, ts) SELECT d, DATE_ADD(dt, INTERVAL 1 MINUTE), DATE_ADD(ts, INTERVAL 1 MINUTE) FROM tbl ORDER BY pk;
+INSERT INTO tbl (d, dt, ts) SELECT d, DATE_ADD(dt, INTERVAL 1 HOUR), DATE_ADD(ts, INTERVAL 1 HOUR) FROM tbl ORDER BY pk;
+INSERT INTO tbl (d, dt, ts) SELECT DATE_ADD(d, INTERVAL 1 DAY), DATE_ADD(dt, INTERVAL 1 DAY), DATE_ADD(ts, INTERVAL 1 DAY) FROM tbl ORDER BY pk;
+INSERT INTO tbl (d, dt, ts) SELECT DATE_ADD(d, INTERVAL 1 WEEK), DATE_ADD(dt, INTERVAL 1 WEEK), DATE_ADD(ts, INTERVAL 1 WEEK) FROM tbl ORDER BY pk;
+INSERT INTO tbl (d, dt, ts) SELECT DATE_ADD(d, INTERVAL 1 MONTH), DATE_ADD(dt, INTERVAL 1 MONTH), DATE_ADD(ts, INTERVAL 1 MONTH) FROM tbl ORDER BY pk;
+INSERT INTO tbl (d, dt, ts) SELECT DATE_ADD(d, INTERVAL 1 QUARTER), DATE_ADD(dt, INTERVAL 1 QUARTER), DATE_ADD(ts, INTERVAL 1 QUARTER) FROM tbl ORDER BY pk;
+INSERT INTO tbl (d, dt, ts) SELECT DATE_ADD(d, INTERVAL 1 YEAR), DATE_ADD(dt, INTERVAL 1 YEAR), DATE_ADD(ts, INTERVAL 1 YEAR) FROM tbl ORDER BY pk;
+
+--echo ========
+--echo Queries:
+--echo ========
+
+--let QUERY_FILE=$MYSQL_TMP_DIR/query.sql
+
+--write_file $QUERY_FILE
+SELECT COUNT(*), SUM(pk) FROM tbl WHERE d  >  '2025-11-24';
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--write_file $QUERY_FILE
+SELECT COUNT(*), SUM(pk) FROM tbl WHERE dt <  '2025-11-24 11:47:05';
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--write_file $QUERY_FILE
+SELECT COUNT(*), SUM(pk) FROM tbl WHERE ts >= '2025-11-24 11:47:03.001';
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--write_file $QUERY_FILE
+SELECT COUNT(*), SUM(pk) FROM tbl WHERE d  >= DATE_ADD('2025-11-24', INTERVAL 1 DAY);
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--write_file $QUERY_FILE
+SELECT COUNT(*), SUM(pk) FROM tbl WHERE d  >= DATE_ADD('2025-11-24', INTERVAL 1 WEEK);
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--write_file $QUERY_FILE
+SELECT COUNT(*), SUM(pk) FROM tbl WHERE d  >= DATE_ADD('2025-11-24', INTERVAL 1 MONTH);
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--write_file $QUERY_FILE
+SELECT COUNT(*), SUM(pk) FROM tbl WHERE d  >= DATE_ADD('2025-11-24', INTERVAL 1 QUARTER);
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--write_file $QUERY_FILE
+SELECT COUNT(*), SUM(pk) FROM tbl WHERE d  >= DATE_ADD('2025-11-24', INTERVAL 1 YEAR);
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--write_file $QUERY_FILE
+SELECT COUNT(*), SUM(pk) FROM tbl WHERE dt >= DATE_SUB('2025-11-24 11:47:03', INTERVAL -1 MICROSECOND);
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--write_file $QUERY_FILE
+SELECT COUNT(*), SUM(pk) FROM tbl WHERE ts >= DATE_ADD('2025-11-24 11:47:03', INTERVAL 1 SECOND);
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--write_file $QUERY_FILE
+SELECT COUNT(*), SUM(pk) FROM tbl WHERE dt >= DATE_ADD('2025-11-24 11:47:03', INTERVAL 1 HOUR);
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--write_file $QUERY_FILE
+SELECT COUNT(*), SUM(pk) FROM tbl WHERE NOT ts < DATE_SUB(DATE_ADD('2025-11-24 11:47:03', INTERVAL '1' HOUR), INTERVAL -2 MINUTE)
+                    XOR NOT NOT NOT NOT NOT dt < DATE_ADD(DATE_SUB('2025-11-24 11:47:03', INTERVAL '-1' MONTH), INTERVAL 2 DAY);
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo =======
+--echo Cleanup
+--echo =======
+
+DROP TABLE tbl;

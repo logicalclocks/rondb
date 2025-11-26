@@ -81,13 +81,13 @@ soft_assert(bool condition, const char* msg)
 ResultPrinter::ResultPrinter(ArenaMalloc* amalloc,
                              struct SelectStatement* query,
                              DynamicArray<LexCString>* column_names,
-                             CHARSET_INFO** column_charset_map,
+                             const NdbDictionary::Column** column_map,
                              RonSQLExecParams::OutputFormat output_format,
                              std::basic_ostream<char>* err):
   m_amalloc(amalloc),
   m_query(query),
   m_column_names(column_names),
-  m_column_charset_map(column_charset_map),
+  m_column_map(column_map),
   m_output_format(output_format),
   m_err(err),
   m_program(amalloc),
@@ -301,8 +301,8 @@ ResultPrinter::compile()
         // and then charset will always be NULL. That's ok, because it won't be
         // used.
         cmd.print_group_by_column.charset =
-          m_column_charset_map != NULL
-          ? m_column_charset_map[o->column.col_idx]
+          m_column_map != NULL
+          ? m_column_map[o->column.col_idx]->getCharset()
           : NULL;
         m_program.push(cmd);
         break;

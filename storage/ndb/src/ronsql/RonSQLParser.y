@@ -146,6 +146,10 @@ extern void rsqlp_error(RSQLP_LTYPE* yylloc, yyscan_t yyscanner, const char* s);
 %token T_OR T_XOR T_AND T_NOT T_EQUALS T_GE T_GT T_LE T_LT T_NOT_EQUALS T_IS T_NULL T_BITWISE_OR T_BITWISE_AND T_BITSHIFT_LEFT T_BITSHIFT_RIGHT T_PLUS T_MINUS T_MULTIPLY T_SLASH T_DIV T_MODULO T_BITWISE_XOR T_EXCLAMATION
 %token T_INTERVAL T_DATE_ADD T_DATE_SUB T_EXTRACT T_MICROSECOND T_SECOND T_MINUTE T_HOUR T_DAY T_WEEK T_MONTH T_QUARTER T_YEAR T_SECOND_MICROSECOND T_MINUTE_MICROSECOND T_MINUTE_SECOND T_HOUR_MICROSECOND T_HOUR_SECOND T_HOUR_MINUTE T_DAY_MICROSECOND T_DAY_SECOND T_DAY_MINUTE T_DAY_HOUR T_YEAR_MONTH
 
+// RonSQLPreparer.cpp needs some values that are inequal to all tokens. They
+// need to be declared here but aren't used in the lexer or parser.
+%token I_MYSQL_TIME
+
 /*
  * MySQL operator presedence, strongest binding first:
  * See https://dev.mysql.com/doc/refman/8.0/en/operator-precedence.html

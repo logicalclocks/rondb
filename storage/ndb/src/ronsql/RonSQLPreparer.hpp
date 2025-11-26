@@ -137,7 +137,7 @@ private:
   Context m_context;
   DynamicArray<LexCString> m_columns;
   NdbAttrId* m_column_attrId_map = NULL;
-  CHARSET_INFO** m_column_charset_map = NULL;
+  const NdbDictionary::Column** m_column_map = NULL;
   const NdbDictionary::Dictionary* m_dict = NULL;
   const NdbDictionary::Table* m_table = NULL;
   yyscan_t m_scanner;
@@ -183,7 +183,8 @@ private:
   void parse();
   bool has_width(size_t pos);
   void load();
-  void generate_index_scan_config_candidates();
+  void plan_index_and_filter();
+  void generate_index_scan_config_candidates(ConditionalExpression* ce);
   void choose_index_scan_config();
   void compile();
   void determine_explain();
@@ -200,7 +201,10 @@ private:
                         NdbScanFilter::BinaryCondition cond,
                         struct ConditionalExpression* left,
                         struct ConditionalExpression* right);
-  raw_value eval_const_expr(struct ConditionalExpression* ce);
+  raw_value encode_constant(struct ConditionalExpression *ce,
+                            const NdbDictionary::Column* col);
+  struct ConditionalExpression* simplify_ce(struct ConditionalExpression* ce,
+                                            int maxdepth);
   void programAggregator(NdbAggregator* aggregator);
   void print_result_json(NdbAggregator* aggregator);
   void print();

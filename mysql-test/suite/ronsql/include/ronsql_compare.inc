@@ -25,7 +25,13 @@ if ($QUERY=='')
 --exec cat $MYSQL_TMP_DIR/ronsql-rdrs-body-1 $MYSQL_TMP_DIR/ronsql-rdrs-body-2 $MYSQL_TMP_DIR/ronsql-rdrs-body-3 > $MYSQL_TMP_DIR/ronsql-rdrs-body
 --let $QUERY_PARAMS = -D test $QUERY_PARAMS
 
---exec $MYSQL --default-character-set=utf8mb4 $QUERY_PARAMS > $MYSQL_TMP_DIR/mysql.out
+# RonSQL doesn't support time zones yet, and works as if in UTC. MySQL uses
+# system time zone, but it seems mtr somehow sets it to +03:00 before starting a
+# test case. Until RonSQL and RDRS supports time zones, we will set UTC time
+# zone explicitly in each test case where it has an impact. This does not carry
+# over to MySQL clients launched with --exec, so we use the --init-command-add
+# parameter for that.
+--exec $MYSQL --default-character-set=utf8mb4 --init-command-add='SET time_zone = "+00:00";' $QUERY_PARAMS > $MYSQL_TMP_DIR/mysql.out
 if ($canonicalization_script)
 {
   --exec sed -r '$canonicalization_script' $MYSQL_TMP_DIR/mysql.out > $MYSQL_TMP_DIR/mysql.out.canon

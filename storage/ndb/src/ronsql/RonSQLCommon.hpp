@@ -27,6 +27,7 @@
 
 #include "Ndb.hpp"
 #include "NdbOperation.hpp"
+#include "mysql_time.h"
 
 #include "ArenaMalloc.hpp"
 #include "LexString.hpp"
@@ -142,6 +143,7 @@ struct ConditionalExpression
       struct ConditionalExpression* arg;
     } extract;
     LexString string;
+    MYSQL_TIME mysql_time;
   };
 };
 
