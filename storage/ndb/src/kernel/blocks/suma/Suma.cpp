@@ -5223,6 +5223,7 @@ void Suma::doFIRE_TRIG_ORD(Signal *signal, LinearSectionPtr lsptr[3]) {
     dst1[3] = any_value;
     dst1[4] = transId1;
     dst1[5] = transId2;
+    dst1[6] = subPtr.p->m_subAutoIncrement;
     dst1 += buffer_header_sz;
     memcpy(dst1, lsptr[0].p, lsptr[0].sz << 2);
     dst1 += lsptr[0].sz;
