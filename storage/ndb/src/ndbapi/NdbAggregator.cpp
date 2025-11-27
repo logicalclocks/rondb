@@ -121,11 +121,24 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
         memcpy(agg_rec, reinterpret_cast<const char*>(&data_buf[parse_pos]),
             gb_cols_len + agg_res_len);
         GBHashEntry new_entry{agg_rec, gb_cols_len};
+        GBHashEntry new_aggs{agg_rec + gb_cols_len, agg_res_len};
+
+        // RONDB-831: COUNT() over zero rows should result in 0, not NULL.
+        // Therefore, replace NULLs with 0 for all COUNT results.
+        for (Uint32 i = 0; i < n_agg_results_; i++) {
+          if (agg_ops_[i] == kOpCount) {
+            AggResItem* item = reinterpret_cast<AggResItem*>(new_aggs.ptr) + i;
+            if (item->is_null) {
+              item->type = NDB_TYPE_BIGINT;
+              item->is_unsigned = 1;
+              item->is_null = false;
+              item->value.val_uint64 = 0;
+            }
+          }
+        }
 
         gb_map_->insert(std::pair<GBHashEntry, GBHashEntry>(
-              new_entry,
-                GBHashEntry{agg_rec + gb_cols_len,
-                agg_res_len}));
+              new_entry, new_aggs));
         agg_res_ptr = reinterpret_cast<AggResItem*>(agg_rec + agg_res_len);
       }
       DEB_TRACE();
@@ -763,10 +776,17 @@ bool NdbAggregator::Finalize() {
     agg_results_ = new AggResItem[n_agg_results_];
     Uint32 i = 0;
     while (i < n_agg_results_) {
-      agg_results_[i].type = NDB_TYPE_UNDEFINED;
-      agg_results_[i].is_unsigned = false;
-      agg_results_[i].is_null = true;
-      agg_results_[i].value.val_int64 = 0;
+      if (agg_ops_[i] == kOpCount) {
+        agg_results_[i].type = NDB_TYPE_BIGINT;
+        agg_results_[i].is_unsigned = 1;
+        agg_results_[i].is_null = false;
+        agg_results_[i].value.val_uint64 = 0;
+      } else {
+        agg_results_[i].type = NDB_TYPE_UNDEFINED;
+        agg_results_[i].is_unsigned = false;
+        agg_results_[i].is_null = true;
+        agg_results_[i].value.val_int64 = 0;
+      }
       i++;
     }
   }

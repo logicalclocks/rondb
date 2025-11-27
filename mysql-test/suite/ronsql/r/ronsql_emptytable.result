@@ -1,15 +1,17 @@
 Create test table with no rows
 CREATE TABLE tbl1 (
-pk INT NOT NULL,
+pk INT NOT NULL AUTO_INCREMENT,
 idx INT NULL,
 flt INT NULL,
 gr INT NULL,
+dat INT NULL,
 PRIMARY KEY USING HASH (pk),
 INDEX index_idx (idx)
 ) ENGINE=NDB CHARSET=latin1;
+====== Queries on an empty table ======
 Table scan
 == Query ==
-SELECT count(*)
+SELECT AVG(dat), COUNT(dat), MAX(dat), MIN(dat), SUM(dat), COUNT(*)
 FROM tbl1
 ;
 
@@ -22,7 +24,7 @@ Number of output lines, including header: 2
 
 Table scan, group on 1 column
 == Query ==
-SELECT count(*)
+SELECT AVG(dat), COUNT(dat), MAX(dat), MIN(dat), SUM(dat), COUNT(*)
 FROM tbl1
 GROUP BY gr
 ;
@@ -36,7 +38,7 @@ Number of output lines, including header: 0
 
 Table scan, group on 2 columns
 == Query ==
-SELECT count(*)
+SELECT AVG(dat), COUNT(dat), MAX(dat), MIN(dat), SUM(dat), COUNT(*)
 FROM tbl1
 GROUP BY gr
 , idx
@@ -51,7 +53,7 @@ Number of output lines, including header: 0
 
 Table scan, eq filter
 == Query ==
-SELECT count(*)
+SELECT AVG(dat), COUNT(dat), MAX(dat), MIN(dat), SUM(dat), COUNT(*)
 FROM tbl1
 WHERE flt = 66
 ;
@@ -65,7 +67,7 @@ Number of output lines, including header: 2
 
 Table scan, eq filter, group on 1 column
 == Query ==
-SELECT count(*)
+SELECT AVG(dat), COUNT(dat), MAX(dat), MIN(dat), SUM(dat), COUNT(*)
 FROM tbl1
 WHERE flt = 66
 GROUP BY gr
@@ -80,7 +82,7 @@ Number of output lines, including header: 0
 
 Table scan, eq filter, group on 2 columns
 == Query ==
-SELECT count(*)
+SELECT AVG(dat), COUNT(dat), MAX(dat), MIN(dat), SUM(dat), COUNT(*)
 FROM tbl1
 WHERE flt = 66
 GROUP BY gr
@@ -96,7 +98,7 @@ Number of output lines, including header: 0
 
 Range scan
 == Query ==
-SELECT count(*)
+SELECT AVG(dat), COUNT(dat), MAX(dat), MIN(dat), SUM(dat), COUNT(*)
 FROM tbl1
 WHERE idx >= 6 AND idx < 8
 ;
@@ -110,7 +112,7 @@ Number of output lines, including header: 2
 
 Range scan, group on 1 column
 == Query ==
-SELECT count(*)
+SELECT AVG(dat), COUNT(dat), MAX(dat), MIN(dat), SUM(dat), COUNT(*)
 FROM tbl1
 WHERE idx >= 6 AND idx < 8
 GROUP BY gr
@@ -125,7 +127,7 @@ Number of output lines, including header: 0
 
 Range scan, group on 2 columns
 == Query ==
-SELECT count(*)
+SELECT AVG(dat), COUNT(dat), MAX(dat), MIN(dat), SUM(dat), COUNT(*)
 FROM tbl1
 WHERE idx >= 6 AND idx < 8
 GROUP BY gr
@@ -141,7 +143,7 @@ Number of output lines, including header: 0
 
 Range scan, eq filter
 == Query ==
-SELECT count(*)
+SELECT AVG(dat), COUNT(dat), MAX(dat), MIN(dat), SUM(dat), COUNT(*)
 FROM tbl1
 WHERE idx >= 6 AND idx < 8 AND flt = 66
 ;
@@ -155,7 +157,7 @@ Number of output lines, including header: 2
 
 Range scan, eq filter, group on 1 column
 == Query ==
-SELECT count(*)
+SELECT AVG(dat), COUNT(dat), MAX(dat), MIN(dat), SUM(dat), COUNT(*)
 FROM tbl1
 WHERE idx >= 6 AND idx < 8 AND flt = 66
 GROUP BY gr
@@ -170,7 +172,7 @@ Number of output lines, including header: 0
 
 Range scan, eq filter, group on 2 columns
 == Query ==
-SELECT count(*)
+SELECT AVG(dat), COUNT(dat), MAX(dat), MIN(dat), SUM(dat), COUNT(*)
 FROM tbl1
 WHERE idx >= 6 AND idx < 8 AND flt = 66
 GROUP BY gr
@@ -178,6 +180,260 @@ GROUP BY gr
 ;
 
 Number of output lines, including header: 0
+
+== Diff ==
+================================================================================
+
+
+
+INSERT INTO tbl1 (idx, flt, gr, dat) VALUES
+(NULL, NULL, NULL, NULL),
+(NULL, NULL, NULL, 5),
+(NULL, NULL, 1, NULL),
+(NULL, NULL, 1, 5),
+(NULL, NULL, 2, NULL),
+(NULL, NULL, 2, 5),
+(NULL, 66, NULL, NULL),
+(NULL, 66, NULL, 5),
+(NULL, 66, 1, NULL),
+(NULL, 66, 1, 5),
+(NULL, 66, 2, NULL),
+(NULL, 66, 2, 5),
+(NULL, 11, NULL, NULL),
+(NULL, 11, NULL, 5),
+(NULL, 11, 1, NULL),
+(NULL, 11, 1, 5),
+(NULL, 11, 2, NULL),
+(NULL, 11, 2, 5),
+(6, NULL, NULL, NULL),
+(6, NULL, NULL, 5),
+(6, NULL, 1, NULL),
+(6, NULL, 1, 5),
+(6, NULL, 2, NULL),
+(6, NULL, 2, 5),
+(6, 66, NULL, NULL),
+(6, 66, NULL, 5),
+(6, 66, 1, NULL),
+(6, 66, 1, 5),
+(6, 66, 2, NULL),
+(6, 66, 2, 5),
+(6, 11, NULL, NULL),
+(6, 11, NULL, 5),
+(6, 11, 1, NULL),
+(6, 11, 1, 5),
+(6, 11, 2, NULL),
+(6, 11, 2, 5),
+(7, NULL, NULL, NULL),
+(7, NULL, NULL, 5),
+(7, NULL, 1, NULL),
+(7, NULL, 1, 5),
+(7, NULL, 2, NULL),
+(7, NULL, 2, 5),
+(7, 66, NULL, NULL),
+(7, 66, NULL, 5),
+(7, 66, 1, NULL),
+(7, 66, 1, 5),
+(7, 66, 2, NULL),
+(7, 66, 2, 5),
+(7, 11, NULL, NULL),
+(7, 11, NULL, 5),
+(7, 11, 1, NULL),
+(7, 11, 1, 5),
+(7, 11, 2, NULL),
+(7, 11, 2, 5),
+(8, NULL, NULL, NULL),
+(8, NULL, NULL, 5),
+(8, NULL, 1, NULL),
+(8, NULL, 1, 5),
+(8, NULL, 2, NULL),
+(8, NULL, 2, 5),
+(8, 66, NULL, NULL),
+(8, 66, NULL, 5),
+(8, 66, 1, NULL),
+(8, 66, 1, 5),
+(8, 66, 2, NULL),
+(8, 66, 2, 5),
+(8, 11, NULL, NULL),
+(8, 11, NULL, 5),
+(8, 11, 1, NULL),
+(8, 11, 1, 5),
+(8, 11, 2, NULL),
+(8, 11, 2, 5);
+
+
+
+====== Queries on an table with both NULL and non-NULL dat ======
+Table scan
+== Query ==
+SELECT AVG(dat), COUNT(dat), MAX(dat), MIN(dat), SUM(dat), COUNT(*)
+FROM tbl1
+;
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+Table scan, group on 1 column
+== Query ==
+SELECT AVG(dat), COUNT(dat), MAX(dat), MIN(dat), SUM(dat), COUNT(*)
+FROM tbl1
+GROUP BY gr
+;
+
+Number of output lines, including header: 4
+
+== Diff ==
+================================================================================
+
+
+
+Table scan, group on 2 columns
+== Query ==
+SELECT AVG(dat), COUNT(dat), MAX(dat), MIN(dat), SUM(dat), COUNT(*)
+FROM tbl1
+GROUP BY gr
+, idx
+;
+
+Number of output lines, including header: 13
+
+== Diff ==
+================================================================================
+
+
+
+Table scan, eq filter
+== Query ==
+SELECT AVG(dat), COUNT(dat), MAX(dat), MIN(dat), SUM(dat), COUNT(*)
+FROM tbl1
+WHERE flt = 66
+;
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+Table scan, eq filter, group on 1 column
+== Query ==
+SELECT AVG(dat), COUNT(dat), MAX(dat), MIN(dat), SUM(dat), COUNT(*)
+FROM tbl1
+WHERE flt = 66
+GROUP BY gr
+;
+
+Number of output lines, including header: 4
+
+== Diff ==
+================================================================================
+
+
+
+Table scan, eq filter, group on 2 columns
+== Query ==
+SELECT AVG(dat), COUNT(dat), MAX(dat), MIN(dat), SUM(dat), COUNT(*)
+FROM tbl1
+WHERE flt = 66
+GROUP BY gr
+, idx
+;
+
+Number of output lines, including header: 13
+
+== Diff ==
+================================================================================
+
+
+
+Range scan
+== Query ==
+SELECT AVG(dat), COUNT(dat), MAX(dat), MIN(dat), SUM(dat), COUNT(*)
+FROM tbl1
+WHERE idx >= 6 AND idx < 8
+;
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+Range scan, group on 1 column
+== Query ==
+SELECT AVG(dat), COUNT(dat), MAX(dat), MIN(dat), SUM(dat), COUNT(*)
+FROM tbl1
+WHERE idx >= 6 AND idx < 8
+GROUP BY gr
+;
+
+Number of output lines, including header: 4
+
+== Diff ==
+================================================================================
+
+
+
+Range scan, group on 2 columns
+== Query ==
+SELECT AVG(dat), COUNT(dat), MAX(dat), MIN(dat), SUM(dat), COUNT(*)
+FROM tbl1
+WHERE idx >= 6 AND idx < 8
+GROUP BY gr
+, idx
+;
+
+Number of output lines, including header: 7
+
+== Diff ==
+================================================================================
+
+
+
+Range scan, eq filter
+== Query ==
+SELECT AVG(dat), COUNT(dat), MAX(dat), MIN(dat), SUM(dat), COUNT(*)
+FROM tbl1
+WHERE idx >= 6 AND idx < 8 AND flt = 66
+;
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+Range scan, eq filter, group on 1 column
+== Query ==
+SELECT AVG(dat), COUNT(dat), MAX(dat), MIN(dat), SUM(dat), COUNT(*)
+FROM tbl1
+WHERE idx >= 6 AND idx < 8 AND flt = 66
+GROUP BY gr
+;
+
+Number of output lines, including header: 4
+
+== Diff ==
+================================================================================
+
+
+
+Range scan, eq filter, group on 2 columns
+== Query ==
+SELECT AVG(dat), COUNT(dat), MAX(dat), MIN(dat), SUM(dat), COUNT(*)
+FROM tbl1
+WHERE idx >= 6 AND idx < 8 AND flt = 66
+GROUP BY gr
+, idx
+;
+
+Number of output lines, including header: 7
 
 == Diff ==
 ================================================================================
