@@ -38,7 +38,7 @@
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_CONT_SCAN 1
-#define DEBUG_TRANSID_AI 1
+//#define DEBUG_TRANSID_AI 1
 #endif
 
 #ifdef DEBUG_TRANSID_AI

@@ -67,7 +67,7 @@ extern EventLogger * g_eventLogger;
 //#define DEBUG_DROP_TAB 1
 //#define DEBUG_DYN_META 1
 //#define DEBUG_HASH 1
-#define DEBUG_ROW_SIZE 1
+//#define DEBUG_ROW_SIZE 1
 #endif
 
 #ifdef DEBUG_ROW_SIZE
@@ -350,6 +350,9 @@ void Dbtup::execTUP_ADD_ATTRREQ(Signal *signal) {
     } else {
       jam();
       regTabPtr.p->m_attributes[ind].m_no_of_varsize++;
+      DEB_DYN_META(("(%u) attrId: %u, no_of_varsize[%u]: %u",
+        instance(), attrId, ind,
+        regTabPtr.p->m_attributes[ind].m_no_of_varsize));
     }
     if (null_pos > AO_NULL_FLAG_POS_MASK) {
       jam();
@@ -357,6 +360,8 @@ void Dbtup::execTUP_ADD_ATTRREQ(Signal *signal) {
       goto error;
     }
     AttributeOffset::setNullFlagPos(attrDes2, null_pos);
+    DEB_DYN_META(("(%u) Null position of attrId: %u is %u",
+      instance(), attrId, null_pos));
   } else {
     jam();
     DEB_DYN_META(("(%u) tab(%u) attrId %u is dynamic %s column",
@@ -1871,6 +1876,8 @@ Uint32 Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line) {
           off = fix_size[ind] + pos[ind];
           fix_size[ind]+= size_in_words;
           jamDataDebug(off);
+          DEB_DYN_META(("(%u) tab(%u), attrId: %u, fix_size[%u]: %u, off: %u",
+            instance(), tabPtr.i, i, ind, fix_size[ind], off));
         }
         else
         {
@@ -1883,14 +1890,17 @@ Uint32 Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line) {
         }
       } else {
         jam();
-        DEB_DYN_META(("(%u) tab(%u), attrId: %u, Variable sized",
-                      instance(),
-                      tabPtr.i,
-                      i));
         /* Static varsize. */
         off = statvar_count[ind]++;
         var_size[ind]+= size_in_bytes;
         jamDataDebug(off);
+        DEB_DYN_META(("(%u) tab(%u), attrId: %u, varsize[%u]: %u, off: %u",
+                      instance(),
+                      tabPtr.i,
+                      i,
+                      ind,
+                      var_size[ind],
+                      off));
       }
     } else {
       jam();
@@ -1909,10 +1919,6 @@ Uint32 Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line) {
         // regTabPtr->blobAttributeMask.set(i);
         // ToDo: I wonder what else is needed to handle BLOB/TEXT, if anything?
 
-        DEB_DYN_META(("(%u) tab(%u), attrId: %u, Fixed size",
-                      instance(),
-                      tabPtr.i,
-                      i));
         if (attrLen!=0)
         {
           jam();
@@ -1926,6 +1932,11 @@ Uint32 Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line) {
             BitmaskImpl::set(dyn_null_words[ind],
                              regTabPtr->dynFixSizeMask[ind], null_pos++);
           }
+           DEB_DYN_META(("(%u) tab(%u), attrId: %u, Fixed size, off: %u",
+                         instance(),
+                         tabPtr.i,
+                         i,
+                         off));
         } else {
           jam();
           ndbrequire(ind == MM);
@@ -1940,15 +1951,16 @@ Uint32 Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line) {
       } else {
       treat_as_varsize:
         jam();
-        DEB_DYN_META(("(%u) tab(%u), attrId: %u, Variable size",
-                      instance(),
-                      tabPtr.i,
-                      i));
         off = dynvar_count[ind]++;
         jamDataDebug(off);
         BitmaskImpl::set(dyn_null_words[ind],
                          regTabPtr->dynVarSizeMask[ind],
                          null_pos);
+        DEB_DYN_META(("(%u) tab(%u), attrId: %u, Variable size, off: %u",
+                      instance(),
+                      tabPtr.i,
+                      i,
+                      off));
       }
     }
     if (off > AttributeOffset::getMaxOffset()) {
@@ -1972,14 +1984,20 @@ Uint32 Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line) {
   regTabPtr->m_offsets[MM].m_fix_header_size= 
     Tuple_header::HeaderSize + fix_size[MM] + pos[MM];
 
-  DEB_ROW_SIZE(("(%u) tab(%u) HeaderSize: %u, fix_size: %u, pos: %u,"
-                " fix_header_size: %u",
+  DEB_ROW_SIZE(("(%u) tab(%u) HeaderSize: %u, fix_size:[%u,%u], pos: [%u,%u]"
+                " fix_header_size: %u, varsize: [%u,%u], dyn_size: [%u,%u]",
                 instance(),
                 tabPtr.i,
                 Tuple_header::HeaderSize,
                 fix_size[MM],
+                fix_size[DD],
                 pos[MM],
-                regTabPtr->m_offsets[MM].m_fix_header_size));
+                pos[DD],
+                regTabPtr->m_offsets[MM].m_fix_header_size,
+                var_size[MM],
+                var_size[DD],
+                dyn_size[MM],
+                dyn_size[DD]));
 
   regTabPtr->m_offsets[DD].m_fix_header_size= 
     fix_size[DD] + pos[DD];
@@ -2013,6 +2031,13 @@ Uint32 Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line) {
       (regTabPtr->m_offsets[DD].m_dyn_null_words << 2) +
       4 * ((dd_dyns + 2) >> 1) + dyn_size[DD];
 
+  DEB_DYN_META(("(%u) max_var_offset: [%u,%u], max_dyn_offset: [%u,%u]",
+    instance(),
+    regTabPtr->m_offsets[MM].m_max_var_offset,
+    regTabPtr->m_offsets[DD].m_max_var_offset,
+    regTabPtr->m_offsets[MM].m_max_dyn_offset,
+    regTabPtr->m_offsets[DD].m_max_dyn_offset));
+
   /* Room for data for all the attributes. */
   Uint32 total_rec_size[2];
   total_rec_size[MM] =
@@ -2021,6 +2046,7 @@ Uint32 Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line) {
   total_rec_size[DD] =
     pos[DD] + fix_size[DD] +
     ((var_size[DD] + 3) >> 2) + ((dyn_size[DD] + 3) >> 2);
+
   /*
     Room for offset arrays and dynamic bitmaps. There is one extra 16-bit
     offset in each offset array (for easy computation of final length).
@@ -2054,6 +2080,9 @@ Uint32 Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line) {
 
   total_rec_size[MM] += COPY_TUPLE_HEADER32;
 
+  DEB_DYN_META(("(%u) total_rec_size[%u,%u]",
+    instance(), total_rec_size[MM] * 4, total_rec_size[DD] * 4));
+
   regTabPtr->total_rec_size= total_rec_size[MM] + total_rec_size[DD];
 
   DEB_TUP_META(("(%u) tab(%u) New total_rec_size set to %u",
@@ -2061,6 +2090,24 @@ Uint32 Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line) {
                 tabPtr.i,
                 regTabPtr->total_rec_size));
 
+  if (regTabPtr->m_offsets[MM].m_fix_header_size > MAX_FIXED_SIZE_IN_WORDS) {
+    jam();
+    jamDataDebug(regTabPtr->m_offsets[MM].m_fix_header_size);
+    return ZTOO_LARGE_FIXED_SIZE_PART;
+  }
+  Uint32 tot_var_size = total_rec_size[MM] -
+    regTabPtr->m_offsets[MM].m_fix_header_size;
+  if (tot_var_size > MAX_VAR_SIZE_IN_WORDS) {
+    jam();
+    jamDataDebug(tot_var_size);
+    return ZTOO_LARGE_VAR_SIZE_PART;
+    return 1;
+  }
+  if (total_rec_size[DD] > MAX_DISK_VAR_SIZE_IN_WORDS) {
+    jam();
+    jamDataDebug(total_rec_size[DD]);
+    return ZTOO_LARGE_DISK_VAR_SIZE_PART;
+  }
   setUpQueryRoutines(regTabPtr);
   setUpKeyArray(regTabPtr);
   return 0;

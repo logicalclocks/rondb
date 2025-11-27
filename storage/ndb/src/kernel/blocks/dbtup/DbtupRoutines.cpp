@@ -45,7 +45,7 @@
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_DISK 1
-#define DEBUG_TRANSID_AI 1
+//#define DEBUG_TRANSID_AI 1
 #endif
 
 #ifdef DEBUG_DISK
@@ -955,6 +955,11 @@ bool Dbtup::varsize_reader(Uint8 *outBuffer, KeyReqStruct *req_struct,
       }
 #endif
       return true;
+    } else {
+      thrjamDebug(req_struct->jamBuffer);
+      thrjamDataDebug(req_struct->jamBuffer, indexBuf);
+      thrjamDataDebug(req_struct->jamBuffer, newIndexBuf);
+      thrjamDataDebug(req_struct->jamBuffer, max_read);
     }
   }
   else
@@ -1081,6 +1086,7 @@ Dbtup::readVarSizeNotNULL(Uint8* out_buffer,
   thrjam(req_struct->jamBuffer);
   thrjamDataDebug(req_struct->jamBuffer, ind);
   thrjamLine(req_struct->jamBuffer, var_idx);
+  thrjamData(req_struct->jamBuffer, srcBytes);
 #endif
   return varsize_reader(out_buffer, req_struct, ah_out, attrDes,
                         src_ptr, srcBytes);

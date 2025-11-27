@@ -114,9 +114,12 @@
 #define MAX_ATTR_NAME_SIZE NAME_LEN /* From mysql_com.h */
 #define MAX_ATTR_DEFAULT_VALUE_SIZE \
   ((MAX_TUPLE_SIZE_IN_WORDS + 1) * 4)  // Add 1 word for AttributeHeader
-#define MAX_ATTRIBUTES_IN_TABLE 512
+#define MAX_ATTRIBUTES_IN_TABLE 4096
 #define MAX_ATTRIBUTES_IN_INDEX 32
-#define MAX_TUPLE_SIZE_IN_WORDS 7500
+#define MAX_TUPLE_SIZE_IN_WORDS 18000
+#define MAX_FIXED_SIZE_IN_WORDS 2013
+#define MAX_VAR_SIZE_IN_WORDS 8000
+#define MAX_DISK_VAR_SIZE_IN_WORDS 7780
 #define MAX_KEY_SIZE_IN_WORDS 1023
 #define MAX_NULL_BITS 4096
 
@@ -194,17 +197,17 @@
 
 /**
  * Not an exact number, but calculated something like this:
- * 512 columns of upto 192 bytes per name
- * Up to 30000 bytes of default values
+ * 4096 columns of upto 64 bytes per name
+ * Up to 720000 bytes of default values
  * Up to 80 kB of ReplicaData (8160 fragments with 4 replicas)
  * Up to 16 kB of FragmentData
  * Up to an extra 50 kB of Frm data for partitions
  * Up to an extra 32 kB of TablespaceData
  * Up to an extra 32 kB of attribute information
- * Thus allocating 256 kB of space for metadata should be sufficient
+ * Thus allocating 1MB of space for metadata should be sufficient
  * for almost every case.
  */
-#define MAX_WORDS_META_FILE 65536
+#define MAX_WORDS_META_FILE 262144
 
 #define MIN_ATTRBUF ((MAX_ATTRIBUTES_IN_TABLE / 24) + 1)
 /*
@@ -426,7 +429,7 @@
  */
 #define MAX_EVENT_REP_SIZE_WORDS 1024
 
-#define MAX_UNDO_DATA 20 + MAX_TUPLE_SIZE_IN_WORDS
+#define MAX_UNDO_DATA 20 + MAX_DISK_VAR_SIZE_IN_WORDS
 // Max. number of pending undo records allowed per LDM
 #define MAX_PENDING_UNDO_RECORDS 1000
 

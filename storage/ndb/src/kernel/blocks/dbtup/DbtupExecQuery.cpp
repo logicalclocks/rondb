@@ -66,7 +66,7 @@
 //#define DEBUG_LCP_SKIP_DELETE 1
 //#define DEBUG_DISK 1
 //#define DEBUG_ELEM_COUNT 1
-#define DEBUG_COPY_TUPLE 1
+//#define DEBUG_COPY_TUPLE 1
 #endif
 
 #ifdef DEBUG_COPY_TUPLE
@@ -2866,7 +2866,7 @@ inline void Dbtup::returnTUPKEYCONF(Signal *signal, KeyReqStruct *req_struct,
   set_trans_state(regOperPtr, trans_state);
 }
 
-#define MAX_READ (MIN(sizeof(signal->theData), MAX_SEND_MESSAGE_BYTESIZE))
+#define MAX_READ 524288
 
 int Dbtup::checkTTL(Tablerec* regTabPtr,
                     KeyReqStruct *req_struct,

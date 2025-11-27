@@ -79,7 +79,7 @@
 #define JAM_FILE_ID 252
 
 #ifdef VM_TRACE
-#define DEBUG_TRANSID_AI 1
+//#define DEBUG_TRANSID_AI 1
 #endif
 
 //

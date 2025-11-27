@@ -53,8 +53,8 @@
 // #define DEBUG_LCP_DELAY 1
 // #define DEBUG_LCP_SKIP 1
 // #define DEBUG_LCP_DEL 1
-//#define LCP_EXTRA_DEBUG 1
-#define DEBUG_COPY_TUPLE 1
+// #define LCP_EXTRA_DEBUG 1
+// #define DEBUG_COPY_TUPLE 1
 #endif
 
 #ifdef DEBUG_COPY_TUPLE

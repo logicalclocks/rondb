@@ -1318,28 +1318,15 @@ Uint32 Dbtup::getOldTriggerId(const TupTriggerData *trigPtrP, Uint32 op_type) {
 void Dbtup::sendBatchedFIRE_TRIG_ORD(Signal *signal, Uint32 ref, Uint32 siglen,
                                      SectionHandle *handle) {
   jam();
-  const Uint32 version = getNodeInfo(refToNode(ref)).m_version;
-  if (ndbd_frag_fire_trig_ord(version)) {
-    jam();
-    sendBatchedFragmentedSignal(ref, GSN_FIRE_TRIG_ORD, signal, siglen, JBB,
+  sendBatchedFragmentedSignal(ref, GSN_FIRE_TRIG_ORD, signal, siglen, JBB,
                                 handle, false);
-  } else {
-    jam();
-    sendSignal(ref, GSN_FIRE_TRIG_ORD, signal, siglen, JBB, handle);
-  }
 }
 
 void Dbtup::sendBatchedFIRE_TRIG_ORD(Signal *signal, Uint32 ref, Uint32 siglen,
                                      LinearSectionPtr ptr[], Uint32 nptr) {
-  const Uint32 version = getNodeInfo(refToNode(ref)).m_version;
-  if (ndbd_frag_fire_trig_ord(version)) {
-    jam();
-    sendBatchedFragmentedSignal(ref, GSN_FIRE_TRIG_ORD, signal, siglen, JBB,
-                                ptr, nptr);
-  } else {
-    jam();
-    sendSignal(ref, GSN_FIRE_TRIG_ORD, signal, siglen, JBB, ptr, nptr);
-  }
+  jam();
+  sendBatchedFragmentedSignal(ref, GSN_FIRE_TRIG_ORD, signal, siglen, JBB,
+                              ptr, nptr);
 }
 
 #define ZOUT_OF_LONG_SIGNAL_MEMORY_IN_TRIGGER 312
@@ -1438,20 +1425,7 @@ void Dbtup::executeTrigger(KeyReqStruct *req_struct,
   trigAttrInfo->setTriggerId(trigPtr->triggerId);
 
   switch (triggerType) {
-    case (TriggerType::SECONDARY_INDEX): {
-      jam();
-      /**
-       * Handle stupid 6.3 which uses one triggerId per operation type
-       */
-      Uint32 node = refToNode(req_struct->TC_ref);
-      if (unlikely(node &&
-                   getNodeInfo(node).m_version < MAKE_VERSION(6, 4, 0))) {
-        jam();
-        triggerId = getOldTriggerId(trigPtr, regOperPtr->op_type);
-        trigAttrInfo->setTriggerId(triggerId);
-      }
-    }
-      [[fallthrough]];
+    case (TriggerType::SECONDARY_INDEX):
     case (TriggerType::REORG_TRIGGER):
     case (TriggerType::FK_PARENT):
     case (TriggerType::FK_CHILD):

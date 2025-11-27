@@ -35,7 +35,7 @@
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 // #define DEBUG_LCP 1
-#define DEBUG_COPY_TUPLE 1
+// #define DEBUG_COPY_TUPLE 1
 #endif
 
 #ifdef DEBUG_COPY_TUPLE

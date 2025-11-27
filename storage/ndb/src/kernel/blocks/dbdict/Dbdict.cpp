@@ -22363,7 +22363,7 @@ void Dbdict::createFile_parse(Signal *signal, bool master, SchemaOpPtr op_ptr,
     bool ok = handle.getSection(objInfoPtr, 0);
     if (!ok) {
       jam();
-      setError(error, CreateTableRef::InvalidFormat, __LINE__);
+      setError(error, CreateFileRef::InvalidFormat, __LINE__);
       return;
     }
   }

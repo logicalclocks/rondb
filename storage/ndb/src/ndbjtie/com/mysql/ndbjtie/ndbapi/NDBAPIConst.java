@@ -1,5 +1,6 @@
 /*
   Copyright (c) 2012, 2025, Oracle and/or its affiliates.
+  Copyright (c) 2025, 2025, Hopsworks and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
@@ -38,8 +39,8 @@ public interface NDBAPIConst
 /*
     int NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY = 32,
         NDB_MAX_ATTRIBUTES_IN_INDEX = NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY,
-        NDB_MAX_ATTRIBUTES_IN_TABLE = 512,
-        NDB_MAX_TUPLE_SIZE_IN_WORDS = 3500,
+        NDB_MAX_ATTRIBUTES_IN_TABLE = 4096,
+        NDB_MAX_TUPLE_SIZE_IN_WORDS = 18000,
         NDB_MAX_KEYSIZE_IN_WORDS = 1023,
         NDB_MAX_KEY_SIZE = (NDB_MAX_KEYSIZE_IN_WORDS*4),
         NDB_MAX_TUPLE_SIZE = (NDB_MAX_TUPLE_SIZE_IN_WORDS*4),

@@ -2346,9 +2346,19 @@ static void ndb_set_record_specification(
 
 int ha_ndbcluster::add_table_ndb_record(NdbDictionary::Dictionary *dict) {
   DBUG_TRACE;
-  NdbDictionary::RecordSpecification spec[NDB_MAX_ATTRIBUTES_IN_TABLE + 2];
   NdbRecord *rec;
   uint fieldId, colId;
+  NdbDictionary::RecordSpecification
+    spec_stack[OLD_NDB_MAX_ATTRIBUTES_IN_TABLE + 2];
+  NdbDictionary::RecordSpecification *spec = &spec_stack[0];
+
+  if (unlikely(table_share->fields > OLD_NDB_MAX_ATTRIBUTES_IN_TABLE)) {
+    spec = new (std::nothrow)
+      NdbDictionary::RecordSpecification[table_share->fields + 2];
+    if (spec == nullptr) {
+      return 1;
+    }
+  }
 
   for (fieldId = 0, colId = 0; fieldId < table_share->fields; fieldId++) {
     if (table->field[fieldId]->stored_in_db) {
@@ -2361,9 +2371,13 @@ int ha_ndbcluster::add_table_ndb_record(NdbDictionary::Dictionary *dict) {
   rec = dict->createRecord(
       m_table, spec, colId, sizeof(spec[0]),
       NdbDictionary::RecMysqldBitfield | NdbDictionary::RecPerColumnFlags);
-  if (!rec) ERR_RETURN(dict->getNdbError());
+  if (unlikely(table_share->fields > OLD_NDB_MAX_ATTRIBUTES_IN_TABLE)) {
+    delete [] spec;
+  }
+  if (!rec) {
+    ERR_RETURN(dict->getNdbError());
+  }
   m_ndb_record = rec;
-
   return 0;
 }
 
@@ -2388,8 +2402,10 @@ int ha_ndbcluster::add_hidden_pk_ndb_record(NdbDictionary::Dictionary *dict) {
 int ha_ndbcluster::open_index_ndb_record(NdbDictionary::Dictionary *dict,
                                          const KEY *key_info, uint index_no) {
   DBUG_TRACE;
-  NdbDictionary::RecordSpecification spec[NDB_MAX_ATTRIBUTES_IN_TABLE + 2];
+  NdbDictionary::RecordSpecification spec[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 2];
   NdbRecord *rec;
+  assert(key_info->user_defined_key_parts < 
+    (NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 2));
 
   Uint32 offset = 0;
   for (uint i = 0; i < key_info->user_defined_key_parts; i++) {

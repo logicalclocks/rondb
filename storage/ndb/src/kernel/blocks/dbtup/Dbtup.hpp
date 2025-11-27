@@ -228,6 +228,10 @@ inline const Uint32 *ALIGN_WORD(const void *ptr) {
 #define ZTOO_MUCH_INPUT_PARAM 938
 #define ZWRONG_INPUT_PARAM_COLUMN 939
 
+#define ZTOO_LARGE_FIXED_SIZE_PART 940
+#define ZTOO_LARGE_VAR_SIZE_PART 941
+#define ZTOO_LARGE_DISK_VAR_SIZE_PART 942
+
 #define MAX_INPUT_PARAMS 16
 
 /*
@@ -3972,7 +3976,7 @@ public:
 
   // A little bit bigger to cover overwrites in copy algorithms (16384 real
   // size).
-#define ZATTR_BUFFER_SIZE 16384
+#define ZATTR_BUFFER_SIZE 24000
   Uint32 clogMemBuffer[ZATTR_BUFFER_SIZE + 16];
   Uint32 coutBuffer[ZATTR_BUFFER_SIZE + 16];
   Uint32 cinBuffer[ZATTR_BUFFER_SIZE + 16];
