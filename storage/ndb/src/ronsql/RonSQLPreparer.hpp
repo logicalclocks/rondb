@@ -144,31 +144,22 @@ private:
   YY_BUFFER_STATE m_buf;
   bool m_do_explain = false;
 
-  // Index scan
-  bool m_do_index_scan = false;
-  class IndexScanConfig
+  // Index/table scan config
+  class ScanConfig
   {
   public:
-    Uint32 col_idx;
-    struct Range
-    {
-      enum class Type { NONE, INCLUSIVE, EXCLUSIVE };
-      Type ltype;
-      Int64 lvalue;
-      Type htype;
-      Int64 hvalue;
-    };
-    Range* ranges;
-    Uint32 range_count;
-    ConditionalExpression* filter;
+    // If index == NULL, do a table scan.
+    const NdbDictionary::Index* index = NULL;
+    // condition_handling_map[i] is -1 if m_toplevel_conditions[i] should be
+    // included in the filter, or the column number in the index if it should be
+    // applied as a bound.
+    int* condition_handling_map = NULL;
+    // An estimate of how performant the scan configuration will be.
+    int goodness = 0;
   };
-  DynamicArray<IndexScanConfig> m_index_scan_config_candidates;
-  IndexScanConfig* m_index_scan_config = NULL;
-  const NdbDictionary::Index* m_index_scan_index = NULL;
-
-  // Table scan
-  bool m_do_table_scan = false;
-  ConditionalExpression* m_table_scan_filter = NULL;
+  DynamicArray<ConditionalExpression*> m_toplevel_conditions;
+  DynamicArray<ScanConfig> m_scan_config_candidates;
+  ScanConfig* m_scan_config = NULL;
 
   AggregationAPICompiler* m_agg = NULL;
   ResultPrinter* m_resultprinter = NULL;
@@ -184,8 +175,8 @@ private:
   bool has_width(size_t pos);
   void load();
   void plan_index_and_filter();
-  void generate_index_scan_config_candidates(ConditionalExpression* ce);
-  void choose_index_scan_config();
+  void collect_toplevel_conditions(ConditionalExpression* ce);
+  void generate_scan_config_candidates();
   void compile();
   void determine_explain();
   void unload_schema();
@@ -194,8 +185,7 @@ private:
 public:
   void execute(); // todo make sure we can execute several times, do not mutate. Make this a separate object that takes a preparer as const input (This todo from review 2024-08-22 with MR)
 private:
-  void apply_filter_top_level(NdbScanFilter* filter,
-                              struct ConditionalExpression* ce);
+  void apply_filter_top_level(NdbScanFilter* filter);
   bool apply_filter(NdbScanFilter* filter, struct ConditionalExpression* ce);
   bool apply_filter_cmp(NdbScanFilter* filter,
                         NdbScanFilter::BinaryCondition cond,
@@ -210,7 +200,6 @@ private:
   void print();
   void print(struct ConditionalExpression* ce,
              LexString prefix);
-  void print(struct IndexScanConfig::Range& range, const char* col_name);
 
 public:
   ~RonSQLPreparer();
