@@ -354,8 +354,7 @@ Instr. DEST SRC DESCRIPTION
 Load   r00  C01 r00 = C01:`b`
 Max    A00  r00 A00:MAX <- r00:`b`
 
-Execute as table scan.
-(There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
+No NDB connection, so no index scan analysis.
 
 Output in mysql-style tab separated format.
 The program for post-processing and output has 8 instructions.
@@ -403,8 +402,7 @@ Mul    r00  r06 r00:((`d` * `e`) / `f`) *= r06:(`b` + `c`)
 Add    r02  r00 r02:((`b` / `c`) / `f`) += r00:(((`d` * `e`) / `f`) * (`b` + `c`))
 Count  A03  r02 A03:COUNT <- r02:(((`b` / `c`) / `f`) + (((`d` * `e`) / `f`) * (`b` + `c`)))
 
-Execute as table scan.
-(There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
+No NDB connection, so no index scan analysis.
 
 Output in mysql-style tab separated format.
 The program for post-processing and output has 17 instructions.
@@ -441,8 +439,7 @@ Minus  r01  r02 r01:`g` -= r02:`h`
 Div    r00  r01 r00:(`e``e` + `f`) /= r01:(`g` - `h`)
 Min    A01  r00 A01:MIN <- r00:((`e``e` + `f`) / (`g` - `h`))
 
-Execute as table scan.
-(There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
+No NDB connection, so no index scan analysis.
 
 Output in mysql-style tab separated format.
 The program for post-processing and output has 17 instructions.
@@ -463,8 +460,7 @@ Instr. DEST SRC DESCRIPTION
 Load   r00  C01 r00 = C01:`b`
 Max    A00  r00 A00:MAX <- r00:`b`
 
-Execute as table scan.
-(There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
+No NDB connection, so no index scan analysis.
 
 Output in mysql-style tab separated format.
 The program for post-processing and output has 8 instructions.
@@ -485,8 +481,7 @@ Instr. DEST SRC DESCRIPTION
 Load   r00  C01 r00 = C01:`b`
 Max    A00  r00 A00:MAX <- r00:`b`
 
-Execute as table scan.
-(There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
+No NDB connection, so no index scan analysis.
 
 Output in mysql-style tab separated format.
 The program for post-processing and output has 8 instructions.
@@ -507,8 +502,7 @@ Instr. DEST SRC DESCRIPTION
 Load   r00  C01 r00 = C01:`b`
 Max    A00  r00 A00:MAX <- r00:`b`
 
-Execute as table scan.
-(There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
+No NDB connection, so no index scan analysis.
 
 Output in mysql-style tab separated format.
 The program for post-processing and output has 8 instructions.
@@ -529,8 +523,7 @@ Instr. DEST SRC DESCRIPTION
 Load   r00  C01 r00 = C01:`b`
 Max    A00  r00 A00:MAX <- r00:`b`
 
-Execute as table scan.
-(There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
+No NDB connection, so no index scan analysis.
 
 Output in mysql-style tab separated format.
 The program for post-processing and output has 8 instructions.
@@ -551,8 +544,7 @@ Instr. DEST SRC DESCRIPTION
 Load   r00  C01 r00 = C01:`b`
 Max    A00  r00 A00:MAX <- r00:`b`
 
-Execute as table scan.
-(There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
+No NDB connection, so no index scan analysis.
 
 Output in mysql-style tab separated format.
 The program for post-processing and output has 8 instructions.
@@ -582,8 +574,7 @@ Instr. DEST SRC DESCRIPTION
 Load   r00  C04 r00 = C04:`b`
 Max    A00  r00 A00:MAX <- r00:`b`
 
-Execute as table scan.
-(There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
+No NDB connection, so no index scan analysis.
 
 Output in mysql-style tab separated format.
 The program for post-processing and output has 17 instructions.
@@ -639,8 +630,7 @@ Minus  r01  r02 r01:`g` -= r02:`h`
 Div    r00  r01 r00:(`ee` + `f`) /= r01:(`g` - `h`)
 Min    A02  r00 A02:MIN <- r00:((`ee` + `f`) / (`g` - `h`))
 
-Execute as table scan.
-(There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
+No NDB connection, so no index scan analysis.
 
 Output in mysql-style tab separated format.
 The program for post-processing and output has 11 instructions.
@@ -675,8 +665,7 @@ Load   r01  C04 r01 = C04:`h`
 Add    r01  r00 r01:`h` += r00:(`i` / `j``j`)
 Count  A00  r01 A00:COUNT <- r01:(`h` + (`i` / `j``j`))
 
-Execute as table scan.
-(There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
+No NDB connection, so no index scan analysis.
 
 Output in mysql-style tab separated format.
 The program for post-processing and output has 18 instructions.
@@ -705,8 +694,7 @@ LoadI  r01  I01 r01 = I01:792
 Minus  r00  r01 r00:`col3` -= r01:792
 Max    A01  r00 A01:MAX <- r00:(`col3` - 792)
 
-Execute as table scan.
-(There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
+No NDB connection, so no index scan analysis.
 
 Output in mysql-style tab separated format.
 The program for post-processing and output has 11 instructions.
@@ -741,8 +729,7 @@ Max    A01  r00 A01:MAX <- r00:`col2`
 Count  A02  r00 A02:COUNT <- r00:`col2`
 Min    A03  r00 A03:MIN <- r00:`col2`
 
-Execute as table scan.
-(There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
+No NDB connection, so no index scan analysis.
 
 Output in mysql-style tab separated format.
 The program for post-processing and output has 22 instructions.
@@ -781,8 +768,7 @@ Max    A02  r00 A02:MAX <- r00:`col2`
 Count  A03  r00 A03:COUNT <- r00:`col2`
 Min    A04  r00 A04:MIN <- r00:`col2`
 
-Execute as table scan.
-(There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
+No NDB connection, so no index scan analysis.
 
 Output in mysql-style tab separated format.
 The program for post-processing and output has 25 instructions.
@@ -825,8 +811,7 @@ Sum    A00  r00 A00:SUM <- r00:`col2`
 Load   r00  C02 r00 = C02:`col3`
 Max    A01  r00 A01:MAX <- r00:`col3`
 
-Execute as table scan.
-(There is no NDB connection, but this can be determined based on the WHERE clause.)
+No NDB connection, so no index scan analysis.
 
 Output in mysql-style tab separated format.
 The program for post-processing and output has 14 instructions.
@@ -947,8 +932,7 @@ Instr. DEST SRC DESCRIPTION
 Load   r00  C01 r00 = C01:`b`
 Max    A00  r00 A00:MAX <- r00:`b`
 
-Execute as table scan.
-(There is no NDB connection, but this can be determined based on the WHERE clause.)
+No NDB connection, so no index scan analysis.
 
 Output in mysql-style tab separated format.
 The program for post-processing and output has 8 instructions.
@@ -973,8 +957,7 @@ Instr. DEST SRC DESCRIPTION
 Load   r00  C01 r00 = C01:`b`
 Max    A00  r00 A00:MAX <- r00:`b`
 
-Execute as table scan.
-(There is no NDB connection, but this can be determined based on the WHERE clause.)
+No NDB connection, so no index scan analysis.
 
 Output in mysql-style tab separated format.
 The program for post-processing and output has 8 instructions.
@@ -997,8 +980,7 @@ Instr. DEST SRC DESCRIPTION
 Load   r00  C01 r00 = C01:`b`
 Max    A00  r00 A00:MAX <- r00:`b`
 
-Execute as table scan.
-(There is no NDB connection, but this can be determined based on the WHERE clause.)
+No NDB connection, so no index scan analysis.
 
 Output in mysql-style tab separated format.
 The program for post-processing and output has 8 instructions.
@@ -1027,8 +1009,7 @@ Instr. DEST SRC DESCRIPTION
 Load   r00  C01 r00 = C01:`b`
 Max    A00  r00 A00:MAX <- r00:`b`
 
-Execute as table scan.
-(There is no NDB connection, but this can be determined based on the WHERE clause.)
+No NDB connection, so no index scan analysis.
 
 Output in mysql-style tab separated format.
 The program for post-processing and output has 8 instructions.
@@ -1057,8 +1038,7 @@ Instr. DEST SRC DESCRIPTION
 Load   r00  C01 r00 = C01:`b`
 Max    A00  r00 A00:MAX <- r00:`b`
 
-Execute as table scan.
-(There is no NDB connection, but this can be determined based on the WHERE clause.)
+No NDB connection, so no index scan analysis.
 
 Output in mysql-style tab separated format.
 The program for post-processing and output has 8 instructions.
@@ -1085,8 +1065,7 @@ Instr. DEST SRC DESCRIPTION
 Load   r00  C01 r00 = C01:`b`
 Max    A00  r00 A00:MAX <- r00:`b`
 
-Execute as table scan.
-(There is no NDB connection, but this can be determined based on the WHERE clause.)
+No NDB connection, so no index scan analysis.
 
 Output in mysql-style tab separated format.
 The program for post-processing and output has 8 instructions.
@@ -1109,8 +1088,7 @@ Instr. DEST SRC DESCRIPTION
 Load   r00  C01 r00 = C01:`b`
 Max    A00  r00 A00:MAX <- r00:`b`
 
-Execute as table scan.
-(There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
+No NDB connection, so no index scan analysis.
 
 Output in mysql-style tab separated format.
 The program for post-processing and output has 8 instructions.
@@ -1137,8 +1115,7 @@ Instr. DEST SRC DESCRIPTION
 Load   r00  C02 r00 = C02:`col3`
 Max    A00  r00 A00:MAX <- r00:`col3`
 
-Execute as table scan.
-(There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
+No NDB connection, so no index scan analysis.
 
 Output in mysql-style tab separated format.
 The program for post-processing and output has 11 instructions.
@@ -1164,8 +1141,7 @@ Instr. DEST SRC DESCRIPTION
 Load   r00  C01 r00 = C01:`b`
 Max    A00  r00 A00:MAX <- r00:`b`
 
-Execute as table scan.
-(There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
+No NDB connection, so no index scan analysis.
 
 Output in mysql-style tab separated format.
 The program for post-processing and output has 8 instructions.
@@ -1186,8 +1162,7 @@ Instr. DEST SRC DESCRIPTION
 Load   r00  C01 r00 = C01:`b`
 Max    A00  r00 A00:MAX <- r00:`b`
 
-Execute as table scan.
-(There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
+No NDB connection, so no index scan analysis.
 
 Output in mysql-style tab separated format.
 The program for post-processing and output has 8 instructions.
@@ -1252,8 +1227,7 @@ Load   r00  C04 r00 = C04:`a`
 Minus  r00  r02 r00:`a` -= r02:(0 - (0 - (`b` - 1)))
 Count  A04  r00 A04:COUNT <- r00:(`a` - (0 - (0 - (`b` - 1))))
 
-Execute as table scan.
-(There is no NDB connection, but this can be determined based on the WHERE clause.)
+No NDB connection, so no index scan analysis.
 
 Output in mysql-style tab separated format.
 The program for post-processing and output has 20 instructions.
@@ -1270,8 +1244,7 @@ Instr. DEST SRC DESCRIPTION
 Load   r00  C00 r00 = C00:`a`
 Max    A00  r00 A00:MAX <- r00:`a`
 
-Execute as table scan.
-(There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
+No NDB connection, so no index scan analysis.
 
 Output in mysql-style tab separated format.
 The program for post-processing and output has 5 instructions.
@@ -1288,8 +1261,7 @@ Instr. DEST SRC DESCRIPTION
 Load   r00  C00 r00 = C00:`a`
 Max    A00  r00 A00:MAX <- r00:`a`
 
-Execute as table scan.
-(There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
+No NDB connection, so no index scan analysis.
 
 Output in mysql-style tab separated format.
 The program for post-processing and output has 5 instructions.
@@ -1375,8 +1347,7 @@ Max    A06  r00 A06:MAX <- r00:(((`apples` + `apples`) + `apples`) + `apples`)
 Count  A07  r05 A07:COUNT <- r05:(`apples` + (`apples` + (`apples` + (`apples` + (`apples` + (`apples` + `apples`))))))
 Count  A08  r01 A08:COUNT <- r01:(`apples` + (`apples` + `apples`))
 
-Execute as table scan.
-(There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
+No NDB connection, so no index scan analysis.
 
 Output in mysql-style tab separated format.
 The program for post-processing and output has 33 instructions.
@@ -1447,8 +1418,7 @@ Add    r00  r02 r00:((((((((`c` + `c`) + `c`) + `c`) + `c`) + `c`) + `c`) + `c`)
 Add    r00  r02 r00:(((((((((`c` + `c`) + `c`) + `c`) + `c`) + `c`) + `c`) + `c`) + `c`) + `c`) += r02:`c`
 Sum    A06  r00 A06:SUM <- r00:((((((((((`c` + `c`) + `c`) + `c`) + `c`) + `c`) + `c`) + `c`) + `c`) + `c`) + `c`)
 
-Execute as table scan.
-(There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
+No NDB connection, so no index scan analysis.
 
 Output in mysql-style tab separated format.
 The program for post-processing and output has 23 instructions.
@@ -1516,8 +1486,7 @@ Sum    A06  r03 A06:SUM <- r03:`l_discount`
 Count  A07  r03 A07:COUNT <- r03:`l_discount`
 Count  A08  r06 A08:COUNT <- r06:1
 
-Execute as table scan.
-(There is no NDB connection, but this can be determined based on the WHERE clause.)
+No NDB connection, so no index scan analysis.
 
 Output in mysql-style tab separated format.
 The program for post-processing and output has 33 instructions.
@@ -1565,8 +1534,7 @@ DivInt r02  r06 r02:(((`a` % `b`) DIV `c`) % `d`) DIV= r06:`e`
 Rem    r02  r07 r02:((((`a` % `b`) DIV `c`) % `d`) DIV `e`) %= r07:`f`
 Sum    A01  r02 A01:SUM <- r02:(((((`a` % `b`) DIV `c`) % `d`) DIV `e`) % `f`)
 
-Execute as table scan.
-(There is no NDB connection, but this can be determined based on the absense of a WHERE clause.)
+No NDB connection, so no index scan analysis.
 
 Output in mysql-style tab separated format.
 The program for post-processing and output has 11 instructions.

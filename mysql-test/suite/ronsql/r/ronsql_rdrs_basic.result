@@ -162,8 +162,8 @@ Instr. DEST SRC DESCRIPTION
 Load   r00  C01 r00 = C01:`sint16`
 Max    A00  r00 A00:MAX <- r00:`sint16`
 
-Execute as table scan without any filter.
-(No candidate plans for index scan.)
+Execute as table scan.
+There are no top-level conditions.
 
 Output in mysql-style tab separated format.
 The program for post-processing and output has 8 instructions.
@@ -184,8 +184,8 @@ Instr. DEST SRC DESCRIPTION
 Load   r00  C01 r00 = C01:`sint16`
 Max    A00  r00 A00:MAX <- r00:`sint16`
 
-Execute as table scan without any filter.
-(No candidate plans for index scan.)
+Execute as table scan.
+There are no top-level conditions.
 
 Output in mysql-style tab separated format.
 The program for post-processing and output has 8 instructions.
@@ -206,8 +206,8 @@ Instr. DEST SRC DESCRIPTION
 Load   r00  C01 r00 = C01:`sint16`
 Max    A00  r00 A00:MAX <- r00:`sint16`
 
-Execute as table scan without any filter.
-(No candidate plans for index scan.)
+Execute as table scan.
+There are no top-level conditions.
 
 Output in mysql-style tab separated format.
 The program for post-processing and output has 8 instructions.
@@ -228,8 +228,8 @@ Instr. DEST SRC DESCRIPTION
 Load   r00  C01 r00 = C01:`sint16`
 Max    A00  r00 A00:MAX <- r00:`sint16`
 
-Execute as table scan without any filter.
-(No candidate plans for index scan.)
+Execute as table scan.
+There are no top-level conditions.
 
 Output in mysql-style tab separated format.
 The program for post-processing and output has 8 instructions.
@@ -253,8 +253,8 @@ Instr. DEST SRC DESCRIPTION
 Load   r00  C01 r00 = C01:`sint16`
 Max    A00  r00 A00:MAX <- r00:`sint16`
 
-Execute as table scan without any filter.
-(No candidate plans for index scan.)
+Execute as table scan.
+There are no top-level conditions.
 
 Output in mysql-style tab separated format.
 The program for post-processing and output has 8 instructions.
@@ -275,8 +275,8 @@ Instr. DEST SRC DESCRIPTION
 Load   r00  C01 r00 = C01:`sint16`
 Max    A00  r00 A00:MAX <- r00:`sint16`
 
-Execute as table scan without any filter.
-(No candidate plans for index scan.)
+Execute as table scan.
+There are no top-level conditions.
 
 Output in mysql-style tab separated format.
 The program for post-processing and output has 8 instructions.
@@ -313,8 +313,8 @@ Instr. DEST SRC DESCRIPTION
 Load   r00  C01 r00 = C01:`sint16`
 Max    A00  r00 A00:MAX <- r00:`sint16`
 
-Execute as table scan without any filter.
-(No candidate plans for index scan.)
+Execute as table scan.
+There are no top-level conditions.
 
 Output in mysql-style tab separated format.
 The program for post-processing and output has 8 instructions.
@@ -335,8 +335,8 @@ Instr. DEST SRC DESCRIPTION
 Load   r00  C01 r00 = C01:`sint16`
 Max    A00  r00 A00:MAX <- r00:`sint16`
 
-Execute as table scan without any filter.
-(No candidate plans for index scan.)
+Execute as table scan.
+There are no top-level conditions.
 
 Output in mysql-style tab separated format.
 The program for post-processing and output has 8 instructions.
@@ -401,8 +401,8 @@ Instr. DEST SRC DESCRIPTION
 Load   r00  C01 r00 = C01:`sint16`
 Max    A00  r00 A00:MAX <- r00:`sint16`
 
-Execute as table scan without any filter.
-(No candidate plans for index scan.)
+Execute as table scan.
+There are no top-level conditions.
 
 Output in mysql-style tab separated format.
 The program for post-processing and output has 8 instructions.
@@ -423,8 +423,8 @@ Instr. DEST SRC DESCRIPTION
 Load   r00  C01 r00 = C01:`sint16`
 Max    A00  r00 A00:MAX <- r00:`sint16`
 
-Execute as table scan without any filter.
-(No candidate plans for index scan.)
+Execute as table scan.
+There are no top-level conditions.
 
 Output in mysql-style tab separated format.
 The program for post-processing and output has 8 instructions.
@@ -445,8 +445,8 @@ Instr. DEST SRC DESCRIPTION
 Load   r00  C01 r00 = C01:`sint16`
 Max    A00  r00 A00:MAX <- r00:`sint16`
 
-Execute as table scan without any filter.
-(No candidate plans for index scan.)
+Execute as table scan.
+There are no top-level conditions.
 
 Output in mysql-style tab separated, header-less format.
 The program for post-processing and output has 8 instructions.
@@ -467,8 +467,8 @@ Instr. DEST SRC DESCRIPTION
 Load   r00  C01 r00 = C01:`sint16`
 Max    A00  r00 A00:MAX <- r00:`sint16`
 
-Execute as table scan without any filter.
-(No candidate plans for index scan.)
+Execute as table scan.
+There are no top-level conditions.
 
 Output in mysql-style tab separated, header-less format.
 The program for post-processing and output has 8 instructions.

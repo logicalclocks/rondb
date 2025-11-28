@@ -91,7 +91,8 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
   m_amalloc(conf.amalloc),
   m_context(*this),
   m_columns(conf.amalloc),
-  m_index_scan_config_candidates(conf.amalloc)
+  m_toplevel_conditions(conf.amalloc),
+  m_scan_config_candidates(conf.amalloc)
 {
   assert(m_status == Status::BEGIN);
   try
@@ -548,80 +549,66 @@ RonSQLPreparer::plan_index_and_filter()
    */
   ConditionalExpression* ce = simplify_ce(m_context.ast_root.where_expression,
                                           -1 /* no max depth */);
-  generate_index_scan_config_candidates(ce);
-  choose_index_scan_config();
-  if (!m_do_index_scan)
-  {
-    // Fallback to table scan
-    m_do_table_scan = true;
-    m_table_scan_filter = ce;
-  }
-}
-
-void
-RonSQLPreparer::generate_index_scan_config_candidates(ConditionalExpression* ce)
-{
-  if (ce == NULL)
-  {
-    // No WHERE clause
-    return;
-  }
-  // Hard coded case to only detect structure
-  // WHERE [column_1] >= [int_1] AND [column_1] < [int_2] AND [some_condition]
-  // todo Generalize. Perhaps a good ambition for the first step is to flatten the top AND tree, iterate through all columns and make an attempt for each.
-  assert(ce != NULL);
-  if (
-      ce->op == T_AND &&
-        ce->args.left->op == T_AND &&
-          ce->args.left->args.left->op == T_GE &&
-            ce->args.left->args.left->args.left->op == T_IDENTIFIER &&
-            ce->args.left->args.left->args.right->op == T_INT &&
-          ce->args.left->args.right->op == T_LT &&
-            ce->args.left->args.right->args.left->op == T_IDENTIFIER &&
-            ce->args.left->args.right->args.right->op == T_INT &&
-      ce->args.left->args.left->args.left->col_idx ==
-      ce->args.left->args.right->args.left->col_idx)
-  {
-    Uint32 col_idx = ce->args.left->args.left->args.left->col_idx;
-    Int64 low_bound = ce->args.left->args.left->args.right->constant_integer;
-    Int64 high_bound = ce->args.left->args.right->args.right->constant_integer;
-    IndexScanConfig isc;
-    isc.col_idx = col_idx;
-    isc.ranges = m_amalloc->alloc_exc<IndexScanConfig::Range>(1);
-    isc.ranges[0].ltype = IndexScanConfig::Range::Type::INCLUSIVE;
-    isc.ranges[0].lvalue = low_bound;
-    isc.ranges[0].htype = IndexScanConfig::Range::Type::EXCLUSIVE;
-    isc.ranges[0].hvalue = high_bound;
-    isc.range_count = 1;
-    isc.filter = ce->args.right;
-    m_index_scan_config_candidates.push(isc);
-  }
-}
-
-void
-RonSQLPreparer::choose_index_scan_config()
-{
-  // todo: Currently, we just pick the first match. We'll have to optimize index choice.
-  if (m_index_scan_config_candidates.size() == 0)
-  {
-    // No candidate configurations, so no matter what indexes are found we won't
-    // use them.
-    return;
-  }
-  if (m_conf.ndb == NULL)
-  {
+  collect_toplevel_conditions(ce);
+  if (m_conf.ndb == NULL) {
     // No connection, so we can't discover indexes.
     return;
   }
-  // todo find and iterate through indexes.
+  // Add scan config candidates, including both index scans and table scan. This
+  // will guarantee that we get at least one candidate.
+  generate_scan_config_candidates();
+  // Choose a scan config candidate
+  Uint32 chosen_candidate = 0;
+  for (Uint32 i = 1; i < m_scan_config_candidates.size(); i++) {
+    if (m_scan_config_candidates[i].goodness >
+        m_scan_config_candidates[chosen_candidate].goodness)
+    {
+      chosen_candidate = i;
+    }
+  }
+  m_scan_config = &m_scan_config_candidates[chosen_candidate];
+}
+
+void
+RonSQLPreparer::collect_toplevel_conditions(ConditionalExpression* ce)
+{
+  if (ce == NULL) {
+    return;
+  }
+  if (ce->op == T_AND) {
+    collect_toplevel_conditions(ce->args.left);
+    collect_toplevel_conditions(ce->args.right);
+  } else {
+    m_toplevel_conditions.push(ce);
+  }
+}
+
+void
+RonSQLPreparer::generate_scan_config_candidates()
+{
+  {
+    // Add a scan config candidate that represents table scan
+    int *condition_handling_map =
+      m_amalloc->alloc_exc<int>(m_toplevel_conditions.size());
+    for (Uint32 i = 0; i < m_toplevel_conditions.size(); i++) {
+      condition_handling_map[i] = -1;
+    }
+    m_scan_config_candidates.push(ScanConfig { NULL,
+                                               condition_handling_map,
+                                               0 });
+  }
+  if (m_toplevel_conditions.size() == 0) {
+    // No WHERE clause
+    return;
+  }
   NdbDictionary::Dictionary::List index_list;
   assert(m_dict != NULL);
   assert(m_table != NULL);
   soft_assert(m_dict->listIndexes(index_list, *m_table) == 0,
               "Failed to list indexes.");
-  for(Uint32 i = 0; i < index_list.count; i++)
-  {
-    NdbDictionary::Dictionary::List::Element& index_obj = index_list.elements[i];
+  for(Uint32 i = 0; i < index_list.count; i++) {
+    NdbDictionary::Dictionary::List::Element& index_obj =
+      index_list.elements[i];
     if (index_obj.state != NdbDictionary::Object::StateOnline) {
       // listIndexes() returns indexes in all states while this function is
       // only interested in indexes that are online and usable. Filtering out
@@ -630,41 +617,90 @@ RonSQLPreparer::choose_index_scan_config()
       // metadata related to the table hasn't been restored yet.
       continue;
     }
-    switch (index_obj.type) {
-      case NdbDictionary::Object::OrderedIndex:
-        {
-          // todo getIndex or getIndexGlobal?
-          const NdbDictionary::Index* index = m_dict->getIndex(index_obj.name, *m_table);
-          soft_assert(index != NULL, "Failed to get index.");
-          // We are only interested in the first index column in an ordered index,
-          // since that is the column the index is first/mainly ordered on.
-          assert(index->getNoOfColumns() > 0);
-          const NdbDictionary::Column* first_index_column = index->getColumn(0);
-          assert(first_index_column != NULL);
-          const char* first_index_column_name = first_index_column->getName();
-          // Try to match the index column name against the name of the table
-          // column used in the config candidates
-          for (Uint32 j = 0; j < m_index_scan_config_candidates.size(); j++)
-          {
-            IndexScanConfig& candidate = m_index_scan_config_candidates[j];
-            const char* candidate_column_name = m_columns[candidate.col_idx].c_str();
-            if (strcmp(first_index_column_name, candidate_column_name) == 0)
-            {
-              // Found a match
-              m_do_index_scan = true;
-              m_index_scan_config = &candidate;
-              m_index_scan_index = index;
-              return;
-            }
-          }
+    if (index_obj.type == NdbDictionary::Object::UniqueHashIndex) {
+      // We are not interested in hash indexes
+      continue;
+    }
+    soft_assert(index_obj.type == NdbDictionary::Object::OrderedIndex,
+                "Unexpected index type. Please report a bug.");
+    // todo getIndex or getIndexGlobal?
+    const NdbDictionary::Index* index = m_dict->getIndex(index_obj.name,
+                                                         *m_table);
+    soft_assert(index != NULL, "Failed to get index.");
+    int *condition_handling_map =
+      m_amalloc->alloc_exc<int>(m_toplevel_conditions.size());
+    for (Uint32 i = 0; i < m_toplevel_conditions.size(); i++) {
+      condition_handling_map[i] = -1;
+    }
+    int goodness = 0;
+    unsigned col_count = index->getNoOfColumns();
+    soft_assert(col_count > 0,
+                "Index appears to have no columns. Please report a bug.");
+    bool later_columns_blocked = false;
+    for(unsigned col_idx = 0;
+        col_idx < col_count && !later_columns_blocked;
+        col_idx++)
+    {
+      const NdbDictionary::Column* column = index->getColumn(col_idx);
+      soft_assert(column != NULL,
+                  "Index column object is NULL. Please report a bug.");
+      // todo Can getAttrId be used to match against the parent table?
+      const char* column_name = column->getName();
+      bool lbound_set = false, ubound_set = false;
+      for(Uint32 cond_idx = 0;
+          cond_idx < m_toplevel_conditions.size() &&
+            !(lbound_set && ubound_set);
+          cond_idx++)
+      {
+        ConditionalExpression* ce = m_toplevel_conditions[cond_idx];
+        if (condition_handling_map[cond_idx] != -1) {
+          // Already used as bound for an earlier index column
+          continue;
         }
-        break;
-      case NdbDictionary::Object::UniqueHashIndex:
-        // We are not interested in hash indexes
-        continue;
-      default:
-        // Unexpected object type
-        abort();
+        TokenKind op = ce->op;
+        if (op != T_EQUALS &&
+            op != T_GE &&
+            op != T_GT &&
+            op != T_LE &&
+            op != T_LT) {
+          // Condition unfit to serve as bound
+          continue;
+        }
+        ConditionalExpression* condition_identifier = ce->args.left;
+        assert(condition_identifier->op == T_IDENTIFIER);
+        const char* condition_col_name =
+          m_columns[condition_identifier->col_idx].c_str();
+        if (strcmp(column_name, condition_col_name) == 0) {
+          bool wants_lbound = op == T_EQUALS || op == T_GE || op == T_GT;
+          bool wants_ubound = op == T_EQUALS || op == T_LE || op == T_LT;
+          if ((wants_lbound && lbound_set) || (wants_ubound && ubound_set)) {
+            // ndbapi would refuse
+            continue;
+          }
+          lbound_set = lbound_set || wants_lbound;
+          ubound_set = ubound_set || wants_ubound;
+          later_columns_blocked = op != T_EQUALS;
+          condition_handling_map[cond_idx] = col_idx;
+        } else {
+          later_columns_blocked = true;
+        }
+      }
+      if (lbound_set || ubound_set) {
+        // goodness is a crude estimate of how performant the scan configuration
+        // will be. Each bound added to the configuration adds 10000 for
+        // equality, 100 for a double-bounded range and 10 for a half-open
+        // range. A 10% bonus is added for data types other than VARCHAR.
+        int points = 10;
+        if (column->getType() != NdbDictionary::Column::Type::Varchar) points++;
+        if (lbound_set && ubound_set) points *= 10;
+        if (!later_columns_blocked) points *= 100;
+        goodness += points;
+      }
+    }
+    if (goodness) {
+      m_scan_config_candidates.push(ScanConfig { index,
+                                                 condition_handling_map,
+                                                 goodness });
     }
   }
 }
@@ -776,29 +812,31 @@ RonSQLPreparer::execute()
     NdbAggregator aggregator(m_table);
     programAggregator(&aggregator);
     soft_assert(aggregator.Finalize(), "Failed to finalize aggregator.");
+    ScanConfig& sc = *m_scan_config;
+    const NdbDictionary::Index* index = sc.index;
+    bool has_filter = false;
+    for (Uint32 i = 0; i < m_toplevel_conditions.size(); i++) {
+      if (sc.condition_handling_map[i] == -1) {
+        has_filter = true;
+      }
+    }
     // End of general preparation
 
-    assert(m_do_table_scan || m_do_index_scan);
-
-    if(m_do_table_scan)
-    {
+    if(index == NULL) {
       DEB_TRACE();
       // Prepare and execute full table scan
-      assert(!m_do_index_scan &&
-             m_index_scan_config == NULL &&
-             m_index_scan_index == NULL);
       DEB_TRACE();
       NdbScanOperation* myScanOp = myTrans->getNdbScanOperation(m_table);
       soft_assert(myScanOp != NULL, "Failed to get scan operation.");
       soft_assert(myScanOp->readTuples(NdbOperation::LockMode::LM_CommittedRead) == 0,
                   "Failed to initialize scan operation.");
       DEB_TRACE();
-      if (m_table_scan_filter != NULL)
+      if (has_filter)
       {
         DEB_TRACE();
         NdbScanFilter filter(myScanOp);
         DEB_TRACE();
-        apply_filter_top_level(&filter, m_table_scan_filter);
+        apply_filter_top_level(&filter);
         DEB_TRACE();
       }
       DEB_TRACE();
@@ -808,103 +846,57 @@ RonSQLPreparer::execute()
       soft_assert(myScanOp->DoAggregation() >= 0,
                   "Failed to execute aggregation.");
       DEB_TRACE();
-    }
-    if(m_do_index_scan)
-    {
+    } else {
       DEB_TRACE();
       // Prepare and execute index scan
-      assert(m_index_scan_config != NULL &&
-             m_index_scan_index != NULL &&
-             !m_do_table_scan &&
-             m_table_scan_filter == NULL);
       NdbIndexScanOperation *myIndexScanOp =
-        myTrans->getNdbIndexScanOperation(m_index_scan_index);
-      Uint32 scanFlags = NdbScanOperation::SF_MultiRange;
+        myTrans->getNdbIndexScanOperation(index);
+      Uint32 scanFlags = 0;
       // todo Decide whether NdbScanOperation::SF_OrderBy is good for performance
-      // todo Perhaps apply NdbScanOperation::SF_MultiRange only when necessary
-      soft_assert(myIndexScanOp->readTuples(NdbOperation::LockMode::LM_CommittedRead, scanFlags) == 0,
+      soft_assert(myIndexScanOp->readTuples(NdbOperation::LockMode::LM_CommittedRead,
+                                            scanFlags) == 0,
                   "Failed to initialize index scan operation.");
-      IndexScanConfig& isc = *m_index_scan_config;
-      const char* col_name = m_columns[isc.col_idx].c_str();
-      for (Uint32 i = 0; i < isc.range_count; i++)
+      for (Uint32 i = 0; i < m_toplevel_conditions.size(); i++)
       {
-        const IndexScanConfig::Range& range = isc.ranges[i];
-        if (range.ltype == IndexScanConfig::Range::Type::INCLUSIVE &&
-            range.htype == IndexScanConfig::Range::Type::INCLUSIVE &&
-            range.lvalue == range.hvalue)
-        {
-          // Equality
-          soft_assert(myIndexScanOp->setBound(col_name,
-                                              NdbIndexScanOperation::BoundType::BoundEQ,
-                                              &range.lvalue) == 0,
-                      "Failed to set lower bound.");
-          soft_assert(myIndexScanOp->end_of_bound(i) == 0,
-                      "Failed to set end of bound.");
+        int index_col_idx = sc.condition_handling_map[i];
+        if (index_col_idx == -1) {
+          // This condition could not be configured for the index scan. It will
+          // be applied as part of the filter instead.
           continue;
         }
-        static const int BoundNone = -1; // datatype matches lboundt and hboundt
-        static_assert(NdbIndexScanOperation::BoundType::BoundEQ != BoundNone);
-        static_assert(NdbIndexScanOperation::BoundType::BoundLE != BoundNone);
-        static_assert(NdbIndexScanOperation::BoundType::BoundLT != BoundNone);
-        static_assert(NdbIndexScanOperation::BoundType::BoundGT != BoundNone);
-        static_assert(NdbIndexScanOperation::BoundType::BoundGE != BoundNone);
-        int lboundt; // datatype matches NdbIndexScanOperation::setBound
-        int hboundt; // datatype matches NdbIndexScanOperation::setBound
-        switch(range.ltype)
-        {
-        case IndexScanConfig::Range::Type::NONE:
-          lboundt = BoundNone;
-          break;
-        case IndexScanConfig::Range::Type::INCLUSIVE:
-          lboundt = NdbIndexScanOperation::BoundLE;
-          break;
-        case IndexScanConfig::Range::Type::EXCLUSIVE:
-          lboundt = NdbIndexScanOperation::BoundLT;
-          break;
-        default:
-          abort();
+        ConditionalExpression* ce = m_toplevel_conditions[i];
+        Uint32 condition_col_idx = ce->args.left->col_idx;
+        ConditionalExpression* condition_constant = ce->args.right;
+        TokenKind op = ce->op;
+        NdbIndexScanOperation::BoundType bt;
+        switch (op) {
+        case T_EQUALS: bt = NdbIndexScanOperation::BoundType::BoundEQ; break;
+        /* This mapping might seem surprising.
+         * - In RonSQL, we have normalized the conditional expressions to have
+         *   the column name on the left and the constant on the right. Thus,
+         *   T_GE means column value >= constant, or in other words, the
+         *   constant is a lower bound.
+         * - In ndbapi, BoundLE is documented to mean non-strict "lower bound".
+         */
+        case T_GE:     bt = NdbIndexScanOperation::BoundType::BoundLE; break;
+        case T_GT:     bt = NdbIndexScanOperation::BoundType::BoundLT; break;
+        case T_LE:     bt = NdbIndexScanOperation::BoundType::BoundGE; break;
+        case T_LT:     bt = NdbIndexScanOperation::BoundType::BoundGT; break;
+        default: abort();
         }
-        switch(range.htype)
-        {
-        case IndexScanConfig::Range::Type::NONE:
-          hboundt = BoundNone;
-          break;
-        case IndexScanConfig::Range::Type::EXCLUSIVE:
-          hboundt = NdbIndexScanOperation::BoundGT;
-          break;
-        case IndexScanConfig::Range::Type::INCLUSIVE:
-          hboundt = NdbIndexScanOperation::BoundGE;
-          break;
-        default:
-          abort();
-        }
-        assert(lboundt != BoundNone ||
-               hboundt != BoundNone);
-        if (lboundt != BoundNone && hboundt != BoundNone)
-        {
-          assert(range.lvalue < range.hvalue);
-        }
-        if (lboundt != BoundNone)
-        {
-          soft_assert(myIndexScanOp->setBound(col_name,
-                                              lboundt,
-                                              &range.lvalue) == 0,
-                      "Failed to set lower bound.");
-        }
-        if (hboundt != BoundNone)
-        {
-          soft_assert(myIndexScanOp->setBound(col_name,
-                                              hboundt,
-                                              &range.hvalue) == 0,
-                      "Failed to set upper bound.");
-        }
-        soft_assert(myIndexScanOp->end_of_bound(i) == 0,
-                    "Failed to set end of bound.");
+        const char* colName = m_columns[condition_col_idx].c_str();
+        raw_value rv = encode_constant(condition_constant,
+                                       m_column_map[condition_col_idx]);
+        soft_assert(myIndexScanOp->setBound(colName, bt, rv.val) == 0,
+                    "Failed to set bound for index scan.");
       }
-      if (isc.filter != NULL)
+      // todo Is this necessary after removing the multirange flag?
+      soft_assert(myIndexScanOp->end_of_bound(0) == 0,
+                  "Failed to set end of bound.");
+      if (has_filter)
       {
         NdbScanFilter filter(myIndexScanOp);
-        apply_filter_top_level(&filter, isc.filter);
+        apply_filter_top_level(&filter);
       }
       soft_assert(myIndexScanOp->setAggregationCode(&aggregator) >= 0,
                   "Failed to set aggregation code.");
@@ -1033,31 +1025,27 @@ RonSQLPreparer::unload_schema() {
 }
 
 void
-RonSQLPreparer::apply_filter_top_level(NdbScanFilter* filter,
-                                       struct ConditionalExpression* ce)
+RonSQLPreparer::apply_filter_top_level(NdbScanFilter* filter)
 {
-  assert(ce != NULL);
   /* ndbapi filter has unary AND and OR operators, i.e. they take an arbitrary
    * number of operands. In a number of places, it is required to have at least
-   * one "group", i.e. containing AND or OR expression, active. Unless the
-   * top-level expression is an AND or OR operation, we wrap it in an AND group
-   * with a single argument.
+   * one "group", i.e. containing AND or OR expression, active. We wrap our
+   * array of top-level conditions in an AND group. Technically this is
+   * unnecessary in the special case of exactly one condition of type T_AND or
+   * T_OR.
    */
-  bool success = false;
-  if (ce->op == T_AND || ce->op == T_OR)
-  {
-    success = apply_filter(filter, ce);
+  soft_assert(filter->begin(NdbScanFilter::AND) >= 0,
+              "Failed to apply filter.");
+  bool has_filter = false;
+  for (Uint32 i = 0; i < m_toplevel_conditions.size(); i++) {
+    if (m_scan_config->condition_handling_map[i] == -1) {
+      has_filter = true;
+      soft_assert(apply_filter(filter, m_toplevel_conditions[i]),
+                  "Failed to apply filter.");
+    }
   }
-  else
-  {
-    success = (filter->begin(NdbScanFilter::AND) >= 0 &&
-               apply_filter(filter, ce) &&
-               filter->end() >= 0);
-  }
-  if (!success)
-  {
-    throw runtime_error("Failed to apply filter.");
-  }
+  assert(has_filter);
+  soft_assert(filter->end() >= 0, "Failed to apply filter.");
 }
 
 bool
@@ -1743,84 +1731,44 @@ RonSQLPreparer::print()
   out << '\n';
 
   // Print scan information
-  if (m_conf.ndb == NULL)
-  {
-    if (m_index_scan_config_candidates.size() == 0)
-    {
-      out << "Execute as table scan.\n"
-          << "(There is no NDB connection,"
-          << " but this can be determined based on the"
-          << (m_context.ast_root.where_expression == NULL ? " absense of a" : "")
-          << " WHERE clause.)\n";
-    }
-    else
-    {
-      out << "Cannot determine whether this would be a table or index scan.\n";
-      if (m_index_scan_config_candidates.size() == 1)
-      {
-        out << "(There is 1 candidate plan for index scan, but without an NDB"
-               " connection it cannot be determined whether it is"
-               " applicable.)\n";
+  if (m_conf.ndb == NULL) {
+    out << "No NDB connection, so no index scan analysis.\n";
+  } else {
+    ScanConfig& sc = *m_scan_config;
+    if (sc.index == NULL) {
+      out << "Execute as table scan.\n";
+    } else {
+      out << "Execute as index scan.\n"
+          << "Index: " << quoted_identifier(sc.index->getName()) << "(";
+      for (Uint32 i = 0; i < sc.index->getNoOfColumns(); i++) {
+        if (i > 0) out << ", ";
+        out << sc.index->getColumn(i)->getName();
       }
-      else
-      {
-        out << "(There are " << m_index_scan_config_candidates.size()
-            << " candidate plans for index scan, but without an NDB connection"
-               " it cannot be determined whether any of them are"
-               " applicable.)\n";
-      }
+      out << ")\nWith goodness " << sc.goodness << " it's the best of "
+          << m_scan_config_candidates.size() << " options.\n";
     }
-  }
-  else if (m_do_table_scan)
-  {
-    assert(!m_do_index_scan &&
-           m_index_scan_config == NULL &&
-           m_index_scan_index == NULL);
-    out << "Execute as table scan "
-        << (m_table_scan_filter == NULL
-            ? "without any filter.\n"
-            : "with a filter.\n");
-    if (m_index_scan_config_candidates.size() == 0)
-    {
-      out << "(No candidate plans for index scan.)\n";
+    Uint32 cond_cnt = m_toplevel_conditions.size();
+    if (cond_cnt) {
+      out << "There are " << cond_cnt << " top-level conditions:\n";
+    } else {
+      out << "There are no top-level conditions.\n";
     }
-    else
-    {
-      if (m_index_scan_config_candidates.size() == 1)
-      {
-        out << "(There is 1 candidate plan for index scan, but it could not be"
-               " applied.)\n";
-      }
-      else
-      {
-        out << "(There are " << m_index_scan_config_candidates.size()
-            << " candidate plans for index scan, none of which could be"
-               " applied.)\n";
-      }
-    }
-  }
-  else
-  {
-    assert(m_do_index_scan &&
-           m_index_scan_config != NULL &&
-           m_index_scan_index != NULL &&
-           !m_do_table_scan &&
-           m_table_scan_filter == NULL);
-    LexCString col_name = m_columns[m_index_scan_config->col_idx];
-    out << "Execute as index scan.\n"
-        << "Indexed column: "
-        << quoted_identifier(col_name) << '\n'
-        << "Index name: " << quoted_identifier(m_index_scan_index->getName())
-        << '\n'
-        << "Ranges:\n";
-    for (Uint32 i = 0; i < m_index_scan_config->range_count; i++)
-    {
+    for (Uint32 i = 0; i < cond_cnt; i++) {
       out << "- ";
-      print(m_index_scan_config->ranges[i], col_name.c_str());
-      out << '\n';
+      int handling = sc.condition_handling_map[i];
+      Uint32 prefixlen;
+      if (handling == -1) {
+        out << "FILTER: ";
+        prefixlen = 10;
+      } else {
+        out << "INDEX[" << handling << "]: ";
+        prefixlen = 12;
+        if (handling > 9) {
+          prefixlen++;
+        }
+      }
+      print(m_toplevel_conditions[i], LexString{"             ", prefixlen});
     }
-    out << "Filter:\n";
-    print(m_index_scan_config->filter, LexString{NULL, 0});
   }
 
   out << '\n';
@@ -1835,7 +1783,7 @@ RonSQLPreparer::print()
 
 void
 RonSQLPreparer::print(struct ConditionalExpression* ce,
-                        LexString prefix)
+                      LexString prefix)
 {
   std::basic_ostream<char>& out = *m_conf.out_stream;
   const char* opstr = NULL;
@@ -2027,65 +1975,6 @@ static const char* interval_type_name(TokenKind interval_type)
   case T_DAY_HOUR: return "DAY_HOUR";
   case T_YEAR_MONTH: return "YEAR_MONTH";
   default: abort();
-  }
-}
-
-void
-RonSQLPreparer::print(struct IndexScanConfig::Range& range, const char* col_name)
-{
-  std::basic_ostream<char>& out = *m_conf.out_stream;
-  if (range.ltype == IndexScanConfig::Range::Type::INCLUSIVE &&
-      range.htype == IndexScanConfig::Range::Type::INCLUSIVE &&
-      range.lvalue == range.hvalue)
-  {
-    // Equality
-    out << col_name << " = " << range.lvalue;
-    return;
-  }
-  const char* lboundt;
-  const char* hboundt;
-  switch(range.ltype)
-  {
-  case IndexScanConfig::Range::Type::NONE:
-    lboundt = NULL;
-    break;
-  case IndexScanConfig::Range::Type::INCLUSIVE:
-    lboundt = " <= ";
-    break;
-  case IndexScanConfig::Range::Type::EXCLUSIVE:
-    lboundt = " < ";
-    break;
-  default:
-    abort();
-  }
-  switch(range.htype)
-  {
-  case IndexScanConfig::Range::Type::NONE:
-    hboundt = NULL;
-    break;
-  case IndexScanConfig::Range::Type::EXCLUSIVE:
-    hboundt = " < ";
-    break;
-  case IndexScanConfig::Range::Type::INCLUSIVE:
-    hboundt = " <= ";
-    break;
-  default:
-    abort();
-  }
-  assert(lboundt != NULL ||
-         hboundt != NULL);
-  if (lboundt != NULL && hboundt != NULL)
-  {
-    assert(range.lvalue < range.hvalue);
-  }
-  if (lboundt != NULL)
-  {
-    out << range.lvalue << lboundt;
-  }
-  out << col_name;
-  if (hboundt != NULL)
-  {
-    out << hboundt << range.hvalue;
   }
 }
 
