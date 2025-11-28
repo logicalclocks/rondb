@@ -1,0 +1,228 @@
+--source include/have_ndb.inc
+
+# RONDB-831 tests
+
+#todo Remove the canonicalization scripts when AVG formatting is fixed
+
+--echo Create test table with no rows
+CREATE TABLE tbl1 (
+  pk INT NOT NULL AUTO_INCREMENT,
+  idx INT NULL,
+  flt INT NULL,
+  gr INT NULL,
+  dat INT NULL,
+  PRIMARY KEY USING HASH (pk),
+  INDEX index_idx (idx)
+) ENGINE=NDB CHARSET=latin1;
+
+let $i=2;
+while($i){
+if($i==2) {
+--echo ====== Queries on an empty table ======
+}
+if($i==1) {
+
+# for idx in NULL 6 7 8; do for flt in NULL 66 11; do for gr in NULL 1 2; do for dat in NULL 5; do echo "($idx, $flt, $gr, $dat),";done;done;done;done
+INSERT INTO tbl1 (idx, flt, gr, dat) VALUES
+(NULL, NULL, NULL, NULL),
+(NULL, NULL, NULL, 5),
+(NULL, NULL, 1, NULL),
+(NULL, NULL, 1, 5),
+(NULL, NULL, 2, NULL),
+(NULL, NULL, 2, 5),
+(NULL, 66, NULL, NULL),
+(NULL, 66, NULL, 5),
+(NULL, 66, 1, NULL),
+(NULL, 66, 1, 5),
+(NULL, 66, 2, NULL),
+(NULL, 66, 2, 5),
+(NULL, 11, NULL, NULL),
+(NULL, 11, NULL, 5),
+(NULL, 11, 1, NULL),
+(NULL, 11, 1, 5),
+(NULL, 11, 2, NULL),
+(NULL, 11, 2, 5),
+(6, NULL, NULL, NULL),
+(6, NULL, NULL, 5),
+(6, NULL, 1, NULL),
+(6, NULL, 1, 5),
+(6, NULL, 2, NULL),
+(6, NULL, 2, 5),
+(6, 66, NULL, NULL),
+(6, 66, NULL, 5),
+(6, 66, 1, NULL),
+(6, 66, 1, 5),
+(6, 66, 2, NULL),
+(6, 66, 2, 5),
+(6, 11, NULL, NULL),
+(6, 11, NULL, 5),
+(6, 11, 1, NULL),
+(6, 11, 1, 5),
+(6, 11, 2, NULL),
+(6, 11, 2, 5),
+(7, NULL, NULL, NULL),
+(7, NULL, NULL, 5),
+(7, NULL, 1, NULL),
+(7, NULL, 1, 5),
+(7, NULL, 2, NULL),
+(7, NULL, 2, 5),
+(7, 66, NULL, NULL),
+(7, 66, NULL, 5),
+(7, 66, 1, NULL),
+(7, 66, 1, 5),
+(7, 66, 2, NULL),
+(7, 66, 2, 5),
+(7, 11, NULL, NULL),
+(7, 11, NULL, 5),
+(7, 11, 1, NULL),
+(7, 11, 1, 5),
+(7, 11, 2, NULL),
+(7, 11, 2, 5),
+(8, NULL, NULL, NULL),
+(8, NULL, NULL, 5),
+(8, NULL, 1, NULL),
+(8, NULL, 1, 5),
+(8, NULL, 2, NULL),
+(8, NULL, 2, 5),
+(8, 66, NULL, NULL),
+(8, 66, NULL, 5),
+(8, 66, 1, NULL),
+(8, 66, 1, 5),
+(8, 66, 2, NULL),
+(8, 66, 2, 5),
+(8, 11, NULL, NULL),
+(8, 11, NULL, 5),
+(8, 11, 1, NULL),
+(8, 11, 1, 5),
+(8, 11, 2, NULL),
+(8, 11, 2, 5);
+
+--echo
+--echo
+--echo
+--echo ====== Queries on an table with both NULL and non-NULL dat ======
+}
+
+DELIMITER |;
+
+--echo Table scan
+let $QUERY=
+SELECT AVG(dat), COUNT(dat), MAX(dat), MIN(dat), SUM(dat), COUNT(*)
+FROM tbl1
+;|
+--let $canonicalization_script=s/\.0000//;
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo Table scan, group on 1 column
+let $QUERY=
+SELECT AVG(dat), COUNT(dat), MAX(dat), MIN(dat), SUM(dat), COUNT(*)
+FROM tbl1
+GROUP BY gr
+;|
+--let $canonicalization_script=s/\.0000//;
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo Table scan, group on 2 columns
+let $QUERY=
+SELECT AVG(dat), COUNT(dat), MAX(dat), MIN(dat), SUM(dat), COUNT(*)
+FROM tbl1
+GROUP BY gr
+       , idx
+;|
+--let $canonicalization_script=s/\.0000//;
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo Table scan, eq filter
+let $QUERY=
+SELECT AVG(dat), COUNT(dat), MAX(dat), MIN(dat), SUM(dat), COUNT(*)
+FROM tbl1
+WHERE flt = 66
+;|
+--let $canonicalization_script=s/\.0000//;
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo Table scan, eq filter, group on 1 column
+let $QUERY=
+SELECT AVG(dat), COUNT(dat), MAX(dat), MIN(dat), SUM(dat), COUNT(*)
+FROM tbl1
+WHERE flt = 66
+GROUP BY gr
+;|
+--let $canonicalization_script=s/\.0000//;
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo Table scan, eq filter, group on 2 columns
+let $QUERY=
+SELECT AVG(dat), COUNT(dat), MAX(dat), MIN(dat), SUM(dat), COUNT(*)
+FROM tbl1
+WHERE flt = 66
+GROUP BY gr
+       , idx
+;|
+--let $canonicalization_script=s/\.0000//;
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo Range scan
+let $QUERY=
+SELECT AVG(dat), COUNT(dat), MAX(dat), MIN(dat), SUM(dat), COUNT(*)
+FROM tbl1
+WHERE idx >= 6 AND idx < 8
+;|
+--let $canonicalization_script=s/\.0000//;
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo Range scan, group on 1 column
+let $QUERY=
+SELECT AVG(dat), COUNT(dat), MAX(dat), MIN(dat), SUM(dat), COUNT(*)
+FROM tbl1
+WHERE idx >= 6 AND idx < 8
+GROUP BY gr
+;|
+--let $canonicalization_script=s/\.0000//;
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo Range scan, group on 2 columns
+let $QUERY=
+SELECT AVG(dat), COUNT(dat), MAX(dat), MIN(dat), SUM(dat), COUNT(*)
+FROM tbl1
+WHERE idx >= 6 AND idx < 8
+GROUP BY gr
+       , idx
+;|
+--let $canonicalization_script=s/\.0000//;
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo Range scan, eq filter
+let $QUERY=
+SELECT AVG(dat), COUNT(dat), MAX(dat), MIN(dat), SUM(dat), COUNT(*)
+FROM tbl1
+WHERE idx >= 6 AND idx < 8 AND flt = 66
+;|
+--let $canonicalization_script=s/\.0000//;
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo Range scan, eq filter, group on 1 column
+let $QUERY=
+SELECT AVG(dat), COUNT(dat), MAX(dat), MIN(dat), SUM(dat), COUNT(*)
+FROM tbl1
+WHERE idx >= 6 AND idx < 8 AND flt = 66
+GROUP BY gr
+;|
+--let $canonicalization_script=s/\.0000//;
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo Range scan, eq filter, group on 2 columns
+let $QUERY=
+SELECT AVG(dat), COUNT(dat), MAX(dat), MIN(dat), SUM(dat), COUNT(*)
+FROM tbl1
+WHERE idx >= 6 AND idx < 8 AND flt = 66
+GROUP BY gr
+       , idx
+;|
+--let $canonicalization_script=s/\.0000//;
+--source suite/ronsql/include/ronsql_compare.inc
+
+DELIMITER ;|
+dec $i;
+}
+DROP TABLE tbl1;
