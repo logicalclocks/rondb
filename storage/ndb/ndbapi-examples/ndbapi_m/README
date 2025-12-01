@@ -1,0 +1,7 @@
+./storage/ndb/ndbapi-examples/ndb_ndbapi_vss 127.0.0.1:1188 --load=1 --table_size=1000 --top_n=1000 --iters=1 --mysql_port=3308
+
+
+
+
+
+
