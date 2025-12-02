@@ -1,0 +1,20 @@
+--echo # vim: set fileencoding=utf-8 : -*- coding: utf-8 -*-
+--source include/have_ndb.inc
+
+# Compare MySQL against RonSQL using RDRS only
+--let $suppress_ronsql_cli=yes
+
+--disable_query_log
+SET time_zone = "+00:00";
+--let RAND_SEED=123
+--let NUM_ROWS=200
+--let TEST_INC_FILE=$MYSQLTEST_VARDIR/tmp/ronsql_hopsworks_gen.inc
+--exec perl $MYSQL_TEST_DIR/suite/ronsql/t/ronsql_hopsworks.pl
+--enable_query_log
+--let $EXPLAIN_FILE=$MYSQL_TMP_DIR/ronsql-explain.out
+
+--source $TEST_INC_FILE
+
+--disable_query_log
+--remove_file $TEST_INC_FILE
+--enable_query_log

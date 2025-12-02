@@ -26,6 +26,7 @@
 #define STORAGE_NDB_SRC_RONSQL_DYNAMICARRAY_HPP 1
 
 #include "ArenaMalloc.hpp"
+#include "RonSQLCommon.hpp"
 
 /* A simple dynamic array supporting only objects that are trivially
  * constructible/destructible, only arena allocation and no shrinking.
@@ -77,8 +78,7 @@ public:
   {
     if (!(item_count < (item_count + 1)))
     {
-      // overflow_error inherits from runtime_error.
-      throw std::overflow_error("DynamicArray::push: item count overflow");
+      throw RonSQLPermanentError("DynamicArray::push: item count overflow");
     }
     Uint32 page = (item_count >> BITS);
     Uint32 idx = item_count & IDX_MASK;

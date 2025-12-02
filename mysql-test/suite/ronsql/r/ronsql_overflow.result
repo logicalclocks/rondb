@@ -1,8 +1,9 @@
 CREATE TABLE tbl (sint8 TINYINT NULL) ENGINE=NDB;
 INSERT INTO tbl (sint8) VALUES (7);
 Overflow using multiplication:
-NDB Permanent error 1860: arithmetic operation results overflow, check error log on data node for more details
-ronsql_cli caught exception: Failed to execute aggregation.
+Error handling: SRE,te->RPE
+NDB Permanent error 1860, Application error: arithmetic operation results overflow, check error log on data node for more details
+ronsql_cli caught exception: Failed to execute table scan aggregation.
 
 
 
@@ -35,7 +36,7 @@ Number of output lines, including header: 2
  sint8	div_overflow
 -7	0.000000000000000000000000000000
 +7	0
-================================================================================
+==========
 
 
 
@@ -51,7 +52,7 @@ GROUP BY sint8;
 Number of output lines, including header: 2
 
 == Diff ==
-================================================================================
+==========
 
 
 
@@ -65,7 +66,7 @@ GROUP BY sint8;
 Number of output lines, including header: 2
 
 == Diff ==
-================================================================================
+==========
 
 
 
@@ -79,7 +80,7 @@ GROUP BY sint8;
 Number of output lines, including header: 2
 
 == Diff ==
-================================================================================
+==========
 
 
 
@@ -93,7 +94,7 @@ GROUP BY sint8;
 Number of output lines, including header: 2
 
 == Diff ==
-================================================================================
+==========
 
 
 

@@ -28,6 +28,8 @@
 #include "Ndb.hpp"
 #include "NdbOperation.hpp"
 #include "mysql_time.h"
+#include "storage/ndb/plugin/ndb_require.h"
+using ndbcluster::ndbrequire;
 
 #include "ArenaMalloc.hpp"
 #include "LexString.hpp"
@@ -168,6 +170,31 @@ struct SelectStatement
   struct ConditionalExpression* where_expression = NULL;
   struct GroupbyColumns* groupby_columns = NULL;
   struct OrderbyColumns* orderby_columns = NULL;
+};
+
+/* RonSQL uses 4 types of exceptions:
+ * - RonSQLRetryableError indicates that the RonSQL query might be worth
+ *   retrying.
+ * - RonSQLPermanentError indicates that the RonSQL query is not worth retrying.
+ * - RonSQLMaybeStaleSchema is used internally to communicate errors from
+ *   operations that depend on the schema. This will cause a schema unload and
+ *   reload. Then, if the schema version was stale, it will be rethrown as a
+ *   RetryableError, otherwise as a PermanentError. In particular, this is used
+ *   for operations that can fail due to stale schema without causing any Ndb
+ *   errors, such as RonSQL type checking.
+ * - std::runtime_error is used internally to indicate errors where it's unknown
+ *   whether they should be retried. This will cause an investigation of Ndb
+ *   error codes. Then, it will be rethrown as a RetryableError or a
+ *   PermanentError.
+ */
+class RonSQLRetryableError : public std::runtime_error {
+  using std::runtime_error::runtime_error;
+};
+class RonSQLPermanentError : public std::runtime_error {
+  using std::runtime_error::runtime_error;
+};
+class RonSQLMaybeStaleSchema : public std::runtime_error {
+  using std::runtime_error::runtime_error;
 };
 
 #endif

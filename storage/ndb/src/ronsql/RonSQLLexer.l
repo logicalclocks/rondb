@@ -546,7 +546,7 @@ rsqlp_alloc(size_t bytes, void * scanner)
   if(likely(ret)) {
     return ret;
   }
-  throw std::runtime_error("rsqlp_alloc: Cannot allocate");
+  throw RonSQLRetryableError("rsqlp_alloc: Cannot allocate");
 }
 
 void*

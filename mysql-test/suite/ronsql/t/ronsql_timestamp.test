@@ -5,6 +5,9 @@
 # starts. Until RonSQL and RDRS supports time zones, we'll run this test in UTC.
 SET time_zone = "+00:00";
 
+# Compare MySQL against RonSQL using RDRS only
+--let $suppress_ronsql_cli=yes
+
 --echo ==============
 --echo Generate data:
 --echo ==============

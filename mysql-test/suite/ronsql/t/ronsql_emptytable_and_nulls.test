@@ -1,5 +1,8 @@
 --source include/have_ndb.inc
 
+# Compare MySQL against RonSQL using RDRS only
+--let $suppress_ronsql_cli=yes
+
 # RONDB-831 tests
 
 #todo Remove the canonicalization scripts when AVG formatting is fixed

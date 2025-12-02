@@ -1,3 +1,5 @@
+// vim: set fileencoding=utf-8 : -*- coding: utf-8 -*-
+
 /*
    Copyright (c) 2024, 2025, Hopsworks and/or its affiliates.
 
@@ -22,7 +24,6 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
-#include <assert.h>
 #include "AggregationAPICompiler.hpp"
 #include "RonSQLParser.y.hpp"
 #include "RonSQLLexer.l.hpp"
@@ -43,15 +44,51 @@
   printf("RonSQLPreparer.cpp:%d\n", __LINE__); \
   fflush(stdout); \
 } while (0)
+std::ostream& operator<<(std::ostream& os, const raw_value& rv) {
+  os << "(len=" << rv.len << ", val=";
+  if (rv.val == NULL) {
+    os << "NULL";
+  } else {
+    const unsigned char* bytes = static_cast<const unsigned char*>(rv.val);
+    for (Uint32 i = 0; i < rv.len; i++) {
+      char hex[4];
+      snprintf(hex, sizeof(hex), "%s%02x", (i > 0 ? " " : ""), bytes[i]);
+      os << hex;
+    }
+  }
+  os << ")";
+  return os;
+}
+template<typename T>
+inline T dbg_print(int line, const char* expr, T val) {
+  std::cout << "RonSQLPreparer.cpp:" << line << " " << expr << " -> " << val << std::endl;
+  return val;
+}
+#define DBG(expr) dbg_print(__LINE__, #expr, (expr))
+#define DBGV(expr) do { \
+  dbg_print(__LINE__, #expr, "<void>"); \
+  (expr); \
+} while (0)
 #else
 #define DEB_TRACE() do { } while (0)
+#define DBG(expr) (expr)
+#define DBGV(expr) (expr)
 #endif
 
 using std::endl;
-using std::runtime_error;
 
 #define feature_not_implemented(description) \
-  throw runtime_error("RonSQL feature not implemented: " description)
+  throw RonSQLPermanentError("RonSQL feature not implemented: " description)
+
+// Schema fingerprint hash constants
+// Used to compute a collision-resistant hash of table + all indexes
+// for detecting schema changes including index additions/deletions
+namespace {
+  constexpr Uint64 PRIME_TABLE_ID = 31;
+  constexpr Uint64 PRIME_TABLE_VER = 37;
+  constexpr Uint64 PRIME_INDEX_ID = 41;
+  constexpr Uint64 PRIME_INDEX_VER = 43;
+}
 
 static const char* interval_type_name(TokenKind interval_type);
 
@@ -94,9 +131,8 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
   m_toplevel_conditions(conf.amalloc),
   m_scan_config_candidates(conf.amalloc)
 {
-  assert(m_status == Status::BEGIN);
-  try
-  {
+  ndbrequire(m_status == Status::BEGIN);
+  try {
     configure();
     parse();
     load();
@@ -105,18 +141,45 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
     determine_explain();
     m_status = Status::PREPARED;
   }
-  catch (...)
-  {
+  catch (...) {
     m_status = Status::FAILED;
-    throw;
+    handle_ronsql_exception(std::current_exception());
   }
 }
 
+// require or fail without retry
 static inline void
-soft_assert(bool condition, const char* msg)
+require_prm(bool condition, const char* msg)
 {
   if (likely(condition)) return;
-  throw runtime_error(msg);
+  throw RonSQLPermanentError(msg);
+}
+
+// require or fail without retry, claiming it's a bug
+#define require_bug(x, msg) require_prm(x, msg " Please report a bug.")
+
+// require or investigate schema version
+static inline void
+require_sch(bool condition, const char* msg)
+{
+  if (likely(condition)) return;
+  throw RonSQLMaybeStaleSchema(msg);
+}
+
+// require or investigate ndb error
+static inline void
+require_run(bool condition, const char* msg)
+{
+  if (likely(condition)) return;
+  throw std::runtime_error(msg);
+}
+
+// require or fail with retry
+static inline void
+require_tmp(bool condition, const char* msg)
+{
+  if (likely(condition)) return;
+  throw RonSQLRetryableError(msg);
 }
 
 void
@@ -124,9 +187,9 @@ RonSQLPreparer::configure()
 {
   // Validate m_conf
 #ifdef VM_TRACE
-  assert(m_conf.sql_buffer != NULL);
-  assert(m_conf.sql_len > 0);
-  assert(m_conf.amalloc != NULL);
+  ndbrequire(m_conf.sql_buffer != NULL);
+  ndbrequire(m_conf.sql_len > 0);
+  ndbrequire(m_conf.amalloc != NULL);
   RonSQLExecParams::ExplainMode mode = m_conf.explain_mode;
   bool may_query =
     (mode == RonSQLExecParams::ExplainMode::ALLOW ||
@@ -136,17 +199,17 @@ RonSQLPreparer::configure()
     (mode == RonSQLExecParams::ExplainMode::ALLOW ||
      mode == RonSQLExecParams::ExplainMode::REQUIRE ||
      mode == RonSQLExecParams::ExplainMode::FORCE);
-  assert(may_query || may_explain);
-  assert(m_conf.out_stream != NULL);
-  assert(m_conf.output_format == RonSQLExecParams::OutputFormat::JSON ||
-         m_conf.output_format == RonSQLExecParams::OutputFormat::JSON_ASCII ||
-         m_conf.output_format == RonSQLExecParams::OutputFormat::TEXT ||
-         m_conf.output_format == RonSQLExecParams::OutputFormat::TEXT_NOHEADER);
+  ndbrequire(may_query || may_explain);
+  ndbrequire(m_conf.out_stream != NULL);
+  ndbrequire(m_conf.output_format == RonSQLExecParams::OutputFormat::JSON ||
+             m_conf.output_format == RonSQLExecParams::OutputFormat::JSON_ASCII ||
+             m_conf.output_format == RonSQLExecParams::OutputFormat::TEXT ||
+             m_conf.output_format == RonSQLExecParams::OutputFormat::TEXT_NOHEADER);
   if (may_query)
   {
-    assert(m_conf.ndb != NULL);
+    ndbrequire(m_conf.ndb != NULL);
   }
-  assert(m_conf.err_stream != NULL);
+  ndbrequire(m_conf.err_stream != NULL);
 #endif
   /*
    * Both `yy_scan_string' and `yy_scan_bytes' create and scan a copy of the
@@ -159,15 +222,15 @@ RonSQLPreparer::configure()
   char* sql_buffer = m_conf.sql_buffer;
   size_t sql_len = m_conf.sql_len;
   // SQL buffer must be double NUL-terminated
-  assert(sql_len >= 2 &&
-         sql_buffer[sql_len-1] == '\0' &&
-         sql_buffer[sql_len-2] == '\0');
+  ndbrequire(sql_len >= 2 &&
+             sql_buffer[sql_len-1] == '\0' &&
+             sql_buffer[sql_len-2] == '\0');
   rsqlp_lex_init_extra(&m_context, &m_scanner);
   // The non-const sql_buffer is only used to initialize the flex scanner. The
   // flex scanner shouldn't modify it either, but only because we have removed
   // the buffer-modifying code from the generated output (see build_lexer.sh).
   // For this reason, the lexer still declares the buffer as non-const.
-  m_buf = rsqlp__scan_buffer(sql_buffer, sql_len, m_scanner);
+  m_buf = rsqlp__scan_buffer(DBG(sql_buffer), sql_len, m_scanner);
   // We don't want the NUL bytes that flex requires.
   size_t our_buffer_len = sql_len - 2;
   m_sql = { static_cast<const char*>(sql_buffer), our_buffer_len };
@@ -185,7 +248,7 @@ RonSQLPreparer::parse()
                                               */
   if (parse_result == 0)
   {
-    assert(m_context.m_err_state == ErrState::NONE);
+    ndbrequire(m_context.m_err_state == ErrState::NONE);
     /* We have already provided columns and expressions to the
      * AggregationAPICompiler. E.g. in `SELECT Max(col1 + col2)`, m_agg already
      * knows about `col1`, `col2` and `col1 + col2`. Here, we let m_agg know about
@@ -203,7 +266,7 @@ RonSQLPreparer::parse()
       case Outputs::Type::AGGREGATE:
       {
         has_aggregate_outputs = true;
-        assert(m_agg != NULL);
+        ndbrequire(m_agg != NULL);
         TokenKind fun = outputs->aggregate.fun;
         AggregationAPICompiler::Expr* expr = outputs->aggregate.arg;
         switch (fun)
@@ -237,20 +300,20 @@ RonSQLPreparer::parse()
     }
     if (m_agg == NULL)
     {
-      assert(!has_aggregate_outputs);
+      ndbrequire(!has_aggregate_outputs);
     }
     else
     {
-      assert(has_aggregate_outputs);
-      assert(m_agg->getStatus() == AggregationAPICompiler::Status::PROGRAMMING);
+      ndbrequire(has_aggregate_outputs);
+      ndbrequire(m_agg->getStatus() == AggregationAPICompiler::Status::PROGRAMMING);
     }
     if (!has_aggregate_outputs)
     {
-      assert(m_conf.err_stream != NULL);
+      ndbrequire(m_conf.err_stream != NULL);
       std::basic_ostream<char>& err = *m_conf.err_stream;
       err << "This query has no aggregate expression, so it is not an aggregate query.\n"
              "Currently, RonSQL only supports aggregate queries.\n";
-      throw runtime_error("Not an aggregate query.");
+      throw RonSQLPermanentError("Not an aggregate query.");
     }
     return;
   }
@@ -265,20 +328,20 @@ RonSQLPreparer::parse()
      *    not apply to us.
      * 2) Stack depth would exceed YYMAXDEPTH.
      * 3) The allocator used by the parser returns NULL, indicating OOM. Since
-     *    the allocation functio we use will never return NULL but rather throw
-     *    an exception on OOM, so this case does not apply to us.
+     *    the allocation function we use will never return NULL but rather throw
+     *    an exception on OOM, this case does not apply to us.
      * Therefore, we know that if we end up here, we are in case 2).
      */
-    throw runtime_error("Parser stack exceeded its maximum depth.");
+    throw RonSQLPermanentError("Parser stack exceeded its maximum depth.");
   }
-  assert(parse_result == 1);
-  assert(m_context.m_err_state != ErrState::NONE);
-  assert(m_sql.str <= m_context.m_err_pos);
+  ndbrequire(parse_result == 1);
+  ndbrequire(m_context.m_err_state != ErrState::NONE);
+  ndbrequire(m_sql.str <= m_context.m_err_pos);
   size_t err_pos = m_context.m_err_pos - m_sql.str;
   size_t err_stop = err_pos + m_context.m_err_len;
-  assert(err_pos <= m_sql.len);
-  assert(err_stop <= m_sql.len + 1); // "Unexpected end of input" marks the
-                                     // character directly after the end.
+  ndbrequire(err_pos <= m_sql.len);
+  ndbrequire(err_stop <= m_sql.len + 1); // "Unexpected end of input" marks the
+                                         // character directly after the end.
   const char* msg = NULL;
   bool print_statement = true;
   switch (m_context.m_err_state)
@@ -441,7 +504,7 @@ RonSQLPreparer::parse()
       }
     }
   }
-  throw runtime_error("Syntax error.");
+  throw RonSQLPermanentError("Syntax error.");
 }
 
 /*
@@ -495,31 +558,33 @@ RonSQLPreparer::load()
   if (ndb != NULL)
   {
     m_dict = ndb->getDictionary();
-    m_table = m_dict->getTable(m_context.ast_root.table.c_str());
-    soft_assert(m_table != NULL,
-                "Failed to get table. Note that RonSQL only supports tables with"
-                " ENGINE=NDB.");
+    m_table = DBG(m_dict->getTable(m_context.ast_root.table.c_str()));
+    require_sch(m_table != NULL,
+                "Failed to get table. Note that RonSQL only supports tables"
+                " with ENGINE=NDB.");
+
+    // Initialize schema fingerprint with table portion.
+    // Index contributions will be added in generate_scan_config_candidates()
+    // where indexes are already being iterated for query planning.
+    m_schema_fingerprint_hash =
+      DBG((Uint64)m_table->getObjectId()) * PRIME_TABLE_ID +
+      DBG((Uint64)m_table->getObjectVersion()) * PRIME_TABLE_VER;
+
     NdbAttrId* col_id_map = m_amalloc->alloc_exc<NdbAttrId>(m_columns.size());
     const NdbDictionary::Column** col_map =
         m_amalloc->alloc_exc<const NdbDictionary::Column*>(m_columns.size());
     for (Uint32 col_idx = 0; col_idx < m_columns.size(); col_idx++)
     {
-      const char* col_name = m_columns[col_idx].c_str();
+      const char* col_name = DBG(m_columns[DBG(col_idx)].c_str());
       const NdbDictionary::Column* col = m_table->getColumn(col_name);
       if (col == NULL)
       {
         err << "Failed to get column " << quoted_identifier(col_name) << "."
             << endl << "Note that column names are case sensitive." << endl;
-        // It's possible that the schema is stale. Since we haven't attempted
-        // any ndb operation yet, we have no error code from NDB and no way to
-        // tell whether this error is due to stale schema or a permanent error
-        // in the query. We unload the schema just in case it is stale, then
-        // throw a separate exception type so that the caller can decide whether
-        // to retry.
-        unload_schema();
-        throw ColumnNotFoundError();
+        throw RonSQLMaybeStaleSchema("Could not find column (column names are"
+                                     " case sensitive).");
       }
-      col_id_map[col_idx] = col->getAttrId();
+      col_id_map[col_idx] = DBG(col->getAttrId());
       col_map[col_idx] = col;
     }
     m_column_attrId_map = col_id_map;
@@ -602,14 +667,14 @@ RonSQLPreparer::generate_scan_config_candidates()
     return;
   }
   NdbDictionary::Dictionary::List index_list;
-  assert(m_dict != NULL);
-  assert(m_table != NULL);
-  soft_assert(m_dict->listIndexes(index_list, *m_table) == 0,
+  ndbrequire(m_dict != NULL);
+  ndbrequire(m_table != NULL);
+  require_sch(m_dict->listIndexes(index_list, *m_table) == 0,
               "Failed to list indexes.");
   for(Uint32 i = 0; i < index_list.count; i++) {
-    NdbDictionary::Dictionary::List::Element& index_obj =
+    NdbDictionary::Dictionary::List::Element& list_element =
       index_list.elements[i];
-    if (index_obj.state != NdbDictionary::Object::StateOnline) {
+    if (list_element.state != NdbDictionary::Object::StateOnline) {
       // listIndexes() returns indexes in all states while this function is
       // only interested in indexes that are online and usable. Filtering out
       // indexes in other states is particularly important when metadata is
@@ -617,16 +682,24 @@ RonSQLPreparer::generate_scan_config_candidates()
       // metadata related to the table hasn't been restored yet.
       continue;
     }
-    if (index_obj.type == NdbDictionary::Object::UniqueHashIndex) {
+    if (list_element.type == NdbDictionary::Object::UniqueHashIndex) {
       // We are not interested in hash indexes
       continue;
     }
-    soft_assert(index_obj.type == NdbDictionary::Object::OrderedIndex,
-                "Unexpected index type. Please report a bug.");
+    require_bug(list_element.type == NdbDictionary::Object::OrderedIndex,
+                "Unexpected index type.");
+
+    // Fetch index for both scan planning and fingerprint computation
     // todo getIndex or getIndexGlobal?
-    const NdbDictionary::Index* index = m_dict->getIndex(index_obj.name,
+    const NdbDictionary::Index* index = m_dict->getIndex(list_element.name,
                                                          *m_table);
-    soft_assert(index != NULL, "Failed to get index.");
+    require_sch(index != NULL, "Failed to get index.");
+
+    // Add this index's contribution to schema fingerprint hash
+    m_schema_fingerprint_hash +=
+      DBG((Uint64)index->getObjectId()) * PRIME_INDEX_ID +
+      DBG((Uint64)index->getObjectVersion()) * PRIME_INDEX_VER;
+
     int *condition_handling_map =
       m_amalloc->alloc_exc<int>(m_toplevel_conditions.size());
     for (Uint32 i = 0; i < m_toplevel_conditions.size(); i++) {
@@ -634,16 +707,14 @@ RonSQLPreparer::generate_scan_config_candidates()
     }
     int goodness = 0;
     unsigned col_count = index->getNoOfColumns();
-    soft_assert(col_count > 0,
-                "Index appears to have no columns. Please report a bug.");
+    require_bug(col_count > 0, "Index appears to have no columns.");
     bool later_columns_blocked = false;
     for(unsigned col_idx = 0;
         col_idx < col_count && !later_columns_blocked;
         col_idx++)
     {
       const NdbDictionary::Column* column = index->getColumn(col_idx);
-      soft_assert(column != NULL,
-                  "Index column object is NULL. Please report a bug.");
+      require_bug(column != NULL, "Index column object is NULL.");
       // todo Can getAttrId be used to match against the parent table?
       const char* column_name = column->getName();
       bool lbound_set = false, ubound_set = false;
@@ -667,7 +738,7 @@ RonSQLPreparer::generate_scan_config_candidates()
           continue;
         }
         ConditionalExpression* condition_identifier = ce->args.left;
-        assert(condition_identifier->op == T_IDENTIFIER);
+        ndbrequire(condition_identifier->op == T_IDENTIFIER);
         const char* condition_col_name =
           m_columns[condition_identifier->col_idx].c_str();
         if (strcmp(column_name, condition_col_name) == 0) {
@@ -713,12 +784,12 @@ RonSQLPreparer::compile()
   {
     if (m_agg->compile())
     {
-      assert(m_agg->getStatus() == AggregationAPICompiler::Status::COMPILED);
+      ndbrequire(m_agg->getStatus() == AggregationAPICompiler::Status::COMPILED);
     }
     else
     {
-      assert(m_agg->getStatus() == AggregationAPICompiler::Status::FAILED);
-      throw runtime_error("Failed to compile aggregation program.");
+      ndbrequire(m_agg->getStatus() == AggregationAPICompiler::Status::FAILED);
+      throw RonSQLPermanentError("Failed to compile aggregation program.");
     }
   }
   // Compile post-processing/printer program
@@ -741,10 +812,10 @@ RonSQLPreparer::determine_explain()
   case RonSQLExecParams::ExplainMode::ALLOW:
     break;
   case RonSQLExecParams::ExplainMode::FORBID:
-    soft_assert(!do_explain, "Tried to EXPLAIN with explain mode set to FORBID.");
+    require_prm(!do_explain, "Tried to EXPLAIN with explain mode set to FORBID.");
     break;
   case RonSQLExecParams::ExplainMode::REQUIRE:
-    soft_assert(do_explain, "Tried to query with explain mode set to REQUIRE.");
+    require_prm(do_explain, "Tried to query with explain mode set to REQUIRE.");
     break;
   case RonSQLExecParams::ExplainMode::REMOVE:
     // Execute as if EXPLAIN was not specified in the query, even if it was.
@@ -770,20 +841,16 @@ void
 RonSQLPreparer::execute()
 {
   DEB_TRACE();
-  soft_assert(m_status != Status::FAILED,
+  require_prm(m_status != Status::FAILED,
               "Attempting RonSQLPreparer::execute while in failed state.");
   DEB_TRACE();
-  assert(m_status == Status::PREPARED);
+  ndbrequire(m_status == Status::PREPARED);
   DEB_TRACE();
   Ndb* ndb = m_conf.ndb;
-  NdbTransaction* myTrans = NULL;
   DEB_TRACE();
-  try
-  {
-    if (m_do_explain)
-    {
-      switch (m_conf.output_format)
-      {
+  try {
+    if (m_do_explain) {
+      switch (m_conf.output_format) {
       case RonSQLExecParams::OutputFormat::TEXT:
         [[fallthrough]];
       case RonSQLExecParams::OutputFormat::TEXT_NOHEADER:
@@ -804,14 +871,15 @@ RonSQLPreparer::execute()
       return;
     }
     DEB_TRACE();
-    soft_assert(ndb != NULL, "Cannot query without ndb object.");
-    myTrans = ndb->startTransaction();
-    soft_assert(myTrans != NULL, "Failed to start transaction.");
+    require_prm(ndb != NULL, "Cannot query without ndb object.");
+    ndbrequire(m_trans == NULL);
+    m_trans = DBG(ndb->startTransaction());
+    require_run(m_trans != NULL, "Failed to start transaction.");
     // Since ndb exists, m_table should have been initialized in load()
-    assert(m_table != NULL);
+    ndbrequire(m_table != NULL);
     NdbAggregator aggregator(m_table);
-    programAggregator(&aggregator);
-    soft_assert(aggregator.Finalize(), "Failed to finalize aggregator.");
+    DBGV(programAggregator(&aggregator));
+    require_prm(aggregator.Finalize(), "Failed to finalize aggregator.");
     ScanConfig& sc = *m_scan_config;
     const NdbDictionary::Index* index = sc.index;
     bool has_filter = false;
@@ -823,52 +891,53 @@ RonSQLPreparer::execute()
     // End of general preparation
 
     if(index == NULL) {
-      DEB_TRACE();
       // Prepare and execute full table scan
       DEB_TRACE();
-      NdbScanOperation* myScanOp = myTrans->getNdbScanOperation(m_table);
-      soft_assert(myScanOp != NULL, "Failed to get scan operation.");
-      soft_assert(myScanOp->readTuples(NdbOperation::LockMode::LM_CommittedRead) == 0,
+      NdbScanOperation* myScanOp = DBG(m_trans->getNdbScanOperation(DBG(m_table)));
+      require_sch(myScanOp != NULL, "Failed to get scan operation.");
+      require_prm(DBG(myScanOp->readTuples(NdbOperation::LockMode::LM_CommittedRead)) == 0,
                   "Failed to initialize scan operation.");
       DEB_TRACE();
       if (has_filter)
       {
         DEB_TRACE();
         NdbScanFilter filter(myScanOp);
-        filter.setSqlCmpSemantics();
+        DBGV(filter.setSqlCmpSemantics());
         DEB_TRACE();
         apply_filter_top_level(&filter);
         DEB_TRACE();
       }
       DEB_TRACE();
-      soft_assert(myScanOp->setAggregationCode(&aggregator) >= 0,
+      require_run(DBG(myScanOp->setAggregationCode(&aggregator)) >= 0,
                   "Failed to set aggregation code.");
       DEB_TRACE();
-      soft_assert(myScanOp->DoAggregation() >= 0,
-                  "Failed to execute aggregation.");
+      require_run(DBG(myScanOp->DoAggregation()) >= 0,
+                  "Failed to execute table scan aggregation.");
       DEB_TRACE();
     } else {
       DEB_TRACE();
       // Prepare and execute index scan
       NdbIndexScanOperation *myIndexScanOp =
-        myTrans->getNdbIndexScanOperation(index);
+        DBG(m_trans->getNdbIndexScanOperation(DBG(index)));
+      require_run(myIndexScanOp != NULL,
+                  "Failed getting index scan operation.");
       Uint32 scanFlags = 0;
       // todo Decide whether NdbScanOperation::SF_OrderBy is good for performance
-      soft_assert(myIndexScanOp->readTuples(NdbOperation::LockMode::LM_CommittedRead,
-                                            scanFlags) == 0,
+      require_run(DBG(myIndexScanOp->readTuples(NdbOperation::LockMode::LM_CommittedRead,
+                                                DBG(scanFlags))) == 0,
                   "Failed to initialize index scan operation.");
       for (Uint32 i = 0; i < m_toplevel_conditions.size(); i++)
       {
-        int index_col_idx = sc.condition_handling_map[i];
+        int index_col_idx = DBG(sc.condition_handling_map[i]);
         if (index_col_idx == -1) {
           // This condition could not be configured for the index scan. It will
           // be applied as part of the filter instead.
           continue;
         }
         ConditionalExpression* ce = m_toplevel_conditions[i];
-        Uint32 condition_col_idx = ce->args.left->col_idx;
+        Uint32 condition_col_idx = DBG(ce->args.left->col_idx);
         ConditionalExpression* condition_constant = ce->args.right;
-        TokenKind op = ce->op;
+        TokenKind op = DBG(ce->op);
         NdbIndexScanOperation::BoundType bt;
         switch (op) {
         case T_EQUALS: bt = NdbIndexScanOperation::BoundType::BoundEQ; break;
@@ -888,22 +957,28 @@ RonSQLPreparer::execute()
         const char* colName = m_columns[condition_col_idx].c_str();
         raw_value rv = encode_constant(condition_constant,
                                        m_column_map[condition_col_idx]);
-        soft_assert(myIndexScanOp->setBound(colName, bt, rv.val) == 0,
+        require_run(DBG(myIndexScanOp->setBound(DBG(colName),
+                                                DBG(bt),
+                                                DBG(rv).val)) == 0,
                     "Failed to set bound for index scan.");
+        DEB_TRACE();
       }
+      DEB_TRACE();
       // todo Is this necessary after removing the multirange flag?
-      soft_assert(myIndexScanOp->end_of_bound(0) == 0,
+      require_run(DBG(myIndexScanOp->end_of_bound(0)) == 0,
                   "Failed to set end of bound.");
       if (has_filter)
       {
+        DEB_TRACE();
         NdbScanFilter filter(myIndexScanOp);
-        filter.setSqlCmpSemantics();
+        DBGV(filter.setSqlCmpSemantics());
         apply_filter_top_level(&filter);
       }
-      soft_assert(myIndexScanOp->setAggregationCode(&aggregator) >= 0,
+      DEB_TRACE();
+      require_run(DBG(myIndexScanOp->setAggregationCode(&aggregator)) >= 0,
                   "Failed to set aggregation code.");
-      soft_assert(myIndexScanOp->DoAggregation() >= 0,
-                  "Failed to execute aggregation.");
+      require_run(DBG(myIndexScanOp->DoAggregation()) >= 0,
+                  "Failed to execute index scan aggregation.");
     }
     DEB_TRACE();
 
@@ -911,120 +986,192 @@ RonSQLPreparer::execute()
     m_resultprinter->print_result(&aggregator, m_conf.out_stream);
     DEB_TRACE();
 
-    ndb->closeTransaction(myTrans);
-    DEB_TRACE();
+    cleanup_trans();
   }
-  catch (const std::exception& e)
-  {
-    std::basic_ostream<char>& err = *m_conf.err_stream;
+  catch (...) {
+    handle_ronsql_exception(std::current_exception());
+  }
+}
 
+void
+RonSQLPreparer::cleanup_trans() {
+  if (m_trans) {
+    Ndb* ndb = m_conf.ndb;
+    ndbrequire(ndb);
+    DBGV(ndb->closeTransaction(m_trans));
+    m_trans = NULL;
+  }
+}
+
+std::ostream& operator<<(std::ostream& os, const NdbError& err) {
+  const char* err_status_msg =
+    ndberror_status_message((ndberror_status)err.status);
+  const char* err_class_msg =
+    ndberror_classification_message((ndberror_classification)
+                                    err.classification);
+  os << "NDB " << err_status_msg << " " << err.code << ", " << err_class_msg;
+  if (err.mysql_code != -1) {
+    os << ", MySQL " << err.mysql_code;
+  }
+  if (err.message != NULL) {
+    os << ": " << err.message;
+  }
+  if (err.details != NULL) {
+    os << " (" << err.details << ")";
+  }
+  return os;
+}
+
+void
+RonSQLPreparer::handle_ronsql_exception(std::exception_ptr eptr) {
+  std::basic_ostream<char>& err = *m_conf.err_stream;
+  try {
+    std::rethrow_exception(eptr);
+  }
+  catch (const RonSQLRetryableError& e) {
+    // This exception type inherits from std::runtime_error, but we don't want
+    // it caught below.
+    DEB_TRACE(); err << "Error handling: RRE\n";
+    cleanup_trans();
+    throw;
+  }
+  catch (const RonSQLPermanentError& e) {
+    // This exception type inherits from std::runtime_error, but we don't want
+    // it caught below.
+    DEB_TRACE(); err << "Error handling: RPE\n";
+    cleanup_trans();
+    throw;
+  }
+  catch (const RonSQLMaybeStaleSchema& e) {
+    // Attempt to unload then reload the schema and detect whether the version
+    // changed. If so, rethrow as RonSQLRetryableError, otherwise as
+    // RonSQLPermanentError.
+    cleanup_trans();
+    err << "Error handling: RMS";
+    if (unload_schema(true)) {
+      DEB_TRACE(); err << "->RRE\n";
+      throw RonSQLRetryableError(e.what());
+    }
+    DEB_TRACE(); err << "->RPE\n";
+    throw RonSQLPermanentError(e.what());
+  }
+  catch (const std::runtime_error& e)
+  {
+    Ndb* ndb = m_conf.ndb;
+    err << "Error handling: SRE";
     // Fetch error
-    DEB_TRACE();
     NdbError ndb_err;
-    if (myTrans != NULL)
-    {
-      ndb_err = myTrans->getNdbError();
-      ndb->closeTransaction(myTrans);
+    if (m_trans != NULL) {
+      DEB_TRACE(); err << ",te";
+      ndbrequire(ndb != NULL);
+      ndb_err = m_trans->getNdbError();
+    } else if (ndb != NULL) {
+      DEB_TRACE(); err << ",oe";
+      ndb_err = DBG(ndb->getNdbError());
+    } else {
+      DEB_TRACE(); err << ",nn\n";
+      cleanup_trans();
+      throw RonSQLPermanentError("No NDB object");
     }
-    else if (ndb != NULL)
-    {
-      ndb_err = ndb->getNdbError();
-    }
-    else
-    {
-      DEB_TRACE();
-      throw;
-    }
-
+    cleanup_trans();
+    bool temporary = false;
     // Decide whether to unload and whether the error is temporary
-    if (/*Invalid schema object version*/
-        (ndb_err.mysql_code == HA_ERR_TABLE_DEF_CHANGED &&
-         ndb_err.code == 241)) {
-      unload_schema();
-      err << "Retry after unload is possible" << endl;
-      throw TemporaryError();
+    if (ndb_err.classification == NdbError::Classification::SchemaError) {
+      DEB_TRACE(); err << ",rl";
+      // Try to reload the schema. If changes were detected then we treat the
+      // error as temporary.
+      temporary = unload_schema(true);
+    } else if (ndb_err.status == NdbError::Status::TemporaryError ||
+               ndb_err.mysql_code == HA_ERR_LOCK_WAIT_TIMEOUT) {
+      DEB_TRACE(); err << ",nu";
+      // Treat error as temporary, no unloading of schema.
+      temporary = true;
     }
-    if (/*Table is being dropped*/
-               (ndb_err.mysql_code == HA_ERR_NO_SUCH_TABLE &&
-                ndb_err.code == 283)) {
-      unload_schema();
-    }
-    if (/*Table not defined in transaction coordinator*/
-               (ndb_err.mysql_code == HA_ERR_TABLE_DEF_CHANGED &&
-                ndb_err.code == 284)) {
-      unload_schema();
-      err << "Retry after unload is possible" << endl;
-      throw TemporaryError();
-    }
-    if (/*No such table existed*/
-               (ndb_err.mysql_code == HA_ERR_NO_SUCH_TABLE &&
-                ndb_err.code == 709)) {
-      unload_schema();
-    }
-    if (/*No such table existed*/
-               (ndb_err.mysql_code == HA_ERR_NO_SUCH_TABLE &&
-                ndb_err.code == 723)) {
-      unload_schema();
-    }
-    if (/*Table is being dropped*/
-               (ndb_err.mysql_code == HA_ERR_NO_SUCH_TABLE &&
-                ndb_err.code == 1226)) {
-      unload_schema();
-    }
-
-    switch (ndb_err.status)
-    {
-    case NdbError::Status::Success:
-      assert(ndb_err.code == 0);
-      // Rethrow since error not from ndb
+    // Now that the ndb error is described on err stream, we'll rethrow the
+    // exception with a new error type.
+    if (temporary) {
       DEB_TRACE();
-      throw;
-    case NdbError::Status::TemporaryError:
-      err << "NDB Temporary error: " << ndb_err.code << " " << ndb_err.message
-          << endl
-          << "Caught exception, probably caused by the temporary error above: "
-          << e.what() << endl;
-      DEB_TRACE();
-      throw TemporaryError();
-    case NdbError::Status::PermanentError:
-      err << "NDB Permanent error " << ndb_err.code << ": " << ndb_err.message
-          << endl;
-      // Now that the ndb error is described on err stream, we'll rethrow the
-      // original exception.
-      DEB_TRACE();
-      throw;
-    case NdbError::Status::UnknownResult:
-      err << "NDB Unknown result: " << ndb_err.code << ": " << ndb_err.message
-          << endl;
-      // Now that the ndb error is described on err stream, we'll rethrow the
-      // original exception.
-      DEB_TRACE();
-      throw;
+      err << "->RRE\n" << ndb_err << '\n';
+      throw RonSQLRetryableError(e.what());
     }
-    // Unreachable
     DEB_TRACE();
-    abort();
+    err << "->RPE\n" << ndb_err << '\n';
+    throw RonSQLPermanentError(e.what());
   }
-  catch (...)
-  {
+  catch (...) {
     // All exceptions thrown should be instances of runtime_error.
     DEB_TRACE();
     abort();
   }
 }
 
-void
-RonSQLPreparer::unload_schema() {
+bool
+RonSQLPreparer::unload_schema(bool reload) {
+  DEB_TRACE();
   Ndb* ndb = m_conf.ndb;
-  const char* table = m_context.ast_root.table.c_str();
-  NdbDictionary::Dictionary *dict = ndb->getDictionary();
-  NdbDictionary::Dictionary::List indexes;
-  dict->listIndexes(indexes, table);
-  for (unsigned i = 0; i < indexes.count; i++) {
-    dict->invalidateIndex(indexes.elements[i].name, table);
+  if (ndb == NULL) {
+    DEB_TRACE();
+    return false;
   }
-  dict->invalidateTable(table);
+  const char* table_name = DBG(m_context.ast_root.table.c_str());
+  const NdbDictionary::Table* old_table = m_table;
+  Uint64 old_schema_fingerprint_hash = m_schema_fingerprint_hash;
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  NdbDictionary::Dictionary::List index_list;
+  dict->listIndexes(index_list, table_name);
+  // Unload indexes
+  for (unsigned i = 0; i < index_list.count; i++) {
+    dict->invalidateIndex(DBG(index_list.elements[i].name), table_name);
+  }
+  // Unload table
+  dict->invalidateTable(table_name);
+  m_table = NULL;
+  m_schema_fingerprint_hash = 0;
+  if (!reload) {
+    return false;
+  }
+  // Reload table
+  const NdbDictionary::Table* new_table = DBG(dict->getTable(table_name));
+  Uint64 new_schema_fingerprint_hash = 0;
+  if (new_table != NULL) {
+    // Compute new schema fingerprint: table + all indexes.
+    // This duplicates the logic from load() and
+    // generate_scan_config_candidates(), but we're in the error/reload path so
+    // this rarely executes.
+    new_schema_fingerprint_hash =
+      DBG((Uint64)new_table->getObjectId()) * PRIME_TABLE_ID +
+      DBG((Uint64)new_table->getObjectVersion()) * PRIME_TABLE_VER;
+    // Match logic in generate_scan_config_candidates filter: If there is a
+    // WHERE clause, then include online ordered indexes in the fingerprint.
+    if (m_toplevel_conditions.size() > 0) {
+      index_list.clear();
+      dict->listIndexes(index_list, *new_table);
+      for (unsigned i = 0; i < index_list.count; i++) {
+        NdbDictionary::Dictionary::List::Element& list_element =
+          index_list.elements[i];
+        if (list_element.state != NdbDictionary::Object::StateOnline ||
+            list_element.type == NdbDictionary::Object::UniqueHashIndex) {
+          continue;
+        }
+        require_bug(list_element.type == NdbDictionary::Object::OrderedIndex,
+                    "Unexpected index type.");
+        const NdbDictionary::Index* index =
+            dict->getIndex(list_element.name, *new_table);
+        if (index != NULL) {
+          new_schema_fingerprint_hash +=
+            DBG((Uint64)index->getObjectId()) * PRIME_INDEX_ID +
+            DBG((Uint64)index->getObjectVersion()) * PRIME_INDEX_VER;
+        }
+      }
+    }
+  }
+  if (old_table != NULL && new_table != NULL) {
+    return DBG(old_schema_fingerprint_hash != new_schema_fingerprint_hash);
+  }
+  return DBG(old_table != NULL || new_table != NULL);
 }
+
+constexpr const char* filter_fail = "Failed to apply filter.";
 
 void
 RonSQLPreparer::apply_filter_top_level(NdbScanFilter* filter)
@@ -1036,82 +1183,93 @@ RonSQLPreparer::apply_filter_top_level(NdbScanFilter* filter)
    * unnecessary in the special case of exactly one condition of type T_AND or
    * T_OR.
    */
-  soft_assert(filter->begin(NdbScanFilter::AND) >= 0,
-              "Failed to apply filter.");
+  require_tmp(DBG(filter->begin(NdbScanFilter::AND)) >= 0, filter_fail);
   bool has_filter = false;
   for (Uint32 i = 0; i < m_toplevel_conditions.size(); i++) {
     if (m_scan_config->condition_handling_map[i] == -1) {
       has_filter = true;
-      soft_assert(apply_filter(filter, m_toplevel_conditions[i]),
-                  "Failed to apply filter.");
+      apply_filter(filter, m_toplevel_conditions[i]);
     }
   }
-  assert(has_filter);
-  soft_assert(filter->end() >= 0, "Failed to apply filter.");
+  ndbrequire(has_filter);
+  require_sch(DBG(filter->end()) >= 0, filter_fail);
 }
 
-bool
+void
 RonSQLPreparer::apply_filter(NdbScanFilter* filter,
                              struct ConditionalExpression* ce)
 {
-  assert (ce != NULL);
+  ndbrequire(ce != NULL);
   switch (ce->op)
   {
   case T_OR:
-    return (filter->begin(NdbScanFilter::OR) >= 0 &&
-            apply_filter(filter, ce->args.left) &&
-            apply_filter(filter, ce->args.right) &&
-            filter->end() >= 0);
+    require_tmp(DBG(filter->begin(NdbScanFilter::OR)) >= 0, filter_fail);
+    apply_filter(filter, ce->args.left);
+    apply_filter(filter, ce->args.right);
+    require_sch(DBG(filter->end()) >= 0, filter_fail);
+    break;
   case T_XOR:
     abort(); // This should have been "simplified" away
   case T_AND:
-    return (filter->begin(NdbScanFilter::AND) >= 0 &&
-            apply_filter(filter, ce->args.left) &&
-            apply_filter(filter, ce->args.right) &&
-            filter->end() >= 0);
+    require_tmp(DBG(filter->begin(NdbScanFilter::AND)) >= 0, filter_fail);
+    apply_filter(filter, ce->args.left);
+    apply_filter(filter, ce->args.right);
+    require_sch(DBG(filter->end()) >= 0, filter_fail);
+    break;
   case T_NOT:
-    return (filter->begin(NdbScanFilter::NAND) >= 0 &&
-            apply_filter(filter, ce->args.left) &&
-            filter->end() >= 0);
+    require_tmp(DBG(filter->begin(NdbScanFilter::NAND)) >= 0, filter_fail);
+    apply_filter(filter, ce->args.left);
+    require_sch(DBG(filter->end()) >= 0, filter_fail);
+    break;
   case T_EQUALS:
-    return apply_filter_cmp(filter, NdbScanFilter::COND_EQ, ce->args.left, ce->args.right);
+    apply_filter_cmp(filter, NdbScanFilter::COND_EQ, ce->args.left, ce->args.right);
+    break;
   case T_GE:
-    return apply_filter_cmp(filter, NdbScanFilter::COND_GE, ce->args.left, ce->args.right);
+    apply_filter_cmp(filter, NdbScanFilter::COND_GE, ce->args.left, ce->args.right);
+    break;
   case T_GT:
-    return apply_filter_cmp(filter, NdbScanFilter::COND_GT, ce->args.left, ce->args.right);
+    apply_filter_cmp(filter, NdbScanFilter::COND_GT, ce->args.left, ce->args.right);
+    break;
   case T_LE:
-    return apply_filter_cmp(filter, NdbScanFilter::COND_LE, ce->args.left, ce->args.right);
+    apply_filter_cmp(filter, NdbScanFilter::COND_LE, ce->args.left, ce->args.right);
+    break;
   case T_LT:
-    return apply_filter_cmp(filter, NdbScanFilter::COND_LT, ce->args.left, ce->args.right);
+    apply_filter_cmp(filter, NdbScanFilter::COND_LT, ce->args.left, ce->args.right);
+    break;
   case T_NOT_EQUALS:
-    return apply_filter_cmp(filter, NdbScanFilter::COND_NE, ce->args.left, ce->args.right);
+    apply_filter_cmp(filter, NdbScanFilter::COND_NE, ce->args.left, ce->args.right);
+    break;
   default:
-    throw runtime_error("Non-boolean term in WHERE condition");
+    throw RonSQLPermanentError("Non-boolean term in WHERE condition");
   }
 }
 
-bool
+void
 RonSQLPreparer::apply_filter_cmp(NdbScanFilter* filter,
-                                   NdbScanFilter::BinaryCondition cond,
-                                   struct ConditionalExpression* left,
-                                   struct ConditionalExpression* right)
+                                 NdbScanFilter::BinaryCondition cond,
+                                 struct ConditionalExpression* left,
+                                 struct ConditionalExpression* right)
 {
   if (left->op != T_IDENTIFIER) {
-    throw runtime_error("For comparison operators, at least one of the operands must be a column name");
+    throw RonSQLPermanentError("For comparison operators, at least one of the"
+                               " operands must be a column name");
   }
-  if (right->op == T_IDENTIFIER)
-  {
-    assert(m_column_attrId_map != NULL);
-    return (filter->cmp(cond,
-                        m_column_attrId_map[left->col_idx],
-                        m_column_attrId_map[right->col_idx]) >= 0);
+  if (right->op == T_IDENTIFIER) {
+    ndbrequire(m_column_attrId_map != NULL);
+    require_sch(DBG(filter->cmp(DBG(cond),
+                                DBG(m_column_attrId_map[left->col_idx]),
+                                DBG(m_column_attrId_map[right->col_idx]))) >= 0,
+                filter_fail);
+    return;
   }
-  assert(m_column_attrId_map != NULL);
-  assert(m_column_map != NULL);
+  ndbrequire(m_column_attrId_map != NULL);
+  ndbrequire(m_column_map != NULL);
   raw_value rv = encode_constant(right, m_column_map[left->col_idx]);
-  return (filter->cmp(cond,
-                      m_column_attrId_map[left->col_idx],
-                      rv.val, rv.len) >= 0);
+  require_sch(DBG(filter->cmp(DBG(cond),
+                              DBG(m_column_attrId_map[left->col_idx]),
+                              DBG(rv).val,
+                              rv.len)) >= 0,
+              filter_fail);
 }
 
 void
@@ -1120,17 +1278,17 @@ rondb_str_to_mysql_time(MYSQL_TIME *mt, LexString str) {
   MYSQL_TIME_STATUS status;
   bool err = str_to_datetime(str.str, str.len, mt, flags, &status);
   if (unlikely(err)) {
-    throw runtime_error("Failed to interpret string literal as a date or"
-                        " timestamp");
+    throw RonSQLMaybeStaleSchema("Failed to interpret string literal as a date"
+                                 " or timestamp");
   }
   if (status.warnings) {
-    throw runtime_error("String literal interpreted as date or timestamp with"
-                        " warnings");
+    throw RonSQLMaybeStaleSchema("String literal interpreted as date or"
+                                 " timestamp with warnings");
   }
   if (status.m_deprecation.m_kind !=
       MYSQL_TIME_STATUS::DEPRECATION::DEPR_KIND::DP_NONE) {
-    throw runtime_error("String literal interpreted as date or timestamp with"
-                        " weird delimiters or spaces");
+    throw RonSQLMaybeStaleSchema("String literal interpreted as date or"
+                                 " timestamp with weird delimiters or spaces");
   }
   // todo test nanosecond rounding, see status->nanoseconds
 }
@@ -1183,33 +1341,36 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
   case NdbDictionary::Column::Type::Timestamp2:
     tk = TIME; binlen = 7; timetype = MYSQL_TIMESTAMP_DATETIME; break;
   default:
-    throw runtime_error("Unsupported column type in comparison condition."
-                        " Supported types are integer types, VARCHAR, DATE,"
-                        " DATETIME and TIMESTAMP.");
+    throw RonSQLMaybeStaleSchema("Unsupported column type in comparison"
+                                 " condition. Supported types are integer"
+                                 " types, VARCHAR, DATE, DATETIME and"
+                                 " TIMESTAMP.");
   }
   if (op == T_INT && tk == INT) {
     if (ce->constant_integer < min || ce->constant_integer > max) {
-      throw runtime_error("Integer type column compared to an integer literal"
-                          " out of range.");
+      throw RonSQLMaybeStaleSchema("Integer type column compared to an integer"
+                                   " literal out of range.");
     }
     Int64* val = m_amalloc->alloc_exc<Int64>(1);
     *val = ce->constant_integer;
     return raw_value{ val, static_cast<Uint32>(bytes) };
   }
   if (tk == INT) {
-    throw runtime_error("Integer type column compared to an incompatible value."
-                        " Only integer literals are supported.");
+    throw RonSQLMaybeStaleSchema("Integer type column compared to an"
+                                 " incompatible value. Only integer literals"
+                                 " are supported.");
   }
   if (op == T_INT) {
-    throw runtime_error("Non-integer type column compared to an integer"
-                        " literal.");
+    throw RonSQLMaybeStaleSchema("Non-integer type column compared to an"
+                                 " integer literal.");
   }
   if (op == T_STRING && tk == STR) {
     if (ce->string.len > static_cast<size_t>(maxlen)) {
-      throw runtime_error("VARCHAR column compared to a string literal that is"
-                          " too long. Note that if the column length is less"
-                          " than 256, then the length of the string literal"
-                          " must also be less than 256.");
+      throw RonSQLMaybeStaleSchema("VARCHAR column compared to a string literal"
+                                   " that is too long. Note that if the column"
+                                   " length is less than 256, then the length"
+                                   " of the string literal must also be less"
+                                   " than 256.");
     }
     Uint8* val = m_amalloc->alloc_exc<Uint8>(lenbytes + ce->string.len);
     memcpy(val, &ce->string.len, lenbytes);
@@ -1217,8 +1378,8 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
     return raw_value{ val, static_cast<Uint32>(lenbytes + ce->string.len) };
   }
   if (tk == STR) {
-    throw runtime_error("VARCHAR column compared to an incompatible value. Only"
-                        " string literals are supported.");
+    throw RonSQLMaybeStaleSchema("VARCHAR column compared to an incompatible"
+                                 " value. Only string literals are supported.");
   }
   if (tk == TIME) {
     MYSQL_TIME mt;
@@ -1227,17 +1388,19 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
     } else if (op == I_MYSQL_TIME) {
       mt = ce->mysql_time;
     } else {
-      throw runtime_error("DATE/DATETIME/TIMESTAMP column compared to an"
-                          " incompatible value. Only string literals and calls"
-                          " to DATE_ADD and DATE_SUB are supported.");
+      throw RonSQLMaybeStaleSchema("DATE/DATETIME/TIMESTAMP column compared to"
+                                   " an incompatible value. Only string"
+                                   " literals and calls to DATE_ADD and"
+                                   " DATE_SUB are supported.");
     }
     uchar* bindate = m_amalloc->alloc_exc<uchar>(binlen);
     int precision = col->getPrecision();
     int warnings = 0;
     if (unlikely(mt.time_type != timetype)) {
-      throw runtime_error("DATE/DATETIME/TIMESTAMP column compared to a valid"
-                          " date/time constant of the wrong type. Note that"
-                          " presence/absence of the time part must match.");
+      throw RonSQLMaybeStaleSchema("DATE/DATETIME/TIMESTAMP column compared to"
+                                   " a valid date/time constant of the wrong"
+                                   " type. Note that presence/absence of the"
+                                   " time part must match.");
     }
     switch (type) {
     case NdbDictionary::Column::Type::Date: {
@@ -1248,8 +1411,8 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
       my_datetime_adjust_frac(&mt, precision, &warnings, true);
       if (unlikely(warnings != 0)) {
         // Actually won't ever happen when truncate argument is set
-        throw runtime_error("Perhaps an invalid DATETIME constant. Please"
-                            " report a bug.");
+        throw RonSQLMaybeStaleSchema("Perhaps an invalid DATETIME constant."
+                                     " Please report a bug.");
       }
       longlong numericDateTime = TIME_to_longlong_datetime_packed(mt);
       my_datetime_packed_to_binary(numericDateTime, bindate, precision);
@@ -1271,15 +1434,16 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
       time_info.tm_isdst = -1; // Daylight saving t
       epoch = timegm(&time_info);
       if (unlikely(epoch <= 0 || epoch > 2147483647)) {
-        throw runtime_error("TIMESTAMP column compared to a constant out of"
-                            " range (valid range is '1970-01-01 00:00:01' UTC"
-                            " to '2038-01-19 03:14:07' UTC)");
+        throw RonSQLMaybeStaleSchema("TIMESTAMP column compared to a constant"
+                                     " out of range (valid range is '1970-01-01"
+                                     " 00:00:01' UTC to '2038-01-19 03:14:07'"
+                                     " UTC)");
       }
       my_datetime_adjust_frac(&mt, precision, &warnings, true);
       if (unlikely(warnings != 0)) {
         // Actually won't ever happen when truncate argument is set
-        throw runtime_error("Perhaps an invalid TIMESTAMP constant. Please"
-                            " report a bug.");
+        throw RonSQLMaybeStaleSchema("Perhaps an invalid TIMESTAMP constant."
+                                     " Please report a bug.");
       }
       // On Mac timeval.tv_usec is Int32 and on linux it is Int64.
       // Inorder to be compatible we cast l_time.second_part to Int32
@@ -1294,7 +1458,7 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
     }
     return raw_value{bindate, binlen};
   }
-  throw runtime_error("Bug in RonSQLPreparer::encode_constant");
+  throw RonSQLPermanentError("Bug in RonSQLPreparer::encode_constant");
 }
 
 struct ConditionalExpression*
@@ -1351,11 +1515,11 @@ RonSQLPreparer::simplify_ce(struct ConditionalExpression* ce, int maxdepth)
       } else if (date_ce->op == I_MYSQL_TIME) {
         ltime = date_ce->mysql_time;
       } else {
-        throw runtime_error("The first argument to DATE_ADD and DATE_SUB must be a string literal or another call to DATE_ADD or DATE_SUB");
+        throw RonSQLPermanentError("The first argument to DATE_ADD and DATE_SUB must be a string literal or another call to DATE_ADD or DATE_SUB");
       }
       if (interval_ce->op != T_INTERVAL)
       {
-        throw runtime_error("The second argument to DATE_ADD and DATE_SUB must be an INTERVAL literal");
+        throw RonSQLPermanentError("The second argument to DATE_ADD and DATE_SUB must be an INTERVAL literal");
       }
       ConditionalExpression* amount_ce = interval_ce->interval.arg;
       Int64 constant_integer;
@@ -1369,12 +1533,12 @@ RonSQLPreparer::simplify_ce(struct ConditionalExpression* ce, int maxdepth)
           char* endptr;
           constant_integer = strtoll(string_literal, &endptr, 10);
           if (*endptr != '\0') {
-            throw runtime_error("Failed to convert INTERVAL string literal amount to an integer");
+            throw RonSQLPermanentError("Failed to convert INTERVAL string literal amount to an integer");
           }
         }
         break;
       default:
-        throw runtime_error("INTERVAL literal requires an amount in the form of an integer literal or a string literal representing an integer");
+        throw RonSQLPermanentError("INTERVAL literal requires an amount in the form of an integer literal or a string literal representing an integer");
       }
       // Member variables in Interval are unsigned long int or unsigned long long int
       if (constant_integer < 0) {
@@ -1422,7 +1586,7 @@ RonSQLPreparer::simplify_ce(struct ConditionalExpression* ce, int maxdepth)
         interval_type = INTERVAL_YEAR;
         break;
       default:
-        throw runtime_error("INTERVAL literals support only interval types MICROSECOND, SECOND, MINUTE, HOUR, DAY, WEEK, MONTH, QUARTER, and YEAR");
+        throw RonSQLPermanentError("INTERVAL literals support only interval types MICROSECOND, SECOND, MINUTE, HOUR, DAY, WEEK, MONTH, QUARTER, and YEAR");
       }
       int warnings = 0;
       bool err = date_add_interval(&ltime,
@@ -1430,7 +1594,7 @@ RonSQLPreparer::simplify_ce(struct ConditionalExpression* ce, int maxdepth)
                                    interval,
                                    &warnings);
       if (err || warnings) {
-        throw runtime_error("DATE_ADD or DATE_SUB failed");
+        throw RonSQLPermanentError("DATE_ADD or DATE_SUB failed");
       }
       ConditionalExpression* ret = m_amalloc->alloc_exc<ConditionalExpression>(1);
       ret->op = I_MYSQL_TIME;
@@ -1516,13 +1680,7 @@ RonSQLPreparer::simplify_ce(struct ConditionalExpression* ce, int maxdepth)
 }
 
 #define programAggregator_do_or_fail(CALL) \
-  do { \
-    if (!(CALL)) \
-    { \
-      err << "Failed writing aggregation program at " #CALL << endl; \
-      throw runtime_error("Failed writing aggregation program"); \
-    } \
-  } while (0)
+  require_prm(CALL, "Failed writing aggregation program. Please report a bug.")
 void
 RonSQLPreparer::programAggregator(NdbAggregator* aggregator)
 {
@@ -1555,7 +1713,7 @@ RonSQLPreparer::programAggregator(NdbAggregator* aggregator)
         err << "Failed writing aggregation program "
                "when attempting to load column "
             << quoted_identifier(m_columns[src]) << endl;
-        throw runtime_error("Failed writing aggregation program");
+        throw RonSQLMaybeStaleSchema("Failed writing aggregation program");
       }
       break;
     }
@@ -1679,8 +1837,8 @@ RonSQLPreparer::print()
   struct ConditionalExpression* where = ast_root.where_expression;
   if (where != NULL)
   {
-    out << "WHERE\n";
-    print(where, LexString{NULL, 0});
+    out << "WHERE\n  ";
+    print(where, LexString{"  ", 2});
   }
   struct GroupbyColumns* groupby = ast_root.groupby_columns;
   if (groupby != NULL)
@@ -1730,45 +1888,68 @@ RonSQLPreparer::print()
     ScanConfig& sc = *m_scan_config;
     if (sc.index == NULL) {
       out << "Execute as table scan.\n";
+      Uint32 cond_cnt = m_toplevel_conditions.size();
+      out << (cond_cnt ?"FILTERS:\n" : "No filters.\n");
+      for (Uint32 i = 0; i < cond_cnt; i++) {
+        out << (i+1 == cond_cnt ? "╰─ " : "├─ ");
+        print(m_toplevel_conditions[i],
+              i + 1 == cond_cnt
+              ? LexString{"   ", 3}
+              : LexString{"│  ", 5});
+      }
     } else {
       out << "Execute as index scan.\n"
           << "Index: " << quoted_identifier(sc.index->getName()) << "(";
       for (Uint32 i = 0; i < sc.index->getNoOfColumns(); i++) {
         if (i > 0) out << ", ";
-        out << sc.index->getColumn(i)->getName();
+        out << quoted_identifier(sc.index->getColumn(i)->getName());
       }
       out << ")\nWith goodness " << sc.goodness << " it's the best of "
           << m_scan_config_candidates.size() << " options.\n";
-    }
-    Uint32 cond_cnt = m_toplevel_conditions.size();
-    if (cond_cnt) {
-      out << "There are " << cond_cnt << " top-level conditions:\n";
-    } else {
-      out << "There are no top-level conditions.\n";
-    }
-    for (Uint32 i = 0; i < cond_cnt; i++) {
-      out << "- ";
-      int handling = sc.condition_handling_map[i];
-      Uint32 prefixlen;
-      if (handling == -1) {
-        out << "FILTER: ";
-        prefixlen = 10;
-      } else {
-        out << "INDEX[" << handling << "]: ";
-        prefixlen = 12;
-        if (handling > 9) {
-          prefixlen++;
+      Uint32 cond_cnt = m_toplevel_conditions.size();
+      ndbrequire(cond_cnt > 0);
+      Uint32 filter_cnt = 0;
+      for (Uint32 i = 0; i < cond_cnt; i++) {
+        if (sc.condition_handling_map[i] == -1) {
+          filter_cnt++;
         }
       }
-      print(m_toplevel_conditions[i], LexString{"             ", prefixlen});
+      Uint32 bound_cnt = cond_cnt - filter_cnt;
+      ndbrequire(bound_cnt > 0);
+      out << "CONDITIONS (" << bound_cnt << " bound"
+          << (bound_cnt == 1 ? "" : "s");
+      if (filter_cnt > 0) {
+        out << " and " << filter_cnt << " filter"
+            << (filter_cnt == 1 ? "" : "s");
+      }
+      out << "):\n";
+      for (Uint32 i = 0; i < cond_cnt; i++) {
+        out << (i+1 == cond_cnt ? "╰─ " : "├─ ");
+        int handling = sc.condition_handling_map[i];
+        Uint32 prefixlen;
+        if (handling == -1) {
+          out << "FILTER: ";
+          prefixlen = 11;
+        } else {
+          out << "INDEX[" << handling << "]: ";
+          prefixlen = 13;
+          if (handling > 9) {
+            prefixlen++;
+          }
+        }
+        print(m_toplevel_conditions[i],
+              i + 1 == cond_cnt
+              ? LexString{"              ", prefixlen}
+              : LexString{"│             ", prefixlen + 2});
+      }
     }
   }
 
   out << '\n';
 
   // Print post-processing information
-  assert(m_resultprinter != NULL);
-  assert(m_conf.out_stream != NULL);
+  ndbrequire(m_resultprinter != NULL);
+  ndbrequire(m_conf.out_stream != NULL);
   m_resultprinter->explain(m_conf.out_stream);
 
   out << '\n';
@@ -1842,10 +2023,10 @@ RonSQLPreparer::print(struct ConditionalExpression* ce,
   case T_IS:
     {
       out << "IS\n"
-          << prefix << "+- ";
-      LexString prefix_arg = prefix.concat(LexString{"|  ", 3}, m_amalloc);
+          << prefix << "├─ ";
+      LexString prefix_arg = prefix.concat(LexString{"│  ", 5}, m_amalloc);
       print(ce->is.arg, prefix_arg);
-      out << prefix << "\\- "
+      out << prefix << "╰─ "
           << (ce->is.null ? "NULL\n" : "NOT NULL\n");
       return;
     }
@@ -1868,7 +2049,7 @@ RonSQLPreparer::print(struct ConditionalExpression* ce,
     if (ce->args.left == NULL)
     {
       out << "NEGATION\n"
-          << prefix << "\\- ";
+          << prefix << "╰─ ";
       LexString prefix_arg = prefix.concat(LexString{"   ", 3}, m_amalloc);
       print(ce->args.right, prefix_arg);
       return;
@@ -1897,10 +2078,10 @@ RonSQLPreparer::print(struct ConditionalExpression* ce,
   case T_INTERVAL:
     {
       out << "INTERVAL\n"
-          << prefix << "+- ";
-      LexString prefix_arg = prefix.concat(LexString{"|  ", 3}, m_amalloc);
+          << prefix << "├─ ";
+      LexString prefix_arg = prefix.concat(LexString{"│  ", 5}, m_amalloc);
       print(ce->interval.arg, prefix_arg);
-      out << prefix << "\\- " <<
+      out << prefix << "╰─ " <<
         interval_type_name(ce->interval.interval_type) << '\n';
       return;
     }
@@ -1913,9 +2094,9 @@ RonSQLPreparer::print(struct ConditionalExpression* ce,
   case T_EXTRACT:
     {
     out << "EXTRACT\n"
-        << prefix << "+- "
+        << prefix << "├─ "
         << interval_type_name(ce->extract.interval_type) << '\n'
-        << prefix << "\\- ";
+        << prefix << "╰─ ";
       LexString prefix_arg = prefix.concat(LexString{"   ", 3}, m_amalloc);
       print(ce->extract.arg, prefix_arg);
       return;
@@ -1927,17 +2108,17 @@ RonSQLPreparer::print(struct ConditionalExpression* ce,
   if (prefix_op)
   {
     out << opstr << '\n'
-        << prefix << "\\- ";
+        << prefix << "╰─ ";
     LexString prefix_arg = prefix.concat(LexString{"   ", 3}, m_amalloc);
     print(ce->args.left, prefix_arg);
   }
   else
   {
     out << opstr << '\n'
-        << prefix << "+- ";
-    LexString prefix_left = prefix.concat(LexString{"|  ", 3}, m_amalloc);
+        << prefix << "├─ ";
+    LexString prefix_left = prefix.concat(LexString{"│  ", 5}, m_amalloc);
     print(ce->args.left, prefix_left);
-    out << prefix << "\\- ";
+    out << prefix << "╰─ ";
     LexString prefix_right = prefix.concat(LexString{"   ", 3}, m_amalloc);
     print(ce->args.right, prefix_right);
   }
@@ -1990,7 +2171,7 @@ RonSQLPreparer::Context::column_name_to_idx(LexCString col_name)
 LexCString
 RonSQLPreparer::column_idx_to_name(Uint32 col_idx)
 {
-  assert(col_idx < m_columns.size());
+  ndbrequire(col_idx < m_columns.size());
   return m_columns[col_idx];
 }
 
@@ -2017,11 +2198,10 @@ RonSQLPreparer::Context::set_err_state(ErrState state,
      * We want to save the error with the left-most position or, if two errors
      * have the same position, the shorter (more low-level) error. However,
      * above we actually save the error detected first. Presumably, that's the
-     * same thing, but here we assert so.
+     * same thing, but here we check it.
      */
-    assert((m_err_pos < err_pos) ||
-           (m_err_pos == err_pos &&
-            m_err_len <= err_len));
+    ndbrequire((m_err_pos < err_pos) ||
+               (m_err_pos == err_pos && m_err_len <= err_len));
   }
 }
 

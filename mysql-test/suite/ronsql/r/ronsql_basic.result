@@ -32,7 +32,7 @@ GROUP BY cchar
 Number of output lines, including header: 23
 
 == Diff ==
-================================================================================
+==========
 
 
 
@@ -51,7 +51,7 @@ GROUP BY cchar
 Number of output lines, including header: 4
 
 == Diff ==
-================================================================================
+==========
 
 
 
@@ -69,7 +69,7 @@ GROUP BY cchar;
 Number of output lines, including header: 6
 
 == Diff ==
-================================================================================
+==========
 
 
 
@@ -85,7 +85,7 @@ GROUP BY cchar;
 Number of output lines, including header: 6
 
 == Diff ==
-================================================================================
+==========
 
 
 
@@ -112,7 +112,7 @@ GROUP BY sint8;
 Number of output lines, including header: 42
 
 == Diff ==
-================================================================================
+==========
 
 
 
@@ -130,7 +130,7 @@ GROUP BY cchar;
 Number of output lines, including header: 6
 
 == Diff ==
-================================================================================
+==========
 
 
 
@@ -154,7 +154,7 @@ GROUP BY cchar;
 Number of output lines, including header: 6
 
 == Diff ==
-================================================================================
+==========
 
 
 
@@ -184,7 +184,7 @@ GROUP BY cchar;
 Number of output lines, including header: 6
 
 == Diff ==
-================================================================================
+==========
 
 
 
@@ -215,7 +215,7 @@ GROUP BY sint8;
 Number of output lines, including header: 42
 
 == Diff ==
-================================================================================
+==========
 
 
 
@@ -238,7 +238,7 @@ GROUP BY sint8;
 Number of output lines, including header: 38
 
 == Diff ==
-================================================================================
+==========
 
 
 
@@ -261,7 +261,7 @@ GROUP BY sint8;
 Number of output lines, including header: 42
 
 == Diff ==
-================================================================================
+==========
 
 
 
@@ -284,7 +284,7 @@ GROUP BY sint8;
 Number of output lines, including header: 42
 
 == Diff ==
-================================================================================
+==========
 
 
 
@@ -300,7 +300,7 @@ GROUP BY cchar, sint8;
 Number of output lines, including header: 769
 
 == Diff ==
-================================================================================
+==========
 
 
 
