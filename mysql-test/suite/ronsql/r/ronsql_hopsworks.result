@@ -1,0 +1,4454 @@
+# vim: set fileencoding=utf-8 : -*- coding: utf-8 -*-
+Generated tests for 10 data types
+
+==================== Start testing data type: TINYINT ====================
+TINYINT: Create table and load data
+TINYINT: SELECT with GROUP BY
+== Query ==
+SELECT val, COUNT(*) as cnt
+FROM tbl
+GROUP BY val;
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+TINYINT: All aggregates
+== Query ==
+SELECT COUNT(val) as avg_val,
+AVG(val) as cnt_val,
+SUM(val) as sum_val,
+MIN(val) as min_val,
+MAX(val) as max_val
+FROM tbl;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+TINYINT: Filter equality. No index, expect TABLE SCAN.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  =
+  ├─ `val`
+  ╰─ 0
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as table scan.
+FILTERS:
+╰─ =
+   ├─ `val`
+   ╰─ 0
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE val = 0;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+TINYINT: Filter comparison WHERE val >= -1 AND val < 1. No index, expect TABLE SCAN.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  AND
+  ├─ >=
+  │  ├─ `val`
+  │  ╰─ -1
+  ╰─ <
+     ├─ `val`
+     ╰─ 1
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as table scan.
+FILTERS:
+├─ >=
+│  ├─ `val`
+│  ╰─ -1
+╰─ <
+   ├─ `val`
+   ╰─ 1
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE val >= -1 AND val < 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+TINYINT: Add indexes
+ALTER TABLE tbl ADD INDEX idx_val_foo (val, foo);|
+ALTER TABLE tbl ADD INDEX idx_foo_val (foo, val);|
+TINYINT: Index scan equality. Expect INDEX SCAN on idx_val_foo.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  =
+  ├─ `val`
+  ╰─ 0
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as index scan.
+Index: `idx_val_foo`(`val`, `foo`)
+With goodness 11000 it's the best of 2 options.
+CONDITIONS (1 bound):
+╰─ INDEX[0]: =
+             ├─ `val`
+             ╰─ 0
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE val = 0;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+TINYINT: Index scan range WHERE val >= -1 AND val < 1. Expect INDEX SCAN on idx_val_foo.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  AND
+  ├─ >=
+  │  ├─ `val`
+  │  ╰─ -1
+  ╰─ <
+     ├─ `val`
+     ╰─ 1
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as index scan.
+Index: `idx_val_foo`(`val`, `foo`)
+With goodness 110 it's the best of 2 options.
+CONDITIONS (2 bounds):
+├─ INDEX[0]: >=
+│            ├─ `val`
+│            ╰─ -1
+╰─ INDEX[0]: <
+             ├─ `val`
+             ╰─ 1
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE val >= -1 AND val < 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+TINYINT: Composite index scan. Expect INDEX SCAN on idx_val_foo.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  AND
+  ├─ AND
+  │  ├─ <=
+  │  │  ├─ 0
+  │  │  ╰─ `foo`
+  │  ╰─ =
+  │     ├─ `val`
+  │     ╰─ 0
+  ╰─ <
+     ├─ `foo`
+     ╰─ 50
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as index scan.
+Index: `idx_val_foo`(`val`, `foo`)
+With goodness 11110 it's the best of 3 options.
+CONDITIONS (3 bounds):
+├─ INDEX[1]: >=
+│            ├─ `foo`
+│            ╰─ 0
+├─ INDEX[0]: =
+│            ├─ `val`
+│            ╰─ 0
+╰─ INDEX[1]: <
+             ├─ `foo`
+             ╰─ 50
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE 0 <= foo AND val = 0 AND foo < 50;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+TINYINT: Composite index scan WHERE val >= -1 AND val < 1. Expect INDEX SCAN on idx_foo_val.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  AND
+  ├─ AND
+  │  ├─ >=
+  │  │  ├─ `val`
+  │  │  ╰─ -1
+  │  ╰─ <
+  │     ├─ `val`
+  │     ╰─ 1
+  ╰─ =
+     ├─ 0
+     ╰─ `foo`
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as index scan.
+Index: `idx_foo_val`(`foo`, `val`)
+With goodness 11110 it's the best of 3 options.
+CONDITIONS (3 bounds):
+├─ INDEX[1]: >=
+│            ├─ `val`
+│            ╰─ -1
+├─ INDEX[1]: <
+│            ├─ `val`
+│            ╰─ 1
+╰─ INDEX[0]: =
+             ├─ `foo`
+             ╰─ 0
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE val >= -1 AND val < 1 AND 0 = foo;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+TINYINT: Composite index scan. Expect INDEX SCAN on idx_val_foo and 2 FILTERs on bar.
+TINYINT: 3-column filter val+foo+bar
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  AND
+  ├─ AND
+  │  ├─ AND
+  │  │  ├─ AND
+  │  │  │  ├─ <=
+  │  │  │  │  ├─ 0
+  │  │  │  │  ╰─ `foo`
+  │  │  │  ╰─ <=
+  │  │  │     ├─ 0
+  │  │  │     ╰─ `bar`
+  │  │  ╰─ =
+  │  │     ├─ `val`
+  │  │     ╰─ 0
+  │  ╰─ <
+  │     ├─ `foo`
+  │     ╰─ 50
+  ╰─ <
+     ├─ `bar`
+     ╰─ 5
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as index scan.
+Index: `idx_val_foo`(`val`, `foo`)
+With goodness 11110 it's the best of 3 options.
+CONDITIONS (3 bounds and 2 filters):
+├─ INDEX[1]: >=
+│            ├─ `foo`
+│            ╰─ 0
+├─ FILTER: >=
+│          ├─ `bar`
+│          ╰─ 0
+├─ INDEX[0]: =
+│            ├─ `val`
+│            ╰─ 0
+├─ INDEX[1]: <
+│            ├─ `foo`
+│            ╰─ 50
+╰─ FILTER: <
+           ├─ `bar`
+           ╰─ 5
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt
+FROM tbl
+WHERE 0 <= foo AND 0 <= bar AND val = 0 AND foo < 50 AND bar < 5;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+TINYINT: Multi-column aggregates
+== Query ==
+SELECT COUNT(*) as count_all
+, COUNT(val) as count_val
+, COUNT(foo) as count_foo
+, COUNT(bar) as count_bar
+, SUM(val) as sum_val
+, SUM(foo) as sum_foo
+, SUM(bar) as sum_bar
+, AVG(val) as avg_val
+, AVG(foo) as avg_foo
+, AVG(bar) as avg_bar
+, MAX(val) as max_val
+, MAX(foo) as max_foo
+, MAX(bar) as max_bar
+FROM tbl;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+TINYINT: GROUP BY with multiple columns.
+== Query ==
+SELECT val, foo, SUM(bar), COUNT(*)
+FROM tbl
+WHERE foo >= -10 AND foo <= 10
+GROUP BY val, foo
+ORDER BY val, foo;
+
+Number of output lines, including header: 23
+
+== Diff ==
+==========
+
+
+
+TINYINT: Empty data set, one result row.
+== Query ==
+SELECT
+COUNT(*) as cnt,
+MIN(val) as min_val,
+AVG(val) as avg_val,
+AVG(foo) as avg_foo
+FROM tbl
+WHERE foo = -9999999;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+TINYINT: GROUP BY and ORDER BY
+== Query ==
+SELECT val, COUNT(*) as cnt
+FROM tbl
+GROUP BY val
+ORDER BY val DESC;
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+
+==================== Start testing data type: TINYINT UNSIGNED ====================
+TINYINT UNSIGNED: Create table and load data
+TINYINT UNSIGNED: SELECT with GROUP BY
+== Query ==
+SELECT val, COUNT(*) as cnt
+FROM tbl
+GROUP BY val;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+TINYINT UNSIGNED: All aggregates
+== Query ==
+SELECT COUNT(val) as avg_val,
+AVG(val) as cnt_val,
+SUM(val) as sum_val,
+MIN(val) as min_val,
+MAX(val) as max_val
+FROM tbl;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+TINYINT UNSIGNED: Filter equality. No index, expect TABLE SCAN.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  =
+  ├─ `val`
+  ╰─ 1
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as table scan.
+FILTERS:
+╰─ =
+   ├─ `val`
+   ╰─ 1
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE val = 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+TINYINT UNSIGNED: Filter comparison WHERE val >= 1 AND val < 100. No index, expect TABLE SCAN.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  AND
+  ├─ >=
+  │  ├─ `val`
+  │  ╰─ 1
+  ╰─ <
+     ├─ `val`
+     ╰─ 100
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as table scan.
+FILTERS:
+├─ >=
+│  ├─ `val`
+│  ╰─ 1
+╰─ <
+   ├─ `val`
+   ╰─ 100
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE val >= 1 AND val < 100;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+TINYINT UNSIGNED: Add indexes
+ALTER TABLE tbl ADD INDEX idx_val_foo (val, foo);|
+ALTER TABLE tbl ADD INDEX idx_foo_val (foo, val);|
+TINYINT UNSIGNED: Index scan equality. Expect INDEX SCAN on idx_val_foo.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  =
+  ├─ `val`
+  ╰─ 1
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as index scan.
+Index: `idx_val_foo`(`val`, `foo`)
+With goodness 11000 it's the best of 2 options.
+CONDITIONS (1 bound):
+╰─ INDEX[0]: =
+             ├─ `val`
+             ╰─ 1
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE val = 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+TINYINT UNSIGNED: Index scan range WHERE val >= 1 AND val < 100. Expect INDEX SCAN on idx_val_foo.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  AND
+  ├─ >=
+  │  ├─ `val`
+  │  ╰─ 1
+  ╰─ <
+     ├─ `val`
+     ╰─ 100
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as index scan.
+Index: `idx_val_foo`(`val`, `foo`)
+With goodness 110 it's the best of 2 options.
+CONDITIONS (2 bounds):
+├─ INDEX[0]: >=
+│            ├─ `val`
+│            ╰─ 1
+╰─ INDEX[0]: <
+             ├─ `val`
+             ╰─ 100
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE val >= 1 AND val < 100;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+TINYINT UNSIGNED: Composite index scan. Expect INDEX SCAN on idx_val_foo.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  AND
+  ├─ AND
+  │  ├─ <=
+  │  │  ├─ 0
+  │  │  ╰─ `foo`
+  │  ╰─ =
+  │     ├─ `val`
+  │     ╰─ 1
+  ╰─ <
+     ├─ `foo`
+     ╰─ 50
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as index scan.
+Index: `idx_val_foo`(`val`, `foo`)
+With goodness 11110 it's the best of 3 options.
+CONDITIONS (3 bounds):
+├─ INDEX[1]: >=
+│            ├─ `foo`
+│            ╰─ 0
+├─ INDEX[0]: =
+│            ├─ `val`
+│            ╰─ 1
+╰─ INDEX[1]: <
+             ├─ `foo`
+             ╰─ 50
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE 0 <= foo AND val = 1 AND foo < 50;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+TINYINT UNSIGNED: Composite index scan WHERE val >= 1 AND val < 100. Expect INDEX SCAN on idx_foo_val.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  AND
+  ├─ AND
+  │  ├─ >=
+  │  │  ├─ `val`
+  │  │  ╰─ 1
+  │  ╰─ <
+  │     ├─ `val`
+  │     ╰─ 100
+  ╰─ =
+     ├─ 0
+     ╰─ `foo`
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as index scan.
+Index: `idx_foo_val`(`foo`, `val`)
+With goodness 11110 it's the best of 3 options.
+CONDITIONS (3 bounds):
+├─ INDEX[1]: >=
+│            ├─ `val`
+│            ╰─ 1
+├─ INDEX[1]: <
+│            ├─ `val`
+│            ╰─ 100
+╰─ INDEX[0]: =
+             ├─ `foo`
+             ╰─ 0
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE val >= 1 AND val < 100 AND 0 = foo;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+TINYINT UNSIGNED: Composite index scan. Expect INDEX SCAN on idx_val_foo and 2 FILTERs on bar.
+TINYINT UNSIGNED: 3-column filter val+foo+bar
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  AND
+  ├─ AND
+  │  ├─ AND
+  │  │  ├─ AND
+  │  │  │  ├─ <=
+  │  │  │  │  ├─ 0
+  │  │  │  │  ╰─ `foo`
+  │  │  │  ╰─ <=
+  │  │  │     ├─ 0
+  │  │  │     ╰─ `bar`
+  │  │  ╰─ =
+  │  │     ├─ `val`
+  │  │     ╰─ 1
+  │  ╰─ <
+  │     ├─ `foo`
+  │     ╰─ 50
+  ╰─ <
+     ├─ `bar`
+     ╰─ 5
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as index scan.
+Index: `idx_val_foo`(`val`, `foo`)
+With goodness 11110 it's the best of 3 options.
+CONDITIONS (3 bounds and 2 filters):
+├─ INDEX[1]: >=
+│            ├─ `foo`
+│            ╰─ 0
+├─ FILTER: >=
+│          ├─ `bar`
+│          ╰─ 0
+├─ INDEX[0]: =
+│            ├─ `val`
+│            ╰─ 1
+├─ INDEX[1]: <
+│            ├─ `foo`
+│            ╰─ 50
+╰─ FILTER: <
+           ├─ `bar`
+           ╰─ 5
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt
+FROM tbl
+WHERE 0 <= foo AND 0 <= bar AND val = 1 AND foo < 50 AND bar < 5;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+TINYINT UNSIGNED: Multi-column aggregates
+== Query ==
+SELECT COUNT(*) as count_all
+, COUNT(val) as count_val
+, COUNT(foo) as count_foo
+, COUNT(bar) as count_bar
+, SUM(val) as sum_val
+, SUM(foo) as sum_foo
+, SUM(bar) as sum_bar
+, AVG(val) as avg_val
+, AVG(foo) as avg_foo
+, AVG(bar) as avg_bar
+, MAX(val) as max_val
+, MAX(foo) as max_foo
+, MAX(bar) as max_bar
+FROM tbl;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+TINYINT UNSIGNED: GROUP BY with multiple columns.
+== Query ==
+SELECT val, foo, SUM(bar), COUNT(*)
+FROM tbl
+WHERE foo >= -10 AND foo <= 10
+GROUP BY val, foo
+ORDER BY val, foo;
+
+Number of output lines, including header: 22
+
+== Diff ==
+==========
+
+
+
+TINYINT UNSIGNED: Empty data set, one result row.
+== Query ==
+SELECT
+COUNT(*) as cnt,
+MIN(val) as min_val,
+AVG(val) as avg_val,
+AVG(foo) as avg_foo
+FROM tbl
+WHERE foo = -9999999;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+TINYINT UNSIGNED: GROUP BY and ORDER BY
+== Query ==
+SELECT val, COUNT(*) as cnt
+FROM tbl
+GROUP BY val
+ORDER BY val DESC;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+
+==================== Start testing data type: SMALLINT ====================
+SMALLINT: Create table and load data
+SMALLINT: SELECT with GROUP BY
+== Query ==
+SELECT val, COUNT(*) as cnt
+FROM tbl
+GROUP BY val;
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+SMALLINT: All aggregates
+== Query ==
+SELECT COUNT(val) as avg_val,
+AVG(val) as cnt_val,
+SUM(val) as sum_val,
+MIN(val) as min_val,
+MAX(val) as max_val
+FROM tbl;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+SMALLINT: Filter equality. No index, expect TABLE SCAN.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  =
+  ├─ `val`
+  ╰─ 0
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as table scan.
+FILTERS:
+╰─ =
+   ├─ `val`
+   ╰─ 0
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE val = 0;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+SMALLINT: Filter comparison WHERE val >= -1 AND val < 1. No index, expect TABLE SCAN.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  AND
+  ├─ >=
+  │  ├─ `val`
+  │  ╰─ -1
+  ╰─ <
+     ├─ `val`
+     ╰─ 1
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as table scan.
+FILTERS:
+├─ >=
+│  ├─ `val`
+│  ╰─ -1
+╰─ <
+   ├─ `val`
+   ╰─ 1
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE val >= -1 AND val < 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+SMALLINT: Add indexes
+ALTER TABLE tbl ADD INDEX idx_val_foo (val, foo);|
+ALTER TABLE tbl ADD INDEX idx_foo_val (foo, val);|
+SMALLINT: Index scan equality. Expect INDEX SCAN on idx_val_foo.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  =
+  ├─ `val`
+  ╰─ 0
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as index scan.
+Index: `idx_val_foo`(`val`, `foo`)
+With goodness 11000 it's the best of 2 options.
+CONDITIONS (1 bound):
+╰─ INDEX[0]: =
+             ├─ `val`
+             ╰─ 0
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE val = 0;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+SMALLINT: Index scan range WHERE val >= -1 AND val < 1. Expect INDEX SCAN on idx_val_foo.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  AND
+  ├─ >=
+  │  ├─ `val`
+  │  ╰─ -1
+  ╰─ <
+     ├─ `val`
+     ╰─ 1
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as index scan.
+Index: `idx_val_foo`(`val`, `foo`)
+With goodness 110 it's the best of 2 options.
+CONDITIONS (2 bounds):
+├─ INDEX[0]: >=
+│            ├─ `val`
+│            ╰─ -1
+╰─ INDEX[0]: <
+             ├─ `val`
+             ╰─ 1
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE val >= -1 AND val < 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+SMALLINT: Composite index scan. Expect INDEX SCAN on idx_val_foo.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  AND
+  ├─ AND
+  │  ├─ <=
+  │  │  ├─ 0
+  │  │  ╰─ `foo`
+  │  ╰─ =
+  │     ├─ `val`
+  │     ╰─ 0
+  ╰─ <
+     ├─ `foo`
+     ╰─ 50
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as index scan.
+Index: `idx_val_foo`(`val`, `foo`)
+With goodness 11110 it's the best of 3 options.
+CONDITIONS (3 bounds):
+├─ INDEX[1]: >=
+│            ├─ `foo`
+│            ╰─ 0
+├─ INDEX[0]: =
+│            ├─ `val`
+│            ╰─ 0
+╰─ INDEX[1]: <
+             ├─ `foo`
+             ╰─ 50
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE 0 <= foo AND val = 0 AND foo < 50;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+SMALLINT: Composite index scan WHERE val >= -1 AND val < 1. Expect INDEX SCAN on idx_foo_val.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  AND
+  ├─ AND
+  │  ├─ >=
+  │  │  ├─ `val`
+  │  │  ╰─ -1
+  │  ╰─ <
+  │     ├─ `val`
+  │     ╰─ 1
+  ╰─ =
+     ├─ 0
+     ╰─ `foo`
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as index scan.
+Index: `idx_foo_val`(`foo`, `val`)
+With goodness 11110 it's the best of 3 options.
+CONDITIONS (3 bounds):
+├─ INDEX[1]: >=
+│            ├─ `val`
+│            ╰─ -1
+├─ INDEX[1]: <
+│            ├─ `val`
+│            ╰─ 1
+╰─ INDEX[0]: =
+             ├─ `foo`
+             ╰─ 0
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE val >= -1 AND val < 1 AND 0 = foo;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+SMALLINT: Composite index scan. Expect INDEX SCAN on idx_val_foo and 2 FILTERs on bar.
+SMALLINT: 3-column filter val+foo+bar
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  AND
+  ├─ AND
+  │  ├─ AND
+  │  │  ├─ AND
+  │  │  │  ├─ <=
+  │  │  │  │  ├─ 0
+  │  │  │  │  ╰─ `foo`
+  │  │  │  ╰─ <=
+  │  │  │     ├─ 0
+  │  │  │     ╰─ `bar`
+  │  │  ╰─ =
+  │  │     ├─ `val`
+  │  │     ╰─ 0
+  │  ╰─ <
+  │     ├─ `foo`
+  │     ╰─ 50
+  ╰─ <
+     ├─ `bar`
+     ╰─ 5
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as index scan.
+Index: `idx_val_foo`(`val`, `foo`)
+With goodness 11110 it's the best of 3 options.
+CONDITIONS (3 bounds and 2 filters):
+├─ INDEX[1]: >=
+│            ├─ `foo`
+│            ╰─ 0
+├─ FILTER: >=
+│          ├─ `bar`
+│          ╰─ 0
+├─ INDEX[0]: =
+│            ├─ `val`
+│            ╰─ 0
+├─ INDEX[1]: <
+│            ├─ `foo`
+│            ╰─ 50
+╰─ FILTER: <
+           ├─ `bar`
+           ╰─ 5
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt
+FROM tbl
+WHERE 0 <= foo AND 0 <= bar AND val = 0 AND foo < 50 AND bar < 5;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+SMALLINT: Multi-column aggregates
+== Query ==
+SELECT COUNT(*) as count_all
+, COUNT(val) as count_val
+, COUNT(foo) as count_foo
+, COUNT(bar) as count_bar
+, SUM(val) as sum_val
+, SUM(foo) as sum_foo
+, SUM(bar) as sum_bar
+, AVG(val) as avg_val
+, AVG(foo) as avg_foo
+, AVG(bar) as avg_bar
+, MAX(val) as max_val
+, MAX(foo) as max_foo
+, MAX(bar) as max_bar
+FROM tbl;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+SMALLINT: GROUP BY with multiple columns.
+== Query ==
+SELECT val, foo, SUM(bar), COUNT(*)
+FROM tbl
+WHERE foo >= -10 AND foo <= 10
+GROUP BY val, foo
+ORDER BY val, foo;
+
+Number of output lines, including header: 23
+
+== Diff ==
+==========
+
+
+
+SMALLINT: Empty data set, one result row.
+== Query ==
+SELECT
+COUNT(*) as cnt,
+MIN(val) as min_val,
+AVG(val) as avg_val,
+AVG(foo) as avg_foo
+FROM tbl
+WHERE foo = -9999999;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+SMALLINT: GROUP BY and ORDER BY
+== Query ==
+SELECT val, COUNT(*) as cnt
+FROM tbl
+GROUP BY val
+ORDER BY val DESC;
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+
+==================== Start testing data type: SMALLINT UNSIGNED ====================
+SMALLINT UNSIGNED: Create table and load data
+SMALLINT UNSIGNED: SELECT with GROUP BY
+== Query ==
+SELECT val, COUNT(*) as cnt
+FROM tbl
+GROUP BY val;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+SMALLINT UNSIGNED: All aggregates
+== Query ==
+SELECT COUNT(val) as avg_val,
+AVG(val) as cnt_val,
+SUM(val) as sum_val,
+MIN(val) as min_val,
+MAX(val) as max_val
+FROM tbl;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+SMALLINT UNSIGNED: Filter equality. No index, expect TABLE SCAN.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  =
+  ├─ `val`
+  ╰─ 1
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as table scan.
+FILTERS:
+╰─ =
+   ├─ `val`
+   ╰─ 1
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE val = 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+SMALLINT UNSIGNED: Filter comparison WHERE val >= 1 AND val < 1000. No index, expect TABLE SCAN.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  AND
+  ├─ >=
+  │  ├─ `val`
+  │  ╰─ 1
+  ╰─ <
+     ├─ `val`
+     ╰─ 1000
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as table scan.
+FILTERS:
+├─ >=
+│  ├─ `val`
+│  ╰─ 1
+╰─ <
+   ├─ `val`
+   ╰─ 1000
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE val >= 1 AND val < 1000;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+SMALLINT UNSIGNED: Add indexes
+ALTER TABLE tbl ADD INDEX idx_val_foo (val, foo);|
+ALTER TABLE tbl ADD INDEX idx_foo_val (foo, val);|
+SMALLINT UNSIGNED: Index scan equality. Expect INDEX SCAN on idx_val_foo.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  =
+  ├─ `val`
+  ╰─ 1
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as index scan.
+Index: `idx_val_foo`(`val`, `foo`)
+With goodness 11000 it's the best of 2 options.
+CONDITIONS (1 bound):
+╰─ INDEX[0]: =
+             ├─ `val`
+             ╰─ 1
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE val = 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+SMALLINT UNSIGNED: Index scan range WHERE val >= 1 AND val < 1000. Expect INDEX SCAN on idx_val_foo.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  AND
+  ├─ >=
+  │  ├─ `val`
+  │  ╰─ 1
+  ╰─ <
+     ├─ `val`
+     ╰─ 1000
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as index scan.
+Index: `idx_val_foo`(`val`, `foo`)
+With goodness 110 it's the best of 2 options.
+CONDITIONS (2 bounds):
+├─ INDEX[0]: >=
+│            ├─ `val`
+│            ╰─ 1
+╰─ INDEX[0]: <
+             ├─ `val`
+             ╰─ 1000
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE val >= 1 AND val < 1000;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+SMALLINT UNSIGNED: Composite index scan. Expect INDEX SCAN on idx_val_foo.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  AND
+  ├─ AND
+  │  ├─ <=
+  │  │  ├─ 0
+  │  │  ╰─ `foo`
+  │  ╰─ =
+  │     ├─ `val`
+  │     ╰─ 1
+  ╰─ <
+     ├─ `foo`
+     ╰─ 50
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as index scan.
+Index: `idx_val_foo`(`val`, `foo`)
+With goodness 11110 it's the best of 3 options.
+CONDITIONS (3 bounds):
+├─ INDEX[1]: >=
+│            ├─ `foo`
+│            ╰─ 0
+├─ INDEX[0]: =
+│            ├─ `val`
+│            ╰─ 1
+╰─ INDEX[1]: <
+             ├─ `foo`
+             ╰─ 50
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE 0 <= foo AND val = 1 AND foo < 50;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+SMALLINT UNSIGNED: Composite index scan WHERE val >= 1 AND val < 1000. Expect INDEX SCAN on idx_foo_val.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  AND
+  ├─ AND
+  │  ├─ >=
+  │  │  ├─ `val`
+  │  │  ╰─ 1
+  │  ╰─ <
+  │     ├─ `val`
+  │     ╰─ 1000
+  ╰─ =
+     ├─ 0
+     ╰─ `foo`
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as index scan.
+Index: `idx_foo_val`(`foo`, `val`)
+With goodness 11110 it's the best of 3 options.
+CONDITIONS (3 bounds):
+├─ INDEX[1]: >=
+│            ├─ `val`
+│            ╰─ 1
+├─ INDEX[1]: <
+│            ├─ `val`
+│            ╰─ 1000
+╰─ INDEX[0]: =
+             ├─ `foo`
+             ╰─ 0
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE val >= 1 AND val < 1000 AND 0 = foo;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+SMALLINT UNSIGNED: Composite index scan. Expect INDEX SCAN on idx_val_foo and 2 FILTERs on bar.
+SMALLINT UNSIGNED: 3-column filter val+foo+bar
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  AND
+  ├─ AND
+  │  ├─ AND
+  │  │  ├─ AND
+  │  │  │  ├─ <=
+  │  │  │  │  ├─ 0
+  │  │  │  │  ╰─ `foo`
+  │  │  │  ╰─ <=
+  │  │  │     ├─ 0
+  │  │  │     ╰─ `bar`
+  │  │  ╰─ =
+  │  │     ├─ `val`
+  │  │     ╰─ 1
+  │  ╰─ <
+  │     ├─ `foo`
+  │     ╰─ 50
+  ╰─ <
+     ├─ `bar`
+     ╰─ 5
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as index scan.
+Index: `idx_val_foo`(`val`, `foo`)
+With goodness 11110 it's the best of 3 options.
+CONDITIONS (3 bounds and 2 filters):
+├─ INDEX[1]: >=
+│            ├─ `foo`
+│            ╰─ 0
+├─ FILTER: >=
+│          ├─ `bar`
+│          ╰─ 0
+├─ INDEX[0]: =
+│            ├─ `val`
+│            ╰─ 1
+├─ INDEX[1]: <
+│            ├─ `foo`
+│            ╰─ 50
+╰─ FILTER: <
+           ├─ `bar`
+           ╰─ 5
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt
+FROM tbl
+WHERE 0 <= foo AND 0 <= bar AND val = 1 AND foo < 50 AND bar < 5;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+SMALLINT UNSIGNED: Multi-column aggregates
+== Query ==
+SELECT COUNT(*) as count_all
+, COUNT(val) as count_val
+, COUNT(foo) as count_foo
+, COUNT(bar) as count_bar
+, SUM(val) as sum_val
+, SUM(foo) as sum_foo
+, SUM(bar) as sum_bar
+, AVG(val) as avg_val
+, AVG(foo) as avg_foo
+, AVG(bar) as avg_bar
+, MAX(val) as max_val
+, MAX(foo) as max_foo
+, MAX(bar) as max_bar
+FROM tbl;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+SMALLINT UNSIGNED: GROUP BY with multiple columns.
+== Query ==
+SELECT val, foo, SUM(bar), COUNT(*)
+FROM tbl
+WHERE foo >= -10 AND foo <= 10
+GROUP BY val, foo
+ORDER BY val, foo;
+
+Number of output lines, including header: 22
+
+== Diff ==
+==========
+
+
+
+SMALLINT UNSIGNED: Empty data set, one result row.
+== Query ==
+SELECT
+COUNT(*) as cnt,
+MIN(val) as min_val,
+AVG(val) as avg_val,
+AVG(foo) as avg_foo
+FROM tbl
+WHERE foo = -9999999;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+SMALLINT UNSIGNED: GROUP BY and ORDER BY
+== Query ==
+SELECT val, COUNT(*) as cnt
+FROM tbl
+GROUP BY val
+ORDER BY val DESC;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+
+==================== Start testing data type: MEDIUMINT ====================
+MEDIUMINT: Create table and load data
+MEDIUMINT: SELECT with GROUP BY
+== Query ==
+SELECT val, COUNT(*) as cnt
+FROM tbl
+GROUP BY val;
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+MEDIUMINT: All aggregates
+== Query ==
+SELECT COUNT(val) as avg_val,
+AVG(val) as cnt_val,
+SUM(val) as sum_val,
+MIN(val) as min_val,
+MAX(val) as max_val
+FROM tbl;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+MEDIUMINT: Filter equality. No index, expect TABLE SCAN.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  =
+  ├─ `val`
+  ╰─ 0
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as table scan.
+FILTERS:
+╰─ =
+   ├─ `val`
+   ╰─ 0
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE val = 0;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+MEDIUMINT: Filter comparison WHERE val >= -1 AND val < 1. No index, expect TABLE SCAN.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  AND
+  ├─ >=
+  │  ├─ `val`
+  │  ╰─ -1
+  ╰─ <
+     ├─ `val`
+     ╰─ 1
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as table scan.
+FILTERS:
+├─ >=
+│  ├─ `val`
+│  ╰─ -1
+╰─ <
+   ├─ `val`
+   ╰─ 1
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE val >= -1 AND val < 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+MEDIUMINT: Add indexes
+ALTER TABLE tbl ADD INDEX idx_val_foo (val, foo);|
+ALTER TABLE tbl ADD INDEX idx_foo_val (foo, val);|
+MEDIUMINT: Index scan equality. Expect INDEX SCAN on idx_val_foo.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  =
+  ├─ `val`
+  ╰─ 0
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as index scan.
+Index: `idx_val_foo`(`val`, `foo`)
+With goodness 11000 it's the best of 2 options.
+CONDITIONS (1 bound):
+╰─ INDEX[0]: =
+             ├─ `val`
+             ╰─ 0
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE val = 0;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+MEDIUMINT: Index scan range WHERE val >= -1 AND val < 1. Expect INDEX SCAN on idx_val_foo.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  AND
+  ├─ >=
+  │  ├─ `val`
+  │  ╰─ -1
+  ╰─ <
+     ├─ `val`
+     ╰─ 1
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as index scan.
+Index: `idx_val_foo`(`val`, `foo`)
+With goodness 110 it's the best of 2 options.
+CONDITIONS (2 bounds):
+├─ INDEX[0]: >=
+│            ├─ `val`
+│            ╰─ -1
+╰─ INDEX[0]: <
+             ├─ `val`
+             ╰─ 1
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE val >= -1 AND val < 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+MEDIUMINT: Composite index scan. Expect INDEX SCAN on idx_val_foo.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  AND
+  ├─ AND
+  │  ├─ <=
+  │  │  ├─ 0
+  │  │  ╰─ `foo`
+  │  ╰─ =
+  │     ├─ `val`
+  │     ╰─ 0
+  ╰─ <
+     ├─ `foo`
+     ╰─ 50
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as index scan.
+Index: `idx_val_foo`(`val`, `foo`)
+With goodness 11110 it's the best of 3 options.
+CONDITIONS (3 bounds):
+├─ INDEX[1]: >=
+│            ├─ `foo`
+│            ╰─ 0
+├─ INDEX[0]: =
+│            ├─ `val`
+│            ╰─ 0
+╰─ INDEX[1]: <
+             ├─ `foo`
+             ╰─ 50
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE 0 <= foo AND val = 0 AND foo < 50;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+MEDIUMINT: Composite index scan WHERE val >= -1 AND val < 1. Expect INDEX SCAN on idx_foo_val.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  AND
+  ├─ AND
+  │  ├─ >=
+  │  │  ├─ `val`
+  │  │  ╰─ -1
+  │  ╰─ <
+  │     ├─ `val`
+  │     ╰─ 1
+  ╰─ =
+     ├─ 0
+     ╰─ `foo`
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as index scan.
+Index: `idx_foo_val`(`foo`, `val`)
+With goodness 11110 it's the best of 3 options.
+CONDITIONS (3 bounds):
+├─ INDEX[1]: >=
+│            ├─ `val`
+│            ╰─ -1
+├─ INDEX[1]: <
+│            ├─ `val`
+│            ╰─ 1
+╰─ INDEX[0]: =
+             ├─ `foo`
+             ╰─ 0
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE val >= -1 AND val < 1 AND 0 = foo;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+MEDIUMINT: Composite index scan. Expect INDEX SCAN on idx_val_foo and 2 FILTERs on bar.
+MEDIUMINT: 3-column filter val+foo+bar
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  AND
+  ├─ AND
+  │  ├─ AND
+  │  │  ├─ AND
+  │  │  │  ├─ <=
+  │  │  │  │  ├─ 0
+  │  │  │  │  ╰─ `foo`
+  │  │  │  ╰─ <=
+  │  │  │     ├─ 0
+  │  │  │     ╰─ `bar`
+  │  │  ╰─ =
+  │  │     ├─ `val`
+  │  │     ╰─ 0
+  │  ╰─ <
+  │     ├─ `foo`
+  │     ╰─ 50
+  ╰─ <
+     ├─ `bar`
+     ╰─ 5
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as index scan.
+Index: `idx_val_foo`(`val`, `foo`)
+With goodness 11110 it's the best of 3 options.
+CONDITIONS (3 bounds and 2 filters):
+├─ INDEX[1]: >=
+│            ├─ `foo`
+│            ╰─ 0
+├─ FILTER: >=
+│          ├─ `bar`
+│          ╰─ 0
+├─ INDEX[0]: =
+│            ├─ `val`
+│            ╰─ 0
+├─ INDEX[1]: <
+│            ├─ `foo`
+│            ╰─ 50
+╰─ FILTER: <
+           ├─ `bar`
+           ╰─ 5
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt
+FROM tbl
+WHERE 0 <= foo AND 0 <= bar AND val = 0 AND foo < 50 AND bar < 5;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+MEDIUMINT: Multi-column aggregates
+== Query ==
+SELECT COUNT(*) as count_all
+, COUNT(val) as count_val
+, COUNT(foo) as count_foo
+, COUNT(bar) as count_bar
+, SUM(val) as sum_val
+, SUM(foo) as sum_foo
+, SUM(bar) as sum_bar
+, AVG(val) as avg_val
+, AVG(foo) as avg_foo
+, AVG(bar) as avg_bar
+, MAX(val) as max_val
+, MAX(foo) as max_foo
+, MAX(bar) as max_bar
+FROM tbl;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+MEDIUMINT: GROUP BY with multiple columns.
+== Query ==
+SELECT val, foo, SUM(bar), COUNT(*)
+FROM tbl
+WHERE foo >= -10 AND foo <= 10
+GROUP BY val, foo
+ORDER BY val, foo;
+
+Number of output lines, including header: 23
+
+== Diff ==
+==========
+
+
+
+MEDIUMINT: Empty data set, one result row.
+== Query ==
+SELECT
+COUNT(*) as cnt,
+MIN(val) as min_val,
+AVG(val) as avg_val,
+AVG(foo) as avg_foo
+FROM tbl
+WHERE foo = -9999999;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+MEDIUMINT: GROUP BY and ORDER BY
+== Query ==
+SELECT val, COUNT(*) as cnt
+FROM tbl
+GROUP BY val
+ORDER BY val DESC;
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+
+==================== Start testing data type: MEDIUMINT UNSIGNED ====================
+MEDIUMINT UNSIGNED: Create table and load data
+MEDIUMINT UNSIGNED: SELECT with GROUP BY
+== Query ==
+SELECT val, COUNT(*) as cnt
+FROM tbl
+GROUP BY val;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+MEDIUMINT UNSIGNED: All aggregates
+== Query ==
+SELECT COUNT(val) as avg_val,
+AVG(val) as cnt_val,
+SUM(val) as sum_val,
+MIN(val) as min_val,
+MAX(val) as max_val
+FROM tbl;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+MEDIUMINT UNSIGNED: Filter equality. No index, expect TABLE SCAN.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  =
+  ├─ `val`
+  ╰─ 1
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as table scan.
+FILTERS:
+╰─ =
+   ├─ `val`
+   ╰─ 1
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE val = 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+MEDIUMINT UNSIGNED: Filter comparison WHERE val >= 1 AND val < 10000. No index, expect TABLE SCAN.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  AND
+  ├─ >=
+  │  ├─ `val`
+  │  ╰─ 1
+  ╰─ <
+     ├─ `val`
+     ╰─ 10000
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as table scan.
+FILTERS:
+├─ >=
+│  ├─ `val`
+│  ╰─ 1
+╰─ <
+   ├─ `val`
+   ╰─ 10000
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE val >= 1 AND val < 10000;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+MEDIUMINT UNSIGNED: Add indexes
+ALTER TABLE tbl ADD INDEX idx_val_foo (val, foo);|
+ALTER TABLE tbl ADD INDEX idx_foo_val (foo, val);|
+MEDIUMINT UNSIGNED: Index scan equality. Expect INDEX SCAN on idx_val_foo.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  =
+  ├─ `val`
+  ╰─ 1
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as index scan.
+Index: `idx_val_foo`(`val`, `foo`)
+With goodness 11000 it's the best of 2 options.
+CONDITIONS (1 bound):
+╰─ INDEX[0]: =
+             ├─ `val`
+             ╰─ 1
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE val = 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+MEDIUMINT UNSIGNED: Index scan range WHERE val >= 1 AND val < 10000. Expect INDEX SCAN on idx_val_foo.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  AND
+  ├─ >=
+  │  ├─ `val`
+  │  ╰─ 1
+  ╰─ <
+     ├─ `val`
+     ╰─ 10000
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as index scan.
+Index: `idx_val_foo`(`val`, `foo`)
+With goodness 110 it's the best of 2 options.
+CONDITIONS (2 bounds):
+├─ INDEX[0]: >=
+│            ├─ `val`
+│            ╰─ 1
+╰─ INDEX[0]: <
+             ├─ `val`
+             ╰─ 10000
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE val >= 1 AND val < 10000;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+MEDIUMINT UNSIGNED: Composite index scan. Expect INDEX SCAN on idx_val_foo.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  AND
+  ├─ AND
+  │  ├─ <=
+  │  │  ├─ 0
+  │  │  ╰─ `foo`
+  │  ╰─ =
+  │     ├─ `val`
+  │     ╰─ 1
+  ╰─ <
+     ├─ `foo`
+     ╰─ 50
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as index scan.
+Index: `idx_val_foo`(`val`, `foo`)
+With goodness 11110 it's the best of 3 options.
+CONDITIONS (3 bounds):
+├─ INDEX[1]: >=
+│            ├─ `foo`
+│            ╰─ 0
+├─ INDEX[0]: =
+│            ├─ `val`
+│            ╰─ 1
+╰─ INDEX[1]: <
+             ├─ `foo`
+             ╰─ 50
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE 0 <= foo AND val = 1 AND foo < 50;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+MEDIUMINT UNSIGNED: Composite index scan WHERE val >= 1 AND val < 10000. Expect INDEX SCAN on idx_foo_val.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  AND
+  ├─ AND
+  │  ├─ >=
+  │  │  ├─ `val`
+  │  │  ╰─ 1
+  │  ╰─ <
+  │     ├─ `val`
+  │     ╰─ 10000
+  ╰─ =
+     ├─ 0
+     ╰─ `foo`
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as index scan.
+Index: `idx_foo_val`(`foo`, `val`)
+With goodness 11110 it's the best of 3 options.
+CONDITIONS (3 bounds):
+├─ INDEX[1]: >=
+│            ├─ `val`
+│            ╰─ 1
+├─ INDEX[1]: <
+│            ├─ `val`
+│            ╰─ 10000
+╰─ INDEX[0]: =
+             ├─ `foo`
+             ╰─ 0
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE val >= 1 AND val < 10000 AND 0 = foo;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+MEDIUMINT UNSIGNED: Composite index scan. Expect INDEX SCAN on idx_val_foo and 2 FILTERs on bar.
+MEDIUMINT UNSIGNED: 3-column filter val+foo+bar
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  AND
+  ├─ AND
+  │  ├─ AND
+  │  │  ├─ AND
+  │  │  │  ├─ <=
+  │  │  │  │  ├─ 0
+  │  │  │  │  ╰─ `foo`
+  │  │  │  ╰─ <=
+  │  │  │     ├─ 0
+  │  │  │     ╰─ `bar`
+  │  │  ╰─ =
+  │  │     ├─ `val`
+  │  │     ╰─ 1
+  │  ╰─ <
+  │     ├─ `foo`
+  │     ╰─ 50
+  ╰─ <
+     ├─ `bar`
+     ╰─ 5
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as index scan.
+Index: `idx_val_foo`(`val`, `foo`)
+With goodness 11110 it's the best of 3 options.
+CONDITIONS (3 bounds and 2 filters):
+├─ INDEX[1]: >=
+│            ├─ `foo`
+│            ╰─ 0
+├─ FILTER: >=
+│          ├─ `bar`
+│          ╰─ 0
+├─ INDEX[0]: =
+│            ├─ `val`
+│            ╰─ 1
+├─ INDEX[1]: <
+│            ├─ `foo`
+│            ╰─ 50
+╰─ FILTER: <
+           ├─ `bar`
+           ╰─ 5
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt
+FROM tbl
+WHERE 0 <= foo AND 0 <= bar AND val = 1 AND foo < 50 AND bar < 5;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+MEDIUMINT UNSIGNED: Multi-column aggregates
+== Query ==
+SELECT COUNT(*) as count_all
+, COUNT(val) as count_val
+, COUNT(foo) as count_foo
+, COUNT(bar) as count_bar
+, SUM(val) as sum_val
+, SUM(foo) as sum_foo
+, SUM(bar) as sum_bar
+, AVG(val) as avg_val
+, AVG(foo) as avg_foo
+, AVG(bar) as avg_bar
+, MAX(val) as max_val
+, MAX(foo) as max_foo
+, MAX(bar) as max_bar
+FROM tbl;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+MEDIUMINT UNSIGNED: GROUP BY with multiple columns.
+== Query ==
+SELECT val, foo, SUM(bar), COUNT(*)
+FROM tbl
+WHERE foo >= -10 AND foo <= 10
+GROUP BY val, foo
+ORDER BY val, foo;
+
+Number of output lines, including header: 22
+
+== Diff ==
+==========
+
+
+
+MEDIUMINT UNSIGNED: Empty data set, one result row.
+== Query ==
+SELECT
+COUNT(*) as cnt,
+MIN(val) as min_val,
+AVG(val) as avg_val,
+AVG(foo) as avg_foo
+FROM tbl
+WHERE foo = -9999999;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+MEDIUMINT UNSIGNED: GROUP BY and ORDER BY
+== Query ==
+SELECT val, COUNT(*) as cnt
+FROM tbl
+GROUP BY val
+ORDER BY val DESC;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+
+==================== Start testing data type: INT ====================
+INT: Create table and load data
+INT: SELECT with GROUP BY
+== Query ==
+SELECT val, COUNT(*) as cnt
+FROM tbl
+GROUP BY val;
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+INT: All aggregates
+== Query ==
+SELECT COUNT(val) as avg_val,
+AVG(val) as cnt_val,
+SUM(val) as sum_val,
+MIN(val) as min_val,
+MAX(val) as max_val
+FROM tbl;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+INT: Filter equality. No index, expect TABLE SCAN.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  =
+  ├─ `val`
+  ╰─ 0
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as table scan.
+FILTERS:
+╰─ =
+   ├─ `val`
+   ╰─ 0
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE val = 0;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+INT: Filter comparison WHERE val >= -1 AND val < 1. No index, expect TABLE SCAN.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  AND
+  ├─ >=
+  │  ├─ `val`
+  │  ╰─ -1
+  ╰─ <
+     ├─ `val`
+     ╰─ 1
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as table scan.
+FILTERS:
+├─ >=
+│  ├─ `val`
+│  ╰─ -1
+╰─ <
+   ├─ `val`
+   ╰─ 1
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE val >= -1 AND val < 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+INT: Add indexes
+ALTER TABLE tbl ADD INDEX idx_val_foo (val, foo);|
+ALTER TABLE tbl ADD INDEX idx_foo_val (foo, val);|
+INT: Index scan equality. Expect INDEX SCAN on idx_val_foo.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  =
+  ├─ `val`
+  ╰─ 0
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as index scan.
+Index: `idx_val_foo`(`val`, `foo`)
+With goodness 11000 it's the best of 2 options.
+CONDITIONS (1 bound):
+╰─ INDEX[0]: =
+             ├─ `val`
+             ╰─ 0
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE val = 0;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+INT: Index scan range WHERE val >= -1 AND val < 1. Expect INDEX SCAN on idx_val_foo.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  AND
+  ├─ >=
+  │  ├─ `val`
+  │  ╰─ -1
+  ╰─ <
+     ├─ `val`
+     ╰─ 1
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as index scan.
+Index: `idx_val_foo`(`val`, `foo`)
+With goodness 110 it's the best of 2 options.
+CONDITIONS (2 bounds):
+├─ INDEX[0]: >=
+│            ├─ `val`
+│            ╰─ -1
+╰─ INDEX[0]: <
+             ├─ `val`
+             ╰─ 1
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE val >= -1 AND val < 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+INT: Composite index scan. Expect INDEX SCAN on idx_val_foo.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  AND
+  ├─ AND
+  │  ├─ <=
+  │  │  ├─ 0
+  │  │  ╰─ `foo`
+  │  ╰─ =
+  │     ├─ `val`
+  │     ╰─ 0
+  ╰─ <
+     ├─ `foo`
+     ╰─ 50
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as index scan.
+Index: `idx_val_foo`(`val`, `foo`)
+With goodness 11110 it's the best of 3 options.
+CONDITIONS (3 bounds):
+├─ INDEX[1]: >=
+│            ├─ `foo`
+│            ╰─ 0
+├─ INDEX[0]: =
+│            ├─ `val`
+│            ╰─ 0
+╰─ INDEX[1]: <
+             ├─ `foo`
+             ╰─ 50
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE 0 <= foo AND val = 0 AND foo < 50;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+INT: Composite index scan WHERE val >= -1 AND val < 1. Expect INDEX SCAN on idx_foo_val.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  AND
+  ├─ AND
+  │  ├─ >=
+  │  │  ├─ `val`
+  │  │  ╰─ -1
+  │  ╰─ <
+  │     ├─ `val`
+  │     ╰─ 1
+  ╰─ =
+     ├─ 0
+     ╰─ `foo`
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as index scan.
+Index: `idx_foo_val`(`foo`, `val`)
+With goodness 11110 it's the best of 3 options.
+CONDITIONS (3 bounds):
+├─ INDEX[1]: >=
+│            ├─ `val`
+│            ╰─ -1
+├─ INDEX[1]: <
+│            ├─ `val`
+│            ╰─ 1
+╰─ INDEX[0]: =
+             ├─ `foo`
+             ╰─ 0
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE val >= -1 AND val < 1 AND 0 = foo;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+INT: Composite index scan. Expect INDEX SCAN on idx_val_foo and 2 FILTERs on bar.
+INT: 3-column filter val+foo+bar
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  AND
+  ├─ AND
+  │  ├─ AND
+  │  │  ├─ AND
+  │  │  │  ├─ <=
+  │  │  │  │  ├─ 0
+  │  │  │  │  ╰─ `foo`
+  │  │  │  ╰─ <=
+  │  │  │     ├─ 0
+  │  │  │     ╰─ `bar`
+  │  │  ╰─ =
+  │  │     ├─ `val`
+  │  │     ╰─ 0
+  │  ╰─ <
+  │     ├─ `foo`
+  │     ╰─ 50
+  ╰─ <
+     ├─ `bar`
+     ╰─ 5
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as index scan.
+Index: `idx_val_foo`(`val`, `foo`)
+With goodness 11110 it's the best of 3 options.
+CONDITIONS (3 bounds and 2 filters):
+├─ INDEX[1]: >=
+│            ├─ `foo`
+│            ╰─ 0
+├─ FILTER: >=
+│          ├─ `bar`
+│          ╰─ 0
+├─ INDEX[0]: =
+│            ├─ `val`
+│            ╰─ 0
+├─ INDEX[1]: <
+│            ├─ `foo`
+│            ╰─ 50
+╰─ FILTER: <
+           ├─ `bar`
+           ╰─ 5
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt
+FROM tbl
+WHERE 0 <= foo AND 0 <= bar AND val = 0 AND foo < 50 AND bar < 5;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+INT: Multi-column aggregates
+== Query ==
+SELECT COUNT(*) as count_all
+, COUNT(val) as count_val
+, COUNT(foo) as count_foo
+, COUNT(bar) as count_bar
+, SUM(val) as sum_val
+, SUM(foo) as sum_foo
+, SUM(bar) as sum_bar
+, AVG(val) as avg_val
+, AVG(foo) as avg_foo
+, AVG(bar) as avg_bar
+, MAX(val) as max_val
+, MAX(foo) as max_foo
+, MAX(bar) as max_bar
+FROM tbl;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+INT: GROUP BY with multiple columns.
+== Query ==
+SELECT val, foo, SUM(bar), COUNT(*)
+FROM tbl
+WHERE foo >= -10 AND foo <= 10
+GROUP BY val, foo
+ORDER BY val, foo;
+
+Number of output lines, including header: 23
+
+== Diff ==
+==========
+
+
+
+INT: Empty data set, one result row.
+== Query ==
+SELECT
+COUNT(*) as cnt,
+MIN(val) as min_val,
+AVG(val) as avg_val,
+AVG(foo) as avg_foo
+FROM tbl
+WHERE foo = -9999999;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+INT: GROUP BY and ORDER BY
+== Query ==
+SELECT val, COUNT(*) as cnt
+FROM tbl
+GROUP BY val
+ORDER BY val DESC;
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+
+==================== Start testing data type: INT UNSIGNED ====================
+INT UNSIGNED: Create table and load data
+INT UNSIGNED: SELECT with GROUP BY
+== Query ==
+SELECT val, COUNT(*) as cnt
+FROM tbl
+GROUP BY val;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+INT UNSIGNED: All aggregates
+== Query ==
+SELECT COUNT(val) as avg_val,
+AVG(val) as cnt_val,
+SUM(val) as sum_val,
+MIN(val) as min_val,
+MAX(val) as max_val
+FROM tbl;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+INT UNSIGNED: Filter equality. No index, expect TABLE SCAN.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  =
+  ├─ `val`
+  ╰─ 1
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as table scan.
+FILTERS:
+╰─ =
+   ├─ `val`
+   ╰─ 1
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE val = 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+INT UNSIGNED: Filter comparison WHERE val >= 1 AND val < 1000000. No index, expect TABLE SCAN.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  AND
+  ├─ >=
+  │  ├─ `val`
+  │  ╰─ 1
+  ╰─ <
+     ├─ `val`
+     ╰─ 1000000
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as table scan.
+FILTERS:
+├─ >=
+│  ├─ `val`
+│  ╰─ 1
+╰─ <
+   ├─ `val`
+   ╰─ 1000000
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE val >= 1 AND val < 1000000;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+INT UNSIGNED: Add indexes
+ALTER TABLE tbl ADD INDEX idx_val_foo (val, foo);|
+ALTER TABLE tbl ADD INDEX idx_foo_val (foo, val);|
+INT UNSIGNED: Index scan equality. Expect INDEX SCAN on idx_val_foo.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  =
+  ├─ `val`
+  ╰─ 1
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as index scan.
+Index: `idx_val_foo`(`val`, `foo`)
+With goodness 11000 it's the best of 2 options.
+CONDITIONS (1 bound):
+╰─ INDEX[0]: =
+             ├─ `val`
+             ╰─ 1
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE val = 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+INT UNSIGNED: Index scan range WHERE val >= 1 AND val < 1000000. Expect INDEX SCAN on idx_val_foo.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  AND
+  ├─ >=
+  │  ├─ `val`
+  │  ╰─ 1
+  ╰─ <
+     ├─ `val`
+     ╰─ 1000000
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as index scan.
+Index: `idx_val_foo`(`val`, `foo`)
+With goodness 110 it's the best of 2 options.
+CONDITIONS (2 bounds):
+├─ INDEX[0]: >=
+│            ├─ `val`
+│            ╰─ 1
+╰─ INDEX[0]: <
+             ├─ `val`
+             ╰─ 1000000
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE val >= 1 AND val < 1000000;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+INT UNSIGNED: Composite index scan. Expect INDEX SCAN on idx_val_foo.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  AND
+  ├─ AND
+  │  ├─ <=
+  │  │  ├─ 0
+  │  │  ╰─ `foo`
+  │  ╰─ =
+  │     ├─ `val`
+  │     ╰─ 1
+  ╰─ <
+     ├─ `foo`
+     ╰─ 50
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as index scan.
+Index: `idx_val_foo`(`val`, `foo`)
+With goodness 11110 it's the best of 3 options.
+CONDITIONS (3 bounds):
+├─ INDEX[1]: >=
+│            ├─ `foo`
+│            ╰─ 0
+├─ INDEX[0]: =
+│            ├─ `val`
+│            ╰─ 1
+╰─ INDEX[1]: <
+             ├─ `foo`
+             ╰─ 50
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE 0 <= foo AND val = 1 AND foo < 50;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+INT UNSIGNED: Composite index scan WHERE val >= 1 AND val < 1000000. Expect INDEX SCAN on idx_foo_val.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  AND
+  ├─ AND
+  │  ├─ >=
+  │  │  ├─ `val`
+  │  │  ╰─ 1
+  │  ╰─ <
+  │     ├─ `val`
+  │     ╰─ 1000000
+  ╰─ =
+     ├─ 0
+     ╰─ `foo`
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as index scan.
+Index: `idx_foo_val`(`foo`, `val`)
+With goodness 11110 it's the best of 3 options.
+CONDITIONS (3 bounds):
+├─ INDEX[1]: >=
+│            ├─ `val`
+│            ╰─ 1
+├─ INDEX[1]: <
+│            ├─ `val`
+│            ╰─ 1000000
+╰─ INDEX[0]: =
+             ├─ `foo`
+             ╰─ 0
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE val >= 1 AND val < 1000000 AND 0 = foo;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+INT UNSIGNED: Composite index scan. Expect INDEX SCAN on idx_val_foo and 2 FILTERs on bar.
+INT UNSIGNED: 3-column filter val+foo+bar
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  AND
+  ├─ AND
+  │  ├─ AND
+  │  │  ├─ AND
+  │  │  │  ├─ <=
+  │  │  │  │  ├─ 0
+  │  │  │  │  ╰─ `foo`
+  │  │  │  ╰─ <=
+  │  │  │     ├─ 0
+  │  │  │     ╰─ `bar`
+  │  │  ╰─ =
+  │  │     ├─ `val`
+  │  │     ╰─ 1
+  │  ╰─ <
+  │     ├─ `foo`
+  │     ╰─ 50
+  ╰─ <
+     ├─ `bar`
+     ╰─ 5
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as index scan.
+Index: `idx_val_foo`(`val`, `foo`)
+With goodness 11110 it's the best of 3 options.
+CONDITIONS (3 bounds and 2 filters):
+├─ INDEX[1]: >=
+│            ├─ `foo`
+│            ╰─ 0
+├─ FILTER: >=
+│          ├─ `bar`
+│          ╰─ 0
+├─ INDEX[0]: =
+│            ├─ `val`
+│            ╰─ 1
+├─ INDEX[1]: <
+│            ├─ `foo`
+│            ╰─ 50
+╰─ FILTER: <
+           ├─ `bar`
+           ╰─ 5
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt
+FROM tbl
+WHERE 0 <= foo AND 0 <= bar AND val = 1 AND foo < 50 AND bar < 5;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+INT UNSIGNED: Multi-column aggregates
+== Query ==
+SELECT COUNT(*) as count_all
+, COUNT(val) as count_val
+, COUNT(foo) as count_foo
+, COUNT(bar) as count_bar
+, SUM(val) as sum_val
+, SUM(foo) as sum_foo
+, SUM(bar) as sum_bar
+, AVG(val) as avg_val
+, AVG(foo) as avg_foo
+, AVG(bar) as avg_bar
+, MAX(val) as max_val
+, MAX(foo) as max_foo
+, MAX(bar) as max_bar
+FROM tbl;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+INT UNSIGNED: GROUP BY with multiple columns.
+== Query ==
+SELECT val, foo, SUM(bar), COUNT(*)
+FROM tbl
+WHERE foo >= -10 AND foo <= 10
+GROUP BY val, foo
+ORDER BY val, foo;
+
+Number of output lines, including header: 22
+
+== Diff ==
+==========
+
+
+
+INT UNSIGNED: Empty data set, one result row.
+== Query ==
+SELECT
+COUNT(*) as cnt,
+MIN(val) as min_val,
+AVG(val) as avg_val,
+AVG(foo) as avg_foo
+FROM tbl
+WHERE foo = -9999999;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+INT UNSIGNED: GROUP BY and ORDER BY
+== Query ==
+SELECT val, COUNT(*) as cnt
+FROM tbl
+GROUP BY val
+ORDER BY val DESC;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+
+==================== Start testing data type: BIGINT ====================
+BIGINT: Create table and load data
+BIGINT: SELECT with GROUP BY
+== Query ==
+SELECT val, COUNT(*) as cnt
+FROM tbl
+GROUP BY val;
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+BIGINT: All aggregates
+== Query ==
+SELECT COUNT(val) as avg_val,
+MIN(val) as min_val,
+MAX(val) as max_val
+FROM tbl;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+BIGINT: Filter equality. No index, expect TABLE SCAN.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  =
+  ├─ `val`
+  ╰─ 0
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as table scan.
+FILTERS:
+╰─ =
+   ├─ `val`
+   ╰─ 0
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE val = 0;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+BIGINT: Filter comparison WHERE val >= -1 AND val < 1. No index, expect TABLE SCAN.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  AND
+  ├─ >=
+  │  ├─ `val`
+  │  ╰─ -1
+  ╰─ <
+     ├─ `val`
+     ╰─ 1
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as table scan.
+FILTERS:
+├─ >=
+│  ├─ `val`
+│  ╰─ -1
+╰─ <
+   ├─ `val`
+   ╰─ 1
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE val >= -1 AND val < 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+BIGINT: Add indexes
+ALTER TABLE tbl ADD INDEX idx_val_foo (val, foo);|
+ALTER TABLE tbl ADD INDEX idx_foo_val (foo, val);|
+BIGINT: Index scan equality. Expect INDEX SCAN on idx_val_foo.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  =
+  ├─ `val`
+  ╰─ 0
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as index scan.
+Index: `idx_val_foo`(`val`, `foo`)
+With goodness 11000 it's the best of 2 options.
+CONDITIONS (1 bound):
+╰─ INDEX[0]: =
+             ├─ `val`
+             ╰─ 0
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE val = 0;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+BIGINT: Index scan range WHERE val >= -1 AND val < 1. Expect INDEX SCAN on idx_val_foo.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  AND
+  ├─ >=
+  │  ├─ `val`
+  │  ╰─ -1
+  ╰─ <
+     ├─ `val`
+     ╰─ 1
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as index scan.
+Index: `idx_val_foo`(`val`, `foo`)
+With goodness 110 it's the best of 2 options.
+CONDITIONS (2 bounds):
+├─ INDEX[0]: >=
+│            ├─ `val`
+│            ╰─ -1
+╰─ INDEX[0]: <
+             ├─ `val`
+             ╰─ 1
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE val >= -1 AND val < 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+BIGINT: Composite index scan. Expect INDEX SCAN on idx_val_foo.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  AND
+  ├─ AND
+  │  ├─ <=
+  │  │  ├─ 0
+  │  │  ╰─ `foo`
+  │  ╰─ =
+  │     ├─ `val`
+  │     ╰─ 0
+  ╰─ <
+     ├─ `foo`
+     ╰─ 50
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as index scan.
+Index: `idx_val_foo`(`val`, `foo`)
+With goodness 11110 it's the best of 3 options.
+CONDITIONS (3 bounds):
+├─ INDEX[1]: >=
+│            ├─ `foo`
+│            ╰─ 0
+├─ INDEX[0]: =
+│            ├─ `val`
+│            ╰─ 0
+╰─ INDEX[1]: <
+             ├─ `foo`
+             ╰─ 50
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE 0 <= foo AND val = 0 AND foo < 50;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+BIGINT: Composite index scan WHERE val >= -1 AND val < 1. Expect INDEX SCAN on idx_foo_val.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  AND
+  ├─ AND
+  │  ├─ >=
+  │  │  ├─ `val`
+  │  │  ╰─ -1
+  │  ╰─ <
+  │     ├─ `val`
+  │     ╰─ 1
+  ╰─ =
+     ├─ 0
+     ╰─ `foo`
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as index scan.
+Index: `idx_foo_val`(`foo`, `val`)
+With goodness 11110 it's the best of 3 options.
+CONDITIONS (3 bounds):
+├─ INDEX[1]: >=
+│            ├─ `val`
+│            ╰─ -1
+├─ INDEX[1]: <
+│            ├─ `val`
+│            ╰─ 1
+╰─ INDEX[0]: =
+             ├─ `foo`
+             ╰─ 0
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE val >= -1 AND val < 1 AND 0 = foo;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+BIGINT: Composite index scan. Expect INDEX SCAN on idx_val_foo and 2 FILTERs on bar.
+BIGINT: 3-column filter val+foo+bar
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  AND
+  ├─ AND
+  │  ├─ AND
+  │  │  ├─ AND
+  │  │  │  ├─ <=
+  │  │  │  │  ├─ 0
+  │  │  │  │  ╰─ `foo`
+  │  │  │  ╰─ <=
+  │  │  │     ├─ 0
+  │  │  │     ╰─ `bar`
+  │  │  ╰─ =
+  │  │     ├─ `val`
+  │  │     ╰─ 0
+  │  ╰─ <
+  │     ├─ `foo`
+  │     ╰─ 50
+  ╰─ <
+     ├─ `bar`
+     ╰─ 5
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as index scan.
+Index: `idx_val_foo`(`val`, `foo`)
+With goodness 11110 it's the best of 3 options.
+CONDITIONS (3 bounds and 2 filters):
+├─ INDEX[1]: >=
+│            ├─ `foo`
+│            ╰─ 0
+├─ FILTER: >=
+│          ├─ `bar`
+│          ╰─ 0
+├─ INDEX[0]: =
+│            ├─ `val`
+│            ╰─ 0
+├─ INDEX[1]: <
+│            ├─ `foo`
+│            ╰─ 50
+╰─ FILTER: <
+           ├─ `bar`
+           ╰─ 5
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt
+FROM tbl
+WHERE 0 <= foo AND 0 <= bar AND val = 0 AND foo < 50 AND bar < 5;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+BIGINT: Multi-column aggregates
+== Query ==
+SELECT COUNT(*) as count_all
+, COUNT(val) as count_val
+, COUNT(foo) as count_foo
+, COUNT(bar) as count_bar
+, MAX(val) as max_val
+, MAX(foo) as max_foo
+, MAX(bar) as max_bar
+FROM tbl;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+BIGINT: GROUP BY with multiple columns.
+== Query ==
+SELECT val, foo, SUM(bar), COUNT(*)
+FROM tbl
+WHERE foo >= -10 AND foo <= 10
+GROUP BY val, foo
+ORDER BY val, foo;
+
+Number of output lines, including header: 23
+
+== Diff ==
+==========
+
+
+
+BIGINT: Empty data set, one result row.
+== Query ==
+SELECT
+COUNT(*) as cnt,
+MIN(val) as min_val,
+AVG(foo) as avg_foo
+FROM tbl
+WHERE foo = -9999999;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+BIGINT: GROUP BY and ORDER BY
+== Query ==
+SELECT val, COUNT(*) as cnt
+FROM tbl
+GROUP BY val
+ORDER BY val DESC;
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+
+==================== Start testing data type: BIGINT UNSIGNED ====================
+BIGINT UNSIGNED: Create table and load data
+BIGINT UNSIGNED: SELECT with GROUP BY
+== Query ==
+SELECT val, COUNT(*) as cnt
+FROM tbl
+GROUP BY val;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+BIGINT UNSIGNED: All aggregates
+== Query ==
+SELECT COUNT(val) as avg_val,
+MIN(val) as min_val,
+MAX(val) as max_val
+FROM tbl;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+BIGINT UNSIGNED: Filter equality. No index, expect TABLE SCAN.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  =
+  ├─ `val`
+  ╰─ 1
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as table scan.
+FILTERS:
+╰─ =
+   ├─ `val`
+   ╰─ 1
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE val = 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+BIGINT UNSIGNED: Filter comparison WHERE val >= 1 AND val < 1000000000. No index, expect TABLE SCAN.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  AND
+  ├─ >=
+  │  ├─ `val`
+  │  ╰─ 1
+  ╰─ <
+     ├─ `val`
+     ╰─ 1000000000
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as table scan.
+FILTERS:
+├─ >=
+│  ├─ `val`
+│  ╰─ 1
+╰─ <
+   ├─ `val`
+   ╰─ 1000000000
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE val >= 1 AND val < 1000000000;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+BIGINT UNSIGNED: Add indexes
+ALTER TABLE tbl ADD INDEX idx_val_foo (val, foo);|
+ALTER TABLE tbl ADD INDEX idx_foo_val (foo, val);|
+BIGINT UNSIGNED: Index scan equality. Expect INDEX SCAN on idx_val_foo.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  =
+  ├─ `val`
+  ╰─ 1
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as index scan.
+Index: `idx_val_foo`(`val`, `foo`)
+With goodness 11000 it's the best of 2 options.
+CONDITIONS (1 bound):
+╰─ INDEX[0]: =
+             ├─ `val`
+             ╰─ 1
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE val = 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+BIGINT UNSIGNED: Index scan range WHERE val >= 1 AND val < 1000000000. Expect INDEX SCAN on idx_val_foo.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  AND
+  ├─ >=
+  │  ├─ `val`
+  │  ╰─ 1
+  ╰─ <
+     ├─ `val`
+     ╰─ 1000000000
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as index scan.
+Index: `idx_val_foo`(`val`, `foo`)
+With goodness 110 it's the best of 2 options.
+CONDITIONS (2 bounds):
+├─ INDEX[0]: >=
+│            ├─ `val`
+│            ╰─ 1
+╰─ INDEX[0]: <
+             ├─ `val`
+             ╰─ 1000000000
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE val >= 1 AND val < 1000000000;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+BIGINT UNSIGNED: Composite index scan. Expect INDEX SCAN on idx_val_foo.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  AND
+  ├─ AND
+  │  ├─ <=
+  │  │  ├─ 0
+  │  │  ╰─ `foo`
+  │  ╰─ =
+  │     ├─ `val`
+  │     ╰─ 1
+  ╰─ <
+     ├─ `foo`
+     ╰─ 50
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as index scan.
+Index: `idx_val_foo`(`val`, `foo`)
+With goodness 11110 it's the best of 3 options.
+CONDITIONS (3 bounds):
+├─ INDEX[1]: >=
+│            ├─ `foo`
+│            ╰─ 0
+├─ INDEX[0]: =
+│            ├─ `val`
+│            ╰─ 1
+╰─ INDEX[1]: <
+             ├─ `foo`
+             ╰─ 50
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE 0 <= foo AND val = 1 AND foo < 50;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+BIGINT UNSIGNED: Composite index scan WHERE val >= 1 AND val < 1000000000. Expect INDEX SCAN on idx_foo_val.
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  AND
+  ├─ AND
+  │  ├─ >=
+  │  │  ├─ `val`
+  │  │  ╰─ 1
+  │  ╰─ <
+  │     ├─ `val`
+  │     ╰─ 1000000000
+  ╰─ =
+     ├─ 0
+     ╰─ `foo`
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as index scan.
+Index: `idx_foo_val`(`foo`, `val`)
+With goodness 11110 it's the best of 3 options.
+CONDITIONS (3 bounds):
+├─ INDEX[1]: >=
+│            ├─ `val`
+│            ╰─ 1
+├─ INDEX[1]: <
+│            ├─ `val`
+│            ╰─ 1000000000
+╰─ INDEX[0]: =
+             ├─ `foo`
+             ╰─ 0
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt FROM tbl WHERE val >= 1 AND val < 1000000000 AND 0 = foo;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+BIGINT UNSIGNED: Composite index scan. Expect INDEX SCAN on idx_val_foo and 2 FILTERs on bar.
+BIGINT UNSIGNED: 3-column filter val+foo+bar
+== Explain Query ==
+Query parse tree:
+SELECT
+  Out_0:`cnt`
+   = A0:Count(1)
+FROM tbl
+WHERE
+  AND
+  ├─ AND
+  │  ├─ AND
+  │  │  ├─ AND
+  │  │  │  ├─ <=
+  │  │  │  │  ├─ 0
+  │  │  │  │  ╰─ `foo`
+  │  │  │  ╰─ <=
+  │  │  │     ├─ 0
+  │  │  │     ╰─ `bar`
+  │  │  ╰─ =
+  │  │     ├─ `val`
+  │  │     ╰─ 1
+  │  ╰─ <
+  │     ├─ `foo`
+  │     ╰─ 50
+  ╰─ <
+     ├─ `bar`
+     ╰─ 5
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as index scan.
+Index: `idx_val_foo`(`val`, `foo`)
+With goodness 11110 it's the best of 3 options.
+CONDITIONS (3 bounds and 2 filters):
+├─ INDEX[1]: >=
+│            ├─ `foo`
+│            ╰─ 0
+├─ FILTER: >=
+│          ├─ `bar`
+│          ╰─ 0
+├─ INDEX[0]: =
+│            ├─ `val`
+│            ╰─ 1
+├─ INDEX[1]: <
+│            ├─ `foo`
+│            ╰─ 50
+╰─ FILTER: <
+           ├─ `bar`
+           ╰─ 5
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+==========
+== Query ==
+SELECT COUNT(*) as cnt
+FROM tbl
+WHERE 0 <= foo AND 0 <= bar AND val = 1 AND foo < 50 AND bar < 5;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+BIGINT UNSIGNED: Multi-column aggregates
+== Query ==
+SELECT COUNT(*) as count_all
+, COUNT(val) as count_val
+, COUNT(foo) as count_foo
+, COUNT(bar) as count_bar
+, MAX(val) as max_val
+, MAX(foo) as max_foo
+, MAX(bar) as max_bar
+FROM tbl;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+BIGINT UNSIGNED: GROUP BY with multiple columns.
+== Query ==
+SELECT val, foo, SUM(bar), COUNT(*)
+FROM tbl
+WHERE foo >= -10 AND foo <= 10
+GROUP BY val, foo
+ORDER BY val, foo;
+
+Number of output lines, including header: 22
+
+== Diff ==
+==========
+
+
+
+BIGINT UNSIGNED: Empty data set, one result row.
+== Query ==
+SELECT
+COUNT(*) as cnt,
+MIN(val) as min_val,
+AVG(foo) as avg_foo
+FROM tbl
+WHERE foo = -9999999;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+BIGINT UNSIGNED: GROUP BY and ORDER BY
+== Query ==
+SELECT val, COUNT(*) as cnt
+FROM tbl
+GROUP BY val
+ORDER BY val DESC;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+

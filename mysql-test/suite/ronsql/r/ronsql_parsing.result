@@ -1,203 +1,245 @@
+# vim: set fileencoding=utf-8 : -*- coding: utf-8 -*-
 ===== Null byte at beginning =====
 Input contains null byte at position 0.
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== Null byte in identifier =====
 Input contains null byte at position 8.
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== Null byte at end =====
 Input contains null byte at position 17.
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== Illegal UTF-8 byte =====
 Syntax error in SQL statement: Bytes 0xf8-0xff are illegal in UTF-8.
 > select a� from tbl;
 !         ^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== Illegal 0xc0 UTF-8 byte =====
 Syntax error in SQL statement: Invalid UTF-8 encoding.
 > select a� from tbl;
 !         ^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== Illegal 0xc1 UTF-8 byte =====
 Syntax error in SQL statement: Invalid UTF-8 encoding.
 > select a� from tbl;
 !         ^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== UTF-8 overlong 2-byte sequence =====
 Syntax error in SQL statement: Overlong UTF-8 encoding.
 > select a�� from tbl;
 !         ^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== UTF-8 overlong 3-byte sequence =====
 Syntax error in SQL statement: Overlong UTF-8 encoding.
 > select a��� from tbl;
 !         ^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== Too high code point (U+123456) =====
 Syntax error in SQL statement: Unicode code points above U+10FFFF are invalid.
 > select `a����` from tbl;
 !          ^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== Surrogate (U+dead) =====
 Syntax error in SQL statement: Unicode code points U+D800 -- U+DFFF are invalid, as they correspond to UTF-16 surrogate pairs.
 > select `a���` from tbl;
 !          ^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== Non-BMP UTF-8 in identifier =====
 Syntax error in SQL statement: Unicode code points above U+FFFF are not allowed in MySQL identifiers.
 > select `a𠓗` from tbl;
 !          ^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== Unimplemented keyword used as unquoted identifier =====
 Syntax error in SQL statement: Unimplemented keyword. If this was intended as an identifier, use backtick quotation.
 > select zone from tbl;
 !        ^^^^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== Incomplete escape sequence in single-quoted string =====
 Syntax error in SQL statement: Incomplete escape sequence in single-quoted string
 > select a from tbl where 'hello\
 !                               ^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== Unexpected EOI in single-quoted string =====
 Syntax error in SQL statement: Unexpected end of input inside single-quoted string
 > select a from tbl where 'hello
 !                         ^^^^^^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== Illegal token =====
 Syntax error in SQL statement: Illegal token
 > select #a from tbl;
 !        ^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== EOI inside quoted identifier =====
 Syntax error in SQL statement: Unexpected end of input inside quoted identifier
 > select `a
 !        ^^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== EOI inside escaped identifier =====
 Syntax error in SQL statement: Unexpected end of input inside quoted identifier
 > select `bc``de
 !        ^^^^^^^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== UTF-8 2-byte sequence with illegal 2nd byte =====
 Syntax error in SQL statement: Invalid UTF-8 encoding.
 > select `a�` from tbl;
 !          ^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== UTF-8 2-byte sequence at EOI with 2nd byte missing =====
 Syntax error in SQL statement: Invalid UTF-8 encoding.
 > select `a` from `table�
 !                       ^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== UTF-8 3-byte sequence with illegal 2nd byte =====
 Syntax error in SQL statement: Invalid UTF-8 encoding.
 > select `a�` from tbl;
 !          ^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== UTF-8 3-byte sequence with illegal 3rd byte =====
 Syntax error in SQL statement: Invalid UTF-8 encoding.
 > select `a�` from tbl;
 !          ^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== UTF-8 3-byte sequence at EOI with 2nd byte missing =====
 Syntax error in SQL statement: Invalid UTF-8 encoding.
 > select `a` from `table�
 !                       ^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== UTF-8 3-byte sequence at EOI with 3rd byte missing =====
 Syntax error in SQL statement: Invalid UTF-8 encoding.
 > select `a` from `table�
 !                       ^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== UTF-8 4-byte sequence with illegal 2nd byte =====
 Syntax error in SQL statement: Invalid UTF-8 encoding.
 > select `a�` from tbl;
 !          ^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== UTF-8 4-byte sequence with illegal 3rd byte =====
 Syntax error in SQL statement: Invalid UTF-8 encoding.
 > select `a�` from tbl;
 !          ^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== UTF-8 4-byte sequence with illegal 4th byte =====
 Syntax error in SQL statement: Invalid UTF-8 encoding.
 > select `a�` from tbl;
 !          ^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== UTF-8 4-byte sequence at EOI with 2nd byte missing =====
 Syntax error in SQL statement: Invalid UTF-8 encoding.
 > select `a` from `table�
 !                       ^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== UTF-8 4-byte sequence at EOI with 3rd byte missing =====
 Syntax error in SQL statement: Invalid UTF-8 encoding.
 > select `a` from `table�
 !                       ^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== UTF-8 4-byte sequence at EOI with 4th byte missing =====
 Syntax error in SQL statement: Invalid UTF-8 encoding.
 > select `a` from `table�
 !                       ^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== Rogue UTF-8 continuation byte =====
 Syntax error in SQL statement: Invalid UTF-8 encoding.
 > select a� from tbl;
 !         ^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== Empty input =====
 Syntax error in SQL statement: Empty input
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== Invalid token at beginning =====
 Syntax error in SQL statement: Illegal token
 > select a from tbl;
 ! ^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== Control character in unquoted identifier =====
 Syntax error in SQL statement: Illegal token
 > select a from tbl;
 !         ^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== Invalid token at end =====
 Syntax error in SQL statement: Illegal token
 > select a from tbl;
 !                   ^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== Unexpected end of input =====
 Syntax error in SQL statement: Unexpected end of input
 > select a from tbl
 !                  ^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== Unexpected end of input at newline =====
 Syntax error in SQL statement: Unexpected end of input
 > select a from tbl
 > 
 ! ^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== Unexpected at this point =====
 Syntax error in SQL statement: Unexpected at this point
 > select a `bcde` from tbl;
 !          ^^^^^^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== Unexpected before newline =====
 Syntax error in SQL statement: Unexpected at this point
 > select a `bcde`
 !          ^^^^^^
 > from tbl;
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== Unexpected after newline =====
 Syntax error in SQL statement: Unexpected at this point
 > select a
 > `bcde` from tbl;
 ! ^^^^^^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== Unexpected with ending newline =====
 Syntax error in SQL statement: Unexpected at this point
 > select a `bcde` from tbl;
 !          ^^^^^^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== Unexpected with newline at start =====
 Syntax error in SQL statement: Unexpected at this point
 > 
 > select a `bcde` from tbl;
 !          ^^^^^^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== Unexpected containing newline =====
 Syntax error in SQL statement: Unexpected at this point
@@ -205,6 +247,7 @@ Syntax error in SQL statement: Unexpected at this point
 !          ^^^
 > de` from tbl;
 ! ^^^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== Unexpected containing two newlines =====
 Syntax error in SQL statement: Unexpected at this point
@@ -214,21 +257,25 @@ Syntax error in SQL statement: Unexpected at this point
 ! ^^
 > e` from tbl;
 ! ^^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== Unexpected escaped identifier =====
 Syntax error in SQL statement: Unexpected at this point
 > select a `bc``de` from tbl;
 !          ^^^^^^^^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== Two escaped identifiers, 1st unexpected =====
 Syntax error in SQL statement: Unexpected at this point
 > select a `bc``de` from `fg``h``i`;
 !          ^^^^^^^^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== Two escaped identifiers, 2nd unexpected =====
 Syntax error in SQL statement: Unexpected at this point
 > select a, `bc``de` from tbl `fg``h``i`;
 !                             ^^^^^^^^^^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== Error marker alignment after 2-byte UTF-8 characters =====
 Syntax error in SQL statement: Unexpected at this point
@@ -236,6 +283,7 @@ Syntax error in SQL statement: Unexpected at this point
 >       ,räksmörgås räksmörgås
 !                   ^^^^^^^^^^
 > from tbl;
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== Error marker alignment after 3-byte UTF-8 character =====
 Syntax error in SQL statement: Unexpected at this point
@@ -243,100 +291,121 @@ Syntax error in SQL statement: Unexpected at this point
 >       ,ᚱab ᚱab
 !            ^^^
 > from tbl;
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== Incomplete escape sequence in single-quoted string =====
 Syntax error in SQL statement: Incomplete escape sequence in single-quoted string
 > select a from tbl where 'word\
 !                              ^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== Unexpected end of input inside single-quoted string =====
 Syntax error in SQL statement: Unexpected end of input inside single-quoted string
 > select a from tbl where 'word
 !                         ^^^^^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== date_add not supported in output =====
 Syntax error in SQL statement: Unexpected at this point
 > select date_add(col1, interval 1 day) from tbl;
 !        ^^^^^^^^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== Parser stack exhausted =====
+Error handling: RPE
 ronsql_cli caught exception: Parser stack exceeded its maximum depth.
 ===== Too long unquoted identifier in column name =====
 Syntax error in SQL statement: This identifier is too long. The limit is 64 bytes encoded as UTF-8.
 > select aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa from tbl;
 !        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== Too long quoted identifier in column name =====
 Syntax error in SQL statement: This identifier is too long. The limit is 64 bytes encoded as UTF-8.
 > select `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` from tbl;
 !        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== Too long quoted identifier in column name, although characters < 64 =====
 Syntax error in SQL statement: This identifier is too long. The limit is 64 bytes encoded as UTF-8.
 > select `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaöööööööööö` from tbl;
 !        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== Too long unquoted alias =====
 Syntax error in SQL statement: This identifier is too long. The limit is 64 bytes encoded as UTF-8.
 > select a as aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa from tbl;
 !             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== Too long quoted alias =====
 Syntax error in SQL statement: This identifier is too long. The limit is 64 bytes encoded as UTF-8.
 > select a as `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` from tbl;
 !             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== Too long unquoted identifier in WHERE =====
 Syntax error in SQL statement: This identifier is too long. The limit is 64 bytes encoded as UTF-8.
 > select a from tbl where aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa;
 !                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== Too long quoted identifier in WHERE =====
 Syntax error in SQL statement: This identifier is too long. The limit is 64 bytes encoded as UTF-8.
 > select a from tbl where `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`;
 !                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== Too long unquoted identifier in GROUP BY =====
 Syntax error in SQL statement: This identifier is too long. The limit is 64 bytes encoded as UTF-8.
 > select a from tbl group by aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa;
 !                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== Too long quoted identifier in GROUP BY =====
 Syntax error in SQL statement: This identifier is too long. The limit is 64 bytes encoded as UTF-8.
 > select a from tbl group by `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`;
 !                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== Too long unquoted identifier in ORDER BY =====
 Syntax error in SQL statement: This identifier is too long. The limit is 64 bytes encoded as UTF-8.
 > select a from tbl ORDER BY aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa;
 !                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== Too long quoted identifier in ORDER BY =====
 Syntax error in SQL statement: This identifier is too long. The limit is 64 bytes encoded as UTF-8.
 > select a from tbl ORDER BY `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`;
 !                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== Too long unaliased select expression =====
 Syntax error in SQL statement: Unaliased select expression too long. Use `AS` to add an alias no more than 64 bytes long.
 > select max ((((((((((((((((((((((((((((((a)))))))))))))))))))))))))))))) from tbl;
 !        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== Select a column that is not in group by clause =====
 Syntax error: SELECT expression refers to ungrouped column `b` outside of aggregate function.
 You can either add this column to the GROUP BY clause, or use it within an aggregate function e.g. Sum(`b`).
+Error handling: RPE
 ronsql_cli caught exception: Ungrouped column in non-aggregated SELECT expression.
 ===== Non-aggregation query =====
 This query has no aggregate expression, so it is not an aggregate query.
 Currently, RonSQL only supports aggregate queries.
+Error handling: RPE
 ronsql_cli caught exception: Not an aggregate query.
 ===== Non-aggregation query with GROUP BY =====
 This query has no aggregate expression, so it is not an aggregate query.
 Currently, RonSQL only supports aggregate queries.
+Error handling: RPE
 ronsql_cli caught exception: Not an aggregate query.
 ===== Too big integer constant =====
 Syntax error in SQL statement: Literal integer too big.
 > select sum(a) from tbl where a < 9223372036854775808;
 !                                  ^^^^^^^^^^^^^^^^^^^
+Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 ===== Simple =====
 Query parse tree:
@@ -786,20 +855,20 @@ SELECT
    = C3:`col4`
 FROM tbl
 WHERE
-XOR
-+- =
-|  +- `col2`
-|  \- +
-|     +- `col3`
-|     \- 5
-\- AND
-   +- !=
-   |  +- `col2`
-   |  \- `col4`
-   \- !
-      \- >=
-         +- `col2`
-         \- 57
+  XOR
+  ├─ =
+  │  ├─ `col2`
+  │  ╰─ +
+  │     ├─ `col3`
+  │     ╰─ 5
+  ╰─ AND
+     ├─ !=
+     │  ├─ `col2`
+     │  ╰─ `col4`
+     ╰─ !
+        ╰─ >=
+           ├─ `col2`
+           ╰─ 57
 GROUP BY
   C0:`col1`
   C3:`col4`
@@ -825,105 +894,105 @@ SELECT
    = A0:Max(`b`)
 FROM tbl
 WHERE
-AND
-+- OR
-|  +- OR
-|  |  +- `a`
-|  |  \- `a`
-|  \- XOR
-|     +- `a`
-|     \- AND
-|        +- AND
-|        |  +- `a`
-|        |  \- `a`
-|        \- NOT
-|           \- BITWISE-OR (|)
-|              +- IS
-|              |  +- !=
-|              |  |  +- !=
-|              |  |  |  +- <
-|              |  |  |  |  +- <=
-|              |  |  |  |  |  +- >
-|              |  |  |  |  |  |  +- >=
-|              |  |  |  |  |  |  |  +- =
-|              |  |  |  |  |  |  |  |  +- `a`
-|              |  |  |  |  |  |  |  |  \- `a`
-|              |  |  |  |  |  |  |  \- `a`
-|              |  |  |  |  |  |  \- `a`
-|              |  |  |  |  |  \- `a`
-|              |  |  |  |  \- `a`
-|              |  |  |  \- `a`
-|              |  |  \- `a`
-|              |  \- NULL
-|              \- &
-|                 +- `a`
-|                 \- >>
-|                    +- <<
-|                    |  +- `a`
-|                    |  \- `a`
-|                    \- -
-|                       +- +
-|                       |  +- `a`
-|                       |  \- `a`
-|                       \- %
-|                          +- /
-|                          |  +- *
-|                          |  |  +- `a`
-|                          |  |  \- `a`
-|                          |  \- `a`
-|                          \- ^
-|                             +- `a`
-|                             \- !
-|                                \- `a`
-\- OR
-   +- OR
-   |  +- XOR
-   |  |  +- AND
-   |  |  |  +- AND
-   |  |  |  |  +- =
-   |  |  |  |  |  +- >=
-   |  |  |  |  |  |  +- >
-   |  |  |  |  |  |  |  +- <=
-   |  |  |  |  |  |  |  |  +- <
-   |  |  |  |  |  |  |  |  |  +- !=
-   |  |  |  |  |  |  |  |  |  |  +- !=
-   |  |  |  |  |  |  |  |  |  |  |  +- IS
-   |  |  |  |  |  |  |  |  |  |  |  |  +- BITWISE-OR (|)
-   |  |  |  |  |  |  |  |  |  |  |  |  |  +- &
-   |  |  |  |  |  |  |  |  |  |  |  |  |  |  +- <<
-   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  +- >>
-   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  +- +
-   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  +- -
-   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  +- *
-   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  +- /
-   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  +- %
-   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  +- ^
-   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  +- !
-   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  \- `a`
-   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  \- `a`
-   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  \- `a`
-   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  \- `a`
-   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  \- `a`
-   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  \- `a`
-   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  \- `a`
-   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  \- `a`
-   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  \- `a`
-   |  |  |  |  |  |  |  |  |  |  |  |  |  |  \- `a`
-   |  |  |  |  |  |  |  |  |  |  |  |  |  \- `a`
-   |  |  |  |  |  |  |  |  |  |  |  |  \- NOT NULL
-   |  |  |  |  |  |  |  |  |  |  |  \- `a`
-   |  |  |  |  |  |  |  |  |  |  \- `a`
-   |  |  |  |  |  |  |  |  |  \- `a`
-   |  |  |  |  |  |  |  |  \- `a`
-   |  |  |  |  |  |  |  \- `a`
-   |  |  |  |  |  |  \- `a`
-   |  |  |  |  |  \- NOT
-   |  |  |  |  |     \- `a`
-   |  |  |  |  \- `a`
-   |  |  |  \- `a`
-   |  |  \- `a`
-   |  \- `a`
-   \- `a`
+  AND
+  ├─ OR
+  │  ├─ OR
+  │  │  ├─ `a`
+  │  │  ╰─ `a`
+  │  ╰─ XOR
+  │     ├─ `a`
+  │     ╰─ AND
+  │        ├─ AND
+  │        │  ├─ `a`
+  │        │  ╰─ `a`
+  │        ╰─ NOT
+  │           ╰─ BITWISE-OR (|)
+  │              ├─ IS
+  │              │  ├─ !=
+  │              │  │  ├─ !=
+  │              │  │  │  ├─ <
+  │              │  │  │  │  ├─ <=
+  │              │  │  │  │  │  ├─ >
+  │              │  │  │  │  │  │  ├─ >=
+  │              │  │  │  │  │  │  │  ├─ =
+  │              │  │  │  │  │  │  │  │  ├─ `a`
+  │              │  │  │  │  │  │  │  │  ╰─ `a`
+  │              │  │  │  │  │  │  │  ╰─ `a`
+  │              │  │  │  │  │  │  ╰─ `a`
+  │              │  │  │  │  │  ╰─ `a`
+  │              │  │  │  │  ╰─ `a`
+  │              │  │  │  ╰─ `a`
+  │              │  │  ╰─ `a`
+  │              │  ╰─ NULL
+  │              ╰─ &
+  │                 ├─ `a`
+  │                 ╰─ >>
+  │                    ├─ <<
+  │                    │  ├─ `a`
+  │                    │  ╰─ `a`
+  │                    ╰─ -
+  │                       ├─ +
+  │                       │  ├─ `a`
+  │                       │  ╰─ `a`
+  │                       ╰─ %
+  │                          ├─ /
+  │                          │  ├─ *
+  │                          │  │  ├─ `a`
+  │                          │  │  ╰─ `a`
+  │                          │  ╰─ `a`
+  │                          ╰─ ^
+  │                             ├─ `a`
+  │                             ╰─ !
+  │                                ╰─ `a`
+  ╰─ OR
+     ├─ OR
+     │  ├─ XOR
+     │  │  ├─ AND
+     │  │  │  ├─ AND
+     │  │  │  │  ├─ =
+     │  │  │  │  │  ├─ >=
+     │  │  │  │  │  │  ├─ >
+     │  │  │  │  │  │  │  ├─ <=
+     │  │  │  │  │  │  │  │  ├─ <
+     │  │  │  │  │  │  │  │  │  ├─ !=
+     │  │  │  │  │  │  │  │  │  │  ├─ !=
+     │  │  │  │  │  │  │  │  │  │  │  ├─ IS
+     │  │  │  │  │  │  │  │  │  │  │  │  ├─ BITWISE-OR (|)
+     │  │  │  │  │  │  │  │  │  │  │  │  │  ├─ &
+     │  │  │  │  │  │  │  │  │  │  │  │  │  │  ├─ <<
+     │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  ├─ >>
+     │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  ├─ +
+     │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  ├─ -
+     │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  ├─ *
+     │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  ├─ /
+     │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  ├─ %
+     │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  ├─ ^
+     │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  ├─ !
+     │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  ╰─ `a`
+     │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  ╰─ `a`
+     │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  ╰─ `a`
+     │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  ╰─ `a`
+     │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  ╰─ `a`
+     │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  ╰─ `a`
+     │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  ╰─ `a`
+     │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  ╰─ `a`
+     │  │  │  │  │  │  │  │  │  │  │  │  │  │  │  ╰─ `a`
+     │  │  │  │  │  │  │  │  │  │  │  │  │  │  ╰─ `a`
+     │  │  │  │  │  │  │  │  │  │  │  │  │  ╰─ `a`
+     │  │  │  │  │  │  │  │  │  │  │  │  ╰─ NOT NULL
+     │  │  │  │  │  │  │  │  │  │  │  ╰─ `a`
+     │  │  │  │  │  │  │  │  │  │  ╰─ `a`
+     │  │  │  │  │  │  │  │  │  ╰─ `a`
+     │  │  │  │  │  │  │  │  ╰─ `a`
+     │  │  │  │  │  │  │  ╰─ `a`
+     │  │  │  │  │  │  ╰─ `a`
+     │  │  │  │  │  ╰─ NOT
+     │  │  │  │  │     ╰─ `a`
+     │  │  │  │  ╰─ `a`
+     │  │  │  ╰─ `a`
+     │  │  ╰─ `a`
+     │  ╰─ `a`
+     ╰─ `a`
 GROUP BY
   C0:`a`
 
@@ -946,9 +1015,9 @@ SELECT
    = A0:Max(`b`)
 FROM tbl
 WHERE
-IS
-+- STRING: 0x00=<00>,0x27=',0x08=<08>,0x0a=<0A>,0x0d=<0D>,0x09=<09>,0x1a=<1A>,bs=\,bs_perc=\%,bs_ul=\_,Q=Q,7=7
-\- NOT NULL
+  IS
+  ├─ STRING: 0x00=<00>,0x27=',0x08=<08>,0x0a=<0A>,0x0d=<0D>,0x09=<09>,0x1a=<1A>,bs=\,bs_perc=\%,bs_ul=\_,Q=Q,7=7
+  ╰─ NOT NULL
 GROUP BY
   C0:`col`
 
@@ -971,7 +1040,7 @@ SELECT
    = A0:Max(`b`)
 FROM tbl
 WHERE
-STRING: hello<20>world
+  STRING: hello<20>world
 GROUP BY
   C0:`col`
 
@@ -994,13 +1063,13 @@ SELECT
    = A0:Max(`b`)
 FROM tbl
 WHERE
-IS
-+- DATE_ADD
-|  +- `col1`
-|  \- INTERVAL
-|     +- 1
-|     \- DAY
-\- NOT NULL
+  IS
+  ├─ DATE_ADD
+  │  ├─ `col1`
+  │  ╰─ INTERVAL
+  │     ├─ 1
+  │     ╰─ DAY
+  ╰─ NOT NULL
 GROUP BY
   C0:`col`
 
@@ -1023,13 +1092,13 @@ SELECT
    = A0:Max(`b`)
 FROM tbl
 WHERE
->
-+- DATE_ADD
-|  +- STRING: 2024-05-06
-|  \- INTERVAL
-|     +- 23
-|     \- MICROSECOND
-\- `col2`
+  >
+  ├─ DATE_ADD
+  │  ├─ STRING: 2024-05-06
+  │  ╰─ INTERVAL
+  │     ├─ 23
+  │     ╰─ MICROSECOND
+  ╰─ `col2`
 GROUP BY
   C0:`col`
 
@@ -1052,11 +1121,11 @@ SELECT
    = A0:Max(`b`)
 FROM tbl
 WHERE
-<=
-+- EXTRACT
-|  +- YEAR
-|  \- STRING: 2024-05-06
-\- `col2`
+  <=
+  ├─ EXTRACT
+  │  ├─ YEAR
+  │  ╰─ STRING: 2024-05-06
+  ╰─ `col2`
 GROUP BY
   C0:`col`
 
@@ -1184,22 +1253,22 @@ SELECT
    = A4:Count((`a` - (0 - (0 - (`b` - 1)))))
 FROM tbl
 WHERE
-AND
-+- AND
-|  +- <
-|  |  +- `col1`
-|  |  \- -45
-|  \- >
-|     +- `col2`
-|     \- NEGATION
-|        \- NEGATION
-|           \- NEGATION
-|              \- NEGATION
-|                 \- NEGATION
-|                    \- `col3`
-\- >
-   +- `col3`
-   \- 7
+  AND
+  ├─ AND
+  │  ├─ <
+  │  │  ├─ `col1`
+  │  │  ╰─ -45
+  │  ╰─ >
+  │     ├─ `col2`
+  │     ╰─ NEGATION
+  │        ╰─ NEGATION
+  │           ╰─ NEGATION
+  │              ╰─ NEGATION
+  │                 ╰─ NEGATION
+  │                    ╰─ `col3`
+  ╰─ >
+     ├─ `col3`
+     ╰─ 7
 GROUP BY
   C0:`col1`
 
@@ -1448,13 +1517,13 @@ SELECT
    = A8:Count(1)
 FROM lineitem
 WHERE
-<=
-+- `l_shipdate`
-\- DATE_SUB
-   +- STRING: 1998-12-01
-   \- INTERVAL
-      +- STRING: 90
-      \- DAY
+  <=
+  ├─ `l_shipdate`
+  ╰─ DATE_SUB
+     ├─ STRING: 1998-12-01
+     ╰─ INTERVAL
+        ├─ STRING: 90
+        ╰─ DAY
 GROUP BY
   C0:`l_returnflag`
   C1:`l_linestatus`

@@ -28,7 +28,7 @@ SELECT COUNT(*), SUM(pk) FROM tbl WHERE d  >  '2025-11-24';
 Number of output lines, including header: 2
 
 == Diff ==
-================================================================================
+==========
 
 
 
@@ -38,7 +38,7 @@ SELECT COUNT(*), SUM(pk) FROM tbl WHERE dt <  '2025-11-24 11:47:05';
 Number of output lines, including header: 2
 
 == Diff ==
-================================================================================
+==========
 
 
 
@@ -48,7 +48,7 @@ SELECT COUNT(*), SUM(pk) FROM tbl WHERE ts >= '2025-11-24 11:47:03.001';
 Number of output lines, including header: 2
 
 == Diff ==
-================================================================================
+==========
 
 
 
@@ -58,7 +58,7 @@ SELECT COUNT(*), SUM(pk) FROM tbl WHERE d  >= DATE_ADD('2025-11-24', INTERVAL 1 
 Number of output lines, including header: 2
 
 == Diff ==
-================================================================================
+==========
 
 
 
@@ -68,7 +68,7 @@ SELECT COUNT(*), SUM(pk) FROM tbl WHERE d  >= DATE_ADD('2025-11-24', INTERVAL 1 
 Number of output lines, including header: 2
 
 == Diff ==
-================================================================================
+==========
 
 
 
@@ -78,7 +78,7 @@ SELECT COUNT(*), SUM(pk) FROM tbl WHERE d  >= DATE_ADD('2025-11-24', INTERVAL 1 
 Number of output lines, including header: 2
 
 == Diff ==
-================================================================================
+==========
 
 
 
@@ -88,7 +88,7 @@ SELECT COUNT(*), SUM(pk) FROM tbl WHERE d  >= DATE_ADD('2025-11-24', INTERVAL 1 
 Number of output lines, including header: 2
 
 == Diff ==
-================================================================================
+==========
 
 
 
@@ -98,7 +98,7 @@ SELECT COUNT(*), SUM(pk) FROM tbl WHERE d  >= DATE_ADD('2025-11-24', INTERVAL 1 
 Number of output lines, including header: 2
 
 == Diff ==
-================================================================================
+==========
 
 
 
@@ -108,7 +108,7 @@ SELECT COUNT(*), SUM(pk) FROM tbl WHERE dt >= DATE_SUB('2025-11-24 11:47:03', IN
 Number of output lines, including header: 2
 
 == Diff ==
-================================================================================
+==========
 
 
 
@@ -118,7 +118,7 @@ SELECT COUNT(*), SUM(pk) FROM tbl WHERE ts >= DATE_ADD('2025-11-24 11:47:03', IN
 Number of output lines, including header: 2
 
 == Diff ==
-================================================================================
+==========
 
 
 
@@ -128,7 +128,7 @@ SELECT COUNT(*), SUM(pk) FROM tbl WHERE dt >= DATE_ADD('2025-11-24 11:47:03', IN
 Number of output lines, including header: 2
 
 == Diff ==
-================================================================================
+==========
 
 
 
@@ -139,7 +139,7 @@ SELECT COUNT(*), SUM(pk) FROM tbl WHERE NOT ts < DATE_SUB(DATE_ADD('2025-11-24 1
 Number of output lines, including header: 2
 
 == Diff ==
-================================================================================
+==========
 
 
 

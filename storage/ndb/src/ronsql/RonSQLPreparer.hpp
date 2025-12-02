@@ -97,8 +97,6 @@ public:
     TOO_LONG_UNALIASED_OUTPUT,
     PARSER_ERROR,
   };
-  class TemporaryError : public std::exception {};
-  class ColumnNotFoundError : public std::exception {};
   /*
    * The context class is used to expose parser internals to flex and bison code
    * without making them public.
@@ -140,6 +138,8 @@ private:
   const NdbDictionary::Column** m_column_map = NULL;
   const NdbDictionary::Dictionary* m_dict = NULL;
   const NdbDictionary::Table* m_table = NULL;
+  Uint64 m_schema_fingerprint_hash = 0;
+  NdbTransaction* m_trans = NULL;
   yyscan_t m_scanner;
   YY_BUFFER_STATE m_buf;
   bool m_do_explain = false;
@@ -179,15 +179,17 @@ private:
   void generate_scan_config_candidates();
   void compile();
   void determine_explain();
-  void unload_schema();
+  bool unload_schema(bool reload = false);
+  void handle_ronsql_exception(std::exception_ptr eptr);
 
   // Functions used in execution phase
 public:
   void execute(); // todo make sure we can execute several times, do not mutate. Make this a separate object that takes a preparer as const input (This todo from review 2024-08-22 with MR)
 private:
+  void cleanup_trans();
   void apply_filter_top_level(NdbScanFilter* filter);
-  bool apply_filter(NdbScanFilter* filter, struct ConditionalExpression* ce);
-  bool apply_filter_cmp(NdbScanFilter* filter,
+  void apply_filter(NdbScanFilter* filter, struct ConditionalExpression* ce);
+  void apply_filter_cmp(NdbScanFilter* filter,
                         NdbScanFilter::BinaryCondition cond,
                         struct ConditionalExpression* left,
                         struct ConditionalExpression* right);

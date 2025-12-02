@@ -1,5 +1,8 @@
 --source include/have_ndb.inc
 
+# Compare MySQL against RonSQL using RDRS only
+--let $suppress_ronsql_cli=yes
+
 --let RAND_SEED=42
 --let NUM_ROWS=10
 --source suite/ronsql/include/ronsql_create_table_api_scan.inc

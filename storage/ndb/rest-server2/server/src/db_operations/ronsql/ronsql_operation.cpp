@@ -37,7 +37,7 @@
 
 RS_Status ronsql_op(RonSQLExecParams& params) {
   std::basic_ostream<char>& err = *params.err_stream;
-  static int max_attempts = 2;
+  static int max_attempts = 3;
   for (int attempt = 0; attempt < max_attempts; attempt++) {
     bool is_last_attempt = attempt == max_attempts - 1;
     try {
@@ -47,29 +47,22 @@ RS_Status ronsql_op(RonSQLExecParams& params) {
       DEB_TRACE();
       return RS_OK;
     }
-    catch (RonSQLPreparer::TemporaryError& e) {
+    catch (RonSQLRetryableError& e) {
       DEB_TRACE();
       if (is_last_attempt) {
-        err << "Caught TemporaryError after " << max_attempts << " attempts."
-            << std::endl;
+        err << "Caught RonSQLRetryableError after " << max_attempts
+            << " attempts: " << e.what() << ".\n";
         return RS_SERVER_ERROR(std::string(rdrsErrorMessage(ERROR_RONSQL_TEMPORARY)));
-      } else {
-        ndb_retry_sleep(50);
       }
+      ndb_retry_sleep(50);
     }
-    catch (RonSQLPreparer::ColumnNotFoundError& e) {
-      if (is_last_attempt) {
-        err << "Caught ColumnNotFoundError after " << max_attempts
-            << " attempts." << std::endl;
-        return RS_SERVER_ERROR(std::string(rdrsErrorMessage(ERROR_RONSQL_PERMANENT)));
-      } else {
-        ndb_retry_sleep(50);
-      }
-    }
-    catch (std::runtime_error& e) {
-      err << "Caught exception: " << e.what() << std::endl;
-      DEB_TRACE();
+    catch (RonSQLPermanentError& e) {
+      err << "Caught exception: " << e.what() << "\n";
       return RS_SERVER_ERROR(std::string(rdrsErrorMessage(ERROR_RONSQL_PERMANENT)));
+    }
+    catch (...) {
+      // This should never happen
+      abort();
     }
   }
   // Should be unreachable

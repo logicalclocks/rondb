@@ -49,7 +49,8 @@ if ($canonicalization_script)
 }
 --exec (head -n 1 $MYSQL_TMP_DIR/ronsql-rdrs.out && tail -n +2 $MYSQL_TMP_DIR/ronsql-rdrs.out | sort) > $MYSQL_TMP_DIR/ronsql-rdrs.out.sorted
 
-# todo make cli conditional
+if ($suppress_ronsql_cli=='')
+{
 --exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING $QUERY_PARAMS > $MYSQL_TMP_DIR/ronsql-cli.out
 if ($canonicalization_script)
 {
@@ -60,6 +61,7 @@ if ($canonicalization_script)
 # todo The "|| true" at the end makes this test succeed no matter what the
 # results are. Remove it when possible.
 --exec diff -u --label ronsql-cli.out $MYSQL_TMP_DIR/ronsql-cli.out.sorted --label ronsql-rdrs.out $MYSQL_TMP_DIR/ronsql-rdrs.out.sorted || true
+}
 
 --echo
 --echo == Diff ==
@@ -73,11 +75,14 @@ if ($canonicalization_script)
 --remove_file $MYSQL_TMP_DIR/ronsql-rdrs-body-3
 --remove_file $MYSQL_TMP_DIR/mysql.out
 --remove_file $MYSQL_TMP_DIR/mysql.out.sorted
+if ($suppress_ronsql_cli=='')
+{
 --remove_file $MYSQL_TMP_DIR/ronsql-cli.out
 --remove_file $MYSQL_TMP_DIR/ronsql-cli.out.sorted
+}
 --remove_file $MYSQL_TMP_DIR/ronsql-rdrs.out
 --remove_file $MYSQL_TMP_DIR/ronsql-rdrs.out.sorted
---echo ================================================================================
+--echo ==========
 --echo
 --echo
 --echo

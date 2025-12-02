@@ -24,12 +24,10 @@
 
 #include <iostream>
 #include "define_formatter.hpp"
-#include <assert.h>
 #include <cstring>
 #include "AggregationAPICompiler.hpp"
 using std::endl;
 using std::max;
-using std::runtime_error;
 
 AggregationAPICompiler::AggregationAPICompiler
     (std::function<const char*(uint)> column_idx_to_name,
@@ -52,7 +50,7 @@ AggregationAPICompiler::getStatus()
   return m_status;
 }
 
-#define assert_status(name) assert(m_status == Status::name)
+#define require_status(name) ndbrequire(m_status == Status::name)
 
 /*
  * Start of High-level API
@@ -116,11 +114,11 @@ AggregationAPICompiler::new_expr(ExprOp op,
   {
     return NULL;
   }
-  assert(m_status == Status::PROGRAMMING ||
-         m_status == Status::COMPILING ||
-         m_status == Status::COMPILED);
-  assert(left == NULL || m_exprs.has_item(left));
-  assert(right == NULL || m_exprs.has_item(right));
+  ndbrequire(m_status == Status::PROGRAMMING ||
+             m_status == Status::COMPILING ||
+             m_status == Status::COMPILED);
+  ndbrequire(left == NULL || m_exprs.has_item(left));
+  ndbrequire(right == NULL || m_exprs.has_item(right));
   Expr e;
   e.op = op;
   e.left = left;
@@ -129,15 +127,15 @@ AggregationAPICompiler::new_expr(ExprOp op,
   if (op == ExprOp::Load ||
       op == ExprOp::LoadConstantInt)
   {
-    assert(left == NULL);
-    assert(right == NULL);
+    ndbrequire(left == NULL);
+    ndbrequire(right == NULL);
     e.est_regs = 1;
   }
   else
   {
-    assert(left != NULL);
-    assert(right != NULL);
-    assert(idx == 0);
+    ndbrequire(left != NULL);
+    ndbrequire(right != NULL);
+    ndbrequire(idx == 0);
     // Estimate the numbers of registers necessary to calculate the
     // expression, and use that to determine the order of evaluation.
     // We cannot afford to calculate the exact number of registers needed
@@ -173,35 +171,35 @@ AggregationAPICompiler::new_expr(ExprOp op,
     case ExprOp::Add:
       if (int64_add_overflow(arg1, arg2)) {
         m_err << "Overflow when attempting to fold constant expression (" << arg1 << " + " << arg2 << ").\n";
-        throw runtime_error("Overflow in integer constant folding.");
+        throw RonSQLPermanentError("Overflow in integer constant folding.");
       }
       result = arg1 + arg2;
       break;
     case ExprOp::Minus:
       if (int64_sub_overflow(arg1, arg2)) {
         m_err << "Overflow when attempting to fold constant expression (" << arg1 << " - " << arg2 << ").\n";
-        throw runtime_error("Overflow in integer constant folding.");
+        throw RonSQLPermanentError("Overflow in integer constant folding.");
       }
       result = arg1 - arg2;
       break;
     case ExprOp::Mul:
       if (int64_mul_overflow(arg1, arg2)) {
         m_err << "Overflow when attempting to fold constant expression (" << arg1 << " * " << arg2 << ").\n";
-        throw runtime_error("Overflow in integer constant folding.");
+        throw RonSQLPermanentError("Overflow in integer constant folding.");
       }
       result = arg1 * arg2;
       break;
     case ExprOp::DivInt:
       if (arg2 == 0) {
         m_err << "Divide by zero when attempting to fold constant expression (" << arg1 << " DIV " << arg2 << ").\n";
-        throw runtime_error("Divide by zero in integer constant folding.");
+        throw RonSQLPermanentError("Divide by zero in integer constant folding.");
       }
       result = arg1 / arg2;
       break;
     case ExprOp::Rem:
       if (arg2 == 0) {
         m_err << "Divide by zero when attempting to fold constant expression (" << arg1 << " % " << arg2 << ").\n";
-        throw runtime_error("Divide by zero in integer constant folding.");
+        throw RonSQLPermanentError("Divide by zero in integer constant folding.");
       }
       result = arg1 % arg2;
       break;
@@ -226,7 +224,7 @@ AggregationAPICompiler::new_expr(ExprOp op,
   }
   // Since new expressions are only to be created during programming, the
   // above deduplication should always succeed during compilation.
-  assert_status(PROGRAMMING);
+  require_status(PROGRAMMING);
   if (left)
   {
     left->usage++;
@@ -247,10 +245,10 @@ AggregationAPICompiler::new_agg(AggregationAPICompiler::AggType agg_type,
   {
     return -1; // todo can't return -1 due to return type.
   }
-  assert(m_exprs.has_item(expr));
-  assert(m_status == Status::PROGRAMMING ||
-         m_status == Status::COMPILING ||
-          m_status == Status::COMPILED);
+  ndbrequire(m_exprs.has_item(expr));
+  ndbrequire(m_status == Status::PROGRAMMING ||
+             m_status == Status::COMPILING ||
+             m_status == Status::COMPILED);
   AggExpr agg;
   agg.agg_type = agg_type;
   agg.expr = expr;
@@ -266,7 +264,7 @@ AggregationAPICompiler::new_agg(AggregationAPICompiler::AggType agg_type,
   }
   // Since new aggregates are only to be created during programming, the above
   // deduplication should always succeed during compilation.
-  assert_status(PROGRAMMING);
+  require_status(PROGRAMMING);
   expr->usage++;
   m_aggs.push(agg);
   return m_aggs.size() - 1;
@@ -279,7 +277,7 @@ AggregationAPICompiler::Load(Uint32 col_idx)
   {
     return NULL;
   }
-  assert_status(PROGRAMMING);
+  require_status(PROGRAMMING);
   return new_expr(ExprOp::Load, 0, 0, col_idx);
 }
 
@@ -306,7 +304,7 @@ AggregationAPICompiler::public_arithmetic_expression_helper(ExprOp op,
   {
     return NULL;
   }
-  assert_status(PROGRAMMING);
+  require_status(PROGRAMMING);
   return new_expr(op, x, y, 0);
 }
 
@@ -314,10 +312,7 @@ Uint32
 AggregationAPICompiler::public_aggregate_function_helper(AggType agg_type,
                                                          Expr* x)
 {
-  if (m_status == Status::FAILED)
-  {
-    throw runtime_error("Tried compile aggregate after compilation already failed"); //todo should this be an abort? It used to be return -1, with a signed data type.
-  }
+  ndbrequire(m_status != Status::FAILED);
   return new_agg(agg_type, x);
 }
 
@@ -335,7 +330,7 @@ AggregationAPICompiler::public_aggregate_function_helper(AggType agg_type,
  * compilation and to prove correctness of the produced program.
  */
 
-#define assert_reg(REG) assert((REG) < REGS)
+#define require_reg(REG) ndbrequire((REG) < REGS)
 
 void
 AggregationAPICompiler::svm_init()
@@ -348,17 +343,17 @@ AggregationAPICompiler::svm_init()
 
 #define OPERATOR_CASE(Name) \
   case SVMInstrType::Name: \
-    assert_reg(dest); assert_reg(src); \
+    require_reg(dest); require_reg(src); \
     svm_use(dest, is_first_compilation); \
     svm_use(src, is_first_compilation); \
     r[dest]=new_expr(ExprOp::Name, r[dest], r[src], 0); \
     break;
 #define AGG_CASE(Name) \
   case SVMInstrType::Name: \
-    assert(dest < m_aggs.size()); \
-    assert_reg(src); \
+    ndbrequire(dest < m_aggs.size()); \
+    require_reg(src); \
     svm_use(src, is_first_compilation); \
-    assert(m_aggs[dest].expr == r[src]); \
+    ndbrequire(m_aggs[dest].expr == r[src]); \
     break;
 void
 AggregationAPICompiler::svm_execute(AggregationAPICompiler::Instr* instr,
@@ -370,15 +365,15 @@ AggregationAPICompiler::svm_execute(AggregationAPICompiler::Instr* instr,
   switch (type)
   {
   case SVMInstrType::Load:
-    assert_reg(dest);
+    require_reg(dest);
     r[dest]=new_expr(ExprOp::Load, NULL, NULL, src);
     break;
   case SVMInstrType::LoadConstantInteger:
-    assert_reg(dest);
+    require_reg(dest);
     r[dest]=new_expr(ExprOp::LoadConstantInt, NULL, NULL, src);
     break;
   case SVMInstrType::Mov:
-    assert_reg(dest); assert_reg(src);
+    require_reg(dest); require_reg(src);
     r[dest]=r[src];
     break;
   FORALL_ARITHMETIC_OPS(OPERATOR_CASE)
@@ -396,10 +391,10 @@ void
 AggregationAPICompiler::svm_use(Uint32 reg, bool is_first_compilation)
 {
   Expr* value = r[reg];
-  assert(value != NULL);
+  ndbrequire(value != NULL);
   if (is_first_compilation)
   {
-    assert(value->usage - value->program_usage > 0);
+    ndbrequire(value->usage - value->program_usage > 0);
     value->program_usage++;
   }
 }
@@ -418,7 +413,7 @@ AggregationAPICompiler::svm_use(Uint32 reg, bool is_first_compilation)
 
 #define AGG_CASE(Name) \
     case SVMInstrType::Name: \
-      assert(m_program[i].dest == next_aggregate); \
+      ndbrequire(m_program[i].dest == next_aggregate); \
       next_aggregate++; \
       break;
 bool
@@ -428,7 +423,7 @@ AggregationAPICompiler::compile()
   {
     return false;
   }
-  assert_status(PROGRAMMING);
+  require_status(PROGRAMMING);
   m_status = Status::COMPILING;
   svm_init();
   for (Uint32 i=0; i<REGS; i++)
@@ -439,9 +434,9 @@ AggregationAPICompiler::compile()
   for (Uint32 i=0; i<m_exprs.size(); i++)
   {
     Expr* e = &m_exprs[i];
-    assert(0 < e->usage || e->op == ExprOp::LoadConstantInt);
-    assert(e->program_usage == 0);
-    assert(e->has_been_compiled == false);
+    ndbrequire(0 < e->usage || e->op == ExprOp::LoadConstantInt);
+    ndbrequire(e->program_usage == 0);
+    ndbrequire(e->has_been_compiled == false);
   }
 #endif
   for (Uint32 i=0; i<m_aggs.size(); i++)
@@ -456,11 +451,11 @@ AggregationAPICompiler::compile()
   }
   for (Uint32 i=0; i<m_exprs.size(); i++)
   {
-    assert(m_exprs[i].usage == m_exprs[i].program_usage);
+    ndbrequire(m_exprs[i].usage == m_exprs[i].program_usage);
   }
   dead_code_elimination();
   m_status = Status::COMPILED;
-  // Assert correctness
+  // Check correctness
   svm_init();
   Uint32 next_aggregate = 0;
   for (Uint32 i=0; i<m_program.size(); i++)
@@ -473,7 +468,7 @@ AggregationAPICompiler::compile()
       void(); // Do nothing
     }
   }
-  assert(next_aggregate == m_aggs.size());
+  ndbrequire(next_aggregate == m_aggs.size());
   return true;
 }
 #undef AGG_CASE
@@ -481,7 +476,7 @@ AggregationAPICompiler::compile()
 bool
 AggregationAPICompiler::compile(AggExpr* agg, Uint32 idx)
 {
-  assert_status(COMPILING);
+  require_status(COMPILING);
   Uint32 reg;
   if (!compile(agg->expr, &reg))
   {
@@ -496,7 +491,7 @@ AggregationAPICompiler::compile(AggExpr* agg, Uint32 idx)
 bool
 AggregationAPICompiler::compile(Expr* expr, Uint32* reg)
 {
-  assert_status(COMPILING);
+  require_status(COMPILING);
   // If the value already exists in a register then use that.
   for (Uint32 i=0; i<REGS; i++)
   {
@@ -516,7 +511,7 @@ AggregationAPICompiler::compile(Expr* expr, Uint32* reg)
     {
       return false;
     }
-    assert_reg(*reg);
+    require_reg(*reg);
     pushInstr(SVMInstrType::Load, *reg, expr->idx, is_first_compilation);
     return true;
   }
@@ -526,7 +521,7 @@ AggregationAPICompiler::compile(Expr* expr, Uint32* reg)
     {
       return false;
     }
-    assert_reg(*reg);
+    require_reg(*reg);
     pushInstr(SVMInstrType::LoadConstantInteger, *reg, expr->idx, is_first_compilation);
     return true;
   }
@@ -538,7 +533,7 @@ AggregationAPICompiler::compile(Expr* expr, Uint32* reg)
     {
       return false;
     }
-    assert_reg(dest);
+    require_reg(dest);
     src = dest;
     m_locked[dest]++;
     m_locked[src]++; // Yes, this will lock the same register twice.
@@ -549,13 +544,13 @@ AggregationAPICompiler::compile(Expr* expr, Uint32* reg)
     {
       return false;
     }
-    assert_reg(dest);
+    require_reg(dest);
     m_locked[dest]++;
     if (!compile(expr->right, &src))
     {
       return false;
     }
-    assert_reg(src);
+    require_reg(src);
     m_locked[src]++;
   }
   else
@@ -564,23 +559,23 @@ AggregationAPICompiler::compile(Expr* expr, Uint32* reg)
     {
       return false;
     }
-    assert_reg(src);
+    require_reg(src);
     m_locked[src]++;
     if (!compile(expr->left, &dest))
     {
       return false;
     }
-    assert_reg(dest);
+    require_reg(dest);
     m_locked[dest]++;
   }
   // At this point, dest and src are both registers containing the correct
   // values, and both are locked. If they are the same register, it's locked
   // twice.
-  assert(r[dest] == expr->left); assert(r[src] == expr->right);
-  assert(m_locked[dest]); assert(m_locked[src]);
+  ndbrequire(r[dest] == expr->left); ndbrequire(r[src] == expr->right);
+  ndbrequire(m_locked[dest]); ndbrequire(m_locked[src]);
   if (dest == src)
   {
-    assert(m_locked[dest] >= 2);
+    ndbrequire(m_locked[dest] >= 2);
   }
   if (expr->left->usage - expr->left->program_usage > (dest == src ? 2 : 1))
   {
@@ -601,11 +596,11 @@ AggregationAPICompiler::compile(Expr* expr, Uint32* reg)
       if (seize_register(&new_reg,
                         estimated_cost_of_recalculating(expr->left, dest)))
       {
-        assert_reg(new_reg);
-        assert(r[dest] == expr->left);
+        require_reg(new_reg);
+        ndbrequire(r[dest] == expr->left);
         pushInstr(SVMInstrType::Mov, new_reg, dest, is_first_compilation);
-        assert(r[new_reg] == expr->left);
-        assert(r[dest] == expr->left);
+        ndbrequire(r[new_reg] == expr->left);
+        ndbrequire(r[dest] == expr->left);
       }
     }
   }
@@ -631,8 +626,8 @@ AggregationAPICompiler::compile(Expr* expr, Uint32* reg)
         return false;
       }
     }
-    assert_reg(new_dest);
-    assert(m_locked[new_dest] == 0);
+    require_reg(new_dest);
+    ndbrequire(m_locked[new_dest] == 0);
     if (r[new_dest] != expr->left)
     {
       pushInstr(SVMInstrType::Mov, new_dest, dest, is_first_compilation);
@@ -641,14 +636,14 @@ AggregationAPICompiler::compile(Expr* expr, Uint32* reg)
     m_locked[dest]--;
     dest = new_dest;
   }
-  assert(r[dest] == expr->left);
-  assert(m_locked[dest] == (dest == src ? 2 : 1));
+  ndbrequire(r[dest] == expr->left);
+  ndbrequire(m_locked[dest] == (dest == src ? 2 : 1));
   m_locked[dest]--;
-  assert(r[src] == expr->right);
-  assert(m_locked[src] >= 1);
+  ndbrequire(r[src] == expr->right);
+  ndbrequire(m_locked[src] >= 1);
   m_locked[src]--;
   pushInstr(expr->op, dest, src, is_first_compilation);
-  assert(r[dest] == expr);
+  ndbrequire(r[dest] == expr);
   *reg = dest;
   return true;
 }
@@ -662,7 +657,7 @@ AggregationAPICompiler::compile(Expr* expr, Uint32* reg)
 bool
 AggregationAPICompiler::seize_register(Uint32* reg, Uint32 max_cost)
 {
-  assert_status(COMPILING);
+  require_status(COMPILING);
   Uint32 cost[REGS];
   Uint32 min_cost = UINT32_MAX;
   Uint32 ret = 0;
@@ -692,7 +687,7 @@ AggregationAPICompiler::seize_register(Uint32* reg, Uint32 max_cost)
   }
   if (!m_locked[ret] && cost[ret] <= max_cost)
   {
-    assert_reg(ret);
+    require_reg(ret);
     *reg = ret;
     return true;
   }
@@ -739,7 +734,7 @@ AggregationAPICompiler::pushInstr(SVMInstrType type,
                                   Uint32 src,
                                   bool is_first_compilation)
 {
-  assert_status(COMPILING);
+  require_status(COMPILING);
   Instr instr;
   instr.type = type;
   instr.dest = dest;
@@ -756,7 +751,7 @@ AggregationAPICompiler::pushInstr(AggType type,
                                   Uint32 src,
                                   bool is_first_compilation)
 {
-  assert_status(COMPILING);
+  require_status(COMPILING);
   SVMInstrType instr;
   switch (type)
   {
@@ -776,7 +771,7 @@ AggregationAPICompiler::pushInstr(ExprOp op,
                                   Uint32 src,
                                   bool is_first_compilation)
 {
-  assert_status(COMPILING);
+  require_status(COMPILING);
   SVMInstrType instr;
   switch (op)
   {
@@ -791,7 +786,7 @@ AggregationAPICompiler::pushInstr(ExprOp op,
 
 #define OPERATOR_CASE(Name) \
     case SVMInstrType::Name: \
-      assert_reg(dest); assert_reg(src); \
+      require_reg(dest); require_reg(src); \
       this_instr_is_useful = reg_needed[dest]; \
       if (this_instr_is_useful) \
       { \
@@ -801,8 +796,8 @@ AggregationAPICompiler::pushInstr(ExprOp op,
       break;
 #define AGG_CASE(Name) \
     case SVMInstrType::Name: \
-      assert(dest < m_aggs.size()); \
-      assert_reg(src); \
+      ndbrequire(dest < m_aggs.size()); \
+      require_reg(src); \
       this_instr_is_useful = true; \
       reg_needed[src] = true; \
       break;
@@ -840,7 +835,7 @@ AggregationAPICompiler::dead_code_elimination()
     {
     case SVMInstrType::Load:
     case SVMInstrType::LoadConstantInteger:
-      assert_reg(dest);
+      require_reg(dest);
       this_instr_is_useful = reg_needed[dest];
       if (this_instr_is_useful)
       {
@@ -848,7 +843,7 @@ AggregationAPICompiler::dead_code_elimination()
       }
       break;
     case SVMInstrType::Mov:
-      assert_reg(dest); assert_reg(src);
+      require_reg(dest); require_reg(src);
       this_instr_is_useful = reg_needed[dest];
       if (this_instr_is_useful)
       {
@@ -870,7 +865,7 @@ AggregationAPICompiler::dead_code_elimination()
     {
       // We believe the compiler will not generate useless instructions of any
       // other type than Mov.
-      assert(type == SVMInstrType::Mov);
+      ndbrequire(type == SVMInstrType::Mov);
       dead_code_found = true;
     }
   }
@@ -906,7 +901,7 @@ AggregationAPICompiler::dead_code_elimination()
 void
 AggregationAPICompiler::print_aggregates()
 {
-  assert_status(COMPILED);
+  require_status(COMPILED);
   m_out << "Aggregations:\n";
   for (Uint32 i=0; i<m_aggs.size(); i++)
   {
@@ -1014,7 +1009,7 @@ DEFINE_FORMATTER(d2, uint, {
 
 #define OPERATOR_CASE(Name) \
   case SVMInstrType::Name: \
-    assert_reg(dest); assert_reg(src); \
+    require_reg(dest); require_reg(src); \
     m_out << s6(#Name) << " r" << d2(dest) << "  r" << d2(src) << " r" << \
       d2(dest) << ":"; \
     print(r[dest]); \
@@ -1023,8 +1018,8 @@ DEFINE_FORMATTER(d2, uint, {
     break;
 #define AGG_CASE(Name) \
   case SVMInstrType::Name: \
-    assert(dest < m_aggs.size()); \
-    assert_reg(src); \
+    ndbrequire(dest < m_aggs.size()); \
+    require_reg(src); \
     m_out << s6(#Name) << " A" << d2(dest) << "  r" << d2(src) << " A" << \
       d2(dest) << ":" << ucasestr_##Name << " <- r" << d2(src) << ':'; \
     print(r[src]); \
@@ -1047,17 +1042,17 @@ AggregationAPICompiler::print(Instr* instr)
   switch (instr->type)
   {
   case SVMInstrType::Load:
-    assert_reg(dest);
+    require_reg(dest);
     m_out << "Load   r" << d2(dest) << "  C" << d2(src) << " r" << d2(dest) <<
       " = C" << d2(src) << ':' << quoted_identifier(m_column_idx_to_name(src));
     break;
   case SVMInstrType::LoadConstantInteger:
-    assert_reg(dest);
+    require_reg(dest);
     m_out << "LoadI  r" << d2(dest) << "  I" << d2(src) << " r" << d2(dest) <<
       " = I" << d2(src) << ':' << m_constants[src].int_64;
     break;
   case SVMInstrType::Mov:
-    assert_reg(dest); assert_reg(src);
+    require_reg(dest); require_reg(src);
     m_out << "Mov    r" << d2(dest) << "  r" << d2(src) << " r" << d2(dest) <<
       " = r" << d2(src) << ':';
     print(r[src]);

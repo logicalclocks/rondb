@@ -1,3 +1,4 @@
+# vim: set fileencoding=utf-8 : -*- coding: utf-8 -*-
 CREATE DATABASE db1;
 USE db1;
 Create test table api_scan with 1000 rows
@@ -129,6 +130,7 @@ GROUPxxx_4	31560
 }
 == CLI, SELECT, explainMode=REQUIRE ==
 == RDRS, SELECT, explainMode=REQUIRE ==
+Error handling: RPE
 Caught exception: Tried to query with explain mode set to REQUIRE.
 == CLI, SELECT, explainMode=REMOVE ==
 c	max(sint16)
@@ -163,7 +165,7 @@ Load   r00  C01 r00 = C01:`sint16`
 Max    A00  r00 A00:MAX <- r00:`sint16`
 
 Execute as table scan.
-There are no top-level conditions.
+No filters.
 
 Output in mysql-style tab separated format.
 The program for post-processing and output has 8 instructions.
@@ -185,7 +187,7 @@ Load   r00  C01 r00 = C01:`sint16`
 Max    A00  r00 A00:MAX <- r00:`sint16`
 
 Execute as table scan.
-There are no top-level conditions.
+No filters.
 
 Output in mysql-style tab separated format.
 The program for post-processing and output has 8 instructions.
@@ -207,7 +209,7 @@ Load   r00  C01 r00 = C01:`sint16`
 Max    A00  r00 A00:MAX <- r00:`sint16`
 
 Execute as table scan.
-There are no top-level conditions.
+No filters.
 
 Output in mysql-style tab separated format.
 The program for post-processing and output has 8 instructions.
@@ -229,13 +231,14 @@ Load   r00  C01 r00 = C01:`sint16`
 Max    A00  r00 A00:MAX <- r00:`sint16`
 
 Execute as table scan.
-There are no top-level conditions.
+No filters.
 
 Output in mysql-style tab separated format.
 The program for post-processing and output has 8 instructions.
 
 == CLI, EXPLAIN SELECT, explainMode=FORBID ==
 == RDRS, EXPLAIN SELECT, explainMode=FORBID ==
+Error handling: RPE
 Caught exception: Tried to EXPLAIN with explain mode set to FORBID.
 == CLI, EXPLAIN SELECT, explainMode=REQUIRE ==
 Query parse tree:
@@ -254,7 +257,7 @@ Load   r00  C01 r00 = C01:`sint16`
 Max    A00  r00 A00:MAX <- r00:`sint16`
 
 Execute as table scan.
-There are no top-level conditions.
+No filters.
 
 Output in mysql-style tab separated format.
 The program for post-processing and output has 8 instructions.
@@ -276,7 +279,7 @@ Load   r00  C01 r00 = C01:`sint16`
 Max    A00  r00 A00:MAX <- r00:`sint16`
 
 Execute as table scan.
-There are no top-level conditions.
+No filters.
 
 Output in mysql-style tab separated format.
 The program for post-processing and output has 8 instructions.
@@ -314,7 +317,7 @@ Load   r00  C01 r00 = C01:`sint16`
 Max    A00  r00 A00:MAX <- r00:`sint16`
 
 Execute as table scan.
-There are no top-level conditions.
+No filters.
 
 Output in mysql-style tab separated format.
 The program for post-processing and output has 8 instructions.
@@ -336,7 +339,7 @@ Load   r00  C01 r00 = C01:`sint16`
 Max    A00  r00 A00:MAX <- r00:`sint16`
 
 Execute as table scan.
-There are no top-level conditions.
+No filters.
 
 Output in mysql-style tab separated format.
 The program for post-processing and output has 8 instructions.
@@ -402,7 +405,7 @@ Load   r00  C01 r00 = C01:`sint16`
 Max    A00  r00 A00:MAX <- r00:`sint16`
 
 Execute as table scan.
-There are no top-level conditions.
+No filters.
 
 Output in mysql-style tab separated format.
 The program for post-processing and output has 8 instructions.
@@ -424,7 +427,7 @@ Load   r00  C01 r00 = C01:`sint16`
 Max    A00  r00 A00:MAX <- r00:`sint16`
 
 Execute as table scan.
-There are no top-level conditions.
+No filters.
 
 Output in mysql-style tab separated format.
 The program for post-processing and output has 8 instructions.
@@ -446,7 +449,7 @@ Load   r00  C01 r00 = C01:`sint16`
 Max    A00  r00 A00:MAX <- r00:`sint16`
 
 Execute as table scan.
-There are no top-level conditions.
+No filters.
 
 Output in mysql-style tab separated, header-less format.
 The program for post-processing and output has 8 instructions.
@@ -468,7 +471,7 @@ Load   r00  C01 r00 = C01:`sint16`
 Max    A00  r00 A00:MAX <- r00:`sint16`
 
 Execute as table scan.
-There are no top-level conditions.
+No filters.
 
 Output in mysql-style tab separated, header-less format.
 The program for post-processing and output has 8 instructions.
@@ -493,24 +496,21 @@ GROUPåäö_2	32679
 == Before ALTER TABLE, new query via RDRS ==
 Failed to get column `sint16_altered`.
 Note that column names are case sensitive.
-Failed to get column `sint16_altered`.
-Note that column names are case sensitive.
-Caught ColumnNotFoundError after 2 attempts.
+Error handling: RMS->RPE
+Caught exception: Could not find column (column names are case sensitive).
 
 == Before ALTER TABLE, new query via CLI ==
 Failed to get column `sint16_altered`.
 Note that column names are case sensitive.
-Failed to get column `sint16_altered`.
-Note that column names are case sensitive.
-ronsql_cli caught ColumnNotFoundError after 2 attempts.
+Error handling: RMS->RPE
+ronsql_cli caught exception: Could not find column (column names are case sensitive).
 == ALTER TABLE ==
 ALTER TABLE db1.api_scan CHANGE sint16 sint16_altered SMALLINT NULL;
 == After ALTER TABLE, old query via CLI ==
 Failed to get column `sint16`.
 Note that column names are case sensitive.
-Failed to get column `sint16`.
-Note that column names are case sensitive.
-ronsql_cli caught ColumnNotFoundError after 2 attempts.
+Error handling: RMS->RPE
+ronsql_cli caught exception: Could not find column (column names are case sensitive).
 == After ALTER TABLE, new query via CLI ==
 c	max(sint16_altered)
 NULL	32566

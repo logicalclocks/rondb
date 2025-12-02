@@ -45,10 +45,10 @@
 
 using std::endl;
 using std::max;
-using std::runtime_error;
 
 #define feature_not_implemented(description) \
-  throw runtime_error("RonSQL feature not implemented: " description)
+  throw RonSQLPermanentError("RonSQL feature not implemented: " description)
+#define bug(x) throw RonSQLPermanentError(x " Please report a bug.")
 
 DEFINE_FORMATTER(quoted_identifier, LexCString, {
   os.put('`');
@@ -71,11 +71,12 @@ static void print_string(std::ostream& output_stream,
                          bool trim_space_suffix);
 static double convert_result_to_double(NdbAggregator::Result result);
 
+// require or investigate schema version
 static inline void
-soft_assert(bool condition, const char* msg)
+require_sch(bool condition, const char* msg)
 {
   if (likely(condition)) return;
-  throw runtime_error(msg);
+  throw RonSQLMaybeStaleSchema(msg);
 }
 
 ResultPrinter::ResultPrinter(ArenaMalloc* amalloc,
@@ -156,7 +157,7 @@ ResultPrinter::compile()
                 << "or use it within an aggregate function e.g. Sum("
                 << quoted_identifier(column_names[col_idx])
                 << ")." << endl;
-            throw runtime_error("Ungrouped column in non-aggregated SELECT expression.");
+            throw RonSQLPermanentError("Ungrouped column in non-aggregated SELECT expression.");
             // todo Test for aggregates without groups and groups without aggregates.
           }
           if (m_groupby_cols[i] == col_idx)
@@ -437,7 +438,7 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
         NdbAggregator::Column column = record.FetchGroupbyColumn();
         if (column.end())
         {
-          throw std::runtime_error("Got record with fewer GROUP BY columns than expected.");
+          bug("Got record with fewer GROUP BY columns than expected.");
         }
         m_regs_g[cmd.store_group_by_column.reg_g] = column;
       }
@@ -447,7 +448,7 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
         NdbAggregator::Column column = record.FetchGroupbyColumn();
         if (!column.end())
         {
-          throw std::runtime_error("Got record with more GROUP BY columns than expected.");
+          bug("Got record with more GROUP BY columns than expected.");
         }
       }
       break;
@@ -456,7 +457,7 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
         NdbAggregator::Result result = record.FetchAggregationResult();
         if (result.end())
         {
-          throw std::runtime_error("Got record with fewer aggregates than expected.");
+          bug("Got record with fewer aggregates than expected.");
         }
         m_regs_a[cmd.store_aggregate.reg_a] = result;
       }
@@ -466,7 +467,7 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
         NdbAggregator::Result result = record.FetchAggregationResult();
         if (!result.end())
         {
-          throw std::runtime_error("Got record with more aggregates than expected.");
+          bug("Got record with more aggregates than expected.");
         }
       }
       break;
@@ -531,7 +532,7 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
         case NdbDictionary::Column::Type::Char:          ///< Len. A fixed array of 1-byte chars
           {
             CHARSET_INFO* charset = cmd.print_group_by_column.charset;
-            soft_assert(charset != nullptr, "Could not find charset for CHAR column");
+            require_sch(charset != nullptr, "Could not find charset for CHAR column");
             LexString content = LexString{ column.data(), column.byte_size() };
             // todo it's nowadays ok to put brace on same line. (This todo from review 2024-08-22 with MR)
             if (m_json_output) {
@@ -550,7 +551,7 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
         case NdbDictionary::Column::Type::Varchar:       ///< Length bytes: 1, Max: 255
           {
             CHARSET_INFO* charset = cmd.print_group_by_column.charset;
-            soft_assert(charset != nullptr, "Could not find charset for VARCHAR column");
+            require_sch(charset != nullptr, "Could not find charset for VARCHAR column");
             LexString content = LexString{ &column.data()[1],
                                            (size_t)column.data()[0] };
             if (m_json_output)
@@ -608,8 +609,7 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
         case NdbDictionary::Column::Type::Timestamp2:    ///< 4 bytes + 0-3 fraction
           feature_not_implemented("Print GROUP BY column of type Timestamp2");
         default:
-          throw runtime_error("Unexpected data type when printing GROUP BY"
-                              " column. Please report a bug.");
+          bug("Unexpected data type when printing GROUP BY column.");
         }
       }
       break;
@@ -634,11 +634,9 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
           print_float_or_double(out, result.data_double(), true);
           break;
         case NdbDictionary::Column::Undefined:
-          throw runtime_error("Unexpected undefined data type in aggregation"
-                              " result. Please report a bug.");
+          bug("Unexpected undefined data type in aggregation result.");
         default:
-          throw runtime_error("Unexpected data type in aggregation result."
-                              " Please report a bug.");
+          bug("Unexpected data type in aggregation result.");
         }
       }
       break;
@@ -1000,8 +998,8 @@ convert_result_to_double(NdbAggregator::Result result)
   case NdbDictionary::Column::Type::Double:
     return static_cast<double>(result.data_double());
   default:
-    throw runtime_error("Unexpected data type in results underlying AVG. Please"
-                        " report a bug.");
+    throw RonSQLPermanentError("Unexpected data type in results underlying AVG."
+                               " Please report a bug.");
   }
 }
 

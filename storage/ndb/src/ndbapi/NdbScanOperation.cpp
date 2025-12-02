@@ -1795,9 +1795,11 @@ int NdbScanOperation::nextResult(bool fetchAllowed, bool forceSend) {
   if (unlikely(!m_scanUsingOldApi)) {
     /* Cannot mix NdbRecAttr and NdbRecord methods in one operation */
     setErrorCode(4284);
+    DEB_TRACE();
     return -1;
   }
 
+  DEB_TRACE();
   return nextResult(&dummyOutRowPtr, fetchAllowed, forceSend);
 }
 
@@ -1816,7 +1818,10 @@ int NdbScanOperation::nextResult(const char **out_row_ptr, bool fetchAllowed,
 
       /* First take care of any getValue(). */
       if (getvalue_recattr != nullptr) {
-        if (receiver->get_AttrValues(getvalue_recattr) == -1) return -1;
+        if (receiver->get_AttrValues(getvalue_recattr) == -1) {
+          DEB_TRACE();
+          return -1;
+        }
       }
 
       /* Handle blobs. */
@@ -1825,19 +1830,29 @@ int NdbScanOperation::nextResult(const char **out_row_ptr, bool fetchAllowed,
         Uint32 key_length;
         const char *key_data;
         res = receiver->get_keyinfo20(infoword, key_length, key_data);
-        if (res == -1) return -1;
+        if (res == -1) {
+          DEB_TRACE();
+          return -1;
+        }
 
         do {
-          if (tBlob->atNextResultNdbRecord(key_data, key_length * 4) == -1)
+          if (tBlob->atNextResultNdbRecord(key_data, key_length * 4) == -1) {
+            DEB_TRACE();
             return -1;
+          }
           tBlob = tBlob->theNext;
         } while (tBlob != nullptr);
         /* Flush blob part ops on behalf of user. */
-        if (m_transConnection->executePendingBlobOps() == -1) return -1;
+        if (m_transConnection->executePendingBlobOps() == -1) {
+          DEB_TRACE();
+          return -1;
+        }
       }
     }
+    DEB_TRACE();
     return 0;
   }
+  DEB_TRACE();
   return res;
 }
 
@@ -3810,11 +3825,17 @@ int NdbIndexScanOperation::next_result_ord_ndbrecord(const char *&out_row,
   */
   if (m_current_api_receiver == theParallelism ||
       !m_api_receivers[m_current_api_receiver]->getNextRow()) {
-    if (!fetchAllowed) return 2;  // No more data available now
+    if (!fetchAllowed) {
+      DEB_TRACE();
+      return 2;  // No more data available now
+    }
 
     /* Wait for all receivers to be retrieved. */
     int count = ordered_send_scan_wait_for_all(forceSend);
-    if (count == -1) return -1;
+    if (count == -1) {
+      DEB_TRACE();
+      return -1;
+    }
 
     /*
       Insert all newly retrieved receivers in sorted array.
@@ -3843,9 +3864,11 @@ int NdbIndexScanOperation::next_result_ord_ndbrecord(const char *&out_row,
   /* Now just return the next row (if any). */
   if (current < theParallelism &&
       (out_row = m_api_receivers[current]->getCurrentRow()) != nullptr) {
+    DEB_TRACE();
     return 0;
   } else {
     theError.code = Err_scanAlreadyComplete;
+    DEB_TRACE();
     return 1;  // End-of-file
   }
 }
