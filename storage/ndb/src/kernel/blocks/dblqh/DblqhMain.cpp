@@ -19147,7 +19147,7 @@ Dblqh::next_scanconf_tupkeyreq(Signal* signal,
     Uint32 res_len = scanPtr->m_agg_interpreter->CopyOneVecCandidateToSignal(signal);
     ndbrequire(res_len != 0);
     TransIdAI * transIdAI=  (TransIdAI *)signal->getDataPtrSend();
-    transIdAI->connectPtr = scanPtr->scanApiOpPtr[0];
+    transIdAI->connectPtr = scanPtr->scanApiOpPtr[scanPtr->scanApiOpPtr_index];
     transIdAI->transId[0] = regTcPtr->transid[0];
     transIdAI->transId[1] = regTcPtr->transid[1];
 
