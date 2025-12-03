@@ -1382,13 +1382,10 @@ int NdbScanOperation::processTableScanDefs(NdbScanOperation::LockMode lm,
 
   Uint32 continousScan =
     theNdb->theImpl->get_ndbapi_config_parameters().m_continous_scan &&
-    allow_continous_scan;
-
-  if (continousScan &&
-      (lm != LM_CommittedRead ||
-      !ndbd_support_continous_scan(theNdb->getMinDbNodeVersion()))) {
-    continousScan = 0;
-  }
+    allow_continous_scan &&
+    lm == LM_CommittedRead &&
+    ndbd_support_continous_scan(theNdb->getMinDbNodeVersion()) &&
+    !m_aggregation_code;
 
   if (rangeScan && (scan_flags & (SF_OrderBy | SF_OrderByFull))) {
     if (continousScan == 0) {
