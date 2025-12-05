@@ -912,7 +912,7 @@ print_string(std::ostream& out,
       }
     } else if (unlikely((wc & (~my_wc_t(0x07ff))) == 0xd800)) {
       // Illegal surrogate
-      out << "�"; // U+fffd
+      out << (likely(utf8_output) ? "�" : "\\ufffd");
     } else if (likely(wc <= 0xffff)) {
       if (likely(utf8_output)) {
         out << char(0xe0 | (wc >> 12))
@@ -944,7 +944,7 @@ print_string(std::ostream& out,
       }
     } else {
       // Illegal code point
-      out << "�"; // U+fffd
+      out << (likely(utf8_output) ? "�" : "\\ufffd");
     }
   }
 }
