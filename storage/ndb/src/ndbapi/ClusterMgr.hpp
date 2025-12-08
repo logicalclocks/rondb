@@ -55,6 +55,7 @@ extern "C" void *runClusterMgr_C(void *me);
   heart beat mechanism between pairs of data nodes, using the CM_HEARTBEAT
   signal.
  */
+
 class ClusterMgr : public trp_client {
   friend class TransporterFacade;
   friend class ArbitMgr;
@@ -165,7 +166,48 @@ class ClusterMgr : public trp_client {
   int m_auto_reconnect;
   Uint32 m_connect_count;
 
+  struct UserIdHashEntry {
+    UserIdHashEntry *next_entry;
+    NDB_TICKS m_error_time;
+    Uint32 m_user_id;
+    Uint32 m_user_id_version;
+    Uint32 m_username_len;
+    bool m_wait_for_entry;
+    char m_username[0];
+  };
+
+  int retrieveUserId(const char *username,
+                     Uint32 username_len,
+                     Uint32 &userId,
+                     Uint32 &userIdVersion,
+                     Uint32 node_id);
+  int updateUserId(const char *username,
+                   Uint32 username_len,
+                   Uint32 userId,
+                   Uint32 userIdVersion);
+  void rateOverflowError(const char *username,
+                         Uint32 username_len);
+
  private:
+  void createUserIdHash();
+  void releaseUserIdHash();
+  void fillingUserIdCache(Uint32 node_id, Uint32 nextDatabaseId);
+  int insertUserId(const char *username,
+                   Uint32 username_len,
+                   Uint32 userId,
+                   Uint32 userIdVersion);
+  void deleteUserId(const char *username,
+                    Uint32 username_len,
+                    Uint32 userId,
+                    Uint32 userIdVersion);
+
+  Uint32 m_num_in_user_id_cache;
+  bool m_initialised_user_id_cache;
+  bool m_initialising_user_id_cache;
+  NdbMutex *theUserIdMutex;
+  NdbCondition *theUserIdCond;
+  struct UserIdHashEntry **theUserIdHash;
+
   Uint32 m_max_api_reg_req_interval;
   Uint32 noOfAliveNodes;
   Uint32 noOfConnectedNodes;
@@ -224,6 +266,12 @@ class ClusterMgr : public trp_client {
   /**
    * Signals received
    */
+  void execLIST_DATABASE_CONF(const Uint32 * theData,
+                              const LinearSectionPtr ptr[3]);
+  void execDROP_DATABASE_REP(const Uint32 * theData,
+                             const LinearSectionPtr ptr[3]);
+  void execCREATE_DATABASE_REP(const Uint32 * theData,
+                               const LinearSectionPtr ptr[3]);
   void execSET_DOMAIN_ID_REQ  (const Uint32 * theData);
   void execSET_HOSTNAME_REQ(const NdbApiSignal*, const LinearSectionPtr ptr[]);
   void execACTIVATE_REQ  (const Uint32 * theData);

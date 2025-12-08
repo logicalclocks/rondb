@@ -143,8 +143,14 @@ class TcKeyReq {
   //  Conditional part = can be present in signal.
   //  These four words will be sent only if their indicator is set.
   // ----------------------------------------------------------------------
-  UintR scanInfo;             // DATA 8   Various flags for scans, see below
-  UintR distrGroupHashValue;  // DATA 9
+  union {
+    Uint32 scanInfo;             // DATA 8   Various flags for scans, see below
+    Uint32 userId;
+  };
+  union {
+    Uint32 distrGroupHashValue;  // DATA 9
+    Uint32 userIdVersion;
+  };
   UintR distributionKeySize;  // DATA 10
   UintR storedProcId;         // DATA 11
 
@@ -172,6 +178,7 @@ class TcKeyReq {
   static Uint8 getDirtyFlag(const UintR &requestInfo);
   static Uint8 getInterpretedFlag(const UintR &requestInfo);
   static Uint8 getInterpretedInsertFlag(const UintR &requestInfo);
+  static Uint8 getUserIdFlag(const UintR &requestInfo);
   static Uint8 getDistributionKeyFlag(const UintR &requestInfo);
   static Uint8 getViaSPJFlag(const UintR &requestInfo);
   static Uint8 getScanIndFlag(const UintR &requestInfo);
@@ -203,6 +210,7 @@ class TcKeyReq {
   static void setDirtyFlag(UintR &requestInfo, Uint32 flag);
   static void setInterpretedFlag(UintR &requestInfo, Uint32 flag);
   static void setInterpretedInsertFlag(UintR &requestInfo, Uint32 flag);
+  static void setUserIdFlag(UintR &requestInfo, Uint32 flag);
   static void setDistributionKeyFlag(UintR &requestInfo, Uint32 flag);
   static void setViaSPJFlag(UintR &requestInfo, Uint32 flag);
   static void setScanIndFlag(UintR &requestInfo, Uint32 flag);
@@ -389,11 +397,13 @@ class TcKeyReq {
  A = Replica applier       - 1  Bit 25
  I = IgnoreTTL             - 1  Bit 26
  N = Interpreted Insert    - 1  Bit 27
+ t = TTL only expired      - 1  Bit 28
+ u - User Id               - 1  Bit 29
 
            1111111111222222222233
  01234567890123456789012345678901
  dnb cooop lsyyeiaaarkkkkkkkkkkkk  (Short TCKEYREQ)
- dnbvcooopqlsyyeixDfrRwBUQAIN       (Long TCKEYREQ)
+ dnbvcooopqlsyyeixDfrRwBUQAINu      (Long TCKEYREQ)
 */
 
 #define TCKEY_NODISK_SHIFT (1)
@@ -434,11 +444,13 @@ class TcKeyReq {
 
 #define TC_PASS_QUEUEING_SHIFT (24)
 #define TC_REPLICA_APPLIER_SHIFT (25)
+
+#define INTERPRETED_INSERT_SHIFT (27)
+#define USER_ID_SHIFT (29)
 /*
  * TTL related
  */
 #define TC_TTL_IGNORE_SHIFT (26)
-#define INTERPRETED_INSERT_SHIFT (27)
 #define TC_TTL_ONLY_EXPIRED_SHIFT (28)
 
 /**
@@ -521,6 +533,10 @@ inline Uint8 TcKeyReq::getInterpretedFlag(const UintR &requestInfo) {
 
 inline Uint8 TcKeyReq::getInterpretedInsertFlag(const UintR &requestInfo) {
   return (Uint8)((requestInfo >> INTERPRETED_INSERT_SHIFT) & 1);
+}
+
+inline Uint8 TcKeyReq::getUserIdFlag(const UintR &requestInfo) {
+  return (Uint8)((requestInfo >> USER_ID_SHIFT) & 1);
 }
 
 inline Uint8 TcKeyReq::getDistributionKeyFlag(const UintR &requestInfo) {
@@ -607,6 +623,13 @@ inline void TcKeyReq::setInterpretedInsertFlag(UintR &requestInfo,
   ASSERT_BOOL(flag, "TcKeyReq::setInterpretedInsertFlag");
   requestInfo &= ~(1 << INTERPRETED_INSERT_SHIFT);
   requestInfo |= (flag << INTERPRETED_INSERT_SHIFT);
+}
+
+inline void TcKeyReq::setUserIdFlag(UintR &requestInfo,
+                                    Uint32 flag) {
+  ASSERT_BOOL(flag, "TcKeyReq::setUserIdFlag");
+  requestInfo &= ~(1 << USER_ID_SHIFT);
+  requestInfo |= (flag << USER_ID_SHIFT);
 }
 
 inline void TcKeyReq::setDistributionKeyFlag(UintR &requestInfo, Uint32 flag) {

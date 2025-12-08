@@ -258,6 +258,7 @@ DictDatabaseInfo::Mapping[] = {
   DDBI_MAP_INT64(Database, MaxTransactionSize, MaxTransactionSize),
   DDBI_MAP_INT64(Database, MaxParallelTransactions, MaxParallelTransactions),
   DDBI_MAP_INT64(Database, MaxParallelComplexQueries, MaxParallelComplexQueries),
+  DDBI_MAP_INT(Database, IsUser, IsUser),
 
   DDBIBREAK(ParameterEnd)
 };
@@ -276,6 +277,7 @@ DictDatabaseInfo::Database::init(){
   MaxTransactionSize = 0;
   MaxParallelTransactions = 0;
   MaxParallelComplexQueries = 0;
+  IsUser = false;
 }
 
 //static 

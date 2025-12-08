@@ -1248,6 +1248,7 @@ class Dbspj : public SimulatedBlock {
     Uint32 m_rootFragId;
     Uint32 m_rootFragCnt;
     Uint32 m_transId[2];
+    Uint32 m_user_id;
     TreeNode_list::Head m_nodes;
     TreeNodeCursor_list::Head m_cursor_nodes;
     Uint32 m_cnt_active;  // No of "running" nodes

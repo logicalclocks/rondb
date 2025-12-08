@@ -43,6 +43,7 @@
 #include <signaldata/TcIndx.hpp>
 #include <signaldata/TcKeyReq.hpp>
 #include <signaldata/TestOrd.hpp>
+#include <signaldata/QueryDatabase.hpp>
 
 #include <NdbOut.hpp>
 
@@ -113,6 +114,20 @@ int NdbApiSignal::setSignal(int aNdbSignalType, Uint32 receiversBlockNo) {
       theReceiversBlockNumber = DBDIH;
       theVerId_signalNumber = GSN_DIHNDBTAMPER;
       theLength = 3;
+    } break;
+
+    case GSN_LIST_DATABASE_REQ: {
+      theTrace = TestOrd::TraceAPI;
+      theReceiversBlockNumber = DBDICT;
+      theVerId_signalNumber = GSN_LIST_DATABASE_REQ;
+      theLength = ListDatabaseReq::SignalLength;
+    } break;
+
+    case GSN_GET_DATABASE_REQ: {
+      theTrace = TestOrd::TraceAPI;
+      theReceiversBlockNumber = DBDICT;
+      theVerId_signalNumber = GSN_GET_DATABASE_REQ;
+      theLength = GetDatabaseReq::SignalLength;
     } break;
 
     case GSN_TCSEIZEREQ: {

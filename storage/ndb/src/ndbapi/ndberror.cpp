@@ -408,6 +408,9 @@ ErrorBundle ErrorCodes[] = {
   { 809,  DMEC, IE, "809" },
   { 812,  DMEC, IE, "812" },
   { 833,  DMEC, IE, "833" },
+  /**
+   * Application errors
+   */
   { 846,  DMEC, AE, "Read/Write interpreter in/output index error" },
   { 871,  DMEC, AE, "No such interpreter instruction" },
   { 882,  DMEC, AE, "Inconsistent sizes of interpreter code sections" },
@@ -423,6 +426,7 @@ ErrorBundle ErrorCodes[] = {
   { 937,  DMEC, AE, "Inconsistency in input parameters" },
   { 938,  DMEC, AE, "Too much input parameters" },
   { 939,  DMEC, AE, "Wrong column for input parameters" },
+  { 942,  DMEC, AE, "Database name too long" },
   { 4000, DMEC, IE, "MEMORY ALLOCATION ERROR" },
   { 4001, DMEC, IE, "Signal Definition Error" },
   { 4005, DMEC, IE, "Internal Error in NdbApi" },

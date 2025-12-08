@@ -55,11 +55,16 @@
 #include <signaldata/Activate.hpp>
 #include <signaldata/SetHostname.hpp>
 #include <signaldata/SetDomainId.hpp>
+#include <signaldata/CreateDatabase.hpp>
+#include <signaldata/DropDatabase.hpp>
+#include <signaldata/QueryDatabase.hpp>
+#include <signaldata/TcKeyRef.hpp>
 
 #include <mgmapi.h>
 #include <mgmapi_config_parameters.h>
 #include <EventLogger.hpp>
 #include <mgmapi_configuration.hpp>
+#include <rondb_hash.hpp>
 
 #if 0
 #define DEBUG_FPRINTF(arglist) \
@@ -70,11 +75,21 @@
 #define DEBUG_FPRINTF(a)
 #endif
 
+#if defined(__GNUC__) && !defined(__clang__)
+#  define PRINTF_FMT(fmt_idx, arg_idx) \
+       __attribute__((format(gnu_printf, fmt_idx, arg_idx)))
+#elif defined(__clang__)
+#  define PRINTF_FMT(fmt_idx, arg_idx) \
+       __attribute__((format(printf, fmt_idx, arg_idx)))
+#else
+#  define PRINTF_FMT(fmt_idx, arg_idx)
+#endif
+
 int global_flag_skip_invalidate_cache = 0;
 int global_flag_skip_waiting_for_clean_cache = 0;
 extern "C"
 void
-error_printer(const char * fmt, ...) __attribute__ ((format (printf, 1, 2)));
+error_printer(const char *fmt, ...) PRINTF_FMT(1, 2);
 
 extern "C"
 void
@@ -94,6 +109,7 @@ error_printer(const char * fmt, ...)
   va_end(ap);
 }
 // #define DEBUG_REG
+#define DEBUG_USER
 
 extern EventLogger *g_eventLogger;
 
@@ -139,6 +155,7 @@ ClusterMgr::ClusterMgr(TransporterFacade & _facade):
             Logger::Timestamp().c_str(), ret);
     abort();
   }
+  createUserIdHash();
   DBUG_VOID_RETURN;
 }
 
@@ -153,6 +170,7 @@ ClusterMgr::~ClusterMgr() {
   NdbMutex_Destroy(clusterMgrThreadMutex);
   NdbMutex_Destroy(m_node_state_mutex);
   ProcessInfo::release(m_process_info);
+  releaseUserIdHash();
   DBUG_VOID_RETURN;
 }
 
@@ -534,6 +552,18 @@ void ClusterMgr::trp_deliver_signal(const NdbApiSignal *sig,
   const Uint32 *theData = sig->getDataPtr();
 
   switch (gsn) {
+    case GSN_LIST_DATABASE_CONF:
+      execLIST_DATABASE_CONF(theData, ptr);
+      break;
+
+    case GSN_DROP_DATABASE_REP:
+      execDROP_DATABASE_REP(theData, ptr);
+      break;
+
+    case GSN_CREATE_DATABASE_REP:
+      execCREATE_DATABASE_REP(theData, ptr);
+      break;
+
     case GSN_SET_DOMAIN_ID_REQ:
       execSET_DOMAIN_ID_REQ(theData);
       break;
@@ -982,6 +1012,389 @@ ClusterMgr::execSET_HOSTNAME_REQ(const NdbApiSignal* sig,
                  refToNode(senderRef),
                  changeNodeId,
                  hostname_buf));
+}
+
+#define USER_ID_HASH_SIZE 1024
+void ClusterMgr::execLIST_DATABASE_CONF(const Uint32 * theData,
+                                        const LinearSectionPtr ptr[3]) {
+  DBUG_ENTER("ClusterMgr::execLIST_DATABASE_CONF");
+  const ListDatabaseConf * const listDatabaseConf =
+    (const ListDatabaseConf *)&theData[0];
+  Uint32 senderRef = listDatabaseConf->senderRef;
+  Uint32 databaseId = listDatabaseConf->databaseId;
+  if (databaseId == RNIL) {
+    /* No more users */
+    m_initialised_user_id_cache = true;
+    m_initialising_user_id_cache = false;
+    DBUG_VOID_RETURN;
+  }
+  Uint32 databaseVersion = listDatabaseConf->databaseVersion;
+  const char *username = (const char*)ptr[0].p;
+  Uint32 username_len = strnlen(username, MAX_DB_NAME_SIZE);
+  require(username_len < ptr[0].sz * 4);
+  DBUG_PRINT("info", ("List user %s, id: %u, version: %u",
+    username, databaseId, databaseVersion));
+  if (username_len <= MAX_DB_NAME_SIZE) {
+    int ret_code = insertUserId(username,
+                                username_len,
+                                databaseId,
+                                databaseVersion);
+    if (ret_code != 0) {
+      /* Failed to build user id cache, fallback to request handling */
+      DBUG_VOID_RETURN;
+    }
+  }
+  Uint32 node_id = refToNode(senderRef);
+  fillingUserIdCache(node_id, databaseId + 1);
+  DBUG_VOID_RETURN;
+}
+
+void ClusterMgr::execDROP_DATABASE_REP(const Uint32 * theData,
+                                       const LinearSectionPtr ptr[3]) {
+  DBUG_ENTER("ClusterMgr::execDROP_DATABASE_REP");
+  const DropDatabaseRep * const dropDatabaseRep =
+    (const DropDatabaseRep *)&theData[0];
+  Uint32 databaseId = dropDatabaseRep->databaseId;
+  Uint32 databaseVersion = dropDatabaseRep->databaseVersion;
+  Uint32 databaseNameLen = dropDatabaseRep->databaseNameLen;
+  const char *username = (const char*)ptr[0].p;
+  require(databaseNameLen < ptr[0].sz * 4);
+  DBUG_PRINT("info", ("Drop user %s, id: %u, version: %u",
+    username, databaseId, databaseVersion));
+  if (databaseNameLen <= MAX_DB_NAME_SIZE) {
+    deleteUserId(username,
+                 databaseNameLen,
+                 databaseId,
+                 databaseVersion);
+  }
+  DBUG_VOID_RETURN;
+}
+
+void ClusterMgr::execCREATE_DATABASE_REP(const Uint32 * theData,
+                                         const LinearSectionPtr ptr[3]) {
+  DBUG_ENTER("ClusterMgr::execCREATE_DATABASE_REP");
+  const CreateDatabaseRep * const createDatabaseRep =
+    (const CreateDatabaseRep *)&theData[0];
+  Uint32 databaseId = createDatabaseRep->databaseId;
+  Uint32 databaseVersion = createDatabaseRep->databaseVersion;
+  Uint32 databaseNameLen = createDatabaseRep->databaseNameLen;
+  const char *username = (const char*)ptr[0].p;
+  require(databaseNameLen < ptr[0].sz * 4);
+  DBUG_PRINT("info", ("Create user %s, id: %u, version: %u",
+    username, databaseId, databaseVersion));
+  if (m_initialising_user_id_cache == true ||
+      m_initialised_user_id_cache == true) {
+    if (databaseNameLen <= MAX_DB_NAME_SIZE) {
+      insertUserId(username,
+                   databaseNameLen,
+                   databaseId,
+                   databaseVersion);
+    }
+  }
+  DBUG_VOID_RETURN;
+}
+
+void ClusterMgr::fillingUserIdCache(Uint32 node_id, Uint32 nextDatabaseId) {
+  DBUG_ENTER("ClusterMgr::fillingUserIdCache");
+  Uint32 ref = numberToRef(API_CLUSTERMGR, theFacade.ownId());
+  NdbApiSignal tSignal(ref);
+  ListDatabaseReq * const req =
+    CAST_PTR(ListDatabaseReq, tSignal.getDataPtrSend());
+  req->senderRef = ref;
+  req->requestInfo = 1; //is_user
+  req->nextDatabaseId = nextDatabaseId;
+  safe_sendSignal(&tSignal, node_id);
+  DBUG_VOID_RETURN;
+}
+
+void ClusterMgr::rateOverflowError(const char *username,
+                                   Uint32 username_len) {
+  DBUG_ENTER("ClusterMgr::rateOverflowError");
+  /**
+   * The RonDB data node reported a rate overflow error, in this case we
+   * will give the user a 1 second pause where it cannot use the data node
+   * until this second has passed. This will ensure that we won't overload
+   * the data nodes with requests that will all be deemed rate overflow
+   * errrors.
+   */
+  NdbMutex_Lock(theUserIdMutex);
+  if (m_num_in_user_id_cache == RNIL) {
+    NdbMutex_Unlock(theUserIdMutex);
+    return;
+  }
+  Uint32 hash_val = rondb_calc_hash_val(username,
+                                        username_len,
+                                        true);
+  Uint32 inx = hash_val & (USER_ID_HASH_SIZE - 1);
+  struct UserIdHashEntry *entry = theUserIdHash[inx];
+  while (entry != nullptr) {
+    if (entry->m_username_len != username_len ||
+        entry->m_user_id == RNIL ||
+        memcmp(entry->m_username, username, username_len) != 0) {
+      entry = entry->next_entry;
+      continue;
+    }
+    NDB_TICKS now = NdbTick_getCurrentTicks();
+    entry->m_error_time = now;
+    break;
+  }
+  NdbMutex_Unlock(theUserIdMutex);
+  DBUG_VOID_RETURN;
+}
+
+int ClusterMgr::retrieveUserId(const char *username,
+                               Uint32 username_len,
+                               Uint32 &userId,
+                               Uint32 &userIdVersion,
+                               Uint32 node_id) {
+  DBUG_ENTER("ClusterMgr::retrieveUserId");
+  NdbMutex_Lock(theUserIdMutex);
+  if (m_num_in_user_id_cache == RNIL) {
+    userId = RNIL;
+    userIdVersion = 0;
+    NdbMutex_Unlock(theUserIdMutex);
+    DBUG_RETURN(0);
+  }
+  if (!ndbd_support_user_rate_limits(minDbVersion)) {
+    userId = RNIL;
+    userIdVersion = 0;
+    NdbMutex_Unlock(theUserIdMutex);
+    DBUG_RETURN(0);
+  }
+  if (m_initialising_user_id_cache == false) {
+    m_initialising_user_id_cache = true;
+    fillingUserIdCache(node_id, 0);
+  }
+  Uint32 hash_val = rondb_calc_hash_val(username,
+                                        username_len,
+                                        true);
+  Uint32 inx = hash_val & (USER_ID_HASH_SIZE - 1);
+  struct UserIdHashEntry *entry = theUserIdHash[inx];
+  bool first = true;
+  while (entry != nullptr) {
+    if (entry->m_username_len != username_len ||
+        memcmp(entry->m_username, username, username_len) != 0) {
+      entry = entry->next_entry;
+      continue;
+    }
+    Uint32 user_id = entry->m_user_id;
+    if (first == false || user_id != RNIL) {
+      if (NdbTick_IsValid(entry->m_error_time) != 0) {
+        NDB_TICKS now = NdbTick_getCurrentTicks();
+        /* We had an overload error, check if error time has expired */
+        if (NdbTick_Elapsed(entry->m_error_time, now).milliSec() > 1000) {
+          NdbTick_Invalidate(&entry->m_error_time);
+        } else {
+          NdbMutex_Unlock(theUserIdMutex);
+          return TcKeyRef::RateOverflowError;
+        }
+      }
+      userId = entry->m_user_id;
+      userIdVersion = entry->m_user_id_version;
+      NdbMutex_Unlock(theUserIdMutex);
+      DBUG_RETURN(0);
+    }
+    entry->m_wait_for_entry = true;
+    NdbCondition_WaitTimeout(theUserIdCond, theUserIdMutex, 10);
+    entry = theUserIdHash[inx];
+    first = false;
+  }
+  if (m_initialised_user_id_cache) {
+    /**
+     * When the user id cache is fully initialised we treat a missing
+     * entry as no user with that name exists.
+     */
+    NdbMutex_Unlock(theUserIdMutex);
+    userId = RNIL;
+    userIdVersion = 0;
+    DBUG_RETURN(0);
+  }
+  /**
+   * We didn't find any entry, we will insert an entry into the hash
+   * table, we will set user id to RNIL to indicate we are still
+   * retrieving the user id from the RonDB data nodes.
+   */
+  int ret_code = insertUserId(username,
+                              username_len,
+                              RNIL,
+                              0);
+  if (ret_code != 0) {
+    userId = RNIL;
+    userIdVersion = 0;
+    DBUG_RETURN(0);
+  }
+  /* User thread will send GET_DATABASE_REQ to get userId */
+  DBUG_RETURN(1);
+}
+
+int ClusterMgr::insertUserId(const char *username,
+                             Uint32 username_len,
+                             Uint32 userId,
+                             Uint32 userIdVersion) {
+  DBUG_ENTER("ClusterMgr::insertUserId");
+  NdbMutex_Lock(theUserIdMutex);
+  if (m_num_in_user_id_cache == RNIL) {
+    NdbMutex_Unlock(theUserIdMutex);
+    DBUG_RETURN(-1);
+  }
+  struct UserIdHashEntry *new_entry = (struct UserIdHashEntry*)
+    malloc(sizeof(struct UserIdHashEntry) + username_len + 1);
+  if (new_entry == nullptr) {
+    NdbMutex_Unlock(theUserIdMutex);
+    DBUG_RETURN(-1);
+  }
+  Uint32 hash_val = rondb_calc_hash_val(username,
+                                        username_len,
+                                        true);
+  Uint32 inx = hash_val & (USER_ID_HASH_SIZE - 1);
+  new_entry->next_entry = theUserIdHash[inx];
+  new_entry->m_username_len = username_len;
+  new_entry->m_user_id = userId;
+  new_entry->m_user_id_version = userIdVersion;
+  new_entry->m_wait_for_entry = false;
+  NdbTick_Invalidate(&new_entry->m_error_time);
+  std::memcpy(&new_entry->m_username[0],
+              username,
+              username_len + 1);
+  theUserIdHash[inx] = new_entry;
+  NdbMutex_Lock(theUserIdMutex);
+  DBUG_RETURN(0);
+}
+
+int ClusterMgr::updateUserId(const char *username,
+                             Uint32 username_len,
+                             Uint32 userId,
+                             Uint32 userIdVersion) {
+  DBUG_ENTER("ClusterMgr::updateUserId");
+  NdbMutex_Lock(theUserIdMutex);
+  if (m_num_in_user_id_cache == RNIL) {
+    NdbMutex_Unlock(theUserIdMutex);
+    DBUG_RETURN(0);
+  }
+  Uint32 hash_val = rondb_calc_hash_val(username,
+                                        username_len,
+                                        true);
+  Uint32 inx = hash_val & (USER_ID_HASH_SIZE - 1);
+  UserIdHashEntry *entry = theUserIdHash[inx];
+  while (entry != nullptr) {
+    if (entry->m_username_len != username_len ||
+        memcmp(entry->m_username, username, username_len) != 0) {
+      entry = entry->next_entry;
+      continue;
+    } else {
+      entry->m_user_id = userId;
+      entry->m_user_id_version = userIdVersion;
+      if (entry->m_wait_for_entry) {
+        entry->m_wait_for_entry = false;
+        NdbCondition_Broadcast(theUserIdCond);
+      }
+      NdbMutex_Unlock(theUserIdMutex);
+      DBUG_RETURN(0);
+    }
+  }
+  NdbMutex_Unlock(theUserIdMutex);
+#ifdef DEBUG_USER
+  g_eventLogger->info("Failed to update user id, "
+                      "name: %s, namelen: %u, id: %u, version: %u",
+    username,
+    username_len,
+    userId,
+    userIdVersion);
+#endif
+  DBUG_RETURN(-1);
+}
+
+void ClusterMgr::deleteUserId(const char *username,
+                              Uint32 username_len,
+                              Uint32 userId,
+                              Uint32 userIdVersion) {
+  DBUG_ENTER("ClusterMgr::deleteUserId");
+  if (m_num_in_user_id_cache == RNIL) {
+    NdbMutex_Unlock(theUserIdMutex);
+    DBUG_VOID_RETURN;
+  }
+  Uint32 hash_val = rondb_calc_hash_val(username,
+                                        username_len,
+                                        true);
+  Uint32 inx = hash_val & (USER_ID_HASH_SIZE - 1);
+  struct UserIdHashEntry *entry = theUserIdHash[inx];
+  struct UserIdHashEntry *prev_entry = nullptr;
+  while (entry != nullptr) {
+    if (entry->m_username_len != username_len ||
+        memcmp(entry->m_username, username, username_len) != 0) {
+      prev_entry = entry;
+      entry = entry->next_entry;
+      continue;
+    } else {
+      if (entry->m_user_id == userId &&
+          entry->m_user_id_version == userIdVersion) {
+        if (entry->m_wait_for_entry) {
+          entry->m_wait_for_entry = false;
+          NdbCondition_Broadcast(theUserIdCond);
+        }
+        if (prev_entry == nullptr) {
+          theUserIdHash[inx] = entry->next_entry;
+        } else {
+          prev_entry->next_entry = entry->next_entry;
+        }
+        NdbMutex_Unlock(theUserIdMutex);
+        std::free(entry);
+        DBUG_VOID_RETURN;
+      }
+      NdbMutex_Unlock(theUserIdMutex);
+#ifdef DEBUG_USER
+      g_eventLogger->info("deleteUserId found same name, different id, "
+                          "name: %s, namelen: %u, id: %u, version: %u"
+                          ", found userId: %u, version: %u",
+                          username,
+                          username_len,
+                          userId,
+                          userIdVersion,
+                          entry->m_user_id,
+                          entry->m_user_id_version);
+#endif
+      DBUG_VOID_RETURN;
+    }
+  }
+  NdbMutex_Unlock(theUserIdMutex);
+  DBUG_VOID_RETURN;
+}
+
+void ClusterMgr::createUserIdHash() {
+  DBUG_ENTER("ClusterMgr::createUserIdHash");
+  m_num_in_user_id_cache = 0;
+  theUserIdMutex = NdbMutex_Create();
+  theUserIdCond = NdbCondition_Create();
+  theUserIdHash = (struct UserIdHashEntry**)
+    std::calloc(1, sizeof(struct UserIdHashEntry*) * USER_ID_HASH_SIZE);
+  if (theUserIdHash == nullptr) {
+    m_num_in_user_id_cache = RNIL;
+  }
+  m_initialised_user_id_cache = false;
+  m_initialising_user_id_cache = false;
+  DBUG_VOID_RETURN;
+}
+
+void ClusterMgr::releaseUserIdHash() {
+  DBUG_ENTER("ClusterMgr::releaseUserIdHash");
+  NdbMutex_Lock(theUserIdMutex);
+  m_num_in_user_id_cache = RNIL;
+  if (theUserIdHash != nullptr) {
+    for (Uint32 i = 0; i < USER_ID_HASH_SIZE; i++) {
+      struct UserIdHashEntry *entry = theUserIdHash[i];
+      while (entry != nullptr) {
+        struct UserIdHashEntry *next_entry = entry->next_entry;
+        std::free(entry);
+        entry = next_entry;
+      }
+    }
+    std::free(theUserIdHash);
+    theUserIdHash = nullptr;
+  }
+  NdbMutex_Unlock(theUserIdMutex);
+  NdbCondition_Destroy(theUserIdCond);
+  NdbMutex_Destroy(theUserIdMutex);
+  DBUG_VOID_RETURN;
 }
 
 /******************************************************************************

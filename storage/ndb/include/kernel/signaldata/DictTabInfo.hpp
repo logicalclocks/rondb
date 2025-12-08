@@ -722,6 +722,7 @@ struct DictDatabaseInfo {
     MaxTransactionSize= 103,
     MaxParallelTransactions = 104,
     MaxParallelComplexQueries = 105,
+    IsUser = 106,
     ParameterEnd = 199,
   };
   struct Database {
@@ -736,6 +737,7 @@ struct DictDatabaseInfo {
     Uint64 MaxTransactionSize;
     Uint64 MaxParallelTransactions;
     Uint64 MaxParallelComplexQueries;
+    bool IsUser;
     Database() {}
     void init();
   };

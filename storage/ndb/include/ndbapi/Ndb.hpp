@@ -2147,9 +2147,6 @@ class Ndb {
   Uint32 insert_completed_list(NdbTransaction *);
   Uint32 insert_sent_list(NdbTransaction *);
 
-  int sendRecSignal(Uint16 aNodeId, Uint32 aWaitState, NdbApiSignal *aSignal,
-                    Uint32 nodeSequence, Uint32 *ret_conn_seq = nullptr);
-
   // Get block number of this NDBAPI object
   int getBlockNumber();
 

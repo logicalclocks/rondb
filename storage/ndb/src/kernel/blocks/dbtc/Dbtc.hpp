@@ -2951,6 +2951,7 @@ class Dbtc : public SimulatedBlock {
       theDatabaseConcurrentTransactionMutex(nullptr),
       m_is_memory_quota_exceeded(false),
       m_is_disk_quota_exceeded(false),
+      m_is_user(false),
       m_current_in_memory_size8k(0),
       m_current_disk_space_size32k(0),
       m_current_used_rate_us(0),
@@ -2989,6 +2990,7 @@ class Dbtc : public SimulatedBlock {
 
     bool m_is_memory_quota_exceeded;
     bool m_is_disk_quota_exceeded;
+    bool m_is_user;
 
     NDB_TICKS m_last_rate_decrement;
 
