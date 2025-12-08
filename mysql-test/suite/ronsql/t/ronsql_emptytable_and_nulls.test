@@ -222,6 +222,80 @@ GROUP BY gr
 --let $canonicalization_script=s/\.0000//;
 --source suite/ronsql/include/ronsql_compare.inc
 
+--echo Queries combining NULL, NOT, AND, OR, =, !=
+let $QUERY=SELECT count(*), sum(pk) from tbl1 WHERE flt = 11;|
+--source suite/ronsql/include/ronsql_compare.inc
+let $QUERY=SELECT count(*), sum(pk) from tbl1 WHERE flt != 11;|
+--source suite/ronsql/include/ronsql_compare.inc
+let $QUERY=SELECT count(*), sum(pk) from tbl1 WHERE flt = 11 AND gr = 2;|
+--source suite/ronsql/include/ronsql_compare.inc
+let $QUERY=SELECT count(*), sum(pk) from tbl1 WHERE flt = 11 AND gr != 2;|
+--source suite/ronsql/include/ronsql_compare.inc
+let $QUERY=SELECT count(*), sum(pk) from tbl1 WHERE flt != 11 AND gr = 2;|
+--source suite/ronsql/include/ronsql_compare.inc
+let $QUERY=SELECT count(*), sum(pk) from tbl1 WHERE flt != 11 AND gr != 2;|
+--source suite/ronsql/include/ronsql_compare.inc
+let $QUERY=SELECT count(*), sum(pk) from tbl1 WHERE flt = 11 OR gr = 2;|
+--source suite/ronsql/include/ronsql_compare.inc
+let $QUERY=SELECT count(*), sum(pk) from tbl1 WHERE flt = 11 OR gr != 2;|
+--source suite/ronsql/include/ronsql_compare.inc
+let $QUERY=SELECT count(*), sum(pk) from tbl1 WHERE flt != 11 OR gr = 2;|
+--source suite/ronsql/include/ronsql_compare.inc
+let $QUERY=SELECT count(*), sum(pk) from tbl1 WHERE flt != 11 OR gr != 2;|
+--source suite/ronsql/include/ronsql_compare.inc
+let $QUERY=SELECT count(*), sum(pk) from tbl1 WHERE NOT (flt = 11);|
+--source suite/ronsql/include/ronsql_compare.inc
+let $QUERY=SELECT count(*), sum(pk) from tbl1 WHERE NOT (flt != 11);|
+--source suite/ronsql/include/ronsql_compare.inc
+let $QUERY=SELECT count(*), sum(pk) from tbl1 WHERE (NOT (flt = 11)) AND gr = 2;|
+--source suite/ronsql/include/ronsql_compare.inc
+let $QUERY=SELECT count(*), sum(pk) from tbl1 WHERE flt = 11 AND (NOT (gr = 2));|
+--source suite/ronsql/include/ronsql_compare.inc
+let $QUERY=SELECT count(*), sum(pk) from tbl1 WHERE NOT (flt = 11 AND gr = 2);|
+--source suite/ronsql/include/ronsql_compare.inc
+let $QUERY=SELECT count(*), sum(pk) from tbl1 WHERE (NOT (flt = 11)) AND gr != 2;|
+--source suite/ronsql/include/ronsql_compare.inc
+let $QUERY=SELECT count(*), sum(pk) from tbl1 WHERE flt = 11 AND (NOT (gr != 2));|
+--source suite/ronsql/include/ronsql_compare.inc
+let $QUERY=SELECT count(*), sum(pk) from tbl1 WHERE NOT (flt = 11 AND gr != 2);|
+--source suite/ronsql/include/ronsql_compare.inc
+let $QUERY=SELECT count(*), sum(pk) from tbl1 WHERE (NOT (flt != 11)) AND gr = 2;|
+--source suite/ronsql/include/ronsql_compare.inc
+let $QUERY=SELECT count(*), sum(pk) from tbl1 WHERE flt != 11 AND (NOT (gr = 2));|
+--source suite/ronsql/include/ronsql_compare.inc
+let $QUERY=SELECT count(*), sum(pk) from tbl1 WHERE NOT (flt != 11 AND gr = 2);|
+--source suite/ronsql/include/ronsql_compare.inc
+let $QUERY=SELECT count(*), sum(pk) from tbl1 WHERE (NOT (flt != 11)) AND gr != 2;|
+--source suite/ronsql/include/ronsql_compare.inc
+let $QUERY=SELECT count(*), sum(pk) from tbl1 WHERE flt != 11 AND (NOT (gr != 2));|
+--source suite/ronsql/include/ronsql_compare.inc
+let $QUERY=SELECT count(*), sum(pk) from tbl1 WHERE NOT (flt != 11 AND gr != 2);|
+--source suite/ronsql/include/ronsql_compare.inc
+let $QUERY=SELECT count(*), sum(pk) from tbl1 WHERE (NOT (flt = 11)) OR gr = 2;|
+--source suite/ronsql/include/ronsql_compare.inc
+let $QUERY=SELECT count(*), sum(pk) from tbl1 WHERE flt = 11 OR (NOT (gr = 2));|
+--source suite/ronsql/include/ronsql_compare.inc
+let $QUERY=SELECT count(*), sum(pk) from tbl1 WHERE NOT (flt = 11 OR gr = 2);|
+--source suite/ronsql/include/ronsql_compare.inc
+let $QUERY=SELECT count(*), sum(pk) from tbl1 WHERE (NOT (flt = 11)) OR gr != 2;|
+--source suite/ronsql/include/ronsql_compare.inc
+let $QUERY=SELECT count(*), sum(pk) from tbl1 WHERE flt = 11 OR (NOT (gr != 2));|
+--source suite/ronsql/include/ronsql_compare.inc
+let $QUERY=SELECT count(*), sum(pk) from tbl1 WHERE NOT (flt = 11 OR gr != 2);|
+--source suite/ronsql/include/ronsql_compare.inc
+let $QUERY=SELECT count(*), sum(pk) from tbl1 WHERE (NOT (flt != 11)) OR gr = 2;|
+--source suite/ronsql/include/ronsql_compare.inc
+let $QUERY=SELECT count(*), sum(pk) from tbl1 WHERE flt != 11 OR (NOT (gr = 2));|
+--source suite/ronsql/include/ronsql_compare.inc
+let $QUERY=SELECT count(*), sum(pk) from tbl1 WHERE NOT (flt != 11 OR gr = 2);|
+--source suite/ronsql/include/ronsql_compare.inc
+let $QUERY=SELECT count(*), sum(pk) from tbl1 WHERE (NOT (flt != 11)) OR gr != 2;|
+--source suite/ronsql/include/ronsql_compare.inc
+let $QUERY=SELECT count(*), sum(pk) from tbl1 WHERE flt != 11 OR (NOT (gr != 2));|
+--source suite/ronsql/include/ronsql_compare.inc
+let $QUERY=SELECT count(*), sum(pk) from tbl1 WHERE NOT (flt != 11 OR gr != 2);|
+--source suite/ronsql/include/ronsql_compare.inc
+
 DELIMITER ;|
 dec $i;
 }
