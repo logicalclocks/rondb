@@ -33,8 +33,8 @@
 
 struct CreateDbReq
 {
-  static constexpr Uint32 SignalLengthTC = 11;
-  static constexpr Uint32 SignalLengthLQH = 8;
+  static constexpr Uint32 SignalLengthTC = 12;
+  static constexpr Uint32 SignalLengthLQH = 9;
 
   Uint32 senderRef;
   Uint32 senderData;
@@ -44,6 +44,7 @@ struct CreateDbReq
   Uint32 inMemorySizeMB;
   Uint32 diskSpaceSizeGB;
   Uint32 ratePerSec;
+  Uint32 isUser;
   Uint32 maxTransactionSize;
   Uint32 maxParallelTransactions;
   Uint32 maxParallelComplexQueries;

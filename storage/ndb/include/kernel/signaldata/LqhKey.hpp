@@ -120,13 +120,13 @@ class LqhKeyReq {
   static Uint8 getOperation(const UintR &requestInfo);
   static Uint8 getSeqNoReplica(const UintR &requestInfo);
   static Uint8 getLastReplicaNo(const UintR &requestInfo);
-  static Uint8 getAIInLqhKeyReq(const UintR &requestInfo);
   static UintR getKeyLen(const UintR &requestInfo);
   static UintR getSameClientAndTcFlag(const UintR &requestInfo);
   static UintR getReturnedReadLenAIFlag(const UintR &requestInfo);
   static UintR getApplicationAddressFlag(const UintR &requestInfo);
   static UintR getMarkerFlag(const UintR &requestInfo);
   static UintR getNoDiskFlag(const UintR &requestInfo);
+  static UintR getUserIdFlag(const UintR &requestInfo);
 
   /**
    * Setters
@@ -160,6 +160,7 @@ class LqhKeyReq {
   static void setApplicationAddressFlag(UintR &requestInfo, UintR val);
   static void setMarkerFlag(UintR &requestInfo, UintR val);
   static void setNoDiskFlag(UintR &requestInfo, UintR val);
+  static void setUserIdFlag(UintR &requestInfo, UintR val);
 
   static UintR getRowidFlag(const UintR &requestInfo);
   static void setRowidFlag(UintR &requestInfo, UintR val);
@@ -207,11 +208,6 @@ class LqhKeyReq {
   static void setDisableFkConstraints(UintR &requestInfo, UintR val);
 
   /**
-   * Get mask of currently undefined bits
-   */
-  static UintR getLongClearBits(const UintR &requestInfo);
-
-  /**
    * Trigger flag ensuring that requests based on fully replicated triggers
    * doesn't trigger a new trigger itself.
    */
@@ -246,8 +242,8 @@ class LqhKeyReq {
     RI_TTL_IGNORE_SHIFT = 6,
     RI_INTERPRETED_INSERT_SHIFT = 7,
     RI_TTL_ONLY_EXPIRED_SHIFT = 8,
-    /* Currently unused */
-    RI_CLEAR_SHIFT9 = 9,
+
+    RI_USER_ID_SHIFT = 9,
 
     RI_LAST_REPL_SHIFT = 10,
     RI_LAST_REPL_MASK = 3,
@@ -264,8 +260,6 @@ class LqhKeyReq {
     RI_OPERATION_MASK = 7,
     RI_SEQ_REPLICA_SHIFT = 22,
     RI_SEQ_REPLICA_MASK = 3,
-    RI_AI_IN_THIS_SHIFT = 24,
-    RI_AI_IN_THIS_MASK = 7, /* legacy for short LQHKEYREQ */
     RI_CORR_FACTOR_VALUE = 24,
     RI_NORMAL_DIRTY = 25,
     RI_DEFERRED_CONSTRAINTS = 26,
@@ -324,6 +318,8 @@ class LqhKeyReq {
  * R = Replica Applier        = 1 Bit (5)
  * L = TTL flag               = 1 Bit (6)
  * N = Interpreted Insert flag= 1 Bit (7)
+ * t = TTL only expired flag  = 1 Bit (8)
+ * U = User Id flag           = 1 Bit (9)
 
  * Short LQHKEYREQ :
  *             1111111111222222222233
@@ -334,7 +330,7 @@ class LqhKeyReq {
  * Long LQHKEYREQ :
  *             1111111111222222222233
  *   01234567890123456789012345678901
- *   FTUwQRLN  llgnqpdisooorrAPDcumxz
+ *   FTUwQRLNtUllgnqpdisooorrAPDcumxz
  *
  */
 
@@ -416,10 +412,6 @@ inline Uint8 LqhKeyReq::getOperation(const UintR &requestInfo) {
 
 inline Uint8 LqhKeyReq::getSeqNoReplica(const UintR &requestInfo) {
   return (requestInfo >> RI_SEQ_REPLICA_SHIFT) & RI_SEQ_REPLICA_MASK;
-}
-
-inline Uint8 LqhKeyReq::getAIInLqhKeyReq(const UintR &requestInfo) {
-  return (requestInfo >> RI_AI_IN_THIS_SHIFT) & RI_AI_IN_THIS_MASK;
 }
 
 inline UintR LqhKeyReq::getKeyLen(const UintR &requestInfo) {
@@ -533,15 +525,6 @@ inline void LqhKeyReq::setLastReplicaNo(UintR &requestInfo, UintR val) {
   requestInfo |= (val << RI_LAST_REPL_SHIFT);
 }
 
-inline void LqhKeyReq::setAIInLqhKeyReq(UintR &requestInfo, UintR val) {
-  ASSERT_MAX(val, RI_AI_IN_THIS_MASK, "LqhKeyReq::setAIInLqhKeyReq");
-  requestInfo |= (val << RI_AI_IN_THIS_SHIFT);
-}
-
-inline void LqhKeyReq::clearAIInLqhKeyReq(UintR &requestInfo) {
-  requestInfo &= ~((Uint32)RI_AI_IN_THIS_MASK << RI_AI_IN_THIS_SHIFT);
-}
-
 inline void LqhKeyReq::setKeyLen(UintR &requestInfo, UintR val) {
   ASSERT_MAX(val, RI_KEYLEN_MASK, "LqhKeyReq::setKeyLen");
   requestInfo |= (val << RI_KEYLEN_SHIFT);
@@ -579,8 +562,17 @@ inline void LqhKeyReq::setNoDiskFlag(UintR &requestInfo, UintR val) {
   requestInfo |= (val << RI_NODISK_SHIFT);
 }
 
+inline void LqhKeyReq::setUserIdFlag(UintR &requestInfo, UintR val) {
+  ASSERT_BOOL(val, "LqhKeyReq::setUserIdFlag");
+  requestInfo |= (val << RI_USER_ID_SHIFT);
+}
+
 inline UintR LqhKeyReq::getNoDiskFlag(const UintR &requestInfo) {
   return (requestInfo >> RI_NODISK_SHIFT) & 1;
+}
+
+inline UintR LqhKeyReq::getUserIdFlag(const UintR &requestInfo) {
+  return (requestInfo >> RI_USER_ID_SHIFT) & 1;
 }
 
 inline void LqhKeyReq::setRowidFlag(UintR &requestInfo, UintR val) {
@@ -644,12 +636,6 @@ inline void LqhKeyReq::setDisableFkConstraints(UintR &requestInfo, UintR val) {
 
 inline UintR LqhKeyReq::getDisableFkConstraints(const UintR &requestInfo) {
   return (requestInfo >> RI_DISABLE_FK) & 1;
-}
-
-inline UintR LqhKeyReq::getLongClearBits(const UintR &requestInfo) {
-  const Uint32 mask = (1 << RI_CLEAR_SHIFT9);
-
-  return (requestInfo & mask);
 }
 
 inline void LqhKeyReq::setNoTriggersFlag(UintR &requestInfo, UintR val) {

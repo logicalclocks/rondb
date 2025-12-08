@@ -147,7 +147,8 @@ RS_Status pk_batch_read(void *amalloc_void,
                         bool is_batch,
                         RS_Buffer *req_buffs,
                         RS_Buffer *resp_buffs,
-                        unsigned int threadIndex) {
+                        unsigned int threadIndex,
+                        char *username_ptr) {
   ArenaMalloc *amalloc = (ArenaMalloc*)amalloc_void;
   Ndb *ndb_object  = nullptr;
   RS_Status status = rdrsRonDBConnectionPool->GetNdbObject(&ndb_object,
@@ -162,7 +163,8 @@ RS_Status pk_batch_read(void *amalloc_void,
                                       is_batch,
                                       req_buffs,
                                       resp_buffs,
-                                      ndb_object);
+                                      ndb_object,
+                                      username_ptr);
   )
   rdrsRonDBConnectionPool->ReturnNdbObject(ndb_object,
                                            &status,

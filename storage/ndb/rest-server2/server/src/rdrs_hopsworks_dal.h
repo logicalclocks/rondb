@@ -38,6 +38,7 @@ typedef struct HopsworksAPIKey {
 // User table
 typedef struct HopsworksUsers {
   char email[USERS_EMAIL_SIZE];
+  char username[USERNAME_SIZE];
 } HopsworksUsers;
 
 // project_team table
@@ -58,7 +59,10 @@ RS_Status find_api_key(const char *prefix, HopsworksAPIKey *api_key);
 /*
  * Find all projects for the api key
  */
-RS_Status find_all_projects(int uid, char ***projects, int *count);
+RS_Status find_all_projects(int uid,
+                            char ***projects,
+                            int *count,
+                            char **username_ptr);
 
 #endif
 

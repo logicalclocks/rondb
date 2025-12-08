@@ -93,6 +93,7 @@ BatchKeyOperations::init_batch_operations(ArenaMalloc *amalloc,
   m_numOperations = numOps;
   m_num_sent_operations = 0;
   m_single_transaction = globalConfigs.rest.useSingleTransaction;
+  m_user_rate_limits = globalConfigs.rest.userRateLimits;
   m_key_ops = amalloc->alloc<KeyOperation>(numOps);
   if (unlikely(m_key_ops == nullptr)) {
     RS_Status error = RS_SERVER_ERROR(
@@ -375,9 +376,10 @@ RS_Status BatchKeyOperations::setup_primary_keys() {
   return RS_OK;
 }
 
-RS_Status BatchKeyOperations::setup_transactions() {
+RS_Status BatchKeyOperations::setup_transactions(char *username_ptr) {
   Uint32 tmp[MAX_KEY_SIZE_IN_WORDS * MAX_XFRM_MULTIPLY];
   char *buf = (char *)&tmp[0];
+  PKRRequest *req = nullptr;
   if (unlikely(m_single_transaction)) {
     if (m_key_ops[0].m_ndbTransaction != nullptr) {
       /* Transaction started already in previous loop */
@@ -387,7 +389,7 @@ RS_Status BatchKeyOperations::setup_transactions() {
     KeyOperation *first_key_op = nullptr;
     for (Uint32 i = m_first_key; i < m_last_key; i++) {
       first_key_op = &m_key_ops[i];
-      PKRRequest *req = &first_key_op->m_req;
+      req = &first_key_op->m_req;
       if (req->IsInvalidOp()) {
         first_key_op = nullptr;
         continue;
@@ -405,11 +407,32 @@ RS_Status BatchKeyOperations::setup_transactions() {
         return RS_RONDB_SERVER_ERROR(m_ndb_object->getNdbError(), 
           std::string(rdrsErrorMessage(ERROR_TRANSACTION_START_FAILED)));
       }
+      if (m_user_rate_limits && username_ptr) {
+        /**
+         * We need to concatenate database name and username here
+         */
+        const char *project_name = req->DB();
+        Uint32 project_name_len =
+          strnlen(project_name, PROJECT_PROJECTNAME_SIZE);
+        Uint32 username_len = strnlen(username_ptr, USERNAME_SIZE);
+        memmove(username_ptr + project_name_len,
+                username_ptr,
+                username_len + 1);
+        memcpy(username_ptr, project_name, project_name_len);
+        username_len += project_name_len;
+        if (key_op->m_ndbTransaction->setUserId(username_ptr,
+                                                username_len) != 0) {
+          m_ndb_object->closeTransaction(key_op->m_ndbTransaction);
+          key_op->m_ndbTransaction = nullptr;
+          return RS_RONDB_SERVER_ERROR(m_ndb_object->getNdbError(), 
+            std::string(rdrsErrorMessage(ERROR_TRANSACTION_START_FAILED)));
+        }
+      }
     }
   } else {
     for (Uint32 i = m_first_key; i < m_last_key; i++) {
       KeyOperation *key_op = &m_key_ops[i];
-      PKRRequest *req = &key_op->m_req;
+      req = &key_op->m_req;
       if (req->IsInvalidOp()) {
         continue;
       }
@@ -421,6 +444,27 @@ RS_Status BatchKeyOperations::setup_transactions() {
       if (unlikely(key_op->m_ndbTransaction == nullptr)) {
         return RS_RONDB_SERVER_ERROR(m_ndb_object->getNdbError(), 
             std::string(rdrsErrorMessage(ERROR_TRANSACTION_START_FAILED)));
+      }
+      if (m_user_rate_limits && username_ptr) {
+        /**
+         * We need to concatenate database name and username here
+         */
+        const char *project_name = req->DB();
+        Uint32 project_name_len =
+          strnlen(project_name, PROJECT_PROJECTNAME_SIZE);
+        Uint32 username_len = strnlen(username_ptr, USERNAME_SIZE);
+        memmove(username_ptr + project_name_len,
+                username_ptr,
+                username_len + 1);
+        memcpy(username_ptr, project_name, project_name_len);
+        username_len += project_name_len;
+        if (key_op->m_ndbTransaction->setUserId(username_ptr,
+                                                username_len) != 0) {
+          m_ndb_object->closeTransaction(key_op->m_ndbTransaction);
+          key_op->m_ndbTransaction = nullptr;
+          return RS_RONDB_SERVER_ERROR(m_ndb_object->getNdbError(), 
+            std::string(rdrsErrorMessage(ERROR_TRANSACTION_START_FAILED)));
+        }
       }
     }
   }
@@ -1187,7 +1231,8 @@ RS_Status BatchKeyOperations::perform_operation(
   bool is_batch,
   RS_Buffer *reqBuffer,
   RS_Buffer *respBuffer,
-  Ndb *ndb_object) {
+  Ndb *ndb_object,
+  char *username_ptr) {
 
   DEB_NDB_BE("init_batch_operations");
   RS_Status status = init_batch_operations(
@@ -1240,7 +1285,7 @@ RS_Status BatchKeyOperations::perform_operation(
     m_last_key = last_key;
 
     DEB_NDB_BE("setup_transactions");
-    status = setup_transactions();
+    status = setup_transactions(username_ptr);
     if (unlikely(status.http_code != SUCCESS)) {
       handle_ndb_error(status);
       return status;

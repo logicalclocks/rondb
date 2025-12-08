@@ -108,9 +108,12 @@ void RonSQLCtrl::ronsql(
     return;
   }
 
+  char username[USERNAME_SIZE + PROJECT_PROJECTNAME_SIZE + 1];
+  char *username_ptr = nullptr;
   if (globalConfigs.security.apiKey.useHopsworksAPIKeys) {
     auto api_key = req->getHeader(API_KEY_NAME_LOWER_CASE);
-    status = authenticate(api_key, database);
+    username_ptr = &username[0];
+    status = authenticate(api_key, database, username_ptr);
     if (static_cast<drogon::HttpStatusCode>(status.http_code) !=
           drogon::HttpStatusCode::k200OK) {
       resp->setBody(std::string(status.message));

@@ -860,6 +860,42 @@ void NdbImpl::trp_deliver_signal(const NdbApiSignal *aSignal,
       }
       goto InvalidSignal;
     }
+    case GSN_GET_DATABASE_CONF: {
+      if (tFirstDataPtr == nullptr) {
+        goto InvalidSignal;
+      }
+      if (tWaitState != WAIT_GET_DATABASE_REQ) {
+        goto InvalidSignal;
+      }
+      tCon = void2con(tFirstDataPtr);
+      if (tCon->checkMagicNumber() != 0) {
+        goto InvalidSignal;
+      }
+      tReturnCode = tCon->receiveGET_DATABASE_CONF(aSignal);
+      if (tReturnCode != -1) {
+        tNewState = NO_WAIT;
+      } else {
+        goto InvalidSignal;
+      }
+    }
+    case GSN_GET_DATABASE_REF: {
+      if (tFirstDataPtr == nullptr) {
+        goto InvalidSignal;
+      }
+      if (tWaitState != WAIT_GET_DATABASE_REQ) {
+        goto InvalidSignal;
+      }
+      tCon = void2con(tFirstDataPtr);
+      if (tCon->checkMagicNumber() != 0) {
+        goto InvalidSignal;
+      }
+      tReturnCode = tCon->receiveGET_DATABASE_REF(aSignal);
+      if (tReturnCode != -1) {
+        tNewState = NO_WAIT;
+      } else {
+        goto InvalidSignal;
+      }
+    }
     case GSN_TCSEIZECONF: {
       if (tFirstDataPtr == nullptr) {
         goto InvalidSignal;
@@ -1696,8 +1732,10 @@ int Ndb::pollNdb(int aMillisecondNumber, int minNoOfEventsToWakeup) {
   return poll_trans(aMillisecondNumber, minNoOfEventsToWakeup, &pg);
 }
 
-int Ndb::sendRecSignal(Uint16 node_id, Uint32 aWaitState, NdbApiSignal *aSignal,
-                       Uint32 conn_seq, Uint32 *ret_conn_seq) {
+int NdbImpl::sendRecSignal(Uint16 node_id, Uint32 aWaitState, NdbApiSignal *aSignal,
+                       Uint32 conn_seq, Uint32 *ret_conn_seq,
+                       Uint32 secs,
+                       const LinearSectionPtr (*ptr)[3]) {
   /*
   In most situations 0 is returned.
   In error cases we have 5 different cases
@@ -1718,21 +1756,30 @@ int Ndb::sendRecSignal(Uint16 node_id, Uint32 aWaitState, NdbApiSignal *aSignal,
     in all places where the object is out of context due to a return,
     break, continue or simply end of statement block
   */
-  theImpl->incClientStat(WaitMetaRequestCount, 1);
-  PollGuard poll_guard(*theImpl);
+  incClientStat(Ndb::ClientStatistics::WaitMetaRequestCount, 1);
+  PollGuard poll_guard(*this);
 
   /**
    * Either we supply the correct conn_seq and ret_conn_seq == 0
    *     or we supply conn_seq == 0 and ret_conn_seq != 0
    */
-  read_conn_seq = theImpl->getNodeSequence(node_id);
+  read_conn_seq = getNodeSequence(node_id);
   bool ok = (conn_seq == read_conn_seq && ret_conn_seq == nullptr) ||
             (conn_seq == 0 && ret_conn_seq != nullptr);
 
   if (ret_conn_seq) *ret_conn_seq = read_conn_seq;
-  if ((theImpl->get_node_alive(node_id)) && ok) {
-    if (theImpl->check_send_size(node_id, send_size)) {
-      return_code = theImpl->sendSignal(aSignal, node_id);
+  if ((get_node_alive(node_id)) && ok) {
+    if (check_send_size(node_id, send_size)) {
+      if (secs == 0) {
+        return_code = sendSignal(aSignal, node_id);
+      } else {
+        LinearSectionPtr loc_ptr[3];
+        memcpy(&loc_ptr[0], &ptr[0], sizeof(loc_ptr));
+        return_code = sendSignal(aSignal,
+                                 node_id,
+                                 loc_ptr,
+                                 secs);
+      }
       if (return_code != -1) {
         return poll_guard.wait_n_unlock(WAITFOR_RESPONSE_TIMEOUT, node_id,
                                         aWaitState, false);
@@ -1743,7 +1790,7 @@ int Ndb::sendRecSignal(Uint16 node_id, Uint32 aWaitState, NdbApiSignal *aSignal,
       return_code = -4;
     }  // if
   } else {
-    if ((theImpl->get_node_stopping(node_id)) && ok) {
+    if ((get_node_stopping(node_id)) && ok) {
       return_code = -5;
     } else {
       return_code = -2;
@@ -1751,7 +1798,7 @@ int Ndb::sendRecSignal(Uint16 node_id, Uint32 aWaitState, NdbApiSignal *aSignal,
   }    // if
   return return_code;
   // End of protected area
-}  // Ndb::sendRecSignal()
+}  // NdbImpl::sendRecSignal()
 
 void NdbTransaction::sendTC_COMMIT_ACK(NdbImpl *impl, NdbApiSignal *aSignal,
                                        Uint32 transId1, Uint32 transId2,

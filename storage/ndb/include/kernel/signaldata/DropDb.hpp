@@ -32,7 +32,7 @@
 
 
 struct DropDbReq {
-  static constexpr Uint32 SignalLength = 5;
+  static constexpr Uint32 SignalLength = 6;
 
   enum {
     PREPARE_DROP = 0,
@@ -43,6 +43,7 @@ struct DropDbReq {
   Uint32 requestType;
   Uint32 databaseId;
   Uint32 databaseVersion;
+  Uint32 isUser;
 
   friend bool printDROP_DB_REQ(FILE *, const Uint32 *, Uint32, Uint16);
 };

@@ -60,6 +60,7 @@ class BatchKeyOperations {
   Ndb *m_ndb_object;
   bool m_isBatch;
   bool m_single_transaction;
+  bool m_user_rate_limits;
   struct KeyOperation *m_key_ops;
   Uint32 m_num_sent_operations;
   Uint32 m_first_key;
@@ -74,14 +75,15 @@ class BatchKeyOperations {
                                bool is_batch,
                                RS_Buffer *reqBuffer,
                                RS_Buffer *respBuffer,
-                               Ndb *ndb_object);
+                               Ndb *ndb_object,
+                               char *username_ptr);
    RS_Status init_batch_operations(ArenaMalloc*,
                                    Uint32,
                                    bool is_batch,
                                    RS_Buffer *reqBuffer,
                                    Ndb *ndb_object);
    RS_Status setup_primary_keys();
-   RS_Status setup_transactions();
+   RS_Status setup_transactions(char *username_ptr);
    RS_Status setup_read_operations();
    RS_Status execute();
    RS_Status create_response(RS_Buffer *respBuffer);

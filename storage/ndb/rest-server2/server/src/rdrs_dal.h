@@ -186,7 +186,8 @@ RS_Status pk_batch_read(void *amalloc,
                         bool is_batch,
                         RS_Buffer *req_buffs,
                         RS_Buffer *resp_buffs,
-                        unsigned int threadIndex);
+                        unsigned int threadIndex,
+                        char *username_ptr);
 
 /**
  * RonSQL query

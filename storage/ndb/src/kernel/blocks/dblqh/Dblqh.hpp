@@ -2773,6 +2773,7 @@ class Dblqh : public SimulatedBlock {
     TcConnectionrec() :
       m_magic(Magic::make(TYPE_ID)),
       fragmentptr(RNIL64),
+      m_user_ptr_i(RNIL64),
       accConnectrec(RNIL),
       tupConnectrec(RNIL),
       nextTcConnectrec(RNIL),
@@ -2873,6 +2874,7 @@ class Dblqh : public SimulatedBlock {
     {
     }
     Uint64 fragmentptr;
+    Uint64 m_user_ptr_i;
     Dbacc::Operationrec *accConnectPtrP;
     Dbtup::Operationrec *tupConnectPtrP;
 #ifdef DEBUG_USAGE_COUNT
@@ -2963,7 +2965,6 @@ class Dblqh : public SimulatedBlock {
     Uint8 opAgg;
     Uint8 operation;
     Uint8 m_reorg;
-    Uint8 reclenAiLqhkey;
     Uint8 replicaType;
     Uint8 seqNoReplica;
     Uint8 tcNodeFailrec;
@@ -4562,6 +4563,7 @@ public:
       m_memory_report_limit = 0;
       m_disk_space_report_limit = 0;
       m_rate_report_limit_ns = 0;
+      m_is_user = false;
     }
     DatabaseRecord(Dblqh &dblqh, Uint32);
     Uint32 m_magic;
@@ -4591,6 +4593,8 @@ public:
     NDB_TICKS m_last_quota_report_time;
 
     Uint32 m_continue_delay;
+
+    bool m_is_user;
 
     inline bool equal(const DatabaseRecord & p) const
     {
@@ -5311,7 +5315,7 @@ private:
                                Int32 num_32k_pages,
                                Uint32 line,
                                Uint32 pageId);
-  void update_rate_usage(Uint32 tableId, Uint32 added_rate);
+  void update_rate_usage(Uint32 tableId, Uint64 databasePtrI, Uint32 added_rate);
   void send_database_quota_rep(DatabaseRecordPtr dbPtr, NDB_TICKS);
   Uint32 get_delay(Uint32 tableId);
   void change_report_limits(DatabaseRecord *dbPtrP,

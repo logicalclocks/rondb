@@ -171,7 +171,11 @@ int Ndb::NDB_connect(Uint32 tNode, Uint32 instance) {
   tNdbCon->Status(NdbTransaction::Connecting);  // Set status to connecting
   tNdbCon->theDBnode = tNode;
   Uint32 nodeSequence;
-  tReturnCode = sendRecSignal(tNode, WAIT_TC_SEIZE, tSignal, 0, &nodeSequence);
+  tReturnCode = theImpl->sendRecSignal(tNode,
+                                       WAIT_TC_SEIZE,
+                                       tSignal,
+                                       0,
+                                       &nodeSequence);
   releaseSignal(tSignal);
   if ((tReturnCode == 0) && (tNdbCon->Status() == NdbTransaction::Connected)) {
     //************************************************
@@ -945,6 +949,7 @@ NdbTransaction *Ndb::startTransactionLocal(Uint32 aPriority, Uint32 nodeId,
   tConnection->next(tConNext);       // Add the active connection object
   tConnection->setTransactionId(tFirstTransId);
   tConnection->thePriority = aPriority;
+  tConnection->m_user_id = RNIL;
   if ((tFirstTransId & 0xFFFFFFFF) == 0xFFFFFFFF) {
     //---------------------------------------------------
     // Transaction id rolling round. We will start from

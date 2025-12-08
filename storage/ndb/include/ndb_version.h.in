@@ -1137,4 +1137,16 @@ ndbd_support_2k_api_nodes(Uint32 x) {
   }
   return false;
 }
+
+static inline
+bool
+ndbd_support_user_rate_limits(Uint32 x) {
+  if (major > 25) {
+    return true;
+  }
+  if ((major == 25) && (minor == 10) && (rel >= 2)) {
+    return true;
+  }
+  return false;
+}
 #endif

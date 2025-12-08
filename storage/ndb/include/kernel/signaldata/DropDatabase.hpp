@@ -31,6 +31,15 @@
 #define JAM_FILE_ID 551
 
 
+struct DropDatabaseRep {
+  static constexpr Uint32 SignalLength = 3;
+
+  Uint32 databaseId;
+  Uint32 databaseVersion;
+  Uint32 databaseNameLen;
+  SECTION( DICT_TAB_INFO = 0 );
+};
+
 struct DropDatabaseReq {
   static constexpr Uint32 SignalLength = 8;
 
@@ -63,7 +72,8 @@ struct DropDatabaseRef {
   static constexpr Uint32 SignalLength = 9;
 
   enum ErrorCode {
-    InvalidTableState = 1
+    InvalidTableState = 1,
+    DatabaseNameTooLong = 942
   };
 
   union { Uint32 clientRef, senderRef; };
