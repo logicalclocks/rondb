@@ -835,6 +835,7 @@ RonSQLPreparer::execute()
       {
         DEB_TRACE();
         NdbScanFilter filter(myScanOp);
+        filter.setSqlCmpSemantics();
         DEB_TRACE();
         apply_filter_top_level(&filter);
         DEB_TRACE();
@@ -896,6 +897,7 @@ RonSQLPreparer::execute()
       if (has_filter)
       {
         NdbScanFilter filter(myIndexScanOp);
+        filter.setSqlCmpSemantics();
         apply_filter_top_level(&filter);
       }
       soft_assert(myIndexScanOp->setAggregationCode(&aggregator) >= 0,
@@ -1100,25 +1102,16 @@ RonSQLPreparer::apply_filter_cmp(NdbScanFilter* filter,
   if (right->op == T_IDENTIFIER)
   {
     assert(m_column_attrId_map != NULL);
-    // todo This only works in simple expressions. For full correctness, the
-    // condition needs to be translated from 3-valued logic to 2-valued logic.
-    return (filter->begin(NdbScanFilter::AND) >= 0 &&
-            filter->isnotnull(m_column_attrId_map[left->col_idx]) >=0 &&
-            filter->isnotnull(m_column_attrId_map[right->col_idx]) >=0 &&
-            filter->cmp(cond,
+    return (filter->cmp(cond,
                         m_column_attrId_map[left->col_idx],
-                        m_column_attrId_map[right->col_idx]) >= 0 &&
-            filter->end() >= 0);
+                        m_column_attrId_map[right->col_idx]) >= 0);
   }
   assert(m_column_attrId_map != NULL);
   assert(m_column_map != NULL);
   raw_value rv = encode_constant(right, m_column_map[left->col_idx]);
-  return (filter->begin(NdbScanFilter::AND) >= 0 &&
-          filter->isnotnull(m_column_attrId_map[left->col_idx]) >=0 &&
-          filter->cmp(cond,
+  return (filter->cmp(cond,
                       m_column_attrId_map[left->col_idx],
-                      rv.val, rv.len) >= 0 &&
-          filter->end() >= 0);
+                      rv.val, rv.len) >= 0);
 }
 
 void

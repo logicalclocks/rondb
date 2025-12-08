@@ -186,6 +186,367 @@ Number of output lines, including header: 0
 
 
 
+Queries combining NULL, NOT, AND, OR, =, !=
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE flt = 11;
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE flt != 11;
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE flt = 11 AND gr = 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE flt = 11 AND gr != 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE flt != 11 AND gr = 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE flt != 11 AND gr != 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE flt = 11 OR gr = 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE flt = 11 OR gr != 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE flt != 11 OR gr = 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE flt != 11 OR gr != 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE NOT (flt = 11);
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE NOT (flt != 11);
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE (NOT (flt = 11)) AND gr = 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE flt = 11 AND (NOT (gr = 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE NOT (flt = 11 AND gr = 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE (NOT (flt = 11)) AND gr != 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE flt = 11 AND (NOT (gr != 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE NOT (flt = 11 AND gr != 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE (NOT (flt != 11)) AND gr = 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE flt != 11 AND (NOT (gr = 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE NOT (flt != 11 AND gr = 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE (NOT (flt != 11)) AND gr != 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE flt != 11 AND (NOT (gr != 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE NOT (flt != 11 AND gr != 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE (NOT (flt = 11)) OR gr = 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE flt = 11 OR (NOT (gr = 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE NOT (flt = 11 OR gr = 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE (NOT (flt = 11)) OR gr != 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE flt = 11 OR (NOT (gr != 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE NOT (flt = 11 OR gr != 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE (NOT (flt != 11)) OR gr = 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE flt != 11 OR (NOT (gr = 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE NOT (flt != 11 OR gr = 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE (NOT (flt != 11)) OR gr != 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE flt != 11 OR (NOT (gr != 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE NOT (flt != 11 OR gr != 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
 INSERT INTO tbl1 (idx, flt, gr, dat) VALUES
 (NULL, NULL, NULL, NULL),
 (NULL, NULL, NULL, 5),
@@ -434,6 +795,367 @@ GROUP BY gr
 ;
 
 Number of output lines, including header: 7
+
+== Diff ==
+================================================================================
+
+
+
+Queries combining NULL, NOT, AND, OR, =, !=
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE flt = 11;
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE flt != 11;
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE flt = 11 AND gr = 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE flt = 11 AND gr != 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE flt != 11 AND gr = 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE flt != 11 AND gr != 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE flt = 11 OR gr = 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE flt = 11 OR gr != 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE flt != 11 OR gr = 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE flt != 11 OR gr != 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE NOT (flt = 11);
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE NOT (flt != 11);
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE (NOT (flt = 11)) AND gr = 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE flt = 11 AND (NOT (gr = 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE NOT (flt = 11 AND gr = 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE (NOT (flt = 11)) AND gr != 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE flt = 11 AND (NOT (gr != 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE NOT (flt = 11 AND gr != 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE (NOT (flt != 11)) AND gr = 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE flt != 11 AND (NOT (gr = 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE NOT (flt != 11 AND gr = 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE (NOT (flt != 11)) AND gr != 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE flt != 11 AND (NOT (gr != 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE NOT (flt != 11 AND gr != 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE (NOT (flt = 11)) OR gr = 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE flt = 11 OR (NOT (gr = 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE NOT (flt = 11 OR gr = 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE (NOT (flt = 11)) OR gr != 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE flt = 11 OR (NOT (gr != 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE NOT (flt = 11 OR gr != 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE (NOT (flt != 11)) OR gr = 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE flt != 11 OR (NOT (gr = 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE NOT (flt != 11 OR gr = 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE (NOT (flt != 11)) OR gr != 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE flt != 11 OR (NOT (gr != 2));
+
+Number of output lines, including header: 2
+
+== Diff ==
+================================================================================
+
+
+
+== Query ==
+SELECT count(*), sum(pk) from tbl1 WHERE NOT (flt != 11 OR gr != 2);
+
+Number of output lines, including header: 2
 
 == Diff ==
 ================================================================================
