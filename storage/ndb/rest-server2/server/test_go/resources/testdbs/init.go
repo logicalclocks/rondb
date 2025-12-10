@@ -74,6 +74,7 @@ var databaseCreateSchemes = map[string]string{
 	FSDB001:    FSDB001Scheme,
 	FSDB002:    FSDB002Scheme,
 	FSDB003:    FSDB003Scheme,
+	FSDB004:    FSDB004Scheme,
 	SentinelDB: SentinelDBScheme,
 }
 

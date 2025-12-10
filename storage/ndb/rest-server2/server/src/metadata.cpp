@@ -213,6 +213,8 @@ newFeatureViewMetadata(const std::string &featureStoreName,
     fgFeature.featureGroupName = feature.featureGroupName;
     fgFeature.featureGroupVersion = feature.featureGroupVersion;
     fgFeature.featureGroupId = feature.featureGroupId;
+    fgFeature.onDemandFeatureGroupID = feature.onDemandFeatureGroupID;
+    fgFeature.spine = feature.spine;
     fgFeature.features = featureValue;
     // std::cout << "fgFeature: " << fgFeature.to_string() << std::endl;
 
@@ -252,6 +254,7 @@ newFeatureViewMetadata(const std::string &featureStoreName,
     std::string featureIndexKey   = GetFeatureIndexKeyByFeature(feature);
     featureIndex[featureIndexKey] = featureCount++;
   }
+  bool hasSpine = false;
   auto complexFeatures = std::unordered_map<std::string, AvroDecoder>();
   auto fgSchemaCache = std::unordered_map<int, FeatureGroupAvroSchema>();
   int projectId = 0;
@@ -261,7 +264,12 @@ newFeatureViewMetadata(const std::string &featureStoreName,
   RS_Status status;
   for (const auto &fgFeature : fgFeaturesArray) {
     for (const auto &feature : fgFeature.features) {
-      if (feature.isComplex()) {
+
+      if (feature.isSpine()) {
+        hasSpine = true;
+      }
+
+      if (feature.isComplex() && !feature.isSpine()) {
         auto it = fgSchemaCache.find(feature.featureGroupId);
         if (it == fgSchemaCache.end()) {
           std::tie(projectId, status) =
@@ -340,6 +348,7 @@ newFeatureViewMetadata(const std::string &featureStoreName,
   metadata->requiredJoinKeyMap = requiredJoinKeyMap;
   metadata->joinKeyMap = joinKeyMap;
   metadata->complexFeatures = complexFeatures;
+  metadata->hasSpine = hasSpine;
   return {metadata, CRS_Status::SUCCESS.status};
 }
 
@@ -471,6 +480,8 @@ std::tuple<FeatureViewMetadata*, std::shared_ptr<RestErrorCode>>
     feature.featureGroupVersion = featureGroup.version;
     feature.featureGroupId = tdf.featureGroupID;
     feature.featureStoreId = featureGroup.featureStoreId;
+    feature.onDemandFeatureGroupID = featureGroup.onDemandFeatureGroupID;
+    feature.spine = featureGroup.spine;
     feature.id = tdf.featureID;
     feature.name = tdf.name;
     feature.type = tdf.type;

@@ -432,6 +432,11 @@ GetBatchPkReadParams(
     std::string testTable =
         fgFeature.featureGroupName + "_" +
         std::to_string(fgFeature.featureGroupVersion);
+
+    if (fgFeature.isSpine()) {
+      continue;
+    }
+
     std::vector<PKReadFilter> filters;
     std::vector<PKReadReadColumn> columns;
 
@@ -497,8 +502,14 @@ GetBatchPkReadParams(
 BatchResponseJSON
 getPkReadResponseJSON(const metadata::FeatureViewMetadata &metadata) {
   auto response = BatchResponseJSON();
-  response.setResult(std::vector<PKReadResponseWithCodeJSON>(
-    metadata.featureGroupFeatures.size()));
+  // Count non-spine feature groups
+  int nonSpineFGCount = 0;
+  for (const auto &fgFeature : metadata.featureGroupFeatures) {
+    if (!fgFeature.isSpine()) {
+      nonSpineFGCount++;
+    }
+  }
+  response.setResult(std::vector<PKReadResponseWithCodeJSON>(nonSpineFGCount));
   return response;
 }
 
@@ -819,12 +830,20 @@ void FeatureStoreCtrl::featureStore(
 
     DEB_FS_CTRL("Fill Passed Feature values for  Feature Store request");
     auto fsResp = feature_store_data_structs::FeatureStoreResponse();
-    fsResp.status = status;
     FillPassedFeatures(features,
                        reqStruct.passedFeatures,
                        metadata->prefixFeaturesLookup,
                        metadata->featureIndexLookup);
+
+    if (metadata->hasSpine) {
+      // Spine FG are external. We alway return MISSING when reading Spine FG
+      if (status == feature_store_data_structs::FeatureStatus::Complete) {
+        status = feature_store_data_structs::FeatureStatus::Missing;
+      }
+    }
+
     fsResp.features = features;
+    fsResp.status = status;
     if (reqStruct.metadataRequest.featureName ||
         reqStruct.metadataRequest.featureType) {
       fsResp.metadata = GetFeatureMetadata(metadata, reqStruct.metadataRequest);
