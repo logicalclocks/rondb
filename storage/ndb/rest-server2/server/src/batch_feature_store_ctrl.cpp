@@ -314,11 +314,7 @@ void BatchFeatureStoreCtrl::batch_featureStore(
                                     featureStatus);
 
   //Set status for spine FG
-  fixSpineFGStatus(features,
-                   reqStruct.passedFeatures,
-                   metadata,
-                   metadata->featureIndexLookup,
-                   featureStatus);
+  fixSpineFGStatus(metadata, featureStatus);
 
   fsResp.status = featureStatus;
   fsResp.features = features;
@@ -482,10 +478,7 @@ void fillPassedFeaturesMultipleEntries(
 }
 
 void fixSpineFGStatus(
-    std::vector<std::vector<std::vector<char>>> &features,
-    const std::vector<std::unordered_map<std::string, std::vector<char>>> &passedFeatures,
     const metadata::FeatureViewMetadata *fvMetadata,
-    std::unordered_map<std::string, int> &indexLookup,
     std::vector<feature_store_data_structs::FeatureStatus> &status) {
 
   if (fvMetadata->hasSpine) {
