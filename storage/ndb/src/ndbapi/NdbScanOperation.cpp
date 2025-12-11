@@ -1516,6 +1516,11 @@ int NdbScanOperation::setAggregationCode(const NdbAggregator *code)
     return -1;
   }
 
+  if (code->table_impl() != m_currentTable) {
+    setErrorCodeAbort(241); // Invalid schema object version
+    return -1;
+  }
+
   m_aggregation_code = const_cast<NdbAggregator*>(code);
 
   if (code->disk_columns()) {
@@ -1532,7 +1537,7 @@ int NdbScanOperation::DoAggregation() {
       !m_aggregation_code->finalized())
   {
     DEB_TRACE();
-    setErrorCodeAbort(4560); //  NdbAggregatior::Finalise() not called.
+    setErrorCodeAbort(4560); //  NdbAggregator::Finalize() not called.
     return -1;
   }
 
@@ -1551,24 +1556,40 @@ int NdbScanOperation::DoAggregation() {
   }
 
   DEB_TRACE();
-  int check = -1;
-  while ((check = nextResult(true)) == 0) {
-    // TODO (Zhao) handle return value;
-    DEB_TRACE();
-    if (!m_aggregation_code->ProcessRes(myRecAttr->aRef())) {
+  while (true) {
+    int check = nextResult(true);
+    switch(check) {
+    case -1:
+      // Permanent error
       DEB_TRACE();
       return -1;
+    case 0:
+      // Progress getting data
+      if (m_aggregation_code->ProcessRes(myRecAttr->aRef())) {
+        // Done processing data fetched so far
+        DEB_TRACE();
+        continue;
+      } else {
+        // This is unexpected
+        DEB_TRACE();
+        return -1;
+      }
+    case 1:
+      // Scan complete.
+      DEB_TRACE();
+      m_aggregation_code->PrepareResults();
+      return 0;
+    case 2:
+      // No more data available immediately. This should never happen because
+      // nextResult is called with fetchAllowed = true.
+      DEB_TRACE();
+      abort();
+    default:
+      // This should never happen
+      DEB_TRACE();
+      abort();
     }
-    DEB_TRACE();
   }
-  DEB_TRACE();
-  if (check < 0) {
-    return check;
-  }
-  DEB_TRACE();
-  m_aggregation_code->PrepareResults();
-  DEB_TRACE();
-  return 0;
 }
 
 void NdbScanOperation::setReadLockMode(LockMode lockMode) {
