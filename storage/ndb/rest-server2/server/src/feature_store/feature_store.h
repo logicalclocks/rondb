@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023, 2024 Hopsworks AB
+ * Copyright (C) 2023, 2024, 2025 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -52,6 +52,7 @@ typedef struct Feature_Group {
   int version;
   int online_enabled;
   int num_pk;
+  int on_demand_feature_group_id; 
 } Feature_Group;
 
 typedef struct Serving_Key {
@@ -62,6 +63,10 @@ typedef struct Serving_Key {
   char join_on[SERVING_KEY_JOIN_ON_SIZE];
   int join_index;
 } Serving_Key;
+
+typedef struct OnDemandFeatureGroup {
+  signed char spine;
+} OnDemandFeatureGroup;
 
 /**
  * Find project ID using the feature store name
@@ -125,6 +130,12 @@ RS_Status find_serving_key_data(int feature_view_id, Serving_Key **serving_keys,
  * SELECT schema from schemas  WHERE id = {schema_id}
  */
 RS_Status find_feature_group_schema(const char *subject_name, int project_id, char **schema /*out. freed by glang*/);
+
+/**
+ * Find on_demand_feature_group
+ * SELECT spine from  on_demand_feature_group where id = {id}
+ */
+RS_Status find_on_demand_feature_group(int id, OnDemandFeatureGroup *odfg);
 
 #endif
 #ifdef __cplusplus

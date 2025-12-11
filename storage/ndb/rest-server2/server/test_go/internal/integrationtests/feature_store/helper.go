@@ -1,6 +1,6 @@
 /*
  * This file is part of the RonDB REST API Server
- * Copyright (c) 2023 Hopsworks AB
+ * Copyright (c) 2023,2025 Hopsworks AB
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -384,6 +384,11 @@ func ValidateResponseWithData(t *testing.T, data *[]interface{}, cols *[]string,
 }
 
 func ValidateResponseWithDataExcludeCols(t *testing.T, data *[]interface{}, cols *[]string, exCols *map[string]bool, resp *api.FeatureStoreResponse) {
+	ValidateResponseWithDataExcludeColsWithStatusCheck(t, data, cols, exCols, resp, false)
+}
+
+func ValidateResponseWithDataExcludeColsWithStatusCheck(t *testing.T, data *[]interface{}, cols *[]string, exCols *map[string]bool, resp *api.FeatureStoreResponse,
+	ignoreStatusCheck bool) {
 	var status = api.FEATURE_STATUS_COMPLETE
 	if len(*data) == 0 {
 		status = api.FEATURE_STATUS_ERROR
@@ -452,7 +457,7 @@ func ValidateResponseWithDataExcludeCols(t *testing.T, data *[]interface{}, cols
 			break
 		}
 	}
-	if resp.Status != status {
+	if !ignoreStatusCheck && resp.Status != status {
 		t.Errorf("Got status %s but expect %s", resp.Status, status)
 	}
 }
