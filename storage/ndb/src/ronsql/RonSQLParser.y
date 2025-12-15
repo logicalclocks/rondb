@@ -122,7 +122,11 @@ extern void rsqlp_error(RSQLP_LTYPE* yylloc, yyscan_t yyscanner, const char* s);
 {
   TokenKind tokenkindval;
   Int64 bival;
-  float fval;
+  struct
+  {
+    double dbl;
+    LexString ls;
+  } fpval;
   bool bval;
   LexString str;
   LexCString str_c;
@@ -139,7 +143,7 @@ extern void rsqlp_error(RSQLP_LTYPE* yylloc, yyscan_t yyscanner, const char* s);
 }
 
 %token<bival> T_INT
-%token<fval> T_FLOAT
+%token<fpval> T_FLOAT
 %token T_COUNT T_MAX T_MIN T_SUM T_AVG T_LEFT T_RIGHT
 %token T_EXPLAIN T_SELECT T_FROM T_GROUP T_BY T_ORDER T_ASC T_DESC T_AS T_WHERE
 %token T_SEMICOLON
@@ -323,8 +327,8 @@ cond_expr:
   identifier_c                          { initptr($$); $$->op = T_IDENTIFIER; $$->col_idx = context->column_name_to_idx($1); }
 | T_STRING                              { initptr($$); $$->op = T_STRING; $$->string = $1; }
 | T_INT                                 { initptr($$); $$->op = T_INT; $$->constant_integer = $1; }
-| T_MINUS cond_expr                     { if ( $2->op == T_INT) { initptr($$); $$->op = T_INT; $$->constant_integer = -$2->constant_integer; }
-                                          else { init_cond($$, NULL, T_MINUS, $2); } }
+| T_FLOAT                               { initptr($$); $$->op = T_FLOAT; $$->constant_float.dbl = $1.dbl; $$->constant_float.ls = $1.ls; }
+| T_MINUS cond_expr                     { init_cond($$, NULL, T_MINUS, $2); }
 | T_LEFT cond_expr T_RIGHT              { $$ = $2; }
 | cond_expr T_OR cond_expr              { init_cond($$, $1, T_OR, $3); }
 | cond_expr T_XOR cond_expr             { init_cond($$, $1, T_XOR, $3); }

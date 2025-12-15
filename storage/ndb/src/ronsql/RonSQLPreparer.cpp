@@ -34,6 +34,8 @@
 #include "mysql_time.h"
 #include "my_inttypes.h"
 #include <my_base.h>
+#include "decimal.h"
+#include <decimal_utils.hpp>
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_RONSQLPREPARER 1
@@ -80,16 +82,6 @@ using std::endl;
 #define feature_not_implemented(description) \
   throw RonSQLPermanentError("RonSQL feature not implemented: " description)
 
-// Schema fingerprint hash constants
-// Used to compute a collision-resistant hash of table + all indexes
-// for detecting schema changes including index additions/deletions
-namespace {
-  constexpr Uint64 PRIME_TABLE_ID = 31;
-  constexpr Uint64 PRIME_TABLE_VER = 37;
-  constexpr Uint64 PRIME_INDEX_ID = 41;
-  constexpr Uint64 PRIME_INDEX_VER = 43;
-}
-
 static const char* interval_type_name(TokenKind interval_type);
 
 DEFINE_FORMATTER(quoted_identifier, LexString, {
@@ -128,6 +120,7 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
   m_amalloc(conf.amalloc),
   m_context(*this),
   m_columns(conf.amalloc),
+  m_indexes(conf.amalloc),
   m_toplevel_conditions(conf.amalloc),
   m_scan_config_candidates(conf.amalloc)
 {
@@ -407,6 +400,9 @@ RonSQLPreparer::parse()
   case ErrState::LEX_LITERAL_INTEGER_TOO_BIG:
     msg = "Literal integer too big.";
     break;
+  case ErrState::LEX_LITERAL_FLOAT_INVALID:
+    msg = "Invalid literal float.";
+    break;
   case ErrState::TOO_LONG_UNALIASED_OUTPUT:
     msg = "Unaliased select expression too long. Use `AS` to add an alias no more than 64 bytes long.";
     break;
@@ -537,6 +533,7 @@ RonSQLPreparer::has_width(size_t pos)
 void
 RonSQLPreparer::load()
 {
+  DEB_TRACE();
   std::basic_ostream<char>& err = *m_conf.err_stream;
   /*
    * During parsing, strings that were claimed to be column names were inserted
@@ -555,32 +552,97 @@ RonSQLPreparer::load()
   // we'll still be able to do a (partial) EXPLAIN SELECT, so no need to fail
   // yet.
   Ndb* ndb = m_conf.ndb;
-  if (ndb != NULL)
-  {
+  if (ndb != NULL) {
+    // Populate m_dict
     m_dict = ndb->getDictionary();
-    m_table = DBG(m_dict->getTable(m_context.ast_root.table.c_str()));
-    require_sch(m_table != NULL,
+    // Populate m_table
+    m_table = DBG(m_dict->getTable(DBG(m_context.ast_root.table.c_str())));
+    // getTable returns a cached table if it exists, otherwise the cache it
+    // updated. Therefore, getTable cannot return NULL due to an out-of-date
+    // cache, it always means that the table does not exist. Therefore, we use
+    // require_prm to indicate that schema reloading will solve this issue.
+    require_prm(m_table != NULL,
                 "Failed to get table. Note that RonSQL only supports tables"
                 " with ENGINE=NDB.");
-
-    // Initialize schema fingerprint with table portion.
-    // Index contributions will be added in generate_scan_config_candidates()
-    // where indexes are already being iterated for query planning.
-    m_schema_fingerprint_hash =
-      DBG((Uint64)m_table->getObjectId()) * PRIME_TABLE_ID +
-      DBG((Uint64)m_table->getObjectVersion()) * PRIME_TABLE_VER;
-
+    // Populate m_indexes
+    NdbDictionary::Dictionary::List index_list;
+    ndbrequire(m_dict != NULL);
+    ndbrequire(m_table != NULL);
+    require_sch(m_dict->listIndexes(index_list, *m_table) == 0,
+                "Failed to list indexes.");
+    bool err_failed_to_get_index = false;
+    bool err_object_status_not_retrieved = false;
+    bool err_table_verid_mismatch = false;
+    for(Uint32 i = 0; i < index_list.count; i++) {
+      NdbDictionary::Dictionary::List::Element& list_element =
+        index_list.elements[i];
+      if (list_element.state != NdbDictionary::Object::StateOnline) {
+        // listIndexes() returns indexes in all states while this function is
+        // only interested in indexes that are online and usable. Filtering out
+        // indexes in other states is particularly important when metadata is
+        // being restored as they may be in StateBuilding indicating that all
+        // metadata related to the table hasn't been restored yet.
+        DEB_TRACE();
+        continue;
+      }
+      if (list_element.type == NdbDictionary::Object::UniqueHashIndex) {
+        // We are not interested in hash indexes
+        DEB_TRACE();
+        continue;
+      }
+      require_bug(list_element.type == NdbDictionary::Object::OrderedIndex,
+                  "Unexpected index type.");
+      const NdbDictionary::Index* index = m_dict->getIndex(list_element.name,
+                                                           *m_table);
+      // On detecting possible schema errors we still need to finish populating
+      // m_indexes. The detection of an error is saved in bool err_* variables.
+      if (index == NULL) {
+        // A NULL index here is a little strange. Perhaps the index was deleted
+        // after it was listed above?
+        err_failed_to_get_index = true;
+        DEB_TRACE();
+        continue;
+      }
+      if (DBG(index->getObjectStatus()) !=
+          NdbDictionary::Object::Status::Retrieved) {
+        DEB_TRACE();
+        err_object_status_not_retrieved = true;
+      }
+      if(DBG(index->getTableId()) != DBG(m_table->getObjectId()) ||
+         DBG(index->getTableVersion()) != DBG(m_table->getObjectVersion())) {
+        DEB_TRACE();
+        err_table_verid_mismatch = true;
+      }
+      m_indexes.push(index);
+    }
+    // m_indexes is now populated, so we are allowed to throw schema errors.
+    require_sch(DBG(m_table->getObjectStatus()) ==
+                NdbDictionary::Object::Status::Retrieved,
+                "Schema cache for table not up to date.");
+    if (err_failed_to_get_index) {
+      DEB_TRACE();
+      throw RonSQLMaybeStaleSchema("Failed to get index.");
+    }
+    if (err_object_status_not_retrieved) {
+      DEB_TRACE();
+      throw RonSQLMaybeStaleSchema("Schema cache for index not up to date.");
+    }
+    if (err_table_verid_mismatch) {
+      DEB_TRACE();
+      throw RonSQLMaybeStaleSchema("Index's table id/version did not match"
+                                   " table's object id/version.");
+    }
+    // Populate m_column_attrId_map and m_column_map
     NdbAttrId* col_id_map = m_amalloc->alloc_exc<NdbAttrId>(m_columns.size());
     const NdbDictionary::Column** col_map =
         m_amalloc->alloc_exc<const NdbDictionary::Column*>(m_columns.size());
-    for (Uint32 col_idx = 0; col_idx < m_columns.size(); col_idx++)
-    {
+    for (Uint32 col_idx = 0; col_idx < m_columns.size(); col_idx++) {
       const char* col_name = DBG(m_columns[DBG(col_idx)].c_str());
       const NdbDictionary::Column* col = m_table->getColumn(col_name);
-      if (col == NULL)
-      {
+      if (col == NULL) {
         err << "Failed to get column " << quoted_identifier(col_name) << "."
             << endl << "Note that column names are case sensitive." << endl;
+        DEB_TRACE();
         throw RonSQLMaybeStaleSchema("Could not find column (column names are"
                                      " case sensitive).");
       }
@@ -666,40 +728,8 @@ RonSQLPreparer::generate_scan_config_candidates()
     // No WHERE clause
     return;
   }
-  NdbDictionary::Dictionary::List index_list;
-  ndbrequire(m_dict != NULL);
-  ndbrequire(m_table != NULL);
-  require_sch(m_dict->listIndexes(index_list, *m_table) == 0,
-              "Failed to list indexes.");
-  for(Uint32 i = 0; i < index_list.count; i++) {
-    NdbDictionary::Dictionary::List::Element& list_element =
-      index_list.elements[i];
-    if (list_element.state != NdbDictionary::Object::StateOnline) {
-      // listIndexes() returns indexes in all states while this function is
-      // only interested in indexes that are online and usable. Filtering out
-      // indexes in other states is particularly important when metadata is
-      // being restored as they may be in StateBuilding indicating that all
-      // metadata related to the table hasn't been restored yet.
-      continue;
-    }
-    if (list_element.type == NdbDictionary::Object::UniqueHashIndex) {
-      // We are not interested in hash indexes
-      continue;
-    }
-    require_bug(list_element.type == NdbDictionary::Object::OrderedIndex,
-                "Unexpected index type.");
-
-    // Fetch index for both scan planning and fingerprint computation
-    // todo getIndex or getIndexGlobal?
-    const NdbDictionary::Index* index = m_dict->getIndex(list_element.name,
-                                                         *m_table);
-    require_sch(index != NULL, "Failed to get index.");
-
-    // Add this index's contribution to schema fingerprint hash
-    m_schema_fingerprint_hash +=
-      DBG((Uint64)index->getObjectId()) * PRIME_INDEX_ID +
-      DBG((Uint64)index->getObjectVersion()) * PRIME_INDEX_VER;
-
+  for(Uint32 i = 0; i < m_indexes.size(); i++) {
+    const NdbDictionary::Index* index = m_indexes[i];
     int *condition_handling_map =
       m_amalloc->alloc_exc<int>(m_toplevel_conditions.size());
     for (Uint32 i = 0; i < m_toplevel_conditions.size(); i++) {
@@ -711,8 +741,7 @@ RonSQLPreparer::generate_scan_config_candidates()
     bool later_columns_blocked = false;
     for(unsigned col_idx = 0;
         col_idx < col_count && !later_columns_blocked;
-        col_idx++)
-    {
+        col_idx++) {
       const NdbDictionary::Column* column = index->getColumn(col_idx);
       require_bug(column != NULL, "Index column object is NULL.");
       // todo Can getAttrId be used to match against the parent table?
@@ -721,8 +750,7 @@ RonSQLPreparer::generate_scan_config_candidates()
       for(Uint32 cond_idx = 0;
           cond_idx < m_toplevel_conditions.size() &&
             !(lbound_set && ubound_set);
-          cond_idx++)
-      {
+          cond_idx++) {
         ConditionalExpression* ce = m_toplevel_conditions[cond_idx];
         if (condition_handling_map[cond_idx] != -1) {
           // Already used as bound for an earlier index column
@@ -758,17 +786,26 @@ RonSQLPreparer::generate_scan_config_candidates()
       }
       if (lbound_set || ubound_set) {
         // goodness is a crude estimate of how performant the scan configuration
-        // will be. Each bound added to the configuration adds 10000 for
-        // equality, 100 for a double-bounded range and 10 for a half-open
+        // will be. Each bound added to the configuration adds 100000 for
+        // equality, 1000 for a double-bounded range and 100 for a half-open
         // range. A 10% bonus is added for data types other than VARCHAR.
-        int points = 10;
-        if (column->getType() != NdbDictionary::Column::Type::Varchar) points++;
+        // There's also a 1-point bonus for PRIMARY index.
+        int points = 100;
+        if (column->getType() != NdbDictionary::Column::Type::Varchar &&
+            column->getType() != NdbDictionary::Column::Type::Longvarchar) {
+          points+=10;
+        }
         if (lbound_set && ubound_set) points *= 10;
         if (!later_columns_blocked) points *= 100;
         goodness += points;
       }
     }
     if (goodness) {
+      if (strcmp(index->getName(), "PRIMARY") == 0) {
+        // If the index can be used, then add a 1-point bonus for the PRIMARY
+        // index.
+        goodness++;
+      }
       m_scan_config_candidates.push(ScanConfig { index,
                                                  condition_handling_map,
                                                  goodness });
@@ -780,14 +817,10 @@ void
 RonSQLPreparer::compile()
 {
   // Compile aggregation program if applicable
-  if (m_agg != NULL)
-  {
-    if (m_agg->compile())
-    {
+  if (m_agg != NULL) {
+    if (m_agg->compile()) {
       ndbrequire(m_agg->getStatus() == AggregationAPICompiler::Status::COMPILED);
-    }
-    else
-    {
+    } else {
       ndbrequire(m_agg->getStatus() == AggregationAPICompiler::Status::FAILED);
       throw RonSQLPermanentError("Failed to compile aggregation program.");
     }
@@ -850,6 +883,7 @@ RonSQLPreparer::execute()
   DEB_TRACE();
   try {
     if (m_do_explain) {
+      DEB_TRACE();
       switch (m_conf.output_format) {
       case RonSQLExecParams::OutputFormat::TEXT:
         [[fallthrough]];
@@ -917,6 +951,10 @@ RonSQLPreparer::execute()
     } else {
       DEB_TRACE();
       // Prepare and execute index scan
+      require_sch(DBG(index->getTableId()) == DBG(m_table->getObjectId()) &&
+                  DBG(index->getTableVersion()) ==
+                  DBG(m_table->getObjectVersion()),
+                  "Table id/version mismatch");
       NdbIndexScanOperation *myIndexScanOp =
         DBG(m_trans->getNdbIndexScanOperation(DBG(index)));
       require_run(myIndexScanOp != NULL,
@@ -1048,7 +1086,7 @@ RonSQLPreparer::handle_ronsql_exception(std::exception_ptr eptr) {
     // RonSQLPermanentError.
     cleanup_trans();
     err << "Error handling: RMS";
-    if (unload_schema(true)) {
+    if (unload_schema()) {
       DEB_TRACE(); err << "->RRE\n";
       throw RonSQLRetryableError(e.what());
     }
@@ -1080,7 +1118,7 @@ RonSQLPreparer::handle_ronsql_exception(std::exception_ptr eptr) {
       DEB_TRACE(); err << ",rl";
       // Try to reload the schema. If changes were detected then we treat the
       // error as temporary.
-      temporary = unload_schema(true);
+      temporary = unload_schema();
     } else if (ndb_err.status == NdbError::Status::TemporaryError ||
                ndb_err.mysql_code == HA_ERR_LOCK_WAIT_TIMEOUT) {
       DEB_TRACE(); err << ",nu";
@@ -1105,70 +1143,131 @@ RonSQLPreparer::handle_ronsql_exception(std::exception_ptr eptr) {
   }
 }
 
+/* Unload table and indexes, then detect schema changes.
+   Return true if any schema change was detected.
+ */
 bool
-RonSQLPreparer::unload_schema(bool reload) {
+RonSQLPreparer::unload_schema() {
   DEB_TRACE();
   Ndb* ndb = m_conf.ndb;
   if (ndb == NULL) {
     DEB_TRACE();
     return false;
   }
-  const char* table_name = DBG(m_context.ast_root.table.c_str());
-  const NdbDictionary::Table* old_table = m_table;
-  Uint64 old_schema_fingerprint_hash = m_schema_fingerprint_hash;
+  ndbrequire(m_table != NULL);
+  // Save table object ID and version
+  typedef std::pair<int, int> Idver;
+  const Idver old_table_idver = { DBG(m_table->getObjectId()),
+                                  DBG(m_table->getObjectVersion()) };
+  // Unload indexes, saving their object IDs and versions in a sorted list
+  bool table_idver_mismatch = false;
+  const Uint32 old_indexes_count = DBG(m_indexes.size());
+  Idver* old_indexes_idver = m_amalloc->alloc_exc<Idver>(old_indexes_count);
   NdbDictionary::Dictionary *dict = ndb->getDictionary();
-  NdbDictionary::Dictionary::List index_list;
-  dict->listIndexes(index_list, table_name);
-  // Unload indexes
-  for (unsigned i = 0; i < index_list.count; i++) {
-    dict->invalidateIndex(DBG(index_list.elements[i].name), table_name);
+  bool some_old_indexes_not_retrieved = false;
+  for (Uint32 i = 0; i < old_indexes_count; i++) {
+    DEB_TRACE();
+    const NdbDictionary::Index* old_index = m_indexes[i];
+    ndbrequire(old_index != NULL);
+    old_indexes_idver[i] = { DBG(old_index->getObjectId()),
+                             DBG(old_index->getObjectVersion()) };
+    some_old_indexes_not_retrieved = some_old_indexes_not_retrieved ||
+      (old_index->getObjectStatus() !=
+       NdbDictionary::Object::Status::Retrieved);
+    const Idver table_idver_according_to_old_index = {
+      DBG(old_index->getTableId()),
+      DBG(old_index->getTableVersion()) };
+    table_idver_mismatch = table_idver_mismatch ||
+      (old_table_idver != table_idver_according_to_old_index);
+    dict->invalidateIndex(old_index);
+    m_indexes[i] = NULL;
   }
+  std::sort(old_indexes_idver, old_indexes_idver + old_indexes_count);
   // Unload table
-  dict->invalidateTable(table_name);
+  dict->invalidateTable(m_table);
   m_table = NULL;
-  m_schema_fingerprint_hash = 0;
-  if (!reload) {
-    return false;
+  if (table_idver_mismatch) {
+    // We don't need to reload table or indexes, since we have already
+    // determined an inconsistency. This inconsistency should go away next time
+    // we load metadata, and this is checked in RonSQLPreparer::load().
+    DEB_TRACE();
+    return true;
   }
   // Reload table
-  const NdbDictionary::Table* new_table = DBG(dict->getTable(table_name));
-  Uint64 new_schema_fingerprint_hash = 0;
-  if (new_table != NULL) {
-    // Compute new schema fingerprint: table + all indexes.
-    // This duplicates the logic from load() and
-    // generate_scan_config_candidates(), but we're in the error/reload path so
-    // this rarely executes.
-    new_schema_fingerprint_hash =
-      DBG((Uint64)new_table->getObjectId()) * PRIME_TABLE_ID +
-      DBG((Uint64)new_table->getObjectVersion()) * PRIME_TABLE_VER;
-    // Match logic in generate_scan_config_candidates filter: If there is a
-    // WHERE clause, then include online ordered indexes in the fingerprint.
-    if (m_toplevel_conditions.size() > 0) {
-      index_list.clear();
-      dict->listIndexes(index_list, *new_table);
-      for (unsigned i = 0; i < index_list.count; i++) {
-        NdbDictionary::Dictionary::List::Element& list_element =
-          index_list.elements[i];
-        if (list_element.state != NdbDictionary::Object::StateOnline ||
-            list_element.type == NdbDictionary::Object::UniqueHashIndex) {
-          continue;
-        }
-        require_bug(list_element.type == NdbDictionary::Object::OrderedIndex,
-                    "Unexpected index type.");
-        const NdbDictionary::Index* index =
-            dict->getIndex(list_element.name, *new_table);
-        if (index != NULL) {
-          new_schema_fingerprint_hash +=
-            DBG((Uint64)index->getObjectId()) * PRIME_INDEX_ID +
-            DBG((Uint64)index->getObjectVersion()) * PRIME_INDEX_VER;
-        }
-      }
+  const NdbDictionary::Table* new_table =
+    DBG(dict->getTable(DBG(m_context.ast_root.table.c_str())));
+  if (new_table == NULL) {
+    // We don't need to reload indexes, since we have already determined a
+    // schema change.
+    DEB_TRACE();
+    return true;
+  }
+  require_prm(DBG(new_table->getObjectStatus()) ==
+              NdbDictionary::Object::Status::Retrieved,
+              "Reloaded table not in Retrieved status.");
+  const Idver new_table_idver = { DBG(new_table->getObjectId()),
+                                  DBG(new_table->getObjectVersion()) };
+  if (new_table_idver != old_table_idver) {
+    // We don't need to reload indexes, since we have already determined a
+    // schema change.
+    DEB_TRACE();
+    return true;
+  }
+  // Reload indexes
+  // Match logic in load(): Load online ordered indexes
+  NdbDictionary::Dictionary::List index_list;
+  require_prm(dict->listIndexes(index_list, *new_table) == 0,
+              "Failed to list indexes while reloading schema.");
+  Uint32 new_indexes_count = 0;
+  Idver* new_indexes_idver = m_amalloc->alloc_exc<Idver>(old_indexes_count);
+  for (Uint32 i = 0; i < index_list.count; i++) {
+    NdbDictionary::Dictionary::List::Element& list_element =
+      index_list.elements[i];
+    if (DBG(list_element.state) != NdbDictionary::Object::StateOnline ||
+        DBG(list_element.type) == NdbDictionary::Object::UniqueHashIndex) {
+      DEB_TRACE();
+      continue;
+    }
+    require_bug(list_element.type == NdbDictionary::Object::OrderedIndex,
+                "Unexpected index type.");
+    const NdbDictionary::Index* new_index = dict->getIndex(list_element.name,
+                                                           *new_table);
+    require_prm(new_index != NULL,
+                "Failed to get index while reloading schema.");
+    require_prm(DBG(new_index->getObjectStatus()) ==
+                NdbDictionary::Object::Status::Retrieved,
+                "Reloaded index not in Retrieved status.");
+    if (new_indexes_count >= old_indexes_count) {
+      // Number of indexes changed, so a schema change must have occurred.
+      DEB_TRACE();
+      return true;
+    }
+    new_indexes_idver[new_indexes_count++] = {
+      DBG(new_index->getObjectId()),
+      DBG(new_index->getObjectVersion()) };
+    const Idver table_idver_according_to_index = {
+      DBG(new_index->getTableId()),
+      DBG(new_index->getTableVersion()) };
+    require_prm(new_table_idver == table_idver_according_to_index,
+                "Index's table id/version did not match table's object"
+                " id/version, while reloading schema.");
+  }
+  if (new_indexes_count != old_indexes_count) {
+    // Number of indexes changed, so a schema change must have occurred.
+    DEB_TRACE();
+    return true;
+  }
+  std::sort(new_indexes_idver, new_indexes_idver + new_indexes_count);
+  for (Uint32 i = 0; i < new_indexes_count; i++) {
+    if (new_indexes_idver[i] != old_indexes_idver[i]) {
+      // Object ID or version changed for this index, so a schema change
+      // must have occurred.
+      DEB_TRACE();
+      return true;
     }
   }
-  if (old_table != NULL && new_table != NULL) {
-    return DBG(old_schema_fingerprint_hash != new_schema_fingerprint_hash);
-  }
-  return DBG(old_table != NULL || new_table != NULL);
+  DEB_TRACE();
+  return some_old_indexes_not_retrieved;
 }
 
 constexpr const char* filter_fail = "Failed to apply filter.";
@@ -1304,7 +1403,7 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
   Uint32 binlen = 0;
   enum_mysql_timestamp_type timetype = MYSQL_TIMESTAMP_NONE;
   int tk = 0;
-  const int INT = 1, STR = 2, TIME = 3;
+  const int INT = 1, FLOAT = 2, DECIMAL = 3, STR = 4, TIME = 5;
   NdbDictionary::Column::Type type = col->getType();
   switch (type) {
   case NdbDictionary::Column::Type::Tinyint:
@@ -1330,6 +1429,14 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
     // by ConditionalExpression::integer_constant, so we restrict it to the
     // narrower range.
     tk = INT; min = 0; max = INT64_MAX; bytes = 8; break;
+  case NdbDictionary::Column::Type::Float:
+    tk = FLOAT; bytes = 4; break;
+  case NdbDictionary::Column::Type::Double:
+    tk = FLOAT; bytes = 8; break;
+  case NdbDictionary::Column::Type::Decimal:
+    [[fallthrough]];
+  case NdbDictionary::Column::Type::Decimalunsigned:
+    tk = DECIMAL; break;
   case NdbDictionary::Column::Type::Varchar:
     tk = STR; maxlen = 255; lenbytes = 1; break;
   case NdbDictionary::Column::Type::Longvarchar:
@@ -1360,9 +1467,80 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
                                  " incompatible value. Only integer literals"
                                  " are supported.");
   }
+  if (tk == FLOAT) {
+    if (op == T_INT && bytes == 4) {
+      float* val = m_amalloc->alloc_exc<float>(1);
+      *val = float(ce->constant_integer);
+      return raw_value{ val, static_cast<Uint32>(bytes) };
+    } else if (op == T_INT && bytes == 8) {
+      double* val = m_amalloc->alloc_exc<double>(1);
+      *val = double(ce->constant_integer);
+      return raw_value{ val, static_cast<Uint32>(bytes) };
+    } else if (op == T_FLOAT && bytes == 4) {
+      float* val = m_amalloc->alloc_exc<float>(1);
+      *val = float(ce->constant_float.dbl);
+      return raw_value{ val, static_cast<Uint32>(bytes) };
+    } else if (op == T_FLOAT && bytes == 8) {
+      double* val = m_amalloc->alloc_exc<double>(1);
+      *val = ce->constant_float.dbl;
+      return raw_value{ val, static_cast<Uint32>(bytes) };
+    } else {
+      throw RonSQLMaybeStaleSchema("Floating point type column compared to an"
+                                   " incompatible value. Only integer and float"
+                                   " literals are supported.");
+    }
+  }
+  if (tk == DECIMAL) {
+    int prec = col->getPrecision();
+    int scale = col->getScale();
+    size_t bin_len = decimal_bin_size(prec, scale);
+    void* bin = m_amalloc->alloc_bytes(bin_len, 4);
+    int err;
+    if (op == T_INT) {
+      decimal_t dec;
+      decimal_digit_t digits[9];
+      dec.len = 9;
+      dec.buf = digits;
+      if (type == NdbDictionary::Column::Type::Decimalunsigned &&
+          ce->constant_integer < 0) {
+        throw RonSQLMaybeStaleSchema("Decimal type column compared to an"
+                                     " integer literal out of range.");
+      }
+      longlong2decimal(ce->constant_integer, &dec);
+      err = decimal2bin(&dec, (unsigned char *)bin, prec, scale);
+    } else if (op == T_FLOAT) {
+      if (type == NdbDictionary::Column::Type::Decimalunsigned &&
+          ce->constant_float.dbl < 0) {
+        throw RonSQLMaybeStaleSchema("Decimal type column compared to a"
+                                     " float literal out of range.");
+      }
+      LexString ls = ce->constant_float.ls;
+      err = decimal_str2bin(ls.str, ls.len, prec, scale, bin, bin_len);
+    } else {
+      throw RonSQLMaybeStaleSchema("Floating point type column compared to an"
+                                   " incompatible value. Only integer and float"
+                                   " literals are supported.");
+    }
+    if (unlikely(err != E_DEC_OK)) {
+      switch (err) {
+      case E_DEC_BAD_PREC: [[fallthrough]];
+      case E_DEC_BAD_SCALE: [[fallthrough]];
+      case E_DEC_OOM: [[fallthrough]];
+      case E_DEC_BAD_NUM:
+        throw RonSQLPermanentError("Failed converting float literal to DECIMAL");
+      case E_DEC_OVERFLOW: [[fallthrough]];
+      case E_DEC_TRUNCATED:
+        throw RonSQLMaybeStaleSchema("Failed converting float literal to DECIMAL");
+      default:
+        abort();
+      }
+    }
+    return raw_value{ bin, bin_len };
+  }
   if (op == T_INT) {
-    throw RonSQLMaybeStaleSchema("Non-integer type column compared to an"
-                                 " integer literal.");
+    throw RonSQLMaybeStaleSchema("Integer literal compared to an incompatible"
+                                 " column. Only integer and float type columns"
+                                 " are supported.");
   }
   if (op == T_STRING && tk == STR) {
     if (ce->string.len > static_cast<size_t>(maxlen)) {
@@ -1496,7 +1674,8 @@ RonSQLPreparer::simplify_ce(struct ConditionalExpression* ce, int maxdepth)
       if (op == ce->op && left == ce->args.left && right == ce->args.right) {
         return ce;
       }
-      ConditionalExpression* ret = m_amalloc->alloc_exc<ConditionalExpression>(1);
+      ConditionalExpression* ret =
+        m_amalloc->alloc_exc<ConditionalExpression>(1);
       ret->op = op;
       ret->args.left = left;
       ret->args.right = right;
@@ -1515,13 +1694,16 @@ RonSQLPreparer::simplify_ce(struct ConditionalExpression* ce, int maxdepth)
       } else if (date_ce->op == I_MYSQL_TIME) {
         ltime = date_ce->mysql_time;
       } else {
-        throw RonSQLPermanentError("The first argument to DATE_ADD and DATE_SUB must be a string literal or another call to DATE_ADD or DATE_SUB");
+        throw RonSQLPermanentError("The first argument to DATE_ADD and DATE_SUB"
+                                   " must be a string literal or another call"
+                                   " to DATE_ADD or DATE_SUB");
       }
-      if (interval_ce->op != T_INTERVAL)
-      {
-        throw RonSQLPermanentError("The second argument to DATE_ADD and DATE_SUB must be an INTERVAL literal");
+      if (interval_ce->op != T_INTERVAL) {
+        throw RonSQLPermanentError("The second argument to DATE_ADD and"
+                                   " DATE_SUB must be an INTERVAL literal");
       }
-      ConditionalExpression* amount_ce = interval_ce->interval.arg;
+      ConditionalExpression* amount_ce = simplify_ce(interval_ce->interval.arg,
+                                                     maxdepth - 1);
       Int64 constant_integer;
       switch (amount_ce->op) {
       case T_INT:
@@ -1529,18 +1711,23 @@ RonSQLPreparer::simplify_ce(struct ConditionalExpression* ce, int maxdepth)
         break;
       case T_STRING:
         {
-          const char* string_literal = amount_ce->string.to_LexCString(m_amalloc).c_str();
+          const char* string_literal =
+            amount_ce->string.to_LexCString(m_amalloc).c_str();
           char* endptr;
           constant_integer = strtoll(string_literal, &endptr, 10);
           if (*endptr != '\0') {
-            throw RonSQLPermanentError("Failed to convert INTERVAL string literal amount to an integer");
+            throw RonSQLPermanentError("Failed to convert INTERVAL string"
+                                       " literal amount to an integer");
           }
         }
         break;
       default:
-        throw RonSQLPermanentError("INTERVAL literal requires an amount in the form of an integer literal or a string literal representing an integer");
+        throw RonSQLPermanentError("INTERVAL literal requires an amount in the"
+                                   " form of an integer literal or a string"
+                                   " literal representing an integer");
       }
-      // Member variables in Interval are unsigned long int or unsigned long long int
+      // Member variables in Interval are unsigned long int or
+      // unsigned long long int
       if (constant_integer < 0) {
         neg = !neg;
         constant_integer = -constant_integer;
@@ -1586,7 +1773,9 @@ RonSQLPreparer::simplify_ce(struct ConditionalExpression* ce, int maxdepth)
         interval_type = INTERVAL_YEAR;
         break;
       default:
-        throw RonSQLPermanentError("INTERVAL literals support only interval types MICROSECOND, SECOND, MINUTE, HOUR, DAY, WEEK, MONTH, QUARTER, and YEAR");
+        throw RonSQLPermanentError("INTERVAL literals support only interval"
+                                   " types MICROSECOND, SECOND, MINUTE, HOUR,"
+                                   " DAY, WEEK, MONTH, QUARTER, and YEAR");
       }
       int warnings = 0;
       bool err = date_add_interval(&ltime,
@@ -1596,7 +1785,8 @@ RonSQLPreparer::simplify_ce(struct ConditionalExpression* ce, int maxdepth)
       if (err || warnings) {
         throw RonSQLPermanentError("DATE_ADD or DATE_SUB failed");
       }
-      ConditionalExpression* ret = m_amalloc->alloc_exc<ConditionalExpression>(1);
+      ConditionalExpression* ret =
+        m_amalloc->alloc_exc<ConditionalExpression>(1);
       ret->op = I_MYSQL_TIME;
       ret->mysql_time = ltime;
       return ret;
@@ -1651,7 +1841,8 @@ RonSQLPreparer::simplify_ce(struct ConditionalExpression* ce, int maxdepth)
         return &r[0];
       }
       if (l != ce->args.left) {
-        ConditionalExpression* r = m_amalloc->alloc_exc<ConditionalExpression>(1);
+        ConditionalExpression* r =
+          m_amalloc->alloc_exc<ConditionalExpression>(1);
         r->op = T_NOT;
         r->args.left = l;
         return r;
@@ -1672,6 +1863,33 @@ RonSQLPreparer::simplify_ce(struct ConditionalExpression* ce, int maxdepth)
       r->args.left = x;
       r->args.right = y;
       return r;
+    }
+  case T_MINUS:
+    {
+      if (ce->args.left != NULL) {
+        return ce;
+      }
+      ConditionalExpression* n = simplify_ce(ce->args.right, maxdepth - 1);
+      if (n->op == T_INT || n->op == T_FLOAT) {
+        ConditionalExpression* r =
+          m_amalloc->alloc_exc<ConditionalExpression>(1);
+        r->op = n->op;
+        if (n->op == T_INT) {
+          r->constant_integer = -n->constant_integer;
+        } else {
+          r->constant_float.dbl = -n->constant_float.dbl;
+          assert(n->constant_float.ls.len > 0);
+          if (n->constant_float.ls.str[0] == '-') {
+            r->constant_float.ls.str = &n->constant_float.ls.str[1];
+            r->constant_float.ls.len = n->constant_float.ls.len - 1;
+          } else {
+            r->constant_float.ls = (LexString{"-", 1})
+              .concat(n->constant_float.ls, m_amalloc);
+          }
+        }
+        return r;
+      }
+      return ce;
     }
   default:
     // No simplification to do
@@ -1989,6 +2207,14 @@ RonSQLPreparer::print(struct ConditionalExpression* ce,
   case T_INT:
     out << ce->constant_integer << '\n';
     return;
+  case T_FLOAT:
+    {
+      LexString ls = ce->constant_float.ls;
+      while (ls.len > 0 && ls.str[ls.len-1]=='0') ls.len--;
+      if (ls.len > 0 && ls.str[ls.len-1]=='.') ls.len--;
+      out << ls << '\n';
+      return;
+    }
   case T_OR:
     opstr = "OR";
     break;
@@ -2099,6 +2325,17 @@ RonSQLPreparer::print(struct ConditionalExpression* ce,
         << prefix << "╰─ ";
       LexString prefix_arg = prefix.concat(LexString{"   ", 3}, m_amalloc);
       print(ce->extract.arg, prefix_arg);
+      return;
+    }
+  case I_MYSQL_TIME:
+    {
+      char to[MAX_DATE_STRING_REP_LENGTH];
+      my_TIME_to_str(ce->mysql_time, to, 6);
+      int len = strlen(to);
+      while (len > 0 && to[len-1]=='0') len--;
+      if (len > 0 && to[len-1]=='.') len--;
+      to[len]='\0';
+      out << "DATETIME: " << to << '\n';
       return;
     }
   default:

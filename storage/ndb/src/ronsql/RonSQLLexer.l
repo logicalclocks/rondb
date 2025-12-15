@@ -244,7 +244,14 @@ SINGLE_QUOTED_STRING_CHARACTER_EXCEPT_APOSTROPHE_AND_BACKSLASH         [^\0\047\
 [0-9]+\.[0-9]+ {
   char hold_char = yytext[rsqlp_leng];
   yytext[rsqlp_leng] = char(0);
-  yylval->fval = atof(yytext);
+  char *endptr;
+  errno = 0;
+  yylval->fpval.dbl = strtod(yytext, &endptr);
+  if (errno == ERANGE ||
+      endptr != yytext + rsqlp_leng) {
+    return_err_for_this_rule(LITERAL_FLOAT_INVALID);
+  }
+  yylval->fpval.ls = LexString{ yytext, rsqlp_leng };
   yytext[rsqlp_leng] = hold_char;
   lloc_this_rule();
   return T_FLOAT;

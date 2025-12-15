@@ -1257,7 +1257,8 @@ WHERE
   ├─ AND
   │  ├─ <
   │  │  ├─ `col1`
-  │  │  ╰─ -45
+  │  │  ╰─ NEGATION
+  │  │     ╰─ 45
   │  ╰─ >
   │     ├─ `col2`
   │     ╰─ NEGATION
@@ -1268,7 +1269,11 @@ WHERE
   │                    ╰─ `col3`
   ╰─ >
      ├─ `col3`
-     ╰─ 7
+     ╰─ NEGATION
+        ╰─ NEGATION
+           ╰─ NEGATION
+              ╰─ NEGATION
+                 ╰─ 7
 GROUP BY
   C0:`col1`
 

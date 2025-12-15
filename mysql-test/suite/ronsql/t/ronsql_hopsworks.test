@@ -13,6 +13,7 @@ SET time_zone = "+00:00";
 --enable_query_log
 --let $EXPLAIN_FILE=$MYSQL_TMP_DIR/ronsql-explain.out
 
+# todo: After data node can send DECIMAL type, remove diffs from result file.
 --source $TEST_INC_FILE
 
 --disable_query_log
