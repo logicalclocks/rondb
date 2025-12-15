@@ -52,7 +52,7 @@ struct LexLocation
 struct raw_value
 {
   const void* val = NULL;
-  Uint32 len = 0;
+  size_t len = 0;
 };
 
 /*
@@ -94,6 +94,7 @@ public:
     LEX_ILLEGAL_TOKEN,
     LEX_UNEXPECTED_EOI_IN_QUOTED_IDENTIFIER,
     LEX_LITERAL_INTEGER_TOO_BIG,
+    LEX_LITERAL_FLOAT_INVALID,
     TOO_LONG_UNALIASED_OUTPUT,
     PARSER_ERROR,
   };
@@ -138,7 +139,7 @@ private:
   const NdbDictionary::Column** m_column_map = NULL;
   const NdbDictionary::Dictionary* m_dict = NULL;
   const NdbDictionary::Table* m_table = NULL;
-  Uint64 m_schema_fingerprint_hash = 0;
+  DynamicArray<const NdbDictionary::Index*> m_indexes;
   NdbTransaction* m_trans = NULL;
   yyscan_t m_scanner;
   YY_BUFFER_STATE m_buf;
@@ -179,7 +180,7 @@ private:
   void generate_scan_config_candidates();
   void compile();
   void determine_explain();
-  bool unload_schema(bool reload = false);
+  bool unload_schema();
   void handle_ronsql_exception(std::exception_ptr eptr);
 
   // Functions used in execution phase

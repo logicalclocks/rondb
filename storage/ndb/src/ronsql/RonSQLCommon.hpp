@@ -131,6 +131,11 @@ struct ConditionalExpression
     Int64 constant_integer;
     struct
     {
+      double dbl;
+      LexString ls;
+    } constant_float;
+    struct
+    {
       struct ConditionalExpression* arg;
       bool null;
     } is;

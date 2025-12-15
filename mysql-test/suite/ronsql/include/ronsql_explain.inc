@@ -32,3 +32,8 @@ if ($QUERY=='')
 --remove_file $MYSQL_TMP_DIR/ronsql-rdrs-body-1
 --remove_file $MYSQL_TMP_DIR/ronsql-rdrs-body-2
 --remove_file $MYSQL_TMP_DIR/ronsql-rdrs-body-3
+if ($QUERY=='')
+{
+  --remove_file $QUERY_FILE
+}
+--let $QUERY=
