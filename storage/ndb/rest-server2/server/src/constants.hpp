@@ -31,12 +31,14 @@
 #define METRICS             "metrics"
 #define FEATURE_STORE       "feature_store"
 #define BATCH_FEATURE_STORE "batch_feature_store"
+#define SCAN                "scan"
 
 #define MAKE_PATH(version, endpoint) "/" version "/" endpoint
 
 #define HEALTH_PATH MAKE_PATH(API_VERSION, HEALTH)
 #define PING_PATH   MAKE_PATH(API_VERSION, PING)
 #define BATCH_PATH  MAKE_PATH(API_VERSION, BATCH)
+#define SCAN_PATH  "/" API_VERSION "/{db}/{table}/" SCAN
 
 #define PKREAD_PATH              "/" API_VERSION "/{db}/{table}/" PKREAD
 #define RONSQL_PATH              "/" API_VERSION "/" RONSQL
@@ -51,11 +53,13 @@ constexpr const char *METHOD                         = "method";
 constexpr const char *RELATIVE_URL                   = "relative-url";
 constexpr const char *BODY                           = "body";
 constexpr const char *FILTERS                        = "filters";
+constexpr const char *INDEX                          = "index";
 constexpr const char *COLUMN                         = "column";
 constexpr const char *VALUE                          = "value";
 constexpr const char *READCOLUMNS                    = "readColumns";
 constexpr const char *DATA_RETURN_TYPE               = "dataReturnType";
 constexpr const char *OPERATION_ID                   = "operationId";
+constexpr const char *LIMIT                          = "limit";
 constexpr const char *INFO                           = "INFO";
 constexpr const char *API_KEY_NAME_LOWER_CASE =
     "x-api-key";  // Drogon always receives the header as lowercase

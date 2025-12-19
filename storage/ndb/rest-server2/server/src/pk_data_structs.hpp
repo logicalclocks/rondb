@@ -23,6 +23,7 @@
 #include "rdrs_dal.h"
 #include "rdrs_const.h"
 #include <ndb_types.h>
+#include <NdbScanFilter.hpp>
 
 #include <drogon/HttpTypes.h>
 #include <string>
@@ -30,6 +31,21 @@
 #include <EventLogger.hpp>
 #include <ArenaMalloc.hpp>
 #include <libbase64.h>
+#include <simdjson.h>
+#include <optional>
+#include <iostream>
+
+// Debug macro for scan operations
+// Uncomment the line below to enable debug output
+// #define DEBUG_SCAN 1
+
+#ifdef DEBUG_SCAN
+#define DEB_SCAN(x) do { std::cout << x; } while(0)
+#define DEB_SCAN_BLOCK(code) do { code } while(0)
+#else
+#define DEB_SCAN(x) ((void)0)
+#define DEB_SCAN_BLOCK(code) ((void)0)
+#endif
 
 std::string to_string(DataReturnType);
 Uint32 decode_utf8_to_unicode(const std::string_view &, size_t &);
@@ -385,4 +401,178 @@ class BatchResponseJSON {
     }
   }
 };
+
+/*** Scan read ***/
+class ScanReadFilter {
+ public:
+  std::string_view column;
+  std::vector<char> value;
+};
+
+class ScanReadColumn {
+ public:
+  std::string_view column;
+};
+
+class ScanReadPath {
+ public:
+  ScanReadPath(std::string_view db_view,
+               std::string_view table_view)
+    : db(db_view), table(table_view) {
+  }
+  std::string db;
+  std::string table;
+};
+
+class Node {
+ public:
+  enum class NodeType {
+    UNDEF,
+    FILTER_NODE,
+    BOUND_NODE
+  };
+  class ParsedValue {
+   public:
+    enum class Kind {
+      UNDEF,
+      INT64,
+      UINT64,
+      DOUBLE,
+      STRING,
+      NULLVAL
+    };
+
+    ParsedValue() : kind(Kind::UNDEF), i64(0),
+                    u64(0), d(0.0), s("") {
+    };
+
+    Kind kind;
+    int64_t i64;
+    uint64_t u64;
+    double d;
+    std::string s;
+
+    std::string ToString() {
+      switch(kind) {
+        case Kind::INT64:
+          return std::to_string(i64);
+        case Kind::UINT64:
+          return std::to_string(u64);
+        case Kind::DOUBLE:
+          return std::to_string(d);
+        case Kind::STRING:
+          return s;
+        case Kind::NULLVAL:
+          return std::string("NULLVAL");
+        default:
+          return std::string("InvalidValue");
+      }
+    }
+  };
+
+  Node(NodeType type) : node_type(type), col(nullptr) {
+    binary.clear();
+  }
+
+  NodeType node_type;
+  ParsedValue value;
+  const NdbDictionary::Column* col;
+  std::vector<uint8_t> binary;
+};
+
+class FilterNode : public Node {
+ public:
+  enum class Type {
+    UNDEF,
+    LOGIC,
+    COMPARE,
+    IS_NULL,
+    IS_NOT_NULL
+  };
+  typedef NdbScanFilter::Group Group;
+  typedef NdbScanFilter::BinaryCondition Condition;
+
+  FilterNode() : Node(NodeType::FILTER_NODE), type(Type::UNDEF),
+                 group(Group::AND),
+                 cond(Condition::COND_EQ), column("") {
+    children.clear();
+  }
+
+  Type type = Type::UNDEF;
+  Group group = Group::AND; // LOGIC only
+  Condition cond = Condition::COND_EQ;
+  std::string column;
+  std::vector<std::shared_ptr<FilterNode>> children;
+};
+
+class BoundNode : public Node {
+ public:
+  BoundNode() : Node(NodeType::BOUND_NODE) {
+  }
+};
+
+struct IndexBound {
+  std::vector<BoundNode> values;  // prefix values
+  bool inclusive = true;
+  std::vector<uint8_t> binary;
+};
+
+struct IndexRange {
+  std::optional<IndexBound> lower;
+  std::optional<IndexBound> upper;
+};
+
+class IndexScanParams {
+ public:
+  IndexScanParams() : name(""), order(Order::NO_ORDER),
+                      index_recs_buffer(nullptr) {
+    columns.clear();
+    cols.clear();
+    ranges.clear();
+  }
+  ~IndexScanParams() {
+    if (index_recs_buffer != nullptr) {
+      delete[] index_recs_buffer;
+    }
+  }
+  enum class Order {
+    NO_ORDER,
+    ASC,
+    DESC
+  };
+  std::string name;
+  std::vector<std::string> columns;
+  std::vector<const NdbDictionary::Column*> cols;
+  std::vector<IndexRange> ranges;
+  Order order = Order::NO_ORDER;
+  char* index_recs_buffer;
+};
+
+class ScanReadParams {
+ public:
+   ScanReadParams(std::string_view db_view,
+                  std::string_view table_view);
+  ~ScanReadParams() {
+    if (table_rec_buffer) {
+      delete[] table_rec_buffer;
+    }
+  }
+  std::string to_string();
+  RS_Status validate();
+  RS_Status validate_columns();
+  static void DumpFilters(std::shared_ptr<FilterNode>& node, int spaces = 0);
+  void DumpIndex();
+
+  ScanReadPath path;
+  std::shared_ptr<FilterNode> filterRoot;
+  std::vector<ScanReadColumn> readColumns;
+  std::optional<IndexScanParams> index;
+  uint64_t limit;
+  char* table_rec_buffer;
+};
+
+RS_Status ValidateScanColumns(const std::vector<ScanReadColumn>& readColumns);
+RS_Status ValidateScanFilter(const std::shared_ptr<FilterNode> filterRoot);
+RS_Status ValidateScanIndex(const IndexScanParams& index_params);
+
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_PK_DATA_STRUCTS_HPP_

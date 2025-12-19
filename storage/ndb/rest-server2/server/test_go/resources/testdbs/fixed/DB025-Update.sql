@@ -16,7 +16,9 @@
 
 USE db025;
 
-DROP TABLE table_1;
+DROP TABLE IF EXISTS table_1;
+
+DROP TABLE IF EXISTS table_2;
 
 CREATE TABLE table_1(
     id0 VARCHAR(10),
@@ -34,4 +36,22 @@ VALUES
         'col0_data',
         'col1_data',
         'col2_data'
+    );
+
+CREATE TABLE table_2(
+    id0 INT(10),
+    new_col0 VARCHAR(100),
+    new_col1 VARCHAR(100),
+    new_col2 VARCHAR(100),
+    PRIMARY KEY(id0)
+) ENGINE = ndbcluster;
+
+INSERT INTO
+    table_2
+VALUES
+    (
+        1,
+        'new_col0_data',
+        'new_col1_data',
+        'new_col2_data'
     );

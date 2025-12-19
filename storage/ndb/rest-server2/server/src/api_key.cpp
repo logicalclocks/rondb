@@ -360,6 +360,7 @@ RS_Status APIKeyCache::update_cache(const std::string &apiKey, Uint32 hash) {
         "Failed to allocate API Key record in cache").status;
     }
     DEB_AUTH("API Key %s inserted in cache with refCount: 1", apiKey.c_str());
+    newUserDBs->m_thread = thread;
     newUserDBs->m_refresh_interval = refresh_interval_with_jitter();
     newUserDBs->m_ref_count = 1;
     newUserDBs->m_state = UserDBs::IS_VALIDATING;
@@ -500,9 +501,11 @@ void APIKeyCache::cache_entry_updater(const std::string &apiKey) {
        */
       DEB_AUTH_THREAD("API key %s, delete", apiKey.c_str());
       NdbMutex_Lock(m_rwLock[key_cache_id]);
+      NdbThread *thread = m_key_cache[key_cache_id][apiKey]->m_thread;
       delete m_key_cache[key_cache_id][apiKey];
       m_key_cache[key_cache_id].erase(apiKey);
       NdbMutex_Unlock(m_rwLock[key_cache_id]);
+      NdbThread_Destroy(&thread);
       return;
     }
 
@@ -527,7 +530,9 @@ void APIKeyCache::cache_entry_updater(const std::string &apiKey) {
         m_key_cache[key_cache_id].erase(apiKey);
         NdbMutex_Unlock(m_rwLock[key_cache_id]);
         NdbMutex_Unlock(userDBs->m_waitLock);
+        NdbThread *thread = userDBs->m_thread;
         delete userDBs;
+        NdbThread_Destroy(&thread);
         return;
       } else {
         NdbMutex_Unlock(m_rwLock[key_cache_id]);

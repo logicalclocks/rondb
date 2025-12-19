@@ -39,6 +39,7 @@
 #include <NdbSleep.h>
 #include <NdbMutex.h>
 #include <NdbCondition.h>
+#include <NdbThread.h>
 
 #define NUM_FS_CACHES 1
 
@@ -118,6 +119,7 @@ class FSMetadataCache {
   NdbCondition *m_sleepCond;
   FSCacheEntry* m_first_cache_entry[NUM_FS_CACHES];
   FSCacheEntry* m_last_cache_entry[NUM_FS_CACHES];
+  NdbThread* m_cache_threads[NUM_FS_CACHES];
   bool m_is_thread_running;
 
   void cleanup();
