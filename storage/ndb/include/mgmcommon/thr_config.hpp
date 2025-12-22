@@ -71,7 +71,8 @@ public:
                     unsigned &num_rr_groups,
                     bool use_tc_threads,
                     bool use_ldm_threads,
-                    unsigned max_rr_group_size);
+                    unsigned max_rr_group_size,
+                    unsigned exclusive_io_cpus);
   int do_parse_thrconfig(const char * ThreadConfig,
                          unsigned realtime,
                          unsigned spintime);
