@@ -3353,7 +3353,7 @@ int NdbIndexScanOperation::setBoundHelperOldApi(
   if (aValue != nullptr) {
     /* Copy data into correct part of RecAttr */
     assert(valueLen > 0);
-    assert(byteOffset + valueLen <= maxKeyRecordBytes);
+    require(byteOffset + valueLen <= maxKeyRecordBytes);
 
     memcpy(boundInfo.key + byteOffset, aValue, valueLen);
   } else {
