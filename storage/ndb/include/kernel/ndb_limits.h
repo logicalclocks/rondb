@@ -198,7 +198,7 @@
 /**
  * Not an exact number, but calculated something like this:
  * 4096 columns of upto 64 bytes per name
- * Up to 720000 bytes of default values
+ * Up to 72000 bytes of default values
  * Up to 80 kB of ReplicaData (8160 fragments with 4 replicas)
  * Up to 16 kB of FragmentData
  * Up to an extra 50 kB of Frm data for partitions
@@ -208,6 +208,13 @@
  * for almost every case.
  */
 #define MAX_WORDS_META_FILE 262144
+
+/**
+ * Number of pages allocated for CTL files in LCP, we need
+ * 4 of those sets of pages.
+ */
+#define PAGES_PER_CTL_FILE 4
+#define LCP_NUM_CTL_FILES 4
 
 #define MIN_ATTRBUF ((MAX_ATTRIBUTES_IN_TABLE / 24) + 1)
 /*

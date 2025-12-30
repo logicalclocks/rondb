@@ -40,6 +40,21 @@
 
 #define JAM_FILE_ID 472
 
+#if (defined(VM_TRACE) || defined(ERROR_INSERT))
+// #define DEBUG_BACKUP 1
+#endif
+
+#ifdef DEBUG_BACKUP
+#define DEB_BACKUP(arglist)     \
+  do {                           \
+    g_eventLogger->info arglist; \
+  } while (0)
+#else
+#define DEB_BACKUP(arglist) \
+  do {                       \
+  } while (0)
+#endif
+
 // extern const unsigned Ndbcntr::g_sysTableCount;
 
 Backup::Backup(Block_context &ctx, Uint32 instanceNumber, Uint32 blockNo)
@@ -488,20 +503,35 @@ void Backup::execREAD_CONFIG_REQ(Signal *signal) {
    * We need to allocate an additional of 1 page because of a bug
    * in ArrayPool.
    */
+  Uint32 dataBufPages = (szDataBuf + sizeof(Page32) - 1) / sizeof(Page32);
+  Uint32 logBufPages = (szLogBuf + sizeof(Page32) - 1) / sizeof(Page32);
+  Uint32 maxFilesPerLcp = ((2 * BackupFormat::NDB_MAX_FILES_PER_LCP));
+  Uint32 lcpBufferPages =
+    ((c_defaults.m_lcp_buffer_size + sizeof(Page32) - 1) / sizeof(Page32));
   Uint32 noPages =
-      (szDataBuf + sizeof(Page32) - 1) / sizeof(Page32) +
-      (szLogBuf + sizeof(Page32) - 1) / sizeof(Page32) +
-      ((2 * BackupFormat::NDB_MAX_FILES_PER_LCP) *
-       ((c_defaults.m_lcp_buffer_size + sizeof(Page32) - 1) / sizeof(Page32)));
+    dataBufPages + logBufPages + (maxFilesPerLcp * lcpBufferPages);
 
-  Uint32 seizeNumPages = noPages + (1*NO_OF_PAGES_META_FILE)+ 9;
-  if (!m_is_query_block)
-  {
+  Uint32 seizeNumPages = noPages +
+                         NO_OF_PAGES_META_FILE +
+                         (LCP_NUM_CTL_FILES * PAGES_PER_CTL_FILE) +
+                         1;
+  if (!m_is_query_block) {
     jam();
+    DEB_BACKUP(("(%u) dataBufPages: %u, logBufPages: %u, maxFilesPerLcp: %u"
+                ", lcpBufferPages: %u, NO_OF_PAGES_META_FILE: %u, "
+                "LCP_NUM_CTL_FILES: %u, PAGES_PER_CTL_FILE: %u,"
+                " + 1 page for bug, seizeNumPages: %u",
+      instance(),
+      dataBufPages,
+      logBufPages,
+      maxFilesPerLcp,
+      lcpBufferPages,
+      NO_OF_PAGES_META_FILE,
+      LCP_NUM_CTL_FILES,
+      PAGES_PER_CTL_FILE,
+      seizeNumPages));
     c_pagePool.setSize(seizeNumPages, true);
-  }
-  else
-  {
+  } else {
     c_pagePool.setSize(1, true);
   }
 
