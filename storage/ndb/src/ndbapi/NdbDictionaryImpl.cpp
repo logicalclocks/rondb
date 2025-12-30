@@ -4885,7 +4885,7 @@ loop:
     {
       Uint32 ah;
       const Uint32 byteSize = col->m_defaultValue.length();
-      assert(byteSize <= NDB_MAX_VAR_SIZE_IN_WORDS);
+      assert(byteSize <= NDB_MAX_VAR_SIZE);
 
       // The AttributeId of a column isn't decided now, so 0 is used.
       AttributeHeader::init(&ah, 0, byteSize);

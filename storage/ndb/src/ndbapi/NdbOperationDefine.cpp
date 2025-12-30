@@ -1008,9 +1008,9 @@ int NdbOperation::setVarValue(const NdbColumnImpl *tAttrInfo,
   DBUG_PRINT("info", ("aLen=%u", (Uint32)aLen));
 
   // wl3717_todo not optimal..
-  const Uint32 MaxTupleSizeInLongWords = (NDB_MAX_VAR_SIZE_IN_WORDS + 7) / 8;
+  const Uint32 MaxTupleSizeInLongWords = (NDB_MAX_VAR_SIZE + 7) / 8;
   Uint64 buf[MaxTupleSizeInLongWords];
-  assert(aLen < (NDB_MAX_VAR_SIZE_IN_WORDS - 2));
+  assert(aLen < (NDB_MAX_VAR_SIZE - 2));
   unsigned char *p = (unsigned char *)buf;
   p[0] = (aLen & 0xff);
   p[1] = (aLen >> 8);
