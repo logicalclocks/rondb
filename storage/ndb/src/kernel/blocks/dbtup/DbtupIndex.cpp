@@ -930,9 +930,9 @@ void Dbtup::removeOfflineRebuildQueue(Uint32 buildPtrI, Uint32 line) {
       m_queued_offline_rebuild_counter,
       line,
       found));
-
-    m_queued_offline_rebuild[m_queued_offline_rebuild_counter] = RNIL;
+    ndbrequire(m_queued_offline_rebuild_counter > 0);
     m_queued_offline_rebuild_counter--;
+    m_queued_offline_rebuild[m_queued_offline_rebuild_counter] = RNIL;
     jam();
     jamData(m_queued_offline_rebuild_counter);
     return;
@@ -956,7 +956,7 @@ void Dbtup::buildIndexOffline_table_readonly(Signal *signal, Uint32 buildPtrI) {
   jam();
   jamData(tablePtr.i);
 
-  if (m_offline_rebuild_outstanding >= MAX_OFFLINE_REBUILD_OUTSTANDING) {
+  if (m_offline_rebuild_outstanding >= MAX_OFFLINE_REBUILD_INDEXES) {
     jam();
     jamData(m_offline_rebuild_outstanding);
     insertOfflineRebuildQueue(buildPtrI, __LINE__);
@@ -1015,7 +1015,7 @@ void Dbtup::buildIndexOffline_table_readonly(Signal *signal, Uint32 buildPtrI) {
     buildPtr.p->m_outstanding++;
     buildPtr.p->m_fragNo++;
     m_offline_rebuild_outstanding++;
-    if (m_offline_rebuild_outstanding >= MAX_OFFLINE_REBUILD_OUTSTANDING) {
+    if (m_offline_rebuild_outstanding >= MAX_OFFLINE_REBUILD_INDEXES) {
       jam();
       jamData(m_offline_rebuild_outstanding);
       insertOfflineRebuildQueue(buildPtrI, __LINE__);
@@ -1040,13 +1040,13 @@ void Dbtup::buildIndexOffline_table_readonly(Signal *signal, Uint32 buildPtrI) {
                AlterTabReq::SignalLength, JBB);
   }
   jam();
-  if (m_offline_rebuild_outstanding < MAX_OFFLINE_REBUILD_OUTSTANDING &&
+  if (m_offline_rebuild_outstanding < MAX_OFFLINE_REBUILD_INDEXES &&
       m_queued_offline_rebuild_counter > 0 &&
       m_queued_offline_rebuild[0] != buildPtrI) {
     jam();
     /**
      * This becomes a recursive call, but is limited by the number
-     * MAX_OFFLINE_REBUILD_OUTSTANDING
+     * MAX_OFFLINE_REBUILD_INDEXES
      * We need to avoid entering here with the same buildPtrI to avoid
      * ending up in an eternal loop.
      */

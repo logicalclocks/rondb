@@ -4996,7 +4996,6 @@ public:
   Uint32 m_num_copy_restores_active;
   Uint32 m_current_ldm_instance;
 
-#define MAX_OUTSTANDING_REBUILD_INDEXES 4
   Uint32 m_current_rebuild_indexes_ongoing;
   Uint32 m_next_table_rebuild_indexes;
 
