@@ -1329,10 +1329,12 @@ void Dblqh::execCONTINUEB(Signal *signal) {
       return;
     case ZREBUILD_ORDERED_INDEXES: {
       jam();
-      if (m_current_rebuild_indexes_ongoing < MAX_OUTSTANDING_REBUILD_INDEXES) {
+      ndbrequire(m_current_rebuild_indexes_ongoing <
+                 MAX_OUTSTANDING_REBUILD_INDEXES);
+      jamData(m_current_rebuild_indexes_ongoing);
+      m_next_table_rebuild_indexes++;
+      if (m_next_table_rebuild_indexes < ctabrecFileSize) {
         jam();
-        jamData(m_current_rebuild_indexes_ongoing);
-        m_next_table_rebuild_indexes++;
         rebuildOrderedIndexes(signal, m_next_table_rebuild_indexes);
       }
       return;
@@ -29241,6 +29243,7 @@ void Dblqh::rebuildOrderedIndexes(Signal *signal, Uint32 tableId) {
         signal, LocalRecoveryCompleteRep::EXECUTE_REDO_LOG_COMPLETED);
 
     m_next_table_rebuild_indexes = 0;
+    m_current_rebuild_indexes_ongoing = 0;
   }
   do {
     if (tableId >= ctabrecFileSize) {

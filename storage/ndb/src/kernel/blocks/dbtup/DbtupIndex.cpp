@@ -1015,11 +1015,13 @@ void Dbtup::buildIndexOffline_table_readonly(Signal *signal, Uint32 buildPtrI) {
     buildPtr.p->m_outstanding++;
     buildPtr.p->m_fragNo++;
     m_offline_rebuild_outstanding++;
-    if (m_offline_rebuild_outstanding >= MAX_OFFLINE_REBUILD_INDEXES) {
-      jam();
-      jamData(m_offline_rebuild_outstanding);
-      insertOfflineRebuildQueue(buildPtrI, __LINE__);
-      return;
+    if (buildPtr.p->m_fragNo < buildPtr.p->m_num_fragments) {
+      if (m_offline_rebuild_outstanding >= MAX_OFFLINE_REBUILD_INDEXES) {
+        jam();
+        jamData(m_offline_rebuild_outstanding);
+        insertOfflineRebuildQueue(buildPtrI, __LINE__);
+        return;
+      }
     }
   }
 
