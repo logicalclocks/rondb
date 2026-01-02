@@ -423,7 +423,7 @@ ErrorBundle ErrorCodes[] = {
   { 937,  DMEC, AE, "Inconsistency in input parameters" },
   { 938,  DMEC, AE, "Too much input parameters" },
   { 939,  DMEC, AE, "Wrong column for input parameters" },
-  { 940,  DMEC, AE, "Fixed size part of row can at most be 16052 bytes" },
+  { 940,  DMEC, AE, "Fixed size part of row can at most be 30000 bytes" },
   { 941,  DMEC, AE, "In-memory varsize part of row can at most be 32000 bytes" },
   { 942,  DMEC, AE, "On-disk part of row can at most be 31120 bytes" },
   { 4000, DMEC, IE, "MEMORY ALLOCATION ERROR" },

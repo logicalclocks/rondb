@@ -165,7 +165,7 @@ SELECT inline_size FROM ndbinfo.blobs WHERE table_name = 'badchar';
 DROP TABLE test.neglen;
 DROP TABLE test.badchar;
 
---error ER_CANT_CREATE_TABLE
+--error ER_CANT_CREATE_TABLE, 1296
 CREATE TABLE test.badlen(
                       a int primary key,
                       b blob comment "NDB_COLUMN=BLOB_INLINE_SIZE=40000") engine=ndb;
@@ -174,13 +174,14 @@ SHOW WARNINGS;
 --error ER_CANT_CREATE_TABLE
 CREATE TABLE test.maxlen(
                       a int primary key,
-                      b blob comment "NDB_COLUMN=BLOB_INLINE_SIZE=29981") engine=ndb;
+                      b blob comment "NDB_COLUMN=BLOB_INLINE_SIZE=31981") engine=ndb;
 SHOW WARNINGS;
 
-## Max len for inline Blob is 30000 - (4 + 16[header])
+## Max len for inline Blob is 32000 - (4 + 16[header])
 CREATE TABLE test.maxlen(
                       a int primary key,
-                      b blob comment "NDB_COLUMN=BLOB_INLINE_SIZE=29980") engine=ndb;
+                      b blob comment "NDB_COLUMN=BLOB_INLINE_SIZE=31976") engine=ndb;
+SHOW WARNINGS;
 ## Verify inline of test.maxlen
 SELECT inline_size FROM ndbinfo.blobs WHERE table_name = 'maxlen';
 

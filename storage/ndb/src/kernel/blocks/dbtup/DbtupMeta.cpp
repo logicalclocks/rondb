@@ -65,7 +65,7 @@ extern EventLogger * g_eventLogger;
 //#define DEBUG_TUP_META 1
 //#define DEBUG_TUP_META_EXTRA 1
 //#define DEBUG_DROP_TAB 1
-//#define DEBUG_DYN_META 1
+#define DEBUG_DYN_META 1
 //#define DEBUG_HASH 1
 //#define DEBUG_ROW_SIZE 1
 #endif
@@ -2093,6 +2093,7 @@ Uint32 Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line) {
   if (regTabPtr->m_offsets[MM].m_fix_header_size > MAX_FIXED_SIZE_IN_WORDS) {
     jam();
     jamDataDebug(regTabPtr->m_offsets[MM].m_fix_header_size);
+    g_eventLogger->info("(%u)fix_size = %u", instance(), regTabPtr->m_offsets[MM].m_fix_header_size);
     return ZTOO_LARGE_FIXED_SIZE_PART;
   }
   Uint32 tot_var_size = total_rec_size[MM] -
@@ -2100,12 +2101,13 @@ Uint32 Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line) {
   if (tot_var_size > MAX_VAR_SIZE_IN_WORDS) {
     jam();
     jamDataDebug(tot_var_size);
+    g_eventLogger->info("(%u)tot_var_size = %u", instance(), tot_var_size);
     return ZTOO_LARGE_VAR_SIZE_PART;
-    return 1;
   }
   if (total_rec_size[DD] > MAX_DISK_VAR_SIZE_IN_WORDS) {
     jam();
     jamDataDebug(total_rec_size[DD]);
+    g_eventLogger->info("(%u)tot_rec_sizei[DD] = %u", instance(), total_rec_size[DD]);
     return ZTOO_LARGE_DISK_VAR_SIZE_PART;
   }
   setUpQueryRoutines(regTabPtr);
