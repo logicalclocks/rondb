@@ -2532,3 +2532,73 @@ func Test_IncludeDetailedStatus_JoinedTablePartialKeyAndMissingRow(t *testing.T)
 	}
 
 }
+
+func Test_GetSpineFeatureVector_WithMetadata_Passed_Spine(t *testing.T) {
+	var fsName = testdbs.FSDB004
+	var fvName = "fv_spine_group"
+	var fvVersion = 1
+	rows, pks, cols, err := fshelper.GetNSampleData(fsName, "fg1_1", 2)
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+
+	var fsReq = CreateBatchFeatureStoreRequest(
+		fsName,
+		fvName,
+		fvVersion,
+		pks,
+		*GetPkValues(&rows, &pks, &cols),
+		[]string{"f1"},
+		[][]interface{}{{[]byte(` { "key1": "value1", "key2": "value2", "key3": "value3" } `)}, {[]byte(` { "key1": "value1", "key2": "value2", "key3": "value3" } `)}},
+	)
+	fsReq.MetadataRequest = &api.MetadataRequest{FeatureName: true, FeatureType: true}
+
+	fsResp := GetFeatureStoreResponse(t, fsReq)
+
+	var exCols = make(map[string]bool)
+	exCols["ts"] = true
+	exCols["col2"] = true
+	ValidateResponseWithDataExcludeColsStatusCheck(t, &rows, &cols, &exCols, fsResp, true)
+
+	// status is always MISSING for Spine FG
+	if fsResp.Status[0] != "MISSING" {
+		t.Fatalf("Status should be MISSING")
+	}
+	if fsResp.Status[1] != "MISSING" {
+		t.Fatalf("Status should be MISSING")
+	}
+}
+
+func Test_GetSpineFeatureVector_WithMetadata_Missing_Spine(t *testing.T) {
+	var fsName = testdbs.FSDB004
+	var fvName = "fv_spine_group"
+	var fvVersion = 1
+	rows, pks, cols, err := fshelper.GetNSampleData(fsName, "fg1_1", 2)
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+
+	var fsReq = CreateBatchFeatureStoreRequest(
+		fsName,
+		fvName,
+		fvVersion,
+		pks,
+		*GetPkValues(&rows, &pks, &cols),
+		nil,
+		nil,
+	)
+	fsResp := GetFeatureStoreResponse(t, fsReq)
+
+	var exCols = make(map[string]bool)
+	exCols["ts"] = true
+	exCols["col2"] = true
+	ValidateResponseWithDataExcludeColsStatusCheck(t, &rows, &cols, &exCols, fsResp, true)
+
+	// status is always MISSING for Spine FG
+	if fsResp.Status[0] != "MISSING" {
+		t.Fatalf("Status should be MISSING")
+	}
+	if fsResp.Status[1] != "MISSING" {
+		t.Fatalf("Status should be MISSING")
+	}
+}

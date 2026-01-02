@@ -69,4 +69,7 @@ void fillPassedFeaturesMultipleEntries(
     std::unordered_map<std::string, std::vector<metadata::FeatureMetadata>> &featureMetadata,
     std::unordered_map<std::string, int> &indexLookup,
     const std::vector<feature_store_data_structs::FeatureStatus> &status);
+void fixSpineFGStatus(
+    const metadata::FeatureViewMetadata *fvMetadata,
+    std::vector<feature_store_data_structs::FeatureStatus> &status);
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_BATCH_FEATURE_STORE_CTRL_HPP_

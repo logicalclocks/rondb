@@ -663,6 +663,18 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     "64" },
 
   {
+    CFG_DB_EXCLUSIVE_IO_CPUS,
+    "ExclusiveIoCPUs",
+    DB_TOKEN,
+    "Number of CPUs for exclusive use for IO",
+    ConfigInfo::CI_USED,
+    false,
+    ConfigInfo::CI_INT,
+    "0",
+    "0",
+    "8" },
+
+  {
     CFG_DB_NUM_SCAN_FRAGREQ_COUNTS,
     "ScanBatchSizeQueryWorker",
     DB_TOKEN,

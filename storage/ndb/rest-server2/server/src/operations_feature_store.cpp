@@ -86,13 +86,27 @@ std::tuple<FeatureGroup, RS_Status> GetFeatureGroupData(int featureGroupID) {
   if (ret.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
     return std::make_tuple(FeatureGroup{}, ret);
   }
-  return std::make_tuple(
-      FeatureGroup{fg.name,
-                   fg.feature_store_id,
-                   fg.version,
-                   fg.online_enabled != 0},
-      CRS_Status::SUCCESS.status
-  );
+
+  FeatureGroup fgMeta{fg.name,
+                    fg.feature_store_id,
+                    fg.version,
+                    fg.online_enabled != 0,
+                    fg.on_demand_feature_group_id,
+                    false};
+
+  if (fgMeta.onDemandFeatureGroupID != 0) {
+    // get FG spine data
+    OnDemandFeatureGroup odfg;
+    ret = find_on_demand_feature_group(fgMeta.onDemandFeatureGroupID, &odfg);
+
+    if (ret.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
+      return std::make_tuple(FeatureGroup{}, ret);
+    }
+
+    fgMeta.spine = odfg.spine != 0;
+  }
+
+  return std::make_tuple(fgMeta, CRS_Status::SUCCESS.status);
 }
 
 std::tuple<std::vector<TrainingDatasetFeature>, RS_Status>

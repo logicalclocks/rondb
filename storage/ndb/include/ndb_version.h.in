@@ -1117,6 +1117,9 @@ ndbd_support_continous_scan(Uint32 x) {
   if ((major == 25) && (minor == 10) && (patch >= 1)) {
     return true;
   }
+  if ((major == 24) && (minor == 10) && (patch >= 18)) {
+    return true;
+  }
   return false;
 }
 

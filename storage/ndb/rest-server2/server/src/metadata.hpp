@@ -41,6 +41,8 @@ struct FeatureMetadata {
   int featureGroupVersion;
   int featureGroupId;
   int featureStoreId;
+  int onDemandFeatureGroupID;
+  bool spine;
   int id;
   std::string name;
   std::string type;
@@ -50,6 +52,9 @@ struct FeatureMetadata {
   int joinIndex;
 
   bool isComplex() const;
+  bool isSpine() const {
+    return spine;
+  }
   std::string to_string() const {
     std::ostringstream oss;
     oss << "FeatureMetadata {"
@@ -72,8 +77,14 @@ struct FeatureGroupFeatures {
   int featureGroupVersion;
   int featureGroupId;
   int joinIndex;
+  int onDemandFeatureGroupID;
+  bool spine;
   std::vector<FeatureMetadata> features;
   std::vector<ServingKey> primaryKeyMap;
+
+  bool isSpine() const {
+    return spine;
+  }
   std::string to_string() const {
     std::ostringstream oss;
     oss << "FeatureGroupFeatures {"
@@ -182,6 +193,8 @@ struct FeatureViewMetadata {
       complexFeatures;
   // key: joinIndex + fgId + fName, label are excluded. joinIndex is needed
   // because of self-join
+  bool hasSpine;
+  // Does this FV contains spine FGs
   std::string to_string() const {
     std::ostringstream oss;
     oss << "FeatureViewMetadata {"
