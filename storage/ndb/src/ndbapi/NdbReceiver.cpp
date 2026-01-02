@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2024, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -323,6 +323,7 @@ NdbReceiver::NdbReceiver(Ndb *aNdb)
       m_lastFinalRecAttr(nullptr),
       m_rec_attr_data(nullptr),
       m_rec_attr_len(0),
+      m_index(Uint32(~0)),
       m_current_row(beforeFirstRow),
       m_expected_result_length(0),
       m_received_result_length(0) {}
@@ -1362,6 +1363,9 @@ int NdbReceiver::execTRANSID_AI(const Uint32 *aDataPtr, Uint32 aLength) {
   const Uint32 exp = m_expected_result_length;
   const Uint32 tmp = m_received_result_length + aLength;
 
+  DBUG_ENTER("NdbReceiver::execTRANSID_AI");
+  DBUG_PRINT("info", ("Expected: %u, recvd: %u, receiver index: %u, len: %u",
+    exp, tmp, this->m_index, aLength));
   /*
    * Store received data unprocessed into receive buffer
    * in its packed format.
@@ -1377,7 +1381,7 @@ int NdbReceiver::execTRANSID_AI(const Uint32 *aDataPtr, Uint32 aLength) {
     if (unpackRow(aDataPtr, aLength, m_row_buffer) == -1) return -1;
   }
   m_received_result_length = tmp;
-  return (tmp == exp || (exp > TcKeyConf::DirtyReadBit) ? 1 : 0);
+  DBUG_RETURN(tmp == exp || (exp > TcKeyConf::DirtyReadBit) ? 1 : 0);
 }
 
 int NdbReceiver::execKEYINFO20(Uint32 info, const Uint32 *aDataPtr,

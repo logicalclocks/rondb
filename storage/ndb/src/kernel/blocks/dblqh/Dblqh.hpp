@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
    Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -443,6 +443,7 @@ class FsReadWriteReq;
 /*       ERROR CODES FROM DBTC                                               */
 /* ------------------------------------------------------------------------- */
 #define ZMEMORY_QUOTA_OVERFLOW_ERROR 239
+#define ZSCAN_CONTINOUS_SCAN_LOCK_ERROR 2202
 #endif
 
 /**
@@ -679,6 +680,12 @@ class Dblqh : public SimulatedBlock {
       WAIT_SCAN_NEXTREQ_ending = 14
     };
     enum ScanType { ST_IDLE = 0, SCAN = 1, COPY = 2 };
+    enum ContinousScanState {
+      CONTINOUS_SCAN_IDLE = 0,
+      CONTINOUS_SCAN_ACTIVE = 1,
+      CONTINOUS_SCAN_READY = 2,
+      CONTINOUS_SCAN_CLOSE = 3
+    };
 
     /* A single scan of each fragment can have
      * MAX_PARALLEL_OP_PER_SCAN_WITH_LOCK read operations in progress
@@ -697,7 +704,8 @@ class Dblqh : public SimulatedBlock {
     UintR scan_acc_op_ptr[MaxScanAccSegments];
     Uint32 scan_acc_index;
     Uint32 scan_acc_segments;
-    UintR scanApiOpPtr;
+    Uint32 scanApiOpPtr[4];
+    Uint32 scanApiOpPtr_index;
     Local_key m_row_id;
 
     Uint32 m_max_batch_size_rows;
@@ -772,6 +780,8 @@ class Dblqh : public SimulatedBlock {
     Uint8 prioAFlag;
     Uint8 m_first_match_flag;
     Uint8 m_send_early_hbrep;
+    Uint8 m_par_ordered_scan_flag;
+    Uint8 m_continous_scan_state;
     // Aggregation
     Uint8 m_aggregation;
     Uint32 m_agg_curr_batch_size_rows; // [0, 1], 1 indicates a "aggregation
@@ -3371,8 +3381,10 @@ private:
   void sendAttrinfoLoop(Signal *signal);
   void sendAttrinfoSignal(Signal *signal);
   void sendLqhAttrinfoSignal(Signal *signal);
-  Uint32 initScanrec(const class ScanFragReq *, Uint32 aiLen,
-                     TcConnectionrecPtr);
+  Uint32 initScanrec(const class ScanFragReq *,
+                     Uint32 aiLen,
+                     TcConnectionrecPtr,
+                     Uint32 sig_len);
   void initScanTc(const class ScanFragReq *, Uint32 transid1, Uint32 transid2,
                   Uint32 fragId, Uint32 nodeId, Uint32 hashHi,
                   TcConnectionrecPtr);
@@ -3701,43 +3713,41 @@ private:
   void localAbortStateHandlerLab(Signal *signal, TcConnectionrecPtr);
   void writePrepareLog(Signal *signal, TcConnectionrecPtr);
   void writePrepareLog_problems(Signal *signal, const TcConnectionrecPtr,
-                                LogPartRecord *logPartPtrP);
-  void doWritePrepareLog(Signal* signal, TcConnectionrecPtr);
-  void update_log_problem(Signal*, LogPartRecord*, Uint32 problem, bool);
-  void takeOverErrorLab(Signal* signal, TcConnectionrecPtr);
-  bool checkTransporterOverloaded(Signal* signal,
-                                  const NodeBitmask& all,
-                                  const class LqhKeyReq* req);
-  void earlyKeyReqAbort(Signal* signal, 
-                        const class LqhKeyReq * lqhKeyReq, 
-                        Uint32 errorCode,
-                        TcConnectionrecPtr);
-  void logLqhkeyrefLab(Signal* signal, TcConnectionrecPtr);
-  void closeCopyLab(Signal* signal, TcConnectionrec*);
-  void commitReplyLab(Signal* signal, TcConnectionrec*);
-  void completeUnusualLab(Signal* signal, TcConnectionrecPtr);
-  void completeTransNotLastLab(Signal* signal, TcConnectionrecPtr);
-  void completedLab(Signal* signal, TcConnectionrecPtr);
-  void copyCompletedLab(Signal* signal, TcConnectionrecPtr);
-  void completeLcpRoundLab(Signal* signal, Uint32 lcpId);
-  void continueAfterLogAbortWriteLab(Signal* signal, TcConnectionrecPtr);
-  void sendAttrinfoLab(Signal* signal);
-  void sendExecConf(Signal* signal, Uint32, Uint32);
-  void execSr(Signal* signal);
-  void srFourthComp(Signal* signal);
-  void timeSup(Signal* signal);
-  void closeCopyRequestLab(Signal* signal, TcConnectionrecPtr);
-  void closeScanRequestLab(Signal* signal, TcConnectionrecPtr);
-  void scanTcConnectLab(Signal* signal, Uint32 startTcCon, Uint32 fragId);
-  void initGcpRecLab(Signal* signal);
-  void prepareContinueAfterBlockedLab(Signal* signal, TcConnectionrecPtr);
-  void commitContinueAfterBlockedLab(Signal* signal, TcConnectionrecPtr);
-  void sendExecFragRefLab(Signal* signal);
-  void fragrefLab(Signal* signal, Uint32 errorCode, const LqhFragReq* req);
-  void abortAddFragOps(Signal* signal);
-  void rwConcludedLab(Signal* signal, TcConnectionrecPtr);
-  void sendsttorryLab(Signal* signal);
-  void initialiseRecordsLab(Signal* signal, Uint32 data, Uint32, Uint32);
+                                LogPartRecord *logPartPtrP,
+                                bool out_of_log_buffer);
+  void doWritePrepareLog(Signal *signal, TcConnectionrecPtr);
+  void update_log_problem(Signal *, LogPartRecord *, Uint32 problem, bool);
+  void takeOverErrorLab(Signal *signal, TcConnectionrecPtr);
+  bool checkTransporterOverloaded(Signal *signal, const NodeBitmask &all,
+                                  const class LqhKeyReq *req);
+  void earlyKeyReqAbort(Signal *signal, const class LqhKeyReq *lqhKeyReq,
+                        Uint32 errorCode, TcConnectionrecPtr);
+  void logLqhkeyrefLab(Signal *signal, TcConnectionrecPtr);
+  void closeCopyLab(Signal *signal, TcConnectionrec *);
+  void commitReplyLab(Signal *signal, TcConnectionrec *);
+  void completeUnusualLab(Signal *signal, TcConnectionrecPtr);
+  void completeTransNotLastLab(Signal *signal, TcConnectionrecPtr);
+  void completedLab(Signal *signal, TcConnectionrecPtr);
+  void copyCompletedLab(Signal *signal, TcConnectionrecPtr);
+  void completeLcpRoundLab(Signal *signal, Uint32 lcpId);
+  void continueAfterLogAbortWriteLab(Signal *signal, TcConnectionrecPtr);
+  void sendAttrinfoLab(Signal *signal);
+  void sendExecConf(Signal *signal, Uint32, Uint32);
+  void execSr(Signal *signal);
+  void srFourthComp(Signal *signal);
+  void timeSup(Signal *signal);
+  void closeCopyRequestLab(Signal *signal, TcConnectionrecPtr);
+  void closeScanRequestLab(Signal *signal, TcConnectionrecPtr);
+  void scanTcConnectLab(Signal *signal, Uint32 startTcCon, Uint32 fragId);
+  void initGcpRecLab(Signal *signal);
+  void prepareContinueAfterBlockedLab(Signal *signal, TcConnectionrecPtr);
+  void commitContinueAfterBlockedLab(Signal *signal, TcConnectionrecPtr);
+  void sendExecFragRefLab(Signal *signal);
+  void fragrefLab(Signal *signal, Uint32 errorCode, const LqhFragReq *req);
+  void abortAddFragOps(Signal *signal);
+  void rwConcludedLab(Signal *signal, TcConnectionrecPtr);
+  void sendsttorryLab(Signal *signal);
+  void initialiseRecordsLab(Signal *signal, Uint32 data, Uint32, Uint32);
   void sttor_startphase1(Signal *signal);
   void startphase2Lab(Signal *signal, Uint32 config);
   void startphase3Lab(Signal *signal);

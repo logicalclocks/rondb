@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2004, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2004, 2025, Oracle and/or its affiliates.
    Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -55,7 +55,8 @@ struct NdbApiConfig {
         m_waitfor_timeout(120000),
         m_default_queue_option(0),
         m_default_hashmap_size(0),
-        m_verbose(0) {}
+        m_verbose(0),
+        m_continous_scan(0) {}
 
   Uint32 m_scan_batch_size;
   Uint32 m_batch_byte_size;
@@ -64,6 +65,7 @@ struct NdbApiConfig {
   Uint32 m_default_queue_option;
   Uint32 m_default_hashmap_size;
   Uint32 m_verbose;
+  Uint32 m_continous_scan;
 };
 
 class Ndb_cluster_connection_impl : public Ndb_cluster_connection {

@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2010, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2010, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -212,6 +212,7 @@ class PollGuard {
                 bool forceSend,
                 NDB_TICKS *start_time);
   void unlock_and_signal();
+  void flush_send();
 private:
   int wait_for_input_in_loop(int wait_time,
                              bool forceSend,

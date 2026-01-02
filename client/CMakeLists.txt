@@ -1,5 +1,5 @@
-# Copyright (c) 2006, 2024, Oracle and/or its affiliates.
-# Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
+# Copyright (c) 2006, 2025, Oracle and/or its affiliates.
+# Copyright (c) 2022, 2025, Hopsworks and/or its affiliates.
 # 
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -61,9 +61,7 @@ MYSQL_ADD_EXECUTABLE(mysqltest
   LINK_LIBRARIES mysqlclient
   )
 
-IF(MY_COMPILER_IS_GNU AND (WITH_LTO OR CMAKE_COMPILER_FLAG_WITH_LTO))
-  TARGET_LINK_OPTIONS(mysqltest PRIVATE -Wno-error=stringop-overflow)
-ENDIF()
+DOWNGRADE_STRINGOP_WARNINGS(mysqltest)
 
 MYSQL_ADD_EXECUTABLE(mysqlcheck
   check/mysqlcheck.cc
@@ -195,6 +193,7 @@ MYSQL_ADD_EXECUTABLE(json_client_library_main
   LINK_LIBRARIES json_client_library  strings mysys decimal
   SKIP_INSTALL
   )
+DOWNGRADE_STRINGOP_WARNINGS(json_client_library_main)
 
 # A test executable which does nothing, except verify that symbols are visible.
 # To test standalone build:

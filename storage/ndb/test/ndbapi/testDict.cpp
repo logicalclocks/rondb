@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
    Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -120,27 +120,37 @@ void getNodeGroups(NdbRestarter &restarter) {
 
 char f_tablename[256];
 
-#define CHECK(b)                                                          \
-  if (!(b)) {                                                             \
-    g_err << "ERR: " << step->getName() << " failed on line " << __LINE__ \
-          << endl;                                                        \
-    result = NDBT_FAILED;                                                 \
-    break;                                                                \
+#define DIAGNOSTIC0 \
+  g_err << "ERR: " << step->getName() << " failed on line " << __LINE__ << endl
+
+#define DIAGNOSTIC1(c)                                                  \
+  g_err << "ERR: " << step->getName() << " failed on line " << __LINE__ \
+        << ": " << c << endl
+
+#define CHECK(b)          \
+  if (!(b)) {             \
+    DIAGNOSTIC0;          \
+    result = NDBT_FAILED; \
+    break;                \
   }
 
-#define CHECK2(b, c)                                                      \
-  if (!(b)) {                                                             \
-    g_err << "ERR: " << step->getName() << " failed on line " << __LINE__ \
-          << ": " << c << endl;                                           \
-    result = NDBT_FAILED;                                                 \
-    goto end;                                                             \
+#define CHECK1(b) \
+  if (!(b)) {     \
+    DIAGNOSTIC0;  \
+    break;        \
   }
 
-#define CHECK3(b, c)                                                      \
-  if (!(b)) {                                                             \
-    g_err << "ERR: " << step->getName() << " failed on line " << __LINE__ \
-          << ": " << c << endl;                                           \
-    return NDBT_FAILED;                                                   \
+#define CHECK2(b, c)      \
+  if (!(b)) {             \
+    DIAGNOSTIC1(c);       \
+    result = NDBT_FAILED; \
+    goto end;             \
+  }
+
+#define CHECK3(b, c)    \
+  if (!(b)) {           \
+    DIAGNOSTIC1(c);     \
+    return NDBT_FAILED; \
   }
 
 int runLoadTable(NDBT_Context *ctx, NDBT_Step *step) {
@@ -303,13 +313,9 @@ int runSetDropTableConcurrentLCP(NDBT_Context *ctx, NDBT_Step *step) {
 
 int runSetMinTimeBetweenLCP(NDBT_Context *ctx, NDBT_Step *step) {
   NdbRestarter restarter;
-  int result;
   int val = DumpStateOrd::DihMinTimeBetweenLCP;
   if (restarter.dumpStateAllNodes(&val, 1) != 0) {
-    do {
-      CHECK(0);
-    } while (0);
-    g_err << "Failed to set LCP to min value" << endl;
+    DIAGNOSTIC1("Failed to set LCP to min value");
     return NDBT_FAILED;
   }
   return NDBT_OK;
@@ -324,13 +330,9 @@ int runClearErrorInsert(NDBT_Context *ctx, NDBT_Step *step) {
 
 int runResetMinTimeBetweenLCP(NDBT_Context *ctx, NDBT_Step *step) {
   NdbRestarter restarter;
-  int result;
   int val2[] = {DumpStateOrd::DihMinTimeBetweenLCP, 0};
   if (restarter.dumpStateAllNodes(val2, 2) != 0) {
-    do {
-      CHECK(0);
-    } while (0);
-    g_err << "Failed to set LCP to min value" << endl;
+    DIAGNOSTIC1("Failed to set LCP to min value");
     return NDBT_FAILED;
   }
   return NDBT_OK;
@@ -703,11 +705,7 @@ int runCreateAndDropWithData(NDBT_Context *ctx, NDBT_Step *step) {
   NdbRestarter restarter;
   int val = DumpStateOrd::DihMinTimeBetweenLCP;
   if (restarter.dumpStateAllNodes(&val, 1) != 0) {
-    int result;
-    do {
-      CHECK(0);
-    } while (0);
-    g_err << "Unable to change timebetween LCP" << endl;
+    DIAGNOSTIC1("Unable to change timebetween LCP");
     return NDBT_FAILED;
   }
 
@@ -3736,6 +3734,7 @@ struct RandSchemaOp {
   Vector<Obj *> m_objects;
 
   int schema_op(Ndb *);
+  int drop_tab(Ndb *);
   int validate(Ndb *);
   int cleanup(Ndb *);
 
@@ -3746,10 +3745,13 @@ struct RandSchemaOp {
   int drop_obj(Ndb *, Obj *);
 
   void remove_obj(Obj *);
+  const NdbError &getNdbError() const { return m_error; }
+  void clearNdbError() { m_error.code = 0; }
 
  private:
   unsigned *seed;
   unsigned ownseed;
+  NdbError m_error;
 };
 
 template class Vector<RandSchemaOp::Obj *>;
@@ -3785,6 +3787,15 @@ drop_object:
   return drop_obj(ndb, obj);
 }
 
+int RandSchemaOp::drop_tab(Ndb *ndb) {
+  Uint32 type = (1 << NdbDictionary::Object::UserTable);
+  Obj *obj = get_obj(type);
+  if (obj == nullptr) {
+    return NDBT_FAILED;  // No table available
+  }
+  return drop_obj(ndb, obj);
+}
+
 RandSchemaOp::Obj *RandSchemaOp::get_obj(Uint32 mask) {
   Vector<Obj *> tmp;
   for (Uint32 i = 0; i < m_objects.size(); i++) {
@@ -3810,9 +3821,13 @@ int RandSchemaOp::create_table(Ndb *ndb) {
     BaseString::snprintf(buf, sizeof(buf), "%s-%d", pTab.getName(),
                          ndb_rand_r(seed));
     pTab.setName(buf);
-    if (pDict->createTable(pTab)) return NDBT_FAILED;
+    if (pDict->createTable(pTab)) {
+      m_error = pDict->getNdbError();
+      return NDBT_FAILED;
+    }
   } else {
     if (NDBT_Tables::createTable(ndb, pTab.getName())) {
+      m_error = pDict->getNdbError();
       return NDBT_FAILED;
     }
   }
@@ -3822,6 +3837,7 @@ int RandSchemaOp::create_table(Ndb *ndb) {
   if (tab2 == NULL) {
     g_err << "Table : " << pTab.getName() << ", not found on line " << __LINE__
           << ", error: " << pDict->getNdbError() << endl;
+    m_error = pDict->getNdbError();
     return NDBT_FAILED;
   }
   HugoTransactions trans(*tab2);
@@ -3841,6 +3857,7 @@ int RandSchemaOp::create_index(Ndb *ndb, Obj *tab) {
   const NdbDictionary::Table *pTab = pDict->getTable(tab->m_name.c_str());
 
   if (pTab == 0) {
+    m_error = pDict->getNdbError();
     return NDBT_FAILED;
   }
 
@@ -3871,7 +3888,8 @@ int RandSchemaOp::create_index(Ndb *ndb, Obj *tab) {
       idx0.addColumn(pTab->getColumn(i)->getName());
   }
   if (pDict->createIndex(idx0)) {
-    ndbout << pDict->getNdbError() << endl;
+    m_error = pDict->getNdbError();
+    ndbout << m_error << endl;
     return NDBT_FAILED;
   }
   Obj *obj = new Obj;
@@ -3893,6 +3911,7 @@ int RandSchemaOp::drop_obj(Ndb *ndb, Obj *obj) {
      * Drop of table automatically drops all indexes
      */
     if (pDict->dropTable(obj->m_name.c_str())) {
+      m_error = pDict->getNdbError();
       return NDBT_FAILED;
     }
     while (obj->m_dependant.size()) {
@@ -3903,6 +3922,7 @@ int RandSchemaOp::drop_obj(Ndb *ndb, Obj *obj) {
              obj->m_type == NdbDictionary::Object::OrderedIndex) {
     ndbout_c("drop index %s", obj->m_name.c_str());
     if (pDict->dropIndex(obj->m_name.c_str(), obj->m_parent->m_name.c_str())) {
+      m_error = pDict->getNdbError();
       return NDBT_FAILED;
     }
     remove_obj(obj);
@@ -3987,6 +4007,7 @@ int RandSchemaOp::alter_table(Ndb *ndb, Obj *obj) {
     ndbout_c("altering %s ops: %s", pOld->getName(), ops.c_str());
     if (pDict->alterTable(*pOld, tNew) != 0) {
       g_err << pDict->getNdbError() << endl;
+      m_error = pDict->getNdbError();
       return NDBT_FAILED;
     }
     if (strcmp(pOld->getName(), tNew.getName())) {
@@ -4009,6 +4030,7 @@ int RandSchemaOp::validate(Ndb *ndb) {
         g_err << "Table: " << m_objects[i]->m_name.c_str()
               << ", not found on line " << __LINE__
               << ", error: " << pDict->getNdbError() << endl;
+        m_error = pDict->getNdbError();
         return NDBT_FAILED;
       }
       HugoTransactions trans(*tab2);
@@ -4078,8 +4100,21 @@ int runDictRestart(NDBT_Context *ctx, NDBT_Step *step) {
   if (res.init(ctx, step)) return NDBT_FAILED;
 
   for (int i = 0; i < loops; i++) {
-    for (Uint32 j = 0; j < 10; j++)
-      if (dict.schema_op(pNdb)) return NDBT_FAILED;
+    for (Uint32 j = 0; j < 10; j++) {
+      if (dict.schema_op(pNdb) != 0) {
+        /**
+         * if error is:
+         * 708: No more attribute metadata records (increase MaxNoOfAttributes),
+         * current operation is discarded, a drop table or drop index operation
+         * is used instead and test continue.
+         */
+        if (dict.getNdbError().code != 708) return NDBT_FAILED;
+        dict.clearNdbError();
+        if (dict.drop_tab(pNdb) == NDBT_FAILED) {
+          return NDBT_FAILED;
+        }
+      }
+    }
 
     if (res.dostep(ctx, step)) return NDBT_FAILED;
 
@@ -4493,7 +4528,6 @@ static const NdbDictionary::Table *runBug48604createtable(NDBT_Context *ctx,
   Ndb *pNdb = GETNDB(step);
   NdbDictionary::Dictionary *pDic = pNdb->getDictionary();
   const NdbDictionary::Table *pTab = 0;
-  int result = NDBT_OK;
   do {
     NdbDictionary::Table tab(tabName_Bug48604);
     {
@@ -4508,8 +4542,8 @@ static const NdbDictionary::Table *runBug48604createtable(NDBT_Context *ctx,
       col.setNullable(false);
       tab.addColumn(col);
     }
-    CHECK(pDic->createTable(tab) == 0);
-    CHECK((pTab = pDic->getTable(tabName_Bug48604)) != 0);
+    CHECK1(pDic->createTable(tab) == 0);
+    CHECK1((pTab = pDic->getTable(tabName_Bug48604)) != 0);
   } while (0);
   return pTab;
 }
@@ -4519,7 +4553,6 @@ static const NdbDictionary::Index *runBug48604createindex(NDBT_Context *ctx,
   Ndb *pNdb = GETNDB(step);
   NdbDictionary::Dictionary *pDic = pNdb->getDictionary();
   const NdbDictionary::Index *pInd = 0;
-  int result = NDBT_OK;
   do {
     NdbDictionary::Index ind(indName_Bug48604);
     ind.setTable(tabName_Bug48604);
@@ -4527,8 +4560,8 @@ static const NdbDictionary::Index *runBug48604createindex(NDBT_Context *ctx,
     ind.setLogging(false);
     ind.addColumn("b");
     g_info << "index create.." << endl;
-    CHECK(pDic->createIndex(ind) == 0);
-    CHECK((pInd = pDic->getIndex(indName_Bug48604, tabName_Bug48604)) != 0);
+    CHECK1(pDic->createIndex(ind) == 0);
+    CHECK1((pInd = pDic->getIndex(indName_Bug48604, tabName_Bug48604)) != 0);
     g_info << "index created" << endl;
     return pInd;
   } while (0);
@@ -9507,7 +9540,6 @@ int runBug14645319(NDBT_Context *ctx, NDBT_Step *step) {
 
     int old_fragments = 0;
     int old_buckets = 0;
-    int new_fragments = 0;
     int new_buckets = 0;
 
     do {
@@ -9562,7 +9594,6 @@ int runBug14645319(NDBT_Context *ctx, NDBT_Step *step) {
       result = pDic->getHashMap(new_hm, &new_tab);
       if (result != 0) break;
 
-      new_fragments = new_tab.getFragmentCount();
       new_buckets = new_hm.getMapLen();
 
       if (test.expected_buckets > 0 && new_buckets != test.expected_buckets) {

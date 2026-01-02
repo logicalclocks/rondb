@@ -1,4 +1,4 @@
-# Copyright (c) 2006, 2024, Oracle and/or its affiliates.
+# Copyright (c) 2006, 2025, Oracle and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -390,4 +390,23 @@ IF(MSVC AND NOT WIN32_CLANG)
    SET("${flag}" "${${flag}} /wd4100")
   ENDFOREACH()
   TARGET_COMPILE_OPTIONS(innodb_zipdecompress PRIVATE "/wd4100")
+ENDIF()
+
+IF(MY_COMPILER_IS_GNU AND FPROFILE_USE)
+  ADD_COMPILE_FLAGS(page/page0zip.cc COMPILE_FLAGS
+    "-Wno-array-bounds"
+    "-Wno-restrict"
+    "-Wno-stringop-overflow"
+    )
+  ADD_COMPILE_FLAGS(lock/lock0lock.cc COMPILE_FLAGS
+    "-Wno-alloc-size-larger-than"
+    )
+  # This is needed for innodb_zipdecompress
+  ADD_COMPILE_FLAGS(
+    rem/rem0wrec.cc
+    COMPILE_FLAGS "-Wno-stringop-overflow"
+    )
+  IF(CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 12)
+    STRING_APPEND(CMAKE_CXX_FLAGS " -Wno-error=alloc-size-larger-than=")
+  ENDIF()
 ENDIF()

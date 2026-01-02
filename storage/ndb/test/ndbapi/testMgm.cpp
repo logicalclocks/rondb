@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2023, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2023, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -3097,10 +3097,13 @@ int runTestNdbApiConfig(NDBT_Context *ctx, NDBT_Step *step) {
       {CFG_DEFAULT_HASHMAP_SIZE,
        &NdbApiConfig::m_default_hashmap_size,
        {240, 3840}},
+      {CFG_API_CONTINOUS_SCAN,
+       &NdbApiConfig::m_continous_scan,
+       {0,1}},
   };
   // Catch if new members are added to NdbApiConfig,
   // if so add tests and adjust expected size
-  static_assert(sizeof(NdbApiConfig) == 7 * sizeof(Uint32));
+  static_assert(sizeof(NdbApiConfig) == 8 * sizeof(Uint32));
 
   Config savedconf;
   if (!mgmd.get_config(savedconf)) return NDBT_FAILED;
@@ -3265,8 +3268,7 @@ static int runGracefulStopRestartNodesInNG0(NDBT_Context *ctx,
   ctx->incProperty("ReplicasReady");
   ctx->getPropertyWait("ReplicasReady", numReplicas);
 
-  int res =
-      restarter.restartOneDbNode(myNodeId, false, true, false, false, false);
+  int res = restarter.restartOneDbNode(myNodeId, false, true, false, false);
 
   ndbout_c("restart node %u result : %d", myNodeId, res);
 
@@ -3276,6 +3278,10 @@ static int runGracefulStopRestartNodesInNG0(NDBT_Context *ctx,
     ndbout_c("ndb_mgm_restart failed %s %d",
              ndb_mgm_get_latest_error_msg(restarter.handle),
              ndb_mgm_get_latest_error(restarter.handle));
+    if (res == -2) {
+      // Timeout, unknown state of restart
+      return NDBT_FAILED;
+    }
   }
 
   return NDBT_OK;
@@ -3303,6 +3309,55 @@ static int runStartNodes(NDBT_Context *ctx, NDBT_Step *step) {
   return NDBT_OK;
 }
 
+static int runReportCommandsUntilStopped(NDBT_Context *ctx, NDBT_Step *step) {
+  constexpr int numEventTypes = 3;
+  Ndb_logevent_type types[numEventTypes] = {
+      NDB_LE_BackupStatus, NDB_LE_MemoryUsage, NDB_LE_SavedEvent};
+  NdbMgmd mgmd;
+  struct ndb_mgm_events *events;
+  mgmd.use_tls(opt_tls_search_path, opt_mgm_tls);
+  if (!mgmd.connect()) return NDBT_FAILED;
+  int result = NDBT_OK;
+  while (!ctx->isTestStopped() && result == NDBT_OK) {
+    for (int i = 0; i < numEventTypes; i++) {
+      events = ndb_mgm_dump_events(mgmd.handle(), types[i], 0, nullptr);
+      if (!events) {
+        ndbout_c("Failed to get events");
+        result = NDBT_FAILED;
+        continue;
+      }
+      free(events);
+    }
+  }
+  return result;
+}
+static int restartDataNode(NDBT_Context *ctx, NDBT_Step *step) {
+  NdbRestarter restarter;
+  int result = NDBT_FAILED;
+  const int nodeId = restarter.getNode(NdbRestarter::NS_RANDOM);
+  ndbout_c("Restarting node %u", nodeId);
+  do {
+    if (restarter.restartOneDbNode(nodeId,
+                                   false,  // initial
+                                   true)   // nostart
+        != NDBT_OK) {
+      ndbout_c("Failed to restart node %u", nodeId);
+      break;
+    }
+    if (restarter.waitNodesNoStart(&nodeId, 1) != NDBT_OK) {
+      ndbout_c("Node failed to enter NOT STARTED state");
+      break;
+    }
+    if ((restarter.startNodes(&nodeId, 1) != NDBT_OK) ||
+        (restarter.waitNodesStarted(&nodeId, 1) != NDBT_OK)) {
+      ndbout_c("Node failed to start");
+      break;
+    }
+    result = NDBT_OK;
+  } while (0);
+  ctx->stopTest();
+  return result;
+}
 NDBT_TESTSUITE(testMgm);
 DRIVER(DummyDriver); /* turn off use of NdbApi */
 TESTCASE("ApiSessionFailure", "Test failures in MGMAPI session") {
@@ -3439,6 +3494,11 @@ TESTCASE("TestConcurrentGracefulStop",
   STEPS(runGracefulStopRestartNodesInNG0, 4);
   VERIFIER(runCheckOutcome);
   FINALIZER(runStartNodes);
+}
+TESTCASE("TestReportCommandsRestart",
+         "Test report commands work over node restarts") {
+  STEP(runReportCommandsUntilStopped);
+  STEP(restartDataNode);
 }
 
 NDBT_TESTSUITE_END(testMgm)

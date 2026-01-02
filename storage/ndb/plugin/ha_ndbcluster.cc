@@ -1,5 +1,5 @@
-/* Copyright (c) 2004, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
+/* Copyright (c) 2004, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2025, Hopsworks and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
@@ -111,6 +111,7 @@
 #include "storage/ndb/src/common/util/parse_mask.hpp"
 #include "storage/ndb/src/ndbapi/NdbQueryBuilder.hpp"
 #include "storage/ndb/src/ndbapi/NdbQueryOperation.hpp"
+#include "storage/ndb/src/ndbapi/ndb_internal.hpp"
 #include "string_with_len.h"
 #include "strxnmov.h"
 #include "template_utils.h"
@@ -2209,6 +2210,8 @@ int ha_ndbcluster::open_index(NdbDictionary::Dictionary *dict,
       const NdbError &err = dict->getNdbError();
       if (err.code != 4243) ERR_RETURN(err);
       // Index Not Found. Proceed with this index unavailable.
+      // Mark table as invalid to avoid caching the table definition.
+      table->invalidate_dict();
     }
   }
 
@@ -2233,6 +2236,8 @@ int ha_ndbcluster::open_index(NdbDictionary::Dictionary *dict,
       const NdbError &err = dict->getNdbError();
       if (err.code != 4243) ERR_RETURN(err);
       // Index Not Found. Proceed with this index unavailable.
+      // Mark table as invalid to avoid caching the table definition.
+      table->invalidate_dict();
     }
   }
 
@@ -12957,6 +12962,10 @@ static int ndbcluster_init(void *handlerton_ptr) {
   ndb_log_info("[TRACE][main][ndbcluster_init][5] Calling ndb_init_internal");
   // Initialize NdbApi
   ndb_init_internal(1);
+  Ndb_internal::set_log_timestamp_format(
+      opt_log_timestamps
+          ? Ndb_internal::log_timestamp_format::iso8601_system_time
+          : Ndb_internal::log_timestamp_format::iso8601_utc);
 
   ndb_log_info("[TRACE][main][ndbcluster_init][6] Calling Ndb_server_hooks::register_server_hooks");
   if (!ndb_server_hooks.register_server_hooks(ndb_wait_setup_server_startup,
@@ -18003,6 +18012,9 @@ static SHOW_VAR ndb_status_vars[] = {
     {"Ndb", (char *)&show_ndb_metadata_check, SHOW_FUNC, SHOW_SCOPE_GLOBAL},
     {"Ndb", (char *)&show_ndb_metadata_synced, SHOW_FUNC, SHOW_SCOPE_GLOBAL},
     {"Ndb", (char *)&show_ndb_metadata_excluded_count, SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
+    {"Ndb_schema_participant_count",
+     (char *)&ndbcluster_binlog_get_schema_participant_count, SHOW_FUNC,
      SHOW_SCOPE_GLOBAL},
     {NullS, NullS, SHOW_LONG, SHOW_SCOPE_GLOBAL}};
 

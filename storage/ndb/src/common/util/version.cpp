@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -142,21 +142,25 @@ struct NdbUpGradeCompatible {
 };
 
 struct NdbUpGradeCompatible ndbCompatibleTable_schema_table[] = {
+  { MAKE_VERSION(25,10,NDB_VERSION_BUILD),MAKE_VERSION(22,10,3), UG_Range },
   { MAKE_VERSION(24,10,NDB_VERSION_BUILD),MAKE_VERSION(22,10,3), UG_Range },
   { 0, 0, UG_Null }
 };
 
 struct NdbUpGradeCompatible ndbCompatibleTable_backup_table[] = {
+  { MAKE_VERSION(25,10,NDB_VERSION_BUILD),MAKE_VERSION(22,10,3), UG_Range },
   { MAKE_VERSION(24,10,NDB_VERSION_BUILD),MAKE_VERSION(22,10,3), UG_Range },
   { 0, 0, UG_Null }
 };
 
 struct NdbUpGradeCompatible ndbCompatibleTable_full[] = {
+  { MAKE_VERSION(25,10,NDB_VERSION_BUILD),MAKE_VERSION(22,10,3), UG_Range },
   { MAKE_VERSION(24,10,NDB_VERSION_BUILD),MAKE_VERSION(22,10,3), UG_Range },
   { 0, 0, UG_Null }
 };
 
 struct NdbUpGradeCompatible ndbCompatibleTable_upgrade[] = {
+  { MAKE_VERSION(25,10,NDB_VERSION_BUILD),MAKE_VERSION(22,10,3), UG_Range },
   { MAKE_VERSION(24,10,NDB_VERSION_BUILD),MAKE_VERSION(22,10,3), UG_Range },
   { 0, 0, UG_Null }
 };

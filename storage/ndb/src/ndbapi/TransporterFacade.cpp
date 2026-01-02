@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
    Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -92,6 +92,7 @@ static int indexToNumber(int index) { return index + MIN_API_BLOCK_NO; }
  *****************************************************************************/
 void TransporterFacade::reportError(NodeId nodeId, TransporterError errorCode,
                                     const char *info) {
+  DBUG_ENTER("TransporterFacade::reportError");
 #ifdef REPORT_TRANSPORTER
   g_eventLogger->info("REPORT_TRANSP: reportError (nodeId=%d, errorCode=%d) %s",
                       (int)nodeId, (int)errorCode, info ? info : "");
@@ -106,8 +107,11 @@ void TransporterFacade::reportError(NodeId nodeId, TransporterError errorCode,
     }
     DEBUG_FPRINTF((stderr, "(%u)FAC:reportError(%u, %d, %s)\n", ownId(), nodeId,
                    (int)errorCode, info));
+    DBUG_PRINT("info", ("reportError(%u,%u), %s",
+      nodeId, errorCode, info ? info : ""));
     startDisconnecting(nodeId);
   }
+  DBUG_VOID_RETURN;
 }
 
 /**
@@ -453,10 +457,6 @@ int TransporterFacade::start_instance(NodeId nodeId,
   assert(theOwnId == 0);
   theOwnId = nodeId;
   DEBUG_FPRINTF((stderr, "(%u)FAC:start_instance\n", ownId()));
-
-#if defined SIGPIPE && !defined _WIN32
-  (void)signal(SIGPIPE, SIG_IGN);
-#endif
 
   theTransporterRegistry = new TransporterRegistry(this, this);
   if (theTransporterRegistry == nullptr) {

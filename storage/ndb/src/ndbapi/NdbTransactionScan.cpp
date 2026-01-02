@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -85,7 +85,9 @@ int NdbTransaction::receiveSCAN_TABREF(const NdbApiSignal *aSignal) {
  *****************************************************************************/
 int NdbTransaction::receiveSCAN_TABCONF(const NdbApiSignal *aSignal,
                                         const Uint32 *ops, Uint32 len) {
+  DBUG_ENTER("NdbTransaction::receiveSCAN_TABCONF");
   const ScanTabConf *conf = CAST_CONSTPTR(ScanTabConf, aSignal->getDataPtr());
+  DBUG_PRINT("info", ("requestInfo: 0x%x", conf->requestInfo));
 
   if (checkState_TransId(&conf->transId1)) {
     /**
@@ -99,7 +101,7 @@ int NdbTransaction::receiveSCAN_TABCONF(const NdbApiSignal *aSignal,
         assert(m_scanningQuery);
         m_scanningQuery->execCLOSE_SCAN_REP(0, false);
       }
-      return 1;  // -> Finished
+      DBUG_RETURN(1); // -> Finished
     }
 
     int retVal = -1;
@@ -141,24 +143,28 @@ int NdbTransaction::receiveSCAN_TABCONF(const NdbApiSignal *aSignal,
             opCount = *ops++;
           }
           const Uint32 totalLen = ScanTabConf::getLength(info);
-          DBUG_PRINT("info", ("SCAN_TABCONF rows: %u, totalLen: %u",
-            opCount, totalLen));
+          DBUG_PRINT("info",
+            ("SCAN_TABCONF rows: %u, totalLen: %u, tcPtrI: %u, receiver: %p,"
+             " index: %u, id: %u",
+            opCount, totalLen, tcPtrI, tOp, tOp->m_index, tOp->m_id));
           if (tcPtrI == RNIL && opCount == 0) {
             theScanningOp->receiver_completed(tOp);
             retVal = 0;
           } else if (tOp->execSCANOPCONF(tcPtrI, totalLen, opCount)) {
+            DBUG_PRINT("info", ("Receiver index: %u, id: %u delivered",
+              tOp->m_index, tOp->m_id));
             theScanningOp->receiver_delivered(tOp);
             retVal = 0;
           }
         }
       }
     }  // while
-    return retVal;
+    DBUG_RETURN(retVal);
   } else {
 #ifdef NDB_NO_DROPPED_SIGNAL
     abort();
 #endif
   }
 
-  return -1;
+  DBUG_RETURN(-1);
 }

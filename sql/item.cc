@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2000, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2000, 2025, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -6333,11 +6333,16 @@ Item *Item_field::replace_item_field(uchar *arg) {
 
     // The field is an outer reference, so we cannot reuse transformed query
     // block's Item_field; make a new one for this query block
+    if (info->m_outer_field != nullptr)  // have made one already, reuse it
+      return info->m_outer_field;
+
     THD *const thd = current_thd;
     Item_field *outer_field = new (thd->mem_root) Item_field(thd, info->m_item);
     if (outer_field == nullptr) return nullptr; /* purecov: inspected */
     outer_field->depended_from = info->m_trans_block;
     outer_field->context = &info->m_curr_block->context;
+    outer_field->hidden = hidden;
+    info->m_outer_field = outer_field;  // for reuse
     return outer_field;
   }
 

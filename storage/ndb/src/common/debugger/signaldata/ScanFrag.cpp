@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2004, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2004, 2025, Oracle and/or its affiliates.
    Copyright (c) 2023, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -55,6 +55,10 @@ bool printSCAN_FRAGREQ(FILE *output, const Uint32 *theData, Uint32 len,
     fprintf(output, "f");
   if (ScanFragReq::getQueryThreadFlag(sig->requestInfo))
     fprintf(output, "q");
+  if (ScanFragReq::getParallelOrderedScanFlag(sig->requestInfo))
+    fprintf(output, "(cs)");
+  if (ScanFragReq::getTTLOnlyExpiredFragFlag(sig->requestInfo))
+    fprintf(output, "(ttl)");
   if (ScanFragReq::getNoDiskFlag(sig->requestInfo))
     fprintf(output, "(nodisk)");
   else
@@ -82,11 +86,14 @@ bool printSCAN_FRAGREQ(FILE *output, const Uint32 *theData, Uint32 len,
   fprintf(output, " batch_size_rows: %u\n", sig->batch_size_rows);
   fprintf(output, " batch_size_bytes: %u\n", sig->batch_size_bytes);
 
-  if (ScanFragReq::getCorrFactorFlag(sig->requestInfo)) {
-    fprintf(output, " corrFactorLo: 0x%x\n", sig->variableData[0]);
-    fprintf(output, " corrFactorHi: 0x%x\n", sig->variableData[1]);
+  if (ScanFragReq::getCorrFactorFlag(sig->requestInfo) ||
+      ScanFragReq::getParallelOrderedScanFlag(sig->requestInfo) ||
+      ScanFragReq::getTTLOnlyExpiredFragFlag(sig->requestInfo)) {
+    Uint32 num_extra = len - ScanFragReq::SignalLength;
+    for (Uint32 i = 0; i < num_extra; i++) {
+      fprintf(output, " variableData[%u]: 0x%x\n", i, sig->variableData[i]);
+    }
   }
-
   return true;
 }
 

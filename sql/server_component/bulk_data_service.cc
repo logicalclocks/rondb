@@ -1,4 +1,4 @@
-/*  Copyright (c) 2022, 2024, Oracle and/or its affiliates.
+/*  Copyright (c) 2022, 2025, Oracle and/or its affiliates.
 
     This program is free software; you can redistribute it and/or modify
     it under the terms of the GNU General Public License, version 2.0,
@@ -315,7 +315,7 @@ static int format_double_column(
     return ER_LOAD_BULK_DATA_WRONG_VALUE_FOR_FIELD;
   }
 
-  if (field_double->truncate(&nr, FLT_MAX) != Field_real::TR_OK) {
+  if (field_double->truncate(&nr, DBL_MAX) != Field_real::TR_OK) {
     error_details.column_type = "double";
     log_conversion_error(text_col, "Invalid value for type: ");
     return ER_LOAD_BULK_DATA_WRONG_VALUE_FOR_FIELD;

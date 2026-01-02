@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2012, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2020, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2012, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2020, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -97,7 +97,6 @@ public class NdbRecordSmartValueHandlerImpl implements SmartValueHandler {
         domainFieldHandlers = null;
         fieldNumberToColumnNumberMap = null;
         transientValues = null;
-        proxy = null;
     }
 
     /** Was this value handler released? */
@@ -129,8 +128,6 @@ public class NdbRecordSmartValueHandlerImpl implements SmartValueHandler {
     private Object[] transientValues = null;
 
     private boolean[] transientModified; 
-
-    private Object proxy;
 
     public NdbRecordSmartValueHandlerImpl(DomainTypeHandlerImpl<?> domainTypeHandler) {
         this.domainTypeHandler = domainTypeHandler;
@@ -790,13 +787,4 @@ public class NdbRecordSmartValueHandlerImpl implements SmartValueHandler {
 
     public void setCacheManager(CacheManager cm) {
     }
-
-    public void setProxy(Object proxy) {
-        this.proxy = proxy;
-    }
-
-    public Object getProxy() {
-        return this.proxy;
-    }
-
 }

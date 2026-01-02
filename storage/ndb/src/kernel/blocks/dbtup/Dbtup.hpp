@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
    Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -618,6 +618,7 @@ struct Fragoperrec {
                                       Tuple_header **tuple_header_ptr,
                                       Uint32 &loop_count, Uint32 size);
 
+  Uint32 get_lastSeen(Uint32 scanPtrI);
   // for md5 of key (could maybe reuse existing temp buffer)
   Uint64 c_dataBuffer[ZWORDS_ON_PAGE / 2 + 1];
 
@@ -4876,6 +4877,14 @@ Dbtup::prepare_tab_pointers(Uint64 frag_id)
   ptrAss(tabptr, Rtablerec);
   prepare_tabptr = tabptr;
 }
+
+inline Uint32 Dbtup::get_lastSeen(Uint32 scanPtrI) {
+  ScanOpPtr scanPtr;
+  scanPtr.i = scanPtrI;
+  ndbrequire(c_scanOpPool.getValidPtr(scanPtr));
+  return scanPtr.p->m_last_seen;
+}
+
 #undef JAM_FILE_ID
 
 #endif
