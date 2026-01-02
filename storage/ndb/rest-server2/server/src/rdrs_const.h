@@ -94,6 +94,7 @@ static inline int bytes_for_ndb_str_len(int ndb_str_len) {
 #define USERS                    "users"
 #define PROJECT_TEAM             "project_team"
 #define FEATURE_GROUP            "feature_group"
+#define ON_DEMAND_FEATURE_GROUP  "on_demand_feature_group"
 
 // Update the following constants if there are changes in the hopsworks schema
 #define API_KEY_PREFIX_SIZE                45 + 1    /* +1 for ndb len or '\0'*/

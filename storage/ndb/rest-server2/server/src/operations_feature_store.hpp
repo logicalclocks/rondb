@@ -69,6 +69,12 @@ struct FeatureGroup {
   int featureStoreId;
   int version;
   bool onlineEnabled;
+  int onDemandFeatureGroupID;
+  bool spine;
+
+  bool isSpine() const {
+    return spine;
+  }
 };
 
 std::tuple<FeatureGroup, RS_Status> GetFeatureGroupData(int featureGroupID);

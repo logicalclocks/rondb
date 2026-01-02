@@ -140,7 +140,6 @@
 //#define DEBUG_SCHEMA_VERSION 1
 //#define DEBUG_EARLY_LCP 1
 //#define DEBUG_NODE_STATUS 1
-//#define DEBUG_INDEX_BUILD 1
 //#define DEBUG_RESTART_SYNCH 1
 //#define DEBUG_START_PHASE9 1
 //#define DEBUG_COMMITTED_WORDS 1
@@ -158,6 +157,7 @@
 //#define DEBUG_RATE_DETAIL 1
 //#define DEBUG_QUOTAS 1
 //#define DEBUG_CONT_SCAN 1
+//#define DEBUG_INDEX_BUILD 1
 #endif
 
 #ifdef DEBUG_CONT_SCAN 
@@ -1302,6 +1302,8 @@ void Dblqh::execCONTINUEB(Signal *signal) {
     {
       cstartRecReq = SRR_REDO_COMPLETE;
       ndbrequire(c_lcp_complete_fragments.isEmpty());
+      DEB_INDEX_BUILD(("(%u) Start rebuilding index line: %u",
+        instance(), __LINE__));
       rebuildOrderedIndexes(signal, 0);
       return;
     }
@@ -2300,6 +2302,10 @@ void Dblqh::execREAD_CONFIG_REQ(Signal *signal) {
   m_full_restart_logs = 1; //Compatability in upgrade, false from MGM server
   ndb_mgm_get_int_parameter(p, CFG_DB_FULL_RESTART_LOGS, 
                             &m_full_restart_logs);
+
+#ifdef DEBUG_INDEX_BUILD
+  m_full_restart_logs = 0;
+#endif
 
   m_rate_limits_active = 0;
   ndb_mgm_get_int_parameter(p, CFG_DB_ACTIVATE_RATE_LIMITS, 
@@ -29159,6 +29165,8 @@ void Dblqh::execSET_LOCAL_LCP_ID_CONF(Signal *signal) {
     jam();
     cstartRecReq = SRR_REDO_COMPLETE;  // REDO complete
 
+    DEB_INDEX_BUILD(("(%u) Start rebuilding index line: %u",
+      instance(), __LINE__));
     rebuildOrderedIndexes(signal, 0);
     return;
   }
@@ -31910,7 +31918,9 @@ void Dblqh::continue_srFourthComp(Signal *signal) {
     }
 
     cstartRecReq = SRR_REDO_COMPLETE;  // REDO complete
-
+ 
+    DEB_INDEX_BUILD(("(%u) Start rebuilding index line: %u",
+      instance(), __LINE__));
     rebuildOrderedIndexes(signal, 0);
     return;
   } else {

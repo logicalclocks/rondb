@@ -608,7 +608,8 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
         case NdbDictionary::Column::Type::Timestamp2:    ///< 4 bytes + 0-3 fraction
           feature_not_implemented("Print GROUP BY column of type Timestamp2");
         default:
-          abort(); // Unknown type
+          throw runtime_error("Unexpected data type when printing GROUP BY"
+                              " column. Please report a bug.");
         }
       }
       break;
@@ -633,10 +634,11 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
           print_float_or_double(out, result.data_double(), true);
           break;
         case NdbDictionary::Column::Undefined:
-          abort();
-          break;
+          throw runtime_error("Unexpected undefined data type in aggregation"
+                              " result. Please report a bug.");
         default:
-          abort();
+          throw runtime_error("Unexpected data type in aggregation result."
+                              " Please report a bug.");
         }
       }
       break;
@@ -644,11 +646,17 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
       {
         NdbAggregator::Result result_sum = m_regs_a[cmd.print_avg.reg_a_sum];
         NdbAggregator::Result result_count = m_regs_a[cmd.print_avg.reg_a_count];
-        // todo this must be tested thoroughly against MySQL.
-        double numerator = convert_result_to_double(result_sum);
-        double denominator = convert_result_to_double(result_count);
-        double result = numerator / denominator;
-        print_float_or_double(out, result, true);
+        if (result_sum.is_null() &&
+            !result_count.is_null() &&
+            result_count.type() == NdbDictionary::Column::Type::Bigunsigned &&
+            result_count.data_uint64() == 0) {
+          out << m_null_representation;
+        } else {
+          double numerator = convert_result_to_double(result_sum);
+          double denominator = convert_result_to_double(result_count);
+          double result = numerator / denominator;
+          print_float_or_double(out, result, true);
+        }
       }
       break;
     case Cmd::Type::PRINT_STR:
@@ -992,7 +1000,8 @@ convert_result_to_double(NdbAggregator::Result result)
   case NdbDictionary::Column::Type::Double:
     return static_cast<double>(result.data_double());
   default:
-    abort();
+    throw runtime_error("Unexpected data type in results underlying AVG. Please"
+                        " report a bug.");
   }
 }
 

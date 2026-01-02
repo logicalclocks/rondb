@@ -1,6 +1,6 @@
 /*
  * This file is part of the RonDB REST API Server
- * Copyright (c) 2023 Hopsworks AB
+ * Copyright (c) 2023, 2025 Hopsworks AB
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -94,6 +94,11 @@ func ValidateResponseWithData(t *testing.T, data *[][]interface{}, cols *[]strin
 }
 
 func ValidateResponseWithDataExcludeCols(t *testing.T, data *[][]interface{}, cols *[]string, exCols *map[string]bool, resp *api.BatchFeatureStoreResponse) {
+	ValidateResponseWithDataExcludeColsStatusCheck(t, data, cols, exCols, resp, true)
+}
+
+func ValidateResponseWithDataExcludeColsStatusCheck(t *testing.T, data *[][]interface{}, cols *[]string, exCols *map[string]bool, resp *api.BatchFeatureStoreResponse,
+	statusCheck bool) {
 	for i, row := range *data {
 		var fsResp = &api.FeatureStoreResponse{}
 		fsResp.Metadata = resp.Metadata
@@ -102,7 +107,7 @@ func ValidateResponseWithDataExcludeCols(t *testing.T, data *[][]interface{}, co
 		if exCols == nil {
 			fshelper.ValidateResponseWithData(t, &row, cols, fsResp)
 		} else {
-			fshelper.ValidateResponseWithDataExcludeCols(t, &row, cols, exCols, fsResp)
+			fshelper.ValidateResponseWithDataExcludeColsWithStatusCheck(t, &row, cols, exCols, fsResp, statusCheck)
 		}
 	}
 }

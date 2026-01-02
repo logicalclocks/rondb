@@ -12,4 +12,3 @@
 #
 ##############################################################################
 
-ronsql.ronsql_emptytable : RONDB-831 fails due to a result mismatch.

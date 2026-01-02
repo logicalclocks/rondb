@@ -307,12 +307,16 @@ void BatchFeatureStoreCtrl::batch_featureStore(
     features = emptyFeatures;
     noOps = 0;
   }
-  fsResp.status = featureStatus;
   fillPassedFeaturesMultipleEntries(features,
                                     reqStruct.passedFeatures,
                                     metadata->prefixFeaturesLookup,
                                     metadata->featureIndexLookup,
                                     featureStatus);
+
+  //Set status for spine FG
+  fixSpineFGStatus(metadata, featureStatus);
+
+  fsResp.status = featureStatus;
   fsResp.features = features;
   fsResp.metadata = GetFeatureMetadata(metadata, reqStruct.metadataRequest);
 
@@ -378,6 +382,10 @@ getFeatureValuesMultipleEntries(
     std::vector<std::vector<std::vector<char>>>(batchStatus.size());
   for (auto &response : batchResponse.getResult()) {
     std::string_view operationId = response.getBody().getOperationID();
+    // Skip invalid/uninitialized responses (e.g., when spine FGs are skipped)
+    if (operationId.empty()) {
+      continue;
+    }
     Uint32 separatorPos = operationId.find(SEQUENCE_SEPARATOR);
     std::string_view splitOperationIdFirst =
       operationId.substr(0, separatorPos);
@@ -440,7 +448,14 @@ BatchResponseJSON
   getPkReadResponseJson(int numEntries,
                         const metadata::FeatureViewMetadata &metadata) {
   auto response = BatchResponseJSON();
-  response.Init(metadata.featureGroupFeatures.size() * numEntries);
+  // Count non-spine feature groups
+  int nonSpineFGCount = 0;
+  for (const auto &fgFeature : metadata.featureGroupFeatures) {
+    if (!fgFeature.isSpine()) {
+      nonSpineFGCount++;
+    }
+  }
+  response.Init(nonSpineFGCount * numEntries);
   return response;
 }
 
@@ -457,6 +472,20 @@ void fillPassedFeaturesMultipleEntries(
                            passedFeatures[i],
                            featureMetadata,
                            indexLookup);
+      }
+    }
+  }
+}
+
+void fixSpineFGStatus(
+    const metadata::FeatureViewMetadata *fvMetadata,
+    std::vector<feature_store_data_structs::FeatureStatus> &status) {
+
+  if (fvMetadata->hasSpine) {
+    for (unsigned i = 0; i < status.size(); ++i) {
+      if (status[i] != feature_store_data_structs::FeatureStatus::Error) {
+        // set status to MISSING if not already set to some error
+        status[i] = feature_store_data_structs::FeatureStatus::Missing;
       }
     }
   }

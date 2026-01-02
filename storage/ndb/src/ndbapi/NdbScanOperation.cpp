@@ -4046,7 +4046,8 @@ int NdbIndexScanOperation::get_next_sorted_row(const char *&out_row) {
       theNdb, m_api_receivers[current]->m_index, current));
     DBUG_RETURN(0);
   }
-  if (unlikely(curr_state != ReceiverDataReady)) {
+  if (unlikely(curr_state != ReceiverDataReady &&
+               curr_state != ReceiverEmpty)) {
     DBUG_PRINT("info", ("theNdb(%p) current_index: %u, curr_state: %u",
       theNdb, current_index, curr_state));
     require(false);
