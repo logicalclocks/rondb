@@ -1755,16 +1755,17 @@ Configuration::setupConfiguration()
       iter.get(CFG_DB_USE_TC_THREADS, &use_tc_threads);
       Uint32 use_ldm_threads = 1;
       iter.get(CFG_DB_USE_LDM_THREADS, &use_ldm_threads);
+      Uint32 exclusive_io_cpus = 0;
+      iter.get(CFG_DB_EXCLUSIVE_IO_CPUS, &exclusive_io_cpus);
       m_thr_config.do_parse_auto(_realtimeScheduler,
                                  _schedulerSpinTimer,
                                  num_cpus,
                                  globalData.ndbRRGroups,
                                  use_tc_threads,
                                  use_ldm_threads,
-                                 globalData.theMaxRRGroupSize);
-    }
-    else
-    {
+                                 globalData.theMaxRRGroupSize,
+                                 exclusive_io_cpus);
+    } else {
       Uint32 classic = 0;
       iter.get(CFG_NDBMT_CLASSIC, &classic);
 #ifdef NDB_USE_GET_ENV
