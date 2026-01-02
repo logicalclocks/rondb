@@ -1328,8 +1328,15 @@ void Dblqh::execCONTINUEB(Signal *signal) {
       wait_reorg_suma_filter_enabled(signal);
       return;
     case ZREBUILD_ORDERED_INDEXES: {
-      Uint32 tableId = signal->theData[1];
-      rebuildOrderedIndexes(signal, tableId);
+      jam();
+      ndbrequire(m_current_rebuild_indexes_ongoing <
+                 MAX_OUTSTANDING_REBUILD_INDEXES);
+      jamData(m_current_rebuild_indexes_ongoing);
+      m_next_table_rebuild_indexes++;
+      if (m_next_table_rebuild_indexes < ctabrecFileSize) {
+        jam();
+        rebuildOrderedIndexes(signal, m_next_table_rebuild_indexes);
+      }
       return;
     }
     case ZWAIT_READONLY: {
@@ -2304,7 +2311,7 @@ void Dblqh::execREAD_CONFIG_REQ(Signal *signal) {
                             &m_full_restart_logs);
 
 #ifdef DEBUG_INDEX_BUILD
-  m_full_restart_logs = 0;
+  m_full_restart_logs = 1;
 #endif
 
   m_rate_limits_active = 0;
@@ -4959,11 +4966,19 @@ void Dblqh::execALTER_TAB_REQ(Signal *signal) {
       lock_table_exclusive(tablePtr.p);
       signal->theData[len++] = cnewestGci + 3;
       break;
-    case AlterTabReq::AlterTableReadOnly:
+    case AlterTabReq::AlterTableReadOnly: {
       jam();
       lock_table_exclusive(tablePtr.p);
-      ndbrequire(tablePtr.p->tableStatus == Tablerec::TABLE_DEFINED);
-      tablePtr.p->tableStatus = Tablerec::TABLE_READ_ONLY;
+      if (tablePtr.p->tableStatus == Tablerec::TABLE_DEFINED) {
+        jam();
+        tablePtr.p->tableStatus = Tablerec::TABLE_READ_ONLY;
+        tablePtr.p->m_read_only_counter = 1;
+      } else {
+        jam();
+        ndbrequire(tablePtr.p->tableStatus == Tablerec::TABLE_READ_ONLY);
+        ndbrequire(tablePtr.p->m_read_only_counter > 0);
+        tablePtr.p->m_read_only_counter++;
+      }
       DEB_SCHEMA_VERSION(("(%u)tab: %u tableStatus = TABLE_READ_ONLY",
                           instance(), tablePtr.i));
       signal->theData[0] = ZWAIT_READONLY;
@@ -4973,7 +4988,8 @@ void Dblqh::execALTER_TAB_REQ(Signal *signal) {
       sendSignal(reference(), GSN_CONTINUEB, signal, 4, JBB);
       unlock_table_exclusive(tablePtr.p);
       return;
-    case AlterTabReq::AlterTableReadWrite:
+    }
+    case AlterTabReq::AlterTableReadWrite: {
       jam();
       locked_table = true;
       lock_table_exclusive(tablePtr.p);
@@ -4981,7 +4997,22 @@ void Dblqh::execALTER_TAB_REQ(Signal *signal) {
       tablePtr.p->tableStatus = Tablerec::TABLE_DEFINED;
       DEB_SCHEMA_VERSION(("(%u)tab: %u tableStatus = TABLE_DEFINED(2)",
                           instance(), tablePtr.i));
+      ndbrequire(tablePtr.p->m_read_only_counter > 0);
+      tablePtr.p->m_read_only_counter--;
+      if (tablePtr.p->m_read_only_counter == 0) {
+        jam();
+        tablePtr.p->tableStatus = Tablerec::TABLE_DEFINED;
+        DEB_SCHEMA_VERSION(("(%u)tab: %u tableStatus = TABLE_DEFINED(2)",
+                            instance(), tablePtr.i));
+      } else {
+        jam();
+        DEB_SCHEMA_VERSION(("(%u)tab: %u tableStatus = TABLE_READ_ONLY(%u)",
+                            instance(),
+                            tablePtr.i,
+                            tablePtr.p->m_read_only_counter));
+      }
       break;
+    }
     default:
       ndbabort();
   }
@@ -29204,6 +29235,7 @@ void Dblqh::execSTART_RECREF(Signal *signal) {
 
 void Dblqh::rebuildOrderedIndexes(Signal *signal, Uint32 tableId) {
   jamEntry();
+  jamData(tableId);
 
   if (tableId == 0) {
     jam();
@@ -29212,55 +29244,66 @@ void Dblqh::rebuildOrderedIndexes(Signal *signal, Uint32 tableId) {
 
     sendLOCAL_RECOVERY_COMPLETE_REP(
         signal, LocalRecoveryCompleteRep::EXECUTE_REDO_LOG_COMPLETED);
+    m_next_table_rebuild_indexes = 0;
+    m_current_rebuild_indexes_ongoing = 0;
   }
-  if (tableId >= ctabrecFileSize) {
-    jam();
-    LogPartRecordPtr logPartPtr;
+  do {
+    if (tableId >= ctabrecFileSize) {
 
-    for (logPartPtr.i = 0; logPartPtr.i < clogPartFileSize; logPartPtr.i++) {
       jam();
-      ptrCheckGuard(logPartPtr, clogPartFileSize, logPartRecord);
-      LogFileRecordPtr logFile;
-      logFile.i = logPartPtr.p->currentLogfile;
-      ptrCheckGuard(logFile, clogFileFileSize, logFileRecord);
-
-      LogPosition head = {logFile.p->fileNo, logFile.p->currentMbyte};
-      LogPosition tail = {logPartPtr.p->logTailFileNo,
-                          logPartPtr.p->logTailMbyte};
-      Uint64 free_mb =
-          free_log(head, tail, logPartPtr.p->noLogFiles, clogFileSize);
-      Uint32 committed_mbytes = get_committed_mbytes(logPartPtr.p);
-      if (free_mb <= (c_free_mb_tail_problem_limit + committed_mbytes)) {
+      jamData(tableId);
+      if (m_current_rebuild_indexes_ongoing > 0) {
         jam();
-        update_log_problem(signal, logPartPtr.p, LogPartRecord::P_TAIL_PROBLEM,
-                           true);
+        /* Still outstanding rebuild indexes */
+        return;
       }
+      LogPartRecordPtr logPartPtr;
+
+      for (logPartPtr.i = 0; logPartPtr.i < clogPartFileSize; logPartPtr.i++) {
+        jam();
+        ptrCheckGuard(logPartPtr, clogPartFileSize, logPartRecord);
+        LogFileRecordPtr logFile;
+        logFile.i = logPartPtr.p->currentLogfile;
+        ptrCheckGuard(logFile, clogFileFileSize, logFileRecord);
+
+        LogPosition head = {logFile.p->fileNo, logFile.p->currentMbyte};
+        LogPosition tail = {logPartPtr.p->logTailFileNo,
+                            logPartPtr.p->logTailMbyte};
+        Uint64 free_mb =
+            free_log(head, tail, logPartPtr.p->noLogFiles, clogFileSize);
+        Uint32 committed_mbytes = get_committed_mbytes(logPartPtr.p);
+        if (free_mb <= (c_free_mb_tail_problem_limit + committed_mbytes)) {
+          jam();
+          update_log_problem(signal, logPartPtr.p, LogPartRecord::P_TAIL_PROBLEM,
+                             true);
+        }
+      }
+
+      StartRecConf *conf = (StartRecConf *)signal->getDataPtrSend();
+      conf->startingNodeId = getOwnNodeId();
+      conf->senderData = cstartRecReqData;
+      sendSignal(cmasterDihBlockref, GSN_START_RECCONF, signal,
+                 StartRecConf::SignalLength, JBB);
+
+      g_eventLogger->info(
+          "LDM(%u): We have completed restoring our"
+          " fragments and executed REDO log and rebuilt"
+          " ordered indexes",
+          instance());
+      return;
     }
-
-    StartRecConf *conf = (StartRecConf *)signal->getDataPtrSend();
-    conf->startingNodeId = getOwnNodeId();
-    conf->senderData = cstartRecReqData;
-    sendSignal(cmasterDihBlockref, GSN_START_RECCONF, signal,
-               StartRecConf::SignalLength, JBB);
-
-    g_eventLogger->info(
-        "LDM(%u): We have completed restoring our"
-        " fragments and executed REDO log and rebuilt"
-        " ordered indexes",
-        instance());
-    return;
-  }
-
-  tabptr.i = tableId;
-  ptrCheckGuard(tabptr, ctabrecFileSize, tablerec);
-  if (!(DictTabInfo::isOrderedIndex(tabptr.p->tableType) &&
-        tabptr.p->tableStatus == Tablerec::TABLE_DEFINED)) {
-    jam();
-    signal->theData[0] = ZREBUILD_ORDERED_INDEXES;
-    signal->theData[1] = tableId + 1;
-    sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB);
-    return;
-  }
+    tabptr.i = tableId;
+    ptrCheckGuard(tabptr, ctabrecFileSize, tablerec);
+    if (!(DictTabInfo::isOrderedIndex(tabptr.p->tableType) &&
+          tabptr.p->tableStatus == Tablerec::TABLE_DEFINED)) {
+      m_next_table_rebuild_indexes++;
+      tableId = m_next_table_rebuild_indexes;
+      continue;
+    }
+    break;
+  } while (true);
+  jam();
+  jamData(tableId);
 
   signal->theData[0] = NDB_LE_RebuildIndex;
   signal->theData[1] = instance();
@@ -29272,6 +29315,16 @@ void Dblqh::rebuildOrderedIndexes(Signal *signal, Uint32 tableId) {
        ", index table %u",
        instance(), tabptr.p->primaryTableId, tableId));
 
+  m_current_rebuild_indexes_ongoing++;
+  jam();
+  jamData(m_current_rebuild_indexes_ongoing);
+
+  if (m_current_rebuild_indexes_ongoing < MAX_OUTSTANDING_REBUILD_INDEXES) {
+    jam();
+    signal->theData[0] = ZREBUILD_ORDERED_INDEXES;
+    signal->theData[1] = m_next_table_rebuild_indexes;
+    sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB);
+  }
   ndbassert(!m_is_query_block);
   BuildIndxImplReq *const req = (BuildIndxImplReq *)signal->getDataPtrSend();
   req->senderRef = reference();
@@ -29297,7 +29350,11 @@ void Dblqh::execBUILD_INDX_IMPL_CONF(Signal *signal) {
   jamEntry();
   BuildIndxImplConf *conf = (BuildIndxImplConf *)signal->getDataPtr();
   Uint32 tableId = conf->senderData;
-  rebuildOrderedIndexes(signal, tableId + 1);
+  ndbrequire(m_current_rebuild_indexes_ongoing > 0);
+  m_current_rebuild_indexes_ongoing--;
+  jamData(m_current_rebuild_indexes_ongoing);
+  m_next_table_rebuild_indexes++;
+  rebuildOrderedIndexes(signal, m_next_table_rebuild_indexes);
   if (m_full_restart_logs) {
     g_eventLogger->info("LDM(%u): index id %u rebuild done",
       instance(), tableId);
@@ -32735,6 +32792,14 @@ Dblqh::getNextTuxFragrec(Uint32 tableId,
   return RNIL64;
 }
 
+Uint32
+Dblqh::getTableNumFragments(Uint32 tableId) {
+  TablerecPtr tabPtr;
+  tabPtr.i = tableId;
+  ptrCheckGuard(tabPtr, ctabrecFileSize, tablerec);
+  return tabPtr.p->num_fragments_in_array;
+}
+
 Uint64
 Dblqh::getNextTupFragrec(Uint32 tableId,
                          Uint32 & index)
@@ -33381,6 +33446,7 @@ Dblqh::initTable(Tablerec *tabPtrP)
   tabPtrP->m_informed_backup_drop_tab = false;
   tabPtrP->m_senderData = RNIL;
   tabPtrP->m_senderRef = Uint32(~0);
+  tabPtrP->m_read_only_counter = 0;
 #ifdef DEBUG_USAGE_COUNT
   NdbMutex_Init(&tabptr.p->m_usage_count);
   tabPtrP->m_first_usage = RNIL;
