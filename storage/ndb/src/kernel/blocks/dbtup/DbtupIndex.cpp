@@ -873,6 +873,9 @@ void Dbtup::execALTER_TAB_CONF(Signal *signal) {
 
   if (buildPtr.p->m_fragNo == 0) {
     jam();
+    jamData(buildPtr.p->m_request.tableId);
+    jamData(buildPtr.p->m_indexId);
+    jamData(buildPtr.p->m_fragNo);
     DEB_INDEX_BUILD(("(%u) Build first offline buildPtrI: %u, tab(%u,%u,%u)",
       instance(),
       buildPtr.i,
@@ -955,6 +958,7 @@ void Dbtup::buildIndexOffline_table_readonly(Signal *signal, Uint32 buildPtrI) {
   ptrCheckGuard(tablePtr, cnoOfTablerec, tablerec);
   jam();
   jamData(tablePtr.i);
+  jamData(buildPtr.p->m_indexId);
 
   if (m_offline_rebuild_outstanding >= MAX_OFFLINE_REBUILD_INDEXES) {
     jam();
@@ -994,6 +998,8 @@ void Dbtup::buildIndexOffline_table_readonly(Signal *signal, Uint32 buildPtrI) {
       tux = tux->getInstance(instance());
       ndbrequire(tux != 0);
     }
+    jam();
+    jamData(buildPtr.p->m_fragNo);
     req.tux_ptr = tux;
     req.tup_ptr = this;
     req.func_ptr = Dbtux_mt_buildIndexFragment_wrapper_C;

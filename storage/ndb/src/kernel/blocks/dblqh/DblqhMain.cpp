@@ -4978,6 +4978,7 @@ void Dblqh::execALTER_TAB_REQ(Signal *signal) {
         ndbrequire(tablePtr.p->tableStatus == Tablerec::TABLE_READ_ONLY);
         ndbrequire(tablePtr.p->m_read_only_counter > 0);
         tablePtr.p->m_read_only_counter++;
+        jamData(tablePtr.p->m_read_only_counter);
       }
       DEB_SCHEMA_VERSION(("(%u)tab: %u tableStatus = TABLE_READ_ONLY",
                           instance(), tablePtr.i));
@@ -4994,7 +4995,6 @@ void Dblqh::execALTER_TAB_REQ(Signal *signal) {
       locked_table = true;
       lock_table_exclusive(tablePtr.p);
       ndbrequire(tablePtr.p->tableStatus == Tablerec::TABLE_READ_ONLY);
-      tablePtr.p->tableStatus = Tablerec::TABLE_DEFINED;
       DEB_SCHEMA_VERSION(("(%u)tab: %u tableStatus = TABLE_DEFINED(2)",
                           instance(), tablePtr.i));
       ndbrequire(tablePtr.p->m_read_only_counter > 0);
@@ -5006,6 +5006,7 @@ void Dblqh::execALTER_TAB_REQ(Signal *signal) {
                             instance(), tablePtr.i));
       } else {
         jam();
+        jamData(tablePtr.p->m_read_only_counter);
         DEB_SCHEMA_VERSION(("(%u)tab: %u tableStatus = TABLE_READ_ONLY(%u)",
                             instance(),
                             tablePtr.i,
