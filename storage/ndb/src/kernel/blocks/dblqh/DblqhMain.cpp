@@ -1328,9 +1328,12 @@ void Dblqh::execCONTINUEB(Signal *signal) {
       wait_reorg_suma_filter_enabled(signal);
       return;
     case ZREBUILD_ORDERED_INDEXES: {
+      if (m_current_rebuild_indexes_ongoing >=
+          MAX_OUTSTANDING_REBUILD_INDEXES) {
+        jam();
+        return;
+      }
       jam();
-      ndbrequire(m_current_rebuild_indexes_ongoing <
-                 MAX_OUTSTANDING_REBUILD_INDEXES);
       jamData(m_current_rebuild_indexes_ongoing);
       m_next_table_rebuild_indexes++;
       if (m_next_table_rebuild_indexes < ctabrecFileSize) {
