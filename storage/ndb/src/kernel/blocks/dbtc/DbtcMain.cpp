@@ -3705,7 +3705,7 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
   bool is_immediate = Tspecial_op_flags != 0 || isIndexOpReturn;
   DatabaseRecordPtr databaseRecordPtr;
   Uint32 user_id_flag = TcKeyReq::getUserIdFlag(Treqinfo);
-  if (user_id_flag) {
+  if (user_id_flag && handle.m_cnt != 0) {
     Uint32 user_id = tcKeyReq->userId;
     Uint32 user_id_version = tcKeyReq->userIdVersion;
     DatabaseRecord key(*this, user_id);
@@ -4418,7 +4418,9 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
   Uint32 TkeyIndex;
   Uint32 *TOptionalDataPtr = (Uint32 *)&tcKeyReq->scanInfo;
   {
-    Uint32 TscanInfoIndex = TcKeyReq::getUserIdFlag(Treqinfo) ? 2 : 0;
+    Uint32 TscanInfoIndex = 
+      (TcKeyReq::getUserIdFlag(Treqinfo) &&
+       handle.m_cnt != 0) ? 2 : 0;
     Uint32 TDistrGHIndex = TcKeyReq::getScanIndFlag(Treqinfo);
     Uint32 TDistrKeyIndex = TscanInfoIndex + TDistrGHIndex;
 
@@ -22152,7 +22154,7 @@ void Dbtc::execTCINDXREQ(Signal *signal) {
     return;
   }
   Uint32 user_id_flag = TcKeyReq::getUserIdFlag(tcIndxRequestInfo);
-  if (user_id_flag) {
+  if (user_id_flag && isLongTcIndxReq) {
     Uint32 user_id = tcIndxReq->userId;
     Uint32 user_id_version = tcIndxReq->userIdVersion;
     DatabaseRecord key(*this, user_id);
