@@ -28237,6 +28237,7 @@ void Dbdict::execSCHEMA_TRANS_IMPL_REF(Signal *signal) {
 
   if (ref->errorCode) {
     jam();
+    ndbrequire(ref->errorCode != 626);
     ErrorInfo error;
     setError(error, ref);
     setError(trans_ptr, error);
@@ -30777,6 +30778,7 @@ void Dbdict::sendTransClientReply(Signal *signal, SchemaTransPtr trans_ptr) {
       ref->masterNodeId = c_masterNodeId;
       sendSignal(receiverRef, GSN_SCHEMA_TRANS_END_REF, signal,
                  SchemaTransEndRef::SignalLength, JBB);
+      ndbrequire(ref->errorCode != 626);
     }
     resetError(trans_ptr);
     trans_ptr.p->m_clientState = TransClient::EndReply;
