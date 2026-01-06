@@ -449,7 +449,7 @@ class DictTabInfo {
 
   // Attribute data interpretation
   struct Attribute {
-    char AttributeName[MAX_TAB_NAME_SIZE];
+    char AttributeName[MAX_ATTR_NAME_SIZE];
     Uint32 AttributeId;
     Uint32 AttributeType;  // for osu 4.1->5.0.x
     Uint32 AttributeSize;
