@@ -893,6 +893,7 @@ void NdbImpl::trp_deliver_signal(const NdbApiSignal *aSignal,
       tReturnCode = tCon->receiveGET_DATABASE_REF(aSignal);
       if (tReturnCode != -1) {
         tNewState = NO_WAIT;
+        break;
       } else {
         goto InvalidSignal;
       }
