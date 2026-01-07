@@ -57,7 +57,8 @@ class TcKeyRef {
   static constexpr Uint32 SignalLength = 5;
 
   enum ErrorCode {
-    RateOverflowError = 243
+    WriteRateOverflowError = 243,
+    ReadRateOverflowError = 2203
   };
 
  private:

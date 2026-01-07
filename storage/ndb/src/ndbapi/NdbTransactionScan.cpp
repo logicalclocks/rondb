@@ -55,7 +55,7 @@
 int NdbTransaction::receiveSCAN_TABREF(const NdbApiSignal *aSignal) {
   const ScanTabRef *ref = CAST_CONSTPTR(ScanTabRef, aSignal->getDataPtr());
 
-  if (ref->errorCode == TcKeyRef::RateOverflowError) {
+  if (ref->errorCode == TcKeyRef::WriteRateOverflowError) {
     rateOverflowError();
   }
   if (checkState_TransId(&ref->transId1)) {

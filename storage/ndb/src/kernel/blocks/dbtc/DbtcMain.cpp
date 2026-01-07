@@ -136,17 +136,17 @@
 //#define DEBUG_TCGETOPSIZE 1
 //#define DEBUG_HASH 1
 //#define DEBUG_ACTIVE_NODES 1
-//#define DEBUG_RATE_LIST 1
-//#define DEBUG_RATE_QUEUE 1
-//#define DEBUG_RATE_DEF 1
-//#define DEBUG_QUOTAS_REP 1
-//#define DEBUG_RATE_QUEUE_SET 1
-//#define DEBUG_QUOTAS 1
-//#define DEBUG_RATE_QUEUE_DROP 1
-//#define DEBUG_QUOTA_ABORT 1
+#define DEBUG_RATE_LIST 1
+#define DEBUG_RATE_QUEUE 1
+#define DEBUG_RATE_DEF 1
+#define DEBUG_QUOTAS_REP 1
+#define DEBUG_RATE_QUEUE_SET 1
+#define DEBUG_QUOTAS 1
+#define DEBUG_RATE_QUEUE_DROP 1
+#define DEBUG_QUOTA_ABORT 1
 //#define DEBUG_TRACK_EXEC_FLAG 1
 //#define DEBUG_SCAN_MANY 1
-//#define DEBUG_RATE_OVERFLOW 1
+#define DEBUG_RATE_OVERFLOW 1
 //#define DEBUG_CONT_SCAN 1
 #endif
 
@@ -16007,13 +16007,13 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
           if (databaseRecordPtr.p->m_is_queueing_abort_read) {
             jam();
             releaseSections(handle);
-            DEB_RATE_OVERFLOW(("(%u) Rate Overflow db: %llu, apiPtrI: %u"
+            DEB_RATE_OVERFLOW(("(%u) Rate Overflow db: %u, apiPtrI: %u"
                                ", line: %u",
               instance(),
               databaseRecordPtr.p->m_database_id,
               apiConnectptr.i,
               __LINE__));
-            errCode = ZRATE_OVERFLOW_ERROR;
+            errCode = TcKeyRef::ReadRateOverflowError;
             goto SCAN_TAB_error;
           }
           databaseRecordPtr.p->m_api_ref_count++;
@@ -16046,13 +16046,13 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
           if (databaseRecordPtr.p->m_is_queueing_abort_read) {
             jam();
             releaseSections(handle);
-            DEB_RATE_OVERFLOW(("(%u) Rate Overflow: db: %llu,"
+            DEB_RATE_OVERFLOW(("(%u) Rate Overflow: db: %u,"
               " transOwnerPtrI: %u, line: %u",
               instance(),
               databaseRecordPtr.p->m_database_id,
               transOwnerPtr.i,
               __LINE__));
-            errCode = ZRATE_OVERFLOW_ERROR;
+            errCode = TcKeyRef::ReadRateOverflowError;
             goto SCAN_TAB_error;
           }
           apiConnectptr.p->m_queuedDatabasePtrI = databaseRecordPtr.i;
@@ -28299,7 +28299,7 @@ bool Dbtc::check_tckey_queueing(Signal *signal,
     if (unlikely(databaseRecordPtr.p->m_is_queueing_abort)) {
       jam();
       releaseSections(handle);
-      DEB_RATE_OVERFLOW(("(%u) Rate Overflow: db: %llu, apiConnectptr.i: %u"
+      DEB_RATE_OVERFLOW(("(%u) Rate Overflow: db: %u, apiConnectptr.i: %u"
                          ", line: %u",
         instance(),
         databaseRecordPtr.p->m_database_id,
@@ -28309,7 +28309,7 @@ bool Dbtc::check_tckey_queueing(Signal *signal,
                         apiConnectptr,
                         TstartFlag,
                         TexecFlag,
-                        ZRATE_OVERFLOW_ERROR);
+                        TcKeyRef::WriteRateOverflowError);
       return false;
     }
     if (unlikely(databaseRecordPtr.p->m_is_queueing_abort_read)) {
@@ -28322,7 +28322,7 @@ bool Dbtc::check_tckey_queueing(Signal *signal,
           op_type != ZUNLOCK) {
         jam();
         releaseSections(handle);
-        DEB_RATE_OVERFLOW(("(%u) Rate Overflow: db: %llu, apiConnectptr.i: %u"
+        DEB_RATE_OVERFLOW(("(%u) Rate Overflow: db: %u, apiConnectptr.i: %u"
                            ", line: %u",
           instance(),
           databaseRecordPtr.p->m_database_id,
@@ -28332,7 +28332,7 @@ bool Dbtc::check_tckey_queueing(Signal *signal,
                           apiConnectptr,
                           TstartFlag,
                           TexecFlag,
-                          ZRATE_OVERFLOW_ERROR);
+                          TcKeyRef::ReadRateOverflowError);
       }
     }
     if (unlikely(apiConnectptr.p->m_first_queued_req == nullptr &&
@@ -28356,7 +28356,7 @@ bool Dbtc::check_tckey_queueing(Signal *signal,
                                    apiConnectptr))) {
         jam();
         releaseSections(handle);
-        DEB_RATE_OVERFLOW(("(%u) Rate Overflow: db: %llu, apiConnectptr.i: %u"
+        DEB_RATE_OVERFLOW(("(%u) Rate Overflow: db: %u, apiConnectptr.i: %u"
                            ", line: %u",
           instance(),
           databaseRecordPtr.p->m_database_id,
@@ -28366,7 +28366,7 @@ bool Dbtc::check_tckey_queueing(Signal *signal,
                           apiConnectptr,
                           TstartFlag,
                           TexecFlag,
-                          ZRATE_OVERFLOW_ERROR);
+                          TcKeyRef::WriteRateOverflowError);
         return false;
       }
       releaseSections(handle);
@@ -28392,7 +28392,7 @@ void Dbtc::handle_queue_tckeyreq(Signal *signal,
                                apiConnectptr))) {
     jam();
     releaseSections(handle);
-    DEB_RATE_OVERFLOW(("(%u) Rate Overflow: db: %llu, apiConnectptr.i: %u"
+    DEB_RATE_OVERFLOW(("(%u) Rate Overflow: db: %u, apiConnectptr.i: %u"
                        ", line: %u",
       instance(),
       databaseRecordPtr.p->m_database_id,
@@ -28402,7 +28402,7 @@ void Dbtc::handle_queue_tckeyreq(Signal *signal,
                       apiConnectptr,
                       TstartFlag,
                       TexecFlag,
-                      ZRATE_OVERFLOW_ERROR);
+                      TcKeyRef::WriteRateOverflowError);
     return;
   }
   jam();

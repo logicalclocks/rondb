@@ -156,7 +156,7 @@
 //#define DEBUG_RATE 1
 //#define DEBUG_RATE_SEND 1
 //#define DEBUG_RATE_DETAIL 1
-//#define DEBUG_QUOTAS 1
+#define DEBUG_QUOTAS 1
 //#define DEBUG_CONT_SCAN 1
 //#define DEBUG_INDEX_BUILD 1
 #endif

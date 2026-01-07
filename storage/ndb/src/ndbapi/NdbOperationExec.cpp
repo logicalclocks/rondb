@@ -1690,7 +1690,7 @@ int NdbOperation::receiveTCKEYREF(const NdbApiSignal *aSignal) {
   theStatus = Finished;
   theReceiver.m_received_result_length = ~0;
 
-  if (errorCode == TcKeyRef::RateOverflowError) {
+  if (errorCode == TcKeyRef::WriteRateOverflowError) {
     theNdbCon->rateOverflowError();
   }
   // not dirty read
