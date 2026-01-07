@@ -34678,8 +34678,11 @@ void Dbdict::execGET_DATABASE_REQ(Signal *signal) {
       break;
     }
     copy(&dbName[0], objInfoPtr);
-    memmove(&dbNamePtr[1], &dbNamePtr[0], MAX_DB_NAME_SIZE - 1);
-    dbNamePtr[0] = '$';
+    if (is_user) {
+      jam();
+      memmove(&dbNamePtr[1], &dbNamePtr[0], MAX_DB_NAME_SIZE - 1);
+      dbNamePtr[0] = '$';
+    }
     DEB_QUOTAS(("dbNamePtr: %s, objInfoPtr.sz: %u",
       dbNamePtr, objInfoPtr.sz));
     releaseSections(handle);

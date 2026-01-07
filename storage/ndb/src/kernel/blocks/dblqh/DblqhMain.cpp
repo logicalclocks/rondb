@@ -38749,9 +38749,10 @@ Dblqh::execCREATE_DB_REQ(Signal *signal) {
   CreateDbReq req = *(CreateDbReq*)signal->getDataPtr();
   DatabaseRecord key(*this, req.databaseId);
   DatabaseRecordPtr dbPtr;
-  DEB_QUOTAS(("(%u) DBLQH Create Database id: %u",
+  DEB_QUOTAS(("(%u) DBLQH Create Database id: %u, isUser: %u",
               instance(),
-              req.databaseId));
+              req.databaseId,
+              req.isUser));
 
   if (m_databaseRecordHash.find(dbPtr, key)) {
     jam();
@@ -38964,9 +38965,10 @@ Dblqh::execDROP_DB_REQ(Signal *signal) {
   DropDbReq req = *(DropDbReq*)signal->getDataPtr();
   DatabaseRecord key(*this, req.databaseId);
   DatabaseRecordPtr dbPtr;
-  DEB_QUOTAS(("(%u) DBLQH Drop Database id: %u",
+  DEB_QUOTAS(("(%u) DBLQH Drop Database id: %u, isUser: %u",
               instance(),
-              req.databaseId));
+              req.databaseId,
+              req.isUser));
 
   if (!m_databaseRecordHash.find(dbPtr, key)) {
     jam();
@@ -38983,6 +38985,8 @@ Dblqh::execDROP_DB_REQ(Signal *signal) {
                DropDbRef::SignalLength, JBB);
     return;
   }
+  DEB_QUOTAS(("(%u) Database m_is_user: %u",
+    instance(), dbPtr.p->m_is_user));
   ndbrequire(dbPtr.p->m_is_user == req.isUser);
   lock_database_hash();
   m_databaseRecordHash.remove(dbPtr);
@@ -39139,7 +39143,7 @@ Dblqh::update_rate_usage(Uint32 tableId,
     lock_database_hash();
   }
   DatabaseRecordPtr dbPtr;
-  if (userId != RNIL) {
+  if (userId != RNIL64) {
     dbPtr.i = userId;
   } else {
     TablerecPtr tabPtr;

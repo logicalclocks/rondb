@@ -6001,10 +6001,17 @@ void MgmtSrvr::get_quotas(const char *database_name, bool is_user, NdbOut& out) 
   char *databaseNamePtr = (char*)&databaseName[0];
   Uint32 db_name_len = strnlen(database_name, MAX_DB_NAME_SIZE + 1);
   if (db_name_len > MAX_DB_NAME_SIZE) {
-    Uint32 err = DropDatabaseRef::DatabaseNameTooLong;
-    out << "result: No such user exists" << endl;
-    out << "error_code: " << err << endl;
-    out << endl;
+    if (is_user) {
+      Uint32 err = DropDatabaseRef::DatabaseNameTooLong;
+      out << "result: User name too long" << endl;
+      out << "error_code: " << err << endl;
+      out << endl;
+    } else {
+      Uint32 err = DropDatabaseRef::DatabaseNameTooLong;
+      out << "result: Database name too long" << endl;
+      out << "error_code: " << err << endl;
+      out << endl;
+    }
     return;
   }
   memcpy((char*)&databaseName[0], database_name, db_name_len);
