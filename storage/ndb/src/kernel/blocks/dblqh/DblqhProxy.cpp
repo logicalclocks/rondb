@@ -2165,7 +2165,7 @@ DblqhProxy::sendDROP_DB_REQ(Signal* signal,
   req->senderRef = reference();
   req->senderData = ssId;
   sendSignalNoRelease(workerRef(ss.m_worker), GSN_DROP_DB_REQ,
-                      signal, ConnectTableDbReq::SignalLength, JBB, handle);
+                      signal, DropDbReq::SignalLength, JBB, handle);
 }
 
 void

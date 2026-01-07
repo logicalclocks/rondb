@@ -4578,7 +4578,7 @@ public:
       m_memory_report_limit = 0;
       m_disk_space_report_limit = 0;
       m_rate_report_limit_ns = 0;
-      m_is_user = false;
+      m_is_user = 0;
     }
     DatabaseRecord(Dblqh &dblqh, Uint32);
     Uint32 m_magic;
@@ -4609,7 +4609,7 @@ public:
 
     Uint32 m_continue_delay;
 
-    bool m_is_user;
+    Uint32 m_is_user;
 
     inline bool equal(const DatabaseRecord & p) const
     {

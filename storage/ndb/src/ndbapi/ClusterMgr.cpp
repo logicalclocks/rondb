@@ -1120,7 +1120,7 @@ void ClusterMgr::rateOverflowError(const char *username,
   NdbMutex_Lock(theUserIdMutex);
   if (m_num_in_user_id_cache == RNIL) {
     NdbMutex_Unlock(theUserIdMutex);
-    return;
+    DBUG_VOID_RETURN;
   }
   Uint32 hash_val = rondb_calc_hash_val(username,
                                         username_len,

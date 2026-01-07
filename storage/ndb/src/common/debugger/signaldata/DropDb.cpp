@@ -37,7 +37,9 @@ bool printDROP_DB_REQ(FILE *output,
 	  sig->senderRef, sig->senderData);
   fprintf(output, " databaseId: %.8u, databaseVersion: %.8u\n", 
 	  sig->databaseId, sig->databaseVersion);
-  fprintf(output, " requestType: H\'%.8x\n", sig->requestType);
+  fprintf(output, " requestType: H\'%.8x, isUser: H\'%.8x\n",
+          sig->requestType,
+          sig->isUser);
   return true;
 }
 

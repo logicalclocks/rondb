@@ -484,6 +484,7 @@ void NdbTransaction::rateOverflowError() {
     facade->rateOverflowError(m_current_username,
                               m_current_username_len);
   }
+  DBUG_VOID_RETURN;
 }
 
 int NdbTransaction::setUserId(const char *username, Uint32 username_len) {
