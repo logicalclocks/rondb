@@ -357,7 +357,8 @@ ErrorBundle ErrorCodes[] = {
    * OverloadError
    */
   { 239,  DMEC, OL, "Memory quota reached for database, delete data before write again" },
-  { 243,  DMEC, OL, "Rate limit reached and queues are overloaded for database" },
+  { 243,  DMEC, OL, "Write Rate limit reached and queues are overloaded for database" },
+  { 2203,  DMEC, OL, "Read Rate limit reached and queues are overloaded for database" },
   { 247,  DMEC, OL, "Too many operations in a transaction in database" },
   { 248,  DMEC, OL, "Too many concurrent transactions in database" },
   { 929,  DMEC, OL, "Disk quota reached for database, delete data before write again" },

@@ -2592,7 +2592,7 @@ Remark:
 *******************************************************************************/
 int NdbTransaction::receiveTCROLLBACKREF(const NdbApiSignal *aSignal) {
   Uint32 errorCode = aSignal->readData(4);
-  if (unlikely(errorCode == TcKeyRef::RateOverflowError)) {
+  if (unlikely(errorCode == TcKeyRef::WriteRateOverflowError)) {
     rateOverflowError();
   }
   if (checkState_TransId(aSignal->getDataPtr() + 1)) {
@@ -2624,7 +2624,7 @@ int NdbTransaction::receiveTCROLLBACKREP(const NdbApiSignal *aSignal) {
   DBUG_ENTER("NdbTransaction::receiveTCROLLBACKREP");
 
   Uint32 errorCode = aSignal->readData(4);
-  if (unlikely(errorCode == TcKeyRef::RateOverflowError)) {
+  if (unlikely(errorCode == TcKeyRef::WriteRateOverflowError)) {
     rateOverflowError();
   }
   /****************************************************************************

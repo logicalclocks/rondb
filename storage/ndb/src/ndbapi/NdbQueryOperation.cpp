@@ -5148,7 +5148,7 @@ bool NdbQueryOperationImpl::execTCKEYREF(const NdbApiSignal *aSignal) {
   assert(!getQueryDef().isScanQuery());
 
   const TcKeyRef *ref = CAST_CONSTPTR(TcKeyRef, aSignal->getDataPtr());
-  if (ref->errorCode == TcKeyRef::RateOverflowError) {
+  if (ref->errorCode == TcKeyRef::WriteRateOverflowError) {
     getQuery().getNdbTransaction().rateOverflowError();
   }
   if (!getQuery().m_transaction.checkState_TransId(ref->transId)) {

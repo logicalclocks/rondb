@@ -1176,7 +1176,7 @@ int ClusterMgr::retrieveUserId(const char *username,
           NdbTick_Invalidate(&entry->m_error_time);
         } else {
           NdbMutex_Unlock(theUserIdMutex);
-          return TcKeyRef::RateOverflowError;
+          return TcKeyRef::WriteRateOverflowError;
         }
       }
       userId = entry->m_user_id;
