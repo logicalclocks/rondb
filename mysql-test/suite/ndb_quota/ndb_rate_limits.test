@@ -3,7 +3,7 @@ CREATE DATABASE test1;
 USE test1;
 CREATE TABLE t1 (a int primary key,b int) engine ndb;
 INSERT INTO t1 VALUES (1,0),(2,0),(3,0),(4,0),(5,0),(6,0),(7,0),(8,0),(9,0),(10,0);
---exec $NDB_MGM -e "DATABASE QUOTA SET test1 --rate-per-sec = 40"
+--exec $NDB_MGM -e "DATABASE QUOTA SET test1 --rate-per-sec = 45"
 
 connect(mysqld2,127.0.0.1,root,,test,$MASTER_MYPORT);
 connect(mysqld3,127.0.0.1,root,,test,$MASTER_MYPORT);
@@ -11,6 +11,8 @@ connect(mysqld4,127.0.0.1,root,,test,$MASTER_MYPORT);
 connect(mysqld5,127.0.0.1,root,,test,$MASTER_MYPORT);
 connect(mysqld6,127.0.0.1,root,,test,$MASTER_MYPORT);
 
+--disable_query_log
+--disable_result_log
 connection default;
 let $count = 100;
 while ($count)
@@ -70,9 +72,11 @@ while ($count)
   UPDATE test1.t1 SET b = 1 WHERE a = 5;
   dec $count;
 }
+--enable_query_log
+--enable_result_log
 
 connection default;
 sleep 10;
-SELECT * from test1.t1;
+SELECT * from test1.t1 ORDER BY a;
 --exec $NDB_MGM -e "DATABASE QUOTA DROP test1"
 DROP DATABASE test1;

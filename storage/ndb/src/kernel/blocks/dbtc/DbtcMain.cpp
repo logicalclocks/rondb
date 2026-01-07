@@ -16007,7 +16007,7 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
           if (databaseRecordPtr.p->m_is_queueing_abort_read) {
             jam();
             releaseSections(handle);
-            DEB_RATE_OVERFLOW(("(%u) Rate Overflow db: %u, apiPtrI: %u"
+            DEB_RATE_OVERFLOW(("(%u) Read Rate Overflow db: %u, apiPtrI: %u"
                                ", line: %u",
               instance(),
               databaseRecordPtr.p->m_database_id,
@@ -16046,7 +16046,7 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
           if (databaseRecordPtr.p->m_is_queueing_abort_read) {
             jam();
             releaseSections(handle);
-            DEB_RATE_OVERFLOW(("(%u) Rate Overflow: db: %u,"
+            DEB_RATE_OVERFLOW(("(%u) Read Rate Overflow: db: %u,"
               " transOwnerPtrI: %u, line: %u",
               instance(),
               databaseRecordPtr.p->m_database_id,
@@ -28299,7 +28299,7 @@ bool Dbtc::check_tckey_queueing(Signal *signal,
     if (unlikely(databaseRecordPtr.p->m_is_queueing_abort)) {
       jam();
       releaseSections(handle);
-      DEB_RATE_OVERFLOW(("(%u) Rate Overflow: db: %u, apiConnectptr.i: %u"
+      DEB_RATE_OVERFLOW(("(%u) Write Rate Overflow: db: %u, apiConnectptr.i: %u"
                          ", line: %u",
         instance(),
         databaseRecordPtr.p->m_database_id,
@@ -28322,8 +28322,8 @@ bool Dbtc::check_tckey_queueing(Signal *signal,
           op_type != ZUNLOCK) {
         jam();
         releaseSections(handle);
-        DEB_RATE_OVERFLOW(("(%u) Rate Overflow: db: %u, apiConnectptr.i: %u"
-                           ", line: %u",
+        DEB_RATE_OVERFLOW(("(%u) Read Rate Overflow: db: %u,"
+                           " apiConnectptr.i: %u, line: %u",
           instance(),
           databaseRecordPtr.p->m_database_id,
           apiConnectptr.i,
@@ -28356,8 +28356,8 @@ bool Dbtc::check_tckey_queueing(Signal *signal,
                                    apiConnectptr))) {
         jam();
         releaseSections(handle);
-        DEB_RATE_OVERFLOW(("(%u) Rate Overflow: db: %u, apiConnectptr.i: %u"
-                           ", line: %u",
+        DEB_RATE_OVERFLOW(("(%u) Write Rate Overflow: db: %u,"
+                           " apiConnectptr.i: %u, line: %u",
           instance(),
           databaseRecordPtr.p->m_database_id,
           apiConnectptr.i,
@@ -28392,7 +28392,7 @@ void Dbtc::handle_queue_tckeyreq(Signal *signal,
                                apiConnectptr))) {
     jam();
     releaseSections(handle);
-    DEB_RATE_OVERFLOW(("(%u) Rate Overflow: db: %u, apiConnectptr.i: %u"
+    DEB_RATE_OVERFLOW(("(%u) Write Rate Overflow: db: %u, apiConnectptr.i: %u"
                        ", line: %u",
       instance(),
       databaseRecordPtr.p->m_database_id,
