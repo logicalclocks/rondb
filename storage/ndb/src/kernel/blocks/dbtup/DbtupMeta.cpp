@@ -2055,10 +2055,11 @@ Uint32 Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line) {
   if (mm_vars + regTabPtr->m_attributes[MM].m_no_of_dynamic)
   {
     jam();
-    total_rec_size[MM] += (mm_vars + 2) >> 1;
-    total_rec_size[MM] += regTabPtr->m_offsets[MM].m_dyn_null_words;
-    total_rec_size[MM] += (mm_dyns + 2) >> 1;
-    total_rec_size[MM] += 1;
+    Uint32 mm_dyn_extra = (mm_vars + 2) >> 1;
+    mm_dyn_extra += regTabPtr->m_offsets[MM].m_dyn_null_words;
+    mm_dyn_extra += (mm_dyns + 2) >> 1;
+    mm_dyn_extra += 1;
+    total_rec_size[MM] += mm_dyn_extra;
   }
   if (dd_vars + regTabPtr->m_attributes[DD].m_no_of_dynamic)
   {
@@ -2075,6 +2076,9 @@ Uint32 Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line) {
     total_rec_size[DD] += 1;
   }
 
+  Uint32 tot_var_size = total_rec_size[MM] -
+    regTabPtr->m_offsets[MM].m_fix_header_size;
+
   /* Room for changemask */
   total_rec_size[MM] += 1 + ((regTabPtr->m_no_of_attributes + 31) >> 5);
 
@@ -2083,7 +2087,7 @@ Uint32 Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line) {
   DEB_DYN_META(("(%u) total_rec_size[%u,%u]",
     instance(), total_rec_size[MM] * 4, total_rec_size[DD] * 4));
 
-  regTabPtr->total_rec_size= total_rec_size[MM] + total_rec_size[DD];
+  regTabPtr->total_rec_size = total_rec_size[MM] + total_rec_size[DD];
 
   DEB_TUP_META(("(%u) tab(%u) New total_rec_size set to %u",
                 instance(),
@@ -2093,21 +2097,21 @@ Uint32 Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line) {
   if (regTabPtr->m_offsets[MM].m_fix_header_size > MAX_FIXED_SIZE_IN_WORDS) {
     jam();
     jamDataDebug(regTabPtr->m_offsets[MM].m_fix_header_size);
-    g_eventLogger->info("(%u)fix_size = %u", instance(), regTabPtr->m_offsets[MM].m_fix_header_size);
+    DEB_DYN_META(("(%u)fix_size = %u",
+      instance(), regTabPtr->m_offsets[MM].m_fix_header_size));
     return ZTOO_LARGE_FIXED_SIZE_PART;
   }
-  Uint32 tot_var_size = total_rec_size[MM] -
-    regTabPtr->m_offsets[MM].m_fix_header_size;
   if (tot_var_size > MAX_VAR_SIZE_IN_WORDS) {
     jam();
     jamDataDebug(tot_var_size);
-    g_eventLogger->info("(%u)tot_var_size = %u", instance(), tot_var_size);
+    DEB_DYN_META(("(%u)tot_var_size = %u", instance(), tot_var_size));
     return ZTOO_LARGE_VAR_SIZE_PART;
   }
   if (total_rec_size[DD] > MAX_DISK_VAR_SIZE_IN_WORDS) {
     jam();
     jamDataDebug(total_rec_size[DD]);
-    g_eventLogger->info("(%u)tot_rec_sizei[DD] = %u", instance(), total_rec_size[DD]);
+    DEB_DYN_META(("(%u)tot_rec_sizei[DD] = %u",
+      instance(), total_rec_size[DD]));
     return ZTOO_LARGE_DISK_VAR_SIZE_PART;
   }
   setUpQueryRoutines(regTabPtr);
