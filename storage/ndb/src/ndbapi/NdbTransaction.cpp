@@ -480,7 +480,7 @@ void NdbTransaction::setOperationErrorCodeAbort(int error) {
 void NdbTransaction::rateOverflowError() {
   DBUG_ENTER("NdbTransaction::rateOverflowError");
   TransporterFacade *facade = theNdb->theImpl->m_transporter_facade;
-  if (m_current_username != nullptr) {
+  if (m_user_id != RNIL) {
     facade->rateOverflowError(m_current_username,
                               m_current_username_len);
   }
