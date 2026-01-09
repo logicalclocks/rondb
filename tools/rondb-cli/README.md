@@ -164,11 +164,12 @@ USE database
 
 **Internal commands** - dot prefix:
 ```
+.browse     Open database browser (TUI)
 .demo       Run a quick demo (write, read, query)
 .bench [N]  Run benchmark (default 1000 ops, shows throughput)
-.help     Show help
-.tables   List all tables
-.quit     Exit
+.tables     List all tables
+.help       Show help
+.quit       Exit
 ```
 
 ### CLI Commands
