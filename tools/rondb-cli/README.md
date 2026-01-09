@@ -61,6 +61,13 @@ This clones [rondb-docker](https://github.com/logicalclocks/rondb-docker) and st
 - Rondis (Redis protocol) on port 6379
 - REST API on port 4406
 
+To stop and clean up:
+
+```bash
+./scripts/cleanup-rondb.sh        # Stop containers, remove volumes
+./scripts/cleanup-rondb.sh --all  # Also remove cloned rondb-docker repo
+```
+
 ### 2. Connect
 
 ```bash
@@ -218,13 +225,16 @@ rondb-cli/
 │   │   └── mysql.go        # MySQL client wrapper
 │   ├── shell/
 │   │   └── repl.go         # Interactive shell with readline
+│   ├── tui/
+│   │   └── browser.go      # Database browser UI
 │   └── ui/
 │       ├── colors.go       # Terminal styling
 │       └── table.go        # Table formatting
 ├── docs/
 │   └── PHILOSOPHY.md       # Project principles
 └── scripts/
-    └── start-rondb.sh      # Start local RonDB
+    ├── start-rondb.sh      # Start local RonDB
+    └── cleanup-rondb.sh    # Stop and clean up
 ```
 
 ## Development
