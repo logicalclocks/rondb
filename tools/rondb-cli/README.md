@@ -72,7 +72,7 @@ You'll see:
 RonDB CLI - Rondis commands. SQL queries. One database.
 Type .help for commands, Tab for autocomplete
 
-🟢 Connected to RonDB 24.10
+[OK] Connected to RonDB 24.10
 
 rondb>
 ```

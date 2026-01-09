@@ -227,6 +227,10 @@ func (s *Shell) executeSQL(line string) error {
 }
 
 func (s *Shell) runDemo() error {
+	if s.rondisClient == nil {
+		return fmt.Errorf("Rondis not connected. Demo requires Rondis.")
+	}
+
 	fmt.Println()
 	fmt.Println(ui.Info("Running demo..."))
 	fmt.Println()
@@ -244,7 +248,7 @@ func (s *Shell) runDemo() error {
 	}
 
 	// Write with Rondis
-	fmt.Println("📝 Writing 5 records via Rondis...")
+	fmt.Println("Writing 5 records via Rondis...")
 	for _, u := range users {
 		_, duration, err := s.rondisClient.Execute([]string{"SET", u.key, u.value})
 		if err != nil {
@@ -255,18 +259,18 @@ func (s *Shell) runDemo() error {
 	fmt.Println()
 
 	// Read with Rondis
-	fmt.Println("📖 Reading back via Rondis...")
+	fmt.Println("Reading back via Rondis...")
 	for _, u := range users {
 		result, duration, err := s.rondisClient.Execute([]string{"GET", u.key})
 		if err != nil {
 			return err
 		}
-		fmt.Printf("   GET %s → %s %s\n", ui.Key(u.key), result, ui.Timing(duration))
+		fmt.Printf("   GET %s -> %s %s\n", ui.Key(u.key), result, ui.Timing(duration))
 	}
 	fmt.Println()
 
-	// Query with SQL
-	fmt.Println("🔍 Querying via SQL...")
+	// Query with SQL - THE magic moment
+	fmt.Println("Now querying the SAME data via SQL...")
 	columns, rows, duration, err := s.mysqlClient.Query("SELECT redis_key, value_start FROM redis_0.string_keys WHERE redis_key LIKE 'demo:user:%'")
 	if err != nil {
 		return err
@@ -275,12 +279,11 @@ func (s *Shell) runDemo() error {
 	fmt.Print(output)
 	fmt.Println()
 
-	// Cleanup
-	fmt.Println("🧹 Cleaning up...")
-	for _, u := range users {
-		s.rondisClient.Execute([]string{"DEL", u.key})
-	}
 	fmt.Println(ui.Success("Demo complete!"))
+	fmt.Println()
+	fmt.Println("Data persisted. Try these:")
+	fmt.Println("   SELECT * FROM redis_0.string_keys WHERE redis_key LIKE 'demo:%'")
+	fmt.Println("   GET demo:user:1")
 	fmt.Println()
 
 	return nil
@@ -299,7 +302,7 @@ func (s *Shell) runBench(numOps int) error {
 	fmt.Println()
 
 	// Write benchmark
-	fmt.Printf("📝 Writing %d keys via Rondis...\n", numOps)
+	fmt.Printf("Writing %d keys via Rondis...\n", numOps)
 	writeStart := time.Now()
 	for i := 0; i < numOps; i++ {
 		key := fmt.Sprintf("bench:key:%d", i)
@@ -315,7 +318,7 @@ func (s *Shell) runBench(numOps int) error {
 	fmt.Println()
 
 	// Read benchmark
-	fmt.Printf("📖 Reading %d keys via Rondis...\n", numOps)
+	fmt.Printf("Reading %d keys via Rondis...\n", numOps)
 	readStart := time.Now()
 	for i := 0; i < numOps; i++ {
 		key := fmt.Sprintf("bench:key:%d", i)
@@ -330,7 +333,7 @@ func (s *Shell) runBench(numOps int) error {
 	fmt.Println()
 
 	// SQL count to prove data is there
-	fmt.Println("🔍 Verifying via SQL...")
+	fmt.Println("Verifying via SQL...")
 	_, rows, duration, err := s.mysqlClient.Query("SELECT COUNT(*) as count FROM redis_0.string_keys WHERE redis_key LIKE 'bench:key:%'")
 	if err != nil {
 		return err
@@ -341,7 +344,7 @@ func (s *Shell) runBench(numOps int) error {
 	fmt.Println()
 
 	// SQL sample query
-	fmt.Println("🔍 Sample SQL query (LIMIT 5)...")
+	fmt.Println("Sample SQL query (LIMIT 5)...")
 	columns, rows, duration, err := s.mysqlClient.Query("SELECT redis_key, value_start FROM redis_0.string_keys WHERE redis_key LIKE 'bench:key:%' LIMIT 5")
 	if err != nil {
 		return err
@@ -350,20 +353,31 @@ func (s *Shell) runBench(numOps int) error {
 	fmt.Print(output)
 	fmt.Println()
 
-	// Cleanup
-	fmt.Printf("🧹 Cleaning up %d keys...\n", numOps)
-	cleanStart := time.Now()
-	for i := 0; i < numOps; i++ {
-		key := fmt.Sprintf("bench:key:%d", i)
-		s.rondisClient.Execute([]string{"DEL", key})
-	}
-	cleanDuration := time.Since(cleanStart)
-	fmt.Printf("   Cleanup in %v\n", cleanDuration.Round(time.Millisecond))
-	fmt.Println()
-
+	// Results
 	fmt.Println(ui.Success("Benchmark complete!"))
 	fmt.Printf("   Writes: %.0f ops/sec\n", writeOpsPerSec)
 	fmt.Printf("   Reads:  %.0f ops/sec\n", readOpsPerSec)
+	fmt.Println()
+
+	// Ask about cleanup
+	fmt.Printf("Delete benchmark data? [y/N] ")
+	var response string
+	fmt.Scanln(&response)
+	response = strings.ToLower(strings.TrimSpace(response))
+
+	if response == "y" || response == "yes" {
+		fmt.Printf("Cleaning up %d keys...", numOps)
+		cleanStart := time.Now()
+		for i := 0; i < numOps; i++ {
+			key := fmt.Sprintf("bench:key:%d", i)
+			s.rondisClient.Execute([]string{"DEL", key})
+		}
+		cleanDuration := time.Since(cleanStart)
+		fmt.Printf(" done %s\n", ui.Timing(cleanDuration))
+	} else {
+		fmt.Println("Data kept. Query with:")
+		fmt.Println("   SELECT * FROM redis_0.string_keys WHERE redis_key LIKE 'bench:%'")
+	}
 	fmt.Println()
 
 	return nil
