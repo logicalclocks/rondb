@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -146,7 +147,11 @@ func (s *Shell) execute(line string) error {
 }
 
 func (s *Shell) executeInternal(line string) error {
-	cmd := strings.ToLower(strings.TrimPrefix(line, "."))
+	parts := strings.Fields(strings.TrimPrefix(line, "."))
+	if len(parts) == 0 {
+		return fmt.Errorf("empty command")
+	}
+	cmd := strings.ToLower(parts[0])
 
 	switch cmd {
 	case "help":
@@ -156,7 +161,15 @@ func (s *Shell) executeInternal(line string) error {
 	case "demo":
 		return s.runDemo()
 	case "bench":
-		return s.runBench()
+		numOps := 1000
+		if len(parts) > 1 {
+			n, err := strconv.Atoi(parts[1])
+			if err != nil || n <= 0 {
+				return fmt.Errorf("invalid number of operations: %s", parts[1])
+			}
+			numOps = n
+		}
+		return s.runBench(numOps)
 	case "quit", "exit", "q":
 		fmt.Println(ui.Disconnected())
 		os.Exit(0)
@@ -273,12 +286,17 @@ func (s *Shell) runDemo() error {
 	return nil
 }
 
-func (s *Shell) runBench() error {
-	fmt.Println()
-	fmt.Println(ui.Info("Running benchmark (1000 operations)..."))
-	fmt.Println()
+func (s *Shell) runBench(numOps int) error {
+	if s.rondisClient == nil {
+		return fmt.Errorf("Rondis not connected. Benchmark requires Rondis.")
+	}
 
-	const numOps = 1000
+	fmt.Println()
+	if numOps > 10000 {
+		fmt.Println(ui.Warning(fmt.Sprintf("Running %d operations - this may take a while...", numOps)))
+	}
+	fmt.Println(ui.Info(fmt.Sprintf("Running benchmark (%d operations)...", numOps)))
+	fmt.Println()
 
 	// Write benchmark
 	fmt.Printf("📝 Writing %d keys via Rondis...\n", numOps)
@@ -388,7 +406,7 @@ Commands:
 
   Internal commands:
     .demo               Run a quick demo (write, read, query)
-    .bench              Run benchmark (1000 ops, shows throughput)
+    .bench [N]          Run benchmark (default 1000 ops, shows throughput)
     .help               Show this help
     .tables             List all tables
     .quit               Exit the shell

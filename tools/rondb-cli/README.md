@@ -164,8 +164,8 @@ USE database
 
 **Internal commands** - dot prefix:
 ```
-.demo     Run a quick demo (write, read, query)
-.bench    Run benchmark (1000 ops, shows throughput)
+.demo       Run a quick demo (write, read, query)
+.bench [N]  Run benchmark (default 1000 ops, shows throughput)
 .help     Show help
 .tables   List all tables
 .quit     Exit
