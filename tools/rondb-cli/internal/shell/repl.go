@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/chzyer/readline"
 	"github.com/logicalclocks/rondb/tools/rondb-cli/internal/client"
@@ -154,6 +155,8 @@ func (s *Shell) executeInternal(line string) error {
 		return s.listTables()
 	case "demo":
 		return s.runDemo()
+	case "bench":
+		return s.runBench()
 	case "quit", "exit", "q":
 		fmt.Println(ui.Disconnected())
 		os.Exit(0)
@@ -270,6 +273,84 @@ func (s *Shell) runDemo() error {
 	return nil
 }
 
+func (s *Shell) runBench() error {
+	fmt.Println()
+	fmt.Println(ui.Info("Running benchmark (1000 operations)..."))
+	fmt.Println()
+
+	const numOps = 1000
+
+	// Write benchmark
+	fmt.Printf("📝 Writing %d keys via Rondis...\n", numOps)
+	writeStart := time.Now()
+	for i := 0; i < numOps; i++ {
+		key := fmt.Sprintf("bench:key:%d", i)
+		value := fmt.Sprintf(`{"id":%d,"data":"benchmark test data for key %d"}`, i, i)
+		_, _, err := s.rondisClient.Execute([]string{"SET", key, value})
+		if err != nil {
+			return err
+		}
+	}
+	writeDuration := time.Since(writeStart)
+	writeOpsPerSec := float64(numOps) / writeDuration.Seconds()
+	fmt.Printf("   %d writes in %v (%.0f ops/sec)\n", numOps, writeDuration.Round(time.Millisecond), writeOpsPerSec)
+	fmt.Println()
+
+	// Read benchmark
+	fmt.Printf("📖 Reading %d keys via Rondis...\n", numOps)
+	readStart := time.Now()
+	for i := 0; i < numOps; i++ {
+		key := fmt.Sprintf("bench:key:%d", i)
+		_, _, err := s.rondisClient.Execute([]string{"GET", key})
+		if err != nil {
+			return err
+		}
+	}
+	readDuration := time.Since(readStart)
+	readOpsPerSec := float64(numOps) / readDuration.Seconds()
+	fmt.Printf("   %d reads in %v (%.0f ops/sec)\n", numOps, readDuration.Round(time.Millisecond), readOpsPerSec)
+	fmt.Println()
+
+	// SQL count to prove data is there
+	fmt.Println("🔍 Verifying via SQL...")
+	_, rows, duration, err := s.mysqlClient.Query("SELECT COUNT(*) as count FROM redis_0.string_keys WHERE redis_key LIKE 'bench:key:%'")
+	if err != nil {
+		return err
+	}
+	if len(rows) > 0 {
+		fmt.Printf("   COUNT(*) = %v %s\n", rows[0][0], ui.Timing(duration))
+	}
+	fmt.Println()
+
+	// SQL sample query
+	fmt.Println("🔍 Sample SQL query (LIMIT 5)...")
+	columns, rows, duration, err := s.mysqlClient.Query("SELECT redis_key, value_start FROM redis_0.string_keys WHERE redis_key LIKE 'bench:key:%' LIMIT 5")
+	if err != nil {
+		return err
+	}
+	output := ui.RenderSQLResultWithDuration(columns, rows, duration)
+	fmt.Print(output)
+	fmt.Println()
+
+	// Cleanup
+	fmt.Printf("🧹 Cleaning up %d keys...\n", numOps)
+	cleanStart := time.Now()
+	for i := 0; i < numOps; i++ {
+		key := fmt.Sprintf("bench:key:%d", i)
+		s.rondisClient.Execute([]string{"DEL", key})
+	}
+	cleanDuration := time.Since(cleanStart)
+	fmt.Printf("   Cleanup in %v\n", cleanDuration.Round(time.Millisecond))
+	fmt.Println()
+
+	fmt.Println(ui.Success("Benchmark complete!"))
+	fmt.Printf("   Writes: %.0f ops/sec\n", writeOpsPerSec)
+	fmt.Printf("   Reads:  %.0f ops/sec\n", readOpsPerSec)
+	fmt.Println()
+
+	return nil
+}
+
 func (s *Shell) listTables() error {
 	tables, err := s.mysqlClient.ListTables()
 	if err != nil {
@@ -307,6 +388,7 @@ Commands:
 
   Internal commands:
     .demo               Run a quick demo (write, read, query)
+    .bench              Run benchmark (1000 ops, shows throughput)
     .help               Show this help
     .tables             List all tables
     .quit               Exit the shell
@@ -411,6 +493,7 @@ func (s *Shell) getCompleter() *readline.PrefixCompleter {
 		),
 
 		// Internal commands
+		readline.PcItem(".bench"),
 		readline.PcItem(".demo"),
 		readline.PcItem(".help"),
 		readline.PcItem(".tables"),
