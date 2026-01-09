@@ -458,9 +458,14 @@ void Dbtup::execTUP_ADD_ATTRREQ(Signal *signal) {
                regTabPtr.p->m_attributes[ind].m_no_of_dyn_fix) <=
               regTabPtr.p->m_attributes[ind].m_no_of_dynamic);
   }
-  handleCharsetPos(csNumber, regTabPtr.p->charsetArray,
-                   regTabPtr.p->noOfCharsets,
-                   fragOperPtr.p->charsetIndex, attrDes2);
+  if (!handleCharsetPos(csNumber,
+                       regTabPtr.p->charsetArray,
+                       regTabPtr.p->noOfCharsets,
+                       fragOperPtr.p->charsetIndex,
+                       attrDes2)) {
+    terrorCode = CreateTableRef::InvalidFormat;
+    goto error;
+  }
   regTabPtr.p->tabDescriptor[(attrId * ZAD_SIZE) + 1] = attrDes2;
 
   if ((ERROR_INSERTED(4009) && attrId == 0) ||
@@ -1380,8 +1385,17 @@ Dbtup::handleAlterTablePrepare(Signal *signal,
       /* Only dynamic attributes possible for add attr */
       ndbrequire(AttributeDescriptor::getDynamic(attrDescriptor));
 
-      handleCharsetPos(csNumber, CharsetArray, newNoOfCharsets, charsetIndex,
-                       attrDes2);
+      if (!handleCharsetPos(csNumber,
+                            CharsetArray,
+                            newNoOfCharsets,
+                            charsetIndex,
+                            attrDes2)) {
+        jam();
+        terrorCode = CreateTableRef::InvalidFormat;
+        releaseAlterTabOpRec(regAlterTabOpPtr);
+        sendAlterTabRef(signal, terrorCode);
+        return;
+      }
 
       Uint32 null_pos = dyn_nullbits[ind];
       Uint32 arrType= AttributeDescriptor::getArrayType(attrDescriptor);
@@ -1554,7 +1568,9 @@ void Dbtup::handleAlterTableCommit(Signal *signal, const AlterTabReq *req,
     DEB_DYN_META(("(%u) tab(%u) computeTableMetaData: ALTER",
                   instance(),
                   tabPtr.i));
-    computeTableMetaData(tabPtr, __LINE__);
+    terrorCode = computeTableMetaData(tabPtr, __LINE__);
+    if (terrorCode != 0) {
+    }
   }
 
   if (AlterTableReq::getReorgFragFlag(req->changeMask)) {
@@ -1689,8 +1705,10 @@ void Dbtup::handleAlterTableAbort(Signal *signal, const AlterTabReq *req,
   If needed, attrDes2 will be updated with the correct charsetPos and
   charsetIndex will be updated to point to next free charsetPos slot.
 */
-void Dbtup::handleCharsetPos(Uint32 csNumber, const CHARSET_INFO **charsetArray,
-                             Uint32 noOfCharsets, Uint32 &charsetIndex,
+bool Dbtup::handleCharsetPos(Uint32 csNumber,
+                             const CHARSET_INFO **charsetArray,
+                             Uint32 noOfCharsets,
+                             Uint32 &charsetIndex,
                              Uint32 &attrDes2) {
   if (csNumber != 0) {
     const CHARSET_INFO *cs = all_charsets[csNumber];
@@ -1708,7 +1726,10 @@ void Dbtup::handleCharsetPos(Uint32 csNumber, const CHARSET_INFO **charsetArray,
       charsetIndex++;
     }
     AttributeOffset::setCharsetPos(attrDes2, i);
+  } else {
+    AttributeOffset::setNoCharsetPos(attrDes2);
   }
+  return true;
 }
 
 bool Dbtup::is_disk_columns_in_table(Uint32 tableId) {

@@ -6275,8 +6275,16 @@ void Dbdict::handleTabInfo(SimpleProperties::Reader &it,
   Uint32 nullCount = 0;
   Uint32 nullBits = 0;
   Uint32 noOfCharsets = 0;
-  Uint16 charsets[128];
+  Uint16 charsets[127];
   Uint32 recordLength = 0;
+  Uint32 fixed_recordLength = 0;
+  Uint32 mm_var_recordLength = 0;
+  Uint32 disk_recordLength = 0;
+  Uint32 mm_vars = 0;
+  Uint32 mm_dyns = 0;
+  Uint32 dd_vars = 0;
+  Uint32 dd_dyns = 0;
+  Uint32 nullable_non_dyn_cols = 0;
   AttributeRecordPtr attrPtr;
   c_attributeRecordHash.removeAll();
 
@@ -6491,10 +6499,40 @@ void Dbdict::handleTabInfo(SimpleProperties::Reader &it,
 
     c_attributeRecordHash.add(attrPtr);
 
-    int a = AttributeDescriptor::getDiskBased(desc);
-    if (a) disk_based = true;
+    int disk = AttributeDescriptor::getDiskBased(desc);
+    if (disk) disk_based = true;
     int b = AttributeDescriptor::getArrayType(desc);
-    Uint32 pos = 2 * (a ? 1 : 0) + (b == NDB_ARRAYTYPE_FIXED ? 0 : 1);
+    int dyn = AttributeDescriptor::getDynamic(desc);
+
+    recordLength += sz;
+    if (dyn) {
+      if (disk) {
+        dd_dyns++;
+      } else {
+        mm_dyns++;
+      }
+    } else if (b == NDB_ARRAYTYPE_FIXED) {
+      if (attrDesc.AttributeNullableFlag) {
+        nullable_non_dyn_cols++;
+      }
+    } else {
+      if (attrDesc.AttributeNullableFlag) {
+        nullable_non_dyn_cols++;
+      }
+      if (disk) {
+        dd_vars++;
+      } else {
+        mm_vars++;
+      }
+    }
+    if (disk) {
+      disk_recordLength += sz;
+    } else if (b == NDB_ARRAYTYPE_FIXED && !dyn) {
+      fixed_recordLength += sz;
+    } else {
+      mm_var_recordLength += sz;
+    }
+    Uint32 pos = 2 * (disk ? 1 : 0) + (b == NDB_ARRAYTYPE_FIXED ? 0 : 1);
     counts[pos + 1]++;
 
     if (b != NDB_ARRAYTYPE_FIXED && sz == 0) {
@@ -6510,6 +6548,29 @@ void Dbdict::handleTabInfo(SimpleProperties::Reader &it,
     if (it.getKey() != DictTabInfo::AttributeName) break;
   }  // while
 
+  /**
+   * All columns that are NULL and not dynamic are stored in the
+   * fixed size region. Add to fixed_recordLength.
+   *
+   * Dynamic columns always add a bit to the NULL area in MM or DD.
+   * Dynamic columns always require a 2-byte offset when stored.
+   *
+   * Non-dynamic variable sized columns require 2 bytes for offset
+   * computation plus one extra offset.
+   *
+   * Add 1 word in MM variable sized record to store total length
+   * of varsized + dynamic part.
+   */
+  fixed_recordLength += ((nullable_non_dyn_cols + 31) >> 5);
+  disk_recordLength += ((dd_dyns + 31) >> 5);
+  mm_var_recordLength += ((mm_dyns + 31) >> 5);
+  disk_recordLength += ((dd_dyns + 2) >> 1);
+  mm_var_recordLength += ((mm_dyns + 2) >> 1);
+  disk_recordLength += ((dd_vars + 2) >> 1);
+  mm_var_recordLength += ((mm_vars + 2) >> 1);
+  mm_var_recordLength += 1;
+  disk_recordLength += 1;
+
   tablePtr.p->m_disk_based = disk_based;
   tablePtr.p->noOfPrimkey = keyCount;
   tablePtr.p->noOfNullAttr = nullCount;
@@ -6517,6 +6578,12 @@ void Dbdict::handleTabInfo(SimpleProperties::Reader &it,
   tablePtr.p->tupKeyLength = keyLength;
   tablePtr.p->noOfNullBits = nullCount + nullBits;
 
+  tabRequire(fixed_recordLength <= MAX_FIXED_SIZE_IN_WORDS,
+             CreateTableRef::TooLargeFixedSizePart);
+  tabRequire(mm_var_recordLength <= MAX_VAR_SIZE_IN_WORDS,
+             CreateTableRef::TooLargeVarsizePart);
+  tabRequire(disk_recordLength <= MAX_DISK_VAR_SIZE_IN_WORDS,
+             CreateTableRef::TooLargeDiskSizePart);
   tabRequire(recordLength <= MAX_TUPLE_SIZE_IN_WORDS,
              CreateTableRef::RecordTooBig);
   tabRequire(attrCount <= MAX_ATTRIBUTES_IN_TABLE,

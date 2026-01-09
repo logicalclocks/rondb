@@ -3243,8 +3243,10 @@ private:
   void sendAlterTabRef(Signal *signal, Uint32 errorCode);
   void sendAlterTabConf(Signal *, Uint32 clientData = RNIL);
 
-  void handleCharsetPos(Uint32 csNumber, const CHARSET_INFO **charsetArray,
-                        Uint32 noOfCharsets, Uint32 &charsetIndex,
+  bool handleCharsetPos(Uint32 csNumber,
+                        const CHARSET_INFO **charsetArray,
+                        Uint32 noOfCharsets,
+                        Uint32 &charsetIndex,
                         Uint32 &attrDes2);
   Uint32 computeTableMetaData(TablerecPtr regTabPtr, Uint32 line);
 

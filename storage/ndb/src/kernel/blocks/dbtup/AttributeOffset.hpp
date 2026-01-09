@@ -34,6 +34,7 @@ class AttributeOffset {
  public:
   static void setOffset(Uint32 &desc, Uint32 offset);
   static void setCharsetPos(Uint32 &desc, Uint32 offset);
+  static void setNoCharsetPos(Uint32 &desc);
   static void setNullFlagPos(Uint32 &desc, Uint32 offset);
 
   static Uint32 getOffset(const Uint32 &);
@@ -55,8 +56,8 @@ class AttributeOffset {
  * Allow for 4096 attributes, all nullable, and for 128 different
  * character sets.
  *
- * a = Attribute offset         - 11 bits  0-10 ( addr word in 8 kb )
- * c = Has charset flag           1  bits 11-11
+ * a = Attribute offset         - 11 bits  0-11 ( addr word in 16 kb )
+ * c = Has charset flag           Charset pointer != 127
  * s = Charset pointer position - 7  bits 12-18 ( in table descriptor )
  * f = Null flag offset in word - 5  bits 20-24 ( address 32 bits )
  * w = Null word offset         - 7  bits 25-31 ( f+w addr 4096 attrs )
@@ -67,9 +68,8 @@ class AttributeOffset {
  */
 
 #define AO_ATTRIBUTE_OFFSET_SHIFT 0
-#define AO_ATTRIBUTE_OFFSET_MASK 0x7ff
+#define AO_ATTRIBUTE_OFFSET_MASK 0xfff
 
-#define AO_CHARSET_FLAG_SHIFT 11
 #define AO_CHARSET_POS_SHIFT 12
 #define AO_CHARSET_POS_MASK 127
 
@@ -88,10 +88,12 @@ inline void AttributeOffset::setOffset(Uint32 &desc, Uint32 offset) {
 
 inline void AttributeOffset::setCharsetPos(Uint32 &desc, Uint32 offset) {
   ASSERT_MAX(offset, AO_CHARSET_POS_MASK, "AttributeOffset::setCharsetPos");
-  desc |= (1 << AO_CHARSET_FLAG_SHIFT);
   desc |= (offset << AO_CHARSET_POS_SHIFT);
 }
 
+inline void AttributeOffset::setNoCharsetPos(Uint32 &desc) {
+  setCharsetPos(desc, AO_CHARSET_POS_MASK);
+}
 inline void AttributeOffset::setNullFlagPos(Uint32 &desc, Uint32 pos) {
   ASSERT_MAX(pos, AO_NULL_FLAG_POS_MASK, "AttributeOffset::setNullFlagPos");
   desc |= (pos << AO_NULL_FLAG_POS_SHIFT);
@@ -102,7 +104,8 @@ inline Uint32 AttributeOffset::getOffset(const Uint32 &desc) {
 }
 
 inline bool AttributeOffset::getCharsetFlag(const Uint32 &desc) {
-  return (desc >> AO_CHARSET_FLAG_SHIFT) & 1;
+  return ((desc >> AO_CHARSET_POS_SHIFT) & AO_CHARSET_POS_MASK) !=
+          AO_CHARSET_POS_MASK;
 }
 
 inline Uint32 AttributeOffset::getCharsetPos(const Uint32 &desc) {
