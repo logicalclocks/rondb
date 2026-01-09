@@ -12,8 +12,8 @@ import (
 
 // Colors - RonDB theme: black + orange
 var (
-	orange     = lipgloss.Color("#FF6600")
-	dimOrange  = lipgloss.Color("#CC5500")
+	orange     = lipgloss.Color("#FFA500")
+	dimOrange  = lipgloss.Color("#CC8400")
 	darkGray   = lipgloss.Color("#333333")
 	lightGray  = lipgloss.Color("#888888")
 	white      = lipgloss.Color("#FFFFFF")
