@@ -123,6 +123,7 @@ rondb> SELECT * FROM redis_0.string_keys
 | `--host` | `RONDB_HOST` | localhost | RonDB host |
 | `--rondis-port` | `RONDB_RONDIS_PORT` | 6379 | Rondis port |
 | `--mysql-port` | `RONDB_MYSQL_PORT` | 3306 | MySQL port |
+| `--tls` | - | false | Enable TLS (MySQL + Rondis) |
 
 ### Authentication
 
@@ -131,7 +132,7 @@ rondb> SELECT * FROM redis_0.string_keys
 | `RONDB_MYSQL_USER` | root | MySQL username |
 | `RONDB_MYSQL_PASSWORD` | (empty) | MySQL password |
 
-### Example
+### Examples
 
 ```bash
 # Connect to remote cluster
@@ -139,6 +140,9 @@ RONDB_HOST=db.example.com \
 RONDB_MYSQL_USER=admin \
 RONDB_MYSQL_PASSWORD=secret \
 rondb
+
+# Connect with TLS
+rondb --host db.example.com --tls
 ```
 
 ## Commands
