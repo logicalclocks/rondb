@@ -14,21 +14,31 @@ import (
 	"github.com/logicalclocks/rondb/tools/rondb-cli/internal/ui"
 )
 
+// Config holds shell configuration
+type Config struct {
+	Host       string
+	RondisPort int
+	MySQLPort  int
+	TLS        bool
+}
+
 type Shell struct {
 	rondisClient *client.RondisClient
 	mysqlClient  *client.MySQLClient
-	host         string
-	rondisPort   int
-	mysqlPort    int
+	config       Config
 	mysqlUser    string
 	mysqlPass    string
 }
 
 func Run() error {
-	return RunWithConfig("localhost", 6379, 3306)
+	return RunWithConfig(Config{
+		Host:       "localhost",
+		RondisPort: 6379,
+		MySQLPort:  3306,
+	})
 }
 
-func RunWithConfig(host string, rondisPort, mysqlPort int) error {
+func RunWithConfig(cfg Config) error {
 	// Get credentials from environment (default: root with no password)
 	mysqlUser := os.Getenv("RONDB_MYSQL_USER")
 	if mysqlUser == "" {
@@ -37,18 +47,16 @@ func RunWithConfig(host string, rondisPort, mysqlPort int) error {
 	mysqlPass := os.Getenv("RONDB_MYSQL_PASSWORD")
 
 	s := &Shell{
-		host:       host,
-		rondisPort: rondisPort,
-		mysqlPort:  mysqlPort,
-		mysqlUser:  mysqlUser,
-		mysqlPass:  mysqlPass,
+		config:    cfg,
+		mysqlUser: mysqlUser,
+		mysqlPass: mysqlPass,
 	}
 
 	if err := s.connect(); err != nil {
 		fmt.Println(ui.Error(fmt.Sprintf("Connection failed: %v", err)))
 		fmt.Println(ui.Info("Check that RonDB is running:"))
-		fmt.Println(ui.Info(fmt.Sprintf("  Rondis: %s:%d", host, rondisPort)))
-		fmt.Println(ui.Info(fmt.Sprintf("  MySQL:  %s:%d (user: %s)", host, mysqlPort, mysqlUser)))
+		fmt.Println(ui.Info(fmt.Sprintf("  Rondis: %s:%d", cfg.Host, cfg.RondisPort)))
+		fmt.Println(ui.Info(fmt.Sprintf("  MySQL:  %s:%d (user: %s)", cfg.Host, cfg.MySQLPort, mysqlUser)))
 		return err
 	}
 	defer s.close()
@@ -66,15 +74,25 @@ func (s *Shell) connect() error {
 	var err error
 
 	// MySQL is required
-	s.mysqlClient, err = client.NewMySQLClient(s.host, s.mysqlPort, s.mysqlUser, s.mysqlPass)
+	s.mysqlClient, err = client.NewMySQLClientWithOptions(client.MySQLOptions{
+		Host:     s.config.Host,
+		Port:     s.config.MySQLPort,
+		User:     s.mysqlUser,
+		Password: s.mysqlPass,
+		TLS:      s.config.TLS,
+	})
 	if err != nil {
-		return fmt.Errorf("mysql (%s:%d): %w", s.host, s.mysqlPort, err)
+		return fmt.Errorf("mysql (%s:%d): %w", s.config.Host, s.config.MySQLPort, err)
 	}
 
 	// Rondis is optional - don't fail if not available
-	s.rondisClient, err = client.NewRondisClient(s.host, s.rondisPort)
+	s.rondisClient, err = client.NewRondisClientWithOptions(client.RondisOptions{
+		Host: s.config.Host,
+		Port: s.config.RondisPort,
+		TLS:  s.config.TLS,
+	})
 	if err != nil {
-		fmt.Println(ui.Info(fmt.Sprintf("Rondis not available on port %d (SQL-only mode)", s.rondisPort)))
+		fmt.Println(ui.Info(fmt.Sprintf("Rondis not available on port %d (SQL-only mode)", s.config.RondisPort)))
 		s.rondisClient = nil
 	}
 

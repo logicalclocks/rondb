@@ -1,20 +1,57 @@
 package client
 
 import (
+	"crypto/tls"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql"
+	"github.com/go-sql-driver/mysql"
 )
 
 type MySQLClient struct {
 	db *sql.DB
 }
 
+// MySQLOptions holds connection options
+type MySQLOptions struct {
+	Host     string
+	Port     int
+	User     string
+	Password string
+	TLS      bool // Enable TLS
+}
+
+// sanitizeIdentifier escapes MySQL identifiers to prevent SQL injection.
+// Identifiers (database/table names) can't use parameterized queries,
+// so we escape backticks by doubling them.
+func sanitizeIdentifier(name string) string {
+	return strings.ReplaceAll(name, "`", "``")
+}
+
 // NewMySQLClient creates a new MySQL client connection
 func NewMySQLClient(host string, port int, user, password string) (*MySQLClient, error) {
-	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/", user, password, host, port)
+	return NewMySQLClientWithOptions(MySQLOptions{
+		Host:     host,
+		Port:     port,
+		User:     user,
+		Password: password,
+	})
+}
+
+// NewMySQLClientWithOptions creates a new MySQL client with extended options
+func NewMySQLClientWithOptions(opts MySQLOptions) (*MySQLClient, error) {
+	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/", opts.User, opts.Password, opts.Host, opts.Port)
+
+	// Register TLS config if enabled
+	if opts.TLS {
+		tlsConfig := &tls.Config{
+			MinVersion: tls.VersionTLS12,
+		}
+		mysql.RegisterTLSConfig("custom", tlsConfig)
+		dsn += "?tls=custom"
+	}
 
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
@@ -154,7 +191,7 @@ func (c *MySQLClient) ListDatabases() ([]string, error) {
 
 // ListTablesInDB returns all tables in a specific database
 func (c *MySQLClient) ListTablesInDB(database string) ([]string, error) {
-	query := fmt.Sprintf("SHOW TABLES FROM `%s`", database)
+	query := fmt.Sprintf("SHOW TABLES FROM `%s`", sanitizeIdentifier(database))
 	rows, err := c.db.Query(query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list tables: %w", err)
@@ -195,15 +232,18 @@ type TableData struct {
 
 // QueryTableData returns sample data from a table (limited rows for TUI)
 func (c *MySQLClient) QueryTableData(database, table string, limit int) (*TableData, error) {
+	db := sanitizeIdentifier(database)
+	tbl := sanitizeIdentifier(table)
+
 	// Get total count
-	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM `%s`.`%s`", database, table)
+	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM `%s`.`%s`", db, tbl)
 	var total int
 	if err := c.db.QueryRow(countQuery).Scan(&total); err != nil {
 		total = -1 // Unknown
 	}
 
 	// Get data
-	query := fmt.Sprintf("SELECT * FROM `%s`.`%s` LIMIT %d", database, table, limit)
+	query := fmt.Sprintf("SELECT * FROM `%s`.`%s` LIMIT %d", db, tbl, limit)
 	rows, err := c.db.Query(query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query table: %w", err)
@@ -249,7 +289,7 @@ func (c *MySQLClient) QueryTableData(database, table string, limit int) (*TableD
 
 // DescribeTable returns column info for a table
 func (c *MySQLClient) DescribeTable(database, table string) ([]ColumnInfo, error) {
-	query := fmt.Sprintf("SHOW COLUMNS FROM `%s`.`%s`", database, table)
+	query := fmt.Sprintf("SHOW COLUMNS FROM `%s`.`%s`", sanitizeIdentifier(database), sanitizeIdentifier(table))
 	rows, err := c.db.Query(query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to describe table: %w", err)
