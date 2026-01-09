@@ -18,24 +18,24 @@ var (
 	valueStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("7"))
 )
 
-// Success renders a message with green styling and a checkmark prefix
+// Success renders a message with green styling
 func Success(msg string) string {
-	return successStyle.Render("✓ " + msg)
+	return successStyle.Render("[OK] " + msg)
 }
 
-// Error renders a message with red styling and an X prefix
+// Error renders a message with red styling
 func Error(msg string) string {
-	return errorStyle.Render("✗ " + msg)
+	return errorStyle.Render("[ERROR] " + msg)
 }
 
 // Warning renders a message with yellow styling
 func Warning(msg string) string {
-	return warningStyle.Render("⚠ " + msg)
+	return warningStyle.Render("[WARN] " + msg)
 }
 
 // Info renders a message with cyan styling
 func Info(msg string) string {
-	return infoStyle.Render("ℹ " + msg)
+	return infoStyle.Render("[*] " + msg)
 }
 
 // Prompt returns the styled "rondb> " prompt
@@ -60,9 +60,9 @@ func Value(v string) string {
 	return valueStyle.Render(v)
 }
 
-// Connected returns a styled connection message with green circle
+// Connected returns a styled connection message
 func Connected(version string) string {
-	return successStyle.Render("🟢 Connected to RonDB " + version)
+	return successStyle.Render("Connected to RonDB " + version)
 }
 
 // Welcome returns a welcome banner
@@ -76,7 +76,7 @@ func Welcome() string {
 	return banner + "\n" + hint
 }
 
-// Disconnected returns a styled disconnection message with red circle
+// Disconnected returns a styled disconnection message
 func Disconnected() string {
-	return errorStyle.Render("🔴 Disconnected")
+	return errorStyle.Render("Disconnected")
 }
