@@ -186,6 +186,67 @@ type ColumnInfo struct {
 	Default  string
 }
 
+// TableData holds query results for TUI
+type TableData struct {
+	Columns []string
+	Rows    [][]string
+	Total   int
+}
+
+// QueryTableData returns sample data from a table (limited rows for TUI)
+func (c *MySQLClient) QueryTableData(database, table string, limit int) (*TableData, error) {
+	// Get total count
+	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM `%s`.`%s`", database, table)
+	var total int
+	if err := c.db.QueryRow(countQuery).Scan(&total); err != nil {
+		total = -1 // Unknown
+	}
+
+	// Get data
+	query := fmt.Sprintf("SELECT * FROM `%s`.`%s` LIMIT %d", database, table, limit)
+	rows, err := c.db.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query table: %w", err)
+	}
+	defer rows.Close()
+
+	columns, err := rows.Columns()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get columns: %w", err)
+	}
+
+	var data [][]string
+	for rows.Next() {
+		values := make([]interface{}, len(columns))
+		valuePtrs := make([]interface{}, len(columns))
+		for i := range columns {
+			valuePtrs[i] = &values[i]
+		}
+
+		if err := rows.Scan(valuePtrs...); err != nil {
+			return nil, fmt.Errorf("failed to scan row: %w", err)
+		}
+
+		row := make([]string, len(columns))
+		for i, v := range values {
+			if v == nil {
+				row[i] = "NULL"
+			} else if b, ok := v.([]byte); ok {
+				row[i] = string(b)
+			} else {
+				row[i] = fmt.Sprintf("%v", v)
+			}
+		}
+		data = append(data, row)
+	}
+
+	return &TableData{
+		Columns: columns,
+		Rows:    data,
+		Total:   total,
+	}, nil
+}
+
 // DescribeTable returns column info for a table
 func (c *MySQLClient) DescribeTable(database, table string) ([]ColumnInfo, error) {
 	query := fmt.Sprintf("SHOW COLUMNS FROM `%s`.`%s`", database, table)

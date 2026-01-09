@@ -71,6 +71,7 @@ type DBClient interface {
 	ListDatabases() ([]string, error)
 	ListTablesInDB(database string) ([]string, error)
 	DescribeTable(database, table string) ([]client.ColumnInfo, error)
+	QueryTableData(database, table string, limit int) (*client.TableData, error)
 }
 
 // Model is the main TUI model
@@ -83,6 +84,9 @@ type Model struct {
 	focusLeft    bool
 	expanded     map[string]bool // which databases are expanded
 	currentTable *TableInfo
+	tableData    *client.TableData // current table data
+	showData     bool              // toggle between schema and data view
+	dataScroll   int               // scroll offset for data view
 	width        int
 	height       int
 	err          error
@@ -97,6 +101,7 @@ type keyMap struct {
 	Right  key.Binding
 	Enter  key.Binding
 	Tab    key.Binding
+	Data   key.Binding
 	Quit   key.Binding
 }
 
@@ -107,6 +112,7 @@ var keys = keyMap{
 	Right: key.NewBinding(key.WithKeys("right", "l")),
 	Enter: key.NewBinding(key.WithKeys("enter", " ")),
 	Tab:   key.NewBinding(key.WithKeys("tab")),
+	Data:  key.NewBinding(key.WithKeys("d")),
 	Quit:  key.NewBinding(key.WithKeys("q", "esc", "ctrl+c")),
 }
 
@@ -139,6 +145,7 @@ type tablesLoadedMsg struct {
 	tables   []string
 }
 type schemaLoadedMsg struct{ table *TableInfo }
+type dataLoadedMsg struct{ data *client.TableData }
 type errMsg struct{ err error }
 
 // Update handles messages
@@ -183,6 +190,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.expand()
 			}
 			return m, nil
+
+		case key.Matches(msg, keys.Data):
+			// Toggle data view or load data
+			if m.currentTable != nil {
+				if m.showData && m.tableData != nil {
+					m.showData = false // Switch back to schema
+				} else {
+					m.showData = true
+					return m, m.loadData(m.currentTable.Database, m.currentTable.Name)
+				}
+			}
+			return m, nil
 		}
 
 	case tea.WindowSizeMsg:
@@ -205,6 +224,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case schemaLoadedMsg:
 		m.currentTable = msg.table
+		m.tableData = nil // Reset data when switching tables
+		m.showData = false
+		return m, nil
+
+	case dataLoadedMsg:
+		m.tableData = msg.data
+		m.dataScroll = 0
 		return m, nil
 
 	case errMsg:
@@ -360,6 +386,16 @@ func (m *Model) loadSchema(database, table string) tea.Cmd {
 	}
 }
 
+func (m *Model) loadData(database, table string) tea.Cmd {
+	return func() tea.Msg {
+		data, err := m.client.QueryTableData(database, table, 100)
+		if err != nil {
+			return errMsg{err}
+		}
+		return dataLoadedMsg{data}
+	}
+}
+
 // View renders the UI
 func (m Model) View() string {
 	if m.quitting {
@@ -401,7 +437,7 @@ func (m Model) View() string {
 		leftStyle.Render(leftPanel),
 		rightStyle.Render(rightPanel),
 	)
-	help := helpStyle.Render("  ↑↓ navigate  ←→ collapse/expand  Enter select  Tab switch panel  q quit")
+	help := helpStyle.Render("  ↑↓ navigate  ←→ collapse/expand  Enter select  Tab panel  d data  q quit")
 
 	return lipgloss.JoinVertical(lipgloss.Left, title, panels, help)
 }
@@ -460,7 +496,68 @@ func (m *Model) renderSchema(width, height int) string {
 		lines = append(lines, headerStyle.Render("SCHEMA"))
 		lines = append(lines, "")
 		lines = append(lines, dimStyle.Render("Select a table to view schema"))
+		lines = append(lines, dimStyle.Render("Press 'd' to view data"))
+	} else if m.showData {
+		// Data view
+		title := fmt.Sprintf("%s.%s [DATA]", m.currentTable.Database, m.currentTable.Name)
+		lines = append(lines, headerStyle.Render(title))
+
+		if m.tableData == nil {
+			lines = append(lines, "")
+			lines = append(lines, dimStyle.Render("Loading..."))
+		} else if len(m.tableData.Rows) == 0 {
+			lines = append(lines, "")
+			lines = append(lines, dimStyle.Render("(empty table)"))
+		} else {
+			// Show row count
+			countStr := fmt.Sprintf("%d rows", len(m.tableData.Rows))
+			if m.tableData.Total > len(m.tableData.Rows) {
+				countStr = fmt.Sprintf("%d of %d rows", len(m.tableData.Rows), m.tableData.Total)
+			}
+			lines = append(lines, dimStyle.Render(countStr))
+			lines = append(lines, "")
+
+			// Calculate column widths (simplified)
+			colWidths := make([]int, len(m.tableData.Columns))
+			for i, col := range m.tableData.Columns {
+				colWidths[i] = len(col)
+				if colWidths[i] < 8 {
+					colWidths[i] = 8
+				}
+				if colWidths[i] > 25 {
+					colWidths[i] = 25
+				}
+			}
+
+			// Header row
+			var headerParts []string
+			for i, col := range m.tableData.Columns {
+				c := col
+				if len(c) > colWidths[i] {
+					c = c[:colWidths[i]-1] + "…"
+				}
+				headerParts = append(headerParts, fmt.Sprintf("%-*s", colWidths[i], c))
+			}
+			lines = append(lines, dimStyle.Render(strings.Join(headerParts, " │ ")))
+			lines = append(lines, dimStyle.Render(strings.Repeat("─", min(width, 80))))
+
+			// Data rows
+			for _, row := range m.tableData.Rows {
+				var rowParts []string
+				for i, val := range row {
+					v := val
+					if len(v) > colWidths[i] {
+						v = v[:colWidths[i]-1] + "…"
+					}
+					rowParts = append(rowParts, fmt.Sprintf("%-*s", colWidths[i], v))
+				}
+				lines = append(lines, normalStyle.Render(strings.Join(rowParts, " │ ")))
+			}
+		}
+		lines = append(lines, "")
+		lines = append(lines, dimStyle.Render("Press 'd' for schema"))
 	} else {
+		// Schema view
 		title := fmt.Sprintf("%s.%s", m.currentTable.Database, m.currentTable.Name)
 		lines = append(lines, headerStyle.Render(title))
 		lines = append(lines, "")
@@ -496,6 +593,8 @@ func (m *Model) renderSchema(width, height int) string {
 
 			lines = append(lines, normalStyle.Render(line))
 		}
+		lines = append(lines, "")
+		lines = append(lines, dimStyle.Render("Press 'd' for data"))
 	}
 
 	if m.err != nil {
