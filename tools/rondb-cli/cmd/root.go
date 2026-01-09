@@ -17,6 +17,7 @@ var (
 	host       string
 	rondisPort int
 	mysqlPort  int
+	useTLS     bool
 )
 
 var rootCmd = &cobra.Command{
@@ -24,7 +25,12 @@ var rootCmd = &cobra.Command{
 	Short: "RonDB CLI",
 	Long:  "RonDB CLI - Rondis commands. SQL queries. One database.",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return shell.RunWithConfig(host, rondisPort, mysqlPort)
+		return shell.RunWithConfig(shell.Config{
+			Host:       host,
+			RondisPort: rondisPort,
+			MySQLPort:  mysqlPort,
+			TLS:        useTLS,
+		})
 	},
 }
 
@@ -35,7 +41,11 @@ var statusCmd = &cobra.Command{
 		fmt.Printf("Checking %s...\n", host)
 
 		// Check Rondis
-		rondisClient, err := client.NewRondisClient(host, rondisPort)
+		rondisClient, err := client.NewRondisClientWithOptions(client.RondisOptions{
+			Host: host,
+			Port: rondisPort,
+			TLS:  useTLS,
+		})
 		if err != nil {
 			fmt.Println(ui.Error(fmt.Sprintf("Rondis (:%d): %v", rondisPort, err)))
 		} else {
@@ -50,7 +60,13 @@ var statusCmd = &cobra.Command{
 		}
 		mysqlPass := os.Getenv("RONDB_MYSQL_PASSWORD")
 
-		mysqlClient, err := client.NewMySQLClient(host, mysqlPort, mysqlUser, mysqlPass)
+		mysqlClient, err := client.NewMySQLClientWithOptions(client.MySQLOptions{
+			Host:     host,
+			Port:     mysqlPort,
+			User:     mysqlUser,
+			Password: mysqlPass,
+			TLS:      useTLS,
+		})
 		if err != nil {
 			fmt.Println(ui.Error(fmt.Sprintf("MySQL (:%d): %v", mysqlPort, err)))
 		} else {
@@ -74,6 +90,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&host, "host", "localhost", "RonDB host")
 	rootCmd.PersistentFlags().IntVar(&rondisPort, "rondis-port", 6379, "Rondis port")
 	rootCmd.PersistentFlags().IntVar(&mysqlPort, "mysql-port", 3306, "MySQL port")
+	rootCmd.PersistentFlags().BoolVar(&useTLS, "tls", false, "Enable TLS for connections")
 
 	// Also support env vars
 	if h := os.Getenv("RONDB_HOST"); h != "" {

@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"strings"
 	"time"
@@ -13,10 +14,35 @@ type RondisClient struct {
 	client *redis.Client
 }
 
+// RondisOptions holds connection options
+type RondisOptions struct {
+	Host     string
+	Port     int
+	Password string
+	TLS      bool
+}
+
 func NewRondisClient(host string, port int) (*RondisClient, error) {
-	client := redis.NewClient(&redis.Options{
-		Addr: fmt.Sprintf("%s:%d", host, port),
+	return NewRondisClientWithOptions(RondisOptions{
+		Host: host,
+		Port: port,
 	})
+}
+
+// NewRondisClientWithOptions creates a new Rondis client with extended options
+func NewRondisClientWithOptions(opts RondisOptions) (*RondisClient, error) {
+	redisOpts := &redis.Options{
+		Addr:     fmt.Sprintf("%s:%d", opts.Host, opts.Port),
+		Password: opts.Password,
+	}
+
+	if opts.TLS {
+		redisOpts.TLSConfig = &tls.Config{
+			MinVersion: tls.VersionTLS12,
+		}
+	}
+
+	client := redis.NewClient(redisOpts)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
