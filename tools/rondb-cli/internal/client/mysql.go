@@ -124,3 +124,102 @@ func (c *MySQLClient) Close() error {
 	}
 	return nil
 }
+
+// ListDatabases returns all databases
+func (c *MySQLClient) ListDatabases() ([]string, error) {
+	rows, err := c.db.Query("SHOW DATABASES")
+	if err != nil {
+		return nil, fmt.Errorf("failed to list databases: %w", err)
+	}
+	defer rows.Close()
+
+	var databases []string
+	for rows.Next() {
+		var dbName string
+		if err := rows.Scan(&dbName); err != nil {
+			return nil, fmt.Errorf("failed to scan database name: %w", err)
+		}
+		// Skip system databases for cleaner view
+		if dbName != "information_schema" && dbName != "performance_schema" && dbName != "mysql" && dbName != "sys" {
+			databases = append(databases, dbName)
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating databases: %w", err)
+	}
+
+	return databases, nil
+}
+
+// ListTablesInDB returns all tables in a specific database
+func (c *MySQLClient) ListTablesInDB(database string) ([]string, error) {
+	query := fmt.Sprintf("SHOW TABLES FROM `%s`", database)
+	rows, err := c.db.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list tables: %w", err)
+	}
+	defer rows.Close()
+
+	var tables []string
+	for rows.Next() {
+		var tableName string
+		if err := rows.Scan(&tableName); err != nil {
+			return nil, fmt.Errorf("failed to scan table name: %w", err)
+		}
+		tables = append(tables, tableName)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating tables: %w", err)
+	}
+
+	return tables, nil
+}
+
+// ColumnInfo holds column metadata for TUI
+type ColumnInfo struct {
+	Name     string
+	Type     string
+	Nullable string
+	Key      string
+	Default  string
+}
+
+// DescribeTable returns column info for a table
+func (c *MySQLClient) DescribeTable(database, table string) ([]ColumnInfo, error) {
+	query := fmt.Sprintf("SHOW COLUMNS FROM `%s`.`%s`", database, table)
+	rows, err := c.db.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to describe table: %w", err)
+	}
+	defer rows.Close()
+
+	var columns []ColumnInfo
+	for rows.Next() {
+		var field, colType, null, key string
+		var defaultVal, extra sql.NullString
+
+		if err := rows.Scan(&field, &colType, &null, &key, &defaultVal, &extra); err != nil {
+			return nil, fmt.Errorf("failed to scan column info: %w", err)
+		}
+
+		col := ColumnInfo{
+			Name:     field,
+			Type:     colType,
+			Nullable: null,
+			Key:      key,
+		}
+		if defaultVal.Valid {
+			col.Default = defaultVal.String
+		}
+
+		columns = append(columns, col)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating columns: %w", err)
+	}
+
+	return columns, nil
+}

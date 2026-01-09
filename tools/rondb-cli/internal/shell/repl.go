@@ -10,6 +10,7 @@ import (
 
 	"github.com/chzyer/readline"
 	"github.com/logicalclocks/rondb/tools/rondb-cli/internal/client"
+	"github.com/logicalclocks/rondb/tools/rondb-cli/internal/tui"
 	"github.com/logicalclocks/rondb/tools/rondb-cli/internal/ui"
 )
 
@@ -170,6 +171,8 @@ func (s *Shell) executeInternal(line string) error {
 			numOps = n
 		}
 		return s.runBench(numOps)
+	case "browse", "ui":
+		return tui.Run(s.mysqlClient)
 	case "quit", "exit", "q":
 		fmt.Println(ui.Disconnected())
 		os.Exit(0)
@@ -419,10 +422,11 @@ Commands:
     USE database        Switch database
 
   Internal commands:
+    .browse             Open database browser (TUI)
     .demo               Run a quick demo (write, read, query)
     .bench [N]          Run benchmark (default 1000 ops, shows throughput)
-    .help               Show this help
     .tables             List all tables
+    .help               Show this help
     .quit               Exit the shell
 
 The magic: Your Rondis data is queryable with SQL!
@@ -526,6 +530,7 @@ func (s *Shell) getCompleter() *readline.PrefixCompleter {
 
 		// Internal commands
 		readline.PcItem(".bench"),
+		readline.PcItem(".browse"),
 		readline.PcItem(".demo"),
 		readline.PcItem(".help"),
 		readline.PcItem(".tables"),
