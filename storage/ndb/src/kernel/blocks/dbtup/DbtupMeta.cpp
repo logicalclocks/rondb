@@ -2060,10 +2060,11 @@ Uint32 Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line) {
     regTabPtr->m_offsets[DD].m_max_dyn_offset));
 
   /* Room for data for all the attributes. */
-  Uint32 total_rec_size[2];
-  total_rec_size[MM] =
-    pos[MM] + fix_size[MM] +
+  Uint32 tot_var_size = 
     ((var_size[MM] + 3) >> 2) + ((dyn_size[MM] + 3) >> 2);
+  Uint32 total_rec_size[2];
+  total_rec_size[MM] = tot_var_size +
+    pos[MM] + fix_size[MM];
   total_rec_size[DD] =
     pos[DD] + fix_size[DD] +
     ((var_size[DD] + 3) >> 2) + ((dyn_size[DD] + 3) >> 2);
@@ -2081,6 +2082,8 @@ Uint32 Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line) {
     mm_dyn_extra += (mm_dyns + 2) >> 1;
     mm_dyn_extra += 1;
     total_rec_size[MM] += mm_dyn_extra;
+    tot_var_size += mm_dyn_extra;
+    tot_var_size += Tuple_header::HeaderSize;
   }
   if (dd_vars + regTabPtr->m_attributes[DD].m_no_of_dynamic)
   {
@@ -2090,15 +2093,12 @@ Uint32 Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line) {
     total_rec_size[DD] += (dd_dyns + 2) >> 1;
   }
   /* Room for the header. */
-  total_rec_size[MM] += Tuple_header::HeaderSize;
   if (regTabPtr->m_no_of_disk_attributes)
   {
     total_rec_size[DD] += Tuple_header::HeaderSize;
     total_rec_size[DD] += 1;
   }
-
-  Uint32 tot_var_size = total_rec_size[MM] -
-    regTabPtr->m_offsets[MM].m_fix_header_size;
+  total_rec_size[MM] += Tuple_header::HeaderSize;
 
   /* Room for changemask */
   total_rec_size[MM] += 1 + ((regTabPtr->m_no_of_attributes + 31) >> 5);

@@ -252,12 +252,9 @@ col34 char(255),
 col35 char(255))
 tablespace ts1 storage disk
 charset = latin1 engine=ndbcluster;
-ERROR HY000: Can't create table 't1' (use SHOW WARNINGS for more info).
 show warnings;
 Level	Code	Message
-Warning	1296	Got error 851 'Fixed-size column offset exceeded max. Use VARCHAR or COLUMN_FORMAT DYNAMIC for some columns' from NDB
-Warning	1296	Failed to commit NDB schema transaction
-Error	1005	Can't create table 't1' (use SHOW WARNINGS for more info).
+drop table t1;
 create table t1(
 col1 int unsigned not null primary key,
 col2 int unsigned not null,
@@ -271,13 +268,13 @@ drop table t1;
 create table t1(
 col1 int unsigned not null primary key,
 col2 int unsigned not null,
-col3 varchar(30000))
+col3 varchar(31056))
 tablespace ts1 storage disk
 charset = latin1 engine=ndbcluster;
 ERROR HY000: Can't create table 't1' (use SHOW WARNINGS for more info).
 show warnings;
 Level	Code	Message
-Warning	1296	Got error 738 'Record too big' from NDB
+Warning	1296	Got error 942 'On-disk part of row can at most be 31080 bytes' from NDB
 Error	1005	Can't create table 't1' (use SHOW WARNINGS for more info).
 CREATE TABLE t1 (a bigint primary key, b bigint storage disk)
 ENGINE ndb

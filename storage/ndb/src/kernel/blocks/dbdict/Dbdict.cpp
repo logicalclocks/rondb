@@ -139,8 +139,15 @@
 //#define DO_TRANSIENT_POOL_STAT 1
 //#define DEBUG_HASH 1
 //#define DEBUG_QUOTAS_EXTRA 1
-#define DEBUG_QUOTAS 1
+//#define DEBUG_QUOTAS 1
 //#define DEBUG_RESTART 1
+#define DEBUG_META 1
+#endif
+
+#ifdef DEBUG_META
+#define DEB_META(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_META(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_RESTART
@@ -5442,6 +5449,18 @@ inline void Dbdict::printTables() {
   g_eventLogger->info("OBJECT IN DICT:%s", name);
 }
 
+#ifdef DEBUG_META
+#define tabRequire(cond, error)     \
+  if (!(cond)) {                    \
+    jam();                          \
+    g_eventLogger->info("errorLine: %u, error: %u", \
+      __LINE__, error);             \
+    parseP->errorCode = error;      \
+    parseP->errorLine = __LINE__;   \
+    parseP->errorKey = it.getKey(); \
+    return;                         \
+  }  // if
+#else
 #define tabRequire(cond, error)     \
   if (!(cond)) {                    \
     jam();                          \
@@ -5450,7 +5469,7 @@ inline void Dbdict::printTables() {
     parseP->errorKey = it.getKey(); \
     return;                         \
   }  // if
-
+#endif
 // handleAddTableFailure(signal, __LINE__, allocatedTable);
 
 Dbdict::DictObject *Dbdict::get_object(const char *name, Uint32 len,
@@ -6562,14 +6581,26 @@ void Dbdict::handleTabInfo(SimpleProperties::Reader &it,
    * of varsized + dynamic part.
    */
   fixed_recordLength += ((nullable_non_dyn_cols + 31) >> 5);
-  disk_recordLength += ((dd_dyns + 31) >> 5);
-  mm_var_recordLength += ((mm_dyns + 31) >> 5);
-  disk_recordLength += ((dd_dyns + 2) >> 1);
-  mm_var_recordLength += ((mm_dyns + 2) >> 1);
-  disk_recordLength += ((dd_vars + 2) >> 1);
-  mm_var_recordLength += ((mm_vars + 2) >> 1);
-  mm_var_recordLength += 1;
-  disk_recordLength += 1;
+  if (dd_dyns > 0) {
+    disk_recordLength += ((dd_dyns + 31) >> 5);
+    disk_recordLength += ((dd_dyns + 2) >> 1);
+  }
+  if (mm_dyns > 0) {
+    mm_var_recordLength += ((mm_dyns + 31) >> 5);
+    mm_var_recordLength += ((mm_dyns + 2) >> 1);
+  }
+  if (dd_vars > 0) {
+    disk_recordLength += ((dd_vars + 2) >> 1);
+  }
+  if (mm_vars + mm_dyns > 0) {
+    mm_var_recordLength += 2; //Tuple_header::HeaderSize
+    mm_var_recordLength += ((mm_vars + 2) >> 1);
+    mm_var_recordLength += 2;
+  }
+  if (dd_vars + dd_dyns > 0) {
+    disk_recordLength += 2; //Tuple_header::HeaderSize
+    disk_recordLength += 2;
+  }
 
   tablePtr.p->m_disk_based = disk_based;
   tablePtr.p->noOfPrimkey = keyCount;
@@ -6577,6 +6608,12 @@ void Dbdict::handleTabInfo(SimpleProperties::Reader &it,
   tablePtr.p->noOfCharsets = noOfCharsets;
   tablePtr.p->tupKeyLength = keyLength;
   tablePtr.p->noOfNullBits = nullCount + nullBits;
+
+  DEB_META(("fixed_recordLength: %u, mm_var_recordLength: %u, "
+              "disk_recordLength: %u",
+    fixed_recordLength,
+    mm_var_recordLength,
+    disk_recordLength));
 
   tabRequire(fixed_recordLength <= MAX_FIXED_SIZE_IN_WORDS,
              CreateTableRef::TooLargeFixedSizePart);
