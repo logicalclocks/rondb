@@ -6503,7 +6503,6 @@ void Dbdict::handleTabInfo(SimpleProperties::Reader &it,
       return;
     }
 
-    recordLength += sz;
     if (attrDesc.AttributeKeyFlag) {
       keyLength += sz;
 
@@ -6593,13 +6592,13 @@ void Dbdict::handleTabInfo(SimpleProperties::Reader &it,
     disk_recordLength += ((dd_vars + 2) >> 1);
   }
   if (mm_vars + mm_dyns > 0) {
-    mm_var_recordLength += 2; //Tuple_header::HeaderSize
+    mm_var_recordLength += 1; //Tuple_header::HeaderSize
     mm_var_recordLength += ((mm_vars + 2) >> 1);
-    mm_var_recordLength += 2;
+    mm_var_recordLength += 1;
   }
   if (dd_vars + dd_dyns > 0) {
-    disk_recordLength += 2; //Tuple_header::HeaderSize
-    disk_recordLength += 2;
+    disk_recordLength += 1; //Tuple_header::HeaderSize
+    disk_recordLength += 1;
   }
 
   tablePtr.p->m_disk_based = disk_based;

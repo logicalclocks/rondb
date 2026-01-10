@@ -2080,9 +2080,9 @@ Uint32 Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line) {
     Uint32 mm_dyn_extra = (mm_vars + 2) >> 1;
     mm_dyn_extra += regTabPtr->m_offsets[MM].m_dyn_null_words;
     mm_dyn_extra += (mm_dyns + 2) >> 1;
+    tot_var_size += mm_dyn_extra;
     mm_dyn_extra += 1;
     total_rec_size[MM] += mm_dyn_extra;
-    tot_var_size += mm_dyn_extra;
     tot_var_size += Tuple_header::HeaderSize;
   }
   if (dd_vars + regTabPtr->m_attributes[DD].m_no_of_dynamic)
@@ -2092,10 +2092,12 @@ Uint32 Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line) {
     total_rec_size[DD] += regTabPtr->m_offsets[DD].m_dyn_null_words;
     total_rec_size[DD] += (dd_dyns + 2) >> 1;
   }
+  Uint32 total_disk_size = total_rec_size[DD];
   /* Room for the header. */
   if (regTabPtr->m_no_of_disk_attributes)
   {
     total_rec_size[DD] += Tuple_header::HeaderSize;
+    total_disk_size += Tuple_header::HeaderSize;
     total_rec_size[DD] += 1;
   }
   total_rec_size[MM] += Tuple_header::HeaderSize;
@@ -2128,11 +2130,11 @@ Uint32 Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line) {
     DEB_DYN_META(("(%u)tot_var_size = %u", instance(), tot_var_size));
     return ZTOO_LARGE_VAR_SIZE_PART;
   }
-  if (total_rec_size[DD] > MAX_DISK_VAR_SIZE_IN_WORDS) {
+  if (total_disk_size > MAX_DISK_VAR_SIZE_IN_WORDS) {
     jam();
     jamDataDebug(total_rec_size[DD]);
-    DEB_DYN_META(("(%u)tot_rec_sizei[DD] = %u",
-      instance(), total_rec_size[DD]));
+    DEB_DYN_META(("(%u)tot_disk_size = %u",
+      instance(), total_disk_size));
     return ZTOO_LARGE_DISK_VAR_SIZE_PART;
   }
   setUpQueryRoutines(regTabPtr);

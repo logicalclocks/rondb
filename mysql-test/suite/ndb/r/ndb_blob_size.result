@@ -240,16 +240,17 @@ ERROR HY000: Can't create table 'maxlen' (use SHOW WARNINGS for more info).
 SHOW WARNINGS;
 Level	Code	Message
 Warning	1296	Got error 941 'In-memory varsize part of row can at most be 32036 bytes' from NDB
+Warning	1296	Failed to commit NDB schema transaction
 Error	1005	Can't create table 'maxlen' (use SHOW WARNINGS for more info).
 
-## Max len for inline Blob is 32032 - (20 + 16[header])
+## Max len for inline Blob is 32032 - (16 + 16[header])
 CREATE TABLE test.maxlen(
                       a int primary key,
                       b blob comment "NDB_COLUMN=BLOB_INLINE_SIZE=32000") engine=ndb;
 SHOW WARNINGS;
 Level	Code	Message
 
-## Max len for inline disk Blob is 31080 - (20 + 16[header])
+## Max len for inline disk Blob is 31080 - (16 + 16[header])
 ## Verify inline of test.maxlen
 SELECT inline_size FROM ndbinfo.blobs WHERE table_name = 'maxlen';
 inline_size
