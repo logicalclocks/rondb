@@ -1,6 +1,7 @@
 package shell
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/chzyer/readline"
 	"github.com/logicalclocks/rondb/tools/rondb-cli/internal/client"
+	"github.com/logicalclocks/rondb/tools/rondb-cli/internal/dsl"
 	"github.com/logicalclocks/rondb/tools/rondb-cli/internal/tui"
 	"github.com/logicalclocks/rondb/tools/rondb-cli/internal/ui"
 )
@@ -19,15 +21,18 @@ type Config struct {
 	Host       string
 	RondisPort int
 	MySQLPort  int
+	RestPort   int
 	TLS        bool
 }
 
 type Shell struct {
 	rondisClient *client.RondisClient
 	mysqlClient  *client.MySQLClient
+	restClient   *client.RestClient
 	config       Config
 	mysqlUser    string
 	mysqlPass    string
+	rl           *readline.Instance // Store readline instance for multi-line input
 }
 
 func Run() error {
@@ -35,6 +40,7 @@ func Run() error {
 		Host:       "localhost",
 		RondisPort: 6379,
 		MySQLPort:  3306,
+		RestPort:   4406,
 	})
 }
 
@@ -55,8 +61,9 @@ func RunWithConfig(cfg Config) error {
 	if err := s.connect(); err != nil {
 		fmt.Println(ui.Error(fmt.Sprintf("Connection failed: %v", err)))
 		fmt.Println(ui.Info("Check that RonDB is running:"))
-		fmt.Println(ui.Info(fmt.Sprintf("  Rondis: %s:%d", cfg.Host, cfg.RondisPort)))
-		fmt.Println(ui.Info(fmt.Sprintf("  MySQL:  %s:%d (user: %s)", cfg.Host, cfg.MySQLPort, mysqlUser)))
+		fmt.Println(ui.Info(fmt.Sprintf("  Rondis:   %s:%d", cfg.Host, cfg.RondisPort)))
+		fmt.Println(ui.Info(fmt.Sprintf("  MySQL:    %s:%d (user: %s)", cfg.Host, cfg.MySQLPort, mysqlUser)))
+		fmt.Println(ui.Info(fmt.Sprintf("  REST API: %s:%d", cfg.Host, cfg.RestPort)))
 		return err
 	}
 	defer s.close()
@@ -85,6 +92,16 @@ func (s *Shell) connect() error {
 		return fmt.Errorf("mysql (%s:%d): %w", s.config.Host, s.config.MySQLPort, err)
 	}
 
+	// REST API is required
+	s.restClient, err = client.NewRestClientWithOptions(client.RestOptions{
+		Host: s.config.Host,
+		Port: s.config.RestPort,
+		TLS:  s.config.TLS,
+	})
+	if err != nil {
+		return fmt.Errorf("rest api (%s:%d): %w", s.config.Host, s.config.RestPort, err)
+	}
+
 	// Rondis is optional - don't fail if not available
 	s.rondisClient, err = client.NewRondisClientWithOptions(client.RondisOptions{
 		Host: s.config.Host,
@@ -106,6 +123,9 @@ func (s *Shell) close() {
 	if s.mysqlClient != nil {
 		s.mysqlClient.Close()
 	}
+	if s.restClient != nil {
+		s.restClient.Close()
+	}
 }
 
 func (s *Shell) loop() error {
@@ -124,6 +144,9 @@ func (s *Shell) loop() error {
 		return err
 	}
 	defer rl.Close()
+
+	// Store readline instance for multi-line input
+	s.rl = rl
 
 	for {
 		line, err := rl.Readline()
@@ -159,6 +182,16 @@ func (s *Shell) execute(line string) error {
 	// SQL detection
 	if isSQLCommand(lower) {
 		return s.executeSQL(line)
+	}
+
+	// REST API: Single READ command
+	if strings.HasPrefix(lower, "read ") {
+		return s.executeREAD(line)
+	}
+
+	// REST API: BATCH (single-line or multi-line mode)
+	if lower == "batch" || strings.HasPrefix(lower, "batch ") {
+		return s.executeBatch(line)
 	}
 
 	// Default: Rondis command
@@ -245,6 +278,110 @@ func (s *Shell) executeSQL(line string) error {
 	fmt.Println(ui.Success(fmt.Sprintf("OK, %d rows affected", affected)))
 	fmt.Println(ui.Timing(duration))
 	return nil
+}
+
+// executeREAD handles single READ commands via REST API
+func (s *Shell) executeREAD(line string) error {
+	database, table, req, err := dsl.ParseSingleRead(line)
+	if err != nil {
+		return fmt.Errorf("parse error: %w", err)
+	}
+
+	endpoint := fmt.Sprintf("/0.1.0/%s/%s/pk-read", database, table)
+
+	// Pretty print the request
+	reqJSON, _ := json.MarshalIndent(req, "", "  ")
+	fmt.Println(ui.Info(fmt.Sprintf("POST %s", endpoint)))
+	fmt.Println(string(reqJSON))
+	fmt.Println()
+
+	data, duration, err := s.restClient.Post(endpoint, req)
+	if err != nil {
+		return err
+	}
+
+	fmt.Println(ui.Info("Response:"))
+	fmt.Println(client.PrettyJSON(data))
+	fmt.Println(ui.Timing(duration))
+	return nil
+}
+
+// executeBatch handles BATCH commands via REST API (single-line or multi-line)
+func (s *Shell) executeBatch(line string) error {
+	var lines []string
+
+	// Check if there's content after BATCH on the same line
+	content := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(line, "BATCH"), "batch"))
+	if content != "" {
+		// Single-line mode: parse the rest of the line
+		lines = []string{content}
+	} else {
+		// Multi-line mode: read until ';'
+		fmt.Println(ui.Info("Entering BATCH mode. End with ';' on its own line."))
+		var err error
+		lines, err = s.readBatchLines()
+		if err != nil {
+			return err
+		}
+	}
+
+	req, err := dsl.ParseBatch(lines)
+	if err != nil {
+		return fmt.Errorf("parse error: %w", err)
+	}
+
+	endpoint := "/0.1.0/batch"
+
+	// Pretty print the request
+	reqJSON, _ := json.MarshalIndent(req, "", "  ")
+	fmt.Println()
+	fmt.Println(ui.Info(fmt.Sprintf("POST %s", endpoint)))
+	fmt.Println(string(reqJSON))
+	fmt.Println()
+
+	data, duration, err := s.restClient.Post(endpoint, req)
+	if err != nil {
+		return err
+	}
+
+	fmt.Println(ui.Info("Response:"))
+	fmt.Println(client.PrettyJSON(data))
+	fmt.Println(ui.Timing(duration))
+	return nil
+}
+
+// readBatchLines reads lines until a line containing only ';' is entered
+func (s *Shell) readBatchLines() ([]string, error) {
+	var lines []string
+
+	// Change prompt for multi-line input
+	originalPrompt := s.rl.Config.Prompt
+	s.rl.SetPrompt("batch> ")
+	defer s.rl.SetPrompt(originalPrompt)
+
+	for {
+		line, err := s.rl.Readline()
+		if err == readline.ErrInterrupt {
+			return nil, fmt.Errorf("batch input cancelled")
+		} else if err != nil {
+			return nil, err
+		}
+
+		trimmed := strings.TrimSpace(line)
+
+		// Check for end marker
+		if trimmed == ";" {
+			break
+		}
+
+		lines = append(lines, line)
+	}
+
+	if len(lines) == 0 {
+		return nil, fmt.Errorf("empty batch")
+	}
+
+	return lines, nil
 }
 
 func (s *Shell) runDemo() error {
@@ -423,7 +560,7 @@ func (s *Shell) listTables() error {
 
 func (s *Shell) printHelp() {
 	help := `
-RonDB CLI - Rondis commands. SQL queries. One database.
+RonDB CLI - Rondis commands. SQL queries. REST API. One database.
 
 Commands:
   Rondis commands (Redis protocol):
@@ -438,6 +575,16 @@ Commands:
     INSERT INTO ...     Insert data
     CREATE TABLE ...    Create tables
     USE database        Switch database
+
+  REST API (pk-read):
+    READ db.table col1, col2 FILTER id=1, name="foo"
+                        Single pk-read via REST API
+
+    BATCH READ db.table col1 FILTER id=1 [OP id] [READ ...]
+                        Batch with full READ per operation
+
+    BATCH db.table: col1, col2 READ FILTER id=1; READ FILTER id=2;
+                        Batch with shared table/columns
 
   Internal commands:
     .browse             Open database browser (TUI)
@@ -545,6 +692,10 @@ func (s *Shell) getCompleter() *readline.PrefixCompleter {
 			readline.PcItem("TABLE"),
 			readline.PcItem("DATABASE"),
 		),
+
+		// REST API commands
+		readline.PcItem("READ"),
+		readline.PcItem("BATCH"),
 
 		// Internal commands
 		readline.PcItem(".bench"),

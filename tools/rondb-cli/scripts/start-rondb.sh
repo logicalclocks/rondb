@@ -157,6 +157,11 @@ start_cluster() {
                 "Port": 1186
             }
         ]
+    },
+    "Security": {
+        "APIKey": {
+            "UseHopsworksAPIKeys": false
+        }
     }
 }
 RESTJSON

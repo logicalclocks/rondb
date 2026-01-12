@@ -17,6 +17,7 @@ var (
 	host       string
 	rondisPort int
 	mysqlPort  int
+	restPort   int
 	useTLS     bool
 )
 
@@ -29,6 +30,7 @@ var rootCmd = &cobra.Command{
 			Host:       host,
 			RondisPort: rondisPort,
 			MySQLPort:  mysqlPort,
+			RestPort:   restPort,
 			TLS:        useTLS,
 		})
 	},
@@ -74,6 +76,19 @@ var statusCmd = &cobra.Command{
 			mysqlClient.Close()
 		}
 
+		// Check REST API
+		restClient, err := client.NewRestClientWithOptions(client.RestOptions{
+			Host: host,
+			Port: restPort,
+			TLS:  useTLS,
+		})
+		if err != nil {
+			fmt.Println(ui.Error(fmt.Sprintf("REST API (:%d): %v", restPort, err)))
+		} else {
+			fmt.Println(ui.Success(fmt.Sprintf("REST API (:%d): connected", restPort)))
+			restClient.Close()
+		}
+
 		return nil
 	},
 }
@@ -90,6 +105,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&host, "host", "localhost", "RonDB host")
 	rootCmd.PersistentFlags().IntVar(&rondisPort, "rondis-port", 6379, "Rondis port")
 	rootCmd.PersistentFlags().IntVar(&mysqlPort, "mysql-port", 3306, "MySQL port")
+	rootCmd.PersistentFlags().IntVar(&restPort, "rest-port", 4406, "REST API port")
 	rootCmd.PersistentFlags().BoolVar(&useTLS, "tls", false, "Enable TLS for connections")
 
 	// Also support env vars
@@ -104,6 +120,11 @@ func init() {
 	if p := os.Getenv("RONDB_MYSQL_PORT"); p != "" {
 		if port, err := strconv.Atoi(p); err == nil {
 			mysqlPort = port
+		}
+	}
+	if p := os.Getenv("RONDB_REST_PORT"); p != "" {
+		if port, err := strconv.Atoi(p); err == nil {
+			restPort = port
 		}
 	}
 
