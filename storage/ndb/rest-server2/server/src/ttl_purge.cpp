@@ -2146,7 +2146,8 @@ bool TTLPurger::Run() {
     assert(!purge_worker_running_);
     schema_watcher_ = NdbThread_Create(TTLPurger::_SchemaWatcherJob,
                                        (NDB_THREAD_ARG *)this,
-                                       0, "SchemaWatcher",
+                                       1 * 1024 * 1024,
+                                       "SchemaWatcher",
                                        NDB_THREAD_PRIO_MEAN);
     schema_watcher_running_ = true;
   }

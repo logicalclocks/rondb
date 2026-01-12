@@ -7639,13 +7639,23 @@ bool NdbDictionaryImpl::validateRecordSpec(
    */
 
   /* Column data + NULL bits with at least 1 non nullable PK */
-  const Uint32 MaxRecordElements = (2 * NDB_MAX_ATTRIBUTES_IN_TABLE) - 1;
+  const Uint32 MaxRecordElements = (2 * OLD_NDB_MAX_ATTRIBUTES_IN_TABLE) - 1;
   Uint32 numElements = 0;
-  BitRange bitRanges[MaxRecordElements];
+  bool malloced_bitRanges = false;
+  BitRange stackBitRanges[MaxRecordElements];
+  BitRange *bitRanges = &stackBitRanges[0];
 
   if (length > NDB_MAX_ATTRIBUTES_IN_TABLE) {
     m_error.code = 4548;
     return false;
+  }
+  if (length > OLD_NDB_MAX_ATTRIBUTES_IN_TABLE) {
+    malloced_bitRanges = true;
+    bitRanges = new (std::nothrow) BitRange[2 * length];
+    if (bitRanges == nullptr) {
+      m_error.code = 4548;
+      return false;
+    }
   }
 
   /* Populate bitRanges array with ranges of bits occupied by
@@ -7671,6 +7681,7 @@ bool NdbDictionaryImpl::validateRecordSpec(
          !((col->getLength() == 1) &&
            (flags & NdbDictionary::RecMysqldBitfield)))) {
       m_error.code = 4556;
+      if (malloced_bitRanges) delete [] bitRanges;
       return false;
     }
 
@@ -7727,12 +7738,14 @@ bool NdbDictionaryImpl::validateRecordSpec(
     if (unlikely((bitRanges[rangeNum].start <= endOfPreviousRange))) {
       /* Oops, this range overlaps with previous one */
       m_error.code = 4547;
+      if (malloced_bitRanges) delete [] bitRanges;
       return false;
     }
     endOfPreviousRange = bitRanges[rangeNum].end;
   }
 
   /* All relevant ranges are distinct */
+  if (malloced_bitRanges) delete [] bitRanges;
   return true;
 }
 
