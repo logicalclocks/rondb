@@ -348,7 +348,7 @@ RS_Status APIKeyCache::update_cache(const std::string &apiKey, Uint32 hash) {
     api_key_str[apiKey.size()] = 0;
     NdbThread *thread = NdbThread_Create(api_key_thread_main,
                                          (void**)api_key_str,
-                                          128 * 1024,
+                                          1024 * 1024,
                                           "Api Key Cache thread",
                                           NDB_THREAD_PRIO_LOW);
     if (thread == nullptr) {

@@ -2191,7 +2191,7 @@ static void run_old_flexAsynch(ThreadNdb *pThreadData, NdbTimer &timer) {
   for (Uint32 i = 0; i < tNoOfThreads; i++) {
     pThreadData[i].ThreadNo = i;
     threadLife[i] =
-        NdbThread_Create(threadLoop, (void **)&pThreadData[i], 32768,
+        NdbThread_Create(threadLoop, (void **)&pThreadData[i], 1024 * 1024,
                          "flexAsynchThread", NDB_THREAD_PRIO_LOW);
     if (numberOfExecutorCPU != 0) {
       Ndb_LockCPU(threadLife[i], Uint32(executorCPUArray[cpu_id]));

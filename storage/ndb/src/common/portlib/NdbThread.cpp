@@ -318,7 +318,7 @@ struct NdbThread *NdbThread_Create(NDB_THREAD_FUNC *p_thread_func,
   NDB_THREAD_STACKSIZE thread_stack_size;
   /* Use default stack size if 0 specified */
   if (_stack_size == 0)
-    thread_stack_size = 64 * 1024 * SIZEOF_CHARP / 4;
+    thread_stack_size = 128 * 1024 * SIZEOF_CHARP / 4;
   else
     thread_stack_size = _stack_size * SIZEOF_CHARP / 4;
 

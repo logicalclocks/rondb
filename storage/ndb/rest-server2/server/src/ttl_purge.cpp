@@ -339,7 +339,7 @@ retry:
   purge_worker_exit_ = false;
   purge_worker_ = NdbThread_Create(TTLPurger::_PurgeWorkerJob,
                                      (NDB_THREAD_ARG *)this,
-                                     0, "PurgeWorker",
+                                     1024 * 1024, "PurgeWorker",
                                      NDB_THREAD_PRIO_MEAN);
   purge_worker_running_ = true;
 
