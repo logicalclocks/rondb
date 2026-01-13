@@ -8063,17 +8063,20 @@ void Suma::resend_bucket(Signal *signal, Uint32 buck, Uint64 min_gci,
   ndbrequire(tail != RNIL);
 
   if (tail == bucket->m_buffer_head.m_page_id) {
+    jam();
     max_gci = bucket->m_buffer_head.m_max_gci;
     end = page->m_data + bucket->m_buffer_head.m_page_pos;
     next_page = RNIL;
 
     if (ptr == end) {
+      jam();
       delay = true;
       goto next;
     }
   }
   else if(pos == 0 && min_gci > max_gci)
   {
+    jam();
     free_page(tail, page, __LINE__);
     tail = bucket->m_buffer_tail = next_page;
     goto next;
@@ -8249,13 +8252,16 @@ void Suma::resend_bucket(Signal *signal, Uint32 buck, Uint64 min_gci,
         dst += sz_part;
         sz_buf += sz_part;
         if (part == 2 || part == 4) {
+          jam();
           ndbrequire(sz_part == MAX_SUMA_BUFFER_SIZE); // Simply continue
         } else if (part == 3) {
+          jam();
           lsptr[2].sz = sz_buf;
           expected_part = 4;
           sz_buf = 0;
           dst = b_buffer;
         } else if (part == 5) {
+          jam();
           lsptr[1].sz = sz_buf;
           expected_part = 6;
         } else {
@@ -8292,6 +8298,7 @@ void Suma::resend_bucket(Signal *signal, Uint32 buck, Uint64 min_gci,
          * If it doesn't belong to this subscription we will ignore the
          * entry.
          */
+        jam();
         Ptr<Table> tabPtr;
         tabPtr.i = subPtr.p->m_table_ptrI;
         ndbrequire(c_tablePool.getValidPtr(tabPtr));
@@ -8355,7 +8362,7 @@ next:
     g_eventLogger->info("SUMA Resend done for bucket %u", buck);
     return;
   }
-
+  jam();
   signal->theData[0] = SumaContinueB::RESEND_BUCKET;
   signal->theData[1] = buck;
   signal->theData[2] = (Uint32)(min_gci >> 32);
