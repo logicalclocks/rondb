@@ -6302,6 +6302,7 @@ void Dbdict::handleTabInfo(SimpleProperties::Reader &it,
   Uint32 mm_vars = 0;
   Uint32 mm_dyns = 0;
   Uint32 dd_vars = 0;
+  Uint32 dd_null_vars = 0;
   Uint32 dd_dyns = 0;
   Uint32 nullable_non_dyn_cols = 0;
   AttributeRecordPtr attrPtr;
@@ -6536,6 +6537,9 @@ void Dbdict::handleTabInfo(SimpleProperties::Reader &it,
     } else {
       if (attrDesc.AttributeNullableFlag) {
         nullable_non_dyn_cols++;
+        if (disk) {
+          dd_null_vars++;
+        }
       }
       if (disk) {
         dd_vars++;
@@ -6543,13 +6547,16 @@ void Dbdict::handleTabInfo(SimpleProperties::Reader &it,
         mm_vars++;
       }
     }
+    Uint32 store_sz = ((4 * sz) + 3) / 4;
     if (disk) {
-      disk_recordLength += sz;
+      disk_recordLength += store_sz;
     } else if (b == NDB_ARRAYTYPE_FIXED && !dyn) {
-      fixed_recordLength += sz;
+      fixed_recordLength += store_sz;
     } else {
-      mm_var_recordLength += sz;
+      mm_var_recordLength += store_sz;
     }
+    DEB_META(("disk_recordLength: %u, store_sz: %u, line: %u",
+      disk_recordLength, store_sz, __LINE__));
     Uint32 pos = 2 * (disk ? 1 : 0) + (b == NDB_ARRAYTYPE_FIXED ? 0 : 1);
     counts[pos + 1]++;
 
@@ -6565,6 +6572,8 @@ void Dbdict::handleTabInfo(SimpleProperties::Reader &it,
 
     if (it.getKey() != DictTabInfo::AttributeName) break;
   }  // while
+  DEB_META(("disk_recordLength: %u, line: %u",
+    disk_recordLength, __LINE__));
 
   /**
    * All columns that are NULL and not dynamic are stored in the
@@ -6582,24 +6591,33 @@ void Dbdict::handleTabInfo(SimpleProperties::Reader &it,
   fixed_recordLength += ((nullable_non_dyn_cols + 31) >> 5);
   if (dd_dyns > 0) {
     disk_recordLength += ((dd_dyns + 31) >> 5);
-    disk_recordLength += ((dd_dyns + 2) >> 1);
   }
+  DEB_META(("disk_recordLength: %u, line: %u",
+    disk_recordLength, __LINE__));
   if (mm_dyns > 0) {
     mm_var_recordLength += ((mm_dyns + 31) >> 5);
     mm_var_recordLength += ((mm_dyns + 2) >> 1);
   }
   if (dd_vars > 0) {
     disk_recordLength += ((dd_vars + 2) >> 1);
+    disk_recordLength += ((dd_dyns + 2) >> 1);
   }
+  DEB_META(("disk_recordLength: %u, line: %u",
+    disk_recordLength, __LINE__));
   if (mm_vars + mm_dyns > 0) {
     mm_var_recordLength += 1; //Tuple_header::HeaderSize
     mm_var_recordLength += ((mm_vars + 2) >> 1);
     mm_var_recordLength += 1;
   }
   if (dd_vars + dd_dyns > 0) {
-    disk_recordLength += 1; //Tuple_header::HeaderSize
-    disk_recordLength += 1;
+    disk_recordLength += 2; //Tuple_header::HeaderSize
+    disk_recordLength += 1; // GCI
+    if (dd_null_vars > 0) {
+      disk_recordLength += ((dd_null_vars + 31) >> 5);
+    }
   }
+  DEB_META(("disk_recordLength: %u, line: %u",
+    disk_recordLength, __LINE__));
 
   tablePtr.p->m_disk_based = disk_based;
   tablePtr.p->noOfPrimkey = keyCount;

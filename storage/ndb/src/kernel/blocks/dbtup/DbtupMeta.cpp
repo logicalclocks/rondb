@@ -2069,6 +2069,8 @@ Uint32 Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line) {
     pos[DD] + fix_size[DD] +
     ((var_size[DD] + 3) >> 2) + ((dyn_size[DD] + 3) >> 2);
 
+  DEB_DYN_META(("(%u) total_disk_size: %u, line: %u",
+    instance(), total_rec_size[DD], __LINE__));
   /*
     Room for offset arrays and dynamic bitmaps. There is one extra 16-bit
     offset in each offset array (for easy computation of final length).
@@ -2093,6 +2095,10 @@ Uint32 Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line) {
     total_rec_size[DD] += (dd_dyns + 2) >> 1;
   }
   Uint32 total_disk_size = total_rec_size[DD];
+
+  DEB_DYN_META(("(%u) total_disk_size: %u, line: %u",
+    instance(), total_disk_size, __LINE__));
+
   /* Room for the header. */
   if (regTabPtr->m_no_of_disk_attributes)
   {
@@ -2100,6 +2106,9 @@ Uint32 Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line) {
     total_disk_size += Tuple_header::HeaderSize;
     total_rec_size[DD] += 1;
   }
+  DEB_DYN_META(("(%u) total_disk_size: %u, line: %u",
+    instance(), total_disk_size, __LINE__));
+
   total_rec_size[MM] += Tuple_header::HeaderSize;
 
   /* Room for changemask */
