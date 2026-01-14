@@ -7057,10 +7057,10 @@ Suma::get_buffer_ptr(Signal* signal,
     pos.m_last_gci = gci;
  
     /* Already verified in seize_page */
-    page= c_page_pool.getPtr(pos.m_page_id);
-    page->m_next_page= RNIL;
+    page = c_page_pool.getPtr(pos.m_page_id);
+    page->m_next_page = RNIL;
     ptr= page->m_data;
-    goto loop; //
+    goto loop;
   }
 }
 
@@ -7982,7 +7982,6 @@ void Suma::resend_bucket(Signal *signal, Uint32 buck, Uint64 min_gci,
                          Uint32 pos, Uint64 last_gci) {
   ndbrequire(buck < NO_OF_BUCKETS);
   Bucket *bucket = c_buckets + buck;
-  g_eventLogger->info("resend_bucket");
 
 #ifdef ERROR_INSERT
   if (unlikely(ERROR_INSERTED(13060))) {
@@ -8053,6 +8052,7 @@ void Suma::resend_bucket(Signal *signal, Uint32 buck, Uint64 min_gci,
 
   Uint32 tail = bucket->m_buffer_tail;
   Buffer_page *page = c_page_pool.getPtr(tail);
+  Buffer_page *page_first = page;
   Uint64 max_gci = page->m_max_gci_lo | (Uint64(page->m_max_gci_hi) << 32);
   Uint32 next_page = page->m_next_page;
   Uint32 *ptr = page->m_data + pos;
@@ -8063,6 +8063,12 @@ void Suma::resend_bucket(Signal *signal, Uint32 buck, Uint64 min_gci,
   ndbrequire(tail != RNIL);
 
   if (tail == bucket->m_buffer_head.m_page_id) {
+    /**
+     * We have reached the last page in the bucket. Set next_page to RNIL
+     * and set end position. In this case the page might not be updated
+     * with max_gci yet, thus we use the max_gci from the bucket head
+     * and similarly for page position and end position.
+     */
     jam();
     max_gci = bucket->m_buffer_head.m_max_gci;
     end = page->m_data + bucket->m_buffer_head.m_page_pos;
@@ -8073,9 +8079,11 @@ void Suma::resend_bucket(Signal *signal, Uint32 buck, Uint64 min_gci,
       delay = true;
       goto next;
     }
-  }
-  else if(pos == 0 && min_gci > max_gci)
-  {
+  } else if (pos == 0 && min_gci > max_gci) {
+    /**
+     * The max GCI on this page is lower than the min GCI we are interested
+     * in, thus we can skip the page.
+     */
     jam();
     free_page(tail, page, __LINE__);
     tail = bucket->m_buffer_tail = next_page;
@@ -8219,21 +8227,30 @@ void Suma::resend_bucket(Signal *signal, Uint32 buck, Uint64 min_gci,
           jam();
           // Next part of data on next page.
           CHECK_PAGE(next_page);
-          Buffer_page* page= c_page_pool.getPtr(next_page);
+          page = c_page_pool.getPtr(next_page);
           ndbrequire(page->m_words_used > 0);
           ptr_part = page->m_data;
+          next_page = page->m_next_page;
+          end = page->m_data + page->m_words_used;
         }
         src_part = ptr_part;
         Uint32 header_word_part = *src_part;
         src_part++;
         Uint32 sz_part = header_word_part & Buffer_page::SIZE_MASK;
-        ndbrequire(sz_part > 0);
-        sz_part--;
         if (ptr_part != ptr) {
           // First block on a page always must have gci.
+          jam();
           ndbrequire((header_word_part & Buffer_page::SAME_GCI_FLAG) == 0);
+          next_pos = sz_part;
+        } else {
+          if (next_pos > 0) {
+            jam();
+            next_pos += sz_part;
+          }
         }
-        ptr = ptr_part + sz_part + 1;
+        ptr = ptr_part + sz_part;
+        ndbrequire(sz_part > 0);
+        sz_part--;
         part = (header_word_part >> Buffer_page::PART_NUM_SHIFT) &
                 Buffer_page::PART_NUM_MASK;
         ndbrequire(part == expected_part || part == (expected_part + 1));
@@ -8331,17 +8348,33 @@ void Suma::resend_bucket(Signal *signal, Uint32 buck, Uint64 min_gci,
   if (next_pos > 0 || (ptr == end && tail != bucket->m_buffer_head.m_page_id)) {
     jam();
     /**
-     * release...
+     * We moved to new pages, we need to release them and set up the new
+     * tail page and set pos to 0.
+     *
+     * The page variable still points to the first page. page_cont is the page
+     * we are currently reading from. Release pages already completed and move
+     * tail forward.
      */
     ndbassert(tail != bucket->m_buffer_head.m_page_id);
-    free_page(tail, page, __LINE__);
-    tail = bucket->m_buffer_tail = next_page;
+    Uint32 page_next = 0;
+    do {
+      page_next = page_first->m_next_page;
+      free_page(tail, page_first, __LINE__);
+      tail = page_next;
+      if (page_next == RNIL) break;
+      page_first = c_page_pool.getPtr(page_next);
+    } while (page_first != page);
+    tail = bucket->m_buffer_tail = page_next;
     pos = next_pos;
     if (pos == 0) {
       jam();
       last_gci = 0;
     }
   } else {
+    /**
+     * We are still on the same page, we haven't moved to any new page
+     * Move the position according to where we moved the ptr.
+     */
     jam();
     pos = Uint32(ptr - page->m_data);
   }
