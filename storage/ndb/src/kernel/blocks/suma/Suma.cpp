@@ -8055,6 +8055,7 @@ void Suma::resend_bucket(Signal *signal, Uint32 buck, Uint64 min_gci,
   Buffer_page *page_first = page;
   Uint64 max_gci = page->m_max_gci_lo | (Uint64(page->m_max_gci_hi) << 32);
   Uint32 next_page = page->m_next_page;
+  Uint32 last_page = next_page;
   Uint32 *ptr = page->m_data + pos;
   Uint32 *end = page->m_data + page->m_words_used;
   bool delay = false;
@@ -8226,6 +8227,7 @@ void Suma::resend_bucket(Signal *signal, Uint32 buck, Uint64 min_gci,
         } else {
           jam();
           // Next part of data on next page.
+          last_page = next_page;
           CHECK_PAGE(next_page);
           page = c_page_pool.getPtr(next_page);
           ndbrequire(page->m_words_used > 0);
@@ -8358,12 +8360,14 @@ void Suma::resend_bucket(Signal *signal, Uint32 buck, Uint64 min_gci,
     ndbassert(tail != bucket->m_buffer_head.m_page_id);
     Uint32 page_next = 0;
     do {
+      jam();
       page_next = page_first->m_next_page;
       free_page(tail, page_first, __LINE__);
+      if (page_next == last_page) break;
       tail = page_next;
-      if (page_next == RNIL) break;
       page_first = c_page_pool.getPtr(page_next);
-    } while (page_first != page);
+      ndbrequire(page_first != page);
+    } while (true);
     tail = bucket->m_buffer_tail = page_next;
     pos = next_pos;
     if (pos == 0) {
@@ -8387,7 +8391,7 @@ next:
     /**
      * Bucket takeover in sendSUB_GCP_COMPLETE_REP() sets bucket head's
      * m_page_id and m_next_page to RNIL to inform the resend fiber to
-     * indicate that the swtich_over gci is completed and no more data
+     * indicate that the switch_over gci is completed and no more data
      * will arrive. Resend fiber uses this info to terminate resending.
      */
     ndbassert(!(bucket->m_state & Bucket::BUCKET_TAKEOVER));
