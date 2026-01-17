@@ -3,10 +3,13 @@ package shell
 import (
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/chzyer/readline"
@@ -161,7 +164,17 @@ func (s *Shell) loop() error {
 			continue
 		}
 
-		if err := s.execute(line); err != nil {
+		// Check if command is complete (ends with ;;) or needs more input
+		fullCommand, err := s.readFullCommand(line)
+		if err != nil {
+			if err.Error() == "input cancelled" {
+				continue
+			}
+			fmt.Println(ui.Error(err.Error()))
+			continue
+		}
+
+		if err := s.execute(fullCommand); err != nil {
 			fmt.Println(ui.Error(err.Error()))
 		}
 	}
@@ -169,6 +182,68 @@ func (s *Shell) loop() error {
 	fmt.Println()
 	fmt.Println(ui.Disconnected())
 	return nil
+}
+
+// readFullCommand reads a complete command, supporting multi-line input
+// Commands end with ; or are single-line if they don't need continuation
+func (s *Shell) readFullCommand(firstLine string) (string, error) {
+	// If line ends with ;, it's complete
+	if strings.HasSuffix(firstLine, ";") {
+		return strings.TrimSuffix(firstLine, ";"), nil
+	}
+
+	// For simple single-line commands (internal commands, simple Rondis), return as-is
+	lower := strings.ToLower(firstLine)
+	if strings.HasPrefix(lower, ".") {
+		return firstLine, nil
+	}
+
+	// For BATCH without ;, use the existing multi-line BATCH handling
+	if lower == "batch" || strings.HasPrefix(lower, "batch ") {
+		return firstLine, nil // Let executeBatch handle multi-line
+	}
+
+	// For other commands without ;, check if it looks like it might need more input
+	// Simple heuristic: if it's a short Rondis command (GET, SET, etc.), it's complete
+	simpleCommands := []string{"get ", "set ", "del ", "incr ", "decr ", "ping", "keys ", "mget ", "mset ", "hget ", "hset ", "hdel "}
+	for _, cmd := range simpleCommands {
+		if strings.HasPrefix(lower, cmd) || lower == strings.TrimSpace(cmd) {
+			return firstLine, nil
+		}
+	}
+
+	// For SQL and READ commands, allow multi-line input until ;
+	var lines []string
+	lines = append(lines, firstLine)
+
+	// Change prompt for continuation
+	originalPrompt := s.rl.Config.Prompt
+	s.rl.SetPrompt("   ...> ")
+	defer s.rl.SetPrompt(originalPrompt)
+
+	for {
+		line, err := s.rl.Readline()
+		if err == readline.ErrInterrupt {
+			return "", fmt.Errorf("input cancelled")
+		} else if err != nil {
+			return "", err
+		}
+
+		line = strings.TrimSpace(line)
+
+		// Check for end marker
+		if strings.HasSuffix(line, ";") {
+			line = strings.TrimSuffix(line, ";")
+			if line != "" {
+				lines = append(lines, line)
+			}
+			break
+		}
+
+		lines = append(lines, line)
+	}
+
+	return strings.Join(lines, " "), nil
 }
 
 func (s *Shell) execute(line string) error {
@@ -212,16 +287,54 @@ func (s *Shell) executeInternal(line string) error {
 		return s.listTables()
 	case "demo":
 		return s.runDemo()
-	case "bench":
-		numOps := 1000
-		if len(parts) > 1 {
-			n, err := strconv.Atoi(parts[1])
-			if err != nil || n <= 0 {
-				return fmt.Errorf("invalid number of operations: %s", parts[1])
-			}
-			numOps = n
+	case "load_rondis":
+		numThreads, numOps, rowsPerOp, err := parseBenchParams(parts)
+		if err != nil {
+			return err
 		}
-		return s.runBench(numOps)
+		return s.runLoadRondis(numThreads, numOps, rowsPerOp)
+	case "bench_rondis":
+		numThreads, numOps, rowsPerOp, err := parseBenchParams(parts)
+		if err != nil {
+			return err
+		}
+		writePct := 0 // default: 100% reads
+		if len(parts) > 4 {
+			n, err := strconv.Atoi(parts[4])
+			if err != nil || n < 0 || n > 100 {
+				return fmt.Errorf("invalid write percentage (0-100): %s", parts[4])
+			}
+			writePct = n
+		}
+		return s.runBenchRondis(numThreads, numOps, rowsPerOp, writePct)
+	case "bench_rondis_cont":
+		numThreads, numOps, rowsPerOp, err := parseBenchParams(parts)
+		if err != nil {
+			return err
+		}
+		writePct := 0 // default: 100% reads
+		if len(parts) > 4 {
+			n, err := strconv.Atoi(parts[4])
+			if err != nil || n < 0 || n > 100 {
+				return fmt.Errorf("invalid write percentage (0-100): %s", parts[4])
+			}
+			writePct = n
+		}
+		durationSec := 60 // default: 60 seconds
+		if len(parts) > 5 {
+			n, err := strconv.Atoi(parts[5])
+			if err != nil || n <= 0 {
+				return fmt.Errorf("invalid duration in seconds: %s", parts[5])
+			}
+			durationSec = n
+		}
+		return s.runBenchRondisCont(numThreads, numOps, rowsPerOp, writePct, durationSec)
+	case "del_rondis":
+		numThreads, numOps, rowsPerOp, err := parseBenchParams(parts)
+		if err != nil {
+			return err
+		}
+		return s.runDelRondis(numThreads, numOps, rowsPerOp)
 	case "browse", "ui":
 		return tui.Run(s.mysqlClient)
 	case "quit", "exit", "q":
@@ -307,16 +420,31 @@ func (s *Shell) executeREAD(line string) error {
 }
 
 // executeBatch handles BATCH commands via REST API (single-line or multi-line)
+// Single-line: end with ; (e.g., BATCH db.table b READ FILTER a=1, READ FILTER a=2;)
+// Multi-line: end with ; on its own line
+// Use , to separate READ operations in header syntax
 func (s *Shell) executeBatch(line string) error {
 	var lines []string
 
 	// Check if there's content after BATCH on the same line
 	content := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(line, "BATCH"), "batch"))
-	if content != "" {
-		// Single-line mode: parse the rest of the line
+
+	// Check if line ends with ; (single-line complete marker)
+	if content != "" && strings.HasSuffix(content, ";") {
+		// Single-line mode: remove trailing ;
+		content = strings.TrimSuffix(content, ";")
+		content = strings.TrimSpace(content)
 		lines = []string{content}
+	} else if content != "" {
+		// Multi-line mode starting with content: read more until ';' on its own line
+		fmt.Println(ui.Info("Continue BATCH input. End with ';' on its own line."))
+		moreLines, err := s.readBatchLines()
+		if err != nil {
+			return err
+		}
+		lines = append([]string{content}, moreLines...)
 	} else {
-		// Multi-line mode: read until ';'
+		// Multi-line mode: read until ';' on its own line
 		fmt.Println(ui.Info("Entering BATCH mode. End with ';' on its own line."))
 		var err error
 		lines, err = s.readBatchLines()
@@ -447,94 +575,529 @@ func (s *Shell) runDemo() error {
 	return nil
 }
 
-func (s *Shell) runBench(numOps int) error {
+// parseBenchParams parses the common parameters for benchmark commands
+func parseBenchParams(parts []string) (numThreads, numOps, rowsPerOp int, err error) {
+	numThreads = 4
+	numOps = 100
+	rowsPerOp = 10
+	if len(parts) > 1 {
+		n, err := strconv.Atoi(parts[1])
+		if err != nil || n <= 0 {
+			return 0, 0, 0, fmt.Errorf("invalid number of threads: %s", parts[1])
+		}
+		numThreads = n
+	}
+	if len(parts) > 2 {
+		n, err := strconv.Atoi(parts[2])
+		if err != nil || n <= 0 {
+			return 0, 0, 0, fmt.Errorf("invalid number of requests: %s", parts[2])
+		}
+		numOps = n
+	}
+	if len(parts) > 3 {
+		n, err := strconv.Atoi(parts[3])
+		if err != nil || n <= 0 {
+			return 0, 0, 0, fmt.Errorf("invalid rows per request: %s", parts[3])
+		}
+		rowsPerOp = n
+	}
+	return numThreads, numOps, rowsPerOp, nil
+}
+
+// createRondisClients creates multiple Rondis clients for parallel operations
+func (s *Shell) createRondisClients(numThreads int) ([]*client.RondisClient, error) {
+	clients := make([]*client.RondisClient, numThreads)
+	for i := 0; i < numThreads; i++ {
+		c, err := client.NewRondisClientWithOptions(client.RondisOptions{
+			Host: s.config.Host,
+			Port: s.config.RondisPort,
+			TLS:  s.config.TLS,
+		})
+		if err != nil {
+			// Close already created clients
+			for j := 0; j < i; j++ {
+				clients[j].Close()
+			}
+			return nil, fmt.Errorf("failed to create client for thread %d: %w", i, err)
+		}
+		clients[i] = c
+	}
+	return clients, nil
+}
+
+// runLoadRondis loads data using MSET/SET
+func (s *Shell) runLoadRondis(numThreads int, numOps int, rowsPerOp int) error {
+	if s.rondisClient == nil {
+		return fmt.Errorf("Rondis not connected. Load requires Rondis.")
+	}
+
+	totalOps := numThreads * numOps
+	totalKeys := totalOps * rowsPerOp
+	useMulti := rowsPerOp > 1
+
+	fmt.Println()
+	if totalKeys > 10000 {
+		fmt.Println(ui.Warning(fmt.Sprintf("Loading %d total keys - this may take a while...", totalKeys)))
+	}
+	if useMulti {
+		fmt.Println(ui.Info(fmt.Sprintf("Loading data: %d threads × %d requests × %d rows = %d total keys", numThreads, numOps, rowsPerOp, totalKeys)))
+	} else {
+		fmt.Println(ui.Info(fmt.Sprintf("Loading data: %d threads × %d requests = %d total keys", numThreads, numOps, totalKeys)))
+	}
+	fmt.Println()
+
+	clients, err := s.createRondisClients(numThreads)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		for _, c := range clients {
+			c.Close()
+		}
+	}()
+
+	if useMulti {
+		fmt.Printf("Writing %d keys via MSET (%d threads × %d calls × %d rows)...\n", totalKeys, numThreads, numOps, rowsPerOp)
+	} else {
+		fmt.Printf("Writing %d keys via SET (%d threads × %d calls)...\n", totalKeys, numThreads, numOps)
+	}
+
+	var writeErrors int64
+	var wg sync.WaitGroup
+	writeStart := time.Now()
+
+	for t := 0; t < numThreads; t++ {
+		wg.Add(1)
+		go func(threadID int, rondisClient *client.RondisClient) {
+			defer wg.Done()
+			for i := 0; i < numOps; i++ {
+				if useMulti {
+					args := []string{"MSET"}
+					for j := 0; j < rowsPerOp; j++ {
+						keyIndex := i*rowsPerOp + j
+						key := fmt.Sprintf("bench:key:%d:%d", threadID, keyIndex)
+						value := fmt.Sprintf(`{"id":%d,"data":"benchmark test data for key %d"}`, keyIndex, keyIndex)
+						args = append(args, key, value)
+					}
+					_, _, err := rondisClient.Execute(args)
+					if err != nil {
+						atomic.AddInt64(&writeErrors, 1)
+					}
+				} else {
+					keyIndex := i
+					key := fmt.Sprintf("bench:key:%d:%d", threadID, keyIndex)
+					value := fmt.Sprintf(`{"id":%d,"data":"benchmark test data for key %d"}`, keyIndex, keyIndex)
+					_, _, err := rondisClient.Execute([]string{"SET", key, value})
+					if err != nil {
+						atomic.AddInt64(&writeErrors, 1)
+					}
+				}
+			}
+		}(t, clients[t])
+	}
+	wg.Wait()
+	writeDuration := time.Since(writeStart)
+
+	writeKeysPerSec := float64(totalKeys) / writeDuration.Seconds()
+	writeOpsPerSec := float64(totalOps) / writeDuration.Seconds()
+	if useMulti {
+		fmt.Printf("   %d keys in %v (%.0f keys/sec, %.0f MSET/sec)\n", totalKeys, writeDuration.Round(time.Millisecond), writeKeysPerSec, writeOpsPerSec)
+	} else {
+		fmt.Printf("   %d keys in %v (%.0f SET/sec)\n", totalKeys, writeDuration.Round(time.Millisecond), writeOpsPerSec)
+	}
+	if writeErrors > 0 {
+		fmt.Printf("   %d write errors\n", writeErrors)
+	}
+	fmt.Println()
+
+	// Results
+	fmt.Println(ui.Success("Load complete!"))
+	fmt.Printf("   Configuration: %d threads × %d requests × %d rows = %d total keys\n", numThreads, numOps, rowsPerOp, totalKeys)
+	if useMulti {
+		fmt.Printf("   Writes: %.0f keys/sec (%.0f MSET/sec)\n", writeKeysPerSec, writeOpsPerSec)
+	} else {
+		fmt.Printf("   Writes: %.0f SET/sec\n", writeOpsPerSec)
+	}
+	fmt.Println()
+
+	return nil
+}
+
+// runBenchRondis benchmarks using mixed MGET/GET and MSET/SET operations
+// writePct: 0 = 100% reads, 100 = 100% writes
+func (s *Shell) runBenchRondis(numThreads int, numOps int, rowsPerOp int, writePct int) error {
 	if s.rondisClient == nil {
 		return fmt.Errorf("Rondis not connected. Benchmark requires Rondis.")
 	}
 
+	totalOps := numThreads * numOps
+	totalKeys := totalOps * rowsPerOp
+	useMulti := rowsPerOp > 1
+
 	fmt.Println()
-	if numOps > 10000 {
-		fmt.Println(ui.Warning(fmt.Sprintf("Running %d operations - this may take a while...", numOps)))
+	if useMulti {
+		fmt.Println(ui.Info(fmt.Sprintf("Benchmarking: %d threads × %d requests × %d rows = %d total keys (%d%% writes, %d%% reads)", numThreads, numOps, rowsPerOp, totalKeys, writePct, 100-writePct)))
+	} else {
+		fmt.Println(ui.Info(fmt.Sprintf("Benchmarking: %d threads × %d requests = %d total keys (%d%% writes, %d%% reads)", numThreads, numOps, totalKeys, writePct, 100-writePct)))
 	}
-	fmt.Println(ui.Info(fmt.Sprintf("Running benchmark (%d operations)...", numOps)))
 	fmt.Println()
 
-	// Write benchmark
-	fmt.Printf("Writing %d keys via Rondis...\n", numOps)
-	writeStart := time.Now()
-	for i := 0; i < numOps; i++ {
-		key := fmt.Sprintf("bench:key:%d", i)
-		value := fmt.Sprintf(`{"id":%d,"data":"benchmark test data for key %d"}`, i, i)
-		_, _, err := s.rondisClient.Execute([]string{"SET", key, value})
-		if err != nil {
-			return err
-		}
-	}
-	writeDuration := time.Since(writeStart)
-	writeOpsPerSec := float64(numOps) / writeDuration.Seconds()
-	fmt.Printf("   %d writes in %v (%.0f ops/sec)\n", numOps, writeDuration.Round(time.Millisecond), writeOpsPerSec)
-	fmt.Println()
-
-	// Read benchmark
-	fmt.Printf("Reading %d keys via Rondis...\n", numOps)
-	readStart := time.Now()
-	for i := 0; i < numOps; i++ {
-		key := fmt.Sprintf("bench:key:%d", i)
-		_, _, err := s.rondisClient.Execute([]string{"GET", key})
-		if err != nil {
-			return err
-		}
-	}
-	readDuration := time.Since(readStart)
-	readOpsPerSec := float64(numOps) / readDuration.Seconds()
-	fmt.Printf("   %d reads in %v (%.0f ops/sec)\n", numOps, readDuration.Round(time.Millisecond), readOpsPerSec)
-	fmt.Println()
-
-	// SQL count to prove data is there
-	fmt.Println("Verifying via SQL...")
-	_, rows, duration, err := s.mysqlClient.Query("SELECT COUNT(*) as count FROM redis_0.string_keys WHERE redis_key LIKE 'bench:key:%'")
+	clients, err := s.createRondisClients(numThreads)
 	if err != nil {
 		return err
 	}
-	if len(rows) > 0 {
-		fmt.Printf("   COUNT(*) = %v %s\n", rows[0][0], ui.Timing(duration))
-	}
-	fmt.Println()
+	defer func() {
+		for _, c := range clients {
+			c.Close()
+		}
+	}()
 
-	// SQL sample query
-	fmt.Println("Sample SQL query (LIMIT 5)...")
-	columns, rows, duration, err := s.mysqlClient.Query("SELECT redis_key, value_start FROM redis_0.string_keys WHERE redis_key LIKE 'bench:key:%' LIMIT 5")
-	if err != nil {
-		return err
+	if useMulti {
+		fmt.Printf("Running %d ops (%d threads × %d calls × %d rows)...\n", totalKeys, numThreads, numOps, rowsPerOp)
+	} else {
+		fmt.Printf("Running %d ops (%d threads × %d calls)...\n", totalKeys, numThreads, numOps)
 	}
-	output := ui.RenderSQLResultWithDuration(columns, rows, duration)
-	fmt.Print(output)
+
+	var readOps int64
+	var writeOps int64
+	var errors int64
+	var wg sync.WaitGroup
+	benchStart := time.Now()
+
+	for t := 0; t < numThreads; t++ {
+		wg.Add(1)
+		go func(threadID int, rondisClient *client.RondisClient) {
+			defer wg.Done()
+			rng := rand.New(rand.NewSource(time.Now().UnixNano() + int64(threadID)))
+
+			for i := 0; i < numOps; i++ {
+				isWrite := rng.Intn(100) < writePct
+
+				if useMulti {
+					if isWrite {
+						// MSET
+						args := []string{"MSET"}
+						for j := 0; j < rowsPerOp; j++ {
+							keyIndex := i*rowsPerOp + j
+							key := fmt.Sprintf("bench:key:%d:%d", threadID, keyIndex)
+							value := fmt.Sprintf(`{"id":%d,"data":"benchmark test data for key %d"}`, keyIndex, keyIndex)
+							args = append(args, key, value)
+						}
+						_, _, err := rondisClient.Execute(args)
+						if err != nil {
+							atomic.AddInt64(&errors, 1)
+						} else {
+							atomic.AddInt64(&writeOps, 1)
+						}
+					} else {
+						// MGET
+						args := []string{"MGET"}
+						for j := 0; j < rowsPerOp; j++ {
+							keyIndex := i*rowsPerOp + j
+							key := fmt.Sprintf("bench:key:%d:%d", threadID, keyIndex)
+							args = append(args, key)
+						}
+						_, _, err := rondisClient.Execute(args)
+						if err != nil {
+							atomic.AddInt64(&errors, 1)
+						} else {
+							atomic.AddInt64(&readOps, 1)
+						}
+					}
+				} else {
+					keyIndex := i
+					key := fmt.Sprintf("bench:key:%d:%d", threadID, keyIndex)
+					if isWrite {
+						// SET
+						value := fmt.Sprintf(`{"id":%d,"data":"benchmark test data for key %d"}`, keyIndex, keyIndex)
+						_, _, err := rondisClient.Execute([]string{"SET", key, value})
+						if err != nil {
+							atomic.AddInt64(&errors, 1)
+						} else {
+							atomic.AddInt64(&writeOps, 1)
+						}
+					} else {
+						// GET
+						_, _, err := rondisClient.Execute([]string{"GET", key})
+						if err != nil {
+							atomic.AddInt64(&errors, 1)
+						} else {
+							atomic.AddInt64(&readOps, 1)
+						}
+					}
+				}
+			}
+		}(t, clients[t])
+	}
+	wg.Wait()
+	benchDuration := time.Since(benchStart)
+
+	keysPerSec := float64(totalKeys) / benchDuration.Seconds()
+	opsPerSec := float64(totalOps) / benchDuration.Seconds()
+
+	actualWritePct := float64(writeOps) / float64(writeOps+readOps) * 100
+	actualReadPct := float64(readOps) / float64(writeOps+readOps) * 100
+
+	if useMulti {
+		fmt.Printf("   %d keys in %v (%.0f keys/sec, %.0f ops/sec)\n", totalKeys, benchDuration.Round(time.Millisecond), keysPerSec, opsPerSec)
+	} else {
+		fmt.Printf("   %d keys in %v (%.0f ops/sec)\n", totalKeys, benchDuration.Round(time.Millisecond), opsPerSec)
+	}
+	fmt.Printf("   Actual mix: %.1f%% writes (%d), %.1f%% reads (%d)\n", actualWritePct, writeOps, actualReadPct, readOps)
+	if errors > 0 {
+		fmt.Printf("   %d errors\n", errors)
+	}
 	fmt.Println()
 
 	// Results
 	fmt.Println(ui.Success("Benchmark complete!"))
-	fmt.Printf("   Writes: %.0f ops/sec\n", writeOpsPerSec)
-	fmt.Printf("   Reads:  %.0f ops/sec\n", readOpsPerSec)
+	fmt.Printf("   Configuration: %d threads × %d requests × %d rows = %d total keys\n", numThreads, numOps, rowsPerOp, totalKeys)
+	fmt.Printf("   Throughput: %.0f ops/sec\n", opsPerSec)
+	if useMulti {
+		fmt.Printf("   Keys/sec: %.0f\n", keysPerSec)
+	}
 	fmt.Println()
 
-	// Ask about cleanup
-	fmt.Printf("Delete benchmark data? [y/N] ")
-	var response string
-	fmt.Scanln(&response)
-	response = strings.ToLower(strings.TrimSpace(response))
+	return nil
+}
 
-	if response == "y" || response == "yes" {
-		fmt.Printf("Cleaning up %d keys...", numOps)
-		cleanStart := time.Now()
-		for i := 0; i < numOps; i++ {
-			key := fmt.Sprintf("bench:key:%d", i)
-			s.rondisClient.Execute([]string{"DEL", key})
+// runBenchRondisCont runs continuous benchmark for specified duration
+// writePct: 0 = 100% reads, 100 = 100% writes
+func (s *Shell) runBenchRondisCont(numThreads int, numOps int, rowsPerOp int, writePct int, durationSec int) error {
+	if s.rondisClient == nil {
+		return fmt.Errorf("Rondis not connected. Benchmark requires Rondis.")
+	}
+
+	useMulti := rowsPerOp > 1
+
+	fmt.Println()
+	fmt.Println(ui.Info(fmt.Sprintf("Continuous benchmark: %d threads, %d rows/req, %d%% writes, %d%% reads, running for %d seconds",
+		numThreads, rowsPerOp, writePct, 100-writePct, durationSec)))
+	fmt.Println()
+
+	clients, err := s.createRondisClients(numThreads)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		for _, c := range clients {
+			c.Close()
 		}
-		cleanDuration := time.Since(cleanStart)
-		fmt.Printf(" done %s\n", ui.Timing(cleanDuration))
+	}()
+
+	fmt.Printf("Running for %d seconds...\n", durationSec)
+
+	var totalReadOps int64
+	var totalWriteOps int64
+	var totalErrors int64
+	var wg sync.WaitGroup
+
+	// Use a channel to signal stop
+	stopCh := make(chan struct{})
+
+	benchStart := time.Now()
+
+	// Start timer to close stopCh after duration
+	go func() {
+		time.Sleep(time.Duration(durationSec) * time.Second)
+		close(stopCh)
+	}()
+
+	for t := 0; t < numThreads; t++ {
+		wg.Add(1)
+		go func(threadID int, rondisClient *client.RondisClient) {
+			defer wg.Done()
+			rng := rand.New(rand.NewSource(time.Now().UnixNano() + int64(threadID)))
+			keyCounter := 0
+
+			for {
+				select {
+				case <-stopCh:
+					return
+				default:
+					isWrite := rng.Intn(100) < writePct
+					// Use modulo to cycle through the same keys as .bench_rondis
+					requestId := keyCounter % numOps
+					keyCounter++
+
+					if useMulti {
+						if isWrite {
+							// MSET
+							args := []string{"MSET"}
+							for j := 0; j < rowsPerOp; j++ {
+								keyIndex := requestId*rowsPerOp + j
+								key := fmt.Sprintf("bench:key:%d:%d", threadID, keyIndex)
+								value := fmt.Sprintf(`{"id":%d,"data":"benchmark test data for key %d"}`, keyIndex, keyIndex)
+								args = append(args, key, value)
+							}
+							_, _, err := rondisClient.Execute(args)
+							if err != nil {
+								atomic.AddInt64(&totalErrors, 1)
+							} else {
+								atomic.AddInt64(&totalWriteOps, 1)
+							}
+						} else {
+							// MGET
+							args := []string{"MGET"}
+							for j := 0; j < rowsPerOp; j++ {
+								keyIndex := requestId*rowsPerOp + j
+								key := fmt.Sprintf("bench:key:%d:%d", threadID, keyIndex)
+								args = append(args, key)
+							}
+							_, _, err := rondisClient.Execute(args)
+							if err != nil {
+								atomic.AddInt64(&totalErrors, 1)
+							} else {
+								atomic.AddInt64(&totalReadOps, 1)
+							}
+						}
+					} else {
+						keyIndex := requestId
+						key := fmt.Sprintf("bench:key:%d:%d", threadID, keyIndex)
+						if isWrite {
+							// SET
+							value := fmt.Sprintf(`{"id":%d,"data":"benchmark test data for key %d"}`, keyIndex, keyIndex)
+							_, _, err := rondisClient.Execute([]string{"SET", key, value})
+							if err != nil {
+								atomic.AddInt64(&totalErrors, 1)
+							} else {
+								atomic.AddInt64(&totalWriteOps, 1)
+							}
+						} else {
+							// GET
+							_, _, err := rondisClient.Execute([]string{"GET", key})
+							if err != nil {
+								atomic.AddInt64(&totalErrors, 1)
+							} else {
+								atomic.AddInt64(&totalReadOps, 1)
+							}
+						}
+					}
+				}
+			}
+		}(t, clients[t])
+	}
+
+	wg.Wait()
+	benchDuration := time.Since(benchStart)
+
+	totalOps := totalReadOps + totalWriteOps
+	totalKeys := totalOps * int64(rowsPerOp)
+	opsPerSec := float64(totalOps) / benchDuration.Seconds()
+	keysPerSec := float64(totalKeys) / benchDuration.Seconds()
+
+	var actualWritePct, actualReadPct float64
+	if totalOps > 0 {
+		actualWritePct = float64(totalWriteOps) / float64(totalOps) * 100
+		actualReadPct = float64(totalReadOps) / float64(totalOps) * 100
+	}
+
+	fmt.Println()
+	fmt.Println(ui.Success("Continuous benchmark complete!"))
+	fmt.Printf("   Duration: %v\n", benchDuration.Round(time.Millisecond))
+	fmt.Printf("   Total requests: %d (%.0f ops/sec)\n", totalOps, opsPerSec)
+	fmt.Printf("   Total keys: %d (%.0f keys/sec)\n", totalKeys, keysPerSec)
+	fmt.Printf("   Writes: %d (%.1f%%)\n", totalWriteOps, actualWritePct)
+	fmt.Printf("   Reads: %d (%.1f%%)\n", totalReadOps, actualReadPct)
+	if totalErrors > 0 {
+		fmt.Printf("   Errors: %d\n", totalErrors)
+	}
+	fmt.Println()
+
+	return nil
+}
+
+// runDelRondis deletes data using DEL (Redis doesn't have MDEL, using DEL with multiple keys)
+func (s *Shell) runDelRondis(numThreads int, numOps int, rowsPerOp int) error {
+	if s.rondisClient == nil {
+		return fmt.Errorf("Rondis not connected. Delete requires Rondis.")
+	}
+
+	totalOps := numThreads * numOps
+	totalKeys := totalOps * rowsPerOp
+	useMulti := rowsPerOp > 1
+
+	fmt.Println()
+	if totalKeys > 10000 {
+		fmt.Println(ui.Warning(fmt.Sprintf("Deleting %d total keys - this may take a while...", totalKeys)))
+	}
+	if useMulti {
+		fmt.Println(ui.Info(fmt.Sprintf("Deleting data: %d threads × %d requests × %d rows = %d total keys", numThreads, numOps, rowsPerOp, totalKeys)))
 	} else {
-		fmt.Println("Data kept. Query with:")
-		fmt.Println("   SELECT * FROM redis_0.string_keys WHERE redis_key LIKE 'bench:%'")
+		fmt.Println(ui.Info(fmt.Sprintf("Deleting data: %d threads × %d requests = %d total keys", numThreads, numOps, totalKeys)))
+	}
+	fmt.Println()
+
+	clients, err := s.createRondisClients(numThreads)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		for _, c := range clients {
+			c.Close()
+		}
+	}()
+
+	if useMulti {
+		fmt.Printf("Deleting %d keys via DEL (%d threads × %d calls × %d rows)...\n", totalKeys, numThreads, numOps, rowsPerOp)
+	} else {
+		fmt.Printf("Deleting %d keys via DEL (%d threads × %d calls)...\n", totalKeys, numThreads, numOps)
+	}
+
+	var delErrors int64
+	var wg sync.WaitGroup
+	delStart := time.Now()
+
+	for t := 0; t < numThreads; t++ {
+		wg.Add(1)
+		go func(threadID int, rondisClient *client.RondisClient) {
+			defer wg.Done()
+			for i := 0; i < numOps; i++ {
+				if useMulti {
+					// DEL supports multiple keys
+					args := []string{"DEL"}
+					for j := 0; j < rowsPerOp; j++ {
+						keyIndex := i*rowsPerOp + j
+						key := fmt.Sprintf("bench:key:%d:%d", threadID, keyIndex)
+						args = append(args, key)
+					}
+					_, _, err := rondisClient.Execute(args)
+					if err != nil {
+						atomic.AddInt64(&delErrors, 1)
+					}
+				} else {
+					keyIndex := i
+					key := fmt.Sprintf("bench:key:%d:%d", threadID, keyIndex)
+					_, _, err := rondisClient.Execute([]string{"DEL", key})
+					if err != nil {
+						atomic.AddInt64(&delErrors, 1)
+					}
+				}
+			}
+		}(t, clients[t])
+	}
+	wg.Wait()
+	delDuration := time.Since(delStart)
+
+	delKeysPerSec := float64(totalKeys) / delDuration.Seconds()
+	delOpsPerSec := float64(totalOps) / delDuration.Seconds()
+	if useMulti {
+		fmt.Printf("   %d keys in %v (%.0f keys/sec, %.0f DEL/sec)\n", totalKeys, delDuration.Round(time.Millisecond), delKeysPerSec, delOpsPerSec)
+	} else {
+		fmt.Printf("   %d keys in %v (%.0f DEL/sec)\n", totalKeys, delDuration.Round(time.Millisecond), delOpsPerSec)
+	}
+	if delErrors > 0 {
+		fmt.Printf("   %d delete errors\n", delErrors)
+	}
+	fmt.Println()
+
+	// Results
+	fmt.Println(ui.Success("Delete complete!"))
+	fmt.Printf("   Configuration: %d threads × %d requests × %d rows = %d total keys\n", numThreads, numOps, rowsPerOp, totalKeys)
+	if useMulti {
+		fmt.Printf("   Deletes: %.0f keys/sec (%.0f DEL/sec)\n", delKeysPerSec, delOpsPerSec)
+	} else {
+		fmt.Printf("   Deletes: %.0f DEL/sec\n", delOpsPerSec)
 	}
 	fmt.Println()
 
@@ -562,6 +1125,8 @@ func (s *Shell) printHelp() {
 	help := `
 RonDB CLI - Rondis commands. SQL queries. REST API. One database.
 
+Multi-line input: End any command with ; or type ; on its own line.
+
 Commands:
   Rondis commands (Redis protocol):
     SET key value       Store a value
@@ -577,19 +1142,22 @@ Commands:
     USE database        Switch database
 
   REST API (pk-read):
-    READ db.table col1, col2 FILTER id=1, name="foo"
+    READ db.table col1, col2 FILTER id=1, name="foo";
                         Single pk-read via REST API
 
-    BATCH READ db.table col1 FILTER id=1 [OP id] [READ ...]
+    BATCH READ db.table col1 FILTER id=1 [OP id] [READ ...];
                         Batch with full READ per operation
 
-    BATCH db.table: col1, col2 READ FILTER id=1; READ FILTER id=2;
-                        Batch with shared table/columns
+    BATCH db.table col1, col2 READ FILTER id=1, READ FILTER id=2;
+                        Batch with shared table/columns (use , to separate READs)
 
   Internal commands:
     .browse             Open database browser (TUI)
     .demo               Run a quick demo (write, read, query)
-    .bench [N]          Run benchmark (default 1000 ops, shows throughput)
+    .load_rondis [T] [N] [R]         Load data via MSET (T=threads, N=requests, R=rows/req)
+    .bench_rondis [T] [N] [R] [W]    Mixed benchmark (W=write%, 0=all reads, 100=all writes)
+    .bench_rondis_cont [T] [N] [R] [W] [S]  Continuous benchmark for S seconds
+    .del_rondis [T] [N] [R]          Delete data via DEL
     .tables             List all tables
     .help               Show this help
     .quit               Exit the shell
@@ -698,7 +1266,10 @@ func (s *Shell) getCompleter() *readline.PrefixCompleter {
 		readline.PcItem("BATCH"),
 
 		// Internal commands
-		readline.PcItem(".bench"),
+		readline.PcItem(".load_rondis"),
+		readline.PcItem(".bench_rondis"),
+		readline.PcItem(".bench_rondis_cont"),
+		readline.PcItem(".del_rondis"),
 		readline.PcItem(".browse"),
 		readline.PcItem(".demo"),
 		readline.PcItem(".help"),
