@@ -1105,10 +1105,6 @@ ndbd_support_long_transid_ai(Uint32 x) {
   {
     return true;
   }
-  if ((major == 24) && (minor == 10) && (patch >= 18))
-  {
-    return true;
-  }
   return false;
 }
 #endif
