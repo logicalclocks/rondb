@@ -79,7 +79,7 @@ func RunWithConfig(cfg Config) error {
 	fmt.Println()
 	fmt.Println(ui.Welcome())
 	fmt.Println()
-	fmt.Println(ui.Connected("24.10"))
+	fmt.Println(ui.Connected("25.10"))
 	fmt.Println()
 
 	return s.loop()

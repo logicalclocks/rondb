@@ -87,7 +87,7 @@ RonDB CLI - MySQL queries, REST API calls, RonSQL queries
 and Rondis commands, all in one database.
 Type .help for commands, Tab for autocomplete
 
-[OK] Connected to RonDB 24.10
+[OK] Connected to RonDB 25.10
 
 rondb>
 ```
