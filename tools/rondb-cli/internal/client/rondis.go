@@ -62,7 +62,7 @@ func (c *RondisClient) Ping() error {
 }
 
 func (c *RondisClient) Execute(args []string) (string, time.Duration, error) {
-	if len(args) == 0 {
+	if len(args) == 0 || args[0] == "" {
 		return "", 0, fmt.Errorf("no command provided")
 	}
 

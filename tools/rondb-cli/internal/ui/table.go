@@ -15,6 +15,7 @@ func RenderTable(headers []string, rows [][]string) string {
 	buf := &bytes.Buffer{}
 	table := tablewriter.NewWriter(buf)
 
+	table.SetAutoFormatHeaders(false)
 	table.SetHeader(headers)
 	table.AppendBulk(rows)
 
@@ -46,6 +47,7 @@ func RenderSQLResult(columns []string, rows [][]interface{}) string {
 	buf := &bytes.Buffer{}
 	table := tablewriter.NewWriter(buf)
 
+	table.SetAutoFormatHeaders(false)
 	table.SetHeader(columns)
 
 	stringRows := make([][]string, len(rows))
@@ -86,6 +88,7 @@ func RenderTableWithDuration(headers []string, rows [][]string, duration time.Du
 	buf := &bytes.Buffer{}
 	table := tablewriter.NewWriter(buf)
 
+	table.SetAutoFormatHeaders(false)
 	table.SetHeader(headers)
 	table.AppendBulk(rows)
 
@@ -132,6 +135,7 @@ func RenderSQLResultWithDuration(columns []string, rows [][]interface{}, duratio
 	buf := &bytes.Buffer{}
 	table := tablewriter.NewWriter(buf)
 
+	table.SetAutoFormatHeaders(false)
 	table.SetHeader(columns)
 
 	stringRows := make([][]string, len(rows))
