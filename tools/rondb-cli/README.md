@@ -1,6 +1,7 @@
 # rondb-cli
 
-Rondis commands. SQL queries. One database.
+MySQL queries, REST API calls, RonSQL queries
+and Rondis commands, all in one database.
 
 ```
 rondb> SET user:123 '{"name":"Alice","age":30}'
@@ -13,14 +14,20 @@ rondb> SELECT * FROM redis_0.string_keys WHERE redis_key LIKE 'user:%'
 │ user:123  │ {"name":"Alice","age":30}   │
 └───────────┴─────────────────────────────┘
 1 row (1.2ms)
+
+rondb> RONSQL SELECT COUNT(*) FROM string_keys
+{"data":{"columns":["COUNT(*)"],"rows":[[1]]}}
+(2.1ms)
 ```
 
 ## What is this?
 
 rondb-cli is a unified command-line interface for RonDB that lets you:
 
-- Run Rondis commands (GET, SET, INCR, etc.) - Redis protocol on RonDB
-- Execute SQL queries (SELECT, INSERT, CREATE TABLE, etc.)
+- Run **Rondis commands** (GET, SET, INCR, etc.) - Redis protocol on RonDB
+- Execute **SQL queries** (SELECT, INSERT, CREATE TABLE, etc.)
+- Run **RonSQL queries** via REST API - high-performance SQL without MySQL overhead
+- Use **REST API** for pk-read and batch operations
 - Query Rondis data with SQL (the magic)
 
 All in one shell. No context switching.
@@ -76,7 +83,8 @@ rondb
 
 You'll see:
 ```
-RonDB CLI - Rondis commands. SQL queries. One database.
+RonDB CLI - MySQL queries, REST API calls, RonSQL queries
+and Rondis commands, all in one database.
 Type .help for commands, Tab for autocomplete
 
 [OK] Connected to RonDB 24.10
@@ -123,7 +131,8 @@ rondb> SELECT * FROM redis_0.string_keys
 | `--host` | `RONDB_HOST` | localhost | RonDB host |
 | `--rondis-port` | `RONDB_RONDIS_PORT` | 6379 | Rondis port |
 | `--mysql-port` | `RONDB_MYSQL_PORT` | 3306 | MySQL port |
-| `--tls` | - | false | Enable TLS (MySQL + Rondis) |
+| `--rest-port` | `RONDB_REST_PORT` | 4406 | REST API port (RDRS2) |
+| `--tls` | - | false | Enable TLS for all connections |
 
 ### Authentication
 
@@ -149,7 +158,7 @@ rondb --host db.example.com --tls
 
 ### Interactive Shell
 
-Once connected, you have three command types:
+Once connected, you have multiple command types:
 
 **Rondis commands** (Redis protocol):
 ```
@@ -173,14 +182,36 @@ DESCRIBE table
 USE database
 ```
 
+**MYSQL prefix** - explicit MySQL routing:
+```
+MYSQL SELECT * FROM table
+```
+
+**RonSQL queries** - high-performance SQL via REST API:
+```
+RONSQL SELECT * FROM table
+RONSQL EXPLAIN SELECT * FROM table
+RONSQL SET DATABASE mydb
+```
+
+**REST API** - pk-read and batch operations:
+```
+READ db.table col1, col2 FILTER pk_col=value
+BATCH db.table: col1, col2 READ FILTER pk=1; READ FILTER pk=2;
+```
+
 **Internal commands** - dot prefix:
 ```
-.browse     Open database browser (TUI)
-.demo       Run a quick demo (write, read, query)
-.bench [N]  Run benchmark (default 1000 ops, shows throughput)
-.tables     List all tables
-.help       Show help
-.quit       Exit
+.browse              Open database browser (TUI)
+.demo                Run a quick demo (write, read, query)
+.tables              List all tables
+.help                Show syntax help
+.help internal       Show benchmark commands
+.debug [0|1]         Toggle debug mode
+.client [N]          Show/set client ID for benchmarks
+.ronsql_database [db]     Show/set RonSQL database
+.ronsql_format [format]   Show/set RonSQL output (JSON, JSON_ASCII, TEXT, TEXT_NOHEADER)
+quit, exit, q        Exit the shell
 ```
 
 ### CLI Commands
@@ -191,6 +222,33 @@ rondb status       # Check RonDB connectivity
 rondb version      # Print version
 rondb --help       # Show usage
 ```
+
+### Benchmarks
+
+rondb-cli includes built-in benchmarks for Rondis, SQL, and REST API (RDRS). Use `.help internal` to see all benchmark commands.
+
+```
+# Rondis benchmarks
+.load_rondis [T] [N] [R]         Load test data (T threads, N ops, R rows/op)
+.bench_rondis [T] [N] [R]        Read benchmark
+.bench_rondis_cont [T] [N] [R] [W] [S]  Continuous benchmark (W% writes, S seconds)
+.del_rondis [T] [N] [R]          Delete test data
+
+# SQL benchmarks
+.load_sql [T] [N] [R]            Load test data into SQL table
+.bench_sql [T] [N] [R]           Read benchmark via SQL
+.bench_sql_cont [T] [N] [R] [W] [S]    Continuous benchmark
+.del_sql [T] [N] [R]             Delete test data
+.drop_sql                        Drop the test table
+
+# RDRS (REST API) benchmarks
+.bench_rdrs [T] [N] [R]          Batch pk-read benchmark
+.bench_rdrs_cont [T] [N] [R] [S] Continuous benchmark
+```
+
+Key format: `bench:key:<client>:<thread>:<key>:<row>`
+
+Use `.client N` to set a client ID prefix for running multiple benchmark instances.
 
 ## The Magic: SQL on Rondis Data
 
@@ -226,7 +284,10 @@ rondb-cli/
 ├── internal/
 │   ├── client/
 │   │   ├── rondis.go       # Rondis client wrapper
-│   │   └── mysql.go        # MySQL client wrapper
+│   │   ├── mysql.go        # MySQL client wrapper
+│   │   └── rest.go         # REST API client (RDRS2)
+│   ├── dsl/
+│   │   └── parser.go       # DSL parser for READ/BATCH commands
 │   ├── shell/
 │   │   └── repl.go         # Interactive shell with readline
 │   ├── tui/
@@ -281,4 +342,4 @@ See [docs/PHILOSOPHY.md](docs/PHILOSOPHY.md) for design principles.
 TL;DR:
 - 3-minute win: connect, diagnose, decide
 - One CLI, no ceremony
-- Rondis speed + SQL power = the aha moment
+- Four interfaces (MySQL, RonSQL, REST API, Rondis) = one powerful shell
