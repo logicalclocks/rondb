@@ -70,10 +70,11 @@ func Welcome() string {
 	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
 	subtitleStyle := lipgloss.NewStyle().Faint(true)
 
-	banner := titleStyle.Render("RonDB CLI") + " - " + subtitleStyle.Render("Rondis commands. SQL queries. One database.")
+	line1 := titleStyle.Render("RonDB CLI") + " - " + subtitleStyle.Render("MySQL queries, REST API calls, RonSQL queries")
+	line2 := subtitleStyle.Render("and Rondis commands, all in one database.")
 	hint := subtitleStyle.Render("Type .help for commands, Tab for autocomplete")
 
-	return banner + "\n" + hint
+	return line1 + "\n" + line2 + "\n" + hint
 }
 
 // Disconnected returns a styled disconnection message
