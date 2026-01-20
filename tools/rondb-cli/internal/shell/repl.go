@@ -29,8 +29,12 @@ type Config struct {
 	RestPort   int
 	MySQLUser  string
 	MySQLPass  string
-	TLS        bool
-	Verbose    int // Verbose level (0=normal, 1=connection info, 2=debug)
+	TLS        bool // Enable TLS for Rondis and MySQL
+	RDRSTLS    bool // Enable TLS (HTTPS) for RDRS/REST API
+	Verbose    int  // Verbose level (0=normal, 1=connection info, 2=debug)
+	NoMySQL    bool // Disable MySQL connection
+	NoRDRS     bool // Disable RDRS/REST API connection
+	NoRondis   bool // Disable Rondis connection
 }
 
 type Shell struct {
@@ -84,12 +88,16 @@ func RunWithConfig(cfg Config) error {
 		fmt.Println(ui.Info("  --rdrs-host        RDRS/REST API host (overrides --host)"))
 		fmt.Println(ui.Info("  --rondis-port      Rondis port (default: 6379)"))
 		fmt.Println(ui.Info("  --mysql-port       MySQL port (default: 3306)"))
-		fmt.Println(ui.Info("  --rest-port        REST API port (default: 4406)"))
+		fmt.Println(ui.Info("  --rdrs-port        RDRS/REST API port (default: 4406)"))
 		fmt.Println(ui.Info("  --mysql-user       MySQL username (default: root)"))
 		fmt.Println(ui.Info("  --mysql-password   MySQL password (default: empty)"))
 		fmt.Println(ui.Info("  -p, --password     Prompt for MySQL password (silent input)"))
-		fmt.Println(ui.Info("  --tls              Enable TLS for connections"))
+		fmt.Println(ui.Info("  --tls              Enable TLS for all connections"))
+		fmt.Println(ui.Info("  --rdrs-tls         Enable TLS (HTTPS) for RDRS/REST API only"))
 		fmt.Println(ui.Info("  --verbose          Verbose level (0=normal, 1=connection info, 2=debug)"))
+		fmt.Println(ui.Info("  --no-mysql         Disable MySQL connection"))
+		fmt.Println(ui.Info("  --no-rdrs          Disable RDRS/REST API connection"))
+		fmt.Println(ui.Info("  --no-rondis        Disable Rondis connection"))
 		fmt.Println()
 		fmt.Println(ui.Info("Environment variables:"))
 		fmt.Println(ui.Info("  RONDB_HOST           RonDB host (sets all hosts)"))
@@ -97,7 +105,7 @@ func RunWithConfig(cfg Config) error {
 		fmt.Println(ui.Info("  RDRS_HOST            RDRS/REST API host (overrides RONDB_HOST)"))
 		fmt.Println(ui.Info("  RONDB_RONDIS_PORT    Rondis port"))
 		fmt.Println(ui.Info("  RONDB_MYSQL_PORT     MySQL port"))
-		fmt.Println(ui.Info("  RONDB_REST_PORT      REST API port"))
+		fmt.Println(ui.Info("  RONDB_RDRS_PORT      RDRS/REST API port"))
 		fmt.Println(ui.Info("  RONDB_MYSQL_USER     MySQL username"))
 		fmt.Println(ui.Info("  RONDB_MYSQL_PASSWORD MySQL password"))
 		return err
@@ -116,37 +124,90 @@ func RunWithConfig(cfg Config) error {
 func (s *Shell) connect() error {
 	var err error
 
-	// MySQL is required (uses MySQLHost)
-	s.mysqlClient, err = client.NewMySQLClientWithOptions(client.MySQLOptions{
-		Host:     s.config.MySQLHost,
-		Port:     s.config.MySQLPort,
-		User:     s.mysqlUser,
-		Password: s.mysqlPass,
-		TLS:      s.config.TLS,
-	})
-	if err != nil {
-		return fmt.Errorf("mysql (%s:%d): %w", s.config.MySQLHost, s.config.MySQLPort, err)
+	// MySQL connection (unless disabled)
+	if s.config.NoMySQL {
+		if s.verbose >= 1 {
+			fmt.Println("[*] MySQL disabled via --no-mysql")
+		}
+		s.mysqlClient = nil
+	} else {
+		if s.verbose >= 1 {
+			tlsInfo := ""
+			if s.config.TLS {
+				tlsInfo = " (TLS)"
+			}
+			fmt.Printf("[*] Connecting to MySQL at %s:%d%s...\n", s.config.MySQLHost, s.config.MySQLPort, tlsInfo)
+		}
+		s.mysqlClient, err = client.NewMySQLClientWithOptions(client.MySQLOptions{
+			Host:     s.config.MySQLHost,
+			Port:     s.config.MySQLPort,
+			User:     s.mysqlUser,
+			Password: s.mysqlPass,
+			TLS:      s.config.TLS,
+		})
+		if err != nil {
+			return fmt.Errorf("mysql (%s:%d): %w", s.config.MySQLHost, s.config.MySQLPort, err)
+		}
+		if s.verbose >= 1 {
+			fmt.Printf("[*] MySQL connected as %s\n", s.mysqlUser)
+		}
 	}
 
-	// REST API is required (uses RDRSHost)
-	s.restClient, err = client.NewRestClientWithOptions(client.RestOptions{
-		Host: s.config.RDRSHost,
-		Port: s.config.RestPort,
-		TLS:  s.config.TLS,
-	})
-	if err != nil {
-		return fmt.Errorf("rest api (%s:%d): %w", s.config.RDRSHost, s.config.RestPort, err)
+	// REST API connection (unless disabled)
+	if s.config.NoRDRS {
+		if s.verbose >= 1 {
+			fmt.Println("[*] RDRS/REST API disabled via --no-rdrs")
+		}
+		s.restClient = nil
+	} else {
+		if s.verbose >= 1 {
+			protocol := "http"
+			if s.config.RDRSTLS {
+				protocol = "https"
+			}
+			fmt.Printf("[*] Connecting to REST API at %s://%s:%d...\n", protocol, s.config.RDRSHost, s.config.RestPort)
+		}
+		s.restClient, err = client.NewRestClientWithOptions(client.RestOptions{
+			Host: s.config.RDRSHost,
+			Port: s.config.RestPort,
+			TLS:  s.config.RDRSTLS,
+		})
+		if err != nil {
+			return fmt.Errorf("rest api (%s:%d): %w", s.config.RDRSHost, s.config.RestPort, err)
+		}
+		if s.verbose >= 1 {
+			fmt.Println("[*] REST API connected")
+		}
 	}
 
-	// Rondis is optional - don't fail if not available (uses general Host)
-	s.rondisClient, err = client.NewRondisClientWithOptions(client.RondisOptions{
-		Host: s.config.Host,
-		Port: s.config.RondisPort,
-		TLS:  s.config.TLS,
-	})
-	if err != nil {
-		fmt.Println(ui.Info(fmt.Sprintf("Rondis not available on %s:%d (SQL-only mode)", s.config.Host, s.config.RondisPort)))
+	// Rondis connection (unless disabled) - optional, don't fail if not available
+	if s.config.NoRondis {
+		if s.verbose >= 1 {
+			fmt.Println("[*] Rondis disabled via --no-rondis")
+		}
 		s.rondisClient = nil
+	} else {
+		if s.verbose >= 1 {
+			tlsInfo := ""
+			if s.config.TLS {
+				tlsInfo = " (TLS)"
+			}
+			fmt.Printf("[*] Connecting to Rondis at %s:%d%s...\n", s.config.Host, s.config.RondisPort, tlsInfo)
+		}
+		s.rondisClient, err = client.NewRondisClientWithOptions(client.RondisOptions{
+			Host: s.config.Host,
+			Port: s.config.RondisPort,
+			TLS:  s.config.TLS,
+		})
+		if err != nil {
+			if s.verbose >= 1 {
+				fmt.Printf("[*] Rondis not available: %v\n", err)
+			}
+			fmt.Println(ui.Info(fmt.Sprintf("Rondis not available on %s:%d (SQL-only mode)", s.config.Host, s.config.RondisPort)))
+			s.rondisClient = nil
+		} else if s.verbose >= 1 {
+			fmt.Println("[*] Rondis connected")
+		}
 	}
 
 	return nil
@@ -453,26 +514,41 @@ func (s *Shell) executeInternal(line string) error {
 	case "demo":
 		return s.runDemo()
 	case "load_rondis":
+		if s.rondisClient == nil {
+			return fmt.Errorf("Rondis not connected. Cannot run load_rondis.")
+		}
 		numThreads, numOps, rowsPerOp, err := parseBenchParams(parts)
 		if err != nil {
 			return err
 		}
 		return s.runLoadRondis(numThreads, numOps, rowsPerOp)
 	case "load_sql":
+		if s.mysqlClient == nil {
+			return fmt.Errorf("MySQL not connected. Cannot run load_sql.")
+		}
 		numThreads, numOps, rowsPerOp, err := parseBenchParams(parts)
 		if err != nil {
 			return err
 		}
 		return s.runLoadSQL(numThreads, numOps, rowsPerOp)
 	case "del_sql":
+		if s.mysqlClient == nil {
+			return fmt.Errorf("MySQL not connected. Cannot run del_sql.")
+		}
 		numThreads, numOps, rowsPerOp, err := parseBenchParams(parts)
 		if err != nil {
 			return err
 		}
 		return s.runDelSQL(numThreads, numOps, rowsPerOp)
 	case "drop_sql":
+		if s.mysqlClient == nil {
+			return fmt.Errorf("MySQL not connected. Cannot run drop_sql.")
+		}
 		return s.runDropSQL()
 	case "bench_sql":
+		if s.mysqlClient == nil {
+			return fmt.Errorf("MySQL not connected. Cannot run bench_sql.")
+		}
 		numThreads, numOps, rowsPerOp, err := parseBenchParams(parts)
 		if err != nil {
 			return err
@@ -487,6 +563,9 @@ func (s *Shell) executeInternal(line string) error {
 		}
 		return s.runBenchSQL(numThreads, numOps, rowsPerOp, writePct)
 	case "bench_sql_cont":
+		if s.mysqlClient == nil {
+			return fmt.Errorf("MySQL not connected. Cannot run bench_sql_cont.")
+		}
 		numThreads, numOps, rowsPerOp, err := parseBenchParams(parts)
 		if err != nil {
 			return err
@@ -509,12 +588,18 @@ func (s *Shell) executeInternal(line string) error {
 		}
 		return s.runBenchSQLCont(numThreads, numOps, rowsPerOp, writePct, durationSec)
 	case "bench_sql_scan":
+		if s.mysqlClient == nil {
+			return fmt.Errorf("MySQL not connected. Cannot run bench_sql_scan.")
+		}
 		numThreads, numOps, rowsPerOp, err := parseBenchParams(parts)
 		if err != nil {
 			return err
 		}
 		return s.runBenchSQLScan(numThreads, numOps, rowsPerOp)
 	case "bench_sql_scan_cont":
+		if s.mysqlClient == nil {
+			return fmt.Errorf("MySQL not connected. Cannot run bench_sql_scan_cont.")
+		}
 		numThreads, numOps, rowsPerOp, err := parseBenchParams(parts)
 		if err != nil {
 			return err
@@ -529,6 +614,9 @@ func (s *Shell) executeInternal(line string) error {
 		}
 		return s.runBenchSQLScanCont(numThreads, numOps, rowsPerOp, durationSec)
 	case "bench_rondis":
+		if s.rondisClient == nil {
+			return fmt.Errorf("Rondis not connected. Cannot run bench_rondis.")
+		}
 		numThreads, numOps, rowsPerOp, err := parseBenchParams(parts)
 		if err != nil {
 			return err
@@ -543,6 +631,9 @@ func (s *Shell) executeInternal(line string) error {
 		}
 		return s.runBenchRondis(numThreads, numOps, rowsPerOp, writePct)
 	case "bench_rondis_cont":
+		if s.rondisClient == nil {
+			return fmt.Errorf("Rondis not connected. Cannot run bench_rondis_cont.")
+		}
 		numThreads, numOps, rowsPerOp, err := parseBenchParams(parts)
 		if err != nil {
 			return err
@@ -565,18 +656,27 @@ func (s *Shell) executeInternal(line string) error {
 		}
 		return s.runBenchRondisCont(numThreads, numOps, rowsPerOp, writePct, durationSec)
 	case "del_rondis":
+		if s.rondisClient == nil {
+			return fmt.Errorf("Rondis not connected. Cannot run del_rondis.")
+		}
 		numThreads, numOps, rowsPerOp, err := parseBenchParams(parts)
 		if err != nil {
 			return err
 		}
 		return s.runDelRondis(numThreads, numOps, rowsPerOp)
 	case "bench_rdrs":
+		if s.restClient == nil {
+			return fmt.Errorf("REST API not connected. Cannot run bench_rdrs.")
+		}
 		numThreads, numOps, rowsPerOp, err := parseBenchParams(parts)
 		if err != nil {
 			return err
 		}
 		return s.runBenchRDRS(numThreads, numOps, rowsPerOp)
 	case "bench_rdrs_cont":
+		if s.restClient == nil {
+			return fmt.Errorf("REST API not connected. Cannot run bench_rdrs_cont.")
+		}
 		numThreads, numOps, rowsPerOp, err := parseBenchParams(parts)
 		if err != nil {
 			return err
@@ -591,6 +691,9 @@ func (s *Shell) executeInternal(line string) error {
 		}
 		return s.runBenchRDRSCont(numThreads, numOps, rowsPerOp, durationSec)
 	case "browse", "ui":
+		if s.mysqlClient == nil {
+			return fmt.Errorf("MySQL not connected. Cannot run browse/ui.")
+		}
 		return tui.Run(s.mysqlClient)
 	case "quit", "exit", "q":
 		fmt.Println(ui.Disconnected())
@@ -623,6 +726,10 @@ func (s *Shell) executeRondis(line string) error {
 }
 
 func (s *Shell) executeSQL(line string) error {
+	if s.mysqlClient == nil {
+		return fmt.Errorf("MySQL not connected. Use --no-mysql=false or restart without --no-mysql.")
+	}
+
 	lower := strings.ToLower(strings.TrimSpace(line))
 
 	// Check if it's a SELECT or SHOW (returns rows)
@@ -731,6 +838,10 @@ func (s *Shell) executeRonSQL(line string) error {
 
 // executeREAD handles single READ commands via REST API
 func (s *Shell) executeREAD(line string) error {
+	if s.restClient == nil {
+		return fmt.Errorf("REST API not connected. Use --no-rdrs=false or restart without --no-rdrs.")
+	}
+
 	database, table, req, err := dsl.ParseSingleRead(line)
 	if err != nil {
 		return fmt.Errorf("parse error: %w", err)
@@ -760,6 +871,10 @@ func (s *Shell) executeREAD(line string) error {
 // Multi-line: end with ; on its own line
 // Use , to separate READ operations in header syntax
 func (s *Shell) executeBatch(line string) error {
+	if s.restClient == nil {
+		return fmt.Errorf("REST API not connected. Use --no-rdrs=false or restart without --no-rdrs.")
+	}
+
 	var lines []string
 
 	// Check if there's content after BATCH on the same line
@@ -2846,7 +2961,7 @@ func (s *Shell) runBenchRDRS(numThreads int, numOps int, rowsPerOp int) error {
 		c, err := client.NewRestClientWithOptions(client.RestOptions{
 			Host: s.config.RDRSHost,
 			Port: s.config.RestPort,
-			TLS:  s.config.TLS,
+			TLS:  s.config.RDRSTLS,
 		})
 		if err != nil {
 			// Close already created clients
@@ -3002,7 +3117,7 @@ func (s *Shell) runBenchRDRSCont(numThreads int, numOps int, rowsPerOp int, dura
 		c, err := client.NewRestClientWithOptions(client.RestOptions{
 			Host: s.config.RDRSHost,
 			Port: s.config.RestPort,
-			TLS:  s.config.TLS,
+			TLS:  s.config.RDRSTLS,
 		})
 		if err != nil {
 			// Close already created clients
@@ -3296,12 +3411,16 @@ func (s *Shell) printHelpStart() {
 	fmt.Println(ui.Info("  --rdrs-host        RDRS/REST API host (overrides --host)"))
 	fmt.Println(ui.Info("  --rondis-port      Rondis port (default: 6379)"))
 	fmt.Println(ui.Info("  --mysql-port       MySQL port (default: 3306)"))
-	fmt.Println(ui.Info("  --rest-port        REST API port (default: 4406)"))
+	fmt.Println(ui.Info("  --rdrs-port        RDRS/REST API port (default: 4406)"))
 	fmt.Println(ui.Info("  --mysql-user       MySQL username (default: root)"))
 	fmt.Println(ui.Info("  --mysql-password   MySQL password (default: empty)"))
 	fmt.Println(ui.Info("  -p, --password     Prompt for MySQL password (silent input)"))
-	fmt.Println(ui.Info("  --tls              Enable TLS for connections"))
+	fmt.Println(ui.Info("  --tls              Enable TLS for all connections"))
+	fmt.Println(ui.Info("  --rdrs-tls         Enable TLS (HTTPS) for RDRS/REST API only"))
 	fmt.Println(ui.Info("  --verbose          Verbose level (0=normal, 1=connection info, 2=debug)"))
+	fmt.Println(ui.Info("  --no-mysql         Disable MySQL connection"))
+	fmt.Println(ui.Info("  --no-rdrs          Disable RDRS/REST API connection"))
+	fmt.Println(ui.Info("  --no-rondis        Disable Rondis connection"))
 	fmt.Println()
 	fmt.Println(ui.Info("Environment variables:"))
 	fmt.Println(ui.Info("  RONDB_HOST           RonDB host (sets all hosts)"))
@@ -3309,7 +3428,7 @@ func (s *Shell) printHelpStart() {
 	fmt.Println(ui.Info("  RDRS_HOST            RDRS/REST API host (overrides RONDB_HOST)"))
 	fmt.Println(ui.Info("  RONDB_RONDIS_PORT    Rondis port"))
 	fmt.Println(ui.Info("  RONDB_MYSQL_PORT     MySQL port"))
-	fmt.Println(ui.Info("  RONDB_REST_PORT      REST API port"))
+	fmt.Println(ui.Info("  RONDB_RDRS_PORT      RDRS/REST API port"))
 	fmt.Println(ui.Info("  RONDB_MYSQL_USER     MySQL username"))
 	fmt.Println(ui.Info("  RONDB_MYSQL_PASSWORD MySQL password"))
 	fmt.Println()

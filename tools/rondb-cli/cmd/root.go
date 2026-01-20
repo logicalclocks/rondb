@@ -26,7 +26,11 @@ var (
 	mysqlPass  string
 	promptPass bool
 	useTLS     bool
+	rdrsTLS    bool
 	verbose    int
+	noMySQL    bool
+	noRDRS     bool
+	noRondis   bool
 )
 
 var rootCmd = &cobra.Command{
@@ -63,7 +67,11 @@ var rootCmd = &cobra.Command{
 			MySQLUser:  mysqlUser,
 			MySQLPass:  mysqlPass,
 			TLS:        useTLS,
+			RDRSTLS:    useTLS || rdrsTLS,
 			Verbose:    verbose,
+			NoMySQL:    noMySQL,
+			NoRDRS:     noRDRS,
+			NoRondis:   noRondis,
 		})
 	},
 }
@@ -136,7 +144,7 @@ var statusCmd = &cobra.Command{
 		restClient, err := client.NewRestClientWithOptions(client.RestOptions{
 			Host: effectiveRDRSHost,
 			Port: restPort,
-			TLS:  useTLS,
+			TLS:  useTLS || rdrsTLS,
 		})
 		if err != nil {
 			fmt.Println(ui.Error(fmt.Sprintf("REST API (%s:%d): %v", effectiveRDRSHost, restPort, err)))
@@ -163,12 +171,16 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&rdrsHost, "rdrs-host", "", "RDRS/REST API host (overrides --host)")
 	rootCmd.PersistentFlags().IntVar(&rondisPort, "rondis-port", 6379, "Rondis port")
 	rootCmd.PersistentFlags().IntVar(&mysqlPort, "mysql-port", 3306, "MySQL port")
-	rootCmd.PersistentFlags().IntVar(&restPort, "rest-port", 4406, "REST API port")
+	rootCmd.PersistentFlags().IntVar(&restPort, "rdrs-port", 4406, "RDRS/REST API port")
 	rootCmd.PersistentFlags().StringVar(&mysqlUser, "mysql-user", "root", "MySQL username")
 	rootCmd.PersistentFlags().StringVar(&mysqlPass, "mysql-password", "", "MySQL password")
 	rootCmd.PersistentFlags().BoolVarP(&promptPass, "password", "p", false, "Prompt for MySQL password")
-	rootCmd.PersistentFlags().BoolVar(&useTLS, "tls", false, "Enable TLS for connections")
+	rootCmd.PersistentFlags().BoolVar(&useTLS, "tls", false, "Enable TLS for all connections")
+	rootCmd.PersistentFlags().BoolVar(&rdrsTLS, "rdrs-tls", false, "Enable TLS (HTTPS) for RDRS/REST API only")
 	rootCmd.PersistentFlags().IntVar(&verbose, "verbose", 0, "Verbose level (0=normal, 1=connection info, 2=debug)")
+	rootCmd.PersistentFlags().BoolVar(&noMySQL, "no-mysql", false, "Disable MySQL connection")
+	rootCmd.PersistentFlags().BoolVar(&noRDRS, "no-rdrs", false, "Disable RDRS/REST API connection")
+	rootCmd.PersistentFlags().BoolVar(&noRondis, "no-rondis", false, "Disable Rondis connection")
 
 	// Also support env vars (env vars override defaults, flags override env vars)
 	// RONDB_HOST sets both MySQL and RDRS hosts
@@ -192,7 +204,7 @@ func init() {
 			mysqlPort = port
 		}
 	}
-	if p := os.Getenv("RONDB_REST_PORT"); p != "" {
+	if p := os.Getenv("RONDB_RDRS_PORT"); p != "" {
 		if port, err := strconv.Atoi(p); err == nil {
 			restPort = port
 		}
