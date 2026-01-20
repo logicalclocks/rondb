@@ -38,7 +38,8 @@ func NewRondisClientWithOptions(opts RondisOptions) (*RondisClient, error) {
 
 	if opts.TLS {
 		redisOpts.TLSConfig = &tls.Config{
-			MinVersion: tls.VersionTLS12,
+			MinVersion:         tls.VersionTLS12,
+			InsecureSkipVerify: true,
 		}
 	}
 

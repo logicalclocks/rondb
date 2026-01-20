@@ -47,7 +47,8 @@ func NewMySQLClientWithOptions(opts MySQLOptions) (*MySQLClient, error) {
 	// Register TLS config if enabled
 	if opts.TLS {
 		tlsConfig := &tls.Config{
-			MinVersion: tls.VersionTLS12,
+			MinVersion:         tls.VersionTLS12,
+			InsecureSkipVerify: true,
 		}
 		mysql.RegisterTLSConfig("custom", tlsConfig)
 		dsn += "?tls=custom"
