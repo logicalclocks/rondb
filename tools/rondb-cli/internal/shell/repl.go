@@ -40,6 +40,7 @@ type Shell struct {
 	clientID       int                // Client ID prefix for benchmark keys (default 0)
 	ronsqlDatabase string             // Database for RonSQL queries
 	ronsqlFormat   string             // Output format for RonSQL queries (default "JSON")
+	ronsqlExplain  string             // Explain mode for RonSQL queries (default "ALLOW")
 }
 
 func Run() error {
@@ -60,10 +61,12 @@ func RunWithConfig(cfg Config) error {
 	mysqlPass := os.Getenv("RONDB_MYSQL_PASSWORD")
 
 	s := &Shell{
-		config:       cfg,
-		mysqlUser:    mysqlUser,
-		mysqlPass:    mysqlPass,
-		ronsqlFormat: "JSON",
+		config:         cfg,
+		mysqlUser:      mysqlUser,
+		mysqlPass:      mysqlPass,
+		ronsqlDatabase: "test",
+		ronsqlFormat:   "JSON",
+		ronsqlExplain:  "ALLOW",
 	}
 
 	if err := s.connect(); err != nil {
@@ -374,6 +377,17 @@ func (s *Shell) executeInternal(line string) error {
 		}
 		s.ronsqlFormat = format
 		fmt.Println(ui.Success(fmt.Sprintf("RonSQL format set to %s", s.ronsqlFormat)))
+	case "ronsql_explain":
+		if len(parts) < 2 {
+			fmt.Printf("RonSQL explain mode: %s\n", s.ronsqlExplain)
+			return nil
+		}
+		mode := strings.ToUpper(parts[1])
+		if mode != "ALLOW" && mode != "FORBID" && mode != "REQUIRE" && mode != "REMOVE" && mode != "FORCE" {
+			return fmt.Errorf("invalid explain mode: use ALLOW, FORBID, REQUIRE, REMOVE, or FORCE")
+		}
+		s.ronsqlExplain = mode
+		fmt.Println(ui.Success(fmt.Sprintf("RonSQL explain mode set to %s", s.ronsqlExplain)))
 	case "tables":
 		return s.listTables()
 	case "demo":
@@ -593,15 +607,8 @@ func (s *Shell) executeRonSQL(line string) error {
 		return fmt.Errorf("REST API not connected. RonSQL requires REST API.")
 	}
 
-	// Check for EXPLAIN mode
-	explainMode := "ALLOW"
+	// Use query as-is, explainMode controlled by .ronsql_explain setting
 	query := rest
-	if len(tokens) > 0 && strings.EqualFold(tokens[0], "explain") {
-		explainMode = "EXECUTE"
-		// Rejoin tokens after EXPLAIN to preserve query structure
-		query = strings.Join(tokens[1:], " ")
-	}
-
 	if query == "" {
 		return fmt.Errorf("RONSQL requires a query")
 	}
@@ -615,7 +622,7 @@ func (s *Shell) executeRonSQL(line string) error {
 	req := RonSQLRequest{
 		Query:        query,
 		Database:     s.ronsqlDatabase,
-		ExplainMode:  explainMode,
+		ExplainMode:  s.ronsqlExplain,
 		OutputFormat: s.ronsqlFormat,
 	}
 
@@ -2597,11 +2604,11 @@ Commands:
                         Batch with shared table/columns (use , to separate READs)
 
   RonSQL (REST API):
-    RONSQL SELECT ...          Execute query via RonSQL REST API
-    RONSQL EXPLAIN SELECT ...  Execute with explain mode
+    RONSQL <query>             Execute query via RonSQL REST API
     RONSQL SET DATABASE <db>   Set database for RonSQL queries
     .ronsql_database [db]      Show/set RonSQL database
     .ronsql_format [format]    Show/set RonSQL output format (JSON, JSON_ASCII, TEXT, TEXT_NOHEADER)
+    .ronsql_explain [mode]     Show/set RonSQL explain mode (ALLOW, FORBID, REQUIRE, REMOVE, FORCE)
 
   Internal commands:
     .browse             Open database browser (TUI)
@@ -2747,7 +2754,6 @@ func (s *Shell) getCompleter() *readline.PrefixCompleter {
 		readline.PcItem("BATCH"),
 		readline.PcItem("RONSQL",
 			readline.PcItem("SELECT"),
-			readline.PcItem("EXPLAIN"),
 			readline.PcItem("SET",
 				readline.PcItem("DATABASE"),
 			),
@@ -2760,6 +2766,13 @@ func (s *Shell) getCompleter() *readline.PrefixCompleter {
 			readline.PcItem("JSON_ASCII"),
 			readline.PcItem("TEXT"),
 			readline.PcItem("TEXT_NOHEADER"),
+		),
+		readline.PcItem(".ronsql_explain",
+			readline.PcItem("ALLOW"),
+			readline.PcItem("FORBID"),
+			readline.PcItem("REQUIRE"),
+			readline.PcItem("REMOVE"),
+			readline.PcItem("FORCE"),
 		),
 		readline.PcItem(".load_rondis"),
 		readline.PcItem(".load_sql"),
