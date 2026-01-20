@@ -21,11 +21,16 @@ import (
 
 // Config holds shell configuration
 type Config struct {
-	Host       string
+	Host       string // General host (used for Rondis)
+	MySQLHost  string // MySQL host (can be different from Host)
+	RDRSHost   string // RDRS/REST API host (can be different from Host)
 	RondisPort int
 	MySQLPort  int
 	RestPort   int
+	MySQLUser  string
+	MySQLPass  string
 	TLS        bool
+	Verbose    int // Verbose level (0=normal, 1=connection info, 2=debug)
 }
 
 type Shell struct {
@@ -37,6 +42,7 @@ type Shell struct {
 	mysqlPass      string
 	rl             *readline.Instance // Store readline instance for multi-line input
 	debug          bool               // Debug mode for printing requests/responses in benchmarks
+	verbose        int                // Verbose level: 0=normal, 1=connect/disconnect info, 2=debug mode
 	clientID       int                // Client ID prefix for benchmark keys (default 0)
 	ronsqlDatabase string             // Database for RonSQL queries
 	ronsqlFormat   string             // Output format for RonSQL queries (default "JSON")
@@ -53,17 +59,12 @@ func Run() error {
 }
 
 func RunWithConfig(cfg Config) error {
-	// Get credentials from environment (default: root with no password)
-	mysqlUser := os.Getenv("RONDB_MYSQL_USER")
-	if mysqlUser == "" {
-		mysqlUser = "root"
-	}
-	mysqlPass := os.Getenv("RONDB_MYSQL_PASSWORD")
-
 	s := &Shell{
 		config:         cfg,
-		mysqlUser:      mysqlUser,
-		mysqlPass:      mysqlPass,
+		mysqlUser:      cfg.MySQLUser,
+		mysqlPass:      cfg.MySQLPass,
+		verbose:        cfg.Verbose,
+		debug:          cfg.Verbose >= 2,
 		ronsqlDatabase: "test",
 		ronsqlFormat:   "JSON",
 		ronsqlExplain:  "ALLOW",
@@ -71,10 +72,34 @@ func RunWithConfig(cfg Config) error {
 
 	if err := s.connect(); err != nil {
 		fmt.Println(ui.Error(fmt.Sprintf("Connection failed: %v", err)))
+		fmt.Println()
 		fmt.Println(ui.Info("Check that RonDB is running:"))
 		fmt.Println(ui.Info(fmt.Sprintf("  Rondis:   %s:%d", cfg.Host, cfg.RondisPort)))
-		fmt.Println(ui.Info(fmt.Sprintf("  MySQL:    %s:%d (user: %s)", cfg.Host, cfg.MySQLPort, mysqlUser)))
-		fmt.Println(ui.Info(fmt.Sprintf("  REST API: %s:%d", cfg.Host, cfg.RestPort)))
+		fmt.Println(ui.Info(fmt.Sprintf("  MySQL:    %s:%d (user: %s)", cfg.MySQLHost, cfg.MySQLPort, cfg.MySQLUser)))
+		fmt.Println(ui.Info(fmt.Sprintf("  REST API: %s:%d", cfg.RDRSHost, cfg.RestPort)))
+		fmt.Println()
+		fmt.Println(ui.Info("Command line flags:"))
+		fmt.Println(ui.Info("  --host             RonDB host (default: localhost, sets all hosts)"))
+		fmt.Println(ui.Info("  --mysql-host       MySQL host (overrides --host)"))
+		fmt.Println(ui.Info("  --rdrs-host        RDRS/REST API host (overrides --host)"))
+		fmt.Println(ui.Info("  --rondis-port      Rondis port (default: 6379)"))
+		fmt.Println(ui.Info("  --mysql-port       MySQL port (default: 3306)"))
+		fmt.Println(ui.Info("  --rest-port        REST API port (default: 4406)"))
+		fmt.Println(ui.Info("  --mysql-user       MySQL username (default: root)"))
+		fmt.Println(ui.Info("  --mysql-password   MySQL password (default: empty)"))
+		fmt.Println(ui.Info("  -p, --password     Prompt for MySQL password (silent input)"))
+		fmt.Println(ui.Info("  --tls              Enable TLS for connections"))
+		fmt.Println(ui.Info("  --verbose          Verbose level (0=normal, 1=connection info, 2=debug)"))
+		fmt.Println()
+		fmt.Println(ui.Info("Environment variables:"))
+		fmt.Println(ui.Info("  RONDB_HOST           RonDB host (sets all hosts)"))
+		fmt.Println(ui.Info("  MYSQL_HOST           MySQL host (overrides RONDB_HOST)"))
+		fmt.Println(ui.Info("  RDRS_HOST            RDRS/REST API host (overrides RONDB_HOST)"))
+		fmt.Println(ui.Info("  RONDB_RONDIS_PORT    Rondis port"))
+		fmt.Println(ui.Info("  RONDB_MYSQL_PORT     MySQL port"))
+		fmt.Println(ui.Info("  RONDB_REST_PORT      REST API port"))
+		fmt.Println(ui.Info("  RONDB_MYSQL_USER     MySQL username"))
+		fmt.Println(ui.Info("  RONDB_MYSQL_PASSWORD MySQL password"))
 		return err
 	}
 	defer s.close()
@@ -91,36 +116,36 @@ func RunWithConfig(cfg Config) error {
 func (s *Shell) connect() error {
 	var err error
 
-	// MySQL is required
+	// MySQL is required (uses MySQLHost)
 	s.mysqlClient, err = client.NewMySQLClientWithOptions(client.MySQLOptions{
-		Host:     s.config.Host,
+		Host:     s.config.MySQLHost,
 		Port:     s.config.MySQLPort,
 		User:     s.mysqlUser,
 		Password: s.mysqlPass,
 		TLS:      s.config.TLS,
 	})
 	if err != nil {
-		return fmt.Errorf("mysql (%s:%d): %w", s.config.Host, s.config.MySQLPort, err)
+		return fmt.Errorf("mysql (%s:%d): %w", s.config.MySQLHost, s.config.MySQLPort, err)
 	}
 
-	// REST API is required
+	// REST API is required (uses RDRSHost)
 	s.restClient, err = client.NewRestClientWithOptions(client.RestOptions{
-		Host: s.config.Host,
+		Host: s.config.RDRSHost,
 		Port: s.config.RestPort,
 		TLS:  s.config.TLS,
 	})
 	if err != nil {
-		return fmt.Errorf("rest api (%s:%d): %w", s.config.Host, s.config.RestPort, err)
+		return fmt.Errorf("rest api (%s:%d): %w", s.config.RDRSHost, s.config.RestPort, err)
 	}
 
-	// Rondis is optional - don't fail if not available
+	// Rondis is optional - don't fail if not available (uses general Host)
 	s.rondisClient, err = client.NewRondisClientWithOptions(client.RondisOptions{
 		Host: s.config.Host,
 		Port: s.config.RondisPort,
 		TLS:  s.config.TLS,
 	})
 	if err != nil {
-		fmt.Println(ui.Info(fmt.Sprintf("Rondis not available on port %d (SQL-only mode)", s.config.RondisPort)))
+		fmt.Println(ui.Info(fmt.Sprintf("Rondis not available on %s:%d (SQL-only mode)", s.config.Host, s.config.RondisPort)))
 		s.rondisClient = nil
 	}
 
@@ -128,14 +153,26 @@ func (s *Shell) connect() error {
 }
 
 func (s *Shell) close() {
+	if s.verbose >= 1 {
+		fmt.Println(ui.Info("Closing connections..."))
+	}
 	if s.rondisClient != nil {
 		s.rondisClient.Close()
+		if s.verbose >= 1 {
+			fmt.Println(ui.Info(fmt.Sprintf("  Rondis (%s:%d): disconnected", s.config.Host, s.config.RondisPort)))
+		}
 	}
 	if s.mysqlClient != nil {
 		s.mysqlClient.Close()
+		if s.verbose >= 1 {
+			fmt.Println(ui.Info(fmt.Sprintf("  MySQL (%s:%d): disconnected", s.config.MySQLHost, s.config.MySQLPort)))
+		}
 	}
 	if s.restClient != nil {
 		s.restClient.Close()
+		if s.verbose >= 1 {
+			fmt.Println(ui.Info(fmt.Sprintf("  REST API (%s:%d): disconnected", s.config.RDRSHost, s.config.RestPort)))
+		}
 	}
 }
 
@@ -320,8 +357,15 @@ func (s *Shell) executeInternal(line string) error {
 
 	switch cmd {
 	case "help":
-		if len(parts) > 1 && parts[1] == "internal" {
-			s.printHelpInternal()
+		if len(parts) > 1 {
+			switch parts[1] {
+			case "internal":
+				s.printHelpInternal()
+			case "start":
+				s.printHelpStart()
+			default:
+				s.printHelp()
+			}
 		} else {
 			s.printHelp()
 		}
@@ -343,6 +387,22 @@ func (s *Shell) executeInternal(line string) error {
 			fmt.Println(ui.Info("Debug mode disabled"))
 		default:
 			return fmt.Errorf("invalid debug value: use 0/1, on/off, or true/false")
+		}
+	case "verbose":
+		if len(parts) < 2 {
+			fmt.Printf("Verbose level: %d\n", s.verbose)
+			return nil
+		}
+		level, err := strconv.Atoi(parts[1])
+		if err != nil || level < 0 || level > 2 {
+			return fmt.Errorf("invalid verbose level: use 0, 1, or 2")
+		}
+		s.verbose = level
+		if level >= 2 {
+			s.debug = true
+			fmt.Println(ui.Success(fmt.Sprintf("Verbose level set to %d (debug mode enabled)", level)))
+		} else {
+			fmt.Println(ui.Success(fmt.Sprintf("Verbose level set to %d", level)))
 		}
 	case "client":
 		if len(parts) < 2 {
@@ -448,6 +508,26 @@ func (s *Shell) executeInternal(line string) error {
 			durationSec = n
 		}
 		return s.runBenchSQLCont(numThreads, numOps, rowsPerOp, writePct, durationSec)
+	case "bench_sql_scan":
+		numThreads, numOps, rowsPerOp, err := parseBenchParams(parts)
+		if err != nil {
+			return err
+		}
+		return s.runBenchSQLScan(numThreads, numOps, rowsPerOp)
+	case "bench_sql_scan_cont":
+		numThreads, numOps, rowsPerOp, err := parseBenchParams(parts)
+		if err != nil {
+			return err
+		}
+		durationSec := 60 // default: 60 seconds
+		if len(parts) > 4 {
+			n, err := strconv.Atoi(parts[4])
+			if err != nil || n <= 0 {
+				return fmt.Errorf("invalid duration in seconds: %s", parts[4])
+			}
+			durationSec = n
+		}
+		return s.runBenchSQLScanCont(numThreads, numOps, rowsPerOp, durationSec)
 	case "bench_rondis":
 		numThreads, numOps, rowsPerOp, err := parseBenchParams(parts)
 		if err != nil {
@@ -985,6 +1065,9 @@ func parseBenchParams(parts []string) (numThreads, numOps, rowsPerOp int, err er
 // createRondisClients creates multiple Rondis clients for parallel operations
 func (s *Shell) createRondisClients(numThreads int) ([]*client.RondisClient, error) {
 	clients := make([]*client.RondisClient, numThreads)
+	if s.verbose >= 1 {
+		fmt.Printf("[*] Creating %d Rondis connections to %s:%d...\n", numThreads, s.config.Host, s.config.RondisPort)
+	}
 	for i := 0; i < numThreads; i++ {
 		c, err := client.NewRondisClientWithOptions(client.RondisOptions{
 			Host: s.config.Host,
@@ -999,6 +1082,9 @@ func (s *Shell) createRondisClients(numThreads int) ([]*client.RondisClient, err
 			return nil, fmt.Errorf("failed to create client for thread %d: %w", i, err)
 		}
 		clients[i] = c
+	}
+	if s.verbose >= 1 {
+		fmt.Printf("[*] %d Rondis connections established\n", numThreads)
 	}
 	return clients, nil
 }
@@ -1032,6 +1118,9 @@ func (s *Shell) runLoadRondis(numThreads int, numOps int, rowsPerOp int) error {
 		for _, c := range clients {
 			c.Close()
 		}
+		if s.verbose >= 1 {
+			fmt.Printf("[*] %d Rondis connections closed\n", numThreads)
+		}
 	}()
 
 	if useMulti {
@@ -1041,9 +1130,30 @@ func (s *Shell) runLoadRondis(numThreads int, numOps int, rowsPerOp int) error {
 	}
 
 	var writeErrors int64
+	var completedOps int64
 	var wg sync.WaitGroup
 	latencyCollector := NewLatencyCollector()
 	writeStart := time.Now()
+
+	// Progress reporting goroutine
+	stopProgress := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				ops := atomic.LoadInt64(&completedOps)
+				keys := ops * int64(rowsPerOp)
+				elapsed := time.Since(writeStart)
+				keysPerSec := float64(keys) / elapsed.Seconds()
+				pct := float64(ops) / float64(totalOps) * 100
+				fmt.Printf("   Progress: %d/%d ops (%.1f%%), %d keys, %.0f keys/sec\n", ops, totalOps, pct, keys, keysPerSec)
+			case <-stopProgress:
+				return
+			}
+		}
+	}()
 
 	debugMode := s.debug
 	clientID := s.clientID
@@ -1088,10 +1198,12 @@ func (s *Shell) runLoadRondis(numThreads int, numOps int, rowsPerOp int) error {
 						atomic.AddInt64(&writeErrors, 1)
 					}
 				}
+				atomic.AddInt64(&completedOps, 1)
 			}
 		}(t, clients[t])
 	}
 	wg.Wait()
+	close(stopProgress)
 	writeDuration := time.Since(writeStart)
 
 	// Get latency stats
@@ -1163,9 +1275,12 @@ func (s *Shell) runLoadSQL(numThreads int, numOps int, rowsPerOp int) error {
 
 	// Create MySQL clients for each thread
 	clients := make([]*client.MySQLClient, numThreads)
+	if s.verbose >= 1 {
+		fmt.Printf("[*] Creating %d MySQL connections to %s:%d...\n", numThreads, s.config.MySQLHost, s.config.MySQLPort)
+	}
 	for i := 0; i < numThreads; i++ {
 		c, err := client.NewMySQLClientWithOptions(client.MySQLOptions{
-			Host:     s.config.Host,
+			Host:     s.config.MySQLHost,
 			Port:     s.config.MySQLPort,
 			User:     s.mysqlUser,
 			Password: s.mysqlPass,
@@ -1180,18 +1295,45 @@ func (s *Shell) runLoadSQL(numThreads int, numOps int, rowsPerOp int) error {
 		}
 		clients[i] = c
 	}
+	if s.verbose >= 1 {
+		fmt.Printf("[*] %d MySQL connections established\n", numThreads)
+	}
 	defer func() {
 		for _, c := range clients {
 			c.Close()
+		}
+		if s.verbose >= 1 {
+			fmt.Printf("[*] %d MySQL connections closed\n", numThreads)
 		}
 	}()
 
 	fmt.Printf("Inserting %d rows (%d threads × %d requests × %d rows)...\n", totalKeys, numThreads, numOps, rowsPerOp)
 
 	var writeErrors int64
+	var completedOps int64
 	var wg sync.WaitGroup
 	latencyCollector := NewLatencyCollector()
 	writeStart := time.Now()
+
+	// Progress reporting goroutine
+	stopProgress := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				ops := atomic.LoadInt64(&completedOps)
+				rows := ops * int64(rowsPerOp)
+				elapsed := time.Since(writeStart)
+				rowsPerSec := float64(rows) / elapsed.Seconds()
+				pct := float64(ops) / float64(totalOps) * 100
+				fmt.Printf("   Progress: %d/%d ops (%.1f%%), %d rows, %.0f rows/sec\n", ops, totalOps, pct, rows, rowsPerSec)
+			case <-stopProgress:
+				return
+			}
+		}
+	}()
 
 	debugMode := s.debug
 	clientID := s.clientID
@@ -1223,10 +1365,12 @@ func (s *Shell) runLoadSQL(numThreads int, numOps int, rowsPerOp int) error {
 				if err != nil {
 					atomic.AddInt64(&writeErrors, 1)
 				}
+				atomic.AddInt64(&completedOps, 1)
 			}
 		}(t, clients[t])
 	}
 	wg.Wait()
+	close(stopProgress)
 	writeDuration := time.Since(writeStart)
 
 	// Get latency stats
@@ -1270,9 +1414,12 @@ func (s *Shell) runDelSQL(numThreads int, numOps int, rowsPerOp int) error {
 
 	// Create MySQL clients for each thread
 	clients := make([]*client.MySQLClient, numThreads)
+	if s.verbose >= 1 {
+		fmt.Printf("[*] Creating %d MySQL connections to %s:%d...\n", numThreads, s.config.MySQLHost, s.config.MySQLPort)
+	}
 	for i := 0; i < numThreads; i++ {
 		c, err := client.NewMySQLClientWithOptions(client.MySQLOptions{
-			Host:     s.config.Host,
+			Host:     s.config.MySQLHost,
 			Port:     s.config.MySQLPort,
 			User:     s.mysqlUser,
 			Password: s.mysqlPass,
@@ -1287,18 +1434,47 @@ func (s *Shell) runDelSQL(numThreads int, numOps int, rowsPerOp int) error {
 		}
 		clients[i] = c
 	}
+	if s.verbose >= 1 {
+		fmt.Printf("[*] %d MySQL connections established\n", numThreads)
+	}
 	defer func() {
 		for _, c := range clients {
 			c.Close()
+		}
+		if s.verbose >= 1 {
+			fmt.Printf("[*] %d MySQL connections closed\n", numThreads)
 		}
 	}()
 
 	fmt.Printf("Deleting %d rows (%d threads × %d DELETE statements)...\n", totalKeys, numThreads, numOps)
 
 	var delErrors int64
+	var completedOps int64
 	var wg sync.WaitGroup
 	latencyCollector := NewLatencyCollector()
 	delStart := time.Now()
+
+	// Progress reporting goroutine
+	stopProgress := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				ops := atomic.LoadInt64(&completedOps)
+				rows := ops * int64(rowsPerOp)
+				errs := atomic.LoadInt64(&delErrors)
+				elapsed := time.Since(delStart)
+				rowsPerSec := float64(rows) / elapsed.Seconds()
+				pct := float64(ops) / float64(totalOps) * 100
+				fmt.Printf("   Progress: %d/%d ops (%.1f%%), %d rows deleted, errors=%d, %.0f rows/sec\n",
+					ops, totalOps, pct, rows, errs, rowsPerSec)
+			case <-stopProgress:
+				return
+			}
+		}
+	}()
 
 	debugMode := s.debug
 	clientID := s.clientID
@@ -1322,10 +1498,12 @@ func (s *Shell) runDelSQL(numThreads int, numOps int, rowsPerOp int) error {
 				if err != nil {
 					atomic.AddInt64(&delErrors, 1)
 				}
+				atomic.AddInt64(&completedOps, 1)
 			}
 		}(t, clients[t])
 	}
 	wg.Wait()
+	close(stopProgress)
 	delDuration := time.Since(delStart)
 
 	// Get latency stats
@@ -1382,9 +1560,12 @@ func (s *Shell) runBenchSQL(numThreads int, numOps int, rowsPerOp int, writePct 
 
 	// Create MySQL clients for each thread
 	clients := make([]*client.MySQLClient, numThreads)
+	if s.verbose >= 1 {
+		fmt.Printf("[*] Creating %d MySQL connections to %s:%d...\n", numThreads, s.config.MySQLHost, s.config.MySQLPort)
+	}
 	for i := 0; i < numThreads; i++ {
 		c, err := client.NewMySQLClientWithOptions(client.MySQLOptions{
-			Host:     s.config.Host,
+			Host:     s.config.MySQLHost,
 			Port:     s.config.MySQLPort,
 			User:     s.mysqlUser,
 			Password: s.mysqlPass,
@@ -1399,9 +1580,15 @@ func (s *Shell) runBenchSQL(numThreads int, numOps int, rowsPerOp int, writePct 
 		}
 		clients[i] = c
 	}
+	if s.verbose >= 1 {
+		fmt.Printf("[*] %d MySQL connections established\n", numThreads)
+	}
 	defer func() {
 		for _, c := range clients {
 			c.Close()
+		}
+		if s.verbose >= 1 {
+			fmt.Printf("[*] %d MySQL connections closed\n", numThreads)
 		}
 	}()
 
@@ -1413,6 +1600,29 @@ func (s *Shell) runBenchSQL(numThreads int, numOps int, rowsPerOp int, writePct 
 	var wg sync.WaitGroup
 	latencyCollector := NewLatencyCollector()
 	benchStart := time.Now()
+
+	// Progress reporting goroutine
+	stopProgress := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				reads := atomic.LoadInt64(&readOps)
+				writes := atomic.LoadInt64(&writeOps)
+				errs := atomic.LoadInt64(&errors)
+				ops := reads + writes
+				elapsed := time.Since(benchStart)
+				opsPerSec := float64(ops) / elapsed.Seconds()
+				pct := float64(ops) / float64(totalOps) * 100
+				fmt.Printf("   Progress: %d/%d ops (%.1f%%), reads=%d, writes=%d, errors=%d, %.0f ops/sec\n",
+					ops, totalOps, pct, reads, writes, errs, opsPerSec)
+			case <-stopProgress:
+				return
+			}
+		}
+	}()
 
 	debugMode := s.debug
 	clientID := s.clientID
@@ -1475,6 +1685,7 @@ func (s *Shell) runBenchSQL(numThreads int, numOps int, rowsPerOp int, writePct 
 		}(t, clients[t])
 	}
 	wg.Wait()
+	close(stopProgress)
 
 	benchDuration := time.Since(benchStart)
 
@@ -1501,22 +1712,27 @@ func (s *Shell) runBenchSQL(numThreads int, numOps int, rowsPerOp int, writePct 
 	return nil
 }
 
-// runBenchSQLCont runs continuous SQL benchmark for specified duration
-func (s *Shell) runBenchSQLCont(numThreads int, numOps int, rowsPerOp int, writePct int, durationSec int) error {
+// runBenchSQLScan benchmarks using SELECT queries that scan by user_id only (no IN clause)
+func (s *Shell) runBenchSQLScan(numThreads int, numOps int, rowsPerOp int) error {
 	if s.mysqlClient == nil {
 		return fmt.Errorf("MySQL not connected. Benchmark requires MySQL.")
 	}
 
+	totalOps := numThreads * numOps
+	totalKeys := totalOps * rowsPerOp
+
 	fmt.Println()
-	fmt.Println(ui.Info(fmt.Sprintf("Continuous SQL benchmark: %d threads, %d rows/req, %d%% writes, %d%% reads, running for %d seconds",
-		numThreads, rowsPerOp, writePct, 100-writePct, durationSec)))
+	fmt.Println(ui.Info(fmt.Sprintf("SQL Scan Benchmark: %d threads × %d requests × %d rows = %d total rows (scan by user_id)", numThreads, numOps, rowsPerOp, totalKeys)))
 	fmt.Println()
 
 	// Create MySQL clients for each thread
 	clients := make([]*client.MySQLClient, numThreads)
+	if s.verbose >= 1 {
+		fmt.Printf("[*] Creating %d MySQL connections to %s:%d...\n", numThreads, s.config.MySQLHost, s.config.MySQLPort)
+	}
 	for i := 0; i < numThreads; i++ {
 		c, err := client.NewMySQLClientWithOptions(client.MySQLOptions{
-			Host:     s.config.Host,
+			Host:     s.config.MySQLHost,
 			Port:     s.config.MySQLPort,
 			User:     s.mysqlUser,
 			Password: s.mysqlPass,
@@ -1531,9 +1747,315 @@ func (s *Shell) runBenchSQLCont(numThreads int, numOps int, rowsPerOp int, write
 		}
 		clients[i] = c
 	}
+	if s.verbose >= 1 {
+		fmt.Printf("[*] %d MySQL connections established\n", numThreads)
+	}
 	defer func() {
 		for _, c := range clients {
 			c.Close()
+		}
+		if s.verbose >= 1 {
+			fmt.Printf("[*] %d MySQL connections closed\n", numThreads)
+		}
+	}()
+
+	fmt.Printf("Running %d scan operations (%d threads × %d calls, each scanning %d rows)...\n", totalOps, numThreads, numOps, rowsPerOp)
+
+	var readOps int64
+	var errors int64
+	var wg sync.WaitGroup
+	latencyCollector := NewLatencyCollector()
+	benchStart := time.Now()
+
+	// Progress reporting goroutine
+	stopProgress := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				ops := atomic.LoadInt64(&readOps)
+				errs := atomic.LoadInt64(&errors)
+				rows := ops * int64(rowsPerOp)
+				elapsed := time.Since(benchStart)
+				opsPerSec := float64(ops) / elapsed.Seconds()
+				pct := float64(ops) / float64(totalOps) * 100
+				fmt.Printf("   Progress: %d/%d ops (%.1f%%), %d rows, errors=%d, %.0f scans/sec\n",
+					ops, totalOps, pct, rows, errs, opsPerSec)
+			case <-stopProgress:
+				return
+			}
+		}
+	}()
+
+	debugMode := s.debug
+	clientID := s.clientID
+	for t := 0; t < numThreads; t++ {
+		wg.Add(1)
+		go func(threadID int, mysqlClient *client.MySQLClient) {
+			defer wg.Done()
+
+			for i := 0; i < numOps; i++ {
+				// SELECT using only user_id (scans all rows for that user_id)
+				userID := fmt.Sprintf("bench:key:%d:%d:%d", clientID, threadID, i)
+				selectSQL := fmt.Sprintf("SELECT user_id, event_time, description, value_int, event_type FROM test.sql_test WHERE user_id = '%s'", userID)
+				if debugMode {
+					fmt.Printf("[DEBUG] SQL: %s\n", selectSQL)
+				}
+				opStart := time.Now()
+				_, _, err := mysqlClient.Execute(selectSQL)
+				latencyCollector.Record(time.Since(opStart))
+				if debugMode {
+					fmt.Printf("[DEBUG] Result: err=%v\n", err)
+				}
+				if err != nil {
+					atomic.AddInt64(&errors, 1)
+				} else {
+					atomic.AddInt64(&readOps, 1)
+				}
+			}
+		}(t, clients[t])
+	}
+	wg.Wait()
+	close(stopProgress)
+
+	benchDuration := time.Since(benchStart)
+
+	// Get latency stats
+	minLat, maxLat, avgLat, p95Lat, p99Lat, p999Lat, _ := latencyCollector.GetTotalStats()
+
+	// Report results
+	fmt.Println()
+	totalRowsProcessed := readOps * int64(rowsPerOp)
+	opsPerSec := float64(readOps) / benchDuration.Seconds()
+	rowsPerSec := float64(totalRowsProcessed) / benchDuration.Seconds()
+
+	fmt.Println(ui.Success(fmt.Sprintf("SQL Scan Benchmark completed in %.2fs", benchDuration.Seconds())))
+	fmt.Printf("   Scans:  %d operations (%d rows scanned)\n", readOps, totalRowsProcessed)
+	fmt.Printf("   Errors: %d\n", errors)
+	fmt.Printf("   Throughput: %.0f scans/sec (%.0f rows/sec)\n", opsPerSec, rowsPerSec)
+	fmt.Printf("   Latency: min=%s avg=%s max=%s p95=%s p99=%s p99.9=%s\n",
+		formatLatency(minLat), formatLatency(avgLat), formatLatency(maxLat),
+		formatLatency(p95Lat), formatLatency(p99Lat), formatLatency(p999Lat))
+	fmt.Println()
+
+	return nil
+}
+
+// runBenchSQLScanCont runs continuous SQL scan benchmark for specified duration
+func (s *Shell) runBenchSQLScanCont(numThreads int, numOps int, rowsPerOp int, durationSec int) error {
+	if s.mysqlClient == nil {
+		return fmt.Errorf("MySQL not connected. Benchmark requires MySQL.")
+	}
+
+	fmt.Println()
+	fmt.Println(ui.Info(fmt.Sprintf("Continuous SQL Scan benchmark: %d threads, %d rows/scan, running for %d seconds",
+		numThreads, rowsPerOp, durationSec)))
+	fmt.Println()
+
+	// Create MySQL clients for each thread
+	clients := make([]*client.MySQLClient, numThreads)
+	if s.verbose >= 1 {
+		fmt.Printf("[*] Creating %d MySQL connections to %s:%d...\n", numThreads, s.config.MySQLHost, s.config.MySQLPort)
+	}
+	for i := 0; i < numThreads; i++ {
+		c, err := client.NewMySQLClientWithOptions(client.MySQLOptions{
+			Host:     s.config.MySQLHost,
+			Port:     s.config.MySQLPort,
+			User:     s.mysqlUser,
+			Password: s.mysqlPass,
+			TLS:      s.config.TLS,
+		})
+		if err != nil {
+			// Close already created clients
+			for j := 0; j < i; j++ {
+				clients[j].Close()
+			}
+			return fmt.Errorf("failed to create MySQL client for thread %d: %w", i, err)
+		}
+		clients[i] = c
+	}
+	if s.verbose >= 1 {
+		fmt.Printf("[*] %d MySQL connections established\n", numThreads)
+	}
+	defer func() {
+		for _, c := range clients {
+			c.Close()
+		}
+		if s.verbose >= 1 {
+			fmt.Printf("[*] %d MySQL connections closed\n", numThreads)
+		}
+	}()
+
+	fmt.Printf("Running for %d seconds (reporting every 10s)...\n", durationSec)
+	fmt.Println()
+
+	// Total counters
+	var totalReadOps int64
+	var totalErrors int64
+
+	// Interval counters (for 10-second reporting)
+	var intervalReadOps int64
+	var intervalErrors int64
+
+	var wg sync.WaitGroup
+	latencyCollector := NewLatencyCollector()
+
+	// Use a channel to signal stop
+	stopCh := make(chan struct{})
+
+	benchStart := time.Now()
+
+	// Start timer to close stopCh after duration
+	go func() {
+		time.Sleep(time.Duration(durationSec) * time.Second)
+		close(stopCh)
+	}()
+
+	// Start reporting goroutine
+	reportDone := make(chan struct{})
+	go func() {
+		defer close(reportDone)
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		intervalStart := time.Now()
+
+		for {
+			select {
+			case <-stopCh:
+				return
+			case <-ticker.C:
+				// Read and reset interval counters
+				reads := atomic.SwapInt64(&intervalReadOps, 0)
+				errs := atomic.SwapInt64(&intervalErrors, 0)
+
+				// Get interval latency stats
+				minLat, maxLat, avgLat, p99Lat, _ := latencyCollector.GetIntervalStats()
+
+				intervalDuration := time.Since(intervalStart)
+				intervalStart = time.Now()
+
+				rows := reads * int64(rowsPerOp)
+				scansPerSec := float64(reads) / intervalDuration.Seconds()
+				rowsPerSec := float64(rows) / intervalDuration.Seconds()
+
+				elapsed := time.Since(benchStart).Seconds()
+				fmt.Printf("[%5.0fs] scans: %d, errors: %d, %.0f scans/sec (%.0f rows/sec), latency: min=%s avg=%s max=%s p99=%s\n",
+					elapsed, reads, errs, scansPerSec, rowsPerSec,
+					formatLatency(minLat), formatLatency(avgLat), formatLatency(maxLat), formatLatency(p99Lat))
+			}
+		}
+	}()
+
+	debugMode := s.debug
+	clientID := s.clientID
+	for t := 0; t < numThreads; t++ {
+		wg.Add(1)
+		go func(threadID int, mysqlClient *client.MySQLClient) {
+			defer wg.Done()
+			keyCounter := 0
+
+			for {
+				select {
+				case <-stopCh:
+					return
+				default:
+					// Use modulo to cycle through the same keys as .bench_sql_scan
+					requestId := keyCounter % numOps
+					keyCounter++
+
+					// SELECT using only user_id (scans all rows for that user_id)
+					userID := fmt.Sprintf("bench:key:%d:%d:%d", clientID, threadID, requestId)
+					selectSQL := fmt.Sprintf("SELECT user_id, event_time, description, value_int, event_type FROM test.sql_test WHERE user_id = '%s'", userID)
+					if debugMode {
+						fmt.Printf("[DEBUG] SQL: %s\n", selectSQL)
+					}
+					opStart := time.Now()
+					_, _, err := mysqlClient.Execute(selectSQL)
+					latencyCollector.Record(time.Since(opStart))
+					if debugMode {
+						fmt.Printf("[DEBUG] Result: err=%v\n", err)
+					}
+					if err != nil {
+						atomic.AddInt64(&totalErrors, 1)
+						atomic.AddInt64(&intervalErrors, 1)
+					} else {
+						atomic.AddInt64(&totalReadOps, 1)
+						atomic.AddInt64(&intervalReadOps, 1)
+					}
+				}
+			}
+		}(t, clients[t])
+	}
+	wg.Wait()
+	<-reportDone // Wait for reporting goroutine to finish
+
+	benchDuration := time.Since(benchStart)
+
+	// Get total latency stats
+	minLat, maxLat, avgLat, p95Lat, p99Lat, p999Lat, _ := latencyCollector.GetTotalStats()
+
+	// Report total results
+	fmt.Println()
+	totalRowsProcessed := totalReadOps * int64(rowsPerOp)
+	scansPerSec := float64(totalReadOps) / benchDuration.Seconds()
+	rowsPerSec := float64(totalRowsProcessed) / benchDuration.Seconds()
+
+	fmt.Println(ui.Success(fmt.Sprintf("Continuous SQL Scan Benchmark completed in %.2fs", benchDuration.Seconds())))
+	fmt.Printf("   Total Scans:  %d operations (%d rows scanned)\n", totalReadOps, totalRowsProcessed)
+	fmt.Printf("   Total Errors: %d\n", totalErrors)
+	fmt.Printf("   Avg Throughput: %.0f scans/sec (%.0f rows/sec)\n", scansPerSec, rowsPerSec)
+	fmt.Printf("   Latency: min=%s avg=%s max=%s p95=%s p99=%s p99.9=%s\n",
+		formatLatency(minLat), formatLatency(avgLat), formatLatency(maxLat),
+		formatLatency(p95Lat), formatLatency(p99Lat), formatLatency(p999Lat))
+	fmt.Println()
+
+	return nil
+}
+
+// runBenchSQLCont runs continuous SQL benchmark for specified duration
+func (s *Shell) runBenchSQLCont(numThreads int, numOps int, rowsPerOp int, writePct int, durationSec int) error {
+	if s.mysqlClient == nil {
+		return fmt.Errorf("MySQL not connected. Benchmark requires MySQL.")
+	}
+
+	fmt.Println()
+	fmt.Println(ui.Info(fmt.Sprintf("Continuous SQL benchmark: %d threads, %d rows/req, %d%% writes, %d%% reads, running for %d seconds",
+		numThreads, rowsPerOp, writePct, 100-writePct, durationSec)))
+	fmt.Println()
+
+	// Create MySQL clients for each thread
+	clients := make([]*client.MySQLClient, numThreads)
+	if s.verbose >= 1 {
+		fmt.Printf("[*] Creating %d MySQL connections to %s:%d...\n", numThreads, s.config.MySQLHost, s.config.MySQLPort)
+	}
+	for i := 0; i < numThreads; i++ {
+		c, err := client.NewMySQLClientWithOptions(client.MySQLOptions{
+			Host:     s.config.MySQLHost,
+			Port:     s.config.MySQLPort,
+			User:     s.mysqlUser,
+			Password: s.mysqlPass,
+			TLS:      s.config.TLS,
+		})
+		if err != nil {
+			// Close already created clients
+			for j := 0; j < i; j++ {
+				clients[j].Close()
+			}
+			return fmt.Errorf("failed to create MySQL client for thread %d: %w", i, err)
+		}
+		clients[i] = c
+	}
+	if s.verbose >= 1 {
+		fmt.Printf("[*] %d MySQL connections established\n", numThreads)
+	}
+	defer func() {
+		for _, c := range clients {
+			c.Close()
+		}
+		if s.verbose >= 1 {
+			fmt.Printf("[*] %d MySQL connections closed\n", numThreads)
 		}
 	}()
 
@@ -1729,6 +2251,9 @@ func (s *Shell) runBenchRondis(numThreads int, numOps int, rowsPerOp int, writeP
 		for _, c := range clients {
 			c.Close()
 		}
+		if s.verbose >= 1 {
+			fmt.Printf("[*] %d Rondis connections closed\n", numThreads)
+		}
 	}()
 
 	if useMulti {
@@ -1743,6 +2268,30 @@ func (s *Shell) runBenchRondis(numThreads int, numOps int, rowsPerOp int, writeP
 	var wg sync.WaitGroup
 	latencyCollector := NewLatencyCollector()
 	benchStart := time.Now()
+
+	// Progress reporting goroutine
+	stopProgress := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				reads := atomic.LoadInt64(&readOps)
+				writes := atomic.LoadInt64(&writeOps)
+				errs := atomic.LoadInt64(&errors)
+				ops := reads + writes
+				keys := ops * int64(rowsPerOp)
+				elapsed := time.Since(benchStart)
+				keysPerSec := float64(keys) / elapsed.Seconds()
+				pct := float64(ops) / float64(totalOps) * 100
+				fmt.Printf("   Progress: %d/%d ops (%.1f%%), reads=%d, writes=%d, errors=%d, %.0f keys/sec\n",
+					ops, totalOps, pct, reads, writes, errs, keysPerSec)
+			case <-stopProgress:
+				return
+			}
+		}
+	}()
 
 	debugMode := s.debug
 	clientID := s.clientID
@@ -1843,6 +2392,7 @@ func (s *Shell) runBenchRondis(numThreads int, numOps int, rowsPerOp int, writeP
 		}(t, clients[t])
 	}
 	wg.Wait()
+	close(stopProgress)
 	benchDuration := time.Since(benchStart)
 
 	// Get latency stats
@@ -1901,6 +2451,9 @@ func (s *Shell) runBenchRondisCont(numThreads int, numOps int, rowsPerOp int, wr
 	defer func() {
 		for _, c := range clients {
 			c.Close()
+		}
+		if s.verbose >= 1 {
+			fmt.Printf("[*] %d Rondis connections closed\n", numThreads)
 		}
 	}()
 
@@ -2150,6 +2703,9 @@ func (s *Shell) runDelRondis(numThreads int, numOps int, rowsPerOp int) error {
 		for _, c := range clients {
 			c.Close()
 		}
+		if s.verbose >= 1 {
+			fmt.Printf("[*] %d Rondis connections closed\n", numThreads)
+		}
 	}()
 
 	if useMulti {
@@ -2159,9 +2715,32 @@ func (s *Shell) runDelRondis(numThreads int, numOps int, rowsPerOp int) error {
 	}
 
 	var delErrors int64
+	var completedOps int64
 	var wg sync.WaitGroup
 	latencyCollector := NewLatencyCollector()
 	delStart := time.Now()
+
+	// Progress reporting goroutine
+	stopProgress := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				ops := atomic.LoadInt64(&completedOps)
+				keys := ops * int64(rowsPerOp)
+				errs := atomic.LoadInt64(&delErrors)
+				elapsed := time.Since(delStart)
+				keysPerSec := float64(keys) / elapsed.Seconds()
+				pct := float64(ops) / float64(totalOps) * 100
+				fmt.Printf("   Progress: %d/%d ops (%.1f%%), %d keys deleted, errors=%d, %.0f keys/sec\n",
+					ops, totalOps, pct, keys, errs, keysPerSec)
+			case <-stopProgress:
+				return
+			}
+		}
+	}()
 
 	debugMode := s.debug
 	clientID := s.clientID
@@ -2205,10 +2784,12 @@ func (s *Shell) runDelRondis(numThreads int, numOps int, rowsPerOp int) error {
 						atomic.AddInt64(&delErrors, 1)
 					}
 				}
+				atomic.AddInt64(&completedOps, 1)
 			}
 		}(t, clients[t])
 	}
 	wg.Wait()
+	close(stopProgress)
 	delDuration := time.Since(delStart)
 
 	// Get latency stats
@@ -2258,9 +2839,12 @@ func (s *Shell) runBenchRDRS(numThreads int, numOps int, rowsPerOp int) error {
 
 	// Create REST clients for each thread
 	clients := make([]*client.RestClient, numThreads)
+	if s.verbose >= 1 {
+		fmt.Printf("[*] Creating %d REST connections to %s:%d...\n", numThreads, s.config.RDRSHost, s.config.RestPort)
+	}
 	for i := 0; i < numThreads; i++ {
 		c, err := client.NewRestClientWithOptions(client.RestOptions{
-			Host: s.config.Host,
+			Host: s.config.RDRSHost,
 			Port: s.config.RestPort,
 			TLS:  s.config.TLS,
 		})
@@ -2273,9 +2857,15 @@ func (s *Shell) runBenchRDRS(numThreads int, numOps int, rowsPerOp int) error {
 		}
 		clients[i] = c
 	}
+	if s.verbose >= 1 {
+		fmt.Printf("[*] %d REST connections established\n", numThreads)
+	}
 	defer func() {
 		for _, c := range clients {
 			c.Close()
+		}
+		if s.verbose >= 1 {
+			fmt.Printf("[*] %d REST connections closed\n", numThreads)
 		}
 	}()
 
@@ -2294,6 +2884,29 @@ func (s *Shell) runBenchRDRS(numThreads int, numOps int, rowsPerOp int) error {
 	var wg sync.WaitGroup
 	latencyCollector := NewLatencyCollector()
 	benchStart := time.Now()
+
+	// Progress reporting goroutine
+	stopProgress := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				ops := atomic.LoadInt64(&readOps)
+				errs := atomic.LoadInt64(&errors)
+				rows := ops * int64(rowsPerOp)
+				elapsed := time.Since(benchStart)
+				opsPerSec := float64(ops) / elapsed.Seconds()
+				rowsPerSec := float64(rows) / elapsed.Seconds()
+				pct := float64(ops) / float64(totalOps) * 100
+				fmt.Printf("   Progress: %d/%d ops (%.1f%%), %d rows, errors=%d, %.0f batch/sec, %.0f rows/sec\n",
+					ops, totalOps, pct, rows, errs, opsPerSec, rowsPerSec)
+			case <-stopProgress:
+				return
+			}
+		}
+	}()
 
 	debugMode := s.debug
 	clientID := s.clientID
@@ -2343,6 +2956,7 @@ func (s *Shell) runBenchRDRS(numThreads int, numOps int, rowsPerOp int) error {
 		}(t, clients[t])
 	}
 	wg.Wait()
+	close(stopProgress)
 
 	benchDuration := time.Since(benchStart)
 
@@ -2381,9 +2995,12 @@ func (s *Shell) runBenchRDRSCont(numThreads int, numOps int, rowsPerOp int, dura
 
 	// Create REST clients for each thread
 	clients := make([]*client.RestClient, numThreads)
+	if s.verbose >= 1 {
+		fmt.Printf("[*] Creating %d REST connections to %s:%d...\n", numThreads, s.config.RDRSHost, s.config.RestPort)
+	}
 	for i := 0; i < numThreads; i++ {
 		c, err := client.NewRestClientWithOptions(client.RestOptions{
-			Host: s.config.Host,
+			Host: s.config.RDRSHost,
 			Port: s.config.RestPort,
 			TLS:  s.config.TLS,
 		})
@@ -2396,9 +3013,15 @@ func (s *Shell) runBenchRDRSCont(numThreads int, numOps int, rowsPerOp int, dura
 		}
 		clients[i] = c
 	}
+	if s.verbose >= 1 {
+		fmt.Printf("[*] %d REST connections established\n", numThreads)
+	}
 	defer func() {
 		for _, c := range clients {
 			c.Close()
+		}
+		if s.verbose >= 1 {
+			fmt.Printf("[*] %d REST connections closed\n", numThreads)
 		}
 	}()
 
@@ -2616,6 +3239,7 @@ Commands:
     .tables             List all tables
     .help               Show this help
     .help internal      Show benchmark commands
+    .help start         Show connection flags and environment variables
     quit, exit, q       Exit the shell
 
 The magic: Your Rondis data is queryable with SQL!
@@ -2632,6 +3256,7 @@ Internal benchmark commands (T=threads, N=requests, R=rows/req, W=write%, S=seco
   Settings:
     .client [N]                          Set/show client ID for key prefix (default 0)
     .debug [0|1]                         Toggle debug mode (print requests/responses)
+    .verbose [0|1|2]                     Set verbose level (0=normal, 1=connect/disconnect, 2=+debug)
 
   Rondis benchmarks:
     .load_rondis [T] [N] [R]             Load data via MSET
@@ -2643,6 +3268,8 @@ Internal benchmark commands (T=threads, N=requests, R=rows/req, W=write%, S=seco
     .load_sql [T] [N] [R]                Load data via INSERT into test.sql_test
     .bench_sql [T] [N] [R] [W]           Benchmark (W=write%, 0=all reads, 100=all writes)
     .bench_sql_cont [T] [N] [R] [W] [S]  Continuous benchmark for S seconds
+    .bench_sql_scan [T] [N] [R]          Scan benchmark (SELECT by user_id only, no IN clause)
+    .bench_sql_scan_cont [T] [N] [R] [S] Continuous scan benchmark for S seconds
     .del_sql [T] [N] [R]                 Delete data via DELETE from test.sql_test
     .drop_sql                            Drop the test.sql_test table
 
@@ -2654,6 +3281,38 @@ Key format: bench:key:<client>:<thread>:<key>:<row>
 Defaults: T=2, N=1000, R=1, W=0, S=60, client=0
 `
 	fmt.Println(help)
+}
+
+func (s *Shell) printHelpStart() {
+	fmt.Println()
+	fmt.Println(ui.Info("Connection settings:"))
+	fmt.Println(ui.Info(fmt.Sprintf("  Rondis:   %s:%d", s.config.Host, s.config.RondisPort)))
+	fmt.Println(ui.Info(fmt.Sprintf("  MySQL:    %s:%d (user: %s)", s.config.MySQLHost, s.config.MySQLPort, s.mysqlUser)))
+	fmt.Println(ui.Info(fmt.Sprintf("  REST API: %s:%d", s.config.RDRSHost, s.config.RestPort)))
+	fmt.Println()
+	fmt.Println(ui.Info("Command line flags:"))
+	fmt.Println(ui.Info("  --host             RonDB host (default: localhost, sets all hosts)"))
+	fmt.Println(ui.Info("  --mysql-host       MySQL host (overrides --host)"))
+	fmt.Println(ui.Info("  --rdrs-host        RDRS/REST API host (overrides --host)"))
+	fmt.Println(ui.Info("  --rondis-port      Rondis port (default: 6379)"))
+	fmt.Println(ui.Info("  --mysql-port       MySQL port (default: 3306)"))
+	fmt.Println(ui.Info("  --rest-port        REST API port (default: 4406)"))
+	fmt.Println(ui.Info("  --mysql-user       MySQL username (default: root)"))
+	fmt.Println(ui.Info("  --mysql-password   MySQL password (default: empty)"))
+	fmt.Println(ui.Info("  -p, --password     Prompt for MySQL password (silent input)"))
+	fmt.Println(ui.Info("  --tls              Enable TLS for connections"))
+	fmt.Println(ui.Info("  --verbose          Verbose level (0=normal, 1=connection info, 2=debug)"))
+	fmt.Println()
+	fmt.Println(ui.Info("Environment variables:"))
+	fmt.Println(ui.Info("  RONDB_HOST           RonDB host (sets all hosts)"))
+	fmt.Println(ui.Info("  MYSQL_HOST           MySQL host (overrides RONDB_HOST)"))
+	fmt.Println(ui.Info("  RDRS_HOST            RDRS/REST API host (overrides RONDB_HOST)"))
+	fmt.Println(ui.Info("  RONDB_RONDIS_PORT    Rondis port"))
+	fmt.Println(ui.Info("  RONDB_MYSQL_PORT     MySQL port"))
+	fmt.Println(ui.Info("  RONDB_REST_PORT      REST API port"))
+	fmt.Println(ui.Info("  RONDB_MYSQL_USER     MySQL username"))
+	fmt.Println(ui.Info("  RONDB_MYSQL_PASSWORD MySQL password"))
+	fmt.Println()
 }
 
 func isSQLCommand(lower string) bool {
@@ -2780,6 +3439,8 @@ func (s *Shell) getCompleter() *readline.PrefixCompleter {
 		readline.PcItem(".drop_sql"),
 		readline.PcItem(".bench_sql"),
 		readline.PcItem(".bench_sql_cont"),
+		readline.PcItem(".bench_sql_scan"),
+		readline.PcItem(".bench_sql_scan_cont"),
 		readline.PcItem(".bench_rondis"),
 		readline.PcItem(".bench_rondis_cont"),
 		readline.PcItem(".del_rondis"),
@@ -2788,9 +3449,15 @@ func (s *Shell) getCompleter() *readline.PrefixCompleter {
 		readline.PcItem(".browse"),
 		readline.PcItem(".demo"),
 		readline.PcItem(".debug"),
+		readline.PcItem(".verbose",
+			readline.PcItem("0"),
+			readline.PcItem("1"),
+			readline.PcItem("2"),
+		),
 		readline.PcItem(".client"),
 		readline.PcItem(".help",
 			readline.PcItem("internal"),
+			readline.PcItem("start"),
 		),
 		readline.PcItem(".tables"),
 		readline.PcItem("quit"),
