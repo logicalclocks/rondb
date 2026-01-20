@@ -151,6 +151,16 @@ CLASS
  CM(std::vector<RondisDatabaseConfig>, databases, Databases,
     {RondisDatabaseConfig(0)},
     "Database-specific configuration.")
+ CM(bool, createTables, CreateTables, true,
+    "Whether to create Rondis databases and tables on startup if they don't exist.")
+ CM(std::string, mysqlHost, MySQLHost, "localhost",
+    "The MySQL server host for creating Rondis tables.")
+ CM(Uint16, mysqlPort, MySQLPort, 3306,
+    "The MySQL server port for creating Rondis tables.")
+ CM(std::string, mysqlUser, MySQLUser, "root",
+    "The MySQL user for creating Rondis tables.")
+ CM(std::string, mysqlPassword, MySQLPassword, "",
+    "The MySQL password for creating Rondis tables.")
  PROBLEM(serverIP.empty(), "Rondis server IP cannot be empty")
  PROBLEM(serverPort == 0, "Rondis server port cannot be zero.")
  PROBLEM(numThreads == 0, "Number of rondis threads cannot be zero.")
