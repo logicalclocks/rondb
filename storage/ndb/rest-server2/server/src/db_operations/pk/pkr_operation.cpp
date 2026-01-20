@@ -640,7 +640,8 @@ RS_Status KeyOperation::write_col_to_resp(Uint32 colIdx,
     Uint32 null_bit_in_byte;
     bool null_value = NdbDictionary::getNullBitOffset(
       ndb_record, col_id, null_byte_offset, null_bit_in_byte);
-    if (null_value) {
+    // Only check null bits for columns that are actually nullable
+    if (null_value && col->getNullable()) {
       Uint8 null_byte = row[null_byte_offset];
       Uint8 null_bit_value = (null_byte >> null_bit_in_byte) & 1;
       if (null_bit_value) {
