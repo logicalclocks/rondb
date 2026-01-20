@@ -98,5 +98,33 @@ Number of output lines, including header: 2
 
 
 
+Compare MySQL and RonSQL using a query that creates a fairly deep stack
+using 100 unary minuses and 100 NOTs.
+== Query ==
+SELECT sum(sint8)
+FROM tbl
+WHERE
+  sint8 > ----------------------------------------------------------------------------------------------------1 AND
+  NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT
+  NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT
+  NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT
+  NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT
+  NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT
+  sint8>0;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+Test the maximum stack depth for unary minus and NOT that RonSQL can
+handle.
+sum(sint8)
+NULL
+sum(sint8)
+NULL
+Exceeding maximum stack depth for RonSQL should fail gracefully
 Cleanup
 DROP TABLE tbl;
