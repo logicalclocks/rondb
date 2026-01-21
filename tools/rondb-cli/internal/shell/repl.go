@@ -1085,6 +1085,72 @@ func (lc *LatencyCollector) GetTotalStats() (min, max, avg, p95, p99, p999 time.
 	return minV, maxV, avgV, p95V, p99V, p999V, cnt
 }
 
+// Maximum number of errors to store in benchmarks
+const maxBenchmarkErrors = 100
+
+// ErrorCollector collects errors from benchmark runs (thread-safe, limited)
+type ErrorCollector struct {
+	mu     sync.Mutex
+	errors []string
+	count  int64 // Total error count (may exceed len(errors))
+}
+
+// NewErrorCollector creates a new error collector
+func NewErrorCollector() *ErrorCollector {
+	return &ErrorCollector{
+		errors: make([]string, 0, maxBenchmarkErrors),
+	}
+}
+
+// Record adds an error to the collection (thread-safe)
+// Returns true if the error was stored, false if limit reached
+func (ec *ErrorCollector) Record(err error) {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+	ec.count++
+	if len(ec.errors) < maxBenchmarkErrors {
+		ec.errors = append(ec.errors, err.Error())
+	}
+}
+
+// Count returns the total number of errors (may exceed stored errors)
+func (ec *ErrorCollector) Count() int64 {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+	return ec.count
+}
+
+// GetErrors returns a copy of the stored errors
+func (ec *ErrorCollector) GetErrors() []string {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+	result := make([]string, len(ec.errors))
+	copy(result, ec.errors)
+	return result
+}
+
+// PrintErrors prints all collected errors if any exist
+func (ec *ErrorCollector) PrintErrors() {
+	ec.mu.Lock()
+	errCount := ec.count
+	storedErrors := make([]string, len(ec.errors))
+	copy(storedErrors, ec.errors)
+	ec.mu.Unlock()
+
+	if errCount == 0 {
+		return
+	}
+
+	fmt.Println()
+	fmt.Println(ui.Error(fmt.Sprintf("Errors encountered (%d total):", errCount)))
+	for i, errMsg := range storedErrors {
+		fmt.Printf("   %d. %s\n", i+1, errMsg)
+	}
+	if errCount > int64(len(storedErrors)) {
+		fmt.Printf("   ... and %d more errors not shown\n", errCount-int64(len(storedErrors)))
+	}
+}
+
 // calculateLatencyStats calculates min, max, avg, p99 from latencies
 func calculateLatencyStats(latencies []time.Duration) (min, max, avg, p99 time.Duration, count int) {
 	count = len(latencies)
@@ -1248,10 +1314,10 @@ func (s *Shell) runLoadRondis(numThreads int, numOps int, rowsPerOp int) error {
 		fmt.Printf("Writing %d keys via SET (%d threads × %d calls)...\n", totalKeys, numThreads, numOps)
 	}
 
-	var writeErrors int64
 	var completedOps int64
 	var wg sync.WaitGroup
 	latencyCollector := NewLatencyCollector()
+	errorCollector := NewErrorCollector()
 	writeStart := time.Now()
 
 	// Progress reporting goroutine
@@ -1298,7 +1364,7 @@ func (s *Shell) runLoadRondis(numThreads int, numOps int, rowsPerOp int) error {
 						fmt.Printf("[DEBUG] RESP: %s, err: %v\n", resp, err)
 					}
 					if err != nil {
-						atomic.AddInt64(&writeErrors, 1)
+						errorCollector.Record(err)
 					}
 				} else {
 					key := fmt.Sprintf("bench:key:%d:%d:%d:%d", clientID, threadID, i, 0)
@@ -1314,7 +1380,7 @@ func (s *Shell) runLoadRondis(numThreads int, numOps int, rowsPerOp int) error {
 						fmt.Printf("[DEBUG] RESP: %s, err: %v\n", resp, err)
 					}
 					if err != nil {
-						atomic.AddInt64(&writeErrors, 1)
+						errorCollector.Record(err)
 					}
 				}
 				atomic.AddInt64(&completedOps, 1)
@@ -1335,8 +1401,9 @@ func (s *Shell) runLoadRondis(numThreads int, numOps int, rowsPerOp int) error {
 	} else {
 		fmt.Printf("   %d keys in %v (%.0f SET/sec)\n", totalKeys, writeDuration.Round(time.Millisecond), writeOpsPerSec)
 	}
-	if writeErrors > 0 {
-		fmt.Printf("   %d write errors\n", writeErrors)
+	errCount := errorCollector.Count()
+	if errCount > 0 {
+		fmt.Printf("   %d write errors\n", errCount)
 	}
 	fmt.Println()
 
@@ -1351,6 +1418,7 @@ func (s *Shell) runLoadRondis(numThreads int, numOps int, rowsPerOp int) error {
 	fmt.Printf("   Latency: min=%s avg=%s max=%s p95=%s p99=%s p99.9=%s\n",
 		formatLatency(minLat), formatLatency(avgLat), formatLatency(maxLat),
 		formatLatency(p95Lat), formatLatency(p99Lat), formatLatency(p999Lat))
+	errorCollector.PrintErrors()
 	fmt.Println()
 
 	return nil
@@ -1428,7 +1496,7 @@ func (s *Shell) runLoadSQL(numThreads int, numOps int, rowsPerOp int) error {
 
 	fmt.Printf("Inserting %d rows (%d threads × %d requests × %d rows)...\n", totalKeys, numThreads, numOps, rowsPerOp)
 
-	var writeErrors int64
+	errorCollector := NewErrorCollector()
 	var completedOps int64
 	var wg sync.WaitGroup
 	latencyCollector := NewLatencyCollector()
@@ -1482,7 +1550,7 @@ func (s *Shell) runLoadSQL(numThreads int, numOps int, rowsPerOp int) error {
 					fmt.Printf("[DEBUG] Result: err=%v\n", err)
 				}
 				if err != nil {
-					atomic.AddInt64(&writeErrors, 1)
+					errorCollector.Record(err)
 				}
 				atomic.AddInt64(&completedOps, 1)
 			}
@@ -1498,6 +1566,7 @@ func (s *Shell) runLoadSQL(numThreads int, numOps int, rowsPerOp int) error {
 	writeRowsPerSec := float64(totalKeys) / writeDuration.Seconds()
 	writeOpsPerSec := float64(totalOps) / writeDuration.Seconds()
 	fmt.Printf("   %d rows in %v (%.0f rows/sec, %.0f INSERT/sec)\n", totalKeys, writeDuration.Round(time.Millisecond), writeRowsPerSec, writeOpsPerSec)
+	writeErrors := errorCollector.Count()
 	if writeErrors > 0 {
 		fmt.Printf("   %d write errors\n", writeErrors)
 	}
@@ -1510,6 +1579,7 @@ func (s *Shell) runLoadSQL(numThreads int, numOps int, rowsPerOp int) error {
 	fmt.Printf("   Latency: min=%s avg=%s max=%s p95=%s p99=%s p99.9=%s\n",
 		formatLatency(minLat), formatLatency(avgLat), formatLatency(maxLat),
 		formatLatency(p95Lat), formatLatency(p99Lat), formatLatency(p999Lat))
+	errorCollector.PrintErrors()
 	fmt.Println()
 
 	return nil
@@ -1567,7 +1637,7 @@ func (s *Shell) runDelSQL(numThreads int, numOps int, rowsPerOp int) error {
 
 	fmt.Printf("Deleting %d rows (%d threads × %d DELETE statements)...\n", totalKeys, numThreads, numOps)
 
-	var delErrors int64
+	errorCollector := NewErrorCollector()
 	var completedOps int64
 	var wg sync.WaitGroup
 	latencyCollector := NewLatencyCollector()
@@ -1583,7 +1653,7 @@ func (s *Shell) runDelSQL(numThreads int, numOps int, rowsPerOp int) error {
 			case <-ticker.C:
 				ops := atomic.LoadInt64(&completedOps)
 				rows := ops * int64(rowsPerOp)
-				errs := atomic.LoadInt64(&delErrors)
+				errs := errorCollector.Count()
 				elapsed := time.Since(delStart)
 				rowsPerSec := float64(rows) / elapsed.Seconds()
 				pct := float64(ops) / float64(totalOps) * 100
@@ -1615,7 +1685,7 @@ func (s *Shell) runDelSQL(numThreads int, numOps int, rowsPerOp int) error {
 					fmt.Printf("[DEBUG] Result: err=%v\n", err)
 				}
 				if err != nil {
-					atomic.AddInt64(&delErrors, 1)
+					errorCollector.Record(err)
 				}
 				atomic.AddInt64(&completedOps, 1)
 			}
@@ -1631,6 +1701,7 @@ func (s *Shell) runDelSQL(numThreads int, numOps int, rowsPerOp int) error {
 	delRowsPerSec := float64(totalKeys) / delDuration.Seconds()
 	delOpsPerSec := float64(totalOps) / delDuration.Seconds()
 	fmt.Printf("   %d rows in %v (%.0f rows/sec, %.0f DELETE/sec)\n", totalKeys, delDuration.Round(time.Millisecond), delRowsPerSec, delOpsPerSec)
+	delErrors := errorCollector.Count()
 	if delErrors > 0 {
 		fmt.Printf("   %d delete errors\n", delErrors)
 	}
@@ -1643,6 +1714,7 @@ func (s *Shell) runDelSQL(numThreads int, numOps int, rowsPerOp int) error {
 	fmt.Printf("   Latency: min=%s avg=%s max=%s p95=%s p99=%s p99.9=%s\n",
 		formatLatency(minLat), formatLatency(avgLat), formatLatency(maxLat),
 		formatLatency(p95Lat), formatLatency(p99Lat), formatLatency(p999Lat))
+	errorCollector.PrintErrors()
 	fmt.Println()
 
 	return nil
@@ -1715,9 +1787,9 @@ func (s *Shell) runBenchSQL(numThreads int, numOps int, rowsPerOp int, writePct 
 
 	var readOps int64
 	var writeOps int64
-	var errors int64
 	var wg sync.WaitGroup
 	latencyCollector := NewLatencyCollector()
+	errorCollector := NewErrorCollector()
 	benchStart := time.Now()
 
 	// Progress reporting goroutine
@@ -1730,7 +1802,7 @@ func (s *Shell) runBenchSQL(numThreads int, numOps int, rowsPerOp int, writePct 
 			case <-ticker.C:
 				reads := atomic.LoadInt64(&readOps)
 				writes := atomic.LoadInt64(&writeOps)
-				errs := atomic.LoadInt64(&errors)
+				errs := errorCollector.Count()
 				ops := reads + writes
 				elapsed := time.Since(benchStart)
 				opsPerSec := float64(ops) / elapsed.Seconds()
@@ -1777,7 +1849,7 @@ func (s *Shell) runBenchSQL(numThreads int, numOps int, rowsPerOp int, writePct 
 						fmt.Printf("[DEBUG] Result: err=%v\n", err)
 					}
 					if err != nil {
-						atomic.AddInt64(&errors, 1)
+						errorCollector.Record(err)
 					} else {
 						atomic.AddInt64(&writeOps, 1)
 					}
@@ -1795,7 +1867,7 @@ func (s *Shell) runBenchSQL(numThreads int, numOps int, rowsPerOp int, writePct 
 						fmt.Printf("[DEBUG] Result: err=%v\n", err)
 					}
 					if err != nil {
-						atomic.AddInt64(&errors, 1)
+						errorCollector.Record(err)
 					} else {
 						atomic.AddInt64(&readOps, 1)
 					}
@@ -1821,11 +1893,12 @@ func (s *Shell) runBenchSQL(numThreads int, numOps int, rowsPerOp int, writePct 
 	fmt.Println(ui.Success(fmt.Sprintf("SQL Benchmark completed in %.2fs", benchDuration.Seconds())))
 	fmt.Printf("   Reads:  %d operations (%d rows)\n", readOps, readOps*int64(rowsPerOp))
 	fmt.Printf("   Writes: %d operations (%d rows)\n", writeOps, writeOps*int64(rowsPerOp))
-	fmt.Printf("   Errors: %d\n", errors)
+	fmt.Printf("   Errors: %d\n", errorCollector.Count())
 	fmt.Printf("   Throughput: %.0f ops/sec (%.0f rows/sec)\n", opsPerSec, rowsPerSec)
 	fmt.Printf("   Latency: min=%s avg=%s max=%s p95=%s p99=%s p99.9=%s\n",
 		formatLatency(minLat), formatLatency(avgLat), formatLatency(maxLat),
 		formatLatency(p95Lat), formatLatency(p99Lat), formatLatency(p999Lat))
+	errorCollector.PrintErrors()
 	fmt.Println()
 
 	return nil
@@ -1881,9 +1954,9 @@ func (s *Shell) runBenchSQLScan(numThreads int, numOps int, rowsPerOp int) error
 	fmt.Printf("Running %d scan operations (%d threads × %d calls, each scanning %d rows)...\n", totalOps, numThreads, numOps, rowsPerOp)
 
 	var readOps int64
-	var errors int64
 	var wg sync.WaitGroup
 	latencyCollector := NewLatencyCollector()
+	errorCollector := NewErrorCollector()
 	benchStart := time.Now()
 
 	// Progress reporting goroutine
@@ -1895,7 +1968,7 @@ func (s *Shell) runBenchSQLScan(numThreads int, numOps int, rowsPerOp int) error
 			select {
 			case <-ticker.C:
 				ops := atomic.LoadInt64(&readOps)
-				errs := atomic.LoadInt64(&errors)
+				errs := errorCollector.Count()
 				rows := ops * int64(rowsPerOp)
 				elapsed := time.Since(benchStart)
 				opsPerSec := float64(ops) / elapsed.Seconds()
@@ -1929,7 +2002,7 @@ func (s *Shell) runBenchSQLScan(numThreads int, numOps int, rowsPerOp int) error
 					fmt.Printf("[DEBUG] Result: err=%v\n", err)
 				}
 				if err != nil {
-					atomic.AddInt64(&errors, 1)
+					errorCollector.Record(err)
 				} else {
 					atomic.AddInt64(&readOps, 1)
 				}
@@ -1952,11 +2025,12 @@ func (s *Shell) runBenchSQLScan(numThreads int, numOps int, rowsPerOp int) error
 
 	fmt.Println(ui.Success(fmt.Sprintf("SQL Scan Benchmark completed in %.2fs", benchDuration.Seconds())))
 	fmt.Printf("   Scans:  %d operations (%d rows scanned)\n", readOps, totalRowsProcessed)
-	fmt.Printf("   Errors: %d\n", errors)
+	fmt.Printf("   Errors: %d\n", errorCollector.Count())
 	fmt.Printf("   Throughput: %.0f scans/sec (%.0f rows/sec)\n", opsPerSec, rowsPerSec)
 	fmt.Printf("   Latency: min=%s avg=%s max=%s p95=%s p99=%s p99.9=%s\n",
 		formatLatency(minLat), formatLatency(avgLat), formatLatency(maxLat),
 		formatLatency(p95Lat), formatLatency(p99Lat), formatLatency(p999Lat))
+	errorCollector.PrintErrors()
 	fmt.Println()
 
 	return nil
@@ -2012,7 +2086,6 @@ func (s *Shell) runBenchSQLScanCont(numThreads int, numOps int, rowsPerOp int, d
 
 	// Total counters
 	var totalReadOps int64
-	var totalErrors int64
 
 	// Interval counters (for 10-second reporting)
 	var intervalReadOps int64
@@ -2020,6 +2093,7 @@ func (s *Shell) runBenchSQLScanCont(numThreads int, numOps int, rowsPerOp int, d
 
 	var wg sync.WaitGroup
 	latencyCollector := NewLatencyCollector()
+	errorCollector := NewErrorCollector()
 
 	// Use a channel to signal stop
 	stopCh := make(chan struct{})
@@ -2097,7 +2171,7 @@ func (s *Shell) runBenchSQLScanCont(numThreads int, numOps int, rowsPerOp int, d
 						fmt.Printf("[DEBUG] Result: err=%v\n", err)
 					}
 					if err != nil {
-						atomic.AddInt64(&totalErrors, 1)
+						errorCollector.Record(err)
 						atomic.AddInt64(&intervalErrors, 1)
 					} else {
 						atomic.AddInt64(&totalReadOps, 1)
@@ -2123,11 +2197,12 @@ func (s *Shell) runBenchSQLScanCont(numThreads int, numOps int, rowsPerOp int, d
 
 	fmt.Println(ui.Success(fmt.Sprintf("Continuous SQL Scan Benchmark completed in %.2fs", benchDuration.Seconds())))
 	fmt.Printf("   Total Scans:  %d operations (%d rows scanned)\n", totalReadOps, totalRowsProcessed)
-	fmt.Printf("   Total Errors: %d\n", totalErrors)
+	fmt.Printf("   Total Errors: %d\n", errorCollector.Count())
 	fmt.Printf("   Avg Throughput: %.0f scans/sec (%.0f rows/sec)\n", scansPerSec, rowsPerSec)
 	fmt.Printf("   Latency: min=%s avg=%s max=%s p95=%s p99=%s p99.9=%s\n",
 		formatLatency(minLat), formatLatency(avgLat), formatLatency(maxLat),
 		formatLatency(p95Lat), formatLatency(p99Lat), formatLatency(p999Lat))
+	errorCollector.PrintErrors()
 	fmt.Println()
 
 	return nil
@@ -2184,7 +2259,6 @@ func (s *Shell) runBenchSQLCont(numThreads int, numOps int, rowsPerOp int, write
 	// Total counters
 	var totalReadOps int64
 	var totalWriteOps int64
-	var totalErrors int64
 
 	// Interval counters (for 10-second reporting)
 	var intervalReadOps int64
@@ -2193,6 +2267,7 @@ func (s *Shell) runBenchSQLCont(numThreads int, numOps int, rowsPerOp int, write
 
 	var wg sync.WaitGroup
 	latencyCollector := NewLatencyCollector()
+	errorCollector := NewErrorCollector()
 
 	// Use a channel to signal stop
 	stopCh := make(chan struct{})
@@ -2284,7 +2359,7 @@ func (s *Shell) runBenchSQLCont(numThreads int, numOps int, rowsPerOp int, write
 							fmt.Printf("[DEBUG] Result: err=%v\n", err)
 						}
 						if err != nil {
-							atomic.AddInt64(&totalErrors, 1)
+							errorCollector.Record(err)
 							atomic.AddInt64(&intervalErrors, 1)
 						} else {
 							atomic.AddInt64(&totalWriteOps, 1)
@@ -2304,7 +2379,7 @@ func (s *Shell) runBenchSQLCont(numThreads int, numOps int, rowsPerOp int, write
 							fmt.Printf("[DEBUG] Result: err=%v\n", err)
 						}
 						if err != nil {
-							atomic.AddInt64(&totalErrors, 1)
+							errorCollector.Record(err)
 							atomic.AddInt64(&intervalErrors, 1)
 						} else {
 							atomic.AddInt64(&totalReadOps, 1)
@@ -2333,11 +2408,12 @@ func (s *Shell) runBenchSQLCont(numThreads int, numOps int, rowsPerOp int, write
 	fmt.Println(ui.Success(fmt.Sprintf("Continuous SQL Benchmark completed in %.2fs", benchDuration.Seconds())))
 	fmt.Printf("   Total Reads:  %d operations (%d rows)\n", totalReadOps, totalReadOps*int64(rowsPerOp))
 	fmt.Printf("   Total Writes: %d operations (%d rows)\n", totalWriteOps, totalWriteOps*int64(rowsPerOp))
-	fmt.Printf("   Total Errors: %d\n", totalErrors)
+	fmt.Printf("   Total Errors: %d\n", errorCollector.Count())
 	fmt.Printf("   Avg Throughput: %.0f ops/sec (%.0f rows/sec)\n", opsPerSec, rowsPerSec)
 	fmt.Printf("   Latency: min=%s avg=%s max=%s p95=%s p99=%s p99.9=%s\n",
 		formatLatency(minLat), formatLatency(avgLat), formatLatency(maxLat),
 		formatLatency(p95Lat), formatLatency(p99Lat), formatLatency(p999Lat))
+	errorCollector.PrintErrors()
 	fmt.Println()
 
 	return nil
@@ -2383,9 +2459,9 @@ func (s *Shell) runBenchRondis(numThreads int, numOps int, rowsPerOp int, writeP
 
 	var readOps int64
 	var writeOps int64
-	var errors int64
 	var wg sync.WaitGroup
 	latencyCollector := NewLatencyCollector()
+	errorCollector := NewErrorCollector()
 	benchStart := time.Now()
 
 	// Progress reporting goroutine
@@ -2398,7 +2474,7 @@ func (s *Shell) runBenchRondis(numThreads int, numOps int, rowsPerOp int, writeP
 			case <-ticker.C:
 				reads := atomic.LoadInt64(&readOps)
 				writes := atomic.LoadInt64(&writeOps)
-				errs := atomic.LoadInt64(&errors)
+				errs := errorCollector.Count()
 				ops := reads + writes
 				keys := ops * int64(rowsPerOp)
 				elapsed := time.Since(benchStart)
@@ -2442,7 +2518,7 @@ func (s *Shell) runBenchRondis(numThreads int, numOps int, rowsPerOp int, writeP
 							fmt.Printf("[DEBUG] RESP: %s, err: %v\n", resp, err)
 						}
 						if err != nil {
-							atomic.AddInt64(&errors, 1)
+							errorCollector.Record(err)
 						} else {
 							atomic.AddInt64(&writeOps, 1)
 						}
@@ -2463,7 +2539,7 @@ func (s *Shell) runBenchRondis(numThreads int, numOps int, rowsPerOp int, writeP
 							fmt.Printf("[DEBUG] RESP: %s, err: %v\n", resp, err)
 						}
 						if err != nil {
-							atomic.AddInt64(&errors, 1)
+							errorCollector.Record(err)
 						} else {
 							atomic.AddInt64(&readOps, 1)
 						}
@@ -2484,7 +2560,7 @@ func (s *Shell) runBenchRondis(numThreads int, numOps int, rowsPerOp int, writeP
 							fmt.Printf("[DEBUG] RESP: %s, err: %v\n", resp, err)
 						}
 						if err != nil {
-							atomic.AddInt64(&errors, 1)
+							errorCollector.Record(err)
 						} else {
 							atomic.AddInt64(&writeOps, 1)
 						}
@@ -2501,7 +2577,7 @@ func (s *Shell) runBenchRondis(numThreads int, numOps int, rowsPerOp int, writeP
 							fmt.Printf("[DEBUG] RESP: %s, err: %v\n", resp, err)
 						}
 						if err != nil {
-							atomic.AddInt64(&errors, 1)
+							errorCollector.Record(err)
 						} else {
 							atomic.AddInt64(&readOps, 1)
 						}
@@ -2529,8 +2605,9 @@ func (s *Shell) runBenchRondis(numThreads int, numOps int, rowsPerOp int, writeP
 		fmt.Printf("   %d keys in %v (%.0f ops/sec)\n", totalKeys, benchDuration.Round(time.Millisecond), opsPerSec)
 	}
 	fmt.Printf("   Actual mix: %.1f%% writes (%d), %.1f%% reads (%d)\n", actualWritePct, writeOps, actualReadPct, readOps)
-	if errors > 0 {
-		fmt.Printf("   %d errors\n", errors)
+	errCount := errorCollector.Count()
+	if errCount > 0 {
+		fmt.Printf("   %d errors\n", errCount)
 	}
 	fmt.Println()
 
@@ -2544,6 +2621,7 @@ func (s *Shell) runBenchRondis(numThreads int, numOps int, rowsPerOp int, writeP
 	fmt.Printf("   Latency: min=%s avg=%s max=%s p95=%s p99=%s p99.9=%s\n",
 		formatLatency(minLat), formatLatency(avgLat), formatLatency(maxLat),
 		formatLatency(p95Lat), formatLatency(p99Lat), formatLatency(p999Lat))
+	errorCollector.PrintErrors()
 	fmt.Println()
 
 	return nil
@@ -2582,7 +2660,6 @@ func (s *Shell) runBenchRondisCont(numThreads int, numOps int, rowsPerOp int, wr
 	// Total counters
 	var totalReadOps int64
 	var totalWriteOps int64
-	var totalErrors int64
 
 	// Interval counters (for 10-second reporting)
 	var intervalReadOps int64
@@ -2591,6 +2668,7 @@ func (s *Shell) runBenchRondisCont(numThreads int, numOps int, rowsPerOp int, wr
 
 	var wg sync.WaitGroup
 	latencyCollector := NewLatencyCollector()
+	errorCollector := NewErrorCollector()
 
 	// Use a channel to signal stop
 	stopCh := make(chan struct{})
@@ -2678,7 +2756,7 @@ func (s *Shell) runBenchRondisCont(numThreads int, numOps int, rowsPerOp int, wr
 								fmt.Printf("[DEBUG] RESP: %s, err: %v\n", resp, err)
 							}
 							if err != nil {
-								atomic.AddInt64(&totalErrors, 1)
+								errorCollector.Record(err)
 								atomic.AddInt64(&intervalErrors, 1)
 							} else {
 								atomic.AddInt64(&totalWriteOps, 1)
@@ -2701,7 +2779,7 @@ func (s *Shell) runBenchRondisCont(numThreads int, numOps int, rowsPerOp int, wr
 								fmt.Printf("[DEBUG] RESP: %s, err: %v\n", resp, err)
 							}
 							if err != nil {
-								atomic.AddInt64(&totalErrors, 1)
+								errorCollector.Record(err)
 								atomic.AddInt64(&intervalErrors, 1)
 							} else {
 								atomic.AddInt64(&totalReadOps, 1)
@@ -2724,7 +2802,7 @@ func (s *Shell) runBenchRondisCont(numThreads int, numOps int, rowsPerOp int, wr
 								fmt.Printf("[DEBUG] RESP: %s, err: %v\n", resp, err)
 							}
 							if err != nil {
-								atomic.AddInt64(&totalErrors, 1)
+								errorCollector.Record(err)
 								atomic.AddInt64(&intervalErrors, 1)
 							} else {
 								atomic.AddInt64(&totalWriteOps, 1)
@@ -2743,7 +2821,7 @@ func (s *Shell) runBenchRondisCont(numThreads int, numOps int, rowsPerOp int, wr
 								fmt.Printf("[DEBUG] RESP: %s, err: %v\n", resp, err)
 							}
 							if err != nil {
-								atomic.AddInt64(&totalErrors, 1)
+								errorCollector.Record(err)
 								atomic.AddInt64(&intervalErrors, 1)
 							} else {
 								atomic.AddInt64(&totalReadOps, 1)
@@ -2782,12 +2860,14 @@ func (s *Shell) runBenchRondisCont(numThreads int, numOps int, rowsPerOp int, wr
 	fmt.Printf("   Total keys: %d (%.0f keys/sec)\n", totalKeys, keysPerSec)
 	fmt.Printf("   Total Writes: %d (%.1f%%)\n", totalWriteOps, actualWritePct)
 	fmt.Printf("   Total Reads: %d (%.1f%%)\n", totalReadOps, actualReadPct)
-	if totalErrors > 0 {
-		fmt.Printf("   Total Errors: %d\n", totalErrors)
+	errCount := errorCollector.Count()
+	if errCount > 0 {
+		fmt.Printf("   Total Errors: %d\n", errCount)
 	}
 	fmt.Printf("   Latency: min=%s avg=%s max=%s p95=%s p99=%s p99.9=%s\n",
 		formatLatency(minLat), formatLatency(avgLat), formatLatency(maxLat),
 		formatLatency(p95Lat), formatLatency(p99Lat), formatLatency(p999Lat))
+	errorCollector.PrintErrors()
 	fmt.Println()
 
 	return nil
@@ -2833,7 +2913,7 @@ func (s *Shell) runDelRondis(numThreads int, numOps int, rowsPerOp int) error {
 		fmt.Printf("Deleting %d keys via DEL (%d threads × %d calls)...\n", totalKeys, numThreads, numOps)
 	}
 
-	var delErrors int64
+	errorCollector := NewErrorCollector()
 	var completedOps int64
 	var wg sync.WaitGroup
 	latencyCollector := NewLatencyCollector()
@@ -2849,7 +2929,7 @@ func (s *Shell) runDelRondis(numThreads int, numOps int, rowsPerOp int) error {
 			case <-ticker.C:
 				ops := atomic.LoadInt64(&completedOps)
 				keys := ops * int64(rowsPerOp)
-				errs := atomic.LoadInt64(&delErrors)
+				errs := errorCollector.Count()
 				elapsed := time.Since(delStart)
 				keysPerSec := float64(keys) / elapsed.Seconds()
 				pct := float64(ops) / float64(totalOps) * 100
@@ -2885,7 +2965,7 @@ func (s *Shell) runDelRondis(numThreads int, numOps int, rowsPerOp int) error {
 						fmt.Printf("[DEBUG] RESP: %s, err: %v\n", resp, err)
 					}
 					if err != nil {
-						atomic.AddInt64(&delErrors, 1)
+						errorCollector.Record(err)
 					}
 				} else {
 					key := fmt.Sprintf("bench:key:%d:%d:%d:%d", clientID, threadID, i, 0)
@@ -2900,7 +2980,7 @@ func (s *Shell) runDelRondis(numThreads int, numOps int, rowsPerOp int) error {
 						fmt.Printf("[DEBUG] RESP: %s, err: %v\n", resp, err)
 					}
 					if err != nil {
-						atomic.AddInt64(&delErrors, 1)
+						errorCollector.Record(err)
 					}
 				}
 				atomic.AddInt64(&completedOps, 1)
@@ -2921,6 +3001,7 @@ func (s *Shell) runDelRondis(numThreads int, numOps int, rowsPerOp int) error {
 	} else {
 		fmt.Printf("   %d keys in %v (%.0f DEL/sec)\n", totalKeys, delDuration.Round(time.Millisecond), delOpsPerSec)
 	}
+	delErrors := errorCollector.Count()
 	if delErrors > 0 {
 		fmt.Printf("   %d delete errors\n", delErrors)
 	}
@@ -2937,6 +3018,7 @@ func (s *Shell) runDelRondis(numThreads int, numOps int, rowsPerOp int) error {
 	fmt.Printf("   Latency: min=%s avg=%s max=%s p95=%s p99=%s p99.9=%s\n",
 		formatLatency(minLat), formatLatency(avgLat), formatLatency(maxLat),
 		formatLatency(p95Lat), formatLatency(p99Lat), formatLatency(p999Lat))
+	errorCollector.PrintErrors()
 	fmt.Println()
 
 	return nil
@@ -3000,9 +3082,9 @@ func (s *Shell) runBenchRDRS(numThreads int, numOps int, rowsPerOp int) error {
 	}
 
 	var readOps int64
-	var errors int64
 	var wg sync.WaitGroup
 	latencyCollector := NewLatencyCollector()
+	errorCollector := NewErrorCollector()
 	benchStart := time.Now()
 
 	// Progress reporting goroutine
@@ -3014,7 +3096,7 @@ func (s *Shell) runBenchRDRS(numThreads int, numOps int, rowsPerOp int) error {
 			select {
 			case <-ticker.C:
 				ops := atomic.LoadInt64(&readOps)
-				errs := atomic.LoadInt64(&errors)
+				errs := errorCollector.Count()
 				rows := ops * int64(rowsPerOp)
 				elapsed := time.Since(benchStart)
 				opsPerSec := float64(ops) / elapsed.Seconds()
@@ -3068,7 +3150,7 @@ func (s *Shell) runBenchRDRS(numThreads int, numOps int, rowsPerOp int) error {
 					fmt.Printf("[DEBUG] RESP: %s, err: %v\n", string(resp), err)
 				}
 				if err != nil {
-					atomic.AddInt64(&errors, 1)
+					errorCollector.Record(err)
 				} else {
 					atomic.AddInt64(&readOps, 1)
 				}
@@ -3092,11 +3174,12 @@ func (s *Shell) runBenchRDRS(numThreads int, numOps int, rowsPerOp int) error {
 	fmt.Println(ui.Success(fmt.Sprintf("RDRS Benchmark completed in %.2fs", benchDuration.Seconds())))
 	fmt.Printf("   Batch requests: %d\n", readOps)
 	fmt.Printf("   Rows read: %d\n", totalRowsProcessed)
-	fmt.Printf("   Errors: %d\n", errors)
+	fmt.Printf("   Errors: %d\n", errorCollector.Count())
 	fmt.Printf("   Throughput: %.0f batch/sec (%.0f rows/sec)\n", opsPerSec, rowsPerSec)
 	fmt.Printf("   Latency: min=%s avg=%s max=%s p95=%s p99=%s p99.9=%s\n",
 		formatLatency(minLat), formatLatency(avgLat), formatLatency(maxLat),
 		formatLatency(p95Lat), formatLatency(p99Lat), formatLatency(p999Lat))
+	errorCollector.PrintErrors()
 	fmt.Println()
 
 	return nil
@@ -3158,7 +3241,6 @@ func (s *Shell) runBenchRDRSCont(numThreads int, numOps int, rowsPerOp int, dura
 
 	// Total counters
 	var totalReadOps int64
-	var totalErrors int64
 
 	// Interval counters (for 10-second reporting)
 	var intervalReadOps int64
@@ -3166,6 +3248,7 @@ func (s *Shell) runBenchRDRSCont(numThreads int, numOps int, rowsPerOp int, dura
 
 	var wg sync.WaitGroup
 	latencyCollector := NewLatencyCollector()
+	errorCollector := NewErrorCollector()
 
 	// Use a channel to signal stop
 	stopCh := make(chan struct{})
@@ -3262,7 +3345,7 @@ func (s *Shell) runBenchRDRSCont(numThreads int, numOps int, rowsPerOp int, dura
 						fmt.Printf("[DEBUG] RESP: %s, err: %v\n", string(resp), err)
 					}
 					if err != nil {
-						atomic.AddInt64(&totalErrors, 1)
+						errorCollector.Record(err)
 						atomic.AddInt64(&intervalErrors, 1)
 					} else {
 						atomic.AddInt64(&totalReadOps, 1)
@@ -3289,11 +3372,12 @@ func (s *Shell) runBenchRDRSCont(numThreads int, numOps int, rowsPerOp int, dura
 	fmt.Println(ui.Success(fmt.Sprintf("Continuous RDRS Benchmark completed in %.2fs", benchDuration.Seconds())))
 	fmt.Printf("   Total Batches: %d\n", totalReadOps)
 	fmt.Printf("   Total Rows: %d\n", totalRowsProcessed)
-	fmt.Printf("   Total Errors: %d\n", totalErrors)
+	fmt.Printf("   Total Errors: %d\n", errorCollector.Count())
 	fmt.Printf("   Avg Throughput: %.0f batch/sec (%.0f rows/sec)\n", opsPerSec, rowsPerSec)
 	fmt.Printf("   Latency: min=%s avg=%s max=%s p95=%s p99=%s p99.9=%s\n",
 		formatLatency(minLat), formatLatency(avgLat), formatLatency(maxLat),
 		formatLatency(p95Lat), formatLatency(p99Lat), formatLatency(p999Lat))
+	errorCollector.PrintErrors()
 	fmt.Println()
 
 	return nil
