@@ -27,6 +27,7 @@ var (
 	promptPass bool
 	useTLS     bool
 	rdrsTLS    bool
+	rdrsAPIKey string
 	verbose    int
 	noMySQL    bool
 	noRDRS     bool
@@ -68,6 +69,7 @@ var rootCmd = &cobra.Command{
 			MySQLPass:  mysqlPass,
 			TLS:        useTLS,
 			RDRSTLS:    useTLS || rdrsTLS,
+			RDRSAPIKey: rdrsAPIKey,
 			Verbose:    verbose,
 			NoMySQL:    noMySQL,
 			NoRDRS:     noRDRS,
@@ -177,6 +179,7 @@ func init() {
 	rootCmd.PersistentFlags().BoolVarP(&promptPass, "password", "p", false, "Prompt for MySQL password")
 	rootCmd.PersistentFlags().BoolVar(&useTLS, "tls", false, "Enable TLS for all connections")
 	rootCmd.PersistentFlags().BoolVar(&rdrsTLS, "rdrs-tls", false, "Enable TLS (HTTPS) for RDRS/REST API only")
+	rootCmd.PersistentFlags().StringVar(&rdrsAPIKey, "rdrs-api-key", "", "API key for RDRS/REST API authentication")
 	rootCmd.PersistentFlags().IntVar(&verbose, "verbose", 0, "Verbose level (0=normal, 1=connection info, 2=debug)")
 	rootCmd.PersistentFlags().BoolVar(&noMySQL, "no-mysql", false, "Disable MySQL connection")
 	rootCmd.PersistentFlags().BoolVar(&noRDRS, "no-rdrs", false, "Disable RDRS/REST API connection")
@@ -214,6 +217,9 @@ func init() {
 	}
 	if p := os.Getenv("RONDB_MYSQL_PASSWORD"); p != "" {
 		mysqlPass = p
+	}
+	if k := os.Getenv("RONDB_RDRS_API_KEY"); k != "" {
+		rdrsAPIKey = k
 	}
 
 	rootCmd.AddCommand(statusCmd)
