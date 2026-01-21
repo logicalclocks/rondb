@@ -29,12 +29,13 @@ type Config struct {
 	RestPort   int
 	MySQLUser  string
 	MySQLPass  string
-	TLS        bool // Enable TLS for Rondis and MySQL
-	RDRSTLS    bool // Enable TLS (HTTPS) for RDRS/REST API
-	Verbose    int  // Verbose level (0=normal, 1=connection info, 2=debug)
-	NoMySQL    bool // Disable MySQL connection
-	NoRDRS     bool // Disable RDRS/REST API connection
-	NoRondis   bool // Disable Rondis connection
+	TLS        bool   // Enable TLS for Rondis and MySQL
+	RDRSTLS    bool   // Enable TLS (HTTPS) for RDRS/REST API
+	RDRSAPIKey string // API key for RDRS/REST API authentication
+	Verbose    int    // Verbose level (0=normal, 1=connection info, 2=debug)
+	NoMySQL    bool   // Disable MySQL connection
+	NoRDRS     bool   // Disable RDRS/REST API connection
+	NoRondis   bool   // Disable Rondis connection
 }
 
 type Shell struct {
@@ -94,6 +95,7 @@ func RunWithConfig(cfg Config) error {
 		fmt.Println(ui.Info("  -p, --password     Prompt for MySQL password (silent input)"))
 		fmt.Println(ui.Info("  --tls              Enable TLS for all connections"))
 		fmt.Println(ui.Info("  --rdrs-tls         Enable TLS (HTTPS) for RDRS/REST API only"))
+		fmt.Println(ui.Info("  --rdrs-api-key     API key for RDRS/REST API authentication"))
 		fmt.Println(ui.Info("  --verbose          Verbose level (0=normal, 1=connection info, 2=debug)"))
 		fmt.Println(ui.Info("  --no-mysql         Disable MySQL connection"))
 		fmt.Println(ui.Info("  --no-rdrs          Disable RDRS/REST API connection"))
@@ -108,6 +110,7 @@ func RunWithConfig(cfg Config) error {
 		fmt.Println(ui.Info("  RONDB_RDRS_PORT      RDRS/REST API port"))
 		fmt.Println(ui.Info("  RONDB_MYSQL_USER     MySQL username"))
 		fmt.Println(ui.Info("  RONDB_MYSQL_PASSWORD MySQL password"))
+	fmt.Println(ui.Info("  RONDB_RDRS_API_KEY   RDRS/REST API key"))
 		return err
 	}
 	defer s.close()
@@ -168,9 +171,10 @@ func (s *Shell) connect() error {
 			fmt.Printf("[*] Connecting to REST API at %s://%s:%d...\n", protocol, s.config.RDRSHost, s.config.RestPort)
 		}
 		s.restClient, err = client.NewRestClientWithOptions(client.RestOptions{
-			Host: s.config.RDRSHost,
-			Port: s.config.RestPort,
-			TLS:  s.config.RDRSTLS,
+			Host:   s.config.RDRSHost,
+			Port:   s.config.RestPort,
+			TLS:    s.config.RDRSTLS,
+			APIKey: s.config.RDRSAPIKey,
 		})
 		if err != nil {
 			return fmt.Errorf("rest api (%s:%d): %w", s.config.RDRSHost, s.config.RestPort, err)
@@ -2959,9 +2963,10 @@ func (s *Shell) runBenchRDRS(numThreads int, numOps int, rowsPerOp int) error {
 	}
 	for i := 0; i < numThreads; i++ {
 		c, err := client.NewRestClientWithOptions(client.RestOptions{
-			Host: s.config.RDRSHost,
-			Port: s.config.RestPort,
-			TLS:  s.config.RDRSTLS,
+			Host:   s.config.RDRSHost,
+			Port:   s.config.RestPort,
+			TLS:    s.config.RDRSTLS,
+			APIKey: s.config.RDRSAPIKey,
 		})
 		if err != nil {
 			// Close already created clients
@@ -3115,9 +3120,10 @@ func (s *Shell) runBenchRDRSCont(numThreads int, numOps int, rowsPerOp int, dura
 	}
 	for i := 0; i < numThreads; i++ {
 		c, err := client.NewRestClientWithOptions(client.RestOptions{
-			Host: s.config.RDRSHost,
-			Port: s.config.RestPort,
-			TLS:  s.config.RDRSTLS,
+			Host:   s.config.RDRSHost,
+			Port:   s.config.RestPort,
+			TLS:    s.config.RDRSTLS,
+			APIKey: s.config.RDRSAPIKey,
 		})
 		if err != nil {
 			// Close already created clients
@@ -3417,6 +3423,7 @@ func (s *Shell) printHelpStart() {
 	fmt.Println(ui.Info("  -p, --password     Prompt for MySQL password (silent input)"))
 	fmt.Println(ui.Info("  --tls              Enable TLS for all connections"))
 	fmt.Println(ui.Info("  --rdrs-tls         Enable TLS (HTTPS) for RDRS/REST API only"))
+		fmt.Println(ui.Info("  --rdrs-api-key     API key for RDRS/REST API authentication"))
 	fmt.Println(ui.Info("  --verbose          Verbose level (0=normal, 1=connection info, 2=debug)"))
 	fmt.Println(ui.Info("  --no-mysql         Disable MySQL connection"))
 	fmt.Println(ui.Info("  --no-rdrs          Disable RDRS/REST API connection"))
@@ -3431,6 +3438,7 @@ func (s *Shell) printHelpStart() {
 	fmt.Println(ui.Info("  RONDB_RDRS_PORT      RDRS/REST API port"))
 	fmt.Println(ui.Info("  RONDB_MYSQL_USER     MySQL username"))
 	fmt.Println(ui.Info("  RONDB_MYSQL_PASSWORD MySQL password"))
+	fmt.Println(ui.Info("  RONDB_RDRS_API_KEY   RDRS/REST API key"))
 	fmt.Println()
 }
 

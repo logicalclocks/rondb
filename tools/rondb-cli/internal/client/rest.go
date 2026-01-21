@@ -15,13 +15,15 @@ import (
 type RestClient struct {
 	client  *http.Client
 	baseURL string
+	apiKey  string
 }
 
 // RestOptions holds connection options for REST API
 type RestOptions struct {
-	Host string
-	Port int
-	TLS  bool
+	Host   string
+	Port   int
+	TLS    bool
+	APIKey string
 }
 
 // NewRestClient creates a new REST client with default options
@@ -57,6 +59,7 @@ func NewRestClientWithOptions(opts RestOptions) (*RestClient, error) {
 	client := &RestClient{
 		client:  httpClient,
 		baseURL: baseURL,
+		apiKey:  opts.APIKey,
 	}
 
 	// Validate connection
@@ -76,6 +79,9 @@ func (c *RestClient) Ping() error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/0.1.0", nil)
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
+	}
+	if c.apiKey != "" {
+		req.Header.Set("X-API-Key", c.apiKey)
 	}
 
 	resp, err := c.client.Do(req)
@@ -104,6 +110,9 @@ func (c *RestClient) Post(endpoint string, body interface{}) ([]byte, time.Durat
 		return nil, 0, fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if c.apiKey != "" {
+		req.Header.Set("X-API-Key", c.apiKey)
+	}
 
 	start := time.Now()
 	resp, err := c.client.Do(req)
