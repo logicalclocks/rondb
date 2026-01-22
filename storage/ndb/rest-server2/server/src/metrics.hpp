@@ -63,6 +63,19 @@ class BatchPkReadEndPointMetricsUpdater {
   ~BatchPkReadEndPointMetricsUpdater();
 };
 
+class BatchPkDeleteEndPointMetricsUpdater {
+ private:
+  drogon::HttpResponsePtr m_response;
+  NDB_TICKS m_start_time;
+  Uint32 m_key_requests;
+
+ public:
+  BatchPkDeleteEndPointMetricsUpdater(drogon::HttpResponsePtr response);
+  void set_key_requests(Uint32 key_requests);
+
+  ~BatchPkDeleteEndPointMetricsUpdater();
+};
+
 class BatchFsReadEndPointMetricsUpdater {
  private:
   drogon::HttpResponsePtr m_response;

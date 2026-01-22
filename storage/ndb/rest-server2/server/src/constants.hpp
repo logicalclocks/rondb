@@ -26,7 +26,9 @@
 #define PING                "ping"
 #define HEALTH              "health"
 #define PKREAD              "pk-read"
+#define PKDELETE            "pk-delete"
 #define BATCH               "batch"
+#define BATCHDELETE         "batchdelete"
 #define RONSQL              "ronsql"
 #define METRICS             "metrics"
 #define FEATURE_STORE       "feature_store"
@@ -36,7 +38,8 @@
 
 #define HEALTH_PATH MAKE_PATH(API_VERSION, HEALTH)
 #define PING_PATH   MAKE_PATH(API_VERSION, PING)
-#define BATCH_PATH  MAKE_PATH(API_VERSION, BATCH)
+#define BATCH_PATH        MAKE_PATH(API_VERSION, BATCH)
+#define BATCHDELETE_PATH  MAKE_PATH(API_VERSION, BATCHDELETE)
 
 #define PKREAD_PATH              "/" API_VERSION "/{db}/{table}/" PKREAD
 #define RONSQL_PATH              "/" API_VERSION "/" RONSQL
