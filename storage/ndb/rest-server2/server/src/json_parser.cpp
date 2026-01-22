@@ -197,7 +197,8 @@ std::unique_ptr<char[]> &JSONParser::get_buffer() {
 
 RS_Status extract_db_and_table(const std::string_view &,
                                std::string_view &,
-                               std::string&);
+                               std::string&,
+                               const char *expected_request_type);
 RS_Status handle_simdjson_error(const simdjson::error_code &,
                                 simdjson::ondemand::document &,
                                 const char *&);
@@ -374,10 +375,12 @@ RS_Status JSONParser::pk_parse(simdjson::padded_string_view reqBody,
   return CRS_Status::SUCCESS.status;
 }
 
-// This is used to perform batched primary key read operations.
-// The body here is a list of arbitrary pk-reads under the key operations:
-RS_Status JSONParser::batch_parse(simdjson::padded_string_view reqBody,
-                                  std::vector<PKReadParams> &reqStructs) {
+// Common implementation for batch parsing of pk-read and pk-delete operations.
+// The expected_request_type parameter specifies what URL suffix to expect
+// (PKREAD for "pk-read" or PKDELETE for "pk-delete").
+RS_Status JSONParser::batch_parse_impl(simdjson::padded_string_view reqBody,
+                                       std::vector<PKReadParams> &reqStructs,
+                                       const char *expected_request_type) {
   const char *currentLocation = nullptr;
 
   simdjson::error_code error = parser.iterate(reqBody).get(doc);
@@ -458,7 +461,8 @@ RS_Status JSONParser::batch_parse(simdjson::padded_string_view reqBody,
     RS_Status status =
       extract_db_and_table(relativeUrl,
                            reqStruct.path.db,
-                           reqStruct.path.table);
+                           reqStruct.path.table,
+                           expected_request_type);
     if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
                              drogon::HttpStatusCode::k200OK)) {
       return status;
@@ -640,6 +644,20 @@ RS_Status JSONParser::batch_parse(simdjson::padded_string_view reqBody,
     reqStructs.push_back(reqStruct);
   }
   return CRS_Status::SUCCESS.status;
+}
+
+// This is used to perform batched primary key read operations.
+// The body here is a list of arbitrary pk-reads under the key operations:
+RS_Status JSONParser::batch_parse(simdjson::padded_string_view reqBody,
+                                  std::vector<PKReadParams> &reqStructs) {
+  return batch_parse_impl(reqBody, reqStructs, PKREAD);
+}
+
+// This is used to perform batched primary key delete operations.
+// The body here is a list of arbitrary pk-deletes under the key operations:
+RS_Status JSONParser::batch_parse_delete(simdjson::padded_string_view reqBody,
+                                         std::vector<PKReadParams> &reqStructs) {
+  return batch_parse_impl(reqBody, reqStructs, PKDELETE);
 }
 
 /*
@@ -1451,7 +1469,8 @@ RS_Status JSONParser::batch_feature_store_parse(
 
 RS_Status extract_db_and_table(const std::string_view &relativeUrl,
                                std::string_view &db,
-                               std::string &table) {
+                               std::string &table,
+                               const char *expected_request_type) {
   // Find the positions of the last three slashes
   std::string_view request_type;
   size_t len = relativeUrl.length();
@@ -1507,8 +1526,9 @@ RS_Status extract_db_and_table(const std::string_view &relativeUrl,
   table = checkUrl.substr(secondLastSlashPos + 1,
                           lastSlashPos - secondLastSlashPos - 1);
   request_type = checkUrl.substr(lastSlashPos + 1);
-  if (request_type.length() == strlen(PKREAD) &&
-      (memcmp(request_type.data(), PKREAD, request_type.length()) == 0) &&
+  size_t expected_len = strlen(expected_request_type);
+  if (request_type.length() == expected_len &&
+      (memcmp(request_type.data(), expected_request_type, expected_len) == 0) &&
       db.length() > 0 &&
       table.length() > 0) {
     return CRS_Status::SUCCESS.status;

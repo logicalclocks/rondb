@@ -1,4 +1,4 @@
-# Copyright (c) 2023, 2025, Hopsworks and/or its affiliates.
+# Copyright (c) 2023, 2026, Hopsworks and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -25,6 +25,7 @@ file(GLOB_RECURSE SRC
         api_key.cpp
         base_ctrl.cpp
         batch_feature_store_ctrl.cpp
+        batch_pk_delete_ctrl.cpp
         batch_pk_read_ctrl.cpp
         buffer_manager.cpp
         config_structs.cpp
@@ -59,6 +60,9 @@ file(GLOB_RECURSE SRC
         ronsql_ctrl.cpp
         tls_util.cpp
         db_operations/pk/common.cpp
+        db_operations/pk/pk_base_operation.cpp
+        db_operations/pk/pk_batch_base_operation.cpp
+        db_operations/pk/pkd_operation.cpp
         db_operations/pk/pkr_operation.cpp
         db_operations/pk/pkr_request.cpp
         db_operations/pk/pkr_response.cpp
