@@ -149,6 +149,10 @@ int create_rondis_tables(const char *mysql_host,
     return -1;
   }
 
+  // Force TCP protocol instead of Unix socket (avoids socket not found errors)
+  unsigned int protocol = MYSQL_PROTOCOL_TCP;
+  mysql_options(conn, MYSQL_OPT_PROTOCOL, &protocol);
+
   if (mysql_real_connect(conn,
                          mysql_host,
                          mysql_user,
