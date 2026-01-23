@@ -38,6 +38,12 @@ type BatchRequest struct {
 	Operations []BatchOperation `json:"operations"`
 }
 
+// BatchResult contains the parsed batch request and detected operation type
+type BatchResult struct {
+	Request  *BatchRequest
+	IsDelete bool // true for pk-delete, false for pk-read
+}
+
 // ParseSingleRead parses a single READ command
 // Format: READ db.table [col0, col1] FILTER id0=0, id1=0
 func ParseSingleRead(line string) (database, table string, req *PkReadRequest, err error) {
@@ -93,6 +99,59 @@ func ParseSingleRead(line string) (database, table string, req *PkReadRequest, e
 	}
 
 	return database, table, req, nil
+}
+
+// ParseBatchUnified parses BATCH input and auto-detects READ or DELETE operations
+// Syntax 1 (per-op): BATCH READ db.table FILTER ... [READ ...] or BATCH DELETE db.table FILTER ... [DELETE ...]
+// Syntax 2 (header): BATCH db.table [cols] READ FILTER ... or BATCH db.table [cols] DELETE FILTER ...
+func ParseBatchUnified(lines []string) (*BatchResult, error) {
+	input := strings.Join(lines, " ")
+	input = strings.TrimSpace(input)
+
+	// Detect operation type by looking for READ or DELETE keywords
+	lower := strings.ToLower(input)
+
+	// Check if it starts with READ or DELETE (per-operation syntax)
+	if strings.HasPrefix(lower, "read ") {
+		req, err := ParseBatch(lines)
+		if err != nil {
+			return nil, err
+		}
+		return &BatchResult{Request: req, IsDelete: false}, nil
+	}
+	if strings.HasPrefix(lower, "delete ") {
+		req, err := ParseBatchDelete(lines)
+		if err != nil {
+			return nil, err
+		}
+		return &BatchResult{Request: req, IsDelete: true}, nil
+	}
+
+	// Header syntax - detect by finding first READ or DELETE keyword after db.table
+	// Pattern: db.table [cols] READ/DELETE FILTER ...
+	readPattern := regexp.MustCompile(`(?i)\bREAD\b`)
+	deletePattern := regexp.MustCompile(`(?i)\bDELETE\b`)
+
+	readLoc := readPattern.FindStringIndex(input)
+	deleteLoc := deletePattern.FindStringIndex(input)
+
+	// Determine which comes first (or which exists)
+	if readLoc != nil && (deleteLoc == nil || readLoc[0] < deleteLoc[0]) {
+		req, err := ParseBatch(lines)
+		if err != nil {
+			return nil, err
+		}
+		return &BatchResult{Request: req, IsDelete: false}, nil
+	}
+	if deleteLoc != nil {
+		req, err := ParseBatchDelete(lines)
+		if err != nil {
+			return nil, err
+		}
+		return &BatchResult{Request: req, IsDelete: true}, nil
+	}
+
+	return nil, fmt.Errorf("no READ or DELETE operations found in batch")
 }
 
 // ParseBatch parses BATCH input (single-line or multi-line)
@@ -504,6 +563,12 @@ func splitByKeyword(s string, keyword string) []string {
 // New syntax: "READ redis_0.x b FILTER a=1 READ redis_0.y c FILTER d=2"
 // Each READ starts a new operation
 func tokenizeBatchInput(lines []string) []string {
+	return tokenizeBatchInputByKeyword(lines, "READ")
+}
+
+// tokenizeBatchInputByKeyword converts batch input into logical operation chunks
+// splitting by the specified keyword (READ or DELETE)
+func tokenizeBatchInputByKeyword(lines []string, keyword string) []string {
 	// Join all input into single string
 	input := strings.Join(lines, " ")
 	input = strings.TrimSpace(input)
@@ -516,10 +581,10 @@ func tokenizeBatchInput(lines []string) []string {
 		return nil
 	}
 
-	// Split by READ keyword (each READ starts a new operation)
-	// Pattern: READ db.table [cols] FILTER ... [OP ...]
-	readPattern := regexp.MustCompile(`(?i)\bREAD\b`)
-	locs := readPattern.FindAllStringIndex(input, -1)
+	// Split by keyword (each keyword starts a new operation)
+	// Pattern: KEYWORD db.table [cols] FILTER ... [OP ...]
+	keywordPattern := regexp.MustCompile(`(?i)\b` + keyword + `\b`)
+	locs := keywordPattern.FindAllStringIndex(input, -1)
 
 	if len(locs) == 0 {
 		return lines
@@ -540,4 +605,232 @@ func tokenizeBatchInput(lines []string) []string {
 	}
 
 	return result
+}
+
+// ParseBatchDelete parses BATCH DELETE input (single-line or multi-line)
+// Syntax 1: BATCH DELETE db.table [cols] FILTER conditions [OP id] [DELETE ...]
+// Syntax 2: BATCH DELETE db.table: [cols] DELETE FILTER conditions, DELETE FILTER conditions
+func ParseBatchDelete(lines []string) (*BatchRequest, error) {
+	// Join all input into single string
+	input := strings.Join(lines, " ")
+	input = strings.TrimSpace(input)
+
+	// Check for header syntax: "db.table: cols DELETE FILTER ..."
+	if isDeleteHeaderSyntax(input) {
+		return parseHeaderBatchDelete(input)
+	}
+
+	// Otherwise use per-operation syntax
+	chunks := tokenizeBatchInputByKeyword(lines, "DELETE")
+
+	var operations []BatchOperation
+
+	for _, chunk := range chunks {
+		chunk = strings.TrimSpace(chunk)
+		if chunk == "" || chunk == ";" {
+			continue
+		}
+
+		// Each chunk should be a DELETE statement: "DELETE db.table [cols] FILTER conditions [OP id]"
+		database, table, req, err := parseBatchDeleteOp(chunk)
+		if err != nil {
+			return nil, err
+		}
+
+		op := BatchOperation{
+			Method:      "POST",
+			RelativeURL: fmt.Sprintf("%s/%s/pk-delete", database, table),
+			Body:        *req,
+		}
+		operations = append(operations, op)
+	}
+
+	if len(operations) == 0 {
+		return nil, fmt.Errorf("no operations defined in batch delete")
+	}
+
+	return &BatchRequest{Operations: operations}, nil
+}
+
+// isDeleteHeaderSyntax checks if input uses the header syntax: "db.table cols DELETE FILTER ..."
+// Header syntax starts with db.table (not DELETE)
+func isDeleteHeaderSyntax(input string) bool {
+	// If it starts with DELETE, it's per-operation syntax
+	if strings.HasPrefix(strings.ToLower(input), "delete ") {
+		return false
+	}
+	// Check if it starts with db.table pattern
+	headerPattern := regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]*\b`)
+	return headerPattern.MatchString(input)
+}
+
+// parseHeaderBatchDelete parses: "db.table [cols] DELETE FILTER a=1, DELETE FILTER a=2"
+func parseHeaderBatchDelete(input string) (*BatchRequest, error) {
+	// Find db.table at the start
+	tablePattern := regexp.MustCompile(`^([a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]*)\s*:?\s*`)
+	match := tablePattern.FindStringSubmatch(input)
+	if match == nil {
+		return nil, fmt.Errorf("invalid header syntax: expected db.table")
+	}
+
+	// Parse db.table
+	dbTableStr := match[1]
+	database, table, err := parseDbTable(dbTableStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid table reference: %w", err)
+	}
+
+	rest := strings.TrimSpace(input[len(match[0]):])
+
+	// Find first DELETE keyword to separate columns from operations
+	deletePattern := regexp.MustCompile(`(?i)\bDELETE\b`)
+	deleteLoc := deletePattern.FindStringIndex(rest)
+	if deleteLoc == nil {
+		return nil, fmt.Errorf("no DELETE operations found")
+	}
+
+	// Parse columns (between : and first DELETE) - can be empty
+	colStr := strings.TrimSpace(rest[:deleteLoc[0]])
+	var readColumns []ReadColumn
+	if colStr != "" {
+		readColumns, err = parseReadColumns(colStr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid columns: %w", err)
+		}
+	}
+
+	// Split remaining by "DELETE" to get individual operations
+	opsStr := rest[deleteLoc[0]:]
+	// Split by ", DELETE" or ",DELETE" to separate operations
+	opChunks := splitDeleteOperations(opsStr)
+
+	var operations []BatchOperation
+	for i, chunk := range opChunks {
+		chunk = strings.TrimSpace(chunk)
+		if chunk == "" {
+			continue
+		}
+
+		// Remove leading "DELETE" if present
+		lower := strings.ToLower(chunk)
+		if strings.HasPrefix(lower, "delete") {
+			chunk = strings.TrimSpace(chunk[6:])
+		}
+
+		// Parse FILTER and optional OP
+		req, err := parseFilterOp(chunk)
+		if err != nil {
+			return nil, fmt.Errorf("operation %d: %w", i+1, err)
+		}
+
+		// Apply shared columns (can be empty for delete)
+		req.ReadColumns = readColumns
+
+		op := BatchOperation{
+			Method:      "POST",
+			RelativeURL: fmt.Sprintf("%s/%s/pk-delete", database, table),
+			Body:        *req,
+		}
+		operations = append(operations, op)
+	}
+
+	if len(operations) == 0 {
+		return nil, fmt.Errorf("no operations defined in batch delete")
+	}
+
+	return &BatchRequest{Operations: operations}, nil
+}
+
+// splitDeleteOperations splits "DELETE FILTER a=1, DELETE FILTER a=2" into chunks
+// Splits by ", DELETE" or "; DELETE" pattern to separate operations
+func splitDeleteOperations(s string) []string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+
+	// Split by DELETE keyword (each DELETE starts a new operation)
+	// Support both ", DELETE" and "; DELETE" as separators
+	deletePattern := regexp.MustCompile(`(?i)[,;]\s*DELETE\b`)
+	parts := deletePattern.Split(s, -1)
+
+	var result []string
+	for i, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		// For parts after the first one, we removed "DELETE" when splitting, so add it back
+		if i > 0 {
+			p = "DELETE " + p
+		}
+		result = append(result, p)
+	}
+	return result
+}
+
+// parseBatchDeleteOp parses a single DELETE operation for batch
+// Format: DELETE db.table [col1, col2] FILTER conditions [OP id]
+func parseBatchDeleteOp(line string) (database, table string, req *PkReadRequest, err error) {
+	line = strings.TrimSpace(line)
+
+	// Remove DELETE prefix (case-insensitive)
+	lower := strings.ToLower(line)
+	if !strings.HasPrefix(lower, "delete ") {
+		return "", "", nil, fmt.Errorf("batch operation must start with DELETE")
+	}
+	line = strings.TrimSpace(line[7:])
+
+	// Split by OP keyword first (optional, at the end)
+	var opID string
+	opParts := splitByKeyword(line, "OP")
+	if len(opParts) == 2 {
+		line = strings.TrimSpace(opParts[0])
+		opID = strings.TrimSpace(opParts[1])
+	}
+
+	// Split by FILTER keyword
+	parts := splitByKeyword(line, "FILTER")
+	if len(parts) != 2 {
+		return "", "", nil, fmt.Errorf("FILTER clause is required")
+	}
+
+	beforeFilter := strings.TrimSpace(parts[0])
+	filterStr := strings.TrimSpace(parts[1])
+
+	// Parse the part before FILTER: "db.table [col1, col2]"
+	tokens := strings.Fields(beforeFilter)
+	if len(tokens) == 0 {
+		return "", "", nil, fmt.Errorf("database.table is required")
+	}
+
+	dbTable := tokens[0]
+	database, table, err = parseDbTable(dbTable)
+	if err != nil {
+		return "", "", nil, err
+	}
+
+	// Remaining tokens are read columns (if any - optional for delete)
+	var readColumns []ReadColumn
+	if len(tokens) > 1 {
+		colStr := strings.Join(tokens[1:], " ")
+		readColumns, err = parseReadColumns(colStr)
+		if err != nil {
+			return "", "", nil, fmt.Errorf("invalid read columns: %w", err)
+		}
+	}
+
+	// Parse filters
+	filters, err := parseFilters(filterStr)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("invalid filter: %w", err)
+	}
+
+	req = &PkReadRequest{
+		Filters:     filters,
+		ReadColumns: readColumns,
+		OperationID: opID,
+	}
+
+	return database, table, req, nil
 }
