@@ -222,6 +222,100 @@ RS_Status create_native_request(PKReadParams &pkReadParams,
     drogon::HttpStatusCode::k200OK), "OK").status;
 }
 
+RS_Status create_native_write_request(PKReadParams &pkReadParams,
+                                      Uint32 *reqBuff,
+                                      Uint32 &next_head) {
+  Uint32 *buf = reqBuff;
+  Uint32 head = PK_REQ_HEADER_END;
+  Uint32 dbOffset = head;
+  EN_Status status = {};
+  head = copy_str_to_buffer(pkReadParams.path.db, reqBuff, head, status);
+  if (unlikely(head == 0)) {
+    return CRS_Status(status.http_code, status.message).status;
+  }
+  Uint32 tableOffset = head;
+  head = copy_str_to_buffer(pkReadParams.path.table, reqBuff, head, status);
+  if (unlikely(head == 0)) {
+    return CRS_Status(status.http_code, status.message).status;
+  }
+  // PK Filters
+  Uint32 pkOffset = head;
+  buf[head / ADDRESS_SIZE] = Uint32(pkReadParams.filters.size());
+  head += ADDRESS_SIZE;
+  Uint32 kvi = head / ADDRESS_SIZE;
+  head += Uint32(pkReadParams.filters.size()) * ADDRESS_SIZE;
+  for (auto filter : pkReadParams.filters) {
+    Uint32 tupleOffset = head;
+    head += 8;
+    Uint32 keyNameOffset = head;
+    head = copy_str_to_buffer(filter.column, reqBuff, head, status);
+    if (unlikely(head == 0)) {
+      return CRS_Status(status.http_code, status.message).status;
+    }
+    Uint32 valueOffset = head;
+    head = copy_ndb_str_to_buffer(filter.value, reqBuff, head, status);
+    if (unlikely(head == 0)) {
+      return CRS_Status(status.http_code, status.message).status;
+    }
+    buf[kvi] = tupleOffset;
+    kvi++;
+    buf[tupleOffset / ADDRESS_SIZE] = keyNameOffset;
+    buf[tupleOffset / ADDRESS_SIZE + 1] = valueOffset;
+  }
+  // Operation ID
+  Uint32 op_id_offset = 0;
+  if (likely(!pkReadParams.operationId.empty())) {
+    op_id_offset = head;
+    head = copy_str_to_buffer(pkReadParams.operationId, reqBuff, head, status);
+    if (unlikely(head == 0)) {
+      return CRS_Status(status.http_code, status.message).status;
+    }
+  }
+  // Write Columns (column+value pairs, similar to filters)
+  Uint32 writeColsOffset = 0;
+  if (likely(!pkReadParams.writeColumns.empty())) {
+    writeColsOffset = head;
+    buf[head / ADDRESS_SIZE] = Uint32(pkReadParams.writeColumns.size());
+    head += ADDRESS_SIZE;
+    Uint32 wci = head / ADDRESS_SIZE;
+    head += Uint32(pkReadParams.writeColumns.size()) * ADDRESS_SIZE;
+    for (auto writeCol : pkReadParams.writeColumns) {
+      Uint32 tupleOffset = head;
+      head += 8;
+      Uint32 colNameOffset = head;
+      head = copy_str_to_buffer(writeCol.column, reqBuff, head, status);
+      if (unlikely(head == 0)) {
+        return CRS_Status(status.http_code, status.message).status;
+      }
+      Uint32 valueOffset = head;
+      head = copy_ndb_str_to_buffer(writeCol.value, reqBuff, head, status);
+      if (unlikely(head == 0)) {
+        return CRS_Status(status.http_code, status.message).status;
+      }
+      buf[wci] = tupleOffset;
+      wci++;
+      buf[tupleOffset / ADDRESS_SIZE] = colNameOffset;
+      buf[tupleOffset / ADDRESS_SIZE + 1] = valueOffset;
+    }
+    next_head += head;
+  } else {
+    next_head += head;
+  }
+  // request buffer header
+  buf[PK_REQ_OP_TYPE_IDX] = (Uint32)(RDRS_PK_REQ_ID);
+  buf[PK_REQ_CAPACITY_IDX] = (Uint32)(globalConfigs.internal.respBufferSize);
+  buf[PK_REQ_LENGTH_IDX] = (Uint32)(head);
+  buf[PK_REQ_FLAGS_IDX] = (Uint32)(pkReadParams.writeOperationType);
+  buf[PK_REQ_DB_IDX] = (Uint32)(dbOffset);
+  buf[PK_REQ_TABLE_IDX] = (Uint32)(tableOffset);
+  buf[PK_REQ_PK_COLS_IDX] = (Uint32)(pkOffset);
+  buf[PK_REQ_READ_COLS_IDX] = (Uint32)(0);  // No read columns for write
+  buf[PK_REQ_OP_ID_IDX] = (Uint32)(op_id_offset);
+  buf[PK_REQ_WRITE_COLS_IDX] = (Uint32)(writeColsOffset);
+  return CRS_Status(static_cast<HTTP_CODE>(
+    drogon::HttpStatusCode::k200OK), "OK").status;
+}
+
 RS_Buffer getNextReqRS_Buffer(Uint32 &current_head,
                               Uint32 request_buffer_limit,
                               RS_Buffer &current_request_buffer,
