@@ -1344,10 +1344,14 @@ func (s *Shell) runLoadRondis(numThreads int, numOps int, rowsPerOp int) error {
 			case <-ticker.C:
 				ops := atomic.LoadInt64(&completedOps)
 				keys := ops * int64(rowsPerOp)
+				errs := errorCollector.Count()
 				elapsed := time.Since(writeStart)
 				keysPerSec := float64(keys) / elapsed.Seconds()
 				pct := float64(ops) / float64(totalOps) * 100
-				fmt.Printf("   Progress: %d/%d ops (%.1f%%), %d keys, %.0f keys/sec\n", ops, totalOps, pct, keys, keysPerSec)
+				minLat, maxLat, avgLat, p99Lat, _ := latencyCollector.GetIntervalStats()
+				fmt.Printf("   Progress: %d/%d ops (%.1f%%), %d keys, errors=%d, %.0f keys/sec, latency: min=%s avg=%s max=%s p99=%s\n",
+					ops, totalOps, pct, keys, errs, keysPerSec,
+					formatLatency(minLat), formatLatency(avgLat), formatLatency(maxLat), formatLatency(p99Lat))
 			case <-stopProgress:
 				return
 			}
@@ -1403,6 +1407,7 @@ func (s *Shell) runLoadRondis(numThreads int, numOps int, rowsPerOp int) error {
 	}
 	wg.Wait()
 	close(stopProgress)
+	fmt.Println()
 	writeDuration := time.Since(writeStart)
 
 	// Get latency stats
@@ -1525,11 +1530,15 @@ func (s *Shell) runLoadSQL(numThreads int, numOps int, rowsPerOp int) error {
 			select {
 			case <-ticker.C:
 				ops := atomic.LoadInt64(&completedOps)
+				errs := errorCollector.Count()
 				rows := ops * int64(rowsPerOp)
 				elapsed := time.Since(writeStart)
 				rowsPerSec := float64(rows) / elapsed.Seconds()
 				pct := float64(ops) / float64(totalOps) * 100
-				fmt.Printf("   Progress: %d/%d ops (%.1f%%), %d rows, %.0f rows/sec\n", ops, totalOps, pct, rows, rowsPerSec)
+				minLat, maxLat, avgLat, p99Lat, _ := latencyCollector.GetIntervalStats()
+				fmt.Printf("   Progress: %d/%d ops (%.1f%%), %d rows, errors=%d, %.0f rows/sec, latency: min=%s avg=%s max=%s p99=%s\n",
+					ops, totalOps, pct, rows, errs, rowsPerSec,
+					formatLatency(minLat), formatLatency(avgLat), formatLatency(maxLat), formatLatency(p99Lat))
 			case <-stopProgress:
 				return
 			}
@@ -1572,6 +1581,7 @@ func (s *Shell) runLoadSQL(numThreads int, numOps int, rowsPerOp int) error {
 	}
 	wg.Wait()
 	close(stopProgress)
+	fmt.Println()
 	writeDuration := time.Since(writeStart)
 
 	// Get latency stats
@@ -1671,8 +1681,10 @@ func (s *Shell) runDelSQL(numThreads int, numOps int, rowsPerOp int) error {
 				elapsed := time.Since(delStart)
 				rowsPerSec := float64(rows) / elapsed.Seconds()
 				pct := float64(ops) / float64(totalOps) * 100
-				fmt.Printf("   Progress: %d/%d ops (%.1f%%), %d rows deleted, errors=%d, %.0f rows/sec\n",
-					ops, totalOps, pct, rows, errs, rowsPerSec)
+				minLat, maxLat, avgLat, p99Lat, _ := latencyCollector.GetIntervalStats()
+				fmt.Printf("   Progress: %d/%d ops (%.1f%%), %d rows deleted, errors=%d, %.0f rows/sec, latency: min=%s avg=%s max=%s p99=%s\n",
+					ops, totalOps, pct, rows, errs, rowsPerSec,
+					formatLatency(minLat), formatLatency(avgLat), formatLatency(maxLat), formatLatency(p99Lat))
 			case <-stopProgress:
 				return
 			}
@@ -1707,6 +1719,7 @@ func (s *Shell) runDelSQL(numThreads int, numOps int, rowsPerOp int) error {
 	}
 	wg.Wait()
 	close(stopProgress)
+	fmt.Println()
 	delDuration := time.Since(delStart)
 
 	// Get latency stats
@@ -1805,8 +1818,10 @@ func (s *Shell) runDelRDRS(numThreads int, numOps int, rowsPerOp int) error {
 				elapsed := time.Since(delStart)
 				rowsPerSec := float64(rows) / elapsed.Seconds()
 				pct := float64(ops) / float64(totalOps) * 100
-				fmt.Printf("   Progress: %d/%d batches (%.1f%%), %d rows deleted, errors=%d, %.0f rows/sec\n",
-					ops, totalOps, pct, rows, errs, rowsPerSec)
+				minLat, maxLat, avgLat, p99Lat, _ := latencyCollector.GetIntervalStats()
+				fmt.Printf("   Progress: %d/%d batches (%.1f%%), %d rows deleted, errors=%d, %.0f rows/sec, latency: min=%s avg=%s max=%s p99=%s\n",
+					ops, totalOps, pct, rows, errs, rowsPerSec,
+					formatLatency(minLat), formatLatency(avgLat), formatLatency(maxLat), formatLatency(p99Lat))
 			case <-stopProgress:
 				return
 			}
@@ -1860,6 +1875,7 @@ func (s *Shell) runDelRDRS(numThreads int, numOps int, rowsPerOp int) error {
 	}
 	wg.Wait()
 	close(stopProgress)
+	fmt.Println()
 	delDuration := time.Since(delStart)
 
 	// Get latency stats
@@ -2044,7 +2060,7 @@ func (s *Shell) runBenchSQL(numThreads int, numOps int, rowsPerOp int, writePct 
 	}
 	wg.Wait()
 	close(stopProgress)
-
+	fmt.Println()
 	benchDuration := time.Since(benchStart)
 
 	// Get latency stats
@@ -2178,7 +2194,7 @@ func (s *Shell) runBenchSQLScan(numThreads int, numOps int, rowsPerOp int) error
 	}
 	wg.Wait()
 	close(stopProgress)
-
+	fmt.Println()
 	benchDuration := time.Since(benchStart)
 
 	// Get latency stats
@@ -2647,8 +2663,10 @@ func (s *Shell) runBenchRondis(numThreads int, numOps int, rowsPerOp int, writeP
 				elapsed := time.Since(benchStart)
 				keysPerSec := float64(keys) / elapsed.Seconds()
 				pct := float64(ops) / float64(totalOps) * 100
-				fmt.Printf("   Progress: %d/%d ops (%.1f%%), reads=%d, writes=%d, errors=%d, %.0f keys/sec\n",
-					ops, totalOps, pct, reads, writes, errs, keysPerSec)
+				minLat, maxLat, avgLat, p99Lat, _ := latencyCollector.GetIntervalStats()
+				fmt.Printf("   Progress: %d/%d ops (%.1f%%), reads=%d, writes=%d, errors=%d, %.0f keys/sec, latency: min=%s avg=%s max=%s p99=%s\n",
+					ops, totalOps, pct, reads, writes, errs, keysPerSec,
+					formatLatency(minLat), formatLatency(avgLat), formatLatency(maxLat), formatLatency(p99Lat))
 			case <-stopProgress:
 				return
 			}
@@ -2755,6 +2773,7 @@ func (s *Shell) runBenchRondis(numThreads int, numOps int, rowsPerOp int, writeP
 	}
 	wg.Wait()
 	close(stopProgress)
+	fmt.Println()
 	benchDuration := time.Since(benchStart)
 
 	// Get latency stats
@@ -3100,8 +3119,10 @@ func (s *Shell) runDelRondis(numThreads int, numOps int, rowsPerOp int) error {
 				elapsed := time.Since(delStart)
 				keysPerSec := float64(keys) / elapsed.Seconds()
 				pct := float64(ops) / float64(totalOps) * 100
-				fmt.Printf("   Progress: %d/%d ops (%.1f%%), %d keys deleted, errors=%d, %.0f keys/sec\n",
-					ops, totalOps, pct, keys, errs, keysPerSec)
+				minLat, maxLat, avgLat, p99Lat, _ := latencyCollector.GetIntervalStats()
+				fmt.Printf("   Progress: %d/%d ops (%.1f%%), %d keys deleted, errors=%d, %.0f keys/sec, latency: min=%s avg=%s max=%s p99=%s\n",
+					ops, totalOps, pct, keys, errs, keysPerSec,
+					formatLatency(minLat), formatLatency(avgLat), formatLatency(maxLat), formatLatency(p99Lat))
 			case <-stopProgress:
 				return
 			}
@@ -3156,6 +3177,7 @@ func (s *Shell) runDelRondis(numThreads int, numOps int, rowsPerOp int) error {
 	}
 	wg.Wait()
 	close(stopProgress)
+	fmt.Println()
 	delDuration := time.Since(delStart)
 
 	// Get latency stats
@@ -3269,8 +3291,10 @@ func (s *Shell) runBenchRDRS(numThreads int, numOps int, rowsPerOp int) error {
 				opsPerSec := float64(ops) / elapsed.Seconds()
 				rowsPerSec := float64(rows) / elapsed.Seconds()
 				pct := float64(ops) / float64(totalOps) * 100
-				fmt.Printf("   Progress: %d/%d ops (%.1f%%), %d rows, errors=%d, %.0f batch/sec, %.0f rows/sec\n",
-					ops, totalOps, pct, rows, errs, opsPerSec, rowsPerSec)
+				minLat, maxLat, avgLat, p99Lat, _ := latencyCollector.GetIntervalStats()
+				fmt.Printf("   Progress: %d/%d ops (%.1f%%), %d rows, errors=%d, %.0f batch/sec, %.0f rows/sec, latency: min=%s avg=%s max=%s p99=%s\n",
+					ops, totalOps, pct, rows, errs, opsPerSec, rowsPerSec,
+					formatLatency(minLat), formatLatency(avgLat), formatLatency(maxLat), formatLatency(p99Lat))
 			case <-stopProgress:
 				return
 			}
@@ -3326,7 +3350,7 @@ func (s *Shell) runBenchRDRS(numThreads int, numOps int, rowsPerOp int) error {
 	}
 	wg.Wait()
 	close(stopProgress)
-
+	fmt.Println()
 	benchDuration := time.Since(benchStart)
 
 	// Get latency stats
