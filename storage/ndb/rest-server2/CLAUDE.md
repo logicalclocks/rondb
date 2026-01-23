@@ -110,17 +110,17 @@ class BaseBatchOperations {
 
 4. Update `CMakeLists.txt` with new source files
 
-### Key Differences Between Read and Delete
+### Key Differences Between Read, Delete, and Write
 
-| Aspect | Read | Delete |
-|--------|------|--------|
-| `supports_blobs()` | true | false (no blob data in response) |
-| `supports_read_all_columns()` | true | false |
-| `get_single_transaction_exec_type()` | NoCommit | Commit |
-| NDB operation | `readTuple()` | `deleteTuple()` |
-| Blob handling | Per readColumn | Per table column (for part deletion) |
-| JSON parser method | `batch_parse()` | `batch_parse_delete()` |
-| URL suffix | `pk-read` | `pk-delete` |
+| Aspect | Read | Delete | Write |
+|--------|------|--------|-------|
+| `supports_blobs()` | true | false | true |
+| `supports_read_all_columns()` | true | false | false |
+| `get_single_transaction_exec_type()` | NoCommit | Commit | Commit |
+| NDB operation | `readTuple()` | `deleteTuple()` | `writeTuple()`/`updateTuple()`/`insertTuple()` |
+| Blob handling | Per readColumn | Per table column | Per writeColumn |
+| JSON parser method | `batch_parse()` | `batch_parse_delete()` | `batch_parse_write()` |
+| URL suffix | `pk-read` | `pk-delete` | `pk-write`/`pk-update`/`pk-insert` |
 
 ### REST API URL Format
 
@@ -152,7 +152,121 @@ The `relative-url` in batch operation JSON must use the correct suffix:
 }
 ```
 
-The URL suffix is validated in `extract_db_and_table()` - using the wrong suffix returns an error.
+**Batch Write** (endpoint: `/0.1.0/batchwrite`):
+```json
+{
+  "operations": [
+    {
+      "method": "POST",
+      "relative-url": "database/table/pk-write",
+      "body": { "filters": [...], "writeColumns": [...] }
+    },
+    {
+      "method": "POST",
+      "relative-url": "database/table/pk-update",
+      "body": { "filters": [...], "writeColumns": [...] }
+    },
+    {
+      "method": "POST",
+      "relative-url": "database/table/pk-insert",
+      "body": { "filters": [...], "writeColumns": [...] }
+    }
+  ]
+}
+```
+
+The URL suffix is validated in `extract_db_and_table()` or `extract_db_table_and_write_op()` - using the wrong suffix returns an error.
+
+## Write Operation Types
+
+Batch write supports three operation types, determined by the URL suffix:
+
+| URL Suffix | NDB Method | Behavior |
+|------------|------------|----------|
+| `pk-write` | `writeTuple()` | Insert if row doesn't exist, update if it does |
+| `pk-update` | `updateTuple()` | Update only, fails if row doesn't exist |
+| `pk-insert` | `insertTuple()` | Insert only, fails if row already exists |
+
+### Implementation Details
+
+**Operation type constants** (rdrs_const.h):
+```cpp
+#define RDRS_WRITE_OP_WRITE  0  // writeTuple
+#define RDRS_WRITE_OP_UPDATE 1  // updateTuple
+#define RDRS_WRITE_OP_INSERT 2  // insertTuple
+```
+
+**Flow**:
+1. `batch_parse_write()` calls `extract_db_table_and_write_op()` to parse URL and determine operation type
+2. Operation type stored in `PKReadParams.writeOperationType`
+3. `create_native_write_request()` stores it in `PK_REQ_FLAGS_IDX`
+4. `PKRRequest::WriteOperationType()` retrieves it from the request buffer
+5. `setup_write_operations()` uses switch statement to call appropriate NDB method
+
+**Key files**:
+- `pkw_operation.hpp/cpp` - WriteKeyOperation struct and BatchWriteOperations class
+- `json_parser.cpp` - `extract_db_table_and_write_op()` for URL parsing
+- `encoding.cpp` - `create_native_write_request()` stores operation type
+
+### Mixed Operations in Same Batch
+
+A single batch can contain different operation types:
+```json
+{
+  "operations": [
+    {"relative-url": "db/t1/pk-write", ...},
+    {"relative-url": "db/t2/pk-update", ...},
+    {"relative-url": "db/t1/pk-insert", ...}
+  ]
+}
+```
+
+Each operation is processed independently with its own operation type.
+
+## BLOB Handling in Write Operations
+
+**Write operations support BLOB/TEXT columns via NdbBlob.** Unlike regular columns that are set in the row buffer, BLOB/TEXT columns must be written using `NdbBlob::setValue()`.
+
+### How It Works
+
+1. **Detection**: `setup_write_columns()` scans writeColumns for BLOB/TEXT types and sets `m_has_write_blobs = true`
+
+2. **Single transaction mode**: When BLOBs are present, `m_single_transaction = true` is set (NdbBlob requires it)
+
+3. **Row buffer setup**: In `setup_write_operations()`, BLOB/TEXT columns are **skipped** when setting values in the row buffer:
+   ```cpp
+   if (col->getType() == NdbDictionary::Column::Blob ||
+       col->getType() == NdbDictionary::Column::Text) {
+     continue;  // Skip - handled via NdbBlob
+   }
+   ```
+
+4. **Blob handle activation**: After `writeTuple()`/`updateTuple()`/`insertTuple()`, get blob handles and set values:
+   ```cpp
+   NdbBlob *blobHandle = operation->getBlobHandle(col->getName());
+   if (col->getType() == NdbDictionary::Column::Text) {
+     blobHandle->setValue(valueCStr, valueLen);  // Direct text
+   } else {
+     // BLOB: base64 decode first
+     base64_decode(valueCStr, valueLen, decodedBuffer, &decodedLen, 0);
+     blobHandle->setValue(decodedBuffer, decodedLen);
+   }
+   ```
+
+### Key Points
+
+- **TEXT columns**: Value is passed directly as UTF-8 text
+- **BLOB columns**: Value must be base64 encoded in the request; decoded before writing
+- **Single transaction**: Required when any operation has BLOBs
+- **WriteKeyOperation fields**:
+  ```cpp
+  const NdbDictionary::Column **m_writeColumns;  // Write column dictionary objects
+  Uint32 m_num_write_columns;                     // Count of write columns
+  Uint8 *m_bitmap_write_columns;                  // Bitmap for columns to write
+  NdbBlob **m_write_blob_handles;                 // Blob handles for write columns
+  bool m_has_write_blobs;                         // True if any write column is BLOB/TEXT
+  Uint32 m_write_op_type;                         // RDRS_WRITE_OP_WRITE/_UPDATE/_INSERT
+  ```
 
 ## BLOB Handling in Delete Operations
 

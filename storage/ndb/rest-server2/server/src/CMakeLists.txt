@@ -27,6 +27,7 @@ file(GLOB_RECURSE SRC
         batch_feature_store_ctrl.cpp
         batch_pk_delete_ctrl.cpp
         batch_pk_read_ctrl.cpp
+        batch_pk_write_ctrl.cpp
         buffer_manager.cpp
         config_structs.cpp
         connection.cpp
@@ -65,6 +66,7 @@ file(GLOB_RECURSE SRC
         db_operations/pk/pkd_operation.cpp
         db_operations/pk/pkr_operation.cpp
         db_operations/pk/pkr_request.cpp
+        db_operations/pk/pkw_operation.cpp
         db_operations/pk/pkr_response.cpp
         db_operations/ronsql/ronsql_operation.cpp
         ttl_purge.cpp
