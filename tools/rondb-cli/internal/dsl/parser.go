@@ -26,6 +26,19 @@ type PkReadRequest struct {
 	OperationID string       `json:"operationId,omitempty"`
 }
 
+// WriteColumn represents a column to write with its value
+type WriteColumn struct {
+	Column string      `json:"column"`
+	Value  interface{} `json:"value"`
+}
+
+// PkWriteRequest represents a single pk-write request body
+type PkWriteRequest struct {
+	Filters      []Filter      `json:"filters"`
+	WriteColumns []WriteColumn `json:"writeColumns"`
+	OperationID  string        `json:"operationId,omitempty"`
+}
+
 // BatchOperation represents a single operation in a batch request
 type BatchOperation struct {
 	Method      string        `json:"method"`
@@ -33,15 +46,48 @@ type BatchOperation struct {
 	Body        PkReadRequest `json:"body"`
 }
 
+// BatchWriteOperation represents a single write operation in a batch request
+type BatchWriteOperation struct {
+	Method      string         `json:"method"`
+	RelativeURL string         `json:"relative-url"`
+	Body        PkWriteRequest `json:"body"`
+}
+
 // BatchRequest represents a batch of operations
 type BatchRequest struct {
 	Operations []BatchOperation `json:"operations"`
 }
 
+// BatchWriteRequest represents a batch of write operations
+type BatchWriteRequest struct {
+	Operations []BatchWriteOperation `json:"operations"`
+}
+
+// OpType indicates the type of batch operation
+type OpType int
+
+const (
+	OpTypeRead OpType = iota
+	OpTypeDelete
+	OpTypeWrite // covers WRITE, UPDATE, INSERT (all use batchwrite endpoint)
+)
+
+// WriteOpType indicates the specific write operation (used with OpTypeWrite)
+type WriteOpType string
+
+const (
+	WriteOpWrite  WriteOpType = "pk-write"
+	WriteOpUpdate WriteOpType = "pk-update"
+	WriteOpInsert WriteOpType = "pk-insert"
+)
+
 // BatchResult contains the parsed batch request and detected operation type
 type BatchResult struct {
-	Request  *BatchRequest
-	IsDelete bool // true for pk-delete, false for pk-read
+	Request      *BatchRequest
+	WriteRequest *BatchWriteRequest
+	OpType       OpType
+	WriteOpType  WriteOpType // set when OpType is OpTypeWrite
+	IsDelete     bool        // deprecated: use OpType instead
 }
 
 // ParseSingleRead parses a single READ command
@@ -101,57 +147,118 @@ func ParseSingleRead(line string) (database, table string, req *PkReadRequest, e
 	return database, table, req, nil
 }
 
-// ParseBatchUnified parses BATCH input and auto-detects READ or DELETE operations
-// Syntax 1 (per-op): BATCH READ db.table FILTER ... [READ ...] or BATCH DELETE db.table FILTER ... [DELETE ...]
-// Syntax 2 (header): BATCH db.table [cols] READ FILTER ... or BATCH db.table [cols] DELETE FILTER ...
+// ParseBatchUnified parses BATCH input and auto-detects READ, DELETE, or WRITE operations
+// Syntax 1 (per-op): BATCH READ/DELETE/WRITE db.table ... FILTER ... [READ/DELETE/WRITE ...]
+// Syntax 2 (header): BATCH db.table READ/DELETE/WRITE/UPDATE/INSERT ... FILTER ...
 func ParseBatchUnified(lines []string) (*BatchResult, error) {
 	input := strings.Join(lines, " ")
 	input = strings.TrimSpace(input)
 
-	// Detect operation type by looking for READ or DELETE keywords
+	// Detect operation type by looking for READ, DELETE, WRITE, UPDATE, INSERT keywords
 	lower := strings.ToLower(input)
 
-	// Check if it starts with READ or DELETE (per-operation syntax)
+	// Check if it starts with READ, DELETE, WRITE, UPDATE, or INSERT (per-operation syntax)
 	if strings.HasPrefix(lower, "read ") {
 		req, err := ParseBatch(lines)
 		if err != nil {
 			return nil, err
 		}
-		return &BatchResult{Request: req, IsDelete: false}, nil
+		return &BatchResult{Request: req, OpType: OpTypeRead, IsDelete: false}, nil
 	}
 	if strings.HasPrefix(lower, "delete ") {
 		req, err := ParseBatchDelete(lines)
 		if err != nil {
 			return nil, err
 		}
-		return &BatchResult{Request: req, IsDelete: true}, nil
+		return &BatchResult{Request: req, OpType: OpTypeDelete, IsDelete: true}, nil
+	}
+	if strings.HasPrefix(lower, "write ") {
+		req, err := ParseBatchWriteWithType(lines, WriteOpWrite, "WRITE")
+		if err != nil {
+			return nil, err
+		}
+		return &BatchResult{WriteRequest: req, OpType: OpTypeWrite, WriteOpType: WriteOpWrite, IsDelete: false}, nil
+	}
+	if strings.HasPrefix(lower, "update ") {
+		req, err := ParseBatchWriteWithType(lines, WriteOpUpdate, "UPDATE")
+		if err != nil {
+			return nil, err
+		}
+		return &BatchResult{WriteRequest: req, OpType: OpTypeWrite, WriteOpType: WriteOpUpdate, IsDelete: false}, nil
+	}
+	if strings.HasPrefix(lower, "insert ") {
+		req, err := ParseBatchWriteWithType(lines, WriteOpInsert, "INSERT")
+		if err != nil {
+			return nil, err
+		}
+		return &BatchResult{WriteRequest: req, OpType: OpTypeWrite, WriteOpType: WriteOpInsert, IsDelete: false}, nil
 	}
 
-	// Header syntax - detect by finding first READ or DELETE keyword after db.table
-	// Pattern: db.table [cols] READ/DELETE FILTER ...
+	// Header syntax - detect by finding first READ, DELETE, WRITE, UPDATE, or INSERT keyword after db.table
+	// Pattern: db.table READ/DELETE/WRITE/UPDATE/INSERT ... FILTER ...
 	readPattern := regexp.MustCompile(`(?i)\bREAD\b`)
 	deletePattern := regexp.MustCompile(`(?i)\bDELETE\b`)
+	writePattern := regexp.MustCompile(`(?i)\bWRITE\b`)
+	updatePattern := regexp.MustCompile(`(?i)\bUPDATE\b`)
+	insertPattern := regexp.MustCompile(`(?i)\bINSERT\b`)
 
 	readLoc := readPattern.FindStringIndex(input)
 	deleteLoc := deletePattern.FindStringIndex(input)
+	writeLoc := writePattern.FindStringIndex(input)
+	updateLoc := updatePattern.FindStringIndex(input)
+	insertLoc := insertPattern.FindStringIndex(input)
 
-	// Determine which comes first (or which exists)
-	if readLoc != nil && (deleteLoc == nil || readLoc[0] < deleteLoc[0]) {
+	// Find which keyword comes first
+	type locInfo struct {
+		loc      []int
+		opType   OpType
+		writeOp  WriteOpType
+		keyword  string
+	}
+
+	candidates := []locInfo{
+		{readLoc, OpTypeRead, "", "READ"},
+		{deleteLoc, OpTypeDelete, "", "DELETE"},
+		{writeLoc, OpTypeWrite, WriteOpWrite, "WRITE"},
+		{updateLoc, OpTypeWrite, WriteOpUpdate, "UPDATE"},
+		{insertLoc, OpTypeWrite, WriteOpInsert, "INSERT"},
+	}
+
+	var first *locInfo
+	for i := range candidates {
+		if candidates[i].loc != nil {
+			if first == nil || candidates[i].loc[0] < first.loc[0] {
+				first = &candidates[i]
+			}
+		}
+	}
+
+	if first == nil {
+		return nil, fmt.Errorf("no READ, DELETE, WRITE, UPDATE, or INSERT operations found in batch")
+	}
+
+	switch first.opType {
+	case OpTypeRead:
 		req, err := ParseBatch(lines)
 		if err != nil {
 			return nil, err
 		}
-		return &BatchResult{Request: req, IsDelete: false}, nil
-	}
-	if deleteLoc != nil {
+		return &BatchResult{Request: req, OpType: OpTypeRead, IsDelete: false}, nil
+	case OpTypeDelete:
 		req, err := ParseBatchDelete(lines)
 		if err != nil {
 			return nil, err
 		}
-		return &BatchResult{Request: req, IsDelete: true}, nil
+		return &BatchResult{Request: req, OpType: OpTypeDelete, IsDelete: true}, nil
+	case OpTypeWrite:
+		req, err := ParseBatchWriteWithType(lines, first.writeOp, first.keyword)
+		if err != nil {
+			return nil, err
+		}
+		return &BatchResult{WriteRequest: req, OpType: OpTypeWrite, WriteOpType: first.writeOp, IsDelete: false}, nil
 	}
 
-	return nil, fmt.Errorf("no READ or DELETE operations found in batch")
+	return nil, fmt.Errorf("no READ, DELETE, WRITE, UPDATE, or INSERT operations found in batch")
 }
 
 // ParseBatch parses BATCH input (single-line or multi-line)
@@ -833,4 +940,327 @@ func parseBatchDeleteOp(line string) (database, table string, req *PkReadRequest
 	}
 
 	return database, table, req, nil
+}
+
+// ParseBatchWrite parses BATCH WRITE input (single-line or multi-line)
+// Syntax 1: BATCH WRITE db.table col1=val1, col2=val2 FILTER pk1=1, pk2=2 [OP id] [WRITE ...]
+// Syntax 2: BATCH db.table WRITE col1=val1, col2=val2 FILTER pk1=1, pk2=2, WRITE col1=val3 FILTER pk1=3, pk2=4
+func ParseBatchWrite(lines []string) (*BatchWriteRequest, error) {
+	return ParseBatchWriteWithType(lines, WriteOpWrite, "WRITE")
+}
+
+// ParseBatchWriteWithType parses batch write/update/insert input with specified write type and keyword
+// keyword is WRITE, UPDATE, or INSERT
+// writeOp determines the relative URL suffix (pk-write, pk-update, pk-insert)
+func ParseBatchWriteWithType(lines []string, writeOp WriteOpType, keyword string) (*BatchWriteRequest, error) {
+	// Join all input into single string
+	input := strings.Join(lines, " ")
+	input = strings.TrimSpace(input)
+
+	// Check for header syntax: "db.table WRITE/UPDATE/INSERT col=val FILTER ..."
+	if isWriteHeaderSyntaxWithKeyword(input, keyword) {
+		return parseHeaderBatchWriteWithType(input, writeOp, keyword)
+	}
+
+	// Otherwise use per-operation syntax
+	chunks := tokenizeBatchInputByKeyword(lines, keyword)
+
+	var operations []BatchWriteOperation
+
+	for _, chunk := range chunks {
+		chunk = strings.TrimSpace(chunk)
+		if chunk == "" || chunk == ";" {
+			continue
+		}
+
+		// Each chunk should be a WRITE/UPDATE/INSERT statement
+		database, table, req, err := parseBatchWriteOpWithKeyword(chunk, keyword)
+		if err != nil {
+			return nil, err
+		}
+
+		op := BatchWriteOperation{
+			Method:      "POST",
+			RelativeURL: fmt.Sprintf("%s/%s/%s", database, table, writeOp),
+			Body:        *req,
+		}
+		operations = append(operations, op)
+	}
+
+	if len(operations) == 0 {
+		return nil, fmt.Errorf("no operations defined in batch %s", strings.ToLower(keyword))
+	}
+
+	return &BatchWriteRequest{Operations: operations}, nil
+}
+
+// isWriteHeaderSyntax checks if input uses the header syntax: "db.table WRITE col=val FILTER ..."
+// Header syntax starts with db.table (not WRITE)
+func isWriteHeaderSyntax(input string) bool {
+	return isWriteHeaderSyntaxWithKeyword(input, "WRITE")
+}
+
+// isWriteHeaderSyntaxWithKeyword checks if input uses header syntax for given keyword (WRITE/UPDATE/INSERT)
+func isWriteHeaderSyntaxWithKeyword(input string, keyword string) bool {
+	// If it starts with the keyword, it's per-operation syntax
+	if strings.HasPrefix(strings.ToLower(input), strings.ToLower(keyword)+" ") {
+		return false
+	}
+	// Check if it starts with db.table pattern
+	headerPattern := regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]*\b`)
+	return headerPattern.MatchString(input)
+}
+
+// parseHeaderBatchWrite parses: "db.table WRITE col=val FILTER a=1, WRITE col=val2 FILTER a=2"
+func parseHeaderBatchWrite(input string) (*BatchWriteRequest, error) {
+	return parseHeaderBatchWriteWithType(input, WriteOpWrite, "WRITE")
+}
+
+// parseHeaderBatchWriteWithType parses header syntax for WRITE/UPDATE/INSERT operations
+func parseHeaderBatchWriteWithType(input string, writeOp WriteOpType, keyword string) (*BatchWriteRequest, error) {
+	// Find db.table at the start
+	tablePattern := regexp.MustCompile(`^([a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]*)\s*:?\s*`)
+	match := tablePattern.FindStringSubmatch(input)
+	if match == nil {
+		return nil, fmt.Errorf("invalid header syntax: expected db.table")
+	}
+
+	// Parse db.table
+	dbTableStr := match[1]
+	database, table, err := parseDbTable(dbTableStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid table reference: %w", err)
+	}
+
+	rest := strings.TrimSpace(input[len(match[0]):])
+
+	// Find first keyword (WRITE/UPDATE/INSERT)
+	keywordPattern := regexp.MustCompile(`(?i)\b` + keyword + `\b`)
+	keywordLoc := keywordPattern.FindStringIndex(rest)
+	if keywordLoc == nil {
+		return nil, fmt.Errorf("no %s operations found", keyword)
+	}
+
+	// Split remaining by keyword to get individual operations
+	opsStr := rest[keywordLoc[0]:]
+	opChunks := splitWriteOperationsWithKeyword(opsStr, keyword)
+
+	var operations []BatchWriteOperation
+	for i, chunk := range opChunks {
+		chunk = strings.TrimSpace(chunk)
+		if chunk == "" {
+			continue
+		}
+
+		// Remove leading keyword if present
+		lower := strings.ToLower(chunk)
+		lowerKeyword := strings.ToLower(keyword)
+		if strings.HasPrefix(lower, lowerKeyword) {
+			chunk = strings.TrimSpace(chunk[len(keyword):])
+		}
+
+		// Parse write columns and FILTER
+		req, err := parseWriteColsFilterOp(chunk)
+		if err != nil {
+			return nil, fmt.Errorf("operation %d: %w", i+1, err)
+		}
+
+		op := BatchWriteOperation{
+			Method:      "POST",
+			RelativeURL: fmt.Sprintf("%s/%s/%s", database, table, writeOp),
+			Body:        *req,
+		}
+		operations = append(operations, op)
+	}
+
+	if len(operations) == 0 {
+		return nil, fmt.Errorf("no operations defined in batch %s", strings.ToLower(keyword))
+	}
+
+	return &BatchWriteRequest{Operations: operations}, nil
+}
+
+// splitWriteOperations splits "WRITE col=val FILTER a=1, WRITE col=val2 FILTER a=2" into chunks
+func splitWriteOperations(s string) []string {
+	return splitWriteOperationsWithKeyword(s, "WRITE")
+}
+
+// splitWriteOperationsWithKeyword splits operations by the given keyword (WRITE/UPDATE/INSERT)
+func splitWriteOperationsWithKeyword(s string, keyword string) []string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+
+	// Split by keyword (each keyword starts a new operation)
+	pattern := regexp.MustCompile(`(?i)[,;]\s*` + keyword + `\b`)
+	parts := pattern.Split(s, -1)
+
+	var result []string
+	for i, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		// For parts after the first one, we removed the keyword when splitting, so add it back
+		if i > 0 {
+			p = keyword + " " + p
+		}
+		result = append(result, p)
+	}
+	return result
+}
+
+// parseWriteColsFilterOp parses "col1=val1, col2=val2 FILTER a=1, b=2 [OP opid]"
+func parseWriteColsFilterOp(s string) (*PkWriteRequest, error) {
+	s = strings.TrimSpace(s)
+
+	// Check for OP at the end
+	var opID string
+	opParts := splitByKeyword(s, "OP")
+	if len(opParts) == 2 {
+		s = strings.TrimSpace(opParts[0])
+		opID = strings.TrimSpace(opParts[1])
+	}
+
+	// Split by FILTER
+	parts := splitByKeyword(s, "FILTER")
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("FILTER clause is required")
+	}
+
+	writeColsStr := strings.TrimSpace(parts[0])
+	filterStr := strings.TrimSpace(parts[1])
+
+	// Parse write columns (col=val format)
+	writeColumns, err := parseWriteColumns(writeColsStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid write columns: %w", err)
+	}
+
+	// Parse filters
+	filters, err := parseFilters(filterStr)
+	if err != nil {
+		return nil, err
+	}
+
+	return &PkWriteRequest{
+		Filters:      filters,
+		WriteColumns: writeColumns,
+		OperationID:  opID,
+	}, nil
+}
+
+// parseBatchWriteOp parses a single WRITE operation for batch
+// Format: WRITE db.table col1=val1, col2=val2 FILTER conditions [OP id]
+func parseBatchWriteOp(line string) (database, table string, req *PkWriteRequest, err error) {
+	return parseBatchWriteOpWithKeyword(line, "WRITE")
+}
+
+// parseBatchWriteOpWithKeyword parses a single WRITE/UPDATE/INSERT operation for batch
+// Format: KEYWORD db.table col1=val1, col2=val2 FILTER conditions [OP id]
+func parseBatchWriteOpWithKeyword(line string, keyword string) (database, table string, req *PkWriteRequest, err error) {
+	line = strings.TrimSpace(line)
+
+	// Remove keyword prefix (case-insensitive)
+	lower := strings.ToLower(line)
+	lowerKeyword := strings.ToLower(keyword)
+	if !strings.HasPrefix(lower, lowerKeyword+" ") {
+		return "", "", nil, fmt.Errorf("batch operation must start with %s", keyword)
+	}
+	line = strings.TrimSpace(line[len(keyword):])
+
+	// Split by OP keyword first (optional, at the end)
+	var opID string
+	opParts := splitByKeyword(line, "OP")
+	if len(opParts) == 2 {
+		line = strings.TrimSpace(opParts[0])
+		opID = strings.TrimSpace(opParts[1])
+	}
+
+	// Split by FILTER keyword
+	parts := splitByKeyword(line, "FILTER")
+	if len(parts) != 2 {
+		return "", "", nil, fmt.Errorf("FILTER clause is required")
+	}
+
+	beforeFilter := strings.TrimSpace(parts[0])
+	filterStr := strings.TrimSpace(parts[1])
+
+	// Parse the part before FILTER: "db.table col1=val1, col2=val2"
+	// First token is db.table, rest is write columns
+	spaceIdx := strings.Index(beforeFilter, " ")
+	var dbTable, writeColsStr string
+	if spaceIdx == -1 {
+		dbTable = beforeFilter
+		writeColsStr = ""
+	} else {
+		dbTable = beforeFilter[:spaceIdx]
+		writeColsStr = strings.TrimSpace(beforeFilter[spaceIdx+1:])
+	}
+
+	database, table, err = parseDbTable(dbTable)
+	if err != nil {
+		return "", "", nil, err
+	}
+
+	// Parse write columns (col=val format)
+	writeColumns, err := parseWriteColumns(writeColsStr)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("invalid write columns: %w", err)
+	}
+
+	// Parse filters
+	filters, err := parseFilters(filterStr)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("invalid filter: %w", err)
+	}
+
+	req = &PkWriteRequest{
+		Filters:      filters,
+		WriteColumns: writeColumns,
+		OperationID:  opID,
+	}
+
+	return database, table, req, nil
+}
+
+// parseWriteColumns parses "col1=val1, col2=val2" format into WriteColumn slice
+func parseWriteColumns(s string) ([]WriteColumn, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, nil
+	}
+
+	var columns []WriteColumn
+	// Split by comma, respecting quotes
+	parts := splitFilterParts(s)
+
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+
+		// Split by = sign
+		eqIdx := strings.Index(part, "=")
+		if eqIdx == -1 {
+			return nil, fmt.Errorf("invalid write column format '%s', expected col=value", part)
+		}
+
+		column := strings.TrimSpace(part[:eqIdx])
+		valueStr := strings.TrimSpace(part[eqIdx+1:])
+
+		if column == "" {
+			return nil, fmt.Errorf("column name cannot be empty")
+		}
+
+		value := parseValue(valueStr)
+		columns = append(columns, WriteColumn{
+			Column: column,
+			Value:  value,
+		})
+	}
+
+	return columns, nil
 }
