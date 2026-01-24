@@ -1,0 +1,263 @@
+TPC-H Q12 Analysis with Pushdown Join Aggregation
+=================================================
+
+Based on TPC-H specification and query reference.
+
+SQL Query:
+----------
+SELECT l_shipmode,
+       SUM(CASE WHEN o_orderpriority IN ('1-URGENT','2-HIGH') THEN 1 ELSE 0 END) AS high_line_count,
+       SUM(CASE WHEN o_orderpriority NOT IN ('1-URGENT','2-HIGH') THEN 1 ELSE 0 END) AS low_line_count
+FROM orders, lineitem
+WHERE o_orderkey = l_orderkey
+  AND l_shipmode IN ('MAIL', 'SHIP')
+  AND l_commitdate < l_receiptdate
+  AND l_shipdate < l_commitdate
+  AND l_receiptdate >= DATE '1994-01-01'
+  AND l_receiptdate < DATE '1995-01-01'
+GROUP BY l_shipmode
+ORDER BY l_shipmode
+
+
+Join Tree Options
+-----------------
+
+Option A: LINEITEM (root scan) -> ORDERS (lookup, leaf)
+- Filters on LINEITEM reduce rows early
+- ORDERS lookup by primary key (o_orderkey)
+- Aggregation at ORDERS (leaf)
+
+Option B: ORDERS (root scan) -> LINEITEM (lookup, leaf)
+- Scans all orders first
+- LINEITEM lookup/scan with filters
+- Aggregation at LINEITEM (leaf)
+
+Option A is more efficient - LINEITEM filters are highly selective
+(shipmode + date range), reducing the number of ORDERS lookups.
+
+
+Execution with Our Architecture (Option A)
+==========================================
+
+Schema Reference
+----------------
+LINEITEM:
+  l_orderkey      (col 0) - FK to orders, part of PK
+  l_shipmode      (col 14)
+  l_shipdate      (col 10)
+  l_commitdate    (col 11)
+  l_receiptdate   (col 12)
+
+ORDERS:
+  o_orderkey      (col 0) - PK
+  o_orderpriority (col 5)
+
+
+Phase 1: Setup
+--------------
+DBSPJ sends JOIN_AGG_SETUP_REQ to each data node with ORDERS fragments:
+
+JOIN_AGG_SETUP_REQ:
+  transid[2]          = <transaction ID>
+  senderData          = <SPJ request ID>
+  requestId           = <unique aggregation ID>
+  tableId             = ORDERS (leaf table)
+  resultRef           = <API block reference>
+  resultData          = <API operation reference>
+  routeRef            = <TC block reference>
+
+  Long Section 0: Aggregation Program
+    - GROUP BY: linked column l_shipmode (from parent)
+    - Aggregate 1: SUM(CASE WHEN o_orderpriority IN ('1-URGENT','2-HIGH') THEN 1 ELSE 0)
+    - Aggregate 2: SUM(CASE WHEN o_orderpriority NOT IN ('1-URGENT','2-HIGH') THEN 1 ELSE 0)
+    - Local column to read: o_orderpriority (col 5)
+
+DBLQH creates:
+
+  JoinAggregationState {
+      m_transid = {...}
+      m_requestId = ...
+      m_agg_program = <copied from signal>
+      m_agg_interpreter = new AggInterpreter(m_agg_program)
+      m_state = SETUP_COMPLETE
+  }
+  // Inserted into s_join_agg_state_hash
+
+
+Phase 2: Root Scan (LINEITEM)
+-----------------------------
+TreeNode 0: LINEITEM scan (intermediate)
+
+DABits:
+  treeBits  = NI_AGGREGATE | NI_LINKED_ATTR | NI_ATTR_INTERPRET
+  paramBits = PI_ATTR_INTERPRET
+
+AttrInfo:
+  [0-4]: Header
+  [5-n]: Filter interpreter program:
+         - l_shipmode IN ('MAIL', 'SHIP')
+         - l_commitdate < l_receiptdate
+         - l_shipdate < l_commitdate
+         - l_receiptdate >= '1994-01-01'
+         - l_receiptdate < '1995-01-01'
+  [n+1-m]: Linked attributes:
+         - l_orderkey (col 0)    -- join key for ORDERS lookup
+         - l_shipmode (col 14)   -- GROUP BY column for aggregation
+         - CORR_FACTOR32
+  ** NO FLUSH_AI ** (intermediate node)
+
+Execution:
+- DBLQH scans LINEITEM fragments
+- Filter interpreter rejects non-matching rows
+- Matching rows: send TRANSID_AI to DBSPJ with linked attrs (l_orderkey, l_shipmode)
+- DBSPJ triggers ORDERS lookups for each matching row
+
+
+Phase 3: Child Lookups (ORDERS) - Parallel
+------------------------------------------
+For each LINEITEM row that passes filters, DBSPJ sends LQHKEYREQ to ORDERS:
+
+LQHKEYREQ:
+  requestInfo = RI_JOIN_AGGREGATION | ...
+  requestId = <matches setup>
+  tableId = ORDERS
+  key = l_orderkey (from parent LINEITEM row)
+
+AttrInfo:
+  [0-4]: Header
+  [5]:   EXIT_OK (no filter on ORDERS)
+  [6-m]: Linked columns from parent:
+         - l_shipmode value (e.g., "MAIL")
+         - CORR_FACTOR32
+  ** NO aggregation program (already in setup) **
+  ** NO FLUSH_AI **
+
+Execution on each LDM thread:
+
+  1. Find JoinAggregationState from s_join_agg_state_hash
+
+  2. Execute ORDERS lookup (TUPKEYREQ)
+     - Read o_orderpriority from local row
+
+  3. Lock m_interpreter_mutex
+
+  4. ProcessRecWithLinkedAttrs():
+     - Linked buffer contains: l_shipmode = "MAIL"
+     - Local read: o_orderpriority = "2-HIGH"
+
+     - GROUP BY key: l_shipmode ("MAIL")
+     - Find/create group in hash map
+
+     - Evaluate CASE expressions:
+       - o_orderpriority = "2-HIGH" -> IN ('1-URGENT','2-HIGH') = TRUE
+       - high_line_count += 1
+       - low_line_count += 0
+
+  5. Unlock m_interpreter_mutex
+
+  6. Atomic: m_completed_ops++
+
+  7. Send LQHKEYCONF (no row data - aggregated internally)
+
+Aggregation State After Processing Multiple Rows:
+
+  m_agg_interpreter->gb_map_ = {
+      {"MAIL", {high_line_count: 12847, low_line_count: 19432}},
+      {"SHIP", {high_line_count: 11523, low_line_count: 18106}}
+  }
+
+
+Phase 4: Completion
+-------------------
+After all LQHKEYREQ operations complete, DBSPJ sends JOIN_AGG_COMPLETE_REQ:
+
+JOIN_AGG_COMPLETE_REQ:
+  transid[2] = ...
+  requestId = ...
+  completedOps = 61908  (total LINEITEM rows that passed filters)
+
+Execution (routed to one thread by DblqhProxy):
+
+  1. Find state, verify m_completed_ops == 61908
+
+  2. Lock m_interpreter_mutex
+
+  3. FinalizeResults():
+     - Iterate gb_map_
+     - Serialize results
+
+  4. Send TRANSID_AI to DBSPJ:
+     +------------+------------------+-----------------+
+     | l_shipmode | high_line_count  | low_line_count  |
+     +------------+------------------+-----------------+
+     | MAIL       | 12847            | 19432           |
+     | SHIP       | 11523            | 18106           |
+     +------------+------------------+-----------------+
+
+  5. Send JOIN_AGG_COMPLETE_CONF
+
+  6. m_state = COMPLETED
+
+
+Phase 5: Multi-Node Aggregation
+-------------------------------
+If ORDERS table spans 4 data nodes, each node sends its partial results:
+
+  Node 1: {MAIL: (3211, 4858), SHIP: (2880, 4526)}
+  Node 2: {MAIL: (3215, 4862), SHIP: (2881, 4527)}
+  Node 3: {MAIL: (3210, 4856), SHIP: (2882, 4527)}
+  Node 4: {MAIL: (3211, 4856), SHIP: (2880, 4526)}
+
+DBSPJ merges per-node results:
+
+  Final: {MAIL: (12847, 19432), SHIP: (11523, 18106)}
+
+Sends to API, which applies ORDER BY l_shipmode.
+
+
+Column Flow Diagram
+-------------------
+
+LINEITEM (scan)                          ORDERS (lookup + aggregate)
+===============                          ===========================
+
+Filters applied:
+  l_shipmode IN ('MAIL','SHIP')
+  l_commitdate < l_receiptdate
+  l_shipdate < l_commitdate
+  l_receiptdate in [1994-01-01, 1995-01-01)
+        |
+        v
+Linked attrs passed:
+  l_orderkey -----------------------> Key for lookup
+  l_shipmode -----------------------> GROUP BY (in aggregation)
+        |
+        v                               Local read:
+                                          o_orderpriority
+                                                |
+                                                v
+                                        Aggregation:
+                                          GROUP BY l_shipmode (linked)
+                                          SUM(CASE o_orderpriority...)
+                                                |
+                                                v
+                                        Results to DBSPJ -> API
+
+
+Key Observations
+----------------
+
+1. Efficient Filter Pushdown: All LINEITEM filters execute at scan time,
+   reducing ORDERS lookups significantly
+
+2. Minimal Data Transfer: Only l_orderkey + l_shipmode sent per matching
+   row (not full LINEITEM row)
+
+3. Parallel Aggregation: Multiple LDM threads process ORDERS lookups
+   concurrently, all updating shared AggInterpreter (mutex-protected)
+
+4. Low GROUP BY Cardinality: Only 7 possible l_shipmode values, so hash
+   map is tiny - mutex contention minimal
+
+5. Single Result Send: Final aggregated result is just 2 rows (MAIL, SHIP)
+   regardless of millions of input rows
