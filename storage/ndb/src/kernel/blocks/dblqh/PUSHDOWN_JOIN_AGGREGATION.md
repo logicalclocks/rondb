@@ -121,18 +121,17 @@ struct JoinAggregationState {
     Uint32 m_total_ops_expected;            // Total operations in batch (0 = unknown)
 
     //------------------------------------------------------------------
-    // Result Tracking (protected by m_result_mutex)
+    // Result Tracking (protected by m_interpreter_mutex)
     //------------------------------------------------------------------
-    NdbMutex* m_result_mutex;               // Protects result fields
     Uint32 m_agg_curr_batch_size_rows;      // Aggregated result rows (groups)
     Uint32 m_agg_curr_batch_size_bytes;     // Aggregated result bytes
     Uint32 m_rows_sent;                     // Rows already sent to API
 
     //------------------------------------------------------------------
-    // FLUSH_AI Routing (immutable after creation)
+    // Result Routing (immutable after creation)
     //------------------------------------------------------------------
     Uint32 m_resultRef;                 // API reference
-    Uint32 m_resultData;                // API operation data
+    Uint32 m_resultData;                // API operation data reference (pointer to API object)
     Uint32 m_routeRef;                  // Route reference (TC block)
 
     //------------------------------------------------------------------
@@ -167,7 +166,7 @@ struct JoinAggregationState {
 
 ### Node-Level State Management
 
-The shared state is managed at the node level, accessible by all LDM threads:
+The shared state is managed at the node level (not per DBLQH instance), accessible by all LDM threads:
 
 ```cpp
 class Dblqh : public SimulatedBlock {
@@ -175,36 +174,50 @@ class Dblqh : public SimulatedBlock {
 
     //------------------------------------------------------------------
     // Join Aggregation State Management (node-level, thread-safe)
+    // These are STATIC - one per data node, shared across all DBLQH instances
     //------------------------------------------------------------------
 
-    // Hash table for state lookup - protected by m_join_agg_hash_mutex
+    // Hash table for state lookup - protected by s_join_agg_hash_mutex
     static constexpr Uint32 JOIN_AGG_STATE_HASH_SIZE = 256;
-    NdbMutex* m_join_agg_hash_mutex;
-    Uint32 m_join_agg_state_hash[JOIN_AGG_STATE_HASH_SIZE];
+    static NdbMutex* s_join_agg_hash_mutex;
+    static Uint32 s_join_agg_state_hash[JOIN_AGG_STATE_HASH_SIZE];
 
-    // Pool for JoinAggregationState records
-    ArrayPool<JoinAggregationState> c_joinAggStatePool;
+    // Pool for JoinAggregationState records (uses QUERY_MEMORY via ndbd_malloc)
+    static ArrayPool<JoinAggregationState> s_joinAggStatePool;
 
-    // State management functions
-    JoinAggregationState* createJoinAggState(
+    // State management functions (operate on static data)
+    static JoinAggregationState* createJoinAggState(
         const Uint32 transid[2],
         Uint32 senderData,
         Uint32 requestId,
         Signal* signal);
 
-    JoinAggregationState* findJoinAggState(
+    static JoinAggregationState* findJoinAggState(
         const Uint32 transid[2],
         Uint32 senderData,
         Uint32 requestId);
 
-    void releaseJoinAggState(JoinAggregationState* state);
+    static void releaseJoinAggState(JoinAggregationState* state);
 
     // Hash function
-    Uint32 hashJoinAggState(const Uint32 transid[2], Uint32 senderData, Uint32 requestId);
+    static Uint32 hashJoinAggState(const Uint32 transid[2], Uint32 senderData, Uint32 requestId);
+
+    // Initialization (called once at node startup)
+    static void initJoinAggStatePool();
 };
 ```
 
 ### Signal Flow
+
+#### Signal Routing via DblqhProxy
+
+The setup, completion, and release signals only need to be executed by one thread per node. `DblqhProxy.cpp` can route these signals to a designated thread:
+
+- `JOIN_AGG_SETUP_REQ` - routed to one thread, creates shared state
+- `JOIN_AGG_COMPLETE_REQ` - routed to one thread, finalizes and sends results
+- `JOIN_AGG_RELEASE_REQ` - routed to one thread, releases state
+
+The operation signals (`LQHKEYREQ`, `SCAN_FRAGREQ`) continue to be routed normally based on fragment ownership.
 
 #### Phase 1: Setup (New Signal)
 
@@ -258,13 +271,14 @@ struct JoinAggSetupRef {
 **execJOIN_AGG_SETUP_REQ Flow:**
 
 ```
-JOIN_AGG_SETUP_REQ arrives (from DBSPJ)
+JOIN_AGG_SETUP_REQ arrives (from DBSPJ, routed by DblqhProxy)
     |
     v
-Acquire m_join_agg_hash_mutex
+Acquire s_join_agg_hash_mutex (static, node-level)
     |
     v
-Allocate JoinAggregationState from pool
+Allocate JoinAggregationState from s_joinAggStatePool
+    (uses ndbd_malloc with QUERY_MEMORY)
     |
     v
 Copy aggregation program from signal section
@@ -273,19 +287,19 @@ Copy aggregation program from signal section
 Create and initialize AggInterpreter
     |
     v
-Initialize mutexes (m_interpreter_mutex, m_result_mutex)
+Initialize m_interpreter_mutex
     |
     v
-Store FLUSH_AI routing info
+Store result routing info (resultRef, resultData, routeRef)
     |
     v
 Set m_state = SETUP_COMPLETE
     |
     v
-Insert into hash table
+Insert into s_join_agg_state_hash
     |
     v
-Release m_join_agg_hash_mutex
+Release s_join_agg_hash_mutex
     |
     v
 Send JOIN_AGG_SETUP_CONF
@@ -430,7 +444,7 @@ struct JoinAggCompleteConf {
 **execJOIN_AGG_COMPLETE_REQ Flow:**
 
 ```
-JOIN_AGG_COMPLETE_REQ arrives (from DBSPJ)
+JOIN_AGG_COMPLETE_REQ arrives (from DBSPJ, routed by DblqhProxy)
     |
     v
 findJoinAggState(transid, senderData, requestId)
@@ -458,8 +472,9 @@ Release state->m_interpreter_mutex
     |
     v
 Send TRANSID_AI with aggregated results
-    - Use stored m_resultRef, m_resultData, m_routeRef from FLUSH_AI
+    - Use stored m_resultRef, m_resultData, m_routeRef
     - May require multiple TRANSID_AI for large results
+    - NO FLUSH_AI needed - results sent directly here
     |
     v
 Send JOIN_AGG_COMPLETE_CONF
@@ -470,6 +485,8 @@ Set state->m_state = COMPLETED
     v
 Schedule state cleanup (or wait for explicit release signal)
 ```
+
+**Note:** Results may also be sent during the accumulation phase if the aggregation buffer fills up. In this case, partial results are sent via TRANSID_AI and the buffer is cleared to continue accumulating.
 
 #### Phase 4: Cleanup (Optional Signal)
 
@@ -494,9 +511,8 @@ struct JoinAggReleaseReq {
 
 To prevent deadlocks, acquire mutexes in this order:
 
-1. `m_join_agg_hash_mutex` (node-level, protects hash table)
+1. `s_join_agg_hash_mutex` (static, node-level, protects hash table)
 2. `state->m_interpreter_mutex` (per-state, protects AggInterpreter)
-3. `state->m_result_mutex` (per-state, protects result counters)
 
 #### Atomic Operations
 
@@ -543,58 +559,67 @@ void processRowForJoinAgg(JoinAggregationState* state,
 
 ### Attribute Information Handling
 
-#### Parent Row Data in AttrInfo
+#### Simplified AttrInfo for Join Aggregation
 
-For join aggregation, the AttrInfo section includes linked attribute data from parent tables:
+Since the aggregation program is sent in `JOIN_AGG_SETUP_REQ` (not per-operation), and results are sent via `JOIN_AGG_COMPLETE_REQ` (not FLUSH_AI), the AttrInfo for leaf operations is simplified:
 
 ```
-AttrInfo for leaf operation (lookup or scan):
+AttrInfo for leaf operation (lookup or scan) with join aggregation:
 +------------------+----------------------------------------+
 | 5-word header    | Standard header                        |
 +------------------+----------------------------------------+
-| Interpreted prog | Filter program (if any)                |
+| Filter program   | Optional filter for leaf table         |
+|                  | - Executed by filter interpreter       |
+|                  | - Default: EXIT_OK if no filter        |
 +------------------+----------------------------------------+
-| Parent data hdr  | AttributeHeader for each parent column |
-| Parent data      | Actual values from parent rows:        |
+| Linked columns   | Columns from parent tables:            |
 |                  | - GROUP BY column values               |
 |                  | - Aggregate source column values       |
+|                  | - Used by both filter and aggregation  |
 |                  | - CORR_FACTOR32                        |
 +------------------+----------------------------------------+
-| User projection  | Result columns (aggregate outputs)     |
-+------------------+----------------------------------------+
-| FLUSH_AI marker  | Routing info for results               |
-+------------------+----------------------------------------+
-| Final reads      | Local table columns for aggregation    |
-+------------------+----------------------------------------+
 ```
+
+**Key simplifications:**
+- **No aggregation program** - already sent in JOIN_AGG_SETUP_REQ
+- **No FLUSH_AI marker** - results sent on buffer full or JOIN_AGG_COMPLETE_REQ
+- **No user projection** - aggregation program defines output columns
+- **No final reads for aggregation** - local columns to read are defined in aggregation program
+
+The linked columns serve dual purpose:
+1. Filter interpreter can reference parent columns for predicates
+2. Aggregation interpreter reads them for GROUP BY and aggregate functions
 
 #### Column ID Mapping
 
-The aggregation program uses a column ID scheme to distinguish local vs parent columns:
+The aggregation program uses a simple scheme to distinguish local columns from linked (parent) columns. There's no need to distinguish which ancestor level a linked column came from - they all arrive in the linked attribute buffer in order.
 
 ```cpp
 // Column ID encoding:
-// Bits 15-14: Source indicator
-//   00 = Local table column
-//   01 = Parent table column (level 1 - immediate parent)
-//   10 = Parent table column (level 2 - grandparent)
-//   11 = Reserved
-// Bits 13-0: Column number within source
+// Bit 15: Source indicator
+//   0 = Local table column (read via DBTUP)
+//   1 = Linked attribute (read from AttrInfo buffer)
+// Bits 14-0: Column/offset identifier
 
-static constexpr Uint32 COL_SOURCE_MASK = 0xC000;
+static constexpr Uint32 COL_SOURCE_MASK = 0x8000;
 static constexpr Uint32 COL_SOURCE_LOCAL = 0x0000;
-static constexpr Uint32 COL_SOURCE_PARENT1 = 0x4000;
-static constexpr Uint32 COL_SOURCE_PARENT2 = 0x8000;
-static constexpr Uint32 COL_NUMBER_MASK = 0x3FFF;
+static constexpr Uint32 COL_SOURCE_LINKED = 0x8000;
+static constexpr Uint32 COL_NUMBER_MASK = 0x7FFF;
 
 // Example: GROUP BY c.category, SUM(l.price)
-// c.category = parent column from CUSTOMER (0x4006 if col 6)
-// l.price = local column from LINEITEM (0x0005 if col 5)
+// c.category = linked column (0x8000 | offset_in_buffer)
+// l.price = local column (0x0005 if col 5)
 ```
+
+**Why no parent level distinction?**
+- Linked attributes from all ancestor tables are concatenated in the AttrInfo
+- The aggregation program references them by offset in the linked buffer
+- The specific ancestor table doesn't matter for aggregation execution
+- MySQL supports joins of up to 64 tables, so tracking 63 parent levels would be complex and unnecessary
 
 ### Integration with DBTUP
 
-DBTUP's `AggInterpreter` needs modifications to handle linked attribute data:
+DBTUP's `AggInterpreter` needs modifications to handle linked attribute data. The aggregation program (sent at setup time) specifies which local columns to read.
 
 ```cpp
 class AggInterpreter {
@@ -603,14 +628,12 @@ public:
     int ProcessRec(Dbtup* block_tup, KeyReqStruct* req_struct);
 
     // New interface for join aggregation
-    // Called with both local row data and parent row data
+    // Called with both local row data and linked attributes from parents
     int ProcessRecWithLinkedAttrs(
         Dbtup* block_tup,
         KeyReqStruct* req_struct,
-        const Uint32* linked_attr_data,     // Parent row columns
-        Uint32 linked_attr_len,
-        const Uint32* linked_attr_headers,  // AttributeHeaders for parent cols
-        Uint32 num_linked_attrs);
+        const Uint32* linked_attr_data,     // Parent row columns from AttrInfo
+        Uint32 linked_attr_len);
 
     // Finalize and prepare results for sending
     int FinalizeResults();
@@ -619,12 +642,11 @@ public:
     int GetResultData(Uint32* buffer, Uint32 buffer_size, Uint32* bytes_written);
 
 private:
-    // New: Buffer for linked attribute data (parent columns)
+    // Buffer for linked attribute data (parent columns)
     Uint32 m_linked_attr_buf[MAX_LINKED_ATTR_SIZE];
-    Uint32 m_linked_attr_headers[MAX_LINKED_ATTRS];
-    Uint32 m_num_linked_attrs;
+    Uint32 m_linked_attr_len;
 
-    // Load column value - enhanced to check linked attrs first
+    // Load column value - checks source bit to determine local vs linked
     int LoadColumnValue(Uint32 col_id, Register* reg);
 };
 
@@ -634,11 +656,11 @@ int AggInterpreter::LoadColumnValue(Uint32 col_id, Register* reg) {
     Uint32 col_num = col_id & COL_NUMBER_MASK;
 
     if (source == COL_SOURCE_LOCAL) {
-        // Read from local row via DBTUP
+        // Read from local row via DBTUP (column specified in aggregation program)
         return block_tup_->readAttribute(col_num, reg);
     } else {
-        // Read from linked attribute buffer
-        return readLinkedAttribute(source, col_num, reg);
+        // Read from linked attribute buffer at offset
+        return readLinkedAttribute(col_num, reg);
     }
 }
 ```
@@ -709,14 +731,18 @@ enum JoinAggErrorCode {
 
 ### Memory Management
 
-```cpp
-// Configuration parameters (in config.ini)
-[ndbd]
-JoinAggMaxStates = 64           // Max concurrent aggregation states per node
-JoinAggInterpreterPoolSize = 32 // Pre-allocated interpreter instances
-JoinAggResultBufferSize = 1MB   // Max result buffer per state
+Memory is allocated using NDB's internal allocator from `ndbd_malloc_impl.hpp` with `QUERY_MEMORY` resource. No configuration parameters needed.
 
-// Resource tracking
+```cpp
+#include "vm/ndbd_malloc_impl.hpp"
+
+// Allocation for JoinAggregationState and AggInterpreter
+void* ptr = ndbd_malloc(size, RG_QUERY_MEMORY);
+
+// Deallocation
+ndbd_free(ptr, size);
+
+// Resource tracking (for monitoring)
 struct JoinAggResources {
     Uint32 c_active_states;
     Uint32 c_peak_states;
@@ -725,29 +751,35 @@ struct JoinAggResources {
 };
 ```
 
+The memory limits are governed by the overall QUERY_MEMORY pool size, which is already configured for query execution.
+
 ### Complete Signal Flow Diagram
 
 ```
-DBSPJ                              DBLQH (any thread)                    DBTUP
+DBSPJ                              DBLQH                                 DBTUP
+  |                                      |                                  |
+  |====== Setup Phase (routed by DblqhProxy to one thread) ==============  |
   |                                      |                                  |
   | JOIN_AGG_SETUP_REQ                   |                                  |
   |------------------------------------->|                                  |
   |                                      | Create JoinAggregationState      |
+  |                                      | Parse aggregation program        |
   |                                      | Initialize AggInterpreter        |
-  |                                      | Insert in hash table             |
+  |                                      | Insert in static hash table      |
   | JOIN_AGG_SETUP_CONF                  |                                  |
   |<-------------------------------------|                                  |
   |                                      |                                  |
-  |====== Operations Phase (parallel) ================================     |
+  |====== Operations Phase (parallel, any LDM thread) ===================  |
   |                                      |                                  |
   | LQHKEYREQ (join agg, thread 1)       |                                  |
   |------------------------------------->|                                  |
-  |                                      | Find state, lock interpreter     |
+  |                                      | Find state in static hash        |
   |                                      | TUPKEYREQ                        |
   |                                      |--------------------------------->|
-  |                                      |                                  | Read row
+  |                                      |                                  | Read local row
   |                                      | TUPKEYCONF                       |
   |                                      |<---------------------------------|
+  |                                      | Lock interpreter mutex           |
   |                                      | ProcessRecWithLinkedAttrs()      |
   |                                      | Unlock, increment completed_ops  |
   | LQHKEYCONF                           |                                  |
@@ -757,16 +789,19 @@ DBSPJ                              DBLQH (any thread)                    DBTUP
   |------------------------------------->|                                  |
   |                                      | Find state, create ScanRecord    |
   |                                      | For each row:                    |
+  |                                      |   Read via DBTUP                 |
   |                                      |   Lock interpreter               |
   |                                      |   ProcessRecWithLinkedAttrs()    |
   |                                      |   Unlock                         |
+  |                                      |   (may send partial results if   |
+  |                                      |    buffer full)                  |
   |                                      | Increment completed_ops          |
   | SCAN_FRAGCONF                        |                                  |
   |<-------------------------------------|                                  |
   |                                      |                                  |
   | ... more operations (parallel) ...   |                                  |
   |                                      |                                  |
-  |====== Completion Phase ===============================================  |
+  |====== Completion Phase (routed by DblqhProxy to one thread) =========  |
   |                                      |                                  |
   | JOIN_AGG_COMPLETE_REQ                |                                  |
   |------------------------------------->|                                  |
@@ -782,19 +817,22 @@ DBSPJ                              DBLQH (any thread)                    DBTUP
   | JOIN_AGG_COMPLETE_CONF               |                                  |
   |<-------------------------------------|                                  |
   |                                      |                                  |
-  | Route results to API via FLUSH_AI    |                                  |
+  | DBSPJ routes results to API          |                                  |
   |                                      |                                  |
-  | JOIN_AGG_RELEASE_REQ (optional)      |                                  |
+  |====== Cleanup Phase (routed by DblqhProxy to one thread) ============  |
+  |                                      |                                  |
+  | JOIN_AGG_RELEASE_REQ                 |                                  |
   |------------------------------------->|                                  |
-  |                                      | Release state                    |
+  |                                      | Remove from hash, free memory    |
 ```
 
 ## File Changes Summary
 
 | File | Changes |
 |------|---------|
-| `Dblqh.hpp` | Add JoinAggregationState struct, pool, hash table, mutexes |
-| `DblqhMain.cpp` | Add execJOIN_AGG_SETUP_REQ, execJOIN_AGG_COMPLETE_REQ, modify execLQHKEYREQ, execSCAN_FRAGREQ |
+| `Dblqh.hpp` | Add JoinAggregationState struct, static pool/hash/mutex |
+| `DblqhMain.cpp` | Add execJOIN_AGG_SETUP_REQ, execJOIN_AGG_COMPLETE_REQ, execJOIN_AGG_RELEASE_REQ, modify execLQHKEYREQ, execSCAN_FRAGREQ |
+| `DblqhProxy.cpp` | Route JOIN_AGG_* signals to designated thread |
 | `LqhKeyReq.hpp` | Add RI_JOIN_AGGREGATION flag |
 | `ScanFrag.hpp` | Add RI_JOIN_AGGREGATION flag |
 | `signaldata/JoinAgg.hpp` (new) | Signal definitions for JOIN_AGG_* |
@@ -822,17 +860,17 @@ DBSPJ                              DBLQH (any thread)                    DBTUP
 ## Performance Considerations
 
 1. **Mutex Contention**: The interpreter mutex is held during row processing. For high-cardinality joins, this could be a bottleneck.
-   - **Mitigation**: Consider per-group locking for GROUP BY queries
-   - **Mitigation**: Batch row processing to reduce lock frequency
+   - **Mitigation**: Minimize critical section to just aggregation update
+   - **Mitigation**: Consider per-group locking for GROUP BY queries with many groups
 
-2. **Memory Usage**: Each state includes an AggInterpreter (~32KB base + hash map for groups)
-   - **Mitigation**: Pool of pre-allocated interpreters
-   - **Mitigation**: Configurable limits on group count
+2. **Memory Usage**: Each state includes an AggInterpreter (hash map for groups)
+   - Uses QUERY_MEMORY pool, shared with other query execution
+   - Memory released when JOIN_AGG_RELEASE_REQ processed
 
-3. **Hash Table Lookup**: Every operation looks up state in hash table
-   - **Mitigation**: Cache state pointer in TcConnectionrec/ScanRecord
-   - **Mitigation**: Read-optimized concurrent hash table
+3. **Hash Table Lookup**: State lookup required once per operation start
+   - State pointer cached in TcConnectionrec/ScanRecord after lookup
+   - Static hash table with simple mutex - fast for typical concurrency
 
-4. **Cross-Thread Communication**: Results must be collected and sent from one thread
-   - **Mitigation**: Designate "coordinator" thread for result sending
-   - **Mitigation**: Use signal-based result aggregation
+4. **Single-Thread Phases**: Setup/completion/release routed to one thread
+   - Serializes state creation and result sending
+   - Operations phase fully parallel across LDM threads

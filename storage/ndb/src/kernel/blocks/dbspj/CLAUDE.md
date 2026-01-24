@@ -911,10 +911,11 @@ See `storage/ndb/src/kernel/blocks/dblqh/PUSHDOWN_JOIN_AGGREGATION.md` for detai
 
 ### Key Design Decisions
 
-1. **Dedicated Setup Signal**: `JOIN_AGG_SETUP_REQ` sent to each data node before operations start
-2. **Node-Level Shared State**: `JoinAggregationState` created once per node, accessible by any LDM thread
-3. **Thread-Safe Access**: Mutex per interpreter, atomic counters for operation tracking
-4. **Support Both Operations**: LQHKEYREQ and SCAN_FRAGREQ can participate in join aggregation
+1. **Dedicated Setup Signal**: `JOIN_AGG_SETUP_REQ` sent to each data node, contains aggregation program
+2. **Static Node-Level State**: `JoinAggregationState` uses static hash table/mutex, one per data node
+3. **DblqhProxy Routing**: Setup/complete/release signals routed to one thread; operations parallel
+4. **Simplified AttrInfo**: Only filter program + linked columns (no aggregation program, no FLUSH_AI)
+5. **Memory**: Uses `ndbd_malloc` with `QUERY_MEMORY`, no configuration needed
 
 ### Signal Flow Summary
 
@@ -922,26 +923,29 @@ See `storage/ndb/src/kernel/blocks/dblqh/PUSHDOWN_JOIN_AGGREGATION.md` for detai
 DBSPJ                              DBLQH
   |                                  |
   | JOIN_AGG_SETUP_REQ               |  (1) Create shared state
+  | (contains aggregation program)   |      (routed by DblqhProxy)
   |--------------------------------->|
   | JOIN_AGG_SETUP_CONF              |
   |<---------------------------------|
   |                                  |
-  | LQHKEYREQ/SCAN_FRAGREQ           |  (2) Operations (parallel)
-  |--------------------------------->|      - Find state
-  |                                  |      - Lock interpreter
+  | LQHKEYREQ/SCAN_FRAGREQ           |  (2) Operations (parallel, any thread)
+  | (filter + linked columns only)   |      - Find state in static hash
+  |--------------------------------->|      - Lock interpreter
   |                                  |      - Aggregate row
   |                                  |      - Unlock
   | LQHKEYCONF/SCAN_FRAGCONF         |
   |<---------------------------------|
   |                                  |
-  | JOIN_AGG_COMPLETE_REQ            |  (3) Finalize
-  |--------------------------------->|      - Prepare results
+  | JOIN_AGG_COMPLETE_REQ            |  (3) Finalize & send results
+  |--------------------------------->|      (routed by DblqhProxy)
   |                                  |
-  | TRANSID_AI (aggregated results)  |  (4) Send results
+  | TRANSID_AI (aggregated results)  |
   |<---------------------------------|
-  |                                  |
   | JOIN_AGG_COMPLETE_CONF           |
   |<---------------------------------|
+  |                                  |
+  | JOIN_AGG_RELEASE_REQ             |  (4) Cleanup
+  |--------------------------------->|      (routed by DblqhProxy)
 ```
 
 ### JoinAggregationState Structure
@@ -953,7 +957,8 @@ struct JoinAggregationState {
     Uint32 m_senderData;
     Uint32 m_requestId;
 
-    // Aggregation
+    // Aggregation (program sent at setup, stored here)
+    Uint32* m_agg_program;
     AggInterpreter* m_agg_interpreter;
     NdbMutex* m_interpreter_mutex;
 
@@ -961,31 +966,36 @@ struct JoinAggregationState {
     std::atomic<Uint32> m_completed_ops;
     std::atomic<Uint32> m_failed_ops;
 
-    // Result routing (FLUSH_AI info)
-    Uint32 m_resultRef;
-    Uint32 m_resultData;
-    Uint32 m_routeRef;
+    // Result routing
+    Uint32 m_resultRef;                 // API reference
+    Uint32 m_resultData;                // API operation data reference
+    Uint32 m_routeRef;                  // TC block reference
 
     // State machine
-    std::atomic<State> m_state;  // SETUP_COMPLETE -> ACCUMULATING -> FINALIZING -> COMPLETED
+    std::atomic<State> m_state;
 };
+
+// Static node-level management
+static NdbMutex* s_join_agg_hash_mutex;
+static Uint32 s_join_agg_state_hash[256];
+static ArrayPool<JoinAggregationState> s_joinAggStatePool;
 ```
 
 ### AggInterpreter Extension
 
-For join aggregation, the interpreter must handle parent table columns:
+For join aggregation, the interpreter handles both local and linked (parent) columns:
 
 ```cpp
-// New method for join aggregation
 int ProcessRecWithLinkedAttrs(
     Dbtup* block_tup,
     KeyReqStruct* req_struct,
-    const Uint32* linked_attr_data,     // Parent row columns
+    const Uint32* linked_attr_data,
     Uint32 linked_attr_len);
 
-// Column ID encoding for parent columns:
-// Bits 15-14: 00=local, 01=parent1, 10=parent2
-// Bits 13-0:  Column number
+// Column ID encoding (simple local vs linked):
+// Bit 15:    0 = local column (read via DBTUP)
+//            1 = linked column (read from buffer)
+// Bits 14-0: Column number or buffer offset
 ```
 
 ### Cross-Node Aggregation
