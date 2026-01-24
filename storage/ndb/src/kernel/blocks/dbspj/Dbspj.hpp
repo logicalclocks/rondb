@@ -1045,6 +1045,13 @@ class Dbspj : public SimulatedBlock {
        */
       T_REDUCE_KEYS = 0x800000,
 
+      /**
+       * This node is the aggregation leaf - only this node sends
+       * results to the API when aggregation is active.
+       * The aggregation program is executed by DBLQH (black box to SPJ).
+       */
+      T_AGGREGATE_LEAF = 0x1000000,
+
       // End marker...
       T_END = 0
     };
@@ -1208,6 +1215,8 @@ class Dbspj : public SimulatedBlock {
       RT_NEED_COMPLETE = 0x20  // Does any node need m_complete hook
       ,
       RT_REPEAT_SCAN_RESULT = 0x40  // Repeat bushy scan result when required
+      ,
+      RT_AGGREGATE = 0x80  // Request contains aggregation (only leaf sends to API)
     };
 
     enum RequestState {

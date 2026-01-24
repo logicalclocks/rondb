@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2011, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -62,6 +62,7 @@
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_HASH 1
+//#define DEBUG_AGGREGATION 1
 #define DEBUG_TRANSID_AI 1
 #endif
 
@@ -75,6 +76,12 @@
 #define DEB_HASH(arglist) do { g_eventLogger->info arglist ; } while (0)
 #else
 #define DEB_HASH(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_AGGREGATION
+#define DEB_AGGREGATION(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_AGGREGATION(arglist) do { } while (0)
 #endif
 
 extern EventLogger* g_eventLogger;
@@ -9354,6 +9361,21 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
       treeNodePtr.p->m_bits |= TreeNode::T_FIRST_MATCH;
     }  // DABits::NI_ANTI_JOIN
 
+    if (treeBits & DABits::NI_AGGREGATE) {
+      jam();
+      DEB_AGGREGATION(("(%u) AGGREGATE: request contains aggregation",
+                       instance()));
+      requestPtr.p->m_bits |= Request::RT_AGGREGATE;
+
+      if (treeBits & DABits::NI_AGGREGATE_LEAF) {
+        jam();
+        DEB_AGGREGATION(("(%u) AGGREGATE_LEAF: this node sends aggregated "
+                         "results to API",
+                         instance()));
+        treeNodePtr.p->m_bits |= TreeNode::T_AGGREGATE_LEAF;
+      }
+    }  // DABits::NI_AGGREGATE
+
     if (treeBits & DABits::NI_HAS_PARENT) {
       jam();
       DEBUG("NI_HAS_PARENT");
@@ -9715,8 +9737,28 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
          * Also need to have this under API-version control, as
          * older API versions assumed that all SPJ results were
          * returned as 'long' signals.
+         *
+         * For aggregation queries (RT_AGGREGATE set on request):
+         * Only the aggregate leaf node (T_AGGREGATE_LEAF) sends results
+         * to the API. Intermediate nodes suppress FLUSH_AI, passing data
+         * only via linked attributes to child nodes. The aggregation
+         * program is executed by DBLQH at the leaf node.
          */
-        if (treeBits & DABits::NI_LINKED_ATTR || requestPtr.p->isScan()) {
+        const bool isAggregateRequest =
+            (requestPtr.p->m_bits & Request::RT_AGGREGATE) != 0;
+        const bool isAggregateLeaf =
+            (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) != 0;
+        const bool suppressFlushAI = isAggregateRequest && !isAggregateLeaf;
+
+        if (suppressFlushAI) {
+          DEB_AGGREGATION(("(%u) Suppressing FLUSH_AI for intermediate "
+                           "aggregate node",
+                           instance()));
+        }
+
+        if (!suppressFlushAI &&
+            (treeBits & DABits::NI_LINKED_ATTR || requestPtr.p->isScan() ||
+             !ndbd_spj_api_support_short_TRANSID_AI(API_version))) {
           /**
            * Insert a FLUSH_AI of 'USER_PROJECTION' result (to client)
            * before 'LINKED_ATTR' results to SPJ is produced.
