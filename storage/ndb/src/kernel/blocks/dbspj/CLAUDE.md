@@ -900,3 +900,100 @@ Correlation: 0x00000001
 - Format aggregate results (DBLQH's job)
 
 DBSPJ simply routes the aggregation program to the correct table and ensures proper result flow back to the API.
+
+---
+
+## DBLQH Architecture for Pushdown Join Aggregation
+
+For pushdown join queries, the leaf table operations (LQHKEYREQ lookups or SCAN_FRAGREQ scans) must aggregate results across multiple operations. This requires shared state in DBLQH.
+
+See `storage/ndb/src/kernel/blocks/dblqh/PUSHDOWN_JOIN_AGGREGATION.md` for detailed architecture.
+
+### Key Design Decisions
+
+1. **Dedicated Setup Signal**: `JOIN_AGG_SETUP_REQ` sent to each data node before operations start
+2. **Node-Level Shared State**: `JoinAggregationState` created once per node, accessible by any LDM thread
+3. **Thread-Safe Access**: Mutex per interpreter, atomic counters for operation tracking
+4. **Support Both Operations**: LQHKEYREQ and SCAN_FRAGREQ can participate in join aggregation
+
+### Signal Flow Summary
+
+```
+DBSPJ                              DBLQH
+  |                                  |
+  | JOIN_AGG_SETUP_REQ               |  (1) Create shared state
+  |--------------------------------->|
+  | JOIN_AGG_SETUP_CONF              |
+  |<---------------------------------|
+  |                                  |
+  | LQHKEYREQ/SCAN_FRAGREQ           |  (2) Operations (parallel)
+  |--------------------------------->|      - Find state
+  |                                  |      - Lock interpreter
+  |                                  |      - Aggregate row
+  |                                  |      - Unlock
+  | LQHKEYCONF/SCAN_FRAGCONF         |
+  |<---------------------------------|
+  |                                  |
+  | JOIN_AGG_COMPLETE_REQ            |  (3) Finalize
+  |--------------------------------->|      - Prepare results
+  |                                  |
+  | TRANSID_AI (aggregated results)  |  (4) Send results
+  |<---------------------------------|
+  |                                  |
+  | JOIN_AGG_COMPLETE_CONF           |
+  |<---------------------------------|
+```
+
+### JoinAggregationState Structure
+
+```cpp
+struct JoinAggregationState {
+    // Identification
+    Uint32 m_transid[2];
+    Uint32 m_senderData;
+    Uint32 m_requestId;
+
+    // Aggregation
+    AggInterpreter* m_agg_interpreter;
+    NdbMutex* m_interpreter_mutex;
+
+    // Operation tracking (atomic)
+    std::atomic<Uint32> m_completed_ops;
+    std::atomic<Uint32> m_failed_ops;
+
+    // Result routing (FLUSH_AI info)
+    Uint32 m_resultRef;
+    Uint32 m_resultData;
+    Uint32 m_routeRef;
+
+    // State machine
+    std::atomic<State> m_state;  // SETUP_COMPLETE -> ACCUMULATING -> FINALIZING -> COMPLETED
+};
+```
+
+### AggInterpreter Extension
+
+For join aggregation, the interpreter must handle parent table columns:
+
+```cpp
+// New method for join aggregation
+int ProcessRecWithLinkedAttrs(
+    Dbtup* block_tup,
+    KeyReqStruct* req_struct,
+    const Uint32* linked_attr_data,     // Parent row columns
+    Uint32 linked_attr_len);
+
+// Column ID encoding for parent columns:
+// Bits 15-14: 00=local, 01=parent1, 10=parent2
+// Bits 13-0:  Column number
+```
+
+### Cross-Node Aggregation
+
+Each data node maintains independent aggregation state. For queries where the leaf table spans multiple nodes:
+
+1. Each node aggregates its local fragments
+2. DBSPJ receives results from all nodes via TRANSID_AI
+3. DBSPJ merges per-node results (if needed) before sending to API
+
+This is consistent with existing scan aggregation behavior.

@@ -1,0 +1,838 @@
+# DBLQH Pushdown Join Aggregation Architecture
+
+## Overview
+
+This document describes the architectural changes needed in DBLQH to support aggregation for pushdown join queries. Currently, DBLQH supports aggregation for simple scans (single table). For pushdown joins, DBSPJ coordinates multiple operations (LQHKEYREQ lookups and/or SCAN_FRAGREQ scans) across tables, and the leaf table must aggregate results across all these operations.
+
+## Current Architecture
+
+### Scan-Based Aggregation (Already Implemented)
+
+For single-table scans with aggregation, DBLQH maintains state in `ScanRecord`:
+
+```cpp
+struct ScanRecord {
+    Uint8 m_aggregation;                    // Flag: aggregation enabled
+    Uint32 m_agg_curr_batch_size_rows;      // [0,1] indicates batch complete
+    Uint32 m_agg_curr_batch_size_bytes;     // Bytes of aggregation results
+    Uint32 m_agg_n_res_recs;                // Cached results count
+    AggInterpreter* m_agg_interpreter;      // Aggregation interpreter instance
+};
+```
+
+**Flow:**
+1. `execSCAN_FRAGREQ` creates ScanRecord with aggregation program
+2. DBTUP executes aggregation via `AggInterpreter::ProcessRec()` for each row
+3. Results accumulate in `m_agg_interpreter->gb_map_` (grouped) or `agg_results_` (ungrouped)
+4. When batch threshold reached, results sent via `TRANSID_AI`
+5. `SCAN_FRAGCONF` reports aggregated row count
+
+### Pushdown Join Flow (DBSPJ Perspective)
+
+For pushdown joins with aggregation (see `CLAUDE.md` in dbspj):
+
+```
+CUSTOMER (scan)     → No FLUSH_AI (intermediate)
+    |
+    +--linked attrs--> ORDERS (lookup/scan) → No FLUSH_AI (intermediate)
+                           |
+                           +--linked attrs--> LINEITEM (lookup/scan, leaf)
+                                                    |
+                                                    v
+                                           Execute aggregation
+                                                    |
+                                                    v
+                                              FLUSH_AI → API
+```
+
+**Key Points:**
+- DBSPJ sends multiple operations to leaf table:
+  - `LQHKEYREQ` for key lookups (when joining on indexed columns)
+  - `SCAN_FRAGREQ` for scans (range scans or full scans on leaf)
+- Each operation contains:
+  - Key/scan parameters for the operation
+  - Linked attributes from parent tables (GROUP BY columns, aggregate source columns)
+  - Aggregation program (passed through from API)
+- Aggregation must accumulate across ALL operations in the batch
+- Only the leaf table sends results to API
+
+## Problem Statement
+
+For pushdown join aggregation in DBLQH:
+
+1. **Multiple Operations**: Unlike single-table scans where one ScanRecord handles all rows, join operations arrive as separate `LQHKEYREQ` or `SCAN_FRAGREQ` signals, potentially handled by different LDM threads
+
+2. **Shared State Needed**: Aggregation state must persist across multiple operations that belong to the same SPJ request, and be accessible from any LDM thread
+
+3. **Multi-Node Distribution**: The leaf table's fragments are distributed across data nodes; each node needs its own aggregation state
+
+4. **Parent Data Access**: The aggregation must access columns from parent tables (received via linked attributes)
+
+5. **Batch Coordination**: Must know when all operations are complete to send aggregated results
+
+## Proposed Architecture
+
+### Design Principles
+
+1. **Dedicated Setup Signal**: A new signal (`JOIN_AGG_SETUP_REQ`) is sent to each data node before the batch starts, creating the shared aggregation state
+
+2. **Node-Level Shared State**: The `JoinAggregationState` is created once per data node (not per fragment or per thread) and is accessible by any LDM thread
+
+3. **Thread-Safe Access**: The state structure uses atomic operations or mutex protection for concurrent access
+
+4. **Support Both Operations**: Both LQHKEYREQ and SCAN_FRAGREQ can participate in join aggregation
+
+### New State Structure: JoinAggregationState
+
+Create a new structure to hold aggregation state shared across multiple operations:
+
+```cpp
+struct JoinAggregationState {
+    static constexpr Uint32 TYPE_ID = RT_DBLQH_JOIN_AGG_STATE;
+    Uint32 m_magic;
+
+    //------------------------------------------------------------------
+    // Identification (immutable after creation)
+    //------------------------------------------------------------------
+    Uint32 m_transid[2];           // Transaction ID
+    Uint32 m_senderData;           // SPJ request identifier
+    Uint32 m_requestId;            // Unique request ID for this aggregation
+    BlockReference m_senderRef;     // DBSPJ block reference
+    BlockReference m_apiRef;        // API block reference for results
+
+    //------------------------------------------------------------------
+    // Aggregation Program (immutable after creation)
+    //------------------------------------------------------------------
+    Uint32* m_agg_program;              // Copy of aggregation program
+    Uint32 m_agg_program_len;           // Program length in words
+
+    //------------------------------------------------------------------
+    // Aggregation State (thread-safe access required)
+    //------------------------------------------------------------------
+    AggInterpreter* m_agg_interpreter;  // Shared aggregation interpreter
+    NdbMutex* m_interpreter_mutex;      // Protects m_agg_interpreter access
+
+    //------------------------------------------------------------------
+    // Operation Tracking (atomic operations)
+    //------------------------------------------------------------------
+    std::atomic<Uint32> m_outstanding_ops;  // Operations still in progress
+    std::atomic<Uint32> m_completed_ops;    // Operations completed successfully
+    std::atomic<Uint32> m_failed_ops;       // Operations that failed
+    Uint32 m_total_ops_expected;            // Total operations in batch (0 = unknown)
+
+    //------------------------------------------------------------------
+    // Result Tracking (protected by m_result_mutex)
+    //------------------------------------------------------------------
+    NdbMutex* m_result_mutex;               // Protects result fields
+    Uint32 m_agg_curr_batch_size_rows;      // Aggregated result rows (groups)
+    Uint32 m_agg_curr_batch_size_bytes;     // Aggregated result bytes
+    Uint32 m_rows_sent;                     // Rows already sent to API
+
+    //------------------------------------------------------------------
+    // FLUSH_AI Routing (immutable after creation)
+    //------------------------------------------------------------------
+    Uint32 m_resultRef;                 // API reference
+    Uint32 m_resultData;                // API operation data
+    Uint32 m_routeRef;                  // Route reference (TC block)
+
+    //------------------------------------------------------------------
+    // State Machine (atomic)
+    //------------------------------------------------------------------
+    enum State {
+        IDLE = 0,
+        SETUP_COMPLETE = 1,    // Ready to receive operations
+        ACCUMULATING = 2,      // Receiving operations, accumulating results
+        FINALIZING = 3,        // All ops done, preparing results
+        SENDING_RESULTS = 4,   // Sending results to API
+        COMPLETED = 5,         // All results sent
+        ERROR = 6,
+        ABORTING = 7
+    };
+    std::atomic<State> m_state;
+    Uint32 m_error_code;                // Error code if m_state == ERROR
+
+    //------------------------------------------------------------------
+    // Hash Table Management
+    //------------------------------------------------------------------
+    Uint32 m_hash_next;                 // Next in hash chain
+    Uint32 m_hash_prev;                 // Previous in hash chain
+
+    //------------------------------------------------------------------
+    // Timeout Management
+    //------------------------------------------------------------------
+    Uint32 m_creation_time;             // For timeout detection
+    Uint32 m_last_activity_time;        // Last operation timestamp
+};
+```
+
+### Node-Level State Management
+
+The shared state is managed at the node level, accessible by all LDM threads:
+
+```cpp
+class Dblqh : public SimulatedBlock {
+    // ...existing members...
+
+    //------------------------------------------------------------------
+    // Join Aggregation State Management (node-level, thread-safe)
+    //------------------------------------------------------------------
+
+    // Hash table for state lookup - protected by m_join_agg_hash_mutex
+    static constexpr Uint32 JOIN_AGG_STATE_HASH_SIZE = 256;
+    NdbMutex* m_join_agg_hash_mutex;
+    Uint32 m_join_agg_state_hash[JOIN_AGG_STATE_HASH_SIZE];
+
+    // Pool for JoinAggregationState records
+    ArrayPool<JoinAggregationState> c_joinAggStatePool;
+
+    // State management functions
+    JoinAggregationState* createJoinAggState(
+        const Uint32 transid[2],
+        Uint32 senderData,
+        Uint32 requestId,
+        Signal* signal);
+
+    JoinAggregationState* findJoinAggState(
+        const Uint32 transid[2],
+        Uint32 senderData,
+        Uint32 requestId);
+
+    void releaseJoinAggState(JoinAggregationState* state);
+
+    // Hash function
+    Uint32 hashJoinAggState(const Uint32 transid[2], Uint32 senderData, Uint32 requestId);
+};
+```
+
+### Signal Flow
+
+#### Phase 1: Setup (New Signal)
+
+DBSPJ sends `JOIN_AGG_SETUP_REQ` to each data node that has fragments of the leaf table:
+
+```cpp
+// Signal: JOIN_AGG_SETUP_REQ
+// Sent from: DBSPJ
+// Sent to: DBLQH (one per data node with leaf table fragments)
+// Purpose: Create shared aggregation state before operations start
+
+struct JoinAggSetupReq {
+    static constexpr Uint32 SignalLength = 10;
+    static constexpr Uint32 AggProgramSectionNum = 0;
+
+    Uint32 senderRef;           // DBSPJ block reference
+    Uint32 senderData;          // SPJ request identifier
+    Uint32 requestId;           // Unique ID for this aggregation request
+    Uint32 transid[2];          // Transaction ID
+    Uint32 tableId;             // Leaf table ID
+    Uint32 expectedOpCount;     // Expected number of operations (0 = unknown)
+    Uint32 resultRef;           // API reference for FLUSH_AI
+    Uint32 resultData;          // API data for FLUSH_AI
+    Uint32 routeRef;            // Route reference for FLUSH_AI
+
+    // Long section 0: Aggregation program
+};
+
+// Response: JOIN_AGG_SETUP_CONF
+struct JoinAggSetupConf {
+    static constexpr Uint32 SignalLength = 4;
+
+    Uint32 senderRef;           // DBLQH block reference
+    Uint32 senderData;          // Echo from request
+    Uint32 requestId;           // Echo from request
+    Uint32 aggStatePtr;         // Handle to created state (for debugging)
+};
+
+// Error response: JOIN_AGG_SETUP_REF
+struct JoinAggSetupRef {
+    static constexpr Uint32 SignalLength = 5;
+
+    Uint32 senderRef;
+    Uint32 senderData;
+    Uint32 requestId;
+    Uint32 errorCode;
+    Uint32 errorLine;
+};
+```
+
+**execJOIN_AGG_SETUP_REQ Flow:**
+
+```
+JOIN_AGG_SETUP_REQ arrives (from DBSPJ)
+    |
+    v
+Acquire m_join_agg_hash_mutex
+    |
+    v
+Allocate JoinAggregationState from pool
+    |
+    v
+Copy aggregation program from signal section
+    |
+    v
+Create and initialize AggInterpreter
+    |
+    v
+Initialize mutexes (m_interpreter_mutex, m_result_mutex)
+    |
+    v
+Store FLUSH_AI routing info
+    |
+    v
+Set m_state = SETUP_COMPLETE
+    |
+    v
+Insert into hash table
+    |
+    v
+Release m_join_agg_hash_mutex
+    |
+    v
+Send JOIN_AGG_SETUP_CONF
+```
+
+#### Phase 2: Operations (LQHKEYREQ / SCAN_FRAGREQ)
+
+Operations include a reference to the aggregation state:
+
+```cpp
+// New flags in LqhKeyReq::requestInfo
+namespace LqhKeyReq {
+    static constexpr Uint32 RI_JOIN_AGGREGATION = 0x...;  // Has join aggregation
+}
+
+// New flags in ScanFragReq::requestInfo
+namespace ScanFragReq {
+    static constexpr Uint32 RI_JOIN_AGGREGATION = 0x...;  // Has join aggregation
+}
+
+// Additional words in LQHKEYREQ/SCAN_FRAGREQ when RI_JOIN_AGGREGATION set:
+// - requestId: matches JOIN_AGG_SETUP_REQ.requestId
+// - Parent data in AttrInfo section (linked attributes)
+```
+
+**LQHKEYREQ with Join Aggregation:**
+
+```
+LQHKEYREQ arrives (with RI_JOIN_AGGREGATION flag)
+    |
+    v
+Extract requestId from signal
+    |
+    v
+findJoinAggState(transid, senderData, requestId)
+    |
+    v
+[State not found?] --> Send LQHKEYREF (state not initialized)
+    |
+    v
+[State found, m_state == ERROR?] --> Send LQHKEYREF (aggregation failed)
+    |
+    v
+Execute normal lookup (TUPKEYREQ to DBTUP)
+    |
+    v
+On TUPKEYCONF:
+    |
+    v
+Acquire state->m_interpreter_mutex
+    |
+    v
+Extract parent row data from AttrInfo (linked attributes)
+    |
+    v
+Process row through AggInterpreter with parent data:
+    m_agg_interpreter->ProcessRecWithLinkedAttrs(...)
+    |
+    v
+Release state->m_interpreter_mutex
+    |
+    v
+Atomic increment: state->m_completed_ops++
+    |
+    v
+Send LQHKEYCONF (DO NOT send row data - aggregation accumulates it)
+```
+
+**SCAN_FRAGREQ with Join Aggregation:**
+
+```
+SCAN_FRAGREQ arrives (with RI_JOIN_AGGREGATION flag)
+    |
+    v
+Extract requestId from signal
+    |
+    v
+findJoinAggState(transid, senderData, requestId)
+    |
+    v
+[State not found?] --> Send SCAN_FRAGREF (state not initialized)
+    |
+    v
+Create ScanRecord with reference to JoinAggregationState:
+    scanPtr->m_join_agg_state_ptr = state
+    |
+    v
+For each row in scan:
+    |
+    v
+    Acquire state->m_interpreter_mutex
+    |
+    v
+    Extract parent row data from AttrInfo
+    |
+    v
+    Process row through shared AggInterpreter:
+        state->m_agg_interpreter->ProcessRecWithLinkedAttrs(...)
+    |
+    v
+    Release state->m_interpreter_mutex
+    |
+    v
+When scan batch/fragment complete:
+    Atomic increment: state->m_completed_ops++
+    |
+    v
+Send SCAN_FRAGCONF (with aggregation batch info, not individual rows)
+```
+
+#### Phase 3: Completion (New Signal)
+
+DBSPJ sends completion signal when all operations for the batch are done:
+
+```cpp
+// Signal: JOIN_AGG_COMPLETE_REQ
+// Sent when: DBSPJ has received CONF for all operations
+// Purpose: Trigger finalization and result sending
+
+struct JoinAggCompleteReq {
+    static constexpr Uint32 SignalLength = 6;
+
+    Uint32 senderRef;
+    Uint32 senderData;
+    Uint32 requestId;
+    Uint32 transid[2];
+    Uint32 completedOps;        // Total completed ops (for verification)
+};
+
+// Response: JOIN_AGG_COMPLETE_CONF
+struct JoinAggCompleteConf {
+    static constexpr Uint32 SignalLength = 5;
+
+    Uint32 senderRef;
+    Uint32 senderData;
+    Uint32 requestId;
+    Uint32 numResultRows;       // Number of aggregate result rows
+    Uint32 resultBytes;         // Total bytes of results
+};
+```
+
+**execJOIN_AGG_COMPLETE_REQ Flow:**
+
+```
+JOIN_AGG_COMPLETE_REQ arrives (from DBSPJ)
+    |
+    v
+findJoinAggState(transid, senderData, requestId)
+    |
+    v
+[State not found?] --> Send JOIN_AGG_COMPLETE_REF
+    |
+    v
+Verify: state->m_completed_ops == completedOps
+    |
+    v
+Acquire state->m_interpreter_mutex
+    |
+    v
+Set state->m_state = FINALIZING
+    |
+    v
+Finalize aggregation: m_agg_interpreter->FinalizeResults()
+    |
+    v
+Set state->m_state = SENDING_RESULTS
+    |
+    v
+Release state->m_interpreter_mutex
+    |
+    v
+Send TRANSID_AI with aggregated results
+    - Use stored m_resultRef, m_resultData, m_routeRef from FLUSH_AI
+    - May require multiple TRANSID_AI for large results
+    |
+    v
+Send JOIN_AGG_COMPLETE_CONF
+    |
+    v
+Set state->m_state = COMPLETED
+    |
+    v
+Schedule state cleanup (or wait for explicit release signal)
+```
+
+#### Phase 4: Cleanup (Optional Signal)
+
+```cpp
+// Signal: JOIN_AGG_RELEASE_REQ
+// Sent when: DBSPJ is done with the aggregation state
+// Purpose: Release resources
+
+struct JoinAggReleaseReq {
+    static constexpr Uint32 SignalLength = 4;
+
+    Uint32 senderRef;
+    Uint32 senderData;
+    Uint32 requestId;
+    Uint32 transid[2];
+};
+```
+
+### Thread-Safety Details
+
+#### Mutex Hierarchy
+
+To prevent deadlocks, acquire mutexes in this order:
+
+1. `m_join_agg_hash_mutex` (node-level, protects hash table)
+2. `state->m_interpreter_mutex` (per-state, protects AggInterpreter)
+3. `state->m_result_mutex` (per-state, protects result counters)
+
+#### Atomic Operations
+
+Use atomics for frequently accessed counters:
+
+```cpp
+// Increment completed ops (called by each LDM thread)
+state->m_completed_ops.fetch_add(1, std::memory_order_relaxed);
+
+// Check state (lock-free read)
+if (state->m_state.load(std::memory_order_acquire) == State::ERROR) {
+    // Handle error
+}
+
+// State transition (compare-and-swap)
+State expected = State::ACCUMULATING;
+if (state->m_state.compare_exchange_strong(expected, State::FINALIZING)) {
+    // Won the race to finalize
+}
+```
+
+#### Critical Section Minimization
+
+```cpp
+void processRowForJoinAgg(JoinAggregationState* state,
+                          const Uint32* rowData,
+                          const Uint32* parentData) {
+    // Only hold mutex during actual aggregation
+    NdbMutex_Lock(state->m_interpreter_mutex);
+
+    int result = state->m_agg_interpreter->ProcessRecWithLinkedAttrs(
+        rowData, parentData);
+
+    NdbMutex_Unlock(state->m_interpreter_mutex);
+
+    if (result != 0) {
+        // Handle error atomically
+        state->m_failed_ops.fetch_add(1);
+        State expected = State::ACCUMULATING;
+        state->m_state.compare_exchange_strong(expected, State::ERROR);
+    }
+}
+```
+
+### Attribute Information Handling
+
+#### Parent Row Data in AttrInfo
+
+For join aggregation, the AttrInfo section includes linked attribute data from parent tables:
+
+```
+AttrInfo for leaf operation (lookup or scan):
++------------------+----------------------------------------+
+| 5-word header    | Standard header                        |
++------------------+----------------------------------------+
+| Interpreted prog | Filter program (if any)                |
++------------------+----------------------------------------+
+| Parent data hdr  | AttributeHeader for each parent column |
+| Parent data      | Actual values from parent rows:        |
+|                  | - GROUP BY column values               |
+|                  | - Aggregate source column values       |
+|                  | - CORR_FACTOR32                        |
++------------------+----------------------------------------+
+| User projection  | Result columns (aggregate outputs)     |
++------------------+----------------------------------------+
+| FLUSH_AI marker  | Routing info for results               |
++------------------+----------------------------------------+
+| Final reads      | Local table columns for aggregation    |
++------------------+----------------------------------------+
+```
+
+#### Column ID Mapping
+
+The aggregation program uses a column ID scheme to distinguish local vs parent columns:
+
+```cpp
+// Column ID encoding:
+// Bits 15-14: Source indicator
+//   00 = Local table column
+//   01 = Parent table column (level 1 - immediate parent)
+//   10 = Parent table column (level 2 - grandparent)
+//   11 = Reserved
+// Bits 13-0: Column number within source
+
+static constexpr Uint32 COL_SOURCE_MASK = 0xC000;
+static constexpr Uint32 COL_SOURCE_LOCAL = 0x0000;
+static constexpr Uint32 COL_SOURCE_PARENT1 = 0x4000;
+static constexpr Uint32 COL_SOURCE_PARENT2 = 0x8000;
+static constexpr Uint32 COL_NUMBER_MASK = 0x3FFF;
+
+// Example: GROUP BY c.category, SUM(l.price)
+// c.category = parent column from CUSTOMER (0x4006 if col 6)
+// l.price = local column from LINEITEM (0x0005 if col 5)
+```
+
+### Integration with DBTUP
+
+DBTUP's `AggInterpreter` needs modifications to handle linked attribute data:
+
+```cpp
+class AggInterpreter {
+public:
+    // Existing interface for single-table scans
+    int ProcessRec(Dbtup* block_tup, KeyReqStruct* req_struct);
+
+    // New interface for join aggregation
+    // Called with both local row data and parent row data
+    int ProcessRecWithLinkedAttrs(
+        Dbtup* block_tup,
+        KeyReqStruct* req_struct,
+        const Uint32* linked_attr_data,     // Parent row columns
+        Uint32 linked_attr_len,
+        const Uint32* linked_attr_headers,  // AttributeHeaders for parent cols
+        Uint32 num_linked_attrs);
+
+    // Finalize and prepare results for sending
+    int FinalizeResults();
+
+    // Get result data for sending
+    int GetResultData(Uint32* buffer, Uint32 buffer_size, Uint32* bytes_written);
+
+private:
+    // New: Buffer for linked attribute data (parent columns)
+    Uint32 m_linked_attr_buf[MAX_LINKED_ATTR_SIZE];
+    Uint32 m_linked_attr_headers[MAX_LINKED_ATTRS];
+    Uint32 m_num_linked_attrs;
+
+    // Load column value - enhanced to check linked attrs first
+    int LoadColumnValue(Uint32 col_id, Register* reg);
+};
+
+// Implementation of LoadColumnValue
+int AggInterpreter::LoadColumnValue(Uint32 col_id, Register* reg) {
+    Uint32 source = col_id & COL_SOURCE_MASK;
+    Uint32 col_num = col_id & COL_NUMBER_MASK;
+
+    if (source == COL_SOURCE_LOCAL) {
+        // Read from local row via DBTUP
+        return block_tup_->readAttribute(col_num, reg);
+    } else {
+        // Read from linked attribute buffer
+        return readLinkedAttribute(source, col_num, reg);
+    }
+}
+```
+
+### Changes to Existing Structures
+
+#### ScanRecord
+
+Add reference to shared aggregation state:
+
+```cpp
+struct ScanRecord {
+    // ... existing fields ...
+
+    // For join aggregation - reference to shared state
+    Uint32 m_join_agg_state_ptr;    // Ptr to JoinAggregationState (RNIL if none)
+    Uint32 m_join_agg_request_id;   // Request ID for lookup
+};
+```
+
+#### TcConnectionrec
+
+Add reference to shared aggregation state for key operations:
+
+```cpp
+struct TcConnectionrec {
+    // ... existing fields ...
+
+    // For join aggregation operations
+    Uint32 m_join_agg_state_ptr;    // Ptr to JoinAggregationState (RNIL if none)
+    Uint32 m_join_agg_request_id;   // Request ID for lookup
+};
+```
+
+### Error Handling
+
+```cpp
+enum JoinAggErrorCode {
+    JAE_NO_ERROR = 0,
+    JAE_STATE_ALLOC_FAILED = 4001,      // Cannot allocate JoinAggregationState
+    JAE_STATE_NOT_FOUND = 4002,         // State not found for operation
+    JAE_INTERPRETER_INIT_FAILED = 4003, // AggInterpreter initialization failed
+    JAE_INTERPRETER_ERROR = 4004,       // AggInterpreter returned error
+    JAE_OP_COUNT_MISMATCH = 4005,       // Completed ops != expected
+    JAE_PARENT_DATA_ERROR = 4006,       // Invalid parent data format
+    JAE_RESULT_TOO_LARGE = 4007,        // Aggregation result exceeds limits
+    JAE_TIMEOUT = 4008,                 // State timed out
+    JAE_ALREADY_FINALIZED = 4009,       // Duplicate complete signal
+    JAE_MUTEX_ERROR = 4010              // Mutex acquisition failed
+};
+```
+
+**Error Propagation:**
+
+1. Error during setup (JOIN_AGG_SETUP_REQ):
+   - Send JOIN_AGG_SETUP_REF
+   - DBSPJ aborts the query
+
+2. Error during operation (LQHKEYREQ/SCAN_FRAGREQ):
+   - Atomically set `state->m_state = ERROR`
+   - Send LQHKEYREF/SCAN_FRAGREF for this operation
+   - Subsequent operations check state and fail fast
+   - DBSPJ sends JOIN_AGG_COMPLETE_REQ (or ABORT)
+
+3. Error during completion:
+   - Send JOIN_AGG_COMPLETE_REF
+   - DBSPJ handles based on error code
+
+### Memory Management
+
+```cpp
+// Configuration parameters (in config.ini)
+[ndbd]
+JoinAggMaxStates = 64           // Max concurrent aggregation states per node
+JoinAggInterpreterPoolSize = 32 // Pre-allocated interpreter instances
+JoinAggResultBufferSize = 1MB   // Max result buffer per state
+
+// Resource tracking
+struct JoinAggResources {
+    Uint32 c_active_states;
+    Uint32 c_peak_states;
+    Uint64 c_total_states_created;
+    Uint64 c_interpreter_memory_used;
+};
+```
+
+### Complete Signal Flow Diagram
+
+```
+DBSPJ                              DBLQH (any thread)                    DBTUP
+  |                                      |                                  |
+  | JOIN_AGG_SETUP_REQ                   |                                  |
+  |------------------------------------->|                                  |
+  |                                      | Create JoinAggregationState      |
+  |                                      | Initialize AggInterpreter        |
+  |                                      | Insert in hash table             |
+  | JOIN_AGG_SETUP_CONF                  |                                  |
+  |<-------------------------------------|                                  |
+  |                                      |                                  |
+  |====== Operations Phase (parallel) ================================     |
+  |                                      |                                  |
+  | LQHKEYREQ (join agg, thread 1)       |                                  |
+  |------------------------------------->|                                  |
+  |                                      | Find state, lock interpreter     |
+  |                                      | TUPKEYREQ                        |
+  |                                      |--------------------------------->|
+  |                                      |                                  | Read row
+  |                                      | TUPKEYCONF                       |
+  |                                      |<---------------------------------|
+  |                                      | ProcessRecWithLinkedAttrs()      |
+  |                                      | Unlock, increment completed_ops  |
+  | LQHKEYCONF                           |                                  |
+  |<-------------------------------------|                                  |
+  |                                      |                                  |
+  | SCAN_FRAGREQ (join agg, thread 2)    |                                  |
+  |------------------------------------->|                                  |
+  |                                      | Find state, create ScanRecord    |
+  |                                      | For each row:                    |
+  |                                      |   Lock interpreter               |
+  |                                      |   ProcessRecWithLinkedAttrs()    |
+  |                                      |   Unlock                         |
+  |                                      | Increment completed_ops          |
+  | SCAN_FRAGCONF                        |                                  |
+  |<-------------------------------------|                                  |
+  |                                      |                                  |
+  | ... more operations (parallel) ...   |                                  |
+  |                                      |                                  |
+  |====== Completion Phase ===============================================  |
+  |                                      |                                  |
+  | JOIN_AGG_COMPLETE_REQ                |                                  |
+  |------------------------------------->|                                  |
+  |                                      | Find state                       |
+  |                                      | Verify completed_ops             |
+  |                                      | Lock interpreter                 |
+  |                                      | FinalizeResults()                |
+  |                                      | Unlock                           |
+  |                                      |                                  |
+  |                                      | TRANSID_AI (aggregated results)  |
+  |<-------------------------------------|                                  |
+  |                                      |                                  |
+  | JOIN_AGG_COMPLETE_CONF               |                                  |
+  |<-------------------------------------|                                  |
+  |                                      |                                  |
+  | Route results to API via FLUSH_AI    |                                  |
+  |                                      |                                  |
+  | JOIN_AGG_RELEASE_REQ (optional)      |                                  |
+  |------------------------------------->|                                  |
+  |                                      | Release state                    |
+```
+
+## File Changes Summary
+
+| File | Changes |
+|------|---------|
+| `Dblqh.hpp` | Add JoinAggregationState struct, pool, hash table, mutexes |
+| `DblqhMain.cpp` | Add execJOIN_AGG_SETUP_REQ, execJOIN_AGG_COMPLETE_REQ, modify execLQHKEYREQ, execSCAN_FRAGREQ |
+| `LqhKeyReq.hpp` | Add RI_JOIN_AGGREGATION flag |
+| `ScanFrag.hpp` | Add RI_JOIN_AGGREGATION flag |
+| `signaldata/JoinAgg.hpp` (new) | Signal definitions for JOIN_AGG_* |
+| `AggInterpreter.hpp` | Add ProcessRecWithLinkedAttrs, FinalizeResults |
+| `AggInterpreter.cpp` | Implement linked attribute handling |
+
+## Open Questions (Resolved)
+
+1. **Batch Completion Mechanism**: ✓ Dedicated JOIN_AGG_COMPLETE_REQ signal
+
+2. **Thread Safety**: ✓ Mutex per interpreter, atomics for counters, hash mutex for lookups
+
+3. **Multi-Node**: ✓ Each node has independent state, DBSPJ coordinates final aggregation if needed
+
+## Remaining Design Decisions
+
+1. **Result Aggregation Across Nodes**: If leaf table spans multiple nodes, does DBSPJ aggregate the per-node results, or is there node-to-node coordination?
+
+2. **Partial Results**: Should DBLQH send partial results if aggregation buffer fills up, or wait for completion?
+
+3. **Interpreter Pool**: Pre-allocate interpreter instances, or create on demand?
+
+4. **State Timeout**: How long to keep state before automatic cleanup? Tied to transaction timeout?
+
+## Performance Considerations
+
+1. **Mutex Contention**: The interpreter mutex is held during row processing. For high-cardinality joins, this could be a bottleneck.
+   - **Mitigation**: Consider per-group locking for GROUP BY queries
+   - **Mitigation**: Batch row processing to reduce lock frequency
+
+2. **Memory Usage**: Each state includes an AggInterpreter (~32KB base + hash map for groups)
+   - **Mitigation**: Pool of pre-allocated interpreters
+   - **Mitigation**: Configurable limits on group count
+
+3. **Hash Table Lookup**: Every operation looks up state in hash table
+   - **Mitigation**: Cache state pointer in TcConnectionrec/ScanRecord
+   - **Mitigation**: Read-optimized concurrent hash table
+
+4. **Cross-Thread Communication**: Results must be collected and sent from one thread
+   - **Mitigation**: Designate "coordinator" thread for result sending
+   - **Mitigation**: Use signal-based result aggregation
