@@ -107,10 +107,12 @@ struct JoinAggregationState {
     Uint32 m_agg_program_len;           // Program length in words
 
     //------------------------------------------------------------------
-    // Aggregation State (thread-safe access required)
+    // Aggregation State (thread-safe via per-group locking)
     //------------------------------------------------------------------
     AggInterpreter* m_agg_interpreter;  // Shared aggregation interpreter
-    NdbMutex* m_interpreter_mutex;      // Protects m_agg_interpreter access
+    // Note: Fine-grained locking is inside AggInterpreter:
+    //   - m_group_map_mutex: protects GROUP BY hash map (find/insert)
+    //   - group->m_mutex: per-group mutex for accumulator updates
 
     //------------------------------------------------------------------
     // Operation Tracking (atomic operations)
@@ -349,17 +351,17 @@ Execute normal lookup (TUPKEYREQ to DBTUP)
 On TUPKEYCONF:
     |
     v
-Acquire state->m_interpreter_mutex
-    |
-    v
 Extract parent row data from AttrInfo (linked attributes)
     |
     v
 Process row through AggInterpreter with parent data:
     m_agg_interpreter->ProcessRecWithLinkedAttrs(...)
     |
-    v
-Release state->m_interpreter_mutex
+    +-- Internally uses two-level locking:
+    |   1. Brief lock on m_group_map_mutex to find/create group
+    |   2. Lock group->m_mutex to update accumulators
+    |   3. Unlock group->m_mutex
+    |   (Multiple threads can aggregate different groups in parallel)
     |
     v
 Atomic increment: state->m_completed_ops++
@@ -390,17 +392,16 @@ Create ScanRecord with reference to JoinAggregationState:
 For each row in scan:
     |
     v
-    Acquire state->m_interpreter_mutex
-    |
-    v
     Extract parent row data from AttrInfo
     |
     v
     Process row through shared AggInterpreter:
         state->m_agg_interpreter->ProcessRecWithLinkedAttrs(...)
-    |
-    v
-    Release state->m_interpreter_mutex
+        |
+        +-- Two-level locking (parallel across groups):
+            1. Brief lock on m_group_map_mutex to find/create group
+            2. Lock group->m_mutex to update accumulators
+            3. Unlock group->m_mutex
     |
     v
 When scan batch/fragment complete:
@@ -507,12 +508,143 @@ struct JoinAggReleaseReq {
 
 ### Thread-Safety Details
 
-#### Mutex Hierarchy
+#### Basic Mutex Hierarchy
 
 To prevent deadlocks, acquire mutexes in this order:
 
-1. `s_join_agg_hash_mutex` (static, node-level, protects hash table)
-2. `state->m_interpreter_mutex` (per-state, protects AggInterpreter)
+1. `s_join_agg_hash_mutex` (static, node-level, protects state hash table)
+2. `state->m_group_map_mutex` (per-state, protects GROUP BY hash map)
+3. `group->m_mutex` (per-group, protects aggregate accumulators)
+
+#### Per-Group Locking Strategy
+
+For high-concurrency scenarios, using a single mutex per AggInterpreter creates
+contention when many LDM threads aggregate simultaneously. Instead, we use a
+two-level locking strategy:
+
+1. **Group Map Mutex**: Protects the GROUP BY hash map structure (find/insert)
+2. **Per-Group Mutex**: Each GROUP BY row has its own mutex for accumulator updates
+
+This allows multiple threads to aggregate different groups in parallel.
+
+```cpp
+// Extended GROUP BY entry with per-row mutex
+struct GroupByEntry {
+    // Group key (variable length, stored separately)
+    Uint32 m_key_offset;        // Offset into key buffer
+    Uint32 m_key_len;           // Key length in bytes
+
+    // Per-group mutex for accumulator updates
+    NdbMutex* m_mutex;
+
+    // Aggregate accumulators (protected by m_mutex)
+    AggResItem m_accumulators[MAX_AGGREGATES];
+    Uint64 m_row_count;         // Number of rows in this group
+};
+
+// Extended AggInterpreter with per-group locking
+class AggInterpreter {
+    // ...existing members...
+
+    // GROUP BY hash map - protected by m_group_map_mutex
+    NdbMutex* m_group_map_mutex;
+    std::unordered_map<GroupKey, GroupByEntry*, GroupKeyHash> m_group_map;
+
+    // Pool for GroupByEntry allocation
+    GroupByEntry* m_group_pool;
+    Uint32 m_group_pool_size;
+    std::atomic<Uint32> m_next_group_slot;
+};
+```
+
+#### Two-Phase Row Processing
+
+```cpp
+int AggInterpreter::ProcessRecWithLinkedAttrs(
+    Dbtup* block_tup,
+    KeyReqStruct* req_struct,
+    const Uint32* linked_attr_data,
+    Uint32 linked_attr_len)
+{
+    // Phase 1: Extract GROUP BY key from linked attrs + local columns
+    GroupKey key;
+    extractGroupByKey(linked_attr_data, req_struct, &key);
+
+    // Phase 2: Find or create group entry (short critical section)
+    GroupByEntry* group = nullptr;
+    {
+        NdbMutex_Lock(m_group_map_mutex);
+
+        auto it = m_group_map.find(key);
+        if (it != m_group_map.end()) {
+            group = it->second;
+        } else {
+            // Allocate new group entry
+            group = allocateGroupEntry(key);
+            if (group == nullptr) {
+                NdbMutex_Unlock(m_group_map_mutex);
+                return ZAGG_GROUP_ALLOC_FAILED;
+            }
+            m_group_map[key] = group;
+        }
+
+        NdbMutex_Unlock(m_group_map_mutex);
+    }
+
+    // Phase 3: Update accumulators (per-group mutex, parallel across groups)
+    {
+        NdbMutex_Lock(group->m_mutex);
+
+        // Extract aggregate source values
+        Register values[MAX_AGGREGATES];
+        extractAggregateInputs(linked_attr_data, req_struct, values);
+
+        // Update each accumulator
+        for (Uint32 i = 0; i < m_num_aggregates; i++) {
+            updateAccumulator(&group->m_accumulators[i], m_agg_functions[i], &values[i]);
+        }
+        group->m_row_count++;
+
+        NdbMutex_Unlock(group->m_mutex);
+    }
+
+    return 0;
+}
+```
+
+#### Lock-Free Group Lookup Optimization
+
+For read-heavy workloads where most rows hit existing groups, we can use
+a lock-free lookup with fallback to locked insert:
+
+```cpp
+GroupByEntry* AggInterpreter::findOrCreateGroup(const GroupKey& key)
+{
+    // Fast path: lock-free lookup (read-only, no mutex)
+    // Uses atomic load with acquire semantics
+    GroupByEntry* group = m_group_map.find_lockfree(key);
+    if (group != nullptr) {
+        return group;  // Found existing group, no lock needed
+    }
+
+    // Slow path: acquire mutex for potential insert
+    NdbMutex_Lock(m_group_map_mutex);
+
+    // Double-check after acquiring lock (another thread may have inserted)
+    auto it = m_group_map.find(key);
+    if (it != m_group_map.end()) {
+        group = it->second;
+    } else {
+        group = allocateGroupEntry(key);
+        if (group != nullptr) {
+            m_group_map.insert({key, group});
+        }
+    }
+
+    NdbMutex_Unlock(m_group_map_mutex);
+    return group;
+}
+```
 
 #### Atomic Operations
 
@@ -532,21 +664,28 @@ State expected = State::ACCUMULATING;
 if (state->m_state.compare_exchange_strong(expected, State::FINALIZING)) {
     // Won the race to finalize
 }
+
+// Allocate group slot from pool (lock-free)
+Uint32 slot = m_next_group_slot.fetch_add(1, std::memory_order_relaxed);
+if (slot >= m_group_pool_size) {
+    return nullptr;  // Pool exhausted
+}
 ```
 
-#### Critical Section Minimization
+#### Complete Row Processing with Per-Group Locking
 
 ```cpp
 void processRowForJoinAgg(JoinAggregationState* state,
                           const Uint32* rowData,
-                          const Uint32* parentData) {
-    // Only hold mutex during actual aggregation
-    NdbMutex_Lock(state->m_interpreter_mutex);
+                          const Uint32* linkedData,
+                          Uint32 linkedDataLen) {
+    AggInterpreter* interp = state->m_agg_interpreter;
 
-    int result = state->m_agg_interpreter->ProcessRecWithLinkedAttrs(
-        rowData, parentData);
-
-    NdbMutex_Unlock(state->m_interpreter_mutex);
+    // Process row with two-level locking:
+    // 1. Brief lock on group map to find/create group
+    // 2. Per-group lock to update accumulators
+    int result = interp->ProcessRecWithLinkedAttrs(
+        rowData, linkedData, linkedDataLen);
 
     if (result != 0) {
         // Handle error atomically
@@ -556,6 +695,67 @@ void processRowForJoinAgg(JoinAggregationState* state,
     }
 }
 ```
+
+#### Finalization with Per-Group Locking
+
+During finalization, we need to ensure no concurrent updates:
+
+```cpp
+int AggInterpreter::FinalizeResults() {
+    // Acquire group map mutex to prevent new group creation
+    NdbMutex_Lock(m_group_map_mutex);
+
+    // Set finalizing flag to reject new rows
+    m_finalizing = true;
+
+    // Iterate all groups - no per-group lock needed since
+    // m_finalizing prevents concurrent updates
+    for (auto& [key, group] : m_group_map) {
+        // Finalize each accumulator (e.g., compute AVG from SUM/COUNT)
+        for (Uint32 i = 0; i < m_num_aggregates; i++) {
+            finalizeAccumulator(&group->m_accumulators[i], m_agg_functions[i]);
+        }
+    }
+
+    NdbMutex_Unlock(m_group_map_mutex);
+    return 0;
+}
+```
+
+#### Memory Layout for Cache Efficiency
+
+Align GroupByEntry to cache line boundaries to prevent false sharing:
+
+```cpp
+// Cache-line aligned group entry (typically 64 bytes)
+struct alignas(64) GroupByEntry {
+    // Hot data: mutex and accumulators (accessed during aggregation)
+    NdbMutex* m_mutex;                          // 8 bytes
+    Uint64 m_row_count;                         // 8 bytes
+    AggResItem m_accumulators[MAX_AGGREGATES];  // variable
+
+    // Cold data: key info (accessed during lookup/finalization)
+    Uint32 m_key_offset;
+    Uint32 m_key_len;
+
+    // Padding to cache line boundary
+    char m_padding[...];
+};
+```
+
+#### Contention Analysis
+
+| Scenario | Single Mutex | Per-Group Mutex |
+|----------|--------------|-----------------|
+| Low cardinality (e.g., 7 shipmodes) | Some contention | Minimal - only 7 groups |
+| High cardinality (e.g., 1M customers) | Severe contention | Parallel across groups |
+| Skewed distribution | Bottleneck on hot groups | Hot groups still serialize |
+| Group map growth | N/A | Brief contention on insert |
+
+**Trade-offs:**
+- Per-group mutex adds ~8 bytes per group
+- Lock-free lookup adds complexity but improves read-heavy workloads
+- For very low cardinality (< 10 groups), single mutex may be simpler
 
 ### Attribute Information Handling
 
@@ -779,9 +979,13 @@ DBSPJ                              DBLQH                                 DBTUP
   |                                      |                                  | Read local row
   |                                      | TUPKEYCONF                       |
   |                                      |<---------------------------------|
-  |                                      | Lock interpreter mutex           |
-  |                                      | ProcessRecWithLinkedAttrs()      |
-  |                                      | Unlock, increment completed_ops  |
+  |                                      | ProcessRecWithLinkedAttrs():     |
+  |                                      |   Lock group_map, find group     |
+  |                                      |   Unlock group_map               |
+  |                                      |   Lock group->mutex              |
+  |                                      |   Update accumulators            |
+  |                                      |   Unlock group->mutex            |
+  |                                      | Increment completed_ops          |
   | LQHKEYCONF                           |                                  |
   |<-------------------------------------|                                  |
   |                                      |                                  |
@@ -790,11 +994,13 @@ DBSPJ                              DBLQH                                 DBTUP
   |                                      | Find state, create ScanRecord    |
   |                                      | For each row:                    |
   |                                      |   Read via DBTUP                 |
-  |                                      |   Lock interpreter               |
-  |                                      |   ProcessRecWithLinkedAttrs()    |
-  |                                      |   Unlock                         |
-  |                                      |   (may send partial results if   |
-  |                                      |    buffer full)                  |
+  |                                      |   Lock group_map, find group     |
+  |                                      |   Unlock group_map               |
+  |                                      |   Lock group->mutex              |
+  |                                      |   Update accumulators            |
+  |                                      |   Unlock group->mutex            |
+  |                                      |   (parallel with other threads   |
+  |                                      |    on different groups)          |
   |                                      | Increment completed_ops          |
   | SCAN_FRAGCONF                        |                                  |
   |<-------------------------------------|                                  |
@@ -859,18 +1065,24 @@ DBSPJ                              DBLQH                                 DBTUP
 
 ## Performance Considerations
 
-1. **Mutex Contention**: The interpreter mutex is held during row processing. For high-cardinality joins, this could be a bottleneck.
-   - **Mitigation**: Minimize critical section to just aggregation update
-   - **Mitigation**: Consider per-group locking for GROUP BY queries with many groups
+1. **Per-Group Locking**: Two-level locking minimizes contention
+   - Group map mutex held briefly for find/insert
+   - Per-group mutex allows parallel aggregation across different groups
+   - For high-cardinality GROUP BY, threads rarely contend
+   - For low-cardinality (< 10 groups), some contention on hot groups
 
 2. **Memory Usage**: Each state includes an AggInterpreter (hash map for groups)
    - Uses QUERY_MEMORY pool, shared with other query execution
+   - Per-group mutex adds ~8 bytes overhead per group
+   - GroupByEntry aligned to cache lines to prevent false sharing
    - Memory released when JOIN_AGG_RELEASE_REQ processed
 
 3. **Hash Table Lookup**: State lookup required once per operation start
    - State pointer cached in TcConnectionrec/ScanRecord after lookup
    - Static hash table with simple mutex - fast for typical concurrency
+   - Lock-free group lookup optimization for read-heavy workloads
 
 4. **Single-Thread Phases**: Setup/completion/release routed to one thread
    - Serializes state creation and result sending
    - Operations phase fully parallel across LDM threads
+   - Finalization sets flag to reject new rows, then iterates groups
