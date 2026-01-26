@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2017, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2022, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2022, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -102,7 +102,7 @@ static bool check_sdi_compatibility(const dd::RJ_Document &doc) {
   assert(doc.HasMember("mysqld_version_id"));
   const dd::RJ_Value &mysqld_version_id = doc["mysqld_version_id"];
   assert(mysqld_version_id.IsUint64());
-  if (mysqld_version_id.GetUint64() > std::uint64_t(251100)) {
+  if (mysqld_version_id.GetUint64() >= std::uint64_t(260500)) {
     /**
      * We cannot handle deserialize from version newer than 25.10.
      * We can handle tables created in earlier versions always.
