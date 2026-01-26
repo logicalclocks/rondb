@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
    Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -57,8 +57,8 @@ typedef ArrayPool<GlobalPage> GlobalPage_pool;
 typedef SafeArrayPool<GlobalPage> GlobalPage_safepool;
 
 struct GlobalData {
-  Uint32 m_hb_count[MAX_NODES];    // hb counters
-  NodeInfo m_nodeInfo[MAX_NODES];  // At top to ensure cache alignment
+  Uint32 m_hb_count[ABS_MAX_NODES];    // hb counters
+  NodeInfo m_nodeInfo[ABS_MAX_NODES];  // At top to ensure cache alignment
   Signal VMSignals[1];             // Owned by FastScheduler::
   NodeVersionInfo m_versionInfo;
   Uint32 m_restart_seq;  //
@@ -134,7 +134,7 @@ struct GlobalData {
   Uint8      theMaxLocationDomainId;
 
   Uint8      theNextTcThreadPerRecv[MAX_NDBMT_RECEIVE_THREADS];
-  Uint8      theLocationDomainId[MAX_NODES];
+  Uint8      theLocationDomainId[ABS_MAX_NODES];
 
   NdbMutex   *theIO_lag_mutex;
   ndb_openssl_evp::byte nodeMasterKey[MAX_NODE_MASTER_KEY_LENGTH];

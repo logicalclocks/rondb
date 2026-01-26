@@ -1,4 +1,4 @@
-/* Copyright (c) 2008, 2024, Oracle and/or its affiliates.
+/* Copyright (c) 2008, 2025, Oracle and/or its affiliates.
    Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -179,7 +179,7 @@ static Uint32 glob_wakeup_latency = 25;
 static Uint32 glob_num_job_buffers_per_thread = 0;
 static bool glob_use_write_lock_mutex = true;
 static Uint32 glob_num_writers_per_job_buffers = 0;
-static Uint32 glob_max_send_buffer_size[MAX_NODES];
+static Uint32 glob_max_send_buffer_size[ABS_MAX_NODES];
 /**
  * Ensure that the above variables that are read-only after startup are
  * not sharing CPU cache line with anything else that is updated.
@@ -7579,7 +7579,7 @@ static TransporterReceiveHandleKernel
  */
 static Uint32 g_trp_to_recv_thr_map[MAX_NTRANSPORTERS];
 
-static Uint32 g_api_node_to_recv_instance_map[MAX_NODES];
+static Uint32 g_api_node_to_recv_instance_map[ABS_MAX_NODES];
 
 /**
  * We use this method both to initialise the realtime variable
@@ -9706,7 +9706,7 @@ rep_init(struct thr_repository* rep, unsigned int cnt, Ndbd_mem_manager *mm)
   }
 
   std::memset(rep->m_thread_send_buffers, 0, sizeof(rep->m_thread_send_buffers));
-  for (Uint32 node_id = 0; node_id < MAX_NODES; node_id++)
+  for (Uint32 node_id = 0; node_id < ABS_MAX_NODES; node_id++)
   {
     glob_max_send_buffer_size[node_id] =
       globalTransporterRegistry.getSendBufferSize(node_id);
@@ -9919,7 +9919,7 @@ void ThreadConfig::init() {
 /**
  * return receiver thread handling a particular trp
  *   returned number is indexed from 0 and upwards to #receiver threads
- *   (or MAX_NODES is none)
+ *   (or ABS_MAX_NODES is none)
  */
 Uint32 mt_get_recv_thread_idx(TrpId trp_id) {
   assert(trp_id < NDB_ARRAY_SIZE(g_trp_to_recv_thr_map));
@@ -9961,7 +9961,7 @@ assign_receiver_threads(void)
   Uint32 recv_thread_idx = 0;
   Uint32 recv_thread_idx_shm = 0;
   Uint32 max_trp_id = 0;
-  for (Uint32 i = 0; i < MAX_NODES; i++)
+  for (Uint32 i = 0; i < ABS_MAX_NODES; i++)
   {
     g_api_node_to_recv_instance_map[i] = RNIL;
   }
@@ -10378,6 +10378,13 @@ static bool crash_started = false;
 
 void ErrorReporter::prepare_to_crash(bool first_phase,
                                      bool error_insert_crash) {
+  {
+    thr_data *selfptr = NDB_THREAD_TLS_THREAD;
+    if (selfptr != NULL) {
+      selfptr->m_watchdog_counter = 22;
+    }
+  }
+
   if (first_phase) {
     NdbMutex_Lock(&g_thr_repository->stop_for_crash_mutex);
     if (crash_started && error_insert_crash) {
@@ -10607,9 +10614,25 @@ FastScheduler::dumpSignalMemoryAndJam(Uint32 thr_no, FILE* out)
     memcpy(&signal.header, s, 4*siglen);
 
     const Uint32 *posptr = reinterpret_cast<const Uint32 *>(s);
-    signal.m_sectionPtrI[0] = posptr[siglen + 0];
-    signal.m_sectionPtrI[1] = posptr[siglen + 1];
-    signal.m_sectionPtrI[2] = posptr[siglen + 2];
+    signal.m_sectionPtrI[0] = RNIL;
+    signal.m_sectionPtrI[1] = RNIL;
+    signal.m_sectionPtrI[2] = RNIL;
+    switch (s->m_noOfSections) {
+      case 3:
+        signal.m_sectionPtrI[2] = posptr[siglen + 2];
+        [[fallthrough]];
+      case 2:
+        signal.m_sectionPtrI[1] = posptr[siglen + 1];
+        [[fallthrough]];
+      case 1:
+        signal.m_sectionPtrI[0] = posptr[siglen + 0];
+        [[fallthrough]];
+      case 0:
+        break;
+      default:
+        /* Out of range - ignore */
+        break;
+    };
     bool prioa = signalSequence[seq_end].prioa;
 
     /* Make sure to display clearly when there is a gap in the dump. */

@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
    Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -1714,6 +1714,9 @@ public:
   static Uint32 m_rr_load_refresh_count;
   static Uint32 m_num_rr_groups;
   static Uint32 m_num_distribution_threads;
+  static Uint32 m_max_nodeid;
+  static Uint32 m_max_ndb_nodeid;
+ 
   static bool m_inited_rr_groups;
   struct NextRoundInfo {
     Uint32 m_next_pos;
@@ -2207,6 +2210,11 @@ public:
   virtual void checkInitGlobalVariables();
 #endif
 
+  static Uint32 get_max_nodeid();
+  static void set_max_nodeid(Uint32 max_nodeid);
+  static Uint32 get_max_ndb_nodeid();
+  static void set_max_ndb_nodeid(Uint32 max_ndb_nodeid);
+
  protected:
   /**
    * SegmentUtils methods
@@ -2626,6 +2634,19 @@ inline void SimulatedBlock::check_sections(Signal25 *signal, Uint32 oldSecCount,
                       signal->header.m_fragmentInfo != 3)) {
     handle_invalid_fragmentInfo(signal);
   }
+}
+
+inline Uint32 SimulatedBlock::get_max_nodeid() {
+  return m_max_nodeid;
+}
+inline void SimulatedBlock::set_max_nodeid(Uint32 max_nodeid) {
+  m_max_nodeid = max_nodeid + 1;
+}
+inline Uint32 SimulatedBlock::get_max_ndb_nodeid() {
+  return m_max_ndb_nodeid;
+}
+inline void SimulatedBlock::set_max_ndb_nodeid(Uint32 max_ndb_nodeid) {
+  m_max_ndb_nodeid = max_ndb_nodeid + 1;
 }
 
 /**

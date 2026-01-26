@@ -1,0 +1,13 @@
+# Binary
+rondb
+
+# Cloned repos
+scripts/rondb-docker/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store

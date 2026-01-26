@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2004, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2004, 2025, Oracle and/or its affiliates.
    Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -272,8 +272,10 @@
 #define CFG_DB_TRANS_ERROR_LOGLEVEL 679
 #define CFG_DB_ENCRYPTED_FILE_SYSTEM 680
 #define CFG_DB_REQUIRE_TLS 681
+#define CFG_DB_API_FAILURE_HANDLING_TIMEOUT 682
 
 /* Start RonDB only configuration parameters */
+#define CFG_DB_EXCLUSIVE_IO_CPUS      684
 #define CFG_DB_QT_READ_LOCKED         685
 #define CFG_DB_FULL_RESTART_LOGS      686
 #define CFG_DB_ACTIVATE_RATE_LIMITS   687
@@ -397,6 +399,7 @@
 #define CFG_CONNECT_BACKOFF_MAX_TIME 807
 #define CFG_START_CONNECT_BACKOFF_MAX_TIME 808
 #define CFG_API_VERBOSE               809
+#define CFG_API_CONTINOUS_SCAN        899
 
 /**
  * Internal

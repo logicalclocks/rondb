@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -153,6 +153,7 @@ class MgmtSrvr : private ConfigSubscriber, public trp_client {
 
  public:
   NodeId getOwnNodeId() const { return _ownNodeId; }
+  NodeId get_max_node_id();
 
   /**
    * Get status on a node.
@@ -483,7 +484,7 @@ private:
 
   bool m_need_restart;
 
-  ndb_sockaddr m_connect_address[MAX_NODES];
+  ndb_sockaddr m_connect_address[ABS_MAX_NODES];
   const char *get_connect_address(NodeId node_id, char *addr_buf,
                                   size_t addr_buf_size);
   void clear_connect_address_cache(NodeId nodeid);
@@ -507,8 +508,8 @@ private:
   int _logLevelThreadSleep;
   MutexVector<NodeId> m_started_nodes;
   MutexVector<EventSubscribeReq> m_log_level_requests;
-  LogLevel m_nodeLogLevel[MAX_NODES];
-  enum ndb_mgm_node_type nodeTypes[MAX_NODES];
+  LogLevel m_nodeLogLevel[ABS_MAX_NODES];
+  enum ndb_mgm_node_type nodeTypes[ABS_MAX_NODES];
   friend class MgmApiSession;
   friend class Ndb_mgmd_event_service;
   Ndb_mgmd_event_service m_event_listner;
@@ -553,7 +554,7 @@ private:
       NDB_TICKS m_start;
       unsigned m_timeout;  // Milliseconds
     };
-    Reservation m_reservations[MAX_NODES];
+    Reservation m_reservations[ABS_MAX_NODES];
 
    public:
     NodeIdReservations();

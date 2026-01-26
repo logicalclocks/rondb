@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2011, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2011, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -5565,7 +5565,7 @@ Dbspj::computePartitionHash(Signal* signal,
  * always selecting the first one we find.
  */
 Uint32 Dbspj::check_own_location_domain(const Uint32 *nodes, Uint32 end) {
-  Uint32 loc_nodes[MAX_NDB_NODES];
+  Uint32 loc_nodes[ABS_MAX_NDB_NODES];
   Uint32 loc_node_count = 0;
   Uint32 my_location_domain_id = m_location_domain_id[getOwnNodeId()];
 

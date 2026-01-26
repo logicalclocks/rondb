@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2018, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2018, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2025, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -57,6 +58,7 @@ static const char *COL_SCHEMA_OP_ID = "schema_op_id";
 // upgrade
 static constexpr int IDENTIFIER_LENGTH = 255;
 static constexpr int LEGACY_IDENTIFIER_LENGTH = 63;
+static constexpr int SLOCK_LENGTH = 255;
 
 static const char *SCHEMA_UUID_KEY = "schema_uuid";
 
@@ -90,9 +92,9 @@ bool Ndb_schema_dist_table::check_schema() const {
   }
 
   // slock
-  // binary, need room for at least 32 bytes(i.e 32*8 bits for 256 nodes)
+  // binary, need room for at least 255 bytes(i.e 255*8 bits for 2040 nodes)
   if (!(check_column_exist(COL_SLOCK) && check_column_binary(COL_SLOCK) &&
-        check_column_minlength(COL_SLOCK, 32))) {
+        check_column_minlength(COL_SLOCK, SLOCK_LENGTH))) {
     return false;
   }
 
@@ -253,10 +255,10 @@ bool Ndb_schema_dist_table::define_table_ndb(NdbDictionary::Table &new_table,
   }
 
   {
-    // slock BINARY(32) NOT NULL
+    // slock BINARY(255) NOT NULL (2040 nodes)
     NdbDictionary::Column col_slock(COL_SLOCK);
     col_slock.setType(NdbDictionary::Column::Binary);
-    col_slock.setLength(32);
+    col_slock.setLength(SLOCK_LENGTH);
     col_slock.setNullable(false);
     if (!define_table_add_column(new_table, col_slock)) return false;
   }
@@ -347,6 +349,10 @@ bool Ndb_schema_dist_table::need_upgrade() const {
       get_column_max_length(COL_NAME) < IDENTIFIER_LENGTH) {
     return true;
   }
+  // The slock column needs upgrade if not 255 bytes
+  if (get_column_max_length(COL_SLOCK) < SLOCK_LENGTH) {
+    return true;
+  }
   return false;
 }
 
@@ -374,7 +380,7 @@ std::string Ndb_schema_dist_table::define_table_dd() const {
   ss << "CREATE TABLE " << db_name() << "." << table_name() << "(\n";
   ss << "db VARBINARY(" << get_column_max_length(COL_DB) << ") NOT NULL,";
   ss << "name VARBINARY(" << get_column_max_length(COL_NAME) << ") NOT NULL,";
-  ss << "slock BINARY(32) NOT NULL,"
+  ss << "slock BINARY(255) NOT NULL,"
         "query BLOB NOT NULL,"
         "node_id INT UNSIGNED NOT NULL,"
         "epoch BIGINT UNSIGNED NOT NULL,"

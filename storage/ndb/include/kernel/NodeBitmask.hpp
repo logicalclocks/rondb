@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2025, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -41,25 +42,26 @@
  *
  * Note that this is used in a lot of signals
  */
-#define _NODE_BITMASK_SIZE 8
+#define _NODE_BITMASK_SIZE_255 8
+#define _NODE_BITMASK_SIZE 64
 
 /**
  * No. of 32 bits words needed to store a node bitmask
  * containing all the nodes in the system prior to 8.0.15
  *
- * The maximum number of total nodes is 255 prior to 8.0.15
+ * The maximum number of total nodes is 255 previously, now 2047
  *
  * - Data nodes, API and MGMD nodes
  * Note that this is used in a lot of signals
  */
-#define _NODE_BITMASK_SIZE_255_NODES 8
+//#define _NODE_BITMASK_SIZE_255_NODES 8
 
 /**
  * No of 32 bits words needed to store a transporter bitmask
  *   containing all the transporters in the system
  *   Both NDB nodes and API, MGM... nodes
  */
-#define _TRP_BITMASK_SIZE 11
+#define _TRP_BITMASK_SIZE 68
 
 /**
  * No of 32 bits words needed to store a node bitmask
@@ -82,14 +84,16 @@
 #define _NDB_NBM_DIFF_BYTES \
   (_NDB_NODE_BITMASK_SIZE - _NDB_NODE_BITMASK_SIZE_48_NODES) * sizeof(Uint32)
 #define _NBM_DIFF_BYTES \
-  (_NODE_BITMASK_SIZE - _NODE_BITMASK_SIZE_255_NODES) * sizeof(Uint32)
+  (_NODE_BITMASK_SIZE - _NODE_BITMASK_SIZE_2047_NODES) * sizeof(Uint32)
 /**
  * No of 32 bits word needed to store B bits for N nodes
  */
 #define NODE_ARRAY_SIZE(N, B) (((N) * (B) + 31) >> 5)
 
 typedef Bitmask<(unsigned int)_NODE_BITMASK_SIZE> NodeBitmask;
+typedef Bitmask<(unsigned int)_NODE_BITMASK_SIZE_255> NodeBitmask255;
 typedef BitmaskPOD<(unsigned int)_NODE_BITMASK_SIZE> NodeBitmaskPOD;
+typedef BitmaskPOD<(unsigned int)_NODE_BITMASK_SIZE_255> NodeBitmask255POD;
 
 typedef Bitmask<(unsigned int)_TRP_BITMASK_SIZE> TrpBitmask;
 typedef BitmaskPOD<(unsigned int)_TRP_BITMASK_SIZE> TrpBitmaskPOD;
@@ -97,12 +101,11 @@ typedef BitmaskPOD<(unsigned int)_TRP_BITMASK_SIZE> TrpBitmaskPOD;
 typedef Bitmask<(unsigned int)_NDB_NODE_BITMASK_SIZE> NdbNodeBitmask;
 typedef BitmaskPOD<(unsigned int)_NDB_NODE_BITMASK_SIZE> NdbNodeBitmaskPOD;
 
-typedef Bitmask<(unsigned int)_NODE_BITMASK_SIZE_255_NODES> NodeBitmask255;
 typedef Bitmask<(unsigned int)_NDB_NODE_BITMASK_SIZE_48_NODES> NdbNodeBitmask48;
 
-#define __NBM_SZ ((MAX_NODES >> 5) + ((MAX_NODES & 31) != 0))
+#define __NBM_SZ ((ABS_MAX_NODES >> 5) + ((ABS_MAX_NODES & 31) != 0))
 #define __TBM_SZ ((MAX_NTRANSPORTERS >> 5) + ((MAX_NTRANSPORTERS & 31) != 0))
-#define __NNBM_SZ ((MAX_NDB_NODES >> 5) + ((MAX_NDB_NODES & 31) != 0))
+#define __NNBM_SZ ((ABS_MAX_NDB_NODES >> 5) + ((ABS_MAX_NDB_NODES & 31) != 0))
 
 #if (__NBM_SZ > _NODE_BITMASK_SIZE)
 #error "MAX_NODES can not fit into NODE_BITMASK_SIZE"
@@ -113,7 +116,7 @@ typedef Bitmask<(unsigned int)_NDB_NODE_BITMASK_SIZE_48_NODES> NdbNodeBitmask48;
 #endif
 
 #if (__NNBM_SZ > _NDB_NODE_BITMASK_SIZE)
-#error "MAX_NDB_NODES can not fit into NDB_NODE_BITMASK_SIZE"
+#error "ABS_MAX_NDB_NODES can not fit into NDB_NODE_BITMASK_SIZE"
 #endif
 
 /**

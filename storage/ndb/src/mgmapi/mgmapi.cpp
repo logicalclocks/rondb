@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
    Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -738,15 +738,24 @@ extern "C" int ndb_mgm_connect(NdbMgmHandle handle, int no_retries,
 #endif
   char buf[1024];
 
-#if defined SIGPIPE && !defined _WIN32
-  if (handle->ignore_sigpipe) (void)signal(SIGPIPE, SIG_IGN);
-#endif
-
   /**
    * Do connect
    */
   LocalConfig &cfg = handle->cfg;
   NdbSocket sock;
+
+#ifndef _WIN32
+  if (ndb_socket_can_disable_sigpipe())
+    sock.disable_sigpipe();
+  else if (handle->ignore_sigpipe) {
+    // Check whether a non-default signal handler has been installed
+    struct sigaction current;
+    int r = sigaction(SIGPIPE, nullptr, &current);
+    assert(r == 0);
+    if (r == 0 && current.sa_handler == SIG_DFL) signal(SIGPIPE, SIG_IGN);
+  }
+#endif
+
   Uint32 i = Uint32(~0);
   while (!sock.is_valid()) {
     Uint32 invalid_Address = 0;
@@ -2312,7 +2321,9 @@ extern "C" int ndb_mgm_dump_state(NdbMgmHandle handle, int nodeId,
 
 extern "C" struct ndb_mgm_configuration *ndb_mgm_get_configuration_from_node(
     NdbMgmHandle handle, int nodeid) {
-  return ndb_mgm_get_configuration2(handle, 0, NDB_MGM_NODE_TYPE_UNKNOWN,
+  return ndb_mgm_get_configuration2(handle,
+                                    NDB_VERSION,
+                                    NDB_MGM_NODE_TYPE_UNKNOWN,
                                     nodeid);
 }
 

@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2005, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2005, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -807,7 +807,7 @@ static ndb_mgm_configuration *fetch_configuration(int from_node) {
   if (from_node == INT_MIN) {
     // from_node option is not requested.
     // Retrieve config from the default src: mgmd
-    conf = ndb_mgm_get_configuration(mgm, 0);
+    conf = ndb_mgm_get_configuration(mgm, NDB_VERSION);
   } else if (from_node < 1) {
     fprintf(stderr, "Invalid node number %d is given for --config_from_node.\n",
             from_node);

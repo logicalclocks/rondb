@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -107,10 +107,10 @@ class Ndbcntr : public SimulatedBlock {
     struct {
       Uint32 m_nodeId;
       Uint32 m_lastGci;
-    } m_logNodes[MAX_NDB_NODES];
+    } m_logNodes[ABS_MAX_NDB_NODES];
     Uint32 m_logNodesCount;
 
-    Uint32 m_wait_sp[MAX_NDB_NODES];
+    Uint32 m_wait_sp[ABS_MAX_NDB_NODES];
   } c_start;
 
   struct LocalSysfile {

@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2022, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2025, Oracle and/or its affiliates.
    Copyright (c) 2020, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -525,7 +525,8 @@ THRConfig::do_parse_auto(unsigned realtime,
                          unsigned &num_rr_groups,
                          bool use_tc_threads,
                          bool use_ldm_threads,
-                         unsigned max_rr_group_size) {
+                         unsigned max_rr_group_size,
+                         unsigned exclusive_io_cpus) {
   Uint32 tc_threads = 0;
   Uint32 ldm_threads = 0;
   Uint32 main_threads = 0;
@@ -658,6 +659,13 @@ THRConfig::do_parse_auto(unsigned realtime,
      * Robin groups in an even fashion since there is no knowledge of
      * which L3 cache a Round Robin group belongs to.
      */
+    if (exclusive_io_cpus > 0 &&
+        ((exclusive_io_cpus * 4) > num_cpus)) {
+      exclusive_io_cpus = num_cpus / 4;
+      g_eventLogger->info("Max 25 percent of the CPUs can be exclusive to IO, "
+                          "decreased ExclusiveIoCPUs to %u",
+        exclusive_io_cpus);
+    }
     num_rr_groups =
       Ndb_CreateCPUMap(num_query_instances, max_rr_group_size);
     Uint32 count_ldm_threads = ldm_threads;
@@ -669,6 +677,11 @@ THRConfig::do_parse_auto(unsigned realtime,
     g_eventLogger->info("Number of RR Groups = %u", num_rr_groups);
     Uint32 rr_group = 0;
     Uint32 next_cpu_id = Ndb_GetFirstCPUInMap(rr_group);
+    setLockIoThreadsToCPU(next_cpu_id);
+    for (Uint32 i  = 0; i < exclusive_io_cpus; i++) {
+      next_cpu_id = Ndb_GetNextCPUInMap(next_cpu_id, rr_group);
+      setLockIoThreadsToCPU(next_cpu_id);
+    }
 
     /**
      * Calculate the number of LDM threads that will share CPU core with
@@ -682,12 +695,13 @@ THRConfig::do_parse_auto(unsigned realtime,
     Uint32 num_only_ldms_in_group = num_rr_groups * num_only_ldm_groups;
     assert(num_only_ldms_in_group <= count_ldm_threads);
 
-    for (Uint32 i = 0; i < num_cpus; i++) {
+    for (Uint32 i = exclusive_io_cpus; i < num_cpus; i++) {
       Uint32 thread_type = T_SEND; // T_SEND silences compiler
       Uint32 inx = RNIL;
       Uint32 odd = (i & 1) == 1;
-      if (i != 0) {
+      if (i != exclusive_io_cpus) {
         next_cpu_id = Ndb_GetNextCPUInMap(next_cpu_id, rr_group);
+        setLockIoThreadsToCPU(next_cpu_id);
       }
       if (num_only_ldms_in_group > 0) {
         thread_type = T_LDM;
@@ -836,6 +850,7 @@ THRConfig::do_parse_auto(unsigned realtime,
         }
       }
     }
+    lock_io_threads();
   } else {
     num_rr_groups = Ndb_GetRRGroups(num_query_instances, max_rr_group_size);
   }
@@ -926,12 +941,16 @@ void THRConfig::lock_io_threads() {
    * preferred manner is to only use ThreadConfig
    */
   if (m_LockIoThreadsToCPU.count() == 1) {
+    m_threads[T_IXBLD][0].m_bind_type = T_Thread::B_CPU_BIND;
+    m_threads[T_IXBLD][0].m_bind_no = m_LockIoThreadsToCPU.getBitNo(0);
     m_threads[T_IO][0].m_bind_type = T_Thread::B_CPU_BIND;
     m_threads[T_IO][0].m_bind_no = m_LockIoThreadsToCPU.getBitNo(0);
     m_threads[T_WD][0].m_bind_type = T_Thread::B_CPU_BIND;
     m_threads[T_WD][0].m_bind_no = m_LockIoThreadsToCPU.getBitNo(0);
   } else if (m_LockIoThreadsToCPU.count() > 1) {
     unsigned no = createCpuSet(m_LockIoThreadsToCPU, true);
+    m_threads[T_IXBLD][0].m_bind_type = T_Thread::B_CPUSET_BIND;
+    m_threads[T_IXBLD][0].m_bind_no = no;
     m_threads[T_IO][0].m_bind_type = T_Thread::B_CPUSET_BIND;
     m_threads[T_IO][0].m_bind_no = no;
     m_threads[T_WD][0].m_bind_type = T_Thread::B_CPUSET_BIND;

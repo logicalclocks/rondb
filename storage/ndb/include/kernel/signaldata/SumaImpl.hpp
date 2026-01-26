@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -347,17 +347,31 @@ struct SubTableData {
     ri = (ri & 0xFFFFFF00) | val;
   }
   static void setReqNodeId(Uint32 &ri, Uint32 val) {
-    ri = (ri & 0xFFFF00FF) | (val << 8);
+    Uint32 val_low = val & 0xFF;
+    Uint32 val_high = (val >> 8);
+    require(val_high <= 0xFF);
+    ri = (ri & 0x00FF00FF) |
+         (val_low << 8) |
+         (val_high << 24);
   }
   static void setNdbdNodeId(Uint32 &ri, Uint32 val) {
+    require(val <= 0xFF);
     ri = (ri & 0xFF00FFFF) | (val << 16);
   }
 
-  static Uint32 getOperation(const Uint32 &ri) { return (ri & 0xFF); }
+  static Uint32 getOperation(const Uint32 &ri) {
+    return (ri & 0xFF);
+  }
 
-  static Uint32 getReqNodeId(const Uint32 &ri) { return (ri >> 8) & 0xFF; }
+  static Uint32 getReqNodeId(const Uint32 &ri) {
+    Uint32 val_low =  (ri >> 8) & 0xFF;
+    Uint32 val_high = (ri >> 24) & 0xFF;
+    return val_low + (val_high << 8);
+  }
 
-  static Uint32 getNdbdNodeId(const Uint32 &ri) { return (ri >> 16) & 0xFF; }
+  static Uint32 getNdbdNodeId(const Uint32 &ri) {
+    return (ri >> 16) & 0xFF;
+  }
 };
 
 struct SubSyncContinueReq {

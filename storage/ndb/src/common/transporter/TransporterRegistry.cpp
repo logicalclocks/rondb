@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
    Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -338,11 +338,11 @@ TransporterRegistry::TransporterRegistry(TransporterCallback *callback,
 #ifdef NDB_SHM_TRANSPORTER_SUPPORTED
   theSHMTransporters = new SHM_Transporter *[maxTransporters];
 #endif
-  theTransporterTypes = new TransporterType[MAX_NODES];
-  theNodeIdTransporters = new Transporter *[MAX_NODES];
-  theNodeIdMultiTransporters = new Multi_Transporter *[MAX_NODES];
+  theTransporterTypes = new TransporterType[ABS_MAX_NODES];
+  theNodeIdTransporters = new Transporter *[ABS_MAX_NODES];
+  theNodeIdMultiTransporters = new Multi_Transporter *[ABS_MAX_NODES];
   performStates = new PerformState[maxTransporters];
-  nodeActiveStates    = new bool              [MAX_NODES];
+  nodeActiveStates    = new bool              [ABS_MAX_NODES];
   ioStates = new IOState[maxTransporters];
   peerUpIndicators = new bool[maxTransporters];
   connectingTime = new Uint32[maxTransporters];
@@ -362,7 +362,7 @@ TransporterRegistry::TransporterRegistry(TransporterCallback *callback,
 
   // Initialize the transporter arrays
   ErrorState default_error_state = {TE_NO_ERROR, (const char *)~(UintPtr)0};
-  for (unsigned i = 0; i < MAX_NODES; i++) {
+  for (unsigned i = 0; i < ABS_MAX_NODES; i++) {
     theNodeIdTransporters[i] = nullptr;
     theNodeIdMultiTransporters[i] = nullptr;
     nodeActiveStates[i]   = true;
@@ -464,7 +464,7 @@ void TransporterRegistry::removeAll() {
     // allTransporters[] contain TCP, Loopback and SHM_Transporters
     delete allTransporters[trpId];
   }
-  for (unsigned i = 0; i < MAX_NODES; i++) {
+  for (unsigned i = 0; i < ABS_MAX_NODES; i++) {
     delete theNodeIdMultiTransporters[i];
   }
   nTransporters = 0;
@@ -618,7 +618,7 @@ bool TransporterRegistry::connect_server(NdbSocket &&socket, BaseString &msg,
   */
 
   // Check that nodeid is in range before accessing the arrays
-  if (nodeId < 0 || nodeId > (int)MAX_NODES) {
+  if (nodeId < 0 || nodeId > (int)ABS_MAX_NODES) {
     /* Strange, log it */
     msg.assfmt(
         "Ignored connection attempt as client "
@@ -830,7 +830,7 @@ bool TransporterRegistry::configureTransporter(
   assert(localNodeId);
   assert(config->localNodeId == localNodeId);
 
-  if (remoteNodeId > MAX_NODES) return false;
+  if (remoteNodeId > ABS_MAX_NODES) return false;
 
   Transporter *t = theNodeIdTransporters[remoteNodeId];
   if (t != nullptr) {
@@ -1396,6 +1396,8 @@ TransporterRegistry::check_TCP(TransporterReceiveHandle& recvdata,
         ndb_socket_t sock_fd = allTransporters[trpid]->getSocket();
         epoll_ctl(recvdata.m_epoll_fd, EPOLL_CTL_DEL,
                   ndb_socket_get_native(sock_fd), nullptr);
+        DBUG_PRINT("info", ("start_disconnecting(4), trp_id: %u",
+          trpid));
         start_disconnecting(trpid);
       } else if (recvdata.m_epoll_events[i].events & EPOLLIN) {
         recvdata.m_read_transporters.set(trpid);
@@ -2614,7 +2616,8 @@ bool TransporterRegistry::start_disconnecting(TrpId trp_id, int errnum,
         send_source ? "send" : "recv", errnum, performStates[trp_id]);
   }
   DBUG_ENTER("TransporterRegistry::start_disconnecting");
-  DBUG_PRINT("info", ("performStates[trp:%u]=DISCONNECTING", trp_id));
+  DBUG_PRINT("info", ("performStates[trp:%u]=DISCONNECTING, errnum: %d",
+    trp_id, errnum));
   DEBUG_FPRINTF((stderr, "(%u)performStates[trp:%u] = DISCONNECTING\n",
                  localNodeId, trp_id));
   performStates[trp_id] = DISCONNECTING;
@@ -2761,8 +2764,11 @@ void TransporterRegistry::report_disconnect(TransporterReceiveHandle &recvdata,
       Transporter *other_trp = multi_trp->get_active_transporter(i);
       const TrpId other_trp_id = other_trp->getTransporterIndex();
       if (performStates[other_trp_id] != DISCONNECTED) {
-        if (this_trp->m_is_active)  // 1)
+        if (this_trp->m_is_active)  { // 1)
+          DBUG_PRINT("info", ("start_disconnecting(2), trp_id: %u",
+            other_trp_id));
           start_disconnecting(other_trp_id);
+        }
 
         ready_to_disconnect = false;  // 2)
         DEBUG_FPRINTF((stderr,
@@ -2780,8 +2786,11 @@ void TransporterRegistry::report_disconnect(TransporterReceiveHandle &recvdata,
       Transporter *other_trp = multi_trp->get_inactive_transporter(i);
       const TrpId other_trp_id = other_trp->getTransporterIndex();
       if (performStates[other_trp_id] != DISCONNECTED) {
-        if (this_trp->m_is_active)  // 1)
+        if (this_trp->m_is_active) {  // 1)
+          DBUG_PRINT("info", ("start_disconnecting(3), trp_id: %u",
+            other_trp_id));
           start_disconnecting(other_trp_id);
+        }
 
         ready_to_disconnect = false;  // 2)
         DEBUG_FPRINTF((stderr,
@@ -3623,13 +3632,13 @@ TransporterRegistry::get_send_transporter_id(NodeId nodeId, BlockNumber bno)
 }
 
 Transporter* TransporterRegistry::get_node_transporter(NodeId nodeId) const {
-  assert(nodeId <= MAX_NODES);
+  assert(nodeId <= ABS_MAX_NODES);
   return theNodeIdTransporters[nodeId];
 }
 
 Multi_Transporter *TransporterRegistry::get_node_multi_transporter(
     NodeId nodeId) const {
-  assert(nodeId <= MAX_NODES);
+  assert(nodeId <= ABS_MAX_NODES);
   return theNodeIdMultiTransporters[nodeId];
 }
 
@@ -3641,7 +3650,7 @@ Multi_Transporter *TransporterRegistry::get_node_multi_transporter(
  */
 Transporter *TransporterRegistry::get_node_base_transporter(
     NodeId nodeId) const {
-  assert(nodeId <= MAX_NODES);
+  assert(nodeId <= ABS_MAX_NODES);
   Transporter *t = theNodeIdTransporters[nodeId];
   assert(t == nullptr || !t->isPartOfMultiTransporter());
   return t;
@@ -3703,7 +3712,7 @@ bool TransporterRegistry::connect_client(NdbMgmHandle *h) {
 bool TransporterRegistry::report_dynamic_ports(NdbMgmHandle h) const {
   // Fill array of nodeid/port pairs for those ports which are dynamic
   unsigned num_ports = 0;
-  ndb_mgm_dynamic_port ports[MAX_NODES];
+  ndb_mgm_dynamic_port ports[ABS_MAX_NODES];
   for (unsigned i = 0; i < m_transporter_interface.size(); i++) {
     const Transporter_interface &ti = m_transporter_interface[i];
     if (ti.m_s_service_port >= 0) continue;  // Not a dynamic port
@@ -3870,7 +3879,7 @@ void TransporterRegistry::updateWritePtr(TransporterSendBufferHandle *handle,
 
 // FIXME(later): Change to use TrpId to identify Transporter:
 void TransporterRegistry::inc_overload_count(NodeId nodeId) {
-  assert(nodeId < MAX_NODES);
+  assert(nodeId < ABS_MAX_NODES);
   assert(theNodeIdTransporters[nodeId] != nullptr);
   theNodeIdTransporters[nodeId]->inc_overload_count();
 }
@@ -3888,19 +3897,19 @@ void TransporterRegistry::update_send_buffer_usage(TrpId trpId,
 }
 
 void TransporterRegistry::inc_slowdown_count(NodeId nodeId) {
-  assert(nodeId < MAX_NODES);
+  assert(nodeId < ABS_MAX_NODES);
   assert(theNodeIdTransporters[nodeId] != nullptr);
   theNodeIdTransporters[nodeId]->inc_slowdown_count();
 }
 
 Uint32 TransporterRegistry::get_overload_count(NodeId nodeId) const {
-  assert(nodeId < MAX_NODES);
+  assert(nodeId < ABS_MAX_NODES);
   assert(theNodeIdTransporters[nodeId] != nullptr);
   return theNodeIdTransporters[nodeId]->get_overload_count();
 }
 
 Uint32 TransporterRegistry::get_slowdown_count(NodeId nodeId) const {
-  assert(nodeId < MAX_NODES);
+  assert(nodeId < ABS_MAX_NODES);
   assert(theNodeIdTransporters[nodeId] != nullptr);
   return theNodeIdTransporters[nodeId]->get_slowdown_count();
 }

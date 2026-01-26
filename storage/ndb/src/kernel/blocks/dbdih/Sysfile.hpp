@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2025, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -48,18 +49,18 @@
  * No of 32 bits word in sysfile
  *
  *   6 +                                           // was 5 in < version 5.1
- *   MAX_NDB_NODES +                               // lastCompletedGCI
- *   NODE_ARRAY_SIZE(MAX_NDB_NODES, 4) +           // nodeStatus
- *   NODE_ARRAY_SIZE(MAX_NDB_NODES, NODEID_BITS) + // nodeGroups
- *   NODE_ARRAY_SIZE(MAX_NDB_NODES, NODEID_BITS) + // takeOver
+ *   ABS_MAX_NDB_NODES +                           // lastCompletedGCI
+ *   NODE_ARRAY_SIZE(ABS_MAX_NDB_NODES, 4) +       // nodeStatus
+ *   NODE_ARRAY_SIZE(ABS_MAX_NDB_NODES, NODEID_BITS) + // nodeGroups
+ *   NODE_ARRAY_SIZE(ABS_MAX_NDB_NODES, NODEID_BITS) + // takeOver
  *   NodeBitmask::NDB_NODE_BITMASK_SIZE            // Lcp Active
  */
 #define _SYSFILE_SIZE32_v1 (6 + 49 + 7 + 13 + 13 + 2)
 
 #define _SYSFILE_SIZE32_v2                                 \
-  (7 + MAX_NDB_NODES + NODE_ARRAY_SIZE(MAX_NDB_NODES, 4) + \
-   NODE_ARRAY_SIZE(MAX_NDB_NODES, NODEID_BITS) +           \
-   NODE_ARRAY_SIZE(MAX_NDB_NODES, NODEID_BITS) + _NDB_NODE_BITMASK_SIZE)
+  (7 + ABS_MAX_NDB_NODES + NODE_ARRAY_SIZE(ABS_MAX_NDB_NODES, 4) + \
+   NODE_ARRAY_SIZE(ABS_MAX_NDB_NODES, NODEID_BITS) +           \
+   NODE_ARRAY_SIZE(ABS_MAX_NDB_NODES, NODEID_BITS) + _NDB_NODE_BITMASK_SIZE)
 
 #define _SYSFILE_FILE_SIZE 1536
 
@@ -115,7 +116,7 @@ struct Sysfile {
   /**
    * Last completed GCI for each node
    */
-  Uint32 lastCompletedGCI[MAX_NDB_NODES];
+  Uint32 lastCompletedGCI[ABS_MAX_NDB_NODES];
 
   /**
    * Active status bits
@@ -133,7 +134,7 @@ struct Sysfile {
     NS_NotDefined = 8,
     NS_Configured = 9
   };
-  static constexpr Uint32 NODE_STATUS_SIZE = NODE_ARRAY_SIZE(MAX_NDB_NODES, 4);
+  static constexpr Uint32 NODE_STATUS_SIZE = NODE_ARRAY_SIZE(ABS_MAX_NDB_NODES, 4);
   Uint32 nodeStatus[NODE_STATUS_SIZE];
 
   Uint32 getNodeStatus(NodeId) const;
@@ -148,7 +149,7 @@ struct Sysfile {
    * The node group of each node
    *   Sizeof(NodeGroup) = 8 Bit
    */
-  Uint16 nodeGroups[MAX_NDB_NODES];
+  Uint16 nodeGroups[ABS_MAX_NDB_NODES];
 
   NodeId getNodeGroup(NodeId) const;
   void setNodeGroup(NodeId, Uint16 group);
@@ -159,7 +160,7 @@ struct Sysfile {
   /**
    * Any node can take over for any node
    */
-  Uint16 takeOver[MAX_NDB_NODES];
+  Uint16 takeOver[ABS_MAX_NDB_NODES];
 
   static void setTakeOverNode_v1(NodeId nodeId, Uint32 *takeOver, Uint8 toNode);
   static NodeId getTakeOverNode_v1(NodeId nodeId, const Uint32 *takeOver);
@@ -177,7 +178,7 @@ struct Sysfile {
   int unpack_sysfile_format_v1(const Uint32 cdata[], Uint32 *cdata_size_ptr);
 };
 
-#if (MAX_NDB_NODES > (1 << NODEID_BITS))
+#if (ABS_MAX_NDB_NODES > (1 << NODEID_BITS))
 #error "Sysfile node id is too small"
 #endif
 
@@ -196,7 +197,7 @@ struct Sysfile {
 inline void Sysfile::initSysFile() {
   memset(this, 0, sizeof(*this));
   maxNodeId = 0;
-  for (Uint32 i = 0; i < MAX_NDB_NODES; i++) {
+  for (Uint32 i = 0; i < ABS_MAX_NDB_NODES; i++) {
     setNodeGroup(i, NO_NODE_GROUP_ID);
     setNodeStatus(i, Sysfile::NS_NotDefined);
   }
@@ -250,7 +251,7 @@ inline void Sysfile::setNodeStatus(NodeId nodeId, Uint32 status) {
 inline Uint32 Sysfile::getMaxNodeId() const {
 #if defined(VM_TRACE)
   Uint32 max_node_id;
-  for (max_node_id = MAX_NDB_NODES - 1; max_node_id > 0; max_node_id--) {
+  for (max_node_id = ABS_MAX_NDB_NODES - 1; max_node_id > 0; max_node_id--) {
     if (Sysfile::getNodeStatus(max_node_id) != Sysfile::NS_NotDefined) {
       break;
     }

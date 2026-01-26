@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
    Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -70,6 +70,8 @@ Uint64 Dblqh::getTransactionMemoryNeed(
 
 void Dblqh::initData() 
 {
+  m_current_rebuild_indexes_ongoing = 0;
+  m_next_table_rebuild_indexes = 0;
   c_any_node_waiting_for_lcp = false;
 #ifdef STATS_PARALLEL_COPY_FRAGMENT
   c_outstanding_words_copy_fragreq = 0;

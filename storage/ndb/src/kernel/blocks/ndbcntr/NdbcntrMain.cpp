@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
    Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -2686,7 +2686,7 @@ bool Ndbcntr::trySystemRestart(Signal *signal) {
                       c_start.m_starting.getText(buf));
 
   Uint32 recNode = 0;
-  NodeBitmask tmp_m_starting;
+  NdbNodeBitmask tmp_m_starting;
   tmp_m_starting = c_start.m_starting;
   while (!tmp_m_starting.isclear()) {
     recNode = tmp_m_starting.find(recNode + 1);

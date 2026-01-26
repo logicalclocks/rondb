@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2019, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2019, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2025, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -74,7 +75,7 @@ int Sysfile::pack_sysfile_format_v2(Uint32 cdata[],
    */
 #ifdef VM_TRACE
   // memset(takeOver, 0, sizeof(takeOver)); // TODO clear takeover at caller??
-  for (Uint32 i = 0; i < MAX_NDB_NODES; i++) {
+  for (Uint32 i = 0; i < ABS_MAX_NDB_NODES; i++) {
     ActiveStatus active_status = (ActiveStatus)getNodeStatus(i);
     require(active_status != NS_ActiveMissed_2);
     require(active_status != NS_ActiveMissed_3);
@@ -359,7 +360,7 @@ int Sysfile::unpack_sysfile_format_v2(const Uint32 cdata[],
   const Uint32 max_node_id = cdata[index];
   index++;
 
-  if (max_node_id >= MAX_NDB_NODES) {
+  if (max_node_id >= ABS_MAX_NDB_NODES) {
     return -7;
   }
 

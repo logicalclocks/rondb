@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2010, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2010, 2025, Oracle and/or its affiliates.
    Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -472,6 +472,10 @@ int PollGuard::wait_scan(int wait_time,
   return wait_for_input_in_loop(wait_time,
                                 forceSend,
                                 start_time);
+}
+
+void PollGuard::flush_send() {
+  m_clnt->do_forceSend(true);
 }
 
 int PollGuard::wait_for_input_in_loop(int max_wait_ms,

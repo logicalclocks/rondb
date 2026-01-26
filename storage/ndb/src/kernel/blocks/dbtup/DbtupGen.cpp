@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
    Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -79,6 +79,11 @@ void Dbtup::initData()
   // Records with constant sizes
   init_list_sizes();
   cpackedListIndex = 0;
+  m_offline_rebuild_outstanding = 0;
+  m_queued_offline_rebuild_counter = 0;
+  for (Uint32 i = 0; i < MAX_OUTSTANDING_REBUILD_INDEXES + 1; i++) {
+    m_queued_offline_rebuild[i] = RNIL;
+  }
 }//Dbtup::initData()
 
 Dbtup::Dbtup(Block_context& ctx,

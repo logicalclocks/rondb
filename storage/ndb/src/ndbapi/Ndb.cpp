@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
    Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -2111,7 +2111,7 @@ void Ndb::printState(const char *fmt, ...) {
   NdbMutex_Lock(ndb_print_state_mutex);
   unsigned i;
   ndbout << buf << " ndb=" << hex << (void *)this << endl;
-  for (unsigned n = 0; n < MAX_NDB_NODES; n++) {
+  for (unsigned n = 0; n < ABS_MAX_NDB_NODES; n++) {
     NdbTransaction *con = theConnectionArray[n];
     if (con != nullptr) {
       ndbout << "conn " << n << ":" << endl;

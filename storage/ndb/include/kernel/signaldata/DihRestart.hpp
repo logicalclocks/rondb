@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2011, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2011, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2025, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -41,9 +42,9 @@ struct DihRestartReq {
    * Below only for direct signal.
    */
   static constexpr Uint32 CheckLength =
-      1 + NdbNodeBitmask::Size + MAX_NDB_NODES;
+      1 + NdbNodeBitmask::Size + ABS_MAX_NDB_NODES;
   Uint32 nodemask[NdbNodeBitmask::Size];
-  Uint32 node_gcis[MAX_NDB_NODES];
+  Uint32 node_gcis[ABS_MAX_NDB_NODES];
 };
 
 struct DihRestartRef {

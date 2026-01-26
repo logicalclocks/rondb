@@ -1,4 +1,4 @@
-# Copyright (c) 2005, 2024, Oracle and/or its affiliates.
+# Copyright (c) 2005, 2025, Oracle and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -45,6 +45,18 @@
    fun:_dl_allocate_tls
    fun:pthread_create*
 
+}
+
+{
+   pthread allocate_tls timer memory loss
+   Memcheck:Leak
+   match-leak-kinds: possible
+   fun:calloc
+   ...
+   fun:_dl_allocate_tls
+   fun:pthread_create*
+   ...
+   fun:timer_create*
 }
 
 {
@@ -2731,4 +2743,15 @@
    ...
    fun:_dl_catch_exception
    ...
+}
+
+{
+   mysqltest_do_shutdown_timeout
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:allocate
+   ...
+   fun:_ZL18do_shutdown_serverP10st_command
+   fun:main
 }

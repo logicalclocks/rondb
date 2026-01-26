@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
    Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -168,6 +168,9 @@
 
 #define ZSCANTIME_OUT_ERROR 296
 #define ZSCANTIME_OUT_ERROR2 297
+
+#define ZSCAN_PAR_RECEIVER_ID_ERROR 2201
+#define ZSCAN_CONTINOUS_SCAN_LOCK_ERROR 2202
 
 // ----------------------------------------
 // Error Codes for transactions
@@ -1586,6 +1589,16 @@ class Dbtc : public SimulatedBlock {
 
     Uint32 m_location_domain_id;
 
+    /* Discrete states of API failure handling for logs etc */
+    enum ApiFailStates {
+      AF_IDLE,
+      AF_CHECK_TRANS,
+      AF_CHECK_MARKERS,
+      AF_CHECK_MARKERS_WAIT_TC_TAKEOVER,
+      AF_CHECK_MARKERS_WAIT_TRANS
+    };
+    Uint32 m_af_state;
+    /* Independent steps of Data node failure handling */
     enum NodeFailBits {
       NF_TAKEOVER = 0x1,
       NF_CHECK_SCAN = 0x2,
@@ -1593,7 +1606,7 @@ class Dbtc : public SimulatedBlock {
       NF_BLOCK_HANDLE = 0x8,
       NF_NODE_FAIL_BITS = 0xF  // All bits...
     };
-    Uint32 m_nf_bits;
+    Uint32 m_nf_bits; /* Node fail handling state */
     NdbNodeBitmask _m_lqh_trans_conf;
     /**
      * Indicator if any history to track yet
@@ -1811,11 +1824,13 @@ class Dbtc : public SimulatedBlock {
     // The value of fragmentCompleted in the last received SCAN_FRAGCONF
     Uint8 m_scan_frag_conf_status;
 
+    Uint8 m_apiPtr_index;
+
     inline void startFragTimer(Uint32 timeVal) { scanFragTimer = timeVal; }
     inline void stopFragTimer(void) { scanFragTimer = 0; }
 
     Uint32 m_ops;
-    Uint32 m_apiPtr;
+    Uint32 m_apiPtr[4];
     Uint32 m_totalLen;
     Uint32 m_hasMore;
     Uint32 nextList;
@@ -1976,6 +1991,7 @@ class Dbtc : public SimulatedBlock {
      *
      */
     bool m_scan_dist_key_flag;
+    bool m_par_ordered_scan_flag;
     Uint32 m_scan_dist_key;
     Uint32 m_read_any_node;
     NDB_TICKS m_start_ticks;
@@ -2017,8 +2033,8 @@ class Dbtc : public SimulatedBlock {
    *       TC NODE.       */
   /*************************************************************************>*/
   struct TcFailRecord {
-    Uint16 queueList[MAX_NDB_NODES];
-    Uint8 takeOverProcState[MAX_NDB_NODES];
+    Uint16 queueList[ABS_MAX_NDB_NODES];
+    Uint8 takeOverProcState[ABS_MAX_NDB_NODES];
     UintR completedTakeOver;
     UintR currentHashIndexTakeOver;
     Uint32 maxInstanceId;
@@ -2585,8 +2601,6 @@ class Dbtc : public SimulatedBlock {
 
   void checkScanActiveInFailedLqh(Signal *signal, Uint32 scanPtrI,
                                   Uint32 failedNodeId);
-  void checkScanFragList(Signal *, Uint32 failedNodeId, ScanRecord *scanP,
-                         Local_ScanFragRec_dllist::Head &);
 
   void nodeFailCheckTransactions(Signal *, Uint32 transPtrI,
                                  Uint32 failedNodeId);
@@ -2820,8 +2834,8 @@ class Dbtc : public SimulatedBlock {
 
   BlockReference capiFailRef;
   UintR cpackedListIndex;
-  Uint16 cpackedList[MAX_NODES];
-  UintR capiConnectClosing[MAX_NODES];
+  Uint16 cpackedList[ABS_MAX_NODES];
+  UintR capiConnectClosing[ABS_MAX_NODES];
   UintR con_lineNodes;
 
   UintR tabortInd;
@@ -3395,6 +3409,7 @@ class Dbtc : public SimulatedBlock {
   bool m_dbinfo_full_apiconnectrecord;
 
   void dump_trans(ApiConnectRecordPtr transPtr);
+  void dump_scan_state(ApiConnectRecordPtr scanTransPtr);
   bool hasOp(ApiConnectRecordPtr transPtr, Uint32 op);
   bool is_transaction_to_start(ApiConnectRecord*, Uint32);
   bool check_tckey_queueing(Signal *signal,

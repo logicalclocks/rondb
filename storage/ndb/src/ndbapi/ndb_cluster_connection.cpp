@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2004, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2004, 2025, Oracle and/or its affiliates.
    Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -23,6 +23,8 @@
    along with this program; if not, write to the Free Software
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
+
+#include <ctime>
 
 #include <ndb_global.h>
 #include "util/require.h"
@@ -337,7 +339,7 @@ unsigned Ndb_cluster_connection::max_nodegroup() {
     // If any node is answering, ndb is answering
     //************************************************
     trp_node n = tp->theClusterMgr->getNodeInfo(node_id);
-    if (n.is_confirmed() && n.m_state.nodeGroup <= MAX_NDB_NODES)
+    if (n.is_confirmed() && n.m_state.nodeGroup <= ABS_MAX_NDB_NODES)
       ng.set(n.m_state.nodeGroup);
   }
   tp->unlock_poll_mutex();
@@ -478,8 +480,8 @@ class NdbApiInternalLogHandler : public LogHandler {
       : m_defaultHandler(defaultHandler), m_userConsumer(nullptr) {
     m_consumer_mutex = NdbMutex_Create();
     m_handler_mutex = NdbMutex_Create();
-    Logger::LoggerTest::setHandlerPointerAdress(*g_eventLogger,
-                                                &m_defaultHandler);
+    Logger::LoggerTest::setHandlerPointerAddress(*g_eventLogger,
+                                                 &m_defaultHandler);
   }
 
  public:
@@ -491,8 +493,8 @@ class NdbApiInternalLogHandler : public LogHandler {
     g_api_internal_log_handler = nullptr;
   }
 
-  virtual void append(const char *pCategory, Logger::LoggerLevel level,
-                      const char *pMsg, time_t now) override {
+  void append(const char *pCategory, Logger::LoggerLevel level,
+              const char *pMsg, const std::timespec *now) override {
     {
       if (m_userConsumer) {
         Guard g(m_consumer_mutex);
@@ -526,11 +528,10 @@ class NdbApiInternalLogHandler : public LogHandler {
     return true;
   }
   bool checkParams() override { return true; }
-  void writeHeader(const char *, Logger::LoggerLevel, time_t) override {
-    return;
-  }
-  void writeMessage(const char *) override { return; }
-  void writeFooter() override { return; }
+  void writeHeader(const char *, Logger::LoggerLevel,
+                   const std::timespec *) override {}
+  void writeMessage(const char *) override {}
+  void writeFooter() override {}
   void setRepeatFrequency(unsigned val) override {
     m_defaultHandler->setRepeatFrequency(val);
   }
@@ -563,6 +564,13 @@ Ndb_cluster_connection_impl::Ndb_cluster_connection_impl(
 
   NdbMutex_Lock(g_ndb_connection_mutex);
   if (g_ndb_connection_count++ == 0) {
+    if (g_eventLogger == nullptr) {
+      [[maybe_unused]] int ret = fprintf(stderr,
+                                         "ERROR: g_eventLogger object is "
+                                         "null. ndb_init() not called?\n");
+      require(g_eventLogger != nullptr);
+    }
+
     NdbColumnImpl::create_pseudo_columns();
     /* Setup singleton InternalLogHandler if needed */
     NdbApiInternalLogHandler::getLogHandlerInstance();
@@ -824,7 +832,7 @@ Ndb_cluster_connection_impl::set_location_domain_id(Uint32 nodeId,
   if (nodeId == m_my_node_id) {
     m_my_location_domain_id = locationDomainId;
   } else {
-    if (nodeId >=  MAX_NDB_NODES ||
+    if (nodeId >=  ABS_MAX_NDB_NODES ||
         m_db_nodes.get(nodeId) == 0) { // Thus it is another API node
       DBUG_RETURN(0);
     }
@@ -851,7 +859,7 @@ Ndb_cluster_connection_impl::set_location_domain_id(Uint32 nodeId,
     }
   } else {
     /* We move to a new LocationDomainId for our node */
-    for (Uint32 i = 1; i < MAX_NDB_NODES; i++) {
+    for (Uint32 i = 1; i < ABS_MAX_NDB_NODES; i++) {
       if (m_db_nodes.get(i) == 0) continue;
       Int32 adjustment = 0;
       if (old_locationDomainId == m_location_domain_id[i] &&
@@ -1089,8 +1097,8 @@ int Ndb_cluster_connection_impl::init_nodes_vector(
 }
 
 Uint32 Ndb_cluster_connection_impl::get_db_nodes(
-    Uint8 arr[MAX_NDB_NODES]) const {
-  require(m_db_nodes.count() < MAX_NDB_NODES);
+    Uint8 arr[ABS_MAX_NDB_NODES]) const {
+  require(m_db_nodes.count() < ABS_MAX_NDB_NODES);
   Uint32 cnt = 0;
   for (Uint32 node_id = m_db_nodes.find_first();
        node_id != NdbNodeBitmask::NotFound;
@@ -1105,6 +1113,7 @@ Uint32
 Ndb_cluster_connection_impl::get_unconnected_db_nodes(
   Uint32 & num_connected_db_nodes) const
 {
+  DBUG_ENTER("Ndb_cluster_connection_impl::get_unconnected_db_nodes");
   TransporterFacade *tp = m_transporter_facade;
 
   NdbNodeBitmask not_active;// All nodes not_active
@@ -1119,16 +1128,19 @@ Ndb_cluster_connection_impl::get_unconnected_db_nodes(
     const trp_node& node = tp->theClusterMgr->getNodeInfo(node_id);
     if (!node.m_node_active)
     {
+      DBUG_PRINT("info", ("Node %u not active", node_id));
       not_active.set(node_id);
       continue;
     }
     if (!node.m_alive)
     {
+      DBUG_PRINT("info", ("Node %u not alive", node_id));
       continue;
     }
+    DBUG_PRINT("info", ("Node %u alive", node_id));
     connected.set(node_id);
     NdbNodeBitmask nodes;
-    // Truncate NodeBitmask to NdbNodeBitmask, data nodes are in lower bits
+    // Truncate NodeBitmask255 to NdbNodeBitmask, data nodes are in lower bits
     nodes.assign(nodes.Size, node.m_state.m_connected_nodes.rep.data);
     started.bitOR(nodes);
   }
@@ -1139,7 +1151,7 @@ Ndb_cluster_connection_impl::get_unconnected_db_nodes(
      * No db nodes connected, means all unconnected.
      */
     assert(m_db_nodes.count() == m_nodes_comm_group.size());
-    return m_nodes_comm_group.size();
+    DBUG_RETURN(m_nodes_comm_group.size());
   }
 
   /**
@@ -1149,10 +1161,12 @@ Ndb_cluster_connection_impl::get_unconnected_db_nodes(
    */
   connected.bitAND(m_db_nodes);
   num_connected_db_nodes = connected.count();
+  DBUG_PRINT("info", ("num_connected_db_nodes: %u",
+    num_connected_db_nodes));
   not_active.bitAND(m_db_nodes);
   started.bitAND(m_db_nodes);
   started.bitANDC(not_active);
-  return started.bitANDC(connected).count();
+  DBUG_RETURN(started.bitANDC(connected).count());
 }
 
 int Ndb_cluster_connection_impl::configure(
@@ -1190,6 +1204,10 @@ int Ndb_cluster_connection_impl::configure(
     Uint32 verbose = 0;
     if (!iter.get(CFG_API_VERBOSE, &verbose)) {
       m_ndbapiconfig.m_verbose = verbose;
+    }
+    Uint32 continous_scan = 0;
+    if (!iter.get(CFG_API_CONTINOUS_SCAN, &continous_scan)) {
+      m_ndbapiconfig.m_continous_scan = continous_scan;
     }
 
     // If DefaultHashmapSize is not set or zero, use the minimum
@@ -1542,7 +1560,7 @@ bool Ndb_cluster_connection::release_ndb_wait_group(NdbWaitGroup *group) {
 }
 
 Uint32 Ndb_cluster_connection_impl::select_any(NdbImpl *impl_ndb) {
-  Uint16 prospective_node_ids[MAX_NDB_NODES];
+  Uint16 prospective_node_ids[ABS_MAX_NDB_NODES];
   Uint32 num_prospective_nodes = 0;
   Uint32 my_location_domain_id = m_my_location_domain_id;
   DBUG_ENTER("Ndb_cluster_connection_impl::select_any");
@@ -1587,7 +1605,7 @@ Ndb_cluster_connection_impl::select_location_based(NdbImpl *impl_ndb,
                                                    Uint32 primary_node)
 {
   Uint16 *node_hint_count = &impl_ndb->m_node_hint_count[0];
-  Uint16 prospective_node_ids[MAX_NDB_NODES];
+  Uint16 prospective_node_ids[ABS_MAX_NDB_NODES];
   Uint32 num_prospective_nodes = 0;
   Uint32 my_location_domain_id = m_my_location_domain_id;
   DBUG_ENTER("Ndb_cluster_connection_impl::select_location_based");
@@ -1740,6 +1758,7 @@ int Ndb_cluster_connection::wait_until_ready(const int *nodes, int cnt,
       DBUG_RETURN(-1);
     }
     mask.set(nodes[i]);
+    DBUG_PRINT("info", ("Starting node %u", nodes[i]));
   }
 
   TransporterFacade *tp = m_impl.m_transporter_facade;
@@ -1764,10 +1783,13 @@ int Ndb_cluster_connection::wait_until_ready(const int *nodes, int cnt,
       //************************************************
       // If any node is answering, ndb is answering
       //************************************************
-      if (tp->get_node_alive(node_id) != 0)
+      if (tp->get_node_alive(node_id) != 0) {
+        DBUG_PRINT("info", ("Node %u is alive", node_id));
         alive.set(node_id);
-      else
+      } else {
+        DBUG_PRINT("info", ("Node %u is dead", node_id));
         dead.set(node_id);
+      }
     }
     tp->unlock_poll_mutex();
 

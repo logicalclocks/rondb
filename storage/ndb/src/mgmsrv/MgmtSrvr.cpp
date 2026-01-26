@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
    Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -265,7 +265,7 @@ MgmtSrvr::MgmtSrvr(const MgmtOpts &opts)
   }
 
   /* Init node arrays */
-  for (Uint32 i = 0; i < MAX_NODES; i++) {
+  for (Uint32 i = 0; i < ABS_MAX_NODES; i++) {
     nodeTypes[i] = (enum ndb_mgm_node_type) - 1;
     clear_connect_address_cache(i);
   }
@@ -759,7 +759,7 @@ void MgmtSrvr::config_changed(NodeId node_id, const Config *new_config) {
 
   /* Rebuild node arrays */
   ConfigIter iter(m_local_config, CFG_SECTION_NODE);
-  for (Uint32 i = 0; i < MAX_NODES; i++) {
+  for (Uint32 i = 0; i < ABS_MAX_NODES; i++) {
     clear_connect_address_cache(i);
 
     if (iter.first()) continue;
@@ -812,9 +812,9 @@ bool MgmtSrvr::get_packed_config_from_node(NodeId nodeId, BaseString &buf64,
                                            bool v2_requester) {
   DBUG_ENTER("get_packed_config_from_node");
 
-  if (nodeId >= MAX_NODES_ID) {
+  if (nodeId >= ABS_MAX_NODES) {
     error.assfmt("Nodeid %d is greater than max nodeid %d. ", nodeId,
-                 MAX_NODES_ID);
+                 ABS_MAX_NODES);
     DBUG_RETURN(false);
   }
 
@@ -927,7 +927,7 @@ bool MgmtSrvr::get_packed_config_from_node(NodeId nodeId, BaseString &buf64,
       }
 
       case GSN_NODE_FAILREP: {
-        // Wait until GSN_NODE_COMPLETEREP is received.
+        // Wait until GSN_NF_COMPLETEREP is received.
         continue;
       }
 
@@ -947,6 +947,9 @@ bool MgmtSrvr::get_packed_config_from_node(NodeId nodeId, BaseString &buf64,
   DBUG_RETURN(false);
 }
 
+NodeId MgmtSrvr::get_max_node_id() {
+  return m_config_manager->get_max_node_id();
+}
 MgmtSrvr::~MgmtSrvr() {
   /* Stop log level thread */
   void *res = 0;
@@ -2952,7 +2955,7 @@ int MgmtSrvr::setEventReportingLevelImpl(int nodeId_arg,
     if (nodeId_arg == 0) {
       // all nodes
       nodeId = 1;
-      max = MAX_NDB_NODES;
+      max = ABS_MAX_NDB_NODES;
     } else {
       // only one node
       max = nodeId = nodeId_arg;
@@ -2973,7 +2976,7 @@ int MgmtSrvr::setEventReportingLevelImpl(int nodeId_arg,
     if (nodeId_arg == 0) {
       // all nodes
       nodeId = 1;
-      max = MAX_NDB_NODES;
+      max = ABS_MAX_NDB_NODES;
     } else {
       // only one node
       max = nodeId = nodeId_arg;
@@ -3831,7 +3834,7 @@ void MgmtSrvr::trp_deliver_signal(const NdbApiSignal *signal,
 void MgmtSrvr::trp_node_status(Uint32 nodeId, Uint32 _event) {}
 
 enum ndb_mgm_node_type MgmtSrvr::getNodeType(NodeId nodeId) const {
-  if (nodeId >= MAX_NODES) return (enum ndb_mgm_node_type) - 1;
+  if (nodeId >= ABS_MAX_NODES) return (enum ndb_mgm_node_type) - 1;
 
   return nodeTypes[nodeId];
 }
@@ -4714,9 +4717,9 @@ bool MgmtSrvr::getNextNodeId(NodeId *nodeId,
   NodeId tmp = *nodeId;
 
   tmp++;
-  while (nodeTypes[tmp] != type && tmp < MAX_NODES) tmp++;
+  while (nodeTypes[tmp] != type && tmp < ABS_MAX_NODES) tmp++;
 
-  if (tmp == MAX_NODES) {
+  if (tmp == ABS_MAX_NODES) {
     return false;
   }
 
@@ -5434,7 +5437,7 @@ void MgmtSrvr::make_sync_req(SignalSender &ss, Uint32 nodeId) {
 
 bool MgmtSrvr::request_events(NdbNodeBitmask nodes, Uint32 reports_per_node,
                               Uint32 dump_type, Vector<SimpleSignal> &events) {
-  int nodes_counter[MAX_NDB_NODES];
+  int nodes_counter[ABS_MAX_NDB_NODES];
 #ifndef NDEBUG
   NdbNodeBitmask save = nodes;
 #endif
@@ -5443,7 +5446,7 @@ bool MgmtSrvr::request_events(NdbNodeBitmask nodes, Uint32 reports_per_node,
 
   // Send the dump command to all requested NDB nodes
   const bool all = nodes.isclear();
-  for (int i = 1; i < MAX_NDB_NODES; i++) {
+  for (int i = 1; i < ABS_MAX_NDB_NODES; i++) {
     // Check if node should be involved
     if (!all && !nodes.get(i)) continue;
 
@@ -5516,7 +5519,7 @@ bool MgmtSrvr::request_events(NdbNodeBitmask nodes, Uint32 reports_per_node,
           theNodes = rep->theNodes;
         }
         // only care about data-nodes
-        for (NodeId i = 1; i < MAX_NDB_NODES; i++) {
+        for (NodeId i = 1; i < ABS_MAX_NDB_NODES; i++) {
           if (NdbNodeBitmask::get(theNodes, i)) {
             nodes.clear(i);
 

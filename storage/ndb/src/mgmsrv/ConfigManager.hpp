@@ -1,5 +1,5 @@
-/* Copyright (c) 2008, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+/* Copyright (c) 2008, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -120,6 +120,7 @@ class ConfigManager : public MgmtThread {
   NodeBitmask m_checked;
 
   NodeId m_node_id;
+  NodeId m_max_node_id;
 
   const char *m_configdir;
 
@@ -210,6 +211,8 @@ class ConfigManager : public MgmtThread {
   } m_dynamic_ports;
 
   Uint32 m_retry;
+  void get_max_node_id(const Config *conf);
+
 public:
   void set_node_failed(Uint32 nodeId);
 
@@ -241,6 +244,7 @@ public:
                          unsigned num_ports, BaseString &msg);
   bool get_dynamic_port(int node1, int node2, int *value,
                         BaseString &msg) const;
+  NodeId get_max_node_id() { return m_max_node_id; }
 };
 
 #endif

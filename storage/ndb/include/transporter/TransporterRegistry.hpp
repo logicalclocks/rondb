@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -807,7 +807,7 @@ inline Uint32 TransporterRegistry::get_num_trps() { return nTransporters; }
 
 inline void TransporterRegistry::set_status_overloaded(NodeId nodeId,
                                                        bool val) {
-  assert(nodeId < MAX_NODES);
+  assert(nodeId < ABS_MAX_NODES);
   if (val != m_status_overloaded.get(nodeId)) {
     m_status_overloaded.set(nodeId, val);
     if (val) inc_overload_count(nodeId);
@@ -820,7 +820,7 @@ inline const NodeBitmask &TransporterRegistry::get_status_overloaded() const {
 }
 
 inline void TransporterRegistry::set_status_slowdown(NodeId nodeId, bool val) {
-  assert(nodeId < MAX_NODES);
+  assert(nodeId < ABS_MAX_NODES);
   if (val != m_status_slowdown.get(nodeId)) {
     m_status_slowdown.set(nodeId, val);
     if (val) inc_slowdown_count(nodeId);
@@ -834,7 +834,7 @@ inline const NodeBitmask &TransporterRegistry::get_status_slowdown() const {
 inline void TransporterRegistry::indicate_node_up(
     NodeId nodeId)  // Called from receive thread
 {
-  assert(nodeId < MAX_NODES);
+  assert(nodeId < ABS_MAX_NODES);
 
   if (!peerUpIndicators[nodeId]) {
     peerUpIndicators[nodeId] = true;
@@ -844,7 +844,7 @@ inline void TransporterRegistry::indicate_node_up(
 inline bool TransporterRegistry::get_and_clear_node_up_indicator(
     NodeId nodeId)  // Called from start client thread
 {
-  assert(nodeId < MAX_NODES);
+  assert(nodeId < ABS_MAX_NODES);
 
   bool indicator = peerUpIndicators[nodeId];
   if (indicator) {
@@ -868,14 +868,14 @@ inline void TransporterRegistry::set_connect_backoff_max_time_in_ms(
 }
 
 inline void TransporterRegistry::backoff_reset_connecting_time(NodeId nodeId) {
-  assert(nodeId < MAX_NODES);
+  assert(nodeId < ABS_MAX_NODES);
 
   connectingTime[nodeId] = 0;
 }
 
 inline bool TransporterRegistry::backoff_update_and_check_time_for_connect(
     NodeId nodeId) {
-  assert(nodeId < MAX_NODES);
+  assert(nodeId < ABS_MAX_NODES);
 
   Uint32 backoff_max_time = get_connect_backoff_max_time_in_laps();
 

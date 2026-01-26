@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2024, Logical Clocks and/or its affiliates.
+   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -873,14 +873,25 @@ void MgmApiSession::getConfig(Parser_t::Context &, const class Properties &args,
   Uint32 nodetype = NDB_MGM_NODE_TYPE_UNKNOWN;
   Uint32 from_node = 0;
   Uint32 node_id = 0;
+  Uint32 version = 0;
 
-  // Ignoring mandatory parameter "version"
   args.get("nodetype", &nodetype);
   args.get("from_node", &from_node);
   args.get("node", &node_id);
+  args.get("version", &version);
 
   SLEEP_ERROR_INSERTED(1);
   m_output->println("get config reply");
+
+  if (!ndbd_support_2k_api_nodes(version) &&
+      m_mgmsrv.get_max_node_id() > OLD_MAX_NODES) {
+    m_output->println(
+      "result: %s",
+      "Configuration has high node ids, incompatible versions");
+    m_output->print("\n");
+    require(false);
+    return;
+  }
 
   BaseString pack64, error;
 
@@ -2619,7 +2630,7 @@ void MgmApiSession::dump_events(Parser_t::Context &,
   args.get("nodes", &nodes_str);
   if (nodes_str) {
     int res = parse_mask(nodes_str, nodes);
-    if (res < 0 || !valid_nodes(nodes, MAX_NDB_NODES - 1)) {
+    if (res < 0 || !valid_nodes(nodes, ABS_MAX_NDB_NODES - 1)) {
       m_output->println("result: invalid nodes: '%s'", nodes_str);
       m_output->println("%s", "");
       return;
@@ -2768,7 +2779,7 @@ void MgmApiSession::set_ports(Parser_t::Context &, Properties const &args) {
   // Check node argument
   Uint32 node;
   args.get("node", &node);
-  if (node == 0 || node >= MAX_NODES) {
+  if (node == 0 || node >= ABS_MAX_NODES) {
     m_output->println("result: Illegal value for argument node: %u", node);
     m_output->println("%s", "");
     discard_bulk_data(m_input);
@@ -2777,7 +2788,7 @@ void MgmApiSession::set_ports(Parser_t::Context &, Properties const &args) {
 
   Uint32 num_ports;
   args.get("num_ports", &num_ports);
-  if (num_ports == 0 || num_ports >= MAX_NODES) {
+  if (num_ports == 0 || num_ports >= ABS_MAX_NODES) {
     m_output->println("result: Illegal value for argument num_ports: %u",
                       num_ports);
     m_output->println("%s", "");
@@ -2786,7 +2797,7 @@ void MgmApiSession::set_ports(Parser_t::Context &, Properties const &args) {
   }
 
   // Read the name value pair list of ports to set from bulk data
-  MgmtSrvr::DynPortSpec ports[MAX_NODES];
+  MgmtSrvr::DynPortSpec ports[ABS_MAX_NODES];
   {
     Uint32 ports_read;
     BaseString msg;

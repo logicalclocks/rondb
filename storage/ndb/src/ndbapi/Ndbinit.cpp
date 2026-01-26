@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
    Copyright (c) 2025, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -92,13 +92,13 @@ void Ndb::setup(Ndb_cluster_connection *ndb_cluster_connection,
 
   theError.code = 0;
 
-  theConnectionArray = new NdbConnection *[MAX_NDB_NODES];
-  theConnectionArrayLast = new NdbConnection *[MAX_NDB_NODES];
+  theConnectionArray = new NdbConnection *[ABS_MAX_NDB_NODES];
+  theConnectionArrayLast = new NdbConnection *[ABS_MAX_NDB_NODES];
   theCommitAckSignal = nullptr;
   theCachedMinDbNodeVersion = 0;
 
   int i;
-  for (i = 0; i < MAX_NDB_NODES; i++) {
+  for (i = 0; i < ABS_MAX_NDB_NODES; i++) {
     theConnectionArray[i] = nullptr;
     theConnectionArrayLast[i] = nullptr;
   }  // for

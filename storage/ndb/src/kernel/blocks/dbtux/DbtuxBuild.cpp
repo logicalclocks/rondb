@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2009, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2009, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -123,6 +123,14 @@ Dbtux::mt_buildIndexFragment(mt_BuildIndxCtx *req) {
 
     TreePos treePos;
     bool ok = searchToAdd(ctx, frag, *searchBound, ent, treePos);
+#ifdef VM_TRACE
+    if (!ok) {
+      g_eventLogger->info("tab(%u,%u), index: %u",
+        frag.m_tableId,
+        frag.m_fragId,
+        frag.m_indexId);
+    }
+#endif
     ndbrequire(ok);
 
     /*

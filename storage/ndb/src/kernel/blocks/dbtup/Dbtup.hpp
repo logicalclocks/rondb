@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
    Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -618,6 +618,7 @@ struct Fragoperrec {
                                       Tuple_header **tuple_header_ptr,
                                       Uint32 &loop_count, Uint32 size);
 
+  Uint32 get_lastSeen(Uint32 scanPtrI);
   // for md5 of key (could maybe reuse existing temp buffer)
   Uint64 c_dataBuffer[ZWORDS_ON_PAGE / 2 + 1];
 
@@ -1761,6 +1762,7 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
     Uint32 m_tupleNo;      // tuple number on page
     Uint32 m_buildRef;     // Where to send tuples
     Uint32 m_outstanding;  // If mt-build...
+    Uint32 m_num_fragments;// Number of fragments
     BuildIndxImplRef::ErrorCode m_errorCode;
     union {
       Uint32 nextPool;
@@ -1774,6 +1776,16 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
   BuildIndexRec_pool c_buildIndexPool;
   BuildIndexRec_list c_buildIndexList;
   Uint32 c_noOfBuildIndexRec;
+  Uint32 m_offline_rebuild_outstanding;
+  Uint32 m_queued_offline_rebuild_counter;
+#ifdef VM_TRACE
+#define MAX_OFFLINE_REBUILD_INDEXES 1
+#else
+#define MAX_OFFLINE_REBUILD_INDEXES 4
+#endif
+  Uint32 m_queued_offline_rebuild[MAX_OUTSTANDING_REBUILD_INDEXES + 1];
+  void insertOfflineRebuildQueue(Uint32 buildPtrI, Uint32 line);
+  void removeOfflineRebuildQueue(Uint32 buildPtrI, Uint32 line);
 
   int mt_scan_init(Uint32 tableId,
                    Uint32 fragId,
@@ -3936,7 +3948,7 @@ public:
   Uint32 cdata[32];
   Uint32 cdataPages[16];
   Uint32 cpackedListIndex;
-  Uint32 cpackedList[MAX_NODES];
+  Uint32 cpackedList[ABS_MAX_NODES];
   Uint32 cerrorPackedDelay;
   Uint32 cfreeTdList[16];
   Uint32 clastBitMask;
@@ -4876,6 +4888,14 @@ Dbtup::prepare_tab_pointers(Uint64 frag_id)
   ptrAss(tabptr, Rtablerec);
   prepare_tabptr = tabptr;
 }
+
+inline Uint32 Dbtup::get_lastSeen(Uint32 scanPtrI) {
+  ScanOpPtr scanPtr;
+  scanPtr.i = scanPtrI;
+  ndbrequire(c_scanOpPool.getValidPtr(scanPtr));
+  return scanPtr.p->m_last_seen;
+}
+
 #undef JAM_FILE_ID
 
 #endif

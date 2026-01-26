@@ -1,4 +1,4 @@
-/* Copyright (c) 2008, 2024, Oracle and/or its affiliates.
+/* Copyright (c) 2008, 2025, Oracle and/or its affiliates.
    Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -1664,7 +1664,7 @@ void DblqhProxy::sendEXEC_SR_2(Signal *signal, Uint32 ssId) {
     return;
   }
 
-  NodeBitmask nodes;
+  NdbNodeBitmask nodes;
   nodes.assign(NdbNodeBitmask::Size, ss.m_sig.sr_nodes);
   NodeReceiverGroup rg(DBLQH, nodes);
 

@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2008, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2023, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2008, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2023, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -371,7 +371,7 @@ class NdbMgmd {
       return false;
     }
 
-    ndb_mgm::config_ptr conf(ndb_mgm_get_configuration(m_handle, 0));
+    ndb_mgm::config_ptr conf(ndb_mgm_get_configuration(m_handle, NDB_VERSION));
     if (!conf) {
       error("get_config: ndb_mgm_get_configuration failed");
       return false;

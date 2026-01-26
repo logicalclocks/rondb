@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2016, 2024, Oracle and/or its affiliates.
+  Copyright (c) 2016, 2025, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
@@ -438,7 +438,7 @@ std::optional<Destinations> DestMetadataCacheGroup::refresh_destinations(
                 err.message().c_str());
 
       if (err == make_error_condition(std::errc::timed_out) ||
-          err == make_error_condition(std::errc::no_such_file_or_directory)) {
+          err.category() == net::ip::resolver_category()) {
         return std::nullopt;
       }
 

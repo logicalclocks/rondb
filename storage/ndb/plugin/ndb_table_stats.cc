@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2021, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2025, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -88,9 +89,12 @@ bool ndb_get_table_statistics(THD *thd, Ndb *ndb,
     }
 
     NdbScanOperation::ScanOptions options;
-    options.optionsPresent = NdbScanOperation::ScanOptions::SO_BATCH |
-                             NdbScanOperation::ScanOptions::SO_GETVALUE |
-                             NdbScanOperation::ScanOptions::SO_INTERPRETED;
+    options.optionsPresent =
+      NdbScanOperation::ScanOptions::SO_BATCH |
+        NdbScanOperation::ScanOptions::SO_GETVALUE |
+        NdbScanOperation::ScanOptions::SO_USE_STANDARD_SCAN |
+        NdbScanOperation::ScanOptions::SO_INTERPRETED;
+
     /* Set batch=1, as we need only one row per fragment. */
     options.batch = 1;
     options.extraGetValues = &extraGets[0];
@@ -112,6 +116,7 @@ bool ndb_get_table_statistics(THD *thd, Ndb *ndb,
       goto retry;
     }
 
+    DBUG_PRINT("info", ("Call nextResult(row, true, true)"));
     const char *dummyRowPtr;
     while ((check = pOp->nextResult(&dummyRowPtr, true, true)) == 0) {
       DBUG_PRINT("info",
@@ -137,7 +142,7 @@ bool ndb_get_table_statistics(THD *thd, Ndb *ndb,
         break;
       }
     }
-
+    DBUG_PRINT("info", ("nextResult returned: %d", check));
     if (check == -1) {
       ndb_error = pOp->getNdbError();
       goto retry;
@@ -197,7 +202,7 @@ bool ndb_get_table_commit_count(Ndb *ndb, const NdbDictionary::Table *ndbtab,
     return true;  // Error
   }
 
-  int retries = 100;
+  int retries = 10;
   NdbTransaction *trans;
   do {
     /**

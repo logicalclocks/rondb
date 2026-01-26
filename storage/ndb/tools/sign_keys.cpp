@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2022, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2025, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -494,7 +495,7 @@ Config *fetch_configuration(SSL_CTX *ctx) {
     goto noconnect;
   }
 
-  conf = ndb_mgm_get_configuration(mgm, 0);
+  conf = ndb_mgm_get_configuration(mgm, NDB_VERSION);
 
   if (conf == nullptr) {
     ndberr << "Could not get configuration, error code: "

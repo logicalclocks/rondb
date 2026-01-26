@@ -1,5 +1,5 @@
-/* Copyright (c) 2008, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
+/* Copyright (c) 2008, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -82,7 +82,7 @@ void Dbinfo::execREAD_CONFIG_REQ(Signal *signal) {
   counts.est_tables = 100;
 
   // Count nodes
-  for (int i = 1; i < MAX_NODES; i++) {
+  for (Uint32 i = 1; i < MAX_NODES; i++) {
     NodeInfo::NodeType type = getNodeInfo(i).getType();
     if (type == NodeInfo::NodeType::DB) counts.data_nodes++;
     if (type == NodeInfo::NodeType::DB || type == NodeInfo::NodeType::API ||

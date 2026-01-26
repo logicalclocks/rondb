@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -234,6 +234,8 @@ void TCP_Transporter::setSocketOptions(ndb_socket_t socket) {
     set_get(socket, IPPROTO_TCP, TCP_MAXSEG, "TCP_MAXSEG", sockOptTcpMaxSeg);
 #endif
   }
+
+  ndb_socket_disable_sigpipe(socket);
 }
 
 bool TCP_Transporter::setSocketNonBlocking(ndb_socket_t socket) {
@@ -368,6 +370,8 @@ bool TCP_Transporter::doSend(bool need_wakeup [[maybe_unused]]) {
 #endif
       if ((DISCONNECT_ERRNO(err, nBytesSent))) {
         remain = 0;                           // Will stop retries of this send.
+        DBUG_PRINT("info", ("doSend calls start_disconnecting, node: %u, errno: %u",
+          remoteNodeId, ndb_socket_errno()));
         if (!start_disconnecting(err, true))  // Initiate pending disconnect
         {
           // We are 'DISCONNECTING' asynch -> We may still attempt more sends.
@@ -466,6 +470,9 @@ int TCP_Transporter::doReceive(TransporterReceiveHandle &recvdata) {
             (char *)ndbstrerror(err));
 #endif
         if (DISCONNECT_ERRNO(err, nBytesRead)) {
+          DBUG_PRINT("info", ("doSend(2) calls start_disconnecting, node: %u,"
+                     " errno: %u",
+            remoteNodeId, err));
           if (!start_disconnecting(err, false)) {
             return 0;
           }

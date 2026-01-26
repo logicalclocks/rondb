@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2004, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2004, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2025, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -110,9 +111,10 @@ void BitmaskImpl::setFieldImpl(Uint32 dst[], unsigned shiftL, unsigned len,
  */
 
 template struct BitmaskPOD<1>;
-template struct BitmaskPOD<2>;   // NdbNodeBitmask
-template struct BitmaskPOD<8>;   // NodeBitmask
-template struct BitmaskPOD<10>;  // TrpBitmask
+template struct BitmaskPOD<2>;
+template struct BitmaskPOD<5>;   // NdbNodeBitmask
+template struct BitmaskPOD<64>;   // NodeBitmask
+template struct BitmaskPOD<68>;  // TrpBitmask
 template struct BitmaskPOD<16>;
 
 #ifdef TEST_BITMASK

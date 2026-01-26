@@ -1,4 +1,4 @@
-# Copyright (c) 2010, 2024, Oracle and/or its affiliates.
+# Copyright (c) 2010, 2025, Oracle and/or its affiliates.
 # 
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -50,6 +50,12 @@ IF(EXISTS "/etc/fedora-release")
   IF(FEDORA_RELEASE MATCHES "Fedora" AND
       FEDORA_RELEASE MATCHES "34")
     SET(LINUX_FEDORA_34 1)
+  ENDIF()
+  IF(IS_SYMLINK "/usr/sbin")
+    FILE(READ_SYMLINK "/usr/sbin" USR_SBIN)
+    IF(USR_SBIN STREQUAL "bin")
+      SET(LINUX_FEDORA_SBIN_MERGE 1)
+    ENDIF()
   ENDIF()
 ENDIF()
 

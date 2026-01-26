@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2005, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2005, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2025, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -102,7 +103,7 @@ void print(const char *filename, const Sysfile *sysfile) {
   ndbout << " -- " << endl;
 
   ndbout << "-- Node status: --" << endl;
-  for (int i = 1; i < MAX_NDB_NODES; i++) {
+  for (int i = 1; i < ABS_MAX_NDB_NODES; i++) {
     if (g_all || sysfile->getNodeStatus(i) != Sysfile::NS_NotDefined) {
       sprintf(buf,
               "Node %.2d -- %s GCP: %d, NodeGroup: %d, TakeOverNode: %d, "

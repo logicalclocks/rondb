@@ -1,4 +1,4 @@
-/* Copyright (c) 2008, 2024, Oracle and/or its affiliates.
+/* Copyright (c) 2008, 2025, Oracle and/or its affiliates.
    Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -331,7 +331,7 @@ class DblqhProxy : public LocalProxy {
       m_sendREQ = (SsFUNCREQ)&DblqhProxy::sendLQH_TRANSREQ;
       m_sendCONF = (SsFUNCREP)&DblqhProxy::sendLQH_TRANSCONF;
     }
-    enum { poolSize = MAX_NDB_NODES };
+    enum { poolSize = ABS_MAX_NDB_NODES };
     static SsPool<Ss_LQH_TRANSREQ> &pool(LocalProxy *proxy) {
       return ((DblqhProxy *)proxy)->c_ss_LQH_TRANSREQ;
     }

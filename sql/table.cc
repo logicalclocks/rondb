@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2000, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2000, 2025, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -2840,8 +2840,15 @@ bool create_key_part_field_with_prefix_length(TABLE *table, MEM_ROOT *root) {
          key_part < key_part_end; key_part++) {
       Field *field = key_part->field = table->field[key_part->fieldnr - 1];
 
+      /*
+        For spatial indexes, the key parts are assigned the length (4 *
+        sizeof(double)) in prepare_key_column() and the field->key_length() is
+        set to 0. This makes it appear like a prefixed index. However, prefixed
+        indexes are not allowed on Geometric columns. Hence skipping new field
+        creation for Geometric columns.
+      */
       if (field->key_length() != key_part->length &&
-          !field->is_flag_set(BLOB_FLAG)) {
+          field->type() != MYSQL_TYPE_GEOMETRY) {
         /*
           We are using only a prefix of the column as a key:
           Create a new field for the key part that matches the index
@@ -3339,6 +3346,34 @@ int closefrm(TABLE *table, bool free_share) {
   if (table->db_stat) error = table->file->ha_close();
   my_free(const_cast<char *>(table->alias));
   table->alias = nullptr;
+
+  /*
+    Iterate through the Table's Key_info and free its key_part->field if the
+    field is of BLOB type.
+
+    When a prefixed key is present, a new Field object is created in
+    create_key_part_field_with_prefix_length(). These field objects get
+    destroyed when the Table's mem_root is cleared here later. In case of
+    Field_blob objects, Field_blob::value is allocated on the heap. Thus
+    Field_blob objects are freed here in order to destruct the Field_blob::value
+    object.
+  */
+  KEY *key_info = table->key_info;
+  if (key_info) {
+    KEY_PART_INFO *key_part = key_info->key_part;
+    for (KEY *key_info_end = key_info + table->s->keys; key_info < key_info_end;
+         key_info++) {
+      for (KEY_PART_INFO *key_part_end = key_part + key_info->actual_key_parts;
+           key_part < key_part_end; key_part++) {
+        if (key_part->field && key_part->field->is_flag_set(BLOB_FLAG) &&
+            key_part->field->type() != MYSQL_TYPE_GEOMETRY) {
+          ::destroy_at(key_part->field);
+          key_part->field = nullptr;
+        }
+      }
+    }
+  }
+
   if (table->field) {
     for (Field **ptr = table->field; *ptr; ptr++) {
       if ((*ptr)->gcol_info) free_items((*ptr)->gcol_info->item_list);
@@ -3734,16 +3769,24 @@ Ident_name_check check_table_name(const char *name, size_t length) {
   return Ident_name_check::OK;
 }
 
-bool check_column_name(const char *name) {
+bool check_column_name(const Name_string &namestring) {
+  size_t valid_length = 0;
+  bool length_error = false;
+  if (validate_string(system_charset_info, namestring.ptr(),
+                      namestring.length(), &valid_length, &length_error)) {
+    return true;
+  }
+  const char *name = namestring.ptr();
   // name length in symbols
   size_t name_length = 0;
   bool last_char_is_space = true;
+  const char *name_end = name + namestring.length();
+  const bool is_multibyte = use_mb(system_charset_info);
 
   while (*name) {
     last_char_is_space = my_isspace(system_charset_info, *name);
-    if (use_mb(system_charset_info)) {
-      const int len = my_ismbchar(system_charset_info, name,
-                                  name + system_charset_info->mbmaxlen);
+    if (is_multibyte) {
+      const int len = my_ismbchar(system_charset_info, name, name_end);
       if (len) {
         name += len;
         name_length++;
@@ -6521,12 +6564,19 @@ bool Table_ref::is_mergeable() const {
   return derived->is_mergeable();
 }
 
-bool Table_ref::materializable_is_const() const {
+bool Table_ref::has_stored_program() const {
+  assert(derived != nullptr);
+  return derived->has_stored_program();
+}
+
+bool Table_ref::materializable_is_const(THD *thd) const {
   assert(uses_materialization());
   const Query_expression *unit = derived_query_expression();
+  const bool explain_mode = thd->lex->is_explain();
   return unit->query_result()->estimated_rowcount <= 1 &&
          (unit->first_query_block()->active_options() &
-          OPTION_NO_SUBQUERY_DURING_OPTIMIZATION) == 0;
+          OPTION_NO_SUBQUERY_DURING_OPTIMIZATION) == 0 &&
+         !(explain_mode && has_stored_program());
 }
 
 /**

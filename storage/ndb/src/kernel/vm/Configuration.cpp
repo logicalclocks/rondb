@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
    Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -380,7 +380,7 @@ Configuration::set_location_domain_id() {
       ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG, msg,
                 "Node data (Id) missing");
     }
-    if(nodeId > MAX_NODES || nodeId == 0) {
+    if (nodeId > ABS_MAX_NODES || nodeId == 0) {
       BaseString::snprintf(buf, sizeof(buf),
 	       "Invalid node id: %d", nodeId);
       ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG, msg, buf);
@@ -410,6 +410,8 @@ Configuration::set_not_active_nodes()
 
   g_eventLogger->info("Set not active nodes");
   Uint32 nodeNo = 0;
+  Uint32 max_nodeid = 0;
+  Uint32 max_ndb_nodeid = 0;
   NodeBitmask nodes;
   for(ndb_mgm_first(p); ndb_mgm_valid(p); ndb_mgm_next(p), nodeNo++)
   {
@@ -420,13 +422,17 @@ Configuration::set_not_active_nodes()
       ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG, msg,
                 "Node data (Id) missing");
     }
-    
+
+    if (nodeId > max_nodeid) {
+      max_nodeid = nodeId;
+    }
+
     if(ndb_mgm_get_int_parameter(p, CFG_TYPE_OF_SECTION, &nodeType)){
       ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG, msg,
                 "Node data (Type) missing");
     }
     
-    if(nodeId > MAX_NODES || nodeId == 0){
+    if (nodeId >= ABS_MAX_NODES || nodeId == 0) {
       BaseString::snprintf(buf, sizeof(buf),
 	       "Invalid node id: %d", nodeId);
       ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG, msg, buf);
@@ -442,11 +448,14 @@ Configuration::set_not_active_nodes()
         
     switch(nodeType){
     case NODE_TYPE_DB:
-      if(nodeId > MAX_NDB_NODES){
+      if(nodeId >= ABS_MAX_NDB_NODES){
 		  BaseString::snprintf(buf, sizeof(buf),
                   "Maximum node id for a ndb node is: %d", 
-		 MAX_NDB_NODES);
+		 ABS_MAX_NDB_NODES - 1);
 	ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG, msg, buf);
+      }
+      if (nodeId > max_ndb_nodeid) {
+        max_ndb_nodeid = nodeId;
       }
       break;
     case NODE_TYPE_API:
@@ -468,6 +477,8 @@ Configuration::set_not_active_nodes()
       globalTransporterRegistry.set_active_node(nodeId, 0, true);
     }
   }
+  SimulatedBlock::set_max_nodeid(max_nodeid);
+  SimulatedBlock::set_max_ndb_nodeid(max_ndb_nodeid);
 }
 
 void
@@ -497,7 +508,7 @@ Configuration::get_num_nodes(Uint32 &noOfNodes,
                 "Node data (Type) missing");
     }
     
-    if(nodeId > MAX_NODES || nodeId == 0){
+    if (nodeId > ABS_MAX_NODES || nodeId == 0) {
       BaseString::snprintf(buf, sizeof(buf),
 	       "Invalid node id: %d", nodeId);
       ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG, msg, buf);
@@ -515,10 +526,10 @@ Configuration::get_num_nodes(Uint32 &noOfNodes,
     case NODE_TYPE_DB:
       noOfDBNodes++; // No of NDB processes
       
-      if(nodeId > MAX_NDB_NODES){
+      if(nodeId >= ABS_MAX_NDB_NODES){
 		  BaseString::snprintf(buf, sizeof(buf),
                   "Maximum node id for a ndb node is: %d", 
-		 MAX_NDB_NODES);
+		 ABS_MAX_NDB_NODES - 1);
 	ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG, msg, buf);
       }
       break;
@@ -1671,6 +1682,9 @@ Configuration::setupConfiguration()
     g_eventLogger->info("Mixology level set to 0x%x", _mixologyLevel);
     globalTransporterRegistry.setMixologyLevel(_mixologyLevel);
   }
+
+  _shutdownHandlingFault = 0;
+  _shutdownHandlingFaultExtra = 0;
 #endif
 
   /**
@@ -1752,16 +1766,17 @@ Configuration::setupConfiguration()
       iter.get(CFG_DB_USE_TC_THREADS, &use_tc_threads);
       Uint32 use_ldm_threads = 1;
       iter.get(CFG_DB_USE_LDM_THREADS, &use_ldm_threads);
+      Uint32 exclusive_io_cpus = 0;
+      iter.get(CFG_DB_EXCLUSIVE_IO_CPUS, &exclusive_io_cpus);
       m_thr_config.do_parse_auto(_realtimeScheduler,
                                  _schedulerSpinTimer,
                                  num_cpus,
                                  globalData.ndbRRGroups,
                                  use_tc_threads,
                                  use_ldm_threads,
-                                 globalData.theMaxRRGroupSize);
-    }
-    else
-    {
+                                 globalData.theMaxRRGroupSize,
+                                 exclusive_io_cpus);
+    } else {
       Uint32 classic = 0;
       iter.get(CFG_NDBMT_CLASSIC, &classic);
 #ifdef NDB_USE_GET_ENV
@@ -2041,6 +2056,20 @@ void Configuration::setRestartOnErrorInsert(int i) {
 Uint32 Configuration::getMixologyLevel() const { return _mixologyLevel; }
 
 void Configuration::setMixologyLevel(Uint32 l) { _mixologyLevel = l; }
+
+Uint32 Configuration::getShutdownHandlingFault() const {
+  return _shutdownHandlingFault;
+}
+
+Uint32 Configuration::getShutdownHandlingFaultExtra() const {
+  return _shutdownHandlingFaultExtra;
+}
+
+void Configuration ::setShutdownHandlingFault(Uint32 v, Uint32 extra) {
+  _shutdownHandlingFault = v;
+  _shutdownHandlingFaultExtra = extra;
+}
+
 #endif
 
 ndb_mgm_configuration_iterator * 

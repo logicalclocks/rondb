@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -525,6 +525,14 @@ void Dbtup::execBUILD_INDX_IMPL_REQ(Signal *signal) {
     // memory page format
     buildPtr.p->m_build_vs = (tablePtr.p->m_attributes[MM].m_no_of_varsize +
                               tablePtr.p->m_attributes[MM].m_no_of_dynamic) > 0;
+    buildPtr.p->m_num_fragments = c_lqh->getTableNumFragments(tablePtr.i);
+    jamDataDebug(buildPtr.p->m_num_fragments);
+    if (buildPtr.p->m_num_fragments == 0) {
+      jam();
+      buildIndexReply(signal, buildPtr.p);
+      c_buildIndexList.release(buildPtr);
+      return;
+    }
     if (DictTabInfo::isOrderedIndex(buildReq->indexType)) {
       jam();
       const TupTriggerData_list &triggerList = tablePtr.p->tuxCustomTriggers;
@@ -575,6 +583,11 @@ void Dbtup::execBUILD_INDX_IMPL_REQ(Signal *signal) {
         !!(buildReq->requestType & BuildIndxImplReq::RF_BUILD_OFFLINE);
     if (offline && m_max_parallel_index_build > 1) {
       jam();
+      DEB_INDEX_BUILD(("(%u) buildIndexOffline, ptrI: %u, tab(%u,%u)",
+        instance(),
+        buildPtr.i,
+        buildPtr.p->m_request.tableId,
+        buildPtr.p->m_indexId));
       buildIndexOffline(signal, buildPtr.i);
     } else {
       jam();
@@ -609,18 +622,22 @@ void Dbtup::buildIndex(Signal *signal, Uint32 buildPtrI) {
   do {
     // get fragment
     FragrecordPtr fragPtr;
-    if (buildPtr.p->m_fragNo == MAX_FRAG_PER_LQH) {
+    if (buildPtr.p->m_fragNo == buildPtr.p->m_num_fragments) {
       jam();
       // build ready
       buildIndexReply(signal, buildPtr.p);
       c_buildIndexList.release(buildPtr);
       return;
     }
-    ndbrequire(buildPtr.p->m_fragNo < MAX_FRAG_PER_LQH);
-    fragPtr.i = c_lqh->getNextTupFragrec(tablePtr.i, buildPtr.p->m_fragNo);
+    jamDebug();
+    jamDataDebug(buildPtr.p->m_fragNo);
+    ndbrequire(buildPtr.p->m_fragNo < buildPtr.p->m_num_fragments);
+    Uint32 fragNo = buildPtr.p->m_fragNo;
+    fragPtr.i = c_lqh->getNextTupFragrec(tablePtr.i, fragNo);
     if (fragPtr.i == RNIL64) {
       jam();
       buildPtr.p->m_fragNo++;
+      jamDataDebug(buildPtr.p->m_fragNo);
       buildPtr.p->m_pageId = 0;
       buildPtr.p->m_tupleNo = firstTupleNo;
       break;
@@ -631,6 +648,7 @@ void Dbtup::buildIndex(Signal *signal, Uint32 buildPtrI) {
     if (buildPtr.p->m_pageId >= fragPtr.p->m_max_page_cnt) {
       jam();
       buildPtr.p->m_fragNo++;
+      jamDataDebug(buildPtr.p->m_fragNo);
       buildPtr.p->m_pageId = 0;
       buildPtr.p->m_tupleNo = firstTupleNo;
       break;
@@ -675,6 +693,7 @@ void Dbtup::buildIndex(Signal *signal, Uint32 buildPtrI) {
 #ifdef TIME_MEASUREMENT
     start = NdbTick_getCurrentTicks();
 #endif
+    jamDebug();
     // add to index
     TuxMaintReq *const req = (TuxMaintReq *)signal->getDataPtrSend();
     req->errorCode = RNIL;
@@ -854,17 +873,75 @@ void Dbtup::execALTER_TAB_CONF(Signal *signal) {
 
   if (buildPtr.p->m_fragNo == 0) {
     jam();
+    jamData(buildPtr.p->m_request.tableId);
+    jamData(buildPtr.p->m_indexId);
+    jamData(buildPtr.p->m_fragNo);
+    DEB_INDEX_BUILD(("(%u) Build first offline buildPtrI: %u, tab(%u,%u,%u)",
+      instance(),
+      buildPtr.i,
+      buildPtr.p->m_request.tableId,
+      buildPtr.p->m_indexId,
+      buildPtr.p->m_fragNo));
     buildIndexOffline_table_readonly(signal, conf->senderData);
     return;
   } else {
     jam();
     TablerecPtr tablePtr;
     (void)tablePtr; // hide unused warning
-    ndbrequire(buildPtr.p->m_fragNo >= MAX_FRAG_PER_LQH);
+    ndbrequire(buildPtr.p->m_fragNo >= buildPtr.p->m_num_fragments);
     buildIndexReply(signal, buildPtr.p);
     c_buildIndexList.release(buildPtr);
     return;
   }
+}
+
+void Dbtup::insertOfflineRebuildQueue(Uint32 buildPtrI, Uint32 line) {
+  for (Uint32 i = 0; i < m_queued_offline_rebuild_counter; i++) {
+    if (m_queued_offline_rebuild[i] == buildPtrI) {
+      /* Already in queue */
+      jam();
+      jamData(i);
+      return;
+    }
+  }
+  jam();
+  DEB_INDEX_BUILD(("(%u) Queue buildPtrI: %u in %u line %u",
+    instance(),
+    buildPtrI,
+    m_queued_offline_rebuild_counter,
+    line));
+  m_queued_offline_rebuild[m_queued_offline_rebuild_counter++] = buildPtrI;
+}
+
+void Dbtup::removeOfflineRebuildQueue(Uint32 buildPtrI, Uint32 line) {
+  Uint32 found = RNIL;
+  for (Uint32 i = 0; i < m_queued_offline_rebuild_counter; i++) {
+    if (m_queued_offline_rebuild[i] == buildPtrI) {
+      jam();
+      jamData(i);
+      found = i;
+    }
+    if (found != RNIL) {
+      m_queued_offline_rebuild[i] = m_queued_offline_rebuild[i + 1];
+    }
+  }
+  if (found != RNIL) {
+
+    DEB_INDEX_BUILD(("(%u) Remove Queue buildPtrI: %u in %u line %u, found %u",
+      instance(),
+      buildPtrI,
+      m_queued_offline_rebuild_counter,
+      line,
+      found));
+    ndbrequire(m_queued_offline_rebuild_counter > 0);
+    m_queued_offline_rebuild_counter--;
+    m_queued_offline_rebuild[m_queued_offline_rebuild_counter] = RNIL;
+    jam();
+    jamData(m_queued_offline_rebuild_counter);
+    return;
+  }
+  jam();
+  return;
 }
 
 void Dbtup::buildIndexOffline_table_readonly(Signal *signal, Uint32 buildPtrI) {
@@ -879,17 +956,27 @@ void Dbtup::buildIndexOffline_table_readonly(Signal *signal, Uint32 buildPtrI) {
   TablerecPtr tablePtr;
   tablePtr.i = buildReq->tableId;
   ptrCheckGuard(tablePtr, cnoOfTablerec, tablerec);
+  jam();
+  jamData(tablePtr.i);
+  jamData(buildPtr.p->m_indexId);
 
+  if (m_offline_rebuild_outstanding >= MAX_OFFLINE_REBUILD_INDEXES) {
+    jam();
+    jamData(m_offline_rebuild_outstanding);
+    insertOfflineRebuildQueue(buildPtrI, __LINE__);
+    return;
+  }
   DEB_INDEX_BUILD(("(%u) Starting index build of primary table %u"
                    ", ordered index table %u",
                    instance(),
                    tablePtr.i,
                    buildPtr.p->m_indexId));
-  for (;buildPtr.p->m_fragNo < MAX_FRAG_PER_LQH; buildPtr.p->m_fragNo++)
-  {
+  for (;buildPtr.p->m_fragNo < buildPtr.p->m_num_fragments;
+       buildPtr.p->m_fragNo++) {
     jam();
     FragrecordPtr fragPtr;
-    fragPtr.i = c_lqh->getNextTupFragrec(tablePtr.i, buildPtr.p->m_fragNo);
+    Uint32 fragNo = buildPtr.p->m_fragNo;
+    fragPtr.i = c_lqh->getNextTupFragrec(tablePtr.i, fragNo);
     if (fragPtr.i == RNIL64)
     {
       jam();
@@ -911,6 +998,8 @@ void Dbtup::buildIndexOffline_table_readonly(Signal *signal, Uint32 buildPtrI) {
       tux = tux->getInstance(instance());
       ndbrequire(tux != 0);
     }
+    jam();
+    jamData(buildPtr.p->m_fragNo);
     req.tux_ptr = tux;
     req.tup_ptr = this;
     req.func_ptr = Dbtux_mt_buildIndexFragment_wrapper_C;
@@ -919,13 +1008,26 @@ void Dbtup::buildIndexOffline_table_readonly(Signal *signal, Uint32 buildPtrI) {
     Uint32 *req_ptr = signal->getDataPtrSend();
     memcpy(req_ptr, &req, sizeof(req));
 
+    DEB_INDEX_BUILD(("(%u) buildPtrI: %u Build offline index tab(%u,%u,%u)",
+      instance(),
+      buildPtr.i,
+      buildReq->tableId,
+      buildPtr.p->m_indexId,
+      buildPtr.p->m_fragNo));
+
     sendSignal(NDBFS_REF, GSN_BUILD_INDX_IMPL_REQ, signal,
                (sizeof(req) + 15) / 4, JBB);
 
     buildPtr.p->m_outstanding++;
-    if (buildPtr.p->m_outstanding >= m_max_parallel_index_build) {
-      jam();
-      return;
+    buildPtr.p->m_fragNo++;
+    m_offline_rebuild_outstanding++;
+    if (buildPtr.p->m_fragNo < buildPtr.p->m_num_fragments) {
+      if (m_offline_rebuild_outstanding >= MAX_OFFLINE_REBUILD_INDEXES) {
+        jam();
+        jamData(m_offline_rebuild_outstanding);
+        insertOfflineRebuildQueue(buildPtrI, __LINE__);
+        return;
+      }
     }
   }
 
@@ -936,6 +1038,7 @@ void Dbtup::buildIndexOffline_table_readonly(Signal *signal, Uint32 buildPtrI) {
      * Note: before 7.3.4, 7.2.15, 7.1.30 fifth word and
      * up was undefined.
      */
+    removeOfflineRebuildQueue(buildPtrI, __LINE__);
     std::memset(req, 0, sizeof(*req));
     req->senderRef = reference();
     req->senderData = buildPtrI;
@@ -943,12 +1046,38 @@ void Dbtup::buildIndexOffline_table_readonly(Signal *signal, Uint32 buildPtrI) {
     req->requestType = AlterTabReq::AlterTableReadWrite;
     sendSignal(calcInstanceBlockRef(DBLQH), GSN_ALTER_TAB_REQ, signal,
                AlterTabReq::SignalLength, JBB);
-    return;
-  } else {
+  }
+  jam();
+  if (m_offline_rebuild_outstanding < MAX_OFFLINE_REBUILD_INDEXES &&
+      m_queued_offline_rebuild_counter > 0 &&
+      m_queued_offline_rebuild[0] != buildPtrI) {
     jam();
-    // wait for replies
+    /**
+     * This becomes a recursive call, but is limited by the number
+     * MAX_OFFLINE_REBUILD_INDEXES
+     * We need to avoid entering here with the same buildPtrI to avoid
+     * ending up in an eternal loop.
+     */
+    Uint32 ptrI = m_queued_offline_rebuild[0];
+    jamData(m_offline_rebuild_outstanding);
+    jamData(ptrI);
+    removeOfflineRebuildQueue(ptrI, __LINE__);
+#ifdef DEBUG_INDEX_BUILD
+    BuildIndexPtr ptr;
+    ptr.i = ptrI;
+    c_buildIndexList.getPtr(ptr);
+    DEB_INDEX_BUILD(("(%u) Build queued offline buildPtrI: %u, tab(%u,%u,%u)",
+      instance(),
+      ptr.i,
+      ptr.p->m_request.tableId,
+      ptr.p->m_indexId,
+      ptr.p->m_fragNo));
+#endif
+    buildIndexOffline_table_readonly(signal, ptrI);
     return;
   }
+  // wait for replies
+  return;
 }
 
 int
@@ -961,7 +1090,8 @@ Dbtup::mt_scan_init(Uint32 tableId, Uint32 fragId,
 
   FragrecordPtr fragPtr;
   fragPtr.i = RNIL64;
-  for (Uint32 i = 0; i < MAX_FRAG_PER_LQH; i++)
+  Uint32 num_fragments = c_lqh->getTableNumFragments(tableId);
+  for (Uint32 i = 0; i < num_fragments; i++)
   {
     if (c_lqh->getNextTupFragid(tableId, i) == fragId)
     {
@@ -1082,7 +1212,18 @@ void Dbtup::execBUILD_INDX_IMPL_REF(Signal *signal) {
   (void)tablePtr;  // hide unused warning
   buildPtr.p->m_errorCode = (BuildIndxImplRef::ErrorCode)err;
   // No point in starting any more
-  buildPtr.p->m_fragNo = MAX_FRAG_PER_LQH;
+  buildPtr.p->m_fragNo = buildPtr.p->m_num_fragments;
+  jamDataDebug(buildPtr.p->m_fragNo);
+  jamDataDebug(buildPtr.p->m_indexId);
+  ndbrequire(m_offline_rebuild_outstanding > 0);
+  m_offline_rebuild_outstanding--;
+  jamData(m_offline_rebuild_outstanding);
+  DEB_INDEX_BUILD(("(%u) Build offline REF buildPtrI: %u, tab(%u,%u,%u)",
+    instance(),
+    buildPtr.i,
+    buildPtr.p->m_request.tableId,
+    buildPtr.p->m_indexId,
+    buildPtr.p->m_fragNo));
   buildIndexOffline_table_readonly(signal, ptr);
 }
 
@@ -1093,10 +1234,19 @@ void Dbtup::execBUILD_INDX_IMPL_CONF(Signal *signal) {
 
   BuildIndexPtr buildPtr;
   c_buildIndexList.getPtr(buildPtr, ptr);
-  ndbrequire(buildPtr.p->m_outstanding);
+  ndbrequire(buildPtr.p->m_outstanding > 0);
   buildPtr.p->m_outstanding--;
-  buildPtr.p->m_fragNo++;
-
+  jamDataDebug(buildPtr.p->m_fragNo);
+  jamDataDebug(buildPtr.p->m_indexId);
+  ndbrequire(m_offline_rebuild_outstanding > 0);
+  m_offline_rebuild_outstanding--;
+  jamData(m_offline_rebuild_outstanding);
+  DEB_INDEX_BUILD(("(%u) Build offline CONF buildPtrI: %u, tab(%u,%u,%u)",
+    instance(),
+    buildPtr.i,
+    buildPtr.p->m_request.tableId,
+    buildPtr.p->m_indexId,
+    buildPtr.p->m_fragNo));
   buildIndexOffline_table_readonly(signal, ptr);
 }
 

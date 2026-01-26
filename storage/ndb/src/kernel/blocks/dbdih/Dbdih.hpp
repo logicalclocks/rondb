@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
    Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -120,7 +120,7 @@
 #define MAX_CONCURRENT_DIH_TAB_DEF_OPS (MAX_CONCURRENT_LCP_TAB_DEF_FLUSHES + 2 + 2)
 #define ZCREATE_REPLICA_FILE_SIZE 4
 #define ZPAGEREC (MAX_CONCURRENT_DIH_TAB_DEF_OPS * PACK_TABLE_PAGES)
-#define ZPROXY_MASTER_FILE_SIZE (MAX_NDB_NODES + 1)
+#define ZPROXY_MASTER_FILE_SIZE (ABS_MAX_NDB_NODES + 1)
 
 /*MaxConcurrent proxied WaitGcpReq.  Set to 10 as safety margin on 1.*/
 #define ZPROXY_FILE_SIZE 10
@@ -967,7 +967,7 @@ class Dbdih : public SimulatedBlock {
   bool getParam(const char *param, Uint32 *retVal) override {
     if (param && strcmp(param, "ActiveMutexes") == 0) {
       if (retVal) {
-        *retVal = 5 + MAX_NDB_NODES;
+        *retVal = 5 + ABS_MAX_NDB_NODES;
       }
       return true;
     }
@@ -1013,7 +1013,7 @@ class Dbdih : public SimulatedBlock {
 
   void sendEND_TOREP(Signal *signal, Uint32 startNodeId);
 
-  void create_nodegroup_mapping(Uint16 nodegroup_mapping[MAX_NDB_NODES]);
+  void create_nodegroup_mapping(Uint16 nodegroup_mapping[ABS_MAX_NDB_NODES]);
   bool check_stall_lcp_start(void);
   void check_node_not_restarted_yet(NodeRecordPtr nodePtr);
   void setNodeRecoveryStatus(Uint32 nodeId,
@@ -1841,8 +1841,8 @@ class Dbdih : public SimulatedBlock {
   Uint8 tmp_next_replica_node_set[MAX_NDB_NODE_GROUPS]
                                  [NDBMT_MAX_WORKER_INSTANCES];
   Uint16 tmp_node_group_id[MAX_NDB_PARTITIONS];
-  Uint16 tmp_fragments_per_ldm[MAX_NDB_NODES][NDBMT_MAX_WORKER_INSTANCES];
-  Uint16 tmp_fragments_per_node[MAX_NDB_NODES];
+  Uint16 tmp_fragments_per_ldm[ABS_MAX_NDB_NODES][NDBMT_MAX_WORKER_INSTANCES];
+  Uint16 tmp_fragments_per_node[ABS_MAX_NDB_NODES];
   void init_next_replica_node(
       Uint16 (
           *next_replica_node)[MAX_NDB_NODE_GROUPS][NDBMT_MAX_WORKER_INSTANCES],
@@ -2815,7 +2815,7 @@ class Dbdih : public SimulatedBlock {
 
   bool handle_master_take_over_copy_gci(Signal *signal, NodeId newMasterNodeId);
 
-  RedoStateRep::RedoAlertState m_node_redo_alert_state[MAX_NDB_NODES];
+  RedoStateRep::RedoAlertState m_node_redo_alert_state[ABS_MAX_NDB_NODES];
   RedoStateRep::RedoAlertState m_global_redo_alert_state;
   RedoStateRep::RedoAlertState get_global_redo_alert_state();
   void sendREDO_STATE_REP_to_all(Signal *, Uint32 block, bool send_to_all);

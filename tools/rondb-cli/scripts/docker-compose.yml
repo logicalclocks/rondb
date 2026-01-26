@@ -1,0 +1,76 @@
+#   Copyright (c) 2026, 2026, Hopsworks and/or its affiliates.
+#
+#   This program is free software; you can redistribute it and/or modify
+#   it under the terms of the GNU General Public License, version 2.0,
+#   as published by the Free Software Foundation.
+#
+#   This program is designed to work with certain software (including
+#   but not limited to OpenSSL) that is licensed under separate terms,
+#   as designated in a particular file or component or in included license
+#   documentation.  The authors of MySQL hereby grant you an additional
+#   permission to link the program and your derivative works with the
+#   separately licensed software that they have either included with
+#   the program or referenced in the documentation.
+#
+#   This program is distributed in the hope that it will be useful,
+#   but WITHOUT ANY WARRANTY; without even the implied warranty of
+#   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#   GNU General Public License, version 2.0, for more details.
+#
+#   You should have received a copy of the GNU General Public License
+#   along with this program; if not, write to the Free Software
+#   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
+#
+# RonDB Docker Compose - Standalone Alternative
+#
+# IMPORTANT: The recommended approach is to use start-rondb.sh which pulls
+# from https://github.com/logicalclocks/rondb-docker
+#
+# This file is a simplified alternative if you want a single-container setup.
+# However, it may not work out of the box as RonDB images may not be published.
+#
+# Usage (if image exists):
+#   docker compose up -d
+#   docker compose logs -f
+#   docker compose down -v
+#
+# Connect:
+#   MySQL:  mysql -h 127.0.0.1 -P 3306 -u root
+#   Redis:  redis-cli -h 127.0.0.1 -p 6379
+#
+# To build the image locally from rondb source:
+#   cd /path/to/rondb
+#   BUILDKIT_ENABLED=1 docker build . \
+#       -f build_scripts/release_scripts/build-docker-image/Dockerfile \
+#       --tag rondb-local:latest \
+#       --build-arg RONDB_X86_TARBALL_URI=https://repo.hops.works/master/rondb-24.10.0-linux-glibc2.28-x86_64.tar.gz
+#
+
+services:
+  rondb:
+    # Try hopsworks/rondb-standalone or build locally
+    image: ${RONDB_IMAGE:-hopsworks/rondb-standalone:24.10.0}
+    container_name: rondb-standalone
+    ports:
+      - "3306:3306"     # MySQL
+      - "6379:6379"     # Rondis (Redis protocol)
+      - "4406:4406"     # REST API
+      - "1186:1186"     # NDB Management
+    environment:
+      MYSQL_ALLOW_EMPTY_PASSWORD: "true"
+      # Point rdrs2 to our config with Rondis enabled
+      RDRS_CONFIG_FILE: /srv/hops/rdrs2-config.json
+    volumes:
+      - rondb-data:/srv/hops/mysql-cluster
+      - ./rdrs2-config.json:/srv/hops/rdrs2-config.json:ro
+    command: ["mysqld"]
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 90s
+    restart: unless-stopped
+
+volumes:
+  rondb-data:

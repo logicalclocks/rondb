@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
    Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -1256,7 +1256,11 @@ void Qmgr::execCM_REGREQ(Signal *signal) {
   Uint32 gci = 1;
   Uint32 start_type = ~0;
 
-  ndbrequire(cmRegReq->nodeId < MAX_NODES);
+  if (cmRegReq->nodeId >= MAX_NDB_NODES) {
+    jam();
+    sendCmRegrefLab(signal, Tblockref, CmRegRef::ZNOT_IN_CFG, startingVersion);
+    return;
+  }
 
   if (!c_connectedNodes.get(cmRegReq->nodeId)) {
     jam();
@@ -1305,6 +1309,20 @@ void Qmgr::execCM_REGREQ(Signal *signal) {
     sendCmRegrefLab(signal, Tblockref, CmRegRef::ZINCOMPATIBLE_VERSION,
                     startingVersion);
     return;
+  }
+
+  if (MAX_NODES > ABS_MAX_NODES) {
+    jam();
+    if (!ndbd_support_2k_api_nodes(startingVersion)) {
+      /**
+       * If configuration contains nodes with high node ids we must have higher
+       * requirements on the version used.
+       */
+      jam();
+      sendCmRegrefLab(signal, Tblockref, CmRegRef::ZINCOMPATIBLE_VERSION,
+                      startingVersion);
+      return;
+    }
   }
 
   if (check_start_type(start_type, c_start.m_start_type)) {
@@ -2082,7 +2100,7 @@ Uint32 Qmgr::check_startup(Signal *signal) {
   wait.bitANDC(tmp);
 
   Uint32 retVal = 0;
-  Uint32 incompleteng = MAX_NDB_NODES;  // Illegal value
+  Uint32 incompleteng = ABS_MAX_NDB_NODES;  // Illegal value
   NdbNodeBitmask report_mask;
 
   if ((c_start.m_latest_gci == 0) ||
@@ -2287,7 +2305,7 @@ check_log:
     incompleteng = signal->theData[0];
     memcpy(signal->theData, save, sizeof(save));
 
-    if (incompleteng != MAX_NDB_NODES) {
+    if (incompleteng != ABS_MAX_NDB_NODES) {
       jam();
       if (retVal == 1) {
         jam();
@@ -3110,6 +3128,7 @@ void Qmgr::initData(Signal *signal) {
   c_restartPartitionedTimeout = Uint32(~0);
   c_restartFailureTimeout = Uint32(~0);
   c_restartNoNodegroupTimeout = 15000;
+  c_apiFailureTimeoutSecs = 600;
   ndb_mgm_get_int_parameter(p, CFG_DB_HEARTBEAT_INTERVAL, &hbDBDB);
   ndb_mgm_get_int_parameter(p, CFG_DB_ARBIT_TIMEOUT, &arbitTimeout);
   ndb_mgm_get_int_parameter(p, CFG_DB_ARBIT_METHOD, &arbitMethod);
@@ -3122,6 +3141,8 @@ void Qmgr::initData(Signal *signal) {
   ndb_mgm_get_int_parameter(p, CFG_DB_START_FAILURE_TIMEOUT,
                             &c_restartFailureTimeout);
   ndb_mgm_get_int_parameter(p, CFG_DB_CONNECT_CHECK_DELAY, &ccInterval);
+  ndb_mgm_get_int_parameter(p, CFG_DB_API_FAILURE_HANDLING_TIMEOUT,
+                            &c_apiFailureTimeoutSecs);
 
   if (c_restartPartialTimeout == 0) {
     c_restartPartialTimeout = Uint32(~0);
@@ -3150,12 +3171,13 @@ void Qmgr::initData(Signal *signal) {
 
   Uint32 sum = 0;
   ArbitSignalData *const sd = (ArbitSignalData *)&signal->theData[0];
+  NodeBitmaskPOD arbit_mask;
   for (unsigned rank = 1; rank <= 2; rank++) {
     sd->sender = getOwnNodeId();
     sd->code = rank;
     sd->node = 0;
     sd->ticket.clear();
-    sd->mask.clear();
+    arbit_mask.clear();
     ndb_mgm_configuration_iterator *iter =
         m_ctx.m_config.getClusterConfigIterator();
     for (ndb_mgm_first(iter); ndb_mgm_valid(iter); ndb_mgm_next(iter)) {
@@ -3164,11 +3186,11 @@ void Qmgr::initData(Signal *signal) {
           tmp == rank) {
         Uint32 nodeId = 0;
         ndbrequire(!ndb_mgm_get_int_parameter(iter, CFG_NODE_ID, &nodeId));
-        sd->mask.set(nodeId);
+        arbit_mask.set(nodeId);
       }
     }
-    sum += sd->mask.count();
-    execARBIT_CFG(signal);
+    sum += arbit_mask.count();
+    execARBIT_CFG(signal, arbit_mask);
   }
 
   if (arbitRec.method == ArbitRec::METHOD_DEFAULT && sum == 0) {
@@ -4417,15 +4439,18 @@ void Qmgr::checkStartInterface(Signal* signal, NDB_TICKS now)
       else
       {
         jam();
-        if (((get_hb_count(nodePtr.i) + 1) % 30) == 0) {
-          jam();
-          char buf[256];
-          if (getNodeInfo(nodePtr.i).m_type == NodeInfo::DB) {
+        const Uint32 secondsElapsed = get_hb_count(nodePtr.i);
+        bool generateDelayLog =
+            (secondsElapsed && ((secondsElapsed % 30) == 0));
+
+        if (getNodeInfo(nodePtr.i).m_type == NodeInfo::DB) {
+          if (generateDelayLog) {
             jam();
+            char buf[256];
             BaseString::snprintf(buf, sizeof(buf),
                                  "Failure handling of node %d has not completed"
                                  " in %d seconds - state = %d",
-                                 nodePtr.i, get_hb_count(nodePtr.i),
+                                 nodePtr.i, secondsElapsed,
                                  nodePtr.p->failState);
             warningEvent("%s", buf);
 
@@ -4435,12 +4460,41 @@ void Qmgr::checkStartInterface(Signal* signal, NDB_TICKS now)
             signal->theData[0] = DumpStateOrd::DihTcSumaNodeFailCompleted;
             signal->theData[1] = nodePtr.i;
             sendSignal(DBDIH_REF, GSN_DUMP_STATE_ORD, signal, 2, JBB);
-          } else {
+          }
+        } else {
+          /* API/MGMD */
+
+          /* Check which timeout value to use */
+          Uint32 maxSeconds = c_apiFailureTimeoutSecs;
+          if (nodePtr.p->failState == WAITING_FOR_API_FAILCONF) {
+            /* Check if we are waiting for DICT */
+            for (Uint32 i = 0; i < NDB_ARRAY_SIZE(nodePtr.p->m_failconf_blocks);
+                 i++) {
+              if (nodePtr.p->m_failconf_blocks[i] == DBDICT) {
+                /* DICT failure handling time can include
+                 * Schema Transaction rollback/forward
+                 */
+                maxSeconds = (7 * 24 * 60 * 60);
+                break;
+              }
+            }
+          }
+          const Uint32 remainSecs =
+              ((maxSeconds > 0) ? (secondsElapsed >= maxSeconds
+                                       ? 0
+                                       : maxSeconds - secondsElapsed)
+                                : UINT32_MAX);
+
+          const bool escalate = (remainSecs == 0);
+          generateDelayLog |= (remainSecs == 5 || escalate);
+
+          if (generateDelayLog) {
             jam();
+            char buf[256];
             BaseString::snprintf(buf, sizeof(buf),
                                  "Failure handling of api %u has not completed"
-                                 " in %d seconds - state = %d",
-                                 nodePtr.i, get_hb_count(nodePtr.i),
+                                 " in %d seconds.  Limit %u - state = %d",
+                                 nodePtr.i, secondsElapsed, maxSeconds,
                                  nodePtr.p->failState);
             warningEvent("%s", buf);
             if (nodePtr.p->failState == WAITING_FOR_API_FAILCONF) {
@@ -4454,7 +4508,40 @@ void Qmgr::checkStartInterface(Signal* signal, NDB_TICKS now)
                                    nodePtr.p->m_failconf_blocks[3],
                                    nodePtr.p->m_failconf_blocks[4]);
               warningEvent("%s", buf);
+
+              /* Ask delayed block(s) to explain themselves */
+              for (Uint32 i = 0;
+                   i < NDB_ARRAY_SIZE(nodePtr.p->m_failconf_blocks); i++) {
+                if (nodePtr.p->m_failconf_blocks[i] != 0) {
+                  signal->theData[0] = DumpStateOrd::DihTcSumaNodeFailCompleted;
+                  signal->theData[1] = nodePtr.i;
+                  const Uint32 dstRef =
+                      numberToRef(nodePtr.p->m_failconf_blocks[i], 0);
+                  sendSignal(dstRef, GSN_DUMP_STATE_ORD, signal, 2, JBB);
+                }
+              }
             }
+          }
+
+          if (escalate) {
+            g_eventLogger->error(
+                "Failure handling of api %u has not completed "
+                "in %d seconds.  Limit %d - state = %d blocks "
+                "%u %u %u %u %u",
+                nodePtr.i, secondsElapsed, maxSeconds, nodePtr.p->failState,
+                nodePtr.p->m_failconf_blocks[0],
+                nodePtr.p->m_failconf_blocks[1],
+                nodePtr.p->m_failconf_blocks[2],
+                nodePtr.p->m_failconf_blocks[3],
+                nodePtr.p->m_failconf_blocks[4]);
+
+            CRASH_INSERTION(961);  // Safe exit for testing
+            char buf[100];
+            BaseString::snprintf(
+                buf, sizeof(buf),
+                "Exceeded limit of %u seconds handling failure of Api node %u.",
+                maxSeconds, nodePtr.i);
+            progError(__LINE__, NDBD_EXIT_API_FAIL_HANDLING_TIMEOUT, buf);
           }
         }
       }
@@ -5062,6 +5149,37 @@ void Qmgr::api_failed(Signal *signal, Uint32 nodeId) {
              CloseComReqConf::SignalLength, JBB);
 }  // api_failed
 
+bool Qmgr::check_all_nodes_support_high_node_ids() {
+  Uint32 min_version = 0xFFFFFFFF;
+  /**
+   * If a node with a high node id tries to connect, then all nodes
+   * in the cluster must run the version supporting it no matter
+   * what node type they are.
+   */
+  for (Uint32 node = 1; node < MAX_NODES; node++) {
+    if (node > OLD_MAX_NODES) {
+      /* Nodes with high node ids obviously have support for it */
+      break;
+    }
+    if (!c_connectedNodes.get(node)) {
+      /* Node isn't connected, so no need to check its version */
+      continue;
+    }
+    Uint32 node_version = getNodeInfo(node).m_version;
+    if (node_version != 0 && node_version < min_version) {
+      jam();
+      jamData(node);
+      min_version = node_version;
+    }
+  }
+  if (!ndbd_support_2k_api_nodes(min_version)) {
+    g_eventLogger->info("Min Version 0x%x of is not compatible",
+      min_version);
+    return false;
+  }
+  return true;
+}
+
 /**--------------------------------------------------------------------------
  * AN API NODE IS REGISTERING. IF FOR THE FIRST TIME WE WILL ENABLE
  * COMMUNICATION WITH ALL NDB BLOCKS.
@@ -5080,7 +5198,15 @@ void Qmgr::execAPI_REGREQ(Signal *signal) {
 
   NodeRecPtr apiNodePtr;
   apiNodePtr.i = refToNode(ref);
-  ptrCheckGuard(apiNodePtr, MAX_NODES, nodeRec);
+  if (apiNodePtr.i >= MAX_NODES) {
+    infoEvent("Connection attempt from not configured node %u",
+      apiNodePtr.i);
+    g_eventLogger->info("Connection attempt from not configured node: %u",
+      apiNodePtr.i);
+    sendApiRegRef(signal, ref, ApiRegRef::UnconfiguredNode);
+    return;
+  }
+  ptrAss(apiNodePtr, nodeRec);
 
   if (apiNodePtr.p->phase == ZFAIL_CLOSING) {
     jam();
@@ -5127,6 +5253,24 @@ void Qmgr::execAPI_REGREQ(Signal *signal) {
     compatability_check = false;
   }
 
+  if (compatability_check && apiNodePtr.i > OLD_MAX_NODES) {
+    if (!check_all_nodes_support_high_node_ids()) {
+      compatability_check = false;
+    }
+  }
+  if (compatability_check && (MAX_NODES > OLD_MAX_NODES)) {
+    /**
+     * This node is expecting nodes with high node ids due to the
+     * configuration. This means that no API nodes are allowed to
+     * get into the cluster unless they have a version that
+     * supports high node ids.
+     */
+    if (!ndbd_support_2k_api_nodes(version)) {
+      g_eventLogger->info("Version 0x%x of node %u is not compatible",
+        version, apiNodePtr.i);
+      compatability_check = false;
+    }
+  }
   if (!compatability_check) {
     jam();
     char buf[NDB_VERSION_STRING_BUF_SZ];
@@ -5304,7 +5448,14 @@ void Qmgr::sendApiRegConf(Signal *signal, Uint32 node) {
   NodeVersionInfo info = getNodeVersionInfo();
   apiRegConf->minDbVersion = info.m_type[NodeInfo::DB].m_min_version;
   apiRegConf->minApiVersion = info.m_type[NodeInfo::API].m_min_version;
-  apiRegConf->nodeState.m_connected_nodes.assign(c_connectedNodes);
+  /**
+   * Ignore sending connect status of API nodes, the API isn't interested
+   * in this information. Send 8 words of connect status for backwards
+   * compatability.
+   */
+  memcpy(&apiRegConf->nodeState.m_connected_nodes,
+         c_connectedNodes.rep.data,
+         NodeBitmask255::Size * 4);
   sendSignal(ref, GSN_API_REGCONF, signal, ApiRegConf::SignalLength, JBB);
 }
 
@@ -6716,13 +6867,13 @@ void Qmgr::sendPrepFailReq(Signal *signal, Uint16 aNode) {
 /**
  * Config signals are logically part of CM_REG.
  */
-void Qmgr::execARBIT_CFG(Signal *signal) {
+void Qmgr::execARBIT_CFG(Signal *signal, NodeBitmaskPOD arbit_mask) {
   jamEntry();
   ArbitSignalData *sd = (ArbitSignalData *)&signal->theData[0];
   unsigned rank = sd->code;
   ndbrequire(1 <= rank && rank <= 2);
-  arbitRec.apiMask[0].bitOR(sd->mask);
-  arbitRec.apiMask[rank].assign(sd->mask);
+  arbitRec.apiMask[0].bitOR(arbit_mask);
+  arbitRec.apiMask[rank].assign(arbit_mask);
 }
 
 /**
@@ -7631,7 +7782,7 @@ void Qmgr::stateArbitChoose(Signal *signal) {
         // Arbitration timeout has expired
         ndbrequire(arbitRec.node == 0);  // No arbitrator selected
 
-        NodeBitmask nodes;
+        NdbNodeBitmask nodes;
         computeArbitNdbMask(nodes);
         arbitRec.code = ArbitCode::WinWaitExternal;
         reportArbitEvent(signal, NDB_LE_ArbitResult, nodes);
@@ -7818,6 +7969,7 @@ void Qmgr::computeArbitNdbMask(NodeBitmaskPOD &aMask) {
   }
 }
 
+
 void Qmgr::computeArbitNdbMask(NdbNodeBitmaskPOD &aMask) {
   NodeRecPtr aPtr;
   aMask.clear();
@@ -7851,7 +8003,7 @@ void Qmgr::computeBeforeFailNdbMask(NdbNodeBitmaskPOD &aMask) {
  * where sender (word 0) is event type.
  */
 void Qmgr::reportArbitEvent(Signal *signal, Ndb_logevent_type type,
-                            const NodeBitmask mask) {
+                            const NdbNodeBitmask mask) {
   ArbitSignalData *sd = (ArbitSignalData *)&signal->theData[0];
   sd->sender = type;
   sd->code = arbitRec.code | (arbitRec.state << 16);
@@ -8031,6 +8183,15 @@ void Qmgr::execDUMP_STATE_ORD(Signal *signal) {
     closeCom->failedNodeId = nodeId;
     sendSignal(TRPMAN_REF, GSN_CLOSE_COMREQ, signal,
                CloseComReqConf::SignalLength, JBB);
+  }
+  if (signal->theData[0] == 909) {
+    jam();
+    if (signal->getLength() == 2) {
+      jam();
+      g_eventLogger->info("QMGR : Setting c_apiFailureTimeoutSecs to %u",
+                          signal->theData[1]);
+      c_apiFailureTimeoutSecs = signal->theData[1];
+    }
   }
 }  // Qmgr::execDUMP_STATE_ORD()
 
@@ -9107,7 +9268,7 @@ void Qmgr::execDBINFO_SCANREQ(Signal *signal) {
       NodeRecPtr aPtr;
       // buf_size: Node nr (max 3 chars) and ', '  + trailing '\0'
       const int buf_size = 5 * MAX_NODES + 1;
-      char buf[buf_size];
+      char buf[5 * ABS_MAX_NODES + 1];
 
       for (unsigned rank = 1; rank <= 2; rank++) {
         jam();

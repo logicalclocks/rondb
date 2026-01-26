@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
    Copyright (c) 2025, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -194,7 +194,7 @@ std::string NdbBackup::getBackupDataDirForNode(int node_id) {
   if (connect()) return "";
 
   // Fetch configuration from management server
-  ndb_mgm::config_ptr conf(ndb_mgm_get_configuration(handle, 0));
+  ndb_mgm::config_ptr conf(ndb_mgm_get_configuration(handle, NDB_VERSION));
   if (!conf) {
     const char *err_msg = ndb_mgm_get_latest_error_msg(handle);
     if (!err_msg) err_msg = "No error given!";

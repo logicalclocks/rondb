@@ -1,5 +1,5 @@
-/* Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+/* Copyright (c) 2003, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -71,7 +71,7 @@ class Config {
     become obsolete and a reload from those would revert to an
     old config.
     0 => config updated from mgmapi, no node is primary anymore
-    1 - MAX_NODES => only node with specified nodeid can reload
+    1 - ABS_MAX_NODES => only node with specified nodeid can reload
                      config without force
    */
   Uint32 getPrimaryMgmNode() const;

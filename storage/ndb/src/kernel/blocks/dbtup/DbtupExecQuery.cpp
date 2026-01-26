@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
    Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -2069,7 +2069,7 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
     Uint32 attrBufLen = lqhScanPtrP->scanAiLength;
     Uint32 dirtyOp = (lqhScanPtrP->scanLockHold == ZFALSE);
     Uint32 prioAFlag = lqhScanPtrP->prioAFlag;
-    Uint32 opRef = lqhScanPtrP->scanApiOpPtr;
+    Uint32 opRef = lqhScanPtrP->scanApiOpPtr[lqhScanPtrP->scanApiOpPtr_index];
     Uint32 applRef = lqhScanPtrP->scanApiBlockref;
     Uint32 interpreted_exec = lqhOpPtrP->opExec;
     Uint32 interpreted_insert = lqhOpPtrP->m_interpreted_insert;

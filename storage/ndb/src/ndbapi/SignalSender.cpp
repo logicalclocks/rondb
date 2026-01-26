@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2005, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2005, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -151,7 +151,7 @@ NodeBitmask SignalSender::broadcastSignal(NodeBitmask mask, SimpleSignal &sig,
   sig.set(*this, TestOrd::TraceAPI, recBlock, gsn, len);
 
   NodeBitmask result;
-  for (Uint32 i = 0; i < MAX_NODES; i++) {
+  for (Uint32 i = 0; i < ABS_MAX_NODES; i++) {
     if (mask.get(i) && sendSignal(i, &sig) == SEND_OK) result.set(i);
   }
   return result;
@@ -281,7 +281,7 @@ NodeId SignalSender::find_node(const NodeBitmask &mask,
 
     if (n == NodeBitmask::NotFound) return 0;
 
-    assert(n < MAX_NODES);
+    assert(n < ABS_MAX_NODES);
 
   } while (!cond(getNodeInfo(n)));
 

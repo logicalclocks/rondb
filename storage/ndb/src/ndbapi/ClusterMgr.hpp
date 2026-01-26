@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -170,7 +170,7 @@ class ClusterMgr : public trp_client {
   Uint32 noOfConnectedDBNodes;
   Uint32 minDbVersion;
   Uint32 minApiVersion;
-  Node theNodes[MAX_NODES];
+  Node theNodes[ABS_MAX_NODES];
   NdbThread *theClusterMgrThread;
 
   NdbCondition *waitForHBCond;
@@ -284,7 +284,7 @@ public:
 
 inline const trp_node &ClusterMgr::getNodeInfo(NodeId nodeId) const {
   // Check array bounds
-  assert(nodeId < MAX_NODES);
+  assert(nodeId < ABS_MAX_NODES);
   return theNodes[nodeId];
 }
 
@@ -317,7 +317,7 @@ ClusterMgr::getNoOfConnectedNodes() const {
 
 inline void ClusterMgr::hb_received(NodeId nodeId) {
   // Check array bounds + don't allow node 0 to be touched
-  assert(nodeId > 0 && nodeId < MAX_NODES);
+  assert(nodeId > 0 && nodeId < ABS_MAX_NODES);
   theNodes[nodeId].hbMissed = 0;
 }
 

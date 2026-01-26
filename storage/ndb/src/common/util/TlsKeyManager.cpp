@@ -1,4 +1,5 @@
-/* Copyright (c) 2022, 2024, Oracle and/or its affiliates.
+/* Copyright (c) 2022, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2025, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -439,7 +440,7 @@ void TlsKeyManager::describe_cert(cert_record &entry, struct x509_st *cert) {
 
 void TlsKeyManager::cert_table_set(int node_id, X509 *cert) {
   Guard mutex_guard(&m_cert_table_mutex);
-  assert(node_id < MAX_NODES);
+  assert(node_id < ABS_MAX_NODES);
   if (node_id == 0) return;  // Client certs do not go into table
 
   /* In the case of a multi-transporter, the entry may already be active */
@@ -452,7 +453,7 @@ void TlsKeyManager::cert_table_set(int node_id, X509 *cert) {
 
 void TlsKeyManager::cert_table_clear(int node_id) {
   Guard mutex_guard(&m_cert_table_mutex);
-  assert(node_id < MAX_NODES);
+  assert(node_id < ABS_MAX_NODES);
 
   struct cert_record &entry = m_cert_table[node_id];
   entry.serial[0] = '\0';

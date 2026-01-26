@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2024, Oracle and/or its affiliates.
+  Copyright (c) 2024, 2025, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
@@ -80,11 +80,11 @@ class HTTP_CLIENT_EXPORT Client {
   int error_code() const;
   std::string error_message() const;
   const Statistics &statistics() const;
+  class CallbacksPrivateImpl;
 
  private:
   void start_http_flow();
 
-  class CallbacksPrivateImpl;
   bool is_connected_{false};
   std::error_code error_code_;
   Endpoint connected_endpoint_;

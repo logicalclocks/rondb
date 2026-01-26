@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2004, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2004, 2025, Oracle and/or its affiliates.
    Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -55,7 +55,8 @@ struct NdbApiConfig {
         m_waitfor_timeout(120000),
         m_default_queue_option(0),
         m_default_hashmap_size(0),
-        m_verbose(0) {}
+        m_verbose(0),
+        m_continous_scan(0) {}
 
   Uint32 m_scan_batch_size;
   Uint32 m_batch_byte_size;
@@ -64,6 +65,7 @@ struct NdbApiConfig {
   Uint32 m_default_queue_option;
   Uint32 m_default_hashmap_size;
   Uint32 m_verbose;
+  Uint32 m_continous_scan;
 };
 
 class Ndb_cluster_connection_impl : public Ndb_cluster_connection {
@@ -119,8 +121,8 @@ class Ndb_cluster_connection_impl : public Ndb_cluster_connection {
   NdbNodeBitmask m_db_nodes;
   NdbMutex *m_nodes_comm_group_mutex;
   Vector<Node> m_nodes_comm_group;
-  Uint16 m_node_index[MAX_NDB_NODES];
-  Uint16 m_location_domain_id[MAX_NODES];
+  Uint16 m_node_index[ABS_MAX_NDB_NODES];
+  Uint16 m_location_domain_id[ABS_MAX_NODES];
   int init_nodes_vector(Uint32 nodeid, const ndb_mgm_configuration *config);
   int configure(Uint32 nodeid, const ndb_mgm_configuration *config);
   void connect_thread();
@@ -130,7 +132,7 @@ class Ndb_cluster_connection_impl : public Ndb_cluster_connection {
   int set_service_uri(const char *, const char *, int, const char *);
   void set_data_node_neighbour(Uint32 neighbour_node);
   void adjust_node_comm_group(Uint32 node_id, Int32 adjustment);
-  Uint32 get_db_nodes(Uint8 nodesarray[MAX_NDB_NODES]) const;
+  Uint32 get_db_nodes(Uint8 nodesarray[ABS_MAX_NDB_NODES]) const;
   Uint32 get_unconnected_db_nodes(Uint32 & num_connected_db_nodes) const;
 
   /**

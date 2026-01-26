@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
    Copyright (c) 2024, 2025, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -42,11 +42,12 @@ bool printSCANTABREQ(FILE *output, const Uint32 *theData, Uint32 len,
   fprintf(output, " apiConnectPtr: H\'%.8x", sig->apiConnectPtr);
   fprintf(output, " requestInfo: H\'%.8x:\n", requestInfo);
   fprintf(output,
-          "  Parallellism: %u Batch: %u LockMode: %u Keyinfo: %u Holdlock: %u "
+          " Batch: %u LockMode: %u Keyinfo: %u Holdlock: %u "
           "RangeScan: %u Descending: %u TupScan: %u\n ReadCommitted: %u "
-          "DistributionKeyFlag: %u NoDisk: %u Spj: %u MultiFrag: %u"
-          ", PassQueueFlag: %u",
-          sig->getParallelism(requestInfo), sig->getScanBatch(requestInfo),
+          "DistributionKeyFlag: %u NoDisk: %u Spj: %u MultiFrag: %u\n "
+          ", PassQueueFlag: %u, AggregationFlag: %u,"
+          " TTLIgnoreFragFlag: %u, ParOrdScanFlag: %u",
+          sig->getScanBatch(requestInfo),
           sig->getLockMode(requestInfo), sig->getKeyinfoFlag(requestInfo),
           sig->getHoldLockFlag(requestInfo), sig->getRangeScanFlag(requestInfo),
           sig->getDescendingFlag(requestInfo), sig->getTupScanFlag(requestInfo),
@@ -54,7 +55,10 @@ bool printSCANTABREQ(FILE *output, const Uint32 *theData, Uint32 len,
           sig->getDistributionKeyFlag(requestInfo),
           sig->getNoDiskFlag(requestInfo), sig->getViaSPJFlag(requestInfo),
           sig->getMultiFragFlag(requestInfo),
-          sig->getPassQueueingFlag(requestInfo));
+          sig->getPassQueueingFlag(requestInfo),
+          sig->getAggregation(requestInfo),
+          sig->getTTLIgnoreFlag(requestInfo),
+          sig->getParallelOrderedScanFlag(requestInfo));
 
   if (sig->getDistributionKeyFlag(requestInfo))
     fprintf(output, " DKey: %x", sig->distributionKey);

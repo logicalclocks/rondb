@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2018, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2018, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2025, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -812,8 +813,9 @@ bool ConfigObject::read_v2_header_info(const Uint32 **data) {
     m_error_code = WRONG_VERSION_RECEIVED;
     return false;
   }
-  if (m_num_default_sections != 5 || m_num_data_nodes > MAX_NDB_NODES ||
-      m_num_data_nodes + m_num_api_nodes > MAX_NODES || m_num_data_nodes == 0 ||
+  if (m_num_default_sections != 5 || m_num_data_nodes > ABS_MAX_NDB_NODES ||
+      m_num_data_nodes + m_num_api_nodes > ABS_MAX_NODES ||
+      m_num_data_nodes == 0 ||
       m_num_api_nodes == 0 || m_num_mgm_nodes == 0 ||
       m_num_comm_sections == 0) {
     m_error_code = INCONSISTENT_CONFIGURATION;

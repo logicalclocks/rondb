@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2008, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2008, 2025, Oracle and/or its affiliates.
    Copyright (c) 2022, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -270,13 +270,6 @@ void AsyncIoThread::allocMemReq(Request *request) {
 }
 
 void AsyncIoThread::buildIndxReq(Request *request) {
-  /**
-   * Rebind thread config to allow different behaviour
-   * during Index build.
-   */
-  THRConfigRebinder idxbuild_cpulock(&m_fs.m_ctx.m_config.m_thr_config,
-                                     THRConfig::T_IXBLD, theThreadPtr);
-
   mt_BuildIndxReq req;
   memcpy(&req, &request->par.build.m_req, sizeof(req));
   Uint32 rg;

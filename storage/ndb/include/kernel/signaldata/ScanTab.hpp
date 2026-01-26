@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
    Copyright (c) 2024, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -125,6 +125,7 @@ class ScanTabReq {
   static Uint32 getMultiFragFlag(const Uint32 &requestInfo);
   static Uint32 getTTLIgnoreFlag(const Uint32 &requestInfo);
   static Uint32 getTTLOnlyExpiredFlag(const Uint32 &requestInfo);
+  static Uint32 getParallelOrderedScanFlag(const Uint32 &requestInfo);
 
   /**
    * Set:ers for requestInfo
@@ -150,6 +151,7 @@ class ScanTabReq {
   static void setMultiFragFlag(Uint32 &requestInfo, Uint32 val);
   static void setTTLIgnoreFlag(Uint32 &requestInfo, Uint32 val);
   static void setTTLOnlyExpiredFlag(Uint32 &requestInfo, Uint32 val);
+  static void setParallelOrderedScanFlag(Uint32 &requestInfo, Uint32 val);
 };
 
 /**
@@ -161,6 +163,7 @@ class ScanTabReq {
                                         zero-filled until future reuse.
  g = Aggregation           - 1  Bit 7   reuse the highest bit of Parallelism
  P = Pass queue flag       - 1  Bit 6   Signal sent from DBTC, queued request
+
  l = Lock mode             - 1  Bit 8
  h = Hold lock mode        - 1  Bit 10
  c = Read Committed        - 1  Bit 11
@@ -181,11 +184,12 @@ class ScanTabReq {
  R = Read Committed base   - 1  Bit 30
  I = IgnoreTTL             - 1  Bit 3
  e = TTL only expired      - 1  Bit 4
+ r = Four receiver/part    - 1  Bit 2
 
            1111111111222222222233
  01234567890123456789012345678901
  pppppppplnhcktzxbbbbbbbbbbdjafR
-    Ie  g
+   rIe Pg
 */
 
 #define PARALLEL_SHIFT (0)
@@ -193,6 +197,9 @@ class ScanTabReq {
 
 #define SCAN_AGGREGATION_SHIFT (7)
 #define SCAN_AGGREGATION_MASK  (1)
+
+#define PAR_ORDER_SCAN_SHIFT     (2)
+#define PAR_ORDER_SCAN_MASK      (1)
 
 #define PASS_QUEUE_SHIFT     (6)
 #define PASS_QUEUE_MASK      (1)
@@ -238,6 +245,16 @@ class ScanTabReq {
 
 inline Uint8 ScanTabReq::getReadCommittedBaseFlag(const UintR &requestInfo) {
   return (Uint8)((requestInfo >> SCAN_READ_COMMITTED_BASE_SHIFT) & 1);
+}
+
+inline Uint32 ScanTabReq::getParallelOrderedScanFlag(const UintR &requestInfo) {
+  return (Uint32)((requestInfo >> PAR_ORDER_SCAN_SHIFT) & PAR_ORDER_SCAN_MASK);
+}
+
+inline void ScanTabReq::setParallelOrderedScanFlag(UintR & requestInfo, Uint32 mode) {
+  ASSERT_MAX(mode, PAR_ORDER_SCAN_MASK,  "ScanTabReq::setParallelOrderedScanFlag");
+  requestInfo= (requestInfo & ~(PAR_ORDER_SCAN_MASK << PAR_ORDER_SCAN_SHIFT)) |
+               ((mode & PAR_ORDER_SCAN_MASK) << PAR_ORDER_SCAN_SHIFT);
 }
 
 inline Uint8 ScanTabReq::getParallelism(const UintR &requestInfo) {

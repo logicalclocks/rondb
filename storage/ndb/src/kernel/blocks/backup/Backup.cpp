@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
    Copyright (c) 2022, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -93,22 +93,21 @@ static const Uint32 WaitScanTempErrorRetryMillis = 10;
 static NDB_TICKS startTime;
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
-//#define DEBUG_EMPTY_LCP 1
-//#define DEBUG_END_LCP 1
-//#define DEBUG_LCP_DEL_FILES 1
-//#define DEBUG_LCP 1
-//#define DEBUG_EMPTY_LCP 1
-#define DEBUG_LCP_WRITE_CTL 1
-#define DEBUG_UNDO_LCP 1
-//#define DEBUG_LCP_ROW 1
-//#define DEBUG_LCP_DEL 1
-//#define DEBUG_EXTRA_LCP 1
-//#define DEBUG_REDO_CONTROL 1
-//#define DEBUG_REDO_CONTROL_DETAIL 1
-#define DEBUG_LCP_DD 1
-//#define DEBUG_LCP_STAT 1
-//#define DEBUG_LCP_LAG 1
-//#define DO_TRANSIENT_POOL_STAT 1
+// #define DEBUG_EMPTY_LCP 1
+// #define DEBUG_END_LCP 1
+// #define DEBUG_LCP_DEL_FILES 1
+// #define DEBUG_LCP 1
+// #define DEBUG_UNDO_LCP 1
+// #define DEBUG_LCP_ROW 1
+// #define DEBUG_LCP_DEL 1
+// #define DEBUG_EXTRA_LCP 1
+// #define DEBUG_REDO_CONTROL 1
+// #define DEBUG_REDO_CONTROL_DETAIL 1
+// #define DEBUG_LCP_DD 1
+// #define DEBUG_LCP_STAT 1
+// #define DEBUG_LCP_LAG 1
+// #define DO_TRANSIENT_POOL_STAT 1
+// #define DEBUG_LCP_WRITE_CTL 1
 #endif
 
 #ifdef DEBUG_END_LCP
@@ -2721,6 +2720,11 @@ void Backup::execDUMP_STATE_ORD(Signal *signal) {
 #endif
       return;
     }
+#ifdef LCP_EXTRA_DEBUG
+    case DumpStateOrd::BackupDumpLcpExtraDebug: {
+      LcpExtraDebug.dump(instance());
+    }
+#endif
     default:
       /* continue to debug section */
       break;
@@ -3712,6 +3716,26 @@ void Backup::CompoundState::forceState(State newState) {
   }
 #endif
 }
+#ifdef LCP_EXTRA_DEBUG
+void Backup::LcpExtraDebug::dump(const Uint32 instance) const {
+  // Mutex to prevent mixing of messages from different threads.
+  NdbMutex_Lock(_lcp_extra_debug_mutex);
+
+  g_eventLogger->info("LCP EXTRA DEBUG START (INSTANCE %u)", instance);
+
+  CircularStringBuffer::Iterator it(&csb);
+
+  const char *entry = it.getNextString();
+  int entryCount = 0;
+  while (entry != nullptr) {
+    g_eventLogger->info("[%i] %s", entryCount++, entry);
+    entry = it.getNextString();
+  }
+
+  g_eventLogger->info("LCP EXTRA DEBUG END (INSTANCE %u)", instance);
+  NdbMutex_Unlock(_lcp_extra_debug_mutex);
+}
+#endif
 
 Backup::Table::Table()
 {
@@ -8568,6 +8592,22 @@ void Backup::skip_page_lcp_scanned_bit() {
     ptr.p->m_skip_change_page_lcp_scanned_bit++;
   else
     ptr.p->m_skip_all_page_lcp_scanned_bit++;
+
+#ifdef LCP_EXTRA_DEBUG
+  {
+    TablePtr tabPtr;
+    Fragment* fragPtrP;
+    ptr.p->tables.first(tabPtr);
+    get_lcp_fragment(&fragPtrP, tabPtr);
+    LCPEXTRADEBUG(this,
+                  "skip_page_lcp_scanned_bit : tab(%u,%u), row_count: %llu, "
+                  "m_skip_change_page_lcp_scanned_bit : %u, "
+                  "m_skip_all_page_lcp_scanned_bit: %u",
+                  tabPtr.p->tableId, fragPtrP->fragmentId, ptr.p->m_row_count,
+                  ptr.p->m_skip_change_page_lcp_scanned_bit,
+                  ptr.p->m_skip_all_page_lcp_scanned_bit);
+  }
+#endif
 }
 
 void Backup::skip_no_change_page() {
@@ -9295,6 +9335,74 @@ void Backup::fragmentCompleted(Signal *signal, BackupFilePtr filePtr,
 #ifdef DEBUG_LCP_EXTENDED_STAT
       print_extended_lcp_stat();
 #endif
+#ifdef LCP_EXTRA_DEBUG
+      LCPEXTRADEBUG(this,
+                    "LCP tab(%u,%u): ins: %llu, wri: %llu"
+                    ", del_by_row: %llu, del_by_page: %llu"
+                    ", bytes wri: %llu, num_files: %u"
+                    ", first d file: %u",
+                    tabPtr.p->tableId, fragPtrP->fragmentId,
+                    filePtr.p->m_lcp_inserts, filePtr.p->m_lcp_writes,
+                    filePtr.p->m_lcp_delete_by_rowids,
+                    filePtr.p->m_lcp_delete_by_pageids, ptr.p->m_bytes_written,
+                    ptr.p->m_num_lcp_files, ptr.p->m_first_data_file_number);
+      // print_extended_lcp_stat()
+      if (ptr.p->m_any_lcp_page_ops) {
+        LCPEXTRADEBUG(this,
+                      "change_page_alloc_after_start: %u, "
+                      "all_page_alloc_after_start: %u, "
+                      "change_page_alloc_dropped_after_start: %u, "
+                      "all_page_alloc_dropped_after_start: %u",
+                      ptr.p->m_change_page_alloc_after_start,
+                      ptr.p->m_all_page_alloc_after_start,
+                      ptr.p->m_change_page_alloc_dropped_after_start,
+                      ptr.p->m_all_page_alloc_dropped_after_start);
+        LCPEXTRADEBUG(this,
+                      "change_page_dropped_A_after_start: %u, "
+                      "all_page_dropped_A_after_start: %u, "
+                      "change_page_dropped_D_after_start: %u, "
+                      "all_page_dropped_D_after_start: %u",
+                      ptr.p->m_change_page_dropped_A_after_start,
+                      ptr.p->m_all_page_dropped_A_after_start,
+                      ptr.p->m_change_page_dropped_D_after_start,
+                      ptr.p->m_all_page_dropped_D_after_start);
+        LCPEXTRADEBUG(this,
+                      "skip_change_page_lcp_scanned_bit: %u, "
+                      "skip_all_page_lcp_scanned_bit: %u, "
+                      "skip_change_page_no_change: %u, "
+                      "skip_empty_change_page: %u, "
+                      "skip_empty_all_page: %u",
+                      ptr.p->m_skip_change_page_lcp_scanned_bit,
+                      ptr.p->m_skip_all_page_lcp_scanned_bit,
+                      ptr.p->m_skip_change_page_no_change,
+                      ptr.p->m_skip_empty_change_page,
+                      ptr.p->m_skip_empty_all_page);
+        LCPEXTRADEBUG(this,
+                      "record_empty_change_page_A: %u, "
+                      "record_late_alloc_change_page_A: %u, "
+                      "skip_late_alloc_change_page_D: %u, "
+                      "skip_late_alloc_all_page_A: %u, "
+                      "skip_late_alloc_all_page_D: %u",
+                      ptr.p->m_record_empty_change_page_A,
+                      ptr.p->m_record_late_alloc_change_page_A,
+                      ptr.p->m_skip_late_alloc_change_page_D,
+                      ptr.p->m_skip_late_alloc_all_page_A,
+                      ptr.p->m_skip_late_alloc_all_page_D);
+        LCPEXTRADEBUG(this,
+                      "lcp_keep_row_change_pages: %llu, "
+                      "lcp_keep_row_all_pages: %llu, "
+                      "lcp_keep_delete_row_change_pages: %llu, "
+                      "lcp_keep_delete_row_all_pages: %llu, "
+                      "lcp_keep_delete_change_pages: %u, "
+                      "lcp_keep_delete_all_pages: %u",
+                      ptr.p->m_lcp_keep_row_change_pages,
+                      ptr.p->m_lcp_keep_row_all_pages,
+                      ptr.p->m_lcp_keep_delete_row_change_pages,
+                      ptr.p->m_lcp_keep_delete_row_all_pages,
+                      ptr.p->m_lcp_keep_delete_change_pages,
+                      ptr.p->m_lcp_keep_delete_all_pages);
+      }
+#endif
       c_tup->stop_lcp_scan(tabPtr.p->tableId, fragPtrP->fragmentId);
     }
 
@@ -9320,6 +9428,20 @@ void Backup::fragmentCompleted(Signal *signal, BackupFilePtr filePtr,
                    ptr.p->newestGci));
     }
 #endif
+
+#ifdef LCP_EXTRA_DEBUG
+    {
+      TablePtr tabPtr;
+      Fragment* fragPtrP;
+      ptr.p->tables.first(tabPtr);
+      get_lcp_fragment(&fragPtrP, tabPtr);
+      LCPEXTRADEBUG(
+          this, "lcp_complete_scan, tab(%u,%u), row_count: %llu, newestGCI: %u",
+          tabPtr.p->tableId, fragPtrP->fragmentId, ptr.p->m_row_count,
+          ptr.p->newestGci);
+    }
+#endif
+
     /**
      * The actual complete processing is started from checkFile which is
      * called regularly from a CONTINUEB loop. We cannot start the complete
@@ -14567,30 +14689,28 @@ void Backup::start_execute_lcp(Signal *signal, BackupRecordPtr ptr,
   ptr.p->tables.first(tabPtr);
   get_lcp_fragment(&fragPtrP, tabPtr);
 #ifdef DEBUG_LCP_STAT
-  DEB_LCP_STAT((
-           "(%u)TAGY LCP_Start: tab(%u,%u).%u, row_count: %llu,"
-           " row_change_count: %llu,"
-           " prev_row_count: %llu,"
-           " memory_used_in_bytes: %llu, max_page_cnt: %u, LCP lsn: %llu",
-           instance(),
-           tabPtr.p->tableId,
-           fragPtrP->fragmentId,
-           c_lqh->getCreateSchemaVersion(tabPtr.p->tableId),
-           ptr.p->m_row_count,
-           ptr.p->m_row_change_count,
-           ptr.p->m_prev_row_count,
-           ptr.p->m_memory_used_in_bytes,
-           ptr.p->m_lcp_max_page_cnt,
-           ptr.p->m_current_lcp_lsn));
+  DEB_LCP_STAT(
+      ("(%u)TAGY LCP_Start: tab(%u,%u).%u, row_count: %llu,"
+       " row_change_count: %llu,"
+       " prev_row_count: %llu,"
+       " memory_used_in_bytes: %llu, max_page_cnt: %u, LCP lsn: %llu",
+       instance(), tabPtr.p->tableId, fragPtr.p->fragmentId,
+       c_lqh->getCreateSchemaVersion(tabPtr.p->tableId), ptr.p->m_row_count,
+       ptr.p->m_row_change_count, ptr.p->m_prev_row_count,
+       ptr.p->m_memory_used_in_bytes, ptr.p->m_lcp_max_page_cnt,
+       ptr.p->m_current_lcp_lsn));
 #endif
 
-  if (ptr.p->m_row_change_count == 0 &&
-      ptr.p->preparePrevLcpId != 0 &&
-      (ptr.p->prepareMaxGciWritten == newestGci &&
-       m_our_node_started) &&
-      c_pgman->idle_fragment_lcp(tabPtr.p->tableId,
-                                 fragPtrP->fragmentId))
+#ifdef LCP_EXTRA_DEBUG
   {
+    LCPEXTRADEBUG(this, "start_execute_lcp : tab(%u,%u), row_count: %llu",
+                  tabPtr.p->tableId, fragPtrP->fragmentId, ptr.p->m_row_count);
+  }
+#endif
+
+  if (ptr.p->m_row_change_count == 0 && ptr.p->preparePrevLcpId != 0 &&
+      (ptr.p->prepareMaxGciWritten == newestGci && m_our_node_started) &&
+      c_pgman->idle_fragment_lcp(tabPtr.p->tableId, fragPtrP->fragmentId)) {
     /**
      * We don't handle it as an idle LCP when it is the first LCP
      * executed on the fragment. In this case we need to run a normal
@@ -14890,6 +15010,11 @@ void Backup::lcp_write_ctl_file(Signal *signal, BackupRecordPtr ptr) {
   if (ptr.p->m_wait_data_file_close || ptr.p->m_wait_sync_extent ||
       ptr.p->m_wait_disk_data_sync) {
     jam();
+    // #ifdef  LCP_EXTRA_DEBUG
+    //     {
+    //       LCPEXTRADEBUG(this, "%s", "lcp_write_ctl_file : waiting ...");
+    //     }
+    // #endif
     return;
   }
 
@@ -14941,6 +15066,9 @@ void Backup::lcp_write_ctl_file(Signal *signal, BackupRecordPtr ptr) {
        *
        * SOLVED
        */
+#ifdef LCP_EXTRA_DEBUG
+      ptr.p->backup.LcpExtraDebug.dump(instance());
+#endif
       ndbrequire(ptr.p->m_save_error_code != 0 ||
                  ptr.p->m_row_count == dataFilePtr.p->m_lcp_inserts ||
                  ((ptr.p->m_num_parts_in_this_lcp !=
@@ -15006,6 +15134,13 @@ void Backup::lcp_write_ctl_file(Signal *signal, BackupRecordPtr ptr) {
   lcpCtlFilePtr->MaxGciWritten = ptr.p->newestGci;
 
   ptr.p->m_wait_gci_to_delete = MAX(maxCompletedGci, ptr.p->newestGci);
+
+#ifdef LCP_EXTRA_DEBUG
+  {
+    LCPEXTRADEBUG(this, "lcp_write_ctl_file : tab(%u,%u), row_count: %llu",
+                  tabPtr.p->tableId, fragPtrP->fragmentId, ptr.p->m_row_count);
+  }
+#endif
 
   ndbrequire(m_newestRestorableGci != 0);
   DEB_LCP_WRITE_CTL((
@@ -16457,6 +16592,8 @@ bool Backup::get_backup_record(BackupRecordPtr &ptr) {
    * return true if a backup record is found and false otherwise.
    */
   c_backups.first(ptr);
+  if (ptr.i == RNIL) return false;
+
   if (ptr.p->is_lcp()) {
     ptr.i = RNIL;
     ptr.p = 0;

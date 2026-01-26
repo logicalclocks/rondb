@@ -10,19 +10,19 @@ Node 3 is already activated
 Now activating the node in the cluster
 Node 3 is now activated in the cluster
 
-Node 16 is already activated
+Node 1600 is already activated
 Now activating the node in the cluster
-Node 16 is now activated in the cluster
+Node 1600 is now activated in the cluster
 
-Node 16 is an API/mysqld node, we cannot stop it from here
+Node 1600 is an API/mysqld node, we cannot stop it from here
 we will proceeed with deactivation still
 Configuration changed to reflect deactivated node
 Now deactivating the node in the cluster
-Node 16 is now deactivated in the cluster
+Node 1600 is now deactivated in the cluster
 
 Configuration changed to reflect activated node
 Now activating the node in the cluster
-Node 16 is now activated in the cluster
+Node 1600 is now activated in the cluster
 
 Node 1 is being restarted
 

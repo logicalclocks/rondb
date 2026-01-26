@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2023, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2003, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2023, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -54,7 +54,7 @@
 #define MAX_EXECUTOR_THREADS 384
 #define MAX_DEFINER_THREADS 32
 #define MAX_REAL_THREADS 416
-#define NDB_MAX_NODES (MAX_NDB_NODES - 1)
+#define NDB_MAX_NODES (ABS_MAX_NDB_NODES - 1)
 #define NDB_MAX_RECEIVE_CPUS 128
 /*
   NDB_MAXTHREADS used to be just MAXTHREADS, which collides with a

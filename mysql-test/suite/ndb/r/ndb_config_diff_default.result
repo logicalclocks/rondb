@@ -41,126 +41,6 @@ HostName1,localhost,(null)
 HostName2,localhost,(null)
 PortNumber,<MGM-PORT>,0
 
-config of [TCP] connection between node id 16 and 1 that is different from default
-CONFIG_PARAMETER,ACTUAL_VALUE,DEFAULT_VALUE
-NodeId1,16,(mandatory)
-NodeId2,1,(mandatory)
-NodeIdServer,1,(mandatory)
-Checksum,1,false
-HostName1,localhost,(null)
-HostName2,localhost,(null)
-PortNumber,<DYNAMIC-PORT>,0
-
-config of [TCP] connection between node id 16 and 2 that is different from default
-CONFIG_PARAMETER,ACTUAL_VALUE,DEFAULT_VALUE
-NodeId1,16,(mandatory)
-NodeId2,2,(mandatory)
-NodeIdServer,2,(mandatory)
-Checksum,1,false
-HostName1,localhost,(null)
-HostName2,localhost,(null)
-PortNumber,<DYNAMIC-PORT>,0
-
-config of [TCP] connection between node id 32 and 1 that is different from default
-CONFIG_PARAMETER,ACTUAL_VALUE,DEFAULT_VALUE
-NodeId1,32,(mandatory)
-NodeId2,1,(mandatory)
-NodeIdServer,1,(mandatory)
-Checksum,1,false
-HostName1,localhost,(null)
-HostName2,localhost,(null)
-PortNumber,<DYNAMIC-PORT>,0
-
-config of [TCP] connection between node id 32 and 2 that is different from default
-CONFIG_PARAMETER,ACTUAL_VALUE,DEFAULT_VALUE
-NodeId1,32,(mandatory)
-NodeId2,2,(mandatory)
-NodeIdServer,2,(mandatory)
-Checksum,1,false
-HostName1,localhost,(null)
-HostName2,localhost,(null)
-PortNumber,<DYNAMIC-PORT>,0
-
-config of [TCP] connection between node id 48 and 1 that is different from default
-CONFIG_PARAMETER,ACTUAL_VALUE,DEFAULT_VALUE
-NodeId1,48,(mandatory)
-NodeId2,1,(mandatory)
-NodeIdServer,1,(mandatory)
-Checksum,1,false
-HostName1,localhost,(null)
-HostName2,localhost,(null)
-PortNumber,<DYNAMIC-PORT>,0
-
-config of [TCP] connection between node id 48 and 2 that is different from default
-CONFIG_PARAMETER,ACTUAL_VALUE,DEFAULT_VALUE
-NodeId1,48,(mandatory)
-NodeId2,2,(mandatory)
-NodeIdServer,2,(mandatory)
-Checksum,1,false
-HostName1,localhost,(null)
-HostName2,localhost,(null)
-PortNumber,<DYNAMIC-PORT>,0
-
-config of [TCP] connection between node id 49 and 1 that is different from default
-CONFIG_PARAMETER,ACTUAL_VALUE,DEFAULT_VALUE
-NodeId1,49,(mandatory)
-NodeId2,1,(mandatory)
-NodeIdServer,1,(mandatory)
-Checksum,1,false
-HostName1,localhost,(null)
-HostName2,localhost,(null)
-PortNumber,<DYNAMIC-PORT>,0
-
-config of [TCP] connection between node id 49 and 2 that is different from default
-CONFIG_PARAMETER,ACTUAL_VALUE,DEFAULT_VALUE
-NodeId1,49,(mandatory)
-NodeId2,2,(mandatory)
-NodeIdServer,2,(mandatory)
-Checksum,1,false
-HostName1,localhost,(null)
-HostName2,localhost,(null)
-PortNumber,<DYNAMIC-PORT>,0
-
-config of [TCP] connection between node id 63 and 1 that is different from default
-CONFIG_PARAMETER,ACTUAL_VALUE,DEFAULT_VALUE
-NodeId1,63,(mandatory)
-NodeId2,1,(mandatory)
-NodeIdServer,1,(mandatory)
-Checksum,1,false
-HostName1,localhost,(null)
-HostName2,localhost,(null)
-PortNumber,<DYNAMIC-PORT>,0
-
-config of [TCP] connection between node id 63 and 2 that is different from default
-CONFIG_PARAMETER,ACTUAL_VALUE,DEFAULT_VALUE
-NodeId1,63,(mandatory)
-NodeId2,2,(mandatory)
-NodeIdServer,2,(mandatory)
-Checksum,1,false
-HostName1,localhost,(null)
-HostName2,localhost,(null)
-PortNumber,<DYNAMIC-PORT>,0
-
-config of [TCP] connection between node id 127 and 1 that is different from default
-CONFIG_PARAMETER,ACTUAL_VALUE,DEFAULT_VALUE
-NodeId1,127,(mandatory)
-NodeId2,1,(mandatory)
-NodeIdServer,1,(mandatory)
-Checksum,1,false
-HostName1,localhost,(null)
-HostName2,localhost,(null)
-PortNumber,<DYNAMIC-PORT>,0
-
-config of [TCP] connection between node id 127 and 2 that is different from default
-CONFIG_PARAMETER,ACTUAL_VALUE,DEFAULT_VALUE
-NodeId1,127,(mandatory)
-NodeId2,2,(mandatory)
-NodeIdServer,2,(mandatory)
-Checksum,1,false
-HostName1,localhost,(null)
-HostName2,localhost,(null)
-PortNumber,<DYNAMIC-PORT>,0
-
 config of [TCP] connection between node id 192 and 1 that is different from default
 CONFIG_PARAMETER,ACTUAL_VALUE,DEFAULT_VALUE
 NodeId1,192,(mandatory)
@@ -314,6 +194,126 @@ PortNumber,<DYNAMIC-PORT>,0
 config of [TCP] connection between node id 255 and 2 that is different from default
 CONFIG_PARAMETER,ACTUAL_VALUE,DEFAULT_VALUE
 NodeId1,255,(mandatory)
+NodeId2,2,(mandatory)
+NodeIdServer,2,(mandatory)
+Checksum,1,false
+HostName1,localhost,(null)
+HostName2,localhost,(null)
+PortNumber,<DYNAMIC-PORT>,0
+
+config of [TCP] connection between node id 322 and 1 that is different from default
+CONFIG_PARAMETER,ACTUAL_VALUE,DEFAULT_VALUE
+NodeId1,322,(mandatory)
+NodeId2,1,(mandatory)
+NodeIdServer,1,(mandatory)
+Checksum,1,false
+HostName1,localhost,(null)
+HostName2,localhost,(null)
+PortNumber,<DYNAMIC-PORT>,0
+
+config of [TCP] connection between node id 322 and 2 that is different from default
+CONFIG_PARAMETER,ACTUAL_VALUE,DEFAULT_VALUE
+NodeId1,322,(mandatory)
+NodeId2,2,(mandatory)
+NodeIdServer,2,(mandatory)
+Checksum,1,false
+HostName1,localhost,(null)
+HostName2,localhost,(null)
+PortNumber,<DYNAMIC-PORT>,0
+
+config of [TCP] connection between node id 483 and 1 that is different from default
+CONFIG_PARAMETER,ACTUAL_VALUE,DEFAULT_VALUE
+NodeId1,483,(mandatory)
+NodeId2,1,(mandatory)
+NodeIdServer,1,(mandatory)
+Checksum,1,false
+HostName1,localhost,(null)
+HostName2,localhost,(null)
+PortNumber,<DYNAMIC-PORT>,0
+
+config of [TCP] connection between node id 483 and 2 that is different from default
+CONFIG_PARAMETER,ACTUAL_VALUE,DEFAULT_VALUE
+NodeId1,483,(mandatory)
+NodeId2,2,(mandatory)
+NodeIdServer,2,(mandatory)
+Checksum,1,false
+HostName1,localhost,(null)
+HostName2,localhost,(null)
+PortNumber,<DYNAMIC-PORT>,0
+
+config of [TCP] connection between node id 494 and 1 that is different from default
+CONFIG_PARAMETER,ACTUAL_VALUE,DEFAULT_VALUE
+NodeId1,494,(mandatory)
+NodeId2,1,(mandatory)
+NodeIdServer,1,(mandatory)
+Checksum,1,false
+HostName1,localhost,(null)
+HostName2,localhost,(null)
+PortNumber,<DYNAMIC-PORT>,0
+
+config of [TCP] connection between node id 494 and 2 that is different from default
+CONFIG_PARAMETER,ACTUAL_VALUE,DEFAULT_VALUE
+NodeId1,494,(mandatory)
+NodeId2,2,(mandatory)
+NodeIdServer,2,(mandatory)
+Checksum,1,false
+HostName1,localhost,(null)
+HostName2,localhost,(null)
+PortNumber,<DYNAMIC-PORT>,0
+
+config of [TCP] connection between node id 563 and 1 that is different from default
+CONFIG_PARAMETER,ACTUAL_VALUE,DEFAULT_VALUE
+NodeId1,563,(mandatory)
+NodeId2,1,(mandatory)
+NodeIdServer,1,(mandatory)
+Checksum,1,false
+HostName1,localhost,(null)
+HostName2,localhost,(null)
+PortNumber,<DYNAMIC-PORT>,0
+
+config of [TCP] connection between node id 563 and 2 that is different from default
+CONFIG_PARAMETER,ACTUAL_VALUE,DEFAULT_VALUE
+NodeId1,563,(mandatory)
+NodeId2,2,(mandatory)
+NodeIdServer,2,(mandatory)
+Checksum,1,false
+HostName1,localhost,(null)
+HostName2,localhost,(null)
+PortNumber,<DYNAMIC-PORT>,0
+
+config of [TCP] connection between node id 1271 and 1 that is different from default
+CONFIG_PARAMETER,ACTUAL_VALUE,DEFAULT_VALUE
+NodeId1,1271,(mandatory)
+NodeId2,1,(mandatory)
+NodeIdServer,1,(mandatory)
+Checksum,1,false
+HostName1,localhost,(null)
+HostName2,localhost,(null)
+PortNumber,<DYNAMIC-PORT>,0
+
+config of [TCP] connection between node id 1271 and 2 that is different from default
+CONFIG_PARAMETER,ACTUAL_VALUE,DEFAULT_VALUE
+NodeId1,1271,(mandatory)
+NodeId2,2,(mandatory)
+NodeIdServer,2,(mandatory)
+Checksum,1,false
+HostName1,localhost,(null)
+HostName2,localhost,(null)
+PortNumber,<DYNAMIC-PORT>,0
+
+config of [TCP] connection between node id 1600 and 1 that is different from default
+CONFIG_PARAMETER,ACTUAL_VALUE,DEFAULT_VALUE
+NodeId1,1600,(mandatory)
+NodeId2,1,(mandatory)
+NodeIdServer,1,(mandatory)
+Checksum,1,false
+HostName1,localhost,(null)
+HostName2,localhost,(null)
+PortNumber,<DYNAMIC-PORT>,0
+
+config of [TCP] connection between node id 1600 and 2 that is different from default
+CONFIG_PARAMETER,ACTUAL_VALUE,DEFAULT_VALUE
+NodeId1,1600,(mandatory)
 NodeId2,2,(mandatory)
 NodeIdServer,2,(mandatory)
 Checksum,1,false
