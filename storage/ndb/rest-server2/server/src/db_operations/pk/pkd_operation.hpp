@@ -16,13 +16,11 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301,
  * USA.
  */
- 
-#ifndef STORAGE_NDB_REST_SERVER2_SERVER_SRC_DB_OPERATIONS_PK_PKR_OPERATION_HPP_
-#define STORAGE_NDB_REST_SERVER2_SERVER_SRC_DB_OPERATIONS_PK_PKR_OPERATION_HPP_
+
+#ifndef STORAGE_NDB_REST_SERVER2_SERVER_SRC_DB_OPERATIONS_PK_PKD_OPERATION_HPP_
+#define STORAGE_NDB_REST_SERVER2_SERVER_SRC_DB_OPERATIONS_PK_PKD_OPERATION_HPP_
 
 #include "pk_batch_base_operation.hpp"
-#include "pkr_request.hpp"
-#include "pkr_response.hpp"
 #include "common.hpp"
 #include "src/rdrs_dal.h"
 
@@ -35,37 +33,40 @@
 #include <ArenaMalloc.hpp>
 
 /**
- * KeyOperation inherits from BaseKeyOperation.
- * For read operations, m_blob_handles is allocated in setup_blob_handles for ops with blobs.
+ * DeleteKeyOperation inherits from BaseKeyOperation.
+ * For tables with BLOB columns, m_blob_handles is allocated in setup_table_blob_handles.
+ * Note: m_blobColumns stores table's blob columns (for part deletion),
+ * while m_readColumns stores requested read columns (may or may not include blobs).
  */
-struct KeyOperation : public BaseKeyOperation {
-  // No additional fields needed - m_blob_handles is in BaseKeyOperation
+struct DeleteKeyOperation : public BaseKeyOperation {
+  // Blob columns in the table (for automatic blob part deletion)
+  const NdbDictionary::Column **m_blobColumns;
+  Uint32 m_num_blob_columns;
 };
 
-class BatchKeyOperations : public BaseBatchOperations {
+class BatchDeleteOperations : public BaseBatchOperations {
  private:
-  struct KeyOperation *m_key_ops;
+  struct DeleteKeyOperation *m_key_ops;
+  bool m_has_blob_columns;  // True if any table in batch has BLOB columns
 
   // Implementation of virtual methods from BaseBatchOperations
   BaseKeyOperation* get_key_op(Uint32 i) override { return &m_key_ops[i]; }
   RS_Status allocate_key_ops(ArenaMalloc* amalloc, Uint32 numOps) override;
-  bool supports_blobs() const override { return true; }
-  bool supports_read_all_columns() const override { return true; }
-  NdbTransaction::ExecType get_single_transaction_exec_type() const override {
-    return NdbTransaction::NoCommit;  // Read needs NoCommit for blob handling
-  }
+  // Delete operations don't support reading blobs in response (keeps default false)
+  // but we do handle blob part deletion at table level.
+  // NdbBlob state machine runs internally during execute(Commit).
 
  public:
-   BatchKeyOperations();
-   ~BatchKeyOperations();
+   BatchDeleteOperations();
+   ~BatchDeleteOperations();
    RS_Status perform_operation(ArenaMalloc*,
                                Uint32 numOps,
                                bool is_batch,
                                RS_Buffer *reqBuffer,
                                RS_Buffer *respBuffer,
                                Ndb *ndb_object);
-   // Read-specific methods
-   RS_Status setup_blob_handles(ArenaMalloc *amalloc);
-   RS_Status setup_read_operations();
+   // Delete-specific methods
+   RS_Status setup_table_blob_handles(ArenaMalloc *amalloc);
+   RS_Status setup_delete_operations();
 };
-#endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_DB_OPERATIONS_PK_PKR_OPERATION_HPP_
+#endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_DB_OPERATIONS_PK_PKD_OPERATION_HPP_

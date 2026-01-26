@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2024, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2024, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -148,6 +148,10 @@ int create_rondis_tables(const char *mysql_host,
     printf("Failed to initialize MySQL connection\n");
     return -1;
   }
+
+  // Force TCP protocol instead of Unix socket (avoids socket not found errors)
+  unsigned int protocol = MYSQL_PROTOCOL_TCP;
+  mysql_options(conn, MYSQL_OPT_PROTOCOL, &protocol);
 
   if (mysql_real_connect(conn,
                          mysql_host,
