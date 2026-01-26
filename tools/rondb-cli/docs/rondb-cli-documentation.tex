@@ -1,0 +1,1361 @@
+%
+%   Copyright (c) 2026, 2026, Hopsworks and/or its affiliates.
+%
+%   This program is free software; you can redistribute it and/or modify
+%   it under the terms of the GNU General Public License, version 2.0,
+%   as published by the Free Software Foundation.
+%
+%   This program is designed to work with certain software (including
+%   but not limited to OpenSSL) that is licensed under separate terms,
+%   as designated in a particular file or component or in included license
+%   documentation.  The authors of MySQL hereby grant you an additional
+%   permission to link the program and your derivative works with the
+%   separately licensed software that they have either included with
+%   the program or referenced in the documentation.
+%
+%   This program is distributed in the hope that it will be useful,
+%   but WITHOUT ANY WARRANTY; without even the implied warranty of
+%   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+%   GNU General Public License, version 2.0, for more details.
+%
+%   You should have received a copy of the GNU General Public License
+%   along with this program; if not, write to the Free Software
+%   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
+%
+
+\documentclass[11pt,a4paper]{report}
+
+% Packages
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=1in]{geometry}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{tocloft}
+\usepackage{enumitem}
+
+% Colors
+\definecolor{rondb-orange}{HTML}{FFA500}
+\definecolor{code-bg}{HTML}{F5F5F5}
+\definecolor{code-keyword}{HTML}{0000FF}
+\definecolor{code-string}{HTML}{008000}
+\definecolor{code-comment}{HTML}{808080}
+
+% Hyperref setup
+\hypersetup{
+    colorlinks=true,
+    linkcolor=rondb-orange,
+    urlcolor=blue,
+    citecolor=rondb-orange,
+    pdftitle={RonDB CLI Documentation},
+    pdfauthor={RonDB Team},
+}
+
+% Listings setup
+\lstset{
+    backgroundcolor=\color{code-bg},
+    basicstyle=\ttfamily\small,
+    breaklines=true,
+    captionpos=b,
+    commentstyle=\color{code-comment},
+    frame=single,
+    keywordstyle=\color{code-keyword}\bfseries,
+    stringstyle=\color{code-string},
+    showstringspaces=false,
+    tabsize=2,
+    xleftmargin=1em,
+    framexleftmargin=1em,
+}
+
+\lstdefinelanguage{rondb}{
+    keywords={READ, BATCH, FILTER, OP, SELECT, INSERT, UPDATE, DELETE, FROM, WHERE, INTO, VALUES, SET, CREATE, DROP, TABLE, DATABASE, SHOW, DESCRIBE, USE, RONSQL, MYSQL},
+    morecomment=[l]{\#},
+    morestring=[b]",
+    morestring=[b]',
+    sensitive=false,
+}
+
+\lstdefinelanguage{bash}{
+    keywords={rondb, go, build},
+    morecomment=[l]{\#},
+    morestring=[b]",
+    morestring=[b]',
+}
+
+% Header/Footer
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\leftmark}
+\fancyhead[R]{RonDB CLI v0.1.0}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\footrulewidth}{0.4pt}
+
+% Title formatting
+\titleformat{\chapter}[display]
+    {\normalfont\huge\bfseries\color{rondb-orange}}
+    {\chaptertitlename\ \thechapter}{20pt}{\Huge}
+
+% Document info
+\title{
+    \vspace{2cm}
+    {\Huge\bfseries\color{rondb-orange} RonDB CLI}\\[0.5cm]
+    {\Large Technical Documentation}\\[1cm]
+    {\large Version 0.1.0}\\[2cm]
+    \rule{\textwidth}{1pt}\\[0.5cm]
+    {\large Rondis commands. SQL queries. One database.}\\
+    \rule{\textwidth}{1pt}
+}
+\author{RonDB Development Team}
+\date{\today}
+
+\begin{document}
+
+% Title page
+\maketitle
+\thispagestyle{empty}
+
+% Table of contents
+\tableofcontents
+\newpage
+
+%=============================================================================
+\chapter{Introduction}
+%=============================================================================
+
+\section{Overview}
+
+RonDB CLI (\texttt{rondb-cli}) is a unified command-line interface for RonDB, a distributed in-memory database that combines Redis-compatible operations with full MySQL SQL support. The CLI provides seamless interaction with four distinct client interfaces through a single interactive shell:
+
+\begin{itemize}
+    \item \textbf{MySQL} -- Full SQL support for queries, schema management, and data manipulation
+    \item \textbf{REST API} -- High-performance primary key lookups using a DSL that generates JSON requests to RDRS (RonDB Data REST Server)
+    \item \textbf{RonSQL} -- Aggregation queries (COUNT, SUM, AVG, MIN, MAX) executed via the REST API
+    \item \textbf{Rondis} -- Redis-compatible commands for key-value operations
+\end{itemize}
+
+\subsection{Version Compatibility}
+
+The rondb-cli source code is included in the RonDB source tree starting from RonDB 25.10. However, most functionality works with older RonDB versions:
+
+Table: RonDB Version Compatibility
+
+\begin{tabular}{ll}
+\toprule
+Interface & Minimum RonDB Version \\
+\midrule
+MySQL & Any version \\
+REST API & 22.10 \\
+Rondis & 24.10 \\
+RonSQL & 24.10 \\
+\bottomrule
+\end{tabular}
+
+\subsection{Design Philosophy}
+
+The RonDB CLI follows a ``3-minute win'' philosophy:
+\begin{itemize}
+    \item \textbf{Connect} -- Establish connections to RonDB services quickly
+    \item \textbf{Diagnose} -- Identify issues and understand system state
+    \item \textbf{Decide} -- Take action based on gathered information
+\end{itemize}
+
+\noindent Core principles:
+\begin{enumerate}
+    \item \textbf{One CLI, no ceremony} -- Simple, unified interface
+    \item \textbf{Four interfaces, one shell} -- MySQL, RonSQL, REST API, and Rondis
+    \item \textbf{Reliability} -- Robust error handling and connection management
+    \item \textbf{Clarity} -- Clear output formatting and helpful messages
+    \item \textbf{Speed} -- Optimized for low latency operations
+    \item \textbf{Composability} -- Commands can be combined and scripted
+\end{enumerate}
+
+\subsection{Key Features}
+
+\begin{itemize}
+    \item Unified shell supporting Rondis (Redis), MySQL, RonSQL, and REST API
+    \item Automatic command routing based on syntax detection
+    \item Interactive TUI database browser
+    \item Comprehensive benchmarking suite with latency statistics
+    \item Multi-line command support
+    \item TLS encryption support
+    \item Environment variable and command-line configuration
+    \item Color-coded output with timing information
+\end{itemize}
+
+%=============================================================================
+\chapter{Installation and Setup}
+%=============================================================================
+
+\section{Prerequisites}
+
+\begin{itemize}
+    \item Go 1.24.0 or later
+    \item Access to a RonDB cluster with:
+    \begin{itemize}
+        \item Rondis service (default port: 6379)
+        \item MySQL service (default port: 3306)
+        \item RDRS/REST API service (default port: 4406)
+    \end{itemize}
+\end{itemize}
+
+\section{Building from Source}
+
+\begin{lstlisting}[language=bash]
+# Navigate to the rondb-cli directory
+cd tools/rondb-cli
+
+# Build the binary
+go build -o rondb .
+
+# Verify the build
+./rondb version
+\end{lstlisting}
+
+\section{Quick Start}
+
+\begin{lstlisting}[language=bash]
+# Connect to local RonDB with defaults
+./rondb
+
+# Connect to remote host
+./rondb --host myrondb.example.com
+
+# Connect with MySQL authentication
+./rondb --host myrondb.example.com --mysql-user admin -p
+
+# Connect with TLS enabled
+./rondb --host myrondb.example.com --tls
+\end{lstlisting}
+
+%=============================================================================
+\chapter{Configuration}
+%=============================================================================
+
+\section{Command-Line Flags}
+
+Table: Command-Line Flags
+
+\begin{tabular}{lll}
+\toprule
+Flag & Default & Description \\
+\midrule
+--host & localhost & General host for all services \\
+--mysql-host & (inherits) & MySQL host (overrides --host) \\
+--rdrs-host & (inherits) & REST API host (overrides --host) \\
+--rondis-port & 6379 & Rondis service port \\
+--mysql-port & 3306 & MySQL service port \\
+--rdrs-port & 4406 & REST API service port \\
+--mysql-user & root & MySQL username \\
+--mysql-password & (empty) & MySQL password \\
+-p, --password & false & Prompt for MySQL password \\
+--tls & false & Enable TLS for all connections \\
+--rdrs-tls & false & Enable TLS for REST API only \\
+--rdrs-api-key & (empty) & API key for REST API authentication \\
+--verbose & 0 & Verbose level \\
+--no-mysql & false & Disable MySQL connection \\
+--no-rdrs & false & Disable REST API connection \\
+--no-rondis & false & Disable Rondis connection \\
+\bottomrule
+\end{tabular}
+
+\section{Environment Variables}
+
+Environment variables provide an alternative configuration method. Command-line flags take precedence over environment variables.
+
+Table: Environment Variables
+
+\begin{tabular}{ll}
+\toprule
+Variable & Description \\
+\midrule
+RONDB\_HOST & RonDB host (sets all service hosts) \\
+MYSQL\_HOST & MySQL host (overrides RONDB\_HOST) \\
+RDRS\_HOST & REST API host (overrides RONDB\_HOST) \\
+RONDB\_RONDIS\_PORT & Rondis service port \\
+RONDB\_MYSQL\_PORT & MySQL service port \\
+RONDB\_RDRS\_PORT & REST API service port \\
+RONDB\_MYSQL\_USER & MySQL username \\
+RONDB\_MYSQL\_PASSWORD & MySQL password \\
+RONDB\_RDRS\_API\_KEY & REST API authentication key \\
+\bottomrule
+\end{tabular}
+
+\section{Configuration Precedence}
+
+Configuration values are resolved in the following order (highest to lowest priority):
+\begin{enumerate}
+    \item Command-line flags
+    \item Environment variables
+    \item Default values
+\end{enumerate}
+
+%=============================================================================
+\chapter{Client Interfaces}
+%=============================================================================
+
+RonDB CLI supports four distinct client interfaces, each optimized for different access patterns.
+
+\section{MySQL (SQL Interface)}
+
+The MySQL interface provides full SQL query support. SQL commands are detected by keywords such as \texttt{SELECT}, \texttt{INSERT}, \texttt{UPDATE}, \texttt{DELETE}, \texttt{CREATE}, \texttt{DROP}, etc.
+
+\subsection{Supported Operations}
+
+\begin{lstlisting}[language=rondb]
+# Data queries
+SELECT * FROM users WHERE id = 1;
+SELECT name, email FROM users LIMIT 10;
+
+# Data modification
+INSERT INTO users (name, email) VALUES ('John', 'john@example.com');
+UPDATE users SET name = 'Jane' WHERE id = 1;
+DELETE FROM users WHERE id = 1;
+
+# Schema operations
+CREATE TABLE users (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    name VARCHAR(100),
+    email VARCHAR(255)
+) ENGINE=NDB;
+DROP TABLE users;
+ALTER TABLE users ADD COLUMN phone VARCHAR(20);
+
+# Database operations
+USE mydb;
+CREATE DATABASE IF NOT EXISTS mydb;
+SHOW DATABASES;
+SHOW TABLES;
+DESCRIBE users;
+EXPLAIN SELECT * FROM users;
+\end{lstlisting}
+
+\subsection{Multi-line SQL}
+
+SQL statements can span multiple lines. The shell detects incomplete statements and provides a continuation prompt:
+
+\begin{lstlisting}[language=rondb]
+rondb> SELECT
+    ...>   id,
+    ...>   name,
+    ...>   email
+    ...> FROM users
+    ...> WHERE active = 1
+    ...> ORDER BY name;
+\end{lstlisting}
+
+\subsection{Forcing MySQL Routing}
+
+Use the \texttt{MYSQL} prefix to force command routing through MySQL:
+
+\begin{lstlisting}[language=rondb]
+rondb> MYSQL SHOW PROCESSLIST;
+\end{lstlisting}
+
+\section{REST API (DSL Interface)}
+
+The REST API interface uses a Domain-Specific Language (DSL) for primary key read operations.
+
+\subsection{Single READ Syntax}
+
+\begin{lstlisting}[language=rondb]
+READ database.table [col1, col2, ...] FILTER pk1=value1, pk2=value2;
+\end{lstlisting}
+
+\begin{lstlisting}[language=rondb]
+# Read all columns
+READ mydb.users FILTER user_id=1001;
+
+# Read specific columns
+READ mydb.users id, name, email FILTER user_id=1001;
+
+# Composite primary key
+READ mydb.order_items FILTER order_id=100, item_id=1;
+
+# String filter value
+READ mydb.products FILTER sku="ABC-123";
+\end{lstlisting}
+
+\textbf{Example with request/response:}
+\begin{lstlisting}[language=rondb]
+rondb> READ mydb.users id, name, email FILTER user_id=1001;
+
+Request:
+{
+  "filters": [
+    {"column": "user_id", "value": 1001}
+  ],
+  "readColumns": [
+    {"column": "id", "dataReturnType": "default"},
+    {"column": "name", "dataReturnType": "default"},
+    {"column": "email", "dataReturnType": "default"}
+  ]
+}
+
+Response:
+{
+  "data": {
+    "id": 1001,
+    "name": "John Doe",
+    "email": "john@example.com"
+  }
+}
+(12.3ms)
+\end{lstlisting}
+
+\subsection{BATCH Syntax}
+
+For multiple operations in a single request:
+
+\begin{lstlisting}[language=rondb]
+# Syntax 1: Full READ per operation
+BATCH
+  READ mydb.users id, name FILTER user_id=1 OP 1
+  READ mydb.users id, name FILTER user_id=2 OP 2
+;
+
+# Syntax 2: Shared header with multiple READs
+BATCH mydb.users: id, name
+  READ FILTER user_id=1
+  READ FILTER user_id=2
+;
+\end{lstlisting}
+
+\begin{lstlisting}[language=rondb]
+# Batch with two filter columns (composite primary key)
+BATCH READ mydb.items qty, price FILTER order_id=1, item_id=1 OP i1 READ mydb.items qty, price FILTER order_id=1, item_id=2 OP i2;
+\end{lstlisting}
+
+\textbf{Example with request/response:}
+\begin{lstlisting}[language=rondb]
+rondb> BATCH
+    ...>   READ mydb.users id, name FILTER user_id=1 OP 1
+    ...>   READ mydb.users id, name FILTER user_id=2 OP 2
+    ...> ;
+
+Request:
+{
+  "operations": [
+    {
+      "method": "POST",
+      "relative-url": "mydb/users/pk-read",
+      "body": {
+        "filters": [{"column": "user_id", "value": 1}],
+        "readColumns": [
+          {"column": "id", "dataReturnType": "default"},
+          {"column": "name", "dataReturnType": "default"}
+        ],
+        "operationId": "1"
+      }
+    },
+    {
+      "method": "POST",
+      "relative-url": "mydb/users/pk-read",
+      "body": {
+        "filters": [{"column": "user_id", "value": 2}],
+        "readColumns": [
+          {"column": "id", "dataReturnType": "default"},
+          {"column": "name", "dataReturnType": "default"}
+        ],
+        "operationId": "2"
+      }
+    }
+  ]
+}
+
+Response:
+{
+  "result": [
+    {"operationId": "1", "data": {"id": 1, "name": "Alice"}},
+    {"operationId": "2", "data": {"id": 2, "name": "Bob"}}
+  ]
+}
+(15.7ms)
+\end{lstlisting}
+
+\section{RonSQL (REST API SQL)}
+
+RonSQL executes aggregation queries through the RDRS REST API, providing high-performance SQL access without MySQL overhead. Currently, RonSQL supports aggregation queries on a single table only.
+
+\subsection{Supported Queries}
+
+RonSQL supports aggregation functions on a single table:
+
+\begin{lstlisting}[language=rondb]
+# Count rows
+RONSQL SELECT COUNT(*) FROM mydb.orders;
+
+# Sum values
+RONSQL SELECT SUM(amount) FROM mydb.orders;
+
+# Average, min, max
+RONSQL SELECT AVG(price), MIN(price), MAX(price) FROM mydb.products;
+
+# Count with GROUP BY
+RONSQL SELECT status, COUNT(*) FROM mydb.orders GROUP BY status;
+
+# Aggregation with WHERE clause
+RONSQL SELECT SUM(quantity) FROM mydb.order_items WHERE product_id = 100;
+
+# Multiple aggregations
+RONSQL SELECT COUNT(*), SUM(amount), AVG(amount) FROM mydb.transactions;
+\end{lstlisting}
+
+\textbf{Example:}
+\begin{lstlisting}[language=rondb]
+rondb> RONSQL SELECT status, COUNT(*) FROM mydb.orders GROUP BY status;
+
+Request:
+{
+  "database": "mydb",
+  "query": "SELECT status, COUNT(*) FROM orders GROUP BY status",
+  "format": "JSON",
+  "explain": "ALLOW"
+}
+
+Response:
+{
+  "data": [
+    {"status": "pending", "COUNT(*)": 42},
+    {"status": "shipped", "COUNT(*)": 156},
+    {"status": "delivered", "COUNT(*)": 892}
+  ]
+}
+(8.5ms)
+\end{lstlisting}
+
+\subsection{Commands}
+
+\begin{lstlisting}[language=rondb]
+# Set default database context
+RONSQL SET DATABASE mydb;
+
+# After setting database, table names don't need qualification
+RONSQL SELECT COUNT(*) FROM orders;
+RONSQL SELECT SUM(amount), AVG(amount) FROM transactions;
+\end{lstlisting}
+
+\subsection{Configuration}
+
+RonSQL behavior can be configured using internal commands:
+
+\begin{lstlisting}[language=rondb]
+# Show/set database context
+.ronsql_database [database_name]
+
+# Show/set output format
+# Options: JSON, JSON_ASCII, TEXT, TEXT_NOHEADER
+.ronsql_format [format]
+
+# Show/set explain mode
+# Options: ALLOW, FORBID, REQUIRE, REMOVE, FORCE
+.ronsql_explain [mode]
+\end{lstlisting}
+
+\subsection{Limitations}
+
+\begin{itemize}
+    \item Only single-table queries are supported (no JOINs)
+    \item Only aggregation queries (COUNT, SUM, AVG, MIN, MAX)
+    \item For general SQL queries, use the MySQL interface instead
+\end{itemize}
+
+\section{Rondis (Redis Protocol)}
+
+Rondis provides Redis-compatible commands for key-value operations. Commands are automatically detected by keyword matching.
+
+\subsection{Supported Commands}
+
+\begin{lstlisting}[language=rondb]
+# String operations
+SET key value              # Store a string value
+GET key                    # Retrieve a string value
+DEL key [key ...]          # Delete one or more keys
+MGET key [key ...]         # Get multiple values
+
+# Numeric operations
+INCR key                   # Increment integer value
+DECR key                   # Decrement integer value
+INCRBY key increment       # Increment by specified amount
+DECRBY key decrement       # Decrement by specified amount
+
+# Hash operations
+HSET hash field value      # Set hash field
+HGET hash field            # Get hash field value
+HDEL hash field [field...] # Delete hash fields
+HGETALL hash               # Get all fields and values
+
+# Key operations
+KEYS pattern               # Find keys matching pattern
+EXISTS key [key ...]       # Check if keys exist
+TTL key                    # Get time to live
+EXPIRE key seconds         # Set expiration time
+
+# Other
+PING                       # Test connection
+\end{lstlisting}
+
+\subsection{Example Session}
+
+\begin{lstlisting}[language=rondb]
+rondb> SET user:1001 "John Doe"
+OK (0.8ms)
+
+rondb> GET user:1001
+"John Doe" (0.5ms)
+
+rondb> HSET user:1001:profile name "John" email "john@example.com"
+(integer) 2 (1.2ms)
+
+rondb> HGETALL user:1001:profile
+1) "name"
+2) "John"
+3) "email"
+4) "john@example.com"
+(0.7ms)
+\end{lstlisting}
+
+%=============================================================================
+\chapter{Internal Commands}
+%=============================================================================
+
+Internal commands are prefixed with a dot (\texttt{.}) and provide shell configuration and utility functions.
+
+\section{Help and Information}
+
+Table: Help Commands
+
+\begin{tabular}{ll}
+\toprule
+Command & Description \\
+\midrule
+.help & Display general help information \\
+.help internal & Display benchmark and internal commands \\
+.help start & Display connection flags and environment variables \\
+.tables & List all tables in accessible databases \\
+\bottomrule
+\end{tabular}
+
+\section{Navigation and Exploration}
+
+Table: Navigation Commands
+
+\begin{tabular}{ll}
+\toprule
+Command & Description \\
+\midrule
+.browse & Open TUI database browser \\
+.ui & Alias for .browse \\
+.demo & Run interactive demonstration \\
+\bottomrule
+\end{tabular}
+
+\section{Configuration Commands}
+
+Table: Configuration Commands
+
+\begin{tabular}{ll}
+\toprule
+Command & Description \\
+\midrule
+.client [N] & Set or display client ID for benchmarks \\
+.debug [0|1] & Toggle debug mode \\
+.verbose [0|1|2] & Set verbose level \\
+.ronsql\_database [db] & Set RonSQL database context \\
+.ronsql\_format [fmt] & Set RonSQL output format \\
+.ronsql\_explain [mode] & Set RonSQL explain mode \\
+\bottomrule
+\end{tabular}
+
+\section{Exit Commands}
+
+\begin{lstlisting}[language=rondb]
+quit    # Exit the shell
+exit    # Exit the shell
+q       # Exit the shell (shorthand)
+\end{lstlisting}
+
+%=============================================================================
+\chapter{Benchmarking}
+%=============================================================================
+
+RonDB CLI includes a comprehensive benchmarking suite for performance testing.
+
+\section{Benchmark Parameters}
+
+All benchmark commands accept common parameters:
+
+Table: Benchmark Parameters
+
+\begin{tabular}{lll}
+\toprule
+Parameter & Default & Description \\
+\midrule
+T (threads) & 2 & Number of concurrent threads \\
+N (ops) & 1000 & Number of operations per thread \\
+R (rows) & 1 & Rows per operation \\
+W (write\%) & 0 & Write percentage (0-100) \\
+S (seconds) & 60 & Duration for continuous benchmarks \\
+\bottomrule
+\end{tabular}
+
+\section{Rondis Benchmarks}
+
+\subsection{Data Loading}
+
+\begin{lstlisting}[language=rondb]
+# Load test data
+.load_rondis [T] [N] [R]
+
+# Example: 4 threads, 5000 ops, 10 rows each = 200,000 keys
+rondb> .load_rondis 4 5000 10
+\end{lstlisting}
+
+\subsection{Performance Testing}
+
+\begin{lstlisting}[language=rondb]
+# Run benchmark (T threads, N ops, R rows, W% writes)
+.bench_rondis [T] [N] [R] [W]
+
+# Run continuous benchmark for S seconds
+.bench_rondis_cont [T] [N] [R] [W] [S]
+
+# Example: 4 threads, 10000 ops, 1 row, 20% writes
+rondb> .bench_rondis 4 10000 1 20
+\end{lstlisting}
+
+\subsection{Data Cleanup}
+
+\begin{lstlisting}[language=rondb]
+# Delete test data (must match load parameters)
+.del_rondis [T] [N] [R]
+
+rondb> .del_rondis 4 5000 10
+\end{lstlisting}
+
+\section{SQL Benchmarks}
+
+SQL benchmarks use the \texttt{test.sql\_test} table with the following schema:
+
+\begin{lstlisting}[language=rondb]
+CREATE TABLE test.sql_test (
+    user_id VARCHAR(64) NOT NULL,
+    event_time BIGINT NOT NULL,
+    description VARCHAR(128),
+    value_int BIGINT DEFAULT 0,
+    event_type BIGINT DEFAULT 0,
+    PRIMARY KEY (user_id, event_time)
+) ENGINE=NDB;
+\end{lstlisting}
+
+The table is automatically created by the \texttt{.load\_sql} command if it does not exist.
+
+\subsection{Data Loading}
+
+\begin{lstlisting}[language=rondb]
+# Load test data into test.sql_test table
+.load_sql [T] [N] [R]
+
+rondb> .load_sql 4 5000 10
+\end{lstlisting}
+
+\subsection{Performance Testing}
+
+\begin{lstlisting}[language=rondb]
+# Run SELECT/UPDATE benchmark
+.bench_sql [T] [N] [R] [W]
+
+# Run continuous benchmark
+.bench_sql_cont [T] [N] [R] [W] [S]
+
+# Run scan-based benchmark (no writes)
+.bench_sql_scan [T] [N] [R]
+
+# Run continuous scan benchmark
+.bench_sql_scan_cont [T] [N] [R] [S]
+\end{lstlisting}
+
+\subsection{Data Cleanup}
+
+\begin{lstlisting}[language=rondb]
+# Delete test data
+.del_sql [T] [N] [R]
+
+# Drop the test table entirely
+.drop_sql
+\end{lstlisting}
+
+\section{REST API Benchmarks}
+
+\begin{lstlisting}[language=rondb]
+# Run batch pk-read benchmark
+.bench_rdrs [T] [N] [R]
+
+# Run continuous benchmark
+.bench_rdrs_cont [T] [N] [R] [S]
+
+# Note: Uses data from .load_sql
+\end{lstlisting}
+
+\section{Benchmark Output}
+
+Benchmarks report comprehensive statistics:
+
+\begin{lstlisting}
+SQL Benchmark complete!
+   Configuration: 4 threads x 10000 requests x 1 rows = 40000 total
+   Reads: 32000 (80.0%), Writes: 8000 (20.0%)
+   Throughput: 45230 ops/sec (12.5ms total)
+   Latency: min=0.1ms avg=0.9ms max=15.2ms p95=2.1ms p99=4.5ms p99.9=12.3ms
+
+Errors encountered (3 total):
+   1. connection refused
+   2. timeout after 30s
+   3. duplicate key error
+\end{lstlisting}
+
+\section{Error Collection}
+
+Benchmarks collect up to 100 unique errors and display them after completion. This helps identify:
+\begin{itemize}
+    \item Connection issues
+    \item Timeout problems
+    \item Data consistency errors
+    \item Resource exhaustion
+\end{itemize}
+
+%=============================================================================
+\chapter{TUI Database Browser}
+%=============================================================================
+
+The TUI (Terminal User Interface) browser provides interactive database exploration.
+
+\section{Launching the Browser}
+
+\begin{lstlisting}[language=rondb]
+rondb> .browse
+# or
+rondb> .ui
+\end{lstlisting}
+
+\section{Interface Layout}
+
+The browser displays a two-panel interface:
+
+\begin{verbatim}
++---------------------------+--------------------------------+
+|  Databases                |  Schema: mydb.users            |
+|  ------------------------ |  ------------------------------ |
+|  > mydb                   |  Column     Type      Null Key |
+|      users                |  id         INT       NO   PRI |
+|      orders               |  name       VARCHAR   YES      |
+|    ndb_binlog_index       |  email      VARCHAR   YES      |
+|  > test                   |  created_at DATETIME  YES      |
+|      sql_test             |                                |
++---------------------------+--------------------------------+
+\end{verbatim}
+
+\section{Keyboard Navigation}
+
+Table: TUI Keyboard Shortcuts
+
+\begin{tabular}{ll}
+\toprule
+Key & Action \\
+\midrule
+j / Down & Move cursor down \\
+k / Up & Move cursor up \\
+h / Left & Collapse database \\
+l / Right & Expand database \\
+Enter / Space & Select table (show schema) \\
+Tab & Toggle focus between panels \\
+d & Toggle schema/data view \\
+q / Esc & Quit browser \\
+Ctrl+C & Quit browser \\
+\bottomrule
+\end{tabular}
+
+\section{Views}
+
+\subsection{Schema View}
+
+Displays table column information:
+\begin{itemize}
+    \item Column name
+    \item Data type
+    \item Nullable status
+    \item Key type (PRI, UNI, MUL)
+    \item Default value
+\end{itemize}
+
+\subsection{Data View}
+
+Displays sample rows from the selected table (limited to prevent overwhelming the display).
+
+Toggle between views using the \texttt{d} key.
+
+%=============================================================================
+\chapter{Architecture}
+%=============================================================================
+
+\section{Project Structure}
+
+\begin{verbatim}
+rondb-cli/
+├── main.go                 # Entry point
+├── cmd/
+│   └── root.go             # Cobra CLI commands
+├── internal/
+│   ├── client/
+│   │   ├── mysql.go        # MySQL client wrapper
+│   │   ├── rondis.go       # Rondis client wrapper
+│   │   └── rest.go         # REST API client
+│   ├── dsl/
+│   │   └── parser.go       # DSL parser for READ/BATCH
+│   ├── shell/
+│   │   └── repl.go         # Interactive REPL
+│   ├── tui/
+│   │   └── browser.go      # Database browser
+│   └── ui/
+│       ├── colors.go       # Terminal styling
+│       └── table.go        # Table formatting
+├── docs/
+│   └── PHILOSOPHY.md       # Design principles
+└── go.mod                  # Dependencies
+\end{verbatim}
+
+\section{Client Architecture}
+
+\subsection{MySQLClient}
+
+\begin{lstlisting}[language=Go]
+type MySQLClient struct {
+    db *sql.DB
+}
+
+type MySQLOptions struct {
+    Host     string
+    Port     int
+    User     string
+    Password string
+    TLS      bool
+}
+\end{lstlisting}
+
+Key methods:
+\begin{itemize}
+    \item \texttt{Query(sql string)} -- Execute SELECT queries
+    \item \texttt{Execute(sql string)} -- Execute INSERT/UPDATE/DELETE
+    \item \texttt{ListDatabases()} -- Get database list
+    \item \texttt{ListTablesInDB(database string)} -- Get tables
+    \item \texttt{DescribeTable(database, table string)} -- Get schema
+\end{itemize}
+
+\subsection{RondisClient}
+
+\begin{lstlisting}[language=Go]
+type RondisClient struct {
+    client *redis.Client
+}
+
+type RondisOptions struct {
+    Host     string
+    Port     int
+    Password string
+    TLS      bool
+}
+\end{lstlisting}
+
+Key methods:
+\begin{itemize}
+    \item \texttt{Execute(args []string)} -- Execute any Redis command
+    \item \texttt{Ping()} -- Test connection
+\end{itemize}
+
+\subsection{RestClient}
+
+\begin{lstlisting}[language=Go]
+type RestClient struct {
+    client  *http.Client
+    baseURL string
+    apiKey  string
+}
+
+type RestOptions struct {
+    Host   string
+    Port   int
+    TLS    bool
+    APIKey string
+}
+\end{lstlisting}
+
+Key methods:
+\begin{itemize}
+    \item \texttt{Post(endpoint string, body interface{})} -- Send POST request
+    \item \texttt{Ping()} -- Test connection
+\end{itemize}
+
+\section{Command Routing}
+
+Commands are routed based on keyword detection:
+
+\begin{lstlisting}[language=Go]
+func (s *Shell) execute(line string) error {
+    lower := strings.ToLower(line)
+
+    // 1. Internal commands (dot prefix)
+    if strings.HasPrefix(lower, ".") {
+        return s.executeInternal(line)
+    }
+
+    // 2. SQL commands (keyword detection)
+    if isSQLCommand(lower) {
+        return s.executeSQL(line)
+    }
+
+    // 3. RonSQL commands
+    if strings.HasPrefix(lower, "ronsql ") {
+        return s.executeRonSQL(line)
+    }
+
+    // 4. REST API READ commands
+    if strings.HasPrefix(lower, "read ") {
+        return s.executeREAD(line)
+    }
+
+    // 5. REST API BATCH commands
+    if strings.HasPrefix(lower, "batch") {
+        return s.executeBatch()
+    }
+
+    // 6. Default: Rondis
+    return s.executeRondis(line)
+}
+\end{lstlisting}
+
+\section{Latency Collection}
+
+Thread-safe latency collection for benchmarks:
+
+\begin{lstlisting}[language=Go]
+type LatencyCollector struct {
+    mu        sync.Mutex
+    latencies []time.Duration
+}
+
+func (lc *LatencyCollector) Record(d time.Duration)
+func (lc *LatencyCollector) GetTotalStats() (min, max, avg, p95, p99, p999 time.Duration, count int)
+\end{lstlisting}
+
+\section{Error Collection}
+
+Thread-safe error collection (limited to 100 errors):
+
+\begin{lstlisting}[language=Go]
+const maxBenchmarkErrors = 100
+
+type ErrorCollector struct {
+    mu     sync.Mutex
+    errors []string
+    count  int64
+}
+
+func (ec *ErrorCollector) Record(err error)
+func (ec *ErrorCollector) Count() int64
+func (ec *ErrorCollector) PrintErrors()
+\end{lstlisting}
+
+%=============================================================================
+\chapter{Dependencies}
+%=============================================================================
+
+\section{Core Dependencies}
+
+Table: Go Module Dependencies
+
+\begin{tabular}{lll}
+\toprule
+Package & Version & Purpose \\
+\midrule
+charmbracelet/bubbles & v0.21.0 & TUI components \\
+charmbracelet/bubbletea & v1.3.10 & TUI framework \\
+charmbracelet/lipgloss & v1.1.0 & Terminal styling \\
+chzyer/readline & v1.5.1 & Interactive input \\
+go-sql-driver/mysql & v1.7.1 & MySQL driver \\
+redis/go-redis/v9 & v9.1.0 & Redis client \\
+spf13/cobra & v1.7.0 & CLI framework \\
+golang.org/x/term & v0.39.0 & Terminal control \\
+olekukonko/tablewriter & v0.0.5 & Table formatting \\
+\bottomrule
+\end{tabular}
+
+%=============================================================================
+\chapter{Security Considerations}
+%=============================================================================
+
+\section{SQL Injection Prevention}
+
+The MySQL client sanitizes identifiers to prevent SQL injection:
+
+\begin{lstlisting}[language=Go]
+func sanitizeIdentifier(name string) string {
+    return strings.ReplaceAll(name, "`", "``")
+}
+
+// Usage in queries
+query := fmt.Sprintf("SHOW TABLES FROM `%s`",
+    sanitizeIdentifier(database))
+\end{lstlisting}
+
+\section{TLS Configuration}
+
+TLS can be enabled for secure connections:
+
+\begin{lstlisting}[language=Go]
+tlsConfig := &tls.Config{
+    MinVersion:         tls.VersionTLS12,
+    InsecureSkipVerify: true,  // For self-signed certs
+}
+\end{lstlisting}
+
+\textbf{Note:} \texttt{InsecureSkipVerify} is enabled by default for development environments. Production deployments should use proper certificate validation.
+
+\section{API Key Authentication}
+
+REST API requests include authentication headers when configured:
+
+\begin{lstlisting}[language=Go]
+if c.apiKey != "" {
+    req.Header.Set("X-API-Key", c.apiKey)
+}
+\end{lstlisting}
+
+\section{Password Handling}
+
+Passwords are:
+\begin{itemize}
+    \item Never logged or displayed
+    \item Read silently when using \texttt{-p} flag
+    \item Can be provided via environment variable for automation
+\end{itemize}
+
+%=============================================================================
+\chapter{Troubleshooting}
+%=============================================================================
+
+\section{Connection Issues}
+
+\subsection{Checking Status}
+
+Use the \texttt{status} subcommand to verify connections:
+
+\begin{lstlisting}[language=bash]
+./rondb status --host myrondb.example.com
+\end{lstlisting}
+
+\subsection{Common Connection Errors}
+
+Table: Connection Troubleshooting
+
+\begin{tabular}{ll}
+\toprule
+Error & Solution \\
+\midrule
+Connection refused & Verify service is running and port is correct \\
+Timeout & Check network connectivity and firewall rules \\
+Authentication failed & Verify username and password \\
+TLS handshake error & Check TLS configuration and certificates \\
+\bottomrule
+\end{tabular}
+
+\section{Verbose Modes}
+
+Enable verbose output for debugging:
+
+\begin{lstlisting}[language=bash]
+# Level 1: Connection information
+./rondb --verbose 1
+
+# Level 2: Debug output
+./rondb --verbose 2
+\end{lstlisting}
+
+\section{Debug Mode}
+
+Enable debug mode within the shell:
+
+\begin{lstlisting}[language=rondb]
+rondb> .debug 1
+Debug mode enabled
+
+rondb> SET key value
+[DEBUG] REQ: [SET key value]
+[DEBUG] RESP: OK
+OK (0.8ms)
+\end{lstlisting}
+
+%=============================================================================
+\chapter{Examples}
+%=============================================================================
+
+\section{Complete Workflow Example}
+
+\begin{lstlisting}[language=rondb]
+# Connect to RonDB
+$ ./rondb --host myrondb.example.com --mysql-user admin -p
+Enter MySQL password: ********
+
+Welcome to RonDB CLI v0.1.0
+Type .help for help, .demo for a quick demo
+
+# Run the demo
+rondb> .demo
+
+# Explore databases
+rondb> .browse
+
+# Write via Rondis
+rondb> SET product:1001 '{"name":"Widget","price":29.99}'
+OK (0.8ms)
+
+# Read via Rondis
+rondb> GET product:1001
+{"name":"Widget","price":29.99} (0.5ms)
+
+# Query via SQL
+rondb> SELECT * FROM inventory.products WHERE id = 1001;
++------+--------+-------+
+| id   | name   | price |
++------+--------+-------+
+| 1001 | Widget | 29.99 |
++------+--------+-------+
+1 row in set (2.3ms)
+
+# High-performance read via REST API
+rondb> READ inventory.products id, name, price FILTER id=1001;
+{
+  "data": {
+    "id": 1001,
+    "name": "Widget",
+    "price": 29.99
+  }
+}
+(1.1ms)
+
+# Run benchmark
+rondb> .load_rondis 4 10000 1
+rondb> .bench_rondis 4 10000 1 20
+rondb> .del_rondis 4 10000 1
+
+# Exit
+rondb> quit
+\end{lstlisting}
+
+\section{Batch Operations Example}
+
+\begin{lstlisting}[language=rondb]
+rondb> BATCH
+    ...> READ inventory.products id, name FILTER id=1001 OP prod1
+    ...> READ inventory.products id, name FILTER id=1002 OP prod2
+    ...> READ inventory.products id, name FILTER id=1003 OP prod3
+    ...> ;
+{
+  "result": [
+    {"operationId": "prod1", "data": {"id": 1001, "name": "Widget"}},
+    {"operationId": "prod2", "data": {"id": 1002, "name": "Gadget"}},
+    {"operationId": "prod3", "data": {"id": 1003, "name": "Gizmo"}}
+  ]
+}
+(3.2ms)
+\end{lstlisting}
+
+%=============================================================================
+\appendix
+\chapter{Quick Reference Card}
+%=============================================================================
+
+\section{Command Summary}
+
+Table: Command Summary
+
+\begin{tabular}{ll}
+\toprule
+Command & Description \\
+\midrule
+\multicolumn{2}{l}{\textbf{Information}} \\
+.help & General help \\
+.help internal & Benchmark commands \\
+.help start & Connection options \\
+.tables & List all tables \\
+.browse & TUI browser \\
+.demo & Quick demo \\
+\midrule
+\multicolumn{2}{l}{\textbf{Configuration}} \\
+.client [N] & Set client ID \\
+.debug [0|1] & Toggle debug \\
+.verbose [0|1|2] & Set verbosity \\
+\midrule
+\multicolumn{2}{l}{\textbf{Rondis Benchmarks}} \\
+.load\_rondis [T] [N] [R] & Load data \\
+.bench\_rondis [T] [N] [R] [W] & Run benchmark \\
+.bench\_rondis\_cont [...] [S] & Continuous \\
+.del\_rondis [T] [N] [R] & Delete data \\
+\midrule
+\multicolumn{2}{l}{\textbf{SQL Benchmarks}} \\
+.load\_sql [T] [N] [R] & Load data \\
+.bench\_sql [T] [N] [R] [W] & Run benchmark \\
+.bench\_sql\_cont [...] [S] & Continuous \\
+.bench\_sql\_scan [T] [N] [R] & Scan benchmark \\
+.del\_sql [T] [N] [R] & Delete data \\
+.drop\_sql & Drop test table \\
+\midrule
+\multicolumn{2}{l}{\textbf{REST API Benchmarks}} \\
+.bench\_rdrs [T] [N] [R] & Batch pk-read \\
+.bench\_rdrs\_cont [...] [S] & Continuous \\
+\midrule
+\multicolumn{2}{l}{\textbf{Exit}} \\
+quit / exit / q & Exit shell \\
+\bottomrule
+\end{tabular}
+
+\section{Default Values}
+
+\begin{itemize}
+    \item Host: \texttt{localhost}
+    \item Rondis port: \texttt{6379}
+    \item MySQL port: \texttt{3306}
+    \item REST API port: \texttt{4406}
+    \item MySQL user: \texttt{root}
+    \item Benchmark threads: \texttt{2}
+    \item Benchmark operations: \texttt{1000}
+    \item Benchmark rows/op: \texttt{1}
+    \item Benchmark write\%: \texttt{0}
+    \item Continuous duration: \texttt{60} seconds
+\end{itemize}
+
+%=============================================================================
+\chapter{Version History}
+%=============================================================================
+
+\section{Version 0.1.0}
+
+Initial release featuring:
+\begin{itemize}
+    \item Unified CLI for Rondis, MySQL, RonSQL, and REST API
+    \item Interactive TUI database browser
+    \item Comprehensive benchmarking suite
+    \item DSL parser for REST API operations
+    \item TLS support for all connections
+    \item API key authentication for REST API
+    \item Error collection for benchmarks
+    \item Multi-line command support
+    \item Color-coded output
+\end{itemize}
+
+\end{document}
