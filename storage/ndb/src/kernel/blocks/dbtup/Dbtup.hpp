@@ -228,6 +228,10 @@ inline const Uint32 *ALIGN_WORD(const void *ptr) {
 #define ZTOO_MUCH_INPUT_PARAM 938
 #define ZWRONG_INPUT_PARAM_COLUMN 939
 
+#define ZTOO_LARGE_FIXED_SIZE_PART 940
+#define ZTOO_LARGE_VAR_SIZE_PART 941
+#define ZTOO_LARGE_DISK_VAR_SIZE_PART 942
+
 #define MAX_INPUT_PARAMS 16
 
 /*
@@ -813,8 +817,8 @@ struct Fragrecord {
     Page_fifo::Head thFreeFirst;  // pages with at least 1 free record
 
     Uint32 m_lcp_scan_op;
-    Local_key m_lcp_keep_list_head;
-    Local_key m_lcp_keep_list_tail;
+    Uint32 *m_lcp_keep_list_head;
+    Uint32 *m_lcp_keep_list_tail;
 
     enum FragState {
       FS_FREE,
@@ -1050,7 +1054,7 @@ struct Operationrec {
    * can find out about the fragment page id and the page offset.
    */
   Local_key m_tuple_location;
-  Local_key m_copy_tuple_location;
+  Uint32 *m_copy_tuple_location;
 
   /**
    * In case we need to allocate a new disk row part we store the new
@@ -1175,6 +1179,7 @@ struct Operationrec {
     Uint32 original_op_type;
     Uint8 ttl_ignore;
     Uint8 ttl_only_expired;
+    Uint8 m_refresh_case;
   };
 
   Uint32 m_base_header_bits;
@@ -1999,6 +2004,7 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
       m_disable_fk_checks = false;
       m_tuple_ptr = NULL;
       ttl_purge_window_size = 0;
+      m_use_corr_factor = 0;
     }
 
     KeyReqStruct(EmulatedJamBuffer *_jamBuffer) : changeMask(false) {
@@ -2010,6 +2016,7 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
       m_deferred_constraints = true;
       m_disable_fk_checks = false;
       ttl_purge_window_size = 0;
+      m_use_corr_factor = 0;
     }
 
     KeyReqStruct(Dbtup *tup) : changeMask(false) {
@@ -2022,6 +2029,7 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
       m_disable_fk_checks = false;
       m_dbtup_ptr = tup;
       ttl_purge_window_size = 0;
+      m_use_corr_factor = 0;
     }
 
     KeyReqStruct(Dbtup *tup, When when) : changeMask() {
@@ -2035,6 +2043,7 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
       m_tuple_ptr = NULL;
       m_dbtup_ptr = tup;
       ttl_purge_window_size = 0;
+      m_use_corr_factor = 0;
     }
 
     /**
@@ -2091,6 +2100,7 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
     bool is_expanded;
     bool m_is_lcp;
     enum When m_when;
+    Uint8 m_use_corr_factor;
 
 
 #ifdef ERROR_INSERT
@@ -3233,8 +3243,10 @@ private:
   void sendAlterTabRef(Signal *signal, Uint32 errorCode);
   void sendAlterTabConf(Signal *, Uint32 clientData = RNIL);
 
-  void handleCharsetPos(Uint32 csNumber, const CHARSET_INFO **charsetArray,
-                        Uint32 noOfCharsets, Uint32 &charsetIndex,
+  bool handleCharsetPos(Uint32 csNumber,
+                        const CHARSET_INFO **charsetArray,
+                        Uint32 noOfCharsets,
+                        Uint32 &charsetIndex,
                         Uint32 &attrDes2);
   Uint32 computeTableMetaData(TablerecPtr regTabPtr, Uint32 line);
 
@@ -3314,7 +3326,8 @@ public:
                         const Uint32 *dataBuf, Uint32 lenOfData);
 
   void sendAPI_TRANSID_AI(Signal *signal, BlockReference recBlockRef,
-                          const Uint32 *dataBuf, Uint32 lenOfData);
+                          const Uint32 *dataBuf, Uint32 lenOfData,
+                          KeyReqStruct* req_struct);
 
   //------------------------------------------------------------------
   // Trigger handling routines
@@ -3965,7 +3978,7 @@ public:
 
   // A little bit bigger to cover overwrites in copy algorithms (16384 real
   // size).
-#define ZATTR_BUFFER_SIZE 16384
+#define ZATTR_BUFFER_SIZE 24000
   Uint32 clogMemBuffer[ZATTR_BUFFER_SIZE + 16];
   Uint32 coutBuffer[ZATTR_BUFFER_SIZE + 16];
   Uint32 cinBuffer[ZATTR_BUFFER_SIZE + 16];
@@ -4035,10 +4048,14 @@ public:
   static constexpr Uint32 COPY_TUPLE_HEADER32 = 4;
 
   Tuple_header* alloc_copy_tuple(const Tablerec* tabPtrP,
-                                 Local_key* ptr,
-                                 bool init){
-    Uint32 * dst = c_undo_buffer.alloc_copy_tuple(ptr,
-                                                  tabPtrP->total_rec_size);
+                                 Uint32 **ptr,
+                                 bool init) {
+    *ptr = (Uint32*)
+      lc_ndbd_pool_malloc(tabPtrP->total_rec_size * 4,
+                          RG_TRANSACTION_MEMORY,
+                          getThreadId(),
+                          false);
+    Uint32 *dst = *ptr;
     if (unlikely(dst == 0))
       return nullptr;
     if (init) {
@@ -4054,8 +4071,9 @@ public:
     return (Tuple_header *)(mask->end_of_mask(count));
   }
 
-  Uint32 *get_copy_tuple_raw(const Local_key *ptr) {
-    return c_undo_buffer.get_ptr(ptr);
+  void free_copy_tuple(Uint32 **ptr) {
+    lc_ndbd_pool_free(*ptr);
+    *ptr = nullptr;
   }
 
   Tuple_header *get_copy_tuple(Uint32 *rawptr) {
@@ -4064,10 +4082,6 @@ public:
 
   ChangeMask *get_change_mask_ptr(Uint32 *rawptr) {
     return (ChangeMask *)(rawptr + COPY_TUPLE_HEADER32);
-  }
-
-  Tuple_header *get_copy_tuple(const Local_key *ptr) {
-    return get_copy_tuple(get_copy_tuple_raw(ptr));
   }
 
   ChangeMask *get_change_mask_ptr(const Tablerec *tabP,
@@ -4411,9 +4425,8 @@ public:
                                        Uint32 logicalPageId, Uint32 *next,
                                        Uint32 *prev, Uint32 lcp_scanned_bit,
                                        Uint32 last_lcp_state);
-  void remove_top_from_lcp_keep_list(Fragrecord *, Uint32 *, Local_key);
-  void insert_lcp_keep_list(Fragrecord *, Local_key, Uint32 *,
-                            const Local_key *);
+  void remove_top_from_lcp_keep_list(Fragrecord *, Uint32 *);
+  void insert_lcp_keep_list(Fragrecord *, Uint32 *, const Local_key *);
   void handle_lcp_drop_change_page(Fragrecord*,
                                    Uint32,
                                    PagePtr,
@@ -4431,22 +4444,6 @@ public:
                                   Tablerec *);
 
   void setup_lcp_read_copy_tuple(KeyReqStruct *, Operationrec *, Tablerec *);
-
-  bool isCopyTuple(Uint32 pageid, Uint32 pageidx) const {
-    return (pageidx & (Uint16(1) << 15)) != 0;
-  }
-
-  void setCopyTuple(Uint32 &pageid, Uint16 &pageidx) const {
-    assert(!isCopyTuple(pageid, pageidx));
-    pageidx |= (Uint16(1) << 15);
-    assert(isCopyTuple(pageid, pageidx));
-  }
-
-  void clearCopyTuple(Uint32 &pageid, Uint16 &pageidx) const {
-    assert(isCopyTuple(pageid, pageidx));
-    pageidx &= ~(Uint16(1) << 15);
-    assert(!isCopyTuple(pageid, pageidx));
-  }
 
  private:
   void release_c_free_scan_lock();
@@ -4473,8 +4470,14 @@ public:
     return is_ttl_table(tablePtr.p);
   }
 
+  void print_checksum(const Uint32* data,
+                      const Uint32 ref,
+                      const Uint32 len,
+                      const Uint32 line);
+
 public:
   Dbtup *m_curr_tup;
+  Uint32 *m_copy_tuple_used;
   static Uint64 getTransactionMemoryNeed(
     const Uint32 ldm_instance_count,
     const ndb_mgm_configuration_iterator * mgm_cfg);

@@ -61,7 +61,7 @@ class HugoCalculator {
   class KeyParts {
    public:
     Ndb::Key_part_ptr ptrs[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 1];
-    char buffer[NDB_MAX_TUPLE_SIZE];
+    char buffer[NDB_MAX_KEYSIZE_IN_WORDS + 2];
 
     KeyParts() { ptrs[0].ptr = 0; }
   };

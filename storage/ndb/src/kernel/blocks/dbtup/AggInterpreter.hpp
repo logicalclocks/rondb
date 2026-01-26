@@ -63,7 +63,9 @@ class AggInterpreter {
 #endif // PA_MALLOC
       memcpy(prog_, prog, prog_len * sizeof(Uint32));
       memset(buf_, 0, READ_BUF_WORD_SIZE * sizeof(Uint32));
-      memset(decimal_buf_, 0, sizeof(Int32) * DECIMAL_BUFF_LENGTH);
+      memset(decimal_buf_, 0, sizeof(decimal_digit_t) * DECIMAL_BUFF_LENGTH);
+      decimal_.buf = decimal_buf_;
+      decimal_.len = DECIMAL_BUFF_LENGTH;
 #ifdef PA_MALLOC
       /* For using Ndbd_mem_manager*/
       /*
@@ -102,6 +104,7 @@ class AggInterpreter {
   }
 
   bool Init();
+  bool OptimizeProgram();
 
   Int32 ProcessRec(Dbtup* block_tup, Dbtup::KeyReqStruct* req_struct);
   void Print();
@@ -151,7 +154,8 @@ class AggInterpreter {
   static Uint32 g_result_header_size_per_group_;
 
   Int64 frag_id_;
-  Int32 decimal_buf_[DECIMAL_BUFF_LENGTH];
+  decimal_t decimal_;
+  decimal_digit_t decimal_buf_[DECIMAL_BUFF_LENGTH];
 
 #ifdef PA_MALLOC
   /* For using Ndbd_mem_manager */

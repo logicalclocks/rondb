@@ -40,7 +40,7 @@ private:
   ArenaMalloc* m_amalloc;
   struct SelectStatement* m_query;
   DynamicArray<LexCString>* m_column_names;
-  CHARSET_INFO** m_column_charset_map;
+  const NdbDictionary::Column** m_column_map;
   RonSQLExecParams::OutputFormat m_output_format;
   std::basic_ostream<char>* m_err;
 
@@ -76,6 +76,8 @@ private:
       {
         Uint32 reg_g;
         CHARSET_INFO* charset;
+        int precision;
+        int scale;
       } print_group_by_column;
       struct
       {
@@ -102,6 +104,7 @@ private:
   bool m_utf8_output;
   bool m_tsv_output;
   bool m_tsv_headers;
+  const char* m_quote;
   LexString m_null_representation;
   // Program state
   NdbAggregator::Column* m_regs_g;
@@ -111,14 +114,12 @@ private:
   void optimize();
   void print_record(NdbAggregator::ResultRecord& record,
                     std::ostream& out);
-  void print_float_or_double(std::ostream& out,
-                             double value,
-                             bool is_double);
+  void print_float_or_double(std::ostream& out, double value);
 public:
   ResultPrinter(ArenaMalloc* amalloc,
                 struct SelectStatement* query,
                 DynamicArray<LexCString>* column_names,
-                CHARSET_INFO** charset_map,
+                const NdbDictionary::Column** column_map,
                 RonSQLExecParams::OutputFormat output_format,
                 std::basic_ostream<char>* err);
   void print_result(NdbAggregator* aggregator,

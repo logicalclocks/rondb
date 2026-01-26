@@ -122,7 +122,11 @@ extern void rsqlp_error(RSQLP_LTYPE* yylloc, yyscan_t yyscanner, const char* s);
 {
   TokenKind tokenkindval;
   Int64 bival;
-  float fval;
+  struct
+  {
+    double dbl;
+    LexString ls;
+  } fpval;
   bool bval;
   LexString str;
   LexCString str_c;
@@ -139,12 +143,16 @@ extern void rsqlp_error(RSQLP_LTYPE* yylloc, yyscan_t yyscanner, const char* s);
 }
 
 %token<bival> T_INT
-%token<fval> T_FLOAT
+%token<fpval> T_FLOAT
 %token T_COUNT T_MAX T_MIN T_SUM T_AVG T_LEFT T_RIGHT
 %token T_EXPLAIN T_SELECT T_FROM T_GROUP T_BY T_ORDER T_ASC T_DESC T_AS T_WHERE
 %token T_SEMICOLON
 %token T_OR T_XOR T_AND T_NOT T_EQUALS T_GE T_GT T_LE T_LT T_NOT_EQUALS T_IS T_NULL T_BITWISE_OR T_BITWISE_AND T_BITSHIFT_LEFT T_BITSHIFT_RIGHT T_PLUS T_MINUS T_MULTIPLY T_SLASH T_DIV T_MODULO T_BITWISE_XOR T_EXCLAMATION
 %token T_INTERVAL T_DATE_ADD T_DATE_SUB T_EXTRACT T_MICROSECOND T_SECOND T_MINUTE T_HOUR T_DAY T_WEEK T_MONTH T_QUARTER T_YEAR T_SECOND_MICROSECOND T_MINUTE_MICROSECOND T_MINUTE_SECOND T_HOUR_MICROSECOND T_HOUR_SECOND T_HOUR_MINUTE T_DAY_MICROSECOND T_DAY_SECOND T_DAY_MINUTE T_DAY_HOUR T_YEAR_MONTH
+
+// RonSQLPreparer.cpp needs some values that are inequal to all tokens. They
+// need to be declared here but aren't used in the lexer or parser.
+%token I_MYSQL_TIME
 
 /*
  * MySQL operator presedence, strongest binding first:
@@ -319,8 +327,8 @@ cond_expr:
   identifier_c                          { initptr($$); $$->op = T_IDENTIFIER; $$->col_idx = context->column_name_to_idx($1); }
 | T_STRING                              { initptr($$); $$->op = T_STRING; $$->string = $1; }
 | T_INT                                 { initptr($$); $$->op = T_INT; $$->constant_integer = $1; }
-| T_MINUS cond_expr                     { if ( $2->op == T_INT) { initptr($$); $$->op = T_INT; $$->constant_integer = -$2->constant_integer; }
-                                          else { init_cond($$, NULL, T_MINUS, $2); } }
+| T_FLOAT                               { initptr($$); $$->op = T_FLOAT; $$->constant_float.dbl = $1.dbl; $$->constant_float.ls = $1.ls; }
+| T_MINUS cond_expr                     { init_cond($$, NULL, T_MINUS, $2); }
 | T_LEFT cond_expr T_RIGHT              { $$ = $2; }
 | cond_expr T_OR cond_expr              { init_cond($$, $1, T_OR, $3); }
 | cond_expr T_XOR cond_expr             { init_cond($$, $1, T_XOR, $3); }

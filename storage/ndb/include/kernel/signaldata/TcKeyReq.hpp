@@ -86,8 +86,7 @@ class TcKeyReq {
   static constexpr Uint32 SignalLength = 25;
   static constexpr Uint32 MaxKeyInfo = 8;
   static constexpr Uint32 MaxAttrInfo = 5;
-  static constexpr Uint32 MaxTotalAttrInfo =
-      ((MAX_SEND_MESSAGE_BYTESIZE / 4) - SignalLength);
+  static constexpr Uint32 MaxTotalAttrInfo = 0x3FFFF;
 
   /**
    * Long signal variant of TCKEYREQ

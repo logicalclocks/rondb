@@ -38,6 +38,13 @@
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_CONT_SCAN 1
+//#define DEBUG_TRANSID_AI 1
+#endif
+
+#ifdef DEBUG_TRANSID_AI
+#define DEB_TRANSID_AI(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_TRANSID_AI(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_CONT_SCAN
@@ -137,6 +144,19 @@ void Dbtup::updatePackedList(Uint16 hostId) {
   }
 }
 
+void Dbtup::print_checksum(const Uint32 *data,
+                           const Uint32 ref,
+                           const Uint32 len,
+                           const Uint32 line) {
+  Uint32 checksum = 0;
+  for (Uint32 i = 0; i < len; i++) {
+    checksum ^= data[i];
+  }
+  g_eventLogger->info("(%u) SEND TRANSID_AI: checksum: 0x%x, len: %u,"
+                      " ref: 0x%x, line: %u",
+    instance(), checksum, len, ref, line);
+}
+
 /**
  * Send a TRANSID_AI signal to an API node. If sufficiently small, the signal is
  * buffered for later being sent as a API_PACKED-signal. When required the
@@ -147,7 +167,8 @@ void Dbtup::updatePackedList(Uint16 hostId) {
  *  - We must be connected to the API node.
  */
 void Dbtup::sendAPI_TRANSID_AI(Signal *signal, Uint32 recBlockRef,
-                               const Uint32 *dataBuf, Uint32 lenOfData) {
+                               const Uint32 *dataBuf, Uint32 lenOfData,
+                               KeyReqStruct *req_struct) {
   const Uint32 nodeId = refToNode(recBlockRef);
 
   // Test prerequisites:
@@ -157,6 +178,8 @@ void Dbtup::sendAPI_TRANSID_AI(Signal *signal, Uint32 recBlockRef,
   ndbrequire(nodeId < MAX_NODES);
   HostBuffer *const buffer = &hostBuffer[nodeId];
   const Uint32 TpacketLen = buffer->packetLenTA;
+
+  ndbassert(dataBuf == &signal->theData[25]);
 
   /**
    * Check if the packed buffers has to be flushed first.
@@ -173,17 +196,6 @@ void Dbtup::sendAPI_TRANSID_AI(Signal *signal, Uint32 recBlockRef,
     const Uint32 sig1 = transIdAI->transId[0];
     const Uint32 sig2 = transIdAI->transId[1];
 
-    if (dataBuf != &signal->theData[25]) {
-      jamDebug();
-      /**
-       * TUP incorrectly guessed that it could prepare the signal
-       * to be EXECUTE_DIRECT'ly. Has to move it away for sendSignal()
-       * needing the low 25 signal-words to send the packed buffers.
-       * (Use memmove as src & dest may overlap)
-       */
-      memmove(&signal->theData[25], dataBuf, lenOfData * sizeof(Uint32));
-      dataBuf = &signal->theData[25];
-    }
 
     // Send already buffered TRANSID_AI(s) preceding this TRANSID_AI
     const BlockReference TBref = numberToRef(API_PACKED, nodeId);
@@ -198,7 +210,9 @@ void Dbtup::sendAPI_TRANSID_AI(Signal *signal, Uint32 recBlockRef,
     transIdAI->transId[0] = sig1;
     transIdAI->transId[1] = sig2;
   }
-
+#ifdef DEBUG_TRANSID_AI
+  print_checksum(dataBuf, recBlockRef, lenOfData, __LINE__);
+#endif
   if (lenOfData <= TransIdAI::DataLength) {
     /**
      * Short signal, buffer it, or send directly
@@ -227,13 +241,14 @@ void Dbtup::sendAPI_TRANSID_AI(Signal *signal, Uint32 recBlockRef,
     {
       jamDebug();
       ndbassert(buffer->packetLenTA == 0);
-      if (dataBuf != &signal->theData[TransIdAI::HeaderLength]) {
-        MEMCOPY_NO_WORDS(&signal->theData[TransIdAI::HeaderLength], dataBuf,
-                         lenOfData);
-      }
+      MEMCOPY_NO_WORDS(&signal->theData[TransIdAI::HeaderLength], dataBuf,
+                       lenOfData);
+      DEB_TRANSID_AI(("(%u) Send API AI Short0: len: %u, ref: 0x%x, map: %u",
+        instance(), lenOfData, recBlockRef, signal->theData[0]));
       sendSignal(recBlockRef, GSN_TRANSID_AI, signal,
                  TransIdAI::HeaderLength + lenOfData, JBB);
     }
+    return;
   } else {
     jamDebug();
     /**
@@ -242,8 +257,28 @@ void Dbtup::sendAPI_TRANSID_AI(Signal *signal, Uint32 recBlockRef,
     LinearSectionPtr ptr[3];
     ptr[0].p = const_cast<Uint32 *>(dataBuf);
     ptr[0].sz = lenOfData;
-    sendSignal(recBlockRef, GSN_TRANSID_AI, signal, TransIdAI::HeaderLength,
-               JBB, ptr, 1);
+    if (likely(lenOfData <= MAX_TRANSID_AI_SIZE)) {
+      DEB_TRANSID_AI(("(%u) Send API AI Short1: len: %u, ref: 0x%x, map: %u",
+        instance(), lenOfData, recBlockRef, signal->theData[0]));
+      sendSignal(recBlockRef, GSN_TRANSID_AI, signal, TransIdAI::HeaderLength,
+                 JBB, ptr, 1);
+    } else {
+      jam();
+      DEB_TRANSID_AI(("(%u) Send API AI Long: len: %u, ref: 0x%x",
+        instance(), lenOfData, recBlockRef));
+      TransIdAILong *transIdAILong = (TransIdAILong *)signal->getDataPtrSend();
+      Uint32 sig_len = TransIdAILong::HeaderLength;
+      if (req_struct->m_use_corr_factor) {
+        jam();
+        sig_len = TransIdAILong::HeaderWithCorrelationLength;
+        std::memcpy(&transIdAILong->correlationData[0],
+                    &dataBuf[lenOfData - 3],
+                    3 * 4);
+      }
+      transIdAILong->totalLen = lenOfData;
+      sendBatchedFragmentedSignal(recBlockRef, GSN_TRANSID_AI, signal,
+                 sig_len, JBB, ptr, 1);
+    }
   }
 }
 
@@ -261,6 +296,7 @@ void Dbtup::sendReadAttrinfo(Signal *signal, KeyReqStruct *req_struct,
   bool connectedToNode = getNodeInfo(nodeId).m_connected;
   const Uint32 type = getNodeInfo(nodeId).m_type;
   const bool is_api = (type >= NodeInfo::API && type <= NodeInfo::MGM);
+
 
   if (ERROR_INSERTED(4006) && (nodeId != getOwnNodeId())) {
     // Use error insert to turn routing on
@@ -302,6 +338,9 @@ void Dbtup::sendReadAttrinfo(Signal *signal, KeyReqStruct *req_struct,
              */
             (nodeId == getOwnNodeId() && connectedToNode));
 
+#ifdef DEBUG_TRANSID_AI
+  print_checksum(&signal->theData[25], recBlockref, ToutBufIndex, __LINE__);
+#endif
   /**
    * If a previous read_pseudo executed a 'FLUSH_AI', we may
    * already have sent a TRANSID_AI signal with the result row
@@ -323,18 +362,14 @@ void Dbtup::sendReadAttrinfo(Signal *signal, KeyReqStruct *req_struct,
     if (nodeId != getOwnNodeId()) {
       jamDebug();
       if (is_api) {
+        DEB_TRANSID_AI(("(%u) sendReadAttrinfo: API AI len: %u, ref: 0x%x",
+          instance(), ToutBufIndex, recBlockref));
         sendAPI_TRANSID_AI(signal, recBlockref, &signal->theData[25],
-                           ToutBufIndex);
+                           ToutBufIndex, req_struct);
+        return;
       }
-
-      /**
-       * Send long signal if 'long' data.
-       * Note that older versions of SPJ can *only* handle long signals
-       */
-      else if (ToutBufIndex > TransIdAI::DataLength ||
-               (refToMain(recBlockref) == DBSPJ &&
-                !ndbd_spj_support_short_TRANSID_AI(
-                    getNodeInfo(nodeId).m_version))) {
+      /* Send long signal if 'long' data. */
+      if (ToutBufIndex > TransIdAI::DataLength) {
         jam();
         /**
          * Receiver block doesn't support packed 'short' signals.
@@ -342,8 +377,19 @@ void Dbtup::sendReadAttrinfo(Signal *signal, KeyReqStruct *req_struct,
         LinearSectionPtr ptr[3];
         ptr[0].p = &signal->theData[25];
         ptr[0].sz = ToutBufIndex;
-        sendSignal(recBlockref, GSN_TRANSID_AI, signal, TransIdAI::HeaderLength,
-                   JBB, ptr, 1);
+        DEB_TRANSID_AI(("(%u) sendReadAttrinfo: DN AI len: %u, ref: 0x%x",
+          instance(), ToutBufIndex, recBlockref));
+        if (ToutBufIndex <= MAX_TRANSID_AI_SIZE) {
+          jamDebug();
+          sendSignal(recBlockref, GSN_TRANSID_AI, signal,
+                     TransIdAI::HeaderLength, JBB, ptr, 1);
+        } else {
+          jam();
+          jamDataDebug(ToutBufIndex);
+          sendBatchedFragmentedSignal(recBlockref, GSN_TRANSID_AI, signal,
+            TransIdAI::HeaderLength, JBB, ptr, 1);
+        }
+        return;
       } else {
         jam();
         ndbassert(ToutBufIndex <= TransIdAI::DataLength);
@@ -373,6 +419,9 @@ void Dbtup::sendReadAttrinfo(Signal *signal, KeyReqStruct *req_struct,
         (blockNumber == getBACKUP() ||
          blockNumber == getDBLQH()))
     {
+      memmove(&signal->theData[TransIdAI::HeaderLength],
+              &signal->theData[25],
+              ToutBufIndex * sizeof(Uint32));
       static_assert(MAX_TUPLE_SIZE_IN_WORDS + MAX_ATTRIBUTES_IN_TABLE <=
                     NDB_ARRAY_SIZE(signal->theData) - TransIdAI::HeaderLength);
       ndbrequire(TransIdAI::HeaderLength + ToutBufIndex <=
@@ -380,20 +429,26 @@ void Dbtup::sendReadAttrinfo(Signal *signal, KeyReqStruct *req_struct,
       EXECUTE_DIRECT(blockNumber, GSN_TRANSID_AI, signal,
                      TransIdAI::HeaderLength + ToutBufIndex);
       jamEntryDebug();
+      return;
     } else if (ToutBufIndex <= TransIdAI::DataLength) {
       /**
        * Data is 'short', send short signal
        */
       jam();
+      MEMCOPY_NO_WORDS(&signal->theData[TransIdAI::HeaderLength],
+                       &signal->theData[25], ToutBufIndex);
       const JobBufferLevel prioLevel = req_struct->m_prio_a_flag ? JBA : JBB;
       sendSignal(recBlockref, GSN_TRANSID_AI, signal,
                  TransIdAI::HeaderLength + ToutBufIndex, prioLevel);
+      return;
     } else {
       jam();
       LinearSectionPtr ptr[3];
-      ptr[0].p = &signal->theData[TransIdAI::HeaderLength];
+      ptr[0].p = &signal->theData[25];
       ptr[0].sz = ToutBufIndex;
-      if (ERROR_INSERTED(4038) && refToMain(recBlockref) != BACKUP) {
+      if (ERROR_INSERTED(4038) &&
+          refToMain(recBlockref) != BACKUP &&
+          ptr[0].sz <= 7500) {
         /* Copy data to Seg-section for delayed send */
         jam();
         Uint32 sectionIVal = RNIL;
@@ -402,6 +457,7 @@ void Dbtup::sendReadAttrinfo(Signal *signal, KeyReqStruct *req_struct,
 
         sendSignalWithDelay(recBlockref, GSN_TRANSID_AI, signal, 10,
                             TransIdAI::HeaderLength, &sh);
+        return;
       } else {
         /**
          * We are sending to the same node, it is important that we maintain
@@ -425,13 +481,42 @@ void Dbtup::sendReadAttrinfo(Signal *signal, KeyReqStruct *req_struct,
           jam();
           prioLevel = JBA;
         }
-        sendSignal(recBlockref,
-                   GSN_TRANSID_AI,
-                   signal,
-                   TransIdAI::HeaderLength,
-                   prioLevel,
-                   ptr,
-                   1);
+        /**
+         * Since we are sending within the same data node we need not
+         * communicate the totalLen in the signal, the receiver will
+         * figure it out in assembleFragments.
+         *
+         * Also setting it here would overwrite the data sent and thus
+         * corrupt the signal.
+         */
+#ifdef DEBUG_TRANSID_AI
+        /* Data node expects CORR_FACTOR32, 2 words */
+        DEB_TRANSID_AI(("(%u) sendReadAttrinfo: Same DN AI len: %u, ref: 0x%x",
+          instance(), ToutBufIndex, recBlockref));
+        if (req_struct->m_use_corr_factor) {
+          ndbrequire(req_struct->m_use_corr_factor == 1);
+          Uint32 len = ToutBufIndex;
+          const Uint32 *dataPtr = ptr[0].p;
+          DEB_TRANSID_AI(("(%u) CorrelationData: 0x%x,0x%x",
+            instance(), dataPtr[len - 2], dataPtr[len - 1]));
+        }
+#endif
+        if (ToutBufIndex <= MAX_TRANSID_AI_SIZE) {
+          jamDebug();
+          sendSignal(recBlockref, GSN_TRANSID_AI, signal,
+            TransIdAI::HeaderLength, prioLevel, ptr, 1);
+        } else {
+          jamDebug();
+          /**
+           * Batched signals overwrite part of the signal object to send
+           * segment information, thus we have to copy the data away from
+           * this area.
+           */
+          sendBatchedFragmentedSignal(
+            recBlockref, GSN_TRANSID_AI, signal,
+            TransIdAI::HeaderLength, prioLevel, ptr, 1);
+        }
+        return;
       }
     }
     return;
@@ -453,12 +538,36 @@ void Dbtup::sendReadAttrinfo(Signal *signal, KeyReqStruct *req_struct,
   }
   // Only TC can handle TRANSID_AI_R signals.
   ndbrequire(refToMain(routeBlockref) == DBTC);
-  transIdAI->attrData[0] = recBlockref;
   LinearSectionPtr ptr[3];
   ptr[0].p = &signal->theData[25];
   ptr[0].sz = ToutBufIndex;
-  sendSignal(routeBlockref, GSN_TRANSID_AI_R, signal,
-             TransIdAI::HeaderLength + 1, JBB, ptr, 1);
+  DEB_TRANSID_AI(("(%u) sendReadAttrinfo: AI_R len: %u, ref: 0x%x, map: %u",
+    instance(), ToutBufIndex, recBlockref, signal->theData[0]));
+  if (ToutBufIndex <= MAX_TRANSID_AI_SIZE) {
+    jam();
+    transIdAI->attrData[0] = recBlockref;
+    sendSignal(routeBlockref, GSN_TRANSID_AI_R, signal,
+               TransIdAI::HeaderLength + 1, JBB, ptr, 1);
+  } else {
+    jam();
+    Uint32 sig_len;
+    TransIdAILong *const transIdAILong = (TransIdAILong *)signal->getDataPtr();
+    if (req_struct->m_use_corr_factor) {
+      const Uint32 *dataPtr = ptr[0].p;
+      const Uint32 len_corr = req_struct->m_use_corr_factor + 1;
+      sig_len = TransIdAILong::HeaderWithCorrelationLength + 1;
+      std::memcpy(&transIdAILong->correlationData[0],
+                  &dataPtr[ToutBufIndex - len_corr],
+                  len_corr * 4);
+      transIdAILong->attrData[0] = recBlockref;
+    } else {
+      sig_len = TransIdAILong::HeaderLength + 1;
+      transIdAILong->correlationData[0] = recBlockref;
+    }
+    transIdAILong->totalLen = ToutBufIndex;
+    sendBatchedFragmentedSignal(routeBlockref, GSN_TRANSID_AI_R, signal,
+      sig_len, JBB, ptr, 1);
+  }
 }
 
 void Dbtup::SendAggResToAPI(Signal* signal, const void* lqhTcConnectrec,

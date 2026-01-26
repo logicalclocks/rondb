@@ -65,7 +65,7 @@ extern EventLogger * g_eventLogger;
 //#define DEBUG_TUP_META 1
 //#define DEBUG_TUP_META_EXTRA 1
 //#define DEBUG_DROP_TAB 1
-//#define DEBUG_DYN_META 1
+#define DEBUG_DYN_META 1
 //#define DEBUG_HASH 1
 //#define DEBUG_ROW_SIZE 1
 #endif
@@ -350,6 +350,9 @@ void Dbtup::execTUP_ADD_ATTRREQ(Signal *signal) {
     } else {
       jam();
       regTabPtr.p->m_attributes[ind].m_no_of_varsize++;
+      DEB_DYN_META(("(%u) attrId: %u, no_of_varsize[%u]: %u",
+        instance(), attrId, ind,
+        regTabPtr.p->m_attributes[ind].m_no_of_varsize));
     }
     if (null_pos > AO_NULL_FLAG_POS_MASK) {
       jam();
@@ -357,6 +360,8 @@ void Dbtup::execTUP_ADD_ATTRREQ(Signal *signal) {
       goto error;
     }
     AttributeOffset::setNullFlagPos(attrDes2, null_pos);
+    DEB_DYN_META(("(%u) Null position of attrId: %u is %u",
+      instance(), attrId, null_pos));
   } else {
     jam();
     DEB_DYN_META(("(%u) tab(%u) attrId %u is dynamic %s column",
@@ -453,9 +458,14 @@ void Dbtup::execTUP_ADD_ATTRREQ(Signal *signal) {
                regTabPtr.p->m_attributes[ind].m_no_of_dyn_fix) <=
               regTabPtr.p->m_attributes[ind].m_no_of_dynamic);
   }
-  handleCharsetPos(csNumber, regTabPtr.p->charsetArray,
-                   regTabPtr.p->noOfCharsets,
-                   fragOperPtr.p->charsetIndex, attrDes2);
+  if (!handleCharsetPos(csNumber,
+                       regTabPtr.p->charsetArray,
+                       regTabPtr.p->noOfCharsets,
+                       fragOperPtr.p->charsetIndex,
+                       attrDes2)) {
+    terrorCode = CreateTableRef::InvalidFormat;
+    goto error;
+  }
   regTabPtr.p->tabDescriptor[(attrId * ZAD_SIZE) + 1] = attrDes2;
 
   if ((ERROR_INSERTED(4009) && attrId == 0) ||
@@ -873,8 +883,8 @@ void Dbtup::execTUPFRAGREQ(Signal *signal) {
   regFragPtr.p->m_tablespace_id = tablespace_id;
   regFragPtr.p->m_undo_complete = 0;
   regFragPtr.p->m_lcp_scan_op = RNIL;
-  regFragPtr.p->m_lcp_keep_list_head.setNull();
-  regFragPtr.p->m_lcp_keep_list_tail.setNull();
+  regFragPtr.p->m_lcp_keep_list_head = nullptr;
+  regFragPtr.p->m_lcp_keep_list_tail = nullptr;
   regFragPtr.p->noOfPages = 0;
   regFragPtr.p->noOfVarPages = 0;
   regFragPtr.p->m_varWordsFree = 0;
@@ -1375,8 +1385,17 @@ Dbtup::handleAlterTablePrepare(Signal *signal,
       /* Only dynamic attributes possible for add attr */
       ndbrequire(AttributeDescriptor::getDynamic(attrDescriptor));
 
-      handleCharsetPos(csNumber, CharsetArray, newNoOfCharsets, charsetIndex,
-                       attrDes2);
+      if (!handleCharsetPos(csNumber,
+                            CharsetArray,
+                            newNoOfCharsets,
+                            charsetIndex,
+                            attrDes2)) {
+        jam();
+        terrorCode = CreateTableRef::InvalidFormat;
+        releaseAlterTabOpRec(regAlterTabOpPtr);
+        sendAlterTabRef(signal, terrorCode);
+        return;
+      }
 
       Uint32 null_pos = dyn_nullbits[ind];
       Uint32 arrType= AttributeDescriptor::getArrayType(attrDescriptor);
@@ -1549,7 +1568,9 @@ void Dbtup::handleAlterTableCommit(Signal *signal, const AlterTabReq *req,
     DEB_DYN_META(("(%u) tab(%u) computeTableMetaData: ALTER",
                   instance(),
                   tabPtr.i));
-    computeTableMetaData(tabPtr, __LINE__);
+    terrorCode = computeTableMetaData(tabPtr, __LINE__);
+    if (terrorCode != 0) {
+    }
   }
 
   if (AlterTableReq::getReorgFragFlag(req->changeMask)) {
@@ -1684,8 +1705,10 @@ void Dbtup::handleAlterTableAbort(Signal *signal, const AlterTabReq *req,
   If needed, attrDes2 will be updated with the correct charsetPos and
   charsetIndex will be updated to point to next free charsetPos slot.
 */
-void Dbtup::handleCharsetPos(Uint32 csNumber, const CHARSET_INFO **charsetArray,
-                             Uint32 noOfCharsets, Uint32 &charsetIndex,
+bool Dbtup::handleCharsetPos(Uint32 csNumber,
+                             const CHARSET_INFO **charsetArray,
+                             Uint32 noOfCharsets,
+                             Uint32 &charsetIndex,
                              Uint32 &attrDes2) {
   if (csNumber != 0) {
     const CHARSET_INFO *cs = all_charsets[csNumber];
@@ -1703,7 +1726,10 @@ void Dbtup::handleCharsetPos(Uint32 csNumber, const CHARSET_INFO **charsetArray,
       charsetIndex++;
     }
     AttributeOffset::setCharsetPos(attrDes2, i);
+  } else {
+    AttributeOffset::setNoCharsetPos(attrDes2);
   }
+  return true;
 }
 
 bool Dbtup::is_disk_columns_in_table(Uint32 tableId) {
@@ -1871,6 +1897,8 @@ Uint32 Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line) {
           off = fix_size[ind] + pos[ind];
           fix_size[ind]+= size_in_words;
           jamDataDebug(off);
+          DEB_DYN_META(("(%u) tab(%u), attrId: %u, fix_size[%u]: %u, off: %u",
+            instance(), tabPtr.i, i, ind, fix_size[ind], off));
         }
         else
         {
@@ -1883,14 +1911,17 @@ Uint32 Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line) {
         }
       } else {
         jam();
-        DEB_DYN_META(("(%u) tab(%u), attrId: %u, Variable sized",
-                      instance(),
-                      tabPtr.i,
-                      i));
         /* Static varsize. */
         off = statvar_count[ind]++;
         var_size[ind]+= size_in_bytes;
         jamDataDebug(off);
+        DEB_DYN_META(("(%u) tab(%u), attrId: %u, varsize[%u]: %u, off: %u",
+                      instance(),
+                      tabPtr.i,
+                      i,
+                      ind,
+                      var_size[ind],
+                      off));
       }
     } else {
       jam();
@@ -1909,10 +1940,6 @@ Uint32 Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line) {
         // regTabPtr->blobAttributeMask.set(i);
         // ToDo: I wonder what else is needed to handle BLOB/TEXT, if anything?
 
-        DEB_DYN_META(("(%u) tab(%u), attrId: %u, Fixed size",
-                      instance(),
-                      tabPtr.i,
-                      i));
         if (attrLen!=0)
         {
           jam();
@@ -1926,6 +1953,11 @@ Uint32 Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line) {
             BitmaskImpl::set(dyn_null_words[ind],
                              regTabPtr->dynFixSizeMask[ind], null_pos++);
           }
+           DEB_DYN_META(("(%u) tab(%u), attrId: %u, Fixed size, off: %u",
+                         instance(),
+                         tabPtr.i,
+                         i,
+                         off));
         } else {
           jam();
           ndbrequire(ind == MM);
@@ -1940,15 +1972,16 @@ Uint32 Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line) {
       } else {
       treat_as_varsize:
         jam();
-        DEB_DYN_META(("(%u) tab(%u), attrId: %u, Variable size",
-                      instance(),
-                      tabPtr.i,
-                      i));
         off = dynvar_count[ind]++;
         jamDataDebug(off);
         BitmaskImpl::set(dyn_null_words[ind],
                          regTabPtr->dynVarSizeMask[ind],
                          null_pos);
+        DEB_DYN_META(("(%u) tab(%u), attrId: %u, Variable size, off: %u",
+                      instance(),
+                      tabPtr.i,
+                      i,
+                      off));
       }
     }
     if (off > AttributeOffset::getMaxOffset()) {
@@ -1972,14 +2005,20 @@ Uint32 Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line) {
   regTabPtr->m_offsets[MM].m_fix_header_size= 
     Tuple_header::HeaderSize + fix_size[MM] + pos[MM];
 
-  DEB_ROW_SIZE(("(%u) tab(%u) HeaderSize: %u, fix_size: %u, pos: %u,"
-                " fix_header_size: %u",
+  DEB_ROW_SIZE(("(%u) tab(%u) HeaderSize: %u, fix_size:[%u,%u], pos: [%u,%u]"
+                " fix_header_size: %u, varsize: [%u,%u], dyn_size: [%u,%u]",
                 instance(),
                 tabPtr.i,
                 Tuple_header::HeaderSize,
                 fix_size[MM],
+                fix_size[DD],
                 pos[MM],
-                regTabPtr->m_offsets[MM].m_fix_header_size));
+                pos[DD],
+                regTabPtr->m_offsets[MM].m_fix_header_size,
+                var_size[MM],
+                var_size[DD],
+                dyn_size[MM],
+                dyn_size[DD]));
 
   regTabPtr->m_offsets[DD].m_fix_header_size= 
     fix_size[DD] + pos[DD];
@@ -2013,14 +2052,25 @@ Uint32 Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line) {
       (regTabPtr->m_offsets[DD].m_dyn_null_words << 2) +
       4 * ((dd_dyns + 2) >> 1) + dyn_size[DD];
 
+  DEB_DYN_META(("(%u) max_var_offset: [%u,%u], max_dyn_offset: [%u,%u]",
+    instance(),
+    regTabPtr->m_offsets[MM].m_max_var_offset,
+    regTabPtr->m_offsets[DD].m_max_var_offset,
+    regTabPtr->m_offsets[MM].m_max_dyn_offset,
+    regTabPtr->m_offsets[DD].m_max_dyn_offset));
+
   /* Room for data for all the attributes. */
-  Uint32 total_rec_size[2];
-  total_rec_size[MM] =
-    pos[MM] + fix_size[MM] +
+  Uint32 tot_var_size = 
     ((var_size[MM] + 3) >> 2) + ((dyn_size[MM] + 3) >> 2);
+  Uint32 total_rec_size[2];
+  total_rec_size[MM] = tot_var_size +
+    pos[MM] + fix_size[MM];
   total_rec_size[DD] =
     pos[DD] + fix_size[DD] +
     ((var_size[DD] + 3) >> 2) + ((dyn_size[DD] + 3) >> 2);
+
+  DEB_DYN_META(("(%u) total_disk_size: %u, line: %u",
+    instance(), total_rec_size[DD], __LINE__));
   /*
     Room for offset arrays and dynamic bitmaps. There is one extra 16-bit
     offset in each offset array (for easy computation of final length).
@@ -2029,10 +2079,13 @@ Uint32 Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line) {
   if (mm_vars + regTabPtr->m_attributes[MM].m_no_of_dynamic)
   {
     jam();
-    total_rec_size[MM] += (mm_vars + 2) >> 1;
-    total_rec_size[MM] += regTabPtr->m_offsets[MM].m_dyn_null_words;
-    total_rec_size[MM] += (mm_dyns + 2) >> 1;
-    total_rec_size[MM] += 1;
+    Uint32 mm_dyn_extra = (mm_vars + 2) >> 1;
+    mm_dyn_extra += regTabPtr->m_offsets[MM].m_dyn_null_words;
+    mm_dyn_extra += (mm_dyns + 2) >> 1;
+    tot_var_size += mm_dyn_extra;
+    mm_dyn_extra += 1;
+    total_rec_size[MM] += mm_dyn_extra;
+    tot_var_size += Tuple_header::HeaderSize;
   }
   if (dd_vars + regTabPtr->m_attributes[DD].m_no_of_dynamic)
   {
@@ -2041,26 +2094,58 @@ Uint32 Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line) {
     total_rec_size[DD] += regTabPtr->m_offsets[DD].m_dyn_null_words;
     total_rec_size[DD] += (dd_dyns + 2) >> 1;
   }
+  Uint32 total_disk_size = total_rec_size[DD];
+
+  DEB_DYN_META(("(%u) total_disk_size: %u, line: %u",
+    instance(), total_disk_size, __LINE__));
+
   /* Room for the header. */
-  total_rec_size[MM] += Tuple_header::HeaderSize;
   if (regTabPtr->m_no_of_disk_attributes)
   {
     total_rec_size[DD] += Tuple_header::HeaderSize;
+    total_disk_size += Tuple_header::HeaderSize;
     total_rec_size[DD] += 1;
   }
+  DEB_DYN_META(("(%u) total_disk_size: %u, line: %u",
+    instance(), total_disk_size, __LINE__));
+
+  total_rec_size[MM] += Tuple_header::HeaderSize;
 
   /* Room for changemask */
   total_rec_size[MM] += 1 + ((regTabPtr->m_no_of_attributes + 31) >> 5);
 
   total_rec_size[MM] += COPY_TUPLE_HEADER32;
 
-  regTabPtr->total_rec_size= total_rec_size[MM] + total_rec_size[DD];
+  DEB_DYN_META(("(%u) total_rec_size[%u,%u]",
+    instance(), total_rec_size[MM] * 4, total_rec_size[DD] * 4));
+
+  regTabPtr->total_rec_size = total_rec_size[MM] + total_rec_size[DD];
 
   DEB_TUP_META(("(%u) tab(%u) New total_rec_size set to %u",
                 instance(),
                 tabPtr.i,
                 regTabPtr->total_rec_size));
 
+  if (regTabPtr->m_offsets[MM].m_fix_header_size > MAX_FIXED_SIZE_IN_WORDS) {
+    jam();
+    jamDataDebug(regTabPtr->m_offsets[MM].m_fix_header_size);
+    DEB_DYN_META(("(%u)fix_size = %u",
+      instance(), regTabPtr->m_offsets[MM].m_fix_header_size));
+    return ZTOO_LARGE_FIXED_SIZE_PART;
+  }
+  if (tot_var_size > MAX_VAR_SIZE_IN_WORDS) {
+    jam();
+    jamDataDebug(tot_var_size);
+    DEB_DYN_META(("(%u)tot_var_size = %u", instance(), tot_var_size));
+    return ZTOO_LARGE_VAR_SIZE_PART;
+  }
+  if (total_disk_size > MAX_DISK_VAR_SIZE_IN_WORDS) {
+    jam();
+    jamDataDebug(total_rec_size[DD]);
+    DEB_DYN_META(("(%u)tot_disk_size = %u",
+      instance(), total_disk_size));
+    return ZTOO_LARGE_DISK_VAR_SIZE_PART;
+  }
   setUpQueryRoutines(regTabPtr);
   setUpKeyArray(regTabPtr);
   return 0;

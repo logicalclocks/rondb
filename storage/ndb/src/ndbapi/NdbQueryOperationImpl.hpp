@@ -32,6 +32,7 @@
 #include "NdbIndexScanOperation.hpp"
 #include "NdbQueryBuilderImpl.hpp"
 #include "NdbQueryOperation.hpp"
+#include "NdbApiSignal.hpp"
 
 // Forward declarations
 class NdbTableImpl;
@@ -656,6 +657,10 @@ class NdbQueryOperationImpl {
 
   /** Process result data for this operation. Return true if batch complete.*/
   bool execTRANSID_AI(const Uint32 *ptr, Uint32 len);
+  bool execTRANSID_AI(const Uint32 *ptr,
+                      Uint32 len,
+                      const NdbApiSignal *aSignal,
+                      Uint32 totalLen);
 
   /** Process absence of result data for this operation. (Only used when the
    * root operation is a lookup.)

@@ -53,7 +53,14 @@
 // #define DEBUG_LCP_DELAY 1
 // #define DEBUG_LCP_SKIP 1
 // #define DEBUG_LCP_DEL 1
-#define LCP_EXTRA_DEBUG 1
+// #define LCP_EXTRA_DEBUG 1
+// #define DEBUG_COPY_TUPLE 1
+#endif
+
+#ifdef DEBUG_COPY_TUPLE
+#define DEB_COPY_TUPLE(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_COPY_TUPLE(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_LCP_DELAY
@@ -502,7 +509,7 @@ void Dbtup::execACC_CHECK_SCAN(Signal *signal) {
   const bool lcp = (scan.m_bits & ScanOp::SCAN_LCP);
 
   if (scan.m_state == ScanOp::First) {
-    if (lcp && !fragPtr.p->m_lcp_keep_list_head.isNull()) {
+    if (lcp && fragPtr.p->m_lcp_keep_list_head != nullptr) {
       jam();
       /**
        * Handle lcp keep list already here
@@ -1847,7 +1854,7 @@ bool Dbtup::scanNext(Signal *signal, ScanOpPtr scanPtr) {
                           : 1;
   const Uint32 first = ((bits & ScanOp::SCAN_VS) == 0) ? 0 : 1;
 
-  if (lcp && !fragPtr.p->m_lcp_keep_list_head.isNull()) {
+  if (lcp && fragPtr.p->m_lcp_keep_list_head != nullptr) {
     jam();
     /**
      * Handle lcp keep list here too, due to scanCont
@@ -2843,16 +2850,16 @@ void Dbtup::handle_lcp_keep(Signal *signal, FragrecordPtr fragPtr,
   tablePtr.i = scanPtrP->m_tableId;
   ptrCheckGuard(tablePtr, cnoOfTablerec, tablerec);
 
-  ndbrequire(!fragPtr.p->m_lcp_keep_list_head.isNull());
-  Local_key tmp = fragPtr.p->m_lcp_keep_list_head;
-  Uint32 *copytuple = get_copy_tuple_raw(&tmp);
+  ndbrequire(fragPtr.p->m_lcp_keep_list_head != nullptr);
+  Uint32 *copytuple = fragPtr.p->m_lcp_keep_list_head;
   if (copytuple[0] == FREE_PAGE_RNIL) {
     jam();
     ndbrequire(c_backup->is_partial_lcp_enabled());
     /* Handle DELETE by ROWID or DELETE by PAGEID */
     Uint32 num_entries = copytuple[4];
     Uint32 page_id = copytuple[5];
-    Uint16 *page_index_array = (Uint16 *)&copytuple[6];
+    Uint32 page_ptr_i_to_free = copytuple[6];
+    Uint16 *page_index_array = (Uint16 *)&copytuple[7];
     c_backup->change_current_page_temp(page_id);
     if (page_index_array[0] == ZNIL) {
       jam();
@@ -2865,12 +2872,14 @@ void Dbtup::handle_lcp_keep(Signal *signal, FragrecordPtr fragPtr,
       DEB_LCP_KEEP(("(%u)tab(%u,%u) page(%u): Handle LCP keep DELETE by PAGEID",
                     instance(), fragPtr.p->fragTableId, fragPtr.p->fragmentId,
                     page_id));
-      remove_top_from_lcp_keep_list(fragPtr.p, copytuple, tmp);
+      remove_top_from_lcp_keep_list(fragPtr.p, copytuple);
       c_backup->lcp_keep_delete_by_page_id();
       record_delete_by_pageid(signal, fragPtr.p->fragTableId,
                               fragPtr.p->fragmentId, *scanPtrP, page_id, size,
                               false);
-      c_undo_buffer.free_copy_tuple(&tmp);
+      m_ctx.m_mm.lock();
+      m_ctx.m_mm.release_page(RT_DBTUP_PAGE, page_ptr_i_to_free, true);
+      m_ctx.m_mm.unlock();
     } else {
       jam();
       /* DELETE by ROWID */
@@ -2889,13 +2898,15 @@ void Dbtup::handle_lcp_keep(Signal *signal, FragrecordPtr fragPtr,
            key.m_page_no, key.m_page_idx));
       if (num_entries == 0) {
         jam();
-        remove_top_from_lcp_keep_list(fragPtr.p, copytuple, tmp);
+        remove_top_from_lcp_keep_list(fragPtr.p, copytuple);
       }
       record_delete_by_rowid(signal, fragPtr.p->fragTableId,
                              fragPtr.p->fragmentId, *scanPtrP, key, 0, false);
       if (num_entries == 0) {
         jam();
-        c_undo_buffer.free_copy_tuple(&tmp);
+        m_ctx.m_mm.lock();
+        m_ctx.m_mm.release_page(RT_DBTUP_PAGE, page_ptr_i_to_free, true);
+        m_ctx.m_mm.unlock();
       }
     }
   } else {
@@ -2905,16 +2916,21 @@ void Dbtup::handle_lcp_keep(Signal *signal, FragrecordPtr fragPtr,
      * current page temporarily. This can be found in copytuple[0]
      * where handle_lcp_keep_commit puts it.
      */
+    Local_key tmp;
     c_backup->change_current_page_temp(copytuple[0]);
     c_backup->lcp_keep_row();
-    remove_top_from_lcp_keep_list(fragPtr.p, copytuple, tmp);
+    memcpy(&tmp, &copytuple[0], sizeof(Local_key));
+#ifdef DEBUG_LCP_KEEP
+    Uint32 *nextptr;
+    memcpy(&nextptr, &copytuple[2], sizeof(void*));
     DEB_LCP_KEEP(
-        ("(%u)tab(%u,%u) row(%u,%u) page(%u,%u): Handle LCP keep"
-         " insert entry",
+        ("(%u)tab(%u,%u) row(%u,%u) copytuple: 0x%p Handle LCP keep"
+         " insert entry, next: 0x%p",
          instance(), fragPtr.p->fragTableId, fragPtr.p->fragmentId,
-         copytuple[0], copytuple[1], tmp.m_page_no, tmp.m_page_idx));
-    Local_key save = tmp;
-    setCopyTuple(tmp.m_page_no, tmp.m_page_idx);
+         tmp.m_page_no, tmp.m_page_idx, copytuple, nextptr));
+#endif
+    remove_top_from_lcp_keep_list(fragPtr.p, copytuple);
+    m_copy_tuple_used = copytuple;
     prepare_scanTUPKEYREQ(tmp.m_page_no, tmp.m_page_idx);
     NextScanConf *const conf = (NextScanConf *)signal->getDataPtrSend();
     conf->scanPtr = scanPtrP->m_userPtr;
@@ -2924,35 +2940,37 @@ void Dbtup::handle_lcp_keep(Signal *signal, FragrecordPtr fragPtr,
     conf->localKey[1] = tmp.m_page_idx;
     signal->setLength(NextScanConf::SignalLengthNoGCI);
     c_lqh->exec_next_scan_conf(signal);
-    c_undo_buffer.free_copy_tuple(&save);
+    jam();
+    ndbrequire(m_copy_tuple_used == nullptr);
+
+    DEB_COPY_TUPLE(("(%u), free_copy_tuple: 0x%p, line: %u",
+      instance(), copytuple, __LINE__));
+
+    free_copy_tuple(&copytuple);
     return;
   }
 }
 
 void Dbtup::remove_top_from_lcp_keep_list(Fragrecord *fragPtrP,
-                                          Uint32 *copytuple,
-                                          Local_key tmp) {
-  memcpy(&fragPtrP->m_lcp_keep_list_head, copytuple + 2, sizeof(Local_key));
-
-  if (fragPtrP->m_lcp_keep_list_head.isNull()) {
+                                          Uint32 *copytuple) {
+  memcpy(&fragPtrP->m_lcp_keep_list_head, &copytuple[2], sizeof(void*));
+  ndbassert(fragPtrP->m_lcp_keep_list_head != copytuple);
+  if (fragPtrP->m_lcp_keep_list_head == nullptr) {
     jam();
     DEB_LCP_KEEP(
-        ("(%u) tab(%u,%u) tmp(%u,%u) keep_list(%u,%u):"
+        ("(%u) tab(%u,%u) copy(0x%p), head(0x%p), tail(0x%p:"
          " LCP keep list empty again",
-         instance(), fragPtrP->fragTableId, fragPtrP->fragmentId, tmp.m_page_no,
-         tmp.m_page_idx, fragPtrP->m_lcp_keep_list_tail.m_page_no,
-         fragPtrP->m_lcp_keep_list_tail.m_page_idx));
-    ndbrequire(tmp.m_page_no == fragPtrP->m_lcp_keep_list_tail.m_page_no);
-    ndbrequire(tmp.m_page_idx == fragPtrP->m_lcp_keep_list_tail.m_page_idx);
-    fragPtrP->m_lcp_keep_list_tail.setNull();
+         instance(), fragPtrP->fragTableId, fragPtrP->fragmentId, copytuple,
+         fragPtrP->m_lcp_keep_list_head,
+         fragPtrP->m_lcp_keep_list_tail));
+    ndbrequire(copytuple == fragPtrP->m_lcp_keep_list_tail);
+    fragPtrP->m_lcp_keep_list_tail = nullptr;
   } else {
     jam();
-    DEB_LCP_KEEP(("(%u)tab(%u,%u) move LCP keep head(%u,%u),tail(%u,%u)",
+    DEB_LCP_KEEP(("(%u)tab(%u,%u) move LCP keep head(0x%p),tail(0x%p)",
                   instance(), fragPtrP->fragTableId, fragPtrP->fragmentId,
-                  fragPtrP->m_lcp_keep_list_head.m_page_no,
-                  fragPtrP->m_lcp_keep_list_head.m_page_idx,
-                  fragPtrP->m_lcp_keep_list_tail.m_page_no,
-                  fragPtrP->m_lcp_keep_list_tail.m_page_idx));
+                  fragPtrP->m_lcp_keep_list_head,
+                  fragPtrP->m_lcp_keep_list_tail));
   }
 }
 
@@ -3067,7 +3085,6 @@ void Dbtup::handle_lcp_drop_change_page(Fragrecord *fragPtrP,
                  instance(), fragPtrP->fragTableId, fragPtrP->fragmentId,
                  logicalPageId));
   }
-  Local_key location;
   /**
    * We store the following content into the copy tuple with a set of
    * DELETE by ROWID.
@@ -3090,26 +3107,8 @@ void Dbtup::handle_lcp_drop_change_page(Fragrecord *fragPtrP,
                                                   Int32(-4),
                                                   __LINE__,
                                                   pagePtr.i);
-  m_ctx.m_mm.lock();
-  m_ctx.m_mm.release_page(RT_DBTUP_PAGE, pagePtr.i, true);
-  Uint32 words = 6 + ((found_idx_count + 1) / 2);
-  if (unlikely(c_undo_buffer.alloc_copy_tuple(&location,
-                                              words,
-                                              true) ==
-               nullptr))
-  {
-    char buf[256];
-    BaseString::snprintf(buf, sizeof(buf),
-                         "Global memory manager is out of memory completely,"
-                         " no memory in shared global memory left and no"
-                         " memory in reserved memory either.");
-    progError(__LINE__,
-              NDBD_OUT_OF_MEMORY,
-              buf);
-  }
-  m_ctx.m_mm.unlock();
   update_pages_allocated(-1);
-  Uint32 * copytuple = get_copy_tuple_raw(&location);
+  Uint32 * copytuple = (Uint32*)pagePtr.p;
   Local_key flag_key;
   flag_key.m_page_no = FREE_PAGE_RNIL;
   flag_key.m_page_idx = 0;
@@ -3117,42 +3116,47 @@ void Dbtup::handle_lcp_drop_change_page(Fragrecord *fragPtrP,
 
   copytuple[4] = found_idx_count;
   copytuple[5] = logicalPageId;
-  memcpy(&copytuple[6], &found_idx[0], 2 * found_idx_count);
-  insert_lcp_keep_list(fragPtrP, location, copytuple, &flag_key);
+  copytuple[6] = pagePtr.i;
+  memcpy(&copytuple[7], &found_idx[0], 2 * found_idx_count);
+  insert_lcp_keep_list(fragPtrP, copytuple, &flag_key);
 }
 
-void Dbtup::insert_lcp_keep_list(Fragrecord *fragPtrP, Local_key location,
-                                 Uint32 *copytuple, const Local_key *rowid) {
+void Dbtup::insert_lcp_keep_list(Fragrecord *fragPtrP,
+                                 Uint32 *copytuple,
+                                 const Local_key *rowid) {
   /**
    * Store original row-id in copytuple[0,1]
-   * Store next-ptr in copytuple[2,3] (set to RNIL/RNIL)
+   * Store next-ptr in copytuple[2,3] (set to NULL/NULL)
    */
   assert(sizeof(Local_key) == 8);
-  memcpy(copytuple + 0, rowid, sizeof(Local_key));
-  Local_key nil;
-  nil.setNull();
-  memcpy(copytuple + 2, &nil, sizeof(Local_key));
+  memcpy(&copytuple[0], rowid, sizeof(Local_key));
+  memset(&copytuple[2], 0, sizeof(void*));
   DEB_LCP_KEEP((
       "(%u)tab(%u,%u) Insert LCP keep for row(%u,%u)"
-      " from location page(%u,%u)",
-      instance(), fragPtrP->fragTableId, fragPtrP->fragmentId, rowid->m_page_no,
-      rowid->m_page_idx, location.m_page_no, location.m_page_idx));
-
+      " copy(0x%p), head(0x%p), tail(0x%p)",
+      instance(),
+      fragPtrP->fragTableId,
+      fragPtrP->fragmentId,
+      rowid->m_page_no,
+      rowid->m_page_idx,
+      copytuple,
+      fragPtrP->m_lcp_keep_list_head,
+      fragPtrP->m_lcp_keep_list_tail));
   /**
    * Link in the copy tuple into the LCP keep list.
    */
-  if (fragPtrP->m_lcp_keep_list_tail.isNull()) {
+  if (fragPtrP->m_lcp_keep_list_tail == nullptr) {
     jam();
-    fragPtrP->m_lcp_keep_list_head = location;
+    fragPtrP->m_lcp_keep_list_head = copytuple;
   } else {
     jam();
-    Uint32 *tail = get_copy_tuple_raw(&fragPtrP->m_lcp_keep_list_tail);
-    Local_key nextptr;
-    memcpy(&nextptr, tail + 2, sizeof(Local_key));
-    ndbrequire(nextptr.isNull());
-    memcpy(tail + 2, &location, sizeof(Local_key));
+    Uint32 *tail = fragPtrP->m_lcp_keep_list_tail;
+    Uint32 *nextptr;
+    memcpy(&nextptr, &tail[2], sizeof(void*));
+    ndbrequire(nextptr == nullptr);
+    memcpy(&tail[2], &copytuple, sizeof(void*));
   }
-  fragPtrP->m_lcp_keep_list_tail = location;
+  fragPtrP->m_lcp_keep_list_tail = copytuple;
 }
 
 void Dbtup::scanCont(Signal *signal, ScanOpPtr scanPtr) {
@@ -3356,8 +3360,8 @@ void Dbtup::start_lcp_scan(Uint32 tableId, Uint32 fragId,
   scanPtr.p->m_endPage = frag.m_max_page_cnt;
   max_page_cnt = frag.m_max_page_cnt;
 
-  ndbrequire(frag.m_lcp_keep_list_head.isNull());
-  ndbrequire(frag.m_lcp_keep_list_tail.isNull());
+  ndbrequire(frag.m_lcp_keep_list_head == nullptr);
+  ndbrequire(frag.m_lcp_keep_list_tail == nullptr);
 }
 
 void

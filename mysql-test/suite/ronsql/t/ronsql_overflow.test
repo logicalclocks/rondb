@@ -92,5 +92,120 @@ GROUP BY sint8;
 EOF
 --source suite/ronsql/include/ronsql_compare.inc
 
+--echo Compare MySQL and RonSQL using a query that creates a fairly deep stack
+--echo using 100 unary minuses and 100 NOTs.
+--write_file $QUERY_FILE
+SELECT sum(sint8)
+FROM tbl
+WHERE
+  sint8 > ----------------------------------------------------------------------------------------------------1 AND
+  NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT
+  NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT
+  NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT
+  NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT
+  NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT
+  sint8>0;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo Test the maximum stack depth for unary minus and NOT that RonSQL can
+--echo handle.
+--write_file $QUERY_FILE
+SELECT sum(sint8)
+FROM tbl
+WHERE
+  sint8 >
+EOF
+# Add 99*100+87=9987 minus signs to the query file.
+let $1= 99;
+while ($1)
+{
+--append_file $QUERY_FILE
+  ----------------------------------------------------------------------------------------------------
+EOF
+dec $1;
+}
+--append_file $QUERY_FILE
+  ---------------------------------------------------------------------------------------1
+  AND
+EOF
+# Add 499*20+7=9987 NOT keywords to the query file.
+let $1= 499;
+while ($1)
+{
+--append_file $QUERY_FILE
+  NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT
+EOF
+dec $1;
+}
+--append_file $QUERY_FILE
+  NOT NOT NOT NOT NOT NOT NOT sint8>0;
+EOF
+# Test ronsql_cli
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test < '$QUERY_FILE' 2>&1
+# Test rdrs2
+--exec printf '{"query":"' > $MYSQL_TMP_DIR/ronsql-rdrs-body-1
+--exec perl -pe 's/\n/\\n/g;' $QUERY_FILE > $MYSQL_TMP_DIR/ronsql-rdrs-body-2
+--exec printf '","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/ronsql-rdrs-body-3
+--exec cat $MYSQL_TMP_DIR/ronsql-rdrs-body-1 $MYSQL_TMP_DIR/ronsql-rdrs-body-2 $MYSQL_TMP_DIR/ronsql-rdrs-body-3 > $MYSQL_TMP_DIR/ronsql-rdrs-body
+--exec curl --fail-with-body -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/ronsql-rdrs-body 2>/dev/null
+--remove_file $QUERY_FILE
+--remove_file $MYSQL_TMP_DIR/ronsql-rdrs-body
+--remove_file $MYSQL_TMP_DIR/ronsql-rdrs-body-1
+--remove_file $MYSQL_TMP_DIR/ronsql-rdrs-body-2
+--remove_file $MYSQL_TMP_DIR/ronsql-rdrs-body-3
+
+--echo Exceeding maximum stack depth for RonSQL should fail gracefully
+--write_file $QUERY_FILE
+SELECT sum(sint8)
+FROM tbl
+WHERE
+  sint8 >
+EOF
+# Add 99*100+88=9988 minus signs to the query file.
+let $1= 99;
+while ($1)
+{
+--append_file $QUERY_FILE
+  ----------------------------------------------------------------------------------------------------
+EOF
+dec $1;
+}
+--append_file $QUERY_FILE
+  ----------------------------------------------------------------------------------------1
+  AND
+EOF
+# Add 499*20+8=9988 NOT keywords to the query file.
+let $1= 499;
+while ($1)
+{
+--append_file $QUERY_FILE
+  NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT NOT
+EOF
+dec $1;
+}
+--append_file $QUERY_FILE
+  NOT NOT NOT NOT NOT NOT NOT NOT sint8>0;
+EOF
+# Test ronsql_cli - expect error with "Parser stack exceeded" message
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test < '$QUERY_FILE' > $MYSQL_TMP_DIR/ronsql-cli.out 2>&1
+--exec grep -q "Parser stack exceeded" $MYSQL_TMP_DIR/ronsql-cli.out
+--remove_file $MYSQL_TMP_DIR/ronsql-cli.out
+# Test rdrs2 - expect error response with "Parser stack exceeded" message
+--exec printf '{"query":"' > $MYSQL_TMP_DIR/ronsql-rdrs-body-1
+--exec perl -pe 's/\n/\\n/g;' $QUERY_FILE > $MYSQL_TMP_DIR/ronsql-rdrs-body-2
+--exec printf '","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/ronsql-rdrs-body-3
+--exec cat $MYSQL_TMP_DIR/ronsql-rdrs-body-1 $MYSQL_TMP_DIR/ronsql-rdrs-body-2 $MYSQL_TMP_DIR/ronsql-rdrs-body-3 > $MYSQL_TMP_DIR/ronsql-rdrs-body
+--error 22
+--exec curl --fail-with-body -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/ronsql-rdrs-body > $MYSQL_TMP_DIR/ronsql-rdrs.out 2>/dev/null
+--exec grep -q "Parser stack exceeded" $MYSQL_TMP_DIR/ronsql-rdrs.out
+--remove_file $MYSQL_TMP_DIR/ronsql-rdrs.out
+--remove_file $QUERY_FILE
+--remove_file $MYSQL_TMP_DIR/ronsql-rdrs-body
+--remove_file $MYSQL_TMP_DIR/ronsql-rdrs-body-1
+--remove_file $MYSQL_TMP_DIR/ronsql-rdrs-body-2
+--remove_file $MYSQL_TMP_DIR/ronsql-rdrs-body-3
+
 --echo Cleanup
 DROP TABLE tbl;

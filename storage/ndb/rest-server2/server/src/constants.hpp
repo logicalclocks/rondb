@@ -26,7 +26,13 @@
 #define PING                "ping"
 #define HEALTH              "health"
 #define PKREAD              "pk-read"
+#define PKDELETE            "pk-delete"
+#define PKWRITE             "pk-write"
+#define PKUPDATE            "pk-update"
+#define PKINSERT            "pk-insert"
 #define BATCH               "batch"
+#define BATCHDELETE         "batchdelete"
+#define BATCHWRITE          "batchwrite"
 #define RONSQL              "ronsql"
 #define METRICS             "metrics"
 #define FEATURE_STORE       "feature_store"
@@ -36,7 +42,9 @@
 
 #define HEALTH_PATH MAKE_PATH(API_VERSION, HEALTH)
 #define PING_PATH   MAKE_PATH(API_VERSION, PING)
-#define BATCH_PATH  MAKE_PATH(API_VERSION, BATCH)
+#define BATCH_PATH        MAKE_PATH(API_VERSION, BATCH)
+#define BATCHDELETE_PATH  MAKE_PATH(API_VERSION, BATCHDELETE)
+#define BATCHWRITE_PATH   MAKE_PATH(API_VERSION, BATCHWRITE)
 
 #define PKREAD_PATH              "/" API_VERSION "/{db}/{table}/" PKREAD
 #define RONSQL_PATH              "/" API_VERSION "/" RONSQL
@@ -54,6 +62,7 @@ constexpr const char *FILTERS                        = "filters";
 constexpr const char *COLUMN                         = "column";
 constexpr const char *VALUE                          = "value";
 constexpr const char *READCOLUMNS                    = "readColumns";
+constexpr const char *WRITECOLUMNS                   = "writeColumns";
 constexpr const char *DATA_RETURN_TYPE               = "dataReturnType";
 constexpr const char *OPERATION_ID                   = "operationId";
 constexpr const char *INFO                           = "INFO";

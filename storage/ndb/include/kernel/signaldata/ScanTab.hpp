@@ -62,7 +62,7 @@ class ScanTabReq {
    * Length of signal
    */
   static constexpr Uint32 StaticLength = 11;
-  static constexpr Uint32 MaxTotalAttrInfo = 0xFFFF;
+  static constexpr Uint32 MaxTotalAttrInfo = 0x3FFFF;
 
   /**
    * Long section nums

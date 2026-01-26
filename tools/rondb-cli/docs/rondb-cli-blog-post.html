@@ -1,0 +1,205 @@
+<!--
+   Copyright (c) 2026, 2026, Hopsworks and/or its affiliates.
+
+   This program is free software; you can redistribute it and/or modify
+   it under the terms of the GNU General Public License, version 2.0,
+   as published by the Free Software Foundation.
+
+   This program is designed to work with certain software (including
+   but not limited to OpenSSL) that is licensed under separate terms,
+   as designated in a particular file or component or in included license
+   documentation.  The authors of MySQL hereby grant you an additional
+   permission to link the program and your derivative works with the
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
+
+   This program is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License, version 2.0, for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with this program; if not, write to the Free Software
+   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
+-->
+
+<!-- RonDB CLI Blog Post for Blogger.com -->
+<!-- Copy everything below this line and paste into Blogger's HTML editor -->
+
+<h2>Introducing RonDB CLI: One Shell to Rule Them All</h2>
+
+<p>We're excited to announce <strong>RonDB CLI</strong>, a new unified command-line interface that brings together all of RonDB's powerful capabilities into a single, intuitive shell. Whether you're running SQL queries, executing Redis commands, or performing high-performance primary key lookups, RonDB CLI has you covered.</p>
+
+<h3>The Challenge: Multiple Interfaces, Multiple Tools</h3>
+
+<p>RonDB is a unique database that combines the best of multiple worlds: full MySQL SQL support, Redis-compatible key-value operations, and a high-performance REST API. But until now, interacting with these different interfaces meant juggling multiple tools:</p>
+
+<ul>
+<li>MySQL client for SQL queries</li>
+<li>redis-cli for Rondis commands</li>
+<li>curl or custom scripts for REST API calls</li>
+</ul>
+
+<p>This fragmentation made it harder to explore, debug, and benchmark RonDB effectively.</p>
+
+<h3>The Solution: RonDB CLI</h3>
+
+<p>RonDB CLI follows a simple philosophy: <strong>"3-minute win"</strong> &mdash; connect, diagnose, and decide in under 3 minutes. It provides a single shell that automatically routes your commands to the right interface:</p>
+
+<ul>
+<li><strong>MySQL</strong> &mdash; Full SQL support for queries, schema management, and data manipulation</li>
+<li><strong>REST API</strong> &mdash; High-performance primary key lookups using a human-readable DSL</li>
+<li><strong>RonSQL</strong> &mdash; Aggregation queries (COUNT, SUM, AVG, MIN, MAX) via the REST API</li>
+<li><strong>Rondis</strong> &mdash; Redis-compatible commands for key-value operations</li>
+</ul>
+
+<h3>Smart Command Routing</h3>
+
+<p>RonDB CLI automatically detects what type of command you're running. Just type your command and the shell figures out where to send it:</p>
+
+<pre style="background-color: #f5f5f5; padding: 15px; border-radius: 5px; overflow-x: auto;">
+<code># SQL queries are routed to MySQL
+rondb&gt; SELECT * FROM mydb.users WHERE id = 1;
+
+# Redis commands go to Rondis
+rondb&gt; SET user:1001 "John Doe"
+rondb&gt; GET user:1001
+
+# REST API primary key lookups
+rondb&gt; READ mydb.users id, name, email FILTER user_id=1001;
+
+# Aggregation queries via RonSQL
+rondb&gt; RONSQL SELECT COUNT(*), SUM(amount) FROM mydb.orders;</code>
+</pre>
+
+<h3>REST API Made Easy</h3>
+
+<p>One of the most powerful features is the Domain-Specific Language (DSL) for REST API operations. Instead of crafting JSON by hand, you write simple, readable commands:</p>
+
+<pre style="background-color: #f5f5f5; padding: 15px; border-radius: 5px; overflow-x: auto;">
+<code>rondb&gt; READ mydb.users id, name, email FILTER user_id=1001;
+
+Request:
+{
+  "filters": [
+    {"column": "user_id", "value": 1001}
+  ],
+  "readColumns": [
+    {"column": "id", "dataReturnType": "default"},
+    {"column": "name", "dataReturnType": "default"},
+    {"column": "email", "dataReturnType": "default"}
+  ]
+}
+
+Response:
+{
+  "data": {
+    "id": 1001,
+    "name": "John Doe",
+    "email": "john@example.com"
+  }
+}
+(12.3ms)</code>
+</pre>
+
+<p>You can even batch multiple lookups in a single request:</p>
+
+<pre style="background-color: #f5f5f5; padding: 15px; border-radius: 5px; overflow-x: auto;">
+<code>rondb&gt; BATCH READ mydb.users id, name FILTER user_id=1 OP 1 READ mydb.users id, name FILTER user_id=2 OP 2;</code>
+</pre>
+
+<h3>Built-in Benchmarking</h3>
+
+<p>RonDB CLI includes a comprehensive benchmarking suite. Load test data, run performance tests, and get detailed latency statistics &mdash; all from within the shell:</p>
+
+<pre style="background-color: #f5f5f5; padding: 15px; border-radius: 5px; overflow-x: auto;">
+<code># Load 200,000 keys (4 threads x 5000 ops x 10 rows)
+rondb&gt; .load_rondis 4 5000 10
+
+# Benchmark with 20% writes
+rondb&gt; .bench_rondis 4 10000 1 20
+
+# Results include p95, p99, p99.9 latencies
+Throughput: 45230 ops/sec
+Latency: min=0.1ms avg=0.9ms max=15.2ms p95=2.1ms p99=4.5ms p99.9=12.3ms</code>
+</pre>
+
+<h3>Interactive Database Browser</h3>
+
+<p>Explore your databases with the built-in TUI (Terminal User Interface) browser. Navigate databases, view table schemas, and preview data &mdash; all with keyboard shortcuts:</p>
+
+<pre style="background-color: #f5f5f5; padding: 15px; border-radius: 5px; overflow-x: auto;">
+<code>rondb&gt; .browse</code>
+</pre>
+
+<p>Use <code>j/k</code> to navigate, <code>Enter</code> to select, and <code>d</code> to toggle between schema and data views.</p>
+
+<h3>Easy Configuration</h3>
+
+<p>Connect to your RonDB cluster with simple command-line flags or environment variables:</p>
+
+<pre style="background-color: #f5f5f5; padding: 15px; border-radius: 5px; overflow-x: auto;">
+<code># Connect with flags
+./rondb --host myrondb.example.com --mysql-user admin -p --tls
+
+# Or use environment variables
+export RONDB_HOST=myrondb.example.com
+export RONDB_MYSQL_USER=admin
+./rondb</code>
+</pre>
+
+<h3>Version Compatibility</h3>
+
+<p>RonDB CLI is included in the RonDB source tree starting from version 25.10, but it works with older versions too:</p>
+
+<table style="border-collapse: collapse; width: 100%; max-width: 400px;">
+<tr style="background-color: #f5f5f5;">
+<th style="border: 1px solid #ddd; padding: 10px; text-align: left;">Interface</th>
+<th style="border: 1px solid #ddd; padding: 10px; text-align: left;">Minimum Version</th>
+</tr>
+<tr>
+<td style="border: 1px solid #ddd; padding: 10px;">MySQL</td>
+<td style="border: 1px solid #ddd; padding: 10px;">Any version</td>
+</tr>
+<tr>
+<td style="border: 1px solid #ddd; padding: 10px;">REST API</td>
+<td style="border: 1px solid #ddd; padding: 10px;">22.10</td>
+</tr>
+<tr>
+<td style="border: 1px solid #ddd; padding: 10px;">Rondis</td>
+<td style="border: 1px solid #ddd; padding: 10px;">24.10</td>
+</tr>
+<tr>
+<td style="border: 1px solid #ddd; padding: 10px;">RonSQL</td>
+<td style="border: 1px solid #ddd; padding: 10px;">24.10</td>
+</tr>
+</table>
+
+<h3>Getting Started</h3>
+
+<p>Building RonDB CLI is straightforward:</p>
+
+<pre style="background-color: #f5f5f5; padding: 15px; border-radius: 5px; overflow-x: auto;">
+<code>cd tools/rondb-cli
+go build -o rondb .
+./rondb --host localhost</code>
+</pre>
+
+<p>Once connected, type <code>.help</code> to see available commands, or <code>.demo</code> to run a quick interactive demonstration.</p>
+
+<h3>What's Next?</h3>
+
+<p>RonDB CLI is actively developed and we're always looking to improve it. Some areas we're exploring:</p>
+
+<ul>
+<li>Additional REST API operations</li>
+<li>Enhanced autocompletion</li>
+<li>Query history and favorites</li>
+<li>Output export formats</li>
+</ul>
+
+<p>We'd love to hear your feedback! Try RonDB CLI and let us know what you think.</p>
+
+<hr>
+
+<p><em>RonDB CLI is part of the RonDB project. For more information, visit the RonDB documentation.</em></p>

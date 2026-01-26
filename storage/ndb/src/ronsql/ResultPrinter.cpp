@@ -29,6 +29,8 @@
 #include "RonSQLPreparer.hpp"
 #include "mysql/strings/dtoa.h"
 #include <sql_string.h>
+#include <decimal_utils.hpp>
+#include "my_time.h"
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_RONSQLPRINTER 1
@@ -45,10 +47,10 @@
 
 using std::endl;
 using std::max;
-using std::runtime_error;
 
 #define feature_not_implemented(description) \
-  throw runtime_error("RonSQL feature not implemented: " description)
+  throw RonSQLPermanentError("RonSQL feature not implemented: " description)
+#define bug(x) throw RonSQLPermanentError(x " Please report a bug.")
 
 DEFINE_FORMATTER(quoted_identifier, LexCString, {
   os.put('`');
@@ -71,23 +73,24 @@ static void print_string(std::ostream& output_stream,
                          bool trim_space_suffix);
 static double convert_result_to_double(NdbAggregator::Result result);
 
+// require or investigate schema version
 static inline void
-soft_assert(bool condition, const char* msg)
+require_sch(bool condition, const char* msg)
 {
   if (likely(condition)) return;
-  throw runtime_error(msg);
+  throw RonSQLMaybeStaleSchema(msg);
 }
 
 ResultPrinter::ResultPrinter(ArenaMalloc* amalloc,
                              struct SelectStatement* query,
                              DynamicArray<LexCString>* column_names,
-                             CHARSET_INFO** column_charset_map,
+                             const NdbDictionary::Column** column_map,
                              RonSQLExecParams::OutputFormat output_format,
                              std::basic_ostream<char>* err):
   m_amalloc(amalloc),
   m_query(query),
   m_column_names(column_names),
-  m_column_charset_map(column_charset_map),
+  m_column_map(column_map),
   m_output_format(output_format),
   m_err(err),
   m_program(amalloc),
@@ -156,7 +159,7 @@ ResultPrinter::compile()
                 << "or use it within an aggregate function e.g. Sum("
                 << quoted_identifier(column_names[col_idx])
                 << ")." << endl;
-            throw runtime_error("Ungrouped column in non-aggregated SELECT expression.");
+            throw RonSQLPermanentError("Ungrouped column in non-aggregated SELECT expression.");
             // todo Test for aggregates without groups and groups without aggregates.
           }
           if (m_groupby_cols[i] == col_idx)
@@ -224,6 +227,7 @@ ResultPrinter::compile()
     m_utf8_output = true;
     m_tsv_output = true;
     m_tsv_headers = true;
+    m_quote = "";
     m_null_representation = LexString{"NULL", 4};
     break;
   case RonSQLExecParams::OutputFormat::TEXT_NOHEADER:
@@ -231,6 +235,7 @@ ResultPrinter::compile()
     m_utf8_output = true;
     m_tsv_output = true;
     m_tsv_headers = false;
+    m_quote = "";
     m_null_representation = LexString{"NULL", 4};
     break;
   case RonSQLExecParams::OutputFormat::JSON:
@@ -238,6 +243,7 @@ ResultPrinter::compile()
     m_utf8_output = true;
     m_tsv_output = false;
     m_tsv_headers = false;
+    m_quote = "\"";
     m_null_representation = LexString{"null", 4};
     break;
   case RonSQLExecParams::OutputFormat::JSON_ASCII:
@@ -245,6 +251,7 @@ ResultPrinter::compile()
     m_utf8_output = false;
     m_tsv_output = false;
     m_tsv_headers = false;
+    m_quote = "\"";
     m_null_representation = LexString{"null", 4};
     break;
   default:
@@ -294,16 +301,30 @@ ResultPrinter::compile()
       case Outputs::Type::COLUMN:
       {
         // todo indent case, move break inside braces. (This todo from review 2024-08-22 with MR)
+        CHARSET_INFO* charset;
+        int precision;
+        int scale;
+        if (m_column_map != NULL) {
+          const NdbDictionary::Column* col = m_column_map[o->column.col_idx];
+          charset = col->getCharset();
+          precision = col->getPrecision();
+          scale = col->getScale();
+        } else {
+          // During EXPLAIN SELECT without access to ndb we still need to
+          // compile, but these values won't be used.
+          charset = NULL;
+          precision = 0;
+          scale = 0;
+        }
+        ndbrequire(precision <= 65);
+        ndbrequire(scale <= 30);
+        ndbrequire(scale <= precision);
         Cmd cmd;
         cmd.type = Cmd::Type::PRINT_GROUP_BY_COLUMN;
         cmd.print_group_by_column.reg_g = m_col_idx_groupby_map[o->column.col_idx];
-        // During EXPLAIN SELECT without access to ndb we still need to compile,
-        // and then charset will always be NULL. That's ok, because it won't be
-        // used.
-        cmd.print_group_by_column.charset =
-          m_column_charset_map != NULL
-          ? m_column_charset_map[o->column.col_idx]
-          : NULL;
+        cmd.print_group_by_column.charset = charset;
+        cmd.print_group_by_column.precision = precision;
+        cmd.print_group_by_column.scale = scale;
         m_program.push(cmd);
         break;
       }
@@ -437,7 +458,7 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
         NdbAggregator::Column column = record.FetchGroupbyColumn();
         if (column.end())
         {
-          throw std::runtime_error("Got record with fewer GROUP BY columns than expected.");
+          bug("Got record with fewer GROUP BY columns than expected.");
         }
         m_regs_g[cmd.store_group_by_column.reg_g] = column;
       }
@@ -447,7 +468,7 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
         NdbAggregator::Column column = record.FetchGroupbyColumn();
         if (!column.end())
         {
-          throw std::runtime_error("Got record with more GROUP BY columns than expected.");
+          bug("Got record with more GROUP BY columns than expected.");
         }
       }
       break;
@@ -456,7 +477,7 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
         NdbAggregator::Result result = record.FetchAggregationResult();
         if (result.end())
         {
-          throw std::runtime_error("Got record with fewer aggregates than expected.");
+          bug("Got record with fewer aggregates than expected.");
         }
         m_regs_a[cmd.store_aggregate.reg_a] = result;
       }
@@ -466,7 +487,7 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
         NdbAggregator::Result result = record.FetchAggregationResult();
         if (!result.end())
         {
-          throw std::runtime_error("Got record with more aggregates than expected.");
+          bug("Got record with more aggregates than expected.");
         }
       }
       break;
@@ -517,21 +538,36 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
           out << column.data_uint64();
           break;
         case NdbDictionary::Column::Type::Float:         ///< 32-bit float. 4 bytes float
-          feature_not_implemented("Print GROUP BY column of type Float");
+          print_float_or_double(out, column.data_float());
+          break;
         case NdbDictionary::Column::Type::Double:        ///< 64-bit float. 8 byte float
-          feature_not_implemented("Print GROUP BY column of type Double");
+          print_float_or_double(out, column.data_double());
+          break;
         case NdbDictionary::Column::Type::Olddecimal:    ///< MySQL < 5.0 signed decimal,  Precision, Scale
           feature_not_implemented("Print GROUP BY column of type Olddecimal");
         case NdbDictionary::Column::Type::Olddecimalunsigned:
           feature_not_implemented("Print GROUP BY column of type Olddecimalunsigned");
         case NdbDictionary::Column::Type::Decimal:       ///< MySQL >= 5.0 signed decimal,  Precision, Scale
-          feature_not_implemented("Print GROUP BY column of type Decimal");
+          [[fallthrough]];
         case NdbDictionary::Column::Type::Decimalunsigned:
-          feature_not_implemented("Print GROUP BY column of type Decimalunsigned");
+          {
+            int precision = cmd.print_group_by_column.precision;
+            int scale = cmd.print_group_by_column.scale;
+            constexpr int DECIMAL_MAX_STR_LEN_IN_BYTES = 68;
+            char decStr[DECIMAL_MAX_STR_LEN_IN_BYTES];
+            decimal_bin2str((const void*)column.data(),
+                            column.byte_size(),
+                            precision,
+                            scale,
+                            decStr,
+                            DECIMAL_MAX_STR_LEN_IN_BYTES);
+            out << decStr;
+            break;
+          }
         case NdbDictionary::Column::Type::Char:          ///< Len. A fixed array of 1-byte chars
           {
             CHARSET_INFO* charset = cmd.print_group_by_column.charset;
-            soft_assert(charset != nullptr, "Could not find charset for CHAR column");
+            require_sch(charset != nullptr, "Could not find charset for CHAR column");
             LexString content = LexString{ column.data(), column.byte_size() };
             // todo it's nowadays ok to put brace on same line. (This todo from review 2024-08-22 with MR)
             if (m_json_output) {
@@ -548,31 +584,35 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
             break;
           }
         case NdbDictionary::Column::Type::Varchar:       ///< Length bytes: 1, Max: 255
+        case NdbDictionary::Column::Type::Longvarchar:   ///< Length bytes: 2, little-endian
           {
             CHARSET_INFO* charset = cmd.print_group_by_column.charset;
-            soft_assert(charset != nullptr, "Could not find charset for VARCHAR column");
-            LexString content = LexString{ &column.data()[1],
-                                           (size_t)column.data()[0] };
-            if (m_json_output)
-            {
-              out << '"';
-              print_string(out, content, charset, true, m_utf8_output, false);
-              out << '"';
+            require_sch(charset != nullptr, "Could not find charset for VARCHAR column");
+            LexString content;
+            if (column.type() == NdbDictionary::Column::Type::Varchar) {
+              content = LexString{ &column.data()[1],
+                                   (size_t)(unsigned char)column.data()[0] };
+            } else {
+              content = LexString{ &column.data()[2],
+                                   (size_t)(unsigned char)column.data()[0] |
+                                   (((size_t)(unsigned char)column.data()[1]) << 8) };
             }
-            else if (m_tsv_output)
-            {
-              print_string(out, content, charset, false, true, false);
-            }
-            else
-            {
-              abort();
-            }
+            out << m_quote;
+            print_string(out,
+                         content,
+                         charset,
+                         m_json_output,
+                         m_utf8_output || m_tsv_output,
+                         false);
+            out << m_quote;
             break;
           }
         case NdbDictionary::Column::Type::Binary:        ///< Len
           feature_not_implemented("Print GROUP BY column of type Binary");
         case NdbDictionary::Column::Type::Varbinary:     ///< Length bytes: 1, Max: 255
           feature_not_implemented("Print GROUP BY column of type Varbinary");
+        case NdbDictionary::Column::Type::Longvarbinary: ///< Length bytes: 2, little-endian
+          feature_not_implemented("Print GROUP BY column of type Longvarbinary");
         case NdbDictionary::Column::Type::Datetime:      ///< Precision down to 1 sec (sizeof(Datetime) == 8 bytes )
           feature_not_implemented("Print GROUP BY column of type Datetime");
         case NdbDictionary::Column::Type::Date:          ///< Precision down to 1 day(sizeof(Date) == 4 bytes )
@@ -581,7 +621,7 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
             Uint32 year = date >> 9;
             Uint32 month = (date >> 5) & 0xf;
             Uint32 day = date & 0x1f;
-            out << year << "-" << d2(month) << "-" << d2(day);
+            out << m_quote << year << "-" << d2(month) << "-" << d2(day) << m_quote;
             // todo There must be a function somewhere that does this, but I can't find it. Maybe in my_time.cc.
             break;
           }
@@ -591,10 +631,6 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
           feature_not_implemented("Print GROUP BY column of type Text");
         case NdbDictionary::Column::Type::Bit:           ///< Bit, length specifies no of bits
           feature_not_implemented("Print GROUP BY column of type Bit");
-        case NdbDictionary::Column::Type::Longvarchar:   ///< Length bytes: 2, little-endian
-          feature_not_implemented("Print GROUP BY column of type Longvarchar");
-        case NdbDictionary::Column::Type::Longvarbinary: ///< Length bytes: 2, little-endian
-          feature_not_implemented("Print GROUP BY column of type Longvarbinary");
         case NdbDictionary::Column::Type::Time:          ///< Time without date
           feature_not_implemented("Print GROUP BY column of type Time");
         case NdbDictionary::Column::Type::Year:          ///< Year 1901-2155 (1 byte)
@@ -604,12 +640,44 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
         case NdbDictionary::Column::Type::Time2:         ///< 3 bytes + 0-3 fraction
           feature_not_implemented("Print GROUP BY column of type Time2");
         case NdbDictionary::Column::Type::Datetime2:     ///< 5 bytes plus 0-3 fraction
-          feature_not_implemented("Print GROUP BY column of type Datetime2");
+          {
+            int precision = cmd.print_group_by_column.precision;
+            longlong numericDate = my_datetime_packed_from_binary(
+              (const unsigned char*)column.data(),
+              (unsigned int)precision);
+            MYSQL_TIME lTime;
+            TIME_from_longlong_datetime_packed(&lTime, numericDate);
+            char to[MAX_DATE_STRING_REP_LENGTH];
+            my_TIME_to_str(lTime, to, precision);
+            out << m_quote << to << m_quote;
+            break;
+          }
         case NdbDictionary::Column::Type::Timestamp2:    ///< 4 bytes + 0-3 fraction
-          feature_not_implemented("Print GROUP BY column of type Timestamp2");
+          {
+            int precision = cmd.print_group_by_column.precision;
+            my_timeval myTV{};
+            my_timestamp_from_binary(&myTV,
+                                     (const unsigned char *)column.data(),
+                                     (unsigned int) precision);
+            Int64 epochIn = myTV.m_tv_sec;
+            time_t stdtime(epochIn);
+            struct tm *time_info = gmtime(&stdtime);
+            MYSQL_TIME lTime  = {};
+            lTime.year        = time_info->tm_year + 1900;
+            lTime.month       = time_info->tm_mon +1;
+            lTime.day         = time_info->tm_mday;
+            lTime.hour        = time_info->tm_hour;
+            lTime.minute      = time_info->tm_min;
+            lTime.second      = time_info->tm_sec;
+            lTime.second_part = myTV.m_tv_usec;
+            lTime.time_type   = MYSQL_TIMESTAMP_DATETIME;
+            char to[MAX_DATE_STRING_REP_LENGTH];
+            my_TIME_to_str(lTime, to, precision);
+            out << m_quote << to << m_quote;
+            break;
+          }
         default:
-          throw runtime_error("Unexpected data type when printing GROUP BY"
-                              " column. Please report a bug.");
+          bug("Unexpected data type when printing GROUP BY column.");
         }
       }
       break;
@@ -631,14 +699,12 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
           out << result.data_uint64();
           break;
         case NdbDictionary::Column::Double:
-          print_float_or_double(out, result.data_double(), true);
+          print_float_or_double(out, result.data_double());
           break;
         case NdbDictionary::Column::Undefined:
-          throw runtime_error("Unexpected undefined data type in aggregation"
-                              " result. Please report a bug.");
+          bug("Unexpected undefined data type in aggregation result.");
         default:
-          throw runtime_error("Unexpected data type in aggregation result."
-                              " Please report a bug.");
+          bug("Unexpected data type in aggregation result.");
         }
       }
       break;
@@ -655,7 +721,7 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
           double numerator = convert_result_to_double(result_sum);
           double denominator = convert_result_to_double(result_count);
           double result = numerator / denominator;
-          print_float_or_double(out, result, true);
+          print_float_or_double(out, result);
         }
       }
       break;
@@ -912,7 +978,7 @@ print_string(std::ostream& out,
       }
     } else if (unlikely((wc & (~my_wc_t(0x07ff))) == 0xd800)) {
       // Illegal surrogate
-      out << "�"; // U+fffd
+      out << (likely(utf8_output) ? "�" : "\\ufffd");
     } else if (likely(wc <= 0xffff)) {
       if (likely(utf8_output)) {
         out << char(0xe0 | (wc >> 12))
@@ -944,48 +1010,26 @@ print_string(std::ostream& out,
       }
     } else {
       // Illegal code point
-      out << "�"; // U+fffd
+      out << (likely(utf8_output) ? "�" : "\\ufffd");
     }
   }
 }
 
 inline void
-ResultPrinter::print_float_or_double(std::ostream& out,
-                                     double value,
-                                     bool is_double)
+ResultPrinter::print_float_or_double(std::ostream& out, double value)
 {
-  // todo perhaps do not evaluate this branch every time
-  if (m_json_output && is_double) {
-   if(is_double)
-   {
-     out << std::fixed << std::setprecision(6) << value;
-   }
-   else
-   {
-     abort(); // todo test the following
-     out << std::fixed << std::setprecision(6) << static_cast<float>(value);
-   }
-   return;
-  }
-  if (m_tsv_output)
+  char buffer[FLOATING_POINT_BUFFER];
+  bool error;
+  size_t len = my_fcvt_compact(value, buffer, &error);
+  if (error)
   {
-    char buffer[129];
-    bool error;
-    size_t len = my_gcvt(value,
-                         is_double ? MY_GCVT_ARG_DOUBLE : MY_GCVT_ARG_FLOAT,
-                         128, buffer, &error);
-    (void) len;
-    if (error)
-    {
-      // value is Inf, -Inf or NaN.
-      out << m_null_representation;
-      return;
-    }
-    assert(len > 0 && buffer[len] ==0);
-    out << buffer;
+    // value is Inf, -Inf or NaN.
+    out << m_null_representation;
     return;
   }
-  abort();
+  ndbrequire(len > 0 && buffer[len] == 0);
+  out << buffer;
+  return;
 }
 
 inline static double
@@ -1000,8 +1044,8 @@ convert_result_to_double(NdbAggregator::Result result)
   case NdbDictionary::Column::Type::Double:
     return static_cast<double>(result.data_double());
   default:
-    throw runtime_error("Unexpected data type in results underlying AVG. Please"
-                        " report a bug.");
+    throw RonSQLPermanentError("Unexpected data type in results underlying AVG."
+                               " Please report a bug.");
   }
 }
 

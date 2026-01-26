@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2004, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -427,7 +427,10 @@ ErrorBundle ErrorCodes[] = {
   { 937,  DMEC, AE, "Inconsistency in input parameters" },
   { 938,  DMEC, AE, "Too much input parameters" },
   { 939,  DMEC, AE, "Wrong column for input parameters" },
-  { 942,  DMEC, AE, "Database name too long" },
+  { 940,  DMEC, AE, "Fixed size part of row can at most be 16280 bytes" },
+  { 941,  DMEC, AE, "In-memory varsize part of row can at most be 32036 bytes" },
+  { 942,  DMEC, AE, "On-disk part of row can at most be 31080 bytes" },
+  { 943,  DMEC, AE, "Database name too long" },
   { 4000, DMEC, IE, "MEMORY ALLOCATION ERROR" },
   { 4001, DMEC, IE, "Signal Definition Error" },
   { 4005, DMEC, IE, "Internal Error in NdbApi" },

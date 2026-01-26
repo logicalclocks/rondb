@@ -1,0 +1,51 @@
+{
+    "#comment": "RDRS2 configuration for local RonDB with Rondis enabled",
+    "Internal": {
+        "maxReqSize": 4194304,
+        "ReqBufferSize": 1048576,
+        "RespBufferSize": 5242880,
+        "PreAllocatedBuffers": 32,
+        "BatchMaxSize": 128
+    },
+    "REST": {
+        "Enable": true,
+        "ServerIP": "0.0.0.0",
+        "ServerPort": 4406,
+        "NumThreads": 64
+    },
+    "Rondis": {
+        "Enable": true,
+        "ServerIP": "0.0.0.0",
+        "ServerPort": 6379,
+        "NumThreads": 16,
+        "NumDatabases": 1,
+        "Databases": [
+            {
+                "Index": 0,
+                "Mode": "RONDB",
+                "OptimizeSmallValues": true
+            }
+        ]
+    },
+    "RonDB": {
+        "Mgmds": [
+            {
+                "IP": "localhost",
+                "Port": 1186
+            }
+        ],
+        "ConnectionPoolSize": 1
+    },
+    "Security": {
+        "InsecureAllowAll": true,
+        "TLS": {
+            "EnableTLS": false
+        },
+        "APIKey": {
+            "UseHopsworksAPIKeys": false
+        }
+    },
+    "Log": {
+        "Level": "info"
+    }
+}

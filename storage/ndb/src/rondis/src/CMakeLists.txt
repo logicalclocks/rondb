@@ -45,6 +45,7 @@ ADD_CONVENIENCE_LIBRARY(rondis
   server_thread.cc
   table_definitions.cc
   worker_thread.cc
+  LINK_LIBRARIES mysqlclient
 )
 
 NDB_ADD_EXECUTABLE(rondisd rondis.cc)

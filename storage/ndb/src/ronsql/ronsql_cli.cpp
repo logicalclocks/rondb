@@ -350,7 +350,7 @@ read_stdin(ArenaMalloc* amalloc, char** buffer, size_t* buffer_len)
     int error = ferror(stdin); // datatype matches ferror
     if (error)
     {
-      throw std::runtime_error("Error reading from stdin.");
+      throw RonSQLPermanentError("Error reading from stdin.");
     }
     if (contentlen == alloclen)
     {
@@ -371,7 +371,7 @@ read_stdin(ArenaMalloc* amalloc, char** buffer, size_t* buffer_len)
 
 static ExitCode
 run_ronsql(RonSQLExecParams& params) {
-  static int max_attempts = 2;
+  static int max_attempts = 3;
   for (int attempt = 0; attempt < max_attempts; attempt++) {
     bool is_last_attempt = attempt == max_attempts - 1;
     try {
@@ -379,10 +379,10 @@ run_ronsql(RonSQLExecParams& params) {
       executor.execute();
       return 0;
     }
-    catch (RonSQLPreparer::TemporaryError& e) {
+    catch (RonSQLRetryableError& e) {
       if (is_last_attempt) {
         // Avoid exit code 2 as it is used by e.g. bash.
-        cerr << "ronsql_cli caught TemporaryError after " << max_attempts
+        cerr << "ronsql_cli caught retryable error after " << max_attempts
              << " attempts." << endl;
       // Exit with code 3 (temporary error)
         return 3;
@@ -390,20 +390,14 @@ run_ronsql(RonSQLExecParams& params) {
         ndb_retry_sleep(50);
       }
     }
-    catch (RonSQLPreparer::ColumnNotFoundError& e) {
-      if (is_last_attempt) {
-        cerr << "ronsql_cli caught ColumnNotFoundError after " << max_attempts
-             << " attempts." << endl;
-      // Exit with code 1 (permanent error)
-        return 1;
-      } else {
-        ndb_retry_sleep(50);
-      }
-    }
-    catch (std::runtime_error& e) {
+    catch (RonSQLPermanentError& e) {
       cerr << "ronsql_cli caught exception: " << e.what() << endl;
       // Exit with code 1 (permanent error)
       return 1;
+    }
+    catch (...) {
+      // This should never happen
+      abort();
     }
   }
   // Unreachable

@@ -453,7 +453,7 @@ insert into t1 values (1,@v13000), (2,@v13000);
 select length(b) from t1 order by 1;
 drop table t1;
 
-let $i=50;
+let $i=64;
 let $separator=;
 let $sql=create table t1 (;
 while ($i)

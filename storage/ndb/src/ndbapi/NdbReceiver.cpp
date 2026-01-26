@@ -326,7 +326,10 @@ NdbReceiver::NdbReceiver(Ndb *aNdb)
       m_index(Uint32(~0)),
       m_current_row(beforeFirstRow),
       m_expected_result_length(0),
-      m_received_result_length(0) {}
+      m_received_result_length(0),
+      m_num_long_row_allocated(0),
+      m_num_long_row_current_used(0),
+      m_long_row_ref(nullptr) {}
 
 NdbReceiver::~NdbReceiver() {
   DBUG_ENTER("NdbReceiver::~NdbReceiver");
@@ -361,6 +364,8 @@ int NdbReceiver::init(ReceiverType type, void *owner) {
   m_lastFinalRecAttr = nullptr;
   m_rec_attr_data = nullptr;
   m_rec_attr_len = 0;
+  free_long_row_ref();
+  DBUG_PRINT("info", ("NdbReceiver::init(0x%p)", this));
 
   if (m_id == NdbObjectIdMap::InvalidId) {
     if (m_ndb) {
@@ -399,6 +404,7 @@ void NdbReceiver::release() {
     tRecAttr = tRecAttr->next();
     m_ndb->releaseRecAttr(tSaveRecAttr);
   }
+  free_long_row_ref();
   m_firstRecAttr = nullptr;
   m_lastRecAttr = nullptr;
   m_firstFinalRecAttr = nullptr;
@@ -1061,23 +1067,26 @@ int NdbReceiver::get_keyinfo20(Uint32 &scaninfo, Uint32 &length,
 
 const char *NdbReceiver::unpackBuffer(const NdbReceiverBuffer *buffer,
                                       Uint32 row) {
+  DBUG_ENTER("NdbReceiver::unpackBuffer");
   assert(buffer != nullptr);
 
   Uint32 aLength;
   const Uint32 *aDataPtr = buffer->getRow(row, aLength);
   if (likely(aDataPtr != nullptr)) {
+    DBUG_PRINT("info", ("this: 0x%p.unpackRow(ptr: 0x%p, len: %u)",
+      this, aDataPtr, aLength));
     if (unpackRow(aDataPtr, aLength, m_row_buffer) == -1) return nullptr;
 
-    return m_row_buffer;
+    DBUG_RETURN(m_row_buffer);
   }
 
   /* ReceiveBuffer may contain only keyinfo */
   const Uint32 *key = buffer->getKey(row, aLength);
   if (key != nullptr) {
     assert(m_row_buffer != nullptr);
-    return m_row_buffer;  // Row is empty, used as non-NULL return
+    DBUG_RETURN(m_row_buffer);  // Row is empty, used as non-NULL return
   }
-  return nullptr;
+  DBUG_RETURN(nullptr);
 }
 
 int NdbReceiver::unpackRow(const Uint32 *aDataPtr, Uint32 aLength, char *row) {
@@ -1359,13 +1368,29 @@ NdbReceiver::get_AttrValues(NdbRecAttr* rec_attr_list) const
                           m_rec_attr_len);
 }
 
+void NdbReceiver::print_checksum(const Uint32 *data,
+                                 const Uint32 len,
+                                 const Uint32 line) {
+  Uint32 checksum = 0;
+  for (Uint32 i = 0; i < len; i++) {
+    checksum ^= data[i];
+  }
+  DBUG_PRINT("info", ("len: %u, checksum: 0x%x, line: %u",
+    len, checksum, line));
+}
+
+/* We only come here if signal isn't fragmented */
 int NdbReceiver::execTRANSID_AI(const Uint32 *aDataPtr, Uint32 aLength) {
   const Uint32 exp = m_expected_result_length;
   const Uint32 tmp = m_received_result_length + aLength;
 
-  DBUG_ENTER("NdbReceiver::execTRANSID_AI");
-  DBUG_PRINT("info", ("Expected: %u, recvd: %u, receiver index: %u, len: %u",
-    exp, tmp, this->m_index, aLength));
+  DBUG_ENTER("NdbReceiver::execTRANSID_AI short");
+  DBUG_PRINT("info", ("Expected: %u, recvd: %u, receiver index: %u, len: %u"
+                      ", this: 0x%p",
+    exp, tmp, this->m_index, aLength, this));
+#ifdef VM_TRACE
+  print_checksum(aDataPtr, aLength, __LINE__);
+#endif
   /*
    * Store received data unprocessed into receive buffer
    * in its packed format.
@@ -1377,9 +1402,214 @@ int NdbReceiver::execTRANSID_AI(const Uint32 *aDataPtr, Uint32 aLength) {
     if (likely(aLength > 0)) {
       memcpy(row_recv, aDataPtr, aLength * sizeof(Uint32));
     }
+    DBUG_PRINT("info", ("row_recv: 0x%p", row_recv));
   } else {
     if (unpackRow(aDataPtr, aLength, m_row_buffer) == -1) return -1;
   }
+  m_received_result_length = tmp;
+  DBUG_RETURN(tmp == exp || (exp > TcKeyConf::DirtyReadBit) ? 1 : 0);
+}
+
+#define LONG_ROW_ALLOC_START 1
+NdbReceiver::LongRowRef *
+NdbReceiver::first_long_row_ref(Uint32 ref,
+                                Uint32 totalLen) {
+  DBUG_ENTER("NdbReceiver::first_long_row_ref");
+  if (m_num_long_row_allocated == 0) {
+    LongRowRef *alloc_ref =
+      (LongRowRef*)calloc(sizeof(LongRowRef), LONG_ROW_ALLOC_START);
+    if (alloc_ref == nullptr) {
+      DBUG_RETURN(nullptr);
+    }
+    m_num_long_row_allocated = LONG_ROW_ALLOC_START;
+    m_num_long_row_current_used = 0;
+    m_long_row_ref = alloc_ref;
+    DBUG_PRINT("info", ("Allocated first LongRowRef object"));
+  }
+  if (m_num_long_row_allocated > 0 &&
+      m_num_long_row_allocated == m_num_long_row_current_used) {
+    Uint32 current_alloced = m_num_long_row_allocated;
+    LongRowRef *alloc_ref =
+      (LongRowRef*)calloc(sizeof(LongRowRef), 2 * current_alloced);
+    if (alloc_ref == nullptr) {
+      DBUG_RETURN(nullptr);
+    }
+    std::memcpy(alloc_ref,
+                m_long_row_ref,
+                current_alloced * sizeof(LongRowRef));
+    m_num_long_row_allocated = 2 * current_alloced;
+    DBUG_PRINT("info", ("Allocated more LongRowRef objects,"
+                        " now max %u objects",
+      m_num_long_row_allocated));
+    free(m_long_row_ref);
+    m_long_row_ref = alloc_ref;
+  }
+  LongRowRef *row_ref = next_long_row_ref(Uint32(0));
+  assert(row_ref != nullptr);
+  Uint32 *row_recv = new (std::nothrow) Uint32[totalLen];
+  if (row_recv == nullptr) {
+    DBUG_RETURN(nullptr);
+  }
+  DBUG_PRINT("info", ("Allocated %u bytes for row object", totalLen));
+  m_num_long_row_current_used++;
+  row_ref->m_blockref = ref;
+  row_ref->m_row_recv = row_recv;
+  row_ref->m_row_release_ptr = row_recv;
+  DBUG_PRINT("info", ("Allocated long row object, now %u objects used",
+    m_num_long_row_current_used));
+  DBUG_RETURN(row_ref);
+}
+
+NdbReceiver::LongRowRef *
+NdbReceiver::next_long_row_ref(Uint32 ref) {
+  DBUG_ENTER("NdbReceiver::next_long_row_ref");
+  for (Uint32 i = 0; i < m_num_long_row_allocated; i++) {
+    LongRowRef *next_row_ref = &m_long_row_ref[i];
+    if (next_row_ref->m_blockref == ref) {
+      DBUG_PRINT("info", ("row_recv: 0x%p, row_rel_ptr: 0x%p, ref: 0x%x",
+        next_row_ref->m_row_recv,
+        next_row_ref->m_row_release_ptr,
+        next_row_ref->m_blockref));
+      DBUG_RETURN(next_row_ref);
+    }
+  }
+  DBUG_RETURN(nullptr);
+}
+
+void NdbReceiver::copy_long_row_part(NdbReceiver::LongRowRef *row_ref,
+                                     const Uint32 *aDataPtr,
+                                     Uint32 aLength) {
+  Uint32 *row_recv = row_ref->m_row_recv;
+  assert(aLength > 0);
+  std::memcpy(row_recv, aDataPtr, aLength * sizeof(Uint32));
+  row_recv += aLength;
+  row_ref->m_row_recv = row_recv;
+}
+
+void NdbReceiver::release_long_row_ref(NdbReceiver::LongRowRef *row_ref,
+                                       Uint32 ref) {
+  DBUG_ENTER("NdbReceiver::release_long_row_ref");
+  assert(row_ref->m_blockref == ref);
+  assert(row_ref->m_row_release_ptr != nullptr);
+  delete [] row_ref->m_row_release_ptr;
+  DBUG_PRINT("info", ("Release 0x%p, row_recv: 0x%p, ref: 0x%x",
+    row_ref->m_row_recv,
+    row_ref->m_row_release_ptr,
+    row_ref->m_blockref));
+  row_ref->m_blockref = 0;
+  row_ref->m_row_release_ptr = nullptr;
+  row_ref->m_row_recv = nullptr;
+  Uint32 current_used = m_num_long_row_current_used;
+  assert(current_used > 0);
+  current_used--;
+  m_num_long_row_current_used = current_used;
+  DBUG_PRINT("info", ("m_num_long_row_current_used now: %u",
+    m_num_long_row_current_used));
+  if (current_used == 0) {
+    m_num_long_row_allocated = 0;
+    free(m_long_row_ref);
+    m_long_row_ref = nullptr;
+  }
+  DBUG_VOID_RETURN;
+}
+
+void NdbReceiver::free_long_row_ref() {
+  if (m_num_long_row_allocated != 0) {
+    assert(m_long_row_ref != nullptr);
+    for (Uint32 i = 0; i < m_num_long_row_allocated; i++) {
+      LongRowRef *row_ref = &m_long_row_ref[i];
+      if (row_ref->m_blockref != 0) {
+        assert(row_ref->m_row_release_ptr != nullptr);
+        free(row_ref->m_row_release_ptr);
+      }
+    }
+    m_num_long_row_allocated = 0;
+    m_num_long_row_current_used = 0;
+    free(m_long_row_ref);
+    m_long_row_ref = nullptr;
+  }
+}
+
+/* We only come here if signal is fragmented */
+int NdbReceiver::execTRANSID_AI(const Uint32 *aDataPtr,
+                                Uint32 aLength,
+                                const NdbApiSignal *aSignal,
+                                Uint32 totalLen) {
+  const Uint32 exp = m_expected_result_length;
+  const Uint32 tmp = m_received_result_length + totalLen;
+
+  DBUG_ENTER("NdbReceiver::execTRANSID_AI long");
+  DBUG_PRINT("info", ("Expected: %u, recvd: %u, receiver index: %u, len: %u"
+                      ", totalLen: %u, fragInfo: %u, this: 0x%p",
+    exp, tmp, this->m_index, aLength,
+    totalLen, aSignal->m_fragmentInfo, this));
+#ifdef VM_TRACE
+  print_checksum(aDataPtr, aLength, __LINE__);
+#endif
+  Uint32 sender_ref = aSignal->theSendersBlockRef;
+  /*
+   * Store received data unprocessed into receive buffer
+   * in its packed format.
+   * It is unpacked into NdbRecord format when
+   * we navigate to each row.
+   */
+  LongRowRef *row_ref;
+  if (m_recv_buffer != nullptr) {
+    if (aSignal->isFirstFragment()) {
+      row_ref = first_long_row_ref(sender_ref,
+                                   totalLen);
+    } else {
+      row_ref = next_long_row_ref(sender_ref);
+    }
+  } else {
+    if (aSignal->isFirstFragment()) {
+      row_ref = first_long_row_ref(sender_ref,
+                                   totalLen);
+    } else {
+      row_ref = next_long_row_ref(sender_ref);
+    }
+  }
+  if (row_ref == nullptr) {
+    assert(false);
+    DBUG_PRINT("info", ("Faulty signal, no m_row_recv"));
+    DBUG_RETURN(-1);
+  }
+  copy_long_row_part(row_ref, aDataPtr, aLength);
+  if (!aSignal->isLastFragment()) {
+    /**
+     * An intermediate signal, we have already created space and it
+     * isn't the last signal, thus copy data into the space allocated
+     * was enough.
+     */
+    DBUG_RETURN(0);
+  }
+  Uint32 calc_total_len = row_ref->m_row_recv - row_ref->m_row_release_ptr;
+  require(calc_total_len == totalLen);
+#ifdef VM_TRACE
+  print_checksum(row_ref->m_row_release_ptr, totalLen, __LINE__);
+#endif
+  if (m_recv_buffer != nullptr) {
+    /**
+     * The call to allocRow also signals that the row is fully received
+     * in the case of pushed join queries.
+     * This means that we cannot use this buffer until we have received
+     * the full signal.
+     */
+    Uint32 *row_recv = m_recv_buffer->allocRow(totalLen);
+    if (row_recv == nullptr) {
+      assert(false);
+      DBUG_RETURN(-1);
+    }
+    std::memcpy(row_recv, row_ref->m_row_release_ptr, 4 * totalLen);
+  } else {
+    int ret = unpackRow(row_ref->m_row_release_ptr, totalLen, m_row_buffer);
+    if (ret == -1) {
+      assert(false);
+      DBUG_RETURN(-1);
+    }
+  }
+  release_long_row_ref(row_ref, sender_ref);
+  DBUG_PRINT("info", ("tmp: %u, exp: %u", tmp, exp));
   m_received_result_length = tmp;
   DBUG_RETURN(tmp == exp || (exp > TcKeyConf::DirtyReadBit) ? 1 : 0);
 }
@@ -1435,8 +1665,9 @@ int NdbReceiver::execSCANOPCONF(Uint32 tcPtrI, Uint32 len, Uint32 rows) {
 
   const Uint32 tmp = m_received_result_length;
   m_expected_result_length = len;
-  DBUG_PRINT("info", ("execSCANOPCONF: expected_len: %u, len received: %u",
-    len, tmp));
+  DBUG_PRINT("info", ("0x%p->execSCANOPCONF: expected_len: %u,"
+                      " len received: %u",
+    this, len, tmp));
   return (tmp == len ? 1 : 0);
 }
 

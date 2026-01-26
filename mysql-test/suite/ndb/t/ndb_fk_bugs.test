@@ -669,6 +669,9 @@ create table t1_parent (pk1 char(255) primary key) charset=latin1, engine = ndb;
 
 --error ER_CANT_CREATE_TABLE
 create table t1 (
+  c65 char(255) column_format fixed, c64 char(255) column_format fixed, c63 char(255) column_format fixed, c62 char(255) column_format fixed, c61 char(255) column_format fixed,
+  c60 char(255) column_format fixed, c59 char(255) column_format fixed, c58 char(255) column_format fixed, c57 char(255) column_format fixed, c56 char(255) column_format fixed,
+  c55 char(255) column_format fixed, c54 char(255) column_format fixed, c53 char(255) column_format fixed, c52 char(255) column_format fixed, c51 char(255) column_format fixed,
   c50 char(255) column_format fixed, c49 char(255) column_format fixed, c48 char(255) column_format fixed, c47 char(255) column_format fixed, c46 char(255) column_format fixed,
   c45 char(255) column_format fixed, c44 char(255) column_format fixed, c43 char(255) column_format fixed, c42 char(255) column_format fixed, c41 char(255) column_format fixed,
   c40 char(255) column_format fixed, c39 char(255) column_format fixed, c38 char(255) column_format fixed, c37 char(255) column_format fixed, c36 char(255) column_format fixed,

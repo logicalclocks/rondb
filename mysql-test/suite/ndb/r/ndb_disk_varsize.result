@@ -1,0 +1,77 @@
+CREATE LOGFILE GROUP lg1
+ADD UNDOFILE 'undofile.dat'
+INITIAL_SIZE 16M
+UNDO_BUFFER_SIZE = 1M
+ENGINE=NDB;
+CREATE TABLESPACE ts1
+ADD DATAFILE 'datafile.dat'
+USE LOGFILE GROUP lg1
+INITIAL_SIZE 12M
+ENGINE NDB;
+CREATE TABLE t1 (a int primary key,
+b1 CHAR(252),
+b2 CHAR(252),
+b3 CHAR(252),
+b4 CHAR(252),
+b5 CHAR(252),
+b6 CHAR(252),
+b7 CHAR(252),
+b8 CHAR(252),
+b9 CHAR(252),
+b10 CHAR(252),
+b11 CHAR(252),
+b12 CHAR(252),
+b13 CHAR(252),
+b14 CHAR(252),
+b15 CHAR(252),
+b16 CHAR(252),
+b17 CHAR(252),
+b18 CHAR(252),
+b19 CHAR(252),
+b20 CHAR(252),
+b21 CHAR(252),
+b22 CHAR(252),
+b23 CHAR(252),
+b24 CHAR(252),
+b25 CHAR(252),
+b26 CHAR(252),
+b27 CHAR(252),
+b28 CHAR(252),
+b29 CHAR(252),
+b30 CHAR(252),
+b31 CHAR(252),
+b32 CHAR(252),
+b33 CHAR(56),
+c VARCHAR(8120))
+storage disk engine ndb character set latin1 tablespace ts1;
+BEGIN;
+INSERT INTO t1 VALUES (0, '1','2','3','4','5', '6','7','8','9','10', '11','12','13','14','15', '16','17','18','19','20', '21','22','23','24','25', '26','27','28','29','30', '31','32','33', '123456');
+INSERT INTO t1 VALUES (1, '1','2','3','4','5', '6','7','8','9','10', '11','12','13','14','15', '16','17','18','19','20', '21','22','23','24','25', '26','27','28','29','30', '31','32','33', '123456');
+INSERT INTO t1 VALUES (2, '1','2','3','4','5', '6','7','8','9','10', '11','12','13','14','15', '16','17','18','19','20', '21','22','23','24','25', '26','27','28','29','30', '31','32','33', '123456');
+COMMIT;
+BEGIN;
+INSERT INTO t1 VALUES (3, '1','2','3','4','5', '6','7','8','9','10', '11','12','13','14','15', '16','17','18','19','20', '21','22','23','24','25', '26','27','28','29','30', '31','32','33', '123456');
+UPDATE t1 SET c = '12345678901234' where a = 1;
+UPDATE t1 SET c = '123456789012345678901234567890' where a = 1;
+UPDATE t1 SET c = '12345678901234567890' where a = 1;
+COMMIT;
+SELECT a,c from t1 ORDER BY a;
+a	c
+0	123456
+1	12345678901234567890
+2	123456
+3	123456
+BEGIN;
+UPDATE t1 SET c = '12345678901234' where a = 1;
+UPDATE t1 SET c = '123456' where a = 1;
+COMMIT;
+SELECT a,c from t1 ORDER BY a;
+a	c
+0	123456
+1	123456
+2	123456
+3	123456
+DROP TABLE t1;
+ALTER TABLESPACE ts1 DROP DATAFILE 'datafile.dat';
+DROP TABLESPACE ts1;
+DROP LOGFILE GROUP lg1 engine ndb;

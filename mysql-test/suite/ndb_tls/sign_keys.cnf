@@ -10,17 +10,20 @@ mysqld=
 ndbapi=,,
 
 [cluster_config]
-DataMemory=                    30M
+DataMemory=                    40M
+MaxNoOfTables=                 128
+MaxNoOfOrderedIndexes=         128
+MaxNoOfUniqueHashIndexes=      128
 NoOfFragmentLogFiles=          4
-SharedGlobalMemory=            20M
+SharedGlobalMemory=            400M
 LongMessageBuffer=             4M
 RedoBuffer=                    4M
 BackupLogBufferSize=           2M
 HeartbeatIntervalDbDb=         30000
 HeartbeatIntervalDbApi=        30000
-SchemaMemory= 200M
+SchemaMemory=200M
 NumCPUs=4
-TotalMemoryConfig=2500M
+TotalMemoryConfig=2800M
 
 [mysqld]
 ndbcluster

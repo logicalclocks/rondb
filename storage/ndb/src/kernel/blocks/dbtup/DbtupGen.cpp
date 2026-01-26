@@ -66,6 +66,7 @@
 void Dbtup::initData() 
 {
   m_curr_tup = this;
+  m_copy_tuple_used = nullptr;
   cownNodeId = getOwnNodeId();
   TablerecPtr tablePtr;
   (void)tablePtr; // hide unused warning

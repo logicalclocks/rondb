@@ -586,7 +586,7 @@ DROP TABLE t1;
 #
 # test alter of table with many attributes
 #
-let $i=499;
+let $i=3865;
 let $separator=;
 let $sql=create table t1 (;
 while ($i)
@@ -595,24 +595,34 @@ while ($i)
   let $separator=,;
   dec $i;
 }
-let $sql=$sql, c501 varchar(10000) character set latin1;
+let $i=229;
+while ($i)
+{
+  let $sql=$sql$separator d$i int column_format dynamic;
+  let $separator=,;
+  dec $i;
+}
+let $sql=$sql, c4095 varchar(10000) character set latin1;
 let $sql=$sql, primary key using hash(c1)) engine=ndb;
 eval $sql; # eval the sql and create the table
 
 insert into t1 (c1) values (1), (2), (3);
-alter table t1 algorithm=copy, modify c1 int auto_increment;
-alter table t1 algorithm=inplace, add column c500 bit(1) column_format DYNAMIC;
-# Exceeding max record size of NDB
 --error ER_CANT_CREATE_TABLE
-alter table t1 algorithm=copy, add column c502 varchar(18001) character set latin1;
-show warnings;
+alter table t1 algorithm=copy, add column c4096 varchar(22001) character set latin1;
+
 # Exceeding max record size of NDB
 --error ER_GET_ERRMSG
-alter table t1 algorithm=inplace, add column c502 varchar(18001) character set latin1;
+alter table t1 algorithm=inplace, add column c4096 varchar(22001) character set latin1;
+show warnings;
+
+alter table t1 algorithm=copy, modify c1 int auto_increment;
+alter table t1 algorithm=inplace, add column c4096 bit(1) column_format DYNAMIC;
+--error ER_TOO_MANY_FIELDS
+alter table t1 algorithm=inplace, add column c4097 bit(1) column_format DYNAMIC;
+# Exceeding max record size of NDB
 show warnings;
 delete from t1;
 drop table t1;
-
 
 #
 # Bug #13830980 MYSQL COMPLAINS OF NOT SUPPORTING ALTER ONLINE EVEN WHEN VALID OPTIONS ARE USED

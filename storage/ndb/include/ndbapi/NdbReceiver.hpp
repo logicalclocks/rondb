@@ -173,7 +173,13 @@ class NdbReceiver {
                                   bool read_range_no);
 
   int execKEYINFO20(Uint32 info, const Uint32 *ptr, Uint32 len);
+  void print_checksum(const Uint32 *data, const Uint32 len, const Uint32 line);
+  
   int execTRANSID_AI(const Uint32 *ptr, Uint32 len);
+  int execTRANSID_AI(const Uint32 *ptr,
+                     Uint32 len,
+                     const NdbApiSignal *aSignal,
+                     Uint32 totalLen);
   int execTCOPCONF(Uint32 len);
   int execSCANOPCONF(Uint32 tcPtrI, Uint32 len, Uint32 rows);
 
@@ -242,6 +248,76 @@ class NdbReceiver {
    */
   Uint32 m_expected_result_length;
   Uint32 m_received_result_length;
+
+  /**
+   * An NdbReceiver object receives rows from multiple threads at the same time.
+   * We use the block reference of the sender as primary key to the array
+   * of the references to the currently receiving rows.
+   *
+   * In the past when a row was received in one signal it was easy to handle
+   * this since the entire row was received at once. Now a row can be received
+   * in multiple signals and we need to remember where to write in the row
+   * for each of the rows being received in parallel.
+   *
+   * We need the following information for each currently received row:
+   * 1) We need the block reference of the sender to find the memory
+   *    references.
+   * 2) We need to remember the start of the memory area.
+   * 3) We need to remember the next area to write to.
+   */
+  struct LongRowRef {
+    /**
+     * Block reference sending the fragmented row. Each block reference
+     * will only send one row using sendBatchedFragmentedSignal. There
+     * could however be multiple threads sending to the same NdbReceiver
+     * in parallel.
+     *
+     * Thus we need to maintain multiple receiving areas while receiving
+     * fragmented signals.
+     */
+    Uint32 m_blockref;
+
+    /* Has m_row_recv been allocated using malloc */
+    bool m_row_recv_allocated;
+
+    /**
+     * Pointer to area receiving fragmented TRANSID_AI signals.
+     * Area need not be free'd since part of m_recv_buffer.
+     */
+    Uint32 *m_row_recv;
+
+    /**
+     * Pointer to area receiving fragmented TRANSID_AI signals for key
+     * operations. Need to be freed when row unpacked. Also used for
+     * scan operations to remember the start of the row.
+     */
+    Uint32 *m_row_release_ptr;
+  };
+
+  /* Number of rows allocated in LongRowRef */
+  Uint32 m_num_long_row_allocated;
+  /* Number of rows currently used in LongRowRef */
+  Uint32 m_num_long_row_current_used;
+  LongRowRef *m_long_row_ref;
+
+  /**
+   * The below methods handle fragmented TRANSID_AI signals.
+   * One NdbReceiver object can receive from multiple nodes
+   * and threads at the same time. It is serialised within
+   * one thread, but the signal order is not deterministic.
+   * Thus when receiving a fragmented signal we need those
+   * methods to assemble the TRANSID_AI fragments together
+   * into one message.
+   */
+  LongRowRef *first_long_row_ref(Uint32 ref,
+                                 Uint32 totalLen);
+  LongRowRef *next_long_row_ref(Uint32 ref);
+  void copy_long_row_part(LongRowRef *row_ref,
+                          const Uint32 *aDataPtr,
+                          Uint32 aLength);
+  void release_long_row_ref(LongRowRef *row_ref,
+                            Uint32 ref);
+  void free_long_row_ref();
 
   /**
    * Unpack a packed stream of field values, whose presence and nullness

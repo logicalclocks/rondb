@@ -1449,19 +1449,36 @@ static NDBT_Table *createMaxKeyMaxColsHugoTabDef(const char *name) {
 
     /* Attributes */
     for (; attrNum < (NDB_MAX_ATTRIBUTES_IN_TABLE - 1); attrNum++) {
+      bool dyn = false;
+      if (attrNum > 1000) {
+        dyn = true;
+      }
       BaseString::snprintf(namebuff, buffsize, "A%d", attrNum);
-      attrs[attrNum] = new NDBT_Attribute(
-          namebuff, NdbDictionary::Column::Unsigned, 1, false);
+      if (attrNum > (NDB_MAX_ATTRIBUTES_IN_TABLE - 1100)) {
+        attrs[attrNum] = new NDBT_Attribute(
+            namebuff,
+            NdbDictionary::Column::Varchar,
+            3,
+            false);
+      } else {
+        attrs[attrNum] = new NDBT_Attribute(
+            namebuff,
+            NdbDictionary::Column::Unsigned,
+            1,
+            false,
+            false,
+            0,
+            NdbDictionary::Column::StorageTypeMemory,
+            dyn); //Make it dynamic to fit after 2020 columns
+      }
     }
 
     /* Last attr uses remaining attr space */
     BaseString::snprintf(namebuff, buffsize, "A%d", attrNum);
-    Uint32 sz32 = NDB_MAX_TUPLE_SIZE_IN_WORDS;
-    sz32 -= NDB_MAX_KEYSIZE_IN_WORDS;
-    sz32 -= NDB_MAX_ATTRIBUTES_IN_INDEX;
-    sz32 -= 2 * NDB_MAX_ATTRIBUTES_IN_TABLE;
-    attrs[attrNum] = new NDBT_Attribute(namebuff, NdbDictionary::Column::Binary,
-                                        4 * sz32, false);
+    Uint32 sz32 = 3159;
+    attrs[attrNum] =
+      new NDBT_Attribute(namebuff, NdbDictionary::Column::Longvarbinary,
+                         4 * sz32, false);
 
     WIDE_MAXKEYMAXCOLS_HUGO =
         new NDBT_Table(name, NDB_MAX_ATTRIBUTES_IN_TABLE, attrs);
@@ -1491,16 +1508,35 @@ static NDBT_Table *createMinKeyMaxColsHugoTabDef(const char *name) {
 
     /* Attributes */
     for (; attrNum < (NDB_MAX_ATTRIBUTES_IN_TABLE - 1); attrNum++) {
+      bool dyn = false;
+      if (attrNum > 2000) {
+        dyn = true;
+      }
       BaseString::snprintf(namebuff, buffsize, "A%d", attrNum);
-      attrs[attrNum] = new NDBT_Attribute(
-          namebuff, NdbDictionary::Column::Unsigned, 1, false);
+      if (attrNum > (NDB_MAX_ATTRIBUTES_IN_TABLE - 100)) {
+        attrs[attrNum] = new NDBT_Attribute(
+            namebuff,
+            NdbDictionary::Column::Varchar,
+            7,
+            false);
+      } else {
+        attrs[attrNum] = new NDBT_Attribute(
+            namebuff,
+            NdbDictionary::Column::Unsigned,
+            1,
+            false,
+            false,
+            0,
+            NdbDictionary::Column::StorageTypeMemory,
+            dyn); //Make it dynamic to fit after 2000 columns
+      }
     }
 
     /* Last attr uses remaining attr space */
     BaseString::snprintf(namebuff, buffsize, "A%d", attrNum);
     attrs[attrNum] = new NDBT_Attribute(
-        namebuff, NdbDictionary::Column::Binary,
-        (NDB_MAX_TUPLE_SIZE_IN_WORDS - (NDB_MAX_ATTRIBUTES_IN_TABLE - 1)) * 4,
+        namebuff, NdbDictionary::Column::Longvarbinary,
+        (NDB_MAX_VAR_SIZE_IN_WORDS - (2000 + 4 + 1450)) * 4,
         false);
 
     WIDE_MINKEYMAXCOLS_HUGO =
@@ -1512,6 +1548,66 @@ static NDBT_Table *createMinKeyMaxColsHugoTabDef(const char *name) {
   }
 
   return WIDE_MINKEYMAXCOLS_HUGO;
+}
+
+static NDBT_Table *WIDE_MIXED_MAXCOLS_HUGO = NULL;
+
+static NDBT_Table *createMixedMaxColsHugoTabDef(const char *name) {
+  if (WIDE_MINKEYMAXCOLS_HUGO == NULL) {
+    /* Create a wide table with one key and the max number
+     * of attributes
+     */
+    NdbDictionary::Column *attrs[NDB_MAX_ATTRIBUTES_IN_TABLE];
+    const int buffsize = 100;
+    char namebuff[buffsize];
+    Uint32 attrNum = 0;
+    attrs[attrNum] =
+        new NDBT_Attribute("K1", NdbDictionary::Column::Unsigned, 1, true);
+    attrNum++;
+
+    /* Attributes */
+    for (; attrNum < (NDB_MAX_ATTRIBUTES_IN_TABLE - 1); attrNum++) {
+      NdbDictionary::Column::StorageType storage =
+        NdbDictionary::Column::StorageTypeMemory;
+      if (attrNum > 2000) {
+        storage = NdbDictionary::Column::StorageTypeDisk;
+      }
+      BaseString::snprintf(namebuff, buffsize, "A%d", attrNum);
+      if (attrNum > (NDB_MAX_ATTRIBUTES_IN_TABLE - 100)) {
+        attrs[attrNum] = new NDBT_Attribute(
+            namebuff,
+            NdbDictionary::Column::Varchar,
+            7,
+            false);
+      } else {
+        attrs[attrNum] = new NDBT_Attribute(
+            namebuff,
+            NdbDictionary::Column::Unsigned,
+            1,
+            false,
+            false,
+            0,
+            storage,
+            false);
+      }
+    }
+
+    /* Last attr uses remaining attr space */
+    BaseString::snprintf(namebuff, buffsize, "A%d", attrNum);
+    attrs[attrNum] = new NDBT_Attribute(
+        namebuff, NdbDictionary::Column::Longvarbinary,
+        (NDB_MAX_VAR_SIZE_IN_WORDS - (2000 + 4 + 1450)) * 4,
+        false);
+
+    WIDE_MIXED_MAXCOLS_HUGO =
+        new NDBT_Table(name, NDB_MAX_ATTRIBUTES_IN_TABLE, attrs);
+
+    /* Free attributes, table will remain until program exit */
+    for (attrNum = 0; attrNum < NDB_MAX_ATTRIBUTES_IN_TABLE; attrNum++)
+      delete attrs[attrNum];
+  }
+
+  return WIDE_MIXED_MAXCOLS_HUGO;
 }
 
 // Define array with pointer to other test tables
@@ -1528,7 +1624,8 @@ static const OtherTable other_tables[] = {
     {"WIDE_MAXKEY_HUGO", &WIDE_MAXKEY_HUGO, NULL},
     {"WIDE_MAXATTR_HUGO", &WIDE_MAXATTR_HUGO, NULL},
     {"WIDE_MAXKEYMAXCOLS_HUGO", NULL, createMaxKeyMaxColsHugoTabDef},
-    {"WIDE_MINKEYMAXCOLS_HUGO", NULL, createMinKeyMaxColsHugoTabDef}};
+    {"WIDE_MINKEYMAXCOLS_HUGO", NULL, createMinKeyMaxColsHugoTabDef},
+    {"WIDE_MIXED_MAXCOLS_HUGO", NULL, createMixedMaxColsHugoTabDef}};
 
 static const int numOtherTables = sizeof(other_tables) / sizeof(OtherTable);
 

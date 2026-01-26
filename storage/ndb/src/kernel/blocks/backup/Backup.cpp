@@ -97,6 +97,8 @@ static NDB_TICKS startTime;
 // #define DEBUG_END_LCP 1
 // #define DEBUG_LCP_DEL_FILES 1
 // #define DEBUG_LCP 1
+// #define DEBUG_LCP_MEM 1
+// #define DEBUG_BACKUP 1
 // #define DEBUG_UNDO_LCP 1
 // #define DEBUG_LCP_ROW 1
 // #define DEBUG_LCP_DEL 1
@@ -108,6 +110,28 @@ static NDB_TICKS startTime;
 // #define DEBUG_LCP_LAG 1
 // #define DO_TRANSIENT_POOL_STAT 1
 // #define DEBUG_LCP_WRITE_CTL 1
+#endif
+
+#ifdef DEBUG_BACKUP
+#define DEB_BACKUP(arglist)     \
+  do {                           \
+    g_eventLogger->info arglist; \
+  } while (0)
+#else
+#define DEB_BACKUP(arglist) \
+  do {                       \
+  } while (0)
+#endif
+
+#ifdef DEBUG_LCP_MEM
+#define DEB_LCP_MEM(arglist)     \
+  do {                           \
+    g_eventLogger->info arglist; \
+  } while (0)
+#else
+#define DEB_LCP_MEM(arglist) \
+  do {                       \
+  } while (0)
 #endif
 
 #ifdef DEBUG_END_LCP
@@ -2419,7 +2443,9 @@ void Backup::execCONTINUEB(Signal *signal) {
         DEBUG_OUT("Backup - Buffer full - "
                   << buf.getFreeSize() << " < " << buf.getMaxWrite() << " (sz: "
                   << buf.getUsableSize() << " getMinRead: " << buf.getMinRead()
-                  << ") - tableId = " << tabPtr.p->tableId);
+                  << ") - tableId = " << tabPtr.p->tableId
+                  << " fileType = " << filePtr.p->fileType
+                  << " filePtr.p = 0x" << filePtr.p);
 
         signal->theData[0] = BackupContinueB::BUFFER_FULL_META;
         signal->theData[1] = Tdata1;
@@ -6195,7 +6221,8 @@ void Backup::execDEFINE_BACKUP_REQ(Signal *signal) {
 
     noOfPages[2] =
         (c_defaults.m_lcp_buffer_size + sizeof(Page32) - 1) / sizeof(Page32);
-    for (Uint32 i = 0; i < (4 + (2 * BackupFormat::NDB_MAX_FILES_PER_LCP));
+    for (Uint32 i = 0;
+         i < (LCP_NUM_CTL_FILES + (2 * BackupFormat::NDB_MAX_FILES_PER_LCP));
          i++) {
       Uint32 minWriteLcp;
       Uint32 maxWriteLcp;
@@ -6209,7 +6236,7 @@ void Backup::execDEFINE_BACKUP_REQ(Signal *signal) {
           minWriteLcp = 1024;
           maxWriteLcp = 32768;
           maxInsertLcp = 8192;
-          noOfPagesLcp = 2;
+          noOfPagesLcp = PAGES_PER_CTL_FILE;
           ptr.p->ctlFilePtr = files[i].i;
           files[i].p->fileType = BackupFormat::CTL_FILE;
           break;
@@ -6219,7 +6246,7 @@ void Backup::execDEFINE_BACKUP_REQ(Signal *signal) {
           minWriteLcp = 1024;
           maxWriteLcp = 32768;
           maxInsertLcp = 8192;
-          noOfPagesLcp = 2;
+          noOfPagesLcp = PAGES_PER_CTL_FILE;
           ptr.p->prepareCtlFilePtr[0] = files[i].i;
           files[i].p->fileType = BackupFormat::CTL_FILE;
           break;
@@ -6229,7 +6256,7 @@ void Backup::execDEFINE_BACKUP_REQ(Signal *signal) {
           minWriteLcp = 1024;
           maxWriteLcp = 32768;
           maxInsertLcp = 8192;
-          noOfPagesLcp = 2;
+          noOfPagesLcp = PAGES_PER_CTL_FILE;
           ptr.p->prepareCtlFilePtr[1] = files[i].i;
           files[i].p->fileType = BackupFormat::CTL_FILE;
           break;
@@ -6239,13 +6266,13 @@ void Backup::execDEFINE_BACKUP_REQ(Signal *signal) {
           minWriteLcp = 1024;
           maxWriteLcp = 32768;
           maxInsertLcp = 8192;
-          noOfPagesLcp = 2;
+          noOfPagesLcp = PAGES_PER_CTL_FILE;
           ptr.p->deleteFilePtr = files[i].i;
           files[i].p->fileType = BackupFormat::DATA_FILE;
           break;
         }
         default: {
-          if (i < 4 + BackupFormat::NDB_MAX_FILES_PER_LCP) {
+          if (i < LCP_NUM_CTL_FILES + BackupFormat::NDB_MAX_FILES_PER_LCP) {
             jam();
             minWriteLcp = minWrite[2];
             maxWriteLcp = maxWrite[2];
@@ -6273,8 +6300,11 @@ void Backup::execDEFINE_BACKUP_REQ(Signal *signal) {
         }
       }
       Page32Ptr pagePtr;
-      DEB_LCP(("LCP: instance: %u, i: %u, seize %u pages", instance(), i,
-               noOfPagesLcp));
+      DEB_LCP_MEM(("(%u) LCP: i: %u, seize %u pages, filePtr.p: 0x%p"
+               ", minWriteLcp: %u, maxWriteLcp: %u, maxInsertLcp: %u, free: %u",
+        instance(), i, noOfPagesLcp, files[i].p,
+        minWriteLcp, maxWriteLcp, maxInsertLcp,
+        c_pagePool.getNoOfFree()));
       ndbrequire(files[i].p->pages.seize(noOfPagesLcp));
       files[i].p->pages.getPtr(pagePtr, 0);
       const char *msg = files[i].p->operation.dataBuffer.setup(
@@ -6284,6 +6314,22 @@ void Backup::execDEFINE_BACKUP_REQ(Signal *signal) {
         g_eventLogger->info("setup msg = %s, i = %u", msg, i);
         ndbabort();
       }
+      DEB_LCP_MEM(("(%u) setup, getFreeSize: %u, getFreeLwm: %u, getMaxWrite:%u"
+               ", getMinRead: %u, getBufferSize: %u, getUsableSize: %u"
+               ", minWriteLcp: %u, maxWriteLcp: %u, maxInsertLcp: %u"
+               ", free: %u",
+        instance(),
+        files[i].p->operation.dataBuffer.getFreeSize(),
+        files[i].p->operation.dataBuffer.getFreeLwm(),
+        files[i].p->operation.dataBuffer.getMaxWrite(),
+        files[i].p->operation.dataBuffer.getMinRead(),
+        files[i].p->operation.dataBuffer.getBufferSize(),
+        files[i].p->operation.dataBuffer.getUsableSize(),
+        minWriteLcp,
+        maxWriteLcp,
+        maxInsertLcp,
+        c_pagePool.getNoOfFree()));
+
       files[i].p->operation.m_bytes_total = 0;
       files[i].p->operation.m_records_total = 0;
     }
@@ -6318,6 +6364,8 @@ void Backup::execDEFINE_BACKUP_REQ(Signal *signal) {
       }  // if
       init_file(files[i], ptr.i);
 
+      DEB_BACKUP(("(%u) Seize noPages[%u] = %u, free: %u",
+        instance(), i, noOfPages[i], c_pagePool.getNoOfFree()));
       if (ERROR_INSERTED(10035) ||
           files[i].p->pages.seize(noOfPages[i]) == false) {
         jam();
@@ -8333,6 +8381,7 @@ void Backup::execTRANSID_AI(Signal *signal) {
       memcpy(dst + 1, src, 4 * dataLen);
     } else {
       jam();
+      ndbabort(); // Temporary to check if this is ever used
       SectionHandle handle(this, signal);
       SegmentedSectionPtr dataPtr;
       ndbrequire(handle.getSection(dataPtr, 0));
@@ -13887,7 +13936,7 @@ void Backup::prepare_parts_for_lcp(Signal *signal, BackupRecordPtr ptr) {
 void Backup::prepare_ranges_for_parts(BackupRecordPtr ptr, Uint32 in_parts) {
 #ifdef DEBUG_LCP
   TablePtr debTabPtr;
-  Fragment* fragPtrP
+  Fragment* fragPtrP;
   ptr.p->tables.first(debTabPtr);
   get_lcp_fragment(&fragPtrP, debTabPtr);
 #endif

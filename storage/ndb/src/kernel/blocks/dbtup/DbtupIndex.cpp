@@ -205,9 +205,9 @@ int Dbtup::tuxReadAttrsCommon(KeyReqStruct &req_struct, const Uint32 *attrIds,
       opPtr.p = m_ldm_instance_used->getOperationPtrP(opPtr.i);
       if (opPtr.p->op_struct.bit_field.tupVersion == tupVersion) {
         thrjamDebug(req_struct.jamBuffer);
-        if (!opPtr.p->m_copy_tuple_location.isNull()) {
+        if (opPtr.p->m_copy_tuple_location != nullptr) {
           req_struct.m_tuple_ptr =
-              get_copy_tuple(&opPtr.p->m_copy_tuple_location);
+              get_copy_tuple(opPtr.p->m_copy_tuple_location);
         }
         break;
       }
@@ -317,8 +317,8 @@ int Dbtup::tuxReadPk(Uint32 *fragPtrP_input, Uint32 *tablePtrP_input,
      * query thread directly.
      */
     opPtr.p = m_ldm_instance_used->getOperationPtrP(opPtr.i);
-    ndbrequire(!opPtr.p->m_copy_tuple_location.isNull());
-    req_struct.m_tuple_ptr = get_copy_tuple(&opPtr.p->m_copy_tuple_location);
+    ndbrequire(opPtr.p->m_copy_tuple_location != nullptr);
+    req_struct.m_tuple_ptr = get_copy_tuple(opPtr.p->m_copy_tuple_location);
   }
   prepare_read(&req_struct, tablePtrP, false);
     

@@ -1125,7 +1125,8 @@ Configuration::compute_backup_page_memory(
   lcp_buffer *= ((2 * BackupFormat::NDB_MAX_FILES_PER_LCP) + 1);
   Uint64 per_thread_buffer = lcp_buffer + Uint64(backup_log_buffer);
   per_thread_buffer +=
-    ((Backup::NO_OF_PAGES_META_FILE + 9) * GLOBAL_PAGE_SIZE);
+    ((Backup::NO_OF_PAGES_META_FILE +
+      (LCP_NUM_CTL_FILES * PAGES_PER_CTL_FILE) + 1) * GLOBAL_PAGE_SIZE);
   Uint32 num_ldm_threads = globalData.ndbMtLqhWorkers;
   return per_thread_buffer * Uint64(num_ldm_threads);
 }
