@@ -31,6 +31,7 @@
 #include <iostream>
 
 RS_Status create_native_request(PKReadParams &, Uint32*, Uint32&);
+RS_Status create_native_write_request(PKReadParams &, Uint32*, Uint32&);
 RS_Status process_pkread_response(ArenaMalloc*,
                                   void *,
                                   RS_Buffer *reqBuff,

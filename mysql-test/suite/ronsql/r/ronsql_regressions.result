@@ -9,7 +9,7 @@ SELECT sum(a) FROM tbl WHERE a < 5;
 Number of output lines, including header: 2
 
 == Diff ==
-================================================================================
+==========
 
 
 
@@ -19,7 +19,7 @@ SELECT sum(a) FROM tbl;
 Number of output lines, including header: 2
 
 == Diff ==
-================================================================================
+==========
 
 
 

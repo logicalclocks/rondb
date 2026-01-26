@@ -1,3 +1,28 @@
+/*
+   Copyright (c) 2026, 2026, Hopsworks and/or its affiliates.
+
+   This program is free software; you can redistribute it and/or modify
+   it under the terms of the GNU General Public License, version 2.0,
+   as published by the Free Software Foundation.
+
+   This program is designed to work with certain software (including
+   but not limited to OpenSSL) that is licensed under separate terms,
+   as designated in a particular file or component or in included license
+   documentation.  The authors of MySQL hereby grant you an additional
+   permission to link the program and your derivative works with the
+   separately licensed software that they have either included with
+   the program or referenced in the documentation.
+
+   This program is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License, version 2.0, for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with this program; if not, write to the Free Software
+   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
+*/
+
 package shell
 
 import (
@@ -297,13 +322,19 @@ func (s *Shell) loop() error {
 // readFullCommand reads a complete command, supporting multi-line input
 // Commands end with ; or are single-line if they don't need continuation
 func (s *Shell) readFullCommand(firstLine string) (string, error) {
-	// If line ends with ;, it's complete
+	lower := strings.ToLower(firstLine)
+
+	// For BATCH and BATCH DELETE, preserve the semicolon for their own handling
+	if lower == "batch" || strings.HasPrefix(lower, "batch ") {
+		return firstLine, nil // Let executeBatch/executeBatchDelete handle multi-line and semicolon
+	}
+
+	// If line ends with ;, it's complete (strip the semicolon for other commands)
 	if strings.HasSuffix(firstLine, ";") {
 		return strings.TrimSuffix(firstLine, ";"), nil
 	}
 
 	// For simple single-line commands (internal commands, simple Rondis), return as-is
-	lower := strings.ToLower(firstLine)
 	if strings.HasPrefix(lower, ".") {
 		return firstLine, nil
 	}
@@ -316,11 +347,6 @@ func (s *Shell) readFullCommand(firstLine string) (string, error) {
 	// RONSQL commands are handled by executeRonSQL - return as-is
 	if lower == "ronsql" || strings.HasPrefix(lower, "ronsql ") {
 		return firstLine, nil
-	}
-
-	// For BATCH without ;, use the existing multi-line BATCH handling
-	if lower == "batch" || strings.HasPrefix(lower, "batch ") {
-		return firstLine, nil // Let executeBatch handle multi-line
 	}
 
 	// For other commands without ;, check if it looks like it might need more input
@@ -404,7 +430,7 @@ func (s *Shell) execute(line string) error {
 		return s.executeREAD(line)
 	}
 
-	// REST API: BATCH (single-line or multi-line mode)
+	// REST API: BATCH (handles both READ and DELETE operations)
 	if lower == "batch" || strings.HasPrefix(lower, "batch ") {
 		return s.executeBatch(line)
 	}
@@ -544,6 +570,27 @@ func (s *Shell) executeInternal(line string) error {
 			return err
 		}
 		return s.runDelSQL(numThreads, numOps, rowsPerOp)
+	case "del_rdrs":
+		if s.restClient == nil {
+			return fmt.Errorf("REST API not connected. Cannot run del_rdrs.")
+		}
+		numThreads, numOps, rowsPerOp, err := parseBenchParams(parts)
+		if err != nil {
+			return err
+		}
+		return s.runDelRDRS(numThreads, numOps, rowsPerOp)
+	case "load_rdrs":
+		if s.restClient == nil {
+			return fmt.Errorf("REST API not connected. Cannot run load_rdrs.")
+		}
+		if s.mysqlClient == nil {
+			return fmt.Errorf("MySQL not connected. Cannot run load_rdrs (needed to create table).")
+		}
+		numThreads, numOps, rowsPerOp, err := parseBenchParams(parts)
+		if err != nil {
+			return err
+		}
+		return s.runLoadRDRS(numThreads, numOps, rowsPerOp)
 	case "drop_sql":
 		if s.mysqlClient == nil {
 			return fmt.Errorf("MySQL not connected. Cannot run drop_sql.")
@@ -676,7 +723,15 @@ func (s *Shell) executeInternal(line string) error {
 		if err != nil {
 			return err
 		}
-		return s.runBenchRDRS(numThreads, numOps, rowsPerOp)
+		writePct := 0 // default: 100% reads
+		if len(parts) > 4 {
+			n, err := strconv.Atoi(parts[4])
+			if err != nil || n < 0 || n > 100 {
+				return fmt.Errorf("invalid write percentage (0-100): %s", parts[4])
+			}
+			writePct = n
+		}
+		return s.runBenchRDRS(numThreads, numOps, rowsPerOp, writePct)
 	case "bench_rdrs_cont":
 		if s.restClient == nil {
 			return fmt.Errorf("REST API not connected. Cannot run bench_rdrs_cont.")
@@ -685,15 +740,23 @@ func (s *Shell) executeInternal(line string) error {
 		if err != nil {
 			return err
 		}
-		durationSec := 60 // default: 60 seconds
+		writePct := 0 // default: 100% reads
 		if len(parts) > 4 {
 			n, err := strconv.Atoi(parts[4])
+			if err != nil || n < 0 || n > 100 {
+				return fmt.Errorf("invalid write percentage (0-100): %s", parts[4])
+			}
+			writePct = n
+		}
+		durationSec := 60 // default: 60 seconds
+		if len(parts) > 5 {
+			n, err := strconv.Atoi(parts[5])
 			if err != nil || n <= 0 {
-				return fmt.Errorf("invalid duration in seconds: %s", parts[4])
+				return fmt.Errorf("invalid duration in seconds: %s", parts[5])
 			}
 			durationSec = n
 		}
-		return s.runBenchRDRSCont(numThreads, numOps, rowsPerOp, durationSec)
+		return s.runBenchRDRSCont(numThreads, numOps, rowsPerOp, writePct, durationSec)
 	case "browse", "ui":
 		if s.mysqlClient == nil {
 			return fmt.Errorf("MySQL not connected. Cannot run browse/ui.")
@@ -906,23 +969,42 @@ func (s *Shell) executeBatch(line string) error {
 		if err != nil {
 			return err
 		}
+		if len(lines) == 0 {
+			return fmt.Errorf("empty batch")
+		}
 	}
 
-	req, err := dsl.ParseBatch(lines)
+	result, err := dsl.ParseBatchUnified(lines)
 	if err != nil {
 		return fmt.Errorf("parse error: %w", err)
 	}
 
-	endpoint := "/0.1.0/batch"
+	// Choose endpoint and request body based on operation type
+	var endpoint string
+	var requestBody interface{}
+
+	switch result.OpType {
+	case dsl.OpTypeRead:
+		endpoint = "/0.1.0/batch"
+		requestBody = result.Request
+	case dsl.OpTypeDelete:
+		endpoint = "/0.1.0/batchdelete"
+		requestBody = result.Request
+	case dsl.OpTypeWrite:
+		endpoint = "/0.1.0/batchwrite"
+		requestBody = result.WriteRequest
+	default:
+		return fmt.Errorf("unknown operation type")
+	}
 
 	// Pretty print the request
-	reqJSON, _ := json.MarshalIndent(req, "", "  ")
+	reqJSON, _ := json.MarshalIndent(requestBody, "", "  ")
 	fmt.Println()
 	fmt.Println(ui.Info(fmt.Sprintf("POST %s", endpoint)))
 	fmt.Println(string(reqJSON))
 	fmt.Println()
 
-	data, duration, err := s.restClient.Post(endpoint, req)
+	data, duration, err := s.restClient.Post(endpoint, requestBody)
 	if err != nil {
 		return err
 	}
@@ -934,6 +1016,7 @@ func (s *Shell) executeBatch(line string) error {
 }
 
 // readBatchLines reads lines until a line containing only ';' is entered
+// Returns empty slice if user immediately types ';' (caller may have content already)
 func (s *Shell) readBatchLines() ([]string, error) {
 	var lines []string
 
@@ -958,10 +1041,6 @@ func (s *Shell) readBatchLines() ([]string, error) {
 		}
 
 		lines = append(lines, line)
-	}
-
-	if len(lines) == 0 {
-		return nil, fmt.Errorf("empty batch")
 	}
 
 	return lines, nil
@@ -1330,10 +1409,14 @@ func (s *Shell) runLoadRondis(numThreads int, numOps int, rowsPerOp int) error {
 			case <-ticker.C:
 				ops := atomic.LoadInt64(&completedOps)
 				keys := ops * int64(rowsPerOp)
+				errs := errorCollector.Count()
 				elapsed := time.Since(writeStart)
 				keysPerSec := float64(keys) / elapsed.Seconds()
 				pct := float64(ops) / float64(totalOps) * 100
-				fmt.Printf("   Progress: %d/%d ops (%.1f%%), %d keys, %.0f keys/sec\n", ops, totalOps, pct, keys, keysPerSec)
+				minLat, maxLat, avgLat, p99Lat, _ := latencyCollector.GetIntervalStats()
+				fmt.Printf("   Progress: %d/%d ops (%.1f%%), %d keys, errors=%d, %.0f keys/sec, latency: min=%s avg=%s max=%s p99=%s\n",
+					ops, totalOps, pct, keys, errs, keysPerSec,
+					formatLatency(minLat), formatLatency(avgLat), formatLatency(maxLat), formatLatency(p99Lat))
 			case <-stopProgress:
 				return
 			}
@@ -1389,6 +1472,7 @@ func (s *Shell) runLoadRondis(numThreads int, numOps int, rowsPerOp int) error {
 	}
 	wg.Wait()
 	close(stopProgress)
+	fmt.Println()
 	writeDuration := time.Since(writeStart)
 
 	// Get latency stats
@@ -1511,11 +1595,15 @@ func (s *Shell) runLoadSQL(numThreads int, numOps int, rowsPerOp int) error {
 			select {
 			case <-ticker.C:
 				ops := atomic.LoadInt64(&completedOps)
+				errs := errorCollector.Count()
 				rows := ops * int64(rowsPerOp)
 				elapsed := time.Since(writeStart)
 				rowsPerSec := float64(rows) / elapsed.Seconds()
 				pct := float64(ops) / float64(totalOps) * 100
-				fmt.Printf("   Progress: %d/%d ops (%.1f%%), %d rows, %.0f rows/sec\n", ops, totalOps, pct, rows, rowsPerSec)
+				minLat, maxLat, avgLat, p99Lat, _ := latencyCollector.GetIntervalStats()
+				fmt.Printf("   Progress: %d/%d ops (%.1f%%), %d rows, errors=%d, %.0f rows/sec, latency: min=%s avg=%s max=%s p99=%s\n",
+					ops, totalOps, pct, rows, errs, rowsPerSec,
+					formatLatency(minLat), formatLatency(avgLat), formatLatency(maxLat), formatLatency(p99Lat))
 			case <-stopProgress:
 				return
 			}
@@ -1558,6 +1646,7 @@ func (s *Shell) runLoadSQL(numThreads int, numOps int, rowsPerOp int) error {
 	}
 	wg.Wait()
 	close(stopProgress)
+	fmt.Println()
 	writeDuration := time.Since(writeStart)
 
 	// Get latency stats
@@ -1657,8 +1746,10 @@ func (s *Shell) runDelSQL(numThreads int, numOps int, rowsPerOp int) error {
 				elapsed := time.Since(delStart)
 				rowsPerSec := float64(rows) / elapsed.Seconds()
 				pct := float64(ops) / float64(totalOps) * 100
-				fmt.Printf("   Progress: %d/%d ops (%.1f%%), %d rows deleted, errors=%d, %.0f rows/sec\n",
-					ops, totalOps, pct, rows, errs, rowsPerSec)
+				minLat, maxLat, avgLat, p99Lat, _ := latencyCollector.GetIntervalStats()
+				fmt.Printf("   Progress: %d/%d ops (%.1f%%), %d rows deleted, errors=%d, %.0f rows/sec, latency: min=%s avg=%s max=%s p99=%s\n",
+					ops, totalOps, pct, rows, errs, rowsPerSec,
+					formatLatency(minLat), formatLatency(avgLat), formatLatency(maxLat), formatLatency(p99Lat))
 			case <-stopProgress:
 				return
 			}
@@ -1693,6 +1784,7 @@ func (s *Shell) runDelSQL(numThreads int, numOps int, rowsPerOp int) error {
 	}
 	wg.Wait()
 	close(stopProgress)
+	fmt.Println()
 	delDuration := time.Since(delStart)
 
 	// Get latency stats
@@ -1711,6 +1803,342 @@ func (s *Shell) runDelSQL(numThreads int, numOps int, rowsPerOp int) error {
 	fmt.Println(ui.Success("SQL Delete complete!"))
 	fmt.Printf("   Configuration: %d threads × %d requests × %d rows = %d total rows\n", numThreads, numOps, rowsPerOp, totalKeys)
 	fmt.Printf("   Deletes: %.0f rows/sec (%.0f DELETE/sec)\n", delRowsPerSec, delOpsPerSec)
+	fmt.Printf("   Latency: min=%s avg=%s max=%s p95=%s p99=%s p99.9=%s\n",
+		formatLatency(minLat), formatLatency(avgLat), formatLatency(maxLat),
+		formatLatency(p95Lat), formatLatency(p99Lat), formatLatency(p999Lat))
+	errorCollector.PrintErrors()
+	fmt.Println()
+
+	return nil
+}
+
+// runDelRDRS deletes test data using RDRS batchdelete endpoint
+func (s *Shell) runDelRDRS(numThreads int, numOps int, rowsPerOp int) error {
+	if s.restClient == nil {
+		return fmt.Errorf("REST API not connected. Delete requires RDRS.")
+	}
+
+	totalOps := numThreads * numOps
+	totalKeys := totalOps * rowsPerOp
+
+	fmt.Println()
+	if totalKeys > 10000 {
+		fmt.Println(ui.Warning(fmt.Sprintf("Deleting %d total rows via RDRS - this may take a while...", totalKeys)))
+	}
+	fmt.Println(ui.Info(fmt.Sprintf("Deleting RDRS data: %d threads × %d batches × %d rows = %d total rows", numThreads, numOps, rowsPerOp, totalKeys)))
+	fmt.Println()
+
+	// Create REST clients for each thread
+	clients := make([]*client.RestClient, numThreads)
+	if s.verbose >= 1 {
+		fmt.Printf("[*] Creating %d REST connections to %s:%d...\n", numThreads, s.config.RDRSHost, s.config.RestPort)
+	}
+	for i := 0; i < numThreads; i++ {
+		c, err := client.NewRestClientWithOptions(client.RestOptions{
+			Host:   s.config.RDRSHost,
+			Port:   s.config.RestPort,
+			TLS:    s.config.RDRSTLS,
+			APIKey: s.config.RDRSAPIKey,
+		})
+		if err != nil {
+			// Close already created clients
+			for j := 0; j < i; j++ {
+				clients[j].Close()
+			}
+			return fmt.Errorf("failed to create REST client for thread %d: %w", i, err)
+		}
+		clients[i] = c
+	}
+	if s.verbose >= 1 {
+		fmt.Printf("[*] %d REST connections established\n", numThreads)
+	}
+	defer func() {
+		for _, c := range clients {
+			c.Close()
+		}
+		if s.verbose >= 1 {
+			fmt.Printf("[*] %d REST connections closed\n", numThreads)
+		}
+	}()
+
+	fmt.Printf("Deleting %d rows (%d threads × %d batch requests × %d rows/batch)...\n", totalKeys, numThreads, numOps, rowsPerOp)
+
+	errorCollector := NewErrorCollector()
+	var completedOps int64
+	var wg sync.WaitGroup
+	latencyCollector := NewLatencyCollector()
+	delStart := time.Now()
+
+	// Progress reporting goroutine
+	stopProgress := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				ops := atomic.LoadInt64(&completedOps)
+				rows := ops * int64(rowsPerOp)
+				errs := errorCollector.Count()
+				elapsed := time.Since(delStart)
+				rowsPerSec := float64(rows) / elapsed.Seconds()
+				pct := float64(ops) / float64(totalOps) * 100
+				minLat, maxLat, avgLat, p99Lat, _ := latencyCollector.GetIntervalStats()
+				fmt.Printf("   Progress: %d/%d batches (%.1f%%), %d rows deleted, errors=%d, %.0f rows/sec, latency: min=%s avg=%s max=%s p99=%s\n",
+					ops, totalOps, pct, rows, errs, rowsPerSec,
+					formatLatency(minLat), formatLatency(avgLat), formatLatency(maxLat), formatLatency(p99Lat))
+			case <-stopProgress:
+				return
+			}
+		}
+	}()
+
+	debugMode := s.debug
+	clientID := s.clientID
+	for t := 0; t < numThreads; t++ {
+		wg.Add(1)
+		go func(threadID int, restClient *client.RestClient) {
+			defer wg.Done()
+
+			for i := 0; i < numOps; i++ {
+				// Build batch delete request with rowsPerOp operations
+				userID := fmt.Sprintf("bench:key:%d:%d:%d", clientID, threadID, i)
+				var operations []dsl.BatchOperation
+
+				for j := 0; j < rowsPerOp; j++ {
+					op := dsl.BatchOperation{
+						Method:      "POST",
+						RelativeURL: "test/sql_test/pk-delete",
+						Body: dsl.PkReadRequest{
+							Filters: []dsl.Filter{
+								{Column: "user_id", Value: userID},
+								{Column: "event_time", Value: j},
+							},
+							OperationID: fmt.Sprintf("%d", j),
+						},
+					}
+					operations = append(operations, op)
+				}
+
+				batchReq := dsl.BatchRequest{Operations: operations}
+				if debugMode {
+					reqJSON, _ := json.MarshalIndent(batchReq, "", "  ")
+					fmt.Printf("[DEBUG] REQ: POST /0.1.0/batchdelete\n%s\n", reqJSON)
+				}
+				opStart := time.Now()
+				resp, _, err := restClient.Post("/0.1.0/batchdelete", batchReq)
+				latencyCollector.Record(time.Since(opStart))
+				if debugMode {
+					fmt.Printf("[DEBUG] RESP: %s, err: %v\n", string(resp), err)
+				}
+				if err != nil {
+					errorCollector.Record(err)
+				}
+				atomic.AddInt64(&completedOps, 1)
+			}
+		}(t, clients[t])
+	}
+	wg.Wait()
+	close(stopProgress)
+	fmt.Println()
+	delDuration := time.Since(delStart)
+
+	// Get latency stats
+	minLat, maxLat, avgLat, p95Lat, p99Lat, p999Lat, _ := latencyCollector.GetTotalStats()
+
+	delRowsPerSec := float64(totalKeys) / delDuration.Seconds()
+	delOpsPerSec := float64(totalOps) / delDuration.Seconds()
+	fmt.Printf("   %d rows in %v (%.0f rows/sec, %.0f batch/sec)\n", totalKeys, delDuration.Round(time.Millisecond), delRowsPerSec, delOpsPerSec)
+	delErrors := errorCollector.Count()
+	if delErrors > 0 {
+		fmt.Printf("   %d delete errors\n", delErrors)
+	}
+	fmt.Println()
+
+	// Results
+	fmt.Println(ui.Success("RDRS Delete complete!"))
+	fmt.Printf("   Configuration: %d threads × %d batches × %d rows = %d total rows\n", numThreads, numOps, rowsPerOp, totalKeys)
+	fmt.Printf("   Deletes: %.0f rows/sec (%.0f batch/sec)\n", delRowsPerSec, delOpsPerSec)
+	fmt.Printf("   Latency: min=%s avg=%s max=%s p95=%s p99=%s p99.9=%s\n",
+		formatLatency(minLat), formatLatency(avgLat), formatLatency(maxLat),
+		formatLatency(p95Lat), formatLatency(p99Lat), formatLatency(p999Lat))
+	errorCollector.PrintErrors()
+	fmt.Println()
+
+	return nil
+}
+
+// runLoadRDRS loads data via RDRS batchwrite into test.sql_test
+func (s *Shell) runLoadRDRS(numThreads int, numOps int, rowsPerOp int) error {
+	totalOps := numThreads * numOps
+	totalKeys := totalOps * rowsPerOp
+
+	fmt.Println()
+	if totalKeys > 10000 {
+		fmt.Println(ui.Warning(fmt.Sprintf("Loading %d total rows via RDRS - this may take a while...", totalKeys)))
+	}
+	fmt.Println(ui.Info(fmt.Sprintf("Loading RDRS data: %d threads × %d batches × %d rows = %d total rows", numThreads, numOps, rowsPerOp, totalKeys)))
+	fmt.Println()
+
+	// Ensure test database and table exists (use MySQL to create)
+	fmt.Println("Creating test database and table...")
+	_, _, err := s.mysqlClient.Execute("CREATE DATABASE IF NOT EXISTS test")
+	if err != nil {
+		return fmt.Errorf("failed to create database: %w", err)
+	}
+
+	createTableSQL := `
+		CREATE TABLE IF NOT EXISTS test.sql_test (
+			user_id VARCHAR(64) NOT NULL,
+			event_time BIGINT NOT NULL,
+			description VARCHAR(128),
+			value_int BIGINT DEFAULT 0,
+			event_type BIGINT DEFAULT 0,
+			PRIMARY KEY (user_id, event_time)
+		) ENGINE=NDB`
+	_, _, err = s.mysqlClient.Execute(createTableSQL)
+	if err != nil {
+		return fmt.Errorf("failed to create table: %w", err)
+	}
+	fmt.Println("   Database and table ready")
+	fmt.Println()
+
+	// Create REST clients for each thread
+	clients := make([]*client.RestClient, numThreads)
+	if s.verbose >= 1 {
+		fmt.Printf("[*] Creating %d REST connections to %s:%d...\n", numThreads, s.config.RDRSHost, s.config.RestPort)
+	}
+	for i := 0; i < numThreads; i++ {
+		c, err := client.NewRestClientWithOptions(client.RestOptions{
+			Host:   s.config.RDRSHost,
+			Port:   s.config.RestPort,
+			TLS:    s.config.RDRSTLS,
+			APIKey: s.config.RDRSAPIKey,
+		})
+		if err != nil {
+			// Close already created clients
+			for j := 0; j < i; j++ {
+				clients[j].Close()
+			}
+			return fmt.Errorf("failed to create REST client for thread %d: %w", i, err)
+		}
+		clients[i] = c
+	}
+	if s.verbose >= 1 {
+		fmt.Printf("[*] %d REST connections established\n", numThreads)
+	}
+	defer func() {
+		for _, c := range clients {
+			c.Close()
+		}
+		if s.verbose >= 1 {
+			fmt.Printf("[*] %d REST connections closed\n", numThreads)
+		}
+	}()
+
+	fmt.Printf("Inserting %d rows (%d threads × %d batch requests × %d rows/batch)...\n", totalKeys, numThreads, numOps, rowsPerOp)
+
+	errorCollector := NewErrorCollector()
+	var completedOps int64
+	var wg sync.WaitGroup
+	latencyCollector := NewLatencyCollector()
+	writeStart := time.Now()
+
+	// Progress reporting goroutine
+	stopProgress := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				ops := atomic.LoadInt64(&completedOps)
+				rows := ops * int64(rowsPerOp)
+				errs := errorCollector.Count()
+				elapsed := time.Since(writeStart)
+				rowsPerSec := float64(rows) / elapsed.Seconds()
+				pct := float64(ops) / float64(totalOps) * 100
+				minLat, maxLat, avgLat, p99Lat, _ := latencyCollector.GetIntervalStats()
+				fmt.Printf("   Progress: %d/%d batches (%.1f%%), %d rows, errors=%d, %.0f rows/sec, latency: min=%s avg=%s max=%s p99=%s\n",
+					ops, totalOps, pct, rows, errs, rowsPerSec,
+					formatLatency(minLat), formatLatency(avgLat), formatLatency(maxLat), formatLatency(p99Lat))
+			case <-stopProgress:
+				return
+			}
+		}
+	}()
+
+	debugMode := s.debug
+	clientID := s.clientID
+	for t := 0; t < numThreads; t++ {
+		wg.Add(1)
+		go func(threadID int, restClient *client.RestClient) {
+			defer wg.Done()
+
+			for i := 0; i < numOps; i++ {
+				// Build batch write request with rowsPerOp operations
+				userID := fmt.Sprintf("bench:key:%d:%d:%d", clientID, threadID, i)
+				var operations []dsl.BatchWriteOperation
+
+				for j := 0; j < rowsPerOp; j++ {
+					description := fmt.Sprintf(`{"client":%d,"id":%d,"key":%d,"row":%d,"data":"benchmark test data"}`, clientID, threadID, i, j)
+					op := dsl.BatchWriteOperation{
+						Method:      "POST",
+						RelativeURL: "test/sql_test/pk-write",
+						Body: dsl.PkWriteRequest{
+							Filters: []dsl.Filter{
+								{Column: "user_id", Value: userID},
+								{Column: "event_time", Value: j},
+							},
+							WriteColumns: []dsl.WriteColumn{
+								{Column: "description", Value: description},
+								{Column: "value_int", Value: 0},
+								{Column: "event_type", Value: 0},
+							},
+							OperationID: fmt.Sprintf("%d", j),
+						},
+					}
+					operations = append(operations, op)
+				}
+
+				request := dsl.BatchWriteRequest{
+					Operations: operations,
+				}
+
+				if debugMode {
+					jsonBytes, _ := json.MarshalIndent(request, "", "  ")
+					fmt.Printf("[DEBUG] RDRS Request: %s\n", string(jsonBytes))
+				}
+
+				opStart := time.Now()
+				resp, _, err := restClient.Post("/0.1.0/batchwrite", request)
+				latencyCollector.Record(time.Since(opStart))
+
+				if debugMode {
+					fmt.Printf("[DEBUG] Result: err=%v, resp=%s\n", err, string(resp))
+				}
+				if err != nil {
+					errorCollector.Record(err)
+				}
+				atomic.AddInt64(&completedOps, 1)
+			}
+		}(t, clients[t])
+	}
+	wg.Wait()
+	close(stopProgress)
+	fmt.Println()
+	writeDuration := time.Since(writeStart)
+
+	// Get latency stats
+	minLat, maxLat, avgLat, p95Lat, p99Lat, p999Lat, _ := latencyCollector.GetTotalStats()
+
+	writeRowsPerSec := float64(totalKeys) / writeDuration.Seconds()
+	writeOpsPerSec := float64(totalOps) / writeDuration.Seconds()
+	fmt.Printf("   %d rows in %v (%.0f rows/sec, %.0f batch/sec)\n", totalKeys, writeDuration.Round(time.Millisecond), writeRowsPerSec, writeOpsPerSec)
+	writeErrors := errorCollector.Count()
+	if writeErrors > 0 {
+		fmt.Printf("   %d write errors\n", writeErrors)
+	}
 	fmt.Printf("   Latency: min=%s avg=%s max=%s p95=%s p99=%s p99.9=%s\n",
 		formatLatency(minLat), formatLatency(avgLat), formatLatency(maxLat),
 		formatLatency(p95Lat), formatLatency(p99Lat), formatLatency(p999Lat))
@@ -1877,7 +2305,7 @@ func (s *Shell) runBenchSQL(numThreads int, numOps int, rowsPerOp int, writePct 
 	}
 	wg.Wait()
 	close(stopProgress)
-
+	fmt.Println()
 	benchDuration := time.Since(benchStart)
 
 	// Get latency stats
@@ -2011,7 +2439,7 @@ func (s *Shell) runBenchSQLScan(numThreads int, numOps int, rowsPerOp int) error
 	}
 	wg.Wait()
 	close(stopProgress)
-
+	fmt.Println()
 	benchDuration := time.Since(benchStart)
 
 	// Get latency stats
@@ -2480,8 +2908,10 @@ func (s *Shell) runBenchRondis(numThreads int, numOps int, rowsPerOp int, writeP
 				elapsed := time.Since(benchStart)
 				keysPerSec := float64(keys) / elapsed.Seconds()
 				pct := float64(ops) / float64(totalOps) * 100
-				fmt.Printf("   Progress: %d/%d ops (%.1f%%), reads=%d, writes=%d, errors=%d, %.0f keys/sec\n",
-					ops, totalOps, pct, reads, writes, errs, keysPerSec)
+				minLat, maxLat, avgLat, p99Lat, _ := latencyCollector.GetIntervalStats()
+				fmt.Printf("   Progress: %d/%d ops (%.1f%%), reads=%d, writes=%d, errors=%d, %.0f keys/sec, latency: min=%s avg=%s max=%s p99=%s\n",
+					ops, totalOps, pct, reads, writes, errs, keysPerSec,
+					formatLatency(minLat), formatLatency(avgLat), formatLatency(maxLat), formatLatency(p99Lat))
 			case <-stopProgress:
 				return
 			}
@@ -2588,6 +3018,7 @@ func (s *Shell) runBenchRondis(numThreads int, numOps int, rowsPerOp int, writeP
 	}
 	wg.Wait()
 	close(stopProgress)
+	fmt.Println()
 	benchDuration := time.Since(benchStart)
 
 	// Get latency stats
@@ -2933,8 +3364,10 @@ func (s *Shell) runDelRondis(numThreads int, numOps int, rowsPerOp int) error {
 				elapsed := time.Since(delStart)
 				keysPerSec := float64(keys) / elapsed.Seconds()
 				pct := float64(ops) / float64(totalOps) * 100
-				fmt.Printf("   Progress: %d/%d ops (%.1f%%), %d keys deleted, errors=%d, %.0f keys/sec\n",
-					ops, totalOps, pct, keys, errs, keysPerSec)
+				minLat, maxLat, avgLat, p99Lat, _ := latencyCollector.GetIntervalStats()
+				fmt.Printf("   Progress: %d/%d ops (%.1f%%), %d keys deleted, errors=%d, %.0f keys/sec, latency: min=%s avg=%s max=%s p99=%s\n",
+					ops, totalOps, pct, keys, errs, keysPerSec,
+					formatLatency(minLat), formatLatency(avgLat), formatLatency(maxLat), formatLatency(p99Lat))
 			case <-stopProgress:
 				return
 			}
@@ -2989,6 +3422,7 @@ func (s *Shell) runDelRondis(numThreads int, numOps int, rowsPerOp int) error {
 	}
 	wg.Wait()
 	close(stopProgress)
+	fmt.Println()
 	delDuration := time.Since(delStart)
 
 	// Get latency stats
@@ -3024,8 +3458,8 @@ func (s *Shell) runDelRondis(numThreads int, numOps int, rowsPerOp int) error {
 	return nil
 }
 
-// runBenchRDRS benchmarks REST API using batch pk-read operations on test.sql_test
-func (s *Shell) runBenchRDRS(numThreads int, numOps int, rowsPerOp int) error {
+// runBenchRDRS benchmarks REST API using batch pk-read/pk-write operations on test.sql_test
+func (s *Shell) runBenchRDRS(numThreads int, numOps int, rowsPerOp int, writePct int) error {
 	if s.restClient == nil {
 		return fmt.Errorf("REST API not connected. Benchmark requires RDRS.")
 	}
@@ -3034,8 +3468,8 @@ func (s *Shell) runBenchRDRS(numThreads int, numOps int, rowsPerOp int) error {
 	totalRows := totalOps * rowsPerOp
 
 	fmt.Println()
-	fmt.Println(ui.Info(fmt.Sprintf("RDRS Benchmarking: %d threads × %d requests × %d rows = %d total rows (read-only)",
-		numThreads, numOps, rowsPerOp, totalRows)))
+	fmt.Println(ui.Info(fmt.Sprintf("RDRS Benchmarking: %d threads × %d requests × %d rows = %d total rows (%d%% writes, %d%% reads)",
+		numThreads, numOps, rowsPerOp, totalRows, writePct, 100-writePct)))
 	fmt.Println()
 
 	// Create REST clients for each thread
@@ -3082,6 +3516,7 @@ func (s *Shell) runBenchRDRS(numThreads int, numOps int, rowsPerOp int) error {
 	}
 
 	var readOps int64
+	var writeOps int64
 	var wg sync.WaitGroup
 	latencyCollector := NewLatencyCollector()
 	errorCollector := NewErrorCollector()
@@ -3095,15 +3530,19 @@ func (s *Shell) runBenchRDRS(numThreads int, numOps int, rowsPerOp int) error {
 		for {
 			select {
 			case <-ticker.C:
-				ops := atomic.LoadInt64(&readOps)
+				reads := atomic.LoadInt64(&readOps)
+				writes := atomic.LoadInt64(&writeOps)
 				errs := errorCollector.Count()
+				ops := reads + writes
 				rows := ops * int64(rowsPerOp)
 				elapsed := time.Since(benchStart)
 				opsPerSec := float64(ops) / elapsed.Seconds()
 				rowsPerSec := float64(rows) / elapsed.Seconds()
 				pct := float64(ops) / float64(totalOps) * 100
-				fmt.Printf("   Progress: %d/%d ops (%.1f%%), %d rows, errors=%d, %.0f batch/sec, %.0f rows/sec\n",
-					ops, totalOps, pct, rows, errs, opsPerSec, rowsPerSec)
+				minLat, maxLat, avgLat, p99Lat, _ := latencyCollector.GetIntervalStats()
+				fmt.Printf("   Progress: %d/%d ops (%.1f%%), reads=%d, writes=%d, errors=%d, %.0f batch/sec, %.0f rows/sec, latency: min=%s avg=%s max=%s p99=%s\n",
+					ops, totalOps, pct, reads, writes, errs, opsPerSec, rowsPerSec,
+					formatLatency(minLat), formatLatency(avgLat), formatLatency(maxLat), formatLatency(p99Lat))
 			case <-stopProgress:
 				return
 			}
@@ -3116,50 +3555,94 @@ func (s *Shell) runBenchRDRS(numThreads int, numOps int, rowsPerOp int) error {
 		wg.Add(1)
 		go func(threadID int, restClient *client.RestClient) {
 			defer wg.Done()
+			rng := rand.New(rand.NewSource(time.Now().UnixNano() + int64(threadID)))
 
 			for i := 0; i < numOps; i++ {
-				// Build batch request with rowsPerOp operations
+				isWrite := rng.Intn(100) < writePct
 				userID := fmt.Sprintf("bench:key:%d:%d:%d", clientID, threadID, i)
-				var operations []dsl.BatchOperation
 
-				for j := 0; j < rowsPerOp; j++ {
-					op := dsl.BatchOperation{
-						Method:      "POST",
-						RelativeURL: "test/sql_test/pk-read",
-						Body: dsl.PkReadRequest{
-							Filters: []dsl.Filter{
-								{Column: "user_id", Value: userID},
-								{Column: "event_time", Value: j},
+				if isWrite {
+					// Build batch write request with pk-write operations
+					var operations []dsl.BatchWriteOperation
+					for j := 0; j < rowsPerOp; j++ {
+						description := fmt.Sprintf(`{"client":%d,"id":%d,"key":%d,"row":%d,"data":"benchmark update"}`, clientID, threadID, i, j)
+						op := dsl.BatchWriteOperation{
+							Method:      "POST",
+							RelativeURL: "test/sql_test/pk-write",
+							Body: dsl.PkWriteRequest{
+								Filters: []dsl.Filter{
+									{Column: "user_id", Value: userID},
+									{Column: "event_time", Value: j},
+								},
+								WriteColumns: []dsl.WriteColumn{
+									{Column: "description", Value: description},
+									{Column: "value_int", Value: j + 1},
+									{Column: "event_type", Value: 1},
+								},
+								OperationID: fmt.Sprintf("%d", j),
 							},
-							ReadColumns: readColumns,
-							OperationID: fmt.Sprintf("%d", j),
-						},
+						}
+						operations = append(operations, op)
 					}
-					operations = append(operations, op)
-				}
 
-				batchReq := dsl.BatchRequest{Operations: operations}
-				if debugMode {
-					reqJSON, _ := json.MarshalIndent(batchReq, "", "  ")
-					fmt.Printf("[DEBUG] REQ: POST /0.1.0/batch\n%s\n", reqJSON)
-				}
-				opStart := time.Now()
-				resp, _, err := restClient.Post("/0.1.0/batch", batchReq)
-				latencyCollector.Record(time.Since(opStart))
-				if debugMode {
-					fmt.Printf("[DEBUG] RESP: %s, err: %v\n", string(resp), err)
-				}
-				if err != nil {
-					errorCollector.Record(err)
+					writeReq := dsl.BatchWriteRequest{Operations: operations}
+					if debugMode {
+						reqJSON, _ := json.MarshalIndent(writeReq, "", "  ")
+						fmt.Printf("[DEBUG] REQ: POST /0.1.0/batchwrite\n%s\n", reqJSON)
+					}
+					opStart := time.Now()
+					resp, _, err := restClient.Post("/0.1.0/batchwrite", writeReq)
+					latencyCollector.Record(time.Since(opStart))
+					if debugMode {
+						fmt.Printf("[DEBUG] RESP: %s, err: %v\n", string(resp), err)
+					}
+					if err != nil {
+						errorCollector.Record(err)
+					} else {
+						atomic.AddInt64(&writeOps, 1)
+					}
 				} else {
-					atomic.AddInt64(&readOps, 1)
+					// Build batch read request with pk-read operations
+					var operations []dsl.BatchOperation
+					for j := 0; j < rowsPerOp; j++ {
+						op := dsl.BatchOperation{
+							Method:      "POST",
+							RelativeURL: "test/sql_test/pk-read",
+							Body: dsl.PkReadRequest{
+								Filters: []dsl.Filter{
+									{Column: "user_id", Value: userID},
+									{Column: "event_time", Value: j},
+								},
+								ReadColumns: readColumns,
+								OperationID: fmt.Sprintf("%d", j),
+							},
+						}
+						operations = append(operations, op)
+					}
+
+					batchReq := dsl.BatchRequest{Operations: operations}
+					if debugMode {
+						reqJSON, _ := json.MarshalIndent(batchReq, "", "  ")
+						fmt.Printf("[DEBUG] REQ: POST /0.1.0/batch\n%s\n", reqJSON)
+					}
+					opStart := time.Now()
+					resp, _, err := restClient.Post("/0.1.0/batch", batchReq)
+					latencyCollector.Record(time.Since(opStart))
+					if debugMode {
+						fmt.Printf("[DEBUG] RESP: %s, err: %v\n", string(resp), err)
+					}
+					if err != nil {
+						errorCollector.Record(err)
+					} else {
+						atomic.AddInt64(&readOps, 1)
+					}
 				}
 			}
 		}(t, clients[t])
 	}
 	wg.Wait()
 	close(stopProgress)
-
+	fmt.Println()
 	benchDuration := time.Since(benchStart)
 
 	// Get latency stats
@@ -3167,13 +3650,14 @@ func (s *Shell) runBenchRDRS(numThreads int, numOps int, rowsPerOp int) error {
 
 	// Report results
 	fmt.Println()
-	totalRowsProcessed := readOps * int64(rowsPerOp)
-	opsPerSec := float64(readOps) / benchDuration.Seconds()
+	totalOpsCompleted := readOps + writeOps
+	totalRowsProcessed := totalOpsCompleted * int64(rowsPerOp)
+	opsPerSec := float64(totalOpsCompleted) / benchDuration.Seconds()
 	rowsPerSec := float64(totalRowsProcessed) / benchDuration.Seconds()
 
 	fmt.Println(ui.Success(fmt.Sprintf("RDRS Benchmark completed in %.2fs", benchDuration.Seconds())))
-	fmt.Printf("   Batch requests: %d\n", readOps)
-	fmt.Printf("   Rows read: %d\n", totalRowsProcessed)
+	fmt.Printf("   Reads:  %d batch requests (%d rows)\n", readOps, readOps*int64(rowsPerOp))
+	fmt.Printf("   Writes: %d batch requests (%d rows)\n", writeOps, writeOps*int64(rowsPerOp))
 	fmt.Printf("   Errors: %d\n", errorCollector.Count())
 	fmt.Printf("   Throughput: %.0f batch/sec (%.0f rows/sec)\n", opsPerSec, rowsPerSec)
 	fmt.Printf("   Latency: min=%s avg=%s max=%s p95=%s p99=%s p99.9=%s\n",
@@ -3186,14 +3670,14 @@ func (s *Shell) runBenchRDRS(numThreads int, numOps int, rowsPerOp int) error {
 }
 
 // runBenchRDRSCont runs continuous RDRS benchmark for specified duration
-func (s *Shell) runBenchRDRSCont(numThreads int, numOps int, rowsPerOp int, durationSec int) error {
+func (s *Shell) runBenchRDRSCont(numThreads int, numOps int, rowsPerOp int, writePct int, durationSec int) error {
 	if s.restClient == nil {
 		return fmt.Errorf("REST API not connected. Benchmark requires RDRS.")
 	}
 
 	fmt.Println()
-	fmt.Println(ui.Info(fmt.Sprintf("Continuous RDRS benchmark: %d threads, %d rows/batch, running for %d seconds",
-		numThreads, rowsPerOp, durationSec)))
+	fmt.Println(ui.Info(fmt.Sprintf("Continuous RDRS benchmark: %d threads, %d rows/batch, %d%% writes, running for %d seconds",
+		numThreads, rowsPerOp, writePct, durationSec)))
 	fmt.Println()
 
 	// Create REST clients for each thread
@@ -3241,9 +3725,11 @@ func (s *Shell) runBenchRDRSCont(numThreads int, numOps int, rowsPerOp int, dura
 
 	// Total counters
 	var totalReadOps int64
+	var totalWriteOps int64
 
 	// Interval counters (for 10-second reporting)
 	var intervalReadOps int64
+	var intervalWriteOps int64
 	var intervalErrors int64
 
 	var wg sync.WaitGroup
@@ -3276,6 +3762,7 @@ func (s *Shell) runBenchRDRSCont(numThreads int, numOps int, rowsPerOp int, dura
 			case <-ticker.C:
 				// Read and reset interval counters
 				reads := atomic.SwapInt64(&intervalReadOps, 0)
+				writes := atomic.SwapInt64(&intervalWriteOps, 0)
 				errs := atomic.SwapInt64(&intervalErrors, 0)
 
 				// Get interval latency stats
@@ -3284,13 +3771,14 @@ func (s *Shell) runBenchRDRSCont(numThreads int, numOps int, rowsPerOp int, dura
 				intervalDuration := time.Since(intervalStart)
 				intervalStart = time.Now()
 
-				rows := reads * int64(rowsPerOp)
-				opsPerSec := float64(reads) / intervalDuration.Seconds()
+				ops := reads + writes
+				rows := ops * int64(rowsPerOp)
+				opsPerSec := float64(ops) / intervalDuration.Seconds()
 				rowsPerSec := float64(rows) / intervalDuration.Seconds()
 
 				elapsed := time.Since(benchStart).Seconds()
-				fmt.Printf("[%5.0fs] batches: %d, errors: %d, %.0f batch/sec (%.0f rows/sec), latency: min=%s avg=%s max=%s p99=%s\n",
-					elapsed, reads, errs, opsPerSec, rowsPerSec,
+				fmt.Printf("[%5.0fs] reads: %d, writes: %d, errors: %d, %.0f batch/sec (%.0f rows/sec), latency: min=%s avg=%s max=%s p99=%s\n",
+					elapsed, reads, writes, errs, opsPerSec, rowsPerSec,
 					formatLatency(minLat), formatLatency(avgLat), formatLatency(maxLat), formatLatency(p99Lat))
 			}
 		}
@@ -3303,6 +3791,7 @@ func (s *Shell) runBenchRDRSCont(numThreads int, numOps int, rowsPerOp int, dura
 		go func(threadID int, restClient *client.RestClient) {
 			defer wg.Done()
 			keyCounter := 0
+			rng := rand.New(rand.NewSource(time.Now().UnixNano() + int64(threadID)))
 
 			for {
 				select {
@@ -3312,44 +3801,90 @@ func (s *Shell) runBenchRDRSCont(numThreads int, numOps int, rowsPerOp int, dura
 					// Use modulo to cycle through the same keys as .bench_rdrs
 					requestId := keyCounter % numOps
 					keyCounter++
+					isWrite := rng.Intn(100) < writePct
 
-					// Build batch request with rowsPerOp operations
+					// Build user_id for this request
 					userID := fmt.Sprintf("bench:key:%d:%d:%d", clientID, threadID, requestId)
-					var operations []dsl.BatchOperation
 
-					for j := 0; j < rowsPerOp; j++ {
-						op := dsl.BatchOperation{
-							Method:      "POST",
-							RelativeURL: "test/sql_test/pk-read",
-							Body: dsl.PkReadRequest{
-								Filters: []dsl.Filter{
-									{Column: "user_id", Value: userID},
-									{Column: "event_time", Value: j},
+					if isWrite {
+						// Build batch write request with pk-write operations
+						var operations []dsl.BatchWriteOperation
+						for j := 0; j < rowsPerOp; j++ {
+							description := fmt.Sprintf(`{"client":%d,"id":%d,"key":%d,"row":%d,"data":"benchmark update"}`, clientID, threadID, requestId, j)
+							op := dsl.BatchWriteOperation{
+								Method:      "POST",
+								RelativeURL: "test/sql_test/pk-write",
+								Body: dsl.PkWriteRequest{
+									Filters: []dsl.Filter{
+										{Column: "user_id", Value: userID},
+										{Column: "event_time", Value: j},
+									},
+									WriteColumns: []dsl.WriteColumn{
+										{Column: "description", Value: description},
+										{Column: "value_int", Value: j + 1},
+										{Column: "event_type", Value: 1},
+									},
+									OperationID: fmt.Sprintf("%d", j),
 								},
-								ReadColumns: readColumns,
-								OperationID: fmt.Sprintf("%d", j),
-							},
+							}
+							operations = append(operations, op)
 						}
-						operations = append(operations, op)
-					}
 
-					batchReq := dsl.BatchRequest{Operations: operations}
-					if debugMode {
-						reqJSON, _ := json.MarshalIndent(batchReq, "", "  ")
-						fmt.Printf("[DEBUG] REQ: POST /0.1.0/batch\n%s\n", reqJSON)
-					}
-					opStart := time.Now()
-					resp, _, err := restClient.Post("/0.1.0/batch", batchReq)
-					latencyCollector.Record(time.Since(opStart))
-					if debugMode {
-						fmt.Printf("[DEBUG] RESP: %s, err: %v\n", string(resp), err)
-					}
-					if err != nil {
-						errorCollector.Record(err)
-						atomic.AddInt64(&intervalErrors, 1)
+						writeReq := dsl.BatchWriteRequest{Operations: operations}
+						if debugMode {
+							reqJSON, _ := json.MarshalIndent(writeReq, "", "  ")
+							fmt.Printf("[DEBUG] REQ: POST /0.1.0/batchwrite\n%s\n", reqJSON)
+						}
+						opStart := time.Now()
+						resp, _, err := restClient.Post("/0.1.0/batchwrite", writeReq)
+						latencyCollector.Record(time.Since(opStart))
+						if debugMode {
+							fmt.Printf("[DEBUG] RESP: %s, err: %v\n", string(resp), err)
+						}
+						if err != nil {
+							errorCollector.Record(err)
+							atomic.AddInt64(&intervalErrors, 1)
+						} else {
+							atomic.AddInt64(&totalWriteOps, 1)
+							atomic.AddInt64(&intervalWriteOps, 1)
+						}
 					} else {
-						atomic.AddInt64(&totalReadOps, 1)
-						atomic.AddInt64(&intervalReadOps, 1)
+						// Build batch read request with pk-read operations
+						var operations []dsl.BatchOperation
+						for j := 0; j < rowsPerOp; j++ {
+							op := dsl.BatchOperation{
+								Method:      "POST",
+								RelativeURL: "test/sql_test/pk-read",
+								Body: dsl.PkReadRequest{
+									Filters: []dsl.Filter{
+										{Column: "user_id", Value: userID},
+										{Column: "event_time", Value: j},
+									},
+									ReadColumns: readColumns,
+									OperationID: fmt.Sprintf("%d", j),
+								},
+							}
+							operations = append(operations, op)
+						}
+
+						batchReq := dsl.BatchRequest{Operations: operations}
+						if debugMode {
+							reqJSON, _ := json.MarshalIndent(batchReq, "", "  ")
+							fmt.Printf("[DEBUG] REQ: POST /0.1.0/batch\n%s\n", reqJSON)
+						}
+						opStart := time.Now()
+						resp, _, err := restClient.Post("/0.1.0/batch", batchReq)
+						latencyCollector.Record(time.Since(opStart))
+						if debugMode {
+							fmt.Printf("[DEBUG] RESP: %s, err: %v\n", string(resp), err)
+						}
+						if err != nil {
+							errorCollector.Record(err)
+							atomic.AddInt64(&intervalErrors, 1)
+						} else {
+							atomic.AddInt64(&totalReadOps, 1)
+							atomic.AddInt64(&intervalReadOps, 1)
+						}
 					}
 				}
 			}
@@ -3365,13 +3900,14 @@ func (s *Shell) runBenchRDRSCont(numThreads int, numOps int, rowsPerOp int, dura
 
 	// Report total results
 	fmt.Println()
-	totalRowsProcessed := totalReadOps * int64(rowsPerOp)
-	opsPerSec := float64(totalReadOps) / benchDuration.Seconds()
+	totalOpsCompleted := totalReadOps + totalWriteOps
+	totalRowsProcessed := totalOpsCompleted * int64(rowsPerOp)
+	opsPerSec := float64(totalOpsCompleted) / benchDuration.Seconds()
 	rowsPerSec := float64(totalRowsProcessed) / benchDuration.Seconds()
 
 	fmt.Println(ui.Success(fmt.Sprintf("Continuous RDRS Benchmark completed in %.2fs", benchDuration.Seconds())))
-	fmt.Printf("   Total Batches: %d\n", totalReadOps)
-	fmt.Printf("   Total Rows: %d\n", totalRowsProcessed)
+	fmt.Printf("   Total Reads:  %d batches (%d rows)\n", totalReadOps, totalReadOps*int64(rowsPerOp))
+	fmt.Printf("   Total Writes: %d batches (%d rows)\n", totalWriteOps, totalWriteOps*int64(rowsPerOp))
 	fmt.Printf("   Total Errors: %d\n", errorCollector.Count())
 	fmt.Printf("   Avg Throughput: %.0f batch/sec (%.0f rows/sec)\n", opsPerSec, rowsPerSec)
 	fmt.Printf("   Latency: min=%s avg=%s max=%s p95=%s p99=%s p99.9=%s\n",
@@ -3421,15 +3957,27 @@ Commands:
     USE database        Switch database
     MYSQL <command>     Send any command directly to MySQL
 
-  REST API (pk-read):
-    READ db.table col1, col2 FILTER id=1, name="foo";
+  REST API (pk-read / pk-delete):
+    READ db.table col1, col2 FILTER pk1=1, pk2=2;
                         Single pk-read via REST API
 
-    BATCH READ db.table col1 FILTER id=1 [OP id] [READ ...];
-                        Batch with full READ per operation
+    BATCH READ db.table col1 FILTER pk1=1, pk2=1 READ db.table col1 FILTER pk1=2, pk2=2;
+                        Batch read with full READ per operation
 
-    BATCH db.table col1, col2 READ FILTER id=1, READ FILTER id=2;
-                        Batch with shared table/columns (use , to separate READs)
+    BATCH db.table col1, col2 READ FILTER pk1=1, pk2=1, READ FILTER pk1=2, pk2=2;
+                        Batch read with shared table/columns
+
+    BATCH DELETE db.table FILTER pk1=1, pk2=1 DELETE db.table FILTER pk1=2, pk2=2;
+                        Batch delete with full DELETE per operation
+
+    BATCH db.table DELETE FILTER pk1=1, pk2=1, DELETE FILTER pk1=2, pk2=2;
+                        Batch delete with shared table/columns
+
+    BATCH WRITE db.table col=val FILTER pk1=1, pk2=1 WRITE db.table col=val2 FILTER pk1=2, pk2=2;
+                        Batch write with full WRITE per operation
+
+    BATCH db.table WRITE col=val FILTER pk1=1, pk2=1, WRITE col=val2 FILTER pk1=2, pk2=2;
+                        Batch write with shared table
 
   RonSQL (REST API):
     RONSQL <query>             Execute query via RonSQL REST API
@@ -3475,12 +4023,14 @@ Internal benchmark commands (T=threads, N=requests, R=rows/req, W=write%, S=seco
     .bench_sql_cont [T] [N] [R] [W] [S]  Continuous benchmark for S seconds
     .bench_sql_scan [T] [N] [R]          Scan benchmark (SELECT by user_id only, no IN clause)
     .bench_sql_scan_cont [T] [N] [R] [S] Continuous scan benchmark for S seconds
-    .del_sql [T] [N] [R]                 Delete data via DELETE from test.sql_test
+    .del_sql [T] [N] [R]                 Delete data via SQL DELETE from test.sql_test
+    .del_rdrs [T] [N] [R]                Delete data via RDRS batchdelete from test.sql_test
     .drop_sql                            Drop the test.sql_test table
 
   RDRS benchmarks:
-    .bench_rdrs [T] [N] [R]              Batch pk-read benchmark (read-only)
-    .bench_rdrs_cont [T] [N] [R] [S]     Continuous benchmark for S seconds
+    .load_rdrs [T] [N] [R]               Load data via batchwrite into test.sql_test
+    .bench_rdrs [T] [N] [R] [W]          Benchmark (W=write%, 0=all reads, 100=all writes)
+    .bench_rdrs_cont [T] [N] [R] [W] [S] Continuous benchmark for S seconds
 
 Key format: bench:key:<client>:<thread>:<key>:<row>
 Defaults: T=2, N=1000, R=1, W=0, S=60, client=0
@@ -3621,7 +4171,11 @@ func (s *Shell) getCompleter() *readline.PrefixCompleter {
 
 		// REST API commands
 		readline.PcItem("READ"),
-		readline.PcItem("BATCH"),
+		readline.PcItem("BATCH",
+			readline.PcItem("READ"),
+			readline.PcItem("DELETE"),
+			readline.PcItem("WRITE"),
+		),
 		readline.PcItem("RONSQL",
 			readline.PcItem("SELECT"),
 			readline.PcItem("SET",
@@ -3647,6 +4201,7 @@ func (s *Shell) getCompleter() *readline.PrefixCompleter {
 		readline.PcItem(".load_rondis"),
 		readline.PcItem(".load_sql"),
 		readline.PcItem(".del_sql"),
+		readline.PcItem(".del_rdrs"),
 		readline.PcItem(".drop_sql"),
 		readline.PcItem(".bench_sql"),
 		readline.PcItem(".bench_sql_cont"),
@@ -3655,6 +4210,7 @@ func (s *Shell) getCompleter() *readline.PrefixCompleter {
 		readline.PcItem(".bench_rondis"),
 		readline.PcItem(".bench_rondis_cont"),
 		readline.PcItem(".del_rondis"),
+		readline.PcItem(".load_rdrs"),
 		readline.PcItem(".bench_rdrs"),
 		readline.PcItem(".bench_rdrs_cont"),
 		readline.PcItem(".browse"),

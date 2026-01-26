@@ -260,3 +260,61 @@ RS_Status PKRRequest::GetError() {
 bool PKRRequest::IsInvalidOp() {
   return this->isInvalidOp;
 }
+
+Uint32 PKRRequest::WriteColumnsCount() {
+  Uint32 offset =
+    (reinterpret_cast<Uint32 *>(req->buffer))[PK_REQ_WRITE_COLS_IDX];
+  if (unlikely(offset == 0)) {
+    return 0;
+  } else {
+    Uint32 count =
+      (reinterpret_cast<Uint32 *>(req->buffer))[offset / ADDRESS_SIZE];
+    return count;
+  }
+}
+
+Uint32 PKRRequest::WriteColumnTupleOffset(const int n) {
+  // Same layout as PK columns: [count][tuple offset1]...[tuple offset n]
+  // [col name offset][value offset] [bytes ...]
+  Uint32 offset =
+    (reinterpret_cast<Uint32 *>(req->buffer))[PK_REQ_WRITE_COLS_IDX];
+  // +1 for count
+  Uint32 tupleOffset =
+    (reinterpret_cast<Uint32 *>(req->buffer))[(offset / ADDRESS_SIZE) + 1 + n];
+  return tupleOffset;
+}
+
+const char *PKRRequest::WriteColumnName(Uint32 index) {
+  Uint32 tupleOffset = WriteColumnTupleOffset(index);
+  Uint32 nameOffset = (reinterpret_cast<Uint32 *>(req->buffer))[tupleOffset / 4];
+  return req->buffer + nameOffset + ADDRESS_SIZE;
+}
+
+Uint32 PKRRequest::WriteColumnNameLen(Uint32 index) {
+  Uint32 tupleOffset = WriteColumnTupleOffset(index);
+  Uint32 nameOffset = (reinterpret_cast<Uint32 *>(req->buffer))[tupleOffset / 4];
+  const char *ptr = req->buffer + nameOffset;
+  const Uint32 *len_ptr = reinterpret_cast<const Uint32*>(ptr);
+  return *len_ptr;
+}
+
+const char *PKRRequest::WriteColumnValueCStr(Uint32 index) {
+  Uint32 tupleOffset = WriteColumnTupleOffset(index);
+  Uint32 valueOffset =
+    (reinterpret_cast<Uint32 *>(req->buffer))[(tupleOffset / 4) + 1];
+  // skip first 4 bytes that contain size of string
+  return req->buffer + valueOffset + 4;
+}
+
+Uint32 PKRRequest::WriteColumnValueLen(Uint32 index) {
+  Uint32 tupleOffset = WriteColumnTupleOffset(index);
+  Uint32 valueOffset =
+    (reinterpret_cast<Uint32 *>(req->buffer))[(tupleOffset / 4) + 1];
+  unsigned char *data_start = (unsigned char *)req->buffer + valueOffset;
+  Uint32 *len_ptr = reinterpret_cast<Uint32*>(data_start);
+  return *len_ptr;
+}
+
+Uint32 PKRRequest::WriteOperationType() {
+  return (reinterpret_cast<Uint32 *>(req->buffer))[PK_REQ_FLAGS_IDX];
+}

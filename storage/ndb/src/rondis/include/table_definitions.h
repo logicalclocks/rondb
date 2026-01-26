@@ -155,11 +155,12 @@ enum KeyState {
     MultiRow = 3,
     /* Use m_num_rows */
     CompletedMultiRowSuccess = 4,
-    MultiRowRWValue = 5,
-    MultiRowRWValueSent = 6,
-    MultiRowRWAll = 7,
-    CompletedMultiRow = 8,
-    CompletedReadError = 9
+    CompletedMultiRowSuccessCommit = 5,
+    MultiRowRWValue = 6,
+    MultiRowRWValueSent = 7,
+    MultiRowRWAll = 8,
+    CompletedMultiRow = 9,
+    CompletedReadError = 10 
 };
 
 #define MAX_PARALLEL_KEY_OPS 1024

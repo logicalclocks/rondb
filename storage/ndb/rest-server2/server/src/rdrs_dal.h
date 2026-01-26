@@ -189,6 +189,28 @@ RS_Status pk_batch_read(void *amalloc,
                         unsigned int threadIndex);
 
 /**
+ * Batched primary key delete operation
+ * Also used for single key delete operation
+ */
+RS_Status pk_batch_delete(void *amalloc,
+                          unsigned int no_req,
+                          bool is_batch,
+                          RS_Buffer *req_buffs,
+                          RS_Buffer *resp_buffs,
+                          unsigned int threadIndex);
+
+/**
+ * Batched primary key write operation
+ * Also used for single key write operation
+ */
+RS_Status pk_batch_write(void *amalloc,
+                         unsigned int no_req,
+                         bool is_batch,
+                         RS_Buffer *req_buffs,
+                         RS_Buffer *resp_buffs,
+                         unsigned int threadIndex);
+
+/**
  * RonSQL query
  */
 struct RonSQLExecParams; /*

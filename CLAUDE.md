@@ -73,7 +73,11 @@ Command flow: `cmd/root.go` → `shell/repl.go` → `client/*.go`
 Shell detects command type:
 - `.` prefix → internal commands (.demo, .bench, .browse, .tables, .help)
 - SQL keywords (SELECT, INSERT, etc.) → MySQL client
+- `READ` / `BATCH` → REST API (pk-read/pk-delete/pk-write via RDRS)
+- `RONSQL` → REST API RonSQL queries
 - Everything else → Rondis client
+
+See `tools/rondb-cli/CLAUDE.md` for detailed rondb-cli documentation.
 
 ### RonDB Core Structure
 - `/storage/ndb/` - NDB Cluster storage engine
