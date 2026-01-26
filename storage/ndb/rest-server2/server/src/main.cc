@@ -373,7 +373,12 @@ int main(int argc, char *argv[]) {
       g_database_index,
       globalConfigs.rondis.numDatabases,
       &dirty_incr_decr_flag[0],
-      &opt_small_values_flag[0]);
+      &opt_small_values_flag[0],
+      globalConfigs.rondis.createTables,
+      globalConfigs.rondis.mysqlHost.c_str(),
+      globalConfigs.rondis.mysqlPort,
+      globalConfigs.rondis.mysqlUser.c_str(),
+      globalConfigs.rondis.mysqlPassword.c_str());
     if (ret_code != 0) {
       printf("Error setting up Rondis Server\n");
       g_exit_code = 1;

@@ -852,7 +852,7 @@ static int set_complex_rows(Ndb *ndb,
     Uint32 inx = current_index + i;
     if (key_storage[inx].m_key_state == KeyState::MultiRow) {
       num_complex_writes++;
-      DEB_MGET_CMD(("Start complex write of key id %u\n", inx));
+      DEB_MSET_CMD(("Start complex write of key id %u\n", inx));
       if (key_storage[i].m_trans == nullptr) {
         if (!setup_one_transaction(ndb,
                                    response,
@@ -890,7 +890,7 @@ static int set_complex_rows(Ndb *ndb,
      * so if one of them has to wait for a lock, it should not stop
      * other transactions from progressing.
      */
-    DEB_MGET_CMD(("Call sendPollNdb with %u keys, %u keys out and %u bytes"
+    DEB_MSET_CMD(("Call sendPollNdb with %u keys, %u keys out and %u bytes"
                   " out, current_finished_in_loop: %u\n",
                   get_ctrl->m_num_keys_multi_rows,
                   get_ctrl->m_num_keys_outstanding,
@@ -1414,8 +1414,11 @@ static int send_next_read_batch(std::string *response,
                get_ctrl->m_is_set_command == false) {
       get_ctrl->m_num_keys_outstanding++;
       commit_read_value_transaction(&key_storage[inx]);
+      DEB_MGET_CMD(("i: %u, current_finished: %u, outstanding: %u\n",
+        i, current_finished, get_ctrl->m_num_keys_outstanding));
       assert(current_finished > 0);
       current_finished--;
+      key_storage[inx].m_key_state = KeyState::CompletedMultiRowSuccessCommit;
     }
   }
   return 0;
@@ -1481,8 +1484,9 @@ static int get_complex_rows(Ndb *ndb,
     int finished = execute_ndb(ndb, min_finished, __LINE__);
     assert(finished >= 0);
     current_finished_in_loop += finished;
-    DEB_MGET_CMD(("Finished serving %u keys, prepare next batch\n",
-      finished));
+    DEB_MGET_CMD(("Finished serving %u keys, prepare next batch,"
+                  " current_index: %u\n",
+      finished, current_index));
     if (get_ctrl->m_num_keys_failed > 0) return 0;
     int ret_code = send_next_read_batch(response,
                                         key_storage,
@@ -1577,7 +1581,10 @@ rondb_get_func(Ndb *ndb,
                struct GetControl *get_ctrl,
                KeyStorage *key_storage,
                Uint32 num_keys) {
-  DEB_MGET_CMD(("MGET of %u keys\n", num_keys));
+  DEB_MGET_CMD(("MGET of %u keys, simple flag: %u, worker_id: %u\n",
+    num_keys,
+    get_opt_small_values_flag(get_ctrl->m_worker_id),
+    get_ctrl->m_worker_id));
   Uint32 current_index = 0;
   do {
     Uint32 loop_count = std::min(num_keys - current_index,

@@ -33,6 +33,7 @@
 #include "commands.h"
 #include <strings.h>
 #include <cassert>
+#include <mysql.h>
 
 //#define DEBUG_NDB_CMD 1
 
@@ -137,6 +138,118 @@ bool g_opt_small_values_flag[MAX_NUM_DATABASES];
 Uint32 g_num_databases = 0;
 int g_num_threads = 0;
 
+int create_rondis_tables(const char *mysql_host,
+                         Uint32 mysql_port,
+                         const char *mysql_user,
+                         const char *mysql_password,
+                         Uint32 num_databases) {
+  MYSQL *conn = mysql_init(nullptr);
+  if (conn == nullptr) {
+    printf("Failed to initialize MySQL connection\n");
+    return -1;
+  }
+
+  if (mysql_real_connect(conn,
+                         mysql_host,
+                         mysql_user,
+                         mysql_password,
+                         nullptr,
+                         mysql_port,
+                         nullptr,
+                         0) == nullptr) {
+    printf("Failed to connect to MySQL: %s\n", mysql_error(conn));
+    mysql_close(conn);
+    return -1;
+  }
+
+  printf("Connected to MySQL at %s:%u for Rondis table creation\n",
+         mysql_host, mysql_port);
+
+  for (Uint32 db_id = 0; db_id < num_databases; db_id++) {
+    char query[32768];
+
+    // Create database if not exists
+    snprintf(query, sizeof(query),
+             "CREATE DATABASE IF NOT EXISTS %s_%u",
+             REDIS_DB_NAME, db_id);
+    if (mysql_query(conn, query) != 0) {
+      printf("Failed to create database %s_%u: %s\n",
+             REDIS_DB_NAME, db_id, mysql_error(conn));
+      mysql_close(conn);
+      return -1;
+    }
+    printf("Database %s_%u ready\n", REDIS_DB_NAME, db_id);
+
+    // Create string_keys table
+    snprintf(query, sizeof(query),
+      "CREATE TABLE IF NOT EXISTS %s_%u.%s("
+      "  redis_key_id BIGINT UNSIGNED NOT NULL,"
+      "  redis_key VARBINARY(%u) NOT NULL,"
+      "  rondb_key BIGINT UNSIGNED AUTO_INCREMENT NULL,"
+      "  value_data_type INT UNSIGNED NOT NULL,"
+      "  tot_value_len INT UNSIGNED NOT NULL,"
+      "  num_rows INT UNSIGNED NOT NULL,"
+      "  value_start VARBINARY(%u) NOT NULL,"
+      "  expiry_date TIMESTAMP NULL,"
+      "  KEY ttl_index(expiry_date),"
+      "  PRIMARY KEY (redis_key_id, redis_key) USING HASH,"
+      "  UNIQUE KEY (rondb_key) USING HASH"
+      ") ENGINE NDB CHARSET=latin1 "
+      "COMMENT=\"NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM_X_8\"",
+      REDIS_DB_NAME, db_id, KEY_TABLE_NAME,
+      MAX_KEY_VALUE_LEN, INLINE_VALUE_LEN);
+    if (mysql_query(conn, query) != 0) {
+      printf("Failed to create table %s_%u.%s: %s\n",
+             REDIS_DB_NAME, db_id, KEY_TABLE_NAME, mysql_error(conn));
+      mysql_close(conn);
+      return -1;
+    }
+    printf("Table %s_%u.%s ready\n", REDIS_DB_NAME, db_id, KEY_TABLE_NAME);
+
+    // Create hset_keys table
+    snprintf(query, sizeof(query),
+      "CREATE TABLE IF NOT EXISTS %s_%u.%s("
+      "  redis_key VARBINARY(%u) NOT NULL,"
+      "  redis_key_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,"
+      "  PRIMARY KEY (redis_key) USING HASH,"
+      "  UNIQUE KEY (redis_key_id) USING HASH"
+      ") ENGINE NDB CHARSET=latin1 "
+      "COMMENT=\"NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM_X_8\"",
+      REDIS_DB_NAME, db_id, HSET_KEY_TABLE_NAME, MAX_KEY_VALUE_LEN);
+    if (mysql_query(conn, query) != 0) {
+      printf("Failed to create table %s_%u.%s: %s\n",
+             REDIS_DB_NAME, db_id, HSET_KEY_TABLE_NAME, mysql_error(conn));
+      mysql_close(conn);
+      return -1;
+    }
+    printf("Table %s_%u.%s ready\n", REDIS_DB_NAME, db_id, HSET_KEY_TABLE_NAME);
+
+    // Create string_values table
+    snprintf(query, sizeof(query),
+      "CREATE TABLE IF NOT EXISTS %s_%u.%s("
+      "  rondb_key BIGINT UNSIGNED NOT NULL,"
+      "  ordinal INT UNSIGNED NOT NULL,"
+      "  expiry_date TIMESTAMP NULL,"
+      "  value VARBINARY(%u) NOT NULL,"
+      "  KEY ttl_index(expiry_date),"
+      "  PRIMARY KEY (rondb_key, ordinal)"
+      ") ENGINE NDB CHARSET=latin1 "
+      "COMMENT=\"NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM_X_8\"",
+      REDIS_DB_NAME, db_id, VALUE_TABLE_NAME, EXTENSION_VALUE_LEN);
+    if (mysql_query(conn, query) != 0) {
+      printf("Failed to create table %s_%u.%s: %s\n",
+             REDIS_DB_NAME, db_id, VALUE_TABLE_NAME, mysql_error(conn));
+      mysql_close(conn);
+      return -1;
+    }
+    printf("Table %s_%u.%s ready\n", REDIS_DB_NAME, db_id, VALUE_TABLE_NAME);
+  }
+
+  mysql_close(conn);
+  printf("Successfully created all Rondis databases and tables\n");
+  return 0;
+}
+
 class NdbObjectGuard {
   public:
   NdbObjectGuard(int worker_id, Uint32 database_id)
@@ -181,7 +294,12 @@ int setup_ndb_connection_for_rondis(
  Uint32 *database_index,
  Uint32 num_databases,
  bool *dirty_incr_decr_flag,
- bool *opt_small_values_flag) {
+ bool *opt_small_values_flag,
+ bool create_tables,
+ const char *mysql_host,
+ Uint32 mysql_port,
+ const char *mysql_user,
+ const char *mysql_password) {
   assert(rondis_execution_variant == 0);
   rondis_execution_variant = INSIDE_RDRS2;
   g_get_ndb_object_func_ptr = get_ndb_object_func_ptr;
@@ -193,6 +311,19 @@ int setup_ndb_connection_for_rondis(
   g_num_threads = num_threads;
   g_current_database_index = database_index;
   g_num_databases = num_databases;
+
+  if (create_tables) {
+    int ret = create_rondis_tables(mysql_host,
+                                   mysql_port,
+                                   mysql_user,
+                                   mysql_password,
+                                   num_databases);
+    if (ret != 0) {
+      printf("Failed to create Rondis tables\n");
+      return -1;
+    }
+  }
+
   for (int i = 0; i < MAX_NUM_DATABASES; i++) {
     g_is_incr_decr_dirty[i] = false;
     g_opt_small_values_flag[i] = true;

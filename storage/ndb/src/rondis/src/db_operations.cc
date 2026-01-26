@@ -696,7 +696,7 @@ value_callback(int result, NdbTransaction *trans, void *aObject) {
   assert(trans == key_store->m_trans);
   assert(get_ctrl->m_num_transactions > 0);
   (void)result;
-  if (key_store->m_key_state == KeyState::CompletedMultiRowSuccess) {
+  if (key_store->m_key_state == KeyState::CompletedMultiRowSuccessCommit) {
     /* Only commit of Locked Read performed here */
     key_store->m_close_flag = true;
     assert(get_ctrl->m_num_keys_multi_rows > 0);
