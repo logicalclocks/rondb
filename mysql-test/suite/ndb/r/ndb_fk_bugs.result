@@ -563,6 +563,9 @@ ERROR 23000: Cannot delete or update a parent row: a foreign key constraint fail
 drop table t2, t1;
 create table t1_parent (pk1 char(255) primary key) charset=latin1, engine = ndb;
 create table t1 (
+c65 char(255) column_format fixed, c64 char(255) column_format fixed, c63 char(255) column_format fixed, c62 char(255) column_format fixed, c61 char(255) column_format fixed,
+c60 char(255) column_format fixed, c59 char(255) column_format fixed, c58 char(255) column_format fixed, c57 char(255) column_format fixed, c56 char(255) column_format fixed,
+c55 char(255) column_format fixed, c54 char(255) column_format fixed, c53 char(255) column_format fixed, c52 char(255) column_format fixed, c51 char(255) column_format fixed,
 c50 char(255) column_format fixed, c49 char(255) column_format fixed, c48 char(255) column_format fixed, c47 char(255) column_format fixed, c46 char(255) column_format fixed,
 c45 char(255) column_format fixed, c44 char(255) column_format fixed, c43 char(255) column_format fixed, c42 char(255) column_format fixed, c41 char(255) column_format fixed,
 c40 char(255) column_format fixed, c39 char(255) column_format fixed, c38 char(255) column_format fixed, c37 char(255) column_format fixed, c36 char(255) column_format fixed,
@@ -579,8 +582,7 @@ primary key using hash(c1)
 ERROR HY000: Can't create table 't1' (use SHOW WARNINGS for more info).
 SHOW WARNINGS;
 Level	Code	Message
-Warning	1296	Got error 851 'Fixed-size column offset exceeded max. Use VARCHAR or COLUMN_FORMAT DYNAMIC for some columns' from NDB
-Warning	1296	Failed to commit NDB schema transaction
+Warning	1296	Got error 940 'Fixed size part of row can at most be 16280 bytes' from NDB
 Error	1005	Can't create table 't1' (use SHOW WARNINGS for more info).
 create table t1(a int primary key) engine = ndb;
 drop table t1, t1_parent;

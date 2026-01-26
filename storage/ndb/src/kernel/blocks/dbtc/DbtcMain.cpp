@@ -22490,12 +22490,14 @@ void Dbtc::execTCKEYREF(Signal *signal) {
 }
 
 void Dbtc::execTRANSID_AI_R(Signal *signal) {
-  TransIdAI *const transIdAI = (TransIdAI *)signal->getDataPtr();
-  Uint32 sigLen = signal->length();
-  Uint32 dataLen = sigLen - TransIdAI::HeaderLength - 1;
-  Uint32 recBlockref = transIdAI->attrData[dataLen];
-
+  if (!assembleFragments(signal)) {
+    jam();
+    return;
+  }
   jamEntry();
+  TransIdAI *const transIdAI = (TransIdAI *)signal->getDataPtr();
+  TransIdAILong *const transIdAILong = (TransIdAILong *)signal->getDataPtr();
+  Uint32 sigLen = signal->length();
 
   SectionHandle handle(this, signal);
 
@@ -22503,7 +22505,22 @@ void Dbtc::execTRANSID_AI_R(Signal *signal) {
    * Forward signal to final destination
    * Truncate last word since that was used to hold the final dest.
    */
-  sendSignal(recBlockref, GSN_TRANSID_AI, signal, sigLen - 1, JBB, &handle);
+  if (sigLen == (TransIdAI::HeaderLength + 1)) {
+    jam();
+    Uint32 recBlockref = transIdAI->attrData[0];
+    sendSignal(recBlockref, GSN_TRANSID_AI, signal, sigLen - 1, JBB, &handle);
+  } else if (sigLen == (TransIdAILong::HeaderLength + 1)) {
+    jam();
+    Uint32 recBlockref = transIdAILong->correlationData[0];
+    sendBatchedFragmentedSignal(recBlockref, GSN_TRANSID_AI, signal,
+      sigLen - 1, JBB, &handle, false);
+  } else {
+    jam();
+    ndbrequire(sigLen == (TransIdAILong::HeaderWithCorrelationLength + 1));
+    Uint32 recBlockref = transIdAILong->attrData[0];
+    sendBatchedFragmentedSignal(recBlockref, GSN_TRANSID_AI, signal,
+      sigLen - 1, JBB, &handle, false);
+  }
 }
 
 void Dbtc::execKEYINFO20_R(Signal *signal) {
@@ -22533,6 +22550,10 @@ void Dbtc::execKEYINFO20_R(Signal *signal) {
  * base table.
  */
 void Dbtc::execTRANSID_AI(Signal *signal) {
+  if (!assembleFragments(signal)) {
+    jam();
+    return;
+  }
   TransIdAI *const transIdAI = (TransIdAI *)signal->getDataPtr();
 
   jamEntry();

@@ -971,8 +971,19 @@ class alignas(NDB_CL) SimulatedBlock
   /* If send size is > FRAGMENT_WORD_SIZE, fragments of this size
    * will be sent by the sendFragmentedSignal variants
    */
-  static constexpr Uint32 FRAGMENT_WORD_SIZE = 240;
-  static constexpr Uint32 BATCH_FRAGMENT_WORD_SIZE = 240 * 8;
+#ifdef VM_TRACE
+  static constexpr Uint32 FRAGMENT_WORD_SIZE = 120;
+  static constexpr Uint32 BATCH_FRAGMENT_WORD_SIZE = 120;
+#else
+  static constexpr Uint32 FRAGMENT_WORD_SIZE = 240 * 16;
+  static constexpr Uint32 BATCH_FRAGMENT_WORD_SIZE = 240 * 16;
+#endif
+  static_assert((FRAGMENT_WORD_SIZE / NDB_SECTION_SEGMENT_SZ) *
+                 NDB_SECTION_SEGMENT_SZ ==
+                 FRAGMENT_WORD_SIZE);
+  static_assert((BATCH_FRAGMENT_WORD_SIZE / NDB_SECTION_SEGMENT_SZ) *
+                 NDB_SECTION_SEGMENT_SZ ==
+                 BATCH_FRAGMENT_WORD_SIZE);
 
   void sendFragmentedSignal(BlockReference ref, GlobalSignalNumber gsn,
                             Signal *signal, Uint32 length, JobBufferLevel jbuf,
@@ -1010,6 +1021,14 @@ class alignas(NDB_CL) SimulatedBlock
       bool noRelease, Callback & = TheEmptyCallback,
       Uint32 messageSize = BATCH_FRAGMENT_WORD_SIZE);
 
+  /**
+   * It is important that ptr[x].p don't point to the Signal object below
+   * signal->theData[25] since sendBatchedFragmentSignal will use a part
+   * of the signal to transfer information about segments. Thus this area
+   * will be overwritten and cause bugs very hard to find.
+   *
+   * This relates to all sendBatchedFragmentedSignal functions
+   */
   void sendBatchedFragmentedSignal(
       BlockReference ref, GlobalSignalNumber gsn, Signal *signal, Uint32 length,
       JobBufferLevel jbuf, LinearSectionPtr ptr[3], Uint32 noOfSections,

@@ -227,30 +227,35 @@ DROP TABLE test.badchar;
 CREATE TABLE test.badlen(
                       a int primary key,
                       b blob comment "NDB_COLUMN=BLOB_INLINE_SIZE=40000") engine=ndb;
-ERROR HY000: Can't create table 'badlen' (use SHOW WARNINGS for more info).
+Got one of the listed errors
 SHOW WARNINGS;
 Level	Code	Message
-Warning	1296	Got error 738 'Record too big' from NDB
+Warning	1296	Got error 941 'In-memory varsize part of row can at most be 32036 bytes' from NDB
 Error	1005	Can't create table 'badlen' (use SHOW WARNINGS for more info).
 
 CREATE TABLE test.maxlen(
                       a int primary key,
-                      b blob comment "NDB_COLUMN=BLOB_INLINE_SIZE=29981") engine=ndb;
+                      b blob comment "NDB_COLUMN=BLOB_INLINE_SIZE=32001") engine=ndb;
 ERROR HY000: Can't create table 'maxlen' (use SHOW WARNINGS for more info).
 SHOW WARNINGS;
 Level	Code	Message
-Warning	1296	Got error 738 'Record too big' from NDB
+Warning	1296	Got error 941 'In-memory varsize part of row can at most be 32036 bytes' from NDB
+Warning	1296	Failed to commit NDB schema transaction
 Error	1005	Can't create table 'maxlen' (use SHOW WARNINGS for more info).
 
-## Max len for inline Blob is 30000 - (4 + 16[header])
+## Max len for inline Blob is 32032 - (16 + 16[header])
 CREATE TABLE test.maxlen(
                       a int primary key,
-                      b blob comment "NDB_COLUMN=BLOB_INLINE_SIZE=29980") engine=ndb;
+                      b blob comment "NDB_COLUMN=BLOB_INLINE_SIZE=32000") engine=ndb;
+SHOW WARNINGS;
+Level	Code	Message
+
+## Max len for inline disk Blob is 31080 - (16 + 16[header])
 ## Verify inline of test.maxlen
 SELECT inline_size FROM ndbinfo.blobs WHERE table_name = 'maxlen';
 inline_size
-29980
-
+32000
+## Verify inline of test.disk_maxlen
 DROP TABLE test.maxlen;
 
 ## TINYBLOB columns ignore the BLOB_INLINE_SIZE option
@@ -419,7 +424,7 @@ ALTER TABLE test.inline algorithm=copy,
 ERROR HY000: Can't create destination table for copying alter table (use SHOW WARNINGS for more info).
 SHOW WARNINGS;
 Level	Code	Message
-Warning	1296	Got error 738 'Record too big' from NDB
+Warning	1296	Got error 941 'In-memory varsize part of row can at most be 32036 bytes' from NDB
 Error	1005	Can't create destination table for copying alter table (use SHOW WARNINGS for more info).
 
 ## ALTER TABLE random characters on COMMENT before NDB_COLUMN

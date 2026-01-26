@@ -1675,8 +1675,8 @@ class Dbspj : public SimulatedBlock {
   /**
    * Scratch buffers...
    */
-  Uint32 m_buffer0[16*1024]; // 64k
-  Uint32 m_buffer1[16*1024]; // 64k
+  Uint32 m_buffer0[32*1024]; // 128k
+  Uint32 m_buffer1[32*1024]; // 128k
 public:
   static size_t getTableRecordSize()
   {

@@ -78,6 +78,10 @@
 
 #define JAM_FILE_ID 252
 
+#ifdef VM_TRACE
+//#define DEBUG_TRANSID_AI 1
+#endif
+
 //
 // Constructor, Destructor
 //
@@ -2937,13 +2941,19 @@ bool SimulatedBlock::assembleFragments(Signal *signal) {
   Uint32 *sectionPtr = signal->m_sectionPtrI;
 
   if (fragInfo == 0) {
+    jamDebug();
     return true;
   }
 
   const Uint32 secs = signal->header.m_noOfSections;
   const Uint32 *const secNos = &signal->theData[sigLen - secs];
 
+  jamDebug();
+  jamDataDebug(signal->length());
+  jamDataDebug(secs);
+
   if (fragInfo == 1) {
+    jamDebug();
     /**
      * First in train
      */
@@ -2971,7 +2981,6 @@ bool SimulatedBlock::assembleFragments(Signal *signal) {
     signal->header.m_noOfSections = 0;
     return false;
   }
-
   FragmentInfo key(fragId, senderRef);
   Ptr<FragmentInfo> fragPtr;
   if (c_fragmentInfoHash.find(fragPtr, key)) {
@@ -3015,7 +3024,8 @@ bool SimulatedBlock::assembleFragments(Signal *signal) {
       signal->setLength(sigLen - secs);
       signal->header.m_noOfSections = i;
       signal->header.m_fragmentInfo = 0;
-
+      jamDebug();
+      jamDataDebug(signal->length());
       c_fragmentInfoHash.release(fragPtr);
       return true;
     } else {
@@ -3439,6 +3449,7 @@ bool SimulatedBlock::sendFirstFragment(FragmentSendInfo &info,
                                        Uint32 length, JobBufferLevel jbuf,
                                        SectionHandle *sections, bool noRelease,
                                        Uint32 messageSize) {
+  jamDebug();
   Uint32 noSections = sections->m_cnt;
   SegmentedSectionPtr *ptr = sections->m_ptr;
 
@@ -3452,22 +3463,35 @@ bool SimulatedBlock::sendFirstFragment(FragmentSendInfo &info,
       info.m_sectionPtr[2].m_segmented.i = ptr[2].i;
       info.m_sectionPtr[2].m_segmented.p = ptr[2].p;
       totalSize += ptr[2].sz;
+      jamDataDebug(ptr[2].sz);
       [[fallthrough]];
     case 2:
       info.m_sectionPtr[1].m_segmented.i = ptr[1].i;
       info.m_sectionPtr[1].m_segmented.p = ptr[1].p;
       totalSize += ptr[1].sz;
+      jamDataDebug(ptr[1].sz);
       [[fallthrough]];
     case 1:
       info.m_sectionPtr[0].m_segmented.i = ptr[0].i;
       info.m_sectionPtr[0].m_segmented.p = ptr[0].p;
       totalSize += ptr[0].sz;
+      jamDataDebug(ptr[0].sz);
   }
 
-  if (totalSize + length <= MAX_SIZE_SINGLE_SIGNAL) {
+  jamDataDebug(totalSize);
+  jamDataDebug(length);
+
+  Uint32 max_size = MAX_SIZE_SINGLE_SIGNAL;
+#ifdef VM_TRACE
+  if (gsn == GSN_TRANSID_AI) {
+    max_size = DEB_MAX_SIZE_SINGLE_SIGNAL;
+  }
+#endif
+  if (totalSize + length <= max_size) {
     /**
      * Send signal directly
      */
+    jamDebug();
     if (noRelease)
       sendSignalNoRelease(rg, gsn, signal, length, jbuf, sections);
     else
@@ -3603,11 +3627,14 @@ void SimulatedBlock::sendNextSegmentedFragment(Signal *signal,
   for (; secNo >= 0 && secCount < 3; secNo--) {
     Uint32 ptrI = info.m_sectionPtr[secNo].m_segmented.i;
     if (ptrI == RNIL) continue;
-
+    jamDebug();
+    jamDataDebug(sz);
+    jamDataDebug(maxSz);
     info.m_sectionPtr[secNo].m_segmented.i = RNIL;
 
     SectionSegment *ptrP = info.m_sectionPtr[secNo].m_segmented.p;
     const Uint32 size = ptrP->m_sz;
+    jamDataDebug(size);
 
     ptr[secCount].i = ptrI;
     ptr[secCount].p = ptrP;
@@ -3620,17 +3647,22 @@ void SimulatedBlock::sendNextSegmentedFragment(Signal *signal,
       /**
        * The section fits
        */
+      jamDebug();
       sz += size;
+      jamDataDebug(sz);
       lsout(g_eventLogger->info("section %d saved as %d", secNo, secCount - 1));
       continue;
     }
 
     const Uint32 overflow = size - sizeLeft;  // > 0
+    jamDebug();
+    jamDataDebug(overflow);
     if (overflow <= SectionSegment::DataLength) {
       /**
        * Only one segment left to send
        *   send even if sizeLeft <= size
        */
+      jamDebug();
       lsout(g_eventLogger->info("section %d saved as %d but full over: %d",
                                 secNo, secCount - 1, overflow));
       secNo--;
@@ -3643,6 +3675,7 @@ void SimulatedBlock::sendNextSegmentedFragment(Signal *signal,
        * Less than one segment left (space)
        *   dont bother sending
        */
+      jamDebug();
       secCount--;
       info.m_sectionPtr[secNo].m_segmented.i = ptrI;
       loop = Full;
@@ -3718,6 +3751,8 @@ void SimulatedBlock::sendNextSegmentedFragment(Signal *signal,
 
   Uint32 fragInfo = info.m_fragInfo;
   info.m_fragInfo = 2;
+  jamDebug();
+  jamDataDebug(fragInfo);
   switch (loop) {
     case Unknown:
       if (secNo >= 0) {
@@ -3787,6 +3822,7 @@ bool SimulatedBlock::sendFirstFragment(
     FragmentSendInfo &info, NodeReceiverGroup rg, GlobalSignalNumber gsn,
     Signal *signal, Uint32 length, JobBufferLevel jbuf, LinearSectionPtr ptr[3],
     Uint32 noOfSections, Uint32 messageSize) {
+  jamDebug();
   check_sections(reinterpret_cast<Signal25 *>(signal),
                  signal->header.m_noOfSections, noOfSections);
 
@@ -3799,20 +3835,33 @@ bool SimulatedBlock::sendFirstFragment(
     case 3:
       info.m_sectionPtr[2].m_linear = ptr[2];
       totalSize += ptr[2].sz;
+      jamDataDebug(ptr[2].sz);
       [[fallthrough]];
     case 2:
       info.m_sectionPtr[1].m_linear = ptr[1];
       totalSize += ptr[1].sz;
+      jamDataDebug(ptr[1].sz);
       [[fallthrough]];
     case 1:
       info.m_sectionPtr[0].m_linear = ptr[0];
       totalSize += ptr[0].sz;
+      jamDataDebug(ptr[0].sz);
   }
 
-  if (totalSize + length <= MAX_SIZE_SINGLE_SIGNAL) {
+  jamDataDebug(totalSize);
+  jamDataDebug(length);
+
+  Uint32 max_size = MAX_SIZE_SINGLE_SIGNAL;
+#ifdef VM_TRACE
+  if (gsn == GSN_TRANSID_AI) {
+    max_size = DEB_MAX_SIZE_SINGLE_SIGNAL;
+  }
+#endif
+  if (totalSize + length <= max_size) {
     /**
      * Send signal directly
      */
+    jamDebug();
     sendSignal(rg, gsn, signal, length, jbuf, ptr, noOfSections);
     info.m_status = FragmentSendInfo::SendComplete;
 
@@ -4008,6 +4057,25 @@ void SimulatedBlock::sendNextLinearFragment(Signal *signal,
 
   signal->header.m_noOfSections = 0;
   signal->header.m_fragmentInfo = fragInfo;
+  jamDebug();
+  jamDataDebug(sigLen);
+  jamDataDebug(secCount);
+  jamDataDebug(signalPtr[0].sz);
+  jamDataDebug(fragInfo);
+#ifdef DEBUG_TRANSID_AI
+  const Uint32 *p = signalPtr[0].p;
+  Uint32 p_sz = signalPtr[0].sz;
+  Uint32 checksum = 0;
+  for (Uint32 i = 0; i < p_sz; i++) {
+    checksum ^= p[i];
+  }
+  Uint16 low = checksum & 0xFFFF;
+  Uint16 high = checksum >> 16;
+  jamDataDebug(low);
+  jamDataDebug(high);
+  g_eventLogger->info("(%u), gsn: %u, len: %u, checksum: 0x%x, map: %u",
+    instance(), info.m_gsn, p_sz, checksum, signal->theData[0]);
+#endif
 
   sendSignal(info.m_nodeReceiverGroup, info.m_gsn, signal,
              sigLen + secCount + 1, (JobBufferLevel)info.m_prio, signalPtr,
@@ -4027,6 +4095,7 @@ void SimulatedBlock::sendFragmentedSignal(BlockReference ref,
                                           JobBufferLevel jbuf,
                                           SectionHandle *sections, Callback &c,
                                           Uint32 messageSize) {
+  jamDebug();
   bool res = true;
   Ptr<FragmentSendInfo> tmp;
   res = c_segmentedFragmentSendList.seizeFirst(tmp);
@@ -4065,6 +4134,7 @@ void SimulatedBlock::sendFragmentedSignal(NodeReceiverGroup rg,
                                           JobBufferLevel jbuf,
                                           SectionHandle *sections, Callback &c,
                                           Uint32 messageSize) {
+  jamDebug();
   bool res = true;
   Ptr<FragmentSendInfo> tmp;
   res = c_segmentedFragmentSendList.seizeFirst(tmp);
@@ -4107,6 +4177,7 @@ void SimulatedBlock::sendFragmentedSignal(
     BlockReference ref, GlobalSignalNumber gsn, Signal *signal, Uint32 length,
     JobBufferLevel jbuf, LinearSectionPtr ptr[3], Uint32 noOfSections,
     Callback &c, Uint32 messageSize) {
+  jamDebug();
   bool res = true;
   Ptr<FragmentSendInfo> tmp;
   res = c_linearFragmentSendList.seizeFirst(tmp);
@@ -4141,6 +4212,7 @@ void SimulatedBlock::sendFragmentedSignal(
     NodeReceiverGroup rg, GlobalSignalNumber gsn, Signal *signal, Uint32 length,
     JobBufferLevel jbuf, LinearSectionPtr ptr[3], Uint32 noOfSections,
     Callback &c, Uint32 messageSize) {
+  jamDebug();
   bool res = true;
   Ptr<FragmentSendInfo> tmp;
   res = c_linearFragmentSendList.seizeFirst(tmp);
@@ -4248,6 +4320,7 @@ void SimulatedBlock::sendBatchedFragmentedSignal(
     JobBufferLevel jbuf, LinearSectionPtr ptr[3], Uint32 noOfSections,
     Callback &c, Uint32 messageSize) {
   jam();
+  jamDataDebug(length);
   bool res = true;
   FragmentSendInfo fragSendInfo;
 
