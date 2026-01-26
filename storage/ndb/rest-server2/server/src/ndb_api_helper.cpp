@@ -72,10 +72,10 @@ RS_Status get_index_scan_op(Ndb *ndb_object,
       std::string(rdrsErrorMessage(ERROR_LOAD_INDEX_FAILED)) + 
       std::string(" Index: ") + std::string(index_name));
   }
-  *scanOp = tx->getNdbIndexScanOperation(index);
+  *scanOp = tx->getNdbIndexScanOperation(index, table_dict);
   if (unlikely(*scanOp == nullptr)) {
-    err = ndb_object->getNdbError();
-    return RS_RONDB_SERVER_ERROR(err, 
+    err = tx->getNdbError();
+    return RS_RONDB_SERVER_ERROR(err,
         std::string(rdrsErrorMessage(ERROR_SCAN_OPERATION_FAILED)));
   }
   return RS_OK;

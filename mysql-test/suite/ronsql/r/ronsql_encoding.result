@@ -52,7 +52,7 @@ GROUP BY title
 Number of output lines, including header: 7
 
 == Diff ==
-================================================================================
+==========
 
 
 
@@ -112,7 +112,7 @@ GROUP BY title
 Number of output lines, including header: 7
 
 == Diff ==
-================================================================================
+==========
 
 
 

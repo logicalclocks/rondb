@@ -2052,6 +2052,11 @@ NdbIndexScanOperation *NdbTransaction::getNdbIndexScanOperation(
 NdbIndexScanOperation *NdbTransaction::getNdbIndexScanOperation(
     const NdbIndexImpl *index, const NdbTableImpl *table) {
   if (theCommitStatus == Started) {
+    if (index->m_table_id != static_cast<Uint32>(table->m_id) ||
+        index->m_table_version != table->m_version) {
+      setOperationErrorCodeAbort(241);
+      return nullptr;
+    }
     const NdbTableImpl *indexTable = index->getIndexTable();
     if (indexTable != nullptr) {
       if (!checkSchemaObjects(table, index)) {

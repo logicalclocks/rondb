@@ -1,5 +1,8 @@
 --source include/have_ndb.inc
 
+# Compare MySQL against RonSQL using RDRS only
+--let $suppress_ronsql_cli=yes
+
 --disable_query_log
 CREATE TABLE tbl (
   uint16 SMALLINT UNSIGNED NOT NULL,
