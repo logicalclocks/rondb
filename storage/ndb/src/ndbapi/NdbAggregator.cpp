@@ -860,6 +860,9 @@ NdbAggregator::Column NdbAggregator::ResultRecord::FetchGroupbyColumn() {
   Uint32 id = header.getAttributeId();
   const NdbDictionary::Column* col =
                       aggregator_->table_impl()->getColumn(id);
+  if (col == nullptr) {
+    abort();
+  }
   NdbDictionary::Column::Type type = col->getType();
   bool is_null = header.isNULL();
   Uint32 byte_size = header.getByteSize();
