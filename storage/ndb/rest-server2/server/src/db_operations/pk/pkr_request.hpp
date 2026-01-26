@@ -192,5 +192,57 @@ class PKRRequest {
    * Add a read column name
    */
   bool addReadColumnName(Uint32 index, const char *name, Uint32 data_type);
+
+  /**
+   * Get number of write columns
+   * @return number of write columns
+   */
+  Uint32 WriteColumnsCount();
+
+  /**
+   * Get offset of nth write column tuple
+   *
+   * @param n nth column
+   * @return offset
+   */
+  Uint32 WriteColumnTupleOffset(const int n);
+
+  /**
+   * Get write column name
+   *
+   * @param n index
+   * @return write column name
+   */
+  const char *WriteColumnName(Uint32 n);
+
+  /**
+   * Get write column name length
+   *
+   * @param n index
+   * @return write column name length
+   */
+  Uint32 WriteColumnNameLen(Uint32 n);
+
+  /**
+   * Get write column value
+   *
+   * @param n index
+   * @return write column value c-string
+   */
+  const char *WriteColumnValueCStr(Uint32 n);
+
+  /**
+   * Get write column value length
+   *
+   * @param n index
+   * @return write column value length
+   */
+  Uint32 WriteColumnValueLen(Uint32 n);
+
+  /**
+   * Get write operation type
+   * @return RDRS_WRITE_OP_WRITE, RDRS_WRITE_OP_UPDATE, or RDRS_WRITE_OP_INSERT
+   */
+  Uint32 WriteOperationType();
 };
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_DB_OPERATIONS_PK_PKR_REQUEST_HPP_

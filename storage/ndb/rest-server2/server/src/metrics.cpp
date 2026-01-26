@@ -78,6 +78,7 @@ std::atomic<Uint64> m_metrics_request_counter;
 std::atomic<Uint64> pk_read_histogram[64];
 std::atomic<Uint64> batch_pk_read_histogram[64];
 std::atomic<Uint64> batch_pk_delete_histogram[64];
+std::atomic<Uint64> batch_pk_write_histogram[64];
 std::atomic<Uint64> fs_histogram[64];
 std::atomic<Uint64> batch_fs_histogram[64];
 std::atomic<Uint64> ronsql_histogram[64];
@@ -90,6 +91,7 @@ std::atomic<Uint64> rondis_histogram[61]; // not 64, rondis errors not counted
 std::atomic<Uint64> pk_read_histogram_total;
 std::atomic<Uint64> batch_pk_read_histogram_total;
 std::atomic<Uint64> batch_pk_delete_histogram_total;
+std::atomic<Uint64> batch_pk_write_histogram_total;
 std::atomic<Uint64> fs_histogram_total;
 std::atomic<Uint64> batch_fs_histogram_total;
 std::atomic<Uint64> ronsql_histogram_total;
@@ -109,6 +111,7 @@ std::atomic<Uint64> rondis_histogram_total;
 Uint32 pk_read_histogram_boundaries[60];
 Uint32 batch_pk_read_histogram_boundaries[60];
 Uint32 batch_pk_delete_histogram_boundaries[60];
+Uint32 batch_pk_write_histogram_boundaries[60];
 Uint32 fs_histogram_boundaries[60];
 Uint32 batch_fs_histogram_boundaries[60];
 Uint32 ronsql_histogram_boundaries[60];
@@ -131,6 +134,9 @@ init_metrics_intermediate_variables() {
     batch_pk_delete_histogram[i] = 0;
   }
   for (Uint32 i = 0; i < 64; i++) {
+    batch_pk_write_histogram[i] = 0;
+  }
+  for (Uint32 i = 0; i < 64; i++) {
     fs_histogram[i] = 0;
   }
   for (Uint32 i = 0; i < 64; i++) {
@@ -145,6 +151,7 @@ init_metrics_intermediate_variables() {
   pk_read_histogram_total = 0;
   batch_pk_read_histogram_total = 0;
   batch_pk_delete_histogram_total = 0;
+  batch_pk_write_histogram_total = 0;
   fs_histogram_total = 0;
   batch_fs_histogram_total = 0;
   ronsql_histogram_total = 0;
@@ -190,6 +197,18 @@ init_metrics_intermediate_variables() {
   for (Uint32 i = 0; i < 20; i++) {
     batch_pk_delete_histogram_boundaries[40 + i] = batch_pk_delete_boundary;
     batch_pk_delete_boundary = (batch_pk_delete_boundary / 2) * 3;
+  }
+
+  for (Uint32 i = 0; i < 20; i++) {
+    batch_pk_write_histogram_boundaries[i] = 200 * (i + 1);
+  }
+  for (Uint32 i = 0; i < 20; i++) {
+    batch_pk_write_histogram_boundaries[20 + i] = 4000 + 500 * (i + 1);
+  }
+  Uint32 batch_pk_write_boundary = 21000;
+  for (Uint32 i = 0; i < 20; i++) {
+    batch_pk_write_histogram_boundaries[40 + i] = batch_pk_write_boundary;
+    batch_pk_write_boundary = (batch_pk_write_boundary / 2) * 3;
   }
 
   for (Uint32 i = 0; i < 10; i++) {
@@ -445,6 +464,41 @@ BatchPkDeleteEndPointMetricsUpdater::~BatchPkDeleteEndPointMetricsUpdater() {
     hist = 63; // Other error
   }
   batch_pk_delete_histogram[hist].fetch_add(1, std::memory_order_relaxed);
+}
+
+BatchPkWriteEndPointMetricsUpdater::BatchPkWriteEndPointMetricsUpdater(
+  drogon::HttpResponsePtr response) {
+  m_start_time = NdbTick_getCurrentTicks();
+  m_response = response;
+  m_key_requests = 0;
+}
+
+void
+BatchPkWriteEndPointMetricsUpdater::set_key_requests(Uint32 key_requests) {
+  m_key_requests = key_requests;
+}
+
+BatchPkWriteEndPointMetricsUpdater::~BatchPkWriteEndPointMetricsUpdater() {
+  NDB_TICKS now = NdbTick_getCurrentTicks();
+  Uint64 elapsed_us = NdbTick_Elapsed(m_start_time, now).microSec();
+  auto status = m_response->getStatusCode();
+  Uint32 hist;
+  if (status == drogon::HttpStatusCode::k200OK) {
+    hist = calculate_batch_pk_index(elapsed_us);
+    batch_pk_write_histogram_total.fetch_add(
+      elapsed_us,
+      std::memory_order_relaxed);
+    m_ndb_key_request_from_batch_counter.fetch_add(
+      m_key_requests,
+      std::memory_order_relaxed);
+  } else if (status == drogon::HttpStatusCode::k400BadRequest) {
+    hist = 61;
+  } else if (status == drogon::HttpStatusCode::k500InternalServerError) {
+    hist = 62;
+  } else {
+    hist = 63; // Other error
+  }
+  batch_pk_write_histogram[hist].fetch_add(1, std::memory_order_relaxed);
 }
 
 
