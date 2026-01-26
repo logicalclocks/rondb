@@ -55,6 +55,25 @@ enum InterpreterOp {
   kOpMax,
   kOpMin,
   kOpCount,
+
+  // Type-specific aggregations
+  kOpSumBigint,       // Sum for BIGINT (handles signed/unsigned dynamically)
+  kOpSumDouble,
+  kOpMaxBigint,
+  kOpMaxDouble,
+  kOpMinBigint,
+  kOpMinDouble,
+
+  // Type-specific arithmetic operations
+  kOpPlusBigint,      // Plus for BIGINT (handles signed/unsigned dynamically)
+  kOpPlusDouble,
+  kOpMinusBigint,
+  kOpMinusDouble,
+  kOpMulBigint,
+  kOpMulDouble,
+  kOpDivDouble,       // Floating point division (result is always double)
+  kOpDivIntBigint,    // Integer division for BIGINT
+
   kOpTotal
 };
 
