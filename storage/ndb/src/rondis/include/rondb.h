@@ -49,7 +49,18 @@ int setup_ndb_connection_for_rondis(
  Uint32 *database_index,
  Uint32 num_databases,
  bool *dirty_incr_decr_flag,
- bool *opt_small_values_flag);
+ bool *opt_small_values_flag,
+ bool create_tables,
+ const char *mysql_host,
+ Uint32 mysql_port,
+ const char *mysql_user,
+ const char *mysql_password);
+
+int create_rondis_tables(const char *mysql_host,
+                         Uint32 mysql_port,
+                         const char *mysql_user,
+                         const char *mysql_password,
+                         Uint32 num_databases);
 
 void rondb_end();
 

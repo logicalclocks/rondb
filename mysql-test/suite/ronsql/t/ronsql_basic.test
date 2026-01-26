@@ -229,6 +229,18 @@ WHERE (sint8 >= -20 and sint8 < 5
 GROUP BY sint8;|
 --source suite/ronsql/include/ronsql_compare.inc
 
+--echo Short VARCHAR filter:
+--let QUERY_FILE=$MYSQL_TMP_DIR/query.sql
+--write_file $QUERY_FILE
+SELECT cchar
+     , sint8
+     , count(*)
+FROM api_scan
+WHERE cchar = 'GROUPxxx_0' OR cchar > 'GROUPxxx_1'
+GROUP BY cchar, sint8;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
 
 
 --echo Cleanup
