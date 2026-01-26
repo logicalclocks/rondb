@@ -131,7 +131,7 @@ class NdbAggregator {
       memcpy(&val,ptr_,sizeof(val));
       return val;
     }
-    float data_double() {
+    double data_double() {
       double val;
       memcpy(&val,ptr_,sizeof(val));
       return val;

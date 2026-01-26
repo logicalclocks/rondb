@@ -1377,6 +1377,16 @@ class NdbDictionary {
     const char *getTable() const;
 
     /**
+     * Get the Id of the underlying table being indexed
+     */
+    int getTableId() const;
+
+    /**
+     * Get the Version of the underlying table being indexed
+     */
+    int getTableVersion() const;
+
+    /**
      * Get the number of columns in the index
      */
     unsigned getNoOfColumns() const;

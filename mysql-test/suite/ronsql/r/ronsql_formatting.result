@@ -28,7 +28,7 @@ GROUP BY cfloat;
 Number of output lines, including header: 0
 
 == Diff ==
-================================================================================
+==========
 
 
 
@@ -42,7 +42,7 @@ GROUP BY sint16;
 Number of output lines, including header: 9
 
 == Diff ==
-================================================================================
+==========
 
 
 
@@ -58,7 +58,7 @@ GROUP BY cchar;
 Number of output lines, including header: 5
 
 == Diff ==
-================================================================================
+==========
 
 
 
@@ -74,7 +74,7 @@ GROUP BY cchar;
 Number of output lines, including header: 5
 
 == Diff ==
-================================================================================
+==========
 
 
 
@@ -90,7 +90,7 @@ GROUP BY cchar;
 Number of output lines, including header: 5
 
 == Diff ==
-================================================================================
+==========
 
 
 
@@ -106,7 +106,7 @@ GROUP BY cchar;
 Number of output lines, including header: 5
 
 == Diff ==
-================================================================================
+==========
 
 
 
