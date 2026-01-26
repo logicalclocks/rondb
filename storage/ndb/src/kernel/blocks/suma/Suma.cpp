@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -8052,7 +8052,7 @@ void Suma::resend_bucket(Signal *signal, Uint32 buck, Uint64 min_gci,
 
   Uint32 tail = bucket->m_buffer_tail;
   Buffer_page *page = c_page_pool.getPtr(tail);
-  Buffer_page *page_first = page;
+  Buffer_page *page_cont = page;
   Uint64 max_gci = page->m_max_gci_lo | (Uint64(page->m_max_gci_hi) << 32);
   Uint32 next_page = page->m_next_page;
   Uint32 last_page = next_page;
@@ -8229,11 +8229,12 @@ void Suma::resend_bucket(Signal *signal, Uint32 buck, Uint64 min_gci,
           // Next part of data on next page.
           last_page = next_page;
           CHECK_PAGE(next_page);
-          page = c_page_pool.getPtr(next_page);
+          Buffer_page *page = c_page_pool.getPtr(next_page);
           ndbrequire(page->m_words_used > 0);
           ptr_part = page->m_data;
-          next_page = page->m_next_page;
           end = page->m_data + page->m_words_used;
+          next_page = page->m_next_page;
+          page_cont = page;
         }
         src_part = ptr_part;
         Uint32 header_word_part = *src_part;
@@ -8244,11 +8245,9 @@ void Suma::resend_bucket(Signal *signal, Uint32 buck, Uint64 min_gci,
           jam();
           ndbrequire((header_word_part & Buffer_page::SAME_GCI_FLAG) == 0);
           next_pos = sz_part;
-        } else {
-          if (next_pos > 0) {
-            jam();
-            next_pos += sz_part;
-          }
+        } else if (next_pos > 0) {
+          jam();
+          next_pos += (sz_part + 1);
         }
         ptr = ptr_part + sz_part;
         ndbrequire(sz_part > 0);
@@ -8358,17 +8357,14 @@ void Suma::resend_bucket(Signal *signal, Uint32 buck, Uint64 min_gci,
      * tail forward.
      */
     ndbassert(tail != bucket->m_buffer_head.m_page_id);
-    Uint32 page_next = 0;
+    Uint32 page_next = page->m_next_page;
     do {
-      jam();
-      page_next = page_first->m_next_page;
-      free_page(tail, page_first, __LINE__);
-      if (page_next == last_page) break;
+      free_page(tail, page, __LINE__);
       tail = page_next;
-      page_first = c_page_pool.getPtr(page_next);
-      ndbrequire(page_first != page);
-    } while (true);
-    tail = bucket->m_buffer_tail = page_next;
+      page = c_page_pool.getPtr(page_next);
+      page_next = page->m_next_page;
+    } while (page != page_cont);
+    tail = bucket->m_buffer_tail = next_page;
     pos = next_pos;
     if (pos == 0) {
       jam();
