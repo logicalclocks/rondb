@@ -25,7 +25,13 @@ if ($QUERY=='')
 --exec cat $MYSQL_TMP_DIR/ronsql-rdrs-body-1 $MYSQL_TMP_DIR/ronsql-rdrs-body-2 $MYSQL_TMP_DIR/ronsql-rdrs-body-3 > $MYSQL_TMP_DIR/ronsql-rdrs-body
 --let $QUERY_PARAMS = -D test $QUERY_PARAMS
 
---exec $MYSQL --default-character-set=utf8mb4 $QUERY_PARAMS > $MYSQL_TMP_DIR/mysql.out
+# RonSQL doesn't support time zones yet, and works as if in UTC. MySQL uses
+# system time zone, but it seems mtr somehow sets it to +03:00 before starting a
+# test case. Until RonSQL and RDRS supports time zones, we will set UTC time
+# zone explicitly in each test case where it has an impact. This does not carry
+# over to MySQL clients launched with --exec, so we use the --init-command-add
+# parameter for that.
+--exec $MYSQL --default-character-set=utf8mb4 --init-command-add='SET time_zone = "+00:00";' $QUERY_PARAMS > $MYSQL_TMP_DIR/mysql.out
 if ($canonicalization_script)
 {
   --exec sed -r '$canonicalization_script' $MYSQL_TMP_DIR/mysql.out > $MYSQL_TMP_DIR/mysql.out.canon
@@ -43,7 +49,8 @@ if ($canonicalization_script)
 }
 --exec (head -n 1 $MYSQL_TMP_DIR/ronsql-rdrs.out && tail -n +2 $MYSQL_TMP_DIR/ronsql-rdrs.out | sort) > $MYSQL_TMP_DIR/ronsql-rdrs.out.sorted
 
-# todo make cli conditional
+if ($suppress_ronsql_cli=='')
+{
 --exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING $QUERY_PARAMS > $MYSQL_TMP_DIR/ronsql-cli.out
 if ($canonicalization_script)
 {
@@ -54,6 +61,7 @@ if ($canonicalization_script)
 # todo The "|| true" at the end makes this test succeed no matter what the
 # results are. Remove it when possible.
 --exec diff -u --label ronsql-cli.out $MYSQL_TMP_DIR/ronsql-cli.out.sorted --label ronsql-rdrs.out $MYSQL_TMP_DIR/ronsql-rdrs.out.sorted || true
+}
 
 --echo
 --echo == Diff ==
@@ -67,11 +75,14 @@ if ($canonicalization_script)
 --remove_file $MYSQL_TMP_DIR/ronsql-rdrs-body-3
 --remove_file $MYSQL_TMP_DIR/mysql.out
 --remove_file $MYSQL_TMP_DIR/mysql.out.sorted
+if ($suppress_ronsql_cli=='')
+{
 --remove_file $MYSQL_TMP_DIR/ronsql-cli.out
 --remove_file $MYSQL_TMP_DIR/ronsql-cli.out.sorted
+}
 --remove_file $MYSQL_TMP_DIR/ronsql-rdrs.out
 --remove_file $MYSQL_TMP_DIR/ronsql-rdrs.out.sorted
---echo ================================================================================
+--echo ==========
 --echo
 --echo
 --echo

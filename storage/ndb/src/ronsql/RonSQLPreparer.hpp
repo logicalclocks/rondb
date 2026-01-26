@@ -52,7 +52,7 @@ struct LexLocation
 struct raw_value
 {
   const void* val = NULL;
-  Uint32 len = 0;
+  size_t len = 0;
 };
 
 /*
@@ -94,11 +94,10 @@ public:
     LEX_ILLEGAL_TOKEN,
     LEX_UNEXPECTED_EOI_IN_QUOTED_IDENTIFIER,
     LEX_LITERAL_INTEGER_TOO_BIG,
+    LEX_LITERAL_FLOAT_INVALID,
     TOO_LONG_UNALIASED_OUTPUT,
     PARSER_ERROR,
   };
-  class TemporaryError : public std::exception {};
-  class ColumnNotFoundError : public std::exception {};
   /*
    * The context class is used to expose parser internals to flex and bison code
    * without making them public.
@@ -137,38 +136,31 @@ private:
   Context m_context;
   DynamicArray<LexCString> m_columns;
   NdbAttrId* m_column_attrId_map = NULL;
-  CHARSET_INFO** m_column_charset_map = NULL;
+  const NdbDictionary::Column** m_column_map = NULL;
   const NdbDictionary::Dictionary* m_dict = NULL;
   const NdbDictionary::Table* m_table = NULL;
+  DynamicArray<const NdbDictionary::Index*> m_indexes;
+  NdbTransaction* m_trans = NULL;
   yyscan_t m_scanner;
   YY_BUFFER_STATE m_buf;
   bool m_do_explain = false;
 
-  // Index scan
-  bool m_do_index_scan = false;
-  class IndexScanConfig
+  // Index/table scan config
+  class ScanConfig
   {
   public:
-    Uint32 col_idx;
-    struct Range
-    {
-      enum class Type { NONE, INCLUSIVE, EXCLUSIVE };
-      Type ltype;
-      Int64 lvalue;
-      Type htype;
-      Int64 hvalue;
-    };
-    Range* ranges;
-    Uint32 range_count;
-    ConditionalExpression* filter;
+    // If index == NULL, do a table scan.
+    const NdbDictionary::Index* index = NULL;
+    // condition_handling_map[i] is -1 if m_toplevel_conditions[i] should be
+    // included in the filter, or the column number in the index if it should be
+    // applied as a bound.
+    int* condition_handling_map = NULL;
+    // An estimate of how performant the scan configuration will be.
+    int goodness = 0;
   };
-  DynamicArray<IndexScanConfig> m_index_scan_config_candidates;
-  IndexScanConfig* m_index_scan_config = NULL;
-  const NdbDictionary::Index* m_index_scan_index = NULL;
-
-  // Table scan
-  bool m_do_table_scan = false;
-  ConditionalExpression* m_table_scan_filter = NULL;
+  DynamicArray<ConditionalExpression*> m_toplevel_conditions;
+  DynamicArray<ScanConfig> m_scan_config_candidates;
+  ScanConfig* m_scan_config = NULL;
 
   AggregationAPICompiler* m_agg = NULL;
   ResultPrinter* m_resultprinter = NULL;
@@ -183,30 +175,34 @@ private:
   void parse();
   bool has_width(size_t pos);
   void load();
-  void generate_index_scan_config_candidates();
-  void choose_index_scan_config();
+  void plan_index_and_filter();
+  void collect_toplevel_conditions(ConditionalExpression* ce);
+  void generate_scan_config_candidates();
   void compile();
   void determine_explain();
-  void unload_schema();
+  bool unload_schema();
+  void handle_ronsql_exception(std::exception_ptr eptr);
 
   // Functions used in execution phase
 public:
   void execute(); // todo make sure we can execute several times, do not mutate. Make this a separate object that takes a preparer as const input (This todo from review 2024-08-22 with MR)
 private:
-  void apply_filter_top_level(NdbScanFilter* filter,
-                              struct ConditionalExpression* ce);
-  bool apply_filter(NdbScanFilter* filter, struct ConditionalExpression* ce);
-  bool apply_filter_cmp(NdbScanFilter* filter,
+  void cleanup_trans();
+  void apply_filter_top_level(NdbScanFilter* filter);
+  void apply_filter(NdbScanFilter* filter, struct ConditionalExpression* ce);
+  void apply_filter_cmp(NdbScanFilter* filter,
                         NdbScanFilter::BinaryCondition cond,
                         struct ConditionalExpression* left,
                         struct ConditionalExpression* right);
-  raw_value eval_const_expr(struct ConditionalExpression* ce);
+  raw_value encode_constant(struct ConditionalExpression *ce,
+                            const NdbDictionary::Column* col);
+  struct ConditionalExpression* simplify_ce(struct ConditionalExpression* ce,
+                                            int maxdepth);
   void programAggregator(NdbAggregator* aggregator);
   void print_result_json(NdbAggregator* aggregator);
   void print();
   void print(struct ConditionalExpression* ce,
              LexString prefix);
-  void print(struct IndexScanConfig::Range& range, const char* col_name);
 
 public:
   ~RonSQLPreparer();

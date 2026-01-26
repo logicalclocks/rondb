@@ -874,6 +874,14 @@ const char *NdbDictionary::Index::getTable() const {
   return m_impl.getTableName();
 }
 
+int NdbDictionary::Index::getTableId() const {
+  return m_impl.m_table_id;
+}
+
+int NdbDictionary::Index::getTableVersion() const {
+  return m_impl.m_table_version;
+}
+
 unsigned NdbDictionary::Index::getNoOfColumns() const {
   return m_impl.m_columns.size();
 }

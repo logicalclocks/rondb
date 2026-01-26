@@ -1516,6 +1516,11 @@ int NdbScanOperation::setAggregationCode(const NdbAggregator *code)
     return -1;
   }
 
+  if (code->table_impl() != m_currentTable) {
+    setErrorCodeAbort(241); // Invalid schema object version
+    return -1;
+  }
+
   m_aggregation_code = const_cast<NdbAggregator*>(code);
 
   if (code->disk_columns()) {
@@ -1532,7 +1537,7 @@ int NdbScanOperation::DoAggregation() {
       !m_aggregation_code->finalized())
   {
     DEB_TRACE();
-    setErrorCodeAbort(4560); //  NdbAggregatior::Finalise() not called.
+    setErrorCodeAbort(4560); //  NdbAggregator::Finalize() not called.
     return -1;
   }
 
@@ -1551,24 +1556,40 @@ int NdbScanOperation::DoAggregation() {
   }
 
   DEB_TRACE();
-  int check = -1;
-  while ((check = nextResult(true)) == 0) {
-    // TODO (Zhao) handle return value;
-    DEB_TRACE();
-    if (!m_aggregation_code->ProcessRes(myRecAttr->aRef())) {
+  while (true) {
+    int check = nextResult(true);
+    switch(check) {
+    case -1:
+      // Permanent error
       DEB_TRACE();
       return -1;
+    case 0:
+      // Progress getting data
+      if (m_aggregation_code->ProcessRes(myRecAttr->aRef())) {
+        // Done processing data fetched so far
+        DEB_TRACE();
+        continue;
+      } else {
+        // This is unexpected
+        DEB_TRACE();
+        return -1;
+      }
+    case 1:
+      // Scan complete.
+      DEB_TRACE();
+      m_aggregation_code->PrepareResults();
+      return 0;
+    case 2:
+      // No more data available immediately. This should never happen because
+      // nextResult is called with fetchAllowed = true.
+      DEB_TRACE();
+      abort();
+    default:
+      // This should never happen
+      DEB_TRACE();
+      abort();
     }
-    DEB_TRACE();
   }
-  DEB_TRACE();
-  if (check < 0) {
-    return check;
-  }
-  DEB_TRACE();
-  m_aggregation_code->PrepareResults();
-  DEB_TRACE();
-  return 0;
 }
 
 void NdbScanOperation::setReadLockMode(LockMode lockMode) {
@@ -1795,9 +1816,11 @@ int NdbScanOperation::nextResult(bool fetchAllowed, bool forceSend) {
   if (unlikely(!m_scanUsingOldApi)) {
     /* Cannot mix NdbRecAttr and NdbRecord methods in one operation */
     setErrorCode(4284);
+    DEB_TRACE();
     return -1;
   }
 
+  DEB_TRACE();
   return nextResult(&dummyOutRowPtr, fetchAllowed, forceSend);
 }
 
@@ -1816,7 +1839,10 @@ int NdbScanOperation::nextResult(const char **out_row_ptr, bool fetchAllowed,
 
       /* First take care of any getValue(). */
       if (getvalue_recattr != nullptr) {
-        if (receiver->get_AttrValues(getvalue_recattr) == -1) return -1;
+        if (receiver->get_AttrValues(getvalue_recattr) == -1) {
+          DEB_TRACE();
+          return -1;
+        }
       }
 
       /* Handle blobs. */
@@ -1825,19 +1851,29 @@ int NdbScanOperation::nextResult(const char **out_row_ptr, bool fetchAllowed,
         Uint32 key_length;
         const char *key_data;
         res = receiver->get_keyinfo20(infoword, key_length, key_data);
-        if (res == -1) return -1;
+        if (res == -1) {
+          DEB_TRACE();
+          return -1;
+        }
 
         do {
-          if (tBlob->atNextResultNdbRecord(key_data, key_length * 4) == -1)
+          if (tBlob->atNextResultNdbRecord(key_data, key_length * 4) == -1) {
+            DEB_TRACE();
             return -1;
+          }
           tBlob = tBlob->theNext;
         } while (tBlob != nullptr);
         /* Flush blob part ops on behalf of user. */
-        if (m_transConnection->executePendingBlobOps() == -1) return -1;
+        if (m_transConnection->executePendingBlobOps() == -1) {
+          DEB_TRACE();
+          return -1;
+        }
       }
     }
+    DEB_TRACE();
     return 0;
   }
+  DEB_TRACE();
   return res;
 }
 
@@ -3317,7 +3353,7 @@ int NdbIndexScanOperation::setBoundHelperOldApi(
   if (aValue != nullptr) {
     /* Copy data into correct part of RecAttr */
     assert(valueLen > 0);
-    assert(byteOffset + valueLen <= maxKeyRecordBytes);
+    require(byteOffset + valueLen <= maxKeyRecordBytes);
 
     memcpy(boundInfo.key + byteOffset, aValue, valueLen);
   } else {
@@ -3810,11 +3846,17 @@ int NdbIndexScanOperation::next_result_ord_ndbrecord(const char *&out_row,
   */
   if (m_current_api_receiver == theParallelism ||
       !m_api_receivers[m_current_api_receiver]->getNextRow()) {
-    if (!fetchAllowed) return 2;  // No more data available now
+    if (!fetchAllowed) {
+      DEB_TRACE();
+      return 2;  // No more data available now
+    }
 
     /* Wait for all receivers to be retrieved. */
     int count = ordered_send_scan_wait_for_all(forceSend);
-    if (count == -1) return -1;
+    if (count == -1) {
+      DEB_TRACE();
+      return -1;
+    }
 
     /*
       Insert all newly retrieved receivers in sorted array.
@@ -3843,9 +3885,11 @@ int NdbIndexScanOperation::next_result_ord_ndbrecord(const char *&out_row,
   /* Now just return the next row (if any). */
   if (current < theParallelism &&
       (out_row = m_api_receivers[current]->getCurrentRow()) != nullptr) {
+    DEB_TRACE();
     return 0;
   } else {
     theError.code = Err_scanAlreadyComplete;
+    DEB_TRACE();
     return 1;  // End-of-file
   }
 }
