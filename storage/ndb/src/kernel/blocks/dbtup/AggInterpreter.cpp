@@ -90,6 +90,7 @@ bool AggInterpreter::Init() {
      */
     return true;
   }
+
   // Skip the next 5 reserved Uint32 elements
   assert(prog_[cur_pos_] == 0);
   cur_pos_ += 5;
@@ -139,6 +140,207 @@ bool AggInterpreter::Init() {
   inited_ = true;
   agg_prog_start_pos_ = cur_pos_;
   memset(registers_, 0, sizeof(registers_));
+
+  return true;
+}
+
+
+/**
+ * OptimizeProgram - Analyze the aggregation program and replace generic opcodes
+ * with type-specific ones based on static type analysis.
+ *
+ * This function walks through the program instructions, tracks the type of each
+ * register, and replaces generic opcodes (kOpSum, kOpPlus, etc.) with their
+ * type-specific variants (kOpSumBigint, kOpSumDouble, kOpPlusBigint, etc.).
+ *
+ * Since the aggregation program has no loops, the type of each register is
+ * deterministic and can be computed in a single pass.
+ *
+ * Must be called after Init() and before the first ProcessRec().
+ */
+bool AggInterpreter::OptimizeProgram() {
+  if (!inited_) {
+    return false;
+  }
+
+  // Track the type of each register: NDB_TYPE_BIGINT, NDB_TYPE_DOUBLE, or NDB_TYPE_UNDEFINED
+  DataType reg_types[kRegTotal];
+  for (Uint32 i = 0; i < kRegTotal; i++) {
+    reg_types[i] = NDB_TYPE_UNDEFINED;
+  }
+
+  // Single pass: analyze and rewrite the program
+  Uint32 exec_pos = agg_prog_start_pos_;
+
+  while (exec_pos < prog_len_) {
+    Uint32 value = prog_[exec_pos];
+    Uint8 op = (value & 0xFC000000) >> 26;
+    Uint32 reg_index, reg_index2;
+    DataType type;
+    Uint8 new_op = op;
+
+    switch (op) {
+      case kOpLoadCol:
+        type = (value & 0x03E00000) >> 21;
+        reg_index = (value & 0x000F0000) >> 16;
+        if (type == NDB_TYPE_FLOAT || type == NDB_TYPE_DOUBLE) {
+          reg_types[reg_index] = NDB_TYPE_DOUBLE;
+        } else if (type == NDB_TYPE_DECIMAL || type == NDB_TYPE_DECIMALUNSIGNED) {
+          // Decimal could be either depending on scale - keep generic
+          reg_types[reg_index] = NDB_TYPE_UNDEFINED;
+          exec_pos++;  // Skip decimal info word
+        } else {
+          reg_types[reg_index] = NDB_TYPE_BIGINT;
+        }
+        break;
+
+      case kOpLoadConst:
+        type = (value & 0x03E00000) >> 21;
+        reg_index = (value & 0x000F0000) >> 16;
+        if (type == NDB_TYPE_DOUBLE) {
+          reg_types[reg_index] = NDB_TYPE_DOUBLE;
+        } else {
+          reg_types[reg_index] = NDB_TYPE_BIGINT;
+        }
+        exec_pos += 2;  // Skip constant value words
+        break;
+
+      case kOpMov:
+        reg_index = (value >> 12) & 0x0F;
+        reg_index2 = (value >> 8) & 0x0F;
+        reg_types[reg_index] = reg_types[reg_index2];
+        break;
+
+      case kOpPlus:
+        reg_index = (value >> 12) & 0x0F;
+        reg_index2 = (value >> 8) & 0x0F;
+        if (reg_types[reg_index] == NDB_TYPE_DOUBLE ||
+            reg_types[reg_index2] == NDB_TYPE_DOUBLE) {
+          new_op = kOpPlusDouble;
+          reg_types[reg_index] = NDB_TYPE_DOUBLE;
+        } else if (reg_types[reg_index] != NDB_TYPE_UNDEFINED &&
+                   reg_types[reg_index2] != NDB_TYPE_UNDEFINED) {
+          new_op = kOpPlusBigint;
+          reg_types[reg_index] = NDB_TYPE_BIGINT;
+        } else {
+          reg_types[reg_index] = NDB_TYPE_UNDEFINED;
+        }
+        prog_[exec_pos] = (new_op << 26) | (value & 0x03FFFFFF);
+        break;
+
+      case kOpMinus:
+        reg_index = (value >> 12) & 0x0F;
+        reg_index2 = (value >> 8) & 0x0F;
+        if (reg_types[reg_index] == NDB_TYPE_DOUBLE ||
+            reg_types[reg_index2] == NDB_TYPE_DOUBLE) {
+          new_op = kOpMinusDouble;
+          reg_types[reg_index] = NDB_TYPE_DOUBLE;
+        } else if (reg_types[reg_index] != NDB_TYPE_UNDEFINED &&
+                   reg_types[reg_index2] != NDB_TYPE_UNDEFINED) {
+          new_op = kOpMinusBigint;
+          reg_types[reg_index] = NDB_TYPE_BIGINT;
+        } else {
+          reg_types[reg_index] = NDB_TYPE_UNDEFINED;
+        }
+        prog_[exec_pos] = (new_op << 26) | (value & 0x03FFFFFF);
+        break;
+
+      case kOpMul:
+        reg_index = (value >> 12) & 0x0F;
+        reg_index2 = (value >> 8) & 0x0F;
+        if (reg_types[reg_index] == NDB_TYPE_DOUBLE ||
+            reg_types[reg_index2] == NDB_TYPE_DOUBLE) {
+          new_op = kOpMulDouble;
+          reg_types[reg_index] = NDB_TYPE_DOUBLE;
+        } else if (reg_types[reg_index] != NDB_TYPE_UNDEFINED &&
+                   reg_types[reg_index2] != NDB_TYPE_UNDEFINED) {
+          new_op = kOpMulBigint;
+          reg_types[reg_index] = NDB_TYPE_BIGINT;
+        } else {
+          reg_types[reg_index] = NDB_TYPE_UNDEFINED;
+        }
+        prog_[exec_pos] = (new_op << 26) | (value & 0x03FFFFFF);
+        break;
+
+      case kOpDiv:
+        reg_index = (value >> 12) & 0x0F;
+        // Division always produces double
+        new_op = kOpDivDouble;
+        reg_types[reg_index] = NDB_TYPE_DOUBLE;
+        prog_[exec_pos] = (new_op << 26) | (value & 0x03FFFFFF);
+        break;
+
+      case kOpDivInt:
+        reg_index = (value >> 12) & 0x0F;
+        reg_index2 = (value >> 8) & 0x0F;
+        if (reg_types[reg_index] != NDB_TYPE_UNDEFINED &&
+            reg_types[reg_index2] != NDB_TYPE_UNDEFINED) {
+          new_op = kOpDivIntBigint;
+        }
+        reg_types[reg_index] = NDB_TYPE_BIGINT;
+        prog_[exec_pos] = (new_op << 26) | (value & 0x03FFFFFF);
+        break;
+
+      case kOpMod:
+        reg_index = (value >> 12) & 0x0F;
+        reg_index2 = (value >> 8) & 0x0F;
+        // No type-specific version for Mod - just track types
+        if (reg_types[reg_index] == NDB_TYPE_DOUBLE ||
+            reg_types[reg_index2] == NDB_TYPE_DOUBLE) {
+          reg_types[reg_index] = NDB_TYPE_DOUBLE;
+        } else if (reg_types[reg_index] == NDB_TYPE_UNDEFINED ||
+                   reg_types[reg_index2] == NDB_TYPE_UNDEFINED) {
+          reg_types[reg_index] = NDB_TYPE_UNDEFINED;
+        } else {
+          reg_types[reg_index] = NDB_TYPE_BIGINT;
+        }
+        break;
+
+      case kOpSum:
+        reg_index = (value & 0x000F0000) >> 16;
+        if (reg_types[reg_index] == NDB_TYPE_DOUBLE) {
+          new_op = kOpSumDouble;
+        } else if (reg_types[reg_index] == NDB_TYPE_BIGINT) {
+          new_op = kOpSumBigint;
+        }
+        if (new_op != op) {
+          prog_[exec_pos] = (new_op << 26) | (value & 0x03FFFFFF);
+        }
+        break;
+
+      case kOpMax:
+        reg_index = (value & 0x000F0000) >> 16;
+        if (reg_types[reg_index] == NDB_TYPE_DOUBLE) {
+          new_op = kOpMaxDouble;
+        } else if (reg_types[reg_index] == NDB_TYPE_BIGINT) {
+          new_op = kOpMaxBigint;
+        }
+        if (new_op != op) {
+          prog_[exec_pos] = (new_op << 26) | (value & 0x03FFFFFF);
+        }
+        break;
+
+      case kOpMin:
+        reg_index = (value & 0x000F0000) >> 16;
+        if (reg_types[reg_index] == NDB_TYPE_DOUBLE) {
+          new_op = kOpMinDouble;
+        } else if (reg_types[reg_index] == NDB_TYPE_BIGINT) {
+          new_op = kOpMinBigint;
+        }
+        if (new_op != op) {
+          prog_[exec_pos] = (new_op << 26) | (value & 0x03FFFFFF);
+        }
+        break;
+
+      case kOpCount:
+        // Count always produces BIGINT - no optimization needed
+        break;
+
+      default:
+        break;
+    }
+    exec_pos++;
+  }
 
   return true;
 }
@@ -359,6 +561,133 @@ static Int32 Sum(const Register& a, AggResItem* res, bool print) {
   return 0;
 }
 
+/**
+ * SumBigint - Sum for BIGINT (handles both signed and unsigned dynamically)
+ */
+static Int32 SumBigint(const Register& a, AggResItem* res, bool print) {
+  assert(a.type != NDB_TYPE_UNDEFINED);
+  if (unlikely(a.is_null)) {
+    return 1;
+  }
+
+  if (unlikely(res->type == NDB_TYPE_UNDEFINED || res->is_null)) {
+    res->type = NDB_TYPE_BIGINT;
+    res->value.val_int64 = a.value.val_int64;
+    res->is_unsigned = a.is_unsigned;
+    res->is_null = false;
+#ifdef DEBUG_PA_INTERP
+    if (print) {
+      char log_buf[128];
+      sprintf(log_buf, "SumBigint() init AggRes to ");
+      PrintValue(res, log_buf);
+    }
+#endif // DEBUG_PA_INTERP
+    assert(res->type != NDB_TYPE_UNDEFINED);
+    return 0;
+  }
+
+  Int64 val0 = a.value.val_int64;
+  Int64 val1 = res->value.val_int64;
+  Int64 res_val = static_cast<Uint64>(val0) + static_cast<Uint64>(val1);
+  bool res_unsigned = false;
+
+  if (a.is_unsigned) {
+    if (res->is_unsigned || val1 >= 0) {
+      if (TestIfSumOverflowsUint64((Uint64)val0, (Uint64)val1)) {
+        return -1;
+      }
+      res_unsigned = true;
+    } else {
+      if ((Uint64)val0 > (Uint64)(LLONG_MAX)) {
+        res_unsigned = true;
+      }
+    }
+  } else {
+    if (res->is_unsigned) {
+      if (val0 >= 0) {
+        if (TestIfSumOverflowsUint64((Uint64)val0, (Uint64)val1)) {
+          return -1;
+        }
+        res_unsigned = true;
+      } else {
+        if ((Uint64)val1 > (Uint64)(LLONG_MAX)) {
+          res_unsigned = true;
+        }
+      }
+    } else {
+      if (val0 >= 0 && val1 >= 0) {
+        res_unsigned = true;
+      } else if (val0 < 0 && val1 < 0 && res_val >= 0) {
+        return -1;
+      }
+    }
+  }
+
+  bool unsigned_flag = (a.is_unsigned | res->is_unsigned);
+  if ((unsigned_flag && !res_unsigned && res_val < 0) ||
+      (!unsigned_flag && res_unsigned &&
+       (Uint64)res_val > (Uint64)LLONG_MAX)) {
+    return -1;
+  }
+
+  if (unsigned_flag) {
+    res->value.val_uint64 = res_val;
+  } else {
+    res->value.val_int64 = res_val;
+  }
+  res->is_unsigned = unsigned_flag;
+#ifdef DEBUG_PA_INTERP
+  if (print) {
+    char log_buf[128];
+    sprintf(log_buf, "SumBigint(), update AggRes to ");
+    PrintValue(res, log_buf);
+  }
+#endif // DEBUG_PA_INTERP
+  return 0;
+}
+
+/**
+ * SumDouble - Sum for double precision floats
+ */
+static Int32 SumDouble(const Register& a, AggResItem* res, bool print) {
+  assert(a.type != NDB_TYPE_UNDEFINED);
+  if (unlikely(a.is_null)) {
+    return 1;
+  }
+
+  if (unlikely(res->type == NDB_TYPE_UNDEFINED || res->is_null)) {
+    res->type = NDB_TYPE_DOUBLE;
+    res->value.val_double = a.value.val_double;
+    res->is_unsigned = false;
+    res->is_null = false;
+#ifdef DEBUG_PA_INTERP
+    if (print) {
+      char log_buf[128];
+      sprintf(log_buf, "SumDouble() init AggRes to ");
+      PrintValue(res, log_buf);
+    }
+#endif // DEBUG_PA_INTERP
+    assert(res->type != NDB_TYPE_UNDEFINED);
+    return 0;
+  }
+
+  double res_val = a.value.val_double + res->value.val_double;
+
+  if (unlikely(!std::isfinite(res_val))) {
+    return -1;
+  }
+
+  res->value.val_double = res_val;
+#ifdef DEBUG_PA_INTERP
+  if (print) {
+    char log_buf[128];
+    sprintf(log_buf, "SumDouble(), update AggRes to ");
+    PrintValue(res, log_buf);
+  }
+#endif // DEBUG_PA_INTERP
+  return 0;
+}
+
 static Int32 Max(const Register& a, AggResItem* res, bool print) {
   assert(a.type != NDB_TYPE_UNDEFINED);
   if (res->type == NDB_TYPE_UNDEFINED || res->is_null) {
@@ -433,6 +762,106 @@ static Int32 Max(const Register& a, AggResItem* res, bool print) {
   }
 #endif // DEBUG_PA_INTERP
 
+  return 0;
+}
+
+/**
+ * MaxBigint - Max for BIGINT (handles both signed and unsigned dynamically)
+ */
+static Int32 MaxBigint(const Register& a, AggResItem* res, bool print) {
+  assert(a.type != NDB_TYPE_UNDEFINED);
+  if (unlikely(a.is_null)) {
+    return 1;
+  }
+
+  if (unlikely(res->type == NDB_TYPE_UNDEFINED || res->is_null)) {
+    res->type = NDB_TYPE_BIGINT;
+    res->value.val_int64 = a.value.val_int64;
+    res->is_unsigned = a.is_unsigned;
+    res->is_null = false;
+#ifdef DEBUG_PA_INTERP
+    if (print) {
+      char log_buf[128];
+      sprintf(log_buf, "MaxBigint() init AggRes to ");
+      PrintValue(res, log_buf);
+    }
+#endif // DEBUG_PA_INTERP
+    assert(res->type != NDB_TYPE_UNDEFINED);
+    return 0;
+  }
+
+  if (!a.is_unsigned && !res->is_unsigned) {
+    if (a.value.val_int64 > res->value.val_int64) {
+      res->value.val_int64 = a.value.val_int64;
+    }
+  } else if (a.is_unsigned && res->is_unsigned) {
+    if (a.value.val_uint64 > res->value.val_uint64) {
+      res->value.val_uint64 = a.value.val_uint64;
+    }
+  } else if (a.is_unsigned && !res->is_unsigned) {
+    if (res->value.val_int64 < 0) {
+      res->value.val_uint64 = a.value.val_uint64;
+      res->is_unsigned = true;
+    } else {
+      if (a.value.val_uint64 > static_cast<Uint64>(res->value.val_int64)) {
+        res->value.val_uint64 = a.value.val_uint64;
+        res->is_unsigned = true;
+      }
+    }
+  } else {
+    // !a.is_unsigned && res->is_unsigned
+    if (a.value.val_int64 >= 0) {
+      if (static_cast<Uint64>(a.value.val_int64) > res->value.val_uint64) {
+        res->value.val_uint64 = static_cast<Uint64>(a.value.val_int64);
+      }
+    }
+    // If a is negative and res is unsigned, res is already larger
+  }
+#ifdef DEBUG_PA_INTERP
+  if (print) {
+    char log_buf[128];
+    sprintf(log_buf, "MaxBigint(), update AggRes to ");
+    PrintValue(res, log_buf);
+  }
+#endif // DEBUG_PA_INTERP
+  return 0;
+}
+
+/**
+ * MaxDouble - Max for double precision floats
+ */
+static Int32 MaxDouble(const Register& a, AggResItem* res, bool print) {
+  assert(a.type != NDB_TYPE_UNDEFINED);
+  if (unlikely(a.is_null)) {
+    return 1;
+  }
+
+  if (unlikely(res->type == NDB_TYPE_UNDEFINED || res->is_null)) {
+    res->type = NDB_TYPE_DOUBLE;
+    res->value.val_double = a.value.val_double;
+    res->is_unsigned = false;
+    res->is_null = false;
+#ifdef DEBUG_PA_INTERP
+    if (print) {
+      char log_buf[128];
+      sprintf(log_buf, "MaxDouble() init AggRes to ");
+      PrintValue(res, log_buf);
+    }
+#endif // DEBUG_PA_INTERP
+    assert(res->type != NDB_TYPE_UNDEFINED);
+    return 0;
+  }
+
+  if (a.value.val_double > res->value.val_double) {
+    res->value.val_double = a.value.val_double;
+  }
+#ifdef DEBUG_PA_INTERP
+  if (print) {
+    char log_buf[128];
+    sprintf(log_buf, "MaxDouble(), update AggRes to ");
+    PrintValue(res, log_buf);
+  }
+#endif // DEBUG_PA_INTERP
   return 0;
 }
 
@@ -513,6 +942,108 @@ static Int32 Min(const Register& a, AggResItem* res, bool print) {
   }
 #endif // DEBUG_PA_INTERP
 
+  return 0;
+}
+
+/**
+ * MinBigint - Min for BIGINT (handles both signed and unsigned dynamically)
+ */
+static Int32 MinBigint(const Register& a, AggResItem* res, bool print) {
+  assert(a.type != NDB_TYPE_UNDEFINED);
+  if (unlikely(a.is_null)) {
+    return 1;
+  }
+
+  if (unlikely(res->type == NDB_TYPE_UNDEFINED || res->is_null)) {
+    res->type = NDB_TYPE_BIGINT;
+    res->value.val_int64 = a.value.val_int64;
+    res->is_unsigned = a.is_unsigned;
+    res->is_null = false;
+#ifdef DEBUG_PA_INTERP
+    if (print) {
+      char log_buf[128];
+      sprintf(log_buf, "MinBigint() init AggRes to ");
+      PrintValue(res, log_buf);
+    }
+#endif // DEBUG_PA_INTERP
+    assert(res->type != NDB_TYPE_UNDEFINED);
+    return 0;
+  }
+
+  if (!a.is_unsigned && !res->is_unsigned) {
+    if (a.value.val_int64 < res->value.val_int64) {
+      res->value.val_int64 = a.value.val_int64;
+    }
+  } else if (a.is_unsigned && res->is_unsigned) {
+    if (a.value.val_uint64 < res->value.val_uint64) {
+      res->value.val_uint64 = a.value.val_uint64;
+    }
+  } else if (a.is_unsigned && !res->is_unsigned) {
+    // a is unsigned, res is signed
+    if (res->value.val_int64 < 0) {
+      // res is negative, so res is smaller - keep res
+    } else {
+      if (a.value.val_uint64 < static_cast<Uint64>(res->value.val_int64)) {
+        res->value.val_uint64 = a.value.val_uint64;
+        res->is_unsigned = true;
+      }
+    }
+  } else {
+    // !a.is_unsigned && res->is_unsigned
+    if (a.value.val_int64 < 0) {
+      res->value.val_int64 = a.value.val_int64;
+      res->is_unsigned = false;
+    } else {
+      if (static_cast<Uint64>(a.value.val_int64) < res->value.val_uint64) {
+        res->value.val_uint64 = static_cast<Uint64>(a.value.val_int64);
+      }
+    }
+  }
+#ifdef DEBUG_PA_INTERP
+  if (print) {
+    char log_buf[128];
+    sprintf(log_buf, "MinBigint(), update AggRes to ");
+    PrintValue(res, log_buf);
+  }
+#endif // DEBUG_PA_INTERP
+  return 0;
+}
+
+/**
+ * MinDouble - Min for double precision floats
+ */
+static Int32 MinDouble(const Register& a, AggResItem* res, bool print) {
+  assert(a.type != NDB_TYPE_UNDEFINED);
+  if (unlikely(a.is_null)) {
+    return 1;
+  }
+
+  if (unlikely(res->type == NDB_TYPE_UNDEFINED || res->is_null)) {
+    res->type = NDB_TYPE_DOUBLE;
+    res->value.val_double = a.value.val_double;
+    res->is_unsigned = false;
+    res->is_null = false;
+#ifdef DEBUG_PA_INTERP
+    if (print) {
+      char log_buf[128];
+      sprintf(log_buf, "MinDouble() init AggRes to ");
+      PrintValue(res, log_buf);
+    }
+#endif // DEBUG_PA_INTERP
+    assert(res->type != NDB_TYPE_UNDEFINED);
+    return 0;
+  }
+
+  if (a.value.val_double < res->value.val_double) {
+    res->value.val_double = a.value.val_double;
+  }
+#ifdef DEBUG_PA_INTERP
+  if (print) {
+    char log_buf[128];
+    sprintf(log_buf, "MinDouble(), update AggRes to ");
+    PrintValue(res, log_buf);
+  }
+#endif // DEBUG_PA_INTERP
   return 0;
 }
 
@@ -635,7 +1166,9 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
       n_groups_ = gb_map_->size();
       agg_res_ptr = reinterpret_cast<AggResItem*>(agg_rec + len_in_char);
 
-      for (uint32_t i = 0; i < n_agg_results_; i++) {
+      // Initialize the new group's aggregation slots
+      assert(n_agg_results_ <= MAX_AGG_N_RESULTS);
+      for (Uint32 i = 0; i < n_agg_results_; i++) {
         agg_res_ptr[i].type = NDB_TYPE_UNDEFINED;
         agg_res_ptr[i].value.val_int64 = 0;
         agg_res_ptr[i].is_unsigned = false;
@@ -754,6 +1287,99 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
           return ZAGG_MATH_OVERFLOW;
         }
         break;
+
+      // Type-specific Plus operations
+      case kOpPlusBigint:
+        reg_index = (value >> 12) & 0x0F;
+        reg_index2 = (value >> 8) & 0x0F;
+        ret = RegPlusBigint(registers_[reg_index], registers_[reg_index2],
+                  &registers_[reg_index]);
+        if (ret < 0) {
+          g_eventLogger->debug("Overflow[PlusBigint], value is out of range");
+          return ZAGG_MATH_OVERFLOW;
+        }
+        break;
+
+      case kOpPlusDouble:
+        reg_index = (value >> 12) & 0x0F;
+        reg_index2 = (value >> 8) & 0x0F;
+        ret = RegPlusDouble(registers_[reg_index], registers_[reg_index2],
+                  &registers_[reg_index]);
+        if (ret < 0) {
+          g_eventLogger->debug("Overflow[PlusDouble], value is out of range");
+          return ZAGG_MATH_OVERFLOW;
+        }
+        break;
+
+      // Type-specific Minus operations
+      case kOpMinusBigint:
+        reg_index = (value >> 12) & 0x0F;
+        reg_index2 = (value >> 8) & 0x0F;
+        ret = RegMinusBigint(registers_[reg_index], registers_[reg_index2],
+                  &registers_[reg_index]);
+        if (ret < 0) {
+          g_eventLogger->debug("Overflow[MinusBigint], value is out of range");
+          return ZAGG_MATH_OVERFLOW;
+        }
+        break;
+
+      case kOpMinusDouble:
+        reg_index = (value >> 12) & 0x0F;
+        reg_index2 = (value >> 8) & 0x0F;
+        ret = RegMinusDouble(registers_[reg_index], registers_[reg_index2],
+                  &registers_[reg_index]);
+        if (ret < 0) {
+          g_eventLogger->debug("Overflow[MinusDouble], value is out of range");
+          return ZAGG_MATH_OVERFLOW;
+        }
+        break;
+
+      // Type-specific Multiply operations
+      case kOpMulBigint:
+        reg_index = (value >> 12) & 0x0F;
+        reg_index2 = (value >> 8) & 0x0F;
+        ret = RegMulBigint(registers_[reg_index], registers_[reg_index2],
+                  &registers_[reg_index]);
+        if (ret < 0) {
+          g_eventLogger->debug("Overflow[MulBigint], value is out of range");
+          return ZAGG_MATH_OVERFLOW;
+        }
+        break;
+
+      case kOpMulDouble:
+        reg_index = (value >> 12) & 0x0F;
+        reg_index2 = (value >> 8) & 0x0F;
+        ret = RegMulDouble(registers_[reg_index], registers_[reg_index2],
+                  &registers_[reg_index]);
+        if (ret < 0) {
+          g_eventLogger->debug("Overflow[MulDouble], value is out of range");
+          return ZAGG_MATH_OVERFLOW;
+        }
+        break;
+
+      // Type-specific Division operations
+      case kOpDivDouble:
+        reg_index = (value >> 12) & 0x0F;
+        reg_index2 = (value >> 8) & 0x0F;
+        ret = RegDivDouble(registers_[reg_index], registers_[reg_index2],
+                  &registers_[reg_index]);
+        if (ret < 0) {
+          g_eventLogger->debug("Overflow[DivDouble], value is out of range");
+          return ZAGG_MATH_OVERFLOW;
+        }
+        break;
+
+      case kOpDivIntBigint:
+        reg_index = (value >> 12) & 0x0F;
+        reg_index2 = (value >> 8) & 0x0F;
+        ret = RegDivIntBigint(registers_[reg_index], registers_[reg_index2],
+                  &registers_[reg_index]);
+        if (ret < 0) {
+          g_eventLogger->debug("Overflow[DivIntBigint], value is out of range");
+          return ZAGG_MATH_OVERFLOW;
+        }
+        break;
+
       case kOpLoadCol:
         type = (value & 0x03E00000) >> 21;
         is_unsigned = IsUnsigned(type);
@@ -1114,6 +1740,53 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
 
         ret = Count(registers_[reg_index], &agg_res_ptr[agg_index], debug_print);
         // assert(ret >= 0);
+        break;
+
+      // Type-specific Sum operations
+      case kOpSumBigint:
+        reg_index = (value & 0x000F0000) >> 16;
+        agg_index = (value & 0x0000FFFF);
+        ret = SumBigint(registers_[reg_index], &agg_res_ptr[agg_index], debug_print);
+        if (ret < 0) {
+          g_eventLogger->debug("Overflow[SumBigint], value is out of range");
+          return ZAGG_MATH_OVERFLOW;
+        }
+        break;
+
+      case kOpSumDouble:
+        reg_index = (value & 0x000F0000) >> 16;
+        agg_index = (value & 0x0000FFFF);
+        ret = SumDouble(registers_[reg_index], &agg_res_ptr[agg_index], debug_print);
+        if (ret < 0) {
+          g_eventLogger->debug("Overflow[SumDouble], value is out of range");
+          return ZAGG_MATH_OVERFLOW;
+        }
+        break;
+
+      // Type-specific Max operations
+      case kOpMaxBigint:
+        reg_index = (value & 0x000F0000) >> 16;
+        agg_index = (value & 0x0000FFFF);
+        ret = MaxBigint(registers_[reg_index], &agg_res_ptr[agg_index], debug_print);
+        break;
+
+      case kOpMaxDouble:
+        reg_index = (value & 0x000F0000) >> 16;
+        agg_index = (value & 0x0000FFFF);
+        ret = MaxDouble(registers_[reg_index], &agg_res_ptr[agg_index], debug_print);
+        break;
+
+      // Type-specific Min operations
+      case kOpMinBigint:
+        reg_index = (value & 0x000F0000) >> 16;
+        agg_index = (value & 0x0000FFFF);
+        ret = MinBigint(registers_[reg_index], &agg_res_ptr[agg_index], debug_print);
+        break;
+
+      case kOpMinDouble:
+        reg_index = (value & 0x000F0000) >> 16;
+        agg_index = (value & 0x0000FFFF);
+        ret = MinDouble(registers_[reg_index], &agg_res_ptr[agg_index], debug_print);
         break;
 
       default:

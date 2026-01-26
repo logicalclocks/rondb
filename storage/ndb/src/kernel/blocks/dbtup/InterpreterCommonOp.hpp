@@ -736,4 +736,434 @@ Int32 RegModReg(const Register& a, const Register& b, Register* res) {
   return 0;
 }
 
+/*
+ * Type-specific arithmetic operations
+ * These assume the compiler has already determined the types and
+ * emitted the appropriate opcode. Signedness is handled dynamically.
+ */
+
+// ============== Plus operations ==============
+
+/**
+ * PlusBigint - Addition for BIGINT (handles signed/unsigned dynamically)
+ * Precondition: a.type == NDB_TYPE_BIGINT, b.type == NDB_TYPE_BIGINT
+ */
+Int32 RegPlusBigint(const Register& a, const Register& b, Register* res) {
+  bool unsigned_flag = (a.is_unsigned | b.is_unsigned);
+
+  if (unlikely(a.is_null || b.is_null)) {
+    SetRegisterNull(res);
+    res->type = NDB_TYPE_BIGINT;
+    res->is_unsigned = unsigned_flag;
+    return 1;
+  }
+
+  Int64 val0 = a.value.val_int64;
+  Int64 val1 = b.value.val_int64;
+  Int64 res_val = static_cast<Uint64>(val0) + static_cast<Uint64>(val1);
+  bool res_unsigned = false;
+
+  if (a.is_unsigned) {
+    if (b.is_unsigned || val1 >= 0) {
+      if (TestIfSumOverflowsUint64((Uint64)val0, (Uint64)val1)) {
+        return -1;
+      }
+      res_unsigned = true;
+    } else {
+      if ((Uint64)val0 > (Uint64)(LLONG_MAX)) {
+        res_unsigned = true;
+      }
+    }
+  } else {
+    if (b.is_unsigned) {
+      if (val0 >= 0) {
+        if (TestIfSumOverflowsUint64((Uint64)val0, (Uint64)val1)) {
+          return -1;
+        }
+        res_unsigned = true;
+      } else {
+        if ((Uint64)val1 > (Uint64)(LLONG_MAX)) {
+          res_unsigned = true;
+        }
+      }
+    } else {
+      if (val0 >= 0 && val1 >= 0) {
+        res_unsigned = true;
+      } else if (val0 < 0 && val1 < 0 && res_val >= 0) {
+        return -1;
+      }
+    }
+  }
+
+  if ((unsigned_flag && !res_unsigned && res_val < 0) ||
+      (!unsigned_flag && res_unsigned &&
+       (Uint64)res_val > (Uint64)LLONG_MAX)) {
+    return -1;
+  }
+
+  if (unsigned_flag) {
+    res->value.val_uint64 = res_val;
+  } else {
+    res->value.val_int64 = res_val;
+  }
+  res->type = NDB_TYPE_BIGINT;
+  res->is_unsigned = unsigned_flag;
+  res->is_null = false;
+  return 0;
+}
+
+/**
+ * PlusDouble - Addition for double precision floats
+ * Precondition: a and b contain double values
+ */
+Int32 RegPlusDouble(const Register& a, const Register& b, Register* res) {
+  if (unlikely(a.is_null || b.is_null)) {
+    SetRegisterNull(res);
+    res->type = NDB_TYPE_DOUBLE;
+    return 1;
+  }
+
+  double res_val = a.value.val_double + b.value.val_double;
+  if (unlikely(!std::isfinite(res_val))) {
+    return -1;
+  }
+
+  res->value.val_double = res_val;
+  res->type = NDB_TYPE_DOUBLE;
+  res->is_unsigned = false;
+  res->is_null = false;
+  return 0;
+}
+
+// ============== Minus operations ==============
+
+/**
+ * MinusBigint - Subtraction for BIGINT (handles signed/unsigned dynamically)
+ * Precondition: a.type == NDB_TYPE_BIGINT, b.type == NDB_TYPE_BIGINT
+ */
+Int32 RegMinusBigint(const Register& a, const Register& b, Register* res) {
+  bool unsigned_flag = (a.is_unsigned | b.is_unsigned);
+
+  if (unlikely(a.is_null || b.is_null)) {
+    SetRegisterNull(res);
+    res->type = NDB_TYPE_BIGINT;
+    res->is_unsigned = unsigned_flag;
+    return 1;
+  }
+
+  Int64 val0 = a.value.val_int64;
+  Int64 val1 = b.value.val_int64;
+  Int64 res_val = static_cast<Uint64>(val0) - static_cast<Uint64>(val1);
+  bool res_unsigned = false;
+
+  if (a.is_unsigned) {
+    if (b.is_unsigned) {
+      if (static_cast<Uint64>(val0) < static_cast<Uint64>(val1)) {
+        if (res_val >= 0) {
+          return -1;
+        }
+        res_unsigned = true;
+      }
+    } else {
+      if (val1 >= 0) {
+        if (static_cast<Uint64>(val0) > static_cast<Uint64>(val1)) {
+          res_unsigned = true;
+        }
+      } else {
+        if (TestIfSumOverflowsUint64((Uint64)val0, (Uint64)-val1)) {
+          return -1;
+        }
+        res_unsigned = true;
+      }
+    }
+  } else {
+    if (b.is_unsigned) {
+      if (static_cast<Uint64>(val0) - LLONG_MIN <
+          static_cast<Uint64>(val1)) {
+        return -1;
+      }
+      if (val0 >= 0 && val1 < 0) {
+        res_unsigned = true;
+      } else if (val0 < 0 && val1 > 0 && res_val >= 0) {
+        return -1;
+      }
+    }
+  }
+
+  if ((unsigned_flag && !res_unsigned && res_val < 0) ||
+      (!unsigned_flag && res_unsigned &&
+       (Uint64)res_val > (Uint64)LLONG_MAX)) {
+    return -1;
+  }
+
+  if (unsigned_flag) {
+    res->value.val_uint64 = res_val;
+  } else {
+    res->value.val_int64 = res_val;
+  }
+  res->type = NDB_TYPE_BIGINT;
+  res->is_unsigned = unsigned_flag;
+  res->is_null = false;
+  return 0;
+}
+
+/**
+ * MinusDouble - Subtraction for double precision floats
+ * Precondition: a and b contain double values
+ */
+Int32 RegMinusDouble(const Register& a, const Register& b, Register* res) {
+  if (unlikely(a.is_null || b.is_null)) {
+    SetRegisterNull(res);
+    res->type = NDB_TYPE_DOUBLE;
+    return 1;
+  }
+
+  double res_val = a.value.val_double - b.value.val_double;
+  if (unlikely(!std::isfinite(res_val))) {
+    return -1;
+  }
+
+  res->value.val_double = res_val;
+  res->type = NDB_TYPE_DOUBLE;
+  res->is_unsigned = false;
+  res->is_null = false;
+  return 0;
+}
+
+// ============== Multiply operations ==============
+
+/**
+ * MulBigint - Multiplication for BIGINT (handles signed/unsigned dynamically)
+ * Precondition: a.type == NDB_TYPE_BIGINT, b.type == NDB_TYPE_BIGINT
+ */
+Int32 RegMulBigint(const Register& a, const Register& b, Register* res) {
+  bool unsigned_flag = (a.is_unsigned | b.is_unsigned);
+
+  if (unlikely(a.is_null || b.is_null)) {
+    SetRegisterNull(res);
+    res->type = NDB_TYPE_BIGINT;
+    res->is_unsigned = unsigned_flag;
+    return 1;
+  }
+
+  Int64 val0 = a.value.val_int64;
+  Int64 val1 = b.value.val_int64;
+
+  if (val0 == 0 || val1 == 0) {
+    res->value.val_int64 = 0;
+    res->type = NDB_TYPE_BIGINT;
+    res->is_unsigned = unsigned_flag;
+    res->is_null = false;
+    return 0;
+  }
+
+  bool val0_negative = (!a.is_unsigned && val0 < 0);
+  bool val1_negative = (!b.is_unsigned && val1 < 0);
+  bool res_negative = val0_negative != val1_negative;
+  bool res_unsigned = !res_negative;
+
+  // Handle INT_MIN64 special cases
+  if (val0_negative && val0 == LLONG_MIN) {
+    if (val1 == 1) {
+      if ((unsigned_flag && !res_unsigned && val0 < 0) ||
+          (!unsigned_flag && res_unsigned &&
+           (Uint64)val0 > (Uint64)LLONG_MAX)) {
+        return -1;
+      }
+      if (unsigned_flag) {
+        res->value.val_uint64 = val0;
+      } else {
+        res->value.val_int64 = val0;
+      }
+      res->type = NDB_TYPE_BIGINT;
+      res->is_unsigned = unsigned_flag;
+      res->is_null = false;
+      return 0;
+    }
+    return -1;
+  }
+  if (val1_negative && val1 == LLONG_MIN) {
+    if (val0 == 1) {
+      if ((unsigned_flag && !res_unsigned && val1 < 0) ||
+          (!unsigned_flag && res_unsigned &&
+           (Uint64)val1 > (Uint64)LLONG_MAX)) {
+        return -1;
+      }
+      if (unsigned_flag) {
+        res->value.val_uint64 = val1;
+      } else {
+        res->value.val_int64 = val1;
+      }
+      res->type = NDB_TYPE_BIGINT;
+      res->is_unsigned = unsigned_flag;
+      res->is_null = false;
+      return 0;
+    }
+    return -1;
+  }
+
+  if (val0_negative) val0 = -val0;
+  if (val1_negative) val1 = -val1;
+
+  Uint32 a0 = 0xFFFFFFFFUL & val0;
+  Uint32 a1 = static_cast<Uint64>(val0) >> 32;
+  Uint32 b0 = 0xFFFFFFFFUL & val1;
+  Uint32 b1 = static_cast<Uint64>(val1) >> 32;
+
+  if (a1 && b1) {
+    return -1;
+  }
+
+  Uint64 res_val1 = static_cast<Uint64>(a1) * b0 + static_cast<Uint64>(a0) * b1;
+  if (res_val1 > 0xFFFFFFFFUL) {
+    return -1;
+  }
+
+  res_val1 = res_val1 << 32;
+  Uint64 res_val0 = static_cast<Uint64>(a0) * b0;
+
+  if (TestIfSumOverflowsUint64(res_val1, res_val0)) {
+    return -1;
+  }
+
+  Int64 res_val = res_val1 + res_val0;
+
+  if (val0_negative != val1_negative) {
+    if (static_cast<Uint64>(res_val) > static_cast<Uint64>(LLONG_MAX)) {
+      return -1;
+    }
+    res_val = -res_val;
+  }
+
+  if ((unsigned_flag && !res_unsigned && res_val < 0) ||
+      (!unsigned_flag && res_unsigned &&
+       (Uint64)res_val > (Uint64)LLONG_MAX)) {
+    return -1;
+  }
+
+  if (unsigned_flag) {
+    res->value.val_uint64 = res_val;
+  } else {
+    res->value.val_int64 = res_val;
+  }
+  res->type = NDB_TYPE_BIGINT;
+  res->is_unsigned = unsigned_flag;
+  res->is_null = false;
+  return 0;
+}
+
+/**
+ * MulDouble - Multiplication for double precision floats
+ * Precondition: a and b contain double values
+ */
+Int32 RegMulDouble(const Register& a, const Register& b, Register* res) {
+  if (unlikely(a.is_null || b.is_null)) {
+    SetRegisterNull(res);
+    res->type = NDB_TYPE_DOUBLE;
+    return 1;
+  }
+
+  double res_val = a.value.val_double * b.value.val_double;
+  if (unlikely(!std::isfinite(res_val))) {
+    return -1;
+  }
+
+  res->value.val_double = res_val;
+  res->type = NDB_TYPE_DOUBLE;
+  res->is_unsigned = false;
+  res->is_null = false;
+  return 0;
+}
+
+// ============== Division operations ==============
+
+/**
+ * DivDouble - Division returning double
+ * Precondition: a and b contain double values
+ */
+Int32 RegDivDouble(const Register& a, const Register& b, Register* res) {
+  if (unlikely(a.is_null || b.is_null)) {
+    SetRegisterNull(res);
+    res->type = NDB_TYPE_DOUBLE;
+    return 1;
+  }
+
+  double val0 = a.value.val_double;
+  double val1 = b.value.val_double;
+
+  if (val1 == 0.0) {
+    SetRegisterNull(res);
+    res->type = NDB_TYPE_DOUBLE;
+    return 1;
+  }
+
+  double res_val = val0 / val1;
+  if (unlikely(!std::isfinite(res_val))) {
+    return -1;
+  }
+
+  res->value.val_double = res_val;
+  res->type = NDB_TYPE_DOUBLE;
+  res->is_unsigned = false;
+  res->is_null = false;
+  return 0;
+}
+
+/**
+ * DivIntBigint - Integer division for BIGINT (handles signed/unsigned dynamically)
+ * Precondition: a.type == NDB_TYPE_BIGINT, b.type == NDB_TYPE_BIGINT
+ */
+Int32 RegDivIntBigint(const Register& a, const Register& b, Register* res) {
+  bool unsigned_flag = (a.is_unsigned | b.is_unsigned);
+
+  if (unlikely(a.is_null || b.is_null)) {
+    SetRegisterNull(res);
+    res->type = NDB_TYPE_BIGINT;
+    res->is_unsigned = unsigned_flag;
+    return 1;
+  }
+
+  Int64 val0 = a.value.val_int64;
+  Int64 val1 = b.value.val_int64;
+
+  if (val1 == 0) {
+    SetRegisterNull(res);
+    res->type = NDB_TYPE_BIGINT;
+    res->is_unsigned = unsigned_flag;
+    return 1;
+  }
+
+  bool val0_negative = !a.is_unsigned && val0 < 0;
+  bool val1_negative = !b.is_unsigned && val1 < 0;
+  bool res_negative = val0_negative != val1_negative;
+  bool res_unsigned = !res_negative;
+
+  Uint64 uval0 = static_cast<Uint64>(val0_negative && val0 != LLONG_MIN ? -val0 : val0);
+  Uint64 uval1 = static_cast<Uint64>(val1_negative && val1 != LLONG_MIN ? -val1 : val1);
+  Uint64 res_val = uval0 / uval1;
+
+  if (res_negative) {
+    if (res_val > static_cast<Uint64>(LLONG_MAX)) {
+      return -1;
+    }
+    res_val = static_cast<Uint64>(-static_cast<Int64>(res_val));
+  }
+
+  if ((unsigned_flag && !res_unsigned && (Int64)res_val < 0) ||
+      (!unsigned_flag && res_unsigned &&
+       (Uint64)res_val > (Uint64)LLONG_MAX)) {
+    return -1;
+  }
+
+  if (unsigned_flag) {
+    res->value.val_uint64 = res_val;
+  } else {
+    res->value.val_int64 = res_val;
+  }
+  res->type = NDB_TYPE_BIGINT;
+  res->is_unsigned = unsigned_flag;
+  res->is_null = false;
+  return 0;
+}
+
 #endif  // INTERPRETER_COMMON_OP_H_
