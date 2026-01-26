@@ -184,7 +184,7 @@ static bool IsUnsigned(DataType type) {
   return false;
 }
 
-static DataType AlignedType(DataType type) {
+static DataType AlignedType(DataType type, int scale) {
   switch (type) {
     case NDB_TYPE_TINYINT:
     case NDB_TYPE_SMALLINT:
@@ -202,17 +202,9 @@ static DataType AlignedType(DataType type) {
     case NDB_TYPE_FLOAT:
     case NDB_TYPE_DOUBLE:
       return NDB_TYPE_DOUBLE;
-    /*
-     * TODO (Zhao)
-     * PA related
-     * Temporary solultion
-     * Currently regard Decimal as a undefined,
-     * then decide it as BIGINT/BIGUNSIGNED/DOUBLE in LoadColumn
-     * dynamically.
-     */
     case NDB_TYPE_DECIMAL:
     case NDB_TYPE_DECIMALUNSIGNED:
-      return NDB_TYPE_UNDEFINED;
+      return scale == 0 ? NDB_TYPE_BIGINT : NDB_TYPE_DOUBLE;
     default:
       assert(0);
   }
@@ -674,10 +666,9 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
   Int32 decimal_info = 0;
   Int32 precision = 0;
   Int32 scale = 0;
-  decimal_t decimal;
-  decimal.buf = decimal_buf_;
   Int32 dec_ret = E_DEC_OK;
   Uint8* dec_buf_ptr = nullptr;
+  double dec_val_dbl = 0;
   longlong dec_val_ll = 0;
   ulonglong dec_val_ull = 0;
 
@@ -788,8 +779,24 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
           return ZAGG_COL_TYPE_UNSUPPORTED;
         }
 
+        if (type == NDB_TYPE_DECIMAL ||
+            type == NDB_TYPE_DECIMALUNSIGNED) {
+          if (unlikely(exec_pos >= prog_len_)) {
+            g_eventLogger->warning("Pushdown aggregation program ended in the"
+                                   " middle of an instruction.");
+            return ZAGG_OTHER_ERROR;
+          }
+          decimal_info =
+              sint4korr(reinterpret_cast<char*>(&prog_[exec_pos++]));
+          precision = decimal_info >> 16;
+          scale = decimal_info & 0xFFFF;
+        } else {
+          precision = 0;
+          scale = 0;
+        }
+
         ResetRegister(&registers_[reg_index]);
-        registers_[reg_index].type = AlignedType(type);
+        registers_[reg_index].type = AlignedType(type, scale);
         registers_[reg_index].is_unsigned = is_unsigned;
         registers_[reg_index].is_null = header->isNULL();
         if (registers_[reg_index].is_null) {
@@ -887,17 +894,11 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
                             registers_[reg_index].value.val_double);
             break;
           case NDB_TYPE_DECIMAL:
-            decimal_info =
-                sint4korr(reinterpret_cast<char*>(&prog_[exec_pos]));
-            precision = decimal_info >> 16;
-            scale = decimal_info & 0xFFFF;
-            exec_pos += 1;
             assert(static_cast<Uint32>(decimal_bin_size(precision, scale)) ==
                 AttributeDescriptor::getSizeInBytes(attrDescriptor[0]));
             // memset(decimal.buf, 0, sizeof(Int32) * DECIMAL_BUFF_LENGTH);
-            decimal.len = AttributeDescriptor::getSizeInBytes(attrDescriptor[0]);
             dec_ret = bin2decimal(reinterpret_cast<const uchar*>(&buf_[buf_pos_ + 1]),
-                      &decimal, precision, scale);
+                      &decimal_, precision, scale);
             // assert(dec_ret == E_DEC_OK);
             if (dec_ret != E_DEC_OK) {
               dec_buf_ptr = reinterpret_cast<Uint8*>(&buf_[buf_pos_ + 1]);
@@ -916,15 +917,17 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
             }
             /*
              * Moz
-             * convery from decimal to supported type dynamically.
+             * convert from decimal to double or bigint.
              */
+            assert(registers_[reg_index].is_unsigned == false);
             if (scale != 0) {
-              dec_ret = decimal2double(&decimal, &(registers_[reg_index].value.val_double));
-              registers_[reg_index].type = NDB_TYPE_DOUBLE;
+              assert(registers_[reg_index].type == NDB_TYPE_DOUBLE);
+              dec_ret = decimal2double(&decimal_, &dec_val_dbl);
+              registers_[reg_index].value.val_double = dec_val_dbl;
             } else {
-              dec_ret = decimal2longlong(&decimal, &dec_val_ll);
+              assert(registers_[reg_index].type == NDB_TYPE_BIGINT);
+              dec_ret = decimal2longlong(&decimal_, &dec_val_ll);
               registers_[reg_index].value.val_int64 = dec_val_ll;
-              registers_[reg_index].type = NDB_TYPE_BIGINT;
             }
             // assert(dec_ret == E_DEC_OK);
             if (dec_ret != E_DEC_OK) {
@@ -942,7 +945,6 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
                 return ZAGG_DECIMAL_CONV_ERROR;
               }
             }
-            assert(registers_[reg_index].is_unsigned == false);
 #ifdef DEBUG_PA_INTERP
             if (scale != 0) {
               PA_INTERP_TRACE(frag_id_,
@@ -956,17 +958,11 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
 #endif // DEBUG_PA_INTERP
           break;
         case NDB_TYPE_DECIMALUNSIGNED:
-            decimal_info =
-                sint4korr(reinterpret_cast<char*>(&prog_[exec_pos]));
-            precision = decimal_info >> 16;
-            scale = decimal_info & 0xFFFF;
-            exec_pos += 1;
             assert(static_cast<Uint32>(decimal_bin_size(precision, scale)) ==
                 AttributeDescriptor::getSizeInBytes(attrDescriptor[0]));
             // memset(decimal.buf, 0, sizeof(Int32) * DECIMAL_BUFF_LENGTH);
-            decimal.len = AttributeDescriptor::getSizeInBytes(attrDescriptor[0]);
             dec_ret = bin2decimal(reinterpret_cast<const uchar*>(&buf_[buf_pos_ + 1]),
-                      &decimal, precision, scale);
+                      &decimal_, precision, scale);
             // assert(dec_ret == E_DEC_OK);
             if (dec_ret != E_DEC_OK) {
               dec_buf_ptr = reinterpret_cast<Uint8*>(&buf_[buf_pos_ + 1]);
@@ -985,17 +981,20 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
             }
             /*
              * Moz
-             * convery from decimal to supported type dynamically.
+             * convert from decimal unsigned to double or bigint.
              */
+            assert(registers_[reg_index].is_unsigned == true);
+            if(unlikely(decimal_.sign)) {
+              return ZAGG_DECIMAL_CONV_ERROR;
+            }
             if (scale != 0) {
-              dec_ret = decimal2double(&decimal, &(registers_[reg_index].value.val_double));
-              registers_[reg_index].type = NDB_TYPE_DOUBLE;
-              assert(registers_[reg_index].is_unsigned == false);
+              assert(registers_[reg_index].type == NDB_TYPE_DOUBLE);
+              dec_ret = decimal2double(&decimal_, &dec_val_dbl);
+              registers_[reg_index].value.val_double = dec_val_dbl;
             } else {
-              dec_ret = decimal2ulonglong(&decimal, &dec_val_ull);
+              assert(registers_[reg_index].type == NDB_TYPE_BIGINT);
+              dec_ret = decimal2ulonglong(&decimal_, &dec_val_ull);
               registers_[reg_index].value.val_uint64 = dec_val_ull;
-              registers_[reg_index].type = NDB_TYPE_BIGUNSIGNED;
-              registers_[reg_index].is_unsigned = true;
             }
             // assert(dec_ret == E_DEC_OK);
             if (dec_ret != E_DEC_OK) {
@@ -1037,9 +1036,14 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
         assert(type == NDB_TYPE_BIGINT || type == NDB_TYPE_BIGUNSIGNED ||
                type == NDB_TYPE_DOUBLE);
         ResetRegister(&registers_[reg_index]);
-        registers_[reg_index].type = AlignedType(type);
+        registers_[reg_index].type = AlignedType(type, 0);
         registers_[reg_index].is_unsigned = IsUnsigned(type);
         registers_[reg_index].is_null = false;
+        if (unlikely(exec_pos + 2 > prog_len_)) {
+          g_eventLogger->warning("Pushdown aggregation program ended in the"
+                                 " middle of an instruction.");
+          return ZAGG_OTHER_ERROR;
+        }
         switch (type) {
           case NDB_TYPE_BIGINT:
             registers_[reg_index].value.val_int64 =

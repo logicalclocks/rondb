@@ -1,0 +1,149 @@
+SET time_zone = "+00:00";
+==============
+Generate data:
+==============
+CREATE TABLE tbl (
+pk INT          PRIMARY KEY AUTO_INCREMENT,
+d  DATE         NOT NULL,
+dt DATETIME(6)  NOT NULL,
+ts TIMESTAMP(3) NOT NULL
+) ENGINE=NDB;
+INSERT INTO tbl (d, dt, ts) VALUES ('2025-11-24', '2025-11-24 11:47:03.000000', '2025-11-24 11:47:03.000000');
+INSERT INTO tbl (d, dt, ts) SELECT d, DATE_ADD(dt, INTERVAL 1 MICROSECOND), DATE_ADD(ts, INTERVAL 1 MICROSECOND) FROM tbl ORDER BY pk;
+INSERT INTO tbl (d, dt, ts) SELECT d, DATE_ADD(dt, INTERVAL 1000 MICROSECOND), DATE_ADD(ts, INTERVAL 1000 MICROSECOND) FROM tbl ORDER BY pk;
+INSERT INTO tbl (d, dt, ts) SELECT d, DATE_ADD(dt, INTERVAL 1 SECOND), DATE_ADD(ts, INTERVAL 1 SECOND) FROM tbl ORDER BY pk;
+INSERT INTO tbl (d, dt, ts) SELECT d, DATE_ADD(dt, INTERVAL 1 MINUTE), DATE_ADD(ts, INTERVAL 1 MINUTE) FROM tbl ORDER BY pk;
+INSERT INTO tbl (d, dt, ts) SELECT d, DATE_ADD(dt, INTERVAL 1 HOUR), DATE_ADD(ts, INTERVAL 1 HOUR) FROM tbl ORDER BY pk;
+INSERT INTO tbl (d, dt, ts) SELECT DATE_ADD(d, INTERVAL 1 DAY), DATE_ADD(dt, INTERVAL 1 DAY), DATE_ADD(ts, INTERVAL 1 DAY) FROM tbl ORDER BY pk;
+INSERT INTO tbl (d, dt, ts) SELECT DATE_ADD(d, INTERVAL 1 WEEK), DATE_ADD(dt, INTERVAL 1 WEEK), DATE_ADD(ts, INTERVAL 1 WEEK) FROM tbl ORDER BY pk;
+INSERT INTO tbl (d, dt, ts) SELECT DATE_ADD(d, INTERVAL 1 MONTH), DATE_ADD(dt, INTERVAL 1 MONTH), DATE_ADD(ts, INTERVAL 1 MONTH) FROM tbl ORDER BY pk;
+INSERT INTO tbl (d, dt, ts) SELECT DATE_ADD(d, INTERVAL 1 QUARTER), DATE_ADD(dt, INTERVAL 1 QUARTER), DATE_ADD(ts, INTERVAL 1 QUARTER) FROM tbl ORDER BY pk;
+INSERT INTO tbl (d, dt, ts) SELECT DATE_ADD(d, INTERVAL 1 YEAR), DATE_ADD(dt, INTERVAL 1 YEAR), DATE_ADD(ts, INTERVAL 1 YEAR) FROM tbl ORDER BY pk;
+========
+Queries:
+========
+== Query ==
+SELECT COUNT(*), SUM(pk) FROM tbl WHERE d  >  '2025-11-24';
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Query ==
+SELECT COUNT(*), SUM(pk) FROM tbl WHERE dt <  '2025-11-24 11:47:05';
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Query ==
+SELECT COUNT(*), SUM(pk) FROM tbl WHERE ts >= '2025-11-24 11:47:03.001';
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Query ==
+SELECT COUNT(*), SUM(pk) FROM tbl WHERE d  >= DATE_ADD('2025-11-24', INTERVAL 1 DAY);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Query ==
+SELECT COUNT(*), SUM(pk) FROM tbl WHERE d  >= DATE_ADD('2025-11-24', INTERVAL 1 WEEK);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Query ==
+SELECT COUNT(*), SUM(pk) FROM tbl WHERE d  >= DATE_ADD('2025-11-24', INTERVAL 1 MONTH);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Query ==
+SELECT COUNT(*), SUM(pk) FROM tbl WHERE d  >= DATE_ADD('2025-11-24', INTERVAL 1 QUARTER);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Query ==
+SELECT COUNT(*), SUM(pk) FROM tbl WHERE d  >= DATE_ADD('2025-11-24', INTERVAL 1 YEAR);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Query ==
+SELECT COUNT(*), SUM(pk) FROM tbl WHERE dt >= DATE_SUB('2025-11-24 11:47:03', INTERVAL -1 MICROSECOND);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Query ==
+SELECT COUNT(*), SUM(pk) FROM tbl WHERE ts >= DATE_ADD('2025-11-24 11:47:03', INTERVAL 1 SECOND);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Query ==
+SELECT COUNT(*), SUM(pk) FROM tbl WHERE dt >= DATE_ADD('2025-11-24 11:47:03', INTERVAL 1 HOUR);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Query ==
+SELECT COUNT(*), SUM(pk) FROM tbl WHERE NOT ts < DATE_SUB(DATE_ADD('2025-11-24 11:47:03', INTERVAL '1' HOUR), INTERVAL -2 MINUTE)
+                    XOR NOT NOT NOT NOT NOT dt < DATE_ADD(DATE_SUB('2025-11-24 11:47:03', INTERVAL '-1' MONTH), INTERVAL 2 DAY);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+=======
+Cleanup
+=======
+DROP TABLE tbl;
