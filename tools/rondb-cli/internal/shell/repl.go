@@ -591,6 +591,44 @@ func (s *Shell) executeInternal(line string) error {
 			return err
 		}
 		return s.runLoadRDRS(numThreads, numOps, rowsPerOp)
+	case "load_tpch":
+		if s.restClient == nil {
+			return fmt.Errorf("REST API not connected. Cannot run load_tpch.")
+		}
+		if s.mysqlClient == nil {
+			return fmt.Errorf("MySQL not connected. Cannot run load_tpch (needed to create tables).")
+		}
+		// Parse scale factor, thread count, and batch size
+		scaleFactor := 1   // default: 1 dataset
+		numThreads := 4    // default: 4 threads
+		batchSize := 100   // default: 100 rows per batch
+		if len(parts) > 1 {
+			sf, err := strconv.Atoi(parts[1])
+			if err != nil || sf <= 0 {
+				return fmt.Errorf("invalid scale factor: %s (use a positive integer, e.g., 1, 10, 100)", parts[1])
+			}
+			scaleFactor = sf
+		}
+		if len(parts) > 2 {
+			t, err := strconv.Atoi(parts[2])
+			if err != nil || t <= 0 {
+				return fmt.Errorf("invalid thread count: %s (use a positive integer)", parts[2])
+			}
+			numThreads = t
+		}
+		if len(parts) > 3 {
+			b, err := strconv.Atoi(parts[3])
+			if err != nil || b <= 0 {
+				return fmt.Errorf("invalid batch size: %s (use a positive integer)", parts[3])
+			}
+			batchSize = b
+		}
+		return s.runLoadTPCH(scaleFactor, numThreads, batchSize)
+	case "drop_tpch":
+		if s.mysqlClient == nil {
+			return fmt.Errorf("MySQL not connected. Cannot run drop_tpch.")
+		}
+		return s.runDropTPCH()
 	case "drop_sql":
 		if s.mysqlClient == nil {
 			return fmt.Errorf("MySQL not connected. Cannot run drop_sql.")
@@ -4032,8 +4070,12 @@ Internal benchmark commands (T=threads, N=requests, R=rows/req, W=write%, S=seco
     .bench_rdrs [T] [N] [R] [W]          Benchmark (W=write%, 0=all reads, 100=all writes)
     .bench_rdrs_cont [T] [N] [R] [W] [S] Continuous benchmark for S seconds
 
+  TPC-H data loading:
+    .load_tpch [SF] [T] [B]              Load TPC-H data (SF=scale factor, T=threads, B=batch size)
+    .drop_tpch                           Drop all TPC-H tables and database
+
 Key format: bench:key:<client>:<thread>:<key>:<row>
-Defaults: T=2, N=1000, R=1, W=0, S=60, client=0
+Defaults: T=2, N=1000, R=1, W=0, S=60, client=0, SF=1, B=100
 `
 	fmt.Println(help)
 }
@@ -4211,6 +4253,8 @@ func (s *Shell) getCompleter() *readline.PrefixCompleter {
 		readline.PcItem(".bench_rondis_cont"),
 		readline.PcItem(".del_rondis"),
 		readline.PcItem(".load_rdrs"),
+		readline.PcItem(".load_tpch"),
+		readline.PcItem(".drop_tpch"),
 		readline.PcItem(".bench_rdrs"),
 		readline.PcItem(".bench_rdrs_cont"),
 		readline.PcItem(".browse"),
