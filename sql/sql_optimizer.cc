@@ -5732,7 +5732,6 @@ bool JOIN::extract_const_tables() {
               (e.g., materialized table with >1 row, or with stored programs
               in EXPLAIN mode)
         */
-        const bool explain_mode = thd->lex->is_explain();
         if ((table->s->system || table->file->stats.records <= 1 ||
              all_partitions_pruned_away) &&
             !tab->dependent &&  // 1
