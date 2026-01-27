@@ -123,7 +123,6 @@ Configuration::Configuration() {
   _backupPath = 0;
   _initialStart = false;
   m_config_retriever = 0;
-  m_logLevel = 0;
 }
 
 Configuration::~Configuration() {
@@ -135,9 +134,6 @@ Configuration::~Configuration() {
     delete m_config_retriever;
   }
 
-  if (m_logLevel) {
-    delete m_logLevel;
-  }
   ndb_mgm_destroy_iterator(m_clusterConfigIter);
 }
 
@@ -1622,6 +1618,18 @@ Configuration::setupConfiguration()
   }
 
   /**
+   * Setup g_eventLogger log levels for logevents.
+   */
+
+  for (unsigned j = 0; j < LogLevel::LOGLEVEL_CATEGORIES; j++) {
+    Uint32 level;
+    LogLevel &logLevel = g_eventLogger->m_logLevel;
+    if (!iter.get(CFG_MIN_LOGLEVEL + j, &level)) {
+      logLevel.setLogLevel((LogLevel::EventCategory)j, level);
+    }
+  }
+
+  /**
    * Iff we use the 'default' (non-mt) send buffer implementation, the
    * send buffers are allocated here.
    */
@@ -2139,11 +2147,6 @@ Configuration::calcSizeAlt(ConfigValues * ownConfig)
   unsigned int automaticMemoryConfig = 1;
   unsigned int max_schema_objects = OLD_NDB_MAX_TABLES;
 
-  m_logLevel = new LogLevel();
-  if (!m_logLevel) {
-    ERROR_SET(fatal, NDBD_EXIT_MEMALLOC, "Failed to create LogLevel", "");
-  }
-
   struct AttribStorage {
     int paramId;
     Uint32 *storage;
@@ -2253,20 +2256,12 @@ Configuration::calcSizeAlt(ConfigValues * ownConfig)
 
 #define DO_DIV(x, y) (((x) + (y - 1)) / (y))
 
-  for(unsigned j = 0; j<LogLevel::LOGLEVEL_CATEGORIES; j++)
-  {
-    Uint32 tmp;
-    if (!ndb_mgm_get_int_parameter(&db, CFG_MIN_LOGLEVEL + j, &tmp)) {
-      m_logLevel->setLogLevel((LogLevel::EventCategory)j, tmp);
-    }
-  }
-  
   get_num_nodes(noOfNodes,
                 noOfDBNodes,
                 noOfAPINodes,
                 noOfMGMNodes);
 
-  noOfMetaTables+= 2; // Add System tables
+  noOfTables += 2;      // Add System tables
   noOfAttributes += 9;  // Add System table attributes
   globalData.theMaxNoOfTables += 2;
   globalData.theMaxNoOfAttributes += 9;

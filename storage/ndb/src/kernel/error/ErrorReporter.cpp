@@ -54,7 +54,7 @@
 #define MESSAGE_LENGTH 999
 #define OLD_MESSAGE_LENGTH 499
 
-const char * ndb_basename(const char *path);
+const char *ndb_basename(const char *path);
 
 static const char *formatTimeStampString(char *theDateTimeString, size_t len) {
   TimeModule DateTime; /* To create "theDateTimeString" */

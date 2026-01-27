@@ -184,10 +184,7 @@ SET(TESTS
   val_int_compare
   )
 
-SET(ALL_SMALL_TESTS)
-FOREACH(test ${TESTS})
-  LIST(APPEND ALL_SMALL_TESTS ${test}-t.cc)
-ENDFOREACH()
+LIST(TRANSFORM TESTS APPEND "-t.cc" OUTPUT_VARIABLE ALL_SMALL_TESTS)
 
 # Add tests (link them with gunit/gmock libraries and the server libraries)
 SET(SERVER_TESTS
@@ -324,10 +321,7 @@ ENDIF()
 # Warnings about missing PGO profile data are not useful for unit tests.
 DISABLE_MISSING_PROFILE_WARNING()
 
-SET(ALL_LARGE_TESTS)
-FOREACH(test ${SERVER_TESTS})
-  LIST(APPEND ALL_LARGE_TESTS ${test}-t.cc)
-ENDFOREACH()
+LIST(TRANSFORM SERVER_TESTS APPEND "-t.cc" OUTPUT_VARIABLE ALL_LARGE_TESTS)
 
 SET(SQL_GUNIT_LIB_SOURCE
   ${CMAKE_SOURCE_DIR}/sql/filesort_utils.cc
@@ -353,19 +347,26 @@ MYSQL_ADD_EXECUTABLE(merge_small_tests-t ${ALL_SMALL_TESTS}
   ADD_TEST merge_small_tests
   COMPILE_DEFINITIONS ${DISABLE_PSI_DEFINITIONS}
   ENABLE_EXPORTS
+  EXCLUDE_FROM_GCOV
   LINK_LIBRARIES sqlgunitlib gunit_small extra::rapidjson extra::boost
   )
-DOWNGRADE_STRINGOP_WARNINGS(merge_small_tests-t)
+IF(TARGET merge_small_tests-t)
+  DOWNGRADE_STRINGOP_WARNINGS(merge_small_tests-t)
+ENDIF()
 
 LIST(APPEND ALL_LARGE_TESTS ../../storage/example/ha_example.cc)
 
 MYSQL_ADD_EXECUTABLE(merge_large_tests-t ${ALL_LARGE_TESTS}
   ADD_TEST merge_large_tests
   ENABLE_EXPORTS
+  EXCLUDE_FROM_GCOV
   LINK_LIBRARIES gunit_large server_unittest_library
-  )
-IF(MY_COMPILER_IS_GNU)
-  MY_TARGET_LINK_OPTIONS(merge_large_tests-t "-Wno-alloc-size-larger-than")
+)
+IF(TARGET merge_large_tests-t)
+  IF(MY_COMPILER_IS_GNU)
+    TARGET_LINK_OPTIONS(merge_large_tests-t PRIVATE -Wno-alloc-size-larger-than)
+  ENDIF()
+  DOWNGRADE_STRINGOP_WARNINGS(merge_large_tests-t)
 ENDIF()
 DOWNGRADE_STRINGOP_WARNINGS(merge_large_tests-t)
 
@@ -376,8 +377,20 @@ FOREACH(test ${TESTS})
     EXCLUDE_FROM_ALL
     LINK_LIBRARIES sqlgunitlib gunit_small extra::boost
     SKIP_INSTALL
-    )
+    ADD_GCOV_TEST ${test}
+  )
 ENDFOREACH()
+
+# Disable by default, since it dumps a stack trace.
+# We don't want ppl to think there was a segfault or something.
+# See also the mtr test main.print_stacktrace
+MYSQL_ADD_EXECUTABLE(mysys_stacktrace-t mysys_stacktrace-t.cc
+  COMPILE_DEFINITIONS ${DISABLE_PSI_DEFINITIONS}
+  ENABLE_EXPORTS
+  EXCLUDE_FROM_ALL
+  LINK_LIBRARIES sqlgunitlib gunit_small extra::boost
+  SKIP_INSTALL
+)
 
 # See comments about __builtin_memcmp in the source file.
 IF(HAVE_NO_BUILTIN_MEMCMP)
@@ -397,7 +410,8 @@ FOREACH(test ${SERVER_TESTS})
     EXCLUDE_FROM_ALL
     LINK_LIBRARIES gunit_large server_unittest_library
     SKIP_INSTALL
-    )
+    ADD_GCOV_TEST ${test}
+  )
 ENDFOREACH()
 
 ADD_LIBRARY(rpl_channel_credentials_lib STATIC

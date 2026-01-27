@@ -13,8 +13,11 @@ Starting shutdown. This may take a while. Please wait...
 All DB nodes are being restarted.
 
 4 records in table ndb_sql_metadata
+<<<<<<< HEAD
 4 records in table ndb_sql_metadata
 4 records in table ndb_sql_metadata
+=======
+>>>>>>> 0896fcd61dec11a0904166911a0126f59daaa1bf
 # restart
 # restart
 4 records in table ndb_sql_metadata

@@ -816,6 +816,8 @@ static PSI_thread_info all_innodb_threads[] = {
                    PSI_DOCUMENT_ME),
     PSI_THREAD_KEY(page_archiver_thread, "ib_page_arch", PSI_FLAG_SINGLETON, 0,
                    PSI_DOCUMENT_ME),
+    PSI_THREAD_KEY(buf_pool_create_thread, "ib_buf_create", PSI_FLAG_SINGLETON,
+                   0, PSI_DOCUMENT_ME),
     PSI_THREAD_KEY(buf_dump_thread, "ib_buf_dump", PSI_FLAG_SINGLETON, 0,
                    PSI_DOCUMENT_ME),
     PSI_THREAD_KEY(clone_ddl_thread, "ib_clone_ddl", PSI_FLAG_SINGLETON, 0,
@@ -9541,10 +9543,11 @@ static void innobase_get_multi_value_and_diff(
 }
 
 /** Checks which fields have changed in a row and stores information
- of them to an update vector.
+ of them to an update vector for the table's clustered index.
  @return DB_SUCCESS or error code */
 static dberr_t calc_row_difference(
-    upd_t *uvect,             /*!< in/out: update vector */
+    upd_t *uvect,             /*!< in/out: update vector for the
+                              clustered index */
     const uchar *old_row,     /*!< in: old row in MySQL format */
     uchar *new_row,           /*!< in: new row in MySQL format */
     TABLE *table,             /*!< in: table in MySQL data
@@ -9927,7 +9930,7 @@ static dberr_t calc_row_difference(
       if (changes_fts_column && !changes_fts_doc_col) {
         ib::warn(ER_IB_MSG_559) << "A new Doc ID must be supplied"
                                    " while updating FTS indexed columns.";
-        return (DB_FTS_INVALID_DOCID);
+        return DB_FTS_INVALID_DOCID;
       }
 
       /* Doc ID must monotonically increase */
@@ -9937,7 +9940,7 @@ static dberr_t calc_row_difference(
                                 << innodb_table->fts->cache->next_doc_id - 1
                                 << " for table " << innodb_table->name;
 
-        return (DB_FTS_INVALID_DOCID);
+        return DB_FTS_INVALID_DOCID;
       } else if ((doc_id - prebuilt->table->fts->cache->next_doc_id) >=
                  FTS_DOC_ID_MAX_STEP) {
         ib::warn(ER_IB_MSG_561)
@@ -9976,8 +9979,8 @@ static dberr_t calc_row_difference(
 
   ut_a(buf <= (byte *)original_upd_buff + buff_len);
 
-  ut_ad(uvect->validate());
-  return (DB_SUCCESS);
+  ut_d(uvect->validate_for_index(clust_index));
+  return DB_SUCCESS;
 }
 
 /**
@@ -14528,22 +14531,28 @@ int innobase_basic_ddl::delete_impl(THD *thd, const char *name,
 
       file_per_table = dict_table_is_file_per_table(tab);
       dd_table_close(tab, thd, nullptr, false);
+    } else if (err == 4) {
+      /* Could not open existing table. Definition may contain bad SQL. */
+      error = DB_ERROR;
     }
   }
 
-  error = row_drop_table_for_mysql(norm_name, trx, true, handler);
+  /* Don't drop what we can't open; otherwise, we'll hit asserts later. */
+  if ((error == DB_SUCCESS) &&
+      ((error = row_drop_table_for_mysql(norm_name, trx, true, handler)) ==
+       DB_SUCCESS)) {
+    if (handler != nullptr) {
+      priv->unregister_table_handler(norm_name);
+    }
 
-  if (handler != nullptr && error == DB_SUCCESS) {
-    priv->unregister_table_handler(norm_name);
-  }
+    if (file_per_table) {
+      dd::Object_id dd_space_id = dd_first_index(dd_tab)->tablespace_id();
+      dd::cache::Dictionary_client *client = dd::get_dd_client(thd);
+      dd::cache::Dictionary_client::Auto_releaser releaser(client);
 
-  if (error == DB_SUCCESS && file_per_table) {
-    dd::Object_id dd_space_id = dd_first_index(dd_tab)->tablespace_id();
-    dd::cache::Dictionary_client *client = dd::get_dd_client(thd);
-    dd::cache::Dictionary_client::Auto_releaser releaser(client);
-
-    if (dd_drop_tablespace(client, dd_space_id)) {
-      error = DB_ERROR;
+      if (dd_drop_tablespace(client, dd_space_id)) {
+        error = DB_ERROR;
+      }
     }
   }
 
@@ -20797,11 +20806,10 @@ in status code only if no other resize is in progress */
 
     if (innodb_buffer_pool_size_validate(thd, requested_buffer_pool_size,
                                          aligned_buffer_pool_size)) {
-      os_event_set(srv_buf_resize_event);
-
       ib::info(ER_IB_MSG_573)
           << export_vars.innodb_buffer_pool_resize_status
           << " (new size: " << aligned_buffer_pool_size << " bytes)";
+      os_event_set(srv_buf_resize_event);
 
       *static_cast<longlong *>(var_ptr) = aligned_buffer_pool_size;
     } else {

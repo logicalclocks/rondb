@@ -43,8 +43,6 @@
 
 #define MGM_ERROR_MAX_INJECT_SESSION_ONLY 10000
 
-class SetLogLevelOrd;
-
 class Ndb_mgmd_event_service : public EventLoggerBase {
   friend class MgmtSrvr;
 
@@ -269,7 +267,6 @@ class MgmtSrvr : private ConfigSubscriber, public trp_client {
   //**************************************************************************
 
   int setEventReportingLevelImpl(int processId, const EventSubscribeReq &ll);
-  int setNodeLogLevelImpl(int processId, const SetLogLevelOrd &ll);
 
   /**
    *   Insert an error in a DB process.

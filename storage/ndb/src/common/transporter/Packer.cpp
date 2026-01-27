@@ -300,9 +300,7 @@ Uint32 TransporterRegistry::unpack(TransporterReceiveHandle &recvHandle,
                       ptr, errorCode)) {
       loop_count++;
 
-      Uint32 rBlockNum = signalHeader.theReceiversBlockNumber;
-
-      if (rBlockNum == QMGR) {  // QMGR==252
+      if (TransporterRegistry::is_permitted_halt_signal(&signalHeader)) {
         Uint32 sBlockNum = signalHeader.theSendersBlockRef;
         sBlockNum = numberToRef(sBlockNum, remoteNodeId);
         signalHeader.theSendersBlockRef = sBlockNum;
@@ -310,11 +308,13 @@ Uint32 TransporterRegistry::unpack(TransporterReceiveHandle &recvHandle,
         doStopReceiving = recvHandle.deliver_signal(&signalHeader, prio,
                                                     errorCode, signalData, ptr);
       } else {
-	DEBUG("prepareReceive(...) - Discarding message to block: "
-	      << rBlockNum << " from Node: " << remoteNodeId);
-      }//if
-    }//while
-  }//if
+        DEBUG("prepareReceive(...) - Discarding message to block: "
+              << signalHeader.theReceiversBlockNumber
+              << " from BlockNumber :" << signalHeader.theSendersBlockRef
+              << " on Node: " << remoteNodeId);
+      }  // if
+    }    // while
+  }      // if
 
   if (errorCode != TE_NO_ERROR)
   {
@@ -388,9 +388,7 @@ Uint32 *TransporterRegistry::unpack(TransporterReceiveHandle &recvHandle,
                       ptr, errorCode)) {
       loop_count++;
 
-      Uint32 rBlockNum = signalHeader.theReceiversBlockNumber;
-
-      if (rBlockNum == QMGR) {  // QMGR==252
+      if (TransporterRegistry::is_permitted_halt_signal(&signalHeader)) {
         Uint32 sBlockNum = signalHeader.theSendersBlockRef;
         sBlockNum = numberToRef(sBlockNum, remoteNodeId);
         signalHeader.theSendersBlockRef = sBlockNum;
@@ -398,11 +396,13 @@ Uint32 *TransporterRegistry::unpack(TransporterReceiveHandle &recvHandle,
         doStopReceiving = recvHandle.deliver_signal(&signalHeader, prio,
                                                     errorCode, signalData, ptr);
       } else {
-	DEBUG("prepareReceive(...) - Discarding message to block: "
-	      << rBlockNum << " from Node: " << remoteNodeId);
-      }//if
-    }//while
-  }//if
+        DEBUG("prepareReceive(...) - Discarding message to block: "
+              << signalHeader.theReceiversBlockNumber
+              << " from BlockNumber :" << signalHeader.theSendersBlockRef
+              << " on Node: " << remoteNodeId);
+      }  // if
+    }    // while
+  }      // if
 
   if (errorCode != TE_NO_ERROR)
   {

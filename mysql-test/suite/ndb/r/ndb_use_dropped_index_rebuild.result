@@ -47,7 +47,10 @@ pk
 
 ##########################################
 ## Use ndb_drop_index to drop the index idx_a.
+<<<<<<< HEAD
 Dropping index t1/idx_a...OK
+=======
+>>>>>>> 0896fcd61dec11a0904166911a0126f59daaa1bf
 ## Check index does NOT exist in NDB
 
 ## Select from the table again, expect error since NDB

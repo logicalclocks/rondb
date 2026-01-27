@@ -2,7 +2,6 @@
 # -*- cperl -*-
 # Copyright (c) 2009, 2025, Oracle and/or its affiliates.
 # Copyright (c) 2022, 2025, Hopsworks and/or its affiliates.
-
 #  Use is subject to license terms.
 #
 # This program is free software; you can redistribute it and/or modify
