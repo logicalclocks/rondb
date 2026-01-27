@@ -5269,7 +5269,7 @@ void Suma::doFIRE_TRIG_ORD(Signal *signal, LinearSectionPtr lsptr[3]) {
     }
 
     /* Finally we pack the before value buffer */
-    const Uint32 *ptr2 = lsptr[2].p;
+    const Uint32 *ptr2 = lsptr[1].p;
     Uint32 sz2 = lsptr[1].sz;
     while (sz2 > MAX_SUMA_BUFFER_SIZE) {
       jam();
@@ -5302,7 +5302,6 @@ void Suma::doFIRE_TRIG_ORD(Signal *signal, LinearSectionPtr lsptr[3]) {
       memcpy(dst, ptr2, num_bytes);
     }
   }
-
   DBUG_VOID_RETURN;
 }
 
