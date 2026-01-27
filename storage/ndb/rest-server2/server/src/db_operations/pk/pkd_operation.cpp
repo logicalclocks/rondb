@@ -67,10 +67,17 @@ BatchDeleteOperations::~BatchDeleteOperations() {
 }
 
 RS_Status BatchDeleteOperations::allocate_key_ops(ArenaMalloc* amalloc, Uint32 numOps) {
-  m_key_ops = amalloc->calloc<DeleteKeyOperation>(numOps);
+  // Use alloc instead of calloc because DeleteKeyOperation contains non-trivial
+  // types (PKRRequest, PKRResponse) that cannot be memset-initialized
+  m_key_ops = amalloc->alloc<DeleteKeyOperation>(numOps);
   if (unlikely(m_key_ops == nullptr)) {
     return RS_SERVER_ERROR(
         std::string(rdrsErrorMessage(ERROR_MEMORY_ALLOCATION_FAILURE)));
+  }
+  // Initialize delete-specific fields (base fields initialized in init_batch_operations)
+  for (Uint32 i = 0; i < numOps; i++) {
+    m_key_ops[i].m_blobColumns = nullptr;
+    m_key_ops[i].m_num_blob_columns = 0;
   }
   DEB_NDB_DEL("m_key_ops: %p, sizeof(DeleteKeyOperation): %u",
               m_key_ops, (Uint32)sizeof(DeleteKeyOperation));
