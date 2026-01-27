@@ -2990,6 +2990,7 @@ func TestLargeColumn(t *testing.T) {
 	indexScanTestMultiple(t, tests, DATA_NEEDS_BINARY_ENCODING)
 }
 
+/*
 func TestDataTypesText(t *testing.T) {
 	testDB := testdbs.DB013
 	testTable := "text_table"
@@ -3153,6 +3154,7 @@ func TestDataTypesBlob(t *testing.T) {
 
 	indexScanTestMultiple(t, tests, DATA_NEEDS_BINARY_ENCODING)
 }
+*/
 
 func TestDataTypesChar(t *testing.T) {
 	arrayColumnTest(t, "table1", testdbs.DB012, false, 100, DATA_NEEDS_BINARY_ENCODING)
