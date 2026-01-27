@@ -66,7 +66,8 @@ class BatchWriteOperations : public BaseBatchOperations {
                                bool is_batch,
                                RS_Buffer *reqBuffer,
                                RS_Buffer *respBuffer,
-                               Ndb *ndb_object);
+                               Ndb *ndb_object,
+                               char *username_ptr);
    // Write-specific methods
    RS_Status setup_write_columns(ArenaMalloc *amalloc);
    RS_Status setup_write_operations();

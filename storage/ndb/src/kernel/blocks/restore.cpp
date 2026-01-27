@@ -3036,7 +3036,6 @@ void Restore::execute_operation(Signal *signal, FilePtr file_ptr, Uint32 keyLen,
   LqhKeyReq::setOperation(tmp, op_type);
   LqhKeyReq::setSameClientAndTcFlag(tmp, 0);
   if (short_lqhkeyreq) {
-    LqhKeyReq::setAIInLqhKeyReq(tmp, 0);
     req->hashValue = 0;
   } else {
     Uint32 tableId = file_ptr.p->m_table_id;

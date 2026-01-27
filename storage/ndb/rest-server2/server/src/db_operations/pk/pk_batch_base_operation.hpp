@@ -36,6 +36,7 @@ class BaseBatchOperations {
   Ndb *m_ndb_object;
   bool m_isBatch;
   bool m_single_transaction;
+  bool m_user_rate_limits;
   Uint32 m_num_sent_operations;
   Uint32 m_first_key;
   Uint32 m_last_key;
@@ -58,7 +59,10 @@ class BaseBatchOperations {
                                   Ndb *ndb_object);
 
   RS_Status setup_primary_keys();
-  RS_Status setup_transactions();
+  RS_Status set_user_id(PKRRequest *req,
+                        BaseKeyOperation *key_op,
+                        char *username_ptr);
+  RS_Status setup_transactions(char *username_ptr);
   RS_Status execute();
   RS_Status create_response(RS_Buffer *respBuffer);
   void close_transaction();

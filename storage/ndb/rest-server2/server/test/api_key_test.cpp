@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2024 Hopsworks AB
+ * Copyright (C) 2024, 2025 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -110,32 +110,42 @@ void test_key(APIKeyCache *cache) {
 
   std::string apiKey =
       "bkYjEz6OTZyevbqT.ocHajJhnE0ytBh8zbYj3IXupyMqeMZp8PW464eTxzxqP5afBjodEQUgY0lmL33ub";
-  RS_Status status = cache->validate_api_key(apiKey, {existentDB});
+  char username[USERNAME_SIZE + 1];
+  char *username_ptr = &username[0];
+  RS_Status status = cache->validate_api_key(apiKey,
+                                             {existentDB},
+                                             username_ptr);
   EXPECT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
       << "Wrong prefix was falsely validated";
 
   apiKey = "bkYjEz6OTZyevbqT";
-  status = cache->validate_api_key(apiKey, {});
+  status = cache->validate_api_key(apiKey, {}, username_ptr);
   EXPECT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
       << "Missing secret was falsely validated";
 
   apiKey = "bkYjEz6OTZyevbq.ocHajJhnE0ytBh8zbYj3IXupyMqeMZp8PW464eTxzxqP5afBjodEQUgY0lmL33ub";
-  status = cache->validate_api_key(apiKey, {});
+  status = cache->validate_api_key(apiKey, {}, username_ptr);
   EXPECT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
       << "Wrong length prefix was falsely validated";
 
   // correct api key but wrong db. this api key can not access test3 db
-  status = cache->validate_api_key(HOPSWORKS_TEST_API_KEY, {fakeDB});
+  status = cache->validate_api_key(HOPSWORKS_TEST_API_KEY,
+                                   {fakeDB},
+                                   username_ptr);
   EXPECT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
       << "Inexistent database was falsely validated";
 
   // correct api key
-  status = cache->validate_api_key(HOPSWORKS_TEST_API_KEY, {existentDB});
+  status = cache->validate_api_key(HOPSWORKS_TEST_API_KEY,
+                                   {existentDB},
+                                   username_ptr);
   EXPECT_EQ(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
       << "No error expected; error: " << status.message;
 
   // no errors
-  status = cache->validate_api_key(HOPSWORKS_TEST_API_KEY, {existentDB, existentDB2});
+  status = cache->validate_api_key(HOPSWORKS_TEST_API_KEY,
+                                   {existentDB, existentDB2},
+                                   username_ptr);
   EXPECT_EQ(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
       << "No error expected; error: " << status.message;
 }
@@ -155,7 +165,9 @@ void test_update_cache_every_n_seconds(APIKeyCache *cache,
   std::string apiKey = HOPSWORKS_TEST_API_KEY;
   std::vector<std::string_view> databases = {DB001, DB002};
 
-  RS_Status status = cache->validate_api_key(apiKey, databases);
+  char username[USERNAME_SIZE + 1];
+  char *username_ptr = &username[0];
+  RS_Status status = cache->validate_api_key(apiKey, databases, username_ptr);
   EXPECT_EQ(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
       << "No error expected; error: " << status.message;
 
@@ -166,7 +178,7 @@ void test_update_cache_every_n_seconds(APIKeyCache *cache,
   auto lastUpdated2 = cache->last_updated(apiKey);
   EXPECT_NE(lastUpdated1, lastUpdated2) << "Cache entry was not updated";
 
-  status = cache->validate_api_key(apiKey, databases);
+  status = cache->validate_api_key(apiKey, databases, username_ptr);
   EXPECT_EQ(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
       << "No error expected; error: " << status.message;
 }
@@ -197,7 +209,9 @@ void test_update_cache_every_n_seconds_unauthorized(APIKeyCache *cache,
   std::string apiKey    = HOPSWORKS_TEST_API_KEY;
   const std::string db3 = "test3";
 
-  RS_Status status = cache->validate_api_key(apiKey, {db3});
+  char username[USERNAME_SIZE + 1];
+  char *username_ptr = &username[0];
+  RS_Status status = cache->validate_api_key(apiKey, {db3}, username_ptr);
   EXPECT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
       << "Database should not exist. Expected test to fail";
 
@@ -251,7 +265,9 @@ void test_load(APIKeyCache *cache, const AllConfigs &conf) {
 
       auto DB = DB001;
 
-      RS_Status status = cache->validate_api_key(apiKey, {DB});
+      char username[USERNAME_SIZE + 1];
+      char *username_ptr = &username[0];
+      RS_Status status = cache->validate_api_key(apiKey, {DB}, username_ptr);
       if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
         std::cout << "validation failed for api key: " << apiKey << "; error: " << status.message
                   << std::endl;
@@ -389,7 +405,9 @@ void test_load_with_bad_keys(APIKeyCache *cache, const AllConfigs &conf) {
 
       auto DB = DB001;
 
-      RS_Status status = cache->validate_api_key(apiKey, {DB});
+      char username[USERNAME_SIZE + 1];
+      char *username_ptr = &username[0];
+      RS_Status status = cache->validate_api_key(apiKey, {DB}, username_ptr);
       if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
         ch.push(true);
       } else {

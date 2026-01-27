@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023, 2025 Hopsworks AB
+ * Copyright (C) 2023, 2026 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -186,7 +186,8 @@ RS_Status pk_batch_read(void *amalloc,
                         bool is_batch,
                         RS_Buffer *req_buffs,
                         RS_Buffer *resp_buffs,
-                        unsigned int threadIndex);
+                        unsigned int threadIndex,
+                        char *username_ptr);
 
 /**
  * Batched primary key delete operation
@@ -197,7 +198,8 @@ RS_Status pk_batch_delete(void *amalloc,
                           bool is_batch,
                           RS_Buffer *req_buffs,
                           RS_Buffer *resp_buffs,
-                          unsigned int threadIndex);
+                          unsigned int threadIndex,
+                          char *username_ptr);
 
 /**
  * Batched primary key write operation
@@ -208,7 +210,8 @@ RS_Status pk_batch_write(void *amalloc,
                          bool is_batch,
                          RS_Buffer *req_buffs,
                          RS_Buffer *resp_buffs,
-                         unsigned int threadIndex);
+                         unsigned int threadIndex,
+                         char *username_ptr);
 
 /**
  * RonSQL query

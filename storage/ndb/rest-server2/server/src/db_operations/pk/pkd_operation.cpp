@@ -229,7 +229,8 @@ RS_Status BatchDeleteOperations::perform_operation(
   bool is_batch,
   RS_Buffer *reqBuffer,
   RS_Buffer *respBuffer,
-  Ndb *ndb_object) {
+  Ndb *ndb_object,
+  char *username_ptr) {
 
   DEB_NDB_DEL("init_batch_operations");
   RS_Status status = init_batch_operations(
@@ -288,7 +289,7 @@ RS_Status BatchDeleteOperations::perform_operation(
     m_last_key = last_key;
 
     DEB_NDB_DEL("setup_transactions");
-    status = setup_transactions();
+    status = setup_transactions(username_ptr);
     if (unlikely(status.http_code != SUCCESS)) {
       handle_ndb_error(status);
       return status;

@@ -335,6 +335,10 @@ class NdbImpl : public trp_client {
     return true;
   }
 
+  int sendRecSignal(Uint16 aNodeId, Uint32 aWaitState, NdbApiSignal *aSignal,
+                    Uint32 nodeSequence, Uint32 *ret_conn_seq = nullptr,
+                    Uint32 secs = 0, const LinearSectionPtr (*ptr)[3] = nullptr);
+
   int sendSignal(NdbApiSignal *, Uint32 nodeId);
   int sendSignal(NdbApiSignal *, Uint32 nodeId, const LinearSectionPtr ptr[3],
                  Uint32 secs);

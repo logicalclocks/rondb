@@ -33,8 +33,8 @@
 
 struct AlterDbReq
 {
-  static constexpr Uint32 SignalLength = 11;
-  static constexpr Uint32 SignalLengthLQH = 8;
+  static constexpr Uint32 SignalLength = 12;
+  static constexpr Uint32 SignalLengthLQH = 9;
 
   Uint32 senderRef;
   Uint32 senderData;
@@ -44,6 +44,7 @@ struct AlterDbReq
   Uint32 inMemorySizeMB;
   Uint32 diskSpaceSizeGB;
   Uint32 ratePerSec;
+  Uint32 isUser;
   Uint32 maxTransactionSize;
   Uint32 maxParallelTransactions;
   Uint32 maxParallelComplexQueries;

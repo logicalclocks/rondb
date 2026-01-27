@@ -655,7 +655,7 @@ void Dbtup::scanReply(Signal *signal, ScanOpPtr scanPtr) {
         case AccLockReq::Refused: {
           jam();
           // we cannot see deleted tuple (assert only)
-          ndbassert(false);
+          // ndbassert(false);
           // skip it
           scan.m_state = ScanOp::Next;
           CheckLcpStop *cls = (CheckLcpStop *)signal->theData;

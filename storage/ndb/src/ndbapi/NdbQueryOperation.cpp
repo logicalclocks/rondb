@@ -3351,6 +3351,13 @@ int NdbQueryImpl::doSend(int nodeId, bool lastFlag) {
     } else {
       tSignal.setLength(ScanTabReq::StaticLength);
     }
+    Uint32 user_id = getNdbTransaction().m_user_id;
+    if (user_id != RNIL) {
+      ScanTabReq::setUserIdFlag(reqInfo, 1);
+      scanTabReq->userId = user_id;
+      scanTabReq->userIdVersion = getNdbTransaction().m_user_id_version;
+      tSignal.setLength(ScanTabReq::StaticLength + 4);
+    }
     scanTabReq->requestInfo = reqInfo;
 
     /**
@@ -3428,9 +3435,17 @@ int NdbQueryImpl::doSend(int nodeId, bool lastFlag) {
     TcKeyReq::setDirtyFlag(reqInfo, true);
     TcKeyReq::setSimpleFlag(reqInfo, true);
     TcKeyReq::setCommitFlag(reqInfo, m_commitIndicator);
-    tcKeyReq->requestInfo = reqInfo;
 
-    tSignal.setLength(TcKeyReq::StaticLength);
+    Uint32 user_id = getNdbTransaction().m_user_id;
+    if (user_id != RNIL) {
+      tcKeyReq->userId = user_id;
+      tcKeyReq->userIdVersion = getNdbTransaction().m_user_id_version;
+      TcKeyReq::setUserIdFlag(reqInfo, 1);
+      tSignal.setLength(TcKeyReq::StaticLength + 2);
+    } else {
+      tSignal.setLength(TcKeyReq::StaticLength);
+    }
+    tcKeyReq->requestInfo = reqInfo;
 
     /****
         // Unused optional part located after TcKeyReq::StaticLength
@@ -5226,6 +5241,9 @@ bool NdbQueryOperationImpl::execTCKEYREF(const NdbApiSignal *aSignal) {
   assert(!getQueryDef().isScanQuery());
 
   const TcKeyRef *ref = CAST_CONSTPTR(TcKeyRef, aSignal->getDataPtr());
+  if (ref->errorCode == TcKeyRef::WriteRateOverflowError) {
+    getQuery().getNdbTransaction().rateOverflowError();
+  }
   if (!getQuery().m_transaction.checkState_TransId(ref->transId)) {
 #ifdef NDB_NO_DROPPED_SIGNAL
     abort();

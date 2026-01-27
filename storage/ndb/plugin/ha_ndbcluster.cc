@@ -149,6 +149,7 @@ static bool opt_ndb_read_backup;
 static ulong opt_ndb_data_node_neighbour;
 static bool opt_ndb_fully_replicated;
 static ulong opt_ndb_row_checksum;
+static bool opt_user_rate_limits;
 
 char *opt_ndb_tls_search_path;
 ulong opt_ndb_mgm_tls_level;
@@ -7758,6 +7759,19 @@ int ha_ndbcluster::start_stmt(THD *thd, thr_lock_type) {
   return 0;
 }
 
+int ha_ndbcluster::set_user_id(NdbTransaction *trans, int &error) {
+  Security_context *sec_context = m_thd_ndb->get_thd()->security_context();
+  LEX_CSTRING user = sec_context->user();
+  const char *username = user.str;
+  unsigned username_len = user.length;
+  if (trans->setUserId(username, username_len) != 0) {
+    ERR_SET(trans->getNdbError(), error);
+    m_thd_ndb->ndb->closeTransaction(trans);
+    return -1;
+  }
+  return 0;
+}
+
 NdbTransaction *ha_ndbcluster::start_transaction_row(
     const NdbRecord *ndb_record, const uchar *record, int &error) {
   NdbTransaction *trans;
@@ -7775,6 +7789,11 @@ NdbTransaction *ha_ndbcluster::start_transaction_row(
       ndb->startTransaction(ndb_record, (const char *)record, buf, sizeof(tmp));
 
   if (trans) {
+    if (opt_user_rate_limits) {
+      if (set_user_id(trans, error) != 0) {
+        return nullptr;
+      }
+    }
     m_thd_ndb->increment_hinted_trans_count();
     DBUG_PRINT("info", ("Delayed allocation of TC"));
     return m_thd_ndb->trans = trans;
@@ -7803,6 +7822,11 @@ NdbTransaction *ha_ndbcluster::start_transaction_key(uint index_num,
       ndb->startTransaction(key_rec, (const char *)key_data, buf, sizeof(tmp));
 
   if (trans) {
+    if (opt_user_rate_limits) {
+      if (set_user_id(trans, error) != 0) {
+        return nullptr;
+      }
+    }
     m_thd_ndb->increment_hinted_trans_count();
     DBUG_PRINT("info", ("Delayed allocation of TC"));
     return m_thd_ndb->trans = trans;
@@ -7831,9 +7855,14 @@ NdbTransaction *ha_ndbcluster::start_transaction(int &error) {
     // NOTE! No hint provided when starting transaction
 
     DBUG_PRINT("info", ("Delayed allocation of TC"));
+
+    if (opt_user_rate_limits) {
+      if (set_user_id(trans, error) != 0) {
+        return nullptr;
+      }
+    }
     return m_thd_ndb->trans = trans;
   }
-
   ERR_SET(m_thd_ndb->ndb->getNdbError(), error);
   return nullptr;
 }
@@ -7849,6 +7878,11 @@ NdbTransaction *ha_ndbcluster::start_transaction_part_id(Uint32 part_id,
   m_thd_ndb->transaction_checks();
 
   if ((trans = m_thd_ndb->ndb->startTransaction(m_table, part_id))) {
+    if (opt_user_rate_limits) {
+      if (set_user_id(trans, error) != 0) {
+        return nullptr;
+      }
+    }
     m_thd_ndb->increment_hinted_trans_count();
     DBUG_PRINT("info", ("Delayed allocation of TC"));
     return m_thd_ndb->trans = trans;
@@ -18345,6 +18379,16 @@ static MYSQL_SYSVAR_BOOL(
     0        /* default */
 );
 
+static MYSQL_SYSVAR_BOOL(
+    user_rate_limits,         /* name */
+    opt_user_rate_limits, /* var  */
+    PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,
+    "Ensures that users can only use the CPUs up to the rate limit",
+    nullptr, /* check func. */
+    nullptr, /* update func. */
+    0        /* default */
+);
+
 bool opt_ndb_metadata_check;
 static MYSQL_SYSVAR_BOOL(
     metadata_check,         /* name */
@@ -19022,6 +19066,7 @@ static MYSQL_THDVAR_UINT(dbg_check_shares, /* name */
 #endif
 
 static SYS_VAR *system_variables[] = {
+    MYSQL_SYSVAR(user_rate_limits),
     MYSQL_SYSVAR(extra_logging),
     MYSQL_SYSVAR(wait_connected),
     MYSQL_SYSVAR(wait_setup),

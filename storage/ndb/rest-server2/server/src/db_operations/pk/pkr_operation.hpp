@@ -63,7 +63,8 @@ class BatchKeyOperations : public BaseBatchOperations {
                                bool is_batch,
                                RS_Buffer *reqBuffer,
                                RS_Buffer *respBuffer,
-                               Ndb *ndb_object);
+                               Ndb *ndb_object,
+                               char *username_ptr);
    // Read-specific methods
    RS_Status setup_blob_handles(ArenaMalloc *amalloc);
    RS_Status setup_read_operations();

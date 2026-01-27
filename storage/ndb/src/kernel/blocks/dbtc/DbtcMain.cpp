@@ -136,17 +136,17 @@
 //#define DEBUG_TCGETOPSIZE 1
 //#define DEBUG_HASH 1
 //#define DEBUG_ACTIVE_NODES 1
-//#define DEBUG_RATE_LIST 1
-//#define DEBUG_RATE_QUEUE 1
-//#define DEBUG_RATE_DEF 1
-//#define DEBUG_QUOTAS_REP 1
-//#define DEBUG_RATE_QUEUE_SET 1
-//#define DEBUG_QUOTAS 1
-//#define DEBUG_RATE_QUEUE_DROP 1
-//#define DEBUG_QUOTA_ABORT 1
+#define DEBUG_RATE_LIST 1
+#define DEBUG_RATE_QUEUE 1
+#define DEBUG_RATE_DEF 1
+#define DEBUG_QUOTAS_REP 1
+#define DEBUG_RATE_QUEUE_SET 1
+#define DEBUG_QUOTAS 1
+#define DEBUG_RATE_QUEUE_DROP 1
+#define DEBUG_QUOTA_ABORT 1
 //#define DEBUG_TRACK_EXEC_FLAG 1
 //#define DEBUG_SCAN_MANY 1
-//#define DEBUG_RATE_OVERFLOW 1
+#define DEBUG_RATE_OVERFLOW 1
 //#define DEBUG_CONT_SCAN 1
 #endif
 
@@ -3609,8 +3609,27 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
       tc_testbit(regApiPtr->m_flags, ApiConnectRecord::TF_INDEX_OP_RETURN);
   bool is_immediate = Tspecial_op_flags != 0 || isIndexOpReturn;
   DatabaseRecordPtr databaseRecordPtr;
-  databaseRecordPtr.i = localTabptr.p->databaseRecord;
-  databaseRecordPtr.p = nullptr;
+  Uint32 user_id_flag = TcKeyReq::getUserIdFlag(Treqinfo);
+  if (user_id_flag && handle.m_cnt != 0) {
+    Uint32 user_id = tcKeyReq->userId;
+    Uint32 user_id_version = tcKeyReq->userIdVersion;
+    DatabaseRecord key(*this, user_id);
+    if (unlikely(!m_databaseRecordHash.find(databaseRecordPtr, key))) {
+      databaseRecordPtr.i = localTabptr.p->databaseRecord;
+      databaseRecordPtr.p = nullptr;
+    } else if (unlikely(databaseRecordPtr.p->m_is_user == false ||
+                        databaseRecordPtr.p->m_database_version !=
+                          user_id_version)) {
+      databaseRecordPtr.i = localTabptr.p->databaseRecord;
+      databaseRecordPtr.p = nullptr;
+      g_eventLogger->info("(%u) Sending incorrect user id: %u",
+        instance(), user_id);
+      ndbassert(false);
+    }
+  } else {
+    databaseRecordPtr.i = localTabptr.p->databaseRecord;
+    databaseRecordPtr.p = nullptr;
+  }
 
   passQueueingFlag = passQueueingFlag &&
                      handle.m_cnt > 0;
@@ -4304,10 +4323,14 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
   Uint32 TkeyIndex;
   Uint32 *TOptionalDataPtr = (Uint32 *)&tcKeyReq->scanInfo;
   {
+    Uint32 TscanInfoIndex = 
+      (TcKeyReq::getUserIdFlag(Treqinfo) &&
+       handle.m_cnt != 0) ? 2 : 0;
     Uint32 TDistrGHIndex = TcKeyReq::getScanIndFlag(Treqinfo);
-    Uint32 TDistrKeyIndex = TDistrGHIndex;
+    Uint32 TDistrKeyIndex = TscanInfoIndex + TDistrGHIndex;
 
-    Uint32 TscanInfo = TcKeyReq::getTakeOverScanInfo(TOptionalDataPtr[0]);
+    Uint32 TscanInfo =
+      TcKeyReq::getTakeOverScanInfo(TOptionalDataPtr[TscanInfoIndex]);
 
     regCachePtr->scanTakeOverInd = TDistrGHIndex;
     regCachePtr->scanInfo = TscanInfo;
@@ -5462,18 +5485,10 @@ void Dbtc::sendlqhkeyreq(Signal *signal, BlockReference TBRef,
   LqhKeyReq::setTTLIgnoreFlag(Tdata10, regCachePtr->m_ttl_ignore);
   LqhKeyReq::setTTLOnlyExpiredFlag(Tdata10, regCachePtr->m_ttl_only_expired);
 
-  /* -----------------------------------------------------------------------
-   * If we are sending a short LQHKEYREQ, then there will be some AttrInfo
-   * in the LQHKEYREQ.
-   * Work out how much we'll send
-   * ----------------------------------------------------------------------- */
-  UintR aiInLqhKeyReq = 0;
-
   LqhKeyReq::setNoTriggersFlag(
       Tdata10, !!(regTcPtr->m_special_op_flags &
                   TcConnectRecord::SOF_FULLY_REPLICATED_TRIGGER));
 
-  LqhKeyReq::setAIInLqhKeyReq(Tdata10, aiInLqhKeyReq);
   /* -----------------------------------------------------------------------
    * Bit 27 == 0 since TC record is the same as the client record.
    * Bit 28 == 0 since readLenAi can only be set after reading in LQH.
@@ -5535,10 +5550,21 @@ void Dbtc::sendlqhkeyreq(Signal *signal, BlockReference TBRef,
   lqhKeyReq->transId2 = sig3;
   lqhKeyReq->scanInfo = sig6;
 
-  lqhKeyReq->variableData[0] = sig4;
-  lqhKeyReq->variableData[1] = sig5;
+  Uint32 extra_index = 0;
+  if (regApiPtr->m_queuedDatabasePtrI != RNIL64) {
+    DatabaseRecordPtr databaseRecordPtr;
+    databaseRecordPtr.i = regApiPtr->m_queuedDatabasePtrI;
+    ndbrequire(m_databaseRecordPool.getPtr(databaseRecordPtr));
+    if (databaseRecordPtr.p->m_is_user) {
+      lqhKeyReq->variableData[0] = databaseRecordPtr.p->m_database_id;
+      extra_index++;
+      LqhKeyReq::setUserIdFlag(lqhKeyReq->requestInfo, 1);
+    }
+  }
+  lqhKeyReq->variableData[extra_index++] = sig4;
+  lqhKeyReq->variableData[extra_index++] = sig5;
 
-  UintR nextPos = 2;
+  UintR nextPos = extra_index;
 
   if (regTcPtr->lastReplicaNo > 1) {
     sig0 =
@@ -15780,8 +15806,27 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
 
   {
     DatabaseRecordPtr databaseRecordPtr;
-    databaseRecordPtr.i = tabptr.p->databaseRecord;
-    databaseRecordPtr.p = nullptr;
+    Uint32 user_id_flag = ScanTabReq::getUserIdFlag(ri);
+    if (user_id_flag) {
+      Uint32 user_id = scanTabReq->userId;
+      Uint32 user_id_version = scanTabReq->userIdVersion;
+      DatabaseRecord key(*this, user_id);
+      if (unlikely(!m_databaseRecordHash.find(databaseRecordPtr, key))) {
+        databaseRecordPtr.i = tabptr.p->databaseRecord;
+        databaseRecordPtr.p = nullptr;
+      } else if (unlikely(databaseRecordPtr.p->m_is_user == false ||
+                          databaseRecordPtr.p->m_database_version !=
+                            user_id_version)) {
+        databaseRecordPtr.i = tabptr.p->databaseRecord;
+        databaseRecordPtr.p = nullptr;
+        g_eventLogger->info("(%u) Sending incorrect user id for scan: %u",
+          instance(), user_id);
+        ndbassert(false);
+      }
+    } else {
+      databaseRecordPtr.i = tabptr.p->databaseRecord;
+      databaseRecordPtr.p = nullptr;
+    }
 
     if (unlikely(passQueueingFlag ||
                  databaseRecordPtr.i != RNIL64 ||
@@ -15809,13 +15854,13 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
           if (databaseRecordPtr.p->m_is_queueing_abort_read) {
             jam();
             releaseSections(handle);
-            DEB_RATE_OVERFLOW(("(%u) Rate Overflow db: %llu, apiPtrI: %u"
+            DEB_RATE_OVERFLOW(("(%u) Read Rate Overflow db: %u, apiPtrI: %u"
                                ", line: %u",
               instance(),
               databaseRecordPtr.p->m_database_id,
               apiConnectptr.i,
               __LINE__));
-            errCode = ZRATE_OVERFLOW_ERROR;
+            errCode = TcKeyRef::ReadRateOverflowError;
             goto SCAN_TAB_error;
           }
           databaseRecordPtr.p->m_api_ref_count++;
@@ -15848,13 +15893,13 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
           if (databaseRecordPtr.p->m_is_queueing_abort_read) {
             jam();
             releaseSections(handle);
-            DEB_RATE_OVERFLOW(("(%u) Rate Overflow: db: %llu,"
+            DEB_RATE_OVERFLOW(("(%u) Read Rate Overflow: db: %u,"
               " transOwnerPtrI: %u, line: %u",
               instance(),
               databaseRecordPtr.p->m_database_id,
               transOwnerPtr.i,
               __LINE__));
-            errCode = ZRATE_OVERFLOW_ERROR;
+            errCode = TcKeyRef::ReadRateOverflowError;
             goto SCAN_TAB_error;
           }
           apiConnectptr.p->m_queuedDatabasePtrI = databaseRecordPtr.i;
@@ -18451,9 +18496,20 @@ bool Dbtc::sendScanFragReq(Signal *signal, ScanRecordPtr scanptr,
   req->batch_size_rows = scanP->batch_size_rows;
   req->batch_size_bytes = scanP->batch_byte_size;
 
-  // set ttl_purge_window_size if needed;
   Uint32 extra_len = 0;
+  // Set User Id if needed
+  if (apiConnectptr.p->m_queuedDatabasePtrI != RNIL64) {
+    DatabaseRecordPtr databaseRecordPtr;
+    databaseRecordPtr.i = apiConnectptr.p->m_queuedDatabasePtrI;
+    ndbrequire(m_databaseRecordPool.getPtr(databaseRecordPtr));
+    if (databaseRecordPtr.p->m_is_user) {
+      req->variableData[0] = databaseRecordPtr.p->m_database_id;
+      extra_len++;
+      ScanFragReq::setUserIdFlag(req->requestInfo, 1);
+    }
+  }
 
+  // set ttl_purge_window_size if needed;
   if (ScanFragReq::getTTLOnlyExpiredFragFlag(requestInfo)) {
     /*
      * Based on the ndbassert below, it seems that getCorrFactorFlag
@@ -21825,8 +21881,27 @@ void Dbtc::execTCINDXREQ(Signal *signal) {
     }
     return;
   }
-  databaseRecordPtr.i = localTabptr.p->databaseRecord;
-  databaseRecordPtr.p = nullptr;
+  Uint32 user_id_flag = TcKeyReq::getUserIdFlag(tcIndxRequestInfo);
+  if (user_id_flag && isLongTcIndxReq) {
+    Uint32 user_id = tcIndxReq->userId;
+    Uint32 user_id_version = tcIndxReq->userIdVersion;
+    DatabaseRecord key(*this, user_id);
+    if (unlikely(!m_databaseRecordHash.find(databaseRecordPtr, key))) {
+      databaseRecordPtr.i = localTabptr.p->databaseRecord;
+      databaseRecordPtr.p = nullptr;
+    } else if (unlikely(databaseRecordPtr.p->m_is_user == false ||
+                        databaseRecordPtr.p->m_database_version !=
+                          user_id_version)) {
+      databaseRecordPtr.i = localTabptr.p->databaseRecord;
+      databaseRecordPtr.p = nullptr;
+      g_eventLogger->info("(%u) Sending incorrect user id: %u",
+        instance(), user_id);
+      ndbassert(false);
+    }
+  } else {
+    databaseRecordPtr.i = localTabptr.p->databaseRecord;
+    databaseRecordPtr.p = nullptr;
+  }
 
   passQueueingFlag = passQueueingFlag &&
                      handle.m_cnt > 0;
@@ -24078,7 +24153,6 @@ void Dbtc::execKEYINFO20(Signal *signal) {
   Uint32 transId[] = {conf->transId1, conf->transId2};
 
   Uint32 keyLen = conf->keyLen;
-  Uint32 scanInfo = conf->scanInfo_Node;
 
   TcConnectRecordPtr tcPtr;
   tcPtr.i = conf->clientOpPtr;
@@ -24180,14 +24254,7 @@ void Dbtc::execKEYINFO20(Signal *signal) {
   TcKeyReq::setKeyLength(tcKeyRequestInfo, 0);
   TcKeyReq::setAIInTcKeyReq(tcKeyRequestInfo, 0);
   TcKeyReq::setOperationType(tcKeyRequestInfo, op);
-  const bool use_scan_takeover = false;
-  if (use_scan_takeover) {
-    TcKeyReq::setScanIndFlag(tcKeyRequestInfo, 1);
-  }
   tcKeyReq->requestInfo = tcKeyRequestInfo;
-  if (use_scan_takeover) {
-    tcKeyReq->scanInfo = (scanInfo << 1) + 1;  // TODO cleanup
-  }
   signal->m_sectionPtrI[TcKeyReq::KeyInfoSectionNum] = keyInfoPtrI;
   signal->header.m_noOfSections = 1;
 
@@ -24221,8 +24288,7 @@ void Dbtc::execKEYINFO20(Signal *signal) {
   /* Pass trigger Id via ApiConnectRecord (nasty) */
   ndbrequire(transPtr.p->immediateTriggerId == RNIL);
   transPtr.p->immediateTriggerId = tcPtr.p->currentTriggerId;
-  EXECUTE_DIRECT(DBTC, GSN_TCKEYREQ, signal,
-                 TcKeyReq::StaticLength + (use_scan_takeover ? 1 : 0));
+  EXECUTE_DIRECT(DBTC, GSN_TCKEYREQ, signal, TcKeyReq::StaticLength);
   jamEntry();
 
   /*
@@ -26962,6 +27028,7 @@ void Dbtc::execCREATE_DB_REQ(Signal* signal) {
   dbPtr.p->m_disk_space_size_limit32k =
     Uint64(req.diskSpaceSizeGB) * Uint64(1024 * 32);
   dbPtr.p->m_rate_per_sec = req.ratePerSec;
+  dbPtr.p->m_is_user = req.isUser;
   dbPtr.p->m_max_transaction_size = req.maxTransactionSize;
   dbPtr.p->m_max_parallel_transactions = req.maxParallelTransactions;
   dbPtr.p->m_max_parallel_complex_queries = req.maxParallelComplexQueries;
@@ -27037,6 +27104,7 @@ void Dbtc::execALTER_DB_REQ(Signal* signal) {
                AlterDbRef::SignalLength, JBB);
     return;
   }
+  ndbrequire(dbPtr.p->m_is_user == req.isUser);
   dbPtr.p->m_database_version = req.databaseVersion;
   dbPtr.p->m_in_memory_size_limit8k =
     Uint64(req.inMemorySizeMB) * Uint64(128);
@@ -27083,6 +27151,7 @@ void Dbtc::execCONNECT_TABLE_DB_REQ(Signal *signal) {
                ConnectTableDbRef::SignalLength, JBB);
     return;
   }
+  ndbrequire(dbPtr.p->m_is_user == false);
   if (req.requestType == ConnectTableDbReq::CONNECT_GLOBAL_INSTANCE) {
     Uint32 num_tc_threads = globalData.ndbMtTcWorkers;
     Uint32 tcInstanceUsed = (req.databaseId % num_tc_threads) + 1;
@@ -27156,6 +27225,7 @@ void Dbtc::execDISCONNECT_TABLE_DB_REQ(Signal *signal) {
                DisconnectTableDbRef::SignalLength, JBB);
     return;
   }
+  ndbrequire(dbPtr.p->m_is_user == false);
   tabPtr.p->databaseRecord = RNIL64;
   mb();
 
@@ -27232,6 +27302,7 @@ void Dbtc::execDROP_DB_REQ(Signal *signal) {
                DropDbRef::SignalLength, JBB);
     return;
   }
+  ndbrequire(dbPtr.p->m_is_user == req.isUser);
 
   if (req.requestType == DropDbReq::PREPARE_DROP) {
     if (dbPtr.p->m_first_queued_req == nullptr &&
@@ -27977,7 +28048,7 @@ bool Dbtc::check_tckey_queueing(Signal *signal,
     if (unlikely(databaseRecordPtr.p->m_is_queueing_abort)) {
       jam();
       releaseSections(handle);
-      DEB_RATE_OVERFLOW(("(%u) Rate Overflow: db: %llu, apiConnectptr.i: %u"
+      DEB_RATE_OVERFLOW(("(%u) Write Rate Overflow: db: %u, apiConnectptr.i: %u"
                          ", line: %u",
         instance(),
         databaseRecordPtr.p->m_database_id,
@@ -27987,7 +28058,7 @@ bool Dbtc::check_tckey_queueing(Signal *signal,
                         apiConnectptr,
                         TstartFlag,
                         TexecFlag,
-                        ZRATE_OVERFLOW_ERROR);
+                        TcKeyRef::WriteRateOverflowError);
       return false;
     }
     if (unlikely(databaseRecordPtr.p->m_is_queueing_abort_read)) {
@@ -28000,8 +28071,8 @@ bool Dbtc::check_tckey_queueing(Signal *signal,
           op_type != ZUNLOCK) {
         jam();
         releaseSections(handle);
-        DEB_RATE_OVERFLOW(("(%u) Rate Overflow: db: %llu, apiConnectptr.i: %u"
-                           ", line: %u",
+        DEB_RATE_OVERFLOW(("(%u) Read Rate Overflow: db: %u,"
+                           " apiConnectptr.i: %u, line: %u",
           instance(),
           databaseRecordPtr.p->m_database_id,
           apiConnectptr.i,
@@ -28010,7 +28081,7 @@ bool Dbtc::check_tckey_queueing(Signal *signal,
                           apiConnectptr,
                           TstartFlag,
                           TexecFlag,
-                          ZRATE_OVERFLOW_ERROR);
+                          TcKeyRef::ReadRateOverflowError);
       }
     }
     if (unlikely(apiConnectptr.p->m_first_queued_req == nullptr &&
@@ -28034,8 +28105,8 @@ bool Dbtc::check_tckey_queueing(Signal *signal,
                                    apiConnectptr))) {
         jam();
         releaseSections(handle);
-        DEB_RATE_OVERFLOW(("(%u) Rate Overflow: db: %llu, apiConnectptr.i: %u"
-                           ", line: %u",
+        DEB_RATE_OVERFLOW(("(%u) Write Rate Overflow: db: %u,"
+                           " apiConnectptr.i: %u, line: %u",
           instance(),
           databaseRecordPtr.p->m_database_id,
           apiConnectptr.i,
@@ -28044,7 +28115,7 @@ bool Dbtc::check_tckey_queueing(Signal *signal,
                           apiConnectptr,
                           TstartFlag,
                           TexecFlag,
-                          ZRATE_OVERFLOW_ERROR);
+                          TcKeyRef::WriteRateOverflowError);
         return false;
       }
       releaseSections(handle);
@@ -28070,7 +28141,7 @@ void Dbtc::handle_queue_tckeyreq(Signal *signal,
                                apiConnectptr))) {
     jam();
     releaseSections(handle);
-    DEB_RATE_OVERFLOW(("(%u) Rate Overflow: db: %llu, apiConnectptr.i: %u"
+    DEB_RATE_OVERFLOW(("(%u) Write Rate Overflow: db: %u, apiConnectptr.i: %u"
                        ", line: %u",
       instance(),
       databaseRecordPtr.p->m_database_id,
@@ -28080,7 +28151,7 @@ void Dbtc::handle_queue_tckeyreq(Signal *signal,
                       apiConnectptr,
                       TstartFlag,
                       TexecFlag,
-                      ZRATE_OVERFLOW_ERROR);
+                      TcKeyRef::WriteRateOverflowError);
     return;
   }
   jam();

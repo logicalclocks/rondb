@@ -215,6 +215,7 @@ ndb_tls_search_path	#
 ndb_use_copying_alter_table	#
 ndb_use_exact_count	#
 ndb_use_transactions	#
+ndb_user_rate_limits	#
 ndb_version	#
 ndb_version_string	#
 ndb_wait_connected	#

@@ -174,9 +174,12 @@ void BatchPKDeleteCtrl::batchPKDelete(
   }
 
   // Authenticate
+  char username[USERNAME_SIZE + PROJECT_PROJECTNAME_SIZE + 1];
+  char *username_ptr = nullptr;
   if (likely(globalConfigs.security.apiKey.useHopsworksAPIKeys)) {
     auto api_key = req->getHeader(API_KEY_NAME_LOWER_CASE);
-    status = authenticate(api_key, db_vector);
+    username_ptr = &username[0];
+    status = authenticate(api_key, db_vector, username_ptr);
     if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
         drogon::HttpStatusCode::k200OK)) {
       resp->setBody(std::string(status.message));
@@ -235,7 +238,8 @@ void BatchPKDeleteCtrl::batchPKDelete(
                              true,
                              reqBuffs.data(),
                              respBuffs.data(),
-                             currentThreadIndex);
+                             currentThreadIndex,
+                             username_ptr);
 
     resp->setStatusCode(static_cast<drogon::HttpStatusCode>(status.http_code));
 
