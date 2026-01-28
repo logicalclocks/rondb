@@ -144,3 +144,33 @@ type BatchWriteOperationTestInfo struct {
 	HttpCode       []int // for some operations there are multiple valid return codes
 	ErrMsgContains string
 }
+
+// Batch Delete Request - uses same body structure as read (filters only, no readColumns)
+type BatchDeleteOpRequest struct {
+	Operations *[]BatchDeleteSubOp `json:"operations" binding:"required,min=1,max=4096,unique,dive"`
+}
+
+type BatchDeleteSubOp struct {
+	Method      *string       `json:"method"        binding:"required,oneof=POST"`
+	RelativeURL *string       `json:"relative-url"  binding:"required,min=1"`
+	Body        *PKDeleteBody `json:"body"          binding:"required"`
+}
+
+type PKDeleteBody struct {
+	Filters     *[]Filter `json:"filters"      form:"filters"      binding:"required,min=1,max=4096,dive"`
+	OperationID *string   `json:"operationId"  form:"operation-id" binding:"omitempty"`
+}
+
+// data structs for delete testing
+type BatchDeleteSubOperationTestInfo struct {
+	SubOperation BatchDeleteSubOp
+	Table        string
+	DB           string
+	HttpCode     []int // for some operations there are multiple valid return codes
+}
+
+type BatchDeleteOperationTestInfo struct {
+	Operations     []BatchDeleteSubOperationTestInfo
+	HttpCode       []int // for some operations there are multiple valid return codes
+	ErrMsgContains string
+}

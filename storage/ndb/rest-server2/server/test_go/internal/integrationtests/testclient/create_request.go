@@ -162,3 +162,12 @@ func NewPKWriteReqBodyTBD() api.PKWriteBody {
 	}
 	return param
 }
+
+// NewPKDeleteReqBodyTBD creates a test PKDeleteBody for testing
+func NewPKDeleteReqBodyTBD() api.PKDeleteBody {
+	param := api.PKDeleteBody{
+		Filters:     NewFilters("filter_col_", 1),
+		OperationID: NewOperationID(64),
+	}
+	return param
+}

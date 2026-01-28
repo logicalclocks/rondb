@@ -336,3 +336,113 @@ When creating shared base classes, these includes are commonly needed:
 - Controllers: `server/src/` (e.g., `batch_pk_delete_ctrl.cpp`)
 - DB operations: `server/src/db_operations/pk/`
 - Base classes: `server/src/db_operations/pk/pk_base_operation.*`, `pk_batch_base_operation.*`
+
+## Go Integration Tests
+
+Integration tests for the REST API are located in `server/test_go/internal/integrationtests/`. Each endpoint has its own test package.
+
+### Running Tests
+
+Tests can be run via MTR (MySQL Test Runner):
+```bash
+cd debug_build/mysql-test
+./mtr rdrs2-golang_batchwrite    # Run batchwrite tests
+./mtr rdrs2-golang_batchdelete   # Run batchdelete tests
+./mtr rdrs2-golang_batchpkread   # Run batch read tests
+```
+
+Or directly with Go (requires running RonDB cluster):
+```bash
+cd server/test_go
+go test -v ./internal/integrationtests/batchwrite/
+go test -v ./internal/integrationtests/batchdelete/
+```
+
+### Test Package Structure
+
+Each test package follows this structure:
+```
+internal/integrationtests/<endpoint>/
+├── wrapper_test.go    # TestMain - test initialization
+├── utils.go           # Test utility functions
+├── utils_rest.go      # REST-specific test helpers
+└── handler_test.go    # Main test cases
+```
+
+### Batchwrite Tests (`batchwrite/`)
+
+Tests for the `/0.1.0/batchwrite` endpoint supporting pk-write, pk-update, pk-insert operations.
+
+| Test | Description |
+|------|-------------|
+| `TestBatchWriteSimple` | Basic pk-write and pk-update operations |
+| `TestBatchWriteMultiple` | Multiple operations in a single batch |
+| `TestBatchWriteUpdateNonExistent` | pk-update on non-existent row (expects 404) |
+| `TestBatchWriteTextColumns` | VARCHAR column writes |
+| `TestBatchWriteBlobColumns` | BLOB/TEXT column writes via NdbBlob |
+| `TestBatchWriteMultipleBlobOps` | Multiple BLOB operations in one batch |
+| `TestBatchWriteMissingReqField` | Validation of required request fields |
+| `TestBatchWriteInvalidURLSuffix` | Invalid URL suffix error handling |
+| `TestBatchWriteNonExistentTable` | Non-existent table error (404) |
+| `TestBatchWriteNonExistentColumn` | Non-existent column error (400) |
+
+### Batchdelete Tests (`batchdelete/`)
+
+Tests for the `/0.1.0/batchdelete` endpoint. These tests follow a write-verify-delete-verify pattern to ensure proper deletion.
+
+| Test | Description |
+|------|-------------|
+| `TestBatchDeleteIntTable` | Delete integer rows with full verification cycle |
+| `TestBatchDeleteBigintTable` | Delete bigint rows |
+| `TestBatchDeleteVarcharTable` | Delete varchar rows |
+| `TestBatchDeleteVarbinaryTable` | Delete varbinary rows |
+| `TestBatchDeleteTextTable` | Delete rows with TEXT columns (BLOB part cleanup) |
+| `TestBatchDeleteBlobTable` | Delete rows with BLOB columns |
+| `TestBatchDeleteNonExistent` | Delete non-existent row (expects 404) |
+| `TestBatchDeleteMultiple` | Multiple deletes in single batch |
+| `TestBatchDeleteAcrossTables` | Delete from different tables in one batch |
+| `TestBatchDeleteMissingReqField` | Validation of required request fields |
+| `TestBatchDeleteNonExistentTable` | Non-existent table error |
+| `TestBatchDeleteInvalidURLSuffix` | Invalid URL suffix error |
+| `TestBatchDeleteAndReinsert` | Delete and re-insert idempotency test |
+
+### Helper Functions in Batchdelete Tests
+
+The batchdelete tests use helper functions that combine multiple endpoints:
+
+```go
+// Write data using batchwrite endpoint
+writeTestData(t, writeOps)
+
+// Read data using batch endpoint to verify
+readTestData(t, readOps)
+
+// Verify row exists/deleted
+verifyRowExists(t, db, table, filters)
+verifyRowDeleted(t, db, table, filters)
+```
+
+### Adding New Test Packages
+
+1. Create test directory: `internal/integrationtests/<newpackage>/`
+2. Add the four standard files (wrapper_test.go, utils.go, utils_rest.go, handler_test.go)
+3. Add data structures to `pkg/api/` if needed
+4. Add URL generators to `internal/testutils/url_generator.go`
+5. Add constants to `internal/config/constants.go`
+6. Add MTR mapping in `mysql-test/suite/rdrs2-golang/include/run_gotest.inc`
+7. Create MTR test file: `mysql-test/suite/rdrs2-golang/t/rdrs2-golang_<newpackage>.test`
+8. Create MTR result file: `mysql-test/suite/rdrs2-golang/r/rdrs2-golang_<newpackage>.result`
+
+### Test Data Isolation
+
+Tests run twice per MTR execution (once without TLS, once with TLS) on the same database. To avoid conflicts:
+- Use unique primary keys per test (e.g., id values 8000+)
+- Use pk-write instead of pk-insert for setup (handles existing rows)
+- Clean up test data at end of test if needed
+
+### API Data Structures (pkg/api/)
+
+| File | Structures |
+|------|------------|
+| `pk-data-structs.go` | `Filter`, `ReadColumn`, `WriteColumn`, `PKReadBody`, `PKWriteBody` |
+| `batch-data-structs.go` | `BatchOpRequest`, `BatchWriteOpRequest`, `BatchDeleteOpRequest`, `PKDeleteBody` |

@@ -154,6 +154,25 @@ func NewBatchWriteURL() string {
 	return url
 }
 
+func NewBatchDeleteURL() string {
+	conf := config.GetAll()
+	url := fmt.Sprintf("%s:%d/%s/%s",
+		conf.REST.ServerIP,
+		conf.REST.ServerPort,
+		version.API_VERSION,
+		config.BATCH_DELETE_OPERATION,
+	)
+	appendURLProtocol(&url)
+	return url
+}
+
+func NewBatchPKDeleteURL(db string, table string) string {
+	url := fmt.Sprintf("%s/%s/%s",
+		db, table, config.PK_DELETE_OPERATION,
+	)
+	return url
+}
+
 func NewBatchPKWriteURL(db string, table string, opType string) string {
 	url := fmt.Sprintf("%s/%s/%s",
 		db, table, opType,
