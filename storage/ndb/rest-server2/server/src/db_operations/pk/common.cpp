@@ -85,7 +85,8 @@ RS_Status set_col_value(const NdbDictionary::Column *col,
                         Uint32 valueLen,
                         const char *colName,
                         Uint8 *row,
-                        const NdbRecord *ndb_record) {
+                        const NdbRecord *ndb_record,
+                        bool pk) {
   RS_Status error = RS_OK;
   Uint32 col_id = col->getColumnNo();
   Uint32 offset;
@@ -284,6 +285,11 @@ RS_Status set_col_value(const NdbDictionary::Column *col,
   }
   case NdbDictionary::Column::Float: {
     ///< 32-bit float. 4 bytes float, can be used in array
+    if (pk) {
+      error = RS_CLIENT_ERROR(std::string(rdrsErrorMessage(ERROR_UNSUPPORTED_HASH_INDEX)) +
+        std::string(" Column: ") + std::string(colName));
+      break;
+    }
     char *parsed = nullptr;
     errno = 0;
     float parsedNumber = strtof(valueCStr, &parsed);
@@ -298,6 +304,11 @@ RS_Status set_col_value(const NdbDictionary::Column *col,
   }
   case NdbDictionary::Column::Double: {
     ///< 64-bit float. 8 byte float, can be used in array
+    if (pk) {
+      error = RS_CLIENT_ERROR(std::string(rdrsErrorMessage(ERROR_UNSUPPORTED_HASH_INDEX)) +
+        std::string(" Column: ") + std::string(colName));
+      break;
+    }
     char *parsed = nullptr;
     errno = 0;
     double parsedNumber = strtod(valueCStr, &parsed);
@@ -757,7 +768,8 @@ RS_Status set_operation_pk_col(const NdbDictionary::Column *col,
                        request->PKValueLen(colIdx),
                        request->PKName(colIdx),
                        row,
-                       ndb_record);
+                       ndb_record,
+                       true);
 }
 
 RS_Status set_operation_write_col(const NdbDictionary::Column *col,
@@ -770,7 +782,8 @@ RS_Status set_operation_write_col(const NdbDictionary::Column *col,
                        request->WriteColumnValueLen(colIdx),
                        request->WriteColumnName(colIdx),
                        row,
-                       ndb_record);
+                       ndb_record,
+                       false);
 }
 
 int GetByteArray(const NdbRecAttr *attr, const char **firstByte, Uint32 *bytes) {
