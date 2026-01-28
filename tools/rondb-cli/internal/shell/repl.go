@@ -403,6 +403,7 @@ func (s *Shell) readFullCommand(firstLine string) (string, error) {
 }
 
 func (s *Shell) execute(line string) error {
+	line = strings.TrimSpace(line)
 	lower := strings.ToLower(line)
 
 	// Internal commands
@@ -964,6 +965,9 @@ func (s *Shell) executeREAD(line string) error {
 		return fmt.Errorf("REST API not connected. Use --no-rdrs=false or restart without --no-rdrs.")
 	}
 
+	// Strip trailing semicolon (command terminator)
+	line = strings.TrimSuffix(strings.TrimSpace(line), ";")
+
 	database, table, req, err := dsl.ParseSingleRead(line)
 	if err != nil {
 		return fmt.Errorf("parse error: %w", err)
@@ -984,7 +988,9 @@ func (s *Shell) executeREAD(line string) error {
 
 	fmt.Println(ui.Info("Response:"))
 	fmt.Println(client.PrettyJSON(data))
-	fmt.Println(ui.Timing(duration))
+	if !s.quiet {
+		fmt.Println(ui.Timing(duration))
+	}
 	return nil
 }
 

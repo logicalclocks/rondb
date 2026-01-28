@@ -532,3 +532,55 @@ BATCH operations (via RDRS) require API key authentication when `UseHopsworksAPI
 | `CMakeLists.txt` | Added `ADD_SUBDIRECTORY(tools)` |
 | `mysql-test/mysql-test-run.pl` | Added `RONDB_CLI` environment variable |
 | `mysql-test/suite/rdrs2-golang/my.cnf` | Added `RDRS_HOST`, `RDRS_PORT` variables |
+
+## Hopsworks Schema Requirements
+
+The hopsworks database tables used for API key authentication **must use `latin1` charset**. The RDRS code validates column sizes which depend on the charset.
+
+### Required Charset
+
+```sql
+CREATE TABLE `api_key` (
+  `prefix` varchar(45) NOT NULL,  -- Must be latin1 (45 bytes)
+  ...
+) ENGINE=ndbcluster DEFAULT CHARSET=latin1;
+
+CREATE TABLE `project_team` (
+  `team_member` varchar(150) NOT NULL,  -- Must be latin1 (150 bytes)
+  ...
+) ENGINE=ndbcluster DEFAULT CHARSET=latin1;
+```
+
+If tables use `utf8mb4` (default in MySQL 8), the column sizes are 4x larger and RDRS validation fails.
+
+### Error Handling Pattern
+
+**Prefer error returns over asserts** for schema validation. Asserts crash RDRS; error returns allow graceful failure with diagnostic messages.
+
+```cpp
+// Bad - crashes RDRS on schema mismatch
+assert(col_size == API_KEY_PREFIX_SIZE);
+
+// Good - returns error with helpful message
+if (unlikely(col_size != API_KEY_PREFIX_SIZE)) {
+  ndb_object->closeTransaction(tx);
+  return RS_SERVER_ERROR(
+    "hopsworks.api_key table has wrong schema: prefix column size mismatch "
+    "(expected latin1 charset)");
+}
+```
+
+Key validation points in `rdrs_hopsworks_dal.cpp`:
+- Line ~89: `api_key.prefix` column size check
+- Line ~386: `project_team.team_member` column size check
+
+### MTR Test Setup
+
+When creating hopsworks tables in MTR tests, always specify the charset:
+
+```sql
+CREATE TABLE `users` (...) ENGINE=ndbcluster DEFAULT CHARSET=latin1;
+CREATE TABLE `project` (...) ENGINE=ndbcluster DEFAULT CHARSET=latin1;
+CREATE TABLE `project_team` (...) ENGINE=ndbcluster DEFAULT CHARSET=latin1;
+CREATE TABLE `api_key` (...) ENGINE=ndbcluster DEFAULT CHARSET=latin1;
+```

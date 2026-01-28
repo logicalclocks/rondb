@@ -2,9 +2,8 @@
 --source include/have_ndb.inc
 
 #
-# Test rondb-cli SQL functionality
-# Note: BATCH tests require hopsworks database setup with API key authorization
-# which is done by the Go tests. This test focuses on SQL functionality.
+# Test rondb-cli SQL and BATCH functionality
+# This test sets up the hopsworks API key authentication for BATCH operations
 #
 
 # Check that rondb-cli is available
@@ -12,14 +11,136 @@ if (!$RONDB_CLI) {
   --skip rondb-cli binary not found - build with Go installed
 }
 
-# Set up rondb-cli command with connection parameters (SQL only, no RDRS)
---let $RONDB_CMD=$RONDB_CLI --host=127.0.0.1 --mysql-port=$MASTER_MYPORT --no-rdrs --no-rondis --quiet
+--echo #
+--echo # Setup: Create hopsworks database with API key for BATCH authentication
+--echo #
+
+--disable_query_log
+--disable_warnings
+
+DROP DATABASE IF EXISTS hopsworks;
+DROP DATABASE IF EXISTS cli_test;
+
+CREATE DATABASE hopsworks;
+USE hopsworks;
+
+# Create minimal hopsworks schema for API key authentication
+CREATE TABLE `users` (
+  `uid` int(11) NOT NULL,
+  `username` varchar(10) NOT NULL,
+  `password` varchar(128) NOT NULL,
+  `email` varchar(150) DEFAULT NULL,
+  `fname` varchar(30) DEFAULT NULL,
+  `lname` varchar(30) DEFAULT NULL,
+  `activated` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `title` varchar(10) DEFAULT '-',
+  `false_login` int(11) NOT NULL DEFAULT '-1',
+  `status` int(11) NOT NULL DEFAULT '-1',
+  `isonline` int(11) NOT NULL DEFAULT '-1',
+  `secret` varchar(20) DEFAULT NULL,
+  `validation_key` varchar(128) DEFAULT NULL,
+  `validation_key_updated` timestamp DEFAULT NULL,
+  `validation_key_type` VARCHAR(20) DEFAULT NULL,
+  `mode` int(11) NOT NULL DEFAULT '0',
+  `password_changed` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `notes` varchar(500) DEFAULT '-',
+  `max_num_projects` int(11) NOT NULL,
+  `num_active_projects` int(11) NOT NULL DEFAULT '0',
+  `num_created_projects` int(11) NOT NULL DEFAULT '0',
+  `two_factor` tinyint(1) NOT NULL DEFAULT '1',
+  `tours_state` tinyint(1) NOT NULL DEFAULT '0',
+  `salt` varchar(128) NOT NULL DEFAULT '',
+  PRIMARY KEY (`uid`),
+  UNIQUE KEY `username` (`username`),
+  UNIQUE KEY `email` (`email`)
+) ENGINE=ndbcluster DEFAULT CHARSET=latin1;
+
+CREATE TABLE `project` (
+  `id` int(11) NOT NULL,
+  `inode_pid` bigint(20) NOT NULL,
+  `inode_name` varchar(255) NOT NULL,
+  `partition_id` bigint(20) NOT NULL,
+  `projectname` varchar(100) NOT NULL,
+  `username` varchar(150) NOT NULL,
+  `created` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `retention_period` date DEFAULT NULL,
+  `archived` tinyint(1) DEFAULT '0',
+  `logs` tinyint(1) DEFAULT '0',
+  `deleted` tinyint(1) DEFAULT '0',
+  `description` varchar(2000) DEFAULT NULL,
+  `payment_type` varchar(255) NOT NULL DEFAULT 'PREPAID',
+  `last_quota_update` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `kafka_max_num_topics` int(11) NOT NULL DEFAULT '100',
+  `docker_image` varchar(255) DEFAULT NULL,
+  `python_env_id` int(11) DEFAULT NULL,
+  `creation_status` tinyint(1) NOT NULL DEFAULT '0',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `projectname` (`projectname`),
+  KEY `user_idx` (`username`)
+) ENGINE=ndbcluster DEFAULT CHARSET=latin1;
+
+CREATE TABLE `project_team` (
+  `project_id` int(11) NOT NULL,
+  `team_member` varchar(150) NOT NULL,
+  `team_role` varchar(32) NOT NULL,
+  `added` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`project_id`,`team_member`),
+  KEY `team_member` (`team_member`)
+) ENGINE=ndbcluster DEFAULT CHARSET=latin1;
+
+CREATE TABLE `api_key` (
+  `id` int(11) NOT NULL,
+  `prefix` varchar(45) NOT NULL,
+  `secret` varchar(512) NOT NULL,
+  `salt` varchar(256) NOT NULL,
+  `created` timestamp NOT NULL,
+  `modified` timestamp NOT NULL,
+  `name` varchar(45) NOT NULL,
+  `user_id` int(11) NOT NULL,
+  `reserved` tinyint(1) DEFAULT '0',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `prefix_UNIQUE` (`prefix`),
+  KEY `fk_api_key_1_idx` (`user_id`)
+) ENGINE=ndbcluster DEFAULT CHARSET=latin1;
+
+# Insert test user
+INSERT INTO `users` VALUES (
+  10000, 'macho',
+  '12fa520ec8f65d3a6feacfa97a705e622e1fea95b80b521ec016e43874dfed5a',
+  'macho@hopsworks.ai', '', 'macho', '2015-05-15 10:22:36', 'Mr',
+  0, 2, 1, 'V3WBPS4G2WMQ53VA', NULL, NULL, NULL, 0,
+  '2015-04-28 15:18:42', NULL, 30, 2, 1, 0, 3,
+  '+9mTLmYSpnZROFEJEaednw8+GDH/s2J1QuRZy8okxW5myI/q8ek8Xu+ab5CyE9GzhWX6Sa4cr7KX8cAHi5IC4g=='
+);
+
+# Insert cli_test project (id=1)
+INSERT INTO `project` VALUES (
+  1, 1, 'cli_test', 0, 'cli_test', 'macho@hopsworks.ai',
+  '2022-05-30 14:17:22', NULL, NULL, NULL, NULL,
+  'CLI test project', 'NOLIMIT', '2022-05-30 14:17:38', 100, 'SomeDockerImage', 1, 0
+);
+
+# Link user to cli_test project
+INSERT INTO `project_team` VALUES (
+  1, 'macho@hopsworks.ai', 'Data scientist', '2022-06-01 13:28:05'
+);
+
+# Insert test API key: bkYjEz6OTZyevbqt.ocHajJhnE0ytBh8zbYj3IXupyMqeMZp8PW464eTxzxqP5afBjodEQUgY0lmL33ub
+INSERT INTO `api_key` VALUES (
+  1, 'bkYjEz6OTZyevbqt',
+  '709faa77accc3f30394cfb53b67253ba64881528cb3056eea110703ca430cce4',
+  '1/1TxiaiIB01rIcY2E36iuwKP6fm2GzBaNaQqOVGMhH0AvcIlIzaUIw0fMDjKNLa0OWxAOrfTSPqAolpI/n+ug==',
+  '2022-06-14 10:27:03', '2022-06-14 10:27:03', 'myapikey1', 10000, 0
+);
+
+--enable_warnings
+--enable_query_log
 
 --echo #
 --echo # Setup: Create test database and table
 --echo #
 
-CREATE DATABASE IF NOT EXISTS cli_test;
+CREATE DATABASE cli_test;
 USE cli_test;
 
 CREATE TABLE batch_test (
@@ -28,19 +149,24 @@ CREATE TABLE batch_test (
   value INT
 ) ENGINE=NDB;
 
+# Set up rondb-cli commands
+--let $API_KEY=bkYjEz6OTZyevbqt.ocHajJhnE0ytBh8zbYj3IXupyMqeMZp8PW464eTxzxqP5afBjodEQUgY0lmL33ub
+--let $RONDB_SQL=$RONDB_CLI --host=127.0.0.1 --mysql-port=$MASTER_MYPORT --no-rdrs --no-rondis --quiet
+--let $RONDB_BATCH=$RONDB_CLI --host=127.0.0.1 --mysql-port=$MASTER_MYPORT --rdrs-host=$RDRS_HOST --rdrs-port=$RDRS_PORT --rdrs-api-key=$API_KEY --no-rondis --quiet
+
 --echo #
 --echo # Test 1: INSERT using rondb-cli SQL
 --echo #
 
---exec $RONDB_CMD -e "INSERT INTO cli_test.batch_test VALUES (1, 'Alice', 100);"
---exec $RONDB_CMD -e "INSERT INTO cli_test.batch_test VALUES (2, 'Bob', 200);"
---exec $RONDB_CMD -e "INSERT INTO cli_test.batch_test VALUES (3, 'Charlie', 300);"
+--exec $RONDB_SQL -e "INSERT INTO cli_test.batch_test VALUES (1, 'Alice', 100);"
+--exec $RONDB_SQL -e "INSERT INTO cli_test.batch_test VALUES (2, 'Bob', 200);"
+--exec $RONDB_SQL -e "INSERT INTO cli_test.batch_test VALUES (3, 'Charlie', 300);"
 
 --echo #
 --echo # Test 2: SELECT using rondb-cli SQL
 --echo #
 
---exec $RONDB_CMD -e "SELECT * FROM cli_test.batch_test ORDER BY id;"
+--exec $RONDB_SQL -e "SELECT * FROM cli_test.batch_test ORDER BY id;"
 
 --echo #
 --echo # Test 3: Verify data with native MySQL
@@ -52,7 +178,7 @@ SELECT * FROM batch_test ORDER BY id;
 --echo # Test 4: UPDATE using rondb-cli SQL
 --echo #
 
---exec $RONDB_CMD -e "UPDATE cli_test.batch_test SET value = 150 WHERE id = 1;"
+--exec $RONDB_SQL -e "UPDATE cli_test.batch_test SET value = 150 WHERE id = 1;"
 
 --echo # Verify update
 SELECT * FROM batch_test WHERE id = 1;
@@ -61,9 +187,49 @@ SELECT * FROM batch_test WHERE id = 1;
 --echo # Test 5: DELETE using rondb-cli SQL
 --echo #
 
---exec $RONDB_CMD -e "DELETE FROM cli_test.batch_test WHERE id = 2;"
+--exec $RONDB_SQL -e "DELETE FROM cli_test.batch_test WHERE id = 2;"
 
 --echo # Verify deletion
+SELECT * FROM batch_test ORDER BY id;
+
+--echo #
+--echo # Test 6: READ using rondb-cli REST API (pk-read)
+--echo #
+
+--exec $RONDB_BATCH -e "READ cli_test.batch_test name, value FILTER id=1;"
+--exec $RONDB_BATCH -e "READ cli_test.batch_test name, value FILTER id=3;"
+
+--echo #
+--echo # Test 7: BATCH READ using rondb-cli REST API
+--echo #
+
+--exec $RONDB_BATCH -e "BATCH READ cli_test.batch_test name, value FILTER id=1 READ cli_test.batch_test name, value FILTER id=3;"
+
+--echo #
+--echo # Test 8: BATCH WRITE (INSERT) using rondb-cli REST API
+--echo #
+
+--exec $RONDB_BATCH -e "BATCH WRITE cli_test.batch_test name='David', value=400 FILTER id=4;"
+
+--echo # Verify BATCH WRITE (INSERT)
+SELECT * FROM batch_test WHERE id = 4;
+
+--echo #
+--echo # Test 9: BATCH WRITE (UPDATE) using rondb-cli REST API
+--echo #
+
+--exec $RONDB_BATCH -e "BATCH WRITE cli_test.batch_test name='Charlie Updated', value=350 FILTER id=3;"
+
+--echo # Verify BATCH WRITE (UPDATE)
+SELECT * FROM batch_test WHERE id = 3;
+
+--echo #
+--echo # Test 10: BATCH DELETE using rondb-cli REST API
+--echo #
+
+--exec $RONDB_BATCH -e "BATCH DELETE cli_test.batch_test FILTER id=4;"
+
+--echo # Verify BATCH DELETE
 SELECT * FROM batch_test ORDER BY id;
 
 --echo #
@@ -72,3 +238,4 @@ SELECT * FROM batch_test ORDER BY id;
 
 DROP TABLE batch_test;
 DROP DATABASE cli_test;
+DROP DATABASE hopsworks;

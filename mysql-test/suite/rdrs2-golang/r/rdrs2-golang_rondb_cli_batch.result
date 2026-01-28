@@ -1,7 +1,10 @@
 #
+# Setup: Create hopsworks database with API key for BATCH authentication
+#
+#
 # Setup: Create test database and table
 #
-CREATE DATABASE IF NOT EXISTS cli_test;
+CREATE DATABASE cli_test;
 USE cli_test;
 CREATE TABLE batch_test (
 id INT PRIMARY KEY,
@@ -51,7 +54,155 @@ id	name	value
 1	Alice	150
 3	Charlie	300
 #
+# Test 6: READ using rondb-cli REST API (pk-read)
+#
+[*] POST /0.1.0/cli_test/batch_test/pk-read
+{
+  "filters": [
+    {
+      "column": "id",
+      "value": 1
+    }
+  ],
+  "readColumns": [
+    {
+      "column": "name",
+      "dataReturnType": "default"
+    },
+    {
+      "column": "value",
+      "dataReturnType": "default"
+    }
+  ]
+}
+
+[*] Response:
+{
+  "code": 200,
+  "operationId": "",
+  "data": {
+    "name": "Alice",
+    "value": 150
+  }
+}
+[*] POST /0.1.0/cli_test/batch_test/pk-read
+{
+  "filters": [
+    {
+      "column": "id",
+      "value": 3
+    }
+  ],
+  "readColumns": [
+    {
+      "column": "name",
+      "dataReturnType": "default"
+    },
+    {
+      "column": "value",
+      "dataReturnType": "default"
+    }
+  ]
+}
+
+[*] Response:
+{
+  "code": 200,
+  "operationId": "",
+  "data": {
+    "name": "Charlie",
+    "value": 300
+  }
+}
+#
+# Test 7: BATCH READ using rondb-cli REST API
+#
+{
+  "result": [
+    {
+      "code": 200,
+      "body": {
+        "operationId": "",
+        "data": {
+          "name": "Alice",
+          "value": 150
+        }
+      }
+    },
+    {
+      "code": 200,
+      "body": {
+        "operationId": "",
+        "data": {
+          "name": "Charlie",
+          "value": 300
+        }
+      }
+    }
+  ]
+}
+
+#
+# Test 8: BATCH WRITE (INSERT) using rondb-cli REST API
+#
+{
+  "result": [
+    {
+      "code": 200,
+      "body": {
+        "operationId": "",
+        "data": {}
+      }
+    }
+  ]
+}
+
+# Verify BATCH WRITE (INSERT)
+SELECT * FROM batch_test WHERE id = 4;
+id	name	value
+4	David	400
+#
+# Test 9: BATCH WRITE (UPDATE) using rondb-cli REST API
+#
+{
+  "result": [
+    {
+      "code": 200,
+      "body": {
+        "operationId": "",
+        "data": {}
+      }
+    }
+  ]
+}
+
+# Verify BATCH WRITE (UPDATE)
+SELECT * FROM batch_test WHERE id = 3;
+id	name	value
+3	Charlie Updated	350
+#
+# Test 10: BATCH DELETE using rondb-cli REST API
+#
+{
+  "result": [
+    {
+      "code": 200,
+      "body": {
+        "operationId": "",
+        "data": {}
+      }
+    }
+  ]
+}
+
+# Verify BATCH DELETE
+SELECT * FROM batch_test ORDER BY id;
+id	name	value
+1	Alice	150
+3	Charlie Updated	350
+#
 # Cleanup
 #
 DROP TABLE batch_test;
 DROP DATABASE cli_test;
+DROP DATABASE hopsworks;
