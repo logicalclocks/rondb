@@ -55,7 +55,7 @@ SELECT table_name, table_rows, avg_row_length
 TABLE_NAME	TABLE_ROWS	AVG_ROW_LENGTH
 blobs	10	84
 dictionary_columns	200	84
-dictionary_tables	40	176
+dictionary_tables	40	192
 events	40	48
 foreign_keys	10	124
 index_columns	20	80
@@ -117,7 +117,7 @@ CALL populate_sizes();
 SELECT table_name, est_rows, actual_rows from rowcounts
 WHERE table_name = "ndb$config_values";
 table_name	est_rows	actual_rows
-ndb$config_values	350	380
+ndb$config_values	386	384
 ## Note:
 ## the estimate for config_values relies on a constant in NdbinfoTables.cpp
 ## which must be manually maintained in order for the test to pass.

@@ -63,7 +63,8 @@ extern RestoreLogger restoreLogger;
 static Uint32 g_tableCompabilityMask = 0;
 static int ga_nodeId = 0;
 static int ga_nParallelism = 128;
-static int ga_backupId = 0;
+static int64 ga_inputBackupId = -1;
+static Uint32 ga_backupId = 0;
 bool ga_dont_ignore_systab_0 = false;
 static bool ga_no_upgrade = false;
 static bool ga_promote_attributes = false;
@@ -84,6 +85,11 @@ static const char *default_backupPath = "." DIR_SEPARATOR;
 static const char *ga_backupPath = default_backupPath;
 
 static bool opt_decrypt = false;
+
+static Uint32 opt_read_size = 0;
+constexpr Uint32 MIN_READ_SIZE = 128 * 1024;
+constexpr Uint32 MAX_READ_SIZE = 32 * 1024 * 1024;
+constexpr Uint32 DEFAULT_READ_SIZE = BackupFile::DEFAULT_BUFFER_SIZE;
 
 // g_backup_password global, directly accessed in Restore.cpp.
 ndb_password_state g_backup_password_state("backup", nullptr);
@@ -106,6 +112,10 @@ Properties g_rewrite_databases;
 NdbRecordPrintFormat g_ndbrecord_print_format;
 unsigned int opt_no_binlog;
 static bool opt_timestamp_printouts;
+/* Limit per thread max transactions to 1024 until fix of
+ * Bug#38558743 NdbAPI limited to 1024 transactions/Ndb object
+ */
+static constexpr int MaxTransactionsPerThread = 1024;
 
 Ndb_cluster_connection *g_cluster_connection = NULL;
 
@@ -155,6 +165,7 @@ bool ga_skip_unknown_objects = false;
 bool ga_skip_broken_objects = false;
 bool ga_allow_pk_changes = false;
 bool ga_ignore_extended_pk_updates = false;
+int ga_hint = 0;
 BaseString g_options("ndb_restore");
 static int ga_num_slices = 1;
 static int ga_slice_id = 0;
@@ -190,6 +201,7 @@ static const char *opt_include_databases = NULL;
 static const char *opt_rewrite_database = NULL;
 static const char *opt_one_remap_col_arg = NULL;
 static bool opt_restore_privilege_tables = false;
+bool opt_skip_fk_checks = false;
 
 /**
  * ExtraTableInfo
@@ -292,8 +304,8 @@ static struct my_option my_long_options[] = {
      "Read encryption password for backup file from stdin",
      &opt_backup_password_from_stdin.opt_value, nullptr, 0, GET_BOOL, NO_ARG, 0,
      0, 0, nullptr, 0, &opt_backup_password_from_stdin},
-    {"backupid", 'b', "Backup id", &ga_backupId, nullptr, nullptr, GET_INT,
-     REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
+    {"backupid", 'b', "Backup id", &ga_inputBackupId, nullptr, nullptr, GET_LL,
+     REQUIRED_ARG, -1, -1, 0, 0, 0, 0},
     {"decrypt", NDB_OPT_NOSHORT, "Decrypt file", &opt_decrypt, nullptr, nullptr,
      GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0},
     {"restore_data", 'r',
@@ -335,10 +347,9 @@ static struct my_option my_long_options[] = {
      "Skip table structure check during restore of data", &ga_skip_table_check,
      nullptr, nullptr, GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0},
     {"parallelism", 'p',
-     "No of parallel transactions during restore of data."
-     "(parallelism can be 1 to 1024)",
-     &ga_nParallelism, nullptr, nullptr, GET_INT, REQUIRED_ARG, 128, 1, 1024, 0,
-     1, 0},
+     "Max no of parallel transactions during restore of data", &ga_nParallelism,
+     nullptr, nullptr, GET_INT, REQUIRED_ARG, 128, 1,
+     (MaxTransactionsPerThread * g_max_parts), 0, 1, 0},
     {"print", NDB_OPT_NOSHORT, "Print metadata, data and log to stdout",
      &_print, nullptr, nullptr, GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0},
     {"print_data", NDB_OPT_NOSHORT, "Print data to stdout", &_print_data,
@@ -481,6 +492,16 @@ static struct my_option my_long_options[] = {
      "conversions.",
      &opt_one_remap_col_arg, nullptr, nullptr, GET_STR, REQUIRED_ARG, 0, 0, 0,
      0, 0, 0},
+    {"skip-fk-checks", NDB_OPT_NOSHORT,
+     "Skip checking foreign key integrity when rebuilding foreign keys",
+     &opt_skip_fk_checks, nullptr, nullptr, GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0},
+    {"read-size", NDB_OPT_NOSHORT,
+     "Set size in bytes of buffer for reading from Backup files",
+     &opt_read_size, nullptr, nullptr, GET_UINT, REQUIRED_ARG,
+     DEFAULT_READ_SIZE, MIN_READ_SIZE, MAX_READ_SIZE, nullptr, 0, nullptr},
+    {"hint", NDB_OPT_NOSHORT,
+     "Hint all transactions to node id of backup being restored", &ga_hint,
+     nullptr, nullptr, GET_BOOL, OPT_ARG, 0, 0, 0, 0, 0, 0},
     NdbStdOpt::end_of_options};
 
 static bool parse_remap_option(const BaseString option, BaseString &db_name,
@@ -561,17 +582,18 @@ static bool get_one_option(int optid, const struct my_option *opt,
       break;
     case 'n':
       if (ga_nodeId == 0) {
-        err << "Error in --nodeid,-n setting, see --help";
+        err << "Error in --nodeid,-n setting, see --help" << endl;
         exitHandler(NdbToolsProgramExitCode::WRONG_ARGS);
       }
       info.setLevel(254);
       info << "Nodeid = " << ga_nodeId << endl;
       break;
     case 'b':
-      if (ga_backupId == 0) {
-        err << "Error in --backupid,-b setting, see --help";
+      if (ga_inputBackupId == -1 || (ga_inputBackupId >= (int64(1) << 32))) {
+        err << "Error in --backupid,-b setting, see --help" << endl;
         exitHandler(NdbToolsProgramExitCode::WRONG_ARGS);
       }
+      ga_backupId = Uint32(ga_inputBackupId);
       info.setLevel(254);
       info << "Backup Id = " << ga_backupId << endl;
       break;
@@ -705,7 +727,7 @@ bool readArguments(Ndb_opts &opts, char ***pargv) {
     err << "Backup file node ID not specified, please provide --nodeid" << endl;
     exitHandler(NdbToolsProgramExitCode::WRONG_ARGS);
   }
-  if (ga_backupId == 0) {
+  if (ga_inputBackupId == -1) {
     err << "Backup ID not specified, please provide --backupid" << endl;
     exitHandler(NdbToolsProgramExitCode::WRONG_ARGS);
   }
@@ -2197,7 +2219,7 @@ int do_restore(RestoreThreadData *thrdata) {
       }
 
       RestoreDataIterator dataIter(metaData, &free_data_callback,
-                                   (void *)thrdata);
+                                   (void *)thrdata, opt_read_size);
 
       if (!dataIter.validateBackupFile()) {
         restoreLogger.log_error(
@@ -2597,7 +2619,7 @@ int detect_backup_format() {
       //      BACKUP-1-PART-1-OF-3 : not found, continue
       //      BACKUP-1-PART-1-OF-4 : FOUND, set ga_part_count and break
       BaseString::snprintf(
-          name, sz, "%s%sBACKUP-%d-PART-1-OF-%u%sBACKUP-%u.%d.ctl",
+          name, sz, "%s%sBACKUP-%u-PART-1-OF-%u%sBACKUP-%u.%d.ctl",
           ga_backupPath, DIR_SEPARATOR, ga_backupId, ga_part_count,
           DIR_SEPARATOR, ga_backupId, ga_nodeId);
       if (my_stat(name, &buf, 0)) {
@@ -2680,6 +2702,7 @@ int main(int argc, char **argv) {
   if (ga_allow_pk_changes) g_options.append(" --allow-pk-changes");
   if (ga_ignore_extended_pk_updates)
     g_options.append(" --ignore-extended-pk-updates");
+  if (opt_skip_fk_checks) g_options.append(" --skip-fk-checks");
 
   // determine backup format: simple or multi-part, and count parts
   int result = detect_backup_format();
@@ -2705,11 +2728,45 @@ int main(int argc, char **argv) {
     }
   }
 
+  if (ga_hint) {
+    /**
+     * User set hint option
+     *
+     * Check that node id from backup is data node + live
+     * on this cluster.
+     */
+    ga_hint = 0;
+    g_cluster_connection->wait_until_ready(30, 30);
+    Ndb_cluster_connection_node_iter node_iter;
+    int live_node = 0;
+    while ((live_node = (int)g_cluster_connection->get_next_alive_node(
+                node_iter)) != 0) {
+      if (live_node == ga_nodeId) {
+        ga_hint = ga_nodeId;
+        break;
+      }
+    }
+    if (ga_hint) {
+      info << "Hinting transactions to node id " << ga_nodeId << endl;
+    } else {
+      info << "Unable to hint transactions to node id " << ga_nodeId << endl;
+    }
+  }
+
   g_restoring_in_parallel = true;
   // check if single-threaded restore is necessary
   if (_print || _print_meta || _print_data || _print_log || _print_sql_log ||
       ga_backup_format == BF_SINGLE) {
     g_restoring_in_parallel = false;
+    // Bound row parallelism between (1,MaxTransactionsPerThread)
+    if (ga_nParallelism > MaxTransactionsPerThread) {
+      info << "Requested parallelism " << ga_nParallelism << " limited to "
+           << MaxTransactionsPerThread << "." << endl;
+      ga_nParallelism = MaxTransactionsPerThread;
+    }
+    ga_nParallelism = std::max(ga_nParallelism, 1);
+    info << "Parallelism for single restore instance is " << ga_nParallelism
+         << endl;
     for (int i = 1; i <= ga_part_count; i++) {
       /*
        * do_restore uses its parameter 'partId' to select the backup part.
@@ -2766,10 +2823,19 @@ int main(int argc, char **argv) {
      * Divide data INSERT parallelism across parts, ensuring
      * each part has at least 1
      */
+    const int MaxProcessParallelism = ga_part_count * MaxTransactionsPerThread;
+    if (ga_nParallelism > MaxProcessParallelism) {
+      info << "Requested parallelism " << ga_nParallelism << " limited to "
+           << MaxProcessParallelism << "." << endl;
+      info << "Parameter upperbound is " << ga_part_count << " parts * "
+           << MaxTransactionsPerThread << " max parallelism per part" << endl;
+      ga_nParallelism = MaxProcessParallelism;
+    }
     ga_nParallelism /= ga_part_count;
-    if (ga_nParallelism == 0) ga_nParallelism = 1;
+    // Ensure at least 1 per thread
+    ga_nParallelism = std::max(ga_nParallelism, 1);
 
-    debug << "Part parallelism is " << ga_nParallelism << endl;
+    info << "Part parallelism is " << ga_nParallelism << endl;
 
     for (int part_id = 1; part_id <= ga_part_count; part_id++) {
       NDB_THREAD_PRIO prio = NDB_THREAD_PRIO_MEAN;

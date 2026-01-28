@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -365,8 +365,8 @@ void Backup::execREAD_CONFIG_REQ(Signal *signal) {
    */
   c_nodePool.setSize(MAX_NDB_NODES);
   c_backupPool.setSize(noBackups + 1);
-  c_backupFilePool.setSize(3 * noBackups + 4 +
-                           (2 * BackupFormat::NDB_MAX_FILES_PER_LCP));
+  c_backupFilePool.setSize(3 * noBackups + (LCP_NUM_CTL_FILES + 1) +
+                           BackupFormat::NDB_MAX_FILES_PER_LCP);
   c_tablePool.setSize(noBackups * noTables + 2);
 
   c_transient_pools[BACKUP_TRIGGER_RECORD_TRANSIENT_POOL_INDEX] =
@@ -505,7 +505,7 @@ void Backup::execREAD_CONFIG_REQ(Signal *signal) {
    */
   Uint32 dataBufPages = (szDataBuf + sizeof(Page32) - 1) / sizeof(Page32);
   Uint32 logBufPages = (szLogBuf + sizeof(Page32) - 1) / sizeof(Page32);
-  Uint32 maxFilesPerLcp = ((2 * BackupFormat::NDB_MAX_FILES_PER_LCP));
+  Uint32 maxFilesPerLcp = 1 + BackupFormat::NDB_MAX_FILES_PER_LCP;
   Uint32 lcpBufferPages =
     ((c_defaults.m_lcp_buffer_size + sizeof(Page32) - 1) / sizeof(Page32));
   Uint32 noPages =

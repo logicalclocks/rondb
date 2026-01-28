@@ -590,7 +590,9 @@ class TransporterRegistry {
 
   bool m_use_only_ipv4;
 
-private:
+  static bool is_permitted_halt_signal(const SignalHeader *signalHeader);
+
+ private:
   TransporterCallback *const callbackObj;
   TransporterReceiveHandle *const receiveHandle;
 
