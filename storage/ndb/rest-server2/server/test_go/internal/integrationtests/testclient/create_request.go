@@ -1,3 +1,20 @@
+/*
+ * This file is part of the RonDB REST API Server
+ * Copyright (c) 2023, 2026 Hopsworks AB
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, version 3.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ */
+
 package testclient
 
 import (
@@ -97,4 +114,51 @@ func NewFiltersKVs(vals ...interface{}) *[]api.Filter {
 		i += 2
 	}
 	return &filters
+}
+
+// NewWriteColumn creates a single write column
+func NewWriteColumn(column string, value interface{}) *[]api.WriteColumn {
+	writeColumns := make([]api.WriteColumn, 1)
+	v := rawBytes(value)
+	writeColumns[0] = api.WriteColumn{Column: &column, Value: &v}
+	return &writeColumns
+}
+
+// NewWriteColumns creates multiple write columns with prefix and values
+func NewWriteColumns(prefix string, numColumns int, value interface{}) *[]api.WriteColumn {
+	writeColumns := make([]api.WriteColumn, numColumns)
+	for i := 0; i < numColumns; i++ {
+		col := prefix + fmt.Sprintf("%d", i)
+		v := rawBytes(value)
+		writeColumns[i] = api.WriteColumn{Column: &col, Value: &v}
+	}
+	return &writeColumns
+}
+
+// NewWriteColumnsKVs creates write columns from key-value pairs
+func NewWriteColumnsKVs(vals ...interface{}) *[]api.WriteColumn {
+	if len(vals)%2 != 0 {
+		log.Panic("Expecting key value pairs")
+	}
+
+	writeColumns := make([]api.WriteColumn, len(vals)/2)
+	idx := 0
+	for i := 0; i < len(vals); {
+		c := fmt.Sprintf("%v", vals[i])
+		v := rawBytes(vals[i+1])
+		writeColumns[idx] = api.WriteColumn{Column: &c, Value: &v}
+		idx++
+		i += 2
+	}
+	return &writeColumns
+}
+
+// NewPKWriteReqBodyTBD creates a test PKWriteBody for testing
+func NewPKWriteReqBodyTBD() api.PKWriteBody {
+	param := api.PKWriteBody{
+		Filters:      NewFilters("filter_col_", 1),
+		WriteColumns: NewWriteColumnsKVs("col0", "test_value"),
+		OperationID:  NewOperationID(64),
+	}
+	return param
 }

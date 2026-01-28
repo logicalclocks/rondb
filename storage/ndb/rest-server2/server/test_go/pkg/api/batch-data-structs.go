@@ -1,6 +1,6 @@
 /*
  * This file is part of the RonDB REST API Server
- * Copyright (c) 2023 Hopsworks AB
+ * Copyright (c) 2023, 2026 Hopsworks AB
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -116,6 +116,31 @@ type BatchSubOperationTestInfo struct {
 
 type BatchOperationTestInfo struct {
 	Operations     []BatchSubOperationTestInfo
+	HttpCode       []int // for some operations there are multiple valid return codes
+	ErrMsgContains string
+}
+
+// Batch Write Request
+type BatchWriteOpRequest struct {
+	Operations *[]BatchWriteSubOp `json:"operations" binding:"required,min=1,max=4096,unique,dive"`
+}
+
+type BatchWriteSubOp struct {
+	Method      *string      `json:"method"        binding:"required,oneof=POST"`
+	RelativeURL *string      `json:"relative-url"  binding:"required,min=1"`
+	Body        *PKWriteBody `json:"body"          binding:"required"`
+}
+
+// data structs for write testing
+type BatchWriteSubOperationTestInfo struct {
+	SubOperation BatchWriteSubOp
+	Table        string
+	DB           string
+	HttpCode     []int // for some operations there are multiple valid return codes
+}
+
+type BatchWriteOperationTestInfo struct {
+	Operations     []BatchWriteSubOperationTestInfo
 	HttpCode       []int // for some operations there are multiple valid return codes
 	ErrMsgContains string
 }

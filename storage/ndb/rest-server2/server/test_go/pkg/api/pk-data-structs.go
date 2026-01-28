@@ -1,6 +1,6 @@
 /*
  * This file is part of the RonDB REST API Server
- * Copyright (c) 2023 Hopsworks AB
+ * Copyright (c) 2023, 2026 Hopsworks AB
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -247,4 +247,41 @@ type PKTestInfo struct {
 	HttpCode       int
 	ErrMsgContains string
 	RespKVs        []interface{}
+}
+
+// Write operation structures
+type WriteColumn struct {
+	Column *string          `json:"column"   form:"column"   binding:"required,min=1,max=64"`
+	Value  *json.RawMessage `json:"value"    form:"value"    binding:"required"`
+}
+
+func (w WriteColumn) String() string {
+	var stringify strings.Builder
+	if w.Column != nil {
+		stringify.WriteString(fmt.Sprintf("Column: %s\n", *w.Column))
+	}
+	if w.Value != nil {
+		j, err := json.Marshal(w.Value)
+		if err != nil {
+			stringify.WriteString(fmt.Sprintf("Error marshaling Value: %s\n", err.Error()))
+		} else {
+			stringify.WriteString(fmt.Sprintf("Value: %s\n", j))
+		}
+	}
+	return stringify.String()
+}
+
+type PKWriteBody struct {
+	Filters      *[]Filter      `json:"filters"       form:"filters"       binding:"required,min=1,max=4096,dive"`
+	WriteColumns *[]WriteColumn `json:"writeColumns"  form:"write-columns" binding:"required,min=1,max=4096"`
+	OperationID  *string        `json:"operationId"   form:"operation-id"  binding:"omitempty"`
+}
+
+// For testing only
+type PKWriteTestInfo struct {
+	PkReq          PKWriteBody
+	Table          string
+	Db             string
+	HttpCode       int
+	ErrMsgContains string
 }

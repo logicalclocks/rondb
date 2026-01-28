@@ -33,6 +33,7 @@ my %mtr_to_go = (
   'rdrs2-golang_api.test'               => 'hopsworks.ai/rdrs2/pkg/api',                                     #
   'rdrs2-golang_batchfeaturestore.test' => 'hopsworks.ai/rdrs2/internal/integrationtests/batchfeaturestore', #
   'rdrs2-golang_batchpkread.test'       => 'hopsworks.ai/rdrs2/internal/integrationtests/batchpkread',       #
+  'rdrs2-golang_batchwrite.test'        => 'hopsworks.ai/rdrs2/internal/integrationtests/batchwrite',        #
   'rdrs2-golang_common.test'            => 'hopsworks.ai/rdrs2/internal/common',                             #
   'rdrs2-golang_config.test'            => 'hopsworks.ai/rdrs2/internal/config',                             #
   'rdrs2-golang_feature_store.test'     => 'hopsworks.ai/rdrs2/internal/feature_store',                      #

@@ -1,6 +1,6 @@
 /*
  * This file is part of the RonDB REST API Server
- * Copyright (c) 2023, 2025 Hopsworks AB
+ * Copyright (c) 2023, 2026 Hopsworks AB
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -139,6 +139,25 @@ func NewBatchReadURL() string {
 		config.BATCH_OPERATION,
 	)
 	appendURLProtocol(&url)
+	return url
+}
+
+func NewBatchWriteURL() string {
+	conf := config.GetAll()
+	url := fmt.Sprintf("%s:%d/%s/%s",
+		conf.REST.ServerIP,
+		conf.REST.ServerPort,
+		version.API_VERSION,
+		config.BATCH_WRITE_OPERATION,
+	)
+	appendURLProtocol(&url)
+	return url
+}
+
+func NewBatchPKWriteURL(db string, table string, opType string) string {
+	url := fmt.Sprintf("%s/%s/%s",
+		db, table, opType,
+	)
 	return url
 }
 

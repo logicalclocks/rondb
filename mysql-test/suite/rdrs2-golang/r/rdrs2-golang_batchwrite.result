@@ -1,0 +1,8 @@
+## Run rdrs2-golang_batchwrite.test without TLS
+ok  	hopsworks.ai/rdrs2/internal/integrationtests/batchwrite
+
+Golang test for hopsworks.ai/rdrs2/internal/integrationtests/batchwrite exited with code 0
+## Run rdrs2-golang_batchwrite.test with TLS and server-side cert
+ok  	hopsworks.ai/rdrs2/internal/integrationtests/batchwrite
+
+Golang test for hopsworks.ai/rdrs2/internal/integrationtests/batchwrite exited with code 0

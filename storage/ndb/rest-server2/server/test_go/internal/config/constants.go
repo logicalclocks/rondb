@@ -1,6 +1,6 @@
 /*
  * This file is part of the RonDB REST API Server
- * Copyright (c) 2023 Hopsworks AB
+ * Copyright (c) 2023, 2026 Hopsworks AB
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -34,7 +34,11 @@ const PING_OPERATION = "ping"
 const STAT_OPERATION = "stat"
 const HEALTH_OPERATION = "health"
 const PK_DB_OPERATION = "pk-read"
+const PK_WRITE_OPERATION = "pk-write"
+const PK_UPDATE_OPERATION = "pk-update"
+const PK_INSERT_OPERATION = "pk-insert"
 const BATCH_OPERATION = "batch"
+const BATCH_WRITE_OPERATION = "batchwrite"
 const FEATURE_STORE_OPERATION = "feature_store"
 const BATCH_FEATURE_STORE_OPERATION = "batch_feature_store"
 
