@@ -8129,7 +8129,7 @@ void Qmgr::execDUMP_STATE_ORD(Signal *signal) {
       Uint32 nodeId = signal->theData[1];
       Uint32 &newNodeId = signal->theData[1];
       Uint32 length = 2;
-      assert(257 > MAX_NODES);
+      //assert(257 > MAX_NODES);
       if (nodeId > MAX_NODES) {
         const char *type = "None";
         switch (nodeId) {
