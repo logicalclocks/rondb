@@ -14900,6 +14900,7 @@ void Dblqh::continueACCKEYREF(Signal *signal, TcConnectionrecPtr tcConnectptr,
         Uint32 rate = (tcPtr->operation == ZREAD ?
                         READ_KEY_REF_RATE : WRITE_KEY_REF_RATE);
         m_ldm_instance_used->update_rate_usage(fragptr.p->tabRef,
+                                               tcPtr->m_user_ptr_i,
                                                rate);
       }
       if (!m_is_in_query_thread) {
