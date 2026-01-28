@@ -446,3 +446,89 @@ Tests run twice per MTR execution (once without TLS, once with TLS) on the same 
 |------|------------|
 | `pk-data-structs.go` | `Filter`, `ReadColumn`, `WriteColumn`, `PKReadBody`, `PKWriteBody` |
 | `batch-data-structs.go` | `BatchOpRequest`, `BatchWriteOpRequest`, `BatchDeleteOpRequest`, `PKDeleteBody` |
+
+## rondb-cli Integration
+
+The `rondb-cli` tool (`tools/rondb-cli/`) provides a unified CLI for RonDB, supporting Rondis commands, SQL queries, and REST API BATCH operations.
+
+### Building rondb-cli
+
+rondb-cli is built automatically as part of the CMake build when Go is installed:
+
+```bash
+cd debug_build
+make rondb-cli          # Build just rondb-cli
+make                    # Or build everything
+```
+
+The binary is placed in `bin/rondb` under the build directory.
+
+### Command-Line Flags for Scripted Usage
+
+| Flag | Description |
+|------|-------------|
+| `-e, --execute` | Execute command and exit (non-interactive mode) |
+| `-q, --quiet` | Suppress timing and info messages (deterministic output) |
+| `--host` | RonDB host (sets both MySQL and RDRS hosts) |
+| `--mysql-port` | MySQL port (default: 3306) |
+| `--rdrs-port` | RDRS/REST API port (default: 4406) |
+| `--rdrs-api-key` | API key for RDRS authentication |
+| `--no-rdrs` | Disable RDRS/REST API connection |
+| `--no-rondis` | Disable Rondis connection |
+| `--no-mysql` | Disable MySQL connection |
+
+### Examples
+
+```bash
+# SQL query (non-interactive)
+rondb -e "SELECT * FROM db.table;" --quiet
+
+# BATCH operation (requires API key for Hopsworks authentication)
+rondb -e "BATCH WRITE db.table col=value FILTER id=1;" --rdrs-api-key=$API_KEY --quiet
+
+# SQL-only mode (disable RDRS and Rondis)
+rondb --no-rdrs --no-rondis -e "INSERT INTO db.table VALUES (1, 'test');"
+```
+
+### MTR Integration
+
+rondb-cli is integrated with MTR (MySQL Test Runner) for testing:
+
+1. **Environment variable**: MTR sets `RONDB_CLI` pointing to the rondb binary
+2. **Connection parameters**: `RDRS_HOST`, `RDRS_PORT`, `MASTER_MYPORT` available in tests
+3. **Test location**: `mysql-test/suite/rdrs2-golang/t/rdrs2-golang_rondb_cli_batch.test`
+
+### MTR Test Example
+
+```sql
+# Check rondb-cli is available
+if (!$RONDB_CLI) {
+  --skip rondb-cli binary not found
+}
+
+# SQL-only mode (no API key needed)
+--let $RONDB_CMD=$RONDB_CLI --host=127.0.0.1 --mysql-port=$MASTER_MYPORT --no-rdrs --no-rondis --quiet
+
+# Execute SQL via rondb-cli
+--exec $RONDB_CMD -e "INSERT INTO test.t1 VALUES (1, 'Alice');"
+--exec $RONDB_CMD -e "SELECT * FROM test.t1;"
+```
+
+### API Key Authentication
+
+BATCH operations (via RDRS) require API key authentication when `UseHopsworksAPIKeys: true` is configured:
+
+- Test API key: `bkYjEz6OTZyevbqt.ocHajJhnE0ytBh8zbYj3IXupyMqeMZp8PW464eTxzxqP5afBjodEQUgY0lmL33ub`
+- The API key must be authorized for the target database in the hopsworks schema
+- Go tests set up the hopsworks database with test API keys during `testdbs.CreateDataBases()`
+- SQL-only tests can bypass this by using `--no-rdrs` flag
+
+### Files Modified for rondb-cli Integration
+
+| File | Change |
+|------|--------|
+| `tools/CMakeLists.txt` | Top-level tools directory |
+| `tools/rondb-cli/CMakeLists.txt` | Go build integration with CMake |
+| `CMakeLists.txt` | Added `ADD_SUBDIRECTORY(tools)` |
+| `mysql-test/mysql-test-run.pl` | Added `RONDB_CLI` environment variable |
+| `mysql-test/suite/rdrs2-golang/my.cnf` | Added `RDRS_HOST`, `RDRS_PORT` variables |

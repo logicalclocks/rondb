@@ -1,0 +1,57 @@
+#
+# Setup: Create test database and table
+#
+CREATE DATABASE IF NOT EXISTS cli_test;
+USE cli_test;
+CREATE TABLE batch_test (
+id INT PRIMARY KEY,
+name VARCHAR(100),
+value INT
+) ENGINE=NDB;
+#
+# Test 1: INSERT using rondb-cli SQL
+#
+[OK] OK, 1 rows affected
+[OK] OK, 1 rows affected
+[OK] OK, 1 rows affected
+#
+# Test 2: SELECT using rondb-cli SQL
+#
+┼────┼─────────┼───────┼
+│ id │  name   │ value │
+┼────┼─────────┼───────┼
+│  1 │ Alice   │   100 │
+│  2 │ Bob     │   200 │
+│  3 │ Charlie │   300 │
+┼────┼─────────┼───────┼
+3 rows
+#
+# Test 3: Verify data with native MySQL
+#
+SELECT * FROM batch_test ORDER BY id;
+id	name	value
+1	Alice	100
+2	Bob	200
+3	Charlie	300
+#
+# Test 4: UPDATE using rondb-cli SQL
+#
+[OK] OK, 1 rows affected
+# Verify update
+SELECT * FROM batch_test WHERE id = 1;
+id	name	value
+1	Alice	150
+#
+# Test 5: DELETE using rondb-cli SQL
+#
+[OK] OK, 1 rows affected
+# Verify deletion
+SELECT * FROM batch_test ORDER BY id;
+id	name	value
+1	Alice	150
+3	Charlie	300
+#
+# Cleanup
+#
+DROP TABLE batch_test;
+DROP DATABASE cli_test;

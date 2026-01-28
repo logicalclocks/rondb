@@ -2910,6 +2910,16 @@ sub executable_setup () {
       mtr_verbose("Found NDBT binaries");
       $ENV{'NDBT_BINARIES_AVAILABLE'} = 1;
     }
+
+    # rondb-cli - RonDB command-line interface for Rondis + MySQL + REST API
+    my $exe_rondb_cli =
+      my_find_bin($bindir,
+                  [ "runtime_output_directory", "bin" ],
+                   "rondb", NOT_REQUIRED);
+    if ($exe_rondb_cli) {
+      mtr_verbose("Found rondb-cli binary");
+      $ENV{'RONDB_CLI'} = native_path($exe_rondb_cli);
+    }
   }
 
   if (defined $ENV{'MYSQL_TEST'}) {

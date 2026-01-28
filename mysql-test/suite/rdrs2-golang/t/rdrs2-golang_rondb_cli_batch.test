@@ -1,0 +1,74 @@
+--source include/not_parallel.inc
+--source include/have_ndb.inc
+
+#
+# Test rondb-cli SQL functionality
+# Note: BATCH tests require hopsworks database setup with API key authorization
+# which is done by the Go tests. This test focuses on SQL functionality.
+#
+
+# Check that rondb-cli is available
+if (!$RONDB_CLI) {
+  --skip rondb-cli binary not found - build with Go installed
+}
+
+# Set up rondb-cli command with connection parameters (SQL only, no RDRS)
+--let $RONDB_CMD=$RONDB_CLI --host=127.0.0.1 --mysql-port=$MASTER_MYPORT --no-rdrs --no-rondis --quiet
+
+--echo #
+--echo # Setup: Create test database and table
+--echo #
+
+CREATE DATABASE IF NOT EXISTS cli_test;
+USE cli_test;
+
+CREATE TABLE batch_test (
+  id INT PRIMARY KEY,
+  name VARCHAR(100),
+  value INT
+) ENGINE=NDB;
+
+--echo #
+--echo # Test 1: INSERT using rondb-cli SQL
+--echo #
+
+--exec $RONDB_CMD -e "INSERT INTO cli_test.batch_test VALUES (1, 'Alice', 100);"
+--exec $RONDB_CMD -e "INSERT INTO cli_test.batch_test VALUES (2, 'Bob', 200);"
+--exec $RONDB_CMD -e "INSERT INTO cli_test.batch_test VALUES (3, 'Charlie', 300);"
+
+--echo #
+--echo # Test 2: SELECT using rondb-cli SQL
+--echo #
+
+--exec $RONDB_CMD -e "SELECT * FROM cli_test.batch_test ORDER BY id;"
+
+--echo #
+--echo # Test 3: Verify data with native MySQL
+--echo #
+
+SELECT * FROM batch_test ORDER BY id;
+
+--echo #
+--echo # Test 4: UPDATE using rondb-cli SQL
+--echo #
+
+--exec $RONDB_CMD -e "UPDATE cli_test.batch_test SET value = 150 WHERE id = 1;"
+
+--echo # Verify update
+SELECT * FROM batch_test WHERE id = 1;
+
+--echo #
+--echo # Test 5: DELETE using rondb-cli SQL
+--echo #
+
+--exec $RONDB_CMD -e "DELETE FROM cli_test.batch_test WHERE id = 2;"
+
+--echo # Verify deletion
+SELECT * FROM batch_test ORDER BY id;
+
+--echo #
+--echo # Cleanup
+--echo #
+
+DROP TABLE batch_test;
+DROP DATABASE cli_test;

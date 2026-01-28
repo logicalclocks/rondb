@@ -61,6 +61,8 @@ type Config struct {
 	NoMySQL    bool   // Disable MySQL connection
 	NoRDRS     bool   // Disable RDRS/REST API connection
 	NoRondis   bool   // Disable Rondis connection
+	Command    string // Command to execute non-interactively (like mysql -e)
+	Quiet      bool   // Suppress timing and info messages (for scripted usage)
 }
 
 type Shell struct {
@@ -73,6 +75,7 @@ type Shell struct {
 	rl             *readline.Instance // Store readline instance for multi-line input
 	debug          bool               // Debug mode for printing requests/responses in benchmarks
 	verbose        int                // Verbose level: 0=normal, 1=connect/disconnect info, 2=debug mode
+	quiet          bool               // Suppress timing and info messages (for scripted usage)
 	clientID       int                // Client ID prefix for benchmark keys (default 0)
 	ronsqlDatabase string             // Database for RonSQL queries
 	ronsqlFormat   string             // Output format for RonSQL queries (default "JSON")
@@ -95,6 +98,7 @@ func RunWithConfig(cfg Config) error {
 		mysqlPass:      cfg.MySQLPass,
 		verbose:        cfg.Verbose,
 		debug:          cfg.Verbose >= 2,
+		quiet:          cfg.Quiet,
 		ronsqlDatabase: "test",
 		ronsqlFormat:   "JSON",
 		ronsqlExplain:  "ALLOW",
@@ -125,6 +129,7 @@ func RunWithConfig(cfg Config) error {
 		fmt.Println(ui.Info("  --no-mysql         Disable MySQL connection"))
 		fmt.Println(ui.Info("  --no-rdrs          Disable RDRS/REST API connection"))
 		fmt.Println(ui.Info("  --no-rondis        Disable Rondis connection"))
+		fmt.Println(ui.Info("  -e                 Execute command and exit (non-interactive)"))
 		fmt.Println()
 		fmt.Println(ui.Info("Environment variables:"))
 		fmt.Println(ui.Info("  RONDB_HOST           RonDB host (sets all hosts)"))
@@ -135,10 +140,15 @@ func RunWithConfig(cfg Config) error {
 		fmt.Println(ui.Info("  RONDB_RDRS_PORT      RDRS/REST API port"))
 		fmt.Println(ui.Info("  RONDB_MYSQL_USER     MySQL username"))
 		fmt.Println(ui.Info("  RONDB_MYSQL_PASSWORD MySQL password"))
-	fmt.Println(ui.Info("  RONDB_RDRS_API_KEY   RDRS/REST API key"))
+		fmt.Println(ui.Info("  RONDB_RDRS_API_KEY   RDRS/REST API key"))
 		return err
 	}
 	defer s.close()
+
+	// Non-interactive mode: execute command and exit
+	if cfg.Command != "" {
+		return s.execute(cfg.Command)
+	}
 
 	fmt.Println()
 	fmt.Println(ui.Welcome())
@@ -844,8 +854,13 @@ func (s *Shell) executeSQL(line string) error {
 			return err
 		}
 
-		output := ui.RenderSQLResultWithDuration(columns, rows, duration)
-		fmt.Print(output)
+		if s.quiet {
+			output := ui.RenderSQLResult(columns, rows)
+			fmt.Print(output)
+		} else {
+			output := ui.RenderSQLResultWithDuration(columns, rows, duration)
+			fmt.Print(output)
+		}
 		return nil
 	}
 
@@ -856,7 +871,9 @@ func (s *Shell) executeSQL(line string) error {
 	}
 
 	fmt.Println(ui.Success(fmt.Sprintf("OK, %d rows affected", affected)))
-	fmt.Println(ui.Timing(duration))
+	if !s.quiet {
+		fmt.Println(ui.Timing(duration))
+	}
 	return nil
 }
 
@@ -1037,19 +1054,25 @@ func (s *Shell) executeBatch(line string) error {
 
 	// Pretty print the request
 	reqJSON, _ := json.MarshalIndent(requestBody, "", "  ")
-	fmt.Println()
-	fmt.Println(ui.Info(fmt.Sprintf("POST %s", endpoint)))
-	fmt.Println(string(reqJSON))
-	fmt.Println()
+	if !s.quiet {
+		fmt.Println()
+		fmt.Println(ui.Info(fmt.Sprintf("POST %s", endpoint)))
+		fmt.Println(string(reqJSON))
+		fmt.Println()
+	}
 
 	data, duration, err := s.restClient.Post(endpoint, requestBody)
 	if err != nil {
 		return err
 	}
 
-	fmt.Println(ui.Info("Response:"))
+	if !s.quiet {
+		fmt.Println(ui.Info("Response:"))
+	}
 	fmt.Println(client.PrettyJSON(data))
-	fmt.Println(ui.Timing(duration))
+	if !s.quiet {
+		fmt.Println(ui.Timing(duration))
+	}
 	return nil
 }
 

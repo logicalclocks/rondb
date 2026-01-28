@@ -2346,6 +2346,11 @@ ADD_SUBDIRECTORY(utilities)
 ADD_SUBDIRECTORY(share)
 ADD_SUBDIRECTORY(libservices)
 
+# rondb-cli tool (Go-based CLI for Rondis + MySQL)
+IF(EXISTS "${CMAKE_SOURCE_DIR}/tools")
+  ADD_SUBDIRECTORY(tools)
+ENDIF()
+
 IF(NOT WITHOUT_SERVER)
   ADD_SUBDIRECTORY(testclients)
   ADD_SUBDIRECTORY(sql)
