@@ -54,6 +54,7 @@
 
 constexpr const char *POST                           = "POST";
 constexpr const char *GET                            = "GET";
+constexpr const char *DELETE                         = "DELETE";
 constexpr const char *OPERATIONS                     = "operations";
 constexpr const char *METHOD                         = "method";
 constexpr const char *RELATIVE_URL                   = "relative-url";

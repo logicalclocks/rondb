@@ -73,7 +73,7 @@ func sendHttpBatchDeleteRequest(
 	httpCode, response = testclient.SendHttpRequestWithClient(
 		t,
 		client,
-		config.BATCH_HTTP_VERB,
+		config.BATCH_DELETE_HTTP_VERB,
 		url,
 		string(body),
 		testInfo.ErrMsgContains,

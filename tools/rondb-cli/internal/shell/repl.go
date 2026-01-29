@@ -1043,17 +1043,21 @@ func (s *Shell) executeBatch(line string) error {
 	// Choose endpoint and request body based on operation type
 	var endpoint string
 	var requestBody interface{}
+	var httpMethod string
 
 	switch result.OpType {
 	case dsl.OpTypeRead:
 		endpoint = "/0.1.0/batch"
 		requestBody = result.Request
+		httpMethod = "POST"
 	case dsl.OpTypeDelete:
 		endpoint = "/0.1.0/batchdelete"
 		requestBody = result.Request
+		httpMethod = "DELETE"
 	case dsl.OpTypeWrite:
 		endpoint = "/0.1.0/batchwrite"
 		requestBody = result.WriteRequest
+		httpMethod = "POST"
 	default:
 		return fmt.Errorf("unknown operation type")
 	}
@@ -1062,12 +1066,18 @@ func (s *Shell) executeBatch(line string) error {
 	reqJSON, _ := json.MarshalIndent(requestBody, "", "  ")
 	if !s.quiet {
 		fmt.Println()
-		fmt.Println(ui.Info(fmt.Sprintf("POST %s", endpoint)))
+		fmt.Println(ui.Info(fmt.Sprintf("%s %s", httpMethod, endpoint)))
 		fmt.Println(string(reqJSON))
 		fmt.Println()
 	}
 
-	data, duration, err := s.restClient.Post(endpoint, requestBody)
+	var data []byte
+	var duration time.Duration
+	if result.OpType == dsl.OpTypeDelete {
+		data, duration, err = s.restClient.Delete(endpoint, requestBody)
+	} else {
+		data, duration, err = s.restClient.Post(endpoint, requestBody)
+	}
 	if err != nil {
 		return err
 	}
@@ -1990,10 +2000,10 @@ func (s *Shell) runDelRDRS(numThreads int, numOps int, rowsPerOp int) error {
 				batchReq := dsl.BatchRequest{Operations: operations}
 				if debugMode {
 					reqJSON, _ := json.MarshalIndent(batchReq, "", "  ")
-					fmt.Printf("[DEBUG] REQ: POST /0.1.0/batchdelete\n%s\n", reqJSON)
+					fmt.Printf("[DEBUG] REQ: DELETE /0.1.0/batchdelete\n%s\n", reqJSON)
 				}
 				opStart := time.Now()
-				resp, _, err := restClient.Post("/0.1.0/batchdelete", batchReq)
+				resp, _, err := restClient.Delete("/0.1.0/batchdelete", batchReq)
 				latencyCollector.Record(time.Since(opStart))
 				if debugMode {
 					fmt.Printf("[DEBUG] RESP: %s, err: %v\n", string(resp), err)

@@ -379,7 +379,7 @@ func TestBatchDeleteMissingReqField(t *testing.T) {
 	operations := make([]api.BatchDeleteSubOp, 0)
 	operationsWrapper := api.BatchDeleteOpRequest{Operations: &operations}
 	body, _ := json.Marshal(operationsWrapper)
-	testclient.SendHttpRequest(t, config.BATCH_HTTP_VERB, url, string(body),
+	testclient.SendHttpRequest(t, config.BATCH_DELETE_HTTP_VERB, url, string(body),
 		"No operations defined", http.StatusBadRequest)
 
 	// Test missing method
@@ -387,7 +387,7 @@ func TestBatchDeleteMissingReqField(t *testing.T) {
 	operations[1].Method = nil
 	operationsWrapper = api.BatchDeleteOpRequest{Operations: &operations}
 	body, _ = json.Marshal(operationsWrapper)
-	testclient.SendHttpRequest(t, config.BATCH_HTTP_VERB, url, string(body),
+	testclient.SendHttpRequest(t, config.BATCH_DELETE_HTTP_VERB, url, string(body),
 		"the Method section should be POST", http.StatusBadRequest)
 
 	// Test missing relative URL
@@ -395,7 +395,7 @@ func TestBatchDeleteMissingReqField(t *testing.T) {
 	operations[1].RelativeURL = nil
 	operationsWrapper = api.BatchDeleteOpRequest{Operations: &operations}
 	body, _ = json.Marshal(operationsWrapper)
-	testclient.SendHttpRequest(t, config.BATCH_HTTP_VERB, url, string(body),
+	testclient.SendHttpRequest(t, config.BATCH_DELETE_HTTP_VERB, url, string(body),
 		"the relativeUrl section is required", http.StatusBadRequest)
 
 	// Test missing body
@@ -403,7 +403,7 @@ func TestBatchDeleteMissingReqField(t *testing.T) {
 	operations[1].Body = nil
 	operationsWrapper = api.BatchDeleteOpRequest{Operations: &operations}
 	body, _ = json.Marshal(operationsWrapper)
-	testclient.SendHttpRequest(t, config.BATCH_HTTP_VERB, url, string(body),
+	testclient.SendHttpRequest(t, config.BATCH_DELETE_HTTP_VERB, url, string(body),
 		"Field validation for 'Body' failed", http.StatusBadRequest)
 
 	// Test missing filters
@@ -411,7 +411,7 @@ func TestBatchDeleteMissingReqField(t *testing.T) {
 	operations[1].Body.Filters = nil
 	operationsWrapper = api.BatchDeleteOpRequest{Operations: &operations}
 	body, _ = json.Marshal(operationsWrapper)
-	testclient.SendHttpRequest(t, config.BATCH_HTTP_VERB, url, string(body),
+	testclient.SendHttpRequest(t, config.BATCH_DELETE_HTTP_VERB, url, string(body),
 		"the Field section is null", http.StatusBadRequest)
 }
 
