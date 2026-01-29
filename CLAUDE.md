@@ -32,16 +32,26 @@ Key CMake flags:
 
 ## Testing
 
-### MySQL Test Suite
+### MySQL Test Suite (MTR)
 ```bash
 cd mysql-test
-./mysql-test-run.pl [test_name]       # Run specific test
-./mysql-test-run.pl --record test     # Record new baseline
-./mysql-test-run.pl ndb_*             # NDB-specific tests
-./mysql-test-run --extern test_name   # External server mode
+./mtr [test_name]                     # Run specific test
+./mtr --record test                   # Record new baseline
+./mtr --suite=rondis                  # Run all Rondis tests
+./mtr --suite=rondis rondis_basic     # Run specific Rondis test
+./mtr ndb_*                           # NDB-specific tests
+./mtr --extern test_name              # External server mode
 ```
 
 Test files: `t/*.test` (input), `r/*.result` (expected output)
+
+### Rondis MTR Tests
+Located in `mysql-test/suite/rondis/`:
+- `t/rondis_basic.test` - Basic Redis commands (GET, SET, HSET, etc.)
+- `t/rondis_advanced.test` - Advanced operations (GETRANGE, SETRANGE, INCR/DECR)
+- `r/*.result` - Expected output files
+
+Tests use `rondb-cli` with `--quiet` flag for scripted execution via `--exec`.
 
 ### rondb-cli Manual Testing
 ```bash
@@ -82,8 +92,29 @@ See `tools/rondb-cli/CLAUDE.md` for detailed rondb-cli documentation.
 ### RonDB Core Structure
 - `/storage/ndb/` - NDB Cluster storage engine
 - `/storage/ndb/rest-server2/` - REST + Rondis server (RDRS)
+- `/storage/ndb/src/rondis/` - Rondis Redis-compatible server implementation
 - `/client/` - MySQL CLI tools
 - `/mysql-test/` - Integration test suite
+
+### Rondis Server Implementation
+```
+storage/ndb/src/rondis/
+├── src/
+│   ├── commands.cc        # Redis command implementations (GET, SET, GETRANGE, etc.)
+│   ├── db_operations.cc   # NDB database operations for Rondis
+│   ├── interpreted_code.cc # NDB interpreted code for atomic operations
+│   ├── rondb.cc           # Command dispatch and routing
+│   └── redis_parser.cc    # RESP protocol parser
+├── include/
+│   ├── table_definitions.h # KeyStorage struct, table schemas
+│   └── db_operations.h    # Database operation declarations
+```
+
+Key patterns:
+- Commands use NDB interpreted code for atomic read-modify-write operations
+- `KeyStorage` struct tracks key state through operations
+- RESP protocol: `$N\r\n` for bulk strings, `*N\r\n` for arrays, `:N\r\n` for integers
+- Single-key GET returns bulk string; MGET returns array
 
 ## Configuration
 
@@ -120,3 +151,22 @@ SELECT redis_key, value FROM redis_0.string_keys WHERE redis_key LIKE 'user:%'
 - `mysql.go` includes SQL injection prevention via identifier sanitization
 - TLS support for both MySQL and Rondis connections
 - Never commit `.env` files or credentials
+
+## Rondis Implementation Notes
+
+**RESP Protocol Compliance:**
+- Single-key GET/HGET must return bulk string (`$N\r\n...`), not array
+- MGET/HMGET return array format (`*N\r\n$N\r\n...`)
+- GETRANGE uses inclusive indices (0-4 returns 5 characters)
+- DEL returns count of deleted keys (0 if key doesn't exist)
+
+**NDB Interpreted Code:**
+- Used for atomic read-modify-write operations (SETRANGE, INCR, etc.)
+- `load_op_type()` detects INSERT vs UPDATE for writeTuple operations
+- `read_full()` reads column into interpreter memory with 4-byte header
+- `write_from_mem()` writes from interpreter memory to column
+
+**Common Gotchas:**
+- Hash keys (HSET) use different redis_key_id than string keys
+- `rondb-cli` must handle `redis.Nil` error as valid "(nil)" response
+- MTR tests need `--quiet` flag to suppress timing output
