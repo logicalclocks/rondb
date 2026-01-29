@@ -184,8 +184,38 @@ Batch write supports three operation types, determined by the URL suffix:
 | URL Suffix | NDB Method | Behavior |
 |------------|------------|----------|
 | `pk-write` | `writeTuple()` | Insert if row doesn't exist, update if it does |
-| `pk-update` | `updateTuple()` | Update only, fails if row doesn't exist |
-| `pk-insert` | `insertTuple()` | Insert only, fails if row already exists |
+| `pk-update` | `updateTuple()` | Update only, fails if row doesn't exist (404) |
+| `pk-insert` | `insertTuple()` | Insert only, fails if row already exists (409) |
+
+### HTTP Status Codes
+
+Defined in `rdrs_dal.h`:
+
+| Code | Constant | Usage |
+|------|----------|-------|
+| 200 | `SUCCESS` | Operation succeeded |
+| 400 | `CLIENT_ERROR` | Invalid request (bad filters, missing columns, etc.) |
+| 401 | `AUTH_ERROR` | Authentication failed |
+| 404 | `NOT_FOUND` | Row not found (read/update/delete non-existent) |
+| 409 | `CONFLICT` | Constraint violation (duplicate key on insert) |
+| 500 | `SERVER_ERROR` | Internal server error |
+
+**Error handling in batch operations** (`pk_batch_base_operation.cpp`):
+
+```cpp
+NdbError::Classification op_error = op->getNdbError().classification;
+if (op_error == NdbError::NoError) {
+  resp->SetStatus(SUCCESS, "OK");
+} else if (op_error == NdbError::NoDataFound) {
+  resp->SetStatus(NOT_FOUND, "NOT Found");
+} else if (op_error == NdbError::ConstraintViolation) {
+  resp->SetStatus(CONFLICT, op->getNdbError().message);
+  return RS_RONDB_CONFLICT_ERROR(...);
+} else {
+  resp->SetStatus(SERVER_ERROR, op->getNdbError().message);
+  return RS_RONDB_SERVER_ERROR(...);
+}
+```
 
 ### Implementation Details
 
@@ -422,6 +452,22 @@ verifyRowExists(t, db, table, filters)
 verifyRowDeleted(t, db, table, filters)
 ```
 
+### Batchcomprehensive Tests (`batchcomprehensive/`)
+
+Comprehensive integration tests (~1700 lines) covering all batch operations with extensive scenarios:
+
+| Section | Tests |
+|---------|-------|
+| CRUD Lifecycle | `TestCRUDLifecycleInt`, `TestCRUDLifecycleBigint`, `TestCRUDLifecycleVarchar` |
+| Batch Operations | `TestBatchMultipleWrites`, `TestBatchMultipleReads`, `TestBatchMultipleDeletes` |
+| Cross-Table | `TestCrossTableBatchOperations` - operations on DB004, DB005, DB006, DB007 in one batch |
+| Mixed Operations | `TestMixedWriteAndUpdate`, `TestPkInsertOperation` |
+| Edge Cases | `TestNullValues`, `TestBoundaryValues`, `TestSpecialCharacters` (unicode, emoji, quotes) |
+| Error Handling | `TestUpdateNonExistent`, `TestReadNonExistent`, `TestDeleteNonExistent`, `TestPartialBatchFailure` |
+| Large Objects | `TestTextColumnOperations`, `TestBlobColumnOperations`, `TestVarbinaryOperations` |
+| Large Batches | `TestLargeBatch` - 100 operations in single batch |
+| Idempotency | `TestPkWriteIdempotency`, `TestDeleteAndReinsert` |
+
 ### Adding New Test Packages
 
 1. Create test directory: `internal/integrationtests/<newpackage>/`
@@ -496,7 +542,7 @@ rondb-cli is integrated with MTR (MySQL Test Runner) for testing:
 
 1. **Environment variable**: MTR sets `RONDB_CLI` pointing to the rondb binary
 2. **Connection parameters**: `RDRS_HOST`, `RDRS_PORT`, `MASTER_MYPORT` available in tests
-3. **Test location**: `mysql-test/suite/rdrs2-golang/t/rdrs2-golang_rondb_cli_batch.test`
+3. **Test location**: `mysql-test/suite/rondb-cli/t/rondb_cli_batch.test` (dedicated suite)
 
 ### MTR Test Example
 
@@ -531,7 +577,10 @@ BATCH operations (via RDRS) require API key authentication when `UseHopsworksAPI
 | `tools/rondb-cli/CMakeLists.txt` | Go build integration with CMake |
 | `CMakeLists.txt` | Added `ADD_SUBDIRECTORY(tools)` |
 | `mysql-test/mysql-test-run.pl` | Added `RONDB_CLI` environment variable |
+| `mysql-test/suite/rondb-cli/my.cnf` | Dedicated MTR suite for rondb-cli tests |
 | `mysql-test/suite/rdrs2-golang/my.cnf` | Added `RDRS_HOST`, `RDRS_PORT` variables |
+
+**Note**: rondb-cli tests are in a separate `rondb-cli` MTR suite (not `rdrs2-golang`) because they test the CLI binary directly rather than Go test packages.
 
 ## Hopsworks Schema Requirements
 
