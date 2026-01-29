@@ -2,139 +2,92 @@
 # Test 1: PING - Basic connectivity test
 #
 PONG
-(0.1ms)
 #
 # Test 2: SET and GET - Basic string operations
 #
 OK
-(1.0ms)
 1) Hello World
-(0.6ms)
 #
 # Test 3: SET with overwrite
 #
 OK
-(1.2ms)
 1) Updated Value
-(0.5ms)
 #
 # Test 4: Multiple keys
 #
 OK
-(1.3ms)
 OK
-(1.1ms)
 OK
-(1.1ms)
 OK
-(1.2ms)
 1) Alice
-(0.8ms)
 1) alice@example.com
-(0.6ms)
 1) Bob
-(0.5ms)
 1) bob@example.com
-(0.6ms)
 #
 # Test 5: GET non-existent key returns nil
 #
 1) (nil)
-(0.5ms)
 #
 # Test 6: DEL - Delete keys
 #
 1
-(1.1ms)
 1) (nil)
-(0.5ms)
 #
 # Test 7: MSET and MGET - Multiple key operations
 #
 OK
-(1.8ms)
 1) value1
 2) value2
 3) value3
-(1.0ms)
 #
 # Test 8: INCR and DECR - Numeric operations
 #
 OK
-(1.2ms)
 11
-(1.2ms)
 12
-(1.3ms)
 1) 12
-(0.8ms)
 11
-(1.3ms)
 1) 11
-(0.8ms)
 #
 # Test 9: INCRBY and DECRBY
 #
 16
-(1.3ms)
 1) 16
-(0.8ms)
 13
-(1.2ms)
 1) 13
-(0.7ms)
 #
 # Test 10: HSET and HGET - Hash operations
 #
 1
-(4.0ms)
 1
-(1.1ms)
 1
-(1.2ms)
 1) John Doe
-(0.8ms)
 1) 30
-(0.6ms)
 1) New York
-(0.7ms)
 #
 # Test 11: HGET non-existent field returns nil
 #
 1) (nil)
-(0.4ms)
 #
 # Test 12: HDEL - Delete hash field
 #
 1
-(1.1ms)
 1) (nil)
-(0.6ms)
 #
 # Test 13: HMGET - Get multiple hash fields
 #
 1) John Doe
 2) 30
 3) (nil)
-(1.0ms)
 #
 # Cleanup - Delete all test keys
 #
 1
-(1.1ms)
 1
-(1.0ms)
 1
-(1.0ms)
 1
-(1.1ms)
 1
-(0.9ms)
 1
-(0.8ms)
 1
-(0.9ms)
 1
-(0.8ms)
 0
-(0.3ms)

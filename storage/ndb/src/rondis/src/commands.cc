@@ -44,7 +44,7 @@
 #define RAND_CONSTANT 10000
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
-//#define DEBUG_MGET_CMD 1
+#define DEBUG_MGET_CMD 1
 //#define DEBUG_MSET_CMD 1
 //#define DEBUG_DEL_CMD 1
 //#define DEBUG_HSET_KEY 1
@@ -1640,6 +1640,10 @@ rondb_get_func(Ndb *ndb,
     }
     current_index += loop_count;
   } while (current_index < num_keys && get_ctrl->m_num_keys_failed == 0);
+  close_finished_transactions(key_storage,
+                              get_ctrl,
+                              num_keys,
+                              0);
   /**
    * We are done with the reading process, now it is time to report the
    * result based on the KeyStorage array.
@@ -1681,17 +1685,26 @@ static int rondb_get_response(std::string *response,
     tot_bytes += key_store->m_header_len;
   }
   char header_buf[20];
-  Uint32 header_len = (Uint32)snprintf(header_buf,
-                                       sizeof(header_buf),
-                                       "*%u\r\n",
-                                       num_keys);
-  tot_bytes += (Uint32)header_len;
+  Uint32 header_len = 0;
+  /*
+   * For single-key GET/HGET, return bulk string directly without array wrapper.
+   * For multi-key MGET/HMGET, wrap in array format.
+   */
+  if (num_keys > 1) {
+    header_len = (Uint32)snprintf(header_buf,
+                                  sizeof(header_buf),
+                                  "*%u\r\n",
+                                  num_keys);
+    tot_bytes += (Uint32)header_len;
+  }
   try {
     response->reserve(tot_bytes);
   } catch (const std::exception &e) {
     return -1;
   }
-  response->append((const char*)&header_buf[0], header_len);
+  if (header_len > 0) {
+    response->append((const char*)&header_buf[0], header_len);
+  }
   for (Uint32 i = 0; i < num_keys; i++) {
     struct KeyStorage *key_store = &key_storage[i];
     response->append((const char*)&key_store->m_header_buf[0],
@@ -2256,23 +2269,23 @@ void rondb_getrange_command(Ndb *ndb,
       end = tot_len + end;
     }
   } else if (end >= tot_len) {
-    end = tot_len;
+    end = tot_len - 1;
   }
   Uint32 ret_len;
   const char *value_ptr = nullptr;
   char buf[20];
-  if (start >= end ||
+  if (start > end ||
       key_store->m_key_state == KeyState::CompletedFailed) {
     /* Report found NULL */
     ret_len = 0;
   } else if (key_store->m_key_state == KeyState::CompletedSuccess ||
              key_store->m_key_state == KeyState::CompletedMultiRowSuccess) {
     value_ptr = &key_store->m_key_row.value_start[2];
-    ret_len = Uint32((end - start));
+    ret_len = Uint32((end - start + 1));
   } else {
     assert(key_store->m_key_state == KeyState::CompletedMultiRow);
     value_ptr = key_store->m_value_ptr;
-    ret_len = Uint32((end - start));
+    ret_len = Uint32((end - start + 1));
   }
   Uint32 header_len = (Uint32)snprintf(buf,
                                        sizeof(buf),

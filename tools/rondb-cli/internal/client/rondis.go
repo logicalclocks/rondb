@@ -28,6 +28,7 @@ package client
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -106,6 +107,10 @@ func (c *RondisClient) Execute(args []string) (string, time.Duration, error) {
 	duration := time.Since(start)
 
 	if err := val.Err(); err != nil {
+		// redis.Nil means key doesn't exist - this is a valid response, not an error
+		if errors.Is(err, redis.Nil) {
+			return "(nil)", duration, nil
+		}
 		return "", duration, err
 	}
 

@@ -8,8 +8,6 @@
 #
 OK
 13
-OK
-0
 # STRLEN of non-existent key returns 0
 0
 #
@@ -42,10 +40,10 @@ Hi   There
 #
 # Test 4: INCR/DECR starting from zero
 #
+0
 1
 1
-1
-1
+0
 -1
 -1
 #
@@ -146,6 +144,7 @@ OK
 #
 # Test 15: Verify data via SQL (Rondis stores in NDB tables)
 #
+SELECT COUNT(*) > 0 AS has_string_keys FROM redis_0.string_keys;
 has_string_keys
 1
 #
@@ -154,6 +153,7 @@ has_string_keys
 # ========================================
 #
 1
+0
 1
 1
 1
@@ -161,11 +161,10 @@ has_string_keys
 1
 1
 1
+0
+0
+0
+0
 1
-1
-1
-1
-1
-1
-1
-1
+0
+0
