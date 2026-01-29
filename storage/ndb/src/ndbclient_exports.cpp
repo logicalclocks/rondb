@@ -34,6 +34,7 @@
 #include "ndbapi/NdbInfo.hpp"
 #include "portlib/NdbDir.hpp"
 #include "util/Bitmask.hpp"
+#include "util/ndb_barrier.h"
 #include "util/ndb_opts.h"
 #include "util/ndb_rand.h"
 #include "util/random.h"
@@ -52,6 +53,7 @@ extern "C"
 #endif
         void _ndbclient_exports(void) {
   (void)ndb_init();
+  ndb::barrier barr(5);
   Ndb_cluster_connection cluster_connection;
   NdbScanFilter scan_filter((NdbOperation *)0);
   NdbIndexStat index_stat;

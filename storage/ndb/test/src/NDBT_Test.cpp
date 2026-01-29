@@ -36,6 +36,7 @@
 #include <logger/Logger.hpp>
 #include "NDBT.hpp"
 #include "NDBT_Test.hpp"
+#include "util/ndb_barrier.h"
 
 #ifdef _WIN32
 #define setenv(a, b, c) _putenv_s(a, b)
@@ -229,6 +230,8 @@ bool NDBT_Context::setDbProperty(const char *, Uint32) {
   abort();
   return true;
 }
+
+ndb::barrier *NDBT_Context::getStepsBarrierPtr() { return steps_barrier.get(); }
 
 void NDBT_Context::setTab(const NdbDictionary::Table *ptab) {
   tables.clear();
@@ -704,8 +707,10 @@ int NDBT_TestCaseImpl1::runSteps(NDBT_Context *ctx) {
   numStepsFail = 0;
   numStepsCompleted = 0;
   unsigned i;
+  ctx->steps_barrier.reset(new ndb::barrier(steps.size()));
   for (i = 0; i < steps.size(); i++) startStepInThread(i, ctx);
   waitSteps();
+  ctx->steps_barrier.release();
 
   // Check if any step failed
   for (i = 0; i < steps.size(); i++) {
