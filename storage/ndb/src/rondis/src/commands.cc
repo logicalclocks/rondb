@@ -2181,6 +2181,9 @@ void rondb_strlen_command(Ndb *ndb,
     free(key_store);
     return;
   }
+  // Initialize tot_value_len to 0 before executing - if the key doesn't exist,
+  // NDB may return success without populating the row, leaving it uninitialized
+  key_store->m_key_row.tot_value_len = 0;
   int ret_code = prepare_get_simple_key_row(response,
                                             Uint32(0x10),
                                             key_store->m_trans,

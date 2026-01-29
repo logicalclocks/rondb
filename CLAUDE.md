@@ -53,6 +53,30 @@ Located in `mysql-test/suite/rondis/`:
 
 Tests use `rondb-cli` with `--quiet` flag for scripted execution via `--exec`.
 
+**rondis_advanced.test Coverage:**
+
+| Test | Command | Expected Result |
+|------|---------|-----------------|
+| STRLEN | `STRLEN key` | 13 (length of "Hello, World!") |
+| STRLEN | `STRLEN nonexistent` | 0 (non-existent key) |
+| GETRANGE | `GETRANGE key 0 4` | "Hello" (inclusive indices) |
+| GETRANGE | `GETRANGE key -6 -1` | "World!" (negative indices from end) |
+| SETRANGE | `SETRANGE key 6 'Redis'` | 11 (new string length) |
+| SETRANGE | Padding beyond length | `Hi\0\0\0There` (null byte padding) |
+| INCR/DECR | Start from zero | 1, -1 (creates key if not exists) |
+| INCRBY/DECRBY | Large values | 1000000, 500000 |
+| HSET | Multiple fields | Returns count of fields set |
+| HINCRBY/HDECRBY | Hash field increments | Correct arithmetic |
+| HMGET | Mixed existing/nil | Array with (nil) for missing fields |
+
+**Running Rondis tests:**
+```bash
+./mtr --suite=rondis                    # Run all Rondis tests
+./mtr --suite=rondis rondis_advanced    # Run specific test
+./mtr --record --suite=rondis test_name # Record new baseline
+./mtr --suite=rondis test --nowarnings  # Ignore transient NDB warnings
+```
+
 ### rondb-cli Manual Testing
 ```bash
 cd tools/rondb-cli
@@ -170,3 +194,6 @@ SELECT redis_key, value FROM redis_0.string_keys WHERE redis_key LIKE 'user:%'
 - Hash keys (HSET) use different redis_key_id than string keys
 - `rondb-cli` must handle `redis.Nil` error as valid "(nil)" response
 - MTR tests need `--quiet` flag to suppress timing output
+- STRLEN must initialize `tot_value_len = 0` before NDB execute (non-existent keys leave struct uninitialized)
+- SETRANGE pads with null bytes (`\0`), not spaces - rondb-cli displays these as `\0` escape sequences
+- NDB schema distribution timeouts can cause spurious MTR failures - use `--nowarnings` if needed

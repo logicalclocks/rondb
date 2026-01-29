@@ -31,7 +31,7 @@ Hello Redis
 # SETRANGE with padding (offset beyond string length)
 OK
 10
-Hi   There
+Hi\0\0\0There
 #
 # ========================================
 # NUMERIC OPERATION EDGE CASES
