@@ -1,0 +1,93 @@
+#
+# Test 1: PING - Basic connectivity test
+#
+PONG
+#
+# Test 2: SET and GET - Basic string operations
+#
+OK
+Hello World
+#
+# Test 3: SET with overwrite
+#
+OK
+Updated Value
+#
+# Test 4: Multiple keys
+#
+OK
+OK
+OK
+OK
+Alice
+alice@example.com
+Bob
+bob@example.com
+#
+# Test 5: GET non-existent key returns nil
+#
+(nil)
+#
+# Test 6: DEL - Delete keys
+#
+1
+(nil)
+#
+# Test 7: MSET and MGET - Multiple key operations
+#
+OK
+1) value1
+2) value2
+3) value3
+#
+# Test 8: INCR and DECR - Numeric operations
+#
+OK
+11
+12
+12
+11
+11
+#
+# Test 9: INCRBY and DECRBY
+#
+16
+16
+13
+13
+#
+# Test 10: HSET and HGET - Hash operations
+#
+1
+1
+1
+John Doe
+30
+New York
+#
+# Test 11: HGET non-existent field returns nil
+#
+(nil)
+#
+# Test 12: HDEL - Delete hash field
+#
+1
+(nil)
+#
+# Test 13: HMGET - Get multiple hash fields
+#
+1) John Doe
+2) 30
+3) (nil)
+#
+# Cleanup - Delete all test keys
+#
+1
+1
+1
+1
+1
+1
+1
+1
+1
