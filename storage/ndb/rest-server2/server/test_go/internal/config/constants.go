@@ -29,8 +29,11 @@ const TABLE_PP = "table"
 const DB_TABLE_PP = "/:" + DB_PP + "/:" + TABLE_PP + "/"
 
 const VERSION_GROUP = "/" + version.API_VERSION
+const VERSION_GROUP_V2 = "/" + version.API_VERSION_2
 const DB_OPS_EP_GROUP = VERSION_GROUP + DB_TABLE_PP
+const DB_OPS_EP_GROUP_V2 = VERSION_GROUP_V2 + DB_TABLE_PP
 const DBS_OPS_EP_GROUP = VERSION_GROUP + "/"
+const DBS_OPS_EP_GROUP_V2 = VERSION_GROUP_V2 + "/"
 
 const PING_OPERATION = "ping"
 const STAT_OPERATION = "stat"

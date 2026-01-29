@@ -144,6 +144,18 @@ func NewBatchReadURL() string {
 	return url
 }
 
+func NewBatchReadURLV2() string {
+	conf := config.GetAll()
+	url := fmt.Sprintf("%s:%d/%s/%s",
+		conf.REST.ServerIP,
+		conf.REST.ServerPort,
+		version.API_VERSION_2,
+		config.BATCH_OPERATION,
+	)
+	appendURLProtocol(&url)
+	return url
+}
+
 func NewBatchWriteURL() string {
 	conf := config.GetAll()
 	url := fmt.Sprintf("%s:%d/%s/%s",
@@ -156,12 +168,36 @@ func NewBatchWriteURL() string {
 	return url
 }
 
+func NewBatchWriteURLV2() string {
+	conf := config.GetAll()
+	url := fmt.Sprintf("%s:%d/%s/%s",
+		conf.REST.ServerIP,
+		conf.REST.ServerPort,
+		version.API_VERSION_2,
+		config.BATCH_WRITE_OPERATION,
+	)
+	appendURLProtocol(&url)
+	return url
+}
+
 func NewBatchDeleteURL() string {
 	conf := config.GetAll()
 	url := fmt.Sprintf("%s:%d/%s/%s",
 		conf.REST.ServerIP,
 		conf.REST.ServerPort,
 		version.API_VERSION,
+		config.BATCH_DELETE_OPERATION,
+	)
+	appendURLProtocol(&url)
+	return url
+}
+
+func NewBatchDeleteURLV2() string {
+	conf := config.GetAll()
+	url := fmt.Sprintf("%s:%d/%s/%s",
+		conf.REST.ServerIP,
+		conf.REST.ServerPort,
+		version.API_VERSION_2,
 		config.BATCH_DELETE_OPERATION,
 	)
 	appendURLProtocol(&url)

@@ -30,6 +30,7 @@ class RonSQLCtrl : public drogon::HttpController<RonSQLCtrl> {
  public:
   METHOD_LIST_BEGIN
   ADD_METHOD_TO(RonSQLCtrl::ronsql, RONSQL_PATH, drogon::Post);
+  ADD_METHOD_TO(RonSQLCtrl::ronsql, RONSQL_PATH_V2, drogon::Post);
   METHOD_LIST_END
 
   static void ronsql(const drogon::HttpRequestPtr &req,

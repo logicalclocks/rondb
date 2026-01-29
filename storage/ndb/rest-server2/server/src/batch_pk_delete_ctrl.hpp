@@ -31,6 +31,7 @@ class BatchPKDeleteCtrl : public drogon::HttpController<BatchPKDeleteCtrl> {
  public:
   METHOD_LIST_BEGIN
   ADD_METHOD_TO(BatchPKDeleteCtrl::batchPKDelete, BATCHDELETE_PATH, drogon::Delete);
+  ADD_METHOD_TO(BatchPKDeleteCtrl::batchPKDelete, BATCHDELETE_PATH_V2, drogon::Delete);
   METHOD_LIST_END
 
   static void batchPKDelete(const drogon::HttpRequestPtr &req,

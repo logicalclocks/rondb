@@ -30,6 +30,7 @@ class BaseCtrl : public drogon::HttpController<BaseCtrl> {
  public:
   METHOD_LIST_BEGIN
   ADD_METHOD_TO(BaseCtrl::ping, PING_PATH, drogon::Get);
+  ADD_METHOD_TO(BaseCtrl::ping, PING_PATH_V2, drogon::Get);
   METHOD_LIST_END
   static void ping(const drogon::HttpRequestPtr &req,
                    std::function<void(const drogon::HttpResponsePtr &)> &&callback);

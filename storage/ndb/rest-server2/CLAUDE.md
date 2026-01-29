@@ -126,7 +126,7 @@ class BaseBatchOperations {
 
 The `relative-url` in batch operation JSON must use the correct suffix:
 
-**Batch Read** (endpoint: `/0.1.0/batch`):
+**Batch Read** (endpoint: `/<version>/batch`, method: POST):
 ```json
 {
   "operations": [
@@ -139,7 +139,7 @@ The `relative-url` in batch operation JSON must use the correct suffix:
 }
 ```
 
-**Batch Delete** (endpoint: `/0.1.0/batchdelete`):
+**Batch Delete** (endpoint: `/<version>/batchdelete`, method: DELETE):
 ```json
 {
   "operations": [
@@ -152,7 +152,7 @@ The `relative-url` in batch operation JSON must use the correct suffix:
 }
 ```
 
-**Batch Write** (endpoint: `/0.1.0/batchwrite`):
+**Batch Write** (endpoint: `/<version>/batchwrite`, method: POST):
 ```json
 {
   "operations": [
@@ -216,6 +216,91 @@ if (op_error == NdbError::NoError) {
   return RS_RONDB_SERVER_ERROR(...);
 }
 ```
+
+## API Versioning
+
+The REST API supports two versions:
+
+| Version | Error Format | Description |
+|---------|--------------|-------------|
+| `0.1.0` | Plain text | Original version, errors returned as plain text |
+| `0.2.0` | JSON | Errors returned as structured JSON objects |
+
+Both versions are supported simultaneously - the version in the URL determines the error format.
+
+### JSON Error Response Format (0.2.0)
+
+API version 0.2.0 returns errors as JSON objects:
+
+```json
+{
+  "error": {
+    "code": 400,
+    "message": "identifier is empty",
+    "status": -1,
+    "classification": -1,
+    "ndbCode": -1,
+    "mysqlCode": -1
+  }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `code` | HTTP status code (400, 401, 404, 409, 500) |
+| `message` | Human-readable error message |
+| `status` | NdbError status (-1 if not from NDB) |
+| `classification` | NdbError classification (-1 if not from NDB) |
+| `ndbCode` | NdbError code (-1 if not from NDB) |
+| `mysqlCode` | MySQL error code (-1 if not from NDB) |
+
+### Error Response Helper (error_response.hpp)
+
+The `error_response.hpp` header provides helpers for version-aware error responses:
+
+```cpp
+#include "error_response.hpp"
+
+// Check if request uses JSON error version (0.2.0+)
+if (isJsonErrorVersion(req)) {
+  // Returns true for /0.2.0/* paths
+}
+
+// Set error response (auto-detects version)
+setErrorResponse(req, resp, status);           // From RS_Status
+setErrorResponse(req, resp, CLIENT_ERROR, "message");  // Simple message
+
+// Build JSON error body manually
+std::string json = buildJsonErrorBody(status);
+std::string json = buildJsonErrorBody(CLIENT_ERROR, "message");
+```
+
+### Endpoint Registration Pattern
+
+Controllers register handlers for both API versions:
+
+```cpp
+class BatchPKReadCtrl : public drogon::HttpController<BatchPKReadCtrl> {
+ public:
+  METHOD_LIST_BEGIN
+  ADD_METHOD_TO(BatchPKReadCtrl::batchPKRead, BATCH_PATH, drogon::Post);      // /0.1.0/batch
+  ADD_METHOD_TO(BatchPKReadCtrl::batchPKRead, BATCH_PATH_V2, drogon::Post);   // /0.2.0/batch
+  METHOD_LIST_END
+  // Same handler for both versions - error format determined by isJsonErrorVersion()
+};
+```
+
+### HTTP Methods by Endpoint
+
+| Endpoint | HTTP Method | Notes |
+|----------|-------------|-------|
+| `/<version>/batch` | POST | Batch read operations |
+| `/<version>/batchwrite` | POST | Batch write operations |
+| `/<version>/batchdelete` | DELETE | Batch delete operations (RESTful) |
+| `/<version>/ping` | GET | Health check |
+| `/<version>/health` | GET | Detailed health status |
+| `/<version>/{db}/{table}/pk-read` | POST | Single row read |
+| `/<version>/ronsql` | POST | RonSQL queries |
 
 ### Implementation Details
 
@@ -450,6 +535,31 @@ readTestData(t, readOps)
 // Verify row exists/deleted
 verifyRowExists(t, db, table, filters)
 verifyRowDeleted(t, db, table, filters)
+```
+
+### JSON Errors Tests (`jsonerrors/`)
+
+Tests for the JSON error response format in API version 0.2.0:
+
+| Test | Description |
+|------|-------------|
+| `TestJSONErrorResponseFormat` | Validates JSON error structure for various error conditions |
+| `TestJSONErrorVsPlainTextError` | Compares 0.1.0 (plain text) vs 0.2.0 (JSON) error responses |
+| `TestJSONErrorNonExistentTable` | JSON error for non-existent table operations |
+| `TestJSONErrorMissingRequiredFields` | JSON errors for missing method, URL, body fields |
+
+The tests verify the error response structure:
+```json
+{
+  "error": {
+    "code": 400,
+    "message": "error message",
+    "status": -1,
+    "classification": -1,
+    "ndbCode": -1,
+    "mysqlCode": -1
+  }
+}
 ```
 
 ### Batchcomprehensive Tests (`batchcomprehensive/`)

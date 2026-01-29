@@ -45,6 +45,9 @@ class FeatureStoreCtrl : public drogon::HttpController<FeatureStoreCtrl> {
   ADD_METHOD_TO(FeatureStoreCtrl::featureStore,
                 FEATURE_STORE_PATH,
                 drogon::Post);
+  ADD_METHOD_TO(FeatureStoreCtrl::featureStore,
+                FEATURE_STORE_PATH_V2,
+                drogon::Post);
   METHOD_LIST_END
 
   static void featureStore(

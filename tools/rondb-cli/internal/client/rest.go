@@ -36,6 +36,9 @@ import (
 	"time"
 )
 
+// APIVersion is the REST API version (0.2.0 returns JSON error responses)
+const APIVersion = "0.2.0"
+
 // RestClient handles REST API calls to RDRS2
 type RestClient struct {
 	client  *http.Client
@@ -101,7 +104,7 @@ func (c *RestClient) Ping() error {
 	defer cancel()
 
 	// Try to reach the API - use a simple GET to check connectivity
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/0.1.0", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/"+APIVersion, nil)
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}

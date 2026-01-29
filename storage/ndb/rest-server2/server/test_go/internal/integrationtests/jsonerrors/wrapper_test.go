@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 Hopsworks AB
+ * Copyright (C) 2026 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -17,29 +17,19 @@
  * USA.
  */
 
-package version
+package jsonerrors
 
-const (
-	//TODO: manually update
-	VERSION = "0.1.0"
+import (
+	"os"
+	"testing"
 
-	//TODO: manually update
-	API_VERSION = "0.1.0"
-
-	// API version 0.2.0 with JSON error responses
-	API_VERSION_2 = "0.2.0"
+	"hopsworks.ai/rdrs2/internal/config"
+	"hopsworks.ai/rdrs2/internal/testutils"
 )
 
-var (
-	// GITCommit overwritten automatically by the build
-	GITCOMMIT = "HEAD"
-
-	// Built time overwritten automatically by the build
-	BUILDTIME = "NOW"
-
-	// Built hostname overwritten automatically by build
-	HOSTNAME = "LOCALHOST"
-
-	// Built branch overwritten automatically by build
-	BRANCH = "MAIN"
-)
+func TestMain(m *testing.M) {
+	config.LoadDataClusterFromEnv()
+	testutils.SetupHttpClient(nil)
+	code := m.Run()
+	os.Exit(code)
+}

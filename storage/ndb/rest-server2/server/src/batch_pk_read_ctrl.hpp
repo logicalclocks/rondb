@@ -31,6 +31,7 @@ class BatchPKReadCtrl : public drogon::HttpController<BatchPKReadCtrl> {
  public:
   METHOD_LIST_BEGIN
   ADD_METHOD_TO(BatchPKReadCtrl::batchPKRead, BATCH_PATH, drogon::Post);
+  ADD_METHOD_TO(BatchPKReadCtrl::batchPKRead, BATCH_PATH_V2, drogon::Post);
   METHOD_LIST_END
 
   static void batchPKRead(const drogon::HttpRequestPtr &req,

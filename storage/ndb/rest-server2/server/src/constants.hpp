@@ -23,6 +23,7 @@
 
 // Names of Endpoints
 #define API_VERSION         "0.1.0"
+#define API_VERSION_2       "0.2.0"
 #define PING                "ping"
 #define HEALTH              "health"
 #define PKREAD              "pk-read"
@@ -40,6 +41,7 @@
 
 #define MAKE_PATH(version, endpoint) "/" version "/" endpoint
 
+// API version 0.1.0 paths (plain text errors)
 #define HEALTH_PATH MAKE_PATH(API_VERSION, HEALTH)
 #define PING_PATH   MAKE_PATH(API_VERSION, PING)
 #define BATCH_PATH        MAKE_PATH(API_VERSION, BATCH)
@@ -51,6 +53,18 @@
 #define FEATURE_STORE_PATH       "/" API_VERSION "/" FEATURE_STORE
 #define BATCH_FEATURE_STORE_PATH "/" API_VERSION "/" BATCH_FEATURE_STORE
 #define PROMETHEUS_METRICS_PATH  "/" METRICS
+
+// API version 0.2.0 paths (JSON errors)
+#define HEALTH_PATH_V2 MAKE_PATH(API_VERSION_2, HEALTH)
+#define PING_PATH_V2   MAKE_PATH(API_VERSION_2, PING)
+#define BATCH_PATH_V2        MAKE_PATH(API_VERSION_2, BATCH)
+#define BATCHDELETE_PATH_V2  MAKE_PATH(API_VERSION_2, BATCHDELETE)
+#define BATCHWRITE_PATH_V2   MAKE_PATH(API_VERSION_2, BATCHWRITE)
+
+#define PKREAD_PATH_V2              "/" API_VERSION_2 "/{db}/{table}/" PKREAD
+#define RONSQL_PATH_V2              "/" API_VERSION_2 "/" RONSQL
+#define FEATURE_STORE_PATH_V2       "/" API_VERSION_2 "/" FEATURE_STORE
+#define BATCH_FEATURE_STORE_PATH_V2 "/" API_VERSION_2 "/" BATCH_FEATURE_STORE
 
 constexpr const char *POST                           = "POST";
 constexpr const char *GET                            = "GET";
