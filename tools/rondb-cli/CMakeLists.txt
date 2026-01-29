@@ -66,12 +66,13 @@ if(GO_EXECUTABLE)
     DEPENDS ${RONDB_CLI_BINARY}
   )
 
-  # Copy the binary to bin/ directory for use during development/testing
+  # Copy the binary to runtime_output_directory for MTR tests
+  # MTR looks for binaries in runtime_output_directory or bin/
   add_custom_command(TARGET rondb-cli POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             ${RONDB_CLI_BINARY}
-            ${CMAKE_BINARY_DIR}/bin/rondb
-    COMMENT "Copying rondb-cli to bin/"
+            ${CMAKE_BINARY_DIR}/runtime_output_directory/rondb
+    COMMENT "Copying rondb-cli to runtime_output_directory/"
   )
 
   # Install the binary to the bin directory
