@@ -122,6 +122,42 @@ func (c *RondisClient) Close() error {
 	return c.client.Close()
 }
 
+// escapeNonPrintable converts non-printable bytes to escape sequences.
+// Uses common escape sequences (\0, \t, \n, \r, \\) and \xNN for other non-printables.
+func escapeNonPrintable(s string) string {
+	var result strings.Builder
+	result.Grow(len(s))
+
+	for i := 0; i < len(s); i++ {
+		b := s[i]
+		switch b {
+		case 0x00:
+			result.WriteString("\\0")
+		case 0x07:
+			result.WriteString("\\a")
+		case 0x08:
+			result.WriteString("\\b")
+		case 0x09:
+			result.WriteString("\\t")
+		case 0x0a:
+			result.WriteString("\\n")
+		case 0x0d:
+			result.WriteString("\\r")
+		case '\\':
+			result.WriteString("\\\\")
+		default:
+			// Printable ASCII range: 0x20 (space) to 0x7E (~)
+			if b >= 0x20 && b <= 0x7E {
+				result.WriteByte(b)
+			} else {
+				// Non-printable: use hex escape
+				result.WriteString(fmt.Sprintf("\\x%02x", b))
+			}
+		}
+	}
+	return result.String()
+}
+
 func formatResult(val interface{}) string {
 	if val == nil {
 		return "(nil)"
@@ -129,7 +165,7 @@ func formatResult(val interface{}) string {
 
 	switch v := val.(type) {
 	case string:
-		return v
+		return escapeNonPrintable(v)
 	case int64:
 		return fmt.Sprintf("%d", v)
 	case float64:
