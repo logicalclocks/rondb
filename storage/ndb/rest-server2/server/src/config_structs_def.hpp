@@ -155,6 +155,9 @@ CLASS
     "Database-specific configuration.")
  CM(bool, createTables, CreateTables, true,
     "Whether to create Rondis databases and tables on startup if they don't exist.")
+ CM(bool, requireTablesOnStartup, RequireTablesOnStartup, true,
+    "Whether to require Rondis tables to exist on startup. Set to false for MTR tests "
+    "where tables are created by the test itself.")
  CM(std::string, mysqlHost, MySQLHost, "localhost",
     "The MySQL server host for creating Rondis tables.")
  CM(Uint16, mysqlPort, MySQLPort, 3306,

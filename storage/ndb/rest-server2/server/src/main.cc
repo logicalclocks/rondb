@@ -375,6 +375,7 @@ int main(int argc, char *argv[]) {
       &dirty_incr_decr_flag[0],
       &opt_small_values_flag[0],
       globalConfigs.rondis.createTables,
+      globalConfigs.rondis.requireTablesOnStartup,
       globalConfigs.rondis.mysqlHost.c_str(),
       globalConfigs.rondis.mysqlPort,
       globalConfigs.rondis.mysqlUser.c_str(),

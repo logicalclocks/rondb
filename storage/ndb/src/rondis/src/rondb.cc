@@ -33,6 +33,7 @@
 #include "commands.h"
 #include <strings.h>
 #include <cassert>
+#include <mutex>
 #include <mysql.h>
 #include <unistd.h>
 
@@ -136,6 +137,8 @@ Uint32 g_first_thread_id = 0;
 Uint32 *g_current_database_index;
 bool g_is_incr_decr_dirty[MAX_NUM_DATABASES];
 bool g_opt_small_values_flag[MAX_NUM_DATABASES];
+bool g_records_initialized[MAX_NUM_DATABASES] = {false};
+std::mutex g_records_init_mutex;
 Uint32 g_num_databases = 0;
 int g_num_threads = 0;
 
@@ -440,6 +443,7 @@ int setup_ndb_connection_for_rondis(
  bool *dirty_incr_decr_flag,
  bool *opt_small_values_flag,
  bool create_tables,
+ bool require_tables_on_startup,
  const char *mysql_host,
  Uint32 mysql_port,
  const char *mysql_user,
@@ -473,16 +477,21 @@ int setup_ndb_connection_for_rondis(
     g_opt_small_values_flag[i] = true;
   }
   for (Uint32 i = 0; i < num_databases; i++) {
-    NdbObjectGuard ndbObjectGuard(0, i);
-    Ndb *ndb = ndbObjectGuard.get_guard_ndb_object();
     g_is_incr_decr_dirty[i] = dirty_incr_decr_flag[i];
     g_opt_small_values_flag[i] = opt_small_values_flag[i];
-    NdbDictionary::Dictionary *dict = ndb->getDictionary();
-    if (init_string_records(dict, i) != 0) {
-      printf("Failed initializing records for Redis data type STRING;"
-             " error: %s\n",
-           ndb->getNdbError().message);
-      return -1;
+  }
+  if (require_tables_on_startup) {
+    for (Uint32 i = 0; i < num_databases; i++) {
+      NdbObjectGuard ndbObjectGuard(0, i);
+      Ndb *ndb = ndbObjectGuard.get_guard_ndb_object();
+      NdbDictionary::Dictionary *dict = ndb->getDictionary();
+      if (init_string_records(dict, i) != 0) {
+        printf("Failed initializing records for Redis data type STRING;"
+               " error: %s\n",
+             ndb->getNdbError().message);
+        return -1;
+      }
+      g_records_initialized[i] = true;
     }
   }
   return 0;
@@ -520,6 +529,32 @@ void wrong_number_of_arguments(const pink::RedisCmdArgsType &argv,
            REDIS_WRONG_NUMBER_OF_ARGS,
            argv[0].c_str());
   assign_generic_err_to_response(response, error_message);
+}
+
+int ensure_records_initialized(Ndb *ndb, Uint32 database_id) {
+  // Fast path: already initialized (no lock needed for read of bool)
+  if (g_records_initialized[database_id]) {
+    return 0;
+  }
+
+  // Slow path: need to initialize
+  std::lock_guard<std::mutex> lock(g_records_init_mutex);
+
+  // Double-check after acquiring lock
+  if (g_records_initialized[database_id]) {
+    return 0;
+  }
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  if (init_string_records(dict, database_id) != 0) {
+    printf("Failed initializing records for Redis data type STRING;"
+           " error: %s\n",
+           ndb->getNdbError().message);
+    return -1;
+  }
+
+  g_records_initialized[database_id] = true;
+  return 0;
 }
 
 class RondisEndPoint {
@@ -599,6 +634,12 @@ int rondb_redis_handler(const pink::RedisCmdArgsType &argv,
     Ndb *ndb = ndbObjectGuard.get_guard_ndb_object();
     if (ndb == nullptr) {
       unavailable_cluster(argv, response);
+      return 0;
+    }
+    // Lazily initialize records if not done at startup
+    if (ensure_records_initialized(ndb, database_id) != 0) {
+      assign_generic_err_to_response(response,
+        "ERR Failed to initialize Rondis tables");
       return 0;
     }
     DEB_NDB_CMD(("cmd: %s, params: %lu\n", command, argv.size()));

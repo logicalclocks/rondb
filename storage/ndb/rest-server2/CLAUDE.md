@@ -743,3 +743,133 @@ CREATE TABLE `project` (...) ENGINE=ndbcluster DEFAULT CHARSET=latin1;
 CREATE TABLE `project_team` (...) ENGINE=ndbcluster DEFAULT CHARSET=latin1;
 CREATE TABLE `api_key` (...) ENGINE=ndbcluster DEFAULT CHARSET=latin1;
 ```
+
+## Rondis Configuration
+
+Rondis (Redis-compatible interface) can be configured to handle table initialization in different ways.
+
+### Configuration Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `CreateTables` | `true` | Create Rondis databases and tables on startup if they don't exist |
+| `RequireTablesOnStartup` | `true` | Initialize NDB records at startup; if `false`, records are lazily initialized on first command |
+
+### Use Cases
+
+**Production (default):**
+```json
+{
+  "Rondis": {
+    "CreateTables": true,
+    "RequireTablesOnStartup": true
+  }
+}
+```
+Tables are created and records initialized at startup. Server fails to start if initialization fails.
+
+**MTR Tests:**
+```json
+{
+  "Rondis": {
+    "CreateTables": false,
+    "RequireTablesOnStartup": false
+  }
+}
+```
+Tables are created by the test via SQL. Records are lazily initialized on first Rondis command. This allows tests to control table creation timing.
+
+### Lazy Initialization
+
+When `RequireTablesOnStartup: false`, records are initialized lazily via `ensure_records_initialized()`:
+
+```cpp
+// In rondb.cc
+int ensure_records_initialized(Ndb *ndb, Uint32 database_id) {
+  // Fast path: already initialized
+  if (g_records_initialized[database_id]) {
+    return 0;
+  }
+
+  // Slow path: initialize with mutex protection
+  std::lock_guard<std::mutex> lock(g_records_init_mutex);
+  if (g_records_initialized[database_id]) {
+    return 0;  // Double-check after lock
+  }
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  if (init_string_records(dict, database_id) != 0) {
+    return -1;
+  }
+
+  g_records_initialized[database_id] = true;
+  return 0;
+}
+```
+
+This is called in `rondb_redis_handler()` before processing any NDB command.
+
+### Key Files
+
+- `server/src/config_structs_def.hpp` - `RondisConfig` class with config options
+- `storage/ndb/src/rondis/src/rondb.cc` - `setup_ndb_connection_for_rondis()`, `ensure_records_initialized()`
+- `storage/ndb/src/rondis/include/rondb.h` - Function declarations
+
+## Rondis MTR Tests
+
+Rondis MTR tests are in `mysql-test/suite/rondis/`.
+
+### Test Structure
+
+```
+mysql-test/suite/rondis/
+├── my.cnf                              # Suite configuration
+├── rondis_config_template.json         # RDRS config (CreateTables=false)
+├── include/
+│   └── create_rondis_tables.inc        # SQL to create redis_0 tables
+├── t/
+│   ├── rondis_basic.test               # Basic SET/GET/DEL/HSET tests
+│   └── rondis_advanced.test            # Advanced operations
+└── r/
+    ├── rondis_basic.result             # Expected output
+    └── rondis_advanced.result
+```
+
+### Table Creation Include File
+
+Tests source `create_rondis_tables.inc` to create tables via SQL instead of relying on RDRS:
+
+```sql
+--source suite/rondis/include/create_rondis_tables.inc
+```
+
+The include file creates:
+- `redis_0` database
+- `redis_0.string_keys` - String key metadata
+- `redis_0.hset_keys` - Hash key metadata
+- `redis_0.string_values` - Large string values
+
+### Test Cleanup
+
+Tests must drop the `redis_0` database at the end to pass MTR's check-testcase:
+
+```sql
+# At end of test
+--disable_query_log
+DROP DATABASE IF EXISTS redis_0;
+--enable_query_log
+```
+
+### Running Rondis Tests
+
+```bash
+cd debug_build/mysql-test
+./mtr --suite=rondis              # Run all Rondis tests
+./mtr rondis.rondis_basic         # Run specific test
+./mtr --record rondis.rondis_basic  # Re-record baseline
+```
+
+### Known Issues
+
+- **GETRANGE with negative indices**: May crash the server (needs investigation)
+- **Empty string quoting**: `SET key ''` fails due to shell quoting in MTR exec

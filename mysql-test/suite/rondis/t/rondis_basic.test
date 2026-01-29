@@ -11,8 +11,10 @@ if (!$RONDB_CLI) {
   --skip rondb-cli binary not found - build with Go installed
 }
 
+# Create the Rondis tables needed for this test
+--source suite/rondis/include/create_rondis_tables.inc
+
 # Set up rondb-cli for Rondis operations
-# Note: Rondis tables are created automatically by RDRS when CreateTables=true
 --let $RONDIS=$RONDB_CLI --host=$RONDIS_HOST --rondis-port=$RONDIS_PORT --no-mysql --no-rdrs --quiet
 
 --echo #
@@ -134,3 +136,8 @@ if (!$RONDB_CLI) {
 --exec $RONDIS -e "DEL key3"
 --exec $RONDIS -e "DEL counter"
 --exec $RONDIS -e "DEL user:profile"
+
+# Drop the test database to clean up
+--disable_query_log
+DROP DATABASE IF EXISTS redis_0;
+--enable_query_log

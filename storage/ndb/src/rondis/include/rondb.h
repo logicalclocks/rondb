@@ -51,6 +51,7 @@ int setup_ndb_connection_for_rondis(
  bool *dirty_incr_decr_flag,
  bool *opt_small_values_flag,
  bool create_tables,
+ bool require_tables_on_startup,
  const char *mysql_host,
  Uint32 mysql_port,
  const char *mysql_user,
@@ -72,4 +73,8 @@ void set_current_database(int index, Uint32 database_index);
 Uint32 get_current_database(int worker_id);
 bool get_dirty_incr_decr_flag(int worker_id);
 bool get_opt_small_values_flag(int worker_id);
+
+// Lazily initialize records for a database if not already initialized.
+// Returns 0 on success, -1 on failure.
+int ensure_records_initialized(Ndb *ndb, Uint32 database_id);
 #endif
