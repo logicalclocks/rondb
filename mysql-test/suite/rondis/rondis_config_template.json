@@ -30,7 +30,8 @@
     },
     "APIKey": {
       "UseHopsworksAPIKeys": false
-    }
+    },
+    "InsecureAllowAll": true
   },
   "Log": {
     "Level": "INFO"

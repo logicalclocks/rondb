@@ -34,6 +34,7 @@
 #include <strings.h>
 #include <cassert>
 #include <mysql.h>
+#include <unistd.h>
 
 //#define DEBUG_NDB_CMD 1
 
@@ -138,6 +139,54 @@ bool g_opt_small_values_flag[MAX_NUM_DATABASES];
 Uint32 g_num_databases = 0;
 int g_num_threads = 0;
 
+// Maximum time to wait for MySQL to be ready (in seconds)
+#define MYSQL_READY_TIMEOUT_SECONDS 120
+// Sleep interval between retries (in seconds)
+#define MYSQL_READY_RETRY_INTERVAL 2
+
+// Helper function to execute a query with retry for NDB not-ready errors
+// Returns 0 on success, -1 on permanent failure
+int execute_query_with_retry(MYSQL *conn, const char *query, int *elapsed_seconds) {
+  while (*elapsed_seconds < MYSQL_READY_TIMEOUT_SECONDS) {
+    if (mysql_query(conn, query) == 0) {
+      return 0;  // Success
+    }
+
+    unsigned int err = mysql_errno(conn);
+    // Error codes that indicate NDB is not ready yet or temporary issues:
+    // 157 = ER_GET_ERRNO with NDB error (cluster not ready)
+    // 1005 = Can't create table (often NDB not ready)
+    // 1296 = Got error from NDB (cluster not connected)
+    // 1297 = Got temporary error from NDB
+    // 4009 = Cluster failure (node failure)
+    // 1412 = Table definition has changed (schema distribution in progress)
+    // 2006 = MySQL server has gone away
+    // 2013 = Lost connection to MySQL server during query
+    // 1205 = Lock wait timeout exceeded
+    // 1213 = Deadlock found
+    if (err == 157 || err == 1005 || err == 1296 || err == 1297 ||
+        err == 4009 || err == 1412 || err == 2006 || err == 2013 ||
+        err == 1205 || err == 1213) {
+      printf("NDB/MySQL not ready, retrying in %d seconds: %s (error %u)\n",
+             MYSQL_READY_RETRY_INTERVAL, mysql_error(conn), err);
+      sleep(MYSQL_READY_RETRY_INTERVAL);
+      *elapsed_seconds += MYSQL_READY_RETRY_INTERVAL;
+      continue;
+    }
+
+    // For other errors, check if it's a "table already exists" which is OK
+    if (err == 1050) {  // Table already exists
+      return 0;
+    }
+
+    // Permanent error
+    printf("Permanent error executing query: %s (error %u)\n", mysql_error(conn), err);
+    return -1;
+  }
+  printf("Timeout waiting for query to succeed after %d seconds\n", *elapsed_seconds);
+  return -1;  // Timeout
+}
+
 int create_rondis_tables(const char *mysql_host,
                          Uint32 mysql_port,
                          const char *mysql_user,
@@ -153,30 +202,121 @@ int create_rondis_tables(const char *mysql_host,
   unsigned int protocol = MYSQL_PROTOCOL_TCP;
   mysql_options(conn, MYSQL_OPT_PROTOCOL, &protocol);
 
-  if (mysql_real_connect(conn,
-                         mysql_host,
-                         mysql_user,
-                         mysql_password,
-                         nullptr,
-                         mysql_port,
-                         nullptr,
-                         0) == nullptr) {
-    printf("Failed to connect to MySQL: %s\n", mysql_error(conn));
+  // Set timeouts to avoid hanging indefinitely
+  // NDB DDL operations can take several seconds, so use generous timeouts
+  unsigned int connect_timeout = 10;  // 10 seconds for connection
+  unsigned int read_timeout = 60;     // 60 seconds for read (DDL can be slow)
+  unsigned int write_timeout = 60;    // 60 seconds for write
+  mysql_options(conn, MYSQL_OPT_CONNECT_TIMEOUT, &connect_timeout);
+  mysql_options(conn, MYSQL_OPT_READ_TIMEOUT, &read_timeout);
+  mysql_options(conn, MYSQL_OPT_WRITE_TIMEOUT, &write_timeout);
+
+  // Retry connecting to MySQL with timeout
+  int elapsed_seconds = 0;
+  while (elapsed_seconds < MYSQL_READY_TIMEOUT_SECONDS) {
+    if (mysql_real_connect(conn,
+                           mysql_host,
+                           mysql_user,
+                           mysql_password,
+                           nullptr,
+                           mysql_port,
+                           nullptr,
+                           0) != nullptr) {
+      break;  // Connected successfully
+    }
+
+    printf("Waiting for MySQL connection at %s:%u: %s\n",
+           mysql_host, mysql_port, mysql_error(conn));
+    sleep(MYSQL_READY_RETRY_INTERVAL);
+    elapsed_seconds += MYSQL_READY_RETRY_INTERVAL;
+
+    // Reinitialize connection for retry
+    mysql_close(conn);
+    conn = mysql_init(nullptr);
+    if (conn == nullptr) {
+      printf("Failed to reinitialize MySQL connection\n");
+      return -1;
+    }
+    mysql_options(conn, MYSQL_OPT_PROTOCOL, &protocol);
+  }
+
+  if (elapsed_seconds >= MYSQL_READY_TIMEOUT_SECONDS) {
+    printf("Timeout connecting to MySQL after %d seconds\n",
+           MYSQL_READY_TIMEOUT_SECONDS);
     mysql_close(conn);
     return -1;
   }
 
   printf("Connected to MySQL at %s:%u for Rondis table creation\n",
          mysql_host, mysql_port);
+  fflush(stdout);
+
+  // Wait for MySQL to be fully ready by testing a simple query first
+  printf("Testing MySQL connection with simple query...\n");
+  fflush(stdout);
+  while (elapsed_seconds < MYSQL_READY_TIMEOUT_SECONDS) {
+    if (mysql_query(conn, "SELECT 1") == 0) {
+      MYSQL_RES *result = mysql_store_result(conn);
+      if (result != nullptr) {
+        mysql_free_result(result);
+        printf("MySQL is responsive\n");
+        fflush(stdout);
+        break;
+      }
+    }
+    printf("MySQL not ready yet, retrying: %s\n", mysql_error(conn));
+    fflush(stdout);
+    sleep(MYSQL_READY_RETRY_INTERVAL);
+    elapsed_seconds += MYSQL_READY_RETRY_INTERVAL;
+  }
+
+  if (elapsed_seconds >= MYSQL_READY_TIMEOUT_SECONDS) {
+    printf("Timeout waiting for MySQL to be ready\n");
+    mysql_close(conn);
+    return -1;
+  }
+
+  // Wait for NDB to be fully connected by checking ndbcluster engine status
+  // This query will hang or fail if NDB is not ready
+  printf("Waiting for NDB cluster to be ready...\n");
+  fflush(stdout);
+  while (elapsed_seconds < MYSQL_READY_TIMEOUT_SECONDS) {
+    // Check if we can see the ndbcluster engine and it's working
+    if (mysql_query(conn, "SHOW ENGINE NDBCLUSTER STATUS") == 0) {
+      MYSQL_RES *result = mysql_store_result(conn);
+      if (result != nullptr) {
+        // Check if we got rows (NDB is connected)
+        if (mysql_num_rows(result) > 0) {
+          mysql_free_result(result);
+          printf("NDB cluster is ready\n");
+          fflush(stdout);
+          break;
+        }
+        mysql_free_result(result);
+      }
+    }
+    printf("NDB not ready yet: %s\n", mysql_error(conn));
+    fflush(stdout);
+    sleep(MYSQL_READY_RETRY_INTERVAL);
+    elapsed_seconds += MYSQL_READY_RETRY_INTERVAL;
+  }
+
+  if (elapsed_seconds >= MYSQL_READY_TIMEOUT_SECONDS) {
+    printf("Timeout waiting for NDB cluster to be ready\n");
+    mysql_close(conn);
+    return -1;
+  }
 
   for (Uint32 db_id = 0; db_id < num_databases; db_id++) {
     char query[32768];
 
-    // Create database if not exists
+    // Create database if not exists (with retry for NDB readiness)
     snprintf(query, sizeof(query),
              "CREATE DATABASE IF NOT EXISTS %s_%u",
              REDIS_DB_NAME, db_id);
-    if (mysql_query(conn, query) != 0) {
+    printf("Executing: %s\n", query);
+    fflush(stdout);
+    if (execute_query_with_retry(conn, query, &elapsed_seconds) != 0) {
       printf("Failed to create database %s_%u: %s\n",
              REDIS_DB_NAME, db_id, mysql_error(conn));
       mysql_close(conn);
@@ -184,7 +324,7 @@ int create_rondis_tables(const char *mysql_host,
     }
     printf("Database %s_%u ready\n", REDIS_DB_NAME, db_id);
 
-    // Create string_keys table
+    // Create string_keys table (with retry for NDB readiness)
     snprintf(query, sizeof(query),
       "CREATE TABLE IF NOT EXISTS %s_%u.%s("
       "  redis_key_id BIGINT UNSIGNED NOT NULL,"
@@ -202,7 +342,7 @@ int create_rondis_tables(const char *mysql_host,
       "COMMENT=\"NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM_X_8\"",
       REDIS_DB_NAME, db_id, KEY_TABLE_NAME,
       MAX_KEY_VALUE_LEN, INLINE_VALUE_LEN);
-    if (mysql_query(conn, query) != 0) {
+    if (execute_query_with_retry(conn, query, &elapsed_seconds) != 0) {
       printf("Failed to create table %s_%u.%s: %s\n",
              REDIS_DB_NAME, db_id, KEY_TABLE_NAME, mysql_error(conn));
       mysql_close(conn);
@@ -210,7 +350,7 @@ int create_rondis_tables(const char *mysql_host,
     }
     printf("Table %s_%u.%s ready\n", REDIS_DB_NAME, db_id, KEY_TABLE_NAME);
 
-    // Create hset_keys table
+    // Create hset_keys table (with retry for NDB readiness)
     snprintf(query, sizeof(query),
       "CREATE TABLE IF NOT EXISTS %s_%u.%s("
       "  redis_key VARBINARY(%u) NOT NULL,"
@@ -220,7 +360,7 @@ int create_rondis_tables(const char *mysql_host,
       ") ENGINE NDB CHARSET=latin1 "
       "COMMENT=\"NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM_X_8\"",
       REDIS_DB_NAME, db_id, HSET_KEY_TABLE_NAME, MAX_KEY_VALUE_LEN);
-    if (mysql_query(conn, query) != 0) {
+    if (execute_query_with_retry(conn, query, &elapsed_seconds) != 0) {
       printf("Failed to create table %s_%u.%s: %s\n",
              REDIS_DB_NAME, db_id, HSET_KEY_TABLE_NAME, mysql_error(conn));
       mysql_close(conn);
@@ -228,7 +368,7 @@ int create_rondis_tables(const char *mysql_host,
     }
     printf("Table %s_%u.%s ready\n", REDIS_DB_NAME, db_id, HSET_KEY_TABLE_NAME);
 
-    // Create string_values table
+    // Create string_values table (with retry for NDB readiness)
     snprintf(query, sizeof(query),
       "CREATE TABLE IF NOT EXISTS %s_%u.%s("
       "  rondb_key BIGINT UNSIGNED NOT NULL,"
@@ -240,7 +380,7 @@ int create_rondis_tables(const char *mysql_host,
       ") ENGINE NDB CHARSET=latin1 "
       "COMMENT=\"NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM_X_8\"",
       REDIS_DB_NAME, db_id, VALUE_TABLE_NAME, EXTENSION_VALUE_LEN);
-    if (mysql_query(conn, query) != 0) {
+    if (execute_query_with_retry(conn, query, &elapsed_seconds) != 0) {
       printf("Failed to create table %s_%u.%s: %s\n",
              REDIS_DB_NAME, db_id, VALUE_TABLE_NAME, mysql_error(conn));
       mysql_close(conn);

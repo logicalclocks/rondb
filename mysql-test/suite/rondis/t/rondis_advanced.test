@@ -15,6 +15,7 @@ if (!$RONDB_CLI) {
 }
 
 # Set up rondb-cli for Rondis operations
+# Note: Rondis tables are created automatically by RDRS when CreateTables=true
 --let $RONDIS=$RONDB_CLI --host=$RONDIS_HOST --rondis-port=$RONDIS_PORT --no-mysql --no-rdrs --quiet
 
 --echo #
