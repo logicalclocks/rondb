@@ -840,7 +840,9 @@ func (s *Shell) executeRondis(line string) error {
 	}
 
 	fmt.Println(result)
-	fmt.Println(ui.Timing(duration))
+	if !s.quiet {
+		fmt.Println(ui.Timing(duration))
+	}
 	return nil
 }
 

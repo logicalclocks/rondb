@@ -639,6 +639,9 @@ The binary is placed in `bin/rondb` under the build directory.
 # SQL query (non-interactive)
 rondb -e "SELECT * FROM db.table;" --quiet
 
+# Rondis command (non-interactive)
+rondb -e "SET mykey myvalue" --quiet
+
 # BATCH operation (requires API key for Hopsworks authentication)
 rondb -e "BATCH WRITE db.table col=value FILTER id=1;" --rdrs-api-key=$API_KEY --quiet
 
