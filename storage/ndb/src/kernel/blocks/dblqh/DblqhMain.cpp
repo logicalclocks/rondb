@@ -21011,7 +21011,6 @@ void Dblqh::execCOPY_FRAGREQ(Signal *signal) {
     jam();
     from_queue = true;
   }
-  // TODO(Zhao): ignore TTL
   const CopyFragReq copy = *(CopyFragReq *)&signal->theData[0];
   const CopyFragReq* copyFragReq = &copy;
   tabptr.i = copyFragReq->tableId;
@@ -21219,6 +21218,14 @@ void Dblqh::execCOPY_FRAGREQ(Signal *signal) {
     scanPtr->scanNumber = FirstNR_ScanNo + scanNumberIndex;
     scanPtr->scanKeyinfoFlag = 0; // Don't put into hash
     scanPtr->scanLockHold = ZFALSE;
+    /*
+     * TTL related
+     * Ignore TTL for copy fragment scan to ensure all rows (including
+     * expired but not yet purged) are copied to the restarting node.
+     */
+    scanPtr->m_ttl_ignore = 1;
+    scanPtr->m_ttl_ignore_for_ral = 0;
+    scanPtr->m_ttl_only_expired = 0;
     scanPtr->m_curr_batch_size_rows = 0;
     scanPtr->m_curr_batch_size_bytes = 0;
     scanPtr->m_exec_direct_batch_size_words = 0;
