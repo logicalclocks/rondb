@@ -293,8 +293,16 @@ retry:
     }
   }
 
-  // Fetch tables
+  // Fetch tables - clear both caches to avoid stale entries
   ttl_cache_.clear();
+  {
+    // Also clear table_metrics_ to stay in sync with ttl_cache_
+    // Tables will be re-added via UpdateLocalCache during the scan below
+    const std::lock_guard<std::shared_mutex> lock(table_metrics_mutex_);
+    table_metrics_.clear();
+  }
+  // No need to reset metrics_.tables_count here;
+  // GetMetrics() computes it on-the-fly from table_metrics_.size()
   list.clear();
   if (dict->listObjects(list, NdbDictionary::Object::UserTable) != 0) {
     g_eventLogger->warning("[TTL SWatcher] Failed to list objects"
@@ -776,12 +784,17 @@ bool TTLPurger::UpdateLocalCache(const std::string& db,
                             tab->getTTLColumnNo());
         iter->second.ttl_sec = tab->getTTLSec();
         iter->second.col_no = tab->getTTLColumnNo();
+        // Also update table_metrics_ if entry exists (for immediate API visibility)
+        UpdateTableMetricsTTL(db + "/" + table, tab->getTTLSec(),
+                              tab->getTTLColumnNo());
       } else {
         g_eventLogger->info("[TTL SWatcher] Remove[1] TTL of table %s.%s "
                              "in cache: [%u, %u@%u]",
                              db.c_str(), table.c_str(), iter->second.table_id,
                              iter->second.ttl_sec, iter->second.col_no);
         ttl_cache_.erase(iter);
+        // Clean up stale table metrics
+        RemoveTableMetrics(db + "/" + table);
       }
       updated = true;
     } else {
@@ -792,6 +805,22 @@ bool TTLPurger::UpdateLocalCache(const std::string& db,
                              tab->getTTLSec(), tab->getTTLColumnNo());
         ttl_cache_.insert({db + "/" + table, {tab->getTableId(),
                            tab->getTTLSec(), tab->getTTLColumnNo()}});
+        // Also add to table_metrics_ for immediate API visibility
+        // (without waiting for purge worker to process it first)
+        // Lock ordering: mutex_ -> table_metrics_mutex_ (consistent with existing code)
+        {
+          const std::lock_guard<std::shared_mutex> lock(table_metrics_mutex_);
+          std::string key = db + "/" + table;
+          if (table_metrics_.find(key) == table_metrics_.end()) {
+            TTLTableMetrics metrics;
+            metrics.database = db;
+            metrics.table = table;
+            metrics.table_id = tab->getTableId();
+            metrics.ttl_sec = tab->getTTLSec();
+            metrics.ttl_column_no = tab->getTTLColumnNo();
+            table_metrics_[key] = metrics;
+          }
+        }
         updated = true;
       } else {
         // check mysql.ttl_purge_nodes
@@ -809,6 +838,8 @@ bool TTLPurger::UpdateLocalCache(const std::string& db,
                            db.c_str(), table.c_str(), iter->second.table_id,
                            iter->second.ttl_sec, iter->second.col_no);
       ttl_cache_.erase(iter);
+      // Clean up stale table metrics
+      RemoveTableMetrics(db + "/" + table);
       updated = true;
     } else {
       // check mysql.ttl_purge_nodes
@@ -920,6 +951,10 @@ bool TTLPurger::DropDBLocalCache(const std::string& db_str,
     }
     iter++;
   }
+  // Clean up all table metrics for this database (single lock acquisition)
+  if (updated) {
+    RemoveDBTableMetrics(db_str);
+  }
   return updated;
 }
 
@@ -999,8 +1034,31 @@ void TTLPurger::PurgeWorkerJob() {
   Uint32 purge_window = 0;
 
   g_eventLogger->info("[TTL PWorker] Started");
+  // Reset status from potential previous kError state
+  // The actual state (kRunning/kPaused/kDisabled) will be set in the main loop
+  UpdateStatus(TTLPurgeStatus::State::kPaused);
   purged_pos_.clear();
+  Uint64 round_start_time = 0;
+  TTLPurgeConfig local_config;  // Local copy of config for this round
+  // Local accumulation for metrics - updated once per round to minimize locking
+  Uint64 local_rows_purged = 0;
+  std::map<std::string, TTLTableMetrics> local_table_metrics;
   do {
+    // Reset local accumulators at start of each round
+    local_rows_purged = 0;
+    local_table_metrics.clear();
+    // Read config once at the start of each round (single shared_lock)
+    // This minimizes lock contention - only one brief lock per ~1.5s round
+    local_config = GetConfig();
+
+    // Check if purging is enabled
+    if (!local_config.enabled) {
+      UpdateStatus(TTLPurgeStatus::State::kDisabled);
+      NdbSleep_MilliSleep(kDisabledCheckIntervalMs);
+      continue;
+    }
+
+    round_start_time = my_micro_time();
     purge_trx_started = false;
     update_objects = false;
     if (cache_updated_) {
@@ -1055,6 +1113,8 @@ void TTLPurger::PurgeWorkerJob() {
       g_eventLogger->info("[TTL PWorker] Detected cache updated, "
                            "reloaded %lu TTL tables",
                            local_ttl_cache.size());
+      // No need to update metrics_.tables_count here;
+      // GetMetrics() computes it on-the-fly from table_metrics_.size()
     }
 
     shard = kShardNosharding;
@@ -1088,10 +1148,13 @@ void TTLPurger::PurgeWorkerJob() {
 
     if (local_ttl_cache.empty()) {
       // No TTL table is found
+      UpdateStatus(TTLPurgeStatus::State::kPaused);
+      UpdateCurrentTable("", 0);
       sleep(2);
       continue;
     }
 
+    UpdateStatus(TTLPurgeStatus::State::kRunning);
     sleep_between_each_round = true;
     dict = worker_ndb_->getDictionary();
     for (iter = local_ttl_cache.begin(); iter != local_ttl_cache.end();
@@ -1107,9 +1170,9 @@ void TTLPurger::PurgeWorkerJob() {
           goto err;
         }
       }
-      if (cache_updated_) {
-        break;
-      }
+      // Note: cache_updated_ is only checked at round start (line 1067).
+      // Checking here caused round starvation: tables later in iteration
+      // order would never be processed if schema events kept arriving.
 
       start_time = my_micro_time();
 
@@ -1124,6 +1187,9 @@ void TTLPurger::PurgeWorkerJob() {
       check = 0;
       deletedRows = 0;
       trx_failure_times = 0;
+
+      // Update status with current table being processed
+      UpdateCurrentTable(iter->first, iter->second.part_id);
 
       if (worker_ndb_->setDatabaseName(db_str.c_str()) != 0) {
         g_eventLogger->warning("[TTL PWorker] Failed to select "
@@ -1417,7 +1483,7 @@ retry_trx:
              * error 296(Time-out in NDB, probably caused by deadlock)
              * may happen, change the batch size to the minimum and retry
              */
-            iter->second.batch_size = kPurgeBatchSize;
+            iter->second.batch_size = local_config.min_batch_size;
             g_eventLogger->warning("[TTL PWorker] Changed the purgine batch "
                                    "size of table %s to the minimum size %u, "
                                    "Retry...",
@@ -1449,7 +1515,7 @@ retry_trx:
              * error 499(Scan take over error) may happen,
              * change the batch size to the minimum and retry
              */
-            iter->second.batch_size = kPurgeBatchSize;
+            iter->second.batch_size = local_config.min_batch_size;
             g_eventLogger->warning("[TTL PWorker] Changed the purgine batch "
                                    "size of table %s to the minimum size %u, "
                                    "Retry...",
@@ -1566,7 +1632,7 @@ retry_trx:
              * error 296(Time-out in NDB, probably caused by deadlock)
              * may happen, change the batch size to the minimum and retry
              */
-            iter->second.batch_size = kPurgeBatchSize;
+            iter->second.batch_size = local_config.min_batch_size;
             g_eventLogger->warning("[TTL PWorker] Changed the purgine batch "
                                    "size of table %s to the minimum size %u, "
                                    "Retry...",
@@ -1598,7 +1664,7 @@ retry_trx:
              * error 499(Scan take over error) may happen,
              * change the batch size to the minimum and retry
              */
-            iter->second.batch_size = kPurgeBatchSize;
+            iter->second.batch_size = local_config.min_batch_size;
             g_eventLogger->warning("[TTL PWorker] Changed the purgine batch "
                                    "size of table %s to the minimum size %u, "
                                    "Retry...",
@@ -1626,9 +1692,11 @@ retry_trx:
 
       iter->second.batch_size = AdjustBatchSize(iter->second.batch_size,
                                                 deletedRows,
-                                                end_time - start_time);
+                                                end_time - start_time,
+                                                local_config.min_batch_size,
+                                                local_config.max_batch_size);
       if (sleep_between_each_round &&
-          iter->second.batch_size == kMaxPurgeBatchSize) {
+          iter->second.batch_size == local_config.max_batch_size) {
         // At least 1 table finished its batch purging in the max size,
         // so don't sleep and start the next round as soon as possible
         sleep_between_each_round = false;
@@ -1636,6 +1704,31 @@ retry_trx:
 
       iter->second.part_id =
         ((iter->second.part_id + 1) % ttl_tab->getPartitionCount());
+
+      // Accumulate metrics locally (no locking during round)
+      local_rows_purged += deletedRows;
+      {
+        std::string key = db_str + "/" + table_str;
+        auto it = local_table_metrics.find(key);
+        if (it == local_table_metrics.end()) {
+          TTLTableMetrics tm;
+          tm.database = db_str;
+          tm.table = table_str;
+          tm.table_id = iter->second.table_id;
+          tm.ttl_sec = iter->second.ttl_sec;
+          tm.ttl_column_no = iter->second.col_no;
+          tm.current_partition = iter->second.part_id;
+          tm.partition_count = ttl_tab->getPartitionCount();
+          tm.current_batch_size = iter->second.batch_size;
+          tm.rows_purged = deletedRows;
+          local_table_metrics[key] = tm;
+        } else {
+          it->second.current_partition = iter->second.part_id;
+          it->second.current_batch_size = iter->second.batch_size;
+          it->second.rows_purged += deletedRows;
+        }
+      }
+
       // Finish 1 batch
       // keep the ttl_tab in local table cache ?
       continue;
@@ -1670,13 +1763,36 @@ err:
                 iter->second.ttl_sec, iter->second.col_no);
             if (pos + 1 < iter->first.length()) {
               std::string table = iter->first.substr(pos + 1);
-              dict->removeCachedTable(table.c_str());
+              /*
+               * FIX for error 241 infinite loop after restart:
+               *
+               * Use invalidateTable() here instead of removeCachedTable().
+               *
+               * removeCachedTable() only decrements refCount but does NOT
+               * mark m_impl->m_status as Invalid. When getTable() is called
+               * later, GlobalDictCache::get() sees status=OK and returns
+               * the SAME stale cached object, causing error 241 loop.
+               *
+               * invalidateTable() marks m_impl->m_status as Invalid, so
+               * next getTable() will retrieve fresh metadata from data nodes.
+               *
+               * The race condition concern at lines 1066-1077 does NOT apply
+               * here because purge worker EXITS immediately after this
+               * cleanup (line 1759) without calling getTable(). When schema
+               * watcher restarts purge worker, the new worker calls getTable()
+               * and gets fresh objects since they are marked Invalid.
+               *
+               * ORIGINAL CODE (for potential revert):
+               * dict->removeCachedTable(table.c_str());
+               */
+              dict->invalidateTable(table.c_str());
               dict->invalidateIndex(kTTLPurgeIndexName, table.c_str());
             }
           }
         }
         purge_worker_asks_for_retry_ = true;
         purge_worker_exit_ = true;
+        UpdateStatus(TTLPurgeStatus::State::kError);
         break;
       } else if (purge_trx_started) {
         dict->removeCachedTable(table_str.c_str());
@@ -1686,10 +1802,20 @@ err:
         break;  // jump out from for-loop
       }
     }
-    // Finish 1 round
+    // Finish 1 round - update all metrics with single lock acquisition
+    {
+      Uint64 round_end_time = my_micro_time();
+      Uint64 duration_ms = (round_end_time - round_start_time) / 1000;
+      UpdateRoundMetrics(local_rows_purged, duration_ms, local_table_metrics);
+    }
     if (sleep_between_each_round) {
-      // Sleep for 1000 - 2000 ms after finishing each round
-      RandomSleep(1000, 2000);
+      // Sleep with randomness to avoid contention between multiple RDRS nodes
+      // Use configured interval as center, with ±33% variance
+      int variance = static_cast<int>(local_config.sleep_interval_ms / 3);
+      int lower = static_cast<int>(local_config.sleep_interval_ms) - variance;
+      int upper = static_cast<int>(local_config.sleep_interval_ms) + variance;
+      if (lower < 100) lower = 100;  // Minimum 100ms
+      RandomSleep(lower, upper);
     }
   } while (!purge_worker_exit_);
 
@@ -2155,22 +2281,200 @@ bool TTLPurger::Run() {
 
 Uint32 TTLPurger::AdjustBatchSize(Uint32 curr_batch_size,
                                  Uint32 deleted_rows,
-                                 Uint64 used_time) {
+                                 Uint64 used_time,
+                                 Uint32 min_batch,
+                                 Uint32 max_batch) {
+  // Use provided config values (read once per round to minimize lock contention)
   if (deleted_rows == curr_batch_size && used_time < kPurgeThresholdTime) {
-      if (curr_batch_size + kPurgeBatchSizePerIncr <= kMaxPurgeBatchSize) {
+      if (curr_batch_size + kBatchSizePerIncr <= max_batch) {
         // Increase
-        return curr_batch_size + kPurgeBatchSizePerIncr;
+        return curr_batch_size + kBatchSizePerIncr;
       } else {
         // Keep as max
-        assert(curr_batch_size == kMaxPurgeBatchSize);
-        return curr_batch_size;
+        return max_batch;
       }
-  } else if (curr_batch_size - kPurgeBatchSizePerIncr >= kPurgeBatchSize) {
+  } else if (curr_batch_size > min_batch &&
+             curr_batch_size - kBatchSizePerIncr >= min_batch) {
     // Decrease
-    return curr_batch_size - kPurgeBatchSizePerIncr;
+    return curr_batch_size - kBatchSizePerIncr;
   } else {
     // Keep as min
-    assert(curr_batch_size == kPurgeBatchSize);
-    return curr_batch_size;
+    return min_batch;
   }
+}
+
+// ============================================================================
+// Config, Status, and Metrics API implementation
+// ============================================================================
+// Lock strategy:
+// - Readers (API GET, purge worker config read): use std::shared_lock
+// - Writers (API PUT, purge worker status/metrics update): use std::lock_guard
+// This allows concurrent reads while writes have exclusive access.
+
+TTLPurgeConfig TTLPurger::GetConfig() const {
+  const std::shared_lock<std::shared_mutex> lock(config_mutex_);
+  return config_;
+}
+
+void TTLPurger::SetConfig(const TTLPurgeConfig& config) {
+  const std::lock_guard<std::shared_mutex> lock(config_mutex_);
+  bool was_enabled = config_.enabled;
+  config_ = config;
+
+  // Log config change
+  if (was_enabled != config.enabled) {
+    g_eventLogger->info("[TTL PWorker] TTL purge %s via API",
+                        config.enabled ? "enabled" : "disabled");
+  }
+}
+
+bool TTLPurger::IsEnabled() const {
+  const std::shared_lock<std::shared_mutex> lock(config_mutex_);
+  return config_.enabled;
+}
+
+void TTLPurger::SetEnabled(bool enabled) {
+  const std::lock_guard<std::shared_mutex> lock(config_mutex_);
+  if (config_.enabled != enabled) {
+    config_.enabled = enabled;
+    g_eventLogger->info("[TTL PWorker] TTL purge %s via API",
+                        enabled ? "enabled" : "disabled");
+  }
+}
+
+TTLPurgeStatus TTLPurger::GetStatus() const {
+  TTLPurgeStatus status;
+  {
+    const std::shared_lock<std::shared_mutex> lock(metrics_mutex_);
+    status = status_;
+  }
+  // These are atomic or only set at startup, safe to read without lock
+  status.schema_watcher_running = schema_watcher_running_;
+  status.purge_worker_running = purge_worker_running_;
+  return status;
+}
+
+TTLPurgeMetrics TTLPurger::GetMetrics() const {
+  TTLPurgeMetrics result;
+  {
+    const std::shared_lock<std::shared_mutex> lock(metrics_mutex_);
+    result = metrics_;
+  }
+  // Compute tables_count on-the-fly from table_metrics_ (always accurate)
+  // Sequential lock acquisition (no nesting) avoids deadlock risk
+  {
+    const std::shared_lock<std::shared_mutex> lock(table_metrics_mutex_);
+    result.tables_count = static_cast<Uint32>(table_metrics_.size());
+  }
+  return result;
+}
+
+std::vector<TTLTableMetrics> TTLPurger::GetTableMetrics(
+    Uint32 offset, Uint32 limit, Uint32* total) const {
+  std::vector<TTLTableMetrics> result;
+  const std::shared_lock<std::shared_mutex> lock(table_metrics_mutex_);
+
+  *total = static_cast<Uint32>(table_metrics_.size());
+  if (offset >= *total) {
+    return result;
+  }
+
+  // Only copy the requested page - fixed cost regardless of total tables
+  result.reserve(std::min(limit, *total - offset));
+  auto it = table_metrics_.begin();
+  std::advance(it, offset);
+  for (Uint32 i = 0; i < limit && it != table_metrics_.end(); ++i, ++it) {
+    result.push_back(it->second);
+  }
+  return result;
+}
+
+bool TTLPurger::GetTableMetrics(const std::string& db, const std::string& table,
+                                TTLTableMetrics* out) const {
+  std::string key = db + "/" + table;
+  const std::shared_lock<std::shared_mutex> lock(table_metrics_mutex_);
+  auto it = table_metrics_.find(key);
+  if (it == table_metrics_.end()) {
+    return false;
+  }
+  *out = it->second;
+  return true;
+}
+
+void TTLPurger::UpdateStatus(TTLPurgeStatus::State state) {
+  const std::lock_guard<std::shared_mutex> lock(metrics_mutex_);
+  status_.state = state;
+}
+
+void TTLPurger::UpdateCurrentTable(const std::string& table, Uint32 partition) {
+  const std::lock_guard<std::shared_mutex> lock(metrics_mutex_);
+  status_.current_table = table;
+  status_.current_partition = partition;
+}
+
+void TTLPurger::UpdateRoundMetrics(
+    Uint64 rows_purged_this_round,
+    Uint64 duration_ms,
+    const std::map<std::string, TTLTableMetrics>& table_updates) {
+  Uint64 now_ms = static_cast<Uint64>(my_micro_time() / 1000);
+
+  // Update global metrics (single lock)
+  {
+    const std::lock_guard<std::shared_mutex> lock(metrics_mutex_);
+    metrics_.rows_purged_total += rows_purged_this_round;
+    metrics_.rows_purged_last_round = rows_purged_this_round;
+    metrics_.last_round_duration_ms = duration_ms;
+    metrics_.last_purge_time_epoch_ms = now_ms;
+    metrics_.rounds_completed++;
+  }
+
+  // Update per-table metrics (single lock)
+  if (!table_updates.empty()) {
+    const std::lock_guard<std::shared_mutex> lock(table_metrics_mutex_);
+    for (const auto& [key, update] : table_updates) {
+      auto it = table_metrics_.find(key);
+      if (it == table_metrics_.end()) {
+        // New table
+        table_metrics_[key] = update;
+        table_metrics_[key].last_purge_time_epoch_ms = now_ms;
+      } else {
+        // Existing table - merge updates
+        it->second.current_partition = update.current_partition;
+        it->second.partition_count = update.partition_count;
+        it->second.current_batch_size = update.current_batch_size;
+        it->second.rows_purged += update.rows_purged;
+        it->second.last_purge_time_epoch_ms = now_ms;
+      }
+    }
+    // tables_count is computed on-the-fly in GetMetrics() from
+    // table_metrics_.size(), no need to sync here
+  }
+}
+
+void TTLPurger::RemoveTableMetrics(const std::string& key) {
+  const std::lock_guard<std::shared_mutex> lock(table_metrics_mutex_);
+  table_metrics_.erase(key);
+}
+
+void TTLPurger::RemoveDBTableMetrics(const std::string& db) {
+  const std::lock_guard<std::shared_mutex> lock(table_metrics_mutex_);
+  std::string prefix = db + "/";
+  for (auto it = table_metrics_.begin(); it != table_metrics_.end(); ) {
+    if (it->first.compare(0, prefix.size(), prefix) == 0) {
+      it = table_metrics_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+}
+
+void TTLPurger::UpdateTableMetricsTTL(const std::string& key,
+                                      Uint32 ttl_sec, Uint32 ttl_col_no) {
+  const std::lock_guard<std::shared_mutex> lock(table_metrics_mutex_);
+  auto it = table_metrics_.find(key);
+  if (it != table_metrics_.end()) {
+    it->second.ttl_sec = ttl_sec;
+    it->second.ttl_column_no = ttl_col_no;
+  }
+  // If entry doesn't exist, it will be created on next purge round
 }

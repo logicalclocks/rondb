@@ -75,7 +75,7 @@ static ServerThread* g_rondis_thread = nullptr;
 static Uint32 *g_database_index = nullptr;
 static bool g_rondis_running = false;
 static int g_exit_code = 0;
-static TTLPurger* g_ttl_purger = nullptr;
+TTLPurger* g_ttl_purger = nullptr;
 NdbMutex *globalConfigsMutex = nullptr;
 
 static void do_exit() {

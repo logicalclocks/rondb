@@ -46,6 +46,15 @@
 #define BATCH_FEATURE_STORE_PATH "/" API_VERSION "/" BATCH_FEATURE_STORE
 #define PROMETHEUS_METRICS_PATH  "/" METRICS
 
+// TTL Purge API paths
+#define TTL_PURGE              "ttl-purge"
+#define TTL_PURGE_PATH         MAKE_PATH(API_VERSION, TTL_PURGE)
+#define TTL_PURGE_CONFIG_PATH  "/" API_VERSION "/" TTL_PURGE "/config"
+#define TTL_PURGE_STATUS_PATH  "/" API_VERSION "/" TTL_PURGE "/status"
+#define TTL_PURGE_METRICS_PATH "/" API_VERSION "/" TTL_PURGE "/metrics"
+#define TTL_PURGE_TABLES_PATH  "/" API_VERSION "/" TTL_PURGE "/tables"
+#define TTL_PURGE_TABLE_PATH   "/" API_VERSION "/" TTL_PURGE "/tables/{db}/{table}"
+
 constexpr const char *POST                           = "POST";
 constexpr const char *GET                            = "GET";
 constexpr const char *OPERATIONS                     = "operations";

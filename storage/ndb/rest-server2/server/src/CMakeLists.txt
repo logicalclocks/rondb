@@ -64,6 +64,7 @@ file(GLOB_RECURSE SRC
         db_operations/pk/pkr_response.cpp
         db_operations/ronsql/ronsql_operation.cpp
         ttl_purge.cpp
+        ttl_purge_ctrl.cpp
         scan_read_ctrl.cpp
         scan_metrics.cpp
         slow_scan_ctrl.cpp
