@@ -1043,6 +1043,7 @@ void TTLPurger::PurgeWorkerJob() {
   // Local accumulation for metrics - updated once per round to minimize locking
   Uint64 local_rows_purged = 0;
   std::map<std::string, TTLTableMetrics> local_table_metrics;
+  int pre_trx_failures = 0;  // Tracks pre-transaction errors across rounds
   do {
     // Reset local accumulators at start of each round
     local_rows_purged = 0;
@@ -1216,10 +1217,17 @@ void TTLPurger::PurgeWorkerJob() {
           hash_val % n_purge_nodes != static_cast<Uint32>(shard)) {
         continue;
       }
+      if (shard == kShardNosharding &&
+          !iter->second.part_id_offset_applied &&
+          ttl_tab->getPartitionCount() > 1) {
+        iter->second.part_id =
+          worker_ndb_->getNodeId() % ttl_tab->getPartitionCount();
+        iter->second.part_id_offset_applied = true;
+      }
+      assert(iter->second.part_id < ttl_tab->getPartitionCount());
       log_buf += ("[P" + std::to_string(iter->second.part_id) +
                  "/" +
                  std::to_string(ttl_tab->getPartitionCount()) + "]");
-      assert(iter->second.part_id < ttl_tab->getPartitionCount());
 
       log_buf += ("[BS: " + std::to_string(iter->second.batch_size) + "]");
 
@@ -1798,10 +1806,40 @@ err:
         dict->removeCachedTable(table_str.c_str());
         goto retry_trx;
       } else {
-        // retry from begining
-        break;  // jump out from for-loop
+        // Pre-transaction error: skip this table and try the next one.
+        // Accumulate failures in a do-while scoped counter so that
+        // persistent errors eventually trigger a full restart.
+        pre_trx_failures++;
+        if (pre_trx_failures > kMaxTrxRetryTimes) {
+          g_eventLogger->warning("[TTL PWorker] Pre-transaction errors "
+                                 "exceeded %d times... "
+                                 "Quit and notify schema worker",
+                                 kMaxTrxRetryTimes);
+          for (auto it = local_ttl_cache.begin();
+              it != local_ttl_cache.end(); it++) {
+            auto p = it->first.find('/');
+            if (p != std::string::npos) {
+              std::string db = it->first.substr(0, p);
+              if (worker_ndb_->setDatabaseName(db.c_str()) != 0) {
+                continue;
+              }
+              if (p + 1 < it->first.length()) {
+                std::string table = it->first.substr(p + 1);
+                dict->invalidateTable(table.c_str());
+                dict->invalidateIndex(kTTLPurgeIndexName, table.c_str());
+              }
+            }
+          }
+          purge_worker_asks_for_retry_ = true;
+          purge_worker_exit_ = true;
+          UpdateStatus(TTLPurgeStatus::State::kError);
+          break;
+        }
+        continue;  // skip to next table
       }
     }
+    // Round completed without pre-trx escalation, reset the counter
+    pre_trx_failures = 0;
     // Finish 1 round - update all metrics with single lock acquisition
     {
       Uint64 round_end_time = my_micro_time();
@@ -1860,7 +1898,7 @@ bool TTLPurger::GetShard(Int32* shard, Int32* n_purge_nodes,
   Int32 n_nodes = 0;;
   std::vector<Int32> purge_nodes;
   size_t pos = 0;
-  bool check = 0;
+  int check = 0;
   std::string log_buf = "[TTL PWorker] ";
   std::string active_nodes = "[";
   std::string inactive_nodes = "[";
@@ -1938,6 +1976,17 @@ bool TTLPurger::GetShard(Int32* shard, Int32* n_purge_nodes,
       n_nodes++;
       purge_nodes.push_back(rec_attr[0]->int32_value());
     } while ((check = scan_op->nextResult(false)) == 0);
+    if (check == -1) {
+      break;
+    }
+  }
+  if (check == -1) {
+    g_eventLogger->warning("[TTL PWorker] Failed to scan table %s"
+                           ", error: %d(%s). Retry...",
+                           tab->getName(),
+                           scan_op->getNdbError().code,
+                           scan_op->getNdbError().message);
+    goto err;
   }
 
   std::sort(purge_nodes.begin(), purge_nodes.end());
@@ -2018,7 +2067,6 @@ bool TTLPurger::GetPurgeWindow(Uint32* purge_window, bool update_objects) {
   Int32 n_nodes = 0;;
   std::vector<Int32> purge_nodes;
   size_t pos = 0;
-  bool check = 0;
   std::string log_buf = "[TTL PWorker] ";
   std::string active_nodes = "[";
   std::string inactive_nodes = "[";
@@ -2053,7 +2101,14 @@ bool TTLPurger::GetPurgeWindow(Uint32* purge_window, bool update_objects) {
                            trans->getNdbError().message);
     goto err;
   }
-  op->equal(kPurgeCtrlKey, kPurgeCtrlPurgeWindowId);
+  if (op->equal(kPurgeCtrlKey, kPurgeCtrlPurgeWindowId) != 0) {
+    g_eventLogger->warning("[TTL PWorker] Failed to set key on table %s"
+                           ", error: %d(%s). Retry...",
+                           tab->getName(),
+                           op->getNdbError().code,
+                           op->getNdbError().message);
+    goto err;
+  }
 
   rec_attr[0] = op->getValue(kPurgeCtrlKey);
   if (rec_attr[0] == nullptr) {
@@ -2197,9 +2252,17 @@ bool TTLPurger::UpdateLease(const unsigned char* encoded_now) {
                            trans->getNdbError().message);
     goto err;
   }
-  op->updateTuple();
-  op->equal("node_id", worker_ndb_->getNodeId());
-  op->setValue("last_active", reinterpret_cast<const char*>(encoded_now));
+  if (op->updateTuple() != 0 ||
+      op->equal("node_id", worker_ndb_->getNodeId()) != 0 ||
+      op->setValue("last_active",
+                   reinterpret_cast<const char*>(encoded_now)) != 0) {
+    g_eventLogger->warning("[TTL PWorker] Failed to prepare update on table %s"
+                           ", error: %d(%s). Retry...",
+                           tab->getName(),
+                           op->getNdbError().code,
+                           op->getNdbError().message);
+    goto err;
+  }
 
   if (trans->execute(NdbTransaction::Commit) != 0) {
     if (trans->getNdbError().code != 626 /*not found*/) {

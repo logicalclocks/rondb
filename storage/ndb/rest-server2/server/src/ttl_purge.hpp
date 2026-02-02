@@ -157,6 +157,7 @@ class TTLPurger {
     Uint32 col_no;
     Uint32 part_id = {0};                       // Only valid in local ttl cache
     Uint32 batch_size = {kDefaultMinBatchSize}; // Only valid in local ttl cache
+    bool part_id_offset_applied = {false};      // Only valid in local ttl cache
   } TTLInfo;
   // TTL table cache (protected by mutex_)
   // Schema watcher: updates on DDL events
