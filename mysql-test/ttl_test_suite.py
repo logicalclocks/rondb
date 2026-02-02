@@ -130,10 +130,14 @@ DIFFERENCES FROM ORIGINAL ttl_test.py
 
 import argparse
 import importlib.util
+import json
 import os
+import re
+import subprocess
 import sys
 import threading
 import time
+import urllib.request
 from abc import ABC, abstractmethod
 
 import pymysql
@@ -163,6 +167,17 @@ class TestConfig:
         self.rdrs_port = 4406
         self.purge_enabled = False
 
+        # NDB management / backup-restore settings
+        self.bin_dir = "/home/zhao/workspace/kernelmaker/rondb-bin/bin"
+        self.primary_mgmd_port = 1188
+        self.replica_mgmd_port = 1198
+        self.data_dir_p_1 = "/home/zhao/workspace/rondb-run/ndbmtd_1"
+        self.data_dir_p_2 = "/home/zhao/workspace/rondb-run/ndbmtd_2"
+
+        # Replication credentials (used to restart replication after backup/restore)
+        self.repl_user = "replicator"
+        self.repl_password = "rep123"
+
         # Test execution settings
         self.verbose = False
         self.stop_on_failure = False
@@ -180,6 +195,13 @@ class TestConfig:
             config.default_ttl = getattr(module, 'TTL_DEFAULT', config.default_ttl)
             config.rdrs_host = getattr(module, 'RDRS_HOST', config.rdrs_host)
             config.rdrs_port = getattr(module, 'RDRS_PORT', config.rdrs_port)
+            config.bin_dir = getattr(module, 'BIN_DIR', config.bin_dir)
+            config.primary_mgmd_port = getattr(module, 'MGMD_PORT_P', config.primary_mgmd_port)
+            config.replica_mgmd_port = getattr(module, 'MGMD_PORT_R', config.replica_mgmd_port)
+            config.data_dir_p_1 = getattr(module, 'DATA_DIR_P_1', config.data_dir_p_1)
+            config.data_dir_p_2 = getattr(module, 'DATA_DIR_P_2', config.data_dir_p_2)
+            config.repl_user = getattr(module, 'REPL_USER', config.repl_user)
+            config.repl_password = getattr(module, 'REPL_PASSWORD', config.repl_password)
 
         # Environment overrides
         config.host = os.environ.get('MYSQLD_HOST', config.host)
@@ -188,6 +210,13 @@ class TestConfig:
         config.default_ttl = int(os.environ.get('TTL_DEFAULT', config.default_ttl))
         config.rdrs_host = os.environ.get('RDRS_HOST', config.rdrs_host)
         config.rdrs_port = int(os.environ.get('RDRS_PORT', config.rdrs_port))
+        config.bin_dir = os.environ.get('TTL_BIN_DIR', config.bin_dir)
+        config.primary_mgmd_port = int(os.environ.get('TTL_PRIMARY_MGMD_PORT', config.primary_mgmd_port))
+        config.replica_mgmd_port = int(os.environ.get('TTL_REPLICA_MGMD_PORT', config.replica_mgmd_port))
+        config.data_dir_p_1 = os.environ.get('TTL_DATA_DIR_P_1', config.data_dir_p_1)
+        config.data_dir_p_2 = os.environ.get('TTL_DATA_DIR_P_2', config.data_dir_p_2)
+        config.repl_user = os.environ.get('TTL_REPL_USER', config.repl_user)
+        config.repl_password = os.environ.get('TTL_REPL_PASSWORD', config.repl_password)
 
         return config
 
@@ -5045,24 +5074,1647 @@ cat_backup_restore = TestCategory(
 CATEGORIES["backup_restore"] = cat_backup_restore
 
 
-# NOTE: Case 46 requires special handling as it:
-# 1. Stops the replica before starting
-# 2. Uses ndb_mgm and ndb_restore commands
-# 3. Does NOT restart the replica after completion
-# This test should run last or in isolation.
+def _kill_connections_to_db(config, port, database):
+    """Kill all MySQL connections using the given database.
 
-# Case 46 is NOT migrated as a class because it requires:
-# - subprocess calls to ndb_mgm, ndb_restore
-# - Special configuration (BIN_DIR, DATA_DIR_P_1, DATA_DIR_P_2, MGMD_PORT_R)
-# - Stopping/not restarting replica
-#
-# To migrate case 46, you would need to:
-# 1. Add config fields for BIN_DIR, DATA_DIR paths, MGMD_PORT_R
-# 2. Implement special setup that stops replica
-# 3. Implement thread_b that runs ndb_restore commands
-# 4. Decide whether to restart replica in teardown
-#
-# For now, case 46 should be run from the original ttl_test.py
+    This prevents DROP DATABASE from blocking on metadata locks held by stale
+    connections (e.g. from a previous killed test run or an exception in run()).
+    """
+    try:
+        conn = pymysql.connect(
+            host=config.host, port=port,
+            user=config.user, password=config.password
+        )
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id FROM information_schema.processlist "
+            f"WHERE db = '{database}'"
+        )
+        for row in cur.fetchall():
+            try:
+                cur.execute(f"KILL {row[0]}")
+            except Exception:
+                pass
+        cur.close()
+        conn.close()
+    except Exception:
+        pass
+
+
+def _set_purge_enabled(config, enabled):
+    """Enable or disable RDRS TTL purging via the REST API."""
+    url = f"http://{config.rdrs_host}:{config.rdrs_port}/0.1.0/ttl-purge/config"
+    data = json.dumps({"enabled": enabled}).encode()
+    req = urllib.request.Request(url, data=data, method="PUT",
+                                 headers={"Content-Type": "application/json"})
+    try:
+        urllib.request.urlopen(req, timeout=5)
+    except Exception:
+        pass  # RDRS may not be running; tests still work via NDB TTL read filter
+
+
+def _start_backup(config, mgmd_port):
+    """Run 'start backup' via ndb_mgm and return the backup ID.
+
+    Returns the integer backup ID on success, or raises RuntimeError.
+    """
+    result = subprocess.run(
+        [config.bin_dir + "/ndb_mgm",
+         f"--ndb-connectstring=127.0.0.1:{mgmd_port}",
+         "-e", "start backup"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"ndb_mgm start backup failed (rc={result.returncode}): "
+            f"{result.stderr.decode()}"
+        )
+    output = result.stdout.decode()
+    # Output contains a line like: "Backup 1 started ..." or "Backup 1 completed"
+    m = re.search(r'Backup\s+(\d+)\s+', output)
+    if not m:
+        raise RuntimeError(f"Could not parse backup ID from: {output}")
+    return int(m.group(1))
+
+
+def _restore_backup(config, target_mgmd_port, backup_id, data_dir_1, data_dir_2,
+                    include_databases=None):
+    """Run the 5-step ndb_restore sequence. Raises RuntimeError on failure.
+
+    include_databases: if set, only restore the listed databases (comma-separated
+    string). This avoids conflicts with tables that already exist on the target
+    cluster (e.g. the global test.sz table).
+    """
+    ndb_restore = config.bin_dir + "/ndb_restore"
+    connectstring = f"--ndb-connectstring=127.0.0.1:{target_mgmd_port}"
+    path_1 = f"{data_dir_1}/ndb_data/BACKUP/BACKUP-{backup_id}"
+    path_2 = f"{data_dir_2}/ndb_data/BACKUP/BACKUP-{backup_id}"
+    bid = f"--backupid={backup_id}"
+
+    # Common args added to every step when filtering by database
+    db_filter = [f"--include-databases={include_databases}"] if include_databases else []
+
+    steps = [
+        # 1. Restore metadata from node 2
+        [ndb_restore, connectstring, "--nodeid=2", bid,
+         f"--backup-path={path_1}", "--restore_meta", "--no-restore-disk-objects"] + db_filter,
+        # 2. Disable indexes from node 2
+        [ndb_restore, connectstring, "--nodeid=2", bid,
+         f"--backup-path={path_1}", "--disable-indexes"] + db_filter,
+        # 3. Restore data from node 2
+        [ndb_restore, connectstring, "--nodeid=2", bid,
+         f"--backup-path={path_1}", "--restore-data"] + db_filter,
+        # 4. Restore data from node 3
+        [ndb_restore, connectstring, "--nodeid=3", bid,
+         f"--backup-path={path_2}", "--restore-data"] + db_filter,
+        # 5. Rebuild indexes from node 2
+        [ndb_restore, connectstring, "--nodeid=2", bid,
+         f"--backup-path={path_1}", "--rebuild-indexes"] + db_filter,
+    ]
+
+    for i, cmd in enumerate(steps, 1):
+        result = subprocess.run(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"ndb_restore step {i} failed (rc={result.returncode}): "
+                f"{result.stderr.decode()}"
+            )
+
+
+def _wait_for_schema_sync(config, port, database, table, timeout=60):
+    """Connect to MySQL and retry until the restored schema is visible.
+
+    Handles MySQL errors 1412 (table definition changed) and
+    1049 (unknown database) which are transient after ndb_restore.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            conn = pymysql.connect(
+                host=config.host, port=port,
+                user=config.user, password=config.password
+            )
+            cur = conn.cursor()
+            cur.execute(f"SELECT * FROM {database}.{table} LIMIT 1")
+            cur.fetchall()
+            cur.close()
+            conn.close()
+            return True
+        except pymysql.MySQLError as e:
+            errno = e.args[0]
+            if errno in (1412, 1049):
+                time.sleep(5)
+                continue
+            raise
+    return False
+
+
+@cat_backup_restore.register
+class TestCase46BackupRestoreToPrimary(TTLTestBase):
+    """Case 46a: Backup TTL tables from primary, drop, restore back to primary.
+
+    Verifies: TTL metadata preserved, expired rows stay gone, valid rows survive.
+
+    This test runs sequentially (not ConcurrentTTLTest) because the DROP DATABASE
+    between backup and restore requires all connections to ttl_backup to be closed
+    first, which is incompatible with the concurrent thread model.
+    """
+
+    @property
+    def name(self):
+        return "case_46a_backup_restore_to_primary"
+
+    @property
+    def description(self):
+        return "Backup TTL tables, drop, restore to same cluster"
+
+    def setup(self):
+        # Stop replica to avoid conflicts from DROP+ndb_restore cycle
+        replica_conn = pymysql.connect(
+            host=self.config.host,
+            port=self.config.replica_port,
+            user=self.config.user,
+            password=self.config.password
+        )
+        rcur = replica_conn.cursor()
+        rcur.execute("STOP REPLICA")
+        _kill_connections_to_db(self.config, self.config.replica_port, "ttl_backup")
+        rcur.execute("DROP DATABASE IF EXISTS ttl_backup")
+        rcur.close()
+        replica_conn.close()
+
+        _kill_connections_to_db(self.config, self.config.primary_port, "ttl_backup")
+        conn = pymysql.connect(
+            host=self.config.host,
+            port=self.config.primary_port,
+            user=self.config.user,
+            password=self.config.password
+        )
+        cur = conn.cursor()
+        cur.execute("DROP DATABASE IF EXISTS ttl_backup")
+        cur.execute("CREATE DATABASE ttl_backup")
+        cur.execute("CREATE TABLE ttl_backup.sz1 ("
+                    "col_a INT, col_b TIMESTAMP, col_c INT, "
+                    "PRIMARY KEY(col_a), UNIQUE KEY(col_c)) "
+                    "ENGINE=NDB, COMMENT=\"NDB_TABLE=TTL=10@col_b\"")
+        cur.execute("CREATE TABLE ttl_backup.sz2 ("
+                    "col_a INT, col_b TIMESTAMP, col_c INT, "
+                    "KEY(col_c)) "
+                    "ENGINE=NDB, COMMENT=\"NDB_TABLE=TTL=10@col_b\"")
+        cur.execute("CREATE TABLE ttl_backup.sz3 ("
+                    "col_a INT, col_b TIMESTAMP, col_c INT, "
+                    "PRIMARY KEY(col_a), KEY(col_c)) "
+                    "ENGINE=NDB")
+        cur.close()
+        conn.close()
+
+    def teardown(self):
+        try:
+            _kill_connections_to_db(self.config, self.config.primary_port, "ttl_backup")
+            conn = pymysql.connect(
+                host=self.config.host,
+                port=self.config.primary_port,
+                user=self.config.user,
+                password=self.config.password
+            )
+            cur = conn.cursor()
+            cur.execute("DROP DATABASE IF EXISTS ttl_backup")
+            cur.close()
+            conn.close()
+        except Exception:
+            pass
+        # Re-establish replication
+        try:
+            primary_conn = pymysql.connect(
+                host=self.config.host,
+                port=self.config.primary_port,
+                user=self.config.user,
+                password=self.config.password
+            )
+            pcur = primary_conn.cursor()
+            pcur.execute("SHOW BINARY LOG STATUS")
+            binlog_row = pcur.fetchone()
+            log_file = binlog_row[0]
+            log_pos = binlog_row[1]
+            pcur.close()
+            primary_conn.close()
+
+            _kill_connections_to_db(self.config, self.config.replica_port, "ttl_backup")
+            conn = pymysql.connect(
+                host=self.config.host,
+                port=self.config.replica_port,
+                user=self.config.user,
+                password=self.config.password
+            )
+            cur = conn.cursor()
+            cur.execute("DROP DATABASE IF EXISTS ttl_backup")
+            cur.execute("STOP REPLICA")
+            cur.execute("RESET REPLICA ALL")
+            cur.execute(
+                "CHANGE REPLICATION SOURCE TO "
+                f"SOURCE_HOST='{self.config.host}', "
+                f"SOURCE_PORT={self.config.primary_port}, "
+                f"SOURCE_USER='{self.config.repl_user}', "
+                f"SOURCE_PASSWORD='{self.config.repl_password}', "
+                f"SOURCE_LOG_FILE='{log_file}', "
+                f"SOURCE_LOG_POS={log_pos}"
+            )
+            cur.execute("START REPLICA")
+            cur.close()
+            conn.close()
+        except Exception:
+            pass
+
+    def run(self):
+        # --- Phase 1: Insert, wait for TTL, verify, backup ---
+        conn = pymysql.connect(
+            host=self.config.host,
+            port=self.config.primary_port,
+            user=self.config.user,
+            password=self.config.password,
+            database="ttl_backup"
+        )
+        cur = conn.cursor()
+        cur.execute("BEGIN")
+        cur.execute("INSERT INTO sz1 VALUES(1, SYSDATE(), 100)")
+        cur.execute("INSERT INTO sz1 VALUES(2, SYSDATE(), 200)")
+        cur.execute("INSERT INTO sz1 VALUES(3, DATE_ADD(SYSDATE(), INTERVAL 1 DAY), 300)")
+        cur.execute("INSERT INTO sz1 VALUES(4, SYSDATE(), 400)")
+        cur.execute("INSERT INTO sz2 VALUES(1, SYSDATE(), 100)")
+        cur.execute("INSERT INTO sz2 VALUES(2, SYSDATE(), 200)")
+        cur.execute("INSERT INTO sz2 VALUES(3, DATE_ADD(SYSDATE(), INTERVAL 1 DAY), 300)")
+        cur.execute("INSERT INTO sz2 VALUES(4, SYSDATE(), 400)")
+        cur.execute("INSERT INTO sz3 VALUES(1, SYSDATE(), 100)")
+        cur.execute("INSERT INTO sz3 VALUES(2, SYSDATE(), 200)")
+        cur.execute("INSERT INTO sz3 VALUES(3, DATE_ADD(SYSDATE(), INTERVAL 1 DAY), 300)")
+        cur.execute("INSERT INTO sz3 VALUES(4, SYSDATE(), 400)")
+        cur.execute("COMMIT")
+
+        # Verify all 4 rows visible
+        for tbl in ("sz1", "sz2", "sz3"):
+            cur.execute(f"SELECT * FROM {tbl}")
+            assert len(cur.fetchall()) == 4, f"Expected 4 rows in {tbl} before TTL"
+
+        # Wait for TTL expiry (TTL=10s)
+        time.sleep(11)
+
+        # sz1, sz2: only the future row (col_c=300) should remain visible
+        # (expired via NDB read filter; purge is disabled at suite level)
+        cur.execute("SELECT * FROM sz1")
+        results = cur.fetchall()
+        assert len(results) == 1, f"Expected 1 row in sz1 after TTL, got {len(results)}"
+        assert results[0][2] == 300, f"Expected col_c=300, got {results[0][2]}"
+
+        cur.execute("SELECT * FROM sz2")
+        results = cur.fetchall()
+        assert len(results) == 1, f"Expected 1 row in sz2 after TTL, got {len(results)}"
+        assert results[0][2] == 300, f"Expected col_c=300, got {results[0][2]}"
+
+        # sz3 (no TTL): all 4 rows remain
+        cur.execute("SELECT * FROM sz3")
+        results = cur.fetchall()
+        assert len(results) == 4, f"Expected 4 rows in sz3 (no TTL), got {len(results)}"
+
+        # Start backup
+        backup_id = _start_backup(self.config, self.config.primary_mgmd_port)
+
+        # Close connection to release all metadata locks before DROP
+        cur.close()
+        conn.close()
+
+        # --- Phase 2: Drop, restore, verify ---
+        drop_conn = pymysql.connect(
+            host=self.config.host,
+            port=self.config.primary_port,
+            user=self.config.user,
+            password=self.config.password
+        )
+        drop_cur = drop_conn.cursor()
+        drop_cur.execute("DROP DATABASE IF EXISTS ttl_backup")
+        drop_cur.close()
+        drop_conn.close()
+
+        _restore_backup(
+            self.config,
+            self.config.primary_mgmd_port,
+            backup_id=backup_id,
+            data_dir_1=self.config.data_dir_p_1,
+            data_dir_2=self.config.data_dir_p_2,
+            include_databases="ttl_backup",
+        )
+
+        time.sleep(10)
+
+        _wait_for_schema_sync(
+            self.config, self.config.primary_port, "ttl_backup", "sz1"
+        )
+
+        verify_conn = pymysql.connect(
+            host=self.config.host,
+            port=self.config.primary_port,
+            user=self.config.user,
+            password=self.config.password,
+            database="ttl_backup"
+        )
+        cur = verify_conn.cursor()
+
+        cur.execute("SELECT * FROM sz1")
+        results = cur.fetchall()
+        assert len(results) == 1, f"Restored sz1: expected 1 row, got {len(results)}"
+        assert results[0][2] == 300, f"Restored sz1: expected col_c=300, got {results[0][2]}"
+
+        cur.execute("SELECT * FROM sz2")
+        results = cur.fetchall()
+        assert len(results) == 1, f"Restored sz2: expected 1 row, got {len(results)}"
+        assert results[0][2] == 300, f"Restored sz2: expected col_c=300, got {results[0][2]}"
+
+        cur.execute("SELECT * FROM sz3")
+        results = cur.fetchall()
+        assert len(results) == 4, f"Restored sz3: expected 4 rows, got {len(results)}"
+
+        cur.close()
+        verify_conn.close()
+
+
+@cat_backup_restore.register
+class TestCase46BackupRestoreToReplica(TTLTestBase):
+    """Case 46b: Backup TTL tables from primary, restore to replica cluster.
+
+    Verifies: cross-cluster restore, TTL filtering works on replica.
+    """
+
+    @property
+    def name(self):
+        return "case_46b_backup_restore_to_replica"
+
+    @property
+    def description(self):
+        return "Backup TTL tables from primary, restore to replica cluster"
+
+    @property
+    def requires_replica(self):
+        return True
+
+    def setup(self):
+        # Stop replica to avoid conflicts
+        replica_conn = pymysql.connect(
+            host=self.config.host,
+            port=self.config.replica_port,
+            user=self.config.user,
+            password=self.config.password
+        )
+        rcur = replica_conn.cursor()
+        rcur.execute("STOP REPLICA")
+        _kill_connections_to_db(self.config, self.config.replica_port, "ttl_backup")
+        rcur.execute("DROP DATABASE IF EXISTS ttl_backup")
+        rcur.close()
+        replica_conn.close()
+
+        # Create tables on primary
+        _kill_connections_to_db(self.config, self.config.primary_port, "ttl_backup")
+        conn = pymysql.connect(
+            host=self.config.host,
+            port=self.config.primary_port,
+            user=self.config.user,
+            password=self.config.password
+        )
+        cur = conn.cursor()
+        cur.execute("DROP DATABASE IF EXISTS ttl_backup")
+        cur.execute("CREATE DATABASE ttl_backup")
+        cur.execute("CREATE TABLE ttl_backup.sz1 ("
+                     "col_a INT, col_b TIMESTAMP, col_c INT, "
+                     "PRIMARY KEY(col_a), UNIQUE KEY(col_c)) "
+                     "ENGINE=NDB, COMMENT=\"NDB_TABLE=TTL=10@col_b\"")
+        cur.execute("CREATE TABLE ttl_backup.sz2 ("
+                     "col_a INT, col_b TIMESTAMP, col_c INT, "
+                     "KEY(col_c)) "
+                     "ENGINE=NDB, COMMENT=\"NDB_TABLE=TTL=10@col_b\"")
+        cur.execute("CREATE TABLE ttl_backup.sz3 ("
+                     "col_a INT, col_b TIMESTAMP, col_c INT, "
+                     "PRIMARY KEY(col_a), KEY(col_c)) "
+                     "ENGINE=NDB")
+        cur.close()
+        conn.close()
+
+    def teardown(self):
+        try:
+            _kill_connections_to_db(self.config, self.config.primary_port, "ttl_backup")
+            conn = pymysql.connect(
+                host=self.config.host,
+                port=self.config.primary_port,
+                user=self.config.user,
+                password=self.config.password
+            )
+            cur = conn.cursor()
+            cur.execute("DROP DATABASE IF EXISTS ttl_backup")
+            cur.close()
+            conn.close()
+        except Exception:
+            pass
+        # Re-establish replication: ndb_restore injected tables into the
+        # replica NDB dictionary outside of replication, so we need to
+        # reset the replica state and reconfigure the source from the
+        # primary's current binlog position.
+        try:
+            # Get current binlog position from primary
+            primary_conn = pymysql.connect(
+                host=self.config.host,
+                port=self.config.primary_port,
+                user=self.config.user,
+                password=self.config.password
+            )
+            pcur = primary_conn.cursor()
+            pcur.execute("SHOW BINARY LOG STATUS")
+            binlog_row = pcur.fetchone()
+            log_file = binlog_row[0]
+            log_pos = binlog_row[1]
+            pcur.close()
+            primary_conn.close()
+
+            # Reset and reconfigure replica
+            _kill_connections_to_db(self.config, self.config.replica_port, "ttl_backup")
+            conn = pymysql.connect(
+                host=self.config.host,
+                port=self.config.replica_port,
+                user=self.config.user,
+                password=self.config.password
+            )
+            cur = conn.cursor()
+            cur.execute("DROP DATABASE IF EXISTS ttl_backup")
+            cur.execute("STOP REPLICA")
+            cur.execute("RESET REPLICA ALL")
+            cur.execute(
+                "CHANGE REPLICATION SOURCE TO "
+                f"SOURCE_HOST='{self.config.host}', "
+                f"SOURCE_PORT={self.config.primary_port}, "
+                f"SOURCE_USER='{self.config.repl_user}', "
+                f"SOURCE_PASSWORD='{self.config.repl_password}', "
+                f"SOURCE_LOG_FILE='{log_file}', "
+                f"SOURCE_LOG_POS={log_pos}"
+            )
+            cur.execute("START REPLICA")
+            cur.close()
+            conn.close()
+        except Exception:
+            pass
+
+    def run(self):
+        # --- Phase 1: Insert, wait for TTL, verify, backup ---
+        conn = pymysql.connect(
+            host=self.config.host,
+            port=self.config.primary_port,
+            user=self.config.user,
+            password=self.config.password,
+            database="ttl_backup"
+        )
+        cur = conn.cursor()
+        cur.execute("BEGIN")
+        cur.execute("INSERT INTO sz1 VALUES(1, SYSDATE(), 100)")
+        cur.execute("INSERT INTO sz1 VALUES(2, SYSDATE(), 200)")
+        cur.execute("INSERT INTO sz1 VALUES(3, DATE_ADD(SYSDATE(), INTERVAL 1 DAY), 300)")
+        cur.execute("INSERT INTO sz1 VALUES(4, SYSDATE(), 400)")
+        cur.execute("INSERT INTO sz2 VALUES(1, SYSDATE(), 100)")
+        cur.execute("INSERT INTO sz2 VALUES(2, SYSDATE(), 200)")
+        cur.execute("INSERT INTO sz2 VALUES(3, DATE_ADD(SYSDATE(), INTERVAL 1 DAY), 300)")
+        cur.execute("INSERT INTO sz2 VALUES(4, SYSDATE(), 400)")
+        cur.execute("INSERT INTO sz3 VALUES(1, SYSDATE(), 100)")
+        cur.execute("INSERT INTO sz3 VALUES(2, SYSDATE(), 200)")
+        cur.execute("INSERT INTO sz3 VALUES(3, DATE_ADD(SYSDATE(), INTERVAL 1 DAY), 300)")
+        cur.execute("INSERT INTO sz3 VALUES(4, SYSDATE(), 400)")
+        cur.execute("COMMIT")
+
+        # Verify all 4 rows visible
+        for tbl in ("sz1", "sz2", "sz3"):
+            cur.execute(f"SELECT * FROM {tbl}")
+            assert len(cur.fetchall()) == 4, f"Expected 4 rows in {tbl} before TTL"
+
+        # Wait for TTL expiry (TTL=10s)
+        time.sleep(11)
+
+        # sz1, sz2: only the future row (col_c=300) should remain
+        cur.execute("SELECT * FROM sz1")
+        results = cur.fetchall()
+        assert len(results) == 1, f"Expected 1 row in sz1 after TTL, got {len(results)}"
+        assert results[0][2] == 300, f"Expected col_c=300, got {results[0][2]}"
+
+        cur.execute("SELECT * FROM sz2")
+        results = cur.fetchall()
+        assert len(results) == 1, f"Expected 1 row in sz2 after TTL, got {len(results)}"
+        assert results[0][2] == 300, f"Expected col_c=300, got {results[0][2]}"
+
+        # sz3 (no TTL): all 4 rows remain
+        cur.execute("SELECT * FROM sz3")
+        results = cur.fetchall()
+        assert len(results) == 4, f"Expected 4 rows in sz3 (no TTL), got {len(results)}"
+
+        # Start backup on primary
+        backup_id = _start_backup(self.config, self.config.primary_mgmd_port)
+
+        # Close connection to release metadata locks
+        cur.close()
+        conn.close()
+
+        # --- Phase 2: Restore to replica, verify ---
+        _restore_backup(
+            self.config,
+            self.config.replica_mgmd_port,
+            backup_id=backup_id,
+            data_dir_1=self.config.data_dir_p_1,
+            data_dir_2=self.config.data_dir_p_2,
+            include_databases="ttl_backup",
+        )
+
+        time.sleep(10)
+
+        _wait_for_schema_sync(
+            self.config, self.config.replica_port, "ttl_backup", "sz1"
+        )
+
+        verify_conn = pymysql.connect(
+            host=self.config.host,
+            port=self.config.replica_port,
+            user=self.config.user,
+            password=self.config.password,
+            database="ttl_backup"
+        )
+        cur = verify_conn.cursor()
+
+        cur.execute("SELECT * FROM sz1")
+        results = cur.fetchall()
+        assert len(results) == 1, f"Replica sz1: expected 1 row, got {len(results)}"
+        assert results[0][2] == 300, f"Replica sz1: expected col_c=300, got {results[0][2]}"
+
+        cur.execute("SELECT * FROM sz2")
+        results = cur.fetchall()
+        assert len(results) == 1, f"Replica sz2: expected 1 row, got {len(results)}"
+        assert results[0][2] == 300, f"Replica sz2: expected col_c=300, got {results[0][2]}"
+
+        cur.execute("SELECT * FROM sz3")
+        results = cur.fetchall()
+        assert len(results) == 4, f"Replica sz3: expected 4 rows, got {len(results)}"
+
+        cur.close()
+        verify_conn.close()
+
+
+@cat_backup_restore.register
+class TestCase46cTTLMetadataPreservedAfterRestore(TTLTestBase):
+    """Case 46c: TTL metadata is actually preserved after restore.
+
+    Existing tests only check row counts. This test verifies that TTL is still
+    *active* on restored tables by inserting new rows after restore, waiting for
+    TTL expiry, and confirming those new rows become invisible.
+    """
+
+    @property
+    def name(self):
+        return "case_46c_ttl_metadata_preserved_after_restore"
+
+    @property
+    def description(self):
+        return "TTL is still active on restored tables (insert-after-restore expires)"
+
+    def setup(self):
+        # Stop replica to avoid conflicts from DROP+ndb_restore cycle
+        replica_conn = pymysql.connect(
+            host=self.config.host,
+            port=self.config.replica_port,
+            user=self.config.user,
+            password=self.config.password
+        )
+        rcur = replica_conn.cursor()
+        rcur.execute("STOP REPLICA")
+        _kill_connections_to_db(self.config, self.config.replica_port, "ttl_backup")
+        rcur.execute("DROP DATABASE IF EXISTS ttl_backup")
+        rcur.close()
+        replica_conn.close()
+
+        _kill_connections_to_db(self.config, self.config.primary_port, "ttl_backup")
+        conn = pymysql.connect(
+            host=self.config.host,
+            port=self.config.primary_port,
+            user=self.config.user,
+            password=self.config.password
+        )
+        cur = conn.cursor()
+        cur.execute("DROP DATABASE IF EXISTS ttl_backup")
+        cur.execute("CREATE DATABASE ttl_backup")
+        cur.execute("CREATE TABLE ttl_backup.sz1 ("
+                    "col_a INT, col_b TIMESTAMP, col_c INT, "
+                    "PRIMARY KEY(col_a), UNIQUE KEY(col_c)) "
+                    "ENGINE=NDB, COMMENT=\"NDB_TABLE=TTL=10@col_b\"")
+        cur.close()
+        conn.close()
+
+    def teardown(self):
+        try:
+            _kill_connections_to_db(self.config, self.config.primary_port, "ttl_backup")
+            conn = pymysql.connect(
+                host=self.config.host,
+                port=self.config.primary_port,
+                user=self.config.user,
+                password=self.config.password
+            )
+            cur = conn.cursor()
+            cur.execute("DROP DATABASE IF EXISTS ttl_backup")
+            cur.close()
+            conn.close()
+        except Exception:
+            pass
+        # Re-establish replication
+        try:
+            primary_conn = pymysql.connect(
+                host=self.config.host,
+                port=self.config.primary_port,
+                user=self.config.user,
+                password=self.config.password
+            )
+            pcur = primary_conn.cursor()
+            pcur.execute("SHOW BINARY LOG STATUS")
+            binlog_row = pcur.fetchone()
+            log_file = binlog_row[0]
+            log_pos = binlog_row[1]
+            pcur.close()
+            primary_conn.close()
+
+            _kill_connections_to_db(self.config, self.config.replica_port, "ttl_backup")
+            conn = pymysql.connect(
+                host=self.config.host,
+                port=self.config.replica_port,
+                user=self.config.user,
+                password=self.config.password
+            )
+            cur = conn.cursor()
+            cur.execute("DROP DATABASE IF EXISTS ttl_backup")
+            cur.execute("STOP REPLICA")
+            cur.execute("RESET REPLICA ALL")
+            cur.execute(
+                "CHANGE REPLICATION SOURCE TO "
+                f"SOURCE_HOST='{self.config.host}', "
+                f"SOURCE_PORT={self.config.primary_port}, "
+                f"SOURCE_USER='{self.config.repl_user}', "
+                f"SOURCE_PASSWORD='{self.config.repl_password}', "
+                f"SOURCE_LOG_FILE='{log_file}', "
+                f"SOURCE_LOG_POS={log_pos}"
+            )
+            cur.execute("START REPLICA")
+            cur.close()
+            conn.close()
+        except Exception:
+            pass
+
+    def run(self):
+        # --- Phase 1: Insert a future row, backup ---
+        conn = pymysql.connect(
+            host=self.config.host,
+            port=self.config.primary_port,
+            user=self.config.user,
+            password=self.config.password,
+            database="ttl_backup"
+        )
+        cur = conn.cursor()
+        # One row with far-future TTL so it survives through the whole test
+        cur.execute("BEGIN")
+        cur.execute("INSERT INTO sz1 VALUES(1, DATE_ADD(SYSDATE(), INTERVAL 1 DAY), 100)")
+        cur.execute("COMMIT")
+        cur.execute("SELECT * FROM sz1")
+        assert len(cur.fetchall()) == 1, "Expected 1 row before backup"
+
+        backup_id = _start_backup(self.config, self.config.primary_mgmd_port)
+        cur.close()
+        conn.close()
+
+        # --- Phase 2: Drop, restore ---
+        drop_conn = pymysql.connect(
+            host=self.config.host,
+            port=self.config.primary_port,
+            user=self.config.user,
+            password=self.config.password
+        )
+        drop_cur = drop_conn.cursor()
+        drop_cur.execute("DROP DATABASE IF EXISTS ttl_backup")
+        drop_cur.close()
+        drop_conn.close()
+
+        _restore_backup(
+            self.config,
+            self.config.primary_mgmd_port,
+            backup_id=backup_id,
+            data_dir_1=self.config.data_dir_p_1,
+            data_dir_2=self.config.data_dir_p_2,
+            include_databases="ttl_backup",
+        )
+
+        time.sleep(10)
+        _wait_for_schema_sync(
+            self.config, self.config.primary_port, "ttl_backup", "sz1"
+        )
+
+        # --- Phase 3: Insert new rows AFTER restore, verify TTL is active ---
+        verify_conn = pymysql.connect(
+            host=self.config.host,
+            port=self.config.primary_port,
+            user=self.config.user,
+            password=self.config.password,
+            database="ttl_backup"
+        )
+        cur = verify_conn.cursor()
+
+        # Seed row from backup should still be visible
+        cur.execute("SELECT * FROM sz1")
+        results = cur.fetchall()
+        assert len(results) == 1, f"Expected 1 restored row, got {len(results)}"
+
+        # Insert new rows: one that will expire (SYSDATE), one that won't (future)
+        cur.execute("BEGIN")
+        cur.execute("INSERT INTO sz1 VALUES(10, SYSDATE(), 1000)")
+        cur.execute("INSERT INTO sz1 VALUES(11, DATE_ADD(SYSDATE(), INTERVAL 1 DAY), 1100)")
+        cur.execute("COMMIT")
+
+        cur.execute("SELECT * FROM sz1")
+        results = cur.fetchall()
+        assert len(results) == 3, f"Expected 3 rows after insert, got {len(results)}"
+
+        # Wait for TTL expiry
+        time.sleep(11)
+
+        cur.execute("SELECT * FROM sz1")
+        results = cur.fetchall()
+        # Row 10 (SYSDATE) should have expired; rows 1 and 11 (future) survive
+        assert len(results) == 2, (
+            f"Expected 2 rows after TTL (new expired row gone), got {len(results)}"
+        )
+        col_a_values = sorted(r[0] for r in results)
+        assert col_a_values == [1, 11], (
+            f"Expected rows [1, 11] to survive, got {col_a_values}"
+        )
+
+        cur.close()
+        verify_conn.close()
+
+
+@cat_backup_restore.register
+class TestCase46dNullTTLColumnSurvivesRestore(TTLTestBase):
+    """Case 46d: Rows with NULL TTL column survive backup-restore.
+
+    NULL in the TTL column means "never expire". Verify these rows are not lost
+    or treated as expired during the backup-restore cycle.
+    """
+
+    @property
+    def name(self):
+        return "case_46d_null_ttl_column_survives_restore"
+
+    @property
+    def description(self):
+        return "Rows with NULL TTL column survive backup-restore"
+
+    def setup(self):
+        # Stop replica to avoid conflicts from DROP+ndb_restore cycle
+        replica_conn = pymysql.connect(
+            host=self.config.host,
+            port=self.config.replica_port,
+            user=self.config.user,
+            password=self.config.password
+        )
+        rcur = replica_conn.cursor()
+        rcur.execute("STOP REPLICA")
+        _kill_connections_to_db(self.config, self.config.replica_port, "ttl_backup")
+        rcur.execute("DROP DATABASE IF EXISTS ttl_backup")
+        rcur.close()
+        replica_conn.close()
+
+        _kill_connections_to_db(self.config, self.config.primary_port, "ttl_backup")
+        conn = pymysql.connect(
+            host=self.config.host,
+            port=self.config.primary_port,
+            user=self.config.user,
+            password=self.config.password
+        )
+        cur = conn.cursor()
+        cur.execute("DROP DATABASE IF EXISTS ttl_backup")
+        cur.execute("CREATE DATABASE ttl_backup")
+        # col_b is TIMESTAMP NULL so we can insert NULL
+        cur.execute("CREATE TABLE ttl_backup.sz1 ("
+                    "col_a INT, col_b TIMESTAMP NULL, col_c INT, "
+                    "PRIMARY KEY(col_a)) "
+                    "ENGINE=NDB, COMMENT=\"NDB_TABLE=TTL=10@col_b\"")
+        cur.close()
+        conn.close()
+
+    def teardown(self):
+        try:
+            _kill_connections_to_db(self.config, self.config.primary_port, "ttl_backup")
+            conn = pymysql.connect(
+                host=self.config.host,
+                port=self.config.primary_port,
+                user=self.config.user,
+                password=self.config.password
+            )
+            cur = conn.cursor()
+            cur.execute("DROP DATABASE IF EXISTS ttl_backup")
+            cur.close()
+            conn.close()
+        except Exception:
+            pass
+        # Re-establish replication
+        try:
+            primary_conn = pymysql.connect(
+                host=self.config.host,
+                port=self.config.primary_port,
+                user=self.config.user,
+                password=self.config.password
+            )
+            pcur = primary_conn.cursor()
+            pcur.execute("SHOW BINARY LOG STATUS")
+            binlog_row = pcur.fetchone()
+            log_file = binlog_row[0]
+            log_pos = binlog_row[1]
+            pcur.close()
+            primary_conn.close()
+
+            _kill_connections_to_db(self.config, self.config.replica_port, "ttl_backup")
+            conn = pymysql.connect(
+                host=self.config.host,
+                port=self.config.replica_port,
+                user=self.config.user,
+                password=self.config.password
+            )
+            cur = conn.cursor()
+            cur.execute("DROP DATABASE IF EXISTS ttl_backup")
+            cur.execute("STOP REPLICA")
+            cur.execute("RESET REPLICA ALL")
+            cur.execute(
+                "CHANGE REPLICATION SOURCE TO "
+                f"SOURCE_HOST='{self.config.host}', "
+                f"SOURCE_PORT={self.config.primary_port}, "
+                f"SOURCE_USER='{self.config.repl_user}', "
+                f"SOURCE_PASSWORD='{self.config.repl_password}', "
+                f"SOURCE_LOG_FILE='{log_file}', "
+                f"SOURCE_LOG_POS={log_pos}"
+            )
+            cur.execute("START REPLICA")
+            cur.close()
+            conn.close()
+        except Exception:
+            pass
+
+    def run(self):
+        conn = pymysql.connect(
+            host=self.config.host,
+            port=self.config.primary_port,
+            user=self.config.user,
+            password=self.config.password,
+            database="ttl_backup"
+        )
+        cur = conn.cursor()
+
+        # Insert rows: some with NULL TTL, some with past TTL, one with future TTL
+        cur.execute("BEGIN")
+        cur.execute("INSERT INTO sz1 VALUES(1, NULL, 100)")             # NULL -> never expire
+        cur.execute("INSERT INTO sz1 VALUES(2, NULL, 200)")             # NULL -> never expire
+        cur.execute("INSERT INTO sz1 VALUES(3, SYSDATE(), 300)")        # will expire
+        cur.execute("INSERT INTO sz1 VALUES(4, DATE_ADD(SYSDATE(), INTERVAL 1 DAY), 400)")  # future
+        cur.execute("COMMIT")
+
+        cur.execute("SELECT * FROM sz1")
+        assert len(cur.fetchall()) == 4, "Expected 4 rows before TTL"
+
+        # Wait for TTL expiry of row 3
+        time.sleep(11)
+
+        cur.execute("SELECT * FROM sz1")
+        results = cur.fetchall()
+        # Row 3 expired; rows 1, 2 (NULL), and 4 (future) survive
+        assert len(results) == 3, f"Expected 3 rows after TTL, got {len(results)}"
+        col_a_values = sorted(r[0] for r in results)
+        assert col_a_values == [1, 2, 4], f"Expected [1, 2, 4], got {col_a_values}"
+
+        # Backup
+        backup_id = _start_backup(self.config, self.config.primary_mgmd_port)
+        cur.close()
+        conn.close()
+
+        # Drop, restore
+        _kill_connections_to_db(self.config, self.config.primary_port, "ttl_backup")
+        drop_conn = pymysql.connect(
+            host=self.config.host,
+            port=self.config.primary_port,
+            user=self.config.user,
+            password=self.config.password
+        )
+        drop_cur = drop_conn.cursor()
+        drop_cur.execute("DROP DATABASE IF EXISTS ttl_backup")
+        drop_cur.close()
+        drop_conn.close()
+
+        _restore_backup(
+            self.config,
+            self.config.primary_mgmd_port,
+            backup_id=backup_id,
+            data_dir_1=self.config.data_dir_p_1,
+            data_dir_2=self.config.data_dir_p_2,
+            include_databases="ttl_backup",
+        )
+
+        time.sleep(10)
+        _wait_for_schema_sync(
+            self.config, self.config.primary_port, "ttl_backup", "sz1"
+        )
+
+        # Verify NULL rows survived
+        verify_conn = pymysql.connect(
+            host=self.config.host,
+            port=self.config.primary_port,
+            user=self.config.user,
+            password=self.config.password,
+            database="ttl_backup"
+        )
+        cur = verify_conn.cursor()
+
+        cur.execute("SELECT * FROM sz1")
+        results = cur.fetchall()
+        assert len(results) == 3, f"Restored: expected 3 rows, got {len(results)}"
+        col_a_values = sorted(r[0] for r in results)
+        assert col_a_values == [1, 2, 4], (
+            f"Restored: expected [1, 2, 4], got {col_a_values}"
+        )
+
+        # Verify the NULL values are actually NULL
+        cur.execute("SELECT col_a, col_b FROM sz1 WHERE col_b IS NULL")
+        null_rows = cur.fetchall()
+        assert len(null_rows) == 2, (
+            f"Expected 2 rows with NULL TTL column, got {len(null_rows)}"
+        )
+        null_col_a = sorted(r[0] for r in null_rows)
+        assert null_col_a == [1, 2], f"Expected NULL rows [1, 2], got {null_col_a}"
+
+        cur.close()
+        verify_conn.close()
+
+
+@cat_backup_restore.register
+class TestCase46fAlterTTLAfterRestore(TTLTestBase):
+    """Case 46f: ALTER TTL after restore.
+
+    Restore a TTL table, then ALTER TABLE ... COMMENT='NDB_TABLE=TTL=...' to
+    change or disable TTL. Verifies the restored table's metadata is mutable.
+    """
+
+    @property
+    def name(self):
+        return "case_46f_alter_ttl_after_restore"
+
+    @property
+    def description(self):
+        return "ALTER TTL (disable, re-enable, change duration) works after restore"
+
+    def setup(self):
+        # Stop replica to avoid conflicts from DROP+ndb_restore cycle
+        replica_conn = pymysql.connect(
+            host=self.config.host,
+            port=self.config.replica_port,
+            user=self.config.user,
+            password=self.config.password
+        )
+        rcur = replica_conn.cursor()
+        rcur.execute("STOP REPLICA")
+        _kill_connections_to_db(self.config, self.config.replica_port, "ttl_backup")
+        rcur.execute("DROP DATABASE IF EXISTS ttl_backup")
+        rcur.close()
+        replica_conn.close()
+
+        _kill_connections_to_db(self.config, self.config.primary_port, "ttl_backup")
+        conn = pymysql.connect(
+            host=self.config.host,
+            port=self.config.primary_port,
+            user=self.config.user,
+            password=self.config.password
+        )
+        cur = conn.cursor()
+        cur.execute("DROP DATABASE IF EXISTS ttl_backup")
+        cur.execute("CREATE DATABASE ttl_backup")
+        cur.execute("CREATE TABLE ttl_backup.sz1 ("
+                    "col_a INT, col_b TIMESTAMP, col_c INT, "
+                    "PRIMARY KEY(col_a)) "
+                    "ENGINE=NDB, COMMENT=\"NDB_TABLE=TTL=10@col_b\"")
+        cur.close()
+        conn.close()
+
+    def teardown(self):
+        try:
+            _kill_connections_to_db(self.config, self.config.primary_port, "ttl_backup")
+            conn = pymysql.connect(
+                host=self.config.host,
+                port=self.config.primary_port,
+                user=self.config.user,
+                password=self.config.password
+            )
+            cur = conn.cursor()
+            cur.execute("DROP DATABASE IF EXISTS ttl_backup")
+            cur.close()
+            conn.close()
+        except Exception:
+            pass
+        # Re-establish replication
+        try:
+            primary_conn = pymysql.connect(
+                host=self.config.host,
+                port=self.config.primary_port,
+                user=self.config.user,
+                password=self.config.password
+            )
+            pcur = primary_conn.cursor()
+            pcur.execute("SHOW BINARY LOG STATUS")
+            binlog_row = pcur.fetchone()
+            log_file = binlog_row[0]
+            log_pos = binlog_row[1]
+            pcur.close()
+            primary_conn.close()
+
+            _kill_connections_to_db(self.config, self.config.replica_port, "ttl_backup")
+            conn = pymysql.connect(
+                host=self.config.host,
+                port=self.config.replica_port,
+                user=self.config.user,
+                password=self.config.password
+            )
+            cur = conn.cursor()
+            cur.execute("DROP DATABASE IF EXISTS ttl_backup")
+            cur.execute("STOP REPLICA")
+            cur.execute("RESET REPLICA ALL")
+            cur.execute(
+                "CHANGE REPLICATION SOURCE TO "
+                f"SOURCE_HOST='{self.config.host}', "
+                f"SOURCE_PORT={self.config.primary_port}, "
+                f"SOURCE_USER='{self.config.repl_user}', "
+                f"SOURCE_PASSWORD='{self.config.repl_password}', "
+                f"SOURCE_LOG_FILE='{log_file}', "
+                f"SOURCE_LOG_POS={log_pos}"
+            )
+            cur.execute("START REPLICA")
+            cur.close()
+            conn.close()
+        except Exception:
+            pass
+
+    def run(self):
+        # --- Phase 1: Insert rows, backup ---
+        conn = pymysql.connect(
+            host=self.config.host,
+            port=self.config.primary_port,
+            user=self.config.user,
+            password=self.config.password,
+            database="ttl_backup"
+        )
+        cur = conn.cursor()
+
+        cur.execute("BEGIN")
+        cur.execute("INSERT INTO sz1 VALUES(1, SYSDATE(), 100)")
+        cur.execute("INSERT INTO sz1 VALUES(2, DATE_ADD(SYSDATE(), INTERVAL 1 DAY), 200)")
+        cur.execute("COMMIT")
+
+        cur.execute("SELECT * FROM sz1")
+        assert len(cur.fetchall()) == 2, "Expected 2 rows before backup"
+
+        backup_id = _start_backup(self.config, self.config.primary_mgmd_port)
+        cur.close()
+        conn.close()
+
+        # --- Phase 2: Drop, restore ---
+        _kill_connections_to_db(self.config, self.config.primary_port, "ttl_backup")
+        drop_conn = pymysql.connect(
+            host=self.config.host,
+            port=self.config.primary_port,
+            user=self.config.user,
+            password=self.config.password
+        )
+        drop_cur = drop_conn.cursor()
+        drop_cur.execute("DROP DATABASE IF EXISTS ttl_backup")
+        drop_cur.close()
+        drop_conn.close()
+
+        _restore_backup(
+            self.config,
+            self.config.primary_mgmd_port,
+            backup_id=backup_id,
+            data_dir_1=self.config.data_dir_p_1,
+            data_dir_2=self.config.data_dir_p_2,
+            include_databases="ttl_backup",
+        )
+
+        time.sleep(10)
+        _wait_for_schema_sync(
+            self.config, self.config.primary_port, "ttl_backup", "sz1"
+        )
+
+        # --- Phase 3: Verify and ALTER TTL ---
+        verify_conn = pymysql.connect(
+            host=self.config.host,
+            port=self.config.primary_port,
+            user=self.config.user,
+            password=self.config.password,
+            database="ttl_backup"
+        )
+        cur = verify_conn.cursor()
+
+        # Wait for row 1 to expire under original TTL=10
+        time.sleep(11)
+        cur.execute("SELECT * FROM sz1")
+        results = cur.fetchall()
+        assert len(results) == 1, f"Expected 1 row after TTL expiry, got {len(results)}"
+        assert results[0][0] == 2, f"Expected col_a=2, got {results[0][0]}"
+
+        # --- ALTER 1: Disable TTL ---
+        cur.execute("ALTER TABLE sz1 COMMENT=\"NDB_TABLE=TTL=OFF\"")
+        cur.execute("SELECT * FROM sz1")
+        results = cur.fetchall()
+        # With TTL=OFF, all physically-present rows become visible
+        assert len(results) == 2, (
+            f"Expected 2 rows with TTL=OFF, got {len(results)}"
+        )
+
+        # --- ALTER 2: Re-enable TTL with original duration ---
+        cur.execute("ALTER TABLE sz1 COMMENT=\"NDB_TABLE=TTL=10@col_b\"")
+        cur.execute("SELECT * FROM sz1")
+        results = cur.fetchall()
+        # Row 1 is expired again under TTL=10; only row 2 (future) visible
+        assert len(results) == 1, (
+            f"Expected 1 row after re-enabling TTL=10, got {len(results)}"
+        )
+        assert results[0][0] == 2, f"Expected col_a=2, got {results[0][0]}"
+
+        # --- ALTER 3: Change TTL to a very long duration ---
+        cur.execute("ALTER TABLE sz1 COMMENT=\"NDB_TABLE=TTL=86400@col_b\"")
+        cur.execute("SELECT * FROM sz1")
+        results = cur.fetchall()
+        # With TTL=86400 (1 day), row 1 (inserted ~20s ago) is within TTL again
+        assert len(results) == 2, (
+            f"Expected 2 rows with TTL=86400, got {len(results)}"
+        )
+
+        cur.close()
+        verify_conn.close()
+
+
+@cat_backup_restore.register
+class TestCase46gDiskColumnBackupRestore(TTLTestBase):
+    """Case 46g: Backup-restore with disk columns + TTL.
+
+    Cases 51/52 test disk columns with TTL, but not through a backup-restore
+    cycle. The restore_meta step uses --no-restore-disk-objects, which could
+    affect TTL tables with disk columns. This test verifies the full cycle.
+
+    Precondition: tablespace ts_1 must be pre-created on the primary cluster.
+    """
+
+    @property
+    def name(self):
+        return "case_46g_disk_column_backup_restore"
+
+    @property
+    def description(self):
+        return "Disk columns + TTL survive backup-restore cycle"
+
+    def setup(self):
+        # Stop replica to avoid conflicts from DROP+ndb_restore cycle
+        replica_conn = pymysql.connect(
+            host=self.config.host,
+            port=self.config.replica_port,
+            user=self.config.user,
+            password=self.config.password
+        )
+        rcur = replica_conn.cursor()
+        rcur.execute("STOP REPLICA")
+        _kill_connections_to_db(self.config, self.config.replica_port, "ttl_backup")
+        rcur.execute("DROP DATABASE IF EXISTS ttl_backup")
+        rcur.close()
+        replica_conn.close()
+
+        _kill_connections_to_db(self.config, self.config.primary_port, "ttl_backup")
+        conn = pymysql.connect(
+            host=self.config.host,
+            port=self.config.primary_port,
+            user=self.config.user,
+            password=self.config.password
+        )
+        cur = conn.cursor()
+        cur.execute("DROP DATABASE IF EXISTS ttl_backup")
+        cur.execute("CREATE DATABASE ttl_backup")
+        cur.execute("CREATE TABLE ttl_backup.sz1 ("
+                    "col_a INT, col_b TIMESTAMP, col_c INT, "
+                    "col_d INT STORAGE DISK, "
+                    "PRIMARY KEY(col_a)) "
+                    "ENGINE=NDB, TABLESPACE ts_1, "
+                    "COMMENT=\"NDB_TABLE=TTL=10@col_b\"")
+        cur.close()
+        conn.close()
+
+    def teardown(self):
+        try:
+            _kill_connections_to_db(self.config, self.config.primary_port, "ttl_backup")
+            conn = pymysql.connect(
+                host=self.config.host,
+                port=self.config.primary_port,
+                user=self.config.user,
+                password=self.config.password
+            )
+            cur = conn.cursor()
+            cur.execute("DROP DATABASE IF EXISTS ttl_backup")
+            cur.close()
+            conn.close()
+        except Exception:
+            pass
+        # Re-establish replication
+        try:
+            primary_conn = pymysql.connect(
+                host=self.config.host,
+                port=self.config.primary_port,
+                user=self.config.user,
+                password=self.config.password
+            )
+            pcur = primary_conn.cursor()
+            pcur.execute("SHOW BINARY LOG STATUS")
+            binlog_row = pcur.fetchone()
+            log_file = binlog_row[0]
+            log_pos = binlog_row[1]
+            pcur.close()
+            primary_conn.close()
+
+            _kill_connections_to_db(self.config, self.config.replica_port, "ttl_backup")
+            conn = pymysql.connect(
+                host=self.config.host,
+                port=self.config.replica_port,
+                user=self.config.user,
+                password=self.config.password
+            )
+            cur = conn.cursor()
+            cur.execute("DROP DATABASE IF EXISTS ttl_backup")
+            cur.execute("STOP REPLICA")
+            cur.execute("RESET REPLICA ALL")
+            cur.execute(
+                "CHANGE REPLICATION SOURCE TO "
+                f"SOURCE_HOST='{self.config.host}', "
+                f"SOURCE_PORT={self.config.primary_port}, "
+                f"SOURCE_USER='{self.config.repl_user}', "
+                f"SOURCE_PASSWORD='{self.config.repl_password}', "
+                f"SOURCE_LOG_FILE='{log_file}', "
+                f"SOURCE_LOG_POS={log_pos}"
+            )
+            cur.execute("START REPLICA")
+            cur.close()
+            conn.close()
+        except Exception:
+            pass
+
+    def run(self):
+        # --- Phase 1: Insert rows with disk column data, wait for TTL, backup ---
+        conn = pymysql.connect(
+            host=self.config.host,
+            port=self.config.primary_port,
+            user=self.config.user,
+            password=self.config.password,
+            database="ttl_backup"
+        )
+        cur = conn.cursor()
+
+        cur.execute("BEGIN")
+        cur.execute("INSERT INTO sz1 VALUES(1, SYSDATE(), 100, 10000)")
+        cur.execute("INSERT INTO sz1 VALUES(2, SYSDATE(), 200, 20000)")
+        cur.execute("INSERT INTO sz1 VALUES(3, DATE_ADD(SYSDATE(), INTERVAL 1 DAY), 300, 30000)")
+        cur.execute("INSERT INTO sz1 VALUES(4, SYSDATE(), 400, 40000)")
+        cur.execute("COMMIT")
+
+        cur.execute("SELECT * FROM sz1")
+        assert len(cur.fetchall()) == 4, "Expected 4 rows before TTL"
+
+        # Wait for TTL expiry
+        time.sleep(11)
+
+        cur.execute("SELECT * FROM sz1")
+        results = cur.fetchall()
+        assert len(results) == 1, f"Expected 1 row after TTL, got {len(results)}"
+        assert results[0][0] == 3, f"Expected col_a=3, got {results[0][0]}"
+        assert results[0][3] == 30000, f"Expected col_d=30000, got {results[0][3]}"
+
+        # Backup
+        backup_id = _start_backup(self.config, self.config.primary_mgmd_port)
+        cur.close()
+        conn.close()
+
+        # --- Phase 2: Drop, restore ---
+        _kill_connections_to_db(self.config, self.config.primary_port, "ttl_backup")
+        drop_conn = pymysql.connect(
+            host=self.config.host,
+            port=self.config.primary_port,
+            user=self.config.user,
+            password=self.config.password
+        )
+        drop_cur = drop_conn.cursor()
+        drop_cur.execute("DROP DATABASE IF EXISTS ttl_backup")
+        drop_cur.close()
+        drop_conn.close()
+
+        _restore_backup(
+            self.config,
+            self.config.primary_mgmd_port,
+            backup_id=backup_id,
+            data_dir_1=self.config.data_dir_p_1,
+            data_dir_2=self.config.data_dir_p_2,
+            include_databases="ttl_backup",
+        )
+
+        time.sleep(10)
+        _wait_for_schema_sync(
+            self.config, self.config.primary_port, "ttl_backup", "sz1"
+        )
+
+        # --- Phase 3: Verify restored data ---
+        verify_conn = pymysql.connect(
+            host=self.config.host,
+            port=self.config.primary_port,
+            user=self.config.user,
+            password=self.config.password,
+            database="ttl_backup"
+        )
+        cur = verify_conn.cursor()
+
+        # Only the future row should be visible (TTL read filter)
+        cur.execute("SELECT * FROM sz1")
+        results = cur.fetchall()
+        assert len(results) == 1, (
+            f"Restored disk+TTL table: expected 1 visible row, got {len(results)}"
+        )
+        assert results[0][0] == 3, f"Expected col_a=3, got {results[0][0]}"
+        assert results[0][3] == 30000, (
+            f"Disk column data lost: expected col_d=30000, got {results[0][3]}"
+        )
+
+        # Verify TTL is still active: insert a new row, wait, check it expires
+        cur.execute("BEGIN")
+        cur.execute("INSERT INTO sz1 VALUES(10, SYSDATE(), 1000, 100000)")
+        cur.execute("COMMIT")
+        cur.execute("SELECT * FROM sz1")
+        assert len(cur.fetchall()) == 2, "Expected 2 rows after new insert"
+
+        time.sleep(11)
+
+        cur.execute("SELECT * FROM sz1")
+        results = cur.fetchall()
+        assert len(results) == 1, (
+            f"Expected 1 row after new row expires, got {len(results)}"
+        )
+        assert results[0][0] == 3, f"Expected col_a=3 to survive, got {results[0][0]}"
+
+        # Verify expired rows are physically present with TTL=OFF
+        cur.execute("ALTER TABLE sz1 COMMENT=\"NDB_TABLE=TTL=OFF\"")
+        cur.execute("SELECT * FROM sz1")
+        results = cur.fetchall()
+        # All physically-present rows: original 4 from backup + 1 new = 5
+        assert len(results) == 5, (
+            f"Expected 5 rows with TTL=OFF (all physical rows), got {len(results)}"
+        )
+        # Verify disk column values are intact for all rows
+        col_d_values = sorted(r[3] for r in results)
+        assert col_d_values == [10000, 20000, 30000, 40000, 100000], (
+            f"Disk column values incorrect: {col_d_values}"
+        )
+
+        cur.close()
+        verify_conn.close()
+
+
+@cat_backup_restore.register
+class TestCase46hMultiTableBackupRestore(TTLTestBase):
+    """Case 46h: Multiple tables with different TTL configs through backup-restore.
+
+    ndb_restore processes tables sequentially. This test verifies that each
+    table retains its own TTL configuration independently after restore —
+    different TTL durations don't get mixed up or lost between tables.
+    """
+
+    @property
+    def name(self):
+        return "case_46h_multi_table_backup_restore"
+
+    @property
+    def description(self):
+        return "Multiple tables with different TTL configs survive backup-restore"
+
+    def setup(self):
+        # Stop replica to avoid conflicts from DROP+ndb_restore cycle
+        replica_conn = pymysql.connect(
+            host=self.config.host,
+            port=self.config.replica_port,
+            user=self.config.user,
+            password=self.config.password
+        )
+        rcur = replica_conn.cursor()
+        rcur.execute("STOP REPLICA")
+        _kill_connections_to_db(self.config, self.config.replica_port, "ttl_backup")
+        rcur.execute("DROP DATABASE IF EXISTS ttl_backup")
+        rcur.close()
+        replica_conn.close()
+
+        _kill_connections_to_db(self.config, self.config.primary_port, "ttl_backup")
+        conn = pymysql.connect(
+            host=self.config.host,
+            port=self.config.primary_port,
+            user=self.config.user,
+            password=self.config.password
+        )
+        cur = conn.cursor()
+        cur.execute("DROP DATABASE IF EXISTS ttl_backup")
+        cur.execute("CREATE DATABASE ttl_backup")
+        # sz1: short TTL (10s), PK + UNIQUE KEY
+        cur.execute("CREATE TABLE ttl_backup.sz1 ("
+                    "col_a INT, col_b TIMESTAMP, col_c INT, "
+                    "PRIMARY KEY(col_a), UNIQUE KEY(col_c)) "
+                    "ENGINE=NDB, COMMENT=\"NDB_TABLE=TTL=10@col_b\"")
+        # sz2: long TTL (86400s = 1 day), PK only
+        cur.execute("CREATE TABLE ttl_backup.sz2 ("
+                    "col_a INT, col_b TIMESTAMP, col_c INT, "
+                    "PRIMARY KEY(col_a)) "
+                    "ENGINE=NDB, COMMENT=\"NDB_TABLE=TTL=86400@col_b\"")
+        # sz3: no TTL (control table)
+        cur.execute("CREATE TABLE ttl_backup.sz3 ("
+                    "col_a INT, col_b TIMESTAMP, col_c INT, "
+                    "PRIMARY KEY(col_a)) "
+                    "ENGINE=NDB")
+        cur.close()
+        conn.close()
+
+    def teardown(self):
+        try:
+            _kill_connections_to_db(self.config, self.config.primary_port, "ttl_backup")
+            conn = pymysql.connect(
+                host=self.config.host,
+                port=self.config.primary_port,
+                user=self.config.user,
+                password=self.config.password
+            )
+            cur = conn.cursor()
+            cur.execute("DROP DATABASE IF EXISTS ttl_backup")
+            cur.close()
+            conn.close()
+        except Exception:
+            pass
+        # Re-establish replication
+        try:
+            primary_conn = pymysql.connect(
+                host=self.config.host,
+                port=self.config.primary_port,
+                user=self.config.user,
+                password=self.config.password
+            )
+            pcur = primary_conn.cursor()
+            pcur.execute("SHOW BINARY LOG STATUS")
+            binlog_row = pcur.fetchone()
+            log_file = binlog_row[0]
+            log_pos = binlog_row[1]
+            pcur.close()
+            primary_conn.close()
+
+            _kill_connections_to_db(self.config, self.config.replica_port, "ttl_backup")
+            conn = pymysql.connect(
+                host=self.config.host,
+                port=self.config.replica_port,
+                user=self.config.user,
+                password=self.config.password
+            )
+            cur = conn.cursor()
+            cur.execute("DROP DATABASE IF EXISTS ttl_backup")
+            cur.execute("STOP REPLICA")
+            cur.execute("RESET REPLICA ALL")
+            cur.execute(
+                "CHANGE REPLICATION SOURCE TO "
+                f"SOURCE_HOST='{self.config.host}', "
+                f"SOURCE_PORT={self.config.primary_port}, "
+                f"SOURCE_USER='{self.config.repl_user}', "
+                f"SOURCE_PASSWORD='{self.config.repl_password}', "
+                f"SOURCE_LOG_FILE='{log_file}', "
+                f"SOURCE_LOG_POS={log_pos}"
+            )
+            cur.execute("START REPLICA")
+            cur.close()
+            conn.close()
+        except Exception:
+            pass
+
+    def run(self):
+        # --- Phase 1: Insert seed rows, backup ---
+        conn = pymysql.connect(
+            host=self.config.host,
+            port=self.config.primary_port,
+            user=self.config.user,
+            password=self.config.password,
+            database="ttl_backup"
+        )
+        cur = conn.cursor()
+
+        cur.execute("BEGIN")
+        # sz1 (TTL=10): one future row that survives the whole test
+        cur.execute("INSERT INTO sz1 VALUES(1, DATE_ADD(SYSDATE(), INTERVAL 1 DAY), 100)")
+        # sz2 (TTL=86400): one future row
+        cur.execute("INSERT INTO sz2 VALUES(1, DATE_ADD(SYSDATE(), INTERVAL 2 DAY), 100)")
+        # sz3 (no TTL): one row
+        cur.execute("INSERT INTO sz3 VALUES(1, SYSDATE(), 100)")
+        cur.execute("COMMIT")
+
+        for tbl in ("sz1", "sz2", "sz3"):
+            cur.execute(f"SELECT * FROM {tbl}")
+            assert len(cur.fetchall()) == 1, f"Expected 1 row in {tbl} before backup"
+
+        backup_id = _start_backup(self.config, self.config.primary_mgmd_port)
+        cur.close()
+        conn.close()
+
+        # --- Phase 2: Drop, restore ---
+        _kill_connections_to_db(self.config, self.config.primary_port, "ttl_backup")
+        drop_conn = pymysql.connect(
+            host=self.config.host,
+            port=self.config.primary_port,
+            user=self.config.user,
+            password=self.config.password
+        )
+        drop_cur = drop_conn.cursor()
+        drop_cur.execute("DROP DATABASE IF EXISTS ttl_backup")
+        drop_cur.close()
+        drop_conn.close()
+
+        _restore_backup(
+            self.config,
+            self.config.primary_mgmd_port,
+            backup_id=backup_id,
+            data_dir_1=self.config.data_dir_p_1,
+            data_dir_2=self.config.data_dir_p_2,
+            include_databases="ttl_backup",
+        )
+
+        time.sleep(10)
+        _wait_for_schema_sync(
+            self.config, self.config.primary_port, "ttl_backup", "sz1"
+        )
+
+        # --- Phase 3: Insert new rows after restore, verify per-table TTL ---
+        verify_conn = pymysql.connect(
+            host=self.config.host,
+            port=self.config.primary_port,
+            user=self.config.user,
+            password=self.config.password,
+            database="ttl_backup"
+        )
+        cur = verify_conn.cursor()
+
+        # Verify seed rows survived restore
+        for tbl in ("sz1", "sz2", "sz3"):
+            cur.execute(f"SELECT * FROM {tbl}")
+            assert len(cur.fetchall()) == 1, (
+                f"Expected 1 seed row in {tbl} after restore"
+            )
+
+        # Insert a SYSDATE() row into each table
+        cur.execute("BEGIN")
+        cur.execute("INSERT INTO sz1 VALUES(10, SYSDATE(), 1000)")
+        cur.execute("INSERT INTO sz2 VALUES(10, SYSDATE(), 1000)")
+        cur.execute("INSERT INTO sz3 VALUES(10, SYSDATE(), 1000)")
+        cur.execute("COMMIT")
+
+        for tbl in ("sz1", "sz2", "sz3"):
+            cur.execute(f"SELECT * FROM {tbl}")
+            assert len(cur.fetchall()) == 2, (
+                f"Expected 2 rows in {tbl} after new insert"
+            )
+
+        # Wait for TTL=10 expiry
+        time.sleep(11)
+
+        # sz1 (TTL=10): new row expired, only seed row remains
+        cur.execute("SELECT * FROM sz1")
+        results = cur.fetchall()
+        assert len(results) == 1, (
+            f"sz1 (TTL=10): expected 1 row (new row expired), got {len(results)}"
+        )
+        assert results[0][0] == 1, f"sz1: expected seed row col_a=1, got {results[0][0]}"
+
+        # sz2 (TTL=86400): new row still within TTL window, both rows visible
+        cur.execute("SELECT * FROM sz2")
+        results = cur.fetchall()
+        assert len(results) == 2, (
+            f"sz2 (TTL=86400): expected 2 rows (new row within window), got {len(results)}"
+        )
+
+        # sz3 (no TTL): both rows visible
+        cur.execute("SELECT * FROM sz3")
+        results = cur.fetchall()
+        assert len(results) == 2, (
+            f"sz3 (no TTL): expected 2 rows, got {len(results)}"
+        )
+
+        cur.close()
+        verify_conn.close()
 
 
 ###############################################################################
@@ -5207,38 +6859,47 @@ def main():
         runner.list_tests()
         return 0
 
-    if args.test:
-        result = runner.run_test(args.test)
-        return 0 if result.status == TestStatus.PASSED else 1
+    # Disable RDRS TTL purging for the duration of the test suite.
+    # Tests in this suite rely on the NDB read-side TTL filter to hide
+    # expired rows, and do not expect the purger to physically delete them.
+    _set_purge_enabled(config, False)
 
-    if args.category:
-        result = runner.run_category(args.category)
-        return 0 if result.failed == 0 else 1
+    try:
+        if args.test:
+            result = runner.run_test(args.test)
+            return 0 if result.status == TestStatus.PASSED else 1
 
-    # Run all categories
-    results = runner.run_all()
+        if args.category:
+            result = runner.run_category(args.category)
+            return 0 if result.failed == 0 else 1
 
-    # Print summary
-    print("\n" + "="*60)
-    print("SUMMARY")
-    print("="*60)
-    total_passed = sum(r.passed for r in results.values())
-    total_failed = sum(r.failed for r in results.values())
-    total_skipped = sum(r.skipped for r in results.values())
-    total = sum(r.total for r in results.values())
+        # Run all categories
+        results = runner.run_all()
 
-    for name, result in results.items():
-        status = "PASS" if result.failed == 0 else "FAIL"
-        print(f"  [{status}] {name}: {result.passed}/{result.total}")
+        # Print summary
+        print("\n" + "="*60)
+        print("SUMMARY")
+        print("="*60)
+        total_passed = sum(r.passed for r in results.values())
+        total_failed = sum(r.failed for r in results.values())
+        total_skipped = sum(r.skipped for r in results.values())
+        total = sum(r.total for r in results.values())
 
-    print(f"\nTotal: {total_passed}/{total} passed", end="")
-    if total_failed > 0:
-        print(f", {total_failed} failed", end="")
-    if total_skipped > 0:
-        print(f", {total_skipped} skipped", end="")
-    print()
+        for name, result in results.items():
+            status = "PASS" if result.failed == 0 else "FAIL"
+            print(f"  [{status}] {name}: {result.passed}/{result.total}")
 
-    return 0 if total_failed == 0 else 1
+        print(f"\nTotal: {total_passed}/{total} passed", end="")
+        if total_failed > 0:
+            print(f", {total_failed} failed", end="")
+        if total_skipped > 0:
+            print(f", {total_skipped} skipped", end="")
+        print()
+
+        return 0 if total_failed == 0 else 1
+    finally:
+        # Re-enable RDRS TTL purging
+        _set_purge_enabled(config, True)
 
 
 if __name__ == "__main__":
