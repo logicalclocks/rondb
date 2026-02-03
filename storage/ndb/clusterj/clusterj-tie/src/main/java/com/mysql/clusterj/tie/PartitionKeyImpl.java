@@ -156,6 +156,31 @@ class PartitionKeyImpl implements PartitionKey {
         });
     }
 
+    /** Add a timestamp key to the partition key.
+     * Uses the actual storage size (4-7 bytes for TIMESTAMP2 based on precision).
+     * The partition key will actually be constructed when needed, at enlist time.
+     */
+    public void addTimestampKey(final Column storeColumn, final long key) {
+        // Calculate actual storage size from precision (not getSize() which may be aligned to 8)
+        final int columnSize = Utility.getTimestamp2StorageSize(storeColumn.getPrecision());
+        keyPartBuilders.add(new KeyPartBuilderImpl(columnSize) {
+            public void addKeyPart(BufferManager bufferManager) {
+                this.bufferManager = bufferManager;
+                buffer = bufferManager.borrowPartitionKeyPartBuffer(length);
+                if (buffer.capacity() < length || buffer.position() != 0 || buffer.position() + length < buffer.limit()) {
+                    System.out.println("PartitionKeyImpl.addTimestampKey.addKeyPart() got buffer for length: " + length +
+                        " buffer: " + buffer.capacity() + " " + buffer.position() + " " + buffer.limit());
+                }
+                Utility.convertValueForTimestampKey(buffer, storeColumn, key);
+                KeyPart keyPart = new KeyPart(buffer, buffer.limit());
+                keyParts.add(keyPart);
+            }
+            public void release() {
+//                System.out.println("PartitionKeyImpl.addTimestampKey.release() " + length);
+            }
+        });
+    }
+
     /** Add a String key to the partition key.
      * The partition key will actually be constructed when needed, at enlist time.
      * This is done so that the buffer manager can be used to efficiently create
