@@ -197,7 +197,8 @@ std::unique_ptr<char[]> &JSONParser::get_buffer() {
 
 RS_Status extract_db_and_table(const std::string_view &,
                                std::string_view &,
-                               std::string&);
+                               std::string&,
+                               const std::string& expected_operation);
 RS_Status handle_simdjson_error(const simdjson::error_code &,
                                 simdjson::ondemand::document &,
                                 const char *&);
@@ -458,7 +459,8 @@ RS_Status JSONParser::batch_parse(simdjson::padded_string_view reqBody,
     RS_Status status =
       extract_db_and_table(relativeUrl,
                            reqStruct.path.db,
-                           reqStruct.path.table);
+                           reqStruct.path.table,
+                           PKREAD);
     if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
                              drogon::HttpStatusCode::k200OK)) {
       return status;
@@ -1451,7 +1453,8 @@ RS_Status JSONParser::batch_feature_store_parse(
 
 RS_Status extract_db_and_table(const std::string_view &relativeUrl,
                                std::string_view &db,
-                               std::string &table) {
+                               std::string &table,
+                               const std::string& expected_op) {
   // Find the positions of the last three slashes
   std::string_view request_type;
   size_t len = relativeUrl.length();
@@ -1507,8 +1510,7 @@ RS_Status extract_db_and_table(const std::string_view &relativeUrl,
   table = checkUrl.substr(secondLastSlashPos + 1,
                           lastSlashPos - secondLastSlashPos - 1);
   request_type = checkUrl.substr(lastSlashPos + 1);
-  if (request_type.length() == strlen(PKREAD) &&
-      (memcmp(request_type.data(), PKREAD, request_type.length()) == 0) &&
+  if (request_type == expected_op &&
       db.length() > 0 &&
       table.length() > 0) {
     return CRS_Status::SUCCESS.status;
@@ -1533,4 +1535,662 @@ RS_Status handle_simdjson_error(const simdjson::error_code &error,
   return CRS_Status(static_cast<HTTP_CODE>(
     drogon::HttpStatusCode::k400BadRequest),
     error_message(error), currentLocation).status;
+}
+
+/*** Scan Read ***/
+bool parseGroup(std::string_view op, FilterNode::Group& out) {
+  if (op == "AND") {
+    out = FilterNode::Group::AND;
+    return true;
+  } else if (op == "OR") {
+    out = FilterNode::Group::OR;
+    return true;
+  } else if (op == "NAND") {
+    out = FilterNode::Group::NAND;
+    return true;
+  } else if (op == "NOR") {
+    out = FilterNode::Group::NOR;
+    return true;
+  }
+  return false;
+}
+
+RS_Status ParseJsonValue(simdjson::simdjson_result<simdjson::ondemand::value> v,
+                         Node::ParsedValue& pv,
+                         simdjson::ondemand::document &doc) {
+  auto err = v.error();
+  if (err != simdjson::SUCCESS) {
+    const char *currentLocation = nullptr;
+    return handle_simdjson_error(err, doc, currentLocation);
+  }
+  simdjson::ondemand::value value = v.value_unsafe();
+
+  if (value.is_null()) {
+    pv.kind = Node::ParsedValue::Kind::NULLVAL;
+    return CRS_Status().status;
+  }
+
+  auto num_res = value.get_number();
+  if (num_res.error() == simdjson::SUCCESS) {
+    simdjson::ondemand::number num = num_res.value_unsafe();
+
+    if (num.is_uint64()) {
+      pv.kind = Node::ParsedValue::Kind::UINT64;
+      pv.u64 = num.get_uint64();
+    } else if (num.is_int64()) {
+      pv.kind = Node::ParsedValue::Kind::INT64;
+      pv.i64 = num.get_int64();
+    } else if (num.is_double()) {
+      pv.kind = Node::ParsedValue::Kind::DOUBLE;
+      pv.d = num.get_double();
+    } else {
+      return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+          ERROR_SCAN_INVALID_VALUE,
+          std::string(rdrsErrorMessage(ERROR_SCAN_INVALID_VALUE))).status;
+    }
+    return CRS_Status().status;
+  }
+
+  std::string_view sv;
+  if (value.get(sv) == simdjson::SUCCESS) {
+    pv.kind = Node::ParsedValue::Kind::STRING;
+    pv.s.assign(sv);
+    return CRS_Status().status;
+  }
+
+  return CRS_Status(static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+      ERROR_SCAN_INVALID_VALUE,
+      std::string(rdrsErrorMessage(ERROR_SCAN_INVALID_VALUE))).status;
+}
+
+// Security limits for scan operations
+static constexpr int MAX_FILTER_DEPTH = 32;
+static constexpr size_t MAX_SCAN_RANGES = 64;
+
+RS_Status parseScanFilter(
+    simdjson::ondemand::document& doc,
+    simdjson::ondemand::object obj,
+    std::shared_ptr<FilterNode>& out,
+    std::string& err,
+    int depth = 0) {
+
+  // Check recursion depth to prevent stack overflow
+  if (depth > MAX_FILTER_DEPTH) {
+    return CRS_Status(static_cast<HTTP_CODE>(
+          drogon::HttpStatusCode::k400BadRequest),
+        ERROR_SCAN_FILTER_TOO_DEEP,
+        std::string(rdrsErrorMessage(ERROR_SCAN_FILTER_TOO_DEEP))).status;
+  }
+
+  const char *currentLocation = nullptr;
+  auto opVal = obj["op"];
+  if (unlikely(opVal.error() == simdjson::error_code::NO_SUCH_FIELD)) {
+    return CRS_Status(static_cast<HTTP_CODE>(
+          drogon::HttpStatusCode::k400BadRequest),
+        ERROR_SCAN_FILTER_MISSING_OP,
+        std::string(rdrsErrorMessage(ERROR_SCAN_FILTER_MISSING_OP))).status;
+  } else if (unlikely(opVal.error() != simdjson::SUCCESS)) {
+    return handle_simdjson_error(opVal.error(), doc, currentLocation);
+  }
+  std::string_view op;
+  auto error = opVal.get(op);
+  if (unlikely(error != simdjson::SUCCESS)) {
+    return handle_simdjson_error(error, doc, currentLocation);
+  }
+
+  auto node = std::make_shared<FilterNode>();
+
+  FilterNode::Group group;
+  if (parseGroup(op, group)) {
+    node->type = FilterNode::Type::LOGIC;
+    node->group = group;
+
+    auto argsVal = obj["args"];
+    if (unlikely(argsVal.error() == simdjson::error_code::NO_SUCH_FIELD)) {
+      return CRS_Status(static_cast<HTTP_CODE>(
+            drogon::HttpStatusCode::k400BadRequest),
+          ERROR_SCAN_FILTER_LOGIC_MISSING_FILTERS,
+          std::string(rdrsErrorMessage(ERROR_SCAN_FILTER_LOGIC_MISSING_FILTERS))).status;
+    } else if (unlikely(argsVal.error() != simdjson::SUCCESS)) {
+      return handle_simdjson_error(argsVal.error(), doc, currentLocation);
+    }
+    simdjson::ondemand::array arr;
+    error = argsVal.get(arr);
+    if (unlikely(error != simdjson::SUCCESS)) {
+      return handle_simdjson_error(error, doc, currentLocation);
+    }
+
+    for (simdjson::ondemand::value child : arr) {
+      simdjson::ondemand::object childObj;
+      error = child.get(childObj);
+      if (error != simdjson::SUCCESS) {
+        return CRS_Status(static_cast<HTTP_CODE>(
+              drogon::HttpStatusCode::k400BadRequest),
+            ERROR_SCAN_FILTER_LOGIC_INVALID_CHILD_TYPE,
+            std::string(rdrsErrorMessage(ERROR_SCAN_FILTER_LOGIC_INVALID_CHILD_TYPE))).status;
+      }
+
+      std::shared_ptr<FilterNode> sub;
+      RS_Status ret = parseScanFilter(doc, childObj, sub, err, depth + 1);
+      if (ret.http_code != HTTP_CODE::SUCCESS) {
+        return ret;
+      }
+
+      node->children.push_back(sub);
+    }
+
+    /* Binary logic tree */
+    if (node->children.size() != 2) {
+      return CRS_Status(static_cast<HTTP_CODE>(
+            drogon::HttpStatusCode::k400BadRequest),
+          ERROR_SCAN_FILTER_LOGIC_INVALID_CHILD_NUM,
+          std::string(rdrsErrorMessage(ERROR_SCAN_FILTER_LOGIC_INVALID_CHILD_NUM))).status;
+    }
+    out = node;
+    return CRS_Status().status;
+  }
+
+  if (op == "CMP") {
+    node->type = FilterNode::Type::COMPARE;
+
+    // column
+    auto columnVal = obj["column"];
+    if (unlikely(columnVal.error() == simdjson::error_code::NO_SUCH_FIELD)) {
+      return CRS_Status(static_cast<HTTP_CODE>(
+            drogon::HttpStatusCode::k400BadRequest),
+          ERROR_SCAN_FILTER_CMP_MISSING_COLUMN,
+          std::string(rdrsErrorMessage(ERROR_SCAN_FILTER_CMP_MISSING_COLUMN))).status;
+    } else if (unlikely(columnVal.error() != simdjson::SUCCESS)) {
+      return handle_simdjson_error(columnVal.error(), doc, currentLocation);
+    }
+    std::string_view col;
+    error = columnVal.get(col);
+    if (error != simdjson::SUCCESS) {
+      return handle_simdjson_error(columnVal.error(), doc, currentLocation);
+    }
+    node->column = std::string(col);
+
+    // cond
+    auto condVal = obj["cond"];
+    if (unlikely(condVal.error() == simdjson::error_code::NO_SUCH_FIELD)) {
+      return CRS_Status(static_cast<HTTP_CODE>(
+            drogon::HttpStatusCode::k400BadRequest),
+          ERROR_SCAN_FILTER_CMP_MISSING_COND,
+          std::string(rdrsErrorMessage(ERROR_SCAN_FILTER_CMP_MISSING_COND))).status;
+    } else if (unlikely(condVal.error() != simdjson::SUCCESS)) {
+      return handle_simdjson_error(condVal.error(), doc, currentLocation);
+    }
+    std::string_view cond_string;
+    error = condVal.get(cond_string);
+    if (error != simdjson::SUCCESS) {
+      return handle_simdjson_error(condVal.error(), doc, currentLocation);
+    }
+
+    FilterNode::Condition cond = FilterNode::Condition::COND_LE;
+    if (cond_string == "LE") {
+      cond = FilterNode::Condition::COND_LE;
+    } else if (cond_string == "LT") {
+      cond = FilterNode::Condition::COND_LT;
+    } else if (cond_string == "GE") {
+      cond = FilterNode::Condition::COND_GE;
+    } else if (cond_string == "GT") {
+      cond = FilterNode::Condition::COND_GT;
+    } else if (cond_string == "EQ") {
+      cond = FilterNode::Condition::COND_EQ;
+    } else if (cond_string == "NE") {
+      cond = FilterNode::Condition::COND_NE;
+    } else {
+      return CRS_Status(static_cast<HTTP_CODE>(
+            drogon::HttpStatusCode::k400BadRequest),
+          ERROR_SCAN_FILTER_INVALID_COND,
+          std::string(rdrsErrorMessage(ERROR_SCAN_FILTER_INVALID_COND))).status;
+    }
+    node->cond = cond;
+
+    // value
+    auto valueVal = obj["value"];
+    if (unlikely(valueVal.error() == simdjson::error_code::NO_SUCH_FIELD)) {
+      return CRS_Status(static_cast<HTTP_CODE>(
+            drogon::HttpStatusCode::k400BadRequest),
+          ERROR_SCAN_FILTER_CMP_MISSING_VALUE,
+          std::string(rdrsErrorMessage(ERROR_SCAN_FILTER_CMP_MISSING_VALUE))).status;
+    } else if (unlikely(valueVal.error() != simdjson::SUCCESS)) {
+      return handle_simdjson_error(valueVal.error(), doc, currentLocation);
+    }
+
+    auto st = ParseJsonValue(valueVal, node->value, doc);
+    if (st.http_code != HTTP_CODE::SUCCESS) {
+      return st;
+    }
+
+    out = node;
+    return CRS_Status().status;
+  }
+
+  if (op == "ISNULL") {
+    node->type = FilterNode::Type::IS_NULL;
+
+    auto columnVal = obj["column"];
+    if (unlikely(columnVal.error() == simdjson::error_code::NO_SUCH_FIELD)) {
+      return CRS_Status(static_cast<HTTP_CODE>(
+            drogon::HttpStatusCode::k400BadRequest),
+          ERROR_SCAN_FILTER_ISNULL_MISSING_COLUMN,
+          std::string(rdrsErrorMessage(ERROR_SCAN_FILTER_ISNULL_MISSING_COLUMN))).status;
+    } else if (unlikely(columnVal.error() != simdjson::SUCCESS)) {
+      return handle_simdjson_error(columnVal.error(), doc, currentLocation);
+    }
+
+    std::string_view col;
+    error = columnVal.get(col);
+    if (error != simdjson::SUCCESS) {
+      return handle_simdjson_error(columnVal.error(), doc, currentLocation);
+    }
+
+    node->column = std::string(col);
+    out = node;
+    return CRS_Status().status;
+  }
+
+  if (op == "ISNOTNULL") {
+    node->type = FilterNode::Type::IS_NOT_NULL;
+
+    auto columnVal = obj["column"];
+    if (unlikely(columnVal.error() == simdjson::error_code::NO_SUCH_FIELD)) {
+      return CRS_Status(static_cast<HTTP_CODE>(
+            drogon::HttpStatusCode::k400BadRequest),
+          ERROR_SCAN_FILTER_ISNOTNULL_MISSING_COLUMN,
+          std::string(rdrsErrorMessage(ERROR_SCAN_FILTER_ISNOTNULL_MISSING_COLUMN))).status;
+    } else if (unlikely(columnVal.error() != simdjson::SUCCESS)) {
+      return handle_simdjson_error(columnVal.error(), doc, currentLocation);
+    }
+
+    std::string_view col;
+    auto res = columnVal.get(col);
+    if (res) {
+      return handle_simdjson_error(columnVal.error(), doc, currentLocation);
+    }
+
+    node->column = std::string(col);
+    out = node;
+    return CRS_Status().status;
+  }
+
+  return CRS_Status(static_cast<HTTP_CODE>(
+        drogon::HttpStatusCode::k400BadRequest),
+      ERROR_SCAN_FILTER_UNKNOWN_OP,
+      std::string(rdrsErrorMessage(ERROR_SCAN_FILTER_UNKNOWN_OP))).status;
+}
+
+RS_Status parseScanIndex(simdjson::ondemand::document& doc,
+                         simdjson::ondemand::object indexObj,
+                         ScanReadParams& out) {
+  const char *currentLocation = nullptr;
+  IndexScanParams index;
+
+  // ---- name ----
+  {
+    std::string_view sv;
+    auto res = indexObj["name"].get(sv);
+    if (res == simdjson::error_code::NO_SUCH_FIELD) {
+      return CRS_Status(static_cast<HTTP_CODE>(
+            drogon::HttpStatusCode::k400BadRequest),
+          ERROR_SCAN_INDEX_MISSING_NAME,
+          std::string(rdrsErrorMessage(ERROR_SCAN_INDEX_MISSING_NAME))).status;
+    }
+    if (res != simdjson::SUCCESS) {
+      return handle_simdjson_error(res, doc, currentLocation);
+    }
+    index.name.assign(sv);
+  }
+
+  // ---- columns ----
+  {
+    auto colsVal = indexObj["key_columns"];
+    if (colsVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
+      return CRS_Status(static_cast<HTTP_CODE>(
+            drogon::HttpStatusCode::k400BadRequest),
+          ERROR_SCAN_INDEX_MISSING_COLUMNS,
+          std::string(rdrsErrorMessage(ERROR_SCAN_INDEX_MISSING_COLUMNS))).status;
+    }
+    if (colsVal.error() != simdjson::SUCCESS) {
+      return handle_simdjson_error(colsVal.error(), doc,
+                                   currentLocation);
+    }
+
+    simdjson::ondemand::array cols;
+    if (colsVal.get(cols) != simdjson::SUCCESS) {
+      return CRS_Status(static_cast<HTTP_CODE>(
+            drogon::HttpStatusCode::k400BadRequest),
+          ERROR_SCAN_INDEX_COLUMNS_NOT_ARRAY,
+          std::string(rdrsErrorMessage(ERROR_SCAN_INDEX_COLUMNS_NOT_ARRAY))).status;
+    }
+
+    for (auto c : cols) {
+      std::string_view sv;
+      if (c.get(sv) != simdjson::SUCCESS) {
+        return CRS_Status(static_cast<HTTP_CODE>(
+              drogon::HttpStatusCode::k400BadRequest),
+            ERROR_SCAN_INDEX_COLUMN_INVALID,
+            std::string(rdrsErrorMessage(ERROR_SCAN_INDEX_COLUMN_INVALID))).status;
+      }
+      index.columns.emplace_back(sv);
+    }
+
+    if (index.columns.empty()) {
+      return CRS_Status(static_cast<HTTP_CODE>(
+            drogon::HttpStatusCode::k400BadRequest),
+          ERROR_SCAN_INDEX_COLUMNS_EMPTY,
+          std::string(rdrsErrorMessage(ERROR_SCAN_INDEX_COLUMNS_EMPTY))).status;
+    }
+  }
+
+  // ---- order (optional) ----
+  {
+    auto ordVal = indexObj["order"];
+    if (ordVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
+    } else if (ordVal.error() != simdjson::SUCCESS) {
+      return handle_simdjson_error(ordVal.error(), doc,
+                                   currentLocation);
+    } else {
+      std::string_view order;
+      if (ordVal.get(order) != simdjson::SUCCESS) {
+        return CRS_Status(static_cast<HTTP_CODE>(
+              drogon::HttpStatusCode::k400BadRequest),
+            ERROR_SCAN_INDEX_ORDER_INVALID,
+            std::string(rdrsErrorMessage(ERROR_SCAN_INDEX_ORDER_INVALID))).status;
+      }
+      if (order == "asc") {
+        index.order = IndexScanParams::Order::ASC;
+      } else if (order == "desc") {
+        index.order = IndexScanParams::Order::DESC;
+      } else {
+        return CRS_Status(static_cast<HTTP_CODE>(
+              drogon::HttpStatusCode::k400BadRequest),
+            ERROR_SCAN_INDEX_ORDER_INVALID,
+            std::string(rdrsErrorMessage(ERROR_SCAN_INDEX_ORDER_INVALID))).status;
+      }
+    }
+  }
+
+  // ---- ranges ----
+  {
+    auto rangesVal = indexObj["ranges"];
+    if (rangesVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
+      return CRS_Status(static_cast<HTTP_CODE>(
+            drogon::HttpStatusCode::k400BadRequest),
+          ERROR_SCAN_INDEX_MISSING_RANGES,
+          std::string(rdrsErrorMessage(ERROR_SCAN_INDEX_MISSING_RANGES))).status;
+    }
+    if (rangesVal.error() != simdjson::SUCCESS) {
+      return handle_simdjson_error(rangesVal.error(), doc,
+                                   currentLocation);
+    }
+
+    simdjson::ondemand::array ranges;
+    if (rangesVal.get(ranges) != simdjson::SUCCESS) {
+      return CRS_Status(static_cast<HTTP_CODE>(
+            drogon::HttpStatusCode::k400BadRequest),
+          ERROR_SCAN_INDEX_RANGES_NOT_ARRAY,
+          std::string(rdrsErrorMessage(ERROR_SCAN_INDEX_RANGES_NOT_ARRAY))).status;
+    }
+
+    for (auto r : ranges) {
+      simdjson::ondemand::object rangeObj;
+      if (r.get(rangeObj) != simdjson::SUCCESS) {
+        return CRS_Status(static_cast<HTTP_CODE>(
+              drogon::HttpStatusCode::k400BadRequest),
+            ERROR_SCAN_INDEX_RANGE_INVALID,
+            std::string(rdrsErrorMessage(ERROR_SCAN_INDEX_RANGE_INVALID))).status;
+      }
+
+      IndexRange range;
+
+      // ---- lower / upper ----
+      for (auto side : {"lower", "upper"}) {
+        auto boundVal = rangeObj[side];
+        if (boundVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
+          continue;
+        }
+        if (boundVal.error() != simdjson::SUCCESS) {
+          return handle_simdjson_error(boundVal.error(), doc,
+                                       currentLocation);
+        }
+
+        simdjson::ondemand::object boundObj;
+        if (boundVal.get(boundObj) != simdjson::SUCCESS) {
+          return CRS_Status(static_cast<HTTP_CODE>(
+                drogon::HttpStatusCode::k400BadRequest),
+              ERROR_SCAN_INDEX_BOUND_INVALID,
+              std::string(rdrsErrorMessage(ERROR_SCAN_INDEX_BOUND_INVALID))).status;
+        }
+
+        IndexBound bound;
+
+        // values
+        auto valuesVal = boundObj["values"];
+        if (valuesVal.error() != simdjson::SUCCESS) {
+          return CRS_Status(static_cast<HTTP_CODE>(
+                drogon::HttpStatusCode::k400BadRequest),
+              ERROR_SCAN_INDEX_BOUND_MISSING_VALUES,
+              std::string(rdrsErrorMessage(ERROR_SCAN_INDEX_BOUND_MISSING_VALUES))).status;
+        }
+
+        simdjson::ondemand::array values;
+        if (valuesVal.get(values) != simdjson::SUCCESS) {
+          return CRS_Status(static_cast<HTTP_CODE>(
+                drogon::HttpStatusCode::k400BadRequest),
+              ERROR_SCAN_INDEX_BOUND_VALUES_NOT_ARRAY,
+              std::string(rdrsErrorMessage(ERROR_SCAN_INDEX_BOUND_VALUES_NOT_ARRAY))).status;
+        }
+
+        for (auto v : values) {
+          BoundNode bound_node;
+          auto st = ParseJsonValue(v, bound_node.value, doc);
+          if (st.http_code != HTTP_CODE::SUCCESS) {
+            return st;
+          }
+          bound.values.emplace_back(std::move(bound_node));
+        }
+
+        // inclusive (optional)
+        auto incVal = boundObj["inclusive"];
+        if (incVal.error() == simdjson::SUCCESS) {
+          bool inc;
+          if (incVal.get(inc) != simdjson::SUCCESS) {
+            return CRS_Status(static_cast<HTTP_CODE>(
+                  drogon::HttpStatusCode::k400BadRequest),
+                ERROR_SCAN_INDEX_BOUND_INCLUSIVE_INVALID,
+                std::string(rdrsErrorMessage(ERROR_SCAN_INDEX_BOUND_INCLUSIVE_INVALID))).status;
+          }
+          bound.inclusive = inc;
+        }
+
+        if (strcmp(side, "lower") == 0) {
+          range.lower = std::move(bound);
+        } else {
+          range.upper = std::move(bound);
+        }
+      }
+
+      // Check ranges limit before adding
+      if (index.ranges.size() >= MAX_SCAN_RANGES) {
+        return CRS_Status(static_cast<HTTP_CODE>(
+              drogon::HttpStatusCode::k400BadRequest),
+            ERROR_SCAN_TOO_MANY_RANGES,
+            std::string(rdrsErrorMessage(ERROR_SCAN_TOO_MANY_RANGES))).status;
+      }
+      index.ranges.emplace_back(std::move(range));
+    }
+  }
+
+  out.index = std::move(index);
+  return CRS_Status().status;
+}
+
+RS_Status JSONParser::scan_parse(simdjson::padded_string_view reqBody,
+                                  ScanReadParams& reqStruct) {
+  const char *currentLocation = nullptr;
+
+  simdjson::error_code error = parser.iterate(reqBody).get(doc);
+  if (unlikely(error != simdjson::SUCCESS)) {
+    return handle_simdjson_error(error, doc, currentLocation);
+  }
+
+  simdjson::ondemand::object reqObject;
+  error = doc.get_object().get(reqObject);
+  if (unlikely(error != simdjson::SUCCESS)) {
+    return handle_simdjson_error(error, doc, currentLocation);
+  }
+
+  auto& bodyObject = reqObject;
+
+  int64_t limit = -1;
+  auto limitVal = bodyObject[LIMIT];
+  if (unlikely(limitVal.error() ==
+        simdjson::error_code::NO_SUCH_FIELD)) {
+    return CRS_Status(static_cast<HTTP_CODE>(
+          drogon::HttpStatusCode::k400BadRequest),
+        ERROR_SCAN_MISSING_LIMIT, std::string(rdrsErrorMessage(ERROR_SCAN_MISSING_LIMIT))).status;
+  } else if (unlikely(limitVal.error() != simdjson::SUCCESS)) {
+    return handle_simdjson_error(
+        limitVal.error(), doc, currentLocation);
+  } else if (unlikely(limitVal.is_null())) {
+    return CRS_Status(static_cast<HTTP_CODE>(
+          drogon::HttpStatusCode::k400BadRequest),
+        ERROR_SCAN_MISSING_LIMIT, std::string(rdrsErrorMessage(ERROR_SCAN_MISSING_LIMIT))).status;
+  } else {
+    error = limitVal.get(limit);
+    if (unlikely(error != simdjson::SUCCESS)) {
+      return handle_simdjson_error(error, doc, currentLocation);
+    }
+  }
+  reqStruct.limit = limit;
+
+  simdjson::ondemand::array readColumns;
+  auto readColumnsVal = bodyObject[READCOLUMNS];
+  if (unlikely(readColumnsVal.error() ==
+        simdjson::error_code::NO_SUCH_FIELD)) {
+    readColumns = {};
+  } else if (unlikely(readColumnsVal.error() != simdjson::SUCCESS)) {
+    return handle_simdjson_error(
+        readColumnsVal.error(), doc, currentLocation);
+  } else if (unlikely(readColumnsVal.is_null())) {
+    readColumns = {};
+  } else {
+    error = readColumnsVal.get(readColumns);
+    if (unlikely(error != simdjson::SUCCESS)) {
+      return handle_simdjson_error(error, doc, currentLocation);
+    } else if (unlikely(readColumns.is_empty())) {
+      readColumns = {};
+    } else {
+      for (auto readColumn : readColumns) {
+        ScanReadColumn ScanReadColumn;
+        simdjson::ondemand::object readColumnObj;
+        error = readColumn.get(readColumnObj);
+        if (unlikely(error != simdjson::SUCCESS)) {
+          return handle_simdjson_error(error, doc, currentLocation);
+        }
+        std::string_view column;
+        auto columnVal = readColumnObj[COLUMN];
+        if (unlikely(columnVal.error() ==
+              simdjson::error_code::NO_SUCH_FIELD)) {
+          return CRS_Status(
+              HTTP_CODE::CLIENT_ERROR,
+              "a column to read is missing a name").status;
+        } else if (unlikely(columnVal.error() != simdjson::SUCCESS)) {
+          return handle_simdjson_error(
+              columnVal.error(), doc, currentLocation);
+        } else if (unlikely(columnVal.is_null())) {
+          return CRS_Status(
+              HTTP_CODE::CLIENT_ERROR,
+              "a column to read is missing a name").status;
+        } else {
+          error = columnVal.get(column);
+          if (unlikely(error != simdjson::SUCCESS)) {
+            return handle_simdjson_error(error, doc, currentLocation);
+          }
+        }
+        if (unlikely(column.size() == 0)) {
+          return CRS_Status(
+              HTTP_CODE::CLIENT_ERROR,
+              "a column to read is missing a name").status;
+        }
+        ScanReadColumn.column = column;
+        std::string_view dataReturnType;
+        auto dataReturnTypeVal = readColumnObj[DATA_RETURN_TYPE];
+        if (unlikely(dataReturnTypeVal.error() ==
+              simdjson::error_code::NO_SUCH_FIELD)) {
+          dataReturnType = "";
+        } else if (unlikely(dataReturnTypeVal.error() != simdjson::SUCCESS)) {
+          return handle_simdjson_error(dataReturnTypeVal.error(), doc,
+              currentLocation);
+        } else if (unlikely(dataReturnTypeVal.is_null())) {
+          dataReturnType = "";
+        } else {
+          error = dataReturnTypeVal.get(dataReturnType);
+          if (unlikely(error != simdjson::SUCCESS)) {
+            return handle_simdjson_error(error, doc, currentLocation);
+          }
+        }
+        reqStruct.readColumns.emplace_back(ScanReadColumn);
+      }
+    }
+  }
+
+  simdjson::ondemand::object filtersObject;
+  auto filtersVal = bodyObject[FILTERS];
+  if (unlikely(filtersVal.error() == simdjson::error_code::NO_SUCH_FIELD)) {
+  } else if (unlikely(filtersVal.error() != simdjson::SUCCESS)) {
+    return handle_simdjson_error(filtersVal.error(), doc, currentLocation);
+  } else if (unlikely(filtersVal.is_null())) {
+  } else {
+    error = filtersVal.get(filtersObject);
+    if (unlikely(error != simdjson::SUCCESS)) {
+      return handle_simdjson_error(error, doc, currentLocation);
+    }
+    if (unlikely(filtersObject.is_empty())) {
+    } else {
+      std::string err = "";
+      std::shared_ptr<FilterNode> filters;
+      RS_Status ret = parseScanFilter(doc, filtersObject, filters, err);
+      if (ret.http_code != HTTP_CODE::SUCCESS) {
+        return ret;
+      }
+      reqStruct.filterRoot = filters;
+    }
+  }
+
+  simdjson::ondemand::object indexObject;
+  auto indexVal = bodyObject[INDEX];
+  if (unlikely(indexVal.error() == simdjson::error_code::NO_SUCH_FIELD)) {
+  } else if (unlikely(indexVal.error() != simdjson::SUCCESS)) {
+    return handle_simdjson_error(indexVal.error(), doc, currentLocation);
+  } else if (unlikely(indexVal.is_null())) {
+  } else {
+    error = indexVal.get(indexObject);
+    if (unlikely(error != simdjson::SUCCESS)) {
+      return handle_simdjson_error(error, doc, currentLocation);
+    }
+    if (unlikely(indexObject.is_empty())) {
+    } else {
+      std::string err = "";
+      RS_Status ret = parseScanIndex(doc, indexObject, reqStruct);
+      if (ret.http_code != HTTP_CODE::SUCCESS) {
+        return ret;
+      }
+    }
+  }
+  DEB_SCAN_BLOCK(
+    std::cout << std::endl;
+    std::cout << ">>>>>> Parsing LOGICAL Scan Filter: " << std::endl;
+    reqStruct.DumpFilters(reqStruct.filterRoot);
+    std::cout << "<<<<<<" << std::endl;
+    std::cout << std::endl;
+    std::cout << ">>>>>> Parsing LOGICAL Scan Index: " << std::endl;
+    reqStruct.DumpIndex();
+    std::cout << "<<<<<<" << std::endl;
+    std::cout << std::endl;
+  );
+
+  return CRS_Status::SUCCESS.status;
 }

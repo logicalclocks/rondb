@@ -87,6 +87,19 @@ class RonSQLEndPointMetricsUpdater {
   ~RonSQLEndPointMetricsUpdater();
 };
 
+class IndexScanEndPointMetricsUpdater {
+ private:
+  drogon::HttpResponsePtr m_response;
+  NDB_TICKS m_start_time;
+  Uint64 m_rows_fetched;
+
+ public:
+  IndexScanEndPointMetricsUpdater(drogon::HttpResponsePtr response);
+  void set_rows_fetched(Uint64 rows_fetched);
+
+  ~IndexScanEndPointMetricsUpdater();
+};
+
 class RondisEndPointMetricsUpdater {
  private:
   NDB_TICKS m_start_time;

@@ -16,11 +16,6 @@
  */
 package api
 
-/*
-#include "./../../../src/rdrs_const.h"
-#include "./../../../src/rdrs_dal.h"
-*/
-import "C"
 import (
 	"bytes"
 	"encoding/json"

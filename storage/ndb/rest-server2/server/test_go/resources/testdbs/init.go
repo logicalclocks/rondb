@@ -71,6 +71,8 @@ var databaseCreateSchemes = map[string]string{
 	DB026:      DB026Scheme,
 	DB027:      DB027Scheme,
 	DB028:      DB028Scheme,
+	DB029:      DB029Scheme,
+	DB030:      DB030Scheme,
 	FSDB001:    FSDB001Scheme,
 	FSDB002:    FSDB002Scheme,
 	FSDB003:    FSDB003Scheme,
