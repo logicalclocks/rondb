@@ -53,6 +53,7 @@ class JSONParser {
   std::unique_ptr<char[]> &get_buffer();
   RS_Status pk_parse(simdjson::padded_string_view, PKReadParams &);
   RS_Status batch_parse(simdjson::padded_string_view, std::vector<PKReadParams> &);
+  RS_Status scan_parse(simdjson::padded_string_view, ScanReadParams&);
   // The config file can specify the number of threads, which is necessary to
   // initialize global jsonParsers variable. Therefore, we'd rather use a static
   // function for parsing the config itself.

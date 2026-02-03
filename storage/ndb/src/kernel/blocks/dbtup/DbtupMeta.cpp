@@ -1469,7 +1469,7 @@ Dbtup::handleAlterTablePrepare(Signal *signal,
     regAlterTabOpPtr.p->ttlColumnNo = req->ttlColumnNo;
     connectPtr = regAlterTabOpPtr.i;
   } else if (AlterTableReq::getTTLSecFlag(req->changeMask) ||
-             AlterTableReq::getTTLSecFlag(req->changeMask)) {
+             AlterTableReq::getTTLColFlag(req->changeMask)) {
     AlterTabOperationPtr regAlterTabOpPtr;
     seizeAlterTabOperation(regAlterTabOpPtr);
     regAlterTabOpPtr.p->ttlSec = req->ttlSec;

@@ -320,11 +320,11 @@ inline void AlterTableReq::setTTLSecFlag(UintR &changeMask, Uint32 rbFlag) {
 }
 
 inline Uint8 AlterTableReq::getTTLColFlag(const UintR &changeMask) {
-  return (Uint8)((changeMask >> TTL_SEC_SHIFT) & 1);
+  return (Uint8)((changeMask >> TTL_COL_SHIFT) & 1);
 }
 
 inline void AlterTableReq::setTTLColFlag(UintR &changeMask, Uint32 rbFlag) {
-  changeMask |= (rbFlag << TTL_SEC_SHIFT);
+  changeMask |= (rbFlag << TTL_COL_SHIFT);
 }
 
 struct AlterTableConf {

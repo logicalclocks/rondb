@@ -98,6 +98,7 @@ void FSMetadataCache::start_fs_cache_thread() {
                                           "FS Key Cache thread",
                                           NDB_THREAD_PRIO_LOW);
     require(thread != nullptr);
+    m_cache_threads[i] = thread;
   }
   return;
 }
@@ -123,6 +124,7 @@ FSMetadataCache::FSMetadataCache() : m_fs_cache() {
   for (Uint64 i = 0; i < NUM_FS_CACHES; i++) {
     m_rwLock[i] = NdbMutex_Create();
     m_queueLock[i] = NdbMutex_Create();
+    m_cache_threads[i] = nullptr;
   }
   DEB_FS("rwLock: %p, queueLock: %p", m_rwLock[0], m_queueLock[0]);
   m_sleepLock = NdbMutex_Create();
@@ -162,6 +164,14 @@ void FSMetadataCache::cleanup() {
     } else {
       NdbMutex_Unlock(m_sleepLock);
       break;
+    }
+  }
+  /* Wait for all threads to finish and destroy their handles */
+  for (int i = 0; i < NUM_FS_CACHES; i++) {
+    if (m_cache_threads[i] != nullptr) {
+      NdbThread_WaitFor(m_cache_threads[i], nullptr);
+      NdbThread_Destroy(&m_cache_threads[i]);
+      m_cache_threads[i] = nullptr;
     }
   }
   DEB_FS("Cleanup finished");
