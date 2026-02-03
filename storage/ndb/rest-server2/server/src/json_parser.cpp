@@ -1552,7 +1552,7 @@ bool parseGroup(std::string_view op, FilterNode::Group& out) {
     out = FilterNode::Group::NOR;
     return true;
   }
-	return false;
+  return false;
 }
 
 RS_Status ParseJsonValue(simdjson::simdjson_result<simdjson::ondemand::value> v,

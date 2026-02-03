@@ -235,6 +235,20 @@ void TTLPurgeCtrl::updateConfig(
     return;
   }
 
+  // Authenticate if API keys are configured
+  if (likely(globalConfigs.security.apiKey.useHopsworksAPIKeys)) {
+    auto api_key = req->getHeader(API_KEY_NAME_LOWER_CASE);
+    auto status = authenticate_empty(api_key);
+    if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
+        drogon::HttpStatusCode::k200OK)) {
+      resp->setBody(std::string(status.message));
+      resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+      resp->setStatusCode((drogon::HttpStatusCode)status.http_code);
+      callback(resp);
+      return;
+    }
+  }
+
   // Parse JSON body
   const std::string &body = std::string(req->getBody());
   if (body.empty()) {

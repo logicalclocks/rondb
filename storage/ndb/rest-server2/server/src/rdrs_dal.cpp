@@ -1298,7 +1298,7 @@ using RJ_Writer = rapidjson::Writer<RJ_StringBuffer, RJ_Encoding, RJ_Encoding,
                                     RJ_Allocator, 0>;
 void WriteColumnData2Json(RJ_Writer& writer, Uint32 attrType, const NdbDictionary::Column* col,
                           const char* binary) {
-  if (binary == nullptr) {
+  if (unlikely(binary == nullptr)) {
     return;
   }
   Uint16 varchar_len = 0;
@@ -1760,7 +1760,7 @@ RS_Status perform_scan(ScanReadParams& scan_params, Ndb* ndb_object, void* json_
   }
 
   std::string db = std::string(scan_params.path.db);
-  if (ndb_object->setDatabaseName(db.c_str())) {
+  if (unlikely(ndb_object->setDatabaseName(db.c_str()))) {
     RS_Status err = RS_CLIENT_404_WITH_MSG_ERROR(
       std::string(rdrsErrorMessage(ERROR_DB_TABLE_NOT_EXIST)) +
       std::string(" Database: ") +
@@ -1787,7 +1787,7 @@ RS_Status perform_scan(ScanReadParams& scan_params, Ndb* ndb_object, void* json_
     read_cols_provided = false;
     for (int i = 0; i < table->getNoOfColumns(); i++) {
       const NdbDictionary::Column *column = table->getColumn(i);
-      if (column == nullptr) {
+      if (unlikely(column == nullptr)) {
         return RS_SERVER_ERROR("Failed to get column at index " + std::to_string(i));
       }
       read_columns.push_back(column);
@@ -1796,7 +1796,7 @@ RS_Status perform_scan(ScanReadParams& scan_params, Ndb* ndb_object, void* json_
     for (const auto& col : scan_params.readColumns) {
       std::string col_name = std::string(col.column);
       const NdbDictionary::Column *column = table->getColumn(col_name.c_str());
-      if (column == nullptr) {
+      if (unlikely(column == nullptr)) {
         RS_Status err = RS_CLIENT_404_WITH_MSG_ERROR(
           std::string(rdrsErrorMessage(ERROR_COLUMN_NOT_EXIST)) +
           std::string(" Database: ") + db +
@@ -1810,7 +1810,7 @@ RS_Status perform_scan(ScanReadParams& scan_params, Ndb* ndb_object, void* json_
   }
 
   const NdbRecord* table_rec = table->getDefaultRecord();
-  if (table_rec == nullptr) {
+  if (unlikely(table_rec == nullptr)) {
     RS_Status err = RS_SERVER_ERROR(
         std::string(rdrsErrorMessage(ERROR_SCAN_OPERATION_FAILED)) +
         std::string("Failed to get NdbRecord.") +
@@ -1828,7 +1828,7 @@ RS_Status perform_scan(ScanReadParams& scan_params, Ndb* ndb_object, void* json_
   }
 
   NdbTransaction *transaction = ndb_object->startTransaction();
-  if (transaction == nullptr) {
+  if (unlikely(transaction == nullptr)) {
     RS_Status err = RS_RONDB_SERVER_ERROR(
         ndb_object->getNdbError(),
         std::string(rdrsErrorMessage(ERROR_SCAN_OPERATION_FAILED)) +
@@ -1860,7 +1860,7 @@ RS_Status perform_scan(ScanReadParams& scan_params, Ndb* ndb_object, void* json_
     DEB_SCAN(">>>>>> Compiling PHYSICAL Scan Filter" << std::endl);
     if (scan_params.filterRoot->type != FilterNode::Type::LOGIC) {
       DEB_SCAN("  filter->begin(" << FilterNode::Group::AND << ")" << std::endl);
-      if (filter.begin(FilterNode::Group::AND) == -1) {
+      if (unlikely(filter.begin(FilterNode::Group::AND) == -1)) {
         return RS_SERVER_ERROR(
             std::string(rdrsErrorMessage(ERROR_SET_FILTER_FAILED)) +
             " filter->begin() failed");
@@ -1872,7 +1872,7 @@ RS_Status perform_scan(ScanReadParams& scan_params, Ndb* ndb_object, void* json_
     }
     if (scan_params.filterRoot->type != FilterNode::Type::LOGIC) {
       DEB_SCAN("  filter->end()" << std::endl);
-      if (filter.end() == -1) {
+      if (unlikely(filter.end() == -1)) {
         return RS_SERVER_ERROR(
             std::string(rdrsErrorMessage(ERROR_SET_FILTER_FAILED)) +
             " filter->end() failed");
@@ -1940,7 +1940,7 @@ RS_Status perform_scan(ScanReadParams& scan_params, Ndb* ndb_object, void* json_
         read_cols_provided ? read_set.bitmap() : nullptr,
         nullptr,
         &scan_options, sizeof(NdbScanOperation::ScanOptions));
-    if (operation == nullptr) {
+    if (unlikely(operation == nullptr)) {
       RS_Status err = RS_RONDB_SERVER_ERROR(
           transaction->getNdbError(),
           std::string(rdrsErrorMessage(ERROR_SCAN_OPERATION_FAILED)) +
@@ -1975,7 +1975,7 @@ RS_Status perform_scan(ScanReadParams& scan_params, Ndb* ndb_object, void* json_
       }
     }
 
-    if (transaction->execute(NdbTransaction::NoCommit) != 0) {
+    if (unlikely(transaction->execute(NdbTransaction::NoCommit) != 0)) {
       RS_Status err = RS_RONDB_SERVER_ERROR(
           transaction->getNdbError(),
           std::string(rdrsErrorMessage(ERROR_SCAN_OPERATION_FAILED)) +
@@ -2021,7 +2021,7 @@ RS_Status perform_scan(ScanReadParams& scan_params, Ndb* ndb_object, void* json_
     while ((rc = operation->nextResult(reinterpret_cast<const char **>(&row_ptr),
             true, false)) == 0) {
       // Accumulate nextResult time
-      if (timing_enabled) {
+      if (unlikely(timing_enabled)) {
         timing->next_result_us += NdbTick_Elapsed(next_result_start, NdbTick_getCurrentTicks()).microSec();
         json_start = NdbTick_getCurrentTicks();
       }
@@ -2038,7 +2038,7 @@ RS_Status perform_scan(ScanReadParams& scan_params, Ndb* ndb_object, void* json_
         Uint32 attrType = column->getType();
         DEB_SCAN("  [" << attrId << "]: ");
         bool is_null = NdbDictionary::isNull(table_rec, row_ptr, attrId);
-        if (is_null) {
+        if (unlikely(is_null)) {
           DEB_SCAN("NULL");
           writer.Null();
         } else {
@@ -2050,14 +2050,14 @@ RS_Status perform_scan(ScanReadParams& scan_params, Ndb* ndb_object, void* json_
       DEB_SCAN(std::endl);
 
       // Accumulate JSON serialization time, start timing for next nextResult
-      if (timing_enabled) {
+      if (unlikely(timing_enabled)) {
         timing->json_serialize_us += NdbTick_Elapsed(json_start, NdbTick_getCurrentTicks()).microSec();
         next_result_start = NdbTick_getCurrentTicks();
       }
     }
 
     // Accumulate final nextResult time (the one that returned non-zero or hit limit)
-    if (timing_enabled) {
+    if (unlikely(timing_enabled)) {
       timing->next_result_us += NdbTick_Elapsed(next_result_start, NdbTick_getCurrentTicks()).microSec();
       timing->rows_fetched = rows;
       phase_start = NdbTick_getCurrentTicks();
@@ -2078,7 +2078,7 @@ RS_Status perform_scan(ScanReadParams& scan_params, Ndb* ndb_object, void* json_
       *rows_fetched_out = rows;
     }
 
-    if (rc == -1) {
+    if (unlikely(rc == -1)) {
       status = RS_RONDB_SERVER_ERROR(
           transaction->getNdbError(),
           std::string(rdrsErrorMessage(ERROR_SCAN_OPERATION_FAILED)) +
@@ -2106,7 +2106,7 @@ RS_Status perform_scan(ScanReadParams& scan_params, Ndb* ndb_object, void* json_
         NdbOperation::LockMode::LM_CommittedRead,
         read_cols_provided ? read_set.bitmap() : nullptr,
         &scan_options, sizeof(NdbScanOperation::ScanOptions));
-    if (operation == nullptr) {
+    if (unlikely(operation == nullptr)) {
       RS_Status err = RS_RONDB_SERVER_ERROR(
           transaction->getNdbError(),
           std::string(rdrsErrorMessage(ERROR_SCAN_OPERATION_FAILED)) +
@@ -2122,7 +2122,7 @@ RS_Status perform_scan(ScanReadParams& scan_params, Ndb* ndb_object, void* json_
       phase_start = NdbTick_getCurrentTicks();
     }
 
-    if (transaction->execute(NdbTransaction::NoCommit) != 0) {
+    if (unlikely(transaction->execute(NdbTransaction::NoCommit) != 0)) {
       RS_Status err = RS_RONDB_SERVER_ERROR(
           transaction->getNdbError(),
           std::string(rdrsErrorMessage(ERROR_SCAN_OPERATION_FAILED)) +
@@ -2167,7 +2167,7 @@ RS_Status perform_scan(ScanReadParams& scan_params, Ndb* ndb_object, void* json_
     while ((rc = operation->nextResult(reinterpret_cast<const char **>(&row_ptr),
             true, false)) == 0) {
       // Accumulate nextResult time
-      if (timing_enabled) {
+      if (unlikely(timing_enabled)) {
         timing->next_result_us += NdbTick_Elapsed(next_result_start, NdbTick_getCurrentTicks()).microSec();
         json_start = NdbTick_getCurrentTicks();
       }
@@ -2184,7 +2184,7 @@ RS_Status perform_scan(ScanReadParams& scan_params, Ndb* ndb_object, void* json_
         Uint32 attrType = column->getType();
         DEB_SCAN("  [" << attrId << "]: ");
         bool is_null = NdbDictionary::isNull(table_rec, row_ptr, attrId);
-        if (is_null) {
+        if (unlikely(is_null)) {
           DEB_SCAN("NULL");
           writer.Null();
         } else {
@@ -2196,14 +2196,14 @@ RS_Status perform_scan(ScanReadParams& scan_params, Ndb* ndb_object, void* json_
       DEB_SCAN(std::endl);
 
       // Accumulate JSON serialization time, start timing for next nextResult
-      if (timing_enabled) {
+      if (unlikely(timing_enabled)) {
         timing->json_serialize_us += NdbTick_Elapsed(json_start, NdbTick_getCurrentTicks()).microSec();
         next_result_start = NdbTick_getCurrentTicks();
       }
     }
 
     // Accumulate final nextResult time
-    if (timing_enabled) {
+    if (unlikely(timing_enabled)) {
       timing->next_result_us += NdbTick_Elapsed(next_result_start, NdbTick_getCurrentTicks()).microSec();
       timing->rows_fetched = rows;
       phase_start = NdbTick_getCurrentTicks();
@@ -2224,7 +2224,7 @@ RS_Status perform_scan(ScanReadParams& scan_params, Ndb* ndb_object, void* json_
       *rows_fetched_out = rows;
     }
 
-    if (rc == -1) {
+    if (unlikely(rc == -1)) {
       status = RS_RONDB_SERVER_ERROR(
           transaction->getNdbError(),
           std::string(rdrsErrorMessage(ERROR_SCAN_OPERATION_FAILED)) +

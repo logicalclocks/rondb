@@ -403,12 +403,6 @@ class BatchResponseJSON {
 };
 
 /*** Scan read ***/
-class ScanReadFilter {
- public:
-  std::string_view column;
-  std::vector<char> value;
-};
-
 class ScanReadColumn {
  public:
   std::string_view column;
