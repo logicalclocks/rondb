@@ -1650,6 +1650,58 @@ public class Utility {
         endianManager.convertValue(buffer, storeColumn, value);
     }
 
+    /** Get the actual storage size for TIMESTAMP2 based on precision.
+     * TIMESTAMP2 storage: 4 bytes for seconds + fractional bytes based on precision
+     *   - precision 0: 0 extra bytes (total 4)
+     *   - precision 1-2: 1 extra byte (total 5)
+     *   - precision 3-4: 2 extra bytes (total 6)
+     *   - precision 5-6: 3 extra bytes (total 7)
+     * @param precision the fractional seconds precision (0-6)
+     * @return the storage size in bytes (4-7)
+     */
+    public static int getTimestamp2StorageSize(int precision) {
+        if (precision == 0) return 4;
+        if (precision <= 2) return 5;
+        if (precision <= 4) return 6;
+        return 7;
+    }
+
+    /** Convert a timestamp value for use as a partition key.
+     * This method writes only the correct number of bytes based on precision,
+     * which is important for TIMESTAMP/TIMESTAMP2 partition keys.
+     *
+     * TIMESTAMP2 storage format (big-endian):
+     * - 4 bytes for seconds since epoch
+     * - 0-3 additional bytes for fractional seconds based on precision
+     *
+     * @param buffer the ByteBuffer to write to
+     * @param storeColumn the column definition
+     * @param millis the timestamp value in milliseconds since epoch
+     */
+    public static void convertValueForTimestampKey(ByteBuffer buffer, Column storeColumn, long millis) {
+        int precision = storeColumn.getPrecision();
+        int actualSize = getTimestamp2StorageSize(precision);
+
+        // Use packTimestamp2 to get the properly formatted value
+        // packTimestamp2 returns: (seconds << 32) + (packedFraction << 8)
+        // So bytes 0-3 are seconds, bytes 4-6 are fractional, byte 7 is unused
+        long packed = packTimestamp2(precision, millis);
+
+        buffer.order(ByteOrder.BIG_ENDIAN);
+
+        // Write only the bytes needed based on precision
+        // For size 4: write bytes 0-3 (seconds only)
+        // For size 5: write bytes 0-4 (seconds + 1 fractional byte)
+        // etc.
+        for (int i = 0; i < actualSize; i++) {
+            // Extract byte i from the packed value (big-endian, so byte 0 is the highest)
+            int shift = (7 - i) * 8;
+            buffer.put((byte) ((packed >> shift) & 0xFF));
+        }
+
+        buffer.flip();
+    }
+
     /** Encode a String as a ByteBuffer that can be passed to ndbjtie.
      * Put the length information in the beginning of the buffer.
      * Pad fixed length strings with blanks.

@@ -42,3 +42,21 @@ VALUES
         'col1_data',
         'col2_data'
     );
+
+CREATE TABLE table_2(
+    id0 INT(10),
+    col0 VARCHAR(100),
+    col1 VARCHAR(100),
+    col2 VARCHAR(100),
+    PRIMARY KEY(id0)
+) ENGINE = ndbcluster;
+
+INSERT INTO
+    table_2
+VALUES
+    (
+        1,
+        'col0_data',
+        'col1_data',
+        'col2_data'
+    );

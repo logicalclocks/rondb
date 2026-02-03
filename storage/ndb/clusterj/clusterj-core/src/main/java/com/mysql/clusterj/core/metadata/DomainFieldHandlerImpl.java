@@ -201,6 +201,8 @@ public class DomainFieldHandlerImpl extends AbstractDomainFieldHandlerImpl {
                 objectOperationHandlerDelegate = objectOperationHandlerKeyByte;
             } else if (type.equals(java.sql.Date.class)) {
                 objectOperationHandlerDelegate = objectOperationHandlerKeyJavaSqlDate;
+            } else if (type.equals(java.sql.Timestamp.class)) {
+                objectOperationHandlerDelegate = objectOperationHandlerKeyJavaSqlTimestamp;
             } else {
                 objectOperationHandlerDelegate = objectOperationHandlerUnsupportedType;
                 error(
@@ -397,6 +399,10 @@ public class DomainFieldHandlerImpl extends AbstractDomainFieldHandlerImpl {
                 case Date:
                     this.objectOperationHandlerDelegate = objectOperationHandlerKeyJavaSqlDate;
                     this.type = java.sql.Date.class;
+                    break;
+                case Timestamp2:
+                    this.objectOperationHandlerDelegate = objectOperationHandlerKeyJavaSqlTimestamp;
+                    this.type = java.sql.Timestamp.class;
                     break;
                 default:
                     error(local.message("ERR_Primary_Column_Type", domainTypeHandler.getName(), name, this.storeColumnType));

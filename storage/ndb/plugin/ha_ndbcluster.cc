@@ -3993,7 +3993,7 @@ int ha_ndbcluster::full_table_scan(const KEY *key_info,
    * TTL related
    */
   if (m_ttl_ignore) {
-    options.optionsPresent = NdbScanOperation::ScanOptions::SO_TTL_IGNORE;
+    options.optionsPresent |= NdbScanOperation::ScanOptions::SO_TTL_IGNORE;
   }
 
   options.scan_flags =
@@ -16419,7 +16419,7 @@ enum_alter_inplace_result ha_ndbcluster::check_if_supported_inplace_alter(
 
   const NDB_Modifier *mod_ttl = old_table_modifiers.get("TTL");
   std::string ttl_column = "";
-  if (mod_ttl != nullptr) {
+  if (mod_ttl->m_found) {
     std::string ttl_comment(mod_ttl->m_val_str.str, mod_ttl->m_val_str.len);
     std::size_t pos = ttl_comment.find('@');
     if (pos == std::string::npos) {

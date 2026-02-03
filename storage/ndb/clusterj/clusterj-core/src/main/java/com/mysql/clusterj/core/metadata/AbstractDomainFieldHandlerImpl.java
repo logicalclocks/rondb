@@ -1849,6 +1849,86 @@ public abstract class AbstractDomainFieldHandlerImpl implements DomainFieldHandl
 
     };
 
+    /** Handler for java.sql.Timestamp primary key fields.
+     * Unlike the regular timestamp handler, this one:
+     * - Uses equalLong() for setting PK values (not setLong())
+     * - Properly implements partitionKeySetPart() for partition key support
+     */
+    protected static ObjectOperationHandler objectOperationHandlerKeyJavaSqlTimestamp = new ObjectOperationHandler() {
+
+        public boolean isPrimitive() {
+            return false;
+        }
+
+        public void objectInitializeJavaDefaultValue(AbstractDomainFieldHandlerImpl fmd, ValueHandler handler) {
+        }
+
+        public void operationGetValue(AbstractDomainFieldHandlerImpl fmd, Operation op) {
+            op.getValue(fmd.storeColumn);
+        }
+
+        public Object getDefaultValueFor(AbstractDomainFieldHandlerImpl fmd, String columnDefaultValue) {
+            if (columnDefaultValue == null) {
+                return new Timestamp(new java.util.Date().getTime());
+            } else {
+                return Timestamp.valueOf(columnDefaultValue);
+            }
+        }
+
+        public void operationSetValue(AbstractDomainFieldHandlerImpl fmd, Object value, Operation op) {
+            op.equalLong(fmd.storeColumn, ((Timestamp)value).getTime());
+        }
+
+        public void operationSetValue(AbstractDomainFieldHandlerImpl fmd, ValueHandler handler, Operation op) {
+            if (logger.isDetailEnabled()) {
+                logger.detail("Column " + fmd.columnName + " set to value " + handler.getJavaSqlTimestamp(fmd.fieldNumber));
+            }
+            op.equalLong(fmd.storeColumn, (handler.getJavaSqlTimestamp(fmd.fieldNumber)).getTime());
+        }
+
+        public String handler() {
+            return "key java.sql.Timestamp";
+        }
+
+        public void objectSetValue(AbstractDomainFieldHandlerImpl fmd, ResultData rs, ValueHandler handler) {
+            handler.setJavaSqlTimestamp(fmd.fieldNumber, new Timestamp(rs.getLong(fmd.storeColumn)));
+        }
+
+        public void operationSetBounds(AbstractDomainFieldHandlerImpl fmd, Object value, IndexScanOperation.BoundType type, IndexScanOperation op) {
+            op.setBoundLong(fmd.storeColumn, type, ((Timestamp)value).getTime());
+        }
+
+        public void filterCompareValue(AbstractDomainFieldHandlerImpl fmd, Object value, ScanFilter.BinaryCondition condition, ScanFilter filter) {
+            filter.cmpLong(condition, fmd.storeColumn, ((Timestamp)value).getTime());
+        }
+
+        public void operationEqual(AbstractDomainFieldHandlerImpl fmd, Object value, Operation op) {
+            op.equalLong(fmd.storeColumn, ((Timestamp)value).getTime());
+        }
+
+        public boolean isValidIndexType(AbstractDomainFieldHandlerImpl fmd, boolean hashNotOrdered) {
+            return true;
+        }
+
+        public void partitionKeySetPart(AbstractDomainFieldHandlerImpl fmd,
+                PartitionKey partitionKey, ValueHandler keyValueHandler) {
+            partitionKey.addTimestampKey(fmd.storeColumn, (keyValueHandler.getJavaSqlTimestamp(fmd.fieldNumber)).getTime());
+        }
+
+        public Object getValue(QueryExecutionContext context, String index) {
+            return context.getJavaSqlTimestamp(index);
+        }
+
+        public Object objectGetValue(AbstractDomainFieldHandlerImpl fmd, ValueHandler handler) {
+            return handler.getJavaSqlTimestamp(fmd.fieldNumber);
+        }
+
+        public void objectSetValue(AbstractDomainFieldHandlerImpl fmd, Object value, ValueHandler handler) {
+            handler.setJavaSqlTimestamp(fmd.fieldNumber, (java.sql.Timestamp)value);
+        }
+
+    };
+
     protected static ObjectOperationHandler objectOperationHandlerJavaUtilDate = new ObjectOperationHandler() {
 
         public boolean isPrimitive() {

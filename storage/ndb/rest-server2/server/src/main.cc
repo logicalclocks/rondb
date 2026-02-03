@@ -37,6 +37,7 @@ constexpr const char* const usageHelp =
 #include "json_parser.hpp"
 #include "json_printer.hpp"
 #include "metrics.hpp"
+#include "scan_metrics.hpp"
 #include "src/api_key.hpp"
 #include "src/fs_cache.hpp"
 #include "tls_util.hpp"
@@ -74,7 +75,7 @@ static ServerThread* g_rondis_thread = nullptr;
 static Uint32 *g_database_index = nullptr;
 static bool g_rondis_running = false;
 static int g_exit_code = 0;
-static TTLPurger* g_ttl_purger = nullptr;
+TTLPurger* g_ttl_purger = nullptr;
 NdbMutex *globalConfigsMutex = nullptr;
 
 static void do_exit() {
@@ -112,6 +113,7 @@ static void do_exit() {
     stop_api_key_cache();
   if (g_did_start_fs_cache)
     stop_fs_cache();
+  cleanupScanMetrics();
   if (g_rondbConnection != nullptr) {
     delete g_rondbConnection;
     g_rondbConnection = nullptr;
@@ -292,6 +294,9 @@ int main(int argc, char *argv[]) {
 
   // Initialize Prometheus Metrics
   rdrs_metrics::initMetrics();
+
+  // Initialize Scan Metrics buffer
+  initScanMetrics();
 
   // Initialize JSON parsers
   assert(jsonParsers == nullptr);

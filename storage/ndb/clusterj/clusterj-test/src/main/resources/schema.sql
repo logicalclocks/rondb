@@ -1123,4 +1123,22 @@ create table same_table (
   primary key(id)
 ) ENGINE=ndbcluster;
 
+drop table if exists timestamppk;
+CREATE TABLE timestamppk (
+    id TIMESTAMP PRIMARY KEY,
+    data INT
+) ENGINE=ndbcluster;
+
+drop table if exists timestamppk3;
+CREATE TABLE timestamppk3 (
+    id TIMESTAMP(3) PRIMARY KEY,
+    data INT
+) ENGINE=ndbcluster;
+
+drop table if exists timestamppk6;
+CREATE TABLE timestamppk6 (
+    id TIMESTAMP(6) PRIMARY KEY,
+    data INT
+) ENGINE=ndbcluster;
+
 use test;

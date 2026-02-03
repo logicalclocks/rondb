@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2024, 2025 Hopsworks AB
+ * Copyright (C) 2024, 2026 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -65,6 +65,8 @@ RS_Status authenticate(const std::string &apiKey,
                        const std::vector<std::string_view> &,
                        char *username_ptr);
 
+struct NdbThread;
+
 class UserDBs {
  public:
   std::unordered_set<std::string_view> userDBs;
@@ -74,6 +76,7 @@ class UserDBs {
   NDB_TICKS m_lastUpdated;
   NdbMutex *m_waitLock;
   NdbCondition *m_waitCond;
+  struct NdbThread *m_thread; // Thread handle for cleanup
   enum {
     IS_VALIDATING = 0,
     IS_INVALID = 1,
@@ -86,6 +89,7 @@ class UserDBs {
   UserDBs() {
     m_db_ptrs = nullptr;
     m_user_ptr = nullptr;
+    m_thread = nullptr;
     m_waitLock = NdbMutex_Create();
     m_waitCond = NdbCondition_Create();
   }
