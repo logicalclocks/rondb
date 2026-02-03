@@ -18,6 +18,8 @@
 package middleware
 
 import (
+	"net/http"
+
 	"github.com/gin-gonic/gin"
 )
 
@@ -33,13 +35,17 @@ func ConcurrencyLimiterWithQueue(maxConcurrent uint32) gin.HandlerFunc {
 	semaphore := make(chan struct{}, maxConcurrent)
 
 	return func(c *gin.Context) {
-		// Acquire slot (blocks if at capacity)
-		semaphore <- struct{}{}
-
-		// Release slot when done
-		defer func() { <-semaphore }()
-
-		// Process request
-		c.Next()
+		// Acquire slot or abort if context is cancelled
+		select {
+		case semaphore <- struct{}{}:
+			// Release slot when done
+			defer func() { <-semaphore }()
+			// Process request
+			c.Next()
+		case <-c.Request.Context().Done():
+			// Context cancelled (client disconnect or server shutdown)
+			c.AbortWithStatus(http.StatusServiceUnavailable)
+			return
+		}
 	}
 }
