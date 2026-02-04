@@ -12,4 +12,4 @@
 #
 ##############################################################################
 
-rdrs2.rdrs2_encoding : RONDB-792 Every second request returns null for all fields
+
