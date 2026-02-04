@@ -199,7 +199,7 @@ std::unique_ptr<char[]> &JSONParser::get_buffer() {
 RS_Status extract_db_and_table(const std::string_view &,
                                std::string_view &,
                                std::string &,
-                               const std::string& expected_operation);
+                               const char *expected_request_type);
 RS_Status extract_db_table_and_write_op(const std::string_view &,
                                         std::string_view &,
                                         std::string &,
@@ -385,7 +385,7 @@ RS_Status JSONParser::pk_parse(simdjson::padded_string_view reqBody,
 // (PKREAD for "pk-read" or PKDELETE for "pk-delete").
 RS_Status JSONParser::batch_parse_impl(simdjson::padded_string_view reqBody,
                                        std::vector<PKReadParams> &reqStructs,
-                                       std::string& expected_request_type) {
+                                       const char *expected_request_type) {
   const char *currentLocation = nullptr;
 
   simdjson::error_code error = parser.iterate(reqBody).get(doc);
@@ -1813,12 +1813,13 @@ static RS_Status parse_relative_url(const std::string_view &relativeUrl,
 RS_Status extract_db_and_table(const std::string_view &relativeUrl,
                                std::string_view &db,
                                std::string &table,
-                               const std::string& expected_op) {
+                               const char *expected_request_type) {
   std::string_view request_type;
   RS_Status status = parse_relative_url(relativeUrl, db, table, request_type);
   if (unlikely(status.http_code != SUCCESS)) {
     return status;
   }
+  std::string expected_op = std::string(expected_request_type);
   if (request_type == expected_op) {
     return CRS_Status::SUCCESS.status;
   }

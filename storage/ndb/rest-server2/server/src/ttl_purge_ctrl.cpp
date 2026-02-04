@@ -236,9 +236,12 @@ void TTLPurgeCtrl::updateConfig(
   }
 
   // Authenticate if API keys are configured
+  char username[USERNAME_SIZE + PROJECT_PROJECTNAME_SIZE + 1];
+  char *username_ptr = nullptr;
   if (likely(globalConfigs.security.apiKey.useHopsworksAPIKeys)) {
     auto api_key = req->getHeader(API_KEY_NAME_LOWER_CASE);
-    auto status = authenticate_empty(api_key);
+    username_ptr = &username[0];
+    auto status = authenticate_empty(api_key, username_ptr);
     if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
         drogon::HttpStatusCode::k200OK)) {
       resp->setBody(std::string(status.message));
