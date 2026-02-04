@@ -1,9 +1,5 @@
-<<<<<<<< HEAD:storage/ndb/test/run-test/daily-devel--08-tests.txt
 # Copyright (c) 2015, 2025, Oracle and/or its affiliates.
 # Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
-========
-# Copyright (c) 2011, 2025, Oracle and/or its affiliates.
->>>>>>>> 0896fcd61dec11a0904166911a0126f59daaa1bf:storage/ndb/test/crund/cpp/CMakeLists.txt
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -34,17 +30,3 @@ cmd: testIndex
 args: -n NF_Mixed T1 T6 T13
 max-time: 2000
 
-<<<<<<<< HEAD:storage/ndb/test/run-test/daily-devel--08-tests.txt
-========
-LINK_LIBRARIES(crund_helpers ndbclient_so)
-
-SET(CPP_CRUND_SOURCES
-    CrundDriver.cpp
-    Driver.cpp
-    CrundLoad.cpp
-    NdbapiAB.cpp
-    crund.cpp
-   )
-
-ADD_EXECUTABLE(crundAB ${CPP_CRUND_SOURCES})
->>>>>>>> 0896fcd61dec11a0904166911a0126f59daaa1bf:storage/ndb/test/crund/cpp/CMakeLists.txt
