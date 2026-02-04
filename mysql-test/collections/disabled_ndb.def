@@ -21,7 +21,6 @@ ndb_rpl.ndb_rpl_binlog_format_errors       : BUG#29776083 EXPLICIT BINLOG INJECT
 # ndb suite tests
 ndb.ndb_insert            : BUG#16021097 INSERT .. SELECT WITH KEY VIOLATION DOES NOT FAIL
 ndb.ndb_row_count         : BUG#16021097 INSERT .. SELECT WITH KEY VIOLATION DOES NOT FAIL
-ndb.ndb_parallel_undo_log : BUG#28794807 FIX NDB.NDB_PARALLEL_UNDO_LOG TESTCASE FAILURE
 ndb.ndb_multi_mgmd        : WL#12345678 Can only run by itself
 ndb.ndb_read_balance      : WL#12345678 Unstable results
 ndb.test_mgmd             : WL#12345678 Requires fixing
