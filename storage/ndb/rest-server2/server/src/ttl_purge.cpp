@@ -703,6 +703,9 @@ trx_err:
                 if (trx_failure_times > 10) {
                   goto err;
                 } else {
+                  if (exit_) {
+                    goto err;
+                  }
                   sleep(1);
                 }
               }
@@ -1129,6 +1132,9 @@ void TTLPurger::PurgeWorkerJob() {
     }
     if (shard == kShardNotPurger) {
       g_eventLogger->info("Not the configured purging node, skip purging...");
+      if (purge_worker_exit_) {
+        break;
+      }
       sleep(2);
       continue;
     }
@@ -1151,6 +1157,9 @@ void TTLPurger::PurgeWorkerJob() {
       // No TTL table is found
       UpdateStatus(TTLPurgeStatus::State::kPaused);
       UpdateCurrentTable("", 0);
+      if (purge_worker_exit_) {
+        break;
+      }
       sleep(2);
       continue;
     }
@@ -1746,6 +1755,9 @@ err:
         trans = nullptr;
       }
       trx_failure_times++;
+      if (purge_worker_exit_) {
+        break;
+      }
       sleep(1);
       if (trx_failure_times > kMaxTrxRetryTimes) {
         g_eventLogger->warning("[TTL PWorker] Has retried for %d times..."
