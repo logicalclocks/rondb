@@ -303,9 +303,9 @@
 
 /* End RonDB only configuration parameters */
 
-#define CFG_NODE_ARBIT_RANK           200
-#define CFG_NODE_ARBIT_DELAY          201
-#define CFG_EXTRA_SEND_BUFFER_MEMORY  203
+#define CFG_NODE_ARBIT_RANK 200
+#define CFG_NODE_ARBIT_DELAY 201
+#define CFG_EXTRA_SEND_BUFFER_MEMORY 203
 
 #define CFG_MGMD_MGMD_HEARTBEAT_INTERVAL 204
 

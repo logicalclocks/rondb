@@ -31,6 +31,7 @@ class HealthCtrl : public drogon::HttpController<HealthCtrl> {
  public:
   METHOD_LIST_BEGIN
   ADD_METHOD_TO(HealthCtrl::health, HEALTH_PATH, drogon::Get);
+  ADD_METHOD_TO(HealthCtrl::health, HEALTH_PATH_V2, drogon::Get);
   METHOD_LIST_END
 
   static void health(

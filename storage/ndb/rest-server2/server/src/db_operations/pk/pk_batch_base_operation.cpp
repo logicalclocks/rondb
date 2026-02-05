@@ -523,6 +523,16 @@ RS_Status BaseBatchOperations::create_response(RS_Buffer *respBuffs) {
     } else if (op_error == NdbError::NoDataFound) {
       found = false;
       resp->SetStatus(NOT_FOUND, "NOT Found");
+    } else if (op_error == NdbError::ConstraintViolation) {
+      // Constraint violation (e.g., duplicate key on insert)
+      resp->SetStatus(CONFLICT, op->getNdbError().message);
+      resp->Close(response_length);
+      return RS_RONDB_CONFLICT_ERROR(
+        op->getNdbError(), std::string("SubOperation ") +
+        std::string(req->OperationId()
+                    ? req->OperationId()
+                    : "(Unidentified Operation)") +
+        std::string(" failed"));
     } else {
       //  immediately fail the entire batch
       resp->SetStatus(SERVER_ERROR, op->getNdbError().message);

@@ -1446,10 +1446,11 @@ void Dbacc::execACCKEYREQ(Signal *signal, Uint32 opPtrI,
     jamDebug();
     OperationrecPtr lockOpPtr;
     lockOpPtr.i = req->lockConnectPtr;
-    bool is_valid = m_curr_acc->oprec_pool.getValidPtr(lockOpPtr);
-    if (lockOwnerPtr.i == RNIL ||
-        !(lockOwnerPtr.i == lockOpPtr.i || !is_valid ||
+    const bool is_valid = m_curr_acc->oprec_pool.getValidPtr(lockOpPtr);
+    if (!is_valid || lockOwnerPtr.i == RNIL ||
+        !(lockOwnerPtr.i == lockOpPtr.i ||
           lockOwnerPtr.i == lockOpPtr.p->m_lock_owner_ptr_i)) {
+      jam();
       signal->theData[0] = Uint32(-1);
       signal->theData[1] = ZTO_OP_STATE_ERROR;
       operationRecPtr.p->m_op_bits = Operationrec::OP_INITIAL;

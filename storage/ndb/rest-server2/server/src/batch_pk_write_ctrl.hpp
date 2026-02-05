@@ -31,6 +31,7 @@ class BatchPKWriteCtrl : public drogon::HttpController<BatchPKWriteCtrl> {
  public:
   METHOD_LIST_BEGIN
   ADD_METHOD_TO(BatchPKWriteCtrl::batchPKWrite, BATCHWRITE_PATH, drogon::Post);
+  ADD_METHOD_TO(BatchPKWriteCtrl::batchPKWrite, BATCHWRITE_PATH_V2, drogon::Post);
   METHOD_LIST_END
 
   static void batchPKWrite(const drogon::HttpRequestPtr &req,

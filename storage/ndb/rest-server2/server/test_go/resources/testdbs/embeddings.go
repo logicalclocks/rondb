@@ -1,18 +1,20 @@
 /*
- * This file is part of the RonDB REST API Server
- * Copyright (c) 2023 Hopsworks AB
+ * Copyright (C) 2023 Hopsworks AB
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, version 3.
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
  *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
- * General Public License for more details.
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301,
+ * USA.
  */
 
 package testdbs
@@ -233,6 +235,16 @@ const DB027 = "db027"
 var DB028Scheme string
 
 const DB028 = "db028"
+
+//go:embed fixed/DB029.sql
+var DB029Scheme string
+
+const DB029 = "db029"
+
+//go:embed fixed/DB030.sql
+var DB030Scheme string
+
+const DB030 = "db030"
 
 //go:embed fixed/FSDB001.sql
 var FSDB001Scheme string

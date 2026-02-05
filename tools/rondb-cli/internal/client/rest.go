@@ -36,6 +36,9 @@ import (
 	"time"
 )
 
+// APIVersion is the REST API version (0.2.0 returns JSON error responses)
+const APIVersion = "0.2.0"
+
 // RestClient handles REST API calls to RDRS2
 type RestClient struct {
 	client  *http.Client
@@ -101,7 +104,7 @@ func (c *RestClient) Ping() error {
 	defer cancel()
 
 	// Try to reach the API - use a simple GET to check connectivity
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/0.1.0", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/"+APIVersion, nil)
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
@@ -121,6 +124,16 @@ func (c *RestClient) Ping() error {
 
 // Post sends a POST request with JSON body and returns the response
 func (c *RestClient) Post(endpoint string, body interface{}) ([]byte, time.Duration, error) {
+	return c.doRequest(http.MethodPost, endpoint, body)
+}
+
+// Delete sends a DELETE request with JSON body and returns the response
+func (c *RestClient) Delete(endpoint string, body interface{}) ([]byte, time.Duration, error) {
+	return c.doRequest(http.MethodDelete, endpoint, body)
+}
+
+// doRequest sends an HTTP request with JSON body and returns the response
+func (c *RestClient) doRequest(method, endpoint string, body interface{}) ([]byte, time.Duration, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -130,7 +143,7 @@ func (c *RestClient) Post(endpoint string, body interface{}) ([]byte, time.Durat
 	}
 
 	url := c.baseURL + endpoint
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(jsonBody))
+	req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(jsonBody))
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to create request: %w", err)
 	}

@@ -708,7 +708,7 @@ func (s *Shell) loadTPCHTable(table TPCHTableInfo, scaleFactor int, numThreads i
 					Operations: ops,
 				}
 
-				_, _, err := restClient.Post("/0.1.0/batchwrite", request)
+				_, _, err := restClient.Post("/" + APIVersion + "/batchwrite", request)
 				if err != nil {
 					errorCollector.Record(err)
 				}

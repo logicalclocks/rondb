@@ -2583,7 +2583,12 @@ void Value_generator::print_expr(THD *thd, String *out) {
   const Sql_mode_parse_guard parse_guard(thd);
   // Printing db and table name is useless
   auto flags = enum_query_type(QT_NO_DB | QT_NO_TABLE | QT_FORCE_INTRODUCERS);
-  expr_item->print(thd, out, flags);
+  if (expr_item != nullptr) {
+    expr_item->print(thd, out, flags);
+  } else if (expr_str.str != nullptr && expr_str.length > 0) {
+    // Fall back to serialized expression if the Item tree hasn't been unpacked
+    out->append(expr_str.str, expr_str.length);
+  }
 }
 
 bool unpack_value_generator(THD *thd, TABLE *table,
@@ -3033,35 +3038,10 @@ int open_table_from_share(THD *thd, TABLE_SHARE *share, const char *alias,
     }
   }
 
-  // Parse partition expression and create Items
-  if (share->partition_info_str_len && outparam->file &&
-      unpack_partition_info(thd, outparam, share,
-                            share->m_part_info->default_engine_type,
-                            is_create_table)) {
-    if (is_create_table) {
-      /*
-        During CREATE/ALTER TABLE it is ok to receive errors here.
-        It is not ok if it happens during the opening of an frm
-        file as part of a normal query.
-      */
-      error_reported = true;
-    }
-    goto err;
-  }
-
-  /* Check generated columns against table's storage engine. */
-  if (share->vfields && outparam->file &&
-      !(outparam->file->ha_table_flags() & HA_GENERATED_COLUMNS)) {
-    my_error(ER_UNSUPPORTED_ACTION_ON_GENERATED_COLUMN, MYF(0),
-             "Specified storage engine");
-    error_reported = true;
-    goto err;
-  }
-
   /*
-    Allocate bitmaps
-    This needs to be done prior to generated columns as they'll call
-    fix_fields and functions might want to access bitmaps.
+    Allocate bitmaps before any expression is resolved with Item::fix_fields().
+    Such expressions may be part of generated column expressions and partition
+    functions.
   */
 
   bitmap_size = share->column_bitmap_size;
@@ -3085,6 +3065,35 @@ int open_table_from_share(THD *thd, TABLE_SHARE *share, const char *alias,
               share->fields);
   outparam->default_column_bitmaps();
 
+  // Parse partition expression and create Items
+  if (share->partition_info_str_len && outparam->file) {
+    auto *old_map = dbug_tmp_use_all_columns(outparam, outparam->write_set);
+    bool failed = unpack_partition_info(thd, outparam, share,
+                                        share->m_part_info->default_engine_type,
+                                        is_create_table);
+    dbug_tmp_restore_column_map(outparam->write_set, old_map);
+
+    if (failed) {
+      if (is_create_table) {
+        /*
+          During CREATE/ALTER TABLE it is ok to receive errors here.
+          It is not ok if it happens during the opening of an frm
+          file as part of a normal query.
+        */
+        error_reported = true;
+      }
+      goto err;
+    }
+  }
+
+  /* Check generated columns against table's storage engine. */
+  if (share->vfields && outparam->file &&
+      !(outparam->file->ha_table_flags() & HA_GENERATED_COLUMNS)) {
+    my_error(ER_UNSUPPORTED_ACTION_ON_GENERATED_COLUMN, MYF(0),
+             "Specified storage engine");
+    error_reported = true;
+    goto err;
+  }
   /*
     Process generated columns, if any.
   */
@@ -3309,7 +3318,9 @@ err:
     outparam->histograms = nullptr;
   }
   if (!error_reported) open_table_error(thd, share, error, my_errno());
-  ::destroy_at(outparam->file);
+  if (outparam->file != nullptr) {
+    ::destroy_at(outparam->file);
+  }
   if (outparam->part_info) free_items(outparam->part_info->item_list);
   if (outparam->vfield) {
     for (Field **vfield = outparam->vfield; *vfield; vfield++)

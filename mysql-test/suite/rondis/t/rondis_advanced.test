@@ -1,0 +1,232 @@
+--source include/not_parallel.inc
+--source include/have_ndb.inc
+
+#
+# Test Rondis advanced Redis-compatible operations using rondb-cli
+# This test covers more in-depth scenarios including:
+# - String manipulation (STRLEN, GETRANGE, SETRANGE)
+# - Hash increment/decrement operations
+# - Edge cases and larger data sets
+#
+
+# Check that rondb-cli is available
+if (!$RONDB_CLI) {
+  --skip rondb-cli binary not found - build with Go installed
+}
+
+# Create the Rondis tables needed for this test
+--source suite/rondis/include/create_rondis_tables.inc
+
+# Set up rondb-cli for Rondis operations
+--let $RONDIS=$RONDB_CLI --host=$RONDIS_HOST --rondis-port=$RONDIS_PORT --no-mysql --no-rdrs --quiet
+
+--echo #
+--echo # ========================================
+--echo # STRING MANIPULATION TESTS
+--echo # ========================================
+--echo #
+
+--echo #
+--echo # Test 1: STRLEN - String length
+--echo #
+
+--exec $RONDIS -e "SET strlen_test 'Hello, World!'"
+--exec $RONDIS -e "STRLEN strlen_test"
+
+# Note: Empty string test removed due to shell quoting issues with ''
+
+--echo # STRLEN of non-existent key returns 0
+--exec $RONDIS -e "STRLEN nonexistent_strlen_key"
+
+--echo #
+--echo # Test 2: GETRANGE - Get substring
+--echo #
+
+--exec $RONDIS -e "SET getrange_test 'Hello, World!'"
+
+--echo # Get first 5 characters (0-4)
+--exec $RONDIS -e "GETRANGE getrange_test 0 4"
+
+--echo # Get last 6 characters using negative index
+--exec $RONDIS -e "GETRANGE getrange_test -6 -1"
+
+--echo # Get middle portion
+--exec $RONDIS -e "GETRANGE getrange_test 7 11"
+
+--echo # Range beyond string length
+--exec $RONDIS -e "GETRANGE getrange_test 0 100"
+
+--echo #
+--echo # Test 3: SETRANGE - Modify substring
+--echo #
+
+--exec $RONDIS -e "SET setrange_test 'Hello World'"
+--exec $RONDIS -e "SETRANGE setrange_test 6 'Redis'"
+--exec $RONDIS -e "GET setrange_test"
+
+--echo # SETRANGE with padding (offset beyond string length)
+--exec $RONDIS -e "SET setrange_pad 'Hi'"
+--exec $RONDIS -e "SETRANGE setrange_pad 5 'There'"
+--exec $RONDIS -e "GET setrange_pad"
+
+--echo #
+--echo # ========================================
+--echo # NUMERIC OPERATION EDGE CASES
+--echo # ========================================
+--echo #
+
+--echo #
+--echo # Test 4: INCR/DECR starting from zero
+--echo #
+
+--exec $RONDIS -e "DEL incr_new"
+--exec $RONDIS -e "INCR incr_new"
+--exec $RONDIS -e "GET incr_new"
+
+--exec $RONDIS -e "DEL decr_new"
+--exec $RONDIS -e "DECR decr_new"
+--exec $RONDIS -e "GET decr_new"
+
+--echo #
+--echo # Test 5: Large increment/decrement values
+--echo #
+
+--exec $RONDIS -e "SET big_num 0"
+--exec $RONDIS -e "INCRBY big_num 1000000"
+--exec $RONDIS -e "GET big_num"
+--exec $RONDIS -e "DECRBY big_num 500000"
+--exec $RONDIS -e "GET big_num"
+
+--echo #
+--echo # Test 6: Negative numbers
+--echo #
+
+--exec $RONDIS -e "SET neg_num -100"
+--exec $RONDIS -e "INCR neg_num"
+--exec $RONDIS -e "GET neg_num"
+--exec $RONDIS -e "DECRBY neg_num 50"
+--exec $RONDIS -e "GET neg_num"
+
+--echo #
+--echo # ========================================
+--echo # HASH ADVANCED OPERATIONS
+--echo # ========================================
+--echo #
+
+--echo #
+--echo # Test 7: HSET multiple fields at once
+--echo #
+
+--exec $RONDIS -e "HSET product:1001 name 'Laptop' price '999' stock '50' category 'Electronics'"
+--exec $RONDIS -e "HGET product:1001 name"
+--exec $RONDIS -e "HGET product:1001 price"
+--exec $RONDIS -e "HGET product:1001 stock"
+--exec $RONDIS -e "HGET product:1001 category"
+
+--echo #
+--echo # Test 8: HINCRBY - Hash field increment
+--echo #
+
+--exec $RONDIS -e "HSET inventory:item1 quantity 100"
+--exec $RONDIS -e "HINCRBY inventory:item1 quantity 25"
+--exec $RONDIS -e "HGET inventory:item1 quantity"
+
+--echo # Negative increment (effectively a decrement)
+--exec $RONDIS -e "HINCRBY inventory:item1 quantity -10"
+--exec $RONDIS -e "HGET inventory:item1 quantity"
+
+--echo #
+--echo # Test 9: HDECRBY - Hash field decrement
+--echo #
+
+--exec $RONDIS -e "HSET inventory:item2 quantity 50"
+--exec $RONDIS -e "HDECRBY inventory:item2 quantity 5"
+--exec $RONDIS -e "HGET inventory:item2 quantity"
+
+--echo #
+--echo # Test 10: HMGET with mix of existing and non-existing fields
+--echo #
+
+--exec $RONDIS -e "HSET user:100 username 'johndoe' email 'john@example.com' status 'active'"
+--exec $RONDIS -e "HMGET user:100 username password email phone status"
+
+--echo #
+--echo # ========================================
+--echo # REAL-WORLD USE CASE SIMULATIONS
+--echo # ========================================
+--echo #
+
+--echo #
+--echo # Test 11: Session storage pattern
+--echo #
+
+--exec $RONDIS -e "SET session:abc123 'user_id=42,created_at=1706000000,expires_at=1706003600'"
+--exec $RONDIS -e "GET session:abc123"
+--exec $RONDIS -e "DEL session:abc123"
+--exec $RONDIS -e "GET session:abc123"
+
+--echo #
+--echo # Test 12: Counter pattern (page views)
+--echo #
+
+--exec $RONDIS -e "SET pageviews:homepage 0"
+--exec $RONDIS -e "INCR pageviews:homepage"
+--exec $RONDIS -e "INCR pageviews:homepage"
+--exec $RONDIS -e "INCR pageviews:homepage"
+--exec $RONDIS -e "INCRBY pageviews:homepage 10"
+--exec $RONDIS -e "GET pageviews:homepage"
+
+--echo #
+--echo # Test 13: User profile pattern with hash
+--echo #
+
+--exec $RONDIS -e "HSET user:42 username 'alice' email 'alice@company.com' role 'admin' login_count '0'"
+--exec $RONDIS -e "HINCRBY user:42 login_count 1"
+--exec $RONDIS -e "HINCRBY user:42 login_count 1"
+--exec $RONDIS -e "HMGET user:42 username email role login_count"
+
+--echo #
+--echo # Test 14: Shopping cart pattern
+--echo #
+
+--exec $RONDIS -e "HSET cart:user:1 item:101 '2' item:102 '1' item:103 '5'"
+--exec $RONDIS -e "HGET cart:user:1 item:101"
+--exec $RONDIS -e "HINCRBY cart:user:1 item:101 3"
+--exec $RONDIS -e "HGET cart:user:1 item:101"
+--exec $RONDIS -e "HDEL cart:user:1 item:103"
+--exec $RONDIS -e "HMGET cart:user:1 item:101 item:102 item:103"
+
+--echo #
+--echo # Test 15: Verify data via SQL (Rondis stores in NDB tables)
+--echo #
+
+# Rondis stores data in redis_0 database, let's verify via SQL
+SELECT COUNT(*) > 0 AS has_string_keys FROM redis_0.string_keys;
+
+--echo #
+--echo # ========================================
+--echo # CLEANUP
+--echo # ========================================
+--echo #
+
+--exec $RONDIS -e "DEL strlen_test"
+--exec $RONDIS -e "DEL empty_string"
+--exec $RONDIS -e "DEL getrange_test"
+--exec $RONDIS -e "DEL setrange_test"
+--exec $RONDIS -e "DEL setrange_pad"
+--exec $RONDIS -e "DEL incr_new"
+--exec $RONDIS -e "DEL decr_new"
+--exec $RONDIS -e "DEL big_num"
+--exec $RONDIS -e "DEL neg_num"
+--exec $RONDIS -e "DEL product:1001"
+--exec $RONDIS -e "DEL inventory:item1"
+--exec $RONDIS -e "DEL inventory:item2"
+--exec $RONDIS -e "DEL user:100"
+--exec $RONDIS -e "DEL pageviews:homepage"
+--exec $RONDIS -e "DEL user:42"
+--exec $RONDIS -e "DEL cart:user:1"
+
+# Drop the test database to clean up
+--disable_query_log
+DROP DATABASE IF EXISTS redis_0;
+--enable_query_log

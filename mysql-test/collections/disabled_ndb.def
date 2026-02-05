@@ -21,7 +21,6 @@ ndb_rpl.ndb_rpl_binlog_format_errors       : BUG#29776083 EXPLICIT BINLOG INJECT
 # ndb suite tests
 ndb.ndb_insert            : BUG#16021097 INSERT .. SELECT WITH KEY VIOLATION DOES NOT FAIL
 ndb.ndb_row_count         : BUG#16021097 INSERT .. SELECT WITH KEY VIOLATION DOES NOT FAIL
-ndb.ndb_parallel_undo_log : BUG#28794807 FIX NDB.NDB_PARALLEL_UNDO_LOG TESTCASE FAILURE
 ndb.ndb_multi_mgmd        : WL#12345678 Can only run by itself
 ndb.ndb_read_balance      : WL#12345678 Unstable results
 ndb.test_mgmd             : WL#12345678 Requires fixing
@@ -40,6 +39,7 @@ ndb.ndb_suma_handover     : Bug#35539093 Error insert 13048 never hit in ndb.ndb
 #ndb.ndb_basic_4rpl        : WL#87654321
 #ndb.bug_rondb-852         : WL#87654321
 #ndb.ndb_err899            : WL#87654321
+#ndb.ndb_local_logevent    : WL#87654321
 #ndb.ndb_restore_conv_pk_slice_remap : WL#87654321
 #ndb.ndb_basic_ndbd_shm : WL#87654321
 #End mixed version disabling

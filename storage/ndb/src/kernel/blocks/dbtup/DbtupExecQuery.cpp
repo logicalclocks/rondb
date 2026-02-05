@@ -5525,9 +5525,9 @@ int Dbtup::interpreterNextLab(Signal* signal,
     theRegister = Interpreter::getReg1(theInstruction) << 2;
 #ifdef TRACE_INTERPRETER
     g_eventLogger->info(
-        "(%u)Interpreter :"
+        "(%u)Interpreter : Instruction: 0x%x"
         " RnoOfInstructions : %u.  TprogramCounter : %u.  Opcode : %u",
-        instance(), RnoOfInstructions, TprogramCounter,
+        instance(), theInstruction, RnoOfInstructions, TprogramCounter,
         Interpreter::getOpCode(theInstruction));
 #endif
 
@@ -5925,7 +5925,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
           }
           if (unlikely(Toffset < 0 ||
                        (Toffset > ((HEAP_MEMORY_SIZE_DWORDS * 8) -
-                        (MAX_TUPLE_SIZE_IN_WORDS * 4))) ||
+                        (MAX_VAR_SIZE_IN_WORDS * 4))) ||
                        ((Toffset & Int64(3)) != 0))) {
 #ifdef TRACE_INTERPRETER
             g_eventLogger->info("(%u)Offset %lld isn't ok, %u",
@@ -5935,7 +5935,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
           }
           Uint32 memory_offset = Uint32(Toffset);
           Int64 Tpos = * (Int64*)(TregMemBuffer + TposRegister + 2);
-          if (unlikely(Tpos < 0 || Tpos >= (MAX_TUPLE_SIZE_IN_WORDS * 4))) {
+          if (unlikely(Tpos < 0 || Tpos >= (MAX_VAR_SIZE_IN_WORDS * 4))) {
 #ifdef TRACE_INTERPRETER
             g_eventLogger->info("(%u)Pos %lld isn't ok, %u",
                                 instance(), Tpos, __LINE__);
@@ -5944,7 +5944,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
           }
           Uint32 read_pos = (Uint32)Tpos;
           Int64 Tsize = * (Int64*)(TregMemBuffer + TsizeRegister + 2);
-          if (unlikely(Tsize <= 0 || Tsize >= (MAX_TUPLE_SIZE_IN_WORDS * 4))) {
+          if (unlikely(Tsize <= 0 || Tsize >= (MAX_VAR_SIZE_IN_WORDS * 4))) {
 #ifdef TRACE_INTERPRETER
             g_eventLogger->info("(%u)Size %lld isn't ok, %u",
                                 instance(), Tsize, __LINE__);
@@ -5967,7 +5967,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
                                        &TdataForRead[0],
                                        (Uint32)2,
                                        (Uint32*)&TheapMemoryChar[memory_offset],
-                                       (Uint32)MAX_TUPLE_SIZE_IN_WORDS);
+                                       (Uint32)MAX_VAR_SIZE_IN_WORDS);
           if (TnoDataRW < 0) {
             jamDebug();
             terrorCode = Uint32(-TnoDataRW);
@@ -6004,6 +6004,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
           Uint32 ToffsetType = TregMemBuffer[theRegister];
           Int64 Toffset = * (Int64*)(TregMemBuffer + theRegister + 2);
 	  Uint32 TdestRegister = Interpreter::getReg3(theInstruction) << 2;
+
           Uint32 TattrId = theInstruction >> 16;
           Uint32 theAttrinfo = (TattrId << 16);
           if (unlikely((ToffsetType == NULL_INDICATOR))) {
@@ -6017,7 +6018,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
           }
           if (unlikely(Toffset < 0 ||
                        (Toffset > ((HEAP_MEMORY_SIZE_DWORDS * 8) -
-                        (MAX_TUPLE_SIZE_IN_WORDS * 4))) ||
+                        (MAX_VAR_SIZE_IN_WORDS * 4))) ||
                        ((Toffset & Int64(3)) != 0))) {
 #ifdef TRACE_INTERPRETER
             g_eventLogger->info("(%u)Offset %lld isn't ok, %u",
@@ -6032,7 +6033,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
                                        &theAttrinfo,
                                        (Uint32)1,
                                        (Uint32*)&TheapMemoryChar[memory_offset],
-                                       (Uint32)MAX_TUPLE_SIZE_IN_WORDS);
+                                       (Uint32)MAX_VAR_SIZE_IN_WORDS);
           if (TnoDataRW < 0) {
             jamDebug();
             terrorCode = Uint32(-TnoDataRW);
@@ -6174,7 +6175,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
             return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
           }
 	  Int64 size = * (Int64*)(TregMemBuffer + TsizeRegister + 2);
-          if (unlikely(size <= 0 || size >= (MAX_TUPLE_SIZE_IN_WORDS * 4))) {
+          if (unlikely(size <= 0 || size >= (MAX_VAR_SIZE_IN_WORDS * 4))) {
 #ifdef TRACE_INTERPRETER
             g_eventLogger->info("(%u)Size %lld isn't ok, %u",
               instance(), size, __LINE__);
@@ -6518,7 +6519,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
             return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
 #endif
           }
-          if (unlikely(Tsize > (MAX_TUPLE_SIZE_IN_WORDS * 4))) {
+          if (unlikely(Tsize > (MAX_VAR_SIZE_IN_WORDS * 4))) {
 #ifdef TRACE_INTERPRETER
             g_eventLogger->info("(%u)Line %u, Size error: %u",
                                 instance(),

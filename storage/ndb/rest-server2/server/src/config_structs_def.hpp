@@ -70,6 +70,17 @@ CLASS
     " 256.")
  CM(Uint32, reqBufferSize, ReqBufferSize, 1024 * 1024, "")
  CM(Uint32, respBufferSize, RespBufferSize, 5 * 1024 * 1024, "")
+ CM(Uint32, scanRespBufferSize, ScanRespBufferSize, 256 * 1024,
+    "Initial buffer reservation for scan response JSON, in bytes. The buffer"
+    " will grow automatically if the response exceeds this size.")
+ CM(bool, scanTimingEnabled, ScanTimingEnabled, false,
+    "Enable scan timing metrics collection. When enabled, records per-scan"
+    " timing breakdown and maintains a slow scan buffer for diagnostics.")
+ CM(Uint32, slowScanThresholdUs, SlowScanThresholdUs, 10000,
+    "Threshold in microseconds for recording slow scans. Scans exceeding this"
+    " threshold are recorded in the slow scan buffer. Default is 10000 (10ms).")
+ CM(Uint32, slowScanBufferSize, SlowScanBufferSize, 1000,
+    "Maximum number of slow scan entries to keep in the circular buffer.")
  CM(Uint32, preAllocatedBuffers, PreAllocatedBuffers, 32, "")
  CM(Uint32, batchMaxSize, BatchMaxSize, 128,
     "Maximum number of requests contained in a batch request.")
@@ -78,6 +89,7 @@ CLASS
  //todo warn (preallocatedbuffers == 0, "preAllocatedBuffers should be > 0")
  PROBLEM(reqBufferSize < 256, "ReqBufferSize should be >= 256")
  PROBLEM(respBufferSize < 256, "RespBufferSize should be >= 256")
+ PROBLEM(scanRespBufferSize < 1024, "ScanRespBufferSize should be >= 1024")
  PROBLEM(batchMaxSize > 512, "BatchMaxSize should be <= 512")
  PROBLEM(batchMaxSize < 50, "BatchMaxSize should be >= 50")
 )
@@ -155,6 +167,9 @@ CLASS
     "Database-specific configuration.")
  CM(bool, createTables, CreateTables, true,
     "Whether to create Rondis databases and tables on startup if they don't exist.")
+ CM(bool, requireTablesOnStartup, RequireTablesOnStartup, true,
+    "Whether to require Rondis tables to exist on startup. Set to false for MTR tests "
+    "where tables are created by the test itself.")
  CM(std::string, mysqlHost, MySQLHost, "localhost",
     "The MySQL server host for creating Rondis tables.")
  CM(Uint16, mysqlPort, MySQLPort, 3306,

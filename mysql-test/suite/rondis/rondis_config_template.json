@@ -1,0 +1,48 @@
+{
+  "PIDFile": "@pid-file",
+  "REST": {
+    "ServerIP": "@bind-address",
+    "ServerPort": @port
+  },
+  "Rondis": {
+    "Enable": true,
+    "ServerIP": "@bind-address",
+    "ServerPort": @rondisport,
+    "NumThreads": 16,
+    "NumDatabases": 1,
+    "CreateTables": false,
+    "RequireTablesOnStartup": false,
+    "MySQLHost": "@mysqld.1.1.#host",
+    "MySQLPort": @mysqld.1.1.port,
+    "MySQLUser": "root",
+    "MySQLPassword": ""
+  },
+  "RonDB": {
+      "Mgmds": [ { "IP": "@cluster_config.ndb_mgmd.1.1.HostName",
+                   "Port": @cluster_config.ndb_mgmd.1.1.PortNumber } ]
+  },
+  "Security": {
+    "TLS": {
+      "EnableTLS": @EnableTLS,
+      "RequireAndVerifyClientCert": false,
+      "CertificateFile": "@std-data/hopsworks_fake_certificates/hw_service_and_intermediate.pem",
+      "PrivateKeyFile": "@std-data/hopsworks_fake_certificates/hw_service.key",
+      "RootCACertFile": "@std-data/hopsworks_fake_certificates/hw_root.pem"
+    },
+    "APIKey": {
+      "UseHopsworksAPIKeys": false
+    },
+    "InsecureAllowAll": true
+  },
+  "Log": {
+    "Level": "INFO"
+  },
+  "Testing": {
+    "MySQL": {
+        "Servers": [ { "IP": "@mysqld.1.1.#host",
+                       "Port": @mysqld.1.1.port } ],
+      "User": "root",
+      "Password": ""
+    }
+  }
+}

@@ -44,6 +44,9 @@ import (
 	"github.com/logicalclocks/rondb/tools/rondb-cli/internal/ui"
 )
 
+// API version for RDRS REST API (0.2.0 returns JSON error responses)
+const APIVersion = "0.2.0"
+
 // Config holds shell configuration
 type Config struct {
 	Host       string // General host (used for Rondis)
@@ -61,6 +64,8 @@ type Config struct {
 	NoMySQL    bool   // Disable MySQL connection
 	NoRDRS     bool   // Disable RDRS/REST API connection
 	NoRondis   bool   // Disable Rondis connection
+	Command    string // Command to execute non-interactively (like mysql -e)
+	Quiet      bool   // Suppress timing and info messages (for scripted usage)
 }
 
 type Shell struct {
@@ -73,6 +78,7 @@ type Shell struct {
 	rl             *readline.Instance // Store readline instance for multi-line input
 	debug          bool               // Debug mode for printing requests/responses in benchmarks
 	verbose        int                // Verbose level: 0=normal, 1=connect/disconnect info, 2=debug mode
+	quiet          bool               // Suppress timing and info messages (for scripted usage)
 	clientID       int                // Client ID prefix for benchmark keys (default 0)
 	ronsqlDatabase string             // Database for RonSQL queries
 	ronsqlFormat   string             // Output format for RonSQL queries (default "JSON")
@@ -95,6 +101,7 @@ func RunWithConfig(cfg Config) error {
 		mysqlPass:      cfg.MySQLPass,
 		verbose:        cfg.Verbose,
 		debug:          cfg.Verbose >= 2,
+		quiet:          cfg.Quiet,
 		ronsqlDatabase: "test",
 		ronsqlFormat:   "JSON",
 		ronsqlExplain:  "ALLOW",
@@ -125,6 +132,7 @@ func RunWithConfig(cfg Config) error {
 		fmt.Println(ui.Info("  --no-mysql         Disable MySQL connection"))
 		fmt.Println(ui.Info("  --no-rdrs          Disable RDRS/REST API connection"))
 		fmt.Println(ui.Info("  --no-rondis        Disable Rondis connection"))
+		fmt.Println(ui.Info("  -e                 Execute command and exit (non-interactive)"))
 		fmt.Println()
 		fmt.Println(ui.Info("Environment variables:"))
 		fmt.Println(ui.Info("  RONDB_HOST           RonDB host (sets all hosts)"))
@@ -135,10 +143,15 @@ func RunWithConfig(cfg Config) error {
 		fmt.Println(ui.Info("  RONDB_RDRS_PORT      RDRS/REST API port"))
 		fmt.Println(ui.Info("  RONDB_MYSQL_USER     MySQL username"))
 		fmt.Println(ui.Info("  RONDB_MYSQL_PASSWORD MySQL password"))
-	fmt.Println(ui.Info("  RONDB_RDRS_API_KEY   RDRS/REST API key"))
+		fmt.Println(ui.Info("  RONDB_RDRS_API_KEY   RDRS/REST API key"))
 		return err
 	}
 	defer s.close()
+
+	// Non-interactive mode: execute command and exit
+	if cfg.Command != "" {
+		return s.execute(cfg.Command)
+	}
 
 	fmt.Println()
 	fmt.Println(ui.Welcome())
@@ -393,6 +406,7 @@ func (s *Shell) readFullCommand(firstLine string) (string, error) {
 }
 
 func (s *Shell) execute(line string) error {
+	line = strings.TrimSpace(line)
 	lower := strings.ToLower(line)
 
 	// Internal commands
@@ -826,7 +840,9 @@ func (s *Shell) executeRondis(line string) error {
 	}
 
 	fmt.Println(result)
-	fmt.Println(ui.Timing(duration))
+	if !s.quiet {
+		fmt.Println(ui.Timing(duration))
+	}
 	return nil
 }
 
@@ -844,8 +860,13 @@ func (s *Shell) executeSQL(line string) error {
 			return err
 		}
 
-		output := ui.RenderSQLResultWithDuration(columns, rows, duration)
-		fmt.Print(output)
+		if s.quiet {
+			output := ui.RenderSQLResult(columns, rows)
+			fmt.Print(output)
+		} else {
+			output := ui.RenderSQLResultWithDuration(columns, rows, duration)
+			fmt.Print(output)
+		}
 		return nil
 	}
 
@@ -856,7 +877,9 @@ func (s *Shell) executeSQL(line string) error {
 	}
 
 	fmt.Println(ui.Success(fmt.Sprintf("OK, %d rows affected", affected)))
-	fmt.Println(ui.Timing(duration))
+	if !s.quiet {
+		fmt.Println(ui.Timing(duration))
+	}
 	return nil
 }
 
@@ -925,7 +948,7 @@ func (s *Shell) executeRonSQL(line string) error {
 	fmt.Println()
 
 	// Send request
-	endpoint := "/0.1.0/ronsql"
+	endpoint := "/" + APIVersion + "/ronsql"
 	data, duration, err := s.restClient.Post(endpoint, req)
 
 	// Print JSON response (even on error, as it may contain useful info)
@@ -947,12 +970,15 @@ func (s *Shell) executeREAD(line string) error {
 		return fmt.Errorf("REST API not connected. Use --no-rdrs=false or restart without --no-rdrs.")
 	}
 
+	// Strip trailing semicolon (command terminator)
+	line = strings.TrimSuffix(strings.TrimSpace(line), ";")
+
 	database, table, req, err := dsl.ParseSingleRead(line)
 	if err != nil {
 		return fmt.Errorf("parse error: %w", err)
 	}
 
-	endpoint := fmt.Sprintf("/0.1.0/%s/%s/pk-read", database, table)
+	endpoint := fmt.Sprintf("/%s/%s/%s/pk-read", APIVersion, database, table)
 
 	// Pretty print the request
 	reqJSON, _ := json.MarshalIndent(req, "", "  ")
@@ -967,7 +993,9 @@ func (s *Shell) executeREAD(line string) error {
 
 	fmt.Println(ui.Info("Response:"))
 	fmt.Println(client.PrettyJSON(data))
-	fmt.Println(ui.Timing(duration))
+	if !s.quiet {
+		fmt.Println(ui.Timing(duration))
+	}
 	return nil
 }
 
@@ -1020,36 +1048,52 @@ func (s *Shell) executeBatch(line string) error {
 	// Choose endpoint and request body based on operation type
 	var endpoint string
 	var requestBody interface{}
+	var httpMethod string
 
 	switch result.OpType {
 	case dsl.OpTypeRead:
-		endpoint = "/0.1.0/batch"
+		endpoint = "/" + APIVersion + "/batch"
 		requestBody = result.Request
+		httpMethod = "POST"
 	case dsl.OpTypeDelete:
-		endpoint = "/0.1.0/batchdelete"
+		endpoint = "/" + APIVersion + "/batchdelete"
 		requestBody = result.Request
+		httpMethod = "DELETE"
 	case dsl.OpTypeWrite:
-		endpoint = "/0.1.0/batchwrite"
+		endpoint = "/" + APIVersion + "/batchwrite"
 		requestBody = result.WriteRequest
+		httpMethod = "POST"
 	default:
 		return fmt.Errorf("unknown operation type")
 	}
 
 	// Pretty print the request
 	reqJSON, _ := json.MarshalIndent(requestBody, "", "  ")
-	fmt.Println()
-	fmt.Println(ui.Info(fmt.Sprintf("POST %s", endpoint)))
-	fmt.Println(string(reqJSON))
-	fmt.Println()
+	if !s.quiet {
+		fmt.Println()
+		fmt.Println(ui.Info(fmt.Sprintf("%s %s", httpMethod, endpoint)))
+		fmt.Println(string(reqJSON))
+		fmt.Println()
+	}
 
-	data, duration, err := s.restClient.Post(endpoint, requestBody)
+	var data []byte
+	var duration time.Duration
+	if result.OpType == dsl.OpTypeDelete {
+		data, duration, err = s.restClient.Delete(endpoint, requestBody)
+	} else {
+		data, duration, err = s.restClient.Post(endpoint, requestBody)
+	}
 	if err != nil {
 		return err
 	}
 
-	fmt.Println(ui.Info("Response:"))
+	if !s.quiet {
+		fmt.Println(ui.Info("Response:"))
+	}
 	fmt.Println(client.PrettyJSON(data))
-	fmt.Println(ui.Timing(duration))
+	if !s.quiet {
+		fmt.Println(ui.Timing(duration))
+	}
 	return nil
 }
 
@@ -1961,10 +2005,10 @@ func (s *Shell) runDelRDRS(numThreads int, numOps int, rowsPerOp int) error {
 				batchReq := dsl.BatchRequest{Operations: operations}
 				if debugMode {
 					reqJSON, _ := json.MarshalIndent(batchReq, "", "  ")
-					fmt.Printf("[DEBUG] REQ: POST /0.1.0/batchdelete\n%s\n", reqJSON)
+					fmt.Printf("[DEBUG] REQ: DELETE /%s/batchdelete\n%s\n", APIVersion, reqJSON)
 				}
 				opStart := time.Now()
-				resp, _, err := restClient.Post("/0.1.0/batchdelete", batchReq)
+				resp, _, err := restClient.Delete("/" + APIVersion + "/batchdelete", batchReq)
 				latencyCollector.Record(time.Since(opStart))
 				if debugMode {
 					fmt.Printf("[DEBUG] RESP: %s, err: %v\n", string(resp), err)
@@ -2149,7 +2193,7 @@ func (s *Shell) runLoadRDRS(numThreads int, numOps int, rowsPerOp int) error {
 				}
 
 				opStart := time.Now()
-				resp, _, err := restClient.Post("/0.1.0/batchwrite", request)
+				resp, _, err := restClient.Post("/" + APIVersion + "/batchwrite", request)
 				latencyCollector.Record(time.Since(opStart))
 
 				if debugMode {
@@ -3626,10 +3670,10 @@ func (s *Shell) runBenchRDRS(numThreads int, numOps int, rowsPerOp int, writePct
 					writeReq := dsl.BatchWriteRequest{Operations: operations}
 					if debugMode {
 						reqJSON, _ := json.MarshalIndent(writeReq, "", "  ")
-						fmt.Printf("[DEBUG] REQ: POST /0.1.0/batchwrite\n%s\n", reqJSON)
+						fmt.Printf("[DEBUG] REQ: POST /%s/batchwrite\n%s\n", APIVersion, reqJSON)
 					}
 					opStart := time.Now()
-					resp, _, err := restClient.Post("/0.1.0/batchwrite", writeReq)
+					resp, _, err := restClient.Post("/" + APIVersion + "/batchwrite", writeReq)
 					latencyCollector.Record(time.Since(opStart))
 					if debugMode {
 						fmt.Printf("[DEBUG] RESP: %s, err: %v\n", string(resp), err)
@@ -3661,10 +3705,10 @@ func (s *Shell) runBenchRDRS(numThreads int, numOps int, rowsPerOp int, writePct
 					batchReq := dsl.BatchRequest{Operations: operations}
 					if debugMode {
 						reqJSON, _ := json.MarshalIndent(batchReq, "", "  ")
-						fmt.Printf("[DEBUG] REQ: POST /0.1.0/batch\n%s\n", reqJSON)
+						fmt.Printf("[DEBUG] REQ: POST /%s/batch\n%s\n", APIVersion, reqJSON)
 					}
 					opStart := time.Now()
-					resp, _, err := restClient.Post("/0.1.0/batch", batchReq)
+					resp, _, err := restClient.Post("/" + APIVersion + "/batch", batchReq)
 					latencyCollector.Record(time.Since(opStart))
 					if debugMode {
 						fmt.Printf("[DEBUG] RESP: %s, err: %v\n", string(resp), err)
@@ -3871,10 +3915,10 @@ func (s *Shell) runBenchRDRSCont(numThreads int, numOps int, rowsPerOp int, writ
 						writeReq := dsl.BatchWriteRequest{Operations: operations}
 						if debugMode {
 							reqJSON, _ := json.MarshalIndent(writeReq, "", "  ")
-							fmt.Printf("[DEBUG] REQ: POST /0.1.0/batchwrite\n%s\n", reqJSON)
+							fmt.Printf("[DEBUG] REQ: POST /%s/batchwrite\n%s\n", APIVersion, reqJSON)
 						}
 						opStart := time.Now()
-						resp, _, err := restClient.Post("/0.1.0/batchwrite", writeReq)
+						resp, _, err := restClient.Post("/" + APIVersion + "/batchwrite", writeReq)
 						latencyCollector.Record(time.Since(opStart))
 						if debugMode {
 							fmt.Printf("[DEBUG] RESP: %s, err: %v\n", string(resp), err)
@@ -3908,10 +3952,10 @@ func (s *Shell) runBenchRDRSCont(numThreads int, numOps int, rowsPerOp int, writ
 						batchReq := dsl.BatchRequest{Operations: operations}
 						if debugMode {
 							reqJSON, _ := json.MarshalIndent(batchReq, "", "  ")
-							fmt.Printf("[DEBUG] REQ: POST /0.1.0/batch\n%s\n", reqJSON)
+							fmt.Printf("[DEBUG] REQ: POST /%s/batch\n%s\n", APIVersion, reqJSON)
 						}
 						opStart := time.Now()
-						resp, _, err := restClient.Post("/0.1.0/batch", batchReq)
+						resp, _, err := restClient.Post("/" + APIVersion + "/batch", batchReq)
 						latencyCollector.Record(time.Since(opStart))
 						if debugMode {
 							fmt.Printf("[DEBUG] RESP: %s, err: %v\n", string(resp), err)

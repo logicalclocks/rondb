@@ -25,12 +25,14 @@ extern "C" {
 #define STORAGE_NDB_REST_SERVER2_SERVER_SRC_RDRS_DAL_H_
 
 #include <stdbool.h>
+#include <stdint.h>
 
 typedef enum HTTP_CODE {
   SUCCESS      = 200,
   CLIENT_ERROR = 400,
   AUTH_ERROR   = 401,
   NOT_FOUND    = 404,
+  CONFLICT     = 409,
   SERVER_ERROR = 500
 } HTTP_CODE;
 
@@ -232,6 +234,12 @@ RS_Status get_rondb_stats(RonDB_Stats *stats);
 
 void* get_rdrs_ndb_object(int thread_index);
 void return_rdrs_ndb_object(void *ndb_object, int thread_index);
+
+class ScanReadParams;
+struct ScanPhaseTiming;
+RS_Status scan_read(ScanReadParams& scan_params, unsigned int threadIndex,
+                    void* json_string_buf, uint64_t* rows_fetched_out = nullptr,
+                    ScanPhaseTiming* timing = nullptr);
 
 #endif
 

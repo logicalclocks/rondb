@@ -1,18 +1,20 @@
 /*
- * This file is part of the RonDB REST API Server
- * Copyright (c) 2023, 2025 Hopsworks AB
+ * Copyright (C) 2023, 2026 Hopsworks AB
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, version 3.
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
  *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
- * General Public License for more details.
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301,
+ * USA.
  */
 
 package testutils
@@ -139,6 +141,80 @@ func NewBatchReadURL() string {
 		config.BATCH_OPERATION,
 	)
 	appendURLProtocol(&url)
+	return url
+}
+
+func NewBatchReadURLV2() string {
+	conf := config.GetAll()
+	url := fmt.Sprintf("%s:%d/%s/%s",
+		conf.REST.ServerIP,
+		conf.REST.ServerPort,
+		version.API_VERSION_2,
+		config.BATCH_OPERATION,
+	)
+	appendURLProtocol(&url)
+	return url
+}
+
+func NewBatchWriteURL() string {
+	conf := config.GetAll()
+	url := fmt.Sprintf("%s:%d/%s/%s",
+		conf.REST.ServerIP,
+		conf.REST.ServerPort,
+		version.API_VERSION,
+		config.BATCH_WRITE_OPERATION,
+	)
+	appendURLProtocol(&url)
+	return url
+}
+
+func NewBatchWriteURLV2() string {
+	conf := config.GetAll()
+	url := fmt.Sprintf("%s:%d/%s/%s",
+		conf.REST.ServerIP,
+		conf.REST.ServerPort,
+		version.API_VERSION_2,
+		config.BATCH_WRITE_OPERATION,
+	)
+	appendURLProtocol(&url)
+	return url
+}
+
+func NewBatchDeleteURL() string {
+	conf := config.GetAll()
+	url := fmt.Sprintf("%s:%d/%s/%s",
+		conf.REST.ServerIP,
+		conf.REST.ServerPort,
+		version.API_VERSION,
+		config.BATCH_DELETE_OPERATION,
+	)
+	appendURLProtocol(&url)
+	return url
+}
+
+func NewBatchDeleteURLV2() string {
+	conf := config.GetAll()
+	url := fmt.Sprintf("%s:%d/%s/%s",
+		conf.REST.ServerIP,
+		conf.REST.ServerPort,
+		version.API_VERSION_2,
+		config.BATCH_DELETE_OPERATION,
+	)
+	appendURLProtocol(&url)
+	return url
+}
+
+func NewBatchPKDeleteURL(db string, table string) string {
+	url := fmt.Sprintf("%s/%s/%s",
+		db, table, config.PK_DELETE_OPERATION,
+	)
+	return url
+}
+
+func NewBatchPKWriteURL(db string, table string, opType string) string {
+	url := fmt.Sprintf("%s/%s/%s",
+		db, table, opType,
+	)
 	return url
 }
 

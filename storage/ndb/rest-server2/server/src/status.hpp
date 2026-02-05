@@ -76,6 +76,23 @@ inline RS_Status __RS_ERROR_RONDB(const struct NdbError &error,
                     file_name);
 }
 
+inline RS_Status __RS_ERROR_RONDB_CONFLICT(const struct NdbError &error,
+                                           std::string msg,
+                                           int lineNo,
+                                           std::string file_name) {
+  std::string userMsg = "Error: " + msg + " Error: code: " + std::to_string(error.code) +
+                        " MySQL Code: " + std::to_string(error.mysql_code) +
+                        " Message: " + error.message;
+  return __RS_ERROR(CONFLICT,
+                    error.status,
+                    error.classification,
+                    error.code,
+                    error.mysql_code,
+                    userMsg,
+                    lineNo,
+                    file_name);
+}
+
 #define __MYFILENAME__ __FILE__
 
 #define RS_OK __RS_ERROR(SUCCESS, -1, -1, -1, -1, "", 0, "")
@@ -94,5 +111,8 @@ inline RS_Status __RS_ERROR_RONDB(const struct NdbError &error,
 
 #define RS_RONDB_SERVER_ERROR(ndberror, msg)                                                       \
   __RS_ERROR_RONDB(ndberror, msg, __LINE__, __MYFILENAME__)
+
+#define RS_RONDB_CONFLICT_ERROR(ndberror, msg)                                                     \
+  __RS_ERROR_RONDB_CONFLICT(ndberror, msg, __LINE__, __MYFILENAME__)
 
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_STATUS_HPP_

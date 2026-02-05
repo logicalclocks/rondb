@@ -74,7 +74,7 @@ DATABASE QUOTA GET command failed: Error:
 *   709: Error
 *        No such database exists
 DATABASE QUOTA GET command failed: Error:
-*   942: Error
+*   943: Error
 *        Database name too long
 DROP TABLE IF EXISTS t1, t2;
 CREATE TABLE t1 (

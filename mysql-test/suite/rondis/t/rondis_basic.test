@@ -1,0 +1,143 @@
+--source include/not_parallel.inc
+--source include/have_ndb.inc
+
+#
+# Test Rondis basic Redis-compatible operations using rondb-cli
+# This test covers basic string and hash operations
+#
+
+# Check that rondb-cli is available
+if (!$RONDB_CLI) {
+  --skip rondb-cli binary not found - build with Go installed
+}
+
+# Create the Rondis tables needed for this test
+--source suite/rondis/include/create_rondis_tables.inc
+
+# Set up rondb-cli for Rondis operations
+--let $RONDIS=$RONDB_CLI --host=$RONDIS_HOST --rondis-port=$RONDIS_PORT --no-mysql --no-rdrs --quiet
+
+--echo #
+--echo # Test 1: PING - Basic connectivity test
+--echo #
+
+--exec $RONDIS -e "PING"
+
+--echo #
+--echo # Test 2: SET and GET - Basic string operations
+--echo #
+
+--exec $RONDIS -e "SET mykey 'Hello World'"
+--exec $RONDIS -e "GET mykey"
+
+--echo #
+--echo # Test 3: SET with overwrite
+--echo #
+
+--exec $RONDIS -e "SET mykey 'Updated Value'"
+--exec $RONDIS -e "GET mykey"
+
+--echo #
+--echo # Test 4: Multiple keys
+--echo #
+
+--exec $RONDIS -e "SET user:1:name 'Alice'"
+--exec $RONDIS -e "SET user:1:email 'alice@example.com'"
+--exec $RONDIS -e "SET user:2:name 'Bob'"
+--exec $RONDIS -e "SET user:2:email 'bob@example.com'"
+
+--exec $RONDIS -e "GET user:1:name"
+--exec $RONDIS -e "GET user:1:email"
+--exec $RONDIS -e "GET user:2:name"
+--exec $RONDIS -e "GET user:2:email"
+
+--echo #
+--echo # Test 5: GET non-existent key returns nil
+--echo #
+
+--exec $RONDIS -e "GET nonexistent_key"
+
+--echo #
+--echo # Test 6: DEL - Delete keys
+--echo #
+
+--exec $RONDIS -e "DEL mykey"
+--exec $RONDIS -e "GET mykey"
+
+--echo #
+--echo # Test 7: MSET and MGET - Multiple key operations
+--echo #
+
+--exec $RONDIS -e "MSET key1 'value1' key2 'value2' key3 'value3'"
+--exec $RONDIS -e "MGET key1 key2 key3"
+
+--echo #
+--echo # Test 8: INCR and DECR - Numeric operations
+--echo #
+
+--exec $RONDIS -e "SET counter 10"
+--exec $RONDIS -e "INCR counter"
+--exec $RONDIS -e "INCR counter"
+--exec $RONDIS -e "GET counter"
+
+--exec $RONDIS -e "DECR counter"
+--exec $RONDIS -e "GET counter"
+
+--echo #
+--echo # Test 9: INCRBY and DECRBY
+--echo #
+
+--exec $RONDIS -e "INCRBY counter 5"
+--exec $RONDIS -e "GET counter"
+--exec $RONDIS -e "DECRBY counter 3"
+--exec $RONDIS -e "GET counter"
+
+--echo #
+--echo # Test 10: HSET and HGET - Hash operations
+--echo #
+
+--exec $RONDIS -e "HSET user:profile name 'John Doe'"
+--exec $RONDIS -e "HSET user:profile age '30'"
+--exec $RONDIS -e "HSET user:profile city 'New York'"
+
+--exec $RONDIS -e "HGET user:profile name"
+--exec $RONDIS -e "HGET user:profile age"
+--exec $RONDIS -e "HGET user:profile city"
+
+--echo #
+--echo # Test 11: HGET non-existent field returns nil
+--echo #
+
+--exec $RONDIS -e "HGET user:profile nonexistent"
+
+--echo #
+--echo # Test 12: HDEL - Delete hash field
+--echo #
+
+--exec $RONDIS -e "HDEL user:profile city"
+--exec $RONDIS -e "HGET user:profile city"
+
+--echo #
+--echo # Test 13: HMGET - Get multiple hash fields
+--echo #
+
+--exec $RONDIS -e "HMGET user:profile name age city"
+
+--echo #
+--echo # Cleanup - Delete all test keys
+--echo #
+
+--exec $RONDIS -e "DEL user:1:name"
+--exec $RONDIS -e "DEL user:1:email"
+--exec $RONDIS -e "DEL user:2:name"
+--exec $RONDIS -e "DEL user:2:email"
+--exec $RONDIS -e "DEL key1"
+--exec $RONDIS -e "DEL key2"
+--exec $RONDIS -e "DEL key3"
+--exec $RONDIS -e "DEL counter"
+--exec $RONDIS -e "DEL user:profile"
+
+# Drop the test database to clean up
+--disable_query_log
+DROP DATABASE IF EXISTS redis_0;
+--enable_query_log

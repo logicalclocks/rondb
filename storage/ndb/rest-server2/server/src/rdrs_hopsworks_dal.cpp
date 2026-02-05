@@ -86,7 +86,12 @@ RS_Status find_api_key_int(Ndb *ndb_object,
   }
   int col_id = table_dict->getColumn("prefix")->getColumnNo();
   Uint32 col_size = (Uint32)table_dict->getColumn("prefix")->getSizeInBytes();
-  assert(col_size == API_KEY_PREFIX_SIZE);
+  if (unlikely(col_size != API_KEY_PREFIX_SIZE)) {
+    ndb_object->closeTransaction(tx);
+    return RS_SERVER_ERROR(
+      "hopsworks.api_key table has wrong schema: prefix column size mismatch "
+      "(expected latin1 charset)");
+  }
   size_t prefix_len = strlen(prefix);
   if (unlikely(prefix_len >
               (col_size - bytes_for_ndb_str_len(API_KEY_PREFIX_SIZE)))) {
@@ -378,7 +383,12 @@ RS_Status find_project_team_int(
   int col_id = table_dict->getColumn("team_member")->getColumnNo();
   Uint32 col_size =
     (Uint32)table_dict->getColumn("team_member")->getSizeInBytes();
-  assert(col_size == PROJECT_TEAM_TEAM_MEMBER_SIZE);
+  if (unlikely(col_size != PROJECT_TEAM_TEAM_MEMBER_SIZE)) {
+    ndb_object->closeTransaction(tx);
+    return RS_SERVER_ERROR(
+      "hopsworks.project_team table has wrong schema: team_member column size "
+      "mismatch (expected latin1 charset)");
+  }
 
   size_t email_len = strlen(users->email);
   if (unlikely(email_len >

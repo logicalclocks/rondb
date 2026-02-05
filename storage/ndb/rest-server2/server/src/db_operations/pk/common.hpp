@@ -46,7 +46,8 @@ RS_Status set_col_value(const NdbDictionary::Column *col,
                         Uint32 valueLen,
                         const char *colName,
                         Uint8 *row,
-                        const NdbRecord *ndb_record);
+                        const NdbRecord *ndb_record,
+                        bool pk);
 
 /**
  * Set up read operation

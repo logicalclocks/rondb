@@ -1,0 +1,170 @@
+#
+# ========================================
+# STRING MANIPULATION TESTS
+# ========================================
+#
+#
+# Test 1: STRLEN - String length
+#
+OK
+13
+# STRLEN of non-existent key returns 0
+0
+#
+# Test 2: GETRANGE - Get substring
+#
+OK
+# Get first 5 characters (0-4)
+Hello
+# Get last 6 characters using negative index
+World!
+# Get middle portion
+World
+# Range beyond string length
+Hello, World!
+#
+# Test 3: SETRANGE - Modify substring
+#
+OK
+11
+Hello Redis
+# SETRANGE with padding (offset beyond string length)
+OK
+10
+Hi\0\0\0There
+#
+# ========================================
+# NUMERIC OPERATION EDGE CASES
+# ========================================
+#
+#
+# Test 4: INCR/DECR starting from zero
+#
+0
+1
+1
+0
+-1
+-1
+#
+# Test 5: Large increment/decrement values
+#
+OK
+1000000
+1000000
+500000
+500000
+#
+# Test 6: Negative numbers
+#
+OK
+-99
+-99
+-149
+-149
+#
+# ========================================
+# HASH ADVANCED OPERATIONS
+# ========================================
+#
+#
+# Test 7: HSET multiple fields at once
+#
+4
+Laptop
+999
+50
+Electronics
+#
+# Test 8: HINCRBY - Hash field increment
+#
+1
+125
+125
+# Negative increment (effectively a decrement)
+115
+115
+#
+# Test 9: HDECRBY - Hash field decrement
+#
+1
+45
+45
+#
+# Test 10: HMGET with mix of existing and non-existing fields
+#
+3
+1) johndoe
+2) (nil)
+3) john@example.com
+4) (nil)
+5) active
+#
+# ========================================
+# REAL-WORLD USE CASE SIMULATIONS
+# ========================================
+#
+#
+# Test 11: Session storage pattern
+#
+OK
+user_id=42,created_at=1706000000,expires_at=1706003600
+1
+(nil)
+#
+# Test 12: Counter pattern (page views)
+#
+OK
+1
+2
+3
+13
+13
+#
+# Test 13: User profile pattern with hash
+#
+4
+1
+2
+1) alice
+2) alice@company.com
+3) admin
+4) 2
+#
+# Test 14: Shopping cart pattern
+#
+3
+2
+5
+5
+1
+1) 5
+2) 1
+3) (nil)
+#
+# Test 15: Verify data via SQL (Rondis stores in NDB tables)
+#
+SELECT COUNT(*) > 0 AS has_string_keys FROM redis_0.string_keys;
+has_string_keys
+1
+#
+# ========================================
+# CLEANUP
+# ========================================
+#
+1
+0
+1
+1
+1
+1
+1
+1
+1
+0
+0
+0
+0
+1
+0
+0
