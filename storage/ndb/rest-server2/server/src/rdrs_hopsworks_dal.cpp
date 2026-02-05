@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023, 2024 Hopsworks AB
+ * Copyright (C) 2023, 2025 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -86,7 +86,12 @@ RS_Status find_api_key_int(Ndb *ndb_object,
   }
   int col_id = table_dict->getColumn("prefix")->getColumnNo();
   Uint32 col_size = (Uint32)table_dict->getColumn("prefix")->getSizeInBytes();
-  assert(col_size == API_KEY_PREFIX_SIZE);
+  if (unlikely(col_size != API_KEY_PREFIX_SIZE)) {
+    ndb_object->closeTransaction(tx);
+    return RS_SERVER_ERROR(
+      "hopsworks.api_key table has wrong schema: prefix column size mismatch "
+      "(expected latin1 charset)");
+  }
   size_t prefix_len = strlen(prefix);
   if (unlikely(prefix_len >
               (col_size - bytes_for_ndb_str_len(API_KEY_PREFIX_SIZE)))) {
@@ -109,7 +114,8 @@ RS_Status find_api_key_int(Ndb *ndb_object,
                filter.end() < 0)) {
     err = filter.getNdbError();
     ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(err, std::string(rdrsErrorMessage(ERROR_SET_FILTER_FAILED)));
+    return RS_RONDB_SERVER_ERROR(
+      err, std::string(rdrsErrorMessage(ERROR_SET_FILTER_FAILED)));
   }
   NdbRecAttr *user_id = scanOp->getValue("user_id");
   NdbRecAttr *secret = scanOp->getValue("secret");
@@ -129,12 +135,14 @@ RS_Status find_api_key_int(Ndb *ndb_object,
                name == nullptr)) {
     err = scanOp->getNdbError();
     ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(err, std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
+    return RS_RONDB_SERVER_ERROR(
+      err, std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
   }
   if (unlikely(tx->execute(NdbTransaction::NoCommit) != 0)) {
     err = tx->getNdbError();
     ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(err, std::string(rdrsErrorMessage(ERROR_TRANSACTION_EXEC_FAILED)));
+    return RS_RONDB_SERVER_ERROR(
+      err, std::string(rdrsErrorMessage(ERROR_TRANSACTION_EXEC_FAILED)));
   }
   int count  = 0;
   bool check = 0;
@@ -150,21 +158,24 @@ RS_Status find_api_key_int(Ndb *ndb_object,
       if (unlikely(GetByteArray(
                      name, &name_data_start, &name_attr_bytes) != 0)) {
         ndb_object->closeTransaction(tx);
-        return RS_CLIENT_ERROR(std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
+        return RS_CLIENT_ERROR(
+          std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
       }
       Uint32 salt_attr_bytes;
       const char *salt_data_start = nullptr;
       if (unlikely(GetByteArray(
                      salt, &salt_data_start, &salt_attr_bytes) != 0)) {
         ndb_object->closeTransaction(tx);
-        return RS_CLIENT_ERROR(std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
+        return RS_CLIENT_ERROR(
+          std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
       }
       Uint32 secret_attr_bytes;
       const char *secret_data_start = nullptr;
       if (unlikely(GetByteArray(
                      secret, &secret_data_start, &secret_attr_bytes) != 0)) {
         ndb_object->closeTransaction(tx);
-        return RS_CLIENT_ERROR(std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
+        return RS_CLIENT_ERROR(
+          std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
       }
       // <= because we want to leave one byte for '\0'
       // sizes of char arrays are set to accommodate additional '\0'
@@ -172,7 +183,8 @@ RS_Status find_api_key_int(Ndb *ndb_object,
                    sizeof(api_key->name) <= name_attr_bytes ||
                    sizeof(api_key->salt) <= salt_attr_bytes)) {
         ndb_object->closeTransaction(tx);
-        return RS_CLIENT_ERROR(std::string(rdrsErrorMessage(ERROR_PROGRAMMING_BUFFER_TOO_SMALL)));
+        return RS_CLIENT_ERROR(
+          std::string(rdrsErrorMessage(ERROR_PROGRAMMING_BUFFER_TOO_SMALL)));
       }
       memcpy(api_key->name, name_data_start, name_attr_bytes);
       api_key->name[name_attr_bytes] = '\0';
@@ -253,19 +265,30 @@ RS_Status find_user_int(Ndb *ndb_object,
                filter.end() < 0)) {
     err = filter.getNdbError();
     ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(err, std::string(rdrsErrorMessage(ERROR_SET_FILTER_FAILED)));
+    return RS_RONDB_SERVER_ERROR(
+      err, std::string(rdrsErrorMessage(ERROR_SET_FILTER_FAILED)));
   }
   NdbRecAttr *email = scanOp->getValue("email");
   if (unlikely(email == nullptr)) {
-    return RS_RONDB_SERVER_ERROR(err, std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
+    return RS_RONDB_SERVER_ERROR(
+      err, std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
   }
   assert(USERS_EMAIL_SIZE ==
          (Uint32)table_dict->getColumn("email")->getSizeInBytes());
 
+  NdbRecAttr *username = scanOp->getValue("username");
+  if (unlikely(username == nullptr)) {
+    return RS_RONDB_SERVER_ERROR(
+      err, std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
+  }
+  assert(USERNAME_SIZE ==
+         (Uint32)table_dict->getColumn("username")->getSizeInBytes());
+
   if (unlikely(tx->execute(NdbTransaction::NoCommit) != 0)) {
     err = tx->getNdbError();
     ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(err, std::string(rdrsErrorMessage(ERROR_TRANSACTION_EXEC_FAILED)));
+    return RS_RONDB_SERVER_ERROR(
+      err, std::string(rdrsErrorMessage(ERROR_TRANSACTION_EXEC_FAILED)));
   }
   bool check = 0;
   while ((check = scanOp->nextResult(true)) == 0) {
@@ -275,14 +298,33 @@ RS_Status find_user_int(Ndb *ndb_object,
       if (unlikely(GetByteArray(
                      email, &email_data_start, &email_attr_bytes) != 0)) {
         ndb_object->closeTransaction(tx);
-        return RS_CLIENT_ERROR(std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
+        return RS_CLIENT_ERROR(
+          std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
       }
       if (unlikely(sizeof(users->email) < email_attr_bytes)) {
         ndb_object->closeTransaction(tx);
-        return RS_CLIENT_ERROR(std::string(rdrsErrorMessage(ERROR_PROGRAMMING_BUFFER_TOO_SMALL)));
+        return RS_CLIENT_ERROR(
+          std::string(rdrsErrorMessage(ERROR_PROGRAMMING_BUFFER_TOO_SMALL)));
       }
       memcpy(users->email, email_data_start, email_attr_bytes);
       users->email[email_attr_bytes] = 0;
+
+      Uint32 username_attr_bytes;
+      const char *username_data_start = nullptr;
+      if (unlikely(GetByteArray(username,
+                                &username_data_start,
+                                &username_attr_bytes) != 0)) {
+        ndb_object->closeTransaction(tx);
+        return RS_CLIENT_ERROR(
+          std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
+      }
+      if (unlikely(sizeof(users->username) < username_attr_bytes)) {
+        ndb_object->closeTransaction(tx);
+        return RS_CLIENT_ERROR(
+          std::string(rdrsErrorMessage(ERROR_PROGRAMMING_BUFFER_TOO_SMALL)));
+      }
+      memcpy(users->username, username_data_start, username_attr_bytes);
+      users->username[username_attr_bytes] = 0;
     } while ((check = scanOp->nextResult(false)) == 0);
   }
   // check for errors happened during the reading process
@@ -341,7 +383,12 @@ RS_Status find_project_team_int(
   int col_id = table_dict->getColumn("team_member")->getColumnNo();
   Uint32 col_size =
     (Uint32)table_dict->getColumn("team_member")->getSizeInBytes();
-  assert(col_size == PROJECT_TEAM_TEAM_MEMBER_SIZE);
+  if (unlikely(col_size != PROJECT_TEAM_TEAM_MEMBER_SIZE)) {
+    ndb_object->closeTransaction(tx);
+    return RS_SERVER_ERROR(
+      "hopsworks.project_team table has wrong schema: team_member column size "
+      "mismatch (expected latin1 charset)");
+  }
 
   size_t email_len = strlen(users->email);
   if (unlikely(email_len >
@@ -365,17 +412,20 @@ RS_Status find_project_team_int(
                filter.end() < 0)) {
     err = filter.getNdbError();
     ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(err, std::string(rdrsErrorMessage(ERROR_SET_FILTER_FAILED)));
+    return RS_RONDB_SERVER_ERROR(
+      err, std::string(rdrsErrorMessage(ERROR_SET_FILTER_FAILED)));
   }
   NdbRecAttr *project_id = scanOp->getValue("project_id");
   if (unlikely(project_id == nullptr)) {
     ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(err, std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
+    return RS_RONDB_SERVER_ERROR(
+      err, std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
   }
   if (unlikely(tx->execute(NdbTransaction::NoCommit) != 0)) {
     err = tx->getNdbError();
     ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(err, std::string(rdrsErrorMessage(ERROR_TRANSACTION_EXEC_FAILED)));
+    return RS_RONDB_SERVER_ERROR(
+      err, std::string(rdrsErrorMessage(ERROR_TRANSACTION_EXEC_FAILED)));
   }
   bool check;
   while ((check = scanOp->nextResult(true)) == 0) {
@@ -443,25 +493,29 @@ RS_Status find_projects_int(
   if (unlikely(filter.begin(NdbScanFilter::OR) < 0)) {
     err = filter.getNdbError();
     ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(err, std::string(rdrsErrorMessage(ERROR_SET_FILTER_FAILED)));
+    return RS_RONDB_SERVER_ERROR(
+      err, std::string(rdrsErrorMessage(ERROR_SET_FILTER_FAILED)));
   }
   for (Uint32 i = 0; i < project_team_vec->size(); i++) {
     if (unlikely(filter.eq(col_id,
                  (Uint32)(*project_team_vec)[i].project_id) < 0)) {
       err = filter.getNdbError();
       ndb_object->closeTransaction(tx);
-      return RS_RONDB_SERVER_ERROR(err, std::string(rdrsErrorMessage(ERROR_SET_FILTER_FAILED)));
+      return RS_RONDB_SERVER_ERROR(
+        err, std::string(rdrsErrorMessage(ERROR_SET_FILTER_FAILED)));
     }
   }
   if (unlikely(filter.end() < 0)) {
     err = filter.getNdbError();
     ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(err, std::string(rdrsErrorMessage(ERROR_SET_FILTER_FAILED)));
+    return RS_RONDB_SERVER_ERROR(
+      err, std::string(rdrsErrorMessage(ERROR_SET_FILTER_FAILED)));
   }
   NdbRecAttr *projectname = scanOp->getValue("projectname");
   if (unlikely(projectname == nullptr)) {
     ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(err, std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
+    return RS_RONDB_SERVER_ERROR(
+      err, std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
   }
   assert(PROJECT_PROJECTNAME_SIZE ==
          (Uint32)table_dict->getColumn("projectname")->getSizeInBytes());
@@ -469,7 +523,8 @@ RS_Status find_projects_int(
   if (unlikely(tx->execute(NdbTransaction::NoCommit) != 0)) {
     err = tx->getNdbError();
     ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(err, std::string(rdrsErrorMessage(ERROR_TRANSACTION_EXEC_FAILED)));
+    return RS_RONDB_SERVER_ERROR(
+      err, std::string(rdrsErrorMessage(ERROR_TRANSACTION_EXEC_FAILED)));
   }
   bool check = 0;
   while ((check = scanOp->nextResult(true)) == 0) {
@@ -481,12 +536,14 @@ RS_Status find_projects_int(
                                 &projectname_data_start,
                                 &projectname_attr_bytes) != 0)) {
         ndb_object->closeTransaction(tx);
-        return RS_CLIENT_ERROR(std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
+        return RS_CLIENT_ERROR(
+          std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
       }
 
       if (unlikely(sizeof(project.projectname) < projectname_attr_bytes)) {
         ndb_object->closeTransaction(tx);
-        return RS_CLIENT_ERROR(std::string(rdrsErrorMessage(ERROR_PROGRAMMING_BUFFER_TOO_SMALL)));
+        return RS_CLIENT_ERROR(
+          std::string(rdrsErrorMessage(ERROR_PROGRAMMING_BUFFER_TOO_SMALL)));
       }
 
       memcpy(project.projectname,
@@ -520,10 +577,12 @@ RS_Status find_projects_vec(
 RS_Status find_all_projects_int(
   Ndb *ndb_object,
   int uid,
-  std::vector<HopsworksProject> *project_vec) {
+  std::vector<HopsworksProject> *project_vec,
+  HopsworksUsers user) {
 
-  HopsworksUsers user;
-  RS_Status status = find_user(ndb_object, (Uint32)uid, &user);
+  RS_Status status = find_user(ndb_object,
+                               (Uint32)uid,
+                               &user);
   if (unlikely(status.http_code != SUCCESS)) {
     return status;
   }
@@ -539,9 +598,13 @@ RS_Status find_all_projects_int(
   return RS_OK;
 }
 
-RS_Status find_all_projects(int uid, char ***projects, int *count) {
+RS_Status find_all_projects(int uid,
+                            char ***projects,
+                            int *count,
+                            char **username_ptr) {
 
   std::vector<HopsworksProject> project_vec;
+  HopsworksUsers user;
 
   Ndb *ndb_object = nullptr;
   RS_Status status = rdrsRonDBConnectionPool->GetMetadataNdbObject(&ndb_object);
@@ -550,7 +613,10 @@ RS_Status find_all_projects(int uid, char ***projects, int *count) {
   }
   METADATA_OP_RETRY_HANDLER(
     project_vec.clear();
-    status = find_all_projects_int(ndb_object, uid, &project_vec);
+    status = find_all_projects_int(ndb_object,
+                                   uid,
+                                   &project_vec,
+                                   user);
     HandleSchemaErrors(ndb_object, status, {
       std::make_tuple(HOPSWORKS, USERS),
       std::make_tuple(HOPSWORKS, PROJECT_TEAM),
@@ -563,11 +629,16 @@ RS_Status find_all_projects(int uid, char ***projects, int *count) {
   size_t malloc_size = 0;
   malloc_size += (project_vec.size() * sizeof(char*));
   for (Uint32 i = 0; i < project_vec.size(); i++) {
-    size_t name_size = (strlen(project_vec[i].projectname) + 1) * sizeof(char);
+    size_t name_size =
+      (strnlen(project_vec[i].projectname,
+               PROJECT_PROJECTNAME_SIZE) + 1) * sizeof(char);
     DEB_DAL("i = %u, db: %s, len(db name): %u",
             i, project_vec[i].projectname, (Uint32)name_size);
     malloc_size += name_size;
   }
+  size_t username_size =
+    (strnlen(user.username, USERNAME_SIZE) + 1) * sizeof(char);
+  malloc_size += username_size;
   *projects = (char **)malloc(malloc_size);
   if (unlikely(*projects == nullptr)) {
     return CRS_Status(HTTP_CODE::SERVER_ERROR,
@@ -583,5 +654,7 @@ RS_Status find_all_projects(int uid, char ***projects, int *count) {
     memcpy(str_ptr, project_vec[i].projectname, name_size);
     str_ptr += name_size;
   }
+  memcpy(str_ptr, user.username, username_size);
+  *username_ptr = str_ptr;
   return RS_OK;
 }

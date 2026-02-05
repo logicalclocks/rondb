@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023, 2025 Hopsworks AB
+ * Copyright (C) 2023, 2026 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -32,6 +32,7 @@ typedef enum HTTP_CODE {
   CLIENT_ERROR = 400,
   AUTH_ERROR   = 401,
   NOT_FOUND    = 404,
+  CONFLICT     = 409,
   SERVER_ERROR = 500
 } HTTP_CODE;
 
@@ -187,7 +188,32 @@ RS_Status pk_batch_read(void *amalloc,
                         bool is_batch,
                         RS_Buffer *req_buffs,
                         RS_Buffer *resp_buffs,
-                        unsigned int threadIndex);
+                        unsigned int threadIndex,
+                        char *username_ptr);
+
+/**
+ * Batched primary key delete operation
+ * Also used for single key delete operation
+ */
+RS_Status pk_batch_delete(void *amalloc,
+                          unsigned int no_req,
+                          bool is_batch,
+                          RS_Buffer *req_buffs,
+                          RS_Buffer *resp_buffs,
+                          unsigned int threadIndex,
+                          char *username_ptr);
+
+/**
+ * Batched primary key write operation
+ * Also used for single key write operation
+ */
+RS_Status pk_batch_write(void *amalloc,
+                         unsigned int no_req,
+                         bool is_batch,
+                         RS_Buffer *req_buffs,
+                         RS_Buffer *resp_buffs,
+                         unsigned int threadIndex,
+                         char *username_ptr);
 
 /**
  * RonSQL query

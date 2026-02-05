@@ -10189,7 +10189,7 @@ void ThreadConfig::ipControlLoop(NdbThread *pThis) {
       struct NdbThread *thread_ptr =
         NdbThread_Create(mt_job_thread_main,
                          (void **)(rep->m_thread + thr_no),
-                         2*1024*1024,
+                         3*1024*1024,
                          "execute thread", //ToDo add number
                          NDB_THREAD_PRIO_MEAN);
       require(thread_ptr != NULL);
@@ -10202,7 +10202,7 @@ void ThreadConfig::ipControlLoop(NdbThread *pThis) {
       struct NdbThread *thread_ptr =
         NdbThread_Create(mt_receiver_thread_main,
                          (void **)(&rep->m_thread[thr_no]),
-                         2*1024*1024,
+                         3*1024*1024,
                          "receive thread", //ToDo add number
                          NDB_THREAD_PRIO_MEAN);
       require(thread_ptr != NULL);

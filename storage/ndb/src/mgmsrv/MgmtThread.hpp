@@ -45,7 +45,7 @@ class MgmtThread {
   MgmtThread();                    // Not implemented
   MgmtThread(const MgmtThread &);  // Not implemented
   MgmtThread(const char *name,
-             size_t stack_size = 0,  // Use default stack size
+             size_t stack_size = 1024 * 1024,
              NDB_THREAD_PRIO thread_prio = NDB_THREAD_PRIO_LOW)
       : m_running(true),
         m_name(name),

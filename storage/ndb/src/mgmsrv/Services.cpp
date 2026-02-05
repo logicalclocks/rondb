@@ -33,7 +33,6 @@
 #include <BaseString.hpp>
 #include <EventLogger.hpp>
 #include <LogLevel.hpp>
-#include <signaldata/SetLogLevelOrd.hpp>
 #include "util/TlsKeyManager.hpp"
 
 #include <ConfigValues.hpp>
@@ -110,6 +109,50 @@ static struct CmdAuth Basic {
 };
 
 const ParserRow<MgmApiSession> commands[] = {
+    MGM_CMD("set user", &MgmApiSession::setUser, "", &Basic),
+    MGM_ARG("username", String, Mandatory, "User name"),
+    MGM_ARG("rate_per_sec",
+            Int,
+            Mandatory,
+            "Max read/write rate per second"),
+    MGM_ARG("max_transaction_size", Int64, Mandatory, "Max transaction size"),
+    MGM_ARG("max_parallel_transactions",
+            Int,
+            Mandatory,
+            "Max parallel transactions"),
+    MGM_ARG("max_parallel_complex_queries",
+            Int,
+            Mandatory,
+            "Max parallel complex queries"),
+
+    MGM_CMD("alter user", &MgmApiSession::alterUser, "", &Basic),
+    MGM_ARG("username", String, Mandatory, "User name"),
+    MGM_ARG("rate_per_sec",
+            Int,
+            Mandatory,
+            "Max read/write rate per second"),
+    MGM_ARG("max_transaction_size", Int64, Mandatory, "Max transaction size"),
+    MGM_ARG("max_parallel_transactions",
+            Int,
+            Mandatory,
+            "Max parallel transactions"),
+    MGM_ARG("max_parallel_complex_queries",
+            Int,
+            Mandatory,
+            "Max parallel complex queries"),
+
+    MGM_CMD("drop user", &MgmApiSession::dropUser, "", &Basic),
+    MGM_ARG("username", String, Mandatory, "User name"),
+
+    MGM_CMD("get user", &MgmApiSession::getUser, "", &Basic),
+    MGM_ARG("username", String, Mandatory, "User name"),
+
+    MGM_CMD("list users", &MgmApiSession::listUsers, "", &Basic),
+    MGM_ARG("nextUserId", Int, Mandatory, "next User Id"),
+
+    MGM_CMD("backup users", &MgmApiSession::backupUsers, "", &Basic),
+    MGM_ARG("nextUserId", Int, Mandatory, "next User Id"),
+
     MGM_CMD("set quotas", &MgmApiSession::setQuotas, "", &Basic),
     MGM_ARG("database", String, Mandatory, "Database name"),
     MGM_ARG("in_memory_size", Int, Mandatory, "Max in-memory size"),
@@ -477,11 +520,6 @@ MgmApiSession::~MgmApiSession() {
   if (m_secure_socket.is_valid()) {
     m_secure_socket.close();
   }
-  if (m_cert) {
-    X509_free(m_cert);
-    m_mgmsrv.tls_stat_decrement(MgmtSrvr::TlsStats::tls);
-  }
-  m_mgmsrv.tls_stat_decrement(MgmtSrvr::TlsStats::current);
   if (m_stopSelf < 0) g_RestartServer = true;
   if (m_stopSelf) g_StopServer = true;
   NdbMutex_Destroy(m_mutex);
@@ -581,6 +619,12 @@ void MgmApiSession::runSession() {
   NdbMutex_Unlock(m_mutex);
 
   g_eventLogger->debug("%s: Disconnected!", name());
+
+  if (m_cert) {
+    X509_free(m_cert);
+    m_mgmsrv.tls_stat_decrement(MgmtSrvr::TlsStats::tls);
+  }
+  m_mgmsrv.tls_stat_decrement(MgmtSrvr::TlsStats::current);
 
   DBUG_VOID_RETURN;
 }
@@ -739,13 +783,14 @@ MgmApiSession::setQuotas(Parser_t::Context &,
   int error_code;
   NdbOut socket_out(*m_output);
   if ((error_code = m_mgmsrv.set_quotas(database_name,
-                                         in_memory_size,
-                                         on_disk_size,
-                                         rate_per_sec,
-                                         max_transaction_size,
-                                         max_parallel_transactions,
-                                         max_parallel_complex_queries,
-                                         socket_out))) {
+                                        false,
+                                        in_memory_size,
+                                        on_disk_size,
+                                        rate_per_sec,
+                                        max_transaction_size,
+                                        max_parallel_transactions,
+                                        max_parallel_complex_queries,
+                                        socket_out))) {
     if (error_code == -1) return;
     m_output->println("set quotas reply");
     m_output->println("result: %s", "Create Database failed");
@@ -783,13 +828,14 @@ MgmApiSession::alterQuotas(Parser_t::Context &,
   int error_code;
   NdbOut socket_out(*m_output);
   if ((error_code = m_mgmsrv.alter_quotas(database_name,
-                                           in_memory_size,
-                                           on_disk_size,
-                                           rate_per_sec,
-                                           max_transaction_size,
-                                           max_parallel_transactions,
-                                           max_parallel_complex_queries,
-                                           socket_out))) {
+                                          false,
+                                          in_memory_size,
+                                          on_disk_size,
+                                          rate_per_sec,
+                                          max_transaction_size,
+                                          max_parallel_transactions,
+                                          max_parallel_complex_queries,
+                                          socket_out))) {
     if (error_code == -1) return;
     m_output->println("alter quotas reply");
     m_output->println("result: %s", "Alter Database failed");
@@ -814,7 +860,7 @@ MgmApiSession::dropQuotas(Parser_t::Context &,
   g_eventLogger->info("MgmApiSession::dropQuotas");
   int error_code;
   NdbOut socket_out(*m_output);
-  if ((error_code = m_mgmsrv.drop_quotas(database_name, socket_out))) {
+  if ((error_code = m_mgmsrv.drop_quotas(database_name, false, socket_out))) {
     if (error_code == -1) return;
     m_output->println("drop quotas reply");
     m_output->println("result: %s", "Drop Database failed");
@@ -836,7 +882,7 @@ MgmApiSession::getQuotas(Parser_t::Context &,
 
   m_output->println("get quotas reply");
   NdbOut socket_out(*m_output);
-  m_mgmsrv.get_quotas(database_name, socket_out);
+  m_mgmsrv.get_quotas(database_name, false, socket_out);
 }
 
 void
@@ -846,7 +892,7 @@ MgmApiSession::listQuotas(Parser_t::Context &,
   args.get("nextDatabaseId", &nextDatabaseId);
   m_output->println("list quotas reply");
   NdbOut socket_out(*m_output);
-  m_mgmsrv.list_quotas(nextDatabaseId, socket_out);
+  m_mgmsrv.list_quotas(nextDatabaseId, false, socket_out);
 }
 
 void
@@ -856,7 +902,154 @@ MgmApiSession::backupQuotas(Parser_t::Context &,
   args.get("nextDatabaseId", &nextDatabaseId);
   m_output->println("backup quotas reply");
   NdbOut socket_out(*m_output);
-  m_mgmsrv.backup_quotas(nextDatabaseId, socket_out);
+  m_mgmsrv.backup_quotas(nextDatabaseId, false, socket_out);
+}
+
+
+void
+MgmApiSession::setUser(Parser_t::Context &,
+                       const class Properties &args) {
+  const char *user_name = nullptr;
+  Uint32 in_memory_size = 0;
+  Uint32 on_disk_size = 0;
+  Uint32 rate_per_sec = 0;
+  Uint32 max_transaction_size = 0;
+  Uint32 max_parallel_transactions = 0;
+  Uint32 max_parallel_complex_queries = 0;
+
+  // Ignoring mandatory parameter "version"
+  args.get("username", &user_name);
+  args.get("rate_per_sec", &rate_per_sec);
+  args.get("max_transaction_size", &max_transaction_size);
+  args.get("max_parallel_transactions", &max_parallel_transactions);
+  args.get("max_parallel_complex_queries", &max_parallel_complex_queries);
+
+  g_eventLogger->info("MgmApiSession::setUser");
+  int error_code;
+  const char *database_name = nullptr;
+  NdbOut socket_out(*m_output);
+  if ((error_code = m_mgmsrv.set_quotas(database_name,
+                                        true,
+                                        in_memory_size,
+                                        on_disk_size,
+                                        rate_per_sec,
+                                        max_transaction_size,
+                                        max_parallel_transactions,
+                                        max_parallel_complex_queries,
+                                        socket_out))) {
+    if (error_code == -1) return;
+    m_output->println("set user reply");
+    m_output->println("result: %s", "Create User failed");
+    m_output->println("error_code: %d", error_code);
+    m_output->println("%s", "");
+    return;
+  }
+  
+  m_output->println("set user reply");
+  m_output->println("result: Ok");
+  m_output->println("%s", "");
+}
+
+void
+MgmApiSession::alterUser(Parser_t::Context &,
+                         const class Properties &args) {
+  const char *user_name = nullptr;
+  Uint32 in_memory_size = 0;
+  Uint32 on_disk_size = 0;
+  Uint32 rate_per_sec = 0;
+  Uint32 max_transaction_size = 0;
+  Uint32 max_parallel_transactions = 0;
+  Uint32 max_parallel_complex_queries = 0;
+
+  // Ignoring mandatory parameter "version"
+  args.get("username", &user_name);
+  args.get("rate_per_sec", &rate_per_sec);
+  args.get("max_transaction_size", &max_transaction_size);
+  args.get("max_parallel_transactions", &max_parallel_transactions);
+  args.get("max_parallel_complex_queries", &max_parallel_complex_queries);
+
+  g_eventLogger->info("MgmApiSession::alterUser");
+  int error_code;
+  const char *database_name = nullptr;
+  NdbOut socket_out(*m_output);
+  if ((error_code = m_mgmsrv.alter_quotas(database_name,
+                                          true,
+                                          in_memory_size,
+                                          on_disk_size,
+                                          rate_per_sec,
+                                          max_transaction_size,
+                                          max_parallel_transactions,
+                                          max_parallel_complex_queries,
+                                          socket_out))) {
+    if (error_code == -1) return;
+    m_output->println("alter user reply");
+    m_output->println("result: %s", "Alter User failed");
+    m_output->println("error_code: %d", error_code);
+    m_output->println("%s", "");
+    return;
+  }
+  
+  m_output->println("alter user reply");
+  m_output->println("result: Ok");
+  m_output->println("%s", "");
+}
+
+void
+MgmApiSession::dropUser(Parser_t::Context &,
+                        const class Properties &args) {
+  const char *user_name = nullptr;
+
+  // Ignoring mandatory parameter "version"
+  args.get("username", &user_name);
+
+  g_eventLogger->info("MgmApiSession::dropUser");
+  int error_code;
+  char *database_name = nullptr;
+  NdbOut socket_out(*m_output);
+  if ((error_code = m_mgmsrv.drop_quotas(database_name, true, socket_out))) {
+    if (error_code == -1) return;
+    m_output->println("drop user reply");
+    m_output->println("result: %s", "Drop User failed");
+    m_output->println("error_code: %d", error_code);
+    m_output->println("%s", "");
+    return;
+  }
+  
+  m_output->println("drop user reply");
+  m_output->println("result: Ok");
+  m_output->println("%s", "");
+}
+
+void
+MgmApiSession::getUser(Parser_t::Context &,
+                       const class Properties &args) {
+  const char *user_name = nullptr;
+  args.get("username", &user_name);
+
+  const char *database_name = nullptr;
+  m_output->println("get user reply");
+  NdbOut socket_out(*m_output);
+  m_mgmsrv.get_quotas(database_name, true, socket_out);
+}
+
+void
+MgmApiSession::listUsers(Parser_t::Context &,
+                         const class Properties &args) {
+  Uint32 nextUserId = 0;
+  args.get("nextUserId", &nextUserId);
+  m_output->println("list user reply");
+  NdbOut socket_out(*m_output);
+  m_mgmsrv.list_quotas(nextUserId, true, socket_out);
+}
+
+void
+MgmApiSession::backupUsers(Parser_t::Context &,
+                           const class Properties &args) {
+  Uint32 nextUserId = 0;
+  args.get("nextUserId", &nextUserId);
+  m_output->println("backup users reply");
+  NdbOut socket_out(*m_output);
+  m_mgmsrv.backup_quotas(nextUserId, true, socket_out);
 }
 
 void MgmApiSession::getConfig_v1(Parser_t::Context &ctx,
@@ -1166,8 +1359,6 @@ void MgmApiSession::setLogLevel(Parser<MgmApiSession>::Context &,
                                 Properties const &args) {
   Uint32 node = 0, level = 0, cat;
   BaseString errorString;
-  SetLogLevelOrd logLevel;
-  logLevel.clear();
   args.get("node", &node);
   args.get("category", &cat);
   args.get("level", &level);
@@ -1735,11 +1926,18 @@ int mgmsession_on_verify(int r, X509_STORE_CTX *ctx) {
 }
 
 int MgmApiSession::on_verify(int r, X509_STORE_CTX *ctx) {
-  if (r) {
+  /* If result is 1, verification has succeeded at this depth; on_verify()
+     will be called again at the next lower depth until verification fails or
+     depth is zero. */
+  int depth = X509_STORE_CTX_get_error_depth(ctx);
+  if (r == 1 && depth == 0) {
     /* certificate verification has succeeded */
     m_sessionAuthLevel |= (MgmAuth::clientHasTls | MgmAuth::clientHasCert);
+    assert(m_cert == nullptr);
     m_cert = X509_STORE_CTX_get_current_cert(ctx);
     X509_up_ref(m_cert);
+    m_mgmsrv.tls_stat_increment(MgmtSrvr::TlsStats::upgraded);
+    m_mgmsrv.tls_stat_increment(MgmtSrvr::TlsStats::tls);
   }
   return TlsKeyManager::on_verify(r, ctx);
 }
@@ -1773,8 +1971,6 @@ void MgmApiSession::startTls(Parser<MgmApiSession>::Context &,
       SSL_set_verify(ssl, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT,
                      mgmsession_on_verify);
       m_secure_socket.do_tls_handshake();
-      m_mgmsrv.tls_stat_increment(MgmtSrvr::TlsStats::upgraded);
-      m_mgmsrv.tls_stat_increment(MgmtSrvr::TlsStats::tls);
     } else
       NdbSocket::free_ssl(ssl);
   }

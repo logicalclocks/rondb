@@ -58,7 +58,7 @@ int initNdbCodeIncrDecr(std::string *response,
   code->load_const_u16(REG0, MEMORY_OFFSET_LEN_BYTES);
   code->load_const_u16(REG6, MEMORY_OFFSET_START);
   code->load_op_type(REG1); // Read operation type into register 1
-  code->branch_eq_const(REG1, RONDB_INSERT, LABEL2); // Inserts go to label 1
+  code->branch_eq_const(REG1, RONDB_INSERT, LABEL2); // Inserts go to label 2
 
   /**
    * The first 4 bytes of the memory must be kept for the Attribute header

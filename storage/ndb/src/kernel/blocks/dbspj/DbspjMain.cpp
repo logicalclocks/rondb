@@ -62,6 +62,13 @@
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_HASH 1
+#define DEBUG_TRANSID_AI 1
+#endif
+
+#ifdef DEBUG_TRANSID_AI
+#define DEB_TRANSID_AI(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_TRANSID_AI(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_HASH
@@ -1012,8 +1019,12 @@ void Dbspj::execLQHKEYREQ(Signal *signal) {
       SectionReader paramReader(attrPtr, getSectionSegmentPool());
       paramReader.step(len);  // skip over tree to parameters
 
+      Uint32 var_index = 0;
+      if (LqhKeyReq::getUserIdFlag(req->requestInfo)) {
+        var_index++;
+      }
       Build_context ctx;
-      ctx.m_resultRef = req->variableData[0];
+      ctx.m_resultRef = req->variableData[var_index];
       ctx.m_savepointId = req->savePointId;
       ctx.m_scanPrio = 1;
       ctx.m_start_signal = signal;
@@ -1094,23 +1105,28 @@ void Dbspj::do_init(Request *requestP, const LqhKeyReq *req, Uint32 senderRef) {
   requestP->m_save_time = NdbTick_getCurrentTicks();
 #endif
   const Uint32 reqInfo = req->requestInfo;
+  Uint32 var_index = 0;
+  if (LqhKeyReq::getUserIdFlag(reqInfo)) {
+    requestP->m_user_id = req->variableData[0];
+    var_index++;
+  } else {
+    requestP->m_user_id = RNIL;
+  }
   Uint32 tmp = req->clientConnectPtr;
   if (LqhKeyReq::getDirtyFlag(reqInfo) &&
       LqhKeyReq::getOperation(reqInfo) == ZREAD) {
     jam();
 
     ndbrequire(LqhKeyReq::getApplicationAddressFlag(reqInfo));
-    // const Uint32 apiRef   = lqhKeyReq->variableData[0];
-    // const Uint32 apiOpRec = lqhKeyReq->variableData[1];
-    tmp = req->variableData[1];
+    tmp = req->variableData[var_index + 1];
     requestP->m_senderData = tmp;
     requestP->m_senderRef = senderRef;
   } else {
     if (LqhKeyReq::getSameClientAndTcFlag(reqInfo) == 1) {
       if (LqhKeyReq::getApplicationAddressFlag(reqInfo))
-        tmp = req->variableData[2];
+        tmp = req->variableData[var_index + 2];
       else
-        tmp = req->variableData[0];
+        tmp = req->variableData[var_index];
     }
     requestP->m_senderData = tmp;
     requestP->m_senderRef = senderRef;
@@ -1134,14 +1150,15 @@ void Dbspj::handle_early_lqhkey_ref(Signal *signal, const LqhKeyReq *lqhKeyReq,
   ndbrequire(err);
   const Uint32 reqInfo = lqhKeyReq->requestInfo;
   const Uint32 transid[2] = {lqhKeyReq->transId1, lqhKeyReq->transId2};
+  Uint32 var_index = LqhKeyReq::getUserIdFlag(reqInfo);
 
   if (LqhKeyReq::getDirtyFlag(reqInfo) &&
       LqhKeyReq::getOperation(reqInfo) == ZREAD) {
     jam();
     /* Dirty read sends TCKEYREF direct to client, and nothing to TC */
     ndbrequire(LqhKeyReq::getApplicationAddressFlag(reqInfo));
-    const Uint32 apiRef = lqhKeyReq->variableData[0];
-    const Uint32 apiOpRec = lqhKeyReq->variableData[1];
+    const Uint32 apiRef = lqhKeyReq->variableData[var_index];
+    const Uint32 apiOpRec = lqhKeyReq->variableData[var_index + 1];
 
     TcKeyRef *const tcKeyRef =
         reinterpret_cast<TcKeyRef *>(signal->getDataPtrSend());
@@ -1159,9 +1176,9 @@ void Dbspj::handle_early_lqhkey_ref(Signal *signal, const LqhKeyReq *lqhKeyReq,
     Uint32 TcOprec = clientPtr;
     if (LqhKeyReq::getSameClientAndTcFlag(reqInfo) == 1) {
       if (LqhKeyReq::getApplicationAddressFlag(reqInfo))
-        TcOprec = lqhKeyReq->variableData[2];
+        TcOprec = lqhKeyReq->variableData[var_index + 2];
       else
-        TcOprec = lqhKeyReq->variableData[0];
+        TcOprec = lqhKeyReq->variableData[var_index];
     }
 
     LqhKeyRef *const ref =
@@ -1403,6 +1420,11 @@ void Dbspj::do_init(Request *requestP, const ScanFragReq *req,
   requestP->m_sum_waiting = 0;
   requestP->m_save_time = NdbTick_getCurrentTicks();
 #endif
+  if (ScanFragReq::getUserIdFlag(req->requestInfo)) {
+    requestP->m_user_id = req->variableData[0];
+  } else {
+    requestP->m_user_id = RNIL;
+  }
 }
 
 void Dbspj::store_scan(Ptr<Request> requestPtr) {
@@ -3520,6 +3542,10 @@ void Dbspj::execSCAN_NEXTREQ(Signal *signal) {
 }
 
 void Dbspj::execTRANSID_AI(Signal *signal) {
+  if (!assembleFragments(signal)) {
+    jam();
+    return;
+  }
   jamEntry();
   TransIdAI *req = (TransIdAI *)signal->getDataPtr();
   Uint32 ptrI = req->connectPtr;
@@ -3544,12 +3570,14 @@ void Dbspj::execTRANSID_AI(Signal *signal) {
   LinearSectionPtr linearPtr;
   if (signal->getNoOfSections() == 0)  // Short signal
   {
+    jamDebug();
     ndbrequire(signal->getLength() >= TransIdAI::HeaderLength);
     memcpy(m_buffer1, &signal->theData[TransIdAI::HeaderLength],
            4 * (signal->getLength() - TransIdAI::HeaderLength));
     linearPtr.p = m_buffer1;
     linearPtr.sz = signal->getLength() - TransIdAI::HeaderLength;
   } else {
+    jamDebug();
     SegmentedSectionPtr dataPtr;
     SectionHandle handle(this, signal);
     ndbrequire(handle.getSection(dataPtr, 0));
@@ -3562,7 +3590,9 @@ void Dbspj::execTRANSID_AI(Signal *signal) {
     linearPtr.p = m_buffer1;
     linearPtr.sz = dataPtr.sz;
     releaseSections(handle);
+    DEB_TRANSID_AI(("(%u) Dbspj::TRANSID_AI: len: %u", instance(), dataPtr.sz));
   }
+  jamDataDebug(linearPtr.sz);
 
 #if defined(DEBUG_LQHKEYREQ) || defined(DEBUG_SCAN_FRAGREQ)
   printf("execTRANSID_AI: ");
@@ -3592,6 +3622,8 @@ void Dbspj::execTRANSID_AI(Signal *signal) {
   row.m_row_data.m_header = header;
   row.m_row_data.m_data = linearPtr.p;
 
+  jamDebug();
+  jamDataDebug(cnt);
   getCorrelationData(row.m_row_data, cnt - 1, row.m_src_correlation);
 
   do  // Dummy loop to allow 'break' into error handling
@@ -4515,9 +4547,14 @@ Uint32 Dbspj::lookup_build(Build_context &ctx, Ptr<Request> requestPtr,
       dst->attrLen = 0;
       /** Initially set reply ref to client, do_send will set SPJ refs if
        * non-LEAF */
-      dst->variableData[0] = ctx.m_resultRef;
-      dst->variableData[1] = param->resultData;
+      Uint32 var_index = 0;
       Uint32 requestInfo = 0;
+      if (requestPtr.p->m_user_id != RNIL) {
+        jam();
+        var_index++;
+      }
+      dst->variableData[var_index++] = ctx.m_resultRef;
+      dst->variableData[var_index++] = param->resultData;
       LqhKeyReq::setOperation(requestInfo, ZREAD);
       LqhKeyReq::setApplicationAddressFlag(requestInfo, 1);
       LqhKeyReq::setDirtyFlag(requestInfo, 1);
@@ -4618,7 +4655,6 @@ Uint32 Dbspj::lookup_build(Build_context &ctx, Ptr<Request> requestPtr,
       ndbassert(LqhKeyReq::getOperation(requestInfo) == ZREAD);
       ndbassert(LqhKeyReq::getKeyLen(requestInfo) == 0);      // Only long
       ndbassert(LqhKeyReq::getMarkerFlag(requestInfo) == 0);  // Only read
-      ndbassert(LqhKeyReq::getAIInLqhKeyReq(requestInfo) == 0);
       ndbassert(LqhKeyReq::getSeqNoReplica(requestInfo) == 0);
       ndbassert(LqhKeyReq::getLastReplicaNo(requestInfo) == 0);
       ndbassert(LqhKeyReq::getApplicationAddressFlag(requestInfo) != 0);
@@ -4688,14 +4724,21 @@ void Dbspj::lookup_send(Signal *signal, Ptr<Request> requestPtr,
 
   memcpy(req, treeNodePtr.p->m_lookup_data.m_lqhKeyReq,
          sizeof(treeNodePtr.p->m_lookup_data.m_lqhKeyReq));
-  req->variableData[2] = treeNodePtr.p->m_send.m_correlation;
-  req->variableData[3] = requestPtr.p->m_rootResultData;
+  Uint32 var_index = 0;
+  if (requestPtr.p->m_user_id != RNIL) {
+    jam();
+    LqhKeyReq::setUserIdFlag(req->requestInfo, 1);
+    req->variableData[0] = requestPtr.p->m_user_id;
+    var_index++;
+  }
+  req->variableData[var_index + 2] = treeNodePtr.p->m_send.m_correlation;
+  req->variableData[var_index + 3] = requestPtr.p->m_rootResultData;
 
   if (!treeNodePtr.p->isLeaf() || requestPtr.p->isScan()) {
     // Non-LEAF want reply to SPJ instead of ApiClient.
     LqhKeyReq::setNormalProtocolFlag(req->requestInfo, 1);
-    req->variableData[0] = reference();
-    req->variableData[1] = treeNodePtr.i;
+    req->variableData[var_index] = reference();
+    req->variableData[var_index + 1] = treeNodePtr.i;
   } else {
     jam();
     /**
@@ -4801,7 +4844,7 @@ void Dbspj::lookup_send(Signal *signal, Ptr<Request> requestPtr,
 #if defined DEBUG_LQHKEYREQ
     g_eventLogger->info("LQHKEYREQ to %x", ref);
     printLQHKEYREQ(stdout, signal->getDataPtrSend(),
-                   NDB_ARRAY_SIZE(treeNodePtr.p->m_lookup_data.m_lqhKeyReq),
+                   NDB_ARRAY_SIZE(treeNodePtr.p->m_lookup_data.m_lqhKeyReqm_lqhKeyReqm_lqhKeyReqm_lqhKeyReqm_lqhKeyReqm_lqhKeyReqm_lqhKeyReqm_lqhKeyReq),
                    DBLQH);
     printf("KEYINFO: ");
     print(handle.m_ptr[0], stdout);
@@ -4880,7 +4923,8 @@ void Dbspj::lookup_send(Signal *signal, Ptr<Request> requestPtr,
       }
     }
     sendSignal(ref, GSN_LQHKEYREQ, signal,
-               NDB_ARRAY_SIZE(treeNodePtr.p->m_lookup_data.m_lqhKeyReq), JBB,
+               NDB_ARRAY_SIZE(treeNodePtr.p->m_lookup_data.m_lqhKeyReq) + var_index,
+               JBB,
                &handle);
 
     treeNodePtr.p->m_lookup_data.m_outstanding += cnt;
@@ -6875,8 +6919,10 @@ Uint32 Dbspj::scanFrag_parallelism(Ptr<Request> requestPtr,
                                    Uint32 batchSizeRows) {
   jam();
   ndbassert(batchSizeRows > 0);
-  if (unlikely(batchSizeRows == 0)) return 0;  // Should not happen
-
+  if (unlikely(batchSizeRows == 0)) {  // Should not happen
+    jam();
+    return 0;
+  }
   const ScanFragData &data = treeNodePtr.p->m_scanFrag_data;
 
   const Uint32 frags_not_complete = data.m_fragCount - data.m_frags_complete;
@@ -7042,7 +7088,18 @@ void Dbspj::scanFrag_send(Signal *signal, Ptr<Request> requestPtr,
   Uint32 availableBatchRows, availableBatchBytes;
   const Uint32 batchRows = scanFrag_getBatchSize(
       treeNodePtr, availableBatchBytes, availableBatchRows);
+
+  // No batch buffer left
+  if (unlikely(batchRows == 0)) {
+    jam();
+    return;
+  }
   data.m_parallelism = scanFrag_parallelism(requestPtr, treeNodePtr, batchRows);
+
+  if (unlikely(data.m_parallelism == 0)) {
+    jam();
+    return;
+  }
 
   // Cap batchSize-rows to avoid exceeding MAX_PARALLEL_OP_PER_SCAN_SPJ
   const Uint32 bs_rows =
@@ -7116,7 +7173,13 @@ Uint32 Dbspj::scanFrag_send(Signal *signal, Ptr<Request> requestPtr,
 
   memcpy(req, org, sizeof(data.m_scanFragReq));
   // req->variableData[0] // set below
-  req->variableData[1] = requestPtr.p->m_rootResultData;
+  Uint32 var_index = 0;
+  if (requestPtr.p->m_user_id != RNIL) {
+    req->variableData[0] = requestPtr.p->m_user_id;
+    ScanFragReq::setUserIdFlag(req->requestInfo, 1);
+    var_index++;
+  }
+  req->variableData[var_index + 1] = requestPtr.p->m_rootResultData;
   req->batch_size_bytes = bs_bytes;
   req->batch_size_rows = MIN(bs_rows, MAX_PARALLEL_OP_PER_SCAN_SPJ);
 
@@ -7183,7 +7246,7 @@ Uint32 Dbspj::scanFrag_send(Signal *signal, Ptr<Request> requestPtr,
        */
       req->senderData = fragPtr.i;
       req->fragmentNoKeyLen = fragPtr.p->m_fragId;
-      req->variableData[0] = data.m_corrIdStart;
+      req->variableData[var_index] = data.m_corrIdStart;
 
       /**
        * Set up the key-/attrInfo to be sent with the SCAN_FRAGREQ.
@@ -7340,7 +7403,8 @@ Uint32 Dbspj::scanFrag_send(Signal *signal, Ptr<Request> requestPtr,
       g_eventLogger->info("SCAN_FRAGREQ to %x", fragPtr.p->m_ref);
       printSCAN_FRAGREQ(
           stdout, signal->getDataPtrSend(),
-          NDB_ARRAY_SIZE(treeNodePtr.p->m_scanFrag_data.m_scanFragReq), DBLQH);
+          NDB_ARRAY_SIZE(treeNodePtr.p->m_scanFrag_data.m_scanFragReq) + var_index,
+          DBLQH);
       printf("ATTRINFO: ");
       print(handle.m_ptr[0], stdout);
       if (handle.m_cnt > 1) {
@@ -7459,7 +7523,8 @@ Uint32 Dbspj::scanFrag_send(Signal *signal, Ptr<Request> requestPtr,
             for (Uint32 i = 0; i < handle.m_cnt; i++) {
               signal_size += handle.m_ptr[i].sz;
             }
-            signal_size += NDB_ARRAY_SIZE(data.m_scanFragReq);
+            signal_size += NDB_ARRAY_SIZE(data.m_scanFragReq) + 1;
+             
             if (signal_size <= MAX_SIZE_SINGLE_SIGNAL) {
               jam();
               /* Single signals can be sent to virtual blocks. */
@@ -7523,11 +7588,14 @@ Uint32 Dbspj::scanFrag_send(Signal *signal, Ptr<Request> requestPtr,
        */
       {
         jam();
-        sendBatchedFragmentedSignal(ref, GSN_SCAN_FRAGREQ, signal,
-                                    NDB_ARRAY_SIZE(data.m_scanFragReq), JBB,
-                                    &handle,
-                                    !releaseAtSend);  // Keep sent sections,
-                                                      // unless last send
+        sendBatchedFragmentedSignal(
+          ref,
+          GSN_SCAN_FRAGREQ,
+          signal,
+          NDB_ARRAY_SIZE(data.m_scanFragReq) + var_index,
+          JBB,
+          &handle,
+          !releaseAtSend);  // Keep sent sections, unless last send
       }
 
       if (releaseAtSend) {
@@ -8057,6 +8125,12 @@ void Dbspj::scanFrag_execSCAN_NEXTREQ(Signal *signal, Ptr<Request> requestPtr,
     const Uint32 batchRows = scanFrag_getBatchSize(
         treeNodePtr, availableBatchBytes, availableBatchRows);
 
+    // No batch buffer left
+    if (unlikely(batchRows == 0)) {
+      jam();
+      return;
+    }
+
     data.m_parallelism =
         scanFrag_parallelism(requestPtr, treeNodePtr, batchRows);
 
@@ -8066,6 +8140,11 @@ void Dbspj::scanFrag_execSCAN_NEXTREQ(Signal *signal, Ptr<Request> requestPtr,
           << availableBatchRows / data.m_parallelism << " rows and "
           << availableBatchBytes / data.m_parallelism << " bytes.");
 #endif
+  }
+
+  if (unlikely(data.m_parallelism == 0)) {
+    jam();
+    return;
   }
 
   Uint32 bs_rows =
@@ -8673,7 +8752,9 @@ Uint32 Dbspj::buildRowHeader(RowPtr::Header *header, LinearSectionPtr ptr) {
   Uint32 *dst = header->m_offset;
   const Uint32 *const save = dst;
   Uint32 offset = 0;
+  jamDebug();
   do {
+    jamDataDebug(offset);
     *dst++ = offset;
     const Uint32 tmp = *src++;
     const Uint32 tmp_len = AttributeHeader::getDataSize(tmp);
@@ -8805,6 +8886,8 @@ void Dbspj::getCorrelationData(const RowPtr::Row &row, Uint32 col,
    * TODO handle errors
    */
   Uint32 offset = row.m_header->m_offset[col];
+  jamDebug();
+  jamDataDebug(offset);
   Uint32 tmp = row.m_data[offset];
   Uint32 len = AttributeHeader::getDataSize(tmp);
   ndbrequire(len == 1);
@@ -9608,9 +9691,6 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
         param.ptr += len;
         sum_read += len;
 
-        const NodeId API_node = refToNode(ctx.m_resultRef);
-        const Uint32 API_version = getNodeInfo(API_node).m_version;
-
         /**
          * We have just added a 'USER_PROJECTION' which is the
          * result row to the SPJ-API. If we will also add a
@@ -9630,8 +9710,7 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
          * older API versions assumed that all SPJ results were
          * returned as 'long' signals.
          */
-        if (treeBits & DABits::NI_LINKED_ATTR || requestPtr.p->isScan() ||
-            !ndbd_spj_api_support_short_TRANSID_AI(API_version)) {
+        if (treeBits & DABits::NI_LINKED_ATTR || requestPtr.p->isScan()) {
           /**
            * Insert a FLUSH_AI of 'USER_PROJECTION' result (to client)
            * before 'LINKED_ATTR' results to SPJ is produced.

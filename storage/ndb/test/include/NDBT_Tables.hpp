@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2025, 2025, Hopsworks and/or its affiliates.
     Use is subject to license terms.
 
    This program is free software; you can redistribute it and/or modify
@@ -39,7 +40,7 @@ class NDBT_Tables {
   /* Some constants for the maximum sizes of keys and attributes
    * in various cases
    */
-  static constexpr Uint32 MaxRowBytes = NDB_MAX_TUPLE_SIZE_IN_WORDS * 4;
+  static constexpr Uint32 MaxRowBytes = (NDB_MAX_VAR_SIZE_IN_WORDS - 512) * 4;
   static constexpr Uint32 MaxKeyBytes = NDB_MAX_KEYSIZE_IN_WORDS * 4;
   static constexpr Uint32 MinKeyBytes = 4;  // Single Unsigned key
 

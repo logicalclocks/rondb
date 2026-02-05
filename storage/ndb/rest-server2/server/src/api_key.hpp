@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2024 Hopsworks AB
+ * Copyright (C) 2024, 2026 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -53,11 +53,17 @@ class APIKeyCache;
 APIKeyCache* start_api_key_cache();
 void stop_api_key_cache();
 
-RS_Status authenticate_empty(const std::string &apiKey);
-RS_Status authenticate(const std::string &apiKey, PKReadParams &params);
-RS_Status authenticate(const std::string &apiKey, const std::string_view & db);
+RS_Status authenticate_empty(const std::string &apiKey,
+                             char *username_ptr);
 RS_Status authenticate(const std::string &apiKey,
-                       const std::vector<std::string_view> &);
+                       PKReadParams &params,
+                       char *username_ptr);
+RS_Status authenticate(const std::string &apiKey,
+                       const std::string_view & db,
+                       char *username_ptr);
+RS_Status authenticate(const std::string &apiKey,
+                       const std::vector<std::string_view> &,
+                       char *username_ptr);
 
 struct NdbThread;
 
@@ -65,6 +71,7 @@ class UserDBs {
  public:
   std::unordered_set<std::string_view> userDBs;
   char **m_db_ptrs; // Memory to free for database names
+  char *m_user_ptr;
   NDB_TICKS m_lastUsed;
   NDB_TICKS m_lastUpdated;
   NdbMutex *m_waitLock;
@@ -81,6 +88,7 @@ class UserDBs {
 
   UserDBs() {
     m_db_ptrs = nullptr;
+    m_user_ptr = nullptr;
     m_thread = nullptr;
     m_waitLock = NdbMutex_Create();
     m_waitCond = NdbCondition_Create();
@@ -117,7 +125,8 @@ class APIKeyCache {
   Checking whether the API key can access the given databases
   */
   RS_Status validate_api_key(const std::string &,
-                             const std::vector<std::string_view> &);
+                             const std::vector<std::string_view> &,
+                             char *username_ptr);
 
   Uint64 last_updated(const std::string &);
   std::string to_string();
@@ -141,18 +150,21 @@ class APIKeyCache {
   RS_Status update_cache(const std::string &, Uint32 hash);
   RS_Status update_record(std::vector<std::string_view>,
                           UserDBs*,
-                          char **db_ptrs);
+                          char **db_ptrs,
+                          char *user_ptr);
   RS_Status find_and_validate(const std::string &,
                               bool &,
                               bool &,
                               const std::vector<std::string_view> &,
                               Uint32 hash,
-                              bool);
+                              bool,
+                              char *username_ptr);
 
   RS_Status authenticate_user(const std::string &, HopsworksAPIKey &);
   RS_Status get_user_databases(HopsworksAPIKey &,
                                std::vector<std::string_view> &,
-                               char ***db_ptrs);
+                               char ***db_ptrs,
+                               char **username_ptr);
   RS_Status get_api_key(const std::string &, HopsworksAPIKey &);
   Int32 refresh_interval_with_jitter();
 };

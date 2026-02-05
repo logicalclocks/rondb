@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023, 2025 Hopsworks AB
+ * Copyright (C) 2023, 2026 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -135,7 +135,9 @@ typedef enum {
   ERROR_SCAN_MISSING_LIMIT = 104,
   ERROR_SCAN_FILTER_TOO_DEEP = 105,
   ERROR_SCAN_TOO_MANY_RANGES = 106,
-  __MAX_INDEX__                         = 107  // this SHOULD always be last with max index number
+  ERROR_DELETE_OPERATION_FAILED         = 107,
+  ERROR_WRITE_OPERATION_FAILED          = 108,
+  __MAX_INDEX__                         = 109  // this SHOULD always be last with max index number
 } ErrorCode;
 
 // Struct to tie error codes with messages
@@ -253,6 +255,8 @@ static const ErrorEntry errorTable[] = {
     {ERROR_SCAN_MISSING_LIMIT, "[Scan] Must provide limit field"},
     {ERROR_SCAN_FILTER_TOO_DEEP, "[ScanFilter] Filter nesting too deep (max 32 levels)"},
     {ERROR_SCAN_TOO_MANY_RANGES, "[ScanIndex] Too many ranges (max 64)"},
+    {ERROR_DELETE_OPERATION_FAILED, "Failed to start delete operation."},
+    {ERROR_WRITE_OPERATION_FAILED, "Failed to start write operation."},
     {__MAX_INDEX__, "__MAX_INDEX__ Place holder"}
 };
 

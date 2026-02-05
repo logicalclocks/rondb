@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2024, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2024, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -30,6 +30,16 @@
 
 #define JAM_FILE_ID 550
 
+
+struct CreateDatabaseRep
+{
+  static constexpr Uint32 SignalLength = 3;
+
+  Uint32 databaseId;
+  Uint32 databaseVersion;
+  Uint32 databaseNameLen;
+  SECTION( DICT_TAB_INFO = 0 );
+};
 
 struct CreateDatabaseReq
 {

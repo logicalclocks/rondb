@@ -528,14 +528,39 @@ void NdbImpl::trp_deliver_signal(const NdbApiSignal *aSignal,
           void *owner = (void *)tRec->getOwner();
           Uint32 com;
           if (num_sections > 0) {
-            if (type == NdbReceiver::NDB_QUERY_OPERATION) {
-              NdbQueryOperationImpl *impl_owner =
-                  (NdbQueryOperationImpl *)owner;
-              com = impl_owner->execTRANSID_AI(ptr[0].p, ptr[0].sz);
+            DBUG_PRINT("info", ("Long TRANSID_AI from 0x%x, sig_len: %u, map: %u",
+              aSignal->theSendersBlockRef, tLen, tFirstData));
+            if (likely(aSignal->isFragmented() == false)) {
+              if (type == NdbReceiver::NDB_QUERY_OPERATION) {
+                NdbQueryOperationImpl *impl_owner =
+                    (NdbQueryOperationImpl *)owner;
+                com = impl_owner->execTRANSID_AI(ptr[0].p, ptr[0].sz);
+              } else {
+                com = tRec->execTRANSID_AI(ptr[0].p, ptr[0].sz);
+              }
             } else {
-              com = tRec->execTRANSID_AI(ptr[0].p, ptr[0].sz);
+              const TransIdAILong *sig = (const TransIdAILong*)tDataPtr;
+              Uint32 totalLen = sig->totalLen;
+              if (type == NdbReceiver::NDB_QUERY_OPERATION) {
+                NdbQueryOperationImpl *impl_owner =
+                    (NdbQueryOperationImpl *)owner;
+                com = impl_owner->execTRANSID_AI(ptr[0].p,
+                                                 ptr[0].sz,
+                                                 aSignal,
+                                                 totalLen);
+              } else {
+                com = tRec->execTRANSID_AI(ptr[0].p,
+                                           ptr[0].sz,
+                                           aSignal,
+                                           totalLen);
+              }
             }
           } else {
+            DBUG_PRINT("info", ("Short TRANSID_AI from 0x%x, sig_len: %u,"
+                                " map: %u",
+              aSignal->theSendersBlockRef,
+              tLen - TransIdAI::HeaderLength,
+              tFirstData));
             DBUG_EXECUTE_IF("ndb_delay_transid_ai", {
               fprintf(stderr,
                       "NdbImpl::trp_deliver_signal() (%p)"
@@ -545,13 +570,6 @@ void NdbImpl::trp_deliver_signal(const NdbApiSignal *aSignal,
               fprintf(stderr, "NdbImpl::trp_deliver_signal() resuming\n");
             });
 
-            /**
-             * Note that prior to V7.6.2 we assumed that all 'QUERY'
-             * results were returned as 'long' signals. The version
-             * check ndbd_spj_api_support_short_TRANSID_AI() function
-             * has been added to allow the sender to check if the
-             * QUERY-receiver support short (and 'packed') TRANSID_AI.
-             */
             if (type == NdbReceiver::NDB_QUERY_OPERATION) {
               NdbQueryOperationImpl *impl_owner =
                   (NdbQueryOperationImpl *)owner;
@@ -859,6 +877,44 @@ void NdbImpl::trp_deliver_signal(const NdbApiSignal *aSignal,
         break;
       }
       goto InvalidSignal;
+    }
+    case GSN_GET_DATABASE_CONF: {
+      if (tFirstDataPtr == nullptr) {
+        goto InvalidSignal;
+      }
+      if (tWaitState != WAIT_GET_DATABASE_REQ) {
+        goto InvalidSignal;
+      }
+      tCon = void2con(tFirstDataPtr);
+      if (tCon->checkMagicNumber() != 0) {
+        goto InvalidSignal;
+      }
+      tReturnCode = tCon->receiveGET_DATABASE_CONF(aSignal);
+      if (tReturnCode != -1) {
+        tNewState = NO_WAIT;
+        break;
+      } else {
+        goto InvalidSignal;
+      }
+    }
+    case GSN_GET_DATABASE_REF: {
+      if (tFirstDataPtr == nullptr) {
+        goto InvalidSignal;
+      }
+      if (tWaitState != WAIT_GET_DATABASE_REQ) {
+        goto InvalidSignal;
+      }
+      tCon = void2con(tFirstDataPtr);
+      if (tCon->checkMagicNumber() != 0) {
+        goto InvalidSignal;
+      }
+      tReturnCode = tCon->receiveGET_DATABASE_REF(aSignal);
+      if (tReturnCode != -1) {
+        tNewState = NO_WAIT;
+        break;
+      } else {
+        goto InvalidSignal;
+      }
     }
     case GSN_TCSEIZECONF: {
       if (tFirstDataPtr == nullptr) {
@@ -1696,8 +1752,10 @@ int Ndb::pollNdb(int aMillisecondNumber, int minNoOfEventsToWakeup) {
   return poll_trans(aMillisecondNumber, minNoOfEventsToWakeup, &pg);
 }
 
-int Ndb::sendRecSignal(Uint16 node_id, Uint32 aWaitState, NdbApiSignal *aSignal,
-                       Uint32 conn_seq, Uint32 *ret_conn_seq) {
+int NdbImpl::sendRecSignal(Uint16 node_id, Uint32 aWaitState, NdbApiSignal *aSignal,
+                       Uint32 conn_seq, Uint32 *ret_conn_seq,
+                       Uint32 secs,
+                       const LinearSectionPtr (*ptr)[3]) {
   /*
   In most situations 0 is returned.
   In error cases we have 5 different cases
@@ -1718,21 +1776,30 @@ int Ndb::sendRecSignal(Uint16 node_id, Uint32 aWaitState, NdbApiSignal *aSignal,
     in all places where the object is out of context due to a return,
     break, continue or simply end of statement block
   */
-  theImpl->incClientStat(WaitMetaRequestCount, 1);
-  PollGuard poll_guard(*theImpl);
+  incClientStat(Ndb::ClientStatistics::WaitMetaRequestCount, 1);
+  PollGuard poll_guard(*this);
 
   /**
    * Either we supply the correct conn_seq and ret_conn_seq == 0
    *     or we supply conn_seq == 0 and ret_conn_seq != 0
    */
-  read_conn_seq = theImpl->getNodeSequence(node_id);
+  read_conn_seq = getNodeSequence(node_id);
   bool ok = (conn_seq == read_conn_seq && ret_conn_seq == nullptr) ||
             (conn_seq == 0 && ret_conn_seq != nullptr);
 
   if (ret_conn_seq) *ret_conn_seq = read_conn_seq;
-  if ((theImpl->get_node_alive(node_id)) && ok) {
-    if (theImpl->check_send_size(node_id, send_size)) {
-      return_code = theImpl->sendSignal(aSignal, node_id);
+  if ((get_node_alive(node_id)) && ok) {
+    if (check_send_size(node_id, send_size)) {
+      if (secs == 0) {
+        return_code = sendSignal(aSignal, node_id);
+      } else {
+        LinearSectionPtr loc_ptr[3];
+        memcpy(&loc_ptr[0], &ptr[0], sizeof(loc_ptr));
+        return_code = sendSignal(aSignal,
+                                 node_id,
+                                 loc_ptr,
+                                 secs);
+      }
       if (return_code != -1) {
         return poll_guard.wait_n_unlock(WAITFOR_RESPONSE_TIMEOUT, node_id,
                                         aWaitState, false);
@@ -1743,7 +1810,7 @@ int Ndb::sendRecSignal(Uint16 node_id, Uint32 aWaitState, NdbApiSignal *aSignal,
       return_code = -4;
     }  // if
   } else {
-    if ((theImpl->get_node_stopping(node_id)) && ok) {
+    if ((get_node_stopping(node_id)) && ok) {
       return_code = -5;
     } else {
       return_code = -2;
@@ -1751,7 +1818,7 @@ int Ndb::sendRecSignal(Uint16 node_id, Uint32 aWaitState, NdbApiSignal *aSignal,
   }    // if
   return return_code;
   // End of protected area
-}  // Ndb::sendRecSignal()
+}  // NdbImpl::sendRecSignal()
 
 void NdbTransaction::sendTC_COMMIT_ACK(NdbImpl *impl, NdbApiSignal *aSignal,
                                        Uint32 transId1, Uint32 transId2,

@@ -123,7 +123,6 @@ Configuration::Configuration() {
   _backupPath = 0;
   _initialStart = false;
   m_config_retriever = 0;
-  m_logLevel = 0;
 }
 
 Configuration::~Configuration() {
@@ -135,9 +134,6 @@ Configuration::~Configuration() {
     delete m_config_retriever;
   }
 
-  if (m_logLevel) {
-    delete m_logLevel;
-  }
   ndb_mgm_destroy_iterator(m_clusterConfigIter);
 }
 
@@ -1125,7 +1121,8 @@ Configuration::compute_backup_page_memory(
   lcp_buffer *= ((2 * BackupFormat::NDB_MAX_FILES_PER_LCP) + 1);
   Uint64 per_thread_buffer = lcp_buffer + Uint64(backup_log_buffer);
   per_thread_buffer +=
-    ((Backup::NO_OF_PAGES_META_FILE + 9) * GLOBAL_PAGE_SIZE);
+    ((Backup::NO_OF_PAGES_META_FILE +
+      (LCP_NUM_CTL_FILES * PAGES_PER_CTL_FILE) + 1) * GLOBAL_PAGE_SIZE);
   Uint32 num_ldm_threads = globalData.ndbMtLqhWorkers;
   return per_thread_buffer * Uint64(num_ldm_threads);
 }
@@ -1619,6 +1616,18 @@ Configuration::setupConfiguration()
   if (!(iter.get(CFG_TYPE_OF_SECTION, &type) == 0 && type == NODE_TYPE_DB)) {
     ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG, "Invalid configuration fetched",
               "I'm wrong type of node");
+  }
+
+  /**
+   * Setup g_eventLogger log levels for logevents.
+   */
+
+  for (unsigned j = 0; j < LogLevel::LOGLEVEL_CATEGORIES; j++) {
+    Uint32 level;
+    LogLevel &logLevel = g_eventLogger->m_logLevel;
+    if (!iter.get(CFG_MIN_LOGLEVEL + j, &level)) {
+      logLevel.setLogLevel((LogLevel::EventCategory)j, level);
+    }
   }
 
   /**
@@ -2139,11 +2148,6 @@ Configuration::calcSizeAlt(ConfigValues * ownConfig)
   unsigned int automaticMemoryConfig = 1;
   unsigned int max_schema_objects = OLD_NDB_MAX_TABLES;
 
-  m_logLevel = new LogLevel();
-  if (!m_logLevel) {
-    ERROR_SET(fatal, NDBD_EXIT_MEMALLOC, "Failed to create LogLevel", "");
-  }
-
   struct AttribStorage {
     int paramId;
     Uint32 *storage;
@@ -2253,20 +2257,12 @@ Configuration::calcSizeAlt(ConfigValues * ownConfig)
 
 #define DO_DIV(x, y) (((x) + (y - 1)) / (y))
 
-  for(unsigned j = 0; j<LogLevel::LOGLEVEL_CATEGORIES; j++)
-  {
-    Uint32 tmp;
-    if (!ndb_mgm_get_int_parameter(&db, CFG_MIN_LOGLEVEL + j, &tmp)) {
-      m_logLevel->setLogLevel((LogLevel::EventCategory)j, tmp);
-    }
-  }
-  
   get_num_nodes(noOfNodes,
                 noOfDBNodes,
                 noOfAPINodes,
                 noOfMGMNodes);
 
-  noOfMetaTables+= 2; // Add System tables
+  noOfTables += 2;      // Add System tables
   noOfAttributes += 9;  // Add System table attributes
   globalData.theMaxNoOfTables += 2;
   globalData.theMaxNoOfAttributes += 9;

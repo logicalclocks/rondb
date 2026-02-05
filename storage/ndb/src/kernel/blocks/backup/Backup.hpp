@@ -98,7 +98,6 @@ class Backup : public SimulatedBlock {
   void execNODE_FAILREP(Signal *signal);
   void execINCL_NODEREQ(Signal *signal);
   void execCONTINUEB(Signal *signal);
-
   /**
    * Testing
    */
@@ -173,7 +172,7 @@ class Backup : public SimulatedBlock {
   void execFSWRITECONF(Signal *signal);
 
   /**
-   * Master functinallity
+   * Master functionality
    */
   void execBACKUP_REQ(Signal *signal);
   void execABORT_BACKUP_REQ(Signal *signal);
@@ -631,8 +630,8 @@ class Backup : public SimulatedBlock {
       noOfBytes = 0;
       for (Uint32 i = 0; i < BackupFormat::NDB_MAX_FILES_PER_LCP; i++) {
         dataFilePtr[i] = RNIL;
-        prepareDataFilePtr[i] = RNIL;
       }
+      prepareDataFilePtr = RNIL;
       idleFragWorkerCount = 0;
     }
 
@@ -841,7 +840,7 @@ class Backup : public SimulatedBlock {
     Uint32 logFilePtr;  // Ptr.i to log-file (Only backup)
     Uint32 dataFilePtr[BackupFormat::NDB_MAX_FILES_PER_LCP];
     // Ptr.i to first data-file (LCP and Backup)
-    Uint32 prepareDataFilePtr[BackupFormat::NDB_MAX_FILES_PER_LCP];  // Only LCP
+    Uint32 prepareDataFilePtr;    // Only LCP
     Uint32 prepareCtlFilePtr[2];  // Ptr.i to ctl-file for LCP prepare
 
     Uint32 backupDataLen;    // Used for (un)packing backup request
@@ -935,7 +934,7 @@ class Backup : public SimulatedBlock {
 
 #define MAX_BUFFER_USED_WITHOUT_REDO_ALERT (512 * 1024)
 #define BACKUP_DEFAULT_WRITE_SIZE (256 * 1024)
-#define BACKUP_DEFAULT_BUFFER_SIZE (2 * 1024 * 1024)
+#define BACKUP_DEFAULT_BUFFER_SIZE (3 * 1024 * 1024)
 #define BACKUP_DEFAULT_LOGBUFFER_SIZE (16 * 1024 * 1024)
 
   struct Config {
@@ -1558,7 +1557,6 @@ public:
                                        __VA_ARGS__)
 #endif
 };
-
 inline Uint32 Backup::getRestorableGci() { return m_newestRestorableGci; }
 
 inline void Backup::OperationRecord::set_scanned_pages(

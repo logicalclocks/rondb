@@ -125,21 +125,35 @@ void APIKeyCache::cleanup() {
   DEB_AUTH("Cleanup finished");
 }
 
-RS_Status authenticate(const std::string &apiKey, PKReadParams &params) {
-  return apiKeyCache->validate_api_key(apiKey, {params.path.db});
+RS_Status authenticate(const std::string &apiKey,
+                       PKReadParams &params,
+                       char *username_ptr) {
+  return apiKeyCache->validate_api_key(apiKey,
+                                       {params.path.db},
+                                       username_ptr);
 }
 
-RS_Status authenticate_empty(const std::string &apiKey) {
-  return apiKeyCache->validate_api_key(apiKey, {});
-}
-
-RS_Status authenticate(const std::string &apiKey, const std::string_view & db) {
-  return apiKeyCache->validate_api_key(apiKey, {db});
+RS_Status authenticate_empty(const std::string &apiKey,
+                             char *username_ptr) {
+  return apiKeyCache->validate_api_key(apiKey,
+                                       {},
+                                       username_ptr);
 }
 
 RS_Status authenticate(const std::string &apiKey,
-                       const std::vector<std::string_view> &dbs) {
-  return apiKeyCache->validate_api_key(apiKey, dbs);
+                       const std::string_view & db,
+                       char *username_ptr) {
+  return apiKeyCache->validate_api_key(apiKey,
+                                       {db},
+                                       username_ptr);
+}
+
+RS_Status authenticate(const std::string &apiKey,
+                       const std::vector<std::string_view> &dbs,
+                       char *username_ptr) {
+  return apiKeyCache->validate_api_key(apiKey,
+                                       dbs,
+                                       username_ptr);
 }
 
 RS_Status APIKeyCache::validate_api_key_format(const std::string &apiKey) {
@@ -157,8 +171,11 @@ RS_Status APIKeyCache::validate_api_key_format(const std::string &apiKey) {
   return CRS_Status::SUCCESS.status;
 }
 
-RS_Status APIKeyCache::validate_api_key(const std::string &apiKey,
-                                        const std::vector<std::string_view> &dbs) {
+RS_Status APIKeyCache::validate_api_key(
+  const std::string &apiKey,
+  const std::vector<std::string_view> &dbs,
+  char *username_ptr) {
+
 #ifdef DEBUG_AUTH
   DEB_AUTH("authenticate apiKey: %s", apiKey.c_str());
   for (const auto &db : dbs) {
@@ -183,7 +200,8 @@ RS_Status APIKeyCache::validate_api_key(const std::string &apiKey,
                              allowedAccess,
                              dbs,
                              hash,
-                             false);
+                             false,
+                             username_ptr);
 
   if (keyFoundInCache) {
     if (allowedAccess) {
@@ -207,16 +225,20 @@ RS_Status APIKeyCache::validate_api_key(const std::string &apiKey,
                              allowedAccess,
                              dbs,
                              hash,
-                             true);
+                             true,
+                             username_ptr);
   return status;
 }
 
-RS_Status APIKeyCache::find_and_validate(const std::string &apiKey,
-                                         bool &keyFoundInCache,
-                                         bool &allowedAccess,
-                                         const std::vector<std::string_view> &dbs,
-                                         Uint32 hash,
-                                         bool inc_refcount_done) {
+RS_Status APIKeyCache::find_and_validate(
+  const std::string &apiKey,
+  bool &keyFoundInCache,
+  bool &allowedAccess,
+  const std::vector<std::string_view> &dbs,
+  Uint32 hash,
+  bool inc_refcount_done,
+  char *username_ptr) {
+
   Uint32 key_cache_id = hash & (NUM_API_KEY_CACHES - 1);
   NdbMutex_Lock(m_rwLock[key_cache_id]);
   if (m_evicted) {
@@ -348,7 +370,7 @@ RS_Status APIKeyCache::update_cache(const std::string &apiKey, Uint32 hash) {
     api_key_str[apiKey.size()] = 0;
     NdbThread *thread = NdbThread_Create(api_key_thread_main,
                                          (void**)api_key_str,
-                                          128 * 1024,
+                                          1024 * 1024,
                                           "Api Key Cache thread",
                                           NDB_THREAD_PRIO_LOW);
     if (thread == nullptr) {
@@ -378,7 +400,8 @@ RS_Status APIKeyCache::update_cache(const std::string &apiKey, Uint32 hash) {
 
 RS_Status APIKeyCache::update_record(std::vector<std::string_view> dbs,
                                      UserDBs *userDBs,
-                                     char **db_ptrs) {
+                                     char **db_ptrs,
+                                     char *user_ptr) {
   NDB_TICKS lastUpdated = NdbTick_getCurrentTicks();
   userDBs->userDBs.clear();
   userDBs->userDBs.insert(dbs.begin(), dbs.end());
@@ -390,6 +413,7 @@ RS_Status APIKeyCache::update_record(std::vector<std::string_view> dbs,
     free(userDBs->m_db_ptrs);
   }
   userDBs->m_db_ptrs = db_ptrs;
+  userDBs->m_user_ptr = user_ptr;
   return CRS_Status::SUCCESS.status;
 }
 
@@ -431,8 +455,12 @@ void APIKeyCache::cache_entry_updater(const std::string &apiKey) {
     }
 
     char **db_ptrs = nullptr;
+    char *username_ptr = nullptr;
     if (!fail && !m_evicted) {
-      RS_Status status = get_user_databases(key, dbs, &db_ptrs);
+      RS_Status status = get_user_databases(key,
+                                            dbs,
+                                            &db_ptrs,
+                                            &username_ptr);
       if (status.http_code != HTTP_CODE::SUCCESS) {
         fail = true;
       }
@@ -455,7 +483,7 @@ void APIKeyCache::cache_entry_updater(const std::string &apiKey) {
         DEB_AUTH("Valid API Key updated: %s", apiKey.c_str());
       }
       userDBs->m_state = UserDBs::IS_VALID;
-      update_record(dbs, userDBs, db_ptrs);
+      update_record(dbs, userDBs, db_ptrs, username_ptr);
     } else {
       if (first) {
         userDBs->m_lastUsed = lastUpdated;
@@ -570,11 +598,16 @@ RS_Status APIKeyCache::authenticate_user(const std::string &apiKey,
 
 RS_Status APIKeyCache::get_user_databases(HopsworksAPIKey &key,
                                           std::vector<std::string_view> &dbs,
-                                          char ***db_ptrs) {
+                                          char ***db_ptrs,
+                                          char **username_ptr) {
   int uid = key.user_id;
   int count = 0;
   char **projects = nullptr;
-  RS_Status status = find_all_projects(uid, &projects, &count);
+  char *username = nullptr;
+  RS_Status status = find_all_projects(uid,
+                                       &projects,
+                                       &count,
+                                       &username);
   if (status.http_code != HTTP_CODE::SUCCESS) {
     return status;
   }
@@ -592,6 +625,7 @@ RS_Status APIKeyCache::get_user_databases(HopsworksAPIKey &key,
     dbs.push_back(str);
   }
   *db_ptrs = projects;
+  *username_ptr = username;
   return CRS_Status::SUCCESS.status;
 }
 

@@ -38,6 +38,9 @@ class BatchFeatureStoreCtrl : public drogon::HttpController<BatchFeatureStoreCtr
   ADD_METHOD_TO(BatchFeatureStoreCtrl::batch_featureStore,
                 BATCH_FEATURE_STORE_PATH,
                 drogon::Post);
+  ADD_METHOD_TO(BatchFeatureStoreCtrl::batch_featureStore,
+                BATCH_FEATURE_STORE_PATH_V2,
+                drogon::Post);
   METHOD_LIST_END
 
   static void batch_featureStore(

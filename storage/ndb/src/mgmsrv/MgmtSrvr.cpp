@@ -69,7 +69,6 @@
 #include <signaldata/NodeFailRep.hpp>
 #include <signaldata/ResumeReq.hpp>
 #include <signaldata/SchemaTrans.hpp>
-#include <signaldata/SetLogLevelOrd.hpp>
 #include <signaldata/StartOrd.hpp>
 #include <signaldata/Sync.hpp>
 #include <signaldata/Activate.hpp>
@@ -162,10 +161,6 @@ void MgmtSrvr::logLevelThreadRun() {
 
         if (setEventReportingLevelImpl(node, req)) {
           failed_started_nodes.push_back(node);
-        } else {
-          SetLogLevelOrd ord;
-          ord.assign(m_nodeLogLevel[node]);
-          setNodeLogLevelImpl(node, ord);
         }
         m_started_nodes.lock();
       }
@@ -181,12 +176,6 @@ void MgmtSrvr::logLevelThreadRun() {
       if (req.blockRef == 0) {
         req.blockRef = _ownReference;
         if (setEventReportingLevelImpl(0, req)) {
-          failed_log_level_requests.push_back(req);
-        }
-      } else {
-        SetLogLevelOrd ord;
-        ord.assign(req);
-        if (setNodeLogLevelImpl(req.blockRef, ord)) {
           failed_log_level_requests.push_back(req);
         }
       }
@@ -3058,20 +3047,6 @@ int MgmtSrvr::setEventReportingLevelImpl(int nodeId_arg,
 
 //****************************************************************************
 //****************************************************************************
-int MgmtSrvr::setNodeLogLevelImpl(int nodeId, const SetLogLevelOrd &ll) {
-  INIT_SIGNAL_SENDER(ss, nodeId);
-
-  SimpleSignal ssig;
-  ssig.set(ss, TestOrd::TraceAPI, CMVMI, GSN_SET_LOGLEVELORD,
-           SetLogLevelOrd::SignalLength);
-  SetLogLevelOrd *const dst = CAST_PTR(SetLogLevelOrd, ssig.getDataPtrSend());
-  *dst = ll;
-
-  return ss.sendSignal(nodeId, &ssig) == SEND_OK ? 0 : SEND_OR_RECEIVE_FAILED;
-}
-
-//****************************************************************************
-//****************************************************************************
 
 int MgmtSrvr::insertError(int nodeId, int errorNo, Uint32 *extra) {
   BlockNumber block;
@@ -5556,15 +5531,20 @@ void MgmtSrvr::tls_stat_decrement(unsigned int idx) {
   if (idx < sizeof(m_tls_stats)) m_tls_stats[idx]--;
 }
 
-int MgmtSrvr::check_quota_version() {
+int MgmtSrvr::check_quota_version(bool is_user) {
   Uint32 min_version = theFacade->getMinDbNodeVersion();
-  if (ndbd_rate_limit_supported(min_version))
+  if (!ndbd_rate_limit_supported(min_version))
+    return -1;
+  if (!is_user)
     return 0;
-  return -1;
+  if (!ndbd_support_user_rate_limits(min_version))
+    return -1;
+  return 0;
 }
 
 int
 MgmtSrvr::set_quotas(const char *database_name,
+                     bool is_user,
                      Uint32 in_memory_size,
                      Uint32 on_disk_size,
                      Uint32 rate_per_sec,
@@ -5580,8 +5560,8 @@ MgmtSrvr::set_quotas(const char *database_name,
   Uint32 transKey;
   NodeId nodeId;
 
-  if ((res = check_quota_version())) {
-    out << "result: Quotas not supported in this cluster, requires 24.10.0"
+  if ((res = check_quota_version(is_user))) {
+    out << "result: Quotas not supported in this cluster, requires 24.10.18"
         << endl;
     out << "error_code: " << 4572 << endl;
     out << endl;
@@ -5599,7 +5579,7 @@ MgmtSrvr::set_quotas(const char *database_name,
 
   req->transId = transId;
   req->transKey = transKey;
-  req->requestInfo = 0;
+  req->requestInfo = is_user;
   req->requestType = DictTabInfo::Database;
   req->databaseId = 0;
   req->databaseVersion = 0;
@@ -5609,7 +5589,13 @@ MgmtSrvr::set_quotas(const char *database_name,
   DictDatabaseInfo::Database db_obj;
   db_obj.init();
 
-  Uint32 db_name_len = strlen(database_name);
+  Uint32 db_name_len = strnlen(database_name, MAX_DB_NAME_SIZE + 1);
+  if (db_name_len > MAX_DB_NAME_SIZE) {
+    Uint32 err = DropDatabaseRef::DatabaseNameTooLong;
+    endSchemaTrans(ss, nodeId, transId, transKey,
+                   SchemaTransEndReq::SchemaTransAbort);
+    return err;
+  }
   memcpy(&db_obj.DatabaseName[0], database_name, db_name_len);
   db_obj.DatabaseType = DictTabInfo::Database;
   db_obj.DatabaseId = 0;      //Ignored
@@ -5696,6 +5682,7 @@ MgmtSrvr::set_quotas(const char *database_name,
 
 int
 MgmtSrvr::alter_quotas(const char *database_name,
+                       bool is_user,
                        Uint32 in_memory_size,
                        Uint32 on_disk_size,
                        Uint32 rate_per_sec,
@@ -5711,8 +5698,8 @@ MgmtSrvr::alter_quotas(const char *database_name,
   Uint32 transKey;
   NodeId nodeId;
 
-  if ((res = check_quota_version())) {
-    out << "result: Quotas not supported in this cluster, requires 24.10.0"
+  if ((res = check_quota_version(is_user))) {
+    out << "result: Quotas not supported in this cluster, requires 24.10.18"
         << endl;
     out << "error_code: " << 4572 << endl;
     out << endl;
@@ -5730,7 +5717,7 @@ MgmtSrvr::alter_quotas(const char *database_name,
 
   req->transId = transId;
   req->transKey = transKey;
-  req->requestInfo = 0;
+  req->requestInfo = is_user;
   req->requestType = DictTabInfo::Database;
   req->databaseId = 0;
   req->databaseVersion = 0;
@@ -5740,7 +5727,13 @@ MgmtSrvr::alter_quotas(const char *database_name,
   DictDatabaseInfo::Database db_obj;
   db_obj.init();
 
-  Uint32 db_name_len = strlen(database_name);
+  Uint32 db_name_len = strnlen(database_name, MAX_DB_NAME_SIZE + 1);
+  if (db_name_len > MAX_DB_NAME_SIZE) {
+    Uint32 err = DropDatabaseRef::DatabaseNameTooLong;
+    endSchemaTrans(ss, nodeId, transId, transKey,
+                   SchemaTransEndReq::SchemaTransAbort);
+    return err;
+  }
   memcpy(&db_obj.DatabaseName[0], database_name, db_name_len);
   db_obj.DatabaseType = DictTabInfo::Database;
   db_obj.DatabaseId = 0;      //Ignored
@@ -5826,7 +5819,7 @@ MgmtSrvr::alter_quotas(const char *database_name,
   return endSchemaTrans(ss, nodeId, transId, transKey, 0);
 }
 
-int MgmtSrvr::drop_quotas(const char *database_name, NdbOut& out) {
+int MgmtSrvr::drop_quotas(const char *database_name, bool is_user, NdbOut& out) {
   int res;
   SignalSender ss(theFacade);
   ss.lock();
@@ -5835,8 +5828,8 @@ int MgmtSrvr::drop_quotas(const char *database_name, NdbOut& out) {
   Uint32 transKey;
   NodeId nodeId;
 
-  if ((res = check_quota_version())) {
-    out << "result: Quotas not supported in this cluster, requires 24.10.0"
+  if ((res = check_quota_version(is_user))) {
+    out << "result: Quotas not supported in this cluster, requires 24.10.18"
         << endl;
     out << "error_code: " << 4572 << endl;
     out << endl;
@@ -5854,7 +5847,7 @@ int MgmtSrvr::drop_quotas(const char *database_name, NdbOut& out) {
 
   req->transId = transId;
   req->transKey = transKey;
-  req->requestInfo = 0;
+  req->requestInfo = is_user;
   req->requestType = DictTabInfo::Database;
   req->databaseId = 0;
   req->databaseVersion = 0;
@@ -5864,7 +5857,13 @@ int MgmtSrvr::drop_quotas(const char *database_name, NdbOut& out) {
   DictDatabaseInfo::Database db_obj;
   db_obj.init();
 
-  Uint32 db_name_len = strlen(database_name);
+  Uint32 db_name_len = strnlen(database_name, MAX_DB_NAME_SIZE + 1);
+  if (db_name_len > MAX_DB_NAME_SIZE) {
+    Uint32 err = DropDatabaseRef::DatabaseNameTooLong;
+    endSchemaTrans(ss, nodeId, transId, transKey,
+                   SchemaTransEndReq::SchemaTransAbort);
+    return err;
+  }
   memcpy(&db_obj.DatabaseName[0], database_name, db_name_len);
   db_obj.DatabaseType = DictTabInfo::Database;
   db_obj.DatabaseId = 0;      //Ignored
@@ -5949,13 +5948,13 @@ int MgmtSrvr::drop_quotas(const char *database_name, NdbOut& out) {
   return endSchemaTrans(ss, nodeId, transId, transKey, 0);
 }
 
-void MgmtSrvr::get_quotas(const char *database_name, NdbOut& out) {
+void MgmtSrvr::get_quotas(const char *database_name, bool is_user, NdbOut& out) {
   SignalSender ss(theFacade);
   ss.lock();
 
   int res;
-  if ((res = check_quota_version())) {
-    out << "result: Quotas not supported in this cluster, requires 24.10.0"
+  if ((res = check_quota_version(is_user))) {
+    out << "result: Quotas not supported in this cluster, requires 24.10.18"
         << endl;
     out << "error_code: " << 4572 << endl;
     out << endl;
@@ -5969,17 +5968,32 @@ void MgmtSrvr::get_quotas(const char *database_name, NdbOut& out) {
   GetDatabaseReq* req =
     CAST_PTR(GetDatabaseReq, ssig.getDataPtrSend());
 
-  req->requestInfo = 0;
+  req->requestInfo = is_user;
   req->senderData = 81;
   req->senderRef = ss.getOwnRef();
 
   Uint32 databaseName[MAX_DB_NAME_SIZE/4 + 1];
   char *databaseNamePtr = (char*)&databaseName[0];
   Uint32 db_name_len = strnlen(database_name, MAX_DB_NAME_SIZE + 1);
+  if (db_name_len > MAX_DB_NAME_SIZE) {
+    if (is_user) {
+      Uint32 err = DropDatabaseRef::DatabaseNameTooLong;
+      out << "result: User name too long" << endl;
+      out << "error_code: " << err << endl;
+      out << endl;
+    } else {
+      Uint32 err = DropDatabaseRef::DatabaseNameTooLong;
+      out << "result: Database name too long" << endl;
+      out << "error_code: " << err << endl;
+      out << endl;
+    }
+    return;
+  }
   memcpy((char*)&databaseName[0], database_name, db_name_len);
   databaseNamePtr[db_name_len] = 0;
-  g_eventLogger->info("database_name: %s, databaseNamePtr: %s, db_name_len: %u",
-    database_name, databaseNamePtr, db_name_len);
+  g_eventLogger->info("database_name: %s, databaseNamePtr: %s, db_name_len: %u"
+                      ", is_user: %u",
+    database_name, databaseNamePtr, db_name_len, is_user);
 
   ssig.ptr[0].p = (const Uint32*)&databaseName[0];
   ssig.ptr[0].sz = (db_name_len + 4) / 4;
@@ -6011,17 +6025,27 @@ void MgmtSrvr::get_quotas(const char *database_name, NdbOut& out) {
         out << endl;
 
         /* Next send the result data with 9 rows */
-        out << "Database Quotas for " << (const char*)&databaseName[0] << endl;
-        out << "databaseId = " << conf->databaseId << endl;
-        out << "databaseVersion = " << conf->databaseId << endl;
-        out << "InMemorySize = " << conf->InMemorySizeMB << " MByte" << endl;
-        out << "DiskSpaceSize = " << conf->DiskSpaceSizeGB << " GByte" << endl;
-        out << "RatePerSec = " << conf->RatePerSec << endl;
-        out << "MaxTransactionSize = " << conf->MaxTransactionSize << endl;
-        out << "MaxParallelTransactions = ";
-        out << conf->MaxParallelTransactions << endl;
-        out << "MaxParallelComplexQueries = ";
-        out << conf->MaxParallelComplexQueries << endl;
+        if (!is_user) {
+          out << "Database Quotas for " << (const char*)&databaseName[0] << endl;
+          out << "databaseId = " << conf->databaseId << endl;
+          out << "databaseVersion = " << conf->databaseId << endl;
+          out << "InMemorySize = " << conf->InMemorySizeMB << " MByte" << endl;
+          out << "DiskSpaceSize = " << conf->DiskSpaceSizeGB << " GByte" << endl;
+          out << "RatePerSec = " << conf->RatePerSec << endl;
+          out << "MaxTransactionSize = " << conf->MaxTransactionSize << endl;
+          out << "MaxParallelTransactions = ";
+          out << conf->MaxParallelTransactions << endl;
+          out << "MaxParallelComplexQueries = ";
+          out << conf->MaxParallelComplexQueries << endl;
+        } else {
+          out << "User rate limits for " << (const char*)&databaseName[0] << endl;
+          out << "userId = " << conf->databaseId << endl;
+          out << "userVersion = " << conf->databaseId << endl;
+          out << "RatePerSec = " << conf->RatePerSec << endl;
+          out << "MaxTransactionSize = " << conf->MaxTransactionSize << endl;
+          out << "MaxParallelTransactions = ";
+          out << conf->MaxParallelTransactions << endl;
+        }
         return;
       }
       case GSN_GET_DATABASE_REF:
@@ -6030,11 +6054,17 @@ void MgmtSrvr::get_quotas(const char *database_name, NdbOut& out) {
           CAST_CONSTPTR(GetDatabaseRef, signal->getDataPtr());
         Uint32 err = ref->errorCode;
         if (err == DropTableRef::NoSuchTable) {
-          out << "result: No such database exists" << endl;
+          if (!is_user) 
+            out << "result: No such database exists" << endl;
+          else 
+            out << "result: No such user exists" << endl;
           out << "error_code: " << err << endl;
           out << endl;
         } else {
-          out << "result: Get database quotas failed with error" << endl;
+          if (!is_user)
+            out << "result: Get database quotas failed with error" << endl;
+          else
+            out << "result: Get user failed with error" << endl;
           out << "error_code: " << err << endl;
           out << endl;
         }
@@ -6055,15 +6085,21 @@ void MgmtSrvr::get_quotas(const char *database_name, NdbOut& out) {
           if (BitmaskImpl::safe_get(
                 NodeBitmask::getPackedLengthInWords(signal->ptr[0].p),
                 signal->ptr[0].p, nodeId)) {
-            out << "result: Get Database quota failed due to node failure";
+            if (!is_user)
+              out << "result: Get Database quota failed due to node failure";
+            else
+              out << "result: Get user failed due to node failure";
             out << endl;
             out << "error_code: 1" << endl;
             out << endl;
             return;
           }
         } else if (BitmaskImpl::safe_get(len, rep->theAllNodes, nodeId)) {
-          out << "result: Get Database quota failed due to node failure"
-              << endl;
+          if (!is_user)
+            out << "result: Get Database quota failed due to node failure";
+          else
+            out << "result: Get user failed due to node failure";
+          out << endl;
           out << "error_code: 1" << endl;
           out << endl;
           return;
@@ -6084,13 +6120,13 @@ void MgmtSrvr::get_quotas(const char *database_name, NdbOut& out) {
   }
 }
 
-void MgmtSrvr::list_quotas(Uint32 nextDatabaseId, NdbOut& out) {
+void MgmtSrvr::list_quotas(Uint32 nextDatabaseId, bool is_user, NdbOut& out) {
   SignalSender ss(theFacade);
   ss.lock();
 
   int res;
-  if ((res = check_quota_version())) {
-    out << "result: Quotas not supported in this cluster, requires 24.10.0"
+  if ((res = check_quota_version(is_user))) {
+    out << "result: Quotas not supported in this cluster, requires 24.10.18"
         << endl;
     out << "error_code: " << 4572 << endl;
     out << endl;
@@ -6104,7 +6140,7 @@ void MgmtSrvr::list_quotas(Uint32 nextDatabaseId, NdbOut& out) {
   ListDatabaseReq* req =
     CAST_PTR(ListDatabaseReq, ssig.getDataPtrSend());
 
-  req->requestInfo = 0;
+  req->requestInfo = is_user;
   req->senderData = 82;
   req->senderRef = ss.getOwnRef();
   req->nextDatabaseId = nextDatabaseId;
@@ -6152,24 +6188,41 @@ void MgmtSrvr::list_quotas(Uint32 nextDatabaseId, NdbOut& out) {
         nextDatabaseId = conf->databaseId + 1;
         out << "result: Ok" << endl;
         out << "num_rows: 10" << endl;
-        out << "nextDatabaseId: " << nextDatabaseId << endl;
+        if (!is_user)
+          out << "nextDatabaseId: " << nextDatabaseId << endl;
+        else
+          out << "nextUserId: " << nextDatabaseId << endl;
         out << endl;
 
         /* Next send the result data with 9 rows */
-        const char *databaseName = (const char*)signal->ptr[0].p;
-        out << "Database Quotas for " << databaseName << endl;
-        out << "  databaseId = " << conf->databaseId << endl;
-        out << "  databaseVersion = " << conf->databaseId << endl;
-        out << "  InMemorySize = " << conf->InMemorySizeMB << " MByte" << endl;
-        out << "  DiskSpaceSize = " << conf->DiskSpaceSizeGB << " GByte"
-            << endl;
-        out << "  RatePerSec = " << conf->RatePerSec << endl;
-        out << "  MaxTransactionSize = " << conf->MaxTransactionSize << endl;
-        out << "  MaxParallelTransactions = ";
-        out << conf->MaxParallelTransactions << endl;
-        out << "  MaxParallelComplexQueries = ";
-        out << conf->MaxParallelComplexQueries << endl;
-        out << endl;
+        if (!is_user) {
+          const char *databaseName = (const char*)signal->ptr[0].p;
+          out << "Database Quotas for " << databaseName << endl;
+          out << "  databaseId = " << conf->databaseId << endl;
+          out << "  databaseVersion = " << conf->databaseId << endl;
+          out << "  InMemorySize = " << conf->InMemorySizeMB << " MByte" << endl;
+          out << "  DiskSpaceSize = " << conf->DiskSpaceSizeGB << " GByte"
+              << endl;
+          out << "  RatePerSec = " << conf->RatePerSec << endl;
+          out << "  MaxTransactionSize = " << conf->MaxTransactionSize << endl;
+          out << "  MaxParallelTransactions = ";
+          out << conf->MaxParallelTransactions << endl;
+          out << "  MaxParallelComplexQueries = ";
+          out << conf->MaxParallelComplexQueries << endl;
+          out << endl;
+        } else {
+          const char *userName = (const char*)signal->ptr[0].p;
+          out << "User rate limits for " << userName << endl;
+          out << "  userId = " << conf->databaseId << endl;
+          out << "  userVersion = " << conf->databaseId << endl;
+          out << "  RatePerSec = " << conf->RatePerSec << endl;
+          out << "  MaxTransactionSize = " << conf->MaxTransactionSize << endl;
+          out << "  MaxParallelTransactions = ";
+          out << conf->MaxParallelTransactions << endl;
+          out << "  MaxParallelComplexQueries = ";
+          out << conf->MaxParallelComplexQueries << endl;
+          out << endl;
+        }
         return;
       }
       case GSN_LIST_DATABASE_REF:
@@ -6177,7 +6230,10 @@ void MgmtSrvr::list_quotas(Uint32 nextDatabaseId, NdbOut& out) {
         const ListDatabaseRef * ref =
           CAST_CONSTPTR(ListDatabaseRef, signal->getDataPtr());
         Uint32 err = ref->errorCode;
-        out << "result: List database quotas failed with error ";
+        if (!is_user)
+          out << "result: List database quotas failed with error ";
+        else
+          out << "result: List users failed with error ";
         out << "error_code: " << err << endl;
         out << endl;
         return;
@@ -6197,14 +6253,20 @@ void MgmtSrvr::list_quotas(Uint32 nextDatabaseId, NdbOut& out) {
           if (BitmaskImpl::safe_get(
             NodeBitmask::getPackedLengthInWords(signal->ptr[0].p),
             signal->ptr[0].p, nodeId)) {
-            out << "result: List Database quota failed due to node failure";
+            if (!is_user)
+              out << "result: List Database quota failed due to node failure";
+            else
+              out << "result: List users failed due to node failure";
             out << endl;
             out << "error_code: 1" << endl;
             out << endl;
             return;
           }
         } else if (BitmaskImpl::safe_get(len, rep->theAllNodes, nodeId)) {
-          out << "result: List Database quota failed due to node failure";
+          if (!is_user)
+            out << "result: List Database quota failed due to node failure";
+          else
+            out << "result: List users failed due to node failure";
           out << endl;
           out << "error_code: 1" << endl;
           out << endl;
@@ -6226,13 +6288,13 @@ void MgmtSrvr::list_quotas(Uint32 nextDatabaseId, NdbOut& out) {
   }
 }
 
-void MgmtSrvr::backup_quotas(Uint32 nextDatabaseId, NdbOut& out) {
+void MgmtSrvr::backup_quotas(Uint32 nextDatabaseId, bool is_user, NdbOut& out) {
   SignalSender ss(theFacade);
   ss.lock();
 
   int res;
-  if ((res = check_quota_version())) {
-    out << "result: Quotas not supported in this cluster, requires 24.10.0"
+  if ((res = check_quota_version(is_user))) {
+    out << "result: Quotas not supported in this cluster, requires 24.10.18"
         << endl;
     out << "error_code: " << 4572 << endl;
     out << endl;
@@ -6246,7 +6308,7 @@ void MgmtSrvr::backup_quotas(Uint32 nextDatabaseId, NdbOut& out) {
   ListDatabaseReq* req =
     CAST_PTR(ListDatabaseReq, ssig.getDataPtrSend());
 
-  req->requestInfo = 0;
+  req->requestInfo = is_user;
   req->senderData = 83;
   req->senderRef = ss.getOwnRef();
   req->nextDatabaseId = nextDatabaseId;
@@ -6297,16 +6359,27 @@ void MgmtSrvr::backup_quotas(Uint32 nextDatabaseId, NdbOut& out) {
         out << endl;
 
         /* Next send the result data with 9 rows */
-        const char *databaseName = (const char*)signal->ptr[0].p;
-        out << "DATABASE QUOTA SET " << databaseName;
-        out << " --in-memory-size = " << conf->InMemorySizeMB;
-        out << " --on-disk-size = " << conf->DiskSpaceSizeGB;
-        out << " --rate-per-sec = " << conf->RatePerSec;
-        out << " --max-transaction-size = " << conf->MaxTransactionSize;
-        out << " --max-parallel-transactions = ";
-        out << conf->MaxParallelTransactions;
-        out << " --max-parallel-complex-queries = ";
-        out << conf->MaxParallelComplexQueries << endl;
+        if (!is_user) {
+          const char *databaseName = (const char*)signal->ptr[0].p;
+          out << "DATABASE QUOTA SET " << databaseName;
+          out << " --in-memory-size = " << conf->InMemorySizeMB;
+          out << " --on-disk-size = " << conf->DiskSpaceSizeGB;
+          out << " --rate-per-sec = " << conf->RatePerSec;
+          out << " --max-transaction-size = " << conf->MaxTransactionSize;
+          out << " --max-parallel-transactions = ";
+          out << conf->MaxParallelTransactions;
+          out << " --max-parallel-complex-queries = ";
+          out << conf->MaxParallelComplexQueries << endl;
+        } else {
+          const char *userName = (const char*)signal->ptr[0].p;
+          out << "USER SET " << userName;
+          out << " --rate-per-sec = " << conf->RatePerSec;
+          out << " --max-transaction-size = " << conf->MaxTransactionSize;
+          out << " --max-parallel-transactions = ";
+          out << conf->MaxParallelTransactions;
+          out << " --max-parallel-complex-queries = ";
+          out << conf->MaxParallelComplexQueries << endl;
+        }
         return;
       }
       case GSN_LIST_DATABASE_REF:
@@ -6314,7 +6387,10 @@ void MgmtSrvr::backup_quotas(Uint32 nextDatabaseId, NdbOut& out) {
         const ListDatabaseRef * ref =
           CAST_CONSTPTR(ListDatabaseRef, signal->getDataPtr());
         Uint32 err = ref->errorCode;
-        out << "result: List database quotas failed with error ";
+        if (!is_user)
+          out << "result: List database quotas failed with error ";
+        else
+          out << "result: List users failed with error ";
         out << "error_code: " << err << endl;
         out << endl;
         return;
@@ -6334,14 +6410,20 @@ void MgmtSrvr::backup_quotas(Uint32 nextDatabaseId, NdbOut& out) {
           if (BitmaskImpl::safe_get(
             NodeBitmask::getPackedLengthInWords(signal->ptr[0].p),
             signal->ptr[0].p, nodeId)) {
-            out << "result: List Database quota failed due to node failure";
+            if (!is_user)
+              out << "result: List Database quota failed due to node failure";
+            else
+              out << "result: List users failed due to node failure";
             out << endl;
             out << "error_code: 1" << endl;
             out << endl;
             return;
           }
         } else if (BitmaskImpl::safe_get(len, rep->theAllNodes, nodeId)) {
-          out << "result: List Database quota failed due to node failure";
+          if (!is_user)
+            out << "result: List Database quota failed due to node failure";
+          else
+            out << "result: List users failed due to node failure";
           out << endl;
           out << "error_code: 1" << endl;
           out << endl;

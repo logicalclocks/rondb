@@ -2568,7 +2568,6 @@ int NdbScanOperation::prepareSendScan(Uint32 /*aTC_ConnectPtr*/,
   ScanTabReq::setTTLIgnoreFlag(reqInfo, (m_flags & OF_TTL_IGNORE) != 0);
   ScanTabReq::setTTLOnlyExpiredFlag(reqInfo, (m_flags & OF_TTL_ONLY_EXPIRED) != 0);
 
-  req->requestInfo = reqInfo;
   req->distributionKey = theDistributionKey;
   theSCAN_TABREQ->setLength(ScanTabReq::StaticLength + theDistrKeyIndicator_);
 
@@ -2577,6 +2576,15 @@ int NdbScanOperation::prepareSendScan(Uint32 /*aTC_ConnectPtr*/,
     theSCAN_TABREQ->setLength(ScanTabReq::StaticLength +
                               2 /* 1 field padding for theDistributionKey */);
   }
+  Uint32 user_id = theNdbCon->m_user_id;
+  if (user_id != RNIL) {
+    /* Extend length to fit all optional fields including user id + version */
+    theSCAN_TABREQ->setLength(ScanTabReq::StaticLength + 4);
+    req->userId = user_id;
+    req->userIdVersion = theNdbCon->m_user_id_version;
+    ScanTabReq::setUserIdFlag(reqInfo, 1);
+  }
+  req->requestInfo = reqInfo;
 
   /* All scans use NdbRecord internally */
   assert(theStatus == UseNdbRecord);

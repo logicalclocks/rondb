@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023, 2024, Hopsworks and/or its affiliates.
+ * Copyright (c) 2023, 2026, Hopsworks and/or its affiliates.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -48,11 +48,18 @@ class JSONParser {
   */
   std::unique_ptr<char[]> buffer;
 
+  // Common implementation for batch_parse and batch_parse_delete
+  RS_Status batch_parse_impl(simdjson::padded_string_view,
+                             std::vector<PKReadParams> &,
+                             const char *expected_request_type);
+
  public:
   JSONParser();
   std::unique_ptr<char[]> &get_buffer();
   RS_Status pk_parse(simdjson::padded_string_view, PKReadParams &);
   RS_Status batch_parse(simdjson::padded_string_view, std::vector<PKReadParams> &);
+  RS_Status batch_parse_delete(simdjson::padded_string_view, std::vector<PKReadParams> &);
+  RS_Status batch_parse_write(simdjson::padded_string_view, std::vector<PKReadParams> &);
   RS_Status scan_parse(simdjson::padded_string_view, ScanReadParams&);
   // The config file can specify the number of threads, which is necessary to
   // initialize global jsonParsers variable. Therefore, we'd rather use a static

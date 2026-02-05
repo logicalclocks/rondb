@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023, 2025, Hopsworks and/or its affiliates.
+ * Copyright (c) 2023, 2026, Hopsworks and/or its affiliates.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -24,6 +24,7 @@
 #include "error_strings.h"
 #include "config_structs.hpp"
 #include "rdrs_dal.hpp"
+#include "rdrs_const.h"
 #include <my_compiler.h>
 
 #include <cstdint>
@@ -197,8 +198,12 @@ std::unique_ptr<char[]> &JSONParser::get_buffer() {
 
 RS_Status extract_db_and_table(const std::string_view &,
                                std::string_view &,
-                               std::string&,
-                               const std::string& expected_operation);
+                               std::string &,
+                               const char *expected_request_type);
+RS_Status extract_db_table_and_write_op(const std::string_view &,
+                                        std::string_view &,
+                                        std::string &,
+                                        Uint32 &);
 RS_Status handle_simdjson_error(const simdjson::error_code &,
                                 simdjson::ondemand::document &,
                                 const char *&);
@@ -375,10 +380,12 @@ RS_Status JSONParser::pk_parse(simdjson::padded_string_view reqBody,
   return CRS_Status::SUCCESS.status;
 }
 
-// This is used to perform batched primary key read operations.
-// The body here is a list of arbitrary pk-reads under the key operations:
-RS_Status JSONParser::batch_parse(simdjson::padded_string_view reqBody,
-                                  std::vector<PKReadParams> &reqStructs) {
+// Common implementation for batch parsing of pk-read and pk-delete operations.
+// The expected_request_type parameter specifies what URL suffix to expect
+// (PKREAD for "pk-read" or PKDELETE for "pk-delete").
+RS_Status JSONParser::batch_parse_impl(simdjson::padded_string_view reqBody,
+                                       std::vector<PKReadParams> &reqStructs,
+                                       const char *expected_request_type) {
   const char *currentLocation = nullptr;
 
   simdjson::error_code error = parser.iterate(reqBody).get(doc);
@@ -460,7 +467,7 @@ RS_Status JSONParser::batch_parse(simdjson::padded_string_view reqBody,
       extract_db_and_table(relativeUrl,
                            reqStruct.path.db,
                            reqStruct.path.table,
-                           PKREAD);
+                           expected_request_type);
     if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
                              drogon::HttpStatusCode::k200OK)) {
       return status;
@@ -620,6 +627,286 @@ RS_Status JSONParser::batch_parse(simdjson::padded_string_view reqBody,
           reqStruct.readColumns.emplace_back(pkReadReadColumn);
         }
       }
+    }
+
+    std::string_view operationId;
+    auto operationIdVal = bodyObject[OPERATION_ID];
+    if (unlikely(operationIdVal.error() ==
+                 simdjson::error_code::NO_SUCH_FIELD)) {
+      operationId = "";
+    } else if (unlikely(operationIdVal.error() != simdjson::SUCCESS)) {
+      return handle_simdjson_error(
+        operationIdVal.error(), doc, currentLocation);
+    } else if (unlikely(operationIdVal.is_null())) {
+      operationId = "";
+    } else {
+      error = operationIdVal.get(operationId);
+      if (unlikely(error != simdjson::SUCCESS)) {
+        return handle_simdjson_error(error, doc, currentLocation);
+      }
+    }
+    reqStruct.operationId = operationId;
+    reqStructs.push_back(reqStruct);
+  }
+  return CRS_Status::SUCCESS.status;
+}
+
+// This is used to perform batched primary key read operations.
+// The body here is a list of arbitrary pk-reads under the key operations:
+RS_Status JSONParser::batch_parse(simdjson::padded_string_view reqBody,
+                                  std::vector<PKReadParams> &reqStructs) {
+  return batch_parse_impl(reqBody, reqStructs, PKREAD);
+}
+
+// This is used to perform batched primary key delete operations.
+// The body here is a list of arbitrary pk-deletes under the key operations:
+RS_Status JSONParser::batch_parse_delete(simdjson::padded_string_view reqBody,
+                                         std::vector<PKReadParams> &reqStructs) {
+  return batch_parse_impl(reqBody, reqStructs, PKDELETE);
+}
+
+// This is used to perform batched primary key write operations.
+// The body parses writeColumns (column+value pairs) instead of readColumns.
+RS_Status JSONParser::batch_parse_write(simdjson::padded_string_view reqBody,
+                                        std::vector<PKReadParams> &reqStructs) {
+  const char *currentLocation = nullptr;
+
+  simdjson::error_code error = parser.iterate(reqBody).get(doc);
+  if (unlikely(error != simdjson::SUCCESS)) {
+    return handle_simdjson_error(error, doc, currentLocation);
+  }
+
+  simdjson::ondemand::object reqObject;
+  error = doc.get_object().get(reqObject);
+  if (unlikely(error != simdjson::SUCCESS)) {
+    return handle_simdjson_error(error, doc, currentLocation);
+  }
+
+  simdjson::ondemand::array operations;
+  auto operationsVal = reqObject[OPERATIONS];
+  if (unlikely(operationsVal.error() == simdjson::error_code::NO_SUCH_FIELD)) {
+    return CRS_Status(
+      HTTP_CODE::CLIENT_ERROR, "No operations defined").status;
+    operations = {};
+  } else if (unlikely(operationsVal.error() != simdjson::SUCCESS)) {
+    return handle_simdjson_error(operationsVal.error(), doc, currentLocation);
+  }
+  if (unlikely(operationsVal.is_null())) {
+    return CRS_Status(
+      HTTP_CODE::CLIENT_ERROR, "No operations defined").status;
+  }
+  error = operationsVal.get(operations);
+  if (unlikely(error != simdjson::SUCCESS)) {
+    return handle_simdjson_error(error, doc, currentLocation);
+  }
+  if (unlikely(operations.is_empty())) {
+    return CRS_Status(
+      HTTP_CODE::CLIENT_ERROR, "No operations defined").status;
+  }
+  for (auto operation : operations) {
+    PKReadParams reqStruct;
+    simdjson::ondemand::object operationObj;
+    error = operation.get(operationObj);
+    if (unlikely(error != simdjson::SUCCESS)) {
+      return handle_simdjson_error(error, doc, currentLocation);
+    }
+    std::string_view method;
+    auto methodVal = operationObj[METHOD];
+    if (unlikely(methodVal.error() == simdjson::error_code::NO_SUCH_FIELD)) {
+    } else if (unlikely(methodVal.error() != simdjson::SUCCESS)) {
+      return handle_simdjson_error(methodVal.error(), doc, currentLocation);
+    } else if (methodVal.is_null()) {
+      return CRS_Status(
+        HTTP_CODE::CLIENT_ERROR, "the Method section should be POST").status;
+    } else {
+      error = methodVal.get(method);
+      if (unlikely(error != simdjson::SUCCESS)) {
+        return handle_simdjson_error(error, doc, currentLocation);
+      }
+      if (unlikely(method != POST)) {
+        return CRS_Status(
+          HTTP_CODE::CLIENT_ERROR, "the Method section should be POST").status;
+      }
+    }
+
+    std::string_view relativeUrl;
+    auto relativeUrlVal = operationObj[RELATIVE_URL];
+    if (relativeUrlVal.error() == simdjson::error_code::NO_SUCH_FIELD) {
+      return CRS_Status(
+        HTTP_CODE::CLIENT_ERROR, "the relativeUrl section is required").status;
+    } else if (relativeUrlVal.error() != simdjson::SUCCESS) {
+      return handle_simdjson_error(
+        relativeUrlVal.error(), doc, currentLocation);
+    } else if (unlikely(relativeUrlVal.is_null())) {
+      return CRS_Status(
+        HTTP_CODE::CLIENT_ERROR, "the relativeUrl section is required").status;
+    } else {
+      error = relativeUrlVal.get(relativeUrl);
+      if (unlikely(error != simdjson::SUCCESS)) {
+        return handle_simdjson_error(error, doc, currentLocation);
+      }
+    }
+    RS_Status status =
+      extract_db_table_and_write_op(relativeUrl,
+                                    reqStruct.path.db,
+                                    reqStruct.path.table,
+                                    reqStruct.writeOperationType);
+    if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
+                             drogon::HttpStatusCode::k200OK)) {
+      return status;
+    }
+
+    simdjson::ondemand::object bodyObject;
+    auto bodyVal = operationObj[BODY];
+    if (unlikely(bodyVal.error() == simdjson::error_code::NO_SUCH_FIELD)) {
+      return CRS_Status(static_cast<HTTP_CODE>(
+        drogon::HttpStatusCode::k400BadRequest),
+        ERROR_INVALID_BODY, std::string(rdrsErrorMessage(ERROR_INVALID_BODY))).status;
+    }
+    if (unlikely(bodyVal.error() != simdjson::SUCCESS)) {
+      return handle_simdjson_error(bodyVal.error(), doc, currentLocation);
+    } else if (unlikely(bodyVal.is_null())) {
+      return CRS_Status(static_cast<HTTP_CODE>(
+        drogon::HttpStatusCode::k400BadRequest),
+        ERROR_INVALID_BODY, std::string(rdrsErrorMessage(ERROR_INVALID_BODY))).status;
+    }
+    error = bodyVal.get(bodyObject);
+    if (unlikely(error != simdjson::SUCCESS)) {
+      return handle_simdjson_error(error, doc, currentLocation);
+    }
+
+    // Parse filters (PK columns)
+    simdjson::ondemand::array filters;
+    auto filtersVal = bodyObject[FILTERS];
+    if (unlikely(filtersVal.error() == simdjson::error_code::NO_SUCH_FIELD)) {
+      return CRS_Status(
+        HTTP_CODE::CLIENT_ERROR, "the filters section is required").status;
+    } else if (unlikely(filtersVal.error() != simdjson::SUCCESS)) {
+      return handle_simdjson_error(filtersVal.error(), doc, currentLocation);
+    } else if (unlikely(filtersVal.is_null())) {
+      return CRS_Status(
+        HTTP_CODE::CLIENT_ERROR, "the filters section is null").status;
+    } else {
+      error = filtersVal.get(filters);
+      if (unlikely(error != simdjson::SUCCESS)) {
+        return handle_simdjson_error(error, doc, currentLocation);
+      }
+      if (unlikely(filters.is_empty())) {
+        return CRS_Status(
+          HTTP_CODE::CLIENT_ERROR, "the filters section is empty").status;
+      }
+    }
+    for (auto filter : filters) {
+      PKReadFilter pkReadFilter;
+      simdjson::ondemand::object filterObj;
+      error = filter.get(filterObj);
+      if (unlikely(error != simdjson::SUCCESS)) {
+        return handle_simdjson_error(error, doc, currentLocation);
+      }
+      std::string_view column;
+      auto columnVal = filterObj[COLUMN];
+      if (unlikely(columnVal.error() != simdjson::SUCCESS)) {
+        return handle_simdjson_error(columnVal.error(), doc, currentLocation);
+      } else if (unlikely(columnVal.is_null())) {
+        return CRS_Status(
+          HTTP_CODE::CLIENT_ERROR,
+          "a column name in filters is null").status;
+      }
+      error = columnVal.get(column);
+      if (unlikely(error != simdjson::SUCCESS)) {
+        return handle_simdjson_error(error, doc, currentLocation);
+      }
+      if (unlikely(column.size() == 0)) {
+        return CRS_Status(
+          HTTP_CODE::CLIENT_ERROR,
+          "a column name in filters is empty").status;
+      }
+      pkReadFilter.column = column;
+
+      simdjson::ondemand::value value;
+      std::vector<char> bytes;
+      auto valueVal = filterObj[VALUE];
+      error = valueVal.get(value);
+      if (unlikely(error != simdjson::SUCCESS)) {
+        return handle_simdjson_error(columnVal.error(), doc, currentLocation);
+      } else if (unlikely(valueVal.is_null())) {
+        return CRS_Status(
+          HTTP_CODE::CLIENT_ERROR,
+          "a value in filters is null").status;
+      }
+      std::ostringstream oss;
+      oss << value;
+      std::string valueJson = oss.str();
+      bytes = std::vector<char>(valueJson.begin(), valueJson.end());
+      pkReadFilter.value = bytes;
+      reqStruct.filters.emplace_back(pkReadFilter);
+    }
+
+    // Parse writeColumns (columns to write with values)
+    simdjson::ondemand::array writeColumns;
+    auto writeColumnsVal = bodyObject[WRITECOLUMNS];
+    if (unlikely(writeColumnsVal.error() == simdjson::error_code::NO_SUCH_FIELD)) {
+      return CRS_Status(
+        HTTP_CODE::CLIENT_ERROR, "the writeColumns section is required").status;
+    } else if (unlikely(writeColumnsVal.error() != simdjson::SUCCESS)) {
+      return handle_simdjson_error(writeColumnsVal.error(), doc, currentLocation);
+    } else if (unlikely(writeColumnsVal.is_null())) {
+      return CRS_Status(
+        HTTP_CODE::CLIENT_ERROR, "the writeColumns section is null").status;
+    } else {
+      error = writeColumnsVal.get(writeColumns);
+      if (unlikely(error != simdjson::SUCCESS)) {
+        return handle_simdjson_error(error, doc, currentLocation);
+      }
+      if (unlikely(writeColumns.is_empty())) {
+        return CRS_Status(
+          HTTP_CODE::CLIENT_ERROR, "the writeColumns section is empty").status;
+      }
+    }
+    for (auto writeColumn : writeColumns) {
+      PKReadFilter pkWriteColumn;
+      simdjson::ondemand::object writeColumnObj;
+      error = writeColumn.get(writeColumnObj);
+      if (unlikely(error != simdjson::SUCCESS)) {
+        return handle_simdjson_error(error, doc, currentLocation);
+      }
+      std::string_view column;
+      auto columnVal = writeColumnObj[COLUMN];
+      if (unlikely(columnVal.error() != simdjson::SUCCESS)) {
+        return handle_simdjson_error(columnVal.error(), doc, currentLocation);
+      } else if (unlikely(columnVal.is_null())) {
+        return CRS_Status(
+          HTTP_CODE::CLIENT_ERROR,
+          "a column name in writeColumns is null").status;
+      }
+      error = columnVal.get(column);
+      if (unlikely(error != simdjson::SUCCESS)) {
+        return handle_simdjson_error(error, doc, currentLocation);
+      }
+      if (unlikely(column.size() == 0)) {
+        return CRS_Status(
+          HTTP_CODE::CLIENT_ERROR,
+          "a column name in writeColumns is empty").status;
+      }
+      pkWriteColumn.column = column;
+
+      simdjson::ondemand::value value;
+      std::vector<char> bytes;
+      auto valueVal = writeColumnObj[VALUE];
+      error = valueVal.get(value);
+      if (unlikely(error != simdjson::SUCCESS)) {
+        return handle_simdjson_error(columnVal.error(), doc, currentLocation);
+      } else if (unlikely(valueVal.is_null())) {
+        return CRS_Status(
+          HTTP_CODE::CLIENT_ERROR,
+          "a value in writeColumns is null").status;
+      }
+      std::ostringstream oss;
+      oss << value;
+      std::string valueJson = oss.str();
+      bytes = std::vector<char>(valueJson.begin(), valueJson.end());
+      pkWriteColumn.value = bytes;
+      reqStruct.writeColumns.emplace_back(pkWriteColumn);
     }
 
     std::string_view operationId;
@@ -1451,12 +1738,15 @@ RS_Status JSONParser::batch_feature_store_parse(
   return CRS_Status::SUCCESS.status;
 }
 
-RS_Status extract_db_and_table(const std::string_view &relativeUrl,
-                               std::string_view &db,
-                               std::string &table,
-                               const std::string& expected_op) {
+/**
+ * Common helper to parse relative URL and extract db, table, and request_type.
+ * Returns SUCCESS if URL structure is valid (db/table/request_type format).
+ */
+static RS_Status parse_relative_url(const std::string_view &relativeUrl,
+                                    std::string_view &db,
+                                    std::string &table,
+                                    std::string_view &request_type) {
   // Find the positions of the last three slashes
-  std::string_view request_type;
   size_t len = relativeUrl.length();
   if (len < 11) {
     DEB_REL_URL(("1:relativeUrl bad: %s", relativeUrl.data()));
@@ -1475,7 +1765,7 @@ RS_Status extract_db_and_table(const std::string_view &relativeUrl,
     lastSlashPos = relativeUrl.find_last_of('/', lastSlashPos - 1);
   }
   if (len == 0) {
-    DEB_REL_URL(("4:relativeUrl bad: %s", relativeUrl.data()));
+    DEB_REL_URL(("2:relativeUrl bad: %s", relativeUrl.data()));
     return CRS_Status(static_cast<HTTP_CODE>(
       drogon::HttpStatusCode::k400BadRequest),
       ERROR_INVALID_RELATIVE_URL,
@@ -1500,7 +1790,7 @@ RS_Status extract_db_and_table(const std::string_view &relativeUrl,
 
   if (thirdLastSlashPos != std::string_view::npos ||
       secondLastSlashPos == std::string_view::npos) {
-    DEB_REL_URL(("2:relativeUrl bad: %s", relativeUrl.data()));
+    DEB_REL_URL(("3:relativeUrl bad: %s", relativeUrl.data()));
     return CRS_Status(static_cast<HTTP_CODE>(
       drogon::HttpStatusCode::k400BadRequest),
       ERROR_INVALID_RELATIVE_URL,
@@ -1510,16 +1800,69 @@ RS_Status extract_db_and_table(const std::string_view &relativeUrl,
   table = checkUrl.substr(secondLastSlashPos + 1,
                           lastSlashPos - secondLastSlashPos - 1);
   request_type = checkUrl.substr(lastSlashPos + 1);
-  if (request_type == expected_op &&
-      db.length() > 0 &&
-      table.length() > 0) {
+  if (db.length() == 0 || table.length() == 0) {
+    DEB_REL_URL(("4:relativeUrl bad: %s", relativeUrl.data()));
+    return CRS_Status(static_cast<HTTP_CODE>(
+      drogon::HttpStatusCode::k400BadRequest),
+      ERROR_INVALID_RELATIVE_URL,
+      std::string(rdrsErrorMessage(ERROR_INVALID_RELATIVE_URL))).status;
+  }
+  return CRS_Status::SUCCESS.status;
+}
+
+RS_Status extract_db_and_table(const std::string_view &relativeUrl,
+                               std::string_view &db,
+                               std::string &table,
+                               const char *expected_request_type) {
+  std::string_view request_type;
+  RS_Status status = parse_relative_url(relativeUrl, db, table, request_type);
+  if (unlikely(status.http_code != SUCCESS)) {
+    return status;
+  }
+  std::string expected_op = std::string(expected_request_type);
+  if (request_type == expected_op) {
     return CRS_Status::SUCCESS.status;
   }
-  DEB_REL_URL(("3:relativeUrl bad: %s", relativeUrl.data()));
+  DEB_REL_URL(("5:relativeUrl bad request_type: %s", relativeUrl.data()));
   return CRS_Status(static_cast<HTTP_CODE>(
     drogon::HttpStatusCode::k400BadRequest),
     ERROR_INVALID_RELATIVE_URL,
     std::string(rdrsErrorMessage(ERROR_INVALID_RELATIVE_URL))).status;
+}
+
+/**
+ * Extract database, table and write operation type from relative URL.
+ * Accepts pk-write, pk-update, or pk-insert as the request type.
+ */
+RS_Status extract_db_table_and_write_op(const std::string_view &relativeUrl,
+                                        std::string_view &db,
+                                        std::string &table,
+                                        Uint32 &writeOpType) {
+  std::string_view request_type;
+  RS_Status status = parse_relative_url(relativeUrl, db, table, request_type);
+  if (unlikely(status.http_code != SUCCESS)) {
+    return status;
+  }
+  // Check which write operation type this is
+  if (request_type == PKWRITE) {
+    writeOpType = RDRS_WRITE_OP_WRITE;
+    return CRS_Status::SUCCESS.status;
+  }
+  if (request_type == PKUPDATE) {
+    writeOpType = RDRS_WRITE_OP_UPDATE;
+    return CRS_Status::SUCCESS.status;
+  }
+  if (request_type == PKINSERT) {
+    writeOpType = RDRS_WRITE_OP_INSERT;
+    return CRS_Status::SUCCESS.status;
+  }
+  DEB_REL_URL(("6:relativeUrl bad request_type: %.*s",
+               (int)request_type.length(), request_type.data()));
+  return CRS_Status(static_cast<HTTP_CODE>(
+    drogon::HttpStatusCode::k400BadRequest),
+    ERROR_INVALID_RELATIVE_URL,
+    std::string(rdrsErrorMessage(ERROR_INVALID_RELATIVE_URL)) +
+    " Expected pk-write, pk-update, or pk-insert").status;
 }
 
 RS_Status handle_simdjson_error(const simdjson::error_code &error,

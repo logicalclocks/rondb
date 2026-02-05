@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2025, Oracle and/or its affiliates.
+   Copyright (c) 2025, 2025, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1124,7 +1125,7 @@ static int runCreateTable(NDBT_Context *ctx, NDBT_Step *step) {
 
   if (NDBT_Tables::createTable(&ndb, tab_name,
                                !ctx->getSuite()->getLogging()) != 0) {
-    g_err << "runCreateTable: Failed to create table " << tab_name
+    g_err << "runCreateTable: Failed to create table " << tab_name << " "
           << pDict->getNdbError() << endl;
     return NDBT_FAILED;
   }

@@ -1,18 +1,20 @@
 /*
- * This file is part of the RonDB REST API Server
- * Copyright (c) 2023 Hopsworks AB
+ * Copyright (C) 2023, 2026 Hopsworks AB
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, version 3.
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
  *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
- * General Public License for more details.
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301,
+ * USA.
  */
 package api
 
@@ -116,6 +118,61 @@ type BatchSubOperationTestInfo struct {
 
 type BatchOperationTestInfo struct {
 	Operations     []BatchSubOperationTestInfo
+	HttpCode       []int // for some operations there are multiple valid return codes
+	ErrMsgContains string
+}
+
+// Batch Write Request
+type BatchWriteOpRequest struct {
+	Operations *[]BatchWriteSubOp `json:"operations" binding:"required,min=1,max=4096,unique,dive"`
+}
+
+type BatchWriteSubOp struct {
+	Method      *string      `json:"method"        binding:"required,oneof=POST"`
+	RelativeURL *string      `json:"relative-url"  binding:"required,min=1"`
+	Body        *PKWriteBody `json:"body"          binding:"required"`
+}
+
+// data structs for write testing
+type BatchWriteSubOperationTestInfo struct {
+	SubOperation BatchWriteSubOp
+	Table        string
+	DB           string
+	HttpCode     []int // for some operations there are multiple valid return codes
+}
+
+type BatchWriteOperationTestInfo struct {
+	Operations     []BatchWriteSubOperationTestInfo
+	HttpCode       []int // for some operations there are multiple valid return codes
+	ErrMsgContains string
+}
+
+// Batch Delete Request - uses same body structure as read (filters only, no readColumns)
+type BatchDeleteOpRequest struct {
+	Operations *[]BatchDeleteSubOp `json:"operations" binding:"required,min=1,max=4096,unique,dive"`
+}
+
+type BatchDeleteSubOp struct {
+	Method      *string       `json:"method"        binding:"required,oneof=POST"`
+	RelativeURL *string       `json:"relative-url"  binding:"required,min=1"`
+	Body        *PKDeleteBody `json:"body"          binding:"required"`
+}
+
+type PKDeleteBody struct {
+	Filters     *[]Filter `json:"filters"      form:"filters"      binding:"required,min=1,max=4096,dive"`
+	OperationID *string   `json:"operationId"  form:"operation-id" binding:"omitempty"`
+}
+
+// data structs for delete testing
+type BatchDeleteSubOperationTestInfo struct {
+	SubOperation BatchDeleteSubOp
+	Table        string
+	DB           string
+	HttpCode     []int // for some operations there are multiple valid return codes
+}
+
+type BatchDeleteOperationTestInfo struct {
+	Operations     []BatchDeleteSubOperationTestInfo
 	HttpCode       []int // for some operations there are multiple valid return codes
 	ErrMsgContains string
 }

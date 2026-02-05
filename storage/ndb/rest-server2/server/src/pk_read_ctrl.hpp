@@ -30,6 +30,7 @@ class PKReadCtrl : public drogon::HttpController<PKReadCtrl> {
  public:
   METHOD_LIST_BEGIN
   ADD_METHOD_TO(PKReadCtrl::pkRead, PKREAD_PATH, drogon::Post);
+  ADD_METHOD_TO(PKReadCtrl::pkRead, PKREAD_PATH_V2, drogon::Post);
   METHOD_LIST_END
 
   static void pkRead(const drogon::HttpRequestPtr &req,

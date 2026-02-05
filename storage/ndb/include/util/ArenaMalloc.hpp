@@ -29,6 +29,7 @@
 #include <stdexcept>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include "ndb_types.h"
 #include "my_compiler.h"
 
@@ -83,6 +84,7 @@ public:
   void* alloc_bytes(size_t size, size_t alignment) noexcept;
   template<typename T> inline T* alloc(Uint32 items) noexcept;
   template<typename T> inline T* alloc_exc(Uint32 items);
+  template<typename T> inline T* calloc(Uint32 items) noexcept;
   void* realloc_bytes(const void* ptr,
                       size_t size,
                       size_t original_size,
@@ -125,6 +127,21 @@ ArenaMalloc::alloc_exc(Uint32 items)
     return ret;
   }
   throw std::runtime_error("ArenaMalloc: Cannot allocate");
+}
+
+/*
+ * Like ArenaMalloc::alloc(), but zero-initializes the memory.
+ * Return nullptr on failure.
+ */
+template <typename T>
+inline T*
+ArenaMalloc::calloc(Uint32 items) noexcept
+{
+  T* ret = alloc<T>(items);
+  if(likely(ret)) {
+    memset(ret, 0, items * sizeof(T));
+  }
+  return ret;
 }
 
 /*

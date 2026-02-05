@@ -25,8 +25,8 @@ drop table t2;
 --error ER_CANT_CREATE_TABLE
 CREATE TABLE t3_too_large_for_ndb(
   col1 int unsigned not null primary key,
-  col3 varchar(15000),
-  col4 varchar(14991))
+  col3 varchar(17000),
+  col4 varchar(15016))
 charset=latin1 engine=ndbcluster;
 SHOW WARNINGS;
 

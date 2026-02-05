@@ -1512,7 +1512,7 @@ class Dblqh : public SimulatedBlock {
      */
     Uint64 m_redo_written_bytes;
 
-    int tick(Uint32 now, Uint32 maxlag, Uint32 maxlag_cnt);
+    int tick(Uint32 instance, Uint32 now, Uint32 maxlag, Uint32 maxlag_cnt);
     void send_io(Uint32 bytes);
     void complete_io(Uint32 bytes);
     Uint32 get_lag_cnt() { return m_lag_cnt; }
@@ -1876,6 +1876,11 @@ class Dblqh : public SimulatedBlock {
       P_FILE_CHANGE_PROBLEM = 0x4  // 1220
     };
     Uint32 m_log_problems;
+
+    /**
+     * Log part has logged about buffer full
+     */
+    Uint32 m_logged_buffer_full;
 
     /**
      *       A timer that is set every time a log page is sent to disk.
@@ -2773,6 +2778,7 @@ class Dblqh : public SimulatedBlock {
     TcConnectionrec() :
       m_magic(Magic::make(TYPE_ID)),
       fragmentptr(RNIL64),
+      m_user_ptr_i(RNIL64),
       accConnectrec(RNIL),
       tupConnectrec(RNIL),
       nextTcConnectrec(RNIL),
@@ -2873,6 +2879,7 @@ class Dblqh : public SimulatedBlock {
     {
     }
     Uint64 fragmentptr;
+    Uint64 m_user_ptr_i;
     Dbacc::Operationrec *accConnectPtrP;
     Dbtup::Operationrec *tupConnectPtrP;
 #ifdef DEBUG_USAGE_COUNT
@@ -2963,7 +2970,6 @@ class Dblqh : public SimulatedBlock {
     Uint8 opAgg;
     Uint8 operation;
     Uint8 m_reorg;
-    Uint8 reclenAiLqhkey;
     Uint8 replicaType;
     Uint8 seqNoReplica;
     Uint8 tcNodeFailrec;
@@ -3537,24 +3543,21 @@ private:
   void initGciInLogFileRec(Signal *signal, Uint32 noFdDesc,
                            LogPageRecordPtr logPagePtr,
                            LogFileRecordPtr logFilePtr);
-  void initLogpart(Signal* signal, LogPartRecordPtr);
-  void initLogPointers(Signal* signal,
-                       TcConnectionrecPtr,
-                       LogPageRecordPtr & logPagePtr,
-                       LogFileRecordPtr & logFilePtr,
-                       LogPartRecordPtr & logPartPtr);
-  void initReqinfoExecSr(Signal* signal, TcConnectionrecPtr);
-  bool insertFragrec(Signal* signal,
-                     Uint32 fragId,
-                     Uint32 fragmentCount,
-                     Uint32 & freeEntry,
-                     Uint32 & allocated_fragments_in_array);
+  void initLogpart(Signal *signal, LogPartRecordPtr);
+  void initLogPointers(Signal *signal, TcConnectionrecPtr,
+                       LogPageRecordPtr &logPagePtr,
+                       LogFileRecordPtr &logFilePtr,
+                       LogPartRecordPtr &logPartPtr);
+  void initReqinfoExecSr(Signal *signal, TcConnectionrecPtr);
+  Uint32 insertFragrec(Signal* signal,
+                       Uint32 fragId,
+                       Uint32 fragmentCount,
+                       Uint32 & freeEntry,
+                       Uint32 & allocated_fragments_in_array);
   void cb_sync_frag_array(Signal *signal, Uint32 tableId, Uint32 retVal);
-  void linkWaitLog(Signal*,
-                   LogPartRecord *logPartPtrP,
-                   LogPartRecord::OperationQueue &,
-                   TcConnectionrec*);
-  void logNextStart(Signal* signal, LogPartRecord *logPartPtrP);
+  void linkWaitLog(Signal *, LogPartRecord *logPartPtrP,
+                   LogPartRecord::OperationQueue &, TcConnectionrec *);
+  void logNextStart(Signal *signal, LogPartRecord *logPartPtrP);
   void moveToPageRef(LogFileOperationRecordPtr lfoPtr,
                      LogFileRecordPtr logFilePtr, LogPartRecord *logPartPtrP);
   void readAttrinfo(LogPageRecordPtr &logPagePtr, TcConnectionrecPtr,
@@ -3675,33 +3678,28 @@ private:
   void rebuildOrderedIndexes(Signal *signal, Uint32 tableId);
 
   // Generated statement blocks
-  [[noreturn]] void systemErrorLab(Signal* signal, int line);
-  void initFourth(Signal* signal);
-  void packLqhkeyreqLab(Signal* signal, TcConnectionrecPtr);
-  void sendNdbSttorryLab(Signal* signal);
-  void execSrCompletedLab(Signal* signal);
-  void execLogRecord(Signal* signal,
-                     LogPageRecordPtr logPagePtr,
-                     LogFileRecordPtr logFilePtr,
-                     LogPartRecord *logPartPtrP);
-  void srPhase3Comp(Signal* signal);
-  void srLogLimits(Signal* signal);
-  void srGciLimits(Signal* signal, Uint32, Uint32);
-  void srPhase3Start(Signal* signal);
-  void checkStartCompletedLab(Signal* signal);
   void cont_tup_abort(Signal* signal, TcConnectionrecPtr);
-  void continueAbortLab(Signal* signal, TcConnectionrecPtr);
-  void abortContinueAfterBlockedLab(Signal* signal,
-                                    TcConnectionrecPtr);
-  void abortCommonLab(Signal* signal, TcConnectionrecPtr);
-  void localCommitLab(Signal* signal, TcConnectionrecPtr);
-  void abortErrorLab(Signal* signal, TcConnectionrecPtr);
-  void continueAfterReceivingAllAiLab(Signal* signal, TcConnectionrecPtr);
-  void continueACCKEYCONF(Signal* signal,
-                          Uint32 localKey1,
-                          Uint32 localKey2,
+  [[noreturn]] void systemErrorLab(Signal *signal, int line);
+  void initFourth(Signal *signal);
+  void packLqhkeyreqLab(Signal *signal, TcConnectionrecPtr);
+  void sendNdbSttorryLab(Signal *signal);
+  void execSrCompletedLab(Signal *signal);
+  void execLogRecord(Signal *signal, LogPageRecordPtr logPagePtr,
+                     LogFileRecordPtr logFilePtr, LogPartRecord *logPartPtrP);
+  void srPhase3Comp(Signal *signal);
+  void srLogLimits(Signal *signal);
+  void srGciLimits(Signal *signal, Uint32, Uint32);
+  void srPhase3Start(Signal *signal);
+  void checkStartCompletedLab(Signal *signal);
+  void continueAbortLab(Signal *signal, TcConnectionrecPtr);
+  void abortContinueAfterBlockedLab(Signal *signal, TcConnectionrecPtr);
+  void abortCommonLab(Signal *signal, TcConnectionrecPtr);
+  void localCommitLab(Signal *signal, TcConnectionrecPtr);
+  void abortErrorLab(Signal *signal, TcConnectionrecPtr, Uint32 errorCode);
+  void continueAfterReceivingAllAiLab(Signal *signal, TcConnectionrecPtr);
+  void continueACCKEYCONF(Signal *signal, Uint32 localKey1, Uint32 localKey2,
                           TcConnectionrecPtr);
-  void continueACCKEYREF(Signal *signal, TcConnectionrecPtr);
+  void continueACCKEYREF(Signal *signal, TcConnectionrecPtr, Uint32 errorCode);
   void abortStateHandlerLab(Signal *signal, TcConnectionrecPtr);
   void writeAttrinfoLab(Signal *signal, const TcConnectionrec *,
                         LogPageRecordPtr &logPagePtr,
@@ -3711,7 +3709,6 @@ private:
                        TcConnectionrecPtr);
   void abort_scan(Signal *signal, Uint32 scan_ptr_i, Uint32 errcode,
                   TcConnectionrecPtr);
-  void localAbortStateHandlerLab(Signal *signal, TcConnectionrecPtr);
   void writePrepareLog(Signal *signal, TcConnectionrecPtr);
   void writePrepareLog_problems(Signal *signal, const TcConnectionrecPtr,
                                 LogPartRecord *logPartPtrP,
@@ -3723,7 +3720,7 @@ private:
                                   const class LqhKeyReq *req);
   void earlyKeyReqAbort(Signal *signal, const class LqhKeyReq *lqhKeyReq,
                         Uint32 errorCode, TcConnectionrecPtr);
-  void logLqhkeyrefLab(Signal *signal, TcConnectionrecPtr);
+  void logLqhkeyrefLab(Signal *signal, TcConnectionrecPtr, Uint32 errorCode);
   void closeCopyLab(Signal *signal, TcConnectionrec *);
   void commitReplyLab(Signal *signal, TcConnectionrec *);
   void completeUnusualLab(Signal *signal, TcConnectionrecPtr);
@@ -3743,7 +3740,6 @@ private:
   void initGcpRecLab(Signal *signal);
   void prepareContinueAfterBlockedLab(Signal *signal, TcConnectionrecPtr);
   void commitContinueAfterBlockedLab(Signal *signal, TcConnectionrecPtr);
-  void sendExecFragRefLab(Signal *signal);
   void fragrefLab(Signal *signal, Uint32 errorCode, const LqhFragReq *req);
   void abortAddFragOps(Signal *signal);
   void rwConcludedLab(Signal *signal, TcConnectionrecPtr);
@@ -3784,7 +3780,7 @@ private:
   void perform_fragment_checkpoint(Signal *signal);
   void handleFirstFragment(Signal *signal);
   void startLcpRoundLab(Signal *signal);
-  void startFragRefLab(Signal *signal);
+  void startFragRefLab(Signal *signal, Uint32 errorCode);
   void move_start_gci_forward(Signal *, Uint32);
   void srCompletedLab(Signal *signal);
   void openFileInitLab(Signal *signal, LogFileRecordPtr logFilePtr,
@@ -3857,7 +3853,7 @@ private:
   void readSrFourthZeroLab(Signal *signal, LogPageRecordPtr logPagePtr,
                            LogFileRecordPtr logFilePtr,
                            LogPartRecord *logPartPtrP);
-  void copyLqhKeyRefLab(Signal *signal, TcConnectionrecPtr);
+  void copyLqhKeyRefLab(Signal *signal, TcConnectionrecPtr, Uint32 errorCode);
   void restartOperationsLab(Signal *signal);
   void lqhTransNextLab(Signal *signal, TcNodeFailRecordPtr tcNodeFailPtr);
   void restartOperationsAfterStopLab(Signal *signal);
@@ -3866,7 +3862,7 @@ private:
                      TcConnectionrecPtr,
                      Uint32 readLen,
                      Uint32 writeLen);
-  void copyTupkeyRefLab(Signal *signal, TcConnectionrecPtr);
+  void copyTupkeyRefLab(Signal *signal, TcConnectionrecPtr, Uint32 errorCode);
   void copyTupkeyConfLab(Signal *signal, TcConnectionrecPtr);
   void scanTupkeyConfLab(Signal* signal,
                          TcConnectionrec*,
@@ -3875,7 +3871,8 @@ private:
                          Uint32 numExecInstructions);
   void scanTupkeyRefLab(Signal* signal,
                         TcConnectionrecPtr,
-                        Uint32 noExecInstructions);
+                        Uint32 noExecInstructions,
+                        Uint32 errorCode);
   void accScanConfScanLab(Signal *signal, TcConnectionrecPtr);
   void accScanConfCopyLab(Signal *signal);
   void scanLockReleasedLab(Signal *signal, TcConnectionrec *);
@@ -4186,8 +4183,6 @@ public:
   // MAX_NDB_NODES is the size of this array
   TcNodeFailRecord *tcNodeFailRecord;
   UintR ctcNodeFailrecFileSize;
-
-  Uint16 terrorCode;
 
   Uint32 c_firstInNodeGroup;
 
@@ -4562,6 +4557,7 @@ public:
       m_memory_report_limit = 0;
       m_disk_space_report_limit = 0;
       m_rate_report_limit_ns = 0;
+      m_is_user = 0;
     }
     DatabaseRecord(Dblqh &dblqh, Uint32);
     Uint32 m_magic;
@@ -4591,6 +4587,8 @@ public:
     NDB_TICKS m_last_quota_report_time;
 
     Uint32 m_continue_delay;
+
+    Uint32 m_is_user;
 
     inline bool equal(const DatabaseRecord & p) const
     {
@@ -5311,7 +5309,7 @@ private:
                                Int32 num_32k_pages,
                                Uint32 line,
                                Uint32 pageId);
-  void update_rate_usage(Uint32 tableId, Uint32 added_rate);
+  void update_rate_usage(Uint32 tableId, Uint64 databasePtrI, Uint32 added_rate);
   void send_database_quota_rep(DatabaseRecordPtr dbPtr, NDB_TICKS);
   Uint32 get_delay(Uint32 tableId);
   void change_report_limits(DatabaseRecord *dbPtrP,

@@ -57,6 +57,8 @@ var (
 	noMySQL    bool
 	noRDRS     bool
 	noRondis   bool
+	execCmd    string // Command to execute non-interactively (like mysql -e)
+	quiet      bool   // Suppress timing and info messages (for scripted usage)
 )
 
 var rootCmd = &cobra.Command{
@@ -99,6 +101,8 @@ var rootCmd = &cobra.Command{
 			NoMySQL:    noMySQL,
 			NoRDRS:     noRDRS,
 			NoRondis:   noRondis,
+			Command:    execCmd,
+			Quiet:      quiet,
 		})
 	},
 }
@@ -209,6 +213,8 @@ func init() {
 	rootCmd.PersistentFlags().BoolVar(&noMySQL, "no-mysql", false, "Disable MySQL connection")
 	rootCmd.PersistentFlags().BoolVar(&noRDRS, "no-rdrs", false, "Disable RDRS/REST API connection")
 	rootCmd.PersistentFlags().BoolVar(&noRondis, "no-rondis", false, "Disable Rondis connection")
+	rootCmd.Flags().StringVarP(&execCmd, "execute", "e", "", "Execute command and exit (non-interactive mode)")
+	rootCmd.Flags().BoolVarP(&quiet, "quiet", "q", false, "Suppress timing and info messages (for scripted usage)")
 
 	// Also support env vars (env vars override defaults, flags override env vars)
 	// RONDB_HOST sets both MySQL and RDRS hosts

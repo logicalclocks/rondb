@@ -86,6 +86,8 @@ class PKReadParams {
   PKReadPath path;
   std::vector<PKReadFilter> filters;
   std::vector<PKReadReadColumn> readColumns;
+  std::vector<PKReadFilter> writeColumns;  // For write operations (column+value pairs)
+  Uint32 writeOperationType;  // RDRS_WRITE_OP_WRITE, _UPDATE, or _INSERT
   std::string operationId;
   std::string to_string();
   RS_Status validate();

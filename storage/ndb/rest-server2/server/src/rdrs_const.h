@@ -43,6 +43,11 @@ static inline int bytes_for_ndb_str_len(int ndb_str_len) {
 #define RDRS_BATCH_REQ_ID  3
 #define RDRS_BATCH_RESP_ID 4
 
+// Write Operation Types (stored in PK_REQ_FLAGS_IDX for write operations)
+#define RDRS_WRITE_OP_WRITE  0  // writeTuple - insert or update
+#define RDRS_WRITE_OP_UPDATE 1  // updateTuple - update only, fails if not exists
+#define RDRS_WRITE_OP_INSERT 2  // insertTuple - insert only, fails if exists
+
 // Data types
 // Everything is a string.
 // However for RDRS_STRING_DATATYPE the string
@@ -57,16 +62,17 @@ static inline int bytes_for_ndb_str_len(int ndb_str_len) {
 #define RDRS_BIN_ENCODED_DATATYPE 7
 
 // Primary Key Read Request Header Indexes
-#define PK_REQ_OP_TYPE_IDX   0
-#define PK_REQ_CAPACITY_IDX  1
-#define PK_REQ_LENGTH_IDX    2
-#define PK_REQ_FLAGS_IDX     3
-#define PK_REQ_DB_IDX        4
-#define PK_REQ_TABLE_IDX     5
-#define PK_REQ_PK_COLS_IDX   6
-#define PK_REQ_READ_COLS_IDX 7
-#define PK_REQ_OP_ID_IDX     8
-#define PK_REQ_HEADER_END    36  // NOTE: Update this when you add / remove fields from  header
+#define PK_REQ_OP_TYPE_IDX    0
+#define PK_REQ_CAPACITY_IDX   1
+#define PK_REQ_LENGTH_IDX     2
+#define PK_REQ_FLAGS_IDX      3
+#define PK_REQ_DB_IDX         4
+#define PK_REQ_TABLE_IDX      5
+#define PK_REQ_PK_COLS_IDX    6
+#define PK_REQ_READ_COLS_IDX  7
+#define PK_REQ_OP_ID_IDX      8
+#define PK_REQ_WRITE_COLS_IDX 9
+#define PK_REQ_HEADER_END     40  // NOTE: Update this when you add / remove fields from  header
 
 // Primary Key Read Response Header Indexes
 #define PK_RESP_OP_TYPE_IDX    0
@@ -102,6 +108,7 @@ static inline int bytes_for_ndb_str_len(int ndb_str_len) {
 #define API_KEY_SECRET_SIZE                512 + 2   /* +2 for ndb len or '\0'*/
 #define API_KEY_SALT_SIZE                  256 + 2   /* +2 for ndb len or '\0'*/
 #define USERS_EMAIL_SIZE                   150 + 1   /* +1 for ndb len or '\0'*/
+#define USERNAME_SIZE                      10 + 1   /* +1 for ndb len or '\0'*/
 #define PROJECT_TEAM_TEAM_MEMBER_SIZE      150 + 1   /* +1 for ndb len or '\0'*/
 #define PROJECT_PROJECTNAME_SIZE           100 + 1   /* +1 for ndb len or '\0'*/
 #define FEATURE_STORE_NAME_SIZE            100 + 1   /* +1 for ndb len or '\0'*/

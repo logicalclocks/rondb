@@ -62,7 +62,7 @@ class ScanTabReq {
    * Length of signal
    */
   static constexpr Uint32 StaticLength = 11;
-  static constexpr Uint32 MaxTotalAttrInfo = 0xFFFF;
+  static constexpr Uint32 MaxTotalAttrInfo = 0x3FFFF;
 
   /**
    * Long section nums
@@ -101,6 +101,8 @@ class ScanTabReq {
    */
   Uint32 distributionKey;
   UintR ttlPurgeWindowSize;
+  Uint32 userId;
+  Uint32 userIdVersion;
 
   /**
    * Get:ers for requestInfo
@@ -126,6 +128,7 @@ class ScanTabReq {
   static Uint32 getTTLIgnoreFlag(const Uint32 &requestInfo);
   static Uint32 getTTLOnlyExpiredFlag(const Uint32 &requestInfo);
   static Uint32 getParallelOrderedScanFlag(const Uint32 &requestInfo);
+  static Uint32 getUserIdFlag(const Uint32 &requestInfo);
 
   /**
    * Set:ers for requestInfo
@@ -152,6 +155,7 @@ class ScanTabReq {
   static void setTTLIgnoreFlag(Uint32 &requestInfo, Uint32 val);
   static void setTTLOnlyExpiredFlag(Uint32 &requestInfo, Uint32 val);
   static void setParallelOrderedScanFlag(Uint32 &requestInfo, Uint32 val);
+  static void setUserIdFlag(Uint32 &requestInfo, Uint32 val);
 };
 
 /**
@@ -185,11 +189,12 @@ class ScanTabReq {
  I = IgnoreTTL             - 1  Bit 3
  e = TTL only expired      - 1  Bit 4
  r = Four receiver/part    - 1  Bit 2
+ u = User Id flag          - 1  Bit 5
 
            1111111111222222222233
  01234567890123456789012345678901
  pppppppplnhcktzxbbbbbbbbbbdjafR
-   rIe Pg
+    IeuPg
 */
 
 #define PARALLEL_SHIFT (0)
@@ -242,6 +247,8 @@ class ScanTabReq {
 
 #define SCAN_TTL_IGNORE_SHIFT (3)
 #define SCAN_TTL_ONLY_EXPIRED_SHIFT (4)
+
+#define SCAN_USER_ID_SHIFT     (5)
 
 inline Uint8 ScanTabReq::getReadCommittedBaseFlag(const UintR &requestInfo) {
   return (Uint8)((requestInfo >> SCAN_READ_COMMITTED_BASE_SHIFT) & 1);
@@ -470,6 +477,21 @@ ScanTabReq::setTTLOnlyExpiredFlag(UintR & requestInfo, Uint32 flag) {
   requestInfo= (requestInfo & ~(1 << SCAN_TTL_ONLY_EXPIRED_SHIFT)) |
                (flag << SCAN_TTL_ONLY_EXPIRED_SHIFT);
 }
+
+inline
+Uint32
+ScanTabReq::getUserIdFlag(const UintR & requestInfo) {
+  return (requestInfo >> SCAN_USER_ID_SHIFT) & 1;
+}
+
+inline
+void
+ScanTabReq::setUserIdFlag(UintR & requestInfo, Uint32 flag) {
+  ASSERT_BOOL(flag, "TcKeyReq::setUserIdFlag");
+  requestInfo= (requestInfo & ~(1 << SCAN_USER_ID_SHIFT)) |
+               (flag << SCAN_USER_ID_SHIFT);
+}
+
 /**
  *
  * SENDER:  Dbtc

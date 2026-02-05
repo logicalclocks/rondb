@@ -104,6 +104,7 @@ class AggInterpreter {
   }
 
   bool Init();
+  bool OptimizeProgram();
 
   Int32 ProcessRec(Dbtup* block_tup, Dbtup::KeyReqStruct* req_struct);
   void Print();

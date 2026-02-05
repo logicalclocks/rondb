@@ -131,7 +131,7 @@ class Signal {
   Uint32 m_sectionPtrI[3];
   SignalHeader header; // 28 bytes
   union {
-    Uint32 theData[8192];  // 8192 32-bit words -> 32K Bytes
+    Uint32 theData[128 * 8192];  // 128 * 8192 32-bit words -> 1M Bytes
     Uint64 dummyAlign;
   };
   /**

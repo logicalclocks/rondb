@@ -19,6 +19,8 @@
 
 #include "rdrs_dal.h"
 #include "db_operations/pk/pkr_operation.hpp"
+#include "db_operations/pk/pkd_operation.hpp"
+#include "db_operations/pk/pkw_operation.hpp"
 #include "db_operations/ronsql/ronsql_operation.hpp"
 #include "rdrs_dal.hpp"
 #include "rdrs_rondb_connection_pool.hpp"
@@ -163,7 +165,8 @@ RS_Status pk_batch_read(void *amalloc_void,
                         bool is_batch,
                         RS_Buffer *req_buffs,
                         RS_Buffer *resp_buffs,
-                        unsigned int threadIndex) {
+                        unsigned int threadIndex,
+                        char *username_ptr) {
   ArenaMalloc *amalloc = (ArenaMalloc*)amalloc_void;
   Ndb *ndb_object  = nullptr;
   RS_Status status = rdrsRonDBConnectionPool->GetNdbObject(&ndb_object,
@@ -178,7 +181,68 @@ RS_Status pk_batch_read(void *amalloc_void,
                                       is_batch,
                                       req_buffs,
                                       resp_buffs,
-                                      ndb_object);
+                                      ndb_object,
+                                      username_ptr);
+  )
+  rdrsRonDBConnectionPool->ReturnNdbObject(ndb_object,
+                                           &status,
+                                           threadIndex);
+  return status;
+}
+
+RS_Status pk_batch_delete(void *amalloc_void,
+                          unsigned int no_req,
+                          bool is_batch,
+                          RS_Buffer *req_buffs,
+                          RS_Buffer *resp_buffs,
+                          unsigned int threadIndex,
+                          char *username_ptr) {
+  ArenaMalloc *amalloc = (ArenaMalloc*)amalloc_void;
+  Ndb *ndb_object  = nullptr;
+  RS_Status status = rdrsRonDBConnectionPool->GetNdbObject(&ndb_object,
+                                                           threadIndex);
+  if (unlikely(status.http_code != SUCCESS)) {
+    return status;
+  }
+  DATA_OP_RETRY_HANDLER(
+    BatchDeleteOperations pkdelete;
+    status = pkdelete.perform_operation(amalloc,
+                                        no_req,
+                                        is_batch,
+                                        req_buffs,
+                                        resp_buffs,
+                                        ndb_object,
+                                        username_ptr);
+  )
+  rdrsRonDBConnectionPool->ReturnNdbObject(ndb_object,
+                                           &status,
+                                           threadIndex);
+  return status;
+}
+
+RS_Status pk_batch_write(void *amalloc_void,
+                         unsigned int no_req,
+                         bool is_batch,
+                         RS_Buffer *req_buffs,
+                         RS_Buffer *resp_buffs,
+                         unsigned int threadIndex,
+                         char *username_ptr) {
+  ArenaMalloc *amalloc = (ArenaMalloc*)amalloc_void;
+  Ndb *ndb_object  = nullptr;
+  RS_Status status = rdrsRonDBConnectionPool->GetNdbObject(&ndb_object,
+                                                           threadIndex);
+  if (unlikely(status.http_code != SUCCESS)) {
+    return status;
+  }
+  DATA_OP_RETRY_HANDLER(
+    BatchWriteOperations pkwrite;
+    status = pkwrite.perform_operation(amalloc,
+                                       no_req,
+                                       is_batch,
+                                       req_buffs,
+                                       resp_buffs,
+                                       ndb_object,
+                                       username_ptr);
   )
   rdrsRonDBConnectionPool->ReturnNdbObject(ndb_object,
                                            &status,

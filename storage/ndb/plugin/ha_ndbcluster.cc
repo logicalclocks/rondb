@@ -149,6 +149,7 @@ static bool opt_ndb_read_backup;
 static ulong opt_ndb_data_node_neighbour;
 static bool opt_ndb_fully_replicated;
 static ulong opt_ndb_row_checksum;
+static bool opt_user_rate_limits;
 
 char *opt_ndb_tls_search_path;
 ulong opt_ndb_mgm_tls_level;
@@ -1865,6 +1866,34 @@ int ha_ndbcluster::get_metadata(Ndb *ndb, const char *dbname,
       // the table definition will be correct
       return HA_ERR_TABLE_DEF_CHANGED;
     }
+#ifndef NDEBUG
+    /* Light check of table_def versus Server's table_share schema info */
+    // Num columns
+    {
+      const int table_def_cols = ndb_dd_table_get_num_columns(table_def);
+      const int table_share_cols = table_share->fields;
+      if (table_def_cols != table_share_cols) {
+        ndb_log_error(
+            "Schema mismatch : Table def cols %u Table share cols %u for table "
+            "%s.%s",
+            table_def_cols, table_share_cols, dbname, tabname);
+        ndbcluster::ndbrequire(false);
+      }
+    }
+    // Num indexes
+    {
+      const int table_def_idxs = ndb_dd_table_get_num_indexes(table_def);
+      const int table_share_idxs = table_share->keys;
+      if (table_def_idxs != table_share_idxs) {
+        ndb_log_error(
+            "Schema mismatch : Table def idxs %u Table share idxs %u for table "
+            "%s.%s",
+            table_def_idxs, table_share_idxs, dbname, tabname);
+        ndbcluster::ndbrequire(false);
+      }
+    }
+    // Todo : other attributes
+#endif
   }
 
   if (DBUG_EVALUATE_IF("ndb_get_metadata_fail", true, false)) {
@@ -2346,9 +2375,19 @@ static void ndb_set_record_specification(
 
 int ha_ndbcluster::add_table_ndb_record(NdbDictionary::Dictionary *dict) {
   DBUG_TRACE;
-  NdbDictionary::RecordSpecification spec[NDB_MAX_ATTRIBUTES_IN_TABLE + 2];
   NdbRecord *rec;
   uint fieldId, colId;
+  NdbDictionary::RecordSpecification
+    spec_stack[OLD_NDB_MAX_ATTRIBUTES_IN_TABLE + 2];
+  NdbDictionary::RecordSpecification *spec = &spec_stack[0];
+
+  if (unlikely(table_share->fields > OLD_NDB_MAX_ATTRIBUTES_IN_TABLE)) {
+    spec = new (std::nothrow)
+      NdbDictionary::RecordSpecification[table_share->fields + 2];
+    if (spec == nullptr) {
+      return 1;
+    }
+  }
 
   for (fieldId = 0, colId = 0; fieldId < table_share->fields; fieldId++) {
     if (table->field[fieldId]->stored_in_db) {
@@ -2361,9 +2400,13 @@ int ha_ndbcluster::add_table_ndb_record(NdbDictionary::Dictionary *dict) {
   rec = dict->createRecord(
       m_table, spec, colId, sizeof(spec[0]),
       NdbDictionary::RecMysqldBitfield | NdbDictionary::RecPerColumnFlags);
-  if (!rec) ERR_RETURN(dict->getNdbError());
+  if (unlikely(table_share->fields > OLD_NDB_MAX_ATTRIBUTES_IN_TABLE)) {
+    delete [] spec;
+  }
+  if (!rec) {
+    ERR_RETURN(dict->getNdbError());
+  }
   m_ndb_record = rec;
-
   return 0;
 }
 
@@ -2388,8 +2431,10 @@ int ha_ndbcluster::add_hidden_pk_ndb_record(NdbDictionary::Dictionary *dict) {
 int ha_ndbcluster::open_index_ndb_record(NdbDictionary::Dictionary *dict,
                                          const KEY *key_info, uint index_no) {
   DBUG_TRACE;
-  NdbDictionary::RecordSpecification spec[NDB_MAX_ATTRIBUTES_IN_TABLE + 2];
+  NdbDictionary::RecordSpecification spec[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 2];
   NdbRecord *rec;
+  assert(key_info->user_defined_key_parts < 
+    (NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 2));
 
   Uint32 offset = 0;
   for (uint i = 0; i < key_info->user_defined_key_parts; i++) {
@@ -7742,6 +7787,19 @@ int ha_ndbcluster::start_stmt(THD *thd, thr_lock_type) {
   return 0;
 }
 
+int ha_ndbcluster::set_user_id(NdbTransaction *trans, int &error) {
+  Security_context *sec_context = m_thd_ndb->get_thd()->security_context();
+  LEX_CSTRING user = sec_context->user();
+  const char *username = user.str;
+  unsigned username_len = user.length;
+  if (trans->setUserId(username, username_len) != 0) {
+    ERR_SET(trans->getNdbError(), error);
+    m_thd_ndb->ndb->closeTransaction(trans);
+    return -1;
+  }
+  return 0;
+}
+
 NdbTransaction *ha_ndbcluster::start_transaction_row(
     const NdbRecord *ndb_record, const uchar *record, int &error) {
   NdbTransaction *trans;
@@ -7759,6 +7817,11 @@ NdbTransaction *ha_ndbcluster::start_transaction_row(
       ndb->startTransaction(ndb_record, (const char *)record, buf, sizeof(tmp));
 
   if (trans) {
+    if (opt_user_rate_limits) {
+      if (set_user_id(trans, error) != 0) {
+        return nullptr;
+      }
+    }
     m_thd_ndb->increment_hinted_trans_count();
     DBUG_PRINT("info", ("Delayed allocation of TC"));
     return m_thd_ndb->trans = trans;
@@ -7787,6 +7850,11 @@ NdbTransaction *ha_ndbcluster::start_transaction_key(uint index_num,
       ndb->startTransaction(key_rec, (const char *)key_data, buf, sizeof(tmp));
 
   if (trans) {
+    if (opt_user_rate_limits) {
+      if (set_user_id(trans, error) != 0) {
+        return nullptr;
+      }
+    }
     m_thd_ndb->increment_hinted_trans_count();
     DBUG_PRINT("info", ("Delayed allocation of TC"));
     return m_thd_ndb->trans = trans;
@@ -7815,9 +7883,14 @@ NdbTransaction *ha_ndbcluster::start_transaction(int &error) {
     // NOTE! No hint provided when starting transaction
 
     DBUG_PRINT("info", ("Delayed allocation of TC"));
+
+    if (opt_user_rate_limits) {
+      if (set_user_id(trans, error) != 0) {
+        return nullptr;
+      }
+    }
     return m_thd_ndb->trans = trans;
   }
-
   ERR_SET(m_thd_ndb->ndb->getNdbError(), error);
   return nullptr;
 }
@@ -7833,6 +7906,11 @@ NdbTransaction *ha_ndbcluster::start_transaction_part_id(Uint32 part_id,
   m_thd_ndb->transaction_checks();
 
   if ((trans = m_thd_ndb->ndb->startTransaction(m_table, part_id))) {
+    if (opt_user_rate_limits) {
+      if (set_user_id(trans, error) != 0) {
+        return nullptr;
+      }
+    }
     m_thd_ndb->increment_hinted_trans_count();
     DBUG_PRINT("info", ("Delayed allocation of TC"));
     return m_thd_ndb->trans = trans;
@@ -9508,7 +9586,12 @@ int ha_ndbcluster::create(const char *path [[maybe_unused]],
   const char *dbname = table_share->db.str;
   const char *tabname = table_share->table_name.str;
 
-  ndb_log_info("Creating table '%s.%s'", dbname, tabname);
+  {
+    const int sql_cmd = thd_sql_command(thd);
+    ndb_log_info("%s table '%s.%s'",
+                 sql_cmd == SQLCOM_TRUNCATE ? "Truncating" : "Creating", dbname,
+                 tabname);
+  }
 
   Ndb_schema_dist_client schema_dist_client(thd);
 
@@ -10599,21 +10682,40 @@ int ha_ndbcluster::truncate(dd::Table *table_def) {
   /* Fill in create_info from the open table */
   HA_CREATE_INFO create_info;
   update_create_info_from_table(&create_info, table);
-
-  // Close the table, will always return 0
-  (void)close();
+#ifndef NDEBUG
+  const NDB_SHARE *old_share_ptr_for_sanity_check = m_share;
+#endif
 
   // Call ha_ndbcluster::create which will detect that this is a
   // truncate and thus drop the table before creating it again.
   const int truncate_error =
       create(table->s->normalized_path.str, table, &create_info, table_def);
 
-  // Open the table again even if the truncate failed, the caller
-  // expect the table to be open. Report any error during open.
-  const int open_error = open(table->s->normalized_path.str, 0, 0, table_def);
+  DBUG_PRINT("debug", ("truncate res: %d", truncate_error));
+#ifndef NDEBUG
+  /**
+   * This sync point is used by tests that want to assess the
+   * concurrency of the truncate, specially the correct state of the
+   * THR_LOCK_DATA (m_lock) to avoid deadlocks.
+   */
+  if (current_thd) DEBUG_SYNC(current_thd, "truncate_stop_after_execute");
+  /**
+   * create() creates a new ndb_share, but it is NOT set as this
+   * handler's m_share, because the currently opened ndb_share is the
+   * old one. This old share will thus be released through the closing
+   * of this handler's usage of the table. Following is a sanity check
+   * that this handler's share pointer does not change despite there
+   * being a new share.
+   */
+  if (unlikely(old_share_ptr_for_sanity_check != m_share)) {
+    ndb_log_error(
+        "Fatal! Truncate table re-create modified "
+        "the handler's currently opened share pointer.");
+    abort();
+  }
+#endif
 
-  if (truncate_error) return truncate_error;
-  return open_error;
+  return truncate_error;
 }
 
 int ha_ndbcluster::prepare_inplace__add_index(THD *thd, KEY *key_info,
@@ -11333,6 +11435,11 @@ static bool drop_table_and_related(THD *thd, Ndb *ndb,
     return false;
   }
 
+  DBUG_EXECUTE_IF("ndb_fail_drop", {
+    // Simulate failure. A bogus error code will be set on the caller.
+    return false;
+  });
+
   // Drop the table
   if (dict->dropTableGlobal(*table, drop_flags) != 0) {
     const NdbError &ndb_err = dict->getNdbError();
@@ -11445,6 +11552,11 @@ int drop_table_impl(THD *thd, Ndb *ndb,
 
   Thd_ndb *thd_ndb = get_thd_ndb(thd);
   const int dict_error_code = dict->getNdbError().code;
+  DBUG_EXECUTE_IF("ndb_fail_drop", {
+    int *ec = const_cast<int *>(&dict_error_code);
+    // backup in progress (e.g.)
+    *ec = 761;
+  });
   // Check if an error has occurred. Note that if the table didn't exist in NDB
   // (denoted by error codes 709 or 723), it's considered a success
   if (dict_error_code && dict_error_code != 709 && dict_error_code != 723) {
@@ -11762,6 +11874,7 @@ int ha_ndbcluster::open(const char *path [[maybe_unused]],
     return HA_ERR_NO_CONNECTION;
   }
 
+  DBUG_EXECUTE("debug", NDB_SHARE::dbg_print_locks(m_share););
   // Init table lock structure
   thr_lock_data_init(&m_share->lock, &m_lock, (void *)nullptr);
 
@@ -12078,6 +12191,23 @@ inline void ha_ndbcluster::release_key_fields() {
   }
 }
 
+static void check_thr_lock_data_unused(const THR_LOCK_DATA *thr_lock_data) {
+  /**
+   * Check that the handler is not involved in any SQL (thr_lock) locking before
+   * ending its lifecycle.
+   */
+  if (unlikely(thr_lock_data->type > TL_UNLOCK)) {
+    ndb_log_error(
+        "Fatal! Closing handler involved in thr_lock: "
+        "thread_id %u "
+        "type %u "
+        "thr_lock %p",
+        thr_lock_data->owner ? thr_lock_data->owner->thread_id : 0,
+        thr_lock_data->type, thr_lock_data->lock);
+    abort();
+  }
+}
+
 /**
   Close an open ha_ndbcluster instance.
 
@@ -12101,6 +12231,8 @@ inline void ha_ndbcluster::release_key_fields() {
 
 int ha_ndbcluster::close(void) {
   DBUG_TRACE;
+
+  check_thr_lock_data_unused(&m_lock);
 
   release_key_fields();
   release_ndb_share();
@@ -15806,7 +15938,7 @@ enum_alter_inplace_result ha_ndbcluster::supported_inplace_column_change(
   }
 
   const bool field_fk_reference =
-      has_fk_dependency(dict, m_table->getColumn(field_position));
+      has_fk_dependency(dict, m_table_map->getColumn(field_position));
 
   // Check if table field properties are changed
   const enum_alter_inplace_result field_change_result =
@@ -15956,6 +16088,7 @@ enum_alter_inplace_result ha_ndbcluster::check_inplace_alter_supported(
   Ndb *ndb = get_thd_ndb(thd)->ndb;
   NDBDICT *dict = ndb->getDictionary();
   NdbDictionary::Table new_tab = *old_tab;
+  Ndb_table_map new_tab_map{altered_table};
 
   /**
    * Check whether altering column properties can be performed inplace
@@ -15986,7 +16119,8 @@ enum_alter_inplace_result ha_ndbcluster::check_inplace_alter_supported(
       Field *new_field = altered_table->field[i];
       if (strcmp(field->field_name, new_field->field_name) != 0 &&
           !field->is_virtual_gcol()) {
-        NDBCOL *ndbCol = new_tab.getColumn(new_field->field_index());
+        NDBCOL *ndbCol = new_tab.getColumn(
+            new_tab_map.get_column_for_field(new_field->field_index()));
         ndbCol->setName(new_field->field_name);
       }
     }
@@ -16670,14 +16804,15 @@ bool ha_ndbcluster::prepare_inplace_alter_table(
   if (alter_flags & Alter_inplace_info::ALTER_COLUMN_NAME) {
     DBUG_PRINT("info", ("Finding renamed field"));
     /* Find the renamed field */
+    Ndb_table_map new_tab_map{altered_table};
     for (uint i = 0; i < table->s->fields; i++) {
       Field *old_field = table->field[i];
       Field *new_field = altered_table->field[i];
       if (strcmp(old_field->field_name, new_field->field_name) != 0) {
         DBUG_PRINT("info", ("Found field %s renamed to %s",
                             old_field->field_name, new_field->field_name));
-        NdbDictionary::Column *ndbCol =
-            new_tab->getColumn(new_field->field_index());
+        NdbDictionary::Column *ndbCol = new_tab->getColumn(
+            new_tab_map.get_column_for_field(new_field->field_index()));
         ndbCol->setName(new_field->field_name);
       }
     }
@@ -18329,6 +18464,16 @@ static MYSQL_SYSVAR_BOOL(
     0        /* default */
 );
 
+static MYSQL_SYSVAR_BOOL(
+    user_rate_limits,         /* name */
+    opt_user_rate_limits, /* var  */
+    PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,
+    "Ensures that users can only use the CPUs up to the rate limit",
+    nullptr, /* check func. */
+    nullptr, /* update func. */
+    0        /* default */
+);
+
 bool opt_ndb_metadata_check;
 static MYSQL_SYSVAR_BOOL(
     metadata_check,         /* name */
@@ -18503,7 +18648,7 @@ bool opt_ndb_log_bin;
 static MYSQL_SYSVAR_BOOL(
     log_bin,         /* name */
     opt_ndb_log_bin, /* var */
-    PLUGIN_VAR_OPCMDARG,
+    PLUGIN_VAR_READONLY | PLUGIN_VAR_OPCMDARG,
     "Log NDB tables in the binary log. Option only has meaning if "
     "the binary log has been turned on for the server.",
     nullptr, /* check func. */
@@ -19006,6 +19151,7 @@ static MYSQL_THDVAR_UINT(dbg_check_shares, /* name */
 #endif
 
 static SYS_VAR *system_variables[] = {
+    MYSQL_SYSVAR(user_rate_limits),
     MYSQL_SYSVAR(extra_logging),
     MYSQL_SYSVAR(wait_connected),
     MYSQL_SYSVAR(wait_setup),

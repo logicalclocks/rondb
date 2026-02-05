@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023, 2025 Hopsworks AB
+ * Copyright (C) 2023, 2026 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -25,6 +25,7 @@
 #include "api_key.hpp"
 #include "src/constants.hpp"
 #include "metrics.hpp"
+#include "error_response.hpp"
 
 #include <cstring>
 #include <drogon/HttpTypes.h>
@@ -58,8 +59,7 @@ void BatchPKReadCtrl::batchPKRead(
 
   size_t currentThreadIndex = drogon::app().getCurrentThreadIndex();
   if (unlikely(currentThreadIndex >= globalConfigs.rest.numThreads)) {
-    resp->setBody("Too many threads");
-    resp->setStatusCode(drogon::HttpStatusCode::k500InternalServerError);
+    setErrorResponse(req, resp, SERVER_ERROR, "Too many threads");
     callback(resp);
     return;
   }
@@ -72,9 +72,7 @@ void BatchPKReadCtrl::batchPKRead(
 #endif
   size_t length = req->getBody().length();
   if (unlikely(length > globalConfigs.internal.maxReqSize)) {
-    auto resp = drogon::HttpResponse::newHttpResponse();
-    resp->setBody("Request too large");
-    resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
+    setErrorResponse(req, resp, CLIENT_ERROR, "Request too large");
     callback(resp);
     return;
   }
@@ -91,8 +89,7 @@ void BatchPKReadCtrl::batchPKRead(
 
   if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
       drogon::HttpStatusCode::k200OK)) {
-    resp->setBody(std::string(status.message));
-    resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
+    setErrorResponse(req, resp, status);
     callback(resp);
     return;
   }
@@ -121,8 +118,7 @@ void BatchPKReadCtrl::batchPKRead(
     status = validate_db_identifier(db);
     if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
         drogon::HttpStatusCode::k200OK)) {
-      resp->setBody(std::string(status.message));
-      resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
+      setErrorResponse(req, resp, status);
       callback(resp);
       return;
     }
@@ -134,8 +130,7 @@ void BatchPKReadCtrl::batchPKRead(
     status = validate_db_identifier(table_view);
     if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
         drogon::HttpStatusCode::k200OK)) {
-      resp->setBody(std::string(status.message));
-      resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
+      setErrorResponse(req, resp, status);
       callback(resp);
       return;
     }
@@ -145,8 +140,7 @@ void BatchPKReadCtrl::batchPKRead(
     status = validate_column(column);
     if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
         drogon::HttpStatusCode::k200OK)) {
-      resp->setBody(std::string(status.message));
-      resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
+      setErrorResponse(req, resp, status);
       callback(resp);
       return;
     }
@@ -165,21 +159,22 @@ void BatchPKReadCtrl::batchPKRead(
     status = validate_operation_id(reqStruct.operationId);
     if (unlikely(status.http_code != static_cast<HTTP_CODE>(
           drogon::HttpStatusCode::k200OK))) {
-      resp->setBody(std::string(status.message));
-      resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
+      setErrorResponse(req, resp, status);
       callback(resp);
       return;
     }
   }
 
   // Authenticate
+  char username[USERNAME_SIZE + PROJECT_PROJECTNAME_SIZE + 1];
+  char *username_ptr = nullptr;
   if (likely(globalConfigs.security.apiKey.useHopsworksAPIKeys)) {
     auto api_key = req->getHeader(API_KEY_NAME_LOWER_CASE);
-    status = authenticate(api_key, db_vector);
+    username_ptr = &username[0];
+    status = authenticate(api_key, db_vector, username_ptr);
     if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
         drogon::HttpStatusCode::k200OK)) {
-      resp->setBody(std::string(status.message));
-      resp->setStatusCode((drogon::HttpStatusCode)status.http_code);
+      setErrorResponse(req, resp, status);
       callback(resp);
       return;
     }
@@ -212,8 +207,7 @@ void BatchPKReadCtrl::batchPKRead(
                                      current_head);
       if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
           drogon::HttpStatusCode::k200OK)) {
-        resp->setBody(std::string(status.message));
-        resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
+        setErrorResponse(req, resp, status);
         callback(resp);
         release_array_buffers(reqBuffs.data(), respBuffs.data(), i);
         return;
@@ -234,14 +228,14 @@ void BatchPKReadCtrl::batchPKRead(
                            true,
                            reqBuffs.data(),
                            respBuffs.data(),
-                           currentThreadIndex);
-
-    resp->setStatusCode(static_cast<drogon::HttpStatusCode>(status.http_code));
+                           currentThreadIndex,
+                           username_ptr);
 
     if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
         drogon::HttpStatusCode::k200OK)) {
-      resp->setBody(std::string(status.message));
+      setErrorResponse(req, resp, status);
     } else {
+      resp->setStatusCode(static_cast<drogon::HttpStatusCode>(status.http_code));
       if (use_compressed) {
         resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
       } else {
@@ -270,8 +264,7 @@ void BatchPKReadCtrl::batchPKRead(
                                                       size_json);
         if (unlikely(ret < 0)) {
           amalloc.reset();
-          resp->setBody("Malloc failure");
-          resp->setStatusCode(drogon::HttpStatusCode::k500InternalServerError);
+          setErrorResponse(req, resp, SERVER_ERROR, "Malloc failure");
         } else {
 #ifdef DEBUG_BPK_CTRL
           printf("Response string: len: %u, calc_len: %u: %s",

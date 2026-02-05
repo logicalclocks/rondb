@@ -1112,8 +1112,10 @@ void Lgman::execDUMP_STATE_ORD(Signal *signal) {
                            ptr.p->m_last_lcp_lsn, ptr.p->m_max_sync_req_lsn,
                            !ptr.p->m_log_buffer_waiters.isEmpty(),
                            !ptr.p->m_log_sync_waiters.isEmpty());
-      if (clusterLog) infoEvent("%s", tmp);
-      g_eventLogger->info("%s", tmp);
+      if (clusterLog)
+        infoEvent("%s", tmp);
+      else
+        g_eventLogger->info("%s", tmp);
 
       BaseString::snprintf(tmp, sizeof(tmp),
                            "   callback_buffer_words: %u"
@@ -4064,8 +4066,6 @@ void Lgman::execSTART_RECREQ(Signal *signal) {
   if (lg_ptr.i != RNIL) {
     infoEvent("LGMAN: Applying undo to LCP: [%d,%d]", m_latest_lcp,
               m_latest_local_lcp);
-    g_eventLogger->info("LGMAN: Applying undo to LCP: [%d,%d]", m_latest_lcp,
-                        m_latest_local_lcp);
     find_log_head(signal, lg_ptr);
     return;
   }
@@ -4648,9 +4648,6 @@ void Lgman::find_log_head_complete(Signal *signal, Ptr<Logfile_group> lg_ptr,
     infoEvent("LGMAN: Undo head - %s page: %d lsn: %lld",
               fs->get_filename(file_ptr.p->m_fd), head,
               file_ptr.p->m_online.m_lsn);
-    g_eventLogger->info("LGMAN: Undo head - %s page: %d lsn: %lld",
-                        fs->get_filename(file_ptr.p->m_fd), head,
-                        file_ptr.p->m_online.m_lsn);
 
     total += (Uint64)file_ptr.p->m_file_size;
 
@@ -4658,9 +4655,6 @@ void Lgman::find_log_head_complete(Signal *signal, Ptr<Logfile_group> lg_ptr,
       infoEvent("   - next - %s(%lld)", fs->get_filename(file_ptr.p->m_fd),
                 file_ptr.p->m_online.m_lsn);
 
-      g_eventLogger->info("   - next - %s(%lld)",
-                          fs->get_filename(file_ptr.p->m_fd),
-                          file_ptr.p->m_online.m_lsn);
       total += (Uint64)file_ptr.p->m_file_size;
     }
 
@@ -5631,16 +5625,10 @@ void Lgman::stop_run_undo_log(Signal *signal) {
         ndbrequire(m_file_pool.getPtr(tf, tail.m_ptr_i));
         ndbrequire(m_file_pool.getPtr(hf, lg_ptr.p->m_file_pos[HEAD].m_ptr_i));
         infoEvent("LGMAN: Logfile group: %d ", lg_ptr.p->m_logfile_group_id);
-        g_eventLogger->info("LGMAN: Logfile group: %d ",
-                            lg_ptr.p->m_logfile_group_id);
         infoEvent("  head: %s page: %d", fs->get_filename(hf.p->m_fd),
                   lg_ptr.p->m_file_pos[HEAD].m_idx);
-        g_eventLogger->info("  head: %s page: %d", fs->get_filename(hf.p->m_fd),
-                            lg_ptr.p->m_file_pos[HEAD].m_idx);
         infoEvent("  tail: %s page: %d", fs->get_filename(tf.p->m_fd),
                   tail.m_idx);
-        g_eventLogger->info("  tail: %s page: %d", fs->get_filename(tf.p->m_fd),
-                            tail.m_idx);
       }
     }
 
@@ -5660,7 +5648,6 @@ void Lgman::stop_run_undo_log(Signal *signal) {
   }
 
   infoEvent("LGMAN: Flushing page cache after undo completion");
-  g_eventLogger->info("LGMAN: Flushing page cache after undo completion");
 
   /**
    * START FLUSH PGMAN CACHE
@@ -5731,7 +5718,6 @@ void Lgman::execEND_LCPCONF(Signal *signal) {
   validate_logfile_group(lg_ptr, "flushed PGMAN", jamBuffer());
 
   infoEvent("LGMAN: Flushing complete");
-  g_eventLogger->info("LGMAN: Flushing complete");
 
   signal->theData[0] = reference();
   sendSignal(DBLQH_REF, GSN_START_RECCONF, signal, 1, JBB);

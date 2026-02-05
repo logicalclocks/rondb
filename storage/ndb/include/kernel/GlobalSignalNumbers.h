@@ -32,6 +32,10 @@
  * NOTE
  *
  * When adding a new signal, remember to update MAX_GSN and SignalNames.cpp
+ *
+ * When a signal is no longer sent, add a suffix _vX_Y_Z to indicate the last
+ * version there signal may be sent. The signal number must remain reserved and
+ * handled by receiver until that version is no longer supported.
  */
 const GlobalSignalNumber MAX_GSN = 947;
 
@@ -464,25 +468,25 @@ extern const GlobalSignalNumber NO_OF_SIGNAL_NAMES;
 #define GSN_COPY_DATA_REF               337
 #define GSN_COPY_DATA_CONF              338
 
-#define GSN_EXPAND_CLNT                 340
-#define GSN_OPEN_COMORD                 341
-#define GSN_PACKED_SIGNAL               342
-#define GSN_PREP_FAILCONF               343
-#define GSN_PREP_FAILREF                344
-#define GSN_PREP_FAILREQ                345
-#define GSN_PRES_TOCONF                 346
-#define GSN_PRES_TOREQ                  347
-#define GSN_READ_NODESCONF              348
-#define GSN_READ_NODESREF               349
-#define GSN_READ_NODESREQ               350
-#define GSN_SCAN_FRAGCONF               351
-#define GSN_SCAN_FRAGREF                352
-#define GSN_SCAN_FRAGREQ                353
-#define GSN_SCAN_HBREP                  354
-#define GSN_SCAN_PROCCONF               355
-#define GSN_SCAN_PROCREQ                356
-#define GSN_SEND_PACKED                 357
-#define GSN_SET_LOGLEVELORD             358
+#define GSN_EXPAND_CLNT 340
+#define GSN_OPEN_COMORD 341
+#define GSN_PACKED_SIGNAL 342
+#define GSN_PREP_FAILCONF 343
+#define GSN_PREP_FAILREF 344
+#define GSN_PREP_FAILREQ 345
+#define GSN_PRES_TOCONF 346
+#define GSN_PRES_TOREQ 347
+#define GSN_READ_NODESCONF 348
+#define GSN_READ_NODESREF 349
+#define GSN_READ_NODESREQ 350
+#define GSN_SCAN_FRAGCONF 351
+#define GSN_SCAN_FRAGREF 352
+#define GSN_SCAN_FRAGREQ 353
+#define GSN_SCAN_HBREP 354
+#define GSN_SCAN_PROCCONF 355
+#define GSN_SCAN_PROCREQ 356
+#define GSN_SEND_PACKED 357
+#define GSN_SET_LOGLEVELORD_v9_4_0 358
 
 /* 359 used to be LQH_ALLOCREQ, no longer used */
 /* 360 used to be TUP_ALLOCREQ, no longer used */
@@ -881,8 +885,8 @@ extern const GlobalSignalNumber NO_OF_SIGNAL_NAMES;
 #define GSN_CREATE_DATABASE_REQ         645
 #define GSN_CREATE_DATABASE_REF         646
 #define GSN_CREATE_DATABASE_CONF        647
+#define GSN_CREATE_DATABASE_REP         648
 
-#define GSN_648
 #define GSN_649
 
 #define GSN_SET_WAKEUP_THREAD_ORD       657
@@ -946,8 +950,7 @@ extern const GlobalSignalNumber NO_OF_SIGNAL_NAMES;
 #define GSN_DROP_DATABASE_REQ           686
 #define GSN_DROP_DATABASE_REF           687
 #define GSN_DROP_DATABASE_CONF          689
-
-/* not used                             690 */
+#define GSN_DROP_DATABASE_REP           690
 
 /**
  * SUMA restart protocol

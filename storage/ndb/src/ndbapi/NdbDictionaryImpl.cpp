@@ -1775,7 +1775,7 @@ static Uint32 Hash(const char *str, size_t len) {
  *
  * 31                             0
  * ccccccccccuhhhhhhhhhhhhhhhhhhhhh
- * 10        1     21          bits
+ * 12        1     19          bits
  *
  * c = col number
  * u = Unibucket(1)
@@ -1785,16 +1785,16 @@ static Uint32 Hash(const char *str, size_t len) {
  *
  * 31                             0
  * lllllllllluppppppppppppppppppppp
- * 10        1     21          bits
+ * 12        1     19          bits
  *
  * l = chain length
  * u = Unibucket(0)
  * p = Chain pos
  *     (Offset from chain header bucket)
  */
-static const Uint32 UniBucket = 0x00200000;
-static const Uint32 ColNameHashMask = 0x001FFFFF;
-static const Uint32 ColShift = 22;
+static const Uint32 UniBucket = 0x00080000;
+static const Uint32 ColNameHashMask = 0x0007FFFF;
+static const Uint32 ColShift = 20;
 
 NdbColumnImpl *NdbTableImpl::getColumnByHash(const char *name,
                                              Uint32 len) const {
@@ -4885,7 +4885,7 @@ loop:
     {
       Uint32 ah;
       const Uint32 byteSize = col->m_defaultValue.length();
-      assert(byteSize <= NDB_MAX_TUPLE_SIZE);
+      assert(byteSize <= NDB_MAX_VAR_SIZE);
 
       // The AttributeId of a column isn't decided now, so 0 is used.
       AttributeHeader::init(&ah, 0, byteSize);
@@ -6195,12 +6195,14 @@ int NdbDictInterface::createEvent(NdbEventImpl &evnt, int getFlag) {
   DBUG_RETURN(0);
 }
 
-int NdbDictionaryImpl::executeSubscribeEvent(NdbEventOperationImpl &ev_op) {
+int NdbDictionaryImpl::executeSubscribeEvent(NdbEventOperationImpl &ev_op,
+                                             Uint64 &setup_epoch) {
   // NdbDictInterface m_receiver;
-  return m_receiver.executeSubscribeEvent(ev_op);
+  return m_receiver.executeSubscribeEvent(ev_op, setup_epoch);
 }
 
-int NdbDictInterface::executeSubscribeEvent(NdbEventOperationImpl &ev_op) {
+int NdbDictInterface::executeSubscribeEvent(NdbEventOperationImpl &ev_op,
+                                            Uint64 &setup_epoch) {
   DBUG_ENTER("NdbDictInterface::executeSubscribeEvent");
   NdbApiSignal tSignal(m_reference);
   tSignal.theReceiversBlockNumber = DBDICT;
@@ -6226,6 +6228,12 @@ int NdbDictInterface::executeSubscribeEvent(NdbEventOperationImpl &ev_op) {
   int ret = dictSignal(&tSignal, nullptr, 0, 0 /*use masternode id*/,
                        WAIT_CREATE_INDX_REQ /*WAIT_CREATE_EVNT_REQ*/,
                        DICT_LONG_WAITFOR_TIMEOUT, 100, errCodes, -1);
+
+  if (ret == 0) {
+    /* Extract received startGCI */
+    const auto *data = (const Uint32 *)m_buffer.get_data();
+    setup_epoch = (Uint64(data[0]) << 32) | data[1];
+  }
 
   DBUG_RETURN(ret);
 }
@@ -6571,6 +6579,20 @@ void NdbDictInterface::execSUB_START_CONF(const NdbApiSignal *signal) {
              ("subscriptionId=%d,subscriptionKey=%d,subscriberData=%d",
               subStartConf->subscriptionId, subStartConf->subscriptionKey,
               subStartConf->subscriberData));
+
+  Uint32 gci_hi = subStartConf->firstGCIhi;
+  Uint32 gci_lo = 0;
+
+  if (sigLen >= SubStartConf::SignalLength) {
+    gci_lo = subStartConf->firstGCIlo;
+  }
+
+  /* Return received startGCI to client via buffer */
+  m_buffer.grow(4 * 2);  // 2 words
+  auto *data = (Uint32 *)m_buffer.get_data();
+  data[0] = gci_hi;
+  data[1] = gci_lo;
+
   /*
    * If this is the first subscription NdbEventBuffer needs to be
    * notified.  NdbEventBuffer will start listen to Suma signals
@@ -7639,13 +7661,23 @@ bool NdbDictionaryImpl::validateRecordSpec(
    */
 
   /* Column data + NULL bits with at least 1 non nullable PK */
-  const Uint32 MaxRecordElements = (2 * NDB_MAX_ATTRIBUTES_IN_TABLE) - 1;
+  const Uint32 MaxRecordElements = (2 * OLD_NDB_MAX_ATTRIBUTES_IN_TABLE) - 1;
   Uint32 numElements = 0;
-  BitRange bitRanges[MaxRecordElements];
+  bool malloced_bitRanges = false;
+  BitRange stackBitRanges[MaxRecordElements];
+  BitRange *bitRanges = &stackBitRanges[0];
 
   if (length > NDB_MAX_ATTRIBUTES_IN_TABLE) {
     m_error.code = 4548;
     return false;
+  }
+  if (length > OLD_NDB_MAX_ATTRIBUTES_IN_TABLE) {
+    malloced_bitRanges = true;
+    bitRanges = new (std::nothrow) BitRange[2 * length];
+    if (bitRanges == nullptr) {
+      m_error.code = 4548;
+      return false;
+    }
   }
 
   /* Populate bitRanges array with ranges of bits occupied by
@@ -7671,6 +7703,7 @@ bool NdbDictionaryImpl::validateRecordSpec(
          !((col->getLength() == 1) &&
            (flags & NdbDictionary::RecMysqldBitfield)))) {
       m_error.code = 4556;
+      if (malloced_bitRanges) delete [] bitRanges;
       return false;
     }
 
@@ -7727,12 +7760,14 @@ bool NdbDictionaryImpl::validateRecordSpec(
     if (unlikely((bitRanges[rangeNum].start <= endOfPreviousRange))) {
       /* Oops, this range overlaps with previous one */
       m_error.code = 4547;
+      if (malloced_bitRanges) delete [] bitRanges;
       return false;
     }
     endOfPreviousRange = bitRanges[rangeNum].end;
   }
 
   /* All relevant ranges are distinct */
+  if (malloced_bitRanges) delete [] bitRanges;
   return true;
 }
 
@@ -7786,7 +7821,10 @@ int NdbDictionaryImpl::createDefaultNdbRecord(
   /* We create a full NdbRecord for the columns in the table
    */
   DBUG_ENTER("NdbDictionaryImpl::createNdbRecords()");
-  NdbDictionary::RecordSpecification spec[NDB_MAX_ATTRIBUTES_IN_TABLE];
+  NdbDictionary::RecordSpecification
+    spec_stack[OLD_NDB_MAX_ATTRIBUTES_IN_TABLE];
+  NdbDictionary::RecordSpecification *spec = &spec_stack[0];
+
   NdbRecord *rec;
   Uint32 i;
   Uint32 numCols = tableOrIndex->m_columns.size();
@@ -7855,6 +7893,13 @@ int NdbDictionaryImpl::createDefaultNdbRecord(
 
   Uint32 nullableColNum = 0;
 
+  if (unlikely(numCols > OLD_NDB_MAX_ATTRIBUTES_IN_TABLE)) {
+    spec = new (std::nothrow)
+      NdbDictionary::RecordSpecification[numCols];
+    if (spec == nullptr) {
+      return -1;
+    }
+  }
   /* Build record specification array for this table. */
   for (i = 0; i < numCols; i++) {
     /* Have to use columns from 'real' table for indexes as described
@@ -7895,16 +7940,22 @@ int NdbDictionaryImpl::createDefaultNdbRecord(
       if (col->getBlobType() && col->getPartSize() != 0) {
         if (likely(col->m_blobTable != nullptr)) {
           int res = createDefaultNdbRecord(col->m_blobTable, nullptr);
-          if (res != 0) {
+          if (unlikely(res != 0)) {
             free(pkMask);
+            if (numCols > OLD_NDB_MAX_ATTRIBUTES_IN_TABLE) {
+              delete [] spec;
+            }
             DBUG_RETURN(-1);
           }
         } else {
-          if (!ignore_broken_blob_tables()) {
+          if (unlikely(!ignore_broken_blob_tables())) {
             assert(false);
             /* 4263 - Invalid blob attributes or invalid blob parts table */
             m_error.code = 4263;
             free(pkMask);
+            if (numCols > OLD_NDB_MAX_ATTRIBUTES_IN_TABLE) {
+              delete [] spec;
+            }
             DBUG_RETURN(-1);
           }
         }
@@ -7915,9 +7966,15 @@ int NdbDictionaryImpl::createDefaultNdbRecord(
         ndb_set_record_specification(offset, nullableColNum, &spec[i], col);
   }
 
-  rec = createRecord(tableOrIndex, spec, numCols, sizeof(spec[0]),
+  rec = createRecord(tableOrIndex,
+                     spec,
+                     numCols,
+                     sizeof(spec_stack[0]),
                      0,      // No special flags
                      true);  // default record
+  if (unlikely(numCols > OLD_NDB_MAX_ATTRIBUTES_IN_TABLE)) {
+    delete [] spec;
+  }
   if (rec == nullptr) {
     free(pkMask);
     DBUG_RETURN(-1);
@@ -7926,7 +7983,6 @@ int NdbDictionaryImpl::createDefaultNdbRecord(
   /* Store in the table definition */
   tableOrIndex->m_ndbrecord = rec;
   tableOrIndex->m_pkMask = pkMask;
-
   DBUG_RETURN(0);
 }
 

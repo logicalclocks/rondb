@@ -40,6 +40,7 @@
 #include <signaldata/ScanTab.hpp>
 #include <signaldata/TcKeyRef.hpp>
 #include <signaldata/TcKeyReq.hpp>
+#include <signaldata/TransIdAI.hpp>
 
 #include "AttributeHeader.hpp"
 
@@ -495,6 +496,10 @@ class NdbResultStream {
    */
   void execTRANSID_AI(const Uint32 *ptr, Uint32 len,
                       TupleCorrelation correlation);
+  void execTRANSID_AI(const Uint32 *ptr, Uint32 len,
+                      TupleCorrelation correlation,
+                      const NdbApiSignal *aSignal,
+                      Uint32 totalLen);
 
   /**
    * A complete batch has been received from the 'worker' delivering to
@@ -1067,6 +1072,7 @@ Uint16 NdbResultStream::firstResult() {
 }  // NdbResultStream::firstResult()
 
 Uint16 NdbResultStream::nextResult() {
+  DBUG_ENTER("NdbResultStream::nextResult");
   // Fetch next row for this stream
   if (m_worker.hasValidRow(this) && m_currentRow != tupleNotFound &&
       (m_currentRow = findNextTuple(m_currentRow)) != tupleNotFound) {
@@ -1075,15 +1081,17 @@ Uint16 NdbResultStream::nextResult() {
         m_receiver.getRow(m_resultSets[m_read].m_buffer, m_currentRow);
     assert(p != nullptr);
     ((void)p);
+    DBUG_PRINT("info", ("p: 0x%p, m_currentRow: %u", p, m_currentRow));
     m_worker.setValidRow(this);
-    return m_currentRow;
+    DBUG_RETURN(m_currentRow);
   }
   m_iterState = Iter_finished;
-  return tupleNotFound;
+  DBUG_RETURN(tupleNotFound);
 }  // NdbResultStream::nextResult()
 
 /**
  * Callback when a TRANSID_AI signal (receive row) is processed.
+ * Handles non-fragmented signals.
  */
 void NdbResultStream::execTRANSID_AI(const Uint32 *ptr, Uint32 len,
                                      TupleCorrelation correlation) {
@@ -1098,6 +1106,25 @@ void NdbResultStream::execTRANSID_AI(const Uint32 *ptr, Uint32 len,
   m_receiver.execTRANSID_AI(ptr, len);
   receiveSet.m_rowCount++;
 }  // NdbResultStream::execTRANSID_AI()
+
+/* Handle fragmented signals for pushdown joins */
+void NdbResultStream::execTRANSID_AI(const Uint32 *ptr, Uint32 len,
+                                     TupleCorrelation correlation,
+                                     const NdbApiSignal *aSignal,
+                                     Uint32 totalLen) {
+  m_receiver.execTRANSID_AI(ptr, len, aSignal, totalLen);
+  if (aSignal->isLastFragment()) {
+    NdbResultSet &receiveSet = m_resultSets[m_recv];
+    if (isScanQuery()) {
+      /**
+       * Store TupleCorrelation.
+       */
+      receiveSet.m_correlations[receiveSet.m_rowCount] = correlation;
+    }
+
+    receiveSet.m_rowCount++;
+  }
+}
 
 /**
  * Make preparation for another batch of results to be received.
@@ -3324,6 +3351,13 @@ int NdbQueryImpl::doSend(int nodeId, bool lastFlag) {
     } else {
       tSignal.setLength(ScanTabReq::StaticLength);
     }
+    Uint32 user_id = getNdbTransaction().m_user_id;
+    if (user_id != RNIL) {
+      ScanTabReq::setUserIdFlag(reqInfo, 1);
+      scanTabReq->userId = user_id;
+      scanTabReq->userIdVersion = getNdbTransaction().m_user_id_version;
+      tSignal.setLength(ScanTabReq::StaticLength + 4);
+    }
     scanTabReq->requestInfo = reqInfo;
 
     /**
@@ -3401,9 +3435,17 @@ int NdbQueryImpl::doSend(int nodeId, bool lastFlag) {
     TcKeyReq::setDirtyFlag(reqInfo, true);
     TcKeyReq::setSimpleFlag(reqInfo, true);
     TcKeyReq::setCommitFlag(reqInfo, m_commitIndicator);
-    tcKeyReq->requestInfo = reqInfo;
 
-    tSignal.setLength(TcKeyReq::StaticLength);
+    Uint32 user_id = getNdbTransaction().m_user_id;
+    if (user_id != RNIL) {
+      tcKeyReq->userId = user_id;
+      tcKeyReq->userIdVersion = getNdbTransaction().m_user_id_version;
+      TcKeyReq::setUserIdFlag(reqInfo, 1);
+      tSignal.setLength(TcKeyReq::StaticLength + 2);
+    } else {
+      tSignal.setLength(TcKeyReq::StaticLength);
+    }
+    tcKeyReq->requestInfo = reqInfo;
 
     /****
         // Unused optional part located after TcKeyReq::StaticLength
@@ -4300,6 +4342,7 @@ NdbQuery::NextResultOutcome NdbQueryOperationImpl::firstResult() {
 
 NdbQuery::NextResultOutcome NdbQueryOperationImpl::nextResult(bool fetchAllowed,
                                                               bool forceSend) {
+  DBUG_ENTER("NdbQueryOperationImpl::nextResult");
   if (unlikely(getQuery().m_state < NdbQueryImpl::Executing ||
                getQuery().m_state >= NdbQueryImpl::Closed)) {
     int state = getQuery().m_state;
@@ -4309,11 +4352,12 @@ NdbQuery::NextResultOutcome NdbQueryOperationImpl::nextResult(bool fetchAllowed,
     else
       getQuery().setErrorCode(QRY_ILLEGAL_STATE);
     DEBUG_CRASH();
-    return NdbQuery::NextResult_error;
+    DBUG_RETURN(NdbQuery::NextResult_error);
   }
 
   if (this == &getRoot()) {
-    return m_queryImpl.nextRootResult(fetchAllowed, forceSend);
+    DBUG_PRINT("info", ("nextRootResult"));
+    DBUG_RETURN(m_queryImpl.nextRootResult(fetchAllowed, forceSend));
   }
   /**
    * 'next' will never be able to return anything for a lookup operation.
@@ -4325,13 +4369,13 @@ NdbQuery::NextResultOutcome NdbQueryOperationImpl::nextResult(bool fetchAllowed,
       NdbResultStream &resultStream = worker->getResultStream(*this);
       if (resultStream.nextResult() != tupleNotFound) {
         if (unlikely(fetchRow(resultStream) == -1))
-          return NdbQuery::NextResult_error;
-        return NdbQuery::NextResult_gotRow;
+          DBUG_RETURN(NdbQuery::NextResult_error);
+        DBUG_RETURN(NdbQuery::NextResult_gotRow);
       }
     }
   }
   nullifyResult();
-  return NdbQuery::NextResult_scanComplete;
+  DBUG_RETURN(NdbQuery::NextResult_scanComplete);
 }  // NdbQueryOperationImpl::nextResult()
 
 int NdbQueryOperationImpl::fetchRow(NdbResultStream &resultStream) {
@@ -5077,6 +5121,7 @@ int NdbQueryOperationImpl::prepareLookupKeyInfo(
   return 0;
 }  // NdbQueryOperationImpl::prepareLookupKeyInfo
 
+/* Handle non-fragmented TRANSID_AI signals for pushdown joins */
 bool NdbQueryOperationImpl::execTRANSID_AI(const Uint32 *ptr, Uint32 len) {
   TupleCorrelation tupleCorrelation;
   NdbWorker *worker = m_queryImpl.m_workers;
@@ -5095,10 +5140,10 @@ bool NdbQueryOperationImpl::execTRANSID_AI(const Uint32 *ptr, Uint32 len) {
       assert(false);
       return false;
     }
+    DBUG_PRINT("info", ("receiverId: %u, worker: 0x%p", receiverId, worker));
 
     // Extract tuple correlation.
     tupleCorrelation = correlData.getTupleCorrelation();
-    len -= CorrelationData::wordCount;
   }
 
   if (traceSignals) {
@@ -5124,6 +5169,69 @@ bool NdbQueryOperationImpl::execTRANSID_AI(const Uint32 *ptr, Uint32 len) {
   return ret;
 }  // NdbQueryOperationImpl::execTRANSID_AI
 
+/* Handle fragmented signal for pushdown joins */
+bool NdbQueryOperationImpl::execTRANSID_AI(const Uint32 *ptr,
+                                           Uint32 len,
+                                           const NdbApiSignal *aSignal,
+                                           Uint32 totalLen) {
+  DBUG_ENTER("NdbQueryOperationImpl::execTRANSID_AI long");
+  TupleCorrelation tupleCorrelation;
+  NdbWorker *worker = m_queryImpl.m_workers;
+
+  if (getQueryDef().isScanQuery()) {
+    const Uint32 *tDataPtr = aSignal->getDataPtr();
+    const Uint32 sigLen = aSignal->getLength();
+    require(sigLen >= TransIdAILong::HeaderWithCorrelationLength);
+    const CorrelationData correlData(
+      tDataPtr, TransIdAILong::HeaderWithCorrelationLength);
+    const Uint32 receiverId = correlData.getRootReceiverId();
+
+    /** receiverId holds the Id of the receiver of the corresponding stream
+     * of the root operation. We can thus find the correct worker
+     * number.
+     */
+    worker = NdbWorker::receiverIdLookup(
+        m_queryImpl.m_workers, m_queryImpl.getWorkerCount(), receiverId);
+    if (unlikely(worker == nullptr)) {
+      assert(false);
+      DBUG_RETURN(false);
+    }
+    DBUG_PRINT("info", ("receiverId: %u, worker: 0x%p", receiverId, worker));
+
+    // Extract tuple correlation.
+    tupleCorrelation = correlData.getTupleCorrelation();
+  }
+
+  if (traceSignals) {
+    ndbout << "NdbQueryOperationImpl::execTRANSID_AI()"
+           << ", from workerNo=" << worker->getWorkerNo()
+           << ", operation no: " << getQueryOperationDef().getInternalOpNo()
+           << endl;
+  }
+
+  // Process result values.
+  worker->getResultStream(*this).execTRANSID_AI(ptr,
+                                                len,
+                                                tupleCorrelation,
+                                                aSignal,
+                                                totalLen);
+  if (!aSignal->isLastFragment()) {
+    DBUG_RETURN(false);
+  }
+  worker->incrOutstandingResults(-1);
+
+  bool ret = false;
+  if (worker->isFragBatchComplete()) {
+    ret = m_queryImpl.handleBatchComplete(*worker);
+  }
+
+  if (false && traceSignals) {
+    ndbout << "NdbQueryOperationImpl::execTRANSID_AI(): returns:" << ret
+           << ", *this=" << *this << endl;
+  }
+  DBUG_RETURN(ret);
+}  // NdbQueryOperationImpl::execTRANSID_AI
+
 bool NdbQueryOperationImpl::execTCKEYREF(const NdbApiSignal *aSignal) {
   if (traceSignals) {
     ndbout << "NdbQueryOperationImpl::execTCKEYREF()" << endl;
@@ -5133,6 +5241,9 @@ bool NdbQueryOperationImpl::execTCKEYREF(const NdbApiSignal *aSignal) {
   assert(!getQueryDef().isScanQuery());
 
   const TcKeyRef *ref = CAST_CONSTPTR(TcKeyRef, aSignal->getDataPtr());
+  if (ref->errorCode == TcKeyRef::WriteRateOverflowError) {
+    getQuery().getNdbTransaction().rateOverflowError();
+  }
   if (!getQuery().m_transaction.checkState_TransId(ref->transId)) {
 #ifdef NDB_NO_DROPPED_SIGNAL
     abort();
@@ -5195,6 +5306,7 @@ bool NdbQueryOperationImpl::execTCKEYREF(const NdbApiSignal *aSignal) {
 bool NdbQueryOperationImpl::execSCAN_TABCONF(Uint32 tcPtrI, Uint32 rowCount,
                                              Uint32 moreMask, Uint32 activeMask,
                                              const NdbReceiver *receiver) {
+  DBUG_ENTER("NdbQueryOperationImpl::execSCAN_TABCONF");
   assert((tcPtrI == RNIL && moreMask == 0) ||
          (tcPtrI != RNIL && moreMask != 0));
   assert(checkMagicNumber());
@@ -5206,7 +5318,7 @@ bool NdbQueryOperationImpl::execSCAN_TABCONF(Uint32 tcPtrI, Uint32 rowCount,
       m_queryImpl.m_workers, m_queryImpl.getWorkerCount(), receiver->getId());
   if (unlikely(worker == nullptr)) {
     assert(false);
-    return false;
+    DBUG_RETURN(false);
   }
 
   if (traceSignals) {
@@ -5232,7 +5344,10 @@ bool NdbQueryOperationImpl::execSCAN_TABCONF(Uint32 tcPtrI, Uint32 rowCount,
            << ", tcPtrI=" << tcPtrI << " rowCount=" << rowCount
            << " *this=" << *this << endl;
   }
-  return ret;
+  DBUG_PRINT("info", ("SCAN_TABCONF returns %u, rowCount: %u, tcPtrI: %u"
+                      ", receiverId: %u, activeMask: 0x%x, moreMask: 0x%x",
+    ret, rowCount, tcPtrI, receiver->getId(), activeMask, moreMask));
+  DBUG_RETURN(ret);
 }  // NdbQueryOperationImpl::execSCAN_TABCONF
 
 int NdbQueryOperationImpl::setOrdering(NdbQueryOptions::ScanOrdering ordering) {

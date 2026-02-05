@@ -165,26 +165,63 @@ SELECT inline_size FROM ndbinfo.blobs WHERE table_name = 'badchar';
 DROP TABLE test.neglen;
 DROP TABLE test.badchar;
 
---error ER_CANT_CREATE_TABLE
+#CREATE LOGFILE GROUP lg1
+#ADD UNDOFILE 'undofile.dat'
+#INITIAL_SIZE 16M
+#UNDO_BUFFER_SIZE = 1M
+#ENGINE=NDB;
+
+#CREATE TABLESPACE ts1
+#ADD DATAFILE 'datafile.dat'
+#USE LOGFILE GROUP lg1
+#INITIAL_SIZE 12M
+#ENGINE NDB;
+
+--error ER_CANT_CREATE_TABLE, 1296
 CREATE TABLE test.badlen(
                       a int primary key,
                       b blob comment "NDB_COLUMN=BLOB_INLINE_SIZE=40000") engine=ndb;
 SHOW WARNINGS;
 
+#Activate when BLOBs can be disk columns
+#--error ER_CANT_CREATE_TABLE
+#CREATE TABLE test.maxlen(
+#                      a int primary key,
+#                      b blob comment "NDB_COLUMN=BLOB_INLINE_SIZE=31049")
+# tablespace ts1 storage disk engine=ndb;
+#SHOW WARNINGS;
+
 --error ER_CANT_CREATE_TABLE
 CREATE TABLE test.maxlen(
                       a int primary key,
-                      b blob comment "NDB_COLUMN=BLOB_INLINE_SIZE=29981") engine=ndb;
+                      b blob comment "NDB_COLUMN=BLOB_INLINE_SIZE=32001") engine=ndb;
 SHOW WARNINGS;
 
-## Max len for inline Blob is 30000 - (4 + 16[header])
+## Max len for inline Blob is 32032 - (16 + 16[header])
 CREATE TABLE test.maxlen(
                       a int primary key,
-                      b blob comment "NDB_COLUMN=BLOB_INLINE_SIZE=29980") engine=ndb;
+                      b blob comment "NDB_COLUMN=BLOB_INLINE_SIZE=32000") engine=ndb;
+SHOW WARNINGS;
+
+## Max len for inline disk Blob is 31080 - (16 + 16[header])
+#CREATE TABLE test.disk_maxlen(
+#                      a int primary key,
+#                      b blob comment "NDB_COLUMN=BLOB_INLINE_SIZE=31048")
+# tablespace ts1 storage disk engine=ndb;
+#SHOW WARNINGS;
+
 ## Verify inline of test.maxlen
 SELECT inline_size FROM ndbinfo.blobs WHERE table_name = 'maxlen';
+## Verify inline of test.disk_maxlen
+#SELECT inline_size FROM ndbinfo.blobs WHERE table_name = 'maxlen';
 
 DROP TABLE test.maxlen;
+
+#DROP TABLE test.disk_maxlen;
+#ALTER TABLESPACE ts1
+#DROP DATAFILE 'datafile.dat';
+#DROP TABLESPACE ts1;
+#DROP LOGFILE GROUP lg1 ENGINE=NDB;
 
 ## TINYBLOB columns ignore the BLOB_INLINE_SIZE option
 CREATE TABLE test.bigtiny(

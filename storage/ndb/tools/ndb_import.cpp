@@ -611,7 +611,7 @@ static void doerrins() {
   if (type == 0) return;
   if (strcmp(type, "stopjob") == 0) return;
   NDB_THREAD_PRIO prio = NDB_THREAD_PRIO_MEAN;
-  uint stack_size = 64 * 1024;
+  uint stack_size = 1024 * 1024;
   g_errins_thread =
       NdbThread_Create(doerrins_c, (void **)0, stack_size, "errins", prio);
   require(g_errins_thread != 0);

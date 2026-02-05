@@ -588,6 +588,8 @@ class ha_ndbcluster : public handler, public Partition_handler {
   int ndb_index_stat_set_rpk(uint inx);
   int ndb_index_stat_analyze(uint *inx_list, uint inx_count);
 
+  int set_user_id(NdbTransaction*, int &error);
+
   NdbTransaction *start_transaction_part_id(uint32 part_id, int &error);
   inline NdbTransaction *get_transaction_part_id(uint32 part_id, int &error) {
     if (m_thd_ndb->trans) return m_thd_ndb->trans;

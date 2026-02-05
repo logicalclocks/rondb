@@ -220,16 +220,19 @@ PKReadPath::PKReadPath(const std::string_view &db,
 PKReadParams::PKReadParams() : path(),
                                filters(),
                                readColumns(),
+                               writeOperationType(RDRS_WRITE_OP_WRITE),
                                operationId() {
 }
 
 PKReadParams::PKReadParams(PKReadPath &path)
-    : path(path), filters(), readColumns(), operationId() {
+    : path(path), filters(), readColumns(), writeOperationType(RDRS_WRITE_OP_WRITE),
+      operationId() {
 }
 
 PKReadParams::PKReadParams(const std::string_view &db,
                            const std::string_view &table)
-    : path(db, table), filters(), readColumns(), operationId() {
+    : path(db, table), filters(), readColumns(), writeOperationType(RDRS_WRITE_OP_WRITE),
+      operationId() {
 }
 
 std::string PKReadParams::to_string() {

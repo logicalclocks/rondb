@@ -94,7 +94,7 @@ void FSMetadataCache::start_fs_cache_thread() {
     m_last_cache_entry[i] = nullptr;
     NdbThread *thread = NdbThread_Create(fs_key_thread_main,
                                          (void**)i,
-                                          128 * 1024,
+                                          1024 * 1024,
                                           "FS Key Cache thread",
                                           NDB_THREAD_PRIO_LOW);
     require(thread != nullptr);

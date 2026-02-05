@@ -114,9 +114,12 @@ void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
   }
 
   // Authenticate
+  char username[USERNAME_SIZE + PROJECT_PROJECTNAME_SIZE + 1];
+  char *username_ptr = nullptr;
   if (likely(globalConfigs.security.apiKey.useHopsworksAPIKeys)) {
     auto api_key = req->getHeader(API_KEY_NAME_LOWER_CASE);
-    status = authenticate(api_key, reqStruct);
+    username_ptr = &username[0];
+    status = authenticate(api_key, reqStruct, username_ptr);
     if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
           drogon::HttpStatusCode::k200OK)) {
       resp->setBody(std::string(status.message));
@@ -155,7 +158,8 @@ void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
                            false,
                            &reqBuff,
                            &respBuff,
-                           currentThreadIndex);
+                           currentThreadIndex,
+                           username_ptr);
 
     resp->setStatusCode(static_cast<drogon::HttpStatusCode>(status.http_code));
     if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=

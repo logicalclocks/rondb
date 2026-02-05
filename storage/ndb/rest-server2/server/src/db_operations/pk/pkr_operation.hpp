@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023, 2025 Hopsworks AB
+ * Copyright (C) 2023, 2026 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -20,6 +20,7 @@
 #ifndef STORAGE_NDB_REST_SERVER2_SERVER_SRC_DB_OPERATIONS_PK_PKR_OPERATION_HPP_
 #define STORAGE_NDB_REST_SERVER2_SERVER_SRC_DB_OPERATIONS_PK_PKR_OPERATION_HPP_
 
+#include "pk_batch_base_operation.hpp"
 #include "pkr_request.hpp"
 #include "pkr_response.hpp"
 #include "common.hpp"
@@ -33,39 +34,27 @@
 #include <NdbApi.hpp>
 #include <ArenaMalloc.hpp>
 
-struct KeyOperation {
-  Uint32 m_num_pk_columns;
-  Uint32 m_num_read_columns;
-  Uint32 m_num_table_columns;
-  Uint8 *m_bitmap_read_columns;
-  Uint8 *m_row;
-  NdbTransaction *m_ndbTransaction;
-  const NdbOperation *m_ndbOperation;
-  const NdbDictionary::Table *m_tableDict;
-  const NdbDictionary::Column **m_pkColumns;
-  const NdbDictionary::Column **m_readColumns;
-  NdbBlob **m_blob_handles;
-  const NdbRecord *m_ndb_record;
-  PKRRequest m_req;
-  PKRResponse m_resp;
-  RS_Status append_op_recs(PKRResponse *resp, PKRRequest *req);
-  RS_Status write_col_to_resp(Uint32 colIdx,
-                              PKRResponse *resp,
-                              PKRRequest *req);
+/**
+ * KeyOperation inherits from BaseKeyOperation.
+ * For read operations, m_blob_handles is allocated in setup_blob_handles for ops with blobs.
+ */
+struct KeyOperation : public BaseKeyOperation {
+  // No additional fields needed - m_blob_handles is in BaseKeyOperation
 };
 
-class BatchKeyOperations {
+class BatchKeyOperations : public BaseBatchOperations {
  private:
-  Uint32 m_numOperations;
-  Ndb *m_ndb_object;
-  bool m_isBatch;
-  bool m_single_transaction;
   struct KeyOperation *m_key_ops;
-  Uint32 m_num_sent_operations;
-  Uint32 m_first_key;
-  Uint32 m_last_key;
-  bool m_isSuccess;
-  
+
+  // Implementation of virtual methods from BaseBatchOperations
+  BaseKeyOperation* get_key_op(Uint32 i) override { return &m_key_ops[i]; }
+  RS_Status allocate_key_ops(ArenaMalloc* amalloc, Uint32 numOps) override;
+  bool supports_blobs() const override { return true; }
+  bool supports_read_all_columns() const override { return true; }
+  NdbTransaction::ExecType get_single_transaction_exec_type() const override {
+    return NdbTransaction::NoCommit;  // Read needs NoCommit for blob handling
+  }
+
  public:
    BatchKeyOperations();
    ~BatchKeyOperations();
@@ -74,20 +63,10 @@ class BatchKeyOperations {
                                bool is_batch,
                                RS_Buffer *reqBuffer,
                                RS_Buffer *respBuffer,
-                               Ndb *ndb_object);
-   RS_Status init_batch_operations(ArenaMalloc*,
-                                   Uint32,
-                                   bool is_batch,
-                                   RS_Buffer *reqBuffer,
-                                   Ndb *ndb_object);
-   RS_Status setup_primary_keys();
-   RS_Status setup_transactions();
+                               Ndb *ndb_object,
+                               char *username_ptr);
+   // Read-specific methods
+   RS_Status setup_blob_handles(ArenaMalloc *amalloc);
    RS_Status setup_read_operations();
-   RS_Status execute();
-   RS_Status create_response(RS_Buffer *respBuffer);
-   RS_Status append_op_recs(Uint32);
-   void close_transaction();
-   RS_Status abort_request();
-   RS_Status handle_ndb_error(RS_Status);
 };
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_DB_OPERATIONS_PK_PKR_OPERATION_HPP_

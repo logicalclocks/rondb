@@ -345,6 +345,7 @@ void NdbBlob::init() {
   theNullFlag = -1;
   theLength = 0;
   thePos = 0;
+  theAnyValue = 0;
   theNext = nullptr;
   m_keyHashSet = false;
   m_keyHash = 0;
@@ -518,6 +519,18 @@ inline void NdbBlob::setPartPartitionId(NdbOperation *anOp) {
     assert(thePartitionId != noPartitionId());
     anOp->setPartitionId(thePartitionId);
   }
+}
+
+inline int NdbBlob::setAnyValue(NdbOperation *anOp) const {
+  // We set the AnyValue only if the main operation had options
+  // (flags) to set the AnyValue. That is the same as theAnyValue !=
+  // 0, since it is only set if that holds true. This is generally
+  // only called for NdbRecAttr interface of subsequent NdbOperations
+  // for Blob handling.
+  if (theAnyValue != 0) {
+    return anOp->setAnyValue(theAnyValue);
+  }
+  return 0;
 }
 
 // pack/unpack table/index key  XXX support routines, shortcuts
@@ -1774,7 +1787,7 @@ int NdbBlob::insertPart(const char *buf, Uint32 part, const Uint16 &len) {
   if (tOp == nullptr || tOp->insertTuple() == -1 ||
       setPartKeyValue(tOp, part) == -1 ||
       setPartPkidValue(tOp, theHead.pkid) == -1 ||
-      setPartDataValue(tOp, buf, len) == -1) {
+      setPartDataValue(tOp, buf, len) == -1 || setAnyValue(tOp) == -1) {
     setErrorCode(tOp);
     DBUG_RETURN(-1);
   }
@@ -1807,7 +1820,7 @@ int NdbBlob::updatePart(const char *buf, Uint32 part, const Uint16 &len) {
   if (tOp == nullptr || tOp->updateTuple() == -1 ||
       setPartKeyValue(tOp, part) == -1 ||
       setPartPkidValue(tOp, theHead.pkid) == -1 ||
-      setPartDataValue(tOp, buf, len) == -1) {
+      setPartDataValue(tOp, buf, len) == -1 || setAnyValue(tOp) == -1) {
     setErrorCode(tOp);
     DBUG_RETURN(-1);
   }
@@ -1857,7 +1870,7 @@ int NdbBlob::deleteParts(Uint32 part, Uint32 count) {
   while (n < count) {
     NdbOperation *tOp = theNdbCon->getNdbOperation(theBlobTable);
     if (tOp == nullptr || tOp->deleteTuple() == -1 ||
-        setPartKeyValue(tOp, part + n) == -1) {
+        setPartKeyValue(tOp, part + n) == -1 || setAnyValue(tOp) == -1) {
       setErrorCode(tOp);
       DBUG_RETURN(-1);
     }
@@ -1898,7 +1911,8 @@ int NdbBlob::deletePartsUnknown(Uint32 part) {
       NdbOperation *&tOp = tOpList[n];  // ref
       tOp = theNdbCon->getNdbOperation(theBlobTable);
       if (tOp == nullptr || tOp->deleteTuple() == -1 ||
-          setPartKeyValue(tOp, part + count + n) == -1) {
+          setPartKeyValue(tOp, part + count + n) == -1 ||
+          setAnyValue(tOp) == -1) {
         setErrorCode(tOp);
         DBUG_RETURN(-1);
       }
@@ -1937,7 +1951,7 @@ int NdbBlob::writePart(const char *buf, Uint32 part, const Uint16 &len) {
   if (tOp == nullptr || tOp->writeTuple() == -1 ||
       setPartKeyValue(tOp, part) == -1 ||
       setPartPkidValue(tOp, theHead.pkid) == -1 ||
-      setPartDataValue(tOp, buf, len) == -1) {
+      setPartDataValue(tOp, buf, len) == -1 || setAnyValue(tOp) == -1) {
     setErrorCode(tOp);
     DBUG_RETURN(-1);
   }
@@ -2487,6 +2501,15 @@ NdbBlob::BlobAction NdbBlob::preExecute(NdbTransaction::ExecType anExecType) {
   // handle different operation types
   assert(isKeyOp());
   BlobAction rc = BA_DONE;
+
+  /*
+   * Save theAnyValue from the main NdbOp to be sure it is set. Should
+   * only be != 0 if NdbRecAttr's setAnyValue() was called or
+   * NdbRecord options were parsed.
+   */
+  if (theNdbOp->m_any_value != 0) {
+    theAnyValue = theNdbOp->m_any_value;
+  }
 
   /* Check that a non-nullable blob handle has had a value set
    * before proceeding
@@ -3073,7 +3096,8 @@ NdbBlob::BlobAction NdbBlob::handleBlobTask(
           DBUG_PRINT("info", ("Adding op to update header"));
           NdbOperation *tOp = theNdbCon->getNdbOperation(theTable);
           if (tOp == NULL || tOp->updateTuple() == -1 ||
-              setTableKeyValue(tOp) == -1 || setHeadInlineValue(tOp) == -1) {
+              setTableKeyValue(tOp) == -1 || setHeadInlineValue(tOp) == -1 ||
+              setAnyValue(tOp)) {
             setErrorCode(NdbBlobImpl::ErrAbort);
             DBUG_RETURN(BA_ERROR);
           }
@@ -3187,7 +3211,8 @@ NdbBlob::BlobAction NdbBlob::handleBlobTask(
                          ("Issue blind delete for part partIdx %llu", partIdx));
               NdbOperation *tOp = theNdbCon->getNdbOperation(theBlobTable);
               if (tOp == nullptr || tOp->deleteTuple() == -1 ||
-                  setPartKeyValue(tOp, partIdx) == -1) {
+                  setPartKeyValue(tOp, partIdx) == -1 ||
+                  setAnyValue(tOp) == -1) {
                 setErrorCode(tOp);
                 DBUG_RETURN(BA_ERROR);
               }
@@ -3239,7 +3264,8 @@ NdbBlob::BlobAction NdbBlob::handleBlobTask(
           DBUG_PRINT("info", ("BTS_DONE : Adding op to update header"));
           NdbOperation *tOp = theNdbCon->getNdbOperation(theTable);
           if (tOp == nullptr || tOp->updateTuple() == -1 ||
-              setTableKeyValue(tOp) == -1 || setHeadInlineValue(tOp) == -1) {
+              setTableKeyValue(tOp) == -1 || setHeadInlineValue(tOp) == -1 ||
+              setAnyValue(tOp) == -1) {
             setErrorCode(NdbBlobImpl::ErrAbort);
             DBUG_RETURN(BA_ERROR);
           }
@@ -3337,7 +3363,8 @@ NdbBlob::BlobAction NdbBlob::postExecute(NdbTransaction::ExecType anExecType) {
   if (anExecType == NdbTransaction::NoCommit && theHeadInlineUpdateFlag) {
     NdbOperation *tOp = theNdbCon->getNdbOperation(theTable);
     if (tOp == nullptr || tOp->updateTuple() == -1 ||
-        setTableKeyValue(tOp) == -1 || setHeadInlineValue(tOp) == -1) {
+        setTableKeyValue(tOp) == -1 || setHeadInlineValue(tOp) == -1 ||
+        setAnyValue(tOp) == -1) {
       setErrorCode(NdbBlobImpl::ErrAbort);
       DBUG_RETURN(BA_ERROR);
     }
@@ -3373,7 +3400,8 @@ int NdbBlob::preCommit() {
       // add an operation to update head+inline
       NdbOperation *tOp = theNdbCon->getNdbOperation(theTable);
       if (tOp == nullptr || tOp->updateTuple() == -1 ||
-          setTableKeyValue(tOp) == -1 || setHeadInlineValue(tOp) == -1) {
+          setTableKeyValue(tOp) == -1 || setHeadInlineValue(tOp) == -1 ||
+          setAnyValue(tOp) == -1) {
         setErrorCode(NdbBlobImpl::ErrAbort);
         DBUG_RETURN(-1);
       }

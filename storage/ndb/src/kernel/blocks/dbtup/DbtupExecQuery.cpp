@@ -66,6 +66,13 @@
 //#define DEBUG_LCP_SKIP_DELETE 1
 //#define DEBUG_DISK 1
 //#define DEBUG_ELEM_COUNT 1
+//#define DEBUG_COPY_TUPLE 1
+#endif
+
+#ifdef DEBUG_COPY_TUPLE
+#define DEB_COPY_TUPLE(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_COPY_TUPLE(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_REORG
@@ -1381,7 +1388,7 @@ Dbtup::setup_read(KeyReqStruct *req_struct,
     } else {
       jamDebug();
       req_struct->m_tuple_ptr =
-          get_copy_tuple(&currOpPtr.p->m_copy_tuple_location);
+          get_copy_tuple(currOpPtr.p->m_copy_tuple_location);
     }
 
     if (regTabPtr->need_expand(disk)) {
@@ -1572,8 +1579,8 @@ Dbtup::load_extra_diskpage(Signal *signal, Uint32 opRec, Uint32 flags)
   ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(prevOpPtr));
 
   PagePtr page_ptr;
-  ndbassert(!prevOpPtr.p->m_copy_tuple_location.isNull());
-  Tuple_header *ptr = get_copy_tuple(&prevOpPtr.p->m_copy_tuple_location);
+  ndbassert(prevOpPtr.p->m_copy_tuple_location != nullptr);
+  Tuple_header *ptr = get_copy_tuple(prevOpPtr.p->m_copy_tuple_location);
   jamEntry();
   /**
    * We will never need an extra disk page if the first operation was an
@@ -1899,9 +1906,7 @@ void Dbtup::prepare_scanTUPKEYREQ(Uint32 page_id, Uint32 page_idx) {
   prepare_orig_local_key.m_page_no = page_id;
   prepare_orig_local_key.m_page_idx = page_idx;
 #endif
-  bool is_page_key = (!(Local_key::isInvalid(page_id, page_idx) ||
-        isCopyTuple(page_id, page_idx)));
-
+  bool is_page_key = (!(Local_key::isInvalid(page_id, page_idx)));
   if (is_page_key) {
     Uint32 fixed_part_size_in_words =
       prepare_tabptr.p->m_offsets[MM].m_fix_header_size;
@@ -1931,9 +1936,7 @@ void Dbtup::prepare_scan_tux_TUPKEYREQ(Uint32 page_id, Uint32 page_idx) {
   prepare_orig_local_key.m_page_no = page_id;
   prepare_orig_local_key.m_page_idx = page_idx;
 #endif
-  bool is_page_key = (!(Local_key::isInvalid(page_id, page_idx) ||
-        isCopyTuple(page_id, page_idx)));
-
+  bool is_page_key = (!(Local_key::isInvalid(page_id, page_idx)));
   ndbrequire(is_page_key);
   {
     Uint32 fixed_part_size_in_words =
@@ -2188,8 +2191,9 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
     op_struct.bit_field.tupVersion = ZNIL;
     op_struct.bit_field.m_triggers = triggers;
 
-    regOperPtr->m_copy_tuple_location.setNull();
+    regOperPtr->m_copy_tuple_location = nullptr;
     regOperPtr->op_struct.op_bit_fields = op_struct.op_bit_fields;
+    regOperPtr->m_refresh_case = 0;
   }
   {
     Uint32 reorg = lqhOpPtrP->m_reorg;
@@ -2331,7 +2335,7 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
     regOperPtr->op_struct.bit_field.m_tuple_existed_at_start = 0;
     ndbassert(!Local_key::isInvalid(pageid, pageidx));
 
-    if (unlikely(isCopyTuple(pageid, pageidx))) {
+    if (unlikely(m_copy_tuple_used != nullptr)) {
       jamDebug();
       /**
        * Only LCP reads a copy-tuple "directly"
@@ -2429,7 +2433,6 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
     }
     ndbabort();
   }
-  ndbassert(!isCopyTuple(pageid, pageidx));
   /**
    * Get pointer to tuple
    */
@@ -2806,17 +2809,8 @@ void Dbtup::setup_fixed_part(KeyReqStruct *req_struct, Operationrec *regOperPtr,
 void Dbtup::setup_lcp_read_copy_tuple(KeyReqStruct *req_struct,
                                       Operationrec *regOperPtr,
                                       Tablerec *regTabPtr) {
-  Local_key tmp;
-  tmp.m_page_no = req_struct->frag_page_id;
-  tmp.m_page_idx = regOperPtr->m_tuple_location.m_page_idx;
-  clearCopyTuple(tmp.m_page_no, tmp.m_page_idx);
-
-  Uint32 *copytuple = get_copy_tuple_raw(&tmp);
-  Local_key rowid;
-  memcpy(&rowid, copytuple + 0, sizeof(Local_key));
-
-  req_struct->frag_page_id = rowid.m_page_no;
-  regOperPtr->m_tuple_location.m_page_idx = rowid.m_page_idx;
+  Uint32 *copytuple = m_copy_tuple_used;
+  m_copy_tuple_used = nullptr;
 
   Uint32* tab_descr = regTabPtr->tabDescriptor;
   Tuple_header *th = get_copy_tuple(copytuple);
@@ -2872,7 +2866,7 @@ inline void Dbtup::returnTUPKEYCONF(Signal *signal, KeyReqStruct *req_struct,
   set_trans_state(regOperPtr, trans_state);
 }
 
-#define MAX_READ (MIN(sizeof(signal->theData), MAX_SEND_MESSAGE_BYTESIZE))
+#define MAX_READ 524288
 
 int Dbtup::checkTTL(Tablerec* regTabPtr,
                     KeyReqStruct *req_struct,
@@ -3106,20 +3100,10 @@ int Dbtup::handleReadReq(
     Operationrec *_regOperPtr,
     Tablerec *regTabPtr, KeyReqStruct *req_struct) {
   Uint32 *dst;
-  Uint32 dstLen, start_index;
-  const BlockReference sendBref = req_struct->rec_blockref;
-  const Uint32 node = refToNode(sendBref);
-  if (node != 0 && node != getOwnNodeId()) {
-    start_index = 25;
-  } else {
-    jamDebug();
-    /**
-     * execute direct
-     */
-    start_index = AttrInfo::HeaderLength;  // 3;
-  }
-  dst = &signal->theData[start_index];
-  dstLen = (MAX_READ / 4) - start_index;
+  Uint32 dstLen;
+
+  dst = &signal->theData[25];
+  dstLen = (MAX_READ / 4) - 25;
 
   if (unlikely(_regOperPtr->ttl_ignore == 0 &&
                _regOperPtr->ttl_only_expired == 1)) {
@@ -3382,6 +3366,9 @@ int Dbtup::handleUpdateReq(Signal* signal,
     goto error;
   }
 
+  DEB_COPY_TUPLE(("(%u) alloc_copy_tuple: 0x%p, line: %u",
+    instance(), operPtrP->m_copy_tuple_location, __LINE__));
+
   Uint32 tup_version;
   change_mask_ptr = get_change_mask_ptr(regTabPtr, dst);
   if (likely(operPtrP->is_first_operation())) {
@@ -3393,7 +3380,7 @@ int Dbtup::handleUpdateReq(Signal* signal,
     jam();
     Operationrec* prevOp= req_struct->prevOpPtr.p;
     tup_version= prevOp->op_struct.bit_field.tupVersion;
-    Uint32 * rawptr = get_copy_tuple_raw(&prevOp->m_copy_tuple_location);
+    Uint32 * rawptr = prevOp->m_copy_tuple_location;
     org= get_copy_tuple(rawptr);
     copy_change_mask_info(regTabPtr,
         change_mask_ptr,
@@ -3982,6 +3969,10 @@ int Dbtup::handleInsertReq(Signal* signal,
   {
     goto trans_mem_error;
   }
+
+  DEB_COPY_TUPLE(("(%u) alloc_copy_tuple: 0x%p, line: %u",
+    instance(), regOperPtr.p->m_copy_tuple_location, __LINE__));
+
   tuple_ptr= req_struct->m_tuple_ptr = dst;
   set_change_mask_info(regTabPtr, get_change_mask_ptr(regTabPtr, dst));
 
@@ -3997,7 +3988,7 @@ int Dbtup::handleInsertReq(Signal* signal,
     if(unlikely(!prevOp->is_first_operation()))
     {
       jam();
-      org = get_copy_tuple(&prevOp->m_copy_tuple_location);
+      org = get_copy_tuple(prevOp->m_copy_tuple_location);
     } else {
       jamDebug();
     }
@@ -4480,7 +4471,7 @@ trans_mem_error:
   terrorCode = ZNO_COPY_TUPLE_MEMORY_ERROR;
   regOperPtr.p->m_undo_buffer_space = 0;
   if (mem_insert) regOperPtr.p->m_tuple_location.setNull();
-  regOperPtr.p->m_copy_tuple_location.setNull();
+  regOperPtr.p->m_copy_tuple_location = nullptr;
   tupkeyErrorLab(req_struct);
   return -1;
 
@@ -4604,6 +4595,9 @@ int Dbtup::handleDeleteReq(Signal* signal,
     goto error;
   }
 
+  DEB_COPY_TUPLE(("(%u) alloc_copy_tuple: 0x%p. line: %u",
+    instance(), regOperPtr->m_copy_tuple_location, __LINE__));
+
   // delete must set but not increment tupVersion
   if (unlikely(!regOperPtr->is_first_operation())) {
     jam();
@@ -4611,10 +4605,9 @@ int Dbtup::handleDeleteReq(Signal* signal,
     regOperPtr->op_struct.bit_field.tupVersion =
         prevOp->op_struct.bit_field.tupVersion;
     // make copy since previous op is committed before this one
-    const Tuple_header *org = get_copy_tuple(&prevOp->m_copy_tuple_location);
+    const Tuple_header *org = get_copy_tuple(prevOp->m_copy_tuple_location);
     Uint32 len = regTabPtr->total_rec_size -
-      Uint32(((Uint32*)dst) -
-          get_copy_tuple_raw(&regOperPtr->m_copy_tuple_location));
+      Uint32(((Uint32*)dst) - regOperPtr->m_copy_tuple_location);
     memcpy(dst, org, 4 * len);
     req_struct->m_tuple_ptr = dst;
     copy_bits = org->m_header_bits;
@@ -4913,10 +4906,7 @@ Dbtup::handleRefreshReq(Signal* signal,
       return -1;
     }
   }
-
-  /* Store the refresh scenario in the copy tuple location */
-  // TODO : Verify this is never used as a copy tuple location!
-  regOperPtr.p->m_copy_tuple_location.m_file_no = refresh_case;
+  regOperPtr.p->m_refresh_case = refresh_case;
   return 0;
 }
 
@@ -5023,7 +5013,7 @@ Dbtup::checkNullAttributes(KeyReqStruct * req_struct,
 int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
   Operationrec *const regOperPtr = req_struct->operPtrP;
   int TnoDataRW;
-  Uint32 RtotalLen, start_index, dstLen;
+  Uint32 RtotalLen, dstLen;
   Uint32 *dst;
 
   Uint32 RinitReadLen = cinBuffer[0];
@@ -5035,20 +5025,9 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
   jamDebug();
 
   Uint32 RattrinbufLen = req_struct->attrinfo_len;
-  const BlockReference sendBref = req_struct->rec_blockref;
 
-  const Uint32 node = refToNode(sendBref);
-  if (node != 0 && node != getOwnNodeId()) {
-    start_index = 25;
-  } else {
-    jamDebug();
-    /**
-     * execute direct
-     */
-    start_index = TransIdAI::HeaderLength;  // 3;
-  }
-  dst= &signal->theData[start_index];
-  dstLen= (MAX_READ / 4) - start_index;
+  dst = &signal->theData[25];
+  dstLen = (MAX_READ / 4) - 25;
 
   RtotalLen= RinitReadLen;
   RtotalLen += RexecRegionLen;
@@ -5355,8 +5334,15 @@ void Dbtup::SendAggregationResult(Signal* signal, Uint32 res_len,
   LinearSectionPtr ptr[3];
   ptr[0].p = const_cast<Uint32*>(&signal->theData[25]);
   ptr[0].sz = res_len;
-  sendSignal(api_blockref, GSN_TRANSID_AI, signal,
-             TransIdAI::HeaderLength, JBB, ptr, 1);
+  if (res_len <= MAX_TRANSID_AI_SIZE) {
+    sendSignal(api_blockref, GSN_TRANSID_AI, signal,
+               TransIdAI::HeaderLength, JBB, ptr, 1);
+  } else {
+    TransIdAILong *const transIdAILong = (TransIdAILong*)signal->getDataPtr();
+    transIdAILong->totalLen = res_len;
+    sendBatchedFragmentedSignal(api_blockref, GSN_TRANSID_AI, signal,
+       TransIdAILong::HeaderLength, JBB, ptr, 1);
+  }
 }
 
 bool
@@ -5539,9 +5525,9 @@ int Dbtup::interpreterNextLab(Signal* signal,
     theRegister = Interpreter::getReg1(theInstruction) << 2;
 #ifdef TRACE_INTERPRETER
     g_eventLogger->info(
-        "(%u)Interpreter :"
+        "(%u)Interpreter : Instruction: 0x%x"
         " RnoOfInstructions : %u.  TprogramCounter : %u.  Opcode : %u",
-        instance(), RnoOfInstructions, TprogramCounter,
+        instance(), theInstruction, RnoOfInstructions, TprogramCounter,
         Interpreter::getOpCode(theInstruction));
 #endif
 
@@ -5939,7 +5925,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
           }
           if (unlikely(Toffset < 0 ||
                        (Toffset > ((HEAP_MEMORY_SIZE_DWORDS * 8) -
-                        (MAX_TUPLE_SIZE_IN_WORDS * 4))) ||
+                        (MAX_VAR_SIZE_IN_WORDS * 4))) ||
                        ((Toffset & Int64(3)) != 0))) {
 #ifdef TRACE_INTERPRETER
             g_eventLogger->info("(%u)Offset %lld isn't ok, %u",
@@ -5949,7 +5935,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
           }
           Uint32 memory_offset = Uint32(Toffset);
           Int64 Tpos = * (Int64*)(TregMemBuffer + TposRegister + 2);
-          if (unlikely(Tpos < 0 || Tpos >= (MAX_TUPLE_SIZE_IN_WORDS * 4))) {
+          if (unlikely(Tpos < 0 || Tpos >= (MAX_VAR_SIZE_IN_WORDS * 4))) {
 #ifdef TRACE_INTERPRETER
             g_eventLogger->info("(%u)Pos %lld isn't ok, %u",
                                 instance(), Tpos, __LINE__);
@@ -5958,7 +5944,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
           }
           Uint32 read_pos = (Uint32)Tpos;
           Int64 Tsize = * (Int64*)(TregMemBuffer + TsizeRegister + 2);
-          if (unlikely(Tsize <= 0 || Tsize >= (MAX_TUPLE_SIZE_IN_WORDS * 4))) {
+          if (unlikely(Tsize <= 0 || Tsize >= (MAX_VAR_SIZE_IN_WORDS * 4))) {
 #ifdef TRACE_INTERPRETER
             g_eventLogger->info("(%u)Size %lld isn't ok, %u",
                                 instance(), Tsize, __LINE__);
@@ -5981,7 +5967,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
                                        &TdataForRead[0],
                                        (Uint32)2,
                                        (Uint32*)&TheapMemoryChar[memory_offset],
-                                       (Uint32)MAX_TUPLE_SIZE_IN_WORDS);
+                                       (Uint32)MAX_VAR_SIZE_IN_WORDS);
           if (TnoDataRW < 0) {
             jamDebug();
             terrorCode = Uint32(-TnoDataRW);
@@ -6018,6 +6004,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
           Uint32 ToffsetType = TregMemBuffer[theRegister];
           Int64 Toffset = * (Int64*)(TregMemBuffer + theRegister + 2);
 	  Uint32 TdestRegister = Interpreter::getReg3(theInstruction) << 2;
+
           Uint32 TattrId = theInstruction >> 16;
           Uint32 theAttrinfo = (TattrId << 16);
           if (unlikely((ToffsetType == NULL_INDICATOR))) {
@@ -6031,7 +6018,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
           }
           if (unlikely(Toffset < 0 ||
                        (Toffset > ((HEAP_MEMORY_SIZE_DWORDS * 8) -
-                        (MAX_TUPLE_SIZE_IN_WORDS * 4))) ||
+                        (MAX_VAR_SIZE_IN_WORDS * 4))) ||
                        ((Toffset & Int64(3)) != 0))) {
 #ifdef TRACE_INTERPRETER
             g_eventLogger->info("(%u)Offset %lld isn't ok, %u",
@@ -6046,7 +6033,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
                                        &theAttrinfo,
                                        (Uint32)1,
                                        (Uint32*)&TheapMemoryChar[memory_offset],
-                                       (Uint32)MAX_TUPLE_SIZE_IN_WORDS);
+                                       (Uint32)MAX_VAR_SIZE_IN_WORDS);
           if (TnoDataRW < 0) {
             jamDebug();
             terrorCode = Uint32(-TnoDataRW);
@@ -6188,7 +6175,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
             return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
           }
 	  Int64 size = * (Int64*)(TregMemBuffer + TsizeRegister + 2);
-          if (unlikely(size <= 0 || size >= (MAX_TUPLE_SIZE_IN_WORDS * 4))) {
+          if (unlikely(size <= 0 || size >= (MAX_VAR_SIZE_IN_WORDS * 4))) {
 #ifdef TRACE_INTERPRETER
             g_eventLogger->info("(%u)Size %lld isn't ok, %u",
               instance(), size, __LINE__);
@@ -6532,7 +6519,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
             return TUPKEY_abort(req_struct, ZMEMORY_OFFSET_ERROR);
 #endif
           }
-          if (unlikely(Tsize > (MAX_TUPLE_SIZE_IN_WORDS * 4))) {
+          if (unlikely(Tsize > (MAX_VAR_SIZE_IN_WORDS * 4))) {
 #ifdef TRACE_INTERPRETER
             g_eventLogger->info("(%u)Line %u, Size error: %u",
                                 instance(),
@@ -10127,8 +10114,8 @@ Dbtup::nr_read_pk(Uint64 fragPtrI,
       OperationrecPtr opPtr;
       opPtr.i = req_struct.m_tuple_ptr->m_operation_ptr_i;
       ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(opPtr));
-      ndbassert(!opPtr.p->m_copy_tuple_location.isNull());
-      req_struct.m_tuple_ptr = get_copy_tuple(&opPtr.p->m_copy_tuple_location);
+      ndbassert(opPtr.p->m_copy_tuple_location != nullptr);
+      req_struct.m_tuple_ptr = get_copy_tuple(opPtr.p->m_copy_tuple_location);
       copy = true;
     }
     Uint32 *tab_descr = tablePtr.p->tabDescriptor;
@@ -10259,6 +10246,10 @@ Dbtup::nr_delete(Signal* signal, Uint32 senderData,
                              " LCP keep list, increase SharedGlobalMemory");
         progError(__LINE__, NDBD_EXIT_RESOURCE_ALLOC_ERROR, buf);
       }
+
+      DEB_COPY_TUPLE(("(%u) alloc_copy_tuple: 0x%p, line: %u",
+        instance(), oprec.m_copy_tuple_location, __LINE__));
+
       req_struct.m_tuple_ptr = ptr;
       oprec.m_tuple_location = tmp;
       oprec.op_type = ZDELETE;

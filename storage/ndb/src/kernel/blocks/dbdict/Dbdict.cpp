@@ -139,8 +139,15 @@
 //#define DO_TRANSIENT_POOL_STAT 1
 //#define DEBUG_HASH 1
 //#define DEBUG_QUOTAS_EXTRA 1
-#define DEBUG_QUOTAS 1
+//#define DEBUG_QUOTAS 1
 //#define DEBUG_RESTART 1
+#define DEBUG_META 1
+#endif
+
+#ifdef DEBUG_META
+#define DEB_META(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_META(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_RESTART
@@ -5442,6 +5449,18 @@ inline void Dbdict::printTables() {
   g_eventLogger->info("OBJECT IN DICT:%s", name);
 }
 
+#ifdef DEBUG_META
+#define tabRequire(cond, error)     \
+  if (!(cond)) {                    \
+    jam();                          \
+    g_eventLogger->info("errorLine: %u, error: %u", \
+      __LINE__, error);             \
+    parseP->errorCode = error;      \
+    parseP->errorLine = __LINE__;   \
+    parseP->errorKey = it.getKey(); \
+    return;                         \
+  }  // if
+#else
 #define tabRequire(cond, error)     \
   if (!(cond)) {                    \
     jam();                          \
@@ -5450,7 +5469,7 @@ inline void Dbdict::printTables() {
     parseP->errorKey = it.getKey(); \
     return;                         \
   }  // if
-
+#endif
 // handleAddTableFailure(signal, __LINE__, allocatedTable);
 
 Dbdict::DictObject *Dbdict::get_object(const char *name, Uint32 len,
@@ -5592,7 +5611,8 @@ void Dbdict::handleTabInfoInit(Signal *signal, SchemaTransPtr &trans_ptr,
   // Verify that table name is an allowed table name.
   // TODO
   /* ---------------------------------------------------------------- */
-  const Uint32 tableNameLength = Uint32(strlen(c_tableDesc.TableName) + 1);
+  const Uint32 tableNameLength =
+    Uint32(strnlen(c_tableDesc.TableName, MAX_TAB_NAME_SIZE) + 1);
 
   if (checkExist) {
     jam();
@@ -6275,8 +6295,17 @@ void Dbdict::handleTabInfo(SimpleProperties::Reader &it,
   Uint32 nullCount = 0;
   Uint32 nullBits = 0;
   Uint32 noOfCharsets = 0;
-  Uint16 charsets[128];
+  Uint16 charsets[127];
   Uint32 recordLength = 0;
+  Uint32 fixed_recordLength = 0;
+  Uint32 mm_var_recordLength = 0;
+  Uint32 disk_recordLength = 0;
+  Uint32 mm_vars = 0;
+  Uint32 mm_dyns = 0;
+  Uint32 dd_vars = 0;
+  Uint32 dd_null_vars = 0;
+  Uint32 dd_dyns = 0;
+  Uint32 nullable_non_dyn_cols = 0;
   AttributeRecordPtr attrPtr;
   c_attributeRecordHash.removeAll();
 
@@ -6307,7 +6336,8 @@ void Dbdict::handleTabInfo(SimpleProperties::Reader &it,
     /**
      * Check that attribute is not defined twice
      */
-    const Uint32 len = Uint32(strlen(attrDesc.AttributeName)+1);
+    const Uint32 len =
+      Uint32(strnlen(attrDesc.AttributeName, MAX_ATTR_NAME_SIZE)+1);
     const Uint32 name_hash = LcLocalRope::hash(attrDesc.AttributeName, len);
     {
       AttributeRecord key;
@@ -6476,7 +6506,6 @@ void Dbdict::handleTabInfo(SimpleProperties::Reader &it,
       return;
     }
 
-    recordLength += sz;
     if (attrDesc.AttributeKeyFlag) {
       keyLength += sz;
 
@@ -6491,10 +6520,46 @@ void Dbdict::handleTabInfo(SimpleProperties::Reader &it,
 
     c_attributeRecordHash.add(attrPtr);
 
-    int a = AttributeDescriptor::getDiskBased(desc);
-    if (a) disk_based = true;
+    int disk = AttributeDescriptor::getDiskBased(desc);
+    if (disk) disk_based = true;
     int b = AttributeDescriptor::getArrayType(desc);
-    Uint32 pos = 2 * (a ? 1 : 0) + (b == NDB_ARRAYTYPE_FIXED ? 0 : 1);
+    int dyn = AttributeDescriptor::getDynamic(desc);
+
+    recordLength += sz;
+    if (dyn) {
+      if (disk) {
+        dd_dyns++;
+      } else {
+        mm_dyns++;
+      }
+    } else if (b == NDB_ARRAYTYPE_FIXED) {
+      if (attrDesc.AttributeNullableFlag) {
+        nullable_non_dyn_cols++;
+      }
+    } else {
+      if (attrDesc.AttributeNullableFlag) {
+        nullable_non_dyn_cols++;
+        if (disk) {
+          dd_null_vars++;
+        }
+      }
+      if (disk) {
+        dd_vars++;
+      } else {
+        mm_vars++;
+      }
+    }
+    Uint32 store_sz = ((4 * sz) + 3) / 4;
+    if (disk) {
+      disk_recordLength += store_sz;
+    } else if (b == NDB_ARRAYTYPE_FIXED && !dyn) {
+      fixed_recordLength += store_sz;
+    } else {
+      mm_var_recordLength += store_sz;
+    }
+    DEB_META(("disk_recordLength: %u, store_sz: %u, line: %u",
+      disk_recordLength, store_sz, __LINE__));
+    Uint32 pos = 2 * (disk ? 1 : 0) + (b == NDB_ARRAYTYPE_FIXED ? 0 : 1);
     counts[pos + 1]++;
 
     if (b != NDB_ARRAYTYPE_FIXED && sz == 0) {
@@ -6509,6 +6574,52 @@ void Dbdict::handleTabInfo(SimpleProperties::Reader &it,
 
     if (it.getKey() != DictTabInfo::AttributeName) break;
   }  // while
+  DEB_META(("disk_recordLength: %u, line: %u",
+    disk_recordLength, __LINE__));
+
+  /**
+   * All columns that are NULL and not dynamic are stored in the
+   * fixed size region. Add to fixed_recordLength.
+   *
+   * Dynamic columns always add a bit to the NULL area in MM or DD.
+   * Dynamic columns always require a 2-byte offset when stored.
+   *
+   * Non-dynamic variable sized columns require 2 bytes for offset
+   * computation plus one extra offset.
+   *
+   * Add 1 word in MM variable sized record to store total length
+   * of varsized + dynamic part.
+   */
+  fixed_recordLength += ((nullable_non_dyn_cols + 31) >> 5);
+  if (dd_dyns > 0) {
+    disk_recordLength += ((dd_dyns + 31) >> 5);
+  }
+  DEB_META(("disk_recordLength: %u, line: %u",
+    disk_recordLength, __LINE__));
+  if (mm_dyns > 0) {
+    mm_var_recordLength += ((mm_dyns + 31) >> 5);
+    mm_var_recordLength += ((mm_dyns + 2) >> 1);
+  }
+  if (dd_vars > 0) {
+    disk_recordLength += ((dd_vars + 2) >> 1);
+    disk_recordLength += ((dd_dyns + 2) >> 1);
+  }
+  DEB_META(("disk_recordLength: %u, line: %u",
+    disk_recordLength, __LINE__));
+  if (mm_vars + mm_dyns > 0) {
+    mm_var_recordLength += 1; //Tuple_header::HeaderSize
+    mm_var_recordLength += ((mm_vars + 2) >> 1);
+    mm_var_recordLength += 1;
+  }
+  if (dd_vars + dd_dyns > 0) {
+    disk_recordLength += 2; //Tuple_header::HeaderSize
+    disk_recordLength += 1; // GCI
+    if (dd_null_vars > 0) {
+      disk_recordLength += ((dd_null_vars + 31) >> 5);
+    }
+  }
+  DEB_META(("disk_recordLength: %u, line: %u",
+    disk_recordLength, __LINE__));
 
   tablePtr.p->m_disk_based = disk_based;
   tablePtr.p->noOfPrimkey = keyCount;
@@ -6517,6 +6628,18 @@ void Dbdict::handleTabInfo(SimpleProperties::Reader &it,
   tablePtr.p->tupKeyLength = keyLength;
   tablePtr.p->noOfNullBits = nullCount + nullBits;
 
+  DEB_META(("fixed_recordLength: %u, mm_var_recordLength: %u, "
+              "disk_recordLength: %u",
+    fixed_recordLength,
+    mm_var_recordLength,
+    disk_recordLength));
+
+  tabRequire(fixed_recordLength <= MAX_FIXED_SIZE_IN_WORDS,
+             CreateTableRef::TooLargeFixedSizePart);
+  tabRequire(mm_var_recordLength <= MAX_VAR_SIZE_IN_WORDS,
+             CreateTableRef::TooLargeVarsizePart);
+  tabRequire(disk_recordLength <= MAX_DISK_VAR_SIZE_IN_WORDS,
+             CreateTableRef::TooLargeDiskSizePart);
   tabRequire(recordLength <= MAX_TUPLE_SIZE_IN_WORDS,
              CreateTableRef::RecordTooBig);
   tabRequire(attrCount <= MAX_ATTRIBUTES_IN_TABLE,
@@ -8075,7 +8198,7 @@ Dbdict::get_database_object_from_table_name(char *db_name,
     ndbrequire(ok);
   }
   get_table_name(db_name, tab_obj_ptr.p);
-  Uint32 tableNameLen = strlen(db_name);
+  Uint32 tableNameLen = strnlen(db_name, MAX_DB_NAME_SIZE);
   ndbassert(tableNameLen <= PATH_MAX);
   Uint32 index = 0;
   bool found = false;
@@ -17139,7 +17262,7 @@ void Dbdict::createEvent_RT_USER_CREATE(Signal *signal,
   }
   r0.getString(evntRecPtr.p->m_eventRec.NAME);
   {
-    int len = (int)strlen(evntRecPtr.p->m_eventRec.NAME);
+    int len = (int)strnlen(evntRecPtr.p->m_eventRec.NAME, MAX_TAB_NAME_SIZE);
     std::memset(evntRecPtr.p->m_eventRec.NAME + len, 0,
                 MAX_TAB_NAME_SIZE - len);
 #ifdef EVENT_DEBUG
@@ -17167,7 +17290,8 @@ void Dbdict::createEvent_RT_USER_CREATE(Signal *signal,
   }
   r0.getString(evntRecPtr.p->m_eventRec.TABLE_NAME);
   {
-    int len = (int)strlen(evntRecPtr.p->m_eventRec.TABLE_NAME);
+    int len =
+      (int)strnlen(evntRecPtr.p->m_eventRec.TABLE_NAME, MAX_TAB_NAME_SIZE);
     std::memset(evntRecPtr.p->m_eventRec.TABLE_NAME + len, 0,
                 MAX_TAB_NAME_SIZE - len);
   }
@@ -17759,7 +17883,7 @@ void Dbdict::createEvent_RT_USER_GET(Signal *signal,
   }
 
   r0.getString(evntRecPtr.p->m_eventRec.NAME);
-  int len = (int)strlen(evntRecPtr.p->m_eventRec.NAME);
+  int len = (int)strnlen(evntRecPtr.p->m_eventRec.NAME, MAX_TAB_NAME_SIZE);
   std::memset(evntRecPtr.p->m_eventRec.NAME + len, 0, MAX_TAB_NAME_SIZE - len);
 
   releaseSections(handle);
@@ -17853,7 +17977,8 @@ void Dbdict::execCREATE_EVNT_REF(Signal *signal) {
        *   but makes case more explicit
        */
       ptr[0].p = (Uint32 *)evntRecPtr.p->m_eventRec.TABLE_NAME;
-      ptr[0].sz = Uint32((strlen(evntRecPtr.p->m_eventRec.TABLE_NAME) + 4) / 4);
+      ptr[0].sz = Uint32((strnlen(evntRecPtr.p->m_eventRec.TABLE_NAME,
+                                  MAX_TAB_NAME_SIZE) + 4) / 4);
       ptr[1].p = evntRecPtr.p->m_eventRec.ATTRIBUTE_MASK2;
       ptr[1].sz = NDB_ARRAY_SIZE(evntRecPtr.p->m_eventRec.ATTRIBUTE_MASK2) - 1;
       ptr0 = ptr;
@@ -17895,8 +18020,9 @@ void Dbdict::execCREATE_EVNT_CONF(Signal *signal) {
   // but that's ok
   LinearSectionPtr ptr[2];
   ptr[0].p = (Uint32 *)evntRecPtr.p->m_eventRec.TABLE_NAME;
-  ptr[0].sz = Uint32(strlen(evntRecPtr.p->m_eventRec.TABLE_NAME) + 4) /
-              4;  // to make sure we have a null
+  // to make sure we have a null
+  ptr[0].sz = Uint32(strnlen(evntRecPtr.p->m_eventRec.TABLE_NAME,
+                             MAX_TAB_NAME_SIZE) + 4) / 4;
   ptr[1].p = evntRecPtr.p->m_eventRec.ATTRIBUTE_MASK2;
   ptr[1].sz = NDB_ARRAY_SIZE(evntRecPtr.p->m_eventRec.ATTRIBUTE_MASK2) - 1;
 
@@ -18121,6 +18247,14 @@ void Dbdict::execSUB_START_REQ(Signal *signal) {
   jamEntry();
   D("execSUB_START_REQ");
 
+  if (ERROR_INSERTED(6228)) {
+    jam();
+    /* Simulate upgrade, with shorter signal + junk in 'requestInfo' part */
+    SubStartReq *req = (SubStartReq *)signal->getDataPtr();
+    req->requestInfo = 0xffffffff;
+    signal->setLength(SubStartReq::SignalLengthWithoutRequestInfo);
+  }
+
   Uint32 origSenderRef = signal->senderBlockRef();
 
   if (refToBlock(origSenderRef) != DBDICT && getOwnNodeId() != c_masterNodeId) {
@@ -18214,6 +18348,7 @@ void Dbdict::execSUB_START_REQ(Signal *signal) {
 
     req->senderRef = reference();
     req->senderData = subbPtr.i;
+    req->requestInfo = subbPtr.p->m_requestInfo;
 
 #ifdef EVENT_PH3_DEBUG
     g_eventLogger->info(
@@ -18248,6 +18383,7 @@ void Dbdict::execSUB_START_REQ(Signal *signal) {
 
     req->senderRef = reference();
     req->senderData = subbPtr.i;
+    req->requestInfo = subbPtr.p->m_requestInfo;
 
 #ifdef EVENT_PH3_DEBUG
     g_eventLogger->info(
@@ -18425,6 +18561,19 @@ void Dbdict::completeSubStartReq(Signal *signal, Uint32 ptrI,
   g_eventLogger->info("SUB_START_CONF");
 #endif
 
+  /* Determine latest epoch, every epoch after this will be consistently
+   * delivered by this subscription.
+   */
+  Uint32 gciHi = 0;
+  Uint32 gciLo = 0;
+
+  signal->theData[0] = 0;  // user ptr
+  signal->theData[1] = 0;  // Execute direct
+  signal->theData[2] = 2;  // Latest
+  EXECUTE_DIRECT(DBDIH, GSN_GETGCIREQ, signal, 3);
+  gciHi = signal->theData[1];
+  gciLo = signal->theData[2];
+
   ndbrequire(c_outstanding_sub_startstop);
   c_outstanding_sub_startstop--;
   SubStartConf *conf = (SubStartConf *)signal->getDataPtrSend();
@@ -18434,6 +18583,10 @@ void Dbdict::completeSubStartReq(Signal *signal, Uint32 ptrI,
   for (Uint32 i = 0; i < ARRAY_SIZE(subbPtr.p->m_buckets_per_ng); i++)
     cnt += subbPtr.p->m_buckets_per_ng[i];
   conf->bucketCount = cnt;
+
+  /* Ignore SUMA's firstGCI, send latest current GCI obtained above to API */
+  conf->firstGCIhi = gciHi;
+  conf->firstGCIlo = gciLo;
 
   sendSignal(subbPtr.p->m_senderRef, GSN_SUB_START_CONF, signal,
              SubStartConf::SignalLength, JBB);
@@ -18781,7 +18934,7 @@ void Dbdict::execDROP_EVNT_REQ(Signal *signal) {
   }
   r0.getString(evntRecPtr.p->m_eventRec.NAME);
   {
-    int len = (int)strlen(evntRecPtr.p->m_eventRec.NAME);
+    int len = (int)strnlen(evntRecPtr.p->m_eventRec.NAME, MAX_TAB_NAME_SIZE);
     std::memset(evntRecPtr.p->m_eventRec.NAME + len, 0,
                 MAX_TAB_NAME_SIZE - len);
 #ifdef EVENT_DEBUG
@@ -22363,7 +22516,7 @@ void Dbdict::createFile_parse(Signal *signal, bool master, SchemaOpPtr op_ptr,
     bool ok = handle.getSection(objInfoPtr, 0);
     if (!ok) {
       jam();
-      setError(error, CreateTableRef::InvalidFormat, __LINE__);
+      setError(error, CreateFileRef::InvalidFormat, __LINE__);
       return;
     }
   }
@@ -22424,7 +22577,7 @@ void Dbdict::createFile_parse(Signal *signal, bool master, SchemaOpPtr op_ptr,
       return;
   }
 
-  Uint32 len = Uint32(strlen(f.FileName) + 1);
+  Uint32 len = Uint32(strnlen(f.FileName, MAX_TAB_NAME_SIZE) + 1);
   Uint32 hash = LcLocalRope::hash(f.FileName, len);
   if(get_object(f.FileName, len, hash) != 0)
   {
@@ -22763,12 +22916,12 @@ void Dbdict::createFile_fromWriteObjInfo(Signal *signal, Uint32 op_key,
       ndbabort();
   }
 
-  char name[PATH_MAX];
+  char name[PATH_MAX + 4];
   LcConstRope tmp(f_ptr.p->m_path);
   tmp.copy(name, sizeof(name));
   LinearSectionPtr ptr[3];
   ptr[0].p = (Uint32 *)&name[0];
-  ptr[0].sz = Uint32(strlen(name) + 1 + 3) / 4;
+  ptr[0].sz = Uint32(strnlen(name, PATH_MAX) + 1 + 3) / 4;
   sendSignal(ref, GSN_CREATE_FILE_IMPL_REQ, signal, len, JBB, ptr, 1);
 
   Callback c = {safe_cast(&Dbdict::createFile_fromLocal), op_ptr.p->op_key};
@@ -23054,7 +23207,7 @@ void Dbdict::createFilegroup_parse(Signal *signal, bool master,
     }
   }
 
-  Uint32 len = Uint32(strlen(fg.FilegroupName) + 1);
+  Uint32 len = Uint32(strnlen(fg.FilegroupName, MAX_TAB_NAME_SIZE) + 1);
   Uint32 hash = LcLocalRope::hash(fg.FilegroupName, len);
   if(get_object(fg.FilegroupName, len, hash) != 0)
   {
@@ -25475,7 +25628,7 @@ void Dbdict::createFK_parse(Signal *signal, bool master, SchemaOpPtr op_ptr,
     return;
   }
 
-  Uint32 len = Uint32(strlen(fk.Name) + 1);
+  Uint32 len = Uint32(strnlen(fk.Name, MAX_TAB_NAME_SIZE) + 1);
   Uint32 hash = LcLocalRope::hash(fk.Name, len);
   if (get_object(fk.Name, len, hash) != 0)
   {
@@ -28094,6 +28247,7 @@ void Dbdict::handleClientReq(Signal *signal, SchemaOpPtr op_ptr,
   req->requestInfo = requestInfo;
   req->transId = trans_ptr.p->m_transId;
   req->parse.gsn = gsn;
+  //Signal doesn't fit in fragmented signal as it is now
   sendFragmentedSignal(rg, GSN_SCHEMA_TRANS_IMPL_REQ, signal,
                        SchemaTransImplReq::SignalLength + extra_length, JBB,
                        &handle);
@@ -28232,6 +28386,7 @@ void Dbdict::execSCHEMA_TRANS_IMPL_REF(Signal *signal) {
 
   if (ref->errorCode) {
     jam();
+    ndbrequire(ref->errorCode != 626);
     ErrorInfo error;
     setError(error, ref);
     setError(trans_ptr, error);
@@ -30772,6 +30927,7 @@ void Dbdict::sendTransClientReply(Signal *signal, SchemaTransPtr trans_ptr) {
       ref->masterNodeId = c_masterNodeId;
       sendSignal(receiverRef, GSN_SCHEMA_TRANS_END_REF, signal,
                  SchemaTransEndRef::SignalLength, JBB);
+      ndbrequire(ref->errorCode != 626);
     }
     resetError(trans_ptr);
     trans_ptr.p->m_clientState = TransClient::EndReply;
@@ -31502,7 +31658,7 @@ void Dbdict::createHashMap_parse(Signal *signal, bool master,
     handle.m_ptr[CreateHashMapReq::INFO] = objInfoPtr;
   }
 
-  Uint32 len = Uint32(strlen(hm.HashMapName) + 1);
+  Uint32 len = Uint32(strnlen(hm.HashMapName, MAX_TAB_NAME_SIZE) + 1);
   Uint32 hash = LcLocalRope::hash(hm.HashMapName, len);
 
   if (ERROR_INSERTED(6205)) {
@@ -32447,8 +32603,12 @@ Dbdict::packDatabaseIntoPages(SimpleProperties::Writer & w,
   db.DatabaseType = db_ptr.p->m_type;
   db.DatabaseVersion = db_ptr.p->m_version;
 
-  db.InMemorySize = db_ptr.p->m_in_memory_size;
-  db.DiskSpaceSize = db_ptr.p->m_disk_space_size;
+  if (!db_ptr.p->m_is_user) {
+    jam();
+    db.InMemorySize = db_ptr.p->m_in_memory_size;
+    db.DiskSpaceSize = db_ptr.p->m_disk_space_size;
+  }
+  db.IsUser = db_ptr.p->m_is_user;
   db.RatePerSec = db_ptr.p->m_rate_per_sec;
   db.MaxTransactionSize = db_ptr.p->m_max_transaction_size;
   db.MaxParallelTransactions = db_ptr.p->m_max_parallel_transactions;
@@ -32472,6 +32632,7 @@ Dbdict::createDatabase_parse(Signal* signal, bool master,
   CreateDatabaseRecPtr createDbPtr;
   getOpRec(op_ptr, createDbPtr);
   CreateDatabaseReq* impl_req = &createDbPtr.p->m_request;
+  bool is_user = impl_req->requestInfo & 1;
 
   SegmentedSectionPtr objInfoPtr;
   {
@@ -32517,49 +32678,55 @@ Dbdict::createDatabase_parse(Signal* signal, bool master,
       return;
     }
   }
-  Uint32 available_mem_quota_limit =
-    m_allocated_memory_quota_limit - m_current_allocated_memory_quota_mb;
-  if (db.InMemorySize > 0 &&
-      (m_allocated_memory_quota_limit < m_current_allocated_memory_quota_mb ||
-       db.InMemorySize > available_mem_quota_limit)) {
-    if (op_ptr.p->m_restart) {
-      jam();
-      g_eventLogger->info("Database Memory Quota oversubscribed, "
-                          "will not fail since it is a restart");
-    } else {
-      jam();
-      DEB_QUOTAS(("Create Database Mem failed: Requested: %llu, curr: %u,"
-                  " avail: %u",
-        db.InMemorySize,
-        m_current_allocated_memory_quota_mb,
-        m_allocated_memory_quota_limit));
-      setError(error, CreateTableRef::CreateDbNoAvailableMemoryQuota, __LINE__);
-      return;
+  if (!is_user) {
+    Uint32 available_mem_quota_limit =
+      m_allocated_memory_quota_limit - m_current_allocated_memory_quota_mb;
+    if (db.InMemorySize > 0 &&
+        (m_allocated_memory_quota_limit < m_current_allocated_memory_quota_mb ||
+         db.InMemorySize > available_mem_quota_limit)) {
+      if (op_ptr.p->m_restart) {
+        jam();
+        g_eventLogger->info("Database Memory Quota oversubscribed, "
+                            "will not fail since it is a restart");
+      } else {
+        jam();
+        DEB_QUOTAS(("Create Database Mem failed: Requested: %llu, curr: %u,"
+                    " avail: %u",
+          db.InMemorySize,
+          m_current_allocated_memory_quota_mb,
+          m_allocated_memory_quota_limit));
+        setError(error, CreateTableRef::CreateDbNoAvailableMemoryQuota, __LINE__);
+        return;
+      }
     }
-  }
-  Uint32 available_disk_quota_limit =
-    m_allocated_disk_quota_limit_mb - m_current_allocated_disk_quota_mb;
-  if (db.DiskSpaceSize > 0 &&
-      (m_allocated_disk_quota_limit_mb < m_current_allocated_disk_quota_mb ||
-       db.DiskSpaceSize > available_disk_quota_limit)) {
-    if (op_ptr.p->m_restart) {
-      jam();
-      g_eventLogger->info("Database Disk Quota oversubscribed, "
-                          "will not fail since it is a restart");
-    } else {
-      jam();
-      DEB_QUOTAS(("Create Database Disk failed: Requested: %llu, curr: %u,"
-                  " avail: %u",
-        db.InMemorySize,
-        m_current_allocated_memory_quota_mb,
-        m_allocated_disk_quota_limit_mb));
-      setError(error, CreateTableRef::CreateDbNoAvailableDiskQuota, __LINE__);
-      return;
+    Uint32 available_disk_quota_limit =
+      m_allocated_disk_quota_limit_mb - m_current_allocated_disk_quota_mb;
+    if (db.DiskSpaceSize > 0 &&
+        (m_allocated_disk_quota_limit_mb < m_current_allocated_disk_quota_mb ||
+         db.DiskSpaceSize > available_disk_quota_limit)) {
+      if (op_ptr.p->m_restart) {
+        jam();
+        g_eventLogger->info("Database Disk Quota oversubscribed, "
+                            "will not fail since it is a restart");
+      } else {
+        jam();
+        DEB_QUOTAS(("Create Database Disk failed: Requested: %llu, curr: %u,"
+                    " avail: %u",
+          db.InMemorySize,
+          m_current_allocated_memory_quota_mb,
+          m_allocated_disk_quota_limit_mb));
+        setError(error, CreateTableRef::CreateDbNoAvailableDiskQuota, __LINE__);
+        return;
+      }
     }
+  } else {
+    /* Users are stored as $username, converted before searching */
+    memmove(&db.DatabaseName[1], &db.DatabaseName[0], MAX_DB_NAME_SIZE - 1);
+    db.DatabaseName[0] = '$';
   }
   DEB_QUOTAS(("Create Database %s with quotas", db.DatabaseName));
 
-  Uint32 len = Uint32(strlen(db.DatabaseName) + 1);
+  Uint32 len = Uint32(strnlen(db.DatabaseName, MAX_DB_NAME_SIZE) + 1);
   Uint32 hash = LcLocalRope::hash(db.DatabaseName, len);
   if (get_object(db.DatabaseName, len, hash) != 0) {
     jam();
@@ -32590,8 +32757,12 @@ Dbdict::createDatabase_parse(Signal* signal, bool master,
       goto error;
     }
   }
-  db_ptr.p->m_in_memory_size = db.InMemorySize;
-  db_ptr.p->m_disk_space_size = db.DiskSpaceSize;
+  db_ptr.p->m_is_user = is_user;
+  if (!is_user) {
+    jam();
+    db_ptr.p->m_in_memory_size = db.InMemorySize;
+    db_ptr.p->m_disk_space_size = db.DiskSpaceSize;
+  }
   db_ptr.p->m_rate_per_sec = db.RatePerSec;
   db_ptr.p->m_max_transaction_size = db.MaxTransactionSize;
   db_ptr.p->m_max_parallel_transactions = db.MaxParallelTransactions;
@@ -32823,6 +32994,7 @@ Dbdict::createDb_local(Signal* signal,
   req->inMemorySizeMB = (Uint32)(db_ptr.p->m_in_memory_size);
   req->diskSpaceSizeGB = (Uint32)(db_ptr.p->m_disk_space_size);
   req->ratePerSec = db_ptr.p->m_rate_per_sec;
+  req->isUser = db_ptr.p->m_is_user;
   sendSignal(DBLQH_REF, GSN_CREATE_DB_REQ, signal,
              CreateDbReq::SignalLengthLQH, JBB);
 }
@@ -32858,6 +33030,7 @@ Dbdict::execCREATE_DB_CONF(Signal *signal) {
     req->inMemorySizeMB = (Uint32)(db_ptr.p->m_in_memory_size);
     req->diskSpaceSizeGB = (Uint32)(db_ptr.p->m_disk_space_size);
     req->ratePerSec = db_ptr.p->m_rate_per_sec;
+    req->isUser = db_ptr.p->m_is_user;
     req->maxTransactionSize = db_ptr.p->m_max_transaction_size;
     req->maxParallelTransactions =
       db_ptr.p->m_max_parallel_transactions;
@@ -32871,11 +33044,19 @@ Dbdict::execCREATE_DB_CONF(Signal *signal) {
     ndbrequire(refToBlock(signal->getSendersBlockRef()) == DBTC);
     jam();
   }
-  send_connect_table_database(signal,
-                              op_ptr,
-                              db_ptr,
-                              0,
-                              true);
+  if (!db_ptr.p->m_is_user) {
+    jam();
+    send_connect_table_database(signal,
+                                op_ptr,
+                                db_ptr,
+                                0,
+                                true);
+    return;
+  }
+  jam();
+  DEB_QUOTAS(("createDbPtr.i = %u, finished for user",
+              createDbPtr.i));
+  execute(signal, createDbPtr.p->m_callback, db_ptr.p->key);
 }
 
 void Dbdict::execCREATE_DB_REF(Signal *signal) {
@@ -33216,20 +33397,23 @@ void Dbdict::execCOMMIT_DB_CONF(Signal *signal) {
   ndbrequire(m_current_allocated_rate <= m_allocated_alter_rate_limit ||
              op_ptr.p->m_restart);
 
-  m_current_allocated_memory_quota_mb += db_ptr.p->m_in_memory_size;
-  ndbrequire((m_current_allocated_memory_quota_mb <=
-               m_allocated_memory_quota_limit) ||
-             op_ptr.p->m_restart);
+  if (!db_ptr.p->m_is_user) {
+    jam();
+    m_current_allocated_memory_quota_mb += db_ptr.p->m_in_memory_size;
+    ndbrequire((m_current_allocated_memory_quota_mb <=
+                 m_allocated_memory_quota_limit) ||
+               op_ptr.p->m_restart);
 
-  m_current_allocated_disk_quota_mb += db_ptr.p->m_disk_space_size;
-  ndbrequire((m_current_allocated_disk_quota_mb <=
-               m_allocated_disk_quota_limit_mb) ||
-             op_ptr.p->m_restart);
+    m_current_allocated_disk_quota_mb += db_ptr.p->m_disk_space_size;
+    ndbrequire((m_current_allocated_disk_quota_mb <=
+                 m_allocated_disk_quota_limit_mb) ||
+               op_ptr.p->m_restart);
 
-  DEB_QUOTAS(("New m_current_allocated_memory_quota_mb = %u MBytes"
-              ", m_current_allocated_disk_quota_mb = %u MBytes",
-    m_current_allocated_memory_quota_mb,
-    m_current_allocated_disk_quota_mb));
+    DEB_QUOTAS(("New m_current_allocated_memory_quota_mb = %u MBytes"
+                ", m_current_allocated_disk_quota_mb = %u MBytes",
+      m_current_allocated_memory_quota_mb,
+      m_current_allocated_disk_quota_mb));
+  }
   /* Finished commit phase of create database */
   execute(signal, createDbPtr.p->m_callback, db_ptr.p->key);
 }
@@ -33258,6 +33442,40 @@ Dbdict::createDatabase_complete(Signal* signal, SchemaOpPtr op_ptr) {
   jam();
   D("createDatabase_complete");
   DEB_QUOTAS(("createDb_complete"));
+  CreateDatabaseRecPtr createDbPtr;
+  getOpRec(op_ptr, createDbPtr);
+  CreateDatabaseReq* impl_req = &createDbPtr.p->m_request;
+  DatabasePtr db_ptr;
+  bool ok = find_object(db_ptr, impl_req->databaseId);
+  ndbrequire(ok);
+  if (op_ptr.p->m_restart == 0 &&
+      db_ptr.p->m_is_user &&
+      refToBlock(op_ptr.p->m_clientRef) != DBDICT) { //master
+    LcLocalRope name(db_ptr.p->m_name);
+    Uint32 dbName[MAX_DB_NAME_SIZE/4 + 1];
+    char *dbNamePtr = (char*)&dbName[0];
+    name.copy(dbNamePtr, sizeof(dbName));
+    Uint32 db_name_len = strnlen(dbNamePtr, MAX_DB_NAME_SIZE);
+    db_name_len--;
+    memmove(&dbName[0], &dbName[1], db_name_len);
+    dbName[db_name_len] = 0;
+    LinearSectionPtr lsPtr[3];
+    lsPtr[0].p = &dbName[0];
+    lsPtr[0].sz = db_name_len + 1;
+    CreateDatabaseRep* rep = (CreateDatabaseRep*)signal->getDataPtrSend();
+    rep->databaseId = db_ptr.p->key;
+    rep->databaseVersion = db_ptr.p->m_version;
+    rep->databaseNameLen = db_name_len;
+    for (Uint32 node_id = 1; node_id < MAX_NODES; node_id++) {
+      const NodeInfo *nodeInfo = &getNodeInfo(node_id);
+      if (nodeInfo->m_type != NodeInfo::API) continue;
+      if (nodeInfo->m_connected == false) continue;
+      if (!ndbd_support_user_rate_limits(nodeInfo->m_version)) continue;
+      BlockReference ref = numberToRef(API_CLUSTERMGR, node_id);
+      sendSignal(ref, GSN_CREATE_DATABASE_REP, signal,
+                 CreateDatabaseRep::SignalLength, JBB, lsPtr, 1);
+    }
+  }
   sendTransConf(signal, op_ptr);
 }
 
@@ -33416,6 +33634,7 @@ Dbdict::dropDatabase_parse(Signal* signal, bool master,
   DropDatabaseRecPtr dropDbPtr;
   getOpRec(op_ptr, dropDbPtr);
   DropDatabaseReq* impl_req = &dropDbPtr.p->m_request;
+  bool is_user = impl_req->requestInfo & 1;
 
   SegmentedSectionPtr objInfoPtr;
   {
@@ -33439,7 +33658,11 @@ Dbdict::dropDatabase_parse(Signal* signal, bool master,
     setError(error, CreateTableRef::InvalidFormat, __LINE__);
     return;
   }
-  Uint32 len = Uint32(strlen(db.DatabaseName) + 1);
+  if (is_user) {
+    memmove(&db.DatabaseName[1], &db.DatabaseName[0], MAX_DB_NAME_SIZE - 1);
+    db.DatabaseName[0] = '$';
+  }
+  Uint32 len = Uint32(strnlen(db.DatabaseName, MAX_DB_NAME_SIZE) + 1);
   Uint32 hash = LcLocalRope::hash(db.DatabaseName, len);
   DictObject *obj_ptr = get_object(db.DatabaseName, len, hash);
   if (obj_ptr == nullptr) {
@@ -33462,6 +33685,11 @@ Dbdict::dropDatabase_parse(Signal* signal, bool master,
   DatabasePtr db_ptr;
   bool ok = find_object(db_ptr, impl_req->databaseId);
   if (!ok) {
+    jam();
+    setError(error, GetTabInfoRef::TableNotDefined, __LINE__);
+    return;
+  }
+  if (db_ptr.p->m_is_user != is_user) {
     jam();
     setError(error, GetTabInfoRef::TableNotDefined, __LINE__);
     return;
@@ -33569,12 +33797,26 @@ void Dbdict::dropDatabase_commit(Signal* signal, SchemaOpPtr op_ptr) {
   bool ok = find_object(db_ptr, databaseId);
   ndbrequire(ok);
 
-  Callback c;
-  c.m_callbackData = op_ptr.p->op_key;
-  c.m_callbackFunction = safe_cast(&Dbdict::dropDb_alterComplete);
-  dropDbPtr.p->m_callback = c;
+  if (!db_ptr.p->m_is_user) { 
+    jam();
+    Callback c;
+    c.m_callbackData = op_ptr.p->op_key;
+    c.m_callbackFunction = safe_cast(&Dbdict::dropDb_alterComplete);
+    dropDbPtr.p->m_callback = c;
 
-  send_disconnect_table_database(signal, op_ptr, db_ptr, 0);
+    send_disconnect_table_database(signal, op_ptr, db_ptr, 0);
+    return;
+  }
+  /* No disconnect from tables for users */
+  DropDbReq* req = (DropDbReq*)signal->getDataPtrSend();
+  req->senderRef = reference();
+  req->senderData = op_ptr.p->op_key;
+  req->databaseId = db_ptr.p->key;
+  req->databaseVersion = db_ptr.p->m_version;
+  req->requestType = DropDbReq::PREPARE_DROP;
+  req->isUser = db_ptr.p->m_is_user;
+  sendSignal(DBTC_REF, GSN_DROP_DB_REQ, signal,
+             DropDbReq::SignalLength, JBB);
 }
 
 void
@@ -33617,6 +33859,7 @@ Dbdict::send_disconnect_table_database(Signal *signal,
   req->databaseId = db_ptr.p->key;
   req->databaseVersion = db_ptr.p->m_version;
   req->requestType = DropDbReq::PREPARE_DROP;
+  req->isUser = db_ptr.p->m_is_user;
   sendSignal(DBTC_REF, GSN_DROP_DB_REQ, signal,
              DropDbReq::SignalLength, JBB);
 }
@@ -33711,6 +33954,7 @@ void Dbdict::dropDb_local(Signal* signal, SchemaOpPtr op_ptr) {
   req->databaseId = db_ptr.p->key;
   req->databaseVersion = db_ptr.p->m_version;
   req->requestType = DropDbReq::COMMIT_DROP;
+  req->isUser = db_ptr.p->m_is_user;
   sendSignal(DBLQH_REF, GSN_DROP_DB_REQ, signal,
              DropDbReq::SignalLength, JBB);
 }
@@ -33763,6 +34007,7 @@ void Dbdict::dropDb_completeBlock(Signal *signal, Uint32 senderData) {
     req->databaseId = db_ptr.p->key;
     req->databaseVersion = db_ptr.p->m_version;
     req->requestType = DropDbReq::COMMIT_DROP;
+    req->isUser = db_ptr.p->m_is_user;
     sendSignal(DBTC_REF, GSN_DROP_DB_REQ, signal,
                DropDbReq::SignalLength, JBB);
     return;
@@ -33790,20 +34035,51 @@ void Dbdict::dropDatabase_complete(Signal* signal, SchemaOpPtr op_ptr) {
   DatabasePtr db_ptr;
   getOpRec(op_ptr, dropDbPtr);
   DropDatabaseReq* impl_req = &dropDbPtr.p->m_request;
-  unlinkDictObject(op_ptr);
   ndbrequire(find_object(db_ptr, impl_req->databaseId));
+  if (op_ptr.p->m_restart == 0 &&
+      db_ptr.p->m_is_user &&
+      refToBlock(op_ptr.p->m_clientRef) != DBDICT) { //master
+
+    LcLocalRope name(db_ptr.p->m_name);
+    Uint32 dbName[MAX_DB_NAME_SIZE/4 + 1];
+    char *dbNamePtr = (char*)&dbName[0];
+    name.copy(dbNamePtr, sizeof(dbName));
+    Uint32 db_name_len = strnlen(dbNamePtr, MAX_DB_NAME_SIZE);
+    LinearSectionPtr lsPtr[3];
+    db_name_len--;
+    memmove(&dbName[0], &dbName[1], db_name_len);
+    dbName[db_name_len] = 0;
+    lsPtr[0].p = &dbName[0];
+    lsPtr[0].sz = db_name_len + 1;
+    DropDatabaseRep* rep = (DropDatabaseRep*)signal->getDataPtrSend();
+    rep->databaseId = db_ptr.p->key;
+    rep->databaseVersion = db_ptr.p->m_version;
+    rep->databaseNameLen = db_name_len;
+    for (Uint32 node_id = 1; node_id < MAX_NODES; node_id++) {
+      const NodeInfo *nodeInfo = &getNodeInfo(node_id);
+      if (nodeInfo->m_type != NodeInfo::API) continue;
+      if (nodeInfo->m_connected == false) continue;
+      if (!ndbd_support_user_rate_limits(nodeInfo->m_version)) continue;
+      BlockReference ref = numberToRef(API_CLUSTERMGR, node_id);
+      sendSignal(ref, GSN_DROP_DATABASE_REP, signal,
+                 DropDatabaseRep::SignalLength, JBB, lsPtr, 1);
+    }
+  }
+  unlinkDictObject(op_ptr);
   release_object(db_ptr.p->m_obj_ptr_i);
   db_ptr.p->m_obj_ptr_i = RNIL;
 
   ndbrequire(m_current_allocated_rate >= db_ptr.p->m_rate_per_sec);
   m_current_allocated_rate -= db_ptr.p->m_rate_per_sec;
 
-  ndbrequire(m_current_allocated_memory_quota_mb >= db_ptr.p->m_in_memory_size);
-  m_current_allocated_memory_quota_mb -= db_ptr.p->m_in_memory_size;
+  if (!db_ptr.p->m_is_user) {
+    jam();
+    ndbrequire(m_current_allocated_memory_quota_mb >= db_ptr.p->m_in_memory_size);
+    m_current_allocated_memory_quota_mb -= db_ptr.p->m_in_memory_size;
 
-  ndbrequire(m_current_allocated_disk_quota_mb >= db_ptr.p->m_disk_space_size);
-  m_current_allocated_disk_quota_mb -= db_ptr.p->m_disk_space_size;
-
+    ndbrequire(m_current_allocated_disk_quota_mb >= db_ptr.p->m_disk_space_size);
+    m_current_allocated_disk_quota_mb -= db_ptr.p->m_disk_space_size;
+  }
   DEB_QUOTAS(("New after drop m_current_allocated_memory_quota_mb = %u MBytes"
               ", m_current_allocated_disk_quota_mb = %u MBytes",
     m_current_allocated_memory_quota_mb,
@@ -33922,10 +34198,10 @@ void Dbdict::execALTER_DATABASE_REQ(Signal* signal) {
   ErrorInfo error;
   do {
     SchemaOpPtr op_ptr;
-    AlterDatabaseRecPtr dropDbPtr;
+    AlterDatabaseRecPtr alterDbPtr;
     AlterDatabaseReq* impl_req = nullptr;
 
-    startClientReq(op_ptr, dropDbPtr, req, impl_req, error);
+    startClientReq(op_ptr, alterDbPtr, req, impl_req, error);
     if (hasError(error)) {
       jam();
       break;
@@ -33964,6 +34240,7 @@ Dbdict::alterDatabase_parse(Signal* signal, bool master,
   AlterDatabaseRecPtr alterDbPtr;
   getOpRec(op_ptr, alterDbPtr);
   AlterDatabaseReq* impl_req = &alterDbPtr.p->m_request;
+  bool is_user = impl_req->requestInfo & 1;
 
   SegmentedSectionPtr objInfoPtr;
   {
@@ -33987,7 +34264,11 @@ Dbdict::alterDatabase_parse(Signal* signal, bool master,
     return;
   }
 
-  Uint32 len = Uint32(strlen(db.DatabaseName) + 1);
+  if (is_user) {
+    memmove(&db.DatabaseName[1], &db.DatabaseName[0], MAX_DB_NAME_SIZE - 1);
+    db.DatabaseName[0] = '$';
+  }
+  Uint32 len = Uint32(strnlen(db.DatabaseName, MAX_DB_NAME_SIZE) + 1);
   Uint32 hash = LcLocalRope::hash(db.DatabaseName, len);
   DictObject *obj_ptr = get_object(db.DatabaseName, len, hash);
   if (obj_ptr == nullptr) {
@@ -34010,6 +34291,11 @@ Dbdict::alterDatabase_parse(Signal* signal, bool master,
   DatabasePtr db_ptr;
   bool ok = find_object(db_ptr, impl_req->databaseId);
   if (!ok) {
+    jam();
+    setError(error, GetTabInfoRef::TableNotDefined, __LINE__);
+    return;
+  }
+  if (db_ptr.p->m_is_user != is_user) {
     jam();
     setError(error, GetTabInfoRef::TableNotDefined, __LINE__);
     return;
@@ -34041,46 +34327,48 @@ Dbdict::alterDatabase_parse(Signal* signal, bool master,
         return;
       }
     }
-    if (db.InMemorySize != RNIL &&
-        db_ptr.p->m_in_memory_size < db.InMemorySize) {
-      Uint32 increase_memory_quota_mb =
-        db.InMemorySize - db_ptr.p->m_in_memory_size;
-      Uint32 available_memory_quota_limit =
-        m_allocated_memory_quota_limit - m_current_allocated_memory_quota_mb;
-      if (increase_memory_quota_mb > available_memory_quota_limit ||
-            (m_current_allocated_memory_quota_mb >
-              m_allocated_memory_quota_limit)) {
-        jam();
-        DEB_QUOTAS(("Alter Database Mem failed: Requested: %u, curr: %u,"
-                    " avail: %u",
-          increase_memory_quota_mb,
-          m_current_allocated_memory_quota_mb,
-          m_allocated_memory_quota_limit));
-        setError(error,
-                 CreateTableRef::AlterDbNoAvailableMemoryQuota,
-                 __LINE__);
-        return;
-      }
-    }
-    if (db.DiskSpaceSize != RNIL &&
-        db_ptr.p->m_disk_space_size < db.DiskSpaceSize) {
-      Uint32 increase_disk_quota_mb =
-        db.DiskSpaceSize - db_ptr.p->m_disk_space_size;
-      Uint32 available_disk_quota_limit_mb =
-        m_allocated_disk_quota_limit_mb - m_current_allocated_disk_quota_mb;
-      if (increase_disk_quota_mb > available_disk_quota_limit_mb ||
-            (m_current_allocated_disk_quota_mb >
-              m_allocated_disk_quota_limit_mb)) {
-        jam();
-        DEB_QUOTAS(("Create Database Disk failed: Requested: %u, curr: %u,"
-                    " avail: %u",
-          increase_disk_quota_mb,
-          m_current_allocated_disk_quota_mb,
-          m_allocated_disk_quota_limit_mb));
+    if (!is_user) {
+      if (db.InMemorySize != RNIL &&
+          db_ptr.p->m_in_memory_size < db.InMemorySize) {
+        Uint32 increase_memory_quota_mb =
+          db.InMemorySize - db_ptr.p->m_in_memory_size;
+        Uint32 available_memory_quota_limit =
+          m_allocated_memory_quota_limit - m_current_allocated_memory_quota_mb;
+        if (increase_memory_quota_mb > available_memory_quota_limit ||
+              (m_current_allocated_memory_quota_mb >
+                m_allocated_memory_quota_limit)) {
+          jam();
+          DEB_QUOTAS(("Alter Database Mem failed: Requested: %u, curr: %u,"
+                      " avail: %u",
+            increase_memory_quota_mb,
+            m_current_allocated_memory_quota_mb,
+            m_allocated_memory_quota_limit));
           setError(error,
+             CreateTableRef::AlterDbNoAvailableMemoryQuota,
+              __LINE__);
+          return;
+        }
+      }
+      if (db.DiskSpaceSize != RNIL &&
+          db_ptr.p->m_disk_space_size < db.DiskSpaceSize) {
+        Uint32 increase_disk_quota_mb =
+          db.DiskSpaceSize - db_ptr.p->m_disk_space_size;
+        Uint32 available_disk_quota_limit_mb =
+          m_allocated_disk_quota_limit_mb - m_current_allocated_disk_quota_mb;
+        if (increase_disk_quota_mb > available_disk_quota_limit_mb ||
+              (m_current_allocated_disk_quota_mb >
+                m_allocated_disk_quota_limit_mb)) {
+          jam();
+          DEB_QUOTAS(("Create Database Disk failed: Requested: %u, curr: %u,"
+                      " avail: %u",
+            increase_disk_quota_mb,
+            m_current_allocated_disk_quota_mb,
+            m_allocated_disk_quota_limit_mb));
+            setError(error,
                  CreateTableRef::AlterDbNoAvailableDiskQuota,
                  __LINE__);
-        return;
+          return;
+        }
       }
     }
     DatabasePtr alter_db_ptr;
@@ -34126,6 +34414,7 @@ Dbdict::alterDatabase_parse(Signal* signal, bool master,
       alter_db_ptr.p->m_max_parallel_complex_queries =
         db_ptr.p->m_max_parallel_complex_queries;
     }
+    alter_db_ptr.p->m_is_user = db_ptr.p->m_is_user;
     alter_db_ptr.p->m_type = db_ptr.p->m_type;
     alter_db_ptr.p->m_obj_ptr_i = db_ptr.p->m_obj_ptr_i;
     alter_db_ptr.p->m_table_id_check = db_ptr.p->m_table_id_check;
@@ -34303,6 +34592,7 @@ Dbdict::alterDatabase_commit(Signal* signal, SchemaOpPtr op_ptr)
   req->inMemorySizeMB = (Uint32)(alter_db_ptr.p->m_in_memory_size);
   req->diskSpaceSizeGB = (Uint32)(alter_db_ptr.p->m_disk_space_size);
   req->ratePerSec = alter_db_ptr.p->m_rate_per_sec;
+  req->isUser = alter_db_ptr.p->m_is_user;
   req->maxTransactionSize = alter_db_ptr.p->m_max_transaction_size;
   req->maxParallelTransactions =
     alter_db_ptr.p->m_max_parallel_transactions;
@@ -34346,6 +34636,7 @@ Dbdict::execALTER_DB_CONF(Signal *signal)
     req->inMemorySizeMB = (Uint32)(alter_db_ptr.p->m_in_memory_size);
     req->diskSpaceSizeGB = (Uint32)(alter_db_ptr.p->m_disk_space_size);
     req->ratePerSec = alter_db_ptr.p->m_rate_per_sec;
+    req->isUser = alter_db_ptr.p->m_is_user;
     sendSignal(DBLQH_REF, GSN_ALTER_DB_REQ, signal,
                AlterDbReq::SignalLengthLQH, JBB);
     return;
@@ -34356,20 +34647,21 @@ Dbdict::execALTER_DB_CONF(Signal *signal)
   m_current_allocated_rate += alter_db_ptr.p->m_rate_per_sec;
   ndbrequire(m_current_allocated_rate <= m_allocated_alter_rate_limit);
 
-  ndbrequire(m_current_allocated_memory_quota_mb >=
-             db_ptr.p->m_in_memory_size);
-  m_current_allocated_memory_quota_mb -= db_ptr.p->m_in_memory_size;
-  m_current_allocated_memory_quota_mb += alter_db_ptr.p->m_in_memory_size;
-  ndbrequire(m_current_allocated_memory_quota_mb <=
-             m_allocated_memory_quota_limit);
+  if (!db_ptr.p->m_is_user) {
+    ndbrequire(m_current_allocated_memory_quota_mb >=
+               db_ptr.p->m_in_memory_size);
+    m_current_allocated_memory_quota_mb -= db_ptr.p->m_in_memory_size;
+    m_current_allocated_memory_quota_mb += alter_db_ptr.p->m_in_memory_size;
+    ndbrequire(m_current_allocated_memory_quota_mb <=
+               m_allocated_memory_quota_limit);
 
-  ndbrequire(m_current_allocated_disk_quota_mb >=
-             db_ptr.p->m_disk_space_size);
-  m_current_allocated_disk_quota_mb -= db_ptr.p->m_disk_space_size;
-  m_current_allocated_disk_quota_mb += alter_db_ptr.p->m_disk_space_size;
-  ndbrequire(m_current_allocated_disk_quota_mb <=
-             m_allocated_disk_quota_limit_mb);
-
+    ndbrequire(m_current_allocated_disk_quota_mb >=
+               db_ptr.p->m_disk_space_size);
+    m_current_allocated_disk_quota_mb -= db_ptr.p->m_disk_space_size;
+    m_current_allocated_disk_quota_mb += alter_db_ptr.p->m_disk_space_size;
+    ndbrequire(m_current_allocated_disk_quota_mb <=
+               m_allocated_disk_quota_limit_mb);
+  }
   db_ptr.p->m_in_memory_size = alter_db_ptr.p->m_in_memory_size;
   db_ptr.p->m_disk_space_size = alter_db_ptr.p->m_disk_space_size;
   db_ptr.p->m_rate_per_sec = alter_db_ptr.p->m_rate_per_sec;
@@ -34508,6 +34800,7 @@ void Dbdict::execGET_DATABASE_REQ(Signal *signal) {
   const GetDatabaseReq req_copy =
     *(const GetDatabaseReq*)signal->getDataPtr();
   const GetDatabaseReq* req = &req_copy;
+  bool is_user = req->requestInfo & 1;
 
   Uint32 error = 0;
   Uint32 errorLine = 0;
@@ -34515,7 +34808,7 @@ void Dbdict::execGET_DATABASE_REQ(Signal *signal) {
   Uint32 name_len = 0;
   static constexpr Uint32 MAX_DB32 = (MAX_DB_NAME_SIZE / 4) + 1;
   Uint32 dbName[MAX_DB32];
-  const char *dbNamePtr = (const char *)&dbName[0];
+  char *dbNamePtr = (char *)&dbName[0];
   do {
     SegmentedSectionPtr objInfoPtr;
     {
@@ -34534,6 +34827,11 @@ void Dbdict::execGET_DATABASE_REQ(Signal *signal) {
       break;
     }
     copy(&dbName[0], objInfoPtr);
+    if (is_user) {
+      jam();
+      memmove(&dbNamePtr[1], &dbNamePtr[0], MAX_DB_NAME_SIZE - 1);
+      dbNamePtr[0] = '$';
+    }
     DEB_QUOTAS(("dbNamePtr: %s, objInfoPtr.sz: %u",
       dbNamePtr, objInfoPtr.sz));
     releaseSections(handle);
@@ -34561,6 +34859,12 @@ void Dbdict::execGET_DATABASE_REQ(Signal *signal) {
     }
     bool ok = find_object(db_ptr, obj_ptr->m_id);
     if (!ok) {
+      jam();
+      error = GetTabInfoRef::TableNotDefined;
+      errorLine = __LINE__;
+      break;
+    }
+    if (db_ptr.p->m_is_user != is_user) {
       jam();
       error = GetTabInfoRef::TableNotDefined;
       errorLine = __LINE__;
@@ -34607,13 +34911,15 @@ void Dbdict::execLIST_DATABASE_REQ(Signal *signal) {
     *(const ListDatabaseReq*)signal->getDataPtr();
   const ListDatabaseReq* req = &req_copy;
 
+  bool is_user = req->requestInfo & 1;
+
   DatabasePtr db_ptr;
   bool found = false;
   Uint32 dbId = req->nextDatabaseId;
   Uint32 loop_count = 0;
   for (; dbId < c_noOfMetaTables; dbId++) {
     bool ok = find_object(db_ptr, dbId);
-    if (ok) {
+    if (ok && db_ptr.p->m_is_user == is_user) {
       found = true;
       break;
     }
@@ -34642,8 +34948,13 @@ void Dbdict::execLIST_DATABASE_REQ(Signal *signal) {
   name.copy(dbNamePtr, sizeof(dbName));
   Uint32 db_name_len = strnlen(dbNamePtr, MAX_DB_NAME_SIZE);
   LinearSectionPtr lsPtr[3];
+  if (is_user) {
+    db_name_len--;
+    memmove(&dbNamePtr[0], &dbNamePtr[1], db_name_len);
+    dbNamePtr[db_name_len] = 0;
+  }
   lsPtr[0].p = &dbName[0];
-  lsPtr[0].sz = db_name_len + 1;
+  lsPtr[0].sz = (db_name_len + 4) / 4;
   ListDatabaseConf* conf = (ListDatabaseConf*)signal->getDataPtrSend();
   conf->senderRef = reference();
   conf->clientData = req->senderData;

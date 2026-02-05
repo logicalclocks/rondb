@@ -714,6 +714,7 @@ class Dbdict : public SimulatedBlock {
     Uint32 m_max_transaction_size;
     Uint32 m_max_parallel_transactions;
     Uint32 m_max_parallel_complex_queries;
+    bool m_is_user;
   };
   typedef Ptr<Database> DatabasePtr;
   typedef RecordPool<RWPool<Database> > Database_pool;

@@ -1036,7 +1036,7 @@ void Suma::check_wait_handover_timeout(Signal *signal) {
             LogLevel ll;
             ll.setLogLevel(LogLevel::llError, 15);
             g_eventLogger->log(NDB_LE_SubscriptionStatus, signal->theData,
-                               signal->getLength(), getOwnNodeId(), &ll);
+                               signal->getLength(), 0, &ll);
 
             /**
              * Force API_FAILREQ
@@ -3794,10 +3794,11 @@ void Suma::report_sub_start_conf(Signal *signal, Ptr<Subscription> subPtr) {
         conf->senderData = senderData;
         conf->subscriptionId = subPtr.p->m_subscriptionId;
         conf->subscriptionKey = subPtr.p->m_subscriptionKey;
-        conf->firstGCI = Uint32(gci >> 32);
+        conf->firstGCIhi = Uint32(gci >> 32);
         conf->part = SubscriptionData::TableData;
         conf->bucketCount = c_no_of_buckets;
         conf->nodegroup = c_nodeGroup;
+        conf->firstGCIlo = Uint32(gci);
         sendSignal(senderRef, GSN_SUB_START_CONF, signal,
                    SubStartConf::SignalLength, JBB);
 
@@ -4605,6 +4606,10 @@ static bool checkTriggerBufferLock(Uint32 triggerId) {
 }
 
 void Suma::execTRANSID_AI(Signal *signal) {
+  if (!assembleFragments(signal)) {
+    jam();
+    return;
+  }
   jamEntry();
   DBUG_ENTER("Suma::execTRANSID_AI");
 
@@ -4743,8 +4748,18 @@ void Suma::sendScanSubTableData(Signal *signal, Ptr<SyncRecord> syncPtr,
                       getSectionSz(syncPtr.p->m_headersSection),
                       getSectionSz(syncPtr.p->m_dataSection));
 #else
-  sendSignal(ref, GSN_SUB_TABLE_DATA, signal, SubTableData::SignalLength, JBB,
-             &sh);
+  Uint32 ptrLen = 0;
+  for (Uint32 i = 0; i < 2; i++) ptrLen += sh.m_ptr[i].sz;
+  sdata->totalLen = ptrLen;
+  const Uint32 version =
+    getNodeInfo(refToNode(ref)).m_version;
+  if (ndbd_support_long_transid_ai(version)) {
+    sendBatchedFragmentedSignal(ref, GSN_SUB_TABLE_DATA, signal,
+      SubTableData::SignalLength, JBB, &sh, false);
+  } else {
+    sendSignal(ref, GSN_SUB_TABLE_DATA, signal,
+      SubTableData::SignalLength, JBB, &sh);
+  }
 #endif
 
   /* Clear section references */
@@ -5105,6 +5120,8 @@ void Suma::execFIRE_TRIG_ORD(Signal *signal) {
   ndbrequire(clearBufferLock());
 }
 
+#define MAX_SUMA_BUFFER_SIZE 4000
+
 void Suma::doFIRE_TRIG_ORD(Signal *signal, LinearSectionPtr lsptr[3]) {
   jamEntry();
   DBUG_ENTER("Suma::doFIRE_TRIG_ORD");
@@ -5189,49 +5206,103 @@ void Suma::doFIRE_TRIG_ORD(Signal *signal, LinearSectionPtr lsptr[3]) {
      * the oldest page we have filled in.
      */
     constexpr uint buffer_header_sz = 7;
-    Uint32* dst1 = nullptr;
-    Uint32* dst2 = nullptr;
-    Uint32 sz1 = f_trigBufferSize + buffer_header_sz;
-    Uint32 sz2 = b_trigBufferSize;
+    Uint32* dst = nullptr;
 
-    static_assert(1 + Buffer_page::GCI_SZ32 + buffer_header_sz + SUMA_BUF_SZ <=
-                  Buffer_page::DATA_WORDS);
-
+    Uint32 key_header_size = lsptr[0].sz + buffer_header_sz;
     if (unlikely(buffering_disabled())) {
       jam();
       DBUG_VOID_RETURN;
     }
-
-    dst1 = get_buffer_ptr(signal, bucket, gci, sz1, 1);
-    if (unlikely(buffering_disabled())) {
-      jam();
-      DBUG_VOID_RETURN;
-    }
-
-    dst2 = get_buffer_ptr(signal, bucket, gci, sz2, 2);
-    if (unlikely(buffering_disabled())) {
-      jam();
-      DBUG_VOID_RETURN;
-    }
-
-    ndbrequire(dst1 != nullptr && dst2 != nullptr);
-
+    /* Start by packing the header and the key part */
     jam();
-    dst1[0] = subPtr.i;
-    dst1[1] = schemaVersion;
-    dst1[2] = (event << 16) | lsptr[0].sz;
-    dst1[3] = any_value;
-    dst1[4] = transId1;
-    dst1[5] = transId2;
-    dst1 += buffer_header_sz;
-    memcpy(dst1, lsptr[0].p, lsptr[0].sz << 2);
-    dst1 += lsptr[0].sz;
-    memcpy(dst1, lsptr[2].p, lsptr[2].sz << 2);
-    ndbrequire(f_trigBufferSize == lsptr[0].sz + lsptr[2].sz);
-    memcpy(dst2, lsptr[1].p, lsptr[1].sz << 2);
-    ndbrequire(b_trigBufferSize == lsptr[1].sz);
-  }
+    dst = get_buffer_ptr(signal,
+                         bucket,
+                         gci,
+                         key_header_size,
+                         1);
+    if (unlikely(buffering_disabled())) {
+      jam();
+      DBUG_VOID_RETURN;
+    }
 
+    dst[0] = subPtr.i;
+    dst[1] = schemaVersion;
+    dst[2] = (event << 16) | lsptr[0].sz;
+    dst[3] = any_value;
+    dst[4] = transId1;
+    dst[5] = transId2;
+    dst += buffer_header_sz;
+    memcpy(dst, lsptr[0].p, lsptr[0].sz << 2);
+
+
+    /* Next we pack the after value buffer */
+    const Uint32 *ptr1 = lsptr[2].p;
+    Uint32 sz1 = lsptr[2].sz;
+    while (sz1 > MAX_SUMA_BUFFER_SIZE) {
+      jam();
+      dst = get_buffer_ptr(signal,
+                           bucket,
+                           gci,
+                           MAX_SUMA_BUFFER_SIZE,
+                           2);
+      if (unlikely(buffering_disabled())) {
+        jam();
+        DBUG_VOID_RETURN;
+      }
+      Uint32 num_bytes = MAX_SUMA_BUFFER_SIZE * 4;
+      memcpy(dst, ptr1, num_bytes);
+      ptr1 += MAX_SUMA_BUFFER_SIZE;
+      sz1 -= MAX_SUMA_BUFFER_SIZE;
+    }
+    {
+      jam();
+      dst = get_buffer_ptr(signal,
+                           bucket,
+                           gci,
+                           sz1,
+                           3);
+      if (unlikely(buffering_disabled())) {
+        jam();
+        DBUG_VOID_RETURN;
+      }
+      Uint32 num_bytes = sz1 * 4;
+      memcpy(dst, ptr1, num_bytes);
+    }
+
+    /* Finally we pack the before value buffer */
+    const Uint32 *ptr2 = lsptr[1].p;
+    Uint32 sz2 = lsptr[1].sz;
+    while (sz2 > MAX_SUMA_BUFFER_SIZE) {
+      jam();
+      dst = get_buffer_ptr(signal,
+                           bucket,
+                           gci,
+                           MAX_SUMA_BUFFER_SIZE,
+                           4);
+      if (unlikely(buffering_disabled())) {
+        jam();
+        DBUG_VOID_RETURN;
+      }
+      Uint32 num_bytes = MAX_SUMA_BUFFER_SIZE * 4;
+      memcpy(dst, ptr2, num_bytes);
+      ptr2 += MAX_SUMA_BUFFER_SIZE;
+      sz2 -= MAX_SUMA_BUFFER_SIZE;
+    }
+    {
+      jam();
+      dst = get_buffer_ptr(signal,
+                           bucket,
+                           gci,
+                           sz2,
+                           5);
+      if (unlikely(buffering_disabled())) {
+        jam();
+        DBUG_VOID_RETURN;
+      }
+      Uint32 num_bytes = sz2 * 4;
+      memcpy(dst, ptr2, num_bytes);
+    }
+  }
   DBUG_VOID_RETURN;
 }
 
@@ -6848,8 +6919,6 @@ void Suma::execSUMA_HANDOVER_CONF(Signal *signal) {
     tmp.getText(buf);
     infoEvent("Suma: handover from node %u gci: %u buckets: %s (%u)", nodeId,
               gci, buf, c_no_of_buckets);
-    g_eventLogger->info("Suma: handover from node %u gci: %u buckets: %s (%u)",
-                        nodeId, gci, buf, c_no_of_buckets);
     ndbassert(!m_active_buckets.overlaps(tmp));
     m_switchover_buckets.bitOR(tmp);
     ndbrequire(c_startup.m_handover_nodes.get(nodeId));
@@ -6871,8 +6940,6 @@ void Suma::execSUMA_HANDOVER_CONF(Signal *signal) {
     tmp.getText(buf);
     infoEvent("Suma: handover to node %u gci: %u buckets: %s (%u)", nodeId, gci,
               buf, c_no_of_buckets);
-    g_eventLogger->info("Suma: handover to node %u gci: %u buckets: %s (%u)",
-                        nodeId, gci, buf, c_no_of_buckets);
     m_active_buckets.bitANDC(tmp);
     m_switchover_buckets.bitOR(tmp);
     c_startup.m_handover_nodes.clear(nodeId);
@@ -6958,8 +7025,6 @@ Suma::get_buffer_ptr(Signal* signal,
      * 1) save header on last page
      * 2) seize new page
      */
-    static_assert(1 + 6 + SUMA_BUF_SZ + Buffer_page::GCI_SZ32 <=
-                  Buffer_page::DATA_WORDS);
     Uint32 next;
     if (unlikely((next = seize_page()) == RNIL)) {
       jam();
@@ -6988,10 +7053,10 @@ Suma::get_buffer_ptr(Signal* signal,
     pos.m_last_gci = gci;
  
     /* Already verified in seize_page */
-    page= c_page_pool.getPtr(pos.m_page_id);
-    page->m_next_page= RNIL;
+    page = c_page_pool.getPtr(pos.m_page_id);
+    page->m_next_page = RNIL;
     ptr= page->m_data;
-    goto loop; //
+    goto loop;
   }
 }
 
@@ -7913,7 +7978,6 @@ void Suma::resend_bucket(Signal *signal, Uint32 buck, Uint64 min_gci,
                          Uint32 pos, Uint64 last_gci) {
   ndbrequire(buck < NO_OF_BUCKETS);
   Bucket *bucket = c_buckets + buck;
-  g_eventLogger->info("resend_bucket");
 
 #ifdef ERROR_INSERT
   if (unlikely(ERROR_INSERTED(13060))) {
@@ -7984,8 +8048,10 @@ void Suma::resend_bucket(Signal *signal, Uint32 buck, Uint64 min_gci,
 
   Uint32 tail = bucket->m_buffer_tail;
   Buffer_page *page = c_page_pool.getPtr(tail);
+  Buffer_page *page_first = page;
   Uint64 max_gci = page->m_max_gci_lo | (Uint64(page->m_max_gci_hi) << 32);
   Uint32 next_page = page->m_next_page;
+  Uint32 last_page = next_page;
   Uint32 *ptr = page->m_data + pos;
   Uint32 *end = page->m_data + page->m_words_used;
   bool delay = false;
@@ -7994,17 +8060,28 @@ void Suma::resend_bucket(Signal *signal, Uint32 buck, Uint64 min_gci,
   ndbrequire(tail != RNIL);
 
   if (tail == bucket->m_buffer_head.m_page_id) {
+    /**
+     * We have reached the last page in the bucket. Set next_page to RNIL
+     * and set end position. In this case the page might not be updated
+     * with max_gci yet, thus we use the max_gci from the bucket head
+     * and similarly for page position and end position.
+     */
+    jam();
     max_gci = bucket->m_buffer_head.m_max_gci;
     end = page->m_data + bucket->m_buffer_head.m_page_pos;
     next_page = RNIL;
 
     if (ptr == end) {
+      jam();
       delay = true;
       goto next;
     }
-  }
-  else if(pos == 0 && min_gci > max_gci)
-  {
+  } else if (pos == 0 && min_gci > max_gci) {
+    /**
+     * The max GCI on this page is lower than the min GCI we are interested
+     * in, thus we can skip the page.
+     */
+    jam();
     free_page(tail, page, __LINE__);
     tail = bucket->m_buffer_tail = next_page;
     goto next;
@@ -8030,17 +8107,18 @@ void Suma::resend_bucket(Signal *signal, Uint32 buck, Uint64 min_gci,
     while (ptr < end) {
       jam();
       src = ptr;
-      Uint32 tmp = *src;
+      Uint32 header_word = *src;
       src++;
 
-      sz = tmp & Buffer_page::SIZE_MASK;
+      sz = header_word & Buffer_page::SIZE_MASK;
       ptr += sz;
 
       ndbrequire(sz > 0);
       sz--;  // remove *len* part of sz
 
-      part = (tmp >> Buffer_page::PART_NUM_SHIFT) & Buffer_page::PART_NUM_MASK;
-      if ((tmp & Buffer_page::SAME_GCI_FLAG) == 0) {
+      part = (header_word >> Buffer_page::PART_NUM_SHIFT) &
+             Buffer_page::PART_NUM_MASK;
+      if ((header_word & Buffer_page::SAME_GCI_FLAG) == 0) {
         jam();
         ndbrequire(sz >= Buffer_page::GCI_SZ32);
         sz -= Buffer_page::GCI_SZ32;
@@ -8110,6 +8188,10 @@ void Suma::resend_bucket(Signal *signal, Uint32 buck, Uint64 min_gci,
       jam();
       ndbrequire(part == 1);
 
+      /**
+       * When we arrive here src points the current (and first) part.
+       * ptr points to the next part.
+       */
       const uint buffer_header_sz = 7;
       g_cnt++;
       Uint32 subPtrI = src[0];
@@ -8122,63 +8204,86 @@ void Suma::resend_bucket(Signal *signal, Uint32 buck, Uint64 min_gci,
       Uint32 subAutoIncrement = src[6];
       src += buffer_header_sz;
 
-      ndbassert(sz - buffer_header_sz >= sz_1);
-      Uint32 *src2;
-      Uint32 sz2;
-      {
-        Uint32 *ptr2;
-        if (ptr != end) {
-          jam();
-          ptr2 = ptr;
-        } else {
-          jam();
-          // Second half of data on next page.
-          CHECK_PAGE(next_page);
-          Buffer_page* page= c_page_pool.getPtr(next_page);
-          ndbrequire(page->m_words_used > 0);
-          ptr2 = page->m_data;
-        }
-        src2 = ptr2;
-        Uint32 tmp2 = *src2;
-        src2++;
-        sz2 = tmp2 & Buffer_page::SIZE_MASK;
-        ndbrequire(sz2 > 0);
-        sz2--;
-        if (ptr2 != ptr) {
-          jam();
-          // First block on a page always must have gci.
-          ndbrequire((tmp2 & Buffer_page::SAME_GCI_FLAG) == 0);
-          next_pos = sz2 + 1;
-        } else {
-          jam();
-          ptr = src2 + sz2;
-        }
-
-        part = (tmp2 >> Buffer_page::PART_NUM_SHIFT) &
-                Buffer_page::PART_NUM_MASK;
-        ndbrequire(part == 2);
-
-        if ((tmp2 & Buffer_page::SAME_GCI_FLAG) == 0) {
-          jam();
-          ndbrequire(sz2 >= Buffer_page::GCI_SZ32);
-          sz2 -= Buffer_page::GCI_SZ32;
-          Uint32 last_gci_hi = *src2;
-          src2++;
-          Uint32 last_gci_lo = *src2;
-          src2++;
-          // Second block must have same gci as previous.
-          ndbrequire(last_gci == (last_gci_lo | (Uint64(last_gci_hi) << 32)));
-        }
-      }
-      
-      LinearSectionPtr dest_ptr[3];
+      ndbassert(sz - buffer_header_sz == sz_1);
       LinearSectionPtr lsptr[3];
       lsptr[0].p = src;
       lsptr[0].sz = sz_1;
-      lsptr[1].p = src2;
-      lsptr[1].sz = sz2;
-      lsptr[2].p = src + sz_1;
-      lsptr[2].sz = sz - buffer_header_sz - sz_1;
+      lsptr[1].p = b_buffer;
+      lsptr[2].p = f_buffer;
+
+      Uint32 *src_part;
+      Uint32 *dst = f_buffer;
+      Uint32 expected_part = 2;
+      Uint32 sz_buf = 0;
+      while (expected_part <= 5) {
+        Uint32 *ptr_part;
+        if (ptr != end) {
+          jam();
+          ptr_part = ptr;
+        } else {
+          jam();
+          // Next part of data on next page.
+          last_page = next_page;
+          CHECK_PAGE(next_page);
+          page = c_page_pool.getPtr(next_page);
+          ndbrequire(page->m_words_used > 0);
+          ptr_part = page->m_data;
+          next_page = page->m_next_page;
+          end = page->m_data + page->m_words_used;
+        }
+        src_part = ptr_part;
+        Uint32 header_word_part = *src_part;
+        src_part++;
+        Uint32 sz_part = header_word_part & Buffer_page::SIZE_MASK;
+        if (ptr_part != ptr) {
+          // First block on a page always must have gci.
+          jam();
+          ndbrequire((header_word_part & Buffer_page::SAME_GCI_FLAG) == 0);
+          next_pos = sz_part;
+        } else {
+          if (next_pos > 0) {
+            jam();
+            next_pos += sz_part;
+          }
+        }
+        ptr = ptr_part + sz_part;
+        ndbrequire(sz_part > 0);
+        sz_part--;
+        part = (header_word_part >> Buffer_page::PART_NUM_SHIFT) &
+                Buffer_page::PART_NUM_MASK;
+        ndbrequire(part == expected_part || part == (expected_part + 1));
+        if ((header_word_part & Buffer_page::SAME_GCI_FLAG) == 0) {
+          jam();
+          ndbrequire(sz_part >= Buffer_page::GCI_SZ32);
+          sz_part -= Buffer_page::GCI_SZ32;
+          Uint32 last_gci_hi = *src_part;
+          src_part++;
+          Uint32 last_gci_lo = *src_part;
+          src_part++;
+          // Next block must have same gci as previous.
+          ndbrequire(last_gci == (last_gci_lo | (Uint64(last_gci_hi) << 32)));
+        }
+        memcpy(dst, src_part, sz_part * 4);
+        dst += sz_part;
+        sz_buf += sz_part;
+        if (part == 2 || part == 4) {
+          jam();
+          ndbrequire(sz_part == MAX_SUMA_BUFFER_SIZE); // Simply continue
+        } else if (part == 3) {
+          jam();
+          lsptr[2].sz = sz_buf;
+          expected_part = 4;
+          sz_buf = 0;
+          dst = b_buffer;
+        } else if (part == 5) {
+          jam();
+          lsptr[1].sz = sz_buf;
+          expected_part = 6;
+        } else {
+          ndbabort();
+        }
+      }
+      LinearSectionPtr dest_ptr[3];
       const Uint32 nptr = reformat(signal, dest_ptr, lsptr);
 
       Uint32 ptrLen = 0;
@@ -8208,6 +8313,7 @@ void Suma::resend_bucket(Signal *signal, Uint32 buck, Uint64 min_gci,
          * If it doesn't belong to this subscription we will ignore the
          * entry.
          */
+        jam();
         Ptr<Table> tabPtr;
         tabPtr.i = subPtr.p->m_table_ptrI;
         ndbrequire(c_tablePool.getValidPtr(tabPtr));
@@ -8240,17 +8346,35 @@ void Suma::resend_bucket(Signal *signal, Uint32 buck, Uint64 min_gci,
   if (next_pos > 0 || (ptr == end && tail != bucket->m_buffer_head.m_page_id)) {
     jam();
     /**
-     * release...
+     * We moved to new pages, we need to release them and set up the new
+     * tail page and set pos to 0.
+     *
+     * The page variable still points to the first page. page_cont is the page
+     * we are currently reading from. Release pages already completed and move
+     * tail forward.
      */
     ndbassert(tail != bucket->m_buffer_head.m_page_id);
-    free_page(tail, page, __LINE__);
-    tail = bucket->m_buffer_tail = next_page;
+    Uint32 page_next = 0;
+    do {
+      jam();
+      page_next = page_first->m_next_page;
+      free_page(tail, page_first, __LINE__);
+      if (page_next == last_page) break;
+      tail = page_next;
+      page_first = c_page_pool.getPtr(page_next);
+      ndbrequire(page_first != page);
+    } while (true);
+    tail = bucket->m_buffer_tail = page_next;
     pos = next_pos;
     if (pos == 0) {
       jam();
       last_gci = 0;
     }
   } else {
+    /**
+     * We are still on the same page, we haven't moved to any new page
+     * Move the position according to where we moved the ptr.
+     */
     jam();
     pos = Uint32(ptr - page->m_data);
   }
@@ -8263,7 +8387,7 @@ next:
     /**
      * Bucket takeover in sendSUB_GCP_COMPLETE_REP() sets bucket head's
      * m_page_id and m_next_page to RNIL to inform the resend fiber to
-     * indicate that the swtich_over gci is completed and no more data
+     * indicate that the switch_over gci is completed and no more data
      * will arrive. Resend fiber uses this info to terminate resending.
      */
     ndbassert(!(bucket->m_state & Bucket::BUCKET_TAKEOVER));
@@ -8271,7 +8395,7 @@ next:
     g_eventLogger->info("SUMA Resend done for bucket %u", buck);
     return;
   }
-
+  jam();
   signal->theData[0] = SumaContinueB::RESEND_BUCKET;
   signal->theData[1] = buck;
   signal->theData[2] = (Uint32)(min_gci >> 32);

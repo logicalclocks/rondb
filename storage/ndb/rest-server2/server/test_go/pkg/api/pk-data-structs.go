@@ -1,18 +1,20 @@
 /*
- * This file is part of the RonDB REST API Server
- * Copyright (c) 2023 Hopsworks AB
+ * Copyright (C) 2023, 2026 Hopsworks AB
  *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, version 3.
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
  *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
- * General Public License for more details.
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301,
+ * USA.
  */
 package api
 
@@ -242,4 +244,41 @@ type PKTestInfo struct {
 	HttpCode       int
 	ErrMsgContains string
 	RespKVs        []interface{}
+}
+
+// Write operation structures
+type WriteColumn struct {
+	Column *string          `json:"column"   form:"column"   binding:"required,min=1,max=64"`
+	Value  *json.RawMessage `json:"value"    form:"value"    binding:"required"`
+}
+
+func (w WriteColumn) String() string {
+	var stringify strings.Builder
+	if w.Column != nil {
+		stringify.WriteString(fmt.Sprintf("Column: %s\n", *w.Column))
+	}
+	if w.Value != nil {
+		j, err := json.Marshal(w.Value)
+		if err != nil {
+			stringify.WriteString(fmt.Sprintf("Error marshaling Value: %s\n", err.Error()))
+		} else {
+			stringify.WriteString(fmt.Sprintf("Value: %s\n", j))
+		}
+	}
+	return stringify.String()
+}
+
+type PKWriteBody struct {
+	Filters      *[]Filter      `json:"filters"       form:"filters"       binding:"required,min=1,max=4096,dive"`
+	WriteColumns *[]WriteColumn `json:"writeColumns"  form:"write-columns" binding:"required,min=1,max=4096"`
+	OperationID  *string        `json:"operationId"   form:"operation-id"  binding:"omitempty"`
+}
+
+// For testing only
+type PKWriteTestInfo struct {
+	PkReq          PKWriteBody
+	Table          string
+	Db             string
+	HttpCode       int
+	ErrMsgContains string
 }

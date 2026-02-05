@@ -668,6 +668,9 @@ void FeatureStoreCtrl::featureStore(
   }
   // Authenticate
   DEB_FS_CTRL("Authenticate Feature Store request");
+
+  char username[USERNAME_SIZE + PROJECT_PROJECTNAME_SIZE + 1];
+  char *username_ptr = nullptr;
   if (likely(globalConfigs.security.apiKey.useHopsworksAPIKeys)) {
     auto api_key = req->getHeader(API_KEY_NAME_LOWER_CASE);
     if (unlikely(err != nullptr)) {
@@ -677,7 +680,10 @@ void FeatureStoreCtrl::featureStore(
       return;
     }
     // Validate access right to ALL feature stores including shared feature
-    auto status = authenticate(api_key, metadata->featureStoreNames);
+    char *username_ptr = &username[0];
+    auto status = authenticate(api_key,
+                               metadata->featureStoreNames,
+                               username_ptr);
     if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
                    drogon::HttpStatusCode::k200OK)) {
       resp->setBody(std::string(status.message));
@@ -764,7 +770,8 @@ void FeatureStoreCtrl::featureStore(
                                        true,
                                        reqBuffs.data(),
                                        respBuffs.data(),
-                                       currentThreadIndex);
+                                       currentThreadIndex,
+                                       username_ptr);
       if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
                    drogon::HttpStatusCode::k200OK)) {
         DEB_FS_CTRL("pk_batch_read failed: http_code: %u, message: %s",

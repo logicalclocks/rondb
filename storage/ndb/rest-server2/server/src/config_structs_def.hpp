@@ -110,6 +110,8 @@ CLASS
  ALIAS(pingRequiresAuth, PingRequiresAuth, PingRequiresAPIKey)
  CM(bool, useSingleTransaction, UseSingleTransaction, true,
     "Set to true to use single transaction for entire batch.")
+ CM(bool, userRateLimits, UserRateLimits, false,
+    "Set to true to enable rate limits per user")
  PROBLEM(!enable, "REST must be enabled")
  PROBLEM(serverIP.empty(), "REST server IP cannot be empty")
  PROBLEM(serverPort == 0, "REST server port cannot be zero")
@@ -165,6 +167,9 @@ CLASS
     "Database-specific configuration.")
  CM(bool, createTables, CreateTables, true,
     "Whether to create Rondis databases and tables on startup if they don't exist.")
+ CM(bool, requireTablesOnStartup, RequireTablesOnStartup, true,
+    "Whether to require Rondis tables to exist on startup. Set to false for MTR tests "
+    "where tables are created by the test itself.")
  CM(std::string, mysqlHost, MySQLHost, "localhost",
     "The MySQL server host for creating Rondis tables.")
  CM(Uint16, mysqlPort, MySQLPort, 3306,
