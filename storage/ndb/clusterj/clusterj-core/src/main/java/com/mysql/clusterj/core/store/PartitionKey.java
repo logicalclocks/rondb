@@ -45,4 +45,11 @@ public interface PartitionKey {
 
     public void addByteKey(Column storeColumn, byte key);
 
+    /** Add a timestamp key to the partition key.
+     * Uses the column's actual size (4-7 bytes for TIMESTAMP2 based on precision).
+     * @param storeColumn the column metadata
+     * @param key the timestamp value in milliseconds since epoch
+     */
+    public void addTimestampKey(Column storeColumn, long key);
+
 }

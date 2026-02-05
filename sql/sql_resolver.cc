@@ -1267,6 +1267,16 @@ bool Query_block::setup_tables(THD *thd, Table_ref *tables,
       first_query_block_table = nullptr;
       tableno = 0;
     }
+
+    /*
+      The parser already checks table counts based on syntactic structure,
+      but the resolver check is still necessary because:
+
+      1. View expansion: A view may expand into many leaf tables
+      2. Derived tables: Complex subqueries add tables not visible in parser
+      3. Recursive CTEs: Expansion happens at resolution time
+      4. The parser counts syntactic tables; we count actual leaf tables here
+    */
     if (tableno >= MAX_TABLES) {
       my_error(ER_TOO_MANY_TABLES, MYF(0), static_cast<int>(MAX_TABLES));
       return true;
@@ -6325,9 +6335,18 @@ bool Query_block::transform_grouped_to_derived(THD *thd, bool *break_off) {
     int field_no = 1;
 
     for (auto vr : unique_view_refs) {
-      if (baptize_item(thd, vr, &field_no)) return true;
-      if (new_derived->add_item_to_list(vr)) return true;
-      if (update_context_to_derived(vr, new_derived)) return true;
+      /*
+        Copy is needed to preserve the hidded propery during transformation.
+        add_item_to_list() below resets this property and will be later restored
+        by replace_item_view_ref().
+      */
+      Item_view_ref *vr_copy = new (thd->mem_root)
+          Item_view_ref(vr->context, vr->ref_pointer(), vr->original_db_name(),
+                        vr->original_table_name(), vr->original_table_name(),
+                        vr->item_name.ptr(), vr->cached_table);
+      if (baptize_item(thd, vr_copy, &field_no)) return true;
+      if (new_derived->add_item_to_list(vr_copy)) return true;
+      if (update_context_to_derived(vr_copy, new_derived)) return true;
       vr->depended_from = nullptr;
     }
 

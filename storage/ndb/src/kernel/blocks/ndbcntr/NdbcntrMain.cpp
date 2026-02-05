@@ -2452,7 +2452,6 @@ void Ndbcntr::startWaitingNodes(Signal *signal) {
      * Let node perform restart
      */
     infoEvent("Start node: %u using %s", nodeId, start_type_str);
-    g_eventLogger->info("Start node: %u using %s", nodeId, start_type_str);
 
     CntrStartConf *conf = (CntrStartConf *)signal->getDataPtrSend();
     conf->noStartNodes = 1;
@@ -2669,21 +2668,11 @@ bool Ndbcntr::trySystemRestart(Signal *signal) {
 
   infoEvent("System Restart: master node: %u, num starting: %u, gci: %u",
             conf->masterNodeId, conf->noStartNodes, conf->startGci);
-  g_eventLogger->info(
-      "System Restart: master node: %u, num starting: %u,"
-      " gci: %u",
-      conf->masterNodeId, conf->noStartNodes, conf->startGci);
   char buf[NdbNodeBitmask::TextLength + 1];
   infoEvent("CNTR_START_CONF: started: %s", c_startedNodeSet.getText(buf));
   infoEvent("CNTR_START_CONF: cntr_started: %s",
             c_cntr_startedNodeSet.getText(buf));
   infoEvent("CNTR_START_CONF: starting: %s", c_start.m_starting.getText(buf));
-  g_eventLogger->info("CNTR_START_CONF: started: %s",
-                      c_startedNodeSet.getText(buf));
-  g_eventLogger->info("CNTR_START_CONF: cntr_started: %s",
-                      c_cntr_startedNodeSet.getText(buf));
-  g_eventLogger->info("CNTR_START_CONF: starting: %s",
-                      c_start.m_starting.getText(buf));
 
   Uint32 recNode = 0;
   NdbNodeBitmask tmp_m_starting;
@@ -4364,7 +4353,6 @@ void Ndbcntr::execSTOP_REQ(Signal *signal) {
     NdbNodeBitmask mask;
     mask.assign(NdbNodeBitmask::Size, c_stopRec.stopReq.nodes);
     infoEvent("Initiating shutdown abort of %s", mask.getText(buf));
-    g_eventLogger->info("Initiating shutdown abort of %s", mask.getText(buf));
 
     WaitGCPReq *req = (WaitGCPReq *)&signal->theData[0];
     req->senderRef = reference();
@@ -4899,7 +4887,6 @@ void Ndbcntr::execSTOP_CONF(Signal *signal) {
     NdbNodeBitmask mask;
     mask.assign(NdbNodeBitmask::Size, c_stopRec.stopReq.nodes);
     infoEvent("Stopping of %s", mask.getText(buf));
-    g_eventLogger->info("Stopping of %s", mask.getText(buf));
 
     /**
      * Kill any node...
@@ -6033,6 +6020,7 @@ void Ndbcntr::execFSREADREF(Signal *signal) {
         c_local_sysfile.m_state == LocalSysfile::READ_FILE_1) {
       jam();
       handle_read_refuse(signal);
+      return;
     }
     jamLine(c_local_sysfile.m_state);
     ndbabort();

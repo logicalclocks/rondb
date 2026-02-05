@@ -755,6 +755,7 @@ MySQL clients support the protocol:
 #include "mysql/strings/int2str.h"
 #include "mysql/strings/m_ctype.h"
 #include "mysql/thread_type.h"
+#include "mysql_server_suffix.h"
 #include "mysql_time.h"
 #include "mysql_version.h"
 #include "mysqld_error.h"
@@ -3441,6 +3442,7 @@ void setup_conn_event_handler_threads() {
 
   if ((!have_tcpip || opt_disable_networking) && !opt_enable_shared_memory &&
       !opt_enable_named_pipe) {
+    terminate_compress_gtid_table_thread();
     LogErr(ERROR_LEVEL, ER_WIN_LISTEN_BUT_HOW);
     unireg_abort(MYSQLD_ABORT_EXIT);  // Will not return
   }

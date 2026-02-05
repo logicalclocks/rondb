@@ -88,6 +88,10 @@ cmd: testScan
 args: -n InsertDelete T1 T6 D1 D2
 max-time: 500
 
+cmd: testScanFilter
+args: T1
+max-time: 360
+
 cmd: testNodeRestart
 args: -n Bug41469 T1
 max-time: 1440

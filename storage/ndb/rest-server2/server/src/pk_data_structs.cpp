@@ -197,6 +197,19 @@ RS_Status validate_operation_id(const std::string &opId) {
     drogon::HttpStatusCode::k200OK)).status;
 }
 
+RS_Status ValidateScanColumns(const std::vector<ScanReadColumn>& readColumns) {
+  RS_Status status;
+  for (auto& col : readColumns) {
+    status = validate_column(col.column);
+    if (unlikely(status.http_code != static_cast<HTTP_CODE>(
+            drogon::HttpStatusCode::k200OK))) {
+      break;
+    }
+  }
+  return status;
+
+}
+
 PKReadPath::PKReadPath() : db(), table() {
 }
 
@@ -509,3 +522,212 @@ int PKReadResponseJSON::batch_to_string(
   ret_size = (size_t)(buf - json_buf);
   return 0;
 }
+
+/*** Scan read ***/
+RS_Status ValidateScanFilter(const std::shared_ptr<FilterNode> filterRoot) {
+  // make sure column is valid
+  if (filterRoot == nullptr) {
+    return CRS_Status().status;
+  }
+
+  RS_Status status;
+  if (filterRoot->type != FilterNode::Type::LOGIC) {
+    status = validate_column(filterRoot->column);
+    return status;
+  } else {
+  }
+
+  for (const auto& child : filterRoot->children) {
+    status = ValidateScanFilter(child);
+    if (unlikely(status.http_code != static_cast<HTTP_CODE>(
+            drogon::HttpStatusCode::k200OK))) {
+      break;
+    }
+  }
+  return status;
+}
+
+RS_Status ValidateScanIndex(const IndexScanParams& index_params) {
+  RS_Status status;
+  status = validate_db(index_params.name);
+  if (unlikely(status.http_code != static_cast<HTTP_CODE>(
+          drogon::HttpStatusCode::k200OK))) {
+    return status;
+  }
+  for (auto& column : index_params.columns) {
+    status = validate_column(column);
+    if (unlikely(status.http_code != static_cast<HTTP_CODE>(
+            drogon::HttpStatusCode::k200OK))) {
+      break;
+    }
+  }
+  return status;
+}
+
+ScanReadParams::ScanReadParams(std::string_view db_view,
+                               std::string_view table_view)
+  : path(db_view, table_view),
+    filterRoot(nullptr),
+    limit(-1),
+    table_rec_buffer(nullptr) {
+  readColumns.clear();
+}
+
+std::string Type2String(FilterNode::Type type) {
+  std::string type_string;
+  switch (type) {
+    case FilterNode::Type::LOGIC:
+      type_string = "Logic";
+      break;
+    case FilterNode::Type::COMPARE:
+      type_string = "Compare";
+      break;
+    case FilterNode::Type::IS_NULL:
+      type_string = "IsNull";
+      break;
+    case FilterNode::Type::IS_NOT_NULL:
+      type_string = "IsNotNull";
+      break;
+    default:
+      type_string = "Unknown";
+  }
+  return type_string;
+}
+
+std::string Group2String(FilterNode::Group group) {
+  std::string group_string;
+  switch (group) {
+    case FilterNode::Group::AND:
+      group_string = "AND";
+      break;
+    case FilterNode::Group::OR:
+      group_string = "OR";
+      break;
+    case FilterNode::Group::NAND:
+      group_string = "NAND";
+      break;
+    case FilterNode::Group::NOR:
+      group_string = "NOR";
+      break;
+    default:
+      group_string = "UNKNOWN";
+  }
+  return group_string;
+}
+
+std::string Condition2String(FilterNode::Condition cond) {
+  std::string cond_string;
+  switch (cond) {
+    case FilterNode::Condition::COND_LE:
+      cond_string = "LE";
+      break;
+    case FilterNode::Condition::COND_LT:
+      cond_string = "LT";
+      break;
+    case FilterNode::Condition::COND_GE:
+      cond_string = "GE";
+      break;
+    case FilterNode::Condition::COND_GT:
+      cond_string = "GT";
+      break;
+    case FilterNode::Condition::COND_EQ:
+      cond_string = "EQ";
+      break;
+    case FilterNode::Condition::COND_NE:
+      cond_string = "NE";
+      break;
+    default:
+      cond_string = "UNKNOWN";
+  }
+  return cond_string;
+}
+
+#ifdef DEBUG_SCAN
+void ScanReadParams::DumpFilters(std::shared_ptr<FilterNode>& node,
+                                 int spaces) {
+  if (node == nullptr) {
+    return;
+  }
+  std::string spaces_string(spaces, ' ');
+
+  std::string output;
+  switch (node->type) {
+    case FilterNode::Type::LOGIC:
+      output = ("Type: " + Type2String(node->type)
+                +", Group: " + Group2String(node->group));
+      break;
+    case FilterNode::Type::COMPARE:
+      output = ("Type: " + Type2String(node->type)
+                + ", Condition: " + Condition2String(node->cond)
+                + ", Column: " + node->column + ", Value: " +
+                node->value.ToString());
+      break;
+    case FilterNode::Type::IS_NULL:
+    case FilterNode::Type::IS_NOT_NULL:
+      output = ("Type: " + Type2String(node->type) + ", Column: " +
+                node->column);
+      break;
+    default:
+      break;
+  }
+  std::cout << spaces_string << output << std::endl;
+
+  for (auto& child : node->children) {
+    DumpFilters(child, spaces + 2);
+  }
+}
+
+void ScanReadParams::DumpIndex() {
+  if (index != std::nullopt) {
+    std::cout << "name: " <<  index.value().name << std::endl;
+    std::cout << "key_columns: " <<  std::endl;;
+    for (auto& column : index.value().columns) {
+      std::cout << "  " << column << std::endl;
+    }
+    std::cout << "ranges: " <<  std::endl;
+    for (auto& range : index.value().ranges) {
+      std::cout << "  lower bound: ";
+      if (range.lower != std::nullopt) {
+        std::cout << "(" << range.lower.value().inclusive << ")[";
+        for (auto& node : range.lower.value().values) {
+          std::cout << node.value.ToString() << " ";
+        }
+        std::cout << "]";
+      } else {
+        std::cout << "Empty";
+      }
+      std::cout << std::endl;
+
+      std::cout << "  upper bound: ";
+      if (range.upper != std::nullopt) {
+        std::cout << "(" << range.upper.value().inclusive << ")[";
+        for (auto& node : range.upper.value().values) {
+          std::cout << node.value.ToString() << " ";
+        }
+        std::cout << "]";
+      } else {
+        std::cout << "Empty";
+      }
+      std::cout << std::endl;
+    }
+    std::cout << "order: ";
+    switch(index.value().order) {
+      case IndexScanParams::Order::NO_ORDER:
+        std::cout << "no order" << std::endl;
+        break;
+      case IndexScanParams::Order::ASC:
+        std::cout << "asc" << std::endl;
+        break;
+      case IndexScanParams::Order::DESC:
+        std::cout << "desc" << std::endl;
+        break;
+      default:
+        std::cout << "invalid order" << std::endl;
+        break;
+    }
+  }
+}
+#else
+void ScanReadParams::DumpFilters(std::shared_ptr<FilterNode>&, int) {}
+void ScanReadParams::DumpIndex() {}
+#endif

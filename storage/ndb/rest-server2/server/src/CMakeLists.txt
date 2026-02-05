@@ -64,6 +64,10 @@ file(GLOB_RECURSE SRC
         db_operations/pk/pkr_response.cpp
         db_operations/ronsql/ronsql_operation.cpp
         ttl_purge.cpp
+        ttl_purge_ctrl.cpp
+        scan_read_ctrl.cpp
+        scan_metrics.cpp
+        slow_scan_ctrl.cpp
 )
 NDB_ADD_EXECUTABLE(${PROJECT_NAME} ${SRC} STATIC_NDBCLIENT)
 
@@ -102,6 +106,7 @@ TARGET_INCLUDE_DIRECTORIES(${PROJECT_NAME} PRIVATE
   ${PROJECT_SOURCE_DIR}
   ${BASE64_INCLUDE_DIR}
   ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/extra/rapidjson/include
   ${CMAKE_SOURCE_DIR}/storage/ndb/src/ndbapi
   ${CMAKE_SOURCE_DIR}/storage/ndb/src/mgmapi
   ${CMAKE_SOURCE_DIR}/storage/ndb/src/rondis/include
@@ -137,6 +142,7 @@ target_include_directories(rdrs2_lib PUBLIC
 	${PROJECT_SOURCE_DIR}
   ${BASE64_INCLUDE_DIR}
   ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/extra/rapidjson/include
   ${CMAKE_SOURCE_DIR}/storage/ndb/src/ndbapi
   ${CMAKE_SOURCE_DIR}/storage/ndb/src/mgmapi
   ${CMAKE_SOURCE_DIR}/storage/ndb/src/rondis/include

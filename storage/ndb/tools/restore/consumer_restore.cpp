@@ -67,6 +67,9 @@ extern bool ga_allow_unique_indexes;
 
 extern Properties g_rewrite_databases;
 
+extern bool opt_skip_fk_checks;
+extern int ga_hint;
+
 bool BackupRestore::m_preserve_trailing_spaces = false;
 
 // ----------------------------------------------------------------------
@@ -807,7 +810,7 @@ bool BackupRestore::init(Uint32 tableChangesMask) {
   m_ndb = new Ndb(m_cluster_connection);
   if (m_ndb == NULL) return false;
 
-  m_ndb->init(1024);
+  m_ndb->init(m_parallelism);
   if (m_ndb->waitUntilReady(30) != 0) {
     restoreLogger.log_error("Could not connect to NDB");
     return false;
@@ -1736,8 +1739,8 @@ bool BackupRestore::report_data(unsigned backup_id, unsigned node_id) {
     data[0] = NDB_LE_RestoreData;
     data[1] = backup_id;
     data[2] = node_id;
-    data[3] = m_dataCount & 0xFFFFFFFF;
-    data[4] = 0;
+    data[3] = (Uint32)(m_dataCount & 0xFFFFFFFF);
+    data[4] = (Uint32)((m_dataCount >> 32) & 0xFFFFFFFF);
     data[5] = (Uint32)(m_dataBytes & 0xFFFFFFFF);
     data[6] = (Uint32)((m_dataBytes >> 32) & 0xFFFFFFFF);
     Ndb_internal::send_event_report(false /* has lock */, m_ndb, data, 7);
@@ -1751,8 +1754,8 @@ bool BackupRestore::report_log(unsigned backup_id, unsigned node_id) {
     data[0] = NDB_LE_RestoreLog;
     data[1] = backup_id;
     data[2] = node_id;
-    data[3] = m_logCount & 0xFFFFFFFF;
-    data[4] = 0;
+    data[3] = (Uint32)(m_logCount & 0xFFFFFFFF);
+    data[4] = (Uint32)((m_logCount >> 32) & 0xFFFFFFFF);
     data[5] = (Uint32)(m_logBytes & 0xFFFFFFFF);
     data[6] = (Uint32)((m_logBytes >> 32) & 0xFFFFFFFF);
     Ndb_internal::send_event_report(false /* has lock */, m_ndb, data, 7);
@@ -3350,9 +3353,14 @@ bool BackupRestore::endOfTablesFK() {
     fk.setOnDeleteAction(fkinfo.getOnDeleteAction());
 
     restoreLogger.log_info("Creating foreign key: %s", fkname);
+    int flags = 0;
+    if (opt_skip_fk_checks) {
+      restoreLogger.log_info("Skipping foreign key checks");
+      flags = NdbDictionary::Dictionary::CreateFK_NoVerify;
+    }
     if (!ndbapi_dict_operation_retry(
-            [fk](NdbDictionary::Dictionary *dict) {
-              return dict->createForeignKey(fk);
+            [fk, flags](NdbDictionary::Dictionary *dict) {
+              return dict->createForeignKey(fk, nullptr, flags);
             },
             dict)) {
       restoreLogger.log_error(
@@ -3571,9 +3579,9 @@ void BackupRestore::tuple_a(restore_callback_t *cb) {
   Uint32 n_bytes;
   while (cb->retries < MAX_RETRIES) {
     /**
-     * start transactions
+     * start transaction, with hint if supplied
      */
-    cb->connection = m_ndb->startTransaction();
+    cb->connection = m_ndb->startTransaction(ga_hint, 0);
     if (cb->connection == NULL) {
       if (errorHandler(cb)) {
         m_ndb->sendPollNdb(3000, 1);
@@ -3857,10 +3865,14 @@ void BackupRestore::cback(int result, restore_callback_t *cb) {
       }
       return;
     }
-  } else if (get_fatal_error()) {  // fatal error in other restore-thread
-    restoreLogger.log_error("Restore: Failed to restore data due to an "
-                            "unrecoverable error in another restore thread. "
-                            "Exiting...");
+  } else if (get_fatal_error())  // fatal error in other restore-thread
+  {
+    /* Close transaction */
+    m_ndb->closeTransaction(cb->connection);
+    cb->connection = nullptr;
+    restoreLogger.log_error(
+        "Restore: Failed to restore data due to a unrecoverable error "
+        "previously detected. Exiting...");
     cb->next = m_free_callback;
     m_free_callback = cb;
     return;
@@ -4304,7 +4316,9 @@ retry:
     return;
   }
 
-  cb->connection = m_ndb->startTransaction();
+  cb->n_bytes = 0;
+  /* Start transaction with hint if supplied */
+  cb->connection = m_ndb->startTransaction(ga_hint, 0);
   NdbTransaction *trans = cb->connection;
   if (trans == NULL) {
     if (errorHandler(cb))  // temp error, retry
@@ -4594,8 +4608,8 @@ bool BackupRestore::endOfLogEntrys() {
 
   info.setLevel(254);
   restoreLogger.log_info(
-      "Restored %u tuples and "
-      "%u log entries",
+      "Restored %llu tuples and "
+      "%llu log entries",
       m_dataCount, m_logCount);
   return true;
 }

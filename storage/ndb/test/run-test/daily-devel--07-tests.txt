@@ -389,3 +389,11 @@ max-time: 360
 cmd: testNodeRestart
 args: -n timeout_apifail T1
 max-time: 240
+
+cmd: testBackup
+args: -n BackupDuringRestart T1
+max-time: 360
+
+cmd: testBackup
+args: -n BackupFragmentConsistency T1
+max-time: 240

@@ -36,15 +36,13 @@ SET(KEYRING_COMPONENT_COMMON_TESTS
   operations
   parser
   aes_encryption
-  )
+)
 
-SET(ALL_KEYRING_COMPONENT_COMMON_TESTS)
-FOREACH(test ${KEYRING_COMPONENT_COMMON_TESTS})
-  LIST(APPEND ALL_KEYRING_COMPONENT_COMMON_TESTS ${test}-t.cc)
-ENDFOREACH()
+LIST(TRANSFORM KEYRING_COMPONENT_COMMON_TESTS APPEND "-t.cc"
+  OUTPUT_VARIABLE ALL_KEYRING_COMPONENT_COMMON_TESTS)
 LIST(APPEND ALL_KEYRING_COMPONENT_COMMON_TESTS
   ${CMAKE_SOURCE_DIR}/components/keyrings/common/encryption/aes.cc
-  )
+)
 
 SET(KEYRING_COMPONENT_LIBS
   keyring_common
@@ -61,10 +59,13 @@ MYSQL_ADD_EXECUTABLE(merge_component_keyring_common_tests-t
   ${COMPILE_OPTIONS_ARG}
   ENABLE_EXPORTS
   ADD_TEST merge_component_keyring_common_tests
+  EXCLUDE_FROM_GCOV
   LINK_LIBRARIES
   ${KEYRING_COMPONENT_LIBS} ${GTEST_LIBRARIES} gtest_main
-  )
-DOWNGRADE_STRINGOP_WARNINGS(merge_component_keyring_common_tests-t)
+)
+IF(TARGET merge_component_keyring_common_tests-t)
+  DOWNGRADE_STRINGOP_WARNINGS(merge_component_keyring_common_tests-t)
+ENDIF()
 
 FOREACH(test ${KEYRING_COMPONENT_COMMON_TESTS})
   MYSQL_ADD_EXECUTABLE(keyring_common_${test}-t ${test}-t.cc
@@ -74,6 +75,7 @@ FOREACH(test ${KEYRING_COMPONENT_COMMON_TESTS})
     EXCLUDE_FROM_ALL
     LINK_LIBRARIES
     ${KEYRING_COMPONENT_LIBS} ${GTEST_LIBRARIES} gtest_main
+    ADD_GCOV_TEST ${test}
     )
 ENDFOREACH()
 
