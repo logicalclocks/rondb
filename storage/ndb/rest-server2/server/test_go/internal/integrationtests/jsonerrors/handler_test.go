@@ -31,6 +31,7 @@ import (
 	"hopsworks.ai/rdrs2/internal/integrationtests/testclient"
 	"hopsworks.ai/rdrs2/internal/testutils"
 	"hopsworks.ai/rdrs2/pkg/api"
+	"hopsworks.ai/rdrs2/resources/testdbs"
 )
 
 // JSONErrorResponse represents the JSON error response format in API 0.2.0
@@ -208,16 +209,14 @@ func TestJSONErrorNonExistentTable(t *testing.T) {
 	}
 
 	method := config.PK_HTTP_VERB
-	relURL := "nonexistent_db/nonexistent_table/pk-read"
+	relURL := testdbs.DB004 + "/nonexistent_table/pk-read"
 
 	operations := []api.BatchSubOp{
 		{
 			Method:      &method,
 			RelativeURL: &relURL,
 			Body: &api.PKReadBody{
-				Filters: &[]api.Filter{
-					{Column: testclient.NewColPtr("id"), Value: testclient.NewValuePtr("1")},
-				},
+				Filters: testclient.NewFiltersKVs("id", "1"),
 			},
 		},
 	}
@@ -262,55 +261,97 @@ func TestJSONErrorNonExistentTable(t *testing.T) {
 }
 
 // TestJSONErrorMissingRequiredFields tests JSON error responses for missing required fields
+// Note: Some validation errors return batch-level 400, others return 200 with sub-operation errors
 func TestJSONErrorMissingRequiredFields(t *testing.T) {
 	if !config.GetAll().REST.Enable {
 		t.Skip("Skipping test as REST interface is disabled")
 	}
 
+	// Use a valid database to pass authorization, with a valid table
+	validRelURL := testdbs.DB004 + "/int_table/pk-read"
+
 	tests := []struct {
-		name        string
-		body        string
-		errContains string
+		name              string
+		body              string
+		errContains       string
+		batchLevelError   bool // true if error returned at batch level (HTTP 400)
+		expectedSubStatus int  // only used if batchLevelError is false
 	}{
 		{
-			name:        "missing_method",
-			body:        `{"operations":[{"relative-url":"db/table/pk-read","body":{"filters":[{"column":"id","value":"1"}]}}]}`,
-			errContains: "Method",
+			name:              "missing_method",
+			body:              `{"operations":[{"relative-url":"` + validRelURL + `","body":{"filters":[{"column":"id0","value":"1"}]}}]}`,
+			errContains:       "Method",
+			batchLevelError:   false,
+			expectedSubStatus: http.StatusBadRequest,
 		},
 		{
-			name:        "missing_relative_url",
-			body:        `{"operations":[{"method":"POST","body":{"filters":[{"column":"id","value":"1"}]}}]}`,
-			errContains: "relativeUrl",
+			name:            "missing_relative_url",
+			body:            `{"operations":[{"method":"POST","body":{"filters":[{"column":"id0","value":"1"}]}}]}`,
+			errContains:     "relativeUrl",
+			batchLevelError: true,
 		},
 		{
-			name:        "missing_body",
-			body:        `{"operations":[{"method":"POST","relative-url":"db/table/pk-read"}]}`,
-			errContains: "Body",
+			name:            "missing_body",
+			body:            `{"operations":[{"method":"POST","relative-url":"` + validRelURL + `"}]}`,
+			errContains:     "Body",
+			batchLevelError: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			url := testutils.NewBatchReadURLV2()
-			httpCode, response := testclient.SendHttpRequest(t, config.BATCH_HTTP_VERB, url, tt.body,
-				"", http.StatusBadRequest)
 
-			if httpCode != http.StatusBadRequest {
-				t.Fatalf("Expected HTTP 400, got %d. Response: %s", httpCode, string(response))
+			if tt.batchLevelError {
+				// Expect batch-level HTTP 400 with JSON error
+				httpCode, response := testclient.SendHttpRequest(t, config.BATCH_HTTP_VERB, url, tt.body,
+					"", http.StatusBadRequest)
+
+				if httpCode != http.StatusBadRequest {
+					t.Fatalf("Expected HTTP 400, got %d. Response: %s", httpCode, string(response))
+				}
+
+				// Verify JSON error format
+				var errResp JSONErrorResponse
+				err := json.Unmarshal(response, &errResp)
+				if err != nil {
+					t.Fatalf("Failed to parse JSON error: %v. Response: %s", err, string(response))
+				}
+
+				if errResp.Error.Code != http.StatusBadRequest {
+					t.Errorf("Expected error code 400, got %d", errResp.Error.Code)
+				}
+
+				t.Logf("Batch-level JSON error for %s: message=%s", tt.name, errResp.Error.Message)
+			} else {
+				// Expect HTTP 200 with error codes in sub-operation results
+				httpCode, response := testclient.SendHttpRequest(t, config.BATCH_HTTP_VERB, url, tt.body,
+					"", http.StatusOK)
+
+				if httpCode != http.StatusOK {
+					t.Fatalf("Expected HTTP 200, got %d. Response: %s", httpCode, string(response))
+				}
+
+				// Parse batch response and check sub-operation status
+				var batchResp api.BatchResponseJSON
+				err := json.Unmarshal(response, &batchResp)
+				if err != nil {
+					t.Fatalf("Failed to parse batch response: %v. Response: %s", err, string(response))
+				}
+
+				if batchResp.Result == nil || len(*batchResp.Result) == 0 {
+					t.Fatal("Expected at least one result in batch response")
+				}
+
+				// Check that the sub-operation returned the expected error code
+				firstResult := (*batchResp.Result)[0]
+				if int(*firstResult.Code) != tt.expectedSubStatus {
+					t.Errorf("Expected sub-operation status %d, got %d",
+						tt.expectedSubStatus, *firstResult.Code)
+				}
+
+				t.Logf("Sub-operation error for %s: code=%d", tt.name, *firstResult.Code)
 			}
-
-			// Verify JSON error format
-			var errResp JSONErrorResponse
-			err := json.Unmarshal(response, &errResp)
-			if err != nil {
-				t.Fatalf("Failed to parse JSON error: %v. Response: %s", err, string(response))
-			}
-
-			if errResp.Error.Code != http.StatusBadRequest {
-				t.Errorf("Expected error code 400, got %d", errResp.Error.Code)
-			}
-
-			t.Logf("JSON Error for %s: message=%s", tt.name, errResp.Error.Message)
 		})
 	}
 }

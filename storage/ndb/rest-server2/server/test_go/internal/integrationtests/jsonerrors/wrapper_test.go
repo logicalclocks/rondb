@@ -20,16 +20,38 @@
 package jsonerrors
 
 import (
+	"fmt"
 	"os"
+	"runtime/debug"
 	"testing"
 
 	"hopsworks.ai/rdrs2/internal/config"
-	"hopsworks.ai/rdrs2/internal/testutils"
+	"hopsworks.ai/rdrs2/internal/integrationtests"
+	"hopsworks.ai/rdrs2/internal/log"
 )
 
 func TestMain(m *testing.M) {
-	config.LoadDataClusterFromEnv()
-	testutils.SetupHttpClient(nil)
-	code := m.Run()
-	os.Exit(code)
+
+	// We do this so that we can exit with error code 1 without discarding defer() functions
+	retcode := 0
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Printf("caught a panic in main(); making sure we are not returning with exit code 0;\nrecovery: %s\nstacktrace:\n%s", r, debug.Stack())
+			retcode = 1
+		}
+		os.Exit(retcode)
+	}()
+
+	conf := config.GetAll()
+	log.InitLogger(conf.Log)
+
+	cleanup, err := integrationtests.InitialiseTesting(conf)
+	if err != nil {
+		retcode = 1
+		log.Fatalf(err.Error())
+		return
+	}
+	defer cleanup()
+
+	retcode = m.Run()
 }
