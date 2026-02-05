@@ -62,6 +62,10 @@ func SendHttpRequestWithClient(
 	case http.MethodGet:
 		req, err = http.NewRequest(http.MethodGet, url, nil)
 
+	case http.MethodDelete:
+		req, err = http.NewRequest(http.MethodDelete, url, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+
 	default:
 		t.Fatalf("HTTP verb '%s' is not implemented", httpVerb)
 	}
