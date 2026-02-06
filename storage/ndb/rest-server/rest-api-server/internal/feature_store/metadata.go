@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/hamba/avro/v2"
@@ -57,17 +58,26 @@ type FeatureViewMetadata struct {
 	JoinKeyMap         map[string][]string        // key: fName, value: list of feature which join on the key. Used for filling in pk value.
 	RequiredJoinKeyMap map[string][]string        // key: serving-key-prefix + fName, value: list of feature which join on the key. Used for filling in pk value.
 	ComplexFeatures    map[string]*ComplexFeature // key: joinIndex + fgId + fName, label are excluded. joinIndex is needed because of self-join
+	HasSpine           bool                       // Does this FV contains spine FGs
 }
 
 type FeatureGroupFeatures struct {
-	FeatureStoreName    string
-	FeatureStoreId      int
-	FeatureGroupName    string
-	FeatureGroupVersion int
-	FeatureGroupId      int
-	JoinIndex           int
-	Features            []*FeatureMetadata
-	PrimaryKeyMap       []*dal.ServingKey
+	FeatureStoreName       string
+	FeatureStoreId         int
+	FeatureGroupName       string
+	FeatureGroupVersion    int
+	FeatureGroupId         int
+	JoinIndex              int
+	Features               []*FeatureMetadata
+	PrimaryKeyMap          []*dal.ServingKey
+	TableName              string
+	FeatureGroupKey        string // joinIndex|featureGroupId
+	OnDemandFeatureGroupID int
+	Spine                  bool
+}
+
+func (f *FeatureGroupFeatures) IsSpine() bool {
+	return f.Spine
 }
 
 func (fgf *FeatureGroupFeatures) String() string {
@@ -80,18 +90,22 @@ func (fgf *FeatureGroupFeatures) String() string {
 }
 
 type FeatureMetadata struct {
-	FeatureStoreName    string
-	FeatureStoreId      int
-	FeatureGroupName    string
-	FeatureGroupVersion int
-	FeatureGroupId      int
-	Id                  int
-	Name                string
-	Type                string
-	Index               int
-	Label               bool
-	Prefix              string
-	JoinIndex           int
+	FeatureStoreName       string
+	FeatureStoreId         int
+	FeatureGroupName       string
+	FeatureGroupVersion    int
+	FeatureGroupId         int
+	OnDemandFeatureGroupID int
+	Spine                  bool
+	Id                     int
+	Name                   string
+	Type                   string
+	Index                  int
+	Label                  bool
+	Prefix                 string
+	JoinIndex              int
+	IndexKey               string // joinIndex|fgId|Name
+	ServingKey             string // joinIndex|Name
 }
 
 var COMPLEX_FEATURE = map[string]bool{
@@ -103,6 +117,10 @@ var COMPLEX_FEATURE = map[string]bool{
 
 func (f *FeatureMetadata) IsComplex() bool {
 	return COMPLEX_FEATURE[strings.ToUpper(strings.Split(f.Type, "<")[0])]
+}
+
+func (f *FeatureMetadata) IsSpine() bool {
+	return f.Spine
 }
 
 func newFeatureViewMetadata(
@@ -176,6 +194,10 @@ func newFeatureViewMetadata(
 			fgFeature.PrimaryKeyMap = fgPk
 		}
 		fgFeature.JoinIndex = feature.JoinIndex
+		fgFeature.TableName = fmt.Sprintf("%s_%d", feature.FeatureGroupName, feature.FeatureGroupVersion)
+		fgFeature.FeatureGroupKey = fmt.Sprintf("%d|%d", feature.JoinIndex, feature.FeatureGroupId)
+		fgFeature.OnDemandFeatureGroupID = feature.OnDemandFeatureGroupID
+		fgFeature.Spine = feature.Spine
 		fgFeaturesArray = append(fgFeaturesArray, &fgFeature)
 	}
 	less := func(i, j int) bool {
@@ -194,11 +216,17 @@ func newFeatureViewMetadata(
 		featureCount++
 	}
 
+	var hasSpine = false
 	var complexFeatures = make(map[string]*ComplexFeature)
 	var fgSchemaCache = make(map[int]*dal.PerFeatureAvroSchema)
 	for _, fgFeature := range fgFeaturesArray {
 		for _, feature := range fgFeature.Features {
-			if (*feature).IsComplex() {
+
+			if (*feature).IsSpine() {
+				hasSpine = true
+			}
+
+			if (*feature).IsComplex() && !(*feature).IsSpine() {
 				if _, exist := fgSchemaCache[feature.FeatureGroupId]; !exist {
 					projectId, dalErr := dal.GetProjectID(fgFeature.FeatureStoreId)
 					if dalErr != nil {
@@ -264,6 +292,7 @@ func newFeatureViewMetadata(
 	metadata.RequiredJoinKeyMap = requiredJoinKeyMap
 	metadata.JoinKeyMap = joinKeyMap
 	metadata.ComplexFeatures = complexFeatures
+	metadata.HasSpine = hasSpine
 	return &metadata, nil
 }
 
@@ -272,7 +301,12 @@ func getFeatureGroupServingKey(joinIndex int, featureGroupId int) string {
 }
 
 func GetServingKey(joinIndex int, featureName string) string {
-	return fmt.Sprintf("%d|%s", joinIndex, featureName)
+	var sb strings.Builder
+	sb.Grow(12 + len(featureName)) // Pre-allocate: max 10 digits + "|" + feature name
+	sb.WriteString(strconv.Itoa(joinIndex))
+	sb.WriteByte('|')
+	sb.WriteString(featureName)
+	return sb.String()
 }
 
 func GetFeatureGroupKeyByFeature(feature *FeatureMetadata) string {
@@ -280,15 +314,20 @@ func GetFeatureGroupKeyByFeature(feature *FeatureMetadata) string {
 }
 
 func GetFeatureGroupKeyByTDFeature(feature *FeatureGroupFeatures) string {
-	return *getFeatureGroupIndexKey(feature.JoinIndex, feature.FeatureGroupId)
+	return feature.FeatureGroupKey
 }
 
 func GetFeatureIndexKeyByFeature(feature *FeatureMetadata) string {
-	return *getFeatureIndexKey(feature.JoinIndex, feature.FeatureGroupId, feature.Name)
+	return feature.IndexKey
 }
 
 func GetFeatureIndexKeyByFgIndexKey(fgKey string, featureName string) string {
-	return fmt.Sprintf("%s|%s", fgKey, featureName)
+	var sb strings.Builder
+	sb.Grow(len(fgKey) + 1 + len(featureName)) // Pre-allocate exact size
+	sb.WriteString(fgKey)
+	sb.WriteByte('|')
+	sb.WriteString(featureName)
+	return sb.String()
 }
 
 func getFeatureGroupIndexKey(joinIndex int, fgId int) *string {
@@ -297,7 +336,7 @@ func getFeatureGroupIndexKey(joinIndex int, fgId int) *string {
 }
 
 func getFeatureIndexKey(joinIndex int, fgId int, f string) *string {
-	var featureIndexKey = GetFeatureIndexKeyByFgIndexKey(*getFeatureGroupIndexKey(joinIndex, fgId), f)
+	var featureIndexKey = fmt.Sprintf("%d|%d|%s", joinIndex, fgId, f)
 	return &featureIndexKey
 }
 
@@ -362,6 +401,7 @@ func GetFeatureViewMetadata(featureStoreName, featureViewName string, featureVie
 			}
 			fgCache[tdf.FeatureGroupID] = featureGroup
 		}
+
 		feature := FeatureMetadata{}
 		if featureStoreName, exist := fsIdToName[featureGroup.FeatureStoreId]; exist {
 			feature.FeatureStoreName = featureStoreName
@@ -380,6 +420,8 @@ func GetFeatureViewMetadata(featureStoreName, featureViewName string, featureVie
 		feature.FeatureGroupName = featureGroup.Name
 		feature.FeatureGroupVersion = featureGroup.Version
 		feature.FeatureGroupId = tdf.FeatureGroupID
+		feature.OnDemandFeatureGroupID = featureGroup.OnDemandFeatureGroupID
+		feature.Spine = featureGroup.Spine
 		feature.Id = tdf.FeatureID
 		feature.Name = tdf.Name
 		feature.Type = tdf.Type
@@ -387,6 +429,8 @@ func GetFeatureViewMetadata(featureStoreName, featureViewName string, featureVie
 		feature.Label = tdf.Label == 1
 		feature.Prefix = joinIdToJoin[tdf.TDJoinID].Prefix
 		feature.JoinIndex = joinIdToJoin[tdf.TDJoinID].Index
+		feature.IndexKey = fmt.Sprintf("%d|%d|%s", feature.JoinIndex, feature.FeatureGroupId, feature.Name)
+		feature.ServingKey = GetServingKey(feature.JoinIndex, feature.Name)
 		features[i] = &feature
 	}
 	var servingKeys, err1 = dal.GetServingKeys(fvID)

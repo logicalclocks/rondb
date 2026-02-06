@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023, 2024 Hopsworks AB
+ * Copyright (C) 2023, 2026 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -620,7 +620,13 @@ RS_Status find_feature_group_data_int(Ndb *ndb_object,
   }
 
   fg->feature_store_id = feature_store_id_attr->int32_value();
-  fg->version = feature_group_version_attr->int32_value();
+  fg->version          = feature_group_version_attr->int32_value();
+  
+  if (on_demand_feature_group_id_attr->isNULL()) {
+    fg->on_demand_feature_group_id = 0;
+  } else {
+    fg->on_demand_feature_group_id = on_demand_feature_group_id_attr->int32_value();
+  }
 
   Uint32 name_attr_bytes;
   const char *name_attr_start = nullptr;
@@ -1372,5 +1378,92 @@ RS_Status find_feature_group_schema(const char *subject_name, int project_id, ch
                        {std::make_tuple(HOPSWORKS, SCHEMAS)});
   )
   rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb_object, &status);
+  return status;
+}
+
+//-------------------------------------------------------------------------------------------------
+
+RS_Status find_on_demand_feature_group_int(Ndb *ndb_object, int id, OnDemandFeatureGroup *odfg) {
+
+  NdbError ndb_error;
+  const NdbDictionary::Table *table_dict;
+  NdbTransaction *tx;
+  NdbOperation *ndb_op;
+
+  RS_Status status = select_table(ndb_object, HOPSWORKS, ON_DEMAND_FEATURE_GROUP, &table_dict);
+  if (status.http_code != SUCCESS) {
+    return status;
+  }
+
+  status = start_transaction(ndb_object, &tx);
+  if (status.http_code != SUCCESS) {
+    return status;
+  }
+
+  status = get_op(ndb_object, tx, ON_DEMAND_FEATURE_GROUP, &ndb_op);
+  if (status.http_code != SUCCESS) {
+    ndb_object->closeTransaction(tx);
+    return status;
+  }
+
+  status = read_tuple(ndb_object, ndb_op);
+  if (status.http_code != SUCCESS) {
+    ndb_object->closeTransaction(tx);
+    return status;
+  }
+
+  if (ndb_op->equal("id", id) != 0) {
+    ndb_error = ndb_op->getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_023);
+  }
+
+  NdbRecAttr *spine_attr = ndb_op->getValue("spine", nullptr);
+
+  if (spine_attr == nullptr) {
+    ndb_error = ndb_op->getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_019);
+  }
+
+  if (tx->execute(NdbTransaction::Commit) != 0) {
+    ndb_error = tx->getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_009);
+  }
+
+  if (ndb_op->getNdbError().classification == NdbError::NoDataFound) {
+    ndb_object->closeTransaction(tx);
+    return RS_CLIENT_404_ERROR();
+  }
+
+  odfg->spine = spine_attr->int8_value();
+  
+  ndb_object->closeTransaction(tx);
+
+  return RS_OK;
+}
+
+//-------------------------------------------------------------------------------------------------
+
+/**
+ * Find on_demand_feature_group
+ * SELECT spine from  on_demand_feature_group where id = {id}
+ */
+RS_Status find_on_demand_feature_group(int id, OnDemandFeatureGroup *odfg) {
+  Ndb *ndb_object  = nullptr;
+  RS_Status status = rdrsRonDBConnectionPool->GetMetadataNdbObject(&ndb_object);
+  if (status.http_code != SUCCESS) {
+    return status;
+  }
+  /* clang-format off */
+  METADATA_OP_RETRY_HANDLER(
+    status = find_on_demand_feature_group_int(ndb_object, id, odfg);
+    HandleSchemaErrors(ndb_object, status, {std::make_tuple(HOPSWORKS, SCHEMAS)});
+  )
+  /* clang-format on */
+
+  rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb_object, &status);
+
   return status;
 }

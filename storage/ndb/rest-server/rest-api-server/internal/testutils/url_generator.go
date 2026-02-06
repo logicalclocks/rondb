@@ -61,6 +61,13 @@ func NewHealthURL() string {
 	return url
 }
 
+func NewPKReadRelativeURL(db string, table string) string {
+	url := fmt.Sprintf("%s/%s/%s",
+		db, table, config.PK_DB_OPERATION,
+	)
+	return url
+}
+
 func NewPKReadURL(db string, table string) string {
 	conf := config.GetAll()
 	url := fmt.Sprintf("%s:%d%s%s",
