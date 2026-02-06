@@ -49,12 +49,8 @@ inline RS_Status __RS_ERROR(const HTTP_CODE http_code,
   ret.mysql_code = mysql_code;
   ret.err_line_no = line_no;
 
-  strncpy(ret.message, msg.c_str(), RS_STATUS_MSG_LEN - 1);// last byte for null terminator char
-  ret.message[RS_STATUS_MSG_LEN - 1] = '\0';
-
-  strncpy(ret.err_file_name, file_name.c_str(),
-          RS_STATUS_FILE_NAME_LEN - 1);  // last byte for null terminator char
-  ret.err_file_name[RS_STATUS_FILE_NAME_LEN - 1] = '\0';
+  snprintf(ret.message, RS_STATUS_MSG_LEN, "%s", msg.c_str());
+  snprintf(ret.err_file_name, RS_STATUS_FILE_NAME_LEN, "%s", file_name.c_str());
 
   return ret;
 }

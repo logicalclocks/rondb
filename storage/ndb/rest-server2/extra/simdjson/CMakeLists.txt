@@ -27,4 +27,5 @@ add_subdirectory("simdjson-${SIMDJSON_VERSION}")
 
 target_compile_options(simdjson PRIVATE
     -Wno-documentation
+    -Wno-maybe-uninitialized
 )
