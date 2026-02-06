@@ -250,6 +250,7 @@ if (BASE64_BUILD_CLI)
     add_executable(base64-bin
         bin/base64.c
     )
+    target_compile_options(base64-bin PRIVATE -Wno-missing-field-initializers)
     target_link_libraries(base64-bin PRIVATE base64)
     set_target_properties(base64-bin PROPERTIES
         OUTPUT_NAME base64
