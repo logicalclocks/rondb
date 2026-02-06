@@ -36,6 +36,9 @@ add_library(Jsoncpp_lib STATIC ${jsoncpp_SOURCE_DIR}/jsoncpp.cpp)
 target_include_directories(Jsoncpp_lib PUBLIC ${jsoncpp_SOURCE_DIR})
 target_compile_options(Jsoncpp_lib PRIVATE -Wno-implicit-fallthrough -Wno-stringop-overflow)
 
+# Silence CMP0075 warning from drogon's check_include_file_cxx() calls.
+cmake_policy(SET CMP0075 NEW)
+
 # Add drogon subdirectory
 add_subdirectory(drogon-${DROGON_VERSION})
 
