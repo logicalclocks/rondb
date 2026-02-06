@@ -134,6 +134,11 @@ struct ndb_mgm_handle {
 };
 
 
+extern "C" void ndb_mgm_print_error(ndb_mgm_handle *handle) {
+  ndbout_c("Error: code: %u, text:: %s",
+    handle->last_error,
+    &handle->last_error_desc[0]);
+}
 /*
   Check if version "curr" is new relative a list of given versions.
 
