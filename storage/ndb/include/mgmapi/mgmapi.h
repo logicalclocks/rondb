@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1991,6 +1991,10 @@ int ndb_mgm_get_tls_stats(NdbMgmHandle handle,
   int ndb_mgm_drop_user(NdbMgmHandle handle,
                         const char *user_name);
 
+  /**
+   * Error printer
+   */
+  void ndb_mgm_print_error(NdbMgmHandle handle);
 #ifdef __cplusplus
 }
 #endif

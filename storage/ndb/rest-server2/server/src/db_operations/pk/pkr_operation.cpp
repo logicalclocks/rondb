@@ -209,7 +209,6 @@ RS_Status BatchKeyOperations::setup_read_operations() {
 // (see pk_base_operation.cpp)
 
 // close_transaction and handle_ndb_error are inherited from BaseBatchOperations
-}
 RS_Status BatchKeyOperations::perform_operation(
   ArenaMalloc *amalloc,
   Uint32 numOperations,
