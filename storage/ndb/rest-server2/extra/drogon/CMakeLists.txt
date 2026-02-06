@@ -66,7 +66,7 @@ target_compile_options(drogon PUBLIC
     -Wno-missing-field-initializers
     -Wno-missing-format-attribute
     -Wno-overloaded-virtual
-    -Wno-restrict
+    $<$<CXX_COMPILER_ID:GNU>:-Wno-restrict>
     -Wno-sign-compare
     -Wno-unused-function
     -Wno-unused-variable

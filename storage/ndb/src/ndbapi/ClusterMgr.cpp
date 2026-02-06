@@ -74,7 +74,7 @@ int global_flag_skip_invalidate_cache = 0;
 int global_flag_skip_waiting_for_clean_cache = 0;
 extern "C"
 void
-error_printer(const char * fmt, ...) __attribute__ ((format (gnu_printf, 1, 2)));
+error_printer(const char * fmt, ...) __attribute__ ((format (printf, 1, 2)));
 
 extern "C"
 void
