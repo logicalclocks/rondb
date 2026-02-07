@@ -34,7 +34,10 @@ set(BUILD_TESTING ON CACHE BOOL "Enable Drogon tests" FORCE)
 set(jsoncpp_SOURCE_DIR "${SIMDJSON_SOURCE_DIR}/dependencies/jsoncppdist")
 add_library(Jsoncpp_lib STATIC ${jsoncpp_SOURCE_DIR}/jsoncpp.cpp)
 target_include_directories(Jsoncpp_lib PUBLIC ${jsoncpp_SOURCE_DIR})
-target_compile_options(Jsoncpp_lib PRIVATE -Wno-implicit-fallthrough)
+target_compile_options(Jsoncpp_lib PRIVATE -Wno-implicit-fallthrough -Wno-stringop-overflow)
+
+# Silence CMP0075 warning from drogon's check_include_file_cxx() calls.
+cmake_policy(SET CMP0075 NEW)
 
 # Add drogon subdirectory
 add_subdirectory(drogon-${DROGON_VERSION})
@@ -63,6 +66,7 @@ target_compile_options(drogon PUBLIC
     -Wno-missing-field-initializers
     -Wno-missing-format-attribute
     -Wno-overloaded-virtual
+    -Wno-restrict
     -Wno-sign-compare
     -Wno-unused-function
     -Wno-unused-variable

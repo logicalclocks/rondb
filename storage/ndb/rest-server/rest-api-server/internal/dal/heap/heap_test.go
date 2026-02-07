@@ -84,7 +84,7 @@ func TestHeap(t *testing.T) {
 	// Note that we now have more FreeBuffers than initially
 	// 	TODO: Figure out whether we want this to happen
 	stats = heap.GetNativeBuffersStats()
-	if stats.FreeBuffers != int64(conf.Internal.PreAllocatedBuffers) {
+	if stats.FreeBuffers != allocations {
 		t.Fatalf("Number of free buffers does not match. Expecting: %d, Got: %d",
 			allocations, stats.FreeBuffers)
 	}

@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -40,6 +41,7 @@ import (
 	"hopsworks.ai/rdrs/internal/handlers/stat"
 	"hopsworks.ai/rdrs/internal/log"
 	"hopsworks.ai/rdrs/internal/metrics"
+	"hopsworks.ai/rdrs/internal/middleware"
 	"hopsworks.ai/rdrs/internal/security/apikey"
 )
 
@@ -115,6 +117,26 @@ type RouteHandler struct {
 func registerHandlers(router *gin.Engine, heap *heap.Heap, apiKeyCache apikey.Cache,
 	fvMeta *fsmeta.FeatureViewMetaDataCache, rdrsMetrics *metrics.RDRSMetrics) {
 	router.Use(ErrorHandler)
+
+	// Apply concurrency limiter
+	// 0 = auto (set to GOMAXPROCS), >0 = user-defined limit
+	conf := config.GetAll()
+	if conf.REST.MaxConcurrentReqs == 0 {
+		// Auto mode: use GOMAXPROCS
+		var gomaxprocs int
+		if conf.Internal.GOMAXPROCS > 0 {
+			gomaxprocs = conf.Internal.GOMAXPROCS
+		} else {
+			gomaxprocs = runtime.GOMAXPROCS(0) // 0 means query current value without changing it
+		}
+		log.Infof("MaxConcurrentReqs set to auto mode: using GOMAXPROCS=%d", gomaxprocs)
+		router.Use(middleware.ConcurrencyLimiterWithQueue(uint32(gomaxprocs)))
+	} else {
+		// User-defined limit
+		log.Infof("MaxConcurrentReqs set to %d", conf.REST.MaxConcurrentReqs)
+		router.Use(middleware.ConcurrencyLimiterWithQueue(conf.REST.MaxConcurrentReqs))
+	}
+
 	router.Use(RestMetricsHandler(rdrsMetrics.EndPointMetrics))
 
 	versionGroup := router.Group(config.VERSION_GROUP)

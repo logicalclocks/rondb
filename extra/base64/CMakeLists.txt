@@ -17,6 +17,11 @@ if (POLICY CMP0127)
     cmake_policy(SET CMP0127 NEW)
 endif()
 
+# honor CMAKE_REQUIRED_LIBRARIES in check_include_file()
+if (POLICY CMP0075)
+    cmake_policy(SET CMP0075 NEW)
+endif()
+
 project(base64 LANGUAGES C VERSION 0.5.0)
 
 include(GNUInstallDirs)

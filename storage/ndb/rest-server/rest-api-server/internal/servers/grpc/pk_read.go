@@ -51,7 +51,6 @@ func (s *RonDBServer) PKRead(ctx context.Context, reqProto *api.PKReadRequestPro
 	request := api.ConvertPKReadRequestProto(reqProto)
 
 	var responseIntf api.PKReadResponse = (api.PKReadResponse)(&api.PKReadResponseGRPC{})
-	responseIntf.Init()
 
 	httpStatus, release, err := handlers.Handle(&s.pkReadHandler, &apiKey, request, responseIntf)
 	defer release()

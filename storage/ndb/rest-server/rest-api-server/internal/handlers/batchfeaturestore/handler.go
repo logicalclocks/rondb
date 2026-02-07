@@ -19,7 +19,6 @@ package batchfeaturestore
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -172,6 +171,12 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, func(
 		// --- buffers ---
 
 		code, ronDbErr := h.dbBatchHandler.ExecuteWithBuffers(readParams, *dbResponseIntf, reqPtrs, respPtrs, noOps)
+
+		// Clear Go references to prevent use-after-free when release() calls C.free()
+		// The NativeBuffer structs contain unsafe.Pointer to C memory that will be freed
+		reqPtrs = nil
+		respPtrs = nil
+
 		if log.IsDebug() {
 			log.Debugf("RonDB response: code: %d, error: %s, body: %s", code, ronDbErr, (*dbResponseIntf).String())
 		}
@@ -195,6 +200,10 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, func(
 	fillPassedFeaturesMultipleEntries(features, fsReq.PassedFeatures, &metadata.PrefixFeaturesLookup, &metadata.FeatureIndexLookup, &featureStatus)
 	fmt.Println("222Features: ", FeaturesToJson(features))
 	fsResp.Features = *features
+
+	//Set status for spine FG
+	fixSpineFGStatus(features, fsReq.PassedFeatures, metadata, &metadata.FeatureIndexLookup, &featureStatus)
+
 	if fsReq.MetadataRequest != nil {
 		fsResp.Metadata = *fshandler.GetFeatureMetadata(metadata, fsReq.MetadataRequest)
 	}
@@ -209,13 +218,15 @@ func getFeatureValuesMultipleEntries(batchResponse *api.BatchOpResponse, entries
 	ronDbBatchResult := make([][]*api.PKReadResponseWithCodeJSON, len(*batchStatus))
 	batchResult := make([][]interface{}, len(*batchStatus))
 	for _, response := range *rondbResp.Result {
-		splitOperationId := strings.Split(*response.Body.OperationID, SEQUENCE_SEPARATOR)
-		seqNum, err := strconv.Atoi(splitOperationId[0])
-		if err != nil {
-			return nil, feature_store.READ_FROM_DB_FAIL
+		if response != nil {
+			splitOperationId := strings.Split(*response.Body.OperationID, SEQUENCE_SEPARATOR)
+			seqNum, err := strconv.Atoi(splitOperationId[0])
+			if err != nil {
+				return nil, feature_store.READ_FROM_DB_FAIL
+			}
+			*response.Body.OperationID = splitOperationId[1]
+			ronDbBatchResult[seqNum] = append(ronDbBatchResult[seqNum], response)
 		}
-		*response.Body.OperationID = splitOperationId[1]
-		ronDbBatchResult[seqNum] = append(ronDbBatchResult[seqNum], response)
 	}
 	for i, ronDbResult := range ronDbBatchResult {
 		if len(ronDbResult) != 0 {
@@ -235,7 +246,13 @@ func getBatchPkReadParamsMutipleEntries(metadata *feature_store.FeatureViewMetad
 	for i, entry := range *entries {
 		if (*status)[i] != api.FEATURE_STATUS_ERROR {
 			for _, param := range *fshandler.GetBatchPkReadParams(metadata, entry) {
-				var oid = fmt.Sprintf("%d%s%s", i, SEQUENCE_SEPARATOR, *(*param).OperationID)
+				opID := *(*param).OperationID
+				var sb strings.Builder
+				sb.Grow(12 + len(SEQUENCE_SEPARATOR) + len(opID)) // Pre-allocate
+				sb.WriteString(strconv.Itoa(i))
+				sb.WriteString(SEQUENCE_SEPARATOR)
+				sb.WriteString(opID)
+				oid := sb.String()
 				(*param).OperationID = &oid
 				batchReadParams = append(batchReadParams, param)
 			}
@@ -255,6 +272,21 @@ func fillPassedFeaturesMultipleEntries(features *[][]interface{}, passedFeatures
 		for i, feature := range *features {
 			if (*status)[i] != api.FEATURE_STATUS_ERROR {
 				fshandler.FillPassedFeatures(&feature, (*passedFeatures)[i], featureMetadata, indexLookup)
+			}
+		}
+	}
+}
+
+func fixSpineFGStatus(features *[][]interface{},
+	passedFeatures *[]*map[string]*json.RawMessage,
+	fvMetadata *feature_store.FeatureViewMetadata,
+	indexLookup *map[string]int, status *[]api.FeatureStatus) {
+
+	if fvMetadata.HasSpine {
+		for i, _ := range *status {
+			if (*status)[i] != api.FEATURE_STATUS_ERROR {
+				// set status to MISSING if not already set to some error
+				(*status)[i] = api.FEATURE_STATUS_MISSING
 			}
 		}
 	}

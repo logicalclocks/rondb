@@ -16,11 +16,13 @@
 package rest
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/bytedance/sonic"
 	"github.com/gin-gonic/gin"
 	"hopsworks.ai/rdrs/internal/config"
+	fsmetadata "hopsworks.ai/rdrs/internal/feature_store"
 	"hopsworks.ai/rdrs/internal/handlers"
 	"hopsworks.ai/rdrs/pkg/api"
 )
@@ -51,10 +53,31 @@ func (h *RouteHandler) BatchFeatureStore(c *gin.Context) {
 }
 
 func parseBatchFeatureStoreRequest(c *gin.Context) (*api.BatchFeatureStoreRequest, error) {
-
-	postParams := api.BatchFeatureStoreRequest{}
-	if err := c.BindJSON(&postParams); err != nil {
+	body, err := c.GetRawData()
+	if err != nil {
 		return nil, err
 	}
+
+	postParams := api.BatchFeatureStoreRequest{}
+	if err := sonic.Unmarshal(body, &postParams); err != nil {
+		return nil, err
+	}
+
+	if postParams.FeatureStoreName == nil {
+		return nil, fmt.Errorf("Error:Field validation for 'FeatureStoreName' failed")
+	}
+
+	if postParams.FeatureViewName == nil {
+		return nil, fmt.Errorf("Error:Field validation for 'FeatureViewName' failed")
+	}
+
+	if postParams.FeatureViewVersion == nil {
+		return nil, fmt.Errorf("Error:Field validation for 'FeatureViewVersion' failed")
+	}
+
+	if postParams.Entries == nil || len(*postParams.Entries) == 0 {
+		return nil, fmt.Errorf("Error:Field validation for 'Entries' failed. %s ", fsmetadata.NO_PRIMARY_KEY_GIVEN.GetReason())
+	}
+
 	return &postParams, nil
 }
