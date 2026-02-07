@@ -902,10 +902,15 @@ Each per-thread AggInterpreter is a complete, independent instance:
 - Has its own GroupByEntry pool (no `m_mutex` per group needed)
 - Has its own accumulators for each group
 - Uses the same aggregation program (shared, immutable)
+- Uses the **same hash function and initial hash table size** as all
+  other per-thread interpreters — this is critical for efficient
+  bucket-sequential merge (see Merge Algorithm)
 
 The same group key (e.g., shipmode = 'AIR') may exist in multiple
 per-thread interpreters simultaneously. This is correct — the merge
-phase will combine them.
+phase will combine them. Because all interpreters use the same hash
+function, matching groups are in the same bucket index across all
+interpreters.
 
 #### Merge Algorithm
 
@@ -913,40 +918,168 @@ At completion time, DblqhProxy merges all per-thread interpreters.
 This runs single-threaded — no locking needed since all operations
 have completed before JOIN_AGG_COMPLETE_REQ arrives.
 
-```cpp
-// Merge all per-thread interpreters into interpreter[0]
-int AggInterpreter::MergeFrom(const AggInterpreter* other) {
-    // Iterate all groups in the other interpreter
-    for (auto& [key, other_group] : other->m_group_map) {
-        // Find or create the same group in this interpreter
-        GroupByEntry* my_group = findOrCreateGroupNoLock(key);
-        if (my_group == nullptr) {
-            return ZAGG_GROUP_ALLOC_FAILED;
-        }
+For high-cardinality GROUP BY (many groups), the merge must efficiently
+find matching groups across interpreters. A naive approach — iterate
+groups in interpreter[i] and probe the hash map of interpreter[0] —
+causes random cache misses when the hash map is large.
 
-        // Merge accumulators for each aggregate function
-        for (Uint32 i = 0; i < m_num_aggregates; i++) {
-            mergeAccumulator(&my_group->m_accumulators[i],
-                             &other_group->m_accumulators[i],
-                             m_agg_functions[i]);
+##### Consistent Hash Table Structure
+
+All per-thread interpreters use the **same hash function and same hash
+table size**. This means a group with key K hashes to the **same bucket
+index** in every interpreter. The merge exploits this:
+
+```cpp
+// All interpreters use the same hash table layout:
+//   - Same hash function: hashGroupKey(key)
+//   - Same number of buckets: m_hash_table_size
+//   - A group with key K is in bucket hashGroupKey(K) % m_hash_table_size
+//     in EVERY interpreter
+```
+
+##### Bucket-Sequential Merge
+
+Instead of iterating all groups in one interpreter and probing another,
+the merge iterates **by hash bucket index**. For each bucket, it processes
+all entries from all interpreters that fall in that bucket:
+
+```cpp
+int AggInterpreter::MergeAllByBucket(
+    AggInterpreter* interpreters[],
+    Uint32 num_interpreters)
+{
+    // This interpreter (interpreters[0]) accumulates the merged result.
+    // All interpreters have the same m_hash_table_size.
+
+    for (Uint32 bucket = 0; bucket < m_hash_table_size; bucket++) {
+        // For each source interpreter (1..N-1), merge entries
+        // in this bucket into interpreter[0]'s same bucket.
+        for (Uint32 t = 1; t < num_interpreters; t++) {
+            GroupByEntry* other_entry = interpreters[t]->m_buckets[bucket];
+            while (other_entry != nullptr) {
+                // Look up in THIS interpreter's SAME bucket —
+                // key must hash to same bucket, so search is
+                // confined to this bucket's chain.
+                GroupByEntry* my_entry = findInBucket(bucket,
+                                                      other_entry->key());
+                if (my_entry == nullptr) {
+                    // New group: move entry to this bucket
+                    my_entry = insertInBucket(bucket, other_entry->key());
+                    initAccumulators(my_entry);
+                }
+
+                // Merge accumulators
+                for (Uint32 i = 0; i < m_num_aggregates; i++) {
+                    mergeAccumulator(&my_entry->m_accumulators[i],
+                                     &other_entry->m_accumulators[i],
+                                     m_agg_functions[i]);
+                }
+                my_entry->m_row_count += other_entry->m_row_count;
+
+                other_entry = other_entry->m_next;
+            }
         }
-        my_group->m_row_count += other_group->m_row_count;
     }
     return 0;
 }
-
-// Accumulator merge rules:
-// SUM:   result.sum += other.sum
-// COUNT: result.count += other.count
-// MIN:   result.min = min(result.min, other.min)
-// MAX:   result.max = max(result.max, other.max)
-// AVG:   merge sum and count separately, compute avg at finalize
 ```
 
-**Merge complexity:** O(G_total) where G_total is the sum of groups
-across all per-thread interpreters. For low-cardinality GROUP BY this
-is negligible. For high-cardinality, the merge iterates more entries
-but the operations phase was faster due to zero contention.
+**Why this is cache-friendly:**
+- Processing one bucket at a time keeps the working set small
+- All interpreters' entries for bucket B share the same hash prefix,
+  so the bucket chains are short (typically 1-3 entries with good
+  hash distribution)
+- Sequential bucket iteration has a predictable access pattern
+- The merged interpreter's bucket B is hot in cache while we merge
+  all N source interpreters' bucket B entries into it
+
+##### Sorted Merge Alternative
+
+For extremely high cardinality (millions of groups), a sorted merge
+may be more efficient than bucket-sequential merge:
+
+```cpp
+int AggInterpreter::MergeAllSorted(
+    AggInterpreter* interpreters[],
+    Uint32 num_interpreters)
+{
+    // Step 1: Sort each interpreter's groups by key
+    // (can be done in-place on the group arrays)
+    for (Uint32 t = 0; t < num_interpreters; t++) {
+        interpreters[t]->sortGroupsByKey();
+    }
+
+    // Step 2: N-way merge using a priority queue
+    // Groups with matching keys across interpreters
+    // are adjacent in the merge order.
+    PriorityQueue<MergeIterator> pq;
+    for (Uint32 t = 0; t < num_interpreters; t++) {
+        if (interpreters[t]->groupCount() > 0) {
+            pq.push(MergeIterator(interpreters[t], 0));
+        }
+    }
+
+    GroupByEntry* current_result = nullptr;
+    while (!pq.empty()) {
+        MergeIterator top = pq.pop();
+        GroupByEntry* entry = top.currentEntry();
+
+        if (current_result != nullptr &&
+            current_result->key() == entry->key()) {
+            // Same group: merge accumulators
+            for (Uint32 i = 0; i < m_num_aggregates; i++) {
+                mergeAccumulator(&current_result->m_accumulators[i],
+                                 &entry->m_accumulators[i],
+                                 m_agg_functions[i]);
+            }
+            current_result->m_row_count += entry->m_row_count;
+        } else {
+            // New group: start accumulating
+            current_result = appendResultGroup(entry);
+        }
+
+        // Advance iterator, re-insert if more entries
+        if (top.advance()) {
+            pq.push(top);
+        }
+    }
+    return 0;
+}
+```
+
+**Sorted merge characteristics:**
+- O(G_total * log N) — the log N factor from the priority queue is
+  negligible since N (number of threads) is typically small (< 100)
+- Purely sequential memory access through sorted arrays
+- Groups with matching keys are encountered consecutively — the
+  merged result is built in sorted order with no random lookups
+- The sort step is O(G_per_thread * log G_per_thread) per interpreter
+  but can reuse the existing group pool memory
+
+##### Merge Approach Comparison
+
+| Factor | Bucket-Sequential | Sorted Merge |
+|--------|-------------------|--------------|
+| Complexity | O(G_total) amortized | O(G_total * log G_max) |
+| Cache behaviour | Good (bucket at a time) | Excellent (sequential) |
+| Best for | Moderate group counts | Very high group counts |
+| Extra memory | None (in-place) | Sort requires rearrangement |
+| Implementation | Uses existing hash table | Requires sort + priority queue |
+
+The bucket-sequential merge is the natural default since it reuses
+the existing hash table structure. The sorted merge is an optimisation
+for cases where GROUP BY cardinality is very high and the hash table
+becomes too large for cache-friendly bucket processing.
+
+##### Accumulator Merge Rules
+
+```
+SUM:   result.sum += other.sum
+COUNT: result.count += other.count
+MIN:   result.min = min(result.min, other.min)
+MAX:   result.max = max(result.max, other.max)
+AVG:   merge sum and count separately, compute avg at finalize
+```
 
 #### Complete Completion Flow (MUTEX_FREE)
 
