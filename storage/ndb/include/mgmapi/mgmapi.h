@@ -1642,6 +1642,10 @@ extern "C" {
   ndb_mgm_dump_events(NdbMgmHandle handle, enum Ndb_logevent_type type,
                       int no_of_nodes, const int * node_list);
 
+  /**
+   * Error printer
+   */
+  void ndb_mgm_print_error(NdbMgmHandle handle);
 #ifdef __cplusplus
 }
 #endif
