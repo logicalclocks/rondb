@@ -88,13 +88,10 @@ class CRS_Status {
     this->status.classification = classification;
     this->status.code           = code;
     this->status.mysql_code     = mysql_code;
-    strncpy(this->status.message, message, RS_STATUS_MSG_LEN - 1);
-    this->status.message[RS_STATUS_MSG_LEN - 1] = '\0';
-    this->status.err_line_no                    = err_line_no;
-    strncpy(this->status.err_file_name,
-            err_file_name,
-            RS_STATUS_FILE_NAME_LEN - 1);
-    this->status.err_file_name[RS_STATUS_FILE_NAME_LEN - 1] = '\0';
+    snprintf(this->status.message, RS_STATUS_MSG_LEN, "%s", message);
+    this->status.err_line_no = err_line_no;
+    snprintf(this->status.err_file_name, RS_STATUS_FILE_NAME_LEN,
+             "%s", err_file_name);
   }
 };
 

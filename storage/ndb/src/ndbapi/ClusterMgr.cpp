@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -424,10 +424,9 @@ void ClusterMgr::threadMain() {
       m_cluster_state = CS_waiting_for_first_connect;
     }
 
-    NodeFailRep *nodeFailRep =
-        CAST_PTR(NodeFailRep, nodeFail_signal.getDataPtrSend());
+    Uint32 *nodeFailData = nodeFail_signal.getDataPtrSend();
     Uint32 theAllNodes[NodeBitmask::Size];
-    nodeFailRep->noOfNodes = 0;
+    Uint32 noOfNodes = 0;
     NodeBitmask::clear(theAllNodes);
 
     for (int i = 1; i < ABS_MAX_NODES; i++) {
@@ -509,14 +508,15 @@ void ClusterMgr::threadMain() {
             "Node %u disconnecting node %u "
             "due to missed heartbeat",
             getOwnNodeId(), nodeId);
-        nodeFailRep->noOfNodes++;
+        noOfNodes++;
         NodeBitmask::set(theAllNodes, nodeId);
       }
     }
     flush_send_buffers();
     unlock();
 
-    if (nodeFailRep->noOfNodes) {
+    if (noOfNodes) {
+      nodeFailData[NodeFailRep::NoOfNodesIndex] = noOfNodes;
       lock();
       LinearSectionPtr lsptr[3];
       lsptr[0].p = theAllNodes;
@@ -2064,11 +2064,11 @@ void ClusterMgr::reportDisconnected(NodeId nodeId) {
     signal.theLength = NodeFailRep::SignalLengthLong;
     signal.m_noOfSections = 1;
 
-    NodeFailRep *rep = CAST_PTR(NodeFailRep, signal.getDataPtrSend());
+    Uint32 *signalData = signal.getDataPtrSend();
+    signalData[NodeFailRep::FailNoIndex] = 0;
+    signalData[NodeFailRep::MasterNodeIdIndex] = 0;
+    signalData[NodeFailRep::NoOfNodesIndex] = 1;
     Uint32 theAllNodes[NodeBitmask::Size];
-    rep->failNo = 0;
-    rep->masterNodeId = 0;
-    rep->noOfNodes = 1;
     NodeBitmask::clear(theAllNodes);
     NodeBitmask::set(theAllNodes, nodeId);
     LinearSectionPtr lsptr[3];
@@ -2099,10 +2099,10 @@ void ClusterMgr::execNODE_FAILREP(const NdbApiSignal *sig,
   signal.theLength = NodeFailRep::SignalLengthLong;
   signal.m_noOfSections = 1;
 
-  NodeFailRep *copy = CAST_PTR(NodeFailRep, signal.getDataPtrSend());
-  copy->failNo = 0;
-  copy->masterNodeId = 0;
-  copy->noOfNodes = 0;
+  Uint32 *copyData = signal.getDataPtrSend();
+  copyData[NodeFailRep::FailNoIndex] = 0;
+  copyData[NodeFailRep::MasterNodeIdIndex] = 0;
+  Uint32 noOfNodes = 0;
   Uint32 theAllNodes[NodeBitmask::Size];
   NodeBitmask::clear(theAllNodes);
 
@@ -2133,7 +2133,7 @@ void ClusterMgr::execNODE_FAILREP(const NdbApiSignal *sig,
     if (node_failrep == false) {
       theNode.m_node_fail_rep = true;
       NodeBitmask::set(theAllNodes, i);
-      copy->noOfNodes++;
+      noOfNodes++;
     }
 
     if (connected) {
@@ -2143,7 +2143,8 @@ void ClusterMgr::execNODE_FAILREP(const NdbApiSignal *sig,
 
   recalcMinDbVersion();
   recalcMinApiVersion();
-  if (copy->noOfNodes) {
+  if (noOfNodes) {
+    copyData[NodeFailRep::NoOfNodesIndex] = noOfNodes;
     LinearSectionPtr lsptr[3];
     lsptr[0].p = theAllNodes;
     lsptr[0].sz = NodeBitmask::getPackedLengthInWords(theAllNodes);

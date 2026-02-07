@@ -110,12 +110,20 @@ class Paths {
   std::string cjtInstJar() { return jarInstDir() + cjtFile(); }
 
   // Paths for libndbclient
-  std::string libBuildDir() { return binDir() + "library_output_directory"; }
+  std::string libBuildDir();
   std::string libInstDir() { return libInstallPath; }
 
   // Properties file
   std::string propsFile() { return tmpDir() + "clusterj.properties"; }
 };
+
+/*
+ * Defined out-of-line to prevent GCC 12 -Wstringop-overflow false positive
+ * caused by over-inlining std::string concatenation through binDir().
+ */
+std::string Paths::libBuildDir() {
+  return binDir() + "library_output_directory";
+}
 
 Paths paths;
 
