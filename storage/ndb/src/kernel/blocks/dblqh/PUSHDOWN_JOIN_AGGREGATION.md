@@ -74,11 +74,13 @@ For pushdown join aggregation in DBLQH:
 
 ### Design Principles
 
-1. **Dedicated Setup Signal**: A new signal (`JOIN_AGG_SETUP_REQ`) is sent to each data node before the batch starts, creating the shared aggregation state
+1. **Dedicated Setup Signal**: A new signal (`JOIN_AGG_SETUP_REQ`) is sent to each data node before the batch starts, creating the aggregation state
 
-2. **Node-Level Shared State**: The `JoinAggregationState` is created once per data node (not per fragment or per thread) and is accessible by any LDM thread
+2. **Node-Level State**: The `JoinAggregationState` is created once per data node (not per fragment) and is accessible by any thread that executes queries
 
-3. **Thread-Safe Access**: The state structure uses atomic operations or mutex protection for concurrent access
+3. **Selectable Concurrency Strategy**: Dbspj chooses one of two strategies per request:
+   - **MUTEX_BASED**: One shared AggInterpreter with per-group mutex locking
+   - **MUTEX_FREE**: One AggInterpreter per thread, no mutexes during operations; merge at completion
 
 4. **Support Both Operations**: Both LQHKEYREQ and SCAN_FRAGREQ can participate in join aggregation
 
@@ -107,12 +109,31 @@ struct JoinAggregationState {
     Uint32 m_agg_program_len;           // Program length in words
 
     //------------------------------------------------------------------
-    // Aggregation State (thread-safe via per-group locking)
+    // Concurrency Strategy (immutable after creation)
     //------------------------------------------------------------------
-    AggInterpreter* m_agg_interpreter;  // Shared aggregation interpreter
-    // Note: Fine-grained locking is inside AggInterpreter:
+    enum ConcurrencyStrategy {
+        MUTEX_BASED = 0,    // One shared AggInterpreter with per-group mutex
+        MUTEX_FREE = 1      // One AggInterpreter per thread, no mutexes
+    };
+    ConcurrencyStrategy m_strategy;
+    Uint32 m_num_threads;               // Number of query threads on this node
+
+    //------------------------------------------------------------------
+    // Aggregation State
+    //------------------------------------------------------------------
+    // MUTEX_BASED: single shared interpreter with per-group locking
     //   - m_group_map_mutex: protects GROUP BY hash map (find/insert)
     //   - group->m_mutex: per-group mutex for accumulator updates
+    //
+    // MUTEX_FREE: per-thread interpreters, no mutexes needed during
+    //   operations since each thread writes only to its own interpreter.
+    //   At completion, DblqhProxy merges all per-thread interpreters.
+    //------------------------------------------------------------------
+    AggInterpreter* m_agg_interpreter;  // MUTEX_BASED: shared interpreter
+    AggInterpreter* m_per_thread_interpreters[MAX_QUERY_THREADS];
+                                        // MUTEX_FREE: one per thread
+                                        // Indexed by thread number
+                                        // (each thread knows its own index)
 
     //------------------------------------------------------------------
     // Operation Tracking (atomic operations)
@@ -259,8 +280,12 @@ DBSPJ sends `JOIN_AGG_SETUP_REQ` to each data node that has fragments of the lea
 // Purpose: Seize and initialize shared aggregation state before operations start
 
 struct JoinAggSetupReq {
-    static constexpr Uint32 SignalLength = 10;
+    static constexpr Uint32 SignalLength = 11;
     static constexpr Uint32 AggProgramSectionNum = 0;
+
+    // Concurrency strategy values
+    static constexpr Uint32 STRATEGY_MUTEX_BASED = 0;
+    static constexpr Uint32 STRATEGY_MUTEX_FREE = 1;
 
     Uint32 senderRef;           // DBSPJ block reference
     Uint32 senderData;          // SPJ request identifier
@@ -268,6 +293,7 @@ struct JoinAggSetupReq {
     Uint32 transid[2];          // Transaction ID
     Uint32 tableId;             // Leaf table ID
     Uint32 expectedOpCount;     // Expected number of operations (0 = unknown)
+    Uint32 concurrencyStrategy; // STRATEGY_MUTEX_BASED or STRATEGY_MUTEX_FREE
     Uint32 resultRef;           // API reference for FLUSH_AI
     Uint32 resultData;          // API data for FLUSH_AI
     Uint32 routeRef;            // Route reference for FLUSH_AI
@@ -314,19 +340,28 @@ JoinAggregationState* state = getJoinAggState(key)
     |
     v
 state->m_key = key
+state->m_strategy = req->concurrencyStrategy
+state->m_num_threads = getNumQueryThreads()
     |
     v
 Copy aggregation program from signal section
-    |
-    v
-Create and initialize AggInterpreter
-    (including group map mutex, per-group mutexes)
     |
     v
 Store identification (transid, senderData, requestId, senderRef)
     |
     v
 Store result routing info (resultRef, resultData, routeRef)
+    |
+    v
+if (m_strategy == MUTEX_BASED):
+    |   Create one shared AggInterpreter
+    |   (with group map mutex, per-group mutexes)
+    |   state->m_agg_interpreter = new AggInterpreter(...)
+    |
+else (MUTEX_FREE):
+    |   Create one AggInterpreter per thread (no mutexes needed)
+    |   for (i = 0; i < m_num_threads; i++):
+    |       state->m_per_thread_interpreters[i] = new AggInterpreter(...)
     |
     v
 Set m_state = SETUP_COMPLETE
@@ -400,14 +435,24 @@ On TUPKEYCONF:
 Extract parent row data from AttrInfo (linked attributes)
     |
     v
-Process row through AggInterpreter with parent data:
-    m_agg_interpreter->ProcessRecWithLinkedAttrs(...)
+Get the AggInterpreter for this operation:
+    if (state->m_strategy == MUTEX_BASED):
+    |   interp = state->m_agg_interpreter   (shared, uses locking)
+    else (MUTEX_FREE):
+    |   interp = state->m_per_thread_interpreters[myThreadIndex]
+    |       (thread-private, no locking needed)
     |
-    +-- Internally uses two-level locking:
+    v
+interp->ProcessRecWithLinkedAttrs(...)
+    |
+    +-- MUTEX_BASED: two-level locking
     |   1. Brief lock on m_group_map_mutex to find/create group
     |   2. Lock group->m_mutex to update accumulators
     |   3. Unlock group->m_mutex
     |   (Multiple threads can aggregate different groups in parallel)
+    |
+    +-- MUTEX_FREE: no locking at all
+    |   Thread-private interpreter, direct hash map access
     |
     v
 Atomic increment: state->m_completed_ops++
@@ -442,13 +487,15 @@ For each row in scan:
     Extract parent row data from AttrInfo
     |
     v
-    Process row through shared AggInterpreter:
-        state->m_agg_interpreter->ProcessRecWithLinkedAttrs(...)
+    Get AggInterpreter (same strategy selection as LQHKEYREQ):
+        MUTEX_BASED: state->m_agg_interpreter (with locking)
+        MUTEX_FREE:  state->m_per_thread_interpreters[myThreadIndex]
         |
-        +-- Two-level locking (parallel across groups):
-            1. Brief lock on m_group_map_mutex to find/create group
-            2. Lock group->m_mutex to update accumulators
-            3. Unlock group->m_mutex
+        v
+    interp->ProcessRecWithLinkedAttrs(...)
+        |
+        +-- MUTEX_BASED: two-level locking (parallel across groups)
+        +-- MUTEX_FREE: no locking (thread-private interpreter)
     |
     v
 When scan batch/fragment complete:
@@ -506,19 +553,21 @@ JoinAggregationState* state = getJoinAggState(aggStateKey)
 Verify: state->m_completed_ops == completedOps
     |
     v
-Acquire state->m_interpreter_mutex
-    |
-    v
 Set state->m_state = FINALIZING
     |
     v
-Finalize aggregation: m_agg_interpreter->FinalizeResults()
+if (state->m_strategy == MUTEX_BASED):
+    |   Finalize: m_agg_interpreter->FinalizeResults()
+    |
+else (MUTEX_FREE):
+    |   Merge all per-thread interpreters into one:
+    |       merged = state->m_per_thread_interpreters[0]
+    |       for (i = 1; i < m_num_threads; i++):
+    |           merged->MergeFrom(m_per_thread_interpreters[i])
+    |   Finalize: merged->FinalizeResults()
     |
     v
 Set state->m_state = SENDING_RESULTS
-    |
-    v
-Release state->m_interpreter_mutex
     |
     v
 Send TRANSID_AI with aggregated results
@@ -726,18 +775,26 @@ if (slot >= m_group_pool_size) {
 }
 ```
 
-#### Complete Row Processing with Per-Group Locking
+#### Complete Row Processing (Strategy-Dependent)
 
 ```cpp
 void processRowForJoinAgg(JoinAggregationState* state,
+                          Uint32 myThreadIndex,
                           const Uint32* rowData,
                           const Uint32* linkedData,
                           Uint32 linkedDataLen) {
-    AggInterpreter* interp = state->m_agg_interpreter;
+    // Select interpreter based on strategy
+    AggInterpreter* interp;
+    if (state->m_strategy == JoinAggregationState::MUTEX_BASED) {
+        interp = state->m_agg_interpreter;
+        // Uses two-level locking internally:
+        // 1. Brief lock on group map to find/create group
+        // 2. Per-group lock to update accumulators
+    } else {
+        interp = state->m_per_thread_interpreters[myThreadIndex];
+        // No locking — thread-private interpreter
+    }
 
-    // Process row with two-level locking:
-    // 1. Brief lock on group map to find/create group
-    // 2. Per-group lock to update accumulators
     int result = interp->ProcessRecWithLinkedAttrs(
         rowData, linkedData, linkedDataLen);
 
@@ -750,20 +807,20 @@ void processRowForJoinAgg(JoinAggregationState* state,
 }
 ```
 
-#### Finalization with Per-Group Locking
+#### Finalization
 
-During finalization, we need to ensure no concurrent updates:
+Finalization runs single-threaded in DblqhProxy after all operations
+have completed, so no concurrent updates are possible.
+
+For MUTEX_FREE, `MergeFrom()` is called first (see "Merge Algorithm"
+section), then `FinalizeResults()` on the merged interpreter.
 
 ```cpp
 int AggInterpreter::FinalizeResults() {
-    // Acquire group map mutex to prevent new group creation
-    NdbMutex_Lock(m_group_map_mutex);
+    // Runs single-threaded in DblqhProxy — no locking needed.
+    // All operations have completed before this is called.
 
-    // Set finalizing flag to reject new rows
-    m_finalizing = true;
-
-    // Iterate all groups - no per-group lock needed since
-    // m_finalizing prevents concurrent updates
+    // Iterate all groups
     for (auto& [key, group] : m_group_map) {
         // Finalize each accumulator (e.g., compute AVG from SUM/COUNT)
         for (Uint32 i = 0; i < m_num_aggregates; i++) {
@@ -771,7 +828,6 @@ int AggInterpreter::FinalizeResults() {
         }
     }
 
-    NdbMutex_Unlock(m_group_map_mutex);
     return 0;
 }
 ```
@@ -799,17 +855,180 @@ struct alignas(64) GroupByEntry {
 
 #### Contention Analysis
 
-| Scenario | Single Mutex | Per-Group Mutex |
-|----------|--------------|-----------------|
-| Low cardinality (e.g., 7 shipmodes) | Some contention | Minimal - only 7 groups |
-| High cardinality (e.g., 1M customers) | Severe contention | Parallel across groups |
-| Skewed distribution | Bottleneck on hot groups | Hot groups still serialize |
-| Group map growth | N/A | Brief contention on insert |
+| Scenario | MUTEX_BASED (per-group) | MUTEX_FREE (per-thread) |
+|----------|------------------------|------------------------|
+| Low cardinality (e.g., 7 shipmodes) | Some contention on hot groups | Zero contention, cheap merge |
+| High cardinality (e.g., 1M customers) | Parallel across groups | Zero contention, larger merge |
+| Skewed distribution | Hot groups still serialize | Zero contention |
+| Group map growth | Brief contention on insert | No contention (private maps) |
+| Completion overhead | None (single interpreter) | Merge N interpreters |
+| Memory footprint | 1 interpreter + mutexes | N interpreters, no mutexes |
 
 **Trade-offs:**
 - Per-group mutex adds ~8 bytes per group
 - Lock-free lookup adds complexity but improves read-heavy workloads
 - For very low cardinality (< 10 groups), single mutex may be simpler
+
+### Mutex-Free Per-Thread Strategy
+
+#### Overview
+
+The mutex-free strategy eliminates all locking during the operations phase by
+giving each thread its own private AggInterpreter. Each thread accumulates
+into its own group map independently. At completion time, DblqhProxy merges
+all per-thread results into one before sending.
+
+#### Thread Addressing
+
+Each thread that can execute queries has an index (0..N-1). The Dblqh worker
+knows its own thread index. The per-thread interpreter is accessed by:
+
+```cpp
+// Two lookups to reach the thread-private interpreter:
+// 1. aggStateKey → JoinAggregationState (pool index, O(1))
+// 2. myThreadIndex → AggInterpreter (array index, O(1))
+
+JoinAggregationState* state = getJoinAggState(aggStateKey);
+AggInterpreter* interp = state->m_per_thread_interpreters[myThreadIndex];
+
+// No mutex needed — this interpreter is private to this thread
+interp->ProcessRecWithLinkedAttrs(...);
+```
+
+#### Per-Thread Interpreter Characteristics
+
+Each per-thread AggInterpreter is a complete, independent instance:
+- Has its own GROUP BY hash map (no `m_group_map_mutex` needed)
+- Has its own GroupByEntry pool (no `m_mutex` per group needed)
+- Has its own accumulators for each group
+- Uses the same aggregation program (shared, immutable)
+
+The same group key (e.g., shipmode = 'AIR') may exist in multiple
+per-thread interpreters simultaneously. This is correct — the merge
+phase will combine them.
+
+#### Merge Algorithm
+
+At completion time, DblqhProxy merges all per-thread interpreters.
+This runs single-threaded — no locking needed since all operations
+have completed before JOIN_AGG_COMPLETE_REQ arrives.
+
+```cpp
+// Merge all per-thread interpreters into interpreter[0]
+int AggInterpreter::MergeFrom(const AggInterpreter* other) {
+    // Iterate all groups in the other interpreter
+    for (auto& [key, other_group] : other->m_group_map) {
+        // Find or create the same group in this interpreter
+        GroupByEntry* my_group = findOrCreateGroupNoLock(key);
+        if (my_group == nullptr) {
+            return ZAGG_GROUP_ALLOC_FAILED;
+        }
+
+        // Merge accumulators for each aggregate function
+        for (Uint32 i = 0; i < m_num_aggregates; i++) {
+            mergeAccumulator(&my_group->m_accumulators[i],
+                             &other_group->m_accumulators[i],
+                             m_agg_functions[i]);
+        }
+        my_group->m_row_count += other_group->m_row_count;
+    }
+    return 0;
+}
+
+// Accumulator merge rules:
+// SUM:   result.sum += other.sum
+// COUNT: result.count += other.count
+// MIN:   result.min = min(result.min, other.min)
+// MAX:   result.max = max(result.max, other.max)
+// AVG:   merge sum and count separately, compute avg at finalize
+```
+
+**Merge complexity:** O(G_total) where G_total is the sum of groups
+across all per-thread interpreters. For low-cardinality GROUP BY this
+is negligible. For high-cardinality, the merge iterates more entries
+but the operations phase was faster due to zero contention.
+
+#### Complete Completion Flow (MUTEX_FREE)
+
+```
+JOIN_AGG_COMPLETE_REQ arrives at DblqhProxy
+    |
+    v
+state = getJoinAggState(aggStateKey)
+    |
+    v
+Verify: state->m_completed_ops == completedOps
+    |
+    v
+Set state->m_state = FINALIZING
+    |
+    v
+merged = state->m_per_thread_interpreters[0]
+    |
+    v
+for i = 1 to m_num_threads - 1:
+    |   merged->MergeFrom(m_per_thread_interpreters[i])
+    |   (single-threaded, no locking — all ops already complete)
+    |
+    v
+merged->FinalizeResults()
+    (compute AVG from SUM/COUNT, etc.)
+    |
+    v
+Send TRANSID_AI with aggregated results
+    |
+    v
+Send JOIN_AGG_COMPLETE_CONF
+```
+
+### Strategy Selection by Dbspj
+
+Dbspj selects the concurrency strategy in JOIN_AGG_SETUP_REQ. Both
+strategies must produce identical results, making it possible to
+verify correctness by running the same query with each strategy and
+comparing output.
+
+#### Selection Criteria
+
+| Factor | Favors MUTEX_BASED | Favors MUTEX_FREE |
+|--------|-------------------|-------------------|
+| GROUP BY cardinality | High (many groups → low contention) | Low (few groups → high contention on hot groups) |
+| Number of threads | Few threads | Many threads |
+| Memory pressure | Tight (one interpreter) | Relaxed (N interpreters) |
+| Merge cost tolerance | N/A | Acceptable (low-cardinality merge is cheap) |
+
+#### Heuristic
+
+```cpp
+// In Dbspj, when preparing JOIN_AGG_SETUP_REQ:
+Uint32 strategy;
+if (estimated_group_count <= num_query_threads * 2) {
+    // Low cardinality: mutex contention likely on hot groups.
+    // Per-thread interpreters avoid all contention.
+    // Merge cost is cheap (few groups to merge).
+    strategy = JoinAggSetupReq::STRATEGY_MUTEX_FREE;
+} else {
+    // High cardinality: threads rarely collide on same group.
+    // Mutex-based saves memory (one interpreter instead of N).
+    // No merge overhead at completion.
+    strategy = JoinAggSetupReq::STRATEGY_MUTEX_BASED;
+}
+```
+
+The `estimated_group_count` can come from MySQL optimizer statistics
+(index cardinality of GROUP BY columns). When no estimate is available,
+MUTEX_FREE is a safe default — it has predictable performance regardless
+of cardinality.
+
+#### Verification Mode
+
+For testing and correctness verification, Dbspj can be configured to:
+1. Run with a forced strategy (always MUTEX_BASED or always MUTEX_FREE)
+2. Compare results between strategies for the same query
+3. Log which strategy was selected and the selection inputs
+
+This can be controlled via a session variable or NDB configuration
+parameter during development and testing.
 
 ### Attribute Information Handling
 
@@ -1012,10 +1231,12 @@ DBSPJ                              DblqhProxy / Dblqh                     DBTUP
   |                                      |                                  |
   |====== Setup Phase (DblqhProxy, single-threaded) ====================  |
   |                                      |                                  |
-  | JOIN_AGG_SETUP_REQ                   |                                  |
+  | JOIN_AGG_SETUP_REQ(strategy)         |                                  |
   |------------------------------------->| [DblqhProxy]                     |
   |                                      | key = seizeJoinAggState()        |
-  |                                      | Initialize state, AggInterpreter |
+  |                                      | state->m_strategy = strategy     |
+  |                                      | MUTEX_BASED: init 1 interpreter  |
+  |                                      | MUTEX_FREE:  init N interpreters |
   |                                      | state->m_key = key               |
   | JOIN_AGG_SETUP_CONF(aggStateKey=key) |                                  |
   |<-------------------------------------|                                  |
@@ -1023,40 +1244,29 @@ DBSPJ                              DblqhProxy / Dblqh                     DBTUP
   | Dbspj stores aggStateKey for use     |                                  |
   | in all subsequent operations         |                                  |
   |                                      |                                  |
-  |====== Operations Phase (Dblqh workers, parallel, any LDM thread) ===  |
+  |====== Operations Phase (Dblqh workers, parallel, any thread) ========  |
   |                                      |                                  |
   | LQHKEYREQ (+aggStateKey, thread 1)   |                                  |
   |------------------------------------->| [Dblqh worker]                   |
-  |                                      | getJoinAggState(aggStateKey)     |
-  |                                      |   (O(1) pool lookup, no mutex)   |
+  |                                      | state = getJoinAggState(key)     |
+  |                                      | MUTEX_BASED: interp = shared     |
+  |                                      | MUTEX_FREE:  interp = my_thread  |
   |                                      | TUPKEYREQ                        |
   |                                      |--------------------------------->|
   |                                      |                                  | Read local row
   |                                      | TUPKEYCONF                       |
   |                                      |<---------------------------------|
-  |                                      | ProcessRecWithLinkedAttrs():     |
-  |                                      |   Lock group_map, find group     |
-  |                                      |   Unlock group_map               |
-  |                                      |   Lock group->mutex              |
-  |                                      |   Update accumulators            |
-  |                                      |   Unlock group->mutex            |
+  |                                      | interp->ProcessRecWithLinked():  |
+  |                                      |   MUTEX_BASED: lock/unlock       |
+  |                                      |   MUTEX_FREE:  no locking        |
   |                                      | Increment completed_ops          |
   | LQHKEYCONF                           |                                  |
   |<-------------------------------------|                                  |
   |                                      |                                  |
   | SCAN_FRAGREQ (+aggStateKey, thread 2)|                                  |
   |------------------------------------->| [Dblqh worker]                   |
-  |                                      | getJoinAggState(aggStateKey)     |
-  |                                      | Create ScanRecord with key       |
-  |                                      | For each row:                    |
-  |                                      |   Read via DBTUP                 |
-  |                                      |   Lock group_map, find group     |
-  |                                      |   Unlock group_map               |
-  |                                      |   Lock group->mutex              |
-  |                                      |   Update accumulators            |
-  |                                      |   Unlock group->mutex            |
-  |                                      |   (parallel with other threads   |
-  |                                      |    on different groups)          |
+  |                                      | (same strategy selection)        |
+  |                                      | For each row: interp->Process()  |
   |                                      | Increment completed_ops          |
   | SCAN_FRAGCONF                        |                                  |
   |<-------------------------------------|                                  |
@@ -1069,9 +1279,11 @@ DBSPJ                              DblqhProxy / Dblqh                     DBTUP
   |------------------------------------->| [DblqhProxy]                     |
   |                                      | getJoinAggState(aggStateKey)     |
   |                                      | Verify completed_ops             |
-  |                                      | FinalizeResults()                |
-  |                                      |   (no concurrent writers since   |
-  |                                      |    all ops already completed)    |
+  |                                      | MUTEX_BASED:                     |
+  |                                      |   FinalizeResults()              |
+  |                                      | MUTEX_FREE:                      |
+  |                                      |   MergeFrom(interp[1..N-1])     |
+  |                                      |   FinalizeResults()              |
   |                                      |                                  |
   |                                      | TRANSID_AI (aggregated results)  |
   |<-------------------------------------|                                  |
@@ -1086,6 +1298,7 @@ DBSPJ                              DblqhProxy / Dblqh                     DBTUP
   | JOIN_AGG_RELEASE_REQ(aggStateKey)    |                                  |
   |------------------------------------->| [DblqhProxy]                     |
   |                                      | releaseJoinAggState(aggStateKey) |
+  |                                      | (frees 1 or N interpreters)      |
 ```
 
 ## File Changes Summary
@@ -1100,14 +1313,14 @@ DBSPJ                              DblqhProxy / Dblqh                     DBTUP
 | `LqhKeyReq.hpp` | Add RI_JOIN_AGGREGATION flag |
 | `ScanFrag.hpp` | Add RI_JOIN_AGGREGATION flag |
 | `signaldata/JoinAgg.hpp` (new) | Signal definitions for JOIN_AGG_* |
-| `AggInterpreter.hpp` | Add ProcessRecWithLinkedAttrs, FinalizeResults |
-| `AggInterpreter.cpp` | Implement linked attribute handling |
+| `AggInterpreter.hpp` | Add ProcessRecWithLinkedAttrs, FinalizeResults, MergeFrom |
+| `AggInterpreter.cpp` | Implement linked attribute handling, per-thread merge logic |
 
 ## Open Questions (Resolved)
 
 1. **Batch Completion Mechanism**: ✓ Dedicated JOIN_AGG_COMPLETE_REQ signal
 
-2. **Thread Safety**: ✓ Per-group mutex inside AggInterpreter, atomics for counters, O(1) key-based state lookup (no hash mutex needed)
+2. **Thread Safety**: ✓ Two selectable strategies: MUTEX_BASED (per-group mutex) or MUTEX_FREE (per-thread interpreters). Atomics for counters, O(1) key-based state lookup
 
 3. **Multi-Node**: ✓ Each node has independent state, DBSPJ coordinates final aggregation if needed
 
@@ -1123,25 +1336,37 @@ DBSPJ                              DblqhProxy / Dblqh                     DBTUP
 
 ## Performance Considerations
 
-1. **Per-Group Locking**: Two-level locking minimizes contention
+1. **MUTEX_BASED Operations**: Two-level locking minimizes contention
    - Group map mutex held briefly for find/insert
    - Per-group mutex allows parallel aggregation across different groups
    - For high-cardinality GROUP BY, threads rarely contend
    - For low-cardinality (< 10 groups), some contention on hot groups
+   - Zero overhead at completion (single interpreter, no merge)
 
-2. **Memory Usage**: Each state includes an AggInterpreter (hash map for groups)
-   - Uses QUERY_MEMORY pool, shared with other query execution
-   - Per-group mutex adds ~8 bytes overhead per group
-   - GroupByEntry aligned to cache lines to prevent false sharing
-   - Memory released when JOIN_AGG_RELEASE_REQ processed
+2. **MUTEX_FREE Operations**: Zero contention during operations
+   - Each thread writes to its own private interpreter — no locking at all
+   - No cache line bouncing between threads (each has own data)
+   - Completion phase adds merge cost: O(G_total) across all per-thread
+     interpreters, but this runs single-threaded in DblqhProxy
+   - For low-cardinality GROUP BY, merge cost is negligible
+   - For high-cardinality, merge iterates more groups but operations
+     phase was fully contention-free
 
-3. **State Lookup**: O(1) pool index access via aggStateKey
+3. **Memory Usage**
+   - MUTEX_BASED: one AggInterpreter + per-group mutex (~8 bytes/group)
+   - MUTEX_FREE: N AggInterpreter instances (one per thread), no mutexes
+   - MUTEX_FREE uses N times more memory for interpreter state, but
+     GroupByEntry does not need mutex or cache-line alignment
+   - Both use QUERY_MEMORY pool; released when JOIN_AGG_RELEASE_REQ processed
+
+4. **State Lookup**: O(1) pool index access via aggStateKey
    - No hash table, no mutex, no hash computation for state lookup
    - Key carried in signal, used for direct array access
+   - MUTEX_FREE adds one more array index (thread index) — still O(1)
    - State pointer cached in TcConnectionrec/ScanRecord after first lookup
-   - Lock-free group lookup optimization for read-heavy workloads
 
-4. **Single-Thread Phases**: Setup/completion/release handled by DblqhProxy
+5. **Single-Thread Phases**: Setup/completion/release handled by DblqhProxy
    - DblqhProxy is single-threaded: no mutex needed for seize/release
-   - Operations phase fully parallel across LDM threads
-   - Finalization runs in DblqhProxy after all operations have completed
+   - Operations phase fully parallel across threads
+   - MUTEX_FREE completion includes merge before finalize
+   - Both strategies produce identical results
