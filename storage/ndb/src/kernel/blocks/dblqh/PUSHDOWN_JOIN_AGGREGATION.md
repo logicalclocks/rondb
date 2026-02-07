@@ -130,10 +130,12 @@ struct JoinAggregationState {
     //   At completion, DblqhProxy merges all per-thread interpreters.
     //------------------------------------------------------------------
     AggInterpreter* m_agg_interpreter;  // MUTEX_BASED: shared interpreter
-    AggInterpreter* m_per_thread_interpreters[MAX_QUERY_THREADS];
+    AggInterpreter** m_per_thread_interpreters;
                                         // MUTEX_FREE: one per thread
                                         // Indexed by thread number
                                         // (each thread knows its own index)
+                                        // Allocated via ndbd_malloc at setup:
+                                        //   m_num_threads * sizeof(AggInterpreter*)
 
     //------------------------------------------------------------------
     // Operation Tracking (atomic operations)
@@ -641,7 +643,9 @@ struct GroupByEntry {
     NdbMutex* m_mutex;
 
     // Aggregate accumulators (protected by m_mutex)
-    AggResItem m_accumulators[MAX_AGGREGATES];
+    // Dynamically allocated via ndbd_malloc: m_num_aggregates * sizeof(AggResItem)
+    AggResItem* m_accumulators;
+    Uint32 m_num_aggregates;    // Number of aggregate functions
     Uint64 m_row_count;         // Number of rows in this group
 };
 
@@ -654,9 +658,10 @@ class AggInterpreter {
     std::unordered_map<GroupKey, GroupByEntry*, GroupKeyHash> m_group_map;
 
     // Pool for GroupByEntry allocation
-    GroupByEntry* m_group_pool;
-    Uint32 m_group_pool_size;
-    std::atomic<Uint32> m_next_group_slot;
+    // Allocated via ndbd_malloc, grows as needed
+    GroupByEntry* m_group_pool;          // Array of pre-allocated entries
+    Uint32 m_group_pool_size;           // Current pool capacity
+    std::atomic<Uint32> m_next_group_slot;  // Next free slot
 };
 ```
 
@@ -699,12 +704,13 @@ int AggInterpreter::ProcessRecWithLinkedAttrs(
         NdbMutex_Lock(group->m_mutex);
 
         // Extract aggregate source values
-        Register values[MAX_AGGREGATES];
-        extractAggregateInputs(linked_attr_data, req_struct, values);
+        // m_values_buf is pre-allocated at interpreter creation time
+        // sized to m_num_aggregates (no MAX constant needed)
+        extractAggregateInputs(linked_attr_data, req_struct, m_values_buf);
 
         // Update each accumulator
         for (Uint32 i = 0; i < m_num_aggregates; i++) {
-            updateAccumulator(&group->m_accumulators[i], m_agg_functions[i], &values[i]);
+            updateAccumulator(&group->m_accumulators[i], m_agg_functions[i], &m_values_buf[i]);
         }
         group->m_row_count++;
 
@@ -842,15 +848,19 @@ struct alignas(64) GroupByEntry {
     // Hot data: mutex and accumulators (accessed during aggregation)
     NdbMutex* m_mutex;                          // 8 bytes
     Uint64 m_row_count;                         // 8 bytes
-    AggResItem m_accumulators[MAX_AGGREGATES];  // variable
+    AggResItem* m_accumulators;                 // 8 bytes (pointer to ndbd_malloc'd array)
+    Uint32 m_num_aggregates;                    // 4 bytes
 
     // Cold data: key info (accessed during lookup/finalization)
     Uint32 m_key_offset;
     Uint32 m_key_len;
-
-    // Padding to cache line boundary
-    char m_padding[...];
 };
+
+// The m_accumulators array is allocated separately via ndbd_malloc
+// with size m_num_aggregates * sizeof(AggResItem). This avoids
+// baking MAX_AGGREGATES into the struct layout. The struct itself
+// stays small and cache-line aligned; the accumulators are allocated
+// contiguously and accessed sequentially during updates.
 ```
 
 #### Contention Analysis
@@ -1249,8 +1259,12 @@ public:
 
 private:
     // Buffer for linked attribute data (parent columns)
-    Uint32 m_linked_attr_buf[MAX_LINKED_ATTR_SIZE];
-    Uint32 m_linked_attr_len;
+    // Allocated via ndbd_malloc at interpreter creation time,
+    // sized to the actual linked attribute length from the
+    // aggregation program.
+    Uint32* m_linked_attr_buf;
+    Uint32 m_linked_attr_buf_size;  // Allocated size in words
+    Uint32 m_linked_attr_len;       // Current content length in words
 
     // Load column value - checks source bit to determine local vs linked
     int LoadColumnValue(Uint32 col_id, Register* reg);
@@ -1335,13 +1349,35 @@ enum JoinAggErrorCode {
 
 ### Memory Management
 
-Memory is allocated using NDB's internal allocator from `ndbd_malloc_impl.hpp` with `QUERY_MEMORY` resource. No configuration parameters needed.
+All variable-sized arrays are allocated dynamically using NDB's internal
+allocator (`ndbd_malloc`) with `QUERY_MEMORY` resource. This avoids
+compile-time constants like `MAX_QUERY_THREADS`, `MAX_AGGREGATES`, or
+`MAX_LINKED_ATTR_SIZE` in struct definitions. The actual sizes are known
+at setup time from the aggregation program and node configuration.
+
+**Dynamically allocated structures:**
+- `m_per_thread_interpreters` — sized to actual number of query threads
+- `GroupByEntry::m_accumulators` — sized to actual number of aggregate functions
+- `AggInterpreter::m_linked_attr_buf` — sized to actual linked attribute length
+- `AggInterpreter::m_group_pool` — initial allocation, can grow as needed
+- `AggInterpreter::m_buckets` (hash table) — sized to chosen hash table size
 
 ```cpp
 #include "vm/ndbd_malloc_impl.hpp"
 
-// Allocation for JoinAggregationState and AggInterpreter
-void* ptr = ndbd_malloc(size, RG_QUERY_MEMORY);
+// All variable-sized allocations use ndbd_malloc with QUERY_MEMORY:
+
+// Per-thread interpreter array (at setup, MUTEX_FREE only)
+state->m_per_thread_interpreters = (AggInterpreter**)
+    ndbd_malloc(m_num_threads * sizeof(AggInterpreter*), RG_QUERY_MEMORY);
+
+// Accumulators per group (when allocating a new GroupByEntry)
+entry->m_accumulators = (AggResItem*)
+    ndbd_malloc(m_num_aggregates * sizeof(AggResItem), RG_QUERY_MEMORY);
+
+// Linked attribute buffer (at interpreter creation)
+interp->m_linked_attr_buf = (Uint32*)
+    ndbd_malloc(linked_attr_size * sizeof(Uint32), RG_QUERY_MEMORY);
 
 // Deallocation
 ndbd_free(ptr, size);
