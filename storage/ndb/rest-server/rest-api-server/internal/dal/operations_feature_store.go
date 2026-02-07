@@ -132,11 +132,17 @@ func GetTrainingDatasetJoinData(featureViewID int) ([]TrainingDatasetJoin, *DalE
 }
 
 type FeatureGroup struct {
-	Name           string
-	FeatureStoreId int
-	Version        int
-	OnlineEnabled  bool
-	NumOfPk        int
+	Name                   string
+	FeatureStoreId         int
+	Version                int
+	OnlineEnabled          bool
+	NumOfPk                int
+	OnDemandFeatureGroupID int
+	Spine                  bool
+}
+
+func (fg *FeatureGroup) IsSpine() bool {
+	return fg.Spine
 }
 
 func GetFeatureGroupData(featureGroupID int) (*FeatureGroup, *DalError) {
@@ -151,11 +157,28 @@ func GetFeatureGroupData(featureGroupID int) (*FeatureGroup, *DalError) {
 	}
 
 	var fgGo = FeatureGroup{
-		Name:           C.GoString(&fg.name[0]),
-		FeatureStoreId: int(fg.feature_store_id),
-		Version:        int(fg.version),
-		OnlineEnabled:  int(fg.online_enabled) != 0,
+		Name:                   C.GoString(&fg.name[0]),
+		FeatureStoreId:         int(fg.feature_store_id),
+		Version:                int(fg.version),
+		OnlineEnabled:          int(fg.online_enabled) != 0,
+		OnDemandFeatureGroupID: int(fg.on_demand_feature_group_id),
+		Spine:                  false,
 	}
+
+	if fgGo.OnDemandFeatureGroupID != 0 {
+		// get FG spine data
+		var odfg C.OnDemandFeatureGroup
+		odfgPtr := (*C.OnDemandFeatureGroup)(unsafe.Pointer(&odfg))
+
+		ret = C.find_on_demand_feature_group(C.int(fgGo.OnDemandFeatureGroupID), odfgPtr)
+
+		if ret.http_code != http.StatusOK {
+			return nil, cToGoRet(&ret)
+		}
+
+		fgGo.Spine = int8(odfg.spine) != 0
+	}
+
 	return &fgGo, nil
 }
 

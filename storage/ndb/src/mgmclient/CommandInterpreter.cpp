@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2024, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1752,7 +1752,8 @@ static int get_next_nodeid(struct ndb_mgm_cluster_state *cl, int *node_id,
   i = 0;
   while ((i < cl->no_of_nodes)) {
     if ((*node_id < cl->node_states[i].node_id) &&
-        (cl->node_states[i].node_type == type)) {
+        (cl->node_states[i].node_type == type) &&
+        (cl->node_states[i].node_status != NDB_MGM_NODE_STATUS_NO_CONTACT)) {
       if (i >= cl->no_of_nodes) return 0;
 
       *node_id = cl->node_states[i].node_id;
@@ -3497,7 +3498,15 @@ int CommandInterpreter::executeDumpState(int processId, const char *parameters,
   ndbout << endl;
 
   struct ndb_mgm_reply reply;
-  return ndb_mgm_dump_state(m_mgmsrv, processId, params, num_params, &reply);
+  int ret_code = ndb_mgm_dump_state(m_mgmsrv,
+                                    processId,
+                                    params,
+                                    num_params,
+                                    &reply);
+  if (ret_code == 0) return 0;
+  ndbout_c("ERROR on nodeId: %u", processId);
+  ndb_mgm_print_error(m_mgmsrv);
+  return -1;
 }
 
 static void report_memoryusage(const ndb_logevent &event) {

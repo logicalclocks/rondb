@@ -195,7 +195,8 @@ Currently, the REST API server only supports [Hopsworks API Keys](https://docs.h
         "REST": {
                 "Enable": true,
                 "ServerIP": "localhost",
-                "ServerPort": 4406
+                "ServerPort": 4406,
+                "MaxConcurrentReqs": 0
         },
         "GRPC": {
                 "Enable": true,
@@ -295,13 +296,15 @@ Currently, the REST API server only supports [Hopsworks API Keys](https://docs.h
 
   - **OperationIDMaxSize:** Max length of operation ID. Default is 256 characters.
 
-- **REST** 
+- **REST**
 
-  - **Enable:** Enable/Disable REST Server Interface 
+  - **Enable:** Enable/Disable REST Server Interface
 
   - **ServerIP:** Binds the REST server to this IP. The default value is *localhost*
 
   - **ServerPort:** REST server port. The default port is *4406*
+
+  - **MaxConcurrentReqs:** Maximum number of concurrent requests the server will handle. The default value is *0* (auto mode). When set to *0*, the server automatically sets the limit to GOMAXPROCS (matching CPU resources). Set to a positive number to define a custom limit. This helps prevent overloading the server under high traffic.
 
 - **GRPC** 
 

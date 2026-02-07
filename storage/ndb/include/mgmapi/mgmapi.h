@@ -1904,6 +1904,10 @@ int ndb_mgm_get_tls_stats(NdbMgmHandle handle,
   int ndb_mgm_drop_quotas(NdbMgmHandle handle,
                           const char *database_name);
 
+  /**
+   * Error printer
+   */
+  void ndb_mgm_print_error(NdbMgmHandle handle);
 #ifdef __cplusplus
 }
 #endif
