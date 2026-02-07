@@ -209,6 +209,11 @@ class SimulatedBlock {
     // Shared across all block instances on the node.
     // Pool index serves as the Uint32 lookup key.
     //
+    // Uses TransientPool — the standard DBLQH pattern for bounded-
+    //   lifetime records (same as TcConnectionrec, ScanRecord).
+    //   Provides lazy page initialization, automatic shrinking,
+    //   and magic-validated access.
+    //
     // Seize/release: called only from DblqhProxy (single-threaded),
     //   so no mutex needed for pool operations.
     // Access: getJoinAggState() is a direct pool index lookup (O(1)),
@@ -216,7 +221,8 @@ class SimulatedBlock {
     //   contents is handled by mutexes within JoinAggregationState
     //   itself (group map mutex, per-group mutex).
     //------------------------------------------------------------------
-    static ArrayPool<JoinAggregationState> s_joinAggStatePool;
+    typedef TransientPool<JoinAggregationState> JoinAggState_pool;
+    static JoinAggState_pool s_joinAggStatePool;
 
     // Allocate a new state, returns pool index (the key).
     // Called only from DblqhProxy — no mutex needed.
@@ -252,19 +258,24 @@ class SimulatedBlock {
 
 ### Signal Flow
 
-#### Signal Routing via DblqhProxy
+#### Signal Routing
 
-The setup, completion, and release signals are handled directly by `DblqhProxy`
-itself (single-threaded), not forwarded to a Dblqh worker:
+Three different routing strategies are used for the join aggregation signals:
 
-- `JOIN_AGG_SETUP_REQ` — DblqhProxy seizes state from pool, initializes it,
-  returns `aggStateKey` in CONF
-- `JOIN_AGG_COMPLETE_REQ` — DblqhProxy looks up state by key, finalizes and
-  sends results
-- `JOIN_AGG_RELEASE_REQ` — DblqhProxy releases state back to pool
+- `JOIN_AGG_SETUP_REQ` — Handled by **DblqhProxy** (single-threaded).
+  Seizes state from pool, initializes interpreters, returns `aggStateKey`
+  in CONF. No mutex needed for pool seize — DblqhProxy is single-threaded.
 
-Since DblqhProxy is single-threaded, no mutex is needed for pool
-seize/release operations.
+- `JOIN_AGG_COMPLETE_REQ` — Sent to **V_QUERY** virtual block, which
+  routes it to a Dblqh worker thread based on current CPU load. The
+  completion phase (merge + finalize + send results) is CPU-intensive,
+  so V_QUERY's load-based thread selection ensures it runs on a thread
+  with available capacity rather than blocking DblqhProxy. The selected
+  thread runs single-threaded for this signal — no concurrent merge is
+  possible since all operations have already completed.
+
+- `JOIN_AGG_RELEASE_REQ` — Handled by **DblqhProxy** (single-threaded).
+  Releases state back to pool. No mutex needed for pool release.
 
 The operation signals (`LQHKEYREQ`, `SCAN_FRAGREQ`) continue to be routed
 normally to Dblqh worker instances based on fragment ownership. Each carries
@@ -513,8 +524,11 @@ DBSPJ sends completion signal when all operations for the batch are done:
 
 ```cpp
 // Signal: JOIN_AGG_COMPLETE_REQ
-// Sent when: DBSPJ has received CONF for all operations
-// Purpose: Trigger finalization and result sending
+// Sent from: DBSPJ
+// Sent to: V_QUERY (load-balanced to a Dblqh worker thread)
+// Purpose: Trigger merge, finalization, and result sending
+// Note: CPU-intensive (merge + finalize), so V_QUERY selects a thread
+//       with available capacity rather than using single-threaded DblqhProxy
 
 struct JoinAggCompleteReq {
     static constexpr Uint32 SignalLength = 7;
@@ -539,10 +553,18 @@ struct JoinAggCompleteConf {
 };
 ```
 
-**execJOIN_AGG_COMPLETE_REQ Flow (runs in DblqhProxy, single-threaded):**
+**execJOIN_AGG_COMPLETE_REQ Flow (runs in Dblqh worker, selected by V_QUERY):**
 
 ```
-JOIN_AGG_COMPLETE_REQ arrives at DblqhProxy
+JOIN_AGG_COMPLETE_REQ sent to V_QUERY
+    |
+    v
+V_QUERY (via TRPMAN) routes to a Dblqh worker thread
+based on current CPU load weights — the thread with most
+available capacity is selected for this CPU-intensive work.
+    |
+    v
+[Dblqh worker receives signal]
     |
     v
 JoinAggregationState* state = getJoinAggState(aggStateKey)
@@ -556,6 +578,8 @@ Verify: state->m_completed_ops == completedOps
     |
     v
 Set state->m_state = FINALIZING
+    (single-threaded — all operations already completed before
+     DBSPJ sends this signal, so no concurrent updates possible)
     |
     v
 if (state->m_strategy == MUTEX_BASED):
@@ -1094,7 +1118,8 @@ AVG:   merge sum and count separately, compute avg at finalize
 #### Complete Completion Flow (MUTEX_FREE)
 
 ```
-JOIN_AGG_COMPLETE_REQ arrives at DblqhProxy
+JOIN_AGG_COMPLETE_REQ arrives via V_QUERY at Dblqh worker
+    (thread selected by CPU load — most available capacity)
     |
     v
 state = getJoinAggState(aggStateKey)
@@ -1316,19 +1341,18 @@ struct TcConnectionrec {
 ### Error Handling
 
 ```cpp
-enum JoinAggErrorCode {
-    JAE_NO_ERROR = 0,
-    JAE_STATE_ALLOC_FAILED = 4001,      // Cannot allocate JoinAggregationState
-    JAE_STATE_NOT_FOUND = 4002,         // State not found for operation
-    JAE_INTERPRETER_INIT_FAILED = 4003, // AggInterpreter initialization failed
-    JAE_INTERPRETER_ERROR = 4004,       // AggInterpreter returned error
-    JAE_OP_COUNT_MISMATCH = 4005,       // Completed ops != expected
-    JAE_PARENT_DATA_ERROR = 4006,       // Invalid parent data format
-    JAE_RESULT_TOO_LARGE = 4007,        // Aggregation result exceeds limits
-    JAE_TIMEOUT = 4008,                 // State timed out
-    JAE_ALREADY_FINALIZED = 4009,       // Duplicate complete signal
-    JAE_MUTEX_ERROR = 4010              // Mutex acquisition failed
-};
+// DBLQH error codes use the 12xx range (defined in Dblqh.hpp)
+// 1238-1242 taken by database quota errors, so use 1250-1259
+#define ZJOIN_AGG_STATE_ALLOC_FAILED       1250  // Cannot allocate JoinAggregationState
+#define ZJOIN_AGG_STATE_NOT_FOUND          1251  // State not found for operation
+#define ZJOIN_AGG_INTERPRETER_INIT_FAILED  1252  // AggInterpreter initialization failed
+#define ZJOIN_AGG_INTERPRETER_ERROR        1253  // AggInterpreter returned error
+#define ZJOIN_AGG_OP_COUNT_MISMATCH        1254  // Completed ops != expected
+#define ZJOIN_AGG_PARENT_DATA_ERROR        1255  // Invalid parent data format
+#define ZJOIN_AGG_RESULT_TOO_LARGE         1256  // Aggregation result exceeds limits
+#define ZJOIN_AGG_TIMEOUT                  1257  // State timed out
+#define ZJOIN_AGG_ALREADY_FINALIZED        1258  // Duplicate complete signal
+#define ZJOIN_AGG_MUTEX_ERROR              1259  // Mutex acquisition failed
 ```
 
 **Error Propagation:**
@@ -1442,10 +1466,10 @@ DBSPJ                              DblqhProxy / Dblqh                     DBTUP
   |                                      |                                  |
   | ... more operations (parallel) ...   |                                  |
   |                                      |                                  |
-  |====== Completion Phase (DblqhProxy, single-threaded) ================  |
+  |====== Completion Phase (V_QUERY → Dblqh worker, load-balanced) ======  |
   |                                      |                                  |
   | JOIN_AGG_COMPLETE_REQ(aggStateKey)   |                                  |
-  |------------------------------------->| [DblqhProxy]                     |
+  |----------> V_QUERY ----------------->| [Dblqh worker, CPU-load selected]|
   |                                      | getJoinAggState(aggStateKey)     |
   |                                      | Verify completed_ops             |
   |                                      | MUTEX_BASED:                     |
@@ -1474,11 +1498,11 @@ DBSPJ                              DblqhProxy / Dblqh                     DBTUP
 
 | File | Changes |
 |------|---------|
-| `SimulatedBlock.hpp` | Add static `s_joinAggStatePool`, `seizeJoinAggState()`, `getJoinAggState()`, `releaseJoinAggState()` |
-| `SimulatedBlock.cpp` | Implement pool init, seize, get, release |
+| `SimulatedBlock.hpp` | Add static `TransientPool<JoinAggregationState>`, `seizeJoinAggState()`, `getJoinAggState()`, `releaseJoinAggState()` |
+| `SimulatedBlock.cpp` | Implement TransientPool init, seize, get, release |
 | `Dblqh.hpp` | Add JoinAggregationState struct, add `m_join_agg_state_key` to ScanRecord and TcConnectionrec |
-| `DblqhMain.cpp` | Modify execLQHKEYREQ, execSCAN_FRAGREQ to extract aggStateKey when RI_JOIN_AGGREGATION set |
-| `DblqhProxy.cpp` | Add execJOIN_AGG_SETUP_REQ (seize + init), execJOIN_AGG_COMPLETE_REQ (finalize + send), execJOIN_AGG_RELEASE_REQ (release) |
+| `DblqhMain.cpp` | Modify execLQHKEYREQ, execSCAN_FRAGREQ to extract aggStateKey; add execJOIN_AGG_COMPLETE_REQ (merge + finalize + send, via V_QUERY) |
+| `DblqhProxy.cpp` | Add execJOIN_AGG_SETUP_REQ (seize + init), execJOIN_AGG_RELEASE_REQ (release) |
 | `LqhKeyReq.hpp` | Add RI_JOIN_AGGREGATION flag |
 | `ScanFrag.hpp` | Add RI_JOIN_AGGREGATION flag |
 | `signaldata/JoinAgg.hpp` (new) | Signal definitions for JOIN_AGG_* |
