@@ -43,6 +43,10 @@ ADD_CUSTOM_COMMAND(
   COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/build_lexer.sh ${FLEX_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/RonSQLLexer.l ${CMAKE_CURRENT_BINARY_DIR}/RonSQLLexer.l.hpp ${CMAKE_CURRENT_BINARY_DIR}/RonSQLLexer.l.cpp
   )
 
+# Suppress -Wsign-compare in flex-generated code
+set_source_files_properties(${CMAKE_CURRENT_BINARY_DIR}/RonSQLLexer.l.cpp
+  PROPERTIES COMPILE_OPTIONS -Wno-sign-compare)
+
 ADD_CONVENIENCE_LIBRARY(ronsql
   AggregationAPICompiler.cpp
   LexString.cpp

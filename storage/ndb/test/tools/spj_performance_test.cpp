@@ -249,7 +249,7 @@ void TestThread::doLinkedAPITest() {
   NdbQueryBuilder *const builder = NdbQueryBuilder::create();
 
   const NdbQueryDef *queryDef = NULL;
-  const Row **resultPtrs = new const Row *[m_params->m_depth + 1];
+  const char **resultPtrs = new const char *[m_params->m_depth + 1];
 
   NdbTransaction *trans = NULL;
 
@@ -298,7 +298,7 @@ void TestThread::doLinkedAPITest() {
     NdbQuery *const query = trans->createQuery(queryDef);
     for (int i = 0; i < m_params->m_depth + 1; i++) {
       query->getQueryOperation(i)->setResultRowRef(
-          m_resultRec, reinterpret_cast<const char *&>(resultPtrs[i]), NULL);
+          m_resultRec, resultPtrs[i], NULL);
     }
     int res = trans->execute(NoCommit);
     //        if (res != 0)

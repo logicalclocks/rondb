@@ -366,6 +366,8 @@ MYSQL_ADD_EXECUTABLE(merge_large_tests-t ${ALL_LARGE_TESTS}
   )
 IF(MY_COMPILER_IS_GNU)
   MY_TARGET_LINK_OPTIONS(merge_large_tests-t "-Wno-alloc-size-larger-than")
+  # GCC 12 false positive from std::string::replace inlining in gtest headers
+  TARGET_COMPILE_OPTIONS(merge_large_tests-t PRIVATE -Wno-restrict)
 ENDIF()
 DOWNGRADE_STRINGOP_WARNINGS(merge_large_tests-t)
 
