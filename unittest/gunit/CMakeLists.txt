@@ -1,4 +1,5 @@
 # Copyright (c) 2010, 2025, Oracle and/or its affiliates.
+# Copyright (c) 2026, 2026, Hopsworks and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -365,6 +366,8 @@ MYSQL_ADD_EXECUTABLE(merge_large_tests-t ${ALL_LARGE_TESTS}
 IF(TARGET merge_large_tests-t)
   IF(MY_COMPILER_IS_GNU)
     TARGET_LINK_OPTIONS(merge_large_tests-t PRIVATE -Wno-alloc-size-larger-than)
+    # GCC 12 false positive from std::string::replace inlining in gtest headers
+    TARGET_COMPILE_OPTIONS(merge_large_tests-t PRIVATE -Wno-restrict)
   ENDIF()
   DOWNGRADE_STRINGOP_WARNINGS(merge_large_tests-t)
 ENDIF()
