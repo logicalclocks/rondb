@@ -27,9 +27,17 @@ import (
 
 // TODO: Add nil pointer checks
 func ValidateBody(params *api.PKReadParams) error {
+	if params.Filters == nil {
+		return fmt.Errorf("Error:Field validation for 'Filters'")
+	}
+
 	for _, filter := range *params.Filters {
-		// make sure filter columns are valid
-		if err := validators.ValidateDBIdentifier(filter.Column); err != nil {
+		if filter.Value == nil {
+			return fmt.Errorf("Field validation for 'Value' failed on the 'required' tag")
+		} else if filter.Column == nil {
+			return fmt.Errorf("Field validation for 'Column' failed on the 'required' tag")
+		} else if err := validators.ValidateDBIdentifier(filter.Column); err != nil {
+			// make sure filter columns are valid
 			return fmt.Errorf("filter column name is invalid; error: %w", err)
 		}
 	}

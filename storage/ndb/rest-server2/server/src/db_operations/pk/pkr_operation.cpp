@@ -635,7 +635,8 @@ RS_Status KeyOperation::write_col_to_resp(Uint32 colIdx,
   const char *col_name = col->getName();
   Uint32 col_id = col->getColumnNo();
   Uint8 *row = m_row;
-  {
+  // Only check null bits for columns that are actually nullable
+  if (col->getNullable()) {
     Uint32 null_byte_offset;
     Uint32 null_bit_in_byte;
     bool null_value = NdbDictionary::getNullBitOffset(

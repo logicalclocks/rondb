@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -119,6 +119,12 @@ struct ndb_mgm_handle {
   int m_bindaddress_port;
   bool ignore_sigpipe;
 };
+
+extern "C" void ndb_mgm_print_error(ndb_mgm_handle *handle) {
+  ndbout_c("Error: code: %u, text:: %s",
+    handle->last_error,
+    &handle->last_error_desc[0]);
+}
 
 /*
   Check if version "curr" is new relative a list of given versions.
