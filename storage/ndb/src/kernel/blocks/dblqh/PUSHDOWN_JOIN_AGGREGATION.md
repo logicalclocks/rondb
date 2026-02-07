@@ -153,10 +153,14 @@ struct JoinAggregationState {
     Uint32 m_error_code;                // Error code if m_state == ERROR
 
     //------------------------------------------------------------------
-    // Hash Table Management
+    // Key-based access
     //------------------------------------------------------------------
-    Uint32 m_hash_next;                 // Next in hash chain
-    Uint32 m_hash_prev;                 // Previous in hash chain
+    Uint32 m_key;                       // Pool index assigned by DblqhProxy
+                                        // at seize time. Returned to Dbspj in
+                                        // JOIN_AGG_SETUP_CONF and carried in
+                                        // every LQHKEYREQ / SCAN_FRAGREQ.
+                                        // Used by Dblqh workers for O(1) lookup
+                                        // via SimulatedBlock::getJoinAggState().
 
     //------------------------------------------------------------------
     // Timeout Management
@@ -166,60 +170,83 @@ struct JoinAggregationState {
 };
 ```
 
-### Node-Level State Management
+### Shared State Management via SimulatedBlock
 
-The shared state is managed at the node level (not per DBLQH instance), accessible by all LDM threads:
+The shared state must be accessible from both `Dblqh` worker instances (which
+process LQHKEYREQ/SCAN_FRAGREQ on different LDM threads) and `DblqhProxy`
+(which handles setup/completion/release signals). Since both inherit from
+`SimulatedBlock`, the state pool and access methods are defined there:
 
 ```cpp
-class Dblqh : public SimulatedBlock {
+class SimulatedBlock {
     // ...existing members...
 
     //------------------------------------------------------------------
-    // Join Aggregation State Management (node-level, thread-safe)
-    // These are STATIC - one per data node, shared across all DBLQH instances
+    // Join Aggregation State Pool (node-level)
+    // Shared across all block instances on the node.
+    // Pool index serves as the Uint32 lookup key.
+    //
+    // Seize/release: called only from DblqhProxy (single-threaded),
+    //   so no mutex needed for pool operations.
+    // Access: getJoinAggState() is a direct pool index lookup (O(1)),
+    //   safe to call from any thread. Thread-safety for the state
+    //   contents is handled by mutexes within JoinAggregationState
+    //   itself (group map mutex, per-group mutex).
     //------------------------------------------------------------------
-
-    // Hash table for state lookup - protected by s_join_agg_hash_mutex
-    static constexpr Uint32 JOIN_AGG_STATE_HASH_SIZE = 256;
-    static NdbMutex* s_join_agg_hash_mutex;
-    static Uint32 s_join_agg_state_hash[JOIN_AGG_STATE_HASH_SIZE];
-
-    // Pool for JoinAggregationState records (uses QUERY_MEMORY via ndbd_malloc)
     static ArrayPool<JoinAggregationState> s_joinAggStatePool;
 
-    // State management functions (operate on static data)
-    static JoinAggregationState* createJoinAggState(
-        const Uint32 transid[2],
-        Uint32 senderData,
-        Uint32 requestId,
-        Signal* signal);
+    // Allocate a new state, returns pool index (the key).
+    // Called only from DblqhProxy — no mutex needed.
+    static Uint32 seizeJoinAggState();
 
-    static JoinAggregationState* findJoinAggState(
-        const Uint32 transid[2],
-        Uint32 senderData,
-        Uint32 requestId);
+    // Look up state by key (pool index) — O(1) array access,
+    // safe from any LDM thread. Concurrent access to the returned
+    // state is protected by the state's internal mutexes.
+    static JoinAggregationState* getJoinAggState(Uint32 key);
 
-    static void releaseJoinAggState(JoinAggregationState* state);
-
-    // Hash function
-    static Uint32 hashJoinAggState(const Uint32 transid[2], Uint32 senderData, Uint32 requestId);
+    // Release state back to pool.
+    // Called only from DblqhProxy — no mutex needed.
+    static void releaseJoinAggState(Uint32 key);
 
     // Initialization (called once at node startup)
     static void initJoinAggStatePool();
 };
 ```
 
+**Key design points:**
+- `DblqhProxy` is single-threaded, so `seizeJoinAggState()` and
+  `releaseJoinAggState()` require no mutex for pool operations
+- `getJoinAggState(key)` is a direct array index into the pool — O(1), no
+  hash table, no mutex needed for the lookup itself
+- The returned `JoinAggregationState*` is accessed concurrently by multiple
+  LDM threads; thread-safety is ensured by the state's internal mutexes
+  (group map mutex and per-group mutex) as described in the Thread-Safety
+  section
+- The Uint32 key is allocated by DblqhProxy during setup, returned to Dbspj
+  in `JOIN_AGG_SETUP_CONF`, and then carried in every `LQHKEYREQ` and
+  `SCAN_FRAGREQ` signal — eliminating the need for a hash table keyed on
+  (transid, senderData, requestId)
+
 ### Signal Flow
 
 #### Signal Routing via DblqhProxy
 
-The setup, completion, and release signals only need to be executed by one thread per node. `DblqhProxy.cpp` can route these signals to a designated thread:
+The setup, completion, and release signals are handled directly by `DblqhProxy`
+itself (single-threaded), not forwarded to a Dblqh worker:
 
-- `JOIN_AGG_SETUP_REQ` - routed to one thread, creates shared state
-- `JOIN_AGG_COMPLETE_REQ` - routed to one thread, finalizes and sends results
-- `JOIN_AGG_RELEASE_REQ` - routed to one thread, releases state
+- `JOIN_AGG_SETUP_REQ` — DblqhProxy seizes state from pool, initializes it,
+  returns `aggStateKey` in CONF
+- `JOIN_AGG_COMPLETE_REQ` — DblqhProxy looks up state by key, finalizes and
+  sends results
+- `JOIN_AGG_RELEASE_REQ` — DblqhProxy releases state back to pool
 
-The operation signals (`LQHKEYREQ`, `SCAN_FRAGREQ`) continue to be routed normally based on fragment ownership.
+Since DblqhProxy is single-threaded, no mutex is needed for pool
+seize/release operations.
+
+The operation signals (`LQHKEYREQ`, `SCAN_FRAGREQ`) continue to be routed
+normally to Dblqh worker instances based on fragment ownership. Each carries
+the `aggStateKey` (when `RI_JOIN_AGGREGATION` flag is set) so the worker
+can look up the shared state via `getJoinAggState(key)`.
 
 #### Phase 1: Setup (New Signal)
 
@@ -228,8 +255,8 @@ DBSPJ sends `JOIN_AGG_SETUP_REQ` to each data node that has fragments of the lea
 ```cpp
 // Signal: JOIN_AGG_SETUP_REQ
 // Sent from: DBSPJ
-// Sent to: DBLQH (one per data node with leaf table fragments)
-// Purpose: Create shared aggregation state before operations start
+// Handled by: DblqhProxy (one per data node with leaf table fragments)
+// Purpose: Seize and initialize shared aggregation state before operations start
 
 struct JoinAggSetupReq {
     static constexpr Uint32 SignalLength = 10;
@@ -255,7 +282,10 @@ struct JoinAggSetupConf {
     Uint32 senderRef;           // DBLQH block reference
     Uint32 senderData;          // Echo from request
     Uint32 requestId;           // Echo from request
-    Uint32 aggStatePtr;         // Handle to created state (for debugging)
+    Uint32 aggStateKey;         // Uint32 key (pool index) for the created state.
+                                // Dbspj must store this and include it in every
+                                // LQHKEYREQ and SCAN_FRAGREQ that participates
+                                // in this join aggregation.
 };
 
 // Error response: JOIN_AGG_SETUP_REF
@@ -270,26 +300,30 @@ struct JoinAggSetupRef {
 };
 ```
 
-**execJOIN_AGG_SETUP_REQ Flow:**
+**execJOIN_AGG_SETUP_REQ Flow (runs in DblqhProxy, single-threaded):**
 
 ```
-JOIN_AGG_SETUP_REQ arrives (from DBSPJ, routed by DblqhProxy)
+JOIN_AGG_SETUP_REQ arrives at DblqhProxy
     |
     v
-Acquire s_join_agg_hash_mutex (static, node-level)
+Uint32 key = seizeJoinAggState()
+    (No mutex needed — DblqhProxy is single-threaded)
     |
     v
-Allocate JoinAggregationState from s_joinAggStatePool
-    (uses ndbd_malloc with QUERY_MEMORY)
+JoinAggregationState* state = getJoinAggState(key)
+    |
+    v
+state->m_key = key
     |
     v
 Copy aggregation program from signal section
     |
     v
 Create and initialize AggInterpreter
+    (including group map mutex, per-group mutexes)
     |
     v
-Initialize m_interpreter_mutex
+Store identification (transid, senderData, requestId, senderRef)
     |
     v
 Store result routing info (resultRef, resultData, routeRef)
@@ -298,51 +332,63 @@ Store result routing info (resultRef, resultData, routeRef)
 Set m_state = SETUP_COMPLETE
     |
     v
-Insert into s_join_agg_state_hash
-    |
-    v
-Release s_join_agg_hash_mutex
-    |
-    v
-Send JOIN_AGG_SETUP_CONF
+Send JOIN_AGG_SETUP_CONF with aggStateKey = key
+    (Dbspj stores this key and passes it in all subsequent
+     LQHKEYREQ / SCAN_FRAGREQ operations for this aggregation)
 ```
 
 #### Phase 2: Operations (LQHKEYREQ / SCAN_FRAGREQ)
 
-Operations include a reference to the aggregation state:
+Each operation carries the Uint32 key for the shared aggregation state.
+A flag bit in the request signals that the extra word is present:
 
 ```cpp
-// New flags in LqhKeyReq::requestInfo
+// New flag bit in LqhKeyReq::requestInfo
 namespace LqhKeyReq {
-    static constexpr Uint32 RI_JOIN_AGGREGATION = 0x...;  // Has join aggregation
+    // When set, the signal contains one additional word after the
+    // standard signal: the aggStateKey (Uint32 pool index).
+    static constexpr Uint32 RI_JOIN_AGGREGATION = 0x...;  // bit position TBD
 }
 
-// New flags in ScanFragReq::requestInfo
+// New flag bit in ScanFragReq::requestInfo
 namespace ScanFragReq {
-    static constexpr Uint32 RI_JOIN_AGGREGATION = 0x...;  // Has join aggregation
+    // When set, the signal contains one additional word after the
+    // standard signal: the aggStateKey (Uint32 pool index).
+    static constexpr Uint32 RI_JOIN_AGGREGATION = 0x...;  // bit position TBD
 }
 
-// Additional words in LQHKEYREQ/SCAN_FRAGREQ when RI_JOIN_AGGREGATION set:
-// - requestId: matches JOIN_AGG_SETUP_REQ.requestId
-// - Parent data in AttrInfo section (linked attributes)
+// Signal layout when RI_JOIN_AGGREGATION is set:
+//
+// LQHKEYREQ:
+//   word 0..N-1:  standard LqhKeyReq fields
+//   word N:       aggStateKey   (Uint32, pool index from JOIN_AGG_SETUP_CONF)
+//
+// SCAN_FRAGREQ:
+//   word 0..M-1:  standard ScanFragReq fields
+//   word M:       aggStateKey   (Uint32, pool index from JOIN_AGG_SETUP_CONF)
+//
+// The aggStateKey is used by Dblqh to look up the shared
+// JoinAggregationState via SimulatedBlock::getJoinAggState(key).
+// Parent data (linked attributes) is in the AttrInfo section as before.
 ```
 
 **LQHKEYREQ with Join Aggregation:**
 
 ```
-LQHKEYREQ arrives (with RI_JOIN_AGGREGATION flag)
+LQHKEYREQ arrives (with RI_JOIN_AGGREGATION flag set)
     |
     v
-Extract requestId from signal
+Extract aggStateKey from extra word at end of signal
     |
     v
-findJoinAggState(transid, senderData, requestId)
+JoinAggregationState* state = getJoinAggState(aggStateKey)
+    (O(1) pool index lookup, no mutex needed)
     |
     v
-[State not found?] --> Send LQHKEYREF (state not initialized)
+[state == nullptr?] --> Send LQHKEYREF (invalid key)
     |
     v
-[State found, m_state == ERROR?] --> Send LQHKEYREF (aggregation failed)
+[state->m_state == ERROR?] --> Send LQHKEYREF (aggregation failed)
     |
     v
 Execute normal lookup (TUPKEYREQ to DBTUP)
@@ -373,20 +419,21 @@ Send LQHKEYCONF (DO NOT send row data - aggregation accumulates it)
 **SCAN_FRAGREQ with Join Aggregation:**
 
 ```
-SCAN_FRAGREQ arrives (with RI_JOIN_AGGREGATION flag)
+SCAN_FRAGREQ arrives (with RI_JOIN_AGGREGATION flag set)
     |
     v
-Extract requestId from signal
+Extract aggStateKey from extra word at end of signal
     |
     v
-findJoinAggState(transid, senderData, requestId)
+JoinAggregationState* state = getJoinAggState(aggStateKey)
+    (O(1) pool index lookup, no mutex needed)
     |
     v
-[State not found?] --> Send SCAN_FRAGREF (state not initialized)
+[state == nullptr?] --> Send SCAN_FRAGREF (invalid key)
     |
     v
 Create ScanRecord with reference to JoinAggregationState:
-    scanPtr->m_join_agg_state_ptr = state
+    scanPtr->m_join_agg_state_key = aggStateKey
     |
     v
 For each row in scan:
@@ -421,12 +468,13 @@ DBSPJ sends completion signal when all operations for the batch are done:
 // Purpose: Trigger finalization and result sending
 
 struct JoinAggCompleteReq {
-    static constexpr Uint32 SignalLength = 6;
+    static constexpr Uint32 SignalLength = 7;
 
     Uint32 senderRef;
     Uint32 senderData;
     Uint32 requestId;
     Uint32 transid[2];
+    Uint32 aggStateKey;         // Key from JOIN_AGG_SETUP_CONF
     Uint32 completedOps;        // Total completed ops (for verification)
 };
 
@@ -442,16 +490,17 @@ struct JoinAggCompleteConf {
 };
 ```
 
-**execJOIN_AGG_COMPLETE_REQ Flow:**
+**execJOIN_AGG_COMPLETE_REQ Flow (runs in DblqhProxy, single-threaded):**
 
 ```
-JOIN_AGG_COMPLETE_REQ arrives (from DBSPJ, routed by DblqhProxy)
+JOIN_AGG_COMPLETE_REQ arrives at DblqhProxy
     |
     v
-findJoinAggState(transid, senderData, requestId)
+JoinAggregationState* state = getJoinAggState(aggStateKey)
+    (aggStateKey carried in signal, originally from SETUP_CONF)
     |
     v
-[State not found?] --> Send JOIN_AGG_COMPLETE_REF
+[state == nullptr?] --> Send JOIN_AGG_COMPLETE_REF
     |
     v
 Verify: state->m_completed_ops == completedOps
@@ -497,24 +546,29 @@ Schedule state cleanup (or wait for explicit release signal)
 // Purpose: Release resources
 
 struct JoinAggReleaseReq {
-    static constexpr Uint32 SignalLength = 4;
+    static constexpr Uint32 SignalLength = 5;
 
     Uint32 senderRef;
     Uint32 senderData;
     Uint32 requestId;
     Uint32 transid[2];
+    Uint32 aggStateKey;         // Key from JOIN_AGG_SETUP_CONF
 };
 ```
 
 ### Thread-Safety Details
 
-#### Basic Mutex Hierarchy
+#### Mutex Hierarchy
 
-To prevent deadlocks, acquire mutexes in this order:
+No node-level mutex is needed for state lookup — the Uint32 key gives O(1)
+pool access without locking. Pool seize/release is done only by the
+single-threaded DblqhProxy, so no mutex there either.
 
-1. `s_join_agg_hash_mutex` (static, node-level, protects state hash table)
-2. `state->m_group_map_mutex` (per-state, protects GROUP BY hash map)
-3. `group->m_mutex` (per-group, protects aggregate accumulators)
+The mutexes that protect the shared state contents (accessed concurrently
+by multiple LDM threads) must be acquired in this order to prevent deadlocks:
+
+1. `state->m_group_map_mutex` (per-state, protects GROUP BY hash map)
+2. `group->m_mutex` (per-group, protects aggregate accumulators)
 
 #### Per-Group Locking Strategy
 
@@ -869,29 +923,27 @@ int AggInterpreter::LoadColumnValue(Uint32 col_id, Register* reg) {
 
 #### ScanRecord
 
-Add reference to shared aggregation state:
+Add key for shared aggregation state lookup:
 
 ```cpp
 struct ScanRecord {
     // ... existing fields ...
 
-    // For join aggregation - reference to shared state
-    Uint32 m_join_agg_state_ptr;    // Ptr to JoinAggregationState (RNIL if none)
-    Uint32 m_join_agg_request_id;   // Request ID for lookup
+    // For join aggregation - key to shared state (RNIL if none)
+    Uint32 m_join_agg_state_key;    // Pool index from aggStateKey in signal
 };
 ```
 
 #### TcConnectionrec
 
-Add reference to shared aggregation state for key operations:
+Add key for shared aggregation state lookup (key operations):
 
 ```cpp
 struct TcConnectionrec {
     // ... existing fields ...
 
-    // For join aggregation operations
-    Uint32 m_join_agg_state_ptr;    // Ptr to JoinAggregationState (RNIL if none)
-    Uint32 m_join_agg_request_id;   // Request ID for lookup
+    // For join aggregation - key to shared state (RNIL if none)
+    Uint32 m_join_agg_state_key;    // Pool index from aggStateKey in signal
 };
 ```
 
@@ -956,24 +1008,27 @@ The memory limits are governed by the overall QUERY_MEMORY pool size, which is a
 ### Complete Signal Flow Diagram
 
 ```
-DBSPJ                              DBLQH                                 DBTUP
+DBSPJ                              DblqhProxy / Dblqh                     DBTUP
   |                                      |                                  |
-  |====== Setup Phase (routed by DblqhProxy to one thread) ==============  |
+  |====== Setup Phase (DblqhProxy, single-threaded) ====================  |
   |                                      |                                  |
   | JOIN_AGG_SETUP_REQ                   |                                  |
-  |------------------------------------->|                                  |
-  |                                      | Create JoinAggregationState      |
-  |                                      | Parse aggregation program        |
-  |                                      | Initialize AggInterpreter        |
-  |                                      | Insert in static hash table      |
-  | JOIN_AGG_SETUP_CONF                  |                                  |
+  |------------------------------------->| [DblqhProxy]                     |
+  |                                      | key = seizeJoinAggState()        |
+  |                                      | Initialize state, AggInterpreter |
+  |                                      | state->m_key = key               |
+  | JOIN_AGG_SETUP_CONF(aggStateKey=key) |                                  |
   |<-------------------------------------|                                  |
   |                                      |                                  |
-  |====== Operations Phase (parallel, any LDM thread) ===================  |
+  | Dbspj stores aggStateKey for use     |                                  |
+  | in all subsequent operations         |                                  |
   |                                      |                                  |
-  | LQHKEYREQ (join agg, thread 1)       |                                  |
-  |------------------------------------->|                                  |
-  |                                      | Find state in static hash        |
+  |====== Operations Phase (Dblqh workers, parallel, any LDM thread) ===  |
+  |                                      |                                  |
+  | LQHKEYREQ (+aggStateKey, thread 1)   |                                  |
+  |------------------------------------->| [Dblqh worker]                   |
+  |                                      | getJoinAggState(aggStateKey)     |
+  |                                      |   (O(1) pool lookup, no mutex)   |
   |                                      | TUPKEYREQ                        |
   |                                      |--------------------------------->|
   |                                      |                                  | Read local row
@@ -989,9 +1044,10 @@ DBSPJ                              DBLQH                                 DBTUP
   | LQHKEYCONF                           |                                  |
   |<-------------------------------------|                                  |
   |                                      |                                  |
-  | SCAN_FRAGREQ (join agg, thread 2)    |                                  |
-  |------------------------------------->|                                  |
-  |                                      | Find state, create ScanRecord    |
+  | SCAN_FRAGREQ (+aggStateKey, thread 2)|                                  |
+  |------------------------------------->| [Dblqh worker]                   |
+  |                                      | getJoinAggState(aggStateKey)     |
+  |                                      | Create ScanRecord with key       |
   |                                      | For each row:                    |
   |                                      |   Read via DBTUP                 |
   |                                      |   Lock group_map, find group     |
@@ -1007,15 +1063,15 @@ DBSPJ                              DBLQH                                 DBTUP
   |                                      |                                  |
   | ... more operations (parallel) ...   |                                  |
   |                                      |                                  |
-  |====== Completion Phase (routed by DblqhProxy to one thread) =========  |
+  |====== Completion Phase (DblqhProxy, single-threaded) ================  |
   |                                      |                                  |
-  | JOIN_AGG_COMPLETE_REQ                |                                  |
-  |------------------------------------->|                                  |
-  |                                      | Find state                       |
+  | JOIN_AGG_COMPLETE_REQ(aggStateKey)   |                                  |
+  |------------------------------------->| [DblqhProxy]                     |
+  |                                      | getJoinAggState(aggStateKey)     |
   |                                      | Verify completed_ops             |
-  |                                      | Lock interpreter                 |
   |                                      | FinalizeResults()                |
-  |                                      | Unlock                           |
+  |                                      |   (no concurrent writers since   |
+  |                                      |    all ops already completed)    |
   |                                      |                                  |
   |                                      | TRANSID_AI (aggregated results)  |
   |<-------------------------------------|                                  |
@@ -1025,20 +1081,22 @@ DBSPJ                              DBLQH                                 DBTUP
   |                                      |                                  |
   | DBSPJ routes results to API          |                                  |
   |                                      |                                  |
-  |====== Cleanup Phase (routed by DblqhProxy to one thread) ============  |
+  |====== Cleanup Phase (DblqhProxy, single-threaded) ==================  |
   |                                      |                                  |
-  | JOIN_AGG_RELEASE_REQ                 |                                  |
-  |------------------------------------->|                                  |
-  |                                      | Remove from hash, free memory    |
+  | JOIN_AGG_RELEASE_REQ(aggStateKey)    |                                  |
+  |------------------------------------->| [DblqhProxy]                     |
+  |                                      | releaseJoinAggState(aggStateKey) |
 ```
 
 ## File Changes Summary
 
 | File | Changes |
 |------|---------|
-| `Dblqh.hpp` | Add JoinAggregationState struct, static pool/hash/mutex |
-| `DblqhMain.cpp` | Add execJOIN_AGG_SETUP_REQ, execJOIN_AGG_COMPLETE_REQ, execJOIN_AGG_RELEASE_REQ, modify execLQHKEYREQ, execSCAN_FRAGREQ |
-| `DblqhProxy.cpp` | Route JOIN_AGG_* signals to designated thread |
+| `SimulatedBlock.hpp` | Add static `s_joinAggStatePool`, `seizeJoinAggState()`, `getJoinAggState()`, `releaseJoinAggState()` |
+| `SimulatedBlock.cpp` | Implement pool init, seize, get, release |
+| `Dblqh.hpp` | Add JoinAggregationState struct, add `m_join_agg_state_key` to ScanRecord and TcConnectionrec |
+| `DblqhMain.cpp` | Modify execLQHKEYREQ, execSCAN_FRAGREQ to extract aggStateKey when RI_JOIN_AGGREGATION set |
+| `DblqhProxy.cpp` | Add execJOIN_AGG_SETUP_REQ (seize + init), execJOIN_AGG_COMPLETE_REQ (finalize + send), execJOIN_AGG_RELEASE_REQ (release) |
 | `LqhKeyReq.hpp` | Add RI_JOIN_AGGREGATION flag |
 | `ScanFrag.hpp` | Add RI_JOIN_AGGREGATION flag |
 | `signaldata/JoinAgg.hpp` (new) | Signal definitions for JOIN_AGG_* |
@@ -1049,7 +1107,7 @@ DBSPJ                              DBLQH                                 DBTUP
 
 1. **Batch Completion Mechanism**: ✓ Dedicated JOIN_AGG_COMPLETE_REQ signal
 
-2. **Thread Safety**: ✓ Mutex per interpreter, atomics for counters, hash mutex for lookups
+2. **Thread Safety**: ✓ Per-group mutex inside AggInterpreter, atomics for counters, O(1) key-based state lookup (no hash mutex needed)
 
 3. **Multi-Node**: ✓ Each node has independent state, DBSPJ coordinates final aggregation if needed
 
@@ -1077,12 +1135,13 @@ DBSPJ                              DBLQH                                 DBTUP
    - GroupByEntry aligned to cache lines to prevent false sharing
    - Memory released when JOIN_AGG_RELEASE_REQ processed
 
-3. **Hash Table Lookup**: State lookup required once per operation start
-   - State pointer cached in TcConnectionrec/ScanRecord after lookup
-   - Static hash table with simple mutex - fast for typical concurrency
+3. **State Lookup**: O(1) pool index access via aggStateKey
+   - No hash table, no mutex, no hash computation for state lookup
+   - Key carried in signal, used for direct array access
+   - State pointer cached in TcConnectionrec/ScanRecord after first lookup
    - Lock-free group lookup optimization for read-heavy workloads
 
-4. **Single-Thread Phases**: Setup/completion/release routed to one thread
-   - Serializes state creation and result sending
+4. **Single-Thread Phases**: Setup/completion/release handled by DblqhProxy
+   - DblqhProxy is single-threaded: no mutex needed for seize/release
    - Operations phase fully parallel across LDM threads
-   - Finalization sets flag to reject new rows, then iterates groups
+   - Finalization runs in DblqhProxy after all operations have completed
