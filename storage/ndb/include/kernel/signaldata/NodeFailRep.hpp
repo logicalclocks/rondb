@@ -43,14 +43,17 @@ struct NodeFailRep {
   static constexpr Uint32 SignalLength_v1 = 3 + NdbNodeBitmask48::Size;
   static constexpr Uint32 SignalLengthLong_v1 = 3 + NodeBitmask::Size;
 
+  static constexpr Uint32 FailNoIndex = 0;
   Uint32 failNo;
 
   /**
    * Note: This field is only set when signals is sent FROM Ndbcntr
    *       (not when signal is sent from Qmgr)
    */
+  static constexpr Uint32 MasterNodeIdIndex = 1;
   Uint32 masterNodeId;
 
+  static constexpr Uint32 NoOfNodesIndex = 2;
   Uint32 noOfNodes;
   union {
     Uint32 theNodes[NdbNodeBitmask::Size];  // data nodes 8.0.17 and older
