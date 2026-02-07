@@ -255,6 +255,11 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, func(
 	// --- buffers ---
 	code, ronDbErr := h.dbBatchReader.ExecuteWithBuffers(readParams, *dbResponseIntf, reqPtrs, respPtrs, noOps)
 
+	// Clear Go references to prevent use-after-free when release() calls C.free()
+	// The NativeBuffer structs contain unsafe.Pointer to C memory that will be freed
+	reqPtrs = nil
+	respPtrs = nil
+
 	if ronDbErr != nil {
 		var fsError = TranslateRonDbError(code, ronDbErr.Error())
 		return fsError.GetStatus(), release, fsError.GetError()
@@ -275,10 +280,20 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, func(
 	if log.IsDebug() {
 		log.Debugf("Detailed Status : %s", detailedStatus)
 	}
+
 	fsResp := response.(*api.FeatureStoreResponse)
-	fsResp.Status = status
 	FillPassedFeatures(features, fsReq.PassedFeatures, &metadata.PrefixFeaturesLookup, &metadata.FeatureIndexLookup)
+
+	if metadata.HasSpine {
+		// Spine FG are external. We alway return MISSING when reading Spine FG
+		if status == api.FEATURE_STATUS_COMPLETE {
+			status = api.FEATURE_STATUS_MISSING
+		}
+	}
+
 	fsResp.Features = *features
+	fsResp.Status = status
+
 	if fsReq.MetadataRequest != nil {
 		fsResp.Metadata = *GetFeatureMetadata(metadata, fsReq.MetadataRequest)
 	}
@@ -290,9 +305,7 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, func(
 
 func checkRondbResponse(rondbResp *api.BatchResponseJSON) *feature_store.RestErrorCode {
 	for _, result := range *rondbResp.Result {
-		if *result.Code != http.StatusOK && *result.Code != http.StatusNotFound {
-			fmt.Printf("Error is %s", *result.Message)
-			fmt.Printf("result is %s", result.String())
+		if result != nil && *result.Code != http.StatusOK && *result.Code != http.StatusNotFound {
 			return TranslateRonDbError(int(*result.Code), *result.Message)
 		}
 	}
@@ -356,30 +369,32 @@ func GetFeatureValues(ronDbResult *[]*api.PKReadResponseWithCodeJSON, entries *m
 	var arrDetailedStatus = make([]*api.DetailedStatus, 0, len(*ronDbResult))
 	var err *feature_store.RestErrorCode
 	for _, response := range *ronDbResult {
-		if includeDetailedStatus {
-			fgInt, err := strconv.Atoi(strings.Split(*response.Body.OperationID, "|")[1])
-			if err != nil {
-				log.Errorf("Failed to convert feature group id to int: %s", *response.Body.OperationID)
-				fgInt = -1
+		if response != nil {
+			if includeDetailedStatus {
+				fgInt, err := strconv.Atoi(strings.Split(*response.Body.OperationID, "|")[1])
+				if err != nil {
+					log.Errorf("Failed to convert feature group id to int: %s", *response.Body.OperationID)
+					fgInt = -1
+				}
+				arrDetailedStatus = append(arrDetailedStatus, &api.DetailedStatus{
+					FeatureGroupId: fgInt,
+					HttpStatus:     *response.Code,
+				})
 			}
-			arrDetailedStatus = append(arrDetailedStatus, &api.DetailedStatus{
-				FeatureGroupId: fgInt,
-				HttpStatus:     *response.Code,
-			})
-		}
-		if *response.Code == http.StatusNotFound {
-			status = api.FEATURE_STATUS_MISSING
-		} else if *response.Code == http.StatusBadRequest {
-			if strings.Contains(*response.Message, common.ERROR_013()) { // "Wrong number of primary-key columns."
-				status = api.FEATURE_STATUS_MISSING // Missing entry can happen and users can fill up missing features by passed featues
-			} else {
+			if *response.Code == http.StatusNotFound {
+				status = api.FEATURE_STATUS_MISSING
+			} else if *response.Code == http.StatusBadRequest {
+				if strings.Contains(*response.Message, common.ERROR_013()) { // "Wrong number of primary-key columns."
+					status = api.FEATURE_STATUS_MISSING // Missing entry can happen and users can fill up missing features by passed featues
+				} else {
+					status = api.FEATURE_STATUS_ERROR
+				}
+			} else if *response.Code != http.StatusOK {
 				status = api.FEATURE_STATUS_ERROR
 			}
-		} else if *response.Code != http.StatusOK {
-			status = api.FEATURE_STATUS_ERROR
-		}
 
-		getFeatureValuesInt(response, featureView, featureValues, &status, err)
+			getFeatureValuesInt(response, featureView, featureValues, &status, err)
+		}
 	}
 
 	// Fill in primary key value from request into the vector
@@ -388,10 +403,13 @@ func GetFeatureValues(ronDbResult *[]*api.PKReadResponseWithCodeJSON, entries *m
 	// Reason why it has to loop all entries for each `*JoinKeyMap` is to make sure the value are filled in according to the priority.
 	// Otherwise the lower priority one can overwrite the previous assigned entry if the later entry exists only in the lower priority map.
 	// Check `Test_GetFeatureVector_TestCorrectPkValue*` for more detail.
+
+	isDebug := log.IsDebug()
+
 	for featureName, value := range *entries {
 		// Get all join key linked to the provided feature name without prefix
 		if joinKeysWithoutPrefix, ok := featureView.JoinKeyMap[featureName]; ok {
-			if log.IsDebug() {
+			if isDebug {
 				log.Debugf("Filled primary key by JoinKeyMap")
 			}
 			FillPrimaryKey(featureView, &featureValues, joinKeysWithoutPrefix, value)
@@ -401,7 +419,7 @@ func GetFeatureValues(ronDbResult *[]*api.PKReadResponseWithCodeJSON, entries *m
 		// Get all join key linked to the provided feature name with prefix.
 		// Entry with prefix is prioritised and the value overwrites the previous assignment if available.
 		if joinKeysWithPrefix, ok := featureView.PrefixJoinKeyMap[featureName]; ok {
-			if log.IsDebug() {
+			if isDebug {
 				log.Debugf("Filled primary key by PrefixJoinKeyMap")
 			}
 			FillPrimaryKey(featureView, &featureValues, joinKeysWithPrefix, value)
@@ -411,7 +429,7 @@ func GetFeatureValues(ronDbResult *[]*api.PKReadResponseWithCodeJSON, entries *m
 		// Get all join key linked to the provided feature name with prefix.
 		// Entry in RequiredJoinKeyMap is prioritised and the value overwrites the previous assignment if available.
 		if joinKeysRequired, ok := featureView.RequiredJoinKeyMap[featureName]; ok {
-			if log.IsDebug() {
+			if isDebug {
 				log.Debugf("Filled primary key by RequiredJoinKeyMap")
 			}
 			FillPrimaryKey(featureView, &featureValues, joinKeysRequired, value)
@@ -429,76 +447,81 @@ type ComplexFeatureResult struct {
 
 func getFeatureValuesInt(response *api.PKReadResponseWithCodeJSON, featureView *feature_store.FeatureViewMetadata, featureValues []interface{}, status *api.FeatureStatus, err *feature_store.RestErrorCode) {
 	complexFeaturesCount := 0
-	for featureName, _ := range *response.Body.RawData {
-		featureIndexKey := feature_store.GetFeatureIndexKeyByFgIndexKey(*response.Body.OperationID, featureName)
-		// When only primary key is selected, Rondb will return all columns, so not all value from response are needed.
-		if _, ok := (featureView.FeatureIndexLookup)[featureIndexKey]; ok {
-			if _, ok := (featureView.ComplexFeatures)[featureIndexKey]; ok {
-				complexFeaturesCount++
+	if response.Body.RawData != nil {
+		for featureName, _ := range *response.Body.RawData {
+			featureIndexKey := feature_store.GetFeatureIndexKeyByFgIndexKey(*response.Body.OperationID, featureName)
+			// When only primary key is selected, Rondb will return all columns, so not all value from response are needed.
+			if _, ok := (featureView.FeatureIndexLookup)[featureIndexKey]; ok {
+				if _, ok := (featureView.ComplexFeatures)[featureIndexKey]; ok {
+					complexFeaturesCount++
+				}
 			}
 		}
-	}
 
-	var wg sync.WaitGroup
-	results := make(chan ComplexFeatureResult, complexFeaturesCount)
+		var wg sync.WaitGroup
+		results := make(chan ComplexFeatureResult, complexFeaturesCount)
 
-	// process raw avro data
-	for featureName, value := range *response.Body.RawData {
-		featureIndexKey := feature_store.GetFeatureIndexKeyByFgIndexKey(*response.Body.OperationID, featureName)
+		// process raw avro data
+		for featureName, value := range *response.Body.RawData {
+			featureIndexKey := feature_store.GetFeatureIndexKeyByFgIndexKey(*response.Body.OperationID, featureName)
 
-		// When only primary key is selected, Rondb will return all columns, so not all value from response are needed.
-		if index, ok := featureView.FeatureIndexLookup[featureIndexKey]; ok {
-			if complexFeature, ok := featureView.ComplexFeatures[featureIndexKey]; ok {
-				wg.Add(1)
+			// When only primary key is selected, Rondb will return all columns, so not all value from response are needed.
+			if index, ok := featureView.FeatureIndexLookup[featureIndexKey]; ok {
+				if complexFeature, ok := featureView.ComplexFeatures[featureIndexKey]; ok {
+					wg.Add(1)
 
-				go func(index int, value []byte, complexFeature *feature_store.ComplexFeature, featureName string) {
-					defer wg.Done()
-					deser, e := DeserialiseComplexFeature(value, complexFeature)
+					go func(index int, value []byte, complexFeature *feature_store.ComplexFeature, featureName string) {
+						defer wg.Done()
+						deser, e := DeserialiseComplexFeature(value, complexFeature)
 
-					if e != nil {
-						myStatus := api.FEATURE_STATUS_ERROR
-						myErr := feature_store.DESERIALISE_FEATURE_FAIL.NewMessage(
-							fmt.Sprintf("Feature name: %s; datalen %d; Error %s", featureName, len(value), e.Error()))
-						results <- ComplexFeatureResult{Index: index, Err: myErr, Status: myStatus}
-					} else {
-						results <- ComplexFeatureResult{Index: index, Value: deser}
-					}
-				}(index, *value, complexFeature, featureName)
+						if e != nil {
+							myStatus := api.FEATURE_STATUS_ERROR
+							myErr := feature_store.DESERIALISE_FEATURE_FAIL.NewMessage(
+								fmt.Sprintf("Feature name: %s; datalen %d; Error %s", featureName, len(value), e.Error()))
+							results <- ComplexFeatureResult{Index: index, Err: myErr, Status: myStatus}
+						} else {
+							results <- ComplexFeatureResult{Index: index, Value: deser}
+						}
+					}(index, *value, complexFeature, featureName)
 
+				} else {
+					featureValues[index] = value
+				}
+			}
+		}
+		wg.Wait()
+		close(results)
+
+		for res := range results {
+			if res.Err != nil {
+				fmt.Printf("Failed: %v\n", res.Err)
+				err = res.Err
+				*status = res.Status
 			} else {
-				featureValues[index] = value
+				featureValues[res.Index] = res.Value
 			}
-		}
-	}
-	wg.Wait()
-	close(results)
-
-	for res := range results {
-		if res.Err != nil {
-			fmt.Printf("Failed: %v\n", res.Err)
-			err = res.Err
-			*status = res.Status
-		} else {
-			featureValues[res.Index] = res.Value
 		}
 	}
 
 	// process non avro data
-	for featureName, value := range *response.Body.Data {
-		featureIndexKey := feature_store.GetFeatureIndexKeyByFgIndexKey(*response.Body.OperationID, featureName)
-		// When only primary key is selected, Rondb will return all columns, so not all value from response are needed.
-		if index, ok := (featureView.FeatureIndexLookup)[featureIndexKey]; ok {
-			featureValues[index] = value
+	if response.Body.Data != nil {
+		for featureName, value := range *response.Body.Data {
+			featureIndexKey := feature_store.GetFeatureIndexKeyByFgIndexKey(*response.Body.OperationID, featureName)
+			// When only primary key is selected, Rondb will return all columns, so not all value from response are needed.
+			if index, ok := (featureView.FeatureIndexLookup)[featureIndexKey]; ok {
+				featureValues[index] = value
+			}
 		}
 	}
 }
 
 func FillPrimaryKey(featureView *feature_store.FeatureViewMetadata, featureValues *[]interface{}, joinKeys []string, value *json.RawMessage) {
-	var indexKey string
-	// Get all join key linked to the provided feature name
-	if log.IsDebug() {
+	isDebug := log.IsDebug()
+	if isDebug {
 		log.Debugf("Join keys are: %s", strings.Join(joinKeys, ", "))
 	}
+
+	var indexKey string
 	for _, joinKey := range joinKeys {
 		// Check if the join key are valid feature
 		if prefixFeaturesLookups, ok := featureView.PrefixFeaturesLookup[joinKey]; ok {
@@ -507,7 +530,7 @@ func FillPrimaryKey(featureView *feature_store.FeatureViewMetadata, featureValue
 				// Get the index of the feature
 				if index, ok := (featureView.FeatureIndexLookup)[indexKey]; ok {
 					(*featureValues)[index] = value
-					if log.IsDebug() {
+					if isDebug {
 						log.Debugf("Filled primary key %s with value %s", joinKey, *value)
 					}
 				}
@@ -517,24 +540,31 @@ func FillPrimaryKey(featureView *feature_store.FeatureViewMetadata, featureValue
 }
 
 func GetBatchPkReadParams(metadata *feature_store.FeatureViewMetadata, entries *map[string]*json.RawMessage) *[]*api.PKReadParams {
+	isDebug := log.IsDebug()
 
 	var batchReadParams = make([]*api.PKReadParams, 0, len(metadata.FeatureGroupFeatures))
-	// fmt.Printf("Feature group features size is %d\n", len(metadata.FeatureGroupFeatures))
+
 	for _, fgFeature := range metadata.FeatureGroupFeatures {
 		// fmt.Printf("Feature group feature name is %s\n", fgFeature.FeatureGroupName)
 		// fmt.Printf("Feature group feature primary key map size is %d\n", len(fgFeature.PrimaryKeyMap))
 
 		testDb := fgFeature.FeatureStoreName
-		testTable := fmt.Sprintf("%s_%d", fgFeature.FeatureGroupName, fgFeature.FeatureGroupVersion)
+		testTable := fgFeature.TableName
+
+		if fgFeature.IsSpine() {
+			continue
+		}
+
 		var filters = make([]api.Filter, 0, len(fgFeature.Features))
 		var columns = make([]api.ReadColumn, 0, len(fgFeature.Features))
+
 		for _, feature := range fgFeature.Features {
-			if _, ok := metadata.PrimaryKeyMap[feature_store.GetServingKey(feature.JoinIndex, feature.Name)]; !ok {
+			if _, ok := metadata.PrimaryKeyMap[feature.ServingKey]; !ok {
 				var colName = feature.Name
 				var colType = api.DRT_DEFAULT
 				readCol := api.ReadColumn{Column: &colName, DataReturnType: &colType}
 				columns = append(columns, readCol)
-				if log.IsDebug() {
+				if isDebug {
 					log.Debugf("Add to column: %s", feature.Name)
 				}
 			}
@@ -547,7 +577,7 @@ func GetBatchPkReadParams(metadata *feature_store.FeatureViewMetadata, entries *
 				// Fill in value of required entry as original entry may not be required.
 				var filter = api.Filter{Column: &pkCol, Value: (*entries)[servingKey.RequiredEntry]}
 				filters = append(filters, filter)
-				if log.IsDebug() {
+				if isDebug {
 					var entryValue interface{}
 					err := json.Unmarshal(*(*entries)[servingKey.RequiredEntry], &entryValue)
 					if err == nil {
@@ -560,7 +590,7 @@ func GetBatchPkReadParams(metadata *feature_store.FeatureViewMetadata, entries *
 				// Also Fallback and use feature name with prefix.
 				var filter = api.Filter{Column: &pkCol, Value: (*entries)[servingKey.Prefix+servingKey.FeatureName]}
 				filters = append(filters, filter)
-				if log.IsDebug() {
+				if isDebug {
 					var entryValue interface{}
 					err := json.Unmarshal(*(*entries)[servingKey.Prefix+servingKey.FeatureName], &entryValue)
 					if err == nil {
@@ -575,7 +605,7 @@ func GetBatchPkReadParams(metadata *feature_store.FeatureViewMetadata, entries *
 				var filter = api.Filter{Column: &pkCol, Value: (*entries)[servingKey.FeatureName]}
 				filters = append(filters, filter)
 
-				if log.IsDebug() {
+				if isDebug {
 					var entryValue interface{}
 					err := json.Unmarshal(*(*entries)[servingKey.FeatureName], &entryValue)
 					if err == nil {

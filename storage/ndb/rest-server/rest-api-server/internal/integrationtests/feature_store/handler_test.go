@@ -2163,3 +2163,106 @@ func Test_GetFeatureVector_Shared_ComplexType(t *testing.T) {
 		ValidateResponseWithData(t, &row, &cols, fsResp)
 	}
 }
+
+func Test_GetSpineFeatureVector_WithMetadata_Passed_Spine(t *testing.T) {
+	var fsName = testdbs.FSDB004
+	var fvName = "fv_spine_group"
+	var fvVersion = 1
+	rows, pks, cols, err := GetSampleData(fsName, "fg1_1")
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+	for _, row := range rows {
+		var fsReq = CreateFeatureStoreRequest(
+			fsName,
+			fvName,
+			fvVersion,
+			pks,
+			*GetPkValues(&row, &pks, &cols),
+			[]string{"f1"},
+			[]interface{}{[]byte(` { "key1": "value1", "key2": "value2", "key3": "value3" } `)},
+		)
+
+		fsReq.MetadataRequest = &api.MetadataRequest{FeatureName: true, FeatureType: true}
+		includeDetailedStatus := true
+		fsReq.OptionsRequest = &api.OptionsRequest{IncludeDetailedStatus: &includeDetailedStatus}
+
+		fsResp := GetFeatureStoreResponse(t, fsReq)
+
+		var exCols = make(map[string]bool)
+		exCols["ts"] = true
+		exCols["col2"] = true
+		ValidateResponseWithDataExcludeColsWithStatusCheck(t, &row, &cols, &exCols, fsResp, true) // Spine FG always return MISSING status
+		ValidateResponseMetadataExCol(t, &fsResp.Metadata, fsReq.MetadataRequest, &exCols, testdbs.FSDB004, fvName, fvVersion)
+		if fsResp.Status != "MISSING" {
+			t.Fatalf("Status should be MISSING")
+		}
+	}
+}
+
+func Test_GetSpineFeatureVector_WithMetadata_Missing_Spine(t *testing.T) {
+	var fsName = testdbs.FSDB004
+	var fvName = "fv_spine_group"
+	var fvVersion = 1
+	rows, pks, cols, err := GetSampleData(fsName, "fg1_1")
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+	for _, row := range rows {
+		var fsReq = CreateFeatureStoreRequest(
+			fsName,
+			fvName,
+			fvVersion,
+			pks,
+			*GetPkValues(&row, &pks, &cols),
+			nil,
+			nil,
+		)
+
+		fsReq.MetadataRequest = &api.MetadataRequest{FeatureName: true, FeatureType: true}
+		includeDetailedStatus := true
+		fsReq.OptionsRequest = &api.OptionsRequest{IncludeDetailedStatus: &includeDetailedStatus}
+
+		fsResp := GetFeatureStoreResponse(t, fsReq)
+		if fsResp.Status != "MISSING" {
+			t.Fatalf("Status should be MISSING")
+		}
+	}
+}
+
+/*
+if FG is not found in RonDB then the status is set to missing even if the
+feature is provided as "passed feature"
+*/
+func Test_GetFeatureVector_PrimaryKeyNoMatch_PassedFeature(t *testing.T) {
+	rows, pks, cols, err := GetSampleData(testdbs.FSDB002, "sample_2_1")
+
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+
+	for _, row := range rows {
+		var pkValues = *GetPkValues(&row, &pks, &cols)
+		for i := range pkValues {
+			pkv := []byte(strconv.Itoa(9876543 + i))
+			pkValues[i] = pkv
+			row[0] = pkv
+			row[1] = "2022-01-09"
+			row[2] = "NA2"
+			row[3] = "NA3"
+		}
+		var fsReq = CreateFeatureStoreRequest(
+			testdbs.FSDB002,
+			"sample_2",
+			1,
+			pks,
+			pkValues,
+			[]string{"ts", "data1", "data2"},
+			[]interface{}{[]byte(`"2022-01-09"`), []byte(`"NA2"`), []byte(`"NA3"`)},
+		)
+		fsResp := GetFeatureStoreResponseWithDetail(t, fsReq, "", http.StatusOK)
+		if fsResp.Status != "MISSING" {
+			t.Fatalf("Status should be MISSING")
+		}
+	}
+}

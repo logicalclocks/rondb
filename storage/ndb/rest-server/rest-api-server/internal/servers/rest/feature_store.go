@@ -16,6 +16,7 @@
 package rest
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/bytedance/sonic"
@@ -51,10 +52,31 @@ func (h *RouteHandler) FeatureStore(c *gin.Context) {
 }
 
 func parseFeatureStoreRequest(c *gin.Context) (*api.FeatureStoreRequest, error) {
-
-	postParams := api.FeatureStoreRequest{}
-	if err := c.BindJSON(&postParams); err != nil {
+	body, err := c.GetRawData()
+	if err != nil {
 		return nil, err
 	}
+
+	postParams := api.FeatureStoreRequest{}
+	if err := sonic.Unmarshal(body, &postParams); err != nil {
+		return nil, err
+	}
+
+	if postParams.FeatureStoreName == nil {
+		return nil, fmt.Errorf("Error:Field validation for 'FeatureStoreName' failed")
+	}
+
+	if postParams.FeatureViewName == nil {
+		return nil, fmt.Errorf("Error:Field validation for 'FeatureViewName' failed")
+	}
+
+	if postParams.FeatureViewVersion == nil {
+		return nil, fmt.Errorf("Error:Field validation for 'FeatureViewVersion' failed")
+	}
+
+	if postParams.Entries == nil || len(*postParams.Entries) == 0 {
+		return nil, fmt.Errorf("Error:Field validation for 'Entries' failed. Incorrect primary key.")
+	}
+
 	return &postParams, nil
 }
