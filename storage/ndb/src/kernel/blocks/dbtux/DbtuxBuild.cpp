@@ -123,14 +123,6 @@ Dbtux::mt_buildIndexFragment(mt_BuildIndxCtx *req) {
 
     TreePos treePos;
     bool ok = searchToAdd(ctx, frag, *searchBound, ent, treePos);
-#ifdef VM_TRACE
-    if (!ok) {
-      g_eventLogger->info("tab(%u,%u), index: %u",
-        frag.m_tableId,
-        frag.m_fragId,
-        frag.m_indexId);
-    }
-#endif
     ndbrequire(ok);
 
     /*
