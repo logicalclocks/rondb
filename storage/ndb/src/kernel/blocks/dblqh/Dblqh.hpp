@@ -2654,7 +2654,6 @@ class Dblqh : public SimulatedBlock {
     Uint32 schemaVersion;
     Uint16 tableType;
     Uint8 m_disk_table;
-    Uint8 m_read_only_counter;
     bool  m_informed_backup_drop_tab;
     bool m_use_new_hash_function;
 
@@ -4996,9 +4995,6 @@ public:
   Uint32 m_num_copy_restores_active;
   Uint32 m_current_ldm_instance;
 
-  Uint32 m_current_rebuild_indexes_ongoing;
-  Uint32 m_next_table_rebuild_indexes;
-
   bool m_use_mutex_for_log_parts;
   void set_use_mutex_for_log_parts();
 
@@ -5231,8 +5227,6 @@ private:
   bool setAccFragPtrI(Uint32 tableId,
                       Uint32 fragId,
                       Uint64 fragPtrI);
-
-  Uint32 getTableNumFragments(Uint32 tableId);
 
   Uint64 getNextTuxFragrec(Uint32 tableId,
                            Uint32 & index);
