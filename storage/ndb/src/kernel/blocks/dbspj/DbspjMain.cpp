@@ -4851,7 +4851,7 @@ void Dbspj::lookup_send(Signal *signal, Ptr<Request> requestPtr,
 #if defined DEBUG_LQHKEYREQ
     g_eventLogger->info("LQHKEYREQ to %x", ref);
     printLQHKEYREQ(stdout, signal->getDataPtrSend(),
-                   NDB_ARRAY_SIZE(treeNodePtr.p->m_lookup_data.m_lqhKeyReqm_lqhKeyReqm_lqhKeyReqm_lqhKeyReqm_lqhKeyReqm_lqhKeyReqm_lqhKeyReqm_lqhKeyReq),
+                   NDB_ARRAY_SIZE(treeNodePtr.p->m_lookup_data.m_lqhKeyReq),
                    DBLQH);
     printf("KEYINFO: ");
     print(handle.m_ptr[0], stdout);
@@ -9757,8 +9757,7 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
         }
 
         if (!suppressFlushAI &&
-            (treeBits & DABits::NI_LINKED_ATTR || requestPtr.p->isScan() ||
-             !ndbd_spj_api_support_short_TRANSID_AI(API_version))) {
+            (treeBits & DABits::NI_LINKED_ATTR || requestPtr.p->isScan())) {
           /**
            * Insert a FLUSH_AI of 'USER_PROJECTION' result (to client)
            * before 'LINKED_ATTR' results to SPJ is produced.

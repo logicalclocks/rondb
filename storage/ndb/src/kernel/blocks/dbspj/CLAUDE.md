@@ -336,8 +336,7 @@ const bool isAggregateLeaf =
 const bool suppressFlushAI = isAggregateRequest && !isAggregateLeaf;
 
 if (!suppressFlushAI &&
-    (treeBits & DABits::NI_LINKED_ATTR || requestPtr.p->isScan() ||
-     !ndbd_spj_api_support_short_TRANSID_AI(API_version))) {
+    (treeBits & DABits::NI_LINKED_ATTR || requestPtr.p->isScan())) {
   // Insert FLUSH_AI marker
   jam();
   Uint32 flush[4];
