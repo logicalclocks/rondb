@@ -162,6 +162,9 @@ class ScanFragReq {
 
   static void setTTLOnlyExpiredFragFlag(Uint32 & requestInfo, Uint32 val);
   static Uint32 getTTLOnlyExpiredFragFlag(const Uint32 & requestInfo);
+
+  static void setJoinAggFlag(Uint32 &requestInfo, Uint32 val);
+  static Uint32 getJoinAggFlag(const Uint32 &requestInfo);
 };
 
 /*
@@ -369,11 +372,12 @@ class ScanFragNextReq {
  * e = TTL only expired flag - 1  Bit 25
  * P = Parallel ordered flag - 1  Bit 26
  * u = User Id flag          - 1  Bit 27
+ * J = Join aggregation flag - 1  Bit 28
  *
  *           1111111111222222222233
  * 01234567890123456789012345678901
  *  rrcdlxhkrztppppaaaaaaaaaaaaaaaa   Short variant ( < 6.4.0)
- *  rrcdlxhkrztppppCsaim  gIePu       Long variant (6.4.0 +)
+ *  rrcdlxhkrztppppCsaimfqgIePuJ      Long variant (6.4.0 +)
  */
 #define SF_LOCK_MODE_SHIFT (5)
 #define SF_LOCK_MODE_MASK (1)
@@ -409,6 +413,7 @@ class ScanFragNextReq {
 #define SF_TTL_ONLY_EXPIRED_SHIFT (25)
 #define SF_PAR_ORDERED_SCAN_SHIFT (26)
 #define SF_USER_ID_SHIFT (27)
+#define SF_JOIN_AGG_SHIFT (28)
 
 inline Uint32 ScanFragReq::getLockMode(const Uint32 &requestInfo) {
   return (requestInfo >> SF_LOCK_MODE_SHIFT) & SF_LOCK_MODE_MASK;
@@ -658,6 +663,16 @@ inline
 Uint32
 ScanFragReq::getTTLOnlyExpiredFragFlag(const Uint32 & requestInfo) {
   return (requestInfo >> SF_TTL_ONLY_EXPIRED_SHIFT) & 1;
+}
+
+inline void ScanFragReq::setJoinAggFlag(Uint32 &requestInfo, UintR val) {
+  ASSERT_BOOL(val, "ScanFragReq::setJoinAggFlag");
+  requestInfo = (requestInfo & ~(1 << SF_JOIN_AGG_SHIFT)) |
+                (val << SF_JOIN_AGG_SHIFT);
+}
+
+inline Uint32 ScanFragReq::getJoinAggFlag(const Uint32 &requestInfo) {
+  return (requestInfo >> SF_JOIN_AGG_SHIFT) & 1;
 }
 
 /**
