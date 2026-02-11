@@ -18092,7 +18092,8 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
      * totals.
      */
     jam();
-    continueJoinAggSend(signal, aggStateKey, 0, 0,
+    continueJoinAggSend(signal, aggStateKey,
+                        state->m_rows_sent, 0,
                         senderRef, senderData, requestId);
   }
 }

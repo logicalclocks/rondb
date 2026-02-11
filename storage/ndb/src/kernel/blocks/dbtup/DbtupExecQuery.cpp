@@ -5022,6 +5022,9 @@ Dbtup::checkNullAttributes(KeyReqStruct * req_struct,
  * sending via TRANSID_AI.  Selects the correct interpreter based
  * on the concurrency strategy and increments m_completed_ops.
  *
+ * If the interpreter returns AGG_EVICT_NEEDED (group map is full),
+ * evicts one group by sending it via TRANSID_AI, then retries.
+ *
  * Returns 0 on success, or the TUPKEY_abort return value on error.
  */
 int Dbtup::handleJoinAggRow(KeyReqStruct *req_struct,
@@ -5039,8 +5042,34 @@ int Dbtup::handleJoinAggRow(KeyReqStruct *req_struct,
     interp = state->m_agg_interpreter;
   }
   ndbrequire(interp != nullptr);
+
+retry:
   Int32 ret = interp->processRecWithLinkedAttrs(
       this, req_struct, linked_data, linked_len);
+  if (ret == AGG_EVICT_NEEDED) {
+    jamDebug();
+    Uint32 evict_buf[MAX_AGG_RESULT_BATCH_BYTES / sizeof(Uint32)];
+    Uint32 words_written = 0;
+    Int32 evict_ret = interp->evictOneGroup(
+        evict_buf, MAX_AGG_RESULT_BATCH_BYTES / sizeof(Uint32),
+        &words_written);
+    ndbrequire(evict_ret == 0);
+
+    Signal *signal = req_struct->signal;
+    TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
+    transIdAI->connectPtr = state->m_resultData;
+    transIdAI->transId[0] = state->m_transid[0];
+    transIdAI->transId[1] = state->m_transid[1];
+
+    LinearSectionPtr ptr[3];
+    ptr[0].p = evict_buf;
+    ptr[0].sz = words_written;
+    sendSignal(state->m_resultRef, GSN_TRANSID_AI, signal,
+               TransIdAI::HeaderLength, JBB, ptr, 1);
+
+    state->m_rows_sent++;
+    goto retry;
+  }
   if (ret != 0) {
     return TUPKEY_abort(req_struct, ret);
   }

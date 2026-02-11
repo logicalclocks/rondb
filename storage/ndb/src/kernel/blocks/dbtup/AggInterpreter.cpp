@@ -1398,6 +1398,10 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
                       header->getAttributeId(), header->getByteSize(),
                       header->getDataSize(), header->isNULL());
     } else {
+      /* New group: check eviction limit before allocating. */
+      if (m_max_groups > 0 && n_groups_ >= m_max_groups) {
+        return AGG_EVICT_NEEDED;
+      }
       /*
        * update req_struct->read_length here, which will update the
        * Dblqh::ScanRecord::m_curr_batch_size_bytes later in the
@@ -2193,6 +2197,52 @@ Int32 AggInterpreter::processRecWithLinkedAttrs(
   m_linked_attr_data = nullptr;
   m_linked_attr_len = 0;
   return ret;
+}
+
+/**
+ * evictOneGroup - remove one group from gb_map_ and serialize it.
+ *
+ * Called when ProcessRec returns AGG_EVICT_NEEDED because the map has
+ * reached m_max_groups.  Picks the first group (iteration order),
+ * serializes it into buf using the standard wire format, erases it
+ * from gb_map_, and returns 0.  Returns -1 if the map is empty or
+ * the buffer is too small.
+ */
+Int32 AggInterpreter::evictOneGroup(Uint32* buf, Uint32 buf_words,
+                                    Uint32* words_written) {
+  if (gb_map_ == nullptr || gb_map_->empty()) {
+    return -1;
+  }
+
+  auto iter = gb_map_->begin();
+  const GBHashEntry &key = iter->first;
+  const GBHashEntry &val = iter->second;
+  const Uint32 data_words = (key.len + val.len) >> 2;
+  const Uint32 total_words = 4 + data_words;
+
+  if (total_words > buf_words) {
+    return -1;
+  }
+
+  Uint32 pos = 0;
+  buf[pos++] = AttributeHeader::AGG_RESULT << 16 | 0x0721;
+  buf[pos++] = n_gb_cols_ << 16 | n_agg_results_;
+  buf[pos++] = 1;
+  buf[pos++] = key.len << 16 | val.len;
+  memcpy(&buf[pos], key.ptr, key.len + val.len);
+  pos += data_words;
+
+  *words_written = pos;
+
+  result_size_ -= (key.len + val.len);
+  n_groups_--;
+
+#ifndef PA_MALLOC
+  delete[] iter->first.ptr;
+#endif
+  gb_map_->erase(iter);
+
+  return 0;
 }
 
 /**
