@@ -1051,6 +1051,14 @@ void Dblqh::execCONTINUEB(Signal *signal) {
     update_cpu_usage(signal);
     return;
   }
+  case ZCONTINUE_JOIN_AGG_SEND:
+  {
+    jam();
+    continueJoinAggSend(signal, data0, data1, data2,
+                        signal->theData[4], signal->theData[5],
+                        signal->theData[6]);
+    return;
+  }
   case ZRESUME_BLOCKED_COPY_FRAGMENT:
   {
     jam();
@@ -18028,15 +18036,13 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
   state->m_state.store(JoinAggregationState::SENDING_RESULTS);
 
   const Uint32 n_gb_cols = interp->n_gb_cols();
-  const Uint32 n_agg_results = interp->n_agg_results();
-  Uint32 num_result_rows = 0;
-  Uint32 total_bytes = 0;
 
   if (n_gb_cols == 0) {
     /*
      * Non-group-by: single result row with flat accumulator array.
      */
     jam();
+    const Uint32 n_agg_results = interp->n_agg_results();
     const Uint32 agg_bytes = n_agg_results * sizeof(AggResItem);
     const Uint32 agg_words = agg_bytes >> 2;
     Uint32 buf[MAX_AGG_RESULT_BATCH_BYTES / sizeof(Uint32)];
@@ -18060,52 +18066,107 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
     sendSignal(state->m_resultRef, GSN_TRANSID_AI, signal,
                TransIdAI::HeaderLength, JBB, ptr, 1);
 
-    num_result_rows = 1;
-    total_bytes = pos * sizeof(Uint32);
+    state->m_state.store(JoinAggregationState::COMPLETED);
+
+    JoinAggCompleteConf *conf =
+      (JoinAggCompleteConf *)signal->getDataPtrSend();
+    conf->senderRef = reference();
+    conf->senderData = senderData;
+    conf->requestId = requestId;
+    conf->numResultRows = 1;
+    conf->resultBytes = pos * sizeof(Uint32);
+    sendSignal(senderRef, GSN_JOIN_AGG_COMPLETE_CONF,
+               signal, JoinAggCompleteConf::SignalLength, JBB);
   } else {
     /*
-     * Group-by: iterate groups one at a time, sending each as a
-     * separate TRANSID_AI.
+     * Group-by: delegate to helper that sends groups in batches,
+     * yielding via CONTINUEB after every batch to avoid starving
+     * other signals.
      *
-     * TODO: after N groups, issue CONTINUEB to yield CPU to other
-     * queries, then resume sending remaining groups.
+     * Each group is erased from gb_map after it is sent, so when
+     * the helper resumes from a CONTINUEB it simply iterates from
+     * gb_map->begin() again — the already-sent groups are gone.
+     * The running totals (num_result_rows, total_bytes) are carried
+     * across batches in the CONTINUEB signal data.  When gb_map is
+     * empty the helper sends JOIN_AGG_COMPLETE_CONF with the final
+     * totals.
      */
     jam();
-    auto *gb_map = interp->gb_map_mutable();
-    if (gb_map != nullptr) {
-      for (auto iter = gb_map->begin(); iter != gb_map->end();) {
-        jam();
-        const GBHashEntry &key = iter->first;
-        const GBHashEntry &val = iter->second;
-        const Uint32 data_words = (key.len + val.len) >> 2;
-        Uint32 buf[MAX_AGG_RESULT_BATCH_BYTES / sizeof(Uint32)];
-        ndbrequire(4 + data_words <= MAX_AGG_RESULT_BATCH_BYTES / sizeof(Uint32));
-        Uint32 pos = 0;
-        buf[pos++] = AttributeHeader::AGG_RESULT << 16 | 0x0721;
-        buf[pos++] = n_gb_cols << 16 | n_agg_results;
-        buf[pos++] = 1;
-        buf[pos++] = key.len << 16 | val.len;
-        memcpy(&buf[pos], key.ptr, key.len + val.len);
-        pos += data_words;
+    continueJoinAggSend(signal, aggStateKey, 0, 0,
+                        senderRef, senderData, requestId);
+  }
+}
 
-        TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
-        transIdAI->connectPtr = state->m_resultData;
-        transIdAI->transId[0] = state->m_transid[0];
-        transIdAI->transId[1] = state->m_transid[1];
+void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
+                                Uint32 num_result_rows, Uint32 total_bytes,
+                                Uint32 senderRef, Uint32 senderData,
+                                Uint32 requestId) {
+  static const Uint32 GROUPS_PER_BATCH = 16;
 
-        LinearSectionPtr ptr[3];
-        ptr[0].p = buf;
-        ptr[0].sz = pos;
-        sendSignal(state->m_resultRef, GSN_TRANSID_AI, signal,
-                   TransIdAI::HeaderLength, JBB, ptr, 1);
+  JoinAggregationState *state = getJoinAggState(aggStateKey);
+  ndbrequire(state != nullptr);
 
-        num_result_rows++;
-        total_bytes += pos * sizeof(Uint32);
+  AggInterpreter *interp;
+  if (state->m_strategy == JoinAggregationState::MUTEX_FREE) {
+    interp = state->m_per_thread_interpreters[0];
+  } else {
+    interp = state->m_agg_interpreter;
+  }
+  ndbrequire(interp != nullptr);
+
+  const Uint32 n_gb_cols = interp->n_gb_cols();
+  const Uint32 n_agg_results = interp->n_agg_results();
+  auto *gb_map = interp->gb_map_mutable();
+  Uint32 batch_count = 0;
+
+  if (gb_map != nullptr) {
+    for (auto iter = gb_map->begin(); iter != gb_map->end();) {
+      jam();
+      const GBHashEntry &key = iter->first;
+      const GBHashEntry &val = iter->second;
+      const Uint32 data_words = (key.len + val.len) >> 2;
+      Uint32 buf[MAX_AGG_RESULT_BATCH_BYTES / sizeof(Uint32)];
+      ndbrequire(4 + data_words <=
+                 MAX_AGG_RESULT_BATCH_BYTES / sizeof(Uint32));
+      Uint32 pos = 0;
+      buf[pos++] = AttributeHeader::AGG_RESULT << 16 | 0x0721;
+      buf[pos++] = n_gb_cols << 16 | n_agg_results;
+      buf[pos++] = 1;
+      buf[pos++] = key.len << 16 | val.len;
+      memcpy(&buf[pos], key.ptr, key.len + val.len);
+      pos += data_words;
+
+      TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
+      transIdAI->connectPtr = state->m_resultData;
+      transIdAI->transId[0] = state->m_transid[0];
+      transIdAI->transId[1] = state->m_transid[1];
+
+      LinearSectionPtr ptr[3];
+      ptr[0].p = buf;
+      ptr[0].sz = pos;
+      sendSignal(state->m_resultRef, GSN_TRANSID_AI, signal,
+                 TransIdAI::HeaderLength, JBB, ptr, 1);
+
+      num_result_rows++;
+      total_bytes += pos * sizeof(Uint32);
+      batch_count++;
 
 #ifndef PA_MALLOC
-        delete[] iter->first.ptr;
+      delete[] iter->first.ptr;
 #endif
-        gb_map->erase(iter++);
+      gb_map->erase(iter++);
+
+      if (batch_count >= GROUPS_PER_BATCH && iter != gb_map->end()) {
+        jam();
+        signal->theData[0] = ZCONTINUE_JOIN_AGG_SEND;
+        signal->theData[1] = aggStateKey;
+        signal->theData[2] = num_result_rows;
+        signal->theData[3] = total_bytes;
+        signal->theData[4] = senderRef;
+        signal->theData[5] = senderData;
+        signal->theData[6] = requestId;
+        sendSignal(reference(), GSN_CONTINUEB, signal, 7, JBB);
+        return;
       }
     }
   }

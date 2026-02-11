@@ -3229,8 +3229,16 @@ int Dbtup::handleReadReq(
         interp = state->m_agg_interpreter;
       }
       ndbrequire(interp != nullptr);
-      /* TODO: pass linked attributes from parent table (Part E) */
-      interp->processRecWithLinkedAttrs(this, req_struct, nullptr, 0);
+      /* Non-interpreted path: DBSPJ always sets interpreted_exec=TRUE for
+       * join aggregation, so this path is not reached for pushed joins.
+       * Kept for completeness; no linked attributes available here. */
+      Int32 ret = interp->processRecWithLinkedAttrs(
+          this, req_struct, nullptr, 0);
+      if (ret != 0) {
+        terrorCode = Uint32(-ret);
+        tupkeyErrorLab(req_struct);
+        return -1;
+      }
       state->m_completed_ops.fetch_add(1, std::memory_order_relaxed);
       req_struct->read_length = 0;
       return 0;
@@ -5411,8 +5419,11 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
         const Uint32 *linked_data = (RsubLen > 0) ?
             &cinBuffer[5 + cinBuffer[0] + cinBuffer[1] +
                         cinBuffer[2] + cinBuffer[3]] : nullptr;
-        interp->processRecWithLinkedAttrs(
+        Int32 ret = interp->processRecWithLinkedAttrs(
             this, req_struct, linked_data, RsubLen);
+        if (ret != 0) {
+          return TUPKEY_abort(req_struct, ret);
+        }
         state->m_completed_ops.fetch_add(1, std::memory_order_relaxed);
         req_struct->read_length = 0;
       } else {
@@ -5441,8 +5452,11 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
         const Uint32 *linked_data = (RsubLen > 0) ?
             &cinBuffer[5 + cinBuffer[0] + cinBuffer[1] +
                         cinBuffer[2] + cinBuffer[3]] : nullptr;
-        interp->processRecWithLinkedAttrs(
+        Int32 ret = interp->processRecWithLinkedAttrs(
             this, req_struct, linked_data, RsubLen);
+        if (ret != 0) {
+          return TUPKEY_abort(req_struct, ret);
+        }
         state->m_completed_ops.fetch_add(1, std::memory_order_relaxed);
         req_struct->read_length = 0;
       } else {
