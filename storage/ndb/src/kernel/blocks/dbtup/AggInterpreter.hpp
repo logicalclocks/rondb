@@ -76,7 +76,8 @@ class AggInterpreter {
     m_use_mutex(false), m_max_groups(0),
     m_chunks(nullptr),
     m_current_chunk(nullptr), m_total_chunk_bytes(0),
-    m_memory_budget(0), m_thread_id(0) {
+    m_memory_budget(0), m_thread_id(0),
+    m_agg_ops_cached(false) {
       assert(prog_len_ <= MAX_AGG_PROGRAM_WORD_SIZE);
       prog_ = prog_buf_;
       memcpy(prog_, prog, prog_len * sizeof(Uint32));
@@ -128,7 +129,7 @@ class AggInterpreter {
   Int32 finalizeResults();
   Int32 getResultData(Uint32* buffer, Uint32 buffer_size,
                       Uint32* bytes_written);
-  Int32 mergeFrom(AggInterpreter* other);
+  Uint32 mergeFrom(AggInterpreter* other, Uint32 max_groups);
 
   void Print();
   Uint32 PrepareAggResIfNeeded(Signal* signal, bool force);
@@ -251,6 +252,10 @@ class AggInterpreter {
 
   MemChunk* allocNewChunk();
   MemChunk* findChunk(const char* ptr) const;
+
+  // Cached agg ops for merge (avoids recomputing per CONTINUEB batch)
+  Uint8 m_cached_agg_ops[MAX_AGG_N_RESULTS];
+  bool m_agg_ops_cached;
 
   Uint32 prog_buf_[MAX_AGG_PROGRAM_WORD_SIZE];
   Uint32 gb_cols_buf_[MAX_AGG_N_GROUPBY_COLS];

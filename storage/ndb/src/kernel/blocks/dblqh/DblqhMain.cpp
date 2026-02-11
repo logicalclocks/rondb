@@ -18054,29 +18054,42 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
   ndbrequire(state != nullptr);
 
   /*
-   * MUTEX_FREE merge phase: merge one interpreter per CONTINUEB batch.
+   * MUTEX_FREE merge phase: merge per-thread interpreters into [0].
+   * For small group counts, merge entire interpreter at once.
+   * For large group counts, merge in batches and yield via CONTINUEB.
    */
+#ifdef VM_TRACE
+  static const Uint32 MERGE_GROUPS_PER_BATCH = 2;
+#else
+  static const Uint32 MERGE_GROUPS_PER_BATCH = 256;
+#endif
+
   if (state->m_strategy == JoinAggregationState::MUTEX_FREE) {
     AggInterpreter **interps = state->m_per_thread_interpreters;
     const Uint32 num_threads = state->m_num_threads;
 
-    if (merge_idx < num_threads) {
+    while (merge_idx < num_threads) {
       jam();
       if (interps[merge_idx] != nullptr) {
-        interps[0]->mergeFrom(interps[merge_idx]);
+        const auto *other_map = interps[merge_idx]->gb_map();
+        Uint32 other_size = (other_map != nullptr) ? other_map->size() : 0;
+        Uint32 batch = (other_size > MERGE_GROUPS_PER_BATCH) ?
+                       MERGE_GROUPS_PER_BATCH : 0;
+        Uint32 remaining = interps[0]->mergeFrom(
+            interps[merge_idx], batch);
+        if (remaining > 0) {
+          jam();
+          signal->theData[0] = ZCONTINUE_JOIN_AGG_MERGE;
+          signal->theData[1] = aggStateKey;
+          signal->theData[2] = merge_idx;
+          signal->theData[3] = senderRef;
+          signal->theData[4] = senderData;
+          signal->theData[5] = requestId;
+          sendSignal(reference(), GSN_CONTINUEB, signal, 6, JBB);
+          return;
+        }
       }
       merge_idx++;
-      if (merge_idx < num_threads) {
-        jam();
-        signal->theData[0] = ZCONTINUE_JOIN_AGG_MERGE;
-        signal->theData[1] = aggStateKey;
-        signal->theData[2] = merge_idx;
-        signal->theData[3] = senderRef;
-        signal->theData[4] = senderData;
-        signal->theData[5] = requestId;
-        sendSignal(reference(), GSN_CONTINUEB, signal, 6, JBB);
-        return;
-      }
     }
   }
 
@@ -18147,7 +18160,11 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
                                 Uint32 num_result_rows, Uint32 total_bytes,
                                 Uint32 senderRef, Uint32 senderData,
                                 Uint32 requestId) {
+#ifdef VM_TRACE
+  static const Uint32 GROUPS_PER_BATCH = 2;
+#else
   static const Uint32 GROUPS_PER_BATCH = 16;
+#endif
 
   JoinAggregationState *state = getJoinAggState(aggStateKey);
   ndbrequire(state != nullptr);

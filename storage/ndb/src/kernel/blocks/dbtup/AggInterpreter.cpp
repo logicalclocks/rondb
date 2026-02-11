@@ -2439,19 +2439,23 @@ static void extractAggOps(const Uint32* prog, Uint32 prog_len,
   }
 }
 
-Int32 AggInterpreter::mergeFrom(AggInterpreter* other) {
+Uint32 AggInterpreter::mergeFrom(AggInterpreter* other,
+                                  Uint32 max_groups) {
   assert(other != nullptr);
   assert(n_agg_results_ == other->n_agg_results_);
 
-  Uint8 agg_ops[MAX_AGG_N_RESULTS];
-  extractAggOps(prog_, prog_len_, agg_prog_start_pos_,
-                agg_ops, n_agg_results_);
+  // Cache agg_ops on first call to avoid recomputing per CONTINUEB batch.
+  if (!m_agg_ops_cached) {
+    extractAggOps(prog_, prog_len_, agg_prog_start_pos_,
+                  m_cached_agg_ops, n_agg_results_);
+    m_agg_ops_cached = true;
+  }
 
   // No group-by case: merge the flat accumulator arrays
   if (n_gb_cols_ == 0) {
     if (other->agg_results_ != nullptr) {
       mergeAccumulators(agg_results_, other->agg_results_,
-                        n_agg_results_, agg_ops);
+                        n_agg_results_, m_cached_agg_ops);
     }
     return 0;
   }
@@ -2461,6 +2465,7 @@ Int32 AggInterpreter::mergeFrom(AggInterpreter* other) {
     return 0;
   }
 
+  Uint32 count = 0;
   for (auto iter = other->gb_map_->begin();
        iter != other->gb_map_->end();) {
     const GBHashEntry &other_key = iter->first;
@@ -2473,9 +2478,9 @@ Int32 AggInterpreter::mergeFrom(AggInterpreter* other) {
         reinterpret_cast<const AggResItem *>(other_val.ptr);
       AggResItem *my_items =
         reinterpret_cast<AggResItem *>(my_iter->second.ptr);
-      mergeAccumulators(my_items, other_items, n_agg_results_, agg_ops);
+      mergeAccumulators(my_items, other_items, n_agg_results_,
+                        m_cached_agg_ops);
       other->freeGroupData(iter->first.ptr);
-      other->gb_map_->erase(iter++);
     } else {
       // Group only in other: move pointer into this map (no alloc/copy)
       Uint32 total_len = other_key.len +
@@ -2483,12 +2488,19 @@ Int32 AggInterpreter::mergeFrom(AggInterpreter* other) {
       gb_map_->insert(std::pair<GBHashEntry, GBHashEntry>(
         other_key, other_val));
       result_size_ += total_len;
-      ++iter;
+    }
+    other->gb_map_->erase(iter++);
+    count++;
+
+    if (max_groups > 0 && count >= max_groups &&
+        !other->gb_map_->empty()) {
+      n_groups_ = gb_map_->size();
+      return other->gb_map_->size();
     }
   }
 
-  // Transfer remaining chunks from other to this interpreter.
-  // Moved groups now live in other's chunks, so we take ownership.
+  // All groups processed — transfer chunks from other to this interpreter.
+  // Moved groups live in other's chunks, so we take ownership.
   if (other->m_chunks != nullptr) {
     MemChunk* tail = other->m_chunks;
     while (tail->next != nullptr) {
