@@ -45,6 +45,8 @@
 #include <signaldata/EventReport.hpp>
 #include <signaldata/ExecFragReq.hpp>
 #include <signaldata/GCP.hpp>
+#include <signaldata/JoinAgg.hpp>
+#include "JoinAggregationState.hpp"
 #include <signaldata/LqhFrag.hpp>
 #include <signaldata/LqhKey.hpp>
 #include <signaldata/LqhTransReq.hpp>
@@ -17978,9 +17980,50 @@ void Dblqh::send_scan_fragref(Signal *signal, Uint32 transid1, Uint32 transid2,
 
 void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
   jamEntry();
-  // TODO: Phase 5 - merge per-thread partial aggregation results and
-  // send final result to DBSPJ via JOIN_AGG_COMPLETE_CONF.
-  ndbabort();
+  const JoinAggCompleteReq *req =
+    (const JoinAggCompleteReq *)signal->getDataPtr();
+
+  const Uint32 senderRef = req->senderRef;
+  const Uint32 senderData = req->senderData;
+  const Uint32 requestId = req->requestId;
+  const Uint32 aggStateKey = req->aggStateKey;
+  const Uint32 completedOps = req->completedOps;
+
+  JoinAggregationState *state = getJoinAggState(aggStateKey);
+  if (state == nullptr) {
+    jam();
+    JoinAggCompleteRef *ref =
+      (JoinAggCompleteRef *)signal->getDataPtrSend();
+    ref->senderRef = reference();
+    ref->senderData = senderData;
+    ref->requestId = requestId;
+    ref->errorCode = ZJOIN_AGG_STATE_NOT_FOUND;
+    ref->errorLine = __LINE__;
+    sendSignal(senderRef, GSN_JOIN_AGG_COMPLETE_REF,
+               signal, JoinAggCompleteRef::SignalLength, JBB);
+    return;
+  }
+
+  ndbrequire(state->m_completed_ops == completedOps);
+  state->m_state.store(JoinAggregationState::FINALIZING);
+
+  // TODO: Phase 6 — merge/finalize using AggInterpreter:
+  //   MUTEX_BASED: state->m_agg_interpreter->FinalizeResults()
+  //   MUTEX_FREE:  AggInterpreter::MergeAllByBucket(...), then FinalizeResults()
+  // TODO: Phase 6 — send results via TRANSID_AI using
+  //   state->m_resultRef, m_resultData, m_routeRef
+
+  state->m_state.store(JoinAggregationState::COMPLETED);
+
+  JoinAggCompleteConf *conf =
+    (JoinAggCompleteConf *)signal->getDataPtrSend();
+  conf->senderRef = reference();
+  conf->senderData = senderData;
+  conf->requestId = requestId;
+  conf->numResultRows = 0;   // TODO: set from finalized results
+  conf->resultBytes = 0;     // TODO: set from finalized results
+  sendSignal(senderRef, GSN_JOIN_AGG_COMPLETE_CONF,
+             signal, JoinAggCompleteConf::SignalLength, JBB);
 }
 
 void Dblqh::execSCAN_FRAGREQ(Signal *signal) {
