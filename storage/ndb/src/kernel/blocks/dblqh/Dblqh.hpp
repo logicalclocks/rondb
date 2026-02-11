@@ -684,6 +684,7 @@ class Dblqh : public SimulatedBlock {
       m_agg_curr_batch_size_bytes(0),
       m_agg_n_res_recs(0),
       m_agg_interpreter(nullptr),
+      m_join_agg_state_key(RNIL),
       m_ttl_purge_window_size(0)
     {
     }
@@ -827,6 +828,7 @@ class Dblqh : public SimulatedBlock {
                              // that we won't send a scanfragconf with 0 completed_ops
                              // to the TC, which could cause incorrect aggregation result.
     AggInterpreter* m_agg_interpreter;
+    Uint32 m_join_agg_state_key;    // Pool index for shared join agg state (RNIL if none)
     // TTL
     Uint8 m_ttl_ignore;         // ignore set by API
     Uint8 m_ttl_ignore_for_ral; // ignore set by Read after lock
@@ -3005,6 +3007,7 @@ class Dblqh : public SimulatedBlock {
     Uint8 m_disk_table;
     Uint8 m_use_rowid;
     Uint8 m_query_thread;
+    Uint32 m_join_agg_state_key;    // Pool index for shared join agg state (RNIL if none)
     enum dealloc_states {
       /*
        * Example set of dealloc ops:
@@ -3296,6 +3299,7 @@ private:
   void execCOMPLETEREQ(Signal* signal);
   void execMEMCHECKREQ(Signal* signal);
   void execSCAN_FRAGREQ(Signal* signal);
+  void execJOIN_AGG_COMPLETE_REQ(Signal* signal);
   void execSCAN_NEXTREQ(Signal* signal);
   void execACC_SCANREF(Signal* signal, TcConnectionrecPtr);
   void execNEXT_SCANREF(Signal* signal);

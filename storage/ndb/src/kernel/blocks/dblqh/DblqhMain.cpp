@@ -9144,6 +9144,7 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
   regTcPtr->m_use_rowid = LqhKeyReq::getRowidFlag(Treqinfo);
   regTcPtr->m_dealloc_state = TcConnectionrec::DA_IDLE;
   regTcPtr->m_query_thread = 0;
+  regTcPtr->m_join_agg_state_key = RNIL;
   regTcPtr->m_dealloc_data.m_dealloc_ref_count = RNIL;
   {
     regTcPtr->operation = (Operation_t)op == ZREAD_EX ? ZREAD : (Operation_t)op;
@@ -17967,6 +17968,13 @@ void Dblqh::send_scan_fragref(Signal *signal, Uint32 transid1, Uint32 transid2,
   }
   sendSignal(senderBlockRef, GSN_SCAN_FRAGREF, signal,
              ScanFragRef::SignalLength, JBB);
+}
+
+void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
+  jamEntry();
+  // TODO: Phase 5 - merge per-thread partial aggregation results and
+  // send final result to DBSPJ via JOIN_AGG_COMPLETE_CONF.
+  ndbabort();
 }
 
 void Dblqh::execSCAN_FRAGREQ(Signal *signal) {
