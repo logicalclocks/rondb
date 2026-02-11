@@ -1051,6 +1051,14 @@ void Dblqh::execCONTINUEB(Signal *signal) {
     update_cpu_usage(signal);
     return;
   }
+  case ZCONTINUE_JOIN_AGG_MERGE:
+  {
+    jam();
+    continueJoinAggMerge(signal, data0, data1,
+                         data2, signal->theData[4],
+                         signal->theData[5]);
+    return;
+  }
   case ZCONTINUE_JOIN_AGG_SEND:
   {
     jam();
@@ -18017,20 +18025,72 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
 
   /*
    * Select interpreter based on strategy.
-   * MUTEX_FREE: merge per-thread interpreters into interpreters[0].
+   * MUTEX_FREE: merge per-thread interpreters into interpreters[0]
+   * via CONTINUEB yielding (one interpreter per batch).
+   * MUTEX_BASED: single shared interpreter, go straight to send.
+   */
+  if (state->m_strategy == JoinAggregationState::MUTEX_FREE) {
+    jam();
+    continueJoinAggMerge(signal, aggStateKey, 1,
+                         senderRef, senderData, requestId);
+    return;
+  }
+
+  /*
+   * MUTEX_BASED: single shared interpreter, skip merge.
+   * Use continueJoinAggMerge with merge_idx = num_threads (past end)
+   * to go directly to finalize + send.
+   */
+  jam();
+  continueJoinAggMerge(signal, aggStateKey, state->m_num_threads,
+                       senderRef, senderData, requestId);
+}
+
+void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
+                                 Uint32 merge_idx,
+                                 Uint32 senderRef, Uint32 senderData,
+                                 Uint32 requestId) {
+  JoinAggregationState *state = getJoinAggState(aggStateKey);
+  ndbrequire(state != nullptr);
+
+  /*
+   * MUTEX_FREE merge phase: merge one interpreter per CONTINUEB batch.
+   */
+  if (state->m_strategy == JoinAggregationState::MUTEX_FREE) {
+    AggInterpreter **interps = state->m_per_thread_interpreters;
+    const Uint32 num_threads = state->m_num_threads;
+
+    if (merge_idx < num_threads) {
+      jam();
+      if (interps[merge_idx] != nullptr) {
+        interps[0]->mergeFrom(interps[merge_idx]);
+      }
+      merge_idx++;
+      if (merge_idx < num_threads) {
+        jam();
+        signal->theData[0] = ZCONTINUE_JOIN_AGG_MERGE;
+        signal->theData[1] = aggStateKey;
+        signal->theData[2] = merge_idx;
+        signal->theData[3] = senderRef;
+        signal->theData[4] = senderData;
+        signal->theData[5] = requestId;
+        sendSignal(reference(), GSN_CONTINUEB, signal, 6, JBB);
+        return;
+      }
+    }
+  }
+
+  /*
+   * Merge complete (or MUTEX_BASED — no merge needed).
+   * Select the result interpreter, finalize, and start sending.
    */
   AggInterpreter *interp;
   if (state->m_strategy == JoinAggregationState::MUTEX_FREE) {
-    jam();
-    AggInterpreter::mergeAllByBucket(
-        state->m_per_thread_interpreters, state->m_num_threads);
     interp = state->m_per_thread_interpreters[0];
   } else {
-    jam();
     interp = state->m_agg_interpreter;
   }
   ndbrequire(interp != nullptr);
-
   interp->finalizeResults();
 
   state->m_state.store(JoinAggregationState::SENDING_RESULTS);
@@ -18038,15 +18098,13 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
   const Uint32 n_gb_cols = interp->n_gb_cols();
 
   if (n_gb_cols == 0) {
-    /*
-     * Non-group-by: single result row with flat accumulator array.
-     */
     jam();
     const Uint32 n_agg_results = interp->n_agg_results();
     const Uint32 agg_bytes = n_agg_results * sizeof(AggResItem);
     const Uint32 agg_words = agg_bytes >> 2;
     Uint32 buf[MAX_AGG_RESULT_BATCH_BYTES / sizeof(Uint32)];
-    ndbrequire(4 + agg_words <= MAX_AGG_RESULT_BATCH_BYTES / sizeof(Uint32));
+    ndbrequire(4 + agg_words <=
+               MAX_AGG_RESULT_BATCH_BYTES / sizeof(Uint32));
     Uint32 pos = 0;
     buf[pos++] = AttributeHeader::AGG_RESULT << 16 | 0x0721;
     buf[pos++] = 0 << 16 | n_agg_results;
@@ -18077,25 +18135,12 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
     conf->resultBytes = pos * sizeof(Uint32);
     sendSignal(senderRef, GSN_JOIN_AGG_COMPLETE_CONF,
                signal, JoinAggCompleteConf::SignalLength, JBB);
-  } else {
-    /*
-     * Group-by: delegate to helper that sends groups in batches,
-     * yielding via CONTINUEB after every batch to avoid starving
-     * other signals.
-     *
-     * Each group is erased from gb_map after it is sent, so when
-     * the helper resumes from a CONTINUEB it simply iterates from
-     * gb_map->begin() again — the already-sent groups are gone.
-     * The running totals (num_result_rows, total_bytes) are carried
-     * across batches in the CONTINUEB signal data.  When gb_map is
-     * empty the helper sends JOIN_AGG_COMPLETE_CONF with the final
-     * totals.
-     */
-    jam();
-    continueJoinAggSend(signal, aggStateKey,
-                        state->m_rows_sent, 0,
-                        senderRef, senderData, requestId);
+    return;
   }
+
+  continueJoinAggSend(signal, aggStateKey,
+                      state->m_rows_sent, 0,
+                      senderRef, senderData, requestId);
 }
 
 void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,

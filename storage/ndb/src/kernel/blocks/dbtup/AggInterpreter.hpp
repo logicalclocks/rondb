@@ -128,9 +128,6 @@ class AggInterpreter {
   Int32 finalizeResults();
   Int32 getResultData(Uint32* buffer, Uint32 buffer_size,
                       Uint32* bytes_written);
-  static Int32 mergeAllByBucket(
-      AggInterpreter** interpreters,
-      Uint32 num_interpreters);
   Int32 mergeFrom(AggInterpreter* other);
 
   void Print();

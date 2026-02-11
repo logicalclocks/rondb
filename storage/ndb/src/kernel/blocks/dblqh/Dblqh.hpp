@@ -354,6 +354,7 @@ class FsReadWriteReq;
 #define ZRESUME_BLOCKED_COPY_FRAGMENT 43
 #define ZUPDATE_CPU_USAGE 44
 #define ZCONTINUE_JOIN_AGG_SEND 45
+#define ZCONTINUE_JOIN_AGG_MERGE 46
 
 /* ------------------------------------------------------------------------- */
 /*        NODE STATE DURING SYSTEM RESTART, VARIABLES CNODES_SR_STATE        */
@@ -3301,6 +3302,10 @@ private:
   void execMEMCHECKREQ(Signal* signal);
   void execSCAN_FRAGREQ(Signal* signal);
   void execJOIN_AGG_COMPLETE_REQ(Signal* signal);
+  void continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
+                            Uint32 merge_idx,
+                            Uint32 senderRef, Uint32 senderData,
+                            Uint32 requestId);
   void continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
                            Uint32 num_result_rows, Uint32 total_bytes,
                            Uint32 senderRef, Uint32 senderData,

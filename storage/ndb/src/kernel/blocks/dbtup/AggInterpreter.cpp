@@ -2315,27 +2315,6 @@ Int32 AggInterpreter::getResultData(Uint32* buffer, Uint32 buffer_size,
 }
 
 /**
- * mergeAllByBucket - merge results from multiple per-thread interpreters.
- *
- * Used in MUTEX_FREE completion path: merges interpreters[1..N-1] into
- * interpreters[0] by calling mergeFrom on each. After this call,
- * interpreters[0] contains the combined results from all threads.
- */
-Int32 AggInterpreter::mergeAllByBucket(
-    AggInterpreter** interpreters,
-    Uint32 num_interpreters) {
-  if (num_interpreters <= 1) {
-    return 0;
-  }
-  for (Uint32 i = 1; i < num_interpreters; i++) {
-    if (interpreters[i] == nullptr) continue;
-    Int32 ret = interpreters[0]->mergeFrom(interpreters[i]);
-    if (ret != 0) return ret;
-  }
-  return 0;
-}
-
-/**
  * mergeAccumulators - merge src accumulator array into dst.
  * Rules: SUM += SUM, COUNT += COUNT, MAX = max(), MIN = min().
  * agg_ops[i] contains the opcode (kOpSum/kOpCount/kOpMax/kOpMin or
