@@ -17198,6 +17198,19 @@ void Dblqh::continueScanNextReqLab(Signal *signal,
     return;
   }  // if
 
+  if (scanPtr->m_aggregation &&
+      scanPtr->m_agg_interpreter != nullptr &&
+      scanPtr->m_agg_interpreter->gb_map() != nullptr &&
+      !scanPtr->m_agg_interpreter->gb_map()->empty()) {
+    jam();
+    if (!c_tup->SendAggResToAPI(signal, regTcPtr, scanPtr)) {
+      sendScanFragConf(signal, ZFALSE, regTcPtr);
+      return;
+    }
+    closeScanLab(signal, regTcPtr);
+    return;
+  }
+
   if (scanPtr->m_last_row) {
     jamDebug();
     scanPtr->scanCompletedStatus = ZTRUE;
@@ -19362,7 +19375,11 @@ void Dblqh::nextScanConfScanLab(Signal *signal, ScanRecord *const scanPtr,
        * Filter out the pushdown vector search case
        */
       if (unlikely(scanPtr->m_aggregation) && !scanPtr->m_agg_interpreter->vec_search()) {
-        c_tup->SendAggResToAPI(signal, tcConnectptr.p, scanPtr);
+        if (!c_tup->SendAggResToAPI(signal, tcConnectptr.p, scanPtr)) {
+          jam();
+          sendScanFragConf(signal, ZFALSE, tcConnectptr.p);
+          return;
+        }
       }
       if (scanPtr->m_continous_scan_state ==
           ScanRecord::CONTINOUS_SCAN_ACTIVE) {

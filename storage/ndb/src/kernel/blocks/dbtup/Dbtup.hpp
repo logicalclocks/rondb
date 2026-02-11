@@ -3287,7 +3287,7 @@ public:
 
   void nextAttrInfoParam(Uint32 storedProcId);
 
-  void SendAggResToAPI(Signal*, const void* lqhTcConnectrec, void* lqhScanRecord);
+  bool SendAggResToAPI(Signal*, const void* lqhTcConnectrec, void* lqhScanRecord);
   /**
    * Used by Restore...
    */

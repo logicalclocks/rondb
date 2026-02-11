@@ -76,7 +76,7 @@ class AggInterpreter {
     next_send_idx_(-1), ext_prog_buf_(nullptr),
     m_linked_attr_data(nullptr), m_linked_attr_len(0),
     m_use_mutex(false), m_max_groups(0),
-    m_chunks(nullptr),
+    m_chunks(nullptr), m_chunks_tail(nullptr),
     m_current_chunk(nullptr), m_total_chunk_bytes(0),
     m_memory_budget(0), m_budget_increment(0),
     m_total_available(0), m_thread_id(0),
@@ -249,7 +249,8 @@ class AggInterpreter {
   // Chunk-based allocator for group data.
   // Allocates from 32KB chunks via lc_ndbd_pool_malloc,
   // with per-chunk reference counting so eviction can free memory.
-  MemChunk* m_chunks;                 // linked list head
+  MemChunk* m_chunks;                 // doubly-linked list head
+  MemChunk* m_chunks_tail;            // doubly-linked list tail
   MemChunk* m_current_chunk;          // chunk currently bump-allocating from
   Uint32 m_total_chunk_bytes;         // total bytes across all chunks
   Uint32 m_memory_budget;             // current budget (bytes), grows via bookMoreMemory

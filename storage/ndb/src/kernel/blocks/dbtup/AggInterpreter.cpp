@@ -2530,22 +2530,19 @@ Uint32 AggInterpreter::mergeFrom(AggInterpreter* other,
 
   // All groups processed — transfer chunks from other to this interpreter.
   // Moved groups live in other's chunks, so we take ownership.
-  // Splice other's list in front of ours in O(1) via prev pointers.
+  // O(1) splice via tail pointer.
   if (other->m_chunks != nullptr) {
-    // Find tail of other's list via prev chain from last-allocated.
-    // allocNewChunk prepends, so walk next to find tail.
-    MemChunk* tail = other->m_chunks;
-    while (tail->next != nullptr) {
-      tail = tail->next;
-    }
-    tail->next = m_chunks;
+    other->m_chunks_tail->next = m_chunks;
     if (m_chunks != nullptr) {
-      m_chunks->prev = tail;
+      m_chunks->prev = other->m_chunks_tail;
+    } else {
+      m_chunks_tail = other->m_chunks_tail;
     }
     m_chunks = other->m_chunks;
     m_chunks->prev = nullptr;
     m_total_chunk_bytes += other->m_total_chunk_bytes;
     other->m_chunks = nullptr;
+    other->m_chunks_tail = nullptr;
     other->m_current_chunk = nullptr;
     other->m_total_chunk_bytes = 0;
   }
@@ -2839,12 +2836,16 @@ Uint32 AggInterpreter::PrepareAggResIfNeeded(Signal* signal, bool force) {
   assert(n_agg_results_ < 0xFFFF);
 
   if (n_gb_cols_) {
+    const Uint32 max_pos = MAX_AGG_RESULT_BATCH_BYTES / sizeof(Uint32);
     data_buf[pos++] = AttributeHeader::AGG_RESULT << 16 | 0x0721;
     data_buf[pos++] = n_gb_cols_ << 16 | n_agg_results_;
-    data_buf[pos++] = gb_map_->size();
+    Uint32 n_groups_pos = pos++;
+    Uint32 n_groups = 0;
     for (auto iter = gb_map_->begin(); iter != gb_map_->end();) {
       assert(iter->first.len % 4 == 0 && iter->first.len < 0xFFFF);
       assert(iter->second.len % 4 == 0 && iter->second.len < 0xFFFF);
+      Uint32 group_words = 1 + ((iter->first.len + iter->second.len) >> 2);
+      if (pos + group_words > max_pos && n_groups > 0) break;
       data_buf[pos++] = iter->first.len << 16 | iter->second.len;
       assert(iter->first.ptr + (iter->first.len + iter->second.len) ==
           iter->second.ptr + iter->second.len);
@@ -2853,9 +2854,10 @@ Uint32 AggInterpreter::PrepareAggResIfNeeded(Signal* signal, bool force) {
       pos += ((iter->first.len + iter->second.len) >> 2);
       freeGroupData(iter->first.ptr);
       gb_map_->erase(iter++);
-      result_size_ = 0;
+      n_groups++;
     }
-    assert(gb_map_->empty());
+    data_buf[n_groups_pos] = n_groups;
+    result_size_ = 0;
   } else {
     data_buf[pos++] = AttributeHeader::AGG_RESULT << 16 | 0x0721;
     data_buf[pos++] = n_gb_cols_ << 16 | n_agg_results_;
@@ -3244,6 +3246,7 @@ void AggInterpreter::initChunkAllocator(Uint32 thread_id,
   m_budget_increment = m_memory_budget;
   m_total_available = available_pages * MEM_CHUNK_SIZE;
   m_chunks = nullptr;
+  m_chunks_tail = nullptr;
   m_current_chunk = nullptr;
   m_total_chunk_bytes = 0;
 }
@@ -3278,6 +3281,8 @@ MemChunk* AggInterpreter::allocNewChunk() {
   chunk->prev = nullptr;
   if (m_chunks != nullptr) {
     m_chunks->prev = chunk;
+  } else {
+    m_chunks_tail = chunk;
   }
   m_chunks = chunk;
   m_total_chunk_bytes += MEM_CHUNK_SIZE;
@@ -3326,6 +3331,8 @@ void AggInterpreter::freeGroupData(char* ptr) {
     }
     if (chunk->next != nullptr) {
       chunk->next->prev = chunk->prev;
+    } else {
+      m_chunks_tail = chunk->prev;
     }
     if (m_current_chunk == chunk) {
       m_current_chunk = m_chunks;
@@ -3343,6 +3350,7 @@ void AggInterpreter::freeAllChunks() {
     chunk = next;
   }
   m_chunks = nullptr;
+  m_chunks_tail = nullptr;
   m_current_chunk = nullptr;
   m_total_chunk_bytes = 0;
 }
