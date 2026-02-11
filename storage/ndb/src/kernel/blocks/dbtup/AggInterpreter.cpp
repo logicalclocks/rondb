@@ -2460,7 +2460,7 @@ static void extractAggOps(const Uint32* prog, Uint32 prog_len,
   }
 }
 
-Int32 AggInterpreter::mergeFrom(const AggInterpreter* other) {
+Int32 AggInterpreter::mergeFrom(AggInterpreter* other) {
   assert(other != nullptr);
   assert(n_agg_results_ == other->n_agg_results_);
 
@@ -2483,34 +2483,46 @@ Int32 AggInterpreter::mergeFrom(const AggInterpreter* other) {
   }
 
   for (auto iter = other->gb_map_->begin();
-       iter != other->gb_map_->end(); ++iter) {
+       iter != other->gb_map_->end();) {
     const GBHashEntry &other_key = iter->first;
     const GBHashEntry &other_val = iter->second;
-    const AggResItem *other_items =
-      reinterpret_cast<const AggResItem *>(other_val.ptr);
 
     auto my_iter = gb_map_->find(other_key);
     if (my_iter != gb_map_->end()) {
-      // Group exists in both: merge accumulators
+      // Group exists in both: merge accumulators, free other's copy
+      const AggResItem *other_items =
+        reinterpret_cast<const AggResItem *>(other_val.ptr);
       AggResItem *my_items =
         reinterpret_cast<AggResItem *>(my_iter->second.ptr);
       mergeAccumulators(my_items, other_items, n_agg_results_, agg_ops);
+      other->freeGroupData(iter->first.ptr);
+      other->gb_map_->erase(iter++);
     } else {
-      // Group only in other: copy into this map
+      // Group only in other: move pointer into this map (no alloc/copy)
       Uint32 total_len = other_key.len +
                          n_agg_results_ * sizeof(AggResItem);
-      char *rec;
-      rec = allocGroupData(total_len);
-      require(rec != nullptr);
-      memcpy(rec, other_key.ptr, other_key.len);
-      memcpy(rec + other_key.len, other_val.ptr, other_val.len);
-      GBHashEntry new_key{rec, other_key.len};
-      GBHashEntry new_val{rec + other_key.len, other_val.len};
       gb_map_->insert(std::pair<GBHashEntry, GBHashEntry>(
-        new_key, new_val));
+        other_key, other_val));
       result_size_ += total_len;
+      ++iter;
     }
   }
+
+  // Transfer remaining chunks from other to this interpreter.
+  // Moved groups now live in other's chunks, so we take ownership.
+  if (other->m_chunks != nullptr) {
+    MemChunk* tail = other->m_chunks;
+    while (tail->next != nullptr) {
+      tail = tail->next;
+    }
+    tail->next = m_chunks;
+    m_chunks = other->m_chunks;
+    m_total_chunk_bytes += other->m_total_chunk_bytes;
+    other->m_chunks = nullptr;
+    other->m_current_chunk = nullptr;
+    other->m_total_chunk_bytes = 0;
+  }
+
   n_groups_ = gb_map_->size();
   return 0;
 }

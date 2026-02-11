@@ -131,7 +131,7 @@ class AggInterpreter {
   static Int32 mergeAllByBucket(
       AggInterpreter** interpreters,
       Uint32 num_interpreters);
-  Int32 mergeFrom(const AggInterpreter* other);
+  Int32 mergeFrom(AggInterpreter* other);
 
   void Print();
   Uint32 PrepareAggResIfNeeded(Signal* signal, bool force);
