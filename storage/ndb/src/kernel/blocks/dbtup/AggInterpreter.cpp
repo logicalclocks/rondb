@@ -2143,12 +2143,20 @@ void AggInterpreter::Print() {
   }
 }
 
-Int32 AggInterpreter::ProcessRecWithLinkedAttrs(
+/**
+ * processRecWithLinkedAttrs - process a row for join aggregation.
+ *
+ * Stores a pointer to linked_attr_data (AttributeHeader+data pairs from
+ * parent tables in the join tree) so that kOpLoadCol can resolve columns
+ * with bit 15 set from this buffer instead of reading via DBTUP.
+ * Then delegates to ProcessRec to run the aggregation program.
+ * The linked attr pointer is cleared after ProcessRec returns.
+ */
+Int32 AggInterpreter::processRecWithLinkedAttrs(
     Dbtup* block_tup,
     Dbtup::KeyReqStruct* req_struct,
     const Uint32* linked_attr_data,
     Uint32 linked_attr_len) {
-  // Store linked attrs for use by column resolution during program execution
   m_linked_attr_data = linked_attr_data;
   m_linked_attr_len = linked_attr_len;
 
@@ -2163,14 +2171,31 @@ Int32 AggInterpreter::ProcessRecWithLinkedAttrs(
   return ret;
 }
 
-Int32 AggInterpreter::FinalizeResults() {
+/**
+ * finalizeResults - post-process accumulated aggregation results.
+ *
+ * Iterates all groups in gb_map_ (or the flat agg_results_ if no
+ * group-by) and computes derived aggregates such as AVG = SUM / COUNT.
+ * SUM, COUNT, MIN, MAX are already in their final form.
+ * Must be called after all rows have been processed and before
+ * getResultData.
+ */
+Int32 AggInterpreter::finalizeResults() {
   // TODO: Iterate all groups in gb_map_, finalize each accumulator:
   //   - AVG = SUM / COUNT
   //   - Other aggregates are already final (SUM, COUNT, MIN, MAX)
   return 0;
 }
 
-Int32 AggInterpreter::GetResultData(Uint32* buffer, Uint32 buffer_size,
+/**
+ * getResultData - serialize finalized aggregation results into a buffer.
+ *
+ * Writes results in the same TRANSID_AI-compatible format used by
+ * PrepareAggResIfNeeded (magic header, group-by keys, accumulator
+ * values) but into a caller-provided buffer instead of signal->theData.
+ * Must be called after finalizeResults.
+ */
+Int32 AggInterpreter::getResultData(Uint32* buffer, Uint32 buffer_size,
                                     Uint32* bytes_written) {
   // TODO: Serialize finalized group results into TRANSID_AI format.
   // Uses same format as PrepareAggResIfNeeded but writes to caller's buffer.
@@ -2178,33 +2203,206 @@ Int32 AggInterpreter::GetResultData(Uint32* buffer, Uint32 buffer_size,
   return 0;
 }
 
-Int32 AggInterpreter::MergeAllByBucket(
+/**
+ * mergeAllByBucket - merge results from multiple per-thread interpreters.
+ *
+ * Used in MUTEX_FREE completion path: merges interpreters[1..N-1] into
+ * interpreters[0] by calling mergeFrom on each. After this call,
+ * interpreters[0] contains the combined results from all threads.
+ */
+Int32 AggInterpreter::mergeAllByBucket(
     AggInterpreter** interpreters,
     Uint32 num_interpreters) {
   if (num_interpreters <= 1) {
     return 0;
   }
-  // Merge interpreters[1..N-1] into interpreters[0].
-  // Same-bucket iteration ensures cache-friendly access.
   for (Uint32 i = 1; i < num_interpreters; i++) {
     if (interpreters[i] == nullptr) continue;
-    Int32 ret = interpreters[0]->MergeFrom(interpreters[i]);
+    Int32 ret = interpreters[0]->mergeFrom(interpreters[i]);
     if (ret != 0) return ret;
   }
   return 0;
 }
 
-Int32 AggInterpreter::MergeFrom(const AggInterpreter* other) {
+/**
+ * mergeAccumulators - merge src accumulator array into dst.
+ * Rules: SUM += SUM, COUNT += COUNT, MAX = max(), MIN = min().
+ * agg_ops[i] contains the opcode (kOpSum/kOpCount/kOpMax/kOpMin or
+ * type-specific variant) for accumulator slot i.
+ */
+static void mergeAccumulators(AggResItem* dst, const AggResItem* src,
+                              Uint32 n_agg_results,
+                              const Uint8* agg_ops) {
+  for (Uint32 i = 0; i < n_agg_results; i++) {
+    if (src[i].type == NDB_TYPE_UNDEFINED) {
+      continue;
+    }
+    if (dst[i].type == NDB_TYPE_UNDEFINED) {
+      dst[i] = src[i];
+      continue;
+    }
+    if (src[i].is_null) {
+      continue;
+    }
+    if (dst[i].is_null) {
+      dst[i] = src[i];
+      continue;
+    }
+    switch (agg_ops[i]) {
+      case kOpSum:
+      case kOpSumBigint:
+      case kOpSumDouble:
+        if (dst[i].type == NDB_TYPE_BIGINT) {
+          if (dst[i].is_unsigned) {
+            dst[i].value.val_uint64 += src[i].value.val_uint64;
+          } else {
+            dst[i].value.val_int64 += src[i].value.val_int64;
+          }
+        } else {
+          dst[i].value.val_double += src[i].value.val_double;
+        }
+        break;
+      case kOpCount:
+        dst[i].value.val_uint64 += src[i].value.val_uint64;
+        break;
+      case kOpMax:
+      case kOpMaxBigint:
+      case kOpMaxDouble:
+        if (dst[i].type == NDB_TYPE_BIGINT) {
+          if (dst[i].is_unsigned) {
+            if (src[i].value.val_uint64 > dst[i].value.val_uint64)
+              dst[i].value.val_uint64 = src[i].value.val_uint64;
+          } else {
+            if (src[i].value.val_int64 > dst[i].value.val_int64)
+              dst[i].value.val_int64 = src[i].value.val_int64;
+          }
+        } else {
+          if (src[i].value.val_double > dst[i].value.val_double)
+            dst[i].value.val_double = src[i].value.val_double;
+        }
+        break;
+      case kOpMin:
+      case kOpMinBigint:
+      case kOpMinDouble:
+        if (dst[i].type == NDB_TYPE_BIGINT) {
+          if (dst[i].is_unsigned) {
+            if (src[i].value.val_uint64 < dst[i].value.val_uint64)
+              dst[i].value.val_uint64 = src[i].value.val_uint64;
+          } else {
+            if (src[i].value.val_int64 < dst[i].value.val_int64)
+              dst[i].value.val_int64 = src[i].value.val_int64;
+          }
+        } else {
+          if (src[i].value.val_double < dst[i].value.val_double)
+            dst[i].value.val_double = src[i].value.val_double;
+        }
+        break;
+      default:
+        assert(0);
+        break;
+    }
+  }
+}
+
+/**
+ * extractAggOps - scan the aggregation program to determine which operation
+ * (SUM, COUNT, MAX, MIN) applies to each accumulator slot.
+ */
+static void extractAggOps(const Uint32* prog, Uint32 prog_len,
+                          Uint32 agg_prog_start_pos,
+                          Uint8* agg_ops, Uint32 n_agg_results) {
+  memset(agg_ops, 0, n_agg_results);
+  Uint32 exec_pos = agg_prog_start_pos;
+  while (exec_pos < prog_len) {
+    Uint32 value = prog[exec_pos++];
+    Uint8 op = (value & 0xFC000000) >> 26;
+    Uint32 agg_index;
+    switch (op) {
+      case kOpSum:
+      case kOpSumBigint:
+      case kOpSumDouble:
+      case kOpMax:
+      case kOpMaxBigint:
+      case kOpMaxDouble:
+      case kOpMin:
+      case kOpMinBigint:
+      case kOpMinDouble:
+      case kOpCount:
+        agg_index = value & 0x0000FFFF;
+        if (agg_index < n_agg_results) {
+          agg_ops[agg_index] = op;
+        }
+        break;
+      case kOpLoadCol: {
+        Uint32 type = (value & 0x03E00000) >> 21;
+        if (type == NDB_TYPE_DECIMAL || type == NDB_TYPE_DECIMALUNSIGNED) {
+          exec_pos++;  // Skip decimal info word
+        }
+        break;
+      }
+      case kOpLoadConst:
+        exec_pos += 2;  // Skip constant value words
+        break;
+      default:
+        break;
+    }
+  }
+}
+
+Int32 AggInterpreter::mergeFrom(const AggInterpreter* other) {
   assert(other != nullptr);
   assert(n_agg_results_ == other->n_agg_results_);
 
+  Uint8 agg_ops[MAX_AGG_N_RESULTS];
+  extractAggOps(prog_, prog_len_, agg_prog_start_pos_,
+                agg_ops, n_agg_results_);
+
+  // No group-by case: merge the flat accumulator arrays
+  if (n_gb_cols_ == 0) {
+    if (other->agg_results_ != nullptr) {
+      mergeAccumulators(agg_results_, other->agg_results_,
+                        n_agg_results_, agg_ops);
+    }
+    return 0;
+  }
+
+  // Group-by case: merge other's gb_map_ into this gb_map_
   if (other->gb_map_ == nullptr || other->gb_map_->empty()) {
     return 0;
   }
 
-  // TODO: For each group in other->gb_map_, find or create in this->gb_map_,
-  // merge accumulators using rules:
-  //   SUM += SUM, COUNT += COUNT, MIN = min(), MAX = max()
+  for (auto iter = other->gb_map_->begin();
+       iter != other->gb_map_->end(); ++iter) {
+    const GBHashEntry &other_key = iter->first;
+    const GBHashEntry &other_val = iter->second;
+    const AggResItem *other_items =
+      reinterpret_cast<const AggResItem *>(other_val.ptr);
+
+    auto my_iter = gb_map_->find(other_key);
+    if (my_iter != gb_map_->end()) {
+      // Group exists in both: merge accumulators
+      AggResItem *my_items =
+        reinterpret_cast<AggResItem *>(my_iter->second.ptr);
+      mergeAccumulators(my_items, other_items, n_agg_results_, agg_ops);
+    } else {
+      // Group only in other: copy into this map
+      Uint32 total_len = other_key.len +
+                         n_agg_results_ * sizeof(AggResItem);
+#ifdef PA_MALLOC
+      char *rec = MemAlloc(total_len);
+#else
+      char *rec = new char[total_len];
+#endif
+      memcpy(rec, other_key.ptr, other_key.len);
+      memcpy(rec + other_key.len, other_val.ptr, other_val.len);
+      GBHashEntry new_key{rec, other_key.len};
+      GBHashEntry new_val{rec + other_key.len, other_val.len};
+      gb_map_->insert(std::pair<GBHashEntry, GBHashEntry>(
+        new_key, new_val));
+      result_size_ += total_len;
+    }
+  }
+  n_groups_ = gb_map_->size();
   return 0;
 }
 

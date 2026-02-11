@@ -136,28 +136,18 @@ class AggInterpreter {
   Int32 ProcessRec(Dbtup* block_tup, Dbtup::KeyReqStruct* req_struct,
                    bool* vec_update_candidate);
 
-  // Join aggregation: process row with linked attributes from parent tables.
-  // linked_attr_data contains AttributeHeader+data pairs for parent columns.
-  Int32 ProcessRecWithLinkedAttrs(
+  Int32 processRecWithLinkedAttrs(
       Dbtup* block_tup,
       Dbtup::KeyReqStruct* req_struct,
       const Uint32* linked_attr_data,
       Uint32 linked_attr_len);
-
-  // Finalize results (compute AVG from SUM/COUNT, etc.)
-  Int32 FinalizeResults();
-
-  // Get result data for sending via TRANSID_AI
-  Int32 GetResultData(Uint32* buffer, Uint32 buffer_size,
+  Int32 finalizeResults();
+  Int32 getResultData(Uint32* buffer, Uint32 buffer_size,
                       Uint32* bytes_written);
-
-  // Merge all per-thread interpreters by bucket (MUTEX_FREE completion)
-  static Int32 MergeAllByBucket(
+  static Int32 mergeAllByBucket(
       AggInterpreter** interpreters,
       Uint32 num_interpreters);
-
-  // Merge another interpreter's results into this one
-  Int32 MergeFrom(const AggInterpreter* other);
+  Int32 mergeFrom(const AggInterpreter* other);
 
   void Print();
   Uint32 PrepareAggResIfNeeded(Signal* signal, bool force);
