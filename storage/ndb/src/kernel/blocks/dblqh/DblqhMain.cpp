@@ -9334,6 +9334,12 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
   regTcPtr->gci_lo = LqhKeyReq::getGCIFlag(Treqinfo) ? ~Uint32(0) : 0;
   nextPos += LqhKeyReq::getGCIFlag(Treqinfo);
 
+  if (LqhKeyReq::getJoinAggFlag(attrLenFlags)) {
+    jam();
+    regTcPtr->m_join_agg_state_key = lqhKeyReq->variableData[nextPos];
+    nextPos++;
+  }
+
   if (LqhKeyReq::getRowidFlag(Treqinfo)) {
     ndbassert(refToMain(senderRef) != DBTC);
   } else if (op == ZINSERT) {
@@ -20018,6 +20024,7 @@ Uint32 Dblqh::initScanrec(const ScanFragReq *scanFragReq,
   scanPtr->prioAFlag = prioAFlag;
   scanPtr->m_first_match_flag = firstMatch;
   scanPtr->m_aggregation = aggregation;
+  scanPtr->m_join_agg_state_key = RNIL;
   scanPtr->m_ttl_ignore = ttl_ignore;
   scanPtr->m_ttl_ignore_for_ral = false;
   scanPtr->m_ttl_only_expired = ttl_only_expired;
@@ -20129,6 +20136,12 @@ Uint32 Dblqh::initScanrec(const ScanFragReq *scanFragReq,
       scanPtr->scanApiOpPtr[2],
       scanPtr->scanApiOpPtr[3],
       scanPtr->scanApiOpPtr_index));
+  }
+  if (ScanFragReq::getJoinAggFlag(reqinfo)) {
+    jam();
+    scanPtr->m_join_agg_state_key =
+      scanFragReq->variableData[extra_len_index];
+    extra_len_index++;
   }
   ndbassert(sig_len == extra_len_index + ScanFragReq::SignalLength);
   (void)sig_len;
