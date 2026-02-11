@@ -132,6 +132,29 @@ struct Resource_limit {
   Uint32 m_overflow_reserved;
 
   /**
+   * Booking: words booked (reserved for future allocation) for this resource.
+   * Booked memory is invisible to non-keyed allocations.
+   * Tracked in words (Uint32, 4 bytes) for fine-grained accounting.
+   */
+  Uint64 m_booked_words;
+
+  /**
+   * Page equivalent of m_booked_words: ceil(m_booked_words / 8192).
+   * Used to adjust page-level availability checks.
+   */
+  Uint32 m_booked_pages;
+
+  /**
+   * How many of the booked pages come from the reserved area of this resource.
+   */
+  Uint32 m_booked_pages_reserved;
+
+  /**
+   * How many of the booked pages come from the shared global memory.
+   */
+  Uint32 m_booked_pages_shared;
+
+  /**
     A positive number identifying the resource group.
   */
   Uint32 m_resource_id;
