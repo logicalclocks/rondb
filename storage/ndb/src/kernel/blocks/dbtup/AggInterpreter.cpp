@@ -2143,6 +2143,71 @@ void AggInterpreter::Print() {
   }
 }
 
+Int32 AggInterpreter::ProcessRecWithLinkedAttrs(
+    Dbtup* block_tup,
+    Dbtup::KeyReqStruct* req_struct,
+    const Uint32* linked_attr_data,
+    Uint32 linked_attr_len) {
+  // Store linked attrs for use by column resolution during program execution
+  m_linked_attr_data = linked_attr_data;
+  m_linked_attr_len = linked_attr_len;
+
+  // TODO: Implement column resolution that checks bit 15 of col_id to
+  // distinguish local columns (read via block_tup->readAttributes) from
+  // linked columns (read from m_linked_attr_data buffer).
+  // For now, delegate to standard ProcessRec.
+  Int32 ret = ProcessRec(block_tup, req_struct);
+
+  m_linked_attr_data = nullptr;
+  m_linked_attr_len = 0;
+  return ret;
+}
+
+Int32 AggInterpreter::FinalizeResults() {
+  // TODO: Iterate all groups in gb_map_, finalize each accumulator:
+  //   - AVG = SUM / COUNT
+  //   - Other aggregates are already final (SUM, COUNT, MIN, MAX)
+  return 0;
+}
+
+Int32 AggInterpreter::GetResultData(Uint32* buffer, Uint32 buffer_size,
+                                    Uint32* bytes_written) {
+  // TODO: Serialize finalized group results into TRANSID_AI format.
+  // Uses same format as PrepareAggResIfNeeded but writes to caller's buffer.
+  *bytes_written = 0;
+  return 0;
+}
+
+Int32 AggInterpreter::MergeAllByBucket(
+    AggInterpreter** interpreters,
+    Uint32 num_interpreters) {
+  if (num_interpreters <= 1) {
+    return 0;
+  }
+  // Merge interpreters[1..N-1] into interpreters[0].
+  // Same-bucket iteration ensures cache-friendly access.
+  for (Uint32 i = 1; i < num_interpreters; i++) {
+    if (interpreters[i] == nullptr) continue;
+    Int32 ret = interpreters[0]->MergeFrom(interpreters[i]);
+    if (ret != 0) return ret;
+  }
+  return 0;
+}
+
+Int32 AggInterpreter::MergeFrom(const AggInterpreter* other) {
+  assert(other != nullptr);
+  assert(n_agg_results_ == other->n_agg_results_);
+
+  if (other->gb_map_ == nullptr || other->gb_map_->empty()) {
+    return 0;
+  }
+
+  // TODO: For each group in other->gb_map_, find or create in this->gb_map_,
+  // merge accumulators using rules:
+  //   SUM += SUM, COUNT += COUNT, MIN = min(), MAX = max()
+  return 0;
+}
+
 // NOTICE: Need to define agg_ops[] before using this func.
 void AggInterpreter::MergePrint(const AggInterpreter* in1,
                                    const AggInterpreter* in2) {

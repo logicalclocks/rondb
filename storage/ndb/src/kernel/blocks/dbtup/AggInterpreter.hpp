@@ -56,7 +56,7 @@ class AggInterpreter {
     agg_results_(nullptr), agg_prog_start_pos_(0),
     gb_map_(nullptr), n_groups_(0),
     buf_pos_(0), processed_rows_(0),
-    result_size_(0), table_id_(table_id), frag_id_(frag_id)/*, pcount_(0)*/,
+    result_size_(0), table_id_(table_id), frag_id_(frag_id),
     thread_id_(thread_id), alloc_len_(0),
     vec_search_(false), vec_dims_(0), vec_type_(0),
     vec_metric_(0), vec_col_idx_(0), vec_top_n_(0),
@@ -68,7 +68,15 @@ class AggInterpreter {
     vec_n_candidates_sent_(0),
     vec_size_candidates_sent_(0),
     vec_search_scan_done_(false),
-    next_send_idx_(-1), ext_prog_buf_(nullptr) {
+    next_send_idx_(-1), ext_prog_buf_(nullptr),
+    m_linked_attr_data(nullptr), m_linked_attr_len(0) {
+      assert(prog_len_ <= MAX_AGG_PROGRAM_WORD_SIZE);
+      prog_ = prog_buf_;
+      memcpy(prog_, prog, prog_len * sizeof(Uint32));
+      memset(buf_, 0, READ_BUF_WORD_SIZE * sizeof(Uint32));
+      memset(decimal_buf_, 0, sizeof(decimal_digit_t) * DECIMAL_BUFF_LENGTH);
+      decimal_.buf = decimal_buf_;
+      decimal_.len = DECIMAL_BUFF_LENGTH;
   }
   ~AggInterpreter() {
 #ifdef PA_MALLOC
@@ -117,12 +125,8 @@ class AggInterpreter {
 #endif // PA_MALLOC
 
     if (candidate_allocator_) {
-#ifdef PA_MALLOC
       candidate_allocator_->~CandidateAllocator();
       lc_ndbd_pool_free(candidate_allocator_);
-#else
-      delete candidate_allocator_;
-#endif
       candidate_allocator_ = nullptr;
     }
   }
@@ -131,6 +135,30 @@ class AggInterpreter {
 
   Int32 ProcessRec(Dbtup* block_tup, Dbtup::KeyReqStruct* req_struct,
                    bool* vec_update_candidate);
+
+  // Join aggregation: process row with linked attributes from parent tables.
+  // linked_attr_data contains AttributeHeader+data pairs for parent columns.
+  Int32 ProcessRecWithLinkedAttrs(
+      Dbtup* block_tup,
+      Dbtup::KeyReqStruct* req_struct,
+      const Uint32* linked_attr_data,
+      Uint32 linked_attr_len);
+
+  // Finalize results (compute AVG from SUM/COUNT, etc.)
+  Int32 FinalizeResults();
+
+  // Get result data for sending via TRANSID_AI
+  Int32 GetResultData(Uint32* buffer, Uint32 buffer_size,
+                      Uint32* bytes_written);
+
+  // Merge all per-thread interpreters by bucket (MUTEX_FREE completion)
+  static Int32 MergeAllByBucket(
+      AggInterpreter** interpreters,
+      Uint32 num_interpreters);
+
+  // Merge another interpreter's results into this one
+  Int32 MergeFrom(const AggInterpreter* other);
+
   void Print();
   Uint32 PrepareAggResIfNeeded(Signal* signal, bool force);
   Uint32 NumOfResRecords(bool last_time = false);
@@ -213,6 +241,10 @@ class AggInterpreter {
   decimal_t decimal_;
   decimal_digit_t decimal_buf_[DECIMAL_BUFF_LENGTH];
   Uint32 thread_id_;
+
+  // Linked attribute buffer for join aggregation
+  const Uint32* m_linked_attr_data;   // Points to current row's linked attrs
+  Uint32 m_linked_attr_len;           // Current length in words
 
 #ifdef PA_MALLOC
   /* For using Ndbd_mem_manager */
