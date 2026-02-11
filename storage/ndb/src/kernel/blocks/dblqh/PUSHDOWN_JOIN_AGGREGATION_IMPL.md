@@ -370,7 +370,7 @@ addRecSignal(GSN_JOIN_AGG_RELEASE_REQ,  &DblqhProxy::execJOIN_AGG_RELEASE_REQ);
 
 ## 10. Modified: DblqhMain.cpp — Operation and Completion Handlers
 
-**STATUS: IMPLEMENTED** (commits de181c6, 60431e1, b38c812)
+**STATUS: IMPLEMENTED** (commits de181c6, 60431e1, b38c812, 22a3997)
 
 **File:** `storage/ndb/src/kernel/blocks/dblqh/DblqhMain.cpp`
 
@@ -379,12 +379,14 @@ addRecSignal(GSN_JOIN_AGG_RELEASE_REQ,  &DblqhProxy::execJOIN_AGG_RELEASE_REQ);
 Routed via V_QUERY to a Dblqh worker. Implementation:
 - Merges per-thread interpreters (MUTEX_FREE) via mergeAllByBucket()
 - Calls finalizeResults()
-- Non-group-by: single TRANSID_AI with flat accumulator
-- Group-by: iterates gb_map_ one group at a time, sends per-group TRANSID_AI,
-  erases group after send (PA_MALLOC aware)
+- Non-group-by: single TRANSID_AI with flat accumulator, then CONF inline
+- Group-by: delegates to `continueJoinAggSend()` helper which sends groups
+  in batches of 16, yielding via `ZCONTINUE_JOIN_AGG_SEND` (45) CONTINUEB
+  after each batch. Groups are erased after sending so resumption always
+  iterates from `gb_map->begin()`. Running totals (num_result_rows,
+  total_bytes) are carried in the CONTINUEB signal data. When the map is
+  empty, sends JOIN_AGG_COMPLETE_CONF with final totals.
 - Uses fixed-size buffer `Uint32 buf[MAX_AGG_RESULT_BATCH_BYTES / sizeof(Uint32)]`
-- TODO: CONTINUEB yielding after N groups
-- Sends JOIN_AGG_COMPLETE_CONF with numResultRows and resultBytes
 
 ### execLQHKEYREQ — IMPLEMENTED
 
@@ -398,7 +400,7 @@ aggStateKey extraction when JoinAggFlag is set. Stored on
 
 ## 10a. Modified: DbtupExecQuery.cpp — Row-Processing Integration
 
-**STATUS: LQHKEYREQ path IMPLEMENTED** (commit de0add9), **SCAN path NOT STARTED**
+**STATUS: ALL PATHS IMPLEMENTED** (commits de0add9, 66d465a, be46a0e, 22a3997)
 
 **File:** `storage/ndb/src/kernel/blocks/dbtup/DbtupExecQuery.cpp`
 
@@ -407,25 +409,31 @@ aggStateKey extraction when JoinAggFlag is set. Stored on
 Added `m_join_agg_state_key` to `KeyReqStruct` in `Dbtup.hpp`, set from
 `lqhOpPtrP->m_join_agg_state_key` in `execTUPKEYREQ`.
 
-Two interception points before `sendReadAttrinfo`:
+Three interception points before `sendReadAttrinfo`:
 
 1. **Non-interpreted path** (handleReadReq): Before readAttributes, if
    `m_join_agg_state_key != RNIL`, look up JoinAggregationState, select
    AggInterpreter (MUTEX_FREE: `instance()-1` index, MUTEX_BASED: shared),
    call `processRecWithLinkedAttrs()`, increment `m_completed_ops`, set
-   `read_length=0`, return 0. Skips both readAttributes and sendReadAttrinfo.
+   `read_length=0`, return 0. Dead code for DBSPJ (always sets
+   interpreted_exec=TRUE). No linked attributes available. Error return check.
 
-2. **Interpreted non-scan path** (interpreterStartLab): After WHERE clause
-   evaluation, before sendReadAttrinfo, same pattern. Replaces
-   sendReadAttrinfo with AggInterpreter processing.
+2. **Interpreted scan path** (interpreterStartLab, `else if` of
+   m_aggregation): Same pattern with linked attributes from cinBuffer
+   section 4 (RsubLen). Override `m_join_agg_state_key` from
+   `lqhScanPtrP` in scan branch. Error return check via TUPKEY_abort.
 
-Both paths have TODO for passing linked attributes from parent table (Part E).
+3. **Interpreted non-scan path** (interpreterStartLab): After WHERE clause
+   evaluation, before sendReadAttrinfo, same pattern with linked attributes
+   from cinBuffer section 4. Error return check via TUPKEY_abort.
 
-### SCAN Path (Part C) — NOT STARTED
+### Linked Attribute Passing (Part E) — IMPLEMENTED
 
-The scan path has sendReadAttrinfo at the `else` branch of `m_aggregation`
-check (for scans that don't use single-table aggregation). Same pattern as
-LQHKEYREQ but using `scan_rec->m_join_agg_state_key` via `req_struct`.
+Linked attributes from parent tables arrive in cinBuffer section 4 (the
+subroutine/linked attribute section) as part of existing pushdown join
+AttrInfo. Offset: `5 + cinBuffer[0..3]`, length: `cinBuffer[4]` (RsubLen).
+Both interpreted interception points pass these to processRecWithLinkedAttrs.
+Non-interpreted path passes nullptr/0 (not reached for DBSPJ pushdown).
 
 ## 11. Modified: AggInterpreter — New Methods
 
@@ -605,16 +613,22 @@ for NDB API error reporting.
 - Bit-15 linked column resolution in kOpLoadCol
 - Accessor methods for Part A completion handler
 
-### Phase 6a: Row-Processing Integration (DBTUP) — PARTIALLY DONE
+### Phase 6a: Row-Processing Integration (DBTUP) — DONE
 - **Part B (LQHKEYREQ path): DONE** — m_join_agg_state_key on KeyReqStruct,
-  interception before sendReadAttrinfo in both non-interpreted and interpreted
-  paths. Supports MUTEX_BASED and MUTEX_FREE strategies.
-- **Part C (SCAN_FRAGREQ path): NOT STARTED** — same pattern as Part B but
-  for scan operations. Needs check in the `else` branch of `m_aggregation`
-  (i.e., scans that are NOT single-table aggregation).
-- **Part E (linked attr passing): NOT STARTED** — passing parent table columns
-  from signal to AggInterpreter. Requires TcConnectionrec fields for linked
-  attr buffer and DBSPJ integration (Phase 7).
+  interception before sendReadAttrinfo in non-interpreted and interpreted
+  non-scan paths. Supports MUTEX_BASED and MUTEX_FREE strategies.
+- **Part C (SCAN_FRAGREQ path): DONE** — `else if` between m_aggregation
+  check and sendReadAttrinfo. Override m_join_agg_state_key from lqhScanPtrP
+  in scan branch.
+- **Part E (linked attr passing): DONE** — linked attributes arrive in
+  cinBuffer section 4 (RsubLen) via existing pushdown join AttrInfo. Both
+  interpreted interception points pass linked_data/RsubLen to
+  processRecWithLinkedAttrs.
+- **Error return checks: DONE** — all 3 processRecWithLinkedAttrs call sites
+  check return value (non-interpreted: terrorCode + tupkeyErrorLab,
+  interpreted: TUPKEY_abort).
+- **CONTINUEB yielding: DONE** — continueJoinAggSend() helper sends 16
+  groups per batch via ZCONTINUE_JOIN_AGG_SEND (45).
 
 ### Phase 7: DBSPJ Orchestration — NOT STARTED
 - Dbspj.hpp: Add state fields to TreeNode, declare handlers
@@ -650,7 +664,7 @@ for NDB API error reporting.
 | `src/kernel/blocks/dbtup/AggInterpreter.hpp` | Modify | DONE | Methods + linked attr members + accessors |
 | `src/kernel/blocks/dbtup/AggInterpreter.cpp` | Modify | DONE | All method implementations |
 | `src/kernel/blocks/dbtup/Dbtup.hpp` | Modify | DONE | m_join_agg_state_key on KeyReqStruct |
-| `src/kernel/blocks/dbtup/DbtupExecQuery.cpp` | Modify | **PARTIAL** | LQHKEYREQ done, SCAN path pending |
+| `src/kernel/blocks/dbtup/DbtupExecQuery.cpp` | Modify | DONE | All 3 interception points + error checks |
 | `src/kernel/blocks/dbspj/Dbspj.hpp` | Modify | NOT STARTED | TreeNode fields + handler declarations |
 | `src/kernel/blocks/dbspj/DbspjMain.cpp` | Modify | NOT STARTED | Setup/complete/release orchestration |
 
