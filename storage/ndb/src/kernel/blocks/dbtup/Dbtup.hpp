@@ -2856,6 +2856,8 @@ private:
   //------------------------------------------------------------------
   void sendReadAttrinfo(Signal *signal, KeyReqStruct *req_struct,
                         Uint32 TnoOfData);
+  int handleJoinAggRow(KeyReqStruct *req_struct,
+                       const Uint32 *linked_data, Uint32 linked_len);
   bool writeLogMemory(KeyReqStruct *req_struct,
                       const char *input_ptr,
                       Uint32 byte_size);

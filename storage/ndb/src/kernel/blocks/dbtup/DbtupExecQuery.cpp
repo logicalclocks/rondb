@@ -3211,37 +3211,12 @@ int Dbtup::handleReadReq(
   {
     jamDebug();
     if (req_struct->m_join_agg_state_key != RNIL) {
-      jamDebug();
-      /*
-       * Join aggregation: feed row into AggInterpreter instead of
-       * reading regular attrinfo columns and sending TRANSID_AI.
-       * The AggInterpreter has its own program for reading columns.
-       */
-      JoinAggregationState *state =
-          getJoinAggState(req_struct->m_join_agg_state_key);
-      ndbrequire(state != nullptr);
-      AggInterpreter *interp;
-      if (state->m_strategy == JoinAggregationState::MUTEX_FREE) {
-        Uint32 thr_idx = instance() - 1;
-        ndbrequire(thr_idx < state->m_num_threads);
-        interp = state->m_per_thread_interpreters[thr_idx];
-      } else {
-        interp = state->m_agg_interpreter;
-      }
-      ndbrequire(interp != nullptr);
-      /* Non-interpreted path: DBSPJ always sets interpreted_exec=TRUE for
-       * join aggregation, so this path is not reached for pushed joins.
-       * Kept for completeness; no linked attributes available here. */
-      Int32 ret = interp->processRecWithLinkedAttrs(
-          this, req_struct, nullptr, 0);
-      if (ret != 0) {
-        terrorCode = Uint32(-ret);
-        tupkeyErrorLab(req_struct);
-        return -1;
-      }
-      state->m_completed_ops.fetch_add(1, std::memory_order_relaxed);
-      req_struct->read_length = 0;
-      return 0;
+      jam();
+      /* DBSPJ always sets interpreted_exec=TRUE for join aggregation,
+       * so this non-interpreted path should never be reached. */
+      terrorCode = ZJOIN_AGG_INTERPRETER_ERROR;
+      tupkeyErrorLab(req_struct);
+      return -1;
     }
     int ret = readAttributes(req_struct, &cinBuffer[0],
                              req_struct->attrinfo_len, dst, dstLen);
@@ -5040,6 +5015,40 @@ Dbtup::checkNullAttributes(KeyReqStruct * req_struct,
 /* For updates it still makes sense to handle initial read and      */
 /* final read separately since we might want to read values before  */
 /* and after changes, the interpreter can write column values.      */
+/**
+ * handleJoinAggRow
+ *
+ * Feed a row into the join aggregation AggInterpreter instead of
+ * sending via TRANSID_AI.  Selects the correct interpreter based
+ * on the concurrency strategy and increments m_completed_ops.
+ *
+ * Returns 0 on success, or the TUPKEY_abort return value on error.
+ */
+int Dbtup::handleJoinAggRow(KeyReqStruct *req_struct,
+                            const Uint32 *linked_data,
+                            Uint32 linked_len) {
+  JoinAggregationState *state =
+      getJoinAggState(req_struct->m_join_agg_state_key);
+  ndbrequire(state != nullptr);
+  AggInterpreter *interp;
+  if (state->m_strategy == JoinAggregationState::MUTEX_FREE) {
+    Uint32 thr_idx = instance() - 1;
+    ndbrequire(thr_idx < state->m_num_threads);
+    interp = state->m_per_thread_interpreters[thr_idx];
+  } else {
+    interp = state->m_agg_interpreter;
+  }
+  ndbrequire(interp != nullptr);
+  Int32 ret = interp->processRecWithLinkedAttrs(
+      this, req_struct, linked_data, linked_len);
+  if (ret != 0) {
+    return TUPKEY_abort(req_struct, ret);
+  }
+  state->m_completed_ops.fetch_add(1, std::memory_order_relaxed);
+  req_struct->read_length = 0;
+  return 0;
+}
+
 /* ---------------------------------------------------------------- */
 /* ---------------------------------------------------------------- */
 /* ----------------- INTERPRETED EXECUTION  ----------------------- */
@@ -5400,65 +5409,22 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
         return 0;
       } else if (req_struct->m_join_agg_state_key != RNIL) {
         jamDebug();
-        /*
-         * Join aggregation (interpreted scan path): feed the row
-         * into the AggInterpreter instead of sending via TRANSID_AI.
-         */
-        JoinAggregationState *state =
-            getJoinAggState(req_struct->m_join_agg_state_key);
-        ndbrequire(state != nullptr);
-        AggInterpreter *interp;
-        if (state->m_strategy == JoinAggregationState::MUTEX_FREE) {
-          Uint32 thr_idx = instance() - 1;
-          ndbrequire(thr_idx < state->m_num_threads);
-          interp = state->m_per_thread_interpreters[thr_idx];
-        } else {
-          interp = state->m_agg_interpreter;
-        }
-        ndbrequire(interp != nullptr);
         const Uint32 *linked_data = (RsubLen > 0) ?
             &cinBuffer[5 + cinBuffer[0] + cinBuffer[1] +
                         cinBuffer[2] + cinBuffer[3]] : nullptr;
-        Int32 ret = interp->processRecWithLinkedAttrs(
-            this, req_struct, linked_data, RsubLen);
-        if (ret != 0) {
-          return TUPKEY_abort(req_struct, ret);
-        }
-        state->m_completed_ops.fetch_add(1, std::memory_order_relaxed);
-        req_struct->read_length = 0;
+        int res = handleJoinAggRow(req_struct, linked_data, RsubLen);
+        if (res != 0) return res;
       } else {
         sendReadAttrinfo(signal, req_struct, RattroutCounter);
       }
     } else {
       if (req_struct->m_join_agg_state_key != RNIL) {
         jamDebug();
-        /*
-         * Join aggregation (interpreted LQHKEYREQ path): feed the row
-         * into the AggInterpreter instead of sending via TRANSID_AI.
-         * The WHERE clause has already been evaluated by interpreterStartLab.
-         */
-        JoinAggregationState *state =
-            getJoinAggState(req_struct->m_join_agg_state_key);
-        ndbrequire(state != nullptr);
-        AggInterpreter *interp;
-        if (state->m_strategy == JoinAggregationState::MUTEX_FREE) {
-          Uint32 thr_idx = instance() - 1;
-          ndbrequire(thr_idx < state->m_num_threads);
-          interp = state->m_per_thread_interpreters[thr_idx];
-        } else {
-          interp = state->m_agg_interpreter;
-        }
-        ndbrequire(interp != nullptr);
         const Uint32 *linked_data = (RsubLen > 0) ?
             &cinBuffer[5 + cinBuffer[0] + cinBuffer[1] +
                         cinBuffer[2] + cinBuffer[3]] : nullptr;
-        Int32 ret = interp->processRecWithLinkedAttrs(
-            this, req_struct, linked_data, RsubLen);
-        if (ret != 0) {
-          return TUPKEY_abort(req_struct, ret);
-        }
-        state->m_completed_ops.fetch_add(1, std::memory_order_relaxed);
-        req_struct->read_length = 0;
+        int res = handleJoinAggRow(req_struct, linked_data, RsubLen);
+        if (res != 0) return res;
       } else {
         sendReadAttrinfo(signal, req_struct, RattroutCounter);
       }
