@@ -562,9 +562,9 @@ Word 4+: key bytes + accumulator bytes
 The receiver must be prepared to receive these TRANSID_AI signals at
 any point during the query, not just after JOIN_AGG_COMPLETE_REQ.
 
-## 10c. MUTEX_BASED Locking in AggInterpreter — NOT STARTED
+## 10c. MUTEX_BASED Locking in AggInterpreter — DONE
 
-**STATUS: NOT STARTED**
+**STATUS: IMPLEMENTED** (commit a77f5b8)
 
 **File:** `storage/ndb/src/kernel/blocks/dbtup/AggInterpreter.hpp` / `.cpp`
 
@@ -816,11 +816,10 @@ for NDB API error reporting.
 - Completion phase: account for already-evicted groups in totals
 - See section 10b for full design
 
-### Phase 6c: MUTEX_BASED Locking — NOT STARTED
-- AggInterpreter: add std::mutex m_mutex, bool m_use_mutex
-- Acquire lock in ProcessRec when m_use_mutex is true
-- Currently no locking exists — MUTEX_BASED is unsafe for concurrent access
-- See section 10c for full design
+### Phase 6c: MUTEX_BASED Locking — DONE
+- AggInterpreter: std::mutex m_mutex, bool m_use_mutex, setUseMutex() added
+- processRecWithLinkedAttrs acquires lock when m_use_mutex is true
+- DblqhProxy: call setUseMutex(true) when allocating MUTEX_BASED interpreter
 
 ### Phase 7: DBSPJ Orchestration — NOT STARTED
 - Dbspj.hpp: Add state fields to TreeNode, declare handlers
