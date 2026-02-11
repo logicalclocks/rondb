@@ -18194,15 +18194,15 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
 
   const Uint32 n_gb_cols = interp->n_gb_cols();
   const Uint32 n_agg_results = interp->n_agg_results();
-  auto *gb_map = interp->gb_map_mutable();
+  const Uint32 v_len = interp->val_len();
+  GBHashTable *gb_map = interp->gb_map_mutable();
   Uint32 batch_count = 0;
 
   if (gb_map != nullptr) {
-    for (auto iter = gb_map->begin(); iter != gb_map->end();) {
+    for (auto iter = gb_map->begin(); iter.valid();) {
       jam();
-      const GBHashEntry &key = iter->first;
-      const GBHashEntry &val = iter->second;
-      const Uint32 data_words = (key.len + val.len) >> 2;
+      const Uint32 key_len = iter.keyLen();
+      const Uint32 data_words = (key_len + v_len) >> 2;
       Uint32 buf[MAX_AGG_RESULT_BATCH_BYTES / sizeof(Uint32)];
       ndbrequire(4 + data_words <=
                  MAX_AGG_RESULT_BATCH_BYTES / sizeof(Uint32));
@@ -18210,8 +18210,8 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
       buf[pos++] = AttributeHeader::AGG_RESULT << 16 | 0x0721;
       buf[pos++] = n_gb_cols << 16 | n_agg_results;
       buf[pos++] = 1;
-      buf[pos++] = key.len << 16 | val.len;
-      memcpy(&buf[pos], key.ptr, key.len + val.len);
+      buf[pos++] = key_len << 16 | v_len;
+      memcpy(&buf[pos], iter.data(), key_len + v_len);
       pos += data_words;
 
       TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
@@ -18229,9 +18229,9 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
       total_bytes += pos * sizeof(Uint32);
       batch_count++;
 
-      gb_map->erase(iter++);
+      gb_map->eraseAndNext(iter);
 
-      if (iter == gb_map->end()) {
+      if (!iter.valid()) {
         break;
       }
 

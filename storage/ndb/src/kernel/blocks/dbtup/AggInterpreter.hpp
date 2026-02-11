@@ -25,10 +25,11 @@
 #define AGGINTERPRETER_H_
 
 #include <math.h>
-#include <map>
+#include <cstring>
 #include <mutex>
 #include "Dbtup.hpp"
 #include "NdbAggregationCommon.hpp"
+#include "util/rondb_hash.hpp"
 
 #include <simsimd/simsimd.h>
 #include <queue>
@@ -37,6 +38,7 @@
 #define DECIMAL_BUFF_LENGTH 9
 #define AGG_EVICT_NEEDED 1
 #define MEM_CHUNK_SIZE 32768
+#define GB_HASH_BUCKET_COUNT 1024
 
 struct MemChunk {
   char* data;
@@ -46,6 +48,195 @@ struct MemChunk {
   MemChunk* next;
   MemChunk* prev;
   char* group_list;         // singly-linked list of live groups in this chunk
+};
+
+/*
+ * Chaining hash table for group-by lookup.  All per-thread interpreters
+ * use identical bucket count so merge can iterate bucket-by-bucket.
+ *
+ * Group data layout (GROUP_LINK_OVERHEAD = 24 bytes prepended):
+ *   [chunk_next(8)] [hash_next(8)] [key_len(4)] [chunk_offset(4)]
+ * Data pointer (from allocGroupData) points past this header.
+ * hash_next links entries within the same bucket.
+ */
+class GBHashTable {
+ public:
+  static const Uint32 HASH_NEXT_OFFSET = sizeof(char*);
+  static const Uint32 KEY_LEN_OFFSET = 2 * sizeof(char*);
+  static const Uint32 OVERHEAD = 24;
+
+  class Iterator {
+    friend class GBHashTable;
+    GBHashTable* m_ht;
+    Uint32 m_bucket;
+    char** m_prev_link;
+    char* m_raw;
+   public:
+    Iterator() : m_ht(nullptr), m_bucket(0), m_prev_link(nullptr),
+                 m_raw(nullptr) {}
+    Iterator(GBHashTable* ht, Uint32 bucket, char** prev_link, char* raw)
+      : m_ht(ht), m_bucket(bucket), m_prev_link(prev_link), m_raw(raw) {}
+    bool valid() const { return m_raw != nullptr; }
+    char* data() const { return m_raw + OVERHEAD; }
+    Uint32 keyLen() const {
+      return *reinterpret_cast<Uint32*>(m_raw + KEY_LEN_OFFSET);
+    }
+  };
+
+  GBHashTable()
+    : m_size(0), m_bucket_count(0), m_bucket_mask(0) {
+    memset(m_buckets, 0, sizeof(m_buckets));
+  }
+
+  void init(Uint32 bucket_count) {
+    m_bucket_count = bucket_count;
+    m_bucket_mask = bucket_count - 1;
+    m_size = 0;
+    memset(m_buckets, 0, bucket_count * sizeof(char*));
+  }
+
+  void clear() {
+    memset(m_buckets, 0, m_bucket_count * sizeof(char*));
+    m_size = 0;
+  }
+
+  char* find(const char* key, Uint32 key_len) const {
+    Uint32 b = hashKey(key, key_len);
+    return findInBucket(b, key, key_len);
+  }
+
+  void insert(char* data_ptr, Uint32 key_len) {
+    char* raw = data_ptr - OVERHEAD;
+    Uint32 b = hashKey(data_ptr, key_len);
+    hashNext(raw) = m_buckets[b];
+    m_buckets[b] = raw;
+    m_size++;
+  }
+
+  void erase(char* data_ptr, Uint32 key_len) {
+    char* raw = data_ptr - OVERHEAD;
+    Uint32 b = hashKey(data_ptr, key_len);
+    char** prev = &m_buckets[b];
+    while (*prev != nullptr) {
+      if (*prev == raw) {
+        *prev = hashNext(raw);
+        m_size--;
+        return;
+      }
+      prev = &hashNext(*prev);
+    }
+  }
+
+  Iterator begin() {
+    for (Uint32 b = 0; b < m_bucket_count; b++) {
+      if (m_buckets[b] != nullptr) {
+        return Iterator(this, b, &m_buckets[b], m_buckets[b]);
+      }
+    }
+    return Iterator(this, m_bucket_count, nullptr, nullptr);
+  }
+
+  Iterator begin() const {
+    GBHashTable* self = const_cast<GBHashTable*>(this);
+    for (Uint32 b = 0; b < m_bucket_count; b++) {
+      if (m_buckets[b] != nullptr) {
+        return Iterator(self, b,
+                        const_cast<char**>(&m_buckets[b]), m_buckets[b]);
+      }
+    }
+    return Iterator(self, m_bucket_count, nullptr, nullptr);
+  }
+
+  void next(Iterator& it) const {
+    char* nxt = hashNext(it.m_raw);
+    if (nxt != nullptr) {
+      it.m_prev_link = &hashNext(it.m_raw);
+      it.m_raw = nxt;
+      return;
+    }
+    for (Uint32 b = it.m_bucket + 1; b < m_bucket_count; b++) {
+      if (m_buckets[b] != nullptr) {
+        it.m_bucket = b;
+        it.m_prev_link = const_cast<char**>(&m_buckets[b]);
+        it.m_raw = m_buckets[b];
+        return;
+      }
+    }
+    it.m_bucket = m_bucket_count;
+    it.m_prev_link = nullptr;
+    it.m_raw = nullptr;
+  }
+
+  void eraseAndNext(Iterator& it) {
+    char* nxt = hashNext(it.m_raw);
+    *it.m_prev_link = nxt;
+    m_size--;
+    if (nxt != nullptr) {
+      it.m_raw = nxt;
+      return;
+    }
+    for (Uint32 b = it.m_bucket + 1; b < m_bucket_count; b++) {
+      if (m_buckets[b] != nullptr) {
+        it.m_bucket = b;
+        it.m_prev_link = &m_buckets[b];
+        it.m_raw = m_buckets[b];
+        return;
+      }
+    }
+    it.m_bucket = m_bucket_count;
+    it.m_prev_link = nullptr;
+    it.m_raw = nullptr;
+  }
+
+  Uint32 size() const { return m_size; }
+  bool empty() const { return m_size == 0; }
+  Uint32 bucketCount() const { return m_bucket_count; }
+
+  char* findInBucket(Uint32 b, const char* key, Uint32 key_len) const {
+    for (char* raw = m_buckets[b]; raw != nullptr;
+         raw = hashNext(raw)) {
+      char* d = raw + OVERHEAD;
+      Uint32 kl = *reinterpret_cast<Uint32*>(raw + KEY_LEN_OFFSET);
+      if (kl == key_len && memcmp(d, key, key_len) == 0) {
+        return d;
+      }
+    }
+    return nullptr;
+  }
+
+  char* popBucketHead(Uint32 b) {
+    char* raw = m_buckets[b];
+    if (raw == nullptr) return nullptr;
+    m_buckets[b] = hashNext(raw);
+    m_size--;
+    return raw + OVERHEAD;
+  }
+
+  void insertRaw(char* data_ptr) {
+    char* raw = data_ptr - OVERHEAD;
+    Uint32 key_len = *reinterpret_cast<Uint32*>(raw + KEY_LEN_OFFSET);
+    Uint32 b = hashKey(data_ptr, key_len);
+    hashNext(raw) = m_buckets[b];
+    m_buckets[b] = raw;
+    m_size++;
+  }
+
+  bool bucketEmpty(Uint32 b) const { return m_buckets[b] == nullptr; }
+
+  Uint32 hashKey(const char* key, Uint32 len) const {
+    Uint64 h = rondb_xxhash_std(key, len);
+    return static_cast<Uint32>(h) & m_bucket_mask;
+  }
+
+ private:
+  char* m_buckets[GB_HASH_BUCKET_COUNT];
+  Uint32 m_size;
+  Uint32 m_bucket_count;
+  Uint32 m_bucket_mask;
+
+  static char*& hashNext(char* raw) {
+    return *reinterpret_cast<char**>(raw + HASH_NEXT_OFFSET);
+  }
 };
 
 class AggInterpreter {
@@ -138,14 +329,17 @@ class AggInterpreter {
   Uint32 PrepareAggResIfNeeded(Signal* signal, bool force);
   Uint32 NumOfResRecords(bool last_time = false);
   static void MergePrint(const AggInterpreter* in1, const AggInterpreter* in2);
-  const std::map<GBHashEntry, GBHashEntry, GBHashEntryCmp>* gb_map() {
+  const GBHashTable* gb_map() const {
     return gb_map_;
   }
   Int64 table_id() {
     return table_id_;
   }
-  std::map<GBHashEntry, GBHashEntry, GBHashEntryCmp>* gb_map_mutable() {
+  GBHashTable* gb_map_mutable() {
     return gb_map_;
+  }
+  Uint32 val_len() const {
+    return n_agg_results_ * sizeof(AggResItem);
   }
   Uint32 n_gb_cols() const { return n_gb_cols_; }
   Uint32 n_agg_results() const { return n_agg_results_; }
@@ -216,7 +410,7 @@ class AggInterpreter {
   AggResItem* agg_results_;
   Uint32 agg_prog_start_pos_;
 
-  std::map<GBHashEntry, GBHashEntry, GBHashEntryCmp>* gb_map_;
+  GBHashTable* gb_map_;
   Uint32 n_groups_;
   Uint32 buf_[READ_BUF_WORD_SIZE];
   Uint32 buf_pos_;
@@ -267,7 +461,7 @@ class AggInterpreter {
   Uint32 prog_buf_[MAX_AGG_PROGRAM_WORD_SIZE];
   Uint32 gb_cols_buf_[MAX_AGG_N_GROUPBY_COLS];
   AggResItem agg_results_buf_[MAX_AGG_N_RESULTS];
-  std::map<GBHashEntry, GBHashEntry, GBHashEntryCmp> gb_map_buf_;
+  GBHashTable gb_map_buf_;
 
   char mem_buf_[MAX_AGG_RESULT_BATCH_BYTES];
   Uint32 alloc_len_;

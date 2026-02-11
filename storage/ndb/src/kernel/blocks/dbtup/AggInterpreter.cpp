@@ -52,9 +52,9 @@ Uint32 AggInterpreter::g_result_header_size_per_group_ = sizeof(Uint32);
  * the size of a vector with the current maximum dimension (MAX_VEC_DIMS = 8100).
  */
 Uint32 AggInterpreter::g_vec_buf_len_ = MAX_VEC_SEARCH_PROGRAM_WORD_SIZE; /* float */
-// Per-group linked-list header prepended by allocGroupData.
-// Layout: [next (char*, 8)] [key_len (Uint32, 4)] [pad (4)]
-static const Uint32 GROUP_LINK_OVERHEAD = 16;
+// Per-group header prepended by allocGroupData.
+// Layout: [chunk_next (char*, 8)] [hash_next (char*, 8)] [key_len (Uint32, 4)] [chunk_offset (Uint32, 4)]
+static const Uint32 GROUP_LINK_OVERHEAD = 24;
 
 bool
 GBHashEntryCmp::operator()(const GBHashEntry &n1,
@@ -274,6 +274,7 @@ bool AggInterpreter::Init(const Uint32* prog) {
     gb_map_buf_ = std::map<GBHashEntry, GBHashEntry, GBHashEntryCmp>(
                       GBHashEntryCmp(&gb_cmp_ctx_));
     gb_map_ = &gb_map_buf_;
+    gb_map_->init(GB_HASH_BUCKET_COUNT);
   }
 
   /*
@@ -1376,11 +1377,10 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
     }
 
     Uint32 len_in_char = buf_pos_ * sizeof(Uint32);
-    GBHashEntry entry{reinterpret_cast<char*>(buf_), len_in_char};
-    auto iter = gb_map_->find(entry);
-    if (iter != gb_map_->end()) {
-      header = reinterpret_cast<AttributeHeader*>(iter->first.ptr);
-      agg_res_ptr = reinterpret_cast<AggResItem*>(iter->second.ptr);
+    char* found = gb_map_->find(reinterpret_cast<char*>(buf_), len_in_char);
+    if (found != nullptr) {
+      header = reinterpret_cast<AttributeHeader*>(found);
+      agg_res_ptr = reinterpret_cast<AggResItem*>(found + len_in_char);
       PA_INTERP_TRACE(frag_id_,
                       "Found GBHashEntry, id: %u, byte_size: %u, "
                       "data_size: %u, is_null: %u",
@@ -1418,12 +1418,8 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
       memset(agg_rec, 0, len_in_char +
                         n_agg_results_ * sizeof(AggResItem));
       memcpy(agg_rec, reinterpret_cast<char*>(buf_), len_in_char);
-      GBHashEntry new_entry{agg_rec, len_in_char};
 
-      gb_map_->insert(std::pair<GBHashEntry, GBHashEntry>(
-                      new_entry,
-            GBHashEntry{agg_rec + len_in_char,
-            static_cast<Uint32>(n_agg_results_ * sizeof(AggResItem))}));
+      gb_map_->insert(agg_rec, len_in_char);
       n_groups_ = gb_map_->size();
       agg_res_ptr = reinterpret_cast<AggResItem*>(agg_rec + len_in_char);
 
@@ -2100,20 +2096,22 @@ void AggInterpreter::Print() {
       g_eventLogger->info("%s", log_buf);
       log_buf[0] = '\0';
 
-      g_eventLogger->info("Num of groups: %lu, Aggregation results:",
+      g_eventLogger->info("Num of groups: %u, Aggregation results:",
                           gb_map_->size());
-      for (auto iter = gb_map_->begin(); iter != gb_map_->end(); iter++) {
+      for (auto iter = gb_map_->begin(); iter.valid(); gb_map_->next(iter)) {
         int pos = 0;
+        char* data = iter.data();
+        Uint32 key_len = iter.keyLen();
         sprintf(log_buf, "(");
         for (Uint32 i = 0; i < n_gb_cols_; i++) {
           if (i != n_gb_cols_ - 1) {
-            sprintf(log_buf + strlen(log_buf), "%u: %p, ", i, iter->first.ptr + pos);
+            sprintf(log_buf + strlen(log_buf), "%u: %p, ", i, data + pos);
           } else {
-            sprintf(log_buf + strlen(log_buf), "%u: %p): ", i, iter->first.ptr + pos);
+            sprintf(log_buf + strlen(log_buf), "%u: %p): ", i, data + pos);
           }
         }
 
-        AggResItem* item = reinterpret_cast<AggResItem*>(iter->second.ptr);
+        AggResItem* item = reinterpret_cast<AggResItem*>(data + key_len);
         for (Uint32 i = 0; i < n_agg_results_; i++) {
           sprintf(log_buf + strlen(log_buf), "(%u, %u, %u)", item[i].type,
                   item[i].is_unsigned, item[i].is_null);
@@ -2222,15 +2220,10 @@ Int32 AggInterpreter::evictOneGroup(Uint32* buf, Uint32 buf_words,
   // Pop head from the target chunk's per-group linked list.
   char* raw = target->group_list;
   target->group_list = *reinterpret_cast<char**>(raw);
-  Uint32 key_len = *reinterpret_cast<Uint32*>(raw + sizeof(char*));
+  Uint32 key_len = *reinterpret_cast<Uint32*>(raw + 2 * sizeof(char*));
   char* data_ptr = raw + GROUP_LINK_OVERHEAD;
-  GBHashEntry lookup{data_ptr, key_len};
-  auto iter = gb_map_->find(lookup);
-  require(iter != gb_map_->end());
-
-  const GBHashEntry &key = iter->first;
-  const GBHashEntry &val = iter->second;
-  const Uint32 data_words = (key.len + val.len) >> 2;
+  Uint32 v_len = val_len();
+  const Uint32 data_words = (key_len + v_len) >> 2;
   const Uint32 total_words = 4 + data_words;
 
   if (total_words > buf_words) {
@@ -2241,17 +2234,17 @@ Int32 AggInterpreter::evictOneGroup(Uint32* buf, Uint32 buf_words,
   buf[pos++] = AttributeHeader::AGG_RESULT << 16 | 0x0721;
   buf[pos++] = n_gb_cols_ << 16 | n_agg_results_;
   buf[pos++] = 1;
-  buf[pos++] = key.len << 16 | val.len;
-  memcpy(&buf[pos], key.ptr, key.len + val.len);
+  buf[pos++] = key_len << 16 | v_len;
+  memcpy(&buf[pos], data_ptr, key_len + v_len);
   pos += data_words;
 
   *words_written = pos;
 
-  result_size_ -= (key.len + val.len);
+  result_size_ -= (key_len + v_len);
   n_groups_--;
 
-  freeGroupData(iter->first.ptr);
-  gb_map_->erase(iter);
+  gb_map_->erase(data_ptr, key_len);
+  freeGroupData(data_ptr);
 
   return 0;
 }
@@ -2311,17 +2304,19 @@ Int32 AggInterpreter::getResultData(Uint32* buffer, Uint32 buffer_size,
     }
     buffer[pos++] = AttributeHeader::AGG_RESULT << 16 | 0x0721;
     buffer[pos++] = n_gb_cols_ << 16 | n_agg_results_;
+    const Uint32 v_len = val_len();
     buffer[pos++] = gb_map_->size();
-    for (auto iter = gb_map_->begin(); iter != gb_map_->end(); ++iter) {
-      assert(iter->first.len % 4 == 0 && iter->first.len < 0xFFFF);
-      assert(iter->second.len % 4 == 0 && iter->second.len < 0xFFFF);
-      Uint32 data_words = (iter->first.len + iter->second.len) >> 2;
+    for (auto iter = gb_map_->begin(); iter.valid(); gb_map_->next(iter)) {
+      Uint32 key_len = iter.keyLen();
+      assert(key_len % 4 == 0 && key_len < 0xFFFF);
+      assert(v_len % 4 == 0 && v_len < 0xFFFF);
+      Uint32 data_words = (key_len + v_len) >> 2;
       if ((pos + 1 + data_words) * sizeof(Uint32) > buffer_size) {
         *bytes_written = 0;
         return -1;
       }
-      buffer[pos++] = iter->first.len << 16 | iter->second.len;
-      MEMCOPY_NO_WORDS(&buffer[pos], iter->first.ptr, data_words);
+      buffer[pos++] = key_len << 16 | v_len;
+      MEMCOPY_NO_WORDS(&buffer[pos], iter.data(), data_words);
       pos += data_words;
     }
   } else {
@@ -2489,42 +2484,43 @@ Uint32 AggInterpreter::mergeFrom(AggInterpreter* other,
     return 0;
   }
 
-  // Group-by case: merge other's gb_map_ into this gb_map_
+  // Group-by case: lockstep bucket merge from other into this
   if (other->gb_map_ == nullptr || other->gb_map_->empty()) {
     return 0;
   }
 
+  const Uint32 v_len = val_len();
+  const Uint32 nbuckets = gb_map_->bucketCount();
   Uint32 count = 0;
-  for (auto iter = other->gb_map_->begin();
-       iter != other->gb_map_->end();) {
-    const GBHashEntry &other_key = iter->first;
-    const GBHashEntry &other_val = iter->second;
+  for (Uint32 b = 0; b < nbuckets; b++) {
+    while (!other->gb_map_->bucketEmpty(b)) {
+      char* other_data = other->gb_map_->popBucketHead(b);
+      Uint32 other_key_len =
+        *reinterpret_cast<Uint32*>(other_data - GBHashTable::OVERHEAD +
+                                   GBHashTable::KEY_LEN_OFFSET);
 
-    auto my_iter = gb_map_->find(other_key);
-    if (my_iter != gb_map_->end()) {
-      // Group exists in both: merge accumulators, free other's copy
-      const AggResItem *other_items =
-        reinterpret_cast<const AggResItem *>(other_val.ptr);
-      AggResItem *my_items =
-        reinterpret_cast<AggResItem *>(my_iter->second.ptr);
-      mergeAccumulators(my_items, other_items, n_agg_results_,
-                        m_cached_agg_ops);
-      other->freeGroupData(iter->first.ptr);
-    } else {
-      // Group only in other: move pointer into this map (no alloc/copy)
-      Uint32 total_len = other_key.len +
-                         n_agg_results_ * sizeof(AggResItem);
-      gb_map_->insert(std::pair<GBHashEntry, GBHashEntry>(
-        other_key, other_val));
-      result_size_ += total_len;
-    }
-    other->gb_map_->erase(iter++);
-    count++;
+      char* my_data = gb_map_->findInBucket(b, other_data, other_key_len);
+      if (my_data != nullptr) {
+        // Group exists in both: merge accumulators, free other's copy
+        const AggResItem *other_items =
+          reinterpret_cast<const AggResItem *>(other_data + other_key_len);
+        AggResItem *my_items =
+          reinterpret_cast<AggResItem *>(my_data + other_key_len);
+        mergeAccumulators(my_items, other_items, n_agg_results_,
+                          m_cached_agg_ops);
+        other->freeGroupData(other_data);
+      } else {
+        // Group only in other: move pointer into this map (no alloc/copy)
+        gb_map_->insertRaw(other_data);
+        result_size_ += other_key_len + v_len;
+      }
+      count++;
 
-    if (max_groups > 0 && count >= max_groups &&
-        !other->gb_map_->empty()) {
-      n_groups_ = gb_map_->size();
-      return other->gb_map_->size();
+      if (max_groups > 0 && count >= max_groups &&
+          !other->gb_map_->empty()) {
+        n_groups_ = gb_map_->size();
+        return other->gb_map_->size();
+      }
     }
   }
 
@@ -2551,267 +2547,15 @@ Uint32 AggInterpreter::mergeFrom(AggInterpreter* other,
   return 0;
 }
 
-// NOTICE: Need to define agg_ops[] before using this func.
+// Dead code — retained for reference but sorted dual-iteration no longer applies
+// with hash table. Print each interpreter's groups independently.
 void AggInterpreter::MergePrint(const AggInterpreter* in1,
                                    const AggInterpreter* in2) {
   assert(in1 != nullptr && in2 != nullptr);
   assert(in1->n_agg_results_ == in2->n_agg_results_);
-  auto iter1 = in1->gb_map_->begin();
-  auto iter2 = in2->gb_map_->begin();
-  char log_buf[1024];
-  log_buf[0] = '\0';
-
-  while (iter1 != in1->gb_map_->end() && iter2 != in2->gb_map_->end()) {
-    Uint32 len1 = iter1->first.len;
-    Uint32 len2 = iter2->first.len;
-#ifdef NDEBUG
-    (void)len2;
-#endif // NDEBUG
-    assert(len1 == len2);
-
-    int ret = memcmp(iter1->first.ptr, iter2->first.ptr, len1);
-    if (ret < 0) {
-      int pos = 0;
-      sprintf(log_buf + strlen(log_buf), "(");
-      for (Uint32 i = 0; i < in1->n_gb_cols_; i++) {
-        if (i != in1->n_gb_cols_ - 1) {
-          sprintf(log_buf + strlen(log_buf), "%u: %p, ", i, iter1->first.ptr + pos);
-        } else {
-          sprintf(log_buf + strlen(log_buf), "%u: %p): ", i, iter1->first.ptr + pos);
-        }
-      }
-      AggResItem* item = reinterpret_cast<AggResItem*>(iter1->second.ptr);
-      for (Uint32 i = 0; i < in1->n_agg_results_; i++) {
-        sprintf(log_buf + strlen(log_buf), "(%u, %u, %u)", item[i].type,
-            item[i].is_unsigned, item[i].is_null);
-        if (item[i].is_null) {
-          sprintf(log_buf + strlen(log_buf), "[NULL]");
-        } else {
-          switch (item[i].type) {
-            case NDB_TYPE_BIGINT:
-              sprintf(log_buf + strlen(log_buf), "[%15lld]", item[i].value.val_int64);
-              break;
-            case NDB_TYPE_DOUBLE:
-              sprintf(log_buf + strlen(log_buf), "[%31.16f]", item[i].value.val_double);
-              break;
-            default:
-              assert(0);
-          }
-        }
-      }
-      g_eventLogger->info("%s", log_buf);
-      log_buf[0] = '\0';
-      iter1++;
-    } else if (ret > 0) {
-      int pos = 0;
-      sprintf(log_buf + strlen(log_buf), "(");
-      for (Uint32 i = 0; i < in2->n_gb_cols_; i++) {
-        if (i != in2->n_gb_cols_ - 1) {
-          sprintf(log_buf + strlen(log_buf), "%u: %p, ", i, iter2->first.ptr + pos);
-        } else {
-          sprintf(log_buf + strlen(log_buf), "%u: %p): ", i, iter2->first.ptr + pos);
-        }
-      }
-      AggResItem* item = reinterpret_cast<AggResItem*>(iter2->second.ptr);
-      for (Uint32 i = 0; i < in2->n_agg_results_; i++) {
-        sprintf(log_buf + strlen(log_buf), "(%u, %u, %u)", item[i].type,
-            item[i].is_unsigned, item[i].is_null);
-        if (item[i].is_null) {
-          sprintf(log_buf + strlen(log_buf), "[NULL]");
-        } else {
-          switch (item[i].type) {
-            case NDB_TYPE_BIGINT:
-              sprintf(log_buf + strlen(log_buf), "[%15lld]", item[i].value.val_int64);
-              break;
-            case NDB_TYPE_DOUBLE:
-              sprintf(log_buf + strlen(log_buf), "[%31.16f]", item[i].value.val_double);
-              break;
-            default:
-              assert(0);
-          }
-        }
-      }
-      g_eventLogger->info("%s", log_buf);
-      log_buf[0] = '\0';
-      iter2++;
-    } else {
-      int pos = 0;
-      sprintf(log_buf + strlen(log_buf), "(");
-      for (Uint32 i = 0; i < in1->n_gb_cols_; i++) {
-        if (i != in1->n_gb_cols_ - 1) {
-          sprintf(log_buf + strlen(log_buf), "%u: %p, ", i, iter1->first.ptr + pos);
-        } else {
-          sprintf(log_buf + strlen(log_buf), "%u: %p): ", i, iter1->first.ptr + pos);
-        }
-      }
-      AggResItem* item1 = reinterpret_cast<AggResItem*>(iter1->second.ptr);
-      AggResItem* item2 = reinterpret_cast<AggResItem*>(iter2->second.ptr);
-      AggResItem result;
-      // NOTICE: Need to define agg_ops[] first.
-      Uint32 agg_ops[32];
-      for (Uint32 i = 0; i < in1->n_agg_results_; i++) {
-        assert(((item1[i].type == NDB_TYPE_BIGINT &&
-                item1[i].is_unsigned == item2[i].is_unsigned) ||
-                item1[i].type == NDB_TYPE_DOUBLE) &&
-                item1[i].type == item2[i].type);
-        if (item1[i].is_null) {
-          result = item2[i];
-        } else if (item2[i].is_null) {
-          result = item1[i];
-        } else {
-          result.type = item1[i].type;
-          result.is_unsigned = item1[i].is_unsigned;
-          switch (agg_ops[i]) {
-            case kOpSum:
-              if (item1[i].type == NDB_TYPE_BIGINT) {
-                if (item1[i].is_unsigned) {
-                  result.value.val_uint64 = (item1[i].value.val_uint64 +
-                                                 item2[i].value.val_uint64);
-                } else {
-                  result.value.val_int64 = (item1[i].value.val_int64 +
-                                                 item2[i].value.val_int64);
-                }
-              } else {
-                assert(item1[i].type == NDB_TYPE_DOUBLE);
-                result.value.val_double = (item1[i].value.val_double +
-                                               item2[i].value.val_double);
-              }
-              break;
-            case kOpCount:
-              assert(item1[i].type == NDB_TYPE_BIGINT);
-              assert(item1[i].is_unsigned == 1);
-              result.value.val_int64 = (item1[i].value.val_int64 +
-                                             item2[i].value.val_int64);
-              break;
-            case kOpMax:
-              if (item1[i].type == NDB_TYPE_BIGINT) {
-                if (item1[i].is_unsigned) {
-                  result.value.val_uint64 =
-                    item1[i].value.val_uint64 >= item2[i].value.val_uint64 ?
-                    item1[i].value.val_uint64 : item2[i].value.val_uint64;
-                } else {
-                  result.value.val_int64 =
-                    item1[i].value.val_int64 >= item2[i].value.val_int64 ?
-                    item1[i].value.val_int64 : item2[i].value.val_int64;
-                }
-              } else {
-                assert(item1[i].type == NDB_TYPE_DOUBLE);
-                result.value.val_double =
-                  item1[i].value.val_double >= item2[i].value.val_double ?
-                  item1[i].value.val_double : item2[i].value.val_double;
-              }
-              break;
-            case kOpMin:
-              if (item1[i].type == NDB_TYPE_BIGINT) {
-                if (item1[i].is_unsigned) {
-                  result.value.val_uint64 =
-                    item1[i].value.val_uint64 <= item2[i].value.val_uint64 ?
-                    item1[i].value.val_uint64 : item2[i].value.val_uint64;
-                } else {
-                  result.value.val_int64 =
-                    item1[i].value.val_int64 <= item2[i].value.val_int64 ?
-                    item1[i].value.val_int64 : item2[i].value.val_int64;
-                }
-              } else {
-                assert(item1[i].type == NDB_TYPE_DOUBLE);
-                result.value.val_double =
-                  item1[i].value.val_double <= item2[i].value.val_double ?
-                  item1[i].value.val_double : item2[i].value.val_double;
-              }
-              break;
-            default:
-              assert(0);
-              break;
-          }
-        }
-        sprintf(log_buf + strlen(log_buf), "(%u, %u, %u)", result.type,
-            result.is_unsigned, result.is_null);
-        if (result.is_null) {
-          sprintf(log_buf + strlen(log_buf), "[NULL]");
-        } else {
-          switch (result.type) {
-            case NDB_TYPE_BIGINT:
-              sprintf(log_buf + strlen(log_buf), "[%15lld]", result.value.val_int64);
-              break;
-            case NDB_TYPE_DOUBLE:
-              sprintf(log_buf + strlen(log_buf), "[%31.16f]", result.value.val_double);
-              break;
-            default:
-              assert(0);
-          }
-        }
-      }
-      g_eventLogger->info("%s", log_buf);
-      log_buf[0] = '\0';
-      iter1++;
-      iter2++;
-    }
-  }
-  while (iter1 != in1->gb_map_->end()) {
-    int pos = 0;
-    sprintf(log_buf + strlen(log_buf), "(");
-    for (Uint32 i = 0; i < in1->n_gb_cols_; i++) {
-      if (i != in1->n_gb_cols_ - 1) {
-        sprintf(log_buf + strlen(log_buf), "%u: %p, ", i, iter1->first.ptr + pos);
-      } else {
-        sprintf(log_buf + strlen(log_buf), "%u: %p): ", i, iter1->first.ptr + pos);
-      }
-    }
-    AggResItem* item = reinterpret_cast<AggResItem*>(iter1->second.ptr);
-    for (Uint32 i = 0; i < in1->n_agg_results_; i++) {
-      sprintf(log_buf + strlen(log_buf), "(%u, %u, %u)", item[i].type,
-          item[i].is_unsigned, item[i].is_null);
-      if (item[i].is_null) {
-        sprintf(log_buf + strlen(log_buf), "[NULL]");
-      } else {
-        switch (item[i].type) {
-          case NDB_TYPE_BIGINT:
-            sprintf(log_buf + strlen(log_buf), "[%15lld]", item[i].value.val_int64);
-            break;
-          case NDB_TYPE_DOUBLE:
-            sprintf(log_buf + strlen(log_buf), "[%31.16f]", item[i].value.val_double);
-            break;
-          default:
-            assert(0);
-        }
-      }
-    }
-    g_eventLogger->info("%s", log_buf);
-    log_buf[0] = '\0';
-  }
-  while (iter2 != in2->gb_map_->end()) {
-    int pos = 0;
-    sprintf(log_buf + strlen(log_buf), "(");
-    for (Uint32 i = 0; i < in2->n_gb_cols_; i++) {
-      if (i != in2->n_gb_cols_ - 1) {
-        sprintf(log_buf + strlen(log_buf), "%u: %p, ", i, iter2->first.ptr + pos);
-      } else {
-        sprintf(log_buf + strlen(log_buf), "%u: %p): ", i, iter2->first.ptr + pos);
-      }
-    }
-    AggResItem* item = reinterpret_cast<AggResItem*>(iter2->second.ptr);
-    for (Uint32 i = 0; i < in2->n_agg_results_; i++) {
-      sprintf(log_buf + strlen(log_buf), "(%u, %u, %u)", item[i].type,
-          item[i].is_unsigned, item[i].is_null);
-      if (item[i].is_null) {
-        sprintf(log_buf + strlen(log_buf), "[NULL]");
-      } else {
-        switch (item[i].type) {
-          case NDB_TYPE_BIGINT:
-            sprintf(log_buf + strlen(log_buf), "[%15lld]", item[i].value.val_int64);
-            break;
-          case NDB_TYPE_DOUBLE:
-            sprintf(log_buf + strlen(log_buf), "[%31.16f]", item[i].value.val_double);
-            break;
-          default:
-            assert(0);
-        }
-      }
-    }
-    g_eventLogger->info("%s", log_buf);
-    log_buf[0] = '\0';
-    iter2++;
-  }
+  g_eventLogger->info("MergePrint: in1 groups=%u, in2 groups=%u",
+                      in1->gb_map_ ? in1->gb_map_->size() : 0,
+                      in2->gb_map_ ? in2->gb_map_->size() : 0);
 }
 
 
@@ -2840,20 +2584,21 @@ Uint32 AggInterpreter::PrepareAggResIfNeeded(Signal* signal, bool force) {
     data_buf[pos++] = AttributeHeader::AGG_RESULT << 16 | 0x0721;
     data_buf[pos++] = n_gb_cols_ << 16 | n_agg_results_;
     Uint32 n_groups_pos = pos++;
+    const Uint32 v_len = val_len();
     Uint32 n_groups = 0;
-    for (auto iter = gb_map_->begin(); iter != gb_map_->end();) {
-      assert(iter->first.len % 4 == 0 && iter->first.len < 0xFFFF);
-      assert(iter->second.len % 4 == 0 && iter->second.len < 0xFFFF);
-      Uint32 group_words = 1 + ((iter->first.len + iter->second.len) >> 2);
+    for (auto iter = gb_map_->begin(); iter.valid();) {
+      Uint32 key_len = iter.keyLen();
+      assert(key_len % 4 == 0 && key_len < 0xFFFF);
+      assert(v_len % 4 == 0 && v_len < 0xFFFF);
+      Uint32 group_words = 1 + ((key_len + v_len) >> 2);
       if (pos + group_words > max_pos && n_groups > 0) break;
-      data_buf[pos++] = iter->first.len << 16 | iter->second.len;
-      assert(iter->first.ptr + (iter->first.len + iter->second.len) ==
-          iter->second.ptr + iter->second.len);
-      MEMCOPY_NO_WORDS(&data_buf[pos], iter->first.ptr,
-          (iter->first.len + iter->second.len) >> 2);
-      pos += ((iter->first.len + iter->second.len) >> 2);
-      freeGroupData(iter->first.ptr);
-      gb_map_->erase(iter++);
+      data_buf[pos++] = key_len << 16 | v_len;
+      MEMCOPY_NO_WORDS(&data_buf[pos], iter.data(),
+          (key_len + v_len) >> 2);
+      pos += ((key_len + v_len) >> 2);
+      char* data = iter.data();
+      gb_map_->eraseAndNext(iter);
+      freeGroupData(data);
       n_groups++;
     }
     data_buf[n_groups_pos] = n_groups;
@@ -3308,10 +3053,11 @@ char* AggInterpreter::allocGroupData(Uint32 len, Uint32 key_len) {
   chunk->live_groups++;
 
   // Link into chunk's per-group list (LIFO).
-  // Layout: [next (8)] [key_len (4)] [chunk_offset (4)]
+  // Layout: [chunk_next (8)] [hash_next (8)] [key_len (4)] [chunk_offset (4)]
   *reinterpret_cast<char**>(raw) = chunk->group_list;
-  *reinterpret_cast<Uint32*>(raw + sizeof(char*)) = key_len;
-  *reinterpret_cast<Uint32*>(raw + sizeof(char*) + sizeof(Uint32)) = offset;
+  *reinterpret_cast<char**>(raw + sizeof(char*)) = nullptr;  // hash_next
+  *reinterpret_cast<Uint32*>(raw + 2 * sizeof(char*)) = key_len;
+  *reinterpret_cast<Uint32*>(raw + 2 * sizeof(char*) + sizeof(Uint32)) = offset;
   chunk->group_list = raw;
 
   return raw + GROUP_LINK_OVERHEAD;
@@ -3319,7 +3065,7 @@ char* AggInterpreter::allocGroupData(Uint32 len, Uint32 key_len) {
 
 void AggInterpreter::freeGroupData(char* ptr) {
   char* raw = ptr - GROUP_LINK_OVERHEAD;
-  Uint32 offset = *reinterpret_cast<Uint32*>(raw + sizeof(char*) + sizeof(Uint32));
+  Uint32 offset = *reinterpret_cast<Uint32*>(raw + 2 * sizeof(char*) + sizeof(Uint32));
   MemChunk* chunk = reinterpret_cast<MemChunk*>(raw - offset - sizeof(MemChunk));
   chunk->live_groups--;
   if (chunk->live_groups == 0) {
