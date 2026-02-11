@@ -435,9 +435,9 @@ AttrInfo. Offset: `5 + cinBuffer[0..3]`, length: `cinBuffer[4]` (RsubLen).
 Both interpreted interception points pass these to processRecWithLinkedAttrs.
 Non-interpreted path passes nullptr/0 (not reached for DBSPJ pushdown).
 
-## 10b. Group Eviction Under Memory Pressure — NOT STARTED
+## 10b. Group Eviction Under Memory Pressure — DONE
 
-**STATUS: NOT STARTED**
+**STATUS: IMPLEMENTED** (commit bfe676a)
 
 **Files:**
 - `storage/ndb/src/kernel/blocks/dbtup/AggInterpreter.hpp` / `.cpp`
@@ -809,12 +809,10 @@ for NDB API error reporting.
 - **CONTINUEB yielding: DONE** — continueJoinAggSend() helper sends 16
   groups per batch via ZCONTINUE_JOIN_AGG_SEND (45).
 
-### Phase 6b: Group Eviction Under Memory Pressure — NOT STARTED
-- AggInterpreter: m_max_groups limit, AGG_EVICT_NEEDED return code,
-  evictOneGroup() method
-- handleJoinAggRow: eviction loop with TRANSID_AI send, needs Signal*
-- Completion phase: account for already-evicted groups in totals
-- See section 10b for full design
+### Phase 6b: Group Eviction Under Memory Pressure — DONE
+- AggInterpreter: m_max_groups, AGG_EVICT_NEEDED, evictOneGroup()
+- handleJoinAggRow: eviction loop via req_struct->signal, retries after evict
+- Completion phase: num_result_rows starts from state->m_rows_sent
 
 ### Phase 6c: MUTEX_BASED Locking — DONE
 - AggInterpreter: std::mutex m_mutex, bool m_use_mutex, setUseMutex() added
