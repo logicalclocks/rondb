@@ -1653,21 +1653,46 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
         type = (value & 0x03E00000) >> 21;
         is_unsigned = IsUnsigned(type);
         reg_index = (value & 0x000F0000) >> 16;
-        col_index = (value & 0x0000FFFF) << 16;
-
-        ret = block_tup->readAttributes(req_struct, &(col_index), 1,
-                  buf_ + buf_pos_, g_buf_len_ - buf_pos_);
-        // assert(ret >= 0);
-        if (ret < 0) {
-          g_eventLogger->debug("read column error: %d", ret);
-          return -ret;
+        {
+          Uint32 col_id_raw = value & 0x0000FFFF;
+          if ((col_id_raw & 0x8000) != 0 && m_linked_attr_data != nullptr) {
+            /*
+             * Linked column from a parent table in the join tree.
+             * Scan the linked attribute buffer for the matching attr id
+             * and copy header+data into buf_.
+             */
+            Uint32 attr_id = col_id_raw & 0x7FFF;
+            const Uint32* p = m_linked_attr_data;
+            const Uint32* p_end = m_linked_attr_data + m_linked_attr_len;
+            while (p < p_end) {
+              if (AttributeHeader::getAttributeId(*p) == attr_id) break;
+              p += 1 + AttributeHeader::getDataSize(*p);
+            }
+            if (p >= p_end) {
+              g_eventLogger->debug(
+                  "Linked attr %u not found in buffer", attr_id);
+              return ZAGG_OTHER_ERROR;
+            }
+            Uint32 words = 1 + AttributeHeader::getDataSize(*p);
+            memcpy(buf_ + buf_pos_, p, words * sizeof(Uint32));
+            header = reinterpret_cast<AttributeHeader*>(buf_ + buf_pos_);
+            attrDescriptor = nullptr;
+          } else {
+            col_index = col_id_raw << 16;
+            ret = block_tup->readAttributes(req_struct, &(col_index), 1,
+                      buf_ + buf_pos_, g_buf_len_ - buf_pos_);
+            // assert(ret >= 0);
+            if (ret < 0) {
+              g_eventLogger->debug("read column error: %d", ret);
+              return -ret;
+            }
+            header = reinterpret_cast<AttributeHeader*>(buf_ + buf_pos_);
+            attrDescriptor = req_struct->tablePtrP->tabDescriptor +
+                (((col_index) >> 16) * ZAD_SIZE);
+            assert(header->getAttributeId() == (col_index >> 16));
+            assert(type == AttributeDescriptor::getType(attrDescriptor[0]));
+          }
         }
-        header = reinterpret_cast<AttributeHeader*>(buf_ + buf_pos_);
-        attrDescriptor = req_struct->tablePtrP->tabDescriptor +
-          (((col_index) >> 16) * ZAD_SIZE);
-        assert(header->getAttributeId() == (col_index >> 16));
-
-        assert(type == AttributeDescriptor::getType(attrDescriptor[0]));
         // assert(TypeSupported(type));
         if (!TypeSupported(type)) {
           g_eventLogger->debug("Unsupported column type: %u", type);
@@ -1790,7 +1815,7 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
             break;
           case NDB_TYPE_DECIMAL:
             assert(static_cast<Uint32>(decimal_bin_size(precision, scale)) ==
-                AttributeDescriptor::getSizeInBytes(attrDescriptor[0]));
+                header->getByteSize());
             // memset(decimal.buf, 0, sizeof(Int32) * DECIMAL_BUFF_LENGTH);
             dec_ret = bin2decimal(reinterpret_cast<const uchar*>(&buf_[buf_pos_ + 1]),
                       &decimal_, precision, scale);
@@ -1800,7 +1825,7 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
               char log_buf[128];
               sprintf(log_buf, "Error while parsing decimal: ");
               for (Uint32 i = 0;
-                  i < AttributeDescriptor::getSizeInBytes(attrDescriptor[0]); i++) {
+                  i < header->getByteSize(); i++) {
                 sprintf(log_buf + strlen(log_buf), "%x ", *(dec_buf_ptr + i));
               }
               g_eventLogger->debug("%s", log_buf);
@@ -1830,7 +1855,7 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
               char log_buf[128];
               sprintf(log_buf, "Error while converting decimal: ");
               for (Uint32 i = 0;
-                  i < AttributeDescriptor::getSizeInBytes(attrDescriptor[0]); i++) {
+                  i < header->getByteSize(); i++) {
                 sprintf(log_buf + strlen(log_buf), "%x ", *(dec_buf_ptr + i));
               }
               g_eventLogger->debug("%s", log_buf);
@@ -1854,7 +1879,7 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
           break;
         case NDB_TYPE_DECIMALUNSIGNED:
             assert(static_cast<Uint32>(decimal_bin_size(precision, scale)) ==
-                AttributeDescriptor::getSizeInBytes(attrDescriptor[0]));
+                header->getByteSize());
             // memset(decimal.buf, 0, sizeof(Int32) * DECIMAL_BUFF_LENGTH);
             dec_ret = bin2decimal(reinterpret_cast<const uchar*>(&buf_[buf_pos_ + 1]),
                       &decimal_, precision, scale);
@@ -1864,7 +1889,7 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
               char log_buf[128];
               sprintf(log_buf, "Error while parsing decimal: ");
               for (Uint32 i = 0;
-                  i < AttributeDescriptor::getSizeInBytes(attrDescriptor[0]); i++) {
+                  i < header->getByteSize(); i++) {
                 sprintf(log_buf + strlen(log_buf), "%x ", *(dec_buf_ptr + i));
               }
               g_eventLogger->debug("%s", log_buf);
@@ -1897,7 +1922,7 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
               char log_buf[128];
               sprintf(log_buf, "Error while converting decimal: ");
               for (Uint32 i = 0;
-                  i < AttributeDescriptor::getSizeInBytes(attrDescriptor[0]); i++) {
+                  i < header->getByteSize(); i++) {
                 sprintf(log_buf + strlen(log_buf), "%x ", *(dec_buf_ptr + i));
               }
               g_eventLogger->debug("%s", log_buf);
@@ -2146,10 +2171,10 @@ void AggInterpreter::Print() {
 /**
  * processRecWithLinkedAttrs - process a row for join aggregation.
  *
- * Stores a pointer to linked_attr_data (AttributeHeader+data pairs from
- * parent tables in the join tree) so that kOpLoadCol can resolve columns
- * with bit 15 set from this buffer instead of reading via DBTUP.
- * Then delegates to ProcessRec to run the aggregation program.
+ * Sets m_linked_attr_data to point at linked_attr_data (a sequence of
+ * AttributeHeader+data pairs from parent tables in the join tree) so
+ * that ProcessRec's kOpLoadCol handler can resolve columns whose bit 15
+ * is set from this buffer instead of reading via DBTUP readAttributes.
  * The linked attr pointer is cleared after ProcessRec returns.
  */
 Int32 AggInterpreter::processRecWithLinkedAttrs(
