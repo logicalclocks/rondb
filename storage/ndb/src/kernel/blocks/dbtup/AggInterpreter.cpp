@@ -2530,13 +2530,20 @@ Uint32 AggInterpreter::mergeFrom(AggInterpreter* other,
 
   // All groups processed — transfer chunks from other to this interpreter.
   // Moved groups live in other's chunks, so we take ownership.
+  // Splice other's list in front of ours in O(1) via prev pointers.
   if (other->m_chunks != nullptr) {
+    // Find tail of other's list via prev chain from last-allocated.
+    // allocNewChunk prepends, so walk next to find tail.
     MemChunk* tail = other->m_chunks;
     while (tail->next != nullptr) {
       tail = tail->next;
     }
     tail->next = m_chunks;
+    if (m_chunks != nullptr) {
+      m_chunks->prev = tail;
+    }
     m_chunks = other->m_chunks;
+    m_chunks->prev = nullptr;
     m_total_chunk_bytes += other->m_total_chunk_bytes;
     other->m_chunks = nullptr;
     other->m_current_chunk = nullptr;
@@ -3230,17 +3237,31 @@ AggInterpreter::Candidate* AggInterpreter::CandidateAllocator::Allocate(
 }
 
 void AggInterpreter::initChunkAllocator(Uint32 thread_id,
-                                        Uint32 budget_pages) {
+                                        Uint32 budget_pages,
+                                        Uint32 available_pages) {
   m_thread_id = thread_id;
   m_memory_budget = budget_pages * MEM_CHUNK_SIZE;
+  m_budget_increment = m_memory_budget;
+  m_total_available = available_pages * MEM_CHUNK_SIZE;
   m_chunks = nullptr;
   m_current_chunk = nullptr;
   m_total_chunk_bytes = 0;
 }
 
+bool AggInterpreter::bookMoreMemory() {
+  Uint32 new_budget = m_memory_budget + m_budget_increment;
+  if (new_budget > m_total_available) {
+    return false;
+  }
+  m_memory_budget = new_budget;
+  return true;
+}
+
 MemChunk* AggInterpreter::allocNewChunk() {
   if (m_total_chunk_bytes + MEM_CHUNK_SIZE > m_memory_budget) {
-    return nullptr;
+    if (!bookMoreMemory()) {
+      return nullptr;
+    }
   }
   void* page = lc_ndbd_pool_malloc(MEM_CHUNK_SIZE, RG_QUERY_MEMORY,
                                    m_thread_id, false);
@@ -3254,6 +3275,10 @@ MemChunk* AggInterpreter::allocNewChunk() {
   chunk->live_groups = 0;
   chunk->group_list = nullptr;
   chunk->next = m_chunks;
+  chunk->prev = nullptr;
+  if (m_chunks != nullptr) {
+    m_chunks->prev = chunk;
+  }
   m_chunks = chunk;
   m_total_chunk_bytes += MEM_CHUNK_SIZE;
   return chunk;
@@ -3293,14 +3318,14 @@ void AggInterpreter::freeGroupData(char* ptr) {
   MemChunk* chunk = reinterpret_cast<MemChunk*>(raw - offset - sizeof(MemChunk));
   chunk->live_groups--;
   if (chunk->live_groups == 0) {
-    // Unlink from list
-    MemChunk** pp = &m_chunks;
-    while (*pp != nullptr) {
-      if (*pp == chunk) {
-        *pp = chunk->next;
-        break;
-      }
-      pp = &(*pp)->next;
+    // O(1) unlink via doubly-linked list.
+    if (chunk->prev != nullptr) {
+      chunk->prev->next = chunk->next;
+    } else {
+      m_chunks = chunk->next;
+    }
+    if (chunk->next != nullptr) {
+      chunk->next->prev = chunk->prev;
     }
     if (m_current_chunk == chunk) {
       m_current_chunk = m_chunks;

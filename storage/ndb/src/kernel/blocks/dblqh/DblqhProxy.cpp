@@ -2328,8 +2328,9 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   if (available_pages > free_shared) {
     available_pages = free_shared;
   }
-  // Budget: up to 25% of available pages for this aggregation, min 4 pages.
-  Uint32 budget_pages = available_pages / 4;
+  // Initial budget: 1% of available pages, min 4 pages.
+  // Grows incrementally via bookMoreMemory() when more is needed.
+  Uint32 budget_pages = available_pages / 100;
   if (budget_pages < 4) {
     budget_pages = 4;
   }
@@ -2346,7 +2347,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
                                 state->m_agg_program_len, 0);
     interp->Init();
     interp->setUseMutex(true);
-    interp->initChunkAllocator(getThreadId(), budget_pages);
+    interp->initChunkAllocator(getThreadId(), budget_pages, available_pages);
     state->m_agg_interpreter = interp;
   } else {
     jam();
@@ -2366,7 +2367,8 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
         new (page) AggInterpreter(state->m_agg_program,
                                   state->m_agg_program_len, 0);
       interp->Init();
-      interp->initChunkAllocator(getThreadId(), per_thread_budget);
+      interp->initChunkAllocator(getThreadId(), per_thread_budget,
+                                   available_pages);
       arr[i] = interp;
     }
     state->m_per_thread_interpreters = arr;

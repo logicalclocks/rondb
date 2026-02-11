@@ -44,6 +44,7 @@ struct MemChunk {
   Uint32 used;
   Uint32 live_groups;
   MemChunk* next;
+  MemChunk* prev;
   char* group_list;         // singly-linked list of live groups in this chunk
 };
 
@@ -77,7 +78,8 @@ class AggInterpreter {
     m_use_mutex(false), m_max_groups(0),
     m_chunks(nullptr),
     m_current_chunk(nullptr), m_total_chunk_bytes(0),
-    m_memory_budget(0), m_thread_id(0),
+    m_memory_budget(0), m_budget_increment(0),
+    m_total_available(0), m_thread_id(0),
     m_agg_ops_cached(false) {
       assert(prog_len_ <= MAX_AGG_PROGRAM_WORD_SIZE);
       prog_ = prog_buf_;
@@ -153,7 +155,9 @@ class AggInterpreter {
   Uint32 maxGroups() const { return m_max_groups; }
   Int32 evictOneGroup(Uint32* buf, Uint32 buf_words,
                       Uint32* words_written);
-  void initChunkAllocator(Uint32 thread_id, Uint32 budget_pages);
+  void initChunkAllocator(Uint32 thread_id, Uint32 budget_pages,
+                          Uint32 available_pages);
+  bool bookMoreMemory();
   char* allocGroupData(Uint32 len, Uint32 key_len);
   void freeGroupData(char* ptr);
   void freeAllChunks();
@@ -248,7 +252,9 @@ class AggInterpreter {
   MemChunk* m_chunks;                 // linked list head
   MemChunk* m_current_chunk;          // chunk currently bump-allocating from
   Uint32 m_total_chunk_bytes;         // total bytes across all chunks
-  Uint32 m_memory_budget;             // max total chunk bytes allowed
+  Uint32 m_memory_budget;             // current budget (bytes), grows via bookMoreMemory
+  Uint32 m_budget_increment;          // bytes added per bookMoreMemory call
+  Uint32 m_total_available;           // total available at setup (bytes), booking cap
   Uint32 m_thread_id;                 // for lc_ndbd_pool_malloc calls
 
   MemChunk* allocNewChunk();

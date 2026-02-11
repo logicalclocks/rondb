@@ -1018,7 +1018,8 @@ Uint32 Dbtup::copyAttrinfo(Uint32 storedProcId,
                               getThreadId());
         ndbrequire(scan_rec_ptr->m_agg_interpreter->Init(&cinBuffer[proc_start]));
         scan_rec_ptr->m_agg_interpreter->initChunkAllocator(
-            getThreadId(), 4 /* budget_pages = 128KB */);
+            getThreadId(), 4 /* budget_pages = 128KB */,
+            4 /* available_pages = same, no upgrade */);
       }
     }
   } else {
