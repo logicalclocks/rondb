@@ -2182,13 +2182,12 @@ Int32 AggInterpreter::processRecWithLinkedAttrs(
     Dbtup::KeyReqStruct* req_struct,
     const Uint32* linked_attr_data,
     Uint32 linked_attr_len) {
+  std::unique_lock<std::mutex> lock(m_mutex, std::defer_lock);
+  if (m_use_mutex) lock.lock();
+
   m_linked_attr_data = linked_attr_data;
   m_linked_attr_len = linked_attr_len;
 
-  // TODO: Implement column resolution that checks bit 15 of col_id to
-  // distinguish local columns (read via block_tup->readAttributes) from
-  // linked columns (read from m_linked_attr_data buffer).
-  // For now, delegate to standard ProcessRec.
   Int32 ret = ProcessRec(block_tup, req_struct);
 
   m_linked_attr_data = nullptr;

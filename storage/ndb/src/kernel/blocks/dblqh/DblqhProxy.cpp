@@ -2318,7 +2318,9 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
     releaseSections(handle);
   }
 
-  // TODO: Allocate AggInterpreter(s) once implemented.
+  // TODO: Allocate AggInterpreter(s) based on strategy.
+  // MUTEX_BASED: allocate one interpreter, call setUseMutex(true).
+  // MUTEX_FREE: allocate m_num_threads interpreters (mutex off by default).
   // For now leave m_agg_interpreter and m_per_thread_interpreters
   // as nullptr (set by constructor).
 
