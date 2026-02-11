@@ -52,6 +52,9 @@ Uint32 AggInterpreter::g_result_header_size_per_group_ = sizeof(Uint32);
  * the size of a vector with the current maximum dimension (MAX_VEC_DIMS = 8100).
  */
 Uint32 AggInterpreter::g_vec_buf_len_ = MAX_VEC_SEARCH_PROGRAM_WORD_SIZE; /* float */
+// Per-group linked-list header prepended by allocGroupData.
+// Layout: [next (char*, 8)] [key_len (Uint32, 4)] [pad (4)]
+static const Uint32 GROUP_LINK_OVERHEAD = 16;
 
 bool
 GBHashEntryCmp::operator()(const GBHashEntry &n1,
@@ -1407,7 +1410,8 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
       result_size_ += len_in_char +
                        n_agg_results_ * sizeof(AggResItem);
       agg_rec = allocGroupData(len_in_char +
-                               n_agg_results_ * sizeof(AggResItem));
+                               n_agg_results_ * sizeof(AggResItem),
+                               len_in_char);
       if (agg_rec == nullptr) {
         return AGG_EVICT_NEEDED;
       }
@@ -2186,10 +2190,12 @@ Int32 AggInterpreter::processRecWithLinkedAttrs(
 /**
  * evictOneGroup - remove one group from gb_map_ and serialize it.
  *
- * Called when ProcessRec returns AGG_EVICT_NEEDED because the map has
- * reached m_max_groups.  Picks the first group (iteration order),
- * serializes it into buf using the standard wire format, erases it
- * from gb_map_, and returns 0.  Returns -1 if the map is empty or
+ * Called when ProcessRec returns AGG_EVICT_NEEDED because allocation
+ * failed.  Targets the chunk with the fewest live_groups so that
+ * repeated evictions are likely to free an entire chunk.  Pops the
+ * head of the target chunk's per-group linked list for O(1) group
+ * selection.  Falls back to gb_map_->begin() when no chunk with a
+ * non-empty group_list is found.  Returns -1 if the map is empty or
  * the buffer is too small.
  */
 Int32 AggInterpreter::evictOneGroup(Uint32* buf, Uint32 buf_words,
@@ -2198,7 +2204,30 @@ Int32 AggInterpreter::evictOneGroup(Uint32* buf, Uint32 buf_words,
     return -1;
   }
 
-  auto iter = gb_map_->begin();
+  // Find the chunk with the fewest live_groups that has a group_list.
+  static const Uint32 MAX_CHUNK_SCAN = 10;
+  MemChunk* target = nullptr;
+  Uint32 scanned = 0;
+  for (MemChunk* c = m_chunks; c != nullptr && scanned < MAX_CHUNK_SCAN;
+       c = c->next, scanned++) {
+    if (c->group_list != nullptr &&
+        (target == nullptr || c->live_groups < target->live_groups)) {
+      target = c;
+      if (target->live_groups == 1) break;
+    }
+  }
+
+  require(target != nullptr);
+
+  // Pop head from the target chunk's per-group linked list.
+  char* raw = target->group_list;
+  target->group_list = *reinterpret_cast<char**>(raw);
+  Uint32 key_len = *reinterpret_cast<Uint32*>(raw + sizeof(char*));
+  char* data_ptr = raw + GROUP_LINK_OVERHEAD;
+  GBHashEntry lookup{data_ptr, key_len};
+  auto iter = gb_map_->find(lookup);
+  require(iter != gb_map_->end());
+
   const GBHashEntry &key = iter->first;
   const GBHashEntry &val = iter->second;
   const Uint32 data_words = (key.len + val.len) >> 2;
@@ -3223,52 +3252,45 @@ MemChunk* AggInterpreter::allocNewChunk() {
   chunk->capacity = MEM_CHUNK_SIZE - sizeof(MemChunk);
   chunk->used = 0;
   chunk->live_groups = 0;
+  chunk->group_list = nullptr;
   chunk->next = m_chunks;
   m_chunks = chunk;
   m_total_chunk_bytes += MEM_CHUNK_SIZE;
   return chunk;
 }
 
-char* AggInterpreter::allocGroupData(Uint32 len) {
-  len = (len + 7) & ~7u;  // align to 8 bytes
-  if (m_current_chunk != nullptr &&
-      m_current_chunk->used + len <= m_current_chunk->capacity) {
-    char* ptr = m_current_chunk->data + m_current_chunk->used;
-    m_current_chunk->used += len;
-    m_current_chunk->live_groups++;
-    return ptr;
-  }
-  MemChunk* chunk = allocNewChunk();
-  if (chunk == nullptr) {
-    return nullptr;
-  }
-  m_current_chunk = chunk;
-  if (len > chunk->capacity) {
-    return nullptr;
-  }
-  char* ptr = chunk->data + chunk->used;
-  chunk->used += len;
-  chunk->live_groups++;
-  return ptr;
-}
-
-MemChunk* AggInterpreter::findChunk(const char* ptr) const {
-  MemChunk* chunk = m_chunks;
-  while (chunk != nullptr) {
-    if (ptr >= chunk->data &&
-        ptr < chunk->data + chunk->capacity) {
-      return chunk;
+char* AggInterpreter::allocGroupData(Uint32 len, Uint32 key_len) {
+  Uint32 total = ((GROUP_LINK_OVERHEAD + len) + 7) & ~7u;
+  MemChunk* chunk = m_current_chunk;
+  if (chunk == nullptr || chunk->used + total > chunk->capacity) {
+    chunk = allocNewChunk();
+    if (chunk == nullptr) {
+      return nullptr;
     }
-    chunk = chunk->next;
+    m_current_chunk = chunk;
+    if (total > chunk->capacity) {
+      return nullptr;
+    }
   }
-  return nullptr;
+  Uint32 offset = chunk->used;
+  char* raw = chunk->data + offset;
+  chunk->used += total;
+  chunk->live_groups++;
+
+  // Link into chunk's per-group list (LIFO).
+  // Layout: [next (8)] [key_len (4)] [chunk_offset (4)]
+  *reinterpret_cast<char**>(raw) = chunk->group_list;
+  *reinterpret_cast<Uint32*>(raw + sizeof(char*)) = key_len;
+  *reinterpret_cast<Uint32*>(raw + sizeof(char*) + sizeof(Uint32)) = offset;
+  chunk->group_list = raw;
+
+  return raw + GROUP_LINK_OVERHEAD;
 }
 
 void AggInterpreter::freeGroupData(char* ptr) {
-  MemChunk* chunk = findChunk(ptr);
-  if (chunk == nullptr) {
-    return;
-  }
+  char* raw = ptr - GROUP_LINK_OVERHEAD;
+  Uint32 offset = *reinterpret_cast<Uint32*>(raw + sizeof(char*) + sizeof(Uint32));
+  MemChunk* chunk = reinterpret_cast<MemChunk*>(raw - offset - sizeof(MemChunk));
   chunk->live_groups--;
   if (chunk->live_groups == 0) {
     // Unlink from list

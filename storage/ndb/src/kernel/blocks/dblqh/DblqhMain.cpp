@@ -18214,7 +18214,6 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
       total_bytes += pos * sizeof(Uint32);
       batch_count++;
 
-      interp->freeGroupData(iter->first.ptr);
       gb_map->erase(iter++);
 
       if (batch_count >= GROUPS_PER_BATCH && iter != gb_map->end()) {

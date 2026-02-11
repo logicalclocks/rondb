@@ -44,6 +44,7 @@ struct MemChunk {
   Uint32 used;
   Uint32 live_groups;
   MemChunk* next;
+  char* group_list;         // singly-linked list of live groups in this chunk
 };
 
 class AggInterpreter {
@@ -153,7 +154,7 @@ class AggInterpreter {
   Int32 evictOneGroup(Uint32* buf, Uint32 buf_words,
                       Uint32* words_written);
   void initChunkAllocator(Uint32 thread_id, Uint32 budget_pages);
-  char* allocGroupData(Uint32 len);
+  char* allocGroupData(Uint32 len, Uint32 key_len);
   void freeGroupData(char* ptr);
   void freeAllChunks();
   Int64 frag_id() {
@@ -251,7 +252,6 @@ class AggInterpreter {
   Uint32 m_thread_id;                 // for lc_ndbd_pool_malloc calls
 
   MemChunk* allocNewChunk();
-  MemChunk* findChunk(const char* ptr) const;
 
   // Cached agg ops for merge (avoids recomputing per CONTINUEB batch)
   Uint8 m_cached_agg_ops[MAX_AGG_N_RESULTS];
