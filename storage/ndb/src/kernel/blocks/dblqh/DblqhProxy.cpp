@@ -26,6 +26,7 @@
 #include "Dblqh.hpp"
 #include "DblqhCommon.hpp"
 #include "JoinAggregationState.hpp"
+#include "dbtup/AggInterpreter.hpp"
 
 #include <signaldata/DumpStateOrd.hpp>
 #include <signaldata/ExecFragReq.hpp>
@@ -2318,11 +2319,58 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
     releaseSections(handle);
   }
 
-  // TODO: Allocate AggInterpreter(s) based on strategy.
-  // MUTEX_BASED: allocate one interpreter, call setUseMutex(true).
-  // MUTEX_FREE: allocate m_num_threads interpreters (mutex off by default).
-  // For now leave m_agg_interpreter and m_per_thread_interpreters
-  // as nullptr (set by constructor).
+  // Determine memory budget from global query memory availability.
+  Resource_limit rl;
+  m_ctx.m_mm.get_resource_limit_nolock(RG_QUERY_MEMORY, rl);
+  Uint32 available_pages = (rl.m_max > rl.m_curr)
+                             ? (rl.m_max - rl.m_curr) : 0;
+  Uint32 free_shared = m_ctx.m_mm.get_free_shared_nolock();
+  if (available_pages > free_shared) {
+    available_pages = free_shared;
+  }
+  // Budget: up to 25% of available pages for this aggregation, min 4 pages.
+  Uint32 budget_pages = available_pages / 4;
+  if (budget_pages < 4) {
+    budget_pages = 4;
+  }
+  state->m_memory_budget_pages = budget_pages;
+
+  // Allocate AggInterpreter(s) based on strategy.
+  if (state->m_strategy == JoinAggregationState::MUTEX_BASED) {
+    jam();
+    void *page = lc_ndbd_pool_malloc(MEM_CHUNK_SIZE, RG_QUERY_MEMORY,
+                                     getThreadId(), false);
+    ndbrequire(page != nullptr);
+    AggInterpreter *interp =
+      new (page) AggInterpreter(state->m_agg_program,
+                                state->m_agg_program_len, 0);
+    interp->Init();
+    interp->setUseMutex(true);
+    interp->initChunkAllocator(getThreadId(), budget_pages);
+    state->m_agg_interpreter = interp;
+  } else {
+    jam();
+    Uint32 num_threads = state->m_num_threads;
+    AggInterpreter **arr = (AggInterpreter **)ndbd_malloc(
+        num_threads * sizeof(AggInterpreter *));
+    ndbrequire(arr != nullptr);
+    Uint32 per_thread_budget = budget_pages / num_threads;
+    if (per_thread_budget < 4) {
+      per_thread_budget = 4;
+    }
+    for (Uint32 i = 0; i < num_threads; i++) {
+      void *page = lc_ndbd_pool_malloc(MEM_CHUNK_SIZE, RG_QUERY_MEMORY,
+                                       getThreadId(), false);
+      ndbrequire(page != nullptr);
+      AggInterpreter *interp =
+        new (page) AggInterpreter(state->m_agg_program,
+                                  state->m_agg_program_len, 0);
+      interp->Init();
+      interp->initChunkAllocator(getThreadId(), per_thread_budget);
+      arr[i] = interp;
+    }
+    state->m_per_thread_interpreters = arr;
+  }
 
   state->m_state.store(JoinAggregationState::SETUP_COMPLETE);
 
@@ -2361,7 +2409,28 @@ DblqhProxy::execJOIN_AGG_RELEASE_REQ(Signal *signal) {
       state->m_agg_program_len = 0;
     }
 
-    // TODO: Free AggInterpreter(s) once implemented.
+    // Free AggInterpreter(s)
+    if (state->m_agg_interpreter != nullptr) {
+      jam();
+      state->m_agg_interpreter->freeAllChunks();
+      state->m_agg_interpreter->~AggInterpreter();
+      lc_ndbd_pool_free(state->m_agg_interpreter);
+      state->m_agg_interpreter = nullptr;
+    }
+    if (state->m_per_thread_interpreters != nullptr) {
+      jam();
+      for (Uint32 i = 0; i < state->m_num_threads; i++) {
+        if (state->m_per_thread_interpreters[i] != nullptr) {
+          state->m_per_thread_interpreters[i]->freeAllChunks();
+          state->m_per_thread_interpreters[i]->~AggInterpreter();
+          lc_ndbd_pool_free(state->m_per_thread_interpreters[i]);
+          state->m_per_thread_interpreters[i] = nullptr;
+        }
+      }
+      ndbd_free(state->m_per_thread_interpreters,
+                state->m_num_threads * sizeof(AggInterpreter *));
+      state->m_per_thread_interpreters = nullptr;
+    }
 
     // Release the pool record
     releaseJoinAggState(aggStateKey);

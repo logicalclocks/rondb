@@ -30,6 +30,7 @@
 #include "include/my_byteorder.h"
 #include "AggInterpreter.hpp"
 #include "InterpreterCommonOp.hpp"
+#include "util/require.h"
 #include "decimal.h"
 #include "Dbtup.hpp"
 #include <NdbSqlUtil.hpp>
@@ -258,41 +259,26 @@ bool AggInterpreter::Init(const Uint32* prog) {
    * 3. Get all the group by columns id.
    */
   if (n_gb_cols_) {
-#ifdef PA_MALLOC
     assert(n_gb_cols_ <= MAX_AGG_N_GROUPBY_COLS);
     gb_cols_ = gb_cols_buf_;
-#else
-    gb_cols_ = new Uint32[n_gb_cols_];
-#endif // PA_MALLOC
 
     Uint32 i = 0;
     while (i < n_gb_cols_ && cur_pos_ < prog_len_) {
       gb_cols_[i++] = prog_[cur_pos_++];
     }
-#ifdef PA_MALLOC
     gb_cmp_ctx_.n_cols = 0;
     gb_cmp_ctx_.all_binary_cmp = false;
     gb_map_buf_ = std::map<GBHashEntry, GBHashEntry, GBHashEntryCmp>(
                       GBHashEntryCmp(&gb_cmp_ctx_));
     gb_map_ = &gb_map_buf_;
-#else
-    gb_cmp_ctx_.n_cols = 0;
-    gb_cmp_ctx_.all_binary_cmp = false;
-    gb_map_ = new std::map<GBHashEntry, GBHashEntry, GBHashEntryCmp>(
-                      GBHashEntryCmp(&gb_cmp_ctx_));
-#endif // PA_MALLOC
   }
 
   /*
    * 4. Reset all aggregation results
    */
   if (n_agg_results_) {
-#ifdef PA_MALLOC
     assert(n_agg_results_ <= MAX_AGG_N_RESULTS);
     agg_results_ = agg_results_buf_;
-#else
-    agg_results_ = new AggResItem[n_agg_results_];
-#endif // PA_MALLOC
     Uint32 i = 0;
     while (i < n_agg_results_) {
       agg_results_[i].type = NDB_TYPE_UNDEFINED;
@@ -1420,13 +1406,11 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
       // results to API.
       result_size_ += len_in_char +
                        n_agg_results_ * sizeof(AggResItem);
-#ifdef PA_MALLOC
-      agg_rec = MemAlloc(len_in_char +
-                          n_agg_results_ * sizeof(AggResItem));
-#else
-      agg_rec = new char[len_in_char +
-                        n_agg_results_ * sizeof(AggResItem)];
-#endif // PA_MALLOC
+      agg_rec = allocGroupData(len_in_char +
+                               n_agg_results_ * sizeof(AggResItem));
+      if (agg_rec == nullptr) {
+        return AGG_EVICT_NEEDED;
+      }
       memset(agg_rec, 0, len_in_char +
                         n_agg_results_ * sizeof(AggResItem));
       memcpy(agg_rec, reinterpret_cast<char*>(buf_), len_in_char);
@@ -2237,9 +2221,7 @@ Int32 AggInterpreter::evictOneGroup(Uint32* buf, Uint32 buf_words,
   result_size_ -= (key.len + val.len);
   n_groups_--;
 
-#ifndef PA_MALLOC
-  delete[] iter->first.ptr;
-#endif
+  freeGroupData(iter->first.ptr);
   gb_map_->erase(iter);
 
   return 0;
@@ -2517,11 +2499,9 @@ Int32 AggInterpreter::mergeFrom(const AggInterpreter* other) {
       // Group only in other: copy into this map
       Uint32 total_len = other_key.len +
                          n_agg_results_ * sizeof(AggResItem);
-#ifdef PA_MALLOC
-      char *rec = MemAlloc(total_len);
-#else
-      char *rec = new char[total_len];
-#endif
+      char *rec;
+      rec = allocGroupData(total_len);
+      require(rec != nullptr);
       memcpy(rec, other_key.ptr, other_key.len);
       memcpy(rec + other_key.len, other_val.ptr, other_val.len);
       GBHashEntry new_key{rec, other_key.len};
@@ -2832,15 +2812,10 @@ Uint32 AggInterpreter::PrepareAggResIfNeeded(Signal* signal, bool force) {
       MEMCOPY_NO_WORDS(&data_buf[pos], iter->first.ptr,
           (iter->first.len + iter->second.len) >> 2);
       pos += ((iter->first.len + iter->second.len) >> 2);
-#ifndef PA_MALLOC
-      delete[] iter->first.ptr;
-#endif // !PA_MALLOC
+      freeGroupData(iter->first.ptr);
       gb_map_->erase(iter++);
       result_size_ = 0;
     }
-#ifdef PA_MALLOC
-    alloc_len_ = 0;
-#endif // PA_MALLOC
     assert(gb_map_->empty());
   } else {
     data_buf[pos++] = AttributeHeader::AGG_RESULT << 16 | 0x0721;
@@ -2976,17 +2951,6 @@ Uint32 AggInterpreter::NumOfResRecords(bool last_time) {
   }
 }
 
-#ifdef PA_MALLOC
-char* AggInterpreter::MemAlloc(Uint32 len) {
-  if (alloc_len_ + len >= MAX_AGG_RESULT_BATCH_BYTES) {
-    return nullptr;
-  } else {
-    char* ptr = &(mem_buf_[alloc_len_]);
-    alloc_len_ += len;
-    return ptr;
-  }
-}
-
 void AggInterpreter::Destruct(AggInterpreter* ptr) {
   if (ptr == nullptr) {
     return;
@@ -2994,7 +2958,7 @@ void AggInterpreter::Destruct(AggInterpreter* ptr) {
   ptr->~AggInterpreter();
   lc_ndbd_pool_free(ptr);
 }
-#endif // PA_MALLOC
+
 Int32 AggInterpreter::CopyVecCandidateFromSignal(Signal* signal,
                                                 Uint32 ToutBufIndex) {
   if (candidate_allocator_ == nullptr) {
@@ -3002,7 +2966,6 @@ Int32 AggInterpreter::CopyVecCandidateFromSignal(Signal* signal,
                     "CandidateAllocator pre-allocating memory, "
                     "top_n: %u, vec_max_rec_size: %u, actual_rec_size: %u",
                     vec_top_n_, vec_max_rec_size_, ToutBufIndex);
-#ifdef PA_MALLOC
     void* ca_mem = lc_ndbd_pool_malloc(
         sizeof(CandidateAllocator), RG_QUERY_MEMORY, thread_id_, false);
     if (ca_mem == nullptr) {
@@ -3011,10 +2974,6 @@ Int32 AggInterpreter::CopyVecCandidateFromSignal(Signal* signal,
     }
     candidate_allocator_ = new (ca_mem) CandidateAllocator(
         vec_top_n_, vec_max_rec_size_, table_id_, frag_id_);
-#else
-    candidate_allocator_ = new CandidateAllocator(
-        vec_top_n_, vec_max_rec_size_, table_id_, frag_id_);
-#endif
     int ret = candidate_allocator_ -> Init(thread_id_);
     if (ret != 0) {
       return ret;
@@ -3116,11 +3075,11 @@ Uint32 AggInterpreter::CopyOneVecCandidateToSignal(Signal* signal) {
 }
 
 void AggInterpreter::set_vec_max_rec_size(Uint32 size) {
-	/*
-	 * vec_max_rec_size_ is only used to calculate the preallocated memory size
-	 * for candidate_allocator_, so it doesn’t make sense to set it
-	 * after candidate_allocator_ has already been initialized.
-	 */
+  /*
+   * vec_max_rec_size_ is only used to calculate the preallocated memory size
+   * for candidate_allocator_, so it doesn’t make sense to set it
+   * after candidate_allocator_ has already been initialized.
+   */
   if (!candidate_allocator_) {
     // 10% bigger
     vec_max_rec_size_ = static_cast<int>(std::ceil(size * 1.1));
@@ -3174,14 +3133,9 @@ Int32 AggInterpreter::CandidateAllocator::Init(Uint32 thread_id) {
       "full_segments=%lu, last_slots=%lu",
       slot_size_, slots_per_full_segment_, full_segments, last_slots);
 
-#ifdef PA_MALLOC
   assert(num_segments <= MAX_CANDIDATE_SEGMENTS);
-#else
-  segments_.reserve(num_segments);
-#endif
 
   for (size_t i = 0; i < full_segments; i++) {
-#ifdef PA_MALLOC
     void* page_ptr = lc_ndbd_pool_malloc(g_segment_size, RG_QUERY_MEMORY,
         thread_id, false);
     if (!page_ptr) {
@@ -3189,14 +3143,9 @@ Int32 AggInterpreter::CandidateAllocator::Init(Uint32 thread_id) {
       return ZAGG_ALLOC_MEM_FAILED;
     }
     segments_[n_segments_++] = {(char*)page_ptr, g_segment_size};
-#else
-    char* buf = (char*)::operator new(g_segment_size);
-    segments_.push_back({buf, g_segment_size});
-#endif // PA_MALLOC
   }
 
   if (last_size > 0) {
-#ifdef PA_MALLOC
     void* page_ptr = lc_ndbd_pool_malloc(last_size, RG_QUERY_MEMORY,
         thread_id, false);
     if (!page_ptr) {
@@ -3204,10 +3153,6 @@ Int32 AggInterpreter::CandidateAllocator::Init(Uint32 thread_id) {
       return ZAGG_ALLOC_MEM_FAILED;
     }
     segments_[n_segments_++] = {(char*)page_ptr, last_size};
-#else
-    char* buf = (char*)::operator new(last_size);
-    segments_.push_back({buf, last_size});
-#endif // PA_MALLOC
   }
 
   init_ = true;
@@ -3225,11 +3170,7 @@ AggInterpreter::Candidate* AggInterpreter::CandidateAllocator::Allocate(
 	size_t seg_id   = next_index_ >> shift_k_;
 	size_t slot_off = next_index_ & (slots_per_full_segment_ - 1);
 
-#ifdef PA_MALLOC
   assert(seg_id < n_segments_);
-#else
-  assert(seg_id < segments_.size());
-#endif
 
   char* base = segments_[seg_id].ptr;
   char* ptr = base + slot_off * slot_size_;
@@ -3253,4 +3194,105 @@ AggInterpreter::Candidate* AggInterpreter::CandidateAllocator::Allocate(
   }
 
   return c;
+  lc_ndbd_pool_free(ptr);
+}
+
+void AggInterpreter::initChunkAllocator(Uint32 thread_id,
+                                        Uint32 budget_pages) {
+  m_thread_id = thread_id;
+  m_memory_budget = budget_pages * MEM_CHUNK_SIZE;
+  m_chunks = nullptr;
+  m_current_chunk = nullptr;
+  m_total_chunk_bytes = 0;
+}
+
+MemChunk* AggInterpreter::allocNewChunk() {
+  if (m_total_chunk_bytes + MEM_CHUNK_SIZE > m_memory_budget) {
+    return nullptr;
+  }
+  void* page = lc_ndbd_pool_malloc(MEM_CHUNK_SIZE, RG_QUERY_MEMORY,
+                                   m_thread_id, false);
+  if (page == nullptr) {
+    return nullptr;
+  }
+  MemChunk* chunk = static_cast<MemChunk*>(page);
+  chunk->data = static_cast<char*>(page) + sizeof(MemChunk);
+  chunk->capacity = MEM_CHUNK_SIZE - sizeof(MemChunk);
+  chunk->used = 0;
+  chunk->live_groups = 0;
+  chunk->next = m_chunks;
+  m_chunks = chunk;
+  m_total_chunk_bytes += MEM_CHUNK_SIZE;
+  return chunk;
+}
+
+char* AggInterpreter::allocGroupData(Uint32 len) {
+  len = (len + 7) & ~7u;  // align to 8 bytes
+  if (m_current_chunk != nullptr &&
+      m_current_chunk->used + len <= m_current_chunk->capacity) {
+    char* ptr = m_current_chunk->data + m_current_chunk->used;
+    m_current_chunk->used += len;
+    m_current_chunk->live_groups++;
+    return ptr;
+  }
+  MemChunk* chunk = allocNewChunk();
+  if (chunk == nullptr) {
+    return nullptr;
+  }
+  m_current_chunk = chunk;
+  if (len > chunk->capacity) {
+    return nullptr;
+  }
+  char* ptr = chunk->data + chunk->used;
+  chunk->used += len;
+  chunk->live_groups++;
+  return ptr;
+}
+
+MemChunk* AggInterpreter::findChunk(const char* ptr) const {
+  MemChunk* chunk = m_chunks;
+  while (chunk != nullptr) {
+    if (ptr >= chunk->data &&
+        ptr < chunk->data + chunk->capacity) {
+      return chunk;
+    }
+    chunk = chunk->next;
+  }
+  return nullptr;
+}
+
+void AggInterpreter::freeGroupData(char* ptr) {
+  MemChunk* chunk = findChunk(ptr);
+  if (chunk == nullptr) {
+    return;
+  }
+  chunk->live_groups--;
+  if (chunk->live_groups == 0) {
+    // Unlink from list
+    MemChunk** pp = &m_chunks;
+    while (*pp != nullptr) {
+      if (*pp == chunk) {
+        *pp = chunk->next;
+        break;
+      }
+      pp = &(*pp)->next;
+    }
+    if (m_current_chunk == chunk) {
+      m_current_chunk = m_chunks;
+    }
+    m_total_chunk_bytes -= MEM_CHUNK_SIZE;
+    lc_ndbd_pool_free(chunk);
+  }
+}
+
+void AggInterpreter::freeAllChunks() {
+  MemChunk* chunk = m_chunks;
+  while (chunk != nullptr) {
+    MemChunk* next = chunk->next;
+    lc_ndbd_pool_free(chunk);
+    chunk = next;
+  }
+  m_chunks = nullptr;
+  m_current_chunk = nullptr;
+  m_total_chunk_bytes = 0;
 }

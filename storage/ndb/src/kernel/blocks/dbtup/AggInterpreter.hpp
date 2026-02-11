@@ -33,17 +33,18 @@
 #include <simsimd/simsimd.h>
 #include <queue>
 
-/*
- * PA related
- * Turn off the PA_MALLOC to use new instead
- * of AggInterpreter's memory alloctor
- */
-// #undef PA_MALLOC
-#define PA_MALLOC 1
-
 #define READ_BUF_WORD_SIZE 2048
 #define DECIMAL_BUFF_LENGTH 9
 #define AGG_EVICT_NEEDED 1
+#define MEM_CHUNK_SIZE 32768
+
+struct MemChunk {
+  char* data;
+  Uint32 capacity;
+  Uint32 used;
+  Uint32 live_groups;
+  MemChunk* next;
+};
 
 class AggInterpreter {
  public:
@@ -72,7 +73,10 @@ class AggInterpreter {
     vec_search_scan_done_(false),
     next_send_idx_(-1), ext_prog_buf_(nullptr),
     m_linked_attr_data(nullptr), m_linked_attr_len(0),
-    m_use_mutex(false), m_max_groups(0) {
+    m_use_mutex(false), m_max_groups(0),
+    m_chunks(nullptr),
+    m_current_chunk(nullptr), m_total_chunk_bytes(0),
+    m_memory_budget(0), m_thread_id(0) {
       assert(prog_len_ <= MAX_AGG_PROGRAM_WORD_SIZE);
       prog_ = prog_buf_;
       memcpy(prog_, prog, prog_len * sizeof(Uint32));
@@ -82,30 +86,7 @@ class AggInterpreter {
       decimal_.len = DECIMAL_BUFF_LENGTH;
   }
   ~AggInterpreter() {
-#ifdef PA_MALLOC
-#else
-    delete[] prog_;
-    delete[] gb_cols_;
-    delete[] agg_results_;
-    if (gb_map_) {
-      // MOZ debug
-      if (!gb_map_->empty()) {
-        /*
-         * Moz
-         * TODO (Zhao)
-         * potential crash here if the API closes scan
-         * while lqh is processing, double check.
-         *
-         * (CHECKED)
-         */
-        assert(gb_map_->empty());
-      }
-      for (auto iter = gb_map_->begin(); iter != gb_map_->end(); iter++) {
-        delete[] iter->first.ptr;
-      }
-      delete gb_map_;
-    }
-#endif // PA_MALLOC
+    freeAllChunks();
   }
 
   bool Init();
@@ -173,10 +154,13 @@ class AggInterpreter {
   Uint32 maxGroups() const { return m_max_groups; }
   Int32 evictOneGroup(Uint32* buf, Uint32 buf_words,
                       Uint32* words_written);
+  void initChunkAllocator(Uint32 thread_id, Uint32 budget_pages);
+  char* allocGroupData(Uint32 len);
+  void freeGroupData(char* ptr);
+  void freeAllChunks();
   Int64 frag_id() {
     return frag_id_;
   }
-#ifdef PA_MALLOC
   static void Destruct(AggInterpreter* ptr);
   /* For using Ndbd_mem_manager*/
   /*
@@ -187,7 +171,6 @@ class AggInterpreter {
     return page_ref_;
   }
   */
-#endif // PA_MALLOC
   bool vec_search() {
     return vec_search_;
   }
@@ -260,13 +243,17 @@ class AggInterpreter {
   // caller can evict a group before retrying.
   Uint32 m_max_groups;                // 0 = unlimited
 
-#ifdef PA_MALLOC
-  /* For using Ndbd_mem_manager */
-  /*
-  Ndbd_mem_manager* mm_;
-  void* page_addr_;
-  Uint32 page_ref_;
-  */
+  // Chunk-based allocator for group data.
+  // Allocates from 32KB chunks via lc_ndbd_pool_malloc,
+  // with per-chunk reference counting so eviction can free memory.
+  MemChunk* m_chunks;                 // linked list head
+  MemChunk* m_current_chunk;          // chunk currently bump-allocating from
+  Uint32 m_total_chunk_bytes;         // total bytes across all chunks
+  Uint32 m_memory_budget;             // max total chunk bytes allowed
+  Uint32 m_thread_id;                 // for lc_ndbd_pool_malloc calls
+
+  MemChunk* allocNewChunk();
+  MemChunk* findChunk(const char* ptr) const;
 
   Uint32 prog_buf_[MAX_AGG_PROGRAM_WORD_SIZE];
   Uint32 gb_cols_buf_[MAX_AGG_N_GROUPBY_COLS];
@@ -276,7 +263,6 @@ class AggInterpreter {
   char mem_buf_[MAX_AGG_RESULT_BATCH_BYTES];
   Uint32 alloc_len_;
   char* MemAlloc(Uint32 len);
-#endif // PA_MALLOC
 
   /* Vector */
   bool vec_search_;
@@ -330,27 +316,19 @@ class AggInterpreter {
        table_id_(table_id), frag_id_(frag_id),
        slots_per_full_segment_(0),
        shift_k_(0)
-#ifdef PA_MALLOC
        , n_segments_(0)
-#endif
        {
          total_size_ = max_candidates_ * (sizeof(Candidate) + max_buf_len_ * sizeof(Uint32));
          slot_size_ = sizeof(Candidate) + max_buf_len_ * sizeof(Uint32);
        }
 
      ~CandidateAllocator() {
-#ifdef PA_MALLOC
        for (size_t i = 0; i < n_segments_; i++) {
          auto& seg = segments_[i];
          if (seg.ptr) {
            lc_ndbd_pool_free(seg.ptr);
          }
        }
-#else
-       for (auto& seg : segments_) {
-         ::operator delete(seg.ptr);
-       }
-#endif // PA_MALLOC
      }
 
      Int32 Init(Uint32 thread_id);
@@ -380,12 +358,8 @@ class AggInterpreter {
      size_t slot_size_;
      size_t slots_per_full_segment_;
      size_t shift_k_;
-#ifdef PA_MALLOC
      Segment segments_[MAX_CANDIDATE_SEGMENTS];
      size_t n_segments_;
-#else
-     std::vector<Segment> segments_;
-#endif
   };
 
   Uint32 vec_max_rec_size_; // in words

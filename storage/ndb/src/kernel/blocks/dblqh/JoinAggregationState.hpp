@@ -125,6 +125,12 @@ struct JoinAggregationState {
   Uint32 m_total_ops_expected;             // Total operations (0 = unknown)
 
   //------------------------------------------------------------------
+  // Memory Budget (immutable after creation)
+  // Budget in 32KB pages, determined at setup from global availability.
+  //------------------------------------------------------------------
+  Uint32 m_memory_budget_pages;
+
+  //------------------------------------------------------------------
   // Result Tracking
   //------------------------------------------------------------------
   Uint32 m_agg_curr_batch_size_rows;       // Aggregated result rows (groups)
@@ -171,6 +177,7 @@ struct JoinAggregationState {
     m_completed_ops(0),
     m_failed_ops(0),
     m_total_ops_expected(0),
+    m_memory_budget_pages(0),
     m_agg_curr_batch_size_rows(0),
     m_agg_curr_batch_size_bytes(0),
     m_rows_sent(0),

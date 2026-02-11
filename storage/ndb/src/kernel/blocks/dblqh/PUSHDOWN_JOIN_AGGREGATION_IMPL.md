@@ -614,6 +614,56 @@ the number of groups is small enough that lock contention is acceptable.
 For high-cardinality queries, MUTEX_FREE (per-thread interpreters with
 completion-time merge) avoids all locking.
 
+## 10d. Chunk-Based Memory Allocator for Join Aggregation — DONE
+
+**STATUS: IMPLEMENTED**
+
+### Problem
+
+The PA_MALLOC bump allocator (`mem_buf_[8192]` = 8KB) cannot free individual
+group allocations, so eviction doesn't reclaim memory. The 8KB buffer is
+also too small for join aggregation with many groups. Memory decisions should
+be based on globally available memory (RG_QUERY_MEMORY).
+
+### Design
+
+Chunk-based allocator with per-chunk reference counting:
+
+1. **MemChunk struct**: 32KB pages allocated via `lc_ndbd_pool_malloc`.
+   Each chunk has `data`, `capacity`, `used` (bump pointer), `live_groups`
+   (reference count), and `next` (linked list).
+
+2. **allocGroupData(len)**: Bump-allocate from current chunk. If full,
+   allocate a new chunk (if budget allows). Returns nullptr if over budget
+   — triggers eviction via existing `AGG_EVICT_NEEDED` mechanism.
+
+3. **freeGroupData(ptr)**: Find chunk containing ptr, decrement
+   `live_groups`. When `live_groups` reaches 0, free the entire chunk via
+   `lc_ndbd_pool_free`, releasing memory back to the system.
+
+4. **Memory budget**: Set during `execJOIN_AGG_SETUP_REQ` by querying
+   `RG_QUERY_MEMORY` availability via `m_ctx.m_mm.get_resource_limit_nolock()`.
+   Budget = 25% of available pages, minimum 4 pages (128KB).
+
+5. **Interpreter allocation**: DblqhProxy creates AggInterpreter instances
+   in 32KB pages via `lc_ndbd_pool_malloc(MEM_CHUNK_SIZE, RG_QUERY_MEMORY, ...)`.
+   MUTEX_BASED: single interpreter with `setUseMutex(true)`.
+   MUTEX_FREE: per-thread interpreters, each with `budget / num_threads` pages.
+
+6. **Release**: `freeAllChunks()` frees all chunk pages. Destructor calls
+   `freeAllChunks()` if chunk allocator is active. DblqhProxy release handler
+   explicitly destructs and frees interpreter objects.
+
+### Files Modified
+
+- `AggInterpreter.hpp`: MemChunk struct, chunk allocator members + methods
+- `AggInterpreter.cpp`: initChunkAllocator, allocGroupData, freeGroupData,
+  allocNewChunk, findChunk, freeAllChunks; ProcessRec and mergeFrom use
+  chunk allocator; evictOneGroup calls freeGroupData
+- `DblqhProxy.cpp`: Memory query, interpreter creation, release cleanup
+- `DblqhMain.cpp`: continueJoinAggSend uses freeGroupData via interpreter
+- `JoinAggregationState.hpp`: m_memory_budget_pages field
+
 ## 11. Modified: AggInterpreter — New Methods
 
 **STATUS: IMPLEMENTED** (commits 73f4963, 57a722d, 1677fa8, ecb6695)
@@ -818,6 +868,14 @@ for NDB API error reporting.
 - AggInterpreter: std::mutex m_mutex, bool m_use_mutex, setUseMutex() added
 - processRecWithLinkedAttrs acquires lock when m_use_mutex is true
 - DblqhProxy: call setUseMutex(true) when allocating MUTEX_BASED interpreter
+
+### Phase 6d: Chunk-Based Memory Allocator — DONE
+- AggInterpreter: MemChunk struct, chunk allocator (initChunkAllocator,
+  allocGroupData, freeGroupData, freeAllChunks)
+- ProcessRec/mergeFrom use chunk allocator when m_use_chunk_allocator is true
+- evictOneGroup/continueJoinAggSend call freeGroupData for chunk-allocated groups
+- DblqhProxy: queries RG_QUERY_MEMORY for budget, creates/frees interpreters
+- JoinAggregationState: m_memory_budget_pages field
 
 ### Phase 7: DBSPJ Orchestration — NOT STARTED
 - Dbspj.hpp: Add state fields to TreeNode, declare handlers
