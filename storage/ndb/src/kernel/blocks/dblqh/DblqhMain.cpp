@@ -18007,11 +18007,108 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
   ndbrequire(state->m_completed_ops == completedOps);
   state->m_state.store(JoinAggregationState::FINALIZING);
 
-  // TODO: Phase 6 — merge/finalize using AggInterpreter:
-  //   MUTEX_BASED: state->m_agg_interpreter->FinalizeResults()
-  //   MUTEX_FREE:  AggInterpreter::MergeAllByBucket(...), then FinalizeResults()
-  // TODO: Phase 6 — send results via TRANSID_AI using
-  //   state->m_resultRef, m_resultData, m_routeRef
+  /*
+   * Select interpreter based on strategy.
+   * MUTEX_FREE: merge per-thread interpreters into interpreters[0].
+   */
+  AggInterpreter *interp;
+  if (state->m_strategy == JoinAggregationState::MUTEX_FREE) {
+    jam();
+    AggInterpreter::mergeAllByBucket(
+        state->m_per_thread_interpreters, state->m_num_threads);
+    interp = state->m_per_thread_interpreters[0];
+  } else {
+    jam();
+    interp = state->m_agg_interpreter;
+  }
+  ndbrequire(interp != nullptr);
+
+  interp->finalizeResults();
+
+  state->m_state.store(JoinAggregationState::SENDING_RESULTS);
+
+  const Uint32 n_gb_cols = interp->n_gb_cols();
+  const Uint32 n_agg_results = interp->n_agg_results();
+  Uint32 num_result_rows = 0;
+  Uint32 total_bytes = 0;
+
+  if (n_gb_cols == 0) {
+    /*
+     * Non-group-by: single result row with flat accumulator array.
+     */
+    jam();
+    const Uint32 agg_bytes = n_agg_results * sizeof(AggResItem);
+    const Uint32 agg_words = agg_bytes >> 2;
+    Uint32 buf[MAX_AGG_RESULT_BATCH_BYTES / sizeof(Uint32)];
+    ndbrequire(4 + agg_words <= MAX_AGG_RESULT_BATCH_BYTES / sizeof(Uint32));
+    Uint32 pos = 0;
+    buf[pos++] = AttributeHeader::AGG_RESULT << 16 | 0x0721;
+    buf[pos++] = 0 << 16 | n_agg_results;
+    buf[pos++] = 0;
+    buf[pos++] = 0 << 16 | agg_bytes;
+    memcpy(&buf[pos], interp->agg_results(), agg_bytes);
+    pos += agg_words;
+
+    TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
+    transIdAI->connectPtr = state->m_resultData;
+    transIdAI->transId[0] = state->m_transid[0];
+    transIdAI->transId[1] = state->m_transid[1];
+
+    LinearSectionPtr ptr[3];
+    ptr[0].p = buf;
+    ptr[0].sz = pos;
+    sendSignal(state->m_resultRef, GSN_TRANSID_AI, signal,
+               TransIdAI::HeaderLength, JBB, ptr, 1);
+
+    num_result_rows = 1;
+    total_bytes = pos * sizeof(Uint32);
+  } else {
+    /*
+     * Group-by: iterate groups one at a time, sending each as a
+     * separate TRANSID_AI.
+     *
+     * TODO: after N groups, issue CONTINUEB to yield CPU to other
+     * queries, then resume sending remaining groups.
+     */
+    jam();
+    auto *gb_map = interp->gb_map_mutable();
+    if (gb_map != nullptr) {
+      for (auto iter = gb_map->begin(); iter != gb_map->end();) {
+        jam();
+        const GBHashEntry &key = iter->first;
+        const GBHashEntry &val = iter->second;
+        const Uint32 data_words = (key.len + val.len) >> 2;
+        Uint32 buf[MAX_AGG_RESULT_BATCH_BYTES / sizeof(Uint32)];
+        ndbrequire(4 + data_words <= MAX_AGG_RESULT_BATCH_BYTES / sizeof(Uint32));
+        Uint32 pos = 0;
+        buf[pos++] = AttributeHeader::AGG_RESULT << 16 | 0x0721;
+        buf[pos++] = n_gb_cols << 16 | n_agg_results;
+        buf[pos++] = 1;
+        buf[pos++] = key.len << 16 | val.len;
+        memcpy(&buf[pos], key.ptr, key.len + val.len);
+        pos += data_words;
+
+        TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
+        transIdAI->connectPtr = state->m_resultData;
+        transIdAI->transId[0] = state->m_transid[0];
+        transIdAI->transId[1] = state->m_transid[1];
+
+        LinearSectionPtr ptr[3];
+        ptr[0].p = buf;
+        ptr[0].sz = pos;
+        sendSignal(state->m_resultRef, GSN_TRANSID_AI, signal,
+                   TransIdAI::HeaderLength, JBB, ptr, 1);
+
+        num_result_rows++;
+        total_bytes += pos * sizeof(Uint32);
+
+#ifndef PA_MALLOC
+        delete[] iter->first.ptr;
+#endif
+        gb_map->erase(iter++);
+      }
+    }
+  }
 
   state->m_state.store(JoinAggregationState::COMPLETED);
 
@@ -18020,8 +18117,8 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
   conf->senderRef = reference();
   conf->senderData = senderData;
   conf->requestId = requestId;
-  conf->numResultRows = 0;   // TODO: set from finalized results
-  conf->resultBytes = 0;     // TODO: set from finalized results
+  conf->numResultRows = num_result_rows;
+  conf->resultBytes = total_bytes;
   sendSignal(senderRef, GSN_JOIN_AGG_COMPLETE_CONF,
              signal, JoinAggCompleteConf::SignalLength, JBB);
 }

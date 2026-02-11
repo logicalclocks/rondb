@@ -159,6 +159,12 @@ class AggInterpreter {
   Int64 table_id() {
     return table_id_;
   }
+  std::map<GBHashEntry, GBHashEntry, GBHashEntryCmp>* gb_map_mutable() {
+    return gb_map_;
+  }
+  Uint32 n_gb_cols() const { return n_gb_cols_; }
+  Uint32 n_agg_results() const { return n_agg_results_; }
+  const AggResItem* agg_results() const { return agg_results_; }
   Int64 frag_id() {
     return frag_id_;
   }
