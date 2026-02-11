@@ -2093,6 +2093,7 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
     req_struct.m_row_id.m_page_idx = ZNIL;
 #endif
     req_struct.scan_rec = lqhScanPtrP;
+    req_struct.m_join_agg_state_key = lqhScanPtrP->m_join_agg_state_key;
     /*
      * TTL related
      */
@@ -5389,6 +5390,28 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
         } else {
         }
         return 0;
+      } else if (req_struct->m_join_agg_state_key != RNIL) {
+        jamDebug();
+        /*
+         * Join aggregation (interpreted scan path): feed the row
+         * into the AggInterpreter instead of sending via TRANSID_AI.
+         */
+        JoinAggregationState *state =
+            getJoinAggState(req_struct->m_join_agg_state_key);
+        ndbrequire(state != nullptr);
+        AggInterpreter *interp;
+        if (state->m_strategy == JoinAggregationState::MUTEX_FREE) {
+          Uint32 thr_idx = instance() - 1;
+          ndbrequire(thr_idx < state->m_num_threads);
+          interp = state->m_per_thread_interpreters[thr_idx];
+        } else {
+          interp = state->m_agg_interpreter;
+        }
+        ndbrequire(interp != nullptr);
+        /* TODO: pass linked attributes from parent table (Part E) */
+        interp->processRecWithLinkedAttrs(this, req_struct, nullptr, 0);
+        state->m_completed_ops.fetch_add(1, std::memory_order_relaxed);
+        req_struct->read_length = 0;
       } else {
         sendReadAttrinfo(signal, req_struct, RattroutCounter);
       }
