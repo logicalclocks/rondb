@@ -370,169 +370,116 @@ addRecSignal(GSN_JOIN_AGG_RELEASE_REQ,  &DblqhProxy::execJOIN_AGG_RELEASE_REQ);
 
 ## 10. Modified: DblqhMain.cpp — Operation and Completion Handlers
 
+**STATUS: IMPLEMENTED** (commits de181c6, 60431e1, b38c812)
+
 **File:** `storage/ndb/src/kernel/blocks/dblqh/DblqhMain.cpp`
 
-### execJOIN_AGG_COMPLETE_REQ (new handler, routed via V_QUERY)
+### execJOIN_AGG_COMPLETE_REQ — IMPLEMENTED
 
-DBSPJ sends this signal to V_QUERY, which routes it to a Dblqh worker
-based on current CPU load. The merge/finalize work is CPU-intensive, so
-V_QUERY ensures it runs on a thread with available capacity.
+Routed via V_QUERY to a Dblqh worker. Implementation:
+- Merges per-thread interpreters (MUTEX_FREE) via mergeAllByBucket()
+- Calls finalizeResults()
+- Non-group-by: single TRANSID_AI with flat accumulator
+- Group-by: iterates gb_map_ one group at a time, sends per-group TRANSID_AI,
+  erases group after send (PA_MALLOC aware)
+- Uses fixed-size buffer `Uint32 buf[MAX_AGG_RESULT_BATCH_BYTES / sizeof(Uint32)]`
+- TODO: CONTINUEB yielding after N groups
+- Sends JOIN_AGG_COMPLETE_CONF with numResultRows and resultBytes
 
-```cpp
-void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal* signal) {
-    jamEntry();
-    const JoinAggCompleteReq* req =
-        (const JoinAggCompleteReq*)signal->getDataPtr();
+### execLQHKEYREQ — IMPLEMENTED
 
-    JoinAggregationState* state = getJoinAggState(req->aggStateKey);
-    if (state == nullptr) {
-        // Send JOIN_AGG_COMPLETE_REF
-        return;
-    }
+aggStateKey extraction from variableData when JoinAggFlag is set in attrLenFlags.
+Stored on `regTcPtr->m_join_agg_state_key`.
 
-    // Verify operation count
-    ndbrequire(state->m_completed_ops == req->completedOps);
+### execSCAN_FRAGREQ — IMPLEMENTED
 
-    // Set state to FINALIZING — single-threaded, all operations
-    // already completed before DBSPJ sends this signal
-    state->m_state.store(JoinAggregationState::FINALIZING);
+aggStateKey extraction when JoinAggFlag is set. Stored on
+`scanPtr->m_join_agg_state_key`.
 
-    if (state->m_strategy == JoinAggregationState::MUTEX_BASED) {
-        state->m_agg_interpreter->FinalizeResults();
-    } else {
-        // MUTEX_FREE: merge all per-thread interpreters, then finalize
-        AggInterpreter::MergeAllByBucket(
-            state->m_per_thread_interpreters, state->m_num_threads);
-        state->m_per_thread_interpreters[0]->FinalizeResults();
-    }
+## 10a. Modified: DbtupExecQuery.cpp — Row-Processing Integration
 
-    // Send TRANSID_AI with aggregated results
-    // ... (use state->m_resultRef, m_resultData, m_routeRef)
+**STATUS: LQHKEYREQ path IMPLEMENTED** (commit de0add9), **SCAN path NOT STARTED**
 
-    // Send JOIN_AGG_COMPLETE_CONF
-    state->m_state.store(JoinAggregationState::COMPLETED);
-}
-```
+**File:** `storage/ndb/src/kernel/blocks/dbtup/DbtupExecQuery.cpp`
 
-### execLQHKEYREQ (line 8722)
+### LQHKEYREQ Path (Part B) — IMPLEMENTED
 
-After extracting `Treqinfo` (requestInfo) around line 8731, add:
+Added `m_join_agg_state_key` to `KeyReqStruct` in `Dbtup.hpp`, set from
+`lqhOpPtrP->m_join_agg_state_key` in `execTUPKEYREQ`.
 
-```cpp
-const Uint32 joinAggFlag = LqhKeyReq::getJoinAggFlag(Treqinfo);
-Uint32 aggStateKey = RNIL;
-if (joinAggFlag) {
-    // Extra word at end of signal contains aggStateKey
-    aggStateKey = signal->theData[LqhKeyReq::FixedSignalLength + <offset>];
-}
-```
+Two interception points before `sendReadAttrinfo`:
 
-Later, when creating/initializing TcConnectionrec:
+1. **Non-interpreted path** (handleReadReq): Before readAttributes, if
+   `m_join_agg_state_key != RNIL`, look up JoinAggregationState, select
+   AggInterpreter (MUTEX_FREE: `instance()-1` index, MUTEX_BASED: shared),
+   call `processRecWithLinkedAttrs()`, increment `m_completed_ops`, set
+   `read_length=0`, return 0. Skips both readAttributes and sendReadAttrinfo.
 
-```cpp
-regTcPtr->m_join_agg_state_key = aggStateKey;
-```
+2. **Interpreted non-scan path** (interpreterStartLab): After WHERE clause
+   evaluation, before sendReadAttrinfo, same pattern. Replaces
+   sendReadAttrinfo with AggInterpreter processing.
 
-After TUPKEYCONF (when row is read), if `aggStateKey != RNIL`:
+Both paths have TODO for passing linked attributes from parent table (Part E).
 
-```cpp
-JoinAggregationState* state = getJoinAggState(aggStateKey);
-AggInterpreter* interp;
-if (state->m_strategy == JoinAggregationState::MUTEX_BASED) {
-    interp = state->m_agg_interpreter;
-} else {
-    interp = state->m_per_thread_interpreters[getOwnThreadIndex()];
-}
-interp->ProcessRecWithLinkedAttrs(block_tup, req_struct, linked_data, linked_len);
-state->m_completed_ops.fetch_add(1, std::memory_order_relaxed);
-```
+### SCAN Path (Part C) — NOT STARTED
 
-Send LQHKEYCONF without row data (aggregation accumulates it).
-
-### execSCAN_FRAGREQ (line 17615)
-
-After extracting requestInfo around line 17628, add:
-
-```cpp
-const Uint32 joinAggFlag = ScanFragReq::getJoinAggFlag(requestInfo);
-Uint32 aggStateKey = RNIL;
-if (joinAggFlag) {
-    aggStateKey = signal->theData[ScanFragReq::SignalLength + <offset>];
-}
-```
-
-When creating ScanRecord:
-
-```cpp
-scanPtr->m_join_agg_state_key = aggStateKey;
-```
-
-In the scan loop (where rows are processed), if `m_join_agg_state_key != RNIL`:
-use the same strategy-dependent interpreter selection as LQHKEYREQ,
-call `ProcessRecWithLinkedAttrs()` for each row.
+The scan path has sendReadAttrinfo at the `else` branch of `m_aggregation`
+check (for scans that don't use single-table aggregation). Same pattern as
+LQHKEYREQ but using `scan_rec->m_join_agg_state_key` via `req_struct`.
 
 ## 11. Modified: AggInterpreter — New Methods
 
+**STATUS: IMPLEMENTED** (commits 73f4963, 57a722d, 1677fa8, ecb6695)
+
 **File:** `storage/ndb/src/kernel/blocks/dbtup/AggInterpreter.hpp`
 
-Add to public section (after `ProcessRec` at line 104):
+All methods use lowercase first letter naming convention (project standard):
 
 ```cpp
-// Join aggregation: process row with linked attributes from parent tables
-Int32 ProcessRecWithLinkedAttrs(
-    Dbtup* block_tup,
-    Dbtup::KeyReqStruct* req_struct,
-    const Uint32* linked_attr_data,
-    Uint32 linked_attr_len);
+// Public methods added:
+Int32 processRecWithLinkedAttrs(Dbtup*, Dbtup::KeyReqStruct*,
+    const Uint32* linked_attr_data, Uint32 linked_attr_len);
+Int32 finalizeResults();
+Int32 getResultData(Uint32* buffer, Uint32 buffer_size, Uint32* bytes_written);
+static Int32 mergeAllByBucket(AggInterpreter** interpreters, Uint32 num);
+Int32 mergeFrom(const AggInterpreter* other);
 
-// Finalize results (compute AVG from SUM/COUNT, etc.)
-Int32 FinalizeResults();
-
-// Get result data for sending via TRANSID_AI
-Int32 GetResultData(Uint32* buffer, Uint32 buffer_size, Uint32* bytes_written);
-
-// Merge all per-thread interpreters by bucket (MUTEX_FREE completion)
-static Int32 MergeAllByBucket(
-    AggInterpreter* interpreters[],
-    Uint32 num_interpreters);
-
-// Merge another interpreter's results into this one
-Int32 MergeFrom(AggInterpreter* other);
+// Accessor methods added:
+std::map<...>* gb_map_mutable();
+Uint32 n_gb_cols() const;
+Uint32 n_agg_results() const;
+const AggResItem* agg_results() const;
 ```
 
-Add to private section (after existing members at line 172):
-
+Private members added:
 ```cpp
-// Linked attribute buffer (ndbd_malloc'd at creation, not MAX-sized)
-Uint32* m_linked_attr_buf;
-Uint32 m_linked_attr_buf_size;  // Allocated size in words
-Uint32 m_linked_attr_len;       // Current content length
-
-// Column source resolution
-Int32 LoadColumnValue(Uint32 col_id, Register* reg);
+const Uint32* m_linked_attr_data;  // Points to current row's linked attrs
+Uint32 m_linked_attr_len;          // Current length in words
 ```
 
-**File:** `storage/ndb/src/kernel/blocks/dbtup/AggInterpreter.cpp` (or equivalent)
+**File:** `storage/ndb/src/kernel/blocks/dbtup/AggInterpreter.cpp`
 
-Implement:
+Implementations:
 
-- `ProcessRecWithLinkedAttrs`: Copy linked attrs to buffer, then run
-  aggregation program using `LoadColumnValue` which checks bit 15 to
-  distinguish local columns (read via DBTUP) from linked columns (read
-  from buffer).
+- `processRecWithLinkedAttrs`: Sets m_linked_attr_data, delegates to ProcessRec,
+  clears pointer.
 
-- `FinalizeResults`: Iterate all groups in `gb_map_`, finalize each
-  accumulator (e.g., AVG = SUM/COUNT).
+- `finalizeResults`: No-op — all current aggregates (SUM, COUNT, MAX, MIN) are
+  in final form after accumulation. AVG is computed at SQL layer.
 
-- `MergeFrom`: For each group in `other->gb_map_`, find or create in
-  `this->gb_map_`, merge accumulators using rules: SUM+=SUM, COUNT+=COUNT,
-  MIN=min(), MAX=max().
+- `getResultData`: Serializes results into caller buffer using same wire format
+  as PrepareAggResIfNeeded. Non-destructive. Returns -1 if buffer too small.
 
-- `MergeAllByBucket`: Iterate buckets 0..hash_table_size-1. For each bucket,
-  merge entries from interpreters[1..N-1] into interpreters[0]. Same-bucket
-  constraint ensures cache-friendly access.
+- `mergeFrom`: Uses helper functions extractAggOps() and mergeAccumulators().
+  Handles both flat (no group-by) and group-by cases with proper key allocation.
 
-- `GetResultData`: Serialize finalized group results into TRANSID_AI format.
+- `mergeAllByBucket`: Merges interpreters[1..N-1] into interpreters[0].
+
+- **kOpLoadCol bit-15 resolution**: When bit 15 of column ID is set and
+  m_linked_attr_data != nullptr, resolves column from linked buffer by scanning
+  AttributeHeader chain. Replaced `AttributeDescriptor::getSizeInBytes()`
+  with `header->getByteSize()` in all 6 decimal path references (since
+  attrDescriptor is nullptr for linked columns).
 
 ## 12. Modified: Dbspj — Orchestration
 
@@ -625,47 +572,57 @@ for NDB API error reporting.
 - Add `JoinAggregationState.hpp` to DBLQH sources
 - Add `JoinAgg.hpp` to signaldata headers
 
-## 15. Implementation Phases
+## 15. Implementation Phases — Status
 
-### Phase 1: Signal Infrastructure
-- GlobalSignalNumbers.h: Add GSN 944-951
-- SignalNames.cpp: Add name entries
-- signaldata/JoinAgg.hpp: Create signal data structs
-- record_types.hpp: Add RT_DBLQH_JOIN_AGG_STATE
+### Phase 1: Signal Infrastructure — DONE
+- GlobalSignalNumbers.h: GSN 944-951 added
+- SignalNames.cpp: Name entries added
+- signaldata/JoinAgg.hpp: Signal data structs created
+- record_types.hpp: RT_DBLQH_JOIN_AGG_STATE added
 
-### Phase 2: State Structure
-- JoinAggregationState.hpp: Create state struct
-- SimulatedBlock.hpp/cpp: Add static pool and access methods
-- Pool initialization in node startup path
+### Phase 2: State Structure — DONE
+- JoinAggregationState.hpp: State struct created
+- SimulatedBlock.hpp/cpp: Static pool + access methods added
+- Pool initialization in DblqhProxy
 
-### Phase 3: Flag Bits
-- LqhKey.hpp: RI_JOIN_AGG_SHIFT = 7 with getter/setter
+### Phase 3: Flag Bits — DONE
+- LqhKey.hpp: JoinAggFlag in attrLenFlags (bit 7) with getter/setter
 - ScanFrag.hpp: SF_JOIN_AGG_SHIFT = 25 with getter/setter
 
-### Phase 4: DblqhProxy Signal Handlers (Setup + Release)
-- DblqhProxy.hpp: Declare setup + release handlers
-- DblqhProxy.cpp: Register signals, implement execJOIN_AGG_SETUP_REQ,
-  execJOIN_AGG_RELEASE_REQ
+### Phase 4: DblqhProxy Signal Handlers — DONE
+- DblqhProxy.hpp/cpp: execJOIN_AGG_SETUP_REQ (seize state, copy program,
+  create interpreters), execJOIN_AGG_RELEASE_REQ (free and release)
 
-### Phase 5: Dblqh Operation and Completion Integration
-- Dblqh.hpp: Add m_join_agg_state_key to ScanRecord and TcConnectionrec,
-  declare execJOIN_AGG_COMPLETE_REQ handler
-- DblqhInit.cpp: Register GSN_JOIN_AGG_COMPLETE_REQ
-- DblqhMain.cpp: Implement execJOIN_AGG_COMPLETE_REQ (merge + finalize,
-  received via V_QUERY); extract aggStateKey in execLQHKEYREQ and
-  execSCAN_FRAGREQ, call ProcessRecWithLinkedAttrs after row read
+### Phase 5: Dblqh Operation and Completion Integration — DONE
+- Dblqh.hpp: m_join_agg_state_key on ScanRecord and TcConnectionrec
+- DblqhInit.cpp: GSN_JOIN_AGG_COMPLETE_REQ registered
+- DblqhMain.cpp: execJOIN_AGG_COMPLETE_REQ (merge + finalize + per-group
+  TRANSID_AI); aggStateKey extraction in execLQHKEYREQ and execSCAN_FRAGREQ
 
-### Phase 6: AggInterpreter Extensions
-- AggInterpreter.hpp: Add new methods and linked attr buffer
-- Implementation: ProcessRecWithLinkedAttrs, FinalizeResults, MergeFrom,
-  MergeAllByBucket, GetResultData
+### Phase 6: AggInterpreter Extensions — DONE
+- All methods implemented with lowercase naming: processRecWithLinkedAttrs,
+  finalizeResults, getResultData, mergeFrom, mergeAllByBucket
+- Bit-15 linked column resolution in kOpLoadCol
+- Accessor methods for Part A completion handler
 
-### Phase 7: Dbspj Orchestration
+### Phase 6a: Row-Processing Integration (DBTUP) — PARTIALLY DONE
+- **Part B (LQHKEYREQ path): DONE** — m_join_agg_state_key on KeyReqStruct,
+  interception before sendReadAttrinfo in both non-interpreted and interpreted
+  paths. Supports MUTEX_BASED and MUTEX_FREE strategies.
+- **Part C (SCAN_FRAGREQ path): NOT STARTED** — same pattern as Part B but
+  for scan operations. Needs check in the `else` branch of `m_aggregation`
+  (i.e., scans that are NOT single-table aggregation).
+- **Part E (linked attr passing): NOT STARTED** — passing parent table columns
+  from signal to AggInterpreter. Requires TcConnectionrec fields for linked
+  attr buffer and DBSPJ integration (Phase 7).
+
+### Phase 7: DBSPJ Orchestration — NOT STARTED
 - Dbspj.hpp: Add state fields to TreeNode, declare handlers
 - DbspjMain.cpp: Setup/complete/release flow, strategy selection heuristic,
   aggStateKey insertion in LQHKEYREQ and SCAN_FRAGREQ
+- Linked attribute passing to child operations
 
-### Phase 8: Testing & Verification
+### Phase 8: Testing & Verification — NOT STARTED
 - Forced strategy mode (always MUTEX_BASED or always MUTEX_FREE)
 - Compare results between strategies for same query
 - Error injection tests (state alloc failure, interpreter error, timeout)
@@ -673,26 +630,28 @@ for NDB API error reporting.
 
 ## 16. Files Summary
 
-| File | Change Type | Description |
-|------|-------------|-------------|
-| `include/kernel/GlobalSignalNumbers.h` | Modify | Add GSN 944-951, update MAX_GSN |
-| `src/common/debugger/signaldata/SignalNames.cpp` | Modify | Add signal name entries |
-| `src/kernel/blocks/record_types.hpp` | Modify | Add RT_DBLQH_JOIN_AGG_STATE |
-| `include/kernel/signaldata/JoinAgg.hpp` | **New** | Signal data structs |
-| `src/kernel/blocks/dblqh/JoinAggregationState.hpp` | **New** | State struct |
-| `include/kernel/signaldata/LqhKey.hpp` | Modify | RI_JOIN_AGG_SHIFT bit 7 |
-| `include/kernel/signaldata/ScanFrag.hpp` | Modify | SF_JOIN_AGG_SHIFT bit 25 |
-| `src/kernel/vm/SimulatedBlock.hpp` | Modify | Static TransientPool + access methods |
-| `src/kernel/vm/SimulatedBlock.cpp` | Modify | TransientPool implementation |
-| `src/kernel/blocks/dblqh/Dblqh.hpp` | Modify | m_join_agg_state_key in ScanRecord/TcConnectionrec, error codes 1250-1259, handler declaration |
-| `src/ndbapi/ndberror.cpp` | Modify | Error message entries for 1250-1259 |
-| `src/kernel/blocks/dblqh/DblqhInit.cpp` | Modify | addRecSignal for GSN_JOIN_AGG_COMPLETE_REQ |
-| `src/kernel/blocks/dblqh/DblqhMain.cpp` | Modify | execJOIN_AGG_COMPLETE_REQ (via V_QUERY), aggStateKey extraction |
-| `src/kernel/blocks/dblqh/DblqhProxy.hpp` | Modify | Setup + release handler declarations |
-| `src/kernel/blocks/dblqh/DblqhProxy.cpp` | Modify | Signal registration + setup/release handlers |
-| `src/kernel/blocks/dbtup/AggInterpreter.hpp` | Modify | New methods + linked attr members |
-| `src/kernel/blocks/dbtup/AggInterpreter.cpp` | Modify | Method implementations |
-| `src/kernel/blocks/dbspj/Dbspj.hpp` | Modify | TreeNode fields + handler declarations |
-| `src/kernel/blocks/dbspj/DbspjMain.cpp` | Modify | Setup/complete/release orchestration |
+| File | Change Type | Status | Description |
+|------|-------------|--------|-------------|
+| `include/kernel/GlobalSignalNumbers.h` | Modify | DONE | GSN 944-951, MAX_GSN=951 |
+| `src/common/debugger/signaldata/SignalNames.cpp` | Modify | DONE | Signal name entries |
+| `src/kernel/blocks/record_types.hpp` | Modify | DONE | RT_DBLQH_JOIN_AGG_STATE |
+| `include/kernel/signaldata/JoinAgg.hpp` | **New** | DONE | Signal data structs |
+| `src/kernel/blocks/dblqh/JoinAggregationState.hpp` | **New** | DONE | State struct |
+| `include/kernel/signaldata/LqhKey.hpp` | Modify | DONE | JoinAggFlag in attrLenFlags |
+| `include/kernel/signaldata/ScanFrag.hpp` | Modify | DONE | SF_JOIN_AGG_SHIFT bit 25 |
+| `src/kernel/vm/SimulatedBlock.hpp` | Modify | DONE | Static pool + access methods |
+| `src/kernel/vm/SimulatedBlock.cpp` | Modify | DONE | Pool implementation |
+| `src/kernel/blocks/dblqh/Dblqh.hpp` | Modify | DONE | m_join_agg_state_key, error codes, handler decl |
+| `src/ndbapi/ndberror.cpp` | Modify | DONE | Error message entries |
+| `src/kernel/blocks/dblqh/DblqhInit.cpp` | Modify | DONE | GSN_JOIN_AGG_COMPLETE_REQ registration |
+| `src/kernel/blocks/dblqh/DblqhMain.cpp` | Modify | DONE | Complete handler + aggStateKey extraction |
+| `src/kernel/blocks/dblqh/DblqhProxy.hpp` | Modify | DONE | Setup + release handler declarations |
+| `src/kernel/blocks/dblqh/DblqhProxy.cpp` | Modify | DONE | Signal registration + handlers |
+| `src/kernel/blocks/dbtup/AggInterpreter.hpp` | Modify | DONE | Methods + linked attr members + accessors |
+| `src/kernel/blocks/dbtup/AggInterpreter.cpp` | Modify | DONE | All method implementations |
+| `src/kernel/blocks/dbtup/Dbtup.hpp` | Modify | DONE | m_join_agg_state_key on KeyReqStruct |
+| `src/kernel/blocks/dbtup/DbtupExecQuery.cpp` | Modify | **PARTIAL** | LQHKEYREQ done, SCAN path pending |
+| `src/kernel/blocks/dbspj/Dbspj.hpp` | Modify | NOT STARTED | TreeNode fields + handler declarations |
+| `src/kernel/blocks/dbspj/DbspjMain.cpp` | Modify | NOT STARTED | Setup/complete/release orchestration |
 
 All paths are relative to `storage/ndb/`.
