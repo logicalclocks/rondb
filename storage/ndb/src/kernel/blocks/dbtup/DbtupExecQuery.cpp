@@ -5408,8 +5408,11 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
           interp = state->m_agg_interpreter;
         }
         ndbrequire(interp != nullptr);
-        /* TODO: pass linked attributes from parent table (Part E) */
-        interp->processRecWithLinkedAttrs(this, req_struct, nullptr, 0);
+        const Uint32 *linked_data = (RsubLen > 0) ?
+            &cinBuffer[5 + cinBuffer[0] + cinBuffer[1] +
+                        cinBuffer[2] + cinBuffer[3]] : nullptr;
+        interp->processRecWithLinkedAttrs(
+            this, req_struct, linked_data, RsubLen);
         state->m_completed_ops.fetch_add(1, std::memory_order_relaxed);
         req_struct->read_length = 0;
       } else {
@@ -5435,8 +5438,11 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
           interp = state->m_agg_interpreter;
         }
         ndbrequire(interp != nullptr);
-        /* TODO: pass linked attributes from parent table (Part E) */
-        interp->processRecWithLinkedAttrs(this, req_struct, nullptr, 0);
+        const Uint32 *linked_data = (RsubLen > 0) ?
+            &cinBuffer[5 + cinBuffer[0] + cinBuffer[1] +
+                        cinBuffer[2] + cinBuffer[3]] : nullptr;
+        interp->processRecWithLinkedAttrs(
+            this, req_struct, linked_data, RsubLen);
         state->m_completed_ops.fetch_add(1, std::memory_order_relaxed);
         req_struct->read_length = 0;
       } else {
