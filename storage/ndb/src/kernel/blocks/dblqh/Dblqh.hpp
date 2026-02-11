@@ -463,6 +463,18 @@ class FsReadWriteReq;
 #define ZSCAN_CONTINOUS_SCAN_LOCK_ERROR 2202
 #endif
 
+/* Join aggregation error codes (outside DBLQH_C for DblqhProxy) */
+#define ZJOIN_AGG_STATE_ALLOC_FAILED       1250
+#define ZJOIN_AGG_STATE_NOT_FOUND          1251
+#define ZJOIN_AGG_INTERPRETER_INIT_FAILED  1252
+#define ZJOIN_AGG_INTERPRETER_ERROR        1253
+#define ZJOIN_AGG_OP_COUNT_MISMATCH        1254
+#define ZJOIN_AGG_PARENT_DATA_ERROR        1255
+#define ZJOIN_AGG_RESULT_TOO_LARGE         1256
+#define ZJOIN_AGG_TIMEOUT                  1257
+#define ZJOIN_AGG_ALREADY_FINALIZED        1258
+#define ZJOIN_AGG_MUTEX_ERROR              1259
+
 /**
  * @class dblqh
  *

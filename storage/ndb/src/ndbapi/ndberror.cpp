@@ -306,6 +306,7 @@ ErrorBundle ErrorCodes[] = {
   { 1220, DMEC, TR, "REDO log files overloaded (increase FragmentLogFileSize)" },
   { 1234, DMEC, TR, "REDO log files overloaded (increase disk hardware)" },
   { 1222, DMEC, TR, "Out of transaction markers in LQH, increase SharedGlobalMemory" },
+  { 1250, DMEC, TR, "Out of join aggregation state records in LQH" },
   { 4021, DMEC, TR, "Out of Send Buffer space in NDB API" },
   { 4022, DMEC, TR, "Out of Send Buffer space in NDB API" },
   { 4032, DMEC, TR, "Out of Send Buffer space in NDB API" },
@@ -457,6 +458,15 @@ ErrorBundle ErrorCodes[] = {
   { 298,  DMEC, IE, "Invalid distribution key" },
   { 416,  DMEC, IE, "Bad state handling unlock request" },
   { 1237, DMEC, IE, "LQHKEYREQ Protocol error" },
+  { 1251, DMEC, IE, "Join aggregation state not found" },
+  { 1252, DMEC, IE, "Join aggregation interpreter init failed" },
+  { 1253, DMEC, IE, "Join aggregation interpreter error" },
+  { 1254, DMEC, IE, "Join aggregation operation count mismatch" },
+  { 1255, DMEC, IE, "Join aggregation parent data error" },
+  { 1256, DMEC, IE, "Join aggregation result too large" },
+  { 1257, DMEC, IE, "Join aggregation timeout" },
+  { 1258, DMEC, IE, "Join aggregation already finalized" },
+  { 1259, DMEC, IE, "Join aggregation mutex error" },
 
   /**
    * Application error

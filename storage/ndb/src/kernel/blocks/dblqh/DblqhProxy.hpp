@@ -40,6 +40,7 @@
 #include <signaldata/LqhTransReq.hpp>
 #include <signaldata/PrepDropTab.hpp>
 #include <signaldata/StartRec.hpp>
+#include <signaldata/JoinAgg.hpp>
 #include <signaldata/TabCommit.hpp>
 
 #define JAM_FILE_ID 445
@@ -584,6 +585,10 @@ class DblqhProxy : public LocalProxy {
   void completeLCP(Signal *signal);
   void sendLCP_COMPLETE_REP(Signal *);
   void execQUOTA_OVERLOAD_REP(Signal*);
+
+  // GSN_JOIN_AGG signals (setup + release handled by proxy)
+  void execJOIN_AGG_SETUP_REQ(Signal*);
+  void execJOIN_AGG_RELEASE_REQ(Signal*);
 };
 
 #undef JAM_FILE_ID
