@@ -435,6 +435,133 @@ AttrInfo. Offset: `5 + cinBuffer[0..3]`, length: `cinBuffer[4]` (RsubLen).
 Both interpreted interception points pass these to processRecWithLinkedAttrs.
 Non-interpreted path passes nullptr/0 (not reached for DBSPJ pushdown).
 
+## 10b. Group Eviction Under Memory Pressure — NOT STARTED
+
+**STATUS: NOT STARTED**
+
+**Files:**
+- `storage/ndb/src/kernel/blocks/dbtup/AggInterpreter.hpp` / `.cpp`
+- `storage/ndb/src/kernel/blocks/dbtup/DbtupExecQuery.cpp`
+- `storage/ndb/src/kernel/blocks/dblqh/JoinAggregationState.hpp`
+
+### Problem
+
+During row processing, each new group-by key requires memory allocation
+in the AggInterpreter's `gb_map_`. For high-cardinality GROUP BY queries
+this map can grow large. When a new group arrives and memory cannot be
+allocated (or a configured max-groups limit is reached), we need to free
+memory by evicting an existing group — sending its partial results via
+TRANSID_AI to the API so the memory can be reused for the new group.
+
+### Design
+
+The eviction happens during the row-processing path (`handleJoinAggRow`
+→ `processRecWithLinkedAttrs` → `ProcessRec`) when the AggInterpreter
+detects it cannot accommodate a new group.
+
+#### AggInterpreter Changes
+
+1. **New field** `m_max_groups` (Uint32): Maximum number of groups before
+   eviction is triggered. Set during interpreter creation in DblqhProxy.
+   Value 0 means unlimited (no eviction).
+
+2. **New return code** from `processRecWithLinkedAttrs`: Currently returns
+   0 on success or negative error code. Add a positive return code
+   `AGG_EVICT_NEEDED` (e.g., 1) meaning "row was NOT processed because
+   a group must be evicted first to free memory".
+
+3. **New method** `evictOneGroup(Uint32* buf, Uint32 buf_size, Uint32* words_written)`:
+   - Selects a group to evict from `gb_map_` (e.g., the first entry —
+     iteration order is sufficient since all groups are equally valid
+     eviction candidates for a hash aggregate).
+   - Serializes the group into `buf` using the same wire format as
+     `continueJoinAggSend` (AGG_RESULT header + key + accumulator).
+   - Erases the group from `gb_map_` (freeing key memory if !PA_MALLOC).
+   - Returns 0 on success, -1 if map is empty or buffer too small.
+
+#### handleJoinAggRow Changes
+
+`handleJoinAggRow` needs access to `Signal*` and the
+`JoinAggregationState` result routing fields to send TRANSID_AI.
+Update the signature:
+
+```cpp
+int handleJoinAggRow(Signal* signal, KeyReqStruct *req_struct,
+                     const Uint32 *linked_data, Uint32 linked_len);
+```
+
+The eviction loop in `handleJoinAggRow`:
+
+```
+retry:
+    ret = interp->processRecWithLinkedAttrs(...)
+    if (ret == AGG_EVICT_NEEDED) {
+        Uint32 buf[MAX_AGG_RESULT_BATCH_BYTES / sizeof(Uint32)];
+        Uint32 words_written;
+        interp->evictOneGroup(buf, sizeof(buf)/sizeof(Uint32), &words_written);
+
+        // Send evicted group via TRANSID_AI
+        TransIdAI *transIdAI = signal->getDataPtrSend();
+        transIdAI->connectPtr = state->m_resultData;
+        transIdAI->transId[0] = state->m_transid[0];
+        transIdAI->transId[1] = state->m_transid[1];
+        LinearSectionPtr ptr[3];
+        ptr[0].p = buf;
+        ptr[0].sz = words_written;
+        sendSignal(state->m_resultRef, GSN_TRANSID_AI, signal,
+                   TransIdAI::HeaderLength, JBB, ptr, 1);
+
+        state->m_rows_sent++;
+        goto retry;
+    }
+    if (ret != 0) return TUPKEY_abort(req_struct, ret);
+```
+
+#### JoinAggregationState Changes
+
+- `m_rows_sent` (already exists): Track groups sent during eviction so
+  the completion phase knows how many were already sent. The final
+  `numResultRows` in JOIN_AGG_COMPLETE_CONF = evicted groups + groups
+  sent at completion time.
+
+#### MUTEX_FREE Considerations
+
+With MUTEX_FREE each thread has its own interpreter with its own
+`gb_map_`. Eviction is per-thread — no synchronization needed. Each
+thread independently evicts from its own map and sends TRANSID_AI.
+The receiver (API/DBSPJ) must handle partial result rows arriving
+during operation processing, interleaved with completion-time results.
+
+#### MUTEX_BASED Considerations
+
+With MUTEX_BASED the shared interpreter is accessed under a lock.
+Eviction happens while holding the lock — the TRANSID_AI send is
+performed within the critical section. This is acceptable since
+sendSignal is non-blocking (enqueues the signal).
+
+#### Completion Phase Impact
+
+`continueJoinAggSend` already sends all remaining groups from `gb_map_`
+at completion time. After eviction, the map is smaller (evicted groups
+are already gone). The completion CONF totals must include both evicted
+and completion-sent groups. Update `continueJoinAggSend` to initialize
+`num_result_rows` from `state->m_rows_sent` (accumulated eviction count)
+rather than from 0 when first called from `execJOIN_AGG_COMPLETE_REQ`.
+
+#### Wire Format
+
+Evicted groups use the same wire format as completion-time groups:
+```
+Word 0: AttributeHeader::AGG_RESULT << 16 | 0x0721
+Word 1: n_gb_cols << 16 | n_agg_results
+Word 2: 1  (one group per TRANSID_AI)
+Word 3: key_len << 16 | val_len
+Word 4+: key bytes + accumulator bytes
+```
+
+The receiver must be prepared to receive these TRANSID_AI signals at
+any point during the query, not just after JOIN_AGG_COMPLETE_REQ.
+
 ## 11. Modified: AggInterpreter — New Methods
 
 **STATUS: IMPLEMENTED** (commits 73f4963, 57a722d, 1677fa8, ecb6695)
@@ -629,6 +756,13 @@ for NDB API error reporting.
   interpreted: TUPKEY_abort).
 - **CONTINUEB yielding: DONE** — continueJoinAggSend() helper sends 16
   groups per batch via ZCONTINUE_JOIN_AGG_SEND (45).
+
+### Phase 6b: Group Eviction Under Memory Pressure — NOT STARTED
+- AggInterpreter: m_max_groups limit, AGG_EVICT_NEEDED return code,
+  evictOneGroup() method
+- handleJoinAggRow: eviction loop with TRANSID_AI send, needs Signal*
+- Completion phase: account for already-evicted groups in totals
+- See section 10b for full design
 
 ### Phase 7: DBSPJ Orchestration — NOT STARTED
 - Dbspj.hpp: Add state fields to TreeNode, declare handlers
