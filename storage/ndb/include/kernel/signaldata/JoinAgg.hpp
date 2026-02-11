@@ -67,13 +67,14 @@ struct JoinAggSetupRef {
 };
 
 struct JoinAggCompleteReq {
-  static constexpr Uint32 SignalLength = 7;
+  static constexpr Uint32 SignalLength = 8;
   Uint32 senderRef;
   Uint32 senderData;
   Uint32 requestId;
   Uint32 transid[2];
   Uint32 aggStateKey;
   Uint32 completedOps;
+  Uint32 maxBatchRows;
 };
 
 struct JoinAggCompleteConf {
@@ -108,6 +109,27 @@ struct JoinAggReleaseConf {
   Uint32 senderRef;
   Uint32 senderData;
   Uint32 requestId;
+};
+
+// DBLQH → DBSPJ: "I've sent a batch of group rows, pausing."
+struct JoinAggSendReq {
+  static constexpr Uint32 SignalLength = 6;
+  Uint32 senderRef;       // DBLQH worker block ref (DBSPJ needs this to reply)
+  Uint32 senderData;
+  Uint32 requestId;
+  Uint32 aggStateKey;
+  Uint32 numRowsSent;     // cumulative rows sent so far
+  Uint32 resultBytes;     // cumulative bytes sent so far
+};
+
+// DBSPJ → DBLQH: "API is ready, continue sending group rows."
+struct JoinAggSendConf {
+  static constexpr Uint32 SignalLength = 5;
+  Uint32 senderRef;
+  Uint32 senderData;
+  Uint32 requestId;
+  Uint32 aggStateKey;
+  Uint32 maxBatchRows;    // next batch limit
 };
 
 #undef JAM_FILE_ID

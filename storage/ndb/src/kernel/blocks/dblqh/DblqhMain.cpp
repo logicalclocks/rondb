@@ -18017,6 +18017,7 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
   const Uint32 requestId = req->requestId;
   const Uint32 aggStateKey = req->aggStateKey;
   const Uint32 completedOps = req->completedOps;
+  const Uint32 maxBatchRows = req->maxBatchRows;
 
   JoinAggregationState *state = getJoinAggState(aggStateKey);
   if (state == nullptr) {
@@ -18034,6 +18035,7 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
   }
 
   ndbrequire(state->m_completed_ops == completedOps);
+  state->m_max_batch_rows = maxBatchRows;
   state->m_state.store(JoinAggregationState::FINALIZING);
 
   /*
@@ -18229,7 +18231,34 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
 
       gb_map->erase(iter++);
 
-      if (batch_count >= GROUPS_PER_BATCH && iter != gb_map->end()) {
+      if (iter == gb_map->end()) {
+        break;
+      }
+
+      if (state->m_max_batch_rows > 0 &&
+          num_result_rows >= state->m_max_batch_rows) {
+        /*
+         * Reached the batch limit set by DBSPJ. Pause sending and
+         * request permission to continue via JOIN_AGG_SEND_REQ.
+         * DBSPJ will reply with JOIN_AGG_SEND_CONF when the API
+         * is ready for more rows.
+         */
+        jam();
+        state->m_rows_sent = num_result_rows;
+        JoinAggSendReq *sendReq =
+          (JoinAggSendReq *)signal->getDataPtrSend();
+        sendReq->senderRef = reference();
+        sendReq->senderData = senderData;
+        sendReq->requestId = requestId;
+        sendReq->aggStateKey = aggStateKey;
+        sendReq->numRowsSent = num_result_rows;
+        sendReq->resultBytes = total_bytes;
+        sendSignal(senderRef, GSN_JOIN_AGG_SEND_REQ,
+                   signal, JoinAggSendReq::SignalLength, JBB);
+        return;
+      }
+
+      if (batch_count >= GROUPS_PER_BATCH) {
         jam();
         signal->theData[0] = ZCONTINUE_JOIN_AGG_SEND;
         signal->theData[1] = aggStateKey;
@@ -18244,6 +18273,7 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
     }
   }
 
+  state->m_rows_sent = num_result_rows;
   state->m_state.store(JoinAggregationState::COMPLETED);
 
   JoinAggCompleteConf *conf =
@@ -18255,6 +18285,27 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
   conf->resultBytes = total_bytes;
   sendSignal(senderRef, GSN_JOIN_AGG_COMPLETE_CONF,
              signal, JoinAggCompleteConf::SignalLength, JBB);
+}
+
+void Dblqh::execJOIN_AGG_SEND_CONF(Signal *signal) {
+  jamEntry();
+  const JoinAggSendConf *conf =
+    (const JoinAggSendConf *)signal->getDataPtr();
+
+  const Uint32 senderRef = conf->senderRef;
+  const Uint32 senderData = conf->senderData;
+  const Uint32 requestId = conf->requestId;
+  const Uint32 aggStateKey = conf->aggStateKey;
+  const Uint32 maxBatchRows = conf->maxBatchRows;
+
+  JoinAggregationState *state = getJoinAggState(aggStateKey);
+  ndbrequire(state != nullptr);
+
+  state->m_max_batch_rows = maxBatchRows;
+
+  continueJoinAggSend(signal, aggStateKey,
+                      state->m_rows_sent, 0,
+                      senderRef, senderData, requestId);
 }
 
 void Dblqh::execSCAN_FRAGREQ(Signal *signal) {
@@ -19775,9 +19826,16 @@ void Dblqh::scanTupkeyConfLab(Signal* signal,
      */
     ndbrequire(scanPtr->m_curr_batch_size_rows < scanPtr->m_def_max_batch_size);
   }
-  scanPtr->m_exec_direct_batch_size_words += read_len;
-  scanPtr->m_curr_batch_size_bytes += read_len * sizeof(Uint32);
-  scanPtr->m_curr_batch_size_rows = rows + 1;
+  if (scanPtr->m_join_agg_state_key != RNIL) {
+    jam();
+    if (read_len > 0) {
+      scanPtr->m_join_agg_evict_rows++;
+    }
+  } else {
+    scanPtr->m_exec_direct_batch_size_words += read_len;
+    scanPtr->m_curr_batch_size_bytes += read_len * sizeof(Uint32);
+    scanPtr->m_curr_batch_size_rows = rows + 1;
+  }
   scanPtr->m_last_row = last_row;
 
   DEB_CONT_SCAN(("(%u):2 ScanPtrI: %u, readLen: %u, batch_bytes: %u,"
@@ -21552,6 +21610,7 @@ void Dblqh::sendScanFragConf(Signal *signal,
     scanPtr->m_agg_curr_batch_size_rows = 0;
     scanPtr->m_agg_curr_batch_size_bytes= 0;
     scanPtr->m_agg_n_res_recs = 0;
+    scanPtr->m_join_agg_evict_rows = 0;
     /*
      * PA related
      * statemach

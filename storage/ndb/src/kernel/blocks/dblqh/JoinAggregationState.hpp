@@ -136,6 +136,7 @@ struct JoinAggregationState {
   Uint32 m_agg_curr_batch_size_rows;       // Aggregated result rows (groups)
   Uint32 m_agg_curr_batch_size_bytes;      // Aggregated result bytes
   Uint32 m_rows_sent;                      // Rows already sent to API
+  Uint32 m_max_batch_rows;                 // Max rows per send batch (from COMPLETE_REQ)
 
   //------------------------------------------------------------------
   // Result Routing (immutable after creation)
@@ -181,6 +182,7 @@ struct JoinAggregationState {
     m_agg_curr_batch_size_rows(0),
     m_agg_curr_batch_size_bytes(0),
     m_rows_sent(0),
+    m_max_batch_rows(0),
     m_resultRef(0),
     m_resultData(0),
     m_routeRef(0),

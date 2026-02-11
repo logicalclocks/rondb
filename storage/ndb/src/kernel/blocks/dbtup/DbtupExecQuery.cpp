@@ -5038,6 +5038,8 @@ int Dbtup::handleJoinAggRow(KeyReqStruct *req_struct,
   }
   ndbrequire(interp != nullptr);
 
+  Uint32 evict_count = 0;
+
 retry:
   Int32 ret = interp->processRecWithLinkedAttrs(
       this, req_struct, linked_data, linked_len);
@@ -5063,13 +5065,14 @@ retry:
                TransIdAI::HeaderLength, JBB, ptr, 1);
 
     state->m_rows_sent++;
+    evict_count++;
     goto retry;
   }
   if (ret != 0) {
     return TUPKEY_abort(req_struct, ret);
   }
   state->m_completed_ops.fetch_add(1, std::memory_order_relaxed);
-  req_struct->read_length = 0;
+  req_struct->read_length = evict_count;
   return 0;
 }
 

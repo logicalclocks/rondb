@@ -687,6 +687,7 @@ class Dblqh : public SimulatedBlock {
       m_agg_n_res_recs(0),
       m_agg_interpreter(nullptr),
       m_join_agg_state_key(RNIL),
+      m_join_agg_evict_rows(0),
       m_ttl_purge_window_size(0)
     {
     }
@@ -831,6 +832,7 @@ class Dblqh : public SimulatedBlock {
                              // to the TC, which could cause incorrect aggregation result.
     AggInterpreter* m_agg_interpreter;
     Uint32 m_join_agg_state_key;    // Pool index for shared join agg state (RNIL if none)
+    Uint32 m_join_agg_evict_rows;   // Evicted group rows sent to API during this scan batch
     // TTL
     Uint8 m_ttl_ignore;         // ignore set by API
     Uint8 m_ttl_ignore_for_ral; // ignore set by Read after lock
@@ -3302,6 +3304,7 @@ private:
   void execMEMCHECKREQ(Signal* signal);
   void execSCAN_FRAGREQ(Signal* signal);
   void execJOIN_AGG_COMPLETE_REQ(Signal* signal);
+  void execJOIN_AGG_SEND_CONF(Signal* signal);
   void continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
                             Uint32 merge_idx,
                             Uint32 senderRef, Uint32 senderData,
