@@ -2174,16 +2174,15 @@ Int32 AggInterpreter::processRecWithLinkedAttrs(
 /**
  * finalizeResults - post-process accumulated aggregation results.
  *
- * Iterates all groups in gb_map_ (or the flat agg_results_ if no
- * group-by) and computes derived aggregates such as AVG = SUM / COUNT.
- * SUM, COUNT, MIN, MAX are already in their final form.
- * Must be called after all rows have been processed and before
- * getResultData.
+ * Called after all rows have been processed (and after mergeFrom in the
+ * multi-thread case) and before getResultData.
+ *
+ * All current aggregate operations (SUM, COUNT, MAX, MIN) accumulate
+ * their final value directly during ProcessRec, so no arithmetic
+ * post-processing is required. AVG is computed at the SQL layer from
+ * the pushed-down SUM and COUNT.
  */
 Int32 AggInterpreter::finalizeResults() {
-  // TODO: Iterate all groups in gb_map_, finalize each accumulator:
-  //   - AVG = SUM / COUNT
-  //   - Other aggregates are already final (SUM, COUNT, MIN, MAX)
   return 0;
 }
 
@@ -2191,15 +2190,71 @@ Int32 AggInterpreter::finalizeResults() {
  * getResultData - serialize finalized aggregation results into a buffer.
  *
  * Writes results in the same TRANSID_AI-compatible format used by
- * PrepareAggResIfNeeded (magic header, group-by keys, accumulator
- * values) but into a caller-provided buffer instead of signal->theData.
- * Must be called after finalizeResults.
+ * PrepareAggResIfNeeded but into a caller-provided buffer (buffer_size
+ * in bytes).  Non-destructive: does not erase entries from gb_map_.
+ * Returns -1 if the buffer is too small.
+ *
+ * Wire format:
+ *   Word 0: AttributeHeader::AGG_RESULT << 16 | 0x0721  (magic)
+ *   Word 1: n_gb_cols_ << 16 | n_agg_results_
+ *   Word 2: number of groups (0 when no group-by)
+ *   Per group (or once when no group-by):
+ *     Word: key_len << 16 | value_len  (byte lengths)
+ *     Words: key data + accumulator data (contiguous, word-aligned)
  */
 Int32 AggInterpreter::getResultData(Uint32* buffer, Uint32 buffer_size,
                                     Uint32* bytes_written) {
-  // TODO: Serialize finalized group results into TRANSID_AI format.
-  // Uses same format as PrepareAggResIfNeeded but writes to caller's buffer.
-  *bytes_written = 0;
+  Uint32 pos = 0;
+  assert(n_gb_cols_ < 0xFFFF);
+  assert(n_agg_results_ < 0xFFFF);
+
+  if (n_gb_cols_) {
+    if (gb_map_ == nullptr || gb_map_->empty()) {
+      if (3 * sizeof(Uint32) > buffer_size) {
+        *bytes_written = 0;
+        return -1;
+      }
+      buffer[pos++] = AttributeHeader::AGG_RESULT << 16 | 0x0721;
+      buffer[pos++] = n_gb_cols_ << 16 | n_agg_results_;
+      buffer[pos++] = 0;
+      *bytes_written = pos * sizeof(Uint32);
+      return 0;
+    }
+    if (3 * sizeof(Uint32) > buffer_size) {
+      *bytes_written = 0;
+      return -1;
+    }
+    buffer[pos++] = AttributeHeader::AGG_RESULT << 16 | 0x0721;
+    buffer[pos++] = n_gb_cols_ << 16 | n_agg_results_;
+    buffer[pos++] = gb_map_->size();
+    for (auto iter = gb_map_->begin(); iter != gb_map_->end(); ++iter) {
+      assert(iter->first.len % 4 == 0 && iter->first.len < 0xFFFF);
+      assert(iter->second.len % 4 == 0 && iter->second.len < 0xFFFF);
+      Uint32 data_words = (iter->first.len + iter->second.len) >> 2;
+      if ((pos + 1 + data_words) * sizeof(Uint32) > buffer_size) {
+        *bytes_written = 0;
+        return -1;
+      }
+      buffer[pos++] = iter->first.len << 16 | iter->second.len;
+      MEMCOPY_NO_WORDS(&buffer[pos], iter->first.ptr, data_words);
+      pos += data_words;
+    }
+  } else {
+    Uint32 agg_bytes = n_agg_results_ * sizeof(AggResItem);
+    Uint32 agg_words = agg_bytes >> 2;
+    if ((4 + agg_words) * sizeof(Uint32) > buffer_size) {
+      *bytes_written = 0;
+      return -1;
+    }
+    buffer[pos++] = AttributeHeader::AGG_RESULT << 16 | 0x0721;
+    buffer[pos++] = n_gb_cols_ << 16 | n_agg_results_;
+    buffer[pos++] = 0;
+    buffer[pos++] = 0 << 16 | agg_bytes;
+    MEMCOPY_NO_WORDS(&buffer[pos], agg_results_, agg_words);
+    pos += agg_words;
+  }
+
+  *bytes_written = pos * sizeof(Uint32);
   return 0;
 }
 
