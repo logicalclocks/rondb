@@ -2193,6 +2193,7 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
     Uint32 agg_curr_batch_size_rows;
     Uint32 agg_curr_batch_size_bytes;
     Uint32 agg_n_res_recs;
+    Uint32 m_join_agg_state_key;  // Pool index for join agg state (RNIL if none)
     Uint32 ttl_purge_window_size;
   };
 

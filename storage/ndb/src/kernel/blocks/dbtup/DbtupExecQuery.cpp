@@ -46,6 +46,7 @@
 #include "AttributeOffset.hpp"
 #include "Dbtup.hpp"
 #include "AggInterpreter.hpp"
+#include "dblqh/JoinAggregationState.hpp"
 #include "my_time.h"
 #include "my_systime.h"
 #include <signaldata/AccLock.hpp>
@@ -2049,6 +2050,7 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
   req_struct.agg_curr_batch_size_rows = 0;
   req_struct.agg_curr_batch_size_bytes = 0;
   req_struct.agg_n_res_recs = 0;
+  req_struct.m_join_agg_state_key = lqhOpPtrP->m_join_agg_state_key;
 
   req_struct.ttl_purge_window_size = 0;
 
@@ -3207,6 +3209,31 @@ int Dbtup::handleReadReq(
   if (!req_struct->interpreted_exec)
   {
     jamDebug();
+    if (req_struct->m_join_agg_state_key != RNIL) {
+      jamDebug();
+      /*
+       * Join aggregation: feed row into AggInterpreter instead of
+       * reading regular attrinfo columns and sending TRANSID_AI.
+       * The AggInterpreter has its own program for reading columns.
+       */
+      JoinAggregationState *state =
+          getJoinAggState(req_struct->m_join_agg_state_key);
+      ndbrequire(state != nullptr);
+      AggInterpreter *interp;
+      if (state->m_strategy == JoinAggregationState::MUTEX_FREE) {
+        Uint32 thr_idx = instance() - 1;
+        ndbrequire(thr_idx < state->m_num_threads);
+        interp = state->m_per_thread_interpreters[thr_idx];
+      } else {
+        interp = state->m_agg_interpreter;
+      }
+      ndbrequire(interp != nullptr);
+      /* TODO: pass linked attributes from parent table (Part E) */
+      interp->processRecWithLinkedAttrs(this, req_struct, nullptr, 0);
+      state->m_completed_ops.fetch_add(1, std::memory_order_relaxed);
+      req_struct->read_length = 0;
+      return 0;
+    }
     int ret = readAttributes(req_struct, &cinBuffer[0],
                              req_struct->attrinfo_len, dst, dstLen);
     if (likely(ret >= 0)) {
@@ -5366,7 +5393,32 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
         sendReadAttrinfo(signal, req_struct, RattroutCounter);
       }
     } else {
-      sendReadAttrinfo(signal, req_struct, RattroutCounter);
+      if (req_struct->m_join_agg_state_key != RNIL) {
+        jamDebug();
+        /*
+         * Join aggregation (interpreted LQHKEYREQ path): feed the row
+         * into the AggInterpreter instead of sending via TRANSID_AI.
+         * The WHERE clause has already been evaluated by interpreterStartLab.
+         */
+        JoinAggregationState *state =
+            getJoinAggState(req_struct->m_join_agg_state_key);
+        ndbrequire(state != nullptr);
+        AggInterpreter *interp;
+        if (state->m_strategy == JoinAggregationState::MUTEX_FREE) {
+          Uint32 thr_idx = instance() - 1;
+          ndbrequire(thr_idx < state->m_num_threads);
+          interp = state->m_per_thread_interpreters[thr_idx];
+        } else {
+          interp = state->m_agg_interpreter;
+        }
+        ndbrequire(interp != nullptr);
+        /* TODO: pass linked attributes from parent table (Part E) */
+        interp->processRecWithLinkedAttrs(this, req_struct, nullptr, 0);
+        state->m_completed_ops.fetch_add(1, std::memory_order_relaxed);
+        req_struct->read_length = 0;
+      } else {
+        sendReadAttrinfo(signal, req_struct, RattroutCounter);
+      }
     }
     if (req_struct->log_size > 0)
     {
