@@ -1,0 +1,377 @@
+openapi: 3.0.3
+info:
+  title: RonDB REST Server - Scan API
+  description: |
+    Scan API for the RonDB REST Data Server (RDRS).
+
+    Provides table scan and ordered-index scan operations against RonDB Cluster
+    tables, with optional push-down filters and index range bounds.
+  version: 0.1.0
+  license:
+    name: GPL-2.0-or-later
+
+servers:
+  - url: http://localhost:{port}
+    description: Local RDRS instance
+    variables:
+      port:
+        default: "4406"
+
+paths:
+  /0.1.0/{db}/{table}/scan:
+    post:
+      summary: Scan table or index
+      description: |
+        Performs a table scan or ordered-index scan on the specified RonDB table.
+
+        - Without `index`: full table scan (optionally filtered).
+        - With `index`: ordered-index scan over the specified ranges.
+        - With `filters`: push-down NdbScanFilter predicates.
+        - `readColumns` selects which columns are returned (all columns if omitted).
+      operationId: scanRead
+      parameters:
+        - name: db
+          in: path
+          required: true
+          description: Database name.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 64
+        - name: table
+          in: path
+          required: true
+          description: Table name.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 64
+        - name: x-api-key
+          in: header
+          required: false
+          description: |
+            API key for authentication.
+            Required when Hopsworks API key auth is enabled in RDRS config.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScanRequest"
+            examples:
+              tableScan:
+                summary: Simple table scan returning all columns
+                value:
+                  limit: 100
+              filteredTableScan:
+                summary: Table scan with column projection and filter
+                value:
+                  limit: 10
+                  readColumns:
+                    - column: pk
+                    - column: val_1
+                    - column: content
+                  filters:
+                    op: AND
+                    args:
+                      - op: ISNOTNULL
+                        column: content
+                      - op: CMP
+                        column: val_1
+                        cond: GT
+                        value: 100
+              indexScanWithRange:
+                summary: Ordered index scan with range and sort order
+                value:
+                  limit: 10
+                  readColumns:
+                    - column: pk
+                    - column: val_1
+                    - column: val_2
+                  index:
+                    name: idx_val
+                    key_columns:
+                      - val_1
+                      - val_2
+                    ranges:
+                      - lower:
+                          values:
+                            - 0
+                            - 0
+                          inclusive: true
+                        upper:
+                          values:
+                            - 1000
+                            - 1000
+                          inclusive: false
+                    order: asc
+      responses:
+        "200":
+          description: Scan completed successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScanResponse"
+              example:
+                data:
+                  - pk: 1
+                    val_1: 10
+                    val_2: 100
+                    content: hello
+                  - pk: 3
+                    val_1: 30
+                    val_2: 300
+                    content: world
+                rows: 2
+        "400":
+          description: |
+            Bad request. Returned for validation errors, malformed JSON,
+            missing required fields, non-existent database/table/index, etc.
+          content:
+            text/plain:
+              schema:
+                type: string
+              examples:
+                missingLimit:
+                  summary: Missing limit field
+                  value: "[Scan] Must provide limit field"
+                missingFilterOp:
+                  summary: Missing filter op
+                  value: "[ScanFilter] Missing required field: op"
+                invalidFilterChildren:
+                  summary: Wrong number of filter children
+                  value: "[ScanFilter] Logic op must contain 2 children"
+                filterTooDeep:
+                  summary: Filter nesting exceeds limit
+                  value: "[ScanFilter] Filter nesting too deep (max 32 levels)"
+                unknownFilterOp:
+                  summary: Unknown filter operation
+                  value: "[ScanFilter] Unknown op"
+                invalidCondition:
+                  summary: Invalid comparison condition
+                  value: "[ScanFilter] Invalid condition"
+                invalidValue:
+                  summary: Value type mismatch
+                  value: "[ScanFilter/ScanIndex] Invalid value"
+                indexNotExist:
+                  summary: Index not found
+                  value: "[Scan] Index does not exist."
+                tooManyRanges:
+                  summary: Too many index ranges
+                  value: "[ScanIndex] Too many ranges (max 64)"
+                dbTableNotExist:
+                  summary: Database or table not found
+                  value: "Database/Table does not exist."
+        "401":
+          description: Unauthorized — API key authentication failed.
+          content:
+            text/plain:
+              schema:
+                type: string
+        "500":
+          description: Internal server error.
+          content:
+            text/plain:
+              schema:
+                type: string
+
+components:
+  schemas:
+    ScanRequest:
+      type: object
+      required:
+        - limit
+      properties:
+        limit:
+          type: integer
+          format: int64
+          description: Maximum number of rows to return.
+          example: 100
+        readColumns:
+          type: array
+          description: |
+            Columns to include in the result.
+            When omitted, all table columns are returned.
+          items:
+            $ref: "#/components/schemas/ReadColumn"
+        filters:
+          $ref: "#/components/schemas/ScanFilter"
+        index:
+          $ref: "#/components/schemas/IndexScan"
+
+    ReadColumn:
+      type: object
+      required:
+        - column
+      properties:
+        column:
+          type: string
+          description: Column name to read.
+          minLength: 1
+          maxLength: 64
+        dataReturnType:
+          type: string
+          description: Data return type hint.
+          default: default
+          enum:
+            - default
+
+    ScanFilter:
+      type: object
+      required:
+        - op
+      description: |
+        Recursive binary-tree filter pushed down to the RonDB scan engine.
+
+        Three categories of nodes:
+
+        **Logical operators** (internal nodes): `AND`, `OR`, `NAND`, `NOR`
+        — require exactly 2 children in the `args` array.
+
+        **Comparison operator** (leaf): `CMP`
+        — requires `column`, `cond`, and `value`.
+
+        **Null-check operators** (leaf): `ISNULL`, `ISNOTNULL`
+        — require `column` only.
+
+        Maximum nesting depth: 32 levels.
+      properties:
+        op:
+          type: string
+          description: Filter operation type.
+          enum:
+            - AND
+            - OR
+            - NAND
+            - NOR
+            - CMP
+            - ISNULL
+            - ISNOTNULL
+        args:
+          type: array
+          description: |
+            Child filters. Required for logical ops (AND, OR, NAND, NOR).
+            Must contain exactly 2 elements.
+          items:
+            $ref: "#/components/schemas/ScanFilter"
+          minItems: 2
+          maxItems: 2
+        column:
+          type: string
+          description: |
+            Column name. Required for CMP, ISNULL, and ISNOTNULL ops.
+          minLength: 1
+          maxLength: 64
+        cond:
+          type: string
+          description: Comparison condition. Required for CMP.
+          enum:
+            - GT
+            - GE
+            - LT
+            - LE
+            - EQ
+            - NE
+        value:
+          description: |
+            Comparison value. Required for CMP.
+            The type must match the target column data type.
+          oneOf:
+            - type: integer
+            - type: number
+            - type: string
+
+    IndexScan:
+      type: object
+      required:
+        - name
+        - key_columns
+        - ranges
+      description: |
+        Specifies an ordered-index scan. The named index must exist on the
+        table and key_columns must match the index definition.
+      properties:
+        name:
+          type: string
+          description: Index name.
+          example: idx_val
+        key_columns:
+          type: array
+          description: Column names that comprise the index key.
+          items:
+            type: string
+          minItems: 1
+        ranges:
+          type: array
+          description: Range specifications for the scan. Maximum 64 ranges.
+          items:
+            $ref: "#/components/schemas/IndexRange"
+          minItems: 1
+          maxItems: 64
+        order:
+          type: string
+          description: |
+            Sort order of results. When omitted, no ordering is guaranteed.
+          enum:
+            - asc
+            - desc
+
+    IndexRange:
+      type: object
+      description: |
+        A single scan range. At least one of lower or upper should be provided.
+        Omitting both yields an unbounded scan over the index.
+      properties:
+        lower:
+          $ref: "#/components/schemas/IndexBound"
+        upper:
+          $ref: "#/components/schemas/IndexBound"
+
+    IndexBound:
+      type: object
+      required:
+        - values
+      description: |
+        A bound (lower or upper) for an index range. The values array is a
+        prefix matching the leading key columns of the index.
+      properties:
+        values:
+          type: array
+          description: |
+            Prefix values for the bound, corresponding to leading index key
+            columns in order.
+          items:
+            oneOf:
+              - type: integer
+              - type: number
+              - type: string
+          minItems: 1
+        inclusive:
+          type: boolean
+          description: Whether the bound is inclusive.
+          default: true
+
+    ScanResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          description: |
+            Array of row objects. Each object maps column names to values.
+          items:
+            type: object
+            additionalProperties: true
+        rows:
+          type: integer
+          description: Number of rows returned.
+
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-api-key
+      description: |
+        Hopsworks API key for database-level authorization.
+        Only required when useHopsworksAPIKeys is enabled in the RDRS config.
