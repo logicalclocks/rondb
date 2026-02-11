@@ -562,6 +562,58 @@ Word 4+: key bytes + accumulator bytes
 The receiver must be prepared to receive these TRANSID_AI signals at
 any point during the query, not just after JOIN_AGG_COMPLETE_REQ.
 
+## 10c. MUTEX_BASED Locking in AggInterpreter — NOT STARTED
+
+**STATUS: NOT STARTED**
+
+**File:** `storage/ndb/src/kernel/blocks/dbtup/AggInterpreter.hpp` / `.cpp`
+
+### Problem
+
+The MUTEX_BASED strategy uses a single shared AggInterpreter accessed by
+multiple LDM threads. Currently there is no locking — `<mutex>` is
+included but no mutex member or lock acquisition exists. Without locking,
+concurrent `ProcessRec` calls will corrupt `gb_map_` and accumulators.
+
+### Design
+
+Add a mutex member to AggInterpreter and acquire it in `ProcessRec` (and
+`processRecWithLinkedAttrs`) when the interpreter is used in MUTEX_BASED
+mode.
+
+#### AggInterpreter Changes
+
+1. **New member** `std::mutex m_mutex`: Protects `gb_map_` and accumulator
+   state during concurrent access.
+
+2. **New member** `bool m_use_mutex`: Set at construction time based on
+   the concurrency strategy. When false (MUTEX_FREE), no locking overhead.
+
+3. **Locking in ProcessRec**: Acquire `m_mutex` at the start of `ProcessRec`
+   (before group-by key lookup and accumulator update), release at the end.
+   Use `std::lock_guard` or `std::unique_lock` for RAII safety.
+
+   ```cpp
+   Int32 AggInterpreter::ProcessRec(...) {
+       std::unique_lock<std::mutex> lock(m_mutex, std::defer_lock);
+       if (m_use_mutex) lock.lock();
+       // ... existing ProcessRec logic ...
+   }
+   ```
+
+4. **Locking in evictOneGroup**: Also needs the lock when called under
+   MUTEX_BASED (but the caller in `handleJoinAggRow` already holds context
+   from the eviction retry loop — need to ensure no deadlock). Since
+   eviction replaces the `processRecWithLinkedAttrs` call that returned
+   `AGG_EVICT_NEEDED`, the lock is not held at eviction time — safe.
+
+#### Performance Note
+
+MUTEX_BASED is the fallback strategy for low-cardinality GROUP BY where
+the number of groups is small enough that lock contention is acceptable.
+For high-cardinality queries, MUTEX_FREE (per-thread interpreters with
+completion-time merge) avoids all locking.
+
 ## 11. Modified: AggInterpreter — New Methods
 
 **STATUS: IMPLEMENTED** (commits 73f4963, 57a722d, 1677fa8, ecb6695)
@@ -763,6 +815,12 @@ for NDB API error reporting.
 - handleJoinAggRow: eviction loop with TRANSID_AI send, needs Signal*
 - Completion phase: account for already-evicted groups in totals
 - See section 10b for full design
+
+### Phase 6c: MUTEX_BASED Locking — NOT STARTED
+- AggInterpreter: add std::mutex m_mutex, bool m_use_mutex
+- Acquire lock in ProcessRec when m_use_mutex is true
+- Currently no locking exists — MUTEX_BASED is unsafe for concurrent access
+- See section 10c for full design
 
 ### Phase 7: DBSPJ Orchestration — NOT STARTED
 - Dbspj.hpp: Add state fields to TreeNode, declare handlers
