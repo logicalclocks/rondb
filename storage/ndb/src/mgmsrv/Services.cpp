@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -288,6 +288,12 @@ const ParserRow<MgmApiSession> commands[] = {
 
     MGM_CMD("deactivate", &MgmApiSession::deactivate, "", &Basic),
     MGM_ARG("node", Int, Mandatory, "node"),
+
+    MGM_CMD("set_config_param", &MgmApiSession::set_config_param, "", &Basic),
+    MGM_ARG("node", Int, Mandatory, "node"),
+    MGM_ARG("config_key", Int, Mandatory, "config parameter key"),
+    MGM_ARG("config_value_high", Int, Mandatory, "config value high 32 bits"),
+    MGM_ARG("config_value_low", Int, Mandatory, "config value low 32 bits"),
 
     MGM_CMD("start", &MgmApiSession::start, "", &Basic),
     MGM_ARG("node", Int, Mandatory, "Node"),
@@ -1683,6 +1689,40 @@ MgmApiSession::deactivate(Parser<MgmApiSession>::Context &,
     result = INCORRECT_MGM_COMMAND;
   }
   m_output->println("deactivate reply");
+  if(result != 0)
+    m_output->println("result: %s", get_error_text(result));
+  else
+    m_output->println("result: Ok");
+  m_output->println("%s", "");
+}
+
+void
+MgmApiSession::set_config_param(Parser<MgmApiSession>::Context &,
+                                Properties const &args)
+{
+  Uint32 node;
+  Uint32 config_key;
+  Uint32 config_value_high;
+  Uint32 config_value_low;
+
+  bool ok = args.get("node", &node);
+  ok = ok && args.get("config_key", &config_key);
+  ok = ok && args.get("config_value_high", &config_value_high);
+  ok = ok && args.get("config_value_low", &config_value_low);
+
+  int result;
+  if (ok)
+  {
+    Uint64 config_value = (Uint64(config_value_high) << 32) |
+                           Uint64(config_value_low);
+    result = m_mgmsrv.set_config_param_request(node, config_key, config_value);
+  }
+  else
+  {
+    result = INCORRECT_MGM_COMMAND;
+  }
+
+  m_output->println("set_config_param reply");
   if(result != 0)
     m_output->println("result: %s", get_error_text(result));
   else

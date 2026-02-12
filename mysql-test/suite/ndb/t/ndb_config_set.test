@@ -1,0 +1,82 @@
+-- source include/have_ndb.inc
+
+#
+# Test dynamic configuration changes via the SET command.
+# New dynamically changeable parameters should add their
+# test cases to this file.
+#
+
+# ==========================================
+# Test: SET MaxDiskWriteSpeed
+# ==========================================
+
+#
+# Test 1: ALL SET — update all data nodes
+#
+--exec $NDB_MGM -e "ALL SET MaxDiskWriteSpeed 100M"
+
+# Verify both nodes report the new value via ndbinfo
+--sorted_result
+select node_id, config_value
+  from ndbinfo.config_values
+  where config_param = 639
+  order by node_id;
+
+#
+# Test 2: Single node SET — update only node 1
+#
+--exec $NDB_MGM -e "1 SET MaxDiskWriteSpeed 50M"
+
+--sorted_result
+select node_id, config_value
+  from ndbinfo.config_values
+  where config_param = 639
+  order by node_id;
+
+#
+# Test 3: Error cases
+#
+
+# Value below minimum (1M)
+--error 255
+--exec $NDB_MGM -e "ALL SET MaxDiskWriteSpeed 500K"
+
+# Value above maximum (1024G)
+--error 255
+--exec $NDB_MGM -e "ALL SET MaxDiskWriteSpeed 2048G"
+
+# Invalid suffix
+--error 255
+--exec $NDB_MGM -e "ALL SET MaxDiskWriteSpeed 100X"
+
+# Missing value
+--error 255
+--exec $NDB_MGM -e "ALL SET MaxDiskWriteSpeed"
+
+# Unknown parameter
+--error 255
+--exec $NDB_MGM -e "ALL SET FooBar 100M"
+
+#
+# Test 4: Verify config unchanged after failed error cases
+#
+--sorted_result
+select node_id, config_value
+  from ndbinfo.config_values
+  where config_param = 639
+  order by node_id;
+
+#
+# Test 5: Restore default value (4M)
+#
+--exec $NDB_MGM -e "ALL SET MaxDiskWriteSpeed 4M"
+
+--sorted_result
+select node_id, config_value
+  from ndbinfo.config_values
+  where config_param = 639
+  order by node_id;
+
+# ==========================================
+# Add new dynamic config parameter tests below
+# ==========================================

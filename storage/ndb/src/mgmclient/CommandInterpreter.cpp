@@ -158,6 +158,10 @@ class CommandInterpreter {
   void waitForEventThread();
 
  public:
+  int executeSet(int processId, const char *parameters, bool all);
+  int executeSetMaxDiskWriteSpeed(int processId, const char *value_str,
+                                  bool all);
+  Uint64 parse_size_value(const char *str, bool &ok);
   int executeSetDomain(int processId, const char *parameters, bool all);
   int executeHostname(int processId, const char *parameters, bool all);
   int executeActivate(int processId, const char *parameters, bool all);
@@ -326,6 +330,7 @@ static const char* helpText =
 "CLUSTERLOG OFF [<severity>] ...        Disable Cluster logging\n"
 "CLUSTERLOG TOGGLE [<severity>] ...     Toggle severity filter on/off\n"
 "CLUSTERLOG INFO                        Print cluster log information\n"
+"<id> SET <param> <value>               Set config parameter on data node(s)\n"
 "<id> LOCATION_DOMAIN_ID [<id>]         Change location domain id of a node\n"
 "<id> HOSTNAME [<hostname/IP>]          Change hostname of a deactivated node\n"
 "<id> ACTIVATE                          Activate a node previously deactivated\n"
@@ -509,6 +514,22 @@ static const char* helpTextClusterlogInfo =
 "CLUSTERLOG INFO  Print cluster log information\n\n"
 "CLUSTERLOG INFO    Display which severity levels have been enabled,\n"
 "                   see HELP CLUSTERLOG for list of the severity levels.\n"
+;
+
+static const char* helpTextSet =
+"---------------------------------------------------------------------------\n"
+" RonDB -- Management Client -- Help for SET command\n"
+"---------------------------------------------------------------------------\n"
+"SET Set a configuration parameter on a running data node\n\n"
+"<id> SET <param> <value>    Set configuration parameter <param> to <value>\n"
+"                            on node <id>. Use ALL to set on all data nodes.\n\n"
+"Supported parameters:\n"
+"  MaxDiskWriteSpeed          Max bytes/sec for LCP and backup disk writes.\n"
+"                             Value supports K, M, G suffixes (e.g., 100M).\n"
+"                             Range: 1M to 1024G.\n\n"
+"Examples:\n"
+"  ALL SET MaxDiskWriteSpeed 100M    Set on all data nodes to 100 MB/s\n"
+"  1 SET MaxDiskWriteSpeed 50M       Set on node 1 to 50 MB/s\n"
 ;
 
 static const char* helpTextHostname =
@@ -848,6 +869,7 @@ struct st_cmd_help {
                   {"CLUSTERLOG OFF", helpTextClusterlogOff, NULL},
                   {"CLUSTERLOG TOGGLE", helpTextClusterlogToggle, NULL},
                   {"CLUSTERLOG INFO", helpTextClusterlogInfo, NULL},
+                  {"SET", helpTextSet, NULL},
                   {"LOCATION_DOMAIN_ID", helpTextSetDomainId, NULL},
                   {"HOSTNAME", helpTextHostname, NULL},
                   {"ACTIVATE", helpTextActivate, NULL},
@@ -1666,6 +1688,7 @@ static const CommandInterpreter::CommandFunctionPair commands[] = {
   ,{ "ACTIVATE", &CommandInterpreter::executeActivate }
   ,{ "DEACTIVATE", &CommandInterpreter::executeDeactivate }
   ,{ "LOCATION_DOMAIN_ID", &CommandInterpreter::executeSetDomain }
+  ,{ "SET", &CommandInterpreter::executeSet }
 };
 
 
@@ -1781,6 +1804,8 @@ int CommandInterpreter::executeForAll(const char *cmd, ExecuteFunction fun,
   } else if (native_strcasecmp(cmd, "REPORT") == 0) {
     Guard g(m_print_mutex);
     retval = executeReport(nodeId, allAfterSecondToken, true);
+  } else if (native_strcasecmp(cmd, "SET") == 0) {
+    retval = (this->*fun)(nodeId, allAfterSecondToken, true);
   } else {
     Guard g(m_print_mutex);
     struct ndb_mgm_cluster_state *cl = ndb_mgm_get_status(m_mgmsrv);
@@ -2629,6 +2654,214 @@ CommandInterpreter::check_before_config_change(int processId,
     return false;
   }
   return true;
+}
+
+/**
+ * Parse a size value with optional K, M, G suffix.
+ * Returns the value in bytes. Sets ok to false on parse error.
+ */
+Uint64
+CommandInterpreter::parse_size_value(const char *str, bool &ok)
+{
+  ok = false;
+  if (str == nullptr || *str == '\0')
+    return 0;
+
+  char *end_ptr = nullptr;
+  errno = 0;
+  unsigned long long val = strtoull(str, &end_ptr, 10);
+  if (errno == ERANGE || errno == EINVAL || end_ptr == str)
+    return 0;
+
+  Uint64 multiplier = 1;
+  if (*end_ptr != '\0')
+  {
+    char suffix = *end_ptr;
+    // Check there's nothing after the suffix
+    if (*(end_ptr + 1) != '\0')
+      return 0;
+    switch (suffix)
+    {
+    case 'k': case 'K':
+      multiplier = 1024ULL;
+      break;
+    case 'm': case 'M':
+      multiplier = 1024ULL * 1024ULL;
+      break;
+    case 'g': case 'G':
+      multiplier = 1024ULL * 1024ULL * 1024ULL;
+      break;
+    default:
+      return 0;
+    }
+  }
+
+  // Check for overflow
+  Uint64 result = Uint64(val) * multiplier;
+  if (val != 0 && result / multiplier != Uint64(val))
+    return 0;
+
+  ok = true;
+  return result;
+}
+
+int
+CommandInterpreter::executeSet(int processId,
+                               const char *parameters,
+                               bool all)
+{
+  if (!parameters || *parameters == '\0')
+  {
+    ndbout_c("Usage: <id> SET <parameter> <value>");
+    ndbout_c("Supported parameters: MaxDiskWriteSpeed");
+    return -1;
+  }
+
+  Vector<BaseString> command_list;
+  BaseString tmp(parameters);
+  tmp.split(command_list, " \t", 2);
+
+  if (command_list.size() < 2)
+  {
+    ndbout_c("Usage: <id> SET <parameter> <value>");
+    ndbout_c("Supported parameters: MaxDiskWriteSpeed");
+    return -1;
+  }
+
+  const char *param_name = command_list[0].c_str();
+  const char *value_str = command_list[1].c_str();
+
+  if (native_strcasecmp(param_name, "MaxDiskWriteSpeed") == 0)
+  {
+    return executeSetMaxDiskWriteSpeed(processId, value_str, all);
+  }
+
+  ndbout_c("Unknown SET parameter: '%s'", param_name);
+  ndbout_c("Supported parameters: MaxDiskWriteSpeed");
+  return -1;
+}
+
+int
+CommandInterpreter::executeSetMaxDiskWriteSpeed(int processId,
+                                                const char *value_str,
+                                                bool all)
+{
+  bool parse_ok = false;
+  Uint64 new_value = parse_size_value(value_str, parse_ok);
+  if (!parse_ok)
+  {
+    ndbout_c("Invalid value: '%s'. Use a number with optional K, M, or G "
+             "suffix (e.g., 100M)", value_str);
+    return -1;
+  }
+
+  const Uint64 min_value = 1024ULL * 1024ULL;          // 1M
+  const Uint64 max_value = 1024ULL * 1024ULL * 1024ULL * 1024ULL;  // 1024G
+  if (new_value < min_value || new_value > max_value)
+  {
+    ndbout_c("MaxDiskWriteSpeed must be between 1M and 1024G");
+    return -1;
+  }
+
+  /*
+   * Step 1: Update the permanent configuration on the management server.
+   */
+  ndb_mgm_configuration *conf = ndb_mgm_get_configuration(m_mgmsrv,
+                                                           NDB_VERSION);
+  if (conf == 0)
+  {
+    ndbout_c("Could not get configuration");
+    printError();
+    return -1;
+  }
+
+  ConfigValues::Iterator iter(conf->m_config_values);
+  bool found_any = false;
+
+  if (all)
+  {
+    /*
+     * Update MaxDiskWriteSpeed for all data nodes in the configuration.
+     */
+    for (int i = 0; i < ABS_MAX_NODES; i++)
+    {
+      if (!iter.openSection(CFG_SECTION_NODE, i))
+        continue;
+      Uint32 node_type = 0;
+      iter.get(CFG_TYPE_OF_SECTION, &node_type);
+      if (node_type != (Uint32)NODE_TYPE_DB)
+      {
+        iter.closeSection();
+        continue;
+      }
+      iter.set(CFG_DB_MAX_DISK_WRITE_SPEED, new_value);
+      iter.closeSection();
+      found_any = true;
+    }
+  }
+  else
+  {
+    /*
+     * Update MaxDiskWriteSpeed for a specific data node.
+     */
+    bool ret = get_node_section(iter, processId, 0);
+    if (!ret)
+    {
+      printError();
+      ndbout_c("Failed to get configuration of node %d", processId);
+      ndb_mgm_destroy_configuration(conf);
+      return -1;
+    }
+    iter.set(CFG_DB_MAX_DISK_WRITE_SPEED, new_value);
+    iter.closeSection();
+    found_any = true;
+  }
+
+  if (!found_any)
+  {
+    ndbout_c("No data nodes found in configuration");
+    ndb_mgm_destroy_configuration(conf);
+    return -1;
+  }
+
+  int ret_code = ndb_mgm_set_configuration(m_mgmsrv, conf);
+  ndb_mgm_destroy_configuration(conf);
+  if (ret_code != 0)
+  {
+    ndbout_c("Failed to update configuration");
+    printError();
+    return -1;
+  }
+
+  if (all)
+    ndbout_c("Configuration updated for all data nodes");
+  else
+    ndbout_c("Configuration updated for node %d", processId);
+
+  /*
+   * Step 2: Send runtime update signal to data nodes so the change
+   * takes effect immediately and ndbinfo reports the new value.
+   */
+  ret_code = ndb_mgm_set_config_param(m_mgmsrv,
+                                      all ? 0 : processId,
+                                      CFG_DB_MAX_DISK_WRITE_SPEED,
+                                      new_value);
+  if (ret_code < 0)
+  {
+    ndbout_c("Warning: Configuration saved but failed to update running "
+             "nodes. Restart nodes for the change to take effect.");
+    printError();
+    return -1;
+  }
+
+  if (all)
+    ndbout_c("MaxDiskWriteSpeed set to %llu on all data nodes",
+             (unsigned long long)new_value);
+  else
+    ndbout_c("MaxDiskWriteSpeed set to %llu on node %d",
+             (unsigned long long)new_value, processId);
+
+  return 0;
 }
 
 int

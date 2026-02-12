@@ -1,0 +1,49 @@
+Configuration updated for all data nodes
+MaxDiskWriteSpeed set to 104857600 on all data nodes
+
+select node_id, config_value
+from ndbinfo.config_values
+where config_param = 639
+order by node_id;
+node_id	config_value
+1	104857600
+2	104857600
+Configuration updated for node 1
+MaxDiskWriteSpeed set to 52428800 on node 1
+
+select node_id, config_value
+from ndbinfo.config_values
+where config_param = 639
+order by node_id;
+node_id	config_value
+1	52428800
+2	104857600
+MaxDiskWriteSpeed must be between 1M and 1024G
+
+MaxDiskWriteSpeed must be between 1M and 1024G
+
+Invalid value: '100X'. Use a number with optional K, M, or G suffix (e.g., 100M)
+
+Usage: <id> SET <parameter> <value>
+Supported parameters: MaxDiskWriteSpeed
+
+Unknown SET parameter: 'FooBar'
+Supported parameters: MaxDiskWriteSpeed
+
+select node_id, config_value
+from ndbinfo.config_values
+where config_param = 639
+order by node_id;
+node_id	config_value
+1	52428800
+2	104857600
+Configuration updated for all data nodes
+MaxDiskWriteSpeed set to 4194304 on all data nodes
+
+select node_id, config_value
+from ndbinfo.config_values
+where config_param = 639
+order by node_id;
+node_id	config_value
+1	4194304
+2	4194304
