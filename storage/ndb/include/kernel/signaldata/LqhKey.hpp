@@ -51,6 +51,11 @@ class LqhKeyReq {
   friend class Dbtup;
 
   /**
+   * For testing
+   */
+  friend struct LqhKeyReqBuilder;
+
+  /**
    * For printing
    */
   friend bool printLQHKEYREQ(FILE *output, const Uint32 *theData, Uint32 len,

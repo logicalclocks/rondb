@@ -9051,7 +9051,11 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
   }
 
   if (ERROR_INSERTED(5081) ||
-      unlikely(get_node_status(refToNode(tcRef)) != ZNODE_UP))
+      unlikely(get_node_status(refToNode(tcRef)) != ZNODE_UP
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+               && !m_skip_tc_node_check
+#endif
+               ))
   {
     jam();
     if (ERROR_INSERTED(5081))
@@ -36262,6 +36266,16 @@ void Dblqh::execDUMP_STATE_ORD(Signal *signal) {
   Uint32 arg = dumpState->args[0];
 
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
+  if (signal->theData[0] == DumpStateOrd::LqhSkipTcNodeCheck) {
+    jam();
+    m_skip_tc_node_check = true;
+    return;
+  }
+  if (signal->theData[0] == DumpStateOrd::LqhRestoreTcNodeCheck) {
+    jam();
+    m_skip_tc_node_check = false;
+    return;
+  }
   if (signal->theData[0] == DumpStateOrd::LqhSetTransientPoolMaxSize) {
     jam();
     if (signal->getLength() < 3) return;

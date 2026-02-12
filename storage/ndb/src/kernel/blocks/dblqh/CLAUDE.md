@@ -37,6 +37,18 @@ DBSPJ → JOIN_AGG_RELEASE_REQ → DblqhProxy → cleanup
 - Build: `make -j$(sysctl -n hw.ncpu) testJoinAgg` (from debug_build)
 - Run: `testJoinAgg -c <connect_string> -m <mysql_port> [--verbose]`
 
+### ERROR_INSERT Codes
+- **5090** (DblqhProxy.cpp): Forces `setMaxGroups(3)` on AggInterpreters during
+  JOIN_AGG_SETUP_REQ, triggering eviction when a 4th distinct group arrives
+
+### DUMP State Commands (debug/test builds only)
+- **2359** (LqhSkipTcNodeCheck): Disables the `get_node_status(refToNode(tcRef)) != ZNODE_UP`
+  check in LQHKEYREQ processing, allowing LQHKEYCONF to be sent to non-data-node refs
+  (e.g., test programs connected as API nodes)
+- **2360** (LqhRestoreTcNodeCheck): Re-enables the tc node status check
+
+Both are guarded by `#if defined(VM_TRACE) || defined(ERROR_INSERT)`.
+
 ### Key Design Patterns
 - **TransientPool::seize() doesn't call constructors** — all JoinAggregationState fields
   must be explicitly initialized after seize in DblqhProxy::execJOIN_AGG_SETUP_REQ

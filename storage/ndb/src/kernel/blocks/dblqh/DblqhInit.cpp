@@ -778,6 +778,9 @@ Dblqh::Dblqh(Block_context &ctx, Uint32 instanceNumber, Uint32 blockNo)
                  &Dblqh::execRESUME_COPY_FRAG_REQ);
     m_is_query_block = false;
     m_is_in_query_thread = false;
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+    m_skip_tc_node_check = false;
+#endif
     m_ldm_instance_used = this;
     m_acc_block = DBACC;
     m_tup_block = DBTUP;
@@ -789,6 +792,9 @@ Dblqh::Dblqh(Block_context &ctx, Uint32 instanceNumber, Uint32 blockNo)
     ndbrequire(blockNo == DBQLQH);
     m_is_query_block = true;
     m_is_in_query_thread = true;
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+    m_skip_tc_node_check = false;
+#endif
     m_acc_block = DBQACC;
     m_tup_block = DBQTUP;
     m_lqh_block = DBQLQH;

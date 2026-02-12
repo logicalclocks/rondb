@@ -175,6 +175,44 @@ data node crashes, including:
 - Program output with stack traces (`ndbd.log`)
 - Per-thread jam traces (`ndb_N_trace.log.M_tN`)
 
+## LQHKEYREQ Construction
+
+Key operations with join aggregation use LQHKEYREQ instead of SCAN_FRAGREQ.
+The signal has 11 fixed words plus variable data whose layout depends on flags:
+
+```
+Fixed 11 words: [clientConnectPtr, attrLen, hashValue, requestInfo,
+                 tcBlockref, tableSchemaVersion, fragmentData,
+                 transId1, transId2, savePointId, scanInfo]
+
+Variable data (parsed sequentially based on flags):
+  CorrFactorFlag → 2 words (corrFactorLo, corrFactorHi)
+  JoinAggFlag    → 1 word (aggStateKey)
+
+Long sections:
+  Section 0: KeyInfo (primary key)
+  Section 1: AttrInfo (interpreter program)
+```
+
+**Key points:**
+- `tcBlockref = ss.getOwnRef()` — routes LQHKEYCONF back to test program
+- `JoinAggFlag` is bit 28 in `attrLen` field (`LqhKeyReq::getJoinAggFlag()`)
+- Requires NormalProtocolFlag for dirty reads to get LQHKEYCONF
+- Hash computation: use `rondb_calc_hash()` for both ACC hash (values[0])
+  and distribution hash (values[1])
+
+**DUMP commands for tc-node check bypass** (debug/test builds only):
+- `DUMP 2359` (LqhSkipTcNodeCheck) — allows LQHKEYCONF to non-data-node refs
+- `DUMP 2360` (LqhRestoreTcNodeCheck) — restores normal behavior
+- Use `NdbRestarter::dumpStateAllNodes()` to send
+
+## ERROR_INSERT for Testing
+
+- **5090**: Force `setMaxGroups(3)` on AggInterpreters in DblqhProxy setup,
+  triggering eviction when a 4th distinct group arrives during scan.
+  Use `NdbRestarter::insertErrorInAllNodes(5090)` before test,
+  `insertErrorInAllNodes(0)` after.
+
 ## Building
 
 ```bash

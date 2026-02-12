@@ -581,6 +581,9 @@ class Dblqh : public SimulatedBlock {
   bool m_is_query_block;
   bool m_is_recover_block;
   bool m_is_in_query_thread;
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+  bool m_skip_tc_node_check;
+#endif
   enum LcpCloseState {
     LCP_IDLE = 0,
     LCP_RUNNING = 1,       // LCP is running

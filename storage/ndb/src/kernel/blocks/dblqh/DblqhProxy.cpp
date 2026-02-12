@@ -2396,6 +2396,21 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
 
   state->m_state.store(JoinAggregationState::SETUP_COMPLETE);
 
+  if (ERROR_INSERTED(5090)) {
+    jam();
+    // Force eviction by limiting each interpreter to 3 groups max.
+    // When a 4th distinct group arrives, processRecWithLinkedAttrs()
+    // returns AGG_EVICT_NEEDED, triggering the eviction path in
+    // handleJoinAggRow().
+    if (state->m_strategy == JoinAggregationState::MUTEX_BASED) {
+      state->m_agg_interpreter->setMaxGroups(3);
+    } else {
+      for (Uint32 i = 0; i < state->m_num_threads; i++) {
+        state->m_per_thread_interpreters[i]->setMaxGroups(3);
+      }
+    }
+  }
+
   // Send CONF with the pool key
   JoinAggSetupConf *conf =
     (JoinAggSetupConf *)signal->getDataPtrSend();

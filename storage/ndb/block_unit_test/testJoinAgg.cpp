@@ -51,6 +51,11 @@
 #include <kernel/signaldata/TransIdAI.hpp>
 #include <ndbapi/NdbAggregationCommon.hpp>
 
+#include <kernel/signaldata/LqhKey.hpp>
+
+#include <NdbRestarter.hpp>
+#include <util/rondb_hash.hpp>
+#include <kernel/signaldata/DumpStateOrd.hpp>
 #include <mysql.h>
 
 #include <cstdio>
@@ -396,6 +401,46 @@ insertTestData(Ndb *ndb)
 }
 
 static int
+insertManyRows(Ndb *ndb, Uint32 count)
+{
+  const NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  const NdbDictionary::Table *ptab = dict->getTable(TABLE_NAME);
+  if (ptab == nullptr) return -1;
+
+  for (Uint32 i = 1; i <= count; i++) {
+    NdbTransaction *trans = ndb->startTransaction();
+    if (trans == nullptr) {
+      fprintf(stderr, "startTransaction: %s\n",
+              ndb->getNdbError().message);
+      return -1;
+    }
+    NdbOperation *op = trans->getNdbOperation(ptab);
+    if (op == nullptr) {
+      fprintf(stderr, "getNdbOperation: %s\n",
+              trans->getNdbError().message);
+      trans->close();
+      return -1;
+    }
+    op->insertTuple();
+    Int64 a = (Int64)i;
+    Int64 b = (Int64)(i * 10);
+    op->equal("a", a);
+    op->setValue("b", b);
+
+    if (trans->execute(NdbTransaction::Commit) != 0) {
+      fprintf(stderr, "insert(%u) failed: %s\n",
+              i, trans->getNdbError().message);
+      trans->close();
+      return -1;
+    }
+    trans->close();
+  }
+
+  V("Inserted %u rows into %s\n", count, TABLE_NAME);
+  return 0;
+}
+
+static int
 dropTestTable(Ndb *ndb)
 {
   NdbDictionary::Dictionary *dict = ndb->getDictionary();
@@ -665,6 +710,53 @@ parseTransIdAI(const SimpleSignal *sig, AggResult &result)
   }
 
   return 0;
+}
+
+/*
+ * Wait for SCAN_FRAGCONF, handling interleaved TRANSID_AI signals
+ * from evicted groups during the scan phase.
+ */
+static int
+waitForScanConfWithEviction(SignalSender &ss, Uint32 /*fragId*/,
+                            Uint32 &rowsScanned,
+                            std::vector<AggResult> &evictedResults,
+                            Uint32 &evictedGroups)
+{
+  for (;;) {
+    SimpleSignal *resp = waitForSignal(ss, WAIT_TIMEOUT_MS,
+                                       "SCAN_FRAGCONF/TRANSID_AI");
+    if (resp == nullptr) return -1;
+
+    int gsn = getGsn(resp);
+    if (gsn == GSN_TRANSID_AI) {
+      AggResult result;
+      if (parseTransIdAI(resp, result) != 0) return -1;
+      V("  TRANSID_AI (evicted): n_groups=%u\n", result.n_groups);
+      evictedGroups += result.n_groups;
+      evictedResults.push_back(std::move(result));
+    }
+    else if (gsn == GSN_SCAN_FRAGCONF) {
+      const ScanFragConf *conf =
+        reinterpret_cast<const ScanFragConf *>(resp->getDataPtr());
+      rowsScanned = conf->completedOps;
+      Uint32 sigLen = resp->header.theLength;
+      Uint32 rowsExamined =
+        (sigLen >= ScanFragConf::SignalLength_v2) ? conf->rowsExamined : 0;
+      V("  SCAN_FRAGCONF: frag=%u completed=%u rowsExamined=%u\n",
+             conf->senderData, conf->completedOps, rowsExamined);
+      return 0;
+    }
+    else if (gsn == GSN_SCAN_FRAGREF) {
+      const Uint32 *d = resp->getDataPtr();
+      fprintf(stderr, "  SCAN_FRAGREF: errorCode=%u\n", d[3]);
+      return -1;
+    }
+    else {
+      fprintf(stderr, "Unexpected GSN %d in waitForScanConfWithEviction\n",
+              gsn);
+      return -1;
+    }
+  }
 }
 
 /*
@@ -1112,6 +1204,538 @@ testCountSumNoGroupBy(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
 }
 
 /* ------------------------------------------------------------------ */
+/* Test 3: High-cardinality GROUP BY (MUTEX_FREE)                      */
+/* ------------------------------------------------------------------ */
+
+static int
+testHighCardinalityGroupBy(Ndb * /*ndb*/, SignalSender &ss,
+                           const TableMeta &meta, Uint32 numRows)
+{
+  V("\n=============================================\n");
+  V("Test 3: SELECT SUM(b) FROM %s GROUP BY a (%u rows, MUTEX_FREE)\n",
+    TABLE_NAME, numRows);
+  V("=============================================\n");
+
+  std::set<Uint32> uniqueNodes(meta.fragNodes.begin(), meta.fragNodes.end());
+
+  auto aggProg = buildAggProgram_SumGroupBy(meta.attrIdA, meta.attrIdB);
+
+  /* 1. Setup on all data nodes — MUTEX_FREE strategy */
+  std::map<Uint32, Uint32> aggStateKeys;
+  for (Uint32 nd : uniqueNodes) {
+    Uint32 key = 0;
+    if (sendSetupReq(ss, nd, aggProg, meta,
+                     JoinAggSetupReq::STRATEGY_MUTEX_FREE,
+                     key) != 0)
+      return -1;
+    aggStateKeys[nd] = key;
+  }
+
+  /* 2. Scan all fragments */
+  auto attrInfo = buildAttrInfo();
+
+  for (Uint32 f = 0; f < meta.fragCount; f++) {
+    Uint32 fragNodeId = meta.fragNodes[f];
+    Uint32 ldmInst = meta.fragInstances[f];
+    Uint32 stateKey = aggStateKeys[fragNodeId];
+    if (sendScanFragReq(ss, fragNodeId, f, ldmInst,
+                        stateKey, meta, attrInfo) != 0)
+      return -1;
+
+    Uint32 rows = 0;
+    if (waitForScanConf(ss, f, rows) != 0)
+      return -1;
+  }
+
+  /* 3. Complete + receive results from all nodes */
+  std::vector<AggResult> allResults;
+  Uint32 totalGroups = 0;
+  for (Uint32 nd : uniqueNodes) {
+    if (sendCompleteReq(ss, nd, aggStateKeys[nd], 1000) != 0)
+      return -1;
+    if (receiveResults(ss, allResults, totalGroups) != 0)
+      return -1;
+  }
+
+  /* 4. Release */
+  for (Uint32 nd : uniqueNodes) {
+    if (sendReleaseReq(ss, nd, aggStateKeys[nd]) != 0)
+      return -1;
+  }
+
+  /* 5. Validate — numRows groups, each SUM(b) = a*10 */
+  V("\n--- Validation ---\n");
+
+  if (totalGroups != numRows) {
+    fprintf(stderr, "FAIL: expected %u groups, got %u\n", numRows, totalGroups);
+    return -1;
+  }
+
+  std::map<Int64, Int64> actual;
+  for (const auto &res : allResults) {
+    for (const auto &grp : res.groups) {
+      Int64 key = extractGroupKey(grp.first);
+      Int64 sum = extractSumBigint(grp.second, 0);
+      actual[key] = sum;
+    }
+  }
+
+  int failures = 0;
+  for (Uint32 i = 1; i <= numRows; i++) {
+    Int64 key = (Int64)i;
+    Int64 expectedSum = (Int64)(i * 10);
+    auto it = actual.find(key);
+    if (it == actual.end()) {
+      fprintf(stderr, "FAIL: missing group(%lld)\n", (long long)key);
+      failures++;
+    } else if (it->second != expectedSum) {
+      fprintf(stderr, "FAIL: group(%lld) expected SUM=%lld, got %lld\n",
+              (long long)key, (long long)expectedSum, (long long)it->second);
+      failures++;
+    }
+  }
+
+  if (failures == 0) {
+    printf("PASS: Test 3 — all %u groups match (MUTEX_FREE, high cardinality)\n",
+           totalGroups);
+  }
+  return failures > 0 ? -1 : 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Test 4: Eviction via ERROR_INSERT 5090                              */
+/* ------------------------------------------------------------------ */
+
+static int
+testEviction(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta,
+             Uint32 numRows, NdbRestarter &restarter)
+{
+  V("\n=============================================\n");
+  V("Test 4: Eviction test (%u rows, ERROR_INSERT 5090)\n", numRows);
+  V("=============================================\n");
+
+  /* Inject error 5090 in all data nodes — limits max_groups to 3 */
+  if (restarter.insertErrorInAllNodes(5090) != 0) {
+    fprintf(stderr, "FAIL: insertErrorInAllNodes(5090) failed\n");
+    return -1;
+  }
+  V("ERROR_INSERT 5090 set in all nodes\n");
+
+  std::set<Uint32> uniqueNodes(meta.fragNodes.begin(), meta.fragNodes.end());
+
+  auto aggProg = buildAggProgram_SumGroupBy(meta.attrIdA, meta.attrIdB);
+
+  /* 1. Setup on all data nodes */
+  std::map<Uint32, Uint32> aggStateKeys;
+  for (Uint32 nd : uniqueNodes) {
+    Uint32 key = 0;
+    if (sendSetupReq(ss, nd, aggProg, meta,
+                     JoinAggSetupReq::STRATEGY_MUTEX_BASED,
+                     key) != 0) {
+      restarter.insertErrorInAllNodes(0);
+      return -1;
+    }
+    aggStateKeys[nd] = key;
+  }
+
+  /* 2. Scan all fragments — expect interleaved TRANSID_AI (evictions) */
+  auto attrInfo = buildAttrInfo();
+  std::vector<AggResult> evictedResults;
+  Uint32 evictedGroups = 0;
+
+  for (Uint32 f = 0; f < meta.fragCount; f++) {
+    Uint32 fragNodeId = meta.fragNodes[f];
+    Uint32 ldmInst = meta.fragInstances[f];
+    Uint32 stateKey = aggStateKeys[fragNodeId];
+    if (sendScanFragReq(ss, fragNodeId, f, ldmInst,
+                        stateKey, meta, attrInfo) != 0) {
+      restarter.insertErrorInAllNodes(0);
+      return -1;
+    }
+
+    Uint32 rows = 0;
+    if (waitForScanConfWithEviction(ss, f, rows,
+                                    evictedResults, evictedGroups) != 0) {
+      restarter.insertErrorInAllNodes(0);
+      return -1;
+    }
+  }
+
+  V("Evicted %u groups during scan phase\n", evictedGroups);
+
+  /* 3. Complete + receive remaining results */
+  std::vector<AggResult> finalResults;
+  Uint32 finalGroups = 0;
+  for (Uint32 nd : uniqueNodes) {
+    if (sendCompleteReq(ss, nd, aggStateKeys[nd], 1000) != 0) {
+      restarter.insertErrorInAllNodes(0);
+      return -1;
+    }
+    if (receiveResults(ss, finalResults, finalGroups) != 0) {
+      restarter.insertErrorInAllNodes(0);
+      return -1;
+    }
+  }
+
+  /* 4. Release */
+  for (Uint32 nd : uniqueNodes) {
+    if (sendReleaseReq(ss, nd, aggStateKeys[nd]) != 0) {
+      restarter.insertErrorInAllNodes(0);
+      return -1;
+    }
+  }
+
+  /* Clear error insert */
+  restarter.insertErrorInAllNodes(0);
+  V("ERROR_INSERT cleared\n");
+
+  /* 5. Validate — merge evicted + finalized groups */
+  V("\n--- Validation ---\n");
+  V("Evicted groups: %u, finalized groups: %u\n", evictedGroups, finalGroups);
+
+  /*
+   * Evicted groups: sent during scan phase (one at a time, SUM is partial
+   * since a group may be evicted then re-created and evicted again).
+   * For the same key, we need to SUM the partial results.
+   * Finalized groups: sent during complete phase (accumulated after eviction).
+   */
+  std::map<Int64, Int64> actual;
+  for (const auto &res : evictedResults) {
+    for (const auto &grp : res.groups) {
+      Int64 key = extractGroupKey(grp.first);
+      Int64 sum = extractSumBigint(grp.second, 0);
+      actual[key] += sum;
+    }
+  }
+  for (const auto &res : finalResults) {
+    for (const auto &grp : res.groups) {
+      Int64 key = extractGroupKey(grp.first);
+      Int64 sum = extractSumBigint(grp.second, 0);
+      actual[key] += sum;
+    }
+  }
+
+  if (actual.size() != numRows) {
+    fprintf(stderr, "FAIL: expected %u distinct groups, got %zu\n",
+            numRows, actual.size());
+    return -1;
+  }
+
+  int failures = 0;
+  for (Uint32 i = 1; i <= numRows; i++) {
+    Int64 key = (Int64)i;
+    Int64 expectedSum = (Int64)(i * 10);
+    auto it = actual.find(key);
+    if (it == actual.end()) {
+      fprintf(stderr, "FAIL: missing group(%lld)\n", (long long)key);
+      failures++;
+    } else if (it->second != expectedSum) {
+      fprintf(stderr, "FAIL: group(%lld) expected SUM=%lld, got %lld\n",
+              (long long)key, (long long)expectedSum, (long long)it->second);
+      failures++;
+    }
+  }
+
+  if (evictedGroups == 0) {
+    fprintf(stderr, "FAIL: expected evictions but got 0 evicted groups\n");
+    failures++;
+  }
+
+  if (failures == 0) {
+    printf("PASS: Test 4 — eviction test, %u groups correct "
+           "(%u evicted + %u finalized)\n",
+           (Uint32)actual.size(), evictedGroups, finalGroups);
+  }
+  return failures > 0 ? -1 : 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Test 5: LQHKEYREQ with join aggregation                            */
+/* ------------------------------------------------------------------ */
+
+struct LqhKeyReqBuilder {
+  static int send(SignalSender &ss, Ndb *ndb,
+                  Uint32 nodeId, Uint32 ldmInstance,
+                  Uint32 fragId, Uint32 aggStateKey,
+                  Int64 keyValue,
+                  const TableMeta &meta,
+                  const std::vector<Uint32> &attrInfo)
+  {
+    V("  LQHKEYREQ → node %u, frag %u, LDM %u, key=%lld\n",
+      nodeId, fragId, ldmInstance, (long long)keyValue);
+
+    /* Compute hash for the key */
+    const NdbDictionary::Table *ptab =
+      ndb->getDictionary()->getTable(TABLE_NAME);
+    if (ptab == nullptr) {
+      fprintf(stderr, "getTable for hash: %s\n",
+              ndb->getDictionary()->getNdbError().message);
+      return -1;
+    }
+
+    /* Ndb::computeHash returns values[1] (distribution hash).
+     * But LQHKEYREQ needs values[0] (ACC primary key hash).
+     * Compute both using rondb_calc_hash directly.
+     */
+    Uint32 hashValues[4];
+    Uint32 keyWords[2];
+    memcpy(keyWords, &keyValue, sizeof(Int64));
+    rondb_calc_hash(hashValues, (const char *)keyWords, 2,
+                    ptab->use_new_hash_function());
+    Uint32 accHash = hashValues[0];     /* For LQHKEYREQ hashValue (ACC) */
+    (void)hashValues[1];  /* Distribution hash — used by caller via computeHash */
+
+    SimpleSignal ssig;
+    LqhKeyReq *req = reinterpret_cast<LqhKeyReq *>(ssig.getDataPtrSend());
+    memset(req, 0, sizeof(LqhKeyReq));
+
+    req->clientConnectPtr = fragId;
+
+    Uint32 attrLen = 0;
+    LqhKeyReq::setJoinAggFlag(attrLen, 1);
+    req->attrLen = attrLen;
+
+    req->hashValue = accHash;
+
+    Uint32 requestInfo = 0;
+    LqhKeyReq::setOperation(requestInfo, ZREAD);
+    LqhKeyReq::setDirtyFlag(requestInfo, 1);
+    LqhKeyReq::setSimpleFlag(requestInfo, 1);
+    LqhKeyReq::setInterpretedFlag(requestInfo, 1);
+    LqhKeyReq::setNoDiskFlag(requestInfo, 1);
+    LqhKeyReq::setNormalProtocolFlag(requestInfo, 1);
+    LqhKeyReq::setCorrFactorFlag(requestInfo, 1);
+    LqhKeyReq::setKeyLen(requestInfo, 2);
+    req->requestInfo = requestInfo;
+
+    /* tcBlockref = our SignalSender.  The tc-node-status check in LQH
+     * is temporarily disabled via DUMP LqhSkipTcNodeCheck (debug builds).
+     * LQH sends LQHKEYCONF directly to us (send_packed=false since our
+     * block is not DBTC/DBLQH).
+     */
+    req->tcBlockref = ss.getOwnRef();
+
+    req->tableSchemaVersion =
+      meta.tableId | (meta.schemaVersion << 16);
+
+    req->fragmentData = fragId;  // Low 16 bits = fragmentId
+
+    req->transId1 = FAKE_TRANS_ID1;
+    req->transId2 = FAKE_TRANS_ID2;
+
+    req->savePointId = 0;
+    req->scanInfo = 0;
+
+    req->variableData[0] = 0;  /* corrFactorLo */
+    req->variableData[1] = 0;  /* corrFactorHi */
+    req->variableData[2] = aggStateKey;
+    Uint32 sigLen = LqhKeyReq::FixedSignalLength + 3;
+
+    Uint16 recBlock = numberToBlock(V_QUERY, ldmInstance);
+    ssig.set(ss, 0, recBlock, GSN_LQHKEYREQ, sigLen);
+
+    Uint32 keyData[2];
+    memcpy(keyData, &keyValue, sizeof(Int64));
+    ssig.header.m_noOfSections = 2;
+    ssig.ptr[0].p = keyData;
+    ssig.ptr[0].sz = 2;
+    ssig.ptr[1].p = attrInfo.data();
+    ssig.ptr[1].sz = (Uint32)attrInfo.size();
+
+    if (ss.sendSignal(nodeId, &ssig) != SEND_OK) {
+      fprintf(stderr, "sendSignal LQHKEYREQ failed\n");
+      return -1;
+    }
+    return 0;
+  }
+};
+
+static int
+waitForLqhKeyConf(SignalSender &ss)
+{
+  SimpleSignal *resp = waitForSignal(ss, WAIT_TIMEOUT_MS, "LQHKEYCONF");
+  if (resp == nullptr) return -1;
+
+  int gsn = getGsn(resp);
+  if (gsn == GSN_LQHKEYCONF) {
+    V("  LQHKEYCONF received\n");
+    return 0;
+  } else if (gsn == GSN_LQHKEYREF) {
+    const Uint32 *d = resp->getDataPtr();
+    fprintf(stderr, "  LQHKEYREF: errorCode=%u\n", d[2]);
+    return -1;
+  } else {
+    fprintf(stderr, "Unexpected GSN %d waiting for LQHKEYCONF\n", gsn);
+    return -1;
+  }
+}
+
+static int
+testLqhKeyReq(Ndb *ndb, SignalSender &ss, const TableMeta &meta,
+              NdbRestarter &restarter)
+{
+  V("\n=============================================\n");
+  V("Test 5: LQHKEYREQ with join aggregation\n");
+  V("=============================================\n");
+
+  /* We use the 5-row table from Tests 1-2.
+   * Send LQHKEYREQ for each key, each goes through handleJoinAggRow.
+   * Then COMPLETE to get aggregated results.
+   */
+  std::set<Uint32> uniqueNodes(meta.fragNodes.begin(), meta.fragNodes.end());
+  auto aggProg = buildAggProgram_SumGroupBy(meta.attrIdA, meta.attrIdB);
+
+  /* 1. Setup on all data nodes */
+  std::map<Uint32, Uint32> aggStateKeys;
+  for (Uint32 nd : uniqueNodes) {
+    Uint32 key = 0;
+    if (sendSetupReq(ss, nd, aggProg, meta,
+                     JoinAggSetupReq::STRATEGY_MUTEX_BASED,
+                     key) != 0)
+      return -1;
+    aggStateKeys[nd] = key;
+  }
+
+  /* 2. Send LQHKEYREQ for each key value */
+  auto attrInfo = buildAttrInfo();
+
+  /* Determine which fragment each key maps to.
+   * Use computeHash + getPartitionId to find the fragment.
+   */
+  const NdbDictionary::Table *ptab =
+    ndb->getDictionary()->getTable(TABLE_NAME);
+  if (ptab == nullptr) {
+    fprintf(stderr, "getTable for partition: %s\n",
+            ndb->getDictionary()->getNdbError().message);
+    return -1;
+  }
+
+  /* Debug: verify rows are readable via NDB API before LQHKEYREQ */
+  {
+    NdbTransaction *verifyTx = ndb->startTransaction();
+    if (verifyTx == nullptr) {
+      fprintf(stderr, "startTransaction for verify failed: %s\n",
+              ndb->getNdbError().message);
+      return -1;
+    }
+    for (Int64 v = 1; v <= 5; v++) {
+      NdbOperation *vop = verifyTx->getNdbOperation(TABLE_NAME);
+      vop->readTuple(NdbOperation::LM_CommittedRead);
+      vop->equal("a", v);
+      NdbRecAttr *ra = vop->getValue("b");
+      if (verifyTx->execute(NdbTransaction::NoCommit) != 0) {
+        fprintf(stderr, "NDB API read key=%lld failed: %s\n",
+                (long long)v, verifyTx->getNdbError().message);
+        ndb->closeTransaction(verifyTx);
+        return -1;
+      }
+      V("  NDB API verify: key=%lld → b=%lld\n", (long long)v,
+        (long long)ra->int64_value());
+    }
+    ndb->closeTransaction(verifyTx);
+  }
+
+  /* Disable the tc-node-status check in LQH so that tcBlockref can
+   * reference our API node (debug/test builds only).
+   */
+  {
+    int dumpSkip[1] = {DumpStateOrd::LqhSkipTcNodeCheck};
+    restarter.dumpStateAllNodes(dumpSkip, 1);
+    V("  DUMP LqhSkipTcNodeCheck sent to all nodes\n");
+  }
+
+  for (Int64 keyVal = 1; keyVal <= 5; keyVal++) {
+    Uint32 hashValue = 0;
+    Ndb::Key_part_ptr keyParts[2];
+    keyParts[0].ptr = &keyVal;
+    keyParts[0].len = sizeof(Int64);
+    keyParts[1].ptr = nullptr;
+    keyParts[1].len = 0;
+    if (Ndb::computeHash(&hashValue, ptab, keyParts, nullptr, 0) != 0) {
+      fprintf(stderr, "computeHash failed for key %lld\n", (long long)keyVal);
+      return -1;
+    }
+    Uint32 fragId = ptab->getPartitionId(hashValue);
+    Uint32 fragNodeId = meta.fragNodes[fragId];
+    Uint32 ldmInst = meta.fragInstances[fragId];
+    Uint32 stateKey = aggStateKeys[fragNodeId];
+
+    V("  key=%lld → hash=0x%08x frag=%u node=%u LDM=%u\n",
+      (long long)keyVal, hashValue, fragId, fragNodeId, ldmInst);
+
+    if (LqhKeyReqBuilder::send(ss, ndb, fragNodeId, ldmInst, fragId,
+                               stateKey, keyVal, meta, attrInfo) != 0)
+      return -1;
+
+    if (waitForLqhKeyConf(ss) != 0)
+      return -1;
+  }
+
+  /* Restore the tc-node-status check */
+  {
+    int dumpRestore[1] = {DumpStateOrd::LqhRestoreTcNodeCheck};
+    restarter.dumpStateAllNodes(dumpRestore, 1);
+    V("  DUMP LqhRestoreTcNodeCheck sent to all nodes\n");
+  }
+
+  /* 3. Complete + receive results from all nodes */
+  std::vector<AggResult> allResults;
+  Uint32 totalGroups = 0;
+  for (Uint32 nd : uniqueNodes) {
+    if (sendCompleteReq(ss, nd, aggStateKeys[nd], 1000) != 0)
+      return -1;
+    if (receiveResults(ss, allResults, totalGroups) != 0)
+      return -1;
+  }
+
+  /* 4. Release */
+  for (Uint32 nd : uniqueNodes) {
+    if (sendReleaseReq(ss, nd, aggStateKeys[nd]) != 0)
+      return -1;
+  }
+
+  /* 5. Validate — 5 groups, each SUM(b) = key*10 */
+  V("\n--- Validation ---\n");
+
+  if (totalGroups != 5) {
+    fprintf(stderr, "FAIL: expected 5 groups, got %u\n", totalGroups);
+    return -1;
+  }
+
+  std::map<Int64, Int64> actual;
+  for (const auto &res : allResults) {
+    for (const auto &grp : res.groups) {
+      Int64 key = extractGroupKey(grp.first);
+      Int64 sum = extractSumBigint(grp.second, 0);
+      actual[key] = sum;
+      V("  group(%lld) = SUM %lld\n", (long long)key, (long long)sum);
+    }
+  }
+
+  int failures = 0;
+  std::map<Int64, Int64> expected;
+  expected[1] = 10; expected[2] = 20; expected[3] = 30;
+  expected[4] = 40; expected[5] = 50;
+  for (const auto &exp : expected) {
+    auto it = actual.find(exp.first);
+    if (it == actual.end()) {
+      fprintf(stderr, "FAIL: missing group(%lld)\n", (long long)exp.first);
+      failures++;
+    } else if (it->second != exp.second) {
+      fprintf(stderr, "FAIL: group(%lld) expected SUM=%lld, got %lld\n",
+              (long long)exp.first, (long long)exp.second,
+              (long long)it->second);
+      failures++;
+    }
+  }
+
+  if (failures == 0) {
+    printf("PASS: Test 5 — LQHKEYREQ join aggregation, 5 groups correct\n");
+  }
+  return failures > 0 ? -1 : 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* Main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -1171,13 +1795,14 @@ int main(int argc, char **argv)
       return 1;
     }
 
-    /* Create table and insert data */
+    NdbRestarter restarter(connectString);
+
+    /* Phase 1: 5-row tests (Tests 1, 2, 5) */
     TableMeta meta;
     if (createTestTable(&ndb, meta) != 0) { ndb_end(0); return 1; }
     if (queryFragInstances(mysqlPort, meta) != 0) { ndb_end(0); return 1; }
     if (insertTestData(&ndb) != 0) { ndb_end(0); return 1; }
 
-    /* Create SignalSender */
     {
       SignalSender ss(&con);
       ss.lock();
@@ -1186,14 +1811,33 @@ int main(int argc, char **argv)
         refToNode(ss.getOwnRef()),
         ss.getOwnRef());
 
-      /* Run tests */
       if (testSumGroupBy(&ndb, ss, meta) != 0) result = 1;
       if (testCountSumNoGroupBy(&ndb, ss, meta) != 0) result = 1;
+      if (testLqhKeyReq(&ndb, ss, meta, restarter) != 0) result = 1;
 
       ss.unlock();
     }
 
-    /* Cleanup */
+    /* Phase 2: 200-row tests (Tests 3, 4) */
+    dropTestTable(&ndb);
+
+    const Uint32 MANY_ROWS = 200;
+    if (createTestTable(&ndb, meta) != 0) { ndb_end(0); return 1; }
+    if (queryFragInstances(mysqlPort, meta) != 0) { ndb_end(0); return 1; }
+    if (insertManyRows(&ndb, MANY_ROWS) != 0) { ndb_end(0); return 1; }
+
+    {
+      SignalSender ss(&con);
+      ss.lock();
+
+      if (testHighCardinalityGroupBy(&ndb, ss, meta, MANY_ROWS) != 0)
+        result = 1;
+      if (testEviction(&ndb, ss, meta, MANY_ROWS, restarter) != 0)
+        result = 1;
+
+      ss.unlock();
+    }
+
     dropTestTable(&ndb);
   }
 

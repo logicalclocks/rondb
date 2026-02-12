@@ -22,10 +22,16 @@ testJoinAgg -c <connect_string> -m <mysql_port> [--verbose]
 - `-h, --help` — Show help
 
 **Tests:**
-1. `SELECT SUM(b) FROM t GROUP BY a` — group-by with SUM aggregation
-2. `SELECT COUNT(*), SUM(b) FROM t` — non-group-by with COUNT and SUM
+1. `SELECT SUM(b) FROM t GROUP BY a` — group-by with SUM aggregation (SCAN_FRAGREQ)
+2. `SELECT COUNT(*), SUM(b) FROM t` — non-group-by with COUNT and SUM (SCAN_FRAGREQ)
+3. High-cardinality GROUP BY — 200 groups, MUTEX_FREE strategy, exercises merge/send batching
+4. Eviction via ERROR_INSERT 5090 — forces max 3 groups, tests eviction path with
+   interleaved TRANSID_AI during scan phase
+5. LQHKEYREQ with join aggregation — key operations (not scans), tests JoinAggFlag
+   in LqhKeyReq variable data, uses DUMP 2359/2360 to bypass tc-node check
 
-**Requires:** Running NDB cluster (e.g. via `mtr --start ndb_basic`)
+**Requires:** Running NDB cluster via `mtr --start-and-exit ndb_setup_large`
+(Tests 3-5 need the large config with NodeId=144 for data node 2)
 
 ## Documentation
 - `TESTING_GUIDE.md` — Detailed guide for writing block-level signal tests
