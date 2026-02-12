@@ -239,6 +239,7 @@ class ScanFragConf {
   static constexpr Uint32 SignalLength = 6;
   static constexpr Uint32 SignalLength_ext = 7;
   static constexpr Uint32 SignalLength_query = 8;
+  static constexpr Uint32 SignalLength_v2 = 9;
 
  public:
   Uint32 senderData;
@@ -260,6 +261,11 @@ class ScanFragConf {
    * signals.
    */
   Uint32 senderRef;
+  /**
+   * Number of rows examined (read from TUP) during this scan batch.
+   * Only sent when receiver supports it (ndbd_support_scan_frag_rows_examined).
+   */
+  Uint32 rowsExamined;
 };
 
 class ScanFragRef {

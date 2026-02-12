@@ -18016,7 +18016,6 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
   const Uint32 senderData = req->senderData;
   const Uint32 requestId = req->requestId;
   const Uint32 aggStateKey = req->aggStateKey;
-  const Uint32 completedOps = req->completedOps;
   const Uint32 maxBatchRows = req->maxBatchRows;
 
   JoinAggregationState *state = getJoinAggState(aggStateKey);
@@ -18033,8 +18032,6 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
                signal, JoinAggCompleteRef::SignalLength, JBB);
     return;
   }
-
-  ndbrequire(state->m_completed_ops == completedOps);
   state->m_max_batch_rows = maxBatchRows;
   state->m_state.store(JoinAggregationState::FINALIZING);
 
@@ -19781,6 +19778,7 @@ void Dblqh::scanTupkeyConfLab(Signal* signal,
     useStat.m_scanInstructionCount += numExecInstructions;
   }
 
+  scanPtr->m_rows_examined++;
   regTcPtr->transactionState = TcConnectionrec::SCAN_STATE_USED;
 
   const Uint32 rows = scanPtr->m_curr_batch_size_rows;
@@ -21568,6 +21566,7 @@ void Dblqh::sendScanFragConf(Signal *signal,
   }
   const Uint32 completed_ops= tmp_completed_ops;
   const Uint32 total_len= tmp_total_len / sizeof(Uint32);
+  const Uint32 rows_examined = scanPtr->m_rows_examined;
 
   ndbassert((scanPtr->m_curr_batch_size_bytes % sizeof(Uint32)) == 0);
 
@@ -21611,6 +21610,7 @@ void Dblqh::sendScanFragConf(Signal *signal,
     scanPtr->m_agg_curr_batch_size_bytes= 0;
     scanPtr->m_agg_n_res_recs = 0;
     scanPtr->m_join_agg_evict_rows = 0;
+    scanPtr->m_rows_examined = 0;
     /*
      * PA related
      * statemach
@@ -21671,6 +21671,15 @@ void Dblqh::sendScanFragConf(Signal *signal,
     sig_len = ScanFragConf::SignalLength_query;
     conf->activeMask = 0;
     conf->senderRef = reference();
+  }
+  if (ndbd_support_scan_frag_rows_examined(
+          getNodeInfo(tc_node_id).m_version)) {
+    if (sig_len < ScanFragConf::SignalLength_query) {
+      conf->activeMask = 0;
+      conf->senderRef = reference();
+    }
+    conf->rowsExamined = rows_examined;
+    sig_len = ScanFragConf::SignalLength_v2;
   }
   sendSignal(blockRef, GSN_SCAN_FRAGCONF, signal, sig_len, prio_level);
   if (scanPtr->m_par_ordered_scan_flag && !scanCompleted) {

@@ -1115,4 +1115,18 @@ ndbd_support_long_transid_ai(Uint32 x) {
   }
   return false;
 }
+
+static inline
+bool
+ndbd_support_scan_frag_rows_examined(Uint32 x) {
+  const Uint32 major = (x >> 16) & 0xFF;
+  const Uint32 minor = (x >>  8) & 0xFF;
+  if (major > 26) {
+    return true;
+  }
+  if ((major == 26) && (minor >= 04)) {
+    return true;
+  }
+  return false;
+}
 #endif

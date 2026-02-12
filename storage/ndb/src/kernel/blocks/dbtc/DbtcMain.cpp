@@ -17536,6 +17536,9 @@ void Dbtc::execSCAN_FRAGCONF(Signal *signal) {
   const Uint32 status = conf->fragmentCompleted;
   const Uint32 activeMask =
       (sig_len >= ScanFragConf::SignalLength_ext) ? conf->activeMask : 0;
+  const Uint32 rowsExamined =
+      (sig_len >= ScanFragConf::SignalLength_v2) ? conf->rowsExamined : 0;
+  (void)rowsExamined;  // TODO: use for query statistics
 
   if (ERROR_INSERTED(8124)) {
     jam();

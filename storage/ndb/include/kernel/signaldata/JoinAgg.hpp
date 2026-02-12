@@ -67,13 +67,12 @@ struct JoinAggSetupRef {
 };
 
 struct JoinAggCompleteReq {
-  static constexpr Uint32 SignalLength = 8;
+  static constexpr Uint32 SignalLength = 7;
   Uint32 senderRef;
   Uint32 senderData;
   Uint32 requestId;
   Uint32 transid[2];
   Uint32 aggStateKey;
-  Uint32 completedOps;
   Uint32 maxBatchRows;
 };
 

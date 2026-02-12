@@ -231,6 +231,9 @@ void DblqhProxy::callREAD_CONFIG_REQ(Signal *signal) {
   D("proxy:" << V(c_tableRecSize));
   Uint32 i;
   for (i = 0; i < c_tableRecSize; i++) c_tableRec[i] = 0;
+
+  initJoinAggStatePool(64);
+
   backREAD_CONFIG_REQ(signal);
 }
 
@@ -2261,6 +2264,8 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   Uint32 key = seizeJoinAggState();
   if (key == RNIL) {
     jam();
+    SectionHandle handle(this, signal);
+    releaseSections(handle);
     JoinAggSetupRef *ref =
       (JoinAggSetupRef *)signal->getDataPtrSend();
     ref->senderRef = reference();
@@ -2275,6 +2280,21 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
 
   JoinAggregationState *state = getJoinAggState(key);
   ndbrequire(state != nullptr);
+
+  // Initialize runtime counters (TransientPool::seize doesn't call constructor)
+  state->m_outstanding_ops.store(0);
+  state->m_completed_ops.store(0);
+  state->m_failed_ops.store(0);
+  state->m_agg_curr_batch_size_rows = 0;
+  state->m_agg_curr_batch_size_bytes = 0;
+  state->m_rows_sent = 0;
+  state->m_max_batch_rows = 0;
+  state->m_state.store(JoinAggregationState::IDLE);
+  state->m_error_code = 0;
+  state->m_agg_interpreter = nullptr;
+  state->m_per_thread_interpreters = nullptr;
+  state->m_agg_program = nullptr;
+  state->m_agg_program_len = 0;
 
   // Populate immutable identification fields
   state->m_transid[0] = req->transid[0];
