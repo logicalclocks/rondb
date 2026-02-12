@@ -2,8 +2,13 @@
 
 [cluster_config.1]
 NumCPUs=6
+DataMemory=2G
+DiskPageBufferMemory=400M
 TotalMemoryConfig=4G
-NoOfTables=200
-NoOfOrderedIndexes=200
-NoOfUniqueHashIndexes=200
+SchemaMemory=200M
+MaxNoOfTables=2000
+MaxNoOfOrderedIndexes=2000
+MaxNoOfUniqueHashIndexes=2000
 TransactionMemory=200M
+RedoBuffer=100M
+SharedGlobalMemory=450M
