@@ -1,0 +1,9 @@
+!include suite/ndb/my_2rpl.cnf
+
+[cluster_config.1]
+NumCPUs=6
+TotalMemoryConfig=4G
+NoOfTables=200
+NoOfOrderedIndexes=200
+NoOfUniqueHashIndexes=200
+TransactionMemory=200M

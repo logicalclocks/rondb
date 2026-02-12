@@ -1,0 +1,7 @@
+-- source include/have_ndb.inc
+
+# Minimal test to verify NDB cluster is running with large configuration.
+# Start cluster with: mtr --start ndb_setup_large
+# Then run external tests like testJoinAgg against the running cluster.
+
+SELECT 1;
