@@ -1,0 +1,267 @@
+--source include/have_ndb.inc
+
+# suite/ndb_ttl_purge/t/ttl_purge_multi_table.test
+#
+# Multiple TTL table tests (3 cases):
+#   - test_different_ttl_durations
+#   - test_different_databases
+#   - test_all_tables_purged_round_robin
+
+--source suite/ndb_ttl_purge/include/ttl_purge_setup.inc
+--source suite/ndb_ttl_purge/include/ttl_purge_reset_config.inc
+
+--echo #
+--echo # Test: test_different_ttl_durations
+--echo # 3 tables (TTL=5, 30, 3600); only short and medium purged
+--echo #
+
+# Short TTL table (5s)
+--let $ttl_db = ttl_mt_1
+--let $ttl_table = short_ttl
+--let $ttl_seconds = 5
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+# Medium TTL table (30s)
+--let $ttl_db = ttl_mt_2
+--let $ttl_table = medium_ttl
+--let $ttl_seconds = 30
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+# Long TTL table (3600s)
+--let $ttl_db = ttl_mt_3
+--let $ttl_table = long_ttl
+--let $ttl_seconds = 3600
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+# Insert expired rows in short_ttl (5 min ago, well past TTL=5s)
+--let $insert_db = ttl_mt_1
+--let $insert_table = short_ttl
+--let $insert_count = 10
+--let $insert_start_id = 1
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_expired.inc
+
+# Insert rows in medium_ttl that are 35s old (past TTL=30s)
+INSERT INTO ttl_mt_2.medium_ttl (id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 35 SECOND), 'medium_1');
+INSERT INTO ttl_mt_2.medium_ttl (id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 35 SECOND), 'medium_2');
+INSERT INTO ttl_mt_2.medium_ttl (id, ttl_col, data) VALUES (3, DATE_SUB(NOW(), INTERVAL 35 SECOND), 'medium_3');
+INSERT INTO ttl_mt_2.medium_ttl (id, ttl_col, data) VALUES (4, DATE_SUB(NOW(), INTERVAL 35 SECOND), 'medium_4');
+INSERT INTO ttl_mt_2.medium_ttl (id, ttl_col, data) VALUES (5, DATE_SUB(NOW(), INTERVAL 35 SECOND), 'medium_5');
+INSERT INTO ttl_mt_2.medium_ttl (id, ttl_col, data) VALUES (6, DATE_SUB(NOW(), INTERVAL 35 SECOND), 'medium_6');
+INSERT INTO ttl_mt_2.medium_ttl (id, ttl_col, data) VALUES (7, DATE_SUB(NOW(), INTERVAL 35 SECOND), 'medium_7');
+INSERT INTO ttl_mt_2.medium_ttl (id, ttl_col, data) VALUES (8, DATE_SUB(NOW(), INTERVAL 35 SECOND), 'medium_8');
+INSERT INTO ttl_mt_2.medium_ttl (id, ttl_col, data) VALUES (9, DATE_SUB(NOW(), INTERVAL 35 SECOND), 'medium_9');
+INSERT INTO ttl_mt_2.medium_ttl (id, ttl_col, data) VALUES (10, DATE_SUB(NOW(), INTERVAL 35 SECOND), 'medium_10');
+
+# Insert valid rows in long_ttl (1 hour ahead)
+--let $insert_db = ttl_mt_3
+--let $insert_table = long_ttl
+--let $insert_count = 10
+--let $insert_start_id = 1
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_valid.inc
+
+# Wait for short and medium to be purged
+--let $purge_db = ttl_mt_1
+--let $purge_table = short_ttl
+--let $purge_completion_timeout = 30
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_purge_completion.inc
+
+--let $purge_db = ttl_mt_2
+--let $purge_table = medium_ttl
+--let $purge_completion_timeout = 30
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_purge_completion.inc
+
+# Verify long TTL rows still exist
+--let $assert_text = Short TTL rows should be purged
+--let $assert_cond = [SELECT COUNT(*) FROM ttl_mt_1.short_ttl] = 0
+--source include/assert.inc
+
+--let $assert_text = Medium TTL rows should be purged
+--let $assert_cond = [SELECT COUNT(*) FROM ttl_mt_2.medium_ttl] = 0
+--source include/assert.inc
+
+--let $assert_text = Long TTL rows should remain
+--let $assert_cond = [SELECT COUNT(*) FROM ttl_mt_3.long_ttl] = 10
+--source include/assert.inc
+
+DROP DATABASE ttl_mt_1;
+DROP DATABASE ttl_mt_2;
+DROP DATABASE ttl_mt_3;
+--sleep 5
+
+--echo #
+--echo # Test: test_different_databases
+--echo # 3 databases, each with TTL table, all purged
+--echo #
+
+--let $ttl_db = ttl_db_a
+--let $ttl_table = test_table
+--let $ttl_seconds = 5
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+--let $ttl_db = ttl_db_b
+--let $ttl_table = test_table
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+--let $ttl_db = ttl_db_c
+--let $ttl_table = test_table
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+# Insert expired rows in each
+--let $insert_db = ttl_db_a
+--let $insert_table = test_table
+--let $insert_count = 10
+--let $insert_start_id = 1
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_expired.inc
+
+--let $insert_db = ttl_db_b
+--let $insert_table = test_table
+--let $insert_count = 10
+--let $insert_start_id = 1
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_expired.inc
+
+--let $insert_db = ttl_db_c
+--let $insert_table = test_table
+--let $insert_count = 10
+--let $insert_start_id = 1
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_expired.inc
+
+# Wait for all to be purged
+--let $purge_db = ttl_db_a
+--let $purge_table = test_table
+--let $purge_completion_timeout = 30
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_purge_completion.inc
+
+--let $purge_db = ttl_db_b
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_purge_completion.inc
+
+--let $purge_db = ttl_db_c
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_purge_completion.inc
+
+--let $assert_text = All rows in ttl_db_a purged
+--let $assert_cond = [SELECT COUNT(*) FROM ttl_db_a.test_table] = 0
+--source include/assert.inc
+
+--let $assert_text = All rows in ttl_db_b purged
+--let $assert_cond = [SELECT COUNT(*) FROM ttl_db_b.test_table] = 0
+--source include/assert.inc
+
+--let $assert_text = All rows in ttl_db_c purged
+--let $assert_cond = [SELECT COUNT(*) FROM ttl_db_c.test_table] = 0
+--source include/assert.inc
+
+DROP DATABASE ttl_db_a;
+DROP DATABASE ttl_db_b;
+DROP DATABASE ttl_db_c;
+--sleep 5
+
+--echo #
+--echo # Test: test_all_tables_purged_round_robin
+--echo # 5 tables x 20 expired rows, all purged
+--echo #
+
+--let $ttl_db = ttl_multi
+--let $ttl_table = rr_0
+--let $ttl_seconds = 5
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+--let $ttl_table = rr_1
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+--let $ttl_table = rr_2
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+--let $ttl_table = rr_3
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+--let $ttl_table = rr_4
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+# Insert 20 expired rows in each
+--let $insert_db = ttl_multi
+--let $insert_table = rr_0
+--let $insert_count = 20
+--let $insert_start_id = 1
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_expired.inc
+
+--let $insert_table = rr_1
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_expired.inc
+
+--let $insert_table = rr_2
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_expired.inc
+
+--let $insert_table = rr_3
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_expired.inc
+
+--let $insert_table = rr_4
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_expired.inc
+
+# Wait for all tables to be purged
+--let $purge_db = ttl_multi
+--let $purge_table = rr_0
+--let $purge_completion_timeout = 60
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_purge_completion.inc
+
+--let $purge_table = rr_1
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_purge_completion.inc
+
+--let $purge_table = rr_2
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_purge_completion.inc
+
+--let $purge_table = rr_3
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_purge_completion.inc
+
+--let $purge_table = rr_4
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_purge_completion.inc
+
+--echo All 5 tables fully purged via round-robin
+
+# Verify per-table metrics show rows_purged >= 20 for all 5 tables
+# Wait for metrics to update after purge completion
+# (RDRS processes partitions round-robin; metrics lag slightly behind SQL visibility)
+--sleep 30
+
+--exec curl -s $ttl_purge_base/tables/ttl_multi/rr_0 > $MYSQL_TMP_DIR/mt_rr0.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/mt_rr0.json
+--let $json_field = rows_purged
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $assert_text = rr_0 rows_purged should be >= 20
+--let $assert_cond = $json_value >= 20
+--source include/assert.inc
+
+--exec curl -s $ttl_purge_base/tables/ttl_multi/rr_1 > $MYSQL_TMP_DIR/mt_rr1.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/mt_rr1.json
+--let $json_field = rows_purged
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $assert_text = rr_1 rows_purged should be >= 20
+--let $assert_cond = $json_value >= 20
+--source include/assert.inc
+
+--exec curl -s $ttl_purge_base/tables/ttl_multi/rr_2 > $MYSQL_TMP_DIR/mt_rr2.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/mt_rr2.json
+--let $json_field = rows_purged
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $assert_text = rr_2 rows_purged should be >= 20
+--let $assert_cond = $json_value >= 20
+--source include/assert.inc
+
+--exec curl -s $ttl_purge_base/tables/ttl_multi/rr_3 > $MYSQL_TMP_DIR/mt_rr3.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/mt_rr3.json
+--let $json_field = rows_purged
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $assert_text = rr_3 rows_purged should be >= 20
+--let $assert_cond = $json_value >= 20
+--source include/assert.inc
+
+--exec curl -s $ttl_purge_base/tables/ttl_multi/rr_4 > $MYSQL_TMP_DIR/mt_rr4.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/mt_rr4.json
+--let $json_field = rows_purged
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $assert_text = rr_4 rows_purged should be >= 20
+--let $assert_cond = $json_value >= 20
+--source include/assert.inc
+
+DROP DATABASE ttl_multi;
+
+--source suite/ndb_ttl_purge/include/ttl_purge_cleanup_tmp.inc
+
+--echo # All multi-table tests passed

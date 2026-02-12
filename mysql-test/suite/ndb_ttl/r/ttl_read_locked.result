@@ -1,0 +1,485 @@
+#
+# Case 28: FULLY_REPLICATED table with FOR SHARE locking
+#
+DROP TABLE IF EXISTS test.sz1;
+CREATE TABLE test.sz1 (
+col_a INT,
+col_b TIMESTAMP,
+col_c INT,
+PRIMARY KEY(col_a),
+KEY(col_c)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=FULLY_REPLICATED=1,TTL=5@col_b";
+BEGIN;
+INSERT INTO sz1 VALUES
+(1, SYSDATE(), 1), (2, SYSDATE(), 2), (3, SYSDATE(), 3),
+(4, SYSDATE(), 4), (5, SYSDATE(), 5), (6, SYSDATE(), 6),
+(7, SYSDATE(), 7), (8, SYSDATE(), 8), (9, SYSDATE(), 9),
+(10, SYSDATE(), 10);
+COMMIT;
+BEGIN;
+SELECT col_a, col_c FROM sz1;
+col_a	col_c
+1	1
+10	10
+2	2
+3	3
+4	4
+5	5
+6	6
+7	7
+8	8
+9	9
+SELECT col_a, col_c FROM sz1 WHERE col_a = 6;
+col_a	col_c
+6	6
+SELECT col_a, col_c FROM sz1 WHERE col_a >= 6;
+col_a	col_c
+10	10
+6	6
+7	7
+8	8
+9	9
+SELECT col_a, col_c FROM sz1 WHERE col_c = 6;
+col_a	col_c
+6	6
+SELECT col_a, col_c FROM sz1 WHERE col_c <= 6;
+col_a	col_c
+1	1
+2	2
+3	3
+4	4
+5	5
+6	6
+SELECT COUNT(*) FROM sz1;
+COUNT(*)
+0
+COMMIT;
+SELECT COUNT(*) FROM sz1;
+COUNT(*)
+0
+BEGIN;
+INSERT INTO sz1 VALUES
+(1, SYSDATE(), 1), (2, SYSDATE(), 2), (3, SYSDATE(), 3),
+(4, SYSDATE(), 4), (5, SYSDATE(), 5), (6, SYSDATE(), 6),
+(7, SYSDATE(), 7), (8, SYSDATE(), 8), (9, SYSDATE(), 9),
+(10, SYSDATE(), 10);
+COMMIT;
+SELECT col_a, col_c FROM sz1;
+col_a	col_c
+1	1
+10	10
+2	2
+3	3
+4	4
+5	5
+6	6
+7	7
+8	8
+9	9
+BEGIN;
+SELECT col_a, col_c FROM sz1 WHERE col_a <= 5 FOR SHARE;
+col_a	col_c
+1	1
+2	2
+3	3
+4	4
+5	5
+SELECT col_a, col_c FROM sz1;
+col_a	col_c
+1	1
+2	2
+3	3
+4	4
+5	5
+SELECT col_a, col_c FROM sz1 WHERE col_a = 3;
+col_a	col_c
+3	3
+SELECT COUNT(*) FROM sz1 WHERE col_a = 8;
+COUNT(*)
+0
+SELECT col_a, col_c FROM sz1 WHERE col_a >= 3;
+col_a	col_c
+3	3
+4	4
+5	5
+SELECT col_a, col_c FROM sz1 WHERE col_a <= 9;
+col_a	col_c
+1	1
+2	2
+3	3
+4	4
+5	5
+SELECT col_a, col_c FROM sz1 WHERE col_c = 3;
+col_a	col_c
+3	3
+SELECT COUNT(*) FROM sz1 WHERE col_c = 8;
+COUNT(*)
+0
+SELECT col_a, col_c FROM sz1 WHERE col_c >= 3;
+col_a	col_c
+3	3
+4	4
+5	5
+SELECT col_a, col_c FROM sz1 WHERE col_c <= 9;
+col_a	col_c
+1	1
+2	2
+3	3
+4	4
+5	5
+COMMIT;
+BEGIN;
+SELECT COUNT(*) FROM sz1;
+COUNT(*)
+0
+SELECT COUNT(*) FROM sz1 WHERE col_a = 3;
+COUNT(*)
+0
+SELECT COUNT(*) FROM sz1 WHERE col_a = 8;
+COUNT(*)
+0
+SELECT COUNT(*) FROM sz1 WHERE col_a >= 3;
+COUNT(*)
+0
+SELECT COUNT(*) FROM sz1 WHERE col_a <= 9;
+COUNT(*)
+0
+SELECT COUNT(*) FROM sz1 WHERE col_c = 3;
+COUNT(*)
+0
+SELECT COUNT(*) FROM sz1 WHERE col_c = 8;
+COUNT(*)
+0
+SELECT COUNT(*) FROM sz1 WHERE col_c >= 3;
+COUNT(*)
+0
+SELECT COUNT(*) FROM sz1 WHERE col_c <= 9;
+COUNT(*)
+0
+COMMIT;
+DROP TABLE test.sz1;
+#
+# Case 48: Table with UNIQUE KEY and FOR SHARE locking
+#
+DROP TABLE IF EXISTS test.sz;
+CREATE TABLE test.sz (
+col_a INT,
+col_b TIMESTAMP,
+col_c INT,
+PRIMARY KEY(col_a),
+UNIQUE KEY(col_c)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=TTL=66@col_b";
+ALTER TABLE test.sz COMMENT="NDB_TABLE=TTL=5@col_b";
+BEGIN;
+INSERT INTO sz VALUES
+(1, SYSDATE(), 1), (2, SYSDATE(), 2), (3, SYSDATE(), 3),
+(4, SYSDATE(), 4), (5, SYSDATE(), 5), (6, SYSDATE(), 6),
+(7, SYSDATE(), 7), (8, SYSDATE(), 8), (9, SYSDATE(), 9),
+(10, SYSDATE(), 10);
+COMMIT;
+BEGIN;
+SELECT col_a, col_c FROM sz;
+col_a	col_c
+1	1
+10	10
+2	2
+3	3
+4	4
+5	5
+6	6
+7	7
+8	8
+9	9
+SELECT col_a, col_c FROM sz WHERE col_a = 6;
+col_a	col_c
+6	6
+SELECT col_a, col_c FROM sz WHERE col_a >= 6;
+col_a	col_c
+10	10
+6	6
+7	7
+8	8
+9	9
+SELECT col_a, col_c FROM sz WHERE col_c = 8;
+col_a	col_c
+8	8
+SELECT col_a, col_c FROM sz WHERE col_c <= 8;
+col_a	col_c
+1	1
+2	2
+3	3
+4	4
+5	5
+6	6
+7	7
+8	8
+SELECT col_a, col_c FROM sz;
+col_a	col_c
+8	8
+COMMIT;
+SELECT col_a, col_c FROM sz;
+col_a	col_c
+BEGIN;
+INSERT INTO sz VALUES
+(1, SYSDATE(), 1), (2, SYSDATE(), 2), (3, SYSDATE(), 3),
+(4, SYSDATE(), 4), (5, SYSDATE(), 5), (6, SYSDATE(), 6),
+(7, SYSDATE(), 7), (8, SYSDATE(), 8), (9, SYSDATE(), 9),
+(10, SYSDATE(), 10);
+COMMIT;
+SELECT col_a, col_c FROM sz;
+col_a	col_c
+1	1
+10	10
+2	2
+3	3
+4	4
+5	5
+6	6
+7	7
+8	8
+9	9
+BEGIN;
+SELECT col_a, col_c FROM sz WHERE col_a <= 5 FOR SHARE;
+col_a	col_c
+1	1
+2	2
+3	3
+4	4
+5	5
+SELECT col_a, col_c FROM sz;
+col_a	col_c
+1	1
+2	2
+3	3
+4	4
+5	5
+SELECT col_a, col_c FROM sz WHERE col_a = 3;
+col_a	col_c
+3	3
+SELECT COUNT(*) FROM sz WHERE col_a = 8;
+COUNT(*)
+0
+SELECT col_a, col_c FROM sz WHERE col_a >= 3;
+col_a	col_c
+3	3
+4	4
+5	5
+SELECT col_a, col_c FROM sz WHERE col_a <= 9;
+col_a	col_c
+1	1
+2	2
+3	3
+4	4
+5	5
+SELECT col_a, col_c FROM sz WHERE col_c = 3;
+col_a	col_c
+3	3
+SELECT COUNT(*) FROM sz WHERE col_c = 8;
+COUNT(*)
+0
+SELECT col_a, col_c FROM sz WHERE col_c >= 3;
+col_a	col_c
+3	3
+4	4
+5	5
+SELECT col_a, col_c FROM sz WHERE col_c <= 9;
+col_a	col_c
+1	1
+2	2
+3	3
+4	4
+5	5
+COMMIT;
+BEGIN;
+SELECT COUNT(*) FROM sz;
+COUNT(*)
+0
+SELECT COUNT(*) FROM sz WHERE col_a = 3;
+COUNT(*)
+0
+SELECT COUNT(*) FROM sz WHERE col_a = 8;
+COUNT(*)
+0
+SELECT COUNT(*) FROM sz WHERE col_a >= 3;
+COUNT(*)
+0
+SELECT COUNT(*) FROM sz WHERE col_a <= 9;
+COUNT(*)
+0
+SELECT COUNT(*) FROM sz WHERE col_c = 3;
+COUNT(*)
+0
+SELECT COUNT(*) FROM sz WHERE col_c = 8;
+COUNT(*)
+0
+SELECT COUNT(*) FROM sz WHERE col_c >= 3;
+COUNT(*)
+0
+SELECT COUNT(*) FROM sz WHERE col_c <= 9;
+COUNT(*)
+0
+COMMIT;
+DROP TABLE test.sz;
+#
+# Case 29: FULLY_REPLICATED table with FOR SHARE locking (alt)
+#
+DROP TABLE IF EXISTS test.sz1;
+CREATE TABLE test.sz1 (
+col_a INT,
+col_b TIMESTAMP,
+col_c INT,
+PRIMARY KEY(col_a),
+KEY(col_c)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=FULLY_REPLICATED=1,TTL=5@col_b";
+BEGIN;
+INSERT INTO sz1 VALUES
+(1, SYSDATE(), 1), (2, SYSDATE(), 2), (3, SYSDATE(), 3),
+(4, SYSDATE(), 4), (5, SYSDATE(), 5), (6, SYSDATE(), 6),
+(7, SYSDATE(), 7), (8, SYSDATE(), 8), (9, SYSDATE(), 9),
+(10, SYSDATE(), 10);
+COMMIT;
+BEGIN;
+SELECT col_a, col_c FROM sz1;
+col_a	col_c
+1	1
+10	10
+2	2
+3	3
+4	4
+5	5
+6	6
+7	7
+8	8
+9	9
+SELECT col_a, col_c FROM sz1 WHERE col_a = 6;
+col_a	col_c
+6	6
+SELECT col_a, col_c FROM sz1 WHERE col_a >= 6;
+col_a	col_c
+10	10
+6	6
+7	7
+8	8
+9	9
+SELECT col_a, col_c FROM sz1 WHERE col_c = 6;
+col_a	col_c
+6	6
+SELECT col_a, col_c FROM sz1 WHERE col_c <= 6;
+col_a	col_c
+1	1
+2	2
+3	3
+4	4
+5	5
+6	6
+SELECT COUNT(*) FROM sz1;
+COUNT(*)
+0
+COMMIT;
+SELECT COUNT(*) FROM sz1;
+COUNT(*)
+0
+BEGIN;
+INSERT INTO sz1 VALUES
+(1, SYSDATE(), 1), (2, SYSDATE(), 2), (3, SYSDATE(), 3),
+(4, SYSDATE(), 4), (5, SYSDATE(), 5), (6, SYSDATE(), 6),
+(7, SYSDATE(), 7), (8, SYSDATE(), 8), (9, SYSDATE(), 9),
+(10, SYSDATE(), 10);
+COMMIT;
+SELECT col_a, col_c FROM sz1;
+col_a	col_c
+1	1
+10	10
+2	2
+3	3
+4	4
+5	5
+6	6
+7	7
+8	8
+9	9
+BEGIN;
+SELECT col_a, col_c FROM sz1 WHERE col_a <= 5 FOR SHARE;
+col_a	col_c
+1	1
+2	2
+3	3
+4	4
+5	5
+SELECT col_a, col_c FROM sz1;
+col_a	col_c
+1	1
+2	2
+3	3
+4	4
+5	5
+SELECT col_a, col_c FROM sz1 WHERE col_a = 3;
+col_a	col_c
+3	3
+SELECT COUNT(*) FROM sz1 WHERE col_a = 8;
+COUNT(*)
+0
+SELECT col_a, col_c FROM sz1 WHERE col_a >= 3;
+col_a	col_c
+3	3
+4	4
+5	5
+SELECT col_a, col_c FROM sz1 WHERE col_a <= 9;
+col_a	col_c
+1	1
+2	2
+3	3
+4	4
+5	5
+SELECT col_a, col_c FROM sz1 WHERE col_c = 3;
+col_a	col_c
+3	3
+SELECT COUNT(*) FROM sz1 WHERE col_c = 8;
+COUNT(*)
+0
+SELECT col_a, col_c FROM sz1 WHERE col_c >= 3;
+col_a	col_c
+3	3
+4	4
+5	5
+SELECT col_a, col_c FROM sz1 WHERE col_c <= 9;
+col_a	col_c
+1	1
+2	2
+3	3
+4	4
+5	5
+COMMIT;
+BEGIN;
+SELECT COUNT(*) FROM sz1;
+COUNT(*)
+0
+SELECT COUNT(*) FROM sz1 WHERE col_a = 3;
+COUNT(*)
+0
+SELECT COUNT(*) FROM sz1 WHERE col_a = 8;
+COUNT(*)
+0
+SELECT COUNT(*) FROM sz1 WHERE col_a >= 3;
+COUNT(*)
+0
+SELECT COUNT(*) FROM sz1 WHERE col_a <= 9;
+COUNT(*)
+0
+SELECT COUNT(*) FROM sz1 WHERE col_c = 3;
+COUNT(*)
+0
+SELECT COUNT(*) FROM sz1 WHERE col_c = 8;
+COUNT(*)
+0
+SELECT COUNT(*) FROM sz1 WHERE col_c >= 3;
+COUNT(*)
+0
+SELECT COUNT(*) FROM sz1 WHERE col_c <= 9;
+COUNT(*)
+0
+COMMIT;
+DROP TABLE test.sz1;

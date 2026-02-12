@@ -1,0 +1,185 @@
+# ttl_rpl_backup.test
+#
+# Case 46b: Backup on master, restore to slave (cross-cluster).
+# Migrated from ttl_test_suite.py case_46 (BackupRestoreToReplica).
+#
+# Topology: master (2 ndbd) -> slave (1 ndbd), binlog row format
+# TTL = 10 seconds on col_b
+#
+# Three tables:
+#   sz1 - PK + UNIQUE, TTL=10 (NOLOGGING=0 for binlog suite)
+#   sz2 - KEY only, TTL=10 (NOLOGGING=0)
+#   sz3 - PK + KEY, no TTL
+#
+# Flow:
+#   1. Master: insert 4 rows each (3 SYSDATE, 1 future)
+#   2. Wait for TTL expiry -> sz1=1, sz2=1, sz3=4
+#   3. Backup on master
+#   4. Slave: STOP REPLICA, create target database
+#   5. Restore to slave cluster using $NDB_CONNECTSTRING_SLAVE
+#   6. Verify same counts on slave
+
+--source include/have_ndb.inc
+--source include/have_binlog_format_row.inc
+--source suite/ndb_rpl/ndb_rpl_init_source_replica.inc
+--source suite/ndb/include/backup_restore_setup.inc
+
+--echo #
+--echo # Case 46b: Backup on master, restore to slave cluster
+--echo #
+
+###############################################################################
+# Setup on master: create database and 3 tables
+###############################################################################
+
+--connection master
+
+--disable_warnings
+DROP DATABASE IF EXISTS ttl_backup;
+--enable_warnings
+
+CREATE DATABASE ttl_backup;
+
+# sz1: PK + UNIQUE KEY, TTL=10 (NOLOGGING=0 required for binlog suite)
+CREATE TABLE ttl_backup.sz1 (
+    col_a INT,
+    col_b TIMESTAMP,
+    col_c INT,
+    PRIMARY KEY(col_a),
+    UNIQUE KEY(col_c)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=NOLOGGING=0,TTL=66@col_b";
+
+# sz2: non-unique KEY, TTL=10
+CREATE TABLE ttl_backup.sz2 (
+    col_a INT,
+    col_b TIMESTAMP,
+    col_c INT,
+    KEY(col_c)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=NOLOGGING=0,TTL=66@col_b";
+
+# sz3: PK + KEY, no TTL (control table)
+CREATE TABLE ttl_backup.sz3 (
+    col_a INT,
+    col_b TIMESTAMP,
+    col_c INT,
+    PRIMARY KEY(col_a),
+    KEY(col_c)
+) ENGINE = NDB;
+
+sleep 3;
+
+ALTER TABLE ttl_backup.sz1 COMMENT="NDB_TABLE=NOLOGGING=0,TTL=10@col_b";
+ALTER TABLE ttl_backup.sz2 COMMENT="NDB_TABLE=NOLOGGING=0,TTL=10@col_b";
+
+sleep 3;
+
+###############################################################################
+# Phase 1: Insert 4 rows per table on master
+###############################################################################
+
+BEGIN;
+INSERT INTO ttl_backup.sz1 VALUES(1, SYSDATE(), 100);
+INSERT INTO ttl_backup.sz1 VALUES(2, SYSDATE(), 200);
+INSERT INTO ttl_backup.sz1 VALUES(3, DATE_ADD(SYSDATE(), INTERVAL 1 DAY), 300);
+INSERT INTO ttl_backup.sz1 VALUES(4, SYSDATE(), 400);
+INSERT INTO ttl_backup.sz2 VALUES(1, SYSDATE(), 100);
+INSERT INTO ttl_backup.sz2 VALUES(2, SYSDATE(), 200);
+INSERT INTO ttl_backup.sz2 VALUES(3, DATE_ADD(SYSDATE(), INTERVAL 1 DAY), 300);
+INSERT INTO ttl_backup.sz2 VALUES(4, SYSDATE(), 400);
+INSERT INTO ttl_backup.sz3 VALUES(1, SYSDATE(), 100);
+INSERT INTO ttl_backup.sz3 VALUES(2, SYSDATE(), 200);
+INSERT INTO ttl_backup.sz3 VALUES(3, DATE_ADD(SYSDATE(), INTERVAL 1 DAY), 300);
+INSERT INTO ttl_backup.sz3 VALUES(4, SYSDATE(), 400);
+COMMIT;
+
+# Verify all 4 rows present in each table
+SELECT COUNT(*) FROM ttl_backup.sz1;
+SELECT COUNT(*) FROM ttl_backup.sz2;
+SELECT COUNT(*) FROM ttl_backup.sz3;
+
+###############################################################################
+# Phase 2: Wait for TTL expiry on master
+###############################################################################
+
+--let $ttl_wait_condition = SELECT COUNT(*) = 1 FROM ttl_backup.sz1
+--source suite/ndb_ttl_rpl/include/ttl_wait_expired.inc
+
+# Verify: sz1=1 (row 3), sz2=1 (row 3), sz3=4
+SELECT col_a, col_c FROM ttl_backup.sz1;
+SELECT col_a, col_c FROM ttl_backup.sz2;
+SELECT COUNT(*) FROM ttl_backup.sz3;
+
+###############################################################################
+# Phase 3: Backup on master
+###############################################################################
+
+--source include/ndb_backup.inc
+
+###############################################################################
+# Phase 4: Prepare slave for restore
+###############################################################################
+
+--connection slave
+STOP REPLICA;
+
+--disable_warnings
+DROP DATABASE IF EXISTS ttl_backup;
+--enable_warnings
+
+###############################################################################
+# Phase 5: Restore to slave cluster
+# 4-step pattern (needed because sz1 has UNIQUE KEY):
+#   1. meta + disable-indexes
+#   2. data from node 1
+#   3. data from node 2
+#   4. rebuild-indexes
+###############################################################################
+
+--exec $NDB_RESTORE --ndb-connectstring="$NDB_CONNECTSTRING_SLAVE" -b $the_backup_id -n 1 -m --disable-indexes --include-databases=ttl_backup $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT 2>&1
+--exec $NDB_RESTORE --ndb-connectstring="$NDB_CONNECTSTRING_SLAVE" -b $the_backup_id -n 1 -r --include-databases=ttl_backup $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT 2>&1
+--exec $NDB_RESTORE --ndb-connectstring="$NDB_CONNECTSTRING_SLAVE" -b $the_backup_id -n 2 -r --include-databases=ttl_backup $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT 2>&1
+--exec $NDB_RESTORE --ndb-connectstring="$NDB_CONNECTSTRING_SLAVE" -b $the_backup_id -n 1 --rebuild-indexes --include-databases=ttl_backup $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT 2>&1
+
+###############################################################################
+# Phase 6: Wait for schema sync and verify on slave
+###############################################################################
+
+# Create database on slave mysqld to enable NDB table discovery
+--disable_warnings
+CREATE DATABASE IF NOT EXISTS ttl_backup;
+--enable_warnings
+
+# Wait for restored tables to be visible on slave mysqld (direct access triggers NDB discovery)
+--let $wait_timeout = 60
+--let $wait_condition = SELECT COUNT(*) >= 0 FROM ttl_backup.sz1
+--source include/wait_condition.inc
+sleep 3;
+
+--let $wait_timeout = 60
+--let $wait_condition = SELECT COUNT(*) >= 0 FROM ttl_backup.sz2
+--source include/wait_condition.inc
+
+--let $wait_timeout = 60
+--let $wait_condition = SELECT COUNT(*) >= 0 FROM ttl_backup.sz3
+--source include/wait_condition.inc
+
+# Verify restored counts on slave: sz1=1 (row 3), sz2=1 (row 3), sz3=4
+SELECT col_a, col_c FROM ttl_backup.sz1;
+SELECT col_a, col_c FROM ttl_backup.sz2;
+SELECT COUNT(*) FROM ttl_backup.sz3;
+
+###############################################################################
+# Cleanup
+###############################################################################
+
+--connection slave
+DROP DATABASE ttl_backup;
+
+--connection master
+DROP DATABASE ttl_backup;
+--remove_file $NDB_TOOLS_OUTPUT
+--source suite/ndb/include/backup_restore_cleanup.inc
+--let $rpl_only_running_threads= 1
+--source include/rpl/deinit.inc

@@ -1,0 +1,116 @@
+include/rpl/init_source_replica.inc
+Warnings:
+Note	####	Sending passwords in plain text without SSL/TLS is extremely insecure.
+Note	####	Storing MySQL user name or password information in the connection metadata repository is not secure and is therefore not recommended. Please consider using the USER and PASSWORD connection options for START REPLICA; see the 'START REPLICA Syntax' in the MySQL Manual for more information.
+[connection master]
+DROP TABLE IF EXISTS test.sz;
+CREATE TABLE test.sz (
+col_a INT,
+col_b TIMESTAMP,
+col_c INT,
+PRIMARY KEY(col_a),
+UNIQUE KEY(col_c)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=NOLOGGING=0,TTL=66@col_b";
+ALTER TABLE test.sz COMMENT="NDB_TABLE=NOLOGGING=0,TTL=10@col_b";
+#
+# Case 43: DELETE and UPDATE with replication
+#
+BEGIN;
+INSERT INTO test.sz VALUES(1, SYSDATE(), 100);
+INSERT INTO test.sz VALUES(2, SYSDATE(), 200);
+COMMIT;
+SELECT col_a, col_c FROM test.sz ORDER BY col_a;
+col_a	col_c
+1	100
+2	200
+SELECT col_a, col_c FROM test.sz ORDER BY col_a;
+col_a	col_c
+1	100
+2	200
+BEGIN;
+UPDATE test.sz SET col_c = col_c + 100;
+COMMIT;
+SELECT col_a, col_c FROM test.sz WHERE col_a = 1;
+col_a	col_c
+1	200
+SELECT col_a, col_c FROM test.sz WHERE col_a = 1;
+col_a	col_c
+1	200
+BEGIN;
+DELETE FROM test.sz WHERE col_c >= 100;
+COMMIT;
+SELECT col_a, col_c FROM test.sz;
+col_a	col_c
+SELECT col_a, col_c FROM test.sz;
+col_a	col_c
+DELETE FROM test.sz;
+COMMIT;
+#
+# Case 44: INSERT with mixed timestamps (some future-dated)
+#
+BEGIN;
+INSERT INTO test.sz VALUES(1, SYSDATE(), 100);
+INSERT INTO test.sz VALUES(2, SYSDATE(), 200);
+INSERT INTO test.sz VALUES(3, DATE_ADD(SYSDATE(), INTERVAL 1 DAY), 300);
+INSERT INTO test.sz VALUES(4, SYSDATE(), 400);
+COMMIT;
+SELECT col_a, col_c FROM test.sz ORDER BY col_a;
+col_a	col_c
+3	300
+SELECT col_a, col_c FROM test.sz;
+col_a	col_c
+3	300
+BEGIN;
+DELETE FROM test.sz;
+COMMIT;
+SELECT col_a, col_c FROM test.sz;
+col_a	col_c
+SELECT col_a, col_c FROM test.sz;
+col_a	col_c
+DELETE FROM test.sz;
+COMMIT;
+#
+# Case 45: Mixed operations with FOR UPDATE and FOR SHARE
+#
+BEGIN;
+INSERT INTO test.sz VALUES
+(1, SYSDATE(), 1), (2, SYSDATE(), 2), (3, SYSDATE(), 3),
+(4, SYSDATE(), 4), (5, SYSDATE(), 5), (6, SYSDATE(), 6),
+(7, SYSDATE(), 7), (8, SYSDATE(), 8), (9, SYSDATE(), 9),
+(10, SYSDATE(), 10);
+SELECT col_a, col_c FROM test.sz WHERE col_c >= 7 FOR UPDATE;
+col_a	col_c
+7	7
+8	8
+9	9
+10	10
+UPDATE test.sz SET col_c = 100 WHERE col_c <= 3;
+SELECT ROW_COUNT();
+ROW_COUNT()
+3
+SELECT col_a, col_c FROM test.sz WHERE col_a <= 3 FOR SHARE;
+col_a	col_c
+3	100
+2	100
+1	100
+DELETE FROM test.sz WHERE col_c >= 20;
+SELECT ROW_COUNT();
+ROW_COUNT()
+3
+SELECT col_a, col_c FROM test.sz ORDER BY col_a;
+col_a	col_c
+4	4
+5	5
+6	6
+7	7
+8	8
+9	9
+10	10
+COMMIT;
+SELECT col_a, col_c FROM test.sz;
+col_a	col_c
+SELECT col_a, col_c FROM test.sz;
+col_a	col_c
+DROP TABLE test.sz;
+include/rpl/deinit.inc

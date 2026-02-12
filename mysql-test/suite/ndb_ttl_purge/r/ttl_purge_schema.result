@@ -1,0 +1,94 @@
+#
+# Test: test_alter_ttl_value
+# Create TTL=10, verify via API, ALTER to TTL=60, verify change
+#
+CREATE DATABASE IF NOT EXISTS ttl_schema;
+DROP TABLE IF EXISTS ttl_schema.alter_ttl;
+CREATE TABLE ttl_schema.alter_ttl (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_schema.alter_ttl(ttl_col);
+ALTER TABLE ttl_schema.alter_ttl COMMENT="NDB_TABLE=TTL=10@ttl_col";
+include/assert.inc [Initial TTL should be 10]
+ALTER TABLE ttl_schema.alter_ttl COMMENT="NDB_TABLE=TTL=60@ttl_col";
+include/assert.inc [Altered TTL should be 60]
+DROP DATABASE ttl_schema;
+#
+# Test: test_disable_ttl
+# Create TTL, disable, verify removed from API, expired rows stay
+#
+CREATE DATABASE IF NOT EXISTS ttl_schema;
+DROP TABLE IF EXISTS ttl_schema.disable_ttl;
+CREATE TABLE ttl_schema.disable_ttl (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_schema.disable_ttl(ttl_col);
+ALTER TABLE ttl_schema.disable_ttl COMMENT="NDB_TABLE=TTL=10@ttl_col";
+ALTER TABLE ttl_schema.disable_ttl COMMENT="NDB_TABLE=TTL=off";
+INSERT INTO ttl_schema.disable_ttl (id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'should_stay_1');
+INSERT INTO ttl_schema.disable_ttl (id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'should_stay_2');
+INSERT INTO ttl_schema.disable_ttl (id, ttl_col, data) VALUES (3, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'should_stay_3');
+INSERT INTO ttl_schema.disable_ttl (id, ttl_col, data) VALUES (4, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'should_stay_4');
+INSERT INTO ttl_schema.disable_ttl (id, ttl_col, data) VALUES (5, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'should_stay_5');
+include/assert.inc [Rows should remain after TTL disabled]
+DROP DATABASE ttl_schema;
+#
+# Test: test_drop_table_during_purge
+# Create, insert expired, DROP TABLE, check no error state
+#
+CREATE DATABASE IF NOT EXISTS ttl_schema;
+DROP TABLE IF EXISTS ttl_schema.drop_during;
+CREATE TABLE ttl_schema.drop_during (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_schema.drop_during(ttl_col);
+ALTER TABLE ttl_schema.drop_during COMMENT="NDB_TABLE=TTL=5@ttl_col";
+INSERT INTO ttl_schema.drop_during (id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_1');
+INSERT INTO ttl_schema.drop_during (id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_2');
+INSERT INTO ttl_schema.drop_during (id, ttl_col, data) VALUES (3, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_3');
+INSERT INTO ttl_schema.drop_during (id, ttl_col, data) VALUES (4, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_4');
+INSERT INTO ttl_schema.drop_during (id, ttl_col, data) VALUES (5, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_5');
+INSERT INTO ttl_schema.drop_during (id, ttl_col, data) VALUES (6, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_6');
+INSERT INTO ttl_schema.drop_during (id, ttl_col, data) VALUES (7, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_7');
+INSERT INTO ttl_schema.drop_during (id, ttl_col, data) VALUES (8, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_8');
+INSERT INTO ttl_schema.drop_during (id, ttl_col, data) VALUES (9, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_9');
+INSERT INTO ttl_schema.drop_during (id, ttl_col, data) VALUES (10, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_10');
+DROP TABLE ttl_schema.drop_during;
+include/assert.inc [Purge state should not be error after drop]
+Purge state after drop: OK
+DROP DATABASE ttl_schema;
+#
+# Test: test_drop_database_with_ttl_tables
+# Create 3 tables, DROP DB, verify all removed from API
+#
+CREATE DATABASE IF NOT EXISTS ttl_schema;
+DROP TABLE IF EXISTS ttl_schema.multi_0;
+CREATE TABLE ttl_schema.multi_0 (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_schema.multi_0(ttl_col);
+ALTER TABLE ttl_schema.multi_0 COMMENT="NDB_TABLE=TTL=60@ttl_col";
+CREATE DATABASE IF NOT EXISTS ttl_schema;
+Warnings:
+Note	1007	Can't create database 'ttl_schema'; database exists
+DROP TABLE IF EXISTS ttl_schema.multi_1;
+CREATE TABLE ttl_schema.multi_1 (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_schema.multi_1(ttl_col);
+ALTER TABLE ttl_schema.multi_1 COMMENT="NDB_TABLE=TTL=60@ttl_col";
+CREATE DATABASE IF NOT EXISTS ttl_schema;
+Warnings:
+Note	1007	Can't create database 'ttl_schema'; database exists
+DROP TABLE IF EXISTS ttl_schema.multi_2;
+CREATE TABLE ttl_schema.multi_2 (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_schema.multi_2(ttl_col);
+ALTER TABLE ttl_schema.multi_2 COMMENT="NDB_TABLE=TTL=60@ttl_col";
+Tables detected before drop
+DROP DATABASE ttl_schema;
+All 3 tables removed from API after DROP DATABASE
+#
+# Test: test_rename_table
+# Create, RENAME TABLE, verify old gone + new present in API
+#
+CREATE DATABASE IF NOT EXISTS ttl_schema;
+DROP TABLE IF EXISTS ttl_schema.original_name;
+CREATE TABLE ttl_schema.original_name (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_schema.original_name(ttl_col);
+ALTER TABLE ttl_schema.original_name COMMENT="NDB_TABLE=TTL=60@ttl_col";
+RENAME TABLE ttl_schema.original_name TO ttl_schema.new_name;
+include/assert.inc [Old table name should return non-200 after rename]
+New name has TTL setting
+include/assert.inc [Renamed table should have TTL setting]
+DROP DATABASE ttl_schema;
+# All schema change tests passed

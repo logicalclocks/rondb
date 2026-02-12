@@ -1,0 +1,255 @@
+#
+# Test: test_different_ttl_durations
+# 3 tables (TTL=5, 30, 3600); only short and medium purged
+#
+CREATE DATABASE IF NOT EXISTS ttl_mt_1;
+DROP TABLE IF EXISTS ttl_mt_1.short_ttl;
+CREATE TABLE ttl_mt_1.short_ttl (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_mt_1.short_ttl(ttl_col);
+ALTER TABLE ttl_mt_1.short_ttl COMMENT="NDB_TABLE=TTL=5@ttl_col";
+CREATE DATABASE IF NOT EXISTS ttl_mt_2;
+DROP TABLE IF EXISTS ttl_mt_2.medium_ttl;
+CREATE TABLE ttl_mt_2.medium_ttl (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_mt_2.medium_ttl(ttl_col);
+ALTER TABLE ttl_mt_2.medium_ttl COMMENT="NDB_TABLE=TTL=30@ttl_col";
+CREATE DATABASE IF NOT EXISTS ttl_mt_3;
+DROP TABLE IF EXISTS ttl_mt_3.long_ttl;
+CREATE TABLE ttl_mt_3.long_ttl (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_mt_3.long_ttl(ttl_col);
+ALTER TABLE ttl_mt_3.long_ttl COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+INSERT INTO ttl_mt_1.short_ttl (id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_1');
+INSERT INTO ttl_mt_1.short_ttl (id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_2');
+INSERT INTO ttl_mt_1.short_ttl (id, ttl_col, data) VALUES (3, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_3');
+INSERT INTO ttl_mt_1.short_ttl (id, ttl_col, data) VALUES (4, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_4');
+INSERT INTO ttl_mt_1.short_ttl (id, ttl_col, data) VALUES (5, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_5');
+INSERT INTO ttl_mt_1.short_ttl (id, ttl_col, data) VALUES (6, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_6');
+INSERT INTO ttl_mt_1.short_ttl (id, ttl_col, data) VALUES (7, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_7');
+INSERT INTO ttl_mt_1.short_ttl (id, ttl_col, data) VALUES (8, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_8');
+INSERT INTO ttl_mt_1.short_ttl (id, ttl_col, data) VALUES (9, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_9');
+INSERT INTO ttl_mt_1.short_ttl (id, ttl_col, data) VALUES (10, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_10');
+INSERT INTO ttl_mt_2.medium_ttl (id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 35 SECOND), 'medium_1');
+INSERT INTO ttl_mt_2.medium_ttl (id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 35 SECOND), 'medium_2');
+INSERT INTO ttl_mt_2.medium_ttl (id, ttl_col, data) VALUES (3, DATE_SUB(NOW(), INTERVAL 35 SECOND), 'medium_3');
+INSERT INTO ttl_mt_2.medium_ttl (id, ttl_col, data) VALUES (4, DATE_SUB(NOW(), INTERVAL 35 SECOND), 'medium_4');
+INSERT INTO ttl_mt_2.medium_ttl (id, ttl_col, data) VALUES (5, DATE_SUB(NOW(), INTERVAL 35 SECOND), 'medium_5');
+INSERT INTO ttl_mt_2.medium_ttl (id, ttl_col, data) VALUES (6, DATE_SUB(NOW(), INTERVAL 35 SECOND), 'medium_6');
+INSERT INTO ttl_mt_2.medium_ttl (id, ttl_col, data) VALUES (7, DATE_SUB(NOW(), INTERVAL 35 SECOND), 'medium_7');
+INSERT INTO ttl_mt_2.medium_ttl (id, ttl_col, data) VALUES (8, DATE_SUB(NOW(), INTERVAL 35 SECOND), 'medium_8');
+INSERT INTO ttl_mt_2.medium_ttl (id, ttl_col, data) VALUES (9, DATE_SUB(NOW(), INTERVAL 35 SECOND), 'medium_9');
+INSERT INTO ttl_mt_2.medium_ttl (id, ttl_col, data) VALUES (10, DATE_SUB(NOW(), INTERVAL 35 SECOND), 'medium_10');
+INSERT INTO ttl_mt_3.long_ttl (id, ttl_col, data) VALUES (1, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'valid_row_1');
+INSERT INTO ttl_mt_3.long_ttl (id, ttl_col, data) VALUES (2, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'valid_row_2');
+INSERT INTO ttl_mt_3.long_ttl (id, ttl_col, data) VALUES (3, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'valid_row_3');
+INSERT INTO ttl_mt_3.long_ttl (id, ttl_col, data) VALUES (4, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'valid_row_4');
+INSERT INTO ttl_mt_3.long_ttl (id, ttl_col, data) VALUES (5, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'valid_row_5');
+INSERT INTO ttl_mt_3.long_ttl (id, ttl_col, data) VALUES (6, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'valid_row_6');
+INSERT INTO ttl_mt_3.long_ttl (id, ttl_col, data) VALUES (7, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'valid_row_7');
+INSERT INTO ttl_mt_3.long_ttl (id, ttl_col, data) VALUES (8, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'valid_row_8');
+INSERT INTO ttl_mt_3.long_ttl (id, ttl_col, data) VALUES (9, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'valid_row_9');
+INSERT INTO ttl_mt_3.long_ttl (id, ttl_col, data) VALUES (10, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'valid_row_10');
+include/assert.inc [Short TTL rows should be purged]
+include/assert.inc [Medium TTL rows should be purged]
+include/assert.inc [Long TTL rows should remain]
+DROP DATABASE ttl_mt_1;
+DROP DATABASE ttl_mt_2;
+DROP DATABASE ttl_mt_3;
+#
+# Test: test_different_databases
+# 3 databases, each with TTL table, all purged
+#
+CREATE DATABASE IF NOT EXISTS ttl_db_a;
+DROP TABLE IF EXISTS ttl_db_a.test_table;
+CREATE TABLE ttl_db_a.test_table (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_db_a.test_table(ttl_col);
+ALTER TABLE ttl_db_a.test_table COMMENT="NDB_TABLE=TTL=5@ttl_col";
+CREATE DATABASE IF NOT EXISTS ttl_db_b;
+DROP TABLE IF EXISTS ttl_db_b.test_table;
+CREATE TABLE ttl_db_b.test_table (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_db_b.test_table(ttl_col);
+ALTER TABLE ttl_db_b.test_table COMMENT="NDB_TABLE=TTL=5@ttl_col";
+CREATE DATABASE IF NOT EXISTS ttl_db_c;
+DROP TABLE IF EXISTS ttl_db_c.test_table;
+CREATE TABLE ttl_db_c.test_table (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_db_c.test_table(ttl_col);
+ALTER TABLE ttl_db_c.test_table COMMENT="NDB_TABLE=TTL=5@ttl_col";
+INSERT INTO ttl_db_a.test_table (id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_1');
+INSERT INTO ttl_db_a.test_table (id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_2');
+INSERT INTO ttl_db_a.test_table (id, ttl_col, data) VALUES (3, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_3');
+INSERT INTO ttl_db_a.test_table (id, ttl_col, data) VALUES (4, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_4');
+INSERT INTO ttl_db_a.test_table (id, ttl_col, data) VALUES (5, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_5');
+INSERT INTO ttl_db_a.test_table (id, ttl_col, data) VALUES (6, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_6');
+INSERT INTO ttl_db_a.test_table (id, ttl_col, data) VALUES (7, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_7');
+INSERT INTO ttl_db_a.test_table (id, ttl_col, data) VALUES (8, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_8');
+INSERT INTO ttl_db_a.test_table (id, ttl_col, data) VALUES (9, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_9');
+INSERT INTO ttl_db_a.test_table (id, ttl_col, data) VALUES (10, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_10');
+INSERT INTO ttl_db_b.test_table (id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_1');
+INSERT INTO ttl_db_b.test_table (id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_2');
+INSERT INTO ttl_db_b.test_table (id, ttl_col, data) VALUES (3, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_3');
+INSERT INTO ttl_db_b.test_table (id, ttl_col, data) VALUES (4, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_4');
+INSERT INTO ttl_db_b.test_table (id, ttl_col, data) VALUES (5, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_5');
+INSERT INTO ttl_db_b.test_table (id, ttl_col, data) VALUES (6, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_6');
+INSERT INTO ttl_db_b.test_table (id, ttl_col, data) VALUES (7, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_7');
+INSERT INTO ttl_db_b.test_table (id, ttl_col, data) VALUES (8, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_8');
+INSERT INTO ttl_db_b.test_table (id, ttl_col, data) VALUES (9, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_9');
+INSERT INTO ttl_db_b.test_table (id, ttl_col, data) VALUES (10, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_10');
+INSERT INTO ttl_db_c.test_table (id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_1');
+INSERT INTO ttl_db_c.test_table (id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_2');
+INSERT INTO ttl_db_c.test_table (id, ttl_col, data) VALUES (3, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_3');
+INSERT INTO ttl_db_c.test_table (id, ttl_col, data) VALUES (4, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_4');
+INSERT INTO ttl_db_c.test_table (id, ttl_col, data) VALUES (5, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_5');
+INSERT INTO ttl_db_c.test_table (id, ttl_col, data) VALUES (6, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_6');
+INSERT INTO ttl_db_c.test_table (id, ttl_col, data) VALUES (7, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_7');
+INSERT INTO ttl_db_c.test_table (id, ttl_col, data) VALUES (8, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_8');
+INSERT INTO ttl_db_c.test_table (id, ttl_col, data) VALUES (9, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_9');
+INSERT INTO ttl_db_c.test_table (id, ttl_col, data) VALUES (10, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_10');
+include/assert.inc [All rows in ttl_db_a purged]
+include/assert.inc [All rows in ttl_db_b purged]
+include/assert.inc [All rows in ttl_db_c purged]
+DROP DATABASE ttl_db_a;
+DROP DATABASE ttl_db_b;
+DROP DATABASE ttl_db_c;
+#
+# Test: test_all_tables_purged_round_robin
+# 5 tables x 20 expired rows, all purged
+#
+CREATE DATABASE IF NOT EXISTS ttl_multi;
+DROP TABLE IF EXISTS ttl_multi.rr_0;
+CREATE TABLE ttl_multi.rr_0 (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_multi.rr_0(ttl_col);
+ALTER TABLE ttl_multi.rr_0 COMMENT="NDB_TABLE=TTL=5@ttl_col";
+CREATE DATABASE IF NOT EXISTS ttl_multi;
+Warnings:
+Note	1007	Can't create database 'ttl_multi'; database exists
+DROP TABLE IF EXISTS ttl_multi.rr_1;
+CREATE TABLE ttl_multi.rr_1 (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_multi.rr_1(ttl_col);
+ALTER TABLE ttl_multi.rr_1 COMMENT="NDB_TABLE=TTL=5@ttl_col";
+CREATE DATABASE IF NOT EXISTS ttl_multi;
+Warnings:
+Note	1007	Can't create database 'ttl_multi'; database exists
+DROP TABLE IF EXISTS ttl_multi.rr_2;
+CREATE TABLE ttl_multi.rr_2 (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_multi.rr_2(ttl_col);
+ALTER TABLE ttl_multi.rr_2 COMMENT="NDB_TABLE=TTL=5@ttl_col";
+CREATE DATABASE IF NOT EXISTS ttl_multi;
+Warnings:
+Note	1007	Can't create database 'ttl_multi'; database exists
+DROP TABLE IF EXISTS ttl_multi.rr_3;
+CREATE TABLE ttl_multi.rr_3 (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_multi.rr_3(ttl_col);
+ALTER TABLE ttl_multi.rr_3 COMMENT="NDB_TABLE=TTL=5@ttl_col";
+CREATE DATABASE IF NOT EXISTS ttl_multi;
+Warnings:
+Note	1007	Can't create database 'ttl_multi'; database exists
+DROP TABLE IF EXISTS ttl_multi.rr_4;
+CREATE TABLE ttl_multi.rr_4 (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_multi.rr_4(ttl_col);
+ALTER TABLE ttl_multi.rr_4 COMMENT="NDB_TABLE=TTL=5@ttl_col";
+INSERT INTO ttl_multi.rr_0 (id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_1');
+INSERT INTO ttl_multi.rr_0 (id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_2');
+INSERT INTO ttl_multi.rr_0 (id, ttl_col, data) VALUES (3, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_3');
+INSERT INTO ttl_multi.rr_0 (id, ttl_col, data) VALUES (4, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_4');
+INSERT INTO ttl_multi.rr_0 (id, ttl_col, data) VALUES (5, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_5');
+INSERT INTO ttl_multi.rr_0 (id, ttl_col, data) VALUES (6, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_6');
+INSERT INTO ttl_multi.rr_0 (id, ttl_col, data) VALUES (7, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_7');
+INSERT INTO ttl_multi.rr_0 (id, ttl_col, data) VALUES (8, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_8');
+INSERT INTO ttl_multi.rr_0 (id, ttl_col, data) VALUES (9, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_9');
+INSERT INTO ttl_multi.rr_0 (id, ttl_col, data) VALUES (10, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_10');
+INSERT INTO ttl_multi.rr_0 (id, ttl_col, data) VALUES (11, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_11');
+INSERT INTO ttl_multi.rr_0 (id, ttl_col, data) VALUES (12, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_12');
+INSERT INTO ttl_multi.rr_0 (id, ttl_col, data) VALUES (13, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_13');
+INSERT INTO ttl_multi.rr_0 (id, ttl_col, data) VALUES (14, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_14');
+INSERT INTO ttl_multi.rr_0 (id, ttl_col, data) VALUES (15, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_15');
+INSERT INTO ttl_multi.rr_0 (id, ttl_col, data) VALUES (16, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_16');
+INSERT INTO ttl_multi.rr_0 (id, ttl_col, data) VALUES (17, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_17');
+INSERT INTO ttl_multi.rr_0 (id, ttl_col, data) VALUES (18, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_18');
+INSERT INTO ttl_multi.rr_0 (id, ttl_col, data) VALUES (19, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_19');
+INSERT INTO ttl_multi.rr_0 (id, ttl_col, data) VALUES (20, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_20');
+INSERT INTO ttl_multi.rr_1 (id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_1');
+INSERT INTO ttl_multi.rr_1 (id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_2');
+INSERT INTO ttl_multi.rr_1 (id, ttl_col, data) VALUES (3, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_3');
+INSERT INTO ttl_multi.rr_1 (id, ttl_col, data) VALUES (4, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_4');
+INSERT INTO ttl_multi.rr_1 (id, ttl_col, data) VALUES (5, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_5');
+INSERT INTO ttl_multi.rr_1 (id, ttl_col, data) VALUES (6, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_6');
+INSERT INTO ttl_multi.rr_1 (id, ttl_col, data) VALUES (7, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_7');
+INSERT INTO ttl_multi.rr_1 (id, ttl_col, data) VALUES (8, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_8');
+INSERT INTO ttl_multi.rr_1 (id, ttl_col, data) VALUES (9, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_9');
+INSERT INTO ttl_multi.rr_1 (id, ttl_col, data) VALUES (10, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_10');
+INSERT INTO ttl_multi.rr_1 (id, ttl_col, data) VALUES (11, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_11');
+INSERT INTO ttl_multi.rr_1 (id, ttl_col, data) VALUES (12, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_12');
+INSERT INTO ttl_multi.rr_1 (id, ttl_col, data) VALUES (13, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_13');
+INSERT INTO ttl_multi.rr_1 (id, ttl_col, data) VALUES (14, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_14');
+INSERT INTO ttl_multi.rr_1 (id, ttl_col, data) VALUES (15, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_15');
+INSERT INTO ttl_multi.rr_1 (id, ttl_col, data) VALUES (16, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_16');
+INSERT INTO ttl_multi.rr_1 (id, ttl_col, data) VALUES (17, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_17');
+INSERT INTO ttl_multi.rr_1 (id, ttl_col, data) VALUES (18, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_18');
+INSERT INTO ttl_multi.rr_1 (id, ttl_col, data) VALUES (19, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_19');
+INSERT INTO ttl_multi.rr_1 (id, ttl_col, data) VALUES (20, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_20');
+INSERT INTO ttl_multi.rr_2 (id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_1');
+INSERT INTO ttl_multi.rr_2 (id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_2');
+INSERT INTO ttl_multi.rr_2 (id, ttl_col, data) VALUES (3, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_3');
+INSERT INTO ttl_multi.rr_2 (id, ttl_col, data) VALUES (4, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_4');
+INSERT INTO ttl_multi.rr_2 (id, ttl_col, data) VALUES (5, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_5');
+INSERT INTO ttl_multi.rr_2 (id, ttl_col, data) VALUES (6, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_6');
+INSERT INTO ttl_multi.rr_2 (id, ttl_col, data) VALUES (7, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_7');
+INSERT INTO ttl_multi.rr_2 (id, ttl_col, data) VALUES (8, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_8');
+INSERT INTO ttl_multi.rr_2 (id, ttl_col, data) VALUES (9, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_9');
+INSERT INTO ttl_multi.rr_2 (id, ttl_col, data) VALUES (10, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_10');
+INSERT INTO ttl_multi.rr_2 (id, ttl_col, data) VALUES (11, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_11');
+INSERT INTO ttl_multi.rr_2 (id, ttl_col, data) VALUES (12, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_12');
+INSERT INTO ttl_multi.rr_2 (id, ttl_col, data) VALUES (13, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_13');
+INSERT INTO ttl_multi.rr_2 (id, ttl_col, data) VALUES (14, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_14');
+INSERT INTO ttl_multi.rr_2 (id, ttl_col, data) VALUES (15, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_15');
+INSERT INTO ttl_multi.rr_2 (id, ttl_col, data) VALUES (16, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_16');
+INSERT INTO ttl_multi.rr_2 (id, ttl_col, data) VALUES (17, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_17');
+INSERT INTO ttl_multi.rr_2 (id, ttl_col, data) VALUES (18, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_18');
+INSERT INTO ttl_multi.rr_2 (id, ttl_col, data) VALUES (19, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_19');
+INSERT INTO ttl_multi.rr_2 (id, ttl_col, data) VALUES (20, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_20');
+INSERT INTO ttl_multi.rr_3 (id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_1');
+INSERT INTO ttl_multi.rr_3 (id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_2');
+INSERT INTO ttl_multi.rr_3 (id, ttl_col, data) VALUES (3, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_3');
+INSERT INTO ttl_multi.rr_3 (id, ttl_col, data) VALUES (4, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_4');
+INSERT INTO ttl_multi.rr_3 (id, ttl_col, data) VALUES (5, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_5');
+INSERT INTO ttl_multi.rr_3 (id, ttl_col, data) VALUES (6, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_6');
+INSERT INTO ttl_multi.rr_3 (id, ttl_col, data) VALUES (7, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_7');
+INSERT INTO ttl_multi.rr_3 (id, ttl_col, data) VALUES (8, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_8');
+INSERT INTO ttl_multi.rr_3 (id, ttl_col, data) VALUES (9, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_9');
+INSERT INTO ttl_multi.rr_3 (id, ttl_col, data) VALUES (10, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_10');
+INSERT INTO ttl_multi.rr_3 (id, ttl_col, data) VALUES (11, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_11');
+INSERT INTO ttl_multi.rr_3 (id, ttl_col, data) VALUES (12, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_12');
+INSERT INTO ttl_multi.rr_3 (id, ttl_col, data) VALUES (13, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_13');
+INSERT INTO ttl_multi.rr_3 (id, ttl_col, data) VALUES (14, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_14');
+INSERT INTO ttl_multi.rr_3 (id, ttl_col, data) VALUES (15, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_15');
+INSERT INTO ttl_multi.rr_3 (id, ttl_col, data) VALUES (16, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_16');
+INSERT INTO ttl_multi.rr_3 (id, ttl_col, data) VALUES (17, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_17');
+INSERT INTO ttl_multi.rr_3 (id, ttl_col, data) VALUES (18, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_18');
+INSERT INTO ttl_multi.rr_3 (id, ttl_col, data) VALUES (19, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_19');
+INSERT INTO ttl_multi.rr_3 (id, ttl_col, data) VALUES (20, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_20');
+INSERT INTO ttl_multi.rr_4 (id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_1');
+INSERT INTO ttl_multi.rr_4 (id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_2');
+INSERT INTO ttl_multi.rr_4 (id, ttl_col, data) VALUES (3, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_3');
+INSERT INTO ttl_multi.rr_4 (id, ttl_col, data) VALUES (4, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_4');
+INSERT INTO ttl_multi.rr_4 (id, ttl_col, data) VALUES (5, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_5');
+INSERT INTO ttl_multi.rr_4 (id, ttl_col, data) VALUES (6, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_6');
+INSERT INTO ttl_multi.rr_4 (id, ttl_col, data) VALUES (7, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_7');
+INSERT INTO ttl_multi.rr_4 (id, ttl_col, data) VALUES (8, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_8');
+INSERT INTO ttl_multi.rr_4 (id, ttl_col, data) VALUES (9, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_9');
+INSERT INTO ttl_multi.rr_4 (id, ttl_col, data) VALUES (10, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_10');
+INSERT INTO ttl_multi.rr_4 (id, ttl_col, data) VALUES (11, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_11');
+INSERT INTO ttl_multi.rr_4 (id, ttl_col, data) VALUES (12, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_12');
+INSERT INTO ttl_multi.rr_4 (id, ttl_col, data) VALUES (13, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_13');
+INSERT INTO ttl_multi.rr_4 (id, ttl_col, data) VALUES (14, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_14');
+INSERT INTO ttl_multi.rr_4 (id, ttl_col, data) VALUES (15, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_15');
+INSERT INTO ttl_multi.rr_4 (id, ttl_col, data) VALUES (16, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_16');
+INSERT INTO ttl_multi.rr_4 (id, ttl_col, data) VALUES (17, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_17');
+INSERT INTO ttl_multi.rr_4 (id, ttl_col, data) VALUES (18, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_18');
+INSERT INTO ttl_multi.rr_4 (id, ttl_col, data) VALUES (19, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_19');
+INSERT INTO ttl_multi.rr_4 (id, ttl_col, data) VALUES (20, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_20');
+All 5 tables fully purged via round-robin
+include/assert.inc [rr_0 rows_purged should be >= 20]
+include/assert.inc [rr_1 rows_purged should be >= 20]
+include/assert.inc [rr_2 rows_purged should be >= 20]
+include/assert.inc [rr_3 rows_purged should be >= 20]
+include/assert.inc [rr_4 rows_purged should be >= 20]
+DROP DATABASE ttl_multi;
+# All multi-table tests passed

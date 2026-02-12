@@ -1,0 +1,195 @@
+--source include/have_ndb.inc
+
+# suite/ndb_ttl_purge/t/ttl_purge_edge.test
+#
+# Edge case tests for TTL purge (6 cases):
+#   - test_no_expired_rows
+#   - test_all_rows_expired
+#   - test_empty_table
+#   - test_boundary_time
+#   - test_multi_partition
+#   - test_very_short_ttl
+
+--source suite/ndb_ttl_purge/include/ttl_purge_setup.inc
+--source suite/ndb_ttl_purge/include/ttl_purge_reset_config.inc
+
+--echo #
+--echo # Test: test_no_expired_rows
+--echo # TTL=3600s, insert valid rows, verify none purged
+--echo #
+
+--let $ttl_db = ttl_edge
+--let $ttl_table = no_expired
+--let $ttl_seconds = 3600
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+--let $insert_db = ttl_edge
+--let $insert_table = no_expired
+--let $insert_count = 10
+--let $insert_start_id = 1
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_valid.inc
+
+SELECT COUNT(*) FROM ttl_edge.no_expired;
+--sleep 10
+
+# After multiple purge cycles, all valid rows should remain
+--let $assert_text = No rows should be purged with TTL=3600
+--let $assert_cond = [SELECT COUNT(*) FROM ttl_edge.no_expired] = 10
+--source include/assert.inc
+
+DROP DATABASE ttl_edge;
+--sleep 3
+
+--echo #
+--echo # Test: test_all_rows_expired
+--echo # Insert 50 expired rows, wait for purge, all should be gone
+--echo #
+
+--let $ttl_db = ttl_edge
+--let $ttl_table = all_expired
+--let $ttl_seconds = 5
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+--let $insert_db = ttl_edge
+--let $insert_table = all_expired
+--let $insert_count = 50
+--let $insert_start_id = 1
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_expired.inc
+
+--let $purge_db = ttl_edge
+--let $purge_table = all_expired
+--let $purge_completion_timeout = 60
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_purge_completion.inc
+
+--let $assert_text = All 50 expired rows should be purged
+--let $assert_cond = [SELECT COUNT(*) FROM ttl_edge.all_expired] = 0
+--source include/assert.inc
+
+DROP DATABASE ttl_edge;
+--sleep 3
+
+--echo #
+--echo # Test: test_empty_table
+--echo # Create empty TTL table, verify detected by API, no error state
+--echo #
+
+--let $ttl_db = ttl_edge
+--let $ttl_table = empty_tbl
+--let $ttl_seconds = 10
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+# Wait for schema watcher to detect the table
+--let $wait_db = ttl_edge
+--let $wait_table = empty_tbl
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_table_detected.inc
+
+# Check purge status is not in error state
+--exec $ttl_purge_get_status > $MYSQL_TMP_DIR/edge_status.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/edge_status.json
+--let $json_field = state
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--exec echo '$json_value' > $MYSQL_TMP_DIR/_edge_state.txt
+--perl
+my $tmp = $ENV{MYSQL_TMP_DIR};
+open my $f, '<', "$tmp/_edge_state.txt" or die;
+my $val = <$f>; chomp $val; close $f;
+open my $o, '>', "$tmp/_edge_state_check.inc" or die;
+print $o "--let \$state_not_error = " . ($val ne 'error' ? 1 : 0) . "\n";
+close $o;
+EOF
+--source $MYSQL_TMP_DIR/_edge_state_check.inc
+
+--let $assert_text = Purge state should not be error
+--let $assert_cond = $state_not_error = 1
+--source include/assert.inc
+--echo Purge state after empty table: OK
+
+DROP DATABASE ttl_edge;
+--sleep 3
+
+--echo #
+--echo # Test: test_boundary_time
+--echo # Insert row with NOW(), wait for TTL expiry + purge
+--echo #
+
+--let $ttl_db = ttl_edge
+--let $ttl_table = boundary
+--let $ttl_seconds = 10
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+INSERT INTO ttl_edge.boundary (id, ttl_col, data) VALUES (1, NOW(), 'boundary_row');
+
+--let $assert_text = Row should be visible immediately after insert
+--let $assert_cond = [SELECT COUNT(*) FROM ttl_edge.boundary] = 1
+--source include/assert.inc
+
+# Wait for TTL expiry (10s) + purge cycle
+--let $purge_db = ttl_edge
+--let $purge_table = boundary
+--let $purge_completion_timeout = 30
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_purge_completion.inc
+
+--let $assert_text = Row should be purged after TTL expiry
+--let $assert_cond = [SELECT COUNT(*) FROM ttl_edge.boundary] = 0
+--source include/assert.inc
+
+DROP DATABASE ttl_edge;
+--sleep 3
+
+--echo #
+--echo # Test: test_multi_partition
+--echo # PARTITION BY KEY(id) PARTITIONS 4, 40 expired rows, all purged
+--echo #
+
+--let $ttl_db = ttl_edge
+--let $ttl_table = multi_part
+--let $ttl_seconds = 5
+--let $ttl_partitions = 4
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+--let $insert_db = ttl_edge
+--let $insert_table = multi_part
+--let $insert_count = 40
+--let $insert_start_id = 1
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_expired.inc
+
+--let $purge_db = ttl_edge
+--let $purge_table = multi_part
+--let $purge_completion_timeout = 60
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_purge_completion.inc
+
+--let $assert_text = All 40 rows across 4 partitions should be purged
+--let $assert_cond = [SELECT COUNT(*) FROM ttl_edge.multi_part] = 0
+--source include/assert.inc
+
+--echo Purge complete across 4 partitions
+
+DROP DATABASE ttl_edge;
+--sleep 3
+
+--echo #
+--echo # Test: test_very_short_ttl
+--echo # TTL=1s, insert with NOW(), wait for purge
+--echo #
+
+--let $ttl_db = ttl_edge
+--let $ttl_table = short_ttl
+--let $ttl_seconds = 1
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+INSERT INTO ttl_edge.short_ttl (id, ttl_col, data) VALUES (1, NOW(), 'short_lived');
+
+--let $purge_db = ttl_edge
+--let $purge_table = short_ttl
+--let $purge_completion_timeout = 30
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_purge_completion.inc
+
+--let $assert_text = Very short TTL row should be purged
+--let $assert_cond = [SELECT COUNT(*) FROM ttl_edge.short_ttl] = 0
+--source include/assert.inc
+
+DROP DATABASE ttl_edge;
+
+--source suite/ndb_ttl_purge/include/ttl_purge_cleanup_tmp.inc
+
+--echo # All edge case tests passed

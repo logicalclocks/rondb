@@ -1,0 +1,103 @@
+# ttl_backup_alter.test
+#
+# Case 46f: ALTER TTL after backup/restore.
+#
+# Verifies that ALTER TABLE COMMENT (changing TTL) works correctly
+# on a restored table:
+#   1. Restore table with TTL=10
+#   2. Wait for expiry -> 1 row
+#   3. ALTER TTL=OFF -> all physical rows visible
+#   4. ALTER TTL=10@col_b -> expired rows hidden again
+#   5. ALTER TTL=86400@col_b -> SYSDATE rows within 1-day window, visible
+#
+# NOTE: COUNT(*) uses an NDB access path that bypasses TTL filtering.
+# All row-existence checks use SELECT col_a ... instead.
+
+--source include/have_ndb.inc
+--source suite/ndb_ttl/include/ttl_backup_restore_setup.inc
+
+--disable_warnings
+DROP DATABASE IF EXISTS ttl_backup;
+--enable_warnings
+
+CREATE DATABASE ttl_backup;
+
+--echo #
+--echo # Case 46f: ALTER TTL after backup/restore
+--echo #
+
+CREATE TABLE ttl_backup.sz1 (
+    col_a INT,
+    col_b TIMESTAMP,
+    col_c INT,
+    PRIMARY KEY(col_a)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=TTL=66@col_b";
+
+sleep 3;
+ALTER TABLE ttl_backup.sz1 COMMENT="NDB_TABLE=TTL=10@col_b";
+sleep 3;
+
+# Insert 2 rows: 1 SYSDATE (expires), 1 future
+INSERT INTO ttl_backup.sz1 VALUES(1, SYSDATE(), 100);
+INSERT INTO ttl_backup.sz1 VALUES(2, DATE_ADD(SYSDATE(), INTERVAL 1 DAY), 200);
+
+SELECT col_a, col_c FROM ttl_backup.sz1 ORDER BY col_a;
+
+# Backup
+--source include/ndb_backup.inc
+
+# Drop and restore
+DROP DATABASE ttl_backup;
+sleep 3;
+
+--exec $NDB_RESTORE -b $the_backup_id -n 1 -m --disable-indexes --include-databases=ttl_backup $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT 2>&1
+--exec $NDB_RESTORE -b $the_backup_id -n 1 -r --include-databases=ttl_backup $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT 2>&1
+--exec $NDB_RESTORE -b $the_backup_id -n 2 -r --include-databases=ttl_backup $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT 2>&1
+--exec $NDB_RESTORE -b $the_backup_id -n 1 --rebuild-indexes --include-databases=ttl_backup $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT 2>&1
+
+# Create database on mysqld side to enable NDB table discovery
+--disable_warnings
+CREATE DATABASE IF NOT EXISTS ttl_backup;
+--enable_warnings
+
+--let $ttl_sync_db = ttl_backup
+--let $ttl_sync_table = sz1
+--source suite/ndb_ttl/include/ttl_backup_wait_schema_sync.inc
+
+# Wait for TTL expiry: row 1 expires, row 2 survives
+--let $ttl_wait_timeout = 20
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM ttl_backup.sz1 WHERE col_a = 1
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+
+# Verify: 1 row (row 2, col_c=200)
+SELECT col_a, col_c FROM ttl_backup.sz1;
+
+# ALTER TTL=OFF -> all physical rows visible (including expired row 1)
+ALTER TABLE ttl_backup.sz1 COMMENT="NDB_TABLE=TTL=OFF";
+
+SELECT col_a, col_c FROM ttl_backup.sz1 ORDER BY col_a;
+
+# ALTER TTL=10@col_b -> row 1 expired again (timestamp far in the past)
+ALTER TABLE ttl_backup.sz1 COMMENT="NDB_TABLE=TTL=10@col_b";
+
+# Wait for TTL to take effect
+sleep 3;
+
+SELECT col_a, col_c FROM ttl_backup.sz1;
+
+# ALTER TTL=86400@col_b -> row 1 within 1-day window, visible again
+ALTER TABLE ttl_backup.sz1 COMMENT="NDB_TABLE=TTL=86400@col_b";
+
+# Wait for ALTER to propagate
+sleep 3;
+
+SELECT col_a, col_c FROM ttl_backup.sz1 ORDER BY col_a;
+
+###############################################################################
+# Cleanup
+###############################################################################
+
+DROP DATABASE ttl_backup;
+--remove_file $NDB_TOOLS_OUTPUT
+--source suite/ndb/include/backup_restore_cleanup.inc

@@ -1,0 +1,400 @@
+###############################################################################
+# ttl_upsert.test
+#
+# Tests for INSERT ON DUPLICATE KEY UPDATE behaviour with TTL-enabled tables.
+# Migrated from ttl_test_suite.py, cases 6-12.
+#
+# Table:  test.sz  (col_a INT PK, col_b TIMESTAMP [TTL=5s], col_c INT UNIQUE)
+#
+# Case  6: ROLLBACK after TTL, plain INSERT (both expire)
+# Case  7: COMMIT before TTL, ON DUP KEY UPDATE updates existing row
+# Case  8: COMMIT after TTL, ON DUP KEY does INSERT (row expired)
+# Case  9: COMMIT after TTL, ON DUP KEY does INSERT, both expire
+# Case 10: ROLLBACK before TTL, ON DUP KEY does INSERT (fresh)
+# Case 11: ROLLBACK after TTL, ON DUP KEY does INSERT
+# Case 12: ROLLBACK after TTL, both expire
+###############################################################################
+
+--source include/have_ndb.inc
+--source suite/ndb_ttl/include/ttl_create_table.inc
+
+connect (conn_a, localhost, root,,test,$MASTER_MYPORT,);
+connect (conn_b, localhost, root,,test,$MASTER_MYPORT,);
+
+###############################################################################
+# Case 6: ROLLBACK after TTL, plain INSERT (both expire)
+#
+# Python:
+#   Thread A: BEGIN, INSERT(1, SYSDATE(), 100), sleep(13), ROLLBACK
+#   Thread B: sleep(2), BEGIN, INSERT(1, SYSDATE(), 200), COMMIT
+#   Both rows expire.
+#
+# Thread B's plain INSERT on same PK blocks until A releases.
+# A holds the lock past TTL then rolls back.
+# B's INSERT succeeds (no row after rollback) but B's SYSDATE() is old
+# (evaluated at statement start time), so the newly inserted row is already
+# past TTL. Both connections see 0 rows.
+###############################################################################
+
+--echo
+--echo # ================================================
+--echo # Case 6: ROLLBACK after TTL, plain INSERT (both expire)
+--echo # ================================================
+
+connection conn_a;
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+
+# Thread B tries INSERT on same PK -- will block on A's lock.
+connection conn_b;
+BEGIN;
+--send INSERT INTO sz VALUES(1, SYSDATE(), 200)
+
+# A holds past TTL, then rolls back.
+connection conn_a;
+sleep 7;
+ROLLBACK;
+
+# B's INSERT now proceeds.
+connection conn_b;
+--reap
+COMMIT;
+
+# Both rows should have expired.
+# B's SYSDATE() was evaluated at statement start (before the 7s wait),
+# so its timestamp is old enough to have expired.
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM test.sz WHERE col_a = 1
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+
+connection conn_a;
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+
+# Clean up for next test
+DELETE FROM sz;
+
+###############################################################################
+# Case 7: COMMIT before TTL, ON DUP KEY UPDATE updates existing row
+#
+# Python:
+#   Thread A: BEGIN, INSERT(1, SYSDATE(), 100), sleep(5), COMMIT
+#   Thread B: sleep(2), BEGIN,
+#             INSERT ... ON DUP KEY UPDATE col_c=201, col_b=NOW(), COMMIT
+#   A commits before TTL -> row exists and is not expired.
+#   B's ON DUP KEY hits existing row -> does UPDATE to col_c=201, col_b=NOW().
+#   Both see col_c=201. Row eventually expires.
+###############################################################################
+
+--echo
+--echo # ================================================
+--echo # Case 7: COMMIT before TTL, ON DUP KEY UPDATE updates existing row
+--echo # ================================================
+
+connection conn_a;
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+
+# Thread B: INSERT ON DUP KEY UPDATE blocks on A's lock.
+connection conn_b;
+BEGIN;
+--send INSERT INTO sz VALUES(1, SYSDATE(), 200) ON DUPLICATE KEY UPDATE col_c = 201, col_b = NOW()
+
+# A commits before TTL.
+connection conn_a;
+sleep 2;
+COMMIT;
+
+# B proceeds -- row exists and is not expired, so ON DUP KEY does UPDATE.
+connection conn_b;
+--reap
+COMMIT;
+
+# Both should see col_c=201 (the UPDATE path).
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+
+connection conn_a;
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+
+# Wait for TTL expiry (row was refreshed by NOW() in UPDATE).
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM test.sz WHERE col_a = 1
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+
+# Clean up for next test
+DELETE FROM sz;
+
+###############################################################################
+# Case 8: COMMIT after TTL, ON DUP KEY does INSERT (row expired)
+#
+# Python:
+#   Thread A: BEGIN, INSERT(1, SYSDATE(), 100), sleep(11), COMMIT
+#   Thread B: sleep(5), BEGIN,
+#             INSERT ... ON DUP KEY UPDATE col_c=201, col_b=NOW(), COMMIT
+#   A commits after TTL -> row timestamp is expired.
+#   B's ON DUP KEY sees expired row -> ZINSERT_TTL: fresh INSERT with col_c=200.
+#   Both see col_c=200 (INSERT path, not UPDATE path). Row eventually expires.
+###############################################################################
+
+--echo
+--echo # ================================================
+--echo # Case 8: COMMIT after TTL, ON DUP KEY does INSERT (row expired)
+--echo # ================================================
+
+connection conn_a;
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+
+# Partial delay so B gets a fresh SYSDATE() when --send is issued below.
+sleep 3;
+
+# Thread B: INSERT ON DUP KEY UPDATE blocks on A's lock.
+# B's SYSDATE() is captured at ~T+3.
+connection conn_b;
+BEGIN;
+--send INSERT INTO sz VALUES(1, SYSDATE(), 200) ON DUPLICATE KEY UPDATE col_c = 201, col_b = NOW()
+
+# A holds past TTL, then commits. Total hold = 3+4 = 7s > TTL=5s.
+# A's row is expired. B's SYSDATE() was at ~T+3, so after ZINSERT_TTL,
+# B's row is 4s old -- still within TTL=5s.
+connection conn_a;
+sleep 4;
+COMMIT;
+
+# B proceeds -- A's row timestamp is expired, so ON DUP KEY does
+# ZINSERT_TTL (fresh INSERT). col_c=200 from the VALUES clause.
+connection conn_b;
+--reap
+COMMIT;
+
+# Both should see col_c=200 (the fresh INSERT path, not UPDATE to 201).
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+
+connection conn_a;
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+
+# Wait for TTL expiry.
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM test.sz WHERE col_a = 1
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+
+# Clean up for next test
+DELETE FROM sz;
+
+###############################################################################
+# Case 9: COMMIT after TTL, ON DUP KEY does INSERT, both expire
+#
+# Python:
+#   Thread A: BEGIN, INSERT(1, SYSDATE(), 100), sleep(13), COMMIT
+#   Thread B: sleep(2), BEGIN,
+#             INSERT ... ON DUP KEY UPDATE col_c=201, col_b=NOW(), COMMIT
+#   A commits after TTL -> row expired -> ZINSERT_TTL fresh INSERT.
+#   But B's SYSDATE() was set early (T+2), so by the time A commits at T+13,
+#   B's fresh row is also already past TTL. Both see 0 rows.
+###############################################################################
+
+--echo
+--echo # ================================================
+--echo # Case 9: COMMIT after TTL, ON DUP KEY does INSERT, both expire
+--echo # ================================================
+
+connection conn_a;
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+
+# Thread B: INSERT ON DUP KEY UPDATE blocks on A's lock.
+# B sends early, so its SYSDATE() is captured now.
+connection conn_b;
+BEGIN;
+--send INSERT INTO sz VALUES(1, SYSDATE(), 200) ON DUPLICATE KEY UPDATE col_c = 201, col_b = NOW()
+
+# A holds well past TTL, then commits.
+connection conn_a;
+sleep 7;
+COMMIT;
+
+# B proceeds -- ZINSERT_TTL path, but B's timestamp is old enough to
+# have expired as well.
+connection conn_b;
+--reap
+COMMIT;
+
+# Both should see 0 rows (both expired).
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM test.sz WHERE col_a = 1
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+
+connection conn_a;
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+
+# Clean up for next test
+DELETE FROM sz;
+
+###############################################################################
+# Case 10: ROLLBACK before TTL, ON DUP KEY does INSERT (fresh)
+#
+# Python:
+#   Thread A: BEGIN, INSERT(1, SYSDATE(), 100), sleep(5), ROLLBACK
+#   Thread B: sleep(2), BEGIN,
+#             INSERT ... ON DUP KEY UPDATE col_c=201, col_b=NOW(), COMMIT
+#   A rolls back before TTL -> no row.
+#   B's INSERT ON DUP KEY: no existing row -> does fresh INSERT with col_c=200.
+#   Both see col_c=200. Row eventually expires.
+###############################################################################
+
+--echo
+--echo # ================================================
+--echo # Case 10: ROLLBACK before TTL, ON DUP KEY does INSERT (fresh)
+--echo # ================================================
+
+connection conn_a;
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+
+# Thread B: INSERT ON DUP KEY UPDATE blocks on A's lock.
+connection conn_b;
+BEGIN;
+--send INSERT INTO sz VALUES(1, SYSDATE(), 200) ON DUPLICATE KEY UPDATE col_c = 201, col_b = NOW()
+
+# A rolls back before TTL.
+connection conn_a;
+sleep 2;
+ROLLBACK;
+
+# B proceeds -- no row after rollback, so does fresh INSERT col_c=200.
+connection conn_b;
+--reap
+COMMIT;
+
+# Both should see col_c=200 (fresh INSERT, not UPDATE to 201).
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+
+connection conn_a;
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+
+# Wait for TTL expiry.
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM test.sz WHERE col_a = 1
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+
+# Clean up for next test
+DELETE FROM sz;
+
+###############################################################################
+# Case 11: ROLLBACK after TTL, ON DUP KEY does INSERT
+#
+# Python:
+#   Thread A: BEGIN, INSERT(1, SYSDATE(), 100), sleep(11), ROLLBACK
+#   Thread B: sleep(5), BEGIN,
+#             INSERT ... ON DUP KEY UPDATE col_c=201, col_b=NOW(), COMMIT
+#   A rolls back after TTL -> no row.
+#   B's INSERT ON DUP KEY: no existing row -> fresh INSERT col_c=200.
+#   Both see col_c=200. Row eventually expires.
+###############################################################################
+
+--echo
+--echo # ================================================
+--echo # Case 11: ROLLBACK after TTL, ON DUP KEY does INSERT
+--echo # ================================================
+
+connection conn_a;
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+
+# Partial delay so B gets a fresh SYSDATE() when --send is issued below.
+sleep 3;
+
+# Thread B: INSERT ON DUP KEY UPDATE blocks on A's lock.
+# B's SYSDATE() is captured at ~T+3.
+connection conn_b;
+BEGIN;
+--send INSERT INTO sz VALUES(1, SYSDATE(), 200) ON DUPLICATE KEY UPDATE col_c = 201, col_b = NOW()
+
+# A holds past TTL, then rolls back. Total hold = 3+4 = 7s > TTL=5s.
+# B's row has timestamp ~T+3, age at rollback = 4s < TTL=5s => still alive.
+connection conn_a;
+sleep 4;
+ROLLBACK;
+
+# B proceeds -- no row after rollback -> fresh INSERT col_c=200.
+connection conn_b;
+--reap
+COMMIT;
+
+# Both should see col_c=200 (fresh INSERT, not UPDATE).
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+
+connection conn_a;
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+
+# Wait for TTL expiry.
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM test.sz WHERE col_a = 1
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+
+# Clean up for next test
+DELETE FROM sz;
+
+###############################################################################
+# Case 12: ROLLBACK after TTL, both expire
+#
+# Python:
+#   Thread A: BEGIN, INSERT(1, SYSDATE(), 100), sleep(14), ROLLBACK
+#   Thread B: sleep(2), BEGIN,
+#             INSERT ... ON DUP KEY UPDATE col_c=201, col_b=NOW(), COMMIT
+#   A rolls back well past TTL -> no row.
+#   B does fresh INSERT, but B's SYSDATE() was set early (T+2).
+#   By the time A rolls back at T+14, B's row is already expired.
+#   Both see 0 rows.
+###############################################################################
+
+--echo
+--echo # ================================================
+--echo # Case 12: ROLLBACK after TTL, both expire
+--echo # ================================================
+
+connection conn_a;
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+
+# Thread B: INSERT ON DUP KEY UPDATE blocks on A's lock.
+# B sends early so its SYSDATE() is captured now.
+connection conn_b;
+BEGIN;
+--send INSERT INTO sz VALUES(1, SYSDATE(), 200) ON DUPLICATE KEY UPDATE col_c = 201, col_b = NOW()
+
+# A holds well past TTL, then rolls back.
+connection conn_a;
+sleep 7;
+ROLLBACK;
+
+# B proceeds -- fresh INSERT, but B's timestamp is old -> expired.
+connection conn_b;
+--reap
+COMMIT;
+
+# Both should see 0 rows (both expired).
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM test.sz WHERE col_a = 1
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+
+connection conn_a;
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+
+# Clean up for next test
+DELETE FROM sz;
+
+###############################################################################
+# Cleanup
+###############################################################################
+
+connection default;
+disconnect conn_a;
+disconnect conn_b;
+DROP TABLE test.sz;

@@ -1,0 +1,131 @@
+# ttl_backup_multi.test
+#
+# Case 46h: Multi-table backup/restore with different TTL configs.
+#
+# Three tables:
+#   sz1 - PK + UNIQUE, TTL=10 (short)
+#   sz2 - PK, TTL=86400 (1 day)
+#   sz3 - PK, no TTL
+#
+# Flow:
+#   1. Insert 1 future row each, backup, drop, restore
+#   2. Insert 1 SYSDATE row each, wait for TTL=10 expiry
+#   3. Verify: sz1=1 (new row expired), sz2=2 (within 86400 window), sz3=2
+#
+# NOTE: COUNT(*) uses an NDB access path that bypasses TTL filtering.
+# All row-existence checks use SELECT col_a ... instead.
+
+--source include/have_ndb.inc
+--source suite/ndb_ttl/include/ttl_backup_restore_setup.inc
+
+--disable_warnings
+DROP DATABASE IF EXISTS ttl_backup;
+--enable_warnings
+
+CREATE DATABASE ttl_backup;
+
+--echo #
+--echo # Case 46h: Multi-table backup/restore with mixed TTL configs
+--echo #
+
+# sz1: TTL=10 (short)
+CREATE TABLE ttl_backup.sz1 (
+    col_a INT,
+    col_b TIMESTAMP,
+    col_c INT,
+    PRIMARY KEY(col_a),
+    UNIQUE KEY(col_c)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=TTL=66@col_b";
+
+# sz2: TTL=86400 (1 day)
+CREATE TABLE ttl_backup.sz2 (
+    col_a INT,
+    col_b TIMESTAMP,
+    col_c INT,
+    PRIMARY KEY(col_a)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=TTL=86400@col_b";
+
+# sz3: no TTL
+CREATE TABLE ttl_backup.sz3 (
+    col_a INT,
+    col_b TIMESTAMP,
+    col_c INT,
+    PRIMARY KEY(col_a)
+) ENGINE = NDB;
+
+sleep 3;
+
+# Switch sz1 to test TTL (10 seconds)
+ALTER TABLE ttl_backup.sz1 COMMENT="NDB_TABLE=TTL=10@col_b";
+sleep 3;
+
+# Insert 1 future row per table: sz1 +1 day, sz2 +2 days (within 86400s TTL), sz3 SYSDATE
+INSERT INTO ttl_backup.sz1 VALUES(1, DATE_ADD(SYSDATE(), INTERVAL 1 DAY), 100);
+INSERT INTO ttl_backup.sz2 VALUES(1, DATE_ADD(SYSDATE(), INTERVAL 2 DAY), 100);
+INSERT INTO ttl_backup.sz3 VALUES(1, SYSDATE(), 100);
+
+SELECT col_a, col_c FROM ttl_backup.sz1;
+SELECT col_a, col_c FROM ttl_backup.sz2;
+SELECT col_a, col_c FROM ttl_backup.sz3;
+
+# Backup
+--source include/ndb_backup.inc
+
+# Drop and restore
+DROP DATABASE ttl_backup;
+sleep 3;
+
+--exec $NDB_RESTORE -b $the_backup_id -n 1 -m --disable-indexes --include-databases=ttl_backup $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT 2>&1
+--exec $NDB_RESTORE -b $the_backup_id -n 1 -r --include-databases=ttl_backup $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT 2>&1
+--exec $NDB_RESTORE -b $the_backup_id -n 2 -r --include-databases=ttl_backup $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT 2>&1
+--exec $NDB_RESTORE -b $the_backup_id -n 1 --rebuild-indexes --include-databases=ttl_backup $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT 2>&1
+
+# Create database on mysqld side to enable NDB table discovery
+--disable_warnings
+CREATE DATABASE IF NOT EXISTS ttl_backup;
+--enable_warnings
+
+--let $ttl_sync_db = ttl_backup
+--let $ttl_sync_table = sz1
+--source suite/ndb_ttl/include/ttl_backup_wait_schema_sync.inc
+
+--let $ttl_sync_db = ttl_backup
+--let $ttl_sync_table = sz2
+--source suite/ndb_ttl/include/ttl_backup_wait_schema_sync.inc
+
+--let $ttl_sync_db = ttl_backup
+--let $ttl_sync_table = sz3
+--source suite/ndb_ttl/include/ttl_backup_wait_schema_sync.inc
+
+# Verify all tables restored with 1 row each
+SELECT col_a, col_c FROM ttl_backup.sz1;
+SELECT col_a, col_c FROM ttl_backup.sz2;
+SELECT col_a, col_c FROM ttl_backup.sz3;
+
+# Now insert 1 SYSDATE row into each table
+INSERT INTO ttl_backup.sz1 VALUES(2, SYSDATE(), 200);
+INSERT INTO ttl_backup.sz2 VALUES(2, SYSDATE(), 200);
+INSERT INTO ttl_backup.sz3 VALUES(2, SYSDATE(), 200);
+
+# Wait for TTL=10 expiry on sz1: row 2 should expire
+--let $ttl_wait_timeout = 20
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM ttl_backup.sz1 WHERE col_a = 2
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+
+# Verify:
+# sz1 = 1 row (row 2 expired, row 1 future survives)
+# sz2 = 2 rows (both within 86400 window)
+# sz3 = 2 rows (no TTL)
+SELECT col_a, col_c FROM ttl_backup.sz1;
+SELECT col_a, col_c FROM ttl_backup.sz2 ORDER BY col_a;
+SELECT col_a, col_c FROM ttl_backup.sz3 ORDER BY col_a;
+
+###############################################################################
+# Cleanup
+###############################################################################
+
+DROP DATABASE ttl_backup;
+--remove_file $NDB_TOOLS_OUTPUT
+--source suite/ndb/include/backup_restore_cleanup.inc

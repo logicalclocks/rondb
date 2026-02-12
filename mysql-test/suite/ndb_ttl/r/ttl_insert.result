@@ -1,0 +1,104 @@
+DROP TABLE IF EXISTS test.sz;
+CREATE TABLE test.sz (
+col_a INT,
+col_b TIMESTAMP,
+col_c INT,
+PRIMARY KEY(col_a),
+UNIQUE KEY(col_c)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=TTL=66@col_b";
+ALTER TABLE test.sz COMMENT="NDB_TABLE=TTL=5@col_b";
+#
+# Case 1: INSERT duplicate key error when existing row not expired
+#
+DELETE FROM sz;
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 200);
+COMMIT;
+ERROR 23000: Duplicate entry '1' for key 'sz.PRIMARY'
+COMMIT;
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+col_a	col_c
+1	100
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+col_a	col_c
+1	100
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+COUNT(*)
+0
+#
+# Case 2: ZINSERT_TTL allows INSERT to expired row slot
+#
+DELETE FROM sz;
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 200);
+COMMIT;
+COMMIT;
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+col_a	col_c
+1	200
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+col_a	col_c
+1	200
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+COUNT(*)
+0
+#
+# Case 3: Both INSERT operations result in expired rows
+#
+DELETE FROM sz;
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 200);
+COMMIT;
+COMMIT;
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+COUNT(*)
+0
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+COUNT(*)
+0
+#
+# Case 4: ROLLBACK releases row, other INSERT succeeds (before TTL)
+#
+DELETE FROM sz;
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 200);
+ROLLBACK;
+COMMIT;
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+col_a	col_c
+1	200
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+col_a	col_c
+1	200
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+COUNT(*)
+0
+#
+# Case 5: ROLLBACK after TTL, other INSERT already succeeded via ZINSERT_TTL
+#
+DELETE FROM sz;
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 200);
+ROLLBACK;
+COMMIT;
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+col_a	col_c
+1	200
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+col_a	col_c
+1	200
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+COUNT(*)
+0
+DROP TABLE test.sz;
