@@ -1767,7 +1767,6 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
     Uint32 m_tupleNo;      // tuple number on page
     Uint32 m_buildRef;     // Where to send tuples
     Uint32 m_outstanding;  // If mt-build...
-    Uint32 m_num_fragments;// Number of fragments
     BuildIndxImplRef::ErrorCode m_errorCode;
     union {
       Uint32 nextPool;
@@ -1781,16 +1780,6 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
   BuildIndexRec_pool c_buildIndexPool;
   BuildIndexRec_list c_buildIndexList;
   Uint32 c_noOfBuildIndexRec;
-  Uint32 m_offline_rebuild_outstanding;
-  Uint32 m_queued_offline_rebuild_counter;
-#ifdef VM_TRACE
-#define MAX_OFFLINE_REBUILD_INDEXES 1
-#else
-#define MAX_OFFLINE_REBUILD_INDEXES 4
-#endif
-  Uint32 m_queued_offline_rebuild[MAX_OUTSTANDING_REBUILD_INDEXES + 1];
-  void insertOfflineRebuildQueue(Uint32 buildPtrI, Uint32 line);
-  void removeOfflineRebuildQueue(Uint32 buildPtrI, Uint32 line);
 
   int mt_scan_init(Uint32 tableId,
                    Uint32 fragId,
