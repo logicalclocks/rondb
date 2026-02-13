@@ -1,0 +1,314 @@
+DROP TABLE IF EXISTS test.sz;
+CREATE TABLE test.sz (
+col_a INT,
+col_b TIMESTAMP,
+col_c INT,
+PRIMARY KEY(col_a),
+UNIQUE KEY(col_c)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=TTL=66@col_b";
+ALTER TABLE test.sz COMMENT="NDB_TABLE=TTL=5@col_b";
+# -------------------------------------------------------
+# Case 19: DELETE succeeds when row not expired
+# -------------------------------------------------------
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+BEGIN;
+DELETE FROM sz WHERE col_a = 1;
+COMMIT;
+SELECT ROW_COUNT();
+ROW_COUNT()
+1
+COMMIT;
+SELECT COUNT(*) FROM sz;
+COUNT(*)
+0
+SELECT COUNT(*) FROM sz;
+COUNT(*)
+0
+DELETE FROM sz;
+# -------------------------------------------------------
+# Case 20: DELETE finds no row (row expired)
+# -------------------------------------------------------
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+BEGIN;
+DELETE FROM sz WHERE col_a = 1;
+COMMIT;
+SELECT ROW_COUNT();
+ROW_COUNT()
+0
+COMMIT;
+SELECT COUNT(*) FROM sz;
+COUNT(*)
+0
+DELETE FROM sz;
+# -------------------------------------------------------
+# Case 21: ROLLBACK before TTL, DELETE finds no row
+# -------------------------------------------------------
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+BEGIN;
+DELETE FROM sz WHERE col_a = 1;
+ROLLBACK;
+SELECT ROW_COUNT();
+ROW_COUNT()
+0
+COMMIT;
+SELECT COUNT(*) FROM sz;
+COUNT(*)
+0
+SELECT COUNT(*) FROM sz;
+COUNT(*)
+0
+DELETE FROM sz;
+# -------------------------------------------------------
+# Case 22: ROLLBACK after TTL, DELETE finds no row
+# -------------------------------------------------------
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+BEGIN;
+DELETE FROM sz WHERE col_a = 1;
+ROLLBACK;
+SELECT ROW_COUNT();
+ROW_COUNT()
+0
+COMMIT;
+SELECT COUNT(*) FROM sz;
+COUNT(*)
+0
+SELECT COUNT(*) FROM sz;
+COUNT(*)
+0
+DELETE FROM sz;
+# -------------------------------------------------------
+# Case 27: ttl_expired_rows_visible_in_delete
+# -------------------------------------------------------
+# Test 1: DELETE FROM sz (full table delete)
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 101);
+INSERT INTO sz VALUES(2, SYSDATE(), 102);
+INSERT INTO sz VALUES(3, SYSDATE(), 103);
+INSERT INTO sz VALUES(4, SYSDATE(), 104);
+INSERT INTO sz VALUES(5, SYSDATE(), 105);
+COMMIT;
+SELECT COUNT(*) FROM sz;
+COUNT(*)
+5
+BEGIN;
+DELETE FROM sz;
+SELECT ROW_COUNT();
+ROW_COUNT()
+0
+SET ttl_expired_rows_visible_in_delete = ON;
+DELETE FROM sz;
+SELECT ROW_COUNT();
+ROW_COUNT()
+5
+COMMIT;
+SET ttl_expired_rows_visible_in_delete = OFF;
+DELETE FROM sz;
+# Test 2: DELETE FROM sz WHERE col_a > 1
+INSERT INTO sz VALUES(1, SYSDATE(), 101);
+INSERT INTO sz VALUES(2, SYSDATE(), 102);
+INSERT INTO sz VALUES(3, SYSDATE(), 103);
+INSERT INTO sz VALUES(4, SYSDATE(), 104);
+INSERT INTO sz VALUES(5, SYSDATE(), 105);
+COMMIT;
+SELECT COUNT(*) FROM sz;
+COUNT(*)
+5
+BEGIN;
+DELETE FROM sz WHERE col_a > 1;
+SELECT ROW_COUNT();
+ROW_COUNT()
+0
+SET ttl_expired_rows_visible_in_delete = ON;
+DELETE FROM sz WHERE col_a > 1;
+SELECT ROW_COUNT();
+ROW_COUNT()
+4
+COMMIT;
+SET ttl_expired_rows_visible_in_delete = ON;
+DELETE FROM sz;
+SET ttl_expired_rows_visible_in_delete = OFF;
+# Test 3: DELETE FROM sz WHERE col_a > 1 AND col_c < 104
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 101);
+INSERT INTO sz VALUES(2, SYSDATE(), 102);
+INSERT INTO sz VALUES(3, SYSDATE(), 103);
+INSERT INTO sz VALUES(4, SYSDATE(), 104);
+INSERT INTO sz VALUES(5, SYSDATE(), 105);
+COMMIT;
+SELECT COUNT(*) FROM sz;
+COUNT(*)
+5
+BEGIN;
+DELETE FROM sz WHERE col_a > 1 AND col_c < 104;
+SELECT ROW_COUNT();
+ROW_COUNT()
+0
+SET ttl_expired_rows_visible_in_delete = ON;
+DELETE FROM sz WHERE col_a > 1 AND col_c < 104;
+SELECT ROW_COUNT();
+ROW_COUNT()
+2
+COMMIT;
+SET ttl_expired_rows_visible_in_delete = ON;
+DELETE FROM sz;
+SET ttl_expired_rows_visible_in_delete = OFF;
+# Test 4: DELETE FROM sz WHERE col_a > 1 OR col_c < 104
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 101);
+INSERT INTO sz VALUES(2, SYSDATE(), 102);
+INSERT INTO sz VALUES(3, SYSDATE(), 103);
+INSERT INTO sz VALUES(4, SYSDATE(), 104);
+INSERT INTO sz VALUES(5, SYSDATE(), 105);
+COMMIT;
+SELECT COUNT(*) FROM sz;
+COUNT(*)
+5
+BEGIN;
+DELETE FROM sz WHERE col_a > 1 OR col_c < 104;
+SELECT ROW_COUNT();
+ROW_COUNT()
+0
+SET ttl_expired_rows_visible_in_delete = ON;
+DELETE FROM sz WHERE col_a > 1 OR col_c < 104;
+SELECT ROW_COUNT();
+ROW_COUNT()
+5
+COMMIT;
+SET ttl_expired_rows_visible_in_delete = OFF;
+DELETE FROM sz;
+# Test 5: DELETE FROM sz WHERE col_c > 101 AND col_c < 104
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 101);
+INSERT INTO sz VALUES(2, SYSDATE(), 102);
+INSERT INTO sz VALUES(3, SYSDATE(), 103);
+INSERT INTO sz VALUES(4, SYSDATE(), 104);
+INSERT INTO sz VALUES(5, SYSDATE(), 105);
+COMMIT;
+SELECT COUNT(*) FROM sz;
+COUNT(*)
+5
+BEGIN;
+DELETE FROM sz WHERE col_c > 101 AND col_c < 104;
+SELECT ROW_COUNT();
+ROW_COUNT()
+0
+SET ttl_expired_rows_visible_in_delete = ON;
+DELETE FROM sz WHERE col_c > 101 AND col_c < 104;
+SELECT ROW_COUNT();
+ROW_COUNT()
+2
+COMMIT;
+SET ttl_expired_rows_visible_in_delete = ON;
+DELETE FROM sz;
+SET ttl_expired_rows_visible_in_delete = OFF;
+# Test 6: DELETE FROM sz WHERE col_c > 101 OR col_c < 104
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 101);
+INSERT INTO sz VALUES(2, SYSDATE(), 102);
+INSERT INTO sz VALUES(3, SYSDATE(), 103);
+INSERT INTO sz VALUES(4, SYSDATE(), 104);
+INSERT INTO sz VALUES(5, SYSDATE(), 105);
+COMMIT;
+SELECT COUNT(*) FROM sz;
+COUNT(*)
+5
+BEGIN;
+DELETE FROM sz WHERE col_c > 101 OR col_c < 104;
+SELECT ROW_COUNT();
+ROW_COUNT()
+0
+SET ttl_expired_rows_visible_in_delete = ON;
+DELETE FROM sz WHERE col_c > 101 OR col_c < 104;
+SELECT ROW_COUNT();
+ROW_COUNT()
+5
+COMMIT;
+SET ttl_expired_rows_visible_in_delete = OFF;
+DELETE FROM sz;
+# Test 7: DELETE FROM sz WHERE col_c = 103
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 101);
+INSERT INTO sz VALUES(2, SYSDATE(), 102);
+INSERT INTO sz VALUES(3, SYSDATE(), 103);
+INSERT INTO sz VALUES(4, SYSDATE(), 104);
+INSERT INTO sz VALUES(5, SYSDATE(), 105);
+COMMIT;
+SELECT COUNT(*) FROM sz;
+COUNT(*)
+5
+BEGIN;
+DELETE FROM sz WHERE col_c = 103;
+SELECT ROW_COUNT();
+ROW_COUNT()
+0
+SET ttl_expired_rows_visible_in_delete = ON;
+DELETE FROM sz WHERE col_c = 103;
+SELECT ROW_COUNT();
+ROW_COUNT()
+1
+COMMIT;
+SET ttl_expired_rows_visible_in_delete = ON;
+DELETE FROM sz;
+SET ttl_expired_rows_visible_in_delete = OFF;
+# Test 8: DELETE FROM sz WHERE col_a = 4
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 101);
+INSERT INTO sz VALUES(2, SYSDATE(), 102);
+INSERT INTO sz VALUES(3, SYSDATE(), 103);
+INSERT INTO sz VALUES(4, SYSDATE(), 104);
+INSERT INTO sz VALUES(5, SYSDATE(), 105);
+COMMIT;
+SELECT COUNT(*) FROM sz;
+COUNT(*)
+5
+BEGIN;
+DELETE FROM sz WHERE col_a = 4;
+SELECT ROW_COUNT();
+ROW_COUNT()
+0
+SET ttl_expired_rows_visible_in_delete = ON;
+DELETE FROM sz WHERE col_a = 4;
+SELECT ROW_COUNT();
+ROW_COUNT()
+1
+COMMIT;
+SET ttl_expired_rows_visible_in_delete = ON;
+DELETE FROM sz;
+SET ttl_expired_rows_visible_in_delete = OFF;
+# Test 9: DELETE FROM sz WHERE col_c <= 105 LIMIT 2 (repeated)
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 101);
+INSERT INTO sz VALUES(2, SYSDATE(), 102);
+INSERT INTO sz VALUES(3, SYSDATE(), 103);
+INSERT INTO sz VALUES(4, SYSDATE(), 104);
+INSERT INTO sz VALUES(5, SYSDATE(), 105);
+COMMIT;
+SELECT COUNT(*) FROM sz;
+COUNT(*)
+5
+BEGIN;
+DELETE FROM sz WHERE col_c <= 105 LIMIT 2;
+SELECT ROW_COUNT();
+ROW_COUNT()
+0
+SET ttl_expired_rows_visible_in_delete = ON;
+DELETE FROM sz WHERE col_c <= 105 LIMIT 2;
+SELECT ROW_COUNT();
+ROW_COUNT()
+2
+DELETE FROM sz WHERE col_c <= 105 LIMIT 2;
+SELECT ROW_COUNT();
+ROW_COUNT()
+2
+DELETE FROM sz WHERE col_c <= 105 LIMIT 2;
+SELECT ROW_COUNT();
+ROW_COUNT()
+1
+COMMIT;
+SET ttl_expired_rows_visible_in_delete = OFF;
+DROP TABLE test.sz;

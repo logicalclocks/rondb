@@ -1,0 +1,204 @@
+# ttl_disk_column.test
+#
+# Disk column TTL tests (Cases 51, 52).
+# Migrated from ttl_test_suite.py TestCase51-52 (disk_column category).
+#
+# These tests require a tablespace (ts_1) for disk-based columns.
+# Case 51: Disk column table with ADD UNIQUE INDEX and TTL=OFF.
+# Case 52: Disk column table ALTER restrictions (invalid ALTERs expect errors).
+#
+# NOTE: Cases 53 is not part of this category.
+# Cases 54, 55 (foreign key + TTL) are DISABLED in the Python suite because
+# TTL tables with FK as child or parent are not yet fully supported.
+# They are covered separately in ttl_foreign_key.test (case 56 only).
+
+--source include/have_ndb.inc
+
+# Create tablespace infrastructure for disk column tests
+CREATE LOGFILE GROUP lg_1
+  ADD UNDOFILE 'lg_1_undofile.dat'
+  INITIAL_SIZE 16M
+  UNDO_BUFFER_SIZE 1M
+  ENGINE NDB;
+
+CREATE TABLESPACE ts_1
+  ADD DATAFILE 'ts_1_datafile.dat'
+  USE LOGFILE GROUP lg_1
+  INITIAL_SIZE 64M
+  ENGINE NDB;
+
+connect (conn_a, localhost, root,,test,$MASTER_MYPORT,);
+connect (conn_b, localhost, root,,test,$MASTER_MYPORT,);
+
+###############################################################################
+# Case 51: Disk column table with ADD UNIQUE INDEX
+#
+# Thread A: INSERT 4 rows (one with future timestamp), wait for TTL expiry,
+#   ADD UNIQUE INDEX on col_c, verify index lookups, then ALTER TTL=OFF.
+#   After TTL=OFF, all 4 rows (including expired) become visible again.
+# Thread B: After TTL=OFF, verify all 4 rows visible via index lookups.
+###############################################################################
+
+--echo #
+--echo # Case 51: Disk column table with ADD UNIQUE INDEX
+--echo #
+
+--disable_warnings
+DROP TABLE IF EXISTS test.sz1;
+--enable_warnings
+
+CREATE TABLE test.sz1 (
+    col_a INT,
+    col_b TIMESTAMP,
+    col_c INT,
+    col_d INT STORAGE DISK,
+    PRIMARY KEY(col_a)
+) TABLESPACE ts_1,
+  ENGINE = NDB,
+  COMMENT="NDB_TABLE=TTL=66@col_b";
+
+# Wait for schema to propagate
+sleep 3;
+
+# Switch to test TTL value (5 seconds)
+ALTER TABLE test.sz1 COMMENT="NDB_TABLE=TTL=5@col_b";
+
+# Wait for ALTER to propagate
+sleep 3;
+
+# --- Thread A: Insert rows and test ---
+connection conn_a;
+BEGIN;
+INSERT INTO sz1 VALUES(1, SYSDATE(), 100, 10000);
+INSERT INTO sz1 VALUES(2, SYSDATE(), 200, 20000);
+INSERT INTO sz1 VALUES(3, DATE_ADD(SYSDATE(), INTERVAL 1 DAY), 300, 30000);
+INSERT INTO sz1 VALUES(4, SYSDATE(), 400, 40000);
+COMMIT;
+
+# Verify all 4 rows present immediately after insert
+SELECT COUNT(*) FROM sz1;
+
+# Wait for TTL expiry: rows 1, 2, 4 should expire; row 3 has future timestamp
+--let $ttl_wait_timeout = 15
+--let $ttl_wait_condition = SELECT COUNT(*) = 1 FROM test.sz1
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+
+# Verify only row 3 (future timestamp) remains
+SELECT COUNT(*) FROM sz1;
+SELECT col_a FROM sz1;
+
+# ADD UNIQUE INDEX on col_c
+ALTER TABLE sz1 ADD UNIQUE INDEX uk(col_c);
+
+# Verify after adding index: only 1 row visible (TTL still active)
+SELECT COUNT(*) FROM sz1;
+
+# Index lookups: expired rows should not be visible
+SELECT COUNT(*) FROM sz1 WHERE col_c = 100;
+SELECT COUNT(*) FROM sz1 WHERE col_c = 200;
+SELECT COUNT(*) FROM sz1 WHERE col_c = 300;
+SELECT COUNT(*) FROM sz1 WHERE col_c = 400;
+
+# Turn TTL OFF -- all 4 rows (including expired) become visible again
+ALTER TABLE sz1 COMMENT="NDB_TABLE=TTL=OFF";
+
+SELECT COUNT(*) FROM sz1;
+SELECT COUNT(*) FROM sz1 WHERE col_c = 100;
+SELECT COUNT(*) FROM sz1 WHERE col_c = 200;
+SELECT COUNT(*) FROM sz1 WHERE col_c = 300;
+SELECT COUNT(*) FROM sz1 WHERE col_c = 400;
+
+# --- Thread B: Verify all rows visible after TTL=OFF ---
+connection conn_b;
+
+SELECT COUNT(*) FROM sz1;
+SELECT COUNT(*) FROM sz1 WHERE col_c = 100;
+SELECT COUNT(*) FROM sz1 WHERE col_c = 200;
+SELECT COUNT(*) FROM sz1 WHERE col_c = 300;
+SELECT COUNT(*) FROM sz1 WHERE col_c = 400;
+
+# Cleanup
+connection default;
+DROP TABLE test.sz1;
+
+###############################################################################
+# Case 52: Disk column table ALTER restrictions
+#
+# Thread A: INSERT 4 rows, try invalid ALTERs on TTL table with disk columns:
+#   - Change TTL column to STORAGE DISK -> expect ER_ILLEGAL_HA_CREATE_OPTION
+#   - Change table STORAGE DISK -> expect ER_ILLEGAL_HA_CREATE_OPTION
+# Thread B: Wait for TTL expiry, verify only row 3 (future timestamp) remains.
+###############################################################################
+
+--echo #
+--echo # Case 52: Disk column table ALTER restrictions
+--echo #
+
+--disable_warnings
+DROP TABLE IF EXISTS test.sz1;
+--enable_warnings
+
+CREATE TABLE test.sz1 (
+    col_a INT,
+    col_b TIMESTAMP,
+    col_c INT,
+    col_d INT STORAGE DISK,
+    PRIMARY KEY(col_a)
+) TABLESPACE ts_1,
+  ENGINE = NDB,
+  COMMENT="NDB_TABLE=TTL=66@col_b";
+
+# Wait for schema to propagate
+sleep 3;
+
+# Switch to test TTL value (5 seconds)
+ALTER TABLE test.sz1 COMMENT="NDB_TABLE=TTL=5@col_b";
+
+# Wait for ALTER to propagate
+sleep 3;
+
+# --- Thread A: Insert rows and test invalid ALTERs ---
+connection conn_a;
+BEGIN;
+INSERT INTO sz1 VALUES(1, SYSDATE(), 100, 10000);
+INSERT INTO sz1 VALUES(2, SYSDATE(), 200, 20000);
+INSERT INTO sz1 VALUES(3, DATE_ADD(SYSDATE(), INTERVAL 1 DAY), 300, 30000);
+INSERT INTO sz1 VALUES(4, SYSDATE(), 400, 40000);
+COMMIT;
+
+# Verify all 4 rows present
+SELECT COUNT(*) FROM sz1;
+
+# Try invalid ALTER: change TTL column col_b to STORAGE DISK (should fail)
+--error ER_ILLEGAL_HA_CREATE_OPTION
+ALTER TABLE sz1 CHANGE COLUMN col_b col_b INT STORAGE DISK;
+
+# Try invalid ALTER: change table storage to DISK (should fail)
+--error ER_ILLEGAL_HA_CREATE_OPTION
+ALTER TABLE sz1 STORAGE DISK;
+
+# --- Thread B: Wait for TTL expiry and verify ---
+connection conn_b;
+
+# Wait for TTL expiry: rows 1, 2, 4 should expire; row 3 has future timestamp
+--let $ttl_wait_timeout = 15
+--let $ttl_wait_condition = SELECT COUNT(*) = 1 FROM test.sz1
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+
+SELECT COUNT(*) FROM sz1;
+
+# Cleanup
+connection default;
+DROP TABLE test.sz1;
+
+###############################################################################
+# Final cleanup: remove tablespace infrastructure
+###############################################################################
+
+connection default;
+disconnect conn_a;
+disconnect conn_b;
+
+ALTER TABLESPACE ts_1 DROP DATAFILE 'ts_1_datafile.dat';
+DROP TABLESPACE ts_1;
+DROP LOGFILE GROUP lg_1 ENGINE NDB;

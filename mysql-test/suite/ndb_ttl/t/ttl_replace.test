@@ -1,0 +1,283 @@
+--source include/have_ndb.inc
+--source suite/ndb_ttl/include/ttl_create_table.inc
+
+connect (conn_a, localhost, root,,test,$MASTER_MYPORT,);
+connect (conn_b, localhost, root,,test,$MASTER_MYPORT,);
+
+###############################################################################
+# Case 30: REPLACE before TTL (replaces existing row)
+#
+# Thread A inserts, holds transaction before TTL (sleep 2), COMMIT.
+# Thread B does REPLACE while A holds lock (blocks), replaces to col_c=200.
+# Both see col_c=200.  Row eventually expires via TTL.
+###############################################################################
+
+--echo #
+--echo # Case 30: REPLACE before TTL
+--echo #
+
+connection conn_a;
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+
+connection conn_b;
+BEGIN;
+--send REPLACE INTO sz VALUES(1, SYSDATE(), 200)
+
+connection conn_a;
+sleep 2;
+COMMIT;
+
+connection conn_b;
+--reap
+COMMIT;
+
+# Both connections verify col_c=200
+connection conn_a;
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+
+connection conn_b;
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+
+# Wait for the replaced row to expire
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM test.sz WHERE col_a = 1
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+
+# Cleanup
+DELETE FROM sz;
+
+###############################################################################
+# Case 31: REPLACE when A's row expired (inserts new)
+#
+# Thread A inserts, holds transaction past TTL (sleep 6), COMMIT.
+# Thread B does REPLACE while A holds lock (blocks).
+# After A commits, A's row is expired; B's REPLACE effectively inserts.
+# Both see col_c=200.  Row eventually expires via TTL.
+###############################################################################
+
+--echo #
+--echo # Case 31: REPLACE when expired
+--echo #
+
+connection conn_a;
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+
+# Hold A's transaction past TTL so A's row is expired
+sleep 6;
+
+# B sends REPLACE with a fresh SYSDATE(), then A commits to release lock
+connection conn_b;
+BEGIN;
+--send REPLACE INTO sz VALUES(1, SYSDATE(), 200)
+
+connection conn_a;
+COMMIT;
+
+connection conn_b;
+--reap
+COMMIT;
+
+# Both connections verify col_c=200
+connection conn_a;
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+
+connection conn_b;
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+
+# Wait for B's replaced row to expire
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM test.sz WHERE col_a = 1
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+
+# Cleanup
+DELETE FROM sz;
+
+###############################################################################
+# Case 32: REPLACE, both rows expire
+#
+# Thread A inserts, holds transaction well past TTL (sleep 6), COMMIT.
+# Thread B does REPLACE early (blocks on A's lock).
+# By the time A commits, both A's original and B's replace timestamps
+# are past TTL, so both are expired.
+###############################################################################
+
+--echo #
+--echo # Case 32: REPLACE both expire
+--echo #
+
+connection conn_a;
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+
+connection conn_b;
+BEGIN;
+--send REPLACE INTO sz VALUES(1, SYSDATE(), 200)
+
+connection conn_a;
+sleep 6;
+COMMIT;
+
+connection conn_b;
+--reap
+COMMIT;
+
+# Both connections verify the row is already expired
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM test.sz WHERE col_a = 1
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+
+connection conn_a;
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+
+connection conn_b;
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+
+# Cleanup
+DELETE FROM sz;
+
+###############################################################################
+# Case 33: ROLLBACK before TTL, REPLACE succeeds
+#
+# Thread A inserts, holds transaction before TTL (sleep 2), ROLLBACK.
+# Thread B does REPLACE while A holds lock (blocks).
+# After ROLLBACK, no existing row; B's REPLACE acts as INSERT.
+# Both see col_c=200.  Row eventually expires via TTL.
+###############################################################################
+
+--echo #
+--echo # Case 33: ROLLBACK before TTL, REPLACE
+--echo #
+
+connection conn_a;
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+
+connection conn_b;
+BEGIN;
+--send REPLACE INTO sz VALUES(1, SYSDATE(), 200)
+
+connection conn_a;
+sleep 2;
+ROLLBACK;
+
+connection conn_b;
+--reap
+COMMIT;
+
+# Both connections verify col_c=200
+connection conn_a;
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+
+connection conn_b;
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+
+# Wait for the row to expire
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM test.sz WHERE col_a = 1
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+
+# Cleanup
+DELETE FROM sz;
+
+###############################################################################
+# Case 34: ROLLBACK after TTL, REPLACE succeeds
+#
+# Thread A inserts, holds transaction past TTL (sleep 6), ROLLBACK.
+# Thread B does REPLACE while A holds lock (blocks).
+# After ROLLBACK, B's REPLACE succeeds.
+# Both see col_c=200.  Row eventually expires via TTL.
+###############################################################################
+
+--echo #
+--echo # Case 34: ROLLBACK after TTL, REPLACE
+--echo #
+
+connection conn_a;
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+
+# Hold A's transaction past TTL so A's row is expired
+sleep 6;
+
+# B sends REPLACE with a fresh SYSDATE(), then A rollbacks to release lock
+connection conn_b;
+BEGIN;
+--send REPLACE INTO sz VALUES(1, SYSDATE(), 200)
+
+connection conn_a;
+ROLLBACK;
+
+connection conn_b;
+--reap
+COMMIT;
+
+# Both connections verify col_c=200
+connection conn_a;
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+
+connection conn_b;
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+
+# Wait for B's row to expire
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM test.sz WHERE col_a = 1
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+
+# Cleanup
+DELETE FROM sz;
+
+###############################################################################
+# Case 35: ROLLBACK after TTL, both expire
+#
+# Thread A inserts, holds transaction well past TTL (sleep 6), ROLLBACK.
+# Thread B does REPLACE early (blocks on A's lock).
+# By the time A rollbacks, B's replace timestamp is also past TTL.
+# Both rows are expired.
+###############################################################################
+
+--echo #
+--echo # Case 35: ROLLBACK after TTL, both expire
+--echo #
+
+connection conn_a;
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+
+connection conn_b;
+BEGIN;
+--send REPLACE INTO sz VALUES(1, SYSDATE(), 200)
+
+connection conn_a;
+sleep 6;
+ROLLBACK;
+
+connection conn_b;
+--reap
+COMMIT;
+
+# Both connections verify the row is already expired
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM test.sz WHERE col_a = 1
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+
+connection conn_a;
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+
+connection conn_b;
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+
+# Cleanup
+DELETE FROM sz;
+
+###############################################################################
+# Teardown
+###############################################################################
+
+connection default;
+disconnect conn_a;
+disconnect conn_b;
+DROP TABLE test.sz;

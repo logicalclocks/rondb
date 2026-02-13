@@ -1,0 +1,163 @@
+# ttl_backup_basic.test
+#
+# Case 46a: Backup and restore of TTL tables to primary cluster.
+# Migrated from ttl_test_suite.py case_46 (BackupRestoreToPrimary).
+#
+# Three tables:
+#   sz1 - PK + UNIQUE, TTL=10
+#   sz2 - KEY only, TTL=10
+#   sz3 - PK + KEY, no TTL (control)
+#
+# Flow:
+#   1. Insert 4 rows each (3 SYSDATE, 1 future)
+#   2. Wait for TTL expiry -> sz1=1, sz2=1, sz3=4
+#   3. Backup
+#   4. DROP DATABASE, restore
+#   5. Verify same counts as step 2
+
+--source include/have_ndb.inc
+--source suite/ndb_ttl/include/ttl_backup_restore_setup.inc
+
+###############################################################################
+# Setup: create database and 3 tables
+###############################################################################
+
+--disable_warnings
+DROP DATABASE IF EXISTS ttl_backup;
+--enable_warnings
+
+CREATE DATABASE ttl_backup;
+
+# sz1: PK + UNIQUE KEY, TTL=10
+CREATE TABLE ttl_backup.sz1 (
+    col_a INT,
+    col_b TIMESTAMP,
+    col_c INT,
+    PRIMARY KEY(col_a),
+    UNIQUE KEY(col_c)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=TTL=66@col_b";
+
+# sz2: non-unique KEY, TTL=10
+CREATE TABLE ttl_backup.sz2 (
+    col_a INT,
+    col_b TIMESTAMP,
+    col_c INT,
+    KEY(col_c)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=TTL=66@col_b";
+
+# sz3: PK + KEY, no TTL (control table)
+CREATE TABLE ttl_backup.sz3 (
+    col_a INT,
+    col_b TIMESTAMP,
+    col_c INT,
+    PRIMARY KEY(col_a),
+    KEY(col_c)
+) ENGINE = NDB;
+
+# Wait for schema to propagate
+sleep 3;
+
+# Switch to test TTL value (10 seconds for backup tests)
+ALTER TABLE ttl_backup.sz1 COMMENT="NDB_TABLE=TTL=10@col_b";
+ALTER TABLE ttl_backup.sz2 COMMENT="NDB_TABLE=TTL=10@col_b";
+
+# Wait for ALTER to propagate
+sleep 3;
+
+--echo #
+--echo # Case 46a: Backup and restore TTL tables to primary cluster
+--echo #
+
+###############################################################################
+# Phase 1: Insert 4 rows per table
+###############################################################################
+
+BEGIN;
+INSERT INTO ttl_backup.sz1 VALUES(1, SYSDATE(), 100);
+INSERT INTO ttl_backup.sz1 VALUES(2, SYSDATE(), 200);
+INSERT INTO ttl_backup.sz1 VALUES(3, DATE_ADD(SYSDATE(), INTERVAL 1 DAY), 300);
+INSERT INTO ttl_backup.sz1 VALUES(4, SYSDATE(), 400);
+INSERT INTO ttl_backup.sz2 VALUES(1, SYSDATE(), 100);
+INSERT INTO ttl_backup.sz2 VALUES(2, SYSDATE(), 200);
+INSERT INTO ttl_backup.sz2 VALUES(3, DATE_ADD(SYSDATE(), INTERVAL 1 DAY), 300);
+INSERT INTO ttl_backup.sz2 VALUES(4, SYSDATE(), 400);
+INSERT INTO ttl_backup.sz3 VALUES(1, SYSDATE(), 100);
+INSERT INTO ttl_backup.sz3 VALUES(2, SYSDATE(), 200);
+INSERT INTO ttl_backup.sz3 VALUES(3, DATE_ADD(SYSDATE(), INTERVAL 1 DAY), 300);
+INSERT INTO ttl_backup.sz3 VALUES(4, SYSDATE(), 400);
+COMMIT;
+
+# Verify all 4 rows present in each table
+SELECT COUNT(*) FROM ttl_backup.sz1;
+SELECT COUNT(*) FROM ttl_backup.sz2;
+SELECT COUNT(*) FROM ttl_backup.sz3;
+
+###############################################################################
+# Phase 2: Wait for TTL expiry
+###############################################################################
+
+--let $ttl_wait_timeout = 20
+--let $ttl_wait_condition = SELECT COUNT(*) = 1 FROM ttl_backup.sz1
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+
+# Verify: sz1=1 (row 3), sz2=1 (row 3), sz3=4 (no TTL)
+SELECT col_a, col_c FROM ttl_backup.sz1;
+SELECT col_a, col_c FROM ttl_backup.sz2;
+SELECT COUNT(*) FROM ttl_backup.sz3;
+
+###############################################################################
+# Phase 3: Backup
+###############################################################################
+
+--source include/ndb_backup.inc
+
+###############################################################################
+# Phase 4: Drop and restore
+###############################################################################
+
+DROP DATABASE ttl_backup;
+
+# Wait for drop to propagate
+sleep 3;
+
+# Restore: 4-step pattern with --include-databases
+--exec $NDB_RESTORE -b $the_backup_id -n 1 -m --disable-indexes --include-databases=ttl_backup $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT 2>&1
+--exec $NDB_RESTORE -b $the_backup_id -n 1 -r --include-databases=ttl_backup $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT 2>&1
+--exec $NDB_RESTORE -b $the_backup_id -n 2 -r --include-databases=ttl_backup $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT 2>&1
+--exec $NDB_RESTORE -b $the_backup_id -n 1 --rebuild-indexes --include-databases=ttl_backup $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT 2>&1
+
+###############################################################################
+# Phase 5: Wait for schema sync and verify
+###############################################################################
+
+# Create database on mysqld side to enable NDB table discovery
+--disable_warnings
+CREATE DATABASE IF NOT EXISTS ttl_backup;
+--enable_warnings
+
+--let $ttl_sync_db = ttl_backup
+--let $ttl_sync_table = sz1
+--source suite/ndb_ttl/include/ttl_backup_wait_schema_sync.inc
+
+--let $ttl_sync_db = ttl_backup
+--let $ttl_sync_table = sz2
+--source suite/ndb_ttl/include/ttl_backup_wait_schema_sync.inc
+
+--let $ttl_sync_db = ttl_backup
+--let $ttl_sync_table = sz3
+--source suite/ndb_ttl/include/ttl_backup_wait_schema_sync.inc
+
+# Verify restored counts: sz1=1 (row 3), sz2=1 (row 3), sz3=4
+SELECT col_a, col_c FROM ttl_backup.sz1;
+SELECT col_a, col_c FROM ttl_backup.sz2;
+SELECT COUNT(*) FROM ttl_backup.sz3;
+
+###############################################################################
+# Cleanup
+###############################################################################
+
+DROP DATABASE ttl_backup;
+--remove_file $NDB_TOOLS_OUTPUT
+--source suite/ndb/include/backup_restore_cleanup.inc

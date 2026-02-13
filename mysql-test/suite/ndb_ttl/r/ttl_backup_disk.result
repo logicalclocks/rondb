@@ -1,0 +1,57 @@
+DROP DATABASE IF EXISTS ttl_backup;
+CREATE DATABASE ttl_backup;
+#
+# Case 46g: Disk column backup/restore with TTL
+#
+CREATE LOGFILE GROUP lg_1
+ADD UNDOFILE 'lg_1_undofile.dat'
+  INITIAL_SIZE 16M
+UNDO_BUFFER_SIZE 1M
+ENGINE NDB;
+CREATE TABLESPACE ts_1
+ADD DATAFILE 'ts_1_datafile.dat'
+  USE LOGFILE GROUP lg_1
+INITIAL_SIZE 64M
+ENGINE NDB;
+CREATE TABLE ttl_backup.sz1 (
+col_a INT,
+col_b TIMESTAMP,
+col_c INT,
+col_d INT STORAGE DISK,
+PRIMARY KEY(col_a)
+) TABLESPACE ts_1,
+ENGINE = NDB,
+COMMENT="NDB_TABLE=TTL=66@col_b";
+ALTER TABLE ttl_backup.sz1 COMMENT="NDB_TABLE=TTL=10@col_b";
+BEGIN;
+INSERT INTO ttl_backup.sz1 VALUES(1, SYSDATE(), 100, 10000);
+INSERT INTO ttl_backup.sz1 VALUES(2, SYSDATE(), 200, 20000);
+INSERT INTO ttl_backup.sz1 VALUES(3, DATE_ADD(SYSDATE(), INTERVAL 1 DAY), 300, 30000);
+INSERT INTO ttl_backup.sz1 VALUES(4, SYSDATE(), 400, 40000);
+COMMIT;
+SELECT col_a, col_c, col_d FROM ttl_backup.sz1;
+col_a	col_c	col_d
+3	300	30000
+DROP TABLE ttl_backup.sz1;
+DROP DATABASE ttl_backup;
+CREATE DATABASE IF NOT EXISTS ttl_backup;
+SELECT col_a, col_c, col_d FROM ttl_backup.sz1;
+col_a	col_c	col_d
+3	300	30000
+INSERT INTO ttl_backup.sz1 VALUES(5, SYSDATE(), 500, 50000);
+SELECT col_a, col_c, col_d FROM ttl_backup.sz1;
+col_a	col_c	col_d
+3	300	30000
+ALTER TABLE ttl_backup.sz1 COMMENT="NDB_TABLE=TTL=OFF";
+SELECT col_a, col_c, col_d FROM ttl_backup.sz1 ORDER BY col_a;
+col_a	col_c	col_d
+1	100	10000
+2	200	20000
+3	300	30000
+4	400	40000
+5	500	50000
+DROP TABLE ttl_backup.sz1;
+DROP DATABASE ttl_backup;
+ALTER TABLESPACE ts_1 DROP DATAFILE 'ts_1_datafile.dat';
+DROP TABLESPACE ts_1;
+DROP LOGFILE GROUP lg_1 ENGINE NDB;
