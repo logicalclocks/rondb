@@ -34,6 +34,7 @@
 #include "decimal.h"
 #include "Dbtup.hpp"
 #include <NdbSqlUtil.hpp>
+#include <Interpreter.hpp>
 
 #include <simsimd/simsimd.h>
 
@@ -149,13 +150,127 @@ GBHashEntryCmp::operator()(const GBHashEntry &n1,
 #define VS_INTERP_TRACE(table_id, part_id, format, ...) {}
 #endif // DEBUG_VS_INTERP
 
+/**
+ * validateEmbeddedProgram — validate an embedded old-interpreter program
+ * at Init() time ("compile" step).
+ *
+ * Walks the instruction stream and checks:
+ * 1. All opcodes are in the allowed whitelist (no CALL, RETURN, EXIT_REFUSE,
+ *    WRITE_ATTR, heap memory ops)
+ * 2. All branch offsets are forward-only (bit 31 = 0)
+ * 3. All branch targets fall within the embedded program bounds
+ * 4. Instruction lengths computed via getInstructionPreProcessingInfo are valid
+ *
+ * Returns true if the program is safe to execute in interpreterNextLab.
+ */
+bool AggInterpreter::validateEmbeddedProgram(
+    const Uint32* emb_prog, Uint32 emb_len) {
+  Uint32 pc = 0;
+  while (pc < emb_len) {
+    Uint32 instr = emb_prog[pc];
+    Uint32 opCode = Interpreter::getOpCode(instr);
+
+    /* Check opcode whitelist */
+    switch (opCode) {
+      /* Load/store register operations */
+      case Interpreter::READ_ATTR_INTO_REG:
+      case Interpreter::LOAD_CONST_NULL:
+      case Interpreter::LOAD_CONST16:
+      case Interpreter::LOAD_CONST32:
+      case Interpreter::LOAD_CONST64:
+      /* Arithmetic */
+      case Interpreter::ADD_REG_REG:
+      case Interpreter::SUB_REG_REG:
+      /* Unconditional branch */
+      case Interpreter::BRANCH:
+      /* Null-check branches */
+      case Interpreter::BRANCH_REG_EQ_NULL:
+      case Interpreter::BRANCH_REG_NE_NULL:
+      /* Register comparison branches */
+      case Interpreter::BRANCH_EQ_REG_REG:
+      case Interpreter::BRANCH_NE_REG_REG:
+      case Interpreter::BRANCH_LT_REG_REG:
+      case Interpreter::BRANCH_LE_REG_REG:
+      case Interpreter::BRANCH_GT_REG_REG:
+      case Interpreter::BRANCH_GE_REG_REG:
+      /* Exit */
+      case Interpreter::EXIT_OK:
+      /* Column comparison branches */
+      case Interpreter::BRANCH_ATTR_OP_ARG:
+      case Interpreter::BRANCH_ATTR_EQ_NULL:
+      case Interpreter::BRANCH_ATTR_NE_NULL:
+      /* Output for skip_offset communication */
+      case Interpreter::WRITE_INTERPRETER_OUTPUT:
+        break;  /* Allowed */
+
+      default:
+        g_eventLogger->warning(
+            "validateEmbeddedProgram: forbidden opcode %u at pc=%u",
+            opCode, pc);
+        return false;
+    }
+
+    /* Validate branch targets: forward-only, within bounds */
+    bool is_branch = false;
+    switch (opCode) {
+      case Interpreter::BRANCH:
+      case Interpreter::BRANCH_REG_EQ_NULL:
+      case Interpreter::BRANCH_REG_NE_NULL:
+      case Interpreter::BRANCH_EQ_REG_REG:
+      case Interpreter::BRANCH_NE_REG_REG:
+      case Interpreter::BRANCH_LT_REG_REG:
+      case Interpreter::BRANCH_LE_REG_REG:
+      case Interpreter::BRANCH_GT_REG_REG:
+      case Interpreter::BRANCH_GE_REG_REG:
+      case Interpreter::BRANCH_ATTR_OP_ARG:
+      case Interpreter::BRANCH_ATTR_EQ_NULL:
+      case Interpreter::BRANCH_ATTR_NE_NULL:
+        is_branch = true;
+        break;
+      default:
+        break;
+    }
+
+    if (is_branch) {
+      Uint32 direction = instr >> 31;
+      if (direction != 0) {
+        g_eventLogger->warning(
+            "validateEmbeddedProgram: backward branch at pc=%u", pc);
+        return false;
+      }
+      Uint32 offset = (instr >> 16) & 0x7FFF;
+      /* Target = pc + offset (brancher logic: TprogramCounter-- then + offset) */
+      Uint32 target = pc + offset;
+      if (target >= emb_len) {
+        g_eventLogger->warning(
+            "validateEmbeddedProgram: branch target %u out of bounds "
+            "(emb_len=%u) at pc=%u", target, emb_len, pc);
+        return false;
+      }
+    }
+
+    /* Advance to next instruction using getInstructionPreProcessingInfo */
+    Interpreter::InstructionPreProcessing processing;
+    Uint32* next = Interpreter::getInstructionPreProcessingInfo(
+        const_cast<Uint32*>(&emb_prog[pc]), processing);
+    if (next == nullptr) {
+      g_eventLogger->warning(
+          "validateEmbeddedProgram: invalid instruction at pc=%u", pc);
+      return false;
+    }
+    Uint32 instr_len = (Uint32)(next - &emb_prog[pc]);
+    pc += instr_len;
+  }
+
+  return true;
+}
+
 bool AggInterpreter::Init(const Uint32* prog) {
   if (inited_) {
     return true;
   }
 
   /* 0. Prepare the buffer and copy the program */
-#ifdef PA_MALLOC
   // TODO (Zhao)
   // VS related
 	assert(prog_len_ <= MAX_VEC_SEARCH_PROGRAM_WORD_SIZE);
@@ -177,9 +292,6 @@ bool AggInterpreter::Init(const Uint32* prog) {
     prog_ = ext_prog_buf_;
   }
   alloc_len_ = 0;
-#else
-  prog_ = new Uint32[prog_len];
-#endif // PA_MALLOC
   memcpy(prog_, prog, prog_len_ * sizeof(Uint32));
   memset(buf_, 0, READ_BUF_WORD_SIZE * sizeof(Uint32));
   memset(decimal_buf_, 0, sizeof(Int32) * DECIMAL_BUFF_LENGTH);
@@ -296,6 +408,39 @@ bool AggInterpreter::Init(const Uint32* prog) {
   inited_ = true;
   agg_prog_start_pos_ = cur_pos_;
   memset(registers_, 0, sizeof(registers_));
+
+  /*
+   * 5. Validate any embedded interpreter blocks in the aggregation program.
+   *    This "compiles" the embedded programs to ensure they will execute
+   *    correctly in interpreterNextLab.
+   */
+  {
+    Uint32 scan_pos = agg_prog_start_pos_;
+    while (scan_pos < prog_len_) {
+      Uint32 w = prog_[scan_pos];
+      Uint8 op = (w & 0xFC000000) >> 26;
+      if (op == kOpEmbeddedInterp) {
+        Uint32 emb_len = w & 0xFFFF;
+        if (scan_pos + 1 + emb_len > prog_len_ ||
+            !validateEmbeddedProgram(&prog_[scan_pos + 1], emb_len)) {
+          g_eventLogger->warning(
+              "AggInterpreter::Init: embedded program validation failed "
+              "at scan_pos=%u", scan_pos);
+          inited_ = false;
+          return false;
+        }
+        scan_pos += 1 + emb_len;  /* skip header + embedded words */
+      } else if (op == kOpLoadConst) {
+        scan_pos += 3;  /* header + 2 constant value words */
+      } else if (op == kOpLoadCol) {
+        Uint32 type = (w & 0x03E00000) >> 21;
+        scan_pos += (type == NDB_TYPE_DECIMAL ||
+                     type == NDB_TYPE_DECIMALUNSIGNED) ? 2 : 1;
+      } else {
+        scan_pos++;
+      }
+    }
+  }
 
   return true;
 }
@@ -491,6 +636,16 @@ bool AggInterpreter::OptimizeProgram() {
       case kOpCount:
         // Count always produces BIGINT - no optimization needed
         break;
+
+      case kOpEmbeddedInterp:
+      {
+        Uint32 emb_len = value & 0xFFFF;
+        exec_pos += emb_len;  /* skip embedded words; exec_pos++ below adds 1 */
+        break;
+      }
+
+      case kOpSkip:
+        break;  /* 1-word instruction, exec_pos++ below handles it */
 
       default:
         break;
@@ -2096,6 +2251,45 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
         ret = MinDouble(registers_[reg_index], &agg_res_ptr[agg_index], debug_print);
         break;
 
+      case kOpSkip:
+      {
+        Uint32 skip_count = value & 0xFFFF;
+        exec_pos += skip_count;
+        break;
+      }
+
+      case kOpEmbeddedInterp:
+      {
+        Uint32 emb_len = value & 0xFFFF;
+        if (exec_pos + emb_len > prog_len_) {
+          return ZAGG_OTHER_ERROR;
+        }
+
+        /* Save and reset instruction counter (interpreterNextLab asserts 0) */
+        Uint32 saved_instr_count = req_struct->no_exec_instructions;
+        req_struct->no_exec_instructions = 0;
+
+        /* Local output buffer — avoids corrupting outer interpreter coutBuffer */
+        Uint32 local_tmpArea[16];
+
+        int rc = block_tup->interpreterNextLab(
+            req_struct->signal, req_struct,
+            &prog_[exec_pos], emb_len,   /* main program = embedded portion */
+            nullptr, 0,                   /* no subroutines */
+            local_tmpArea, 16);
+
+        req_struct->no_exec_instructions = saved_instr_count;
+
+        if (rc < 0) {
+          return ZAGG_EMBEDDED_INTERP_ERROR;
+        }
+
+        /* Read skip_offset written by WRITE_INTERPRETER_OUTPUT in embedded prog */
+        Uint32 skip_offset = block_tup->c_interpreter_output[0];
+        exec_pos += emb_len + skip_offset;
+        break;
+      }
+
       default:
         // assert(0);
         return ZAGG_WRONG_OPERATION;
@@ -2482,6 +2676,13 @@ static void extractAggOps(const Uint32* prog, Uint32 prog_len,
       case kOpLoadConst:
         exec_pos += 2;  // Skip constant value words
         break;
+      case kOpEmbeddedInterp: {
+        Uint32 emb_len = value & 0xFFFF;
+        exec_pos += emb_len;  // Skip embedded words
+        break;
+      }
+      case kOpSkip:
+        break;  // 1-word instruction, already advanced by exec_pos++
       default:
         break;
     }

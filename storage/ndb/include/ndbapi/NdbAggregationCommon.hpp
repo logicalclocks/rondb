@@ -87,6 +87,10 @@ enum InterpreterOp {
   kOpDivDouble,       // Floating point division (result is always double)
   kOpDivIntBigint,    // Integer division for BIGINT
 
+  // Embedded interpreter support for CASE expressions
+  kOpEmbeddedInterp,  // Invoke embedded old-interpreter code block
+  kOpSkip,            // Unconditional forward skip in aggregation program
+
   kOpTotal
 };
 

@@ -830,6 +830,22 @@ bool NdbAggregator::GroupBy(Int32 col_id) {
   return true;
 }
 
+bool NdbAggregator::EmbeddedInterp(Uint32 embedded_length) {
+  buffer_[curr_prog_pos_++] =
+      (kOpEmbeddedInterp << 26) | (embedded_length & 0xFFFF);
+  return true;
+}
+
+bool NdbAggregator::EmitEmbeddedWord(Uint32 word) {
+  buffer_[curr_prog_pos_++] = word;
+  return true;
+}
+
+bool NdbAggregator::Skip(Uint32 skip_count) {
+  buffer_[curr_prog_pos_++] = (kOpSkip << 26) | (skip_count & 0xFFFF);
+  return true;
+}
+
 bool NdbAggregator::Finalize() {
   if (curr_prog_pos_ == PROGRAM_HEADER_SIZE) {
     SetError(kErrEmptyProgram);

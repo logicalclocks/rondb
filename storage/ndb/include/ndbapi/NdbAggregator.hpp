@@ -268,6 +268,11 @@ class NdbAggregator {
   bool GroupBy(const char* name);
   bool GroupBy(Int32 col_id);
 
+  // Embedded interpreter support for CASE expressions
+  bool EmbeddedInterp(Uint32 embedded_length);
+  bool EmitEmbeddedWord(Uint32 word);
+  bool Skip(Uint32 skip_count);
+
   bool Finalize();
 
   void PrepareResults();

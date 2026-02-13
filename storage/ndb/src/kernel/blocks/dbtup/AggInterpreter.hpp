@@ -454,6 +454,9 @@ class AggInterpreter {
 
   MemChunk* allocNewChunk();
 
+  // Embedded interpreter validation (called at Init time)
+  bool validateEmbeddedProgram(const Uint32* emb_prog, Uint32 emb_len);
+
   // Cached agg ops for merge (avoids recomputing per CONTINUEB batch)
   Uint8 m_cached_agg_ops[MAX_AGG_N_RESULTS];
   bool m_agg_ops_cached;
