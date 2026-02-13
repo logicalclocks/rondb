@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -60,6 +60,7 @@
 #include <signaldata/TamperOrd.hpp>
 #include <signaldata/TestOrd.hpp>
 #include <signaldata/SetDomainId.hpp>
+#include <signaldata/SetConfigParam.hpp>
 
 #ifdef ERROR_INSERT
 #include <signaldata/FsOpenReq.hpp>
@@ -160,6 +161,7 @@ Cmvmi::Cmvmi(Block_context &ctx)
   addRecSignal(GSN_DEACTIVATE_REQ, &Cmvmi::execDEACTIVATE_REQ);
   addRecSignal(GSN_SET_HOSTNAME_REQ, &Cmvmi::execSET_HOSTNAME_REQ);
   addRecSignal(GSN_SET_DOMAIN_ID_REQ, &Cmvmi::execSET_DOMAIN_ID_REQ);
+  addRecSignal(GSN_SET_CONFIG_PARAM_REQ, &Cmvmi::execSET_CONFIG_PARAM_REQ);
 #ifdef ERROR_INSERT
   addRecSignal(GSN_FSOPENCONF, &Cmvmi::execFSOPENCONF);
   addRecSignal(GSN_FSCLOSECONF, &Cmvmi::execFSCLOSECONF);
@@ -3490,5 +3492,72 @@ void Cmvmi::execDEACTIVATE_REQ(Signal *signal)
              GSN_DEACTIVATE_REQ,
              signal,
              DeactivateReq::SignalLength,
+             JBB);
+}
+
+/**
+ * Set a configuration parameter at runtime.
+ * Updates the local ConfigValues (for ndbinfo reporting) and
+ * dispatches the change to the appropriate block for runtime effect.
+ */
+void Cmvmi::execSET_CONFIG_PARAM_REQ(Signal *signal)
+{
+  jamEntry();
+  const SetConfigParamReq* const req =
+    (const SetConfigParamReq *)signal->getDataPtr();
+  BlockReference senderRef = req->senderRef;
+  Uint32 configKey = req->configParamKey;
+  Uint64 configValue = (Uint64(req->configParamValueHigh) << 32) |
+                        Uint64(req->configParamValueLow);
+
+  /**
+   * Update the node's own ConfigValues so that ndbinfo config_values
+   * reports the new value.
+   */
+  ConfigValues *own_config_values = m_ctx.m_config.get_own_config_values_mutable();
+  ConfigValues::Iterator iter(*own_config_values);
+  if (iter.openSection(CFG_SECTION_NODE, 0))
+  {
+    jam();
+    iter.set(configKey, configValue);
+    iter.closeSection();
+  }
+
+  /**
+   * Dispatch to the appropriate block based on the config parameter.
+   */
+  switch (configKey)
+  {
+  case CFG_DB_MAX_DISK_WRITE_SPEED:
+  {
+    jam();
+    /**
+     * Send DumpStateOrd to Backup block to update runtime value.
+     * Use the 64-bit variant (BackupMaxWriteSpeed64) to support large values.
+     */
+    signal->theData[0] = DumpStateOrd::BackupMaxWriteSpeed64;
+    signal->theData[1] = Uint32(configValue >> 32);  // MSB
+    signal->theData[2] = Uint32(configValue & 0xFFFFFFFF);  // LSB
+    sendSignal(BACKUP_REF, GSN_DUMP_STATE_ORD, signal, 3, JBB);
+    break;
+  }
+  default:
+    jam();
+    g_eventLogger->info("SET_CONFIG_PARAM_REQ: unsupported config key %u",
+                        configKey);
+    break;
+  }
+
+  /**
+   * Send confirmation back to the management server.
+   */
+  SetConfigParamConf* conf =
+    (SetConfigParamConf *)signal->getDataPtrSend();
+  conf->senderRef = reference();
+  conf->configParamKey = configKey;
+  sendSignal(senderRef,
+             GSN_SET_CONFIG_PARAM_CONF,
+             signal,
+             SetConfigParamConf::SignalLength,
              JBB);
 }
