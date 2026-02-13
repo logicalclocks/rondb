@@ -120,6 +120,14 @@ See `tools/rondb-cli/CLAUDE.md` for detailed rondb-cli documentation.
 - `/client/` - MySQL CLI tools
 - `/mysql-test/` - Integration test suite
 
+### Pushdown Join Aggregation (RONDB-733)
+Design and implementation docs in `storage/ndb/claude_files/pushdown_join_aggregation/`:
+- `CLAUDE.md` — DBLQH block overview and join aggregation context
+- `local_database_research.md` — Architecture: signal flow, shared state, aggregation engine
+- `local_database_implementation.md` — DBLQH implementation plan (Phases 1-6, complete)
+- `coordinator.md` — DBSPJ protocol and aggregate design
+- `coordinator_research.md` — DBTC orchestration plan (Phase 7: SETUP/COMPLETE/RELEASE)
+
 ### Rondis Server Implementation
 ```
 storage/ndb/src/rondis/
