@@ -378,6 +378,8 @@ static void free_argv(char **argv) {
   free((void *)argv);
 }
 
+static const char *restart_exec_path = nullptr;
+
 static process_waiter spawn_process(const char *progname [[maybe_unused]],
                                     const Vector<BaseString> &args) {
 #ifdef _WIN32
@@ -432,6 +434,18 @@ static process_waiter spawn_process(const char *progname [[maybe_unused]],
   }
 
   // Child path (pid == 0)
+
+  if (restart_exec_path != nullptr) {
+    // Load binary from the path specified by NDB_RESTART_WITH_EXEC env var,
+    // resolving any symlinks at exec time. This allows upgrade/downgrade
+    // testing by pointing NDB_RESTART_WITH_EXEC at a symlink and changing
+    // the symlink target between restarts.
+    execv(restart_exec_path, argv);
+    // execv should not return, if it does something is wrong
+    fprintf(stderr, "angel: execv of '%s' failed, errno: %d\n",
+            restart_exec_path, errno);
+    _exit(1);
+  }
 
   // Count number of arguments
   int argc = 0;
@@ -550,6 +564,8 @@ void angel_run(const char *progname, const Vector<BaseString> &original_args,
                const char *bind_address, bool initial, bool no_start,
                bool daemon, int connnect_retries, int connect_delay,
                const char *tls_search_path, int mgm_tls_level) {
+  restart_exec_path = getenv("NDB_RESTART_WITH_EXEC");
+
   ConfigRetriever retriever(connect_str, force_nodeid, NDB_VERSION,
                             NDB_MGM_NODE_TYPE_NDB, bind_address);
   if (retriever.hasError()) {
@@ -684,7 +700,11 @@ void angel_run(const char *progname, const Vector<BaseString> &original_args,
     one_arg.assfmt("--angel-pid=%d", getpid());
     args.push_back(one_arg);
 
-    if (opt_ndb_log_timestamps < std::size(NdbStdOpt::timestamps_names) - 1) {
+    // Only pass --ndb-log-timestamps when spawning the same binary.
+    // When restart_exec_path is set the child may be an older version
+    // that does not recognise this option.
+    if (restart_exec_path == nullptr &&
+        opt_ndb_log_timestamps < std::size(NdbStdOpt::timestamps_names) - 1) {
       one_arg.assfmt("--ndb-log-timestamps=%s",
                      NdbStdOpt::timestamps_names[opt_ndb_log_timestamps]);
       args.push_back(one_arg);
