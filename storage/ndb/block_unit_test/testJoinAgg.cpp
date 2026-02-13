@@ -58,6 +58,8 @@
 #include <kernel/signaldata/DumpStateOrd.hpp>
 #include <mysql.h>
 
+#include <climits>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -167,6 +169,113 @@ buildAggProgram_CountSum(Uint32 sumColId)
   return prog;
 }
 
+/*
+ * Build aggregation program for:
+ *   SELECT MAX(col) FROM t GROUP BY gbCol
+ */
+static std::vector<Uint32>
+buildAggProgram_MaxGroupBy(Uint32 gbColId, Uint32 maxColId)
+{
+  const Uint32 PROG_LEN = 11;
+  std::vector<Uint32> prog(PROG_LEN);
+  prog[0] = (AGG_MAGIC << 16) | PROG_LEN;
+  prog[1] = (1u << 16) | 1u;  /* n_gb_cols=1, n_agg_results=1 */
+  prog[2] = PUSHDOWN_AGGREGATION_VERSION;
+  prog[3] = prog[4] = prog[5] = prog[6] = prog[7] = 0;
+  prog[8] = gbColId << 16;
+  prog[9] = (kOpLoadCol << 26) | (COL_TYPE_BIGINT << 21) | (0 << 16) |
+             maxColId;
+  prog[10] = (kOpMax << 26) | (0 << 16) | 0;
+  return prog;
+}
+
+/*
+ * Build aggregation program for:
+ *   SELECT MIN(col) FROM t GROUP BY gbCol
+ */
+static std::vector<Uint32>
+buildAggProgram_MinGroupBy(Uint32 gbColId, Uint32 minColId)
+{
+  const Uint32 PROG_LEN = 11;
+  std::vector<Uint32> prog(PROG_LEN);
+  prog[0] = (AGG_MAGIC << 16) | PROG_LEN;
+  prog[1] = (1u << 16) | 1u;
+  prog[2] = PUSHDOWN_AGGREGATION_VERSION;
+  prog[3] = prog[4] = prog[5] = prog[6] = prog[7] = 0;
+  prog[8] = gbColId << 16;
+  prog[9] = (kOpLoadCol << 26) | (COL_TYPE_BIGINT << 21) | (0 << 16) |
+             minColId;
+  prog[10] = (kOpMin << 26) | (0 << 16) | 0;
+  return prog;
+}
+
+/*
+ * Build aggregation program for:
+ *   SELECT COUNT(*) FROM t GROUP BY gbCol
+ */
+static std::vector<Uint32>
+buildAggProgram_CountGroupBy(Uint32 gbColId, Uint32 countColId)
+{
+  const Uint32 PROG_LEN = 11;
+  std::vector<Uint32> prog(PROG_LEN);
+  prog[0] = (AGG_MAGIC << 16) | PROG_LEN;
+  prog[1] = (1u << 16) | 1u;  /* n_gb_cols=1, n_agg_results=1 */
+  prog[2] = PUSHDOWN_AGGREGATION_VERSION;
+  prog[3] = prog[4] = prog[5] = prog[6] = prog[7] = 0;
+  prog[8] = gbColId << 16;
+  prog[9] = (kOpLoadCol << 26) | (COL_TYPE_BIGINT << 21) | (0 << 16) |
+             countColId;
+  prog[10] = (kOpCount << 26) | (0 << 16) | 0;
+  return prog;
+}
+
+/*
+ * Build aggregation program for:
+ *   SELECT COUNT(*), MAX(col), MIN(col) FROM t  (no GROUP BY)
+ *
+ * n_gb_cols=0, n_agg_results=3
+ */
+static std::vector<Uint32>
+buildAggProgram_CountMaxMin(Uint32 colId)
+{
+  const Uint32 PROG_LEN = 12;
+  std::vector<Uint32> prog(PROG_LEN);
+  prog[0] = (AGG_MAGIC << 16) | PROG_LEN;
+  prog[1] = (0u << 16) | 3u;  /* n_gb_cols=0, n_agg_results=3 */
+  prog[2] = PUSHDOWN_AGGREGATION_VERSION;
+  prog[3] = prog[4] = prog[5] = prog[6] = prog[7] = 0;
+  prog[8] = (kOpLoadCol << 26) | (COL_TYPE_BIGINT << 21) | (0 << 16) | colId;
+  prog[9] = (kOpCount << 26) | (0 << 16) | 0;   /* COUNT → agg[0] */
+  prog[10] = (kOpMax << 26) | (0 << 16) | 1;    /* MAX → agg[1] */
+  prog[11] = (kOpMin << 26) | (0 << 16) | 2;    /* MIN → agg[2] */
+  return prog;
+}
+
+/*
+ * Build aggregation program for:
+ *   SELECT COUNT(*), SUM(val), MAX(val), MIN(val) FROM t GROUP BY grp
+ *
+ * n_gb_cols=1, n_agg_results=4
+ */
+static std::vector<Uint32>
+buildAggProgram_AllAggsGroupBy(Uint32 gbColId, Uint32 valColId)
+{
+  const Uint32 PROG_LEN = 14;
+  std::vector<Uint32> prog(PROG_LEN);
+  prog[0] = (AGG_MAGIC << 16) | PROG_LEN;
+  prog[1] = (1u << 16) | 4u;  /* n_gb_cols=1, n_agg_results=4 */
+  prog[2] = PUSHDOWN_AGGREGATION_VERSION;
+  prog[3] = prog[4] = prog[5] = prog[6] = prog[7] = 0;
+  prog[8] = gbColId << 16;
+  prog[9] = (kOpLoadCol << 26) | (COL_TYPE_BIGINT << 21) | (0 << 16) |
+             valColId;
+  prog[10] = (kOpCount << 26) | (0 << 16) | 0;  /* COUNT → agg[0] */
+  prog[11] = (kOpSum << 26) | (0 << 16) | 1;    /* SUM → agg[1] */
+  prog[12] = (kOpMax << 26) | (0 << 16) | 2;    /* MAX → agg[2] */
+  prog[13] = (kOpMin << 26) | (0 << 16) | 3;    /* MIN → agg[3] */
+  return prog;
+}
+
 /* ------------------------------------------------------------------ */
 /* AttrInfo section builder for SCAN_FRAGREQ                          */
 /* ------------------------------------------------------------------ */
@@ -205,6 +314,7 @@ struct TableMeta {
   Uint32 schemaVersion;
   Uint32 attrIdA;
   Uint32 attrIdB;
+  Uint32 attrIdC;       /* for 3-column tables (0 if unused) */
   Uint32 fragCount;
   std::vector<Uint32> fragNodes;      /* primary node for each fragment */
   std::vector<Uint32> fragInstances;  /* LDM instance for each fragment */
@@ -253,6 +363,7 @@ createTestTable(Ndb *ndb, TableMeta &meta)
   meta.schemaVersion = ptab->getObjectVersion();
   meta.attrIdA = ptab->getColumn("a")->getAttrId();
   meta.attrIdB = ptab->getColumn("b")->getAttrId();
+  meta.attrIdC = 0;
   meta.fragCount = ptab->getFragmentCount();
 
   meta.fragNodes.resize(meta.fragCount);
@@ -448,6 +559,194 @@ dropTestTable(Ndb *ndb)
     fprintf(stderr, "dropTable: %s\n", dict->getNdbError().message);
     return -1;
   }
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* 3-column table setup (pk, grp, val) for multi-row-per-group tests  */
+/* ------------------------------------------------------------------ */
+
+static const char *TABLE_NAME_3COL = "jagg_test3";
+
+static int
+createTestTable3Col(Ndb *ndb, TableMeta &meta)
+{
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->dropTable(TABLE_NAME_3COL);
+
+  NdbDictionary::Table tab;
+  tab.setName(TABLE_NAME_3COL);
+
+  NdbDictionary::Column colPk;
+  colPk.setName("pk");
+  colPk.setType(NdbDictionary::Column::Bigint);
+  colPk.setPrimaryKey(true);
+  colPk.setNullable(false);
+  tab.addColumn(colPk);
+
+  NdbDictionary::Column colGrp;
+  colGrp.setName("grp");
+  colGrp.setType(NdbDictionary::Column::Bigint);
+  colGrp.setPrimaryKey(false);
+  colGrp.setNullable(false);
+  tab.addColumn(colGrp);
+
+  NdbDictionary::Column colVal;
+  colVal.setName("val");
+  colVal.setType(NdbDictionary::Column::Bigint);
+  colVal.setPrimaryKey(false);
+  colVal.setNullable(false);
+  tab.addColumn(colVal);
+
+  if (dict->createTable(tab) != 0) {
+    fprintf(stderr, "createTable3Col failed: %s\n",
+            dict->getNdbError().message);
+    return -1;
+  }
+
+  const NdbDictionary::Table *ptab = dict->getTable(TABLE_NAME_3COL);
+  if (ptab == nullptr) {
+    fprintf(stderr, "getTable3Col failed: %s\n",
+            dict->getNdbError().message);
+    return -1;
+  }
+
+  meta.tableId = ptab->getObjectId();
+  meta.schemaVersion = ptab->getObjectVersion();
+  meta.attrIdA = ptab->getColumn("pk")->getAttrId();
+  meta.attrIdB = ptab->getColumn("grp")->getAttrId();
+  meta.attrIdC = ptab->getColumn("val")->getAttrId();
+  meta.fragCount = ptab->getFragmentCount();
+
+  meta.fragNodes.resize(meta.fragCount);
+  for (Uint32 f = 0; f < meta.fragCount; f++) {
+    Uint32 nodeId = 0;
+    ptab->getFragmentNodes(f, &nodeId, 1);
+    meta.fragNodes[f] = nodeId;
+  }
+
+  V("Table '%s': id=%u version=%u pk=%u grp=%u val=%u frags=%u\n",
+    TABLE_NAME_3COL, meta.tableId, meta.schemaVersion,
+    meta.attrIdA, meta.attrIdB, meta.attrIdC, meta.fragCount);
+  for (Uint32 f = 0; f < meta.fragCount; f++) {
+    V("  fragment %u -> node %u\n", f, meta.fragNodes[f]);
+  }
+
+  return 0;
+}
+
+static int
+dropTestTable3Col(Ndb *ndb)
+{
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  if (dict->dropTable(TABLE_NAME_3COL) != 0) {
+    fprintf(stderr, "dropTable3Col: %s\n", dict->getNdbError().message);
+    return -1;
+  }
+  return 0;
+}
+
+/*
+ * Insert rows into 3-col table with multiple rows per group:
+ *   (pk=1, grp=1, val=10), (pk=2, grp=1, val=20)
+ *   (pk=3, grp=2, val=30), (pk=4, grp=2, val=40), (pk=5, grp=2, val=50)
+ *   (pk=6, grp=3, val=60)
+ *
+ * Expected GROUP BY grp:
+ *   group(1): COUNT=2, SUM=30, MAX=20, MIN=10
+ *   group(2): COUNT=3, SUM=120, MAX=50, MIN=30
+ *   group(3): COUNT=1, SUM=60, MAX=60, MIN=60
+ */
+static int
+insertMultiRowData(Ndb *ndb)
+{
+  struct Row { Int64 pk; Int64 grp; Int64 val; };
+  static const Row rows[] = {
+    {1, 1, 10}, {2, 1, 20},
+    {3, 2, 30}, {4, 2, 40}, {5, 2, 50},
+    {6, 3, 60}
+  };
+
+  const NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  const NdbDictionary::Table *ptab = dict->getTable(TABLE_NAME_3COL);
+  if (ptab == nullptr) return -1;
+
+  for (const auto &row : rows) {
+    NdbTransaction *trans = ndb->startTransaction();
+    if (trans == nullptr) {
+      fprintf(stderr, "startTransaction: %s\n", ndb->getNdbError().message);
+      return -1;
+    }
+    NdbOperation *op = trans->getNdbOperation(ptab);
+    if (op == nullptr) {
+      fprintf(stderr, "getNdbOperation: %s\n", trans->getNdbError().message);
+      trans->close();
+      return -1;
+    }
+    op->insertTuple();
+    op->equal("pk", row.pk);
+    op->setValue("grp", row.grp);
+    op->setValue("val", row.val);
+    if (trans->execute(NdbTransaction::Commit) != 0) {
+      fprintf(stderr, "insert3col(%lld,%lld,%lld) failed: %s\n",
+              (long long)row.pk, (long long)row.grp, (long long)row.val,
+              trans->getNdbError().message);
+      trans->close();
+      return -1;
+    }
+    trans->close();
+  }
+
+  V("Inserted %zu rows into %s\n",
+    sizeof(rows)/sizeof(rows[0]), TABLE_NAME_3COL);
+  return 0;
+}
+
+/*
+ * Insert rows with negative values into the 2-col table:
+ *   (1, -100), (2, 50), (3, -200), (4, 300), (5, -50)
+ *
+ * Expected: COUNT=5, SUM=0, MAX=300, MIN=-200
+ */
+static int
+insertNegativeData(Ndb *ndb)
+{
+  struct Row { Int64 a; Int64 b; };
+  static const Row rows[] = {
+    {1, -100}, {2, 50}, {3, -200}, {4, 300}, {5, -50}
+  };
+
+  const NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  const NdbDictionary::Table *ptab = dict->getTable(TABLE_NAME);
+  if (ptab == nullptr) return -1;
+
+  for (const auto &row : rows) {
+    NdbTransaction *trans = ndb->startTransaction();
+    if (trans == nullptr) {
+      fprintf(stderr, "startTransaction: %s\n", ndb->getNdbError().message);
+      return -1;
+    }
+    NdbOperation *op = trans->getNdbOperation(ptab);
+    if (op == nullptr) {
+      fprintf(stderr, "getNdbOperation: %s\n", trans->getNdbError().message);
+      trans->close();
+      return -1;
+    }
+    op->insertTuple();
+    op->equal("a", row.a);
+    op->setValue("b", row.b);
+    if (trans->execute(NdbTransaction::Commit) != 0) {
+      fprintf(stderr, "insert(%lld,%lld) failed: %s\n",
+              (long long)row.a, (long long)row.b,
+              trans->getNdbError().message);
+      trans->close();
+      return -1;
+    }
+    trans->close();
+  }
+
+  V("Inserted %zu rows (negative values) into %s\n",
+    sizeof(rows)/sizeof(rows[0]), TABLE_NAME);
   return 0;
 }
 
@@ -1736,6 +2035,1458 @@ testLqhKeyReq(Ndb *ndb, SignalSender &ss, const TableMeta &meta,
 }
 
 /* ------------------------------------------------------------------ */
+/* Test 6: MAX(b) GROUP BY a                                           */
+/* ------------------------------------------------------------------ */
+
+static int
+testMaxGroupBy(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
+{
+  V("\n========================================\n");
+  V("Test 6: SELECT MAX(b) FROM %s GROUP BY a\n", TABLE_NAME);
+  V("========================================\n");
+
+  std::set<Uint32> uniqueNodes(meta.fragNodes.begin(), meta.fragNodes.end());
+  auto aggProg = buildAggProgram_MaxGroupBy(meta.attrIdA, meta.attrIdB);
+
+  std::map<Uint32, Uint32> aggStateKeys;
+  for (Uint32 nd : uniqueNodes) {
+    Uint32 key = 0;
+    if (sendSetupReq(ss, nd, aggProg, meta,
+                     JoinAggSetupReq::STRATEGY_MUTEX_BASED, key) != 0)
+      return -1;
+    aggStateKeys[nd] = key;
+  }
+
+  auto attrInfo = buildAttrInfo();
+  for (Uint32 f = 0; f < meta.fragCount; f++) {
+    if (sendScanFragReq(ss, meta.fragNodes[f], f, meta.fragInstances[f],
+                        aggStateKeys[meta.fragNodes[f]], meta, attrInfo) != 0)
+      return -1;
+    Uint32 rows = 0;
+    if (waitForScanConf(ss, f, rows) != 0) return -1;
+  }
+
+  std::vector<AggResult> allResults;
+  Uint32 totalGroups = 0;
+  for (Uint32 nd : uniqueNodes) {
+    if (sendCompleteReq(ss, nd, aggStateKeys[nd], 1000) != 0) return -1;
+    if (receiveResults(ss, allResults, totalGroups) != 0) return -1;
+  }
+  for (Uint32 nd : uniqueNodes) {
+    if (sendReleaseReq(ss, nd, aggStateKeys[nd]) != 0) return -1;
+  }
+
+  V("\n--- Validation ---\n");
+  if (totalGroups != 5) {
+    fprintf(stderr, "FAIL: expected 5 groups, got %u\n", totalGroups);
+    return -1;
+  }
+
+  /* With unique keys, MAX(b) = b for each group */
+  std::map<Int64, Int64> expected;
+  expected[1] = 10; expected[2] = 20; expected[3] = 30;
+  expected[4] = 40; expected[5] = 50;
+
+  std::map<Int64, Int64> actual;
+  for (const auto &res : allResults) {
+    for (const auto &grp : res.groups) {
+      Int64 key = extractGroupKey(grp.first);
+      Int64 val = extractSumBigint(grp.second, 0);  /* same layout */
+      actual[key] = val;
+      V("  group(%lld) = MAX %lld\n", (long long)key, (long long)val);
+    }
+  }
+
+  int failures = 0;
+  for (const auto &exp : expected) {
+    auto it = actual.find(exp.first);
+    if (it == actual.end()) {
+      fprintf(stderr, "FAIL: missing group(%lld)\n", (long long)exp.first);
+      failures++;
+    } else if (it->second != exp.second) {
+      fprintf(stderr, "FAIL: group(%lld) expected MAX=%lld, got %lld\n",
+              (long long)exp.first, (long long)exp.second,
+              (long long)it->second);
+      failures++;
+    }
+  }
+
+  if (failures == 0) {
+    printf("PASS: Test 6 — MAX(b) GROUP BY a, all %u groups correct\n",
+           totalGroups);
+  }
+  return failures > 0 ? -1 : 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Test 7: MIN(b) GROUP BY a                                           */
+/* ------------------------------------------------------------------ */
+
+static int
+testMinGroupBy(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
+{
+  V("\n========================================\n");
+  V("Test 7: SELECT MIN(b) FROM %s GROUP BY a\n", TABLE_NAME);
+  V("========================================\n");
+
+  std::set<Uint32> uniqueNodes(meta.fragNodes.begin(), meta.fragNodes.end());
+  auto aggProg = buildAggProgram_MinGroupBy(meta.attrIdA, meta.attrIdB);
+
+  std::map<Uint32, Uint32> aggStateKeys;
+  for (Uint32 nd : uniqueNodes) {
+    Uint32 key = 0;
+    if (sendSetupReq(ss, nd, aggProg, meta,
+                     JoinAggSetupReq::STRATEGY_MUTEX_BASED, key) != 0)
+      return -1;
+    aggStateKeys[nd] = key;
+  }
+
+  auto attrInfo = buildAttrInfo();
+  for (Uint32 f = 0; f < meta.fragCount; f++) {
+    if (sendScanFragReq(ss, meta.fragNodes[f], f, meta.fragInstances[f],
+                        aggStateKeys[meta.fragNodes[f]], meta, attrInfo) != 0)
+      return -1;
+    Uint32 rows = 0;
+    if (waitForScanConf(ss, f, rows) != 0) return -1;
+  }
+
+  std::vector<AggResult> allResults;
+  Uint32 totalGroups = 0;
+  for (Uint32 nd : uniqueNodes) {
+    if (sendCompleteReq(ss, nd, aggStateKeys[nd], 1000) != 0) return -1;
+    if (receiveResults(ss, allResults, totalGroups) != 0) return -1;
+  }
+  for (Uint32 nd : uniqueNodes) {
+    if (sendReleaseReq(ss, nd, aggStateKeys[nd]) != 0) return -1;
+  }
+
+  V("\n--- Validation ---\n");
+  if (totalGroups != 5) {
+    fprintf(stderr, "FAIL: expected 5 groups, got %u\n", totalGroups);
+    return -1;
+  }
+
+  std::map<Int64, Int64> expected;
+  expected[1] = 10; expected[2] = 20; expected[3] = 30;
+  expected[4] = 40; expected[5] = 50;
+
+  std::map<Int64, Int64> actual;
+  for (const auto &res : allResults) {
+    for (const auto &grp : res.groups) {
+      Int64 key = extractGroupKey(grp.first);
+      Int64 val = extractSumBigint(grp.second, 0);
+      actual[key] = val;
+      V("  group(%lld) = MIN %lld\n", (long long)key, (long long)val);
+    }
+  }
+
+  int failures = 0;
+  for (const auto &exp : expected) {
+    auto it = actual.find(exp.first);
+    if (it == actual.end()) {
+      fprintf(stderr, "FAIL: missing group(%lld)\n", (long long)exp.first);
+      failures++;
+    } else if (it->second != exp.second) {
+      fprintf(stderr, "FAIL: group(%lld) expected MIN=%lld, got %lld\n",
+              (long long)exp.first, (long long)exp.second,
+              (long long)it->second);
+      failures++;
+    }
+  }
+
+  if (failures == 0) {
+    printf("PASS: Test 7 — MIN(b) GROUP BY a, all %u groups correct\n",
+           totalGroups);
+  }
+  return failures > 0 ? -1 : 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Test 8: COUNT(*), MAX(b), MIN(b) without GROUP BY                   */
+/* ------------------------------------------------------------------ */
+
+static int
+testMaxMinNoGroupBy(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
+{
+  V("\n=============================================\n");
+  V("Test 8: SELECT COUNT(*), MAX(b), MIN(b) FROM %s\n", TABLE_NAME);
+  V("=============================================\n");
+
+  std::set<Uint32> uniqueNodes(meta.fragNodes.begin(), meta.fragNodes.end());
+  auto aggProg = buildAggProgram_CountMaxMin(meta.attrIdB);
+
+  std::map<Uint32, Uint32> aggStateKeys;
+  for (Uint32 nd : uniqueNodes) {
+    Uint32 key = 0;
+    if (sendSetupReq(ss, nd, aggProg, meta,
+                     JoinAggSetupReq::STRATEGY_MUTEX_BASED, key) != 0)
+      return -1;
+    aggStateKeys[nd] = key;
+  }
+
+  auto attrInfo = buildAttrInfo();
+  for (Uint32 f = 0; f < meta.fragCount; f++) {
+    if (sendScanFragReq(ss, meta.fragNodes[f], f, meta.fragInstances[f],
+                        aggStateKeys[meta.fragNodes[f]], meta, attrInfo) != 0)
+      return -1;
+    Uint32 rows = 0;
+    if (waitForScanConf(ss, f, rows) != 0) return -1;
+  }
+
+  std::vector<AggResult> allResults;
+  Uint32 totalGroups = 0;
+  for (Uint32 nd : uniqueNodes) {
+    if (sendCompleteReq(ss, nd, aggStateKeys[nd], 1000) != 0) return -1;
+    if (receiveResults(ss, allResults, totalGroups) != 0) return -1;
+  }
+  for (Uint32 nd : uniqueNodes) {
+    if (sendReleaseReq(ss, nd, aggStateKeys[nd]) != 0) return -1;
+  }
+
+  V("\n--- Validation ---\n");
+  if (allResults.empty()) {
+    fprintf(stderr, "FAIL: no results received\n");
+    return -1;
+  }
+
+  /*
+   * For MAX/MIN across multiple nodes: take max of maxes, min of mins.
+   * COUNT sums across nodes.
+   */
+  Uint64 count = 0;
+  Int64 maxVal = INT64_MIN;
+  Int64 minVal = INT64_MAX;
+  bool first = true;
+  for (const auto &res : allResults) {
+    if (res.n_gb_cols != 0) {
+      fprintf(stderr, "FAIL: expected n_gb_cols=0, got %u\n", res.n_gb_cols);
+      return -1;
+    }
+    if (res.groups.empty()) {
+      fprintf(stderr, "FAIL: no data in result\n");
+      return -1;
+    }
+    const auto &val = res.groups[0].second;
+    Uint64 nodeCount = extractCountBigint(val, 0);
+    Int64 nodeMax = extractSumBigint(val, 1);
+    Int64 nodeMin = extractSumBigint(val, 2);
+    count += nodeCount;
+    if (nodeCount > 0) {
+      if (first) {
+        maxVal = nodeMax;
+        minVal = nodeMin;
+        first = false;
+      } else {
+        if (nodeMax > maxVal) maxVal = nodeMax;
+        if (nodeMin < minVal) minVal = nodeMin;
+      }
+    }
+  }
+
+  V("  COUNT(*) = %llu\n", (unsigned long long)count);
+  V("  MAX(b) = %lld\n", (long long)maxVal);
+  V("  MIN(b) = %lld\n", (long long)minVal);
+
+  int failures = 0;
+  if (count != 5) {
+    fprintf(stderr, "FAIL: expected COUNT(*)=5, got %llu\n",
+            (unsigned long long)count);
+    failures++;
+  }
+  if (maxVal != 50) {
+    fprintf(stderr, "FAIL: expected MAX(b)=50, got %lld\n",
+            (long long)maxVal);
+    failures++;
+  }
+  if (minVal != 10) {
+    fprintf(stderr, "FAIL: expected MIN(b)=10, got %lld\n",
+            (long long)minVal);
+    failures++;
+  }
+
+  if (failures == 0) {
+    printf("PASS: Test 8 — COUNT(*)=5, MAX(b)=50, MIN(b)=10\n");
+  }
+  return failures > 0 ? -1 : 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Test 9: Empty table — COUNT(*), SUM(b)                              */
+/* ------------------------------------------------------------------ */
+
+static int
+testEmptyTable(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
+{
+  V("\n=============================================\n");
+  V("Test 9: SELECT COUNT(*), SUM(b) FROM %s (empty)\n", TABLE_NAME);
+  V("=============================================\n");
+
+  std::set<Uint32> uniqueNodes(meta.fragNodes.begin(), meta.fragNodes.end());
+  auto aggProg = buildAggProgram_CountSum(meta.attrIdB);
+
+  std::map<Uint32, Uint32> aggStateKeys;
+  for (Uint32 nd : uniqueNodes) {
+    Uint32 key = 0;
+    if (sendSetupReq(ss, nd, aggProg, meta,
+                     JoinAggSetupReq::STRATEGY_MUTEX_BASED, key) != 0)
+      return -1;
+    aggStateKeys[nd] = key;
+  }
+
+  auto attrInfo = buildAttrInfo();
+  Uint32 totalRowsScanned = 0;
+  for (Uint32 f = 0; f < meta.fragCount; f++) {
+    if (sendScanFragReq(ss, meta.fragNodes[f], f, meta.fragInstances[f],
+                        aggStateKeys[meta.fragNodes[f]], meta, attrInfo) != 0)
+      return -1;
+    Uint32 rows = 0;
+    if (waitForScanConf(ss, f, rows) != 0) return -1;
+    totalRowsScanned += rows;
+  }
+
+  V("\nTotal rows scanned: %u (should be 0)\n", totalRowsScanned);
+
+  std::vector<AggResult> allResults;
+  Uint32 totalGroups = 0;
+  for (Uint32 nd : uniqueNodes) {
+    if (sendCompleteReq(ss, nd, aggStateKeys[nd], 1000) != 0) return -1;
+    if (receiveResults(ss, allResults, totalGroups) != 0) return -1;
+  }
+  for (Uint32 nd : uniqueNodes) {
+    if (sendReleaseReq(ss, nd, aggStateKeys[nd]) != 0) return -1;
+  }
+
+  V("\n--- Validation ---\n");
+  if (allResults.empty()) {
+    fprintf(stderr, "FAIL: no results received from empty table\n");
+    return -1;
+  }
+
+  Uint64 count = 0;
+  Int64 sum = 0;
+  for (const auto &res : allResults) {
+    if (res.groups.empty()) continue;
+    const auto &val = res.groups[0].second;
+    count += extractCountBigint(val, 0);
+    sum += extractSumBigint(val, 1);
+  }
+
+  V("  COUNT(*) = %llu\n", (unsigned long long)count);
+  V("  SUM(b) = %lld\n", (long long)sum);
+
+  int failures = 0;
+  if (count != 0) {
+    fprintf(stderr, "FAIL: expected COUNT(*)=0, got %llu\n",
+            (unsigned long long)count);
+    failures++;
+  }
+  if (sum != 0) {
+    fprintf(stderr, "FAIL: expected SUM(b)=0, got %lld\n", (long long)sum);
+    failures++;
+  }
+  if (totalRowsScanned != 0) {
+    fprintf(stderr, "FAIL: expected 0 rows scanned, got %u\n",
+            totalRowsScanned);
+    failures++;
+  }
+
+  if (failures == 0) {
+    printf("PASS: Test 9 — empty table, COUNT(*)=0, SUM(b)=0\n");
+  }
+  return failures > 0 ? -1 : 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Test 10: Multiple rows per group — SUM(val) GROUP BY grp            */
+/* ------------------------------------------------------------------ */
+
+static int
+testMultiRowPerGroup(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
+{
+  V("\n=============================================\n");
+  V("Test 10: SELECT SUM(val) FROM %s GROUP BY grp\n", TABLE_NAME_3COL);
+  V("=============================================\n");
+
+  std::set<Uint32> uniqueNodes(meta.fragNodes.begin(), meta.fragNodes.end());
+  /* GROUP BY grp (attrIdB), SUM val (attrIdC) */
+  auto aggProg = buildAggProgram_SumGroupBy(meta.attrIdB, meta.attrIdC);
+
+  std::map<Uint32, Uint32> aggStateKeys;
+  for (Uint32 nd : uniqueNodes) {
+    Uint32 key = 0;
+    if (sendSetupReq(ss, nd, aggProg, meta,
+                     JoinAggSetupReq::STRATEGY_MUTEX_BASED, key) != 0)
+      return -1;
+    aggStateKeys[nd] = key;
+  }
+
+  auto attrInfo = buildAttrInfo();
+  for (Uint32 f = 0; f < meta.fragCount; f++) {
+    if (sendScanFragReq(ss, meta.fragNodes[f], f, meta.fragInstances[f],
+                        aggStateKeys[meta.fragNodes[f]], meta, attrInfo) != 0)
+      return -1;
+    Uint32 rows = 0;
+    if (waitForScanConf(ss, f, rows) != 0) return -1;
+  }
+
+  std::vector<AggResult> allResults;
+  Uint32 totalGroups = 0;
+  for (Uint32 nd : uniqueNodes) {
+    if (sendCompleteReq(ss, nd, aggStateKeys[nd], 1000) != 0) return -1;
+    if (receiveResults(ss, allResults, totalGroups) != 0) return -1;
+  }
+  for (Uint32 nd : uniqueNodes) {
+    if (sendReleaseReq(ss, nd, aggStateKeys[nd]) != 0) return -1;
+  }
+
+  V("\n--- Validation ---\n");
+  if (totalGroups != 3) {
+    fprintf(stderr, "FAIL: expected 3 groups, got %u\n", totalGroups);
+    return -1;
+  }
+
+  std::map<Int64, Int64> expected;
+  expected[1] = 30;   /* 10 + 20 */
+  expected[2] = 120;  /* 30 + 40 + 50 */
+  expected[3] = 60;
+
+  std::map<Int64, Int64> actual;
+  for (const auto &res : allResults) {
+    for (const auto &grp : res.groups) {
+      Int64 key = extractGroupKey(grp.first);
+      Int64 sum = extractSumBigint(grp.second, 0);
+      actual[key] += sum;
+      V("  group(%lld) += SUM %lld\n", (long long)key, (long long)sum);
+    }
+  }
+
+  int failures = 0;
+  for (const auto &exp : expected) {
+    auto it = actual.find(exp.first);
+    if (it == actual.end()) {
+      fprintf(stderr, "FAIL: missing group(%lld)\n", (long long)exp.first);
+      failures++;
+    } else if (it->second != exp.second) {
+      fprintf(stderr, "FAIL: group(%lld) expected SUM=%lld, got %lld\n",
+              (long long)exp.first, (long long)exp.second,
+              (long long)it->second);
+      failures++;
+    }
+  }
+
+  if (failures == 0) {
+    printf("PASS: Test 10 — multi-row-per-group SUM, 3 groups correct\n");
+  }
+  return failures > 0 ? -1 : 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Test 11: All aggregates — COUNT, SUM, MAX, MIN GROUP BY grp         */
+/* ------------------------------------------------------------------ */
+
+static int
+testAllAggsGroupBy(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
+{
+  V("\n=============================================\n");
+  V("Test 11: SELECT COUNT(*), SUM(val), MAX(val), MIN(val) "
+    "FROM %s GROUP BY grp\n", TABLE_NAME_3COL);
+  V("=============================================\n");
+
+  std::set<Uint32> uniqueNodes(meta.fragNodes.begin(), meta.fragNodes.end());
+  auto aggProg = buildAggProgram_AllAggsGroupBy(meta.attrIdB, meta.attrIdC);
+
+  std::map<Uint32, Uint32> aggStateKeys;
+  for (Uint32 nd : uniqueNodes) {
+    Uint32 key = 0;
+    if (sendSetupReq(ss, nd, aggProg, meta,
+                     JoinAggSetupReq::STRATEGY_MUTEX_BASED, key) != 0)
+      return -1;
+    aggStateKeys[nd] = key;
+  }
+
+  auto attrInfo = buildAttrInfo();
+  for (Uint32 f = 0; f < meta.fragCount; f++) {
+    if (sendScanFragReq(ss, meta.fragNodes[f], f, meta.fragInstances[f],
+                        aggStateKeys[meta.fragNodes[f]], meta, attrInfo) != 0)
+      return -1;
+    Uint32 rows = 0;
+    if (waitForScanConf(ss, f, rows) != 0) return -1;
+  }
+
+  std::vector<AggResult> allResults;
+  Uint32 totalGroups = 0;
+  for (Uint32 nd : uniqueNodes) {
+    if (sendCompleteReq(ss, nd, aggStateKeys[nd], 1000) != 0) return -1;
+    if (receiveResults(ss, allResults, totalGroups) != 0) return -1;
+  }
+  for (Uint32 nd : uniqueNodes) {
+    if (sendReleaseReq(ss, nd, aggStateKeys[nd]) != 0) return -1;
+  }
+
+  V("\n--- Validation ---\n");
+  if (totalGroups != 3) {
+    fprintf(stderr, "FAIL: expected 3 groups, got %u\n", totalGroups);
+    return -1;
+  }
+
+  struct Expected { Uint64 count; Int64 sum; Int64 max; Int64 min; };
+  std::map<Int64, Expected> expected;
+  expected[1] = {2, 30, 20, 10};
+  expected[2] = {3, 120, 50, 30};
+  expected[3] = {1, 60, 60, 60};
+
+  /* Collect per-group results — aggregate partial results across nodes */
+  struct Actual { Uint64 count; Int64 sum; Int64 max; Int64 min; bool init; };
+  std::map<Int64, Actual> actual;
+  for (const auto &res : allResults) {
+    for (const auto &grp : res.groups) {
+      Int64 key = extractGroupKey(grp.first);
+      Uint64 cnt = extractCountBigint(grp.second, 0);
+      Int64 s = extractSumBigint(grp.second, 1);
+      Int64 mx = extractSumBigint(grp.second, 2);
+      Int64 mn = extractSumBigint(grp.second, 3);
+      auto &a = actual[key];
+      if (!a.init) {
+        a.count = cnt; a.sum = s; a.max = mx; a.min = mn; a.init = true;
+      } else {
+        a.count += cnt;
+        a.sum += s;
+        if (mx > a.max) a.max = mx;
+        if (mn < a.min) a.min = mn;
+      }
+      V("  group(%lld): COUNT=%llu SUM=%lld MAX=%lld MIN=%lld\n",
+        (long long)key, (unsigned long long)cnt, (long long)s,
+        (long long)mx, (long long)mn);
+    }
+  }
+
+  int failures = 0;
+  for (const auto &exp : expected) {
+    auto it = actual.find(exp.first);
+    if (it == actual.end()) {
+      fprintf(stderr, "FAIL: missing group(%lld)\n", (long long)exp.first);
+      failures++;
+      continue;
+    }
+    const auto &a = it->second;
+    const auto &e = exp.second;
+    if (a.count != e.count) {
+      fprintf(stderr, "FAIL: group(%lld) COUNT=%llu, expected %llu\n",
+              (long long)exp.first, (unsigned long long)a.count,
+              (unsigned long long)e.count);
+      failures++;
+    }
+    if (a.sum != e.sum) {
+      fprintf(stderr, "FAIL: group(%lld) SUM=%lld, expected %lld\n",
+              (long long)exp.first, (long long)a.sum, (long long)e.sum);
+      failures++;
+    }
+    if (a.max != e.max) {
+      fprintf(stderr, "FAIL: group(%lld) MAX=%lld, expected %lld\n",
+              (long long)exp.first, (long long)a.max, (long long)e.max);
+      failures++;
+    }
+    if (a.min != e.min) {
+      fprintf(stderr, "FAIL: group(%lld) MIN=%lld, expected %lld\n",
+              (long long)exp.first, (long long)a.min, (long long)e.min);
+      failures++;
+    }
+  }
+
+  if (failures == 0) {
+    printf("PASS: Test 11 — COUNT/SUM/MAX/MIN GROUP BY, 3 groups correct\n");
+  }
+  return failures > 0 ? -1 : 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Test 12: Flow control with small batch size                         */
+/* ------------------------------------------------------------------ */
+
+/*
+ * receiveResults variant that uses a fixed small batch size for
+ * SEND_CONF replies, forcing multiple SEND_REQ/SEND_CONF round-trips.
+ */
+static int
+receiveResultsSmallBatch(SignalSender &ss,
+                         std::vector<AggResult> &allResults,
+                         Uint32 &totalGroups,
+                         Uint32 batchSize,
+                         Uint32 &sendReqCount)
+{
+  V("Waiting for results (small batch=%u)...\n", batchSize);
+  Uint32 nodeGroups = 0;
+  bool done = false;
+
+  while (!done) {
+    SimpleSignal *resp = waitForSignal(ss, WAIT_TIMEOUT_MS, "results");
+    if (resp == nullptr) return -1;
+
+    int gsn = getGsn(resp);
+    if (gsn == GSN_TRANSID_AI) {
+      AggResult result;
+      if (parseTransIdAI(resp, result) != 0) return -1;
+      nodeGroups += result.n_groups;
+      totalGroups += result.n_groups;
+      allResults.push_back(std::move(result));
+    }
+    else if (gsn == GSN_JOIN_AGG_SEND_REQ) {
+      const JoinAggSendReq *sendReq =
+        reinterpret_cast<const JoinAggSendReq *>(resp->getDataPtr());
+      V("  JOIN_AGG_SEND_REQ: rowsSent=%u bytes=%u\n",
+        sendReq->numRowsSent, sendReq->resultBytes);
+      sendReqCount++;
+      /* Reply with small batch to force more rounds */
+      if (sendSendConf(ss, sendReq, batchSize) != 0) return -1;
+    }
+    else if (gsn == GSN_JOIN_AGG_COMPLETE_CONF) {
+      const JoinAggCompleteConf *conf =
+        reinterpret_cast<const JoinAggCompleteConf *>(resp->getDataPtr());
+      V("JOIN_AGG_COMPLETE_CONF: numResultRows=%u resultBytes=%u\n",
+        conf->numResultRows, conf->resultBytes);
+      done = true;
+    }
+    else if (gsn == GSN_JOIN_AGG_COMPLETE_REF) {
+      const JoinAggCompleteRef *ref =
+        reinterpret_cast<const JoinAggCompleteRef *>(resp->getDataPtr());
+      fprintf(stderr, "COMPLETE_REF: errorCode=%u errorLine=%u\n",
+              ref->errorCode, ref->errorLine);
+      return -1;
+    }
+    else {
+      fprintf(stderr, "Unexpected GSN %d during result reception\n", gsn);
+    }
+  }
+
+  V("Received %u groups, %u SEND_REQ round-trips\n",
+    nodeGroups, sendReqCount);
+  return 0;
+}
+
+static int
+testFlowControl(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta,
+                Uint32 numRows)
+{
+  V("\n=============================================\n");
+  V("Test 12: Flow control (%u rows, batch=2)\n", numRows);
+  V("=============================================\n");
+
+  std::set<Uint32> uniqueNodes(meta.fragNodes.begin(), meta.fragNodes.end());
+  auto aggProg = buildAggProgram_SumGroupBy(meta.attrIdA, meta.attrIdB);
+
+  std::map<Uint32, Uint32> aggStateKeys;
+  for (Uint32 nd : uniqueNodes) {
+    Uint32 key = 0;
+    if (sendSetupReq(ss, nd, aggProg, meta,
+                     JoinAggSetupReq::STRATEGY_MUTEX_BASED, key) != 0)
+      return -1;
+    aggStateKeys[nd] = key;
+  }
+
+  auto attrInfo = buildAttrInfo();
+  for (Uint32 f = 0; f < meta.fragCount; f++) {
+    if (sendScanFragReq(ss, meta.fragNodes[f], f, meta.fragInstances[f],
+                        aggStateKeys[meta.fragNodes[f]], meta, attrInfo) != 0)
+      return -1;
+    Uint32 rows = 0;
+    if (waitForScanConf(ss, f, rows) != 0) return -1;
+  }
+
+  /* Use maxBatchRows=2 in COMPLETE_REQ and in SEND_CONF replies */
+  std::vector<AggResult> allResults;
+  Uint32 totalGroups = 0;
+  Uint32 totalSendReqs = 0;
+  for (Uint32 nd : uniqueNodes) {
+    if (sendCompleteReq(ss, nd, aggStateKeys[nd], 2) != 0) return -1;
+    Uint32 sendReqs = 0;
+    if (receiveResultsSmallBatch(ss, allResults, totalGroups,
+                                  2, sendReqs) != 0)
+      return -1;
+    totalSendReqs += sendReqs;
+  }
+  for (Uint32 nd : uniqueNodes) {
+    if (sendReleaseReq(ss, nd, aggStateKeys[nd]) != 0) return -1;
+  }
+
+  V("\n--- Validation ---\n");
+  V("Total SEND_REQs: %u\n", totalSendReqs);
+
+  if (totalGroups != numRows) {
+    fprintf(stderr, "FAIL: expected %u groups, got %u\n", numRows, totalGroups);
+    return -1;
+  }
+
+  /* Verify all groups have correct SUM */
+  std::map<Int64, Int64> actual;
+  for (const auto &res : allResults) {
+    for (const auto &grp : res.groups) {
+      Int64 key = extractGroupKey(grp.first);
+      Int64 sum = extractSumBigint(grp.second, 0);
+      actual[key] = sum;
+    }
+  }
+
+  int failures = 0;
+  for (Uint32 i = 1; i <= numRows; i++) {
+    Int64 key = (Int64)i;
+    Int64 expectedSum = (Int64)(i * 10);
+    auto it = actual.find(key);
+    if (it == actual.end()) {
+      fprintf(stderr, "FAIL: missing group(%lld)\n", (long long)key);
+      failures++;
+    } else if (it->second != expectedSum) {
+      fprintf(stderr, "FAIL: group(%lld) expected SUM=%lld, got %lld\n",
+              (long long)key, (long long)expectedSum, (long long)it->second);
+      failures++;
+    }
+  }
+
+  /* With 200 groups and batch_size=2, we expect many SEND_REQ round-trips */
+  if (totalSendReqs == 0) {
+    fprintf(stderr, "FAIL: expected SEND_REQ round-trips but got 0\n");
+    failures++;
+  }
+
+  if (failures == 0) {
+    printf("PASS: Test 12 — flow control, %u groups correct, "
+           "%u SEND_REQ round-trips\n", totalGroups, totalSendReqs);
+  }
+  return failures > 0 ? -1 : 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Test 13: Single row table                                           */
+/* ------------------------------------------------------------------ */
+
+static int
+testSingleRow(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
+{
+  V("\n=============================================\n");
+  V("Test 13: SELECT COUNT(*), SUM(b) FROM %s (1 row)\n", TABLE_NAME);
+  V("=============================================\n");
+
+  std::set<Uint32> uniqueNodes(meta.fragNodes.begin(), meta.fragNodes.end());
+  auto aggProg = buildAggProgram_CountSum(meta.attrIdB);
+
+  std::map<Uint32, Uint32> aggStateKeys;
+  for (Uint32 nd : uniqueNodes) {
+    Uint32 key = 0;
+    if (sendSetupReq(ss, nd, aggProg, meta,
+                     JoinAggSetupReq::STRATEGY_MUTEX_BASED, key) != 0)
+      return -1;
+    aggStateKeys[nd] = key;
+  }
+
+  auto attrInfo = buildAttrInfo();
+  for (Uint32 f = 0; f < meta.fragCount; f++) {
+    if (sendScanFragReq(ss, meta.fragNodes[f], f, meta.fragInstances[f],
+                        aggStateKeys[meta.fragNodes[f]], meta, attrInfo) != 0)
+      return -1;
+    Uint32 rows = 0;
+    if (waitForScanConf(ss, f, rows) != 0) return -1;
+  }
+
+  std::vector<AggResult> allResults;
+  Uint32 totalGroups = 0;
+  for (Uint32 nd : uniqueNodes) {
+    if (sendCompleteReq(ss, nd, aggStateKeys[nd], 1000) != 0) return -1;
+    if (receiveResults(ss, allResults, totalGroups) != 0) return -1;
+  }
+  for (Uint32 nd : uniqueNodes) {
+    if (sendReleaseReq(ss, nd, aggStateKeys[nd]) != 0) return -1;
+  }
+
+  V("\n--- Validation ---\n");
+  Uint64 count = 0;
+  Int64 sum = 0;
+  for (const auto &res : allResults) {
+    if (res.groups.empty()) continue;
+    const auto &val = res.groups[0].second;
+    count += extractCountBigint(val, 0);
+    sum += extractSumBigint(val, 1);
+  }
+
+  V("  COUNT(*) = %llu\n", (unsigned long long)count);
+  V("  SUM(b) = %lld\n", (long long)sum);
+
+  int failures = 0;
+  if (count != 1) {
+    fprintf(stderr, "FAIL: expected COUNT(*)=1, got %llu\n",
+            (unsigned long long)count);
+    failures++;
+  }
+  if (sum != 42) {
+    fprintf(stderr, "FAIL: expected SUM(b)=42, got %lld\n", (long long)sum);
+    failures++;
+  }
+
+  if (failures == 0) {
+    printf("PASS: Test 13 — single row, COUNT(*)=1, SUM(b)=42\n");
+  }
+  return failures > 0 ? -1 : 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Test 14: Negative values — COUNT, SUM, MAX, MIN                     */
+/* ------------------------------------------------------------------ */
+
+static int
+testNegativeValues(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
+{
+  V("\n=============================================\n");
+  V("Test 14: SELECT COUNT(*), MAX(b), MIN(b) FROM %s (negative values)\n",
+    TABLE_NAME);
+  V("=============================================\n");
+
+  std::set<Uint32> uniqueNodes(meta.fragNodes.begin(), meta.fragNodes.end());
+  /* COUNT(*), SUM(b) and also COUNT(*), MAX(b), MIN(b) — use CountMaxMin */
+  auto aggProg = buildAggProgram_CountMaxMin(meta.attrIdB);
+
+  std::map<Uint32, Uint32> aggStateKeys;
+  for (Uint32 nd : uniqueNodes) {
+    Uint32 key = 0;
+    if (sendSetupReq(ss, nd, aggProg, meta,
+                     JoinAggSetupReq::STRATEGY_MUTEX_BASED, key) != 0)
+      return -1;
+    aggStateKeys[nd] = key;
+  }
+
+  auto attrInfo = buildAttrInfo();
+  for (Uint32 f = 0; f < meta.fragCount; f++) {
+    if (sendScanFragReq(ss, meta.fragNodes[f], f, meta.fragInstances[f],
+                        aggStateKeys[meta.fragNodes[f]], meta, attrInfo) != 0)
+      return -1;
+    Uint32 rows = 0;
+    if (waitForScanConf(ss, f, rows) != 0) return -1;
+  }
+
+  std::vector<AggResult> allResults;
+  Uint32 totalGroups = 0;
+  for (Uint32 nd : uniqueNodes) {
+    if (sendCompleteReq(ss, nd, aggStateKeys[nd], 1000) != 0) return -1;
+    if (receiveResults(ss, allResults, totalGroups) != 0) return -1;
+  }
+  for (Uint32 nd : uniqueNodes) {
+    if (sendReleaseReq(ss, nd, aggStateKeys[nd]) != 0) return -1;
+  }
+
+  V("\n--- Validation ---\n");
+  Uint64 count = 0;
+  Int64 maxVal = INT64_MIN;
+  Int64 minVal = INT64_MAX;
+  bool first = true;
+  for (const auto &res : allResults) {
+    if (res.groups.empty()) continue;
+    const auto &val = res.groups[0].second;
+    Uint64 nodeCount = extractCountBigint(val, 0);
+    Int64 nodeMax = extractSumBigint(val, 1);
+    Int64 nodeMin = extractSumBigint(val, 2);
+    count += nodeCount;
+    if (nodeCount > 0) {
+      if (first) {
+        maxVal = nodeMax; minVal = nodeMin; first = false;
+      } else {
+        if (nodeMax > maxVal) maxVal = nodeMax;
+        if (nodeMin < minVal) minVal = nodeMin;
+      }
+    }
+  }
+
+  V("  COUNT(*) = %llu\n", (unsigned long long)count);
+  V("  MAX(b) = %lld\n", (long long)maxVal);
+  V("  MIN(b) = %lld\n", (long long)minVal);
+
+  /* Data: (1,-100), (2,50), (3,-200), (4,300), (5,-50) */
+  int failures = 0;
+  if (count != 5) {
+    fprintf(stderr, "FAIL: expected COUNT(*)=5, got %llu\n",
+            (unsigned long long)count);
+    failures++;
+  }
+  if (maxVal != 300) {
+    fprintf(stderr, "FAIL: expected MAX(b)=300, got %lld\n",
+            (long long)maxVal);
+    failures++;
+  }
+  if (minVal != -200) {
+    fprintf(stderr, "FAIL: expected MIN(b)=-200, got %lld\n",
+            (long long)minVal);
+    failures++;
+  }
+
+  if (failures == 0) {
+    printf("PASS: Test 14 — negative values, COUNT=5 MAX=300 MIN=-200\n");
+  }
+  return failures > 0 ? -1 : 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Test 15: MUTEX_FREE with multiple rows per group                    */
+/* ------------------------------------------------------------------ */
+
+static int
+testMutexFreeMultiRowGroup(Ndb * /*ndb*/, SignalSender &ss,
+                            const TableMeta &meta)
+{
+  V("\n=============================================\n");
+  V("Test 15: SUM(val) GROUP BY grp, MUTEX_FREE\n");
+  V("=============================================\n");
+
+  std::set<Uint32> uniqueNodes(meta.fragNodes.begin(), meta.fragNodes.end());
+  auto aggProg = buildAggProgram_SumGroupBy(meta.attrIdB, meta.attrIdC);
+
+  std::map<Uint32, Uint32> aggStateKeys;
+  for (Uint32 nd : uniqueNodes) {
+    Uint32 key = 0;
+    if (sendSetupReq(ss, nd, aggProg, meta,
+                     JoinAggSetupReq::STRATEGY_MUTEX_FREE, key) != 0)
+      return -1;
+    aggStateKeys[nd] = key;
+  }
+
+  auto attrInfo = buildAttrInfo();
+  for (Uint32 f = 0; f < meta.fragCount; f++) {
+    if (sendScanFragReq(ss, meta.fragNodes[f], f, meta.fragInstances[f],
+                        aggStateKeys[meta.fragNodes[f]], meta, attrInfo) != 0)
+      return -1;
+    Uint32 rows = 0;
+    if (waitForScanConf(ss, f, rows) != 0) return -1;
+  }
+
+  std::vector<AggResult> allResults;
+  Uint32 totalGroups = 0;
+  for (Uint32 nd : uniqueNodes) {
+    if (sendCompleteReq(ss, nd, aggStateKeys[nd], 1000) != 0) return -1;
+    if (receiveResults(ss, allResults, totalGroups) != 0) return -1;
+  }
+  for (Uint32 nd : uniqueNodes) {
+    if (sendReleaseReq(ss, nd, aggStateKeys[nd]) != 0) return -1;
+  }
+
+  V("\n--- Validation ---\n");
+  if (totalGroups != 3) {
+    fprintf(stderr, "FAIL: expected 3 groups, got %u\n", totalGroups);
+    return -1;
+  }
+
+  std::map<Int64, Int64> expected;
+  expected[1] = 30;
+  expected[2] = 120;
+  expected[3] = 60;
+
+  std::map<Int64, Int64> actual;
+  for (const auto &res : allResults) {
+    for (const auto &grp : res.groups) {
+      Int64 key = extractGroupKey(grp.first);
+      Int64 sum = extractSumBigint(grp.second, 0);
+      actual[key] += sum;
+      V("  group(%lld) += SUM %lld\n", (long long)key, (long long)sum);
+    }
+  }
+
+  int failures = 0;
+  for (const auto &exp : expected) {
+    auto it = actual.find(exp.first);
+    if (it == actual.end()) {
+      fprintf(stderr, "FAIL: missing group(%lld)\n", (long long)exp.first);
+      failures++;
+    } else if (it->second != exp.second) {
+      fprintf(stderr, "FAIL: group(%lld) expected SUM=%lld, got %lld\n",
+              (long long)exp.first, (long long)exp.second,
+              (long long)it->second);
+      failures++;
+    }
+  }
+
+  if (failures == 0) {
+    printf("PASS: Test 15 — MUTEX_FREE multi-row group, 3 groups correct\n");
+  }
+  return failures > 0 ? -1 : 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Test 16: COUNT merge in MUTEX_FREE                                  */
+/* ------------------------------------------------------------------ */
+
+static int
+testCountMergeMutexFree(Ndb * /*ndb*/, SignalSender &ss,
+                         const TableMeta &meta, Uint32 numRows)
+{
+  V("\n=============================================\n");
+  V("Test 16: COUNT(*) GROUP BY a, MUTEX_FREE (%u rows)\n", numRows);
+  V("=============================================\n");
+
+  std::set<Uint32> uniqueNodes(meta.fragNodes.begin(), meta.fragNodes.end());
+  auto aggProg = buildAggProgram_CountGroupBy(meta.attrIdA, meta.attrIdB);
+
+  std::map<Uint32, Uint32> aggStateKeys;
+  for (Uint32 nd : uniqueNodes) {
+    Uint32 key = 0;
+    if (sendSetupReq(ss, nd, aggProg, meta,
+                     JoinAggSetupReq::STRATEGY_MUTEX_FREE, key) != 0)
+      return -1;
+    aggStateKeys[nd] = key;
+  }
+
+  auto attrInfo = buildAttrInfo();
+  for (Uint32 f = 0; f < meta.fragCount; f++) {
+    if (sendScanFragReq(ss, meta.fragNodes[f], f, meta.fragInstances[f],
+                        aggStateKeys[meta.fragNodes[f]], meta, attrInfo) != 0)
+      return -1;
+    Uint32 rows = 0;
+    if (waitForScanConf(ss, f, rows) != 0) return -1;
+  }
+
+  std::vector<AggResult> allResults;
+  Uint32 totalGroups = 0;
+  for (Uint32 nd : uniqueNodes) {
+    if (sendCompleteReq(ss, nd, aggStateKeys[nd], 1000) != 0) return -1;
+    if (receiveResults(ss, allResults, totalGroups) != 0) return -1;
+  }
+  for (Uint32 nd : uniqueNodes) {
+    if (sendReleaseReq(ss, nd, aggStateKeys[nd]) != 0) return -1;
+  }
+
+  V("\n--- Validation ---\n");
+  if (totalGroups != numRows) {
+    fprintf(stderr, "FAIL: expected %u groups, got %u\n", numRows, totalGroups);
+    return -1;
+  }
+
+  /* Each key is unique, so COUNT should be 1 per group.
+   * extractCountBigint at agg_idx=0. */
+  std::map<Int64, Uint64> actual;
+  for (const auto &res : allResults) {
+    for (const auto &grp : res.groups) {
+      Int64 key = extractGroupKey(grp.first);
+      Uint64 cnt = extractCountBigint(grp.second, 0);
+      actual[key] += cnt;
+    }
+  }
+
+  int failures = 0;
+  for (Uint32 i = 1; i <= numRows; i++) {
+    Int64 key = (Int64)i;
+    auto it = actual.find(key);
+    if (it == actual.end()) {
+      fprintf(stderr, "FAIL: missing group(%lld)\n", (long long)key);
+      failures++;
+    } else if (it->second != 1) {
+      fprintf(stderr, "FAIL: group(%lld) expected COUNT=1, got %llu\n",
+              (long long)key, (unsigned long long)it->second);
+      failures++;
+    }
+  }
+
+  if (failures == 0) {
+    printf("PASS: Test 16 — COUNT merge MUTEX_FREE, %u groups all COUNT=1\n",
+           numRows);
+  }
+  return failures > 0 ? -1 : 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Test 17: Non-GROUP-BY with MUTEX_FREE                               */
+/* ------------------------------------------------------------------ */
+
+static int
+testNoGroupByMutexFree(Ndb * /*ndb*/, SignalSender &ss,
+                        const TableMeta &meta, Uint32 numRows)
+{
+  V("\n=============================================\n");
+  V("Test 17: COUNT(*), SUM(b) no GROUP BY, MUTEX_FREE (%u rows)\n", numRows);
+  V("=============================================\n");
+
+  std::set<Uint32> uniqueNodes(meta.fragNodes.begin(), meta.fragNodes.end());
+  auto aggProg = buildAggProgram_CountSum(meta.attrIdB);
+
+  std::map<Uint32, Uint32> aggStateKeys;
+  for (Uint32 nd : uniqueNodes) {
+    Uint32 key = 0;
+    if (sendSetupReq(ss, nd, aggProg, meta,
+                     JoinAggSetupReq::STRATEGY_MUTEX_FREE, key) != 0)
+      return -1;
+    aggStateKeys[nd] = key;
+  }
+
+  auto attrInfo = buildAttrInfo();
+  for (Uint32 f = 0; f < meta.fragCount; f++) {
+    if (sendScanFragReq(ss, meta.fragNodes[f], f, meta.fragInstances[f],
+                        aggStateKeys[meta.fragNodes[f]], meta, attrInfo) != 0)
+      return -1;
+    Uint32 rows = 0;
+    if (waitForScanConf(ss, f, rows) != 0) return -1;
+  }
+
+  std::vector<AggResult> allResults;
+  Uint32 totalGroups = 0;
+  for (Uint32 nd : uniqueNodes) {
+    if (sendCompleteReq(ss, nd, aggStateKeys[nd], 1000) != 0) return -1;
+    if (receiveResults(ss, allResults, totalGroups) != 0) return -1;
+  }
+  for (Uint32 nd : uniqueNodes) {
+    if (sendReleaseReq(ss, nd, aggStateKeys[nd]) != 0) return -1;
+  }
+
+  V("\n--- Validation ---\n");
+  Uint64 count = 0;
+  Int64 sum = 0;
+  for (const auto &res : allResults) {
+    if (res.groups.empty()) continue;
+    const auto &val = res.groups[0].second;
+    count += extractCountBigint(val, 0);
+    sum += extractSumBigint(val, 1);
+  }
+
+  V("  COUNT(*) = %llu\n", (unsigned long long)count);
+  V("  SUM(b) = %lld\n", (long long)sum);
+
+  /* Data: i*10 for i=1..numRows → SUM = 10 * numRows*(numRows+1)/2 */
+  Int64 expectedSum = (Int64)(10) * (Int64)numRows * (Int64)(numRows + 1) / 2;
+
+  int failures = 0;
+  if (count != numRows) {
+    fprintf(stderr, "FAIL: expected COUNT(*)=%u, got %llu\n",
+            numRows, (unsigned long long)count);
+    failures++;
+  }
+  if (sum != expectedSum) {
+    fprintf(stderr, "FAIL: expected SUM(b)=%lld, got %lld\n",
+            (long long)expectedSum, (long long)sum);
+    failures++;
+  }
+
+  if (failures == 0) {
+    printf("PASS: Test 17 — non-GROUP-BY MUTEX_FREE, COUNT=%llu SUM=%lld\n",
+           (unsigned long long)count, (long long)sum);
+  }
+  return failures > 0 ? -1 : 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Test 18: Eviction with MUTEX_FREE strategy                          */
+/* ------------------------------------------------------------------ */
+
+static int
+testEvictionMutexFree(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta,
+                       Uint32 numRows, NdbRestarter &restarter)
+{
+  V("\n=============================================\n");
+  V("Test 18: Eviction MUTEX_FREE (%u rows, ERROR_INSERT 5090)\n", numRows);
+  V("=============================================\n");
+
+  if (restarter.insertErrorInAllNodes(5090) != 0) {
+    fprintf(stderr, "FAIL: insertErrorInAllNodes(5090) failed\n");
+    return -1;
+  }
+  V("ERROR_INSERT 5090 set in all nodes\n");
+
+  std::set<Uint32> uniqueNodes(meta.fragNodes.begin(), meta.fragNodes.end());
+  auto aggProg = buildAggProgram_SumGroupBy(meta.attrIdA, meta.attrIdB);
+
+  std::map<Uint32, Uint32> aggStateKeys;
+  for (Uint32 nd : uniqueNodes) {
+    Uint32 key = 0;
+    if (sendSetupReq(ss, nd, aggProg, meta,
+                     JoinAggSetupReq::STRATEGY_MUTEX_FREE, key) != 0) {
+      restarter.insertErrorInAllNodes(0);
+      return -1;
+    }
+    aggStateKeys[nd] = key;
+  }
+
+  auto attrInfo = buildAttrInfo();
+  std::vector<AggResult> evictedResults;
+  Uint32 evictedGroups = 0;
+
+  for (Uint32 f = 0; f < meta.fragCount; f++) {
+    if (sendScanFragReq(ss, meta.fragNodes[f], f, meta.fragInstances[f],
+                        aggStateKeys[meta.fragNodes[f]], meta, attrInfo) != 0) {
+      restarter.insertErrorInAllNodes(0);
+      return -1;
+    }
+    Uint32 rows = 0;
+    if (waitForScanConfWithEviction(ss, f, rows,
+                                    evictedResults, evictedGroups) != 0) {
+      restarter.insertErrorInAllNodes(0);
+      return -1;
+    }
+  }
+
+  V("Evicted %u groups during scan phase\n", evictedGroups);
+
+  std::vector<AggResult> finalResults;
+  Uint32 finalGroups = 0;
+  for (Uint32 nd : uniqueNodes) {
+    if (sendCompleteReq(ss, nd, aggStateKeys[nd], 1000) != 0) {
+      restarter.insertErrorInAllNodes(0);
+      return -1;
+    }
+    if (receiveResults(ss, finalResults, finalGroups) != 0) {
+      restarter.insertErrorInAllNodes(0);
+      return -1;
+    }
+  }
+  for (Uint32 nd : uniqueNodes) {
+    if (sendReleaseReq(ss, nd, aggStateKeys[nd]) != 0) {
+      restarter.insertErrorInAllNodes(0);
+      return -1;
+    }
+  }
+
+  restarter.insertErrorInAllNodes(0);
+  V("ERROR_INSERT cleared\n");
+
+  V("\n--- Validation ---\n");
+  V("Evicted groups: %u, finalized groups: %u\n", evictedGroups, finalGroups);
+
+  std::map<Int64, Int64> actual;
+  for (const auto &res : evictedResults) {
+    for (const auto &grp : res.groups) {
+      Int64 key = extractGroupKey(grp.first);
+      Int64 s = extractSumBigint(grp.second, 0);
+      actual[key] += s;
+    }
+  }
+  for (const auto &res : finalResults) {
+    for (const auto &grp : res.groups) {
+      Int64 key = extractGroupKey(grp.first);
+      Int64 s = extractSumBigint(grp.second, 0);
+      actual[key] += s;
+    }
+  }
+
+  if (actual.size() != numRows) {
+    fprintf(stderr, "FAIL: expected %u distinct groups, got %zu\n",
+            numRows, actual.size());
+    return -1;
+  }
+
+  int failures = 0;
+  for (Uint32 i = 1; i <= numRows; i++) {
+    Int64 key = (Int64)i;
+    Int64 expectedSum = (Int64)(i * 10);
+    auto it = actual.find(key);
+    if (it == actual.end()) {
+      fprintf(stderr, "FAIL: missing group(%lld)\n", (long long)key);
+      failures++;
+    } else if (it->second != expectedSum) {
+      fprintf(stderr, "FAIL: group(%lld) expected SUM=%lld, got %lld\n",
+              (long long)key, (long long)expectedSum, (long long)it->second);
+      failures++;
+    }
+  }
+
+  if (evictedGroups == 0) {
+    fprintf(stderr, "FAIL: expected evictions but got 0 evicted groups\n");
+    failures++;
+  }
+
+  if (failures == 0) {
+    printf("PASS: Test 18 — eviction MUTEX_FREE, %u groups correct "
+           "(%u evicted + %u finalized)\n",
+           (Uint32)actual.size(), evictedGroups, finalGroups);
+  }
+  return failures > 0 ? -1 : 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Test 19: COMPLETE_REF error — invalid aggStateKey                   */
+/* ------------------------------------------------------------------ */
+
+static int
+testCompleteRefError(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
+{
+  V("\n=============================================\n");
+  V("Test 19: COMPLETE_REF with invalid aggStateKey\n");
+  V("=============================================\n");
+
+  /* Send COMPLETE_REQ with a bogus aggStateKey to any data node */
+  std::set<Uint32> uniqueNodes(meta.fragNodes.begin(), meta.fragNodes.end());
+  Uint32 nodeId = *uniqueNodes.begin();
+
+  const Uint32 INVALID_AGG_STATE_KEY = 0xFFFF;
+
+  V("  Sending COMPLETE_REQ with invalid aggStateKey=%u to node %u\n",
+    INVALID_AGG_STATE_KEY, nodeId);
+
+  SimpleSignal ssig;
+  JoinAggCompleteReq *req =
+    reinterpret_cast<JoinAggCompleteReq *>(ssig.getDataPtrSend());
+
+  req->senderRef = ss.getOwnRef();
+  req->senderData = FAKE_SENDER_DATA;
+  req->requestId = FAKE_REQUEST_ID;
+  req->transid[0] = FAKE_TRANS_ID1;
+  req->transid[1] = FAKE_TRANS_ID2;
+  req->aggStateKey = INVALID_AGG_STATE_KEY;
+  req->maxBatchRows = 100;
+
+  Uint16 recBlock = numberToBlock(DBLQH, 1);
+  ssig.set(ss, 0, recBlock, GSN_JOIN_AGG_COMPLETE_REQ,
+           JoinAggCompleteReq::SignalLength);
+
+  if (ss.sendSignal(nodeId, &ssig) != SEND_OK) {
+    fprintf(stderr, "sendSignal COMPLETE_REQ failed\n");
+    return -1;
+  }
+
+  SimpleSignal *resp = waitForSignal(ss, WAIT_TIMEOUT_MS, "COMPLETE_REF");
+  if (resp == nullptr) return -1;
+
+  int gsn = getGsn(resp);
+  int failures = 0;
+
+  if (gsn == GSN_JOIN_AGG_COMPLETE_REF) {
+    const JoinAggCompleteRef *ref =
+      reinterpret_cast<const JoinAggCompleteRef *>(resp->getDataPtr());
+    V("  COMPLETE_REF: errorCode=%u errorLine=%u\n",
+      ref->errorCode, ref->errorLine);
+    /* Error 1251 = ZJOIN_AGG_STATE_NOT_FOUND */
+    if (ref->errorCode != 1251) {
+      fprintf(stderr, "FAIL: expected errorCode=1251, got %u\n",
+              ref->errorCode);
+      failures++;
+    }
+  } else {
+    fprintf(stderr, "FAIL: expected COMPLETE_REF (GSN=%d), got GSN %d\n",
+            GSN_JOIN_AGG_COMPLETE_REF, gsn);
+    failures++;
+  }
+
+  if (failures == 0) {
+    printf("PASS: Test 19 — COMPLETE_REF with errorCode=1251\n");
+  }
+  return failures > 0 ? -1 : 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Test 20: rowsExamined validation                                    */
+/* ------------------------------------------------------------------ */
+
+static int
+testRowsExamined(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
+{
+  V("\n=============================================\n");
+  V("Test 20: rowsExamined validation (5 rows)\n");
+  V("=============================================\n");
+
+  std::set<Uint32> uniqueNodes(meta.fragNodes.begin(), meta.fragNodes.end());
+  auto aggProg = buildAggProgram_CountSum(meta.attrIdB);
+
+  std::map<Uint32, Uint32> aggStateKeys;
+  for (Uint32 nd : uniqueNodes) {
+    Uint32 key = 0;
+    if (sendSetupReq(ss, nd, aggProg, meta,
+                     JoinAggSetupReq::STRATEGY_MUTEX_BASED, key) != 0)
+      return -1;
+    aggStateKeys[nd] = key;
+  }
+
+  auto attrInfo = buildAttrInfo();
+  Uint32 totalRowsExamined = 0;
+
+  for (Uint32 f = 0; f < meta.fragCount; f++) {
+    if (sendScanFragReq(ss, meta.fragNodes[f], f, meta.fragInstances[f],
+                        aggStateKeys[meta.fragNodes[f]], meta, attrInfo) != 0)
+      return -1;
+
+    /* Inline waitForScanConf to also capture rowsExamined */
+    SimpleSignal *resp = waitForSignal(ss, WAIT_TIMEOUT_MS, "SCAN_FRAGCONF");
+    if (resp == nullptr) return -1;
+    int gsn = getGsn(resp);
+    if (gsn == GSN_SCAN_FRAGCONF) {
+      const ScanFragConf *conf =
+        reinterpret_cast<const ScanFragConf *>(resp->getDataPtr());
+      Uint32 sigLen = resp->header.theLength;
+      Uint32 rowsExamined =
+        (sigLen >= ScanFragConf::SignalLength_v2) ? conf->rowsExamined : 0;
+      totalRowsExamined += rowsExamined;
+      V("  frag %u: completedOps=%u rowsExamined=%u\n",
+        conf->senderData, conf->completedOps, rowsExamined);
+    } else if (gsn == GSN_SCAN_FRAGREF) {
+      const Uint32 *d = resp->getDataPtr();
+      fprintf(stderr, "  SCAN_FRAGREF: errorCode=%u\n", d[3]);
+      return -1;
+    } else {
+      fprintf(stderr, "Unexpected GSN %d\n", gsn);
+      return -1;
+    }
+  }
+
+  /* Complete + release */
+  std::vector<AggResult> allResults;
+  Uint32 totalGroups = 0;
+  for (Uint32 nd : uniqueNodes) {
+    if (sendCompleteReq(ss, nd, aggStateKeys[nd], 1000) != 0) return -1;
+    if (receiveResults(ss, allResults, totalGroups) != 0) return -1;
+  }
+  for (Uint32 nd : uniqueNodes) {
+    if (sendReleaseReq(ss, nd, aggStateKeys[nd]) != 0) return -1;
+  }
+
+  V("\n--- Validation ---\n");
+  V("  totalRowsExamined = %u\n", totalRowsExamined);
+
+  int failures = 0;
+  if (totalRowsExamined != 5) {
+    fprintf(stderr, "FAIL: expected rowsExamined=5, got %u\n",
+            totalRowsExamined);
+    failures++;
+  }
+
+  if (failures == 0) {
+    printf("PASS: Test 20 — rowsExamined=%u (expected 5)\n",
+           totalRowsExamined);
+  }
+  return failures > 0 ? -1 : 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Test 21: Release without COMPLETE                                   */
+/* ------------------------------------------------------------------ */
+
+static int
+testReleaseWithoutComplete(Ndb * /*ndb*/, SignalSender &ss,
+                            const TableMeta &meta)
+{
+  V("\n=============================================\n");
+  V("Test 21: SETUP -> SCAN -> RELEASE (no COMPLETE)\n");
+  V("=============================================\n");
+
+  std::set<Uint32> uniqueNodes(meta.fragNodes.begin(), meta.fragNodes.end());
+  auto aggProg = buildAggProgram_SumGroupBy(meta.attrIdA, meta.attrIdB);
+
+  std::map<Uint32, Uint32> aggStateKeys;
+  for (Uint32 nd : uniqueNodes) {
+    Uint32 key = 0;
+    if (sendSetupReq(ss, nd, aggProg, meta,
+                     JoinAggSetupReq::STRATEGY_MUTEX_BASED, key) != 0)
+      return -1;
+    aggStateKeys[nd] = key;
+  }
+
+  auto attrInfo = buildAttrInfo();
+  for (Uint32 f = 0; f < meta.fragCount; f++) {
+    if (sendScanFragReq(ss, meta.fragNodes[f], f, meta.fragInstances[f],
+                        aggStateKeys[meta.fragNodes[f]], meta, attrInfo) != 0)
+      return -1;
+    Uint32 rows = 0;
+    if (waitForScanConf(ss, f, rows) != 0) return -1;
+  }
+
+  /* Skip COMPLETE — go directly to RELEASE */
+  V("  Skipping COMPLETE, sending RELEASE directly\n");
+  for (Uint32 nd : uniqueNodes) {
+    if (sendReleaseReq(ss, nd, aggStateKeys[nd]) != 0)
+      return -1;
+  }
+
+  printf("PASS: Test 21 — release without COMPLETE, no crash\n");
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* Main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -1797,7 +3548,7 @@ int main(int argc, char **argv)
 
     NdbRestarter restarter(connectString);
 
-    /* Phase 1: 5-row tests (Tests 1, 2, 5) */
+    /* Phase 1: 5-row tests (Tests 1, 2, 5, 6, 7, 8) */
     TableMeta meta;
     if (createTestTable(&ndb, meta) != 0) { ndb_end(0); return 1; }
     if (queryFragInstances(mysqlPort, meta) != 0) { ndb_end(0); return 1; }
@@ -1814,11 +3565,17 @@ int main(int argc, char **argv)
       if (testSumGroupBy(&ndb, ss, meta) != 0) result = 1;
       if (testCountSumNoGroupBy(&ndb, ss, meta) != 0) result = 1;
       if (testLqhKeyReq(&ndb, ss, meta, restarter) != 0) result = 1;
+      if (testMaxGroupBy(&ndb, ss, meta) != 0) result = 1;
+      if (testMinGroupBy(&ndb, ss, meta) != 0) result = 1;
+      if (testMaxMinNoGroupBy(&ndb, ss, meta) != 0) result = 1;
+      if (testCompleteRefError(&ndb, ss, meta) != 0) result = 1;
+      if (testRowsExamined(&ndb, ss, meta) != 0) result = 1;
+      if (testReleaseWithoutComplete(&ndb, ss, meta) != 0) result = 1;
 
       ss.unlock();
     }
 
-    /* Phase 2: 200-row tests (Tests 3, 4) */
+    /* Phase 2: 200-row tests (Tests 3, 4, 12, 16, 17, 18) */
     dropTestTable(&ndb);
 
     const Uint32 MANY_ROWS = 200;
@@ -1834,7 +3591,86 @@ int main(int argc, char **argv)
         result = 1;
       if (testEviction(&ndb, ss, meta, MANY_ROWS, restarter) != 0)
         result = 1;
+      if (testFlowControl(&ndb, ss, meta, MANY_ROWS) != 0)
+        result = 1;
+      if (testCountMergeMutexFree(&ndb, ss, meta, MANY_ROWS) != 0)
+        result = 1;
+      if (testNoGroupByMutexFree(&ndb, ss, meta, MANY_ROWS) != 0)
+        result = 1;
+      if (testEvictionMutexFree(&ndb, ss, meta, MANY_ROWS, restarter) != 0)
+        result = 1;
 
+      ss.unlock();
+    }
+
+    dropTestTable(&ndb);
+
+    /* Phase 3: Empty table test (Test 9) */
+    if (createTestTable(&ndb, meta) != 0) { ndb_end(0); return 1; }
+    if (queryFragInstances(mysqlPort, meta) != 0) { ndb_end(0); return 1; }
+    /* No data inserted — table is empty */
+
+    {
+      SignalSender ss(&con);
+      ss.lock();
+      if (testEmptyTable(&ndb, ss, meta) != 0) result = 1;
+      ss.unlock();
+    }
+
+    dropTestTable(&ndb);
+
+    /* Phase 4: 3-column table tests (Tests 10, 11, 15) */
+    if (createTestTable3Col(&ndb, meta) != 0) { ndb_end(0); return 1; }
+    if (queryFragInstances(mysqlPort, meta) != 0) { ndb_end(0); return 1; }
+    if (insertMultiRowData(&ndb) != 0) { ndb_end(0); return 1; }
+
+    {
+      SignalSender ss(&con);
+      ss.lock();
+      if (testMultiRowPerGroup(&ndb, ss, meta) != 0) result = 1;
+      if (testAllAggsGroupBy(&ndb, ss, meta) != 0) result = 1;
+      if (testMutexFreeMultiRowGroup(&ndb, ss, meta) != 0) result = 1;
+      ss.unlock();
+    }
+
+    dropTestTable3Col(&ndb);
+
+    /* Phase 5: Single row test (Test 13) */
+    if (createTestTable(&ndb, meta) != 0) { ndb_end(0); return 1; }
+    if (queryFragInstances(mysqlPort, meta) != 0) { ndb_end(0); return 1; }
+    {
+      /* Insert a single row: (1, 42) */
+      const NdbDictionary::Table *ptab =
+        ndb.getDictionary()->getTable(TABLE_NAME);
+      NdbTransaction *trans = ndb.startTransaction();
+      NdbOperation *op = trans->getNdbOperation(ptab);
+      op->insertTuple();
+      Int64 a = 1, b = 42;
+      op->equal("a", a);
+      op->setValue("b", b);
+      trans->execute(NdbTransaction::Commit);
+      trans->close();
+      V("Inserted 1 row (1, 42) into %s\n", TABLE_NAME);
+    }
+
+    {
+      SignalSender ss(&con);
+      ss.lock();
+      if (testSingleRow(&ndb, ss, meta) != 0) result = 1;
+      ss.unlock();
+    }
+
+    dropTestTable(&ndb);
+
+    /* Phase 6: Negative values test (Test 14) */
+    if (createTestTable(&ndb, meta) != 0) { ndb_end(0); return 1; }
+    if (queryFragInstances(mysqlPort, meta) != 0) { ndb_end(0); return 1; }
+    if (insertNegativeData(&ndb) != 0) { ndb_end(0); return 1; }
+
+    {
+      SignalSender ss(&con);
+      ss.lock();
+      if (testNegativeValues(&ndb, ss, meta) != 0) result = 1;
       ss.unlock();
     }
 
