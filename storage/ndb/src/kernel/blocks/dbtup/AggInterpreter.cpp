@@ -1342,15 +1342,40 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
     AttributeHeader* header = nullptr;
     buf_pos_ = 0;
     for (Uint32 i = 0; i < n_gb_cols_; i++) {
-      int ret = block_tup->readAttributes(req_struct, &(gb_cols_[i]), 1,
-                    buf_ + buf_pos_, g_buf_len_ - buf_pos_);
-      // assert(ret >= 0);
-      if (ret < 0) {
-        g_eventLogger->debug("read group by column error: %d", ret);
-        return -ret;
+      Uint32 attr_id = gb_cols_[i] >> 16;
+      if ((attr_id & 0x8000) != 0 && m_linked_attr_data != nullptr) {
+        /*
+         * Linked GROUP BY column from a parent table in the join tree.
+         * Scan the linked attribute buffer for the matching attr id
+         * and copy header+data into buf_ (same pattern as kOpLoadCol).
+         */
+        Uint32 real_attr_id = attr_id & 0x7FFF;
+        const Uint32* p = m_linked_attr_data;
+        const Uint32* p_end = m_linked_attr_data + m_linked_attr_len;
+        while (p < p_end) {
+          if (AttributeHeader::getAttributeId(*p) == real_attr_id) break;
+          p += 1 + AttributeHeader::getDataSize(*p);
+        }
+        if (p >= p_end) {
+          g_eventLogger->debug(
+              "Linked GROUP BY attr %u not found in buffer", real_attr_id);
+          return ZAGG_OTHER_ERROR;
+        }
+        Uint32 words = 1 + AttributeHeader::getDataSize(*p);
+        memcpy(buf_ + buf_pos_, p, words * sizeof(Uint32));
+        header = reinterpret_cast<AttributeHeader*>(buf_ + buf_pos_);
+        buf_pos_ += words;
+      } else {
+        int ret = block_tup->readAttributes(req_struct, &(gb_cols_[i]), 1,
+                      buf_ + buf_pos_, g_buf_len_ - buf_pos_);
+        // assert(ret >= 0);
+        if (ret < 0) {
+          g_eventLogger->debug("read group by column error: %d", ret);
+          return -ret;
+        }
+        header = reinterpret_cast<AttributeHeader*>(buf_ + buf_pos_);
+        buf_pos_ += (1 + header->getDataSize());
       }
-      header = reinterpret_cast<AttributeHeader*>(buf_ + buf_pos_);
-      buf_pos_ += (1 + header->getDataSize());
     }
 
     if (!gb_cmp_inited_) {
