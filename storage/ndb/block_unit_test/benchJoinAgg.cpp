@@ -1351,19 +1351,22 @@ int main(int argc, char **argv)
     }
     V("Pre-computed %zu lookup targets\n", targets.size());
 
-    /* ---- Bypass tc-node check (via restarter, outside SS lock) ---- */
-    {
-      int dump[1] = {DumpStateOrd::LqhSkipTcNodeCheck};
-      restarter.dumpStateAllNodes(dump, 1);
-      V("DUMP LqhSkipTcNodeCheck sent to all nodes\n");
-    }
-
     /* ---- Run benchmark iterations (inside SS lock) ---- */
     printf("\nStarting benchmark (%d iterations)...\n\n", numIterations);
     std::vector<BenchStats> allStats;
     {
       SignalSender ss(&con);
       ss.lock();
+
+      /* Bypass tc-node check so LQHKEYCONF can route to our API node.
+       * Must be inside ss.lock() to ensure DUMP propagates before
+       * any LQHKEYREQ is sent (same pattern as testJoinAgg).
+       */
+      {
+        int dump[1] = {DumpStateOrd::LqhSkipTcNodeCheck};
+        restarter.dumpStateAllNodes(dump, 1);
+        V("DUMP LqhSkipTcNodeCheck sent to all nodes\n");
+      }
 
       for (int iter = 1; iter <= numIterations; iter++) {
         BenchStats bs = {};
@@ -1377,14 +1380,14 @@ int main(int argc, char **argv)
         printf("\n");
       }
 
-      ss.unlock();
-    }
+      /* Restore the tc-node check before unlocking */
+      {
+        int dump[1] = {DumpStateOrd::LqhRestoreTcNodeCheck};
+        restarter.dumpStateAllNodes(dump, 1);
+        V("DUMP LqhRestoreTcNodeCheck sent to all nodes\n");
+      }
 
-    /* ---- Restore tc-node check ---- */
-    {
-      int dump[1] = {DumpStateOrd::LqhRestoreTcNodeCheck};
-      restarter.dumpStateAllNodes(dump, 1);
-      V("DUMP LqhRestoreTcNodeCheck sent to all nodes\n");
+      ss.unlock();
     }
 
     printSummary(allStats);
