@@ -177,7 +177,6 @@ my $ctest_report;           # Unit test report stored here for delayed printing
 my $current_config_name;    # The currently running config file template
 my $exe_ndb_mgm;
 my $exe_ndb_mgmd;
-my $exe_ndb_mgmd_v2;
 my $exe_ndb_waiter;
 my $exe_ndbmtd;
 my $exe_ndbmtd_v2;
@@ -191,9 +190,6 @@ my $test_fail;
 my $build_thread       = 0;
 my $daemonize_mysqld   = 0;
 my $debug_d            = "d";
-my $exe_ndbmtd_counter = 0;
-my $exe_ndb_mgmd_counter = 0;
-my $exe_mysqld_counter = 0;
 my $tmpdir_path_updated= 0;
 my $source_dist        = 0;
 my $shutdown_report    = 0;
@@ -2788,26 +2784,9 @@ sub find_mysqld {
     mtr_verbose("Adding mysqld-debug first in list of binaries to look for");
     unshift(@mysqld_names, "mysqld-debug");
   }
-  my $exec;
-  my $exec_v2;
-  $exec = my_find_bin($mysqld_basedir,
+  my $exec = my_find_bin($mysqld_basedir,
             [ "runtime_output_directory", "libexec", "sbin", "bin" ],
             [@mysqld_names]);
-  if ($ENV{MTR_RONDB_V2}) {
-    if (($exe_mysqld_counter++ % 2) != 0) {
-      my @mysqld_names_v2 = ("mysqld_v2");
-      if ($opt_debug_server) {
-        mtr_verbose("Adding mysqld-debug first in list of binaries to look for");
-        unshift(@mysqld_names_v2, "mysqld-debug-v2");
-      }
-      $exec_v2 = my_find_bin($mysqld_basedir,
-                   [ "runtime_output_directory", "libexec", "sbin", "bin" ],
-                   [@mysqld_names_v2]);
-    }
-  }
-  if ($exec_v2) {
-    return $exec_v2;
-  }
   return $exec;
 }
 
@@ -2885,11 +2864,6 @@ sub executable_setup () {
                   [ "runtime_output_directory", "libexec", "sbin", "bin" ],
                   "ndb_mgmd");
 
-    $exe_ndb_mgmd_v2 =
-      my_find_bin($bindir,
-                  [ "runtime_output_directory", "libexec", "sbin", "bin" ],
-                  "ndb_mgmd_v2", NOT_REQUIRED);
-
     $exe_ndb_mgm =
       my_find_bin($bindir, [ "runtime_output_directory", "bin" ], "ndb_mgm");
 
@@ -2919,6 +2893,14 @@ sub executable_setup () {
     if ($exe_rondb_cli) {
       mtr_verbose("Found rondb-cli binary");
       $ENV{'RONDB_CLI'} = native_path($exe_rondb_cli);
+    }        
+    if ($exe_ndbmtd_v2 && $ENV{MTR_RONDB_V2}) {
+      mtr_verbose("Found ndbmtd_v2 binary");
+      $ENV{'HAVE_NDBMTD_V2'} = 1;
+      $ENV{'NDBMTD_EXE'} = $exe_ndbmtd;
+      $ENV{'NDBMTD_V2_EXE'} = $exe_ndbmtd_v2;
+    } else {
+      delete $ENV{'HAVE_NDBMTD_V2'};
     }
   }
 
@@ -4022,16 +4004,6 @@ sub ndb_mgmd_start ($$) {
   mtr_add_arg($args, "--configdir=%s",             "$dir");
 
   my $exe = $exe_ndb_mgmd;
-  if ($exe_ndb_mgmd_v2) {
-    if ($ENV{MTR_RONDB_V2}) {
-      # Use two versions for ndbmtd to test upgrade/downgrade
-      $exe = $exe_ndb_mgmd_v2;
-    }
-    if (($exe_ndb_mgmd_counter++ % 2) == 0) {
-      # Use ndb_mgmd every other time
-      $exe = $exe_ndb_mgmd;
-    }
-  }
 
   my $path_ndb_mgmd_log = "$dir/ndb_mgmd.log";
 
@@ -4088,15 +4060,23 @@ sub ndbd_start {
   mkpath($dir) unless -d $dir;
 
   my $exe = $exe_ndbmtd;
-  if ($exe_ndbmtd_v2) {
-    if ($ENV{MTR_RONDB_V2}) {
-      # Use two versions for ndbmtd to test upgrade/downgrade
-      $exe = $exe_ndbmtd_v2;
+  if ($exe_ndbmtd_v2 && $ENV{MTR_RONDB_V2}) {
+    # Create a symlink that initially points to ndbmtd_v2.
+    # The angel process runs ndbmtd (the current binary) directly so
+    # that it has execv() support. NDB_RESTART_WITH_EXEC is set to
+    # the symlink path, telling the angel to use execv() with that
+    # path when spawning child data node processes. The test can then
+    # switch the symlink target between restarts for upgrade testing.
+    my $link_path = "$opt_vardir/tmp/ndbmtd_current";
+    if (! -l $link_path) {
+      symlink($exe_ndbmtd_v2, $link_path)
+        or mtr_error("Failed to create symlink $link_path: $!");
+      $ENV{NDBMTD_LINK} = $link_path;
     }
-    if (($exe_ndbmtd_counter++ % 2) == 0) {
-      # Use ndbmtd every other time
-      $exe = $exe_ndbmtd;
-    }
+    # Angel is ndbmtd (new binary with execv support).
+    # Children are spawned via the symlink.
+    $exe = $exe_ndbmtd;
+    $ENV{NDB_RESTART_WITH_EXEC} = $link_path;
   }
 
   my $args;

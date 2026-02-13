@@ -1562,6 +1562,19 @@ void Dbtup::handleAlterTableCommit(Signal *signal, const AlterTabReq *req,
                                  regAlterTabOpPtr.p->dynTabDesOffset[DD],
                                  DD);
 
+    /* Apply TTL changes before releasing, for combined AddAttr+TTL ALTER. */
+    if (AlterTableReq::getTTLSecFlag(req->changeMask) ||
+        AlterTableReq::getTTLColFlag(req->changeMask)) {
+      jam();
+      regTabPtr->m_ttl_sec = regAlterTabOpPtr.p->ttlSec;
+      regTabPtr->m_ttl_col_no = regAlterTabOpPtr.p->ttlColumnNo;
+      g_eventLogger->info("[DBTUP], execALTER_TAB_REQ, update TTL on table "
+                           "%u, [%u, %u]",
+                           req->tableId,
+                           regTabPtr->m_ttl_sec,
+                           regTabPtr->m_ttl_col_no);
+    }
+
     releaseAlterTabOpRec(regAlterTabOpPtr);
 
     /* Recompute aggregate table meta data. */
@@ -1613,8 +1626,10 @@ void Dbtup::handleAlterTableCommit(Signal *signal, const AlterTabReq *req,
     }
   }
 
-  if (AlterTableReq::getTTLSecFlag(req->changeMask) ||
-      AlterTableReq::getTTLColFlag(req->changeMask)) {
+  /* TTL-only ALTER (no AddAttr). Combined AddAttr+TTL is handled above. */
+  if (!AlterTableReq::getAddAttrFlag(req->changeMask) &&
+      (AlterTableReq::getTTLSecFlag(req->changeMask) ||
+       AlterTableReq::getTTLColFlag(req->changeMask))) {
     jam();
     AlterTabOperationPtr regAlterTabOpPtr;
     regAlterTabOpPtr.i = req->connectPtr;
@@ -1626,6 +1641,7 @@ void Dbtup::handleAlterTableCommit(Signal *signal, const AlterTabReq *req,
                          req->tableId,
                          regTabPtr->m_ttl_sec,
                          regTabPtr->m_ttl_col_no);
+    releaseAlterTabOpRec(regAlterTabOpPtr);
   }
 
   sendAlterTabConf(signal, RNIL);
@@ -1695,6 +1711,14 @@ void Dbtup::handleAlterTableAbort(Signal *signal, const AlterTabReq *req,
       releaseTabDescr(regAlterTabOpPtr.p->dynTableDescriptor[DD]);
       releaseAlterTabOpRec(regAlterTabOpPtr);
     }
+  } else if ((AlterTableReq::getTTLSecFlag(req->changeMask) ||
+              AlterTableReq::getTTLColFlag(req->changeMask)) &&
+             req->connectPtr != RNIL) {
+    jam();
+    AlterTabOperationPtr regAlterTabOpPtr;
+    regAlterTabOpPtr.i = req->connectPtr;
+    ptrCheckGuard(regAlterTabOpPtr, cnoOfAlterTabOps, alterTabOperRec);
+    releaseAlterTabOpRec(regAlterTabOpPtr);
   }
 
   sendAlterTabConf(signal, RNIL);
