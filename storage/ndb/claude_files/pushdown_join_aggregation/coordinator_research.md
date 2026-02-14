@@ -47,8 +47,8 @@ responsibility. Each data node sends one set of partial group results.
 5. DBTC → DBLQH: JOIN_AGG_SETUP_REQ (agg program as section 0) to each node
 6. DBLQH → DBTC: JOIN_AGG_SETUP_CONF (aggStateKey per node)
 7. DBTC:         All SETUP_CONFs → sendFragScansLab (normal fragment sending)
-8. DBTC → DBSPJ: SCAN_FRAGREQ (JoinAgg flag set) + JOIN_AGG_STATE_KEYS signal
-9. DBSPJ:        Build query tree, store aggStateKeys in Request
+8. DBTC → DBSPJ: SCAN_FRAGREQ (JoinAgg flag, aggStateKeys as extra section)
+9. DBSPJ:        Extract aggStateKeys from section, build query tree
 10. DBSPJ → DBLQH: LQHKEYREQ with JoinAggFlag + aggStateKey (each child lookup)
 11. DBLQH → DBSPJ: LQHKEYCONF (no per-row TRANSID_AI for aggregate leaf)
 12. DBSPJ → DBTC: SCAN_FRAGCONF (fragmentCompleted=1 when fragment done)
@@ -67,14 +67,11 @@ responsibility. Each data node sends one set of partial group results.
 | File | Purpose |
 |------|---------|
 | `storage/ndb/include/kernel/signaldata/ScanTab.hpp` | JoinAgg flag in SCAN_TABREQ (bit 0) |
-| `storage/ndb/include/kernel/signaldata/JoinAgg.hpp` | JoinAggStateKeys signal struct |
-| `storage/ndb/include/kernel/GlobalSignalNumbers.h` | GSN_JOIN_AGG_STATE_KEYS = 958 |
-| `storage/ndb/src/kernel/blocks/dbtc/Dbtc.hpp` | ScanRecord: agg program, aggStateKeys, state |
+| `storage/ndb/src/kernel/blocks/dbtc/Dbtc.hpp` | ScanRecord: agg program, aggStateKeys, aggKeysSection, state |
 | `storage/ndb/src/kernel/blocks/dbtc/DbtcInit.cpp` | Register signal handlers |
-| `storage/ndb/src/kernel/blocks/dbtc/DbtcMain.cpp` | SETUP/COMPLETE/RELEASE orchestration |
+| `storage/ndb/src/kernel/blocks/dbtc/DbtcMain.cpp` | SETUP/COMPLETE/RELEASE orchestration, aggStateKeys section |
 | `storage/ndb/src/kernel/blocks/dbspj/Dbspj.hpp` | Request: aggStateKeys |
-| `storage/ndb/src/kernel/blocks/dbspj/DbspjInit.cpp` | Register JOIN_AGG_STATE_KEYS handler |
-| `storage/ndb/src/kernel/blocks/dbspj/DbspjMain.cpp` | Receive keys, set JoinAggFlag, suppress TRANSID_AI |
+| `storage/ndb/src/kernel/blocks/dbspj/DbspjMain.cpp` | Extract keys from section, set JoinAggFlag, suppress TRANSID_AI |
 
 NDB API changes (later phase — for now, test via SignalSender):
 
@@ -110,25 +107,6 @@ inline void ScanTabReq::setJoinAggFlag(UintR &requestInfo, Uint32 val) {
 }
 ```
 
-### GlobalSignalNumbers.h: Add GSN_JOIN_AGG_STATE_KEYS
-
-```cpp
-#define GSN_JOIN_AGG_STATE_KEYS         958
-// Update MAX_GSN from 957 to 958
-```
-
-### JoinAgg.hpp: Add JoinAggStateKeys struct
-
-```cpp
-class JoinAggStateKeys {
-public:
-  static constexpr Uint32 HeaderLength = 2;
-  Uint32 senderData;   // Matches SCAN_FRAGREQ senderData
-  Uint32 numKeys;      // Number of (nodeId, aggStateKey) pairs
-  // Followed by: Uint32 pairs[numKeys * 2]
-};
-```
-
 ### Dbtc.hpp: Extend ScanRecord and ScanState
 
 Add WAIT_JOIN_AGG_SETUP to ScanState enum (line 1912):
@@ -148,13 +126,17 @@ enum ScanState {
 Add fields to ScanRecord (before line 1999 closing brace):
 ```cpp
 Uint32 m_aggProgramPtrI;                   // Section ptr to agg program (RNIL if none)
+Uint32 m_aggKeysSectionPtrI;              // Section: (nodeId, aggStateKey) pairs for DBSPJ
 Uint32 m_aggStateKeys[MAX_NDB_NODES];     // aggStateKey per data node (145 max)
 NdbNodeBitmask m_aggNodes;                 // Data nodes with active agg state
 Uint32 m_aggNodesOutstanding;              // Outstanding SETUP/COMPLETE signals
 bool m_joinAgg;                            // Is this a join-agg query?
 ```
 
-Note: Use `MAX_NDB_NODES` (= `ABS_MAX_NDB_NODES` = 145) for array sizing.
+Note: Use `MAX_NDB_NODES` (runtime, from `get_max_ndb_nodeid()`) for
+dynamic allocation sizing. Data nodes can only be added at startup, so
+no node ID exceeds `MAX_NDB_NODES - 1`. Use `ABS_MAX_NDB_NODES` (145)
+only for compile-time fixed arrays.
 
 Add method declarations to Dbtc class:
 ```cpp
@@ -185,6 +167,7 @@ addRecSignal(GSN_JOIN_AGG_SEND_REQ, &Dbtc::execJOIN_AGG_SEND_REQ);
 
 ```cpp
 scanptr.p->m_aggProgramPtrI = RNIL;
+scanptr.p->m_aggKeysSectionPtrI = RNIL;
 scanptr.p->m_joinAgg = false;
 scanptr.p->m_aggNodes.clear();
 scanptr.p->m_aggNodesOutstanding = 0;
@@ -321,6 +304,23 @@ void Dbtc::execJOIN_AGG_SETUP_CONF(Signal *signal) {
 
     if (scanptr.p->m_aggNodesOutstanding == 0) {
         jam();
+        // Build aggStateKeys section: [nodeId1, key1, nodeId2, key2, ...]
+        // This section is attached to each SCAN_FRAGREQ sent to DBSPJ.
+        {
+            Uint32 keyData[MAX_NDB_NODES * 2];
+            Uint32 idx = 0;
+            NdbNodeBitmask nodes = scanptr.p->m_aggNodes;
+            for (Uint32 nid = nodes.find_first();
+                 nid != NdbNodeBitmask::NotFound;
+                 nid = nodes.find_next(nid + 1)) {
+                keyData[idx++] = nid;
+                keyData[idx++] = scanptr.p->m_aggStateKeys[nid];
+            }
+            scanptr.p->m_aggKeysSectionPtrI = RNIL;
+            ndbrequire(appendToSection(
+                scanptr.p->m_aggKeysSectionPtrI, keyData, idx));
+        }
+
         // All nodes set up — proceed with normal fragment scanning
         scanptr.p->scanState = ScanRecord::RUNNING;
         ApiConnectRecordPtr apiConnectptr;
@@ -363,39 +363,67 @@ void Dbtc::execJOIN_AGG_SETUP_REF(Signal *signal) {
 
 ---
 
-## Sub-Phase 7C: DBTC → DBSPJ: Pass aggStateKeys
+## Sub-Phase 7C: DBTC → DBSPJ: Pass aggStateKeys via SCAN_FRAGREQ Section
 
-### In sendScanFragReq() (DbtcMain.cpp, line 18330)
+### Section-based delivery (no separate signal)
 
-After sending SCAN_FRAGREQ (after sendBatchedFragmentedSignal at ~line 18627),
-if m_joinAgg, send a follow-up signal with aggStateKeys:
+aggStateKeys are passed to DBSPJ as an extra section of SCAN_FRAGREQ,
+eliminating the need for a separate signal. This simplifies the design:
+no signal ordering concerns, no hash lookup issues, no new GSN.
+
+### In sendScanFragReq() (DbtcMain.cpp, line 18379)
+
+After existing section setup and before the MultiFrag block, attach the
+aggStateKeys section:
 
 ```cpp
+SectionHandle sections(this);
+sections.m_ptr[0].i = scanP->scanAttrInfoPtr;
+sections.m_ptr[1].i = scanP->scanKeyInfoPtr;
+sections.m_cnt = 1;  // always attrInfo
+if (scanP->scanKeyInfoPtr != RNIL) {
+    jamDebug();
+    sections.m_cnt = 2;  // sometimes keyinfo
+}
+
+// Attach aggStateKeys section for join-agg queries
 if (scanP->m_joinAgg) {
     jam();
-    Uint32 *data = signal->getDataPtrSend();
-    data[0] = scanFragP->lqhScanFragId;  // senderData matching SCAN_FRAGREQ
-    Uint32 idx = 2;
-    NdbNodeBitmask nodes = scanP->m_aggNodes;
-    for (Uint32 nid = nodes.find_first();
-         nid != NdbNodeBitmask::NotFound;
-         nid = nodes.find_next(nid + 1)) {
-        ndbrequire(idx + 1 < 25);  // Fits in signal body
-        data[idx++] = nid;
-        data[idx++] = scanP->m_aggStateKeys[nid];
-    }
-    data[1] = (idx - 2) / 2;  // numKeys
-    sendSignal(scanFragP->lqhBlockref, GSN_JOIN_AGG_STATE_KEYS,
-               signal, idx, JBB);
+    sections.m_ptr[sections.m_cnt++].i = scanP->m_aggKeysSectionPtrI;
+}
+
+// MultiFrag adds fragIdList as LAST section (existing code, unchanged)
+```
+
+**Section ordering:** `[AttrInfo, KeyInfo?, aggStateKeys?, fragIdList?]`
+
+For join-agg, KeyInfo is absent (scanKeyInfoPtr = RNIL because section 2
+of SCAN_TABREQ was the agg program). Typical layout:
+- join-agg + MultiFrag: `[AttrInfo, aggStateKeys, fragIdList]` → 3 sections
+- join-agg, no MultiFrag: `[AttrInfo, aggStateKeys]` → 2 sections
+
+The aggStateKeys section is shared across all sends (same keys for all
+SPJ workers), like AttrInfo. The existing `sendBatchedFragmentedSignal`
+with `!isLastReq` keeps shared sections alive. The MultiFrag cleanup
+(`release(sections.m_ptr[sections.m_cnt - 1])`) still works because
+fragIdList remains the LAST section.
+
+### Clear pointer on last send (line 18476-18483)
+
+```cpp
+if (isLastReq) {
+    scanP->scanKeyInfoPtr = RNIL;
+    scanP->scanAttrInfoPtr = RNIL;
+    if (scanP->m_joinAgg) scanP->m_aggKeysSectionPtrI = RNIL;
 }
 ```
 
 The JoinAgg flag in SCAN_FRAGREQ requestInfo is already set in initScanrec
-(Sub-Phase 7A) so DBSPJ knows to expect the keys signal.
+(Sub-Phase 7A) so DBSPJ knows to extract the aggStateKeys section.
 
 ---
 
-## Sub-Phase 7D: DBSPJ — Receive Keys, Operations Phase
+## Sub-Phase 7D: DBSPJ — Extract Keys from Section, Operations Phase
 
 ### Dbspj.hpp: Add to Request (not TreeNode)
 
@@ -406,32 +434,50 @@ Uint32 m_aggStateKeys[MAX_NDB_NODES];
 NdbNodeBitmask m_aggNodes;
 ```
 
-### DbspjInit.cpp: Register new signal
+No new signal handler declarations needed — extraction happens inline
+in execSCAN_FRAGREQ.
 
+### DbspjMain.cpp: do_init() initialization
+
+Add after line 1434:
 ```cpp
-addRecSignal(GSN_JOIN_AGG_STATE_KEYS, &Dbspj::execJOIN_AGG_STATE_KEYS);
+requestP->m_aggNodes.clear();
 ```
 
-### DbspjMain.cpp: Handle JOIN_AGG_STATE_KEYS
+### DbspjMain.cpp: Extract aggStateKeys in execSCAN_FRAGREQ
+
+After MultiFrag extraction (line 1336) and before tree build, peel the
+aggStateKeys section from the end (same pattern as MultiFrag):
 
 ```cpp
-void Dbspj::execJOIN_AGG_STATE_KEYS(Signal *signal) {
-    jamEntry();
-    const Uint32 *data = signal->getDataPtr();
-    Uint32 senderData = data[0];
-    Uint32 numKeys = data[1];
-
-    Ptr<Request> requestPtr;
-    ndbrequire(m_scan_request_hash.find(requestPtr, senderData));
-
-    for (Uint32 i = 0; i < numKeys; i++) {
-        Uint32 nodeId = data[2 + i * 2];
-        Uint32 key = data[2 + i * 2 + 1];
-        requestPtr.p->m_aggStateKeys[nodeId] = key;
+Uint32 aggKeysPtrI = RNIL;
+if (ScanFragReq::getJoinAggFlag(req->requestInfo)) {
+    jam();
+    sectionCnt--;
+    aggKeysPtrI = handle.m_ptr[sectionCnt].i;
+    SectionReader reader(aggKeysPtrI, getSectionSegmentPool());
+    Uint32 numPairs = reader.getSize() / 2;
+    for (Uint32 i = 0; i < numPairs; i++) {
+        Uint32 nodeId, aggKey;
+        ndbrequire(reader.getWord(&nodeId));
+        ndbrequire(reader.getWord(&aggKey));
+        ndbrequire(nodeId < MAX_NDB_NODES);
+        requestPtr.p->m_aggStateKeys[nodeId] = aggKey;
         requestPtr.p->m_aggNodes.set(nodeId);
     }
 }
 ```
+
+Release after use (after existing section releases at line 1367):
+```cpp
+releaseSection(aggKeysPtrI);  // no-op if RNIL
+```
+
+**DBSPJ section extraction order (decreasing from end):**
+1. MultiFrag: fragIdList = `handle.m_ptr[--sectionCnt]` (existing)
+2. JoinAgg: aggStateKeys = `handle.m_ptr[--sectionCnt]` (new)
+3. If sectionCnt > 1: KeyInfo = `handle.m_ptr[1]` (existing)
+4. AttrInfo = `handle.m_ptr[0]` (existing)
 
 ### Modify lookup_send() (line ~4704)
 
@@ -638,12 +684,16 @@ void Dbtc::execJOIN_AGG_RELEASE_CONF(Signal *signal) {
 }
 ```
 
-### Release agg program section in releaseScanResources()
+### Release agg sections in releaseScanResources()
 
 ```cpp
 if (scanptr.p->m_aggProgramPtrI != RNIL) {
     releaseSection(scanptr.p->m_aggProgramPtrI);
     scanptr.p->m_aggProgramPtrI = RNIL;
+}
+if (scanptr.p->m_aggKeysSectionPtrI != RNIL) {
+    releaseSection(scanptr.p->m_aggKeysSectionPtrI);
+    scanptr.p->m_aggKeysSectionPtrI = RNIL;
 }
 ```
 

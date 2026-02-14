@@ -127,6 +127,7 @@ Design and implementation docs in `storage/ndb/claude_files/pushdown_join_aggreg
 - `local_database_implementation.md` — DBLQH implementation plan (Phases 1-6, complete)
 - `coordinator.md` — DBSPJ protocol and aggregate design
 - `coordinator_research.md` — DBTC orchestration plan (Phase 7: SETUP/COMPLETE/RELEASE)
+- `coordinator_implementation.md` — DBSPJ implementation notes (Phase 7: aggStateKeys, lookup_send)
 
 ### Rondis Server Implementation
 ```
