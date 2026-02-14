@@ -3525,34 +3525,31 @@ int main(int argc, char **argv)
   int result = 0;
   V("Connecting to cluster: %s\n", connectString);
 
-  {
+  do {
     Ndb_cluster_connection con(connectString);
     if (con.connect(12, 5, 1) != 0) {
       fprintf(stderr, "Failed to connect to management server\n");
-      ndb_end(0);
-      return 1;
+      result = 1; break;
     }
     if (con.wait_until_ready(30, 0) < 0) {
       fprintf(stderr, "Cluster not ready within 30 seconds\n");
-      ndb_end(0);
-      return 1;
+      result = 1; break;
     }
     V("Connected to cluster\n");
 
     Ndb ndb(&con, "test");
     if (ndb.init() != 0) {
       fprintf(stderr, "Ndb::init failed: %s\n", ndb.getNdbError().message);
-      ndb_end(0);
-      return 1;
+      result = 1; break;
     }
 
     NdbRestarter restarter(connectString);
 
     /* Phase 1: 5-row tests (Tests 1, 2, 5, 6, 7, 8) */
     TableMeta meta;
-    if (createTestTable(&ndb, meta) != 0) { ndb_end(0); return 1; }
-    if (queryFragInstances(mysqlPort, meta) != 0) { ndb_end(0); return 1; }
-    if (insertTestData(&ndb) != 0) { ndb_end(0); return 1; }
+    if (createTestTable(&ndb, meta) != 0) { result = 1; break; }
+    if (queryFragInstances(mysqlPort, meta) != 0) { result = 1; break; }
+    if (insertTestData(&ndb) != 0) { result = 1; break; }
 
     {
       SignalSender ss(&con);
@@ -3579,9 +3576,9 @@ int main(int argc, char **argv)
     dropTestTable(&ndb);
 
     const Uint32 MANY_ROWS = 200;
-    if (createTestTable(&ndb, meta) != 0) { ndb_end(0); return 1; }
-    if (queryFragInstances(mysqlPort, meta) != 0) { ndb_end(0); return 1; }
-    if (insertManyRows(&ndb, MANY_ROWS) != 0) { ndb_end(0); return 1; }
+    if (createTestTable(&ndb, meta) != 0) { result = 1; break; }
+    if (queryFragInstances(mysqlPort, meta) != 0) { result = 1; break; }
+    if (insertManyRows(&ndb, MANY_ROWS) != 0) { result = 1; break; }
 
     {
       SignalSender ss(&con);
@@ -3606,8 +3603,8 @@ int main(int argc, char **argv)
     dropTestTable(&ndb);
 
     /* Phase 3: Empty table test (Test 9) */
-    if (createTestTable(&ndb, meta) != 0) { ndb_end(0); return 1; }
-    if (queryFragInstances(mysqlPort, meta) != 0) { ndb_end(0); return 1; }
+    if (createTestTable(&ndb, meta) != 0) { result = 1; break; }
+    if (queryFragInstances(mysqlPort, meta) != 0) { result = 1; break; }
     /* No data inserted — table is empty */
 
     {
@@ -3620,9 +3617,9 @@ int main(int argc, char **argv)
     dropTestTable(&ndb);
 
     /* Phase 4: 3-column table tests (Tests 10, 11, 15) */
-    if (createTestTable3Col(&ndb, meta) != 0) { ndb_end(0); return 1; }
-    if (queryFragInstances(mysqlPort, meta) != 0) { ndb_end(0); return 1; }
-    if (insertMultiRowData(&ndb) != 0) { ndb_end(0); return 1; }
+    if (createTestTable3Col(&ndb, meta) != 0) { result = 1; break; }
+    if (queryFragInstances(mysqlPort, meta) != 0) { result = 1; break; }
+    if (insertMultiRowData(&ndb) != 0) { result = 1; break; }
 
     {
       SignalSender ss(&con);
@@ -3636,8 +3633,8 @@ int main(int argc, char **argv)
     dropTestTable3Col(&ndb);
 
     /* Phase 5: Single row test (Test 13) */
-    if (createTestTable(&ndb, meta) != 0) { ndb_end(0); return 1; }
-    if (queryFragInstances(mysqlPort, meta) != 0) { ndb_end(0); return 1; }
+    if (createTestTable(&ndb, meta) != 0) { result = 1; break; }
+    if (queryFragInstances(mysqlPort, meta) != 0) { result = 1; break; }
     {
       /* Insert a single row: (1, 42) */
       const NdbDictionary::Table *ptab =
@@ -3663,9 +3660,9 @@ int main(int argc, char **argv)
     dropTestTable(&ndb);
 
     /* Phase 6: Negative values test (Test 14) */
-    if (createTestTable(&ndb, meta) != 0) { ndb_end(0); return 1; }
-    if (queryFragInstances(mysqlPort, meta) != 0) { ndb_end(0); return 1; }
-    if (insertNegativeData(&ndb) != 0) { ndb_end(0); return 1; }
+    if (createTestTable(&ndb, meta) != 0) { result = 1; break; }
+    if (queryFragInstances(mysqlPort, meta) != 0) { result = 1; break; }
+    if (insertNegativeData(&ndb) != 0) { result = 1; break; }
 
     {
       SignalSender ss(&con);
@@ -3675,7 +3672,7 @@ int main(int argc, char **argv)
     }
 
     dropTestTable(&ndb);
-  }
+  } while (0);
 
   ndb_end(0);
 
