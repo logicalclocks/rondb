@@ -3207,11 +3207,18 @@ int Dbtup::handleReadReq(
     jamDebug();
     if (req_struct->m_join_agg_state_key != RNIL) {
       jam();
-      /* DBSPJ always sets interpreted_exec=TRUE for join aggregation,
-       * so this non-interpreted path should never be reached. */
-      terrorCode = ZJOIN_AGG_INTERPRETER_ERROR;
-      tupkeyErrorLab(req_struct);
-      return -1;
+      /*
+       * Join aggregation without old interpreter: the aggregate
+       * interpreter reads child-table columns directly via DBTUP
+       * readAttributes.  No linked parent data is available in
+       * the non-interpreted AttrInfo layout.
+       */
+      int res = handleJoinAggRow(req_struct, nullptr, 0);
+      if (res != 0) {
+        tupkeyErrorLab(req_struct);
+        return -1;
+      }
+      return 0;
     }
     int ret = readAttributes(req_struct, &cinBuffer[0],
                              req_struct->attrinfo_len, dst, dstLen);

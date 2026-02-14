@@ -7209,6 +7209,13 @@ Uint32 Dbspj::scanFrag_send(Signal *signal, Ptr<Request> requestPtr,
       reinterpret_cast<ScanFragReq *>(data.m_scanFragReq);
 
   memcpy(req, org, sizeof(data.m_scanFragReq));
+  /*
+   * Clear JoinAggFlag for root scan to DBLQH.  The flag was set by DBTC
+   * to indicate the DBTC→DBSPJ request carries aggStateKeys (in a
+   * section).  The root scan itself does not aggregate — only child
+   * lookups do (via LQHKEYREQ with JoinAggFlag + aggStateKey).
+   */
+  ScanFragReq::setJoinAggFlag(req->requestInfo, 0);
   // req->variableData[0] // set below
   Uint32 var_index = 0;
   if (requestPtr.p->m_user_id != RNIL) {

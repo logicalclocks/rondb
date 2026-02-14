@@ -179,6 +179,10 @@ Rondis stores Redis data in NDB tables. The `redis_0` database contains tables l
 SELECT redis_key, value FROM redis_0.string_keys WHERE redis_key LIKE 'user:%'
 ```
 
+## NDB Important Notes
+
+- **Always create NDB tables through MySQL** (CREATE TABLE ... ENGINE=NDB), never through the NDB API directly. Tables created via the NDB API are not visible to MySQL servers. If you need table metadata (tableId, schemaVersion) for signal-level tests, create the table via MySQL first, then look up metadata via the NDB dictionary API.
+
 ## Security Notes
 
 - `mysql.go` includes SQL injection prevention via identifier sanitization

@@ -52,6 +52,11 @@ class ScanTabReq {
   friend class NdbScanFilterImpl;
 
   /**
+   * Test programs
+   */
+  friend Uint32 buildScanTabReqInfo();
+
+  /**
    * For printing
    */
   friend bool printSCANTABREQ(FILE *output, const Uint32 *theData, Uint32 len,
