@@ -34,9 +34,10 @@
  * exercises the full orchestration: DBTC handles JOIN_AGG_SETUP/COMPLETE/RELEASE
  * internally, and DBSPJ coordinates the scan-to-lookup join.
  *
- * No application-side WHERE filtering — scans ALL lineitem rows and joins
- * with ORDERS.  Results are validated against expected values computed from
- * the known data generation pattern.
+ * The TPC-H Q12 WHERE clause (l_shipmode IN ('MAIL','SHIP'), date range,
+ * ordering predicates) is pushed down to data nodes as an NDB interpreted
+ * program in QN_ScanFragParameters (PI_ATTR_INTERPRET).  Results are
+ * validated against expected values computed from the known data pattern.
  *
  * Usage: bench_q12_dbtc -c <connect_string> -m <mysql_port> [options]
  */
@@ -80,6 +81,7 @@
 /* ------------------------------------------------------------------ */
 
 static bool verbose = false;
+static bool noFilter = false;
 #define V(...) do { if (verbose) printf(__VA_ARGS__); } while(0)
 
 /* ------------------------------------------------------------------ */
@@ -97,6 +99,15 @@ static const Uint32 COL_TYPE_BIGINT = 9;
 static const Uint32 AGG_MAGIC = 0x0721;
 static const Uint32 AGG_RESULT_ATTR = 0xFF00;
 static const Uint32 LINKED_COL_FLAG = 0x8000;
+
+/*
+ * Epoch days from 1992-01-01.
+ * TPC-H Q12 filters l_receiptdate in [1994-01-01, 1995-01-01).
+ * 1994-01-01 = 366(1992 leap) + 365(1993) = day 731
+ * 1995-01-01 = 731 + 365 = day 1096
+ */
+static const Uint32 DATE_19940101 = 731;
+static const Uint32 DATE_19950101 = 1096;
 
 /* TPC-H shipmode values (CHAR(10), space-padded) */
 static const char SHIPMODES[][11] = {
@@ -231,6 +242,150 @@ buildAggProgram_Q12(Uint32 linkedShipmodeAttrId, Uint32 localPriorityAttrId)
 }
 
 /* ------------------------------------------------------------------ */
+/* Pushdown WHERE filter (NDB interpreted program)                     */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Build an NDB interpreted program for the TPC-H Q12 WHERE clause:
+ *
+ *   l_shipmode IN ('MAIL', 'SHIP')
+ *   AND l_commitdate < l_receiptdate
+ *   AND l_shipdate < l_commitdate
+ *   AND l_receiptdate >= DATE_19940101
+ *   AND l_receiptdate < DATE_19950101
+ *
+ * This is pushed down to data nodes via PI_ATTR_INTERPRET in the
+ * QN_ScanFragParameters section.  DBSPJ appends it to the 5-word
+ * interpreter header and forwards it in SCAN_FRAGREQ to DBLQH,
+ * where it executes before reading attributes.
+ */
+static std::vector<Uint32>
+buildScanFilter(const NdbDictionary::Table *tab, const TableMeta &meta)
+{
+  Uint32 buf[256];
+  NdbInterpretedCode code(tab, buf, sizeof(buf) / sizeof(buf[0]));
+
+  Uint32 shipmode_id = meta.attrIds.at("l_shipmode");
+  Uint32 shipdate_id = meta.attrIds.at("l_shipdate");
+  Uint32 commitdate_id = meta.attrIds.at("l_commitdate");
+  Uint32 receiptdate_id = meta.attrIds.at("l_receiptdate");
+
+  static const char MAIL_PADDED[10] = {'M','A','I','L',' ',' ',' ',' ',' ',' '};
+  static const char SHIP_PADDED[10] = {'S','H','I','P',' ',' ',' ',' ',' ',' '};
+
+  /*
+   * NB: NDB interpreter inequality branches are INVERTED from their names!
+   * (see NdbScanFilter.cpp line 560: "implemented backwards")
+   *   branch_col_lt → actually branches when col > val
+   *   branch_col_le → actually branches when col >= val
+   *   branch_col_gt → actually branches when col < val
+   *   branch_col_ge → actually branches when col <= val
+   * EQ and NE are correct (not inverted).
+   *
+   * l_shipmode IN ('MAIL', 'SHIP'):
+   *   if l_shipmode == 'MAIL' → jump to label 0 (pass_shipmode)
+   *   if l_shipmode != 'SHIP' → jump to label 1 (reject)
+   *   fall through = l_shipmode == 'SHIP' → continue
+   */
+  code.branch_col_eq(MAIL_PADDED, 10, shipmode_id, 0);
+  code.branch_col_ne(SHIP_PADDED, 10, shipmode_id, 1);
+  code.def_label(0);  /* pass_shipmode */
+
+  /* l_commitdate < l_receiptdate: reject if commitdate >= receiptdate */
+  code.branch_col_le(commitdate_id, receiptdate_id, 1);
+
+  /* l_shipdate < l_commitdate: reject if shipdate >= commitdate */
+  code.branch_col_le(shipdate_id, commitdate_id, 1);
+
+  /* l_receiptdate >= DATE_19940101: reject if receiptdate < 731 */
+  Uint32 val731 = DATE_19940101;
+  code.branch_col_gt(&val731, sizeof(val731), receiptdate_id, 1);
+
+  /* l_receiptdate < DATE_19950101: reject if receiptdate >= 1096 */
+  Uint32 val1096 = DATE_19950101;
+  code.branch_col_le(&val1096, sizeof(val1096), receiptdate_id, 1);
+
+  code.interpret_exit_ok();
+  code.def_label(1);  /* reject */
+  code.interpret_exit_nok();
+
+  int rc = code.finalise();
+  if (rc != 0) {
+    fprintf(stderr, "NdbInterpretedCode::finalise() failed: %d\n", rc);
+    return {};
+  }
+
+  /*
+   * getWordsUsed() includes label meta-info words stored at the end of the
+   * buffer (2 words per label).  The actual interpreter program is only the
+   * first m_instructions_length words, but that field is private.  Subtract
+   * the meta-info overhead: 2 labels × 2 words each = 4 words.
+   */
+  Uint32 numLabels = 2;
+  Uint32 len = code.getWordsUsed() - numLabels * 2;
+
+  if (verbose) {
+    printf("Scan filter program: %u words (getWordsUsed=%u, labels=%u)\n",
+           len, code.getWordsUsed(), numLabels);
+    /* Walk the program and decode opcodes */
+    Uint32 pc = 0;
+    while (pc < len) {
+      Uint32 w0 = buf[pc];
+      Uint32 opcode = w0 & 0x3f;
+      Uint32 isize = 1;  /* default instruction size */
+      switch (opcode) {
+        case Interpreter::BRANCH_ATTR_OP_ARG: {
+          Uint32 cond = (w0 >> 12) & 0xf;
+          Uint32 offset = (w0 >> 16) & 0x7fff;
+          Uint32 dir = w0 >> 31;
+          Uint32 w1 = buf[pc + 1];
+          Uint32 attrId = (w1 >> 16) & 0xffff;
+          Uint32 vlen = w1 & 0xffff;
+          Uint32 dataWords = (vlen + 3) / 4;
+          printf("  [%2u] BRANCH_ATTR_OP_ARG cond=%u attrId=%u len=%u "
+                 "offset=%s%u  (data %u words)\n",
+                 pc, cond, attrId, vlen, dir ? "-" : "+", offset, dataWords);
+          /* Print inline data in hex */
+          for (Uint32 d = 0; d < dataWords; d++)
+            printf("       data[%u] = H'%08x\n", d, buf[pc + 2 + d]);
+          isize = 2 + dataWords;
+          break;
+        }
+        case Interpreter::BRANCH_ATTR_OP_ATTR: {
+          Uint32 cond = (w0 >> 12) & 0xf;
+          Uint32 offset = (w0 >> 16) & 0x7fff;
+          Uint32 dir = w0 >> 31;
+          Uint32 w1 = buf[pc + 1];
+          Uint32 attrId1 = (w1 >> 16) & 0xffff;
+          Uint32 attrId2 = w1 & 0xffff;
+          printf("  [%2u] BRANCH_ATTR_OP_ATTR cond=%u attrId1=%u attrId2=%u "
+                 "offset=%s%u\n",
+                 pc, cond, attrId1, attrId2, dir ? "-" : "+", offset);
+          isize = 2;
+          break;
+        }
+        case Interpreter::EXIT_OK:
+          printf("  [%2u] EXIT_OK\n", pc);
+          break;
+        case Interpreter::EXIT_REFUSE:
+          printf("  [%2u] EXIT_REFUSE\n", pc);
+          break;
+        default:
+          printf("  [%2u] UNKNOWN opcode=%u  H'%08x\n", pc, opcode, w0);
+          break;
+      }
+      pc += isize;
+    }
+    /* Print raw hex for full verification */
+    printf("Raw hex:");
+    for (Uint32 i = 0; i < len; i++) printf(" %08x", buf[i]);
+    printf("\n");
+  }
+
+  return std::vector<Uint32>(buf, buf + len);
+}
+
+/* ------------------------------------------------------------------ */
 /* QueryTree builder — 2-table join: LINEITEM scan + ORDERS lookup     */
 /* ------------------------------------------------------------------ */
 
@@ -301,6 +456,7 @@ buildAggProgram_Q12(Uint32 linkedShipmodeAttrId, Uint32 localPriorityAttrId)
 static std::vector<Uint32>
 buildQueryTree_Q12(const TableMeta &lineitemMeta,
                    const TableMeta &ordersMeta,
+                   const std::vector<Uint32> &scanFilter,
                    Uint32 receiverId)
 {
   Uint32 li_orderkey = lineitemMeta.attrIds.at("l_orderkey");
@@ -373,18 +529,29 @@ buildQueryTree_Q12(const TableMeta &lineitemMeta,
 
   /* ---- Parameter section ---- */
 
-  /* Param 0: QN_ScanFragParameters */
+  /* Param 0: QN_ScanFragParameters, optionally with PI_ATTR_INTERPRET */
+  Uint32 p0_param_size = QN_ScanFragParameters::NodeSize;
+  Uint32 p0_requestInfo = 0;
+  if (!scanFilter.empty()) {
+    p0_param_size += 1 + (Uint32)scanFilter.size();
+    p0_requestInfo = DABits::PI_ATTR_INTERPRET;
+  }
   Uint32 p0_len = 0;
   QueryNodeParameters::setOpLen(p0_len, QueryNodeParameters::QN_SCAN_FRAG,
-                                QN_ScanFragParameters::NodeSize);
+                                p0_param_size);
   ai.push_back(p0_len);
-  ai.push_back(0);             /* requestInfo: no filter */
+  ai.push_back(p0_requestInfo);
   ai.push_back(receiverId);    /* resultData */
-  ai.push_back(256);           /* batch_size_rows */
-  ai.push_back(65536);         /* batch_size_bytes */
+  ai.push_back(990);            /* batch_size_rows */
+  ai.push_back(2*1024*1024);   /* batch_size_bytes */
   ai.push_back(0);
   ai.push_back(0);
   ai.push_back(0);
+  if (!scanFilter.empty()) {
+    /* PI_ATTR_INTERPRET: (subroutine_len << 16) | program_len */
+    ai.push_back((Uint32)scanFilter.size());
+    for (Uint32 w : scanFilter) ai.push_back(w);
+  }
 
   /* Param 1: QN_LookupParameters */
   Uint32 p1_len = 0;
@@ -757,7 +924,7 @@ Uint32 buildScanTabReqInfo()
   ScanTabReq::setNoDiskFlag(requestInfo, 1);
   ScanTabReq::setViaSPJFlag(requestInfo, 1);
   ScanTabReq::setJoinAggFlag(requestInfo, 1);
-  ScanTabReq::setScanBatch(requestInfo, 256);
+  ScanTabReq::setScanBatch(requestInfo, 990);
   ScanTabReq::setExtendedConf(requestInfo, 1);
   return requestInfo;
 }
@@ -788,8 +955,8 @@ sendScanTabReq(SignalSender &ss, Uint32 nodeId,
   data[6] = FAKE_TRANS_ID1;
   data[7] = FAKE_TRANS_ID2;
   data[8] = apiConnectPtr;      /* buddyConPtr */
-  data[9] = 65536;              /* batch_byte_size */
-  data[10] = 256;               /* first_batch_size */
+  data[9] = 2 * 1024 * 1024;   /* batch_byte_size */
+  data[10] = 990;               /* first_batch_size */
 
   ssig.set(ss, 0, refToBlock(tcRef), GSN_SCAN_TABREQ,
            ScanTabReq::StaticLength);
@@ -905,9 +1072,11 @@ extractSumBigint(const std::vector<Uint8> &val, Uint32 aggIdx)
 static int
 collectResults(SignalSender &ss,
                std::vector<AggResult> &allResults,
-               Uint32 apiConnectPtr, Uint32 tcRef, Uint32 nodeId)
+               Uint32 apiConnectPtr, Uint32 tcRef, Uint32 nodeId,
+               Uint32 &nextReqCount)
 {
   V("Waiting for results...\n");
+  nextReqCount = 0;
 
   bool done = false;
   while (!done) {
@@ -962,6 +1131,7 @@ collectResults(SignalSender &ss,
           fprintf(stderr, "sendSignal SCAN_NEXTREQ failed\n");
           return -1;
         }
+        nextReqCount++;
       }
     }
     else if (gsn == GSN_SCAN_TABREF) {
@@ -987,9 +1157,12 @@ collectResults(SignalSender &ss,
 
 /*
  * Compute expected Q12 results from known data generation pattern.
- * No WHERE filter — all lineitem rows participate.
- * For each lineitem: shipmode determines the group key,
- * the order's priority determines high vs low classification.
+ * Applies the same WHERE filter as the pushdown interpreted program:
+ *   l_shipmode IN ('MAIL', 'SHIP')
+ *   AND l_commitdate < l_receiptdate
+ *   AND l_shipdate < l_commitdate
+ *   AND l_receiptdate >= DATE_19940101
+ *   AND l_receiptdate < DATE_19950101
  */
 static void
 computeExpected(Uint32 numOrders, Uint32 linesPerOrder,
@@ -1001,8 +1174,31 @@ computeExpected(Uint32 numOrders, Uint32 linesPerOrder,
     for (Uint32 l = 0; l < linesPerOrder; l++) {
       Uint32 idx = o * linesPerOrder + l;
       Uint32 shipmodeIdx = idx % NUM_SHIPMODES;
-      std::string sm(SHIPMODES[shipmodeIdx], 10);
 
+      if (!noFilter) {
+        /* l_shipmode IN ('MAIL', 'SHIP') — SHIP=index 3, MAIL=index 5 */
+        if (shipmodeIdx != 3 && shipmodeIdx != 5) continue;
+
+        /* Reproduce the date generation from insertLineitems() */
+        Uint32 orderdate = (o * 1013) % 2406;
+        Uint32 s_offset = 1 + ((idx * 13) % 121);
+        Uint32 c_offset = 30 + ((idx * 7) % 61);
+        Uint32 r_offset = 1 + ((idx * 17) % 30);
+
+        Uint32 shipdate = orderdate + s_offset;
+        Uint32 commitdate = orderdate + c_offset;
+        Uint32 receiptdate = orderdate + s_offset + r_offset;
+
+        /* l_commitdate < l_receiptdate */
+        if (commitdate >= receiptdate) continue;
+        /* l_shipdate < l_commitdate */
+        if (shipdate >= commitdate) continue;
+        /* l_receiptdate >= DATE_19940101 AND l_receiptdate < DATE_19950101 */
+        if (receiptdate < DATE_19940101 || receiptdate >= DATE_19950101)
+          continue;
+      }
+
+      std::string sm(SHIPMODES[shipmodeIdx], 10);
       if (prioIdx == 0 || prioIdx == 1) {
         expectedHigh[sm]++;
       } else {
@@ -1018,6 +1214,7 @@ computeExpected(Uint32 numOrders, Uint32 linesPerOrder,
 
 static int
 runBenchmark(SignalSender &ss, Uint32 nodeId,
+             const NdbDictionary::Table *lineitemTab,
              const TableMeta &lineitemMeta,
              const TableMeta &ordersMeta,
              Uint32 numOrders, Uint32 linesPerOrder,
@@ -1029,17 +1226,24 @@ runBenchmark(SignalSender &ss, Uint32 nodeId,
 
   Uint32 receiverId = 100 + iteration;
 
+  /* Build scan filter (pushdown WHERE clause) */
+  std::vector<Uint32> scanFilter;
+  if (!noFilter) {
+    scanFilter = buildScanFilter(lineitemTab, lineitemMeta);
+    if (scanFilter.empty()) return -1;
+  }
+
   /* Build QueryTree and AggProgram */
   std::vector<Uint32> queryTree =
-    buildQueryTree_Q12(lineitemMeta, ordersMeta, receiverId);
+    buildQueryTree_Q12(lineitemMeta, ordersMeta, scanFilter, receiverId);
 
   Uint32 linkedShipmodeAttrId = lineitemMeta.attrIds.at("l_shipmode");
   Uint32 localPriorityAttrId = ordersMeta.attrIds.at("o_orderpriority");
   std::vector<Uint32> aggProgram =
     buildAggProgram_Q12(linkedShipmodeAttrId, localPriorityAttrId);
 
-  V("QueryTree: %zu words, AggProgram: %zu words\n",
-    queryTree.size(), aggProgram.size());
+  V("ScanFilter: %zu words, QueryTree: %zu words, AggProgram: %zu words\n",
+    scanFilter.size(), queryTree.size(), aggProgram.size());
   if (verbose) {
     fprintf(stderr, "QueryTree hex dump:\n");
     for (size_t i = 0; i < queryTree.size(); i++)
@@ -1068,7 +1272,9 @@ runBenchmark(SignalSender &ss, Uint32 nodeId,
 
   /* Collect results */
   std::vector<AggResult> allResults;
-  rc = collectResults(ss, allResults, apiConnectPtr, tcRef, nodeId);
+  Uint32 nextReqCount = 0;
+  rc = collectResults(ss, allResults, apiConnectPtr, tcRef, nodeId,
+                      nextReqCount);
   if (rc != 0) {
     releaseTcConnect(ss, nodeId, apiConnectPtr, tcRef);
     return -1;
@@ -1136,8 +1342,9 @@ runBenchmark(SignalSender &ss, Uint32 nodeId,
 
   printf("Iteration %d: %s\n", iteration,
          failures == 0 ? "PASS" : "FAIL");
-  printf("  Lineitems: %u  Groups: %u  TRANSID_AI signals: %zu\n",
-         numOrders * linesPerOrder, totalGroups, allResults.size());
+  printf("  Lineitems: %u  Groups: %u  TRANSID_AI: %zu  SCAN_NEXTREQ: %u\n",
+         numOrders * linesPerOrder, totalGroups, allResults.size(),
+         nextReqCount);
   printf("  Scan+Join: %8.2f ms\n", scanMs + resultMs);
   printf("  Release:   %8.2f ms\n", releaseMs);
   printf("  Total:     %8.2f ms\n", totalMs);
@@ -1189,6 +1396,7 @@ int main(int argc, char **argv)
         "  --keep-tables          Keep tables after benchmark\n"
         "  --validate             Validate results (default)\n"
         "  --no-validate          Skip validation\n"
+        "  --no-filter            Disable pushdown WHERE filter\n"
         "  -v, --verbose          Verbose output\n"
         "  -h, --help             Show this help\n",
         argv[0]);
@@ -1212,6 +1420,8 @@ int main(int argc, char **argv)
       doValidate = true;
     } else if (strcmp(argv[i], "--no-validate") == 0) {
       doValidate = false;
+    } else if (strcmp(argv[i], "--no-filter") == 0) {
+      noFilter = true;
     }
   }
 
@@ -1319,6 +1529,16 @@ int main(int argc, char **argv)
         fprintf(stderr, "  %-20s attrId=%u\n", kv.first.c_str(), kv.second);
     }
 
+    /* Get table pointer for NdbInterpretedCode (scan filter) */
+    const NdbDictionary::Table *lineitemTab =
+        ndb.getDictionary()->getTable(LINEITEM_TABLE);
+    if (lineitemTab == nullptr) {
+      fprintf(stderr, "getTable(%s) failed: %s\n",
+              LINEITEM_TABLE, ndb.getDictionary()->getNdbError().message);
+      result = 1;
+      break;
+    }
+
     /* Run benchmark iterations */
     printf("\nStarting benchmark (%d iterations)...\n\n", numIterations);
 
@@ -1328,6 +1548,7 @@ int main(int argc, char **argv)
 
       for (int iter = 1; iter <= numIterations; iter++) {
         if (runBenchmark(ss, (Uint32)dataNodeId,
+                         lineitemTab,
                          lineitemMeta, ordersMeta,
                          numOrders, linesPerOrder,
                          doValidate, iter) != 0) {

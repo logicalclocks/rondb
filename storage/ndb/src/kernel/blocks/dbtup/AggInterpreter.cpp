@@ -118,9 +118,9 @@ GBHashEntryCmp::operator()(const GBHashEntry &n1,
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 #undef DEBUG_PA_INTERP
 // #define DEBUG_PA_INTERP 1
-#define DEBUG_PA_INTERP_PART_ID 0
 //#define DEBUG_AGG 1
 #endif
+#define DEBUG_PA_INTERP_PART_ID 0
 
 #ifdef DEBUG_AGG
 #define DEB_AGG(arglist) do { g_eventLogger->info arglist ; } while (0)

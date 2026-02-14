@@ -63,6 +63,51 @@ Both are guarded by `#if defined(VM_TRACE) || defined(ERROR_INSERT)`.
 - **Batch counter save-before-reset**: In sendScanFragConf, save counters to locals
   before the batch reset block, since reset happens before signal population
 
+### NdbInterpretedCode: Inverted Inequality Branches
+
+**CRITICAL**: The NDB interpreter's inequality branch instructions are implemented
+**backwards** from their names. EQ and NE work as expected, but LT/LE/GT/GE are
+inverted (see `NdbScanFilter.cpp` line 560: "the interpreter cmp-code has been
+implemented backwards, such that it branch on non-matches").
+
+| Method name       | Actually branches when |
+|-------------------|------------------------|
+| `branch_col_eq`   | col == val (correct)   |
+| `branch_col_ne`   | col != val (correct)   |
+| `branch_col_lt`   | col **>** val          |
+| `branch_col_le`   | col **>=** val         |
+| `branch_col_gt`   | col **<** val          |
+| `branch_col_ge`   | col **<=** val         |
+
+This applies to both attr-vs-constant and attr-vs-attr variants.
+
+**Root cause**: In `DbtupExecQuery.cpp` interpreterNextLab(), the comparison result
+`res1 = cmp(col, val)` is tested with inverted conditions:
+```cpp
+case Interpreter::LT:  res = (res1 > 0);  break;  // branches when col > val
+case Interpreter::GE:  res = (res1 <= 0); break;  // branches when col <= val
+```
+
+**NdbScanFilter compensates** by double-inverting: it negates the user's condition
+(for AND groups) then looks up the already-inverted branch method in table3/table4.
+
+**When building raw interpreter programs** (e.g., for PI_ATTR_INTERPRET in
+QN_ScanFragParameters), use the opposite inequality method:
+- To reject when `col >= val`: use `branch_col_le` (not `branch_col_ge`)
+- To reject when `col < val`: use `branch_col_gt` (not `branch_col_lt`)
+
+### NdbInterpretedCode::getWordsUsed() Includes Meta-Info
+
+`getWordsUsed()` returns `m_instructions_length + numLabels * 2`, but the label
+meta-info is stored at the END of the buffer (not after instructions). Reading
+`buf[0..getWordsUsed()-1]` includes garbage from the gap between instructions
+and meta-info. Subtract `numLabels * CODEMETAINFO_WORDS` (2 words per label)
+to get the actual instruction count:
+```cpp
+Uint32 numLabels = 2;
+Uint32 len = code.getWordsUsed() - numLabels * 2;
+```
+
 ### Debug Trace Macros (DEB_XXX Pattern)
 
 NDB kernel blocks use a consistent pattern for conditional debug logging:
