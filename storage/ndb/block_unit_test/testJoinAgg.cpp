@@ -2357,11 +2357,10 @@ testEmptyTable(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
   }
 
   V("\n--- Validation ---\n");
-  if (allResults.empty()) {
-    fprintf(stderr, "FAIL: no results received from empty table\n");
-    return -1;
-  }
-
+  /*
+   * With the kernel fix, nodes with 0 processed rows skip TRANSID_AI.
+   * An empty table means all nodes have 0 rows → 0 TRANSID_AI signals.
+   */
   Uint64 count = 0;
   Int64 sum = 0;
   for (const auto &res : allResults) {
@@ -2371,7 +2370,8 @@ testEmptyTable(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
     sum += extractSumBigint(val, 1);
   }
 
-  V("  COUNT(*) = %llu\n", (unsigned long long)count);
+  V("  COUNT(*) = %llu (from %zu TRANSID_AI signals)\n",
+    (unsigned long long)count, allResults.size());
   V("  SUM(b) = %lld\n", (long long)sum);
 
   int failures = 0;

@@ -1190,6 +1190,351 @@ testBasicAllAggs(Ndb *ndb, SignalSender &ss, Uint32 nodeId, MYSQL *conn)
   return 0;
 }
 
+static int
+testEmptyTable(Ndb *ndb, SignalSender &ss, Uint32 nodeId, MYSQL *conn)
+{
+  printf("Test 4: Empty table COUNT(*), SUM(b) ... ");
+  fflush(stdout);
+
+  ss.unlock();
+  TableMeta meta;
+  int setupRc = createTestTable(conn, ndb, meta);
+  /* No data inserted — table is empty */
+  ss.lock();
+  if (setupRc != 0) return -1;
+
+  Uint32 apiConnectPtr = 0, tcRef = 0;
+  if (seizeTcConnect(ss, nodeId, apiConnectPtr, tcRef) != 0) {
+    ss.unlock(); dropTestTable(conn); ss.lock();
+    return -1;
+  }
+
+  Uint32 receiverId = 45;
+  std::vector<Uint32> queryTree =
+    buildQueryTree(meta.tableId, meta.schemaVersion,
+                   meta.attrIdA, receiverId);
+  std::vector<Uint32> aggProgram = buildAggProgram_CountSum(meta.attrIdB);
+
+  int rc = sendScanTabReq(ss, nodeId, apiConnectPtr, tcRef,
+                          meta, queryTree, aggProgram, receiverId);
+  if (rc != 0) {
+    releaseTcConnect(ss, nodeId, apiConnectPtr, tcRef);
+    ss.unlock(); dropTestTable(conn); ss.lock();
+    return -1;
+  }
+
+  std::vector<AggResult> results;
+  rc = collectResults(ss, results, apiConnectPtr, tcRef, nodeId);
+  if (rc != 0) {
+    releaseTcConnect(ss, nodeId, apiConnectPtr, tcRef);
+    ss.unlock(); dropTestTable(conn); ss.lock();
+    return -1;
+  }
+
+  releaseTcConnect(ss, nodeId, apiConnectPtr, tcRef);
+
+  /* With kernel fix, empty nodes skip TRANSID_AI → 0 results expected */
+  Uint64 totalCount = 0;
+  Int64 totalSum = 0;
+  for (const auto &r : results) {
+    for (const auto &g : r.groups) {
+      totalCount += extractCountBigint(g.second, 0);
+      totalSum += extractSumBigint(g.second, 1);
+    }
+  }
+
+  V("  Result: COUNT=%llu, SUM=%lld, TRANSID_AI signals=%zu\n",
+    (unsigned long long)totalCount, (long long)totalSum, results.size());
+
+  if (totalCount != 0 || totalSum != 0) {
+    printf("FAIL (expected COUNT=0 SUM=0, got COUNT=%llu SUM=%lld)\n",
+           (unsigned long long)totalCount, (long long)totalSum);
+    ss.unlock(); dropTestTable(conn); ss.lock();
+    return -1;
+  }
+
+  printf("PASS\n");
+  ss.unlock(); dropTestTable(conn); ss.lock();
+  return 0;
+}
+
+static int
+testSingleRow(Ndb *ndb, SignalSender &ss, Uint32 nodeId, MYSQL *conn)
+{
+  printf("Test 5: Single row COUNT(*), SUM(b) ... ");
+  fflush(stdout);
+
+  ss.unlock();
+  TableMeta meta;
+  int setupRc = createTestTable(conn, ndb, meta);
+  if (setupRc == 0)
+    setupRc = sqlExec(conn, "INSERT INTO jspj_test VALUES (1, 42)");
+  ss.lock();
+  if (setupRc != 0) return -1;
+
+  Uint32 apiConnectPtr = 0, tcRef = 0;
+  if (seizeTcConnect(ss, nodeId, apiConnectPtr, tcRef) != 0) {
+    ss.unlock(); dropTestTable(conn); ss.lock();
+    return -1;
+  }
+
+  Uint32 receiverId = 46;
+  std::vector<Uint32> queryTree =
+    buildQueryTree(meta.tableId, meta.schemaVersion,
+                   meta.attrIdA, receiverId);
+  std::vector<Uint32> aggProgram = buildAggProgram_CountSum(meta.attrIdB);
+
+  int rc = sendScanTabReq(ss, nodeId, apiConnectPtr, tcRef,
+                          meta, queryTree, aggProgram, receiverId);
+  if (rc != 0) {
+    releaseTcConnect(ss, nodeId, apiConnectPtr, tcRef);
+    ss.unlock(); dropTestTable(conn); ss.lock();
+    return -1;
+  }
+
+  std::vector<AggResult> results;
+  rc = collectResults(ss, results, apiConnectPtr, tcRef, nodeId);
+  if (rc != 0) {
+    releaseTcConnect(ss, nodeId, apiConnectPtr, tcRef);
+    ss.unlock(); dropTestTable(conn); ss.lock();
+    return -1;
+  }
+
+  releaseTcConnect(ss, nodeId, apiConnectPtr, tcRef);
+
+  Uint64 totalCount = 0;
+  Int64 totalSum = 0;
+  for (const auto &r : results) {
+    for (const auto &g : r.groups) {
+      totalCount += extractCountBigint(g.second, 0);
+      totalSum += extractSumBigint(g.second, 1);
+    }
+  }
+
+  V("  Result: COUNT=%llu, SUM=%lld\n",
+    (unsigned long long)totalCount, (long long)totalSum);
+
+  if (totalCount != 1 || totalSum != 42) {
+    printf("FAIL (expected COUNT=1 SUM=42, got COUNT=%llu SUM=%lld)\n",
+           (unsigned long long)totalCount, (long long)totalSum);
+    ss.unlock(); dropTestTable(conn); ss.lock();
+    return -1;
+  }
+
+  ss.unlock();
+  int sqlRc = verifySqlCountSum(conn, TABLE_NAME, "a", "b", 1, 42);
+  ss.lock();
+  if (sqlRc != 0) {
+    printf("FAIL (SQL verification mismatch)\n");
+    ss.unlock(); dropTestTable(conn); ss.lock();
+    return -1;
+  }
+
+  printf("PASS\n");
+  ss.unlock(); dropTestTable(conn); ss.lock();
+  return 0;
+}
+
+static int
+testLargeDataset(Ndb *ndb, SignalSender &ss, Uint32 nodeId, MYSQL *conn)
+{
+  printf("Test 6: Large dataset (200 rows) COUNT(*), SUM(b) ... ");
+  fflush(stdout);
+
+  ss.unlock();
+  TableMeta meta;
+  int setupRc = createTestTable(conn, ndb, meta);
+  if (setupRc == 0) {
+    /* Insert 200 rows: b = row_number (1..200), SUM = 200*201/2 = 20100 */
+    char buf[8192];
+    int pos = snprintf(buf, sizeof(buf), "INSERT INTO jspj_test VALUES ");
+    for (int i = 1; i <= 200; i++) {
+      if (i > 1) pos += snprintf(buf + pos, sizeof(buf) - pos, ",");
+      pos += snprintf(buf + pos, sizeof(buf) - pos, "(%d,%d)", i, i);
+    }
+    setupRc = sqlExec(conn, buf);
+    if (setupRc == 0) V("Inserted 200 rows into %s\n", TABLE_NAME);
+  }
+  ss.lock();
+  if (setupRc != 0) return -1;
+
+  Uint32 apiConnectPtr = 0, tcRef = 0;
+  if (seizeTcConnect(ss, nodeId, apiConnectPtr, tcRef) != 0) {
+    ss.unlock(); dropTestTable(conn); ss.lock();
+    return -1;
+  }
+
+  Uint32 receiverId = 47;
+  std::vector<Uint32> queryTree =
+    buildQueryTree(meta.tableId, meta.schemaVersion,
+                   meta.attrIdA, receiverId);
+  std::vector<Uint32> aggProgram = buildAggProgram_CountSum(meta.attrIdB);
+
+  int rc = sendScanTabReq(ss, nodeId, apiConnectPtr, tcRef,
+                          meta, queryTree, aggProgram, receiverId);
+  if (rc != 0) {
+    releaseTcConnect(ss, nodeId, apiConnectPtr, tcRef);
+    ss.unlock(); dropTestTable(conn); ss.lock();
+    return -1;
+  }
+
+  std::vector<AggResult> results;
+  rc = collectResults(ss, results, apiConnectPtr, tcRef, nodeId);
+  if (rc != 0) {
+    releaseTcConnect(ss, nodeId, apiConnectPtr, tcRef);
+    ss.unlock(); dropTestTable(conn); ss.lock();
+    return -1;
+  }
+
+  releaseTcConnect(ss, nodeId, apiConnectPtr, tcRef);
+
+  Uint64 totalCount = 0;
+  Int64 totalSum = 0;
+  for (const auto &r : results) {
+    for (const auto &g : r.groups) {
+      totalCount += extractCountBigint(g.second, 0);
+      totalSum += extractSumBigint(g.second, 1);
+    }
+  }
+
+  V("  Result: COUNT=%llu, SUM=%lld\n",
+    (unsigned long long)totalCount, (long long)totalSum);
+
+  if (totalCount != 200 || totalSum != 20100) {
+    printf("FAIL (expected COUNT=200 SUM=20100, got COUNT=%llu SUM=%lld)\n",
+           (unsigned long long)totalCount, (long long)totalSum);
+    ss.unlock(); dropTestTable(conn); ss.lock();
+    return -1;
+  }
+
+  ss.unlock();
+  int sqlRc = verifySqlCountSum(conn, TABLE_NAME, "a", "b", 200, 20100);
+  ss.lock();
+  if (sqlRc != 0) {
+    printf("FAIL (SQL verification mismatch)\n");
+    ss.unlock(); dropTestTable(conn); ss.lock();
+    return -1;
+  }
+
+  printf("PASS\n");
+  ss.unlock(); dropTestTable(conn); ss.lock();
+  return 0;
+}
+
+static int
+testManyGroups(Ndb *ndb, SignalSender &ss, Uint32 nodeId, MYSQL *conn)
+{
+  printf("Test 7: Many groups (10 groups, 100 rows) GROUP BY ... ");
+  fflush(stdout);
+
+  ss.unlock();
+  TableMeta meta;
+  int setupRc = createTestTable3Col(conn, ndb, meta);
+  if (setupRc == 0) {
+    /* 100 rows: pk=1..100, grp=(pk-1)%10 + 1, val=pk
+     * Group 1: pk=1,11,21,...,91 → SUM = 1+11+21+31+41+51+61+71+81+91 = 460
+     * Group 2: pk=2,12,22,...,92 → SUM = 2+12+22+32+42+52+62+72+82+92 = 470
+     * ...
+     * Group 10: pk=10,20,...,100 → SUM = 10+20+30+40+50+60+70+80+90+100 = 550
+     */
+    char buf[8192];
+    int pos = snprintf(buf, sizeof(buf), "INSERT INTO jspj_test3 VALUES ");
+    for (int i = 1; i <= 100; i++) {
+      if (i > 1) pos += snprintf(buf + pos, sizeof(buf) - pos, ",");
+      int grp = ((i - 1) % 10) + 1;
+      pos += snprintf(buf + pos, sizeof(buf) - pos, "(%d,%d,%d)", i, grp, i);
+    }
+    setupRc = sqlExec(conn, buf);
+    if (setupRc == 0) V("Inserted 100 rows into %s\n", TABLE_NAME_3COL);
+  }
+  ss.lock();
+  if (setupRc != 0) return -1;
+
+  Uint32 apiConnectPtr = 0, tcRef = 0;
+  if (seizeTcConnect(ss, nodeId, apiConnectPtr, tcRef) != 0) {
+    ss.unlock(); dropTestTable3Col(conn); ss.lock();
+    return -1;
+  }
+
+  Uint32 receiverId = 48;
+  std::vector<Uint32> queryTree =
+    buildQueryTree(meta.tableId, meta.schemaVersion,
+                   meta.attrIdA, receiverId);
+  std::vector<Uint32> aggProgram =
+    buildAggProgram_SumGroupBy(meta.attrIdB, meta.attrIdC);
+
+  int rc = sendScanTabReq(ss, nodeId, apiConnectPtr, tcRef,
+                          meta, queryTree, aggProgram, receiverId);
+  if (rc != 0) {
+    releaseTcConnect(ss, nodeId, apiConnectPtr, tcRef);
+    ss.unlock(); dropTestTable3Col(conn); ss.lock();
+    return -1;
+  }
+
+  std::vector<AggResult> results;
+  rc = collectResults(ss, results, apiConnectPtr, tcRef, nodeId);
+  if (rc != 0) {
+    releaseTcConnect(ss, nodeId, apiConnectPtr, tcRef);
+    ss.unlock(); dropTestTable3Col(conn); ss.lock();
+    return -1;
+  }
+
+  releaseTcConnect(ss, nodeId, apiConnectPtr, tcRef);
+
+  /* Merge groups from all node results */
+  std::map<Int64, Int64> groupSums;
+  for (const auto &r : results) {
+    for (const auto &g : r.groups) {
+      Int64 grpKey = extractGroupKey(g.first);
+      Int64 sumVal = extractSumBigint(g.second, 0);
+      groupSums[grpKey] += sumVal;
+    }
+  }
+
+  V("  Groups: %zu\n", groupSums.size());
+  for (auto &kv : groupSums) {
+    V("    group(%lld) = %lld\n", (long long)kv.first, (long long)kv.second);
+  }
+
+  /* Expected: 10 groups, group(g) = sum of pk where ((pk-1)%10)+1 == g
+   * = 10*g + 10*(0+10+20+...+90)/10... no, let's compute directly:
+   * group(g): pk values are g, g+10, g+20, ..., g+90
+   * SUM = 10*g + 10*(0+10+20+...+90)/10... simpler:
+   * SUM(pk) for group g = g + (g+10) + (g+20) + ... + (g+90)
+   *                      = 10*g + (0+10+20+...+90)
+   *                      = 10*g + 450
+   */
+  std::map<Int64, Int64> expected;
+  for (int g = 1; g <= 10; g++) {
+    expected[g] = 10 * g + 450;
+  }
+
+  if (groupSums != expected) {
+    printf("FAIL (unexpected group sums, got %zu groups)\n", groupSums.size());
+    for (auto &kv : groupSums) {
+      fprintf(stderr, "  group(%lld) = %lld (expected %lld)\n",
+              (long long)kv.first, (long long)kv.second,
+              (long long)expected[kv.first]);
+    }
+    ss.unlock(); dropTestTable3Col(conn); ss.lock();
+    return -1;
+  }
+
+  ss.unlock();
+  int sqlRc = verifySqlSumGroupBy(conn, TABLE_NAME_3COL,
+                                   "pk", "grp", "val", expected);
+  ss.lock();
+  if (sqlRc != 0) {
+    printf("FAIL (SQL verification mismatch)\n");
+    ss.unlock(); dropTestTable3Col(conn); ss.lock();
+    return -1;
+  }
+
+  printf("PASS\n");
+  ss.unlock(); dropTestTable3Col(conn); ss.lock();
+  return 0;
+}
+
 /* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
@@ -1229,13 +1574,13 @@ int main(int argc, char *argv[])
   int result = 0;
   V("Connecting to cluster: %s\n", connectString);
 
-  {
+  do {
     /* MySQL connection for SQL-based result verification */
     MYSQL *conn = connectMysql(mysqlPort);
     if (conn == nullptr) {
       fprintf(stderr, "Cannot connect to MySQL on port %d\n", mysqlPort);
-      ndb_end(0);
-      return 1;
+      result = 1;
+      break;
     }
     V("Connected to MySQL on port %d\n", mysqlPort);
 
@@ -1243,14 +1588,14 @@ int main(int argc, char *argv[])
     if (con.connect(12, 5, 1) != 0) {
       fprintf(stderr, "Failed to connect to management server\n");
       mysql_close(conn);
-      ndb_end(0);
-      return 1;
+      result = 1;
+      break;
     }
     if (con.wait_until_ready(30, 0) < 0) {
       fprintf(stderr, "Cluster not ready within 30 seconds\n");
       mysql_close(conn);
-      ndb_end(0);
-      return 1;
+      result = 1;
+      break;
     }
     V("Connected to cluster\n");
 
@@ -1258,8 +1603,8 @@ int main(int argc, char *argv[])
     if (ndb.init() != 0) {
       fprintf(stderr, "Ndb::init failed: %s\n", ndb.getNdbError().message);
       mysql_close(conn);
-      ndb_end(0);
-      return 1;
+      result = 1;
+      break;
     }
 
     /* Find a data node to send signals to */
@@ -1268,8 +1613,8 @@ int main(int argc, char *argv[])
     if (nodeId <= 0) {
       fprintf(stderr, "No data node found\n");
       mysql_close(conn);
-      ndb_end(0);
-      return 1;
+      result = 1;
+      break;
     }
     V("Using data node %d\n", nodeId);
 
@@ -1284,12 +1629,16 @@ int main(int argc, char *argv[])
       if (testBasicCountSum(&ndb, ss, (Uint32)nodeId, conn) != 0) result = 1;
       if (testBasicSumGroupBy(&ndb, ss, (Uint32)nodeId, conn) != 0) result = 1;
       if (testBasicAllAggs(&ndb, ss, (Uint32)nodeId, conn) != 0) result = 1;
+      if (testEmptyTable(&ndb, ss, (Uint32)nodeId, conn) != 0) result = 1;
+      if (testSingleRow(&ndb, ss, (Uint32)nodeId, conn) != 0) result = 1;
+      if (testLargeDataset(&ndb, ss, (Uint32)nodeId, conn) != 0) result = 1;
+      if (testManyGroups(&ndb, ss, (Uint32)nodeId, conn) != 0) result = 1;
 
       ss.unlock();
     }
 
     mysql_close(conn);
-  }
+  } while (0);
 
   ndb_end(0);
 

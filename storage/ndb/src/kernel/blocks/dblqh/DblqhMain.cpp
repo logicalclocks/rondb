@@ -18128,6 +18128,26 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
 
   if (n_gb_cols == 0) {
     jam();
+    if (interp->processed_rows() == 0) {
+      /*
+       * No rows were processed on this node (all rows hashed to other
+       * nodes). Skip sending TRANSID_AI with zeroed accumulators.
+       */
+      jam();
+      state->m_state.store(JoinAggregationState::COMPLETED);
+
+      JoinAggCompleteConf *conf =
+        (JoinAggCompleteConf *)signal->getDataPtrSend();
+      conf->senderRef = reference();
+      conf->senderData = senderData;
+      conf->requestId = requestId;
+      conf->numResultRows = 0;
+      conf->resultBytes = 0;
+      sendSignal(senderRef, GSN_JOIN_AGG_COMPLETE_CONF,
+                 signal, JoinAggCompleteConf::SignalLength, JBB);
+      return;
+    }
+
     const Uint32 n_agg_results = interp->n_agg_results();
     const Uint32 agg_bytes = n_agg_results * sizeof(AggResItem);
     const Uint32 agg_words = agg_bytes >> 2;

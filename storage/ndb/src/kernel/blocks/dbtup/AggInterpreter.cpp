@@ -2707,11 +2707,13 @@ Uint32 AggInterpreter::mergeFrom(AggInterpreter* other,
       mergeAccumulators(agg_results_, other->agg_results_,
                         n_agg_results_, m_cached_agg_ops);
     }
+    processed_rows_ += other->processed_rows_;
     return 0;
   }
 
   // Group-by case: lockstep bucket merge from other into this
   if (other->gb_map_ == nullptr || other->gb_map_->empty()) {
+    processed_rows_ += other->processed_rows_;
     return 0;
   }
 
@@ -2769,6 +2771,7 @@ Uint32 AggInterpreter::mergeFrom(AggInterpreter* other,
     other->m_total_chunk_bytes = 0;
   }
 
+  processed_rows_ += other->processed_rows_;
   n_groups_ = gb_map_->size();
   return 0;
 }

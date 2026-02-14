@@ -344,6 +344,7 @@ class AggInterpreter {
   Uint32 n_gb_cols() const { return n_gb_cols_; }
   Uint32 n_agg_results() const { return n_agg_results_; }
   const AggResItem* agg_results() const { return agg_results_; }
+  Uint64 processed_rows() const { return processed_rows_; }
   void setUseMutex(bool v) { m_use_mutex = v; }
   void setMaxGroups(Uint32 v) { m_max_groups = v; }
   Uint32 maxGroups() const { return m_max_groups; }
