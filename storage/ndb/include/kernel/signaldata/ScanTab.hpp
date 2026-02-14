@@ -156,6 +156,8 @@ class ScanTabReq {
   static void setTTLOnlyExpiredFlag(Uint32 &requestInfo, Uint32 val);
   static void setParallelOrderedScanFlag(Uint32 &requestInfo, Uint32 val);
   static void setUserIdFlag(Uint32 &requestInfo, Uint32 val);
+  static Uint8 getJoinAggFlag(const UintR &requestInfo);
+  static void setJoinAggFlag(UintR &requestInfo, Uint32 val);
 };
 
 /**
@@ -165,6 +167,7 @@ class ScanTabReq {
                                         Note: these bits are ignored since
                                         7.0.34, 7.1.23, 7.2.7 and should be
                                         zero-filled until future reuse.
+ J = JoinAgg flag          - 1  Bit 1   Pushdown join aggregation query
  g = Aggregation           - 1  Bit 7   reuse the highest bit of Parallelism
  P = Pass queue flag       - 1  Bit 6   Signal sent from DBTC, queued request
 
@@ -249,6 +252,8 @@ class ScanTabReq {
 #define SCAN_TTL_ONLY_EXPIRED_SHIFT (4)
 
 #define SCAN_USER_ID_SHIFT     (5)
+
+#define SCAN_JOIN_AGG_SHIFT    (1)
 
 inline Uint8 ScanTabReq::getReadCommittedBaseFlag(const UintR &requestInfo) {
   return (Uint8)((requestInfo >> SCAN_READ_COMMITTED_BASE_SHIFT) & 1);
@@ -490,6 +495,16 @@ ScanTabReq::setUserIdFlag(UintR & requestInfo, Uint32 flag) {
   ASSERT_BOOL(flag, "TcKeyReq::setUserIdFlag");
   requestInfo= (requestInfo & ~(1 << SCAN_USER_ID_SHIFT)) |
                (flag << SCAN_USER_ID_SHIFT);
+}
+
+inline Uint8 ScanTabReq::getJoinAggFlag(const UintR &requestInfo) {
+  return (Uint8)((requestInfo >> SCAN_JOIN_AGG_SHIFT) & 1);
+}
+
+inline void ScanTabReq::setJoinAggFlag(UintR &requestInfo, Uint32 val) {
+  ASSERT_BOOL(val, "ScanTabReq::setJoinAggFlag");
+  requestInfo = (requestInfo & ~(Uint32(1) << SCAN_JOIN_AGG_SHIFT)) |
+                (val << SCAN_JOIN_AGG_SHIFT);
 }
 
 /**

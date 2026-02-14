@@ -76,6 +76,7 @@
 #include <signaldata/TransIdAI.hpp>
 #include <signaldata/TrigAttrInfo.hpp>
 #include <signaldata/SetDomainId.hpp>
+#include <signaldata/JoinAgg.hpp>
 
 #include <AttributeDescriptor.hpp>
 #include <AttributeHeader.hpp>
@@ -16048,6 +16049,13 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
     if (keyLen) {
       jamDebug();
       scanptr.p->scanKeyInfoPtr = handle.m_ptr[ScanTabReq::KeyInfoSectionNum].i;
+      if (ScanTabReq::getJoinAggFlag(ri)) {
+        jam();
+        scanptr.p->m_joinAgg = true;
+        scanptr.p->m_aggProgramPtrI =
+            handle.m_ptr[ScanTabReq::KeyInfoSectionNum].i;
+        scanptr.p->scanKeyInfoPtr = RNIL;
+      }
     }
   } else {
     jam();
@@ -16251,6 +16259,11 @@ Uint32 Dbtc::initScanrec(ScanRecordPtr scanptr, const ScanTabReq *scanTabReq,
   scanptr.p->m_scan_block_no = DBLQH;
   scanptr.p->m_scan_dist_key_flag = 0;
   scanptr.p->m_start_ticks = getHighResTimer();
+  scanptr.p->m_aggProgramPtrI = RNIL;
+  scanptr.p->m_aggKeysSectionPtrI = RNIL;
+  scanptr.p->m_joinAgg = false;
+  scanptr.p->m_aggNodes.clear();
+  scanptr.p->m_aggNodesOutstanding = 0;
 
   DEB_SCAN_MANY(("(%u) SCAN_TABREQ, batch_size: %u",
     instance(), scanptr.p->batch_size_rows));
@@ -16270,6 +16283,7 @@ Uint32 Dbtc::initScanrec(ScanRecordPtr scanptr, const ScanTabReq *scanTabReq,
   ScanFragReq::setTTLOnlyExpiredFragFlag(tmp,
                       ScanTabReq::getTTLOnlyExpiredFlag(ri));
   ScanFragReq::setParallelOrderedScanFlag(tmp, par_ordered_scan_flag);
+  ScanFragReq::setJoinAggFlag(tmp, ScanTabReq::getJoinAggFlag(ri));
 
   if (unlikely(ScanTabReq::getViaSPJFlag(ri))) {
     jam();
@@ -16814,7 +16828,13 @@ void Dbtc::sendDihGetNodesLab(Signal *signal, ScanRecordPtr scanptr,
 
   /* Start sending SCAN_FRAGREQ's, possibly interrupted with CONTINUEB */
   scanP->scanNextFragId = 0;
-  sendFragScansLab(signal, scanptr, apiConnectptr);
+  if (scanP->m_joinAgg) {
+    jam();
+    scanP->scanState = ScanRecord::WAIT_JOIN_AGG_SETUP;
+    sendJoinAggSetupReqs(signal, scanptr, apiConnectptr);
+  } else {
+    sendFragScansLab(signal, scanptr, apiConnectptr);
+  }
 }  // Dbtc::sendDihGetNodesLab
 
 /******************************************************
@@ -16900,6 +16920,15 @@ void Dbtc::releaseScanResources(Signal *signal, ScanRecordPtr scanPtr,
   if (scanPtr.p->scanAttrInfoPtr != RNIL) {
     releaseSection(scanPtr.p->scanAttrInfoPtr);
     scanPtr.p->scanAttrInfoPtr = RNIL;
+  }
+
+  if (scanPtr.p->m_aggProgramPtrI != RNIL) {
+    releaseSection(scanPtr.p->m_aggProgramPtrI);
+    scanPtr.p->m_aggProgramPtrI = RNIL;
+  }
+  if (scanPtr.p->m_aggKeysSectionPtrI != RNIL) {
+    releaseSection(scanPtr.p->m_aggKeysSectionPtrI);
+    scanPtr.p->m_aggKeysSectionPtrI = RNIL;
   }
 
   ndbrequire(scanPtr.p->m_running_scan_frags.isEmpty());
@@ -28271,4 +28300,142 @@ void Dbtc::debug_db_no_queue(DatabaseRecordPtr databaseRecordPtr,
               regApiPtr->transid[0],
               regApiPtr->transid[1]));
   }
+}
+
+// Join aggregation orchestration (Phase 7)
+
+void Dbtc::sendJoinAggSetupReqs(Signal *signal, ScanRecordPtr scanptr,
+                                ApiConnectRecordPtr apiConnectptr) {
+  scanptr.p->m_aggNodes.clear();
+  scanptr.p->m_aggNodesOutstanding = 0;
+
+  for (Uint32 nodeId = 1; nodeId < MAX_NDB_NODES; nodeId++) {
+    if (!getNodeInfo(nodeId).m_connected) continue;
+    if (getNodeInfo(nodeId).m_type != NodeInfo::DB) continue;
+
+    JoinAggSetupReq *req = (JoinAggSetupReq *)signal->getDataPtrSend();
+    req->senderRef = reference();
+    req->senderData = scanptr.i;
+    req->requestId = scanptr.p->scanApiRec;
+    req->transid[0] = apiConnectptr.p->transid[0];
+    req->transid[1] = apiConnectptr.p->transid[1];
+    req->tableId = scanptr.p->scanTableref;
+    req->expectedOpCount = 0;
+    req->concurrencyStrategy = JoinAggSetupReq::STRATEGY_MUTEX_FREE;
+    req->resultRef = apiConnectptr.p->ndbapiBlockref;
+    req->resultData = apiConnectptr.p->ndbapiConnect;
+    req->routeRef = reference();
+
+    SectionHandle handle(this);
+    Uint32 aggPtrI = RNIL;
+    ndbrequire(dupSection(aggPtrI, scanptr.p->m_aggProgramPtrI));
+    getSection(handle.m_ptr[0], aggPtrI);
+    handle.m_cnt = 1;
+
+    Uint32 ref = numberToRef(DBLQH, nodeId);
+    sendSignal(ref, GSN_JOIN_AGG_SETUP_REQ, signal,
+               JoinAggSetupReq::SignalLength, JBB, &handle);
+    scanptr.p->m_aggNodes.set(nodeId);
+    scanptr.p->m_aggNodesOutstanding++;
+  }
+
+  if (scanptr.p->m_aggNodesOutstanding == 0) {
+    jam();
+    abortScanLab(signal, scanptr, ZGET_DATAREC_ERROR, true, apiConnectptr);
+  }
+}
+
+void Dbtc::execJOIN_AGG_SETUP_CONF(Signal *signal) {
+  jamEntry();
+  const JoinAggSetupConf *conf =
+      (const JoinAggSetupConf *)signal->getDataPtr();
+
+  ScanRecordPtr scanptr;
+  scanptr.i = conf->senderData;
+  scanRecordPool.getPtr(scanptr);
+
+  if (scanptr.p->scanState == ScanRecord::CLOSING_SCAN) {
+    jam();
+    return;
+  }
+  ndbrequire(scanptr.p->scanState == ScanRecord::WAIT_JOIN_AGG_SETUP);
+
+  Uint32 nodeId = refToNode(conf->senderRef);
+  scanptr.p->m_aggStateKeys[nodeId] = conf->aggStateKey;
+  scanptr.p->m_aggNodesOutstanding--;
+
+  if (scanptr.p->m_aggNodesOutstanding == 0) {
+    jam();
+    Uint32 keyData[ABS_MAX_NDB_NODES * 2];
+    Uint32 idx = 0;
+    NdbNodeBitmask nodes = scanptr.p->m_aggNodes;
+    for (Uint32 nid = nodes.find_first();
+         nid != NdbNodeBitmask::NotFound;
+         nid = nodes.find_next(nid + 1)) {
+      keyData[idx++] = nid;
+      keyData[idx++] = scanptr.p->m_aggStateKeys[nid];
+    }
+    scanptr.p->m_aggKeysSectionPtrI = RNIL;
+    ndbrequire(appendToSection(
+        scanptr.p->m_aggKeysSectionPtrI, keyData, idx));
+
+    scanptr.p->scanState = ScanRecord::RUNNING;
+    ApiConnectRecordPtr apiConnectptr;
+    apiConnectptr.i = scanptr.p->scanApiRec;
+    c_apiConnectRecordPool.getPtr(apiConnectptr);
+    sendFragScansLab(signal, scanptr, apiConnectptr);
+  }
+}
+
+void Dbtc::execJOIN_AGG_SETUP_REF(Signal *signal) {
+  jamEntry();
+  const JoinAggSetupRef *ref =
+      (const JoinAggSetupRef *)signal->getDataPtr();
+
+  ScanRecordPtr scanptr;
+  scanptr.i = ref->senderData;
+  scanRecordPool.getPtr(scanptr);
+
+  Uint32 nodeId = refToNode(ref->senderRef);
+  scanptr.p->m_aggNodes.clear(nodeId);
+  scanptr.p->m_aggNodesOutstanding--;
+
+  ApiConnectRecordPtr apiConnectptr;
+  apiConnectptr.i = scanptr.p->scanApiRec;
+  c_apiConnectRecordPool.getPtr(apiConnectptr);
+
+  sendJoinAggReleaseReqs(signal, scanptr);
+  abortScanLab(signal, scanptr, ref->errorCode, true, apiConnectptr);
+}
+
+void Dbtc::execJOIN_AGG_COMPLETE_CONF(Signal *signal) { jamEntry(); }
+void Dbtc::execJOIN_AGG_COMPLETE_REF(Signal *signal) { jamEntry(); }
+void Dbtc::execJOIN_AGG_RELEASE_CONF(Signal *signal) { jamEntry(); }
+void Dbtc::execJOIN_AGG_SEND_REQ(Signal *signal) { jamEntry(); }
+void Dbtc::sendJoinAggCompleteReqs(Signal *, ScanRecordPtr) {}
+
+void Dbtc::sendJoinAggReleaseReqs(Signal *signal, ScanRecordPtr scanptr) {
+  NdbNodeBitmask nodes = scanptr.p->m_aggNodes;
+  for (Uint32 nodeId = nodes.find_first();
+       nodeId != NdbNodeBitmask::NotFound;
+       nodeId = nodes.find_next(nodeId + 1)) {
+    JoinAggReleaseReq *req =
+        (JoinAggReleaseReq *)signal->getDataPtrSend();
+    req->senderRef = reference();
+    req->senderData = scanptr.i;
+    req->requestId = scanptr.p->scanApiRec;
+
+    ApiConnectRecordPtr apiPtr;
+    apiPtr.i = scanptr.p->scanApiRec;
+    c_apiConnectRecordPool.getPtr(apiPtr);
+    req->transid[0] = apiPtr.p->transid[0];
+    req->transid[1] = apiPtr.p->transid[1];
+
+    req->aggStateKey = scanptr.p->m_aggStateKeys[nodeId];
+
+    Uint32 ref = numberToRef(DBLQH, nodeId);
+    sendSignal(ref, GSN_JOIN_AGG_RELEASE_REQ, signal,
+               JoinAggReleaseReq::SignalLength, JBB);
+  }
+  scanptr.p->m_aggNodes.clear();
 }
