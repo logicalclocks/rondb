@@ -16930,6 +16930,10 @@ void Dbtc::releaseScanResources(Signal *signal, ScanRecordPtr scanPtr,
     releaseSection(scanPtr.p->m_aggKeysSectionPtrI);
     scanPtr.p->m_aggKeysSectionPtrI = RNIL;
   }
+  if (scanPtr.p->m_joinAgg && !scanPtr.p->m_aggNodes.isclear()) {
+    jam();
+    sendJoinAggReleaseReqs(signal, scanPtr);
+  }
 
   ndbrequire(scanPtr.p->m_running_scan_frags.isEmpty());
   ndbrequire(scanPtr.p->m_queued_scan_frags.isEmpty());
