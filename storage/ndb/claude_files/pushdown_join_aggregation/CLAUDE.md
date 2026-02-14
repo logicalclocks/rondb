@@ -7,9 +7,13 @@ DBLQH (DataBase Local Query Handler) handles scan and key operations on data nod
 DBLQH supports aggregation for pushdown join queries, allowing aggregation to be
 pushed down to data nodes so intermediate results don't round-trip to the API.
 
-### Documentation
-- `PUSHDOWN_JOIN_AGGREGATION.md` — Architecture overview and signal flow
-- `PUSHDOWN_JOIN_AGGREGATION_IMPL.md` — Implementation plan with code-level detail
+### Documentation (in this directory)
+- `local_database_research.md` — Local database (DBLQH/DBTUP) research
+- `local_database_implementation.md` — Local database implementation details
+- `coordinator.md` — DBSPJ coordinator design
+- `coordinator_research.md` — DBSPJ coordinator research
+- `coordinator_implementation.md` — DBSPJ coordinator implementation details
+- `trace_file_analysis.md` — NDB trace/crash log analysis guide
 
 ### Key Source Files
 - `DblqhMain.cpp` — Signal handlers for JOIN_AGG_SETUP/COMPLETE/RELEASE, scan processing, sendScanFragConf
@@ -58,3 +62,40 @@ Both are guarded by `#if defined(VM_TRACE) || defined(ERROR_INSERT)`.
   ndbd_support_xxx() checks in ndb_version.h.in for backward compatibility
 - **Batch counter save-before-reset**: In sendScanFragConf, save counters to locals
   before the batch reset block, since reset happens before signal population
+
+### Debug Trace Macros (DEB_XXX Pattern)
+
+NDB kernel blocks use a consistent pattern for conditional debug logging:
+
+```cpp
+// 1. The #define DEBUG_XXX is inside the VM_TRACE/ERROR_INSERT guard
+//    to ensure it can never be accidentally enabled in production builds.
+#if (defined(VM_TRACE) || defined(ERROR_INSERT))
+//#define DEBUG_AGG 1
+#endif
+
+// 2. The DEB_XXX macro is always defined (empty in non-debug),
+//    so call sites compile in all builds without #ifdef wrappers.
+#ifdef DEBUG_AGG
+#define DEB_AGG(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_AGG(arglist) do { } while (0)
+#endif
+```
+
+Usage: `DEB_AGG(("format string %u", value));` — note the **double parentheses**
+(outer for macro, inner for function call in the arglist expansion).
+
+To enable: uncomment `#define DEBUG_AGG 1` and rebuild. Only works in debug
+builds (VM_TRACE or ERROR_INSERT defined).
+
+**Important**: Do NOT use `g_eventLogger->debug(...)` for debug tracing — it
+requires special runtime configuration to produce output. Use the DEB_XXX
+pattern instead for developer-activated trace output.
+
+Similar patterns in the codebase:
+- `DEB_CONT_SCAN` / `DEBUG_CONT_SCAN` — DblqhMain.cpp, DbtcMain.cpp, DbtupBuffer.cpp
+- `DEB_TRANSID_AI` / `DEBUG_TRANSID_AI` — DbtupBuffer.cpp
+- `DEB_RATE_QUEUE_DROP` / `DEBUG_RATE_QUEUE_DROP` — DbtcMain.cpp
+- `DEB_AGG` / `DEBUG_AGG` — AggInterpreter.cpp
+- `PA_INTERP_TRACE` / `DEBUG_PA_INTERP` — AggInterpreter.cpp (partition-filtered variant)

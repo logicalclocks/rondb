@@ -115,9 +115,19 @@ GBHashEntryCmp::operator()(const GBHashEntry &n1,
  * Turn on the DEBUG_PA_INTERP
  * to trace AggInterpreter on partition DEBUG_PA_INTERP_PART_ID
  */
+#if (defined(VM_TRACE) || defined(ERROR_INSERT))
 #undef DEBUG_PA_INTERP
 // #define DEBUG_PA_INTERP 1
 #define DEBUG_PA_INTERP_PART_ID 0
+//#define DEBUG_AGG 1
+#endif
+
+#ifdef DEBUG_AGG
+#define DEB_AGG(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_AGG(arglist) do { } while (0)
+#endif
+
 #ifdef DEBUG_PA_INTERP
 #define PA_INTERP_TRACE(part_id, format, ...) \
   do {\
@@ -1400,8 +1410,8 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
   // assert(inited_);
   // assert(req_struct->read_length == 0);
   if (!inited_ || req_struct->read_length != 0) {
-    g_eventLogger->debug("AggInterpreter::ProcessRec error, inited: %d, read_length: %u",
-            inited_, req_struct->read_length);
+    DEB_AGG(("AggInterpreter::ProcessRec error, inited: %d, read_length: %u",
+            inited_, req_struct->read_length));
     return ZAGG_OTHER_ERROR;
   }
 
@@ -1512,8 +1522,8 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
           p += 1 + AttributeHeader::getDataSize(*p);
         }
         if (p >= p_end) {
-          g_eventLogger->debug(
-              "Linked GROUP BY attr %u not found in buffer", real_attr_id);
+          DEB_AGG(("Linked GROUP BY attr %u not found in buffer",
+              real_attr_id));
           return ZAGG_OTHER_ERROR;
         }
         Uint32 words = 1 + AttributeHeader::getDataSize(*p);
@@ -1523,9 +1533,8 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
       } else {
         int ret = block_tup->readAttributes(req_struct, &(gb_cols_[i]), 1,
                       buf_ + buf_pos_, g_buf_len_ - buf_pos_);
-        // assert(ret >= 0);
         if (ret < 0) {
-          g_eventLogger->debug("read group by column error: %d", ret);
+          DEB_AGG(("read group by column error: %d", ret));
           return -ret;
         }
         header = reinterpret_cast<AttributeHeader*>(buf_ + buf_pos_);
@@ -1658,9 +1667,8 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
 
         ret = RegPlusReg(registers_[reg_index], registers_[reg_index2],
                   &registers_[reg_index]);
-        // assert(ret >= 0);
         if (ret < 0) {
-          g_eventLogger->debug("Overflow[PLUS], value is out of range");
+          DEB_AGG(("Overflow[PLUS], value is out of range"));
           return ZAGG_MATH_OVERFLOW;
         }
         break;
@@ -1670,9 +1678,8 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
 
         ret = RegMinusReg(registers_[reg_index], registers_[reg_index2],
                   &registers_[reg_index]);
-        // assert(ret >= 0);
         if (ret < 0) {
-          g_eventLogger->debug("Overflow[MINUS], value is out of range");
+          DEB_AGG(("Overflow[MINUS], value is out of range"));
           return ZAGG_MATH_OVERFLOW;
         }
         break;
@@ -1682,9 +1689,8 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
 
         ret = RegMulReg(registers_[reg_index], registers_[reg_index2],
                   &registers_[reg_index]);
-        // assert(ret >= 0);
         if (ret < 0) {
-          g_eventLogger->debug("Overflow[MUL], value is out of range");
+          DEB_AGG(("Overflow[MUL], value is out of range"));
           return ZAGG_MATH_OVERFLOW;
         }
         break;
@@ -1694,9 +1700,8 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
 
         ret = RegDivReg(registers_[reg_index], registers_[reg_index2],
                   &registers_[reg_index], false);
-        // assert(ret >= 0);
         if (ret < 0) {
-          g_eventLogger->debug("Overflow[DIV], value is out of range");
+          DEB_AGG(("Overflow[DIV], value is out of range"));
           return ZAGG_MATH_OVERFLOW;
         }
         break;
@@ -1706,9 +1711,8 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
 
         ret = RegDivReg(registers_[reg_index], registers_[reg_index2],
                   &registers_[reg_index], true);
-        // assert(ret >= 0);
         if (ret < 0) {
-          g_eventLogger->debug("Overflow[DIVINT], value is out of range");
+          DEB_AGG(("Overflow[DIVINT], value is out of range"));
           return ZAGG_MATH_OVERFLOW;
         }
         break;
@@ -1718,9 +1722,8 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
 
         ret = RegModReg(registers_[reg_index], registers_[reg_index2],
                   &registers_[reg_index]);
-        // assert(ret >= 0);
         if (ret < 0) {
-          g_eventLogger->debug("Overflow[MOD], value is out of range");
+          DEB_AGG(("Overflow[MOD], value is out of range"));
           return ZAGG_MATH_OVERFLOW;
         }
         break;
@@ -1732,7 +1735,7 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
         ret = RegPlusBigint(registers_[reg_index], registers_[reg_index2],
                   &registers_[reg_index]);
         if (ret < 0) {
-          g_eventLogger->debug("Overflow[PlusBigint], value is out of range");
+          DEB_AGG(("Overflow[PlusBigint], value is out of range"));
           return ZAGG_MATH_OVERFLOW;
         }
         break;
@@ -1743,7 +1746,7 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
         ret = RegPlusDouble(registers_[reg_index], registers_[reg_index2],
                   &registers_[reg_index]);
         if (ret < 0) {
-          g_eventLogger->debug("Overflow[PlusDouble], value is out of range");
+          DEB_AGG(("Overflow[PlusDouble], value is out of range"));
           return ZAGG_MATH_OVERFLOW;
         }
         break;
@@ -1755,7 +1758,7 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
         ret = RegMinusBigint(registers_[reg_index], registers_[reg_index2],
                   &registers_[reg_index]);
         if (ret < 0) {
-          g_eventLogger->debug("Overflow[MinusBigint], value is out of range");
+          DEB_AGG(("Overflow[MinusBigint], value is out of range"));
           return ZAGG_MATH_OVERFLOW;
         }
         break;
@@ -1766,7 +1769,7 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
         ret = RegMinusDouble(registers_[reg_index], registers_[reg_index2],
                   &registers_[reg_index]);
         if (ret < 0) {
-          g_eventLogger->debug("Overflow[MinusDouble], value is out of range");
+          DEB_AGG(("Overflow[MinusDouble], value is out of range"));
           return ZAGG_MATH_OVERFLOW;
         }
         break;
@@ -1778,7 +1781,7 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
         ret = RegMulBigint(registers_[reg_index], registers_[reg_index2],
                   &registers_[reg_index]);
         if (ret < 0) {
-          g_eventLogger->debug("Overflow[MulBigint], value is out of range");
+          DEB_AGG(("Overflow[MulBigint], value is out of range"));
           return ZAGG_MATH_OVERFLOW;
         }
         break;
@@ -1789,7 +1792,7 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
         ret = RegMulDouble(registers_[reg_index], registers_[reg_index2],
                   &registers_[reg_index]);
         if (ret < 0) {
-          g_eventLogger->debug("Overflow[MulDouble], value is out of range");
+          DEB_AGG(("Overflow[MulDouble], value is out of range"));
           return ZAGG_MATH_OVERFLOW;
         }
         break;
@@ -1801,7 +1804,7 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
         ret = RegDivDouble(registers_[reg_index], registers_[reg_index2],
                   &registers_[reg_index]);
         if (ret < 0) {
-          g_eventLogger->debug("Overflow[DivDouble], value is out of range");
+          DEB_AGG(("Overflow[DivDouble], value is out of range"));
           return ZAGG_MATH_OVERFLOW;
         }
         break;
@@ -1812,7 +1815,7 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
         ret = RegDivIntBigint(registers_[reg_index], registers_[reg_index2],
                   &registers_[reg_index]);
         if (ret < 0) {
-          g_eventLogger->debug("Overflow[DivIntBigint], value is out of range");
+          DEB_AGG(("Overflow[DivIntBigint], value is out of range"));
           return ZAGG_MATH_OVERFLOW;
         }
         break;
@@ -1837,8 +1840,7 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
               p += 1 + AttributeHeader::getDataSize(*p);
             }
             if (p >= p_end) {
-              g_eventLogger->debug(
-                  "Linked attr %u not found in buffer", attr_id);
+              DEB_AGG(("Linked attr %u not found in buffer", attr_id));
               return ZAGG_OTHER_ERROR;
             }
             Uint32 words = 1 + AttributeHeader::getDataSize(*p);
@@ -1849,9 +1851,8 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
             col_index = col_id_raw << 16;
             ret = block_tup->readAttributes(req_struct, &(col_index), 1,
                       buf_ + buf_pos_, g_buf_len_ - buf_pos_);
-            // assert(ret >= 0);
             if (ret < 0) {
-              g_eventLogger->debug("read column error: %d", ret);
+              DEB_AGG(("read column error: %d", ret));
               return -ret;
             }
             header = reinterpret_cast<AttributeHeader*>(buf_ + buf_pos_);
@@ -1861,9 +1862,8 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
             assert(type == AttributeDescriptor::getType(attrDescriptor[0]));
           }
         }
-        // assert(TypeSupported(type));
         if (!TypeSupported(type)) {
-          g_eventLogger->debug("Unsupported column type: %u", type);
+          DEB_AGG(("Unsupported column type: %u", type));
           return ZAGG_COL_TYPE_UNSUPPORTED;
         }
 
@@ -1987,7 +1987,6 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
             // memset(decimal.buf, 0, sizeof(Int32) * DECIMAL_BUFF_LENGTH);
             dec_ret = bin2decimal(reinterpret_cast<const uchar*>(&buf_[buf_pos_ + 1]),
                       &decimal_, precision, scale);
-            // assert(dec_ret == E_DEC_OK);
             if (dec_ret != E_DEC_OK) {
               dec_buf_ptr = reinterpret_cast<Uint8*>(&buf_[buf_pos_ + 1]);
               char log_buf[128];
@@ -1996,7 +1995,7 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
                   i < header->getByteSize(); i++) {
                 sprintf(log_buf + strlen(log_buf), "%x ", *(dec_buf_ptr + i));
               }
-              g_eventLogger->debug("%s", log_buf);
+              DEB_AGG(("%s", log_buf));
               if (dec_ret == E_DEC_OVERFLOW) {
                 return ZAGG_DECIMAL_PARSE_OVERFLOW;
               } else {
@@ -2017,7 +2016,6 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
               dec_ret = decimal2longlong(&decimal_, &dec_val_ll);
               registers_[reg_index].value.val_int64 = dec_val_ll;
             }
-            // assert(dec_ret == E_DEC_OK);
             if (dec_ret != E_DEC_OK) {
               dec_buf_ptr = reinterpret_cast<Uint8*>(&buf_[buf_pos_ + 1]);
               char log_buf[128];
@@ -2026,7 +2024,7 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
                   i < header->getByteSize(); i++) {
                 sprintf(log_buf + strlen(log_buf), "%x ", *(dec_buf_ptr + i));
               }
-              g_eventLogger->debug("%s", log_buf);
+              DEB_AGG(("%s", log_buf));
               if (dec_ret == E_DEC_OVERFLOW) {
                 return ZAGG_DECIMAL_CONV_OVERFLOW;
               } else {
@@ -2051,7 +2049,6 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
             // memset(decimal.buf, 0, sizeof(Int32) * DECIMAL_BUFF_LENGTH);
             dec_ret = bin2decimal(reinterpret_cast<const uchar*>(&buf_[buf_pos_ + 1]),
                       &decimal_, precision, scale);
-            // assert(dec_ret == E_DEC_OK);
             if (dec_ret != E_DEC_OK) {
               dec_buf_ptr = reinterpret_cast<Uint8*>(&buf_[buf_pos_ + 1]);
               char log_buf[128];
@@ -2060,7 +2057,7 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
                   i < header->getByteSize(); i++) {
                 sprintf(log_buf + strlen(log_buf), "%x ", *(dec_buf_ptr + i));
               }
-              g_eventLogger->debug("%s", log_buf);
+              DEB_AGG(("%s", log_buf));
               if (dec_ret == E_DEC_OVERFLOW) {
                 return ZAGG_DECIMAL_PARSE_OVERFLOW;
               } else {
@@ -2084,7 +2081,6 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
               dec_ret = decimal2ulonglong(&decimal_, &dec_val_ull);
               registers_[reg_index].value.val_uint64 = dec_val_ull;
             }
-            // assert(dec_ret == E_DEC_OK);
             if (dec_ret != E_DEC_OK) {
               dec_buf_ptr = reinterpret_cast<Uint8*>(&buf_[buf_pos_ + 1]);
               char log_buf[128];
@@ -2093,7 +2089,7 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
                   i < header->getByteSize(); i++) {
                 sprintf(log_buf + strlen(log_buf), "%x ", *(dec_buf_ptr + i));
               }
-              g_eventLogger->debug("%s", log_buf);
+              DEB_AGG(("%s", log_buf));
               if (dec_ret == E_DEC_OVERFLOW) {
                 return ZAGG_DECIMAL_CONV_OVERFLOW;
               } else {
@@ -2114,7 +2110,6 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
           break;
 
           default:
-            // assert(0);
             return ZAGG_LOAD_COL_WRONG_TYPE;
         }
         break;
@@ -2157,7 +2152,6 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
                               reg_index, registers_[reg_index].value.val_double);
             break;
           default:
-            // assert(0);
             return ZAGG_LOAD_CONST_WRONG_TYPE;
         }
         exec_pos += 2;
@@ -2176,9 +2170,8 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
         agg_index = (value & 0x0000FFFF);
 
         ret = Sum(registers_[reg_index], &agg_res_ptr[agg_index], debug_print);
-        // assert(ret >= 0);
         if (ret < 0) {
-          g_eventLogger->debug("Overflow[SUM], value is out of range");
+          DEB_AGG(("Overflow[SUM], value is out of range"));
           return ZAGG_MATH_OVERFLOW;
         }
         break;
@@ -2187,21 +2180,18 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
         agg_index = (value & 0x0000FFFF);
 
         ret = Max(registers_[reg_index], &agg_res_ptr[agg_index], debug_print);
-        // assert(ret >= 0);
         break;
       case kOpMin:
         reg_index = (value & 0x000F0000) >> 16;
         agg_index = (value & 0x0000FFFF);
 
         ret = Min(registers_[reg_index], &agg_res_ptr[agg_index], debug_print);
-        // assert(ret >= 0);
         break;
       case kOpCount:
         reg_index = (value & 0x000F0000) >> 16;
         agg_index = (value & 0x0000FFFF);
 
         ret = Count(registers_[reg_index], &agg_res_ptr[agg_index], debug_print);
-        // assert(ret >= 0);
         break;
 
       // Type-specific Sum operations
@@ -2210,7 +2200,7 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
         agg_index = (value & 0x0000FFFF);
         ret = SumBigint(registers_[reg_index], &agg_res_ptr[agg_index], debug_print);
         if (ret < 0) {
-          g_eventLogger->debug("Overflow[SumBigint], value is out of range");
+          DEB_AGG(("Overflow[SumBigint], value is out of range"));
           return ZAGG_MATH_OVERFLOW;
         }
         break;
@@ -2220,7 +2210,7 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
         agg_index = (value & 0x0000FFFF);
         ret = SumDouble(registers_[reg_index], &agg_res_ptr[agg_index], debug_print);
         if (ret < 0) {
-          g_eventLogger->debug("Overflow[SumDouble], value is out of range");
+          DEB_AGG(("Overflow[SumDouble], value is out of range"));
           return ZAGG_MATH_OVERFLOW;
         }
         break;
@@ -2262,6 +2252,7 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
       {
         Uint32 emb_len = value & 0xFFFF;
         if (exec_pos + emb_len > prog_len_) {
+          DEB_AGG(("embedded interp len overflow"));
           return ZAGG_OTHER_ERROR;
         }
 
@@ -2291,7 +2282,6 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
       }
 
       default:
-        // assert(0);
         return ZAGG_WRONG_OPERATION;
     }
   }

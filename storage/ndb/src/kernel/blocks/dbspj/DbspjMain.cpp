@@ -5316,8 +5316,47 @@ void Dbspj::lookup_parent_row(Signal *signal, Ptr<Request> requestPtr,
     Uint32 attrInfoPtrI = treeNodePtr.p->m_send.m_attrInfoPtrI;
     if (treeNodePtr.p->m_bits & TreeNode::T_ATTRINFO_CONSTRUCTED) {
       jam();
-      // Need to build a modified attrInfo, extended with a parameter
-      // build with the 'attrParamPattern' applied to the parent rowRef
+      /**
+       * T_ATTRINFO_CONSTRUCTED — runtime expansion of linked parent data.
+       *
+       * When a child operation has NI_ATTR_LINKED set in the QueryTree,
+       * the base attrInfo (built at setup time in OPTIONAL PART 3) contains
+       * a 5-word interpreter header and possibly an ExitOK instruction, but
+       * the linked parent data is only available at runtime when the parent
+       * row arrives.
+       *
+       * This block duplicates the base attrInfo, appends a paramLen
+       * placeholder word, then expands the m_attrParamPattern (built from
+       * P_ATTRINFO entries in the QueryTree) using the parent row values.
+       * The P_ATTRINFO pattern copies AttributeHeader + data for each
+       * linked attribute from the parent's linked-attr list.
+       *
+       * After expansion, paramLen = new_size - org_size, which includes the
+       * paramLen word itself plus all expanded attribute data.  This value
+       * is written back into the section at position org_size AND into
+       * sectionptrs[4] (the subRoutineLen field of the 5-word interpreter
+       * header).
+       *
+       * The resulting attrInfo layout sent in LQHKEYREQ to DBLQH:
+       *
+       *   cinBuffer[0] = initReadLen      (0 for join-agg-only operations)
+       *   cinBuffer[1] = interpretLen     (1 for ExitOK)
+       *   cinBuffer[2] = finalUpdateLen   (0)
+       *   cinBuffer[3] = finalReadLen     (0)
+       *   cinBuffer[4] = subRoutineLen    (= paramLen = 1 + expand_words)
+       *   cinBuffer[5] = ExitOK instruction
+       *   --- subroutine section starts here ---
+       *   cinBuffer[6] = paramLen value   (redundant copy)
+       *   cinBuffer[7] = AttributeHeader(attrId, dataSize) for linked col
+       *   cinBuffer[8..] = column data (padded to word boundary)
+       *
+       * DBTUP's interpreter extracts the subroutine section starting at
+       * cinBuffer[5 + initReadLen + interpretLen + finalUpdateLen + finalReadLen]
+       * = cinBuffer[6].  Since cinBuffer[6] is the paramLen word (not actual
+       * linked data), DBTUP must skip it: linked_data = sub_start + 1,
+       * linked_len = RsubLen - 1.  The AggInterpreter then scans linked_data
+       * for AttributeHeaders matching LINKED_COL_FLAG column references.
+       */
       DEBUG("parent_row w/ T_ATTRINFO_CONSTRUCTED");
       Uint32 tmp = RNIL;
 

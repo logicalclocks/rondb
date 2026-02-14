@@ -5456,10 +5456,17 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
         return 0;
       } else if (req_struct->m_join_agg_state_key != RNIL) {
         jamDebug();
-        const Uint32 *linked_data = (RsubLen > 0) ?
-            &cinBuffer[5 + cinBuffer[0] + cinBuffer[1] +
-                        cinBuffer[2] + cinBuffer[3]] : nullptr;
-        int res = handleJoinAggRow(req_struct, linked_data, RsubLen);
+        const Uint32 *linked_data = nullptr;
+        Uint32 linked_len = 0;
+        if (RsubLen > 0) {
+          const Uint32 *sub_start =
+              &cinBuffer[5 + cinBuffer[0] + cinBuffer[1] +
+                          cinBuffer[2] + cinBuffer[3]];
+          // Skip the paramLen word prepended by DBSPJ T_ATTRINFO_CONSTRUCTED
+          linked_data = sub_start + 1;
+          linked_len = RsubLen - 1;
+        }
+        int res = handleJoinAggRow(req_struct, linked_data, linked_len);
         if (res != 0) return res;
       } else {
         sendReadAttrinfo(signal, req_struct, RattroutCounter);
@@ -5467,10 +5474,17 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
     } else {
       if (req_struct->m_join_agg_state_key != RNIL) {
         jamDebug();
-        const Uint32 *linked_data = (RsubLen > 0) ?
-            &cinBuffer[5 + cinBuffer[0] + cinBuffer[1] +
-                        cinBuffer[2] + cinBuffer[3]] : nullptr;
-        int res = handleJoinAggRow(req_struct, linked_data, RsubLen);
+        const Uint32 *linked_data = nullptr;
+        Uint32 linked_len = 0;
+        if (RsubLen > 0) {
+          const Uint32 *sub_start =
+              &cinBuffer[5 + cinBuffer[0] + cinBuffer[1] +
+                          cinBuffer[2] + cinBuffer[3]];
+          // Skip the paramLen word prepended by DBSPJ T_ATTRINFO_CONSTRUCTED
+          linked_data = sub_start + 1;
+          linked_len = RsubLen - 1;
+        }
+        int res = handleJoinAggRow(req_struct, linked_data, linked_len);
         if (res != 0) return res;
       } else {
         sendReadAttrinfo(signal, req_struct, RattroutCounter);
