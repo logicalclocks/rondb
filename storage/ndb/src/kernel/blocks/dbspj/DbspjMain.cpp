@@ -1335,6 +1335,23 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
       }
     }
 
+    Uint32 aggKeysPtrI = RNIL;
+    if (ScanFragReq::getJoinAggFlag(req->requestInfo)) {
+      jam();
+      sectionCnt--;
+      aggKeysPtrI = handle.m_ptr[sectionCnt].i;
+      SectionReader reader(aggKeysPtrI, getSectionSegmentPool());
+      Uint32 numPairs = reader.getSize() / 2;
+      for (Uint32 i = 0; i < numPairs; i++) {
+        Uint32 nodeId, aggKey;
+        ndbrequire(reader.getWord(&nodeId));
+        ndbrequire(reader.getWord(&aggKey));
+        ndbrequire(nodeId < ABS_MAX_NDB_NODES);
+        requestPtr.p->m_aggStateKeys[nodeId] = aggKey;
+        requestPtr.p->m_aggNodes.set(nodeId);
+      }
+    }
+
     {
       SectionReader treeReader(attrPtr, getSectionSegmentPool());
       SectionReader paramReader(attrPtr, getSectionSegmentPool());
@@ -1365,6 +1382,7 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
       }
       release(attrPtr);
       releaseSection(fragIdsPtrI);  // MultiFrag list
+      releaseSection(aggKeysPtrI);  // aggStateKeys (no-op if RNIL)
       handle.clear();
     }
 
@@ -1420,6 +1438,7 @@ void Dbspj::do_init(Request *requestP, const ScanFragReq *req,
   requestP->m_rootFragCnt = 0;  // Filled in later
   std::memset(requestP->m_lookup_node_data, 0,
               sizeof(requestP->m_lookup_node_data));
+  requestP->m_aggNodes.clear();
 #ifdef SPJ_TRACE_TIME
   requestP->m_cnt_batches = 0;
   requestP->m_sum_rows = 0;
@@ -4761,6 +4780,16 @@ void Dbspj::lookup_send(Signal *signal, Ptr<Request> requestPtr,
   Uint32 keyInfoPtrI = treeNodePtr.p->m_send.m_keyInfoPtrI;
   Uint32 attrInfoPtrI = treeNodePtr.p->m_send.m_attrInfoPtrI;
 
+  Uint32 agg_extra = 0;
+  if (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) {
+    jam();
+    Uint32 nodeId = refToNode(ref);
+    ndbrequire(requestPtr.p->m_aggNodes.get(nodeId));
+    LqhKeyReq::setJoinAggFlag(req->attrLen, 1);
+    req->variableData[var_index + 4] = requestPtr.p->m_aggStateKeys[nodeId];
+    agg_extra = 1;
+  }
+
   Uint32 err = 0;
 
   do {
@@ -4930,7 +4959,8 @@ void Dbspj::lookup_send(Signal *signal, Ptr<Request> requestPtr,
       }
     }
     sendSignal(ref, GSN_LQHKEYREQ, signal,
-               NDB_ARRAY_SIZE(treeNodePtr.p->m_lookup_data.m_lqhKeyReq) + var_index,
+               NDB_ARRAY_SIZE(treeNodePtr.p->m_lookup_data.m_lqhKeyReq) +
+                   var_index + agg_extra,
                JBB,
                &handle);
 
@@ -9802,7 +9832,9 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
           break;
         }
         sum_read += cnt;
-        treeNodePtr.p->m_bits |= TreeNode::T_EXPECT_TRANSID_AI;
+        if (!(treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF)) {
+          treeNodePtr.p->m_bits |= TreeNode::T_EXPECT_TRANSID_AI;
+        }
 
         // Having a key projection for LINKED child, implies not-LEAF
         treeNodePtr.p->m_bits &= ~(Uint32)TreeNode::T_LEAF;
@@ -9829,7 +9861,9 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
           break;
         }
         sum_read += cnt;
-        treeNodePtr.p->m_bits |= TreeNode::T_EXPECT_TRANSID_AI;
+        if (!(treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF)) {
+          treeNodePtr.p->m_bits |= TreeNode::T_EXPECT_TRANSID_AI;
+        }
       }
 
       if (interpreted) {

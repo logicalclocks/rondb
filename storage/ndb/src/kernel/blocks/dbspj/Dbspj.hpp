@@ -1258,6 +1258,8 @@ class Dbspj : public SimulatedBlock {
     Uint32 m_rows;               // Rows accumulated in current batch
     Uint32 m_outstanding;        // Outstanding signals, when 0, batch is done
     Uint16 m_lookup_node_data[ABS_MAX_NDB_NODES];
+    Uint32 m_aggStateKeys[ABS_MAX_NDB_NODES];
+    NdbNodeBitmask m_aggNodes;
     ArenaHead m_arena;
 
 #ifdef SPJ_TRACE_TIME
