@@ -14,6 +14,7 @@ pushed down to data nodes so intermediate results don't round-trip to the API.
 - `coordinator_research.md` — DBSPJ coordinator research
 - `coordinator_implementation.md` — DBSPJ coordinator implementation details
 - `trace_file_analysis.md` — NDB trace/crash log analysis guide
+- `next_steps.md` — Remaining work: integration tests, NDB API, secondary features
 
 ### Key Source Files
 - `DblqhMain.cpp` — Signal handlers for JOIN_AGG_SETUP/COMPLETE/RELEASE, scan processing, sendScanFragConf
