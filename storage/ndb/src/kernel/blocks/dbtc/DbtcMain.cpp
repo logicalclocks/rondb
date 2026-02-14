@@ -18815,6 +18815,12 @@ void Dbtc::sendScanTabConf(Signal *signal, const ScanRecordPtr scanPtr,
   if (scanPtr.p->m_delivered_scan_frags.isEmpty() &&
       scanPtr.p->m_running_scan_frags.isEmpty()) {
     jam();
+    if (scanPtr.p->m_joinAgg && !scanPtr.p->m_aggNodes.isclear()) {
+      jam();
+      scanPtr.p->scanState = ScanRecord::WAIT_JOIN_AGG_COMPLETE;
+      sendJoinAggCompleteReqs(signal, scanPtr);
+      return;
+    }
     release = true;
     conf->requestInfo = op_count | ScanTabConf::EndOfData;
     DEB_CONT_SCAN(("(%u) TC scanPtr.i: %u, Send EndOfData with op_count: %u",
@@ -28414,11 +28420,98 @@ void Dbtc::execJOIN_AGG_SETUP_REF(Signal *signal) {
   abortScanLab(signal, scanptr, ref->errorCode, true, apiConnectptr);
 }
 
-void Dbtc::execJOIN_AGG_COMPLETE_CONF(Signal *signal) { jamEntry(); }
-void Dbtc::execJOIN_AGG_COMPLETE_REF(Signal *signal) { jamEntry(); }
+void Dbtc::execJOIN_AGG_COMPLETE_CONF(Signal *signal) {
+  jamEntry();
+  const JoinAggCompleteConf *conf =
+      (const JoinAggCompleteConf *)signal->getDataPtr();
+
+  ScanRecordPtr scanptr;
+  scanptr.i = conf->senderData;
+  scanRecordPool.getPtr(scanptr);
+
+  if (scanptr.p->scanState == ScanRecord::CLOSING_SCAN) {
+    jam();
+    return;
+  }
+  ndbrequire(scanptr.p->scanState == ScanRecord::WAIT_JOIN_AGG_COMPLETE);
+
+  scanptr.p->m_aggNodesOutstanding--;
+
+  if (scanptr.p->m_aggNodesOutstanding == 0) {
+    jam();
+    sendJoinAggReleaseReqs(signal, scanptr);
+
+    ApiConnectRecordPtr apiConnectptr;
+    apiConnectptr.i = scanptr.p->scanApiRec;
+    c_apiConnectRecordPool.getPtr(apiConnectptr);
+
+    scanptr.p->scanState = ScanRecord::CLOSING_SCAN;
+    scanptr.p->m_close_scan_req = true;
+    close_scan_req_send_conf(signal, scanptr, apiConnectptr);
+  }
+}
+
+void Dbtc::execJOIN_AGG_COMPLETE_REF(Signal *signal) {
+  jamEntry();
+  const JoinAggCompleteRef *ref =
+      (const JoinAggCompleteRef *)signal->getDataPtr();
+
+  ScanRecordPtr scanptr;
+  scanptr.i = ref->senderData;
+  scanRecordPool.getPtr(scanptr);
+
+  sendJoinAggReleaseReqs(signal, scanptr);
+
+  ApiConnectRecordPtr apiConnectptr;
+  apiConnectptr.i = scanptr.p->scanApiRec;
+  c_apiConnectRecordPool.getPtr(apiConnectptr);
+  abortScanLab(signal, scanptr, ref->errorCode, true, apiConnectptr);
+}
+
 void Dbtc::execJOIN_AGG_RELEASE_CONF(Signal *signal) { jamEntry(); }
-void Dbtc::execJOIN_AGG_SEND_REQ(Signal *signal) { jamEntry(); }
-void Dbtc::sendJoinAggCompleteReqs(Signal *, ScanRecordPtr) {}
+
+void Dbtc::execJOIN_AGG_SEND_REQ(Signal *signal) {
+  jamEntry();
+  const JoinAggSendReq *req =
+      (const JoinAggSendReq *)signal->getDataPtr();
+
+  JoinAggSendConf *conf = (JoinAggSendConf *)signal->getDataPtrSend();
+  conf->senderRef = reference();
+  conf->senderData = req->senderData;
+  conf->requestId = req->requestId;
+  conf->aggStateKey = req->aggStateKey;
+  conf->maxBatchRows = 256;
+  sendSignal(req->senderRef, GSN_JOIN_AGG_SEND_CONF, signal,
+             JoinAggSendConf::SignalLength, JBB);
+}
+
+void Dbtc::sendJoinAggCompleteReqs(Signal *signal, ScanRecordPtr scanptr) {
+  scanptr.p->m_aggNodesOutstanding = 0;
+
+  ApiConnectRecordPtr apiPtr;
+  apiPtr.i = scanptr.p->scanApiRec;
+  c_apiConnectRecordPool.getPtr(apiPtr);
+
+  NdbNodeBitmask nodes = scanptr.p->m_aggNodes;
+  for (Uint32 nodeId = nodes.find_first();
+       nodeId != NdbNodeBitmask::NotFound;
+       nodeId = nodes.find_next(nodeId + 1)) {
+    JoinAggCompleteReq *req =
+        (JoinAggCompleteReq *)signal->getDataPtrSend();
+    req->senderRef = reference();
+    req->senderData = scanptr.i;
+    req->requestId = scanptr.p->scanApiRec;
+    req->transid[0] = apiPtr.p->transid[0];
+    req->transid[1] = apiPtr.p->transid[1];
+    req->aggStateKey = scanptr.p->m_aggStateKeys[nodeId];
+    req->maxBatchRows = 256;
+
+    Uint32 ref = numberToRef(DBLQH, 1, nodeId);
+    sendSignal(ref, GSN_JOIN_AGG_COMPLETE_REQ, signal,
+               JoinAggCompleteReq::SignalLength, JBB);
+    scanptr.p->m_aggNodesOutstanding++;
+  }
+}
 
 void Dbtc::sendJoinAggReleaseReqs(Signal *signal, ScanRecordPtr scanptr) {
   NdbNodeBitmask nodes = scanptr.p->m_aggNodes;
