@@ -75,6 +75,7 @@ static bool verbose = false;
 /* Constants                                                           */
 /* ------------------------------------------------------------------ */
 
+static MYSQL *g_mysql_conn = nullptr;
 static const char *TABLE_NAME = "jagg_test";
 static const Uint32 FAKE_TRANS_ID1 = 0x12345678;
 static const Uint32 FAKE_TRANS_ID2 = 0x87654321;
@@ -1243,6 +1244,103 @@ sendReleaseReq(SignalSender &ss, Uint32 nodeId, Uint32 aggStateKey)
 }
 
 /* ------------------------------------------------------------------ */
+/* SQL verification helpers                                            */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Run a GROUP BY query expecting 2-column result (key, value).
+ * Compare with expected map<Int64, Int64>.
+ */
+static int
+verifySqlGroupByMap(const char *query,
+                    const std::map<Int64, Int64> &expected)
+{
+  if (g_mysql_conn == nullptr) return 0;  /* skip if no MySQL */
+
+  if (mysql_query(g_mysql_conn, query) != 0) {
+    fprintf(stderr, "SQL verify failed: %s\n  query: %s\n",
+            mysql_error(g_mysql_conn), query);
+    return -1;
+  }
+
+  MYSQL_RES *res = mysql_store_result(g_mysql_conn);
+  if (res == nullptr) {
+    fprintf(stderr, "mysql_store_result failed: %s\n",
+            mysql_error(g_mysql_conn));
+    return -1;
+  }
+
+  std::map<Int64, Int64> sqlGroups;
+  MYSQL_ROW row;
+  while ((row = mysql_fetch_row(res)) != nullptr) {
+    if (row[0] == nullptr || row[1] == nullptr) continue;
+    sqlGroups[(Int64)atoll(row[0])] = (Int64)atoll(row[1]);
+  }
+  mysql_free_result(res);
+
+  if (sqlGroups != expected) {
+    fprintf(stderr, "SQL verify mismatch (SQL=%zu groups, expected=%zu)\n",
+            sqlGroups.size(), expected.size());
+    for (const auto &exp : expected) {
+      auto it = sqlGroups.find(exp.first);
+      if (it == sqlGroups.end())
+        fprintf(stderr, "  missing group(%lld)\n", (long long)exp.first);
+      else if (it->second != exp.second)
+        fprintf(stderr, "  group(%lld): SQL=%lld expected=%lld\n",
+                (long long)exp.first, (long long)it->second,
+                (long long)exp.second);
+    }
+    return -1;
+  }
+  V("  SQL verify: %zu groups — matches\n", sqlGroups.size());
+  return 0;
+}
+
+/*
+ * Run a scalar query (no GROUP BY), compare up to 3 Int64 values.
+ */
+static int
+verifySqlScalars(const char *query, const Int64 *expected, Uint32 numCols)
+{
+  if (g_mysql_conn == nullptr) return 0;
+
+  if (mysql_query(g_mysql_conn, query) != 0) {
+    fprintf(stderr, "SQL verify failed: %s\n  query: %s\n",
+            mysql_error(g_mysql_conn), query);
+    return -1;
+  }
+
+  MYSQL_RES *res = mysql_store_result(g_mysql_conn);
+  if (res == nullptr) {
+    fprintf(stderr, "mysql_store_result failed: %s\n",
+            mysql_error(g_mysql_conn));
+    return -1;
+  }
+
+  MYSQL_ROW row = mysql_fetch_row(res);
+  if (row == nullptr) {
+    fprintf(stderr, "SQL verify: no result row\n");
+    mysql_free_result(res);
+    return -1;
+  }
+
+  int failures = 0;
+  for (Uint32 i = 0; i < numCols; i++) {
+    Int64 sqlVal = row[i] != nullptr ? (Int64)atoll(row[i]) : 0;
+    if (sqlVal != expected[i]) {
+      fprintf(stderr, "SQL verify mismatch: col %u SQL=%lld expected=%lld\n",
+              i, (long long)sqlVal, (long long)expected[i]);
+      failures++;
+    }
+  }
+  mysql_free_result(res);
+
+  if (failures > 0) return -1;
+  V("  SQL verify: scalars match\n");
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* Test 1: SUM(b) GROUP BY a                                           */
 /* ------------------------------------------------------------------ */
 
@@ -1347,6 +1445,12 @@ testSumGroupBy(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
               (long long)it->second);
       failures++;
     }
+  }
+
+  if (failures == 0) {
+    if (verifySqlGroupByMap("SELECT a, SUM(b) FROM jagg_test GROUP BY a",
+                            expected) != 0)
+      failures++;
   }
 
   if (failures == 0) {
@@ -1464,6 +1568,12 @@ testCountSumNoGroupBy(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
   }
 
   if (failures == 0) {
+    Int64 exp[] = {5, 150};
+    if (verifySqlScalars("SELECT COUNT(*), SUM(b) FROM jagg_test", exp, 2) != 0)
+      failures++;
+  }
+
+  if (failures == 0) {
     printf("PASS: Test 2 — COUNT(*)=5, SUM(b)=150\n");
   }
   return failures > 0 ? -1 : 0;
@@ -1559,6 +1669,12 @@ testHighCardinalityGroupBy(Ndb * /*ndb*/, SignalSender &ss,
               (long long)key, (long long)expectedSum, (long long)it->second);
       failures++;
     }
+  }
+
+  if (failures == 0) {
+    if (verifySqlGroupByMap("SELECT a, SUM(b) FROM jagg_test GROUP BY a",
+                            actual) != 0)
+      failures++;
   }
 
   if (failures == 0) {
@@ -1705,6 +1821,12 @@ testEviction(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta,
   if (evictedGroups == 0) {
     fprintf(stderr, "FAIL: expected evictions but got 0 evicted groups\n");
     failures++;
+  }
+
+  if (failures == 0) {
+    if (verifySqlGroupByMap("SELECT a, SUM(b) FROM jagg_test GROUP BY a",
+                            actual) != 0)
+      failures++;
   }
 
   if (failures == 0) {
@@ -1996,6 +2118,12 @@ testLqhKeyReq(Ndb *ndb, SignalSender &ss, const TableMeta &meta,
   }
 
   if (failures == 0) {
+    if (verifySqlGroupByMap("SELECT a, SUM(b) FROM jagg_test GROUP BY a",
+                            expected) != 0)
+      failures++;
+  }
+
+  if (failures == 0) {
     printf("PASS: Test 5 — LQHKEYREQ join aggregation, 5 groups correct\n");
   }
   return failures > 0 ? -1 : 0;
@@ -2079,6 +2207,12 @@ testMaxGroupBy(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
   }
 
   if (failures == 0) {
+    if (verifySqlGroupByMap("SELECT a, MAX(b) FROM jagg_test GROUP BY a",
+                            expected) != 0)
+      failures++;
+  }
+
+  if (failures == 0) {
     printf("PASS: Test 6 — MAX(b) GROUP BY a, all %u groups correct\n",
            totalGroups);
   }
@@ -2159,6 +2293,12 @@ testMinGroupBy(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
               (long long)it->second);
       failures++;
     }
+  }
+
+  if (failures == 0) {
+    if (verifySqlGroupByMap("SELECT a, MIN(b) FROM jagg_test GROUP BY a",
+                            expected) != 0)
+      failures++;
   }
 
   if (failures == 0) {
@@ -2272,6 +2412,13 @@ testMaxMinNoGroupBy(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
   }
 
   if (failures == 0) {
+    Int64 exp[] = {5, 50, 10};
+    if (verifySqlScalars("SELECT COUNT(*), MAX(b), MIN(b) FROM jagg_test",
+                          exp, 3) != 0)
+      failures++;
+  }
+
+  if (failures == 0) {
     printf("PASS: Test 8 — COUNT(*)=5, MAX(b)=50, MIN(b)=10\n");
   }
   return failures > 0 ? -1 : 0;
@@ -2358,6 +2505,13 @@ testEmptyTable(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
   }
 
   if (failures == 0) {
+    Int64 exp[] = {0, 0};
+    if (verifySqlScalars("SELECT COUNT(*), COALESCE(SUM(b),0) FROM jagg_test",
+                          exp, 2) != 0)
+      failures++;
+  }
+
+  if (failures == 0) {
     printf("PASS: Test 9 — empty table, COUNT(*)=0, SUM(b)=0\n");
   }
   return failures > 0 ? -1 : 0;
@@ -2439,6 +2593,12 @@ testMultiRowPerGroup(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
               (long long)it->second);
       failures++;
     }
+  }
+
+  if (failures == 0) {
+    if (verifySqlGroupByMap("SELECT grp, SUM(val) FROM jagg_test3 GROUP BY grp",
+                            expected) != 0)
+      failures++;
   }
 
   if (failures == 0) {
@@ -2558,6 +2718,15 @@ testAllAggsGroupBy(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
               (long long)exp.first, (long long)a.min, (long long)e.min);
       failures++;
     }
+  }
+
+  if (failures == 0) {
+    std::map<Int64, Int64> expectedSum;
+    expectedSum[1] = 30; expectedSum[2] = 120; expectedSum[3] = 60;
+    if (verifySqlGroupByMap(
+            "SELECT grp, SUM(val) FROM jagg_test3 GROUP BY grp",
+            expectedSum) != 0)
+      failures++;
   }
 
   if (failures == 0) {
@@ -2715,6 +2884,12 @@ testFlowControl(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta,
   }
 
   if (failures == 0) {
+    if (verifySqlGroupByMap("SELECT a, SUM(b) FROM jagg_test GROUP BY a",
+                            actual) != 0)
+      failures++;
+  }
+
+  if (failures == 0) {
     printf("PASS: Test 12 — flow control, %u groups correct, "
            "%u SEND_REQ round-trips\n", totalGroups, totalSendReqs);
   }
@@ -2785,6 +2960,13 @@ testSingleRow(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
   if (sum != 42) {
     fprintf(stderr, "FAIL: expected SUM(b)=42, got %lld\n", (long long)sum);
     failures++;
+  }
+
+  if (failures == 0) {
+    Int64 exp[] = {1, 42};
+    if (verifySqlScalars("SELECT COUNT(*), SUM(b) FROM jagg_test",
+                          exp, 2) != 0)
+      failures++;
   }
 
   if (failures == 0) {
@@ -2882,6 +3064,13 @@ testNegativeValues(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
   }
 
   if (failures == 0) {
+    Int64 exp[] = {5, 300, -200};
+    if (verifySqlScalars("SELECT COUNT(*), MAX(b), MIN(b) FROM jagg_test",
+                          exp, 3) != 0)
+      failures++;
+  }
+
+  if (failures == 0) {
     printf("PASS: Test 14 — negative values, COUNT=5 MAX=300 MIN=-200\n");
   }
   return failures > 0 ? -1 : 0;
@@ -2966,6 +3155,12 @@ testMutexFreeMultiRowGroup(Ndb * /*ndb*/, SignalSender &ss,
   }
 
   if (failures == 0) {
+    if (verifySqlGroupByMap("SELECT grp, SUM(val) FROM jagg_test3 GROUP BY grp",
+                            expected) != 0)
+      failures++;
+  }
+
+  if (failures == 0) {
     printf("PASS: Test 15 — MUTEX_FREE multi-row group, 3 groups correct\n");
   }
   return failures > 0 ? -1 : 0;
@@ -3046,6 +3241,15 @@ testCountMergeMutexFree(Ndb * /*ndb*/, SignalSender &ss,
   }
 
   if (failures == 0) {
+    std::map<Int64, Int64> expectedCount;
+    for (Uint32 i = 1; i <= numRows; i++)
+      expectedCount[(Int64)i] = 1;
+    if (verifySqlGroupByMap("SELECT a, COUNT(*) FROM jagg_test GROUP BY a",
+                            expectedCount) != 0)
+      failures++;
+  }
+
+  if (failures == 0) {
     printf("PASS: Test 16 — COUNT merge MUTEX_FREE, %u groups all COUNT=1\n",
            numRows);
   }
@@ -3121,6 +3325,13 @@ testNoGroupByMutexFree(Ndb * /*ndb*/, SignalSender &ss,
     fprintf(stderr, "FAIL: expected SUM(b)=%lld, got %lld\n",
             (long long)expectedSum, (long long)sum);
     failures++;
+  }
+
+  if (failures == 0) {
+    Int64 exp[] = {(Int64)numRows, expectedSum};
+    if (verifySqlScalars("SELECT COUNT(*), SUM(b) FROM jagg_test",
+                          exp, 2) != 0)
+      failures++;
   }
 
   if (failures == 0) {
@@ -3247,6 +3458,12 @@ testEvictionMutexFree(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta,
   if (evictedGroups == 0) {
     fprintf(stderr, "FAIL: expected evictions but got 0 evicted groups\n");
     failures++;
+  }
+
+  if (failures == 0) {
+    if (verifySqlGroupByMap("SELECT a, SUM(b) FROM jagg_test GROUP BY a",
+                            actual) != 0)
+      failures++;
   }
 
   if (failures == 0) {
@@ -3498,6 +3715,7 @@ int main(int argc, char **argv)
       fprintf(stderr, "Cannot connect to MySQL on port %d\n", mysqlPort);
       result = 1; break;
     }
+    g_mysql_conn = conn;
     V("Connected to MySQL on port %d\n", mysqlPort);
 
     Ndb_cluster_connection con(connectString);

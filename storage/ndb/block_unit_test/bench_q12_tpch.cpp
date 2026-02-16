@@ -90,6 +90,7 @@
 /* ------------------------------------------------------------------ */
 
 static bool verbose = false;
+static MYSQL *g_mysql_conn = nullptr;
 static Uint32 pipelineBatch = 1000;
 #define V(...) do { if (verbose) printf(__VA_ARGS__); } while(0)
 
@@ -1361,6 +1362,53 @@ runBenchmark(SignalSender &ss,
         failures++;
       }
     }
+
+    /* SQL verification */
+    if (failures == 0 && g_mysql_conn != nullptr) {
+      if (mysql_query(g_mysql_conn,
+              "SELECT l.l_shipmode, "
+              "SUM(CASE WHEN o.o_orderpriority IN ('1-URGENT','2-HIGH') "
+              "THEN 1 ELSE 0 END), "
+              "SUM(CASE WHEN o.o_orderpriority NOT IN ('1-URGENT','2-HIGH') "
+              "THEN 1 ELSE 0 END) "
+              "FROM q12_lineitem l JOIN q12_orders o "
+              "ON l.l_orderkey = o.o_orderkey "
+              "WHERE l.l_shipmode IN ('MAIL','SHIP') "
+              "AND l.l_commitdate < l.l_receiptdate "
+              "AND l.l_shipdate < l.l_commitdate "
+              "AND l.l_receiptdate >= 731 "
+              "AND l.l_receiptdate < 1096 "
+              "GROUP BY l.l_shipmode") != 0) {
+        fprintf(stderr, "SQL verify failed: %s\n", mysql_error(g_mysql_conn));
+        failures++;
+      } else {
+        MYSQL_RES *res = mysql_store_result(g_mysql_conn);
+        if (res == nullptr) {
+          fprintf(stderr, "mysql_store_result failed: %s\n",
+                  mysql_error(g_mysql_conn));
+          failures++;
+        } else {
+          std::map<std::string, Int64> sqlHigh, sqlLow;
+          MYSQL_ROW row;
+          while ((row = mysql_fetch_row(res)) != nullptr) {
+            if (row[0] && row[1] && row[2]) {
+              std::string sm(row[0]);
+              while (sm.size() < 10) sm.push_back(' ');
+              sqlHigh[sm] = (Int64)atoll(row[1]);
+              sqlLow[sm] = (Int64)atoll(row[2]);
+            }
+          }
+          mysql_free_result(res);
+          if (sqlHigh != expectedHigh || sqlLow != expectedLow) {
+            fprintf(stderr, "SQL verify mismatch\n");
+            failures++;
+          } else {
+            V("  SQL verify: %zu shipmode groups — matches\n",
+              sqlHigh.size());
+          }
+        }
+      }
+    }
   }
 
   /* ---- Timing ---- */
@@ -1448,6 +1496,7 @@ doRun()
     fprintf(stderr, "Cannot connect to MySQL on port %d\n", mysqlPort);
     return 1;
   }
+  g_mysql_conn = conn;
 
   /* ---- Create tables + load data (skip if --keep-tables and exist) ---- */
   TableMeta lineitemMeta, ordersMeta;

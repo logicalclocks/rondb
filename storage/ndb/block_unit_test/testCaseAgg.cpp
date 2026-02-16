@@ -67,6 +67,7 @@
 
 /* Verbose output control */
 static bool verbose = false;
+static MYSQL *g_mysql_conn = nullptr;
 #define V(...) do { if (verbose) printf(__VA_ARGS__); } while(0)
 
 /* ------------------------------------------------------------------ */
@@ -939,6 +940,31 @@ testCaseSum(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
     return -1;
   }
 
+  /* SQL verification */
+  if (g_mysql_conn != nullptr) {
+    if (mysql_query(g_mysql_conn,
+            "SELECT SUM(CASE WHEN b <= 20 THEN 1 ELSE 0 END) "
+            "FROM case_agg_test") != 0) {
+      fprintf(stderr, "SQL verify failed: %s\n", mysql_error(g_mysql_conn));
+      return -1;
+    }
+    MYSQL_RES *res = mysql_store_result(g_mysql_conn);
+    if (res == nullptr) {
+      fprintf(stderr, "mysql_store_result failed: %s\n",
+              mysql_error(g_mysql_conn));
+      return -1;
+    }
+    MYSQL_ROW row = mysql_fetch_row(res);
+    Int64 sqlSum = row && row[0] ? (Int64)atoll(row[0]) : 0;
+    mysql_free_result(res);
+    if (sqlSum != sum) {
+      fprintf(stderr, "SQL verify mismatch: SQL=%lld signal=%lld\n",
+              (long long)sqlSum, (long long)sum);
+      return -1;
+    }
+    V("  SQL verify: SUM=%lld — matches\n", (long long)sqlSum);
+  }
+
   printf("PASS: Test — SUM(CASE WHEN b<=20 THEN 1 ELSE 0 END) = 2\n");
   return 0;
 }
@@ -986,6 +1012,7 @@ int main(int argc, char **argv)
       ndb_end(0);
       return 1;
     }
+    g_mysql_conn = conn;
     V("Connected to MySQL on port %d\n", mysqlPort);
 
     Ndb_cluster_connection con(connectString);

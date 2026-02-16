@@ -84,6 +84,7 @@
 /* ------------------------------------------------------------------ */
 
 static bool verbose = false;
+static MYSQL *g_mysql_conn = nullptr;
 #define V(...) do { if (verbose) printf(__VA_ARGS__); } while(0)
 
 /* ------------------------------------------------------------------ */
@@ -1146,6 +1147,39 @@ runBenchmark(SignalSender &ss,
         failures++;
       }
     }
+
+    /* SQL verification */
+    if (failures == 0 && g_mysql_conn != nullptr) {
+      if (mysql_query(g_mysql_conn,
+              "SELECT l.l_shipmode, SUM(o.o_orderpriority) "
+              "FROM bench_lineitem l JOIN bench_orders o "
+              "ON l.l_orderkey = o.o_orderkey GROUP BY l.l_shipmode") != 0) {
+        fprintf(stderr, "SQL verify failed: %s\n", mysql_error(g_mysql_conn));
+        failures++;
+      } else {
+        MYSQL_RES *res = mysql_store_result(g_mysql_conn);
+        if (res == nullptr) {
+          fprintf(stderr, "mysql_store_result failed: %s\n",
+                  mysql_error(g_mysql_conn));
+          failures++;
+        } else {
+          std::map<Int64, Int64> sqlGroups;
+          MYSQL_ROW row;
+          while ((row = mysql_fetch_row(res)) != nullptr) {
+            if (row[0] && row[1])
+              sqlGroups[(Int64)atoll(row[0])] = (Int64)atoll(row[1]);
+          }
+          mysql_free_result(res);
+          if (sqlGroups != expected) {
+            fprintf(stderr, "SQL verify mismatch: SQL=%zu groups, "
+                    "expected=%zu\n", sqlGroups.size(), expected.size());
+            failures++;
+          } else {
+            V("  SQL verify: %zu groups — matches\n", sqlGroups.size());
+          }
+        }
+      }
+    }
   }
 
   /* ---- Timing ---- */
@@ -1297,6 +1331,7 @@ int main(int argc, char **argv)
       fprintf(stderr, "Cannot connect to MySQL on port %d\n", mysqlPort);
       result = 1; goto done;
     }
+    g_mysql_conn = conn;
 
     TableMeta lineitemMeta, ordersMeta;
 
