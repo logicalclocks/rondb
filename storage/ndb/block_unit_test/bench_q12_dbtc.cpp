@@ -110,6 +110,37 @@ static const Uint32 LINKED_COL_FLAG = 0x8000;
 static const Uint32 DATE_19940101 = 731;
 static const Uint32 DATE_19950101 = 1096;
 
+/* NDB packed DATE constants: (year << 9) | (month << 5) | day */
+static const Uint32 NDB_DATE_19940101 = (1994 << 9) | (1 << 5) | 1;
+static const Uint32 NDB_DATE_19950101 = (1995 << 9) | (1 << 5) | 1;
+
+/*
+ * Convert epoch day offset (days since 1992-01-01) to NDB packed DATE format.
+ * NDB DATE: 3 bytes little-endian, packed = (year << 9) | (month << 5) | day.
+ */
+static Uint32
+epochDayToNdbDate(Uint32 epochDay)
+{
+  struct tm t = {};
+  t.tm_year = 92;   /* 1992 */
+  t.tm_mon = 0;     /* January */
+  t.tm_mday = 1 + (int)epochDay;
+  t.tm_isdst = -1;
+  mktime(&t);
+  int y = t.tm_year + 1900;
+  int m = t.tm_mon + 1;
+  int d = t.tm_mday;
+  return ((Uint32)y << 9) | ((Uint32)m << 5) | (Uint32)d;
+}
+
+static void
+storeNdbDate(char *buf, Uint32 packed)
+{
+  buf[0] = (char)(packed & 0xFF);
+  buf[1] = (char)((packed >> 8) & 0xFF);
+  buf[2] = (char)((packed >> 16) & 0xFF);
+}
+
 /* TPC-H shipmode values (CHAR(10), space-padded) */
 static const char SHIPMODES[][11] = {
   "REG AIR   ", "AIR       ", "RAIL      ",
@@ -298,13 +329,15 @@ buildScanFilter(const NdbDictionary::Table *tab, const TableMeta &meta)
   /* l_shipdate < l_commitdate: reject if shipdate >= commitdate */
   code.branch_col_le(shipdate_id, commitdate_id, 1);
 
-  /* l_receiptdate >= DATE_19940101: reject if receiptdate < 731 */
-  Uint32 val731 = DATE_19940101;
-  code.branch_col_gt(&val731, sizeof(val731), receiptdate_id, 1);
+  /* l_receiptdate >= 1994-01-01: reject if receiptdate < 1994-01-01 */
+  char dateBuf731[4] = {0};
+  storeNdbDate(dateBuf731, NDB_DATE_19940101);
+  code.branch_col_gt(dateBuf731, 3, receiptdate_id, 1);
 
-  /* l_receiptdate < DATE_19950101: reject if receiptdate >= 1096 */
-  Uint32 val1096 = DATE_19950101;
-  code.branch_col_le(&val1096, sizeof(val1096), receiptdate_id, 1);
+  /* l_receiptdate < 1995-01-01: reject if receiptdate >= 1995-01-01 */
+  char dateBuf1096[4] = {0};
+  storeNdbDate(dateBuf1096, NDB_DATE_19950101);
+  code.branch_col_le(dateBuf1096, 3, receiptdate_id, 1);
 
   code.interpret_exit_ok();
   code.def_label(1);  /* reject */
@@ -639,9 +672,9 @@ createLineitemTable(MYSQL *conn, Ndb *ndb, TableMeta &meta)
         "  l_orderkey BIGINT NOT NULL,"
         "  l_linenumber INT NOT NULL,"
         "  l_shipmode CHAR(10) NOT NULL,"
-        "  l_shipdate INT UNSIGNED NOT NULL,"
-        "  l_commitdate INT UNSIGNED NOT NULL,"
-        "  l_receiptdate INT UNSIGNED NOT NULL,"
+        "  l_shipdate DATE NOT NULL,"
+        "  l_commitdate DATE NOT NULL,"
+        "  l_receiptdate DATE NOT NULL,"
         "  PRIMARY KEY (l_orderkey, l_linenumber)"
         ") ENGINE=NDB DEFAULT CHARSET=latin1") != 0)
     return -1;
@@ -758,9 +791,13 @@ insertLineitems(Ndb *ndb, Uint32 numOrders, Uint32 linesPerOrder)
       op->equal("l_orderkey", orderkey);
       op->equal("l_linenumber", linenumber);
       op->setValue("l_shipmode", SHIPMODES[shipmodeIdx]);
-      op->setValue("l_shipdate", orderdate + s_offset);
-      op->setValue("l_commitdate", orderdate + c_offset);
-      op->setValue("l_receiptdate", orderdate + s_offset + r_offset);
+      char sd[4] = {0}, cd[4] = {0}, rd[4] = {0};
+      storeNdbDate(sd, epochDayToNdbDate(orderdate + s_offset));
+      storeNdbDate(cd, epochDayToNdbDate(orderdate + c_offset));
+      storeNdbDate(rd, epochDayToNdbDate(orderdate + s_offset + r_offset));
+      op->setValue("l_shipdate", sd);
+      op->setValue("l_commitdate", cd);
+      op->setValue("l_receiptdate", rd);
       count++;
     }
   }
@@ -1311,8 +1348,8 @@ runBenchmark(SignalSender &ss, Uint32 nodeId,
               "WHERE l.l_shipmode IN ('MAIL','SHIP') "
               "AND l.l_commitdate < l.l_receiptdate "
               "AND l.l_shipdate < l.l_commitdate "
-              "AND l.l_receiptdate >= 731 "
-              "AND l.l_receiptdate < 1096 "
+              "AND l.l_receiptdate >= '1994-01-01' "
+              "AND l.l_receiptdate < '1995-01-01' "
               "GROUP BY l.l_shipmode") != 0) {
         fprintf(stderr, "SQL verify failed: %s\n", mysql_error(g_mysql_conn));
         failures++;

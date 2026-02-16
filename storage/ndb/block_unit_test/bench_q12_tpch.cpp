@@ -123,6 +123,33 @@ static const Uint32 LINKED_COL_FLAG = 0x8000;
 static const Uint32 DATE_19940101 = 731;
 static const Uint32 DATE_19950101 = 1096;
 
+/*
+ * Convert epoch day offset (days since 1992-01-01) to NDB packed DATE format.
+ * NDB DATE: 3 bytes little-endian, packed = (year << 9) | (month << 5) | day.
+ */
+static Uint32
+epochDayToNdbDate(Uint32 epochDay)
+{
+  struct tm t = {};
+  t.tm_year = 92;   /* 1992 */
+  t.tm_mon = 0;     /* January */
+  t.tm_mday = 1 + (int)epochDay;
+  t.tm_isdst = -1;
+  mktime(&t);
+  int y = t.tm_year + 1900;
+  int m = t.tm_mon + 1;
+  int d = t.tm_mday;
+  return ((Uint32)y << 9) | ((Uint32)m << 5) | (Uint32)d;
+}
+
+static void
+storeNdbDate(char *buf, Uint32 packed)
+{
+  buf[0] = (char)(packed & 0xFF);
+  buf[1] = (char)((packed >> 8) & 0xFF);
+  buf[2] = (char)((packed >> 16) & 0xFF);
+}
+
 /* TPC-H shipmode values (CHAR(10), space-padded) */
 static const char SHIPMODES[][11] = {
   "REG AIR   ", "AIR       ", "RAIL      ",
@@ -458,9 +485,9 @@ createLineitemTable(MYSQL *conn, Ndb *ndb, TableMeta &meta)
         "  l_orderkey BIGINT NOT NULL,"
         "  l_linenumber INT NOT NULL,"
         "  l_shipmode CHAR(10) NOT NULL,"
-        "  l_shipdate INT UNSIGNED NOT NULL,"
-        "  l_commitdate INT UNSIGNED NOT NULL,"
-        "  l_receiptdate INT UNSIGNED NOT NULL,"
+        "  l_shipdate DATE NOT NULL,"
+        "  l_commitdate DATE NOT NULL,"
+        "  l_receiptdate DATE NOT NULL,"
         "  PRIMARY KEY (l_orderkey, l_linenumber)"
         ") ENGINE=NDB DEFAULT CHARSET=latin1") != 0)
     return -1;
@@ -666,9 +693,13 @@ insertLineitems(Ndb *ndb, Uint32 numOrders, Uint32 linesPerOrder,
       op->equal("l_orderkey", orderkey);
       op->equal("l_linenumber", linenumber);
       op->setValue("l_shipmode", SHIPMODES[shipmodeIdx]);
-      op->setValue("l_shipdate", shipdate);
-      op->setValue("l_commitdate", commitdate);
-      op->setValue("l_receiptdate", receiptdate);
+      char sd[4] = {0}, cd[4] = {0}, rd[4] = {0};
+      storeNdbDate(sd, epochDayToNdbDate(shipdate));
+      storeNdbDate(cd, epochDayToNdbDate(commitdate));
+      storeNdbDate(rd, epochDayToNdbDate(receiptdate));
+      op->setValue("l_shipdate", sd);
+      op->setValue("l_commitdate", cd);
+      op->setValue("l_receiptdate", rd);
 
       LineitemRow row;
       row.l_orderkey = orderkey;
@@ -1376,8 +1407,8 @@ runBenchmark(SignalSender &ss,
               "WHERE l.l_shipmode IN ('MAIL','SHIP') "
               "AND l.l_commitdate < l.l_receiptdate "
               "AND l.l_shipdate < l.l_commitdate "
-              "AND l.l_receiptdate >= 731 "
-              "AND l.l_receiptdate < 1096 "
+              "AND l.l_receiptdate >= '1994-01-01' "
+              "AND l.l_receiptdate < '1995-01-01' "
               "GROUP BY l.l_shipmode") != 0) {
         fprintf(stderr, "SQL verify failed: %s\n", mysql_error(g_mysql_conn));
         failures++;
