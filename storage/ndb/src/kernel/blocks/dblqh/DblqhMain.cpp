@@ -18163,7 +18163,7 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
     pos += agg_words;
 
     TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
-    transIdAI->connectPtr = state->m_resultData;
+    transIdAI->connectPtr = state->m_receiverIds[0];
     transIdAI->transId[0] = state->m_transid[0];
     transIdAI->transId[1] = state->m_transid[1];
 
@@ -18236,7 +18236,11 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
       pos += data_words;
 
       TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
-      transIdAI->connectPtr = state->m_resultData;
+      {
+        const char *key_data = reinterpret_cast<const char*>(iter.data());
+        transIdAI->connectPtr =
+            state->selectReceiverData(key_data, key_len);
+      }
       transIdAI->transId[0] = state->m_transid[0];
       transIdAI->transId[1] = state->m_transid[1];
 

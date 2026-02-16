@@ -28,6 +28,7 @@
 #include <atomic>
 #include <ndb_types.h>
 #include <kernel_types.h>
+#include <util/rondb_hash.hpp>
 
 #define JAM_FILE_ID 447
 
@@ -146,6 +147,19 @@ struct JoinAggregationState {
   Uint32 m_routeRef;             // Route reference (TC block)
 
   //------------------------------------------------------------------
+  // Receiver IDs for hash-partitioned aggregation results
+  // Each group row is routed to receiverIds[hash(key) % numReceiverIds]
+  //------------------------------------------------------------------
+  Uint32 *m_receiverIds;         // Receiver IDs array (ndbd_malloc'd)
+  Uint32 m_numReceiverIds;       // Count of receiver IDs
+
+  Uint32 selectReceiverData(const char *key, Uint32 key_len) const {
+    if (m_numReceiverIds <= 1) return m_receiverIds[0];
+    Uint64 h = rondb_xxhash_std(key, key_len);
+    return m_receiverIds[static_cast<Uint32>(h) % m_numReceiverIds];
+  }
+
+  //------------------------------------------------------------------
   // State Machine (atomic — checked by any thread, set single-threaded)
   //------------------------------------------------------------------
   std::atomic<State> m_state;
@@ -186,6 +200,8 @@ struct JoinAggregationState {
     m_resultRef(0),
     m_resultData(0),
     m_routeRef(0),
+    m_receiverIds(nullptr),
+    m_numReceiverIds(0),
     m_state(IDLE),
     m_error_code(0),
     m_key(RNIL),

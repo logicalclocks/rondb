@@ -15686,8 +15686,18 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
    * times the parallelism. This will ensure that we can continue scanning
    * even after delivering a batch to the NDB API. We will handle this
    * below after acquiring a scan record.
+   *
+   * For JoinAgg queries, scanParallelism is an explicit field and the
+   * receiver IDs in section 0 are for hash-partitioned aggregation result
+   * routing (independent of scan parallelism).
    */
-  Uint32 scanParallel = api_op_ptr.sz;
+  Uint32 numReceiverIds = api_op_ptr.sz;
+  Uint32 scanParallel;
+  if (ScanTabReq::getJoinAggFlag(ri)) {
+    scanParallel = scanTabReq->scanParallelism;
+  } else {
+    scanParallel = numReceiverIds;
+  }
   Uint32 scanConcurrency = scanParallel;
   Uint32 *apiPtr = signal->theData + 25;  // temp storage
   copy(apiPtr, api_op_ptr);
@@ -16033,7 +16043,8 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
 #endif
 
   errCode =
-      initScanrec(scanptr, scanTabReq, scanParallel, apiPtr, apiConnectptr.i);
+      initScanrec(scanptr, scanTabReq, scanParallel, apiPtr,
+                  numReceiverIds, apiConnectptr.i);
   if (unlikely(errCode)) {
     jam();
     transP->apiScanRec = scanptr.i;
@@ -16041,7 +16052,13 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
     goto SCAN_TAB_error;
   }
 
-  releaseSection(handle.m_ptr[ScanTabReq::ReceiverIdSectionNum].i);
+  if (ScanTabReq::getJoinAggFlag(ri)) {
+    jam();
+    scanptr.p->m_aggReceiverIdsPtrI =
+        handle.m_ptr[ScanTabReq::ReceiverIdSectionNum].i;
+  } else {
+    releaseSection(handle.m_ptr[ScanTabReq::ReceiverIdSectionNum].i);
+  }
   if (likely(isLongReq)) {
     jamDebug();
     /* We keep the AttrInfo and KeyInfo sections */
@@ -16204,6 +16221,7 @@ Dbtc::ScanFragRec::ScanFragRec()
 
 Uint32 Dbtc::initScanrec(ScanRecordPtr scanptr, const ScanTabReq *scanTabReq,
                          UintR scanParallel, const Uint32 apiPtr[],
+                         Uint32 numReceiverIds,
                          Uint32 apiConnectPtr) {
   const UintR ri = scanTabReq->requestInfo;
   bool par_ordered_scan_flag = false;
@@ -16261,6 +16279,7 @@ Uint32 Dbtc::initScanrec(ScanRecordPtr scanptr, const ScanTabReq *scanTabReq,
   scanptr.p->m_start_ticks = getHighResTimer();
   scanptr.p->m_aggProgramPtrI = RNIL;
   scanptr.p->m_aggKeysSectionPtrI = RNIL;
+  scanptr.p->m_aggReceiverIdsPtrI = RNIL;
   scanptr.p->m_joinAgg = false;
   scanptr.p->m_aggNodes.clear();
   scanptr.p->m_aggNodesOutstanding = 0;
@@ -16334,7 +16353,7 @@ Uint32 Dbtc::initScanrec(ScanRecordPtr scanptr, const ScanTabReq *scanTabReq,
         ptr.p->m_apiPtr[2],
         ptr.p->m_apiPtr[3]));
     } else {
-      ptr.p->m_apiPtr[0] = apiPtr[i];
+      ptr.p->m_apiPtr[0] = apiPtr[i % numReceiverIds];
     }
   }  // for
   scanptr.p->m_booked_fragments_count = scanParallel;
@@ -16929,6 +16948,10 @@ void Dbtc::releaseScanResources(Signal *signal, ScanRecordPtr scanPtr,
   if (scanPtr.p->m_aggKeysSectionPtrI != RNIL) {
     releaseSection(scanPtr.p->m_aggKeysSectionPtrI);
     scanPtr.p->m_aggKeysSectionPtrI = RNIL;
+  }
+  if (scanPtr.p->m_aggReceiverIdsPtrI != RNIL) {
+    releaseSection(scanPtr.p->m_aggReceiverIdsPtrI);
+    scanPtr.p->m_aggReceiverIdsPtrI = RNIL;
   }
   if (scanPtr.p->m_joinAgg && !scanPtr.p->m_aggNodes.isclear()) {
     jam();
@@ -28345,8 +28368,13 @@ void Dbtc::sendJoinAggSetupReqs(Signal *signal, ScanRecordPtr scanptr,
     SectionHandle handle(this);
     Uint32 aggPtrI = RNIL;
     ndbrequire(dupSection(aggPtrI, scanptr.p->m_aggProgramPtrI));
-    getSection(handle.m_ptr[0], aggPtrI);
-    handle.m_cnt = 1;
+    getSection(handle.m_ptr[JoinAggSetupReq::AggProgramSectionNum], aggPtrI);
+
+    ndbrequire(scanptr.p->m_aggReceiverIdsPtrI != RNIL);
+    Uint32 rcvPtrI = RNIL;
+    ndbrequire(dupSection(rcvPtrI, scanptr.p->m_aggReceiverIdsPtrI));
+    getSection(handle.m_ptr[JoinAggSetupReq::ReceiverIdsSectionNum], rcvPtrI);
+    handle.m_cnt = 2;
 
     Uint32 ref = numberToRef(DBLQH, nodeId);
     sendSignal(ref, GSN_JOIN_AGG_SETUP_REQ, signal,

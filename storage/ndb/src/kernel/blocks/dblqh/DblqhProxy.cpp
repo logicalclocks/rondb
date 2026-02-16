@@ -2320,22 +2320,38 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   // Expected operations
   state->m_total_ops_expected = req->expectedOpCount;
 
-  // Copy aggregation program from long section 0
+  // Copy aggregation program (section 0) and receiver IDs (section 1)
   state->m_agg_program = nullptr;
   state->m_agg_program_len = 0;
-  if (signal->getNoOfSections() >= 1) {
-    jam();
+  state->m_receiverIds = nullptr;
+  state->m_numReceiverIds = 0;
+  {
+    ndbrequire(signal->getNoOfSections() == 2);
     SectionHandle handle(this, signal);
+
     SegmentedSectionPtr ptr;
-    ndbrequire(handle.getSection(ptr, 0));
+    ndbrequire(handle.getSection(ptr,
+                                 JoinAggSetupReq::AggProgramSectionNum));
     Uint32 progLen = ptr.sz;
     Uint32 *progBuf =
       (Uint32 *)ndbd_malloc(progLen * sizeof(Uint32));
-    if (progBuf != nullptr) {
-      copy(progBuf, ptr);
-      state->m_agg_program = progBuf;
-      state->m_agg_program_len = progLen;
-    }
+    ndbrequire(progBuf != nullptr);
+    copy(progBuf, ptr);
+    state->m_agg_program = progBuf;
+    state->m_agg_program_len = progLen;
+
+    SegmentedSectionPtr rcvPtr;
+    ndbrequire(handle.getSection(rcvPtr,
+                                 JoinAggSetupReq::ReceiverIdsSectionNum));
+    Uint32 numIds = rcvPtr.sz;
+    ndbrequire(numIds > 0);
+    Uint32 *idsBuf =
+      (Uint32 *)ndbd_malloc(numIds * sizeof(Uint32));
+    ndbrequire(idsBuf != nullptr);
+    copy(idsBuf, rcvPtr);
+    state->m_receiverIds = idsBuf;
+    state->m_numReceiverIds = numIds;
+
     releaseSections(handle);
   }
 
@@ -2444,6 +2460,13 @@ DblqhProxy::execJOIN_AGG_RELEASE_REQ(Signal *signal) {
                 state->m_agg_program_len * sizeof(Uint32));
       state->m_agg_program = nullptr;
       state->m_agg_program_len = 0;
+    }
+    // Free receiver IDs array
+    if (state->m_receiverIds != nullptr) {
+      ndbd_free(state->m_receiverIds,
+                state->m_numReceiverIds * sizeof(Uint32));
+      state->m_receiverIds = nullptr;
+      state->m_numReceiverIds = 0;
     }
 
     // Free AggInterpreter(s)

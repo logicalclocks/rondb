@@ -33,6 +33,7 @@
 struct JoinAggSetupReq {
   static constexpr Uint32 SignalLength = 11;
   static constexpr Uint32 AggProgramSectionNum = 0;
+  static constexpr Uint32 ReceiverIdsSectionNum = 1;
   static constexpr Uint32 STRATEGY_MUTEX_BASED = 0;
   static constexpr Uint32 STRATEGY_MUTEX_FREE = 1;
 
@@ -47,6 +48,7 @@ struct JoinAggSetupReq {
   Uint32 resultData;
   Uint32 routeRef;
   // Long section 0: Aggregation program
+  // Long section 1: Receiver IDs for hash-partitioned aggregation results
 };
 
 struct JoinAggSetupConf {

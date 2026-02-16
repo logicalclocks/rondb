@@ -64,6 +64,7 @@
 #include <kernel/Interpreter.hpp>
 
 #include <NdbRestarter.hpp>
+#include <util/rondb_hash.hpp>
 #include <mysql.h>
 
 #include <cassert>
@@ -82,6 +83,8 @@
 
 static bool verbose = false;
 static bool noFilter = false;
+static Uint32 scanParallel = 8;
+static Uint32 numReceivers = 1;
 static MYSQL *g_mysql_conn = nullptr;
 #define V(...) do { if (verbose) printf(__VA_ARGS__); } while(0)
 
@@ -937,7 +940,8 @@ sendScanTabReq(SignalSender &ss, Uint32 nodeId,
                const TableMeta &scanMeta,
                const std::vector<Uint32> &queryTree,
                const std::vector<Uint32> &aggProgram,
-               Uint32 receiverId)
+               Uint32 receiverIdBase, Uint32 parallelism,
+               Uint32 numRecvIds)
 {
   V("SCAN_TABREQ → node %u, table=%u\n", nodeId, scanMeta.tableId);
 
@@ -960,12 +964,20 @@ sendScanTabReq(SignalSender &ss, Uint32 nodeId,
   data[9] = 2 * 1024 * 1024;   /* batch_byte_size */
   data[10] = 990;               /* first_batch_size */
 
-  ssig.set(ss, 0, refToBlock(tcRef), GSN_SCAN_TABREQ,
-           ScanTabReq::StaticLength);
+  /* scanParallelism: optional field for JoinAgg queries (DATA 15) */
+  data[15] = parallelism;
+
+  ssig.set(ss, 0, refToBlock(tcRef), GSN_SCAN_TABREQ, 16);
+
+  /* Section 0: receiver IDs (distinct values for hash-partitioned routing) */
+  std::vector<Uint32> receiverIds(numRecvIds);
+  for (Uint32 i = 0; i < numRecvIds; i++) {
+    receiverIds[i] = receiverIdBase + i;
+  }
 
   ssig.header.m_noOfSections = 3;
-  ssig.ptr[0].p = &receiverId;
-  ssig.ptr[0].sz = 1;
+  ssig.ptr[0].p = receiverIds.data();
+  ssig.ptr[0].sz = numRecvIds;
   ssig.ptr[1].p = queryTree.data();
   ssig.ptr[1].sz = (Uint32)queryTree.size();
   ssig.ptr[2].p = aggProgram.data();
@@ -976,9 +988,10 @@ sendScanTabReq(SignalSender &ss, Uint32 nodeId,
     return -1;
   }
 
-  V("  Sent SCAN_TABREQ: requestInfo=0x%08x, queryTree=%zu words, "
-    "aggProgram=%zu words\n",
-    requestInfo, queryTree.size(), aggProgram.size());
+  V("  Sent SCAN_TABREQ: requestInfo=0x%08x, parallelism=%u, "
+    "receivers=%u, queryTree=%zu words, aggProgram=%zu words\n",
+    requestInfo, parallelism, numRecvIds,
+    queryTree.size(), aggProgram.size());
   return 0;
 }
 
@@ -1075,7 +1088,8 @@ static int
 collectResults(SignalSender &ss,
                std::vector<AggResult> &allResults,
                Uint32 apiConnectPtr, Uint32 tcRef, Uint32 nodeId,
-               Uint32 &nextReqCount)
+               Uint32 &nextReqCount,
+               Uint32 receiverIdBase, Uint32 numRecvIds)
 {
   V("Waiting for results...\n");
   nextReqCount = 0;
@@ -1089,6 +1103,42 @@ collectResults(SignalSender &ss,
     int gsn = getGsn(resp);
 
     if (gsn == GSN_TRANSID_AI) {
+      /* Verify receiver ID matches hash of group key */
+      Uint32 connectPtr = resp->getDataPtr()[0];
+      const Uint32 *payload;
+      if (resp->header.m_noOfSections > 0) {
+        payload = resp->ptr[0].p;
+      } else {
+        payload = resp->getDataPtr() + TransIdAI::HeaderLength;
+      }
+      Uint32 n_gb_cols_hdr = payload[1] >> 16;
+      if (n_gb_cols_hdr > 0 && numRecvIds > 1) {
+        Uint32 key_len = payload[3] >> 16;
+        const char *key_data =
+            reinterpret_cast<const char*>(&payload[4]);
+        Uint64 h = rondb_xxhash_std(key_data, key_len);
+        Uint32 expectedId = receiverIdBase +
+            static_cast<Uint32>(h) % numRecvIds;
+        if (connectPtr != expectedId) {
+          fprintf(stderr, "ERROR: TRANSID_AI receiver mismatch: "
+                  "connectPtr=%u expected=%u (hash=0x%llx, "
+                  "numRecv=%u)\n",
+                  connectPtr, expectedId,
+                  (unsigned long long)h, numRecvIds);
+          return -1;
+        }
+      } else {
+        Uint32 expectedId = receiverIdBase;
+        if (connectPtr != expectedId) {
+          fprintf(stderr, "ERROR: TRANSID_AI receiver mismatch: "
+                  "connectPtr=%u expected=%u (non-group-by)\n",
+                  connectPtr, expectedId);
+          return -1;
+        }
+      }
+      V("  TRANSID_AI: connectPtr=%u (receiver %u/%u)\n",
+        connectPtr, connectPtr - receiverIdBase, numRecvIds);
+
       AggResult result;
       if (parseTransIdAI(resp, result) != 0) return -1;
       V("  TRANSID_AI: n_gb_cols=%u n_agg=%u n_groups=%u\n",
@@ -1264,7 +1314,8 @@ runBenchmark(SignalSender &ss, Uint32 nodeId,
 
   /* Send SCAN_TABREQ */
   int rc = sendScanTabReq(ss, nodeId, apiConnectPtr, tcRef,
-                          lineitemMeta, queryTree, aggProgram, receiverId);
+                          lineitemMeta, queryTree, aggProgram,
+                          receiverId, scanParallel, numReceivers);
   if (rc != 0) {
     releaseTcConnect(ss, nodeId, apiConnectPtr, tcRef);
     return -1;
@@ -1276,7 +1327,7 @@ runBenchmark(SignalSender &ss, Uint32 nodeId,
   std::vector<AggResult> allResults;
   Uint32 nextReqCount = 0;
   rc = collectResults(ss, allResults, apiConnectPtr, tcRef, nodeId,
-                      nextReqCount);
+                      nextReqCount, receiverId, numReceivers);
   if (rc != 0) {
     releaseTcConnect(ss, nodeId, apiConnectPtr, tcRef);
     return -1;
@@ -1442,6 +1493,8 @@ int main(int argc, char **argv)
         "  --orders <N>           Number of orders (default: 1500000)\n"
         "  --lines <N>            Lines per order (default: 4)\n"
         "  --iterations <N>       Benchmark iterations (default: 3)\n"
+        "  --parallel <N>         Scan parallelism (default: 8)\n"
+        "  --receivers <N>        Number of receiver IDs (default: 1)\n"
         "  --keep-tables          Keep tables after benchmark\n"
         "  --validate             Validate results (default)\n"
         "  --no-validate          Skip validation\n"
@@ -1471,6 +1524,10 @@ int main(int argc, char **argv)
       doValidate = false;
     } else if (strcmp(argv[i], "--no-filter") == 0) {
       noFilter = true;
+    } else if (strcmp(argv[i], "--parallel") == 0 && i + 1 < argc) {
+      scanParallel = (Uint32)atoi(argv[++i]);
+    } else if (strcmp(argv[i], "--receivers") == 0 && i + 1 < argc) {
+      numReceivers = (Uint32)atoi(argv[++i]);
     }
   }
 
@@ -1481,7 +1538,8 @@ int main(int argc, char **argv)
   printf("  Connect: %s  MySQL port: %d\n", connectString, mysqlPort);
   printf("  Orders: %u  Lines/order: %u  Total lineitems: %u\n",
          numOrders, linesPerOrder, totalLineitems);
-  printf("  Iterations: %d\n\n", numIterations);
+  printf("  Iterations: %d  Parallel: %u  Receivers: %u\n\n",
+         numIterations, scanParallel, numReceivers);
 
   ndb_init();
   int result = 0;

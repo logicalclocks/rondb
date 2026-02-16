@@ -769,9 +769,12 @@ sendSetupReq(SignalSender &ss, Uint32 nodeId,
 
   ssig.set(ss, 0, DBLQH, GSN_JOIN_AGG_SETUP_REQ,
            JoinAggSetupReq::SignalLength);
-  ssig.header.m_noOfSections = 1;
+  Uint32 receiverId = FAKE_SENDER_DATA;
+  ssig.header.m_noOfSections = 2;
   ssig.ptr[0].p = aggProgram.data();
   ssig.ptr[0].sz = (Uint32)aggProgram.size();
+  ssig.ptr[1].p = &receiverId;
+  ssig.ptr[1].sz = 1;
 
   if (ss.sendSignal(nodeId, &ssig) != SEND_OK) {
     fprintf(stderr, "sendSignal SETUP_REQ failed\n");

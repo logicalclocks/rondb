@@ -108,6 +108,7 @@ class ScanTabReq {
   UintR ttlPurgeWindowSize;
   Uint32 userId;
   Uint32 userIdVersion;
+  Uint32 scanParallelism;   // Optional: when JoinAgg flag is set
 
   /**
    * Get:ers for requestInfo

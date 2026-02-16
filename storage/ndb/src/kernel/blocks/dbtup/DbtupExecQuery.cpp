@@ -5061,7 +5061,12 @@ retry:
 
     Signal *signal = req_struct->signal;
     TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
-    transIdAI->connectPtr = state->m_resultData;
+    {
+      Uint32 key_len = evict_buf[3] >> 16;
+      const char *key_data = reinterpret_cast<const char*>(&evict_buf[4]);
+      transIdAI->connectPtr =
+          state->selectReceiverData(key_data, key_len);
+    }
     transIdAI->transId[0] = state->m_transid[0];
     transIdAI->transId[1] = state->m_transid[1];
 

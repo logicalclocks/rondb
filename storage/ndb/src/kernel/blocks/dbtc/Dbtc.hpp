@@ -2002,6 +2002,7 @@ class Dbtc : public SimulatedBlock {
     // Join aggregation state (Phase 7)
     Uint32 m_aggProgramPtrI;
     Uint32 m_aggKeysSectionPtrI;
+    Uint32 m_aggReceiverIdsPtrI;
     NdbNodeBitmask m_aggNodes;
     Uint32 m_aggNodesOutstanding;
     bool m_joinAgg;
@@ -2295,7 +2296,7 @@ class Dbtc : public SimulatedBlock {
   void initScanTcrec(Signal *signal);
   Uint32 initScanrec(ScanRecordPtr, const class ScanTabReq *,
                      const UintR scanParallel, const Uint32 apiPtr[],
-                     Uint32 apiConnectPtr);
+                     Uint32 numReceiverIds, Uint32 apiConnectPtr);
   void initScanfragrec(Signal *signal);
   void releaseScanResources(Signal *, ScanRecordPtr,
                             ApiConnectRecordPtr apiConnectptr,

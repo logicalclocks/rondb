@@ -804,14 +804,14 @@ sendScanTabReq(SignalSender &ss, Uint32 nodeId,
   data[8] = apiConnectPtr;      /* buddyConPtr = self (satisfies TTL assert) */
   data[9] = 65536;              /* batch_byte_size */
   data[10] = 256;               /* first_batch_size */
+  data[15] = 1;                  /* scanParallelism (JoinAgg) */
 
   /* Sections:
    *   [0] ReceiverIds
    *   [1] AttrInfo (QueryTree)
    *   [2] KeyInfo (AggProgram, repurposed for JoinAgg)
    */
-  ssig.set(ss, 0, refToBlock(tcRef), GSN_SCAN_TABREQ,
-           ScanTabReq::StaticLength);
+  ssig.set(ss, 0, refToBlock(tcRef), GSN_SCAN_TABREQ, 16);
 
   ssig.header.m_noOfSections = 3;
   ssig.ptr[0].p = &receiverId;
