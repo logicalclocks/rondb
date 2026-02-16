@@ -306,7 +306,7 @@ buildAttrInfo()
 }
 
 /* ------------------------------------------------------------------ */
-/* Table setup via NDB API                                             */
+/* Table setup via MySQL                                               */
 /* ------------------------------------------------------------------ */
 
 struct TableMeta {
@@ -321,49 +321,51 @@ struct TableMeta {
 };
 
 static int
-createTestTable(Ndb *ndb, TableMeta &meta)
+sqlExec(MYSQL *conn, const char *query)
 {
-  NdbDictionary::Dictionary *dict = ndb->getDictionary();
-
-  /* Drop if exists */
-  dict->dropTable(TABLE_NAME);
-
-  NdbDictionary::Table tab;
-  tab.setName(TABLE_NAME);
-
-  NdbDictionary::Column colA;
-  colA.setName("a");
-  colA.setType(NdbDictionary::Column::Bigint);
-  colA.setPrimaryKey(true);
-  colA.setNullable(false);
-  tab.addColumn(colA);
-
-  NdbDictionary::Column colB;
-  colB.setName("b");
-  colB.setType(NdbDictionary::Column::Bigint);
-  colB.setPrimaryKey(false);
-  colB.setNullable(false);
-  tab.addColumn(colB);
-
-  if (dict->createTable(tab) != 0) {
-    fprintf(stderr, "createTable failed: %s\n",
-            dict->getNdbError().message);
+  if (mysql_query(conn, query) != 0) {
+    fprintf(stderr, "SQL failed: %s\n  query: %s\n",
+            mysql_error(conn), query);
     return -1;
   }
+  return 0;
+}
 
-  /* Reload to get full metadata */
-  const NdbDictionary::Table *ptab = dict->getTable(TABLE_NAME);
+static MYSQL *
+connectMysql(int mysqlPort)
+{
+  MYSQL *conn = mysql_init(nullptr);
+  if (conn == nullptr) {
+    fprintf(stderr, "mysql_init failed\n");
+    return nullptr;
+  }
+  if (mysql_real_connect(conn, "127.0.0.1", "root", "",
+                         "test", mysqlPort, nullptr, 0) == nullptr) {
+    fprintf(stderr, "mysql_real_connect failed: %s\n", mysql_error(conn));
+    mysql_close(conn);
+    return nullptr;
+  }
+  return conn;
+}
+
+static int
+getTableMeta(Ndb *ndb, const char *tableName, TableMeta &meta,
+             const char *colA, const char *colB, const char *colC = nullptr)
+{
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(tableName);
+  const NdbDictionary::Table *ptab = dict->getTable(tableName);
   if (ptab == nullptr) {
-    fprintf(stderr, "getTable failed: %s\n",
-            dict->getNdbError().message);
+    fprintf(stderr, "getTable(%s) failed: %s\n",
+            tableName, dict->getNdbError().message);
     return -1;
   }
 
   meta.tableId = ptab->getObjectId();
   meta.schemaVersion = ptab->getObjectVersion();
-  meta.attrIdA = ptab->getColumn("a")->getAttrId();
-  meta.attrIdB = ptab->getColumn("b")->getAttrId();
-  meta.attrIdC = 0;
+  meta.attrIdA = ptab->getColumn(colA)->getAttrId();
+  meta.attrIdB = ptab->getColumn(colB)->getAttrId();
+  meta.attrIdC = colC ? ptab->getColumn(colC)->getAttrId() : 0;
   meta.fragCount = ptab->getFragmentCount();
 
   meta.fragNodes.resize(meta.fragCount);
@@ -372,12 +374,27 @@ createTestTable(Ndb *ndb, TableMeta &meta)
     ptab->getFragmentNodes(f, &nodeId, 1);
     meta.fragNodes[f] = nodeId;
   }
+  return 0;
+}
+
+static int
+createTestTable(MYSQL *conn, Ndb *ndb, TableMeta &meta)
+{
+  sqlExec(conn, "DROP TABLE IF EXISTS jagg_test");
+  if (sqlExec(conn,
+        "CREATE TABLE jagg_test ("
+        "  a BIGINT NOT NULL PRIMARY KEY,"
+        "  b BIGINT NOT NULL"
+        ") ENGINE=NDB") != 0)
+    return -1;
+
+  if (getTableMeta(ndb, TABLE_NAME, meta, "a", "b") != 0) return -1;
 
   V("Table '%s': id=%u version=%u attrA=%u attrB=%u frags=%u\n",
          TABLE_NAME, meta.tableId, meta.schemaVersion,
          meta.attrIdA, meta.attrIdB, meta.fragCount);
   for (Uint32 f = 0; f < meta.fragCount; f++) {
-    V("  fragment %u → node %u\n", f, meta.fragNodes[f]);
+    V("  fragment %u -> node %u\n", f, meta.fragNodes[f]);
   }
 
   return 0;
@@ -552,13 +569,9 @@ insertManyRows(Ndb *ndb, Uint32 count)
 }
 
 static int
-dropTestTable(Ndb *ndb)
+dropTestTable(MYSQL *conn)
 {
-  NdbDictionary::Dictionary *dict = ndb->getDictionary();
-  if (dict->dropTable(TABLE_NAME) != 0) {
-    fprintf(stderr, "dropTable: %s\n", dict->getNdbError().message);
-    return -1;
-  }
+  sqlExec(conn, "DROP TABLE IF EXISTS jagg_test");
   return 0;
 }
 
@@ -569,61 +582,19 @@ dropTestTable(Ndb *ndb)
 static const char *TABLE_NAME_3COL = "jagg_test3";
 
 static int
-createTestTable3Col(Ndb *ndb, TableMeta &meta)
+createTestTable3Col(MYSQL *conn, Ndb *ndb, TableMeta &meta)
 {
-  NdbDictionary::Dictionary *dict = ndb->getDictionary();
-  dict->dropTable(TABLE_NAME_3COL);
-
-  NdbDictionary::Table tab;
-  tab.setName(TABLE_NAME_3COL);
-
-  NdbDictionary::Column colPk;
-  colPk.setName("pk");
-  colPk.setType(NdbDictionary::Column::Bigint);
-  colPk.setPrimaryKey(true);
-  colPk.setNullable(false);
-  tab.addColumn(colPk);
-
-  NdbDictionary::Column colGrp;
-  colGrp.setName("grp");
-  colGrp.setType(NdbDictionary::Column::Bigint);
-  colGrp.setPrimaryKey(false);
-  colGrp.setNullable(false);
-  tab.addColumn(colGrp);
-
-  NdbDictionary::Column colVal;
-  colVal.setName("val");
-  colVal.setType(NdbDictionary::Column::Bigint);
-  colVal.setPrimaryKey(false);
-  colVal.setNullable(false);
-  tab.addColumn(colVal);
-
-  if (dict->createTable(tab) != 0) {
-    fprintf(stderr, "createTable3Col failed: %s\n",
-            dict->getNdbError().message);
+  sqlExec(conn, "DROP TABLE IF EXISTS jagg_test3");
+  if (sqlExec(conn,
+        "CREATE TABLE jagg_test3 ("
+        "  pk BIGINT NOT NULL PRIMARY KEY,"
+        "  grp BIGINT NOT NULL,"
+        "  val BIGINT NOT NULL"
+        ") ENGINE=NDB") != 0)
     return -1;
-  }
 
-  const NdbDictionary::Table *ptab = dict->getTable(TABLE_NAME_3COL);
-  if (ptab == nullptr) {
-    fprintf(stderr, "getTable3Col failed: %s\n",
-            dict->getNdbError().message);
+  if (getTableMeta(ndb, TABLE_NAME_3COL, meta, "pk", "grp", "val") != 0)
     return -1;
-  }
-
-  meta.tableId = ptab->getObjectId();
-  meta.schemaVersion = ptab->getObjectVersion();
-  meta.attrIdA = ptab->getColumn("pk")->getAttrId();
-  meta.attrIdB = ptab->getColumn("grp")->getAttrId();
-  meta.attrIdC = ptab->getColumn("val")->getAttrId();
-  meta.fragCount = ptab->getFragmentCount();
-
-  meta.fragNodes.resize(meta.fragCount);
-  for (Uint32 f = 0; f < meta.fragCount; f++) {
-    Uint32 nodeId = 0;
-    ptab->getFragmentNodes(f, &nodeId, 1);
-    meta.fragNodes[f] = nodeId;
-  }
 
   V("Table '%s': id=%u version=%u pk=%u grp=%u val=%u frags=%u\n",
     TABLE_NAME_3COL, meta.tableId, meta.schemaVersion,
@@ -636,13 +607,9 @@ createTestTable3Col(Ndb *ndb, TableMeta &meta)
 }
 
 static int
-dropTestTable3Col(Ndb *ndb)
+dropTestTable3Col(MYSQL *conn)
 {
-  NdbDictionary::Dictionary *dict = ndb->getDictionary();
-  if (dict->dropTable(TABLE_NAME_3COL) != 0) {
-    fprintf(stderr, "dropTable3Col: %s\n", dict->getNdbError().message);
-    return -1;
-  }
+  sqlExec(conn, "DROP TABLE IF EXISTS jagg_test3");
   return 0;
 }
 
@@ -3526,13 +3493,22 @@ int main(int argc, char **argv)
   V("Connecting to cluster: %s\n", connectString);
 
   do {
+    MYSQL *conn = connectMysql(mysqlPort);
+    if (conn == nullptr) {
+      fprintf(stderr, "Cannot connect to MySQL on port %d\n", mysqlPort);
+      result = 1; break;
+    }
+    V("Connected to MySQL on port %d\n", mysqlPort);
+
     Ndb_cluster_connection con(connectString);
     if (con.connect(12, 5, 1) != 0) {
       fprintf(stderr, "Failed to connect to management server\n");
+      mysql_close(conn);
       result = 1; break;
     }
     if (con.wait_until_ready(30, 0) < 0) {
       fprintf(stderr, "Cluster not ready within 30 seconds\n");
+      mysql_close(conn);
       result = 1; break;
     }
     V("Connected to cluster\n");
@@ -3540,6 +3516,7 @@ int main(int argc, char **argv)
     Ndb ndb(&con, "test");
     if (ndb.init() != 0) {
       fprintf(stderr, "Ndb::init failed: %s\n", ndb.getNdbError().message);
+      mysql_close(conn);
       result = 1; break;
     }
 
@@ -3547,9 +3524,15 @@ int main(int argc, char **argv)
 
     /* Phase 1: 5-row tests (Tests 1, 2, 5, 6, 7, 8) */
     TableMeta meta;
-    if (createTestTable(&ndb, meta) != 0) { result = 1; break; }
-    if (queryFragInstances(mysqlPort, meta) != 0) { result = 1; break; }
-    if (insertTestData(&ndb) != 0) { result = 1; break; }
+    if (createTestTable(conn, &ndb, meta) != 0) {
+      mysql_close(conn); result = 1; break;
+    }
+    if (queryFragInstances(mysqlPort, meta) != 0) {
+      mysql_close(conn); result = 1; break;
+    }
+    if (insertTestData(&ndb) != 0) {
+      mysql_close(conn); result = 1; break;
+    }
 
     {
       SignalSender ss(&con);
@@ -3573,12 +3556,18 @@ int main(int argc, char **argv)
     }
 
     /* Phase 2: 200-row tests (Tests 3, 4, 12, 16, 17, 18) */
-    dropTestTable(&ndb);
+    dropTestTable(conn);
 
     const Uint32 MANY_ROWS = 200;
-    if (createTestTable(&ndb, meta) != 0) { result = 1; break; }
-    if (queryFragInstances(mysqlPort, meta) != 0) { result = 1; break; }
-    if (insertManyRows(&ndb, MANY_ROWS) != 0) { result = 1; break; }
+    if (createTestTable(conn, &ndb, meta) != 0) {
+      mysql_close(conn); result = 1; break;
+    }
+    if (queryFragInstances(mysqlPort, meta) != 0) {
+      mysql_close(conn); result = 1; break;
+    }
+    if (insertManyRows(&ndb, MANY_ROWS) != 0) {
+      mysql_close(conn); result = 1; break;
+    }
 
     {
       SignalSender ss(&con);
@@ -3600,11 +3589,15 @@ int main(int argc, char **argv)
       ss.unlock();
     }
 
-    dropTestTable(&ndb);
+    dropTestTable(conn);
 
     /* Phase 3: Empty table test (Test 9) */
-    if (createTestTable(&ndb, meta) != 0) { result = 1; break; }
-    if (queryFragInstances(mysqlPort, meta) != 0) { result = 1; break; }
+    if (createTestTable(conn, &ndb, meta) != 0) {
+      mysql_close(conn); result = 1; break;
+    }
+    if (queryFragInstances(mysqlPort, meta) != 0) {
+      mysql_close(conn); result = 1; break;
+    }
     /* No data inserted — table is empty */
 
     {
@@ -3614,12 +3607,18 @@ int main(int argc, char **argv)
       ss.unlock();
     }
 
-    dropTestTable(&ndb);
+    dropTestTable(conn);
 
     /* Phase 4: 3-column table tests (Tests 10, 11, 15) */
-    if (createTestTable3Col(&ndb, meta) != 0) { result = 1; break; }
-    if (queryFragInstances(mysqlPort, meta) != 0) { result = 1; break; }
-    if (insertMultiRowData(&ndb) != 0) { result = 1; break; }
+    if (createTestTable3Col(conn, &ndb, meta) != 0) {
+      mysql_close(conn); result = 1; break;
+    }
+    if (queryFragInstances(mysqlPort, meta) != 0) {
+      mysql_close(conn); result = 1; break;
+    }
+    if (insertMultiRowData(&ndb) != 0) {
+      mysql_close(conn); result = 1; break;
+    }
 
     {
       SignalSender ss(&con);
@@ -3630,11 +3629,15 @@ int main(int argc, char **argv)
       ss.unlock();
     }
 
-    dropTestTable3Col(&ndb);
+    dropTestTable3Col(conn);
 
     /* Phase 5: Single row test (Test 13) */
-    if (createTestTable(&ndb, meta) != 0) { result = 1; break; }
-    if (queryFragInstances(mysqlPort, meta) != 0) { result = 1; break; }
+    if (createTestTable(conn, &ndb, meta) != 0) {
+      mysql_close(conn); result = 1; break;
+    }
+    if (queryFragInstances(mysqlPort, meta) != 0) {
+      mysql_close(conn); result = 1; break;
+    }
     {
       /* Insert a single row: (1, 42) */
       const NdbDictionary::Table *ptab =
@@ -3657,12 +3660,18 @@ int main(int argc, char **argv)
       ss.unlock();
     }
 
-    dropTestTable(&ndb);
+    dropTestTable(conn);
 
     /* Phase 6: Negative values test (Test 14) */
-    if (createTestTable(&ndb, meta) != 0) { result = 1; break; }
-    if (queryFragInstances(mysqlPort, meta) != 0) { result = 1; break; }
-    if (insertNegativeData(&ndb) != 0) { result = 1; break; }
+    if (createTestTable(conn, &ndb, meta) != 0) {
+      mysql_close(conn); result = 1; break;
+    }
+    if (queryFragInstances(mysqlPort, meta) != 0) {
+      mysql_close(conn); result = 1; break;
+    }
+    if (insertNegativeData(&ndb) != 0) {
+      mysql_close(conn); result = 1; break;
+    }
 
     {
       SignalSender ss(&con);
@@ -3671,7 +3680,8 @@ int main(int argc, char **argv)
       ss.unlock();
     }
 
-    dropTestTable(&ndb);
+    dropTestTable(conn);
+    mysql_close(conn);
   } while (0);
 
   ndb_end(0);

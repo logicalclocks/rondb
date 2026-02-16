@@ -277,7 +277,7 @@ buildAttrInfo()
 }
 
 /* ------------------------------------------------------------------ */
-/* Table setup via NDB API                                             */
+/* Table setup via MySQL                                               */
 /* ------------------------------------------------------------------ */
 
 struct TableMeta {
@@ -291,45 +291,50 @@ struct TableMeta {
 };
 
 static int
-createTestTable(Ndb *ndb, TableMeta &meta)
+sqlExec(MYSQL *conn, const char *query)
 {
-  NdbDictionary::Dictionary *dict = ndb->getDictionary();
-  dict->dropTable(TABLE_NAME);
-
-  NdbDictionary::Table tab;
-  tab.setName(TABLE_NAME);
-
-  NdbDictionary::Column colA;
-  colA.setName("a");
-  colA.setType(NdbDictionary::Column::Bigint);
-  colA.setPrimaryKey(true);
-  colA.setNullable(false);
-  tab.addColumn(colA);
-
-  NdbDictionary::Column colB;
-  colB.setName("b");
-  colB.setType(NdbDictionary::Column::Bigint);
-  colB.setPrimaryKey(false);
-  colB.setNullable(false);
-  tab.addColumn(colB);
-
-  if (dict->createTable(tab) != 0) {
-    fprintf(stderr, "createTable failed: %s\n",
-            dict->getNdbError().message);
+  if (mysql_query(conn, query) != 0) {
+    fprintf(stderr, "SQL failed: %s\n  query: %s\n",
+            mysql_error(conn), query);
     return -1;
   }
+  return 0;
+}
 
-  const NdbDictionary::Table *ptab = dict->getTable(TABLE_NAME);
+static MYSQL *
+connectMysql(int mysqlPort)
+{
+  MYSQL *conn = mysql_init(nullptr);
+  if (conn == nullptr) {
+    fprintf(stderr, "mysql_init failed\n");
+    return nullptr;
+  }
+  if (mysql_real_connect(conn, "127.0.0.1", "root", "",
+                         "test", mysqlPort, nullptr, 0) == nullptr) {
+    fprintf(stderr, "mysql_real_connect failed: %s\n", mysql_error(conn));
+    mysql_close(conn);
+    return nullptr;
+  }
+  return conn;
+}
+
+static int
+getTableMeta(Ndb *ndb, const char *tableName, TableMeta &meta,
+             const char *colA, const char *colB)
+{
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(tableName);
+  const NdbDictionary::Table *ptab = dict->getTable(tableName);
   if (ptab == nullptr) {
-    fprintf(stderr, "getTable failed: %s\n",
-            dict->getNdbError().message);
+    fprintf(stderr, "getTable(%s) failed: %s\n",
+            tableName, dict->getNdbError().message);
     return -1;
   }
 
   meta.tableId = ptab->getObjectId();
   meta.schemaVersion = ptab->getObjectVersion();
-  meta.attrIdA = ptab->getColumn("a")->getAttrId();
-  meta.attrIdB = ptab->getColumn("b")->getAttrId();
+  meta.attrIdA = ptab->getColumn(colA)->getAttrId();
+  meta.attrIdB = ptab->getColumn(colB)->getAttrId();
   meta.fragCount = ptab->getFragmentCount();
 
   meta.fragNodes.resize(meta.fragCount);
@@ -338,6 +343,21 @@ createTestTable(Ndb *ndb, TableMeta &meta)
     ptab->getFragmentNodes(f, &nodeId, 1);
     meta.fragNodes[f] = nodeId;
   }
+  return 0;
+}
+
+static int
+createTestTable(MYSQL *conn, Ndb *ndb, TableMeta &meta)
+{
+  sqlExec(conn, "DROP TABLE IF EXISTS case_agg_test");
+  if (sqlExec(conn,
+        "CREATE TABLE case_agg_test ("
+        "  a BIGINT NOT NULL PRIMARY KEY,"
+        "  b BIGINT NOT NULL"
+        ") ENGINE=NDB") != 0)
+    return -1;
+
+  if (getTableMeta(ndb, TABLE_NAME, meta, "a", "b") != 0) return -1;
 
   V("Table '%s': id=%u version=%u attrA=%u attrB=%u frags=%u\n",
          TABLE_NAME, meta.tableId, meta.schemaVersion,
@@ -450,10 +470,9 @@ insertTestData(Ndb *ndb)
 }
 
 static void
-dropTestTable(Ndb *ndb)
+dropTestTable(MYSQL *conn)
 {
-  NdbDictionary::Dictionary *dict = ndb->getDictionary();
-  dict->dropTable(TABLE_NAME);
+  sqlExec(conn, "DROP TABLE IF EXISTS case_agg_test");
 }
 
 /* ------------------------------------------------------------------ */
@@ -961,14 +980,24 @@ int main(int argc, char **argv)
   V("Connecting to cluster: %s\n", connectString);
 
   {
+    MYSQL *conn = connectMysql(mysqlPort);
+    if (conn == nullptr) {
+      fprintf(stderr, "Cannot connect to MySQL on port %d\n", mysqlPort);
+      ndb_end(0);
+      return 1;
+    }
+    V("Connected to MySQL on port %d\n", mysqlPort);
+
     Ndb_cluster_connection con(connectString);
     if (con.connect(12, 5, 1) != 0) {
       fprintf(stderr, "Failed to connect to management server\n");
+      mysql_close(conn);
       ndb_end(0);
       return 1;
     }
     if (con.wait_until_ready(30, 0) < 0) {
       fprintf(stderr, "Cluster not ready within 30 seconds\n");
+      mysql_close(conn);
       ndb_end(0);
       return 1;
     }
@@ -977,14 +1006,21 @@ int main(int argc, char **argv)
     Ndb ndb(&con, "test");
     if (ndb.init() != 0) {
       fprintf(stderr, "Ndb::init failed: %s\n", ndb.getNdbError().message);
+      mysql_close(conn);
       ndb_end(0);
       return 1;
     }
 
     TableMeta meta;
-    if (createTestTable(&ndb, meta) != 0) { ndb_end(0); return 1; }
-    if (queryFragInstances(mysqlPort, meta) != 0) { ndb_end(0); return 1; }
-    if (insertTestData(&ndb) != 0) { ndb_end(0); return 1; }
+    if (createTestTable(conn, &ndb, meta) != 0) {
+      mysql_close(conn); ndb_end(0); return 1;
+    }
+    if (queryFragInstances(mysqlPort, meta) != 0) {
+      mysql_close(conn); ndb_end(0); return 1;
+    }
+    if (insertTestData(&ndb) != 0) {
+      mysql_close(conn); ndb_end(0); return 1;
+    }
 
     {
       SignalSender ss(&con);
@@ -999,7 +1035,8 @@ int main(int argc, char **argv)
       ss.unlock();
     }
 
-    dropTestTable(&ndb);
+    dropTestTable(conn);
+    mysql_close(conn);
   }
 
   ndb_end(0);

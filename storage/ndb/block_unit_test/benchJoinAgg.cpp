@@ -251,78 +251,81 @@ static std::vector<Uint32>
 buildAttrInfoWithLinked(Uint32 linkedAttrId, Int64 linkedValue)
 {
   const Uint32 LINKED_WORDS = 3;  /* 1 header + 2 data words for BIGINT */
-  std::vector<Uint32> ai(6 + LINKED_WORDS);
+  std::vector<Uint32> ai(6 + 1 + LINKED_WORDS);
 
   ai[0] = 0;              /* initial read section length */
   ai[1] = 1;              /* interpreter program length (ExitOK) */
   ai[2] = 0;              /* subroutine length */
   ai[3] = 0;              /* final read section length */
-  ai[4] = LINKED_WORDS;   /* linked attr section length */
+  ai[4] = 1 + LINKED_WORDS;  /* linked attr section length (paramLen + data) */
   ai[5] = INTERPRETER_EXIT_OK;
 
+  /* paramLen word — DBSPJ prepends this via T_ATTRINFO_CONSTRUCTED;
+   * the kernel skips it (sub_start + 1) before passing to AggInterpreter */
+  ai[6] = LINKED_WORDS;
+
   /* Linked attribute: AttributeHeader + BIGINT data */
-  ai[6] = (linkedAttrId << 16) | 8;  /* attrId << 16, byteSize = 8 */
+  ai[7] = (linkedAttrId << 16) | 8;  /* attrId << 16, byteSize = 8 */
   Uint32 valWords[2];
   memcpy(valWords, &linkedValue, sizeof(Int64));
-  ai[7] = valWords[0];
-  ai[8] = valWords[1];
+  ai[8] = valWords[0];
+  ai[9] = valWords[1];
 
   return ai;
 }
 
 /* ------------------------------------------------------------------ */
-/* Table setup via NDB API                                             */
+/* Table setup via MySQL                                               */
 /* ------------------------------------------------------------------ */
 
-/*
- * Create bench_lineitem with composite PK (l_orderkey, l_linenumber)
- * plus l_shipmode column.
- */
 static int
-createLineitemTable(Ndb *ndb, TableMeta &meta)
+sqlExec(MYSQL *conn, const char *query)
+{
+  if (mysql_query(conn, query) != 0) {
+    fprintf(stderr, "SQL failed: %s\n  query: %s\n",
+            mysql_error(conn), query);
+    return -1;
+  }
+  return 0;
+}
+
+static MYSQL *
+connectMysql(int mysqlPort)
+{
+  MYSQL *conn = mysql_init(nullptr);
+  if (conn == nullptr) {
+    fprintf(stderr, "mysql_init failed\n");
+    return nullptr;
+  }
+  if (mysql_real_connect(conn, "127.0.0.1", "root", "",
+                         "test", mysqlPort, nullptr, 0) == nullptr) {
+    fprintf(stderr, "mysql_real_connect failed: %s\n", mysql_error(conn));
+    mysql_close(conn);
+    return nullptr;
+  }
+  return conn;
+}
+
+static int
+loadTableMeta(Ndb *ndb, const char *tableName, TableMeta &meta)
 {
   NdbDictionary::Dictionary *dict = ndb->getDictionary();
-  dict->dropTable(LINEITEM_TABLE);
-
-  NdbDictionary::Table tab;
-  tab.setName(LINEITEM_TABLE);
-
-  NdbDictionary::Column col0;
-  col0.setName("l_orderkey");
-  col0.setType(NdbDictionary::Column::Bigint);
-  col0.setPrimaryKey(true);
-  col0.setNullable(false);
-  tab.addColumn(col0);
-
-  NdbDictionary::Column col1;
-  col1.setName("l_linenumber");
-  col1.setType(NdbDictionary::Column::Bigint);
-  col1.setPrimaryKey(true);
-  col1.setNullable(false);
-  tab.addColumn(col1);
-
-  NdbDictionary::Column col2;
-  col2.setName("l_shipmode");
-  col2.setType(NdbDictionary::Column::Bigint);
-  col2.setPrimaryKey(false);
-  col2.setNullable(false);
-  tab.addColumn(col2);
-
-  if (dict->createTable(tab) != 0) {
-    fprintf(stderr, "createTable(%s) failed: %s\n",
-            LINEITEM_TABLE, dict->getNdbError().message);
+  dict->invalidateTable(tableName);
+  const NdbDictionary::Table *ptab = dict->getTable(tableName);
+  if (ptab == nullptr) {
+    fprintf(stderr, "getTable(%s) failed: %s\n",
+            tableName, dict->getNdbError().message);
     return -1;
   }
 
-  const NdbDictionary::Table *ptab = dict->getTable(LINEITEM_TABLE);
-  if (ptab == nullptr) return -1;
-
   meta.tableId = ptab->getObjectId();
   meta.schemaVersion = ptab->getObjectVersion();
-  meta.attrIds["l_orderkey"] = ptab->getColumn("l_orderkey")->getAttrId();
-  meta.attrIds["l_linenumber"] = ptab->getColumn("l_linenumber")->getAttrId();
-  meta.attrIds["l_shipmode"] = ptab->getColumn("l_shipmode")->getAttrId();
   meta.fragCount = ptab->getFragmentCount();
+
+  for (int i = 0; i < ptab->getNoOfColumns(); i++) {
+    const NdbDictionary::Column *col = ptab->getColumn(i);
+    meta.attrIds[col->getName()] = col->getAttrId();
+  }
 
   meta.fragNodes.resize(meta.fragCount);
   for (Uint32 f = 0; f < meta.fragCount; f++) {
@@ -330,6 +333,25 @@ createLineitemTable(Ndb *ndb, TableMeta &meta)
     ptab->getFragmentNodes(f, &nodeId, 1);
     meta.fragNodes[f] = nodeId;
   }
+
+  V("Table '%s': id=%u frags=%u\n", tableName, meta.tableId, meta.fragCount);
+  return 0;
+}
+
+static int
+createLineitemTable(MYSQL *conn, Ndb *ndb, TableMeta &meta)
+{
+  sqlExec(conn, "DROP TABLE IF EXISTS bench_lineitem");
+  if (sqlExec(conn,
+        "CREATE TABLE bench_lineitem ("
+        "  l_orderkey BIGINT NOT NULL,"
+        "  l_linenumber BIGINT NOT NULL,"
+        "  l_shipmode BIGINT NOT NULL,"
+        "  PRIMARY KEY (l_orderkey, l_linenumber)"
+        ") ENGINE=NDB") != 0)
+    return -1;
+
+  if (loadTableMeta(ndb, LINEITEM_TABLE, meta) != 0) return -1;
 
   V("Table '%s': id=%u frags=%u l_orderkey=%u l_linenumber=%u l_shipmode=%u\n",
     LINEITEM_TABLE, meta.tableId, meta.fragCount,
@@ -338,53 +360,18 @@ createLineitemTable(Ndb *ndb, TableMeta &meta)
   return 0;
 }
 
-/*
- * Create bench_orders with single PK (o_orderkey) + o_orderpriority.
- */
 static int
-createOrdersTable(Ndb *ndb, TableMeta &meta)
+createOrdersTable(MYSQL *conn, Ndb *ndb, TableMeta &meta)
 {
-  NdbDictionary::Dictionary *dict = ndb->getDictionary();
-  dict->dropTable(ORDERS_TABLE);
-
-  NdbDictionary::Table tab;
-  tab.setName(ORDERS_TABLE);
-
-  NdbDictionary::Column col0;
-  col0.setName("o_orderkey");
-  col0.setType(NdbDictionary::Column::Bigint);
-  col0.setPrimaryKey(true);
-  col0.setNullable(false);
-  tab.addColumn(col0);
-
-  NdbDictionary::Column col1;
-  col1.setName("o_orderpriority");
-  col1.setType(NdbDictionary::Column::Bigint);
-  col1.setPrimaryKey(false);
-  col1.setNullable(false);
-  tab.addColumn(col1);
-
-  if (dict->createTable(tab) != 0) {
-    fprintf(stderr, "createTable(%s) failed: %s\n",
-            ORDERS_TABLE, dict->getNdbError().message);
+  sqlExec(conn, "DROP TABLE IF EXISTS bench_orders");
+  if (sqlExec(conn,
+        "CREATE TABLE bench_orders ("
+        "  o_orderkey BIGINT NOT NULL PRIMARY KEY,"
+        "  o_orderpriority BIGINT NOT NULL"
+        ") ENGINE=NDB") != 0)
     return -1;
-  }
 
-  const NdbDictionary::Table *ptab = dict->getTable(ORDERS_TABLE);
-  if (ptab == nullptr) return -1;
-
-  meta.tableId = ptab->getObjectId();
-  meta.schemaVersion = ptab->getObjectVersion();
-  meta.attrIds["o_orderkey"] = ptab->getColumn("o_orderkey")->getAttrId();
-  meta.attrIds["o_orderpriority"] = ptab->getColumn("o_orderpriority")->getAttrId();
-  meta.fragCount = ptab->getFragmentCount();
-
-  meta.fragNodes.resize(meta.fragCount);
-  for (Uint32 f = 0; f < meta.fragCount; f++) {
-    Uint32 nodeId = 0;
-    ptab->getFragmentNodes(f, &nodeId, 1);
-    meta.fragNodes[f] = nodeId;
-  }
+  if (loadTableMeta(ndb, ORDERS_TABLE, meta) != 0) return -1;
 
   V("Table '%s': id=%u frags=%u o_orderkey=%u o_orderpriority=%u\n",
     ORDERS_TABLE, meta.tableId, meta.fragCount,
@@ -584,15 +571,11 @@ insertLineitems(Ndb *ndb, Uint32 numOrders, Uint32 linesPerOrder,
 }
 
 static int
-dropTable(Ndb *ndb, const char *tableName)
+dropTable(MYSQL *conn, const char *tableName)
 {
-  NdbDictionary::Dictionary *dict = ndb->getDictionary();
-  if (dict->dropTable(tableName) != 0) {
-    fprintf(stderr, "dropTable(%s): %s\n",
-            tableName, dict->getNdbError().message);
-    return -1;
-  }
-  return 0;
+  char query[256];
+  snprintf(query, sizeof(query), "DROP TABLE IF EXISTS %s", tableName);
+  return sqlExec(conn, query);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1286,45 +1269,49 @@ int main(int argc, char **argv)
 
   ndb_init();
   int result = 0;
+  MYSQL *conn = nullptr;
 
   {
     Ndb_cluster_connection con(connectString);
     if (con.connect(12, 5, 1) != 0) {
       fprintf(stderr, "Failed to connect to management server\n");
-      ndb_end(0);
-      return 1;
+      result = 1; goto done;
     }
     if (con.wait_until_ready(30, 0) < 0) {
       fprintf(stderr, "Cluster not ready\n");
-      ndb_end(0);
-      return 1;
+      result = 1; goto done;
     }
     V("Connected to cluster\n");
 
     Ndb ndb(&con, "test");
     if (ndb.init() != 0) {
       fprintf(stderr, "Ndb::init: %s\n", ndb.getNdbError().message);
-      ndb_end(0);
-      return 1;
+      result = 1; goto done;
     }
 
     NdbRestarter restarter(connectString);
 
     /* ---- Create tables ---- */
+    conn = connectMysql(mysqlPort);
+    if (conn == nullptr) {
+      fprintf(stderr, "Cannot connect to MySQL on port %d\n", mysqlPort);
+      result = 1; goto done;
+    }
+
     TableMeta lineitemMeta, ordersMeta;
 
     printf("Creating tables...\n");
-    if (createLineitemTable(&ndb, lineitemMeta) != 0) {
-      ndb_end(0); return 1;
+    if (createLineitemTable(conn, &ndb, lineitemMeta) != 0) {
+      result = 1; goto done;
     }
     if (queryFragInstances(mysqlPort, LINEITEM_TABLE, lineitemMeta) != 0) {
-      ndb_end(0); return 1;
+      result = 1; goto done;
     }
-    if (createOrdersTable(&ndb, ordersMeta) != 0) {
-      ndb_end(0); return 1;
+    if (createOrdersTable(conn, &ndb, ordersMeta) != 0) {
+      result = 1; goto done;
     }
     if (queryFragInstances(mysqlPort, ORDERS_TABLE, ordersMeta) != 0) {
-      ndb_end(0); return 1;
+      result = 1; goto done;
     }
 
     /* ---- Load data ---- */
@@ -1332,12 +1319,12 @@ int main(int argc, char **argv)
            numOrders, totalLineitems);
     auto tLoad = Clock::now();
 
-    if (insertOrders(&ndb, numOrders) != 0) { ndb_end(0); return 1; }
+    if (insertOrders(&ndb, numOrders) != 0) { result = 1; goto done; }
 
     std::vector<LineitemRow> lineitemRows;
     if (insertLineitems(&ndb, numOrders, linesPerOrder,
                         numShipmodes, lineitemRows) != 0) {
-      ndb_end(0); return 1;
+      result = 1; goto done;
     }
 
     printf("Data loaded in %.2f ms\n", elapsedMs(tLoad, Clock::now()));
@@ -1347,7 +1334,7 @@ int main(int argc, char **argv)
     /* ---- Pre-compute hash/fragment targets (NDB API, outside SS lock) ---- */
     std::vector<LookupTarget> targets;
     if (precomputeTargets(&ndb, lineitemRows, ordersMeta, targets) != 0) {
-      ndb_end(0); return 1;
+      result = 1; goto done;
     }
     V("Pre-computed %zu lookup targets\n", targets.size());
 
@@ -1365,6 +1352,7 @@ int main(int argc, char **argv)
       {
         int dump[1] = {DumpStateOrd::LqhSkipTcNodeCheck};
         restarter.dumpStateAllNodes(dump, 1);
+        NdbSleep_MilliSleep(100);
         V("DUMP LqhSkipTcNodeCheck sent to all nodes\n");
       }
 
@@ -1394,10 +1382,12 @@ int main(int argc, char **argv)
 
     /* ---- Cleanup ---- */
     printf("\nCleaning up...\n");
-    dropTable(&ndb, LINEITEM_TABLE);
-    dropTable(&ndb, ORDERS_TABLE);
+    dropTable(conn, LINEITEM_TABLE);
+    dropTable(conn, ORDERS_TABLE);
   }
 
+done:
+  if (conn != nullptr) mysql_close(conn);
   ndb_end(0);
 
   printf(result == 0 ? "\n*** ALL ITERATIONS PASSED ***\n"
