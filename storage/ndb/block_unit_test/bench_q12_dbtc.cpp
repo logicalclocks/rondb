@@ -1341,6 +1341,7 @@ runBenchmark(SignalSender &ss, Uint32 nodeId,
   auto t3 = Clock::now();
 
   /* Merge results across nodes */
+  double sqlMs = 0;
   std::map<std::string, Int64> actualHigh, actualLow;
   Uint32 totalGroups = 0;
   for (const auto &res : allResults) {
@@ -1386,8 +1387,9 @@ runBenchmark(SignalSender &ss, Uint32 nodeId,
       }
     }
 
-    /* SQL verification */
-    if (failures == 0 && g_mysql_conn != nullptr) {
+    /* SQL verification and timing */
+    if (g_mysql_conn != nullptr) {
+      auto tSql0 = Clock::now();
       if (mysql_query(g_mysql_conn,
               "SELECT l.l_shipmode, "
               "SUM(CASE WHEN o.o_orderpriority IN ('1-URGENT','2-HIGH') "
@@ -1431,6 +1433,8 @@ runBenchmark(SignalSender &ss, Uint32 nodeId,
           }
         }
       }
+      auto tSql1 = Clock::now();
+      sqlMs = elapsedMs(tSql0, tSql1);
     }
   }
 
@@ -1448,6 +1452,8 @@ runBenchmark(SignalSender &ss, Uint32 nodeId,
   printf("  Scan+Join: %8.2f ms\n", scanMs + resultMs);
   printf("  Release:   %8.2f ms\n", releaseMs);
   printf("  Total:     %8.2f ms\n", totalMs);
+  if (sqlMs > 0)
+    printf("  SQL query: %8.2f ms\n", sqlMs);
 
   if (verbose) {
     for (const auto &kv : actualHigh) {

@@ -182,6 +182,7 @@ struct BenchStats {
   double completeMs;
   double releaseMs;
   double totalMs;
+  double sqlMs;
   Uint32 lookupCount;
   double lookupOpsPerSec;
 };
@@ -215,6 +216,7 @@ printSummary(const std::vector<BenchStats> &runs)
   stats([](const BenchStats &r){ return r.completeMs; }, "Complete ms:");
   stats([](const BenchStats &r){ return r.releaseMs; }, "Release ms:");
   stats([](const BenchStats &r){ return r.totalMs; }, "Total ms:");
+  stats([](const BenchStats &r){ return r.sqlMs; }, "SQL query ms:");
   stats([](const BenchStats &r){ return r.lookupOpsPerSec; }, "Lookup ops/s:");
 }
 
@@ -1397,8 +1399,9 @@ runBenchmark(SignalSender &ss,
       }
     }
 
-    /* SQL verification */
-    if (failures == 0 && g_mysql_conn != nullptr) {
+    /* SQL verification and timing */
+    if (g_mysql_conn != nullptr) {
+      auto tSql0 = Clock::now();
       if (mysql_query(g_mysql_conn,
               "SELECT l.l_shipmode, "
               "SUM(CASE WHEN o.o_orderpriority IN ('1-URGENT','2-HIGH') "
@@ -1442,6 +1445,8 @@ runBenchmark(SignalSender &ss,
           }
         }
       }
+      auto tSql1 = Clock::now();
+      stats.sqlMs = elapsedMs(tSql0, tSql1);
     }
   }
 
@@ -1451,6 +1456,7 @@ runBenchmark(SignalSender &ss,
   stats.completeMs = elapsedMs(t6, t7);
   stats.releaseMs = elapsedMs(t8, t9);
   stats.totalMs = elapsedMs(t0, t9);
+  /* stats.sqlMs set inside SQL verification block, default 0 if skipped */
   stats.lookupCount = sentCount;
   stats.lookupOpsPerSec = (stats.lookupMs > 0) ?
     (sentCount / (stats.lookupMs / 1000.0)) : 0;
@@ -1467,6 +1473,8 @@ runBenchmark(SignalSender &ss,
          stats.completeMs, totalGroups);
   printf("  Release:   %8.2f ms\n", stats.releaseMs);
   printf("  Total:     %8.2f ms\n", stats.totalMs);
+  if (stats.sqlMs > 0)
+    printf("  SQL query: %8.2f ms\n", stats.sqlMs);
 
   if (verbose) {
     std::map<std::string, std::pair<Int64, Int64>> merged;
