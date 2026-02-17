@@ -832,7 +832,8 @@ RonSQLPreparer::compile()
                   &m_columns,
                   m_column_map,
                   m_conf.output_format,
-                  m_conf.err_stream);
+                  m_conf.err_stream,
+                  m_context.ast_root.limit);
 }
 
 void
@@ -2083,6 +2084,10 @@ RonSQLPreparer::print()
         (ascending ? " ASC" : " DESC") << '\n';
       orderby = orderby->next;
     }
+  }
+  if (ast_root.limit >= 0)
+  {
+    out << "LIMIT " << ast_root.limit << '\n';
   }
 
   out << '\n';
