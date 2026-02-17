@@ -2447,6 +2447,13 @@ int NdbQueryPKLookupOperationDefImpl ::serializeOperation(
     requestInfo |= DABits::NI_ANTI_JOIN;
   }
 
+  if (m_queryHasAggregation) {
+    requestInfo |= DABits::NI_AGGREGATE;
+    if (m_isAggregateLeaf) {
+      requestInfo |= DABits::NI_AGGREGATE_LEAF;
+    }
+  }
+
   /**
    * NOTE: Order of sections within the optional part is fixed as:
    *    Part1:  'NI_HAS_PARENT'
@@ -2525,6 +2532,10 @@ int NdbQueryIndexOperationDefImpl ::serializeOperation(
       requestInfo |= DABits::NI_ANTI_JOIN;
     }
 
+    if (m_queryHasAggregation) {
+      requestInfo |= DABits::NI_AGGREGATE;
+    }
+
     // Optional part1: Make list of parent nodes.
     assert(getInternalOpNo() > 0);
     requestInfo |= appendParentList(serializedDef);
@@ -2578,6 +2589,13 @@ int NdbQueryIndexOperationDefImpl ::serializeOperation(
 
   // Always INNER_JOINed with its index parent
   requestInfo |= DABits::NI_INNER_JOIN;
+
+  if (m_queryHasAggregation) {
+    requestInfo |= DABits::NI_AGGREGATE;
+    if (m_isAggregateLeaf) {
+      requestInfo |= DABits::NI_AGGREGATE_LEAF;
+    }
+  }
 
   /**
    * NOTE: Order of sections within the optional part is fixed as:
@@ -2673,6 +2691,13 @@ int NdbQueryScanOperationDefImpl::serialize(const Ndb *ndb,
   }
   if (getMatchType() & NdbQueryOptions::MatchNullOnly) {
     requestInfo |= DABits::NI_ANTI_JOIN;
+  }
+
+  if (m_queryHasAggregation) {
+    requestInfo |= DABits::NI_AGGREGATE;
+    if (m_isAggregateLeaf) {
+      requestInfo |= DABits::NI_AGGREGATE_LEAF;
+    }
   }
 
   // Optional part1: Make list of parent nodes.
