@@ -145,7 +145,7 @@ extern void rsqlp_error(RSQLP_LTYPE* yylloc, yyscan_t yyscanner, const char* s);
 %token<bival> T_INT
 %token<fpval> T_FLOAT
 %token T_COUNT T_MAX T_MIN T_SUM T_AVG T_LEFT T_RIGHT
-%token T_EXPLAIN T_SELECT T_FROM T_GROUP T_BY T_ORDER T_ASC T_DESC T_AS T_WHERE
+%token T_EXPLAIN T_SELECT T_FROM T_GROUP T_BY T_ORDER T_ASC T_DESC T_AS T_WHERE T_LIMIT
 %token T_SEMICOLON
 %token T_OR T_XOR T_AND T_NOT T_EQUALS T_GE T_GT T_LE T_LT T_NOT_EQUALS T_IS T_NULL T_BITWISE_OR T_BITWISE_AND T_BITSHIFT_LEFT T_BITSHIFT_RIGHT T_PLUS T_MINUS T_MULTIPLY T_SLASH T_DIV T_MODULO T_BITWISE_XOR T_EXCLAMATION
 %token T_INTERVAL T_DATE_ADD T_DATE_SUB T_EXTRACT T_MICROSECOND T_SECOND T_MINUTE T_HOUR T_DAY T_WEEK T_MONTH T_QUARTER T_YEAR T_SECOND_MICROSECOND T_MINUTE_MICROSECOND T_MINUTE_SECOND T_HOUR_MICROSECOND T_HOUR_SECOND T_HOUR_MINUTE T_DAY_MICROSECOND T_DAY_SECOND T_DAY_MINUTE T_DAY_HOUR T_YEAR_MONTH
@@ -207,13 +207,14 @@ extern void rsqlp_error(RSQLP_LTYPE* yylloc, yyscan_t yyscanner, const char* s);
 %type<tokenkindval> aggfun interval_type
 %type<arith_expr> arith_expr
 %type<conditional_expression> where_opt cond_expr
+%type<bival> limit_opt
 
 %start selectstatement
 
 %%
 
 selectstatement:
-  explain_opt T_SELECT outputlist T_FROM identifier_c where_opt groupby_opt orderby_opt T_SEMICOLON
+  explain_opt T_SELECT outputlist T_FROM identifier_c where_opt groupby_opt orderby_opt limit_opt T_SEMICOLON
   {
     context->ast_root.do_explain = $1;
     context->ast_root.outputs = $3.head;
@@ -221,6 +222,7 @@ selectstatement:
     context->ast_root.where_expression = $6;
     context->ast_root.groupby_columns = $7;
     context->ast_root.orderby_columns = $8;
+    context->ast_root.limit = $9;
     /*
      * These asserts make sure the definition of TokenKind matches both the
      * yychar variable in RonSQLzparser.y.cpp:rsqlp_parse() and the underlying
@@ -407,6 +409,10 @@ orderby_col:
   identifier_c                          { initptr($$); $$->col_idx = context->column_name_to_idx($1); $$->ascending = true; $$->next = NULL; }
 | identifier_c T_ASC                    { initptr($$); $$->col_idx = context->column_name_to_idx($1); $$->ascending = true; $$->next = NULL; }
 | identifier_c T_DESC                   { initptr($$); $$->col_idx = context->column_name_to_idx($1); $$->ascending = false; $$->next = NULL; }
+
+limit_opt:
+  %empty                                { $$ = -1; }
+| T_LIMIT T_INT                         { $$ = $2; }
 
 %%
 

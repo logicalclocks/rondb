@@ -304,5 +304,60 @@ Number of output lines, including header: 769
 
 
 
+LIMIT with ORDER BY:
+== Query ==
+SELECT cchar as char_gr
+, sum(uint64+uint8)
+, min(cdouble) AS mindbl
+FROM api_scan
+WHERE sint8 = 66
+GROUP BY cchar
+ORDER BY cchar
+LIMIT 3;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+LIMIT 0 returns empty result:
+== Query ==
+SELECT cchar as char_gr
+, count(*)
+FROM api_scan
+GROUP BY cchar
+ORDER BY cchar
+LIMIT 0;
+
+Number of output lines, including header: 0
+
+== Diff ==
+--- mysql.out
++++ ronsql.out
+@@ -0,0 +1 @@
++char_gr	count(*)
+==========
+
+
+
+LIMIT larger than result set:
+== Query ==
+SELECT cchar as char_gr
+, max(sint8)
+FROM api_scan
+WHERE sint8 = 66
+GROUP BY cchar
+ORDER BY cchar
+LIMIT 1000;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
 Cleanup
 DROP TABLE api_scan;

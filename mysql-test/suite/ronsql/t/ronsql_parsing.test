@@ -610,3 +610,28 @@ group by col1;
 EOF
 --exec $PARSE_TEST_QUERY_FILE
 --remove_file $QUERY_FILE
+
+--echo ===== LIMIT =====
+--exec $PARSE_TEST 'select col1, max(b) from tbl group by col1 order by col1 limit 10;'
+
+--echo ===== LIMIT 0 =====
+--exec $PARSE_TEST 'select col1, max(b) from tbl group by col1 limit 0;'
+
+--echo ===== LIMIT without ORDER BY =====
+--exec $PARSE_TEST 'select col1, max(b) from tbl group by col1 limit 5;'
+
+--echo ===== LIMIT with negative value =====
+--error 1
+--exec $PARSE_TEST 'select col1, max(b) from tbl group by col1 limit -5;'
+
+--echo ===== LIMIT without value =====
+--error 1
+--exec $PARSE_TEST 'select col1, max(b) from tbl group by col1 limit;'
+
+--echo ===== LIMIT with non-integer =====
+--error 1
+--exec $PARSE_TEST 'select col1, max(b) from tbl group by col1 limit abc;'
+
+--echo ===== LIMIT before ORDER BY =====
+--error 1
+--exec $PARSE_TEST 'select col1, max(b) from tbl group by col1 limit 5 order by col1;'
