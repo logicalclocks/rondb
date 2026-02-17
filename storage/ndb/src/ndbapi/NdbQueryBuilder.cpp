@@ -33,6 +33,7 @@
 
 #include <NdbInterpretedCode.hpp>
 #include <NdbRecord.hpp>
+#include <NdbAggregator.hpp>
 #include "AttributeHeader.hpp"
 #include "NdbDictionaryImpl.hpp"
 #include "NdbOut.hpp"
@@ -432,6 +433,35 @@ int NdbQueryOptions::setInterpretedCode(const NdbInterpretedCode &code) {
   return m_pimpl->copyInterpretedCode(code);
 }
 
+int NdbQueryOptions::setAggregation(const NdbAggregator &agg) {
+  if (m_pimpl == &defaultOptions) {
+    m_pimpl = new NdbQueryOptionsImpl;
+    if (unlikely(m_pimpl == nullptr)) {
+      return Err_MemoryAlloc;
+    }
+  }
+  return m_pimpl->copyAggregation(agg);
+}
+
+int NdbQueryOptions::addLinkedProjection(const NdbLinkedOperand *operand) {
+  if (unlikely(operand == nullptr)) {
+    return QRY_REQ_ARG_IS_NULL;
+  }
+  if (m_pimpl == &defaultOptions) {
+    m_pimpl = new NdbQueryOptionsImpl;
+    if (unlikely(m_pimpl == nullptr)) {
+      return Err_MemoryAlloc;
+    }
+  }
+  const NdbLinkedOperandImpl *impl =
+      static_cast<const NdbLinkedOperandImpl *>(&operand->getImpl());
+  if (unlikely(m_pimpl->m_linkedProjection.push_back(impl) != 0)) {
+    assert(errno == ENOMEM);
+    return Err_MemoryAlloc;
+  }
+  return 0;
+}
+
 int NdbQueryOptions::setParameters(const NdbQueryOperand *const parameters[]) {
   if (m_pimpl == &defaultOptions) {
     m_pimpl = new NdbQueryOptionsImpl;
@@ -458,7 +488,10 @@ int NdbQueryOptions::setParameters(const NdbQueryOperand *const parameters[]) {
   return 0;
 }
 
-NdbQueryOptionsImpl::~NdbQueryOptionsImpl() { delete m_interpretedCode; }
+NdbQueryOptionsImpl::~NdbQueryOptionsImpl() {
+  delete m_interpretedCode;
+  delete[] m_aggProgramBuffer;
+}
 
 NdbQueryOptionsImpl::NdbQueryOptionsImpl(const NdbQueryOptionsImpl &src)
     : m_matchType(src.m_matchType),
@@ -467,9 +500,24 @@ NdbQueryOptionsImpl::NdbQueryOptionsImpl(const NdbQueryOptionsImpl &src)
       m_firstUpper(src.m_firstUpper),
       m_firstInner(src.m_firstInner),
       m_interpretedCode(nullptr),
-      m_parameters(src.m_parameters) {
+      m_parameters(src.m_parameters),
+      m_aggProgramBuffer(nullptr),
+      m_aggProgramLen(src.m_aggProgramLen),
+      m_aggNGroupByCols(src.m_aggNGroupByCols),
+      m_aggDiskColumns(src.m_aggDiskColumns),
+      m_aggTable(src.m_aggTable),
+      m_linkedProjection(src.m_linkedProjection) {
   if (src.m_interpretedCode != nullptr) {
     copyInterpretedCode(*src.m_interpretedCode);
+  }
+  if (src.m_aggProgramBuffer != nullptr && src.m_aggProgramLen > 0) {
+    m_aggProgramBuffer = new Uint32[src.m_aggProgramLen];
+    if (likely(m_aggProgramBuffer != nullptr)) {
+      memcpy(m_aggProgramBuffer, src.m_aggProgramBuffer,
+             src.m_aggProgramLen * sizeof(Uint32));
+    } else {
+      m_aggProgramLen = 0;
+    }
   }
 }
 
@@ -501,6 +549,35 @@ int NdbQueryOptionsImpl::copyInterpretedCode(const NdbInterpretedCode &src) {
   if (m_interpretedCode) delete m_interpretedCode;
 
   m_interpretedCode = interpretedCode;
+  return 0;
+}
+
+/*
+ * Deep-copy the aggregation program buffer from a finalized NdbAggregator.
+ */
+int NdbQueryOptionsImpl::copyAggregation(const NdbAggregator &src) {
+  if (unlikely(!src.finalized())) {
+    return Err_FinaliseNotCalled;
+  }
+  const Uint32 len = src.instructions_length();
+  if (len == 0) {
+    return 0;
+  }
+
+  Uint32 *buffer = new Uint32[len];
+  if (unlikely(buffer == nullptr)) {
+    return Err_MemoryAlloc;
+  }
+  memcpy(buffer, src.buffer(), len * sizeof(Uint32));
+
+  /* Replace existing aggregation program */
+  delete[] m_aggProgramBuffer;
+
+  m_aggProgramBuffer = buffer;
+  m_aggProgramLen = len;
+  m_aggNGroupByCols = src.n_gb_cols();
+  m_aggDiskColumns = src.disk_columns();
+  m_aggTable = src.table_impl();
   return 0;
 }
 

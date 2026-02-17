@@ -281,11 +281,27 @@ class NdbQueryOptionsImpl {
         m_firstUpper(nullptr),
         m_firstInner(nullptr),
         m_interpretedCode(nullptr),
-        m_parameters(0) {}
+        m_parameters(0),
+        m_aggProgramBuffer(nullptr),
+        m_aggProgramLen(0),
+        m_aggNGroupByCols(0),
+        m_aggDiskColumns(false),
+        m_aggTable(nullptr),
+        m_linkedProjection(0) {}
   NdbQueryOptionsImpl(const NdbQueryOptionsImpl &);
   ~NdbQueryOptionsImpl();
 
   NdbQueryOptions::ScanOrdering getOrdering() const { return m_scanOrder; }
+
+  bool hasAggregation() const { return m_aggProgramBuffer != nullptr; }
+  const Uint32 *getAggProgramBuffer() const { return m_aggProgramBuffer; }
+  Uint32 getAggProgramLen() const { return m_aggProgramLen; }
+  Uint32 getAggNGroupByCols() const { return m_aggNGroupByCols; }
+  bool getAggDiskColumns() const { return m_aggDiskColumns; }
+  const NdbTableImpl *getAggTable() const { return m_aggTable; }
+  const Vector<const NdbLinkedOperandImpl *> &getLinkedProjection() const {
+    return m_linkedProjection;
+  }
 
  private:
   NdbQueryOptions::MatchType m_matchType;
@@ -296,11 +312,27 @@ class NdbQueryOptionsImpl {
   const NdbInterpretedCode *m_interpretedCode;
   Vector<const NdbQueryOperandImpl *> m_parameters;
 
+  // Aggregation program (deep-copied from NdbAggregator)
+  Uint32 *m_aggProgramBuffer;
+  Uint32 m_aggProgramLen;
+  Uint32 m_aggNGroupByCols;
+  bool m_aggDiskColumns;
+  const NdbTableImpl *m_aggTable;
+
+  // Linked operands for parent column projection in aggregation
+  Vector<const NdbLinkedOperandImpl *> m_linkedProjection;
+
   /**
    * Assign NdbInterpretedCode by taking a deep copy of 'src'
    * @return possible error code.
    */
   int copyInterpretedCode(const NdbInterpretedCode &src);
+
+  /**
+   * Deep-copy aggregation program from a finalized NdbAggregator.
+   * @return possible error code.
+   */
+  int copyAggregation(const NdbAggregator &src);
 
   NdbQueryOptionsImpl &operator=(const NdbQueryOptionsImpl &);  // Not impl.
 };

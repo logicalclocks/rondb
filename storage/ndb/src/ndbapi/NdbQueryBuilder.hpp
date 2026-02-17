@@ -35,6 +35,7 @@
 // BUH!
 
 class Ndb;
+class NdbAggregator;
 class NdbQueryDef;
 class NdbQueryDefImpl;
 class NdbQueryBuilderImpl;
@@ -228,6 +229,30 @@ class NdbQueryOptions {
    * @return 0 if ok, -1 in case of error (call getNdbError() for details.)
    */
   int setInterpretedCode(const class NdbInterpretedCode &code);
+
+  /**
+   * Attach an aggregation program to this operation, making it the
+   * "aggregate leaf" of a pushed join query. Only one operation in the
+   * query may have aggregation, and it must not be the root.
+   *
+   * The NdbAggregator must be Finalize()'d before calling this method.
+   * The program buffer is deep-copied internally, so the NdbAggregator
+   * may be destroyed after this call returns.
+   *
+   * @param agg A finalized NdbAggregator defining the aggregation program.
+   * @return 0 if ok, -1 in case of error.
+   */
+  int setAggregation(const NdbAggregator &agg);
+
+  /**
+   * Request that a linked column from a parent operation be included in
+   * the SPJ projection. Required when the aggregation program references
+   * parent columns (e.g., GROUP BY on a parent column).
+   *
+   * @param operand A linked operand from NdbQueryBuilder::linkedValue().
+   * @return 0 if ok, -1 in case of error.
+   */
+  int addLinkedProjection(const NdbLinkedOperand *operand);
 
   int setParameters(const NdbQueryOperand *const parameters[]);
 
