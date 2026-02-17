@@ -3446,14 +3446,36 @@ int NdbQueryImpl::doSend(int nodeId, bool lastFlag) {
      * Section 0 : List of receiver Ids NDBAPI has allocated
      *             for the scan
      * Section 1 : ATTRINFO section
-     * Section 2 : Optional KEYINFO section, or agg program for JoinAgg
+     * Section 2 : Optional KEYINFO section.
+     *             For JoinAgg: [boundsLen, bounds..., aggProgram...]
      */
+
+    /**
+     * For JoinAgg queries, section 2 carries both optional bounds
+     * and the aggregation program in a combined format:
+     *   Word 0:              boundsLen (0 if no bounds)
+     *   Words 1..boundsLen:  bounds data (from m_keyInfo)
+     *   Remaining words:     aggregation program
+     * DBTC parses this header to split bounds from agg program.
+     */
+    Uint32Buffer combinedAggSec2;
+    if (m_hasAggregation) {
+      assert(m_aggProgram.getSize() > 0);
+      const Uint32 boundsLen = m_keyInfo.getSize();
+      combinedAggSec2.append(boundsLen);
+      if (boundsLen > 0) {
+        combinedAggSec2.append(m_keyInfo);
+      }
+      combinedAggSec2.append(m_aggProgram);
+      assert(!combinedAggSec2.isMemoryExhausted());
+    }
+
     GenericSectionPtr secs[3];
     InitialReceiverIdIterator receiverIdIter(m_workers, m_workerCount);
     LinearSectionIterator attrInfoIter(m_attrInfo.addr(), m_attrInfo.getSize());
     LinearSectionIterator keyInfoIter(m_keyInfo.addr(), m_keyInfo.getSize());
-    LinearSectionIterator aggProgramIter(m_aggProgram.addr(),
-                                         m_aggProgram.getSize());
+    LinearSectionIterator combinedAggIter(combinedAggSec2.addr(),
+                                          combinedAggSec2.getSize());
 
     secs[0].sectionIter = &receiverIdIter;
     secs[0].sz = m_workerCount;
@@ -3463,15 +3485,8 @@ int NdbQueryImpl::doSend(int nodeId, bool lastFlag) {
 
     Uint32 numSections = 2;
     if (m_hasAggregation) {
-      /**
-       * For JoinAgg queries, section 2 carries the aggregation program.
-       * DBTC interprets entire section 2 as the agg program when
-       * JoinAgg flag is set. Bounds (for ordered index scans) and
-       * agg program coexistence via a header is handled in a later step.
-       */
-      assert(m_aggProgram.getSize() > 0);
-      secs[2].sectionIter = &aggProgramIter;
-      secs[2].sz = m_aggProgram.getSize();
+      secs[2].sectionIter = &combinedAggIter;
+      secs[2].sz = combinedAggSec2.getSize();
       numSections = 3;
     } else if (m_keyInfo.getSize() > 0) {
       secs[2].sectionIter = &keyInfoIter;

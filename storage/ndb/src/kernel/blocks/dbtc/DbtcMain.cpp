@@ -16063,16 +16063,59 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
     jamDebug();
     /* We keep the AttrInfo and KeyInfo sections */
     scanptr.p->scanAttrInfoPtr = handle.m_ptr[ScanTabReq::AttrInfoSectionNum].i;
-    if (keyLen) {
+    if (ScanTabReq::getJoinAggFlag(ri) && keyLen) {
+      jam();
+      /**
+       * JoinAgg: Section 2 has combined format:
+       *   Word 0:              boundsLen (0 if no bounds)
+       *   Words 1..boundsLen:  bounds data
+       *   Remaining words:     aggregation program
+       * Parse this header to split bounds from agg program.
+       */
+      scanptr.p->m_joinAgg = true;
+      scanptr.p->scanKeyInfoPtr = RNIL;
+      scanptr.p->m_aggProgramPtrI = RNIL;
+
+      SectionReader reader(handle.m_ptr[ScanTabReq::KeyInfoSectionNum].i,
+                           getSectionSegmentPool());
+      Uint32 boundsLen;
+      ndbrequire(reader.getWord(&boundsLen));
+      ndbrequire(1 + boundsLen <= keyLen);
+
+      if (boundsLen > 0) {
+        /* Extract bounds into scanKeyInfoPtr */
+        Uint32 remaining = boundsLen;
+        while (remaining > 0) {
+          const Uint32 *readPtr;
+          Uint32 actualLen;
+          ndbrequire(reader.getWordsPtr(remaining, readPtr, actualLen));
+          ndbrequire(appendToSection(scanptr.p->scanKeyInfoPtr,
+                                     readPtr, actualLen));
+          remaining -= actualLen;
+        }
+      }
+
+      /* Remaining words = aggregation program */
+      const Uint32 aggLen = keyLen - 1 - boundsLen;
+      if (aggLen > 0) {
+        Uint32 remaining = aggLen;
+        while (remaining > 0) {
+          const Uint32 *readPtr;
+          Uint32 actualLen;
+          ndbrequire(reader.getWordsPtr(remaining, readPtr, actualLen));
+          ndbrequire(appendToSection(scanptr.p->m_aggProgramPtrI,
+                                     readPtr, actualLen));
+          remaining -= actualLen;
+        }
+      }
+
+      /* Release original combined section */
+      releaseSection(handle.m_ptr[ScanTabReq::KeyInfoSectionNum].i);
+      handle.m_ptr[ScanTabReq::KeyInfoSectionNum].i = RNIL;
+      handle.m_ptr[ScanTabReq::KeyInfoSectionNum].sz = 0;
+    } else if (keyLen) {
       jamDebug();
       scanptr.p->scanKeyInfoPtr = handle.m_ptr[ScanTabReq::KeyInfoSectionNum].i;
-      if (ScanTabReq::getJoinAggFlag(ri)) {
-        jam();
-        scanptr.p->m_joinAgg = true;
-        scanptr.p->m_aggProgramPtrI =
-            handle.m_ptr[ScanTabReq::KeyInfoSectionNum].i;
-        scanptr.p->scanKeyInfoPtr = RNIL;
-      }
     }
   } else {
     jam();
