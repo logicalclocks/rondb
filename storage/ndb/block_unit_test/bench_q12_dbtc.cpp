@@ -193,7 +193,7 @@ struct TableMeta {
  *   SUM(CASE WHEN ... THEN 0 ELSE 1)
  */
 static std::vector<Uint32>
-buildAggProgram_Q12(Uint32 linkedShipmodeAttrId, Uint32 localPriorityAttrId)
+buildAggProgram_Q12(Uint32 /*linkedShipmodeAttrId*/, Uint32 localPriorityAttrId)
 {
   const Uint32 EMB_LEN = 18;
   const Uint32 AGG_AFTER = 17;
@@ -206,7 +206,7 @@ buildAggProgram_Q12(Uint32 linkedShipmodeAttrId, Uint32 localPriorityAttrId)
   prog[2] = PUSHDOWN_AGGREGATION_VERSION;
   prog[3] = prog[4] = prog[5] = prog[6] = prog[7] = 0;
 
-  prog[8] = (LINKED_COL_FLAG | linkedShipmodeAttrId) << 16;
+  prog[8] = (LINKED_COL_FLAG | 0) << 16;  /* linked pos 0 = l_shipmode */
 
   prog[9] = (kOpEmbeddedInterp << 26) | EMB_LEN;
 

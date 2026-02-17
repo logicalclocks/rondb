@@ -36,6 +36,7 @@
 #include <ndb_opts.h>
 #include <NdbApi.hpp>
 #include <mysql.h>
+#include <decimal_utils.hpp>
 
 #include <cassert>
 #include <chrono>
@@ -67,6 +68,34 @@ static Uint32 detHash(Uint32 a, Uint32 b)
   h *= 0x45d9f3b;
   h ^= h >> 16;
   return h;
+}
+
+/* ------------------------------------------------------------------ */
+/* Helpers: DECIMAL and VARCHAR setValue for NDB API                    */
+/* ------------------------------------------------------------------ */
+
+static void
+setDecimal(NdbOperation *op, const char *col, const char *str)
+{
+  /* DECIMAL(15,2): 13 integral (9+4 → 4+2 bytes) + 2 frac (1 byte) = 7 bytes */
+  const int PREC = 15, SCALE = 2, BIN_LEN = 7;
+  char bin[BIN_LEN];
+  int rc = decimal_str2bin(str, (int)strlen(str), PREC, SCALE, bin, BIN_LEN);
+  (void)rc;
+  assert(rc == E_DEC_OK || rc == E_DEC_TRUNCATED);
+  op->setValue(col, bin, BIN_LEN);
+}
+
+static void
+setVarchar(NdbOperation *op, const char *col, const char *str)
+{
+  /* VARCHAR in NDB requires 1-byte length prefix */
+  size_t len = strlen(str);
+  char buf[256];
+  assert(len < sizeof(buf));
+  buf[0] = (char)len;
+  memcpy(buf + 1, str, len);
+  op->setValue(col, buf, (Uint32)(1 + len));
 }
 
 /* ------------------------------------------------------------------ */
@@ -339,7 +368,7 @@ loadRegion(Ndb *ndb)
     op->insertTuple();
     op->equal("r_regionkey", (Int32)i);
     op->setValue("r_name", REGION_NAMES[i]);
-    op->setValue("r_comment", "");
+    setVarchar(op, "r_comment", "");
   }
 
   if (tx->execute(NdbTransaction::Commit) != 0) {
@@ -367,7 +396,7 @@ loadNation(Ndb *ndb)
     op->equal("n_nationkey", (Int32)i);
     op->setValue("n_name", NATION_NAMES[i]);
     op->setValue("n_regionkey", (Int32)NATION_REGION[i]);
-    op->setValue("n_comment", "");
+    setVarchar(op, "n_comment", "");
   }
 
   if (tx->execute(NdbTransaction::Commit) != 0) {
@@ -400,15 +429,15 @@ loadSupplier(Ndb *ndb, Uint32 count)
       char name[26];
       snprintf(name, sizeof(name), "Supplier#%09u", suppkey);
       op->setValue("s_name", name);
-      op->setValue("s_address", "addr");
+      setVarchar(op, "s_address", "addr");
       op->setValue("s_nationkey", (Int32)(suppkey % 25));
       op->setValue("s_phone", "000-000-0000000");
       char bal[20];
       snprintf(bal, sizeof(bal), "%d.%02d",
                (int)(detHash(suppkey, 100) % 10000),
                (int)(detHash(suppkey, 101) % 100));
-      op->setValue("s_acctbal", bal);
-      op->setValue("s_comment", "");
+      setDecimal(op, "s_acctbal", bal);
+      setVarchar(op, "s_comment", "");
     }
     if (tx->execute(NdbTransaction::Commit) != 0) {
       fprintf(stderr, "insert supplier [%u..%u): %s\n",
@@ -458,7 +487,7 @@ loadPart(Ndb *ndb, Uint32 count)
         pos += len;
       }
       pname[pos] = '\0';
-      op->setValue("p_name", pname);
+      setVarchar(op, "p_name", pname);
 
       char mfgr[26];
       snprintf(mfgr, sizeof(mfgr), "Manufacturer#%u",
@@ -469,7 +498,7 @@ loadPart(Ndb *ndb, Uint32 count)
                (detHash(partkey, 301) % 5) + 1,
                (detHash(partkey, 302) % 5) + 1);
       op->setValue("p_brand", brand);
-      op->setValue("p_type", "STANDARD");
+      setVarchar(op, "p_type", "STANDARD");
       op->setValue("p_size", (Int32)((detHash(partkey, 303) % 50) + 1));
       op->setValue("p_container", "SM CASE");
 
@@ -477,8 +506,8 @@ loadPart(Ndb *ndb, Uint32 count)
       snprintf(price, sizeof(price), "%u.%02u",
                (900 + partkey / 10) % 2001,
                (detHash(partkey, 304) % 100));
-      op->setValue("p_retailprice", price);
-      op->setValue("p_comment", "");
+      setDecimal(op, "p_retailprice", price);
+      setVarchar(op, "p_comment", "");
     }
     if (tx->execute(NdbTransaction::Commit) != 0) {
       fprintf(stderr, "insert part [%u..%u): %s\n",
@@ -523,8 +552,8 @@ loadPartSupp(Ndb *ndb, Uint32 numParts, Uint32 numSuppliers)
         snprintf(cost, sizeof(cost), "%u.%02u",
                  detHash(partkey, 410 + s) % 1000,
                  detHash(partkey, 420 + s) % 100);
-        op->setValue("ps_supplycost", cost);
-        op->setValue("ps_comment", "");
+        setDecimal(op, "ps_supplycost", cost);
+        setVarchar(op, "ps_comment", "");
         loaded++;
       }
     }
@@ -564,17 +593,17 @@ loadCustomer(Ndb *ndb, Uint32 count)
       op->equal("c_custkey", (Int32)custkey);
       char name[26];
       snprintf(name, sizeof(name), "Customer#%09u", custkey);
-      op->setValue("c_name", name);
-      op->setValue("c_address", "addr");
+      setVarchar(op, "c_name", name);
+      setVarchar(op, "c_address", "addr");
       op->setValue("c_nationkey", (Int32)(detHash(custkey, 500) % 25));
       op->setValue("c_phone", "000-000-0000000");
       char bal[20];
       snprintf(bal, sizeof(bal), "%d.%02d",
                (int)(detHash(custkey, 501) % 10000) - 999,
                (int)(detHash(custkey, 502) % 100));
-      op->setValue("c_acctbal", bal);
+      setDecimal(op, "c_acctbal", bal);
       op->setValue("c_mktsegment", MKTSEGMENTS[detHash(custkey, 503) % 5]);
-      op->setValue("c_comment", "");
+      setVarchar(op, "c_comment", "");
     }
     if (tx->execute(NdbTransaction::Commit) != 0) {
       fprintf(stderr, "insert customer [%u..%u): %s\n",
@@ -614,7 +643,7 @@ loadOrders(Ndb *ndb, Uint32 count, Uint32 numCustomers)
       snprintf(price, sizeof(price), "%u.%02u",
                detHash(orderkey, 601) % 500000,
                detHash(orderkey, 602) % 100);
-      op->setValue("o_totalprice", price);
+      setDecimal(op, "o_totalprice", price);
 
       /* Order date: 1992-01-01 + (orderkey % 2557) days
        * This gives dates from 1992-01-01 to ~1998-12-31 (7 years) */
@@ -637,7 +666,7 @@ loadOrders(Ndb *ndb, Uint32 count, Uint32 numCustomers)
                (detHash(orderkey, 604) % 1000) + 1);
       op->setValue("o_clerk", clerk);
       op->setValue("o_shippriority", (Int32)0);
-      op->setValue("o_comment", "");
+      setVarchar(op, "o_comment", "");
     }
     if (tx->execute(NdbTransaction::Commit) != 0) {
       fprintf(stderr, "insert orders [%u..%u): %s\n",
@@ -689,24 +718,24 @@ loadLineitem(Ndb *ndb, Uint32 numOrders, Uint32 linesPerOrder,
         Uint32 qty = (detHash(orderkey, 710 + ln) % 50) + 1;
         char qtyStr[20];
         snprintf(qtyStr, sizeof(qtyStr), "%u.00", qty);
-        op->setValue("l_quantity", qtyStr);
+        setDecimal(op, "l_quantity", qtyStr);
 
         Uint32 priceWhole = (900 + partkey / 10) % 2001;
         char priceStr[20];
         snprintf(priceStr, sizeof(priceStr), "%u.%02u",
                  priceWhole * qty,
                  detHash(orderkey, 720 + ln) % 100);
-        op->setValue("l_extendedprice", priceStr);
+        setDecimal(op, "l_extendedprice", priceStr);
 
         char discStr[20];
         snprintf(discStr, sizeof(discStr), "0.%02u",
                  detHash(orderkey, 730 + ln) % 11);
-        op->setValue("l_discount", discStr);
+        setDecimal(op, "l_discount", discStr);
 
         char taxStr[20];
         snprintf(taxStr, sizeof(taxStr), "0.%02u",
                  detHash(orderkey, 740 + ln) % 9);
-        op->setValue("l_tax", taxStr);
+        setDecimal(op, "l_tax", taxStr);
 
         op->setValue("l_returnflag", "N");
         op->setValue("l_linestatus", "O");
@@ -742,7 +771,7 @@ loadLineitem(Ndb *ndb, Uint32 numOrders, Uint32 linesPerOrder,
         op->setValue("l_shipinstruct", "NONE");
         op->setValue("l_shipmode",
                      SHIPMODE_NAMES[detHash(orderkey, 780 + ln) % 7]);
-        op->setValue("l_comment", "");
+        setVarchar(op, "l_comment", "");
         loaded++;
       }
     }

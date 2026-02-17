@@ -193,7 +193,7 @@ struct TableMeta {
  * kOpLoadCol for SUM uses the local ORDERS column (no bit 15).
  */
 static std::vector<Uint32>
-buildAggProgram_Q12(Uint32 linkedShipmodeAttrId, Uint32 localPriorityAttrId)
+buildAggProgram_Q12(Uint32 /*linkedShipmodeAttrId*/, Uint32 localPriorityAttrId)
 {
   const Uint32 PROG_LEN = 11;
   std::vector<Uint32> prog(PROG_LEN);
@@ -211,9 +211,9 @@ buildAggProgram_Q12(Uint32 linkedShipmodeAttrId, Uint32 localPriorityAttrId)
   prog[3] = prog[4] = prog[5] = prog[6] = prog[7] = 0;
 
   /* Word 8: GROUP BY l_shipmode — linked column from parent LINEITEM.
-   * Bit 15 set in the attr ID signals linked-column resolution.
-   * Format: (0x8000 | l_shipmode_attr_id) << 16 */
-  prog[8] = (LINKED_COL_FLAG | linkedShipmodeAttrId) << 16;
+   * Bit 15 set signals linked-column resolution by position.
+   * Format: (0x8000 | position_in_linked_buffer) << 16 */
+  prog[8] = (LINKED_COL_FLAG | 0) << 16;  /* linked pos 0 = l_shipmode */
 
   /* Word 9: kOpLoadCol(type=BIGINT, reg=0, colId=o_orderpriority)
    * Local column of ORDERS — no bit 15. */

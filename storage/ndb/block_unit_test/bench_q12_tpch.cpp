@@ -253,7 +253,7 @@ struct TableMeta {
  * Actually: 8 + 1 + 1 + 18 + 17 = 45 words.
  */
 static std::vector<Uint32>
-buildAggProgram_Q12(Uint32 linkedShipmodeAttrId, Uint32 localPriorityAttrId)
+buildAggProgram_Q12(Uint32 /*linkedShipmodeAttrId*/, Uint32 localPriorityAttrId)
 {
   const Uint32 EMB_LEN = 18;
   const Uint32 AGG_AFTER = 17;
@@ -267,8 +267,8 @@ buildAggProgram_Q12(Uint32 linkedShipmodeAttrId, Uint32 localPriorityAttrId)
   prog[2] = PUSHDOWN_AGGREGATION_VERSION;
   prog[3] = prog[4] = prog[5] = prog[6] = prog[7] = 0;
 
-  /* GROUP BY l_shipmode — linked CHAR(10) from parent LINEITEM */
-  prog[8] = (LINKED_COL_FLAG | linkedShipmodeAttrId) << 16;
+  /* GROUP BY l_shipmode — linked pos 0 from parent LINEITEM */
+  prog[8] = (LINKED_COL_FLAG | 0) << 16;  /* linked pos 0 = l_shipmode */
 
   /* kOpEmbeddedInterp header */
   prog[9] = (kOpEmbeddedInterp << 26) | EMB_LEN;

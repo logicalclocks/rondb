@@ -1511,19 +1511,22 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
       if ((attr_id & 0x8000) != 0 && m_linked_attr_data != nullptr) {
         /*
          * Linked GROUP BY column from a parent table in the join tree.
-         * Scan the linked attribute buffer for the matching attr id
-         * and copy header+data into buf_ (same pattern as kOpLoadCol).
+         * The lower 15 bits encode a 0-based position index into the
+         * linked attribute buffer (not a table attrId, since attrIds
+         * from different tables can collide in multi-table joins).
          */
-        Uint32 real_attr_id = attr_id & 0x7FFF;
+        Uint32 position = attr_id & 0x7FFF;
         const Uint32* p = m_linked_attr_data;
         const Uint32* p_end = m_linked_attr_data + m_linked_attr_len;
+        Uint32 pos_count = 0;
         while (p < p_end) {
-          if (AttributeHeader::getAttributeId(*p) == real_attr_id) break;
+          if (pos_count == position) break;
           p += 1 + AttributeHeader::getDataSize(*p);
+          pos_count++;
         }
         if (p >= p_end) {
-          DEB_AGG(("Linked GROUP BY attr %u not found in buffer",
-              real_attr_id));
+          DEB_AGG(("Linked GROUP BY position %u not found in buffer",
+              position));
           return ZAGG_OTHER_ERROR;
         }
         Uint32 words = 1 + AttributeHeader::getDataSize(*p);
@@ -1829,18 +1832,21 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
           if ((col_id_raw & 0x8000) != 0 && m_linked_attr_data != nullptr) {
             /*
              * Linked column from a parent table in the join tree.
-             * Scan the linked attribute buffer for the matching attr id
-             * and copy header+data into buf_.
+             * The lower 15 bits encode a 0-based position index into the
+             * linked attribute buffer (not a table attrId, since attrIds
+             * from different tables can collide in multi-table joins).
              */
-            Uint32 attr_id = col_id_raw & 0x7FFF;
+            Uint32 position = col_id_raw & 0x7FFF;
             const Uint32* p = m_linked_attr_data;
             const Uint32* p_end = m_linked_attr_data + m_linked_attr_len;
+            Uint32 pos_count = 0;
             while (p < p_end) {
-              if (AttributeHeader::getAttributeId(*p) == attr_id) break;
+              if (pos_count == position) break;
               p += 1 + AttributeHeader::getDataSize(*p);
+              pos_count++;
             }
             if (p >= p_end) {
-              DEB_AGG(("Linked attr %u not found in buffer", attr_id));
+              DEB_AGG(("Linked position %u not found in buffer", position));
               return ZAGG_OTHER_ERROR;
             }
             Uint32 words = 1 + AttributeHeader::getDataSize(*p);
