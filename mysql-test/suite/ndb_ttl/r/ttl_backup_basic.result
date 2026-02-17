@@ -1,0 +1,73 @@
+DROP DATABASE IF EXISTS ttl_backup;
+CREATE DATABASE ttl_backup;
+CREATE TABLE ttl_backup.sz1 (
+col_a INT,
+col_b TIMESTAMP,
+col_c INT,
+PRIMARY KEY(col_a),
+UNIQUE KEY(col_c)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=TTL=66@col_b";
+CREATE TABLE ttl_backup.sz2 (
+col_a INT,
+col_b TIMESTAMP,
+col_c INT,
+KEY(col_c)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=TTL=66@col_b";
+CREATE TABLE ttl_backup.sz3 (
+col_a INT,
+col_b TIMESTAMP,
+col_c INT,
+PRIMARY KEY(col_a),
+KEY(col_c)
+) ENGINE = NDB;
+ALTER TABLE ttl_backup.sz1 COMMENT="NDB_TABLE=TTL=10@col_b";
+ALTER TABLE ttl_backup.sz2 COMMENT="NDB_TABLE=TTL=10@col_b";
+#
+# Case 46a: Backup and restore TTL tables to primary cluster
+#
+BEGIN;
+INSERT INTO ttl_backup.sz1 VALUES(1, SYSDATE(), 100);
+INSERT INTO ttl_backup.sz1 VALUES(2, SYSDATE(), 200);
+INSERT INTO ttl_backup.sz1 VALUES(3, DATE_ADD(SYSDATE(), INTERVAL 1 DAY), 300);
+INSERT INTO ttl_backup.sz1 VALUES(4, SYSDATE(), 400);
+INSERT INTO ttl_backup.sz2 VALUES(1, SYSDATE(), 100);
+INSERT INTO ttl_backup.sz2 VALUES(2, SYSDATE(), 200);
+INSERT INTO ttl_backup.sz2 VALUES(3, DATE_ADD(SYSDATE(), INTERVAL 1 DAY), 300);
+INSERT INTO ttl_backup.sz2 VALUES(4, SYSDATE(), 400);
+INSERT INTO ttl_backup.sz3 VALUES(1, SYSDATE(), 100);
+INSERT INTO ttl_backup.sz3 VALUES(2, SYSDATE(), 200);
+INSERT INTO ttl_backup.sz3 VALUES(3, DATE_ADD(SYSDATE(), INTERVAL 1 DAY), 300);
+INSERT INTO ttl_backup.sz3 VALUES(4, SYSDATE(), 400);
+COMMIT;
+SELECT COUNT(*) FROM ttl_backup.sz1;
+COUNT(*)
+4
+SELECT COUNT(*) FROM ttl_backup.sz2;
+COUNT(*)
+4
+SELECT COUNT(*) FROM ttl_backup.sz3;
+COUNT(*)
+4
+SELECT col_a, col_c FROM ttl_backup.sz1;
+col_a	col_c
+3	300
+SELECT col_a, col_c FROM ttl_backup.sz2;
+col_a	col_c
+3	300
+SELECT COUNT(*) FROM ttl_backup.sz3;
+COUNT(*)
+4
+DROP DATABASE ttl_backup;
+CREATE DATABASE IF NOT EXISTS ttl_backup;
+SELECT col_a, col_c FROM ttl_backup.sz1;
+col_a	col_c
+3	300
+SELECT col_a, col_c FROM ttl_backup.sz2;
+col_a	col_c
+3	300
+SELECT COUNT(*) FROM ttl_backup.sz3;
+COUNT(*)
+4
+DROP DATABASE ttl_backup;

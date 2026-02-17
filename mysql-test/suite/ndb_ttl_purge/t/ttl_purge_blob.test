@@ -1,0 +1,295 @@
+--source include/have_ndb.inc
+
+# suite/ndb_ttl_purge/t/ttl_purge_blob.test
+#
+# BLOB/TEXT purge tests (3 cases):
+#   - test_blob_purge_with_index
+#   - test_blob_purge_table_scan
+#   - test_blob_purge_multiple_blob_columns
+
+--source suite/ndb_ttl_purge/include/ttl_purge_setup.inc
+--source suite/ndb_ttl_purge/include/ttl_purge_reset_config.inc
+
+--echo #
+--echo # Test: test_blob_purge_with_index
+--echo # TEXT column + ttl_index, verify rows and blob parts cleaned
+--echo #
+
+CREATE DATABASE IF NOT EXISTS ttl_blob;
+
+--disable_warnings
+DROP TABLE IF EXISTS ttl_blob.blob_idx;
+--enable_warnings
+
+CREATE TABLE ttl_blob.blob_idx (
+  id INT PRIMARY KEY,
+  ttl_col DATETIME,
+  data TEXT
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+
+CREATE INDEX ttl_index ON ttl_blob.blob_idx(ttl_col);
+
+--sleep 2
+
+ALTER TABLE ttl_blob.blob_idx COMMENT="NDB_TABLE=TTL=5@ttl_col";
+
+--sleep 5
+
+# Insert rows with large text (>256 bytes to force blob parts)
+--let $blob_text = `SELECT REPEAT('X', 1000)`
+
+--eval INSERT INTO ttl_blob.blob_idx (id, ttl_col, data) VALUES (0, NOW(), '$blob_text')
+--eval INSERT INTO ttl_blob.blob_idx (id, ttl_col, data) VALUES (1, NOW(), '$blob_text')
+--eval INSERT INTO ttl_blob.blob_idx (id, ttl_col, data) VALUES (2, NOW(), '$blob_text')
+--eval INSERT INTO ttl_blob.blob_idx (id, ttl_col, data) VALUES (3, NOW(), '$blob_text')
+--eval INSERT INTO ttl_blob.blob_idx (id, ttl_col, data) VALUES (4, NOW(), '$blob_text')
+
+--let $assert_text = 5 blob rows should be inserted
+--let $assert_cond = [SELECT COUNT(*) FROM ttl_blob.blob_idx] = 5
+--source include/assert.inc
+
+# Verify blob parts exist using regular SQL (ndb$... names pass through in regular SQL context)
+SELECT IFNULL(SUM(frag.rows), 0) INTO @blob_parts_before
+FROM ndbinfo.ndb$frag_mem_use AS frag
+JOIN ndbinfo.ndb$dict_obj_info AS obj ON obj.id = frag.table_id AND obj.type <= 6
+LEFT JOIN ndbinfo.ndb$dict_obj_info AS parent
+  ON obj.parent_obj_id = parent.id AND obj.parent_obj_type = parent.type
+WHERE obj.fq_name LIKE '%NDB$BLOB%' AND parent.fq_name LIKE '%ttl_blob/def/blob_idx%';
+
+--let $bp_before = `SELECT @blob_parts_before`
+
+--let $assert_text = Blob parts should exist before purge
+--let $assert_cond = $bp_before > 0
+--source include/assert.inc
+
+# Wait for main table purge
+--let $purge_db = ttl_blob
+--let $purge_table = blob_idx
+--let $purge_completion_timeout = 60
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_purge_completion.inc
+
+# Poll for blob parts cleanup (up to 30s)
+--let $_blob_clean = 0
+--let $_blob_i = 0
+--disable_query_log
+--disable_result_log
+while (!$_blob_clean)
+{
+  SELECT IFNULL(SUM(frag.rows), 0) INTO @bp_after
+  FROM ndbinfo.ndb$frag_mem_use AS frag
+  JOIN ndbinfo.ndb$dict_obj_info AS obj ON obj.id = frag.table_id AND obj.type <= 6
+  LEFT JOIN ndbinfo.ndb$dict_obj_info AS parent
+    ON obj.parent_obj_id = parent.id AND obj.parent_obj_type = parent.type
+  WHERE obj.fq_name LIKE '%NDB$BLOB%' AND parent.fq_name LIKE '%ttl_blob/def/blob_idx%';
+
+  --let $bp_after = `SELECT @bp_after`
+  if ($bp_after == 0)
+  {
+    --let $_blob_clean = 1
+  }
+  if (!$_blob_clean)
+  {
+    --inc $_blob_i
+    if ($_blob_i >= 15)
+    {
+      --die Timeout: blob parts not cleaned after 30s, still $bp_after parts
+    }
+    --sleep 2
+  }
+}
+--enable_result_log
+--enable_query_log
+
+--echo Blob parts after purge: 0
+
+DROP TABLE ttl_blob.blob_idx;
+--sleep 3
+
+--echo #
+--echo # Test: test_blob_purge_table_scan
+--echo # TEXT column, NO index, verify blob parts cleaned via table scan
+--echo #
+
+--disable_warnings
+DROP TABLE IF EXISTS ttl_blob.blob_noscan;
+--enable_warnings
+
+CREATE TABLE ttl_blob.blob_noscan (
+  id INT PRIMARY KEY,
+  ttl_col DATETIME,
+  data TEXT
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+
+# NO ttl_index - forces table scan path
+
+--sleep 2
+
+ALTER TABLE ttl_blob.blob_noscan COMMENT="NDB_TABLE=TTL=5@ttl_col";
+
+--sleep 5
+
+--let $blob_text2 = `SELECT REPEAT('Y', 1000)`
+
+--eval INSERT INTO ttl_blob.blob_noscan (id, ttl_col, data) VALUES (0, NOW(), '$blob_text2')
+--eval INSERT INTO ttl_blob.blob_noscan (id, ttl_col, data) VALUES (1, NOW(), '$blob_text2')
+--eval INSERT INTO ttl_blob.blob_noscan (id, ttl_col, data) VALUES (2, NOW(), '$blob_text2')
+--eval INSERT INTO ttl_blob.blob_noscan (id, ttl_col, data) VALUES (3, NOW(), '$blob_text2')
+--eval INSERT INTO ttl_blob.blob_noscan (id, ttl_col, data) VALUES (4, NOW(), '$blob_text2')
+
+--let $assert_text = 5 blob rows should be inserted (no index)
+--let $assert_cond = [SELECT COUNT(*) FROM ttl_blob.blob_noscan] = 5
+--source include/assert.inc
+
+# Verify blob parts exist before purge
+SELECT IFNULL(SUM(frag.rows), 0) INTO @blob_parts_noscan
+FROM ndbinfo.ndb$frag_mem_use AS frag
+JOIN ndbinfo.ndb$dict_obj_info AS obj ON obj.id = frag.table_id AND obj.type <= 6
+LEFT JOIN ndbinfo.ndb$dict_obj_info AS parent
+  ON obj.parent_obj_id = parent.id AND obj.parent_obj_type = parent.type
+WHERE obj.fq_name LIKE '%NDB$BLOB%' AND parent.fq_name LIKE '%ttl_blob/def/blob_noscan%';
+
+--let $bp_noscan = `SELECT @blob_parts_noscan`
+
+--let $assert_text = Blob parts should exist before purge (table scan)
+--let $assert_cond = $bp_noscan > 0
+--source include/assert.inc
+
+# Wait for main table purge
+--let $purge_db = ttl_blob
+--let $purge_table = blob_noscan
+--let $purge_completion_timeout = 60
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_purge_completion.inc
+
+# Poll for blob parts cleanup (up to 30s)
+--let $_blob_clean2 = 0
+--let $_blob_j = 0
+--disable_query_log
+--disable_result_log
+while (!$_blob_clean2)
+{
+  SELECT IFNULL(SUM(frag.rows), 0) INTO @ns_after
+  FROM ndbinfo.ndb$frag_mem_use AS frag
+  JOIN ndbinfo.ndb$dict_obj_info AS obj ON obj.id = frag.table_id AND obj.type <= 6
+  LEFT JOIN ndbinfo.ndb$dict_obj_info AS parent
+    ON obj.parent_obj_id = parent.id AND obj.parent_obj_type = parent.type
+  WHERE obj.fq_name LIKE '%NDB$BLOB%' AND parent.fq_name LIKE '%ttl_blob/def/blob_noscan%';
+
+  --let $ns_after = `SELECT @ns_after`
+  if ($ns_after == 0)
+  {
+    --let $_blob_clean2 = 1
+  }
+  if (!$_blob_clean2)
+  {
+    --inc $_blob_j
+    if ($_blob_j >= 15)
+    {
+      --die Timeout: blob_noscan parts not cleaned after 30s, still $ns_after parts
+    }
+    --sleep 2
+  }
+}
+--enable_result_log
+--enable_query_log
+
+--echo Blob parts after table scan purge: 0
+
+DROP TABLE ttl_blob.blob_noscan;
+--sleep 3
+
+--echo #
+--echo # Test: test_blob_purge_multiple_blob_columns
+--echo # TEXT + BLOB columns, verify all blob parts cleaned
+--echo #
+
+--disable_warnings
+DROP TABLE IF EXISTS ttl_blob.multi_blob;
+--enable_warnings
+
+CREATE TABLE ttl_blob.multi_blob (
+  id INT PRIMARY KEY,
+  ttl_col DATETIME,
+  text_data TEXT,
+  blob_data BLOB
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+
+CREATE INDEX ttl_index ON ttl_blob.multi_blob(ttl_col);
+
+--sleep 2
+
+ALTER TABLE ttl_blob.multi_blob COMMENT="NDB_TABLE=TTL=5@ttl_col";
+
+--sleep 5
+
+--let $large_text = `SELECT REPEAT('A', 1000)`
+--let $large_blob = `SELECT REPEAT('B', 1000)`
+
+--eval INSERT INTO ttl_blob.multi_blob (id, ttl_col, text_data, blob_data) VALUES (0, NOW(), '$large_text', '$large_blob')
+--eval INSERT INTO ttl_blob.multi_blob (id, ttl_col, text_data, blob_data) VALUES (1, NOW(), '$large_text', '$large_blob')
+--eval INSERT INTO ttl_blob.multi_blob (id, ttl_col, text_data, blob_data) VALUES (2, NOW(), '$large_text', '$large_blob')
+--eval INSERT INTO ttl_blob.multi_blob (id, ttl_col, text_data, blob_data) VALUES (3, NOW(), '$large_text', '$large_blob')
+--eval INSERT INTO ttl_blob.multi_blob (id, ttl_col, text_data, blob_data) VALUES (4, NOW(), '$large_text', '$large_blob')
+
+--let $assert_text = 5 multi-blob rows should be inserted
+--let $assert_cond = [SELECT COUNT(*) FROM ttl_blob.multi_blob] = 5
+--source include/assert.inc
+
+# Verify blob parts exist before purge
+SELECT IFNULL(SUM(frag.rows), 0) INTO @blob_parts_multi
+FROM ndbinfo.ndb$frag_mem_use AS frag
+JOIN ndbinfo.ndb$dict_obj_info AS obj ON obj.id = frag.table_id AND obj.type <= 6
+LEFT JOIN ndbinfo.ndb$dict_obj_info AS parent
+  ON obj.parent_obj_id = parent.id AND obj.parent_obj_type = parent.type
+WHERE obj.fq_name LIKE '%NDB$BLOB%' AND parent.fq_name LIKE '%ttl_blob/def/multi_blob%';
+
+--let $bp_multi = `SELECT @blob_parts_multi`
+
+--let $assert_text = Blob parts should exist before purge (multi-blob)
+--let $assert_cond = $bp_multi > 0
+--source include/assert.inc
+
+# Wait for main table purge
+--let $purge_db = ttl_blob
+--let $purge_table = multi_blob
+--let $purge_completion_timeout = 60
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_purge_completion.inc
+
+# Poll for blob parts cleanup (up to 30s)
+--let $_blob_clean3 = 0
+--let $_blob_k = 0
+--disable_query_log
+--disable_result_log
+while (!$_blob_clean3)
+{
+  SELECT IFNULL(SUM(frag.rows), 0) INTO @mb_after
+  FROM ndbinfo.ndb$frag_mem_use AS frag
+  JOIN ndbinfo.ndb$dict_obj_info AS obj ON obj.id = frag.table_id AND obj.type <= 6
+  LEFT JOIN ndbinfo.ndb$dict_obj_info AS parent
+    ON obj.parent_obj_id = parent.id AND obj.parent_obj_type = parent.type
+  WHERE obj.fq_name LIKE '%NDB$BLOB%' AND parent.fq_name LIKE '%ttl_blob/def/multi_blob%';
+
+  --let $mb_after = `SELECT @mb_after`
+  if ($mb_after == 0)
+  {
+    --let $_blob_clean3 = 1
+  }
+  if (!$_blob_clean3)
+  {
+    --inc $_blob_k
+    if ($_blob_k >= 15)
+    {
+      --die Timeout: multi_blob parts not cleaned after 30s, still $mb_after parts
+    }
+    --sleep 2
+  }
+}
+--enable_result_log
+--enable_query_log
+
+--echo Multi-blob parts after purge: 0
+
+DROP DATABASE ttl_blob;
+
+--source suite/ndb_ttl_purge/include/ttl_purge_cleanup_tmp.inc
+
+--echo # All blob purge tests passed

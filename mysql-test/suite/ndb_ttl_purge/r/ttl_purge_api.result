@@ -1,0 +1,74 @@
+#
+# Test: test_pagination
+# Create 5 tables, test GET /tables with offset/limit
+#
+CREATE DATABASE IF NOT EXISTS ttl_api;
+DROP TABLE IF EXISTS ttl_api.page_0;
+CREATE TABLE ttl_api.page_0 (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_api.page_0(ttl_col);
+ALTER TABLE ttl_api.page_0 COMMENT="NDB_TABLE=TTL=60@ttl_col";
+CREATE DATABASE IF NOT EXISTS ttl_api;
+Warnings:
+Note	1007	Can't create database 'ttl_api'; database exists
+DROP TABLE IF EXISTS ttl_api.page_1;
+CREATE TABLE ttl_api.page_1 (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_api.page_1(ttl_col);
+ALTER TABLE ttl_api.page_1 COMMENT="NDB_TABLE=TTL=60@ttl_col";
+CREATE DATABASE IF NOT EXISTS ttl_api;
+Warnings:
+Note	1007	Can't create database 'ttl_api'; database exists
+DROP TABLE IF EXISTS ttl_api.page_2;
+CREATE TABLE ttl_api.page_2 (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_api.page_2(ttl_col);
+ALTER TABLE ttl_api.page_2 COMMENT="NDB_TABLE=TTL=60@ttl_col";
+CREATE DATABASE IF NOT EXISTS ttl_api;
+Warnings:
+Note	1007	Can't create database 'ttl_api'; database exists
+DROP TABLE IF EXISTS ttl_api.page_3;
+CREATE TABLE ttl_api.page_3 (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_api.page_3(ttl_col);
+ALTER TABLE ttl_api.page_3 COMMENT="NDB_TABLE=TTL=60@ttl_col";
+CREATE DATABASE IF NOT EXISTS ttl_api;
+Warnings:
+Note	1007	Can't create database 'ttl_api'; database exists
+DROP TABLE IF EXISTS ttl_api.page_4;
+CREATE TABLE ttl_api.page_4 (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_api.page_4(ttl_col);
+ALTER TABLE ttl_api.page_4 COMMENT="NDB_TABLE=TTL=60@ttl_col";
+include/assert.inc [Total should be at least 5]
+include/assert.inc [Limit=2 should return 2 tables]
+include/assert.inc [Offset=2 limit=2 should return 2 tables]
+include/assert.inc [Large offset should return 0 tables]
+DROP DATABASE ttl_api;
+#
+# Test: test_invalid_config_values
+# PUT /config with min_batch=0, inverted max/min, short sleep
+#
+include/assert.inc [min_batch_size should be at least 1]
+include/assert.inc [max_batch_size should be >= min_batch_size]
+include/assert.inc [sleep_interval_ms should be at least 100]
+#
+# Test: test_nonexistent_table_lookup
+# GET /tables/nonexistent_db/nonexistent_table
+#
+include/assert.inc [Nonexistent table should return non-200]
+#
+# Test: test_empty_request_body
+# PUT /config with empty body should return 400
+#
+Empty body PUT returned HTTP 400
+include/assert.inc [Empty body should return HTTP 400]
+#
+# Test: test_invalid_json_body
+# PUT /config with "not valid json" should return 400
+#
+Invalid JSON PUT returned HTTP 400
+include/assert.inc [Invalid JSON should return HTTP 400]
+#
+# Test: test_combined_endpoint
+# GET /ttl-purge returns config + status + metrics
+#
+include/assert.inc [Combined endpoint should have config section]
+include/assert.inc [Combined endpoint should have status section]
+include/assert.inc [Combined endpoint should have metrics section]
+# All API tests passed

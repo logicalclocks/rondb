@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2004, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1122,6 +1122,8 @@ ErrorBundle ErrorCodes[] = {
     "Data nodes failed Deactivate Request"},
   { 5069 /* FAILED_SET_DOMAIN_ID_REQUEST */, DMEC, AE,
     "Data nodes failed Set Location_Domain_Id Request"},
+  { 5070 /* FAILED_SET_CONFIG_PARAM_REQUEST */, DMEC, AE,
+    "Data nodes failed Set Config Param Request"},
   { 1120, DMEC, AE,
     "Set Location_Domain_Id Request failed, busy state"}
 };

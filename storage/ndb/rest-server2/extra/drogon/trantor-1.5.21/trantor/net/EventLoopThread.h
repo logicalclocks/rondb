@@ -18,10 +18,10 @@
 #include <trantor/utils/NonCopyable.h>
 #include <trantor/exports.h>
 #include <mutex>
-#include <thread>
 #include <memory>
 #include <condition_variable>
 #include <future>
+#include <pthread.h>
 
 namespace trantor
 {
@@ -32,7 +32,8 @@ namespace trantor
 class TRANTOR_EXPORT EventLoopThread : NonCopyable
 {
   public:
-    explicit EventLoopThread(const std::string &threadName = "EventLoopThread");
+    explicit EventLoopThread(const std::string &threadName = "EventLoopThread",
+                             size_t stackSize = 0);
     ~EventLoopThread();
 
     /**
@@ -64,12 +65,16 @@ class TRANTOR_EXPORT EventLoopThread : NonCopyable
     std::mutex loopMutex_;
 
     std::string loopThreadName_;
+    size_t stackSize_{0};
     void loopFuncs();
+    static void *threadFunc(void *arg);
     std::promise<std::shared_ptr<EventLoop>> promiseForLoopPointer_;
     std::promise<int> promiseForRun_;
     std::promise<int> promiseForLoop_;
     std::once_flag once_;
-    std::thread thread_;
+    pthread_t threadId_{};
+    bool threadStarted_{false};
+    bool threadJoined_{false};
 };
 
 }  // namespace trantor

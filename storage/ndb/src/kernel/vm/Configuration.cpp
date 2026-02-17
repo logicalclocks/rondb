@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -2086,6 +2086,10 @@ Configuration::getOwnConfigIterator() const {
 }
 
 const ConfigValues *Configuration::get_own_config_values() {
+  return &m_ownConfig->m_config_values;
+}
+
+ConfigValues *Configuration::get_own_config_values_mutable() {
   return &m_ownConfig->m_config_values;
 }
 

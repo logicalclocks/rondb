@@ -2712,6 +2712,50 @@ ndb_mgm_set_domain_id(NdbMgmHandle handle,
 
 extern "C"
 int
+ndb_mgm_set_config_param(NdbMgmHandle handle,
+                         const int nodeId,
+                         const unsigned int configKey,
+                         const unsigned long long configValue)
+{
+  DBUG_ENTER("ndb_mgm_set_config_param");
+  CHECK_HANDLE(handle, -1);
+  SET_ERROR(handle, NDB_MGM_NO_ERROR, "Executing: ndb_mgm_set_config_param");
+  const ParserRow<ParserDummy> set_config_param_reply[] = {
+    MGM_CMD("set_config_param reply", NULL, ""),
+    MGM_ARG("result", String, Mandatory, "Error message"),
+    MGM_END()
+  };
+  int ret = -1;
+  CHECK_CONNECTED(handle, -1);
+  Properties args;
+  args.put("node", (Uint32)nodeId);
+  args.put("config_key", (Uint32)configKey);
+  args.put("config_value_high", (Uint32)(configValue >> 32));
+  args.put("config_value_low", (Uint32)(configValue & 0xFFFFFFFF));
+  const Properties *reply;
+  reply = ndb_mgm_call(handle,
+                       set_config_param_reply,
+                       "set_config_param",
+                       &args);
+  if (reply != NULL)
+  {
+    BaseString result;
+    reply->get("result", result);
+    if (strcmp(result.c_str(), "Ok") == 0)
+    {
+      ret = 0;
+    }
+    else
+    {
+      SET_ERROR(handle, EINVAL, result.c_str());
+    }
+  }
+  delete reply;
+  DBUG_RETURN(ret);
+}
+
+extern "C"
+int
 ndb_mgm_set_hostname(NdbMgmHandle handle,
                      const int nodeId,
                      const char *new_hostname)

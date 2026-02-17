@@ -356,6 +356,12 @@ HttpAppFramework &HttpAppFrameworkImpl::setThreadNum(size_t threadNum)
     return *this;
 }
 
+HttpAppFramework &HttpAppFrameworkImpl::setThreadStackSize(size_t stackSize)
+{
+    threadStackSize_ = stackSize;
+    return *this;
+}
+
 PluginBase *HttpAppFrameworkImpl::getPlugin(const std::string &name)
 {
     return pluginsManagerPtr_->getPlugin(name);
@@ -611,7 +617,8 @@ void HttpAppFrameworkImpl::run()
     // Create IO threads
     ioLoopThreadPool_ =
         std::make_unique<trantor::EventLoopThreadPool>(threadNum_,
-                                                       "DrogonIoLoop");
+                                                       "DrogonIoLoop",
+                                                       threadStackSize_);
     std::vector<trantor::EventLoop *> ioLoops = ioLoopThreadPool_->getLoops();
     for (size_t i = 0; i < threadNum_; ++i)
     {

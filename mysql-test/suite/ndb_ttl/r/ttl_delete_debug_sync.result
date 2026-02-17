@@ -1,0 +1,90 @@
+DROP TABLE IF EXISTS test.sz;
+CREATE TABLE test.sz (
+col_a INT,
+col_b TIMESTAMP,
+col_c INT,
+PRIMARY KEY(col_a),
+UNIQUE KEY(col_c)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=TTL=66@col_b";
+ALTER TABLE test.sz COMMENT="NDB_TABLE=TTL=5@col_b";
+#
+# Case 23: DEBUG_SYNC - DELETE row that expires during operation
+#
+DELETE FROM sz;
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+COMMIT;
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+col_a	col_c
+1	100
+BEGIN;
+SET DEBUG_SYNC = 'ttl_wait_for_row_get_expired_after_reading_4 WAIT_FOR go_ahead';
+DELETE FROM sz;
+SET DEBUG_SYNC = 'now SIGNAL go_ahead';
+SELECT ROW_COUNT();
+ROW_COUNT()
+1
+COMMIT;
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+COUNT(*)
+0
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+COUNT(*)
+0
+SET DEBUG_SYNC = 'RESET';
+SET DEBUG_SYNC = 'RESET';
+#
+# Case 24: DEBUG_SYNC - INSERT ON DUPLICATE KEY UPDATE with sync point 1
+#
+ALTER TABLE test.sz COMMENT="NDB_TABLE=TTL=10@col_b";
+DELETE FROM sz;
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+BEGIN;
+SET DEBUG_SYNC = 'ttl_wait_for_row_get_expired_after_reading_1 WAIT_FOR go_ahead';
+INSERT INTO sz VALUES(1, SYSDATE(), 200) ON DUPLICATE KEY UPDATE col_c = 201, col_b = NOW();
+COMMIT;
+SET DEBUG_SYNC = 'now SIGNAL go_ahead';
+SELECT ROW_COUNT();
+ROW_COUNT()
+2
+COMMIT;
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+col_a	col_c
+1	201
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+col_a	col_c
+1	201
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+COUNT(*)
+0
+SET DEBUG_SYNC = 'RESET';
+SET DEBUG_SYNC = 'RESET';
+#
+# Case 25: DEBUG_SYNC - INSERT ON DUPLICATE KEY UPDATE with sync point 2
+#
+DELETE FROM sz;
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+BEGIN;
+SET DEBUG_SYNC = 'ttl_wait_for_row_get_expired_after_reading_2 WAIT_FOR go_ahead';
+INSERT INTO sz VALUES(1, SYSDATE(), 200) ON DUPLICATE KEY UPDATE col_c = 201, col_b = NOW();
+COMMIT;
+SET DEBUG_SYNC = 'now SIGNAL go_ahead';
+SELECT ROW_COUNT();
+ROW_COUNT()
+2
+COMMIT;
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+col_a	col_c
+1	201
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+col_a	col_c
+1	201
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+COUNT(*)
+0
+SET DEBUG_SYNC = 'RESET';
+SET DEBUG_SYNC = 'RESET';
+DROP TABLE test.sz;

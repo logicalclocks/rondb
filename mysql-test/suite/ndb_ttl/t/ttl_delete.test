@@ -1,0 +1,518 @@
+--source include/have_ndb.inc
+--source suite/ndb_ttl/include/ttl_create_table.inc
+
+#
+# TTL DELETE tests migrated from ttl_test_suite.py
+#
+# Cases 19-22: Concurrent DELETE with TTL (Thread A inserts, Thread B deletes)
+# Case 27: ttl_expired_rows_visible_in_delete session variable
+#
+
+connect (conn_a, localhost, root,,test,$MASTER_MYPORT,);
+connect (conn_b, localhost, root,,test,$MASTER_MYPORT,);
+
+###############################################################################
+# Case 19: DELETE succeeds when row not expired
+#
+# Thread A inserts row, holds transaction BEFORE TTL (sleep 2), then COMMIT.
+# Thread B tries DELETE on same PK — blocks until A commits.
+# Row is NOT expired, so B deletes 1 row.
+###############################################################################
+
+--echo # -------------------------------------------------------
+--echo # Case 19: DELETE succeeds when row not expired
+--echo # -------------------------------------------------------
+
+connection conn_a;
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+
+# Thread B: attempt DELETE on same PK (will block on row lock)
+connection conn_b;
+BEGIN;
+--send DELETE FROM sz WHERE col_a = 1
+
+# Thread A: hold transaction BEFORE TTL, then COMMIT
+connection conn_a;
+sleep 2;
+COMMIT;
+
+# Thread B: reap the DELETE — row not expired, should delete 1 row
+connection conn_b;
+--reap
+SELECT ROW_COUNT();
+
+COMMIT;
+
+# Verify no rows remain
+SELECT COUNT(*) FROM sz;
+
+# Thread A also verifies
+connection conn_a;
+SELECT COUNT(*) FROM sz;
+
+# Cleanup
+DELETE FROM sz;
+
+###############################################################################
+# Case 20: DELETE finds no row (row expired)
+#
+# Thread A inserts row, holds transaction PAST TTL (sleep 6), then COMMIT.
+# Thread B tries DELETE on same PK — blocks until A commits.
+# Row IS expired, so B deletes 0 rows.
+###############################################################################
+
+--echo # -------------------------------------------------------
+--echo # Case 20: DELETE finds no row (row expired)
+--echo # -------------------------------------------------------
+
+connection conn_a;
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+
+# Thread B: attempt DELETE on same PK (will block on row lock)
+connection conn_b;
+BEGIN;
+--send DELETE FROM sz WHERE col_a = 1
+
+# Thread A: hold transaction PAST TTL, then COMMIT
+connection conn_a;
+sleep 6;
+COMMIT;
+
+# Thread B: reap the DELETE — row expired, should delete 0 rows
+connection conn_b;
+--reap
+SELECT ROW_COUNT();
+
+COMMIT;
+
+# Verify: row expired, 0 rows visible
+SELECT COUNT(*) FROM sz;
+
+# Thread A also verifies
+connection conn_a;
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM sz WHERE col_a = 1
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+
+# Cleanup
+DELETE FROM sz;
+
+###############################################################################
+# Case 21: ROLLBACK before TTL, DELETE finds no row
+#
+# Thread A inserts row, holds transaction BEFORE TTL (sleep 2), then ROLLBACK.
+# Thread B tries DELETE on same PK — blocks until A rolls back.
+# Row was rolled back, so B finds 0 rows.
+###############################################################################
+
+--echo # -------------------------------------------------------
+--echo # Case 21: ROLLBACK before TTL, DELETE finds no row
+--echo # -------------------------------------------------------
+
+connection conn_a;
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+
+# Thread B: attempt DELETE on same PK (will block on row lock)
+connection conn_b;
+BEGIN;
+--send DELETE FROM sz WHERE col_a = 1
+
+# Thread A: hold transaction BEFORE TTL, then ROLLBACK
+connection conn_a;
+sleep 2;
+ROLLBACK;
+
+# Thread B: reap the DELETE — row rolled back, should delete 0 rows
+connection conn_b;
+--reap
+SELECT ROW_COUNT();
+
+COMMIT;
+
+# Verify: no rows (rolled back)
+SELECT COUNT(*) FROM sz;
+
+# Thread A also verifies
+connection conn_a;
+SELECT COUNT(*) FROM sz;
+
+# Cleanup
+DELETE FROM sz;
+
+###############################################################################
+# Case 22: ROLLBACK after TTL, DELETE finds no row
+#
+# Thread A inserts row, holds transaction PAST TTL (sleep 6), then ROLLBACK.
+# Thread B tries DELETE on same PK — blocks until A rolls back.
+# Row was rolled back (and would have been expired anyway), so B finds 0 rows.
+###############################################################################
+
+--echo # -------------------------------------------------------
+--echo # Case 22: ROLLBACK after TTL, DELETE finds no row
+--echo # -------------------------------------------------------
+
+connection conn_a;
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+
+# Thread B: attempt DELETE on same PK (will block on row lock)
+connection conn_b;
+BEGIN;
+--send DELETE FROM sz WHERE col_a = 1
+
+# Thread A: hold transaction PAST TTL, then ROLLBACK
+connection conn_a;
+sleep 6;
+ROLLBACK;
+
+# Thread B: reap the DELETE — row rolled back, should delete 0 rows
+connection conn_b;
+--reap
+SELECT ROW_COUNT();
+
+COMMIT;
+
+# Verify: no rows
+SELECT COUNT(*) FROM sz;
+
+# Thread A also verifies
+connection conn_a;
+SELECT COUNT(*) FROM sz;
+
+# Cleanup
+DELETE FROM sz;
+
+###############################################################################
+# Case 27: Comprehensive ttl_expired_rows_visible_in_delete test
+#
+# Single-threaded test (only conn_a) that tests the session variable
+# ttl_expired_rows_visible_in_delete. When ON, DELETE can see and affect
+# expired rows. When OFF (default), expired rows are invisible to DELETE.
+#
+# Sub-tests:
+#   Test 1: DELETE FROM sz (full table)
+#   Test 2: DELETE FROM sz WHERE col_a > 1
+#   Test 3: DELETE FROM sz WHERE col_a > 1 AND col_c < 104
+#   Test 4: DELETE FROM sz WHERE col_a > 1 OR col_c < 104
+#   Test 5: DELETE FROM sz WHERE col_c > 101 AND col_c < 104
+#   Test 6: DELETE FROM sz WHERE col_c > 101 OR col_c < 104
+#   Test 7: DELETE FROM sz WHERE col_c = 103
+#   Test 8: DELETE FROM sz WHERE col_a = 4
+#   Test 9: DELETE FROM sz WHERE col_c <= 105 LIMIT 2 (with repeated deletes)
+###############################################################################
+
+--echo # -------------------------------------------------------
+--echo # Case 27: ttl_expired_rows_visible_in_delete
+--echo # -------------------------------------------------------
+
+connection conn_a;
+
+## ---- Test 1: DELETE FROM sz (full table) ----
+--echo # Test 1: DELETE FROM sz (full table delete)
+
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 101);
+INSERT INTO sz VALUES(2, SYSDATE(), 102);
+INSERT INTO sz VALUES(3, SYSDATE(), 103);
+INSERT INTO sz VALUES(4, SYSDATE(), 104);
+INSERT INTO sz VALUES(5, SYSDATE(), 105);
+COMMIT;
+
+SELECT COUNT(*) FROM sz;
+
+# Wait for TTL expiry
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM sz
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+
+# DELETE with OFF (default) — should affect 0 rows (expired rows invisible)
+BEGIN;
+DELETE FROM sz;
+SELECT ROW_COUNT();
+
+# DELETE with ON — should affect 5 rows (expired rows visible)
+SET ttl_expired_rows_visible_in_delete = ON;
+DELETE FROM sz;
+SELECT ROW_COUNT();
+COMMIT;
+
+# Cleanup for next sub-test
+SET ttl_expired_rows_visible_in_delete = OFF;
+DELETE FROM sz;
+
+## ---- Test 2: DELETE FROM sz WHERE col_a > 1 ----
+--echo # Test 2: DELETE FROM sz WHERE col_a > 1
+
+INSERT INTO sz VALUES(1, SYSDATE(), 101);
+INSERT INTO sz VALUES(2, SYSDATE(), 102);
+INSERT INTO sz VALUES(3, SYSDATE(), 103);
+INSERT INTO sz VALUES(4, SYSDATE(), 104);
+INSERT INTO sz VALUES(5, SYSDATE(), 105);
+COMMIT;
+
+SELECT COUNT(*) FROM sz;
+
+# Wait for TTL expiry
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM sz
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+
+# DELETE with OFF — should affect 0 rows
+BEGIN;
+DELETE FROM sz WHERE col_a > 1;
+SELECT ROW_COUNT();
+
+# DELETE with ON — should affect 4 rows (col_a 2,3,4,5)
+SET ttl_expired_rows_visible_in_delete = ON;
+DELETE FROM sz WHERE col_a > 1;
+SELECT ROW_COUNT();
+COMMIT;
+
+# Cleanup for next sub-test
+SET ttl_expired_rows_visible_in_delete = ON;
+DELETE FROM sz;
+SET ttl_expired_rows_visible_in_delete = OFF;
+
+## ---- Test 3: DELETE FROM sz WHERE col_a > 1 AND col_c < 104 ----
+--echo # Test 3: DELETE FROM sz WHERE col_a > 1 AND col_c < 104
+
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 101);
+INSERT INTO sz VALUES(2, SYSDATE(), 102);
+INSERT INTO sz VALUES(3, SYSDATE(), 103);
+INSERT INTO sz VALUES(4, SYSDATE(), 104);
+INSERT INTO sz VALUES(5, SYSDATE(), 105);
+COMMIT;
+
+SELECT COUNT(*) FROM sz;
+
+# Wait for TTL expiry
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM sz
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+
+# DELETE with OFF — should affect 0 rows
+BEGIN;
+DELETE FROM sz WHERE col_a > 1 AND col_c < 104;
+SELECT ROW_COUNT();
+
+# DELETE with ON — should affect 2 rows (col_a=2/col_c=102, col_a=3/col_c=103)
+SET ttl_expired_rows_visible_in_delete = ON;
+DELETE FROM sz WHERE col_a > 1 AND col_c < 104;
+SELECT ROW_COUNT();
+COMMIT;
+
+# Cleanup for next sub-test
+SET ttl_expired_rows_visible_in_delete = ON;
+DELETE FROM sz;
+SET ttl_expired_rows_visible_in_delete = OFF;
+
+## ---- Test 4: DELETE FROM sz WHERE col_a > 1 OR col_c < 104 ----
+--echo # Test 4: DELETE FROM sz WHERE col_a > 1 OR col_c < 104
+
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 101);
+INSERT INTO sz VALUES(2, SYSDATE(), 102);
+INSERT INTO sz VALUES(3, SYSDATE(), 103);
+INSERT INTO sz VALUES(4, SYSDATE(), 104);
+INSERT INTO sz VALUES(5, SYSDATE(), 105);
+COMMIT;
+
+SELECT COUNT(*) FROM sz;
+
+# Wait for TTL expiry
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM sz
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+
+# DELETE with OFF — should affect 0 rows
+BEGIN;
+DELETE FROM sz WHERE col_a > 1 OR col_c < 104;
+SELECT ROW_COUNT();
+
+# DELETE with ON — should affect 5 rows (all rows match col_a>1 or col_c<104)
+SET ttl_expired_rows_visible_in_delete = ON;
+DELETE FROM sz WHERE col_a > 1 OR col_c < 104;
+SELECT ROW_COUNT();
+COMMIT;
+
+# Cleanup for next sub-test
+SET ttl_expired_rows_visible_in_delete = OFF;
+DELETE FROM sz;
+
+## ---- Test 5: DELETE FROM sz WHERE col_c > 101 AND col_c < 104 ----
+--echo # Test 5: DELETE FROM sz WHERE col_c > 101 AND col_c < 104
+
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 101);
+INSERT INTO sz VALUES(2, SYSDATE(), 102);
+INSERT INTO sz VALUES(3, SYSDATE(), 103);
+INSERT INTO sz VALUES(4, SYSDATE(), 104);
+INSERT INTO sz VALUES(5, SYSDATE(), 105);
+COMMIT;
+
+SELECT COUNT(*) FROM sz;
+
+# Wait for TTL expiry
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM sz
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+
+# DELETE with OFF — should affect 0 rows
+BEGIN;
+DELETE FROM sz WHERE col_c > 101 AND col_c < 104;
+SELECT ROW_COUNT();
+
+# DELETE with ON — should affect 2 rows (col_c=102, col_c=103)
+SET ttl_expired_rows_visible_in_delete = ON;
+DELETE FROM sz WHERE col_c > 101 AND col_c < 104;
+SELECT ROW_COUNT();
+COMMIT;
+
+# Cleanup for next sub-test
+SET ttl_expired_rows_visible_in_delete = ON;
+DELETE FROM sz;
+SET ttl_expired_rows_visible_in_delete = OFF;
+
+## ---- Test 6: DELETE FROM sz WHERE col_c > 101 OR col_c < 104 ----
+--echo # Test 6: DELETE FROM sz WHERE col_c > 101 OR col_c < 104
+
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 101);
+INSERT INTO sz VALUES(2, SYSDATE(), 102);
+INSERT INTO sz VALUES(3, SYSDATE(), 103);
+INSERT INTO sz VALUES(4, SYSDATE(), 104);
+INSERT INTO sz VALUES(5, SYSDATE(), 105);
+COMMIT;
+
+SELECT COUNT(*) FROM sz;
+
+# Wait for TTL expiry
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM sz
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+
+# DELETE with OFF — should affect 0 rows
+BEGIN;
+DELETE FROM sz WHERE col_c > 101 OR col_c < 104;
+SELECT ROW_COUNT();
+
+# DELETE with ON — should affect 5 rows (all rows match)
+SET ttl_expired_rows_visible_in_delete = ON;
+DELETE FROM sz WHERE col_c > 101 OR col_c < 104;
+SELECT ROW_COUNT();
+COMMIT;
+
+# Cleanup for next sub-test
+SET ttl_expired_rows_visible_in_delete = OFF;
+DELETE FROM sz;
+
+## ---- Test 7: DELETE FROM sz WHERE col_c = 103 ----
+--echo # Test 7: DELETE FROM sz WHERE col_c = 103
+
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 101);
+INSERT INTO sz VALUES(2, SYSDATE(), 102);
+INSERT INTO sz VALUES(3, SYSDATE(), 103);
+INSERT INTO sz VALUES(4, SYSDATE(), 104);
+INSERT INTO sz VALUES(5, SYSDATE(), 105);
+COMMIT;
+
+SELECT COUNT(*) FROM sz;
+
+# Wait for TTL expiry
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM sz
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+
+# DELETE with OFF — should affect 0 rows
+BEGIN;
+DELETE FROM sz WHERE col_c = 103;
+SELECT ROW_COUNT();
+
+# DELETE with ON — should affect 1 row
+SET ttl_expired_rows_visible_in_delete = ON;
+DELETE FROM sz WHERE col_c = 103;
+SELECT ROW_COUNT();
+COMMIT;
+
+# Cleanup for next sub-test
+SET ttl_expired_rows_visible_in_delete = ON;
+DELETE FROM sz;
+SET ttl_expired_rows_visible_in_delete = OFF;
+
+## ---- Test 8: DELETE FROM sz WHERE col_a = 4 ----
+--echo # Test 8: DELETE FROM sz WHERE col_a = 4
+
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 101);
+INSERT INTO sz VALUES(2, SYSDATE(), 102);
+INSERT INTO sz VALUES(3, SYSDATE(), 103);
+INSERT INTO sz VALUES(4, SYSDATE(), 104);
+INSERT INTO sz VALUES(5, SYSDATE(), 105);
+COMMIT;
+
+SELECT COUNT(*) FROM sz;
+
+# Wait for TTL expiry
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM sz
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+
+# DELETE with OFF — should affect 0 rows
+BEGIN;
+DELETE FROM sz WHERE col_a = 4;
+SELECT ROW_COUNT();
+
+# DELETE with ON — should affect 1 row
+SET ttl_expired_rows_visible_in_delete = ON;
+DELETE FROM sz WHERE col_a = 4;
+SELECT ROW_COUNT();
+COMMIT;
+
+# Cleanup for next sub-test
+SET ttl_expired_rows_visible_in_delete = ON;
+DELETE FROM sz;
+SET ttl_expired_rows_visible_in_delete = OFF;
+
+## ---- Test 9: DELETE FROM sz WHERE col_c <= 105 LIMIT 2 ----
+--echo # Test 9: DELETE FROM sz WHERE col_c <= 105 LIMIT 2 (repeated)
+
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 101);
+INSERT INTO sz VALUES(2, SYSDATE(), 102);
+INSERT INTO sz VALUES(3, SYSDATE(), 103);
+INSERT INTO sz VALUES(4, SYSDATE(), 104);
+INSERT INTO sz VALUES(5, SYSDATE(), 105);
+COMMIT;
+
+SELECT COUNT(*) FROM sz;
+
+# Wait for TTL expiry
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM sz
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+
+# DELETE with OFF — should affect 0 rows
+BEGIN;
+DELETE FROM sz WHERE col_c <= 105 LIMIT 2;
+SELECT ROW_COUNT();
+
+# DELETE with ON, LIMIT 2 — should affect 2 rows
+SET ttl_expired_rows_visible_in_delete = ON;
+DELETE FROM sz WHERE col_c <= 105 LIMIT 2;
+SELECT ROW_COUNT();
+
+# DELETE with ON, LIMIT 2 again — should affect 2 more rows
+DELETE FROM sz WHERE col_c <= 105 LIMIT 2;
+SELECT ROW_COUNT();
+
+# DELETE with ON, LIMIT 2 again — should affect 1 remaining row
+DELETE FROM sz WHERE col_c <= 105 LIMIT 2;
+SELECT ROW_COUNT();
+COMMIT;
+
+# Reset session variable
+SET ttl_expired_rows_visible_in_delete = OFF;
+
+###############################################################################
+# Cleanup
+###############################################################################
+
+connection default;
+disconnect conn_a;
+disconnect conn_b;
+DROP TABLE test.sz;

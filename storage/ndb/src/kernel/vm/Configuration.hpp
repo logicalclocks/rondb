@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -198,6 +198,7 @@ class Configuration {
 
   ndb_mgm_configuration *m_ownConfig;
   const class ConfigValues *get_own_config_values();
+  class ConfigValues *get_own_config_values_mutable();
   ndb_mgm::config_ptr m_clusterConfig;
   UtilBuffer m_clusterConfigPacked_v1;
   UtilBuffer m_clusterConfigPacked_v2;
