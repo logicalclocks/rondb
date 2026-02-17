@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -79,6 +79,7 @@
 #include "portlib/ndb_openssl_version.h"
 #include "portlib/ndb_sockaddr.h"
 #include <signaldata/SetDomainId.hpp>
+#include <signaldata/SetConfigParam.hpp>
 
 #include <NdbConfig.h>
 #include <SocketServer.hpp>
@@ -1313,6 +1314,119 @@ MgmtSrvr::set_location_domain_id_request(
       assert(setDomainIdConf->changeNodeId == Uint32(changeNodeId));
       assert(setDomainIdConf->senderId <= nodes.max_size());
       NodeId senderNodeId = refToNode(setDomainIdConf->senderRef);
+      nodes.clear(senderNodeId);
+      break;
+    }
+    case GSN_NF_COMPLETEREP:
+    {
+      const NFCompleteRep * rep = CAST_CONSTPTR(NFCompleteRep,
+                                                signal->getDataPtr());
+      if (rep->failedNodeId <= nodes.max_size())
+        nodes.clear(rep->failedNodeId); // clear the failed node
+      break;
+    }
+    case GSN_NODE_FAILREP:
+    {
+      const NodeFailRep * rep = CAST_CONSTPTR(NodeFailRep,
+                                              signal->getDataPtr());
+      Uint32 len = NodeFailRep::getNodeMaskLength(signal->getLength());
+      assert(len == NodeBitmask::Size || // only full length in ndbapi
+             len == 0);
+      NodeBitmask mask;
+      if (signal->header.m_noOfSections >= 1)
+      {
+        mask.assign(signal->ptr[0].sz, signal->ptr[0].p);
+      }
+      else
+      {
+        mask.assign(len, rep->theAllNodes);
+      }
+      nodes.bitANDC(mask);
+      break;
+    }
+    case GSN_API_REGCONF:
+    case GSN_TAKE_OVERTCCONF:
+    case GSN_CONNECT_REP:
+      continue;
+    default:
+      report_unknown_signal(signal);
+      DBUG_RETURN(SEND_OR_RECEIVE_FAILED);
+    }
+  }
+  DBUG_RETURN(error_code);
+}
+
+int
+MgmtSrvr::set_config_param_request(
+  int nodeId,
+  Uint32 configKey,
+  Uint64 configValue)
+{
+  DBUG_ENTER("MgmtSrvr::set_config_param_request");
+  DBUG_PRINT("enter", ("Set config param: key=%u value=%llu for node %d",
+             configKey, configValue, nodeId));
+
+  SignalSender ss(theFacade);
+  SimpleSignal ssig;
+  ss.lock(); // lock will be released on exit
+  SetConfigParamReq* const req = CAST_PTR(SetConfigParamReq,
+                                          ssig.getDataPtrSend());
+  ssig.set(ss,
+           TestOrd::TraceAPI,
+           CMVMI,
+           GSN_SET_CONFIG_PARAM_REQ,
+           SetConfigParamReq::SignalLength);
+  req->senderRef = ss.getOwnRef();
+  req->configParamKey = configKey;
+  req->configParamValueHigh = Uint32(configValue >> 32);
+  req->configParamValueLow = Uint32(configValue & 0xFFFFFFFF);
+
+  // send the signals
+  int failed = 0;
+  NodeBitmask nodes;
+  {
+    NodeId targetNodeId = 0;
+    while(getNextNodeId(&targetNodeId, NDB_MGM_NODE_TYPE_NDB))
+    {
+      if (nodeId != 0 && (int)targetNodeId != nodeId)
+      {
+        // Skip nodes that don't match the target
+        continue;
+      }
+      if (okToSendTo(targetNodeId, true) == 0)
+      {
+        SendStatus result = ss.sendSignal(targetNodeId, &ssig);
+        if (result == SEND_OK)
+          nodes.set(targetNodeId);
+        else
+          failed++;
+      }
+    }
+  }
+  if (nodes.isclear() && failed > 0)
+  {
+    DBUG_RETURN(SEND_OR_RECEIVE_FAILED);
+  }
+  int error_code = 0;
+  while (!nodes.isclear())
+  {
+    SimpleSignal *signal = ss.waitFor();
+    int gsn = signal->readSignalNumber();
+    switch (gsn) {
+    case GSN_SET_CONFIG_PARAM_REF:
+    {
+      const SetConfigParamRef* ref =
+        CAST_CONSTPTR(SetConfigParamRef, signal->getDataPtr());
+      NodeId senderNodeId = refToNode(ref->senderRef);
+      nodes.clear(senderNodeId);
+      error_code = FAILED_SET_CONFIG_PARAM_REQUEST;
+      break;
+    }
+    case GSN_SET_CONFIG_PARAM_CONF:
+    {
+      const SetConfigParamConf* conf =
+        CAST_CONSTPTR(SetConfigParamConf, signal->getDataPtr());
+      NodeId senderNodeId = refToNode(conf->senderRef);
       nodes.clear(senderNodeId);
       break;
     }

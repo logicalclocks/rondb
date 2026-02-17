@@ -1,0 +1,131 @@
+DROP TABLE IF EXISTS test.sz;
+CREATE TABLE test.sz (
+col_a INT,
+col_b TIMESTAMP,
+col_c INT,
+PRIMARY KEY(col_a),
+UNIQUE KEY(col_c)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=TTL=66@col_b";
+ALTER TABLE test.sz COMMENT="NDB_TABLE=TTL=5@col_b";
+#
+# Case 13: UPDATE succeeds when row not expired
+#
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+BEGIN;
+UPDATE sz SET col_c=200 WHERE col_a=1;
+COMMIT;
+SELECT ROW_COUNT();
+ROW_COUNT()
+1
+COMMIT;
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+col_a	col_c
+1	200
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+col_a	col_c
+1	200
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+COUNT(*)
+0
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+COUNT(*)
+0
+DELETE FROM sz;
+#
+# Case 14: UPDATE finds no row (row expired)
+#
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+BEGIN;
+UPDATE sz SET col_c=200 WHERE col_a=1;
+COMMIT;
+SELECT ROW_COUNT();
+ROW_COUNT()
+0
+COMMIT;
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+COUNT(*)
+0
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+COUNT(*)
+0
+DELETE FROM sz;
+#
+# Case 15: UPDATE finds no row, both expire
+#
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+BEGIN;
+UPDATE sz SET col_c=200 WHERE col_a=1;
+COMMIT;
+SELECT ROW_COUNT();
+ROW_COUNT()
+0
+COMMIT;
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+COUNT(*)
+0
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+COUNT(*)
+0
+DELETE FROM sz;
+#
+# Case 16: ROLLBACK before TTL, UPDATE finds no row
+#
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+BEGIN;
+UPDATE sz SET col_c=200 WHERE col_a=1;
+ROLLBACK;
+SELECT ROW_COUNT();
+ROW_COUNT()
+0
+COMMIT;
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+COUNT(*)
+0
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+COUNT(*)
+0
+DELETE FROM sz;
+#
+# Case 17: ROLLBACK after TTL, UPDATE finds no row
+#
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+BEGIN;
+UPDATE sz SET col_c=200 WHERE col_a=1;
+ROLLBACK;
+SELECT ROW_COUNT();
+ROW_COUNT()
+0
+COMMIT;
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+COUNT(*)
+0
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+COUNT(*)
+0
+DELETE FROM sz;
+#
+# Case 18: ROLLBACK after TTL, UPDATE finds no row, both expire
+#
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+BEGIN;
+UPDATE sz SET col_c=200 WHERE col_a=1;
+ROLLBACK;
+SELECT ROW_COUNT();
+ROW_COUNT()
+0
+COMMIT;
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+COUNT(*)
+0
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+COUNT(*)
+0
+DELETE FROM sz;
+DROP TABLE test.sz;

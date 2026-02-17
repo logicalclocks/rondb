@@ -1,0 +1,123 @@
+#
+# Case 56: Foreign key restrictions with TTL parent table
+#
+DROP TABLE IF EXISTS child;
+DROP TABLE IF EXISTS sz2;
+DROP TABLE IF EXISTS sz1;
+DROP TABLE IF EXISTS parentttl;
+DROP TABLE IF EXISTS parent;
+CREATE TABLE parent (
+col_a INT,
+col_t TIMESTAMP,
+col_b_ui INT,
+col_c_ui_upd INT,
+col_d_ui_del INT,
+PRIMARY KEY(col_a),
+UNIQUE KEY(col_b_ui),
+UNIQUE KEY(col_c_ui_upd),
+UNIQUE KEY(col_d_ui_del)
+) ENGINE = NDB;
+CREATE TABLE parentttl (
+col_a INT,
+col_t TIMESTAMP,
+col_b_ui INT,
+col_c_ui_upd INT,
+col_d_ui_del INT,
+PRIMARY KEY(col_a),
+UNIQUE KEY(col_b_ui),
+UNIQUE KEY(col_c_ui_upd),
+UNIQUE KEY(col_d_ui_del)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=TTL=5@col_t";
+CREATE TABLE sz1 (
+col_a INT,
+col_t TIMESTAMP,
+col_b_ui INT,
+col_c_ui_upd INT,
+col_d_ui_del INT,
+PRIMARY KEY(col_a)
+) ENGINE = NDB;
+CREATE TABLE sz2 (
+col_a INT,
+col_t TIMESTAMP,
+col_b_ui INT,
+col_c_ui_upd INT,
+col_d_ui_del INT,
+PRIMARY KEY(col_a),
+FOREIGN KEY(col_b_ui) REFERENCES parent(col_b_ui)
+ON UPDATE CASCADE ON DELETE CASCADE,
+FOREIGN KEY(col_c_ui_upd) REFERENCES parent(col_c_ui_upd)
+ON UPDATE CASCADE ON DELETE CASCADE,
+FOREIGN KEY(col_d_ui_del) REFERENCES parent(col_d_ui_del)
+ON UPDATE CASCADE ON DELETE CASCADE
+) ENGINE = NDB;
+# Test 1: CREATE child with FK to TTL parent -> error
+CREATE TABLE child (
+col_a INT,
+col_t TIMESTAMP,
+col_b_ui INT,
+col_c_ui_upd INT,
+col_d_ui_del INT,
+PRIMARY KEY(col_a),
+FOREIGN KEY(col_b_ui) REFERENCES parentttl(col_b_ui)
+ON UPDATE CASCADE ON DELETE CASCADE,
+FOREIGN KEY(col_c_ui_upd) REFERENCES parentttl(col_c_ui_upd)
+ON UPDATE CASCADE ON DELETE CASCADE,
+FOREIGN KEY(col_d_ui_del) REFERENCES parentttl(col_d_ui_del)
+ON UPDATE CASCADE ON DELETE CASCADE
+) ENGINE = NDB;
+ERROR HY000: Cannot add foreign key constraint
+# Test 2: ALTER sz1 ADD FK to TTL parent -> error
+ALTER TABLE sz1
+ADD FOREIGN KEY(col_b_ui) REFERENCES parentttl(col_b_ui)
+ON UPDATE CASCADE ON DELETE CASCADE,
+ADD FOREIGN KEY(col_c_ui_upd) REFERENCES parentttl(col_c_ui_upd)
+ON UPDATE CASCADE ON DELETE CASCADE,
+ADD FOREIGN KEY(col_d_ui_del) REFERENCES parentttl(col_d_ui_del)
+ON UPDATE CASCADE ON DELETE CASCADE;
+ERROR HY000: Cannot add foreign key constraint
+# Test 3: ALTER parent to add TTL (is FK parent) -> error
+ALTER TABLE parent COMMENT="NDB_TABLE=TTL=5@col_t";
+ERROR 0A000: Adding TTL on table which has fk restrictions is not supported. Reason: Table has fk restrictions, can not add TTL. Try drop the foreign keys from all the children tables.
+# Test 4: ALTER sz2 to add TTL (is FK child) -> error
+ALTER TABLE sz2 COMMENT="NDB_TABLE=TTL=5@col_t";
+ERROR 0A000: Adding TTL on table which has fk restrictions is not supported. Reason: Table has fk restrictions, can not add TTL. Try drop the foreign keys from all the children tables.
+# Test 5: CREATE TTL child with FK to non-TTL parent -> error
+CREATE TABLE child (
+col_a INT,
+col_t TIMESTAMP,
+col_b_ui INT,
+col_c_ui_upd INT,
+col_d_ui_del INT,
+PRIMARY KEY(col_a),
+FOREIGN KEY(col_b_ui) REFERENCES parent(col_b_ui)
+ON UPDATE CASCADE ON DELETE CASCADE,
+FOREIGN KEY(col_c_ui_upd) REFERENCES parent(col_c_ui_upd)
+ON UPDATE CASCADE ON DELETE CASCADE,
+FOREIGN KEY(col_d_ui_del) REFERENCES parent(col_d_ui_del)
+ON UPDATE CASCADE ON DELETE CASCADE
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=TTL=5@col_t";
+ERROR HY000: Cannot add foreign key constraint
+# Test 6: CREATE TTL child with FK to TTL parent -> error
+CREATE TABLE child (
+col_a INT,
+col_t TIMESTAMP,
+col_b_ui INT,
+col_c_ui_upd INT,
+col_d_ui_del INT,
+PRIMARY KEY(col_a),
+FOREIGN KEY(col_b_ui) REFERENCES parentttl(col_b_ui)
+ON UPDATE CASCADE ON DELETE CASCADE,
+FOREIGN KEY(col_c_ui_upd) REFERENCES parentttl(col_c_ui_upd)
+ON UPDATE CASCADE ON DELETE CASCADE,
+FOREIGN KEY(col_d_ui_del) REFERENCES parentttl(col_d_ui_del)
+ON UPDATE CASCADE ON DELETE CASCADE
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=TTL=5@col_t";
+ERROR HY000: Cannot add foreign key constraint
+DROP TABLE IF EXISTS child;
+DROP TABLE sz2;
+DROP TABLE sz1;
+DROP TABLE parentttl;
+DROP TABLE parent;

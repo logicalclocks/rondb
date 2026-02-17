@@ -1,0 +1,52 @@
+#
+# Test: test_datetime_column
+# Create TTL table with DATETIME, insert 5 rows with NOW(), wait for purge
+#
+CREATE DATABASE IF NOT EXISTS ttl_coltypes;
+DROP TABLE IF EXISTS ttl_coltypes.datetime_table;
+CREATE TABLE ttl_coltypes.datetime_table (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_coltypes.datetime_table(ttl_col);
+ALTER TABLE ttl_coltypes.datetime_table COMMENT="NDB_TABLE=TTL=5@ttl_col";
+INSERT INTO ttl_coltypes.datetime_table (id, ttl_col, data) VALUES (1, NOW(), 'will_expire_1');
+INSERT INTO ttl_coltypes.datetime_table (id, ttl_col, data) VALUES (2, NOW(), 'will_expire_2');
+INSERT INTO ttl_coltypes.datetime_table (id, ttl_col, data) VALUES (3, NOW(), 'will_expire_3');
+INSERT INTO ttl_coltypes.datetime_table (id, ttl_col, data) VALUES (4, NOW(), 'will_expire_4');
+INSERT INTO ttl_coltypes.datetime_table (id, ttl_col, data) VALUES (5, NOW(), 'will_expire_5');
+include/assert.inc [5 DATETIME rows should be visible initially]
+include/assert.inc [All DATETIME rows should be purged]
+DROP DATABASE ttl_coltypes;
+#
+# Test: test_timestamp_column
+# Same but with TIMESTAMP column type
+#
+CREATE DATABASE IF NOT EXISTS ttl_coltypes;
+DROP TABLE IF EXISTS ttl_coltypes.timestamp_table;
+CREATE TABLE ttl_coltypes.timestamp_table (id INT PRIMARY KEY, ttl_col TIMESTAMP, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_coltypes.timestamp_table(ttl_col);
+ALTER TABLE ttl_coltypes.timestamp_table COMMENT="NDB_TABLE=TTL=5@ttl_col";
+INSERT INTO ttl_coltypes.timestamp_table (id, ttl_col, data) VALUES (1, NOW(), 'will_expire_1');
+INSERT INTO ttl_coltypes.timestamp_table (id, ttl_col, data) VALUES (2, NOW(), 'will_expire_2');
+INSERT INTO ttl_coltypes.timestamp_table (id, ttl_col, data) VALUES (3, NOW(), 'will_expire_3');
+INSERT INTO ttl_coltypes.timestamp_table (id, ttl_col, data) VALUES (4, NOW(), 'will_expire_4');
+INSERT INTO ttl_coltypes.timestamp_table (id, ttl_col, data) VALUES (5, NOW(), 'will_expire_5');
+include/assert.inc [5 TIMESTAMP rows should be visible initially]
+include/assert.inc [All TIMESTAMP rows should be purged]
+DROP DATABASE ttl_coltypes;
+#
+# Test: test_null_ttl_column
+# 3 NULL ttl rows + 3 expired rows; NULL rows survive purge
+#
+CREATE DATABASE IF NOT EXISTS ttl_coltypes;
+DROP TABLE IF EXISTS ttl_coltypes.null_ttl;
+CREATE TABLE ttl_coltypes.null_ttl (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_coltypes.null_ttl(ttl_col);
+ALTER TABLE ttl_coltypes.null_ttl COMMENT="NDB_TABLE=TTL=5@ttl_col";
+INSERT INTO ttl_coltypes.null_ttl (id, ttl_col, data) VALUES (1, NULL, 'null_ttl_1');
+INSERT INTO ttl_coltypes.null_ttl (id, ttl_col, data) VALUES (2, NULL, 'null_ttl_2');
+INSERT INTO ttl_coltypes.null_ttl (id, ttl_col, data) VALUES (3, NULL, 'null_ttl_3');
+INSERT INTO ttl_coltypes.null_ttl (id, ttl_col, data) VALUES (4, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_1');
+INSERT INTO ttl_coltypes.null_ttl (id, ttl_col, data) VALUES (5, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_2');
+INSERT INTO ttl_coltypes.null_ttl (id, ttl_col, data) VALUES (6, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_3');
+include/assert.inc [Surviving rows should have NULL ttl_col]
+DROP DATABASE ttl_coltypes;
+# All column type tests passed

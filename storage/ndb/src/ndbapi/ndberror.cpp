@@ -1130,6 +1130,8 @@ ErrorBundle ErrorCodes[] = {
     "Data nodes failed Deactivate Request"},
   { 5069 /* FAILED_SET_DOMAIN_ID_REQUEST */, DMEC, AE,
     "Data nodes failed Set Location_Domain_Id Request"},
+  { 5070 /* FAILED_SET_CONFIG_PARAM_REQUEST */, DMEC, AE,
+    "Data nodes failed Set Config Param Request"},
   { 1120, DMEC, AE,
     "Set Location_Domain_Id Request failed, busy state"}
 };

@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -231,6 +231,16 @@ class MgmtSrvr : private ConfigSubscriber, public trp_client {
    *   @return 0 if succeeded, otherwise: error code
    */
   int deactivate_request(int processId);
+
+  /**
+   * Set a configuration parameter on a running data node.
+   *   @param  nodeId      Id of the DB node (0 = all data nodes)
+   *   @param  configKey   Configuration parameter key (CFG_DB_*)
+   *   @param  configValue New value for the parameter
+   *   @return 0 if succeeded, otherwise: error code
+   */
+  int set_config_param_request(int nodeId, Uint32 configKey,
+                               Uint64 configValue);
 
   /**
    *   Restart a list of nodes

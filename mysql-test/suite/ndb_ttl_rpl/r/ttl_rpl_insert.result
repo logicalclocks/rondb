@@ -1,0 +1,85 @@
+include/rpl/init_source_replica.inc
+Warnings:
+Note	####	Sending passwords in plain text without SSL/TLS is extremely insecure.
+Note	####	Storing MySQL user name or password information in the connection metadata repository is not secure and is therefore not recommended. Please consider using the USER and PASSWORD connection options for START REPLICA; see the 'START REPLICA Syntax' in the MySQL Manual for more information.
+[connection master]
+DROP TABLE IF EXISTS test.sz;
+CREATE TABLE test.sz (
+col_a INT,
+col_b TIMESTAMP,
+col_c INT,
+PRIMARY KEY(col_a),
+UNIQUE KEY(col_c)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=NOLOGGING=0,TTL=66@col_b";
+ALTER TABLE test.sz COMMENT="NDB_TABLE=NOLOGGING=0,TTL=10@col_b";
+#
+# Case 36: Basic replication of INSERT
+#
+BEGIN;
+INSERT INTO test.sz VALUES(1, SYSDATE(), 100);
+COMMIT;
+SELECT col_a, col_c FROM test.sz;
+col_a	col_c
+1	100
+SELECT col_a, col_c FROM test.sz;
+col_a	col_c
+1	100
+SELECT col_a, col_c FROM test.sz;
+col_a	col_c
+SELECT col_a, col_c FROM test.sz;
+col_a	col_c
+DELETE FROM test.sz;
+COMMIT;
+#
+# Case 37: Replication when row expires before commit
+#
+BEGIN;
+INSERT INTO test.sz VALUES(1, SYSDATE(), 100);
+SELECT col_a, col_c FROM test.sz;
+col_a	col_c
+1	100
+COMMIT;
+SELECT col_a, col_c FROM test.sz;
+col_a	col_c
+SELECT col_a, col_c FROM test.sz;
+col_a	col_c
+DELETE FROM test.sz;
+COMMIT;
+#
+# Case 38: Multiple inserts with interleaved expiration
+#
+BEGIN;
+INSERT INTO test.sz VALUES(1, SYSDATE(), 100);
+SELECT col_a, col_c FROM test.sz;
+col_a	col_c
+1	100
+COMMIT;
+SELECT col_a, col_c FROM test.sz;
+col_a	col_c
+SELECT col_a, col_c FROM test.sz;
+col_a	col_c
+BEGIN;
+INSERT INTO test.sz VALUES(1, SYSDATE(), 200);
+COMMIT;
+SELECT col_a, col_c FROM test.sz;
+col_a	col_c
+1	200
+SELECT col_a, col_c FROM test.sz;
+col_a	col_c
+1	200
+BEGIN;
+INSERT INTO test.sz VALUES(1, SYSDATE(), 300);
+COMMIT;
+SELECT col_a, col_c FROM test.sz;
+col_a	col_c
+1	300
+SELECT col_a, col_c FROM test.sz;
+col_a	col_c
+1	300
+SELECT col_a, col_c FROM test.sz;
+col_a	col_c
+SELECT col_a, col_c FROM test.sz;
+col_a	col_c
+DROP TABLE test.sz;
+include/rpl/deinit.inc

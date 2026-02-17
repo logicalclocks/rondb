@@ -1,0 +1,124 @@
+--source include/have_ndb.inc
+
+# suite/ndb_ttl_purge/t/ttl_purge_column_types.test
+#
+# TTL column type tests (3 cases):
+#   - test_datetime_column
+#   - test_timestamp_column
+#   - test_null_ttl_column
+
+--source suite/ndb_ttl_purge/include/ttl_purge_setup.inc
+--source suite/ndb_ttl_purge/include/ttl_purge_reset_config.inc
+
+--echo #
+--echo # Test: test_datetime_column
+--echo # Create TTL table with DATETIME, insert 5 rows with NOW(), wait for purge
+--echo #
+
+--let $ttl_db = ttl_coltypes
+--let $ttl_table = datetime_table
+--let $ttl_seconds = 5
+--let $ttl_col_type = DATETIME
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+INSERT INTO ttl_coltypes.datetime_table (id, ttl_col, data) VALUES (1, NOW(), 'will_expire_1');
+INSERT INTO ttl_coltypes.datetime_table (id, ttl_col, data) VALUES (2, NOW(), 'will_expire_2');
+INSERT INTO ttl_coltypes.datetime_table (id, ttl_col, data) VALUES (3, NOW(), 'will_expire_3');
+INSERT INTO ttl_coltypes.datetime_table (id, ttl_col, data) VALUES (4, NOW(), 'will_expire_4');
+INSERT INTO ttl_coltypes.datetime_table (id, ttl_col, data) VALUES (5, NOW(), 'will_expire_5');
+
+--let $assert_text = 5 DATETIME rows should be visible initially
+--let $assert_cond = [SELECT COUNT(*) FROM ttl_coltypes.datetime_table] = 5
+--source include/assert.inc
+
+--let $purge_db = ttl_coltypes
+--let $purge_table = datetime_table
+--let $purge_completion_timeout = 30
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_purge_completion.inc
+
+--let $assert_text = All DATETIME rows should be purged
+--let $assert_cond = [SELECT COUNT(*) FROM ttl_coltypes.datetime_table] = 0
+--source include/assert.inc
+
+DROP DATABASE ttl_coltypes;
+--sleep 3
+
+--echo #
+--echo # Test: test_timestamp_column
+--echo # Same but with TIMESTAMP column type
+--echo #
+
+--let $ttl_db = ttl_coltypes
+--let $ttl_table = timestamp_table
+--let $ttl_seconds = 5
+--let $ttl_col_type = TIMESTAMP
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+INSERT INTO ttl_coltypes.timestamp_table (id, ttl_col, data) VALUES (1, NOW(), 'will_expire_1');
+INSERT INTO ttl_coltypes.timestamp_table (id, ttl_col, data) VALUES (2, NOW(), 'will_expire_2');
+INSERT INTO ttl_coltypes.timestamp_table (id, ttl_col, data) VALUES (3, NOW(), 'will_expire_3');
+INSERT INTO ttl_coltypes.timestamp_table (id, ttl_col, data) VALUES (4, NOW(), 'will_expire_4');
+INSERT INTO ttl_coltypes.timestamp_table (id, ttl_col, data) VALUES (5, NOW(), 'will_expire_5');
+
+--let $assert_text = 5 TIMESTAMP rows should be visible initially
+--let $assert_cond = [SELECT COUNT(*) FROM ttl_coltypes.timestamp_table] = 5
+--source include/assert.inc
+
+--let $purge_db = ttl_coltypes
+--let $purge_table = timestamp_table
+--let $purge_completion_timeout = 30
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_purge_completion.inc
+
+--let $assert_text = All TIMESTAMP rows should be purged
+--let $assert_cond = [SELECT COUNT(*) FROM ttl_coltypes.timestamp_table] = 0
+--source include/assert.inc
+
+DROP DATABASE ttl_coltypes;
+--sleep 3
+
+--echo #
+--echo # Test: test_null_ttl_column
+--echo # 3 NULL ttl rows + 3 expired rows; NULL rows survive purge
+--echo #
+
+--let $ttl_db = ttl_coltypes
+--let $ttl_table = null_ttl
+--let $ttl_seconds = 5
+--let $ttl_col_type = DATETIME
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+# Insert 3 rows with NULL ttl_col (should never be purged)
+INSERT INTO ttl_coltypes.null_ttl (id, ttl_col, data) VALUES (1, NULL, 'null_ttl_1');
+INSERT INTO ttl_coltypes.null_ttl (id, ttl_col, data) VALUES (2, NULL, 'null_ttl_2');
+INSERT INTO ttl_coltypes.null_ttl (id, ttl_col, data) VALUES (3, NULL, 'null_ttl_3');
+
+# Insert 3 expired rows
+INSERT INTO ttl_coltypes.null_ttl (id, ttl_col, data) VALUES (4, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_1');
+INSERT INTO ttl_coltypes.null_ttl (id, ttl_col, data) VALUES (5, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_2');
+INSERT INTO ttl_coltypes.null_ttl (id, ttl_col, data) VALUES (6, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_3');
+
+# Wait for expired rows to be purged
+--sleep 15
+
+# Use SELECT * to count visible rows (not COUNT(*) due to known TTL visibility bug)
+# NULL rows should survive, expired rows should be gone
+--let $wait_timeout = 30
+--let $wait_condition = SELECT COUNT(*) = 3 FROM ttl_coltypes.null_ttl
+--source include/wait_condition.inc
+
+if (!$success)
+{
+  SELECT id, ttl_col, data FROM ttl_coltypes.null_ttl ORDER BY id;
+  --die Expected 3 NULL-ttl rows to survive, but count differs
+}
+
+# Verify the surviving rows are the NULL ones
+--let $assert_text = Surviving rows should have NULL ttl_col
+--let $assert_cond = [SELECT COUNT(*) FROM ttl_coltypes.null_ttl WHERE ttl_col IS NULL] = 3
+--source include/assert.inc
+
+DROP DATABASE ttl_coltypes;
+
+--source suite/ndb_ttl_purge/include/ttl_purge_cleanup_tmp.inc
+
+--echo # All column type tests passed

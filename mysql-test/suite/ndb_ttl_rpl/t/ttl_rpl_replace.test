@@ -1,0 +1,212 @@
+# suite/ndb_ttl_rpl/t/ttl_rpl_replace.test
+#
+# TTL binlog replication tests: Cases 41, 42
+# Migrated from ttl_test_suite.py (TestCase41BinlogMultipleReplaceInserts,
+# TestCase42BinlogFullyReplicatedReplace)
+#
+# Topology: master (2 ndbd) -> slave (1 ndbd), binlog row format
+# TTL = 10 seconds on col_b
+
+--source include/have_ndb.inc
+--source include/have_binlog_format_row.inc
+--source suite/ndb_rpl/ndb_rpl_init_source_replica.inc
+
+--connection master
+--source suite/ndb_ttl_rpl/include/ttl_rpl_create_table.inc
+--source include/rpl/wait_for_ndb_committed_to_binlog.inc
+--sync_slave_with_master
+
+###############################################################################
+# Case 41: Multiple REPLACE INTO operations with replication
+#
+# Stage 1: INSERT(col_c=100) -> COMMIT -> sleep 5 -> REPLACE(col_c=200)
+#          -> COMMIT -> sync -> slave sees col_c=200
+# Stage 2: Wait for expiry -> REPLACE(col_c=300) -> sync
+#          -> slave sees col_c=300 -> wait for expiry
+###############################################################################
+
+--echo #
+--echo # Case 41: Multiple REPLACE INTO operations with replication
+--echo #
+
+# Stage 1: INSERT, then REPLACE before TTL
+--connection master
+BEGIN;
+INSERT INTO test.sz VALUES(1, SYSDATE(), 100);
+COMMIT;
+
+SELECT col_a, col_c FROM test.sz;
+
+sleep 5;
+
+BEGIN;
+REPLACE INTO test.sz VALUES(1, SYSDATE(), 200);
+COMMIT;
+
+SELECT col_a, col_c FROM test.sz;
+
+--source include/rpl/wait_for_ndb_committed_to_binlog.inc
+--sync_slave_with_master
+
+# Slave sees the REPLACE result
+--connection slave
+SELECT col_a, col_c FROM test.sz;
+
+# Wait for TTL expiry on master
+--connection master
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM test.sz
+--source suite/ndb_ttl_rpl/include/ttl_wait_expired.inc
+
+SELECT col_a, col_c FROM test.sz;
+
+# Wait for TTL expiry on slave
+--connection slave
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM test.sz
+--source suite/ndb_ttl_rpl/include/ttl_wait_expired.inc
+
+SELECT col_a, col_c FROM test.sz;
+
+# Stage 2: REPLACE after expiry
+--connection master
+sleep 2;
+BEGIN;
+REPLACE INTO test.sz VALUES(1, SYSDATE(), 300);
+COMMIT;
+
+SELECT col_a, col_c FROM test.sz;
+
+--source include/rpl/wait_for_ndb_committed_to_binlog.inc
+--sync_slave_with_master
+
+--connection slave
+SELECT col_a, col_c FROM test.sz;
+
+# Final: Wait for expiry on both
+--connection master
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM test.sz
+--source suite/ndb_ttl_rpl/include/ttl_wait_expired.inc
+
+SELECT col_a, col_c FROM test.sz;
+
+--connection slave
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM test.sz
+--source suite/ndb_ttl_rpl/include/ttl_wait_expired.inc
+
+SELECT col_a, col_c FROM test.sz;
+
+# Clean up for next case
+--connection master
+--disable_warnings
+DELETE FROM test.sz;
+--enable_warnings
+COMMIT;
+--source include/rpl/wait_for_ndb_committed_to_binlog.inc
+--sync_slave_with_master
+
+###############################################################################
+# Case 42: FULLY_REPLICATED table with REPLACE INTO
+#
+# Uses sz1 table with FULLY_REPLICATED=1.
+# Stage 1: INSERT(col_c=100) -> REPLACE(col_c=200) -> verify
+# Stage 2: Wait for expiry -> REPLACE(col_c=300) -> verify
+# FULLY_REPLICATED shows 2 rows on master (2 ndbd) after REPLACE.
+###############################################################################
+
+--echo #
+--echo # Case 42: FULLY_REPLICATED table with REPLACE INTO
+--echo #
+
+--connection master
+--disable_warnings
+DROP TABLE IF EXISTS test.sz1;
+--enable_warnings
+
+CREATE TABLE test.sz1 (
+    col_a INT,
+    col_b TIMESTAMP,
+    col_c INT
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=FULLY_REPLICATED=1,NOLOGGING=0,TTL=66@col_b";
+
+sleep 3;
+ALTER TABLE test.sz1 COMMENT="NDB_TABLE=FULLY_REPLICATED=1,NOLOGGING=0,TTL=10@col_b";
+sleep 3;
+
+--source include/rpl/wait_for_ndb_committed_to_binlog.inc
+--sync_slave_with_master
+
+# Stage 1: INSERT then REPLACE
+--connection master
+BEGIN;
+INSERT INTO test.sz1 VALUES(1, SYSDATE(), 100);
+COMMIT;
+
+SELECT col_a, col_c FROM test.sz1;
+
+sleep 5;
+
+BEGIN;
+REPLACE INTO test.sz1 VALUES(1, SYSDATE(), 200);
+COMMIT;
+
+# FULLY_REPLICATED: may show 2 rows on master with 2 ndbd
+SELECT col_a, col_c FROM test.sz1 ORDER BY col_c;
+
+--source include/rpl/wait_for_ndb_committed_to_binlog.inc
+--sync_slave_with_master
+
+--connection slave
+SELECT col_a, col_c FROM test.sz1 ORDER BY col_c;
+
+# Wait for TTL expiry on master
+--connection master
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM test.sz1
+--source suite/ndb_ttl_rpl/include/ttl_wait_expired.inc
+
+SELECT col_a, col_c FROM test.sz1;
+
+# Wait for TTL expiry on slave
+--connection slave
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM test.sz1
+--source suite/ndb_ttl_rpl/include/ttl_wait_expired.inc
+
+SELECT col_a, col_c FROM test.sz1;
+
+# Stage 2: REPLACE after expiry
+--connection master
+sleep 5;
+BEGIN;
+REPLACE INTO test.sz1 VALUES(1, SYSDATE(), 300);
+COMMIT;
+
+SELECT col_a, col_c FROM test.sz1;
+
+--source include/rpl/wait_for_ndb_committed_to_binlog.inc
+--sync_slave_with_master
+
+--connection slave
+SELECT col_a, col_c FROM test.sz1;
+
+# Final: Wait for expiry on both
+--connection master
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM test.sz1
+--source suite/ndb_ttl_rpl/include/ttl_wait_expired.inc
+
+SELECT col_a, col_c FROM test.sz1;
+
+--connection slave
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM test.sz1
+--source suite/ndb_ttl_rpl/include/ttl_wait_expired.inc
+
+SELECT col_a, col_c FROM test.sz1;
+
+###############################################################################
+# Cleanup
+###############################################################################
+
+--connection master
+DROP TABLE test.sz1;
+DROP TABLE test.sz;
+--source include/rpl/wait_for_ndb_committed_to_binlog.inc
+--sync_slave_with_master
+--source include/rpl/deinit.inc

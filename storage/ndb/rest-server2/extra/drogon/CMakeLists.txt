@@ -16,6 +16,7 @@
 set (CMAKE_CXX_STANDARD 20)
 set (CMAKE_CXX_STANDARD_REQUIRED ON)
 
+#When changing Drogon version port RONDB-1016 fix into new version
 SET(DROGON_VERSION 1.9.7) # See ../README.txt for how to upgrade
 
 set(TRANTOR_USE_TLS "openssl" CACHE STRING "Select TLS library for Trantor" FORCE)

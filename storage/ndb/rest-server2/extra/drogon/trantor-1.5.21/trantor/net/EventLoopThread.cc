@@ -19,11 +19,30 @@
 #endif
 
 using namespace trantor;
-EventLoopThread::EventLoopThread(const std::string &threadName)
+
+void *EventLoopThread::threadFunc(void *arg)
+{
+    auto *self = static_cast<EventLoopThread *>(arg);
+    self->loopFuncs();
+    return nullptr;
+}
+
+EventLoopThread::EventLoopThread(const std::string &threadName,
+                                 size_t stackSize)
     : loop_(nullptr),
       loopThreadName_(threadName),
-      thread_([this]() { loopFuncs(); })
+      stackSize_(stackSize)
 {
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    if (stackSize_ > 0)
+    {
+        pthread_attr_setstacksize(&attr, stackSize_);
+    }
+    pthread_create(&threadId_, &attr, &EventLoopThread::threadFunc, this);
+    pthread_attr_destroy(&attr);
+    threadStarted_ = true;
+
     auto f = promiseForLoopPointer_.get_future();
     loop_ = f.get();
 }
@@ -40,15 +59,20 @@ EventLoopThread::~EventLoopThread()
     {
         loop->quit();
     }
-    if (thread_.joinable())
+    if (threadStarted_ && !threadJoined_)
     {
-        thread_.join();
+        pthread_join(threadId_, nullptr);
+        threadJoined_ = true;
     }
 }
 
 void EventLoopThread::wait()
 {
-    thread_.join();
+    if (threadStarted_ && !threadJoined_)
+    {
+        pthread_join(threadId_, nullptr);
+        threadJoined_ = true;
+    }
 }
 
 void EventLoopThread::loopFuncs()

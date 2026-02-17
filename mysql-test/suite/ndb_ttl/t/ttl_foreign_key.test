@@ -1,0 +1,193 @@
+# ttl_foreign_key.test
+#
+# Foreign key restriction tests for TTL tables (Case 56).
+# Migrated from ttl_test_suite.py TestCase56 (foreign_key category).
+#
+# Case 56: Foreign key restrictions with TTL parent table.
+# Tests that FK constraints cannot reference TTL tables, and TTL cannot
+# be added to tables involved in FK relationships.
+#
+# NOTE: Cases 54 and 55 are DISABLED in the Python suite:
+#   - Case 54: FK with TTL table as both parent and child not yet supported.
+#   - Case 55: FK with TTL table as parent not yet supported; the test
+#     creates a TTL child table with FK to a non-TTL parent, which is
+#     not yet allowed by the engine.
+# Only Case 56 (pure restriction/error-path testing) is migrated here.
+
+--source include/have_ndb.inc
+
+###############################################################################
+# Case 56: Foreign key restrictions with TTL parent table
+#
+# Setup:
+#   - parent:    non-TTL table with unique keys
+#   - parentttl: TTL table with same schema as parent
+#   - sz1:       non-TTL table (used for ALTER FK tests)
+#   - sz2:       non-TTL table with FK references to parent
+#
+# Tests:
+#   1. CREATE TABLE child with FK to TTL parent -> ER_CANNOT_ADD_FOREIGN
+#   2. ALTER TABLE sz1 ADD FK to TTL parent -> ER_CANNOT_ADD_FOREIGN
+#   3. ALTER TABLE parent (FK parent) to add TTL -> ER_ALTER_OPERATION_NOT_SUPPORTED_REASON
+#   4. ALTER TABLE sz2 (FK child) to add TTL -> ER_ALTER_OPERATION_NOT_SUPPORTED_REASON
+#   5. CREATE TTL child with FK to non-TTL parent -> ER_CANNOT_ADD_FOREIGN
+#   6. CREATE TTL child with FK to TTL parent -> ER_CANNOT_ADD_FOREIGN
+###############################################################################
+
+--echo #
+--echo # Case 56: Foreign key restrictions with TTL parent table
+--echo #
+
+--disable_warnings
+DROP TABLE IF EXISTS child;
+DROP TABLE IF EXISTS sz2;
+DROP TABLE IF EXISTS sz1;
+DROP TABLE IF EXISTS parentttl;
+DROP TABLE IF EXISTS parent;
+--enable_warnings
+
+# Create non-TTL parent table with unique keys
+CREATE TABLE parent (
+    col_a INT,
+    col_t TIMESTAMP,
+    col_b_ui INT,
+    col_c_ui_upd INT,
+    col_d_ui_del INT,
+    PRIMARY KEY(col_a),
+    UNIQUE KEY(col_b_ui),
+    UNIQUE KEY(col_c_ui_upd),
+    UNIQUE KEY(col_d_ui_del)
+) ENGINE = NDB;
+
+# Create TTL parent table with same schema
+CREATE TABLE parentttl (
+    col_a INT,
+    col_t TIMESTAMP,
+    col_b_ui INT,
+    col_c_ui_upd INT,
+    col_d_ui_del INT,
+    PRIMARY KEY(col_a),
+    UNIQUE KEY(col_b_ui),
+    UNIQUE KEY(col_c_ui_upd),
+    UNIQUE KEY(col_d_ui_del)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=TTL=5@col_t";
+
+# Create non-TTL table for ALTER FK tests
+CREATE TABLE sz1 (
+    col_a INT,
+    col_t TIMESTAMP,
+    col_b_ui INT,
+    col_c_ui_upd INT,
+    col_d_ui_del INT,
+    PRIMARY KEY(col_a)
+) ENGINE = NDB;
+
+# Create non-TTL child table with FK to non-TTL parent (should succeed)
+CREATE TABLE sz2 (
+    col_a INT,
+    col_t TIMESTAMP,
+    col_b_ui INT,
+    col_c_ui_upd INT,
+    col_d_ui_del INT,
+    PRIMARY KEY(col_a),
+    FOREIGN KEY(col_b_ui) REFERENCES parent(col_b_ui)
+        ON UPDATE CASCADE ON DELETE CASCADE,
+    FOREIGN KEY(col_c_ui_upd) REFERENCES parent(col_c_ui_upd)
+        ON UPDATE CASCADE ON DELETE CASCADE,
+    FOREIGN KEY(col_d_ui_del) REFERENCES parent(col_d_ui_del)
+        ON UPDATE CASCADE ON DELETE CASCADE
+) ENGINE = NDB;
+
+# --- Test 1: CREATE TABLE child with FK to TTL parent (should fail) ---
+--echo # Test 1: CREATE child with FK to TTL parent -> error
+--error ER_CANNOT_ADD_FOREIGN
+CREATE TABLE child (
+    col_a INT,
+    col_t TIMESTAMP,
+    col_b_ui INT,
+    col_c_ui_upd INT,
+    col_d_ui_del INT,
+    PRIMARY KEY(col_a),
+    FOREIGN KEY(col_b_ui) REFERENCES parentttl(col_b_ui)
+        ON UPDATE CASCADE ON DELETE CASCADE,
+    FOREIGN KEY(col_c_ui_upd) REFERENCES parentttl(col_c_ui_upd)
+        ON UPDATE CASCADE ON DELETE CASCADE,
+    FOREIGN KEY(col_d_ui_del) REFERENCES parentttl(col_d_ui_del)
+        ON UPDATE CASCADE ON DELETE CASCADE
+) ENGINE = NDB;
+
+# --- Test 2: ALTER TABLE sz1 ADD FK to TTL parent (should fail) ---
+--echo # Test 2: ALTER sz1 ADD FK to TTL parent -> error
+--error ER_CANNOT_ADD_FOREIGN
+ALTER TABLE sz1
+    ADD FOREIGN KEY(col_b_ui) REFERENCES parentttl(col_b_ui)
+        ON UPDATE CASCADE ON DELETE CASCADE,
+    ADD FOREIGN KEY(col_c_ui_upd) REFERENCES parentttl(col_c_ui_upd)
+        ON UPDATE CASCADE ON DELETE CASCADE,
+    ADD FOREIGN KEY(col_d_ui_del) REFERENCES parentttl(col_d_ui_del)
+        ON UPDATE CASCADE ON DELETE CASCADE;
+
+# --- Test 3: ALTER TABLE parent (FK parent) to add TTL (should fail) ---
+# parent is referenced by sz2 via FK, so adding TTL should be rejected.
+--echo # Test 3: ALTER parent to add TTL (is FK parent) -> error
+--error ER_ALTER_OPERATION_NOT_SUPPORTED_REASON
+ALTER TABLE parent COMMENT="NDB_TABLE=TTL=5@col_t";
+
+# --- Test 4: ALTER TABLE sz2 (FK child) to add TTL (should fail) ---
+# sz2 has FK referencing parent, so adding TTL should be rejected.
+--echo # Test 4: ALTER sz2 to add TTL (is FK child) -> error
+--error ER_ALTER_OPERATION_NOT_SUPPORTED_REASON
+ALTER TABLE sz2 COMMENT="NDB_TABLE=TTL=5@col_t";
+
+# --- Test 5: CREATE TTL child with FK to non-TTL parent (should fail) ---
+# A TTL table cannot have FK constraints at all.
+--echo # Test 5: CREATE TTL child with FK to non-TTL parent -> error
+--error ER_CANNOT_ADD_FOREIGN
+CREATE TABLE child (
+    col_a INT,
+    col_t TIMESTAMP,
+    col_b_ui INT,
+    col_c_ui_upd INT,
+    col_d_ui_del INT,
+    PRIMARY KEY(col_a),
+    FOREIGN KEY(col_b_ui) REFERENCES parent(col_b_ui)
+        ON UPDATE CASCADE ON DELETE CASCADE,
+    FOREIGN KEY(col_c_ui_upd) REFERENCES parent(col_c_ui_upd)
+        ON UPDATE CASCADE ON DELETE CASCADE,
+    FOREIGN KEY(col_d_ui_del) REFERENCES parent(col_d_ui_del)
+        ON UPDATE CASCADE ON DELETE CASCADE
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=TTL=5@col_t";
+
+# --- Test 6: CREATE TTL child with FK to TTL parent (should fail) ---
+# Both child and parent are TTL -- FK not allowed.
+--echo # Test 6: CREATE TTL child with FK to TTL parent -> error
+--error ER_CANNOT_ADD_FOREIGN
+CREATE TABLE child (
+    col_a INT,
+    col_t TIMESTAMP,
+    col_b_ui INT,
+    col_c_ui_upd INT,
+    col_d_ui_del INT,
+    PRIMARY KEY(col_a),
+    FOREIGN KEY(col_b_ui) REFERENCES parentttl(col_b_ui)
+        ON UPDATE CASCADE ON DELETE CASCADE,
+    FOREIGN KEY(col_c_ui_upd) REFERENCES parentttl(col_c_ui_upd)
+        ON UPDATE CASCADE ON DELETE CASCADE,
+    FOREIGN KEY(col_d_ui_del) REFERENCES parentttl(col_d_ui_del)
+        ON UPDATE CASCADE ON DELETE CASCADE
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=TTL=5@col_t";
+
+###############################################################################
+# Cleanup: drop tables in correct FK dependency order
+###############################################################################
+
+--disable_warnings
+DROP TABLE IF EXISTS child;
+--enable_warnings
+DROP TABLE sz2;
+DROP TABLE sz1;
+DROP TABLE parentttl;
+DROP TABLE parent;
