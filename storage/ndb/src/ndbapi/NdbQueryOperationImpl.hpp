@@ -271,6 +271,24 @@ class NdbQueryImpl {
    */
   NdbAggregator *getAggregator() const { return m_aggregator; }
 
+  /** Called from Ndbif.cpp TRANSID_AI dispatch for NDB_AGG_RECEIVER.
+   *  Stores raw aggregation result data for later processing.
+   *  Non-fragmented variant: records batch offset and copies data.
+   */
+  void execAggTRANSID_AI(const Uint32 *data, Uint32 len);
+
+  /** Fragmented variant: accumulates fragment data.
+   *  Records batch offset only on first fragment (fragInfo==1).
+   */
+  void execAggTRANSID_AI_frag(const Uint32 *data, Uint32 len,
+                               Uint32 fragInfo);
+
+  /** Process all accumulated aggregation results through NdbAggregator.
+   *  Called after scan completes. Feeds each batch to ProcessRes()
+   *  (skipping the AttributeHeader word), then calls PrepareResults().
+   */
+  int processAggResults();
+
  private:
   /** Possible return values from NdbQueryImpl::awaitMoreResults.
    * A subset of the integer values also matches those returned
@@ -527,11 +545,18 @@ class NdbQueryImpl {
    */
   Uint32Buffer m_aggProgram;
 
-  /** Receivers dedicated to receiving aggregation TRANSID_AI results.
-   *  Hash-partitioned: groups are routed to aggReceivers[hash(key) % N].
-   */
+  /** Receivers dedicated to receiving aggregation TRANSID_AI results. */
   NdbReceiver **m_aggReceivers;
   Uint32 m_numAggReceivers;
+
+  /** Raw aggregation result data received via TRANSID_AI.
+   *  Each batch (one or more TRANSID_AI signals) is stored contiguously.
+   *  m_aggResultOffsets[i] gives the start offset for batch i within
+   *  m_aggResultData. Data format from kernel starts with an
+   *  AttributeHeader word followed by the NdbAggregator-compatible format.
+   */
+  Uint32Buffer m_aggResultData;
+  Uint32Buffer m_aggResultOffsets;
 
   /** True if this query starts a new transaction. */
   bool m_startIndicator;

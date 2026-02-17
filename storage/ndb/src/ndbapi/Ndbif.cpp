@@ -535,6 +535,10 @@ void NdbImpl::trp_deliver_signal(const NdbApiSignal *aSignal,
                 NdbQueryOperationImpl *impl_owner =
                     (NdbQueryOperationImpl *)owner;
                 com = impl_owner->execTRANSID_AI(ptr[0].p, ptr[0].sz);
+              } else if (type == NdbReceiver::NDB_AGG_RECEIVER) {
+                NdbQueryImpl *queryImpl = (NdbQueryImpl *)owner;
+                queryImpl->execAggTRANSID_AI(ptr[0].p, ptr[0].sz);
+                com = 0;
               } else {
                 com = tRec->execTRANSID_AI(ptr[0].p, ptr[0].sz);
               }
@@ -548,6 +552,11 @@ void NdbImpl::trp_deliver_signal(const NdbApiSignal *aSignal,
                                                  ptr[0].sz,
                                                  aSignal,
                                                  totalLen);
+              } else if (type == NdbReceiver::NDB_AGG_RECEIVER) {
+                NdbQueryImpl *queryImpl = (NdbQueryImpl *)owner;
+                queryImpl->execAggTRANSID_AI_frag(
+                    ptr[0].p, ptr[0].sz, aSignal->m_fragmentInfo);
+                com = 0;
               } else {
                 com = tRec->execTRANSID_AI(ptr[0].p,
                                            ptr[0].sz,
@@ -576,6 +585,12 @@ void NdbImpl::trp_deliver_signal(const NdbApiSignal *aSignal,
               com =
                   impl_owner->execTRANSID_AI(tDataPtr + TransIdAI::HeaderLength,
                                              tLen - TransIdAI::HeaderLength);
+            } else if (type == NdbReceiver::NDB_AGG_RECEIVER) {
+              NdbQueryImpl *queryImpl = (NdbQueryImpl *)owner;
+              queryImpl->execAggTRANSID_AI(
+                  tDataPtr + TransIdAI::HeaderLength,
+                  tLen - TransIdAI::HeaderLength);
+              com = 0;
             } else {
               com = tRec->execTRANSID_AI(tDataPtr + TransIdAI::HeaderLength,
                                          tLen - TransIdAI::HeaderLength);

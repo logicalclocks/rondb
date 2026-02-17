@@ -16069,6 +16069,7 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
        * JoinAgg: Section 2 has combined format:
        *   Word 0:              boundsLen (0 if no bounds)
        *   Words 1..boundsLen:  bounds data
+       *   Word boundsLen+1:    aggReceiverId (API receiver for results)
        *   Remaining words:     aggregation program
        * Parse this header to split bounds from agg program.
        */
@@ -16080,7 +16081,7 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
                            getSectionSegmentPool());
       Uint32 boundsLen;
       ndbrequire(reader.getWord(&boundsLen));
-      ndbrequire(1 + boundsLen <= keyLen);
+      ndbrequire(2 + boundsLen <= keyLen);  // +2 for boundsLen word + receiverId
 
       if (boundsLen > 0) {
         /* Extract bounds into scanKeyInfoPtr */
@@ -16095,8 +16096,11 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
         }
       }
 
+      /* Extract aggReceiverId */
+      ndbrequire(reader.getWord(&scanptr.p->m_aggReceiverId));
+
       /* Remaining words = aggregation program */
-      const Uint32 aggLen = keyLen - 1 - boundsLen;
+      const Uint32 aggLen = keyLen - 2 - boundsLen;
       if (aggLen > 0) {
         Uint32 remaining = aggLen;
         while (remaining > 0) {
@@ -16323,6 +16327,7 @@ Uint32 Dbtc::initScanrec(ScanRecordPtr scanptr, const ScanTabReq *scanTabReq,
   scanptr.p->m_aggProgramPtrI = RNIL;
   scanptr.p->m_aggKeysSectionPtrI = RNIL;
   scanptr.p->m_aggReceiverIdsPtrI = RNIL;
+  scanptr.p->m_aggReceiverId = RNIL;
   scanptr.p->m_joinAgg = false;
   scanptr.p->m_aggNodes.clear();
   scanptr.p->m_aggNodesOutstanding = 0;
@@ -28405,7 +28410,9 @@ void Dbtc::sendJoinAggSetupReqs(Signal *signal, ScanRecordPtr scanptr,
     req->expectedOpCount = 0;
     req->concurrencyStrategy = JoinAggSetupReq::STRATEGY_MUTEX_FREE;
     req->resultRef = apiConnectptr.p->ndbapiBlockref;
-    req->resultData = apiConnectptr.p->ndbapiConnect;
+    req->resultData = (scanptr.p->m_aggReceiverId != RNIL)
+                          ? scanptr.p->m_aggReceiverId
+                          : apiConnectptr.p->ndbapiConnect;
     req->routeRef = reference();
 
     SectionHandle handle(this);

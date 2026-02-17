@@ -1792,6 +1792,55 @@ NdbAggregator *NdbQuery::getAggregator() const {
   return m_impl.getAggregator();
 }
 
+void NdbQueryImpl::execAggTRANSID_AI(const Uint32 *data, Uint32 len) {
+  if (len == 0) return;
+  m_aggResultOffsets.append(m_aggResultData.getSize());
+  Uint32 *dst = m_aggResultData.alloc(len);
+  if (likely(dst != nullptr)) {
+    memcpy(dst, data, len * sizeof(Uint32));
+  }
+}
+
+void NdbQueryImpl::execAggTRANSID_AI_frag(const Uint32 *data, Uint32 len,
+                                           Uint32 fragInfo) {
+  if (len == 0) return;
+  if (fragInfo == 1) {
+    // First fragment: record batch offset
+    m_aggResultOffsets.append(m_aggResultData.getSize());
+  }
+  Uint32 *dst = m_aggResultData.alloc(len);
+  if (likely(dst != nullptr)) {
+    memcpy(dst, data, len * sizeof(Uint32));
+  }
+}
+
+int NdbQueryImpl::processAggResults() {
+  if (!m_hasAggregation || m_aggregator == nullptr) return 0;
+
+  const Uint32 numBatches = m_aggResultOffsets.getSize();
+  for (Uint32 i = 0; i < numBatches; i++) {
+    const Uint32 offset = m_aggResultOffsets.addr()[i];
+    const Uint32 nextOffset = (i + 1 < numBatches)
+                                  ? m_aggResultOffsets.addr()[i + 1]
+                                  : m_aggResultData.getSize();
+    const Uint32 batchLen = nextOffset - offset;
+    const Uint32 *batchData = m_aggResultData.addr() + offset;
+
+    /**
+     * Kernel sends [AttributeHeader, n_gb_cols|n_agg_results, ...].
+     * NdbAggregator::ProcessRes() expects data starting from the
+     * n_gb_cols|n_agg_results word, so skip the first word
+     * (AttributeHeader).
+     */
+    if (batchLen > 1) {
+      m_aggregator->ProcessRes(
+          const_cast<char *>(reinterpret_cast<const char *>(batchData + 1)));
+    }
+  }
+  m_aggregator->PrepareResults();
+  return 0;
+}
+
 NdbQueryOperation::NdbQueryOperation(NdbQueryOperationImpl &impl)
     : m_impl(impl) {}
 NdbQueryOperation::~NdbQueryOperation() {}
@@ -2125,6 +2174,8 @@ NdbQueryImpl::NdbQueryImpl(NdbTransaction &trans,
       m_aggProgram(),
       m_aggReceivers(nullptr),
       m_numAggReceivers(0),
+      m_aggResultData(),
+      m_aggResultOffsets(),
       m_startIndicator(false),
       m_commitIndicator(false),
       m_prunability(Prune_No),
@@ -2212,6 +2263,8 @@ void NdbQueryImpl::postFetchRelease() {
   }
   delete m_aggregator;
   m_aggregator = nullptr;
+  m_aggResultData.releaseExtend();
+  m_aggResultOffsets.releaseExtend();
 
   m_rowBufferAlloc.reset();
   m_tupleSetAlloc.reset();
@@ -2561,6 +2614,9 @@ NdbQuery::NextResultOutcome NdbQueryImpl::nextRootResult(bool fetchAllowed,
           assert(m_applFrags.getCurrent() == nullptr);
           getRoot().nullifyResult();
           m_state = EndOfData;
+          if (m_hasAggregation) {
+            processAggResults();
+          }
           postFetchRelease();
           return NdbQuery::NextResult_scanComplete;
 
@@ -3451,21 +3507,25 @@ int NdbQueryImpl::doSend(int nodeId, bool lastFlag) {
      */
 
     /**
-     * For JoinAgg queries, section 2 carries both optional bounds
-     * and the aggregation program in a combined format:
+     * For JoinAgg queries, section 2 carries both optional bounds,
+     * the agg receiver ID, and the aggregation program:
      *   Word 0:              boundsLen (0 if no bounds)
      *   Words 1..boundsLen:  bounds data (from m_keyInfo)
+     *   Word boundsLen+1:    aggReceiverId (object map ID for results)
      *   Remaining words:     aggregation program
-     * DBTC parses this header to split bounds from agg program.
+     * DBTC parses this header to split bounds from agg program,
+     * and uses aggReceiverId as resultData in JOIN_AGG_SETUP_REQ.
      */
     Uint32Buffer combinedAggSec2;
     if (m_hasAggregation) {
       assert(m_aggProgram.getSize() > 0);
+      assert(m_numAggReceivers > 0);
       const Uint32 boundsLen = m_keyInfo.getSize();
       combinedAggSec2.append(boundsLen);
       if (boundsLen > 0) {
         combinedAggSec2.append(m_keyInfo);
       }
+      combinedAggSec2.append(m_aggReceivers[0]->getId());
       combinedAggSec2.append(m_aggProgram);
       assert(!combinedAggSec2.isMemoryExhausted());
     }
