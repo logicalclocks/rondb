@@ -2375,9 +2375,12 @@ Uint32 NdbQueryOperationDefImpl::appendParamConstructor(
     Uint32Buffer &serializedDef) const {
   const Vector<const NdbQueryOperandImpl *> &interpretedParams =
       getInterpretedParams();
+  const Vector<const NdbLinkedOperandImpl *> &linkedProj =
+      m_options.getLinkedProjection();
 
   const Uint32 paramSize = interpretedParams.size();
-  if (paramSize == 0) return 0;
+  const Uint32 linkedSize = linkedProj.size();
+  if (paramSize == 0 && linkedSize == 0) return 0;
 
   const Uint32 startPos = serializedDef.getSize();
   serializedDef.append(0);  // Grab first word for length field, updated at end
@@ -2388,12 +2391,12 @@ Uint32 NdbQueryOperationDefImpl::appendParamConstructor(
    * value should be constructed from. This is the same way we encode how
    * lookup-keys, index-bounds and prune-keys are constructed.
    * (Also reuse the same SPJ code for constructing these items)
+   *
+   * The linkedProjection contains additional parent columns needed by the
+   * aggregation program (e.g., GROUP BY on a parent column).  These are
+   * appended after the interpreted params in the same P_ATTRINFO pattern.
    */
-  for (Uint32 i = 0; i < paramSize; ++i) {
-    assert(interpretedParams[i]->getKind() == NdbQueryOperandImpl::Linked);
-    const NdbLinkedOperandImpl *param =
-        static_cast<const NdbLinkedOperandImpl *>(interpretedParams[i]);
-
+  auto appendLinkedOperand = [&](const NdbLinkedOperandImpl *param) {
     const NdbQueryOperationDefImpl *parent = getParentOperation();
 
     Uint32 levels = 0;
@@ -2414,6 +2417,16 @@ Uint32 NdbQueryOperationDefImpl::appendParamConstructor(
 
     const Uint32 columnIx = param->getLinkedColumnIx();
     serializedDef.append(QueryPattern::attrInfo(columnIx));
+  };
+
+  for (Uint32 i = 0; i < paramSize; ++i) {
+    assert(interpretedParams[i]->getKind() == NdbQueryOperandImpl::Linked);
+    appendLinkedOperand(
+        static_cast<const NdbLinkedOperandImpl *>(interpretedParams[i]));
+  }
+
+  for (Uint32 i = 0; i < linkedSize; ++i) {
+    appendLinkedOperand(linkedProj[i]);
   }
 
   // Set total length of param constructor pattern.

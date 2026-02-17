@@ -68,6 +68,7 @@
 //#define DEBUG_DISK 1
 //#define DEBUG_ELEM_COUNT 1
 //#define DEBUG_COPY_TUPLE 1
+#define DEBUG_JOIN_AGG_TRACE 1
 #endif
 
 #ifdef DEBUG_COPY_TUPLE
@@ -152,6 +153,17 @@
 #define DEB_LCP_LGMAN(arglist) \
   do {                         \
   } while (0)
+#endif
+
+/**
+ * DEBUG_JOIN_AGG_TRACE: Dump cinBuffer header and linked data extracted
+ * from the subroutine section before passing to AggInterpreter.
+ * Uncomment the define in the #if block above to activate.
+ */
+#ifdef DEBUG_JOIN_AGG_TRACE
+#define DEB_JOIN_AGG(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_JOIN_AGG(arglist) do { } while (0)
 #endif
 
 //#define TRACE_INTERPRETER 1
@@ -5471,6 +5483,35 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
           linked_data = sub_start + 1;
           linked_len = RsubLen - 1;
         }
+#ifdef DEBUG_JOIN_AGG_TRACE
+        DEB_JOIN_AGG(("DBTUP handleJoinAggRow (interp path): "
+                       "cinBuffer header: initRead=%u interp=%u "
+                       "finalUpd=%u finalRead=%u subLen=%u  "
+                       "linked_len=%u",
+                       cinBuffer[0], cinBuffer[1], cinBuffer[2],
+                       cinBuffer[3], cinBuffer[4], linked_len));
+        if (linked_data && linked_len > 0) {
+          /* Dump linked data: sequence of AttributeHeader+data */
+          const Uint32 *p = linked_data;
+          const Uint32 *p_end = linked_data + linked_len;
+          Uint32 idx = 0;
+          while (p < p_end) {
+            Uint32 hdr = *p;
+            Uint32 attrId = AttributeHeader::getAttributeId(hdr);
+            Uint32 dSz = AttributeHeader::getDataSize(hdr);
+            DEB_JOIN_AGG(("  linked[%u]: AttrHeader=0x%08x "
+                           "(attrId=%u dataSize=%u)",
+                           idx, hdr, attrId, dSz));
+            p += 1 + dSz;
+            idx++;
+          }
+        } else {
+          DEB_JOIN_AGG(("  linked data: EMPTY (RsubLen=%u)", RsubLen));
+        }
+#endif
+        // Reset read_length: the final-read projection (FLUSH_AI) may have
+        // set it, but ProcessRec requires read_length == 0 on entry.
+        req_struct->read_length = 0;
         int res = handleJoinAggRow(req_struct, linked_data, linked_len);
         if (res != 0) return res;
       } else {
@@ -5489,6 +5530,34 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
           linked_data = sub_start + 1;
           linked_len = RsubLen - 1;
         }
+#ifdef DEBUG_JOIN_AGG_TRACE
+        DEB_JOIN_AGG(("DBTUP handleJoinAggRow (non-interp path): "
+                       "cinBuffer header: initRead=%u interp=%u "
+                       "finalUpd=%u finalRead=%u subLen=%u  "
+                       "linked_len=%u",
+                       cinBuffer[0], cinBuffer[1], cinBuffer[2],
+                       cinBuffer[3], cinBuffer[4], linked_len));
+        if (linked_data && linked_len > 0) {
+          const Uint32 *p = linked_data;
+          const Uint32 *p_end = linked_data + linked_len;
+          Uint32 idx = 0;
+          while (p < p_end) {
+            Uint32 hdr = *p;
+            Uint32 attrId = AttributeHeader::getAttributeId(hdr);
+            Uint32 dSz = AttributeHeader::getDataSize(hdr);
+            DEB_JOIN_AGG(("  linked[%u]: AttrHeader=0x%08x "
+                           "(attrId=%u dataSize=%u)",
+                           idx, hdr, attrId, dSz));
+            p += 1 + dSz;
+            idx++;
+          }
+        } else {
+          DEB_JOIN_AGG(("  linked data: EMPTY (RsubLen=%u)", RsubLen));
+        }
+#endif
+        // Reset read_length: the final-read projection (FLUSH_AI) may have
+        // set it, but ProcessRec requires read_length == 0 on entry.
+        req_struct->read_length = 0;
         int res = handleJoinAggRow(req_struct, linked_data, linked_len);
         if (res != 0) return res;
       } else {

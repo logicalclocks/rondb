@@ -64,6 +64,7 @@
 //#define DEBUG_HASH 1
 //#define DEBUG_AGGREGATION 1
 #define DEBUG_TRANSID_AI 1
+#define DEBUG_JOIN_AGG_TRACE 1
 #endif
 
 #ifdef DEBUG_TRANSID_AI
@@ -82,6 +83,29 @@
 #define DEB_AGGREGATION(arglist) do { g_eventLogger->info arglist ; } while (0)
 #else
 #define DEB_AGGREGATION(arglist) do { } while (0)
+#endif
+
+/**
+ * DEBUG_JOIN_AGG_TRACE: Hex dump of QueryTree nodes as received by DBSPJ,
+ * showing tree/param bits, NI_ATTR_LINKED pattern, and PI_ATTR_INTERPRET
+ * details per node.  Uncomment the define above to activate.
+ */
+#ifdef DEBUG_JOIN_AGG_TRACE
+#define DEB_JOIN_AGG(arglist) do { g_eventLogger->info arglist ; } while (0)
+static void dumpWordsToLog(const char *label, const Uint32 *buf, Uint32 len) {
+  char line[256];
+  int pos = 0;
+  g_eventLogger->info("DBSPJ %s (%u words):", label, len);
+  for (Uint32 i = 0; i < len; i++) {
+    pos += snprintf(line + pos, sizeof(line) - pos, " 0x%08x", buf[i]);
+    if ((i % 6) == 5 || i == len - 1) {
+      g_eventLogger->info("  [%u..] %s", i - (i % 6), line);
+      pos = 0;
+    }
+  }
+}
+#else
+#define DEB_JOIN_AGG(arglist) do { } while (0)
 #endif
 
 extern EventLogger* g_eventLogger;
@@ -1545,6 +1569,31 @@ Dbspj::build(Build_context& ctx,
     printf("param: param_len: %u, ", param_len);
     for (Uint32 i = 0; i < param_len; i++) printf("0x%.8x ", m_buffer1[i]);
     printf("\n");
+#endif
+
+#ifdef DEBUG_JOIN_AGG_TRACE
+    {
+      /* Decode tree node header and flags */
+      Uint32 treeBits = (node_len > 1) ? m_buffer0[1] : 0;
+      Uint32 paramBits = (param_len > 1) ? m_buffer1[1] : 0;
+      DEB_JOIN_AGG(("DBSPJ build() node[%u]: op=%u len=%u  "
+                     "treeBits=0x%08x paramBits=0x%08x",
+                     ctx.m_cnt, node_op, node_len, treeBits, paramBits));
+      /* Decode key flags */
+      const char *agg = (treeBits & DABits::NI_AGGREGATE) ? " NI_AGGREGATE" : "";
+      const char *aggLeaf = (treeBits & DABits::NI_AGGREGATE_LEAF) ? " NI_AGGREGATE_LEAF" : "";
+      const char *linked = (treeBits & DABits::NI_LINKED_ATTR) ? " NI_LINKED_ATTR" : "";
+      const char *keyLnk = (treeBits & DABits::NI_KEY_LINKED) ? " NI_KEY_LINKED" : "";
+      const char *attrInt = (treeBits & DABits::NI_ATTR_INTERPRET) ? " NI_ATTR_INTERPRET" : "";
+      const char *attrLnk = (treeBits & DABits::NI_ATTR_LINKED) ? " NI_ATTR_LINKED" : "";
+      const char *piInt = (paramBits & DABits::PI_ATTR_INTERPRET) ? " PI_ATTR_INTERPRET" : "";
+      const char *piList = (paramBits & DABits::PI_ATTR_LIST) ? " PI_ATTR_LIST" : "";
+      DEB_JOIN_AGG(("  flags:%s%s%s%s%s%s%s%s",
+                     agg, aggLeaf, linked, keyLnk, attrInt, attrLnk,
+                     piInt, piList));
+      dumpWordsToLog("  tree node", m_buffer0, node_len);
+      dumpWordsToLog("  param node", m_buffer1, param_len);
+    }
 #endif
 
     err = DbspjErr::UnknowQueryOperation;
@@ -5418,6 +5467,29 @@ void Dbspj::lookup_parent_row(Signal *signal, Ptr<Request> requestPtr,
       Uint32 new_size = ptr.sz;
       paramLen = new_size - org_size;
       writeToSection(tmp, org_size, &paramLen, 1);
+
+#ifdef DEBUG_JOIN_AGG_TRACE
+      DEB_JOIN_AGG(("T_ATTRINFO_CONSTRUCTED expand: org_size=%u "
+                     "new_size=%u paramLen=%u (linked data = %u words)",
+                     org_size, new_size, paramLen,
+                     paramLen > 1 ? paramLen - 1 : 0));
+      /* Dump the expanded attrInfo to see 5-word header + interp + linked */
+      {
+        Uint32 dump_buf[64];
+        Uint32 dump_len = (new_size < 64) ? new_size : 64;
+        SectionReader rdr(tmp, getSectionSegmentPool());
+        for (Uint32 di = 0; di < dump_len; di++) {
+          ndbrequire(rdr.getWord(&dump_buf[di]));
+        }
+        if (dump_len >= 5) {
+          DEB_JOIN_AGG(("  cinBuffer: initRead=%u interp=%u finalUpd=%u "
+                         "finalRead=%u subLen=%u",
+                         dump_buf[0], dump_buf[1], dump_buf[2],
+                         dump_buf[3], dump_buf[4]));
+        }
+        dumpWordsToLog("  expanded attrInfo", dump_buf, dump_len);
+      }
+#endif
 
       Uint32 *sectionptrs = ptr.p->theData;
       sectionptrs[4] = paramLen;
@@ -9671,6 +9743,11 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
             jam();
             DEBUG("NI_ATTR_LINKED"
                   << ", len_pattern:" << len_pattern);
+#ifdef DEBUG_JOIN_AGG_TRACE
+            DEB_JOIN_AGG(("parseDA NI_ATTR_LINKED: len_prg=%u len_pattern=%u",
+                           len_prg, len_pattern));
+            dumpWordsToLog("  linked pattern", tree.ptr, len_pattern);
+#endif
             /**
              * Expand pattern into a new pattern (with linked values)
              * Real attrInfo will be constructed with another expand
@@ -9723,6 +9800,12 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
           const Uint32 len2 = *param.ptr++;
           const Uint32 program_len = len2 & 0xFFFF;
           const Uint32 subroutine_len = len2 >> 16;
+#ifdef DEBUG_JOIN_AGG_TRACE
+          DEB_JOIN_AGG(("parseDA PI_ATTR_INTERPRET: program_len=%u "
+                         "subroutine_len=%u",
+                         program_len, subroutine_len));
+          dumpWordsToLog("  interp program", param.ptr, program_len);
+#endif
           err = DbspjErr::OutOfSectionMemory;
           if (unlikely(
                   !appendToSection(attrInfoPtrI, param.ptr, program_len))) {

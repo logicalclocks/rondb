@@ -149,6 +149,13 @@
 //#define DEBUG_SCAN_MANY 1
 //#define DEBUG_RATE_OVERFLOW 1
 //#define DEBUG_CONT_SCAN 1
+#define DEBUG_JOIN_AGG_TRACE 1
+#endif
+
+#ifdef DEBUG_JOIN_AGG_TRACE
+#define DEB_JOIN_AGG(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_JOIN_AGG(arglist) do { } while (0)
 #endif
 
 #define MAX_QUEUE_TIME_MS 60
@@ -16117,6 +16124,35 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
       releaseSection(handle.m_ptr[ScanTabReq::KeyInfoSectionNum].i);
       handle.m_ptr[ScanTabReq::KeyInfoSectionNum].i = RNIL;
       handle.m_ptr[ScanTabReq::KeyInfoSectionNum].sz = 0;
+
+#ifdef DEBUG_JOIN_AGG_TRACE
+      DEB_JOIN_AGG(("DBTC execSCAN_TABREQ JoinAgg Section 2 parsed:"
+                     " boundsLen=%u aggReceiverId=0x%x aggProgramPtrI=0x%x"
+                     " total_keyLen=%u",
+                     boundsLen, scanptr.p->m_aggReceiverId,
+                     scanptr.p->m_aggProgramPtrI, keyLen));
+      /* Dump aggProgram contents */
+      if (scanptr.p->m_aggProgramPtrI != RNIL) {
+        SegmentedSectionPtr aggPtr;
+        getSection(aggPtr, scanptr.p->m_aggProgramPtrI);
+        Uint32 aggSz = aggPtr.sz;
+        DEB_JOIN_AGG(("  aggProgram (%u words):", aggSz));
+        SectionReader aggRdr(scanptr.p->m_aggProgramPtrI,
+                             getSectionSegmentPool());
+        Uint32 tmpBuf[16];
+        Uint32 remaining = aggSz;
+        Uint32 offset = 0;
+        while (remaining > 0) {
+          Uint32 chunk = (remaining > 16) ? 16 : remaining;
+          for (Uint32 j = 0; j < chunk; j++)
+            ndbrequire(aggRdr.getWord(&tmpBuf[j]));
+          for (Uint32 j = 0; j < chunk; j++)
+            DEB_JOIN_AGG(("    [%u] 0x%08x", offset + j, tmpBuf[j]));
+          offset += chunk;
+          remaining -= chunk;
+        }
+      }
+#endif
     } else if (keyLen) {
       jamDebug();
       scanptr.p->scanKeyInfoPtr = handle.m_ptr[ScanTabReq::KeyInfoSectionNum].i;
@@ -28420,12 +28456,33 @@ void Dbtc::sendJoinAggSetupReqs(Signal *signal, ScanRecordPtr scanptr,
     ndbrequire(dupSection(aggPtrI, scanptr.p->m_aggProgramPtrI));
     getSection(handle.m_ptr[JoinAggSetupReq::AggProgramSectionNum], aggPtrI);
 
-    ndbrequire(scanptr.p->m_aggReceiverIdsPtrI != RNIL);
     Uint32 rcvPtrI = RNIL;
-    ndbrequire(dupSection(rcvPtrI, scanptr.p->m_aggReceiverIdsPtrI));
+    if (scanptr.p->m_aggReceiverId != RNIL) {
+      /* NDB API path: single aggregate receiver ID from section 2.
+       * Section 0 has worker receiver IDs (for SPJ scan results),
+       * not aggregate receiver IDs. */
+      jam();
+      Uint32 rcvId = scanptr.p->m_aggReceiverId;
+      ndbrequire(appendToSection(rcvPtrI, &rcvId, 1));
+    } else {
+      /* Block unit test path: receiver IDs in section 0 */
+      jam();
+      ndbrequire(scanptr.p->m_aggReceiverIdsPtrI != RNIL);
+      ndbrequire(dupSection(rcvPtrI, scanptr.p->m_aggReceiverIdsPtrI));
+    }
     getSection(handle.m_ptr[JoinAggSetupReq::ReceiverIdsSectionNum], rcvPtrI);
     handle.m_cnt = 2;
 
+#ifdef DEBUG_JOIN_AGG_TRACE
+    DEB_JOIN_AGG(("DBTC sendJoinAggSetupReq → node %u: "
+                   "resultRef=0x%x resultData=0x%x "
+                   "aggProgLen=%u numReceiverIds=%u strategy=%s",
+                   nodeId, req->resultRef, req->resultData,
+                   handle.m_ptr[JoinAggSetupReq::AggProgramSectionNum].sz,
+                   handle.m_ptr[JoinAggSetupReq::ReceiverIdsSectionNum].sz,
+                   (scanptr.p->m_aggReceiverId != RNIL)
+                       ? "API(single rcv)" : "BlockTest(section0)"));
+#endif
     Uint32 ref = numberToRef(DBLQH, nodeId);
     sendSignal(ref, GSN_JOIN_AGG_SETUP_REQ, signal,
                JoinAggSetupReq::SignalLength, JBB, &handle);

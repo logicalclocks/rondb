@@ -53,6 +53,26 @@
 #define DEBUG_CRASH()
 #endif
 
+/**
+ * DEBUG_JOIN_AGG_TRACE: Enable hex dumps of QueryTree (AttrInfo section 1)
+ * and combined Section 2 (bounds + aggReceiverId + aggProgram) as sent
+ * from NDB API in SCAN_TABREQ.  Uncomment to activate.
+ */
+#define DEBUG_JOIN_AGG_TRACE 1
+
+#ifdef DEBUG_JOIN_AGG_TRACE
+static void dumpJoinAggHex(const char *label, const Uint32 *buf, Uint32 len) {
+  fprintf(stderr, "=== NdbQuery %s (%u words) ===\n", label, len);
+  for (Uint32 i = 0; i < len; i++) {
+    fprintf(stderr, "  [%3u] 0x%08x", i, buf[i]);
+    if ((i % 4) == 3 || i == len - 1) fprintf(stderr, "\n");
+  }
+}
+#define DEB_JOIN_AGG(label, buf, len) dumpJoinAggHex(label, buf, len)
+#else
+#define DEB_JOIN_AGG(label, buf, len) do {} while(0)
+#endif
+
 /** To prevent compiler warnings about variables that are only used in asserts
  * (when building optimized version).
  */
@@ -3508,6 +3528,8 @@ int NdbQueryImpl::doSend(int nodeId, bool lastFlag) {
     }
     if (m_hasAggregation) {
       ScanTabReq::setJoinAggFlag(reqInfo, 1);
+      scanTabReq->scanParallelism = 1;  // DEBUG: force 1 for easier debugging
+      tSignal.setLength(ScanTabReq::StaticLength + 5);
     }
     scanTabReq->requestInfo = reqInfo;
 
@@ -3571,6 +3593,62 @@ int NdbQueryImpl::doSend(int nodeId, bool lastFlag) {
       numSections = 3;
     }
     DBUG_PRINT("info", ("Send SCAN_TABREQ: NdbQueryOperation"));
+
+#ifdef DEBUG_JOIN_AGG_TRACE
+    if (m_hasAggregation) {
+      fprintf(stderr, "\n====== NdbQuery SCAN_TABREQ (JoinAgg) ======\n");
+      fprintf(stderr, "workerCount=%u, scanParallelism=%u\n",
+              m_workerCount, m_workerCount);
+
+      /* Section 0: worker receiver IDs (for SPJ scan results) */
+      fprintf(stderr, "--- Section 0: Worker Receiver IDs (%u) ---\n",
+              m_workerCount);
+      for (Uint32 i = 0; i < m_workerCount; i++)
+        fprintf(stderr, "  worker[%u] receiverId=0x%x\n",
+                i, m_workers[i].getReceiverId());
+
+      /* Section 1: AttrInfo = QueryTree + Parameters */
+      fprintf(stderr, "--- Section 1: AttrInfo / QueryTree (%u words) ---\n",
+              m_attrInfo.getSize());
+      {
+        const Uint32 *ai = m_attrInfo.addr();
+        Uint32 aiSz = m_attrInfo.getSize();
+        /* Decode QueryTree header */
+        if (aiSz > 0) {
+          Uint32 cnt_len = ai[0];
+          fprintf(stderr, "  QueryTree header: cnt=%u, len=%u\n",
+                  cnt_len >> 16, cnt_len & 0xFFFF);
+        }
+        DEB_JOIN_AGG("AttrInfo (QueryTree+Params)", ai, aiSz);
+      }
+
+      /* Section 2: Combined [boundsLen, bounds, aggReceiverId, aggProgram] */
+      fprintf(stderr,
+              "--- Section 2: Combined AggSection (%u words) ---\n",
+              combinedAggSec2.getSize());
+      {
+        const Uint32 *s2 = combinedAggSec2.addr();
+        Uint32 s2Sz = combinedAggSec2.getSize();
+        if (s2Sz > 0) {
+          Uint32 bLen = s2[0];
+          fprintf(stderr, "  boundsLen=%u\n", bLen);
+          if (1 + bLen < s2Sz)
+            fprintf(stderr, "  aggReceiverId=0x%x\n", s2[1 + bLen]);
+          Uint32 progStart = 2 + bLen;
+          if (progStart < s2Sz) {
+            fprintf(stderr, "  aggProgram (%u words):\n", s2Sz - progStart);
+            for (Uint32 i = progStart; i < s2Sz && i < progStart + 12; i++)
+              fprintf(stderr, "    [%u] 0x%08x\n", i - progStart, s2[i]);
+            if (s2Sz - progStart > 12)
+              fprintf(stderr, "    ... (%u more words)\n",
+                      s2Sz - progStart - 12);
+          }
+        }
+      }
+      fprintf(stderr, "============================================\n\n");
+    }
+#endif  /* DEBUG_JOIN_AGG_TRACE */
+
     /* Send Fragmented as SCAN_TABREQ can be large */
     const int res =
         impl->sendFragmentedSignal(&tSignal, nodeId, secs, numSections);
@@ -4926,6 +5004,19 @@ int NdbQueryOperationImpl::prepareAttrInfo(Uint32Buffer &attrInfo,
     if (unlikely(error)) {
       return error;
     }
+  } else if (def.isAggregateLeaf() &&
+             def.getOptions().getLinkedProjection().size() > 0) {
+    /**
+     * Aggregate leaf with linked parent columns needs a minimal interpreter
+     * program (ExitOK) so that DBSPJ creates the 5-word interpreter header.
+     * Without it, the linked data appended to the subroutine section has no
+     * proper framing and DBTUP misinterprets it as column read attributes.
+     */
+    requestInfo |= DABits::PI_ATTR_INTERPRET;
+    // PI_ATTR_INTERPRET format: [len_word, program...]
+    // len_word = (subroutine_len << 16) | program_len
+    attrInfo.append(1);     // program_len=1, subroutine_len=0
+    attrInfo.append(0x12);  // Interpreter::ExitOK (opcode 18)
   }
 
   if (m_ndbRecord == nullptr && m_firstRecAttr == nullptr) {

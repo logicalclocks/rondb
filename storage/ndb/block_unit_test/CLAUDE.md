@@ -41,11 +41,12 @@ Tests the full NDB API path: NdbQueryBuilder → NdbQueryDef → NdbQuery → ge
 
 **Run:**
 ```bash
-testJoinAggNdbApi -c <connect_string> [--verbose]
+testJoinAggNdbApi -c <connect_string> -m <mysql_port> [--verbose]
 ```
 
 **Options:**
 - `-c` — NDB management server connect string (default: localhost:1186)
+- `-m` — MySQL server port for table creation and verification (default: 3306)
 - `-v, --verbose` — Show detailed progress output
 - `-h, --help` — Show help
 
@@ -54,7 +55,11 @@ testJoinAggNdbApi -c <connect_string> [--verbose]
 2. `SELECT COUNT(*), SUM(amount) FROM parent JOIN child` — non-GROUP-BY with COUNT and SUM
 3. `SELECT grp, COUNT(*), SUM(amount) FROM parent JOIN child GROUP BY grp` — multiple aggregates with GROUP BY
 
-**Requires:** Running NDB cluster (any config)
+Each test first verifies expected results via MySQL JOIN query, then runs the
+same query via NdbQueryBuilder with pushdown aggregation and compares results.
+Tables are created and dropped via MySQL (ENGINE=NDB).
+
+**Requires:** Running NDB cluster with MySQL server
 
 ## Documentation
 - `TESTING_GUIDE.md` — Detailed guide for writing block-level signal tests
