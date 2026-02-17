@@ -1613,3 +1613,98 @@ No NDB connection, so no index scan analysis.
 Output in mysql-style tab separated format.
 The program for post-processing and output has 11 instructions.
 
+===== LIMIT =====
+Query parse tree:
+SELECT
+  Out_0:`col1`
+   = C0:`col1`
+  Out_1:`max(b)`
+   = A0:Max(`b`)
+FROM tbl
+GROUP BY
+  C0:`col1`
+ORDER BY
+  C0:`col1` ASC
+LIMIT 10
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+Load   r00  C01 r00 = C01:`b`
+Max    A00  r00 A00:MAX <- r00:`b`
+
+No NDB connection, so no index scan analysis.
+
+Result limited to 10 rows.
+Output in mysql-style tab separated format.
+The program for post-processing and output has 8 instructions.
+
+===== LIMIT 0 =====
+Query parse tree:
+SELECT
+  Out_0:`col1`
+   = C0:`col1`
+  Out_1:`max(b)`
+   = A0:Max(`b`)
+FROM tbl
+GROUP BY
+  C0:`col1`
+LIMIT 0
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+Load   r00  C01 r00 = C01:`b`
+Max    A00  r00 A00:MAX <- r00:`b`
+
+No NDB connection, so no index scan analysis.
+
+Result limited to 0 rows.
+Output in mysql-style tab separated format.
+The program for post-processing and output has 8 instructions.
+
+===== LIMIT without ORDER BY =====
+Query parse tree:
+SELECT
+  Out_0:`col1`
+   = C0:`col1`
+  Out_1:`max(b)`
+   = A0:Max(`b`)
+FROM tbl
+GROUP BY
+  C0:`col1`
+LIMIT 5
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+Load   r00  C01 r00 = C01:`b`
+Max    A00  r00 A00:MAX <- r00:`b`
+
+No NDB connection, so no index scan analysis.
+
+Result limited to 5 rows.
+Output in mysql-style tab separated format.
+The program for post-processing and output has 8 instructions.
+
+===== LIMIT with negative value =====
+Syntax error in SQL statement: Unexpected at this point
+> select col1, max(b) from tbl group by col1 limit -5;
+!                                                  ^
+Error handling: RPE
+ronsql_cli caught exception: Syntax error.
+===== LIMIT without value =====
+Syntax error in SQL statement: Unexpected at this point
+> select col1, max(b) from tbl group by col1 limit;
+!                                                 ^
+Error handling: RPE
+ronsql_cli caught exception: Syntax error.
+===== LIMIT with non-integer =====
+Syntax error in SQL statement: Unexpected at this point
+> select col1, max(b) from tbl group by col1 limit abc;
+!                                                  ^^^
+Error handling: RPE
+ronsql_cli caught exception: Syntax error.
+===== LIMIT before ORDER BY =====
+Syntax error in SQL statement: Unexpected at this point
+> select col1, max(b) from tbl group by col1 limit 5 order by col1;
+!                                                    ^^^^^
+Error handling: RPE
+ronsql_cli caught exception: Syntax error.
