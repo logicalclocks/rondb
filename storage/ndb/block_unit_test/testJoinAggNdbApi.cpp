@@ -66,7 +66,7 @@ static bool verbose = false;
 
 static const char *PARENT_TABLE = "jagg_parent";
 static const char *CHILD_TABLE = "jagg_child";
-static const char *TEST_DB = "TEST_DB";
+static const char *TEST_DB = "test_db";
 
 /* ------------------------------------------------------------------ */
 /* MySQL helpers                                                       */
@@ -92,7 +92,7 @@ connectMysql(int mysqlPort)
     return nullptr;
   }
   if (mysql_real_connect(conn, "127.0.0.1", "root", "",
-                         TEST_DB, mysqlPort, nullptr, 0) == nullptr) {
+                         nullptr, mysqlPort, nullptr, 0) == nullptr) {
     fprintf(stderr, "mysql_real_connect failed: %s\n", mysql_error(conn));
     mysql_close(conn);
     return nullptr;
@@ -345,8 +345,7 @@ testSumGroupBy(Ndb *ndb, MYSQL *conn,
    *   SUM(amount)  (child column)
    */
   NdbAggregator agg(childTab);
-  Int32 grpColNo = parentTab->getColumn("grp")->getColumnNo();
-  if (!agg.GroupBy(grpColNo | AGG_LINKED_COL_FLAG) ||
+  if (!agg.GroupBy(0 | AGG_LINKED_COL_FLAG) ||  /* linked projection pos 0 = grp */
       !agg.LoadColumn("amount", 0) ||   /* reg 0 */
       !agg.Sum(0, 0) ||                 /* agg[0] = SUM(reg 0) */
       !agg.Finalize()) {
@@ -697,8 +696,7 @@ testMultiAggGroupBy(Ndb *ndb, MYSQL *conn,
 
   /* Build aggregation: GROUP BY grp, COUNT(*), SUM(amount) */
   NdbAggregator agg(childTab);
-  Int32 grpColNo = parentTab->getColumn("grp")->getColumnNo();
-  if (!agg.GroupBy(grpColNo | AGG_LINKED_COL_FLAG) ||
+  if (!agg.GroupBy(0 | AGG_LINKED_COL_FLAG) ||  /* linked projection pos 0 = grp */
       !agg.LoadColumn("amount", 0) ||
       !agg.Count(0, 0) ||  /* agg[0] = COUNT */
       !agg.Sum(1, 0) ||    /* agg[1] = SUM */
@@ -880,101 +878,87 @@ int main(int argc, char **argv)
     Ndb_cluster_connection clusterConn(connectString);
     if (clusterConn.connect(12, 5, 1) != 0) {
       fprintf(stderr, "Cannot connect to cluster mgm: %s\n", connectString);
-      ndb_end(0);
-      return 1;
+      exitCode = 1;
     }
-
-    if (clusterConn.wait_until_ready(30, 0) < 0) {
+    else if (clusterConn.wait_until_ready(30, 0) < 0) {
       fprintf(stderr, "Cluster not ready within 30s\n");
-      ndb_end(0);
-      return 1;
-    }
-
-    /* Connect to MySQL */
-    MYSQL *conn = connectMysql(mysqlPort);
-    if (conn == nullptr) {
-      ndb_end(0);
-      return 1;
-    }
-
-    /* Ensure database exists */
-    char createDb[128];
-    snprintf(createDb, sizeof(createDb),
-             "CREATE DATABASE IF NOT EXISTS %s", TEST_DB);
-    sqlExec(conn, createDb);
-
-    char useDb[128];
-    snprintf(useDb, sizeof(useDb), "USE %s", TEST_DB);
-    sqlExec(conn, useDb);
-
-    Ndb ndb(&clusterConn, TEST_DB);
-    if (ndb.init() != 0) {
-      fprintf(stderr, "Ndb::init failed: %s\n", ndb.getNdbError().message);
-      mysql_close(conn);
-      ndb_end(0);
-      return 1;
-    }
-
-    /* Create test tables via MySQL */
-    if (createTestTables(conn) != 0) {
       exitCode = 1;
-      goto cleanup;
     }
-
-    /* Insert test data via MySQL */
-    if (insertTestData(conn) != 0) {
-      exitCode = 1;
-      goto cleanup;
-    }
-
-    /*
-     * Test data:
-     *   parent: (1,1), (2,1), (3,2), (4,2), (5,3)
-     *   child:  (1,100), (2,200), (3,300), (4,400), (5,500)
-     *
-     * Join result (parent_id = id):
-     *   (id=1, grp=1, amount=100)
-     *   (id=2, grp=1, amount=200)
-     *   (id=3, grp=2, amount=300)
-     *   (id=4, grp=2, amount=400)
-     *   (id=5, grp=3, amount=500)
-     *
-     * GROUP BY grp:
-     *   grp=1: SUM=300, COUNT=2
-     *   grp=2: SUM=700, COUNT=2
-     *   grp=3: SUM=500, COUNT=1
-     *
-     * Totals: COUNT=5, SUM=1500
-     */
-
-    /* Test 1: SUM(amount) GROUP BY grp */
-    {
-      std::map<Int32, Int64> expected = {
-        {1, 300}, {2, 700}, {3, 500}
-      };
-      if (testSumGroupBy(&ndb, conn, expected) != 0) {
+    else {
+      /* Connect to MySQL (without database — it may not exist yet) */
+      MYSQL *conn = connectMysql(mysqlPort);
+      if (conn == nullptr) {
         exitCode = 1;
+      } else {
+        /* Ensure database exists */
+        char createDb[128];
+        snprintf(createDb, sizeof(createDb),
+                 "CREATE DATABASE IF NOT EXISTS %s", TEST_DB);
+        sqlExec(conn, createDb);
+
+        char useDb[128];
+        snprintf(useDb, sizeof(useDb), "USE %s", TEST_DB);
+        sqlExec(conn, useDb);
+
+        Ndb ndb(&clusterConn, TEST_DB);
+        if (ndb.init() != 0) {
+          fprintf(stderr, "Ndb::init failed: %s\n", ndb.getNdbError().message);
+          exitCode = 1;
+        }
+        else if (createTestTables(conn) != 0 ||
+                 insertTestData(conn) != 0) {
+          exitCode = 1;
+        }
+        else {
+          /*
+           * Test data:
+           *   parent: (1,1), (2,1), (3,2), (4,2), (5,3)
+           *   child:  (1,100), (2,200), (3,300), (4,400), (5,500)
+           *
+           * Join result (parent_id = id):
+           *   (id=1, grp=1, amount=100)
+           *   (id=2, grp=1, amount=200)
+           *   (id=3, grp=2, amount=300)
+           *   (id=4, grp=2, amount=400)
+           *   (id=5, grp=3, amount=500)
+           *
+           * GROUP BY grp:
+           *   grp=1: SUM=300, COUNT=2
+           *   grp=2: SUM=700, COUNT=2
+           *   grp=3: SUM=500, COUNT=1
+           *
+           * Totals: COUNT=5, SUM=1500
+           */
+
+          /* Test 1: SUM(amount) GROUP BY grp */
+          {
+            std::map<Int32, Int64> expected = {
+              {1, 300}, {2, 700}, {3, 500}
+            };
+            if (testSumGroupBy(&ndb, conn, expected) != 0) {
+              exitCode = 1;
+            }
+          }
+
+          /* Test 2: COUNT(*), SUM(amount) — no GROUP BY */
+          if (testCountSum(&ndb, conn, 5, 1500) != 0) {
+            exitCode = 1;
+          }
+
+          /* Test 3: COUNT(*), SUM(amount) GROUP BY grp */
+          {
+            std::map<Int32, std::pair<Int64, Int64>> expected = {
+              {1, {2, 300}}, {2, {2, 700}}, {3, {1, 500}}
+            };
+            if (testMultiAggGroupBy(&ndb, conn, expected) != 0) {
+              exitCode = 1;
+            }
+          }
+        }
+        dropTestTables(conn);
+        mysql_close(conn);
       }
     }
-
-    /* Test 2: COUNT(*), SUM(amount) — no GROUP BY */
-    if (testCountSum(&ndb, conn, 5, 1500) != 0) {
-      exitCode = 1;
-    }
-
-    /* Test 3: COUNT(*), SUM(amount) GROUP BY grp */
-    {
-      std::map<Int32, std::pair<Int64, Int64>> expected = {
-        {1, {2, 300}}, {2, {2, 700}}, {3, {1, 500}}
-      };
-      if (testMultiAggGroupBy(&ndb, conn, expected) != 0) {
-        exitCode = 1;
-      }
-    }
-
-cleanup:
-    dropTestTables(conn);
-    mysql_close(conn);
   }
 
   ndb_end(0);
