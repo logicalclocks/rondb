@@ -175,6 +175,7 @@ struct SelectStatement
   struct ConditionalExpression* where_expression = NULL;
   struct GroupbyColumns* groupby_columns = NULL;
   struct OrderbyColumns* orderby_columns = NULL;
+  Int64 limit = -1; // -1 means no limit
 };
 
 /* RonSQL uses 4 types of exceptions:
