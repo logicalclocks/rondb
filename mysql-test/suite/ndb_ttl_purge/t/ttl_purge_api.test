@@ -1,0 +1,230 @@
+--source include/have_ndb.inc
+
+# suite/ndb_ttl_purge/t/ttl_purge_api.test
+#
+# API edge case tests (6 cases):
+#   - test_pagination
+#   - test_invalid_config_values
+#   - test_nonexistent_table_lookup
+#   - test_empty_request_body
+#   - test_invalid_json_body
+#   - test_combined_endpoint
+
+--source suite/ndb_ttl_purge/include/ttl_purge_setup.inc
+--source suite/ndb_ttl_purge/include/ttl_purge_reset_config.inc
+
+--echo #
+--echo # Test: test_pagination
+--echo # Create 5 tables, test GET /tables with offset/limit
+--echo #
+
+--let $ttl_db = ttl_api
+--let $ttl_table = page_0
+--let $ttl_seconds = 60
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+--let $ttl_db = ttl_api
+--let $ttl_table = page_1
+--let $ttl_seconds = 60
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+--let $ttl_db = ttl_api
+--let $ttl_table = page_2
+--let $ttl_seconds = 60
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+--let $ttl_db = ttl_api
+--let $ttl_table = page_3
+--let $ttl_seconds = 60
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+--let $ttl_db = ttl_api
+--let $ttl_table = page_4
+--let $ttl_seconds = 60
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+# Wait for schema watcher to detect all tables
+--sleep 10
+
+# Test offset=0, limit=2
+--exec curl -s "$ttl_purge_base/tables?offset=0&limit=2" > $MYSQL_TMP_DIR/api_page1.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/api_page1.json
+--let $json_field = total
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $page_total = $json_value
+
+--let $assert_text = Total should be at least 5
+--let $assert_cond = $page_total >= 5
+--source include/assert.inc
+
+--let $json_file = $MYSQL_TMP_DIR/api_page1.json
+--let $json_field = tables
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $assert_text = Limit=2 should return 2 tables
+--let $assert_cond = $json_value = 2
+--source include/assert.inc
+
+# Test offset=2, limit=2
+--exec curl -s "$ttl_purge_base/tables?offset=2&limit=2" > $MYSQL_TMP_DIR/api_page2.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/api_page2.json
+--let $json_field = tables
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $assert_text = Offset=2 limit=2 should return 2 tables
+--let $assert_cond = $json_value = 2
+--source include/assert.inc
+
+# Test large offset
+--exec curl -s "$ttl_purge_base/tables?offset=1000&limit=20" > $MYSQL_TMP_DIR/api_page_big.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/api_page_big.json
+--let $json_field = tables
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $assert_text = Large offset should return 0 tables
+--let $assert_cond = $json_value = 0
+--source include/assert.inc
+
+DROP DATABASE ttl_api;
+--sleep 5
+
+--echo #
+--echo # Test: test_invalid_config_values
+--echo # PUT /config with min_batch=0, inverted max/min, short sleep
+--echo #
+
+# min_batch_size < 1 should be clamped to 1
+--exec $ttl_purge_put_config '{"min_batch_size":0}' > /dev/null 2>&1
+--exec $ttl_purge_get_config > $MYSQL_TMP_DIR/api_cfg1.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/api_cfg1.json
+--let $json_field = min_batch_size
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $assert_text = min_batch_size should be at least 1
+--let $assert_cond = $json_value >= 1
+--source include/assert.inc
+
+# max < min should be clamped
+--exec $ttl_purge_put_config '{"min_batch_size":10,"max_batch_size":5}' > /dev/null 2>&1
+--exec $ttl_purge_get_config > $MYSQL_TMP_DIR/api_cfg2.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/api_cfg2.json
+--let $json_field = max_batch_size
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $saved_max = $json_value
+--let $json_field = min_batch_size
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $saved_min = $json_value
+
+--let $assert_text = max_batch_size should be >= min_batch_size
+--let $assert_cond = $saved_max >= $saved_min
+--source include/assert.inc
+
+# sleep < 100ms should be clamped to >= 100
+--exec $ttl_purge_put_config '{"sleep_interval_ms":50}' > /dev/null 2>&1
+--exec $ttl_purge_get_config > $MYSQL_TMP_DIR/api_cfg3.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/api_cfg3.json
+--let $json_field = sleep_interval_ms
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $assert_text = sleep_interval_ms should be at least 100
+--let $assert_cond = $json_value >= 100
+--source include/assert.inc
+
+# Restore default config
+--source suite/ndb_ttl_purge/include/ttl_purge_reset_config.inc
+
+--echo #
+--echo # Test: test_nonexistent_table_lookup
+--echo # GET /tables/nonexistent_db/nonexistent_table
+--echo #
+
+--exec curl -s -o $MYSQL_TMP_DIR/api_noexist.json -w "%{http_code}" $ttl_purge_base/tables/nonexistent_db/nonexistent_table > $MYSQL_TMP_DIR/api_noexist_code.txt 2>/dev/null
+
+--perl
+my $tmp = $ENV{MYSQL_TMP_DIR};
+open my $f, '<', "$tmp/api_noexist_code.txt" or die;
+my $code = <$f>; chomp $code; close $f;
+# Expect 404 or non-200 for nonexistent table
+open my $o, '>', "$tmp/api_noexist_check.inc" or die;
+print $o "--let \$noexist_code = $code\n";
+close $o;
+EOF
+--source $MYSQL_TMP_DIR/api_noexist_check.inc
+
+--let $assert_text = Nonexistent table should return non-200
+--let $assert_cond = $noexist_code != 200
+--source include/assert.inc
+
+--echo #
+--echo # Test: test_empty_request_body
+--echo # PUT /config with empty body should return 400
+--echo #
+
+--exec curl -s -o /dev/null -w "%{http_code}" -X PUT -H "Content-Type: application/json" $ttl_purge_base/config -d '' > $MYSQL_TMP_DIR/api_empty_code.txt 2>/dev/null
+
+--perl
+my $tmp = $ENV{MYSQL_TMP_DIR};
+open my $f, '<', "$tmp/api_empty_code.txt" or die;
+my $code = <$f>; chomp $code; close $f;
+open my $o, '>', "$tmp/api_empty_check.inc" or die;
+print $o "--let \$empty_code = $code\n";
+close $o;
+EOF
+--source $MYSQL_TMP_DIR/api_empty_check.inc
+--echo Empty body PUT returned HTTP 400
+
+--let $assert_text = Empty body should return HTTP 400
+--let $assert_cond = $empty_code = 400
+--source include/assert.inc
+
+--echo #
+--echo # Test: test_invalid_json_body
+--echo # PUT /config with "not valid json" should return 400
+--echo #
+
+--exec curl -s -o /dev/null -w "%{http_code}" -X PUT -H "Content-Type: application/json" $ttl_purge_base/config -d 'not valid json' > $MYSQL_TMP_DIR/api_badjson_code.txt 2>/dev/null
+
+--perl
+my $tmp = $ENV{MYSQL_TMP_DIR};
+open my $f, '<', "$tmp/api_badjson_code.txt" or die;
+my $code = <$f>; chomp $code; close $f;
+open my $o, '>', "$tmp/api_badjson_check.inc" or die;
+print $o "--let \$badjson_code = $code\n";
+close $o;
+EOF
+--source $MYSQL_TMP_DIR/api_badjson_check.inc
+--echo Invalid JSON PUT returned HTTP 400
+
+--let $assert_text = Invalid JSON should return HTTP 400
+--let $assert_cond = $badjson_code = 400
+--source include/assert.inc
+
+--echo #
+--echo # Test: test_combined_endpoint
+--echo # GET /ttl-purge returns config + status + metrics
+--echo #
+
+--exec $ttl_purge_get_all > $MYSQL_TMP_DIR/api_combined.json 2>/dev/null
+
+# Check config section present
+--let $json_file = $MYSQL_TMP_DIR/api_combined.json
+--let $json_field = config
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $assert_text = Combined endpoint should have config section
+--let $assert_cond = $json_value > 0
+--source include/assert.inc
+
+# Check status section present
+--let $json_file = $MYSQL_TMP_DIR/api_combined.json
+--let $json_field = status
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $assert_text = Combined endpoint should have status section
+--let $assert_cond = $json_value > 0
+--source include/assert.inc
+
+# Check metrics section present
+--let $json_file = $MYSQL_TMP_DIR/api_combined.json
+--let $json_field = metrics
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $assert_text = Combined endpoint should have metrics section
+--let $assert_cond = $json_value > 0
+--source include/assert.inc
+
+--source suite/ndb_ttl_purge/include/ttl_purge_cleanup_tmp.inc
+
+--echo # All API tests passed

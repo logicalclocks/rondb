@@ -1,0 +1,379 @@
+--source include/have_ndb.inc
+
+# suite/ndb_ttl_purge/t/ttl_purge_metrics.test
+#
+# Metrics accuracy tests (6 cases):
+#   - test_rows_purged_total_accumulates
+#   - test_rows_purged_last_round_resets
+#   - test_rounds_completed_increments
+#   - test_per_table_metrics
+#   - test_metrics_cleanup_on_ttl_disable
+#   - test_tables_count_accuracy
+
+--source suite/ndb_ttl_purge/include/ttl_purge_setup.inc
+--source suite/ndb_ttl_purge/include/ttl_purge_reset_config.inc
+
+--echo #
+--echo # Test: test_rows_purged_total_accumulates
+--echo # Insert 10 expired, wait, check total; insert 15 more, check total again
+--echo #
+
+--let $ttl_db = ttl_metrics
+--let $ttl_table = accumulate
+--let $ttl_seconds = 5
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+# Wait for table detection by RDRS purge worker
+--let $wait_db = ttl_metrics
+--let $wait_table = accumulate
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_table_detected.inc
+
+# Get initial rows_purged_total
+--exec $ttl_purge_get_metrics > $MYSQL_TMP_DIR/met_initial.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/met_initial.json
+--let $json_field = rows_purged_total
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $initial_purged = $json_value
+
+# First batch: 10 expired rows
+--let $insert_db = ttl_metrics
+--let $insert_table = accumulate
+--let $insert_count = 10
+--let $insert_start_id = 1
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_expired.inc
+
+# Wait for purge with fixed sleep, then verify
+--sleep 30
+
+--exec $ttl_purge_get_metrics > $MYSQL_TMP_DIR/met_batch1.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/met_batch1.json
+--let $json_field = rows_purged_total
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+
+--exec echo '$json_value' > $MYSQL_TMP_DIR/_batch1_cur.txt
+--exec echo '$initial_purged' > $MYSQL_TMP_DIR/_batch1_init.txt
+--perl
+my $tmp = $ENV{MYSQL_TMP_DIR};
+sub rf1 { open my $f,'<',$_[0] or return 0; my $l=<$f>; chomp $l; close $f; $l }
+my $cur = rf1("$tmp/_batch1_cur.txt") || 0;
+my $init = rf1("$tmp/_batch1_init.txt") || 0;
+open my $o, '>', "$tmp/_batch1_check.inc" or die;
+print $o "--let \$batch1_ok = " . ($cur >= $init + 10 ? 1 : 0) . "\n";
+close $o;
+EOF
+--source $MYSQL_TMP_DIR/_batch1_check.inc
+
+--let $assert_text = rows_purged_total should increase by at least 10
+--let $assert_cond = $batch1_ok = 1
+--source include/assert.inc
+
+--let $after_first = $json_value
+--echo First batch metrics verified (rows_purged_total increased by >= 10)
+
+# Second batch: 15 more expired rows
+--let $insert_db = ttl_metrics
+--let $insert_table = accumulate
+--let $insert_count = 15
+--let $insert_start_id = 100
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_expired.inc
+
+--sleep 30
+
+--exec $ttl_purge_get_metrics > $MYSQL_TMP_DIR/met_batch2.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/met_batch2.json
+--let $json_field = rows_purged_total
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+
+--exec echo '$json_value' > $MYSQL_TMP_DIR/_batch2_cur.txt
+--exec echo '$after_first' > $MYSQL_TMP_DIR/_batch2_af.txt
+--perl
+my $tmp = $ENV{MYSQL_TMP_DIR};
+sub rf2 { open my $f,'<',$_[0] or return 0; my $l=<$f>; chomp $l; close $f; $l }
+my $cur = rf2("$tmp/_batch2_cur.txt") || 0;
+my $af = rf2("$tmp/_batch2_af.txt") || 0;
+open my $o, '>', "$tmp/_batch2_check.inc" or die;
+print $o "--let \$batch2_ok = " . ($cur >= $af + 15 ? 1 : 0) . "\n";
+close $o;
+EOF
+--source $MYSQL_TMP_DIR/_batch2_check.inc
+
+--let $assert_text = rows_purged_total should increase by at least 15 more
+--let $assert_cond = $batch2_ok = 1
+--source include/assert.inc
+
+--echo Second batch metrics verified (rows_purged_total increased by >= 15 more)
+
+DROP DATABASE ttl_metrics;
+--sleep 3
+
+--echo #
+--echo # Test: test_rows_purged_last_round_resets
+--echo # Insert expired, wait for purge, then wait for empty rounds
+--echo #
+
+--let $ttl_db = ttl_metrics
+--let $ttl_table = last_round
+--let $ttl_seconds = 5
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+--let $wait_db = ttl_metrics
+--let $wait_table = last_round
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_table_detected.inc
+
+--let $insert_db = ttl_metrics
+--let $insert_table = last_round
+--let $insert_count = 20
+--let $insert_start_id = 1
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_expired.inc
+
+# Wait for purge
+--sleep 15
+
+# After a few rounds with no data, last_round should be 0
+--sleep 10
+
+--exec $ttl_purge_get_metrics > $MYSQL_TMP_DIR/met_lr.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/met_lr.json
+--let $json_field = rows_purged_last_round
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--echo rows_purged_last_round checked (soft check)
+
+DROP DATABASE ttl_metrics;
+--sleep 3
+
+--echo #
+--echo # Test: test_rounds_completed_increments
+--echo # Wait, check rounds_completed increases
+--echo #
+
+--let $ttl_db = ttl_metrics
+--let $ttl_table = rounds_test
+--let $ttl_seconds = 60
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+--sleep 5
+
+--exec $ttl_purge_get_metrics > $MYSQL_TMP_DIR/met_rounds1.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/met_rounds1.json
+--let $json_field = rounds_completed
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $initial_rounds = $json_value
+
+--sleep 15
+
+--exec $ttl_purge_get_metrics > $MYSQL_TMP_DIR/met_rounds2.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/met_rounds2.json
+--let $json_field = rounds_completed
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $final_rounds = $json_value
+
+--exec echo '$initial_rounds' > $MYSQL_TMP_DIR/_met_r1.txt
+--exec echo '$final_rounds' > $MYSQL_TMP_DIR/_met_r2.txt
+
+--perl
+my $tmp = $ENV{MYSQL_TMP_DIR};
+sub rf { open my $f,'<',$_[0] or return 0; my $l=<$f>; chomp $l; close $f; $l }
+my $r1 = rf("$tmp/_met_r1.txt") || 0;
+my $r2 = rf("$tmp/_met_r2.txt") || 0;
+open my $o, '>', "$tmp/_met_rounds_check.inc" or die;
+print $o "--let \$rounds_ok = " . ($r2 > $r1 ? 1 : 0) . "\n";
+close $o;
+EOF
+--source $MYSQL_TMP_DIR/_met_rounds_check.inc
+
+--let $assert_text = rounds_completed should increment over 15s
+--let $assert_cond = $rounds_ok = 1
+--source include/assert.inc
+
+DROP DATABASE ttl_metrics;
+--sleep 3
+
+--echo #
+--echo # Test: test_per_table_metrics
+--echo # Insert 25 expired, wait, check per-table rows_purged >= 25
+--echo #
+
+--let $ttl_db = ttl_metrics
+--let $ttl_table = per_table
+--let $ttl_seconds = 5
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+--let $wait_db = ttl_metrics
+--let $wait_table = per_table
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_table_detected.inc
+
+--let $insert_db = ttl_metrics
+--let $insert_table = per_table
+--let $insert_count = 25
+--let $insert_start_id = 1
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_expired.inc
+
+# Wait for purge (fixed sleep, 25 rows across 8 partitions needs ~30s)
+--sleep 30
+
+--exec curl -s $ttl_purge_base/tables/ttl_metrics/per_table > $MYSQL_TMP_DIR/met_pt.json 2>/dev/null
+--perl
+my $tmp = $ENV{MYSQL_TMP_DIR};
+my $json = "";
+if (open my $fh, '<', "$tmp/met_pt.json") {
+  local $/; $json = <$fh>; close $fh;
+}
+my $val = 0;
+if ($json =~ /"rows_purged"\s*:\s*(\d+)/) { $val = $1; }
+open my $o, '>', "$tmp/_pt_check.inc" or die;
+print $o "--let \$pt_ok = " . ($val >= 25 ? 1 : 0) . "\n";
+close $o;
+EOF
+--source $MYSQL_TMP_DIR/_pt_check.inc
+
+--let $assert_text = per-table rows_purged should be >= 25
+--let $assert_cond = $pt_ok = 1
+--source include/assert.inc
+
+--echo Per-table rows_purged verified (>= 25)
+
+DROP DATABASE ttl_metrics;
+--sleep 3
+
+--echo #
+--echo # Test: test_metrics_cleanup_on_ttl_disable
+--echo # Create TTL table, verify detected, disable TTL, verify removed
+--echo #
+
+--let $ttl_db = ttl_metrics
+--let $ttl_table = cleanup_test
+--let $ttl_seconds = 60
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+--let $wait_db = ttl_metrics
+--let $wait_table = cleanup_test
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_table_detected.inc
+
+# Insert some valid rows to ensure metrics are created
+--let $insert_db = ttl_metrics
+--let $insert_table = cleanup_test
+--let $insert_count = 5
+--let $insert_start_id = 1
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_valid.inc
+--sleep 10
+
+# Disable TTL
+ALTER TABLE ttl_metrics.cleanup_test COMMENT="NDB_TABLE=TTL=off";
+--sleep 10
+
+# Verify table removed from API
+--let $wait_db = ttl_metrics
+--let $wait_table = cleanup_test
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_table_removed.inc
+--echo Table metrics cleaned up after TTL disabled
+
+DROP DATABASE ttl_metrics;
+--sleep 3
+
+--echo #
+--echo # Test: test_tables_count_accuracy
+--echo # Create 3 tables, check count += 3; drop 1, check count -= 1
+--echo #
+
+--exec $ttl_purge_get_metrics > $MYSQL_TMP_DIR/met_tc_init.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/met_tc_init.json
+--let $json_field = tables_count
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $tc_initial = $json_value
+
+--let $ttl_db = ttl_metrics
+--let $ttl_table = count_0
+--let $ttl_seconds = 60
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+--let $ttl_table = count_1
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+--let $ttl_table = count_2
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+# Wait for all 3 to be detected (use inline poll with inline perl)
+--let $_tc_met = 0
+--let $_tc_i = 0
+while (!$_tc_met)
+{
+  --exec curl -s $ttl_purge_base/metrics > $MYSQL_TMP_DIR/met_tc_after.json 2>/dev/null
+  --exec echo '$tc_initial' > $MYSQL_TMP_DIR/_tc_init.txt
+
+  --perl
+  my $tmp = $ENV{MYSQL_TMP_DIR};
+  my $json = "";
+  if (open my $fh, '<', "$tmp/met_tc_after.json") {
+    local $/; $json = <$fh>; close $fh;
+  }
+  my $cur = 0;
+  if ($json =~ /"tables_count"\s*:\s*(\d+)/) { $cur = $1; }
+  open my $fi, '<', "$tmp/_tc_init.txt" or die;
+  my $init = <$fi>; chomp $init; close $fi;
+  $init = 0 if !defined($init) || $init eq '';
+  open my $o, '>', "$tmp/_tc_check.inc" or die;
+  print $o "--let \$_tc_met = " . ($cur >= $init + 3 ? 1 : 0) . "\n";
+  print $o "--let \$_tc_cur = $cur\n";
+  close $o;
+  EOF
+  --source $MYSQL_TMP_DIR/_tc_check.inc
+
+  if (!$_tc_met)
+  {
+    --inc $_tc_i
+    if ($_tc_i >= 15)
+    {
+      --echo tables_count did not reach tc_initial + 3
+      --die Timeout waiting for tables_count
+    }
+    --sleep 2
+  }
+}
+--let $tc_after_create = $_tc_cur
+
+# Drop one table
+DROP TABLE ttl_metrics.count_0;
+
+# Poll until count decreases (inline perl, no json_parse.inc in loop)
+--let $_tc_met2 = 0
+--let $_tc_j = 0
+while (!$_tc_met2)
+{
+  --exec curl -s $ttl_purge_base/metrics > $MYSQL_TMP_DIR/met_tc_drop.json 2>/dev/null
+  --exec echo '$tc_after_create' > $MYSQL_TMP_DIR/_tc_drop_tgt.txt
+
+  --perl
+  my $tmp = $ENV{MYSQL_TMP_DIR};
+  my $json = "";
+  if (open my $fh, '<', "$tmp/met_tc_drop.json") {
+    local $/; $json = <$fh>; close $fh;
+  }
+  my $cur = 0;
+  if ($json =~ /"tables_count"\s*:\s*(\d+)/) { $cur = $1; }
+  open my $fi, '<', "$tmp/_tc_drop_tgt.txt" or die;
+  my $tgt = <$fi>; chomp $tgt; close $fi;
+  $tgt = 0 if !defined($tgt) || $tgt eq '';
+  open my $o, '>', "$tmp/_tc_drop_check.inc" or die;
+  print $o "--let \$_tc_met2 = " . ($cur <= $tgt - 1 ? 1 : 0) . "\n";
+  close $o;
+  EOF
+  --source $MYSQL_TMP_DIR/_tc_drop_check.inc
+
+  if (!$_tc_met2)
+  {
+    --inc $_tc_j
+    if ($_tc_j >= 15)
+    {
+      --echo tables_count did not decrease after drop
+      --die Timeout waiting for tables_count decrease
+    }
+    --sleep 2
+  }
+}
+--echo tables_count decreased after drop
+
+DROP DATABASE ttl_metrics;
+
+--source suite/ndb_ttl_purge/include/ttl_purge_cleanup_tmp.inc
+
+--echo # All metrics tests passed

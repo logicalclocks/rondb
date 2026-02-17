@@ -1,0 +1,291 @@
+--source include/have_ndb.inc
+
+# suite/ndb_ttl_purge/t/ttl_purge_stress.test
+#
+# Stress/scale tests (4 cases, reduced scale for MTR):
+#   - test_many_tables (10 tables x 10 rows)
+#   - test_many_expired_rows (200 rows)
+#   - test_high_insert_rate (50 mixed inserts, sequential)
+#   - test_pagination_with_many_tables (20 tables)
+
+--source suite/ndb_ttl_purge/include/ttl_purge_setup.inc
+--source suite/ndb_ttl_purge/include/ttl_purge_reset_config.inc
+
+--echo #
+--echo # Test: test_many_tables
+--echo # 10 tables, 10 expired rows each, all purged
+--echo #
+
+--let $ttl_db = ttl_stress
+--let $ttl_seconds = 10
+
+--let $ttl_table = table_0
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+--let $ttl_table = table_1
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+--let $ttl_table = table_2
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+--let $ttl_table = table_3
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+--let $ttl_table = table_4
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+--let $ttl_table = table_5
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+--let $ttl_table = table_6
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+--let $ttl_table = table_7
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+--let $ttl_table = table_8
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+--let $ttl_table = table_9
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+--sleep 10
+
+# Insert 10 expired rows in each
+--let $insert_db = ttl_stress
+--let $insert_count = 10
+--let $insert_start_id = 1
+
+--let $insert_table = table_0
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_expired.inc
+--let $insert_table = table_1
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_expired.inc
+--let $insert_table = table_2
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_expired.inc
+--let $insert_table = table_3
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_expired.inc
+--let $insert_table = table_4
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_expired.inc
+--let $insert_table = table_5
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_expired.inc
+--let $insert_table = table_6
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_expired.inc
+--let $insert_table = table_7
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_expired.inc
+--let $insert_table = table_8
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_expired.inc
+--let $insert_table = table_9
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_expired.inc
+
+# Wait for all tables to be purged
+--let $purge_db = ttl_stress
+--let $purge_completion_timeout = 60
+
+--let $purge_table = table_0
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_purge_completion.inc
+--let $purge_table = table_1
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_purge_completion.inc
+--let $purge_table = table_2
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_purge_completion.inc
+--let $purge_table = table_3
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_purge_completion.inc
+--let $purge_table = table_4
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_purge_completion.inc
+--let $purge_table = table_5
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_purge_completion.inc
+--let $purge_table = table_6
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_purge_completion.inc
+--let $purge_table = table_7
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_purge_completion.inc
+--let $purge_table = table_8
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_purge_completion.inc
+--let $purge_table = table_9
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_purge_completion.inc
+
+--echo All 10 tables fully purged
+
+DROP DATABASE ttl_stress;
+--sleep 5
+
+--echo #
+--echo # Test: test_many_expired_rows
+--echo # 200 expired rows, wait for purge
+--echo #
+
+--let $ttl_db = ttl_stress
+--let $ttl_table = many_rows
+--let $ttl_seconds = 5
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+# Insert in batches of 50
+--let $insert_db = ttl_stress
+--let $insert_table = many_rows
+--let $insert_count = 50
+
+--let $insert_start_id = 1
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_expired.inc
+--let $insert_start_id = 51
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_expired.inc
+--let $insert_start_id = 101
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_expired.inc
+--let $insert_start_id = 151
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_expired.inc
+
+--let $purge_db = ttl_stress
+--let $purge_table = many_rows
+--let $purge_completion_timeout = 120
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_purge_completion.inc
+
+--let $assert_text = All 200 rows should be purged
+--let $assert_cond = [SELECT COUNT(*) FROM ttl_stress.many_rows] = 0
+--source include/assert.inc
+
+DROP DATABASE ttl_stress;
+--sleep 3
+
+--echo #
+--echo # Test: test_high_insert_rate (simplified)
+--echo # 50 mixed inserts (expired + valid), valid survive
+--echo #
+
+--let $ttl_db = ttl_stress
+--let $ttl_table = high_rate
+--let $ttl_seconds = 5
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+# Insert 25 expired rows
+--let $insert_db = ttl_stress
+--let $insert_table = high_rate
+--let $insert_count = 25
+--let $insert_start_id = 1
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_expired.inc
+
+# Insert 25 valid rows
+--let $insert_db = ttl_stress
+--let $insert_table = high_rate
+--let $insert_count = 25
+--let $insert_start_id = 1000
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_valid.inc
+
+--sleep 15
+
+# Valid rows should survive, expired rows purged
+--let $assert_text = Valid rows should survive
+--let $assert_cond = [SELECT COUNT(*) FROM ttl_stress.high_rate] >= 25
+--source include/assert.inc
+
+DROP DATABASE ttl_stress;
+--sleep 5
+
+--echo #
+--echo # Test: test_pagination_with_many_tables
+--echo # 20 tables, paginate with limit=5
+--echo #
+
+--let $ttl_db = ttl_stress
+--let $ttl_seconds = 60
+
+--let $ttl_table = pt_0
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+--let $ttl_table = pt_1
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+--let $ttl_table = pt_2
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+--let $ttl_table = pt_3
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+--let $ttl_table = pt_4
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+--let $ttl_table = pt_5
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+--let $ttl_table = pt_6
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+--let $ttl_table = pt_7
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+--let $ttl_table = pt_8
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+--let $ttl_table = pt_9
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+--let $ttl_table = pt_10
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+--let $ttl_table = pt_11
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+--let $ttl_table = pt_12
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+--let $ttl_table = pt_13
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+--let $ttl_table = pt_14
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+--let $ttl_table = pt_15
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+--let $ttl_table = pt_16
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+--let $ttl_table = pt_17
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+--let $ttl_table = pt_18
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+--let $ttl_table = pt_19
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+--sleep 15
+
+# Poll until all 20 tables detected
+--let $_pg_met = 0
+--let $_pg_i = 0
+while (!$_pg_met)
+{
+  --exec curl -s "$ttl_purge_base/tables?offset=0&limit=100" > $MYSQL_TMP_DIR/stress_pg.json 2>/dev/null
+  --let $json_file = $MYSQL_TMP_DIR/stress_pg.json
+  --let $json_field = total
+  --source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+
+  --exec echo '$json_value' > $MYSQL_TMP_DIR/_pg_cur.txt
+  --perl
+  my $tmp = $ENV{MYSQL_TMP_DIR};
+  open my $f, '<', "$tmp/_pg_cur.txt" or die;
+  my $v = <$f>; chomp $v; close $f;
+  open my $o, '>', "$tmp/_pg_check.inc" or die;
+  print $o "--let \$_pg_met = " . (($v || 0) >= 20 ? 1 : 0) . "\n";
+  close $o;
+  EOF
+  --source $MYSQL_TMP_DIR/_pg_check.inc
+
+  if (!$_pg_met)
+  {
+    --inc $_pg_i
+    if ($_pg_i >= 20)
+    {
+      --die Timeout: expected >= 20 tables detected, got $json_value
+    }
+    --sleep 3
+  }
+}
+
+# Paginate with limit=5
+--exec curl -s "$ttl_purge_base/tables?offset=0&limit=5" > $MYSQL_TMP_DIR/stress_p1.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/stress_p1.json
+--let $json_field = tables
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--echo Page 1 (offset=0, limit=5): OK
+
+--exec curl -s "$ttl_purge_base/tables?offset=5&limit=5" > $MYSQL_TMP_DIR/stress_p2.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/stress_p2.json
+--let $json_field = tables
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--echo Page 2 (offset=5, limit=5): OK
+
+--exec curl -s "$ttl_purge_base/tables?offset=10&limit=5" > $MYSQL_TMP_DIR/stress_p3.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/stress_p3.json
+--let $json_field = tables
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--echo Page 3 (offset=10, limit=5): OK
+
+--exec curl -s "$ttl_purge_base/tables?offset=15&limit=5" > $MYSQL_TMP_DIR/stress_p4.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/stress_p4.json
+--let $json_field = tables
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--echo Page 4 (offset=15, limit=5): OK
+
+DROP DATABASE ttl_stress;
+
+--source suite/ndb_ttl_purge/include/ttl_purge_cleanup_tmp.inc
+
+# Force single-phase shutdown (stop_all_servers) after this heavy test.
+# Without this, the two-phase stop_servers() sends SIGTERM to rdrs2 while
+# NDB is still running. The TTL purge worker may be blocked in an NDB API
+# call during cluster transition, waiting up to TransactionDeadlockDetection
+# Timeout (30s) before it can check the exit flag — exceeding MTR's 20s
+# shutdown timeout.
+--source include/force_restart.inc
+
+--echo # All stress tests passed

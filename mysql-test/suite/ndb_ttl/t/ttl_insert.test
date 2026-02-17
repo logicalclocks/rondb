@@ -1,0 +1,267 @@
+# ttl_insert.test
+#
+# Concurrent INSERT tests for TTL functionality (Cases 1-5).
+# Migrated from ttl_test_suite.py TestCase1-5 (INSERT category).
+#
+# Table: test.sz (col_a INT PK, col_b TIMESTAMP TTL=5s, col_c INT UNIQUE)
+# Two concurrent sessions (conn_a, conn_b) exercise INSERT interactions
+# under TTL expiry, duplicate keys, ZINSERT_TTL, and rollback scenarios.
+
+--source include/have_ndb.inc
+--source suite/ndb_ttl/include/ttl_create_table.inc
+
+# Establish two sessions against the same MySQL server
+connect (conn_a, localhost, root,,test,$MASTER_MYPORT,);
+connect (conn_b, localhost, root,,test,$MASTER_MYPORT,);
+
+###############################################################################
+--echo #
+--echo # Case 1: INSERT duplicate key error when existing row not expired
+--echo #
+# Thread A inserts PK=1 and commits before TTL.
+# Thread B tries to insert same PK while row is still alive -> duplicate key.
+# After TTL, both verify the row is gone.
+###############################################################################
+
+connection default;
+DELETE FROM sz;
+
+# Thread A: BEGIN and INSERT
+connection conn_a;
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+
+# Thread B: try INSERT on same PK -- will block on A's row lock
+connection conn_b;
+BEGIN;
+--send INSERT INTO sz VALUES(1, SYSDATE(), 200)
+
+# Thread A: sleep briefly (well before TTL=5s) then COMMIT
+connection conn_a;
+sleep 2;
+COMMIT;
+
+# Thread B: reap -- A committed a live row, so B gets duplicate key
+connection conn_b;
+--error ER_DUP_ENTRY
+--reap
+COMMIT;
+
+# Verify: A's row (col_c=100) is visible from both sessions
+connection conn_a;
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+
+connection conn_b;
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+
+# Wait for TTL expiry and verify row disappears
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM sz WHERE col_a = 1
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+
+###############################################################################
+--echo #
+--echo # Case 2: ZINSERT_TTL allows INSERT to expired row slot
+--echo #
+# Thread A inserts PK=1 and holds transaction past TTL, then commits.
+# Thread B inserts same PK; A's row is TTL-expired so B succeeds via
+# ZINSERT_TTL (insert into expired slot).
+# Both see Thread B's row (col_c=200).
+###############################################################################
+
+connection default;
+DELETE FROM sz;
+
+# Thread A: BEGIN and INSERT
+connection conn_a;
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+
+# Partial delay so B gets a fresh SYSDATE() when --send is issued below.
+sleep 3;
+
+# Thread B: INSERT same PK -- will block on A's lock.
+# B's SYSDATE() is captured at ~T+3, so B's row will still be within
+# TTL when A commits below.
+connection conn_b;
+BEGIN;
+--send INSERT INTO sz VALUES(1, SYSDATE(), 200)
+
+# Thread A: continue holding past TTL, then COMMIT.
+# Total hold = 3+4 = 7s > TTL=5s, so A's row is expired.
+# B's row has timestamp ~T+3, age at commit = 4s < TTL=5s => still alive.
+connection conn_a;
+sleep 4;
+COMMIT;
+
+# Thread B: reap -- A's row is expired, so B's INSERT succeeds (ZINSERT_TTL)
+connection conn_b;
+--reap
+COMMIT;
+
+# Verify: Thread B's row (col_c=200) is visible
+connection conn_a;
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+
+connection conn_b;
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+
+# Wait for Thread B's row to also expire
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM sz WHERE col_a = 1
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+
+###############################################################################
+--echo #
+--echo # Case 3: Both INSERT operations result in expired rows
+--echo #
+# Thread A inserts PK=1 and holds transaction well past TTL, then commits.
+# Thread B inserts same PK; blocks on A's lock. When A commits, A's row
+# is expired. B's INSERT succeeds (ZINSERT_TTL) but B's SYSDATE() was
+# captured before the lock wait, so B's row is also already expired.
+# Both sessions see 0 rows.
+###############################################################################
+
+connection default;
+DELETE FROM sz;
+
+# Thread A: BEGIN and INSERT
+connection conn_a;
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+
+# Thread B: INSERT same PK -- will block on A's lock.
+# SYSDATE() is evaluated now (~T+0), before the lock wait.
+connection conn_b;
+BEGIN;
+--send INSERT INTO sz VALUES(1, SYSDATE(), 200)
+
+# Thread A: hold transaction well past TTL (sleep 6s > TTL=5s), then COMMIT
+# When A commits, A's row (SYSDATE at T+0) is expired (6s > 5s TTL).
+# B's INSERT succeeds (ZINSERT_TTL) but B's SYSDATE is also from ~T+0,
+# so B's row is also expired.
+connection conn_a;
+sleep 6;
+COMMIT;
+
+# Thread B: reap -- INSERT succeeds (expired slot)
+connection conn_b;
+--reap
+COMMIT;
+
+# Verify: both rows expired, 0 rows visible
+connection conn_a;
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+
+connection conn_b;
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+
+###############################################################################
+--echo #
+--echo # Case 4: ROLLBACK releases row, other INSERT succeeds (before TTL)
+--echo #
+# Thread A inserts PK=1, sleeps briefly (before TTL), then ROLLBACKs.
+# Thread B inserts same PK; blocks on A's lock. After A rollbacks,
+# the row is gone and B's INSERT succeeds normally.
+# Both see Thread B's row (col_c=200), which later expires.
+###############################################################################
+
+connection default;
+DELETE FROM sz;
+
+# Thread A: BEGIN and INSERT
+connection conn_a;
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+
+# Thread B: INSERT same PK -- will block on A's lock
+connection conn_b;
+BEGIN;
+--send INSERT INTO sz VALUES(1, SYSDATE(), 200)
+
+# Thread A: sleep briefly (before TTL=5s) then ROLLBACK
+connection conn_a;
+sleep 2;
+ROLLBACK;
+
+# Thread B: reap -- A rolled back, so B's INSERT succeeds
+connection conn_b;
+--reap
+COMMIT;
+
+# Verify: Thread B's row (col_c=200) is visible
+connection conn_a;
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+
+connection conn_b;
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+
+# Wait for Thread B's row to expire
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM sz WHERE col_a = 1
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+
+###############################################################################
+--echo #
+--echo # Case 5: ROLLBACK after TTL, other INSERT already succeeded via ZINSERT_TTL
+--echo #
+# Thread A inserts PK=1 and holds transaction past TTL, then ROLLBACKs.
+# Thread B inserts same PK; blocks on A's lock. A's row is expired by
+# the time A rollbacks. B's INSERT succeeds via ZINSERT_TTL.
+# Both see Thread B's row (col_c=200), which later expires.
+###############################################################################
+
+connection default;
+DELETE FROM sz;
+
+# Thread A: BEGIN and INSERT
+connection conn_a;
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+
+# Partial delay so B gets a fresh SYSDATE() when --send is issued below.
+sleep 3;
+
+# Thread B: INSERT same PK -- will block on A's lock.
+# B's SYSDATE() is captured at ~T+3, so B's row will still be within
+# TTL when A rollbacks below.
+connection conn_b;
+BEGIN;
+--send INSERT INTO sz VALUES(1, SYSDATE(), 200)
+
+# Thread A: continue holding past TTL, then ROLLBACK.
+# Total hold = 3+4 = 7s > TTL=5s, so A's row was expired anyway.
+# B's row has timestamp ~T+3, age at rollback = 4s < TTL=5s => still alive.
+connection conn_a;
+sleep 4;
+ROLLBACK;
+
+# Thread B: reap -- A rolled back (row expired anyway), B's INSERT succeeds
+connection conn_b;
+--reap
+COMMIT;
+
+# Verify: Thread B's row (col_c=200) is visible
+connection conn_a;
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+
+connection conn_b;
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+
+# Wait for Thread B's row to expire
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM sz WHERE col_a = 1
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+
+###############################################################################
+# Final cleanup
+###############################################################################
+
+connection default;
+disconnect conn_a;
+disconnect conn_b;
+DROP TABLE test.sz;

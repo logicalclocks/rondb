@@ -393,17 +393,17 @@ PkReadEndPointMetricsUpdater::PkReadEndPointMetricsUpdater(
 PkReadEndPointMetricsUpdater::~PkReadEndPointMetricsUpdater() {
   NDB_TICKS now = NdbTick_getCurrentTicks();
   Uint64 elapsed_us = NdbTick_Elapsed(m_start_time, now).microSec();
-  auto status = m_response->getStatusCode();
+  int code = static_cast<int>(m_response->getStatusCode());
   Uint32 hist;
-  if (status == drogon::HttpStatusCode::k200OK) {
+  if (code >= 200 && code < 300) {
     hist = calculate_pk_index(elapsed_us);
     pk_read_histogram_total.fetch_add(elapsed_us, std::memory_order_relaxed);
-  } else if (status == drogon::HttpStatusCode::k400BadRequest) {
-    hist = 61;
-  } else if (status == drogon::HttpStatusCode::k500InternalServerError) {
-    hist = 62;
+  } else if (code >= 400 && code < 500) {
+    hist = 61;  // All 4xx client errors
+  } else if (code >= 500) {
+    hist = 62;  // All 5xx server errors
   } else {
-    hist = 63; // Other error
+    hist = 63;  // 1xx, 3xx
   }
   pk_read_histogram[hist].fetch_add(1, std::memory_order_relaxed);
 }
@@ -423,9 +423,9 @@ BatchPkReadEndPointMetricsUpdater::set_key_requests(Uint32 key_requests) {
 BatchPkReadEndPointMetricsUpdater::~BatchPkReadEndPointMetricsUpdater() {
   NDB_TICKS now = NdbTick_getCurrentTicks();
   Uint64 elapsed_us = NdbTick_Elapsed(m_start_time, now).microSec();
-  auto status = m_response->getStatusCode();
+  int code = static_cast<int>(m_response->getStatusCode());
   Uint32 hist;
-  if (status == drogon::HttpStatusCode::k200OK) {
+  if (code >= 200 && code < 300) {
     hist = calculate_batch_pk_index(elapsed_us);
     batch_pk_read_histogram_total.fetch_add(
       elapsed_us,
@@ -433,12 +433,12 @@ BatchPkReadEndPointMetricsUpdater::~BatchPkReadEndPointMetricsUpdater() {
     m_ndb_key_request_from_batch_counter.fetch_add(
       m_key_requests,
       std::memory_order_relaxed);
-  } else if (status == drogon::HttpStatusCode::k400BadRequest) {
-    hist = 61;
-  } else if (status == drogon::HttpStatusCode::k500InternalServerError) {
-    hist = 62;
+  } else if (code >= 400 && code < 500) {
+    hist = 61;  // All 4xx client errors
+  } else if (code >= 500) {
+    hist = 62;  // All 5xx server errors
   } else {
-    hist = 63; // Other error
+    hist = 63;  // 1xx, 3xx
   }
   batch_pk_read_histogram[hist].fetch_add(1, std::memory_order_relaxed);
 }
@@ -453,17 +453,17 @@ FsReadEndPointMetricsUpdater::FsReadEndPointMetricsUpdater(
 FsReadEndPointMetricsUpdater::~FsReadEndPointMetricsUpdater() {
   NDB_TICKS now = NdbTick_getCurrentTicks();
   Uint64 elapsed_us = NdbTick_Elapsed(m_start_time, now).microSec();
-  auto status = m_response->getStatusCode();
+  int code = static_cast<int>(m_response->getStatusCode());
   Uint32 hist;
-  if (status == drogon::HttpStatusCode::k200OK) {
+  if (code >= 200 && code < 300) {
     hist = calculate_fs_index(elapsed_us);
     fs_histogram_total.fetch_add(elapsed_us, std::memory_order_relaxed);
-  } else if (status == drogon::HttpStatusCode::k400BadRequest) {
-    hist = 61;
-  } else if (status == drogon::HttpStatusCode::k500InternalServerError) {
-    hist = 62;
+  } else if (code >= 400 && code < 500) {
+    hist = 61;  // All 4xx client errors
+  } else if (code >= 500) {
+    hist = 62;  // All 5xx server errors
   } else {
-    hist = 63; // Other error
+    hist = 63;  // 1xx, 3xx
   }
   fs_histogram[hist].fetch_add(1, std::memory_order_relaxed);
 }
@@ -483,20 +483,20 @@ BatchFsReadEndPointMetricsUpdater::set_key_requests(Uint32 key_requests) {
 BatchFsReadEndPointMetricsUpdater::~BatchFsReadEndPointMetricsUpdater() {
   NDB_TICKS now = NdbTick_getCurrentTicks();
   Uint64 elapsed_us = NdbTick_Elapsed(m_start_time, now).microSec();
-  auto status = m_response->getStatusCode();
+  int code = static_cast<int>(m_response->getStatusCode());
   Uint32 hist;
-  if (status == drogon::HttpStatusCode::k200OK) {
+  if (code >= 200 && code < 300) {
     hist = calculate_batch_fs_index(elapsed_us);
     batch_fs_histogram_total.fetch_add(elapsed_us, std::memory_order_relaxed);
     m_ndb_key_request_from_fs_batch_counter.fetch_add(
       m_key_requests,
       std::memory_order_relaxed);
-  } else if (status == drogon::HttpStatusCode::k400BadRequest) {
-    hist = 61;
-  } else if (status == drogon::HttpStatusCode::k500InternalServerError) {
-    hist = 62;
+  } else if (code >= 400 && code < 500) {
+    hist = 61;  // All 4xx client errors
+  } else if (code >= 500) {
+    hist = 62;  // All 5xx server errors
   } else {
-    hist = 63; // Other error
+    hist = 63;  // 1xx, 3xx
   }
   batch_fs_histogram[hist].fetch_add(1, std::memory_order_relaxed);
 }
@@ -510,17 +510,17 @@ RonSQLEndPointMetricsUpdater::RonSQLEndPointMetricsUpdater(
 RonSQLEndPointMetricsUpdater::~RonSQLEndPointMetricsUpdater() {
   NDB_TICKS now = NdbTick_getCurrentTicks();
   Uint64 elapsed_us = NdbTick_Elapsed(m_start_time, now).microSec();
-  auto status = m_response->getStatusCode();
+  int code = static_cast<int>(m_response->getStatusCode());
   Uint32 hist;
-  if (status == drogon::HttpStatusCode::k200OK) {
+  if (code >= 200 && code < 300) {
     hist = calculate_ronsql_index(elapsed_us);
     ronsql_histogram_total.fetch_add(elapsed_us, std::memory_order_relaxed);
-  } else if (status == drogon::HttpStatusCode::k400BadRequest) {
-    hist = 61;
-  } else if (status == drogon::HttpStatusCode::k500InternalServerError) {
-    hist = 62;
+  } else if (code >= 400 && code < 500) {
+    hist = 61;  // All 4xx client errors
+  } else if (code >= 500) {
+    hist = 62;  // All 5xx server errors
   } else {
-    hist = 63; // Other error
+    hist = 63;  // 1xx, 3xx
   }
   ronsql_histogram[hist].fetch_add(1, std::memory_order_relaxed);
 }

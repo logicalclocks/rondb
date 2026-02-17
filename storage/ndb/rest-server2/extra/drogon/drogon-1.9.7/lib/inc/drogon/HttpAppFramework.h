@@ -791,6 +791,12 @@ class DROGON_EXPORT HttpAppFramework : public trantor::NonCopyable
      */
     virtual HttpAppFramework &setThreadNum(size_t threadNum) = 0;
 
+    /**
+     * @brief Set the stack size for IO event loop threads.
+     * @param stackSize The stack size in bytes. 0 means use OS default.
+     */
+    virtual HttpAppFramework &setThreadStackSize(size_t stackSize) = 0;
+
     /// Get the number of threads for IO event loops
     virtual size_t getThreadNum() const = 0;
 

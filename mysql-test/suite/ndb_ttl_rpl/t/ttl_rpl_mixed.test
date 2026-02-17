@@ -1,0 +1,220 @@
+# suite/ndb_ttl_rpl/t/ttl_rpl_mixed.test
+#
+# TTL binlog replication tests: Cases 43, 44, 45
+# Migrated from ttl_test_suite.py (TestCase43BinlogDeleteReinsert,
+# TestCase44BinlogMixedTimestamps, TestCase45BinlogMixedOperations)
+#
+# Topology: master (2 ndbd) -> slave (1 ndbd), binlog row format
+# TTL = 10 seconds on col_b
+
+--source include/have_ndb.inc
+--source include/have_binlog_format_row.inc
+--source suite/ndb_rpl/ndb_rpl_init_source_replica.inc
+
+--connection master
+--source suite/ndb_ttl_rpl/include/ttl_rpl_create_table.inc
+--source include/rpl/wait_for_ndb_committed_to_binlog.inc
+--sync_slave_with_master
+
+###############################################################################
+# Case 43: DELETE and UPDATE with replication
+#
+# Master: INSERT 2 rows -> sync -> slave sees 2 rows
+#         UPDATE col_c -> sync -> slave sees updated values
+#         DELETE WHERE col_c >= 100 -> sync -> slave sees 0 rows
+#
+# Note: Original Python used "UPDATE sz SET col_c = 200" which would violate
+# the UNIQUE KEY on col_c. We use "UPDATE sz SET col_c = col_c + 100" instead.
+###############################################################################
+
+--echo #
+--echo # Case 43: DELETE and UPDATE with replication
+--echo #
+
+--connection master
+BEGIN;
+INSERT INTO test.sz VALUES(1, SYSDATE(), 100);
+INSERT INTO test.sz VALUES(2, SYSDATE(), 200);
+COMMIT;
+
+SELECT col_a, col_c FROM test.sz ORDER BY col_a;
+
+--source include/rpl/wait_for_ndb_committed_to_binlog.inc
+--sync_slave_with_master
+
+# Slave sees 2 rows
+--connection slave
+SELECT col_a, col_c FROM test.sz ORDER BY col_a;
+
+# UPDATE on master
+--connection master
+sleep 3;
+BEGIN;
+UPDATE test.sz SET col_c = col_c + 100;
+COMMIT;
+
+SELECT col_a, col_c FROM test.sz WHERE col_a = 1;
+
+--source include/rpl/wait_for_ndb_committed_to_binlog.inc
+--sync_slave_with_master
+
+# Slave sees updated values
+--connection slave
+SELECT col_a, col_c FROM test.sz WHERE col_a = 1;
+
+# DELETE on master
+--connection master
+sleep 3;
+BEGIN;
+DELETE FROM test.sz WHERE col_c >= 100;
+COMMIT;
+
+SELECT col_a, col_c FROM test.sz;
+
+--source include/rpl/wait_for_ndb_committed_to_binlog.inc
+--sync_slave_with_master
+
+# Slave sees 0 rows
+--connection slave
+SELECT col_a, col_c FROM test.sz;
+
+# Clean up for next case
+--connection master
+--disable_warnings
+DELETE FROM test.sz;
+--enable_warnings
+COMMIT;
+--source include/rpl/wait_for_ndb_committed_to_binlog.inc
+--sync_slave_with_master
+
+###############################################################################
+# Case 44: INSERT with mixed timestamps (some future-dated)
+#
+# Master: INSERT 4 rows: 3 with SYSDATE(), 1 with SYSDATE()+1DAY
+#         -> sleep 11 -> COMMIT -> only future-dated row survives
+# Slave:  sees 1 row (col_c=300, the future-dated one)
+# Cleanup: explicit DELETE (future-dated row won't expire for 1 day)
+###############################################################################
+
+--echo #
+--echo # Case 44: INSERT with mixed timestamps (some future-dated)
+--echo #
+
+--connection master
+BEGIN;
+INSERT INTO test.sz VALUES(1, SYSDATE(), 100);
+INSERT INTO test.sz VALUES(2, SYSDATE(), 200);
+INSERT INTO test.sz VALUES(3, DATE_ADD(SYSDATE(), INTERVAL 1 DAY), 300);
+INSERT INTO test.sz VALUES(4, SYSDATE(), 400);
+
+sleep 11;
+
+COMMIT;
+
+# Only the future-dated row (col_a=3, col_c=300) survives
+SELECT col_a, col_c FROM test.sz ORDER BY col_a;
+
+--source include/rpl/wait_for_ndb_committed_to_binlog.inc
+--sync_slave_with_master
+
+# Slave should also see only the future-dated row
+--connection slave
+--let $ttl_wait_condition = SELECT COUNT(*) = 1 FROM test.sz
+--source suite/ndb_ttl_rpl/include/ttl_wait_expired.inc
+
+SELECT col_a, col_c FROM test.sz;
+
+# Cleanup: explicit DELETE (future-dated row won't expire naturally)
+--connection master
+BEGIN;
+DELETE FROM test.sz;
+COMMIT;
+
+SELECT col_a, col_c FROM test.sz;
+
+--source include/rpl/wait_for_ndb_committed_to_binlog.inc
+--sync_slave_with_master
+
+--connection slave
+SELECT col_a, col_c FROM test.sz;
+
+# Clean up for next case
+--connection master
+--disable_warnings
+DELETE FROM test.sz;
+--enable_warnings
+COMMIT;
+--source include/rpl/wait_for_ndb_committed_to_binlog.inc
+--sync_slave_with_master
+
+###############################################################################
+# Case 45: Mixed operations with FOR UPDATE and FOR SHARE
+#
+# Note: In the original Python test, requires_replica = False for thread_b
+# (thread_b ran on PRIMARY, not slave). This test executes everything on
+# the master, then syncs to verify slave state after commit.
+#
+# Master: INSERT 10 rows -> sleep 11 -> FOR UPDATE locks 4 rows
+#         -> UPDATE 3 rows -> FOR SHARE verifies -> DELETE 3 rows
+#         -> 7 rows in TX -> COMMIT -> 0 rows (all expired)
+# Slave:  verify 0 rows after sync
+###############################################################################
+
+--echo #
+--echo # Case 45: Mixed operations with FOR UPDATE and FOR SHARE
+--echo #
+
+--connection master
+BEGIN;
+INSERT INTO test.sz VALUES
+  (1, SYSDATE(), 1), (2, SYSDATE(), 2), (3, SYSDATE(), 3),
+  (4, SYSDATE(), 4), (5, SYSDATE(), 5), (6, SYSDATE(), 6),
+  (7, SYSDATE(), 7), (8, SYSDATE(), 8), (9, SYSDATE(), 9),
+  (10, SYSDATE(), 10);
+
+sleep 11;
+
+# FOR UPDATE: lock rows with col_c >= 7 (rows 7,8,9,10)
+SELECT col_a, col_c FROM test.sz WHERE col_c >= 7 FOR UPDATE;
+
+# UPDATE: set col_c = 100 where col_c <= 3 (rows 1,2,3)
+UPDATE test.sz SET col_c = 100 WHERE col_c <= 3;
+SELECT ROW_COUNT();
+
+# FOR SHARE: verify updated rows
+SELECT col_a, col_c FROM test.sz WHERE col_a <= 3 FOR SHARE;
+
+# DELETE: remove rows with col_c >= 20 (none match since max is 100 or 10)
+# Original Python: DELETE FROM sz WHERE col_c >= 20 (deletes rows with col_c=100)
+# After UPDATE: rows 1,2,3 have col_c=100; rows 7,8,9,10 have col_c=7,8,9,10
+# So col_c >= 20 deletes the 3 rows with col_c=100
+DELETE FROM test.sz WHERE col_c >= 20;
+SELECT ROW_COUNT();
+
+# 7 rows remaining in TX: 10 - 3 deleted = 7
+SELECT col_a, col_c FROM test.sz ORDER BY col_a;
+
+COMMIT;
+
+# All rows expired after commit (inserted 11s+ ago)
+SELECT col_a, col_c FROM test.sz;
+
+--source include/rpl/wait_for_ndb_committed_to_binlog.inc
+--sync_slave_with_master
+
+# Slave sees 0 rows
+--connection slave
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM test.sz
+--source suite/ndb_ttl_rpl/include/ttl_wait_expired.inc
+
+SELECT col_a, col_c FROM test.sz;
+
+###############################################################################
+# Cleanup
+###############################################################################
+
+--connection master
+DROP TABLE test.sz;
+--source include/rpl/wait_for_ndb_committed_to_binlog.inc
+--sync_slave_with_master
+--source include/rpl/deinit.inc

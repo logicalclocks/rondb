@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -37,7 +37,7 @@
  * version there signal may be sent. The signal number must remain reserved and
  * handled by receiver until that version is no longer supported.
  */
-const GlobalSignalNumber MAX_GSN = 947;
+const GlobalSignalNumber MAX_GSN = 950;
 
 struct GsnName {
   GlobalSignalNumber gsn;
@@ -1282,4 +1282,8 @@ extern const GlobalSignalNumber NO_OF_SIGNAL_NAMES;
 #define GSN_SET_DOMAIN_ID_REF           946
 
 #define GSN_COPY_FRAG_DONE_REP          947
+
+#define GSN_SET_CONFIG_PARAM_REQ        948
+#define GSN_SET_CONFIG_PARAM_CONF       949
+#define GSN_SET_CONFIG_PARAM_REF        950
 #endif

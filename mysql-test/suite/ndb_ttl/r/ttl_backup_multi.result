@@ -1,0 +1,65 @@
+DROP DATABASE IF EXISTS ttl_backup;
+CREATE DATABASE ttl_backup;
+#
+# Case 46h: Multi-table backup/restore with mixed TTL configs
+#
+CREATE TABLE ttl_backup.sz1 (
+col_a INT,
+col_b TIMESTAMP,
+col_c INT,
+PRIMARY KEY(col_a),
+UNIQUE KEY(col_c)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=TTL=66@col_b";
+CREATE TABLE ttl_backup.sz2 (
+col_a INT,
+col_b TIMESTAMP,
+col_c INT,
+PRIMARY KEY(col_a)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=TTL=86400@col_b";
+CREATE TABLE ttl_backup.sz3 (
+col_a INT,
+col_b TIMESTAMP,
+col_c INT,
+PRIMARY KEY(col_a)
+) ENGINE = NDB;
+ALTER TABLE ttl_backup.sz1 COMMENT="NDB_TABLE=TTL=10@col_b";
+INSERT INTO ttl_backup.sz1 VALUES(1, DATE_ADD(SYSDATE(), INTERVAL 1 DAY), 100);
+INSERT INTO ttl_backup.sz2 VALUES(1, DATE_ADD(SYSDATE(), INTERVAL 2 DAY), 100);
+INSERT INTO ttl_backup.sz3 VALUES(1, SYSDATE(), 100);
+SELECT col_a, col_c FROM ttl_backup.sz1;
+col_a	col_c
+1	100
+SELECT col_a, col_c FROM ttl_backup.sz2;
+col_a	col_c
+1	100
+SELECT col_a, col_c FROM ttl_backup.sz3;
+col_a	col_c
+1	100
+DROP DATABASE ttl_backup;
+CREATE DATABASE IF NOT EXISTS ttl_backup;
+SELECT col_a, col_c FROM ttl_backup.sz1;
+col_a	col_c
+1	100
+SELECT col_a, col_c FROM ttl_backup.sz2;
+col_a	col_c
+1	100
+SELECT col_a, col_c FROM ttl_backup.sz3;
+col_a	col_c
+1	100
+INSERT INTO ttl_backup.sz1 VALUES(2, SYSDATE(), 200);
+INSERT INTO ttl_backup.sz2 VALUES(2, SYSDATE(), 200);
+INSERT INTO ttl_backup.sz3 VALUES(2, SYSDATE(), 200);
+SELECT col_a, col_c FROM ttl_backup.sz1;
+col_a	col_c
+1	100
+SELECT col_a, col_c FROM ttl_backup.sz2 ORDER BY col_a;
+col_a	col_c
+1	100
+2	200
+SELECT col_a, col_c FROM ttl_backup.sz3 ORDER BY col_a;
+col_a	col_c
+1	100
+2	200
+DROP DATABASE ttl_backup;

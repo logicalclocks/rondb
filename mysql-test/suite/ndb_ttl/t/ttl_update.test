@@ -1,0 +1,241 @@
+--source include/have_ndb.inc
+--source suite/ndb_ttl/include/ttl_create_table.inc
+
+connect (conn_a, localhost, root,,test,$MASTER_MYPORT,);
+connect (conn_b, localhost, root,,test,$MASTER_MYPORT,);
+
+###############################################################################
+# Case 13: UPDATE succeeds when row not expired
+#
+# Thread A inserts, holds transaction for 2s (before TTL=5s), COMMIT.
+# Thread B sends UPDATE (blocks on lock), reaps after COMMIT.
+# Row is not expired so UPDATE succeeds (1 row affected).
+# Row is not expired so UPDATE succeeds. Eventually row expires.
+###############################################################################
+
+--echo #
+--echo # Case 13: UPDATE succeeds when row not expired
+--echo #
+
+connection conn_a;
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+
+connection conn_b;
+BEGIN;
+--send UPDATE sz SET col_c=200 WHERE col_a=1
+
+connection conn_a;
+sleep 2;
+COMMIT;
+
+connection conn_b;
+--reap
+SELECT ROW_COUNT();
+COMMIT;
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+
+connection conn_a;
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+
+# Wait for TTL expiry
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM sz WHERE col_a = 1
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+
+connection conn_a;
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+
+connection conn_b;
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+
+# Cleanup
+DELETE FROM sz;
+
+###############################################################################
+# Case 14: UPDATE finds no row (row expired when B tries)
+#
+# Thread A inserts, holds transaction for 6s (past TTL=5s), COMMIT.
+# Thread B sends UPDATE (blocks on lock), reaps after COMMIT.
+# Row has expired so UPDATE finds 0 rows.
+###############################################################################
+
+--echo #
+--echo # Case 14: UPDATE finds no row (row expired)
+--echo #
+
+connection conn_a;
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+
+connection conn_b;
+BEGIN;
+--send UPDATE sz SET col_c=200 WHERE col_a=1
+
+connection conn_a;
+sleep 6;
+COMMIT;
+
+connection conn_b;
+--reap
+SELECT ROW_COUNT();
+COMMIT;
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+
+connection conn_a;
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+
+# Cleanup
+DELETE FROM sz;
+
+###############################################################################
+# Case 15: UPDATE finds no row, both threads confirm expiry
+#
+# Thread A inserts, holds transaction for 6s (past TTL=5s), COMMIT.
+# Thread B sends UPDATE (blocks on lock), reaps after COMMIT.
+# Row has expired so UPDATE finds 0 rows. Both threads see 0 rows.
+###############################################################################
+
+--echo #
+--echo # Case 15: UPDATE finds no row, both expire
+--echo #
+
+connection conn_a;
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+
+connection conn_b;
+BEGIN;
+--send UPDATE sz SET col_c=200 WHERE col_a=1
+
+connection conn_a;
+sleep 6;
+COMMIT;
+
+connection conn_b;
+--reap
+SELECT ROW_COUNT();
+COMMIT;
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+
+connection conn_a;
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+
+# Cleanup
+DELETE FROM sz;
+
+###############################################################################
+# Case 16: ROLLBACK before TTL, UPDATE finds no row
+#
+# Thread A inserts, holds transaction for 2s (before TTL=5s), ROLLBACK.
+# Thread B sends UPDATE (blocks on lock), reaps after ROLLBACK.
+# Row was rolled back so UPDATE finds 0 rows.
+###############################################################################
+
+--echo #
+--echo # Case 16: ROLLBACK before TTL, UPDATE finds no row
+--echo #
+
+connection conn_a;
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+
+connection conn_b;
+BEGIN;
+--send UPDATE sz SET col_c=200 WHERE col_a=1
+
+connection conn_a;
+sleep 2;
+ROLLBACK;
+
+connection conn_b;
+--reap
+SELECT ROW_COUNT();
+COMMIT;
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+
+connection conn_a;
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+
+# Cleanup
+DELETE FROM sz;
+
+###############################################################################
+# Case 17: ROLLBACK after TTL, UPDATE finds no row
+#
+# Thread A inserts, holds transaction for 6s (past TTL=5s), ROLLBACK.
+# Thread B sends UPDATE (blocks on lock), reaps after ROLLBACK.
+# Row was rolled back so UPDATE finds 0 rows.
+###############################################################################
+
+--echo #
+--echo # Case 17: ROLLBACK after TTL, UPDATE finds no row
+--echo #
+
+connection conn_a;
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+
+connection conn_b;
+BEGIN;
+--send UPDATE sz SET col_c=200 WHERE col_a=1
+
+connection conn_a;
+sleep 6;
+ROLLBACK;
+
+connection conn_b;
+--reap
+SELECT ROW_COUNT();
+COMMIT;
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+
+connection conn_a;
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+
+# Cleanup
+DELETE FROM sz;
+
+###############################################################################
+# Case 18: ROLLBACK after TTL (long hold), UPDATE finds no row, both expire
+#
+# Thread A inserts, holds transaction for 6s (past TTL=5s), ROLLBACK.
+# Thread B sends UPDATE (blocks on lock), reaps after ROLLBACK.
+# Row was rolled back so UPDATE finds 0 rows. Both threads see 0 rows.
+###############################################################################
+
+--echo #
+--echo # Case 18: ROLLBACK after TTL, UPDATE finds no row, both expire
+--echo #
+
+connection conn_a;
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+
+connection conn_b;
+BEGIN;
+--send UPDATE sz SET col_c=200 WHERE col_a=1
+
+connection conn_a;
+sleep 6;
+ROLLBACK;
+
+connection conn_b;
+--reap
+SELECT ROW_COUNT();
+COMMIT;
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+
+connection conn_a;
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+
+# Cleanup
+DELETE FROM sz;
+
+###############################################################################
+# Teardown
+###############################################################################
+
+connection default;
+disconnect conn_a;
+disconnect conn_b;
+DROP TABLE test.sz;

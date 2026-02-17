@@ -1,0 +1,206 @@
+# suite/ndb_ttl_rpl/t/ttl_rpl_insert.test
+#
+# TTL binlog replication tests: Cases 36, 37, 38
+# Migrated from ttl_test_suite.py (TestCase36BinlogBasic,
+# TestCase37BinlogExpireBeforeCommit, TestCase38BinlogMultipleInserts)
+#
+# Topology: master (2 ndbd) -> slave (1 ndbd), binlog row format
+# TTL = 10 seconds on col_b
+
+--source include/have_ndb.inc
+--source include/have_binlog_format_row.inc
+--source suite/ndb_rpl/ndb_rpl_init_source_replica.inc
+
+--connection master
+--source suite/ndb_ttl_rpl/include/ttl_rpl_create_table.inc
+--source include/rpl/wait_for_ndb_committed_to_binlog.inc
+--sync_slave_with_master
+
+###############################################################################
+# Case 36: Basic replication of INSERT
+#
+# Master: INSERT -> COMMIT -> verify 1 row -> wait for TTL -> verify 0 rows
+# Slave:  verify 1 row replicated -> wait for TTL -> verify 0 rows
+###############################################################################
+
+--echo #
+--echo # Case 36: Basic replication of INSERT
+--echo #
+
+--connection master
+BEGIN;
+INSERT INTO test.sz VALUES(1, SYSDATE(), 100);
+COMMIT;
+
+SELECT col_a, col_c FROM test.sz;
+
+--source include/rpl/wait_for_ndb_committed_to_binlog.inc
+--sync_slave_with_master
+
+# Verify row replicated to slave
+--connection slave
+SELECT col_a, col_c FROM test.sz;
+
+# Wait for TTL expiry on master
+--connection master
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM test.sz
+--source suite/ndb_ttl_rpl/include/ttl_wait_expired.inc
+
+SELECT col_a, col_c FROM test.sz;
+
+# Wait for TTL expiry on slave
+--connection slave
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM test.sz
+--source suite/ndb_ttl_rpl/include/ttl_wait_expired.inc
+
+SELECT col_a, col_c FROM test.sz;
+
+# Clean up for next case
+--connection master
+--disable_warnings
+DELETE FROM test.sz;
+--enable_warnings
+COMMIT;
+--source include/rpl/wait_for_ndb_committed_to_binlog.inc
+--sync_slave_with_master
+
+###############################################################################
+# Case 37: Replication when row expires before commit
+#
+# Master: BEGIN -> INSERT -> sleep 11 (past TTL) -> verify 1 row in TX
+#         -> COMMIT -> verify 0 rows (expired)
+# Slave:  verify 0 rows (row expired immediately after commit on slave)
+###############################################################################
+
+--echo #
+--echo # Case 37: Replication when row expires before commit
+--echo #
+
+--connection master
+BEGIN;
+INSERT INTO test.sz VALUES(1, SYSDATE(), 100);
+
+# Sleep past TTL (10s)
+sleep 11;
+
+# Row visible within transaction
+SELECT col_a, col_c FROM test.sz;
+
+COMMIT;
+
+# Row expired immediately after commit
+SELECT col_a, col_c FROM test.sz;
+
+--source include/rpl/wait_for_ndb_committed_to_binlog.inc
+--sync_slave_with_master
+
+# Slave sees 0 rows (row expired immediately on slave too)
+--connection slave
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM test.sz
+--source suite/ndb_ttl_rpl/include/ttl_wait_expired.inc
+
+SELECT col_a, col_c FROM test.sz;
+
+# Clean up for next case
+--connection master
+--disable_warnings
+DELETE FROM test.sz;
+--enable_warnings
+COMMIT;
+--source include/rpl/wait_for_ndb_committed_to_binlog.inc
+--sync_slave_with_master
+
+###############################################################################
+# Case 38: Multiple inserts with interleaved expiration
+#
+# Stage 1: INSERT(col_c=100) -> sleep 11 -> verify in TX -> COMMIT
+#          -> verify 0 (expired)
+# Stage 2: INSERT(col_c=200) -> COMMIT -> sync slave -> verify col_c=200
+# Stage 3: Wait for expiry -> INSERT(col_c=300) -> COMMIT -> sync slave
+#          -> verify col_c=300
+# Final:   Wait for expiry on both -> verify 0 rows
+###############################################################################
+
+--echo #
+--echo # Case 38: Multiple inserts with interleaved expiration
+--echo #
+
+# Stage 1: INSERT, sleep past TTL, COMMIT (expired immediately)
+--connection master
+BEGIN;
+INSERT INTO test.sz VALUES(1, SYSDATE(), 100);
+
+sleep 11;
+
+# Row visible within transaction
+SELECT col_a, col_c FROM test.sz;
+
+COMMIT;
+
+# Row expired after commit
+SELECT col_a, col_c FROM test.sz;
+
+--source include/rpl/wait_for_ndb_committed_to_binlog.inc
+--sync_slave_with_master
+
+# Slave: row expired
+--connection slave
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM test.sz
+--source suite/ndb_ttl_rpl/include/ttl_wait_expired.inc
+
+SELECT col_a, col_c FROM test.sz;
+
+# Stage 2: INSERT(col_c=200) -> COMMIT -> sync -> slave sees it
+--connection master
+sleep 2;
+BEGIN;
+INSERT INTO test.sz VALUES(1, SYSDATE(), 200);
+COMMIT;
+
+SELECT col_a, col_c FROM test.sz;
+
+--source include/rpl/wait_for_ndb_committed_to_binlog.inc
+--sync_slave_with_master
+
+--connection slave
+SELECT col_a, col_c FROM test.sz;
+
+# Stage 3: Wait for expiry, then INSERT(col_c=300)
+--connection master
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM test.sz
+--source suite/ndb_ttl_rpl/include/ttl_wait_expired.inc
+
+BEGIN;
+INSERT INTO test.sz VALUES(1, SYSDATE(), 300);
+COMMIT;
+
+SELECT col_a, col_c FROM test.sz;
+
+--source include/rpl/wait_for_ndb_committed_to_binlog.inc
+--sync_slave_with_master
+
+--connection slave
+SELECT col_a, col_c FROM test.sz;
+
+# Final: Wait for expiry on both
+--connection master
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM test.sz
+--source suite/ndb_ttl_rpl/include/ttl_wait_expired.inc
+
+SELECT col_a, col_c FROM test.sz;
+
+--connection slave
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM test.sz
+--source suite/ndb_ttl_rpl/include/ttl_wait_expired.inc
+
+SELECT col_a, col_c FROM test.sz;
+
+###############################################################################
+# Cleanup
+###############################################################################
+
+--connection master
+DROP TABLE test.sz;
+--source include/rpl/wait_for_ndb_committed_to_binlog.inc
+--sync_slave_with_master
+--source include/rpl/deinit.inc

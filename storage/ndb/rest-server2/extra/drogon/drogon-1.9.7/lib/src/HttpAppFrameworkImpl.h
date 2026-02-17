@@ -73,6 +73,7 @@ class HttpAppFrameworkImpl final : public HttpAppFramework
         const std::vector<std::pair<std::string, std::string>> &sslConfCmds)
         override;
     HttpAppFramework &setThreadNum(size_t threadNum) override;
+    HttpAppFramework &setThreadStackSize(size_t stackSize) override;
 
     size_t getThreadNum() const override
     {
@@ -705,6 +706,7 @@ class HttpAppFrameworkImpl final : public HttpAppFramework
     std::atomic_bool routersInit_{false};
 
     size_t threadNum_{1};
+    size_t threadStackSize_{0};
     std::unique_ptr<trantor::EventLoopThreadPool> ioLoopThreadPool_;
 
 #ifndef _WIN32

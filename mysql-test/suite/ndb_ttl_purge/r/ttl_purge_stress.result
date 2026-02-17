@@ -1,0 +1,594 @@
+#
+# Test: test_many_tables
+# 10 tables, 10 expired rows each, all purged
+#
+CREATE DATABASE IF NOT EXISTS ttl_stress;
+DROP TABLE IF EXISTS ttl_stress.table_0;
+CREATE TABLE ttl_stress.table_0 (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_stress.table_0(ttl_col);
+ALTER TABLE ttl_stress.table_0 COMMENT="NDB_TABLE=TTL=10@ttl_col";
+CREATE DATABASE IF NOT EXISTS ttl_stress;
+Warnings:
+Note	1007	Can't create database 'ttl_stress'; database exists
+DROP TABLE IF EXISTS ttl_stress.table_1;
+CREATE TABLE ttl_stress.table_1 (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_stress.table_1(ttl_col);
+ALTER TABLE ttl_stress.table_1 COMMENT="NDB_TABLE=TTL=10@ttl_col";
+CREATE DATABASE IF NOT EXISTS ttl_stress;
+Warnings:
+Note	1007	Can't create database 'ttl_stress'; database exists
+DROP TABLE IF EXISTS ttl_stress.table_2;
+CREATE TABLE ttl_stress.table_2 (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_stress.table_2(ttl_col);
+ALTER TABLE ttl_stress.table_2 COMMENT="NDB_TABLE=TTL=10@ttl_col";
+CREATE DATABASE IF NOT EXISTS ttl_stress;
+Warnings:
+Note	1007	Can't create database 'ttl_stress'; database exists
+DROP TABLE IF EXISTS ttl_stress.table_3;
+CREATE TABLE ttl_stress.table_3 (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_stress.table_3(ttl_col);
+ALTER TABLE ttl_stress.table_3 COMMENT="NDB_TABLE=TTL=10@ttl_col";
+CREATE DATABASE IF NOT EXISTS ttl_stress;
+Warnings:
+Note	1007	Can't create database 'ttl_stress'; database exists
+DROP TABLE IF EXISTS ttl_stress.table_4;
+CREATE TABLE ttl_stress.table_4 (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_stress.table_4(ttl_col);
+ALTER TABLE ttl_stress.table_4 COMMENT="NDB_TABLE=TTL=10@ttl_col";
+CREATE DATABASE IF NOT EXISTS ttl_stress;
+Warnings:
+Note	1007	Can't create database 'ttl_stress'; database exists
+DROP TABLE IF EXISTS ttl_stress.table_5;
+CREATE TABLE ttl_stress.table_5 (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_stress.table_5(ttl_col);
+ALTER TABLE ttl_stress.table_5 COMMENT="NDB_TABLE=TTL=10@ttl_col";
+CREATE DATABASE IF NOT EXISTS ttl_stress;
+Warnings:
+Note	1007	Can't create database 'ttl_stress'; database exists
+DROP TABLE IF EXISTS ttl_stress.table_6;
+CREATE TABLE ttl_stress.table_6 (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_stress.table_6(ttl_col);
+ALTER TABLE ttl_stress.table_6 COMMENT="NDB_TABLE=TTL=10@ttl_col";
+CREATE DATABASE IF NOT EXISTS ttl_stress;
+Warnings:
+Note	1007	Can't create database 'ttl_stress'; database exists
+DROP TABLE IF EXISTS ttl_stress.table_7;
+CREATE TABLE ttl_stress.table_7 (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_stress.table_7(ttl_col);
+ALTER TABLE ttl_stress.table_7 COMMENT="NDB_TABLE=TTL=10@ttl_col";
+CREATE DATABASE IF NOT EXISTS ttl_stress;
+Warnings:
+Note	1007	Can't create database 'ttl_stress'; database exists
+DROP TABLE IF EXISTS ttl_stress.table_8;
+CREATE TABLE ttl_stress.table_8 (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_stress.table_8(ttl_col);
+ALTER TABLE ttl_stress.table_8 COMMENT="NDB_TABLE=TTL=10@ttl_col";
+CREATE DATABASE IF NOT EXISTS ttl_stress;
+Warnings:
+Note	1007	Can't create database 'ttl_stress'; database exists
+DROP TABLE IF EXISTS ttl_stress.table_9;
+CREATE TABLE ttl_stress.table_9 (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_stress.table_9(ttl_col);
+ALTER TABLE ttl_stress.table_9 COMMENT="NDB_TABLE=TTL=10@ttl_col";
+INSERT INTO ttl_stress.table_0 (id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_1');
+INSERT INTO ttl_stress.table_0 (id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_2');
+INSERT INTO ttl_stress.table_0 (id, ttl_col, data) VALUES (3, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_3');
+INSERT INTO ttl_stress.table_0 (id, ttl_col, data) VALUES (4, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_4');
+INSERT INTO ttl_stress.table_0 (id, ttl_col, data) VALUES (5, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_5');
+INSERT INTO ttl_stress.table_0 (id, ttl_col, data) VALUES (6, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_6');
+INSERT INTO ttl_stress.table_0 (id, ttl_col, data) VALUES (7, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_7');
+INSERT INTO ttl_stress.table_0 (id, ttl_col, data) VALUES (8, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_8');
+INSERT INTO ttl_stress.table_0 (id, ttl_col, data) VALUES (9, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_9');
+INSERT INTO ttl_stress.table_0 (id, ttl_col, data) VALUES (10, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_10');
+INSERT INTO ttl_stress.table_1 (id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_1');
+INSERT INTO ttl_stress.table_1 (id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_2');
+INSERT INTO ttl_stress.table_1 (id, ttl_col, data) VALUES (3, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_3');
+INSERT INTO ttl_stress.table_1 (id, ttl_col, data) VALUES (4, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_4');
+INSERT INTO ttl_stress.table_1 (id, ttl_col, data) VALUES (5, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_5');
+INSERT INTO ttl_stress.table_1 (id, ttl_col, data) VALUES (6, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_6');
+INSERT INTO ttl_stress.table_1 (id, ttl_col, data) VALUES (7, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_7');
+INSERT INTO ttl_stress.table_1 (id, ttl_col, data) VALUES (8, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_8');
+INSERT INTO ttl_stress.table_1 (id, ttl_col, data) VALUES (9, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_9');
+INSERT INTO ttl_stress.table_1 (id, ttl_col, data) VALUES (10, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_10');
+INSERT INTO ttl_stress.table_2 (id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_1');
+INSERT INTO ttl_stress.table_2 (id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_2');
+INSERT INTO ttl_stress.table_2 (id, ttl_col, data) VALUES (3, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_3');
+INSERT INTO ttl_stress.table_2 (id, ttl_col, data) VALUES (4, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_4');
+INSERT INTO ttl_stress.table_2 (id, ttl_col, data) VALUES (5, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_5');
+INSERT INTO ttl_stress.table_2 (id, ttl_col, data) VALUES (6, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_6');
+INSERT INTO ttl_stress.table_2 (id, ttl_col, data) VALUES (7, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_7');
+INSERT INTO ttl_stress.table_2 (id, ttl_col, data) VALUES (8, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_8');
+INSERT INTO ttl_stress.table_2 (id, ttl_col, data) VALUES (9, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_9');
+INSERT INTO ttl_stress.table_2 (id, ttl_col, data) VALUES (10, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_10');
+INSERT INTO ttl_stress.table_3 (id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_1');
+INSERT INTO ttl_stress.table_3 (id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_2');
+INSERT INTO ttl_stress.table_3 (id, ttl_col, data) VALUES (3, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_3');
+INSERT INTO ttl_stress.table_3 (id, ttl_col, data) VALUES (4, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_4');
+INSERT INTO ttl_stress.table_3 (id, ttl_col, data) VALUES (5, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_5');
+INSERT INTO ttl_stress.table_3 (id, ttl_col, data) VALUES (6, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_6');
+INSERT INTO ttl_stress.table_3 (id, ttl_col, data) VALUES (7, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_7');
+INSERT INTO ttl_stress.table_3 (id, ttl_col, data) VALUES (8, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_8');
+INSERT INTO ttl_stress.table_3 (id, ttl_col, data) VALUES (9, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_9');
+INSERT INTO ttl_stress.table_3 (id, ttl_col, data) VALUES (10, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_10');
+INSERT INTO ttl_stress.table_4 (id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_1');
+INSERT INTO ttl_stress.table_4 (id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_2');
+INSERT INTO ttl_stress.table_4 (id, ttl_col, data) VALUES (3, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_3');
+INSERT INTO ttl_stress.table_4 (id, ttl_col, data) VALUES (4, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_4');
+INSERT INTO ttl_stress.table_4 (id, ttl_col, data) VALUES (5, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_5');
+INSERT INTO ttl_stress.table_4 (id, ttl_col, data) VALUES (6, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_6');
+INSERT INTO ttl_stress.table_4 (id, ttl_col, data) VALUES (7, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_7');
+INSERT INTO ttl_stress.table_4 (id, ttl_col, data) VALUES (8, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_8');
+INSERT INTO ttl_stress.table_4 (id, ttl_col, data) VALUES (9, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_9');
+INSERT INTO ttl_stress.table_4 (id, ttl_col, data) VALUES (10, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_10');
+INSERT INTO ttl_stress.table_5 (id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_1');
+INSERT INTO ttl_stress.table_5 (id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_2');
+INSERT INTO ttl_stress.table_5 (id, ttl_col, data) VALUES (3, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_3');
+INSERT INTO ttl_stress.table_5 (id, ttl_col, data) VALUES (4, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_4');
+INSERT INTO ttl_stress.table_5 (id, ttl_col, data) VALUES (5, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_5');
+INSERT INTO ttl_stress.table_5 (id, ttl_col, data) VALUES (6, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_6');
+INSERT INTO ttl_stress.table_5 (id, ttl_col, data) VALUES (7, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_7');
+INSERT INTO ttl_stress.table_5 (id, ttl_col, data) VALUES (8, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_8');
+INSERT INTO ttl_stress.table_5 (id, ttl_col, data) VALUES (9, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_9');
+INSERT INTO ttl_stress.table_5 (id, ttl_col, data) VALUES (10, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_10');
+INSERT INTO ttl_stress.table_6 (id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_1');
+INSERT INTO ttl_stress.table_6 (id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_2');
+INSERT INTO ttl_stress.table_6 (id, ttl_col, data) VALUES (3, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_3');
+INSERT INTO ttl_stress.table_6 (id, ttl_col, data) VALUES (4, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_4');
+INSERT INTO ttl_stress.table_6 (id, ttl_col, data) VALUES (5, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_5');
+INSERT INTO ttl_stress.table_6 (id, ttl_col, data) VALUES (6, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_6');
+INSERT INTO ttl_stress.table_6 (id, ttl_col, data) VALUES (7, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_7');
+INSERT INTO ttl_stress.table_6 (id, ttl_col, data) VALUES (8, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_8');
+INSERT INTO ttl_stress.table_6 (id, ttl_col, data) VALUES (9, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_9');
+INSERT INTO ttl_stress.table_6 (id, ttl_col, data) VALUES (10, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_10');
+INSERT INTO ttl_stress.table_7 (id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_1');
+INSERT INTO ttl_stress.table_7 (id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_2');
+INSERT INTO ttl_stress.table_7 (id, ttl_col, data) VALUES (3, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_3');
+INSERT INTO ttl_stress.table_7 (id, ttl_col, data) VALUES (4, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_4');
+INSERT INTO ttl_stress.table_7 (id, ttl_col, data) VALUES (5, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_5');
+INSERT INTO ttl_stress.table_7 (id, ttl_col, data) VALUES (6, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_6');
+INSERT INTO ttl_stress.table_7 (id, ttl_col, data) VALUES (7, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_7');
+INSERT INTO ttl_stress.table_7 (id, ttl_col, data) VALUES (8, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_8');
+INSERT INTO ttl_stress.table_7 (id, ttl_col, data) VALUES (9, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_9');
+INSERT INTO ttl_stress.table_7 (id, ttl_col, data) VALUES (10, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_10');
+INSERT INTO ttl_stress.table_8 (id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_1');
+INSERT INTO ttl_stress.table_8 (id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_2');
+INSERT INTO ttl_stress.table_8 (id, ttl_col, data) VALUES (3, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_3');
+INSERT INTO ttl_stress.table_8 (id, ttl_col, data) VALUES (4, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_4');
+INSERT INTO ttl_stress.table_8 (id, ttl_col, data) VALUES (5, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_5');
+INSERT INTO ttl_stress.table_8 (id, ttl_col, data) VALUES (6, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_6');
+INSERT INTO ttl_stress.table_8 (id, ttl_col, data) VALUES (7, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_7');
+INSERT INTO ttl_stress.table_8 (id, ttl_col, data) VALUES (8, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_8');
+INSERT INTO ttl_stress.table_8 (id, ttl_col, data) VALUES (9, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_9');
+INSERT INTO ttl_stress.table_8 (id, ttl_col, data) VALUES (10, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_10');
+INSERT INTO ttl_stress.table_9 (id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_1');
+INSERT INTO ttl_stress.table_9 (id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_2');
+INSERT INTO ttl_stress.table_9 (id, ttl_col, data) VALUES (3, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_3');
+INSERT INTO ttl_stress.table_9 (id, ttl_col, data) VALUES (4, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_4');
+INSERT INTO ttl_stress.table_9 (id, ttl_col, data) VALUES (5, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_5');
+INSERT INTO ttl_stress.table_9 (id, ttl_col, data) VALUES (6, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_6');
+INSERT INTO ttl_stress.table_9 (id, ttl_col, data) VALUES (7, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_7');
+INSERT INTO ttl_stress.table_9 (id, ttl_col, data) VALUES (8, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_8');
+INSERT INTO ttl_stress.table_9 (id, ttl_col, data) VALUES (9, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_9');
+INSERT INTO ttl_stress.table_9 (id, ttl_col, data) VALUES (10, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_10');
+All 10 tables fully purged
+DROP DATABASE ttl_stress;
+#
+# Test: test_many_expired_rows
+# 200 expired rows, wait for purge
+#
+CREATE DATABASE IF NOT EXISTS ttl_stress;
+DROP TABLE IF EXISTS ttl_stress.many_rows;
+CREATE TABLE ttl_stress.many_rows (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_stress.many_rows(ttl_col);
+ALTER TABLE ttl_stress.many_rows COMMENT="NDB_TABLE=TTL=5@ttl_col";
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_1');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_2');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (3, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_3');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (4, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_4');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (5, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_5');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (6, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_6');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (7, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_7');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (8, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_8');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (9, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_9');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (10, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_10');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (11, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_11');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (12, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_12');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (13, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_13');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (14, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_14');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (15, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_15');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (16, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_16');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (17, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_17');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (18, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_18');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (19, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_19');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (20, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_20');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (21, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_21');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (22, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_22');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (23, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_23');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (24, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_24');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (25, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_25');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (26, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_26');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (27, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_27');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (28, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_28');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (29, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_29');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (30, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_30');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (31, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_31');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (32, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_32');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (33, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_33');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (34, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_34');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (35, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_35');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (36, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_36');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (37, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_37');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (38, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_38');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (39, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_39');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (40, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_40');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (41, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_41');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (42, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_42');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (43, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_43');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (44, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_44');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (45, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_45');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (46, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_46');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (47, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_47');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (48, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_48');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (49, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_49');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (50, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_50');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (51, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_51');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (52, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_52');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (53, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_53');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (54, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_54');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (55, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_55');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (56, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_56');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (57, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_57');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (58, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_58');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (59, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_59');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (60, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_60');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (61, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_61');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (62, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_62');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (63, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_63');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (64, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_64');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (65, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_65');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (66, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_66');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (67, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_67');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (68, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_68');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (69, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_69');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (70, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_70');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (71, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_71');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (72, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_72');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (73, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_73');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (74, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_74');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (75, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_75');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (76, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_76');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (77, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_77');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (78, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_78');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (79, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_79');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (80, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_80');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (81, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_81');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (82, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_82');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (83, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_83');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (84, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_84');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (85, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_85');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (86, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_86');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (87, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_87');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (88, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_88');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (89, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_89');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (90, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_90');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (91, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_91');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (92, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_92');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (93, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_93');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (94, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_94');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (95, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_95');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (96, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_96');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (97, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_97');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (98, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_98');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (99, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_99');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (100, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_100');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (101, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_101');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (102, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_102');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (103, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_103');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (104, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_104');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (105, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_105');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (106, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_106');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (107, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_107');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (108, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_108');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (109, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_109');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (110, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_110');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (111, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_111');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (112, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_112');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (113, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_113');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (114, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_114');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (115, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_115');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (116, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_116');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (117, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_117');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (118, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_118');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (119, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_119');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (120, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_120');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (121, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_121');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (122, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_122');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (123, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_123');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (124, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_124');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (125, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_125');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (126, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_126');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (127, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_127');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (128, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_128');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (129, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_129');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (130, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_130');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (131, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_131');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (132, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_132');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (133, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_133');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (134, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_134');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (135, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_135');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (136, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_136');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (137, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_137');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (138, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_138');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (139, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_139');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (140, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_140');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (141, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_141');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (142, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_142');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (143, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_143');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (144, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_144');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (145, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_145');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (146, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_146');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (147, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_147');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (148, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_148');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (149, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_149');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (150, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_150');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (151, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_151');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (152, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_152');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (153, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_153');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (154, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_154');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (155, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_155');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (156, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_156');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (157, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_157');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (158, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_158');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (159, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_159');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (160, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_160');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (161, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_161');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (162, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_162');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (163, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_163');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (164, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_164');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (165, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_165');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (166, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_166');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (167, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_167');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (168, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_168');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (169, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_169');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (170, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_170');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (171, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_171');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (172, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_172');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (173, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_173');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (174, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_174');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (175, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_175');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (176, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_176');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (177, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_177');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (178, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_178');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (179, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_179');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (180, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_180');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (181, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_181');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (182, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_182');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (183, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_183');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (184, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_184');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (185, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_185');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (186, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_186');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (187, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_187');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (188, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_188');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (189, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_189');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (190, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_190');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (191, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_191');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (192, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_192');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (193, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_193');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (194, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_194');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (195, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_195');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (196, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_196');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (197, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_197');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (198, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_198');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (199, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_199');
+INSERT INTO ttl_stress.many_rows (id, ttl_col, data) VALUES (200, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_200');
+include/assert.inc [All 200 rows should be purged]
+DROP DATABASE ttl_stress;
+#
+# Test: test_high_insert_rate (simplified)
+# 50 mixed inserts (expired + valid), valid survive
+#
+CREATE DATABASE IF NOT EXISTS ttl_stress;
+DROP TABLE IF EXISTS ttl_stress.high_rate;
+CREATE TABLE ttl_stress.high_rate (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_stress.high_rate(ttl_col);
+ALTER TABLE ttl_stress.high_rate COMMENT="NDB_TABLE=TTL=5@ttl_col";
+INSERT INTO ttl_stress.high_rate (id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_1');
+INSERT INTO ttl_stress.high_rate (id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_2');
+INSERT INTO ttl_stress.high_rate (id, ttl_col, data) VALUES (3, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_3');
+INSERT INTO ttl_stress.high_rate (id, ttl_col, data) VALUES (4, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_4');
+INSERT INTO ttl_stress.high_rate (id, ttl_col, data) VALUES (5, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_5');
+INSERT INTO ttl_stress.high_rate (id, ttl_col, data) VALUES (6, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_6');
+INSERT INTO ttl_stress.high_rate (id, ttl_col, data) VALUES (7, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_7');
+INSERT INTO ttl_stress.high_rate (id, ttl_col, data) VALUES (8, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_8');
+INSERT INTO ttl_stress.high_rate (id, ttl_col, data) VALUES (9, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_9');
+INSERT INTO ttl_stress.high_rate (id, ttl_col, data) VALUES (10, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_10');
+INSERT INTO ttl_stress.high_rate (id, ttl_col, data) VALUES (11, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_11');
+INSERT INTO ttl_stress.high_rate (id, ttl_col, data) VALUES (12, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_12');
+INSERT INTO ttl_stress.high_rate (id, ttl_col, data) VALUES (13, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_13');
+INSERT INTO ttl_stress.high_rate (id, ttl_col, data) VALUES (14, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_14');
+INSERT INTO ttl_stress.high_rate (id, ttl_col, data) VALUES (15, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_15');
+INSERT INTO ttl_stress.high_rate (id, ttl_col, data) VALUES (16, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_16');
+INSERT INTO ttl_stress.high_rate (id, ttl_col, data) VALUES (17, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_17');
+INSERT INTO ttl_stress.high_rate (id, ttl_col, data) VALUES (18, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_18');
+INSERT INTO ttl_stress.high_rate (id, ttl_col, data) VALUES (19, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_19');
+INSERT INTO ttl_stress.high_rate (id, ttl_col, data) VALUES (20, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_20');
+INSERT INTO ttl_stress.high_rate (id, ttl_col, data) VALUES (21, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_21');
+INSERT INTO ttl_stress.high_rate (id, ttl_col, data) VALUES (22, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_22');
+INSERT INTO ttl_stress.high_rate (id, ttl_col, data) VALUES (23, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_23');
+INSERT INTO ttl_stress.high_rate (id, ttl_col, data) VALUES (24, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_24');
+INSERT INTO ttl_stress.high_rate (id, ttl_col, data) VALUES (25, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_row_25');
+INSERT INTO ttl_stress.high_rate (id, ttl_col, data) VALUES (1000, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'valid_row_1000');
+INSERT INTO ttl_stress.high_rate (id, ttl_col, data) VALUES (1001, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'valid_row_1001');
+INSERT INTO ttl_stress.high_rate (id, ttl_col, data) VALUES (1002, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'valid_row_1002');
+INSERT INTO ttl_stress.high_rate (id, ttl_col, data) VALUES (1003, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'valid_row_1003');
+INSERT INTO ttl_stress.high_rate (id, ttl_col, data) VALUES (1004, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'valid_row_1004');
+INSERT INTO ttl_stress.high_rate (id, ttl_col, data) VALUES (1005, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'valid_row_1005');
+INSERT INTO ttl_stress.high_rate (id, ttl_col, data) VALUES (1006, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'valid_row_1006');
+INSERT INTO ttl_stress.high_rate (id, ttl_col, data) VALUES (1007, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'valid_row_1007');
+INSERT INTO ttl_stress.high_rate (id, ttl_col, data) VALUES (1008, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'valid_row_1008');
+INSERT INTO ttl_stress.high_rate (id, ttl_col, data) VALUES (1009, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'valid_row_1009');
+INSERT INTO ttl_stress.high_rate (id, ttl_col, data) VALUES (1010, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'valid_row_1010');
+INSERT INTO ttl_stress.high_rate (id, ttl_col, data) VALUES (1011, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'valid_row_1011');
+INSERT INTO ttl_stress.high_rate (id, ttl_col, data) VALUES (1012, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'valid_row_1012');
+INSERT INTO ttl_stress.high_rate (id, ttl_col, data) VALUES (1013, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'valid_row_1013');
+INSERT INTO ttl_stress.high_rate (id, ttl_col, data) VALUES (1014, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'valid_row_1014');
+INSERT INTO ttl_stress.high_rate (id, ttl_col, data) VALUES (1015, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'valid_row_1015');
+INSERT INTO ttl_stress.high_rate (id, ttl_col, data) VALUES (1016, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'valid_row_1016');
+INSERT INTO ttl_stress.high_rate (id, ttl_col, data) VALUES (1017, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'valid_row_1017');
+INSERT INTO ttl_stress.high_rate (id, ttl_col, data) VALUES (1018, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'valid_row_1018');
+INSERT INTO ttl_stress.high_rate (id, ttl_col, data) VALUES (1019, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'valid_row_1019');
+INSERT INTO ttl_stress.high_rate (id, ttl_col, data) VALUES (1020, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'valid_row_1020');
+INSERT INTO ttl_stress.high_rate (id, ttl_col, data) VALUES (1021, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'valid_row_1021');
+INSERT INTO ttl_stress.high_rate (id, ttl_col, data) VALUES (1022, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'valid_row_1022');
+INSERT INTO ttl_stress.high_rate (id, ttl_col, data) VALUES (1023, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'valid_row_1023');
+INSERT INTO ttl_stress.high_rate (id, ttl_col, data) VALUES (1024, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'valid_row_1024');
+include/assert.inc [Valid rows should survive]
+DROP DATABASE ttl_stress;
+#
+# Test: test_pagination_with_many_tables
+# 20 tables, paginate with limit=5
+#
+CREATE DATABASE IF NOT EXISTS ttl_stress;
+DROP TABLE IF EXISTS ttl_stress.pt_0;
+CREATE TABLE ttl_stress.pt_0 (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_stress.pt_0(ttl_col);
+ALTER TABLE ttl_stress.pt_0 COMMENT="NDB_TABLE=TTL=60@ttl_col";
+CREATE DATABASE IF NOT EXISTS ttl_stress;
+Warnings:
+Note	1007	Can't create database 'ttl_stress'; database exists
+DROP TABLE IF EXISTS ttl_stress.pt_1;
+CREATE TABLE ttl_stress.pt_1 (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_stress.pt_1(ttl_col);
+ALTER TABLE ttl_stress.pt_1 COMMENT="NDB_TABLE=TTL=60@ttl_col";
+CREATE DATABASE IF NOT EXISTS ttl_stress;
+Warnings:
+Note	1007	Can't create database 'ttl_stress'; database exists
+DROP TABLE IF EXISTS ttl_stress.pt_2;
+CREATE TABLE ttl_stress.pt_2 (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_stress.pt_2(ttl_col);
+ALTER TABLE ttl_stress.pt_2 COMMENT="NDB_TABLE=TTL=60@ttl_col";
+CREATE DATABASE IF NOT EXISTS ttl_stress;
+Warnings:
+Note	1007	Can't create database 'ttl_stress'; database exists
+DROP TABLE IF EXISTS ttl_stress.pt_3;
+CREATE TABLE ttl_stress.pt_3 (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_stress.pt_3(ttl_col);
+ALTER TABLE ttl_stress.pt_3 COMMENT="NDB_TABLE=TTL=60@ttl_col";
+CREATE DATABASE IF NOT EXISTS ttl_stress;
+Warnings:
+Note	1007	Can't create database 'ttl_stress'; database exists
+DROP TABLE IF EXISTS ttl_stress.pt_4;
+CREATE TABLE ttl_stress.pt_4 (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_stress.pt_4(ttl_col);
+ALTER TABLE ttl_stress.pt_4 COMMENT="NDB_TABLE=TTL=60@ttl_col";
+CREATE DATABASE IF NOT EXISTS ttl_stress;
+Warnings:
+Note	1007	Can't create database 'ttl_stress'; database exists
+DROP TABLE IF EXISTS ttl_stress.pt_5;
+CREATE TABLE ttl_stress.pt_5 (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_stress.pt_5(ttl_col);
+ALTER TABLE ttl_stress.pt_5 COMMENT="NDB_TABLE=TTL=60@ttl_col";
+CREATE DATABASE IF NOT EXISTS ttl_stress;
+Warnings:
+Note	1007	Can't create database 'ttl_stress'; database exists
+DROP TABLE IF EXISTS ttl_stress.pt_6;
+CREATE TABLE ttl_stress.pt_6 (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_stress.pt_6(ttl_col);
+ALTER TABLE ttl_stress.pt_6 COMMENT="NDB_TABLE=TTL=60@ttl_col";
+CREATE DATABASE IF NOT EXISTS ttl_stress;
+Warnings:
+Note	1007	Can't create database 'ttl_stress'; database exists
+DROP TABLE IF EXISTS ttl_stress.pt_7;
+CREATE TABLE ttl_stress.pt_7 (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_stress.pt_7(ttl_col);
+ALTER TABLE ttl_stress.pt_7 COMMENT="NDB_TABLE=TTL=60@ttl_col";
+CREATE DATABASE IF NOT EXISTS ttl_stress;
+Warnings:
+Note	1007	Can't create database 'ttl_stress'; database exists
+DROP TABLE IF EXISTS ttl_stress.pt_8;
+CREATE TABLE ttl_stress.pt_8 (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_stress.pt_8(ttl_col);
+ALTER TABLE ttl_stress.pt_8 COMMENT="NDB_TABLE=TTL=60@ttl_col";
+CREATE DATABASE IF NOT EXISTS ttl_stress;
+Warnings:
+Note	1007	Can't create database 'ttl_stress'; database exists
+DROP TABLE IF EXISTS ttl_stress.pt_9;
+CREATE TABLE ttl_stress.pt_9 (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_stress.pt_9(ttl_col);
+ALTER TABLE ttl_stress.pt_9 COMMENT="NDB_TABLE=TTL=60@ttl_col";
+CREATE DATABASE IF NOT EXISTS ttl_stress;
+Warnings:
+Note	1007	Can't create database 'ttl_stress'; database exists
+DROP TABLE IF EXISTS ttl_stress.pt_10;
+CREATE TABLE ttl_stress.pt_10 (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_stress.pt_10(ttl_col);
+ALTER TABLE ttl_stress.pt_10 COMMENT="NDB_TABLE=TTL=60@ttl_col";
+CREATE DATABASE IF NOT EXISTS ttl_stress;
+Warnings:
+Note	1007	Can't create database 'ttl_stress'; database exists
+DROP TABLE IF EXISTS ttl_stress.pt_11;
+CREATE TABLE ttl_stress.pt_11 (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_stress.pt_11(ttl_col);
+ALTER TABLE ttl_stress.pt_11 COMMENT="NDB_TABLE=TTL=60@ttl_col";
+CREATE DATABASE IF NOT EXISTS ttl_stress;
+Warnings:
+Note	1007	Can't create database 'ttl_stress'; database exists
+DROP TABLE IF EXISTS ttl_stress.pt_12;
+CREATE TABLE ttl_stress.pt_12 (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_stress.pt_12(ttl_col);
+ALTER TABLE ttl_stress.pt_12 COMMENT="NDB_TABLE=TTL=60@ttl_col";
+CREATE DATABASE IF NOT EXISTS ttl_stress;
+Warnings:
+Note	1007	Can't create database 'ttl_stress'; database exists
+DROP TABLE IF EXISTS ttl_stress.pt_13;
+CREATE TABLE ttl_stress.pt_13 (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_stress.pt_13(ttl_col);
+ALTER TABLE ttl_stress.pt_13 COMMENT="NDB_TABLE=TTL=60@ttl_col";
+CREATE DATABASE IF NOT EXISTS ttl_stress;
+Warnings:
+Note	1007	Can't create database 'ttl_stress'; database exists
+DROP TABLE IF EXISTS ttl_stress.pt_14;
+CREATE TABLE ttl_stress.pt_14 (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_stress.pt_14(ttl_col);
+ALTER TABLE ttl_stress.pt_14 COMMENT="NDB_TABLE=TTL=60@ttl_col";
+CREATE DATABASE IF NOT EXISTS ttl_stress;
+Warnings:
+Note	1007	Can't create database 'ttl_stress'; database exists
+DROP TABLE IF EXISTS ttl_stress.pt_15;
+CREATE TABLE ttl_stress.pt_15 (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_stress.pt_15(ttl_col);
+ALTER TABLE ttl_stress.pt_15 COMMENT="NDB_TABLE=TTL=60@ttl_col";
+CREATE DATABASE IF NOT EXISTS ttl_stress;
+Warnings:
+Note	1007	Can't create database 'ttl_stress'; database exists
+DROP TABLE IF EXISTS ttl_stress.pt_16;
+CREATE TABLE ttl_stress.pt_16 (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_stress.pt_16(ttl_col);
+ALTER TABLE ttl_stress.pt_16 COMMENT="NDB_TABLE=TTL=60@ttl_col";
+CREATE DATABASE IF NOT EXISTS ttl_stress;
+Warnings:
+Note	1007	Can't create database 'ttl_stress'; database exists
+DROP TABLE IF EXISTS ttl_stress.pt_17;
+CREATE TABLE ttl_stress.pt_17 (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_stress.pt_17(ttl_col);
+ALTER TABLE ttl_stress.pt_17 COMMENT="NDB_TABLE=TTL=60@ttl_col";
+CREATE DATABASE IF NOT EXISTS ttl_stress;
+Warnings:
+Note	1007	Can't create database 'ttl_stress'; database exists
+DROP TABLE IF EXISTS ttl_stress.pt_18;
+CREATE TABLE ttl_stress.pt_18 (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_stress.pt_18(ttl_col);
+ALTER TABLE ttl_stress.pt_18 COMMENT="NDB_TABLE=TTL=60@ttl_col";
+CREATE DATABASE IF NOT EXISTS ttl_stress;
+Warnings:
+Note	1007	Can't create database 'ttl_stress'; database exists
+DROP TABLE IF EXISTS ttl_stress.pt_19;
+CREATE TABLE ttl_stress.pt_19 (id INT PRIMARY KEY, ttl_col DATETIME, data VARCHAR(100)) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col";
+CREATE INDEX ttl_index ON ttl_stress.pt_19(ttl_col);
+ALTER TABLE ttl_stress.pt_19 COMMENT="NDB_TABLE=TTL=60@ttl_col";
+Page 1 (offset=0, limit=5): OK
+Page 2 (offset=5, limit=5): OK
+Page 3 (offset=10, limit=5): OK
+Page 4 (offset=15, limit=5): OK
+DROP DATABASE ttl_stress;
+# All stress tests passed
