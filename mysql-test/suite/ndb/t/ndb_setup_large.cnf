@@ -1,10 +1,10 @@
-!include suite/ndb/my_2rpl.cnf
+!include suite/ndb/my_1rpl.cnf
 
 [cluster_config.1]
 NumCPUs=6
 DataMemory=2G
 DiskPageBufferMemory=400M
-TotalMemoryConfig=4G
+TotalMemoryConfig=6G
 SchemaMemory=200M
 MaxNoOfTables=2000
 MaxNoOfOrderedIndexes=2000
@@ -13,10 +13,10 @@ TransactionMemory=200M
 RedoBuffer=100M
 SharedGlobalMemory=450M
 
-# Set data node 2 to node ID 144 so that LQH's host record array
+# Set data node 1 to node ID 144 so that LQH's host record array
 # (sized MAX_NDB_NODES = max_data_node_id + 1 = 145) can accommodate
 # API node IDs used by block unit tests sending LQHKEYREQ directly.
-[cluster_config.ndbd.2.1]
+[cluster_config.ndbd.1.1]
 NodeId=144
 
 # Override all API node IDs to be < 144
