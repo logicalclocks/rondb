@@ -626,6 +626,14 @@ void NdbImpl::trp_deliver_signal(const NdbApiSignal *aSignal,
                 return;
               }
             }
+            case NdbReceiver::NDB_AGG_RECEIVER: {
+              // Aggregation result data received — wake scan waiter.
+              // Data is already stored by execTRANSID_AI above.
+              tNewState =
+                  (((WaitSignalType)tWaitState) == WAIT_SCAN ? (Uint32)NO_WAIT
+                                                             : tWaitState);
+              break;
+            }
             default: {
               goto InvalidSignal;
             }

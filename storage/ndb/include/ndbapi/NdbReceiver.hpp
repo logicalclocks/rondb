@@ -63,7 +63,8 @@ class NdbReceiver {
     NDB_OPERATION = 1,
     NDB_SCANRECEIVER = 2,
     NDB_INDEX_OPERATION = 3,
-    NDB_QUERY_OPERATION = 4
+    NDB_QUERY_OPERATION = 4,
+    NDB_AGG_RECEIVER = 5
   };
 
   NdbReceiver(Ndb *aNdb);

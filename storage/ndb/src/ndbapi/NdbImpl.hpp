@@ -435,6 +435,8 @@ inline NdbTransaction *NdbReceiver::getTransaction(ReceiverType type) const {
       return &((NdbQueryOperationImpl *)m_owner)
                   ->getQuery()
                   .getNdbTransaction();
+    case NDB_AGG_RECEIVER:
+      return &((NdbQueryImpl *)m_owner)->getNdbTransaction();
     default:
       return ((NdbOperation *)m_owner)->theNdbCon;
   }

@@ -35,6 +35,7 @@
 #include "NdbApiSignal.hpp"
 
 // Forward declarations
+class NdbAggregator;
 class NdbTableImpl;
 class NdbIndexImpl;
 class NdbApiSignal;
@@ -260,6 +261,15 @@ class NdbQueryImpl {
   NdbBulkAllocator &getTupleSetAlloc() { return m_tupleSetAlloc; }
 
   NdbBulkAllocator &getRowBufferAlloc() { return m_rowBufferAlloc; }
+
+  /** True if this query has aggregation attached to a leaf operation. */
+  bool hasAggregation() const { return m_hasAggregation; }
+
+  /** Get the NdbAggregator for retrieving aggregated results.
+   *  Returns nullptr if this query does not use aggregation.
+   *  Only valid after query execution has completed.
+   */
+  NdbAggregator *getAggregator() const { return m_aggregator; }
 
  private:
   /** Possible return values from NdbQueryImpl::awaitMoreResults.
@@ -499,6 +509,29 @@ class NdbQueryImpl {
    */
   Uint32Buffer m_attrInfo;  // ATTRINFO: QueryTree + serialized parameters
   Uint32Buffer m_keyInfo;   // KEYINFO:  Lookup key or scan bounds
+
+  /**
+   * Aggregation support (RONDB-733):
+   * When a query has an aggregate leaf operation, the kernel computes
+   * aggregation on data nodes and sends results back to dedicated receivers.
+   */
+  bool m_hasAggregation;
+
+  /** NdbAggregator for collecting and merging partial results from receivers.
+   *  Owned by this NdbQueryImpl; deleted in postFetchRelease().
+   */
+  NdbAggregator *m_aggregator;
+
+  /** Aggregation program buffer (copied from query definition).
+   *  Sent in SCAN_TABREQ Section 2.
+   */
+  Uint32Buffer m_aggProgram;
+
+  /** Receivers dedicated to receiving aggregation TRANSID_AI results.
+   *  Hash-partitioned: groups are routed to aggReceivers[hash(key) % N].
+   */
+  NdbReceiver **m_aggReceivers;
+  Uint32 m_numAggReceivers;
 
   /** True if this query starts a new transaction. */
   bool m_startIndicator;

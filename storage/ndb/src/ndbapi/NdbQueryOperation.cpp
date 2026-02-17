@@ -26,6 +26,7 @@
 
 #include "NdbQueryOperation.hpp"
 #include <ndb_global.h>
+#include <NdbAggregator.hpp>
 #include <NdbDictionary.hpp>
 #include <NdbIndexScanOperation.hpp>
 #include "API.hpp"
@@ -1787,6 +1788,10 @@ int NdbQuery::isPrunable(bool &prunable) const {
   return m_impl.isPrunable(prunable);
 }
 
+NdbAggregator *NdbQuery::getAggregator() const {
+  return m_impl.getAggregator();
+}
+
 NdbQueryOperation::NdbQueryOperation(NdbQueryOperationImpl &impl)
     : m_impl(impl) {}
 NdbQueryOperation::~NdbQueryOperation() {}
@@ -2115,6 +2120,11 @@ NdbQueryImpl::NdbQueryImpl(NdbTransaction &trans,
       m_shortestBound(0xffffffff),
       m_attrInfo(),
       m_keyInfo(),
+      m_hasAggregation(queryDef.hasAggregation()),
+      m_aggregator(nullptr),
+      m_aggProgram(),
+      m_aggReceivers(nullptr),
+      m_numAggReceivers(0),
       m_startIndicator(false),
       m_commitIndicator(false),
       m_prunability(Prune_No),
@@ -2188,6 +2198,20 @@ void NdbQueryImpl::postFetchRelease() {
   }
   delete[] m_workers;
   m_workers = nullptr;
+
+  // Release aggregation resources
+  if (m_aggReceivers != nullptr) {
+    Ndb *const ndb = m_transaction.getNdb();
+    for (Uint32 i = 0; i < m_numAggReceivers; i++) {
+      m_aggReceivers[i]->release();
+      ndb->releaseNdbScanRec(m_aggReceivers[i]);
+    }
+    delete[] m_aggReceivers;
+    m_aggReceivers = nullptr;
+    m_numAggReceivers = 0;
+  }
+  delete m_aggregator;
+  m_aggregator = nullptr;
 
   m_rowBufferAlloc.reset();
   m_tupleSetAlloc.reset();
@@ -3068,6 +3092,57 @@ int NdbQueryImpl::prepareSend() {
 
   if (getQueryDef().isScanQuery()) {
     NdbWorker::buildReceiverIdMap(m_workers, m_workerCount);
+  }
+
+  /**
+   * Aggregation setup (RONDB-733):
+   * If the query has an aggregate leaf, allocate dedicated receivers
+   * for aggregation results and copy the aggregation program for Section 2.
+   */
+  if (m_hasAggregation) {
+    assert(getQueryDef().isScanQuery());
+    const Uint32 aggLeafOpNo = getQueryDef().getAggregateLeafOpNo();
+    const NdbQueryOperationDefImpl &aggLeafDef =
+        getQueryDef().getQueryOperation(aggLeafOpNo);
+    const NdbQueryOptionsImpl &aggOpts = aggLeafDef.getOptions();
+
+    // Copy agg program buffer for later use in doSend() Section 2
+    const Uint32 *progBuf = aggOpts.getAggProgramBuffer();
+    const Uint32 progLen = aggOpts.getAggProgramLen();
+    assert(progBuf != nullptr && progLen > 0);
+    for (Uint32 i = 0; i < progLen; i++) {
+      m_aggProgram.append(progBuf[i]);
+    }
+    if (unlikely(m_aggProgram.isMemoryExhausted())) {
+      setErrorCode(Err_MemoryAlloc);
+      return -1;
+    }
+
+    // Allocate NdbReceiver objects for aggregation results.
+    // Use m_workerCount receivers — one per SPJ worker gives good
+    // hash distribution for group routing.
+    Ndb *const ndb = m_transaction.getNdb();
+    m_numAggReceivers = m_workerCount;
+    m_aggReceivers = new NdbReceiver *[m_numAggReceivers];
+    if (unlikely(m_aggReceivers == nullptr)) {
+      setErrorCode(Err_MemoryAlloc);
+      return -1;
+    }
+    for (Uint32 i = 0; i < m_numAggReceivers; i++) {
+      NdbReceiver *rec = ndb->getNdbScanRec();
+      if (unlikely(rec == nullptr)) {
+        setErrorCode(Err_MemoryAlloc);
+        return -1;
+      }
+      rec->init(NdbReceiver::NDB_AGG_RECEIVER, this);
+      m_aggReceivers[i] = rec;
+    }
+
+    // Create NdbAggregator for result collection.
+    // Use the table from the aggregate leaf operation.
+    const NdbTableImpl *aggTable = aggOpts.getAggTable();
+    assert(aggTable != nullptr);
+    m_aggregator = new NdbAggregator(aggTable->m_facade);
   }
 
 #ifdef TRACE_SERIALIZATION

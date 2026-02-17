@@ -415,6 +415,8 @@ class NdbQueryOperationDefImpl {
 
   bool isAggregateLeaf() const { return m_isAggregateLeaf; }
 
+  const NdbQueryOptionsImpl &getOptions() const { return m_options; }
+
   const Vector<const NdbQueryOperandImpl *> &getInterpretedParams() const {
     return m_options.m_parameters;
   }
