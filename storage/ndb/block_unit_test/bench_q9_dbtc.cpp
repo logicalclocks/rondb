@@ -26,28 +26,205 @@
 /*
  * bench_q9_dbtc — TPC-H Q9 benchmark through the full DBTC→DBSPJ→DBLQH path.
  *
- * Sends SCAN_TABREQ to DBTC with a 6-node QueryTree encoding:
- *   Node 0: QN_SCAN_FRAG on LINEITEM (root)
- *   Node 1: QN_LOOKUP on PART (filter: p_name LIKE '%green%')
- *   Node 2: QN_LOOKUP on ORDERS (linked: o_orderyear)
- *   Node 3: QN_LOOKUP on SUPPLIER (linked: s_nationkey)
- *   Node 4: QN_LOOKUP on PARTSUPP (linked: ps_supplycost)
- *   Node 5: QN_LOOKUP on NATION (aggregate leaf, GROUP BY n_name, o_orderyear)
- *
- * Q9 query:
- *   SELECT n_name, o_orderyear,
- *          SUM(l_extendedprice * (1 - l_discount) - ps_supplycost * l_quantity)
- *   FROM lineitem JOIN part ON p_partkey = l_partkey
- *     JOIN orders ON o_orderkey = l_orderkey
- *     JOIN supplier ON s_suppkey = l_suppkey
- *     JOIN partsupp ON ps_partkey = l_partkey AND ps_suppkey = l_suppkey
- *     JOIN nation ON n_nationkey = s_nationkey
- *   WHERE p_name LIKE '%green%'
- *   GROUP BY n_name, o_orderyear
- *
+ * Sends SCAN_TABREQ to DBTC with a 6-node QueryTree and an aggregation
+ * program, exercising the complete pushdown join aggregation path.
  * Assumes tables loaded by load_tpch.
  *
  * Usage: bench_q9_dbtc -c <connect_string> -m <mysql_port> [options]
+ *
+ * =====================================================================
+ * SQL QUERY
+ * =====================================================================
+ *
+ *   SELECT n_name, o_orderyear,
+ *          SUM(l_extendedprice * (1 - l_discount) - ps_supplycost * l_quantity)
+ *   FROM lineitem
+ *     JOIN part     ON p_partkey   = l_partkey
+ *     JOIN orders   ON o_orderkey  = l_orderkey
+ *     JOIN supplier ON s_suppkey   = l_suppkey
+ *     JOIN partsupp ON ps_partkey  = l_partkey AND ps_suppkey = l_suppkey
+ *     JOIN nation   ON n_nationkey = s_nationkey
+ *   WHERE p_name LIKE '%green%'
+ *   GROUP BY n_name, o_orderyear
+ *
+ * =====================================================================
+ * JOIN TREE TOPOLOGY
+ * =====================================================================
+ *
+ *   Node 0: LINEITEM  (QN_SCAN_FRAG, root scan)
+ *     └─ Node 1: PART      (QN_LOOKUP, filter: p_name LIKE '%green%')
+ *          └─ Node 2: ORDERS    (QN_LOOKUP, linked: o_orderyear)
+ *               └─ Node 3: SUPPLIER  (QN_LOOKUP, linked: s_nationkey)
+ *                    └─ Node 4: PARTSUPP  (QN_LOOKUP, composite key, linked: ps_supplycost)
+ *                         └─ Node 5: NATION    (QN_LOOKUP, aggregate leaf)
+ *
+ * All joins are INNER JOINs. The tree is a linear chain — LINEITEM is the
+ * root scan; every other node is a key lookup driven by linked attribute
+ * values from ancestor nodes.
+ *
+ * =====================================================================
+ * PARENT CHAIN CONVENTION
+ * =====================================================================
+ *
+ * Each child node lists one immediate parent. Key and attribute patterns
+ * use parent(N) to traverse up N levels in the parent chain. Example
+ * from Node 5 (NATION):
+ *
+ *   parent(0) → PARTSUPP  (Node 4, direct parent)
+ *   parent(1) → SUPPLIER  (Node 3)
+ *   parent(2) → ORDERS    (Node 2)
+ *   parent(3) → PART      (Node 1)
+ *   parent(4) → LINEITEM  (Node 0, root)
+ *
+ * =====================================================================
+ * LINKED ATTRIBUTE FLOW
+ * =====================================================================
+ *
+ * NI_LINKED_ATTR makes column values from a node available to descendants
+ * without sending them to the API. Attributes are indexed [0, 1, 2, ...]
+ * in declaration order. Descendants reference them with attrInfo(index).
+ *
+ * Node 0 (LINEITEM) — 6 linked attrs:
+ *   [0] l_orderkey       → Node 2 key
+ *   [1] l_partkey        → Node 1 key, Node 4 key
+ *   [2] l_suppkey        → Node 3 key, Node 4 key
+ *   [3] l_extendedprice  → Node 5 linked → agg program
+ *   [4] l_discount       → Node 5 linked → agg program
+ *   [5] l_quantity       → Node 5 linked → agg program
+ *
+ * Node 2 (ORDERS) — 1 linked attr:
+ *   [0] o_orderyear      → Node 5 linked → agg GROUP BY
+ *
+ * Node 3 (SUPPLIER) — 1 linked attr:
+ *   [0] s_nationkey      → Node 5 key
+ *
+ * Node 4 (PARTSUPP) — 1 linked attr:
+ *   [0] ps_supplycost    → Node 5 linked → agg program
+ *
+ * =====================================================================
+ * NODE DETAILS — KEY PATTERNS
+ * =====================================================================
+ *
+ * Node 1 (PART): key = col(1)
+ *   PART.p_partkey = parent LINEITEM linked[1] (l_partkey)
+ *
+ * Node 2 (ORDERS): key = parent(1), col(0)
+ *   ORDERS.o_orderkey = grandparent LINEITEM linked[0] (l_orderkey)
+ *   parent(1) from ORDERS parent=PART goes up 1 to LINEITEM, col(0)=linked[0]
+ *
+ * Node 3 (SUPPLIER): key = parent(2), col(2)
+ *   SUPPLIER.s_suppkey = LINEITEM linked[2] (l_suppkey)
+ *   parent(2) from SUPPLIER parent=ORDERS goes up 2 to LINEITEM
+ *
+ * Node 4 (PARTSUPP): composite key = parent(3),col(1) + parent(3),col(2)
+ *   PARTSUPP.(ps_partkey, ps_suppkey) = LINEITEM (l_partkey, l_suppkey)
+ *   parent(3) from PARTSUPP parent=SUPPLIER goes up 3 to LINEITEM
+ *   4 pattern words total for the 2-column composite key
+ *
+ * Node 5 (NATION): key = parent(1), col(0)
+ *   NATION.n_nationkey = SUPPLIER linked[0] (s_nationkey)
+ *   parent(1) from NATION parent=PARTSUPP goes up 1 to SUPPLIER
+ *
+ * =====================================================================
+ * NODE 5 — NI_ATTR_LINKED BUFFER
+ * =====================================================================
+ *
+ * Node 5 (NATION) is the aggregate leaf. NI_ATTR_LINKED collects values
+ * from ancestor nodes into a buffer for the aggregation engine:
+ *
+ *   Pattern word(s)          →  Buffer pos  →  Source column
+ *   parent(2), attrInfo(0)   →  [0]         →  ORDERS linked[0] = o_orderyear
+ *   parent(4), attrInfo(3)   →  [1]         →  LINEITEM linked[3] = l_extendedprice
+ *   parent(4), attrInfo(4)   →  [2]         →  LINEITEM linked[4] = l_discount
+ *   parent(4), attrInfo(5)   →  [3]         →  LINEITEM linked[5] = l_quantity
+ *   attrInfo(0)              →  [4]         →  PARTSUPP linked[0] = ps_supplycost
+ *
+ * Note: ps_supplycost uses attrInfo(0) without parent() prefix because it
+ * comes from the direct parent (PARTSUPP). Using parent(0) would require
+ * appendFromParent which needs an initialized targetRow — not available
+ * for the immediate parent node.
+ *
+ * =====================================================================
+ * NODE 1 — PART FILTER PLACEMENT
+ * =====================================================================
+ *
+ * The p_name LIKE '%green%' filter is placed in the tree definition using
+ * NI_ATTR_INTERPRET rather than in the parameter section (PI_ATTR_INTERPRET).
+ * This is necessary because DBSPJ skips parameter attribute processing for
+ * lookup nodes that lack NI_LINKED_ATTR, NI_ATTR_INTERPRET, or PI_ATTR_LIST
+ * flags — the entire attr-handling block is bypassed.
+ *
+ * =====================================================================
+ * AGGREGATION PROGRAM (SCAN_TABREQ section 2)
+ * =====================================================================
+ *
+ * The aggregation program (26 words) is sent as section 2 of SCAN_TABREQ
+ * and runs on DBLQH at the aggregate leaf node (NATION) for each completed
+ * join row.
+ *
+ * Header (8 words):
+ *   [0] magic=0x0721, length=26
+ *   [1] 2 GROUP BY columns, 1 aggregate result
+ *   [2] version
+ *   [3-7] reserved
+ *
+ * GROUP BY columns (2 words):
+ *   [8] n_name (local attrId from NATION table, CHAR(25))
+ *   [9] o_orderyear (LINKED_COL_FLAG | 0 = linked buffer pos 0, INT)
+ *
+ * Linked columns in GROUP BY and instructions use LINKED_COL_FLAG (0x8000)
+ * OR'd with the 0-based position in the NI_ATTR_LINKED buffer, NOT the
+ * table attrId.
+ *
+ * Instructions (16 words):
+ *   kOpLoadCol   DECIMAL(15,2) → reg1   linked[1] = l_extendedprice
+ *   kOpLoadConst DOUBLE 1.0    → reg2
+ *   kOpLoadCol   DECIMAL(15,2) → reg3   linked[2] = l_discount
+ *   kOpMinus     reg2 = reg2 - reg3     (1 - discount)
+ *   kOpMul       reg1 = reg1 * reg2     (price × (1 - discount))
+ *   kOpLoadCol   DECIMAL(15,2) → reg3   linked[4] = ps_supplycost
+ *   kOpLoadCol   DECIMAL(15,2) → reg4   linked[3] = l_quantity
+ *   kOpMul       reg3 = reg3 × reg4     (cost × quantity)
+ *   kOpMinus     reg1 = reg1 - reg3     (revenue - cost = amount)
+ *   kOpSum       reg1 → agg[0]          accumulate into SUM
+ *
+ * DECIMAL(15,2) with scale!=0 auto-converts to DOUBLE at load time in the
+ * aggregation engine, so all arithmetic is done in double precision.
+ *
+ * =====================================================================
+ * SCAN_TABREQ SIGNAL STRUCTURE
+ * =====================================================================
+ *
+ * Signal fields:
+ *   requestInfo: ViaSPJ + JoinAgg + ReadCommitted + NoDisk + ExtendedConf
+ *   tableId/schemaVersion: LINEITEM (root scan table)
+ *   buddyConPtr: apiConnectPtr (self-buddy)
+ *   parallelism: 8 (default, number of fragments scanned in parallel)
+ *
+ * Signal sections:
+ *   Section 0: receiver IDs (array of API connect ptrs for result delivery)
+ *   Section 1: QueryTree (6 nodes) + parameter section (6 param blocks)
+ *   Section 2: aggregation program (26 words)
+ *
+ * =====================================================================
+ * EXECUTION FLOW
+ * =====================================================================
+ *
+ * 1. DBTC receives SCAN_TABREQ, sees ViaSPJ flag, forwards to DBSPJ
+ * 2. DBSPJ parses QueryTree, creates 6 TreeNode objects (1 scan + 5 lookups)
+ * 3. DBSPJ starts scanning LINEITEM fragments in parallel
+ * 4. For each LINEITEM row, DBSPJ executes the lookup chain:
+ *    - PART lookup (l_partkey) → filter p_name LIKE '%green%' → skip if no match
+ *    - ORDERS lookup (l_orderkey) → capture o_orderyear in linked buffer
+ *    - SUPPLIER lookup (l_suppkey) → capture s_nationkey in linked buffer
+ *    - PARTSUPP lookup (l_partkey, l_suppkey) → capture ps_supplycost
+ *    - NATION lookup (s_nationkey) → aggregate leaf with all linked values
+ * 5. At NATION (aggregate leaf), DBLQH runs the aggregation program:
+ *    groups by (n_name, o_orderyear), accumulates SUM(amount)
+ * 6. On scan batch completion, DBLQH sends aggregated results via
+ *    TRANSID_AI (one per fragment partition) back to the API
+ * 7. API merges partial results from all fragments, sends SCAN_NEXTREQ
+ *    for additional batches until SCAN_TABCONF with EndOfData
  */
 
 #include <ndb_global.h>
