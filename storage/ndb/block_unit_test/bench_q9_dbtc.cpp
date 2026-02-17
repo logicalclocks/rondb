@@ -392,10 +392,14 @@ buildQueryTree_Q9(const TableMeta &lineitemMeta,
   const Uint32 node0_len = 8;
 
   /*
-   * Node 1: QN_LOOKUP (4 fixed + 1 parent + 2 key = 7 words)
-   *   No NI_ATTR_INTERPRET here; filter in PI_ATTR_INTERPRET
+   * Node 1: QN_LOOKUP (4 fixed + 1 parent + 2 key + 1 interp len
+   *          + N interp program)
+   *   NI_ATTR_INTERPRET: LIKE filter in tree (not PI_ATTR_INTERPRET)
+   *   PI_ATTR_INTERPRET in params doesn't work for lookups without
+   *   NI_LINKED_ATTR/NI_ATTR_INTERPRET/PI_ATTR_LIST (DBSPJ skips
+   *   the entire attr-handling block).
    */
-  const Uint32 node1_len = 7;
+  const Uint32 node1_len = 7 + 1 + (Uint32)partFilter.size();
 
   /*
    * Node 2: QN_LOOKUP (4 fixed + 1 parent + 2 key + 1 linked = 8 + 1 key word)
@@ -421,11 +425,13 @@ buildQueryTree_Q9(const TableMeta &lineitemMeta,
 
   /*
    * Node 5: QN_LOOKUP (4 fixed + 1 parent + 3 key + 1 interp/linked len
-   *          + 1 interp prog + 10 linked pattern)
+   *          + 1 interp prog + 9 linked pattern)
    *   Key: parent(1), col(0) = 2 pattern words
-   *   NI_ATTR_INTERPRET + NI_ATTR_LINKED: 1 len + 1 ExitOK + 10 pattern = 12
+   *   NI_ATTR_INTERPRET + NI_ATTR_LINKED: 1 len + 1 ExitOK + 9 pattern = 11
+   *   Note: ps_supplycost uses attrInfo(0) directly (no parent prefix)
+   *   because parent(0) with appendFromParent leaves targetRow uninitialized.
    */
-  const Uint32 node5_len = 20;
+  const Uint32 node5_len = 19;
 
   const Uint32 tree_len = 1 + node0_len + node1_len + node2_len +
                            node3_len + node4_len + node5_len;
@@ -448,12 +454,13 @@ buildQueryTree_Q9(const TableMeta &lineitemMeta,
   ai.push_back(li_extendedprice | (li_discount << 16));
   ai.push_back(li_quantity);
 
-  /* ---- Node 1: QN_LOOKUP on PART (filter via PI_ATTR_INTERPRET) ---- */
+  /* ---- Node 1: QN_LOOKUP on PART (filter via NI_ATTR_INTERPRET) ---- */
   Uint32 n1_len = 0;
   QueryNode::setOpLen(n1_len, QueryNode::QN_LOOKUP, node1_len);
   ai.push_back(n1_len);
   ai.push_back(DABits::NI_HAS_PARENT | DABits::NI_KEY_LINKED |
-               DABits::NI_INNER_JOIN | DABits::NI_AGGREGATE);
+               DABits::NI_INNER_JOIN | DABits::NI_AGGREGATE |
+               DABits::NI_ATTR_INTERPRET);
   ai.push_back(partMeta.tableId);
   ai.push_back(partMeta.schemaVersion);
   /* NI_HAS_PARENT: 1 parent (node 0) */
@@ -462,6 +469,10 @@ buildQueryTree_Q9(const TableMeta &lineitemMeta,
   ai.push_back((0 << 16) | 1);
   /* Key pattern: col(1) = l_partkey from parent LINEITEM */
   ai.push_back(QueryPattern::col(1));
+  /* NI_ATTR_INTERPRET: (len_pattern << 16) | len_prg */
+  ai.push_back((0 << 16) | (Uint32)partFilter.size());
+  /* LIKE filter program */
+  for (Uint32 w : partFilter) ai.push_back(w);
 
   /* ---- Node 2: QN_LOOKUP on ORDERS ---- */
   Uint32 n2_len = 0;
@@ -541,10 +552,10 @@ buildQueryTree_Q9(const TableMeta &lineitemMeta,
   ai.push_back(QueryPattern::parent(1));
   ai.push_back(QueryPattern::col(0));
   /* NI_ATTR_INTERPRET/NI_ATTR_LINKED: (len_pattern << 16) | len_prg */
-  ai.push_back((10 << 16) | 1);
+  ai.push_back((9 << 16) | 1);
   /* Interpret program: ExitOK (no filtering, just enables interpreter) */
   ai.push_back(Interpreter::ExitOK());
-  /* NI_ATTR_LINKED pattern: 5 linked references = 10 pattern words */
+  /* NI_ATTR_LINKED pattern: 5 linked references = 9 pattern words */
   /* parent(2), attrInfo(0) — o_orderyear from ORDERS */
   ai.push_back(QueryPattern::parent(2));
   ai.push_back(QueryPattern::attrInfo(0));
@@ -557,8 +568,7 @@ buildQueryTree_Q9(const TableMeta &lineitemMeta,
   /* parent(4), attrInfo(5) — l_quantity from LINEITEM */
   ai.push_back(QueryPattern::parent(4));
   ai.push_back(QueryPattern::attrInfo(5));
-  /* parent(0), attrInfo(0) — ps_supplycost from PARTSUPP */
-  ai.push_back(QueryPattern::parent(0));
+  /* attrInfo(0) — ps_supplycost from PARTSUPP (direct parent, no parent prefix) */
   ai.push_back(QueryPattern::attrInfo(0));
 
   /* ---- Parameter section (6 params) ---- */
@@ -577,24 +587,14 @@ buildQueryTree_Q9(const TableMeta &lineitemMeta,
   ai.push_back(0);
   ai.push_back(0);
 
-  /* Param 1: QN_LookupParameters (PART, with PI_ATTR_INTERPRET) */
+  /* Param 1: QN_LookupParameters (PART, no param filter — filter is in tree) */
   {
-    Uint32 p1_size = QN_LookupParameters::NodeSize;
-    Uint32 p1_requestInfo = 0;
-    if (!partFilter.empty()) {
-      p1_size += 1 + (Uint32)partFilter.size();
-      p1_requestInfo = DABits::PI_ATTR_INTERPRET;
-    }
     Uint32 p1_len = 0;
     QueryNodeParameters::setOpLen(p1_len, QueryNodeParameters::QN_LOOKUP,
-                                  p1_size);
+                                  QN_LookupParameters::NodeSize);
     ai.push_back(p1_len);
-    ai.push_back(p1_requestInfo);
+    ai.push_back(0);             /* requestInfo — no PI_ATTR_INTERPRET */
     ai.push_back(receiverId);
-    if (!partFilter.empty()) {
-      ai.push_back((Uint32)partFilter.size());  /* (0 << 16) | program_len */
-      for (Uint32 w : partFilter) ai.push_back(w);
-    }
   }
 
   /* Params 2-5: QN_LookupParameters (no filter) */
@@ -634,16 +634,11 @@ buildQueryTree_Q9(const TableMeta &lineitemMeta,
  */
 static std::vector<Uint32>
 buildAggProgram_Q9(const TableMeta &nationMeta,
-                   const TableMeta &ordersMeta,
-                   const TableMeta &lineitemMeta,
-                   const TableMeta &partsuppMeta)
+                   const TableMeta & /*ordersMeta*/,
+                   const TableMeta & /*lineitemMeta*/,
+                   const TableMeta & /*partsuppMeta*/)
 {
   Uint32 n_name = nationMeta.attrIds.at("n_name");
-  Uint32 o_orderyear = ordersMeta.attrIds.at("o_orderyear");
-  Uint32 li_extendedprice = lineitemMeta.attrIds.at("l_extendedprice");
-  Uint32 li_discount = lineitemMeta.attrIds.at("l_discount");
-  Uint32 li_quantity = lineitemMeta.attrIds.at("l_quantity");
-  Uint32 ps_supplycost = partsuppMeta.attrIds.at("ps_supplycost");
 
   /*
    * Header: 8 words
@@ -671,17 +666,23 @@ buildAggProgram_Q9(const TableMeta &nationMeta,
   prog[2] = PUSHDOWN_AGGREGATION_VERSION;
   prog[3] = prog[4] = prog[5] = prog[6] = prog[7] = 0;
 
-  /* GROUP BY columns */
-  prog[8] = n_name << 16;                              /* local CHAR(25) */
-  prog[9] = (LINKED_COL_FLAG | o_orderyear) << 16;     /* linked INT */
+  /*
+   * GROUP BY columns.
+   * Linked columns use LINKED_COL_FLAG | position (0-based index into
+   * the linked buffer built by NI_ATTR_LINKED, NOT table attrId).
+   * Buffer order: [0]=o_orderyear, [1]=l_extendedprice, [2]=l_discount,
+   *               [3]=l_quantity, [4]=ps_supplycost
+   */
+  prog[8] = n_name << 16;                        /* local CHAR(25) */
+  prog[9] = (LINKED_COL_FLAG | 0) << 16;         /* linked pos 0 = o_orderyear */
 
   Uint32 pos = HEADER + GB_COLS;  /* = 10 */
 
   Uint32 dec_info_15_2 = (15 << 16) | 2;
 
-  /* kOpLoadCol DECIMAL(15,2) → reg1 (linked l_extendedprice) */
+  /* kOpLoadCol DECIMAL(15,2) → reg1 (linked pos 1 = l_extendedprice) */
   prog[pos++] = (kOpLoadCol << 26) | (NDB_TYPE_DECIMAL << 21) |
-                (kReg1 << 16) | (LINKED_COL_FLAG | li_extendedprice);
+                (kReg1 << 16) | (LINKED_COL_FLAG | 1);
   prog[pos++] = dec_info_15_2;
 
   /* kOpLoadConst DOUBLE 1.0 → reg2 */
@@ -689,9 +690,9 @@ buildAggProgram_Q9(const TableMeta &nationMeta,
                 (kReg2 << 16);
   { double v = 1.0; memcpy(&prog[pos], &v, sizeof(double)); pos += 2; }
 
-  /* kOpLoadCol DECIMAL(15,2) → reg3 (linked l_discount) */
+  /* kOpLoadCol DECIMAL(15,2) → reg3 (linked pos 2 = l_discount) */
   prog[pos++] = (kOpLoadCol << 26) | (NDB_TYPE_DECIMAL << 21) |
-                (kReg3 << 16) | (LINKED_COL_FLAG | li_discount);
+                (kReg3 << 16) | (LINKED_COL_FLAG | 2);
   prog[pos++] = dec_info_15_2;
 
   /* kOpMinus reg2 = reg2 - reg3  (1 - discount) */
@@ -700,14 +701,14 @@ buildAggProgram_Q9(const TableMeta &nationMeta,
   /* kOpMul reg1 = reg1 * reg2  (price * (1 - discount)) */
   prog[pos++] = (kOpMul << 26) | (kReg1 << 12) | (kReg2 << 8);
 
-  /* kOpLoadCol DECIMAL(15,2) → reg3 (linked ps_supplycost) */
+  /* kOpLoadCol DECIMAL(15,2) → reg3 (linked pos 4 = ps_supplycost) */
   prog[pos++] = (kOpLoadCol << 26) | (NDB_TYPE_DECIMAL << 21) |
-                (kReg3 << 16) | (LINKED_COL_FLAG | ps_supplycost);
+                (kReg3 << 16) | (LINKED_COL_FLAG | 4);
   prog[pos++] = dec_info_15_2;
 
-  /* kOpLoadCol DECIMAL(15,2) → reg4 (linked l_quantity) */
+  /* kOpLoadCol DECIMAL(15,2) → reg4 (linked pos 3 = l_quantity) */
   prog[pos++] = (kOpLoadCol << 26) | (NDB_TYPE_DECIMAL << 21) |
-                (kReg4 << 16) | (LINKED_COL_FLAG | li_quantity);
+                (kReg4 << 16) | (LINKED_COL_FLAG | 3);
   prog[pos++] = dec_info_15_2;
 
   /* kOpMul reg3 = reg3 * reg4  (cost * qty) */
@@ -864,16 +865,23 @@ parseTransIdAI(const SimpleSignal *sig, AggResult &result)
 static std::pair<std::string, int>
 extractQ9GroupKey(const std::vector<Uint8> &key)
 {
-  const Uint32 HDR = 4;
-  if (key.size() < HDR + 25 + HDR + 4) return {"", 0};
+  const Uint32 HDR = 4;  /* AttributeHeader size */
+  const Uint32 NAME_DATA = 28;  /* ceil(25/4)*4 = 7 words */
+  if (key.size() < HDR + NAME_DATA + HDR + 4) return {"", 0};
 
-  /* n_name: CHAR(25), trim trailing spaces */
-  int nameLen = 25;
-  while (nameLen > 0 && key[HDR + nameLen - 1] == ' ') nameLen--;
-  std::string nation(reinterpret_cast<const char*>(key.data() + HDR), nameLen);
+  /*
+   * n_name: CHAR(25), word-aligned to 28 bytes in the key buffer.
+   * NDB stores CHAR with null-byte padding (not space-padding) when
+   * setValue is called with a C string shorter than the column width.
+   * Truncate at the first null byte, then trim trailing spaces.
+   */
+  const char *nameStart = reinterpret_cast<const char*>(key.data() + HDR);
+  int nameLen = (int)strnlen(nameStart, 25);
+  while (nameLen > 0 && nameStart[nameLen - 1] == ' ') nameLen--;
+  std::string nation(nameStart, nameLen);
 
-  /* o_orderyear: INT (little-endian 4 bytes) */
-  Uint32 off = HDR + 25 + HDR;
+  /* o_orderyear: INT (little-endian 4 bytes) after word-aligned n_name */
+  Uint32 off = HDR + NAME_DATA + HDR;
   Int32 year;
   memcpy(&year, key.data() + off, sizeof(Int32));
 
@@ -1111,6 +1119,7 @@ runBenchmark(SignalSender &ss, Uint32 nodeId,
         while ((row = mysql_fetch_row(res)) != nullptr) {
           if (row[0] && row[1] && row[2]) {
             std::string nation(row[0]);
+            while (!nation.empty() && nation.back() == ' ') nation.pop_back();
             int year = atoi(row[1]);
             double amount = atof(row[2]);
             sqlResults[{nation, year}] = amount;
