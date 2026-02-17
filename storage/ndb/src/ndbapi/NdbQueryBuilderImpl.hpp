@@ -344,6 +344,7 @@ class NdbQueryOptionsImpl {
 class NdbQueryOperationDefImpl {
   friend class NdbQueryOperationDef;
   friend class NdbQueryOperationImpl;
+  friend class NdbQueryDefImpl;
   friend class NdbQueryImpl;
 
  public:
@@ -539,6 +540,9 @@ class NdbQueryOperationDefImpl {
   /** True if this operation is the aggregate leaf of a join aggregation query.*/
   bool m_isAggregateLeaf;
 
+  /** True if the enclosing query has aggregation (set before serialization).*/
+  bool m_queryHasAggregation;
+
  private:
   bool isChildOf(const NdbQueryOperationDefImpl *parentOp) const;
 
@@ -699,12 +703,18 @@ class NdbQueryDefImpl {
   /** Get serialized representation of query definition.*/
   const Uint32Buffer &getSerialized() const { return m_serializedDef; }
 
+  bool hasAggregation() const { return m_hasAggregation; }
+  Uint32 getAggregateLeafOpNo() const { return m_aggregateLeafOpNo; }
+
  private:
   NdbQueryDef m_interface;
 
   Vector<NdbQueryOperationDefImpl *> m_operations;
   Vector<NdbQueryOperandImpl *> m_operands;
   Uint32Buffer m_serializedDef;
+
+  bool m_hasAggregation;
+  Uint32 m_aggregateLeafOpNo;
 };  // class NdbQueryDefImpl
 
 class NdbQueryBuilderImpl {

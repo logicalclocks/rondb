@@ -1168,11 +1168,40 @@ NdbQueryOperand *NdbQueryBuilderImpl::addOperand(NdbQueryOperandImpl *operand) {
 NdbQueryDefImpl::NdbQueryDefImpl(
     const Ndb *ndb, const Vector<NdbQueryOperationDefImpl *> &operations,
     const Vector<NdbQueryOperandImpl *> &operands, int &error)
-    : m_interface(*this), m_operations(0), m_operands(0) {
+    : m_interface(*this),
+      m_operations(0),
+      m_operands(0),
+      m_hasAggregation(false),
+      m_aggregateLeafOpNo(0) {
   if (m_operations.assign(operations) || m_operands.assign(operands)) {
     // Failed to allocate memory in Vector::assign().
     error = Err_MemoryAlloc;
     return;
+  }
+
+  // Scan operations to find aggregate leaf and validate constraints
+  for (Uint32 i = 0; i < m_operations.size(); i++) {
+    if (m_operations[i]->isAggregateLeaf()) {
+      if (m_hasAggregation) {
+        // Multiple aggregate leaves not allowed
+        error = QRY_WRONG_OPERATION_TYPE;
+        return;
+      }
+      if (i == 0) {
+        // Aggregate leaf must not be the root operation
+        error = QRY_WRONG_OPERATION_TYPE;
+        return;
+      }
+      m_hasAggregation = true;
+      m_aggregateLeafOpNo = i;
+    }
+  }
+
+  // Set query-level aggregation flag on all operations (for serialization)
+  if (m_hasAggregation) {
+    for (Uint32 i = 0; i < m_operations.size(); i++) {
+      m_operations[i]->m_queryHasAggregation = true;
+    }
   }
 
   /* Grab first word, such that serialization of operation 0 will start from
@@ -1756,6 +1785,7 @@ NdbQueryOperationDefImpl::NdbQueryOperationDefImpl(
     : m_isPrepared(false),
       m_diskInChildProjection(false),
       m_isAggregateLeaf(options.hasAggregation()),
+      m_queryHasAggregation(false),
       m_table(table),
       m_ident(ident),
       m_opNo(opNo),
