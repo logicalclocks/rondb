@@ -56,6 +56,7 @@ static const struct { const char* text; const TokenKind value; } keywords_implem
   kwdef(HOUR_SECOND),
   kwdef(INTERVAL),
   kwdef(IS),
+  kwdef(LIMIT),
   kwdef(MAX),
   kwdef(MICROSECOND),
   kwdef(MIN),
