@@ -412,6 +412,8 @@ class NdbQueryOperationDefImpl {
     return m_options.m_interpretedCode;
   }
 
+  bool isAggregateLeaf() const { return m_isAggregateLeaf; }
+
   const Vector<const NdbQueryOperandImpl *> &getInterpretedParams() const {
     return m_options.m_parameters;
   }
@@ -533,6 +535,9 @@ class NdbQueryOperationDefImpl {
    * disk columns.
    */
   bool m_diskInChildProjection;
+
+  /** True if this operation is the aggregate leaf of a join aggregation query.*/
+  bool m_isAggregateLeaf;
 
  private:
   bool isChildOf(const NdbQueryOperationDefImpl *parentOp) const;

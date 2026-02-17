@@ -1755,6 +1755,7 @@ NdbQueryOperationDefImpl::NdbQueryOperationDefImpl(
     const char *ident, Uint32 opNo, Uint32 internalOpNo, int &error)
     : m_isPrepared(false),
       m_diskInChildProjection(false),
+      m_isAggregateLeaf(options.hasAggregation()),
       m_table(table),
       m_ident(ident),
       m_opNo(opNo),
