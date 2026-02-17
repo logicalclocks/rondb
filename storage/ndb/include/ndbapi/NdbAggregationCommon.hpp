@@ -52,6 +52,10 @@ struct CHARSET_INFO;
 #define MAX_VEC_DIMS 8100
 #define MAX_CANDIDATE_SEGMENTS 256
 
+/* Bit 15 in column ID: column is from parent table in a pushed join.
+ * Used with GroupBy() and LoadColumn() to reference linked parent columns. */
+#define AGG_LINKED_COL_FLAG 0x8000
+
 #define PUSHDOWN_AGGREGATION_VERSION 2
 enum InterpreterOp {
   kOpUnknown = 0,

@@ -42,6 +42,7 @@
 #include <NdbApi.hpp>
 #include <NdbSleep.h>
 #include <NdbAggregator.hpp>
+#include <ndbapi/NdbAggregationCommon.hpp>
 #include "NdbQueryBuilder.hpp"
 #include "NdbQueryOperation.hpp"
 
@@ -64,8 +65,7 @@ static bool verbose = false;
 static const char *PARENT_TABLE = "jagg_parent";
 static const char *CHILD_TABLE = "jagg_child";
 
-/* LINKED_COL_FLAG: bit 15 set means column comes from parent table */
-static const Uint32 LINKED_COL_FLAG = 0x8000;
+/* AGG_AGG_LINKED_COL_FLAG from NdbAggregationCommon.hpp: bit 15 = parent column */
 
 /* ------------------------------------------------------------------ */
 /* Table setup via NDB API                                             */
@@ -240,17 +240,15 @@ testSumGroupBy(Ndb *ndb,
   }
 
   /* Build aggregation program:
-   *   GROUP BY grp (parent column → LINKED_COL_FLAG)
+   *   GROUP BY grp (parent column → AGG_LINKED_COL_FLAG)
    *   SUM(amount)  (child column)
    */
   NdbAggregator agg(childTab);
   Int32 grpColNo = parentTab->getColumn("grp")->getColumnNo();
-  agg.GroupBy(grpColNo | LINKED_COL_FLAG);
-  agg.LoadColumn("amount", 0);  /* reg 0 */
-  agg.Sum(0, 0);                /* agg[0] = SUM(reg 0) */
-  agg.Finalize();
-
-  if (agg.GetError().errno_ != 0) {
+  if (!agg.GroupBy(grpColNo | AGG_LINKED_COL_FLAG) ||
+      !agg.LoadColumn("amount", 0) ||   /* reg 0 */
+      !agg.Sum(0, 0) ||                 /* agg[0] = SUM(reg 0) */
+      !agg.Finalize()) {
     printf("FAILED (agg program: %s)\n", agg.GetError().err_msg_);
     return -1;
   }
@@ -324,6 +322,14 @@ testSumGroupBy(Ndb *ndb,
     queryDef->destroy();
     return -1;
   }
+
+  /* Set up projections — SPJ needs at least one column per operation */
+  NdbQueryOperation *parentQueryOp = query->getQueryOperation((Uint32)0);
+  parentQueryOp->getValue("id");
+  parentQueryOp->getValue("grp");
+  NdbQueryOperation *childQueryOp = query->getQueryOperation((Uint32)1);
+  childQueryOp->getValue("parent_id");
+  childQueryOp->getValue("amount");
 
   if (trans->execute(NdbTransaction::NoCommit) != 0) {
     printf("FAILED (execute: %s)\n", trans->getNdbError().message);
@@ -426,10 +432,13 @@ testCountSum(Ndb *ndb, Int64 expectedCount, Int64 expectedSum)
 
   /* Build aggregation: COUNT(*), SUM(amount) — no GROUP BY */
   NdbAggregator agg(childTab);
-  agg.LoadColumn("amount", 0);
-  agg.Count(0, 0);  /* agg[0] = COUNT */
-  agg.Sum(1, 0);    /* agg[1] = SUM */
-  agg.Finalize();
+  if (!agg.LoadColumn("amount", 0) ||
+      !agg.Count(0, 0) ||  /* agg[0] = COUNT */
+      !agg.Sum(1, 0) ||    /* agg[1] = SUM */
+      !agg.Finalize()) {
+    printf("FAILED (agg program: %s)\n", agg.GetError().err_msg_);
+    return -1;
+  }
 
   NdbQueryBuilder *qb = NdbQueryBuilder::create();
   const NdbQueryTableScanOperationDef *parentOp = qb->scanTable(parentTab);
@@ -460,6 +469,14 @@ testCountSum(Ndb *ndb, Int64 expectedCount, Int64 expectedSum)
 
   NdbTransaction *trans = ndb->startTransaction();
   NdbQuery *query = trans->createQuery(queryDef);
+
+  /* Set up projections — SPJ needs at least one column per operation */
+  NdbQueryOperation *parentQueryOp = query->getQueryOperation((Uint32)0);
+  parentQueryOp->getValue("id");
+  NdbQueryOperation *childQueryOp = query->getQueryOperation((Uint32)1);
+  childQueryOp->getValue("parent_id");
+  childQueryOp->getValue("amount");
+
   if (trans->execute(NdbTransaction::NoCommit) != 0) {
     printf("FAILED (execute: %s)\n", trans->getNdbError().message);
     trans->close();
@@ -468,7 +485,15 @@ testCountSum(Ndb *ndb, Int64 expectedCount, Int64 expectedSum)
   }
 
   /* Consume scan */
-  while (query->nextResult(true) == NdbQuery::NextResult_gotRow) {}
+  NdbQuery::NextResultOutcome outcome2;
+  while ((outcome2 = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {}
+  if (outcome2 == NdbQuery::NextResult_error) {
+    printf("FAILED (nextResult: %s)\n", query->getNdbError().message);
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
 
   NdbAggregator *resultAgg = query->getAggregator();
   if (resultAgg == nullptr) {
@@ -554,11 +579,14 @@ testMultiAggGroupBy(Ndb *ndb,
   /* Build aggregation: GROUP BY grp, COUNT(*), SUM(amount) */
   NdbAggregator agg(childTab);
   Int32 grpColNo = parentTab->getColumn("grp")->getColumnNo();
-  agg.GroupBy(grpColNo | LINKED_COL_FLAG);
-  agg.LoadColumn("amount", 0);
-  agg.Count(0, 0);  /* agg[0] = COUNT */
-  agg.Sum(1, 0);    /* agg[1] = SUM */
-  agg.Finalize();
+  if (!agg.GroupBy(grpColNo | AGG_LINKED_COL_FLAG) ||
+      !agg.LoadColumn("amount", 0) ||
+      !agg.Count(0, 0) ||  /* agg[0] = COUNT */
+      !agg.Sum(1, 0) ||    /* agg[1] = SUM */
+      !agg.Finalize()) {
+    printf("FAILED (agg program: %s)\n", agg.GetError().err_msg_);
+    return -1;
+  }
 
   NdbQueryBuilder *qb = NdbQueryBuilder::create();
   const NdbQueryTableScanOperationDef *parentOp = qb->scanTable(parentTab);
@@ -591,6 +619,15 @@ testMultiAggGroupBy(Ndb *ndb,
 
   NdbTransaction *trans = ndb->startTransaction();
   NdbQuery *query = trans->createQuery(queryDef);
+
+  /* Set up projections — SPJ needs at least one column per operation */
+  NdbQueryOperation *parentQueryOp = query->getQueryOperation((Uint32)0);
+  parentQueryOp->getValue("id");
+  parentQueryOp->getValue("grp");
+  NdbQueryOperation *childQueryOp = query->getQueryOperation((Uint32)1);
+  childQueryOp->getValue("parent_id");
+  childQueryOp->getValue("amount");
+
   if (trans->execute(NdbTransaction::NoCommit) != 0) {
     printf("FAILED (execute: %s)\n", trans->getNdbError().message);
     trans->close();
@@ -598,7 +635,15 @@ testMultiAggGroupBy(Ndb *ndb,
     return -1;
   }
 
-  while (query->nextResult(true) == NdbQuery::NextResult_gotRow) {}
+  NdbQuery::NextResultOutcome outcome3;
+  while ((outcome3 = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {}
+  if (outcome3 == NdbQuery::NextResult_error) {
+    printf("FAILED (nextResult: %s)\n", query->getNdbError().message);
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
 
   NdbAggregator *resultAgg = query->getAggregator();
   if (resultAgg == nullptr) {

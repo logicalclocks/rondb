@@ -143,6 +143,43 @@ NdbAggregator::~NdbAggregator() {
   }
 }
 
+void NdbAggregator::initForResults(const Uint32 *programBuffer,
+                                   Uint32 programLen) {
+  assert(programLen >= PROGRAM_HEADER_SIZE);
+  // Word 1: (n_gb_cols << 16) | n_agg_results
+  n_gb_cols_ = programBuffer[1] >> 16;
+  n_agg_results_ = programBuffer[1] & 0xFFFF;
+
+  // Allocate gb_map if GROUP BY is used
+  if (n_gb_cols_ > 0 && gb_map_ == nullptr) {
+    gb_map_ = new std::map<GBHashEntry, GBHashEntry, GBHashEntryCmp>();
+  }
+
+  // Allocate agg_results for non-GROUP-BY case
+  if (n_gb_cols_ == 0 && agg_results_ == nullptr && n_agg_results_ > 0) {
+    agg_results_ = new AggResItem[n_agg_results_];
+    memset(agg_results_, 0, n_agg_results_ * sizeof(AggResItem));
+  }
+
+  // Parse instructions to extract agg_ops for COUNT null→0 fixup.
+  // Instructions start at PROGRAM_HEADER_SIZE + n_gb_cols_.
+  Uint32 instrStart = PROGRAM_HEADER_SIZE + n_gb_cols_;
+  for (Uint32 i = instrStart; i < programLen; i++) {
+    Uint32 op = (programBuffer[i] >> 26) & 0x3F;
+    if (op == kOpSum || op == kOpMax || op == kOpMin || op == kOpCount ||
+        op == kOpSumBigint || op == kOpSumDouble ||
+        op == kOpMaxBigint || op == kOpMaxDouble ||
+        op == kOpMinBigint || op == kOpMinDouble) {
+      Uint32 agg_id = programBuffer[i] & 0xFFFF;
+      if (agg_id < MAX_AGG_N_RESULTS) {
+        agg_ops_[agg_id] = (InterpreterOp)op;
+      }
+    }
+  }
+
+  finalized_ = true;
+}
+
 Int32 NdbAggregator::ProcessRes(char* buf) {
 #ifdef DEBUG_NDBAGGREGATOR
   {
@@ -805,8 +842,15 @@ bool NdbAggregator::GroupBy(const char* name) {
 }
 
 bool NdbAggregator::GroupBy(Int32 col_id) {
-  const NdbDictionary::Column* col = table_impl_->getColumn(col_id);
-  if (col == nullptr) {
+  // AGG_LINKED_COL_FLAG (bit 15): column is from parent table in a pushed join.
+  // Strip for table lookup but preserve in the program buffer.
+  const Int32 raw_col_id = col_id & ~AGG_LINKED_COL_FLAG;
+  const bool is_linked = (col_id & AGG_LINKED_COL_FLAG) != 0;
+
+  const NdbDictionary::Column* col = table_impl_->getColumn(raw_col_id);
+  if (col == nullptr && !is_linked) {
+    // For linked (parent) columns, the column may not exist in the child table.
+    // We cannot validate it here — the kernel will validate at execution time.
     SetError(kErrInvalidColumnId);
     return false;
   }
@@ -818,14 +862,18 @@ bool NdbAggregator::GroupBy(Int32 col_id) {
   }
   buffer_[curr_prog_pos_++] = col_id << 16;
 
-  result_size_est_ += (sizeof(AttributeHeader) + ((col->getSizeInBytes() + 3) & (~3)));
+  if (col != nullptr) {
+    result_size_est_ += (sizeof(AttributeHeader) + ((col->getSizeInBytes() + 3) & (~3)));
+    if (col->getStorageType() == NDB_STORAGETYPE_DISK) {
+      disk_columns_ = true;
+    }
+  } else {
+    // Linked column: estimate 8 bytes (bigint) for size estimation
+    result_size_est_ += (sizeof(AttributeHeader) + 8);
+  }
 
   gb_col_ids_[n_gb_cols_] = col_id;
   n_gb_cols_++;
-
-  if (col->getStorageType() == NDB_STORAGETYPE_DISK) {
-    disk_columns_ = true;
-  }
 
   return true;
 }

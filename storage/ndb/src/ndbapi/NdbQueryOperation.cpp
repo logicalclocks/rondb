@@ -1818,6 +1818,9 @@ int NdbQueryImpl::processAggResults() {
   if (!m_hasAggregation || m_aggregator == nullptr) return 0;
 
   const Uint32 numBatches = m_aggResultOffsets.getSize();
+  const Uint32 totalWords = m_aggResultData.getSize();
+  fprintf(stderr, "[AGG] processAggResults: %u batches, %u total words\n",
+          numBatches, totalWords);
   for (Uint32 i = 0; i < numBatches; i++) {
     const Uint32 offset = m_aggResultOffsets.addr()[i];
     const Uint32 nextOffset = (i + 1 < numBatches)
@@ -1825,6 +1828,12 @@ int NdbQueryImpl::processAggResults() {
                                   : m_aggResultData.getSize();
     const Uint32 batchLen = nextOffset - offset;
     const Uint32 *batchData = m_aggResultData.addr() + offset;
+
+    fprintf(stderr, "[AGG]   batch %u: offset=%u len=%u words:", i, offset, batchLen);
+    for (Uint32 w = 0; w < batchLen && w < 16; w++) {
+      fprintf(stderr, " %08x", batchData[w]);
+    }
+    fprintf(stderr, "\n");
 
     /**
      * Kernel sends [AttributeHeader, n_gb_cols|n_agg_results, ...].
@@ -2261,8 +2270,8 @@ void NdbQueryImpl::postFetchRelease() {
     m_aggReceivers = nullptr;
     m_numAggReceivers = 0;
   }
-  delete m_aggregator;
-  m_aggregator = nullptr;
+  // Keep m_aggregator alive — user accesses it via getAggregator()
+  // after scan completes. It is deleted in close().
   m_aggResultData.releaseExtend();
   m_aggResultOffsets.releaseExtend();
 
@@ -2842,6 +2851,11 @@ int NdbQueryImpl::close(bool forceSend) {
     m_state = Closed;  // Even if it was previously 'Failed' it is closed now!
   }
 
+  // Delete aggregator after close — user may have accessed it via
+  // getAggregator() between scan completion and close().
+  delete m_aggregator;
+  m_aggregator = nullptr;
+
   /** BEWARE:
    *  Don't refer NdbQueryDef or its NdbQueryOperationDefs after ::close()
    *  as the application is allowed to destruct the Def's after this point.
@@ -3199,6 +3213,9 @@ int NdbQueryImpl::prepareSend() {
     const NdbTableImpl *aggTable = aggOpts.getAggTable();
     assert(aggTable != nullptr);
     m_aggregator = new NdbAggregator(aggTable->m_facade);
+    // Initialize aggregator from program header so ProcessRes knows
+    // n_gb_cols, n_agg_results, and agg_ops for result parsing.
+    m_aggregator->initForResults(progBuf, progLen);
   }
 
 #ifdef TRACE_SERIALIZATION
@@ -4912,8 +4929,10 @@ int NdbQueryOperationImpl::prepareAttrInfo(Uint32Buffer &attrInfo,
   }
 
   if (m_ndbRecord == nullptr && m_firstRecAttr == nullptr) {
-    // Leaf operations with empty projections are not supported.
-    if (getNoOfChildOperations() == 0) {
+    // Leaf operations with empty projections are not supported,
+    // unless this is an aggregate leaf (results come via aggregation,
+    // not through the normal row projection path).
+    if (getNoOfChildOperations() == 0 && !def.isAggregateLeaf()) {
       return QRY_EMPTY_PROJECTION;
     }
   } else {

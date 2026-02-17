@@ -245,6 +245,14 @@ class NdbAggregator {
     return disk_columns_;
   }
 
+  /**
+   * Initialize this aggregator for receiving results, given a program buffer.
+   * Reads the program header to set n_gb_cols, n_agg_results, and allocates
+   * the gb_map if needed. Must be called before ProcessRes() when the
+   * aggregator was not built with GroupBy/Sum/etc. calls.
+   */
+  void initForResults(const Uint32 *programBuffer, Uint32 programLen);
+
   Int32 ProcessRes(char* buf);
 
   bool LoadColumn(const char* name, Uint32 reg_id);
