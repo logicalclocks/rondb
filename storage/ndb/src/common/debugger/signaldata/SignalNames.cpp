@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1057,6 +1057,8 @@ const GsnName SignalNames[] = {
   ,{ GSN_SET_DOMAIN_ID_CONF, "SET_DOMAIN_ID_CONF" }
   ,{ GSN_SET_DOMAIN_ID_REF, "SET_DOMAIN_ID_REF" }
   ,{ GSN_COPY_FRAG_DONE_REP, "COPY_FRAG_DONE_REP" }
-
+  ,{ GSN_SET_CONFIG_PARAM_REQ, "SET_CONFIG_PARAM_REQ" }
+  ,{ GSN_SET_CONFIG_PARAM_CONF, "SET_CONFIG_PARAM_CONF" }
+  ,{ GSN_SET_CONFIG_PARAM_REF, "SET_CONFIG_PARAM_REF" }
 };
 const unsigned short NO_OF_SIGNAL_NAMES = sizeof(SignalNames) / sizeof(GsnName);

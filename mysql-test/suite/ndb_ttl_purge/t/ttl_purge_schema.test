@@ -1,0 +1,243 @@
+--source include/have_ndb.inc
+
+# suite/ndb_ttl_purge/t/ttl_purge_schema.test
+#
+# Schema change tests (5 cases):
+#   - test_alter_ttl_value
+#   - test_disable_ttl
+#   - test_drop_table_during_purge
+#   - test_drop_database_with_ttl_tables
+#   - test_rename_table
+
+--source suite/ndb_ttl_purge/include/ttl_purge_setup.inc
+--source suite/ndb_ttl_purge/include/ttl_purge_reset_config.inc
+
+--echo #
+--echo # Test: test_alter_ttl_value
+--echo # Create TTL=10, verify via API, ALTER to TTL=60, verify change
+--echo #
+
+--let $ttl_db = ttl_schema
+--let $ttl_table = alter_ttl
+--let $ttl_seconds = 10
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+# Wait for table detection
+--let $wait_db = ttl_schema
+--let $wait_table = alter_ttl
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_table_detected.inc
+
+# Verify initial TTL = 10
+--exec curl -s $ttl_purge_base/tables/ttl_schema/alter_ttl > $MYSQL_TMP_DIR/schema_ttl1.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/schema_ttl1.json
+--let $json_field = ttl_sec
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $assert_text = Initial TTL should be 10
+--let $assert_cond = $json_value = 10
+--source include/assert.inc
+
+# ALTER TTL to 60
+ALTER TABLE ttl_schema.alter_ttl COMMENT="NDB_TABLE=TTL=60@ttl_col";
+--sleep 10
+
+# Verify TTL changed to 60
+--exec curl -s $ttl_purge_base/tables/ttl_schema/alter_ttl > $MYSQL_TMP_DIR/schema_ttl2.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/schema_ttl2.json
+--let $json_field = ttl_sec
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $assert_text = Altered TTL should be 60
+--let $assert_cond = $json_value = 60
+--source include/assert.inc
+
+DROP DATABASE ttl_schema;
+--sleep 5
+
+--echo #
+--echo # Test: test_disable_ttl
+--echo # Create TTL, disable, verify removed from API, expired rows stay
+--echo #
+
+--let $ttl_db = ttl_schema
+--let $ttl_table = disable_ttl
+--let $ttl_seconds = 10
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+# Wait for detection
+--let $wait_db = ttl_schema
+--let $wait_table = disable_ttl
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_table_detected.inc
+
+# Disable TTL
+ALTER TABLE ttl_schema.disable_ttl COMMENT="NDB_TABLE=TTL=off";
+--sleep 10
+
+# Wait for removal from TTL tables API
+--let $wait_db = ttl_schema
+--let $wait_table = disable_ttl
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_table_removed.inc
+
+# Insert "expired" rows - these should stay since TTL is disabled
+INSERT INTO ttl_schema.disable_ttl (id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'should_stay_1');
+INSERT INTO ttl_schema.disable_ttl (id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'should_stay_2');
+INSERT INTO ttl_schema.disable_ttl (id, ttl_col, data) VALUES (3, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'should_stay_3');
+INSERT INTO ttl_schema.disable_ttl (id, ttl_col, data) VALUES (4, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'should_stay_4');
+INSERT INTO ttl_schema.disable_ttl (id, ttl_col, data) VALUES (5, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'should_stay_5');
+
+--sleep 10
+
+# With TTL disabled, all rows should remain
+--let $assert_text = Rows should remain after TTL disabled
+--let $assert_cond = [SELECT COUNT(*) FROM ttl_schema.disable_ttl] = 5
+--source include/assert.inc
+
+DROP DATABASE ttl_schema;
+--sleep 5
+
+--echo #
+--echo # Test: test_drop_table_during_purge
+--echo # Create, insert expired, DROP TABLE, check no error state
+--echo #
+
+--let $ttl_db = ttl_schema
+--let $ttl_table = drop_during
+--let $ttl_seconds = 5
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+--let $insert_db = ttl_schema
+--let $insert_table = drop_during
+--let $insert_count = 10
+--let $insert_start_id = 1
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_expired.inc
+
+# Drop table immediately
+DROP TABLE ttl_schema.drop_during;
+--sleep 5
+
+# Check purge status is not in error state
+--exec $ttl_purge_get_status > $MYSQL_TMP_DIR/schema_drop_status.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/schema_drop_status.json
+--let $json_field = state
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+
+--exec echo '$json_value' > $MYSQL_TMP_DIR/_drop_state.txt
+--perl
+my $tmp = $ENV{MYSQL_TMP_DIR};
+open my $f, '<', "$tmp/_drop_state.txt" or die;
+my $val = <$f>; chomp $val; close $f;
+open my $o, '>', "$tmp/_drop_state_check.inc" or die;
+print $o "--let \$state_not_error = " . ($val ne 'error' ? 1 : 0) . "\n";
+close $o;
+EOF
+--source $MYSQL_TMP_DIR/_drop_state_check.inc
+
+--let $assert_text = Purge state should not be error after drop
+--let $assert_cond = $state_not_error = 1
+--source include/assert.inc
+--echo Purge state after drop: OK
+
+# Wait for table removal from API
+--let $wait_db = ttl_schema
+--let $wait_table = drop_during
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_table_removed.inc
+
+DROP DATABASE ttl_schema;
+--sleep 5
+
+--echo #
+--echo # Test: test_drop_database_with_ttl_tables
+--echo # Create 3 tables, DROP DB, verify all removed from API
+--echo #
+
+--let $ttl_db = ttl_schema
+--let $ttl_table = multi_0
+--let $ttl_seconds = 60
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+--let $ttl_table = multi_1
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+--let $ttl_table = multi_2
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+--sleep 10
+
+# Verify tables are detected
+--exec $ttl_purge_get_tables > $MYSQL_TMP_DIR/schema_multi_before.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/schema_multi_before.json
+--let $json_field = total
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $tables_before = $json_value
+--echo Tables detected before drop
+
+# DROP entire database
+DROP DATABASE ttl_schema;
+--sleep 10
+
+# Verify all tables removed
+--let $wait_db = ttl_schema
+--let $wait_table = multi_0
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_table_removed.inc
+
+--let $wait_table = multi_1
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_table_removed.inc
+
+--let $wait_table = multi_2
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_table_removed.inc
+
+--echo All 3 tables removed from API after DROP DATABASE
+
+--echo #
+--echo # Test: test_rename_table
+--echo # Create, RENAME TABLE, verify old gone + new present in API
+--echo #
+
+--let $ttl_db = ttl_schema
+--let $ttl_table = original_name
+--let $ttl_seconds = 60
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+# Wait for detection of original name
+--let $wait_db = ttl_schema
+--let $wait_table = original_name
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_table_detected.inc
+
+# Rename the table
+RENAME TABLE ttl_schema.original_name TO ttl_schema.new_name;
+--sleep 10
+
+# Old name should be gone
+--exec curl -s -o /dev/null -w "%{http_code}" $ttl_purge_base/tables/ttl_schema/original_name > $MYSQL_TMP_DIR/schema_rename_old.txt 2>/dev/null
+--perl
+my $tmp = $ENV{MYSQL_TMP_DIR};
+open my $f, '<', "$tmp/schema_rename_old.txt" or die;
+my $code = <$f>; chomp $code; close $f;
+open my $o, '>', "$tmp/schema_rename_old_check.inc" or die;
+print $o "--let \$old_name_code = $code\n";
+close $o;
+EOF
+--source $MYSQL_TMP_DIR/schema_rename_old_check.inc
+
+--let $assert_text = Old table name should return non-200 after rename
+--let $assert_cond = $old_name_code != 200
+--source include/assert.inc
+
+# New name should be present
+--let $wait_db = ttl_schema
+--let $wait_table = new_name
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_table_detected.inc
+
+--exec curl -s $ttl_purge_base/tables/ttl_schema/new_name > $MYSQL_TMP_DIR/schema_rename_new.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/schema_rename_new.json
+--let $json_field = ttl_sec
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--echo New name has TTL setting
+
+--let $assert_text = Renamed table should have TTL setting
+--let $assert_cond = $json_value = 60
+--source include/assert.inc
+
+DROP DATABASE ttl_schema;
+
+--source suite/ndb_ttl_purge/include/ttl_purge_cleanup_tmp.inc
+
+--echo # All schema change tests passed

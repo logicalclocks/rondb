@@ -1169,6 +1169,21 @@ int ndb_mgm_restart5(NdbMgmHandle handle, int no_of_nodes, const int *node_list,
    */
   int ndb_mgm_deactivate(NdbMgmHandle handle, const int nodeId);
 
+  /**
+   * Set a configuration parameter on a running data node.
+   *
+   * @param   handle        Management handle.
+   * @param   nodeId        Node id (0 for all data nodes).
+   * @param   configKey     Configuration parameter key (CFG_DB_*).
+   * @param   configValue   New value for the parameter.
+   *
+   * @return                0 for success, -1 on error.
+   */
+  int ndb_mgm_set_config_param(NdbMgmHandle handle,
+                               const int nodeId,
+                               const unsigned int configKey,
+                               const unsigned long long configValue);
+
   /** @} *********************************************************************/
   /**
    * @name Functions: Controlling Clusterlog output

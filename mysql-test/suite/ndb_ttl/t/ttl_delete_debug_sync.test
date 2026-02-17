@@ -1,0 +1,237 @@
+# ttl_delete_debug_sync.test
+#
+# DEBUG_SYNC tests for TTL DELETE/UPSERT operations (Cases 23-25).
+# Migrated from ttl_test_suite.py TestCase23-25 (DEBUG_SYNC DELETE category).
+#
+# These tests use MySQL's DEBUG_SYNC facility to control timing of
+# DELETE and INSERT ON DUPLICATE KEY UPDATE operations that interact
+# with TTL expiration at specific internal sync points.
+#
+# Table: test.sz (col_a INT PK, col_b TIMESTAMP TTL=5s, col_c INT UNIQUE)
+# Two concurrent sessions (conn_a, conn_b) exercise operations where
+# rows expire while blocked at NDB TTL sync points.
+#
+# Sync points used:
+#   ttl_wait_for_row_get_expired_after_reading_4  (Case 23)
+#   ttl_wait_for_row_get_expired_after_reading_1  (Case 24)
+#   ttl_wait_for_row_get_expired_after_reading_2  (Case 25)
+#
+# Requires: NDB engine, DEBUG_SYNC support (debug build)
+
+--source include/have_ndb.inc
+--source include/have_debug_sync.inc
+--source suite/ndb_ttl/include/ttl_create_table.inc
+
+# Establish two sessions against the same MySQL server
+connect (conn_a, localhost, root,,test,$MASTER_MYPORT,);
+connect (conn_b, localhost, root,,test,$MASTER_MYPORT,);
+
+###############################################################################
+--echo #
+--echo # Case 23: DEBUG_SYNC - DELETE row that expires during operation
+--echo #
+# Thread A inserts a row (col_a=1, col_c=100), sleeps briefly, commits.
+# Row is still alive right after commit.  Thread B sets a DEBUG_SYNC trap
+# on sync point 4, then sends a DELETE which blocks at the sync point.
+# Thread A waits until the row has expired (past TTL), then signals
+# Thread B to continue.  The DELETE finds and removes the (expired) row
+# because it was read before the sync point.  After the DELETE, no rows
+# remain.
+###############################################################################
+
+connection default;
+DELETE FROM sz;
+
+# Thread A: INSERT and commit before TTL
+connection conn_a;
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+
+# Hold transaction briefly (before TTL = 5s)
+sleep 2;
+COMMIT;
+
+# Verify row is visible right after commit
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+
+# Thread B: set DEBUG_SYNC trap and send DELETE (will block at sync point)
+connection conn_b;
+BEGIN;
+SET DEBUG_SYNC = 'ttl_wait_for_row_get_expired_after_reading_4 WAIT_FOR go_ahead';
+--send DELETE FROM sz
+
+# Thread A: wait for row to expire past TTL, then signal Thread B
+connection conn_a;
+sleep 6;
+SET DEBUG_SYNC = 'now SIGNAL go_ahead';
+
+# Thread B: reap DELETE -- should have deleted 1 row
+connection conn_b;
+--reap
+
+# Verify DELETE affected 1 row
+SELECT ROW_COUNT();
+
+COMMIT;
+
+# Verify no rows remain after DELETE + TTL expiry
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+
+# Thread A: also verify from conn_a that no rows remain
+connection conn_a;
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM sz WHERE col_a = 1
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+
+# Clean up DEBUG_SYNC state
+connection conn_a;
+SET DEBUG_SYNC = 'RESET';
+connection conn_b;
+SET DEBUG_SYNC = 'RESET';
+
+###############################################################################
+--echo #
+--echo # Case 24: DEBUG_SYNC - INSERT ON DUPLICATE KEY UPDATE with sync point 1
+--echo #
+# Original Python uses TTL=10.  The timing requires TTL=10: A commits at
+# T=7 (before TTL=10 expiry at T=10) so B sees a live row and NDB returns
+# DUPP_KEY.  B hits sync point 1.  A signals at T=11 (after TTL=10 expiry).
+# B resumes, updates the expired row (col_c=201, col_b=NOW()).
+###############################################################################
+
+# Switch to TTL=10 for cases 24-25 (matches original Python)
+connection default;
+ALTER TABLE test.sz COMMENT="NDB_TABLE=TTL=10@col_b";
+sleep 3;
+
+connection default;
+DELETE FROM sz;
+
+# Thread A: INSERT (do NOT commit yet -- B must block on A's lock)
+connection conn_a;
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+
+# Partial sleep so B's NOW()/SYSDATE() gets a fresh timestamp (~T=5)
+sleep 5;
+
+# Thread B: set DEBUG_SYNC and send IODKU (blocks on A's lock).
+# B's NOW()=~T=5.  After A commits at T=7, B gets lock, NDB sees alive
+# row (T=7 < TTL=10 expiry at T=10), returns DUPP_KEY, B hits sync point.
+connection conn_b;
+BEGIN;
+SET DEBUG_SYNC = 'ttl_wait_for_row_get_expired_after_reading_1 WAIT_FOR go_ahead';
+--send INSERT INTO sz VALUES(1, SYSDATE(), 200) ON DUPLICATE KEY UPDATE col_c = 201, col_b = NOW()
+
+# Thread A: sleep 2 more (total 7s), COMMIT.  Row alive (T=7 < T=10).
+connection conn_a;
+sleep 2;
+COMMIT;
+
+# Wait 4 more (T=11), signal.  Row expired (T=11 > T=10).
+sleep 4;
+SET DEBUG_SYNC = 'now SIGNAL go_ahead';
+
+# Thread B: reap UPSERT
+connection conn_b;
+--reap
+
+# Verify UPSERT affected 2 rows (MySQL convention: 2 = updated existing row)
+SELECT ROW_COUNT();
+
+COMMIT;
+
+# Verify row has col_c=201 (updated, not inserted) from conn_b
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+
+# Thread A: also verify the updated row is visible with col_c=201
+connection conn_a;
+sleep 1;
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+
+# Wait for updated row to also expire
+--let $ttl_wait_timeout = 20
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM sz WHERE col_a = 1
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+
+# Clean up DEBUG_SYNC state
+connection conn_a;
+SET DEBUG_SYNC = 'RESET';
+connection conn_b;
+SET DEBUG_SYNC = 'RESET';
+
+###############################################################################
+--echo #
+--echo # Case 25: DEBUG_SYNC - INSERT ON DUPLICATE KEY UPDATE with sync point 2
+--echo #
+# Same scenario as Case 24 but uses sync point 2 instead of sync point 1.
+# TTL=10 is already set from Case 24.
+###############################################################################
+
+connection default;
+DELETE FROM sz;
+
+# Thread A: INSERT (do NOT commit yet -- B must block on A's lock)
+connection conn_a;
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+
+# Partial sleep so B's NOW()/SYSDATE() gets a fresh timestamp (~T=5)
+sleep 5;
+
+# Thread B: set DEBUG_SYNC and send IODKU (blocks on A's lock).
+connection conn_b;
+BEGIN;
+SET DEBUG_SYNC = 'ttl_wait_for_row_get_expired_after_reading_2 WAIT_FOR go_ahead';
+--send INSERT INTO sz VALUES(1, SYSDATE(), 200) ON DUPLICATE KEY UPDATE col_c = 201, col_b = NOW()
+
+# Thread A: sleep 2 more (total 7s), COMMIT.  Row alive (T=7 < T=10).
+connection conn_a;
+sleep 2;
+COMMIT;
+
+# Wait 4 more (T=11), signal.  Row expired (T=11 > T=10).
+sleep 4;
+SET DEBUG_SYNC = 'now SIGNAL go_ahead';
+
+# Thread B: reap UPSERT
+connection conn_b;
+--reap
+
+# Verify UPSERT affected 2 rows (MySQL convention: 2 = updated existing row)
+SELECT ROW_COUNT();
+
+COMMIT;
+
+# Verify row has col_c=201 (updated, not inserted) from conn_b
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+
+# Thread A: also verify the updated row is visible with col_c=201
+connection conn_a;
+sleep 1;
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+
+# Wait for updated row to also expire
+--let $ttl_wait_timeout = 20
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM sz WHERE col_a = 1
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+
+# Clean up DEBUG_SYNC state
+connection conn_a;
+SET DEBUG_SYNC = 'RESET';
+connection conn_b;
+SET DEBUG_SYNC = 'RESET';
+
+###############################################################################
+# Final cleanup
+###############################################################################
+
+connection default;
+disconnect conn_a;
+disconnect conn_b;
+DROP TABLE test.sz;

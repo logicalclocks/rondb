@@ -15,12 +15,14 @@
 #include <trantor/net/EventLoopThreadPool.h>
 using namespace trantor;
 EventLoopThreadPool::EventLoopThreadPool(size_t threadNum,
-                                         const std::string &name)
+                                         const std::string &name,
+                                         size_t stackSize)
     : loopIndex_(0)
 {
     for (size_t i = 0; i < threadNum; ++i)
     {
-        loopThreadVector_.emplace_back(std::make_shared<EventLoopThread>(name));
+        loopThreadVector_.emplace_back(
+            std::make_shared<EventLoopThread>(name, stackSize));
     }
 }
 void EventLoopThreadPool::start()

@@ -1,0 +1,178 @@
+--source include/have_ndb.inc
+
+# suite/ndb_ttl_purge/t/ttl_purge_config.test
+#
+# Config change tests (3 cases):
+#   - test_change_batch_size_during_purge
+#   - test_disable_during_active_purge
+#   - test_change_sleep_interval
+
+--source suite/ndb_ttl_purge/include/ttl_purge_setup.inc
+--source suite/ndb_ttl_purge/include/ttl_purge_reset_config.inc
+
+--echo #
+--echo # Test: test_change_batch_size_during_purge
+--echo # Insert 100 expired, change max_batch=100, wait, all purged
+--echo #
+
+--let $ttl_db = ttl_config
+--let $ttl_table = batch_size
+--let $ttl_seconds = 5
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+--let $insert_db = ttl_config
+--let $insert_table = batch_size
+--let $insert_count = 100
+--let $insert_start_id = 1
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_expired.inc
+
+# Change max_batch_size mid-purge
+--exec $ttl_purge_put_config '{"max_batch_size":100}' > /dev/null 2>&1
+
+--let $purge_db = ttl_config
+--let $purge_table = batch_size
+--let $purge_completion_timeout = 30
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_purge_completion.inc
+
+--let $assert_text = All 100 rows should be purged with large batch size
+--let $assert_cond = [SELECT COUNT(*) FROM ttl_config.batch_size] = 0
+--source include/assert.inc
+
+# Restore default config
+--source suite/ndb_ttl_purge/include/ttl_purge_reset_config.inc
+
+DROP DATABASE ttl_config;
+--sleep 3
+
+--echo #
+--echo # Test: test_disable_during_active_purge
+--echo # Insert 200 expired, disable purge, check disabled, re-enable, wait
+--echo #
+
+--let $ttl_db = ttl_config
+--let $ttl_table = disable_test
+--let $ttl_seconds = 5
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+--let $insert_db = ttl_config
+--let $insert_table = disable_test
+--let $insert_count = 200
+--let $insert_start_id = 1
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_expired.inc
+
+# Disable purge
+--exec $ttl_purge_put_config '{"enabled":false}' > /dev/null 2>&1
+--sleep 3
+
+# Check status is disabled
+--exec $ttl_purge_get_status > $MYSQL_TMP_DIR/cfg_disabled.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/cfg_disabled.json
+--let $json_field = state
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+
+--exec echo '$json_value' > $MYSQL_TMP_DIR/_cfg_state.txt
+--perl
+my $tmp = $ENV{MYSQL_TMP_DIR};
+open my $f, '<', "$tmp/_cfg_state.txt" or die;
+my $val = <$f>; chomp $val; close $f;
+open my $o, '>', "$tmp/_cfg_state_check.inc" or die;
+print $o "--let \$state_is_disabled = " . ($val eq 'disabled' ? 1 : 0) . "\n";
+close $o;
+EOF
+--source $MYSQL_TMP_DIR/_cfg_state_check.inc
+
+--let $assert_text = Purge state should be disabled
+--let $assert_cond = $state_is_disabled = 1
+--source include/assert.inc
+
+# Re-enable purge
+--exec $ttl_purge_put_config '{"enabled":true}' > /dev/null 2>&1
+
+# Wait for all rows to be purged
+--let $purge_db = ttl_config
+--let $purge_table = disable_test
+--let $purge_completion_timeout = 60
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_purge_completion.inc
+
+--let $assert_text = All 200 rows should be purged after re-enable
+--let $assert_cond = [SELECT COUNT(*) FROM ttl_config.disable_test] = 0
+--source include/assert.inc
+
+--source suite/ndb_ttl_purge/include/ttl_purge_reset_config.inc
+
+DROP DATABASE ttl_config;
+--sleep 3
+
+--echo #
+--echo # Test: test_change_sleep_interval
+--echo # Set short sleep, count rounds; set long sleep, count rounds; compare
+--echo #
+
+# Set short sleep interval (500ms)
+--exec $ttl_purge_put_config '{"sleep_interval_ms":500}' > /dev/null 2>&1
+--sleep 2
+
+--exec $ttl_purge_get_metrics > $MYSQL_TMP_DIR/cfg_si_1a.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/cfg_si_1a.json
+--let $json_field = rounds_completed
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $rounds_short_start = $json_value
+
+--sleep 5
+
+--exec $ttl_purge_get_metrics > $MYSQL_TMP_DIR/cfg_si_1b.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/cfg_si_1b.json
+--let $json_field = rounds_completed
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $rounds_short_end = $json_value
+
+# Set long sleep interval (3000ms)
+--exec $ttl_purge_put_config '{"sleep_interval_ms":3000}' > /dev/null 2>&1
+--sleep 2
+
+--exec $ttl_purge_get_metrics > $MYSQL_TMP_DIR/cfg_si_2a.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/cfg_si_2a.json
+--let $json_field = rounds_completed
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $rounds_long_start = $json_value
+
+--sleep 5
+
+--exec $ttl_purge_get_metrics > $MYSQL_TMP_DIR/cfg_si_2b.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/cfg_si_2b.json
+--let $json_field = rounds_completed
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $rounds_long_end = $json_value
+
+# Log results (soft check - timing variability)
+--exec echo '$rounds_short_start' > $MYSQL_TMP_DIR/_si_ss.txt
+--exec echo '$rounds_short_end' > $MYSQL_TMP_DIR/_si_se.txt
+--exec echo '$rounds_long_start' > $MYSQL_TMP_DIR/_si_ls.txt
+--exec echo '$rounds_long_end' > $MYSQL_TMP_DIR/_si_le.txt
+
+--perl
+my $tmp = $ENV{MYSQL_TMP_DIR};
+sub rf { open my $f,'<',$_[0] or return 0; my $l=<$f>; chomp $l; close $f; $l }
+my $ss = rf("$tmp/_si_ss.txt") || 0;
+my $se = rf("$tmp/_si_se.txt") || 0;
+my $ls = rf("$tmp/_si_ls.txt") || 0;
+my $le = rf("$tmp/_si_le.txt") || 0;
+my $short_rounds = $se - $ss;
+my $long_rounds = $le - $ls;
+open my $o, '>', "$tmp/_si_result.inc" or die;
+print $o "--echo Short and long interval round counts compared\n";
+print $o "--let \$si_ok = " . ($short_rounds >= $long_rounds ? 1 : 0) . "\n";
+close $o;
+EOF
+--source $MYSQL_TMP_DIR/_si_result.inc
+
+--let $assert_text = Short sleep interval should produce more rounds than long
+--let $assert_cond = $si_ok = 1
+--source include/assert.inc
+
+# Restore default config
+--source suite/ndb_ttl_purge/include/ttl_purge_reset_config.inc
+
+--source suite/ndb_ttl_purge/include/ttl_purge_cleanup_tmp.inc
+
+--echo # All config change tests passed

@@ -1,0 +1,142 @@
+DROP TABLE IF EXISTS test.sz;
+CREATE TABLE test.sz (
+col_a INT,
+col_b TIMESTAMP,
+col_c INT,
+PRIMARY KEY(col_a),
+UNIQUE KEY(col_c)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=TTL=66@col_b";
+ALTER TABLE test.sz COMMENT="NDB_TABLE=TTL=5@col_b";
+
+# ================================================
+# Case 6: ROLLBACK after TTL, plain INSERT (both expire)
+# ================================================
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 200);
+ROLLBACK;
+COMMIT;
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+COUNT(*)
+0
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+COUNT(*)
+0
+DELETE FROM sz;
+
+# ================================================
+# Case 7: COMMIT before TTL, ON DUP KEY UPDATE updates existing row
+# ================================================
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 200) ON DUPLICATE KEY UPDATE col_c = 201, col_b = NOW();
+COMMIT;
+COMMIT;
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+col_a	col_c
+1	201
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+col_a	col_c
+1	201
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+COUNT(*)
+0
+DELETE FROM sz;
+
+# ================================================
+# Case 8: COMMIT after TTL, ON DUP KEY does INSERT (row expired)
+# ================================================
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 200) ON DUPLICATE KEY UPDATE col_c = 201, col_b = NOW();
+COMMIT;
+COMMIT;
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+col_a	col_c
+1	200
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+col_a	col_c
+1	200
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+COUNT(*)
+0
+DELETE FROM sz;
+
+# ================================================
+# Case 9: COMMIT after TTL, ON DUP KEY does INSERT, both expire
+# ================================================
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 200) ON DUPLICATE KEY UPDATE col_c = 201, col_b = NOW();
+COMMIT;
+COMMIT;
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+COUNT(*)
+0
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+COUNT(*)
+0
+DELETE FROM sz;
+
+# ================================================
+# Case 10: ROLLBACK before TTL, ON DUP KEY does INSERT (fresh)
+# ================================================
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 200) ON DUPLICATE KEY UPDATE col_c = 201, col_b = NOW();
+ROLLBACK;
+COMMIT;
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+col_a	col_c
+1	200
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+col_a	col_c
+1	200
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+COUNT(*)
+0
+DELETE FROM sz;
+
+# ================================================
+# Case 11: ROLLBACK after TTL, ON DUP KEY does INSERT
+# ================================================
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 200) ON DUPLICATE KEY UPDATE col_c = 201, col_b = NOW();
+ROLLBACK;
+COMMIT;
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+col_a	col_c
+1	200
+SELECT col_a, col_c FROM sz WHERE col_a = 1;
+col_a	col_c
+1	200
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+COUNT(*)
+0
+DELETE FROM sz;
+
+# ================================================
+# Case 12: ROLLBACK after TTL, both expire
+# ================================================
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 100);
+BEGIN;
+INSERT INTO sz VALUES(1, SYSDATE(), 200) ON DUPLICATE KEY UPDATE col_c = 201, col_b = NOW();
+ROLLBACK;
+COMMIT;
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+COUNT(*)
+0
+SELECT COUNT(*) FROM sz WHERE col_a = 1;
+COUNT(*)
+0
+DELETE FROM sz;
+DROP TABLE test.sz;

@@ -425,6 +425,7 @@ int main(int argc, char *argv[]) {
                             globalConfigs.security.tls.certificateFile,
                             globalConfigs.security.tls.privateKeyFile);
   drogon::app().setThreadNum(globalConfigs.rest.numThreads);
+  drogon::app().setThreadStackSize(8 * 1024 * 1024);
   drogon::app().disableSession();
   drogon::app().registerBeginningAdvice([]() {
     auto addresses = drogon::app().getListeners();

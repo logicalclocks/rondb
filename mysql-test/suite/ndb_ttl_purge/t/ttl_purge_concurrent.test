@@ -1,0 +1,169 @@
+--source include/have_ndb.inc
+
+# suite/ndb_ttl_purge/t/ttl_purge_concurrent.test
+#
+# Concurrent operation tests (5 cases):
+#   - test_read_expired_rows
+#   - test_insert_while_purging
+#   - test_update_expired_row
+#   - test_delete_expired_row
+#   - test_concurrent_api_calls (simplified: sequential)
+
+--source suite/ndb_ttl_purge/include/ttl_purge_setup.inc
+--source suite/ndb_ttl_purge/include/ttl_purge_reset_config.inc
+
+--echo #
+--echo # Test: test_read_expired_rows
+--echo # Insert already-expired rows, SELECT should return 0
+--echo #
+
+--let $ttl_db = ttl_concurrent
+--let $ttl_table = read_expired
+--let $ttl_seconds = 5
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+--let $insert_db = ttl_concurrent
+--let $insert_table = read_expired
+--let $insert_count = 10
+--let $insert_start_id = 1
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_expired.inc
+
+# Expired rows should be invisible immediately
+--let $assert_text = Expired rows should not be visible via SELECT
+--let $assert_cond = [SELECT COUNT(*) FROM ttl_concurrent.read_expired] = 0
+--source include/assert.inc
+
+DROP DATABASE ttl_concurrent;
+--sleep 3
+
+--echo #
+--echo # Test: test_insert_while_purging
+--echo # Insert expired rows, then insert valid rows; valid rows survive
+--echo #
+
+--let $ttl_db = ttl_concurrent
+--let $ttl_table = insert_while
+--let $ttl_seconds = 5
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+# Insert 50 expired rows
+--let $insert_db = ttl_concurrent
+--let $insert_table = insert_while
+--let $insert_count = 50
+--let $insert_start_id = 1
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_expired.inc
+
+# Insert 20 valid rows (these should survive purge)
+--let $insert_db = ttl_concurrent
+--let $insert_table = insert_while
+--let $insert_count = 20
+--let $insert_start_id = 1000
+--source suite/ndb_ttl_purge/include/ttl_purge_insert_valid.inc
+
+# Wait for expired rows to be purged
+--sleep 15
+
+# Valid rows should survive
+--let $assert_text = Valid rows should survive purge
+--let $assert_cond = [SELECT COUNT(*) FROM ttl_concurrent.insert_while] >= 20
+--source include/assert.inc
+
+DROP DATABASE ttl_concurrent;
+--sleep 3
+
+--echo #
+--echo # Test: test_update_expired_row
+--echo # UPDATE an expired row should affect 0 rows
+--echo #
+
+--let $ttl_db = ttl_concurrent
+--let $ttl_table = update_test
+--let $ttl_seconds = 5
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+INSERT INTO ttl_concurrent.update_test (id, ttl_col, data)
+  VALUES (1, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired');
+
+# Try to UPDATE expired row - should affect 0 rows
+UPDATE ttl_concurrent.update_test SET data = 'updated' WHERE id = 1;
+SELECT ROW_COUNT() INTO @update_rc;
+
+--let $assert_text = UPDATE on expired row should affect 0 rows
+--let $assert_cond = [SELECT @update_rc] = 0
+--source include/assert.inc
+
+# Verify table appears empty
+--let $assert_text = Table should appear empty after expired insert
+--let $assert_cond = [SELECT COUNT(*) FROM ttl_concurrent.update_test] = 0
+--source include/assert.inc
+
+DROP DATABASE ttl_concurrent;
+--sleep 3
+
+--echo #
+--echo # Test: test_delete_expired_row
+--echo # DELETE an expired row should affect 0 rows
+--echo #
+
+--let $ttl_db = ttl_concurrent
+--let $ttl_table = delete_test
+--let $ttl_seconds = 5
+--source suite/ndb_ttl_purge/include/ttl_purge_create_table.inc
+
+INSERT INTO ttl_concurrent.delete_test (id, ttl_col, data)
+  VALUES (1, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired');
+
+# Try to DELETE expired row - should affect 0 rows
+DELETE FROM ttl_concurrent.delete_test WHERE id = 1;
+SELECT ROW_COUNT() INTO @delete_rc;
+
+--let $assert_text = DELETE on expired row should affect 0 rows
+--let $assert_cond = [SELECT @delete_rc] = 0
+--source include/assert.inc
+
+--let $assert_text = Table should appear empty
+--let $assert_cond = [SELECT COUNT(*) FROM ttl_concurrent.delete_test] = 0
+--source include/assert.inc
+
+DROP DATABASE ttl_concurrent;
+--sleep 3
+
+--echo #
+--echo # Test: test_concurrent_api_calls (simplified)
+--echo # Sequential GET calls to each endpoint, all should succeed
+--echo #
+
+# Call each endpoint and verify we get valid JSON back
+--exec $ttl_purge_get_config > $MYSQL_TMP_DIR/conc_config.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/conc_config.json
+--let $json_field = enabled
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--echo Config endpoint returned OK
+
+--exec $ttl_purge_get_status > $MYSQL_TMP_DIR/conc_status.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/conc_status.json
+--let $json_field = state
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--echo Status endpoint returned OK
+
+--exec $ttl_purge_get_metrics > $MYSQL_TMP_DIR/conc_metrics.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/conc_metrics.json
+--let $json_field = rows_purged_total
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--echo Metrics endpoint returned OK
+
+--exec $ttl_purge_get_tables > $MYSQL_TMP_DIR/conc_tables.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/conc_tables.json
+--let $json_field = total
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--echo Tables endpoint returned OK
+
+--exec $ttl_purge_get_all > $MYSQL_TMP_DIR/conc_all.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/conc_all.json
+--let $json_field = config
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--echo Combined endpoint returned OK
+
+--source suite/ndb_ttl_purge/include/ttl_purge_cleanup_tmp.inc
+
+--echo # All concurrent operation tests passed

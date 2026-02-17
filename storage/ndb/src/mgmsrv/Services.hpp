@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -137,6 +137,7 @@ class MgmApiSession : public SocketServer::Session {
   void set_hostname(Parser_t::Context &ctx, const class Properties &args);
   void activate(Parser_t::Context &ctx, const class Properties &args);
   void deactivate(Parser_t::Context &ctx, const class Properties &args);
+  void set_config_param(Parser_t::Context &ctx, const class Properties &args);
   void start(Parser_t::Context &ctx, const class Properties &args);
   void startAll(Parser_t::Context &ctx, const class Properties &args);
   void startTls(Parser_t::Context &ctx, const class Properties &args);

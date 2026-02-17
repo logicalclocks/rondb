@@ -1,0 +1,143 @@
+# ttl_backup_disk.test
+#
+# Case 46g: Disk column (STORAGE DISK) + TTL through backup/restore cycle.
+#
+# Uses tablespace infrastructure (logfile group + tablespace).
+# Table has col_d INT STORAGE DISK in addition to TTL on col_b.
+#
+# Flow:
+#   1. Insert 4 rows with disk data, wait TTL -> 1 row (row 3)
+#   2. Backup, drop, restore with --no-restore-disk-objects on meta step
+#   3. Verify disk data (col_d=30000) intact
+#   4. Insert new row, wait TTL -> verify it expires (TTL active)
+#   5. ALTER TTL=OFF -> all 5 physical rows with correct disk values
+#
+# NOTE: COUNT(*) uses an NDB access path that bypasses TTL filtering.
+# All row-existence checks use SELECT col_a ... instead.
+
+--source include/have_ndb.inc
+--source suite/ndb_ttl/include/ttl_backup_restore_setup.inc
+
+--disable_warnings
+DROP DATABASE IF EXISTS ttl_backup;
+--enable_warnings
+
+CREATE DATABASE ttl_backup;
+
+--echo #
+--echo # Case 46g: Disk column backup/restore with TTL
+--echo #
+
+# Create tablespace infrastructure
+CREATE LOGFILE GROUP lg_1
+  ADD UNDOFILE 'lg_1_undofile.dat'
+  INITIAL_SIZE 16M
+  UNDO_BUFFER_SIZE 1M
+  ENGINE NDB;
+
+CREATE TABLESPACE ts_1
+  ADD DATAFILE 'ts_1_datafile.dat'
+  USE LOGFILE GROUP lg_1
+  INITIAL_SIZE 64M
+  ENGINE NDB;
+
+CREATE TABLE ttl_backup.sz1 (
+    col_a INT,
+    col_b TIMESTAMP,
+    col_c INT,
+    col_d INT STORAGE DISK,
+    PRIMARY KEY(col_a)
+) TABLESPACE ts_1,
+  ENGINE = NDB,
+  COMMENT="NDB_TABLE=TTL=66@col_b";
+
+sleep 3;
+ALTER TABLE ttl_backup.sz1 COMMENT="NDB_TABLE=TTL=10@col_b";
+sleep 3;
+
+###############################################################################
+# Phase 1: Insert 4 rows with disk data
+###############################################################################
+
+BEGIN;
+INSERT INTO ttl_backup.sz1 VALUES(1, SYSDATE(), 100, 10000);
+INSERT INTO ttl_backup.sz1 VALUES(2, SYSDATE(), 200, 20000);
+INSERT INTO ttl_backup.sz1 VALUES(3, DATE_ADD(SYSDATE(), INTERVAL 1 DAY), 300, 30000);
+INSERT INTO ttl_backup.sz1 VALUES(4, SYSDATE(), 400, 40000);
+COMMIT;
+
+# Wait for TTL expiry: rows 1,2,4 expire; row 3 survives
+--let $ttl_wait_timeout = 20
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM ttl_backup.sz1 WHERE col_a = 1
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+
+SELECT col_a, col_c, col_d FROM ttl_backup.sz1;
+
+###############################################################################
+# Phase 2: Backup
+###############################################################################
+
+--source include/ndb_backup.inc
+
+###############################################################################
+# Phase 3: Drop and restore with --no-restore-disk-objects
+###############################################################################
+
+DROP TABLE ttl_backup.sz1;
+DROP DATABASE ttl_backup;
+sleep 3;
+
+# Meta restore: --no-restore-disk-objects because tablespace already exists
+--exec $NDB_RESTORE -b $the_backup_id -n 1 -m --disable-indexes --no-restore-disk-objects --include-databases=ttl_backup $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT 2>&1
+--exec $NDB_RESTORE -b $the_backup_id -n 1 -r --include-databases=ttl_backup $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT 2>&1
+--exec $NDB_RESTORE -b $the_backup_id -n 2 -r --include-databases=ttl_backup $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT 2>&1
+--exec $NDB_RESTORE -b $the_backup_id -n 1 --rebuild-indexes --include-databases=ttl_backup $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT 2>&1
+
+# Create database on mysqld side to enable NDB table discovery
+--disable_warnings
+CREATE DATABASE IF NOT EXISTS ttl_backup;
+--enable_warnings
+
+--let $ttl_sync_db = ttl_backup
+--let $ttl_sync_table = sz1
+--source suite/ndb_ttl/include/ttl_backup_wait_schema_sync.inc
+
+###############################################################################
+# Phase 4: Verify disk data intact
+###############################################################################
+
+SELECT col_a, col_c, col_d FROM ttl_backup.sz1;
+
+###############################################################################
+# Phase 5: Insert new row, verify TTL still active
+###############################################################################
+
+INSERT INTO ttl_backup.sz1 VALUES(5, SYSDATE(), 500, 50000);
+
+# Wait for new row to expire
+--let $ttl_wait_timeout = 20
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM ttl_backup.sz1 WHERE col_a = 5
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+
+# Only row 3 remains (future timestamp)
+SELECT col_a, col_c, col_d FROM ttl_backup.sz1;
+
+###############################################################################
+# Phase 6: ALTER TTL=OFF -> all physical rows visible with disk values
+###############################################################################
+
+ALTER TABLE ttl_backup.sz1 COMMENT="NDB_TABLE=TTL=OFF";
+
+SELECT col_a, col_c, col_d FROM ttl_backup.sz1 ORDER BY col_a;
+
+###############################################################################
+# Cleanup
+###############################################################################
+
+DROP TABLE ttl_backup.sz1;
+DROP DATABASE ttl_backup;
+ALTER TABLESPACE ts_1 DROP DATAFILE 'ts_1_datafile.dat';
+DROP TABLESPACE ts_1;
+DROP LOGFILE GROUP lg_1 ENGINE NDB;
+--remove_file $NDB_TOOLS_OUTPUT
+--source suite/ndb/include/backup_restore_cleanup.inc

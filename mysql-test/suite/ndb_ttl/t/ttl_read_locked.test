@@ -1,0 +1,491 @@
+# ttl_read_locked.test
+#
+# Concurrent SELECT ... FOR SHARE (READ_LOCKED) tests for TTL functionality.
+# Migrated from ttl_test_suite.py Cases 28, 48, 29.
+#
+# These tests exercise FOR SHARE locking interactions with TTL expiry:
+#   Case 28: FULLY_REPLICATED table with FOR SHARE
+#   Case 48: Table with UNIQUE KEY and FOR SHARE (uses global sz)
+#   Case 29: FULLY_REPLICATED table with FOR SHARE (alt pattern)
+#
+# NOTE: Case 49 is DISABLED -- do NOT run it.
+#   FULLY_REPLICATED + UNIQUE INDEX causes binlog replication deadlock
+#   ("Waiting for dependent transaction to commit" on replica during DROP TABLE).
+#
+# Each of Cases 28 and 29 creates its own table sz1 with FULLY_REPLICATED=1.
+# Case 48 uses the global sz table (which has UNIQUE KEY on col_c).
+
+--source include/have_ndb.inc
+
+# Establish two sessions against the same MySQL server
+connect (conn_a, localhost, root,,test,$MASTER_MYPORT,);
+connect (conn_b, localhost, root,,test,$MASTER_MYPORT,);
+
+###############################################################################
+--echo #
+--echo # Case 28: FULLY_REPLICATED table with FOR SHARE locking
+--echo #
+# Table sz1: FULLY_REPLICATED=1, KEY(col_c) (non-unique), TTL=5@col_b
+#
+# Thread A: INSERT 10 rows, verify before TTL, verify after TTL (all gone),
+#           re-insert 10 rows, verify they exist.
+# Thread B: SELECT ... FOR SHARE on col_a <= 5 (locks 5 rows),
+#           wait past TTL, verify locked rows survive but unlocked rows expire,
+#           COMMIT (release locks), verify all expired.
+###############################################################################
+
+--disable_warnings
+DROP TABLE IF EXISTS test.sz1;
+--enable_warnings
+
+CREATE TABLE test.sz1 (
+    col_a INT,
+    col_b TIMESTAMP,
+    col_c INT,
+    PRIMARY KEY(col_a),
+    KEY(col_c)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=FULLY_REPLICATED=1,TTL=5@col_b";
+
+# Wait for schema propagation
+sleep 3;
+
+# -- Thread A --
+
+connection conn_a;
+BEGIN;
+INSERT INTO sz1 VALUES
+    (1, SYSDATE(), 1), (2, SYSDATE(), 2), (3, SYSDATE(), 3),
+    (4, SYSDATE(), 4), (5, SYSDATE(), 5), (6, SYSDATE(), 6),
+    (7, SYSDATE(), 7), (8, SYSDATE(), 8), (9, SYSDATE(), 9),
+    (10, SYSDATE(), 10);
+COMMIT;
+
+# Wait briefly (before TTL=5s)
+sleep 2;
+
+BEGIN;
+
+# All 10 rows should be visible (not yet expired)
+--sorted_result
+SELECT col_a, col_c FROM sz1;
+
+SELECT col_a, col_c FROM sz1 WHERE col_a = 6;
+
+--sorted_result
+SELECT col_a, col_c FROM sz1 WHERE col_a >= 6;
+
+SELECT col_a, col_c FROM sz1 WHERE col_c = 6;
+
+--sorted_result
+SELECT col_a, col_c FROM sz1 WHERE col_c <= 6;
+
+# Wait past TTL (6s > TTL=5s from the INSERT time + 2s already = total ~8s)
+sleep 6;
+
+# All rows should be expired now
+SELECT COUNT(*) FROM sz1;
+
+COMMIT;
+
+SELECT COUNT(*) FROM sz1;
+
+# Re-insert 10 rows for thread B to use
+BEGIN;
+INSERT INTO sz1 VALUES
+    (1, SYSDATE(), 1), (2, SYSDATE(), 2), (3, SYSDATE(), 3),
+    (4, SYSDATE(), 4), (5, SYSDATE(), 5), (6, SYSDATE(), 6),
+    (7, SYSDATE(), 7), (8, SYSDATE(), 8), (9, SYSDATE(), 9),
+    (10, SYSDATE(), 10);
+COMMIT;
+
+sleep 2;
+
+# All 10 rows visible
+--sorted_result
+SELECT col_a, col_c FROM sz1;
+
+# -- Thread B --
+# In Python, thread B sleeps 15s then starts. Since thread A finishes
+# by ~T=13, thread B effectively starts right after A. The re-inserted
+# rows are ~2s old at this point.
+
+connection conn_b;
+BEGIN;
+
+# Lock rows 1-5 FOR SHARE
+--sorted_result
+SELECT col_a, col_c FROM sz1 WHERE col_a <= 5 FOR SHARE;
+
+# Wait past TTL for the re-inserted rows (6s > TTL=5s remaining)
+sleep 6;
+
+# Locked rows (1-5) should survive; unlocked rows (6-10) should be expired
+--sorted_result
+SELECT col_a, col_c FROM sz1;
+
+# PK lookup: locked row
+SELECT col_a, col_c FROM sz1 WHERE col_a = 3;
+
+# PK lookup: unlocked row (expired)
+SELECT COUNT(*) FROM sz1 WHERE col_a = 8;
+
+# Range scan: rows 3,4,5 locked (from >= 3), 6-10 expired
+--sorted_result
+SELECT col_a, col_c FROM sz1 WHERE col_a >= 3;
+
+# Range scan: rows 1-5 locked (all <= 9 that are alive)
+--sorted_result
+SELECT col_a, col_c FROM sz1 WHERE col_a <= 9;
+
+# Index scan on col_c: locked row
+SELECT col_a, col_c FROM sz1 WHERE col_c = 3;
+
+# Index scan on col_c: unlocked (expired)
+SELECT COUNT(*) FROM sz1 WHERE col_c = 8;
+
+# Index range: rows with col_c >= 3 that are locked: 3,4,5
+--sorted_result
+SELECT col_a, col_c FROM sz1 WHERE col_c >= 3;
+
+# Index range: rows with col_c <= 9 that are locked: 1-5
+--sorted_result
+SELECT col_a, col_c FROM sz1 WHERE col_c <= 9;
+
+COMMIT;
+
+# After releasing locks, all rows should be expired
+BEGIN;
+
+SELECT COUNT(*) FROM sz1;
+
+SELECT COUNT(*) FROM sz1 WHERE col_a = 3;
+
+SELECT COUNT(*) FROM sz1 WHERE col_a = 8;
+
+SELECT COUNT(*) FROM sz1 WHERE col_a >= 3;
+
+SELECT COUNT(*) FROM sz1 WHERE col_a <= 9;
+
+SELECT COUNT(*) FROM sz1 WHERE col_c = 3;
+
+SELECT COUNT(*) FROM sz1 WHERE col_c = 8;
+
+SELECT COUNT(*) FROM sz1 WHERE col_c >= 3;
+
+SELECT COUNT(*) FROM sz1 WHERE col_c <= 9;
+
+COMMIT;
+
+# Teardown for Case 28
+connection default;
+DROP TABLE test.sz1;
+
+###############################################################################
+--echo #
+--echo # Case 48: Table with UNIQUE KEY and FOR SHARE locking
+--echo #
+# Table sz: UNIQUE KEY(col_c), TTL=5@col_b (global table)
+#
+# Similar to Case 28, but uses the global sz table which has UNIQUE KEY
+# on col_c. The unique index lookup (col_c = 8) acquires a lock implicitly,
+# so that row survives TTL expiry while the transaction is open.
+#
+# Thread A: INSERT 10 rows, verify, SELECT col_c=8 (unique index -> lock),
+#           wait past TTL, verify 1 row survives (the locked one), COMMIT,
+#           re-insert, verify.
+# Thread B: FOR SHARE on col_a <= 5, wait past TTL, verify locked rows survive.
+#
+# NOTE: Thread A must use SELECT (not COUNT(*)) to check surviving rows.
+# COUNT(*) uses a different NDB access path that doesn't respect the
+# implicit lock for TTL visibility, always returning 0 for expired rows.
+###############################################################################
+
+--source suite/ndb_ttl/include/ttl_create_table.inc
+
+# -- Thread A --
+
+connection conn_a;
+BEGIN;
+INSERT INTO sz VALUES
+    (1, SYSDATE(), 1), (2, SYSDATE(), 2), (3, SYSDATE(), 3),
+    (4, SYSDATE(), 4), (5, SYSDATE(), 5), (6, SYSDATE(), 6),
+    (7, SYSDATE(), 7), (8, SYSDATE(), 8), (9, SYSDATE(), 9),
+    (10, SYSDATE(), 10);
+COMMIT;
+
+# Wait briefly (before TTL=5s)
+sleep 2;
+
+BEGIN;
+
+# All 10 rows should be visible
+--sorted_result
+SELECT col_a, col_c FROM sz;
+
+SELECT col_a, col_c FROM sz WHERE col_a = 6;
+
+--sorted_result
+SELECT col_a, col_c FROM sz WHERE col_a >= 6;
+
+# Unique index lookup on col_c = 8 acquires lock on the row implicitly
+SELECT col_a, col_c FROM sz WHERE col_c = 8;
+
+# Range scan on col_c (non-unique usage) -- no lock acquired
+--sorted_result
+SELECT col_a, col_c FROM sz WHERE col_c <= 8;
+
+# Wait past TTL (6s > TTL=5s, total ~8s from insert)
+sleep 6;
+
+# Only 1 row survives: col_c=8 which was locked by the unique index lookup
+# NOTE: Must use SELECT (not COUNT(*)) because COUNT(*) uses a different NDB
+# access path that bypasses the TTL lock visibility check.
+SELECT col_a, col_c FROM sz;
+
+COMMIT;
+
+# After releasing locks, all rows expired
+SELECT col_a, col_c FROM sz;
+
+# Re-insert for thread B
+BEGIN;
+INSERT INTO sz VALUES
+    (1, SYSDATE(), 1), (2, SYSDATE(), 2), (3, SYSDATE(), 3),
+    (4, SYSDATE(), 4), (5, SYSDATE(), 5), (6, SYSDATE(), 6),
+    (7, SYSDATE(), 7), (8, SYSDATE(), 8), (9, SYSDATE(), 9),
+    (10, SYSDATE(), 10);
+COMMIT;
+
+sleep 2;
+
+# All 10 rows visible
+--sorted_result
+SELECT col_a, col_c FROM sz;
+
+# -- Thread B --
+
+connection conn_b;
+BEGIN;
+
+# Lock rows 1-5 FOR SHARE
+--sorted_result
+SELECT col_a, col_c FROM sz WHERE col_a <= 5 FOR SHARE;
+
+# Wait past TTL (6s > TTL=5s remaining)
+sleep 6;
+
+# Locked rows (1-5) survive; unlocked rows (6-10) expired
+--sorted_result
+SELECT col_a, col_c FROM sz;
+
+SELECT col_a, col_c FROM sz WHERE col_a = 3;
+
+SELECT COUNT(*) FROM sz WHERE col_a = 8;
+
+--sorted_result
+SELECT col_a, col_c FROM sz WHERE col_a >= 3;
+
+--sorted_result
+SELECT col_a, col_c FROM sz WHERE col_a <= 9;
+
+SELECT col_a, col_c FROM sz WHERE col_c = 3;
+
+SELECT COUNT(*) FROM sz WHERE col_c = 8;
+
+--sorted_result
+SELECT col_a, col_c FROM sz WHERE col_c >= 3;
+
+--sorted_result
+SELECT col_a, col_c FROM sz WHERE col_c <= 9;
+
+COMMIT;
+
+# After releasing locks, all rows expired
+BEGIN;
+
+SELECT COUNT(*) FROM sz;
+
+SELECT COUNT(*) FROM sz WHERE col_a = 3;
+
+SELECT COUNT(*) FROM sz WHERE col_a = 8;
+
+SELECT COUNT(*) FROM sz WHERE col_a >= 3;
+
+SELECT COUNT(*) FROM sz WHERE col_a <= 9;
+
+SELECT COUNT(*) FROM sz WHERE col_c = 3;
+
+SELECT COUNT(*) FROM sz WHERE col_c = 8;
+
+SELECT COUNT(*) FROM sz WHERE col_c >= 3;
+
+SELECT COUNT(*) FROM sz WHERE col_c <= 9;
+
+COMMIT;
+
+# Teardown for Case 48
+connection default;
+DROP TABLE test.sz;
+
+###############################################################################
+--echo #
+--echo # Case 29: FULLY_REPLICATED table with FOR SHARE locking (alt)
+--echo #
+# Table sz1: FULLY_REPLICATED=1, KEY(col_c) (non-unique), TTL=5@col_b
+#
+# Same schema and logic as Case 28 (alternative timing pattern).
+# Thread A: INSERT 10 rows, verify before/after TTL, re-insert.
+# Thread B: FOR SHARE lock rows 1-5, verify locked rows survive TTL.
+###############################################################################
+
+--disable_warnings
+DROP TABLE IF EXISTS test.sz1;
+--enable_warnings
+
+CREATE TABLE test.sz1 (
+    col_a INT,
+    col_b TIMESTAMP,
+    col_c INT,
+    PRIMARY KEY(col_a),
+    KEY(col_c)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=FULLY_REPLICATED=1,TTL=5@col_b";
+
+# Wait for schema propagation
+sleep 3;
+
+# -- Thread A --
+
+connection conn_a;
+BEGIN;
+INSERT INTO sz1 VALUES
+    (1, SYSDATE(), 1), (2, SYSDATE(), 2), (3, SYSDATE(), 3),
+    (4, SYSDATE(), 4), (5, SYSDATE(), 5), (6, SYSDATE(), 6),
+    (7, SYSDATE(), 7), (8, SYSDATE(), 8), (9, SYSDATE(), 9),
+    (10, SYSDATE(), 10);
+COMMIT;
+
+# Wait briefly (before TTL=5s)
+sleep 2;
+
+BEGIN;
+
+# All 10 rows should be visible
+--sorted_result
+SELECT col_a, col_c FROM sz1;
+
+SELECT col_a, col_c FROM sz1 WHERE col_a = 6;
+
+--sorted_result
+SELECT col_a, col_c FROM sz1 WHERE col_a >= 6;
+
+SELECT col_a, col_c FROM sz1 WHERE col_c = 6;
+
+--sorted_result
+SELECT col_a, col_c FROM sz1 WHERE col_c <= 6;
+
+# Wait past TTL
+sleep 6;
+
+# All rows should be expired
+SELECT COUNT(*) FROM sz1;
+
+COMMIT;
+
+SELECT COUNT(*) FROM sz1;
+
+# Re-insert 10 rows for thread B
+BEGIN;
+INSERT INTO sz1 VALUES
+    (1, SYSDATE(), 1), (2, SYSDATE(), 2), (3, SYSDATE(), 3),
+    (4, SYSDATE(), 4), (5, SYSDATE(), 5), (6, SYSDATE(), 6),
+    (7, SYSDATE(), 7), (8, SYSDATE(), 8), (9, SYSDATE(), 9),
+    (10, SYSDATE(), 10);
+COMMIT;
+
+sleep 2;
+
+# All 10 rows visible
+--sorted_result
+SELECT col_a, col_c FROM sz1;
+
+# -- Thread B --
+
+connection conn_b;
+BEGIN;
+
+# Lock rows 1-5 FOR SHARE
+--sorted_result
+SELECT col_a, col_c FROM sz1 WHERE col_a <= 5 FOR SHARE;
+
+# Wait past TTL
+sleep 6;
+
+# Locked rows (1-5) survive; unlocked rows (6-10) expired
+--sorted_result
+SELECT col_a, col_c FROM sz1;
+
+SELECT col_a, col_c FROM sz1 WHERE col_a = 3;
+
+SELECT COUNT(*) FROM sz1 WHERE col_a = 8;
+
+--sorted_result
+SELECT col_a, col_c FROM sz1 WHERE col_a >= 3;
+
+--sorted_result
+SELECT col_a, col_c FROM sz1 WHERE col_a <= 9;
+
+SELECT col_a, col_c FROM sz1 WHERE col_c = 3;
+
+SELECT COUNT(*) FROM sz1 WHERE col_c = 8;
+
+--sorted_result
+SELECT col_a, col_c FROM sz1 WHERE col_c >= 3;
+
+--sorted_result
+SELECT col_a, col_c FROM sz1 WHERE col_c <= 9;
+
+COMMIT;
+
+# After releasing locks, all rows expired
+BEGIN;
+
+SELECT COUNT(*) FROM sz1;
+
+SELECT COUNT(*) FROM sz1 WHERE col_a = 3;
+
+SELECT COUNT(*) FROM sz1 WHERE col_a = 8;
+
+SELECT COUNT(*) FROM sz1 WHERE col_a >= 3;
+
+SELECT COUNT(*) FROM sz1 WHERE col_a <= 9;
+
+SELECT COUNT(*) FROM sz1 WHERE col_c = 3;
+
+SELECT COUNT(*) FROM sz1 WHERE col_c = 8;
+
+SELECT COUNT(*) FROM sz1 WHERE col_c >= 3;
+
+SELECT COUNT(*) FROM sz1 WHERE col_c <= 9;
+
+COMMIT;
+
+# Teardown for Case 29
+connection default;
+DROP TABLE test.sz1;
+
+###############################################################################
+# NOTE: Case 49 is DISABLED.
+# FULLY_REPLICATED + UNIQUE INDEX causes binlog replication deadlock
+# ("Waiting for dependent transaction to commit" on replica during DROP TABLE).
+# The original Python test suite also has this case disabled with the same note.
+###############################################################################
+
+###############################################################################
+# Final cleanup
+###############################################################################
+
+connection default;
+disconnect conn_a;
+disconnect conn_b;

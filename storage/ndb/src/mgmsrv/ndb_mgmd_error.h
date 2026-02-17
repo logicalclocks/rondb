@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2007, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -48,5 +48,6 @@
 #define INCORRECT_MGM_COMMAND 5066
 #define FAILED_SET_HOSTNAME_REQUEST 5067
 #define FAILED_SET_DOMAIN_ID_REQUEST 5069
+#define FAILED_SET_CONFIG_PARAM_REQUEST 5070
 
 #endif
