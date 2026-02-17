@@ -110,6 +110,20 @@ struct Free_page_data {
 #define MM_RG_COUNT 12
 
 /**
+ * A booking record representing a reservation of memory for future allocation.
+ * The booking key must be presented at allocation time to access the booked
+ * memory. See BOOKING_DESIGN.md for details.
+ */
+struct Booking {
+  Uint32 m_key;              /**< Unique key (non-zero when active, 0 = free slot) */
+  Uint32 m_resource_id;      /**< Resource group ID */
+  Uint64 m_total_words;      /**< Originally booked word count */
+  Uint64 m_remaining_words;  /**< Words not yet allocated from this booking */
+  Uint32 m_pages_reserved;   /**< Remaining booked pages from reserved area */
+  Uint32 m_pages_shared;     /**< Remaining booked pages from shared area */
+};
+
+/**
   Information of restriction and current usage of shared global page memory.
 */
 class Resource_limits {
@@ -177,6 +191,22 @@ class Resource_limits {
     See documentation for Resource_limit.
   */
   Resource_limit m_limit[MM_RG_COUNT];
+
+  /**
+   * Booking support: array of active bookings and global booking state.
+   * See BOOKING_DESIGN.md for full details.
+   */
+  static const Uint32 MAX_BOOKINGS = 64;
+  Booking m_bookings[MAX_BOOKINGS];
+  Uint32 m_next_booking_key;   /**< Monotonically increasing key generator */
+  Uint32 m_shared_booked;      /**< Total booked pages from shared pool */
+
+  /**
+   * Find a booking record by key.
+   * Returns pointer to the booking or nullptr if not found.
+   */
+  Booking* find_booking(Uint32 key);
+  const Booking* find_booking(Uint32 key) const;
 
   /**
     Keep 10% of unreserved shared memory only for high priority resource
@@ -377,6 +407,38 @@ public:
 
   void check(Uint32) const;
   void dump() const;
+
+  /**
+   * Book memory (in words) for a resource group.
+   * Returns a booking key > 0 on success, 0 on failure.
+   * Booked memory is invisible to non-keyed allocations.
+   */
+  Uint32 book_memory(Uint32 id, Uint64 words);
+
+  /**
+   * Remove a booking. The remaining (unallocated) portion is released
+   * back to the available pool. Already-allocated memory stays as
+   * normal allocations.
+   */
+  void remove_booking(Uint32 key);
+
+  /**
+   * Called during allocation with a booking key. Reverses booking
+   * counters for the consumed amount so that normal
+   * post_alloc_resource_pages can proceed correctly.
+   * Returns the number of words consumed from the booking.
+   */
+  Uint64 consume_booking(Uint32 key, Uint64 words_allocated);
+
+  /**
+   * Check if a booking key is valid for the given resource group.
+   */
+  bool is_valid_booking(Uint32 key, Uint32 resource_id) const;
+
+  /**
+   * Get remaining words in a booking.
+   */
+  Uint64 get_booking_remaining(Uint32 key) const;
 };
 
 class Ndbd_mem_manager {
@@ -474,6 +536,20 @@ class Ndbd_mem_manager {
    * available during restarts.
    */
   void init_resource_spare(Uint32 id, Uint32 pct);
+
+  /**
+   * Book memory (in words) for a resource group. Returns a booking key (>0)
+   * on success, 0 on failure. The booked memory becomes invisible to
+   * non-keyed allocations. See BOOKING_DESIGN.md for details.
+   */
+  Uint32 book_memory(Uint32 type, Uint64 words);
+
+  /**
+   * Remove a booking. The remaining (unallocated) portion is released back
+   * to the available pool. Already-allocated memory stays as normal
+   * allocations.
+   */
+  void remove_booking(Uint32 booking_key);
 
   /**
    * get_memroot retrieves the memory address of the very first page in the
@@ -584,13 +660,15 @@ class Ndbd_mem_manager {
                    enum AllocZone,
                    bool allow_use_spare_page = false,
                    bool locked = false,
-                   bool use_max_part = true);
+                   bool use_max_part = true,
+                   Uint32 booking_key = 0);
   void alloc_pages(Uint32 type,
                    Uint32* i,
                    Uint32 *cnt,
                    Uint32 min = 1,
                    AllocZone zone = NDB_ZONE_LE_32,
-                   bool locked = false);
+                   bool locked = false,
+                   Uint32 booking_key = 0);
   void release_page(Uint32 type, Uint32 i, bool locked = false);
   void release_pages(Uint32 type, Uint32 i, Uint32 cnt, bool locked = false);
 
@@ -917,9 +995,10 @@ Uint32 Resource_limits::get_resource_free(Uint32 id, bool use_spare) const
   const Resource_limit& rl = m_limit[id - 1];
   Uint32 spare = use_spare ? rl.m_spare : 0;
   Uint32 used_reserve = rl.m_max + spare;
-  if (used_reserve > rl.m_curr)
+  Uint32 committed = rl.m_curr + rl.m_booked_pages;
+  if (used_reserve > committed)
   {
-     return (used_reserve - rl.m_curr);
+     return (used_reserve - committed);
   }
   return 0;
 }
@@ -932,9 +1011,10 @@ Resource_limits::get_resource_free_reserved(Uint32 id, bool use_spare) const
   const Resource_limit& rl = m_limit[id - 1];
   Uint32 spare = use_spare ? rl.m_spare : 0;
   Uint32 used_reserve = rl.m_min + spare;
-  if (used_reserve > rl.m_curr)
+  Uint32 committed = rl.m_curr + rl.m_booked_pages_reserved;
+  if (used_reserve > committed)
   {
-     return (used_reserve - rl.m_curr);
+     return (used_reserve - committed);
   }
   return 0;
 }
@@ -942,7 +1022,9 @@ Resource_limits::get_resource_free_reserved(Uint32 id, bool use_spare) const
 inline
 Uint32 Resource_limits::get_resource_free_shared(Uint32 id) const
 {
-  const Uint32 free_shared = m_shared - m_shared_in_use;
+  const Uint32 total_used = m_shared_in_use + m_shared_booked;
+  const Uint32 free_shared = (m_shared > total_used) ?
+    (m_shared - total_used) : 0;
   require(id <= MM_RG_COUNT);
   const Resource_limit &rl = m_limit[id - 1];
 

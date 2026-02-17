@@ -446,6 +446,10 @@ Resource_limits::Resource_limits() {
   m_medium_prio_free_limit = UINT32_MAX;
   m_ultra_prio_free_limit = 0;
   memset(m_limit, 0, sizeof(m_limit));
+  // Booking support
+  memset(m_bookings, 0, sizeof(m_bookings));
+  m_next_booking_key = 1;
+  m_shared_booked = 0;
 }
 
 #ifndef VM_TRACE
@@ -487,6 +491,26 @@ Resource_limits::check(Uint32 line) const {
     dump();
     require(false);
   }
+  /* Verify booking invariants */
+  Uint32 sum_booked_shared = 0;
+  for (Uint32 i = 0; i < MM_RG_COUNT; i++)
+  {
+    if (rl[i].m_booked_pages != 0 ||
+        rl[i].m_booked_pages_reserved != 0 ||
+        rl[i].m_booked_pages_shared != 0)
+    {
+      /* booked_pages == booked_pages_reserved + booked_pages_shared */
+      require(rl[i].m_booked_pages ==
+              rl[i].m_booked_pages_reserved + rl[i].m_booked_pages_shared);
+      /* booked_pages must be consistent with booked_words */
+      Uint32 expected_pages =
+        (Uint32)((rl[i].m_booked_words + GLOBAL_PAGE_SIZE_WORDS - 1) /
+                 GLOBAL_PAGE_SIZE_WORDS);
+      require(rl[i].m_booked_pages == expected_pages);
+    }
+    sum_booked_shared += rl[i].m_booked_pages_shared;
+  }
+  require(sum_booked_shared == m_shared_booked);
 #endif
 }
 
@@ -501,8 +525,9 @@ Resource_limits::dump() const
 {
   g_eventLogger->info(
       "ri: global "
-      "max_page: %u free_reserved: %u in_use: %u allocated: %u",
-      m_max_page, m_free_reserved, m_in_use, m_allocated);
+      "max_page: %u free_reserved: %u in_use: %u allocated: %u"
+      " shared_booked: %u",
+      m_max_page, m_free_reserved, m_in_use, m_allocated, m_shared_booked);
   for (Uint32 i = 0; i < MM_RG_COUNT; i++)
   {
     if (m_limit[i].m_resource_id == 0 &&
@@ -513,13 +538,37 @@ Resource_limits::dump() const
       continue;
     }
     g_eventLogger->info(
-        "ri: %u id: %u min: %u curr: %u max: %u spare: %u",
+        "ri: %u id: %u min: %u curr: %u max: %u spare: %u"
+        " booked_pages: %u (res: %u shr: %u)",
         i,
         m_limit[i].m_resource_id,
         m_limit[i].m_min,
         m_limit[i].m_curr,
         m_limit[i].m_max,
-        m_limit[i].m_spare);
+        m_limit[i].m_spare,
+        m_limit[i].m_booked_pages,
+        m_limit[i].m_booked_pages_reserved,
+        m_limit[i].m_booked_pages_shared);
+  }
+  Uint32 active_bookings = 0;
+  for (Uint32 i = 0; i < MAX_BOOKINGS; i++)
+  {
+    if (m_bookings[i].m_key != 0)
+    {
+      active_bookings++;
+      g_eventLogger->info(
+          "ri: booking key: %u resource: %u remaining_words: %llu"
+          " pages_res: %u pages_shr: %u",
+          m_bookings[i].m_key,
+          m_bookings[i].m_resource_id,
+          (unsigned long long)m_bookings[i].m_remaining_words,
+          m_bookings[i].m_pages_reserved,
+          m_bookings[i].m_pages_shared);
+    }
+  }
+  if (active_bookings > 0)
+  {
+    g_eventLogger->info("ri: active bookings: %u", active_bookings);
   }
 }
 
@@ -549,6 +598,10 @@ Resource_limits::init_resource_limit(Uint32 id,
   m_limit[id - 1].m_prio_memory = (Resource_limit::PrioMemory)prio;
   m_limit[id - 1].m_spare = 0;
   m_limit[id - 1].m_min = min;
+  m_limit[id - 1].m_booked_words = 0;
+  m_limit[id - 1].m_booked_pages = 0;
+  m_limit[id - 1].m_booked_pages_reserved = 0;
+  m_limit[id - 1].m_booked_pages_shared = 0;
 
   Uint32 reserved = min;
 
@@ -567,6 +620,234 @@ Resource_limits::init_resource_spare(Uint32 id, Uint32 pct)
   m_limit[id - 1].m_min = num_pages_new;
   m_limit[id - 1].m_max = num_pages_new;
   m_limit[id - 1].m_spare = num_pages_spare;
+}
+
+/**
+ * Booking support - see BOOKING_DESIGN.md for details.
+ */
+
+Booking*
+Resource_limits::find_booking(Uint32 key)
+{
+  for (Uint32 i = 0; i < MAX_BOOKINGS; i++)
+  {
+    if (m_bookings[i].m_key == key)
+    {
+      return &m_bookings[i];
+    }
+  }
+  return nullptr;
+}
+
+const Booking*
+Resource_limits::find_booking(Uint32 key) const
+{
+  for (Uint32 i = 0; i < MAX_BOOKINGS; i++)
+  {
+    if (m_bookings[i].m_key == key)
+    {
+      return &m_bookings[i];
+    }
+  }
+  return nullptr;
+}
+
+Uint32
+Resource_limits::book_memory(Uint32 id, Uint64 words)
+{
+  require(id > 0);
+  require(id <= MM_RG_COUNT);
+  require(words > 0);
+
+  Uint32 pages_needed =
+    (Uint32)((words + GLOBAL_PAGE_SIZE_WORDS - 1) / GLOBAL_PAGE_SIZE_WORDS);
+
+  /**
+   * Check that the resource group has enough free pages considering
+   * both the max limit and the shared+reserved availability.
+   */
+  Uint32 free_total = get_resource_free(id, false);
+  if (free_total < pages_needed)
+  {
+    return 0;
+  }
+  Uint32 free_res = get_resource_free_reserved(id, false);
+  Uint32 free_shr = get_resource_free_shared(id);
+  if ((free_res + free_shr) < pages_needed)
+  {
+    return 0;
+  }
+
+  /**
+   * Find a free booking slot.
+   */
+  Uint32 slot = MAX_BOOKINGS;
+  for (Uint32 i = 0; i < MAX_BOOKINGS; i++)
+  {
+    if (m_bookings[i].m_key == 0)
+    {
+      slot = i;
+      break;
+    }
+  }
+  if (slot == MAX_BOOKINGS)
+  {
+    /* No free booking slots available */
+    return 0;
+  }
+
+  /**
+   * Compute the split between reserved and shared memory,
+   * using the same logic as post_alloc_resource_pages.
+   */
+  Uint32 from_reserved = (pages_needed <= free_res) ? pages_needed : free_res;
+  Uint32 from_shared = pages_needed - from_reserved;
+
+  /**
+   * Update per-resource booking counters.
+   */
+  m_limit[id - 1].m_booked_words += words;
+  m_limit[id - 1].m_booked_pages += pages_needed;
+  m_limit[id - 1].m_booked_pages_reserved += from_reserved;
+  m_limit[id - 1].m_booked_pages_shared += from_shared;
+
+  /**
+   * Update global shared booking counter.
+   */
+  m_shared_booked += from_shared;
+
+  /**
+   * Populate booking record.
+   */
+  Uint32 key = m_next_booking_key++;
+  if (m_next_booking_key == 0)
+  {
+    /* Wrap around, skip 0 since it means "no booking" */
+    m_next_booking_key = 1;
+  }
+
+  m_bookings[slot].m_key = key;
+  m_bookings[slot].m_resource_id = id;
+  m_bookings[slot].m_total_words = words;
+  m_bookings[slot].m_remaining_words = words;
+  m_bookings[slot].m_pages_reserved = from_reserved;
+  m_bookings[slot].m_pages_shared = from_shared;
+
+  return key;
+}
+
+void
+Resource_limits::remove_booking(Uint32 key)
+{
+  require(key != 0);
+  Booking *booking = find_booking(key);
+  if (booking == nullptr)
+  {
+    /* Booking was already fully consumed and auto-deactivated. */
+    return;
+  }
+
+  Uint32 id = booking->m_resource_id;
+
+  /**
+   * Reverse the remaining booking counters.
+   * Already-allocated memory (consumed part) stays in m_curr.
+   */
+  Uint32 pages_remaining = booking->m_pages_reserved +
+                           booking->m_pages_shared;
+
+  m_limit[id - 1].m_booked_words -= booking->m_remaining_words;
+  m_limit[id - 1].m_booked_pages -= pages_remaining;
+  m_limit[id - 1].m_booked_pages_reserved -= booking->m_pages_reserved;
+  m_limit[id - 1].m_booked_pages_shared -= booking->m_pages_shared;
+  m_shared_booked -= booking->m_pages_shared;
+
+  /**
+   * Deactivate the booking record.
+   */
+  memset(booking, 0, sizeof(*booking));
+}
+
+Uint64
+Resource_limits::consume_booking(Uint32 key, Uint64 words_allocated)
+{
+  require(key != 0);
+  Booking *booking = find_booking(key);
+  require(booking != nullptr);
+
+  Uint64 use_words = words_allocated;
+  if (use_words > booking->m_remaining_words)
+  {
+    use_words = booking->m_remaining_words;
+  }
+
+  Uint32 id = booking->m_resource_id;
+
+  /**
+   * Compute page delta: how many fewer pages are needed after consuming
+   * use_words from the booking.
+   */
+  Uint32 old_pages = (Uint32)((booking->m_remaining_words +
+                                GLOBAL_PAGE_SIZE_WORDS - 1) /
+                               GLOBAL_PAGE_SIZE_WORDS);
+  booking->m_remaining_words -= use_words;
+  Uint32 new_pages = (Uint32)((booking->m_remaining_words +
+                                GLOBAL_PAGE_SIZE_WORDS - 1) /
+                               GLOBAL_PAGE_SIZE_WORDS);
+  /**
+   * Handle the case when remaining_words becomes 0.
+   * In that case new_pages computed above is 0 (since (0+8191)/8192 = 0).
+   */
+  Uint32 delta_pages = old_pages - new_pages;
+
+  if (delta_pages > 0)
+  {
+    /**
+     * Reverse delta_pages from booking counters, reserved first.
+     */
+    Uint32 res_reverse = (delta_pages <= booking->m_pages_reserved) ?
+                          delta_pages : booking->m_pages_reserved;
+    Uint32 shr_reverse = delta_pages - res_reverse;
+
+    m_limit[id - 1].m_booked_pages -= delta_pages;
+    m_limit[id - 1].m_booked_pages_reserved -= res_reverse;
+    m_limit[id - 1].m_booked_pages_shared -= shr_reverse;
+    m_shared_booked -= shr_reverse;
+    booking->m_pages_reserved -= res_reverse;
+    booking->m_pages_shared -= shr_reverse;
+  }
+
+  m_limit[id - 1].m_booked_words -= use_words;
+
+  /**
+   * If all words consumed, deactivate the booking.
+   */
+  if (booking->m_remaining_words == 0)
+  {
+    assert(booking->m_pages_reserved == 0);
+    assert(booking->m_pages_shared == 0);
+    memset(booking, 0, sizeof(*booking));
+  }
+
+  return use_words;
+}
+
+bool
+Resource_limits::is_valid_booking(Uint32 key, Uint32 resource_id) const
+{
+  if (key == 0) return false;
+  const Booking *booking = find_booking(key);
+  if (booking == nullptr) return false;
+  return (booking->m_resource_id == resource_id);
+}
+
+Uint64
+Resource_limits::get_booking_remaining(Uint32 key) const
+{
+  if (key == 0) return 0;
+  const Booking *booking = find_booking(key);
+  if (booking == nullptr) return 0;
+  return booking->m_remaining_words;
 }
 
 /**
@@ -660,6 +941,30 @@ Ndbd_mem_manager::set_prio_free_limits(Uint32 res)
 {
   mt_mem_manager_lock();
   m_resource_limits.set_prio_free_limits(res);
+  mt_mem_manager_unlock();
+}
+
+Uint32
+Ndbd_mem_manager::book_memory(Uint32 type, Uint64 words)
+{
+  Uint32 idx = type & RG_MASK;
+  assert(idx && idx <= MM_RG_COUNT);
+  mt_mem_manager_lock();
+  Uint32 key = m_resource_limits.book_memory(idx, words);
+  if (key != 0)
+  {
+    m_resource_limits.check(__LINE__);
+  }
+  mt_mem_manager_unlock();
+  return key;
+}
+
+void
+Ndbd_mem_manager::remove_booking(Uint32 booking_key)
+{
+  mt_mem_manager_lock();
+  m_resource_limits.remove_booking(booking_key);
+  m_resource_limits.check(__LINE__);
   mt_mem_manager_unlock();
 }
 
@@ -1542,11 +1847,24 @@ Ndbd_mem_manager::alloc_page(Uint32 type,
                              AllocZone zone,
                              bool use_spare,
                              bool locked,
-                             bool use_max_part)
+                             bool use_max_part,
+                             Uint32 booking_key)
 {
   Uint32 idx = type & RG_MASK;
   assert(idx && idx <= MM_RG_COUNT);
   if (!locked) mt_mem_manager_lock();
+
+  /**
+   * If a booking key is provided, consume from the booking first.
+   * This reverses the booking counters so the subsequent resource limit
+   * checks see the restored availability for this keyed allocation.
+   */
+  if (booking_key != 0)
+  {
+    assert(m_resource_limits.is_valid_booking(booking_key, idx));
+    m_resource_limits.consume_booking(booking_key,
+                                      (Uint64)GLOBAL_PAGE_SIZE_WORDS);
+  }
 
   Uint32 cnt = 1;
   const Uint32 min = 1;
@@ -1711,10 +2029,23 @@ void Ndbd_mem_manager::release_page(Uint32 type, Uint32 i, bool locked) {
 }
 
 void Ndbd_mem_manager::alloc_pages(Uint32 type, Uint32 *i, Uint32 *cnt,
-                                   Uint32 min, AllocZone zone, bool locked) {
+                                   Uint32 min, AllocZone zone, bool locked,
+                                   Uint32 booking_key) {
   Uint32 idx = type & RG_MASK;
   assert(idx && idx <= MM_RG_COUNT);
   if (!locked) mt_mem_manager_lock();
+
+  /**
+   * If a booking key is provided, consume from the booking first.
+   * This reverses the booking counters so the subsequent resource limit
+   * checks see the restored availability for this keyed allocation.
+   */
+  if (booking_key != 0)
+  {
+    assert(m_resource_limits.is_valid_booking(booking_key, idx));
+    m_resource_limits.consume_booking(booking_key,
+                                      (Uint64)(*cnt) * GLOBAL_PAGE_SIZE_WORDS);
+  }
 
   Uint32 req = *cnt;
   const Uint32 free_res =
@@ -1881,7 +2212,10 @@ static Ndbd_mem_manager *glob_mem_manager = nullptr;
 #define MEMORY_SEGMENT_SIZE (2 * 1024 * 1024)
 #define MEMORY_SEGMENT_PAGES 64
 void*
-ndb_malloc_backend(size_t size, unsigned int pool_id, unsigned int *i_val)
+ndb_malloc_backend(size_t size,
+                   unsigned int pool_id,
+                   unsigned int *i_val,
+                   unsigned int booking_key)
 {
   assert(size == MEMORY_SEGMENT_SIZE);
   *i_val = 0;
@@ -1889,7 +2223,10 @@ ndb_malloc_backend(size_t size, unsigned int pool_id, unsigned int *i_val)
   glob_mem_manager->alloc_pages(pool_id,
                                 i_val,
                                 &cnt,
-                                MEMORY_SEGMENT_PAGES);
+                                MEMORY_SEGMENT_PAGES,
+                                Ndbd_mem_manager::NDB_ZONE_LE_32,
+                                false,
+                                booking_key);
   void *mem = nullptr;
   if (cnt == MEMORY_SEGMENT_PAGES)
   {
@@ -1991,6 +2328,20 @@ class Test_mem_manager : public Ndbd_mem_manager {
   Test_mem_manager(Uint32 tot_mem, Uint32 data_mem, Uint32 trans_mem,
                    Uint32 data_mem2 = 0, Uint32 trans_mem2 = 0);
   ~Test_mem_manager();
+
+  /* Accessors for testing */
+  Uint32 get_resource_free(Uint32 id) const {
+    return m_resource_limits.get_resource_free(id, false);
+  }
+  Uint32 get_resource_free_reserved(Uint32 id) const {
+    return m_resource_limits.get_resource_free_reserved(id, false);
+  }
+  Uint32 get_resource_free_shared(Uint32 id) const {
+    return m_resource_limits.get_resource_free_shared(id);
+  }
+  Uint64 get_booking_remaining(Uint32 key) const {
+    return m_resource_limits.get_booking_remaining(key);
+  }
 
  private:
   Uint32 m_leaked_mem;
@@ -2098,6 +2449,336 @@ Test_mem_manager::~Test_mem_manager() {
 #define NDBD_MALLOC_PERF_TEST 0
 static void perf_test(int sz, int run_time);
 static void lc_ndbd_malloc_test();
+static void booking_test();
+
+/**
+ * Booking system unit tests
+ *
+ * Uses Test_mem_manager which sets up:
+ *   RG_DM:  data memory, reserved (m_min = m_max = data_mem)
+ *   RG_TM:  transaction memory, reserved + shared (m_min = trans_mem,
+ *           m_max = HIGHEST)
+ *   RG_QM:  query memory, shared only (m_min = 0, m_max = HIGHEST)
+ *
+ * Total = 300 pages: data_mem=100, trans_mem=100, shared=100
+ */
+static void
+booking_test()
+{
+  printf("Test booking system\n");
+
+  const Uint32 tot = 300;
+  const Uint32 data_sz = 100;
+  const Uint32 trans_sz = 100;
+  /* shared = tot - data_sz - trans_sz = 100 */
+  const Ndbd_mem_manager::AllocZone zone = Ndbd_mem_manager::NDB_ZONE_LE_32;
+
+  /* Test 1: Book from reserved resource (DataMemory) */
+  printf("  Test 1: Book from reserved resource (DataMemory)\n");
+  {
+    Test_mem_manager mem(tot, data_sz, trans_sz);
+
+    Uint32 free_before = mem.get_resource_free(RG_DM);
+    require(free_before == data_sz);
+
+    /* Book 10 pages worth of words */
+    Uint64 book_words = (Uint64)10 * GLOBAL_PAGE_SIZE_WORDS;
+    Uint32 key = mem.book_memory(RG_DM, book_words);
+    require(key != 0);
+
+    /* Free should decrease by 10 */
+    Uint32 free_after = mem.get_resource_free(RG_DM);
+    require(free_after == free_before - 10);
+
+    /* Free reserved should also decrease by 10 */
+    Uint32 free_res = mem.get_resource_free_reserved(RG_DM);
+    require(free_res == data_sz - 10);
+
+    /* Allocate 5 pages WITHOUT the booking key - should work since there
+     * are still 90 free pages visible */
+    Uint32 page_ids[5];
+    for (Uint32 i = 0; i < 5; i++)
+    {
+      bool ok = mem.alloc_page(RG_DM, &page_ids[i], zone);
+      require(ok);
+    }
+
+    /* Free should have decreased by 5 more (5 alloc + 10 booked = 15 used) */
+    Uint32 free_after_alloc = mem.get_resource_free(RG_DM);
+    require(free_after_alloc == data_sz - 10 - 5);
+
+    /* Allocate 3 pages WITH the booking key - draws from booked area */
+    Uint32 booked_pages[3];
+    for (Uint32 i = 0; i < 3; i++)
+    {
+      bool ok = mem.alloc_page(RG_DM, &booked_pages[i], zone,
+                               false, false, true, key);
+      require(ok);
+    }
+
+    /* Booking remaining should be 7 pages worth */
+    Uint64 remaining = mem.get_booking_remaining(key);
+    require(remaining == (Uint64)7 * GLOBAL_PAGE_SIZE_WORDS);
+
+    /* Free should show: 100 - 7(booked remaining) - 5(normal) - 3(keyed) */
+    Uint32 free_now = mem.get_resource_free(RG_DM);
+    require(free_now == data_sz - 7 - 5 - 3);
+
+    /* Remove booking - remaining 7 pages return to available */
+    mem.remove_booking(key);
+
+    /* Free should now be: 100 - 5(normal) - 3(keyed, now normal) = 92 */
+    Uint32 free_removed = mem.get_resource_free(RG_DM);
+    require(free_removed == data_sz - 5 - 3);
+
+    /* Clean up allocated pages */
+    for (Uint32 i = 0; i < 5; i++)
+      mem.release_page(RG_DM, page_ids[i]);
+    for (Uint32 i = 0; i < 3; i++)
+      mem.release_page(RG_DM, booked_pages[i]);
+  }
+  printf("    PASSED\n");
+
+  /* Test 2: Book from shared resource (QueryMemory) */
+  printf("  Test 2: Book from shared resource (QueryMemory)\n");
+  {
+    Test_mem_manager mem(tot, data_sz, trans_sz);
+    /* Enable shared memory access for all priority levels */
+    mem.set_prio_free_limits(0);
+
+    Uint32 shared_free_before = mem.get_resource_free_shared(RG_QM);
+
+    /* Book 20 pages worth of words from shared query memory */
+    Uint64 book_words = (Uint64)20 * GLOBAL_PAGE_SIZE_WORDS;
+    Uint32 key = mem.book_memory(RG_QM, book_words);
+    require(key != 0);
+
+    /* Shared free should decrease for all resource groups */
+    Uint32 shared_free_after = mem.get_resource_free_shared(RG_QM);
+    require(shared_free_after == shared_free_before - 20);
+
+    /* TM should also see reduced shared free (booking is global) */
+    Uint32 tm_shared_free = mem.get_resource_free_shared(RG_TM);
+    require(tm_shared_free == shared_free_before - 20);
+
+    /* Allocate 10 pages with key */
+    Uint32 page_no;
+    Uint32 page_cnt = 10;
+    mem.alloc_pages(RG_QM, &page_no, &page_cnt, 10, zone, false, key);
+    require(page_cnt == 10);
+
+    /* Booking remaining should be 10 pages worth */
+    Uint64 remaining = mem.get_booking_remaining(key);
+    require(remaining == (Uint64)10 * GLOBAL_PAGE_SIZE_WORDS);
+
+    /* Remove booking */
+    mem.remove_booking(key);
+
+    /* The 10 allocated pages stay as normal allocations */
+    Uint32 shared_free_final = mem.get_resource_free_shared(RG_QM);
+    require(shared_free_final == shared_free_before - 10);
+
+    /* Clean up */
+    mem.release_pages(RG_QM, page_no, 10);
+  }
+  printf("    PASSED\n");
+
+  /* Test 3: Booking cannot exceed resource limits */
+  printf("  Test 3: Booking cannot exceed resource limits\n");
+  {
+    Test_mem_manager mem(tot, data_sz, trans_sz);
+
+    /* Try to book more than data_mem pages - should fail */
+    Uint64 too_many = (Uint64)(data_sz + 1) * GLOBAL_PAGE_SIZE_WORDS;
+    Uint32 key = mem.book_memory(RG_DM, too_many);
+    require(key == 0);
+
+    /* Book exactly data_mem pages - should succeed */
+    Uint64 exact = (Uint64)data_sz * GLOBAL_PAGE_SIZE_WORDS;
+    key = mem.book_memory(RG_DM, exact);
+    require(key != 0);
+
+    /* Try to book 1 more page - should fail (all reserved now booked) */
+    Uint64 one_page = GLOBAL_PAGE_SIZE_WORDS;
+    Uint32 key2 = mem.book_memory(RG_DM, one_page);
+    require(key2 == 0);
+
+    /* Remove first booking and try again - should succeed */
+    mem.remove_booking(key);
+    key2 = mem.book_memory(RG_DM, one_page);
+    require(key2 != 0);
+    mem.remove_booking(key2);
+  }
+  printf("    PASSED\n");
+
+  /* Test 4: Multiple concurrent bookings */
+  printf("  Test 4: Multiple concurrent bookings\n");
+  {
+    Test_mem_manager mem(tot, data_sz, trans_sz);
+    mem.set_prio_free_limits(0);
+
+    /* Book from DM and QM concurrently */
+    Uint64 dm_words = (Uint64)30 * GLOBAL_PAGE_SIZE_WORDS;
+    Uint64 qm_words = (Uint64)20 * GLOBAL_PAGE_SIZE_WORDS;
+
+    Uint32 dm_key = mem.book_memory(RG_DM, dm_words);
+    require(dm_key != 0);
+
+    Uint32 qm_key = mem.book_memory(RG_QM, qm_words);
+    require(qm_key != 0);
+
+    /* Both keys should be different */
+    require(dm_key != qm_key);
+
+    /* DM free: 100 - 30 = 70 */
+    require(mem.get_resource_free(RG_DM) == data_sz - 30);
+
+    /* Allocate from both bookings */
+    Uint32 dm_page;
+    bool ok = mem.alloc_page(RG_DM, &dm_page, zone,
+                             false, false, true, dm_key);
+    require(ok);
+
+    Uint32 qm_page_no;
+    Uint32 qm_page_cnt = 5;
+    mem.alloc_pages(RG_QM, &qm_page_no, &qm_page_cnt, 5, zone,
+                    false, qm_key);
+    require(qm_page_cnt == 5);
+
+    /* Verify remaining bookings */
+    require(mem.get_booking_remaining(dm_key) ==
+            (Uint64)29 * GLOBAL_PAGE_SIZE_WORDS);
+    require(mem.get_booking_remaining(qm_key) ==
+            (Uint64)15 * GLOBAL_PAGE_SIZE_WORDS);
+
+    /* Remove both bookings */
+    mem.remove_booking(dm_key);
+    mem.remove_booking(qm_key);
+
+    /* Verify allocated pages are still accounted for */
+    require(mem.get_resource_free(RG_DM) == data_sz - 1);
+
+    /* Clean up */
+    mem.release_page(RG_DM, dm_page);
+    mem.release_pages(RG_QM, qm_page_no, 5);
+  }
+  printf("    PASSED\n");
+
+  /* Test 5: Fully consume a booking */
+  printf("  Test 5: Fully consume a booking\n");
+  {
+    Test_mem_manager mem(tot, data_sz, trans_sz);
+
+    Uint64 book_words = (Uint64)5 * GLOBAL_PAGE_SIZE_WORDS;
+    Uint32 key = mem.book_memory(RG_DM, book_words);
+    require(key != 0);
+
+    /* Allocate all 5 pages using the booking key */
+    Uint32 page_ids[5];
+    for (Uint32 i = 0; i < 5; i++)
+    {
+      bool ok = mem.alloc_page(RG_DM, &page_ids[i], zone,
+                               false, false, true, key);
+      require(ok);
+    }
+
+    /* Booking should be fully consumed (remaining = 0) */
+    require(mem.get_booking_remaining(key) == 0);
+
+    /* Free should be: 100 - 5 allocated, no booking overhead */
+    require(mem.get_resource_free(RG_DM) == data_sz - 5);
+
+    /* Clean up */
+    for (Uint32 i = 0; i < 5; i++)
+      mem.release_page(RG_DM, page_ids[i]);
+  }
+  printf("    PASSED\n");
+
+  /* Test 6: Non-page-aligned word booking */
+  printf("  Test 6: Non-page-aligned word booking\n");
+  {
+    Test_mem_manager mem(tot, data_sz, trans_sz);
+
+    /* Book 1.5 pages worth of words = 12288 words.
+     * This should round up to 2 pages in the booking. */
+    Uint64 book_words = (Uint64)GLOBAL_PAGE_SIZE_WORDS +
+                        (Uint64)(GLOBAL_PAGE_SIZE_WORDS / 2);
+    Uint32 key = mem.book_memory(RG_DM, book_words);
+    require(key != 0);
+
+    /* Free should decrease by 2 pages (ceil(1.5)) */
+    require(mem.get_resource_free(RG_DM) == data_sz - 2);
+
+    /* Remaining should be exactly 12288 words */
+    require(mem.get_booking_remaining(key) == book_words);
+
+    mem.remove_booking(key);
+
+    /* Free should be fully restored */
+    require(mem.get_resource_free(RG_DM) == data_sz);
+  }
+  printf("    PASSED\n");
+
+  /* Test 7: Book, allocate, remove - allocated memory persists */
+  printf("  Test 7: Allocated memory persists after booking removal\n");
+  {
+    Test_mem_manager mem(tot, data_sz, trans_sz);
+
+    Uint64 book_words = (Uint64)10 * GLOBAL_PAGE_SIZE_WORDS;
+    Uint32 key = mem.book_memory(RG_DM, book_words);
+    require(key != 0);
+
+    /* Allocate all 10 pages with key */
+    Uint32 page_ids[10];
+    for (Uint32 i = 0; i < 10; i++)
+    {
+      bool ok = mem.alloc_page(RG_DM, &page_ids[i], zone,
+                               false, false, true, key);
+      require(ok);
+    }
+
+    /* Booking fully consumed. Remove is a no-op for counters. */
+    mem.remove_booking(key);
+
+    /* All 10 pages still allocated. Free = 100 - 10 = 90 */
+    require(mem.get_resource_free(RG_DM) == data_sz - 10);
+
+    /* Can free the pages normally */
+    for (Uint32 i = 0; i < 10; i++)
+      mem.release_page(RG_DM, page_ids[i]);
+
+    require(mem.get_resource_free(RG_DM) == data_sz);
+  }
+  printf("    PASSED\n");
+
+  /* Test 8: Exhaust non-keyed allocation due to booking */
+  printf("  Test 8: Non-keyed allocation sees reduced availability\n");
+  {
+    Test_mem_manager mem(tot, data_sz, trans_sz);
+
+    /* Book all of DM */
+    Uint64 book_words = (Uint64)data_sz * GLOBAL_PAGE_SIZE_WORDS;
+    Uint32 key = mem.book_memory(RG_DM, book_words);
+    require(key != 0);
+
+    /* Non-keyed allocation should fail - no visible free pages */
+    require(mem.get_resource_free(RG_DM) == 0);
+    Uint32 page_id;
+    bool ok = mem.alloc_page(RG_DM, &page_id, zone);
+    require(!ok);
+
+    /* Keyed allocation should succeed */
+    ok = mem.alloc_page(RG_DM, &page_id, zone, false, false, true, key);
+    require(ok);
+
+    /* Remove booking and clean up */
+    mem.remove_booking(key);
+    mem.release_page(RG_DM, page_id);
+  }
+  printf("    PASSED\n");
+
+  printf("Booking tests PASSED\n");
+}
 
 int main(int argc, char **argv) {
   ndb_init();
@@ -2121,6 +2802,7 @@ int main(int argc, char **argv) {
   {
     perf_test(sz, run_time);
   }
+  booking_test();
   lc_ndbd_malloc_test();
   ndb_end(0);
 }
@@ -2600,7 +3282,8 @@ static void*
 lc_mempool_long_lived_pool_malloc(size_t size_in_words,
                                   lc_uint32 pool_id,
                                   lc_uint32 thread_id,
-                                  bool clear_flag);
+                                  bool clear_flag,
+                                  Uint32 booking_key = 0);
 static void*
 lc_memseg_malloc(size_t size_in_words,
                  LC_LONG_LIVED_MEMORY_AREA *mem_area_ptr,
@@ -2744,7 +3427,8 @@ void*
 lc_ndbd_pool_malloc(size_t size,
                     unsigned int _pool_id,
                     unsigned int _thread_id,
-                    bool clear_flag)
+                    bool clear_flag,
+                    unsigned int booking_key)
 {
   lc_uint32 pool_id = (lc_uint32)_pool_id;
   lc_uint32 thread_id = (lc_uint32)_thread_id;
@@ -2760,14 +3444,16 @@ lc_ndbd_pool_malloc(size_t size,
     lc_mempool_long_lived_pool_malloc(size_in_words,
                                       pool_id,
                                       thread_id,
-                                      clear_flag);
+                                      clear_flag,
+                                      booking_key);
 }
 
 static void*
 lc_mempool_long_lived_pool_malloc(size_t size_in_words,
                                   lc_uint32 pool_id,
                                   lc_uint32 thread_id,
-                                  bool clear_flag)
+                                  bool clear_flag,
+                                  Uint32 booking_key)
 {
   bool first = true;
   /* Map the pool id to the internal pool id */
@@ -2934,7 +3620,8 @@ lc_mempool_long_lived_pool_malloc(size_t size_in_words,
       new_mem_area_ptr = (LC_LONG_LIVED_MEMORY_AREA*)
         glob_long_mempool_backend.lc_malloc_backend(MEMORY_SEGMENT_SIZE,
                                                     pool_id,
-                                                    &i_val);
+                                                    &i_val,
+                                                    booking_key);
       if (new_mem_area_ptr != nullptr)
         new_mem_area_ptr->m_i_val = i_val;
     }
@@ -3350,6 +4037,22 @@ lc_ndbd_pool_free(void *mem)
                                   map_pool_id);
 }
 
+/* This method is part of external interface */
+Uint32
+lc_ndbd_pool_book(Uint64 words, Uint32 pool_id)
+{
+  require(glob_mem_manager != nullptr);
+  return glob_mem_manager->book_memory(pool_id, words);
+}
+
+/* This method is part of external interface */
+void
+lc_ndbd_pool_remove_booking(Uint32 booking_key)
+{
+  require(glob_mem_manager != nullptr);
+  glob_mem_manager->remove_booking(booking_key);
+}
+
 static void
 lc_mempool_long_lived_pool_free(lc_uint32 *mem,
                                 LC_LONG_LIVED_MEMORY_BASE *base_ptr,
@@ -3566,9 +4269,13 @@ default_map_thread_id(lc_uint32 map_pool_id)
 static std::atomic<int> num_mallocs;
 
 static void*
-default_malloc_backend(size_t size, unsigned int pool_id, unsigned int *i_val)
+default_malloc_backend(size_t size,
+                       unsigned int pool_id,
+                       unsigned int *i_val,
+                       unsigned int booking_key)
 {
   (void)pool_id;
+  (void)booking_key;
   *i_val = 0;
   num_mallocs++;
   return malloc(size);
@@ -3685,7 +4392,7 @@ lc_pool_short_lived_malloc(LC_SHORT_LIVED_MEMORY_BASE *base_ptr,
     Uint32 i_val = 0;
     void *alloc_mem =
       glob_short_mempool_backend.lc_malloc_backend(
-        MEMORY_SEGMENT_SIZE, pool_id, &i_val);
+        MEMORY_SEGMENT_SIZE, pool_id, &i_val, 0);
     if (unlikely(alloc_mem == nullptr))
     {
       return nullptr;

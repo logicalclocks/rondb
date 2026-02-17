@@ -147,8 +147,22 @@ void ndbd_alloc_touch_mem(void * p, size_t sz, volatile Uint32 * watchCounter, b
 void *lc_ndbd_pool_malloc(size_t size,
                           Uint32 pool_id,
                           Uint32 thread_id,
-                          bool clear_flag);
+                          bool clear_flag,
+                          Uint32 booking_key = 0);
 void lc_ndbd_pool_free(void *mem);
+
+/**
+ * Book memory (in words) for a pool. Returns a booking key > 0 on success,
+ * 0 on failure. Booked memory is invisible to non-keyed allocations.
+ * See BOOKING_DESIGN.md for details.
+ */
+Uint32 lc_ndbd_pool_book(Uint64 words, Uint32 pool_id);
+
+/**
+ * Remove a booking. Already-allocated memory remains as normal allocations.
+ * Only the unallocated portion is released.
+ */
+void lc_ndbd_pool_remove_booking(Uint32 booking_key);
 
 /**
  * The interface to
@@ -215,7 +229,8 @@ void lc_ndbd_split_free(void *mem);
  * memory which is the amount of memory we allocate from the
  * global memory pool each time we run out of memory in the pool.
  */
-typedef void* (*LC_MALLOC_BACKEND) (size_t, unsigned int, unsigned int*);
+typedef void* (*LC_MALLOC_BACKEND) (size_t, unsigned int, unsigned int*,
+                                    unsigned int booking_key);
 typedef void (*LC_FREE_BACKEND) (void*, size_t, unsigned int, unsigned int);
 
 void init_lc_ndbd_memory_pool(unsigned int num_pools,
