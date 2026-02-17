@@ -24,8 +24,20 @@
 INCLUDE_DIRECTORIES(
   ${CMAKE_SOURCE_DIR}/storage/ndb/include/kernel
   ${CMAKE_SOURCE_DIR}/storage/ndb/include/kernel/signaldata
+  ${CMAKE_SOURCE_DIR}/storage/ndb/include/util
   ${CMAKE_SOURCE_DIR}/storage/ndb/src/mgmapi
   ${CMAKE_SOURCE_DIR}/storage/ndb/test/include
+)
+
+SET(BLOCK_UNIT_TEST_TARGETS
+  testJoinAgg
+  benchJoinAgg
+  testCaseAgg
+  bench_q12_tpch
+  testJoinAggSpj
+  bench_q12_dbtc
+  load_tpch
+  bench_q9_dbtc
 )
 
 NDB_ADD_EXECUTABLE(testJoinAgg testJoinAgg.cpp NDBTEST NDBCLIENT MYSQLCLIENT)
@@ -35,3 +47,8 @@ NDB_ADD_EXECUTABLE(testJoinAggSpj testJoinAggSpj.cpp NDBTEST NDBCLIENT MYSQLCLIE
 NDB_ADD_EXECUTABLE(bench_q12_dbtc bench_q12_dbtc.cpp NDBTEST NDBCLIENT MYSQLCLIENT)
 NDB_ADD_EXECUTABLE(load_tpch load_tpch.cpp NDBTEST NDBCLIENT MYSQLCLIENT)
 NDB_ADD_EXECUTABLE(bench_q9_dbtc bench_q9_dbtc.cpp NDBTEST NDBCLIENT MYSQLCLIENT)
+
+FOREACH(target ${BLOCK_UNIT_TEST_TARGETS})
+  SET_TARGET_PROPERTIES(${target} PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+ENDFOREACH()
