@@ -33,6 +33,29 @@ testJoinAgg -c <connect_string> -m <mysql_port> [--verbose]
 **Requires:** Running NDB cluster via `mtr --start-and-exit ndb_setup_large`
 (Tests 3-5 need the large config with NodeId=144 for data node 2)
 
+### testJoinAggNdbApi
+Integration test for pushdown join aggregation using the NdbQueryBuilder API.
+Tests the full NDB API path: NdbQueryBuilder → NdbQueryDef → NdbQuery → getAggregator().
+
+**Build:** `make -j$(sysctl -n hw.ncpu) testJoinAggNdbApi` (from debug_build)
+
+**Run:**
+```bash
+testJoinAggNdbApi -c <connect_string> [--verbose]
+```
+
+**Options:**
+- `-c` — NDB management server connect string (default: localhost:1186)
+- `-v, --verbose` — Show detailed progress output
+- `-h, --help` — Show help
+
+**Tests:**
+1. `SELECT grp, SUM(amount) FROM parent JOIN child GROUP BY grp` — GROUP BY with SUM via pushed join
+2. `SELECT COUNT(*), SUM(amount) FROM parent JOIN child` — non-GROUP-BY with COUNT and SUM
+3. `SELECT grp, COUNT(*), SUM(amount) FROM parent JOIN child GROUP BY grp` — multiple aggregates with GROUP BY
+
+**Requires:** Running NDB cluster (any config)
+
 ## Documentation
 - `TESTING_GUIDE.md` — Detailed guide for writing block-level signal tests
   (SignalSender API, V_QUERY routing, AttrInfo construction, common pitfalls)
