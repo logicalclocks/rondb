@@ -3433,6 +3433,9 @@ int NdbQueryImpl::doSend(int nodeId, bool lastFlag) {
       scanTabReq->userIdVersion = getNdbTransaction().m_user_id_version;
       tSignal.setLength(ScanTabReq::StaticLength + 4);
     }
+    if (m_hasAggregation) {
+      ScanTabReq::setJoinAggFlag(reqInfo, 1);
+    }
     scanTabReq->requestInfo = reqInfo;
 
     /**
@@ -3443,12 +3446,14 @@ int NdbQueryImpl::doSend(int nodeId, bool lastFlag) {
      * Section 0 : List of receiver Ids NDBAPI has allocated
      *             for the scan
      * Section 1 : ATTRINFO section
-     * Section 2 : Optional KEYINFO section
+     * Section 2 : Optional KEYINFO section, or agg program for JoinAgg
      */
     GenericSectionPtr secs[3];
     InitialReceiverIdIterator receiverIdIter(m_workers, m_workerCount);
     LinearSectionIterator attrInfoIter(m_attrInfo.addr(), m_attrInfo.getSize());
     LinearSectionIterator keyInfoIter(m_keyInfo.addr(), m_keyInfo.getSize());
+    LinearSectionIterator aggProgramIter(m_aggProgram.addr(),
+                                         m_aggProgram.getSize());
 
     secs[0].sectionIter = &receiverIdIter;
     secs[0].sz = m_workerCount;
@@ -3457,7 +3462,18 @@ int NdbQueryImpl::doSend(int nodeId, bool lastFlag) {
     secs[1].sz = m_attrInfo.getSize();
 
     Uint32 numSections = 2;
-    if (m_keyInfo.getSize() > 0) {
+    if (m_hasAggregation) {
+      /**
+       * For JoinAgg queries, section 2 carries the aggregation program.
+       * DBTC interprets entire section 2 as the agg program when
+       * JoinAgg flag is set. Bounds (for ordered index scans) and
+       * agg program coexistence via a header is handled in a later step.
+       */
+      assert(m_aggProgram.getSize() > 0);
+      secs[2].sectionIter = &aggProgramIter;
+      secs[2].sz = m_aggProgram.getSize();
+      numSections = 3;
+    } else if (m_keyInfo.getSize() > 0) {
       secs[2].sectionIter = &keyInfoIter;
       secs[2].sz = m_keyInfo.getSize();
       numSections = 3;
