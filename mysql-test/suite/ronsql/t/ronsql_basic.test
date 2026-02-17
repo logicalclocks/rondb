@@ -243,6 +243,45 @@ EOF
 
 
 
+--echo LIMIT with ORDER BY:
+let $QUERY=
+SELECT cchar as char_gr
+     , sum(uint64+uint8)
+     , min(cdouble) AS mindbl
+FROM api_scan
+WHERE sint8 = 66
+GROUP BY cchar
+ORDER BY cchar
+LIMIT 3;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+
+
+--echo LIMIT 0 returns empty result:
+let $QUERY=
+SELECT cchar as char_gr
+     , count(*)
+FROM api_scan
+GROUP BY cchar
+ORDER BY cchar
+LIMIT 0;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+
+
+--echo LIMIT larger than result set:
+let $QUERY=
+SELECT cchar as char_gr
+     , max(sint8)
+FROM api_scan
+WHERE sint8 = 66
+GROUP BY cchar
+ORDER BY cchar
+LIMIT 1000;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+
+
 --echo Cleanup
 DELIMITER ;|
 DROP TABLE api_scan;

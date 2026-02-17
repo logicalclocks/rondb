@@ -86,13 +86,15 @@ ResultPrinter::ResultPrinter(ArenaMalloc* amalloc,
                              DynamicArray<LexCString>* column_names,
                              const NdbDictionary::Column** column_map,
                              RonSQLExecParams::OutputFormat output_format,
-                             std::basic_ostream<char>* err):
+                             std::basic_ostream<char>* err,
+                             Int64 limit):
   m_amalloc(amalloc),
   m_query(query),
   m_column_names(column_names),
   m_column_map(column_map),
   m_output_format(output_format),
   m_err(err),
+  m_limit(limit),
   m_program(amalloc),
   m_groupby_cols(amalloc),
   m_outputs(amalloc),
@@ -387,11 +389,16 @@ ResultPrinter::print_result(NdbAggregator* aggregator,
     DEB_TRACE();
     out << '[';
     bool first_record = true;
+    Int64 row_count = 0;
     for (NdbAggregator::ResultRecord record = aggregator->FetchResultRecord();
          !record.end();
          record = aggregator->FetchResultRecord())
     {
       DEB_TRACE();
+      if (m_limit >= 0 && row_count >= m_limit)
+      {
+        break;
+      }
       if (first_record)
       {
         first_record = false;
@@ -401,6 +408,7 @@ ResultPrinter::print_result(NdbAggregator* aggregator,
         out << ',';
       }
       print_record(record, out);
+      row_count++;
     }
     DEB_TRACE();
     out << "]\n";
@@ -408,13 +416,14 @@ ResultPrinter::print_result(NdbAggregator* aggregator,
   else if (m_tsv_output)
   {
     DEB_TRACE();
-    bool first_record = true;
+    bool headers_printed = false;
+    Int64 row_count = 0;
     for (NdbAggregator::ResultRecord record = aggregator->FetchResultRecord();
          !record.end();
          record = aggregator->FetchResultRecord())
     {
       DEB_TRACE();
-      if (first_record && m_tsv_headers)
+      if (!headers_printed && m_tsv_headers)
       {
         DEB_TRACE();
         // Print the column names.
@@ -426,9 +435,14 @@ ResultPrinter::print_result(NdbAggregator* aggregator,
           out << o->output_name;
         }
         out << '\n';
-        first_record = false;
+        headers_printed = true;
+      }
+      if (m_limit >= 0 && row_count >= m_limit)
+      {
+        break;
       }
       print_record(record, out);
+      row_count++;
     }
     DEB_TRACE();
   }
@@ -1070,6 +1084,11 @@ ResultPrinter::explain(std::basic_ostream<char>* out_stream)
     break;
   default:
     abort();
+  }
+  if (m_limit >= 0)
+  {
+    out << "Result limited to " << m_limit << " row"
+        << (m_limit == 1 ? "" : "s") << ".\n";
   }
   out << "Output in " << format_description << " format.\n"
       << "The program for post-processing and output has " << m_program.size()
