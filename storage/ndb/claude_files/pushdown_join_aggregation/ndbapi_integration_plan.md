@@ -103,7 +103,7 @@ For JoinAgg queries, `scanTabReq->scanParallelism` (DATA 15) carries the scan pa
 
 ---
 
-## Implementation Steps
+## Implementation Steps (All Complete)
 
 ### Step 1: NdbQueryOptions — setAggregation() and addLinkedProjection()
 
@@ -252,13 +252,15 @@ Test cases: basic SUM/COUNT, empty table, single group, multiple groups, index s
 
 ---
 
-## Implementation Order
+## Implementation Order (All Complete)
 
-1. **Steps 1-4**: NdbQueryBuilder changes (API + serialization) — `make ndb_client`
-2. **Step 7**: DBTC Section 2 header parsing — `make ndbmtd`
-3. **Steps 5-6**: NdbQueryOperation signal building — `make ndb_client`
-4. **Steps 8-9**: Result handling — `make ndb_client`
-5. **Step 10**: Test program — build and run
+1. **Steps 1-4**: NdbQueryBuilder changes (API + serialization) — `make ndb_client` ✓
+2. **Step 7**: DBTC Section 2 header parsing — `make ndbmtd` ✓
+3. **Steps 5-6**: NdbQueryOperation signal building — `make ndb_client` ✓
+4. **Steps 8-9**: Result handling — `make ndb_client` ✓
+5. **Step 10**: Test program (4 tests including 3-way join) ✓
+
+See `ndbapi_integration_implementation.md` for full implementation details.
 
 ---
 

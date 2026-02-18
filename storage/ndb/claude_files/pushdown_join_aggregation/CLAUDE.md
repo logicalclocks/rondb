@@ -14,8 +14,8 @@ pushed down to data nodes so intermediate results don't round-trip to the API.
 - `coordinator_research.md` — DBSPJ coordinator research
 - `coordinator_implementation.md` — DBSPJ coordinator implementation details
 - `trace_file_analysis.md` — NDB trace/crash log analysis guide
-- `next_steps.md` — Remaining work: integration tests, NDB API, secondary features
-- `ndbapi_integration_plan.md` — NDB API integration plan (Steps 1-10)
+- `next_steps.md` — Remaining work: MySQL handler integration, secondary features
+- `ndbapi_integration_plan.md` — NDB API integration plan (Steps 1-10, all complete)
 - `ndbapi_integration_implementation.md` — NDB API integration implementation details
 
 ### Key Source Files
@@ -40,9 +40,23 @@ DBSPJ → JOIN_AGG_RELEASE_REQ → DblqhProxy → cleanup
 ```
 
 ### Testing
-- Unit test: `storage/ndb/block_unit_test/testJoinAgg.cpp`
-- Build: `make -j$(sysctl -n hw.ncpu) testJoinAgg` (from debug_build)
-- Run: `testJoinAgg -c <connect_string> -m <mysql_port> [--verbose]`
+
+All tests in `storage/ndb/block_unit_test/`. Build from debug_build, run with
+`-c <connect_string> -m <mysql_port> [--verbose]`.
+
+| Target | Signal Path | Description |
+|--------|-------------|-------------|
+| testJoinAgg | Direct DBLQH | All agg types, GROUP BY, eviction, mutex-free, flow control |
+| testJoinAggSpj | DBTC→DBSPJ→DBLQH | Full QueryTree path, empty/single row, large dataset |
+| testJoinAggNdbApi | NdbQueryBuilder API | 4 tests: SUM/GROUP BY, COUNT+SUM, multi-agg, 3-way join |
+| testCaseAgg | Direct DBLQH | CASE expression in aggregation |
+| benchJoinAgg | Direct DBLQH | Performance: pipelined lookups with linked attrs |
+| bench_q12_tpch | Direct DBLQH | TPC-H Q12 with CASE, CHAR comparison, date filters |
+| bench_q12_dbtc | DBTC→DBSPJ→DBLQH | TPC-H Q12 through full orchestration |
+| bench_q9_dbtc | DBTC→DBSPJ→DBLQH | TPC-H Q9: 6-table join, multi-level linked attrs |
+| load_tpch | — | TPC-H data loader for bench_q9_dbtc |
+
+Build all: `make -j$(sysctl -n hw.ncpu) testJoinAgg testJoinAggSpj testJoinAggNdbApi`
 
 ### ERROR_INSERT Codes
 - **5090** (DblqhProxy.cpp): Forces `setMaxGroups(3)` on AggInterpreters during

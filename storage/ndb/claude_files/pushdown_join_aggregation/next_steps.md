@@ -23,6 +23,21 @@
   NI_AGGREGATE/NI_AGGREGATE_LEAF/PI_ATTR_AGGREGATE
 - QueryTree protocol: DABits for aggregation, linked attribute
   pass-through of GROUP BY columns
+- Table metadata (tableId, schemaVersion) prepended to linked attr entries
+  for type-aware column resolution
+
+**NDB API Integration — Phase 8 (Steps 1–10, all complete):**
+- NdbQueryOptions: `setAggregation()`, `addLinkedProjection()` API
+- NdbQueryOperationDefImpl: `m_isAggregateLeaf` flag
+- NdbQueryDefImpl: `m_hasAggregation`, aggregate leaf tracking
+- Serialization: NI_AGGREGATE / NI_AGGREGATE_LEAF DABits
+- NdbQueryImpl: `m_aggReceivers[]`, `m_aggProgram`, `m_aggResultData`
+- doSend(): combined Section 2 (boundsLen + aggReceiverId + aggProgram),
+  JoinAgg flag, explicit scanParallelism (DATA 15)
+- DBTC Section 2 header parsing: split bounds / receiverId / aggProgram
+- NDB_AGG_RECEIVER type in Ndbif.cpp for TRANSID_AI dispatch
+- Result handling: accumulate-then-process via `processAggResults()`
+- Public API: `NdbQuery::getAggregator()` → `FetchResultRecord()`
 
 ### Test Coverage
 
@@ -30,101 +45,38 @@
 |------|-------------|---------------|
 | testJoinAgg (18 tests) | Direct DBLQH | All agg types, GROUP BY, eviction, mutex-free, empty table, negative values, flow control, rowsExamined |
 | testJoinAggSpj (7 tests) | DBTC→DBSPJ→DBLQH | Basic aggregation through full QueryTree, empty/single row, large dataset, many groups |
+| testJoinAggNdbApi (4 tests) | NdbQueryBuilder API | SUM/GROUP BY, COUNT+SUM, multi-agg GROUP BY, 3-way join with linked param filter |
 | testCaseAgg | Direct DBLQH | CASE expression in aggregation |
 | benchJoinAgg | Direct DBLQH (LQHKEYREQ) | Performance: pipelined lookups with linked attrs |
 | bench_q12_tpch | Direct DBLQH (LQHKEYREQ) | TPC-H Q12 with CASE, CHAR comparison, date filters |
 | bench_q12_dbtc | DBTC→DBSPJ→DBLQH | TPC-H Q12 through full orchestration with pushdown WHERE filter |
+| bench_q9_dbtc | DBTC→DBSPJ→DBLQH | TPC-H Q9: 6-table join with multi-level linked attrs, composite keys |
+| load_tpch | — | TPC-H data loader for bench_q9_dbtc |
 
 ---
 
 ## Next Steps
 
-### 1. More Integration Tests (Priority: High)
-
-The current testJoinAggSpj tests cover the happy path through
-DBTC→DBSPJ→DBLQH but lack stress scenarios that exercise edge cases
-in the coordinator layer.
-
-#### 1a. Eviction Through Full Path
-
-Test that group overflow (eviction) works correctly through DBTC/DBSPJ.
-When the hash table fills up at DBLQH, evicted groups are sent as
-TRANSID_AI directly to the API. Verify that:
-- The API receives partial results during the scan (evicted groups)
-- The final COMPLETE phase merges/sends remaining groups
-- Total result is correct (evicted + final groups combined)
-
-**Approach:** Use ERROR_INSERT 5090 (forces maxGroups=3) in
-testJoinAggSpj or a new test. Create data with >3 distinct GROUP BY
-values. Verify all groups appear in the API results.
-
-#### 1b. Pushdown WHERE Filter Through DBSPJ
-
-bench_q12_dbtc uses PI_ATTR_INTERPRET in QN_ScanFragParameters, but
-testJoinAggSpj does not. Add a test that combines:
-- WHERE filter on root scan table (PI_ATTR_INTERPRET)
-- JOIN_AGG on leaf table
-- Verify that only filtered rows participate in aggregation
-
-#### 1c. Multi-Fragment / Multi-Node
-
-Current tests run on a single data node. Test with:
-- Multiple fragments of the root scan table
-- Verify that SCAN_NEXTREQ batching works correctly
-- Verify that each node's aggregation state is independent
-- Verify COMPLETE merges results from all nodes
-
-Requires a cluster with >=2 data nodes or a table with multiple
-fragments on the same node.
-
-#### 1d. Abort / Error Paths
-
-- API disconnect during scan (SCAN_TABREF)
-- Node failure during aggregation (if testable with ERROR_INSERT)
-- SETUP_REF error handling (e.g., out-of-memory at setup time)
-
-#### 1e. Large Result Sets
-
-- Many groups (>1000) to stress hash table resizing
-- Large batch sizes to verify SCAN_NEXTREQ flow control
-- Zero matching rows (WHERE filter rejects everything)
-
-### 2. NDB API Integration (Priority: Medium)
-
-The NDB API layer needs changes so that real SQL queries (via MySQL
-handler or NdbQueryBuilder) can trigger pushdown join aggregation
-without manual signal construction.
-
-#### 2a. NdbQueryBuilder Changes
-
-NdbQueryBuilder constructs QueryTree for pushed joins. It needs to:
-- Detect aggregation in the query plan
-- Set NI_AGGREGATE / NI_AGGREGATE_LEAF / PI_ATTR_AGGREGATE bits
-- Build aggregation program from the query's GROUP BY / aggregate
-  functions
-- Include GROUP BY columns in linked attributes of intermediate nodes
-- Set PI_ATTR_INTERPRET for WHERE clause pushdown on root scan
-
-**Key files:**
-- `storage/ndb/src/ndbapi/NdbQueryBuilder.cpp`
-- `storage/ndb/src/ndbapi/NdbQueryOperation.cpp`
-- `storage/ndb/include/ndbapi/NdbQueryBuilder.hpp`
-
-#### 2b. MySQL Handler Integration
+### 1. MySQL Handler Integration (Priority: High)
 
 The MySQL handler for NDB (`ha_ndbcluster`) decides whether to push
-joins. It needs to:
-- Recognize queries with GROUP BY + aggregate functions on pushed joins
-- Generate the aggregation program via AggInterpreter's program builder
-- Pass the program through NdbQueryBuilder
+joins. It needs to recognize queries with GROUP BY + aggregate functions
+on pushed joins and route them through the NDB API aggregation path.
+
+#### 1a. ha_ndbcluster_push.cpp
+
+- Detect aggregation candidates in the query plan
+- Generate aggregation program via NdbAggregator's program builder
+- Pass program through NdbQueryOptions::setAggregation()
+- Set up linked projections for GROUP BY columns from parent tables
 
 **Key files:**
 - `storage/ndb/plugin/ha_ndbcluster_push.cpp`
 - `storage/ndb/plugin/ha_ndbcluster.cpp`
 
-#### 2c. MTR Tests
+#### 1b. MTR Tests
 
-Once the API integration works, write MTR tests with SQL queries:
+Once handler integration works, write MTR tests with SQL queries:
 ```sql
 -- Basic pushed aggregate
 SELECT l_shipmode, COUNT(*), SUM(...)
@@ -138,6 +90,34 @@ GROUP BY l_shipmode;
 
 -- Edge cases: empty result, single group, HAVING clause
 ```
+
+### 2. More Integration Tests (Priority: Medium)
+
+#### 2a. Eviction Through NDB API Path
+
+Test that group overflow (eviction) works correctly through the NDB API.
+When the hash table fills up at DBLQH, evicted groups are sent as
+TRANSID_AI directly to the API receiver. Verify that:
+- The API receives partial results during the scan (evicted groups)
+- The final COMPLETE phase merges/sends remaining groups
+- Total result is correct (evicted + final groups combined)
+
+**Approach:** Use ERROR_INSERT 5090 (forces maxGroups=3) with
+testJoinAggNdbApi. Create data with >3 distinct GROUP BY values.
+
+#### 2b. Multi-Fragment / Multi-Node
+
+Current tests run on a single data node. Test with:
+- Multiple fragments of the root scan table
+- Verify that SCAN_NEXTREQ batching works correctly
+- Verify that each node's aggregation state is independent
+- Verify COMPLETE merges results from all nodes
+
+#### 2c. Abort / Error Paths
+
+- API disconnect during scan (SCAN_TABREF)
+- Node failure during aggregation (if testable with ERROR_INSERT)
+- SETUP_REF error handling (e.g., out-of-memory at setup time)
 
 ### 3. Secondary Features (Priority: Low)
 

@@ -373,16 +373,29 @@ req->resultData = (scanptr.p->m_aggReceiverId != RNIL)
 
 Integration test using the NdbQueryBuilder API (not raw signals).
 
-**Schema:**
+**Tests 1–3 Schema:**
 - `jagg_parent(id INT PK, grp INT)`
 - `jagg_child(parent_id INT PK, amount BIGINT)`
+- Test data: 5 parent rows (3 groups), 5 child rows (amounts 100-500)
 
-**Test data:** 5 parent rows (3 groups), 5 child rows (amounts 100-500)
+**Test 4 Schema (3-way join):**
+- `t4_region(id INT PK, area INT)` — root scan table
+- `t4_order(region_id INT PK, priority INT, discount INT)` — middle lookup
+- `t4_line(order_id INT PK, amount BIGINT)` — aggregate leaf
 
 **Tests:**
 1. `SELECT grp, SUM(amount) ... GROUP BY grp` — GROUP BY with SUM, linked parent column
 2. `SELECT COUNT(*), SUM(amount) ...` — Non-GROUP-BY with multiple aggregates
 3. `SELECT grp, COUNT(*), SUM(amount) ... GROUP BY grp` — Multiple aggregates with GROUP BY
+4. `SELECT r.area, o.discount, SUM(l.amount), COUNT(*) FROM t4_region r JOIN t4_order o ... JOIN t4_line l ... WHERE o.priority >= r.area GROUP BY r.area, o.discount` — 3-way join with linked parameter filter, multi-level linked attributes (grandparent + parent GROUP BY columns)
+
+Test 4 exercises:
+- Linked parameter in interpreted filter (`o.priority >= r.area` via `linkedValue()`)
+- Multi-level ancestor traversal in aggregation program (P_PARENT chain)
+- Table metadata (tableId, schemaVersion) in linked attribute entries
+- Wire format extensively documented in comments (Section 0/1/2 disassembly)
+
+Each test verifies results against MySQL JOIN query for correctness.
 
 **Build:** `make -j$(sysctl -n hw.ncpu) testJoinAggNdbApi` (from debug_build)
 

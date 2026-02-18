@@ -54,12 +54,30 @@ testJoinAggNdbApi -c <connect_string> -m <mysql_port> [--verbose]
 1. `SELECT grp, SUM(amount) FROM parent JOIN child GROUP BY grp` — GROUP BY with SUM via pushed join
 2. `SELECT COUNT(*), SUM(amount) FROM parent JOIN child` — non-GROUP-BY with COUNT and SUM
 3. `SELECT grp, COUNT(*), SUM(amount) FROM parent JOIN child GROUP BY grp` — multiple aggregates with GROUP BY
+4. `SELECT r.area, o.discount, SUM(l.amount), COUNT(*) FROM region JOIN order JOIN line ...` — 3-way join
+   with linked parameter filter (`o.priority >= r.area`), multi-level linked attributes
+   (grandparent + parent GROUP BY columns), wire format documented in comments
 
 Each test first verifies expected results via MySQL JOIN query, then runs the
 same query via NdbQueryBuilder with pushdown aggregation and compares results.
 Tables are created and dropped via MySQL (ENGINE=NDB).
 
 **Requires:** Running NDB cluster with MySQL server
+
+### bench_q9_dbtc
+TPC-H Q9 benchmark using raw DBTC→DBSPJ→DBLQH signals. 6-table join
+(lineitem→part→orders→supplier→partsupp→nation) with composite keys,
+multi-level linked attributes, and SUM aggregation with GROUP BY.
+
+**Build:** `make -j$(sysctl -n hw.ncpu) bench_q9_dbtc`
+**Requires:** TPC-H data loaded via `load_tpch`
+
+### load_tpch
+TPC-H data loader. Creates tables and populates with test data for
+bench_q9_dbtc.
+
+**Build:** `make -j$(sysctl -n hw.ncpu) load_tpch`
+**Run:** `load_tpch -c <connect_string> -m <mysql_port>`
 
 ## Documentation
 - `TESTING_GUIDE.md` — Detailed guide for writing block-level signal tests
