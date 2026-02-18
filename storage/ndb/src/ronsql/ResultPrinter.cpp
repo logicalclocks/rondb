@@ -86,15 +86,13 @@ ResultPrinter::ResultPrinter(ArenaMalloc* amalloc,
                              DynamicArray<LexCString>* column_names,
                              const NdbDictionary::Column** column_map,
                              RonSQLExecParams::OutputFormat output_format,
-                             std::basic_ostream<char>* err,
-                             Int64 limit):
+                             std::basic_ostream<char>* err):
   m_amalloc(amalloc),
   m_query(query),
   m_column_names(column_names),
   m_column_map(column_map),
   m_output_format(output_format),
   m_err(err),
-  m_limit(limit),
   m_program(amalloc),
   m_groupby_cols(amalloc),
   m_outputs(amalloc),
@@ -395,7 +393,7 @@ ResultPrinter::print_result(NdbAggregator* aggregator,
          record = aggregator->FetchResultRecord())
     {
       DEB_TRACE();
-      if (m_limit >= 0 && row_count >= m_limit)
+      if (m_query->limit >= 0 && row_count >= m_query->limit)
       {
         break;
       }
@@ -437,7 +435,7 @@ ResultPrinter::print_result(NdbAggregator* aggregator,
         out << '\n';
         headers_printed = true;
       }
-      if (m_limit >= 0 && row_count >= m_limit)
+      if (m_query->limit >= 0 && row_count >= m_query->limit)
       {
         break;
       }
@@ -1085,10 +1083,10 @@ ResultPrinter::explain(std::basic_ostream<char>* out_stream)
   default:
     abort();
   }
-  if (m_limit >= 0)
+  if (m_query->limit >= 0)
   {
-    out << "Result limited to " << m_limit << " row"
-        << (m_limit == 1 ? "" : "s") << ".\n";
+    out << "Result limited to " << m_query->limit << " row"
+        << (m_query->limit == 1 ? "" : "s") << ".\n";
   }
   out << "Output in " << format_description << " format.\n"
       << "The program for post-processing and output has " << m_program.size()

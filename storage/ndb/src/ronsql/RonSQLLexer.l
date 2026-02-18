@@ -267,6 +267,9 @@ SINGLE_QUOTED_STRING_CHARACTER_EXCEPT_APOSTROPHE_AND_BACKSLASH         [^\0\047\
       if (yytext[i] > maxInt64Str[i]) {
         return_err_for_this_rule(LITERAL_INTEGER_TOO_BIG);
       }
+      if (yytext[i] < maxInt64Str[i]) {
+        break;
+      }
     }
   }
   char hold_char = yytext[rsqlp_leng];

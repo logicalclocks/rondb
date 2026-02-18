@@ -43,7 +43,6 @@ private:
   const NdbDictionary::Column** m_column_map;
   RonSQLExecParams::OutputFormat m_output_format;
   std::basic_ostream<char>* m_err;
-  Int64 m_limit;
 
   // Program
   struct Cmd
@@ -122,8 +121,7 @@ public:
                 DynamicArray<LexCString>* column_names,
                 const NdbDictionary::Column** column_map,
                 RonSQLExecParams::OutputFormat output_format,
-                std::basic_ostream<char>* err,
-                Int64 limit);
+                std::basic_ostream<char>* err);
   void print_result(NdbAggregator* aggregator,
                     std::basic_ostream<char>* out_stream);
   void explain(std::basic_ostream<char>* out_stream);
