@@ -50,7 +50,11 @@
  *   Section 1: AttrInfo = QueryTree nodes + QueryParameters
  *   Section 2: [boundsLen, bounds..., aggReceiverId, aggProgram...]
  *
- * --- Section 1: QueryTree (37 words) ---
+ * --- Section 0: Worker Receiver IDs (1 word) ---
+ *
+ *   worker[0] receiverId (single-worker scan, parallelism=1)
+ *
+ * --- Section 1: QueryTree + Params (37 words) ---
  *
  * QueryTree header:
  *   [0]  0x00100002  nodeCount=2, treeLength=16 words
@@ -58,89 +62,93 @@
  * Node 0: QN_ScanFragNode (root table scan on jagg_parent):
  *   [1]  0x00060004  type=QN_SCAN_FRAG(4), nodeLength=6
  *   [2]  0x00002010  requestInfo: NI_LINKED_ATTR | NI_AGGREGATE
- *   [3]  tableId     (jagg_parent)
- *   [4]  tableVersion
- *   [5]  0x00000002  NI_LINKED_ATTR Uint16Sequence: size=2,
- *                      col[0]=parent.id(0)
- *   [6]  0xbabe0001  col[1]=parent.grp(1), pad=0xBABE
- *        -> Parent projects [id, grp] for child operations.
+ *   [3]  0x0000001d  tableId=29 (jagg_parent)
+ *   [4]  0x00000001  tableVersion=1
+ *   Part4 (NI_LINKED_ATTR Uint16Sequence, 2 cols for children):
+ *   [5]  0x00000002  size=2, col[0]=id(0)
+ *   [6]  0xbabe0001  col[1]=grp(1), pad=0xBABE
+ *        -> Projects [id, grp] for child operations.
  *
  * Node 1: QN_LookupNode (child PK lookup on jagg_child):
  *   [7]  0x00090001  type=QN_LOOKUP(1), nodeLength=9
  *   [8]  0x00006083  requestInfo: NI_HAS_PARENT | NI_KEY_LINKED |
  *                      NI_ATTR_LINKED | NI_AGGREGATE | NI_AGGREGATE_LEAF
- *   [9]  tableId     (jagg_child)
- *   [10] tableVersion
+ *   [9]  0x0000001f  tableId=31 (jagg_child)
+ *   [10] 0x00000001  tableVersion=1
  *   Part1 (NI_HAS_PARENT):
  *   [11] 0x00000001  Uint16Sequence: size=1, parent=Node 0
- *   Part2 (NI_KEY_LINKED):
+ *   Part2 (NI_KEY_LINKED, key: child.parent_id = parent.id):
  *   [12] 0x00000001  key pattern length=1
- *   [13] 0x00020000  P_COL | spjRef 0 -> parent.spjProjection[0] = parent.id
- *   Part3 (NI_ATTR_LINKED):
+ *   [13] 0x00020000  P_COL(0x2) col=0 -> parent.spjProj[0] = parent.id
+ *   Part3 (NI_ATTR_LINKED, linked col for GROUP BY):
  *   [14] 0x00010000  attr-linked pattern length=1
- *   [15] 0x00070001  P_ATTRINFO | spjRef 1 -> parent.spjProjection[1] = parent.grp
+ *   [15] 0x00070001  P_ATTRINFO(0x7) col=1 -> parent.spjProj[1] = grp
  *        -> Provides parent.grp as linked column for GROUP BY.
  *
  * Params for Node 0: QN_ScanFragParameters:
  *   [16] 0x000c0004  type=QN_SCAN_FRAG(4), paramLength=12
- *   [17] requestInfo: PI_ATTR_LIST | SFP_PARALLEL
+ *   [17] 0x00020001  requestInfo: PI_ATTR_LIST | SFP_PARALLEL
  *   [18] resultData  (API receiver ID)
  *   [19] batch_size_rows
  *   [20] batch_size_bytes
  *   [21-23] unused/reserved
  *   PI_ATTR_LIST:
  *   [24] 0x00000003  3 AttributeHeaders
- *   [25] attrId=0 (parent.id)
- *   [26] attrId=1 (parent.grp)
- *   [27] attrId=0xffe8 (FRAGMENT pseudo-column)
+ *   [25] 0x00000000  attrId=0 (parent.id)
+ *   [26] 0x00010000  attrId=1 (parent.grp)
+ *   [27] 0xffe80000  attrId=0xFFE8 (CORR_FACTOR64 pseudo-column)
  *
  * Params for Node 1: QN_LookupParameters:
  *   [28] 0x00090001  type=QN_LOOKUP(1), paramLength=9
- *   [29] requestInfo: PI_ATTR_LIST | PI_ATTR_INTERPRET
+ *   [29] 0x00000009  requestInfo: PI_ATTR_LIST | PI_ATTR_INTERPRET
  *   [30] resultData  (API receiver ID)
- *   PI_ATTR_INTERPRET (minimal ExitOK — creates 5-word interpreter
+ *   PI_ATTR_INTERPRET (minimal ExitOK — creates interpreter
  *     header for linked subroutine framing):
- *   [31] 0x00000001  program_len=1, subroutine_len=0
- *   [32] 0x00000012  Interpreter::ExitOK (opcode 18)
+ *   [31] 0x00000001  program_len=1
+ *   [32] 0x00000012  EXIT_OK (opcode 18)
  *   PI_ATTR_LIST:
  *   [33] 0x00000003  3 AttributeHeaders
- *   [34] attrId=0 (child.parent_id)
- *   [35] attrId=1 (child.amount)
- *   [36] attrId=0xffe8 (FRAGMENT pseudo-column)
+ *   [34] 0x00000000  attrId=0 (child.parent_id)
+ *   [35] 0x00010000  attrId=1 (child.amount)
+ *   [36] 0xffe80000  attrId=0xFFE8 (CORR_FACTOR64 pseudo-column)
  *
- * --- Section 2: Bounds + Aggregation ---
+ * --- Section 2: Bounds + Aggregation (14 words) ---
  *
  *   [0]  boundsLen=0 (full table scan, no bounds)
- *   [1]  aggReceiverId (object map ID for aggregation results)
+ *   [1]  aggReceiverId=0x18 (object map ID for aggregation results)
  *   [2..13] aggProgram (12 words):
  *     Header (8 words):
- *       [0] magic=0x0721, programLength=12
- *       [1] n_gb_cols=1, n_agg_results=2
- *       [2] version=PUSHDOWN_AGGREGATION_VERSION(2)
- *       [3-7] reserved (0)
- *     GroupBy columns (1 word):
- *       [8] GroupBy(col 0 | AGG_LINKED_COL_FLAG)
- *           -> GROUP BY linked column at position 0 (= parent.grp)
+ *       [0] 0x0721000c  magic=0x0721, totalLen=12
+ *       [1] 0x00010002  n_gb_cols=1, n_agg_results=2
+ *       [2] 0x00000002  version=PUSHDOWN_AGGREGATION_VERSION(2)
+ *       [3-7] 0x00000000  reserved
+ *     GroupBy column descriptors (1 word):
+ *       [8] 0x80000000  GB col 0: (0x8000|pos 0)=LINKED parent.grp
  *     Instructions (3 words):
- *       [9]  kOpLoadCol: type=BIGINT, reg=0, colId=1 (child.amount)
- *       [10] kOpCount:   agg[0]=COUNT(*), reg=0
- *       [11] kOpSum:     agg[1]=SUM(reg0), reg=0
+ *       [9]  0x1d200001  kOpLoadCol: colId=1 (child.amount), reg=0
+ *       [10] 0x34000000  kOpCount:   agg[0]=COUNT(*)
+ *       [11] 0x28000001  kOpSum:     agg[1]=SUM(reg0)
  *
  * --- Linked column position mapping ---
  *
  * The aggregation program references parent columns by a 0-based position
- * index (with AGG_LINKED_COL_FLAG set), NOT by table attrId.  The position
- * maps to the order of P_ATTRINFO entries in the NI_ATTR_LINKED pattern
- * on the child node (Part3 above):
+ * index (with AGG_LINKED_COL_FLAG=0x8000 set), NOT by table attrId.  The
+ * position maps to the order of P_ATTRINFO entries in the NI_ATTR_LINKED
+ * pattern on the child node (Part3 above):
  *
  *   NI_ATTR_LINKED pattern          Linked buffer at runtime     Agg program ref
  *   ─────────────────────────────  ────────────────────────     ───────────────
  *   P_ATTRINFO|spjRef 1 [word 15]  position 0: parent.grp     GroupBy(0|LINKED)
  *
- * At runtime, DBSPJ expands each P_ATTRINFO(spjRef) by copying the
- * AttributeHeader + data for parent spjProjection[spjRef] into the linked
- * buffer, in pattern order.  The AggInterpreter then walks the linked
- * buffer, skipping entries until it reaches the requested position index.
+ * At runtime, DBSPJ expands each P_ATTRINFO(spjRef) by prepending the
+ * source (tableId, tableVersion), then copying the AttributeHeader + data
+ * for parent spjProjection[spjRef] into the linked buffer, in pattern
+ * order.  The AggInterpreter walks the linked buffer, skipping the
+ * (tableId, tableVersion) prefix and data entries until it reaches
+ * the requested position index.
+ *
+ * Each linked buffer entry at runtime:
+ *   [tableId] [tableVersion] [AH(attrId, dataSize)] [data...]
  *
  * If multiple parent columns were needed (e.g. GROUP BY grp, other_col):
  *   NI_ATTR_LINKED would have two P_ATTRINFO entries,
