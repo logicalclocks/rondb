@@ -957,13 +957,19 @@ sendScanTabReq(SignalSender &ss, Uint32 nodeId,
     receiverIds[i] = receiverIdBase + i;
   }
 
+  /* Build combined agg section: [boundsLen=0, receiverId, aggProgram...] */
+  std::vector<Uint32> aggSection;
+  aggSection.push_back(0);  // boundsLen = 0 (no bounds)
+  aggSection.push_back(receiverIdBase);
+  aggSection.insert(aggSection.end(), aggProgram.begin(), aggProgram.end());
+
   ssig.header.m_noOfSections = 3;
   ssig.ptr[0].p = receiverIds.data();
   ssig.ptr[0].sz = numRecvIds;
   ssig.ptr[1].p = queryTree.data();
   ssig.ptr[1].sz = (Uint32)queryTree.size();
-  ssig.ptr[2].p = aggProgram.data();
-  ssig.ptr[2].sz = (Uint32)aggProgram.size();
+  ssig.ptr[2].p = aggSection.data();
+  ssig.ptr[2].sz = (Uint32)aggSection.size();
 
   if (ss.sendSignal(nodeId, &ssig) != SEND_OK) {
     fprintf(stderr, "sendSignal SCAN_TABREQ failed\n");
@@ -1123,8 +1129,19 @@ collectResults(SignalSender &ss,
       if (endOfData) {
         done = true;
       } else {
-        Uint32 sigLen = resp->header.theLength;
-        Uint32 words_per_op = ops > 0 ? (sigLen - 4) / ops : 4;
+        /* OpData may be inline or in long section 0. DBTC uses 5-word
+           OpData when version >= 8.0.20: {apiPtrI,tcPtrI,rows,len,hasMore}.
+           When total > 25 words, OpData goes in section 0. */
+        const Uint32 *opData;
+        Uint32 opDataLen;
+        if (resp->header.m_noOfSections > 0) {
+          opData = resp->ptr[0].p;
+          opDataLen = resp->ptr[0].sz;
+        } else {
+          opData = d + 4;
+          opDataLen = resp->header.theLength - 4;
+        }
+        Uint32 words_per_op = ops > 0 ? opDataLen / ops : 5;
 
         SimpleSignal nextSig;
         Uint32 *ndata = nextSig.getDataPtrSend();
@@ -1135,23 +1152,27 @@ collectResults(SignalSender &ss,
 
         Uint32 ackCount = 0;
         for (Uint32 i = 0; i < ops; i++) {
-          Uint32 tcPtrI = d[4 + i * words_per_op + 1];
+          Uint32 tcPtrI = opData[i * words_per_op + 1];
           if (tcPtrI != RNIL) {
             ndata[4 + ackCount] = tcPtrI;
             ackCount++;
           }
         }
-        V("  Sending SCAN_NEXTREQ with %u ack(s)\n", ackCount);
 
-        nextSig.set(ss, 0, refToBlock(tcRef), GSN_SCAN_NEXTREQ,
-                    4 + ackCount);
-        nextSig.header.m_noOfSections = 0;
+        if (ackCount > 0) {
+          V("  Sending SCAN_NEXTREQ with %u ack(s)\n", ackCount);
+          nextSig.set(ss, 0, refToBlock(tcRef), GSN_SCAN_NEXTREQ,
+                      4 + ackCount);
+          nextSig.header.m_noOfSections = 0;
 
-        if (ss.sendSignal(nodeId, &nextSig) != SEND_OK) {
-          fprintf(stderr, "sendSignal SCAN_NEXTREQ failed\n");
-          return -1;
+          if (ss.sendSignal(nodeId, &nextSig) != SEND_OK) {
+            fprintf(stderr, "sendSignal SCAN_NEXTREQ failed\n");
+            return -1;
+          }
+          nextReqCount++;
+        } else {
+          V("  All ops have tcPtrI=RNIL, skipping SCAN_NEXTREQ\n");
         }
-        nextReqCount++;
       }
     }
     else if (gsn == GSN_SCAN_TABREF) {
