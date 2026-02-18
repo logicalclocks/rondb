@@ -125,6 +125,8 @@ bool AggInterpreter::Init(const Uint32* prog) {
   memcpy(prog_, prog, prog_len_ * sizeof(Uint32));
   memset(buf_, 0, READ_BUF_WORD_SIZE * sizeof(Uint32));
   memset(decimal_buf_, 0, sizeof(Int32) * DECIMAL_BUFF_LENGTH);
+  decimal_.buf = decimal_buf_;
+  decimal_.len = DECIMAL_BUFF_LENGTH;
 
 
   Uint32 value = 0;

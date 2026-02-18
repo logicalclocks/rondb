@@ -74,26 +74,6 @@ class AggInterpreter {
     vec_size_candidates_sent_(0),
     vec_search_scan_done_(false),
     next_send_idx_(-1), ext_prog_buf_(nullptr) {
-#ifdef PA_MALLOC
-      assert(prog_len_ <= MAX_AGG_PROGRAM_WORD_SIZE);
-      prog_ = prog_buf_;
-#else
-      prog_ = new Uint32[prog_len];
-#endif // PA_MALLOC
-      memcpy(prog_, prog, prog_len * sizeof(Uint32));
-      memset(buf_, 0, READ_BUF_WORD_SIZE * sizeof(Uint32));
-      memset(decimal_buf_, 0, sizeof(decimal_digit_t) * DECIMAL_BUFF_LENGTH);
-      decimal_.buf = decimal_buf_;
-      decimal_.len = DECIMAL_BUFF_LENGTH;
-#ifdef PA_MALLOC
-      /* For using Ndbd_mem_manager*/
-      /*
-      mm_ = mm;
-      page_addr_ = page_addr;
-      page_ref_ = page_ref;
-      */
-      alloc_len_ = 0;
-#endif // PA_MALLOC
   }
   ~AggInterpreter() {
 #ifdef PA_MALLOC
