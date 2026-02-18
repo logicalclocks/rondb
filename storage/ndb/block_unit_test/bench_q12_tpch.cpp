@@ -386,30 +386,33 @@ buildAggProgram_Q12(Uint32 /*linkedShipmodeAttrId*/, Uint32 localPriorityAttrId)
 /* ------------------------------------------------------------------ */
 
 static std::vector<Uint32>
-buildAttrInfoWithLinkedChar10(Uint32 linkedAttrId, const char *shipmodeValue)
+buildAttrInfoWithLinkedChar10(Uint32 linkedAttrId, const char *shipmodeValue,
+                              Uint32 tableId, Uint32 schemaVersion)
 {
-  const Uint32 LINKED_WORDS = 4;  /* 1 header + 3 data words for CHAR(10) */
-  std::vector<Uint32> ai(6 + 1 + LINKED_WORDS);
+  const Uint32 DATA_WORDS = 4;    /* 1 AH + 3 data words for CHAR(10) */
+  const Uint32 ENTRY_WORDS = 2 + DATA_WORDS;  /* tableId + tableVersion + data */
+  std::vector<Uint32> ai(6 + 1 + ENTRY_WORDS);
 
   ai[0] = 0;              /* initial read section length */
   ai[1] = 1;              /* interpreter program length (ExitOK) */
   ai[2] = 0;              /* subroutine length */
   ai[3] = 0;              /* final read section length */
-  ai[4] = 1 + LINKED_WORDS;  /* linked attr section length (paramLen + data) */
+  ai[4] = 1 + ENTRY_WORDS;  /* linked attr section length (paramLen + data) */
   ai[5] = INTERPRETER_EXIT_OK;
 
-  /* paramLen word — DBSPJ prepends this via T_ATTRINFO_CONSTRUCTED;
-   * the kernel skips it (sub_start + 1) before passing to AggInterpreter */
-  ai[6] = LINKED_WORDS;
+  /* paramLen word */
+  ai[6] = ENTRY_WORDS;
 
-  /* AttributeHeader: (attrId << 16) | byteSize */
-  ai[7] = (linkedAttrId << 16) | 10;
+  /* Linked entry: tableId, tableVersion, AH, data */
+  ai[7] = tableId;
+  ai[8] = schemaVersion;
+  ai[9] = (linkedAttrId << 16) | 10;
 
   /* CHAR(10) data + 2 zero-padding bytes = 12 bytes = 3 words */
   char buf[12];
   memset(buf, 0, 12);
   memcpy(buf, shipmodeValue, 10);
-  memcpy(&ai[8], buf, 12);
+  memcpy(&ai[10], buf, 12);
 
   return ai;
 }
@@ -1273,7 +1276,9 @@ runBenchmark(SignalSender &ss,
       const auto &row = lineitemRows[qualifiedIndices[qi]];
 
       auto ai = buildAttrInfoWithLinkedChar10(linkedShipmodeAttrId,
-                                               row.l_shipmode);
+                                               row.l_shipmode,
+                                               lineitemMeta.tableId,
+                                               lineitemMeta.schemaVersion);
 
       if (LqhKeyReqBuilder::send(ss,
                                   targets[qi].nodeId,
@@ -1304,7 +1309,9 @@ runBenchmark(SignalSender &ss,
       const auto &row = lineitemRows[qualifiedIndices[qi]];
 
       auto ai = buildAttrInfoWithLinkedChar10(linkedShipmodeAttrId,
-                                               row.l_shipmode);
+                                               row.l_shipmode,
+                                               lineitemMeta.tableId,
+                                               lineitemMeta.schemaVersion);
 
       if (LqhKeyReqBuilder::send(ss,
                                   targets[qi].nodeId,

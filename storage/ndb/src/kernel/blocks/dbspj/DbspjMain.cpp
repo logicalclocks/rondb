@@ -5452,7 +5452,8 @@ void Dbspj::lookup_parent_row(Signal *signal, Ptr<Request> requestPtr,
       LocalArenaPool<DataBufferSegment<14>> pool(requestPtr.p->m_arena,
                                                  m_dependency_map_pool);
       Local_pattern_store pattern(pool, treeNodePtr.p->m_attrParamPattern);
-      err = expand(tmp, pattern, rowRef, hasNull);
+      err = expand(tmp, pattern, rowRef, hasNull,
+                   true /* addTableMeta for linked attr params */);
       if (unlikely(err != 0)) {
         jam();
         releaseSection(tmp);
@@ -6866,7 +6867,8 @@ void Dbspj::scanFrag_parent_row(Signal *signal, Ptr<Request> requestPtr,
       }
       bool hasNull = false;
       Local_pattern_store pattern(pool, treeNodePtr.p->m_attrParamPattern);
-      err = expand(paramPtrI, pattern, rowRef, hasNull);
+      err = expand(paramPtrI, pattern, rowRef, hasNull,
+                   true /* addTableMeta for linked attr params */);
       if (unlikely(err != 0)) {
         jam();
         break;
@@ -9107,7 +9109,7 @@ Uint32 Dbspj::appendPkColToSection(Uint32 &dst, const RowPtr::Row &row,
 Uint32 Dbspj::appendFromParent(Uint32 &dst, Local_pattern_store &pattern,
                                Local_pattern_store::ConstDataBufferIterator &it,
                                Uint32 levels, const RowPtr &rowptr,
-                               bool &hasNull) {
+                               bool &hasNull, bool addTableMeta) {
   jam();
   Ptr<TreeNode> treeNodePtr;
   ndbrequire(m_treenode_pool.getPtr(treeNodePtr, rowptr.m_src_node_ptrI));
@@ -9172,10 +9174,14 @@ Uint32 Dbspj::appendFromParent(Uint32 &dst, Local_pattern_store &pattern,
       return appendPkColToSection(dst, targetRow.m_row_data, val);
     case QueryPattern::P_ATTRINFO:
       jam();
-      return appendAttrinfoWithTableMeta(
-          dst, targetRow.m_row_data, val,
-          treeNodePtr.p->m_primaryTableId,
-          treeNodePtr.p->m_schemaVersion, hasNull);
+      if (addTableMeta) {
+        return appendAttrinfoWithTableMeta(
+            dst, targetRow.m_row_data, val,
+            treeNodePtr.p->m_primaryTableId,
+            treeNodePtr.p->m_schemaVersion, hasNull);
+      } else {
+        return appendAttrinfoToSection(dst, targetRow.m_row_data, val, hasNull);
+      }
     case QueryPattern::P_DATA:
       jam();
       // retrieving DATA from parent...is...an error
@@ -9256,7 +9262,8 @@ Uint32 Dbspj::appendDataToSection(
  * This function takes a pattern and a row and expands it into a section
  */
 Uint32 Dbspj::expand(Uint32 &_dst, Local_pattern_store &pattern,
-                     const RowPtr &row, bool &hasNull) {
+                     const RowPtr &row, bool &hasNull,
+                     bool addTableMeta) {
   Uint32 err;
   Uint32 dst = _dst;
   hasNull = false;
@@ -9278,12 +9285,16 @@ Uint32 Dbspj::expand(Uint32 &_dst, Local_pattern_store &pattern,
         break;
       case QueryPattern::P_ATTRINFO: {
         jam();
-        Ptr<TreeNode> srcNode;
-        ndbrequire(m_treenode_pool.getPtr(srcNode, row.m_src_node_ptrI));
-        err = appendAttrinfoWithTableMeta(
-            dst, row.m_row_data, val,
-            srcNode.p->m_primaryTableId,
-            srcNode.p->m_schemaVersion, hasNull);
+        if (addTableMeta) {
+          Ptr<TreeNode> srcNode;
+          ndbrequire(m_treenode_pool.getPtr(srcNode, row.m_src_node_ptrI));
+          err = appendAttrinfoWithTableMeta(
+              dst, row.m_row_data, val,
+              srcNode.p->m_primaryTableId,
+              srcNode.p->m_schemaVersion, hasNull);
+        } else {
+          err = appendAttrinfoToSection(dst, row.m_row_data, val, hasNull);
+        }
         break;
       }
       case QueryPattern::P_DATA:
@@ -9295,7 +9306,8 @@ Uint32 Dbspj::expand(Uint32 &_dst, Local_pattern_store &pattern,
         // P_PARENT is a prefix to another pattern token
         // that permits code to access rows from earlier than immediate parent
         // val is no of levels to move up the tree
-        err = appendFromParent(dst, pattern, it, val, row, hasNull);
+        err = appendFromParent(dst, pattern, it, val, row, hasNull,
+                               addTableMeta);
         break;
         // PARAM's was converted to DATA by ::expand(pattern...)
       case QueryPattern::P_PARAM:

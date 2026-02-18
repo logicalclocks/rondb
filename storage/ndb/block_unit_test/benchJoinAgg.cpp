@@ -240,37 +240,36 @@ buildAggProgram_Q12(Uint32 /*linkedShipmodeAttrId*/, Uint32 localPriorityAttrId)
  *   [3] = final read length (0)
  *   [4] = linked attr section length (RsubLen) in words
  *   [5] = ExitOK instruction
- *   [6..] = linked attribute data (AttributeHeader + data pairs)
+ *   [6..] = linked attribute data
  *
- * For a single BIGINT linked attribute (l_shipmode):
- *   [6] = AttributeHeader: (attrId << 16) | 8  (8 bytes for BIGINT)
- *   [7] = low 4 bytes of Int64
- *   [8] = high 4 bytes of Int64
- *   Total linked attr len = 3 words
+ * Each linked entry: [tableId] [tableVersion] [AH(attrId,byteSize)] [data...]
  */
 static std::vector<Uint32>
-buildAttrInfoWithLinked(Uint32 linkedAttrId, Int64 linkedValue)
+buildAttrInfoWithLinked(Uint32 linkedAttrId, Int64 linkedValue,
+                        Uint32 tableId, Uint32 schemaVersion)
 {
-  const Uint32 LINKED_WORDS = 3;  /* 1 header + 2 data words for BIGINT */
-  std::vector<Uint32> ai(6 + 1 + LINKED_WORDS);
+  const Uint32 DATA_WORDS = 3;    /* 1 AH + 2 data words for BIGINT */
+  const Uint32 ENTRY_WORDS = 2 + DATA_WORDS;  /* tableId + tableVersion + data */
+  std::vector<Uint32> ai(6 + 1 + ENTRY_WORDS);
 
   ai[0] = 0;              /* initial read section length */
   ai[1] = 1;              /* interpreter program length (ExitOK) */
   ai[2] = 0;              /* subroutine length */
   ai[3] = 0;              /* final read section length */
-  ai[4] = 1 + LINKED_WORDS;  /* linked attr section length (paramLen + data) */
+  ai[4] = 1 + ENTRY_WORDS;  /* linked attr section length (paramLen + data) */
   ai[5] = INTERPRETER_EXIT_OK;
 
-  /* paramLen word — DBSPJ prepends this via T_ATTRINFO_CONSTRUCTED;
-   * the kernel skips it (sub_start + 1) before passing to AggInterpreter */
-  ai[6] = LINKED_WORDS;
+  /* paramLen word */
+  ai[6] = ENTRY_WORDS;
 
-  /* Linked attribute: AttributeHeader + BIGINT data */
-  ai[7] = (linkedAttrId << 16) | 8;  /* attrId << 16, byteSize = 8 */
+  /* Linked entry: tableId, tableVersion, AH, data */
+  ai[7] = tableId;
+  ai[8] = schemaVersion;
+  ai[9] = (linkedAttrId << 16) | 8;  /* attrId << 16, byteSize = 8 */
   Uint32 valWords[2];
   memcpy(valWords, &linkedValue, sizeof(Int64));
-  ai[8] = valWords[0];
-  ai[9] = valWords[1];
+  ai[10] = valWords[0];
+  ai[11] = valWords[1];
 
   return ai;
 }
@@ -1046,7 +1045,9 @@ runBenchmark(SignalSender &ss,
       Int64 orderkey = lineitemRows[i].l_orderkey;
       Int64 shipmode = lineitemRows[i].l_shipmode;
 
-      auto ai = buildAttrInfoWithLinked(linkedShipmodeAttrId, shipmode);
+      auto ai = buildAttrInfoWithLinked(linkedShipmodeAttrId, shipmode,
+                                       lineitemMeta.tableId,
+                                       lineitemMeta.schemaVersion);
 
       if (LqhKeyReqBuilder::send(ss,
                                   targets[i].nodeId,
@@ -1070,7 +1071,9 @@ runBenchmark(SignalSender &ss,
       Int64 orderkey = lineitemRows[i].l_orderkey;
       Int64 shipmode = lineitemRows[i].l_shipmode;
 
-      auto ai = buildAttrInfoWithLinked(linkedShipmodeAttrId, shipmode);
+      auto ai = buildAttrInfoWithLinked(linkedShipmodeAttrId, shipmode,
+                                       lineitemMeta.tableId,
+                                       lineitemMeta.schemaVersion);
 
       if (LqhKeyReqBuilder::send(ss,
                                   targets[i].nodeId,

@@ -1545,9 +1545,10 @@ class Dbspj : public SimulatedBlock {
                              Uint32 len, bool &hasNull);
   Uint32 appendFromParent(Uint32 &ptrI, Local_pattern_store &,
                           Local_pattern_store::ConstDataBufferIterator &,
-                          Uint32 level, const RowPtr &, bool &hasNull);
+                          Uint32 level, const RowPtr &, bool &hasNull,
+                          bool addTableMeta = false);
   Uint32 expand(Uint32 &ptrI, Local_pattern_store &p, const RowPtr &r,
-                bool &hasNull);
+                bool &hasNull, bool addTableMeta = false);
   Uint32 expand(Uint32 &ptrI, DABuffer &pattern, Uint32 len, DABuffer &param,
                 Uint32 cnt, bool &hasNull);
   Uint32 expand(Local_pattern_store &dst, Ptr<TreeNode> treeNodePtr,
