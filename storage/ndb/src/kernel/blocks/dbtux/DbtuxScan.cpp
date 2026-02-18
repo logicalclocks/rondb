@@ -1048,7 +1048,6 @@ void Dbtux::continue_scan(Signal *signal, ScanOpPtr scanPtr, Frag &frag,
      *
      *   Dblqh::exec_next_scan_conf() -> Dblqh::continue_next_scan_conf()
      */
-     // conf->accOperationPtr = Uint32(-1);
     if (scan.m_aggregation) {
       conf->vectorScanDone = true;
     }

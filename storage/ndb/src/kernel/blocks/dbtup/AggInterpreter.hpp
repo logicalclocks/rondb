@@ -45,16 +45,9 @@
 #define DECIMAL_BUFF_LENGTH 9
 class AggInterpreter {
  public:
-#ifdef PA_MALLOC
-  AggInterpreter(const Uint32* prog, Uint32 prog_len,
-                 Int64 table_id, Int64 frag_id/*,
-                 Ndbd_mem_manager* mm, void* page_addr, Uint32 page_ref*/,
-                 Uint32 thread_id):
-#else
   AggInterpreter(const Uint32* prog, Uint32 prog_len,
                  Int64 table_id, Int64 frag_id,
                  Uint32 thread_id):
-#endif // PA_MALLOC
     prog_len_(prog_len), cur_pos_(0),
     inited_(false), n_gb_cols_(0), gb_cols_(nullptr),
     n_agg_results_(0),
@@ -122,7 +115,13 @@ class AggInterpreter {
 #endif // PA_MALLOC
 
     if (candidate_allocator_) {
+#ifdef PA_MALLOC
+      candidate_allocator_->~CandidateAllocator();
+      lc_ndbd_pool_free(candidate_allocator_);
+#else
       delete candidate_allocator_;
+#endif
+      candidate_allocator_ = nullptr;
     }
   }
 
@@ -280,14 +279,19 @@ class AggInterpreter {
        next_index_(0), reuse_started_(false),
        table_id_(table_id), frag_id_(frag_id),
        slots_per_full_segment_(0),
-       shift_k_(0) {
+       shift_k_(0)
+#ifdef PA_MALLOC
+       , n_segments_(0)
+#endif
+       {
          total_size_ = max_candidates_ * (sizeof(Candidate) + max_buf_len_ * sizeof(Uint32));
          slot_size_ = sizeof(Candidate) + max_buf_len_ * sizeof(Uint32);
        }
 
      ~CandidateAllocator() {
 #ifdef PA_MALLOC
-       for (auto& seg : segments_) {
+       for (size_t i = 0; i < n_segments_; i++) {
+         auto& seg = segments_[i];
          if (seg.ptr) {
            lc_ndbd_pool_free(seg.ptr);
          }
@@ -326,7 +330,12 @@ class AggInterpreter {
      size_t slot_size_;
      size_t slots_per_full_segment_;
      size_t shift_k_;
+#ifdef PA_MALLOC
+     Segment segments_[MAX_CANDIDATE_SEGMENTS];
+     size_t n_segments_;
+#else
      std::vector<Segment> segments_;
+#endif
   };
 
   Uint32 vec_max_rec_size_; // in words

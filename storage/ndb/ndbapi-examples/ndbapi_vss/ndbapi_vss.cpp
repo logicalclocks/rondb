@@ -293,7 +293,7 @@ static void insert_rows(MYSQL &mysql, int n = 10000, int batch_size = 1000)
     fprintf(stderr, "[loader] done\n");
 }
 
-int scan_vector_search(Ndb * myNdb, MYSQL& mysql)
+int scan_vector_search(Ndb * myNdb)
 {
   const int retryMax = 10;
   NdbError  err;
@@ -382,7 +382,7 @@ int scan_vector_search(Ndb * myNdb, MYSQL& mysql)
   return -1;
 }
 
-int scan_index_vector_search(Ndb *myNdb, MYSQL& mysql) {
+int scan_index_vector_search(Ndb *myNdb) {
   NdbError err;
   NdbDictionary::Dictionary* myDict = myNdb->getDictionary();
   const NdbDictionary::Index *myPIndex =
@@ -485,7 +485,7 @@ int scan_index_vector_search(Ndb *myNdb, MYSQL& mysql) {
   return 1;
 }
 
-int table_scan_regular_vector_search(Ndb * myNdb, MYSQL& mysql)
+int table_scan_regular_vector_search(Ndb * myNdb)
 {
   const int retryMax = 10;
   NdbError  err;
@@ -597,7 +597,7 @@ int table_scan_regular_vector_search(Ndb * myNdb, MYSQL& mysql)
   return -1;
 }
 
-int index_scan_regular_vector_search(Ndb * myNdb, MYSQL& mysql)
+int index_scan_regular_vector_search(Ndb * myNdb)
 {
   const int retryMax = 10;
   NdbError  err;
@@ -786,8 +786,7 @@ bool DoubleCheck(Ndb* myNdb, Int32 pk_1, Int32 pk_2) {
   return distance_1 == distance_2;
 }
 
-void ndb_run_scan(const char * connectstring, MYSQL& mysql,
-                  int iters)
+void ndb_run_scan(const char * connectstring, int iters)
 {
   Ndb_cluster_connection cluster_connection(connectstring);
   if (cluster_connection.connect(4, 5, 1))
@@ -819,7 +818,7 @@ void ndb_run_scan(const char * connectstring, MYSQL& mysql,
     fprintf(stderr, "                 ORDER BY embedding <-> "
                     "'[target_vec]'::vector\n");
     fprintf(stderr, "                 LIMIT %u;\n", g_top_n);
-    if (scan_vector_search(&myNdb, mysql) > 0) {
+    if (scan_vector_search(&myNdb) > 0) {
       std::cout << "Query 1: success!" << std::endl  << std::endl;
     }
 
@@ -828,7 +827,7 @@ void ndb_run_scan(const char * connectstring, MYSQL& mysql,
     fprintf(stderr, "                 ORDER BY embedding <-> "
                     "'[target_vec]'::vector\n");
     fprintf(stderr, "                 LIMIT %u;\n", g_top_n);
-    if (table_scan_regular_vector_search(&myNdb, mysql) > 0) {
+    if (table_scan_regular_vector_search(&myNdb) > 0) {
       std::cout << "Query 2: success!" << std::endl  << std::endl;
       std::cout << "Validating [TABLE]: " << std::endl;
       if (res_vs.size() == res_scan.size()) {
@@ -859,7 +858,7 @@ void ndb_run_scan(const char * connectstring, MYSQL& mysql,
     fprintf(stderr, "                 WHERE val >= 10000 AND val < 100000 AND pk < 500\n");
     fprintf(stderr, "                 ORDER BY embedding <-> '[target_vec]'::vector\n");
     fprintf(stderr, "                 LIMIT %u;\n", VEC_TOP_N);
-    if (scan_index_vector_search(&myNdb, mysql) > 0) {
+    if (scan_index_vector_search(&myNdb) > 0) {
       std::cout << "Query 3 success!" << std::endl;
     }
 
@@ -868,7 +867,7 @@ void ndb_run_scan(const char * connectstring, MYSQL& mysql,
     fprintf(stderr, "                 WHERE val >= 10000 AND val < 100000 AND pk < 500\n");
     fprintf(stderr, "                 ORDER BY embedding <-> '[target]'::vector\n");
     fprintf(stderr, "                 LIMIT %u;\n", VEC_TOP_N);
-    if (index_scan_regular_vector_search(&myNdb, mysql) > 0) {
+    if (index_scan_regular_vector_search(&myNdb) > 0) {
       std::cout << "Query 4: success!" << std::endl  << std::endl;
       std::cout << "Validating [INDEX]: " << std::endl;
       if (res_vs.size() == res_scan.size()) {
@@ -958,7 +957,7 @@ int main(int argc, char** argv)
   }
 
   ndb_init();
-  ndb_run_scan(connectstring, mysql, cfg.iters);
+  ndb_run_scan(connectstring, cfg.iters);
   ndb_end(0);
 
   mysql_close(&mysql);

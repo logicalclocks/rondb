@@ -170,7 +170,7 @@ bool AggInterpreter::Init(const Uint32* prog) {
 
   if (vec_search_) {
     value = prog_[cur_pos_++];
-    vec_type_ = (value >> 16) & 0xFF00;
+    vec_type_ = (value >> 24) & 0xFF;
     vec_metric_ = (value >> 16) & 0xFF;
     vec_dims_ = value & 0xFFFF;
 
@@ -2521,11 +2521,7 @@ void AggInterpreter::Destruct(AggInterpreter* ptr) {
   if (ptr == nullptr) {
     return;
   }
-  /*
-  Ndbd_mem_manager* _mm = ptr->mm();
-  Uint32 _page_ref = ptr->page_ref();
-  _mm->release_page(RT_DBTUP_PAGE, _page_ref);
-  */
+  ptr->~AggInterpreter();
   lc_ndbd_pool_free(ptr);
 }
 #endif // PA_MALLOC
@@ -2536,8 +2532,19 @@ Int32 AggInterpreter::CopyVecCandidateFromSignal(Signal* signal,
                     "CandidateAllocator pre-allocating memory, "
                     "top_n: %u, vec_max_rec_size: %u, actual_rec_size: %u",
                     vec_top_n_, vec_max_rec_size_, ToutBufIndex);
-    candidate_allocator_ = new CandidateAllocator(vec_top_n_, vec_max_rec_size_,
-        table_id_, frag_id_);
+#ifdef PA_MALLOC
+    void* ca_mem = lc_ndbd_pool_malloc(
+        sizeof(CandidateAllocator), RG_QUERY_MEMORY, thread_id_, false);
+    if (ca_mem == nullptr) {
+      g_eventLogger->error("Alloc mem for CandidateAllocator failed");
+      return ZAGG_ALLOC_MEM_FAILED;
+    }
+    candidate_allocator_ = new (ca_mem) CandidateAllocator(
+        vec_top_n_, vec_max_rec_size_, table_id_, frag_id_);
+#else
+    candidate_allocator_ = new CandidateAllocator(
+        vec_top_n_, vec_max_rec_size_, table_id_, frag_id_);
+#endif
     int ret = candidate_allocator_ -> Init(thread_id_);
     if (ret != 0) {
       return ret;
@@ -2562,6 +2569,9 @@ Int32 AggInterpreter::CopyVecCandidateFromSignal(Signal* signal,
 
   Candidate* selected = candidate_allocator_->
       Allocate(curr_distance_, &(signal->theData[25]), ToutBufIndex);
+  if (selected == nullptr) {
+    return -1;
+  }
   vec_top_n_results_.push(selected);
   VS_INTERP_TRACE(table_id_, frag_id_,
                   "Push one candidate with distance %lf, [%lu/%u], idx_in_allocator: %u",
@@ -2694,7 +2704,11 @@ Int32 AggInterpreter::CandidateAllocator::Init(Uint32 thread_id) {
       "full_segments=%lu, last_slots=%lu",
       slot_size_, slots_per_full_segment_, full_segments, last_slots);
 
+#ifdef PA_MALLOC
+  assert(num_segments <= MAX_CANDIDATE_SEGMENTS);
+#else
   segments_.reserve(num_segments);
+#endif
 
   for (size_t i = 0; i < full_segments; i++) {
 #ifdef PA_MALLOC
@@ -2704,7 +2718,7 @@ Int32 AggInterpreter::CandidateAllocator::Init(Uint32 thread_id) {
       g_eventLogger->error("Failed allocating segment %lu", i);
       return ZAGG_ALLOC_MEM_FAILED;
     }
-    segments_.push_back({(char*)page_ptr, g_segment_size});
+    segments_[n_segments_++] = {(char*)page_ptr, g_segment_size};
 #else
     char* buf = (char*)::operator new(g_segment_size);
     segments_.push_back({buf, g_segment_size});
@@ -2719,7 +2733,7 @@ Int32 AggInterpreter::CandidateAllocator::Init(Uint32 thread_id) {
       g_eventLogger->error("Failed allocating last segment");
       return ZAGG_ALLOC_MEM_FAILED;
     }
-    segments_.push_back({(char*)page_ptr, last_size});
+    segments_[n_segments_++] = {(char*)page_ptr, last_size};
 #else
     char* buf = (char*)::operator new(last_size);
     segments_.push_back({buf, last_size});
@@ -2741,7 +2755,11 @@ AggInterpreter::Candidate* AggInterpreter::CandidateAllocator::Allocate(
 	size_t seg_id   = next_index_ >> shift_k_;
 	size_t slot_off = next_index_ & (slots_per_full_segment_ - 1);
 
+#ifdef PA_MALLOC
+  assert(seg_id < n_segments_);
+#else
   assert(seg_id < segments_.size());
+#endif
 
   char* base = segments_[seg_id].ptr;
   char* ptr = base + slot_off * slot_size_;

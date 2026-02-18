@@ -813,7 +813,6 @@ void Dbtup::scanReply(Signal *signal, ScanOpPtr scanPtr) {
        *
        *   Dblqh::exec_next_scan_conf() -> Dblqh::continue_next_scan_conf()
        */
-      // conf->accOperationPtr = Uint32(-1);
       conf->vectorScanDone = true;
     }
     signal->setLength(NextScanConf::SignalLengthNoTuple);
