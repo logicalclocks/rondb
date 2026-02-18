@@ -946,6 +946,145 @@ testMultiAggGroupBy(Ndb *ndb, MYSQL *conn,
 /*   JOIN t4_line l ON l.order_id = o.region_id                        */
 /*   WHERE o.priority >= r.area                                        */
 /*   GROUP BY r.area, o.discount                                       */
+/*                                                                     */
+/* ================================================================== */
+/* Wire format reference (SCAN_TABREQ for Test 4)                     */
+/* ================================================================== */
+/*                                                                     */
+/* --- Section 0: Worker Receiver IDs (1 word) ---                     */
+/*                                                                     */
+/*   worker[0] receiverId (single-worker scan, parallelism=1)          */
+/*                                                                     */
+/* --- Section 1: QueryTree + Params (54 words) ---                    */
+/*                                                                     */
+/* QueryTree header:                                                   */
+/*   [0]  0x001d0003  nodeCount=3, treeLength=29 words                 */
+/*                                                                     */
+/* Node 0: QN_ScanFragNode (root table scan on t4_region):             */
+/*   [1]  0x00060004  type=QN_SCAN_FRAG(4), nodeLength=6               */
+/*   [2]  0x00002010  requestInfo: NI_LINKED_ATTR | NI_AGGREGATE       */
+/*   [3]  tableId     (t4_region)                                      */
+/*   [4]  tableVersion                                                 */
+/*   Part4 (NI_LINKED_ATTR Uint16Sequence, 2 cols for children):       */
+/*   [5]  0x00000002  size=2, col[0]=id(0)                             */
+/*   [6]  0xbabe0001  col[1]=area(1), pad=0xBABE                       */
+/*        -> Projects [id, area] for child operations.                 */
+/*                                                                     */
+/* Node 1: QN_LookupNode (child PK lookup on t4_order):                */
+/*   [7]  0x000b0001  type=QN_LOOKUP(1), nodeLength=11                 */
+/*   [8]  0x00002093  requestInfo: NI_HAS_PARENT | NI_KEY_LINKED |     */
+/*                      NI_LINKED_ATTR | NI_ATTR_LINKED | NI_AGGREGATE */
+/*   [9]  tableId     (t4_order)                                       */
+/*   [10] tableVersion                                                 */
+/*   Part1 (NI_HAS_PARENT):                                            */
+/*   [11] 0x00000001  Uint16Sequence: size=1, parent=Node 0            */
+/*   Part2 (NI_KEY_LINKED, key: o.region_id = r.id):                   */
+/*   [12] 0x00000001  key pattern length=1                             */
+/*   [13] 0x00020000  P_COL(0x2) col=0 -> parent.spjProj[0] = r.id    */
+/*   Part3 (NI_ATTR_LINKED, filter param for WHERE o.priority>=r.area):*/
+/*   [14] 0x00010000  attr-linked pattern length=1                     */
+/*   [15] 0x00070001  P_ATTRINFO(0x7) col=1 -> parent.spjProj[1]=area */
+/*        -> Provides r.area as linked param 0 for the filter below.   */
+/*   Part4 (NI_LINKED_ATTR Uint16Sequence, 2 cols for children):       */
+/*   [16] 0x00000002  size=2, col[0]=region_id(0)                      */
+/*   [17] 0xbabe0002  col[1]=discount(2), pad=0xBABE                   */
+/*        -> Projects [region_id, discount] for Node 2 operations.     */
+/*                                                                     */
+/* Node 2: QN_LookupNode (grandchild PK lookup on t4_line, agg leaf): */
+/*   [18] 0x000b0001  type=QN_LOOKUP(1), nodeLength=11                 */
+/*   [19] 0x00006083  requestInfo: NI_HAS_PARENT | NI_KEY_LINKED |     */
+/*                      NI_ATTR_LINKED | NI_AGGREGATE | NI_AGG_LEAF    */
+/*   [20] tableId     (t4_line)                                        */
+/*   [21] tableVersion                                                 */
+/*   Part1 (NI_HAS_PARENT):                                            */
+/*   [22] 0x00010001  Uint16Sequence: size=1, parent=Node 1            */
+/*   Part2 (NI_KEY_LINKED, key: l.order_id = o.region_id):             */
+/*   [23] 0x00000001  key pattern length=1                             */
+/*   [24] 0x00020000  P_COL(0x2) col=0 -> parent.spjProj[0]=region_id */
+/*   Part3 (NI_ATTR_LINKED, linked cols for GROUP BY):                 */
+/*   [25] 0x00030000  attr-linked pattern length=3                     */
+/*   [26] 0x00050001  P_PARENT(0x5) levels=1 -> go up Node 1->Node 0  */
+/*   [27] 0x00070001  P_ATTRINFO(0x7) col=1 -> grandparent col 1=area */
+/*   [28] 0x00070001  P_ATTRINFO(0x7) col=1 -> parent col 1=discount  */
+/*        -> Linked positions: pos 0=r.area (grandparent),             */
+/*           pos 1=o.discount (parent).                                */
+/*        Note: P_PARENT(levels=1) shifts the "current ancestor" to    */
+/*        Node 0 (grandparent), so the first P_ATTRINFO reads from    */
+/*        Node 0's spjProjection. The second P_ATTRINFO (no P_PARENT   */
+/*        prefix) reads from the direct parent Node 1's projection.    */
+/*                                                                     */
+/* Params for Node 0: QN_ScanFragParameters:                           */
+/*   [29] 0x000c0004  type=QN_SCAN_FRAG(4), paramLength=12            */
+/*   [30] requestInfo: PI_ATTR_LIST | SFP_PARALLEL                     */
+/*   [31] resultData  (API receiver ID)                                */
+/*   [32] batch_size_rows                                              */
+/*   [33] batch_size_bytes                                             */
+/*   [34-36] unused/reserved                                           */
+/*   PI_ATTR_LIST:                                                     */
+/*   [37] 0x00000003  3 AttributeHeaders                               */
+/*   [38] attrId=0 (r.id)                                              */
+/*   [39] attrId=1 (r.area)                                            */
+/*   [40] attrId=0xFFE8 (CORR_FACTOR64 pseudo-column)                  */
+/*                                                                     */
+/* Params for Node 1: QN_LookupParameters (+ filter):                  */
+/*   [41] 0x00080001  type=QN_LOOKUP(1), paramLength=8                 */
+/*   [42] requestInfo: PI_ATTR_INTERPRET                               */
+/*   [43] resultData  (API receiver ID)                                */
+/*   PI_ATTR_INTERPRET (filter for WHERE o.priority >= r.area):        */
+/*   [44] 0x00000004  program_len=4                                    */
+/*   [45] 0x0003301a  BRANCH_COL_LE_PARAM(cond=LE, nulls=CMP_EQUAL)   */
+/*                      -> branch target=3 (EXIT_OK)                   */
+/*   [46] 0x00010000  attrId=1 (o.priority), paramNo=0 (linked r.area)*/
+/*   [47] 0x02720013  EXIT_REFUSE(errorCode=626) — reject row          */
+/*   [48] 0x00000012  EXIT_OK — accept row                             */
+/*        Note: NDB inequality branches are INVERTED —                 */
+/*        branch_col_le_param branches when col >= param.              */
+/*        So: if priority >= area → EXIT_OK; else → EXIT_REFUSE.       */
+/*                                                                     */
+/* Params for Node 2: QN_LookupParameters (agg leaf):                  */
+/*   [49] 0x00050001  type=QN_LOOKUP(1), paramLength=5                 */
+/*   [50] requestInfo: PI_ATTR_INTERPRET                               */
+/*   [51] resultData  (API receiver ID)                                */
+/*   PI_ATTR_INTERPRET (trivial program):                              */
+/*   [52] 0x00000001  program_len=1                                    */
+/*   [53] 0x00000012  EXIT_OK — accept all rows (agg is in Section 2)  */
+/*                                                                     */
+/* --- Section 2: Bounds + Aggregation (15 words) ---                  */
+/*                                                                     */
+/*   [0]  boundsLen=0 (full table scan, no index bounds)               */
+/*   [1]  aggReceiverId (object map ID for aggregation results)        */
+/*   [2..14] aggProgram (13 words):                                    */
+/*     Header (8 words):                                               */
+/*       [0] magic=0x0721, totalLen=13                                 */
+/*       [1] n_gb_cols=2, n_agg_results=2                              */
+/*       [2] version=PUSHDOWN_AGGREGATION_VERSION(2)                   */
+/*       [3-7] reserved (0)                                            */
+/*     GroupBy column descriptors (2 words):                           */
+/*       [8] 0x80000007  GB col 0: (0x8000|pos 0)=LINKED r.area,      */
+/*                        type=7 (INT)                                 */
+/*       [9] 0x80010009  GB col 1: (0x8000|pos 1)=LINKED o.discount,  */
+/*                        type=9 (BIGINT)                              */
+/*     Instructions (3 words):                                         */
+/*       [10] kOpLoadCol: type=BIGINT, reg=0, colId=1 (l.amount)      */
+/*       [11] kOpSum:     agg[0]=SUM(reg0)                             */
+/*       [12] kOpCount:   agg[1]=COUNT(*)                              */
+/*                                                                     */
+/* --- Data flow summary ---                                           */
+/*                                                                     */
+/*   Node 0: SCAN t4_region                                            */
+/*     reads: {id, area, CORR_FACTOR64}                                */
+/*     provides to children: col 0 (id), col 1 (area)                 */
+/*       |                                                             */
+/*   Node 1: LOOKUP t4_order — key: region_id = r.id                  */
+/*     filter: priority >= r.area (linked param 0)                     */
+/*     provides to children: col 0 (region_id), col 1 (discount)      */
+/*       |                                                             */
+/*   Node 2: LOOKUP t4_line — key: order_id = o.region_id             */
+/*     AGGREGATE LEAF:                                                 */
+/*       linked[0] = r.area  (via P_PARENT(1) + P_ATTRINFO(1))        */
+/*       linked[1] = o.discount (via P_ATTRINFO(1))                   */
+/*       GROUP BY linked[0] (INT), linked[1] (BIGINT)                 */
+/*       SUM(l.amount), COUNT(*)                                       */
 /* ------------------------------------------------------------------ */
 
 static int
