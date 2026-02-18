@@ -20927,7 +20927,7 @@ void Dblqh::send_next_NEXT_SCANREQ(Signal* signal,
         scanPtr->m_agg_interpreter->vec_search_scan_done()) {
 
       NextScanConf *const conf = (NextScanConf *)signal->getDataPtrSend();
-      ndbrequire(scanptr.p = scanPtr);
+      ndbrequire(scanptr.p == scanPtr);
       conf->scanPtr = scanptr.i;
       conf->vectorScanDone = false;
       /*

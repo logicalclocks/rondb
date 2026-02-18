@@ -77,6 +77,13 @@ NdbAggregator::~NdbAggregator() {
     }
     delete gb_map_;
   }
+  if (vec_result_) {
+    while (!vec_result_->empty()) {
+      delete vec_result_->top();
+      vec_result_->pop();
+    }
+    delete vec_result_;
+  }
   for (Uint32 i = 0; i < vec_result_final_.size(); i++) {
     delete vec_result_final_[i];
   }
@@ -967,18 +974,19 @@ bool NdbAggregator::VectorSearch(const char* name,
   buffer_[5] = ((col_id & 0xFFFF) << 16) | (top_n & 0xFFFF);
   buffer_[6] = vec_size_in_bytes;
   curr_prog_pos_ = 7;
-  memcpy(&buffer_[curr_prog_pos_], vec, dims * sizeof(float));
-  curr_prog_pos_ += dims;
-  // fprintf(stderr, "curr_prog_pos: %u, col_id: %d, top_n: %u, size: %u\n", curr_prog_pos_,
-  //     col_id, top_n, vec_size_in_bytes);
 
-  buffer_[0] = (0x0721) << 16 | curr_prog_pos_;
-
-  instructions_length_ = curr_prog_pos_;
-  if (instructions_length_ >= MAX_VEC_SEARCH_PROGRAM_WORD_SIZE) {
+  if (curr_prog_pos_ + dims >= MAX_VEC_SEARCH_PROGRAM_WORD_SIZE) {
     SetError(kErrTooBigProgram);
     return false;
   }
+
+  memcpy(&buffer_[curr_prog_pos_], vec, dims * sizeof(float));
+  curr_prog_pos_ += dims;
+
+  // 0x0721: magic number identifying this as a pushdown aggregation program
+  buffer_[0] = (0x0721) << 16 | curr_prog_pos_;
+
+  instructions_length_ = curr_prog_pos_;
   vec_top_n_ = top_n;
   if (vec_result_) {
     while (!vec_result_->empty()) {

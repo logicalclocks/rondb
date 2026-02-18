@@ -67,8 +67,8 @@
  * NOTICE: In order to enable DEBUG_PA_TUP,
  * you have to enable DEBUG_PA first.
  */
-// #undef DEBUG_PA_TUP
-#define DEBUG_PA_TUP 1
+#undef DEBUG_PA_TUP
+// #define DEBUG_PA_TUP 1
 #ifdef DEBUG_PA_TUP
 #include "include/my_byteorder.h"
 #include "AggInterpreter.hpp"
@@ -382,8 +382,6 @@ int Dbtup::readAttributes(KeyReqStruct *req_struct, const Uint32 *inBuffer,
   thrjamDebug(req_struct->jamBuffer);
   thrjamDataDebug(req_struct->jamBuffer, inBufLen);
   while (inBufIndex < inBufLen) {
-    // g_eventLogger->info("Hello[1], table: %u, frag_id: %u, thread: %ld\n",
-    //     req_struct->fragPtrP->fragTableId, req_struct->fragPtrP->fragmentId, pthread_self());
     thrjamDebug(req_struct->jamBuffer);
     tmpAttrBufIndex = req_struct->out_buf_index;
     tmpAttrBufBits = req_struct->out_buf_bits;
@@ -391,18 +389,13 @@ int Dbtup::readAttributes(KeyReqStruct *req_struct, const Uint32 *inBuffer,
     inBufIndex++;
     attributeId= ahIn.getAttributeId();
 #ifdef DEBUG_PA_TUP
-    // g_eventLogger->info("Hello[2], table: %u, frag_id: %u, thread: %ld\n",
-    //     req_struct->fragPtrP->fragTableId, req_struct->fragPtrP->fragmentId, pthread_self());
     if (req_struct->fragPtrP != nullptr &&
         PA_NEED_PRINT(true,
           req_struct->fragPtrP->fragTableId,
           req_struct->fragPtrP->fragmentId)) {
-    // g_eventLogger->info("Hello[3], table: %u, frag_id: %u, thread: %ld\n",
-    //     req_struct->fragPtrP->fragTableId, req_struct->fragPtrP->fragmentId, pthread_self());
       const Uint32* attrDescriptor = req_struct->tablePtrP->tabDescriptor +
         (attributeId * ZAD_SIZE);
       const Uint32 TattrDesc1 = attrDescriptor[0];
-      // const Uint32 TattrDesc2 = attrDescriptor[1];
       const Uint32 type_id = AttributeDescriptor::getType(TattrDesc1);
       const Uint32 size = AttributeDescriptor::getSize(TattrDesc1);
       const Uint32 size_in_bytes = AttributeDescriptor::getSizeInBytes(TattrDesc1);
@@ -436,10 +429,10 @@ int Dbtup::readAttributes(KeyReqStruct *req_struct, const Uint32 *inBuffer,
       thrjamDebug(req_struct->jamBuffer);
       Uint32 attrDescriptor = attr_descr[descr_index];
       {
-      const Uint32* attrDescr = req_struct->tablePtrP->tabDescriptor +
-        (attributeId * ZAD_SIZE);
-      const Uint32 TattrDesc1 = attrDescr[0];
-      ndbassert(attrDescriptor == TattrDesc1);
+        const Uint32* attrDescr = req_struct->tablePtrP->tabDescriptor +
+          (attributeId * ZAD_SIZE);
+        const Uint32 TattrDesc1 = attrDescr[0];
+        ndbassert(attrDescriptor == TattrDesc1);
       }
       Uint32 attrDes2 = attr_descr[descr_index + 1];
       Uint64 attrDes = (Uint64(attrDes2) << 32) +
@@ -487,7 +480,7 @@ int Dbtup::readAttributes(KeyReqStruct *req_struct, const Uint32 *inBuffer,
           return -(int)ZPARTIAL_READ_ERROR;
         }
         // VS related
-        if (vec_max_rec_size != nullptr) {
+        if (unlikely(vec_max_rec_size != nullptr)) {
           *vec_max_rec_size += (1 /* AttributeHeader */
                + AttributeDescriptor::getSizeInWords(attrDescriptor));
  #ifdef DEBUG_PA_TUP
@@ -3551,10 +3544,9 @@ int Dbtup::read_pseudo(const Uint32 *inBuffer, Uint32 inPos,
        * TODO (Zhao)
        */
       {
-        // g_eventLogger->info("VEC_DISTANCE");
         double tmp = 721.721;
         memcpy(outBuffer + 1, &tmp, 8);
-        if (vec_max_rec_size) {
+        if (unlikely(vec_max_rec_size != nullptr)) {
           *vec_max_rec_size += (1 + 2);
  #ifdef DEBUG_PA_TUP
           if (req_struct->fragPtrP != nullptr &&
@@ -3635,7 +3627,7 @@ Uint32 Dbtup::read_packed(const Uint32 *inBuf, Uint32 inPos,
   AttributeHeader ahOut;
   Uint8* outBuf = (Uint8*)outBuffer;
   outPos += 4*masksz;
-  if (vec_max_rec_size) {
+  if (unlikely(vec_max_rec_size != nullptr)) {
     *vec_max_rec_size += (1 /* AttributeHeader */ + masksz);
   }
   if (likely(outPos <= maxRead))
@@ -3680,7 +3672,7 @@ Uint32 Dbtup::read_packed(const Uint32 *inBuf, Uint32 inPos,
 
         req_struct->out_buf_index = outPos;
         req_struct->out_buf_bits = outBits;
-        if (vec_max_rec_size) {
+        if (unlikely(vec_max_rec_size != nullptr)) {
           *vec_max_rec_size += AttributeDescriptor::getSizeInWords(attrDescriptor);
         }
         if (likely((*f)(outBuf, req_struct, &ahOut, attrDes)))
