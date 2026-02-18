@@ -30,6 +30,7 @@
 #include "Dbtup.hpp"
 #include "NdbAggregationCommon.hpp"
 #include "util/rondb_hash.hpp"
+#include <NdbSqlUtil.hpp>
 
 #include <simsimd/simsimd.h>
 #include <queue>
@@ -48,6 +49,17 @@ struct MemChunk {
   MemChunk* next;
   MemChunk* prev;
   char* group_list;         // singly-linked list of live groups in this chunk
+};
+
+/*
+ * Per-column type info for type-aware GROUP BY hashing and comparison.
+ * Populated once from table descriptors on first ProcessRec call.
+ */
+struct GBColTypeInfo {
+  Uint32 typeId;
+  const CHARSET_INFO *cs;          // nullptr for non-string types
+  NdbSqlUtil::Cmp *cmpFn;         // from NdbSqlUtil::getType(typeId)
+  Uint32 maxBytes;                 // AttributeDescriptor::getSizeInBytes
 };
 
 /*
@@ -84,7 +96,9 @@ class GBHashTable {
   };
 
   GBHashTable()
-    : m_size(0), m_bucket_count(0), m_bucket_mask(0) {
+    : m_size(0), m_bucket_count(0), m_bucket_mask(0),
+      m_col_types(nullptr), m_n_gb_cols(0),
+      m_xfrm_buf(nullptr), m_xfrm_buf_len(0) {
     memset(m_buckets, 0, sizeof(m_buckets));
   }
 
@@ -192,18 +206,6 @@ class GBHashTable {
   bool empty() const { return m_size == 0; }
   Uint32 bucketCount() const { return m_bucket_count; }
 
-  char* findInBucket(Uint32 b, const char* key, Uint32 key_len) const {
-    for (char* raw = m_buckets[b]; raw != nullptr;
-         raw = hashNext(raw)) {
-      char* d = raw + OVERHEAD;
-      Uint32 kl = *reinterpret_cast<Uint32*>(raw + KEY_LEN_OFFSET);
-      if (kl == key_len && memcmp(d, key, key_len) == 0) {
-        return d;
-      }
-    }
-    return nullptr;
-  }
-
   char* popBucketHead(Uint32 b) {
     char* raw = m_buckets[b];
     if (raw == nullptr) return nullptr;
@@ -223,16 +225,27 @@ class GBHashTable {
 
   bool bucketEmpty(Uint32 b) const { return m_buckets[b] == nullptr; }
 
-  Uint32 hashKey(const char* key, Uint32 len) const {
-    Uint64 h = rondb_xxhash_std(key, len);
-    return static_cast<Uint32>(h) & m_bucket_mask;
+  void setTypeMeta(const GBColTypeInfo *types, Uint32 nCols,
+                   uchar *xfrm_buf, Uint32 xfrm_buf_len) {
+    m_col_types = types;
+    m_n_gb_cols = nCols;
+    m_xfrm_buf = xfrm_buf;
+    m_xfrm_buf_len = xfrm_buf_len;
   }
+
+  Uint32 hashKey(const char* key, Uint32 len) const;
+
+  char* findInBucket(Uint32 b, const char* key, Uint32 key_len) const;
 
  private:
   char* m_buckets[GB_HASH_BUCKET_COUNT];
   Uint32 m_size;
   Uint32 m_bucket_count;
   Uint32 m_bucket_mask;
+  const GBColTypeInfo *m_col_types;
+  Uint32 m_n_gb_cols;
+  uchar *m_xfrm_buf;              // scratch buffer for strnxfrm_hash
+  Uint32 m_xfrm_buf_len;          // size in bytes
 
   static char*& hashNext(char* raw) {
     return *reinterpret_cast<char**>(raw + HASH_NEXT_OFFSET);
@@ -271,7 +284,9 @@ class AggInterpreter {
     m_current_chunk(nullptr), m_total_chunk_bytes(0),
     m_memory_budget(0), m_budget_increment(0),
     m_total_available(0), m_thread_id(0),
-    m_agg_ops_cached(false) {
+    m_agg_ops_cached(false),
+    m_gb_types_inited(false),
+    m_xfrm_buf(nullptr), m_xfrm_buf_len(0) {
       assert(prog_len_ <= MAX_AGG_PROGRAM_WORD_SIZE);
       prog_ = prog_buf_;
       memcpy(prog_, prog, prog_len * sizeof(Uint32));
@@ -279,9 +294,14 @@ class AggInterpreter {
       memset(decimal_buf_, 0, sizeof(decimal_digit_t) * DECIMAL_BUFF_LENGTH);
       decimal_.buf = decimal_buf_;
       decimal_.len = DECIMAL_BUFF_LENGTH;
+      memset(m_gb_types, 0, sizeof(m_gb_types));
   }
   ~AggInterpreter() {
     freeAllChunks();
+    if (m_xfrm_buf != nullptr) {
+      lc_ndbd_pool_free(m_xfrm_buf);
+      m_xfrm_buf = nullptr;
+    }
   }
 
   bool Init();
@@ -461,6 +481,13 @@ class AggInterpreter {
   // Cached agg ops for merge (avoids recomputing per CONTINUEB batch)
   Uint8 m_cached_agg_ops[MAX_AGG_N_RESULTS];
   bool m_agg_ops_cached;
+
+  // Per-column type info for type-aware GROUP BY hashing and comparison
+  GBColTypeInfo m_gb_types[MAX_AGG_N_GROUPBY_COLS];
+  bool m_gb_types_inited;
+  uchar *m_xfrm_buf;              // scratch buffer for strnxfrm_hash
+  Uint32 m_xfrm_buf_len;          // size in bytes
+  Int32 initGBTypes(Dbtup* block_tup, Dbtup::KeyReqStruct* req_struct);
 
   Uint32 prog_buf_[MAX_AGG_PROGRAM_WORD_SIZE];
   Uint32 gb_cols_buf_[MAX_AGG_N_GROUPBY_COLS];

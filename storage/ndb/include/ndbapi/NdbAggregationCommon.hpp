@@ -56,6 +56,12 @@ struct CHARSET_INFO;
  * Used with GroupBy() and LoadColumn() to reference linked parent columns. */
 #define AGG_LINKED_COL_FLAG 0x8000
 
+/* GROUP BY column word encoding: (col_id << 16) | (col_type & 0xFF)
+ * Lower 8 bits store the NdbDictionary::Column::Type enum value so that
+ * linked GROUP BY columns are self-describing (the parent table's column
+ * type is not otherwise available on the API result side). */
+#define AGG_GB_COL_TYPE_MASK 0xFF
+
 #define PUSHDOWN_AGGREGATION_VERSION 2
 enum InterpreterOp {
   kOpUnknown = 0,

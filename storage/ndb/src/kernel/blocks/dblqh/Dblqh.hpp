@@ -132,6 +132,8 @@ class FsReadWriteReq;
 
 #endif // DEBUG_PA
 
+#define ZINVALID_SCHEMA_VERSION 1227
+
 #ifdef DBLQH_C
 // Constants
 /* ------------------------------------------------------------------------- */
@@ -427,7 +429,6 @@ class FsReadWriteReq;
 #define ZTOO_MANY_FRAGMENTS 1224
 #define ZTABLE_NOT_DEFINED 1225
 #define ZDROP_TABLE_IN_PROGRESS 1226
-#define ZINVALID_SCHEMA_VERSION 1227
 #define ZTABLE_READ_ONLY 1233
 #define ZREDO_IO_PROBLEM 1234
 #define ZNO_SUCH_FRAGMENT_ID 1235

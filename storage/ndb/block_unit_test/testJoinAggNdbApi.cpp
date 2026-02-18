@@ -35,6 +35,117 @@
  *   jagg_child(parent_id INT PK, amount BIGINT)
  *
  * Usage: testJoinAggNdbApi -c <connect_string> -m <mysql_port> [-v|--verbose]
+ *
+ * ========================================================================
+ * Wire format reference (SCAN_TABREQ AttrInfo for Test 3)
+ * ========================================================================
+ *
+ * Test 3 query: SELECT jagg_parent.grp, COUNT(*), SUM(jagg_child.amount)
+ *               FROM jagg_parent JOIN jagg_child
+ *               ON jagg_child.parent_id = jagg_parent.id
+ *               GROUP BY jagg_parent.grp
+ *
+ * The SCAN_TABREQ has three long signal sections:
+ *   Section 0: Worker receiver IDs (1 word per worker)
+ *   Section 1: AttrInfo = QueryTree nodes + QueryParameters
+ *   Section 2: [boundsLen, bounds..., aggReceiverId, aggProgram...]
+ *
+ * --- Section 1: QueryTree (37 words) ---
+ *
+ * QueryTree header:
+ *   [0]  0x00100002  nodeCount=2, treeLength=16 words
+ *
+ * Node 0: QN_ScanFragNode (root table scan on jagg_parent):
+ *   [1]  0x00060004  type=QN_SCAN_FRAG(4), nodeLength=6
+ *   [2]  0x00002010  requestInfo: NI_LINKED_ATTR | NI_AGGREGATE
+ *   [3]  tableId     (jagg_parent)
+ *   [4]  tableVersion
+ *   [5]  0x00000002  NI_LINKED_ATTR Uint16Sequence: size=2,
+ *                      col[0]=parent.id(0)
+ *   [6]  0xbabe0001  col[1]=parent.grp(1), pad=0xBABE
+ *        -> Parent projects [id, grp] for child operations.
+ *
+ * Node 1: QN_LookupNode (child PK lookup on jagg_child):
+ *   [7]  0x00090001  type=QN_LOOKUP(1), nodeLength=9
+ *   [8]  0x00006083  requestInfo: NI_HAS_PARENT | NI_KEY_LINKED |
+ *                      NI_ATTR_LINKED | NI_AGGREGATE | NI_AGGREGATE_LEAF
+ *   [9]  tableId     (jagg_child)
+ *   [10] tableVersion
+ *   Part1 (NI_HAS_PARENT):
+ *   [11] 0x00000001  Uint16Sequence: size=1, parent=Node 0
+ *   Part2 (NI_KEY_LINKED):
+ *   [12] 0x00000001  key pattern length=1
+ *   [13] 0x00020000  P_COL | spjRef 0 -> parent.spjProjection[0] = parent.id
+ *   Part3 (NI_ATTR_LINKED):
+ *   [14] 0x00010000  attr-linked pattern length=1
+ *   [15] 0x00070001  P_ATTRINFO | spjRef 1 -> parent.spjProjection[1] = parent.grp
+ *        -> Provides parent.grp as linked column for GROUP BY.
+ *
+ * Params for Node 0: QN_ScanFragParameters:
+ *   [16] 0x000c0004  type=QN_SCAN_FRAG(4), paramLength=12
+ *   [17] requestInfo: PI_ATTR_LIST | SFP_PARALLEL
+ *   [18] resultData  (API receiver ID)
+ *   [19] batch_size_rows
+ *   [20] batch_size_bytes
+ *   [21-23] unused/reserved
+ *   PI_ATTR_LIST:
+ *   [24] 0x00000003  3 AttributeHeaders
+ *   [25] attrId=0 (parent.id)
+ *   [26] attrId=1 (parent.grp)
+ *   [27] attrId=0xffe8 (FRAGMENT pseudo-column)
+ *
+ * Params for Node 1: QN_LookupParameters:
+ *   [28] 0x00090001  type=QN_LOOKUP(1), paramLength=9
+ *   [29] requestInfo: PI_ATTR_LIST | PI_ATTR_INTERPRET
+ *   [30] resultData  (API receiver ID)
+ *   PI_ATTR_INTERPRET (minimal ExitOK — creates 5-word interpreter
+ *     header for linked subroutine framing):
+ *   [31] 0x00000001  program_len=1, subroutine_len=0
+ *   [32] 0x00000012  Interpreter::ExitOK (opcode 18)
+ *   PI_ATTR_LIST:
+ *   [33] 0x00000003  3 AttributeHeaders
+ *   [34] attrId=0 (child.parent_id)
+ *   [35] attrId=1 (child.amount)
+ *   [36] attrId=0xffe8 (FRAGMENT pseudo-column)
+ *
+ * --- Section 2: Bounds + Aggregation ---
+ *
+ *   [0]  boundsLen=0 (full table scan, no bounds)
+ *   [1]  aggReceiverId (object map ID for aggregation results)
+ *   [2..13] aggProgram (12 words):
+ *     Header (8 words):
+ *       [0] magic=0x0721, programLength=12
+ *       [1] n_gb_cols=1, n_agg_results=2
+ *       [2] version=PUSHDOWN_AGGREGATION_VERSION(2)
+ *       [3-7] reserved (0)
+ *     GroupBy columns (1 word):
+ *       [8] GroupBy(col 0 | AGG_LINKED_COL_FLAG)
+ *           -> GROUP BY linked column at position 0 (= parent.grp)
+ *     Instructions (3 words):
+ *       [9]  kOpLoadCol: type=BIGINT, reg=0, colId=1 (child.amount)
+ *       [10] kOpCount:   agg[0]=COUNT(*), reg=0
+ *       [11] kOpSum:     agg[1]=SUM(reg0), reg=0
+ *
+ * --- Linked column position mapping ---
+ *
+ * The aggregation program references parent columns by a 0-based position
+ * index (with AGG_LINKED_COL_FLAG set), NOT by table attrId.  The position
+ * maps to the order of P_ATTRINFO entries in the NI_ATTR_LINKED pattern
+ * on the child node (Part3 above):
+ *
+ *   NI_ATTR_LINKED pattern          Linked buffer at runtime     Agg program ref
+ *   ─────────────────────────────  ────────────────────────     ───────────────
+ *   P_ATTRINFO|spjRef 1 [word 15]  position 0: parent.grp     GroupBy(0|LINKED)
+ *
+ * At runtime, DBSPJ expands each P_ATTRINFO(spjRef) by copying the
+ * AttributeHeader + data for parent spjProjection[spjRef] into the linked
+ * buffer, in pattern order.  The AggInterpreter then walks the linked
+ * buffer, skipping entries until it reaches the requested position index.
+ *
+ * If multiple parent columns were needed (e.g. GROUP BY grp, other_col):
+ *   NI_ATTR_LINKED would have two P_ATTRINFO entries,
+ *   producing positions 0 and 1 in the linked buffer,
+ *   referenced as GroupBy(0|LINKED) and GroupBy(1|LINKED).
  */
 
 #include <ndb_global.h>
@@ -66,6 +177,9 @@ static bool verbose = false;
 
 static const char *PARENT_TABLE = "jagg_parent";
 static const char *CHILD_TABLE = "jagg_child";
+static const char *T4_REGION = "t4_region";
+static const char *T4_ORDER = "t4_order";
+static const char *T4_LINE = "t4_line";
 static const char *TEST_DB = "test_db";
 
 /* ------------------------------------------------------------------ */
@@ -823,6 +937,399 @@ testMultiAggGroupBy(Ndb *ndb, MYSQL *conn,
 }
 
 /* ------------------------------------------------------------------ */
+/* Test 4: 3-Way Join with Multi-Level Linked Attributes              */
+/*                                                                     */
+/* SQL equivalent:                                                     */
+/*   SELECT r.area, o.discount, SUM(l.amount), COUNT(*)                */
+/*   FROM t4_region r                                                  */
+/*   JOIN t4_order o ON o.region_id = r.id                             */
+/*   JOIN t4_line l ON l.order_id = o.region_id                        */
+/*   WHERE o.priority >= r.area                                        */
+/*   GROUP BY r.area, o.discount                                       */
+/* ------------------------------------------------------------------ */
+
+static int
+createTest4Tables(MYSQL *conn)
+{
+  sqlExec(conn, "DROP TABLE IF EXISTS t4_line");
+  sqlExec(conn, "DROP TABLE IF EXISTS t4_order");
+  sqlExec(conn, "DROP TABLE IF EXISTS t4_region");
+
+  if (sqlExec(conn,
+        "CREATE TABLE t4_region ("
+        "  id INT NOT NULL PRIMARY KEY,"
+        "  area INT NOT NULL"
+        ") ENGINE=NDB") != 0) return -1;
+
+  if (sqlExec(conn,
+        "CREATE TABLE t4_order ("
+        "  region_id INT NOT NULL PRIMARY KEY,"
+        "  priority INT NOT NULL,"
+        "  discount BIGINT NOT NULL"
+        ") ENGINE=NDB") != 0) return -1;
+
+  if (sqlExec(conn,
+        "CREATE TABLE t4_line ("
+        "  order_id INT NOT NULL PRIMARY KEY,"
+        "  amount BIGINT NOT NULL"
+        ") ENGINE=NDB") != 0) return -1;
+
+  V("Created test 4 tables\n");
+  return 0;
+}
+
+static int
+insertTest4Data(MYSQL *conn)
+{
+  if (sqlExec(conn,
+        "INSERT INTO t4_region VALUES "
+        "(1,1),(2,2),(3,3),(4,4),(5,5)") != 0) return -1;
+
+  if (sqlExec(conn,
+        "INSERT INTO t4_order VALUES "
+        "(1,3,5),(2,1,10),(3,5,15),(4,2,20),(5,6,25)") != 0) return -1;
+
+  if (sqlExec(conn,
+        "INSERT INTO t4_line VALUES "
+        "(1,100),(2,200),(3,300),(4,400),(5,500)") != 0) return -1;
+
+  V("Inserted test 4 data\n");
+  return 0;
+}
+
+static int
+dropTest4Tables(MYSQL *conn)
+{
+  sqlExec(conn, "DROP TABLE IF EXISTS t4_line");
+  sqlExec(conn, "DROP TABLE IF EXISTS t4_order");
+  sqlExec(conn, "DROP TABLE IF EXISTS t4_region");
+  V("Dropped test 4 tables\n");
+  return 0;
+}
+
+static int
+testThreeWayJoin(Ndb *ndb, MYSQL *conn)
+{
+  printf("Test 4: 3-way join with linked param filter ... ");
+  fflush(stdout);
+
+  /* Verify with MySQL first */
+  {
+    const char *query =
+      "SELECT r.area, o.discount, SUM(l.amount), COUNT(*) "
+      "FROM t4_region r "
+      "JOIN t4_order o ON o.region_id = r.id "
+      "JOIN t4_line l ON l.order_id = o.region_id "
+      "WHERE o.priority >= r.area "
+      "GROUP BY r.area, o.discount "
+      "ORDER BY r.area";
+    V("  MySQL verify: %s\n", query);
+    if (mysql_query(conn, query) != 0) {
+      printf("FAILED (MySQL verify: %s)\n", mysql_error(conn));
+      return -1;
+    }
+    MYSQL_RES *result = mysql_store_result(conn);
+    if (result == nullptr) {
+      printf("FAILED (mysql_store_result: %s)\n", mysql_error(conn));
+      return -1;
+    }
+    Uint32 mysqlRows = 0;
+    MYSQL_ROW row;
+    while ((row = mysql_fetch_row(result)) != nullptr) {
+      Int32 area = atoi(row[0]);
+      Int64 disc = atoll(row[1]);
+      Int64 sum = atoll(row[2]);
+      Int64 cnt = atoll(row[3]);
+      V("  MySQL: area=%d disc=%lld sum=%lld cnt=%lld\n",
+        area, (long long)disc, (long long)sum, (long long)cnt);
+      mysqlRows++;
+    }
+    mysql_free_result(result);
+    if (mysqlRows != 3) {
+      printf("FAILED (MySQL returned %u groups, expected 3)\n", mysqlRows);
+      return -1;
+    }
+    V("  MySQL verification OK\n");
+  }
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(T4_REGION);
+  dict->invalidateTable(T4_ORDER);
+  dict->invalidateTable(T4_LINE);
+  const NdbDictionary::Table *regionTab = dict->getTable(T4_REGION);
+  const NdbDictionary::Table *orderTab = dict->getTable(T4_ORDER);
+  const NdbDictionary::Table *lineTab = dict->getTable(T4_LINE);
+  if (regionTab == nullptr || orderTab == nullptr || lineTab == nullptr) {
+    printf("FAILED (table lookup: %s)\n", dict->getNdbError().message);
+    return -1;
+  }
+
+  /* Look up parent columns needed for aggregation and filter */
+  const NdbDictionary::Column *areaCol = regionTab->getColumn("area");
+  const NdbDictionary::Column *discountCol = orderTab->getColumn("discount");
+  const NdbDictionary::Column *priCol = orderTab->getColumn("priority");
+  if (areaCol == nullptr || discountCol == nullptr || priCol == nullptr) {
+    printf("FAILED (column lookup)\n");
+    return -1;
+  }
+
+  /* Build aggregation program for t4_line (the leaf):
+   *   GROUP BY linked position 0 (= region.area, grandparent)
+   *   GROUP BY linked position 1 (= order.discount, parent)
+   *   SUM(amount)  -> agg[0]
+   *   COUNT(*)     -> agg[1]
+   */
+  NdbAggregator agg(lineTab);
+  if (!agg.GroupByLinked(0, areaCol) ||
+      !agg.GroupByLinked(1, discountCol) ||
+      !agg.LoadColumn("amount", 0) ||
+      !agg.Sum(0, 0) ||
+      !agg.Count(1, 0) ||
+      !agg.Finalize()) {
+    printf("FAILED (agg program: %s)\n", agg.GetError().err_msg_);
+    return -1;
+  }
+
+  /* Build interpreted code for t4_order filter: priority >= area.
+   * branch_col_le_param is INVERTED: branches when col >= param. */
+  Uint32 priorityAttrId = priCol->getColumnNo();
+
+  NdbInterpretedCode code(orderTab);
+  code.branch_col_le_param(priorityAttrId, 0, 0);  /* branch to 0 when pri >= area */
+  code.interpret_exit_nok();                         /* fall-through: reject */
+  code.def_label(0);
+  code.interpret_exit_ok();
+  if (code.finalise() != 0) {
+    printf("FAILED (NdbInterpretedCode finalise: %s)\n",
+           code.getNdbError().message);
+    return -1;
+  }
+
+  /* Build 3-node pushed join query */
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  if (qb == nullptr) {
+    printf("FAILED (NdbQueryBuilder::create)\n");
+    return -1;
+  }
+
+  /* Node 0: scan t4_region */
+  const NdbQueryTableScanOperationDef *regionOp = qb->scanTable(regionTab);
+  if (regionOp == nullptr) {
+    printf("FAILED (scanTable: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  /* Node 1: lookup t4_order (region_id = region.id) with filter */
+  const NdbQueryOperand *orderJoinKey[] = {
+    qb->linkedValue(regionOp, "id"),
+    nullptr
+  };
+
+  NdbQueryOptions orderOpts;
+  const NdbQueryOperand *filterParams[] = {
+    qb->linkedValue(regionOp, "area"),
+    nullptr
+  };
+  orderOpts.setInterpretedCode(code);
+  orderOpts.setParameters(filterParams);
+
+  const NdbQueryLookupOperationDef *orderOp =
+      qb->readTuple(orderTab, orderJoinKey, &orderOpts);
+  if (orderOp == nullptr) {
+    printf("FAILED (readTuple order: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  /* Node 2: lookup t4_line (order_id = order.region_id) with aggregation */
+  const NdbQueryOperand *lineJoinKey[] = {
+    qb->linkedValue(orderOp, "region_id"),
+    nullptr
+  };
+
+  NdbQueryOptions lineOpts;
+  lineOpts.setAggregation(agg);
+
+  const NdbLinkedOperand *areaLink = qb->linkedValue(regionOp, "area");
+  const NdbLinkedOperand *discLink = qb->linkedValue(orderOp, "discount");
+  if (areaLink == nullptr || discLink == nullptr) {
+    printf("FAILED (linkedValue for projection: %s)\n",
+           qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  lineOpts.addLinkedProjection(areaLink);
+  lineOpts.addLinkedProjection(discLink);
+
+  const NdbQueryLookupOperationDef *lineOp =
+      qb->readTuple(lineTab, lineJoinKey, &lineOpts);
+  if (lineOp == nullptr) {
+    printf("FAILED (readTuple line: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  /* Prepare query definition */
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  V("\n  Query prepared: %u operations, isScan=%d\n",
+    queryDef->getNoOfOperations(), queryDef->isScanQuery());
+
+  /* Execute query */
+  NdbTransaction *trans = ndb->startTransaction();
+  if (trans == nullptr) {
+    printf("FAILED (startTransaction: %s)\n", ndb->getNdbError().message);
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbQuery *query = trans->createQuery(queryDef);
+  if (query == nullptr) {
+    printf("FAILED (createQuery: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  /* Set up projections for scan root (needed for nextResult iteration).
+   *
+   * IMPORTANT: Do NOT call getValue() on intermediate aggregate nodes
+   * (order) or the aggregate leaf (line).  When FLUSH_AI is suppressed
+   * for intermediate aggregate nodes in DBSPJ, PI_ATTR_LIST columns are
+   * prepended to NI_LINKED_ATTR columns in the TRANSID_AI.  This shifts
+   * the m_offset[] indices so P_ATTRINFO(spjIdx) reads the wrong column.
+   * Omitting getValue() avoids PI_ATTR_LIST entirely, keeping the row
+   * data aligned with SPJ projection indices.
+   */
+  NdbQueryOperation *regionQueryOp = query->getQueryOperation((Uint32)0);
+  regionQueryOp->getValue("id");
+  regionQueryOp->getValue("area");
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    printf("FAILED (execute: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  /* Consume all scan batches */
+  NdbQuery::NextResultOutcome outcome;
+  Uint32 rowCount = 0;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {
+    rowCount++;
+  }
+
+  if (outcome == NdbQuery::NextResult_error) {
+    printf("FAILED (nextResult: error %d: %s)\n",
+           query->getNdbError().code, query->getNdbError().message);
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  V("  Scan consumed %u rows\n", rowCount);
+
+  /* Retrieve aggregated results */
+  NdbAggregator *resultAgg = query->getAggregator();
+  if (resultAgg == nullptr) {
+    printf("FAILED (getAggregator returned nullptr)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  struct ResultGroup {
+    Int64 discount;
+    Int64 sum_amount;
+    Int64 count;
+  };
+  std::map<Int32, ResultGroup> actual;
+
+  for (;;) {
+    NdbAggregator::ResultRecord rec = resultAgg->FetchResultRecord();
+    if (rec.end()) break;
+
+    NdbAggregator::Column areaCol = rec.FetchGroupbyColumn();
+    Int32 areaVal = areaCol.data_int32();
+
+    NdbAggregator::Column discCol = rec.FetchGroupbyColumn();
+    Int64 discVal = discCol.data_int64();
+
+    NdbAggregator::Result sumRes = rec.FetchAggregationResult();
+    Int64 sumVal = sumRes.data_int64();
+
+    NdbAggregator::Result cntRes = rec.FetchAggregationResult();
+    Int64 cntVal = cntRes.data_int64();
+
+    actual[areaVal] = {discVal, sumVal, cntVal};
+    V("  area=%d disc=%lld SUM=%lld COUNT=%lld\n",
+      areaVal, (long long)discVal, (long long)sumVal, (long long)cntVal);
+  }
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  /* Expected:
+   *   area=1, disc=5:  SUM=100, COUNT=1
+   *   area=3, disc=15: SUM=300, COUNT=1
+   *   area=5, disc=25: SUM=500, COUNT=1
+   */
+  struct Expected {
+    Int32 area;
+    Int64 discount;
+    Int64 sum_amount;
+    Int64 count;
+  };
+  Expected exp[] = {
+    {1, 5, 100, 1},
+    {3, 15, 300, 1},
+    {5, 25, 500, 1}
+  };
+  Uint32 numExpected = sizeof(exp) / sizeof(exp[0]);
+
+  if (actual.size() != numExpected) {
+    printf("FAILED (expected %u groups, got %zu)\n",
+           numExpected, actual.size());
+    return -1;
+  }
+
+  for (Uint32 i = 0; i < numExpected; i++) {
+    auto it = actual.find(exp[i].area);
+    if (it == actual.end()) {
+      printf("FAILED (missing area group %d)\n", exp[i].area);
+      return -1;
+    }
+    if (it->second.discount != exp[i].discount ||
+        it->second.sum_amount != exp[i].sum_amount ||
+        it->second.count != exp[i].count) {
+      printf("FAILED (area=%d: expected disc=%lld sum=%lld cnt=%lld, "
+             "got disc=%lld sum=%lld cnt=%lld)\n",
+             exp[i].area,
+             (long long)exp[i].discount,
+             (long long)exp[i].sum_amount,
+             (long long)exp[i].count,
+             (long long)it->second.discount,
+             (long long)it->second.sum_amount,
+             (long long)it->second.count);
+      return -1;
+    }
+  }
+
+  printf("OK (3 groups)\n");
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* Main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -956,6 +1463,17 @@ int main(int argc, char **argv)
           }
         }
         dropTestTables(conn);
+
+        /* Test 4: 3-way join with linked param filter */
+        if (createTest4Tables(conn) == 0 &&
+            insertTest4Data(conn) == 0) {
+          if (testThreeWayJoin(&ndb, conn) != 0) {
+            exitCode = 1;
+          }
+        } else {
+          exitCode = 1;
+        }
+        dropTest4Tables(conn);
         mysql_close(conn);
       }
     }

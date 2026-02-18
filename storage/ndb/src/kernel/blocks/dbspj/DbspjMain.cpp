@@ -9078,6 +9078,16 @@ Uint32 Dbspj::appendAttrinfoToSection(Uint32 &dst, const RowPtr::Row &row,
   return appendToSection(dst, ptr, 1 + len) ? 0 : DbspjErr::OutOfSectionMemory;
 }
 
+Uint32 Dbspj::appendAttrinfoWithTableMeta(
+    Uint32 &dst, const RowPtr::Row &row,
+    Uint32 col, Uint32 tableId, Uint32 schemaVersion, bool &hasNull) {
+  jam();
+  Uint32 meta[2] = {tableId, schemaVersion};
+  if (unlikely(!appendToSection(dst, meta, 2)))
+    return DbspjErr::OutOfSectionMemory;
+  return appendAttrinfoToSection(dst, row, col, hasNull);
+}
+
 /**
  * 'PkCol' is the composite NDB$PK column in an unique index consisting of
  * a fragment id and the composite PK value (all PK columns concatenated)
@@ -9162,7 +9172,10 @@ Uint32 Dbspj::appendFromParent(Uint32 &dst, Local_pattern_store &pattern,
       return appendPkColToSection(dst, targetRow.m_row_data, val);
     case QueryPattern::P_ATTRINFO:
       jam();
-      return appendAttrinfoToSection(dst, targetRow.m_row_data, val, hasNull);
+      return appendAttrinfoWithTableMeta(
+          dst, targetRow.m_row_data, val,
+          treeNodePtr.p->m_primaryTableId,
+          treeNodePtr.p->m_schemaVersion, hasNull);
     case QueryPattern::P_DATA:
       jam();
       // retrieving DATA from parent...is...an error
@@ -9263,10 +9276,16 @@ Uint32 Dbspj::expand(Uint32 &_dst, Local_pattern_store &pattern,
         jam();
         err = appendPkColToSection(dst, row.m_row_data, val);
         break;
-      case QueryPattern::P_ATTRINFO:
+      case QueryPattern::P_ATTRINFO: {
         jam();
-        err = appendAttrinfoToSection(dst, row.m_row_data, val, hasNull);
+        Ptr<TreeNode> srcNode;
+        ndbrequire(m_treenode_pool.getPtr(srcNode, row.m_src_node_ptrI));
+        err = appendAttrinfoWithTableMeta(
+            dst, row.m_row_data, val,
+            srcNode.p->m_primaryTableId,
+            srcNode.p->m_schemaVersion, hasNull);
         break;
+      }
       case QueryPattern::P_DATA:
         jam();
         err = appendDataToSection(dst, pattern, it, val, hasNull);

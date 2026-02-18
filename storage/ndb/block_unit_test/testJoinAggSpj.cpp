@@ -809,17 +809,23 @@ sendScanTabReq(SignalSender &ss, Uint32 nodeId,
   /* Sections:
    *   [0] ReceiverIds
    *   [1] AttrInfo (QueryTree)
-   *   [2] KeyInfo (AggProgram, repurposed for JoinAgg)
+   *   [2] KeyInfo: combined [boundsLen, bounds..., aggReceiverId, aggProgram...]
    */
   ssig.set(ss, 0, refToBlock(tcRef), GSN_SCAN_TABREQ, 16);
+
+  /* Build combined agg section: [boundsLen=0, receiverId, aggProgram...] */
+  std::vector<Uint32> aggSection;
+  aggSection.push_back(0);  // boundsLen = 0 (no bounds)
+  aggSection.push_back(receiverId);
+  aggSection.insert(aggSection.end(), aggProgram.begin(), aggProgram.end());
 
   ssig.header.m_noOfSections = 3;
   ssig.ptr[0].p = &receiverId;
   ssig.ptr[0].sz = 1;
   ssig.ptr[1].p = queryTree.data();
   ssig.ptr[1].sz = (Uint32)queryTree.size();
-  ssig.ptr[2].p = aggProgram.data();
-  ssig.ptr[2].sz = (Uint32)aggProgram.size();
+  ssig.ptr[2].p = aggSection.data();
+  ssig.ptr[2].sz = (Uint32)aggSection.size();
 
   if (ss.sendSignal(nodeId, &ssig) != SEND_OK) {
     fprintf(stderr, "sendSignal SCAN_TABREQ failed\n");

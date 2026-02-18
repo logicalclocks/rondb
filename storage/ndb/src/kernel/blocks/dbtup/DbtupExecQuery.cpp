@@ -5696,25 +5696,25 @@ inline Uint32 Dbtup::brancher(Uint32 TheInstruction, Uint32 TprogramCounter) {
 const Uint32 *Dbtup::lookupInterpreterParameter(Uint32 paramNo,
                                                 const Uint32 *subptr) const {
   /**
-   * The parameters...are stored in the subroutine section
-   *
-   * WORD2         WORD3       WORD4         WORD5
-   * [ P0 HEADER ] [ P0 DATA ] [ P1 HEADER ] [ P1 DATA ]
-   *
-   * len=4 <=> 1 word
+   * The parameters are stored in the subroutine section.
+   * Each entry has format: [tableId] [tableVersion] [AH] [data...]
+   * where tableId and tableVersion identify the source table of the
+   * linked attribute (for schema version validation).
    */
   const Uint32 sublen = *subptr;
   ndbassert(sublen > 0);
 
   Uint32 pos = 1;
   while (paramNo) {
-    const Uint32 *head = subptr + pos;
-    const Uint32 len = AttributeHeader::getDataSize(*head);
+    if (unlikely(pos + 2 >= sublen)) return nullptr;
+    pos += 2;  // skip tableId + tableVersion
+    const Uint32 len = AttributeHeader::getDataSize(*(subptr + pos));
     paramNo--;
-    pos += 1 + len;
-    if (unlikely(pos >= sublen)) return nullptr;
+    pos += 1 + len;  // skip AH + data
   }
-
+  if (unlikely(pos + 2 >= sublen)) return nullptr;
+  pos += 2;  // skip tableId + tableVersion of target param
+  if (unlikely(pos >= sublen)) return nullptr;
   const Uint32 *head = subptr + pos;
   const Uint32 len = AttributeHeader::getDataSize(*head);
   if (unlikely(pos + 1 + len > sublen)) return nullptr;

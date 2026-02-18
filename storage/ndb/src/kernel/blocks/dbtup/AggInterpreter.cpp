@@ -33,6 +33,7 @@
 #include "util/require.h"
 #include "decimal.h"
 #include "Dbtup.hpp"
+#include "../dblqh/Dblqh.hpp"
 #include <NdbSqlUtil.hpp>
 #include <Interpreter.hpp>
 
@@ -1410,7 +1411,7 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
   // assert(inited_);
   // assert(req_struct->read_length == 0);
   if (!inited_ || req_struct->read_length != 0) {
-    g_eventLogger->info("AggInterpreter::ProcessRec ZAGG_OTHER_ERROR at entry: "
+    g_eventLogger->debug("AggInterpreter::ProcessRec ZAGG_OTHER_ERROR at entry: "
             "inited=%d, read_length=%u",
             inited_, req_struct->read_length);
     return ZAGG_OTHER_ERROR;
@@ -1503,6 +1504,10 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
 
   AggResItem* agg_res_ptr = nullptr;
   if (n_gb_cols_) {
+    if (!m_gb_types_inited) {
+      Int32 err = initGBTypes(block_tup, req_struct);
+      if (unlikely(err != 0)) return err;
+    }
     char* agg_rec = nullptr;
 
     AttributeHeader* header = nullptr;
@@ -1522,15 +1527,17 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
         Uint32 pos_count = 0;
         while (p < p_end) {
           if (pos_count == position) break;
-          p += 1 + AttributeHeader::getDataSize(*p);
+          p += 2;  // skip tableId + tableVersion
+          p += 1 + AttributeHeader::getDataSize(*p);  // skip AH + data
           pos_count++;
         }
         if (p >= p_end) {
-          g_eventLogger->info("AggInterpreter::ProcessRec ZAGG_OTHER_ERROR: "
+          g_eventLogger->debug("AggInterpreter::ProcessRec ZAGG_OTHER_ERROR: "
               "Linked GROUP BY position %u not found in linked buffer "
               "(linked_len=%u)", position, m_linked_attr_len);
           return ZAGG_OTHER_ERROR;
         }
+        p += 2;  // skip tableId + tableVersion of found entry
         Uint32 words = 1 + AttributeHeader::getDataSize(*p);
         memcpy(buf_ + buf_pos_, p, words * sizeof(Uint32));
         header = reinterpret_cast<AttributeHeader*>(buf_ + buf_pos_);
@@ -1844,15 +1851,17 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
             Uint32 pos_count = 0;
             while (p < p_end) {
               if (pos_count == position) break;
-              p += 1 + AttributeHeader::getDataSize(*p);
+              p += 2;  // skip tableId + tableVersion
+              p += 1 + AttributeHeader::getDataSize(*p);  // skip AH + data
               pos_count++;
             }
             if (p >= p_end) {
-              g_eventLogger->info("AggInterpreter::ProcessRec ZAGG_OTHER_ERROR: "
+              g_eventLogger->debug("AggInterpreter::ProcessRec ZAGG_OTHER_ERROR: "
                   "kOpLoadCol linked position %u not found in buffer "
                   "(linked_len=%u)", position, m_linked_attr_len);
               return ZAGG_OTHER_ERROR;
             }
+            p += 2;  // skip tableId + tableVersion of found entry
             Uint32 words = 1 + AttributeHeader::getDataSize(*p);
             memcpy(buf_ + buf_pos_, p, words * sizeof(Uint32));
             header = reinterpret_cast<AttributeHeader*>(buf_ + buf_pos_);
@@ -1880,7 +1889,7 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
         if (type == NDB_TYPE_DECIMAL ||
             type == NDB_TYPE_DECIMALUNSIGNED) {
           if (unlikely(exec_pos >= prog_len_)) {
-            g_eventLogger->info("AggInterpreter::ProcessRec ZAGG_OTHER_ERROR: "
+            g_eventLogger->debug("AggInterpreter::ProcessRec ZAGG_OTHER_ERROR: "
                 "kOpLoadCol DECIMAL overflow exec_pos=%u prog_len=%u",
                 exec_pos, prog_len_);
             return ZAGG_OTHER_ERROR;
@@ -2134,7 +2143,7 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
         registers_[reg_index].is_unsigned = IsUnsigned(type);
         registers_[reg_index].is_null = false;
         if (unlikely(exec_pos + 2 > prog_len_)) {
-          g_eventLogger->info("AggInterpreter::ProcessRec ZAGG_OTHER_ERROR: "
+          g_eventLogger->debug("AggInterpreter::ProcessRec ZAGG_OTHER_ERROR: "
               "kOpLoadConst overflow exec_pos=%u prog_len=%u",
               exec_pos, prog_len_);
           return ZAGG_OTHER_ERROR;
@@ -2264,7 +2273,7 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
       {
         Uint32 emb_len = value & 0xFFFF;
         if (exec_pos + emb_len > prog_len_) {
-          g_eventLogger->info("AggInterpreter::ProcessRec ZAGG_OTHER_ERROR: "
+          g_eventLogger->debug("AggInterpreter::ProcessRec ZAGG_OTHER_ERROR: "
               "embedded interp len overflow exec_pos=%u emb_len=%u "
               "prog_len=%u", exec_pos, emb_len, prog_len_);
           return ZAGG_OTHER_ERROR;
@@ -2384,12 +2393,225 @@ void AggInterpreter::Print() {
 /**
  * processRecWithLinkedAttrs - process a row for join aggregation.
  *
- * Sets m_linked_attr_data to point at linked_attr_data (a sequence of
- * AttributeHeader+data pairs from parent tables in the join tree) so
- * that ProcessRec's kOpLoadCol handler can resolve columns whose bit 15
- * is set from this buffer instead of reading via DBTUP readAttributes.
+ * Sets m_linked_attr_data to point at linked_attr_data which contains
+ * entries from parent tables in the join tree, each with format:
+ *   [tableId] [tableVersion] [AH(attrId, dataSize)] [data...]
+ * ProcessRec's kOpLoadCol and GROUP BY handlers resolve columns whose
+ * bit 15 is set from this buffer (skipping the tableId/tableVersion
+ * prefix per entry) instead of reading via DBTUP readAttributes.
  * The linked attr pointer is cleared after ProcessRec returns.
  */
+Uint32 GBHashTable::hashKey(const char* key, Uint32 len) const {
+  if (m_col_types == nullptr) {
+    Uint64 h = rondb_xxhash_std(key, len);
+    return static_cast<Uint32>(h) & m_bucket_mask;
+  }
+
+  // Type-aware path: hash column-by-column
+  Uint64 hash = 0;
+  const Uint32* p = reinterpret_cast<const Uint32*>(key);
+  const Uint32* end = reinterpret_cast<const Uint32*>(key + len);
+  for (Uint32 i = 0; i < m_n_gb_cols && p < end; i++) {
+    AttributeHeader ah(*p);
+    Uint32 dataSize = ah.getDataSize();
+    if (m_col_types[i].cs != nullptr && dataSize > 0) {
+      // Collation-aware: normalize via strnxfrm_hash, then hash
+      const uchar* src = reinterpret_cast<const uchar*>(p + 1);
+      Uint32 byteSize = ah.getByteSize();
+      Uint32 lb, srcLen;
+      NdbSqlUtil::get_var_length(m_col_types[i].typeId, src, byteSize,
+                                 lb, srcLen);
+      Uint32 maxBytes = m_col_types[i].maxBytes;
+      Uint32 defLen = maxBytes - lb;
+      int n = NdbSqlUtil::strnxfrm_hash(m_col_types[i].cs,
+                                         m_col_types[i].typeId,
+                                         m_xfrm_buf, m_xfrm_buf_len,
+                                         src + lb, srcLen, defLen);
+      if (n > 0) {
+        Uint64 colHash = rondb_xxhash_std(reinterpret_cast<const char*>(m_xfrm_buf),
+                                          n);
+        hash ^= colHash + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
+      }
+    } else {
+      // Non-collation or NULL: hash raw [AH + data] bytes
+      Uint32 colWords = 1 + dataSize;
+      Uint64 colHash = rondb_xxhash_std(reinterpret_cast<const char*>(p),
+                                        colWords * sizeof(Uint32));
+      hash ^= colHash + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
+    }
+    p += 1 + dataSize;
+  }
+  return static_cast<Uint32>(hash) & m_bucket_mask;
+}
+
+char* GBHashTable::findInBucket(Uint32 b, const char* key,
+                                Uint32 key_len) const {
+  if (m_col_types == nullptr) {
+    // Raw comparison path (no type metadata)
+    for (char* raw = m_buckets[b]; raw != nullptr;
+         raw = hashNext(raw)) {
+      char* d = raw + OVERHEAD;
+      Uint32 kl = *reinterpret_cast<Uint32*>(raw + KEY_LEN_OFFSET);
+      if (kl == key_len && memcmp(d, key, key_len) == 0) {
+        return d;
+      }
+    }
+    return nullptr;
+  }
+
+  // Type-aware comparison path: compare column-by-column using cmpFn
+  for (char* raw = m_buckets[b]; raw != nullptr;
+       raw = hashNext(raw)) {
+    char* d = raw + OVERHEAD;
+    Uint32 kl = *reinterpret_cast<Uint32*>(raw + KEY_LEN_OFFSET);
+    if (kl != key_len) continue;
+
+    const Uint32* p1 = reinterpret_cast<const Uint32*>(key);
+    const Uint32* p2 = reinterpret_cast<const Uint32*>(d);
+    const Uint32* p1_end = reinterpret_cast<const Uint32*>(key + key_len);
+    bool match = true;
+    for (Uint32 i = 0; i < m_n_gb_cols && p1 < p1_end; i++) {
+      AttributeHeader ah1(*p1);
+      AttributeHeader ah2(*p2);
+      Uint32 ds1 = ah1.getDataSize();
+      Uint32 ds2 = ah2.getDataSize();
+      if (ds1 == 0 && ds2 == 0) {
+        // Both NULL — considered equal
+        p1 += 1;
+        p2 += 1;
+        continue;
+      }
+      if (ds1 != ds2) {
+        match = false;
+        break;
+      }
+      if (m_col_types[i].cs != nullptr) {
+        // Collation-aware comparison
+        Uint32 byteSize = ah1.getByteSize();
+        int cmp = (*m_col_types[i].cmpFn)(
+            m_col_types[i].cs,
+            p1 + 1, byteSize,
+            p2 + 1, byteSize);
+        if (cmp != 0) {
+          match = false;
+          break;
+        }
+      } else {
+        // Raw comparison for non-string types
+        if (memcmp(p1 + 1, p2 + 1, ds1 * sizeof(Uint32)) != 0) {
+          match = false;
+          break;
+        }
+      }
+      p1 += 1 + ds1;
+      p2 += 1 + ds2;
+    }
+    if (match) return d;
+  }
+  return nullptr;
+}
+
+Int32 AggInterpreter::initGBTypes(Dbtup* block_tup,
+                                  Dbtup::KeyReqStruct* req_struct) {
+  for (Uint32 i = 0; i < n_gb_cols_; i++) {
+    Uint32 attr_id = gb_cols_[i] >> 16;
+    GBColTypeInfo &info = m_gb_types[i];
+
+    if ((attr_id & 0x8000) != 0 && m_linked_attr_data != nullptr) {
+      // Linked column: walk buffer to get (tableId, tableVersion, attrId)
+      Uint32 position = attr_id & 0x7FFF;
+      const Uint32* p = m_linked_attr_data;
+      const Uint32* p_end = m_linked_attr_data + m_linked_attr_len;
+      Uint32 pos_count = 0;
+      while (p < p_end && pos_count < position) {
+        p += 2;  // skip tableId + tableVersion
+        p += 1 + AttributeHeader::getDataSize(*p);
+        pos_count++;
+      }
+      if (unlikely(p + 2 >= p_end)) {
+        g_eventLogger->debug("initGBTypes: linked buffer too short for "
+            "position %u (linked_len=%u)", position, m_linked_attr_len);
+        return ZAGG_OTHER_ERROR;
+      }
+      Uint32 tableId = p[0];
+      Uint32 tableVersion = p[1];
+
+      // Validate table version against DBLQH's tablerec
+      Dblqh* lqh = block_tup->c_lqh;
+      if (unlikely(tableId >= lqh->ctabrecFileSize)) {
+        g_eventLogger->debug("initGBTypes: tableId %u out of range "
+            "(max=%u)", tableId, lqh->ctabrecFileSize);
+        return ZINVALID_SCHEMA_VERSION;
+      }
+      if (unlikely(table_version_major(tableVersion) !=
+                   table_version_major(lqh->tablerec[tableId].schemaVersion))) {
+        g_eventLogger->debug("initGBTypes: schema version mismatch for "
+            "tableId %u: linked=%u, current=%u",
+            tableId, tableVersion, lqh->tablerec[tableId].schemaVersion);
+        return ZINVALID_SCHEMA_VERSION;
+      }
+
+      // Look up type metadata from DBTUP's tablerec
+      if (unlikely(tableId >= block_tup->cnoOfTablerec)) {
+        g_eventLogger->debug("initGBTypes: tableId %u out of range for "
+            "DBTUP (max=%u)", tableId, block_tup->cnoOfTablerec);
+        return ZINVALID_SCHEMA_VERSION;
+      }
+      Dbtup::Tablerec* tab = &block_tup->tablerec[tableId];
+      Uint32 linkedAttrId = AttributeHeader(p[2]).getAttributeId();
+      const Uint32* attrDesc = tab->tabDescriptor + linkedAttrId * ZAD_SIZE;
+      info.typeId = AttributeDescriptor::getType(attrDesc[0]);
+      info.maxBytes = AttributeDescriptor::getSizeInBytes(attrDesc[0]);
+      info.cs = nullptr;
+      if (AttributeOffset::getCharsetFlag(attrDesc[1])) {
+        Uint32 csPos = AttributeOffset::getCharsetPos(attrDesc[1]);
+        info.cs = tab->charsetArray[csPos];
+      }
+    } else {
+      // Local column: look up from the leaf table
+      const Uint32* attrDesc = req_struct->tablePtrP->tabDescriptor +
+          attr_id * ZAD_SIZE;
+      info.typeId = AttributeDescriptor::getType(attrDesc[0]);
+      info.maxBytes = AttributeDescriptor::getSizeInBytes(attrDesc[0]);
+      info.cs = nullptr;
+      if (AttributeOffset::getCharsetFlag(attrDesc[1])) {
+        Uint32 csPos = AttributeOffset::getCharsetPos(attrDesc[1]);
+        info.cs = req_struct->tablePtrP->charsetArray[csPos];
+      }
+    }
+    const NdbSqlUtil::Type &sqlType = NdbSqlUtil::getType(info.typeId);
+    info.cmpFn = sqlType.m_cmp;
+  }
+  // Compute max xfrm buffer size needed for collation-aware hashing
+  Uint32 max_xfrm_len = 0;
+  for (Uint32 i = 0; i < n_gb_cols_; i++) {
+    if (m_gb_types[i].cs != nullptr) {
+      Uint32 lb = 0;
+      if (m_gb_types[i].typeId == NDB_TYPE_VARCHAR) lb = 1;
+      else if (m_gb_types[i].typeId == NDB_TYPE_LONGVARCHAR) lb = 2;
+      Uint32 defLen = m_gb_types[i].maxBytes - lb;
+      Uint32 xfrm_len = NdbSqlUtil::strnxfrm_hash_len(m_gb_types[i].cs,
+                                                        defLen);
+      if (xfrm_len > max_xfrm_len) max_xfrm_len = xfrm_len;
+    }
+  }
+  if (max_xfrm_len > 0) {
+    void* p = lc_ndbd_pool_malloc(max_xfrm_len, RG_QUERY_MEMORY,
+                                  m_thread_id, false);
+    if (unlikely(p == nullptr)) {
+      g_eventLogger->debug("initGBTypes: failed to allocate xfrm buffer "
+          "(%u bytes)", max_xfrm_len);
+      return ZAGG_OTHER_ERROR;
+    }
+    m_xfrm_buf = static_cast<uchar*>(p);
+    m_xfrm_buf_len = max_xfrm_len;
+  }
+
+  m_gb_types_inited = true;
+  gb_map_->setTypeMeta(m_gb_types, n_gb_cols_, m_xfrm_buf, m_xfrm_buf_len);
+  return 0;
+}
+
 Int32 AggInterpreter::processRecWithLinkedAttrs(
     Dbtup* block_tup,
     Dbtup::KeyReqStruct* req_struct,

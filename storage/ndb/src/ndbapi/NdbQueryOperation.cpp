@@ -3235,7 +3235,11 @@ int NdbQueryImpl::prepareSend() {
     m_aggregator = new NdbAggregator(aggTable->m_facade);
     // Initialize aggregator from program header so ProcessRes knows
     // n_gb_cols, n_agg_results, and agg_ops for result parsing.
-    m_aggregator->initForResults(progBuf, progLen);
+    // Pass GROUP BY column definitions for correct type info in
+    // FetchGroupbyColumn() (especially for linked parent columns).
+    m_aggregator->initForResults(progBuf, progLen,
+                                 aggOpts.getAggGbColumns(),
+                                 aggOpts.getAggNGroupByCols());
   }
 
 #ifdef TRACE_SERIALIZATION

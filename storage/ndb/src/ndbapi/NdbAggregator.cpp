@@ -121,6 +121,7 @@ NdbAggregator::NdbAggregator(const NdbDictionary::Table* table) :
     }
     memset(agg_ops_, kOpUnknown, MAX_AGGREGATION_OP_SIZE * 4);
     vec_result_final_.clear();
+    memset(gb_columns_, 0, sizeof(gb_columns_));
 }
 
 NdbAggregator::~NdbAggregator() {
@@ -144,7 +145,9 @@ NdbAggregator::~NdbAggregator() {
 }
 
 void NdbAggregator::initForResults(const Uint32 *programBuffer,
-                                   Uint32 programLen) {
+                                   Uint32 programLen,
+                                   const NdbDictionary::Column *const *gbColumns,
+                                   Uint32 nGbColumns) {
   assert(programLen >= PROGRAM_HEADER_SIZE);
   // Word 1: (n_gb_cols << 16) | n_agg_results
   n_gb_cols_ = programBuffer[1] >> 16;
@@ -159,6 +162,14 @@ void NdbAggregator::initForResults(const Uint32 *programBuffer,
   if (n_gb_cols_ == 0 && agg_results_ == nullptr && n_agg_results_ > 0) {
     agg_results_ = new AggResItem[n_agg_results_];
     memset(agg_results_, 0, n_agg_results_ * sizeof(AggResItem));
+  }
+
+  // Store GROUP BY column definitions for FetchGroupbyColumn().
+  memset(gb_columns_, 0, sizeof(gb_columns_));
+  if (gbColumns != nullptr) {
+    for (Uint32 i = 0; i < nGbColumns && i < MAX_AGG_N_GROUPBY_COLS; i++) {
+      gb_columns_[i] = gbColumns[i];
+    }
   }
 
   // Parse instructions to extract agg_ops for COUNT null→0 fixup.
@@ -827,7 +838,8 @@ bool NdbAggregator::GroupBy(const char* name) {
     return false;
   }
   Int32 col_id = col->getAttrId();
-  buffer_[curr_prog_pos_++] = col_id << 16;
+  buffer_[curr_prog_pos_++] =
+      (col_id << 16) | (col->getType() & AGG_GB_COL_TYPE_MASK);
 
   result_size_est_ += (sizeof(AttributeHeader) + ((col->getSizeInBytes() + 3) & (~3)));
 
@@ -837,6 +849,9 @@ bool NdbAggregator::GroupBy(const char* name) {
   if (col->getStorageType() == NDB_STORAGETYPE_DISK) {
     disk_columns_ = true;
   }
+
+  gb_columns_[n_gb_cols_] = col;
+  n_gb_cols_++;
 
   return true;
 }
@@ -860,6 +875,7 @@ bool NdbAggregator::GroupBy(Int32 col_id) {
     SetError(kErrUnSupportedColumn);
     return false;
   }
+
   buffer_[curr_prog_pos_++] = col_id << 16;
 
   if (col != nullptr) {
@@ -872,9 +888,32 @@ bool NdbAggregator::GroupBy(Int32 col_id) {
     result_size_est_ += (sizeof(AttributeHeader) + 8);
   }
 
-  gb_col_ids_[n_gb_cols_] = col_id;
+  /* For non-linked columns store the column definition; for linked columns
+     the caller should use GroupByLinked() to supply the parent column. */
+  gb_columns_[n_gb_cols_] = is_linked ? nullptr : col;
   n_gb_cols_++;
 
+  return true;
+}
+
+bool NdbAggregator::GroupByLinked(Uint32 position,
+                                  const NdbDictionary::Column *parentCol) {
+  if (parentCol == nullptr) {
+    SetError(kErrInvalidColumnId);
+    return false;
+  }
+  Uint32 col_id = position | AGG_LINKED_COL_FLAG;
+  buffer_[curr_prog_pos_++] =
+      (col_id << 16) | (parentCol->getType() & AGG_GB_COL_TYPE_MASK);
+
+  result_size_est_ += (sizeof(AttributeHeader) +
+                        ((parentCol->getSizeInBytes() + 3) & (~3)));
+  if (parentCol->getStorageType() == NDB_STORAGETYPE_DISK) {
+    disk_columns_ = true;
+  }
+
+  gb_columns_[n_gb_cols_] = parentCol;
+  n_gb_cols_++;
   return true;
 }
 
@@ -1033,14 +1072,28 @@ NdbAggregator::Column NdbAggregator::ResultRecord::FetchGroupbyColumn() {
   curr_group_pos_ += sizeof(AttributeHeader);
 
   Uint32 id = header.getAttributeId();
-  const NdbDictionary::Column* col =
-                      aggregator_->table_impl()->getColumn(id);
-  if (col == nullptr) {
-    abort();
-  }
-  NdbDictionary::Column::Type type = col->getType();
-  bool is_null = header.isNULL();
   Uint32 byte_size = header.getByteSize();
+
+  /* Determine column type.  gb_columns_[] has the authoritative column
+     definition for each GROUP BY column — for local columns it points
+     into the leaf table's dictionary, for linked columns it points into
+     the ancestor table's dictionary (set via GroupByLinked / initForResults).
+     Fall back to leaf table lookup only when gb_columns_ is not set. */
+  Uint32 gb_idx = curr_gb_col_index_++;
+  const NdbDictionary::Column *gb_col =
+      (gb_idx < MAX_AGG_N_GROUPBY_COLS)
+          ? aggregator_->gb_columns_[gb_idx] : nullptr;
+  NdbDictionary::Column::Type type;
+  if (gb_col != nullptr) {
+    type = gb_col->getType();
+  } else {
+    const NdbDictionary::Column *col =
+        aggregator_->table_impl()->getColumn(id);
+    type = (col != nullptr) ? col->getType()
+                            : NdbDictionary::Column::Undefined;
+  }
+
+  bool is_null = header.isNULL();
   Uint32 word_size = header.getDataSize() * sizeof(Int32);
   char* ptr = is_null ? nullptr : group_records_.ptr + curr_group_pos_;
   if (is_null) {

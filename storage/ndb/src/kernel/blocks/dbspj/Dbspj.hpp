@@ -1537,6 +1537,9 @@ class Dbspj : public SimulatedBlock {
   Uint32 appendPkColToSection(Uint32 &ptrI, const RowPtr::Row &, Uint32 col);
   Uint32 appendAttrinfoToSection(Uint32 &, const RowPtr::Row &, Uint32 col,
                                  bool &hasNull);
+  Uint32 appendAttrinfoWithTableMeta(Uint32 &dst, const RowPtr::Row &row,
+                                     Uint32 col, Uint32 tableId,
+                                     Uint32 schemaVersion, bool &hasNull);
   Uint32 appendDataToSection(Uint32 &ptrI, Local_pattern_store &,
                              Local_pattern_store::ConstDataBufferIterator &,
                              Uint32 len, bool &hasNull);

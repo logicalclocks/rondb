@@ -287,6 +287,7 @@ class NdbQueryOptionsImpl {
         m_aggNGroupByCols(0),
         m_aggDiskColumns(false),
         m_aggTable(nullptr),
+        m_aggGbColumns(nullptr),
         m_linkedProjection(0) {}
   NdbQueryOptionsImpl(const NdbQueryOptionsImpl &);
   ~NdbQueryOptionsImpl();
@@ -299,6 +300,9 @@ class NdbQueryOptionsImpl {
   Uint32 getAggNGroupByCols() const { return m_aggNGroupByCols; }
   bool getAggDiskColumns() const { return m_aggDiskColumns; }
   const NdbTableImpl *getAggTable() const { return m_aggTable; }
+  const NdbDictionary::Column *const *getAggGbColumns() const {
+    return m_aggGbColumns;
+  }
   const Vector<const NdbLinkedOperandImpl *> &getLinkedProjection() const {
     return m_linkedProjection;
   }
@@ -318,6 +322,11 @@ class NdbQueryOptionsImpl {
   Uint32 m_aggNGroupByCols;
   bool m_aggDiskColumns;
   const NdbTableImpl *m_aggTable;
+
+  // Column definitions for GROUP BY columns (local and linked).
+  // Dynamically allocated array of n_gb_cols pointers, deep-copied
+  // from NdbAggregator::gb_columns() during copyAggregation().
+  const NdbDictionary::Column **m_aggGbColumns;
 
   // Linked operands for parent column projection in aggregation
   Vector<const NdbLinkedOperandImpl *> m_linkedProjection;
