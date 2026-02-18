@@ -1,6 +1,8 @@
-# Phase 7 DBSPJ Implementation Notes
+# Phase 7 DBSPJ Implementation Notes (Complete)
 
 ## Overview
+
+**STATUS: ALL SECTIONS IMPLEMENTED AND TESTED**
 
 DBTC passes aggStateKeys to DBSPJ as an extra section of SCAN_FRAGREQ
 (not a separate signal). When the JoinAgg flag is set in SCAN_FRAGREQ,
@@ -15,6 +17,23 @@ per-row results that will never arrive.
 This approach eliminates the need for a separate GSN_JOIN_AGG_STATE_KEYS
 signal, avoids signal ordering concerns, and removes the hash lookup
 problem (no need for transId in a separate signal).
+
+### Linked Attribute Table Metadata (Recent Addition)
+
+DBSPJ now conditionally prepends `(tableId, tableVersion)` to linked
+attribute entries when expanding `m_attrParamPattern` patterns. This
+enables type-aware column resolution at the aggregate leaf. Key constraint:
+this metadata is only added for attribute parameter patterns, NOT for key
+patterns (which would corrupt bounds data).
+
+### Position-Based Linked Column Resolution
+
+The aggregation program references linked columns by position index
+(0, 1, 2...) rather than by column ID. The NdbAggregator `GroupBy()`
+and `LoadColumn()` calls set bit 15 (0x8000) to indicate a linked column,
+with bits 0-14 giving the position in the linked attribute buffer. The
+AggInterpreter resolves these by scanning the AttributeHeader chain in
+the linked data.
 
 ---
 

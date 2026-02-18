@@ -877,17 +877,31 @@ for NDB API error reporting.
 - DblqhProxy: queries RG_QUERY_MEMORY for budget, creates/frees interpreters
 - JoinAggregationState: m_memory_budget_pages field
 
-### Phase 7: DBSPJ Orchestration — NOT STARTED
-- Dbspj.hpp: Add state fields to TreeNode, declare handlers
-- DbspjMain.cpp: Setup/complete/release flow, strategy selection heuristic,
-  aggStateKey insertion in LQHKEYREQ and SCAN_FRAGREQ
-- Linked attribute passing to child operations
+### Phase 7: DBSPJ/DBTC Orchestration — DONE
+- DBTC: JoinAgg flag in SCAN_TABREQ, Section 2 = agg program, SETUP/COMPLETE/RELEASE
+- DBSPJ: aggStateKeys from SCAN_FRAGREQ section, JoinAggFlag in LQHKEYREQ,
+  T_AGGREGATE_LEAF/T_EXPECT_TRANSID_AI suppression, FLUSH_AI suppression,
+  parseDA() for NI_AGGREGATE/NI_AGGREGATE_LEAF/PI_ATTR_AGGREGATE
+- Linked attribute pass-through with table metadata (tableId, schemaVersion)
+- Position-based linked column resolution in agg engine
+- See `coordinator_research.md` and `coordinator_implementation.md`
 
-### Phase 8: Testing & Verification — NOT STARTED
-- Forced strategy mode (always MUTEX_BASED or always MUTEX_FREE)
-- Compare results between strategies for same query
-- Error injection tests (state alloc failure, interpreter error, timeout)
-- Stress test: high concurrency with low and high cardinality GROUP BY
+### Phase 8: NDB API Integration — DONE
+- NdbQueryOptions: setAggregation(), addLinkedProjection()
+- NdbQueryBuilder: NI_AGGREGATE/NI_AGGREGATE_LEAF DABits in serialization
+- NdbQueryOperation: combined Section 2 (boundsLen + aggReceiverId + aggProgram),
+  JoinAgg flag, NDB_AGG_RECEIVER type, processAggResults()
+- DBTC: Section 2 header parsing (bounds / receiverId / aggProgram)
+- See `ndbapi_integration_plan.md` and `ndbapi_integration_implementation.md`
+
+### Phase 9: Testing & Verification — DONE
+- testJoinAgg (18 tests): signal-level DBLQH tests
+- testJoinAggSpj (7 tests): full DBTC→DBSPJ→DBLQH path
+- testJoinAggNdbApi (4 tests): NdbQueryBuilder API, including 3-way join
+- testCaseAgg: CASE expressions
+- bench_q12_tpch, bench_q12_dbtc, bench_q9_dbtc: TPC-H benchmarks
+- ERROR_INSERT 5090 forced eviction testing
+- Strategy comparison (MUTEX_BASED vs MUTEX_FREE)
 
 ## 16. Files Summary
 
@@ -912,7 +926,13 @@ for NDB API error reporting.
 | `src/kernel/blocks/dbtup/AggInterpreter.cpp` | Modify | DONE | All method implementations |
 | `src/kernel/blocks/dbtup/Dbtup.hpp` | Modify | DONE | m_join_agg_state_key on KeyReqStruct |
 | `src/kernel/blocks/dbtup/DbtupExecQuery.cpp` | Modify | DONE | All 3 interception points + error checks |
-| `src/kernel/blocks/dbspj/Dbspj.hpp` | Modify | NOT STARTED | TreeNode fields + handler declarations |
-| `src/kernel/blocks/dbspj/DbspjMain.cpp` | Modify | NOT STARTED | Setup/complete/release orchestration |
+| `src/kernel/blocks/dbspj/Dbspj.hpp` | Modify | DONE | TreeNode fields + handler declarations |
+| `src/kernel/blocks/dbspj/DbspjMain.cpp` | Modify | DONE | Setup/complete/release orchestration |
+| `src/ndbapi/NdbQueryBuilder.hpp` | Modify | DONE | setAggregation(), addLinkedProjection() |
+| `src/ndbapi/NdbQueryBuilder.cpp` | Modify | DONE | Builder logic, serialization with DABits |
+| `src/ndbapi/NdbQueryOperationImpl.hpp` | Modify | DONE | Aggregation fields, NDB_AGG_RECEIVER |
+| `src/ndbapi/NdbQueryOperation.cpp` | Modify | DONE | doSend() section building, result handling |
+| `src/ndbapi/Ndbif.cpp` | Modify | DONE | NDB_AGG_RECEIVER TRANSID_AI dispatch |
+| `src/kernel/blocks/dbtc/DbtcMain.cpp` | Modify | DONE | Section 2 combined header parsing |
 
 All paths are relative to `storage/ndb/`.

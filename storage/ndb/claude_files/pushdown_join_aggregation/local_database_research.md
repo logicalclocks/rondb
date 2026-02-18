@@ -1517,15 +1517,24 @@ DBSPJ                              DblqhProxy / Dblqh                     DBTUP
 
 3. **Multi-Node**: ✓ Each node has independent state, DBSPJ coordinates final aggregation if needed
 
-## Remaining Design Decisions
+## Design Decisions (All Resolved)
 
-1. **Result Aggregation Across Nodes**: If leaf table spans multiple nodes, does DBSPJ aggregate the per-node results, or is there node-to-node coordination?
+1. **Result Aggregation Across Nodes**: ✓ Each data node sends independent
+   partial group results via TRANSID_AI. The API-side NdbAggregator merges
+   same-key groups from different nodes via ProcessRes() internal hash map.
+   No node-to-node coordination needed.
 
-2. **Partial Results**: Should DBLQH send partial results if aggregation buffer fills up, or wait for completion?
+2. **Partial Results**: ✓ DBLQH sends partial results (evicted groups) via
+   TRANSID_AI during operation phase when hash table is full. Uses
+   ERROR_INSERT 5090 for forced eviction testing. Evicted + completion-time
+   groups are combined at the API.
 
-3. **Interpreter Pool**: Pre-allocate interpreter instances, or create on demand?
+3. **Interpreter Pool**: ✓ Created on demand during JOIN_AGG_SETUP_REQ via
+   `lc_ndbd_pool_malloc`. Chunk-based allocator with RG_QUERY_MEMORY budget.
+   Freed during JOIN_AGG_RELEASE_REQ.
 
-4. **State Timeout**: How long to keep state before automatic cleanup? Tied to transaction timeout?
+4. **State Timeout**: ✓ Tied to transaction lifetime. JOIN_AGG_RELEASE_REQ
+   is sent by DBTC after COMPLETE, or during scan abort. No separate timeout.
 
 ## Performance Considerations
 

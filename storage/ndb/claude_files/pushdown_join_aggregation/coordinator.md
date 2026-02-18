@@ -880,7 +880,24 @@ Correlation: 0x00000001
 
 ---
 
-### Summary of DBSPJ-Only Changes
+### Linked Attribute Table Metadata
+
+When DBSPJ expands `m_attrParamPattern` for linked attributes (NI_ATTR_LINKED),
+it prepends `(tableId, tableVersion)` to each linked attribute entry. This enables
+the aggregate leaf's AggInterpreter to perform type-aware column resolution.
+
+**Important**: Table metadata is only prepended for attribute parameter patterns
+(P_ATTRINFO), NOT for key patterns (P_COL used in key construction), as this would
+corrupt bounds data used for index lookups.
+
+### Position-Based Linked Column Resolution
+
+The aggregation program references linked columns by position index (0, 1, 2...)
+rather than by column ID. Bit 15 (0x8000) in the column ID indicates a linked column;
+bits 0-14 give the position in the linked attribute buffer. The AggInterpreter resolves
+these by scanning the AttributeHeader chain in the linked data buffer.
+
+### Summary of DBSPJ-Only Changes (All Implemented)
 
 | Component | Change |
 |-----------|--------|
@@ -888,7 +905,9 @@ Correlation: 0x00000001
 | TreeNode bits (Dbspj.hpp) | Add `T_AGGREGATE_LEAF` |
 | parseDA() | Suppress FLUSH_AI for intermediate aggregate nodes |
 | parseDA() | Include aggregation program for leaf node (pass-through to DBLQH) |
+| parseDA() | NI_ATTR_LINKED with table metadata for aggregate leaf |
 | Linked attributes | Ensure GROUP BY and aggregate source columns included |
+| Linked attributes | Prepend (tableId, tableVersion) for type-aware resolution |
 | Result counting | `m_rows` counts aggregate results, not source rows |
 
 ### What DBSPJ Does NOT Do

@@ -17,17 +17,26 @@ DBSPJ handles the operations phase: receives aggStateKeys from DBTC, sets
 JoinAggFlag + aggStateKey in each LQHKEYREQ, suppresses per-row TRANSID_AI
 for aggregate leaf nodes.
 
-### Agg Program Delivery: Section 2 of SCAN_TABREQ
+### Agg Program Delivery: Section 2 of SCAN_TABREQ (Combined Format)
 
-When the JoinAgg flag is set in SCAN_TABREQ, **section 2 carries the agg
-program exclusively** (not KeyInfo). DBTC reads it without query tree parsing.
+When the JoinAgg flag is set in SCAN_TABREQ, section 2 carries a combined
+format with bounds (if index scan) and aggregation data:
 
-All three root types are supported (full table scan, ordered index scan, key
-lookup). Currently section 2 also carries KeyInfo (bounds) for ordered index
-scan roots in pushed queries. For join-agg queries, the NDB API must move
-bounds into the query tree parameters (AttrInfo), freeing section 2 for the
-agg program. This NDB API change is a separate later phase — initial testing
-uses SignalSender where we control signal construction directly.
+```
+Word 0:                boundsLen (0 if no bounds)
+Words 1..boundsLen:    bounds data (for ordered index scans)
+Word boundsLen+1:      aggReceiverId (API NdbReceiver object-map ID)
+Remaining words:       aggregation program (NdbAggregator bytecode)
+```
+
+DBTC splits these: bounds → `scanKeyInfoPtr`, receiver ID → `m_aggReceiverId`,
+remainder → `m_aggProgramPtrI`. The `scanParallelism` field (DATA 15) carries
+the explicit scan parallelism since section 0 size now means "number of
+receivers" for aggregation queries.
+
+This combined format was implemented as part of the NDB API integration
+(Phase 8) and is used by both NdbQueryOperation::doSend() and SignalSender
+test programs.
 
 ### Result Routing
 
@@ -73,11 +82,14 @@ responsibility. Each data node sends one set of partial group results.
 | `storage/ndb/src/kernel/blocks/dbspj/Dbspj.hpp` | Request: aggStateKeys |
 | `storage/ndb/src/kernel/blocks/dbspj/DbspjMain.cpp` | Extract keys from section, set JoinAggFlag, suppress TRANSID_AI |
 
-NDB API changes (later phase — for now, test via SignalSender):
+NDB API changes (Phase 8 — COMPLETE):
 
 | File | Purpose |
 |------|---------|
-| `storage/ndb/src/ndbapi/NdbQueryOperation.cpp` | Move bounds to query tree, agg program in section 2 |
+| `storage/ndb/src/ndbapi/NdbQueryBuilder.hpp/.cpp` | setAggregation(), addLinkedProjection(), DABits |
+| `storage/ndb/src/ndbapi/NdbQueryOperationImpl.hpp` | Aggregation fields, NDB_AGG_RECEIVER type |
+| `storage/ndb/src/ndbapi/NdbQueryOperation.cpp` | Combined Section 2 (boundsLen + aggReceiverId + aggProgram) |
+| `storage/ndb/src/ndbapi/Ndbif.cpp` | NDB_AGG_RECEIVER TRANSID_AI dispatch |
 
 ---
 
@@ -716,13 +728,14 @@ make -j$(sysctl -n hw.ncpu) ndbmtd
 ```
 After each sub-phase.
 
-### Testing
-Initial testing via modified bench_q12_tpch or new SignalSender test that:
-1. Sends SCAN_TABREQ with JoinAgg flag + agg program in section 2
-2. Verifies DBTC does SETUP (aggStateKeys returned)
-3. Verifies DBSPJ receives aggStateKeys and sets JoinAggFlag in LQHKEYREQ
-4. Verifies DBTC does COMPLETE after all fragments done
-5. Verifies aggregated results arrive at API
+### Testing (Complete)
+
+| Test | Path | What It Tests |
+|------|------|---------------|
+| testJoinAggSpj (7 tests) | DBTC→DBSPJ→DBLQH | Basic aggregation through full QueryTree |
+| testJoinAggNdbApi (4 tests) | NdbQueryBuilder API | SUM/GROUP BY, COUNT+SUM, multi-agg, 3-way join |
+| bench_q12_dbtc | DBTC→DBSPJ→DBLQH | TPC-H Q12 through full orchestration |
+| bench_q9_dbtc | DBTC→DBSPJ→DBLQH | TPC-H Q9: 6-table join, multi-level linked attrs |
 
 ### Regression
 Run existing MTR NDB tests to ensure no regressions for non-join-agg queries.
