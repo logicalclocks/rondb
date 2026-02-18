@@ -510,6 +510,9 @@ void NdbColumnImpl::create_pseudo_columns() {
     NdbColumnImpl::create_pseudo("NDB$INTERPRETER_INPUT_14");
   NdbDictionary::Column::INTERPRETER_INPUT_15 = 
     NdbColumnImpl::create_pseudo("NDB$READ_INTERPRETER_OUTPUT_15");
+
+  NdbDictionary::Column::VEC_DISTANCE =
+      NdbColumnImpl::create_pseudo("NDB$VEC_DISTANCE");
 }
 
 void NdbColumnImpl::destory_pseudo_columns() {
@@ -561,6 +564,7 @@ void NdbColumnImpl::destory_pseudo_columns() {
   delete NdbDictionary::Column::INTERPRETER_INPUT_13;
   delete NdbDictionary::Column::INTERPRETER_INPUT_14;
   delete NdbDictionary::Column::INTERPRETER_INPUT_15;
+  delete NdbDictionary::Column::VEC_DISTANCE;
   NdbDictionary::Column::FRAGMENT = nullptr;
   NdbDictionary::Column::FRAGMENT_FIXED_MEMORY = nullptr;
   NdbDictionary::Column::FRAGMENT_VARSIZED_MEMORY = nullptr;
@@ -609,6 +613,8 @@ void NdbColumnImpl::destory_pseudo_columns() {
   NdbDictionary::Column::INTERPRETER_INPUT_13 = nullptr;
   NdbDictionary::Column::INTERPRETER_INPUT_14 = nullptr;
   NdbDictionary::Column::INTERPRETER_INPUT_15 = nullptr;
+
+  NdbDictionary::Column::VEC_DISTANCE = nullptr;
 
   delete NdbDictionary::Column::COPY_ROWID;
   NdbDictionary::Column::COPY_ROWID = nullptr;
@@ -889,6 +895,11 @@ NdbDictionary::Column *NdbColumnImpl::create_pseudo(const char *name) {
   } else if (!strcmp(name, "NDB$INTERPRETER_INPUT_15")) {
     col->setType(NdbDictionary::Column::Unsigned);
     col->m_impl.m_attrId = AttributeHeader::INTERPRETER_INPUT_FIRST + 15;
+    col->m_impl.m_attrSize = 8;
+    col->m_impl.m_arraySize = 1;
+  } else if (!strcmp(name, "NDB$VEC_DISTANCE")) {
+    col->setType(NdbDictionary::Column::Double);
+    col->m_impl.m_attrId = AttributeHeader::VEC_DISTANCE;
     col->m_impl.m_attrSize = 8;
     col->m_impl.m_arraySize = 1;
   } else {
@@ -10128,5 +10139,7 @@ const NdbDictionary::Column * NdbDictionary::Column::INTERPRETER_INPUT_12 = null
 const NdbDictionary::Column * NdbDictionary::Column::INTERPRETER_INPUT_13 = nullptr;
 const NdbDictionary::Column * NdbDictionary::Column::INTERPRETER_INPUT_14 = nullptr;
 const NdbDictionary::Column * NdbDictionary::Column::INTERPRETER_INPUT_15 = nullptr;
+
+const NdbDictionary::Column *NdbDictionary::Column::VEC_DISTANCE = nullptr;
 
 template class Vector<NdbDictInterface::Tx::Op>;

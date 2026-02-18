@@ -30,6 +30,9 @@
 #include "Dbtup.hpp"
 #include "NdbAggregationCommon.hpp"
 
+#include <simsimd/simsimd.h>
+#include <queue>
+
 /*
  * PA related
  * Turn off the PA_MALLOC to use new instead
@@ -43,10 +46,14 @@
 class AggInterpreter {
  public:
 #ifdef PA_MALLOC
-  AggInterpreter(const Uint32* prog, Uint32 prog_len, Int64 frag_id/*,
-                 Ndbd_mem_manager* mm, void* page_addr, Uint32 page_ref*/):
+  AggInterpreter(const Uint32* prog, Uint32 prog_len,
+                 Int64 table_id, Int64 frag_id/*,
+                 Ndbd_mem_manager* mm, void* page_addr, Uint32 page_ref*/,
+                 Uint32 thread_id):
 #else
-  AggInterpreter(const Uint32* prog, Uint32 prog_len, Int64 frag_id):
+  AggInterpreter(const Uint32* prog, Uint32 prog_len,
+                 Int64 table_id, Int64 frag_id,
+                 Uint32 thread_id):
 #endif // PA_MALLOC
     prog_len_(prog_len), cur_pos_(0),
     inited_(false), n_gb_cols_(0), gb_cols_(nullptr),
@@ -54,7 +61,19 @@ class AggInterpreter {
     agg_results_(nullptr), agg_prog_start_pos_(0),
     gb_map_(nullptr), n_groups_(0),
     buf_pos_(0), processed_rows_(0),
-    result_size_(0), frag_id_(frag_id)/*, pcount_(0)*/ {
+    result_size_(0), table_id_(table_id), frag_id_(frag_id)/*, pcount_(0)*/,
+    thread_id_(thread_id), alloc_len_(0),
+    vec_search_(false), vec_dims_(0), vec_type_(0),
+    vec_metric_(0), vec_col_idx_(0), vec_top_n_(0),
+    vec_size_in_bytes_(0), vec_buf_(nullptr),
+    vec_buf_pos_(0), vec_start_pos_(0),
+    vec_max_rec_size_(0),
+    candidate_allocator_(nullptr),
+    curr_distance_(std::numeric_limits<double>::max()),
+    vec_n_candidates_sent_(0),
+    vec_size_candidates_sent_(0),
+    vec_search_scan_done_(false),
+    next_send_idx_(-1), ext_prog_buf_(nullptr) {
 #ifdef PA_MALLOC
       assert(prog_len_ <= MAX_AGG_PROGRAM_WORD_SIZE);
       prog_ = prog_buf_;
@@ -105,14 +124,41 @@ class AggInterpreter {
 
   bool Init();
   bool OptimizeProgram();
+  void FreeMemForVectorSearch() {
+#ifdef PA_MALLOC
+    if (ext_prog_buf_) {
+      lc_ndbd_pool_free(ext_prog_buf_);
+      ext_prog_buf_ = nullptr;
+    }
+    if (vec_buf_) {
+      lc_ndbd_pool_free(vec_buf_);
+      vec_buf_ = nullptr;
+    }
+#else
+    if (vec_buf_) {
+      delete[] vec_buf_;
+      vec_buf_ = nullptr;
+    }
+#endif // PA_MALLOC
 
-  Int32 ProcessRec(Dbtup* block_tup, Dbtup::KeyReqStruct* req_struct);
+    if (candidate_allocator_) {
+      delete candidate_allocator_;
+    }
+  }
+
+  bool Init(const Uint32* prog);
+
+  Int32 ProcessRec(Dbtup* block_tup, Dbtup::KeyReqStruct* req_struct,
+                   bool* vec_update_candidate);
   void Print();
   Uint32 PrepareAggResIfNeeded(Signal* signal, bool force);
   Uint32 NumOfResRecords(bool last_time = false);
   static void MergePrint(const AggInterpreter* in1, const AggInterpreter* in2);
   const std::map<GBHashEntry, GBHashEntry, GBHashEntryCmp>* gb_map() {
     return gb_map_;
+  }
+  Int64 table_id() {
+    return table_id_;
   }
   Int64 frag_id() {
     return frag_id_;
@@ -129,6 +175,32 @@ class AggInterpreter {
   }
   */
 #endif // PA_MALLOC
+  bool vec_search() {
+    return vec_search_;
+  }
+  bool HasAnyVecResult() {
+    return vec_search_ && !vec_top_n_results_.empty();
+  }
+  Uint32 NoofVecResults() {
+    return vec_top_n_results_.size();
+  }
+  bool IsCandidateBufAllocated() {
+    return candidate_allocator_ != nullptr;
+  }
+  Int32 CopyVecCandidateFromSignal(Signal* signal, Uint32 ToutBufIndex);
+  Uint32 CopyVecCandidateToSignal(Signal* signal);
+  void PrepareVecCandidates();
+  Uint32 CopyOneVecCandidateToSignal(Signal* signal);
+  void set_vec_max_rec_size(Uint32 size);
+  void set_vec_search_scan_done(bool value) {
+    vec_search_scan_done_ = value;
+  }
+  bool vec_search_scan_done() {
+    return vec_search_scan_done_;
+  }
+  Int32 next_send_idx() {
+    return next_send_idx_;
+  }
 
  private:
   Uint32* prog_;
@@ -153,9 +225,11 @@ class AggInterpreter {
   static Uint32 g_result_header_size_;
   static Uint32 g_result_header_size_per_group_;
 
+  Int64 table_id_;
   Int64 frag_id_;
   decimal_t decimal_;
   decimal_digit_t decimal_buf_[DECIMAL_BUFF_LENGTH];
+  Uint32 thread_id_;
 
 #ifdef PA_MALLOC
   /* For using Ndbd_mem_manager */
@@ -174,5 +248,118 @@ class AggInterpreter {
   Uint32 alloc_len_;
   char* MemAlloc(Uint32 len);
 #endif // PA_MALLOC
+
+  /* Vector */
+  bool vec_search_;
+  Uint32 vec_dims_;
+  Uint32 vec_type_;
+  Uint32 vec_metric_;
+  Uint32 vec_col_idx_;
+  Uint32 vec_top_n_;
+  Uint32 vec_size_in_bytes_;
+  Uint32* vec_buf_;
+  Uint32 vec_buf_pos_;
+  Uint32 vec_start_pos_;
+  static Uint32 g_vec_buf_len_;
+
+  class Candidate {
+   public:
+    Candidate(double distance, Uint32 tuple_len, Int32 idx) :
+      distance_(distance),
+      actual_buf_len_(tuple_len),
+      idx_in_allocator_(idx),
+      buf_(nullptr) {
+      buf_ = reinterpret_cast<Uint32*>(this + 1);
+    }
+    void Init(const Uint32* tuple) {
+      memcpy(buf_, tuple, actual_buf_len_ * sizeof(Uint32));
+    }
+    ~Candidate() {
+      /*
+       * No need to release buf_ — it comes from the pool_ of CandidateAllocator,
+       * which will be released automatically at the end.
+       */
+    }
+    double distance_;
+    Uint32 actual_buf_len_;
+    Int32 idx_in_allocator_;
+    Uint32* buf_;
+  };
+  struct ByDistance {
+    bool operator()(const Candidate* lhs, const Candidate* rhs) {
+      return lhs->distance_ < rhs->distance_ ? true : false;
+    }
+  };
+
+  class CandidateAllocator {
+   public:
+     CandidateAllocator(size_t max_candidates, size_t max_buf_len,
+                        Int64 table_id, Int64 frag_id)
+       : init_(false), max_candidates_(max_candidates),
+       max_buf_len_(max_buf_len),
+       next_index_(0), reuse_started_(false),
+       table_id_(table_id), frag_id_(frag_id),
+       slots_per_full_segment_(0),
+       shift_k_(0) {
+         total_size_ = max_candidates_ * (sizeof(Candidate) + max_buf_len_ * sizeof(Uint32));
+         slot_size_ = sizeof(Candidate) + max_buf_len_ * sizeof(Uint32);
+       }
+
+     ~CandidateAllocator() {
+#ifdef PA_MALLOC
+       for (auto& seg : segments_) {
+         if (seg.ptr) {
+           lc_ndbd_pool_free(seg.ptr);
+         }
+       }
+#else
+       for (auto& seg : segments_) {
+         ::operator delete(seg.ptr);
+       }
+#endif // PA_MALLOC
+     }
+
+     Int32 Init(Uint32 thread_id);
+
+     static Uint32 g_max_results_size;
+     static Uint32 g_segment_size;
+
+     Candidate* Allocate(double distance, const Uint32* tuple, Uint32 actual_buf_len);
+     void set_next_index(size_t next_index) {
+       assert(reuse_started_);
+       next_index_ = next_index;
+     }
+
+   private:
+     struct Segment {
+       char* ptr;
+       size_t size;
+     };
+     bool init_;
+     size_t max_candidates_;
+     size_t max_buf_len_;
+     size_t next_index_;
+     size_t total_size_;
+     bool reuse_started_;
+     Int64 table_id_;
+     Int64 frag_id_;
+     size_t slot_size_;
+     size_t slots_per_full_segment_;
+     size_t shift_k_;
+     std::vector<Segment> segments_;
+  };
+
+  Uint32 vec_max_rec_size_; // in words
+  CandidateAllocator* candidate_allocator_;
+  double curr_distance_;
+  Uint32 vec_n_candidates_sent_;
+  Uint32 vec_size_candidates_sent_;
+  std::priority_queue<Candidate*,
+    std::vector<Candidate*>,
+    ByDistance> vec_top_n_results_;
+  bool vec_search_scan_done_;
+  Int32 next_send_idx_;
+  std::vector<Candidate*> vec_top_n_results_final_;
+  Uint32* ext_prog_buf_;
 };
 #endif  // AGGINTERPRETER_H_

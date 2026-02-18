@@ -126,13 +126,21 @@ IF(NOT WITHOUT_SERVER)
 
   # This will add WITH_NDBCLUSTER_STORAGE_ENGINE to the CACHE,
   # unless it is explicitly disabled on the command line.
-  MYSQL_ADD_PLUGIN(ndbcluster ${NDBCLUSTER_SOURCES} STORAGE_ENGINE
-    DEFAULT STATIC_ONLY
-    LINK_LIBRARIES
+  set(NDBCLUSTER_LINK_LIBS
     ndbclient_static
     extra::rapidjson
     extra::unordered_dense
-    )
+  )
+
+  if(WITH_SIMSIMD)
+    list(APPEND NDBCLUSTER_LINK_LIBS simsimd::simsimd)
+  endif()
+
+  MYSQL_ADD_PLUGIN(ndbcluster ${NDBCLUSTER_SOURCES} STORAGE_ENGINE
+    DEFAULT STATIC_ONLY
+    LINK_LIBRARIES
+      ${NDBCLUSTER_LINK_LIBS}
+  )
   SET_PROPERTY(SOURCE plugin/ha_ndbcluster.cc
                PROPERTY COMPILE_DEFINITIONS
                NDB_TLS_SEARCH_PATH="${WITH_NDB_TLS_SEARCH_PATH}")
@@ -267,6 +275,27 @@ IF(WITH_NDB_JAVA)
 ELSE(WITH_NDB_JAVA)
   MESSAGE(STATUS "Excluding Cluster Java components")
 ENDIF(WITH_NDB_JAVA)
+
+# Make SimSIMD headers and the dynamic-dispatch macro visible to ALL targets
+# created under storage/ndb/**. Do this BEFORE adding subdirectories so the
+# directory-scope include/defines propagate to all later targets.
+IF (WITH_SIMSIMD)
+  set(SIMSIMD_ROOT ${CMAKE_SOURCE_DIR}/extra/SimSIMD)
+  include_directories(BEFORE SYSTEM ${SIMSIMD_ROOT}/include)  # enables #include <simsimd/...>
+  # add_compile_definitions(SIMSIMD_DYNAMIC_DISPATCH=1)         # ensures header takes runtime path
+
+  # GCC-only: prevent SimSIMD's #warning in types.h (float16/bfloat16 notices)
+  # from being promoted to errors under global -Werror. We scope this at the
+  # directory level so it applies to all NDB intermediate targets that include
+  # SimSIMD headers (PUBLIC usage requirements from the final link don't
+  # propagate back to these earlier compilations).
+  if (CMAKE_C_COMPILER_ID STREQUAL "GNU")
+    add_compile_options(
+      -Wno-error=cpp -Wno-cpp
+      -Wno-error=unknown-pragmas -Wno-unknown-pragmas
+    )
+  endif()
+ENDIF()
 
 ADD_SUBDIRECTORY(include)
 ADD_SUBDIRECTORY(src)

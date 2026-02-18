@@ -1018,14 +1018,18 @@ Uint32 Dbtup::copyAttrinfo(Uint32 storedProcId,
         ndbrequire(page_ptr != nullptr);
         scan_rec_ptr->m_agg_interpreter =
           new(page_ptr) AggInterpreter(&cinBuffer[proc_start], proc_len,
+                              prepare_fragptr.p->fragTableId,
                               prepare_fragptr.p->fragmentId/*,
-                              &m_ctx.m_mm, page_ptr, allocPageRef*/);
+                              &m_ctx.m_mm, page_ptr, allocPageRef*/,
+                              getThreadId());
 #else
         scan_rec_ptr->m_agg_interpreter =
           new AggInterpreter(&cinBuffer[proc_start], proc_len,
-                              prepare_fragptr.p->fragmentId);
+                              prepare_fragptr.p->fragTableId,
+                              prepare_fragptr.p->fragmentId,
+                              getThreadId());
 #endif // PA_MALLOC
-        ndbrequire(scan_rec_ptr->m_agg_interpreter->Init());
+        ndbrequire(scan_rec_ptr->m_agg_interpreter->Init(&cinBuffer[proc_start]));
       }
     }
   } else {
@@ -5048,6 +5052,19 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
   req_struct->log_size = 0;
   req_struct->m_write_log_memory_in_update = true;
   Uint32 op_type = regOperPtr->op_type;
+
+  // bool debug_print = false;
+  // if (req_struct->fragPtrP != nullptr &&
+  //     PA_NEED_PRINT(true,
+  //       req_struct->fragPtrP->fragTableId,
+  //       req_struct->fragPtrP->fragmentId)) {
+  //   debug_print = true;
+  // }
+  // if (debug_print) {
+  //   g_eventLogger->info("Zhao interpreterStartLab, %u, %u, %u, %u, %u, %u, %u\n",
+  //       RinitReadLen, RexecRegionLen, RfinalUpdateLen, RfinalRLen, RsubLen,
+  //       RtotalLen, RattrinbufLen);
+  // }
   if (likely(((RtotalLen + 5) <= RattrinbufLen) &&
         (RattrinbufLen >= 5) &&
         (RtotalLen + 5 < ZATTR_BUFFER_SIZE))) {
@@ -5204,17 +5221,43 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
         return TUPKEY_abort(req_struct, ZTRY_TO_UPDATE_ERROR);
       }
     }
+
+    // VS related
+    Uint32 vec_max_rec_size = 0;
+    Uint32* vec_max_rec_size_ptr = nullptr;
+    bool get_vec_max_rec_size = false;
+    {
+    if (req_struct->scan_rec != nullptr) {
+      Dblqh::ScanRecord* scan_rec_ptr =
+                    reinterpret_cast<Dblqh::ScanRecord*>(req_struct->scan_rec);
+        if (scan_rec_ptr->m_aggregation == true &&
+            scan_rec_ptr->m_agg_interpreter->vec_search() &&
+            !scan_rec_ptr->m_agg_interpreter->IsCandidateBufAllocated()) {
+
+          vec_max_rec_size_ptr = &vec_max_rec_size;
+          get_vec_max_rec_size = true;
+      }
+    }
+    }
     if (likely(RinitReadLen > 0)) {
       jamDebug();
 #ifdef TRACE_INTERPRETER
       g_eventLogger->info("(%u) %u words for initial read after interpreter",
         instance(), RinitReadLen);
 #endif
+      // if (debug_print) {
+      //   g_eventLogger->info("RinitReadLen %u, inputParamLen: %u, [%d], req_struct->out_buf_index: %u\n",
+      //       RinitReadLen, inputParamLen, cinBuffer[5 + inputParamLen], req_struct->out_buf_index);
+      // }
       TnoDataRW = readAttributes(req_struct,
                                  &cinBuffer[5 + inputParamLen],
                                  RinitReadLen,
                                  &dst[0],
-                                 dstLen);
+                                 dstLen,
+                                 vec_max_rec_size_ptr);
+      // if (debug_print) {
+      //   g_eventLogger->info("TnoDataRw %u, dst: %u %u\n", TnoDataRW, dst[0], dst[1]);
+      // }
       if (TnoDataRW >= 0) {
         jamDebug();
         RattroutCounter = TnoDataRW;
@@ -5259,6 +5302,15 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
       // Moz
       if (scan_rec_ptr->m_aggregation == true) {
         ndbrequire(scan_rec_ptr->m_agg_interpreter != nullptr);
+        if (get_vec_max_rec_size) {
+          /*
+           * VS related
+           * We’ve already calculated the theoretical maximum result record size.
+           * Now it’s time to pass it to m_agg_interpreter to guide it in preallocating
+           * the buffer for maintaining the top-k vector search results.
+           */
+          scan_rec_ptr->m_agg_interpreter->set_vec_max_rec_size(vec_max_rec_size);
+        }
         /*
          * update req_struct->read_length here, which will update the
          * Dblqh::ScanRecord::m_curr_batch_size_bytes later in the
@@ -5267,40 +5319,54 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
          * we use Dblqh::ScanRecord::m_agg_curr_batch_size_bytes.
          * req_struct->read_length would be updated in ProcessRec().
          */
-        int ret = scan_rec_ptr->m_agg_interpreter->ProcessRec(this, req_struct);
+        bool vec_update_candidate = false;
+        int ret = scan_rec_ptr->m_agg_interpreter->ProcessRec(this, req_struct,
+                                                       &vec_update_candidate);
         if (ret != 0) {
           return TUPKEY_abort(req_struct, ret);
         }
-        Uint32 res_len = scan_rec_ptr->m_agg_interpreter->
-                                    PrepareAggResIfNeeded(signal, false);
-        if (res_len != 0) {
-          ndbrequire(req_struct->agg_curr_batch_size_rows == 0);
-          ndbrequire(req_struct->agg_curr_batch_size_bytes == 0);
-          req_struct->agg_curr_batch_size_rows = 1;
-          req_struct->agg_curr_batch_size_bytes = res_len * sizeof(Uint32);
-          /*
-           * NEW:
-           * We don't need to update req_struct->read_length here.
-           * Instead, we update req_struct->agg_curr_batch_size_bytes,
-           * it would return to LQH by TupKeyConf from returnTUPKEYCONF(),
-           * which will finally update scanPtr->m_agg_curr_batch_size_bytes.
-           * And we use scanPtr->m_agg_curr_batch_size_bytes to indicate
-           * the batch size for aggregation.
-           *
-           * OLD COMMENT:
-           * We need to req_struct->read_length here, which will update
-           * the Dblqh::ScanRecord::m_curr_batch_size_bytes later in
-           * the Dblqh::scanTupkeyConfLab
-           * // req_struct->read_length = res_len;
-          */
-          TransIdAI * transIdAI=  (TransIdAI *)signal->getDataPtrSend();
-          transIdAI->connectPtr = req_struct->tc_operation_ptr;
-          transIdAI->transId[0] = req_struct->trans_id1;
-          transIdAI->transId[1] = req_struct->trans_id2;
-          SendAggregationResult(signal, res_len, req_struct->rec_blockref);
+        if (!scan_rec_ptr->m_agg_interpreter->vec_search()) {
+          Uint32 res_len = scan_rec_ptr->m_agg_interpreter->
+            PrepareAggResIfNeeded(signal, false);
+          if (res_len != 0) {
+            ndbrequire(req_struct->agg_curr_batch_size_rows == 0);
+            ndbrequire(req_struct->agg_curr_batch_size_bytes == 0);
+            req_struct->agg_curr_batch_size_rows = 1;
+            req_struct->agg_curr_batch_size_bytes = res_len * sizeof(Uint32);
+            /*
+             * NEW:
+             * We don't need to update req_struct->read_length here.
+             * Instead, we update req_struct->agg_curr_batch_size_bytes,
+             * it would return to LQH by TupKeyConf from returnTUPKEYCONF(),
+             * which will finally update scanPtr->m_agg_curr_batch_size_bytes.
+             * And we use scanPtr->m_agg_curr_batch_size_bytes to indicate
+             * the batch size for aggregation.
+             *
+             * OLD COMMENT:
+             * We need to req_struct->read_length here, which will update
+             * the Dblqh::ScanRecord::m_curr_batch_size_bytes later in
+             * the Dblqh::scanTupkeyConfLab
+             * // req_struct->read_length = res_len;
+             */
+            TransIdAI * transIdAI=  (TransIdAI *)signal->getDataPtrSend();
+            transIdAI->connectPtr = req_struct->tc_operation_ptr;
+            transIdAI->transId[0] = req_struct->trans_id1;
+            transIdAI->transId[1] = req_struct->trans_id2;
+            SendAggregationResult(signal, res_len, req_struct->rec_blockref);
+          }
+          req_struct->agg_n_res_recs = scan_rec_ptr->
+            m_agg_interpreter->NumOfResRecords();
+        } else if (vec_update_candidate) {
+          // Uint32* ptr = &signal->theData[25];
+          // g_eventLogger->info("Prepare Copy: %u %u", ptr[0], ptr[1]);
+          int ret = scan_rec_ptr->m_agg_interpreter->
+                             CopyVecCandidateFromSignal(signal,
+                                              RattroutCounter);
+          if (ret != 0) {
+            return TUPKEY_abort(req_struct, ret);
+          }
+        } else {
         }
-        req_struct->agg_n_res_recs = scan_rec_ptr->
-                                      m_agg_interpreter->NumOfResRecords();
         return 0;
       } else {
         sendReadAttrinfo(signal, req_struct, RattroutCounter);
