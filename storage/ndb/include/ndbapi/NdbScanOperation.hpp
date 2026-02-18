@@ -326,6 +326,7 @@ class NdbScanOperation : public NdbOperation {
   int setAggregationCode(const NdbAggregator *code);
 
   int DoAggregation();
+  int DoVectorSearch(NdbRecAttr** userAttrs, Uint32 n_userAttrs);
 
   /**
    * Get the next tuple in a scan transaction. 

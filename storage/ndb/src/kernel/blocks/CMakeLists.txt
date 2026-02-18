@@ -40,6 +40,14 @@ ELSE()
   SET(EXTRA_SRC ndbfs/PosixAsyncFile.cpp)
 ENDIF()
 
+set(NDBBLOCKS_LINK_LIBS
+  ext::zlib
+)
+
+if(WITH_SIMSIMD)
+  list(APPEND NDBBLOCKS_LINK_LIBS simsimd::simsimd)
+endif()
+
 ADD_STATIC_LIBRARY(ndbblocks
   LocalProxy.cpp
   PgmanProxy.cpp
@@ -135,7 +143,7 @@ ADD_STATIC_LIBRARY(ndbblocks
   trpman.cpp
   tsman.cpp
   ${EXTRA_SRC}
-  LINK_LIBRARIES ext::zlib
+  LINK_LIBRARIES ${NDBBLOCKS_LINK_LIBS}
   )
 
 MYSQL_ADD_EXECUTABLE(ndb_print_file

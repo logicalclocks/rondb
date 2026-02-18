@@ -59,6 +59,8 @@
 #include <LogBuffer.hpp>
 #include <OutputStream.hpp>
 
+#include <simsimd/simsimd.h>
+
 #include "util/ndb_openssl3_compat.h"
 
 #define JAM_FILE_ID 484
@@ -935,6 +937,21 @@ void ndbd_run(bool foreground, int report_fd, const char *connect_str,
     }
   }
 
+  g_eventLogger->info("SimSIMD dynamic dispatch: %d",
+                      simsimd_uses_dynamic_dispatch());
+  g_eventLogger->info("SimSIMD capabilities: %d, NEON[%d], SVE[%d], HASWELL[%d], "
+                      "SKYLAKE[%d], ICE[%d], GENOA[%d], SAPPHIRE[%d], "
+                      "TURIN[%d], SIERRA[%d]",
+                      simsimd_capabilities(),
+                      simsimd_uses_neon(),
+                      simsimd_uses_sve(),
+                      simsimd_uses_haswell(),
+                      simsimd_uses_skylake(),
+                      simsimd_uses_ice(),
+                      simsimd_uses_genoa(),
+                      simsimd_uses_sapphire(),
+                      simsimd_uses_turin(),
+                      simsimd_uses_sierra());
   if (initialstart) {
     g_eventLogger->info("Performing partial initial start of this Cluster");
   } else if (initial) {

@@ -24,6 +24,7 @@
 #include "NdbAggregator.hpp"
 #include "AttributeHeader.hpp"
 #include "../../src/ndbapi/NdbDictionaryImpl.hpp"
+#include <simsimd/simsimd.h>
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_NDBAGGREGATOR 1
@@ -56,11 +57,16 @@ NdbAggregator::NdbAggregator(const NdbDictionary::Table* table) :
   result_record_fetched_(false),
   result_size_est_(RESULT_HEADER_SIZE * sizeof(Uint32) +
                RESULT_ITEM_HEADER_SIZE * sizeof(Uint32)),
-  disk_columns_(false) {
+  disk_columns_(false),
+  vec_top_n_(0), vec_result_(nullptr),
+  userAttrs_(nullptr), n_userAttrs_(0),
+  results_prepared_(false), results_left_(0),
+  type_(kAggregation) {
     if (table != nullptr) {
       table_impl_ = & NdbTableImpl::getImpl(*table);
     }
     memset(agg_ops_, kOpUnknown, MAX_AGGREGATION_OP_SIZE * 4);
+    vec_result_final_.clear();
 }
 
 NdbAggregator::~NdbAggregator() {
@@ -71,9 +77,24 @@ NdbAggregator::~NdbAggregator() {
     }
     delete gb_map_;
   }
+  for (Uint32 i = 0; i < vec_result_final_.size(); i++) {
+    delete vec_result_final_[i];
+  }
 }
 
 Int32 NdbAggregator::ProcessRes(char* buf) {
+  int dynamic_dispatch = simsimd_uses_dynamic_dispatch();
+  simsimd_metric_kind_t kind = simsimd_metric_l2sq_k;
+  simsimd_datatype_t datatype = simsimd_datatype_f32_k;
+
+  simsimd_kernel_punned_t result = 0;
+  simsimd_capability_t c = simsimd_cap_serial_k;
+  simsimd_capability_t supported = simsimd_capabilities();
+  simsimd_capability_t allowed = simsimd_cap_any_k;
+  simsimd_find_kernel_punned(kind, datatype, supported, allowed, &result, &c);
+
+  fprintf(stderr, "use_dynamic_dispatch: %d, capabilities: %d, choose: [%p, %d]\n",
+          dynamic_dispatch, supported, result, c);
   DEB_TRACE();
   if (buf != nullptr) {
     DEB_TRACE();
@@ -908,4 +929,113 @@ Int32 NdbAggregator::Column::data_medium() {
 }
 Uint32 NdbAggregator::Column::data_umedium() {
 	return uint3korr(ptr_);
+}
+bool NdbAggregator::VectorSearch(const char* name,
+                                 const float* vec, Uint32 dims,
+                                 Uint32 top_n) {
+  buffer_[1] = n_gb_cols_ << 16 | n_agg_results_;
+  buffer_[2] = PUSHDOWN_AGGREGATION_VERSION;
+
+  buffer_[3] = 0x80000000;
+
+  Uint32 type = 0;
+  Uint32 metric = 0;
+  buffer_[4] = ((type & 0xFF) << 24) | ((metric & 0xFF) << 16) | (dims & 0xFFFF);
+
+  if (name == nullptr) {
+    SetError(kErrInvalidColumnName);
+    return false;
+  }
+  const NdbDictionary::Column* col = table_impl_->getColumn(name);
+  if (col == nullptr) {
+    SetError(kErrInvalidColumnName);
+    return false;
+  }
+  NdbDictionary::Column::Type col_type = col->getType();
+  if (col_type != NDB_TYPE_LONGVARBINARY) {
+    SetError(kErrUnSupportedColumn);
+    return false;
+  }
+
+  // if (col->getStorageType() == NDB_STORAGETYPE_DISK) {
+  //   disk_columns_ = true;
+  // }
+
+  Int32 col_id = col->getAttrId();
+  assert((col_id & 0xFFFF0000) == 0);
+  Uint32 vec_size_in_bytes = dims * sizeof(float);
+  buffer_[5] = ((col_id & 0xFFFF) << 16) | (top_n & 0xFFFF);
+  buffer_[6] = vec_size_in_bytes;
+  curr_prog_pos_ = 7;
+  memcpy(&buffer_[curr_prog_pos_], vec, dims * sizeof(float));
+  curr_prog_pos_ += dims;
+  // fprintf(stderr, "curr_prog_pos: %u, col_id: %d, top_n: %u, size: %u\n", curr_prog_pos_,
+  //     col_id, top_n, vec_size_in_bytes);
+
+  buffer_[0] = (0x0721) << 16 | curr_prog_pos_;
+
+  instructions_length_ = curr_prog_pos_;
+  if (instructions_length_ >= MAX_VEC_SEARCH_PROGRAM_WORD_SIZE) {
+    SetError(kErrTooBigProgram);
+    return false;
+  }
+  vec_top_n_ = top_n;
+  if (vec_result_) {
+    while (!vec_result_->empty()) {
+      VectorSearchResult* ptr = vec_result_->top();
+      vec_result_->pop();
+      delete ptr;
+    }
+    delete vec_result_;
+    vec_result_ = nullptr;
+  }
+  vec_result_ = new std::priority_queue<VectorSearchResult*,
+    std::vector<VectorSearchResult*>,
+    ByDistance>;
+  type_ = kVectorSearch;
+  finalized_ = true;
+  return true;
+}
+
+bool NdbAggregator::VecProcessRes(NdbRecAttr** userAttrs, Uint32 n_userAttrs,
+                                  NdbRecAttr* vecDistanceAttr) {
+  // fprintf(stderr, "  Receive a result from 1 fragment, "
+  //         "pk: %d, distance: %lf, n_userAttrs: %u\n",
+  //     (userAttrs[0])->int32_value(), vecDistanceAttr->double_value(),
+  //     n_userAttrs);
+
+  VectorSearchResult* result = new VectorSearchResult(
+                                   vecDistanceAttr->double_value(),
+                                   n_userAttrs, userAttrs);
+  vec_result_->push(result);
+  if (vec_result_->size() > vec_top_n_) {
+    vec_result_->pop();
+  }
+  return true;
+}
+
+bool NdbAggregator::VecPrepareResults(NdbRecAttr** userAttrs, Uint32 n_userAttrs) {
+  while (!vec_result_->empty()) {
+    VectorSearchResult* result = vec_result_->top();
+    vec_result_final_.push_back(result);
+    vec_result_->pop();
+  }
+  userAttrs_ = userAttrs;
+  n_userAttrs_ = n_userAttrs;
+  results_prepared_ = true;
+  results_left_ = vec_result_final_.size();
+  return true;
+}
+
+bool NdbAggregator::VecFetchNextResult() {
+  if (results_prepared_ && results_left_ > 0) {
+    VectorSearchResult* result = vec_result_final_[results_left_ - 1];
+    for (Uint32 i = 0; i < n_userAttrs_; i++) {
+      userAttrs_[i] =  result->attrs_[i];
+    }
+    results_left_--;
+    return true;
+  } else {
+    return false;
+  }
 }

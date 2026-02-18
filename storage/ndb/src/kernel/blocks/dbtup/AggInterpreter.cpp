@@ -33,10 +33,23 @@
 #include "decimal.h"
 #include "Dbtup.hpp"
 
+#include <simsimd/simsimd.h>
+
 Uint32 AggInterpreter::g_buf_len_ = READ_BUF_WORD_SIZE;
 Uint32 AggInterpreter::g_result_header_size_ = 3 * sizeof(Uint32);
 Uint32 AggInterpreter::g_result_header_size_per_group_ = sizeof(Uint32);
 
+/*
+ * VS related
+ * Since we allocate one page (32 KB) to accommodate the vector search
+ * program — with a maximum size of MAX_VEC_SEARCH_PROGRAM_WORD_SIZE (8192 words) —
+ * this effectively limits the maximum supported vector dimension.
+ *
+ * We also allocate a 1-page (32 KB) buffer for reading vector column values.
+ * This buffer has a capacity of 8192 words, which is slightly larger than
+ * the size of a vector with the current maximum dimension (MAX_VEC_DIMS = 8100).
+ */
+Uint32 AggInterpreter::g_vec_buf_len_ = MAX_VEC_SEARCH_PROGRAM_WORD_SIZE; /* float */
 
 /*
  * PA related
@@ -57,13 +70,64 @@ Uint32 AggInterpreter::g_result_header_size_per_group_ = sizeof(Uint32);
 #define PA_INTERP_TRACE(part_id, format, ...) {}
 #endif // DEBUG_PA_INTERP
 
-bool AggInterpreter::Init() {
+/*
+ * VS related
+ * Turn on the DEBUG_VS_INTERP
+ * to trace AggInterpreter on partition DEBUG_VS_INTERP_PART_ID
+ */
+#undef DEBUG_VS_INTERP
+// #define DEBUG_VS_INTERP 1
+#define DEBUG_VS_INTERP_TABLE_ID 17
+#define DEBUG_VS_INTERP_PART_ID 0
+#ifdef DEBUG_VS_INTERP
+#define VS_INTERP_TRACE(table_id, part_id, format, ...) \
+  do {\
+    if ((table_id == DEBUG_VS_INTERP_TABLE_ID) && \
+        (part_id == DEBUG_VS_INTERP_PART_ID)) {\
+      g_eventLogger->info("[VS_INTERP_TRACE] " format, ##__VA_ARGS__); \
+    }\
+  } while (0)
+#else
+#define VS_INTERP_TRACE(table_id, part_id, format, ...) {}
+#endif // DEBUG_VS_INTERP
+
+bool AggInterpreter::Init(const Uint32* prog) {
   if (inited_) {
     return true;
   }
 
-  Uint32 value = 0;
+  /* 0. Prepare the buffer and copy the program */
+#ifdef PA_MALLOC
+  // TODO (Zhao)
+  // VS related
+	assert(prog_len_ <= MAX_VEC_SEARCH_PROGRAM_WORD_SIZE);
+  if (prog_len_ <= MAX_AGG_PROGRAM_WORD_SIZE) {
+    /*
+		 * Use inline prog_buf_ for aggregation or
+     * small-dimension vector search queries.
+     */
+    prog_ = prog_buf_;
+  } else {
+    /* Use external buf for large-dimension vector search queries. */
+    void* page_ptr = lc_ndbd_pool_malloc(32 * 1024, RG_QUERY_MEMORY,
+        thread_id_, false);
+    if (page_ptr == nullptr) {
+      g_eventLogger->error("Alloc mem for pushdown vector search interpreter failed");
+      return false;
+    }
+    ext_prog_buf_ = static_cast<Uint32*>(page_ptr);
+    prog_ = ext_prog_buf_;
+  }
+  alloc_len_ = 0;
+#else
+  prog_ = new Uint32[prog_len];
+#endif // PA_MALLOC
+  memcpy(prog_, prog, prog_len_ * sizeof(Uint32));
+  memset(buf_, 0, READ_BUF_WORD_SIZE * sizeof(Uint32));
+  memset(decimal_buf_, 0, sizeof(Int32) * DECIMAL_BUFF_LENGTH);
 
+
+  Uint32 value = 0;
   /*
    * 1. Double check the magic num and  total length of program.
    */
@@ -91,9 +155,48 @@ bool AggInterpreter::Init() {
     return true;
   }
 
-  // Skip the next 5 reserved Uint32 elements
-  assert(prog_[cur_pos_] == 0);
-  cur_pos_ += 5;
+  if (prog_[cur_pos_] & 0x80000000) {
+    vec_search_ = true;
+    assert((prog_[cur_pos_] & 0x7FFFFFFF) == 0);
+    cur_pos_++;
+  } else {
+    assert(vec_search_ == false);
+    // Skip the next 5 reserved Uint32 elements
+    assert(prog_[cur_pos_] == 0);
+    cur_pos_ += 5;
+  }
+
+  if (vec_search_) {
+    value = prog_[cur_pos_++];
+    vec_type_ = (value >> 16) & 0xFF00;
+    vec_metric_ = (value >> 16) & 0xFF;
+    vec_dims_ = value & 0xFFFF;
+
+    value = prog_[cur_pos_++];
+    vec_top_n_ = (value) & 0xFFFF;
+    vec_col_idx_ = (value >> 16) & 0xFFFF;
+    value = prog_[cur_pos_++];
+    vec_size_in_bytes_ = (value & 0xFFFFFFFF);
+    // g_eventLogger->info("frag_id: %lld, type: %u, metric: %u, dims: %u, vec_col_idx: %u, vec_top_n: %u, size: %u\n",
+    //     frag_id_, vec_type_, vec_metric_, vec_dims_, vec_col_idx_, vec_top_n_, vec_size_in_bytes_);
+
+    vec_start_pos_ = cur_pos_;
+
+#ifdef PA_MALLOC
+    void* page_ptr = lc_ndbd_pool_malloc(32 * 1024, RG_QUERY_MEMORY,
+        thread_id_, false);
+    if (page_ptr == nullptr) {
+      g_eventLogger->error("Alloc mem for pushdown vector search interpreter failed");
+      return false;
+    }
+    vec_buf_ = static_cast<Uint32*>(page_ptr);
+#else
+    vec_buf_ = new Uint32[g_vec_buf_len_];
+#endif // PA_MALLOC
+
+    inited_ = true;
+    return true;
+  }
 
   /*
    * 3. Get all the group by columns id.
@@ -1090,13 +1193,99 @@ static Int32 Count(const Register& a, AggResItem* res, bool print) {
  *          Others returned by readAttributes
  */
 Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
-        Dbtup::KeyReqStruct* req_struct) {
+        Dbtup::KeyReqStruct* req_struct,
+        bool* vec_update_candidate) {
   // assert(inited_);
   // assert(req_struct->read_length == 0);
   if (!inited_ || req_struct->read_length != 0) {
     g_eventLogger->debug("AggInterpreter::ProcessRec error, inited: %d, read_length: %u",
             inited_, req_struct->read_length);
     return ZAGG_OTHER_ERROR;
+  }
+
+  *vec_update_candidate = false;
+  if (vec_search_) {
+    Uint32 vec_col_idx = (vec_col_idx_ & 0x0000FFFF) << 16;
+    int ret = block_tup->readAttributes(req_struct, &(vec_col_idx), 1,
+                  vec_buf_ + vec_buf_pos_, g_vec_buf_len_ - vec_buf_pos_);
+    if (ret < 0) {
+      g_eventLogger->debug("read vector column error: %d", ret);
+      return -ret;
+    }
+    AttributeHeader* header = nullptr;
+    header = reinterpret_cast<AttributeHeader*>(vec_buf_ + vec_buf_pos_);
+    const Uint32* attrDescriptor = req_struct->tablePtrP->tabDescriptor +
+      (((vec_col_idx) >> 16) * ZAD_SIZE);
+    const Uint32 TattrDesc1 = attrDescriptor[0];
+    // const Uint32 TattrDesc2 = attrDescriptor[1];
+    const Uint32 type_id = AttributeDescriptor::getType(TattrDesc1);
+    const Uint32 array_type = AttributeDescriptor::getArrayType(TattrDesc1);
+
+#ifdef DEBUG_VS_INTERP
+    const Uint32 attributeId = header->getAttributeId();
+    assert(attributeId == (vec_col_idx >> 16));
+    const Uint32 size = AttributeDescriptor::getSize(TattrDesc1);
+    const Uint32 size_in_bytes = AttributeDescriptor::getSizeInBytes(TattrDesc1);
+    const Uint32 size_in_words = AttributeDescriptor::getSizeInWords(TattrDesc1);
+    const Uint32 array_size = AttributeDescriptor::getArraySize(TattrDesc1);
+    const Uint32 nullable = AttributeDescriptor::getNullable(TattrDesc1);
+    const Uint32 distri_key = AttributeDescriptor::getDKey(TattrDesc1);
+    const Uint32 primary_key = AttributeDescriptor::getPrimaryKey(TattrDesc1);
+    const Uint32 dynamic = AttributeDescriptor::getDynamic(TattrDesc1);
+    const Uint32 disk_based = AttributeDescriptor::getDiskBased(TattrDesc1);
+    VS_INTERP_TRACE(table_id_, frag_id_,
+         "AttributeDescriptor, attributeId: %u, type_id: %u, size: %u, "
+         "size_in_bytes: %u, size_in_words: %u, array_type: %u, "
+         "array_size: %u, nullable: %u, distri_key: %u, primary_key: %u "
+         "dynamic: %u, disk_based: %u",
+         attributeId, type_id, size, size_in_bytes, size_in_words, array_type,
+         array_size, nullable, distri_key, primary_key, dynamic, disk_based);
+#endif  // DEBUG_VS_INTERP
+
+    if (type_id != NDB_TYPE_LONGVARBINARY) {
+      g_eventLogger->debug("Unsupported vector column type: %u", type_id);
+      return ZAGG_COL_TYPE_UNSUPPORTED;
+    }
+
+    Uint32 length_bytes = 0;
+    if (array_type == NDB_ARRAYTYPE_SHORT_VAR) {
+      length_bytes = 1;
+    } else if (array_type == NDB_ARRAYTYPE_MEDIUM_VAR) {
+      length_bytes = 2;
+    } else {
+      assert(0);
+    }
+    Uint32 dims = 0;
+    if (!header->isNULL()) {
+#if DEBUG
+      Uint32 len = header->getByteSize();
+      assert(len >= length_bytes);
+#endif  // DEBUG
+      if (length_bytes == 1) {
+        dims = *((Uint8*)header->getDataPtr());
+      } else {
+        dims = *((Uint16*)header->getDataPtr());
+        // assert((dims & 0x00008000) == 1);
+        // dims = (dims & 0x00007FFF);
+      }
+      assert(vec_dims_ == dims / sizeof(float));
+    } else {
+      assert(0);
+    }
+
+    double distance = 0;
+    float* target = (float* )&(prog_[vec_start_pos_]);
+    float* current = (float* )((char*)header->getDataPtr() + length_bytes);
+    simsimd_l2sq_f32(current, target, vec_dims_, &distance);
+    // simsimd_l2sq_f32_serial(current, target, vec_dims_, &distance);
+    curr_distance_ = distance;
+    if (vec_top_n_ != 0 &&
+        (vec_top_n_results_.size() < vec_top_n_ ||
+        distance < vec_top_n_results_.top()->distance_)) {
+      *vec_update_candidate = true;
+    }
+
+    return 0;
   }
 
   AggResItem* agg_res_ptr = nullptr;
@@ -2338,3 +2527,240 @@ void AggInterpreter::Destruct(AggInterpreter* ptr) {
   lc_ndbd_pool_free(ptr);
 }
 #endif // PA_MALLOC
+Int32 AggInterpreter::CopyVecCandidateFromSignal(Signal* signal,
+                                                Uint32 ToutBufIndex) {
+  if (candidate_allocator_ == nullptr) {
+    VS_INTERP_TRACE(table_id_, frag_id_,
+                    "CandidateAllocator pre-allocating memory, "
+                    "top_n: %u, vec_max_rec_size: %u, actual_rec_size: %u",
+                    vec_top_n_, vec_max_rec_size_, ToutBufIndex);
+    candidate_allocator_ = new CandidateAllocator(vec_top_n_, vec_max_rec_size_,
+        table_id_, frag_id_);
+    int ret = candidate_allocator_ -> Init(thread_id_);
+    if (ret != 0) {
+      return ret;
+    }
+  }
+  // The actual record size can't be larger than the vec_max_rec_size_
+  // TODO (Zhao)
+  // handle this error
+  assert(ToutBufIndex <= vec_max_rec_size_);
+
+  if (vec_top_n_results_.size() >= vec_top_n_) {
+    Candidate* knockout = vec_top_n_results_.top();
+    VS_INTERP_TRACE(table_id_, frag_id_,
+                    "Picked the candidate with distance %lf, idx: %d as the next knockout",
+        knockout->distance_,
+        knockout->idx_in_allocator_);
+    vec_top_n_results_.pop();
+    candidate_allocator_->set_next_index(knockout->idx_in_allocator_);
+    // No need to delete 'knockout' — it will be reused by the next selected candidate.
+    // delete knockout;
+  }
+
+  Candidate* selected = candidate_allocator_->
+      Allocate(curr_distance_, &(signal->theData[25]), ToutBufIndex);
+  vec_top_n_results_.push(selected);
+  VS_INTERP_TRACE(table_id_, frag_id_,
+                  "Push one candidate with distance %lf, [%lu/%u], idx_in_allocator: %u",
+                  curr_distance_, vec_top_n_results_.size(), vec_top_n_,
+                  selected->idx_in_allocator_);
+  return 0;
+}
+
+void AggInterpreter::PrepareVecCandidates() {
+  vec_top_n_results_final_.clear();
+  while (!vec_top_n_results_.empty()) {
+    vec_top_n_results_final_.push_back(vec_top_n_results_.top());
+    vec_top_n_results_.pop();
+  }
+  next_send_idx_ = vec_top_n_results_final_.size() - 1;
+  VS_INTERP_TRACE(table_id_, frag_id_,
+                  "PrepareVecCandidates %lu",
+                  vec_top_n_results_final_.size());
+}
+
+Uint32 AggInterpreter::CopyOneVecCandidateToSignal(Signal* signal) {
+  if (next_send_idx_ >= 0) {
+    Candidate* next_send = vec_top_n_results_final_[next_send_idx_];
+    if (next_send->actual_buf_len_ > 3) {
+      // Fast path
+      AttributeHeader header = *(AttributeHeader*)(next_send->buf_ + next_send->actual_buf_len_ - 3);
+      if (header.getAttributeId() == AttributeHeader::VEC_DISTANCE &&
+          *(double*)(next_send->buf_ + next_send->actual_buf_len_ - 2) == 721.721) {
+        /* Fill in the vec_closes_ to the reserved area which contains the magic word 721.721*/
+        *(double*)(next_send->buf_ + next_send->actual_buf_len_ - 2) = next_send->distance_;
+      }
+    } else {
+      // TODO (Zhao)
+      // It doesn’t seem to work with index scans, since in an index scan
+      // there is an NdbRecord (READ_PACKED) packet at the beginning of the result.
+      Uint32 pos = 0;
+      while (pos < next_send->actual_buf_len_) {
+        AttributeHeader header = *(AttributeHeader*)(next_send->buf_ + pos);
+        if (header.getAttributeId() == AttributeHeader::VEC_DISTANCE) {
+#ifdef DEBUG_VS_INTERP
+          double value = *(double*)(next_send->buf_ + pos + 1);
+          VS_INTERP_TRACE(table_id_, frag_id_,
+                          "CopyOneToSignalForSending, attributeId: %d, value: %lf",
+                          header.getAttributeId(), value);
+#endif  // DEBUG_VS_INTERP
+          *(double*)(next_send->buf_ + pos + 1) = next_send->distance_;
+        }
+        pos += header.getDataSize() + 1;
+      }
+    }
+    Uint32 copy_len = next_send->actual_buf_len_;
+    if (next_send != nullptr && next_send->actual_buf_len_ != 0) {
+      memcpy((void*)(&signal->theData[25]), next_send->buf_,
+          next_send->actual_buf_len_ * sizeof(Uint32));
+      VS_INTERP_TRACE(table_id_, frag_id_,
+                      "CopyOneToSignalForSending, len: %u, idx: %d",
+                      next_send->actual_buf_len_, next_send_idx_);
+      vec_n_candidates_sent_++;
+      vec_size_candidates_sent_ += next_send->actual_buf_len_;
+    }
+
+    vec_top_n_results_final_[next_send_idx_] = nullptr;
+    next_send_idx_--;
+    /*
+     * Don’t release the memory here — CandidateAllocator will handle it.
+     */
+    // delete next_send;
+    return copy_len;
+  } else {
+    return 0;
+  }
+}
+
+void AggInterpreter::set_vec_max_rec_size(Uint32 size) {
+	/*
+	 * vec_max_rec_size_ is only used to calculate the preallocated memory size
+	 * for candidate_allocator_, so it doesn’t make sense to set it
+	 * after candidate_allocator_ has already been initialized.
+	 */
+  if (!candidate_allocator_) {
+    // 10% bigger
+    vec_max_rec_size_ = static_cast<int>(std::ceil(size * 1.1));
+    VS_INTERP_TRACE(table_id_, frag_id_, "Adjust vec_max_rec_size: %u -> %u",
+                    size, vec_max_rec_size_);
+  }
+}
+
+Uint32 AggInterpreter::CandidateAllocator::g_max_results_size = 100 * 1024 * 1024; /*100 MB*/
+Uint32 AggInterpreter::CandidateAllocator::g_segment_size = 1 * 1024 * 1024; /*1 MB*/
+
+static inline size_t highest_power_of_two_leq(size_t x) {
+  // x > 0
+  return size_t(1) << (8 * sizeof(size_t) - 1 - __builtin_clzl(x));
+}
+
+Int32 AggInterpreter::CandidateAllocator::Init(Uint32 thread_id) {
+  if (init_) {
+    return 0;
+  }
+
+  if (total_size_ > g_max_results_size) {
+    g_eventLogger->warning(
+        "Vector search result size %lu exceeds max pool %u",
+        total_size_, g_max_results_size);
+    return ZAGG_VS_TOO_BIG_RESULT;
+  }
+
+  if (slot_size_ > g_segment_size) {
+    g_eventLogger->error(
+        "slot_size %lu > segment_size %u, cannot allocate candidates safely",
+        slot_size_, g_segment_size);
+    return ZAGG_VS_TOO_BIG_RESULT;
+  }
+
+  size_t raw = g_segment_size / slot_size_;
+  assert(raw > 0);
+  slots_per_full_segment_ = highest_power_of_two_leq(raw);
+  shift_k_ = __builtin_ctzl(slots_per_full_segment_);
+  // slots_per_full_segment_ = g_segment_size / slot_size_;
+  // assert(slots_per_full_segment_ > 0);
+
+  size_t full_segments = max_candidates_ / slots_per_full_segment_;
+  size_t last_slots = max_candidates_ % slots_per_full_segment_;
+  size_t last_size = last_slots * slot_size_;
+
+  size_t num_segments = full_segments + (last_slots > 0 ? 1 : 0);
+
+  VS_INTERP_TRACE(table_id_, frag_id_,
+      "Init CandidateAllocator: slot_size=%lu, slots_per_full_seg=%lu, "
+      "full_segments=%lu, last_slots=%lu",
+      slot_size_, slots_per_full_segment_, full_segments, last_slots);
+
+  segments_.reserve(num_segments);
+
+  for (size_t i = 0; i < full_segments; i++) {
+#ifdef PA_MALLOC
+    void* page_ptr = lc_ndbd_pool_malloc(g_segment_size, RG_QUERY_MEMORY,
+        thread_id, false);
+    if (!page_ptr) {
+      g_eventLogger->error("Failed allocating segment %lu", i);
+      return ZAGG_ALLOC_MEM_FAILED;
+    }
+    segments_.push_back({(char*)page_ptr, g_segment_size});
+#else
+    char* buf = (char*)::operator new(g_segment_size);
+    segments_.push_back({buf, g_segment_size});
+#endif // PA_MALLOC
+  }
+
+  if (last_size > 0) {
+#ifdef PA_MALLOC
+    void* page_ptr = lc_ndbd_pool_malloc(last_size, RG_QUERY_MEMORY,
+        thread_id, false);
+    if (!page_ptr) {
+      g_eventLogger->error("Failed allocating last segment");
+      return ZAGG_ALLOC_MEM_FAILED;
+    }
+    segments_.push_back({(char*)page_ptr, last_size});
+#else
+    char* buf = (char*)::operator new(last_size);
+    segments_.push_back({buf, last_size});
+#endif // PA_MALLOC
+  }
+
+  init_ = true;
+  return 0;
+}
+
+AggInterpreter::Candidate* AggInterpreter::CandidateAllocator::Allocate(
+    double distance, const Uint32* tuple, Uint32 actual_buf_len) {
+  if (next_index_ >= max_candidates_) {
+    return nullptr;
+  }
+
+  // size_t seg_id = next_index_ / slots_per_full_segment_;
+  // size_t slot_off = next_index_ % slots_per_full_segment_;
+	size_t seg_id   = next_index_ >> shift_k_;
+	size_t slot_off = next_index_ & (slots_per_full_segment_ - 1);
+
+  assert(seg_id < segments_.size());
+
+  char* base = segments_[seg_id].ptr;
+  char* ptr = base + slot_off * slot_size_;
+
+  assert(ptr + slot_size_ <= base + segments_[seg_id].size);
+
+  VS_INTERP_TRACE(table_id_, frag_id_,
+      "Alloc idx=%lu -> seg=%lu slot_off=%lu",
+      next_index_, seg_id, slot_off);
+
+  Candidate* c = new (ptr) Candidate(distance, actual_buf_len, next_index_);
+  c->Init(tuple);
+
+  if (!reuse_started_) {
+    ++next_index_;
+  }
+  if (!reuse_started_ && next_index_ == max_candidates_) {
+    VS_INTERP_TRACE(table_id_, frag_id_, "CandidateAllocator reuse started");
+    next_index_ = 0;
+    reuse_started_ = true;
+  }
+
+  return c;
+}

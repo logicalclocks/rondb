@@ -778,6 +778,7 @@ void Dbtux::continue_scan(Signal *signal, ScanOpPtr scanPtr, Frag &frag,
     conf->scanPtr = scan.m_userPtr;
     conf->accOperationPtr = RNIL;  // no tuple returned
     conf->fragId = frag.m_fragId;
+    conf->vectorScanDone = false;
     // if TC has ordered scan close, it will be detected here
     /* WE ARE ENTERING A REAL-TIME BREAK FOR A SCAN HERE */
     sendSignal(scan.m_userRef, GSN_NEXT_SCANCONF, signal,
@@ -802,6 +803,7 @@ void Dbtux::continue_scan(Signal *signal, ScanOpPtr scanPtr, Frag &frag,
     conf->scanPtr = scan.m_userPtr;
     conf->accOperationPtr = RNIL;
     conf->fragId = RNIL;
+    conf->vectorScanDone = false;
     signal->setLength(NextScanConf::SignalLengthNoTuple);
     c_lqh->exec_next_scan_conf(signal);
     return;
@@ -980,6 +982,7 @@ void Dbtux::continue_scan(Signal *signal, ScanOpPtr scanPtr, Frag &frag,
     // conf signal
     NextScanConf *const conf = (NextScanConf *)signal->getDataPtrSend();
     conf->scanPtr = scan.m_userPtr;
+    conf->vectorScanDone = false;
     // the lock is passed to LQH
     Uint32 accLockOp = scan.m_accLockOp;
     if (unlikely(accLockOp != RNIL)) {
@@ -1029,6 +1032,26 @@ void Dbtux::continue_scan(Signal *signal, ScanOpPtr scanPtr, Frag &frag,
     conf->scanPtr = scan.m_userPtr;
     conf->accOperationPtr = RNIL;
     conf->fragId = RNIL;
+    conf->vectorScanDone = false;
+    /*
+     * VS related
+     * [For sending vector search result]
+     *
+     * 1.b. The normal scan operation is done, so set NextScanConf::vecScanDone
+     * to true to help the following Dblqh::exec_next_scan_conf() to
+     * distinguish it and do the actions properly
+     *
+     * NOTICE:
+     * We cannot directly set accOperationPtr to -1 here because normal
+     * pushdown aggregation also goes through this path, and in that case
+     * it must remain RNIL. Instead, we handle this in the following calls:
+     *
+     *   Dblqh::exec_next_scan_conf() -> Dblqh::continue_next_scan_conf()
+     */
+     // conf->accOperationPtr = Uint32(-1);
+    if (scan.m_aggregation) {
+      conf->vectorScanDone = true;
+    }
     signal->setLength(NextScanConf::SignalLengthNoTuple);
     c_lqh->exec_next_scan_conf(signal);
     return;
@@ -1659,6 +1682,7 @@ void Dbtux::scanClose(Signal *signal, ScanOpPtr scanPtr) {
     conf->scanPtr = scanPtr.p->m_userPtr;
     conf->accOperationPtr = RNIL;
     conf->fragId = RNIL;
+    conf->vectorScanDone = false;
     releaseScanOp(scanPtr);
     signal->setLength(NextScanConf::SignalLengthNoTuple);
     c_lqh->exec_next_scan_conf(signal);

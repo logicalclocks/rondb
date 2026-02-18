@@ -102,6 +102,16 @@ IF(WIN32)
 ENDIF()
 
 IF(WITH_NDBMTD)
+	set(NDBMTD_LINK_LIBS
+    ${NDBD_LIBS}
+    ndbsched_mt
+    ${LIBDL}
+  )
+
+  if(WITH_SIMSIMD)
+    list(APPEND NDBMTD_LINK_LIBS simsimd::simsimd)
+  endif()
+
   MYSQL_ADD_EXECUTABLE(ndbmtd
     ${NDBD_EXTRA_SRC}
     SimBlockList.cpp
@@ -112,6 +122,6 @@ IF(WITH_NDBMTD)
     DESTINATION ${INSTALL_SBINDIR}
     COMPONENT ClusterDataNode
     ENABLE_EXPORTS
-    LINK_LIBRARIES ${NDBD_LIBS} ndbsched_mt ${LIBDL}
-    )
+    LINK_LIBRARIES ${NDBMTD_LINK_LIBS}
+  )
 ENDIF()

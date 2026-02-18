@@ -248,6 +248,8 @@ inline const Uint32 *ALIGN_WORD(const void *ptr) {
 #define ZAGG_LOAD_CONST_WRONG_TYPE 1867
 #define ZAGG_WRONG_OPERATION 1868
 #define ZAGG_OTHER_ERROR 1869
+#define ZAGG_ALLOC_MEM_FAILED 1870
+#define ZAGG_VS_TOO_BIG_RESULT 1871
 
 /* SOME WORD POSITIONS OF FIELDS IN SOME HEADERS */
 
@@ -2872,7 +2874,8 @@ private:
   //------------------------------------------------------------------
   //------------------------------------------------------------------
   int readAttributes(KeyReqStruct *req_struct, const Uint32 *inBuffer,
-                     Uint32 inBufLen, Uint32 *outBuffer, Uint32 TmaxRead);
+                     Uint32 inBufLen, Uint32 *outBuffer, Uint32 TmaxRead,
+                     Uint32* max_vec_rec_size = nullptr);
 
   // Read only PK attributes, without AttributeHeader.
   // Optinally xfrm'ing the key in preparation for hash
@@ -3254,8 +3257,10 @@ private:
   //------------------------------------------------------------------
   static bool nullFlagCheck(KeyReqStruct *req_struct, Uint64 attrDes);
   static bool disk_nullFlagCheck(KeyReqStruct *req_struct, Uint64 attrDes);
-  int read_pseudo(const Uint32 *, Uint32, KeyReqStruct *, Uint32 *);
-  Uint32 read_packed(const Uint32 *, Uint32, KeyReqStruct *, Uint32 *);
+  int read_pseudo(const Uint32 *, Uint32, KeyReqStruct *, Uint32 *,
+                  Uint32* vec_max_rec_size = nullptr);
+  Uint32 read_packed(const Uint32 *, Uint32, KeyReqStruct *, Uint32 *,
+                  Uint32* vec_max_rec_size = nullptr);
 
   Uint32 read_lcp(const Uint32 *, Uint32, KeyReqStruct *, Uint32 *);
   void update_lcp(KeyReqStruct *req_struct, const Uint32 *src, Uint32 len);
