@@ -635,3 +635,54 @@ EOF
 --echo ===== LIMIT before ORDER BY =====
 --error 1
 --exec $PARSE_TEST 'select col1, max(b) from tbl group by col1 limit 5 order by col1;'
+
+# ===== Additional ORDER BY EXPLAIN tests =====
+
+--echo ===== ORDER BY DESC =====
+--exec $PARSE_TEST 'select col1, max(b) from tbl group by col1 order by col1 DESC;'
+
+--echo ===== ORDER BY subset of GROUP BY =====
+--exec $PARSE_TEST 'select col1, col2, max(b) from tbl group by col1, col2 order by col1;'
+
+--echo ===== ORDER BY different order than GROUP BY =====
+--exec $PARSE_TEST 'select col1, col2, max(b) from tbl group by col1, col2 order by col2, col1;'
+
+--echo ===== ORDER BY last GROUP BY column only =====
+--exec $PARSE_TEST 'select col1, col2, col3, max(b) from tbl group by col1, col2, col3 order by col3 DESC;'
+
+--echo ===== ORDER BY with WHERE =====
+--exec $PARSE_TEST 'select col1, sum(b) from tbl where col1 > 5 group by col1 order by col1 DESC;'
+
+--echo ===== ORDER BY with multiple aggregate types =====
+--write_file $QUERY_FILE
+select col1, sum(b), min(b), max(b), count(b), avg(b)
+from tbl
+group by col1
+order by col1;
+EOF
+--exec $PARSE_TEST_QUERY_FILE
+--remove_file $QUERY_FILE
+
+--echo ===== ORDER BY with count(*) =====
+--exec $PARSE_TEST 'select col1, count(*) from tbl group by col1 order by col1 DESC;'
+
+--echo ===== ORDER BY + LIMIT 1 =====
+--exec $PARSE_TEST 'select col1, max(b) from tbl group by col1 order by col1 limit 1;'
+
+--echo ===== ORDER BY DESC + LIMIT =====
+--exec $PARSE_TEST 'select col1, col2, max(b) from tbl group by col1, col2 order by col1 DESC, col2 ASC limit 3;'
+
+--echo ===== ORDER BY + LIMIT 0 =====
+--exec $PARSE_TEST 'select col1, max(b) from tbl group by col1 order by col1 limit 0;'
+
+--echo ===== ORDER BY column not in GROUP BY =====
+--error 1
+--exec $PARSE_TEST 'select col1, max(b) from tbl group by col1 order by col2;'
+
+--echo ===== ORDER BY without GROUP BY =====
+--error 1
+--exec $PARSE_TEST 'select max(b) from tbl order by col1;'
+
+--echo ===== ORDER BY expression =====
+--error 1
+--exec $PARSE_TEST 'select col1, max(b) from tbl group by col1 order by col1 + 1;'
