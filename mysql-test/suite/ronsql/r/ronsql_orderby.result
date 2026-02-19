@@ -1,0 +1,513 @@
+SET time_zone = "+00:00";
+Warnings:
+Warning	1681	UNSIGNED for decimal and floating point data types is deprecated and support for it will be removed in a future release.
+Row count:
+SELECT count(*) FROM orderby_test;
+count(*)
+32
+
+
+
+ORDER BY c_tinyint ASC:
+== Query ==
+SELECT c_tinyint, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_tinyint
+ORDER BY c_tinyint;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
+ORDER BY c_tinyunsigned ASC:
+== Query ==
+SELECT c_tinyunsigned, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_tinyunsigned
+ORDER BY c_tinyunsigned;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
+ORDER BY c_smallint ASC:
+== Query ==
+SELECT c_smallint, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_smallint
+ORDER BY c_smallint;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
+ORDER BY c_smallunsigned ASC:
+== Query ==
+SELECT c_smallunsigned, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_smallunsigned
+ORDER BY c_smallunsigned;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
+ORDER BY c_mediumint ASC:
+== Query ==
+SELECT c_mediumint, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_mediumint
+ORDER BY c_mediumint;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
+ORDER BY c_mediumunsigned ASC:
+== Query ==
+SELECT c_mediumunsigned, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_mediumunsigned
+ORDER BY c_mediumunsigned;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
+ORDER BY c_int ASC:
+== Query ==
+SELECT c_int, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_int
+ORDER BY c_int;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
+ORDER BY c_unsigned ASC:
+== Query ==
+SELECT c_unsigned, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_unsigned
+ORDER BY c_unsigned;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
+ORDER BY c_bigint ASC:
+== Query ==
+SELECT c_bigint, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_bigint
+ORDER BY c_bigint;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
+ORDER BY c_bigunsigned ASC:
+== Query ==
+SELECT c_bigunsigned, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_bigunsigned
+ORDER BY c_bigunsigned;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
+ORDER BY c_float ASC:
+== Query ==
+SELECT c_float, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_float
+ORDER BY c_float;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
+ORDER BY c_double ASC:
+== Query ==
+SELECT c_double, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_double
+ORDER BY c_double;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
+ORDER BY c_decimal ASC:
+== Query ==
+SELECT c_decimal, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_decimal
+ORDER BY c_decimal;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
+ORDER BY c_decunsigned ASC:
+== Query ==
+SELECT c_decunsigned, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_decunsigned
+ORDER BY c_decunsigned;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
+ORDER BY c_char ASC:
+== Query ==
+SELECT c_char, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_char
+ORDER BY c_char;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
+ORDER BY c_varchar ASC:
+== Query ==
+SELECT c_varchar, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_varchar
+ORDER BY c_varchar;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
+ORDER BY c_longvarchar ASC:
+== Query ==
+SELECT c_longvarchar, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_longvarchar
+ORDER BY c_longvarchar;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
+ORDER BY c_date ASC:
+== Query ==
+SELECT c_date, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_date
+ORDER BY c_date;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
+ORDER BY c_datetime ASC:
+== Query ==
+SELECT c_datetime, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_datetime
+ORDER BY c_datetime;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
+ORDER BY c_timestamp ASC:
+== Query ==
+SELECT c_timestamp, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_timestamp
+ORDER BY c_timestamp;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
+
+
+
+ORDER BY c_int DESC:
+== Query ==
+SELECT c_int, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_int
+ORDER BY c_int DESC;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
+ORDER BY c_bigunsigned DESC:
+== Query ==
+SELECT c_bigunsigned, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_bigunsigned
+ORDER BY c_bigunsigned DESC;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
+ORDER BY c_double DESC:
+== Query ==
+SELECT c_double, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_double
+ORDER BY c_double DESC;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
+ORDER BY c_decimal DESC:
+== Query ==
+SELECT c_decimal, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_decimal
+ORDER BY c_decimal DESC;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
+ORDER BY c_varchar DESC:
+== Query ==
+SELECT c_varchar, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_varchar
+ORDER BY c_varchar DESC;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
+ORDER BY c_date DESC:
+== Query ==
+SELECT c_date, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_date
+ORDER BY c_date DESC;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
+
+
+
+ORDER BY c_int ASC, c_varchar ASC:
+== Query ==
+SELECT c_int, c_varchar, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_int, c_varchar
+ORDER BY c_int ASC, c_varchar ASC;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
+ORDER BY c_date DESC, c_decimal ASC:
+== Query ==
+SELECT c_date, c_decimal, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_date, c_decimal
+ORDER BY c_date DESC, c_decimal ASC;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
+ORDER BY c_varchar ASC, c_tinyunsigned DESC:
+== Query ==
+SELECT c_varchar, c_tinyunsigned, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_varchar, c_tinyunsigned
+ORDER BY c_varchar ASC, c_tinyunsigned DESC;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
+ORDER BY c_char ASC, c_double DESC, c_date ASC:
+== Query ==
+SELECT c_char, c_double, c_date, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_char, c_double, c_date
+ORDER BY c_char ASC, c_double DESC, c_date ASC;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
+
+
+
+ORDER BY c_int ASC LIMIT 3:
+== Query ==
+SELECT c_int, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_int
+ORDER BY c_int
+LIMIT 3;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+ORDER BY c_varchar DESC LIMIT 5:
+== Query ==
+SELECT c_varchar, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_varchar
+ORDER BY c_varchar DESC
+LIMIT 5;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+ORDER BY c_date ASC, c_int DESC LIMIT 4:
+== Query ==
+SELECT c_date, c_int, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_date, c_int
+ORDER BY c_date ASC, c_int DESC
+LIMIT 4;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+
+
+
+ORDER BY unsupported VARBINARY:
+c_varbinary	count(*)
+NULL	4
+Error handling: RPE
+ronsql_cli caught exception: RonSQL feature not implemented: Print GROUP BY column of type Varbinary
+
+ORDER BY unsupported TIME:
+c_time	count(*)
+NULL	4
+Error handling: RPE
+ronsql_cli caught exception: RonSQL feature not implemented: Print GROUP BY column of type Time2
+
+ORDER BY unsupported YEAR:
+c_year	count(*)
+NULL	4
+Error handling: RPE
+ronsql_cli caught exception: RonSQL feature not implemented: Print GROUP BY column of type Year
+
+ORDER BY unsupported BIT:
+c_bit	count(*)
+NULL	4
+Error handling: RPE
+ronsql_cli caught exception: RonSQL feature not implemented: Print GROUP BY column of type Bit
+
+Cleanup
+DROP TABLE orderby_test;
