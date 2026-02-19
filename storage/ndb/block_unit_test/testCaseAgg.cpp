@@ -220,7 +220,7 @@ buildAggProgram_CaseSum(Uint32 colBAttrId)
   /* emb[8]: EXIT_OK */
   prog[pos++] = Interpreter::ExitOK();
 
-  assert(pos == emb_start + EMB_LEN);
+  require(pos == emb_start + EMB_LEN);
 
   /*
    * Aggregation instructions after embedded block.
