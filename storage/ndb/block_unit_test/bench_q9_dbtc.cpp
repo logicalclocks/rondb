@@ -1093,11 +1093,18 @@ collectResults(SignalSender &ss,
                std::vector<AggResult> &allResults,
                Uint32 apiConnectPtr, Uint32 tcRef, Uint32 nodeId,
                Uint32 &nextReqCount,
+               Uint32 &minBatchGroupsOut,
+               Uint32 &maxBatchGroupsOut,
                Uint32 receiverIdBase [[maybe_unused]],
                Uint32 numRecvIds [[maybe_unused]])
 {
   V("Waiting for results...\n");
   nextReqCount = 0;
+  Uint32 batchGroups = 0;        /* groups received since last SCAN_TABCONF */
+  Uint32 batchTransIdAI = 0;     /* TRANSID_AI count since last SCAN_TABCONF */
+  Uint32 totalGroups = 0;
+  Uint32 minBatchGroups = UINT32_MAX;
+  Uint32 maxBatchGroups = 0;
 
   bool done = false;
   while (!done) {
@@ -1115,6 +1122,8 @@ collectResults(SignalSender &ss,
       if (parseTransIdAI(resp, result) != 0) return -1;
       V("  TRANSID_AI: n_gb_cols=%u n_agg=%u n_groups=%u\n",
         result.n_gb_cols, result.n_agg_results, result.n_groups);
+      batchGroups += result.n_groups;
+      batchTransIdAI++;
       allResults.push_back(std::move(result));
     }
     else if (gsn == GSN_SCAN_TABCONF) {
@@ -1122,7 +1131,14 @@ collectResults(SignalSender &ss,
       Uint32 ri = d[1];
       bool endOfData = (ri & ScanTabConf::EndOfData) != 0;
       Uint32 ops = ri & 0xFF;
-      V("  SCAN_TABCONF: ops=%u endOfData=%d\n", ops, (int)endOfData);
+      V("  SCAN_TABCONF: ops=%u endOfData=%d"
+        " batchGroups=%u batchTransIdAI=%u\n",
+        ops, (int)endOfData, batchGroups, batchTransIdAI);
+      totalGroups += batchGroups;
+      if (batchGroups < minBatchGroups) minBatchGroups = batchGroups;
+      if (batchGroups > maxBatchGroups) maxBatchGroups = batchGroups;
+      batchGroups = 0;
+      batchTransIdAI = 0;
 
       if (endOfData) {
         done = true;
@@ -1186,6 +1202,15 @@ collectResults(SignalSender &ss,
       V("  Ignoring GSN %d\n", gsn);
     }
   }
+
+  if (minBatchGroups == UINT32_MAX) minBatchGroups = 0;
+  minBatchGroupsOut = minBatchGroups;
+  maxBatchGroupsOut = maxBatchGroups;
+  V("  Batch stats: totalGroups=%u SCAN_NEXTREQs=%u"
+    " groupsPerBatch min=%u max=%u avg=%.1f\n",
+    totalGroups, nextReqCount,
+    minBatchGroups, maxBatchGroups,
+    nextReqCount > 0 ? (double)totalGroups / (nextReqCount + 1) : 0.0);
 
   return 0;
 }
@@ -1256,8 +1281,10 @@ runBenchmark(SignalSender &ss, Uint32 nodeId,
   /* Collect results */
   std::vector<AggResult> allResults;
   Uint32 nextReqCount = 0;
+  Uint32 minBatchGroups = 0, maxBatchGroups = 0;
   rc = collectResults(ss, allResults, apiConnectPtr, tcRef, nodeId,
-                      nextReqCount, receiverId, numReceivers);
+                      nextReqCount, minBatchGroups, maxBatchGroups,
+                      receiverId, numReceivers);
   if (rc != 0) {
     releaseTcConnect(ss, nodeId, apiConnectPtr, tcRef);
     return -1;
@@ -1362,6 +1389,10 @@ runBenchmark(SignalSender &ss, Uint32 nodeId,
          failures == 0 ? "PASS" : "FAIL");
   printf("  Groups: %u  TRANSID_AI: %zu  SCAN_NEXTREQ: %u\n",
          totalGroups, allResults.size(), nextReqCount);
+  printf("  Groups/batch: min=%u max=%u avg=%.1f\n",
+         minBatchGroups, maxBatchGroups,
+         nextReqCount > 0
+             ? (double)totalGroups / (nextReqCount + 1) : 0.0);
   printf("  Scan+Join: %8.2f ms\n", scanMs + resultMs);
   printf("  Release:   %8.2f ms\n", releaseMs);
   printf("  Total:     %8.2f ms\n", totalMs);

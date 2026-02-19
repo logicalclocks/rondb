@@ -1463,6 +1463,7 @@ void Dbspj::do_init(Request *requestP, const ScanFragReq *req,
   std::memset(requestP->m_lookup_node_data, 0,
               sizeof(requestP->m_lookup_node_data));
   requestP->m_aggNodes.clear();
+  requestP->m_lastHbrepTicks = getHighResTimer();
 #ifdef SPJ_TRACE_TIME
   requestP->m_cnt_batches = 0;
   requestP->m_sum_rows = 0;
@@ -2566,6 +2567,55 @@ void Dbspj::batchComplete(Signal *signal, Ptr<Request> requestPtr) {
           return;  // More rows to be fetched -> no sendConf() yet
         }
       }
+    }
+
+    /**
+     * For JoinAgg queries, aggregate rows accumulate in DBLQH's aggregation
+     * engine — no rows are sent to the API per batch unless eviction occurs.
+     * When m_rows == 0 (no evicted groups sent to API), skip the
+     * SCAN_FRAGCONF → DBTC → API → SCAN_NEXTREQ round-trip and fetch the
+     * next batch directly from DBLQH.
+     * When m_rows > 0 (eviction happened), fall through to sendConf so the
+     * API receives SCAN_TABCONF for the evicted group rows.
+     */
+    if (!is_complete && requestPtr.p->m_errCode == 0 &&
+        !requestPtr.p->m_aggNodes.isclear() &&
+        requestPtr.p->m_rows == 0) {
+      jam();
+      cleanupBatch(requestPtr, /*done=*/false);
+
+      /**
+       * Send heartbeat to DBTC to prevent scan fragment timeout.
+       * DBTC's timer is only reset by SCAN_FRAGCONF or SCAN_HBREP.
+       * Since we bypass SCAN_FRAGCONF, send SCAN_HBREP periodically.
+       */
+      {
+        const NDB_TICKS now = getHighResTimer();
+        if (NdbTick_Elapsed(requestPtr.p->m_lastHbrepTicks, now).milliSec()
+                >= 20) {
+          jam();
+          signal->theData[0] = requestPtr.p->m_senderData;
+          signal->theData[1] = requestPtr.p->m_transId[0];
+          signal->theData[2] = requestPtr.p->m_transId[1];
+          sendSignal(requestPtr.p->m_senderRef, GSN_SCAN_HBREP, signal, 3,
+                     JBB);
+          requestPtr.p->m_lastHbrepTicks = now;
+        }
+      }
+
+      Ptr<TreeNode> treeNodePtr;
+      Local_TreeNodeCursor_list list(m_treenode_pool,
+                                     requestPtr.p->m_cursor_nodes);
+      for (list.first(treeNodePtr); !treeNodePtr.isNull();
+           list.next(treeNodePtr)) {
+        if (treeNodePtr.p->m_state == TreeNode::TN_ACTIVE) {
+          jam();
+          (this->*(treeNodePtr.p->m_info->m_execSCAN_NEXTREQ))(
+              signal, requestPtr, treeNodePtr);
+        }
+      }
+      ndbassert(requestPtr.p->m_outstanding > 0);
+      return;
     }
     sendConf(signal, requestPtr, is_complete);
   } else if (is_complete && need_complete_phase) {
@@ -5240,7 +5290,17 @@ void Dbspj::lookup_execLQHKEYCONF(Signal *signal, Ptr<Request> requestPtr,
                                   Ptr<TreeNode> treeNodePtr) {
   ndbrequire(!(requestPtr.p->isLookup() && treeNodePtr.p->isLeaf()));
 
-  if (treeNodePtr.p->m_bits & TreeNode::T_USER_PROJECTION) {
+  if (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) {
+    /**
+     * JoinAgg leaf: lookup results go to the aggregation engine, not the API.
+     * Only evicted groups are sent to the API. The eviction count is
+     * carried in LQHKEYCONF::readLen (set by handleJoinAggRow).
+     */
+    jam();
+    const LqhKeyConf *conf =
+        reinterpret_cast<const LqhKeyConf *>(signal->getDataPtr());
+    requestPtr.p->m_rows += conf->readLen;
+  } else if (treeNodePtr.p->m_bits & TreeNode::T_USER_PROJECTION) {
     jam();
     requestPtr.p->m_rows++;
   }
@@ -8041,7 +8101,10 @@ void Dbspj::scanFrag_execSCAN_FRAGCONF(Signal *signal, Ptr<Request> requestPtr,
     }
   }
 
-  requestPtr.p->m_rows += rows;
+  if (requestPtr.p->m_aggNodes.isclear() ||
+      (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF)) {
+    requestPtr.p->m_rows += rows;
+  }
   fragPtr.p->m_totalRows += rows;
   data.m_totalRows += rows;
   data.m_totalBytes += bytes;

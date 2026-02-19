@@ -1260,6 +1260,7 @@ class Dbspj : public SimulatedBlock {
     Uint16 m_lookup_node_data[ABS_MAX_NDB_NODES];
     Uint32 m_aggStateKeys[ABS_MAX_NDB_NODES];
     NdbNodeBitmask m_aggNodes;
+    NDB_TICKS m_lastHbrepTicks;  // Last time SCAN_HBREP was sent during JoinAgg bypass
     ArenaHead m_arena;
 
 #ifdef SPJ_TRACE_TIME
