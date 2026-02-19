@@ -820,7 +820,10 @@ sendScanTabReq(SignalSender &ss, Uint32 nodeId,
   aggSection.insert(aggSection.end(), aggProgram.begin(), aggProgram.end());
 
   ssig.header.m_noOfSections = 3;
-  ssig.ptr[0].p = &receiverId;
+  /* Section 0: single dummy receiver ID (DBTC ignores section 0 for JoinAgg;
+   * aggregate receiver ID comes from section 2). */
+  Uint32 dummyReceiverId = 0;
+  ssig.ptr[0].p = &dummyReceiverId;
   ssig.ptr[0].sz = 1;
   ssig.ptr[1].p = queryTree.data();
   ssig.ptr[1].sz = (Uint32)queryTree.size();

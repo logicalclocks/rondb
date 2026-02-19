@@ -2002,7 +2002,6 @@ class Dbtc : public SimulatedBlock {
     // Join aggregation state (Phase 7)
     Uint32 m_aggProgramPtrI;
     Uint32 m_aggKeysSectionPtrI;
-    Uint32 m_aggReceiverIdsPtrI;
     Uint32 m_aggReceiverId;  // API-side NdbReceiver ID for agg results
     NdbNodeBitmask m_aggNodes;
     Uint32 m_aggNodesOutstanding;

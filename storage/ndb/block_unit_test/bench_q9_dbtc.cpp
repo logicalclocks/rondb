@@ -951,11 +951,9 @@ sendScanTabReq(SignalSender &ss, Uint32 nodeId,
 
   ssig.set(ss, 0, refToBlock(tcRef), GSN_SCAN_TABREQ, 16);
 
-  /* Section 0: receiver IDs */
-  std::vector<Uint32> receiverIds(numRecvIds);
-  for (Uint32 i = 0; i < numRecvIds; i++) {
-    receiverIds[i] = receiverIdBase + i;
-  }
+  /* Section 0: single dummy receiver ID (DBTC ignores section 0 for JoinAgg;
+   * aggregate receiver ID comes from section 2). */
+  Uint32 dummyReceiverId = 0;
 
   /* Build combined agg section: [boundsLen=0, receiverId, aggProgram...] */
   std::vector<Uint32> aggSection;
@@ -964,8 +962,8 @@ sendScanTabReq(SignalSender &ss, Uint32 nodeId,
   aggSection.insert(aggSection.end(), aggProgram.begin(), aggProgram.end());
 
   ssig.header.m_noOfSections = 3;
-  ssig.ptr[0].p = receiverIds.data();
-  ssig.ptr[0].sz = numRecvIds;
+  ssig.ptr[0].p = &dummyReceiverId;
+  ssig.ptr[0].sz = 1;
   ssig.ptr[1].p = queryTree.data();
   ssig.ptr[1].sz = (Uint32)queryTree.size();
   ssig.ptr[2].p = aggSection.data();

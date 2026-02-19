@@ -15694,9 +15694,10 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
    * even after delivering a batch to the NDB API. We will handle this
    * below after acquiring a scan record.
    *
-   * For JoinAgg queries, scanParallelism is an explicit field and the
-   * receiver IDs in section 0 are for hash-partitioned aggregation result
-   * routing (independent of scan parallelism).
+   * For JoinAgg queries, scanParallelism is an explicit field
+   * (independent of the number of receiver IDs in section 0).
+   * Section 0 receiver IDs are not used for aggregation routing;
+   * the aggregate receiver ID comes from section 2.
    */
   Uint32 numReceiverIds = api_op_ptr.sz;
   Uint32 scanParallel;
@@ -16059,13 +16060,7 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
     goto SCAN_TAB_error;
   }
 
-  if (ScanTabReq::getJoinAggFlag(ri)) {
-    jam();
-    scanptr.p->m_aggReceiverIdsPtrI =
-        handle.m_ptr[ScanTabReq::ReceiverIdSectionNum].i;
-  } else {
-    releaseSection(handle.m_ptr[ScanTabReq::ReceiverIdSectionNum].i);
-  }
+  releaseSection(handle.m_ptr[ScanTabReq::ReceiverIdSectionNum].i);
   if (likely(isLongReq)) {
     jamDebug();
     /* We keep the AttrInfo and KeyInfo sections */
@@ -16362,7 +16357,6 @@ Uint32 Dbtc::initScanrec(ScanRecordPtr scanptr, const ScanTabReq *scanTabReq,
   scanptr.p->m_start_ticks = getHighResTimer();
   scanptr.p->m_aggProgramPtrI = RNIL;
   scanptr.p->m_aggKeysSectionPtrI = RNIL;
-  scanptr.p->m_aggReceiverIdsPtrI = RNIL;
   scanptr.p->m_aggReceiverId = RNIL;
   scanptr.p->m_joinAgg = false;
   scanptr.p->m_aggNodes.clear();
@@ -17032,10 +17026,6 @@ void Dbtc::releaseScanResources(Signal *signal, ScanRecordPtr scanPtr,
   if (scanPtr.p->m_aggKeysSectionPtrI != RNIL) {
     releaseSection(scanPtr.p->m_aggKeysSectionPtrI);
     scanPtr.p->m_aggKeysSectionPtrI = RNIL;
-  }
-  if (scanPtr.p->m_aggReceiverIdsPtrI != RNIL) {
-    releaseSection(scanPtr.p->m_aggReceiverIdsPtrI);
-    scanPtr.p->m_aggReceiverIdsPtrI = RNIL;
   }
   if (scanPtr.p->m_joinAgg && !scanPtr.p->m_aggNodes.isclear()) {
     jam();
@@ -28446,9 +28436,7 @@ void Dbtc::sendJoinAggSetupReqs(Signal *signal, ScanRecordPtr scanptr,
     req->expectedOpCount = 0;
     req->concurrencyStrategy = JoinAggSetupReq::STRATEGY_MUTEX_FREE;
     req->resultRef = apiConnectptr.p->ndbapiBlockref;
-    req->resultData = (scanptr.p->m_aggReceiverId != RNIL)
-                          ? scanptr.p->m_aggReceiverId
-                          : apiConnectptr.p->ndbapiConnect;
+    req->resultData = scanptr.p->m_aggReceiverId;
     req->routeRef = reference();
 
     SectionHandle handle(this);
@@ -28457,31 +28445,19 @@ void Dbtc::sendJoinAggSetupReqs(Signal *signal, ScanRecordPtr scanptr,
     getSection(handle.m_ptr[JoinAggSetupReq::AggProgramSectionNum], aggPtrI);
 
     Uint32 rcvPtrI = RNIL;
-    if (scanptr.p->m_aggReceiverId != RNIL) {
-      /* NDB API path: single aggregate receiver ID from section 2.
-       * Section 0 has worker receiver IDs (for SPJ scan results),
-       * not aggregate receiver IDs. */
-      jam();
-      Uint32 rcvId = scanptr.p->m_aggReceiverId;
-      ndbrequire(appendToSection(rcvPtrI, &rcvId, 1));
-    } else {
-      /* Block unit test path: receiver IDs in section 0 */
-      jam();
-      ndbrequire(scanptr.p->m_aggReceiverIdsPtrI != RNIL);
-      ndbrequire(dupSection(rcvPtrI, scanptr.p->m_aggReceiverIdsPtrI));
-    }
+    ndbrequire(scanptr.p->m_aggReceiverId != RNIL);
+    Uint32 rcvId = scanptr.p->m_aggReceiverId;
+    ndbrequire(appendToSection(rcvPtrI, &rcvId, 1));
     getSection(handle.m_ptr[JoinAggSetupReq::ReceiverIdsSectionNum], rcvPtrI);
     handle.m_cnt = 2;
 
 #ifdef DEBUG_JOIN_AGG_TRACE
     DEB_JOIN_AGG(("DBTC sendJoinAggSetupReq → node %u: "
                    "resultRef=0x%x resultData=0x%x "
-                   "aggProgLen=%u numReceiverIds=%u strategy=%s",
+                   "aggProgLen=%u aggReceiverId=0x%x",
                    nodeId, req->resultRef, req->resultData,
                    handle.m_ptr[JoinAggSetupReq::AggProgramSectionNum].sz,
-                   handle.m_ptr[JoinAggSetupReq::ReceiverIdsSectionNum].sz,
-                   (scanptr.p->m_aggReceiverId != RNIL)
-                       ? "API(single rcv)" : "BlockTest(section0)"));
+                   scanptr.p->m_aggReceiverId));
 #endif
     Uint32 ref = numberToRef(DBLQH, nodeId);
     sendSignal(ref, GSN_JOIN_AGG_SETUP_REQ, signal,
