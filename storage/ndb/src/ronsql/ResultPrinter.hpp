@@ -26,6 +26,7 @@
 #define STORAGE_NDB_SRC_RONSQL_RESULTPRINTER_HPP 1
 
 #include "NdbAggregator.hpp"
+#include <NdbSqlUtil.hpp>
 
 #include "ArenaMalloc.hpp"
 #include "DynamicArray.hpp"
@@ -109,11 +110,36 @@ private:
   // Program state
   NdbAggregator::Column* m_regs_g;
   NdbAggregator::Result* m_regs_a;
+  Uint32 m_print_start_idx;
+  Uint32 m_num_groupby_cols;
+  Uint32 m_num_aggregates;
 
+  // ORDER BY support
+  struct OrderbySpec {
+    Uint32 groupby_idx;    // index into m_regs_g
+    bool ascending;
+    CHARSET_INFO* charset; // for string types, NULL otherwise
+  };
+  struct StoredRow {
+    NdbAggregator::Column* cols;    // array of m_num_groupby_cols Column objects
+    NdbAggregator::Result* results; // array of m_num_aggregates Result objects
+  };
+  DynamicArray<OrderbySpec> m_orderby_specs;
+  bool m_has_orderby;
+
+  void validate_orderby_columns();
   void compile();
   void optimize();
   void print_record(NdbAggregator::ResultRecord& record,
                     std::ostream& out);
+  void run_program(Uint32 from, Uint32 to,
+                   NdbAggregator::ResultRecord* record,
+                   std::ostream* out);
+  StoredRow store_record(NdbAggregator::ResultRecord& record);
+  void print_stored_record(StoredRow& row, std::ostream& out);
+  int compare_rows(StoredRow& a, StoredRow& b);
+  void print_result_ordered(NdbAggregator* aggregator,
+                            std::basic_ostream<char>* out_stream);
   void print_float_or_double(std::ostream& out, double value);
 public:
   ResultPrinter(ArenaMalloc* amalloc,

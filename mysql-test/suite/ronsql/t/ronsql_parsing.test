@@ -512,7 +512,7 @@ EOF
 --exec $PARSE_TEST 'select col1, `col #2`, max(col3) from tbl group by col1, `col #2` order by col1, `col #2`;'
 
 --echo ===== order by ASC/DESC =====
---exec $PARSE_TEST 'select col1, max(b) from tbl group by col1 order by col1, col2 ASC, col3 DESC, col4;'
+--exec $PARSE_TEST 'select col1, col2, col3, col4, max(b) from tbl group by col1, col2, col3, col4 order by col1, col2 ASC, col3 DESC, col4;'
 
 --echo ===== Unimplemented keyword used as quoted identifier =====
 --exec $PARSE_TEST 'select `zone`, max(b) from tbl group by `zone`;'

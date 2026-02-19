@@ -22,6 +22,7 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
+#include <algorithm>
 #include <iomanip>
 #include "m_string.h"
 #include "ResultPrinter.hpp"
@@ -96,7 +97,9 @@ ResultPrinter::ResultPrinter(ArenaMalloc* amalloc,
   m_program(amalloc),
   m_groupby_cols(amalloc),
   m_outputs(amalloc),
-  m_col_idx_groupby_map(amalloc)
+  m_col_idx_groupby_map(amalloc),
+  m_orderby_specs(amalloc),
+  m_has_orderby(query->orderby_columns != NULL)
 {
   assert(amalloc != NULL);
   assert(query != NULL);
@@ -117,6 +120,52 @@ ResultPrinter::ResultPrinter(ArenaMalloc* amalloc,
   assert(err != NULL);
   compile();
   optimize();
+}
+
+void
+ResultPrinter::validate_orderby_columns()
+{
+  std::basic_ostream<char>& err = *m_err;
+  DynamicArray<LexCString>& column_names = *m_column_names;
+  struct OrderbyColumns* ob = m_query->orderby_columns;
+  while (ob != NULL)
+  {
+    Uint32 col_idx = ob->col_idx;
+    bool found = false;
+    for (Uint32 i = 0; i < m_groupby_cols.size(); i++)
+    {
+      if (m_groupby_cols[i] == col_idx)
+      {
+        // Ensure m_col_idx_groupby_map covers this col_idx
+        while (m_col_idx_groupby_map.size() < col_idx + 1)
+        {
+          m_col_idx_groupby_map.push(0);
+        }
+        m_col_idx_groupby_map[col_idx] = i;
+        CHARSET_INFO* charset = NULL;
+        if (m_column_map != NULL)
+        {
+          charset = m_column_map[col_idx]->getCharset();
+        }
+        OrderbySpec spec;
+        spec.groupby_idx = i;
+        spec.ascending = ob->ascending;
+        spec.charset = charset;
+        m_orderby_specs.push(spec);
+        found = true;
+        break;
+      }
+    }
+    if (!found)
+    {
+      assert(m_column_names->size() > col_idx);
+      err << "Syntax error: ORDER BY refers to column "
+          << quoted_identifier(column_names[col_idx])
+          << " which is not in the GROUP BY clause." << endl;
+      throw RonSQLPermanentError("ORDER BY column not in GROUP BY clause.");
+    }
+    ob = ob->next;
+  }
 }
 
 void
@@ -189,6 +238,9 @@ ResultPrinter::compile()
       o = o->next;
     }
   }
+  m_num_groupby_cols = m_groupby_cols.size();
+  m_num_aggregates = number_of_aggregates;
+  validate_orderby_columns();
   // Allocate registers. Even if some of them won't be used in an optimized
   // program, the memory waste is minimal.
   m_regs_g = m_amalloc->alloc_exc<NdbAggregator::Column>(m_groupby_cols.size());
@@ -220,6 +272,7 @@ ResultPrinter::compile()
     cmd.type = Cmd::Type::END_OF_AGGREGATES;
     m_program.push(cmd);
   }
+  m_print_start_idx = m_program.size();
   switch (m_output_format)
   {
   case RonSQLExecParams::OutputFormat::TEXT:
@@ -375,12 +428,488 @@ ResultPrinter::optimize()
   // todo
 }
 
+DEFINE_FORMATTER(d2, uint, {
+  if (value < 10) os << '0';
+  os << value;
+})
+
+// Run a range of program commands. When executing store commands
+// (from..m_print_start_idx), record must be non-NULL. When executing
+// print commands (m_print_start_idx..end), out must be non-NULL.
+void
+ResultPrinter::run_program(Uint32 from, Uint32 to,
+                           NdbAggregator::ResultRecord* record,
+                           std::ostream*)
+{
+  for (Uint32 cmd_index = from; cmd_index < to; cmd_index++)
+  {
+    Cmd& cmd = m_program[cmd_index];
+    switch (cmd.type)
+    {
+    case Cmd::Type::STORE_GROUP_BY_COLUMN:
+      {
+        assert(record != NULL);
+        NdbAggregator::Column column = record->FetchGroupbyColumn();
+        if (column.end())
+        {
+          bug("Got record with fewer GROUP BY columns than expected.");
+        }
+        m_regs_g[cmd.store_group_by_column.reg_g] = column;
+      }
+      break;
+    case Cmd::Type::END_OF_GROUP_BY_COLUMNS:
+      {
+        assert(record != NULL);
+        NdbAggregator::Column column = record->FetchGroupbyColumn();
+        if (!column.end())
+        {
+          bug("Got record with more GROUP BY columns than expected.");
+        }
+      }
+      break;
+    case Cmd::Type::STORE_AGGREGATE:
+      {
+        assert(record != NULL);
+        NdbAggregator::Result result = record->FetchAggregationResult();
+        if (result.end())
+        {
+          bug("Got record with fewer aggregates than expected.");
+        }
+        m_regs_a[cmd.store_aggregate.reg_a] = result;
+      }
+      break;
+    case Cmd::Type::END_OF_AGGREGATES:
+      {
+        assert(record != NULL);
+        NdbAggregator::Result result = record->FetchAggregationResult();
+        if (!result.end())
+        {
+          bug("Got record with more aggregates than expected.");
+        }
+      }
+      break;
+    case Cmd::Type::PRINT_GROUP_BY_COLUMN:
+    case Cmd::Type::PRINT_AGGREGATE:
+    case Cmd::Type::PRINT_AVG:
+    case Cmd::Type::PRINT_STR:
+    case Cmd::Type::PRINT_STR_JSON:
+      // Delegate to print_record logic via the full program path.
+      // These are handled by the existing print_record switch cases,
+      // but here we just forward to the appropriate printing code.
+      // For simplicity, re-use the inline print_record logic by
+      // handling these in print_stored_record instead.
+      assert(false && "Print commands should not be run via run_program");
+      break;
+    default:
+      abort();
+    }
+  }
+}
+
+ResultPrinter::StoredRow
+ResultPrinter::store_record(NdbAggregator::ResultRecord& record)
+{
+  // Run store phase to populate m_regs_g and m_regs_a
+  run_program(0, m_print_start_idx, &record, NULL);
+  // Copy registers into arena-allocated arrays
+  StoredRow row;
+  row.cols = m_amalloc->alloc_exc<NdbAggregator::Column>(m_num_groupby_cols);
+  row.results = m_amalloc->alloc_exc<NdbAggregator::Result>(m_num_aggregates);
+  memcpy(row.cols, m_regs_g,
+         m_num_groupby_cols * sizeof(NdbAggregator::Column));
+  memcpy(row.results, m_regs_a,
+         m_num_aggregates * sizeof(NdbAggregator::Result));
+  return row;
+}
+
+void
+ResultPrinter::print_stored_record(StoredRow& row, std::ostream& out)
+{
+  // Restore registers from stored row
+  memcpy(m_regs_g, row.cols,
+         m_num_groupby_cols * sizeof(NdbAggregator::Column));
+  memcpy(m_regs_a, row.results,
+         m_num_aggregates * sizeof(NdbAggregator::Result));
+  // Run print phase of the program
+  for (Uint32 cmd_index = m_print_start_idx;
+       cmd_index < m_program.size(); cmd_index++)
+  {
+    Cmd& cmd = m_program[cmd_index];
+    switch (cmd.type)
+    {
+    case Cmd::Type::PRINT_GROUP_BY_COLUMN:
+      {
+        NdbAggregator::Column column = m_regs_g[cmd.print_group_by_column.reg_g];
+        if(column.is_null())
+        {
+          out << m_null_representation;
+          break;
+        }
+        switch (column.type())
+        {
+        case NdbDictionary::Column::Type::Undefined:
+          feature_not_implemented("Print GROUP BY column of type Undefined (NULL)");
+        case NdbDictionary::Column::Type::Tinyint:
+          out << Int32(column.data_int8());
+          break;
+        case NdbDictionary::Column::Type::Tinyunsigned:
+          out << Uint32(column.data_uint8());
+          break;
+        case NdbDictionary::Column::Type::Smallint:
+          out << column.data_int16();
+          break;
+        case NdbDictionary::Column::Type::Smallunsigned:
+          out << column.data_uint16();
+          break;
+        case NdbDictionary::Column::Type::Mediumint:
+          out << column.data_medium();
+          break;
+        case NdbDictionary::Column::Type::Mediumunsigned:
+          out << column.data_umedium();
+          break;
+        case NdbDictionary::Column::Type::Int:
+          out << column.data_int32();
+          break;
+        case NdbDictionary::Column::Type::Unsigned:
+          out << column.data_uint32();
+          break;
+        case NdbDictionary::Column::Type::Bigint:
+          out << column.data_int64();
+          break;
+        case NdbDictionary::Column::Type::Bigunsigned:
+          out << column.data_uint64();
+          break;
+        case NdbDictionary::Column::Type::Float:
+          print_float_or_double(out, column.data_float());
+          break;
+        case NdbDictionary::Column::Type::Double:
+          print_float_or_double(out, column.data_double());
+          break;
+        case NdbDictionary::Column::Type::Olddecimal:
+          feature_not_implemented("Print GROUP BY column of type Olddecimal");
+        case NdbDictionary::Column::Type::Olddecimalunsigned:
+          feature_not_implemented("Print GROUP BY column of type Olddecimalunsigned");
+        case NdbDictionary::Column::Type::Decimal:
+          [[fallthrough]];
+        case NdbDictionary::Column::Type::Decimalunsigned:
+          {
+            int precision = cmd.print_group_by_column.precision;
+            int scale = cmd.print_group_by_column.scale;
+            constexpr int DECIMAL_MAX_STR_LEN_IN_BYTES = 68;
+            char decStr[DECIMAL_MAX_STR_LEN_IN_BYTES];
+            decimal_bin2str((const void*)column.data(),
+                            column.byte_size(),
+                            precision,
+                            scale,
+                            decStr,
+                            DECIMAL_MAX_STR_LEN_IN_BYTES);
+            out << decStr;
+            break;
+          }
+        case NdbDictionary::Column::Type::Char:
+          {
+            CHARSET_INFO* charset = cmd.print_group_by_column.charset;
+            require_sch(charset != nullptr, "Could not find charset for CHAR column");
+            LexString content = LexString{ column.data(), column.byte_size() };
+            if (m_json_output) {
+              out << '"';
+              print_string(out, content, charset, true, m_utf8_output, true);
+              out << '"';
+            }
+            else if (m_tsv_output) {
+              print_string(out, content, charset, false, true, true);
+            }
+            else {
+              abort();
+            }
+            break;
+          }
+        case NdbDictionary::Column::Type::Varchar:
+        case NdbDictionary::Column::Type::Longvarchar:
+          {
+            CHARSET_INFO* charset = cmd.print_group_by_column.charset;
+            require_sch(charset != nullptr, "Could not find charset for VARCHAR column");
+            LexString content;
+            if (column.type() == NdbDictionary::Column::Type::Varchar) {
+              content = LexString{ &column.data()[1],
+                                   (size_t)(unsigned char)column.data()[0] };
+            } else {
+              content = LexString{ &column.data()[2],
+                                   (size_t)(unsigned char)column.data()[0] |
+                                   (((size_t)(unsigned char)column.data()[1]) << 8) };
+            }
+            out << m_quote;
+            print_string(out,
+                         content,
+                         charset,
+                         m_json_output,
+                         m_utf8_output || m_tsv_output,
+                         false);
+            out << m_quote;
+            break;
+          }
+        case NdbDictionary::Column::Type::Binary:
+          feature_not_implemented("Print GROUP BY column of type Binary");
+        case NdbDictionary::Column::Type::Varbinary:
+          feature_not_implemented("Print GROUP BY column of type Varbinary");
+        case NdbDictionary::Column::Type::Longvarbinary:
+          feature_not_implemented("Print GROUP BY column of type Longvarbinary");
+        case NdbDictionary::Column::Type::Datetime:
+          feature_not_implemented("Print GROUP BY column of type Datetime");
+        case NdbDictionary::Column::Type::Date:
+          {
+            Uint32 date = column.data_uint32();
+            Uint32 year = date >> 9;
+            Uint32 month = (date >> 5) & 0xf;
+            Uint32 day = date & 0x1f;
+            out << m_quote << year << "-" << d2(month) << "-" << d2(day) << m_quote;
+            break;
+          }
+        case NdbDictionary::Column::Type::Blob:
+          feature_not_implemented("Print GROUP BY column of type Blob");
+        case NdbDictionary::Column::Type::Text:
+          feature_not_implemented("Print GROUP BY column of type Text");
+        case NdbDictionary::Column::Type::Bit:
+          feature_not_implemented("Print GROUP BY column of type Bit");
+        case NdbDictionary::Column::Type::Time:
+          feature_not_implemented("Print GROUP BY column of type Time");
+        case NdbDictionary::Column::Type::Year:
+          feature_not_implemented("Print GROUP BY column of type Year");
+        case NdbDictionary::Column::Type::Timestamp:
+          feature_not_implemented("Print GROUP BY column of type Timestamp");
+        case NdbDictionary::Column::Type::Time2:
+          feature_not_implemented("Print GROUP BY column of type Time2");
+        case NdbDictionary::Column::Type::Datetime2:
+          {
+            int precision = cmd.print_group_by_column.precision;
+            longlong numericDate = my_datetime_packed_from_binary(
+              (const unsigned char*)column.data(),
+              (unsigned int)precision);
+            MYSQL_TIME lTime;
+            TIME_from_longlong_datetime_packed(&lTime, numericDate);
+            char to[MAX_DATE_STRING_REP_LENGTH];
+            my_TIME_to_str(lTime, to, precision);
+            out << m_quote << to << m_quote;
+            break;
+          }
+        case NdbDictionary::Column::Type::Timestamp2:
+          {
+            int precision = cmd.print_group_by_column.precision;
+            my_timeval myTV{};
+            my_timestamp_from_binary(&myTV,
+                                     (const unsigned char *)column.data(),
+                                     (unsigned int) precision);
+            Int64 epochIn = myTV.m_tv_sec;
+            time_t stdtime(epochIn);
+            struct tm *time_info = gmtime(&stdtime);
+            MYSQL_TIME lTime  = {};
+            lTime.year        = time_info->tm_year + 1900;
+            lTime.month       = time_info->tm_mon +1;
+            lTime.day         = time_info->tm_mday;
+            lTime.hour        = time_info->tm_hour;
+            lTime.minute      = time_info->tm_min;
+            lTime.second      = time_info->tm_sec;
+            lTime.second_part = myTV.m_tv_usec;
+            lTime.time_type   = MYSQL_TIMESTAMP_DATETIME;
+            char to[MAX_DATE_STRING_REP_LENGTH];
+            my_TIME_to_str(lTime, to, precision);
+            out << m_quote << to << m_quote;
+            break;
+          }
+        default:
+          bug("Unexpected data type when printing GROUP BY column.");
+        }
+      }
+      break;
+    case Cmd::Type::PRINT_AGGREGATE:
+      {
+        NdbAggregator::Result result = m_regs_a[cmd.print_aggregate.reg_a];
+        if(result.is_null())
+        {
+          out << m_null_representation;
+          break;
+        }
+        switch (result.type())
+        {
+        case NdbDictionary::Column::Bigint:
+          out << result.data_int64();
+          break;
+        case NdbDictionary::Column::Bigunsigned:
+          out << result.data_uint64();
+          break;
+        case NdbDictionary::Column::Double:
+          print_float_or_double(out, result.data_double());
+          break;
+        case NdbDictionary::Column::Undefined:
+          bug("Unexpected undefined data type in aggregation result.");
+        default:
+          bug("Unexpected data type in aggregation result.");
+        }
+      }
+      break;
+    case Cmd::Type::PRINT_AVG:
+      {
+        NdbAggregator::Result result_sum = m_regs_a[cmd.print_avg.reg_a_sum];
+        NdbAggregator::Result result_count = m_regs_a[cmd.print_avg.reg_a_count];
+        if (result_sum.is_null() &&
+            !result_count.is_null() &&
+            result_count.type() == NdbDictionary::Column::Type::Bigunsigned &&
+            result_count.data_uint64() == 0) {
+          out << m_null_representation;
+        } else {
+          double numerator = convert_result_to_double(result_sum);
+          double denominator = convert_result_to_double(result_count);
+          double result = numerator / denominator;
+          print_float_or_double(out, result);
+        }
+      }
+      break;
+    case Cmd::Type::PRINT_STR:
+      out.write(cmd.print_str.content.str, cmd.print_str.content.len);
+      break;
+    case Cmd::Type::PRINT_STR_JSON:
+      if (m_json_output) {
+        out << '"';
+        print_string(out,
+                     cmd.print_str.content,
+                     &my_charset_utf8mb4_bin,
+                     true,
+                     m_utf8_output,
+                     false);
+        out << '"';
+      } else {
+        print_string(out,
+                     cmd.print_str.content,
+                     &my_charset_utf8mb4_bin,
+                     false,
+                     true,
+                     false);
+      }
+      break;
+    default:
+      abort();
+    }
+  }
+}
+
+int
+ResultPrinter::compare_rows(StoredRow& a, StoredRow& b)
+{
+  for (Uint32 i = 0; i < m_orderby_specs.size(); i++)
+  {
+    OrderbySpec& spec = m_orderby_specs[i];
+    NdbAggregator::Column& col_a = a.cols[spec.groupby_idx];
+    NdbAggregator::Column& col_b = b.cols[spec.groupby_idx];
+    // NULL handling: NULLs sort first (smallest) in ASC, matching MySQL
+    if (col_a.is_null() && col_b.is_null()) continue;
+    if (col_a.is_null()) return spec.ascending ? -1 : 1;
+    if (col_b.is_null()) return spec.ascending ? 1 : -1;
+    const NdbSqlUtil::Type& sqlType =
+        NdbSqlUtil::getType(static_cast<Uint32>(col_a.type()));
+    int cmp = (*sqlType.m_cmp)(spec.charset,
+                               col_a.data(), col_a.byte_size(),
+                               col_b.data(), col_b.byte_size());
+    if (cmp != 0)
+    {
+      return spec.ascending ? cmp : -cmp;
+    }
+  }
+  return 0;
+}
+
+void
+ResultPrinter::print_result_ordered(NdbAggregator* aggregator,
+                                    std::basic_ostream<char>* out_stream)
+{
+  DEB_TRACE();
+  assert(out_stream != NULL);
+  std::ostream& out = *out_stream;
+  // Buffer all rows
+  DynamicArray<StoredRow> rows(m_amalloc);
+  for (NdbAggregator::ResultRecord record = aggregator->FetchResultRecord();
+       !record.end();
+       record = aggregator->FetchResultRecord())
+  {
+    DEB_TRACE();
+    rows.push(store_record(record));
+  }
+  Uint32 num_rows = rows.size();
+  if (num_rows == 0)
+  {
+    if (m_json_output)
+    {
+      out << "[]\n";
+    }
+    return;
+  }
+  // Copy to a plain array for std::sort (DynamicArray lacks random-access
+  // iterators)
+  StoredRow* sort_array =
+      m_amalloc->alloc_exc<StoredRow>(num_rows);
+  for (Uint32 i = 0; i < num_rows; i++)
+  {
+    sort_array[i] = rows[i];
+  }
+  // Sort using ORDER BY comparator
+  std::sort(sort_array, sort_array + num_rows,
+    [this](StoredRow& a, StoredRow& b) -> bool {
+      return compare_rows(a, b) < 0;
+    });
+  // Apply LIMIT
+  Uint32 print_count = num_rows;
+  if (m_query->limit >= 0 && (Int64)print_count > m_query->limit)
+  {
+    print_count = (Uint32)m_query->limit;
+  }
+  // Print results
+  if (m_json_output)
+  {
+    DEB_TRACE();
+    out << '[';
+    for (Uint32 i = 0; i < print_count; i++)
+    {
+      if (i > 0) out << ',';
+      print_stored_record(sort_array[i], out);
+    }
+    out << "]\n";
+  }
+  else if (m_tsv_output)
+  {
+    DEB_TRACE();
+    if (m_tsv_headers)
+    {
+      bool first_column = true;
+      for (Uint32 i = 0; i < m_outputs.size(); i++)
+      {
+        Outputs* o = m_outputs[i];
+        if (first_column) first_column = false; else out << '\t';
+        out << o->output_name;
+      }
+      out << '\n';
+    }
+    for (Uint32 i = 0; i < print_count; i++)
+    {
+      print_stored_record(sort_array[i], out);
+    }
+  }
+  else
+  {
+    DEB_TRACE();
+    abort();
+  }
+}
+
 void
 ResultPrinter::print_result(NdbAggregator* aggregator,
                             std::basic_ostream<char>* out_stream)
 {
   DEB_TRACE();
   assert(out_stream != NULL);
+  if (m_has_orderby)
+  {
+    print_result_ordered(aggregator, out_stream);
+    return;
+  }
   std::ostream& out = *out_stream;
   if (m_json_output)
   {
@@ -451,11 +980,6 @@ ResultPrinter::print_result(NdbAggregator* aggregator,
   }
   // ================================================================================
 }
-
-DEFINE_FORMATTER(d2, uint, {
-  if (value < 10) os << '0';
-  os << value;
-})
 
 inline void
 ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& out)
@@ -1082,6 +1606,20 @@ ResultPrinter::explain(std::basic_ostream<char>* out_stream)
     break;
   default:
     abort();
+  }
+  if (m_has_orderby)
+  {
+    out << "Result sorted by ";
+    DynamicArray<LexCString>& column_names = *m_column_names;
+    for (Uint32 i = 0; i < m_orderby_specs.size(); i++)
+    {
+      if (i > 0) out << ", ";
+      OrderbySpec& spec = m_orderby_specs[i];
+      Uint32 col_idx = m_groupby_cols[spec.groupby_idx];
+      out << quoted_identifier(column_names[col_idx])
+          << (spec.ascending ? " ASC" : " DESC");
+    }
+    out << ".\n";
   }
   if (m_query->limit >= 0)
   {
