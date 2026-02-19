@@ -1226,6 +1226,7 @@ No NDB connection, so no index scan analysis.
 Result sorted by `col1` ASC, `col2` ASC, `col3` DESC, `col4` ASC.
 Output in mysql-style tab separated format.
 The program for post-processing and output has 17 instructions.
+
 ===== Unimplemented keyword used as quoted identifier =====
 Query parse tree:
 SELECT
@@ -1573,6 +1574,7 @@ Count  A08  r06 A08:COUNT <- r06:1
 
 No NDB connection, so no index scan analysis.
 
+Result sorted by `l_returnflag` ASC, `l_linestatus` ASC.
 Output in mysql-style tab separated format.
 The program for post-processing and output has 33 instructions.
 
