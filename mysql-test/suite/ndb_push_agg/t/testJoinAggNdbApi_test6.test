@@ -1,0 +1,10 @@
+--source include/have_ndb.inc
+
+# Test 6: CHAR GROUP BY with ordered index scan
+# Separated due to intermittent schema version issues in DBSPJ
+--echo Running testJoinAggNdbApi --only 6
+--exec $NDB_PUSH_AGG_DIR/testJoinAggNdbApi -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT --only 6 > /dev/null 2>&1
+--echo PASSED
+
+# Clean up database created by test program
+DROP DATABASE IF EXISTS test_db;

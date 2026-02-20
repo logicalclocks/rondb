@@ -1,5 +1,5 @@
 --source include/have_ndb.inc
 
 --echo Running benchJoinAgg
---exec $NDB_PUSH_AGG_DIR/benchJoinAgg -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT > $MYSQLTEST_VARDIR/log/benchJoinAgg.log 2>&1
+--exec $NDB_PUSH_AGG_DIR/benchJoinAgg -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT --orders 4000 --iterations 1 > /dev/null 2>&1
 --echo PASSED

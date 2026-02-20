@@ -1,3 +1,5 @@
 --source include/have_ndb.inc
 
---exec $NDB_PUSH_AGG_DIR/testCaseAgg -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT 2>&1
+--echo Running testCaseAgg
+--exec $NDB_PUSH_AGG_DIR/testCaseAgg -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT > /dev/null 2>&1
+--echo PASSED

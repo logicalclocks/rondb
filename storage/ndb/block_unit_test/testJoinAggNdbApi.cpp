@@ -3399,6 +3399,17 @@ testAllNullAggColumn(Ndb *ndb, MYSQL *conn)
 /* Main                                                                */
 /* ------------------------------------------------------------------ */
 
+static int onlyTest = 0;   /* 0 = run all, N = run only test N */
+static int skipTest = 0;   /* 0 = skip none, N = skip test N */
+
+static bool
+shouldRun(int testNum)
+{
+  if (onlyTest != 0) return testNum == onlyTest;
+  if (skipTest != 0) return testNum != skipTest;
+  return true;
+}
+
 static void
 usage(const char *prog)
 {
@@ -3408,6 +3419,8 @@ usage(const char *prog)
           "Options:\n"
           "  -c  NDB management server connect string (default: localhost:1186)\n"
           "  -m  MySQL server port (default: 3306)\n"
+          "  --only <N>     Run only test N\n"
+          "  --skip <N>     Skip test N\n"
           "  -v, --verbose  Show detailed progress output\n"
           "  -h, --help     Show this help\n",
           prog);
@@ -3427,6 +3440,10 @@ int main(int argc, char **argv)
     } else if (strcmp(argv[i], "-v") == 0 ||
                strcmp(argv[i], "--verbose") == 0) {
       verbose = true;
+    } else if (strcmp(argv[i], "--only") == 0 && i + 1 < argc) {
+      onlyTest = atoi(argv[++i]);
+    } else if (strcmp(argv[i], "--skip") == 0 && i + 1 < argc) {
+      skipTest = atoi(argv[++i]);
     } else if (strcmp(argv[i], "-h") == 0 ||
                strcmp(argv[i], "--help") == 0) {
       usage(argv[0]);
@@ -3504,7 +3521,7 @@ int main(int argc, char **argv)
            */
 
           /* Test 1: SUM(amount) GROUP BY grp */
-          {
+          if (shouldRun(1)) {
             std::map<Int32, Int64> expected = {
               {1, 300}, {2, 700}, {3, 500}
             };
@@ -3514,12 +3531,14 @@ int main(int argc, char **argv)
           }
 
           /* Test 2: COUNT(*), SUM(amount) — no GROUP BY */
-          if (testCountSum(&ndb, conn, 5, 1500) != 0) {
-            exitCode = 1;
+          if (shouldRun(2)) {
+            if (testCountSum(&ndb, conn, 5, 1500) != 0) {
+              exitCode = 1;
+            }
           }
 
           /* Test 3: COUNT(*), SUM(amount) GROUP BY grp */
-          {
+          if (shouldRun(3)) {
             std::map<Int32, std::pair<Int64, Int64>> expected = {
               {1, {2, 300}}, {2, {2, 700}}, {3, {1, 500}}
             };
@@ -3529,75 +3548,90 @@ int main(int argc, char **argv)
           }
 
           /* Test 9: Empty result (filter rejects all child rows) */
-          if (testEmptyResult(&ndb, conn) != 0) {
-            exitCode = 1;
+          if (shouldRun(9)) {
+            if (testEmptyResult(&ndb, conn) != 0) {
+              exitCode = 1;
+            }
           }
         }
         dropTestTables(conn);
 
         /* Test 4: 3-way join with linked param filter */
-        if (createTest4Tables(conn) == 0 &&
-            insertTest4Data(conn) == 0) {
-          if (testThreeWayJoin(&ndb, conn) != 0) {
+        /* Test 11: Global aggregation on 3-way join (reuses t4 tables) */
+        if (shouldRun(4) || shouldRun(11)) {
+          if (createTest4Tables(conn) == 0 &&
+              insertTest4Data(conn) == 0) {
+            if (shouldRun(4)) {
+              if (testThreeWayJoin(&ndb, conn) != 0) exitCode = 1;
+            }
+            if (shouldRun(11)) {
+              if (testGlobalAggThreeWay(&ndb, conn) != 0) exitCode = 1;
+            }
+          } else {
             exitCode = 1;
           }
-
-          /* Test 11: Global aggregation on 3-way join (reuses t4 tables) */
-          if (testGlobalAggThreeWay(&ndb, conn) != 0) {
-            exitCode = 1;
-          }
-        } else {
-          exitCode = 1;
+          dropTest4Tables(conn);
         }
-        dropTest4Tables(conn);
 
         /* Test 5: MIN/MAX/SUM/COUNT with NULL values */
-        if (createTest5Tables(conn) == 0 && insertTest5Data(conn) == 0) {
-          if (testMinMaxWithNull(&ndb, conn) != 0) exitCode = 1;
-        } else {
-          exitCode = 1;
+        if (shouldRun(5)) {
+          if (createTest5Tables(conn) == 0 && insertTest5Data(conn) == 0) {
+            if (testMinMaxWithNull(&ndb, conn) != 0) exitCode = 1;
+          } else {
+            exitCode = 1;
+          }
+          dropTest5Tables(conn);
         }
-        dropTest5Tables(conn);
 
         /* Test 6: CHAR GROUP BY with ordered index scan */
-        if (createTest6Tables(conn) == 0 && insertTest6Data(conn) == 0) {
-          if (testCharGroupByWithIndex(&ndb, conn) != 0) exitCode = 1;
-        } else {
-          exitCode = 1;
+        if (shouldRun(6)) {
+          if (createTest6Tables(conn) == 0 && insertTest6Data(conn) == 0) {
+            if (testCharGroupByWithIndex(&ndb, conn) != 0) exitCode = 1;
+          } else {
+            exitCode = 1;
+          }
+          dropTest6Tables(conn);
         }
-        dropTest6Tables(conn);
 
         /* Test 7: 4-way join with composite key */
-        if (createTest7Tables(conn) == 0 && insertTest7Data(conn) == 0) {
-          if (testFourWayCompositeKey(&ndb, conn) != 0) exitCode = 1;
-        } else {
-          exitCode = 1;
+        if (shouldRun(7)) {
+          if (createTest7Tables(conn) == 0 && insertTest7Data(conn) == 0) {
+            if (testFourWayCompositeKey(&ndb, conn) != 0) exitCode = 1;
+          } else {
+            exitCode = 1;
+          }
+          dropTest7Tables(conn);
         }
-        dropTest7Tables(conn);
 
         /* Test 8: Arithmetic expression (Mul + Minus) */
-        if (createTest8Tables(conn) == 0 && insertTest8Data(conn) == 0) {
-          if (testArithmeticExpression(&ndb, conn) != 0) exitCode = 1;
-        } else {
-          exitCode = 1;
+        if (shouldRun(8)) {
+          if (createTest8Tables(conn) == 0 && insertTest8Data(conn) == 0) {
+            if (testArithmeticExpression(&ndb, conn) != 0) exitCode = 1;
+          } else {
+            exitCode = 1;
+          }
+          dropTest8Tables(conn);
         }
-        dropTest8Tables(conn);
 
         /* Test 10: High cardinality GROUP BY (20 groups) */
-        if (createTest10Tables(conn) == 0 && insertTest10Data(conn) == 0) {
-          if (testHighCardinalityGroupBy(&ndb, conn) != 0) exitCode = 1;
-        } else {
-          exitCode = 1;
+        if (shouldRun(10)) {
+          if (createTest10Tables(conn) == 0 && insertTest10Data(conn) == 0) {
+            if (testHighCardinalityGroupBy(&ndb, conn) != 0) exitCode = 1;
+          } else {
+            exitCode = 1;
+          }
+          dropTest10Tables(conn);
         }
-        dropTest10Tables(conn);
 
         /* Test 12: All-NULL aggregation column */
-        if (createTest12Tables(conn) == 0 && insertTest12Data(conn) == 0) {
-          if (testAllNullAggColumn(&ndb, conn) != 0) exitCode = 1;
-        } else {
-          exitCode = 1;
+        if (shouldRun(12)) {
+          if (createTest12Tables(conn) == 0 && insertTest12Data(conn) == 0) {
+            if (testAllNullAggColumn(&ndb, conn) != 0) exitCode = 1;
+          } else {
+            exitCode = 1;
+          }
+          dropTest12Tables(conn);
         }
-        dropTest12Tables(conn);
 
         mysql_close(conn);
       }

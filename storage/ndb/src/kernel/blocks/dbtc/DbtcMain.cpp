@@ -28599,13 +28599,16 @@ void Dbtc::execJOIN_AGG_SEND_REQ(Signal *signal) {
   const JoinAggSendReq *req =
       (const JoinAggSendReq *)signal->getDataPtr();
 
+  // Save before overwriting - req and conf alias the same signal buffer
+  const BlockReference replyRef = req->senderRef;
+
   JoinAggSendConf *conf = (JoinAggSendConf *)signal->getDataPtrSend();
   conf->senderRef = reference();
   conf->senderData = req->senderData;
   conf->requestId = req->requestId;
   conf->aggStateKey = req->aggStateKey;
   conf->maxBatchRows = 256;
-  sendSignal(req->senderRef, GSN_JOIN_AGG_SEND_CONF, signal,
+  sendSignal(replyRef, GSN_JOIN_AGG_SEND_CONF, signal,
              JoinAggSendConf::SignalLength, JBB);
 }
 

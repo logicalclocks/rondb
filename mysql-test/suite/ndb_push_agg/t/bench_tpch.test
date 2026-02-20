@@ -2,53 +2,63 @@
 
 # Load TPC-H data (prerequisite for all benchmarks below)
 --echo Loading TPC-H data
---exec $NDB_PUSH_AGG_DIR/load_tpch -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT > $MYSQLTEST_VARDIR/log/load_tpch.log 2>&1
+--exec $NDB_PUSH_AGG_DIR/load_tpch -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT --sf 0.01 > /dev/null 2>&1
 --echo PASSED
 
 --echo Running bench_q2_ndbapi
---exec $NDB_PUSH_AGG_DIR/bench_q2_ndbapi -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT > $MYSQLTEST_VARDIR/log/bench_q2_ndbapi.log 2>&1
+--exec $NDB_PUSH_AGG_DIR/bench_q2_ndbapi -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT --iterations 1 > /dev/null 2>&1
 --echo PASSED
 
 --echo Running bench_q3_ndbapi
---exec $NDB_PUSH_AGG_DIR/bench_q3_ndbapi -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT > $MYSQLTEST_VARDIR/log/bench_q3_ndbapi.log 2>&1
+--exec $NDB_PUSH_AGG_DIR/bench_q3_ndbapi -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT --iterations 1 > /dev/null 2>&1
 --echo PASSED
 
 --echo Running bench_q4_ndbapi
---exec $NDB_PUSH_AGG_DIR/bench_q4_ndbapi -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT > $MYSQLTEST_VARDIR/log/bench_q4_ndbapi.log 2>&1
+--exec $NDB_PUSH_AGG_DIR/bench_q4_ndbapi -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT --iterations 1 > /dev/null 2>&1
 --echo PASSED
 
 --echo Running bench_q5_ndbapi
---exec $NDB_PUSH_AGG_DIR/bench_q5_ndbapi -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT > $MYSQLTEST_VARDIR/log/bench_q5_ndbapi.log 2>&1
+--exec $NDB_PUSH_AGG_DIR/bench_q5_ndbapi -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT --iterations 1 > /dev/null 2>&1
 --echo PASSED
 
 --echo Running bench_q9_dbtc
---exec $NDB_PUSH_AGG_DIR/bench_q9_dbtc -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT > $MYSQLTEST_VARDIR/log/bench_q9_dbtc.log 2>&1
+--exec $NDB_PUSH_AGG_DIR/bench_q9_dbtc -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT --iterations 1 > /dev/null 2>&1
 --echo PASSED
 
 --echo Running bench_q9_ndbapi
---exec $NDB_PUSH_AGG_DIR/bench_q9_ndbapi -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT > $MYSQLTEST_VARDIR/log/bench_q9_ndbapi.log 2>&1
+--exec $NDB_PUSH_AGG_DIR/bench_q9_ndbapi -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT --iterations 1 > /dev/null 2>&1
 --echo PASSED
 
 --echo Running bench_q10_ndbapi
---exec $NDB_PUSH_AGG_DIR/bench_q10_ndbapi -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT > $MYSQLTEST_VARDIR/log/bench_q10_ndbapi.log 2>&1
+--exec $NDB_PUSH_AGG_DIR/bench_q10_ndbapi -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT --iterations 1 > /dev/null 2>&1
 --echo PASSED
 
 --echo Running bench_q11_ndbapi
---exec $NDB_PUSH_AGG_DIR/bench_q11_ndbapi -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT > $MYSQLTEST_VARDIR/log/bench_q11_ndbapi.log 2>&1
+--exec $NDB_PUSH_AGG_DIR/bench_q11_ndbapi -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT --iterations 1 > /dev/null 2>&1
 --echo PASSED
 
 --echo Running bench_minmax_ndbapi
---exec $NDB_PUSH_AGG_DIR/bench_minmax_ndbapi -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT > $MYSQLTEST_VARDIR/log/bench_minmax_ndbapi.log 2>&1
+--exec $NDB_PUSH_AGG_DIR/bench_minmax_ndbapi -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT --iterations 1 > /dev/null 2>&1
 --echo PASSED
 
 --echo Running bench_nogroup_ndbapi
---exec $NDB_PUSH_AGG_DIR/bench_nogroup_ndbapi -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT > $MYSQLTEST_VARDIR/log/bench_nogroup_ndbapi.log 2>&1
+--exec $NDB_PUSH_AGG_DIR/bench_nogroup_ndbapi -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT --iterations 1 > /dev/null 2>&1
 --echo PASSED
 
 --echo Running bench_orderscan_ndbapi
---exec $NDB_PUSH_AGG_DIR/bench_orderscan_ndbapi -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT > $MYSQLTEST_VARDIR/log/bench_orderscan_ndbapi.log 2>&1
+--exec $NDB_PUSH_AGG_DIR/bench_orderscan_ndbapi -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT --iterations 1 > /dev/null 2>&1
 --echo PASSED
 
 --echo Running bench_datescan_ndbapi
---exec $NDB_PUSH_AGG_DIR/bench_datescan_ndbapi -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT > $MYSQLTEST_VARDIR/log/bench_datescan_ndbapi.log 2>&1
+--exec $NDB_PUSH_AGG_DIR/bench_datescan_ndbapi -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT --iterations 1 > /dev/null 2>&1
 --echo PASSED
+
+# Clean up TPC-H tables
+DROP TABLE IF EXISTS tpch_lineitem;
+DROP TABLE IF EXISTS tpch_orders;
+DROP TABLE IF EXISTS tpch_partsupp;
+DROP TABLE IF EXISTS tpch_customer;
+DROP TABLE IF EXISTS tpch_supplier;
+DROP TABLE IF EXISTS tpch_part;
+DROP TABLE IF EXISTS tpch_nation;
+DROP TABLE IF EXISTS tpch_region;

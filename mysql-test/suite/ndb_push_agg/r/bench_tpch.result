@@ -24,3 +24,11 @@ Running bench_orderscan_ndbapi
 PASSED
 Running bench_datescan_ndbapi
 PASSED
+DROP TABLE IF EXISTS tpch_lineitem;
+DROP TABLE IF EXISTS tpch_orders;
+DROP TABLE IF EXISTS tpch_partsupp;
+DROP TABLE IF EXISTS tpch_customer;
+DROP TABLE IF EXISTS tpch_supplier;
+DROP TABLE IF EXISTS tpch_part;
+DROP TABLE IF EXISTS tpch_nation;
+DROP TABLE IF EXISTS tpch_region;
