@@ -15,6 +15,7 @@ SharedGlobalMemory=450M
 BatchSize=990
 BatchByteSize=1M
 MaxScanBatchSize=4M
+PartitionsPerNode=8
 
 # Set data node 1 to node ID 144 so that LQH's host record array
 # (sized MAX_NDB_NODES = max_data_node_id + 1 = 145) can accommodate
