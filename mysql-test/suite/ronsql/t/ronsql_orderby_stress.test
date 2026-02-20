@@ -1,0 +1,612 @@
+--source include/have_ndb.inc
+
+# RonSQL doesn't support time zones yet, and works as if in UTC.
+SET time_zone = "+00:00";
+
+# =============================================================================
+# Table 1: boundary_orderby — Integer/decimal boundary values
+# 8 groups x 6 rows = 48 rows
+# Tests MIN/MAX values for integer types as ORDER BY keys
+# =============================================================================
+
+--disable_query_log
+CREATE TABLE boundary_orderby (
+  pk           INT              NOT NULL AUTO_INCREMENT,
+  c_int        INT              NULL,
+  c_bigint     BIGINT           NULL,
+  c_bigunsigned BIGINT UNSIGNED NULL,
+  c_decimal    DECIMAL(10,2)    NULL,
+  val          INT              NOT NULL,
+  PRIMARY KEY USING HASH (pk)
+) ENGINE=NDB;
+
+# 8 groups with boundary values, 6 rows each (val = 5,10,15,20,25,30, sum=105)
+# c_int groups: -2147483648, -1000000, -1, 0, 1, 1000000, 2147483647, NULL
+# c_bigint mirrors: -9223372036854775808, -1000000, -1, 0, 1, 1000000, 9223372036854775807, NULL
+# c_bigunsigned: 0, 1, 1000000, 9999999999, 9999999999999999999, 18446744073709551615, reserved, NULL
+# c_decimal: -99999999.99, -0.01, 0.00, 0.01, 0.10, 99999999.99, reserved, NULL
+
+# Row set 1 (one row from each group, val=5)
+INSERT INTO boundary_orderby (c_int, c_bigint, c_bigunsigned, c_decimal, val) VALUES
+  (-2147483648, -9223372036854775808, 0,                    -99999999.99, 5),
+  (-1000000,    -1000000,             1,                    -0.01,        5),
+  (-1,          -1,                   1000000,              0.00,         5),
+  (0,           0,                    9999999999,           0.01,         5),
+  (1,           1,                    9999999999999999999,  0.10,         5),
+  (1000000,     1000000,              18446744073709551615, 99999999.99,  5),
+  (2147483647,  9223372036854775807,  9999999999999999999,  0.10,         5),
+  (NULL,        NULL,                 NULL,                 NULL,         5);
+
+# Row set 2 (val=10)
+INSERT INTO boundary_orderby (c_int, c_bigint, c_bigunsigned, c_decimal, val) VALUES
+  (-2147483648, -9223372036854775808, 0,                    -99999999.99, 10),
+  (-1000000,    -1000000,             1,                    -0.01,        10),
+  (-1,          -1,                   1000000,              0.00,         10),
+  (0,           0,                    9999999999,           0.01,         10),
+  (1,           1,                    9999999999999999999,  0.10,         10),
+  (1000000,     1000000,              18446744073709551615, 99999999.99,  10),
+  (2147483647,  9223372036854775807,  9999999999999999999,  0.10,         10),
+  (NULL,        NULL,                 NULL,                 NULL,         10);
+
+# Row set 3 (val=15)
+INSERT INTO boundary_orderby (c_int, c_bigint, c_bigunsigned, c_decimal, val) VALUES
+  (-2147483648, -9223372036854775808, 0,                    -99999999.99, 15),
+  (-1000000,    -1000000,             1,                    -0.01,        15),
+  (-1,          -1,                   1000000,              0.00,         15),
+  (0,           0,                    9999999999,           0.01,         15),
+  (1,           1,                    9999999999999999999,  0.10,         15),
+  (1000000,     1000000,              18446744073709551615, 99999999.99,  15),
+  (2147483647,  9223372036854775807,  9999999999999999999,  0.10,         15),
+  (NULL,        NULL,                 NULL,                 NULL,         15);
+
+# Row set 4 (val=20)
+INSERT INTO boundary_orderby (c_int, c_bigint, c_bigunsigned, c_decimal, val) VALUES
+  (-2147483648, -9223372036854775808, 0,                    -99999999.99, 20),
+  (-1000000,    -1000000,             1,                    -0.01,        20),
+  (-1,          -1,                   1000000,              0.00,         20),
+  (0,           0,                    9999999999,           0.01,         20),
+  (1,           1,                    9999999999999999999,  0.10,         20),
+  (1000000,     1000000,              18446744073709551615, 99999999.99,  20),
+  (2147483647,  9223372036854775807,  9999999999999999999,  0.10,         20),
+  (NULL,        NULL,                 NULL,                 NULL,         20);
+
+# Row set 5 (val=25)
+INSERT INTO boundary_orderby (c_int, c_bigint, c_bigunsigned, c_decimal, val) VALUES
+  (-2147483648, -9223372036854775808, 0,                    -99999999.99, 25),
+  (-1000000,    -1000000,             1,                    -0.01,        25),
+  (-1,          -1,                   1000000,              0.00,         25),
+  (0,           0,                    9999999999,           0.01,         25),
+  (1,           1,                    9999999999999999999,  0.10,         25),
+  (1000000,     1000000,              18446744073709551615, 99999999.99,  25),
+  (2147483647,  9223372036854775807,  9999999999999999999,  0.10,         25),
+  (NULL,        NULL,                 NULL,                 NULL,         25);
+
+# Row set 6 (val=30)
+INSERT INTO boundary_orderby (c_int, c_bigint, c_bigunsigned, c_decimal, val) VALUES
+  (-2147483648, -9223372036854775808, 0,                    -99999999.99, 30),
+  (-1000000,    -1000000,             1,                    -0.01,        30),
+  (-1,          -1,                   1000000,              0.00,         30),
+  (0,           0,                    9999999999,           0.01,         30),
+  (1,           1,                    9999999999999999999,  0.10,         30),
+  (1000000,     1000000,              18446744073709551615, 99999999.99,  30),
+  (2147483647,  9223372036854775807,  9999999999999999999,  0.10,         30),
+  (NULL,        NULL,                 NULL,                 NULL,         30);
+
+--enable_query_log
+
+--echo Row count boundary_orderby:
+SELECT count(*) FROM boundary_orderby;
+
+DELIMITER |;
+
+--echo
+--echo
+--echo
+--echo Boundary INT ASC (NULL first, then -2147483648 to 2147483647):
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_int, count(*), sum(val)
+FROM boundary_orderby
+GROUP BY c_int
+ORDER BY c_int;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo Boundary INT DESC (NULL first, then 2147483647 to -2147483648):
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_int, count(*), sum(val)
+FROM boundary_orderby
+GROUP BY c_int
+ORDER BY c_int DESC;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo Boundary BIGINT ASC:
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_bigint, count(*), sum(val)
+FROM boundary_orderby
+GROUP BY c_bigint
+ORDER BY c_bigint;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo Boundary BIGINT UNSIGNED ASC:
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_bigunsigned, count(*), sum(val)
+FROM boundary_orderby
+GROUP BY c_bigunsigned
+ORDER BY c_bigunsigned;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo Boundary DECIMAL ASC:
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_decimal, count(*), sum(val)
+FROM boundary_orderby
+GROUP BY c_decimal
+ORDER BY c_decimal;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo Boundary INT ASC LIMIT 3:
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_int, count(*), sum(val)
+FROM boundary_orderby
+GROUP BY c_int
+ORDER BY c_int
+LIMIT 3;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo Boundary multi-column INT ASC, DECIMAL DESC:
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_int, c_decimal, count(*), sum(val)
+FROM boundary_orderby
+GROUP BY c_int, c_decimal
+ORDER BY c_int ASC, c_decimal DESC;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+DELIMITER ;|
+
+--echo Cleanup boundary_orderby
+DROP TABLE boundary_orderby;
+
+
+# =============================================================================
+# Table 2: many_groups — 50 groups x 4 rows = 200 rows
+# Tests ORDER BY with larger number of groups
+# =============================================================================
+
+--disable_query_log
+CREATE TABLE many_groups (
+  pk        INT          NOT NULL AUTO_INCREMENT,
+  grp       INT          NOT NULL,
+  c_varchar VARCHAR(100) CHARACTER SET utf8mb4 NOT NULL,
+  c_date    DATE         NOT NULL,
+  val       INT          NOT NULL,
+  PRIMARY KEY USING HASH (pk)
+) ENGINE=NDB;
+
+# Generate 200 rows using Perl: 50 groups x 4 rows
+# grp = 1..50, c_varchar = deterministic string, c_date = deterministic date
+# val cycles through 10,20,30,40 (sum per group = 100)
+--let TEST_DATA_TSV=$MYSQLTEST_VARDIR/tmp/many_groups_data.tsv
+
+perl;
+  use strict;
+  use warnings;
+  my $file_path = $ENV{TEST_DATA_TSV} // die "TEST_DATA_TSV not set";
+  open(my $fh, '>', $file_path) or die "Could not open file '$file_path' $!";
+
+  # 26 prefixes to generate diverse sort-order strings
+  my @prefixes = qw(alpha bravo charlie delta echo foxtrot golf hotel india
+                     juliet kilo lima mike november oscar papa quebec romeo
+                     sierra tango uniform victor whiskey xray yankee zulu);
+  my @vals = (10, 20, 30, 40);
+
+  for my $grp (1..50) {
+    my $prefix = $prefixes[($grp - 1) % 26];
+    my $suffix = sprintf("%03d", $grp);
+    my $varchar = "${prefix}_${suffix}";
+    my $year = 2000 + ($grp - 1);
+    my $month = (($grp - 1) % 12) + 1;
+    my $day = (($grp - 1) % 28) + 1;
+    my $date = sprintf("%04d-%02d-%02d", $year, $month, $day);
+    for my $vi (0..3) {
+      my $val = $vals[$vi];
+      print $fh "$grp\t$varchar\t$date\t$val\n";
+    }
+  }
+  close($fh);
+EOF
+--enable_query_log
+--echo Loading 200 rows into many_groups:
+--disable_query_log
+eval LOAD DATA INFILE '$TEST_DATA_TSV' INTO TABLE many_groups (grp, c_varchar, c_date, val);
+--enable_query_log
+--remove_file $TEST_DATA_TSV
+
+--echo Row count many_groups:
+SELECT count(*) FROM many_groups;
+
+DELIMITER |;
+
+--echo
+--echo
+--echo
+--echo 50 groups ORDER BY grp ASC:
+--let $skip_sort=yes
+let $QUERY=
+SELECT grp, count(*), sum(val)
+FROM many_groups
+GROUP BY grp
+ORDER BY grp;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo 50 groups ORDER BY grp DESC:
+--let $skip_sort=yes
+let $QUERY=
+SELECT grp, count(*), sum(val)
+FROM many_groups
+GROUP BY grp
+ORDER BY grp DESC;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo 50 groups ORDER BY c_varchar ASC:
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_varchar, count(*), sum(val)
+FROM many_groups
+GROUP BY c_varchar
+ORDER BY c_varchar;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo 50 groups ORDER BY c_date DESC:
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_date, count(*), sum(val)
+FROM many_groups
+GROUP BY c_date
+ORDER BY c_date DESC;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo 50 groups ORDER BY grp ASC LIMIT 10:
+--let $skip_sort=yes
+let $QUERY=
+SELECT grp, count(*), sum(val)
+FROM many_groups
+GROUP BY grp
+ORDER BY grp
+LIMIT 10;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo 50 groups ORDER BY grp DESC LIMIT 10:
+--let $skip_sort=yes
+let $QUERY=
+SELECT grp, count(*), sum(val)
+FROM many_groups
+GROUP BY grp
+ORDER BY grp DESC
+LIMIT 10;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo 50 groups ORDER BY c_varchar ASC LIMIT 25 (half):
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_varchar, count(*), sum(val)
+FROM many_groups
+GROUP BY c_varchar
+ORDER BY c_varchar
+LIMIT 25;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo 50 groups ORDER BY grp LIMIT 50 (exact count):
+--let $skip_sort=yes
+let $QUERY=
+SELECT grp, count(*), sum(val)
+FROM many_groups
+GROUP BY grp
+ORDER BY grp
+LIMIT 50;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo 50 groups ORDER BY grp LIMIT 999 (exceeds count):
+--let $skip_sort=yes
+let $QUERY=
+SELECT grp, count(*), sum(val)
+FROM many_groups
+GROUP BY grp
+ORDER BY grp
+LIMIT 999;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo 50 groups ORDER BY grp LIMIT 0 (zero):
+--let $skip_sort=yes
+let $QUERY=
+SELECT grp, count(*), sum(val)
+FROM many_groups
+GROUP BY grp
+ORDER BY grp
+LIMIT 0;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo Single group via WHERE (degenerate ORDER BY):
+--let $skip_sort=yes
+let $QUERY=
+SELECT grp, count(*), sum(val)
+FROM many_groups
+WHERE grp = 25
+GROUP BY grp
+ORDER BY grp;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo Two-column ORDER BY grp ASC, c_varchar ASC on many_groups:
+--let $skip_sort=yes
+let $QUERY=
+SELECT grp, c_varchar, count(*), sum(val)
+FROM many_groups
+GROUP BY grp, c_varchar
+ORDER BY grp ASC, c_varchar ASC;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+DELIMITER ;|
+
+--echo Cleanup many_groups
+DROP TABLE many_groups;
+
+
+# =============================================================================
+# Table 3: string_edge — String ordering edge cases
+# 9 groups x 6 rows = 54 rows
+# Empty string, short strings, long strings, NULL
+# =============================================================================
+
+--disable_query_log
+CREATE TABLE string_edge (
+  pk        INT          NOT NULL AUTO_INCREMENT,
+  c_varchar VARCHAR(300) CHARACTER SET utf8mb4 NULL,
+  c_int     INT          NOT NULL,
+  val       INT          NOT NULL,
+  PRIMARY KEY USING HASH (pk)
+) ENGINE=NDB;
+
+# 9 groups: '', 'A', 'B', 'aa', 'ab', 'ba', <290-char string>, 'zzz', NULL
+# c_int varies: 1..9 mapping to groups, for multi-column test
+# val cycles 5,10,15,20,25,30 (sum=105 per group)
+
+# Group 1: empty string, c_int=1
+INSERT INTO string_edge (c_varchar, c_int, val) VALUES
+  ('', 1, 5), ('', 1, 10), ('', 1, 15), ('', 1, 20), ('', 1, 25), ('', 1, 30);
+
+# Group 2: 'A', c_int=2
+INSERT INTO string_edge (c_varchar, c_int, val) VALUES
+  ('A', 2, 5), ('A', 2, 10), ('A', 2, 15), ('A', 2, 20), ('A', 2, 25), ('A', 2, 30);
+
+# Group 3: 'B', c_int=3
+INSERT INTO string_edge (c_varchar, c_int, val) VALUES
+  ('B', 3, 5), ('B', 3, 10), ('B', 3, 15), ('B', 3, 20), ('B', 3, 25), ('B', 3, 30);
+
+# Group 4: 'aa', c_int=4
+INSERT INTO string_edge (c_varchar, c_int, val) VALUES
+  ('aa', 4, 5), ('aa', 4, 10), ('aa', 4, 15), ('aa', 4, 20), ('aa', 4, 25), ('aa', 4, 30);
+
+# Group 5: 'ab', c_int=5
+INSERT INTO string_edge (c_varchar, c_int, val) VALUES
+  ('ab', 5, 5), ('ab', 5, 10), ('ab', 5, 15), ('ab', 5, 20), ('ab', 5, 25), ('ab', 5, 30);
+
+# Group 6: 'ba', c_int=6
+INSERT INTO string_edge (c_varchar, c_int, val) VALUES
+  ('ba', 6, 5), ('ba', 6, 10), ('ba', 6, 15), ('ba', 6, 20), ('ba', 6, 25), ('ba', 6, 30);
+
+# Group 7: 290-character string (near VARCHAR(300) limit), c_int=7
+INSERT INTO string_edge (c_varchar, c_int, val) VALUES
+  ('LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL', 7, 5),
+  ('LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL', 7, 10),
+  ('LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL', 7, 15),
+  ('LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL', 7, 20),
+  ('LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL', 7, 25),
+  ('LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL', 7, 30);
+
+# Group 8: 'zzz', c_int=8
+INSERT INTO string_edge (c_varchar, c_int, val) VALUES
+  ('zzz', 8, 5), ('zzz', 8, 10), ('zzz', 8, 15), ('zzz', 8, 20), ('zzz', 8, 25), ('zzz', 8, 30);
+
+# Group 9: NULL, c_int=9
+INSERT INTO string_edge (c_varchar, c_int, val) VALUES
+  (NULL, 9, 5), (NULL, 9, 10), (NULL, 9, 15), (NULL, 9, 20), (NULL, 9, 25), (NULL, 9, 30);
+
+--enable_query_log
+
+--echo Row count string_edge:
+SELECT count(*) FROM string_edge;
+
+DELIMITER |;
+
+--echo
+--echo
+--echo
+--echo String ORDER BY ASC (NULL, empty, A, aa, ab, B, ba, LLLL..., zzz):
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_varchar, count(*), sum(val)
+FROM string_edge
+GROUP BY c_varchar
+ORDER BY c_varchar;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo String ORDER BY DESC:
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_varchar, count(*), sum(val)
+FROM string_edge
+GROUP BY c_varchar
+ORDER BY c_varchar DESC;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo String two-column ORDER BY c_varchar ASC, c_int DESC:
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_varchar, c_int, count(*), sum(val)
+FROM string_edge
+GROUP BY c_varchar, c_int
+ORDER BY c_varchar ASC, c_int DESC;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo String ORDER BY with LIMIT 5:
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_varchar, count(*), sum(val)
+FROM string_edge
+GROUP BY c_varchar
+ORDER BY c_varchar
+LIMIT 5;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+DELIMITER ;|
+
+--echo Cleanup string_edge
+DROP TABLE string_edge;
+
+
+# =============================================================================
+# Table 4: tie_breaker — Multi-column tie-breaking
+# 12 groups x 4 rows = 48 rows
+# First ORDER BY column has many ties, second/third break them
+# =============================================================================
+
+--disable_query_log
+CREATE TABLE tie_breaker (
+  pk    INT NOT NULL AUTO_INCREMENT,
+  c_a   INT NULL,
+  c_b   INT NULL,
+  c_c   INT NULL,
+  val   INT NOT NULL,
+  PRIMARY KEY USING HASH (pk)
+) ENGINE=NDB;
+
+# 12 groups: 4 with c_a=1, 4 with c_a=2, 2 with c_a=3, 2 with c_a=NULL
+# Each group has 4 rows, val = 10,20,30,40 (sum=100)
+#
+# Groups:
+# (1, 10, 100), (1, 10, 200), (1, 20, 100), (1, 20, 200)
+# (2, 10, 100), (2, 10, 200), (2, 20, 100), (2, 20, 200)
+# (3, 10, 100), (3, 20, 200)
+# (NULL, 10, 100), (NULL, NULL, NULL)
+
+# Row set 1 (val=10)
+INSERT INTO tie_breaker (c_a, c_b, c_c, val) VALUES
+  (1, 10, 100, 10), (1, 10, 200, 10), (1, 20, 100, 10), (1, 20, 200, 10),
+  (2, 10, 100, 10), (2, 10, 200, 10), (2, 20, 100, 10), (2, 20, 200, 10),
+  (3, 10, 100, 10), (3, 20, 200, 10),
+  (NULL, 10, 100, 10), (NULL, NULL, NULL, 10);
+
+# Row set 2 (val=20)
+INSERT INTO tie_breaker (c_a, c_b, c_c, val) VALUES
+  (1, 10, 100, 20), (1, 10, 200, 20), (1, 20, 100, 20), (1, 20, 200, 20),
+  (2, 10, 100, 20), (2, 10, 200, 20), (2, 20, 100, 20), (2, 20, 200, 20),
+  (3, 10, 100, 20), (3, 20, 200, 20),
+  (NULL, 10, 100, 20), (NULL, NULL, NULL, 20);
+
+# Row set 3 (val=30)
+INSERT INTO tie_breaker (c_a, c_b, c_c, val) VALUES
+  (1, 10, 100, 30), (1, 10, 200, 30), (1, 20, 100, 30), (1, 20, 200, 30),
+  (2, 10, 100, 30), (2, 10, 200, 30), (2, 20, 100, 30), (2, 20, 200, 30),
+  (3, 10, 100, 30), (3, 20, 200, 30),
+  (NULL, 10, 100, 30), (NULL, NULL, NULL, 30);
+
+# Row set 4 (val=40)
+INSERT INTO tie_breaker (c_a, c_b, c_c, val) VALUES
+  (1, 10, 100, 40), (1, 10, 200, 40), (1, 20, 100, 40), (1, 20, 200, 40),
+  (2, 10, 100, 40), (2, 10, 200, 40), (2, 20, 100, 40), (2, 20, 200, 40),
+  (3, 10, 100, 40), (3, 20, 200, 40),
+  (NULL, 10, 100, 40), (NULL, NULL, NULL, 40);
+
+--enable_query_log
+
+--echo Row count tie_breaker:
+SELECT count(*) FROM tie_breaker;
+
+DELIMITER |;
+
+--echo
+--echo
+--echo
+--echo Tie-breaking 3-column ASC (fully deterministic order):
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_a, c_b, c_c, count(*), sum(val)
+FROM tie_breaker
+GROUP BY c_a, c_b, c_c
+ORDER BY c_a ASC, c_b ASC, c_c ASC;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo Tie-breaking 3-column mixed (DESC, ASC, DESC):
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_a, c_b, c_c, count(*), sum(val)
+FROM tie_breaker
+GROUP BY c_a, c_b, c_c
+ORDER BY c_a DESC, c_b ASC, c_c DESC;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo Tie-breaking 2-column (groups merged, still deterministic):
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_a, c_b, count(*), sum(val)
+FROM tie_breaker
+GROUP BY c_a, c_b
+ORDER BY c_a ASC, c_b DESC;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo Tie-breaking 3-column ASC LIMIT 5:
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_a, c_b, c_c, count(*), sum(val)
+FROM tie_breaker
+GROUP BY c_a, c_b, c_c
+ORDER BY c_a ASC, c_b ASC, c_c ASC
+LIMIT 5;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo Tie-breaking 3-column all DESC LIMIT 3:
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_a, c_b, c_c, count(*), sum(val)
+FROM tie_breaker
+GROUP BY c_a, c_b, c_c
+ORDER BY c_a DESC, c_b DESC, c_c DESC
+LIMIT 3;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo Tie-breaking ORDER BY only c_a ASC (4 groups, deterministic):
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_a, count(*), sum(val)
+FROM tie_breaker
+GROUP BY c_a
+ORDER BY c_a;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo Tie-breaking NULL groups first via LIMIT 2 (multi-level NULL comparison):
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_a, c_b, c_c, count(*), sum(val)
+FROM tie_breaker
+GROUP BY c_a, c_b, c_c
+ORDER BY c_a ASC, c_b ASC, c_c ASC
+LIMIT 2;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo Tie-breaking with multiple aggregates:
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_a, c_b, c_c, count(*), sum(val), min(val), max(val), avg(val)
+FROM tie_breaker
+GROUP BY c_a, c_b, c_c
+ORDER BY c_a ASC, c_b ASC, c_c ASC;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+DELIMITER ;|
+
+--echo Cleanup tie_breaker
+DROP TABLE tie_breaker;

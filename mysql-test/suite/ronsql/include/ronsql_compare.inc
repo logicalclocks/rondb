@@ -42,7 +42,14 @@ if ($canonicalization_perl)
   --exec perl -pe '$canonicalization_perl' $MYSQL_TMP_DIR/mysql.out > $MYSQL_TMP_DIR/mysql.out.canon
   --move_file $MYSQL_TMP_DIR/mysql.out.canon $MYSQL_TMP_DIR/mysql.out
 }
---exec (head -n 1 $MYSQL_TMP_DIR/mysql.out && tail -n +2 $MYSQL_TMP_DIR/mysql.out | sort) > $MYSQL_TMP_DIR/mysql.out.sorted
+if ($skip_sort=='')
+{
+  --exec (head -n 1 $MYSQL_TMP_DIR/mysql.out && tail -n +2 $MYSQL_TMP_DIR/mysql.out | sort) > $MYSQL_TMP_DIR/mysql.out.sorted
+}
+if ($skip_sort!='')
+{
+  --exec cp $MYSQL_TMP_DIR/mysql.out $MYSQL_TMP_DIR/mysql.out.sorted
+}
 --echo
 --exec echo Number of output lines, including header: `grep -Fc '' '$MYSQL_TMP_DIR/mysql.out.sorted'`
 
@@ -57,7 +64,14 @@ if ($canonicalization_perl)
   --exec perl -pe '$canonicalization_perl' $MYSQL_TMP_DIR/ronsql-rdrs.out > $MYSQL_TMP_DIR/ronsql-rdrs.out.canon
   --move_file $MYSQL_TMP_DIR/ronsql-rdrs.out.canon $MYSQL_TMP_DIR/ronsql-rdrs.out
 }
---exec (head -n 1 $MYSQL_TMP_DIR/ronsql-rdrs.out && tail -n +2 $MYSQL_TMP_DIR/ronsql-rdrs.out | sort) > $MYSQL_TMP_DIR/ronsql-rdrs.out.sorted
+if ($skip_sort=='')
+{
+  --exec (head -n 1 $MYSQL_TMP_DIR/ronsql-rdrs.out && tail -n +2 $MYSQL_TMP_DIR/ronsql-rdrs.out | sort) > $MYSQL_TMP_DIR/ronsql-rdrs.out.sorted
+}
+if ($skip_sort!='')
+{
+  --exec cp $MYSQL_TMP_DIR/ronsql-rdrs.out $MYSQL_TMP_DIR/ronsql-rdrs.out.sorted
+}
 
 if ($suppress_ronsql_cli=='')
 {
@@ -72,7 +86,14 @@ if ($canonicalization_perl)
   --exec perl -pe '$canonicalization_perl' $MYSQL_TMP_DIR/ronsql-cli.out > $MYSQL_TMP_DIR/ronsql-cli.out.canon
   --move_file $MYSQL_TMP_DIR/ronsql-cli.out.canon $MYSQL_TMP_DIR/ronsql-cli.out
 }
---exec (head -n 1 $MYSQL_TMP_DIR/ronsql-cli.out && tail -n +2 $MYSQL_TMP_DIR/ronsql-cli.out | sort) > $MYSQL_TMP_DIR/ronsql-cli.out.sorted
+if ($skip_sort=='')
+{
+  --exec (head -n 1 $MYSQL_TMP_DIR/ronsql-cli.out && tail -n +2 $MYSQL_TMP_DIR/ronsql-cli.out | sort) > $MYSQL_TMP_DIR/ronsql-cli.out.sorted
+}
+if ($skip_sort!='')
+{
+  --exec cp $MYSQL_TMP_DIR/ronsql-cli.out $MYSQL_TMP_DIR/ronsql-cli.out.sorted
+}
 # todo The "|| true" at the end makes this test succeed no matter what the
 # results are. Remove it when possible.
 --exec diff -u --label ronsql-cli.out $MYSQL_TMP_DIR/ronsql-cli.out.sorted --label ronsql-rdrs.out $MYSQL_TMP_DIR/ronsql-rdrs.out.sorted || true
@@ -108,3 +129,4 @@ if ($QUERY=='')
 --let $QUERY=
 --let $canonicalization_script=
 --let $canonicalization_perl=
+--let $skip_sort=

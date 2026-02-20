@@ -832,8 +832,7 @@ RonSQLPreparer::compile()
                   &m_columns,
                   m_column_map,
                   m_conf.output_format,
-                  m_conf.err_stream,
-                  m_context.ast_root.limit);
+                  m_conf.err_stream);
 }
 
 void
