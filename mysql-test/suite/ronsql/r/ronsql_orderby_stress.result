@@ -1,0 +1,516 @@
+SET time_zone = "+00:00";
+Row count boundary_orderby:
+SELECT count(*) FROM boundary_orderby;
+count(*)
+48
+
+
+
+Boundary INT ASC (NULL first, then -2147483648 to 2147483647):
+== Query ==
+SELECT c_int, count(*), sum(val)
+FROM boundary_orderby
+GROUP BY c_int
+ORDER BY c_int;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
+Boundary INT DESC (NULL first, then 2147483647 to -2147483648):
+== Query ==
+SELECT c_int, count(*), sum(val)
+FROM boundary_orderby
+GROUP BY c_int
+ORDER BY c_int DESC;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
+Boundary BIGINT ASC:
+== Query ==
+SELECT c_bigint, count(*), sum(val)
+FROM boundary_orderby
+GROUP BY c_bigint
+ORDER BY c_bigint;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
+Boundary BIGINT UNSIGNED ASC:
+== Query ==
+SELECT c_bigunsigned, count(*), sum(val)
+FROM boundary_orderby
+GROUP BY c_bigunsigned
+ORDER BY c_bigunsigned;
+
+Number of output lines, including header: 8
+
+== Diff ==
+==========
+
+
+
+Boundary DECIMAL ASC:
+== Query ==
+SELECT c_decimal, count(*), sum(val)
+FROM boundary_orderby
+GROUP BY c_decimal
+ORDER BY c_decimal;
+
+Number of output lines, including header: 8
+
+== Diff ==
+==========
+
+
+
+Boundary INT ASC LIMIT 3:
+== Query ==
+SELECT c_int, count(*), sum(val)
+FROM boundary_orderby
+GROUP BY c_int
+ORDER BY c_int
+LIMIT 3;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+Boundary multi-column INT ASC, DECIMAL DESC:
+== Query ==
+SELECT c_int, c_decimal, count(*), sum(val)
+FROM boundary_orderby
+GROUP BY c_int, c_decimal
+ORDER BY c_int ASC, c_decimal DESC;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
+Cleanup boundary_orderby
+DROP TABLE boundary_orderby;
+Loading 200 rows into many_groups:
+Row count many_groups:
+SELECT count(*) FROM many_groups;
+count(*)
+200
+
+
+
+50 groups ORDER BY grp ASC:
+== Query ==
+SELECT grp, count(*), sum(val)
+FROM many_groups
+GROUP BY grp
+ORDER BY grp;
+
+Number of output lines, including header: 51
+
+== Diff ==
+==========
+
+
+
+50 groups ORDER BY grp DESC:
+== Query ==
+SELECT grp, count(*), sum(val)
+FROM many_groups
+GROUP BY grp
+ORDER BY grp DESC;
+
+Number of output lines, including header: 51
+
+== Diff ==
+==========
+
+
+
+50 groups ORDER BY c_varchar ASC:
+== Query ==
+SELECT c_varchar, count(*), sum(val)
+FROM many_groups
+GROUP BY c_varchar
+ORDER BY c_varchar;
+
+Number of output lines, including header: 51
+
+== Diff ==
+==========
+
+
+
+50 groups ORDER BY c_date DESC:
+== Query ==
+SELECT c_date, count(*), sum(val)
+FROM many_groups
+GROUP BY c_date
+ORDER BY c_date DESC;
+
+Number of output lines, including header: 51
+
+== Diff ==
+==========
+
+
+
+50 groups ORDER BY grp ASC LIMIT 10:
+== Query ==
+SELECT grp, count(*), sum(val)
+FROM many_groups
+GROUP BY grp
+ORDER BY grp
+LIMIT 10;
+
+Number of output lines, including header: 11
+
+== Diff ==
+==========
+
+
+
+50 groups ORDER BY grp DESC LIMIT 10:
+== Query ==
+SELECT grp, count(*), sum(val)
+FROM many_groups
+GROUP BY grp
+ORDER BY grp DESC
+LIMIT 10;
+
+Number of output lines, including header: 11
+
+== Diff ==
+==========
+
+
+
+50 groups ORDER BY c_varchar ASC LIMIT 25 (half):
+== Query ==
+SELECT c_varchar, count(*), sum(val)
+FROM many_groups
+GROUP BY c_varchar
+ORDER BY c_varchar
+LIMIT 25;
+
+Number of output lines, including header: 26
+
+== Diff ==
+==========
+
+
+
+50 groups ORDER BY grp LIMIT 50 (exact count):
+== Query ==
+SELECT grp, count(*), sum(val)
+FROM many_groups
+GROUP BY grp
+ORDER BY grp
+LIMIT 50;
+
+Number of output lines, including header: 51
+
+== Diff ==
+==========
+
+
+
+50 groups ORDER BY grp LIMIT 999 (exceeds count):
+== Query ==
+SELECT grp, count(*), sum(val)
+FROM many_groups
+GROUP BY grp
+ORDER BY grp
+LIMIT 999;
+
+Number of output lines, including header: 51
+
+== Diff ==
+==========
+
+
+
+50 groups ORDER BY grp LIMIT 0 (zero):
+== Query ==
+SELECT grp, count(*), sum(val)
+FROM many_groups
+GROUP BY grp
+ORDER BY grp
+LIMIT 0;
+
+Number of output lines, including header: 0
+
+== Diff ==
+--- mysql.out
++++ ronsql.out
+@@ -0,0 +1 @@
++grp	count(*)	sum(val)
+==========
+
+
+
+Single group via WHERE (degenerate ORDER BY):
+== Query ==
+SELECT grp, count(*), sum(val)
+FROM many_groups
+WHERE grp = 25
+GROUP BY grp
+ORDER BY grp;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+Two-column ORDER BY grp ASC, c_varchar ASC on many_groups:
+== Query ==
+SELECT grp, c_varchar, count(*), sum(val)
+FROM many_groups
+GROUP BY grp, c_varchar
+ORDER BY grp ASC, c_varchar ASC;
+
+Number of output lines, including header: 51
+
+== Diff ==
+==========
+
+
+
+Cleanup many_groups
+DROP TABLE many_groups;
+Row count string_edge:
+SELECT count(*) FROM string_edge;
+count(*)
+54
+
+
+
+String ORDER BY ASC (NULL, empty, A, aa, ab, B, ba, LLLL..., zzz):
+== Query ==
+SELECT c_varchar, count(*), sum(val)
+FROM string_edge
+GROUP BY c_varchar
+ORDER BY c_varchar;
+
+Number of output lines, including header: 10
+
+== Diff ==
+==========
+
+
+
+String ORDER BY DESC:
+== Query ==
+SELECT c_varchar, count(*), sum(val)
+FROM string_edge
+GROUP BY c_varchar
+ORDER BY c_varchar DESC;
+
+Number of output lines, including header: 10
+
+== Diff ==
+==========
+
+
+
+String two-column ORDER BY c_varchar ASC, c_int DESC:
+== Query ==
+SELECT c_varchar, c_int, count(*), sum(val)
+FROM string_edge
+GROUP BY c_varchar, c_int
+ORDER BY c_varchar ASC, c_int DESC;
+
+Number of output lines, including header: 10
+
+== Diff ==
+==========
+
+
+
+String ORDER BY with LIMIT 5:
+== Query ==
+SELECT c_varchar, count(*), sum(val)
+FROM string_edge
+GROUP BY c_varchar
+ORDER BY c_varchar
+LIMIT 5;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+Cleanup string_edge
+DROP TABLE string_edge;
+Row count tie_breaker:
+SELECT count(*) FROM tie_breaker;
+count(*)
+48
+
+
+
+Tie-breaking 3-column ASC (fully deterministic order):
+== Query ==
+SELECT c_a, c_b, c_c, count(*), sum(val)
+FROM tie_breaker
+GROUP BY c_a, c_b, c_c
+ORDER BY c_a ASC, c_b ASC, c_c ASC;
+
+Number of output lines, including header: 13
+
+== Diff ==
+==========
+
+
+
+Tie-breaking 3-column mixed (DESC, ASC, DESC):
+== Query ==
+SELECT c_a, c_b, c_c, count(*), sum(val)
+FROM tie_breaker
+GROUP BY c_a, c_b, c_c
+ORDER BY c_a DESC, c_b ASC, c_c DESC;
+
+Number of output lines, including header: 13
+
+== Diff ==
+==========
+
+
+
+Tie-breaking 2-column (groups merged, still deterministic):
+== Query ==
+SELECT c_a, c_b, count(*), sum(val)
+FROM tie_breaker
+GROUP BY c_a, c_b
+ORDER BY c_a ASC, c_b DESC;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
+Tie-breaking 3-column ASC LIMIT 5:
+== Query ==
+SELECT c_a, c_b, c_c, count(*), sum(val)
+FROM tie_breaker
+GROUP BY c_a, c_b, c_c
+ORDER BY c_a ASC, c_b ASC, c_c ASC
+LIMIT 5;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+Tie-breaking 3-column all DESC LIMIT 3:
+== Query ==
+SELECT c_a, c_b, c_c, count(*), sum(val)
+FROM tie_breaker
+GROUP BY c_a, c_b, c_c
+ORDER BY c_a DESC, c_b DESC, c_c DESC
+LIMIT 3;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+Tie-breaking ORDER BY only c_a ASC (4 groups, deterministic):
+== Query ==
+SELECT c_a, count(*), sum(val)
+FROM tie_breaker
+GROUP BY c_a
+ORDER BY c_a;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+Tie-breaking NULL groups first via LIMIT 2 (multi-level NULL comparison):
+== Query ==
+SELECT c_a, c_b, c_c, count(*), sum(val)
+FROM tie_breaker
+GROUP BY c_a, c_b, c_c
+ORDER BY c_a ASC, c_b ASC, c_c ASC
+LIMIT 2;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+Tie-breaking with multiple aggregates:
+== Query ==
+SELECT c_a, c_b, c_c, count(*), sum(val), min(val), max(val), avg(val)
+FROM tie_breaker
+GROUP BY c_a, c_b, c_c
+ORDER BY c_a ASC, c_b ASC, c_c ASC;
+
+Number of output lines, including header: 13
+
+== Diff ==
+--- mysql.out
++++ ronsql.out
+@@ -1,13 +1,13 @@
+ c_a	c_b	c_c	count(*)	sum(val)	min(val)	max(val)	avg(val)
+-NULL	NULL	NULL	4	100	10	40	25.0000
+-NULL	10	100	4	100	10	40	25.0000
+-1	10	100	4	100	10	40	25.0000
+-1	10	200	4	100	10	40	25.0000
+-1	20	100	4	100	10	40	25.0000
+-1	20	200	4	100	10	40	25.0000
+-2	10	100	4	100	10	40	25.0000
+-2	10	200	4	100	10	40	25.0000
+-2	20	100	4	100	10	40	25.0000
+-2	20	200	4	100	10	40	25.0000
+-3	10	100	4	100	10	40	25.0000
+-3	20	200	4	100	10	40	25.0000
++NULL	NULL	NULL	4	100	10	40	25
++NULL	10	100	4	100	10	40	25
++1	10	100	4	100	10	40	25
++1	10	200	4	100	10	40	25
++1	20	100	4	100	10	40	25
++1	20	200	4	100	10	40	25
++2	10	100	4	100	10	40	25
++2	10	200	4	100	10	40	25
++2	20	100	4	100	10	40	25
++2	20	200	4	100	10	40	25
++3	10	100	4	100	10	40	25
++3	20	200	4	100	10	40	25
+==========
+
+
+
+Cleanup tie_breaker
+DROP TABLE tie_breaker;

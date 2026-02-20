@@ -1,0 +1,633 @@
+--source include/have_ndb.inc
+
+# RonSQL doesn't support time zones yet, and works as if in UTC.
+SET time_zone = "+00:00";
+
+--disable_query_log
+CREATE TABLE orderby_test (
+  pk               INT              NOT NULL AUTO_INCREMENT,
+  c_tinyint        TINYINT          NULL,
+  c_tinyunsigned   TINYINT UNSIGNED NULL,
+  c_smallint       SMALLINT         NULL,
+  c_smallunsigned  SMALLINT UNSIGNED NULL,
+  c_mediumint      MEDIUMINT        NULL,
+  c_mediumunsigned MEDIUMINT UNSIGNED NULL,
+  c_int            INT              NULL,
+  c_unsigned       INT UNSIGNED     NULL,
+  c_bigint         BIGINT           NULL,
+  c_bigunsigned    BIGINT UNSIGNED  NULL,
+  c_float          FLOAT            NULL,
+  c_double         DOUBLE           NULL,
+  c_decimal        DECIMAL(10,2)    NULL,
+  c_decunsigned    DECIMAL(10,2) UNSIGNED NULL,
+  c_char           CHAR(20)    CHARACTER SET utf8mb4 NULL,
+  c_varchar        VARCHAR(50)  CHARACTER SET utf8mb4 NULL,
+  c_longvarchar    VARCHAR(300) CHARACTER SET utf8mb4 NULL,
+  c_date           DATE             NULL,
+  c_datetime       DATETIME(3)      NULL,
+  c_timestamp      TIMESTAMP(3)     NULL,
+  c_varbinary      VARBINARY(50)    NULL,
+  c_time           TIME(3)          NULL,
+  c_year           YEAR             NULL,
+  c_bit            BIT(8)           NULL,
+  val              INT              NOT NULL,
+  PRIMARY KEY USING HASH (pk)
+) ENGINE=NDB;
+
+# Insert 32 rows: 7 non-NULL groups (G1-G7) x 4 rows + 4 NULL rows
+# Values are intentionally NOT in sorted order for any column.
+# Each group's 4 rows have val = 10, 20, 30, 40 (sum = 100).
+
+# Rows 1-8: one row from each group
+INSERT INTO orderby_test
+  (c_tinyint, c_tinyunsigned, c_smallint, c_smallunsigned,
+   c_mediumint, c_mediumunsigned, c_int, c_unsigned,
+   c_bigint, c_bigunsigned,
+   c_float, c_double, c_decimal, c_decunsigned,
+   c_char, c_varchar, c_longvarchar,
+   c_date, c_datetime, c_timestamp,
+   c_varbinary, c_time, c_year, c_bit, val) VALUES
+  # G1
+  (50, 200, 12000, 50000,
+   300000, 1500000, 50000, 3000000,
+   500000000, 8000000000,
+   2.0, 100.0, 42.99, 100.00,
+   'grape', 'grape juice', 'grape is a fruit that grows on vines and is used for wine and juice',
+   '2023-06-15', '2023-06-15 14:30:00.000', '2023-06-15 14:30:00.000',
+   0x4731, '14:30:00.000', 2023, b'01010000', 10),
+  # G2
+  (-120, 0, -30000, 0,
+   -5000000, 0, -2000000, 0,
+   -9000000000, 0,
+   -8.5, -1000.5, -500.50, 0.00,
+   'apple', 'apple pie', 'apple is a popular fruit eaten raw or baked into delicious pies and crisps',
+   '2019-03-15', '2019-03-15 08:00:00.000', '2019-03-15 08:00:00.000',
+   0x4732, '08:00:00.000', 2019, b'00000010', 10),
+  # G3
+  (7, 42, 500, 1000,
+   100, 42000, 7, 42,
+   7, 42,
+   0.5, 3.75, 3.33, 3.33,
+   'fig', 'fig pudding', 'fig is a sweet fruit that can be eaten fresh or dried for later consumption',
+   '2024-02-28', '2024-02-28 23:59:59.500', '2024-02-28 23:59:59.500',
+   0x4733, '23:59:59.500', 2024, b'01000010', 10),
+  # G4
+  (127, 255, 32000, 65000,
+   8000000, 16000000, 2100000000, 4200000000,
+   9000000000000, 18000000000000,
+   100.0, 99999.5, 999.99, 999.99,
+   'Honeydew', 'Honeydew melon', 'Honeydew melon is a large sweet melon with pale green flesh and smooth rind',
+   '2025-09-10', '2025-09-10 00:00:00.001', '2025-09-10 00:00:00.001',
+   0x4734, '00:00:00.001', 2025, b'11111111', 10),
+  # G5
+  (-15, 5, -100, 15,
+   -500, 5000, -100, 500,
+   -500, 5000,
+   -1.25, -50.125, -25.10, 0.50,
+   'cherry', 'cherry tart', 'cherry is a small stone fruit that comes in sweet and sour varieties for eating',
+   '2020-07-20', '2020-07-20 12:00:00.000', '2020-07-20 12:00:00.000',
+   0x4735, '12:00:00.000', 2020, b'00001000', 10),
+  # G6
+  (0, 100, 0, 30000,
+   0, 8000000, 0, 1000000,
+   0, 1000000000,
+   0.0, 0.0, 0.00, 42.99,
+   'Banana', 'Banana split', 'Banana is a curved yellow fruit rich in potassium and commonly eaten as a snack',
+   '2021-01-01', '2021-01-01 00:00:00.000', '2021-01-01 00:00:00.000',
+   0x4736, '00:00:00.000', 2021, b'00000100', 10),
+  # G7
+  (80, 15, 20000, 5000,
+   2000000, 100000, 800000, 80000,
+   80000000000, 500000,
+   10.75, 5000.25, 100.00, 500.50,
+   'Date', 'Date cake', 'Date is a sweet tropical fruit from the date palm tree popular in Middle Eastern food',
+   '2022-11-30', '2022-11-30 18:45:30.250', '2022-11-30 18:45:30.250',
+   0x4737, '18:45:30.250', 2022, b'00010000', 10),
+  # G_NULL
+  (NULL, NULL, NULL, NULL,
+   NULL, NULL, NULL, NULL,
+   NULL, NULL,
+   NULL, NULL, NULL, NULL,
+   NULL, NULL, NULL,
+   NULL, NULL, NULL,
+   NULL, NULL, NULL, NULL, 10);
+
+# Rows 9-16: second row from each group (val=20)
+INSERT INTO orderby_test
+  (c_tinyint, c_tinyunsigned, c_smallint, c_smallunsigned,
+   c_mediumint, c_mediumunsigned, c_int, c_unsigned,
+   c_bigint, c_bigunsigned,
+   c_float, c_double, c_decimal, c_decunsigned,
+   c_char, c_varchar, c_longvarchar,
+   c_date, c_datetime, c_timestamp,
+   c_varbinary, c_time, c_year, c_bit, val) VALUES
+  (50, 200, 12000, 50000, 300000, 1500000, 50000, 3000000,
+   500000000, 8000000000, 2.0, 100.0, 42.99, 100.00,
+   'grape', 'grape juice', 'grape is a fruit that grows on vines and is used for wine and juice',
+   '2023-06-15', '2023-06-15 14:30:00.000', '2023-06-15 14:30:00.000',
+   0x4731, '14:30:00.000', 2023, b'01010000', 20),
+  (-120, 0, -30000, 0, -5000000, 0, -2000000, 0,
+   -9000000000, 0, -8.5, -1000.5, -500.50, 0.00,
+   'apple', 'apple pie', 'apple is a popular fruit eaten raw or baked into delicious pies and crisps',
+   '2019-03-15', '2019-03-15 08:00:00.000', '2019-03-15 08:00:00.000',
+   0x4732, '08:00:00.000', 2019, b'00000010', 20),
+  (7, 42, 500, 1000, 100, 42000, 7, 42,
+   7, 42, 0.5, 3.75, 3.33, 3.33,
+   'fig', 'fig pudding', 'fig is a sweet fruit that can be eaten fresh or dried for later consumption',
+   '2024-02-28', '2024-02-28 23:59:59.500', '2024-02-28 23:59:59.500',
+   0x4733, '23:59:59.500', 2024, b'01000010', 20),
+  (127, 255, 32000, 65000, 8000000, 16000000, 2100000000, 4200000000,
+   9000000000000, 18000000000000, 100.0, 99999.5, 999.99, 999.99,
+   'Honeydew', 'Honeydew melon', 'Honeydew melon is a large sweet melon with pale green flesh and smooth rind',
+   '2025-09-10', '2025-09-10 00:00:00.001', '2025-09-10 00:00:00.001',
+   0x4734, '00:00:00.001', 2025, b'11111111', 20),
+  (-15, 5, -100, 15, -500, 5000, -100, 500,
+   -500, 5000, -1.25, -50.125, -25.10, 0.50,
+   'cherry', 'cherry tart', 'cherry is a small stone fruit that comes in sweet and sour varieties for eating',
+   '2020-07-20', '2020-07-20 12:00:00.000', '2020-07-20 12:00:00.000',
+   0x4735, '12:00:00.000', 2020, b'00001000', 20),
+  (0, 100, 0, 30000, 0, 8000000, 0, 1000000,
+   0, 1000000000, 0.0, 0.0, 0.00, 42.99,
+   'Banana', 'Banana split', 'Banana is a curved yellow fruit rich in potassium and commonly eaten as a snack',
+   '2021-01-01', '2021-01-01 00:00:00.000', '2021-01-01 00:00:00.000',
+   0x4736, '00:00:00.000', 2021, b'00000100', 20),
+  (80, 15, 20000, 5000, 2000000, 100000, 800000, 80000,
+   80000000000, 500000, 10.75, 5000.25, 100.00, 500.50,
+   'Date', 'Date cake', 'Date is a sweet tropical fruit from the date palm tree popular in Middle Eastern food',
+   '2022-11-30', '2022-11-30 18:45:30.250', '2022-11-30 18:45:30.250',
+   0x4737, '18:45:30.250', 2022, b'00010000', 20),
+  (NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+   NULL, NULL, NULL, NULL, NULL, NULL,
+   NULL, NULL, NULL,
+   NULL, NULL, NULL,
+   NULL, NULL, NULL, NULL, 20);
+
+# Rows 17-24: third row from each group (val=30)
+INSERT INTO orderby_test
+  (c_tinyint, c_tinyunsigned, c_smallint, c_smallunsigned,
+   c_mediumint, c_mediumunsigned, c_int, c_unsigned,
+   c_bigint, c_bigunsigned,
+   c_float, c_double, c_decimal, c_decunsigned,
+   c_char, c_varchar, c_longvarchar,
+   c_date, c_datetime, c_timestamp,
+   c_varbinary, c_time, c_year, c_bit, val) VALUES
+  (50, 200, 12000, 50000, 300000, 1500000, 50000, 3000000,
+   500000000, 8000000000, 2.0, 100.0, 42.99, 100.00,
+   'grape', 'grape juice', 'grape is a fruit that grows on vines and is used for wine and juice',
+   '2023-06-15', '2023-06-15 14:30:00.000', '2023-06-15 14:30:00.000',
+   0x4731, '14:30:00.000', 2023, b'01010000', 30),
+  (-120, 0, -30000, 0, -5000000, 0, -2000000, 0,
+   -9000000000, 0, -8.5, -1000.5, -500.50, 0.00,
+   'apple', 'apple pie', 'apple is a popular fruit eaten raw or baked into delicious pies and crisps',
+   '2019-03-15', '2019-03-15 08:00:00.000', '2019-03-15 08:00:00.000',
+   0x4732, '08:00:00.000', 2019, b'00000010', 30),
+  (7, 42, 500, 1000, 100, 42000, 7, 42,
+   7, 42, 0.5, 3.75, 3.33, 3.33,
+   'fig', 'fig pudding', 'fig is a sweet fruit that can be eaten fresh or dried for later consumption',
+   '2024-02-28', '2024-02-28 23:59:59.500', '2024-02-28 23:59:59.500',
+   0x4733, '23:59:59.500', 2024, b'01000010', 30),
+  (127, 255, 32000, 65000, 8000000, 16000000, 2100000000, 4200000000,
+   9000000000000, 18000000000000, 100.0, 99999.5, 999.99, 999.99,
+   'Honeydew', 'Honeydew melon', 'Honeydew melon is a large sweet melon with pale green flesh and smooth rind',
+   '2025-09-10', '2025-09-10 00:00:00.001', '2025-09-10 00:00:00.001',
+   0x4734, '00:00:00.001', 2025, b'11111111', 30),
+  (-15, 5, -100, 15, -500, 5000, -100, 500,
+   -500, 5000, -1.25, -50.125, -25.10, 0.50,
+   'cherry', 'cherry tart', 'cherry is a small stone fruit that comes in sweet and sour varieties for eating',
+   '2020-07-20', '2020-07-20 12:00:00.000', '2020-07-20 12:00:00.000',
+   0x4735, '12:00:00.000', 2020, b'00001000', 30),
+  (0, 100, 0, 30000, 0, 8000000, 0, 1000000,
+   0, 1000000000, 0.0, 0.0, 0.00, 42.99,
+   'Banana', 'Banana split', 'Banana is a curved yellow fruit rich in potassium and commonly eaten as a snack',
+   '2021-01-01', '2021-01-01 00:00:00.000', '2021-01-01 00:00:00.000',
+   0x4736, '00:00:00.000', 2021, b'00000100', 30),
+  (80, 15, 20000, 5000, 2000000, 100000, 800000, 80000,
+   80000000000, 500000, 10.75, 5000.25, 100.00, 500.50,
+   'Date', 'Date cake', 'Date is a sweet tropical fruit from the date palm tree popular in Middle Eastern food',
+   '2022-11-30', '2022-11-30 18:45:30.250', '2022-11-30 18:45:30.250',
+   0x4737, '18:45:30.250', 2022, b'00010000', 30),
+  (NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+   NULL, NULL, NULL, NULL, NULL, NULL,
+   NULL, NULL, NULL,
+   NULL, NULL, NULL,
+   NULL, NULL, NULL, NULL, 30);
+
+# Rows 25-32: fourth row from each group (val=40)
+INSERT INTO orderby_test
+  (c_tinyint, c_tinyunsigned, c_smallint, c_smallunsigned,
+   c_mediumint, c_mediumunsigned, c_int, c_unsigned,
+   c_bigint, c_bigunsigned,
+   c_float, c_double, c_decimal, c_decunsigned,
+   c_char, c_varchar, c_longvarchar,
+   c_date, c_datetime, c_timestamp,
+   c_varbinary, c_time, c_year, c_bit, val) VALUES
+  (50, 200, 12000, 50000, 300000, 1500000, 50000, 3000000,
+   500000000, 8000000000, 2.0, 100.0, 42.99, 100.00,
+   'grape', 'grape juice', 'grape is a fruit that grows on vines and is used for wine and juice',
+   '2023-06-15', '2023-06-15 14:30:00.000', '2023-06-15 14:30:00.000',
+   0x4731, '14:30:00.000', 2023, b'01010000', 40),
+  (-120, 0, -30000, 0, -5000000, 0, -2000000, 0,
+   -9000000000, 0, -8.5, -1000.5, -500.50, 0.00,
+   'apple', 'apple pie', 'apple is a popular fruit eaten raw or baked into delicious pies and crisps',
+   '2019-03-15', '2019-03-15 08:00:00.000', '2019-03-15 08:00:00.000',
+   0x4732, '08:00:00.000', 2019, b'00000010', 40),
+  (7, 42, 500, 1000, 100, 42000, 7, 42,
+   7, 42, 0.5, 3.75, 3.33, 3.33,
+   'fig', 'fig pudding', 'fig is a sweet fruit that can be eaten fresh or dried for later consumption',
+   '2024-02-28', '2024-02-28 23:59:59.500', '2024-02-28 23:59:59.500',
+   0x4733, '23:59:59.500', 2024, b'01000010', 40),
+  (127, 255, 32000, 65000, 8000000, 16000000, 2100000000, 4200000000,
+   9000000000000, 18000000000000, 100.0, 99999.5, 999.99, 999.99,
+   'Honeydew', 'Honeydew melon', 'Honeydew melon is a large sweet melon with pale green flesh and smooth rind',
+   '2025-09-10', '2025-09-10 00:00:00.001', '2025-09-10 00:00:00.001',
+   0x4734, '00:00:00.001', 2025, b'11111111', 40),
+  (-15, 5, -100, 15, -500, 5000, -100, 500,
+   -500, 5000, -1.25, -50.125, -25.10, 0.50,
+   'cherry', 'cherry tart', 'cherry is a small stone fruit that comes in sweet and sour varieties for eating',
+   '2020-07-20', '2020-07-20 12:00:00.000', '2020-07-20 12:00:00.000',
+   0x4735, '12:00:00.000', 2020, b'00001000', 40),
+  (0, 100, 0, 30000, 0, 8000000, 0, 1000000,
+   0, 1000000000, 0.0, 0.0, 0.00, 42.99,
+   'Banana', 'Banana split', 'Banana is a curved yellow fruit rich in potassium and commonly eaten as a snack',
+   '2021-01-01', '2021-01-01 00:00:00.000', '2021-01-01 00:00:00.000',
+   0x4736, '00:00:00.000', 2021, b'00000100', 40),
+  (80, 15, 20000, 5000, 2000000, 100000, 800000, 80000,
+   80000000000, 500000, 10.75, 5000.25, 100.00, 500.50,
+   'Date', 'Date cake', 'Date is a sweet tropical fruit from the date palm tree popular in Middle Eastern food',
+   '2022-11-30', '2022-11-30 18:45:30.250', '2022-11-30 18:45:30.250',
+   0x4737, '18:45:30.250', 2022, b'00010000', 40),
+  (NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+   NULL, NULL, NULL, NULL, NULL, NULL,
+   NULL, NULL, NULL,
+   NULL, NULL, NULL,
+   NULL, NULL, NULL, NULL, 40);
+
+--enable_query_log
+
+--echo Row count:
+SELECT count(*) FROM orderby_test;
+
+DELIMITER |;
+
+#
+# ===== Section A: ORDER BY ASC for every supported type =====
+#
+
+--echo
+--echo
+--echo
+--echo ORDER BY c_tinyint ASC:
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_tinyint, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_tinyint
+ORDER BY c_tinyint;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo ORDER BY c_tinyunsigned ASC:
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_tinyunsigned, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_tinyunsigned
+ORDER BY c_tinyunsigned;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo ORDER BY c_smallint ASC:
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_smallint, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_smallint
+ORDER BY c_smallint;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo ORDER BY c_smallunsigned ASC:
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_smallunsigned, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_smallunsigned
+ORDER BY c_smallunsigned;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo ORDER BY c_mediumint ASC:
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_mediumint, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_mediumint
+ORDER BY c_mediumint;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo ORDER BY c_mediumunsigned ASC:
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_mediumunsigned, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_mediumunsigned
+ORDER BY c_mediumunsigned;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo ORDER BY c_int ASC:
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_int, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_int
+ORDER BY c_int;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo ORDER BY c_unsigned ASC:
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_unsigned, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_unsigned
+ORDER BY c_unsigned;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo ORDER BY c_bigint ASC:
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_bigint, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_bigint
+ORDER BY c_bigint;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo ORDER BY c_bigunsigned ASC:
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_bigunsigned, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_bigunsigned
+ORDER BY c_bigunsigned;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo ORDER BY c_float ASC:
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_float, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_float
+ORDER BY c_float;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo ORDER BY c_double ASC:
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_double, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_double
+ORDER BY c_double;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo ORDER BY c_decimal ASC:
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_decimal, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_decimal
+ORDER BY c_decimal;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo ORDER BY c_decunsigned ASC:
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_decunsigned, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_decunsigned
+ORDER BY c_decunsigned;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo ORDER BY c_char ASC:
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_char, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_char
+ORDER BY c_char;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo ORDER BY c_varchar ASC:
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_varchar, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_varchar
+ORDER BY c_varchar;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo ORDER BY c_longvarchar ASC:
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_longvarchar, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_longvarchar
+ORDER BY c_longvarchar;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo ORDER BY c_date ASC:
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_date, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_date
+ORDER BY c_date;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo ORDER BY c_datetime ASC:
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_datetime, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_datetime
+ORDER BY c_datetime;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo ORDER BY c_timestamp ASC:
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_timestamp, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_timestamp
+ORDER BY c_timestamp;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+#
+# ===== Section B: ORDER BY DESC for representative types =====
+#
+
+--echo
+--echo
+--echo
+--echo ORDER BY c_int DESC:
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_int, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_int
+ORDER BY c_int DESC;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo ORDER BY c_bigunsigned DESC:
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_bigunsigned, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_bigunsigned
+ORDER BY c_bigunsigned DESC;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo ORDER BY c_double DESC:
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_double, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_double
+ORDER BY c_double DESC;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo ORDER BY c_decimal DESC:
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_decimal, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_decimal
+ORDER BY c_decimal DESC;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo ORDER BY c_varchar DESC:
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_varchar, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_varchar
+ORDER BY c_varchar DESC;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo ORDER BY c_date DESC:
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_date, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_date
+ORDER BY c_date DESC;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+#
+# ===== Section C: Multi-column ORDER BY with mixed types =====
+#
+
+--echo
+--echo
+--echo
+--echo ORDER BY c_int ASC, c_varchar ASC:
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_int, c_varchar, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_int, c_varchar
+ORDER BY c_int ASC, c_varchar ASC;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo ORDER BY c_date DESC, c_decimal ASC:
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_date, c_decimal, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_date, c_decimal
+ORDER BY c_date DESC, c_decimal ASC;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo ORDER BY c_varchar ASC, c_tinyunsigned DESC:
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_varchar, c_tinyunsigned, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_varchar, c_tinyunsigned
+ORDER BY c_varchar ASC, c_tinyunsigned DESC;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo ORDER BY c_char ASC, c_double DESC, c_date ASC:
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_char, c_double, c_date, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_char, c_double, c_date
+ORDER BY c_char ASC, c_double DESC, c_date ASC;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+#
+# ===== Section D: ORDER BY with LIMIT =====
+#
+
+--echo
+--echo
+--echo
+--echo ORDER BY c_int ASC LIMIT 3:
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_int, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_int
+ORDER BY c_int
+LIMIT 3;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo ORDER BY c_varchar DESC LIMIT 5:
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_varchar, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_varchar
+ORDER BY c_varchar DESC
+LIMIT 5;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo ORDER BY c_date ASC, c_int DESC LIMIT 4:
+--let $skip_sort=yes
+let $QUERY=
+SELECT c_date, c_int, count(*), sum(val)
+FROM orderby_test
+GROUP BY c_date, c_int
+ORDER BY c_date ASC, c_int DESC
+LIMIT 4;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+#
+# ===== Section E: Unsupported type error tests =====
+#
+
+--echo
+--echo
+--echo
+--echo ORDER BY unsupported VARBINARY:
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT c_varbinary, count(*) FROM orderby_test GROUP BY c_varbinary ORDER BY c_varbinary;' 2>&1
+
+--echo
+--echo ORDER BY unsupported TIME:
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT c_time, count(*) FROM orderby_test GROUP BY c_time ORDER BY c_time;' 2>&1
+
+--echo
+--echo ORDER BY unsupported YEAR:
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT c_year, count(*) FROM orderby_test GROUP BY c_year ORDER BY c_year;' 2>&1
+
+--echo
+--echo ORDER BY unsupported BIT:
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT c_bit, count(*) FROM orderby_test GROUP BY c_bit ORDER BY c_bit;' 2>&1
+
+#
+# ===== Section F: Cleanup =====
+#
+
+--echo
+--echo Cleanup
+DELIMITER ;|
+DROP TABLE orderby_test;
