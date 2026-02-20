@@ -1376,6 +1376,8 @@ void NdbReceiver::print_checksum(const Uint32 *data,
   for (Uint32 i = 0; i < len; i++) {
     checksum ^= data[i];
   }
+  (void)checksum;
+  (void)line;
   DBUG_PRINT("info", ("len: %u, checksum: 0x%x, line: %u",
     len, checksum, line));
 }
@@ -1491,6 +1493,7 @@ void NdbReceiver::release_long_row_ref(NdbReceiver::LongRowRef *row_ref,
                                        Uint32 ref) {
   (void)ref;
   DBUG_ENTER("NdbReceiver::release_long_row_ref");
+  (void)ref;
   assert(row_ref->m_blockref == ref);
   assert(row_ref->m_row_release_ptr != nullptr);
   delete [] row_ref->m_row_release_ptr;
