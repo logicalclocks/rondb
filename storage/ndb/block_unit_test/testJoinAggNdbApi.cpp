@@ -1799,8 +1799,9 @@ testCharGroupByWithIndex(Ndb *ndb, MYSQL *conn)
   fflush(stdout);
 
   NdbDictionary::Dictionary *dict = ndb->getDictionary();
-  dict->invalidateTable(T6_CATEGORY);
-  dict->invalidateTable(T6_PRODUCT);
+  dict->removeCachedIndex("idx_cat_name", T6_CATEGORY);
+  dict->removeCachedTable(T6_CATEGORY);
+  dict->removeCachedTable(T6_PRODUCT);
   const NdbDictionary::Table *catTab = dict->getTable(T6_CATEGORY);
   const NdbDictionary::Table *prodTab = dict->getTable(T6_PRODUCT);
   const NdbDictionary::Index *catIdx =
@@ -1809,6 +1810,11 @@ testCharGroupByWithIndex(Ndb *ndb, MYSQL *conn)
     printf("FAILED (table/index lookup: %s)\n", dict->getNdbError().message);
     return -1;
   }
+  V("\n  catTab: id=%d ver=%d  prodTab: id=%d ver=%d\n",
+    catTab->getObjectId(), catTab->getObjectVersion(),
+    prodTab->getObjectId(), prodTab->getObjectVersion());
+  V("  catIdx: id=%d ver=%d\n",
+    catIdx->getObjectId(), catIdx->getObjectVersion());
 
   const NdbDictionary::Column *catNameCol = catTab->getColumn("cat_name");
   if (catNameCol == nullptr) {
@@ -1823,6 +1829,23 @@ testCharGroupByWithIndex(Ndb *ndb, MYSQL *conn)
       !agg.Finalize()) {
     printf("FAILED (agg program: %s)\n", agg.GetError().err_msg_);
     return -1;
+  }
+
+  /* Warm-up: simple index scan to force NDB API schema version sync
+   * with data nodes before building the pushed query. */
+  {
+    NdbTransaction *warmup = ndb->startTransaction();
+    if (warmup != nullptr) {
+      NdbIndexScanOperation *sop =
+          warmup->getNdbIndexScanOperation(catIdx, catTab);
+      if (sop != nullptr) {
+        sop->readTuples(NdbOperation::LM_CommittedRead);
+        if (warmup->execute(NdbTransaction::NoCommit) == 0) {
+          sop->nextResult(true);
+        }
+      }
+      warmup->close();
+    }
   }
 
   NdbQueryBuilder *qb = NdbQueryBuilder::create();

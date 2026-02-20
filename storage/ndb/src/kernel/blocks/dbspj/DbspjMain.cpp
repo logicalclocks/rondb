@@ -7406,10 +7406,19 @@ Uint32 Dbspj::scanFrag_send(Signal *signal, Ptr<Request> requestPtr,
   /*
    * Clear JoinAggFlag for root scan to DBLQH.  The flag was set by DBTC
    * to indicate the DBTC→DBSPJ request carries aggStateKeys (in a
-   * section).  The root scan itself does not aggregate — only child
-   * lookups do (via LQHKEYREQ with JoinAggFlag + aggStateKey).
+   * section).  The root scan itself does not aggregate.
+   *
+   * For child scans that are aggregation leaves (T_AGGREGATE_LEAF),
+   * re-enable JoinAggFlag and pass the per-node aggStateKey in
+   * variableData[var_index + 2] (after corrIdStart + rootResultData).
    */
   ScanFragReq::setJoinAggFlag(req->requestInfo, 0);
+  Uint32 agg_extra = 0;
+  if (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) {
+    jam();
+    ScanFragReq::setJoinAggFlag(req->requestInfo, 1);
+    agg_extra = 1;
+  }
   // req->variableData[0] // set below
   Uint32 var_index = 0;
   if (requestPtr.p->m_user_id != RNIL) {
@@ -7641,7 +7650,7 @@ Uint32 Dbspj::scanFrag_send(Signal *signal, Ptr<Request> requestPtr,
       g_eventLogger->info("SCAN_FRAGREQ to %x", fragPtr.p->m_ref);
       printSCAN_FRAGREQ(
           stdout, signal->getDataPtrSend(),
-          NDB_ARRAY_SIZE(treeNodePtr.p->m_scanFrag_data.m_scanFragReq) + var_index,
+          NDB_ARRAY_SIZE(treeNodePtr.p->m_scanFrag_data.m_scanFragReq) + var_index + agg_extra,
           DBLQH);
       printf("ATTRINFO: ");
       print(handle.m_ptr[0], stdout);
@@ -7653,6 +7662,12 @@ Uint32 Dbspj::scanFrag_send(Signal *signal, Ptr<Request> requestPtr,
 
       Uint32 ref = fragPtr.p->m_ref;
       Uint32 nodeId = refToNode(ref);
+      if (agg_extra) {
+        jam();
+        ndbrequire(requestPtr.p->m_aggNodes.get(nodeId));
+        req->variableData[var_index + 2] =
+            requestPtr.p->m_aggStateKeys[nodeId];
+      }
       if (!ScanFragReq::getRangeScanFlag(req->requestInfo)) {
         c_Counters.incr_counter(CI_LOCAL_TABLE_SCANS_SENT, 1);
       } else if (nodeId == getOwnNodeId()) {
@@ -7830,7 +7845,7 @@ Uint32 Dbspj::scanFrag_send(Signal *signal, Ptr<Request> requestPtr,
           ref,
           GSN_SCAN_FRAGREQ,
           signal,
-          NDB_ARRAY_SIZE(data.m_scanFragReq) + var_index,
+          NDB_ARRAY_SIZE(data.m_scanFragReq) + var_index + agg_extra,
           JBB,
           &handle,
           !releaseAtSend);  // Keep sent sections, unless last send
@@ -10147,11 +10162,19 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
     if (treeNodePtr.p->m_send.m_attrInfoPtrI == RNIL) {
       jam();
 
-      // Add dummy interpreted program.
-      Uint32 tmp = Interpreter::ExitOK();
+      /**
+       * Add a proper interpreted program with the 5-word section header
+       * that DBTUP copyAttrinfo expects when interpretedFlag is set.
+       * Header: [InitLen=0, ProgLen=1, SubrLen=0, ParamLen=0, RsubLen=0]
+       * followed by a single ExitOK instruction.
+       *
+       * This is needed because DBSPJ never sets NotInterpretedFlag, so
+       * DBLQH/DBTUP always process child scan attrInfo in interpreted mode.
+       */
+      Uint32 tmp[6] = {0, 1, 0, 0, 0, Interpreter::ExitOK()};
       err = DbspjErr::OutOfSectionMemory;
-      if (unlikely(!appendToSection(treeNodePtr.p->m_send.m_attrInfoPtrI, &tmp,
-                                    1))) {
+      if (unlikely(!appendToSection(treeNodePtr.p->m_send.m_attrInfoPtrI, tmp,
+                                    6))) {
         jam();
         break;
       }
