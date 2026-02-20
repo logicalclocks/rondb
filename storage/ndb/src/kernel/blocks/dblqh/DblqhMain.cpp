@@ -16790,10 +16790,10 @@ void Dblqh::exec_next_scan_conf(Signal *signal, bool ttl_ignore_for_ral) {
    * 2. vectorScanDone indicates the normal scan is done, so
    * mark the vec_search_scan_done_ of the interpreter to true
    */
-  if (vectorScanDone && scanPtr->m_aggregation &&
+  if (unlikely(vectorScanDone && scanPtr->m_aggregation &&
       scanPtr->m_agg_interpreter->vec_search() &&
       // Just set it to 'done' once
-      !scanPtr->m_agg_interpreter->vec_search_scan_done()) {
+      !scanPtr->m_agg_interpreter->vec_search_scan_done())) {
     scanPtr->m_agg_interpreter->set_vec_search_scan_done(true);
     scanPtr->m_curr_batch_size_rows = 0;
     scanPtr->m_curr_batch_size_bytes = 0;
@@ -16806,9 +16806,9 @@ void Dblqh::exec_next_scan_conf(Signal *signal, bool ttl_ignore_for_ral) {
 void Dblqh::continue_next_scan_conf(Signal *signal,
                                     ScanRecord::ScanState scanState,
                                     ScanRecord *const scanPtr) {
-  if (scanPtr && scanPtr->m_aggregation &&
+  if (unlikely(scanPtr && scanPtr->m_aggregation &&
       scanPtr->m_agg_interpreter->vec_search() &&
-      scanPtr->m_agg_interpreter->vec_search_scan_done()) {
+      scanPtr->m_agg_interpreter->vec_search_scan_done())) {
     NextScanConf* nextScanConf = (NextScanConf *)&signal->theData[0];
     ndbrequire(
         /*
@@ -18908,7 +18908,7 @@ void Dblqh::nextScanConfScanLab(Signal *signal, ScanRecord *const scanPtr,
                                  accOpPtr);
     }
 
-    if (vec_search_sending_phase) {
+    if (unlikely(vec_search_sending_phase)) {
       ndbrequire(accOpPtr == (Uint32)-1);
       /*
        * VS related
@@ -19064,7 +19064,7 @@ void Dblqh::nextScanConfScanLab(Signal *signal, ScanRecord *const scanPtr,
       /*
        * Filter out the pushdown vector search case
        */
-      if (scanPtr->m_aggregation && !scanPtr->m_agg_interpreter->vec_search()) {
+      if (unlikely(scanPtr->m_aggregation) && !scanPtr->m_agg_interpreter->vec_search()) {
         c_tup->SendAggResToAPI(signal, tcConnectptr.p, scanPtr);
       }
       if (scanPtr->m_continous_scan_state ==
@@ -19139,9 +19139,9 @@ Dblqh::next_scanconf_tupkeyreq(Signal* signal,
    * [For sending vector search result]
    * 4. Send 1 vector search result
    */
-  if (scanPtr->m_aggregation &&
+  if (unlikely(scanPtr->m_aggregation &&
       scanPtr->m_agg_interpreter->vec_search() &&
-      scanPtr->m_agg_interpreter->vec_search_scan_done()) {
+      scanPtr->m_agg_interpreter->vec_search_scan_done())) {
     ndbrequire(scanPtr->m_agg_interpreter->next_send_idx() >= 0);
 
     Uint32 res_len = scanPtr->m_agg_interpreter->CopyOneVecCandidateToSignal(signal);
@@ -20922,9 +20922,9 @@ void Dblqh::send_next_NEXT_SCANREQ(Signal* signal,
     scanPtr->scan_lastSeen = __LINE__;
     signal->m_extra_signals++;
     jamDebug();
-    if (scanPtr->m_aggregation &&
+    if (unlikely(scanPtr->m_aggregation &&
         scanPtr->m_agg_interpreter->vec_search() &&
-        scanPtr->m_agg_interpreter->vec_search_scan_done()) {
+        scanPtr->m_agg_interpreter->vec_search_scan_done())) {
 
       NextScanConf *const conf = (NextScanConf *)signal->getDataPtrSend();
       ndbrequire(scanptr.p == scanPtr);
@@ -21016,10 +21016,10 @@ void Dblqh::send_next_NEXT_SCANREQ(Signal* signal,
         ndbrequire(next_value == 1);
         m_in_send_next_scan = 1;
       }
-    } else if (scanPtr->m_aggregation &&
+    } else if (unlikely(scanPtr->m_aggregation &&
           scanPtr->m_agg_interpreter->vec_search() &&
           scanPtr->m_agg_interpreter->vec_search_scan_done() &&
-          scanPtr->m_agg_interpreter->next_send_idx() < 0) {
+          scanPtr->m_agg_interpreter->next_send_idx() < 0)) {
       VS_RONDB_TRACE(scanPtr, "Send vector search result completed");
     } else {
       block->EXECUTE_DIRECT_FN(f, signal);
@@ -38229,7 +38229,7 @@ Dblqh::ScanRecord::check_scan_batch_completed(bool debug_pa_print) const {
    *  1. Normal pushdown aggregation
    *  2. First round of scan in vector search
    */
-  if (m_aggregation == true &&
+  if (unlikely(m_aggregation) &&
       !(m_agg_interpreter->vec_search() &&
         m_agg_interpreter->vec_search_scan_done())) {
     /*

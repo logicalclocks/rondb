@@ -90,18 +90,22 @@ NdbAggregator::~NdbAggregator() {
 }
 
 Int32 NdbAggregator::ProcessRes(char* buf) {
-  int dynamic_dispatch = simsimd_uses_dynamic_dispatch();
-  simsimd_metric_kind_t kind = simsimd_metric_l2sq_k;
-  simsimd_datatype_t datatype = simsimd_datatype_f32_k;
+#ifdef DEBUG_NDBAGGREGATOR
+  {
+    int dynamic_dispatch = simsimd_uses_dynamic_dispatch();
+    simsimd_metric_kind_t kind = simsimd_metric_l2sq_k;
+    simsimd_datatype_t datatype = simsimd_datatype_f32_k;
 
-  simsimd_kernel_punned_t result = 0;
-  simsimd_capability_t c = simsimd_cap_serial_k;
-  simsimd_capability_t supported = simsimd_capabilities();
-  simsimd_capability_t allowed = simsimd_cap_any_k;
-  simsimd_find_kernel_punned(kind, datatype, supported, allowed, &result, &c);
+    simsimd_kernel_punned_t result = 0;
+    simsimd_capability_t c = simsimd_cap_serial_k;
+    simsimd_capability_t supported = simsimd_capabilities();
+    simsimd_capability_t allowed = simsimd_cap_any_k;
+    simsimd_find_kernel_punned(kind, datatype, supported, allowed, &result, &c);
 
-  fprintf(stderr, "use_dynamic_dispatch: %d, capabilities: %d, choose: [%p, %d]\n",
-          dynamic_dispatch, supported, result, c);
+    fprintf(stderr, "use_dynamic_dispatch: %d, capabilities: %d, choose: [%p, %d]\n",
+            dynamic_dispatch, supported, result, c);
+  }
+#endif
   DEB_TRACE();
   if (buf != nullptr) {
     DEB_TRACE();
@@ -1017,6 +1021,7 @@ bool NdbAggregator::VecProcessRes(NdbRecAttr** userAttrs, Uint32 n_userAttrs,
                                    n_userAttrs, userAttrs);
   vec_result_->push(result);
   if (vec_result_->size() > vec_top_n_) {
+    delete vec_result_->top();
     vec_result_->pop();
   }
   return true;

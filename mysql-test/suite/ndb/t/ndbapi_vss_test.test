@@ -1,0 +1,29 @@
+-- source include/have_ndb.inc
+-- source include/have_ndbapi_examples.inc
+
+# Skip if ndb_ndbapi_vss_test was not built (requires WITH_SIMSIMD)
+let $have_vss_binary= `SELECT LENGTH('$NDB_VSS_TEST_BINARY') > 0`;
+if (!$have_vss_binary)
+{
+  --skip Test requires ndb_ndbapi_vss_test (built with WITH_SIMSIMD)
+}
+
+# Connect using socket to the MySQL Server which mysqltest currently
+# is connected to
+let MASTER_MYSOCK=`select @@socket`;
+
+# If test is run with TLS then programs need to find the keys.
+let $tls = `SELECT COUNT(*) > 0 FROM ndbinfo.transporters WHERE encrypted = 1`;
+if ($tls) {
+  let HOME=$MYSQL_TMP_DIR;
+  let HOMEPATH=$MYSQL_TMP_DIR;
+  --force-cpdir $MYSQLTEST_VARDIR/std_data/ndb-tls/active $HOME/ndb-tls
+}
+
+# Run the test binary.  Stdout ([TEST] lines) goes directly to MTR result.
+# Stderr (debug trace) is discarded.
+--exec $NDB_EXAMPLES_DIR/ndb_ndbapi_vss_test "$NDB_CONNECTSTRING" --mysql_host=127.0.0.1 --mysql_port=$MASTER_MYPORT --mysql_user=root 2>/dev/null
+
+if ($tls) {
+  --force-rmdir $HOME/ndb-tls
+}
