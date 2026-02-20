@@ -58,7 +58,9 @@
  * and combined Section 2 (bounds + aggReceiverId + aggProgram) as sent
  * from NDB API in SCAN_TABREQ.  Uncomment to activate.
  */
-#define DEBUG_JOIN_AGG_TRACE 1
+#ifdef VM_TRACE
+//#define DEBUG_JOIN_AGG_TRACE 1
+#endif
 
 #ifdef DEBUG_JOIN_AGG_TRACE
 static void dumpJoinAggHex(const char *label, const Uint32 *buf, Uint32 len) {
@@ -1838,9 +1840,11 @@ int NdbQueryImpl::processAggResults() {
   if (!m_hasAggregation || m_aggregator == nullptr) return 0;
 
   const Uint32 numBatches = m_aggResultOffsets.getSize();
+#ifdef DEBUG_JOIN_AGG_TRACE
   const Uint32 totalWords = m_aggResultData.getSize();
   fprintf(stderr, "[AGG] processAggResults: %u batches, %u total words\n",
           numBatches, totalWords);
+#endif
   for (Uint32 i = 0; i < numBatches; i++) {
     const Uint32 offset = m_aggResultOffsets.addr()[i];
     const Uint32 nextOffset = (i + 1 < numBatches)
@@ -1849,11 +1853,13 @@ int NdbQueryImpl::processAggResults() {
     const Uint32 batchLen = nextOffset - offset;
     const Uint32 *batchData = m_aggResultData.addr() + offset;
 
+#ifdef DEBUG_JOIN_AGG_TRACE
     fprintf(stderr, "[AGG]   batch %u: offset=%u len=%u words:", i, offset, batchLen);
     for (Uint32 w = 0; w < batchLen && w < 16; w++) {
       fprintf(stderr, " %08x", batchData[w]);
     }
     fprintf(stderr, "\n");
+#endif
 
     /**
      * Kernel sends [AttributeHeader, n_gb_cols|n_agg_results, ...].
@@ -3035,6 +3041,14 @@ int NdbQueryImpl::prepareSend() {
                    m_transaction.getNdb()->getMinDbNodeVersion())) {
       // 'MultiFragment' not supported by all datanodes, partially upgraded?
       m_fragsPerWorker = 1;
+    } else if (m_hasAggregation) {
+      // Aggregate queries: each fragment gets its own SCAN_FRAGREQ to a
+      // separate DBSPJ instance for maximum parallelism across TC threads.
+      // Multi-fragment bundling would send all fragments on a node to one
+      // DBSPJ instance, serializing the work. Since aggregation results
+      // are per-node (not per-fragment), the extra API round-trips that
+      // multi-fragment workers avoid are not a concern.
+      m_fragsPerWorker = 1;
     } else {
       NdbNodeBitmask dataNodes;
       Uint32 cnt = 0;
@@ -3532,7 +3546,7 @@ int NdbQueryImpl::doSend(int nodeId, bool lastFlag) {
     }
     if (m_hasAggregation) {
       ScanTabReq::setJoinAggFlag(reqInfo, 1);
-      scanTabReq->scanParallelism = 1;  // DEBUG: force 1 for easier debugging
+      scanTabReq->scanParallelism = m_workerCount * m_fragsPerWorker;
       tSignal.setLength(ScanTabReq::StaticLength + 5);
     }
     scanTabReq->requestInfo = reqInfo;
@@ -5849,6 +5863,14 @@ Uint32 NdbQueryOperationImpl::getMaxBatchBytes() const {
                                 /*key_size = */ 0, needRangeNo(),
                                 withCorrelation, batchFrags, batchRows,
                                 m_maxBatchBytes, m_resultBufferSize);
+
+    if (getQuery().m_hasAggregation && getParentOperation() == nullptr) {
+      // For aggregate root scans, batch_byte_size controls DBLQH→DBSPJ
+      // throughput, not API receive buffer. result_bufsize() caps it to
+      // the tiny API buffer (no getValue columns). Restore to the value
+      // from calculate_batch_size() so config BatchByteSize takes effect.
+      m_maxBatchBytes = batchByteSize;
+    }
   }
 
   return m_maxBatchBytes;

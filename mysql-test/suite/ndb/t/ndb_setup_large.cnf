@@ -1,7 +1,7 @@
 !include suite/ndb/my_1rpl.cnf
 
 [cluster_config.1]
-NumCPUs=6
+NumCPUs=8
 DataMemory=2G
 DiskPageBufferMemory=400M
 TotalMemoryConfig=6G
@@ -12,6 +12,9 @@ MaxNoOfUniqueHashIndexes=2000
 TransactionMemory=200M
 RedoBuffer=100M
 SharedGlobalMemory=450M
+BatchSize=990
+BatchByteSize=1M
+MaxScanBatchSize=4M
 
 # Set data node 1 to node ID 144 so that LQH's host record array
 # (sized MAX_NDB_NODES = max_data_node_id + 1 = 145) can accommodate

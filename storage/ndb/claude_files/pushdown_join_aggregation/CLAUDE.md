@@ -161,3 +161,50 @@ Similar patterns in the codebase:
 - `DEB_RATE_QUEUE_DROP` / `DEBUG_RATE_QUEUE_DROP` — DbtcMain.cpp
 - `DEB_AGG` / `DEBUG_AGG` — AggInterpreter.cpp
 - `PA_INTERP_TRACE` / `DEBUG_PA_INTERP` — AggInterpreter.cpp (partition-filtered variant)
+
+### NDB API Multi-Fragment Workers vs DBSPJ Parallelism
+
+The NDB API's multi-fragment worker model (`m_fragsPerWorker > 1`) bundles multiple
+fragments into a single SCAN_FRAGREQ to a single DBSPJ instance. This is controlled
+by the `MultiFragFlag` in `SCAN_TABREQ`. The flow:
+
+1. `NdbQueryOperation.cpp`: `m_fragsPerWorker = rootFragments / numberOfDataNodes`
+2. If `m_fragsPerWorker > 1`, `MultiFragFlag` is set in `SCAN_TABREQ`
+3. In DBTC `sendDihGetNodesLab()`: all fragments on the same node are assigned the
+   **same DBSPJ instance** via round-robin (`cspjInstanceRR`), then sorted by
+   `primaryBlockRef` so they group together
+4. In DBTC `sendScanFragReq()`: fragments with matching `primaryBlockRef` are bundled
+   into a **single SCAN_FRAGREQ** with multiple fragment IDs
+
+**Without MultiFragFlag** (the non-multi-frag path): each fragment gets a **different**
+round-robin DBSPJ instance, resulting in separate SCAN_FRAGREQs that run on different
+TC threads in parallel.
+
+**Impact**: With 1 data node and 4 fragments, MultiFragFlag causes all 4 fragments to
+go to 1 DBSPJ instance (1 SCAN_FRAGREQ), while without it, 4 SCAN_FRAGREQs go to 4
+different DBSPJ instances across TC threads.
+
+**Aggregate queries disable multi-fragment workers** (`m_fragsPerWorker = 1`) because:
+- Aggregation results are per-node, not per-fragment — the API round-trip savings from
+  multi-fragment bundling don't apply
+- Distributing fragments across DBSPJ instances gives better parallelism across TC threads
+- `scanParallelism` in SCAN_TABREQ equals `rootFragments` (one handle per fragment)
+
+Key code locations:
+- `NdbQueryOperation.cpp:3044` — `m_hasAggregation` forces `m_fragsPerWorker = 1`
+- `DbtcMain.cpp:16861-16914` — multi-frag SPJ instance assignment and sorting
+- `DbtcMain.cpp:17241-17243` — non-multi-frag round-robin SPJ instance per fragment
+- `DbtcMain.cpp:18525-18604` — MultiFragFlag fragment grouping in `sendScanFragReq`
+
+#### scanParallelism in SCAN_TABREQ
+
+For JoinAgg queries, DBTC reads `scanParallelism` from the SCAN_TABREQ signal
+(`DbtcMain.cpp:15692`) and uses it to allocate that many `ScanFragRec` handles
+in `initScanrec`. This determines the **maximum concurrent fragments**. After
+DIH reports the actual fragment count (`tfragCount`), `scanParallel` is overridden
+to `tfragCount` for fragment iteration, but the number of pre-allocated handles
+remains fixed. Excess handles (if `scanParallelism > tfragCount`) are set to
+"empty result" in `sendFragScansLab`.
+
+For aggregate queries, `scanParallelism = rootFragments` (since `m_fragsPerWorker = 1`
+and `m_workerCount = rootFragments`), which matches `tfragCount` exactly.
