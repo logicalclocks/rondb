@@ -1,0 +1,5 @@
+--source include/have_ndb.inc
+
+--echo Running bench_q12_dbtc
+--exec $NDB_PUSH_AGG_DIR/bench_q12_dbtc -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT > $MYSQLTEST_VARDIR/log/bench_q12_dbtc.log 2>&1
+--echo PASSED

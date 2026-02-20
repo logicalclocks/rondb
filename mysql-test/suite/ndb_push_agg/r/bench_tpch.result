@@ -1,0 +1,26 @@
+Loading TPC-H data
+PASSED
+Running bench_q2_ndbapi
+PASSED
+Running bench_q3_ndbapi
+PASSED
+Running bench_q4_ndbapi
+PASSED
+Running bench_q5_ndbapi
+PASSED
+Running bench_q9_dbtc
+PASSED
+Running bench_q9_ndbapi
+PASSED
+Running bench_q10_ndbapi
+PASSED
+Running bench_q11_ndbapi
+PASSED
+Running bench_minmax_ndbapi
+PASSED
+Running bench_nogroup_ndbapi
+PASSED
+Running bench_orderscan_ndbapi
+PASSED
+Running bench_datescan_ndbapi
+PASSED

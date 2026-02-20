@@ -3349,6 +3349,15 @@ sub environment_setup {
       }
     }
 
+    # Pushdown join aggregation test binaries from block_unit_test
+    my $test_join_agg_binary =
+      my_find_bin($bindir, [ "runtime_output_directory", "bin" ],
+                  "testJoinAgg", NOT_REQUIRED);
+    if ($test_join_agg_binary) {
+      $ENV{'NDB_PUSH_AGG_DIR'} = dirname($test_join_agg_binary);
+      mtr_verbose("NDB_PUSH_AGG_DIR: $ENV{'NDB_PUSH_AGG_DIR'}");
+    }
+
     my $path_ndb_testrun_log = "$opt_vardir/tmp/ndb_testrun.log";
     $ENV{'NDB_TOOLS_OUTPUT'} = $path_ndb_testrun_log;
 

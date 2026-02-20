@@ -1,0 +1,3 @@
+--source include/have_ndb.inc
+
+--exec $NDB_PUSH_AGG_DIR/testJoinAggSpj -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT 2>&1
