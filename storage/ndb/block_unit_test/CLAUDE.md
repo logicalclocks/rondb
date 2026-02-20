@@ -88,3 +88,41 @@ bench_q9_dbtc.
   before calling ndb_end() — use scoping blocks
 - Use V_QUERY with LDM instance number (not DBLQH instance 0) for scan signals
 - SignalSender requires lock()/unlock() around all signal operations
+
+## NDB API Pitfalls
+
+### Do NOT call getValue() on aggregate query operations
+When using NdbQueryBuilder with pushdown aggregation, do NOT call
+`getValue()` on any query operation (root or intermediate). FLUSH_AI is
+suppressed for non-leaf aggregate nodes (`suppressFlushAI = isAggregateRequest
+&& !isAggregateLeaf` in DbspjMain.cpp). Adding getValue() inserts
+PI_ATTR_LIST columns that get prepended to NI_LINKED_ATTR columns in the
+TRANSID_AI row buffer, shifting all `col()` indices by the number of
+getValue columns. This causes child key lookups to read wrong columns,
+resulting in lookup failures (LQHKEYREF).
+
+### NDB CHAR(N) columns require exactly N bytes in setValue()
+`NdbOperation::setValue(colName, ptr)` for a CHAR(N) column copies exactly N
+bytes from `ptr`. If the source string is shorter than N bytes (e.g., a
+null-terminated C string), NDB reads past the null terminator into whatever
+follows in memory. This produces corrupt column data.
+
+**Always space-pad CHAR values** before calling setValue:
+```cpp
+static void
+setChar(NdbOperation *op, const char *colName,
+        const char *value, Uint32 charLen)
+{
+  char buf[64];
+  require(charLen < sizeof(buf));
+  memset(buf, ' ', charLen);
+  Uint32 slen = (Uint32)strlen(value);
+  if (slen > charLen) slen = charLen;
+  memcpy(buf, value, slen);
+  op->setValue(colName, buf);
+}
+```
+
+When **reading** CHAR(N) data back (e.g., from NdbAggregator::FetchGroupbyColumn),
+use `strnlen(ptr, byteSize)` to find the effective string length, matching
+MySQL's behavior of treating the first null byte as the string end.

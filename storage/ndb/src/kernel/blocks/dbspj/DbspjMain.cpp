@@ -63,7 +63,7 @@
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_HASH 1
 //#define DEBUG_AGGREGATION 1
-#define DEBUG_TRANSID_AI 1
+//#define DEBUG_TRANSID_AI 1
 #define DEBUG_JOIN_AGG_TRACE 1
 #endif
 
@@ -150,10 +150,10 @@ static constexpr Uint32 ResumeCongestedQuota = 32;
  * DEBUG options for different parts of SPJ block.
  * Comment out those part you don't want DEBUG'ed.
  */
-#define DEBUG(x) ndbout << "DBSPJ: "<< x << endl
-#define DEBUG_DICT(x) ndbout << "DBSPJ: "<< x << endl
-#define DEBUG_LQHKEYREQ
-#define DEBUG_SCAN_FRAGREQ
+//#define DEBUG(x) ndbout << "DBSPJ: "<< x << endl
+//#define DEBUG_DICT(x) ndbout << "DBSPJ: "<< x << endl
+//#define DEBUG_LQHKEYREQ
+//#define DEBUG_SCAN_FRAGREQ
 #endif
 
 /**
@@ -2851,6 +2851,17 @@ void Dbspj::sendConf(Signal *signal, Ptr<Request> requestPtr,
           ndbassert(treeNodePtr.p->m_node_no <= 31);
           activeMask |= (1 << treeNodePtr.p->m_node_no);
         }
+#ifdef SPJ_TRACE_TIME
+        if (is_complete) {
+          g_eventLogger->info("node[%u], #LQHKEYCONF: %u, #LQHKEYREF: %u,"
+                              " #SCAN_FRAGCONF: %u, SCAN_FRAGCONF_len: %u",
+            treeNodePtr.p->m_node_no,
+            treeNodePtr.p->m_lqhkeyconf_count,
+            treeNodePtr.p->m_lqhkeyref_count,
+            treeNodePtr.p->m_scan_fragconf_count,
+            treeNodePtr.p->m_scan_fragconf_len);
+        }
+#endif
       }
       conf->activeMask = activeMask;
       c_Counters.incr_counter(CI_SCAN_BATCHES_RETURNED, 1);
@@ -3371,6 +3382,9 @@ void Dbspj::execLQHKEYREF(Signal *signal) {
         << ", node: " << treeNodePtr.p->m_node_no
         << ", request: " << requestPtr.i << ", errorCode: " << ref->errorCode);
 
+#ifdef SPJ_TRACE_TIME
+  treeNodePtr.p->m_lqhkeyref_count++;
+#endif
   ndbrequire(treeNodePtr.p->m_info && treeNodePtr.p->m_info->m_execLQHKEYREF);
   (this->*(treeNodePtr.p->m_info->m_execLQHKEYREF))(signal, requestPtr,
                                                     treeNodePtr);
@@ -3395,6 +3409,9 @@ void Dbspj::execLQHKEYCONF(Signal *signal) {
         << ", node: " << treeNodePtr.p->m_node_no
         << ", request: " << requestPtr.i);
 
+#ifdef SPJ_TRACE_TIME
+  treeNodePtr.p->m_lqhkeyconf_count++;
+#endif
   ndbrequire(treeNodePtr.p->m_info && treeNodePtr.p->m_info->m_execLQHKEYCONF);
   (this->*(treeNodePtr.p->m_info->m_execLQHKEYCONF))(signal, requestPtr,
                                                      treeNodePtr);
@@ -3535,6 +3552,10 @@ void Dbspj::execSCAN_FRAGCONF(Signal *signal) {
     jam();
     scanFragHandlePtr.p->m_next_ref = conf->senderRef;
   }
+#ifdef SPJ_TRACE_TIME
+  treeNodePtr.p->m_scan_fragconf_count++;
+  treeNodePtr.p->m_scan_fragconf_len += conf->total_len;
+#endif
   ndbrequire(treeNodePtr.p->m_info &&
              treeNodePtr.p->m_info->m_execSCAN_FRAGCONF);
   (this->*(treeNodePtr.p->m_info->m_execSCAN_FRAGCONF))(

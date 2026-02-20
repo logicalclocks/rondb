@@ -160,6 +160,13 @@
 //#define DEBUG_QUOTAS 1
 //#define DEBUG_CONT_SCAN 1
 //#define DEBUG_INDEX_BUILD 1
+#define DEBUG_JOIN_AGG 1
+#endif
+
+#ifdef DEBUG_JOIN_AGG
+#define DEB_JOIN_AGG(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_JOIN_AGG(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_CONT_SCAN 
@@ -18025,6 +18032,9 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
   JoinAggregationState *state = getJoinAggState(aggStateKey);
   if (state == nullptr) {
     jam();
+    DEB_JOIN_AGG(("DBLQH execJOIN_AGG_COMPLETE_REQ:"
+                  " aggStateKey=%u state=nullptr (NOT FOUND)",
+                  aggStateKey));
     JoinAggCompleteRef *ref =
       (JoinAggCompleteRef *)signal->getDataPtrSend();
     ref->senderRef = reference();
@@ -18035,6 +18045,21 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
     sendSignal(senderRef, GSN_JOIN_AGG_COMPLETE_REF,
                signal, JoinAggCompleteRef::SignalLength, JBB);
     return;
+  }
+  {
+    AggInterpreter *interp = (state->m_strategy ==
+        JoinAggregationState::MUTEX_FREE)
+        ? state->m_per_thread_interpreters[0]
+        : state->m_agg_interpreter;
+    Uint32 gbSize = 0;
+    if (interp != nullptr && interp->gb_map_mutable() != nullptr)
+      gbSize = interp->gb_map_mutable()->size();
+    DEB_JOIN_AGG(("DBLQH execJOIN_AGG_COMPLETE_REQ:"
+                  " aggStateKey=%u strategy=%u num_threads=%u"
+                  " gb_map_size=%u completed_ops=%u",
+                  aggStateKey, state->m_strategy,
+                  state->m_num_threads, gbSize,
+                  state->m_completed_ops.load()));
   }
   state->m_max_batch_rows = maxBatchRows;
   state->m_state.store(JoinAggregationState::FINALIZING);
@@ -18170,6 +18195,13 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
     LinearSectionPtr ptr[3];
     ptr[0].p = buf;
     ptr[0].sz = pos;
+ 
+    DEB_JOIN_AGG(("(%u) 1:Sending TRANSID_AI to 0x%x, receiverId: %u, size: %u",
+      instance(),
+      state->m_resultRef,
+      transIdAI->connectPtr,
+      pos));
+
     sendSignal(state->m_resultRef, GSN_TRANSID_AI, signal,
                TransIdAI::HeaderLength, JBB, ptr, 1);
 
@@ -18247,6 +18279,13 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
       LinearSectionPtr ptr[3];
       ptr[0].p = buf;
       ptr[0].sz = pos;
+
+      DEB_JOIN_AGG(("(%u) 2:Sending TRANSID_AI to 0x%x, receiverId: %u, size: %u",
+        instance(),
+        state->m_resultRef,
+        transIdAI->connectPtr,
+        pos));
+
       sendSignal(state->m_resultRef, GSN_TRANSID_AI, signal,
                  TransIdAI::HeaderLength, JBB, ptr, 1);
 

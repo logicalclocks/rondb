@@ -351,6 +351,23 @@ setNdbDate(NdbOperation *op, const char *colName, int year, int month, int day)
 }
 
 /* ------------------------------------------------------------------ */
+/* NDB CHAR column helper — space-pad to column width                  */
+/* ------------------------------------------------------------------ */
+
+static void
+setChar(NdbOperation *op, const char *colName,
+        const char *value, Uint32 charLen)
+{
+  char buf[64];
+  require(charLen < sizeof(buf));
+  memset(buf, ' ', charLen);
+  Uint32 slen = (Uint32)strlen(value);
+  if (slen > charLen) slen = charLen;
+  memcpy(buf, value, slen);
+  op->setValue(colName, buf);
+}
+
+/* ------------------------------------------------------------------ */
 /* Data loading functions                                              */
 /* ------------------------------------------------------------------ */
 
@@ -367,7 +384,7 @@ loadRegion(Ndb *ndb)
     NdbOperation *op = tx->getNdbOperation(tab);
     op->insertTuple();
     op->equal("r_regionkey", (Int32)i);
-    op->setValue("r_name", REGION_NAMES[i]);
+    setChar(op, "r_name", REGION_NAMES[i], 25);
     setVarchar(op, "r_comment", "");
   }
 
@@ -394,7 +411,7 @@ loadNation(Ndb *ndb)
     NdbOperation *op = tx->getNdbOperation(tab);
     op->insertTuple();
     op->equal("n_nationkey", (Int32)i);
-    op->setValue("n_name", NATION_NAMES[i]);
+    setChar(op, "n_name", NATION_NAMES[i], 25);
     op->setValue("n_regionkey", (Int32)NATION_REGION[i]);
     setVarchar(op, "n_comment", "");
   }
@@ -428,7 +445,7 @@ loadSupplier(Ndb *ndb, Uint32 count)
       op->equal("s_suppkey", (Int32)suppkey);
       char name[26];
       snprintf(name, sizeof(name), "Supplier#%09u", suppkey);
-      op->setValue("s_name", name);
+      setChar(op, "s_name", name, 25);
       setVarchar(op, "s_address", "addr");
       op->setValue("s_nationkey", (Int32)(suppkey % 25));
       op->setValue("s_phone", "000-000-0000000");
@@ -492,15 +509,15 @@ loadPart(Ndb *ndb, Uint32 count)
       char mfgr[26];
       snprintf(mfgr, sizeof(mfgr), "Manufacturer#%u",
                (detHash(partkey, 300) % 5) + 1);
-      op->setValue("p_mfgr", mfgr);
+      setChar(op, "p_mfgr", mfgr, 25);
       char brand[11];
       snprintf(brand, sizeof(brand), "Brand#%u%u",
                (detHash(partkey, 301) % 5) + 1,
                (detHash(partkey, 302) % 5) + 1);
-      op->setValue("p_brand", brand);
+      setChar(op, "p_brand", brand, 10);
       setVarchar(op, "p_type", "STANDARD");
       op->setValue("p_size", (Int32)((detHash(partkey, 303) % 50) + 1));
-      op->setValue("p_container", "SM CASE");
+      setChar(op, "p_container", "SM CASE", 10);
 
       char price[20];
       snprintf(price, sizeof(price), "%u.%02u",
@@ -602,7 +619,7 @@ loadCustomer(Ndb *ndb, Uint32 count)
                (int)(detHash(custkey, 501) % 10000) - 999,
                (int)(detHash(custkey, 502) % 100));
       setDecimal(op, "c_acctbal", bal);
-      op->setValue("c_mktsegment", MKTSEGMENTS[detHash(custkey, 503) % 5]);
+      setChar(op, "c_mktsegment", MKTSEGMENTS[detHash(custkey, 503) % 5], 10);
       setVarchar(op, "c_comment", "");
     }
     if (tx->execute(NdbTransaction::Commit) != 0) {
@@ -660,11 +677,11 @@ loadOrders(Ndb *ndb, Uint32 count, Uint32 numCustomers)
 
       setNdbDate(op, "o_orderdate", year, month, day);
       op->setValue("o_orderyear", (Int32)year);
-      op->setValue("o_orderpriority", PRIORITY_NAMES[detHash(orderkey, 603) % 5]);
+      setChar(op, "o_orderpriority", PRIORITY_NAMES[detHash(orderkey, 603) % 5], 15);
       char clerk[16];
       snprintf(clerk, sizeof(clerk), "Clerk#%09u",
                (detHash(orderkey, 604) % 1000) + 1);
-      op->setValue("o_clerk", clerk);
+      setChar(op, "o_clerk", clerk, 15);
       op->setValue("o_shippriority", (Int32)0);
       setVarchar(op, "o_comment", "");
     }
@@ -768,9 +785,9 @@ loadLineitem(Ndb *ndb, Uint32 numOrders, Uint32 linesPerOrder,
         setDateFromEpoch("l_shipdate", baseDay + shipDelay);
         setDateFromEpoch("l_commitdate", baseDay + commitDelay);
         setDateFromEpoch("l_receiptdate", baseDay + receiptDelay);
-        op->setValue("l_shipinstruct", "NONE");
-        op->setValue("l_shipmode",
-                     SHIPMODE_NAMES[detHash(orderkey, 780 + ln) % 7]);
+        setChar(op, "l_shipinstruct", "NONE", 25);
+        setChar(op, "l_shipmode",
+                SHIPMODE_NAMES[detHash(orderkey, 780 + ln) % 7], 10);
         setVarchar(op, "l_comment", "");
         loaded++;
       }

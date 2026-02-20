@@ -18916,6 +18916,15 @@ void Dbtc::sendScanTabConf(Signal *signal, const ScanRecordPtr scanPtr,
   if (scanPtr.p->m_delivered_scan_frags.isEmpty() &&
       scanPtr.p->m_running_scan_frags.isEmpty()) {
     jam();
+#ifdef DEBUG_JOIN_AGG_TRACE
+    DEB_JOIN_AGG(("DBTC sendScanTabConf EndOfData check:"
+                   " m_joinAgg=%u m_aggNodes.isclear=%u scanState=%u"
+                   " scanPtr.i=%u",
+                   scanPtr.p->m_joinAgg,
+                   scanPtr.p->m_aggNodes.isclear(),
+                   scanPtr.p->scanState,
+                   scanPtr.i));
+#endif
     if (scanPtr.p->m_joinAgg && !scanPtr.p->m_aggNodes.isclear()) {
       jam();
       scanPtr.p->scanState = ScanRecord::WAIT_JOIN_AGG_COMPLETE;
@@ -28607,6 +28616,10 @@ void Dbtc::sendJoinAggCompleteReqs(Signal *signal, ScanRecordPtr scanptr) {
   apiPtr.i = scanptr.p->scanApiRec;
   c_apiConnectRecordPool.getPtr(apiPtr);
 
+#ifdef DEBUG_JOIN_AGG_TRACE
+  DEB_JOIN_AGG(("DBTC sendJoinAggCompleteReqs: scanPtr.i=%u",
+                 scanptr.i));
+#endif
   NdbNodeBitmask nodes = scanptr.p->m_aggNodes;
   for (Uint32 nodeId = nodes.find_first();
        nodeId != NdbNodeBitmask::NotFound;

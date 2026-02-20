@@ -46,7 +46,7 @@ class SectionReader;
 struct QueryNode;
 struct QueryNodeParameters;
 
-// #define SPJ_TRACE_TIME
+#define SPJ_TRACE_TIME
 
 class Dbspj : public SimulatedBlock {
  public:
@@ -846,7 +846,14 @@ class Dbspj : public SimulatedBlock {
           m_predecessors(),
           m_dependencies(),
           m_resumeEvents(0),
-          m_scanAncestorPtrI(RNIL) {}
+          m_scanAncestorPtrI(RNIL)
+#ifdef SPJ_TRACE_TIME
+          ,m_scan_fragconf_count(0)
+          ,m_scan_fragconf_len(0)
+          ,m_lqhkeyconf_count(0)
+          ,m_lqhkeyref_count(0)
+#endif
+    {}
 
     TreeNode(Uint32 request)
         : m_magic(MAGIC),
@@ -863,7 +870,14 @@ class Dbspj : public SimulatedBlock {
           m_scanAncestorPtrI(RNIL),
           nextList(RNIL),
           prevList(RNIL),
-          nextCursor(RNIL) {
+          nextCursor(RNIL)
+#ifdef SPJ_TRACE_TIME
+          ,m_scan_fragconf_count(0)
+          ,m_scan_fragconf_len(0)
+          ,m_lqhkeyconf_count(0)
+          ,m_lqhkeyref_count(0)
+#endif
+    {
       //    m_send.m_ref = 0;
       m_send.m_correlation = 0;
       m_send.m_keyInfoPtrI = RNIL;
@@ -1189,6 +1203,12 @@ class Dbspj : public SimulatedBlock {
     };
     Uint32 prevList;
     Uint32 nextCursor;
+#ifdef SPJ_TRACE_TIME
+    Uint32 m_scan_fragconf_count;
+    Uint32 m_scan_fragconf_len;
+    Uint32 m_lqhkeyconf_count;
+    Uint32 m_lqhkeyref_count;
+#endif
   };  // struct TreeNode
 
   static const Ptr<TreeNode> NullTreeNodePtr;

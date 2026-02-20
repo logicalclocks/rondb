@@ -612,6 +612,41 @@ bool NdbAggregator::LoadColumn(Int32 col_id, Uint32 reg_id) {
   return true;
 }
 
+bool NdbAggregator::LoadLinkedColumn(Uint32 position, Uint32 reg_id,
+                                     const NdbDictionary::Column *col) {
+  if (col == nullptr) {
+    SetError(kErrInvalidColumnId);
+    return false;
+  }
+  NdbDictionary::Column::Type type = col->getType();
+  if (!TypeSupported(type)) {
+    SetError(kErrUnSupportedColumn);
+    return false;
+  }
+  if (reg_id >= kRegTotal) {
+    SetError(kErrInvalidRegNo);
+    return false;
+  }
+
+  Uint32 col_id = AGG_LINKED_COL_FLAG | position;
+  buffer_[curr_prog_pos_++] =
+    (kOpLoadCol) << 26 |
+    (type & 0x1F) << 21 |
+    (reg_id & 0x0F) << 16 |
+    col_id;
+
+  if (type == NdbDictionary::Column::Decimal ||
+      type == NdbDictionary::Column::Decimalunsigned) {
+    Int32 decimal_info = col->getPrecision() << 16 |
+                           col->getScale();
+    int4store(reinterpret_cast<char*>(&buffer_[curr_prog_pos_]),
+              decimal_info);
+    curr_prog_pos_++;
+  }
+
+  return true;
+}
+
 bool NdbAggregator::LoadUint64(Uint64 value, Uint32 reg_id) {
   buffer_[curr_prog_pos_++] =
     (kOpLoadConst) << 26 |

@@ -272,6 +272,8 @@ class NdbAggregator {
 
   bool LoadColumn(const char* name, Uint32 reg_id);
   bool LoadColumn(Int32 col_id, Uint32 reg_id);
+  bool LoadLinkedColumn(Uint32 position, Uint32 reg_id,
+                        const NdbDictionary::Column *col);
   bool LoadUint64(Uint64 value, Uint32 reg_id);
   bool LoadInt64(Int64 value, Uint32 reg_id);
   bool LoadDouble(double value, Uint32 reg_id);
