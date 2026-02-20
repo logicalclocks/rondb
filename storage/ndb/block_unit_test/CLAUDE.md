@@ -64,6 +64,30 @@ Tables are created and dropped via MySQL (ENGINE=NDB).
 
 **Requires:** Running NDB cluster with MySQL server
 
+### testJoinAggScanScan
+Scan-scan join aggregation tests using NdbQueryBuilder. Unlike testJoinAggNdbApi
+(which uses scanTable/scanIndex root + readTuple child), these tests use child
+scanIndex operations that return 0-N rows per parent row.
+
+**Build:** `make -j$(sysctl -n hw.ncpu) testJoinAggScanScan` (from debug_build)
+
+**Run:**
+```bash
+testJoinAggScanScan -c <connect_string> -m <mysql_port> [--verbose]
+```
+
+**Tests:**
+1. Basic scan-scan SUM GROUP BY (dept→emp via index)
+2. Scan-scan COUNT/SUM no GROUP BY
+3. Scan-scan with interpreted code filter on root (region_id = 1)
+4. Scan-scan all four aggregate types (COUNT, SUM, MIN, MAX)
+5. Scan-scan with NULL values in aggregated column
+6. 3-way join: scan-scan-lookup (region→dept→stat)
+7. scanIndex root + scanIndex child (both bounded)
+8. Composite index bounds (2-column linked bound)
+
+**Requires:** Running NDB cluster with MySQL server
+
 ### bench_q9_dbtc
 TPC-H Q9 benchmark using raw DBTC→DBSPJ→DBLQH signals. 6-table join
 (lineitem→part→orders→supplier→partsupp→nation) with composite keys,
