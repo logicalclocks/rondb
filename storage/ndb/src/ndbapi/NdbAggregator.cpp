@@ -161,7 +161,12 @@ void NdbAggregator::initForResults(const Uint32 *programBuffer,
   // Allocate agg_results for non-GROUP-BY case
   if (n_gb_cols_ == 0 && agg_results_ == nullptr && n_agg_results_ > 0) {
     agg_results_ = new AggResItem[n_agg_results_];
-    memset(agg_results_, 0, n_agg_results_ * sizeof(AggResItem));
+    for (Uint32 i = 0; i < n_agg_results_; i++) {
+      agg_results_[i].type = NDB_TYPE_UNDEFINED;
+      agg_results_[i].value.val_int64 = 0;
+      agg_results_[i].is_unsigned = false;
+      agg_results_[i].is_null = true;
+    }
   }
 
   // Store GROUP BY column definitions for FetchGroupbyColumn().
