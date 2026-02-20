@@ -1,0 +1,9 @@
+!include suite/ndb/my.cnf
+
+[cluster_config.1]
+# Scale up for large_top_n test case (50000 rows x 128-dim vectors):
+# - DataMemory: ~25MB vector data + indexes + overhead
+# - SharedGlobalMemory: CandidateAllocator needs ~5MB per fragment
+#   for top_n=5000 candidates (slot_size * top_n), across 4 partitions
+DataMemory = 128M
+SharedGlobalMemory = 128M

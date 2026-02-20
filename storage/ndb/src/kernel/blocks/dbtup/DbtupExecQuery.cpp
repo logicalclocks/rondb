@@ -5219,9 +5219,9 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
     if (req_struct->scan_rec != nullptr) {
       Dblqh::ScanRecord* scan_rec_ptr =
                     reinterpret_cast<Dblqh::ScanRecord*>(req_struct->scan_rec);
-        if (scan_rec_ptr->m_aggregation == true &&
+        if (unlikely(scan_rec_ptr->m_aggregation == true &&
             scan_rec_ptr->m_agg_interpreter->vec_search() &&
-            !scan_rec_ptr->m_agg_interpreter->IsCandidateBufAllocated()) {
+            !scan_rec_ptr->m_agg_interpreter->IsCandidateBufAllocated())) {
 
           vec_max_rec_size_ptr = &vec_max_rec_size;
           get_vec_max_rec_size = true;
@@ -5291,7 +5291,7 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
       // Moz
       if (scan_rec_ptr->m_aggregation == true) {
         ndbrequire(scan_rec_ptr->m_agg_interpreter != nullptr);
-        if (get_vec_max_rec_size) {
+        if (unlikely(get_vec_max_rec_size)) {
           /*
            * VS related
            * We’ve already calculated the theoretical maximum result record size.

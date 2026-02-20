@@ -1206,7 +1206,7 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
   }
 
   *vec_update_candidate = false;
-  if (vec_search_) {
+  if (unlikely(vec_search_)) {
     Uint32 vec_col_idx = (vec_col_idx_ & 0x0000FFFF) << 16;
     int ret = block_tup->readAttributes(req_struct, &(vec_col_idx), 1,
                   vec_buf_ + vec_buf_pos_, g_vec_buf_len_ - vec_buf_pos_);

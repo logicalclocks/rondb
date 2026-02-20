@@ -3333,6 +3333,13 @@ sub environment_setup {
       $ENV{'NDB_EXAMPLES_BINARY'} = $ndbapi_examples_binary;
       $ENV{'NDB_EXAMPLES_DIR'}    = dirname($ndbapi_examples_binary);
       mtr_verbose("NDB_EXAMPLES_DIR: $ENV{'NDB_EXAMPLES_DIR'}");
+
+      my $vss_binary = dirname($ndbapi_examples_binary) .
+                       "/ndb_ndbapi_vss_test";
+      if (-e $vss_binary) {
+        $ENV{'NDB_VSS_TEST_BINARY'} = $vss_binary;
+        mtr_verbose("NDB_VSS_TEST_BINARY: $vss_binary");
+      }
     }
 
     my $path_ndb_testrun_log = "$opt_vardir/tmp/ndb_testrun.log";
