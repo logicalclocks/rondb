@@ -175,6 +175,59 @@ Alice	50	200
 Bob	80	300
 Charlie	350	400
 
+
+=== Test 8: WHERE filter on root table ===
+== Query ==
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+WHERE o.o_custkey = 100
+GROUP BY o.o_custkey;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+WHERE o.o_custkey = 100
+GROUP BY o.o_custkey|
+o_custkey	SUM(l.l_quantity)
+100	50
+
+
+=== Test 9: WHERE with range on root table ===
+== Query ==
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+WHERE o.o_custkey >= 200
+GROUP BY o.o_custkey;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+WHERE o.o_custkey >= 200
+GROUP BY o.o_custkey|
+o_custkey	SUM(l.l_quantity)
+200	75
+300	75
+
+
+=== Test 10: Error — WHERE on child table ===
+Expected error: WHERE conditions on joined tables are not yet supported.
+Error handling: RPE
+ronsql_cli caught exception: WHERE conditions on joined tables are not yet supported. Only the root table (first in FROM) may be filtered.
+
 === Cleanup ===
 DROP TABLE lineitem;
 DROP TABLE orders;

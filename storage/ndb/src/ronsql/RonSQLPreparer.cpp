@@ -180,6 +180,41 @@ require_tmp(bool condition, const char* msg)
   throw RonSQLRetryableError(msg);
 }
 
+static void
+validate_where_join(struct ConditionalExpression* ce, Uint32* col_table_idx)
+{
+  if (ce == NULL)
+    return;
+  switch (ce->op)
+  {
+  case T_IDENTIFIER:
+    if (col_table_idx[ce->col_idx] != 0)
+    {
+      throw RonSQLPermanentError(
+          "WHERE conditions on joined tables are not yet supported. "
+          "Only the root table (first in FROM) may be filtered.");
+    }
+    break;
+  case T_OR:
+  case T_AND:
+  case T_EQUALS:
+  case T_NOT_EQUALS:
+  case T_GE:
+  case T_GT:
+  case T_LE:
+  case T_LT:
+    validate_where_join(ce->args.left, col_table_idx);
+    validate_where_join(ce->args.right, col_table_idx);
+    break;
+  case T_NOT:
+    validate_where_join(ce->args.left, col_table_idx);
+    break;
+  default:
+    // Constants, strings, etc. — no column reference
+    break;
+  }
+}
+
 void
 RonSQLPreparer::configure()
 {
@@ -757,12 +792,10 @@ RonSQLPreparer::load_join()
   m_column_map = col_map;
   m_column_table_idx = col_table_idx;
 
-  // Reject WHERE on join queries (not yet supported)
+  // Validate WHERE columns are all on root table (table index 0)
   if (m_context.ast_root.where_expression != NULL)
   {
-    err << "WHERE clauses on join queries are not yet supported." << endl;
-    throw RonSQLPermanentError(
-        "WHERE clauses on join queries are not yet supported.");
+    validate_where_join(m_context.ast_root.where_expression, col_table_idx);
   }
 
   // Build linked projections for GROUP BY columns on non-leaf tables
@@ -1202,9 +1235,22 @@ RonSQLPreparer::execute_join()
 
   const NdbQueryOperationDef* opDefs[MAX_JOIN_TABLES];
 
-  // Root operation (always TABLE_SCAN for now)
+  // Root operation (TABLE_SCAN, with optional WHERE filter)
   {
     NdbQueryOptions rootOpts;
+    NdbInterpretedCode code(plan.ops[0].table);
+    if (m_context.ast_root.where_expression != NULL)
+    {
+      ConditionalExpression* where_ce =
+          simplify_ce(m_context.ast_root.where_expression, -1);
+      NdbScanFilter filter(&code);
+      filter.setSqlCmpSemantics();
+      filter.begin(NdbScanFilter::AND);
+      apply_filter(&filter, where_ce);
+      filter.end();
+      code.finalise();
+      rootOpts.setInterpretedCode(code);
+    }
     opDefs[0] = qb->scanTable(plan.ops[0].table, &rootOpts);
     require_run(opDefs[0] != NULL, "Failed to create root scan.");
   }
