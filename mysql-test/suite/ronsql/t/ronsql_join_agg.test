@@ -1,0 +1,262 @@
+--source include/have_ndb.inc
+
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+
+--echo
+--echo === Create tables for join aggregation tests ===
+--echo
+
+--disable_query_log
+
+CREATE TABLE orders (
+  o_id INT NOT NULL,
+  o_custkey INT NOT NULL,
+  o_status VARCHAR(10) NOT NULL,
+  PRIMARY KEY USING HASH (o_id)
+) ENGINE=NDB;
+
+CREATE TABLE lineitem (
+  l_id INT NOT NULL,
+  l_orderkey INT NOT NULL,
+  l_quantity INT NOT NULL,
+  l_price INT NOT NULL,
+  PRIMARY KEY USING HASH (l_id),
+  INDEX idx_orderkey (l_orderkey)
+) ENGINE=NDB;
+
+INSERT INTO orders VALUES
+  (1, 100, 'open'),
+  (2, 100, 'closed'),
+  (3, 200, 'open'),
+  (4, 200, 'open'),
+  (5, 300, 'closed');
+
+INSERT INTO lineitem VALUES
+  (1, 1, 10, 100),
+  (2, 1, 20, 200),
+  (3, 2, 5, 50),
+  (4, 2, 15, 150),
+  (5, 3, 30, 300),
+  (6, 3, 25, 250),
+  (7, 4, 8, 80),
+  (8, 4, 12, 120),
+  (9, 5, 40, 400),
+  (10, 5, 35, 350);
+
+CREATE TABLE customer (
+  c_id INT NOT NULL,
+  c_name VARCHAR(20) NOT NULL,
+  c_region INT NOT NULL,
+  PRIMARY KEY USING HASH (c_id)
+) ENGINE=NDB;
+
+CREATE INDEX idx_custkey ON orders (o_custkey);
+CREATE INDEX idx_oid ON orders (o_id);
+
+INSERT INTO customer VALUES
+  (100, 'Alice', 1),
+  (200, 'Bob', 1),
+  (300, 'Charlie', 2);
+
+CREATE TABLE order_extra (
+  oe_orderid INT NOT NULL,
+  oe_custkey INT NOT NULL,
+  oe_note_val INT NOT NULL,
+  PRIMARY KEY USING HASH (oe_orderid, oe_custkey)
+) ENGINE=NDB;
+
+INSERT INTO order_extra VALUES
+  (1, 100, 10),
+  (2, 100, 20),
+  (3, 200, 30),
+  (4, 200, 40),
+  (5, 300, 50);
+
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo
+--echo === Test 5: 3-table join, GROUP BY on root, SUM on leaf ===
+
+let $QUERY=
+SELECT c.c_region, SUM(l.l_quantity)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY c.c_region;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_region, SUM(l.l_quantity)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY c.c_region|
+
+--echo
+--echo
+--echo === Test 6: 3-table join, GROUP BY on middle table ===
+
+let $QUERY=
+SELECT o.o_status, SUM(l.l_quantity), COUNT(l.l_id)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_status;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_status, SUM(l.l_quantity), COUNT(l.l_id)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_status|
+
+--echo
+--echo
+--echo === Test 7: 3-table join, GROUP BY on root, MIN/MAX on leaf ===
+
+let $QUERY=
+SELECT c.c_name, MIN(l.l_price), MAX(l.l_price)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY c.c_name;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_name, MIN(l.l_price), MAX(l.l_price)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY c.c_name|
+
+--echo
+--echo
+--echo === Test 8: WHERE filter on root table ===
+
+let $QUERY=
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+WHERE o.o_custkey = 100
+GROUP BY o.o_custkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+WHERE o.o_custkey = 100
+GROUP BY o.o_custkey|
+
+--echo
+--echo
+--echo === Test 9: WHERE with range on root table ===
+
+let $QUERY=
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+WHERE o.o_custkey >= 200
+GROUP BY o.o_custkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+WHERE o.o_custkey >= 200
+GROUP BY o.o_custkey|
+
+--echo
+--echo
+--echo === Test 11: SUM on parent column ===
+
+let $QUERY=
+SELECT o.o_status, SUM(o.o_custkey)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_status;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_status, SUM(o.o_custkey)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_status|
+
+--echo
+--echo
+--echo === Test 12: Mixed SUM on parent + child columns ===
+
+let $QUERY=
+SELECT o.o_custkey, SUM(o.o_custkey), SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_custkey, SUM(o.o_custkey), SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey|
+
+DELIMITER ;|
+
+--echo
+--echo
+--echo === Test 10: Error — WHERE on child table ===
+--echo Expected error: WHERE conditions on joined tables are not yet supported.
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT o.o_custkey, SUM(l.l_quantity) FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id WHERE l.l_quantity > 10 GROUP BY o.o_custkey;' 2>&1
+
+DELIMITER |;
+
+--echo
+--echo
+--echo === Test 13: Composite PK join (multi-column ON) ===
+
+let $QUERY=
+SELECT o.o_custkey, SUM(oe.oe_note_val)
+FROM orders AS o JOIN order_extra AS oe
+  ON oe.oe_orderid = o.o_id AND oe.oe_custkey = o.o_custkey
+GROUP BY o.o_custkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_custkey, SUM(oe.oe_note_val)
+FROM orders AS o JOIN order_extra AS oe
+  ON oe.oe_orderid = o.o_id AND oe.oe_custkey = o.o_custkey
+GROUP BY o.o_custkey|
+
+--echo
+--echo
+--echo === Test 14: Root PK lookup (WHERE covers full PK) ===
+
+let $QUERY=
+SELECT o.o_id, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+WHERE o.o_id = 1
+GROUP BY o.o_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_id, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+WHERE o.o_id = 1
+GROUP BY o.o_id|
+
+DELIMITER ;|
+
+--echo
+--echo === Cleanup ===
+
+DROP TABLE order_extra;
+DROP TABLE lineitem;
+DROP TABLE orders;
+DROP TABLE customer;
