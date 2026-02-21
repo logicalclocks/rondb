@@ -227,7 +227,10 @@ bool ndb_push_aggregation(THD *, const JOIN *join,
  * Store a GROUP BY column value from the NdbAggregator result into
  * the corresponding MySQL Field.
  *
- * Handles all NDB integer types for Phase 5 scope.
+ * Handles integer, float/double, char/varchar, and date/time types.
+ * The NDB attribute data format matches MySQL's record buffer format
+ * for date/time types (both originate from the MySQL→NDB storage path),
+ * so those use direct memcpy to the field position.
  *
  * @return 0 on success, error code on unsupported type
  */
@@ -238,6 +241,7 @@ static int store_group_column(NdbAggregator::Column &col, Field *field) {
   }
   field->set_notnull();
   switch (col.type()) {
+    // Integer types — use typed accessors.
     case NdbDictionary::Column::Tinyint:
       field->store(col.data_int8(), false);
       break;
@@ -268,6 +272,53 @@ static int store_group_column(NdbAggregator::Column &col, Field *field) {
     case NdbDictionary::Column::Bigunsigned:
       field->store(col.data_uint64(), true);
       break;
+
+    // Floating-point types.
+    case NdbDictionary::Column::Float:
+      field->store(static_cast<double>(col.data_float()));
+      break;
+    case NdbDictionary::Column::Double:
+      field->store(col.data_double());
+      break;
+
+    // Fixed-length string/binary — raw character data, no length prefix.
+    case NdbDictionary::Column::Char:
+    case NdbDictionary::Column::Binary:
+      field->store(col.data(), col.byte_size(), field->charset());
+      break;
+
+    // Short variable-length — 1-byte length prefix.
+    case NdbDictionary::Column::Varchar:
+    case NdbDictionary::Column::Varbinary: {
+      const uchar *data = reinterpret_cast<const uchar *>(col.data());
+      const uint len = data[0];
+      field->store(reinterpret_cast<const char *>(data + 1), len,
+                   field->charset());
+      break;
+    }
+
+    // Long variable-length — 2-byte little-endian length prefix.
+    case NdbDictionary::Column::Longvarchar:
+    case NdbDictionary::Column::Longvarbinary: {
+      const uchar *data = reinterpret_cast<const uchar *>(col.data());
+      const uint len = data[0] | (static_cast<uint>(data[1]) << 8);
+      field->store(reinterpret_cast<const char *>(data + 2), len,
+                   field->charset());
+      break;
+    }
+
+    // Date/time types — NDB wire format matches MySQL record format.
+    case NdbDictionary::Column::Date:
+    case NdbDictionary::Column::Time:
+    case NdbDictionary::Column::Time2:
+    case NdbDictionary::Column::Datetime:
+    case NdbDictionary::Column::Datetime2:
+    case NdbDictionary::Column::Timestamp:
+    case NdbDictionary::Column::Timestamp2:
+    case NdbDictionary::Column::Year:
+      memcpy(field->field_ptr(), col.data(), col.byte_size());
+      break;
+
     default:
       return HA_ERR_UNSUPPORTED;
   }
