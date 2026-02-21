@@ -3316,6 +3316,10 @@ int ha_ndbcluster::fetch_next_pushed() {
   DBUG_TRACE;
   assert(m_pushed_operation);
 
+  if (m_pushed_agg_mode) {
+    return ndb_fetch_pushed_aggregate(this);
+  }
+
   /**
    * Only prepare result & status from this operation in pushed join.
    * Consecutive rows are prepared through ::index_read_pushed() and
@@ -6676,6 +6680,8 @@ int ha_ndbcluster::close_scan() {
     m_active_query->close(m_thd_ndb->m_force_send);
     m_active_query = nullptr;
   }
+  m_pushed_agg_mode = false;
+  m_agg_results_initialized = false;
 
   m_cond.cond_close();
 
@@ -14884,6 +14890,13 @@ int ndbcluster_push_to_engine(THD *thd, AccessPath *root_path, JOIN *join) {
   bool has_pushed_aggregation = false;
   if (THDVAR(thd, join_pushdown_aggregate)) {
     has_pushed_aggregation = ndb_push_aggregation(thd, join, pushed_builder);
+  }
+  if (has_pushed_aggregation) {
+    auto *root_handler = down_cast<ha_ndbcluster *>(
+        pushed_builder.m_tables[0].get_table()->file);
+    root_handler->m_pushed_agg_mode = true;
+    root_handler->m_agg_results_initialized = false;
+    root_handler->m_pushed_agg_join = join;
   }
 
   /**

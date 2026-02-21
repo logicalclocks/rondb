@@ -370,6 +370,7 @@ class ha_ndbcluster : public handler, public Partition_handler {
   friend void accept_pushed_conditions(const TABLE *table, AccessPath *filter);
   friend bool ndb_push_aggregation(THD *thd, const JOIN *join,
                                    const ndb_pushed_builder_ctx &builder);
+  friend int ndb_fetch_pushed_aggregate(ha_ndbcluster *handler);
 
  private:
   bool maybe_pushable_join(const char *&reason) const;
@@ -735,6 +736,11 @@ class ha_ndbcluster : public handler, public Partition_handler {
   bool m_disable_pushed_join;             // Pushed execution allowed?
   NdbQuery *m_active_query;               // Pushed query instance executing
   NdbQueryOperation *m_pushed_operation;  // Pushed operation instance
+
+  // Pushed aggregation state (set during push, used during fetch).
+  bool m_pushed_agg_mode{false};
+  bool m_agg_results_initialized{false};
+  const JOIN *m_pushed_agg_join{nullptr};
 
   /* In case we failed to push a 'pushed_cond', the handler will evaluate it */
   ha_ndbcluster_cond m_cond;

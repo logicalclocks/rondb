@@ -42,6 +42,7 @@
 #include "storage/ndb/include/ndbapi/NdbAggregator.hpp"
 #include "storage/ndb/plugin/ha_ndbcluster.h"
 #include "storage/ndb/plugin/ha_ndbcluster_push.h"
+#include "storage/ndb/src/ndbapi/NdbQueryOperation.hpp"
 
 /**
  * Check if the aggregate functions and GROUP BY in a JOIN are pushable.
@@ -220,4 +221,144 @@ bool ndb_push_aggregation(THD *, const JOIN *join,
 
   DBUG_PRINT("info", ("ndb_push_aggregation: aggregation pushed successfully"));
   return true;
+}
+
+/**
+ * Store a GROUP BY column value from the NdbAggregator result into
+ * the corresponding MySQL Field.
+ *
+ * Handles all NDB integer types for Phase 5 scope.
+ *
+ * @return 0 on success, error code on unsupported type
+ */
+static int store_group_column(NdbAggregator::Column &col, Field *field) {
+  if (col.is_null()) {
+    field->set_null();
+    return 0;
+  }
+  field->set_notnull();
+  switch (col.type()) {
+    case NdbDictionary::Column::Tinyint:
+      field->store(col.data_int8(), false);
+      break;
+    case NdbDictionary::Column::Tinyunsigned:
+      field->store(col.data_uint8(), true);
+      break;
+    case NdbDictionary::Column::Smallint:
+      field->store(col.data_int16(), false);
+      break;
+    case NdbDictionary::Column::Smallunsigned:
+      field->store(col.data_uint16(), true);
+      break;
+    case NdbDictionary::Column::Mediumint:
+      field->store(col.data_medium(), false);
+      break;
+    case NdbDictionary::Column::Mediumunsigned:
+      field->store(col.data_umedium(), true);
+      break;
+    case NdbDictionary::Column::Int:
+      field->store(col.data_int32(), false);
+      break;
+    case NdbDictionary::Column::Unsigned:
+      field->store(col.data_uint32(), true);
+      break;
+    case NdbDictionary::Column::Bigint:
+      field->store(col.data_int64(), false);
+      break;
+    case NdbDictionary::Column::Bigunsigned:
+      field->store(col.data_uint64(), true);
+      break;
+    default:
+      return HA_ERR_UNSUPPORTED;
+  }
+  return 0;
+}
+
+/**
+ * Drain the pushed scan to completion and prepare aggregate results.
+ *
+ * Calls nextResult() until the scan completes, then calls PrepareResults()
+ * on the NdbAggregator to finalize the group-by hash map for iteration.
+ *
+ * @return 0 on success, error code on failure
+ */
+static int ndb_init_aggregate_results(NdbQueryOperation *pushed_op,
+                                      bool force_send,
+                                      NdbAggregator *agg) {
+  // Drain the scan — aggregate results accumulate in the NdbAggregator
+  // as TRANSID_AI data arrives during nextResult() calls.
+  NdbQuery::NextResultOutcome result;
+  while ((result = pushed_op->nextResult(true, force_send)) ==
+         NdbQuery::NextResult_gotRow) {
+  }
+  if (unlikely(result != NdbQuery::NextResult_scanComplete)) {
+    return HA_ERR_INTERNAL_ERROR;
+  }
+
+  agg->PrepareResults();
+  return 0;
+}
+
+/**
+ * Fetch the next aggregate result row from the NdbAggregator.
+ *
+ * Populates the MySQL row buffer with GROUP BY column values and
+ * sets Item_sum pushed values for aggregate results.
+ *
+ * @return 0 (NextResult_gotRow) for row found,
+ *         NextResult_scanComplete when done, or error code
+ */
+static int ndb_fetch_next_aggregate_row(NdbAggregator *agg,
+                                        const JOIN *join) {
+  NdbAggregator::ResultRecord rec = agg->FetchResultRecord();
+  if (rec.end()) {
+    return NdbQuery::NextResult_scanComplete;
+  }
+
+  // Populate GROUP BY columns in MySQL's row buffer.
+  for (ORDER *group = join->group_list.order; group != nullptr;
+       group = group->next) {
+    NdbAggregator::Column col = rec.FetchGroupbyColumn();
+    const auto *field_item = down_cast<const Item_field *>(*(group->item));
+    const int err = store_group_column(col, field_item->field);
+    if (err) return err;
+  }
+
+  // Set pushed values on Item_sum aggregate functions.
+  for (Item_sum **func = join->sum_funcs; *func != nullptr; func++) {
+    NdbAggregator::Result res = rec.FetchAggregationResult();
+    if (res.is_null()) {
+      (*func)->set_pushed_null();
+    } else {
+      switch (res.type()) {
+        case NdbDictionary::Column::Bigint:
+          (*func)->set_pushed_value_int(res.data_int64());
+          break;
+        case NdbDictionary::Column::Bigunsigned:
+          (*func)->set_pushed_value_int(
+              static_cast<int64_t>(res.data_uint64()));
+          break;
+        case NdbDictionary::Column::Double:
+          (*func)->set_pushed_value_double(res.data_double());
+          break;
+        default:
+          return HA_ERR_INTERNAL_ERROR;
+      }
+    }
+  }
+
+  return NdbQuery::NextResult_gotRow;
+}
+
+int ndb_fetch_pushed_aggregate(ha_ndbcluster *handler) {
+  NdbAggregator *agg = handler->m_active_query->getAggregator();
+  if (agg == nullptr) return HA_ERR_INTERNAL_ERROR;
+
+  if (!handler->m_agg_results_initialized) {
+    const int err = ndb_init_aggregate_results(
+        handler->m_pushed_operation, handler->m_thd_ndb->m_force_send, agg);
+    if (err) return err;
+    handler->m_agg_results_initialized = true;
+  }
+  return ndb_fetch_next_aggregate_row(agg, handler->m_pushed_agg_join);
 }

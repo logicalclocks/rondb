@@ -44,6 +44,7 @@
 
 class THD;
 class JOIN;
+class ha_ndbcluster;
 class ndb_pushed_builder_ctx;
 
 /**
@@ -59,5 +60,21 @@ class ndb_pushed_builder_ctx;
  */
 bool ndb_push_aggregation(THD *thd, const JOIN *join,
                           const ndb_pushed_builder_ctx &builder);
+
+/**
+ * Fetch the next pushed aggregate result.
+ * Called from ha_ndbcluster::fetch_next_pushed() when in aggregate mode.
+ *
+ * On first call, drains the scan to completion (consuming all batches),
+ * calls PrepareResults() on the NdbAggregator, then starts returning
+ * aggregate result rows.
+ *
+ * Each returned row populates the MySQL row buffer with GROUP BY column
+ * values and sets Item_sum pushed values for aggregate results.
+ *
+ * @return 0 (NextResult_gotRow) for row found,
+ *         NextResult_scanComplete when done, or error code
+ */
+int ndb_fetch_pushed_aggregate(ha_ndbcluster *handler);
 
 #endif  // HA_NDBCLUSTER_PUSH_AGG_H
