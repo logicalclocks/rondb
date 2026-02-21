@@ -133,7 +133,8 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
     configure();
     parse();
     load();
-    plan_index_and_filter();
+    if (m_context.ast_root.joins == NULL)
+      plan_index_and_filter();
     compile();
     determine_explain();
     m_status = Status::PREPARED;
@@ -755,6 +756,14 @@ RonSQLPreparer::load_join()
   m_column_attrId_map = col_id_map;
   m_column_map = col_map;
   m_column_table_idx = col_table_idx;
+
+  // Reject WHERE on join queries (not yet supported)
+  if (m_context.ast_root.where_expression != NULL)
+  {
+    err << "WHERE clauses on join queries are not yet supported." << endl;
+    throw RonSQLPermanentError(
+        "WHERE clauses on join queries are not yet supported.");
+  }
 
   // Build linked projections for GROUP BY columns on non-leaf tables
   Uint32 leaf_idx = m_join_plan.agg_leaf_idx;
@@ -2250,6 +2259,16 @@ RonSQLPreparer::programAggregator_join(NdbAggregator* aggregator)
     {
     case AggregationAPICompiler::SVMInstrType::Load:
     {
+      if (m_column_table_idx[src] != leaf_idx)
+      {
+        err << "Aggregate function references column "
+            << quoted_identifier(m_columns[src])
+            << " which is not in the leaf table. "
+            << "Aggregation columns must come from the last joined table."
+            << endl;
+        throw RonSQLPermanentError(
+            "Aggregate references non-leaf column.");
+      }
       NdbAttrId col_id = m_column_attrId_map[src];
       if (!aggregator->LoadColumn(col_id, dest))
       {
