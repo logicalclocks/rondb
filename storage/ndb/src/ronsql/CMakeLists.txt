@@ -50,6 +50,7 @@ set_source_files_properties(${CMAKE_CURRENT_BINARY_DIR}/RonSQLLexer.l.cpp
 ADD_CONVENIENCE_LIBRARY(ronsql
   AggregationAPICompiler.cpp
   LexString.cpp
+  QueryPlanner.cpp
   ResultPrinter.cpp
   RonSQLPreparer.cpp
   ${CMAKE_CURRENT_BINARY_DIR}/RonSQLParser.y.cpp
