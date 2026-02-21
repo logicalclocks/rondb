@@ -34,6 +34,7 @@
 #include "ArenaMalloc.hpp"
 #include "DynamicArray.hpp"
 #include "LexString.hpp"
+#include "QueryPlanner.hpp"
 #include "ResultPrinter.hpp"
 #include "RonSQLCommon.hpp"
 
@@ -139,8 +140,10 @@ private:
   DynamicArray<LexCString> m_column_qualifiers; /* table qualifier per col_idx */
   NdbAttrId* m_column_attrId_map = NULL;
   const NdbDictionary::Column** m_column_map = NULL;
+  Uint32* m_column_table_idx = NULL;
   const NdbDictionary::Dictionary* m_dict = NULL;
   const NdbDictionary::Table* m_table = NULL;
+  JoinPlan m_join_plan;
   DynamicArray<const NdbDictionary::Index*> m_indexes;
   NdbTransaction* m_trans = NULL;
   yyscan_t m_scanner;
@@ -177,6 +180,8 @@ private:
   void parse();
   bool has_width(size_t pos);
   void load();
+  void load_single_table();
+  void load_join();
   void plan_index_and_filter();
   void collect_toplevel_conditions(ConditionalExpression* ce);
   void generate_scan_config_candidates();

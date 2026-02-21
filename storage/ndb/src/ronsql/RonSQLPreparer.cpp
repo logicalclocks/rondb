@@ -25,6 +25,7 @@
 */
 
 #include "AggregationAPICompiler.hpp"
+#include "QueryPlanner.hpp"
 #include "RonSQLParser.y.hpp"
 #include "RonSQLLexer.l.hpp"
 #include "RonSQLPreparer.hpp"
@@ -535,7 +536,6 @@ void
 RonSQLPreparer::load()
 {
   DEB_TRACE();
-  std::basic_ostream<char>& err = *m_conf.err_stream;
   /*
    * During parsing, strings that were claimed to be column names were inserted
    * into m_columns. The element indexes in m_columns, usually called col_idx,
@@ -553,106 +553,206 @@ RonSQLPreparer::load()
   // we'll still be able to do a (partial) EXPLAIN SELECT, so no need to fail
   // yet.
   Ndb* ndb = m_conf.ndb;
-  if (ndb != NULL) {
-    // Populate m_dict
-    m_dict = ndb->getDictionary();
-    // Populate m_table
-    m_table = DBG(m_dict->getTable(DBG(m_context.ast_root.table.c_str())));
-    // getTable returns a cached table if it exists, otherwise the cache it
-    // updated. Therefore, getTable cannot return NULL due to an out-of-date
-    // cache, it always means that the table does not exist. Therefore, we use
-    // require_prm to indicate that schema reloading will solve this issue.
-    require_prm(m_table != NULL,
-                "Failed to get table. Note that RonSQL only supports tables"
-                " with ENGINE=NDB.");
-    // Populate m_indexes
-    NdbDictionary::Dictionary::List index_list;
-    ndbrequire(m_dict != NULL);
-    ndbrequire(m_table != NULL);
-    require_sch(m_dict->listIndexes(index_list, *m_table) == 0,
-                "Failed to list indexes.");
-    bool err_failed_to_get_index = false;
-    bool err_object_status_not_retrieved = false;
-    bool err_table_verid_mismatch = false;
-    for(Uint32 i = 0; i < index_list.count; i++) {
-      NdbDictionary::Dictionary::List::Element& list_element =
-        index_list.elements[i];
-      if (list_element.state != NdbDictionary::Object::StateOnline) {
-        // listIndexes() returns indexes in all states while this function is
-        // only interested in indexes that are online and usable. Filtering out
-        // indexes in other states is particularly important when metadata is
-        // being restored as they may be in StateBuilding indicating that all
-        // metadata related to the table hasn't been restored yet.
-        DEB_TRACE();
-        continue;
-      }
-      if (list_element.type == NdbDictionary::Object::UniqueHashIndex) {
-        // We are not interested in hash indexes
-        DEB_TRACE();
-        continue;
-      }
-      require_bug(list_element.type == NdbDictionary::Object::OrderedIndex,
-                  "Unexpected index type.");
-      const NdbDictionary::Index* index = m_dict->getIndex(list_element.name,
-                                                           *m_table);
-      // On detecting possible schema errors we still need to finish populating
-      // m_indexes. The detection of an error is saved in bool err_* variables.
-      if (index == NULL) {
-        // A NULL index here is a little strange. Perhaps the index was deleted
-        // after it was listed above?
-        err_failed_to_get_index = true;
-        DEB_TRACE();
-        continue;
-      }
-      if (DBG(index->getObjectStatus()) !=
-          NdbDictionary::Object::Status::Retrieved) {
-        DEB_TRACE();
-        err_object_status_not_retrieved = true;
-      }
-      if(DBG(index->getTableId()) != DBG(m_table->getObjectId()) ||
-         DBG(index->getTableVersion()) != DBG(m_table->getObjectVersion())) {
-        DEB_TRACE();
-        err_table_verid_mismatch = true;
-      }
-      m_indexes.push(index);
-    }
-    // m_indexes is now populated, so we are allowed to throw schema errors.
-    require_sch(DBG(m_table->getObjectStatus()) ==
-                NdbDictionary::Object::Status::Retrieved,
-                "Schema cache for table not up to date.");
-    if (err_failed_to_get_index) {
-      DEB_TRACE();
-      throw RonSQLMaybeStaleSchema("Failed to get index.");
-    }
-    if (err_object_status_not_retrieved) {
-      DEB_TRACE();
-      throw RonSQLMaybeStaleSchema("Schema cache for index not up to date.");
-    }
-    if (err_table_verid_mismatch) {
-      DEB_TRACE();
-      throw RonSQLMaybeStaleSchema("Index's table id/version did not match"
-                                   " table's object id/version.");
-    }
-    // Populate m_column_attrId_map and m_column_map
-    NdbAttrId* col_id_map = m_amalloc->alloc_exc<NdbAttrId>(m_columns.size());
-    const NdbDictionary::Column** col_map =
-        m_amalloc->alloc_exc<const NdbDictionary::Column*>(m_columns.size());
-    for (Uint32 col_idx = 0; col_idx < m_columns.size(); col_idx++) {
-      const char* col_name = DBG(m_columns[DBG(col_idx)].c_str());
-      const NdbDictionary::Column* col = m_table->getColumn(col_name);
-      if (col == NULL) {
-        err << "Failed to get column " << quoted_identifier(col_name) << "."
-            << endl << "Note that column names are case sensitive." << endl;
-        DEB_TRACE();
-        throw RonSQLMaybeStaleSchema("Could not find column (column names are"
-                                     " case sensitive).");
-      }
-      col_id_map[col_idx] = DBG(col->getAttrId());
-      col_map[col_idx] = col;
-    }
-    m_column_attrId_map = col_id_map;
-    m_column_map = col_map;
+  if (ndb == NULL) return;
+
+  bool is_join = (m_context.ast_root.joins != NULL);
+
+  // Populate m_dict
+  m_dict = ndb->getDictionary();
+
+  if (is_join) {
+    load_join();
+  } else {
+    load_single_table();
   }
+}
+
+void
+RonSQLPreparer::load_single_table()
+{
+  std::basic_ostream<char>& err = *m_conf.err_stream;
+  // Populate m_table
+  m_table = DBG(m_dict->getTable(DBG(m_context.ast_root.table.c_str())));
+  require_prm(m_table != NULL,
+              "Failed to get table. Note that RonSQL only supports tables"
+              " with ENGINE=NDB.");
+  // Populate m_indexes
+  NdbDictionary::Dictionary::List index_list;
+  ndbrequire(m_dict != NULL);
+  ndbrequire(m_table != NULL);
+  require_sch(m_dict->listIndexes(index_list, *m_table) == 0,
+              "Failed to list indexes.");
+  bool err_failed_to_get_index = false;
+  bool err_object_status_not_retrieved = false;
+  bool err_table_verid_mismatch = false;
+  for(Uint32 i = 0; i < index_list.count; i++) {
+    NdbDictionary::Dictionary::List::Element& list_element =
+      index_list.elements[i];
+    if (list_element.state != NdbDictionary::Object::StateOnline) {
+      DEB_TRACE();
+      continue;
+    }
+    if (list_element.type == NdbDictionary::Object::UniqueHashIndex) {
+      DEB_TRACE();
+      continue;
+    }
+    require_bug(list_element.type == NdbDictionary::Object::OrderedIndex,
+                "Unexpected index type.");
+    const NdbDictionary::Index* index = m_dict->getIndex(list_element.name,
+                                                         *m_table);
+    if (index == NULL) {
+      err_failed_to_get_index = true;
+      DEB_TRACE();
+      continue;
+    }
+    if (DBG(index->getObjectStatus()) !=
+        NdbDictionary::Object::Status::Retrieved) {
+      DEB_TRACE();
+      err_object_status_not_retrieved = true;
+    }
+    if(DBG(index->getTableId()) != DBG(m_table->getObjectId()) ||
+       DBG(index->getTableVersion()) != DBG(m_table->getObjectVersion())) {
+      DEB_TRACE();
+      err_table_verid_mismatch = true;
+    }
+    m_indexes.push(index);
+  }
+  require_sch(DBG(m_table->getObjectStatus()) ==
+              NdbDictionary::Object::Status::Retrieved,
+              "Schema cache for table not up to date.");
+  if (err_failed_to_get_index) {
+    DEB_TRACE();
+    throw RonSQLMaybeStaleSchema("Failed to get index.");
+  }
+  if (err_object_status_not_retrieved) {
+    DEB_TRACE();
+    throw RonSQLMaybeStaleSchema("Schema cache for index not up to date.");
+  }
+  if (err_table_verid_mismatch) {
+    DEB_TRACE();
+    throw RonSQLMaybeStaleSchema("Index's table id/version did not match"
+                                 " table's object id/version.");
+  }
+  // Populate m_column_attrId_map and m_column_map
+  NdbAttrId* col_id_map = m_amalloc->alloc_exc<NdbAttrId>(m_columns.size());
+  const NdbDictionary::Column** col_map =
+      m_amalloc->alloc_exc<const NdbDictionary::Column*>(m_columns.size());
+  for (Uint32 col_idx = 0; col_idx < m_columns.size(); col_idx++) {
+    const char* col_name = DBG(m_columns[DBG(col_idx)].c_str());
+    const NdbDictionary::Column* col = m_table->getColumn(col_name);
+    if (col == NULL) {
+      err << "Failed to get column " << quoted_identifier(col_name) << "."
+          << endl << "Note that column names are case sensitive." << endl;
+      DEB_TRACE();
+      throw RonSQLMaybeStaleSchema("Could not find column (column names are"
+                                   " case sensitive).");
+    }
+    col_id_map[col_idx] = DBG(col->getAttrId());
+    col_map[col_idx] = col;
+  }
+  m_column_attrId_map = col_id_map;
+  m_column_map = col_map;
+}
+
+void
+RonSQLPreparer::load_join()
+{
+  std::basic_ostream<char>& err = *m_conf.err_stream;
+
+  // Build the join plan via QueryPlanner
+  QueryPlanner::plan(
+      m_context.ast_root.root_table,
+      m_context.ast_root.joins,
+      m_dict,
+      err,
+      m_join_plan);
+
+  // Set m_table to root table (used by existing code paths)
+  m_table = m_join_plan.ops[0].table;
+
+  // Resolve columns: match each column to its table
+  Uint32 num_cols = m_columns.size();
+  NdbAttrId* col_id_map = m_amalloc->alloc_exc<NdbAttrId>(num_cols);
+  const NdbDictionary::Column** col_map =
+      m_amalloc->alloc_exc<const NdbDictionary::Column*>(num_cols);
+  Uint32* col_table_idx =
+      m_amalloc->alloc_exc<Uint32>(num_cols);
+
+  for (Uint32 col_idx = 0; col_idx < num_cols; col_idx++)
+  {
+    const char* col_name = m_columns[col_idx].c_str();
+    const char* qualifier = m_column_qualifiers[col_idx].c_str();
+
+    if (qualifier != NULL)
+    {
+      // Qualified column: find the table by alias
+      bool found = false;
+      for (Uint32 t = 0; t < m_join_plan.num_ops; t++)
+      {
+        if (strcmp(m_join_plan.ops[t].alias.c_str(), qualifier) == 0)
+        {
+          const NdbDictionary::Column* col =
+              m_join_plan.ops[t].table->getColumn(col_name);
+          if (col == NULL)
+          {
+            err << "Column '" << qualifier << "." << col_name
+                << "' not found in table '"
+                << m_join_plan.ops[t].table->getName() << "'." << endl;
+            throw RonSQLMaybeStaleSchema("Column not found.");
+          }
+          col_id_map[col_idx] = col->getAttrId();
+          col_map[col_idx] = col;
+          col_table_idx[col_idx] = t;
+          found = true;
+          break;
+        }
+      }
+      if (!found)
+      {
+        err << "Unknown table alias '" << qualifier << "' in column '"
+            << qualifier << "." << col_name << "'." << endl;
+        throw RonSQLPermanentError("Unknown table alias.");
+      }
+    }
+    else
+    {
+      // Unqualified column: search all tables
+      Uint32 match_count = 0;
+      Uint32 match_table = 0;
+      const NdbDictionary::Column* match_col = NULL;
+      for (Uint32 t = 0; t < m_join_plan.num_ops; t++)
+      {
+        const NdbDictionary::Column* col =
+            m_join_plan.ops[t].table->getColumn(col_name);
+        if (col != NULL)
+        {
+          match_count++;
+          match_table = t;
+          match_col = col;
+        }
+      }
+      if (match_count == 0)
+      {
+        err << "Column '" << col_name << "' not found in any joined table."
+            << endl;
+        throw RonSQLMaybeStaleSchema("Column not found.");
+      }
+      if (match_count > 1)
+      {
+        err << "Ambiguous column '" << col_name
+            << "' found in multiple tables. Use 'table.column' syntax."
+            << endl;
+        throw RonSQLPermanentError("Ambiguous column.");
+      }
+      col_id_map[col_idx] = match_col->getAttrId();
+      col_map[col_idx] = match_col;
+      col_table_idx[col_idx] = match_table;
+    }
+  }
+
+  m_column_attrId_map = col_id_map;
+  m_column_map = col_map;
+  m_column_table_idx = col_table_idx;
 }
 
 void
