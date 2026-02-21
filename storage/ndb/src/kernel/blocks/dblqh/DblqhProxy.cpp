@@ -2379,9 +2379,11 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
                                      getThreadId(), false);
     ndbrequire(page != nullptr);
     AggInterpreter *interp =
-      new (page) AggInterpreter(state->m_agg_program,
-                                state->m_agg_program_len, 0);
-    interp->Init();
+      new (page) AggInterpreter(state->m_agg_program_len,
+                                req->tableId,
+                                0,
+                                getThreadId());
+    interp->Init(state->m_agg_program);
     interp->setUseMutex(true);
     interp->initChunkAllocator(getThreadId(), budget_pages, available_pages);
     state->m_agg_interpreter = interp;
@@ -2400,9 +2402,11 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
                                        getThreadId(), false);
       ndbrequire(page != nullptr);
       AggInterpreter *interp =
-        new (page) AggInterpreter(state->m_agg_program,
-                                  state->m_agg_program_len, 0);
-      interp->Init();
+        new (page) AggInterpreter(state->m_agg_program_len,
+                                  req->tableId,
+                                  0,
+                                  getThreadId());
+      interp->Init(state->m_agg_program);
       interp->initChunkAllocator(getThreadId(), per_thread_budget,
                                    available_pages);
       arr[i] = interp;

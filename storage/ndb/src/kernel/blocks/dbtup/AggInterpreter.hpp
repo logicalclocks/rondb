@@ -35,7 +35,7 @@
 #include <simsimd/simsimd.h>
 #include <queue>
 
-#define READ_BUF_WORD_SIZE 2048
+#define ATTR_READ_BUF_WORD_SIZE 2048
 #define DECIMAL_BUFF_LENGTH 9
 #define AGG_EVICT_NEEDED 1
 #define MEM_CHUNK_SIZE 32768
@@ -254,19 +254,30 @@ class GBHashTable {
 
 class AggInterpreter {
  public:
-  AggInterpreter(const Uint32* prog, Uint32 prog_len,
+  AggInterpreter(Uint32 prog_len,
                  Int64 table_id, Int64 frag_id,
                  Uint32 thread_id):
-    prog_len_(prog_len), cur_pos_(0),
-    inited_(false),
-    n_gb_cols_(0), gb_cols_(nullptr),
+    prog_(nullptr), prog_len_(prog_len), cur_pos_(0),
+    inited_(false), n_gb_cols_(0), gb_cols_(nullptr),
     gb_cmp_inited_(false),
     n_agg_results_(0),
     agg_results_(nullptr), agg_prog_start_pos_(0),
     gb_map_(nullptr), n_groups_(0),
-    buf_pos_(0), processed_rows_(0),
+    attr_read_buf_(nullptr), attr_read_pos_(0),
+    processed_rows_(0),
     result_size_(0), table_id_(table_id), frag_id_(frag_id),
-    thread_id_(thread_id), alloc_len_(0),
+    m_linked_attr_data(nullptr), m_linked_attr_len(0),
+    m_use_mutex(false), m_max_groups(0),
+    m_chunks(nullptr), m_chunks_tail(nullptr),
+    m_current_chunk(nullptr), m_total_chunk_bytes(0),
+    m_memory_budget(0), m_budget_increment(0),
+    m_total_available(0), m_thread_id(thread_id),
+    m_cached_agg_ops(nullptr), m_agg_ops_cached(false),
+    m_gb_types(nullptr), m_gb_types_inited(false),
+    m_xfrm_buf(nullptr), m_xfrm_buf_len(0),
+    prog_buf_(nullptr), gb_cols_buf_(nullptr),
+    agg_results_buf_(nullptr), gb_map_buf_(nullptr),
+    mem_buf_(nullptr), alloc_len_(0), m_buf_block_(nullptr),
     vec_search_(false), vec_dims_(0), vec_type_(0),
     vec_metric_(0), vec_col_idx_(0), vec_top_n_(0),
     vec_size_in_bytes_(0), vec_buf_(nullptr),
@@ -277,24 +288,10 @@ class AggInterpreter {
     vec_n_candidates_sent_(0),
     vec_size_candidates_sent_(0),
     vec_search_scan_done_(false),
-    next_send_idx_(-1), ext_prog_buf_(nullptr),
-    m_linked_attr_data(nullptr), m_linked_attr_len(0),
-    m_use_mutex(false), m_max_groups(0),
-    m_chunks(nullptr), m_chunks_tail(nullptr),
-    m_current_chunk(nullptr), m_total_chunk_bytes(0),
-    m_memory_budget(0), m_budget_increment(0),
-    m_total_available(0), m_thread_id(0),
-    m_agg_ops_cached(false),
-    m_gb_types_inited(false),
-    m_xfrm_buf(nullptr), m_xfrm_buf_len(0) {
-      assert(prog_len_ <= MAX_AGG_PROGRAM_WORD_SIZE);
-      prog_ = prog_buf_;
-      memcpy(prog_, prog, prog_len * sizeof(Uint32));
-      memset(buf_, 0, READ_BUF_WORD_SIZE * sizeof(Uint32));
+    next_send_idx_(-1), ext_prog_buf_(nullptr) {
       memset(decimal_buf_, 0, sizeof(decimal_digit_t) * DECIMAL_BUFF_LENGTH);
       decimal_.buf = decimal_buf_;
       decimal_.len = DECIMAL_BUFF_LENGTH;
-      memset(m_gb_types, 0, sizeof(m_gb_types));
   }
   ~AggInterpreter() {
     freeAllChunks();
@@ -302,12 +299,15 @@ class AggInterpreter {
       lc_ndbd_pool_free(m_xfrm_buf);
       m_xfrm_buf = nullptr;
     }
+    if (m_buf_block_ != nullptr) {
+      lc_ndbd_pool_free(m_buf_block_);
+      m_buf_block_ = nullptr;
+    }
   }
 
   bool Init();
   bool OptimizeProgram();
   void FreeMemForVectorSearch() {
-#ifdef PA_MALLOC
     if (ext_prog_buf_) {
       lc_ndbd_pool_free(ext_prog_buf_);
       ext_prog_buf_ = nullptr;
@@ -316,12 +316,6 @@ class AggInterpreter {
       lc_ndbd_pool_free(vec_buf_);
       vec_buf_ = nullptr;
     }
-#else
-    if (vec_buf_) {
-      delete[] vec_buf_;
-      vec_buf_ = nullptr;
-    }
-#endif // PA_MALLOC
 
     if (candidate_allocator_) {
       candidate_allocator_->~CandidateAllocator();
@@ -433,9 +427,9 @@ class AggInterpreter {
 
   GBHashTable* gb_map_;
   Uint32 n_groups_;
-  Uint32 buf_[READ_BUF_WORD_SIZE];
-  Uint32 buf_pos_;
-  static Uint32 g_buf_len_;
+  Uint32* attr_read_buf_;
+  Uint32 attr_read_pos_;
+  static Uint32 g_attr_read_buf_len_;
   Uint64 processed_rows_;
   Uint32 result_size_;
   static Uint32 g_result_header_size_;
@@ -445,7 +439,6 @@ class AggInterpreter {
   Int64 frag_id_;
   decimal_t decimal_;
   decimal_digit_t decimal_buf_[DECIMAL_BUFF_LENGTH];
-  Uint32 thread_id_;
 
   // Linked attribute buffer for join aggregation
   const Uint32* m_linked_attr_data;   // Points to current row's linked attrs
@@ -479,24 +472,27 @@ class AggInterpreter {
   bool validateEmbeddedProgram(const Uint32* emb_prog, Uint32 emb_len);
 
   // Cached agg ops for merge (avoids recomputing per CONTINUEB batch)
-  Uint8 m_cached_agg_ops[MAX_AGG_N_RESULTS];
+  Uint8* m_cached_agg_ops;
   bool m_agg_ops_cached;
 
   // Per-column type info for type-aware GROUP BY hashing and comparison
-  GBColTypeInfo m_gb_types[MAX_AGG_N_GROUPBY_COLS];
+  GBColTypeInfo* m_gb_types;
   bool m_gb_types_inited;
   uchar *m_xfrm_buf;              // scratch buffer for strnxfrm_hash
   Uint32 m_xfrm_buf_len;          // size in bytes
   Int32 initGBTypes(Dbtup* block_tup, Dbtup::KeyReqStruct* req_struct);
 
-  Uint32 prog_buf_[MAX_AGG_PROGRAM_WORD_SIZE];
-  Uint32 gb_cols_buf_[MAX_AGG_N_GROUPBY_COLS];
-  AggResItem agg_results_buf_[MAX_AGG_N_RESULTS];
-  GBHashTable gb_map_buf_;
+  Uint32* prog_buf_;
+  Uint32* gb_cols_buf_;
+  AggResItem* agg_results_buf_;
+  GBHashTable* gb_map_buf_;
 
-  char mem_buf_[MAX_AGG_RESULT_BATCH_BYTES];
+  char* mem_buf_;
   Uint32 alloc_len_;
-  char* MemAlloc(Uint32 len);
+
+  // Single allocation block for all dynamically allocated buffers above.
+  // Allocated in Init(), freed in destructor.
+  void* m_buf_block_;
 
   /* Vector */
   bool vec_search_;
@@ -609,4 +605,8 @@ class AggInterpreter {
   std::vector<Candidate*> vec_top_n_results_final_;
   Uint32* ext_prog_buf_;
 };
+
+static_assert(sizeof(AggInterpreter) <= MEM_CHUNK_SIZE,
+              "AggInterpreter must fit in MEM_CHUNK_SIZE allocation");
+
 #endif  // AGGINTERPRETER_H_

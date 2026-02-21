@@ -1891,10 +1891,10 @@ void
 MgmApiSession::set_config_param(Parser<MgmApiSession>::Context &,
                                 Properties const &args)
 {
-  Uint32 node;
-  Uint32 config_key;
-  Uint32 config_value_high;
-  Uint32 config_value_low;
+  Uint32 node = 0;
+  Uint32 config_key = 0;
+  Uint32 config_value_high = 0;
+  Uint32 config_value_low = 0;
 
   bool ok = args.get("node", &node);
   ok = ok && args.get("config_key", &config_key);

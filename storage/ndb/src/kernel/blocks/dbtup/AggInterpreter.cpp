@@ -39,7 +39,7 @@
 
 #include <simsimd/simsimd.h>
 
-Uint32 AggInterpreter::g_buf_len_ = READ_BUF_WORD_SIZE;
+Uint32 AggInterpreter::g_attr_read_buf_len_ = ATTR_READ_BUF_WORD_SIZE;
 Uint32 AggInterpreter::g_result_header_size_ = 3 * sizeof(Uint32);
 Uint32 AggInterpreter::g_result_header_size_per_group_ = sizeof(Uint32);
 
@@ -281,20 +281,57 @@ bool AggInterpreter::Init(const Uint32* prog) {
     return true;
   }
 
+  require(prog != nullptr);
+
+  /*
+   * Allocate all large buffers in a single block to keep
+   * sizeof(AggInterpreter) small (must fit in MEM_CHUNK_SIZE).
+   */
+  if (m_buf_block_ == nullptr) {
+    static const Uint32 BUF_BLOCK_SIZE =
+      ATTR_READ_BUF_WORD_SIZE * sizeof(Uint32) +
+      MAX_AGG_PROGRAM_WORD_SIZE * sizeof(Uint32) +
+      MAX_AGG_N_GROUPBY_COLS * sizeof(Uint32) +
+      MAX_AGG_N_RESULTS * sizeof(AggResItem) +
+      sizeof(GBHashTable) +
+      MAX_AGG_RESULT_BATCH_BYTES +
+      MAX_AGG_N_GROUPBY_COLS * sizeof(GBColTypeInfo) +
+      MAX_AGG_N_RESULTS * sizeof(Uint8);
+
+    m_buf_block_ = lc_ndbd_pool_malloc(BUF_BLOCK_SIZE, RG_QUERY_MEMORY,
+                                       m_thread_id, false);
+    if (m_buf_block_ == nullptr) {
+      g_eventLogger->error("Alloc mem for AggInterpreter buffers failed");
+      return false;
+    }
+
+    char* p = static_cast<char*>(m_buf_block_);
+    attr_read_buf_ = reinterpret_cast<Uint32*>(p);
+    p += ATTR_READ_BUF_WORD_SIZE * sizeof(Uint32);
+    prog_buf_ = reinterpret_cast<Uint32*>(p);
+    p += MAX_AGG_PROGRAM_WORD_SIZE * sizeof(Uint32);
+    gb_cols_buf_ = reinterpret_cast<Uint32*>(p);
+    p += MAX_AGG_N_GROUPBY_COLS * sizeof(Uint32);
+    agg_results_buf_ = reinterpret_cast<AggResItem*>(p);
+    p += MAX_AGG_N_RESULTS * sizeof(AggResItem);
+    gb_map_buf_ = new (p) GBHashTable();
+    p += sizeof(GBHashTable);
+    mem_buf_ = p;
+    p += MAX_AGG_RESULT_BATCH_BYTES;
+    m_gb_types = reinterpret_cast<GBColTypeInfo*>(p);
+    p += MAX_AGG_N_GROUPBY_COLS * sizeof(GBColTypeInfo);
+    m_cached_agg_ops = reinterpret_cast<Uint8*>(p);
+    memset(m_gb_types, 0, MAX_AGG_N_GROUPBY_COLS * sizeof(GBColTypeInfo));
+  }
+
   /* 0. Prepare the buffer and copy the program */
-  // TODO (Zhao)
-  // VS related
-	assert(prog_len_ <= MAX_VEC_SEARCH_PROGRAM_WORD_SIZE);
+  assert(prog_len_ <= MAX_VEC_SEARCH_PROGRAM_WORD_SIZE);
   if (prog_len_ <= MAX_AGG_PROGRAM_WORD_SIZE) {
-    /*
-		 * Use inline prog_buf_ for aggregation or
-     * small-dimension vector search queries.
-     */
     prog_ = prog_buf_;
   } else {
     /* Use external buf for large-dimension vector search queries. */
     void* page_ptr = lc_ndbd_pool_malloc(32 * 1024, RG_QUERY_MEMORY,
-        thread_id_, false);
+        m_thread_id, false);
     if (page_ptr == nullptr) {
       g_eventLogger->error("Alloc mem for pushdown vector search interpreter failed");
       return false;
@@ -304,7 +341,7 @@ bool AggInterpreter::Init(const Uint32* prog) {
   }
   alloc_len_ = 0;
   memcpy(prog_, prog, prog_len_ * sizeof(Uint32));
-  memset(buf_, 0, READ_BUF_WORD_SIZE * sizeof(Uint32));
+  memset(attr_read_buf_, 0, ATTR_READ_BUF_WORD_SIZE * sizeof(Uint32));
   memset(decimal_buf_, 0, sizeof(Int32) * DECIMAL_BUFF_LENGTH);
   decimal_.buf = decimal_buf_;
   decimal_.len = DECIMAL_BUFF_LENGTH;
@@ -365,17 +402,13 @@ bool AggInterpreter::Init(const Uint32* prog) {
 
     vec_start_pos_ = cur_pos_;
 
-#ifdef PA_MALLOC
     void* page_ptr = lc_ndbd_pool_malloc(32 * 1024, RG_QUERY_MEMORY,
-        thread_id_, false);
+        m_thread_id, false);
     if (page_ptr == nullptr) {
       g_eventLogger->error("Alloc mem for pushdown vector search interpreter failed");
       return false;
     }
     vec_buf_ = static_cast<Uint32*>(page_ptr);
-#else
-    vec_buf_ = new Uint32[g_vec_buf_len_];
-#endif // PA_MALLOC
 
     inited_ = true;
     return true;
@@ -1511,7 +1544,7 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
     char* agg_rec = nullptr;
 
     AttributeHeader* header = nullptr;
-    buf_pos_ = 0;
+    attr_read_pos_ = 0;
     for (Uint32 i = 0; i < n_gb_cols_; i++) {
       Uint32 attr_id = gb_cols_[i] >> 16;
       if ((attr_id & 0x8000) != 0 && m_linked_attr_data != nullptr) {
@@ -1539,18 +1572,18 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
         }
         p += 2;  // skip tableId + tableVersion of found entry
         Uint32 words = 1 + AttributeHeader::getDataSize(*p);
-        memcpy(buf_ + buf_pos_, p, words * sizeof(Uint32));
-        header = reinterpret_cast<AttributeHeader*>(buf_ + buf_pos_);
-        buf_pos_ += words;
+        memcpy(attr_read_buf_ + attr_read_pos_, p, words * sizeof(Uint32));
+        header = reinterpret_cast<AttributeHeader*>(attr_read_buf_ + attr_read_pos_);
+        attr_read_pos_ += words;
       } else {
         int ret = block_tup->readAttributes(req_struct, &(gb_cols_[i]), 1,
-                      buf_ + buf_pos_, g_buf_len_ - buf_pos_);
+                      attr_read_buf_ + attr_read_pos_, g_attr_read_buf_len_ - attr_read_pos_);
         if (ret < 0) {
           DEB_AGG(("read group by column error: %d", ret));
           return -ret;
         }
-        header = reinterpret_cast<AttributeHeader*>(buf_ + buf_pos_);
-        buf_pos_ += (1 + header->getDataSize());
+        header = reinterpret_cast<AttributeHeader*>(attr_read_buf_ + attr_read_pos_);
+        attr_read_pos_ += (1 + header->getDataSize());
       }
     }
 
@@ -1577,8 +1610,8 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
       gb_cmp_inited_ = true;
     }
 
-    Uint32 len_in_char = buf_pos_ * sizeof(Uint32);
-    char* found = gb_map_->find(reinterpret_cast<char*>(buf_), len_in_char);
+    Uint32 len_in_char = attr_read_pos_ * sizeof(Uint32);
+    char* found = gb_map_->find(reinterpret_cast<char*>(attr_read_buf_), len_in_char);
     if (found != nullptr) {
       header = reinterpret_cast<AttributeHeader*>(found);
       agg_res_ptr = reinterpret_cast<AggResItem*>(found + len_in_char);
@@ -1618,7 +1651,7 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
       }
       memset(agg_rec, 0, len_in_char +
                         n_agg_results_ * sizeof(AggResItem));
-      memcpy(agg_rec, reinterpret_cast<char*>(buf_), len_in_char);
+      memcpy(agg_rec, reinterpret_cast<char*>(attr_read_buf_), len_in_char);
 
       gb_map_->insert(agg_rec, len_in_char);
       n_groups_ = gb_map_->size();
@@ -1669,7 +1702,7 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
     value = prog_[exec_pos++];
     Uint8 op = (value & 0xFC000000) >> 26;
     int ret = 0;
-    buf_pos_ = 0;
+    attr_read_pos_ = 0;
     AttributeHeader* header = nullptr;
 
     switch (op) {
@@ -1863,18 +1896,18 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
             }
             p += 2;  // skip tableId + tableVersion of found entry
             Uint32 words = 1 + AttributeHeader::getDataSize(*p);
-            memcpy(buf_ + buf_pos_, p, words * sizeof(Uint32));
-            header = reinterpret_cast<AttributeHeader*>(buf_ + buf_pos_);
+            memcpy(attr_read_buf_ + attr_read_pos_, p, words * sizeof(Uint32));
+            header = reinterpret_cast<AttributeHeader*>(attr_read_buf_ + attr_read_pos_);
             attrDescriptor = nullptr;
           } else {
             col_index = col_id_raw << 16;
             ret = block_tup->readAttributes(req_struct, &(col_index), 1,
-                      buf_ + buf_pos_, g_buf_len_ - buf_pos_);
+                      attr_read_buf_ + attr_read_pos_, g_attr_read_buf_len_ - attr_read_pos_);
             if (ret < 0) {
               DEB_AGG(("read column error: %d", ret));
               return -ret;
             }
-            header = reinterpret_cast<AttributeHeader*>(buf_ + buf_pos_);
+            header = reinterpret_cast<AttributeHeader*>(attr_read_buf_ + attr_read_pos_);
             attrDescriptor = req_struct->tablePtrP->tabDescriptor +
                 (((col_index) >> 16) * ZAD_SIZE);
             assert(header->getAttributeId() == (col_index >> 16));
@@ -1918,77 +1951,77 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
         switch (type) {
           case NDB_TYPE_TINYINT:
             registers_[reg_index].value.val_int64 =
-                *reinterpret_cast<Int8*>(&buf_[buf_pos_ + 1]);
+                *reinterpret_cast<Int8*>(&attr_read_buf_[attr_read_pos_ + 1]);
             PA_INTERP_TRACE(frag_id_,
                             "Load NDB_TYPE_TINYINT %lld",
                             registers_[reg_index].value.val_int64);
             break;
           case NDB_TYPE_SMALLINT:
             registers_[reg_index].value.val_int64 =
-                sint2korr(reinterpret_cast<char*>(&buf_[buf_pos_ + 1]));
+                sint2korr(reinterpret_cast<char*>(&attr_read_buf_[attr_read_pos_ + 1]));
             PA_INTERP_TRACE(frag_id_,
                             "Load NDB_TYPE_SMALLINT %lld",
                             registers_[reg_index].value.val_int64);
             break;
           case NDB_TYPE_MEDIUMINT:
             registers_[reg_index].value.val_int64 =
-                sint3korr(reinterpret_cast<char*>(&buf_[buf_pos_ + 1]));
+                sint3korr(reinterpret_cast<char*>(&attr_read_buf_[attr_read_pos_ + 1]));
             PA_INTERP_TRACE(frag_id_,
                             "Load NDB_TYPE_MEDIUM %lld",
                             registers_[reg_index].value.val_int64);
             break;
           case NDB_TYPE_INT:
             registers_[reg_index].value.val_int64 =
-                sint4korr(reinterpret_cast<char*>(&buf_[buf_pos_ + 1]));
+                sint4korr(reinterpret_cast<char*>(&attr_read_buf_[attr_read_pos_ + 1]));
             PA_INTERP_TRACE(frag_id_,
                             "Load NDB_TYPE_INT %lld",
                             registers_[reg_index].value.val_int64);
             break;
           case NDB_TYPE_BIGINT:
             registers_[reg_index].value.val_int64 =
-                sint8korr(reinterpret_cast<char*>(&buf_[buf_pos_ + 1]));
+                sint8korr(reinterpret_cast<char*>(&attr_read_buf_[attr_read_pos_ + 1]));
             PA_INTERP_TRACE(frag_id_,
                             "Load NDB_TYPE_BIGINT %lld",
                             registers_[reg_index].value.val_int64);
             break;
           case NDB_TYPE_TINYUNSIGNED:
             registers_[reg_index].value.val_uint64 =
-                *reinterpret_cast<Uint8*>(&buf_[buf_pos_ + 1]);
+                *reinterpret_cast<Uint8*>(&attr_read_buf_[attr_read_pos_ + 1]);
             PA_INTERP_TRACE(frag_id_,
                             "Load NDB_TYPE_TINYUNSIGNED %llu",
                             registers_[reg_index].value.val_uint64);
             break;
           case NDB_TYPE_SMALLUNSIGNED:
             registers_[reg_index].value.val_uint64 =
-                uint2korr(reinterpret_cast<char*>(&buf_[buf_pos_ + 1]));
+                uint2korr(reinterpret_cast<char*>(&attr_read_buf_[attr_read_pos_ + 1]));
             PA_INTERP_TRACE(frag_id_,
                             "Load NDB_TYPE_SMALLUNSIGNED %llu",
                             registers_[reg_index].value.val_uint64);
             break;
           case NDB_TYPE_MEDIUMUNSIGNED:
             registers_[reg_index].value.val_uint64 =
-                uint3korr(reinterpret_cast<char*>(&buf_[buf_pos_ + 1]));
+                uint3korr(reinterpret_cast<char*>(&attr_read_buf_[attr_read_pos_ + 1]));
             PA_INTERP_TRACE(frag_id_,
                             "Load NDB_TYPE_MEDIUMUNSIGNED %llu",
                             registers_[reg_index].value.val_uint64);
             break;
           case NDB_TYPE_UNSIGNED:
             registers_[reg_index].value.val_uint64 =
-                uint4korr(reinterpret_cast<char*>(&buf_[buf_pos_ + 1]));
+                uint4korr(reinterpret_cast<char*>(&attr_read_buf_[attr_read_pos_ + 1]));
             PA_INTERP_TRACE(frag_id_,
                             "Load NDB_TYPE_UNSIGNED %llu",
                             registers_[reg_index].value.val_uint64);
             break;
           case NDB_TYPE_BIGUNSIGNED:
             registers_[reg_index].value.val_uint64 =
-                uint8korr(reinterpret_cast<char*>(&buf_[buf_pos_ + 1]));
+                uint8korr(reinterpret_cast<char*>(&attr_read_buf_[attr_read_pos_ + 1]));
             PA_INTERP_TRACE(frag_id_,
                             "Load NDB_TYPE_BIGUNSIGNED %llu",
                             registers_[reg_index].value.val_uint64);
             break;
           case NDB_TYPE_FLOAT:
             registers_[reg_index].value.val_double =
-                floatget(reinterpret_cast<unsigned char*>(&buf_[buf_pos_ + 1]));
+                floatget(reinterpret_cast<unsigned char*>(&attr_read_buf_[attr_read_pos_ + 1]));
             PA_INTERP_TRACE(frag_id_,
                             "Load NDB_TYPE_FLOAT %lf",
                             registers_[reg_index].value.val_double);
@@ -1996,7 +2029,7 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
           case NDB_TYPE_DOUBLE:
             registers_[reg_index].value.val_double =
                 doubleget(reinterpret_cast<unsigned char*>(
-                      &buf_[buf_pos_ + 1]));
+                      &attr_read_buf_[attr_read_pos_ + 1]));
             PA_INTERP_TRACE(frag_id_,
                             "Load NDB_TYPE_DOUBLE %lf",
                             registers_[reg_index].value.val_double);
@@ -2005,10 +2038,10 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
             assert(static_cast<Uint32>(decimal_bin_size(precision, scale)) ==
                 header->getByteSize());
             // memset(decimal.buf, 0, sizeof(Int32) * DECIMAL_BUFF_LENGTH);
-            dec_ret = bin2decimal(reinterpret_cast<const uchar*>(&buf_[buf_pos_ + 1]),
+            dec_ret = bin2decimal(reinterpret_cast<const uchar*>(&attr_read_buf_[attr_read_pos_ + 1]),
                       &decimal_, precision, scale);
             if (dec_ret != E_DEC_OK) {
-              dec_buf_ptr = reinterpret_cast<Uint8*>(&buf_[buf_pos_ + 1]);
+              dec_buf_ptr = reinterpret_cast<Uint8*>(&attr_read_buf_[attr_read_pos_ + 1]);
               char log_buf[128];
               sprintf(log_buf, "Error while parsing decimal: ");
               for (Uint32 i = 0;
@@ -2037,7 +2070,7 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
               registers_[reg_index].value.val_int64 = dec_val_ll;
             }
             if (dec_ret != E_DEC_OK) {
-              dec_buf_ptr = reinterpret_cast<Uint8*>(&buf_[buf_pos_ + 1]);
+              dec_buf_ptr = reinterpret_cast<Uint8*>(&attr_read_buf_[attr_read_pos_ + 1]);
               char log_buf[128];
               sprintf(log_buf, "Error while converting decimal: ");
               for (Uint32 i = 0;
@@ -2067,10 +2100,10 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
             assert(static_cast<Uint32>(decimal_bin_size(precision, scale)) ==
                 header->getByteSize());
             // memset(decimal.buf, 0, sizeof(Int32) * DECIMAL_BUFF_LENGTH);
-            dec_ret = bin2decimal(reinterpret_cast<const uchar*>(&buf_[buf_pos_ + 1]),
+            dec_ret = bin2decimal(reinterpret_cast<const uchar*>(&attr_read_buf_[attr_read_pos_ + 1]),
                       &decimal_, precision, scale);
             if (dec_ret != E_DEC_OK) {
-              dec_buf_ptr = reinterpret_cast<Uint8*>(&buf_[buf_pos_ + 1]);
+              dec_buf_ptr = reinterpret_cast<Uint8*>(&attr_read_buf_[attr_read_pos_ + 1]);
               char log_buf[128];
               sprintf(log_buf, "Error while parsing decimal: ");
               for (Uint32 i = 0;
@@ -2102,7 +2135,7 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
               registers_[reg_index].value.val_uint64 = dec_val_ull;
             }
             if (dec_ret != E_DEC_OK) {
-              dec_buf_ptr = reinterpret_cast<Uint8*>(&buf_[buf_pos_ + 1]);
+              dec_buf_ptr = reinterpret_cast<Uint8*>(&attr_read_buf_[attr_read_pos_ + 1]);
               char log_buf[128];
               sprintf(log_buf, "Error while converting decimal: ");
               for (Uint32 i = 0;
@@ -2623,7 +2656,8 @@ Int32 AggInterpreter::processRecWithLinkedAttrs(
   m_linked_attr_data = linked_attr_data;
   m_linked_attr_len = linked_attr_len;
 
-  Int32 ret = ProcessRec(block_tup, req_struct);
+  bool dummy = false;
+  Int32 ret = ProcessRec(block_tup, req_struct, &dummy);
 
   m_linked_attr_data = nullptr;
   m_linked_attr_len = 0;
@@ -3208,14 +3242,14 @@ Int32 AggInterpreter::CopyVecCandidateFromSignal(Signal* signal,
                     "top_n: %u, vec_max_rec_size: %u, actual_rec_size: %u",
                     vec_top_n_, vec_max_rec_size_, ToutBufIndex);
     void* ca_mem = lc_ndbd_pool_malloc(
-        sizeof(CandidateAllocator), RG_QUERY_MEMORY, thread_id_, false);
+        sizeof(CandidateAllocator), RG_QUERY_MEMORY, m_thread_id, false);
     if (ca_mem == nullptr) {
       g_eventLogger->error("Alloc mem for CandidateAllocator failed");
       return ZAGG_ALLOC_MEM_FAILED;
     }
     candidate_allocator_ = new (ca_mem) CandidateAllocator(
         vec_top_n_, vec_max_rec_size_, table_id_, frag_id_);
-    int ret = candidate_allocator_ -> Init(thread_id_);
+    int ret = candidate_allocator_ -> Init(m_thread_id);
     if (ret != 0) {
       return ret;
     }

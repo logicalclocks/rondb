@@ -1024,7 +1024,7 @@ Uint32 Dbtup::copyAttrinfo(Uint32 storedProcId,
         }
         ndbrequire(page_ptr != nullptr);
         scan_rec_ptr->m_agg_interpreter =
-          new(page_ptr) AggInterpreter(&cinBuffer[proc_start], proc_len,
+          new(page_ptr) AggInterpreter(proc_len,
                               prepare_fragptr.p->fragTableId,
                               prepare_fragptr.p->fragmentId,
                               getThreadId());
