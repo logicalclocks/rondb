@@ -25,6 +25,8 @@
 */
 
 #include "AggregationAPICompiler.hpp"
+#include "NdbQueryBuilder.hpp"
+#include "NdbQueryOperation.hpp"
 #include "QueryPlanner.hpp"
 #include "RonSQLParser.y.hpp"
 #include "RonSQLLexer.l.hpp"
@@ -1007,6 +1009,13 @@ RonSQLPreparer::execute()
     }
     DEB_TRACE();
     require_prm(ndb != NULL, "Cannot query without ndb object.");
+
+    if (m_context.ast_root.joins != NULL) {
+      execute_join();
+      cleanup_trans();
+      return;
+    }
+
     ndbrequire(m_trans == NULL);
     m_trans = DBG(ndb->startTransaction());
     require_run(m_trans != NULL, "Failed to start transaction.");
@@ -1140,6 +1149,99 @@ RonSQLPreparer::cleanup_trans() {
     DBGV(ndb->closeTransaction(m_trans));
     m_trans = NULL;
   }
+}
+
+void
+RonSQLPreparer::execute_join()
+{
+  Ndb* ndb = m_conf.ndb;
+  ndbrequire(m_trans == NULL);
+  m_trans = ndb->startTransaction();
+  require_run(m_trans != NULL, "Failed to start transaction.");
+
+  JoinPlan& plan = m_join_plan;
+
+  // Build aggregator on the leaf table
+  const NdbDictionary::Table* leaf_table =
+      plan.ops[plan.agg_leaf_idx].table;
+  NdbAggregator aggregator(leaf_table);
+  programAggregator(&aggregator);
+  require_prm(aggregator.Finalize(), "Failed to finalize aggregator.");
+
+  // Build NdbQueryBuilder tree
+  NdbQueryBuilder* qb = NdbQueryBuilder::create();
+  ndbrequire(qb != NULL);
+
+  const NdbQueryOperationDef* opDefs[MAX_JOIN_TABLES];
+
+  // Root operation (always TABLE_SCAN for now)
+  {
+    NdbQueryOptions rootOpts;
+    opDefs[0] = qb->scanTable(plan.ops[0].table, &rootOpts);
+    require_run(opDefs[0] != NULL, "Failed to create root scan.");
+  }
+
+  // Child operations
+  for (Uint32 i = 1; i < plan.num_ops; i++) {
+    JoinOp& op = plan.ops[i];
+    NdbQueryOptions opts;
+
+    // Build linked key from parent
+    const NdbQueryOperand* keys[MAX_JOIN_KEY_COLS + 1];
+    for (Uint32 k = 0; k < op.num_key_cols; k++) {
+      keys[k] = qb->linkedValue(opDefs[op.parent_op_idx],
+                                 op.parent_key_col_names[k]);
+      require_run(keys[k] != NULL, "Failed to create linked value.");
+    }
+    keys[op.num_key_cols] = nullptr;
+
+    // Attach aggregation to leaf
+    if (i == plan.agg_leaf_idx) {
+      require_run(opts.setAggregation(aggregator) == 0,
+                  "Failed to set aggregation.");
+    }
+
+    switch (op.type) {
+    case JoinOp::PK_LOOKUP:
+      opDefs[i] = qb->readTuple(op.table, keys, &opts);
+      break;
+    case JoinOp::UNIQUE_LOOKUP:
+      opDefs[i] = qb->readTuple(op.index, op.table, keys, &opts);
+      break;
+    case JoinOp::INDEX_SCAN:
+    {
+      NdbQueryIndexBound bound(keys);
+      opDefs[i] = qb->scanIndex(op.index, op.table, &bound, &opts);
+      break;
+    }
+    default:
+      abort();
+    }
+    require_run(opDefs[i] != NULL, "Failed to create child operation.");
+  }
+
+  // Prepare and execute
+  const NdbQueryDef* queryDef = qb->prepare(ndb);
+  require_run(queryDef != NULL, "Failed to prepare query.");
+
+  NdbQuery* query = m_trans->createQuery(queryDef);
+  require_run(query != NULL, "Failed to create query.");
+
+  require_run(m_trans->execute(NdbTransaction::NoCommit) == 0,
+              "Failed to execute transaction.");
+
+  // Consume all rows
+  while (query->nextResult(true) == NdbQuery::NextResult_gotRow) {}
+
+  // Collect and print aggregation results
+  NdbAggregator* resultAgg = query->getAggregator();
+  ndbrequire(resultAgg != NULL);
+  m_resultprinter->print_result(resultAgg, m_conf.out_stream);
+
+  // Cleanup
+  query->close();
+  queryDef->destroy();
+  qb->destroy();
 }
 
 std::ostream& operator<<(std::ostream& os, const NdbError& err) {

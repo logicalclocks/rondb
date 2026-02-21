@@ -195,6 +195,7 @@ public:
   void execute(); // todo make sure we can execute several times, do not mutate. Make this a separate object that takes a preparer as const input (This todo from review 2024-08-22 with MR)
 private:
   void cleanup_trans();
+  void execute_join();
   void apply_filter_top_level(NdbScanFilter* filter);
   void apply_filter(NdbScanFilter* filter, struct ConditionalExpression* ce);
   void apply_filter_cmp(NdbScanFilter* filter,
