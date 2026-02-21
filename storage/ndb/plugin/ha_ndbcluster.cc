@@ -14864,7 +14864,9 @@ int ndbcluster_push_to_engine(THD *thd, AccessPath *root_path, JOIN *join) {
   }
 
   // Check if aggregation can also be pushed for a fully-pushed join.
-  ndb_push_aggregation(thd, join, pushed_builder);
+  if (THDVAR(thd, join_pushdown_aggregate)) {
+    ndb_push_aggregation(thd, join, pushed_builder);
+  }
 
   /**
    * For those tables not being join-pushed we may still be able to
