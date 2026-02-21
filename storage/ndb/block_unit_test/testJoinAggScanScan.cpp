@@ -55,6 +55,7 @@
 #include "NdbQueryBuilder.hpp"
 #include "NdbQueryOperation.hpp"
 
+#include <NdbRestarter.hpp>
 #include <mysql.h>
 
 #include <climits>
@@ -92,6 +93,10 @@ static const char *SS_STAT   = "ss_stat";
 /* Group D tables (Test 8 — composite index) */
 static const char *SS_PROJECT = "ss_project";
 static const char *SS_TASK    = "ss_task";
+
+/* Group E tables (Test 9 — eviction via ERROR_INSERT 4040) */
+static const char *SS_STORE_E = "ss_store_e";
+static const char *SS_SALE_E  = "ss_sale_e";
 
 /* ------------------------------------------------------------------ */
 /* MySQL helpers                                                       */
@@ -1938,6 +1943,283 @@ testCompositeIndexBounds(Ndb *ndb, MYSQL *conn)
 }
 
 /* ------------------------------------------------------------------ */
+/* Group E: ss_store_e + ss_sale_e (Test 9 — eviction)                 */
+/* ------------------------------------------------------------------ */
+
+static int
+createGroupETables(MYSQL *conn)
+{
+  sqlExec(conn, "DROP TABLE IF EXISTS ss_sale_e");
+  sqlExec(conn, "DROP TABLE IF EXISTS ss_store_e");
+
+  if (sqlExec(conn,
+        "CREATE TABLE ss_store_e ("
+        "  store_id INT NOT NULL PRIMARY KEY,"
+        "  region CHAR(20) NOT NULL"
+        ") ENGINE=NDB") != 0) return -1;
+  V("Created table %s\n", SS_STORE_E);
+
+  if (sqlExec(conn,
+        "CREATE TABLE ss_sale_e ("
+        "  sale_id INT NOT NULL PRIMARY KEY,"
+        "  store_id INT NOT NULL,"
+        "  amount BIGINT NOT NULL,"
+        "  INDEX idx_sale_store (store_id)"
+        ") ENGINE=NDB") != 0) return -1;
+  V("Created table %s\n", SS_SALE_E);
+
+  return 0;
+}
+
+static int
+insertGroupEData(MYSQL *conn)
+{
+  /*
+   * 60 stores across 20 regions (3 per region):
+   *   store 1-3  → "Region_01", 4-6  → "Region_02", ..., 58-60 → "Region_20"
+   *
+   * 600 sales: sale_id = 1..600, store_id = ((sale_id-1) % 60) + 1
+   *   → 10 sales per store, 30 sales per region
+   *   amount = sale_id * 10
+   *
+   * 20 groups ensures the eviction condition (gb_map size > 2) is well
+   * exercised, and 600 rows gives many eviction opportunities (~85 fires
+   * at modulo-7 with >=3 groups).
+   */
+  char buf[4096];
+  int pos = snprintf(buf, sizeof(buf), "INSERT INTO ss_store_e VALUES ");
+  for (int s = 1; s <= 60; s++) {
+    if (s > 1) pos += snprintf(buf + pos, sizeof(buf) - pos, ",");
+    int region = ((s - 1) / 3) + 1;
+    pos += snprintf(buf + pos, sizeof(buf) - pos, "(%d,'Region_%02d')",
+                    s, region);
+  }
+  if (sqlExec(conn, buf) != 0) return -1;
+  V("Inserted 60 ss_store_e rows\n");
+
+  char bigbuf[32768];
+  pos = snprintf(bigbuf, sizeof(bigbuf), "INSERT INTO ss_sale_e VALUES ");
+  for (int i = 1; i <= 600; i++) {
+    if (i > 1) pos += snprintf(bigbuf + pos, sizeof(bigbuf) - pos, ",");
+    int storeId = ((i - 1) % 60) + 1;
+    pos += snprintf(bigbuf + pos, sizeof(bigbuf) - pos, "(%d,%d,%d)",
+                    i, storeId, i * 10);
+  }
+  if (sqlExec(conn, bigbuf) != 0) return -1;
+  V("Inserted 600 ss_sale_e rows\n");
+
+  return 0;
+}
+
+static int
+dropGroupETables(MYSQL *conn)
+{
+  sqlExec(conn, "DROP TABLE IF EXISTS ss_sale_e");
+  sqlExec(conn, "DROP TABLE IF EXISTS ss_store_e");
+  V("Dropped ss_store_e, ss_sale_e\n");
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Test 9: Forced eviction via ERROR_INSERT 4040 (scan-scan)           */
+/*                                                                     */
+/* SQL equivalent:                                                     */
+/*   SELECT s.region, SUM(l.amount)                                    */
+/*   FROM ss_store_e s JOIN ss_sale_e l ON l.store_id = s.store_id     */
+/*   GROUP BY s.region                                                 */
+/*                                                                     */
+/* 60 stores, 600 sales, 20 region groups (30 sales each).             */
+/* ERROR_INSERT 4040 forces intermittent group eviction (~every 7th    */
+/* row when >=3 groups). With 20 groups and 600 rows, eviction fires   */
+/* frequently, creating many merge opportunities in DBSPJ.             */
+/* ------------------------------------------------------------------ */
+
+static int
+testEvictionScanScan(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
+{
+  printf("Test 9: Forced eviction (ERROR_INSERT 4040) scan-scan ... ");
+  fflush(stdout);
+
+  if (restarter.insertErrorInAllNodes(4040) != 0) {
+    printf("FAILED (insertErrorInAllNodes(4040))\n");
+    return -1;
+  }
+  V("\n  ERROR_INSERT 4040 set\n");
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(SS_STORE_E);
+  dict->invalidateTable(SS_SALE_E);
+  dict->invalidateIndex("idx_sale_store", SS_SALE_E);
+  const NdbDictionary::Table *storeTab = dict->getTable(SS_STORE_E);
+  const NdbDictionary::Table *saleTab = dict->getTable(SS_SALE_E);
+  const NdbDictionary::Index *saleIdx =
+      dict->getIndex("idx_sale_store", SS_SALE_E);
+  if (storeTab == nullptr || saleTab == nullptr || saleIdx == nullptr) {
+    printf("FAILED (table/index lookup: %s)\n", dict->getNdbError().message);
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+
+  const NdbDictionary::Column *regionCol = storeTab->getColumn("region");
+
+  NdbAggregator agg(saleTab);
+  if (!agg.GroupByLinked(0, regionCol) ||
+      !agg.LoadColumn("amount", 0) ||
+      !agg.Sum(0, 0) ||
+      !agg.Finalize()) {
+    printf("FAILED (agg program: %s)\n", agg.GetError().err_msg_);
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  const NdbQueryTableScanOperationDef *storeOp = qb->scanTable(storeTab);
+  if (storeOp == nullptr) {
+    printf("FAILED (scanTable: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+
+  const NdbQueryOperand *childBound[] = {
+    qb->linkedValue(storeOp, "store_id"), nullptr
+  };
+  NdbQueryIndexBound bound(childBound);
+
+  NdbQueryOptions saleOpts;
+  saleOpts.setAggregation(agg);
+  const NdbLinkedOperand *regionLink = qb->linkedValue(storeOp, "region");
+  saleOpts.addLinkedProjection(regionLink);
+
+  const NdbQueryIndexScanOperationDef *saleOp =
+      qb->scanIndex(saleIdx, saleTab, &bound, &saleOpts);
+  if (saleOp == nullptr) {
+    printf("FAILED (scanIndex: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  if (trans == nullptr) {
+    printf("FAILED (startTransaction: %s)\n", ndb->getNdbError().message);
+    queryDef->destroy();
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+
+  NdbQuery *query = trans->createQuery(queryDef);
+  if (query == nullptr) {
+    printf("FAILED (createQuery: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    printf("FAILED (execute: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+
+  NdbQuery::NextResultOutcome outcome;
+  Uint32 rowCount = 0;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {
+    rowCount++;
+  }
+  if (outcome == NdbQuery::NextResult_error) {
+    printf("FAILED (nextResult: %s)\n", query->getNdbError().message);
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+  V("  Scan consumed %u rows\n", rowCount);
+
+  NdbAggregator *resultAgg = query->getAggregator();
+  if (resultAgg == nullptr) {
+    printf("FAILED (getAggregator returned nullptr)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+
+  std::map<std::string, Int64> actual;
+  for (;;) {
+    NdbAggregator::ResultRecord rec = resultAgg->FetchResultRecord();
+    if (rec.end()) break;
+
+    NdbAggregator::Column regionGbCol = rec.FetchGroupbyColumn();
+    std::string region = extractCharColumn(regionGbCol);
+    NdbAggregator::Result sumRes = rec.FetchAggregationResult();
+    Int64 sumVal = sumRes.data_int64();
+
+    actual[region] = sumVal;
+    V("  region='%s' SUM(amount)=%lld\n", region.c_str(), (long long)sumVal);
+  }
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  restarter.insertErrorInAllNodes(0);
+  V("  ERROR_INSERT cleared\n");
+
+  if (actual.size() != 20) {
+    printf("FAILED (expected 20 groups, got %zu)\n", actual.size());
+    return -1;
+  }
+
+  /* Cross-check with MySQL */
+  {
+    if (mysql_query(conn,
+          "SELECT s.region, SUM(l.amount) "
+          "FROM ss_store_e s JOIN ss_sale_e l ON l.store_id = s.store_id "
+          "GROUP BY s.region ORDER BY s.region") != 0) {
+      printf("FAILED (MySQL cross-check: %s)\n", mysql_error(conn));
+      return -1;
+    }
+    MYSQL_RES *result = mysql_store_result(conn);
+    MYSQL_ROW row;
+    while ((row = mysql_fetch_row(result)) != nullptr) {
+      std::string region(row[0]);
+      while (!region.empty() && region.back() == ' ') region.pop_back();
+      Int64 sqlSum = atoll(row[1]);
+      auto it = actual.find(region);
+      if (it == actual.end() || it->second != sqlSum) {
+        printf("FAILED (MySQL cross-check: region '%s' mismatch: "
+               "NDB=%lld SQL=%lld)\n",
+               region.c_str(),
+               it == actual.end() ? -1LL : (long long)it->second,
+               (long long)sqlSum);
+        mysql_free_result(result);
+        return -1;
+      }
+    }
+    mysql_free_result(result);
+    V("  MySQL cross-check OK\n");
+  }
+
+  printf("OK (20 groups, eviction merge verified)\n");
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* usage / main                                                        */
 /* ------------------------------------------------------------------ */
 
@@ -2053,6 +2335,19 @@ int main(int argc, char **argv)
             exitCode = 1;
           }
           dropGroupDTables(conn);
+
+          /* Test 9: Group E tables (ss_store_e + ss_sale_e) — eviction */
+          {
+            NdbRestarter restarter(connectString);
+            if (createGroupETables(conn) == 0 &&
+                insertGroupEData(conn) == 0) {
+              if (testEvictionScanScan(&ndb, conn, restarter) != 0)
+                exitCode = 1;
+            } else {
+              exitCode = 1;
+            }
+            dropGroupETables(conn);
+          }
         }
 
         mysql_close(conn);
