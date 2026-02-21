@@ -755,6 +755,25 @@ RonSQLPreparer::load_join()
   m_column_attrId_map = col_id_map;
   m_column_map = col_map;
   m_column_table_idx = col_table_idx;
+
+  // Build linked projections for GROUP BY columns on non-leaf tables
+  Uint32 leaf_idx = m_join_plan.agg_leaf_idx;
+  struct GroupbyColumns* groupby = m_context.ast_root.groupby_columns;
+  while (groupby != NULL)
+  {
+    Uint32 col_idx = groupby->col_idx;
+    if (col_table_idx[col_idx] != leaf_idx)
+    {
+      require_prm(m_join_plan.num_linked_projs < MAX_LINKED_PROJS,
+                  "Too many linked projections.");
+      JoinPlan::LinkedProj& lp =
+          m_join_plan.linked_projs[m_join_plan.num_linked_projs];
+      lp.source_op_idx = col_table_idx[col_idx];
+      lp.column_name = m_columns[col_idx].c_str();
+      m_join_plan.num_linked_projs++;
+    }
+    groupby = groupby->next;
+  }
 }
 
 void
@@ -1165,7 +1184,7 @@ RonSQLPreparer::execute_join()
   const NdbDictionary::Table* leaf_table =
       plan.ops[plan.agg_leaf_idx].table;
   NdbAggregator aggregator(leaf_table);
-  programAggregator(&aggregator);
+  programAggregator_join(&aggregator);
   require_prm(aggregator.Finalize(), "Failed to finalize aggregator.");
 
   // Build NdbQueryBuilder tree
@@ -1199,6 +1218,15 @@ RonSQLPreparer::execute_join()
     if (i == plan.agg_leaf_idx) {
       require_run(opts.setAggregation(aggregator) == 0,
                   "Failed to set aggregation.");
+      // Add linked projections for GROUP BY on parent columns
+      for (Uint32 j = 0; j < plan.num_linked_projs; j++) {
+        NdbLinkedOperand* lv = qb->linkedValue(
+            opDefs[plan.linked_projs[j].source_op_idx],
+            plan.linked_projs[j].column_name);
+        require_run(lv != NULL, "Failed to create linked projection.");
+        require_run(opts.addLinkedProjection(lv) == 0,
+                    "Failed to add linked projection.");
+      }
     }
 
     switch (op.type) {
@@ -2177,6 +2205,100 @@ RonSQLPreparer::programAggregator(NdbAggregator* aggregator)
       break;
     default:
       // Unknown instruction
+      abort();
+    }
+  }
+}
+
+void
+RonSQLPreparer::programAggregator_join(NdbAggregator* aggregator)
+{
+  std::basic_ostream<char>& err = *m_conf.err_stream;
+  SelectStatement& ast_root = m_context.ast_root;
+  Uint32 leaf_idx = m_join_plan.agg_leaf_idx;
+
+  // Program groupby columns — use GroupByLinked for parent columns
+  assert(m_column_attrId_map != NULL);
+  Uint32 linked_proj_pos = 0;
+  struct GroupbyColumns* groupby = ast_root.groupby_columns;
+  while (groupby != NULL)
+  {
+    Uint32 col_idx = groupby->col_idx;
+    if (m_column_table_idx[col_idx] == leaf_idx)
+    {
+      programAggregator_do_or_fail
+        (aggregator->GroupBy(m_column_attrId_map[col_idx]));
+    }
+    else
+    {
+      programAggregator_do_or_fail
+        (aggregator->GroupByLinked(linked_proj_pos, m_column_map[col_idx]));
+      linked_proj_pos++;
+    }
+    groupby = groupby->next;
+  }
+
+  // Program aggregations — same as single-table path
+  assert(m_agg != NULL);
+  DynamicArray<AggregationAPICompiler::Instr>& program = m_agg->m_program;
+  for (Uint32 i = 0; i < program.size(); i++)
+  {
+    AggregationAPICompiler::Instr* instr = &program[i];
+    Uint32 dest = instr->dest;
+    Uint32 src = instr->src;
+    switch (instr->type)
+    {
+    case AggregationAPICompiler::SVMInstrType::Load:
+    {
+      NdbAttrId col_id = m_column_attrId_map[src];
+      if (!aggregator->LoadColumn(col_id, dest))
+      {
+        err << "Failed writing aggregation program "
+               "when attempting to load column "
+            << quoted_identifier(m_columns[src]) << endl;
+        throw RonSQLMaybeStaleSchema(
+            "Failed writing aggregation program");
+      }
+      break;
+    }
+    case AggregationAPICompiler::SVMInstrType::LoadConstantInteger:
+      programAggregator_do_or_fail
+        (aggregator->LoadInt64(m_agg->m_constants[src].int_64, dest));
+      break;
+    case AggregationAPICompiler::SVMInstrType::Mov:
+      programAggregator_do_or_fail(aggregator->Mov(dest, src));
+      break;
+    case AggregationAPICompiler::SVMInstrType::Add:
+      programAggregator_do_or_fail(aggregator->Add(dest, src));
+      break;
+    case AggregationAPICompiler::SVMInstrType::Minus:
+      programAggregator_do_or_fail(aggregator->Minus(dest, src));
+      break;
+    case AggregationAPICompiler::SVMInstrType::Mul:
+      programAggregator_do_or_fail(aggregator->Mul(dest, src));
+      break;
+    case AggregationAPICompiler::SVMInstrType::Div:
+      programAggregator_do_or_fail(aggregator->Div(dest, src));
+      break;
+    case AggregationAPICompiler::SVMInstrType::DivInt:
+      programAggregator_do_or_fail(aggregator->DivInt(dest, src));
+      break;
+    case AggregationAPICompiler::SVMInstrType::Rem:
+      programAggregator_do_or_fail(aggregator->Mod(dest, src));
+      break;
+    case AggregationAPICompiler::SVMInstrType::Sum:
+      programAggregator_do_or_fail(aggregator->Sum(dest, src));
+      break;
+    case AggregationAPICompiler::SVMInstrType::Min:
+      programAggregator_do_or_fail(aggregator->Min(dest, src));
+      break;
+    case AggregationAPICompiler::SVMInstrType::Max:
+      programAggregator_do_or_fail(aggregator->Max(dest, src));
+      break;
+    case AggregationAPICompiler::SVMInstrType::Count:
+      programAggregator_do_or_fail(aggregator->Count(dest, src));
+      break;
+    default:
       abort();
     }
   }

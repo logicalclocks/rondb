@@ -207,6 +207,7 @@ private:
   struct ConditionalExpression* simplify_ce(struct ConditionalExpression* ce,
                                             int maxdepth);
   void programAggregator(NdbAggregator* aggregator);
+  void programAggregator_join(NdbAggregator* aggregator);
   void print_result_json(NdbAggregator* aggregator);
   void print();
   void print(struct ConditionalExpression* ce,
