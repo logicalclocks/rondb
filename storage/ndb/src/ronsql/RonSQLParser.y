@@ -140,6 +140,12 @@ extern void rsqlp_error(RSQLP_LTYPE* yylloc, yyscan_t yyscanner, const char* s);
   struct OrderbyColumns* orderby_cols;
   struct ConditionalExpression* conditional_expression;
   AggregationAPICompiler::Expr* arith_expr;
+  struct TableRef* table_ref;
+  struct JoinClause* join_clause;
+  struct {
+    JoinClause* head;
+    JoinClause* tail;
+  } join_list;
 }
 
 %token<bival> T_INT
@@ -208,21 +214,28 @@ extern void rsqlp_error(RSQLP_LTYPE* yylloc, yyscan_t yyscanner, const char* s);
 %type<arith_expr> arith_expr
 %type<conditional_expression> where_opt cond_expr
 %type<bival> limit_opt
+%type<table_ref> table_ref
+%type<join_clause> join_clause
+%type<join_list> join_list
 
 %start selectstatement
 
 %%
 
 selectstatement:
-  explain_opt T_SELECT outputlist T_FROM identifier_c where_opt groupby_opt orderby_opt limit_opt T_SEMICOLON
+  explain_opt T_SELECT outputlist T_FROM table_ref join_list where_opt groupby_opt orderby_opt limit_opt T_SEMICOLON
   {
     context->ast_root.do_explain = $1;
     context->ast_root.outputs = $3.head;
-    context->ast_root.table = $5;
-    context->ast_root.where_expression = $6;
-    context->ast_root.groupby_columns = $7;
-    context->ast_root.orderby_columns = $8;
-    context->ast_root.limit = $9;
+    context->ast_root.root_table = $5;
+    context->ast_root.table = $5->name;
+    if ($6.head != NULL) {
+      context->ast_root.joins = $6.head;
+    }
+    context->ast_root.where_expression = $7;
+    context->ast_root.groupby_columns = $8;
+    context->ast_root.orderby_columns = $9;
+    context->ast_root.limit = $10;
     /*
      * These asserts make sure the definition of TokenKind matches both the
      * yychar variable in RonSQLzparser.y.cpp:rsqlp_parse() and the underlying
@@ -278,6 +291,13 @@ nonaliased_output:
                                           $$->output_name = $1;
                                           $$->next = NULL;
                                         }
+| identifier_c T_DOT identifier_c      {
+                                          initptr($$);
+                                          $$->type = Outputs::Type::COLUMN;
+                                          $$->column.col_idx = context->qualified_column_name_to_idx($1, $3);
+                                          $$->output_name = $3;
+                                          $$->next = NULL;
+                                        }
 | aggfun T_LEFT arith_expr T_RIGHT      { init_aggfun($$, @$, $1, $3); }
 | T_COUNT T_LEFT arith_expr T_RIGHT     {
                                           // This needs to be a separate rule from the "aggfun..."
@@ -306,6 +326,7 @@ aggfun:
 
 arith_expr:
   identifier_c                          { $$ = context->get_agg()->Load(context->column_name_to_idx($1)); }
+| identifier_c T_DOT identifier_c      { $$ = context->get_agg()->Load(context->qualified_column_name_to_idx($1, $3)); }
 | T_INT                                 { $$ = context->get_agg()->ConstantInteger($1); }
 | T_MINUS arith_expr                    { $$ = context->get_agg()->Minus(context->get_agg()->ConstantInteger(0), $2); }
 | T_LEFT arith_expr T_RIGHT             { $$ = $2; }
@@ -321,12 +342,65 @@ identifier:
 identifier_c:
   identifier                            { $$ = $1.to_LexCString(context->get_allocator()); }
 
+table_ref:
+  identifier_c
+  {
+    initptr($$);
+    $$->database = LexCString{NULL, 0};
+    $$->name = $1;
+    $$->alias = $1;
+  }
+| identifier_c T_DOT identifier_c
+  {
+    initptr($$);
+    $$->database = $1;
+    $$->name = $3;
+    $$->alias = $3;
+  }
+| identifier_c T_AS identifier_c
+  {
+    initptr($$);
+    $$->database = LexCString{NULL, 0};
+    $$->name = $1;
+    $$->alias = $3;
+  }
+| identifier_c T_DOT identifier_c T_AS identifier_c
+  {
+    initptr($$);
+    $$->database = $1;
+    $$->name = $3;
+    $$->alias = $5;
+  }
+
+join_list:
+  %empty                                { $$.head = NULL; $$.tail = NULL; }
+| join_list join_clause                 { if ($1.head == NULL) {
+                                            $$.head = $2; $$.tail = $2;
+                                          } else {
+                                            $$.head = $1.head; $$.tail = $2;
+                                            $1.tail->next = $2;
+                                          }
+                                        }
+
+join_clause:
+  T_JOIN table_ref T_ON identifier_c T_DOT identifier_c T_EQUALS identifier_c T_DOT identifier_c
+  {
+    initptr($$);
+    $$->table = *$2;
+    $$->condition.child_table = $4;
+    $$->condition.child_column = $6;
+    $$->condition.parent_table = $8;
+    $$->condition.parent_column = $10;
+    $$->next = NULL;
+  }
+
 where_opt:
   %empty                                { $$ = NULL; }
 | T_WHERE cond_expr                     { $$ = $2; }
 
 cond_expr:
   identifier_c                          { initptr($$); $$->op = T_IDENTIFIER; $$->col_idx = context->column_name_to_idx($1); }
+| identifier_c T_DOT identifier_c      { initptr($$); $$->op = T_IDENTIFIER; $$->col_idx = context->qualified_column_name_to_idx($1, $3); }
 | T_STRING                              { initptr($$); $$->op = T_STRING; $$->string = $1; }
 | T_INT                                 { initptr($$); $$->op = T_INT; $$->constant_integer = $1; }
 | T_FLOAT                               { initptr($$); $$->op = T_FLOAT; $$->constant_float.dbl = $1.dbl; $$->constant_float.ls = $1.ls; }
@@ -392,7 +466,8 @@ groupby_cols:
 | groupby_col T_COMMA groupby_cols      { $$ = $1; $$->next = $3; }
 
 groupby_col:
-identifier_c                            { initptr($$); $$->col_idx = context->column_name_to_idx($1); $$->next = NULL; }
+  identifier_c                          { initptr($$); $$->col_idx = context->column_name_to_idx($1); $$->next = NULL; }
+| identifier_c T_DOT identifier_c      { initptr($$); $$->col_idx = context->qualified_column_name_to_idx($1, $3); $$->next = NULL; }
 
 orderby_opt:
   %empty                                { $$ = NULL; }
@@ -409,6 +484,9 @@ orderby_col:
   identifier_c                          { initptr($$); $$->col_idx = context->column_name_to_idx($1); $$->ascending = true; $$->next = NULL; }
 | identifier_c T_ASC                    { initptr($$); $$->col_idx = context->column_name_to_idx($1); $$->ascending = true; $$->next = NULL; }
 | identifier_c T_DESC                   { initptr($$); $$->col_idx = context->column_name_to_idx($1); $$->ascending = false; $$->next = NULL; }
+| identifier_c T_DOT identifier_c      { initptr($$); $$->col_idx = context->qualified_column_name_to_idx($1, $3); $$->ascending = true; $$->next = NULL; }
+| identifier_c T_DOT identifier_c T_ASC  { initptr($$); $$->col_idx = context->qualified_column_name_to_idx($1, $3); $$->ascending = true; $$->next = NULL; }
+| identifier_c T_DOT identifier_c T_DESC { initptr($$); $$->col_idx = context->qualified_column_name_to_idx($1, $3); $$->ascending = false; $$->next = NULL; }
 
 limit_opt:
   %empty                                { $$ = -1; }

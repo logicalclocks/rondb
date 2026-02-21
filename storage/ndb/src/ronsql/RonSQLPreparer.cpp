@@ -2398,15 +2398,36 @@ Uint32
 RonSQLPreparer::Context::column_name_to_idx(LexCString col_name)
 {
   DynamicArray<LexCString>& columns = m_parser.m_columns;
+  DynamicArray<LexCString>& qualifiers = m_parser.m_column_qualifiers;
   Uint32 sz = columns.size();
   for (Uint32 i=0; i < sz; i++)
   {
-    if (columns[i] == col_name)
+    if (columns[i] == col_name && qualifiers[i].c_str() == NULL)
     {
       return i;
     }
   }
   columns.push(col_name);
+  qualifiers.push(LexCString{NULL, 0});
+  return sz;
+}
+
+Uint32
+RonSQLPreparer::Context::qualified_column_name_to_idx(
+    LexCString table_qualifier, LexCString col_name)
+{
+  DynamicArray<LexCString>& columns = m_parser.m_columns;
+  DynamicArray<LexCString>& qualifiers = m_parser.m_column_qualifiers;
+  Uint32 sz = columns.size();
+  for (Uint32 i = 0; i < sz; i++)
+  {
+    if (columns[i] == col_name && qualifiers[i] == table_qualifier)
+    {
+      return i;
+    }
+  }
+  columns.push(col_name);
+  qualifiers.push(table_qualifier);
   return sz;
 }
 

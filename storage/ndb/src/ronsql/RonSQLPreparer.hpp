@@ -118,6 +118,7 @@ public:
     AggregationAPICompiler* get_agg();
     ArenaMalloc* get_allocator();
     Uint32 column_name_to_idx(LexCString);
+    Uint32 qualified_column_name_to_idx(LexCString table, LexCString column);
     SelectStatement ast_root;
   };
 private:
