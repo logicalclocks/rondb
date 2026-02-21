@@ -5096,6 +5096,42 @@ retry:
     return TUPKEY_abort(req_struct, ret);
   }
   state->m_completed_ops.fetch_add(1, std::memory_order_relaxed);
+
+#ifdef ERROR_INSERT
+  if (ERROR_INSERTED(4040) &&
+      interp->gb_map_mutable() != nullptr &&
+      interp->gb_map_mutable()->size() > 2 &&
+      (state->m_completed_ops.load(std::memory_order_relaxed) % 7) == 0) {
+    jamDebug();
+    Uint32 evict_buf[MAX_AGG_RESULT_BATCH_BYTES / sizeof(Uint32)];
+    Uint32 words_written = 0;
+    Int32 evict_ret = interp->evictOneGroup(
+        evict_buf, MAX_AGG_RESULT_BATCH_BYTES / sizeof(Uint32),
+        &words_written);
+    ndbrequire(evict_ret == 0);
+
+    Signal *signal = req_struct->signal;
+    TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
+    {
+      Uint32 key_len = evict_buf[3] >> 16;
+      const char *key_data = reinterpret_cast<const char*>(&evict_buf[4]);
+      transIdAI->connectPtr =
+          state->selectReceiverData(key_data, key_len);
+    }
+    transIdAI->transId[0] = state->m_transid[0];
+    transIdAI->transId[1] = state->m_transid[1];
+
+    LinearSectionPtr ptr[3];
+    ptr[0].p = evict_buf;
+    ptr[0].sz = words_written;
+    sendSignal(state->m_resultRef, GSN_TRANSID_AI, signal,
+               TransIdAI::HeaderLength, JBB, ptr, 1);
+
+    state->m_rows_sent++;
+    evict_count++;
+  }
+#endif
+
   req_struct->read_length = evict_count;
   return 0;
 }

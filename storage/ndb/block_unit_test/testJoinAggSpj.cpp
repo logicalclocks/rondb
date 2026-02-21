@@ -1545,6 +1545,138 @@ testManyGroups(Ndb *ndb, SignalSender &ss, Uint32 nodeId, MYSQL *conn)
 }
 
 /* ------------------------------------------------------------------ */
+/* Test 8: Forced eviction via ERROR_INSERT 4040                       */
+/* ------------------------------------------------------------------ */
+
+static int
+testForcedEviction(Ndb *ndb, SignalSender &ss, Uint32 nodeId, MYSQL *conn,
+                   NdbRestarter &restarter)
+{
+  printf("Test 8: Forced eviction (ERROR_INSERT 4040) GROUP BY ... ");
+  fflush(stdout);
+
+  ss.unlock();
+  TableMeta meta;
+  int setupRc = createTestTable3Col(conn, ndb, meta);
+  if (setupRc == 0) {
+    char buf[8192];
+    int pos = snprintf(buf, sizeof(buf), "INSERT INTO jspj_test3 VALUES ");
+    for (int i = 1; i <= 100; i++) {
+      if (i > 1) pos += snprintf(buf + pos, sizeof(buf) - pos, ",");
+      int grp = ((i - 1) % 10) + 1;
+      pos += snprintf(buf + pos, sizeof(buf) - pos, "(%d,%d,%d)", i, grp, i);
+    }
+    setupRc = sqlExec(conn, buf);
+    if (setupRc == 0) V("Inserted 100 rows into %s\n", TABLE_NAME_3COL);
+  }
+
+  if (setupRc != 0) {
+    ss.lock();
+    return -1;
+  }
+
+  if (restarter.insertErrorInAllNodes(4040) != 0) {
+    fprintf(stderr, "FAIL: insertErrorInAllNodes(4040) failed\n");
+    dropTestTable3Col(conn);
+    ss.lock();
+    return -1;
+  }
+  V("ERROR_INSERT 4040 set in all nodes\n");
+  ss.lock();
+
+  Uint32 apiConnectPtr = 0, tcRef = 0;
+  if (seizeTcConnect(ss, nodeId, apiConnectPtr, tcRef) != 0) {
+    ss.unlock();
+    restarter.insertErrorInAllNodes(0);
+    dropTestTable3Col(conn);
+    ss.lock();
+    return -1;
+  }
+
+  Uint32 receiverId = 48;
+  std::vector<Uint32> queryTree =
+    buildQueryTree(meta.tableId, meta.schemaVersion,
+                   meta.attrIdA, receiverId);
+  std::vector<Uint32> aggProgram =
+    buildAggProgram_SumGroupBy(meta.attrIdB, meta.attrIdC);
+
+  int rc = sendScanTabReq(ss, nodeId, apiConnectPtr, tcRef,
+                          meta, queryTree, aggProgram, receiverId);
+  if (rc != 0) {
+    releaseTcConnect(ss, nodeId, apiConnectPtr, tcRef);
+    ss.unlock();
+    restarter.insertErrorInAllNodes(0);
+    dropTestTable3Col(conn);
+    ss.lock();
+    return -1;
+  }
+
+  std::vector<AggResult> results;
+  rc = collectResults(ss, results, apiConnectPtr, tcRef, nodeId);
+  if (rc != 0) {
+    releaseTcConnect(ss, nodeId, apiConnectPtr, tcRef);
+    ss.unlock();
+    restarter.insertErrorInAllNodes(0);
+    dropTestTable3Col(conn);
+    ss.lock();
+    return -1;
+  }
+
+  releaseTcConnect(ss, nodeId, apiConnectPtr, tcRef);
+
+  /* Merge groups from all node results */
+  std::map<Int64, Int64> groupSums;
+  for (const auto &r : results) {
+    for (const auto &g : r.groups) {
+      Int64 grpKey = extractGroupKey(g.first);
+      Int64 sumVal = extractSumBigint(g.second, 0);
+      groupSums[grpKey] += sumVal;
+    }
+  }
+
+  V("  Groups: %zu\n", groupSums.size());
+  for (auto &kv : groupSums) {
+    V("    group(%lld) = %lld\n", (long long)kv.first, (long long)kv.second);
+  }
+
+  /* Expected: same as testManyGroups — 10 groups, group(g) = 10*g + 450 */
+  std::map<Int64, Int64> expected;
+  for (int g = 1; g <= 10; g++) {
+    expected[g] = 10 * g + 450;
+  }
+
+  ss.unlock();
+  restarter.insertErrorInAllNodes(0);
+  V("ERROR_INSERT cleared\n");
+
+  if (groupSums != expected) {
+    printf("FAIL (unexpected group sums, got %zu groups)\n", groupSums.size());
+    for (auto &kv : groupSums) {
+      fprintf(stderr, "  group(%lld) = %lld (expected %lld)\n",
+              (long long)kv.first, (long long)kv.second,
+              (long long)expected[kv.first]);
+    }
+    dropTestTable3Col(conn);
+    ss.lock();
+    return -1;
+  }
+
+  int sqlRc = verifySqlSumGroupBy(conn, TABLE_NAME_3COL,
+                                   "pk", "grp", "val", expected);
+  if (sqlRc != 0) {
+    printf("FAIL (SQL verification mismatch)\n");
+    dropTestTable3Col(conn);
+    ss.lock();
+    return -1;
+  }
+
+  printf("PASS\n");
+  dropTestTable3Col(conn);
+  ss.lock();
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -1642,6 +1774,8 @@ int main(int argc, char *argv[])
       if (testSingleRow(&ndb, ss, (Uint32)nodeId, conn) != 0) result = 1;
       if (testLargeDataset(&ndb, ss, (Uint32)nodeId, conn) != 0) result = 1;
       if (testManyGroups(&ndb, ss, (Uint32)nodeId, conn) != 0) result = 1;
+      if (testForcedEviction(&ndb, ss, (Uint32)nodeId, conn,
+                             restarter) != 0) result = 1;
 
       ss.unlock();
     }

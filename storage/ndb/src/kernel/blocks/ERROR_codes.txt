@@ -26,7 +26,8 @@ Next QMGR 962
 Next NDBCNTR 1030
 Next NDBFS 2002
 Next DBACC 3007
-Next DBTUP 4040
+4040: Force intermittent group eviction in join aggregation (every ~7 rows)
+Next DBTUP 4041
 Next DBLQH 5113
 Next DBDICT 6229
 Next DBDIH 7251
