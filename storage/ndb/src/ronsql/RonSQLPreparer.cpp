@@ -120,6 +120,7 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
   m_amalloc(conf.amalloc),
   m_context(*this),
   m_columns(conf.amalloc),
+  m_column_qualifiers(conf.amalloc),
   m_indexes(conf.amalloc),
   m_toplevel_conditions(conf.amalloc),
   m_scan_config_candidates(conf.amalloc)

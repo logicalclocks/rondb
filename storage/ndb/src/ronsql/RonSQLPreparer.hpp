@@ -135,6 +135,7 @@ private:
   ArenaMalloc* m_amalloc;
   Context m_context;
   DynamicArray<LexCString> m_columns;
+  DynamicArray<LexCString> m_column_qualifiers; /* table qualifier per col_idx */
   NdbAttrId* m_column_attrId_map = NULL;
   const NdbDictionary::Column** m_column_map = NULL;
   const NdbDictionary::Dictionary* m_dict = NULL;

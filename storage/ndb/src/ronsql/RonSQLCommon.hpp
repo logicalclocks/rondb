@@ -167,11 +167,35 @@ struct OrderbyColumns
   struct OrderbyColumns* next;
 };
 
+struct TableRef
+{
+  LexCString database;     /* database name, or {NULL, 0} if unqualified */
+  LexCString name;         /* table name */
+  LexCString alias;        /* alias, or same as name if no alias */
+};
+
+struct JoinCondition
+{
+  LexCString child_table;  /* child table alias/name */
+  LexCString child_column; /* child column name */
+  LexCString parent_table; /* parent table alias/name */
+  LexCString parent_column;/* parent column name */
+};
+
+struct JoinClause
+{
+  TableRef table;
+  JoinCondition condition;
+  struct JoinClause *next;
+};
+
 struct SelectStatement
 {
   bool do_explain = false;
   Outputs* outputs = NULL;
-  LexCString table = LexCString{ NULL, 0};
+  LexCString table = LexCString{NULL, 0};
+  TableRef *root_table = NULL;
+  JoinClause *joins = NULL;
   struct ConditionalExpression* where_expression = NULL;
   struct GroupbyColumns* groupby_columns = NULL;
   struct OrderbyColumns* orderby_columns = NULL;
