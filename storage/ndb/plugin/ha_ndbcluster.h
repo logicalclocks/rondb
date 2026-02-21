@@ -368,7 +368,7 @@ class ha_ndbcluster : public handler, public Partition_handler {
 
   friend int ndbcluster_push_to_engine(THD *thd, AccessPath *, JOIN *);
   friend void accept_pushed_conditions(const TABLE *table, AccessPath *filter);
-  friend void ndb_push_aggregation(THD *thd, const JOIN *join,
+  friend bool ndb_push_aggregation(THD *thd, const JOIN *join,
                                    const ndb_pushed_builder_ctx &builder);
 
  private:

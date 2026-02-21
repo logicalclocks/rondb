@@ -192,18 +192,18 @@ static bool ndb_build_aggregation_program(
   return true;
 }
 
-void ndb_push_aggregation(THD *, const JOIN *join,
+bool ndb_push_aggregation(THD *, const JOIN *join,
                           const ndb_pushed_builder_ctx &builder) {
   // All tables in the builder must be part of a pushed join.
   // If any table is not pushed, MySQL still needs raw rows for joining.
   for (uint i = 0; i < builder.m_table_count; i++) {
     const TABLE *tab = builder.m_tables[i].get_table();
     if (tab == nullptr || tab->file->member_of_pushed_join() == nullptr) {
-      return;
+      return false;
     }
   }
 
-  if (!ndb_can_push_aggregation(join)) return;
+  if (!ndb_can_push_aggregation(join)) return false;
 
   // Extract NDB table pointers (requires friend access to ha_ndbcluster).
   const auto *root_handler =
@@ -212,8 +212,12 @@ void ndb_push_aggregation(THD *, const JOIN *join,
   const auto *leaf_handler = down_cast<const ha_ndbcluster *>(
       builder.m_tables[leaf_idx].get_table()->file);
 
-  // Build the NdbAggregator program to validate the translation.
-  // Phase 3: program is built but not used for execution.
-  ndb_build_aggregation_program(join, root_handler->m_table,
-                                leaf_handler->m_table);
+  // Build the NdbAggregator program from the MySQL query plan.
+  if (!ndb_build_aggregation_program(join, root_handler->m_table,
+                                     leaf_handler->m_table)) {
+    return false;
+  }
+
+  DBUG_PRINT("info", ("ndb_push_aggregation: aggregation pushed successfully"));
+  return true;
 }

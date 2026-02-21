@@ -680,7 +680,7 @@ class ndb_pushed_builder_ctx {
 
   friend int ndbcluster_push_to_engine(THD *thd, AccessPath *root_path,
                                        JOIN *join);
-  friend void ndb_push_aggregation(THD *thd, const JOIN *join,
+  friend bool ndb_push_aggregation(THD *thd, const JOIN *join,
                                    const ndb_pushed_builder_ctx &builder);
 
  public:

@@ -14666,12 +14666,15 @@ static bool has_pushed_members_outside_of_branch(AccessPath *path,
  * to query elements which got pushed down to the NDB engine.
  */
 static void fixup_pushed_access_paths(THD *thd, AccessPath *path,
-                                      const JOIN *join, AccessPath *filter) {
+                                      const JOIN *join, AccessPath *filter,
+                                      bool has_pushed_aggregation) {
   /**
    * Define the lambda function which modify the Accesspath to take advantage
    * of whatever we pushed to the NDB engine.
    */
-  auto fixupFunc = [thd, filter](AccessPath *subpath, const JOIN *join) {
+  auto fixupFunc = [thd, filter,
+                    has_pushed_aggregation](AccessPath *subpath,
+                                           const JOIN *join) {
     /**
      * Note that for most of the cases handled below, we manually handle the
      * child-walk, and 'return true' which will stop the 'upper' callee from
@@ -14718,7 +14721,8 @@ static void fixup_pushed_access_paths(THD *thd, AccessPath *path,
        */
       case AccessPath::FILTER: {
         auto &param = subpath->filter();
-        fixup_pushed_access_paths(thd, param.child, join, /*filter=*/subpath);
+        fixup_pushed_access_paths(thd, param.child, join, /*filter=*/subpath,
+                                  has_pushed_aggregation);
 
         if (param.condition == nullptr) {
           // Entire FILTER condition was pushed down.
@@ -14770,21 +14774,34 @@ static void fixup_pushed_access_paths(THD *thd, AccessPath *path,
         break;
       }
 
-#ifndef NDEBUG
-      // Below, debug only: Assert Query_scope containment.
-      // For some operations this is stricter than what was set up by
-      // ndb_pushed_builder_ctx::construct(), where only a Join_scope was
-      // constructed. (See further below)
       case AccessPath::AGGREGATE: {
+        if (has_pushed_aggregation) {
+          // Aggregation is pushed to data nodes — remove the AGGREGATE
+          // AccessPath by replacing it with its child.
+          AccessPath *child = subpath->aggregate().child;
+          *subpath = *child;
+          return false;  // Re-walk the replaced node
+        }
+#ifndef NDEBUG
         assert(!has_pushed_members_outside_of_branch(subpath->aggregate().child,
                                                      join));
+#endif
         break;
       }
       case AccessPath::TEMPTABLE_AGGREGATE: {
+        if (has_pushed_aggregation) {
+          AccessPath *child = subpath->temptable_aggregate().subquery_path;
+          *subpath = *child;
+          return false;
+        }
+#ifndef NDEBUG
         assert(!has_pushed_members_outside_of_branch(
             subpath->temptable_aggregate().subquery_path, join));
+#endif
         break;
       }
+#ifndef NDEBUG
+      // Below, debug only: Assert Query_scope containment.
       case AccessPath::STREAM: {
         assert(!has_pushed_members_outside_of_branch(subpath->stream().child,
                                                      join));
@@ -14864,8 +14881,9 @@ int ndbcluster_push_to_engine(THD *thd, AccessPath *root_path, JOIN *join) {
   }
 
   // Check if aggregation can also be pushed for a fully-pushed join.
+  bool has_pushed_aggregation = false;
   if (THDVAR(thd, join_pushdown_aggregate)) {
-    ndb_push_aggregation(thd, join, pushed_builder);
+    has_pushed_aggregation = ndb_push_aggregation(thd, join, pushed_builder);
   }
 
   /**
@@ -14925,7 +14943,8 @@ int ndbcluster_push_to_engine(THD *thd, AccessPath *root_path, JOIN *join) {
     }
   }
   // Modify the AccessPath structure to reflect pushed execution.
-  fixup_pushed_access_paths(thd, root_path, join, /*filter=*/nullptr);
+  fixup_pushed_access_paths(thd, root_path, join, /*filter=*/nullptr,
+                            has_pushed_aggregation);
   return 0;
 }
 

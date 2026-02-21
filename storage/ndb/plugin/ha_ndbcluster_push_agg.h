@@ -51,10 +51,13 @@ class ndb_pushed_builder_ctx;
  * Called from ndbcluster_push_to_engine() after make_pushed_join() succeeds.
  *
  * Finds the pushed join (if any) from the builder context, checks whether
- * aggregation can be pushed, and in later phases will build the NdbAggregator
- * program and modify the AccessPath tree.
+ * aggregation can be pushed, builds the NdbAggregator program, and returns
+ * true if aggregation was successfully pushed.
+ *
+ * @return true if aggregation is pushed (caller should remove AGGREGATE
+ *         AccessPath), false otherwise
  */
-void ndb_push_aggregation(THD *thd, const JOIN *join,
+bool ndb_push_aggregation(THD *thd, const JOIN *join,
                           const ndb_pushed_builder_ctx &builder);
 
 #endif  // HA_NDBCLUSTER_PUSH_AGG_H

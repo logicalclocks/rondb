@@ -1993,6 +1993,10 @@ bool Item_sum_sum::add() {
 
 longlong Item_sum_sum::val_int() {
   assert(fixed);
+  if (m_pushed_aggregate) {
+    null_value = m_pushed_null;
+    return m_pushed_value_int;
+  }
   if (m_window != nullptr) {
     if (hybrid_type == REAL_RESULT) {
       return llrint_with_overflow_check(val_real());
@@ -2018,6 +2022,10 @@ longlong Item_sum_sum::val_int() {
 double Item_sum_sum::val_real() {
   DBUG_TRACE;
   assert(fixed);
+  if (m_pushed_aggregate) {
+    null_value = m_pushed_null;
+    return m_pushed_value_double;
+  }
   if (m_is_window_function) {
     if (wf_common_init()) return 0.0;
 
@@ -2215,6 +2223,10 @@ bool Item_sum_count::add() {
 longlong Item_sum_count::val_int() {
   DBUG_TRACE;
   assert(fixed);
+  if (m_pushed_aggregate) {
+    null_value = m_pushed_null;
+    return m_pushed_value_int;
+  }
   if (m_is_window_function) {
     if (wf_common_init()) return 0;
 
@@ -2966,6 +2978,10 @@ bool Item_sum_hybrid::compute() {
 
 double Item_sum_hybrid::val_real() {
   assert(fixed);
+  if (m_pushed_aggregate) {
+    null_value = m_pushed_null;
+    return m_pushed_value_double;
+  }
   if (m_is_window_function) {
     if (wf_common_init()) return 0.0;
     bool ret = false;
@@ -2980,6 +2996,10 @@ double Item_sum_hybrid::val_real() {
 
 longlong Item_sum_hybrid::val_int() {
   assert(fixed);
+  if (m_pushed_aggregate) {
+    null_value = m_pushed_null;
+    return m_pushed_value_int;
+  }
   if (m_is_window_function) {
     if (wf_common_init()) return 0;
     bool ret = false;

@@ -798,6 +798,35 @@ class Item_sum : public Item_func {
   void add_json_info(Json_object *obj) override {
     obj->add_alias("distinct", create_dom_ptr<Json_boolean>(with_distinct));
   }
+
+  // Pushed aggregate support (NDB aggregation pushdown).
+  // When m_pushed_aggregate is true, val_int()/val_real() return the
+  // pre-computed values instead of computing from accumulated state.
+ protected:
+  bool m_pushed_aggregate{false};
+  int64_t m_pushed_value_int{0};
+  double m_pushed_value_double{0.0};
+  bool m_pushed_null{false};
+
+ public:
+  void set_pushed_value_int(int64_t val) {
+    m_pushed_aggregate = true;
+    m_pushed_value_int = val;
+    m_pushed_null = false;
+    null_value = false;
+  }
+  void set_pushed_value_double(double val) {
+    m_pushed_aggregate = true;
+    m_pushed_value_double = val;
+    m_pushed_null = false;
+    null_value = false;
+  }
+  void set_pushed_null() {
+    m_pushed_aggregate = true;
+    m_pushed_null = true;
+    null_value = true;
+  }
+  bool is_pushed_aggregate() const { return m_pushed_aggregate; }
 };
 
 class Unique;
