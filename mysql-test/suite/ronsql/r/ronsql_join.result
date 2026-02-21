@@ -1,6 +1,8 @@
 
 === Create tables for join tests ===
 
+Warnings:
+Warning	1296	Node 62: 'Participant timeout'
 
 
 === Test 1: Basic 2-table join with GROUP BY on parent, SUM on child ===
@@ -221,6 +223,51 @@ GROUP BY o.o_custkey|
 o_custkey	SUM(l.l_quantity)
 200	75
 300	75
+
+
+=== Test 11: SUM on parent column ===
+== Query ==
+SELECT o.o_status, SUM(o.o_custkey)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_status;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.o_status, SUM(o.o_custkey)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_status|
+o_status	SUM(o.o_custkey)
+closed	800
+open	1000
+
+
+=== Test 12: Mixed SUM on parent + child columns ===
+== Query ==
+SELECT o.o_custkey, SUM(o.o_custkey), SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.o_custkey, SUM(o.o_custkey), SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey|
+o_custkey	SUM(o.o_custkey)	SUM(l.l_quantity)
+100	400	50
+200	800	75
+300	600	75
 
 
 === Test 10: Error — WHERE on child table ===

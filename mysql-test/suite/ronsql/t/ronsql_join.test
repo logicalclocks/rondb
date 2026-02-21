@@ -219,6 +219,38 @@ FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
 WHERE o.o_custkey >= 200
 GROUP BY o.o_custkey|
 
+--echo
+--echo
+--echo === Test 11: SUM on parent column ===
+
+let $QUERY=
+SELECT o.o_status, SUM(o.o_custkey)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_status;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_status, SUM(o.o_custkey)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_status|
+
+--echo
+--echo
+--echo === Test 12: Mixed SUM on parent + child columns ===
+
+let $QUERY=
+SELECT o.o_custkey, SUM(o.o_custkey), SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_custkey, SUM(o.o_custkey), SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey|
+
 DELIMITER ;|
 
 --echo

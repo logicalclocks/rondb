@@ -186,6 +186,7 @@ private:
   void collect_toplevel_conditions(ConditionalExpression* ce);
   void generate_scan_config_candidates();
   void compile();
+  void build_agg_linked_projections();
   void determine_explain();
   bool unload_schema();
   void handle_ronsql_exception(std::exception_ptr eptr);

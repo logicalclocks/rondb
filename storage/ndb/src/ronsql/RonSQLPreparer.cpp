@@ -136,6 +136,8 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
     if (m_context.ast_root.joins == NULL)
       plan_index_and_filter();
     compile();
+    if (m_context.ast_root.joins != NULL)
+      build_agg_linked_projections();
     determine_explain();
     m_status = Status::PREPARED;
   }
@@ -815,6 +817,45 @@ RonSQLPreparer::load_join()
       m_join_plan.num_linked_projs++;
     }
     groupby = groupby->next;
+  }
+}
+
+static Uint32
+find_or_add_linked_proj(JoinPlan& plan, Uint32 op_idx, const char* col_name)
+{
+  for (Uint32 j = 0; j < plan.num_linked_projs; j++)
+  {
+    if (plan.linked_projs[j].source_op_idx == op_idx &&
+        strcmp(plan.linked_projs[j].column_name, col_name) == 0)
+      return j;
+  }
+  require_prm(plan.num_linked_projs < MAX_LINKED_PROJS,
+              "Too many linked projections.");
+  JoinPlan::LinkedProj& lp = plan.linked_projs[plan.num_linked_projs];
+  lp.source_op_idx = op_idx;
+  lp.column_name = col_name;
+  return plan.num_linked_projs++;
+}
+
+void
+RonSQLPreparer::build_agg_linked_projections()
+{
+  if (m_agg == NULL)
+    return;
+  Uint32 leaf_idx = m_join_plan.agg_leaf_idx;
+  DynamicArray<AggregationAPICompiler::Instr>& program = m_agg->m_program;
+  for (Uint32 i = 0; i < program.size(); i++)
+  {
+    if (program[i].type == AggregationAPICompiler::SVMInstrType::Load)
+    {
+      Uint32 col_idx = program[i].src;
+      if (m_column_table_idx[col_idx] != leaf_idx)
+      {
+        find_or_add_linked_proj(m_join_plan,
+                                m_column_table_idx[col_idx],
+                                m_columns[col_idx].c_str());
+      }
+    }
   }
 }
 
@@ -2307,22 +2348,23 @@ RonSQLPreparer::programAggregator_join(NdbAggregator* aggregator)
     {
       if (m_column_table_idx[src] != leaf_idx)
       {
-        err << "Aggregate function references column "
-            << quoted_identifier(m_columns[src])
-            << " which is not in the leaf table. "
-            << "Aggregation columns must come from the last joined table."
-            << endl;
-        throw RonSQLPermanentError(
-            "Aggregate references non-leaf column.");
+        Uint32 lp_pos = find_or_add_linked_proj(
+            m_join_plan, m_column_table_idx[src],
+            m_columns[src].c_str());
+        programAggregator_do_or_fail
+          (aggregator->LoadLinkedColumn(lp_pos, dest, m_column_map[src]));
       }
-      NdbAttrId col_id = m_column_attrId_map[src];
-      if (!aggregator->LoadColumn(col_id, dest))
+      else
       {
-        err << "Failed writing aggregation program "
-               "when attempting to load column "
-            << quoted_identifier(m_columns[src]) << endl;
-        throw RonSQLMaybeStaleSchema(
-            "Failed writing aggregation program");
+        NdbAttrId col_id = m_column_attrId_map[src];
+        if (!aggregator->LoadColumn(col_id, dest))
+        {
+          err << "Failed writing aggregation program "
+                 "when attempting to load column "
+              << quoted_identifier(m_columns[src]) << endl;
+          throw RonSQLMaybeStaleSchema(
+              "Failed writing aggregation program");
+        }
       }
       break;
     }
