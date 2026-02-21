@@ -39,6 +39,7 @@
 #include "sql/item_sum.h"
 #include "sql/sql_optimizer.h"
 #include "sql/table.h"
+#include "storage/ndb/include/ndbapi/NdbAggregator.hpp"
 #include "storage/ndb/plugin/ha_ndbcluster.h"
 #include "storage/ndb/plugin/ha_ndbcluster_push.h"
 
@@ -105,6 +106,92 @@ static bool ndb_can_push_aggregation(const JOIN *join) {
   return true;
 }
 
+/**
+ * Build an NdbAggregator program from the MySQL query plan.
+ *
+ * Phase 3 scope: builds and validates the program but does not attach it
+ * to the pushed join for execution. The NdbAggregator is constructed on the
+ * stack and discarded — this validates that the translation from MySQL's
+ * aggregate representation to NdbAggregator instructions is correct.
+ *
+ * Assumes a 2-table join where GROUP BY is on the root table and
+ * aggregated columns are on the leaf table.
+ *
+ * @param join           MySQL JOIN containing aggregation info
+ * @param root_ndb_tab   NDB table for the root (parent) table
+ * @param leaf_ndb_tab   NDB table for the leaf (child) table
+ * @return true if the NdbAggregator program was built successfully
+ */
+static bool ndb_build_aggregation_program(
+    const JOIN *join, const NdbDictionary::Table *root_ndb_tab,
+    const NdbDictionary::Table *leaf_ndb_tab) {
+  NdbAggregator agg(leaf_ndb_tab);
+
+  // Map GROUP BY columns. For Phase 3 scope, all GROUP BY columns are
+  // from the root (parent) table, so they use linked projection.
+  Uint32 linked_pos = 0;
+  for (ORDER *group = join->group_list.order; group != nullptr;
+       group = group->next) {
+    const auto *field_item = down_cast<const Item_field *>(*(group->item));
+    const int col_id = field_item->field->field_index();
+    const NdbDictionary::Column *parent_col =
+        root_ndb_tab->getColumn(col_id);
+    if (parent_col == nullptr ||
+        !agg.GroupByLinked(linked_pos++, parent_col)) {
+      return false;
+    }
+  }
+
+  // Map aggregate functions.
+  Uint32 agg_id = 0;
+  for (Item_sum **func = join->sum_funcs; *func != nullptr; func++) {
+    switch ((*func)->sum_func()) {
+      case Item_sum::COUNT_FUNC: {
+        // COUNT(*): load constant 1, then count.
+        if (!agg.LoadUint64(1, kReg1) || !agg.Count(agg_id, kReg1)) {
+          return false;
+        }
+        break;
+      }
+      case Item_sum::SUM_FUNC:
+      case Item_sum::MIN_FUNC:
+      case Item_sum::MAX_FUNC: {
+        // SUM/MIN/MAX(leaf_column): load column, then aggregate.
+        const auto *field_item =
+            down_cast<const Item_field *>((*func)->arguments()[0]);
+        const int col_id = field_item->field->field_index();
+
+        if (!agg.LoadColumn(col_id, kReg1)) return false;
+        switch ((*func)->sum_func()) {
+          case Item_sum::SUM_FUNC:
+            if (!agg.Sum(agg_id, kReg1)) return false;
+            break;
+          case Item_sum::MIN_FUNC:
+            if (!agg.Min(agg_id, kReg1)) return false;
+            break;
+          case Item_sum::MAX_FUNC:
+            if (!agg.Max(agg_id, kReg1)) return false;
+            break;
+          default:
+            break;
+        }
+        break;
+      }
+      default:
+        return false;
+    }
+    agg_id++;
+  }
+
+  if (!agg.Finalize()) return false;
+
+  DBUG_PRINT("info",
+             ("ndb_push_aggregation: built NdbAggregator program "
+              "with %u GROUP BY columns and %u aggregates",
+              linked_pos, agg_id));
+  return true;
+}
+
 void ndb_push_aggregation(THD *, const JOIN *join,
                           const ndb_pushed_builder_ctx &builder) {
   // All tables in the builder must be part of a pushed join.
@@ -118,8 +205,15 @@ void ndb_push_aggregation(THD *, const JOIN *join,
 
   if (!ndb_can_push_aggregation(join)) return;
 
-  DBUG_PRINT("info", ("ndb_push_aggregation: aggregation is pushable"));
+  // Extract NDB table pointers (requires friend access to ha_ndbcluster).
+  const auto *root_handler =
+      down_cast<const ha_ndbcluster *>(builder.m_tables[0].get_table()->file);
+  const uint leaf_idx = builder.m_table_count - 1;
+  const auto *leaf_handler = down_cast<const ha_ndbcluster *>(
+      builder.m_tables[leaf_idx].get_table()->file);
 
-  // Phase 2: Detection succeeded.
-  // Phase 3+ will build the NdbAggregator program and modify AccessPath.
+  // Build the NdbAggregator program to validate the translation.
+  // Phase 3: program is built but not used for execution.
+  ndb_build_aggregation_program(join, root_handler->m_table,
+                                leaf_handler->m_table);
 }

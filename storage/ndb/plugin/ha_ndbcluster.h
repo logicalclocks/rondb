@@ -62,6 +62,7 @@ class NdbQueryOperation;
 class NdbQueryOperationTypeWrapper;
 class NdbQueryParamValue;
 class ndb_pushed_join;
+class ndb_pushed_builder_ctx;
 
 enum NDB_INDEX_TYPE {
   UNDEFINED_INDEX = 0,
@@ -367,6 +368,8 @@ class ha_ndbcluster : public handler, public Partition_handler {
 
   friend int ndbcluster_push_to_engine(THD *thd, AccessPath *, JOIN *);
   friend void accept_pushed_conditions(const TABLE *table, AccessPath *filter);
+  friend void ndb_push_aggregation(THD *thd, const JOIN *join,
+                                   const ndb_pushed_builder_ctx &builder);
 
  private:
   bool maybe_pushable_join(const char *&reason) const;
