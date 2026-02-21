@@ -35,6 +35,7 @@ class NdbQueryBuilder;
 class NdbQueryOperand;
 class NdbQueryOperationDef;
 class NdbQueryOptions;
+class NdbAggregator;
 class ndb_pushed_builder_ctx;
 struct Index_lookup;
 struct NdbError;
@@ -681,7 +682,10 @@ class ndb_pushed_builder_ctx {
   friend int ndbcluster_push_to_engine(THD *thd, AccessPath *root_path,
                                        JOIN *join);
   friend bool ndb_push_aggregation(THD *thd, const JOIN *join,
-                                   const ndb_pushed_builder_ctx &builder);
+                                   ndb_pushed_builder_ctx &builder);
+  friend void ndb_apply_aggregation_options(ndb_pushed_builder_ctx &builder,
+                                            uint tab_no,
+                                            NdbQueryOptions *options);
 
  public:
   ndb_pushed_builder_ctx(const THD *thd, const AccessPath *root_path,
@@ -804,6 +808,10 @@ class ndb_pushed_builder_ctx {
   // Handle to the NdbQuery factory.
   // Possibly reused if multiple NdbQuery's are pushed.
   NdbQueryBuilder *m_builder;
+
+  // NdbAggregator program for aggregation pushdown (heap-allocated).
+  // Set by ndb_push_aggregation() and used during build_query() rebuild.
+  NdbAggregator *m_aggregator{nullptr};
 
   // Number of pushed_tables
   uint m_table_count;

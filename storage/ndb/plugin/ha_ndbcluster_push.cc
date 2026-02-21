@@ -42,6 +42,7 @@
 #include "storage/ndb/include/ndbapi/NdbInterpretedCode.hpp"
 #include "storage/ndb/plugin/ha_ndbcluster.h"
 #include "storage/ndb/plugin/ha_ndbcluster_cond.h"
+#include "storage/ndb/plugin/ha_ndbcluster_push_agg.h"
 #include "storage/ndb/plugin/ndb_thd.h"
 #include "storage/ndb/src/ndbapi/NdbQueryBuilder.hpp"
 #include "storage/ndb/src/ndbapi/NdbQueryOperation.hpp"
@@ -449,6 +450,7 @@ ndb_pushed_builder_ctx::~ndb_pushed_builder_ctx() {
   if (m_builder != nullptr) {
     m_builder->destroy();
   }
+  delete m_aggregator;
 }
 
 const NdbError &ndb_pushed_builder_ctx::getNdbError() const {
@@ -2660,6 +2662,11 @@ int ndb_pushed_builder_ctx::build_query() {
         parameters[cnt] = nullptr;
         options.setParameters(parameters);
       }
+    }
+
+    // Apply aggregation options if this is the leaf table being rebuilt.
+    if (m_aggregator != nullptr) {
+      ndb_apply_aggregation_options(*this, tab_no, &options);
     }
 
     const NdbQueryOperationDef *query_op = nullptr;

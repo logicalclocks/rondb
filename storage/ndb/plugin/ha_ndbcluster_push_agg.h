@@ -32,7 +32,8 @@
  * (COUNT, SUM, MIN, MAX), the aggregation can be pushed to the data
  * nodes via the NdbAggregator program. This file declares the functions
  * for detecting pushable aggregation, building the aggregation program,
- * modifying the AccessPath tree, and fetching aggregate results.
+ * rebuilding the NdbQueryDef with aggregation attached, and fetching
+ * aggregate results.
  *
  * All substantial aggregation pushdown logic lives in
  * ha_ndbcluster_push_agg.cc. Existing files receive only small hooks
@@ -46,20 +47,36 @@ class THD;
 class JOIN;
 class ha_ndbcluster;
 class ndb_pushed_builder_ctx;
+class NdbQueryOptions;
 
 /**
- * Entry point for aggregation pushdown analysis.
+ * Entry point for aggregation pushdown.
  * Called from ndbcluster_push_to_engine() after make_pushed_join() succeeds.
  *
- * Finds the pushed join (if any) from the builder context, checks whether
- * aggregation can be pushed, builds the NdbAggregator program, and returns
- * true if aggregation was successfully pushed.
+ * Checks whether aggregation can be pushed, builds the NdbAggregator
+ * program, rebuilds the NdbQueryDef with aggregation attached, and
+ * replaces the pushed join definition on handlers.
  *
- * @return true if aggregation is pushed (caller should remove AGGREGATE
- *         AccessPath), false otherwise
+ * @return true if aggregation was pushed, false otherwise
  */
 bool ndb_push_aggregation(THD *thd, const JOIN *join,
-                          const ndb_pushed_builder_ctx &builder);
+                          ndb_pushed_builder_ctx &builder);
+
+/**
+ * Apply aggregation options to the leaf table during build_query().
+ * Called from ndb_pushed_builder_ctx::build_query() when m_aggregator is set.
+ *
+ * For the leaf table (last in join scope), calls setAggregation() on its
+ * NdbQueryOptions and adds linked projections for GROUP BY columns from
+ * parent tables.
+ *
+ * @param builder  The builder context with m_aggregator set
+ * @param tab_no   The current table number being built
+ * @param options  The NdbQueryOptions being populated for this table
+ */
+void ndb_apply_aggregation_options(ndb_pushed_builder_ctx &builder,
+                                   unsigned int tab_no,
+                                   NdbQueryOptions *options);
 
 /**
  * Fetch the next pushed aggregate result.

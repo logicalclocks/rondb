@@ -29,8 +29,8 @@
  * Aggregation pushdown for NDB pushed joins — implementation.
  *
  * Contains all logic for detecting pushable aggregation queries,
- * building NdbAggregator programs, modifying the AccessPath tree,
- * and fetching aggregate results.
+ * building NdbAggregator programs, rebuilding the NdbQueryDef with
+ * aggregation attached, and fetching aggregate results.
  */
 
 #include "storage/ndb/plugin/ha_ndbcluster_push_agg.h"
@@ -42,6 +42,7 @@
 #include "storage/ndb/include/ndbapi/NdbAggregator.hpp"
 #include "storage/ndb/plugin/ha_ndbcluster.h"
 #include "storage/ndb/plugin/ha_ndbcluster_push.h"
+#include "storage/ndb/src/ndbapi/NdbQueryBuilder.hpp"
 #include "storage/ndb/src/ndbapi/NdbQueryOperation.hpp"
 
 /**
@@ -108,38 +109,62 @@ static bool ndb_can_push_aggregation(const JOIN *join) {
 }
 
 /**
+ * Find the table index in the tables array for a given MySQL TABLE*.
+ * Returns the matching index, or table_count if not found.
+ */
+static uint find_table_index(const pushed_table *tables, uint table_count,
+                             const TABLE *mysql_table) {
+  for (uint i = 0; i < table_count; i++) {
+    if (tables[i].get_table() == mysql_table) return i;
+  }
+  return table_count;
+}
+
+/**
  * Build an NdbAggregator program from the MySQL query plan.
  *
- * Phase 3 scope: builds and validates the program but does not attach it
- * to the pushed join for execution. The NdbAggregator is constructed on the
- * stack and discarded — this validates that the translation from MySQL's
- * aggregate representation to NdbAggregator instructions is correct.
- *
- * Assumes a 2-table join where GROUP BY is on the root table and
- * aggregated columns are on the leaf table.
+ * Supports multi-table GROUP BY: columns from the leaf table use GroupBy(),
+ * columns from parent tables use GroupByLinked() with linked projections.
+ * Aggregate arguments (SUM/MIN/MAX) must be from the leaf table.
  *
  * @param join           MySQL JOIN containing aggregation info
- * @param root_ndb_tab   NDB table for the root (parent) table
- * @param leaf_ndb_tab   NDB table for the leaf (child) table
- * @return true if the NdbAggregator program was built successfully
+ * @param tables         The pushed table array
+ * @param table_count    Number of tables in the array
+ * @param leaf_tab_no    Table index of the leaf table
+ * @param ndb_tables     Array of NDB table pointers indexed by table position
+ * @return heap-allocated NdbAggregator on success, nullptr on failure
  */
-static bool ndb_build_aggregation_program(
-    const JOIN *join, const NdbDictionary::Table *root_ndb_tab,
-    const NdbDictionary::Table *leaf_ndb_tab) {
-  NdbAggregator agg(leaf_ndb_tab);
+static NdbAggregator *ndb_build_aggregation_program(
+    const JOIN *join, const pushed_table *tables, uint table_count,
+    uint leaf_tab_no, const NdbDictionary::Table *const *ndb_tables) {
+  const NdbDictionary::Table *leaf_ndb_tab = ndb_tables[leaf_tab_no];
+  NdbAggregator *agg = new NdbAggregator(leaf_ndb_tab);
 
-  // Map GROUP BY columns. For Phase 3 scope, all GROUP BY columns are
-  // from the root (parent) table, so they use linked projection.
+  // Map GROUP BY columns. Columns from parent tables use GroupByLinked(),
+  // columns from the leaf table use GroupBy().
   Uint32 linked_pos = 0;
   for (ORDER *group = join->group_list.order; group != nullptr;
        group = group->next) {
     const auto *field_item = down_cast<const Item_field *>(*(group->item));
     const int col_id = field_item->field->field_index();
-    const NdbDictionary::Column *parent_col =
-        root_ndb_tab->getColumn(col_id);
-    if (parent_col == nullptr ||
-        !agg.GroupByLinked(linked_pos++, parent_col)) {
-      return false;
+    const uint tab_idx =
+        find_table_index(tables, table_count, field_item->field->table);
+
+    if (tab_idx == leaf_tab_no) {
+      // Leaf table column — direct GROUP BY.
+      if (!agg->GroupBy(col_id)) {
+        delete agg;
+        return nullptr;
+      }
+    } else {
+      // Parent table column — linked GROUP BY.
+      const NdbDictionary::Column *parent_col =
+          ndb_tables[tab_idx]->getColumn(col_id);
+      if (parent_col == nullptr ||
+          !agg->GroupByLinked(linked_pos++, parent_col)) {
+        delete agg;
+        return nullptr;
+      }
     }
   }
 
@@ -149,8 +174,9 @@ static bool ndb_build_aggregation_program(
     switch ((*func)->sum_func()) {
       case Item_sum::COUNT_FUNC: {
         // COUNT(*): load constant 1, then count.
-        if (!agg.LoadUint64(1, kReg1) || !agg.Count(agg_id, kReg1)) {
-          return false;
+        if (!agg->LoadUint64(1, kReg1) || !agg->Count(agg_id, kReg1)) {
+          delete agg;
+          return nullptr;
         }
         break;
       }
@@ -162,16 +188,28 @@ static bool ndb_build_aggregation_program(
             down_cast<const Item_field *>((*func)->arguments()[0]);
         const int col_id = field_item->field->field_index();
 
-        if (!agg.LoadColumn(col_id, kReg1)) return false;
+        if (!agg->LoadColumn(col_id, kReg1)) {
+          delete agg;
+          return nullptr;
+        }
         switch ((*func)->sum_func()) {
           case Item_sum::SUM_FUNC:
-            if (!agg.Sum(agg_id, kReg1)) return false;
+            if (!agg->Sum(agg_id, kReg1)) {
+              delete agg;
+              return nullptr;
+            }
             break;
           case Item_sum::MIN_FUNC:
-            if (!agg.Min(agg_id, kReg1)) return false;
+            if (!agg->Min(agg_id, kReg1)) {
+              delete agg;
+              return nullptr;
+            }
             break;
           case Item_sum::MAX_FUNC:
-            if (!agg.Max(agg_id, kReg1)) return false;
+            if (!agg->Max(agg_id, kReg1)) {
+              delete agg;
+              return nullptr;
+            }
             break;
           default:
             break;
@@ -179,22 +217,64 @@ static bool ndb_build_aggregation_program(
         break;
       }
       default:
-        return false;
+        delete agg;
+        return nullptr;
     }
     agg_id++;
   }
 
-  if (!agg.Finalize()) return false;
+  if (!agg->Finalize()) {
+    delete agg;
+    return nullptr;
+  }
 
   DBUG_PRINT("info",
              ("ndb_push_aggregation: built NdbAggregator program "
-              "with %u GROUP BY columns and %u aggregates",
+              "with %u linked GROUP BY columns and %u aggregates",
               linked_pos, agg_id));
-  return true;
+  return agg;
+}
+
+/**
+ * Apply aggregation options to the leaf table during build_query().
+ *
+ * Called from build_query() when m_aggregator is set. For the leaf table
+ * (last in join scope), calls setAggregation() on its NdbQueryOptions and
+ * adds linked projections for GROUP BY columns from parent tables.
+ *
+ * This function is a friend of ndb_pushed_builder_ctx.
+ */
+void ndb_apply_aggregation_options(ndb_pushed_builder_ctx &builder,
+                                   uint tab_no, NdbQueryOptions *options) {
+  // Only apply to the leaf table (last in join scope).
+  uint leaf_tab_no = 0;
+  for (uint t = 0; t < builder.m_table_count; t++) {
+    if (builder.m_join_scope.contain(t)) leaf_tab_no = t;
+  }
+  if (tab_no != leaf_tab_no) return;
+
+  options->setAggregation(*builder.m_aggregator);
+
+  // Add linked projections for GROUP BY columns from parent tables.
+  const JOIN *join = builder.m_join;
+  for (ORDER *group = join->group_list.order; group != nullptr;
+       group = group->next) {
+    const auto *field_item = down_cast<const Item_field *>(*(group->item));
+    const uint tab_idx = find_table_index(
+        builder.m_tables, builder.m_table_count, field_item->field->table);
+
+    if (tab_idx != leaf_tab_no) {
+      // Parent column — create linked projection.
+      const NdbQueryOperationDef *parent_op = builder.m_tables[tab_idx].m_op;
+      const NdbLinkedOperand *linked = builder.m_builder->linkedValue(
+          parent_op, field_item->original_field_name());
+      options->addLinkedProjection(linked);
+    }
+  }
 }
 
 bool ndb_push_aggregation(THD *, const JOIN *join,
-                          const ndb_pushed_builder_ctx &builder) {
+                          ndb_pushed_builder_ctx &builder) {
   // All tables in the builder must be part of a pushed join.
   // If any table is not pushed, MySQL still needs raw rows for joining.
   for (uint i = 0; i < builder.m_table_count; i++) {
@@ -206,18 +286,68 @@ bool ndb_push_aggregation(THD *, const JOIN *join,
 
   if (!ndb_can_push_aggregation(join)) return false;
 
-  // Extract NDB table pointers (requires friend access to ha_ndbcluster).
-  const auto *root_handler =
-      down_cast<const ha_ndbcluster *>(builder.m_tables[0].get_table()->file);
-  const uint leaf_idx = builder.m_table_count - 1;
-  const auto *leaf_handler = down_cast<const ha_ndbcluster *>(
-      builder.m_tables[leaf_idx].get_table()->file);
+  // Find the leaf table (last in join scope).
+  uint leaf_tab_no = 0;
+  for (uint t = 0; t < builder.m_table_count; t++) {
+    if (builder.m_join_scope.contain(t)) leaf_tab_no = t;
+  }
 
-  // Build the NdbAggregator program from the MySQL query plan.
-  if (!ndb_build_aggregation_program(join, root_handler->m_table,
-                                     leaf_handler->m_table)) {
+  // Extract NDB table pointers (friend access to ha_ndbcluster::m_table).
+  const NdbDictionary::Table *ndb_tables[MAX_TABLES];
+  for (uint i = 0; i < builder.m_table_count; i++) {
+    const auto *h = down_cast<const ha_ndbcluster *>(
+        builder.m_tables[i].get_table()->file);
+    ndb_tables[i] = h->m_table;
+  }
+
+  // Build the NdbAggregator program on the heap.
+  NdbAggregator *agg = ndb_build_aggregation_program(
+      join, builder.m_tables, builder.m_table_count, leaf_tab_no,
+      ndb_tables);
+  if (agg == nullptr) return false;
+
+  // Store the aggregator on the builder for build_query() to use.
+  builder.m_aggregator = agg;
+
+  // Rebuild the query with aggregation attached. build_query() will call
+  // ndb_apply_aggregation_options() for the leaf table, which calls
+  // setAggregation() and addLinkedProjection() on its NdbQueryOptions.
+  const int error = builder.build_query();
+  if (unlikely(error)) {
+    delete agg;
+    builder.m_aggregator = nullptr;
     return false;
   }
+
+  const NdbQueryDef *const query_def =
+      builder.m_builder->prepare(get_thd_ndb(builder.m_thd)->ndb);
+  if (unlikely(query_def == nullptr)) {
+    delete agg;
+    builder.m_aggregator = nullptr;
+    return false;
+  }
+
+  // Create a new ndb_pushed_join with the aggregation-enabled query def.
+  const ndb_pushed_join *new_pushed_join =
+      new ndb_pushed_join(builder, query_def);
+  if (unlikely(new_pushed_join == nullptr)) {
+    delete agg;
+    builder.m_aggregator = nullptr;
+    return false;
+  }
+
+  // Replace the old pushed join on all handlers.
+  const ndb_pushed_join *old_pushed_join = nullptr;
+  for (uint i = 0; i < new_pushed_join->get_operation_count(); i++) {
+    const TABLE *const tab = new_pushed_join->get_table(i);
+    ha_ndbcluster *child = down_cast<ha_ndbcluster *>(tab->file);
+    if (old_pushed_join == nullptr) {
+      old_pushed_join = child->m_pushed_join_member;
+    }
+    child->m_pushed_join_member = new_pushed_join;
+    child->m_pushed_join_operation = i;
+  }
+  delete old_pushed_join;
 
   DBUG_PRINT("info", ("ndb_push_aggregation: aggregation pushed successfully"));
   return true;
