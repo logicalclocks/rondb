@@ -17,6 +17,8 @@ pushed down to data nodes so intermediate results don't round-trip to the API.
 - `next_steps.md` — Remaining work: MySQL handler integration, secondary features
 - `ndbapi_integration_plan.md` — NDB API integration plan (Steps 1-10, all complete)
 - `ndbapi_integration_implementation.md` — NDB API integration implementation details
+- `mysql_join_agg.md` — MySQL handler integration architecture (Phase 9)
+- `mysql_handler_implementation.md` — MySQL handler implementation plan (Phases 1-12)
 
 ### Key Source Files
 - `DblqhMain.cpp` — Signal handlers for JOIN_AGG_SETUP/COMPLETE/RELEASE, scan processing, sendScanFragConf
