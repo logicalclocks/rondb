@@ -45,6 +45,8 @@ cd mysql-test
 
 Test files: `t/*.test` (input), `r/*.result` (expected output)
 
+MTR automatically starts and stops the required cluster (mysqld, ndbd, ndb_mgmd, rdrs) as part of running the tests — no manual cluster setup is needed.
+
 ### Rondis MTR Tests
 Located in `mysql-test/suite/rondis/`:
 - `t/rondis_basic.test` - Basic Redis commands (GET, SET, HSET, etc.)
