@@ -257,15 +257,15 @@ class AggInterpreter {
   AggInterpreter(Uint32 prog_len,
                  Int64 table_id, Int64 frag_id,
                  Uint32 thread_id):
-    prog_(nullptr), prog_len_(prog_len), cur_pos_(0),
-    inited_(false), n_gb_cols_(0), gb_cols_(nullptr),
+    m_prog(nullptr), m_prog_len(prog_len), m_cur_pos(0),
+    m_inited(false), m_n_gb_cols(0), m_gb_cols(nullptr),
     gb_cmp_inited_(false),
-    n_agg_results_(0),
-    agg_results_(nullptr), agg_prog_start_pos_(0),
-    gb_map_(nullptr), n_groups_(0),
-    attr_read_buf_(nullptr), attr_read_pos_(0),
-    processed_rows_(0),
-    result_size_(0), table_id_(table_id), frag_id_(frag_id),
+    m_n_agg_results(0),
+    m_agg_results(nullptr), m_agg_prog_start_pos(0),
+    m_gb_map(nullptr), m_n_groups(0),
+    m_attr_read_buf(nullptr), m_attr_read_pos(0),
+    m_processed_rows(0),
+    m_result_size(0), m_table_id(table_id), m_frag_id(frag_id),
     m_linked_attr_data(nullptr), m_linked_attr_len(0),
     m_use_mutex(false), m_max_groups(0),
     m_chunks(nullptr), m_chunks_tail(nullptr),
@@ -275,23 +275,23 @@ class AggInterpreter {
     m_cached_agg_ops(nullptr), m_agg_ops_cached(false),
     m_gb_types(nullptr), m_gb_types_inited(false),
     m_xfrm_buf(nullptr), m_xfrm_buf_len(0),
-    prog_buf_(nullptr), gb_cols_buf_(nullptr),
-    agg_results_buf_(nullptr), gb_map_buf_(nullptr),
-    mem_buf_(nullptr), alloc_len_(0), m_buf_block_(nullptr),
-    vec_search_(false), vec_dims_(0), vec_type_(0),
-    vec_metric_(0), vec_col_idx_(0), vec_top_n_(0),
-    vec_size_in_bytes_(0), vec_buf_(nullptr),
-    vec_buf_pos_(0), vec_start_pos_(0),
-    vec_max_rec_size_(0),
-    candidate_allocator_(nullptr),
-    curr_distance_(std::numeric_limits<double>::max()),
-    vec_n_candidates_sent_(0),
-    vec_size_candidates_sent_(0),
-    vec_search_scan_done_(false),
-    next_send_idx_(-1), ext_prog_buf_(nullptr) {
-      memset(decimal_buf_, 0, sizeof(decimal_digit_t) * DECIMAL_BUFF_LENGTH);
-      decimal_.buf = decimal_buf_;
-      decimal_.len = DECIMAL_BUFF_LENGTH;
+    m_prog_buf(nullptr), m_gb_cols_buf(nullptr),
+    m_agg_results_buf(nullptr), m_gb_map_buf(nullptr),
+    m_mem_buf(nullptr), m_alloc_len(0), m_buf_block(nullptr),
+    m_vec_search(false), m_vec_dims(0), m_vec_type(0),
+    m_vec_metric(0), m_vec_col_idx(0), m_vec_top_n(0),
+    m_vec_size_in_bytes(0), m_vec_buf(nullptr),
+    m_vec_buf_pos(0), m_vec_start_pos(0),
+    m_vec_max_rec_size(0),
+    m_candidate_allocator(nullptr),
+    m_curr_distance(std::numeric_limits<double>::max()),
+    m_vec_n_candidates_sent(0),
+    m_vec_size_candidates_sent(0),
+    m_vec_search_scan_done(false),
+    m_next_send_idx(-1), m_ext_prog_buf(nullptr) {
+      memset(m_decimal_buf, 0, sizeof(decimal_digit_t) * DECIMAL_BUFF_LENGTH);
+      m_decimal.buf = m_decimal_buf;
+      m_decimal.len = DECIMAL_BUFF_LENGTH;
   }
   ~AggInterpreter() {
     freeAllChunks();
@@ -299,28 +299,28 @@ class AggInterpreter {
       lc_ndbd_pool_free(m_xfrm_buf);
       m_xfrm_buf = nullptr;
     }
-    if (m_buf_block_ != nullptr) {
-      lc_ndbd_pool_free(m_buf_block_);
-      m_buf_block_ = nullptr;
+    if (m_buf_block != nullptr) {
+      lc_ndbd_pool_free(m_buf_block);
+      m_buf_block = nullptr;
     }
   }
 
   bool Init();
   bool OptimizeProgram();
   void FreeMemForVectorSearch() {
-    if (ext_prog_buf_) {
-      lc_ndbd_pool_free(ext_prog_buf_);
-      ext_prog_buf_ = nullptr;
+    if (m_ext_prog_buf) {
+      lc_ndbd_pool_free(m_ext_prog_buf);
+      m_ext_prog_buf = nullptr;
     }
-    if (vec_buf_) {
-      lc_ndbd_pool_free(vec_buf_);
-      vec_buf_ = nullptr;
+    if (m_vec_buf) {
+      lc_ndbd_pool_free(m_vec_buf);
+      m_vec_buf = nullptr;
     }
 
-    if (candidate_allocator_) {
-      candidate_allocator_->~CandidateAllocator();
-      lc_ndbd_pool_free(candidate_allocator_);
-      candidate_allocator_ = nullptr;
+    if (m_candidate_allocator) {
+      m_candidate_allocator->~CandidateAllocator();
+      lc_ndbd_pool_free(m_candidate_allocator);
+      m_candidate_allocator = nullptr;
     }
   }
 
@@ -344,21 +344,21 @@ class AggInterpreter {
   Uint32 NumOfResRecords(bool last_time = false);
   static void MergePrint(const AggInterpreter* in1, const AggInterpreter* in2);
   const GBHashTable* gb_map() const {
-    return gb_map_;
+    return m_gb_map;
   }
   Int64 table_id() {
-    return table_id_;
+    return m_table_id;
   }
   GBHashTable* gb_map_mutable() {
-    return gb_map_;
+    return m_gb_map;
   }
   Uint32 val_len() const {
-    return n_agg_results_ * sizeof(AggResItem);
+    return m_n_agg_results * sizeof(AggResItem);
   }
-  Uint32 n_gb_cols() const { return n_gb_cols_; }
-  Uint32 n_agg_results() const { return n_agg_results_; }
-  const AggResItem* agg_results() const { return agg_results_; }
-  Uint64 processed_rows() const { return processed_rows_; }
+  Uint32 n_gb_cols() const { return m_n_gb_cols; }
+  Uint32 n_agg_results() const { return m_n_agg_results; }
+  const AggResItem* agg_results() const { return m_agg_results; }
+  Uint64 processed_rows() const { return m_processed_rows; }
   void setUseMutex(bool v) { m_use_mutex = v; }
   void setMaxGroups(Uint32 v) { m_max_groups = v; }
   Uint32 maxGroups() const { return m_max_groups; }
@@ -371,7 +371,7 @@ class AggInterpreter {
   void freeGroupData(char* ptr);
   void freeAllChunks();
   Int64 frag_id() {
-    return frag_id_;
+    return m_frag_id;
   }
   static void Destruct(AggInterpreter* ptr);
   /* For using Ndbd_mem_manager*/
@@ -384,16 +384,16 @@ class AggInterpreter {
   }
   */
   bool vec_search() {
-    return vec_search_;
+    return m_vec_search;
   }
   bool HasAnyVecResult() {
-    return vec_search_ && !vec_top_n_results_.empty();
+    return m_vec_search && !m_vec_top_n_results.empty();
   }
   Uint32 NoofVecResults() {
-    return vec_top_n_results_.size();
+    return m_vec_top_n_results.size();
   }
   bool IsCandidateBufAllocated() {
-    return candidate_allocator_ != nullptr;
+    return m_candidate_allocator != nullptr;
   }
   Int32 CopyVecCandidateFromSignal(Signal* signal, Uint32 ToutBufIndex);
   Uint32 CopyVecCandidateToSignal(Signal* signal);
@@ -401,55 +401,55 @@ class AggInterpreter {
   Uint32 CopyOneVecCandidateToSignal(Signal* signal);
   void set_vec_max_rec_size(Uint32 size);
   void set_vec_search_scan_done(bool value) {
-    vec_search_scan_done_ = value;
+    m_vec_search_scan_done = value;
   }
   bool vec_search_scan_done() {
-    return vec_search_scan_done_;
+    return m_vec_search_scan_done;
   }
   Int32 next_send_idx() {
-    return next_send_idx_;
+    return m_next_send_idx;
   }
 
  private:
-  Uint32* prog_;
-  Uint32 prog_len_;
-  Uint32 cur_pos_;
-  bool inited_;
-  Register registers_[kRegTotal];
+  Uint32* m_prog;
+  Uint32 m_prog_len;
+  Uint32 m_cur_pos;
+  bool m_inited;
+  Register m_registers[kRegTotal];
 
-  Uint32 n_gb_cols_;
-  Uint32* gb_cols_;
+  Uint32 m_n_gb_cols;
+  Uint32* m_gb_cols;
   GBCmpContext gb_cmp_ctx_;
   bool gb_cmp_inited_;
-  Uint32 n_agg_results_;
-  AggResItem* agg_results_;
-  Uint32 agg_prog_start_pos_;
+  Uint32 m_n_agg_results;
+  AggResItem* m_agg_results;
+  Uint32 m_agg_prog_start_pos;
 
-  GBHashTable* gb_map_;
-  Uint32 n_groups_;
-  Uint32* attr_read_buf_;
-  Uint32 attr_read_pos_;
+  GBHashTable* m_gb_map;
+  Uint32 m_n_groups;
+  Uint32* m_attr_read_buf;
+  Uint32 m_attr_read_pos;
   static Uint32 g_attr_read_buf_len_;
-  Uint64 processed_rows_;
-  Uint32 result_size_;
+  Uint64 m_processed_rows;
+  Uint32 m_result_size;
   static Uint32 g_result_header_size_;
   static Uint32 g_result_header_size_per_group_;
 
-  Int64 table_id_;
-  Int64 frag_id_;
-  decimal_t decimal_;
-  decimal_digit_t decimal_buf_[DECIMAL_BUFF_LENGTH];
+  Int64 m_table_id;
+  Int64 m_frag_id;
+  decimal_t m_decimal;
+  decimal_digit_t m_decimal_buf[DECIMAL_BUFF_LENGTH];
 
   // Linked attribute buffer for join aggregation
   const Uint32* m_linked_attr_data;   // Points to current row's linked attrs
   Uint32 m_linked_attr_len;           // Current length in words
 
-  // MUTEX_BASED locking: protects gb_map_ and accumulators during
+  // MUTEX_BASED locking: protects m_gb_map and accumulators during
   // concurrent access from multiple LDM threads.
   bool m_use_mutex;                   // true for MUTEX_BASED strategy
   std::mutex m_mutex;
 
-  // Group eviction: when m_max_groups > 0 and gb_map_ reaches this
+  // Group eviction: when m_max_groups > 0 and m_gb_map reaches this
   // limit, processRecWithLinkedAttrs returns AGG_EVICT_NEEDED so the
   // caller can evict a group before retrying.
   Uint32 m_max_groups;                // 0 = unlimited
@@ -482,57 +482,57 @@ class AggInterpreter {
   Uint32 m_xfrm_buf_len;          // size in bytes
   Int32 initGBTypes(Dbtup* block_tup, Dbtup::KeyReqStruct* req_struct);
 
-  Uint32* prog_buf_;
-  Uint32* gb_cols_buf_;
-  AggResItem* agg_results_buf_;
-  GBHashTable* gb_map_buf_;
+  Uint32* m_prog_buf;
+  Uint32* m_gb_cols_buf;
+  AggResItem* m_agg_results_buf;
+  GBHashTable* m_gb_map_buf;
 
-  char* mem_buf_;
-  Uint32 alloc_len_;
+  char* m_mem_buf;
+  Uint32 m_alloc_len;
 
   // Single allocation block for all dynamically allocated buffers above.
   // Allocated in Init(), freed in destructor.
-  void* m_buf_block_;
+  void* m_buf_block;
 
   /* Vector */
-  bool vec_search_;
-  Uint32 vec_dims_;
-  Uint32 vec_type_;
-  Uint32 vec_metric_;
-  Uint32 vec_col_idx_;
-  Uint32 vec_top_n_;
-  Uint32 vec_size_in_bytes_;
-  Uint32* vec_buf_;
-  Uint32 vec_buf_pos_;
-  Uint32 vec_start_pos_;
+  bool m_vec_search;
+  Uint32 m_vec_dims;
+  Uint32 m_vec_type;
+  Uint32 m_vec_metric;
+  Uint32 m_vec_col_idx;
+  Uint32 m_vec_top_n;
+  Uint32 m_vec_size_in_bytes;
+  Uint32* m_vec_buf;
+  Uint32 m_vec_buf_pos;
+  Uint32 m_vec_start_pos;
   static Uint32 g_vec_buf_len_;
 
   class Candidate {
    public:
     Candidate(double distance, Uint32 tuple_len, Int32 idx) :
-      distance_(distance),
-      actual_buf_len_(tuple_len),
-      idx_in_allocator_(idx),
-      buf_(nullptr) {
-      buf_ = reinterpret_cast<Uint32*>(this + 1);
+      m_distance(distance),
+      m_actual_buf_len(tuple_len),
+      m_idx_in_allocator(idx),
+      m_buf(nullptr) {
+      m_buf = reinterpret_cast<Uint32*>(this + 1);
     }
     void Init(const Uint32* tuple) {
-      memcpy(buf_, tuple, actual_buf_len_ * sizeof(Uint32));
+      memcpy(m_buf, tuple, m_actual_buf_len * sizeof(Uint32));
     }
     ~Candidate() {
       /*
-       * No need to release buf_ — it comes from the pool_ of CandidateAllocator,
+       * No need to release m_buf — it comes from the pool_ of CandidateAllocator,
        * which will be released automatically at the end.
        */
     }
-    double distance_;
-    Uint32 actual_buf_len_;
-    Int32 idx_in_allocator_;
-    Uint32* buf_;
+    double m_distance;
+    Uint32 m_actual_buf_len;
+    Int32 m_idx_in_allocator;
+    Uint32* m_buf;
   };
   struct ByDistance {
     bool operator()(const Candidate* lhs, const Candidate* rhs) {
-      return lhs->distance_ < rhs->distance_ ? true : false;
+      return lhs->m_distance < rhs->m_distance ? true : false;
     }
   };
 
@@ -540,21 +540,21 @@ class AggInterpreter {
    public:
      CandidateAllocator(size_t max_candidates, size_t max_buf_len,
                         Int64 table_id, Int64 frag_id)
-       : init_(false), max_candidates_(max_candidates),
-       max_buf_len_(max_buf_len),
-       next_index_(0), reuse_started_(false),
-       table_id_(table_id), frag_id_(frag_id),
-       slots_per_full_segment_(0),
-       shift_k_(0)
-       , n_segments_(0)
+       : m_init(false), m_max_candidates(max_candidates),
+       m_max_buf_len(max_buf_len),
+       m_next_index(0), m_reuse_started(false),
+       m_table_id(table_id), m_frag_id(frag_id),
+       m_slots_per_full_segment(0),
+       m_shift_k(0)
+       , m_n_segments(0)
        {
-         total_size_ = max_candidates_ * (sizeof(Candidate) + max_buf_len_ * sizeof(Uint32));
-         slot_size_ = sizeof(Candidate) + max_buf_len_ * sizeof(Uint32);
+         m_total_size = m_max_candidates * (sizeof(Candidate) + m_max_buf_len * sizeof(Uint32));
+         m_slot_size = sizeof(Candidate) + m_max_buf_len * sizeof(Uint32);
        }
 
      ~CandidateAllocator() {
-       for (size_t i = 0; i < n_segments_; i++) {
-         auto& seg = segments_[i];
+       for (size_t i = 0; i < m_n_segments; i++) {
+         auto& seg = m_segments[i];
          if (seg.ptr) {
            lc_ndbd_pool_free(seg.ptr);
          }
@@ -568,8 +568,8 @@ class AggInterpreter {
 
      Candidate* Allocate(double distance, const Uint32* tuple, Uint32 actual_buf_len);
      void set_next_index(size_t next_index) {
-       assert(reuse_started_);
-       next_index_ = next_index;
+       assert(m_reuse_started);
+       m_next_index = next_index;
      }
 
    private:
@@ -577,33 +577,33 @@ class AggInterpreter {
        char* ptr;
        size_t size;
      };
-     bool init_;
-     size_t max_candidates_;
-     size_t max_buf_len_;
-     size_t next_index_;
-     size_t total_size_;
-     bool reuse_started_;
-     Int64 table_id_;
-     Int64 frag_id_;
-     size_t slot_size_;
-     size_t slots_per_full_segment_;
-     size_t shift_k_;
-     Segment segments_[MAX_CANDIDATE_SEGMENTS];
-     size_t n_segments_;
+     bool m_init;
+     size_t m_max_candidates;
+     size_t m_max_buf_len;
+     size_t m_next_index;
+     size_t m_total_size;
+     bool m_reuse_started;
+     Int64 m_table_id;
+     Int64 m_frag_id;
+     size_t m_slot_size;
+     size_t m_slots_per_full_segment;
+     size_t m_shift_k;
+     Segment m_segments[MAX_CANDIDATE_SEGMENTS];
+     size_t m_n_segments;
   };
 
-  Uint32 vec_max_rec_size_; // in words
-  CandidateAllocator* candidate_allocator_;
-  double curr_distance_;
-  Uint32 vec_n_candidates_sent_;
-  Uint32 vec_size_candidates_sent_;
+  Uint32 m_vec_max_rec_size; // in words
+  CandidateAllocator* m_candidate_allocator;
+  double m_curr_distance;
+  Uint32 m_vec_n_candidates_sent;
+  Uint32 m_vec_size_candidates_sent;
   std::priority_queue<Candidate*,
     std::vector<Candidate*>,
-    ByDistance> vec_top_n_results_;
-  bool vec_search_scan_done_;
-  Int32 next_send_idx_;
-  std::vector<Candidate*> vec_top_n_results_final_;
-  Uint32* ext_prog_buf_;
+    ByDistance> m_vec_top_n_results;
+  bool m_vec_search_scan_done;
+  Int32 m_next_send_idx;
+  std::vector<Candidate*> m_vec_top_n_results_final;
+  Uint32* m_ext_prog_buf;
 };
 
 static_assert(sizeof(AggInterpreter) <= MEM_CHUNK_SIZE,

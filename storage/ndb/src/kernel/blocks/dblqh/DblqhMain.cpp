@@ -16846,7 +16846,7 @@ void Dblqh::exec_next_scan_conf(Signal *signal, bool ttl_ignore_for_ral) {
    * [For sending vector search result]
    *
    * 2. vectorScanDone indicates the normal scan is done, so
-   * mark the vec_search_scan_done_ of the interpreter to true
+   * mark the m_vec_search_scan_done of the interpreter to true
    */
   if (unlikely(vectorScanDone && scanPtr->m_aggregation &&
       scanPtr->m_agg_interpreter->vec_search() &&
@@ -21622,7 +21622,7 @@ void Dblqh::sendScanFragConf(Signal *signal,
            /*
             * [Explanation]:
             * In vector search, we may reach this point after the first normal scan completes
-            * and `scanPtr->m_agg_interpreter->vec_search_scan_done_` is set to true. This
+            * and `scanPtr->m_agg_interpreter->m_vec_search_scan_done` is set to true. This
             * causes `ScanRecord::check_scan_batch_completed` to start checking whether a
             * batch has completed (which was skipped during the first scan round). If it
             * detects that a batch is done, we end up here.
