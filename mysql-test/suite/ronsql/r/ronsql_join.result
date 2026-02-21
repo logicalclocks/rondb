@@ -301,6 +301,29 @@ o_custkey	SUM(oe.oe_note_val)
 200	70
 300	50
 
+
+=== Test 14: Root PK lookup (WHERE covers full PK) ===
+== Query ==
+SELECT o.o_id, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+WHERE o.o_id = 1
+GROUP BY o.o_id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.o_id, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+WHERE o.o_id = 1
+GROUP BY o.o_id|
+o_id	SUM(l.l_quantity)
+1	30
+
 === Cleanup ===
 DROP TABLE order_extra;
 DROP TABLE lineitem;

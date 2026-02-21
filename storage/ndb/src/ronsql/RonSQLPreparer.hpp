@@ -197,6 +197,9 @@ public:
 private:
   void cleanup_trans();
   void execute_join();
+  void collect_pk_equalities(struct ConditionalExpression* ce,
+                             const NdbDictionary::Table* table,
+                             struct ConditionalExpression* pk_const[]);
   void apply_filter_top_level(NdbScanFilter* filter);
   void apply_filter(NdbScanFilter* filter, struct ConditionalExpression* ce);
   void apply_filter_cmp(NdbScanFilter* filter,

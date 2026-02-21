@@ -71,6 +71,11 @@ public:
       std::basic_ostream<char> &err,
       JoinPlan &plan);
 
+  static const NdbDictionary::Index *
+  findOrderedIndex(const NdbDictionary::Dictionary *dict,
+                   const NdbDictionary::Table *table,
+                   const char *col_names[], Uint32 num_cols);
+
 private:
   static bool isPrimaryKey(const NdbDictionary::Table *table,
                            const char *col_names[], Uint32 num_cols);
@@ -79,11 +84,6 @@ private:
   findUniqueIndex(const NdbDictionary::Dictionary *dict,
                   const NdbDictionary::Table *table,
                   const char *col_names[], Uint32 num_cols);
-
-  static const NdbDictionary::Index *
-  findOrderedIndex(const NdbDictionary::Dictionary *dict,
-                   const NdbDictionary::Table *table,
-                   const char *col_names[], Uint32 num_cols);
 };
 
 #endif

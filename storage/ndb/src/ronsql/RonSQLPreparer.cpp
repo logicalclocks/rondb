@@ -1254,6 +1254,48 @@ RonSQLPreparer::cleanup_trans() {
 }
 
 void
+RonSQLPreparer::collect_pk_equalities(
+    struct ConditionalExpression* ce,
+    const NdbDictionary::Table* table,
+    struct ConditionalExpression* pk_const[])
+{
+  if (ce == NULL) return;
+  if (ce->op == T_AND)
+  {
+    collect_pk_equalities(ce->args.left, table, pk_const);
+    collect_pk_equalities(ce->args.right, table, pk_const);
+    return;
+  }
+  if (ce->op != T_EQUALS) return;
+
+  ConditionalExpression* col_side = NULL;
+  ConditionalExpression* const_side = NULL;
+  if (ce->args.left->op == T_IDENTIFIER && ce->args.right->op != T_IDENTIFIER)
+  {
+    col_side = ce->args.left;
+    const_side = ce->args.right;
+  }
+  else if (ce->args.right->op == T_IDENTIFIER && ce->args.left->op != T_IDENTIFIER)
+  {
+    col_side = ce->args.right;
+    const_side = ce->args.left;
+  }
+  else return;
+
+  const char* col_name = m_columns[col_side->col_idx].c_str();
+  int nkeys = table->getNoOfPrimaryKeys();
+  for (int k = 0; k < nkeys; k++)
+  {
+    const char* pk_name = table->getPrimaryKey(k);
+    if (pk_name != NULL && strcmp(pk_name, col_name) == 0)
+    {
+      pk_const[k] = const_side;
+      break;
+    }
+  }
+}
+
+void
 RonSQLPreparer::execute_join()
 {
   Ndb* ndb = m_conf.ndb;
@@ -1276,24 +1318,119 @@ RonSQLPreparer::execute_join()
 
   const NdbQueryOperationDef* opDefs[MAX_JOIN_TABLES];
 
-  // Root operation (TABLE_SCAN, with optional WHERE filter)
+  // Root operation: PK lookup if WHERE fully covers PK, else TABLE_SCAN.
+  // When children have scan ops, NDB doesn't support lookup root, so use
+  // an ordered index scan on PK with equality bounds instead.
   {
     NdbQueryOptions rootOpts;
-    NdbInterpretedCode code(plan.ops[0].table);
+    const NdbDictionary::Table* root_table = plan.ops[0].table;
+    ConditionalExpression* where_ce = NULL;
+    bool pk_covered = false;
+    bool has_scan_child = false;
+    int nkeys = 0;
+    ConditionalExpression* pk_const[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY];
+
     if (m_context.ast_root.where_expression != NULL)
     {
-      ConditionalExpression* where_ce =
-          simplify_ce(m_context.ast_root.where_expression, -1);
-      NdbScanFilter filter(&code);
-      filter.setSqlCmpSemantics();
-      filter.begin(NdbScanFilter::AND);
-      apply_filter(&filter, where_ce);
-      filter.end();
-      code.finalise();
-      rootOpts.setInterpretedCode(code);
+      where_ce = simplify_ce(m_context.ast_root.where_expression, -1);
+
+      // Check if WHERE fully covers the root PK with equality constants
+      nkeys = root_table->getNoOfPrimaryKeys();
+      for (int k = 0; k < nkeys; k++)
+        pk_const[k] = NULL;
+      collect_pk_equalities(where_ce, root_table, pk_const);
+      pk_covered = true;
+      for (int k = 0; k < nkeys; k++)
+      {
+        if (pk_const[k] == NULL) { pk_covered = false; break; }
+      }
+
+      if (pk_covered)
+      {
+        for (Uint32 ci = 1; ci < plan.num_ops; ci++)
+        {
+          if (plan.ops[ci].type == JoinOp::INDEX_SCAN ||
+              plan.ops[ci].type == JoinOp::TABLE_SCAN)
+          {
+            has_scan_child = true;
+            break;
+          }
+        }
+      }
     }
-    opDefs[0] = qb->scanTable(plan.ops[0].table, &rootOpts);
-    require_run(opDefs[0] != NULL, "Failed to create root scan.");
+
+    if (pk_covered && !has_scan_child)
+    {
+      // All children are lookups — use readTuple PK lookup for root
+      const NdbQueryOperand* pk_keys[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 1];
+      for (int k = 0; k < nkeys; k++)
+      {
+        const char* pk_name = root_table->getPrimaryKey(k);
+        const NdbDictionary::Column* pk_col =
+            root_table->getColumn(pk_name);
+        ndbrequire(pk_col != NULL);
+        raw_value rv = encode_constant(pk_const[k], pk_col);
+        pk_keys[k] = qb->constValue(rv.val, rv.len);
+        require_run(pk_keys[k] != NULL,
+                    "Failed to create const value for PK lookup.");
+      }
+      pk_keys[nkeys] = nullptr;
+      opDefs[0] = qb->readTuple(root_table, pk_keys, &rootOpts);
+      require_run(opDefs[0] != NULL, "Failed to create root PK lookup.");
+    }
+    else if (pk_covered && has_scan_child)
+    {
+      // Children have scans — NDB doesn't support lookup root with scan
+      // children. Use ordered index scan on PK with equality bounds.
+      const char* pk_col_names[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY];
+      for (int k = 0; k < nkeys; k++)
+        pk_col_names[k] = root_table->getPrimaryKey(k);
+      const NdbDictionary::Index* pk_ordered_idx =
+          QueryPlanner::findOrderedIndex(
+              m_dict, root_table, pk_col_names, (Uint32)nkeys);
+      if (pk_ordered_idx != NULL)
+      {
+        const NdbQueryOperand* pk_keys[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 1];
+        for (int k = 0; k < nkeys; k++)
+        {
+          const NdbDictionary::Column* pk_col =
+              root_table->getColumn(pk_col_names[k]);
+          ndbrequire(pk_col != NULL);
+          raw_value rv = encode_constant(pk_const[k], pk_col);
+          pk_keys[k] = qb->constValue(rv.val, rv.len);
+          require_run(pk_keys[k] != NULL,
+                      "Failed to create const value for PK index scan.");
+        }
+        pk_keys[nkeys] = nullptr;
+        NdbQueryIndexBound bound(pk_keys);
+        opDefs[0] = qb->scanIndex(pk_ordered_idx, root_table,
+                                  &bound, &rootOpts);
+        require_run(opDefs[0] != NULL,
+                    "Failed to create root PK index scan.");
+      }
+      else
+      {
+        // No ordered index on PK — fall back to table scan with filter
+        pk_covered = false;
+      }
+    }
+
+    if (!pk_covered)
+    {
+      NdbInterpretedCode code(root_table);
+      if (where_ce != NULL)
+      {
+        NdbScanFilter filter(&code);
+        filter.setSqlCmpSemantics();
+        filter.begin(NdbScanFilter::AND);
+        apply_filter(&filter, where_ce);
+        filter.end();
+        code.finalise();
+        rootOpts.setInterpretedCode(code);
+      }
+      opDefs[0] = qb->scanTable(root_table, &rootOpts);
+      require_run(opDefs[0] != NULL, "Failed to create root scan.");
+    }
   }
 
   // Child operations
