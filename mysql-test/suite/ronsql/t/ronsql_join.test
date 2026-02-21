@@ -41,6 +41,20 @@ INSERT INTO lineitem VALUES
   (9, 5, 40, 400),
   (10, 5, 35, 350);
 
+CREATE TABLE customer (
+  c_id INT NOT NULL,
+  c_name VARCHAR(20) NOT NULL,
+  c_region INT NOT NULL,
+  PRIMARY KEY USING HASH (c_id)
+) ENGINE=NDB;
+
+CREATE INDEX idx_custkey ON orders (o_custkey);
+
+INSERT INTO customer VALUES
+  (100, 'Alice', 1),
+  (200, 'Bob', 1),
+  (300, 'Charlie', 2);
+
 --enable_query_log
 
 DELIMITER |;
@@ -109,6 +123,66 @@ SELECT l.l_orderkey, SUM(l.l_quantity)
 FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
 GROUP BY l.l_orderkey|
 
+--echo
+--echo
+--echo === Test 5: 3-table join, GROUP BY on root, SUM on leaf ===
+
+let $QUERY=
+SELECT c.c_region, SUM(l.l_quantity)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY c.c_region;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_region, SUM(l.l_quantity)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY c.c_region|
+
+--echo
+--echo
+--echo === Test 6: 3-table join, GROUP BY on middle table ===
+
+let $QUERY=
+SELECT o.o_status, SUM(l.l_quantity), COUNT(l.l_id)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_status;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_status, SUM(l.l_quantity), COUNT(l.l_id)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_status|
+
+--echo
+--echo
+--echo === Test 7: 3-table join, GROUP BY on root, MIN/MAX on leaf ===
+
+let $QUERY=
+SELECT c.c_name, MIN(l.l_price), MAX(l.l_price)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY c.c_name;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_name, MIN(l.l_price), MAX(l.l_price)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY c.c_name|
+
 DELIMITER ;|
 
 --echo
@@ -116,3 +190,4 @@ DELIMITER ;|
 
 DROP TABLE lineitem;
 DROP TABLE orders;
+DROP TABLE customer;

@@ -96,6 +96,86 @@ l_orderkey	SUM(l.l_quantity)
 4	20
 5	75
 
+
+=== Test 5: 3-table join, GROUP BY on root, SUM on leaf ===
+== Query ==
+SELECT c.c_region, SUM(l.l_quantity)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY c.c_region;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_region, SUM(l.l_quantity)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY c.c_region|
+c_region	SUM(l.l_quantity)
+1	125
+2	75
+
+
+=== Test 6: 3-table join, GROUP BY on middle table ===
+== Query ==
+SELECT o.o_status, SUM(l.l_quantity), COUNT(l.l_id)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_status;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.o_status, SUM(l.l_quantity), COUNT(l.l_id)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_status|
+o_status	SUM(l.l_quantity)	COUNT(l.l_id)
+closed	95	4
+open	105	6
+
+
+=== Test 7: 3-table join, GROUP BY on root, MIN/MAX on leaf ===
+== Query ==
+SELECT c.c_name, MIN(l.l_price), MAX(l.l_price)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY c.c_name;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_name, MIN(l.l_price), MAX(l.l_price)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY c.c_name|
+c_name	MIN(l.l_price)	MAX(l.l_price)
+Alice	50	200
+Bob	80	300
+Charlie	350	400
+
 === Cleanup ===
 DROP TABLE lineitem;
 DROP TABLE orders;
+DROP TABLE customer;
