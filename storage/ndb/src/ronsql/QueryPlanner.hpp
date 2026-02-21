@@ -30,7 +30,7 @@
 #include "LexString.hpp"
 
 static const Uint32 MAX_JOIN_TABLES = 16;
-static const Uint32 MAX_JOIN_KEY_COLS = 1;
+static const Uint32 MAX_JOIN_KEY_COLS = 8;
 static const Uint32 MAX_LINKED_PROJS = 16;
 
 struct JoinOp
@@ -73,17 +73,17 @@ public:
 
 private:
   static bool isPrimaryKey(const NdbDictionary::Table *table,
-                           const char *col_name);
+                           const char *col_names[], Uint32 num_cols);
 
   static const NdbDictionary::Index *
   findUniqueIndex(const NdbDictionary::Dictionary *dict,
                   const NdbDictionary::Table *table,
-                  const char *col_name);
+                  const char *col_names[], Uint32 num_cols);
 
   static const NdbDictionary::Index *
   findOrderedIndex(const NdbDictionary::Dictionary *dict,
                    const NdbDictionary::Table *table,
-                   const char *col_name);
+                   const char *col_names[], Uint32 num_cols);
 };
 
 #endif

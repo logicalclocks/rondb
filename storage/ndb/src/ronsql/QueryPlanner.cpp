@@ -82,41 +82,69 @@ QueryPlanner::plan(
       throw RonSQLPermanentError("Table not found.");
     }
 
-    /* Find parent operation by matching condition.parent_table against aliases */
-    const char *parent_alias = jc->condition.parent_table.c_str();
-    Uint32 parent_idx = 0;
-    bool found_parent = false;
-    for (Uint32 p = 0; p < out.num_ops; p++)
-    {
-      if (strcmp(out.ops[p].alias.c_str(), parent_alias) == 0)
-      {
-        parent_idx = p;
-        found_parent = true;
-        break;
-      }
-    }
-    if (!found_parent)
-    {
-      err << "Join condition references unknown table '" << parent_alias
-          << "'. Tables must be joined in order, each referencing a "
-          << "previously defined table." << std::endl;
-      throw RonSQLPermanentError("Join references unknown table.");
-    }
-
-    /* Determine join type for the child */
-    const char *child_key_col = jc->condition.child_column.c_str();
-    const char *parent_key_col = jc->condition.parent_column.c_str();
-
+    /* Collect all key columns from the ON condition list */
     JoinOp &childOp = out.ops[out.num_ops];
     childOp.table = child_ndb_table;
     childOp.alias = jc->table.alias;
-    childOp.parent_op_idx = parent_idx;
     childOp.is_root = false;
-    childOp.child_key_col_names[0] = child_key_col;
-    childOp.parent_key_col_names[0] = parent_key_col;
-    childOp.num_key_cols = 1;
 
-    if (isPrimaryKey(child_ndb_table, child_key_col))
+    Uint32 num_keys = 0;
+    Uint32 parent_idx = 0;
+    bool found_parent = false;
+    for (const JoinCondition *cond = jc->conditions;
+         cond != NULL;
+         cond = cond->next)
+    {
+      if (num_keys >= MAX_JOIN_KEY_COLS)
+      {
+        err << "Too many join key columns (max " << MAX_JOIN_KEY_COLS
+            << ")." << std::endl;
+        throw RonSQLPermanentError("Too many join key columns.");
+      }
+
+      /* Find parent operation from first condition, verify consistent */
+      const char *parent_alias = cond->parent_table.c_str();
+      if (num_keys == 0)
+      {
+        for (Uint32 p = 0; p < out.num_ops; p++)
+        {
+          if (strcmp(out.ops[p].alias.c_str(), parent_alias) == 0)
+          {
+            parent_idx = p;
+            found_parent = true;
+            break;
+          }
+        }
+        if (!found_parent)
+        {
+          err << "Join condition references unknown table '" << parent_alias
+              << "'. Tables must be joined in order, each referencing a "
+              << "previously defined table." << std::endl;
+          throw RonSQLPermanentError("Join references unknown table.");
+        }
+      }
+      else
+      {
+        /* All conditions must reference the same parent */
+        if (strcmp(out.ops[parent_idx].alias.c_str(), parent_alias) != 0)
+        {
+          err << "All ON conditions in a single JOIN must reference the "
+              << "same parent table." << std::endl;
+          throw RonSQLPermanentError(
+              "Mixed parent tables in ON conditions.");
+        }
+      }
+
+      childOp.child_key_col_names[num_keys] = cond->child_column.c_str();
+      childOp.parent_key_col_names[num_keys] = cond->parent_column.c_str();
+      num_keys++;
+    }
+
+    childOp.parent_op_idx = parent_idx;
+    childOp.num_key_cols = num_keys;
+
+    /* Determine join type for the child */
+    if (isPrimaryKey(child_ndb_table, childOp.child_key_col_names, num_keys))
     {
       childOp.type = JoinOp::PK_LOOKUP;
       childOp.index = NULL;
@@ -124,7 +152,8 @@ QueryPlanner::plan(
     else
     {
       const NdbDictionary::Index *unique_idx =
-          findUniqueIndex(dict, child_ndb_table, child_key_col);
+          findUniqueIndex(dict, child_ndb_table,
+                          childOp.child_key_col_names, num_keys);
       if (unique_idx != NULL)
       {
         childOp.type = JoinOp::UNIQUE_LOOKUP;
@@ -133,7 +162,8 @@ QueryPlanner::plan(
       else
       {
         const NdbDictionary::Index *ordered_idx =
-            findOrderedIndex(dict, child_ndb_table, child_key_col);
+            findOrderedIndex(dict, child_ndb_table,
+                             childOp.child_key_col_names, num_keys);
         if (ordered_idx != NULL)
         {
           childOp.type = JoinOp::INDEX_SCAN;
@@ -141,12 +171,12 @@ QueryPlanner::plan(
         }
         else
         {
-          err << "Cannot push join: no suitable index on '"
-              << child_key_col << "' for table '" << child_table_name
+          err << "Cannot push join: no suitable index on join columns"
+              << " for table '" << child_table_name
               << "'. Create a primary key, unique index, or ordered "
-              << "index on the join column." << std::endl;
+              << "index on the join columns." << std::endl;
           throw RonSQLPermanentError(
-              "No suitable index for join column.");
+              "No suitable index for join columns.");
         }
       }
     }
@@ -160,18 +190,31 @@ QueryPlanner::plan(
 
 bool
 QueryPlanner::isPrimaryKey(const NdbDictionary::Table *table,
-                           const char *col_name)
+                           const char *col_names[], Uint32 num_cols)
 {
   int nkeys = table->getNoOfPrimaryKeys();
-  if (nkeys != 1) return false;
-  const char *pk_name = table->getPrimaryKey(0);
-  return (pk_name != NULL && strcmp(pk_name, col_name) == 0);
+  if ((Uint32)nkeys != num_cols) return false;
+  for (Uint32 k = 0; k < num_cols; k++)
+  {
+    bool found = false;
+    for (int p = 0; p < nkeys; p++)
+    {
+      const char *pk_name = table->getPrimaryKey(p);
+      if (pk_name != NULL && strcmp(pk_name, col_names[k]) == 0)
+      {
+        found = true;
+        break;
+      }
+    }
+    if (!found) return false;
+  }
+  return true;
 }
 
 const NdbDictionary::Index *
 QueryPlanner::findUniqueIndex(const NdbDictionary::Dictionary *dict,
                               const NdbDictionary::Table *table,
-                              const char *col_name)
+                              const char *col_names[], Uint32 num_cols)
 {
   NdbDictionary::Dictionary::List index_list;
   if (dict->listIndexes(index_list, *table) != 0) return NULL;
@@ -184,16 +227,25 @@ QueryPlanner::findUniqueIndex(const NdbDictionary::Dictionary *dict,
 
     const NdbDictionary::Index *idx = dict->getIndex(elem.name, *table);
     if (idx == NULL) continue;
-    if (idx->getNoOfColumns() != 1) continue;
+    if ((Uint32)idx->getNoOfColumns() != num_cols) continue;
 
-    const NdbDictionary::Column *idx_col = idx->getColumn(0);
-    if (idx_col == NULL) continue;
-
-    const char *idx_col_name = idx_col->getName();
-    if (idx_col_name != NULL && strcmp(idx_col_name, col_name) == 0)
+    bool all_match = true;
+    for (Uint32 c = 0; c < num_cols; c++)
     {
-      return idx;
+      bool found = false;
+      for (int j = 0; j < idx->getNoOfColumns(); j++)
+      {
+        const NdbDictionary::Column *idx_col = idx->getColumn(j);
+        if (idx_col != NULL &&
+            strcmp(idx_col->getName(), col_names[c]) == 0)
+        {
+          found = true;
+          break;
+        }
+      }
+      if (!found) { all_match = false; break; }
     }
+    if (all_match) return idx;
   }
   return NULL;
 }
@@ -201,7 +253,7 @@ QueryPlanner::findUniqueIndex(const NdbDictionary::Dictionary *dict,
 const NdbDictionary::Index *
 QueryPlanner::findOrderedIndex(const NdbDictionary::Dictionary *dict,
                                const NdbDictionary::Table *table,
-                               const char *col_name)
+                               const char *col_names[], Uint32 num_cols)
 {
   NdbDictionary::Dictionary::List index_list;
   if (dict->listIndexes(index_list, *table) != 0) return NULL;
@@ -214,16 +266,26 @@ QueryPlanner::findOrderedIndex(const NdbDictionary::Dictionary *dict,
 
     const NdbDictionary::Index *idx = dict->getIndex(elem.name, *table);
     if (idx == NULL) continue;
-    if (idx->getNoOfColumns() < 1) continue;
+    if ((Uint32)idx->getNoOfColumns() < num_cols) continue;
 
-    const NdbDictionary::Column *idx_col = idx->getColumn(0);
-    if (idx_col == NULL) continue;
-
-    const char *idx_col_name = idx_col->getName();
-    if (idx_col_name != NULL && strcmp(idx_col_name, col_name) == 0)
+    /* Check that all join columns appear as a prefix of the index */
+    bool all_match = true;
+    for (Uint32 c = 0; c < num_cols; c++)
     {
-      return idx;
+      bool found = false;
+      for (Uint32 j = 0; j < num_cols && j < (Uint32)idx->getNoOfColumns(); j++)
+      {
+        const NdbDictionary::Column *idx_col = idx->getColumn(j);
+        if (idx_col != NULL &&
+            strcmp(idx_col->getName(), col_names[c]) == 0)
+        {
+          found = true;
+          break;
+        }
+      }
+      if (!found) { all_match = false; break; }
     }
+    if (all_match) return idx;
   }
   return NULL;
 }

@@ -1,5 +1,7 @@
 --source include/have_ndb.inc
 
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+
 --echo
 --echo === Create tables for join tests ===
 --echo
@@ -261,8 +263,52 @@ DELIMITER ;|
 --exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT o.o_custkey, SUM(l.l_quantity) FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id WHERE l.l_quantity > 10 GROUP BY o.o_custkey;' 2>&1
 
 --echo
+--echo === Create composite key table ===
+
+--disable_query_log
+
+CREATE TABLE order_extra (
+  oe_orderid INT NOT NULL,
+  oe_custkey INT NOT NULL,
+  oe_note_val INT NOT NULL,
+  PRIMARY KEY USING HASH (oe_orderid, oe_custkey)
+) ENGINE=NDB;
+
+INSERT INTO order_extra VALUES
+  (1, 100, 10),
+  (2, 100, 20),
+  (3, 200, 30),
+  (4, 200, 40),
+  (5, 300, 50);
+
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo
+--echo === Test 13: Composite PK join (multi-column ON) ===
+
+let $QUERY=
+SELECT o.o_custkey, SUM(oe.oe_note_val)
+FROM orders AS o JOIN order_extra AS oe
+  ON oe.oe_orderid = o.o_id AND oe.oe_custkey = o.o_custkey
+GROUP BY o.o_custkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_custkey, SUM(oe.oe_note_val)
+FROM orders AS o JOIN order_extra AS oe
+  ON oe.oe_orderid = o.o_id AND oe.oe_custkey = o.o_custkey
+GROUP BY o.o_custkey|
+
+DELIMITER ;|
+
+--echo
 --echo === Cleanup ===
 
+DROP TABLE order_extra;
 DROP TABLE lineitem;
 DROP TABLE orders;
 DROP TABLE customer;

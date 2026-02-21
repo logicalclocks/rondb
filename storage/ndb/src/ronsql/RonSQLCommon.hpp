@@ -180,12 +180,13 @@ struct JoinCondition
   LexCString child_column; /* child column name */
   LexCString parent_table; /* parent table alias/name */
   LexCString parent_column;/* parent column name */
+  struct JoinCondition *next;  /* for multi-column ON conditions */
 };
 
 struct JoinClause
 {
   TableRef table;
-  JoinCondition condition;
+  JoinCondition *conditions;  /* linked list of ON conditions */
   struct JoinClause *next;
 };
 

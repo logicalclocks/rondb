@@ -142,6 +142,7 @@ extern void rsqlp_error(RSQLP_LTYPE* yylloc, yyscan_t yyscanner, const char* s);
   AggregationAPICompiler::Expr* arith_expr;
   struct TableRef* table_ref;
   struct JoinClause* join_clause;
+  struct JoinCondition* join_condition;
   struct {
     JoinClause* head;
     JoinClause* tail;
@@ -216,6 +217,7 @@ extern void rsqlp_error(RSQLP_LTYPE* yylloc, yyscan_t yyscanner, const char* s);
 %type<bival> limit_opt
 %type<table_ref> table_ref
 %type<join_clause> join_clause
+%type<join_condition> join_condition join_condition_list
 %type<join_list> join_list
 
 %start selectstatement
@@ -383,14 +385,36 @@ join_list:
                                         }
 
 join_clause:
-  T_JOIN table_ref T_ON identifier_c T_DOT identifier_c T_EQUALS identifier_c T_DOT identifier_c
+  T_JOIN table_ref T_ON join_condition_list
   {
     initptr($$);
     $$->table = *$2;
-    $$->condition.child_table = $4;
-    $$->condition.child_column = $6;
-    $$->condition.parent_table = $8;
-    $$->condition.parent_column = $10;
+    $$->conditions = $4;
+    $$->next = NULL;
+  }
+
+join_condition_list:
+  join_condition
+  {
+    $$ = $1;
+  }
+| join_condition_list T_AND join_condition
+  {
+    /* Append $3 to end of list starting at $1 */
+    struct JoinCondition *tail = $1;
+    while (tail->next != NULL) tail = tail->next;
+    tail->next = $3;
+    $$ = $1;
+  }
+
+join_condition:
+  identifier_c T_DOT identifier_c T_EQUALS identifier_c T_DOT identifier_c
+  {
+    initptr($$);
+    $$->child_table = $1;
+    $$->child_column = $3;
+    $$->parent_table = $5;
+    $$->parent_column = $7;
     $$->next = NULL;
   }
 
