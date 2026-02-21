@@ -68,6 +68,7 @@
 #include "storage/ndb/plugin/ha_ndbcluster_cond.h"
 #include "storage/ndb/plugin/ha_ndbcluster_connection.h"
 #include "storage/ndb/plugin/ha_ndbcluster_push.h"
+#include "storage/ndb/plugin/ha_ndbcluster_push_agg.h"
 #include "storage/ndb/plugin/ndb_anyvalue.h"
 #include "storage/ndb/plugin/ndb_applier.h"
 #include "storage/ndb/plugin/ndb_binlog_client.h"
@@ -367,6 +368,15 @@ static MYSQL_THDVAR_BOOL(join_pushdown, /* name */
                          nullptr, /* check func. */
                          nullptr, /* update func. */
                          true     /* default */
+);
+
+static MYSQL_THDVAR_BOOL(join_pushdown_aggregate, /* name */
+                         PLUGIN_VAR_OPCMDARG,
+                         "Enable pushing down of aggregation for pushed joins "
+                         "to datanodes",
+                         nullptr, /* check func. */
+                         nullptr, /* update func. */
+                         false    /* default */
 );
 
 static MYSQL_THDVAR_BOOL(log_exclusive_reads, /* name */
@@ -14853,6 +14863,9 @@ int ndbcluster_push_to_engine(THD *thd, AccessPath *root_path, JOIN *join) {
     }
   }
 
+  // Check if aggregation can also be pushed for a fully-pushed join.
+  ndb_push_aggregation(thd, join, pushed_builder);
+
   /**
    * For those tables not being join-pushed we may still be able to
    * push any conditions on the table. (There are less restrictions on whether
@@ -19208,6 +19221,7 @@ static SYS_VAR *system_variables[] = {
     MYSQL_SYSVAR(replica_blob_write_batch_bytes),
     MYSQL_SYSVAR(deferred_constraints),
     MYSQL_SYSVAR(join_pushdown),
+    MYSQL_SYSVAR(join_pushdown_aggregate),
     MYSQL_SYSVAR(log_exclusive_reads),
     MYSQL_SYSVAR(read_backup),
     MYSQL_SYSVAR(data_node_neighbour),
