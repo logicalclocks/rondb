@@ -1603,7 +1603,19 @@ RonSQLPreparer::execute_join()
               "Failed to execute transaction.");
 
   // Consume all rows
-  while (query->nextResult(true) == NdbQuery::NextResult_gotRow) {}
+  NdbQuery::NextResultOutcome rc;
+  while ((rc = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {}
+  if (rc == NdbQuery::NextResult_error)
+  {
+    const NdbError& err = query->getNdbError();
+    std::basic_ostream<char>& errout = *m_conf.err_stream;
+    errout << "Join query failed: " << err.message
+           << " (code " << err.code << ")" << std::endl;
+    query->close();
+    queryDef->destroy();
+    qb->destroy();
+    throw RonSQLRetryableError("Join query execution failed.");
+  }
 
   // Collect and print aggregation results
   NdbAggregator* resultAgg = query->getAggregator();
