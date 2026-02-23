@@ -1,0 +1,10 @@
+Loading TPC-H data
+PASSED
+## Run rdrs2-golang_ronsqltpch.test without TLS
+ok  	hopsworks.ai/rdrs2/internal/integrationtests/ronsqltpch
+
+Golang test for hopsworks.ai/rdrs2/internal/integrationtests/ronsqltpch exited with code 0
+## Run rdrs2-golang_ronsqltpch.test with TLS and server-side cert
+ok  	hopsworks.ai/rdrs2/internal/integrationtests/ronsqltpch
+
+Golang test for hopsworks.ai/rdrs2/internal/integrationtests/ronsqltpch exited with code 0

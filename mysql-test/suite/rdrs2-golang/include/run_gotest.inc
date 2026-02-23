@@ -48,6 +48,7 @@ my %mtr_to_go = (
   'rdrs2-golang_metrics.test'           => 'hopsworks.ai/rdrs2/internal/metrics',                            #
   'rdrs2-golang_ping.test'              => 'hopsworks.ai/rdrs2/internal/integrationtests/ping',              #
   'rdrs2-golang_pkread.test'            => 'hopsworks.ai/rdrs2/internal/integrationtests/pkread',            #
+  'rdrs2-golang_ronsqltpch.test'        => 'hopsworks.ai/rdrs2/internal/integrationtests/ronsqltpch',       #
   'rdrs2-golang_stat.test'              => 'hopsworks.ai/rdrs2/internal/integrationtests/stat',              #
   'rdrs2-golang_testclient.test'        => 'hopsworks.ai/rdrs2/internal/integrationtests/testclient',        #
   'rdrs2-golang_testdbs.test'           => 'hopsworks.ai/rdrs2/resources/testdbs',                           #
