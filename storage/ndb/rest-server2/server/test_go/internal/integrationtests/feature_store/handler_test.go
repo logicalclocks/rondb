@@ -2245,3 +2245,113 @@ func Test_GetFeatureVector_PrimaryKeyNoMatch_PassedFeature(t *testing.T) {
 		}
 	}
 }
+
+func Test_GetFeatureVector_EventDelete_And_Reinsert(t *testing.T) {
+	// Step 1: Verify the query works before deletion
+	rows, pks, cols, err := GetSampleData(testdbs.FSDB002, "sample_2_1")
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s", err)
+	}
+	if len(rows) == 0 {
+		t.Fatalf("No sample data found")
+	}
+
+	row := rows[0]
+	fsReq := CreateFeatureStoreRequest(
+		testdbs.FSDB002,
+		"sample_2",
+		1,
+		pks,
+		*GetPkValues(&row, &pks, &cols),
+		nil,
+		nil,
+	)
+
+	// Query should succeed initially
+	GetFeatureStoreResponseWithDetail(t, fsReq, "", http.StatusOK)
+
+	// Step 2: Connect to MySQL and delete the feature_view row with FK checks disabled
+	db, err := testutils.CreateMySQLConnectionDataCluster()
+	if err != nil {
+		t.Fatalf("Cannot connect to MySQL: %s", err)
+	}
+	defer db.Close()
+
+	// Get the feature_view row details for re-insert
+	var fvID int
+	var fvName string
+	var fsID int
+	var creator int
+	var version int
+	err = db.QueryRow(
+		"SELECT id, name, feature_store_id, creator, version FROM hopsworks.feature_view " +
+			"WHERE feature_store_id = (SELECT id FROM hopsworks.feature_store WHERE name = ?) " +
+			"AND name = ? AND version = ?",
+		testdbs.FSDB002, "sample_2", 1,
+	).Scan(&fvID, &fvName, &fsID, &creator, &version)
+	if err != nil {
+		t.Fatalf("Cannot get feature_view row: %s", err)
+	}
+	t.Logf("Feature view id=%d, name=%s, fs_id=%d, creator=%d, version=%d",
+		fvID, fvName, fsID, creator, version)
+
+	// Disable FK checks and delete the feature_view row
+	_, err = db.Exec("SET FOREIGN_KEY_CHECKS=0")
+	if err != nil {
+		t.Fatalf("Cannot disable FK checks: %s", err)
+	}
+	_, err = db.Exec("DELETE FROM hopsworks.feature_view WHERE id = ?", fvID)
+	if err != nil {
+		t.Fatalf("Cannot delete feature_view row: %s", err)
+	}
+	_, err = db.Exec("SET FOREIGN_KEY_CHECKS=1")
+	if err != nil {
+		t.Fatalf("Cannot enable FK checks: %s", err)
+	}
+	t.Log("Deleted feature_view row, waiting for event watcher to detect...")
+
+	// Ensure the row is restored even if the test fails after deletion.
+	defer func() {
+		db.Exec("SET FOREIGN_KEY_CHECKS=0")
+		db.Exec(
+			"INSERT IGNORE INTO hopsworks.feature_view (id, name, feature_store_id, creator, version) "+
+				"VALUES (?, ?, ?, ?, ?)",
+			fvID, fvName, fsID, creator, version,
+		)
+		db.Exec("SET FOREIGN_KEY_CHECKS=1")
+	}()
+
+	// Step 3: Wait for event watcher to detect the DELETE and evict the cache entry
+	time.Sleep(5 * time.Second)
+
+	// Step 4: Query should now fail because the FV metadata is evicted
+	GetFeatureStoreResponseWithDetail(t, fsReq,
+		fsmetadata.FV_NOT_EXIST.GetReason(), http.StatusBadRequest)
+	t.Log("Query correctly failed after feature_view deletion")
+
+	// Step 5: Re-insert the feature_view row with FK checks disabled
+	_, err = db.Exec("SET FOREIGN_KEY_CHECKS=0")
+	if err != nil {
+		t.Fatalf("Cannot disable FK checks: %s", err)
+	}
+	_, err = db.Exec(
+		"INSERT INTO hopsworks.feature_view (id, name, feature_store_id, creator, version) "+
+			"VALUES (?, ?, ?, ?, ?)",
+		fvID, fvName, fsID, creator, version,
+	)
+	if err != nil {
+		t.Fatalf("Cannot re-insert feature_view row: %s", err)
+	}
+	_, err = db.Exec("SET FOREIGN_KEY_CHECKS=1")
+	if err != nil {
+		t.Fatalf("Cannot enable FK checks: %s", err)
+	}
+	t.Log("Re-inserted feature_view row, waiting for event watcher to detect...")
+
+	// Step 6: Wait for event watcher to detect the INSERT and reload the cache entry
+	time.Sleep(5 * time.Second)
+
+	// Step 7: Query should succeed again
+	GetFeatureStoreResponseWithDetail(t, fsReq, "", http.StatusOK)
+	t.Log("Query correctly succeeded after feature_view re-insertion")
+}

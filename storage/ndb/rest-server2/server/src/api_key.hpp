@@ -26,7 +26,7 @@
 
 #include <atomic>
 #include <memory>
-#include <random>
+#include <shared_mutex>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -69,19 +69,22 @@ class UserDBs {
   NDB_TICKS m_lastUpdated;
   NdbMutex *m_waitLock;
   NdbCondition *m_waitCond;
-  struct NdbThread *m_thread; // Thread handle for cleanup
   enum {
     IS_VALIDATING = 0,
     IS_INVALID = 1,
     IS_VALID = 2
   };
   Uint8 m_state;
-  Int32 m_refresh_interval;
   std::atomic<int> m_ref_count;
+
+  // Key material for in-memory SHA256 verification
+  std::string m_secret;
+  std::string m_salt;
+  int m_user_id;
 
   UserDBs() {
     m_db_ptrs = nullptr;
-    m_thread = nullptr;
+    m_user_id = 0;
     m_waitLock = NdbMutex_Create();
     m_waitCond = NdbCondition_Create();
   }
@@ -97,18 +100,15 @@ class UserDBs {
 
 class APIKeyCache {
  public:
-  APIKeyCache() : m_key_cache(), randomGenerator(std::random_device()()) {
-    m_evicted = false;
-    for (int i = 0; i < NUM_API_KEY_CACHES; i++)
-      m_rwLock[i] = NdbMutex_Create();
+  APIKeyCache() : m_key_cache() {
+    m_refresh_thread = nullptr;
+    m_event_watcher_thread = nullptr;
     m_sleepLock = NdbMutex_Create();
     m_sleepCond = NdbCondition_Create();
   }
 
   ~APIKeyCache() {
     cleanup();
-    for (int i = 0; i < NUM_API_KEY_CACHES; i++)
-      NdbMutex_Destroy(m_rwLock[i]);
     NdbMutex_Destroy(m_sleepLock);
     NdbCondition_Destroy(m_sleepCond);
   }
@@ -123,37 +123,56 @@ class APIKeyCache {
   std::string to_string();
   unsigned size();
 
-  void cache_entry_updater(const std::string &);
+  void set_event_name(const std::string &name) { m_event_name = name; }
+  void preload_all_keys();
+  void start_background_threads();
+  void refresh_job();
+  void event_watcher_job();
+  // Force the event watcher to tear down and reconnect (for testing)
+  void force_reconnect() { m_force_reconnect = true; }
 
  private:
-  // API Key -> User Databases
+  // Prefix -> User Databases
   std::unordered_map<std::string, UserDBs*> m_key_cache[NUM_API_KEY_CACHES];
-  std::mt19937 randomGenerator;
 
-  bool m_evicted = false;
-  NdbMutex *m_rwLock[NUM_API_KEY_CACHES];
+  std::atomic<bool> m_stopped{false};
+  std::atomic<bool> m_force_reconnect{false};
+  // Read-write lock per partition: shared (read) for lookups/snapshots,
+  // exclusive (write) for inserts/deletes. This avoids blocking the
+  // request path while the refresh thread snapshots a partition.
+  std::shared_mutex m_rwLock[NUM_API_KEY_CACHES];
   NdbMutex *m_sleepLock;
   NdbCondition *m_sleepCond;
 
-  static RS_Status validate_api_key_format(const std::string &);
+  struct NdbThread *m_refresh_thread;
+  struct NdbThread *m_event_watcher_thread;
+  std::string m_event_name;
 
   void cleanup();
-  RS_Status update_cache(const std::string &, Uint32 hash);
+  RS_Status update_cache(const std::string &prefix,
+                         const std::string &clientSecret,
+                         Uint32 hash);
   RS_Status update_record(std::vector<std::string_view>,
                           UserDBs*,
                           char **db_ptrs);
-  RS_Status find_and_validate(const std::string &,
-                              bool &,
-                              bool &,
-                              const std::vector<std::string_view> &,
+  RS_Status find_and_validate(const std::string &prefix,
+                              const std::string &clientSecret,
+                              bool &keyFoundInCache,
+                              bool &allowedAccess,
+                              const std::vector<std::string_view> &dbs,
                               Uint32 hash,
-                              bool);
+                              bool inc_refcount_done);
 
-  RS_Status authenticate_user(const std::string &, HopsworksAPIKey &);
-  RS_Status get_user_databases(HopsworksAPIKey &,
-                               std::vector<std::string_view> &,
+  static RS_Status verify_api_key_hash(const std::string &clientSecret,
+                                       const std::string &secret,
+                                       const std::string &salt);
+  void load_single_key(const std::string &prefix,
+                       const std::string &secret,
+                       const std::string &salt,
+                       int user_id);
+  RS_Status get_user_databases(int user_id,
+                               std::vector<std::string_view> &dbs,
                                char ***db_ptrs);
-  RS_Status get_api_key(const std::string &, HopsworksAPIKey &);
-  Int32 refresh_interval_with_jitter();
+  Int32 refresh_interval();
 };
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_API_KEY_HPP_
