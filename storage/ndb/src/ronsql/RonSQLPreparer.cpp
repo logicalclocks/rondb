@@ -2026,6 +2026,8 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
     [[fallthrough]];
   case NdbDictionary::Column::Type::Decimalunsigned:
     tk = DECIMAL; break;
+  case NdbDictionary::Column::Type::Char:
+    tk = STR; maxlen = col->getLength(); lenbytes = 0; break;
   case NdbDictionary::Column::Type::Varchar:
     tk = STR; maxlen = 255; lenbytes = 1; break;
   case NdbDictionary::Column::Type::Longvarchar:
@@ -2039,7 +2041,7 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
   default:
     throw RonSQLMaybeStaleSchema("Unsupported column type in comparison"
                                  " condition. Supported types are integer"
-                                 " types, VARCHAR, DATE, DATETIME and"
+                                 " types, CHAR, VARCHAR, DATE, DATETIME and"
                                  " TIMESTAMP.");
   }
   if (op == T_INT && tk == INT) {
@@ -2132,6 +2134,18 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
                                  " are supported.");
   }
   if (op == T_STRING && tk == STR) {
+    if (lenbytes == 0) {
+      // CHAR: fixed-length, right-padded with spaces, no length prefix
+      Uint32 col_len = col->getLength();
+      if (ce->string.len > static_cast<size_t>(col_len)) {
+        throw RonSQLMaybeStaleSchema("CHAR column compared to a string literal"
+                                     " that is too long.");
+      }
+      Uint8* val = m_amalloc->alloc_exc<Uint8>(col_len);
+      memcpy(val, ce->string.str, ce->string.len);
+      memset(val + ce->string.len, ' ', col_len - ce->string.len);
+      return raw_value{ val, col_len };
+    }
     if (ce->string.len > static_cast<size_t>(maxlen)) {
       throw RonSQLMaybeStaleSchema("VARCHAR column compared to a string literal"
                                    " that is too long. Note that if the column"
@@ -2145,8 +2159,9 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
     return raw_value{ val, static_cast<Uint32>(lenbytes + ce->string.len) };
   }
   if (tk == STR) {
-    throw RonSQLMaybeStaleSchema("VARCHAR column compared to an incompatible"
-                                 " value. Only string literals are supported.");
+    throw RonSQLMaybeStaleSchema("CHAR/VARCHAR column compared to an"
+                                 " incompatible value. Only string literals"
+                                 " are supported.");
   }
   if (tk == TIME) {
     MYSQL_TIME mt;
