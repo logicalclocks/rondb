@@ -97,10 +97,9 @@ func newWithDefaults() AllConfigs {
 				RootCACertFile:             "",
 			},
 			APIKey: APIKey{
-				UseHopsworksAPIKeys:          true,
-				CacheRefreshIntervalMS:       10000,
-				CacheUnusedEntriesEvictionMS: 60000,
-				CacheRefreshIntervalJitterMS: 1000,
+				UseHopsworksAPIKeys:    true,
+				CacheRefreshIntervalMS: 10000,
+				PreloadThreads:         3,
 			},
 		},
 		Log: log.LogConfig{
