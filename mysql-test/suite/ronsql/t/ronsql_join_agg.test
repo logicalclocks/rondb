@@ -347,11 +347,109 @@ JOIN lineitem AS l ON l.l_orderkey = o.o_id
 WHERE o.o_id >= 3
 GROUP BY c.c_region|
 
+--echo
+--echo
+--echo === Test 21: ORDER BY group column ASC ===
+
+let $QUERY=
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+ORDER BY o.o_custkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+ORDER BY o.o_custkey|
+
+--echo
+--echo
+--echo === Test 22: ORDER BY group column DESC ===
+
+let $QUERY=
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+ORDER BY o.o_custkey DESC;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+ORDER BY o.o_custkey DESC|
+
+--echo
+--echo
+--echo === Test 23: ORDER BY with LIMIT ===
+
+let $QUERY=
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+ORDER BY o.o_custkey DESC
+LIMIT 2;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+ORDER BY o.o_custkey DESC
+LIMIT 2|
+
+--echo
+--echo
+--echo === Test 24: LIMIT without ORDER BY ===
+
+let $QUERY=
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+LIMIT 2;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+LIMIT 2|
+
+--echo
+--echo
+--echo === Test 25: 3-table join with ORDER BY and LIMIT ===
+
+let $QUERY=
+SELECT c.c_name, SUM(l.l_quantity)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY c.c_name
+ORDER BY c.c_name
+LIMIT 2;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_name, SUM(l.l_quantity)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY c.c_name
+ORDER BY c.c_name
+LIMIT 2|
+
 DELIMITER ;|
 
 --echo
 --echo
---echo === Test 20: Error — cross-table comparison ===
+--echo === Test 26: Error — cross-table comparison ===
 --echo Expected error: WHERE condition references columns from multiple tables
 --error 1
 --exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT o.o_custkey, SUM(l.l_quantity) FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id WHERE l.l_quantity > o.o_custkey GROUP BY o.o_custkey;' 2>&1

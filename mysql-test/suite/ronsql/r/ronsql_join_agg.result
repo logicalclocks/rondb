@@ -369,7 +369,144 @@ c_region	SUM(l.l_quantity)
 2	75
 
 
-=== Test 20: Error — cross-table comparison ===
+=== Test 21: ORDER BY group column ASC ===
+== Query ==
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+ORDER BY o.o_custkey;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+ORDER BY o.o_custkey|
+o_custkey	SUM(l.l_quantity)
+100	50
+200	75
+300	75
+
+
+=== Test 22: ORDER BY group column DESC ===
+== Query ==
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+ORDER BY o.o_custkey DESC;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+ORDER BY o.o_custkey DESC|
+o_custkey	SUM(l.l_quantity)
+100	50
+200	75
+300	75
+
+
+=== Test 23: ORDER BY with LIMIT ===
+== Query ==
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+ORDER BY o.o_custkey DESC
+LIMIT 2;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+ORDER BY o.o_custkey DESC
+LIMIT 2|
+o_custkey	SUM(l.l_quantity)
+200	75
+300	75
+
+
+=== Test 24: LIMIT without ORDER BY ===
+== Query ==
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+LIMIT 2;
+
+Number of output lines, including header: 3
+
+== Diff ==
+--- mysql.out
++++ ronsql.out
+@@ -1,3 +1,3 @@
+ o_custkey	SUM(l.l_quantity)
+ 100	50
+-200	75
++300	75
+==========
+
+
+
+== Expected result ==
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+LIMIT 2|
+o_custkey	SUM(l.l_quantity)
+100	50
+200	75
+
+
+=== Test 25: 3-table join with ORDER BY and LIMIT ===
+== Query ==
+SELECT c.c_name, SUM(l.l_quantity)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY c.c_name
+ORDER BY c.c_name
+LIMIT 2;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_name, SUM(l.l_quantity)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY c.c_name
+ORDER BY c.c_name
+LIMIT 2|
+c_name	SUM(l.l_quantity)
+Alice	50
+Bob	75
+
+
+=== Test 26: Error — cross-table comparison ===
 Expected error: WHERE condition references columns from multiple tables
 Error handling: RPE
 ronsql_cli caught exception: WHERE condition references columns from multiple tables in a single comparison or OR branch. Split into separate AND conditions, each referencing only one table.
