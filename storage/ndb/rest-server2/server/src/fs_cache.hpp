@@ -43,6 +43,9 @@
 
 #define NUM_FS_CACHES 1
 
+class FSMetadataCache;
+extern FSMetadataCache *g_fs_metadata_cache;
+
 void start_fs_cache();
 void stop_fs_cache();
 void fs_cache_dec_ref_count(char*);
@@ -100,9 +103,6 @@ class FSMetadataCache {
     NdbCondition_Destroy(m_sleepCond);
   }
 
-  /*
-  Checking whether the API key can access the given databases
-  */
   metadata::FeatureViewMetadata*
     get_fs_metadata(const std::string&, FSCacheEntry**);
   void update_cache(metadata::FeatureViewMetadata*,
@@ -110,9 +110,17 @@ class FSMetadataCache {
                     std::shared_ptr<RestErrorCode>);
   void cache_entry_updater(Uint32);
   void start_fs_cache_thread();
+
+  void preload_all_feature_views();
+  void start_event_watcher();
+  void event_watcher_job();
+  // Force the event watcher to tear down and reconnect (for testing)
+  void force_reconnect() { m_force_reconnect = true; }
+
  private:
   std::unordered_map<std::string, FSCacheEntry*> m_fs_cache[NUM_FS_CACHES];
-  bool m_evicted;
+  std::atomic<bool> m_stopped{false};
+  std::atomic<bool> m_force_reconnect{false};
   NdbMutex *m_rwLock[NUM_FS_CACHES];
   NdbMutex *m_queueLock[NUM_FS_CACHES];
   NdbMutex *m_sleepLock;
@@ -120,6 +128,8 @@ class FSMetadataCache {
   FSCacheEntry* m_first_cache_entry[NUM_FS_CACHES];
   FSCacheEntry* m_last_cache_entry[NUM_FS_CACHES];
   NdbThread* m_cache_threads[NUM_FS_CACHES];
+  NdbThread* m_event_watcher_thread;
+  std::string m_event_name;
   bool m_is_thread_running;
 
   void cleanup();
@@ -127,5 +137,10 @@ class FSMetadataCache {
                                            const Uint32 key_cache_id);
   void insert_last(FSCacheEntry*, Uint32);
   void remove_entry(FSCacheEntry*, Uint32);
+
+  void load_single_feature_view(const std::string &fsName,
+                                const std::string &fvName,
+                                int fvVersion);
+  void evict_entry(const std::string &cacheKey);
 };
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_FS_CACHE_HPP_
