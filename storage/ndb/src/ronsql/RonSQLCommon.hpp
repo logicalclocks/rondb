@@ -151,6 +151,11 @@ struct ConditionalExpression
     } extract;
     LexString string;
     MYSQL_TIME mysql_time;
+    struct
+    {
+      Uint32 agg_index;   // register in m_regs_a (SUM, COUNT, MIN, MAX, or AVG sum)
+      Uint32 agg_index2;  // only for AVG: the count register
+    } having_agg;
   };
 };
 
@@ -199,6 +204,7 @@ struct SelectStatement
   JoinClause *joins = NULL;
   struct ConditionalExpression* where_expression = NULL;
   struct GroupbyColumns* groupby_columns = NULL;
+  struct ConditionalExpression* having_expression = NULL;
   struct OrderbyColumns* orderby_columns = NULL;
   Int64 limit = -1; // -1 means no limit
 };

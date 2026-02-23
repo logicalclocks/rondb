@@ -384,16 +384,18 @@ RonSQLPreparer::parse()
       }
       outputs = outputs->next;
     }
+    bool has_having_aggregates = (m_agg != NULL &&
+                                  m_context.ast_root.having_expression != NULL);
     if (m_agg == NULL)
     {
       ndbrequire(!has_aggregate_outputs);
     }
     else
     {
-      ndbrequire(has_aggregate_outputs);
+      ndbrequire(has_aggregate_outputs || has_having_aggregates);
       ndbrequire(m_agg->getStatus() == AggregationAPICompiler::Status::PROGRAMMING);
     }
-    if (!has_aggregate_outputs)
+    if (!has_aggregate_outputs && !has_having_aggregates)
     {
       ndbrequire(m_conf.err_stream != NULL);
       std::basic_ostream<char>& err = *m_conf.err_stream;

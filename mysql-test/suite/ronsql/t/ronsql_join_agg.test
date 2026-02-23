@@ -445,11 +445,163 @@ GROUP BY c.c_name
 ORDER BY c.c_name
 LIMIT 2|
 
+--echo
+--echo
+--echo === Test 27: HAVING with SUM ===
+
+let $QUERY=
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING SUM(l.l_quantity) > 50;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING SUM(l.l_quantity) > 50|
+
+--echo
+--echo
+--echo === Test 28: HAVING with COUNT(*) ===
+
+let $QUERY=
+SELECT o.o_custkey, COUNT(*)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING COUNT(*) >= 4;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_custkey, COUNT(*)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING COUNT(*) >= 4|
+
+--echo
+--echo
+--echo === Test 29: HAVING filters all groups (empty result) ===
+
+let $QUERY=
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING SUM(l.l_quantity) > 9999;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING SUM(l.l_quantity) > 9999|
+
+--echo
+--echo
+--echo === Test 30: HAVING with AND ===
+
+let $QUERY=
+SELECT o.o_custkey, SUM(l.l_quantity), COUNT(*)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING SUM(l.l_quantity) >= 75 AND COUNT(*) >= 4;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_custkey, SUM(l.l_quantity), COUNT(*)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING SUM(l.l_quantity) >= 75 AND COUNT(*) >= 4|
+
+--echo
+--echo
+--echo === Test 31: 3-table join with HAVING ===
+
+let $QUERY=
+SELECT c.c_name, SUM(l.l_quantity)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY c.c_name
+HAVING SUM(l.l_quantity) >= 75;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_name, SUM(l.l_quantity)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY c.c_name
+HAVING SUM(l.l_quantity) >= 75|
+
+--echo
+--echo
+--echo === Test 32: HAVING + ORDER BY + LIMIT ===
+
+let $QUERY=
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING SUM(l.l_quantity) >= 50
+ORDER BY o.o_custkey DESC
+LIMIT 2;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING SUM(l.l_quantity) >= 50
+ORDER BY o.o_custkey DESC
+LIMIT 2|
+
+--echo
+--echo
+--echo === Test 33: HAVING aggregate not in SELECT ===
+
+let $QUERY=
+SELECT o.o_custkey
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING SUM(l.l_quantity) > 50;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_custkey
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING SUM(l.l_quantity) > 50|
+
+--echo
+--echo
+--echo === Test 34: HAVING COUNT(*) not in SELECT ===
+
+let $QUERY=
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING COUNT(*) >= 4;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING COUNT(*) >= 4|
+
 DELIMITER ;|
 
 --echo
 --echo
---echo === Test 26: Error — cross-table comparison ===
+--echo === Test 35: Error — cross-table comparison ===
 --echo Expected error: WHERE condition references columns from multiple tables
 --error 1
 --exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT o.o_custkey, SUM(l.l_quantity) FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id WHERE l.l_quantity > o.o_custkey GROUP BY o.o_custkey;' 2>&1

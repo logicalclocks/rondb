@@ -506,7 +506,208 @@ Alice	50
 Bob	75
 
 
-=== Test 26: Error — cross-table comparison ===
+=== Test 27: HAVING with SUM ===
+== Query ==
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING SUM(l.l_quantity) > 50;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING SUM(l.l_quantity) > 50|
+o_custkey	SUM(l.l_quantity)
+200	75
+300	75
+
+
+=== Test 28: HAVING with COUNT(*) ===
+== Query ==
+SELECT o.o_custkey, COUNT(*)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING COUNT(*) >= 4;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.o_custkey, COUNT(*)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING COUNT(*) >= 4|
+o_custkey	COUNT(*)
+100	4
+200	4
+
+
+=== Test 29: HAVING filters all groups (empty result) ===
+== Query ==
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING SUM(l.l_quantity) > 9999;
+
+Number of output lines, including header: 0
+
+== Diff ==
+--- mysql.out
++++ ronsql.out
+@@ -0,0 +1 @@
++o_custkey	SUM(l.l_quantity)
+==========
+
+
+
+== Expected result ==
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING SUM(l.l_quantity) > 9999|
+o_custkey	SUM(l.l_quantity)
+
+
+=== Test 30: HAVING with AND ===
+== Query ==
+SELECT o.o_custkey, SUM(l.l_quantity), COUNT(*)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING SUM(l.l_quantity) >= 75 AND COUNT(*) >= 4;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.o_custkey, SUM(l.l_quantity), COUNT(*)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING SUM(l.l_quantity) >= 75 AND COUNT(*) >= 4|
+o_custkey	SUM(l.l_quantity)	COUNT(*)
+200	75	4
+
+
+=== Test 31: 3-table join with HAVING ===
+== Query ==
+SELECT c.c_name, SUM(l.l_quantity)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY c.c_name
+HAVING SUM(l.l_quantity) >= 75;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_name, SUM(l.l_quantity)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY c.c_name
+HAVING SUM(l.l_quantity) >= 75|
+c_name	SUM(l.l_quantity)
+Bob	75
+Charlie	75
+
+
+=== Test 32: HAVING + ORDER BY + LIMIT ===
+== Query ==
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING SUM(l.l_quantity) >= 50
+ORDER BY o.o_custkey DESC
+LIMIT 2;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING SUM(l.l_quantity) >= 50
+ORDER BY o.o_custkey DESC
+LIMIT 2|
+o_custkey	SUM(l.l_quantity)
+200	75
+300	75
+
+
+=== Test 33: HAVING aggregate not in SELECT ===
+== Query ==
+SELECT o.o_custkey
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING SUM(l.l_quantity) > 50;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.o_custkey
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING SUM(l.l_quantity) > 50|
+o_custkey
+200
+300
+
+
+=== Test 34: HAVING COUNT(*) not in SELECT ===
+== Query ==
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING COUNT(*) >= 4;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING COUNT(*) >= 4|
+o_custkey	SUM(l.l_quantity)
+100	50
+200	75
+
+
+=== Test 35: Error — cross-table comparison ===
 Expected error: WHERE condition references columns from multiple tables
 Error handling: RPE
 ronsql_cli caught exception: WHERE condition references columns from multiple tables in a single comparison or OR branch. Split into separate AND conditions, each referencing only one table.

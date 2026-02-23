@@ -50,6 +50,7 @@ static const struct { const char* text; const TokenKind value; } keywords_implem
   kwdef(EXTRACT),
   kwdef(FROM),
   kwdef(GROUP),
+  kwdef(HAVING),
   kwdef(HOUR),
   kwdef(HOUR_MICROSECOND),
   kwdef(HOUR_MINUTE),

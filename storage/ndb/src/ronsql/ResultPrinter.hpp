@@ -141,6 +141,10 @@ private:
   void print_result_ordered(NdbAggregator* aggregator,
                             std::basic_ostream<char>* out_stream);
   void print_float_or_double(std::ostream& out, double value);
+  bool evaluate_having(const ConditionalExpression* expr);
+  double evaluate_having_value(const ConditionalExpression* expr);
+  void scan_having_max_agg(const ConditionalExpression* expr,
+                           Uint32& max_idx);
 public:
   ResultPrinter(ArenaMalloc* amalloc,
                 struct SelectStatement* query,

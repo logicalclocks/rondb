@@ -152,7 +152,7 @@ extern void rsqlp_error(RSQLP_LTYPE* yylloc, yyscan_t yyscanner, const char* s);
 %token<bival> T_INT
 %token<fpval> T_FLOAT
 %token T_COUNT T_MAX T_MIN T_SUM T_AVG T_LEFT T_RIGHT
-%token T_EXPLAIN T_SELECT T_FROM T_JOIN T_ON T_GROUP T_BY T_ORDER T_ASC T_DESC T_AS T_WHERE T_LIMIT
+%token T_EXPLAIN T_SELECT T_FROM T_JOIN T_ON T_GROUP T_BY T_HAVING T_ORDER T_ASC T_DESC T_AS T_WHERE T_LIMIT
 %token T_SEMICOLON
 %token T_OR T_XOR T_AND T_NOT T_EQUALS T_GE T_GT T_LE T_LT T_NOT_EQUALS T_IS T_NULL T_BITWISE_OR T_BITWISE_AND T_BITSHIFT_LEFT T_BITSHIFT_RIGHT T_PLUS T_MINUS T_MULTIPLY T_SLASH T_DIV T_MODULO T_BITWISE_XOR T_EXCLAMATION T_DOT
 %token T_INTERVAL T_DATE_ADD T_DATE_SUB T_EXTRACT T_MICROSECOND T_SECOND T_MINUTE T_HOUR T_DAY T_WEEK T_MONTH T_QUARTER T_YEAR T_SECOND_MICROSECOND T_MINUTE_MICROSECOND T_MINUTE_SECOND T_HOUR_MICROSECOND T_HOUR_SECOND T_HOUR_MINUTE T_DAY_MICROSECOND T_DAY_SECOND T_DAY_MINUTE T_DAY_HOUR T_YEAR_MONTH
@@ -213,7 +213,7 @@ extern void rsqlp_error(RSQLP_LTYPE* yylloc, yyscan_t yyscanner, const char* s);
 %type<outputs_linked_list> outputlist
 %type<tokenkindval> aggfun interval_type
 %type<arith_expr> arith_expr
-%type<conditional_expression> where_opt cond_expr
+%type<conditional_expression> where_opt cond_expr having_opt
 %type<bival> limit_opt
 %type<table_ref> table_ref
 %type<join_clause> join_clause
@@ -225,7 +225,7 @@ extern void rsqlp_error(RSQLP_LTYPE* yylloc, yyscan_t yyscanner, const char* s);
 %%
 
 selectstatement:
-  explain_opt T_SELECT outputlist T_FROM table_ref join_list where_opt groupby_opt orderby_opt limit_opt T_SEMICOLON
+  explain_opt T_SELECT outputlist T_FROM table_ref join_list where_opt groupby_opt having_opt orderby_opt limit_opt T_SEMICOLON
   {
     context->ast_root.do_explain = $1;
     context->ast_root.outputs = $3.head;
@@ -236,8 +236,9 @@ selectstatement:
     }
     context->ast_root.where_expression = $7;
     context->ast_root.groupby_columns = $8;
-    context->ast_root.orderby_columns = $9;
-    context->ast_root.limit = $10;
+    context->ast_root.having_expression = $9;
+    context->ast_root.orderby_columns = $10;
+    context->ast_root.limit = $11;
     /*
      * These asserts make sure the definition of TokenKind matches both the
      * yychar variable in RonSQLzparser.y.cpp:rsqlp_parse() and the underlying
@@ -458,6 +459,32 @@ cond_expr:
 | T_DATE_ADD T_LEFT cond_expr T_COMMA cond_expr T_RIGHT     { init_cond($$, $3, T_DATE_ADD, $5); }
 | T_DATE_SUB T_LEFT cond_expr T_COMMA cond_expr T_RIGHT     { init_cond($$, $3, T_DATE_SUB, $5); }
 | T_EXTRACT T_LEFT interval_type T_FROM cond_expr T_RIGHT   { initptr($$); $$->op = T_EXTRACT; $$->extract.interval_type = $3; $$->extract.arg = $5; }
+| aggfun T_LEFT arith_expr T_RIGHT    {
+                                          initptr($$);
+                                          $$->op = $1;
+                                          switch($1) {
+                                            case T_SUM: $$->having_agg.agg_index = context->get_agg()->Sum($3); break;
+                                            case T_MIN: $$->having_agg.agg_index = context->get_agg()->Min($3); break;
+                                            case T_MAX: $$->having_agg.agg_index = context->get_agg()->Max($3); break;
+                                            default: abort();
+                                          }
+                                        }
+| T_COUNT T_LEFT arith_expr T_RIGHT   {
+                                          initptr($$);
+                                          $$->op = T_COUNT;
+                                          $$->having_agg.agg_index = context->get_agg()->Count($3);
+                                        }
+| T_COUNT T_LEFT T_MULTIPLY T_RIGHT   {
+                                          initptr($$);
+                                          $$->op = T_COUNT;
+                                          $$->having_agg.agg_index = context->get_agg()->Count(context->get_agg()->ConstantInteger(1));
+                                        }
+| T_AVG T_LEFT arith_expr T_RIGHT     {
+                                          initptr($$);
+                                          $$->op = T_AVG;
+                                          $$->having_agg.agg_index = context->get_agg()->Sum($3);
+                                          $$->having_agg.agg_index2 = context->get_agg()->Count($3);
+                                        }
 
 interval_type:
   T_MICROSECOND                         { $$ = T_MICROSECOND; }
@@ -480,6 +507,10 @@ interval_type:
 | T_DAY_MINUTE                          { $$ = T_DAY_MINUTE; }
 | T_DAY_HOUR                            { $$ = T_DAY_HOUR; }
 | T_YEAR_MONTH                          { $$ = T_YEAR_MONTH; }
+
+having_opt:
+  %empty                                { $$ = NULL; }
+| T_HAVING cond_expr                    { $$ = $2; }
 
 groupby_opt:
   %empty                                { $$ = NULL; }
