@@ -33,7 +33,6 @@ import (
 
 	"hopsworks.ai/rdrs2/internal/config"
 	"hopsworks.ai/rdrs2/internal/log"
-	"hopsworks.ai/rdrs2/internal/testutils"
 )
 
 func TestMain(m *testing.M) {
@@ -49,10 +48,6 @@ func TestMain(m *testing.M) {
 
 	conf := config.GetAll()
 	log.InitLogger(conf.Log)
-
-	if !*testutils.WithRonDB {
-		return
-	}
 
 	// TPC-H tables are assumed to be already loaded by load_tpch.
 	// When running via MTR, the .test file runs load_tpch before
