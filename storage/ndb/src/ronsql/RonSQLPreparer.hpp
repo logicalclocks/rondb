@@ -144,6 +144,7 @@ private:
   const NdbDictionary::Dictionary* m_dict = NULL;
   const NdbDictionary::Table* m_table = NULL;
   JoinPlan m_join_plan;
+  ConditionalExpression* m_join_where_ce[MAX_JOIN_TABLES];
   DynamicArray<const NdbDictionary::Index*> m_indexes;
   NdbTransaction* m_trans = NULL;
   yyscan_t m_scanner;
@@ -182,6 +183,7 @@ private:
   void load();
   void load_single_table();
   void load_join();
+  void classify_where_by_table();
   void plan_index_and_filter();
   void collect_toplevel_conditions(ConditionalExpression* ce);
   void generate_scan_config_candidates();

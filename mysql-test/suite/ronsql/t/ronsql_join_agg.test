@@ -204,16 +204,23 @@ SELECT o.o_custkey, SUM(o.o_custkey), SUM(l.l_quantity)
 FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
 GROUP BY o.o_custkey|
 
-DELIMITER ;|
-
 --echo
 --echo
---echo === Test 10: Error — WHERE on child table ===
---echo Expected error: WHERE conditions on joined tables are not yet supported.
---error 1
---exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT o.o_custkey, SUM(l.l_quantity) FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id WHERE l.l_quantity > 10 GROUP BY o.o_custkey;' 2>&1
+--echo === Test 10: WHERE filter on leaf table ===
 
-DELIMITER |;
+let $QUERY=
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+WHERE l.l_quantity > 10
+GROUP BY o.o_custkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+WHERE l.l_quantity > 10
+GROUP BY o.o_custkey|
 
 --echo
 --echo
@@ -299,7 +306,54 @@ SELECT o.o_custkey, SUM(l.l_quantity * l.l_price)
 FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
 GROUP BY o.o_custkey|
 
+--echo
+--echo
+--echo === Test 18: WHERE filter on root + leaf tables ===
+
+let $QUERY=
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+WHERE o.o_custkey = 100 AND l.l_price > 100
+GROUP BY o.o_custkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+WHERE o.o_custkey = 100 AND l.l_price > 100
+GROUP BY o.o_custkey|
+
+--echo
+--echo
+--echo === Test 19: WHERE filter on middle table (3-table join) ===
+
+let $QUERY=
+SELECT c.c_region, SUM(l.l_quantity)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+WHERE o.o_id >= 3
+GROUP BY c.c_region;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_region, SUM(l.l_quantity)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+WHERE o.o_id >= 3
+GROUP BY c.c_region|
+
 DELIMITER ;|
+
+--echo
+--echo
+--echo === Test 20: Error — cross-table comparison ===
+--echo Expected error: WHERE condition references columns from multiple tables
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT o.o_custkey, SUM(l.l_quantity) FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id WHERE l.l_quantity > o.o_custkey GROUP BY o.o_custkey;' 2>&1
 
 --echo
 --echo === Cleanup ===

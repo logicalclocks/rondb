@@ -182,21 +182,22 @@ require_tmp(bool condition, const char* msg)
   throw RonSQLRetryableError(msg);
 }
 
-static void
-validate_where_join(struct ConditionalExpression* ce, Uint32* col_table_idx)
+/*
+ * Walk a ConditionalExpression subtree and determine which table its
+ * columns reference.  Returns:
+ *   >= 0 : all columns belong to that table index
+ *     -1 : no column references (constant-only subtree)
+ *     -2 : columns span multiple tables (cross-table condition)
+ */
+static Int32
+classify_ce_table(struct ConditionalExpression* ce, Uint32* col_table_idx)
 {
   if (ce == NULL)
-    return;
+    return -1;
   switch (ce->op)
   {
   case T_IDENTIFIER:
-    if (col_table_idx[ce->col_idx] != 0)
-    {
-      throw RonSQLPermanentError(
-          "WHERE conditions on joined tables are not yet supported. "
-          "Only the root table (first in FROM) may be filtered.");
-    }
-    break;
+    return (Int32)col_table_idx[ce->col_idx];
   case T_OR:
   case T_AND:
   case T_EQUALS:
@@ -205,16 +206,66 @@ validate_where_join(struct ConditionalExpression* ce, Uint32* col_table_idx)
   case T_GT:
   case T_LE:
   case T_LT:
-    validate_where_join(ce->args.left, col_table_idx);
-    validate_where_join(ce->args.right, col_table_idx);
-    break;
+  case T_PLUS:
+  case T_MINUS:
+  case T_MULTIPLY:
+  case T_SLASH:
+  case T_DIV:
+  case T_MODULO:
+  case T_BITWISE_OR:
+  case T_BITWISE_AND:
+  case T_BITSHIFT_LEFT:
+  case T_BITSHIFT_RIGHT:
+  case T_BITWISE_XOR:
+  case T_DATE_ADD:
+  case T_DATE_SUB:
+  {
+    Int32 left_t = classify_ce_table(ce->args.left, col_table_idx);
+    Int32 right_t = classify_ce_table(ce->args.right, col_table_idx);
+    if (left_t == -1) return right_t;
+    if (right_t == -1) return left_t;
+    if (left_t == right_t) return left_t;
+    return -2;  // cross-table
+  }
   case T_NOT:
-    validate_where_join(ce->args.left, col_table_idx);
-    break;
+  case T_EXCLAMATION:
+    return classify_ce_table(ce->args.left, col_table_idx);
+  case T_IS:
+    return classify_ce_table(ce->is.arg, col_table_idx);
+  case T_INTERVAL:
+    return classify_ce_table(ce->interval.arg, col_table_idx);
+  case T_EXTRACT:
+    return classify_ce_table(ce->extract.arg, col_table_idx);
   default:
     // Constants, strings, etc. — no column reference
-    break;
+    return -1;
   }
+}
+
+static const Uint32 MAX_WHERE_CONJUNCTS = 64;
+
+/*
+ * Flatten nested AND nodes into an array of conjuncts.
+ */
+static void
+flatten_and_conjuncts(struct ConditionalExpression* ce,
+                      ConditionalExpression** conjuncts,
+                      Uint32* count)
+{
+  if (ce == NULL) return;
+  if (ce->op == T_AND)
+  {
+    flatten_and_conjuncts(ce->args.left, conjuncts, count);
+    flatten_and_conjuncts(ce->args.right, conjuncts, count);
+    return;
+  }
+  if (*count >= MAX_WHERE_CONJUNCTS)
+  {
+    throw RonSQLPermanentError(
+        "WHERE clause has too many top-level AND conditions.");
+  }
+  conjuncts[*count] = ce;
+  (*count)++;
 }
 
 void
@@ -794,11 +845,8 @@ RonSQLPreparer::load_join()
   m_column_map = col_map;
   m_column_table_idx = col_table_idx;
 
-  // Validate WHERE columns are all on root table (table index 0)
-  if (m_context.ast_root.where_expression != NULL)
-  {
-    validate_where_join(m_context.ast_root.where_expression, col_table_idx);
-  }
+  // Classify WHERE conditions by table for per-table filter pushdown
+  classify_where_by_table();
 
   // Build linked projections for GROUP BY columns on non-leaf tables
   Uint32 leaf_idx = m_join_plan.agg_leaf_idx;
@@ -817,6 +865,55 @@ RonSQLPreparer::load_join()
       m_join_plan.num_linked_projs++;
     }
     groupby = groupby->next;
+  }
+}
+
+void
+RonSQLPreparer::classify_where_by_table()
+{
+  for (Uint32 t = 0; t < MAX_JOIN_TABLES; t++)
+    m_join_where_ce[t] = NULL;
+
+  ConditionalExpression* where_ce = m_context.ast_root.where_expression;
+  if (where_ce == NULL) return;
+
+  // Flatten top-level AND conjuncts
+  ConditionalExpression* conjuncts[MAX_WHERE_CONJUNCTS];
+  Uint32 num_conjuncts = 0;
+  flatten_and_conjuncts(where_ce, conjuncts, &num_conjuncts);
+
+  // Classify each conjunct by table
+  for (Uint32 i = 0; i < num_conjuncts; i++)
+  {
+    Int32 table_idx = classify_ce_table(conjuncts[i], m_column_table_idx);
+
+    if (table_idx == -2)
+    {
+      throw RonSQLPermanentError(
+          "WHERE condition references columns from multiple tables in a "
+          "single comparison or OR branch. Split into separate AND "
+          "conditions, each referencing only one table.");
+    }
+
+    // Constant-only conditions: assign to root table
+    if (table_idx == -1)
+      table_idx = 0;
+
+    // Accumulate conditions for this table
+    if (m_join_where_ce[table_idx] == NULL)
+    {
+      m_join_where_ce[table_idx] = conjuncts[i];
+    }
+    else
+    {
+      // Build AND(existing, new_conjunct)
+      ConditionalExpression* combined =
+          m_amalloc->alloc_exc<ConditionalExpression>(1);
+      combined->op = T_AND;
+      combined->args.left = m_join_where_ce[table_idx];
+      combined->args.right = conjuncts[i];
+      m_join_where_ce[table_idx] = combined;
+    }
   }
 }
 
@@ -1330,9 +1427,9 @@ RonSQLPreparer::execute_join()
     int nkeys = 0;
     ConditionalExpression* pk_const[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY];
 
-    if (m_context.ast_root.where_expression != NULL)
+    if (m_join_where_ce[0] != NULL)
     {
-      where_ce = simplify_ce(m_context.ast_root.where_expression, -1);
+      where_ce = simplify_ce(m_join_where_ce[0], -1);
 
       // Check if WHERE fully covers the root PK with equality constants
       nkeys = root_table->getNoOfPrimaryKeys();
@@ -1446,6 +1543,20 @@ RonSQLPreparer::execute_join()
       require_run(keys[k] != NULL, "Failed to create linked value.");
     }
     keys[op.num_key_cols] = nullptr;
+
+    // Attach WHERE filter for this child table (if any)
+    NdbInterpretedCode child_code(op.table);
+    if (m_join_where_ce[i] != NULL)
+    {
+      ConditionalExpression* child_ce = simplify_ce(m_join_where_ce[i], -1);
+      NdbScanFilter filter(&child_code);
+      filter.setSqlCmpSemantics();
+      filter.begin(NdbScanFilter::AND);
+      apply_filter(&filter, child_ce);
+      filter.end();
+      child_code.finalise();
+      opts.setInterpretedCode(child_code);
+    }
 
     // Attach aggregation to leaf
     if (i == plan.agg_leaf_idx) {
