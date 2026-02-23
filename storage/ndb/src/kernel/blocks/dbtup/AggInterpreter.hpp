@@ -49,7 +49,9 @@ class AggInterpreter {
   AggInterpreter(const Uint32* prog, Uint32 prog_len, Int64 frag_id):
 #endif // PA_MALLOC
     prog_len_(prog_len), cur_pos_(0),
-    inited_(false), n_gb_cols_(0), gb_cols_(nullptr),
+    inited_(false),
+    n_gb_cols_(0), gb_cols_(nullptr),
+    gb_cmp_inited_(false),
     n_agg_results_(0),
     agg_results_(nullptr), agg_prog_start_pos_(0),
     gb_map_(nullptr), n_groups_(0),
@@ -138,6 +140,8 @@ class AggInterpreter {
 
   Uint32 n_gb_cols_;
   Uint32* gb_cols_;
+  GBCmpContext gb_cmp_ctx_;
+  bool gb_cmp_inited_;
   Uint32 n_agg_results_;
   AggResItem* agg_results_;
   Uint32 agg_prog_start_pos_;

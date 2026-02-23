@@ -1,0 +1,19 @@
+[TEST] Test  1: Charset-Aware GROUP BY (table scan): PASS
+[TEST] Test  2: Multi-Column GROUP BY (table scan): PASS
+[TEST] Test  3: Numeric-Only GROUP BY (table scan): PASS
+[TEST] Test  4: Aggregation Without GROUP BY: PASS
+[TEST] Test  5: Aggregation With Filter (table scan): PASS
+[TEST] Test  6: Arithmetic Expressions (table scan): PASS
+[TEST] Test  7: DECIMAL Aggregation (table scan): PASS
+[TEST] Test  8: NULL Handling in COUNT (table scan): PASS
+[TEST] Test  9: Charset-Aware GROUP BY (index scan): PASS
+[TEST] Test 10: Index Scan + Filter + Arithmetic: PASS
+[TEST] Test 11: Large Dataset API-Side Merge: PASS
+[TEST] Test 12: Bug E — Modulo signed % unsigned: PASS
+[TEST] Test 13: Bug B — unsigned - unsigned underflow: PASS
+[TEST] Test 14: Bug C — signed - signed overflow: PASS
+[TEST] Test 15: Bug D — INT_MIN64 * n overflow: PASS
+[TEST] Test 16: Multi-Column Numeric GROUP BY: PASS
+[TEST] Test 17: Nullable Numeric GROUP BY: PASS
+[TEST] Test 18: Reject Blob/Text GROUP BY: PASS
+DROP DATABASE IF EXISTS agg_test;
