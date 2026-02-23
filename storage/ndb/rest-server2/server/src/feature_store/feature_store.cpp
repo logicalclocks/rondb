@@ -1383,6 +1383,125 @@ RS_Status find_feature_group_schema(const char *subject_name,
 
 //-------------------------------------------------------------------------------------------------
 
+RS_Status find_all_feature_views_int(Ndb *ndb_object,
+                                     Feature_View_Entry **entries,
+                                     int *count) {
+  NdbError err;
+  const NdbDictionary::Table *table_dict;
+  NdbTransaction *tx;
+  NdbScanOperation *scanOp;
+
+  RS_Status status = select_table(ndb_object,
+                                  HOPSWORKS,
+                                  FEATURE_VIEW,
+                                  &table_dict);
+  if (unlikely(status.http_code != SUCCESS)) {
+    return status;
+  }
+  status = start_transaction(ndb_object, &tx);
+  if (unlikely(status.http_code != SUCCESS)) {
+    return status;
+  }
+  scanOp = tx->getNdbScanOperation(table_dict);
+  if (unlikely(scanOp == nullptr)) {
+    err = tx->getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(err,
+      std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
+  }
+  if (unlikely(scanOp->readTuples(NdbOperation::LM_CommittedRead) != 0)) {
+    err = scanOp->getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(err,
+      std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
+  }
+
+  NdbRecAttr *id_attr = scanOp->getValue("id");
+  NdbRecAttr *name_attr = scanOp->getValue("name");
+  NdbRecAttr *fs_id_attr = scanOp->getValue("feature_store_id");
+  NdbRecAttr *version_attr = scanOp->getValue("version");
+
+  if (unlikely(id_attr == nullptr ||
+               name_attr == nullptr ||
+               fs_id_attr == nullptr ||
+               version_attr == nullptr)) {
+    err = scanOp->getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(err,
+      std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
+  }
+  if (unlikely(tx->execute(NdbTransaction::NoCommit) != 0)) {
+    err = tx->getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(err,
+      std::string(rdrsErrorMessage(ERROR_TRANSACTION_EXEC_FAILED)));
+  }
+  bool check;
+  std::vector<Feature_View_Entry> fvs;
+  while ((check = scanOp->nextResult(true)) == 0) {
+    do {
+      Feature_View_Entry fv;
+      fv.id = id_attr->int32_value();
+      fv.feature_store_id = fs_id_attr->int32_value();
+      fv.version = version_attr->int32_value();
+
+      Uint32 name_bytes;
+      const char *name_start = nullptr;
+      if (unlikely(GetByteArray(
+                     name_attr, &name_start, &name_bytes) != 0)) {
+        ndb_object->closeTransaction(tx);
+        return RS_CLIENT_ERROR(
+          std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
+      }
+      Uint32 copy_len = name_bytes < (Uint32)(FEATURE_VIEW_NAME_SIZE - 1)
+                          ? name_bytes : (Uint32)(FEATURE_VIEW_NAME_SIZE - 1);
+      memcpy(fv.name, name_start, copy_len);
+      fv.name[copy_len] = '\0';
+
+      fvs.push_back(fv);
+    } while ((check = scanOp->nextResult(false)) == 0);
+  }
+  NdbError error = scanOp->getNdbError();
+  ndb_object->closeTransaction(tx);
+  if (unlikely(error.code != 4120 /*Scan already complete*/)) {
+    return RS_RONDB_SERVER_ERROR(
+      error, "Failed Reading Feature Views. Fn find_all_feature_views_int");
+  }
+  *count = (int)fvs.size();
+  if (fvs.size() == 0) {
+    *entries = nullptr;
+    return RS_OK;
+  }
+  *entries = (Feature_View_Entry *)malloc(
+    fvs.size() * sizeof(Feature_View_Entry));
+  if (unlikely(*entries == nullptr)) {
+    return RS_CLIENT_ERROR(
+      std::string("Out of memory allocating feature view entries"));
+  }
+  for (size_t i = 0; i < fvs.size(); i++) {
+    (*entries)[i] = fvs[i];
+  }
+  return RS_OK;
+}
+
+RS_Status find_all_feature_views(Feature_View_Entry **entries, int *count) {
+  Ndb *ndb_object = nullptr;
+  RS_Status status = rdrsRonDBConnectionPool->GetMetadataNdbObject(&ndb_object);
+  if (unlikely(status.http_code != SUCCESS)) {
+    return status;
+  }
+  METADATA_OP_RETRY_HANDLER(
+    status = find_all_feature_views_int(ndb_object, entries, count);
+    HandleSchemaErrors(ndb_object,
+                       status,
+                       {std::make_tuple(HOPSWORKS, FEATURE_VIEW)});
+  )
+  rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb_object, &status);
+  return status;
+}
+
+//-------------------------------------------------------------------------------------------------
+
 RS_Status find_on_demand_feature_group_int(Ndb *ndb_object, int id, OnDemandFeatureGroup *odfg) {
 
   NdbError ndb_error;

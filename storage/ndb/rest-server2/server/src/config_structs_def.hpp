@@ -336,21 +336,13 @@ CLASS
 (APIKey,
  CM(bool, useHopsworksAPIKeys, UseHopsworksAPIKeys, true,
     "Whether to allow authentication via Hopsworks API keys")
- CM(Uint32, cacheRefreshIntervalMS, CacheRefreshIntervalMS, 10000, "")
- CM(Uint32, cacheUnusedEntriesEvictionMS, CacheUnusedEntriesEvictionMS, 60000,
-    "")
- CM(Uint32, cacheRefreshIntervalJitterMS, CacheRefreshIntervalJitterMS, 1000,
-    "")
+ CM(Uint32, cacheRefreshIntervalMS, CacheRefreshIntervalMS, 180000, "")
+ CM(Uint32, preloadThreads, PreloadThreads, 3,
+    "Number of threads for parallel API key preloading at startup")
  PROBLEM(cacheRefreshIntervalMS <= 0,
          "cache refresh interval must be greater than 0")
- PROBLEM(cacheUnusedEntriesEvictionMS <= 0,
-         "cache unused entries eviction must be greater than 0")
- PROBLEM(cacheRefreshIntervalMS > cacheUnusedEntriesEvictionMS,
-         "cache refresh interval cannot be greater than cache unused"
-         " entries eviction")
- PROBLEM(cacheRefreshIntervalJitterMS >= cacheRefreshIntervalMS,
-         "cache refresh interval must be smaller than cache refresh interval"
-         " jitter")
+ PROBLEM(preloadThreads <= 0,
+         "preload threads must be greater than 0")
 )
 
 CLASS
@@ -374,8 +366,12 @@ CLASS
 (FeatureStoreMetadataCache,
  CM(Uint32, cacheUnusedEntriesEvictionMS, CacheUnusedEntriesEvictionMS, 1800000,
     "") // 30 min
+ CM(Uint32, preloadThreads, PreloadThreads, 3,
+    "Number of threads for parallel feature view preloading at startup")
  PROBLEM(cacheUnusedEntriesEvictionMS <= 0,
          "cache unused entries eviction must be greater than 0")
+ PROBLEM(preloadThreads <= 0,
+         "preload threads must be greater than 0")
 )
 
 CLASS

@@ -19,8 +19,12 @@
 
 #include "api_key.hpp"
 #include "config_structs.hpp"
+#include "ndb_event_utils.hpp"
 #include "pk_data_structs.hpp"
 #include "rdrs_dal.hpp"
+#include "rdrs_rondb_connection_pool.hpp"
+#include "ndb_api_helper.hpp"
+#include "db_operations/pk/common.hpp"
 
 #include <chrono>
 #include <iostream>
@@ -32,6 +36,7 @@
 #include <functional>
 #include <algorithm>
 #include <NdbThread.h>
+#include <NdbApi.hpp>
 #include <util/require.h>
 #include <EventLogger.hpp>
 #include <util/rondb_hash.hpp>
@@ -76,14 +81,16 @@ extern EventLogger *g_eventLogger;
 
 APIKeyCache *apiKeyCache = nullptr;
 
-bool contains_upper(std::string_view s);
+// RonDB connection pool
+extern RDRSRonDBConnectionPool *rdrsRonDBConnectionPool;
 
-std::vector<std::string> split(const std::string &, char);
+bool contains_upper(std::string_view s);
 RS_Status computeHash(const std::string &unhashed, std::string &hashed);
 
 APIKeyCache* start_api_key_cache() {
   apiKeyCache = new APIKeyCache();
   require(apiKeyCache != nullptr);
+  apiKeyCache->set_event_name("RDRS_AK_EVT_" + generate_event_uuid());
   DEB_AUTH("API Key Cache started: %p", apiKeyCache);
   return apiKeyCache;
 }
@@ -97,30 +104,60 @@ void stop_api_key_cache() {
 }
 
 void APIKeyCache::cleanup() {
-  /* Start by waking all threads */
   DEB_AUTH("Cleanup started");
+
+  /* Signal background threads to exit */
   NdbMutex_Lock(m_sleepLock);
   for (int i = 0; i < NUM_API_KEY_CACHES; i++)
-    NdbMutex_Lock(m_rwLock[i]);
-  m_evicted = true;
+    m_rwLock[i].lock();
+  m_stopped = true;
   NdbCondition_Broadcast(m_sleepCond);
   NdbMutex_Unlock(m_sleepLock);
   for (int i = 0; i < NUM_API_KEY_CACHES; i++)
-    NdbMutex_Unlock(m_rwLock[i]);
+    m_rwLock[i].unlock();
 
-  /* Wait for all objects to complete cleanup */
+  /* Wait for background threads to finish */
+  if (m_refresh_thread != nullptr) {
+    void *status;
+    NdbThread_WaitFor(m_refresh_thread, &status);
+    NdbThread_Destroy(&m_refresh_thread);
+    m_refresh_thread = nullptr;
+  }
+  if (m_event_watcher_thread != nullptr) {
+    void *status;
+    NdbThread_WaitFor(m_event_watcher_thread, &status);
+    NdbThread_Destroy(&m_event_watcher_thread);
+    m_event_watcher_thread = nullptr;
+  }
+
+  /* Delete all cache entries - wait for ref_count == 0 */
   for (int i = 0; i < NUM_API_KEY_CACHES; i++) {
-    NdbMutex_Lock(m_rwLock[i]);
-    while (m_key_cache[i].size() > 0) {
+    m_rwLock[i].lock();
+    bool all_clear = false;
+    while (!all_clear) {
+      all_clear = true;
+      for (auto &kv : m_key_cache[i]) {
+        if (kv.second->m_ref_count > 0) {
+          all_clear = false;
+          break;
+        }
+      }
+      if (!all_clear) {
 #ifdef DEBUG_AUTH
-      Uint32 key_cache_size = (Uint32)m_key_cache[i].size();
+        Uint32 key_cache_size = (Uint32)m_key_cache[i].size();
 #endif
-      NdbMutex_Unlock(m_rwLock[i]);
-      DEB_AUTH("m_key_cache[%d].size() = %u", i, key_cache_size);
-      NdbSleep_MilliSleep(CLEANUP_SLEEP_TIME);
-      NdbMutex_Lock(m_rwLock[i]);
+        m_rwLock[i].unlock();
+        DEB_AUTH("m_key_cache[%d].size() = %u, waiting for ref_count",
+                 i, key_cache_size);
+        NdbSleep_MilliSleep(CLEANUP_SLEEP_TIME);
+        m_rwLock[i].lock();
+      }
     }
-    NdbMutex_Unlock(m_rwLock[i]);
+    for (auto &kv : m_key_cache[i]) {
+      delete kv.second;
+    }
+    m_key_cache[i].clear();
+    m_rwLock[i].unlock();
   }
   DEB_AUTH("Cleanup finished");
 }
@@ -142,21 +179,6 @@ RS_Status authenticate(const std::string &apiKey,
   return apiKeyCache->validate_api_key(apiKey, dbs);
 }
 
-RS_Status APIKeyCache::validate_api_key_format(const std::string &apiKey) {
-  if (apiKey.empty()) {
-    return CRS_Status(HTTP_CODE::CLIENT_ERROR, "the apikey is nil").status;
-  }
-  auto splits = split(apiKey, '.');
-  if (splits.size() != 2 ||
-      splits[0].length() != 16 ||
-      splits[1].length() < 1) {
-    DEB_AUTH("Failed incorrect format, Line: %u", __LINE__);
-    return CRS_Status(HTTP_CODE::CLIENT_ERROR,
-                      "the apikey has an incorrect format").status;
-  }
-  return CRS_Status::SUCCESS.status;
-}
-
 RS_Status APIKeyCache::validate_api_key(const std::string &apiKey,
                                         const std::vector<std::string_view> &dbs) {
 #ifdef DEBUG_AUTH
@@ -165,25 +187,36 @@ RS_Status APIKeyCache::validate_api_key(const std::string &apiKey,
     DEB_AUTH("validate db: %s", std::string(db).c_str());
   }
 #endif
-  RS_Status status = validate_api_key_format(apiKey);
-  if (status.http_code != HTTP_CODE::SUCCESS) {
-    return status;
-  }
 
-  // Authenticates only using the the cache. No request sent to backend
-  bool keyFoundInCache = false;
-  bool allowedAccess = false;
+  // Parse once: extract prefix (first 16 chars) and client secret
+  if (apiKey.empty()) {
+    return CRS_Status(HTTP_CODE::CLIENT_ERROR, "the apikey is nil").status;
+  }
+  auto dotPos = apiKey.find('.');
+  if (dotPos != 16 || dotPos + 1 >= apiKey.size()) {
+    DEB_AUTH("Failed incorrect format, Line: %u", __LINE__);
+    return CRS_Status(HTTP_CODE::CLIENT_ERROR,
+                      "the apikey has an incorrect format").status;
+  }
+  std::string prefix = apiKey.substr(0, dotPos);
+  std::string clientSecret = apiKey.substr(dotPos + 1);
+
 #if (NUM_API_KEY_CACHES == 1)
   Uint32 hash = 0;
 #else
-  Uint32 hash = rondb_xxhash_std(apiKey.c_str(), apiKey.size());
+  Uint32 hash = rondb_xxhash_std(prefix.c_str(), prefix.size());
 #endif
-  status = find_and_validate(apiKey,
-                             keyFoundInCache,
-                             allowedAccess,
-                             dbs,
-                             hash,
-                             false);
+
+  // First try: look up by prefix in cache
+  bool keyFoundInCache = false;
+  bool allowedAccess = false;
+  RS_Status status = find_and_validate(prefix,
+                                       clientSecret,
+                                       keyFoundInCache,
+                                       allowedAccess,
+                                       dbs,
+                                       hash,
+                                       false);
 
   if (keyFoundInCache) {
     if (allowedAccess) {
@@ -192,17 +225,20 @@ RS_Status APIKeyCache::validate_api_key(const std::string &apiKey,
       return status;
     }
   }
+
   /**
-   * Update the cache by fetching the API key from backend
-   * Only come here if the API Key wasn't found in cache.
+   * Lazy-load fallback: fetch the API key from backend.
+   * Only reached if the API Key wasn't found in cache
+   * (e.g., created between startup scan and event subscription).
    */
-  status = update_cache(apiKey, hash);
+  status = update_cache(prefix, clientSecret, hash);
   if (status.http_code != HTTP_CODE::SUCCESS) {
     return status;
   }
 
-  // Authenticates only using the the cache. No request sent to backend
-  status = find_and_validate(apiKey,
+  // Second try after lazy load
+  status = find_and_validate(prefix,
+                             clientSecret,
                              keyFoundInCache,
                              allowedAccess,
                              dbs,
@@ -211,26 +247,43 @@ RS_Status APIKeyCache::validate_api_key(const std::string &apiKey,
   return status;
 }
 
-RS_Status APIKeyCache::find_and_validate(const std::string &apiKey,
+RS_Status APIKeyCache::verify_api_key_hash(const std::string &clientSecret,
+                                           const std::string &secret,
+                                           const std::string &salt) {
+  // sha256(clientSecret + stored_salt) should == stored_secret
+  std::string unhashed = clientSecret + salt;
+  std::string hashed;
+  RS_Status status = computeHash(unhashed, hashed);
+  if (status.http_code != HTTP_CODE::SUCCESS) {
+    return status;
+  }
+  if (hashed != secret) {
+    return CRS_Status(HTTP_CODE::CLIENT_ERROR, "bad API key").status;
+  }
+  return CRS_Status::SUCCESS.status;
+}
+
+RS_Status APIKeyCache::find_and_validate(const std::string &prefix,
+                                         const std::string &clientSecret,
                                          bool &keyFoundInCache,
                                          bool &allowedAccess,
                                          const std::vector<std::string_view> &dbs,
                                          Uint32 hash,
                                          bool inc_refcount_done) {
   Uint32 key_cache_id = hash & (NUM_API_KEY_CACHES - 1);
-  NdbMutex_Lock(m_rwLock[key_cache_id]);
-  if (m_evicted) {
-    NdbMutex_Unlock(m_rwLock[key_cache_id]);
+  m_rwLock[key_cache_id].lock_shared();
+  if (m_stopped) {
+    m_rwLock[key_cache_id].unlock_shared();
     keyFoundInCache = true; // Make sure we return without inserting it
     DEB_AUTH("API Key cache shutdown, Line: %u", __LINE__);
     return CRS_Status(HTTP_CODE::SERVER_ERROR,
       "API Key cache is shutting down").status;
   }
-  auto it = m_key_cache[key_cache_id].find(apiKey);
+  auto it = m_key_cache[key_cache_id].find(prefix);
   if (it == m_key_cache[key_cache_id].end()) {
-    NdbMutex_Unlock(m_rwLock[key_cache_id]);
+    m_rwLock[key_cache_id].unlock_shared();
     require(!inc_refcount_done);
-    DEB_AUTH("API Key not found, Line: %u", __LINE__);
+    DEB_AUTH("API Key prefix not found, Line: %u", __LINE__);
     return CRS_Status(HTTP_CODE::AUTH_ERROR,
       "API key not found in cache").status;
   }
@@ -238,14 +291,14 @@ RS_Status APIKeyCache::find_and_validate(const std::string &apiKey,
 
   keyFoundInCache = true;
   if (userDBs == nullptr) {
-    NdbMutex_Unlock(m_rwLock[key_cache_id]);
+    m_rwLock[key_cache_id].unlock_shared();
     require(!inc_refcount_done);
     DEB_AUTH("API Key found UserDBs null, Line: %u", __LINE__);
     return CRS_Status(HTTP_CODE::AUTH_ERROR,
       "API key found in cache but userDBs is null").status;
   }
   NdbMutex_Lock(userDBs->m_waitLock);
-  NdbMutex_Unlock(m_rwLock[key_cache_id]);
+  m_rwLock[key_cache_id].unlock_shared();
   if (userDBs->m_state == UserDBs::IS_INVALID) {
     if (inc_refcount_done) userDBs->m_ref_count--;
 #ifdef DEBUG_AUTH
@@ -277,10 +330,21 @@ RS_Status APIKeyCache::find_and_validate(const std::string &apiKey,
   }
   require(userDBs->m_state == UserDBs::IS_VALID);
   userDBs->m_lastUsed = NdbTick_getCurrentTicks();
+
+  // Copy secret+salt out so we can verify outside the lock
+  std::string secret = userDBs->m_secret;
+  std::string salt = userDBs->m_salt;
+
+  // Check database access while we hold the lock (fast hash set lookup).
+  // Store the result instead of returning early — the hash check must
+  // come first to prevent a timing side-channel where an attacker with
+  // a valid prefix but wrong secret can enumerate authorized databases.
+  bool db_access_ok = true;
+  RS_Status db_error_status = CRS_Status::SUCCESS.status;
   if (!dbs.empty()) {
     for (const auto &db : dbs) {
-      // lower case the database name 
-      // in HW database name comparision is case insensitive
+      // lower case the database name
+      // in HW database name comparison is case insensitive
       std::string lower_db = std::string(db);
       if (contains_upper(lower_db)) {
         std::transform(lower_db.begin(), lower_db.end(), lower_db.begin(),
@@ -288,91 +352,125 @@ RS_Status APIKeyCache::find_and_validate(const std::string &apiKey,
       }
 
       if (userDBs->userDBs.find(lower_db) == userDBs->userDBs.end()) {
-        if (inc_refcount_done) userDBs->m_ref_count--;
-#ifdef DEBUG_AUTH
-        int ref_count = userDBs->m_ref_count;
-#endif
-        NdbMutex_Unlock(userDBs->m_waitLock);
-        DEB_AUTH("API Key found valid, not authorized, Line: %u, refCount: %d",
-                 __LINE__, ref_count);
-        return CRS_Status(HTTP_CODE::AUTH_ERROR,
+        db_access_ok = false;
+        db_error_status = CRS_Status(HTTP_CODE::AUTH_ERROR,
           ("API key not authorized to access " +
           std::string(db)).c_str()).status;
+        DEB_AUTH("API Key not authorized for db: %s, Line: %u",
+                 std::string(db).c_str(), __LINE__);
+        break;
       }
     }
   }
-  // Decrement the reference count such that it can be released again
+  // Release the per-entry lock before SHA256 computation
   if (inc_refcount_done) userDBs->m_ref_count--;
-#ifdef DEBUG_AUTH
-  int ref_count = userDBs->m_ref_count;
-#endif
   NdbMutex_Unlock(userDBs->m_waitLock);
+
+  // Verify API key hash (SHA256) outside the lock — the most expensive
+  // operation on the hot path. Uses copied secret+salt so no lock needed.
+  // IMPORTANT: Hash is checked BEFORE returning DB access errors to prevent
+  // timing side-channel (unauthenticated requests must not learn which
+  // databases a key has access to).
+  RS_Status hashStatus = verify_api_key_hash(clientSecret, secret, salt);
+  if (hashStatus.http_code != HTTP_CODE::SUCCESS) {
+    DEB_AUTH("API Key hash mismatch, Line: %u", __LINE__);
+    return hashStatus;
+  }
+
+  if (!db_access_ok) {
+    return db_error_status;
+  }
+
   allowedAccess = true;
-  DEB_AUTH("API Key found valid, success, Line: %u, refCount: %d",
-           __LINE__, ref_count);
+  DEB_AUTH("API Key found valid, success, Line: %u", __LINE__);
   return CRS_Status::SUCCESS.status;
 }
 
-extern "C" void* api_key_thread_main(void *thr_arg) {
-  errno = 0;
-  char *api_key_str = (char*)thr_arg;
-  std::string apiKey = api_key_str;
-  free(api_key_str);
-  apiKeyCache->cache_entry_updater(apiKey);
-  return nullptr;
-}
-
-RS_Status APIKeyCache::update_cache(const std::string &apiKey, Uint32 hash) {
+RS_Status APIKeyCache::update_cache(const std::string &prefix,
+                                    const std::string &clientSecret,
+                                    Uint32 hash) {
+  // clientSecret is not used here — hash verification happens in
+  // find_and_validate() after the cache lookup.
+  (void)clientSecret;
   Uint32 key_cache_id = hash & (NUM_API_KEY_CACHES - 1);
-  NdbMutex_Lock(m_rwLock[key_cache_id]);
+  m_rwLock[key_cache_id].lock();  // exclusive: may insert
   // Check if the key exists, might have been entered since we released lock
-  auto userDBs = m_key_cache[key_cache_id].find(apiKey);
-  if (userDBs == m_key_cache[key_cache_id].end()) {
-    // The entry does not exist, mark for update
-    char *api_key_str = (char*)malloc(apiKey.size() + 1);
-    if (api_key_str == nullptr) {
-      NdbMutex_Unlock(m_rwLock[key_cache_id]);
-      DEB_AUTH("API Key malloc failed, Line: %u", __LINE__);
-      return CRS_Status(HTTP_CODE::SERVER_ERROR,
-        "Failed to allocate API Key record in cache").status;
-    }
-    auto newUserDBs = new UserDBs();
-    if (newUserDBs == nullptr) {
-      NdbMutex_Unlock(m_rwLock[key_cache_id]);
-      free(api_key_str);
-      DEB_AUTH("API Key create UserDBs failed, Line: %u", __LINE__);
-      return CRS_Status(HTTP_CODE::SERVER_ERROR,
-        "Failed to allocate API Key record in cache").status;
-    }
-    strncpy(api_key_str, apiKey.c_str(), apiKey.size());
-    api_key_str[apiKey.size()] = 0;
-    NdbThread *thread = NdbThread_Create(api_key_thread_main,
-                                         (void**)api_key_str,
-                                          128 * 1024,
-                                          "Api Key Cache thread",
-                                          NDB_THREAD_PRIO_LOW);
-    if (thread == nullptr) {
-      delete newUserDBs;
-      free(api_key_str);
-      NdbMutex_Unlock(m_rwLock[key_cache_id]);
-      DEB_AUTH("API Key thread create failed, Line: %u", __LINE__);
-      return CRS_Status(HTTP_CODE::SERVER_ERROR,
-        "Failed to allocate API Key record in cache").status;
-    }
-    DEB_AUTH("API Key %s inserted in cache with refCount: 1", apiKey.c_str());
-    newUserDBs->m_thread = thread;
-    newUserDBs->m_refresh_interval = refresh_interval_with_jitter();
-    newUserDBs->m_ref_count = 1;
-    newUserDBs->m_state = UserDBs::IS_VALIDATING;
-    m_key_cache[key_cache_id][apiKey] = newUserDBs;
-    DEB_AUTH_TIME("Api key: %s, refresh interval %d",
-                  apiKey.c_str(), newUserDBs->m_refresh_interval);
-    NdbMutex_Unlock(m_rwLock[key_cache_id]);
+  auto it = m_key_cache[key_cache_id].find(prefix);
+  if (it != m_key_cache[key_cache_id].end()) {
+    // Entry already exists (possibly being validated by another thread).
+    // Safe to increment m_ref_count without m_waitLock because we hold
+    // exclusive m_rwLock, which prevents the refresh thread's eviction
+    // (which also requires exclusive m_rwLock) from deleting this entry.
+    it->second->m_ref_count++;
+    m_rwLock[key_cache_id].unlock();
     return CRS_Status::SUCCESS.status;
   }
-  // Increase reference count to the userDBs to avoid it being released
-  userDBs->second->m_ref_count++;
-  NdbMutex_Unlock(m_rwLock[key_cache_id]);
+
+  // Create new entry in IS_VALIDATING state
+  auto newUserDBs = new UserDBs();
+  // Start with ref_count=1 so the refresh thread won't evict this entry
+  // while we release the lock and do the slow DB fetch below.  Decremented
+  // back to 0 after the entry state is set to IS_VALID/IS_INVALID.
+  newUserDBs->m_ref_count = 1;
+  newUserDBs->m_state = UserDBs::IS_VALIDATING;
+  m_key_cache[key_cache_id][prefix] = newUserDBs;
+  DEB_AUTH("API Key prefix %s inserted in cache with refCount: 1",
+           prefix.c_str());
+  m_rwLock[key_cache_id].unlock();
+
+  // Validate inline: fetch key data from DB
+  bool fail = false;
+  HopsworksAPIKey key;
+  if (!m_stopped) {
+    RS_Status status = find_api_key(prefix.c_str(), &key);
+    if (status.http_code != HTTP_CODE::SUCCESS) {
+      DEB_AUTH("find_api_key failed for prefix '%s': http_code=%d, message=%s",
+               prefix.c_str(), status.http_code, status.message);
+      fail = true;
+    }
+  } else {
+    fail = true;
+  }
+
+  std::vector<std::string_view> dbs;
+  char **db_ptrs = nullptr;
+  if (!fail && !m_stopped) {
+    RS_Status status = get_user_databases(key.user_id, dbs, &db_ptrs);
+    if (status.http_code != HTTP_CODE::SUCCESS) {
+      DEB_AUTH("get_user_databases failed for user_id=%d: http_code=%d, message=%s",
+               key.user_id, status.http_code, status.message);
+      fail = true;
+    }
+  }
+
+  NDB_TICKS now = NdbTick_getCurrentTicks();
+  NdbMutex_Lock(newUserDBs->m_waitLock);
+  if (!fail && !m_stopped) {
+    // Guard against resurrection: a DELETE event may have marked this entry
+    // IS_INVALID while we were resolving permissions (between releasing
+    // m_rwLock and acquiring m_waitLock). Don't overwrite back to IS_VALID.
+    if (newUserDBs->m_state == UserDBs::IS_INVALID) {
+      free(db_ptrs);
+      DEB_AUTH("Lazy load raced with DELETE event for prefix: %s", prefix.c_str());
+    } else {
+      newUserDBs->m_secret = key.secret;
+      newUserDBs->m_salt = key.salt;
+      newUserDBs->m_user_id = key.user_id;
+      newUserDBs->m_lastUsed = now;
+      newUserDBs->m_state = UserDBs::IS_VALID;
+      update_record(dbs, newUserDBs, db_ptrs);
+      DEB_AUTH("Valid API Key inserted via lazy load: %s", prefix.c_str());
+    }
+  } else {
+    newUserDBs->m_lastUsed = now;
+    newUserDBs->m_lastUpdated = now;
+    newUserDBs->m_state = UserDBs::IS_INVALID;
+    free(db_ptrs);
+    DEB_AUTH("Invalid API Key via lazy load: %s", prefix.c_str());
+  }
+  NdbCondition_Broadcast(newUserDBs->m_waitCond);
+  NdbMutex_Unlock(newUserDBs->m_waitLock);
+
   return CRS_Status::SUCCESS.status;
 }
 
@@ -393,188 +491,597 @@ RS_Status APIKeyCache::update_record(std::vector<std::string_view> dbs,
   return CRS_Status::SUCCESS.status;
 }
 
-void APIKeyCache::cache_entry_updater(const std::string &apiKey) {
+void APIKeyCache::load_single_key(const std::string &prefix,
+                                  const std::string &secret,
+                                  const std::string &salt,
+                                  int user_id) {
 #if (NUM_API_KEY_CACHES == 1)
   Uint32 key_cache_id = 0;
 #else
-  Uint32 hash = rondb_xxhash_std(apiKey.c_str(), apiKey.size());
+  Uint32 hash = rondb_xxhash_std(prefix.c_str(), prefix.size());
   Uint32 key_cache_id = hash & (NUM_API_KEY_CACHES - 1);
 #endif
-  NdbMutex_Lock(m_rwLock[key_cache_id]);
-  auto it = m_key_cache[key_cache_id].find(apiKey);
-  if (it == m_key_cache[key_cache_id].end()) {
-    NdbMutex_Unlock(m_rwLock[key_cache_id]);
-    require(false);
+
+  m_rwLock[key_cache_id].lock();  // exclusive: may insert
+  // Skip if already cached (e.g., from lazy load)
+  if (m_key_cache[key_cache_id].find(prefix) !=
+      m_key_cache[key_cache_id].end()) {
+    m_rwLock[key_cache_id].unlock();
+    DEB_AUTH("API Key prefix %s already cached, skipping", prefix.c_str());
     return;
   }
-  auto userDBs = it->second;
-  if (userDBs == nullptr) {
-    NdbMutex_Unlock(m_rwLock[key_cache_id]);
-    require(false);
-    return;
-  }
-  NdbMutex_Lock(userDBs->m_waitLock);
-  NdbMutex_Unlock(m_rwLock[key_cache_id]);
-  require(userDBs->m_state == UserDBs::IS_VALIDATING);
-  NdbMutex_Unlock(userDBs->m_waitLock);
-  bool first = true;
-  while (true) {
-    bool fail = false;
 
-    HopsworksAPIKey key;
-    std::vector<std::string_view> dbs;
-    if (!m_evicted) {
-      RS_Status status = authenticate_user(apiKey, key);
-      if (status.http_code != HTTP_CODE::SUCCESS) {
-        fail = true;
-      }
-    }
+  auto newUserDBs = new UserDBs();
+  newUserDBs->m_state = UserDBs::IS_VALIDATING;
+  // Start with ref_count=1 so the refresh thread won't evict this entry
+  // while we release the lock and do the slow DB fetch below.  Decremented
+  // back to 0 after the entry state is set to IS_VALID/IS_INVALID.
+  newUserDBs->m_ref_count = 1;
+  newUserDBs->m_secret = secret;
+  newUserDBs->m_salt = salt;
+  newUserDBs->m_user_id = user_id;
+  m_key_cache[key_cache_id][prefix] = newUserDBs;
+  m_rwLock[key_cache_id].unlock();
 
-    char **db_ptrs = nullptr;
-    if (!fail && !m_evicted) {
-      RS_Status status = get_user_databases(key, dbs, &db_ptrs);
-      if (status.http_code != HTTP_CODE::SUCCESS) {
-        fail = true;
-      }
-    }
-    /**
-     * Wake up all waiters for the API Key validation, if successful
-     * we will fill in the validated databases, otherwise it will be
-     * an empty list of databases and thus no one will be able to
-     * validate against it. The API Key is kept in the API Key Cache
-     * even if it is an incorrect one, but lastUpdated will only be
-     * updated at successful lookups in the API Key Cache.
-     */
-    NDB_TICKS lastUpdated = NdbTick_getCurrentTicks();
-    NdbMutex_Lock(userDBs->m_waitLock);
-    if (!fail && !m_evicted) {
-      if (first) {
-        userDBs->m_lastUsed = lastUpdated;
-        DEB_AUTH("Valid API Key inserted: %s", apiKey.c_str());
-      } else {
-        DEB_AUTH("Valid API Key updated: %s", apiKey.c_str());
-      }
-      userDBs->m_state = UserDBs::IS_VALID;
-      update_record(dbs, userDBs, db_ptrs);
-    } else {
-      if (first) {
-        userDBs->m_lastUsed = lastUpdated;
-      }
-      DEB_AUTH("Invalid API Key: %s", apiKey.c_str());
-      userDBs->m_state = UserDBs::IS_INVALID;
+  // Resolve permissions
+  std::vector<std::string_view> dbs;
+  char **db_ptrs = nullptr;
+  RS_Status status = get_user_databases(user_id, dbs, &db_ptrs);
+
+  NDB_TICKS now = NdbTick_getCurrentTicks();
+  NdbMutex_Lock(newUserDBs->m_waitLock);
+  if (status.http_code == HTTP_CODE::SUCCESS) {
+    // Guard against resurrection: a DELETE event may have marked this entry
+    // IS_INVALID while we were resolving permissions.
+    if (newUserDBs->m_state == UserDBs::IS_INVALID) {
       free(db_ptrs);
+      DEB_AUTH("load_single_key raced with DELETE event for prefix: %s",
+               prefix.c_str());
+    } else {
+      newUserDBs->m_lastUsed = now;
+      newUserDBs->m_state = UserDBs::IS_VALID;
+      update_record(dbs, newUserDBs, db_ptrs);
+      DEB_AUTH("Preloaded API Key: %s", prefix.c_str());
     }
-    first = false;
-    userDBs->m_lastUpdated = lastUpdated;
-    NdbCondition_Broadcast(userDBs->m_waitCond);
-#ifdef DEBUG_AUTH_THREAD
-    int ref_count = userDBs->m_ref_count;
-#endif
-    NdbMutex_Unlock(userDBs->m_waitLock);
+  } else {
+    newUserDBs->m_lastUsed = now;
+    newUserDBs->m_lastUpdated = now;
+    newUserDBs->m_state = UserDBs::IS_INVALID;
+    free(db_ptrs);
+    DEB_AUTH("Failed to preload API Key: %s", prefix.c_str());
+  }
+  NdbCondition_Broadcast(newUserDBs->m_waitCond);
+  NdbMutex_Unlock(newUserDBs->m_waitLock);
+  newUserDBs->m_ref_count--;
+}
 
-    /* Ensure it is easy to wake all threads up when time to close down */
-    DEB_AUTH_THREAD("API key %s, thread sleep, refCount: %d",
-                   apiKey.c_str(), ref_count);
+void APIKeyCache::preload_all_keys() {
+  std::vector<HopsworksAPIKeyEntry> keys;
+  RS_Status status = find_all_api_keys(&keys);
+  if (status.http_code != HTTP_CODE::SUCCESS) {
+    g_eventLogger->warning("[API Key Cache] Failed to preload API keys: %s",
+                           status.message);
+    return;
+  }
+
+  Uint32 num_threads = globalConfigs.security.apiKey.preloadThreads;
+  if (num_threads <= 1 || keys.size() <= 1) {
+    for (const auto &entry : keys) {
+      load_single_key(entry.prefix, entry.secret, entry.salt, entry.user_id);
+    }
+  } else {
+    if (num_threads > keys.size()) {
+      num_threads = (Uint32)keys.size();
+    }
+    std::vector<std::thread> threads;
+    threads.reserve(num_threads);
+    for (Uint32 t = 0; t < num_threads; t++) {
+      threads.emplace_back([this, &keys, t, num_threads]() {
+        for (size_t i = t; i < keys.size(); i += num_threads) {
+          load_single_key(keys[i].prefix, keys[i].secret,
+                          keys[i].salt, keys[i].user_id);
+        }
+      });
+    }
+    for (auto &th : threads) {
+      th.join();
+    }
+  }
+
+  g_eventLogger->info("[API Key Cache] Preloaded %d API keys using %u threads",
+                      (int)keys.size(), num_threads);
+}
+
+extern "C" void* api_key_refresh_thread_main(void *arg) {
+  errno = 0;
+  ((APIKeyCache*)arg)->refresh_job();
+  return nullptr;
+}
+
+extern "C" void* api_key_event_thread_main(void *arg) {
+  errno = 0;
+  ((APIKeyCache*)arg)->event_watcher_job();
+  return nullptr;
+}
+
+void APIKeyCache::start_background_threads() {
+  m_refresh_thread = NdbThread_Create(api_key_refresh_thread_main,
+                                       (NDB_THREAD_ARG *)this,
+                                       128 * 1024,
+                                       "API Key Refresh",
+                                       NDB_THREAD_PRIO_LOW);
+  if (m_refresh_thread == nullptr) {
+    g_eventLogger->warning("[API Key Cache] Failed to start refresh thread");
+  }
+
+  m_event_watcher_thread = NdbThread_Create(api_key_event_thread_main,
+                                             (NDB_THREAD_ARG *)this,
+                                             128 * 1024,
+                                             "API Key Event",
+                                             NDB_THREAD_PRIO_LOW);
+  if (m_event_watcher_thread == nullptr) {
+    g_eventLogger->warning("[API Key Cache] Failed to start event watcher thread");
+  }
+}
+
+void APIKeyCache::refresh_job() {
+  DEB_AUTH_THREAD("[API Key Refresh] Started");
+
+  while (!m_stopped) {
     NdbMutex_Lock(m_sleepLock);
-    if (!m_evicted)
+    if (!m_stopped)
       NdbCondition_WaitTimeout(m_sleepCond,
                                m_sleepLock,
-                               userDBs->m_refresh_interval);
+                               refresh_interval());
     NdbMutex_Unlock(m_sleepLock);
 
-    while (m_evicted) {
-      DEB_AUTH_THREAD("API key %s, thread shutdown", apiKey.c_str());
-      /* First wait for all access to this API Key to finish */
-      NdbMutex_Lock(userDBs->m_waitLock);
-      int ref_count = userDBs->m_ref_count;
-      if (ref_count > 0) {
-        NdbMutex_Unlock(userDBs->m_waitLock);
-        DEB_AUTH_THREAD("API key %s, refCount: %d",
-                        apiKey.c_str(), ref_count);
-        NdbSleep_MilliSleep(CLEANUP_SLEEP_TIME);
-        continue;
+    if (m_stopped) break;
+
+    for (int i = 0; i < NUM_API_KEY_CACHES; i++) {
+      if (m_stopped) break;
+
+      // Snapshot entries under shared (read) lock. Safe to use pointers
+      // outside the lock because only this thread (refresh) deletes entries.
+      std::vector<std::pair<std::string, UserDBs*>> entries;
+      m_rwLock[i].lock_shared();
+      entries.reserve(m_key_cache[i].size());
+      for (auto &kv : m_key_cache[i]) {
+        entries.push_back(kv);
       }
-      NdbMutex_Unlock(userDBs->m_waitLock);
-      /**
-       * Remove the API Key and update counter to ensure cleanup knows
-       * when done.
-       */
-      DEB_AUTH_THREAD("API key %s, delete", apiKey.c_str());
-      NdbMutex_Lock(m_rwLock[key_cache_id]);
-      NdbThread *thread = m_key_cache[key_cache_id][apiKey]->m_thread;
-      delete m_key_cache[key_cache_id][apiKey];
-      m_key_cache[key_cache_id].erase(apiKey);
-      NdbMutex_Unlock(m_rwLock[key_cache_id]);
-      NdbThread_Destroy(&thread);
-      return;
+      m_rwLock[i].unlock_shared();
+
+      // Spread DB operations across the refresh interval to avoid
+      // bursting all N entries at once (thundering herd).
+      Uint32 sleep_per_entry_ms = 0;
+      if (entries.size() > 1) {
+        sleep_per_entry_ms = (Uint32)refresh_interval() /
+                             (Uint32)entries.size();
+        if (sleep_per_entry_ms > 1000) sleep_per_entry_ms = 1000;
+        if (sleep_per_entry_ms == 0) sleep_per_entry_ms = 1;
+      }
+
+      for (auto &[prefix, userDBs] : entries) {
+        if (m_stopped) break;
+
+        NdbMutex_Lock(userDBs->m_waitLock);
+        Uint8 state = userDBs->m_state;
+        NDB_TICKS lastUsed = userDBs->m_lastUsed;
+        NdbMutex_Unlock(userDBs->m_waitLock);
+
+        // Skip entries still being validated
+        if (state == UserDBs::IS_VALIDATING) {
+          // no sleep needed — no DB work done
+        } else if (state == UserDBs::IS_INVALID) {
+          // Evict invalid entries (negative cache) after 5 seconds
+          static const Uint64 INVALID_ENTRY_TTL_MS = 5000;
+          NDB_TICKS now = NdbTick_getCurrentTicks();
+          Uint64 milliSeconds = NdbTick_Elapsed(lastUsed, now).milliSec();
+          if (milliSeconds >= INVALID_ENTRY_TTL_MS) {
+            m_rwLock[i].lock();  // exclusive: erase
+            NdbMutex_Lock(userDBs->m_waitLock);
+            if (userDBs->m_ref_count <= 0) {
+              m_key_cache[i].erase(prefix);
+              m_rwLock[i].unlock();
+              NdbMutex_Unlock(userDBs->m_waitLock);
+              DEB_AUTH_THREAD("Evicted invalid API Key: %s", prefix.c_str());
+              delete userDBs;
+            } else {
+              m_rwLock[i].unlock();
+              NdbMutex_Unlock(userDBs->m_waitLock);
+            }
+          }
+          // no sleep needed — no DB work done
+        } else {
+          // IS_VALID: re-fetch key from DB to verify it still exists
+          HopsworksAPIKey key;
+          RS_Status key_status = find_api_key(prefix.c_str(), &key);
+          if (key_status.http_code != HTTP_CODE::SUCCESS) {
+            // Key no longer exists in DB — evict from cache
+            m_rwLock[i].lock();  // exclusive: erase
+            NdbMutex_Lock(userDBs->m_waitLock);
+            if (userDBs->m_ref_count <= 0) {
+              m_key_cache[i].erase(prefix);
+              m_rwLock[i].unlock();
+              NdbMutex_Unlock(userDBs->m_waitLock);
+              DEB_AUTH_THREAD("Evicted API Key (not in DB): %s",
+                              prefix.c_str());
+              delete userDBs;
+            } else {
+              userDBs->m_state = UserDBs::IS_INVALID;
+              m_rwLock[i].unlock();
+              NdbMutex_Unlock(userDBs->m_waitLock);
+            }
+          } else {
+            // Key still exists — update and re-resolve permissions
+            std::vector<std::string_view> dbs;
+            char **db_ptrs = nullptr;
+            RS_Status status = get_user_databases(key.user_id, dbs, &db_ptrs);
+
+            NdbMutex_Lock(userDBs->m_waitLock);
+            userDBs->m_secret = key.secret;
+            userDBs->m_salt = key.salt;
+            userDBs->m_user_id = key.user_id;
+            if (status.http_code == HTTP_CODE::SUCCESS) {
+              update_record(dbs, userDBs, db_ptrs);
+              DEB_AUTH_THREAD("Refreshed API Key: %s", prefix.c_str());
+            } else {
+              free(db_ptrs);
+              DEB_AUTH_THREAD("Failed to refresh API Key: %s", prefix.c_str());
+            }
+            NdbMutex_Unlock(userDBs->m_waitLock);
+          }
+
+          // Sleep between entries that did DB work (interruptible for shutdown)
+          if (sleep_per_entry_ms > 0 && !m_stopped) {
+            NdbMutex_Lock(m_sleepLock);
+            if (!m_stopped)
+              NdbCondition_WaitTimeout(m_sleepCond, m_sleepLock,
+                                       sleep_per_entry_ms);
+            NdbMutex_Unlock(m_sleepLock);
+          }
+        }
+      }
+    }
+  }
+  DEB_AUTH_THREAD("[API Key Refresh] Stopped");
+}
+
+void APIKeyCache::event_watcher_job() {
+  const char *EVENT_NAME = m_event_name.c_str();
+  bool first_connect = true;
+  Uint32 retry_sleep_ms = 1000;
+  static const Uint32 MAX_RETRY_SLEEP_MS = 30000;
+
+  Ndb *ndb = nullptr;
+  NdbEventOperation *ev_op = nullptr;
+  NdbDictionary::Dictionary *dict = nullptr;
+  NdbRecAttr *id_val = nullptr;
+  NdbRecAttr *prefix_val = nullptr;
+  NdbRecAttr *secret_val = nullptr;
+  NdbRecAttr *salt_val = nullptr;
+  NdbRecAttr *user_id_val = nullptr;
+  NdbRecAttr *prefix_pre_val = nullptr;
+
+retry:
+  ndb = nullptr;
+  ev_op = nullptr;
+  dict = nullptr;
+
+  if (m_stopped) goto done;
+
+  {
+    RS_Status rs = rdrsRonDBConnectionPool->GetMetadataNdbObject(&ndb);
+    if (rs.http_code != SUCCESS) {
+      g_eventLogger->warning("[API Key Event] Failed to get NDB object. Retry...");
+      goto err;
+    }
+  }
+
+  if (ndb->setDatabaseName(HOPSWORKS) != 0) {
+    g_eventLogger->warning("[API Key Event] Failed to set database: %d(%s). Retry...",
+                           ndb->getNdbError().code,
+                           ndb->getNdbError().message);
+    goto err;
+  }
+
+  dict = ndb->getDictionary();
+  {
+    dict->invalidateTable(API_KEY);
+    const NdbDictionary::Table *tab = dict->getTable(API_KEY);
+    if (tab == nullptr) {
+      g_eventLogger->warning("[API Key Event] Failed to get api_key table: %d(%s). Retry...",
+                             dict->getNdbError().code,
+                             dict->getNdbError().message);
+      goto err;
     }
 
-    NdbMutex_Lock(userDBs->m_waitLock);
-    auto lastUsed = userDBs->m_lastUsed;
-#ifdef DEBUG_AUTH_THREAD
-    int ref_count_after = userDBs->m_ref_count;
+    NdbDictionary::Event event(EVENT_NAME);
+    event.setTable(*tab);
+    event.addTableEvent(NdbDictionary::Event::TE_INSERT);
+    event.addTableEvent(NdbDictionary::Event::TE_UPDATE);
+    event.addTableEvent(NdbDictionary::Event::TE_DELETE);
+    event.mergeEvents(true);
+    for (int col = 0; col < tab->getNoOfColumns(); col++) {
+      event.addEventColumn(col);
+    }
+
+    dict->dropEvent(EVENT_NAME);
+
+    if (dict->createEvent(event)) {
+      g_eventLogger->warning("[API Key Event] Failed to create event: %d(%s). Retry...",
+                             dict->getNdbError().code,
+                             dict->getNdbError().message);
+      goto err;
+    }
+  }
+
+  ev_op = ndb->createEventOperation(EVENT_NAME);
+  if (ev_op == nullptr) {
+    g_eventLogger->warning(
+      "[API Key Event] Failed to create event operation: %d(%s). Retry...",
+      ndb->getNdbError().code,
+      ndb->getNdbError().message);
+    goto err;
+  }
+  ev_op->mergeEvents(true);
+
+  // Register PK column so PK data is consumed from the event stream.
+  // Without this, PK data leaks into the data section and triggers
+  // an assertion in NdbEventOperationImpl::receive_event.
+  id_val = ev_op->getValue("id");
+  (void)ev_op->getPreValue("id");
+
+  prefix_val = ev_op->getValue("prefix");
+  secret_val = ev_op->getValue("secret");
+  salt_val = ev_op->getValue("salt");
+  user_id_val = ev_op->getValue("user_id");
+
+  // Pre-values must be registered for all columns that have after-values.
+  // NDB requires matching getValue/getPreValue pairs to properly consume
+  // event data. prefix_pre_val is used for TE_DELETE; the rest are unused
+  // but must be registered to keep the event stream aligned.
+  prefix_pre_val = ev_op->getPreValue("prefix");
+  (void)ev_op->getPreValue("secret");
+  (void)ev_op->getPreValue("salt");
+  (void)ev_op->getPreValue("user_id");
+
+  // Null-check all NdbRecAttr pointers (schema may have changed)
+  if (id_val == nullptr || prefix_val == nullptr ||
+      secret_val == nullptr || salt_val == nullptr ||
+      user_id_val == nullptr || prefix_pre_val == nullptr) {
+    g_eventLogger->warning(
+      "[API Key Event] Failed to register event columns "
+      "(schema may have changed). Retry...");
+    goto err;
+  }
+
+  if (ev_op->execute()) {
+    g_eventLogger->warning(
+      "[API Key Event] Failed to execute event operation: %d(%s). Retry...",
+      ev_op->getNdbError().code,
+      ev_op->getNdbError().message);
+    goto err;
+  }
+
+  retry_sleep_ms = 1000;  // Reset backoff on successful setup
+  g_eventLogger->info("[API Key Event] Watcher %s",
+                      first_connect ? "started" : "reconnected");
+
+  if (!first_connect) {
+    // When the event watcher hits an error it jumps to err:, tears down the
+    // NDB event subscription, sleeps with exponential backoff (1s → 30s cap),
+    // then jumps back to retry: to re-establish the subscription.  During
+    // that gap any table events (INSERT/DELETE/UPDATE) are silently lost.
+    //
+    // Preload picks up missed INSERTs (load_single_key skips already-cached
+    // entries, so this is a fast no-op for most keys).  Waking the refresh
+    // thread handles missed DELETEs/UPDATEs immediately instead of waiting
+    // up to the full refresh interval (180 s).
+    preload_all_keys();
+    NdbMutex_Lock(m_sleepLock);
+    NdbCondition_Broadcast(m_sleepCond);
+    NdbMutex_Unlock(m_sleepLock);
+  }
+  first_connect = false;
+
+  // Poll loop
+  while (!m_stopped) {
+    if (m_force_reconnect.exchange(false)) {
+      g_eventLogger->info("[API Key Event] Forced reconnect requested");
+      goto err;
+    }
+    int res = ndb->pollEvents(1000);
+    if (res < 0) {
+      g_eventLogger->warning(
+        "[API Key Event] pollEvents error: %d(%s). Retry...",
+        ndb->getNdbError().code,
+        ndb->getNdbError().message);
+      goto err;
+    }
+    if (res == 0) continue;
+
+    NdbEventOperation *op;
+    while ((op = ndb->nextEvent())) {
+      if (op->hasError()) {
+        g_eventLogger->warning(
+          "[API Key Event] Event error: %d(%s). Retry...",
+          op->getNdbError().code,
+          op->getNdbError().message);
+        goto err;
+      }
+
+      switch (op->getEventType()) {
+        case NdbDictionary::Event::TE_INSERT: {
+          Uint32 prefix_bytes = 0;
+          const char *prefix_start = nullptr;
+          if (GetByteArray(prefix_val, &prefix_start, &prefix_bytes) != 0) {
+            break;
+          }
+          std::string prefix(prefix_start, prefix_bytes);
+
+          Uint32 secret_bytes = 0;
+          const char *secret_start = nullptr;
+          if (GetByteArray(secret_val, &secret_start, &secret_bytes) != 0) {
+            break;
+          }
+          std::string secret(secret_start, secret_bytes);
+
+          Uint32 salt_bytes = 0;
+          const char *salt_start = nullptr;
+          if (GetByteArray(salt_val, &salt_start, &salt_bytes) != 0) {
+            break;
+          }
+          std::string salt(salt_start, salt_bytes);
+
+          int user_id = user_id_val->int32_value();
+
+          g_eventLogger->info(
+            "[API Key Event] INSERT detected for prefix: %s",
+            prefix.c_str());
+          load_single_key(prefix, secret, salt, user_id);
+          break;
+        }
+        case NdbDictionary::Event::TE_UPDATE: {
+          // With mergeEvents(true), only modified columns have valid
+          // after-image data — unmodified columns are undefined.
+          // Use the PK (id, always available) to do a single PK read
+          // and get the full row (O(1) instead of table scan).
+          int event_id = id_val->int32_value();
+          g_eventLogger->info(
+            "[API Key Event] UPDATE detected for id: %d", event_id);
+
+          HopsworksAPIKeyEntry upd_key;
+          RS_Status upd_status = find_api_key_by_id(event_id, &upd_key);
+          if (upd_status.http_code != HTTP_CODE::SUCCESS) {
+            g_eventLogger->warning(
+              "[API Key Event] Failed to read updated row id=%d: %s",
+              event_id, upd_status.message);
+            break;
+          }
+
+          const std::string &upd_prefix = upd_key.prefix;
+          const std::string &upd_secret = upd_key.secret;
+          const std::string &upd_salt = upd_key.salt;
+          int upd_user_id = upd_key.user_id;
+
+#if (NUM_API_KEY_CACHES == 1)
+          Uint32 upd_cache_id = 0;
+#else
+          Uint32 upd_h = rondb_xxhash_std(upd_prefix.c_str(),
+                                           upd_prefix.size());
+          Uint32 upd_cache_id = upd_h & (NUM_API_KEY_CACHES - 1);
 #endif
-    NdbMutex_Unlock(userDBs->m_waitLock);
+          m_rwLock[upd_cache_id].lock_shared();
+          auto upd_it = m_key_cache[upd_cache_id].find(upd_prefix);
+          if (upd_it != m_key_cache[upd_cache_id].end()) {
+            auto userDBs = upd_it->second;
+            NdbMutex_Lock(userDBs->m_waitLock);
+            userDBs->m_secret = upd_secret;
+            userDBs->m_salt = upd_salt;
+            userDBs->m_user_id = upd_user_id;
+            NdbMutex_Unlock(userDBs->m_waitLock);
+            m_rwLock[upd_cache_id].unlock_shared();
+            g_eventLogger->info(
+              "[API Key Event] Updated cache entry for prefix: %s",
+              upd_prefix.c_str());
+          } else {
+            m_rwLock[upd_cache_id].unlock_shared();
+            load_single_key(upd_prefix, upd_secret, upd_salt, upd_user_id);
+          }
+          break;
+        }
+        case NdbDictionary::Event::TE_DELETE: {
+          Uint32 prefix_bytes = 0;
+          const char *prefix_start = nullptr;
+          if (GetByteArray(prefix_pre_val,
+                           &prefix_start, &prefix_bytes) != 0) {
+            break;
+          }
+          std::string prefix(prefix_start, prefix_bytes);
+          g_eventLogger->info(
+            "[API Key Event] DELETE detected for prefix: %s",
+            prefix.c_str());
 
-    DEB_AUTH_THREAD("API key %s, thread wakeup, ref_count: %d",
-                    apiKey.c_str(), ref_count_after);
-    NDB_TICKS now = NdbTick_getCurrentTicks();
-    Uint64 milliSeconds = NdbTick_Elapsed(lastUsed, now).milliSec();
-    DEB_AUTH_THREAD("API Key: %s %llu millis since last used",
-                    apiKey.c_str(), milliSeconds);
-    if (milliSeconds >=
-          (Uint64)globalConfigs.security.apiKey.cacheUnusedEntriesEvictionMS) {
-      NdbMutex_Lock(m_rwLock[key_cache_id]);
-      NdbMutex_Lock(userDBs->m_waitLock);
-      if (userDBs->m_ref_count <= 0) {
-        m_key_cache[key_cache_id].erase(apiKey);
-        NdbMutex_Unlock(m_rwLock[key_cache_id]);
-        NdbMutex_Unlock(userDBs->m_waitLock);
-        NdbThread *thread = userDBs->m_thread;
-        delete userDBs;
-        NdbThread_Destroy(&thread);
-        return;
-      } else {
-        NdbMutex_Unlock(m_rwLock[key_cache_id]);
-        NdbMutex_Unlock(userDBs->m_waitLock);
+#if (NUM_API_KEY_CACHES == 1)
+          Uint32 key_cache_id = 0;
+#else
+          Uint32 h = rondb_xxhash_std(prefix.c_str(), prefix.size());
+          Uint32 key_cache_id = h & (NUM_API_KEY_CACHES - 1);
+#endif
+          // Mark as invalid; the refresh thread handles actual deletion.
+          m_rwLock[key_cache_id].lock_shared();
+          auto it = m_key_cache[key_cache_id].find(prefix);
+          if (it != m_key_cache[key_cache_id].end()) {
+            auto userDBs = it->second;
+            NdbMutex_Lock(userDBs->m_waitLock);
+            userDBs->m_state = UserDBs::IS_INVALID;
+            // Reset m_lastUsed so the INVALID_ENTRY_TTL countdown
+            // starts from this DELETE event, not the last request.
+            userDBs->m_lastUsed = NdbTick_getCurrentTicks();
+            NdbMutex_Unlock(userDBs->m_waitLock);
+          }
+          m_rwLock[key_cache_id].unlock_shared();
+          break;
+        }
+        case NdbDictionary::Event::TE_CLUSTER_FAILURE:
+        case NdbDictionary::Event::TE_STOP:
+        case NdbDictionary::Event::TE_INCONSISTENT:
+        case NdbDictionary::Event::TE_OUT_OF_MEMORY:
+          g_eventLogger->warning(
+            "[API Key Event] System event %d received. Retry...",
+            op->getEventType());
+          goto err;
+        default:
+          break;
       }
-      continue;
     }
   }
-  return;
+  goto done;
+
+err:
+  if (ev_op != nullptr) {
+    ndb->dropEventOperation(ev_op);
+    ev_op = nullptr;
+  }
+  if (dict != nullptr) {
+    dict->dropEvent(EVENT_NAME);
+    dict = nullptr;
+  }
+  if (ndb != nullptr) {
+    RS_Status rs;
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    ndb = nullptr;
+  }
+  if (!m_stopped) {
+    g_eventLogger->info("[API Key Event] Retrying in %u ms...", retry_sleep_ms);
+    NdbMutex_Lock(m_sleepLock);
+    if (!m_stopped)
+      NdbCondition_WaitTimeout(m_sleepCond, m_sleepLock, retry_sleep_ms);
+    NdbMutex_Unlock(m_sleepLock);
+    retry_sleep_ms = std::min(retry_sleep_ms * 2, MAX_RETRY_SLEEP_MS);
+    goto retry;
+  }
+
+done:
+  if (ev_op != nullptr) {
+    ndb->dropEventOperation(ev_op);
+  }
+  if (dict != nullptr) {
+    dict->dropEvent(EVENT_NAME);
+  }
+  if (ndb != nullptr) {
+    RS_Status rs;
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+  }
+  g_eventLogger->info("[API Key Event] Watcher stopped");
 }
 
-RS_Status APIKeyCache::authenticate_user(const std::string &apiKey,
-                                         HopsworksAPIKey &key) {
-  auto splits = split(apiKey, '.');
-  auto prefix = splits[0];
-  auto clientSecret = splits[1];
-
-  RS_Status status = get_api_key(prefix, key);
-  if (status.http_code != HTTP_CODE::SUCCESS) {
-    return status;
-  }
-
-  // sha256(client.secret + db.salt) = db.secret
-  std::string unhashed = clientSecret + key.salt;
-  std::string hashed;
-  status = computeHash(unhashed, hashed);
-  if (status.http_code != HTTP_CODE::SUCCESS) {
-    return status;
-  }
-  if (hashed != key.secret) {
-    return CRS_Status(HTTP_CODE::CLIENT_ERROR, "bad API key").status;
-  }
-  return CRS_Status::SUCCESS.status;
-}
-
-RS_Status APIKeyCache::get_user_databases(HopsworksAPIKey &key,
+RS_Status APIKeyCache::get_user_databases(int user_id,
                                           std::vector<std::string_view> &dbs,
                                           char ***db_ptrs) {
-  int uid = key.user_id;
   int count = 0;
   char **projects = nullptr;
-  RS_Status status = find_all_projects(uid, &projects, &count);
+  RS_Status status = find_all_projects(user_id, &projects, &count);
   if (status.http_code != HTTP_CODE::SUCCESS) {
     return status;
   }
@@ -595,26 +1102,9 @@ RS_Status APIKeyCache::get_user_databases(HopsworksAPIKey &key,
   return CRS_Status::SUCCESS.status;
 }
 
-RS_Status APIKeyCache::get_api_key(const std::string &userKey,
-                                   HopsworksAPIKey &key) {
-  RS_Status status = find_api_key(userKey.c_str(), &key);
-  if (status.http_code != HTTP_CODE::SUCCESS) {
-    return status;
-  }
-  return CRS_Status::SUCCESS.status;
-}
-
-std::vector<std::string> split(const std::string &str, char delim) {
-  std::vector<std::string> tokens;
-  std::stringstream ss(str);
-  std::string token;
-  while (std::getline(ss, token, delim)) {
-    tokens.push_back(token);
-  }
-  return tokens;
-}
-
 RS_Status computeHash(const std::string &unhashed, std::string &hashed) {
+  static const char hex_lut[] = "0123456789abcdef";
+
   RS_Status status = CRS_Status(HTTP_CODE::CLIENT_ERROR,
                        "Failed to compute hash").status;
 
@@ -631,12 +1121,11 @@ RS_Status computeHash(const std::string &unhashed, std::string &hashed) {
         unsigned int lengthOfHash = 0;
 
         if (EVP_DigestFinal_ex(mdCtx.get(), hash, &lengthOfHash) != 0) {
-          std::stringstream ss;
+          hashed.resize(lengthOfHash * 2);
           for (unsigned int i = 0; i < lengthOfHash; ++i) {
-            ss << std::hex << std::setw(2)
-               << std::setfill('0') << static_cast<int>(hash[i]);
+            hashed[i * 2]     = hex_lut[(hash[i] >> 4) & 0x0f];
+            hashed[i * 2 + 1] = hex_lut[hash[i] & 0x0f];
           }
-          hashed = ss.str();
           status = CRS_Status::SUCCESS.status;
         }
       }
@@ -645,35 +1134,29 @@ RS_Status computeHash(const std::string &unhashed, std::string &hashed) {
   return status;
 }
 
-Int32 APIKeyCache::refresh_interval_with_jitter() {
-  Uint32 cacheRefreshIntervalMS =
-    globalConfigs.security.apiKey.cacheRefreshIntervalMS;
-  Int32 jitterMS = static_cast<Int32>(
-    globalConfigs.security.apiKey.cacheRefreshIntervalJitterMS);
-  std::uniform_int_distribution<Int32> dist(-jitterMS, jitterMS);
-  Int32 jitter = dist(randomGenerator);
-  return Int32(cacheRefreshIntervalMS) + jitter;
+Int32 APIKeyCache::refresh_interval() {
+  return Int32(globalConfigs.security.apiKey.cacheRefreshIntervalMS);
 }
 
 /* Below methods only used by unit test program */
 unsigned APIKeyCache::size() {
   for (int i = 0; i < NUM_API_KEY_CACHES; i++)
-    NdbMutex_Lock(m_rwLock[i]);
+    m_rwLock[i].lock_shared();
   unsigned size_cache = 0;
   for (int i = 0; i < NUM_API_KEY_CACHES; i++)
     size_cache += m_key_cache[i].size();
   for (int i = 0; i < NUM_API_KEY_CACHES; i++)
-    NdbMutex_Unlock(m_rwLock[i]);
+    m_rwLock[i].unlock_shared();
   return size_cache;
 }
 
 std::string APIKeyCache::to_string() {
   std::stringstream ss;
   for (int i = 0; i < NUM_API_KEY_CACHES; i++)
-    NdbMutex_Lock(m_rwLock[i]);
+    m_rwLock[i].lock_shared();
   for (int i = 0; i < NUM_API_KEY_CACHES; i++) {
     for (const auto &entry : m_key_cache[i]) {
-      ss << "API Key: " << entry.first << ", UserDBs: ";
+      ss << "Prefix: " << entry.first << ", UserDBs: ";
       for (const auto &db : entry.second->userDBs) {
         ss << db << ", ";
       }
@@ -681,27 +1164,30 @@ std::string APIKeyCache::to_string() {
     }
   }
   for (int i = 0; i < NUM_API_KEY_CACHES; i++)
-    NdbMutex_Unlock(m_rwLock[i]);
+    m_rwLock[i].unlock_shared();
   return ss.str();
 }
 
 Uint64 APIKeyCache::last_updated(const std::string &apiKey) {
+  auto dotPos = apiKey.find('.');
+  std::string prefix = (dotPos != std::string::npos)
+                        ? apiKey.substr(0, dotPos) : apiKey;
 #if (NUM_API_KEY_CACHES == 1)
   Uint32 hash = 0;
 #else
-  Uint32 hash = rondb_xxhash_std(apiKey.c_str(), apiKey.size());
+  Uint32 hash = rondb_xxhash_std(prefix.c_str(), prefix.size());
 #endif
   Uint32 key_cache_id = hash & (NUM_API_KEY_CACHES - 1);
-  NdbMutex_Lock(m_rwLock[key_cache_id]);
-  auto it = m_key_cache[key_cache_id].find(apiKey);
+  m_rwLock[key_cache_id].lock_shared();
+  auto it = m_key_cache[key_cache_id].find(prefix);
   if (it == m_key_cache[key_cache_id].end()) {
-    NdbMutex_Unlock(m_rwLock[key_cache_id]);
+    m_rwLock[key_cache_id].unlock_shared();
     NDB_TICKS now = NdbTick_getCurrentTicks();
     return now.getUint64();
   }
   auto userDBs = it->second;
   NdbMutex_Lock(userDBs->m_waitLock);
-  NdbMutex_Unlock(m_rwLock[key_cache_id]);
+  m_rwLock[key_cache_id].unlock_shared();
   Uint64 lastUpdated = userDBs->m_lastUpdated.getUint64();
   NdbMutex_Unlock(userDBs->m_waitLock);
   return lastUpdated;
@@ -712,4 +1198,3 @@ bool contains_upper(std::string_view sv) {
         return std::isupper(c);
     });
 }
-

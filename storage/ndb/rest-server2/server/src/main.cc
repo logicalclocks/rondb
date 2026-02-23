@@ -189,7 +189,7 @@ int main(int argc, char *argv[]) {
   ndb_init();
   g_did_ndb_init = true;
   globalConfigsMutex = NdbMutex_Create();
-  (void)start_api_key_cache();
+  APIKeyCache *apiKeyCachePtr = start_api_key_cache();
   g_did_start_api_key_cache = true;
 
   start_fs_cache();
@@ -339,6 +339,18 @@ int main(int argc, char *argv[]) {
   // Start TTL purger
   g_ttl_purger = TTLPurger::CreateTTLPurger();
   g_ttl_purger->Run();
+
+  // Preload API key cache and start background threads
+  if (globalConfigs.security.apiKey.useHopsworksAPIKeys) {
+    apiKeyCachePtr->preload_all_keys();
+    apiKeyCachePtr->start_background_threads();
+  }
+
+  // Preload feature view metadata cache and start event watcher
+  if (g_fs_metadata_cache != nullptr) {
+    g_fs_metadata_cache->preload_all_feature_views();
+    g_fs_metadata_cache->start_event_watcher();
+  }
 
   // Start rondis
   if (globalConfigs.rondis.enable) {

@@ -220,10 +220,9 @@ func (t *TestParameters) Validate() error {
 }
 
 type APIKey struct {
-	UseHopsworksAPIKeys          bool
-	CacheRefreshIntervalMS       uint32
-	CacheUnusedEntriesEvictionMS uint32
-	CacheRefreshIntervalJitterMS uint32
+	UseHopsworksAPIKeys    bool
+	CacheRefreshIntervalMS uint32
+	PreloadThreads         uint32
 }
 
 func (a *APIKey) Validate() error {
@@ -231,16 +230,8 @@ func (a *APIKey) Validate() error {
 		return errors.New("CacheRefreshIntervalMS cannot be 0")
 	}
 
-	if a.CacheUnusedEntriesEvictionMS == 0 {
-		return errors.New("CacheUnusedEntriesEvictionMS cannot be 0")
-	}
-
-	if a.CacheRefreshIntervalMS > a.CacheUnusedEntriesEvictionMS {
-		return errors.New("CacheRefreshIntervalMS can not be more that CacheUnusedEntriesEvictionMS")
-	}
-
-	if a.CacheRefreshIntervalJitterMS >= a.CacheRefreshIntervalMS {
-		return errors.New("CacheRefreshIntervalJitterMS must be smaller than CacheRefreshIntervalMS")
+	if a.PreloadThreads == 0 {
+		return errors.New("PreloadThreads must be greater than 0")
 	}
 
 	return nil
