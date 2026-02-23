@@ -756,6 +756,7 @@ prometheus::Histogram *rondisHistogram = nullptr;
 
 prometheus::Gauge *ronDBConnectionStateGauge            = nullptr;
 prometheus::Gauge *ndbObjectsTotalCountGauge            = nullptr;
+prometheus::Gauge *httpConnectionCountGauge             = nullptr;
 }  // namespace
 
 void initMetrics() {
@@ -1089,6 +1090,12 @@ void initMetrics() {
     .Help("Total NDB objects")
     .Register(*registry)
     .Add({});
+
+  httpConnectionCountGauge = &prometheus::BuildGauge()
+    .Name("rdrs_http_connection_count")
+    .Help("Number of currently active HTTP connections")
+    .Register(*registry)
+    .Add({});
 }
 
 void setRonDBStats() {
@@ -1329,6 +1336,10 @@ void writeMetrics(drogon::HttpResponsePtr resp) {
   // - ndbObjectsTotalCountGauge
   // - ronDBConnectionStateGauge
   setRonDBStats();
+
+  // Update HTTP connection count from Drogon
+  httpConnectionCountGauge->Set(
+    static_cast<double>(drogon::app().getConnectionCount()));
 
   prometheus::TextSerializer serializer;
   std::ostringstream os;

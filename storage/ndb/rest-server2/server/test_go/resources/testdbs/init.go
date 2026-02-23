@@ -276,6 +276,13 @@ func createHopsworksSchema(dbsToRegister ...string) string {
 		hopsworksScheme += addNewProject
 	}
 
+	// Add the main API key AFTER projects are registered, so that the NDB event
+	// watcher INSERT handler sees all project_team rows when it loads the key.
+	mainAPIKey := strings.ReplaceAll(HopsworksAPIKey, HopsworksAPIKey_KEY_ID, "1")
+	mainAPIKey = strings.ReplaceAll(mainAPIKey, HopsworksAPIKey_KEY_PREFIX, "bkYjEz6OTZyevbqt")
+	mainAPIKey = strings.ReplaceAll(mainAPIKey, HopsworksAPIKey_KEY_NAME, "myapikey1")
+	hopsworksScheme += mainAPIKey
+
 	// register additional API Keys
 	for i := 0; i < HopsworksAPIKey_ADDITIONAL_KEYS; i++ {
 		addAPIKey := strings.ReplaceAll(HopsworksAPIKey, HopsworksAPIKey_KEY_ID, fmt.Sprintf("%d", i+2 /* id 1 is already taken*/))
