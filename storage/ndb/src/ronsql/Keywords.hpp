@@ -58,6 +58,7 @@ static const struct { const char* text; const TokenKind value; } keywords_implem
   kwdef(INTERVAL),
   kwdef(IS),
   kwdef(JOIN),
+  kwdef(LIKE),
   kwdef(LIMIT),
   kwdef(MAX),
   kwdef(MICROSECOND),

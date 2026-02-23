@@ -1927,6 +1927,10 @@ RonSQLPreparer::apply_filter(NdbScanFilter* filter,
   case T_NOT_EQUALS:
     apply_filter_cmp(filter, NdbScanFilter::COND_NE, ce->args.left, ce->args.right);
     break;
+  case T_LIKE:
+    apply_filter_like(filter, NdbScanFilter::COND_LIKE,
+                      ce->args.left, ce->args.right);
+    break;
   default:
     throw RonSQLPermanentError("Non-boolean term in WHERE condition");
   }
@@ -1957,6 +1961,26 @@ RonSQLPreparer::apply_filter_cmp(NdbScanFilter* filter,
                               DBG(m_column_attrId_map[left->col_idx]),
                               DBG(rv).val,
                               rv.len)) >= 0,
+              filter_fail);
+}
+
+void
+RonSQLPreparer::apply_filter_like(NdbScanFilter* filter,
+                                   NdbScanFilter::BinaryCondition cond,
+                                   struct ConditionalExpression* left,
+                                   struct ConditionalExpression* right)
+{
+  if (left->op != T_IDENTIFIER) {
+    throw RonSQLPermanentError("LIKE requires a column name on the left side");
+  }
+  if (right->op != T_STRING) {
+    throw RonSQLPermanentError("LIKE requires a string pattern on the right side");
+  }
+  ndbrequire(m_column_attrId_map != NULL);
+  require_sch(DBG(filter->cmp(cond,
+                               m_column_attrId_map[left->col_idx],
+                               right->string.str,
+                               right->string.len)) >= 0,
               filter_fail);
 }
 
