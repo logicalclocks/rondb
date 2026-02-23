@@ -281,6 +281,8 @@ class NdbAggregator {
   Uint32 buffer_[MAX_AGG_PROGRAM_WORD_SIZE];
 
   Uint32 n_gb_cols_;
+  Uint32 gb_col_ids_[MAX_AGG_N_GROUPBY_COLS];
+  GBCmpContext gb_cmp_ctx_;
   Uint32 n_agg_results_;
   AggResItem* agg_results_;
   Uint32 agg_ops_[MAX_AGG_N_RESULTS];
