@@ -5041,7 +5041,8 @@ int NdbQueryOperationImpl::prepareAttrInfo(Uint32Buffer &attrInfo,
     // Leaf operations with empty projections are not supported,
     // unless this is an aggregate leaf (results come via aggregation,
     // not through the normal row projection path).
-    if (getNoOfChildOperations() == 0 && !def.isAggregateLeaf()) {
+    if (getNoOfChildOperations() == 0 && !def.isAggregateLeaf() &&
+        !def.isQueryAggregation()) {
       return QRY_EMPTY_PROJECTION;
     }
   } else {
