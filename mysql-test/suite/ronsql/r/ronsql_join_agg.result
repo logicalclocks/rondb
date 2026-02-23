@@ -228,6 +228,85 @@ GROUP BY o.o_id|
 o_id	SUM(l.l_quantity)
 1	30
 
+
+=== Test 15: COUNT(*) on join ===
+== Query ==
+SELECT o.o_custkey, COUNT(*)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.o_custkey, COUNT(*)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey|
+o_custkey	COUNT(*)
+100	4
+200	4
+300	2
+
+
+=== Test 16: AVG aggregate on join ===
+== Query ==
+SELECT o.o_custkey, AVG(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey;
+
+Number of output lines, including header: 4
+
+== Diff ==
+--- mysql.out
++++ ronsql.out
+@@ -1,4 +1,4 @@
+ o_custkey	AVG(l.l_quantity)
+-100	12.5000
+-200	18.7500
+-300	37.5000
++100	12.5
++200	18.75
++300	37.5
+==========
+
+
+
+== Expected result ==
+SELECT o.o_custkey, AVG(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey|
+o_custkey	AVG(l.l_quantity)
+100	12.5000
+200	18.7500
+300	37.5000
+
+
+=== Test 17: Expression inside aggregate ===
+== Query ==
+SELECT o.o_custkey, SUM(l.l_quantity * l.l_price)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.o_custkey, SUM(l.l_quantity * l.l_price)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey|
+o_custkey	SUM(l.l_quantity * l.l_price)
+100	7500
+200	17330
+300	28250
+
 === Cleanup ===
 DROP TABLE order_extra;
 DROP TABLE lineitem;
