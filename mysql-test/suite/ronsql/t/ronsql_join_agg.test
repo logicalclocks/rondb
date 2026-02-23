@@ -8,6 +8,7 @@ call mtr.add_suppression("Participant timeout");
 --echo
 
 --disable_query_log
+--disable_warnings
 
 CREATE TABLE orders (
   o_id INT NOT NULL,
@@ -73,6 +74,7 @@ INSERT INTO order_extra VALUES
   (4, 200, 40),
   (5, 300, 50);
 
+--enable_warnings
 --enable_query_log
 
 DELIMITER |;
@@ -597,11 +599,105 @@ FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
 GROUP BY o.o_custkey
 HAVING COUNT(*) >= 4|
 
+--echo
+--echo
+--echo === Test 35: Multi-table GROUP BY (parent + child) ===
+
+let $QUERY=
+SELECT o.o_custkey, l.l_price, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey, l.l_price
+ORDER BY o.o_custkey, l.l_price;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_custkey, l.l_price, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey, l.l_price
+ORDER BY o.o_custkey, l.l_price|
+
+--echo
+--echo
+--echo === Test 36: Multi-table GROUP BY (root + leaf, 3-table) ===
+
+let $QUERY=
+SELECT c.c_region, l.l_price, SUM(l.l_quantity)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY c.c_region, l.l_price
+ORDER BY c.c_region, l.l_price;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_region, l.l_price, SUM(l.l_quantity)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY c.c_region, l.l_price
+ORDER BY c.c_region, l.l_price|
+
+--echo
+--echo
+--echo === Test 37: Multi-table GROUP BY (root + middle, 3-table) ===
+
+let $QUERY=
+SELECT c.c_region, o.o_status, SUM(l.l_quantity)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY c.c_region, o.o_status
+ORDER BY c.c_region, o.o_status;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_region, o.o_status, SUM(l.l_quantity)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY c.c_region, o.o_status
+ORDER BY c.c_region, o.o_status|
+
+--echo
+--echo
+--echo === Test 38: Self-join with COUNT(*) ===
+
+let $QUERY=
+SELECT o1.o_status, COUNT(*)
+FROM orders AS o1 JOIN orders AS o2 ON o2.o_custkey = o1.o_custkey
+GROUP BY o1.o_status;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o1.o_status, COUNT(*)
+FROM orders AS o1 JOIN orders AS o2 ON o2.o_custkey = o1.o_custkey
+GROUP BY o1.o_status|
+
+--echo
+--echo
+--echo === Test 39: Self-join with SUM ===
+
+let $QUERY=
+SELECT o1.o_custkey, SUM(o2.o_id)
+FROM orders AS o1 JOIN orders AS o2 ON o2.o_custkey = o1.o_custkey
+GROUP BY o1.o_custkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o1.o_custkey, SUM(o2.o_id)
+FROM orders AS o1 JOIN orders AS o2 ON o2.o_custkey = o1.o_custkey
+GROUP BY o1.o_custkey|
+
 DELIMITER ;|
 
 --echo
 --echo
---echo === Test 35: Error — cross-table comparison ===
+--echo === Test 40: Error — cross-table comparison ===
 --echo Expected error: WHERE condition references columns from multiple tables
 --error 1
 --exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT o.o_custkey, SUM(l.l_quantity) FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id WHERE l.l_quantity > o.o_custkey GROUP BY o.o_custkey;' 2>&1
