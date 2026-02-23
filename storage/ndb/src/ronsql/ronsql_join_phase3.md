@@ -1,5 +1,13 @@
 # RonSQL Join Phase 3 — Split Tests and New Features
 
+## Scope
+
+**The current focus is exclusively on RonSQL aggregation queries.** All join
+work on this branch targets queries with GROUP BY + aggregate functions (SUM,
+COUNT, MIN, MAX, AVG). Non-aggregation join queries (projection-only) are out
+of scope for now. MySQL handler integration (`ha_ndbcluster_push.cpp`) is
+handled in a separate work tree — this branch only concerns RonSQL.
+
 ## Context
 
 Phase 2 added Tests 5-14 to `ronsql_join.test`, covering 3-table joins, WHERE
@@ -113,34 +121,10 @@ column). Check `programAggregator_join()` handles this case.
 
 ---
 
-## Step 22: Joins without aggregation (projection-only)
+## Step 22: Joins without aggregation (projection-only) — DEFERRED
 
-### Problem
-Currently join queries require GROUP BY + aggregation. Simple projection
-queries like `SELECT o.o_id, l.l_quantity FROM orders o JOIN lineitem l ON
-l.l_orderkey = o.o_id` should also work. This is useful for debugging and
-for queries that just need related data from multiple tables.
-
-### 22a. Detect non-aggregate join query
-In `load_join()` or `compile()`, detect when no aggregate functions and no
-GROUP BY are present. Skip aggregator setup entirely.
-
-### 22b. Emit plain row output
-Without aggregation, each joined row is returned directly. The leaf
-operation returns individual rows. Parent columns needed in SELECT become
-linked projections read as regular output columns.
-
-### 22c. Add MTR tests
-- Test 18: `SELECT o.o_id, o.o_custkey, l.l_quantity FROM orders o JOIN
-  lineitem l ON l.l_orderkey = o.o_id` — plain projection
-- Test 19: Same with WHERE filter on root
-
-### Files to modify
-- `storage/ndb/src/ronsql/RonSQLPreparer.cpp` — `load_join()`,
-  `execute_join()`, `programAggregator_join()` or bypass
-- `storage/ndb/src/ronsql/ResultPrinter.cpp` — handle non-aggregated join
-  result rows
-- `mysql-test/suite/ronsql/t/ronsql_join_agg.test`
+**Deferred.** Current scope is RonSQL aggregation queries only. Projection-only
+joins will be revisited separately.
 
 ---
 
@@ -189,15 +173,16 @@ aggregate results.
 
 ## Implementation Order
 
-1. **Step 19** — Split tests (mechanical, no code changes)
-2. **Step 21** — COUNT(*) (likely already works, just verify + test)
-3. **Step 23** — AVG (likely already works, just verify + test)
-4. **Step 24** — Mixed expressions (likely already works, just test)
-5. **Step 22** — Projection-only joins (new feature, moderate complexity)
-6. **Step 20** — WHERE on child tables (new feature, highest complexity)
+1. **Step 19** — Split tests (mechanical, no code changes) — **DONE**
+2. **Step 21** — COUNT(*) (likely already works, just verify + test) — **DONE**
+3. **Step 23** — AVG (likely already works, just verify + test) — **DONE**
+4. **Step 24** — Mixed expressions (likely already works, just test) — **DONE**
+5. **Step 20** — WHERE on child tables (new feature, highest complexity)
+6. ~~**Step 22**~~ — Projection-only joins — **DEFERRED** (out of scope,
+   current focus is aggregation queries only)
 
-Steps 21, 23, 24 are likely verification-only (add tests, fix if broken).
-Steps 20 and 22 require actual feature implementation.
+Steps 21, 23, 24 were verification-only (tests added, all working).
+Step 20 is the remaining feature implementation for Phase 3.
 
 ## Verification
 
