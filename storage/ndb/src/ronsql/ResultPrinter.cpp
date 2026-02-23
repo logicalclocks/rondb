@@ -760,7 +760,13 @@ ResultPrinter::print_stored_record(StoredRow& row, std::ostream& out)
           double numerator = convert_result_to_double(result_sum);
           double denominator = convert_result_to_double(result_count);
           double result = numerator / denominator;
-          print_float_or_double(out, result);
+          char buffer[FLOATING_POINT_BUFFER];
+          bool error;
+          my_fcvt(result, 4, buffer, &error);
+          if (error)
+            out << m_null_representation;
+          else
+            out << buffer;
         }
       }
       break;
@@ -1257,7 +1263,13 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
           double numerator = convert_result_to_double(result_sum);
           double denominator = convert_result_to_double(result_count);
           double result = numerator / denominator;
-          print_float_or_double(out, result);
+          char buffer[FLOATING_POINT_BUFFER];
+          bool error;
+          my_fcvt(result, 4, buffer, &error);
+          if (error)
+            out << m_null_representation;
+          else
+            out << buffer;
         }
       }
       break;

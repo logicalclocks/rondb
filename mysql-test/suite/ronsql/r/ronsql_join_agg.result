@@ -281,16 +281,6 @@ GROUP BY o.o_custkey;
 Number of output lines, including header: 4
 
 == Diff ==
---- mysql.out
-+++ ronsql.out
-@@ -1,4 +1,4 @@
- o_custkey	AVG(l.l_quantity)
--100	12.5000
--200	18.7500
--300	37.5000
-+100	12.5
-+200	18.75
-+300	37.5
 ==========
 
 
