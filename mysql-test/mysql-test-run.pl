@@ -3324,6 +3324,13 @@ sub environment_setup {
       $ENV{'NDB_EXAMPLES_BINARY'} = $ndbapi_examples_binary;
       $ENV{'NDB_EXAMPLES_DIR'}    = dirname($ndbapi_examples_binary);
       mtr_verbose("NDB_EXAMPLES_DIR: $ENV{'NDB_EXAMPLES_DIR'}");
+
+      my $agg_binary = dirname($ndbapi_examples_binary) .
+                       "/ndb_ndbapi_agg_test";
+      if (-e $agg_binary) {
+        $ENV{'NDB_AGG_TEST_BINARY'} = $agg_binary;
+        mtr_verbose("NDB_AGG_TEST_BINARY: $agg_binary");
+      }
     }
 
     my $path_ndb_testrun_log = "$opt_vardir/tmp/ndb_testrun.log";
