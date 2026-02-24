@@ -276,8 +276,8 @@ id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered
 1	SIMPLE	t1	#	ALL	PRIMARY	#	#	#	#	#	Parent of 3 pushed join@1; Using pushed join aggregation; Using temporary
 1	SIMPLE	t2	#	eq_ref	PRIMARY	#	#	#	#	#	Child of 't1' in pushed join@1
 1	SIMPLE	t3	#	eq_ref	PRIMARY	#	#	#	#	#	Child of 't2' in pushed join@1
-Warnings:
 Note	1003	/* select#1 */ select `test`.`t1`.`grp` AS `grp`,sum(`test`.`t3`.`amount`) AS `SUM(t3.amount)`,count(0) AS `COUNT(*)` from `test`.`t1` join `test`.`t2` join `test`.`t3` where ((`test`.`t2`.`pk` = `test`.`t1`.`pk`) and (`test`.`t3`.`pk` = `test`.`t1`.`pk`)) group by `test`.`t1`.`grp`
+Warnings:
 ############################################################
 # Test 13: EXPLAIN without aggregation pushdown
 ############################################################
@@ -289,8 +289,8 @@ id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered
 1	SIMPLE	t1	#	ALL	PRIMARY	#	#	#	#	#	Parent of 3 pushed join@1; Using temporary
 1	SIMPLE	t2	#	eq_ref	PRIMARY	#	#	#	#	#	Child of 't1' in pushed join@1
 1	SIMPLE	t3	#	eq_ref	PRIMARY	#	#	#	#	#	Child of 't1' in pushed join@1
-Warnings:
 Note	1003	/* select#1 */ select `test`.`t1`.`grp` AS `grp`,sum(`test`.`t3`.`amount`) AS `SUM(t3.amount)`,count(0) AS `COUNT(*)` from `test`.`t1` join `test`.`t2` join `test`.`t3` where ((`test`.`t2`.`pk` = `test`.`t1`.`pk`) and (`test`.`t3`.`pk` = `test`.`t1`.`pk`)) group by `test`.`t1`.`grp`
+Warnings:
 ############################################################
 # Test 14: 2-way join (basic case)
 ############################################################
@@ -714,8 +714,8 @@ GROUP BY tp1.grp;
 id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
 1	SIMPLE	tp1	#	ALL	PRIMARY	#	#	#	#	#	Parent of 2 pushed join@1; Using pushed join aggregation; Using temporary
 1	SIMPLE	tp2	#	eq_ref	PRIMARY	#	#	#	#	#	Child of 'tp1' in pushed join@1
-Warnings:
 Note	1003	/* select#1 */ select `test`.`tp1`.`grp` AS `grp`,sum(`test`.`tp2`.`val_int`) AS `SUM(tp2.val_int)` from `test`.`tp1` join `test`.`tp2` where (`test`.`tp2`.`pk` = `test`.`tp1`.`pk`) group by `test`.`tp1`.`grp`
+Warnings:
 ############################################################
 # Test 34: COUNT(nullable_column) — skips NULLs correctly
 ############################################################
@@ -749,7 +749,7 @@ GROUP BY tp1.grp;
 id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
 1	SIMPLE	tp1	#	ALL	NULL	#	#	#	#	#	Parent of 2 pushed join@1; Using temporary
 1	SIMPLE	tp2	#	eq_ref	PRIMARY	#	#	#	#	#	Child of 'tp1' in pushed join@1
-Warnings:
 Note	1003	/* select#1 */ select `test`.`tp1`.`grp` AS `grp`,count(0) AS `COUNT(*)` from `test`.`tp1` left join `test`.`tp2` on((`test`.`tp2`.`pk` = `test`.`tp1`.`pk`)) where true group by `test`.`tp1`.`grp`
+Warnings:
 # Cleanup type tables
 DROP TABLE tp2, tp1;
