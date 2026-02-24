@@ -92,7 +92,15 @@ static bool ndb_can_push_aggregation(const JOIN *join) {
   for (Item_sum **func = join->sum_funcs; *func != nullptr; func++) {
     switch ((*func)->sum_func()) {
       case Item_sum::COUNT_FUNC:
-        // COUNT(*) or COUNT(expr) — always pushable.
+        // COUNT(*) is always pushable.
+        // COUNT(column) where column is nullable cannot be pushed yet
+        // because the data node counts all rows without NULL checking.
+        if ((*func)->argument_count() == 1) {
+          Item *arg = (*func)->arguments()[0];
+          if (arg->type() == Item::FIELD_ITEM && arg->is_nullable()) {
+            return false;
+          }
+        }
         break;
       case Item_sum::SUM_FUNC:
       case Item_sum::MIN_FUNC:

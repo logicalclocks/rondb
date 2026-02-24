@@ -238,5 +238,351 @@ EXPLAIN SELECT t1.grp, SUM(t3.amount), COUNT(*)
 FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
 GROUP BY t1.grp;
 
---echo # Cleanup
+--echo ############################################################
+--echo # Test 14: 2-way join (basic case)
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+--sorted_result
+SELECT t1.grp, SUM(t2.discount), COUNT(*), MIN(t2.discount), MAX(t2.discount)
+FROM t1 JOIN t2 ON t2.pk = t1.pk
+GROUP BY t1.grp;
+
+SET ndb_join_pushdown_aggregate=ON;
+--sorted_result
+SELECT t1.grp, SUM(t2.discount), COUNT(*), MIN(t2.discount), MAX(t2.discount)
+FROM t1 JOIN t2 ON t2.pk = t1.pk
+GROUP BY t1.grp;
+
+--echo ############################################################
+--echo # Test 15: Single row result
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT t1.grp, SUM(t3.amount)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+WHERE t1.pk = 1
+GROUP BY t1.grp;
+
+SET ndb_join_pushdown_aggregate=ON;
+SELECT t1.grp, SUM(t3.amount)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+WHERE t1.pk = 1
+GROUP BY t1.grp;
+
+--echo ############################################################
+--echo # Test 16: COUNT(column) vs COUNT(*) with NULLs
+--echo # Row pk=9 has NULL amount — COUNT(amount) should skip it
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+--sorted_result
+SELECT t1.grp, COUNT(*), COUNT(t3.amount)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp;
+
+SET ndb_join_pushdown_aggregate=ON;
+--sorted_result
+SELECT t1.grp, COUNT(*), COUNT(t3.amount)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp;
+
+--echo ############################################################
+--echo # Test 17: Combined HAVING + ORDER BY + LIMIT
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT t1.grp, SUM(t3.amount) AS total, COUNT(*) AS cnt
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp
+HAVING cnt >= 3
+ORDER BY total ASC
+LIMIT 1;
+
+SET ndb_join_pushdown_aggregate=ON;
+SELECT t1.grp, SUM(t3.amount) AS total, COUNT(*) AS cnt
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp
+HAVING cnt >= 3
+ORDER BY total ASC
+LIMIT 1;
+
+--echo ############################################################
+--echo # Test 18: Multiple aggregates on same column
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+--sorted_result
+SELECT t1.grp, SUM(t3.amount), MIN(t3.amount), MAX(t3.amount),
+       COUNT(*), COUNT(t3.amount)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp;
+
+SET ndb_join_pushdown_aggregate=ON;
+--sorted_result
+SELECT t1.grp, SUM(t3.amount), MIN(t3.amount), MAX(t3.amount),
+       COUNT(*), COUNT(t3.amount)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp;
+
+--echo # Cleanup phase 10 tables
 DROP TABLE t3, t2, t1;
+
+--echo ############################################################
+--echo # Phase 12: Type coverage tests
+--echo ############################################################
+
+--echo # Create tables with diverse column types
+CREATE TABLE tp1 (
+  pk INT PRIMARY KEY,
+  grp INT
+) ENGINE=NDB;
+
+CREATE TABLE tp2 (
+  pk INT PRIMARY KEY,
+  val_int INT,
+  val_bigint BIGINT,
+  val_float FLOAT,
+  val_double DOUBLE,
+  val_date DATE,
+  val_datetime DATETIME,
+  val_char CHAR(10),
+  val_varchar VARCHAR(20)
+) ENGINE=NDB;
+
+INSERT INTO tp1 VALUES (1, 1), (2, 1), (3, 2), (4, 2), (5, 3);
+
+INSERT INTO tp2 VALUES
+  (1, 10,  1000000000000, 1.5,  10.25,  '2024-01-15', '2024-01-15 10:30:00', 'alpha', 'hello'),
+  (2, 20,  2000000000000, 2.5,  20.50,  '2024-02-20', '2024-02-20 14:45:00', 'alpha', 'world'),
+  (3, 30,  3000000000000, 3.5,  30.75,  '2024-01-15', '2024-01-15 09:00:00', 'beta',  'foo'),
+  (4, 40,  4000000000000, 4.5,  40.125, '2024-03-10', '2024-03-10 18:00:00', 'beta',  'bar'),
+  (5, 50,  5000000000000, 5.5,  50.5,   '2024-02-20', '2024-02-20 12:00:00', 'gamma', 'baz');
+
+--echo ############################################################
+--echo # Test 19: SUM/MIN/MAX on INT
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+--sorted_result
+SELECT tp1.grp, SUM(tp2.val_int), MIN(tp2.val_int), MAX(tp2.val_int)
+FROM tp1 JOIN tp2 ON tp2.pk = tp1.pk
+GROUP BY tp1.grp;
+
+SET ndb_join_pushdown_aggregate=ON;
+--sorted_result
+SELECT tp1.grp, SUM(tp2.val_int), MIN(tp2.val_int), MAX(tp2.val_int)
+FROM tp1 JOIN tp2 ON tp2.pk = tp1.pk
+GROUP BY tp1.grp;
+
+--echo ############################################################
+--echo # Test 20: SUM/MIN/MAX on BIGINT
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+--sorted_result
+SELECT tp1.grp, SUM(tp2.val_bigint), MIN(tp2.val_bigint), MAX(tp2.val_bigint)
+FROM tp1 JOIN tp2 ON tp2.pk = tp1.pk
+GROUP BY tp1.grp;
+
+SET ndb_join_pushdown_aggregate=ON;
+--sorted_result
+SELECT tp1.grp, SUM(tp2.val_bigint), MIN(tp2.val_bigint), MAX(tp2.val_bigint)
+FROM tp1 JOIN tp2 ON tp2.pk = tp1.pk
+GROUP BY tp1.grp;
+
+--echo ############################################################
+--echo # Test 21: SUM/MIN/MAX on FLOAT
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+--sorted_result
+SELECT tp1.grp, SUM(tp2.val_float), MIN(tp2.val_float), MAX(tp2.val_float)
+FROM tp1 JOIN tp2 ON tp2.pk = tp1.pk
+GROUP BY tp1.grp;
+
+SET ndb_join_pushdown_aggregate=ON;
+--sorted_result
+SELECT tp1.grp, SUM(tp2.val_float), MIN(tp2.val_float), MAX(tp2.val_float)
+FROM tp1 JOIN tp2 ON tp2.pk = tp1.pk
+GROUP BY tp1.grp;
+
+--echo ############################################################
+--echo # Test 22: SUM/MIN/MAX on DOUBLE
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+--sorted_result
+SELECT tp1.grp, SUM(tp2.val_double), MIN(tp2.val_double), MAX(tp2.val_double)
+FROM tp1 JOIN tp2 ON tp2.pk = tp1.pk
+GROUP BY tp1.grp;
+
+SET ndb_join_pushdown_aggregate=ON;
+--sorted_result
+SELECT tp1.grp, SUM(tp2.val_double), MIN(tp2.val_double), MAX(tp2.val_double)
+FROM tp1 JOIN tp2 ON tp2.pk = tp1.pk
+GROUP BY tp1.grp;
+
+--echo ############################################################
+--echo # Test 23: GROUP BY on DATE column
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+--sorted_result
+SELECT tp2.val_date, COUNT(*), SUM(tp2.val_int)
+FROM tp1 JOIN tp2 ON tp2.pk = tp1.pk
+GROUP BY tp2.val_date;
+
+SET ndb_join_pushdown_aggregate=ON;
+--sorted_result
+SELECT tp2.val_date, COUNT(*), SUM(tp2.val_int)
+FROM tp1 JOIN tp2 ON tp2.pk = tp1.pk
+GROUP BY tp2.val_date;
+
+--echo ############################################################
+--echo # Test 24: GROUP BY on DATETIME column
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+--sorted_result
+SELECT tp2.val_datetime, SUM(tp2.val_int)
+FROM tp1 JOIN tp2 ON tp2.pk = tp1.pk
+GROUP BY tp2.val_datetime;
+
+SET ndb_join_pushdown_aggregate=ON;
+--sorted_result
+SELECT tp2.val_datetime, SUM(tp2.val_int)
+FROM tp1 JOIN tp2 ON tp2.pk = tp1.pk
+GROUP BY tp2.val_datetime;
+
+--echo ############################################################
+--echo # Test 25: GROUP BY on CHAR column
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+--sorted_result
+SELECT tp2.val_char, COUNT(*), SUM(tp2.val_int)
+FROM tp1 JOIN tp2 ON tp2.pk = tp1.pk
+GROUP BY tp2.val_char;
+
+SET ndb_join_pushdown_aggregate=ON;
+--sorted_result
+SELECT tp2.val_char, COUNT(*), SUM(tp2.val_int)
+FROM tp1 JOIN tp2 ON tp2.pk = tp1.pk
+GROUP BY tp2.val_char;
+
+--echo ############################################################
+--echo # Test 26: GROUP BY on VARCHAR column
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+--sorted_result
+SELECT tp2.val_varchar, SUM(tp2.val_int)
+FROM tp1 JOIN tp2 ON tp2.pk = tp1.pk
+GROUP BY tp2.val_varchar;
+
+SET ndb_join_pushdown_aggregate=ON;
+--sorted_result
+SELECT tp2.val_varchar, SUM(tp2.val_int)
+FROM tp1 JOIN tp2 ON tp2.pk = tp1.pk
+GROUP BY tp2.val_varchar;
+
+--echo ############################################################
+--echo # Test 27: GROUP BY root INT + leaf DATE (multi-type GROUP BY)
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+--sorted_result
+SELECT tp1.grp, tp2.val_date, SUM(tp2.val_int)
+FROM tp1 JOIN tp2 ON tp2.pk = tp1.pk
+GROUP BY tp1.grp, tp2.val_date;
+
+SET ndb_join_pushdown_aggregate=ON;
+--sorted_result
+SELECT tp1.grp, tp2.val_date, SUM(tp2.val_int)
+FROM tp1 JOIN tp2 ON tp2.pk = tp1.pk
+GROUP BY tp1.grp, tp2.val_date;
+
+--echo ############################################################
+--echo # Test 28: MIN/MAX on DATE and DATETIME
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+--sorted_result
+SELECT tp1.grp, MIN(tp2.val_date), MAX(tp2.val_date),
+       MIN(tp2.val_datetime), MAX(tp2.val_datetime)
+FROM tp1 JOIN tp2 ON tp2.pk = tp1.pk
+GROUP BY tp1.grp;
+
+SET ndb_join_pushdown_aggregate=ON;
+--sorted_result
+SELECT tp1.grp, MIN(tp2.val_date), MAX(tp2.val_date),
+       MIN(tp2.val_datetime), MAX(tp2.val_datetime)
+FROM tp1 JOIN tp2 ON tp2.pk = tp1.pk
+GROUP BY tp1.grp;
+
+--echo ############################################################
+--echo # Test 29: MIN/MAX on CHAR and VARCHAR
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+--sorted_result
+SELECT tp1.grp, MIN(tp2.val_char), MAX(tp2.val_char),
+       MIN(tp2.val_varchar), MAX(tp2.val_varchar)
+FROM tp1 JOIN tp2 ON tp2.pk = tp1.pk
+GROUP BY tp1.grp;
+
+SET ndb_join_pushdown_aggregate=ON;
+--sorted_result
+SELECT tp1.grp, MIN(tp2.val_char), MAX(tp2.val_char),
+       MIN(tp2.val_varchar), MAX(tp2.val_varchar)
+FROM tp1 JOIN tp2 ON tp2.pk = tp1.pk
+GROUP BY tp1.grp;
+
+--echo ############################################################
+--echo # Test 30: All-NULL aggregate column
+--echo ############################################################
+CREATE TABLE tn1 (pk INT PRIMARY KEY, grp INT) ENGINE=NDB;
+CREATE TABLE tn2 (pk INT PRIMARY KEY, val INT) ENGINE=NDB;
+
+INSERT INTO tn1 VALUES (1, 1), (2, 1), (3, 2);
+INSERT INTO tn2 VALUES (1, NULL), (2, NULL), (3, NULL);
+
+SET ndb_join_pushdown_aggregate=OFF;
+--sorted_result
+SELECT tn1.grp, SUM(tn2.val), COUNT(*), COUNT(tn2.val),
+       MIN(tn2.val), MAX(tn2.val)
+FROM tn1 JOIN tn2 ON tn2.pk = tn1.pk
+GROUP BY tn1.grp;
+
+SET ndb_join_pushdown_aggregate=ON;
+--sorted_result
+SELECT tn1.grp, SUM(tn2.val), COUNT(*), COUNT(tn2.val),
+       MIN(tn2.val), MAX(tn2.val)
+FROM tn1 JOIN tn2 ON tn2.pk = tn1.pk
+GROUP BY tn1.grp;
+
+DROP TABLE tn2, tn1;
+
+--echo ############################################################
+--echo # Test 31: Implicit aggregation on empty join result
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT COUNT(*), SUM(tp2.val_int), MIN(tp2.val_int), MAX(tp2.val_int)
+FROM tp1 JOIN tp2 ON tp2.pk = tp1.pk
+WHERE tp1.pk = 999;
+
+SET ndb_join_pushdown_aggregate=ON;
+SELECT COUNT(*), SUM(tp2.val_int), MIN(tp2.val_int), MAX(tp2.val_int)
+FROM tp1 JOIN tp2 ON tp2.pk = tp1.pk
+WHERE tp1.pk = 999;
+
+--echo ############################################################
+--echo # Test 32: Single group (all rows in one group)
+--echo ############################################################
+# Use a constant GROUP BY expression that evaluates the same for all rows
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT 'all' AS grp, COUNT(*), SUM(tp2.val_int), MIN(tp2.val_double), MAX(tp2.val_double)
+FROM tp1 JOIN tp2 ON tp2.pk = tp1.pk
+GROUP BY grp;
+
+SET ndb_join_pushdown_aggregate=ON;
+SELECT 'all' AS grp, COUNT(*), SUM(tp2.val_int), MIN(tp2.val_double), MAX(tp2.val_double)
+FROM tp1 JOIN tp2 ON tp2.pk = tp1.pk
+GROUP BY grp;
+
+--echo ############################################################
+--echo # Test 33: EXPLAIN on 2-way join with aggregation
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=ON;
+--replace_column 4 # 7 # 8 # 9 # 10 # 11 #
+EXPLAIN SELECT tp1.grp, SUM(tp2.val_int)
+FROM tp1 JOIN tp2 ON tp2.pk = tp1.pk
+GROUP BY tp1.grp;
+
+--echo # Cleanup type tables
+DROP TABLE tp2, tp1;
