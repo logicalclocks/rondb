@@ -456,6 +456,48 @@ affected test cases in:
 Without this fix, test results are flaky — passing or failing depending on
 hash table layout which varies across runs and platforms.
 
+### Future: ASOF JOIN Support (RonSQL Only) (Priority: Low)
+
+ASOF JOIN matches each row from the left table to the closest row in the
+right table based on a temporal or ordered column, without requiring exact
+equality. Common in time-series and financial data analysis.
+
+**Example:**
+```sql
+SELECT t.*, q.price
+FROM trades t
+ASOF JOIN quotes q ON t.symbol = q.symbol AND t.timestamp >= q.timestamp;
+```
+
+**What's needed in RonSQL:**
+- New join type in the RonSQL parser/grammar (ASOF JOIN keyword)
+- Semantics: for each left row, find the right row with the largest key
+  value that is <= the left row's key (or >= depending on direction)
+- Execution: ordered index scan on the right table with upper/lower bound
+  derived from each left row's join column value
+- Aggregation support: ASOF JOIN combined with GROUP BY/SUM/COUNT etc.
+
+### Future: Vector Search Join (RonSQL Only) (Priority: Low)
+
+Support joins where the final (leaf) table is accessed via a vector
+similarity search (k-nearest neighbors) rather than an exact key lookup
+or index scan.
+
+**Example:**
+```sql
+SELECT p.product_name, r.review_text, r.similarity
+FROM products p
+JOIN reviews r ON VECTOR_SEARCH(r.embedding, p.query_vector, 10);
+```
+
+**What's needed in RonSQL:**
+- Vector similarity search as a join condition (KNN lookup on leaf table)
+- Integration with NDB's vector index infrastructure
+- The join produces top-K nearest neighbors from the right table for each
+  left row, rather than exact-match or range-match rows
+- Aggregation over vector search results (e.g., AVG similarity score
+  per product category)
+
 ### 5b. 64-bit rowsExamined (Priority: Low)
 
 For very large joins (millions of leaf rows), the 32-bit rowsExamined
