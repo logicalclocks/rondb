@@ -302,6 +302,22 @@ No crashes. The test program failed because:
 ```
 dic: 4714: Index stats system tables do not exist
 ```
-This is likely a consequence of the previous crash (test #9) — the cluster
-was restarted but index stats system tables were not properly initialized.
-This is a secondary failure caused by the test #9 crash.
+This is NOT a consequence of the test #9 crash — it's an independent issue.
+The index stats system tables (`ndb_index_stat_head`, `ndb_index_stat_sample`)
+are only created by the MySQL plugin (ha_ndbcluster_binlog.cc). In this ATRT
+configuration there is no mysqld, so these tables never exist. When testBlobs
+creates an ordered index, DBDICT triggers an index stats update via TRIX, which
+fails with error 4714 when it can't find the stats tables. The error path in
+`alterIndex_fromIndexStat()` (Dbdict.cpp) aborted the entire createIndex.
+
+Earlier tests (T1, T6, D1, D2) pass because those table types don't have
+ordered indexes, so the index stats path is never triggered.
+
+Root cause: `Dbdict::alterIndex_fromIndexStat()` treated all IndexStatRef
+errors as fatal, including 4714 which is expected without mysqld.
+
+Fix (branch autotest_fixes):
+1. In `alterIndex_fromIndexStat()`, when error 4714 (NoSysTables) is
+   received, treat it as non-fatal: skip the stats operation by setting
+   `m_sub_index_stat_dml = true` and `m_sub_index_stat_mon = true`, then
+   continue with `createSubOps()` instead of `abortSubOps()`.

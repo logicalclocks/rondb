@@ -14622,6 +14622,19 @@ void Dbdict::alterIndex_fromIndexStat(Signal *signal, Uint32 op_key,
     alterIndexPtr.p->m_sub_index_stat_dml = true;
     alterIndexPtr.p->m_sub_index_stat_mon = true;
     createSubOps(signal, op_ptr);
+  } else if (ret == 4714) {
+    /**
+     * Index stats system tables do not exist (error 4714 / NoSysTables).
+     * This is expected when no mysqld is connected — the index stats tables
+     * (ndb_index_stat_head, ndb_index_stat_sample) are only created by the
+     * MySQL plugin. Treat as non-fatal: skip the stats operation and
+     * continue the index creation.
+     */
+    jam();
+    D("alterIndex_fromIndexStat: skip index stats, sys tables not found");
+    alterIndexPtr.p->m_sub_index_stat_dml = true;
+    alterIndexPtr.p->m_sub_index_stat_mon = true;
+    createSubOps(signal, op_ptr);
   } else {
     jam();
     const IndexStatRef *ref = (const IndexStatRef *)signal->getDataPtr();
