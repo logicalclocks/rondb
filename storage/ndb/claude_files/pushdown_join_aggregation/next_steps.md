@@ -127,17 +127,15 @@ this suite tests the full MySQL→handler→NDB API→data node path.
 
 ### 4. More Integration Tests (Priority: Medium)
 
-#### 4a. Eviction Through NDB API Path
+#### 4a. Eviction Through NDB API Path ✅ COMPLETE
 
-Test that group overflow (eviction) works correctly through the NDB API.
-When the hash table fills up at DBLQH, evicted groups are sent as
-TRANSID_AI directly to the API receiver. Verify that:
-- The API receives partial results during the scan (evicted groups)
-- The final COMPLETE phase merges/sends remaining groups
-- Total result is correct (evicted + final groups combined)
-
-**Approach:** Use ERROR_INSERT 5090 (forces maxGroups=3) with
-testJoinAggNdbApi. Create data with >3 distinct GROUP BY values.
+Tests 14–17 in `testJoinAggNdbApi.cpp` verify eviction through the NDB API:
+- **Test 14**: ERROR_INSERT 5090 (maxGroups=3), 2-table join, 10 groups, SUM+COUNT
+- **Test 15**: ERROR_INSERT 5090 with all agg functions (SUM/COUNT/MIN/MAX)
+- **Test 16**: ERROR_INSERT 5090 on 3-way join (linked attribute pass-through)
+- **Test 17**: Combined ERROR_INSERT 5090 + 4040 (dual eviction pressure)
+All tests verify partial TRANSID_AI → API merge → correct final results,
+with MySQL cross-check for each.
 
 #### 4b. Multi-Fragment / Multi-Node
 

@@ -3647,6 +3647,1001 @@ testEvictionGroupBy(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
 }
 
 /* ------------------------------------------------------------------ */
+/* Test 14: Forced eviction via ERROR_INSERT 5090 (maxGroups=3)        */
+/*                                                                     */
+/* SQL equivalent:                                                     */
+/*   SELECT p.grp, SUM(c.val), COUNT(*)                                */
+/*   FROM t14_parent p JOIN t14_child c ON c.parent_id = p.id          */
+/*   GROUP BY p.grp                                                    */
+/*                                                                     */
+/* 100 rows, 10 groups of 10. ERROR_INSERT 5090 forces maxGroups=3,    */
+/* causing hard-limit eviction whenever a 4th group arrives. Evicted   */
+/* groups are sent as partial TRANSID_AI results; the NDB API must     */
+/* merge them correctly with the final COMPLETE batch.                 */
+/* ------------------------------------------------------------------ */
+
+static const char *T14_PARENT = "t14_parent";
+static const char *T14_CHILD  = "t14_child";
+
+static int
+createTest14Tables(MYSQL *conn)
+{
+  sqlExec(conn, "DROP TABLE IF EXISTS t14_child");
+  sqlExec(conn, "DROP TABLE IF EXISTS t14_parent");
+
+  if (sqlExec(conn,
+        "CREATE TABLE t14_parent ("
+        "  id INT NOT NULL PRIMARY KEY,"
+        "  grp INT NOT NULL"
+        ") ENGINE=NDB") != 0) return -1;
+
+  if (sqlExec(conn,
+        "CREATE TABLE t14_child ("
+        "  parent_id INT NOT NULL PRIMARY KEY,"
+        "  val BIGINT NOT NULL"
+        ") ENGINE=NDB") != 0) return -1;
+
+  V("Created t14_parent, t14_child\n");
+  return 0;
+}
+
+static int
+insertTest14Data(MYSQL *conn)
+{
+  /* 100 parents: id=1..100, grp = ((id-1) % 10) + 1
+   * 100 children: parent_id=id, val = id * 10
+   *
+   * Group g contains ids: g, g+10, g+20, ..., g+90 (10 rows each)
+   * SUM(val) for group g = 10 * (g + g+10 + g+20 + ... + g+90)
+   *                       = 10 * (10*g + 10*(0+1+2+...+9))
+   *                       = 10 * (10*g + 450) = 100*g + 4500
+   * COUNT(*) for each group = 10
+   */
+  char buf[8192];
+  int pos = snprintf(buf, sizeof(buf), "INSERT INTO t14_parent VALUES ");
+  for (int i = 1; i <= 100; i++) {
+    if (i > 1) pos += snprintf(buf + pos, sizeof(buf) - pos, ",");
+    int grp = ((i - 1) % 10) + 1;
+    pos += snprintf(buf + pos, sizeof(buf) - pos, "(%d,%d)", i, grp);
+  }
+  if (sqlExec(conn, buf) != 0) return -1;
+
+  pos = snprintf(buf, sizeof(buf), "INSERT INTO t14_child VALUES ");
+  for (int i = 1; i <= 100; i++) {
+    if (i > 1) pos += snprintf(buf + pos, sizeof(buf) - pos, ",");
+    pos += snprintf(buf + pos, sizeof(buf) - pos, "(%d,%d)", i, i * 10);
+  }
+  if (sqlExec(conn, buf) != 0) return -1;
+
+  V("Inserted 100 t14_parent + 100 t14_child rows\n");
+  return 0;
+}
+
+static int
+dropTest14Tables(MYSQL *conn)
+{
+  sqlExec(conn, "DROP TABLE IF EXISTS t14_child");
+  sqlExec(conn, "DROP TABLE IF EXISTS t14_parent");
+  V("Dropped t14_parent, t14_child\n");
+  return 0;
+}
+
+static int
+testEviction5090GroupBy(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
+{
+  printf("Test 14: Forced eviction (ERROR_INSERT 5090) GROUP BY ... ");
+  fflush(stdout);
+
+  if (restarter.insertErrorInAllNodes(5090) != 0) {
+    printf("FAILED (insertErrorInAllNodes(5090))\n");
+    return -1;
+  }
+  V("\n  ERROR_INSERT 5090 set (maxGroups=3)\n");
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(T14_PARENT);
+  dict->invalidateTable(T14_CHILD);
+  const NdbDictionary::Table *parentTab = dict->getTable(T14_PARENT);
+  const NdbDictionary::Table *childTab = dict->getTable(T14_CHILD);
+  if (parentTab == nullptr || childTab == nullptr) {
+    printf("FAILED (table lookup: %s)\n", dict->getNdbError().message);
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+
+  const NdbDictionary::Column *grpCol = parentTab->getColumn("grp");
+  if (grpCol == nullptr) {
+    printf("FAILED (column lookup)\n");
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+
+  NdbAggregator agg(childTab);
+  if (!agg.GroupByLinked(0, grpCol) ||
+      !agg.LoadColumn("val", 0) ||
+      !agg.Sum(0, 0) ||
+      !agg.Count(1, 0) ||
+      !agg.Finalize()) {
+    printf("FAILED (agg program: %s)\n", agg.GetError().err_msg_);
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  const NdbQueryTableScanOperationDef *parentOp = qb->scanTable(parentTab);
+
+  const NdbQueryOperand *joinKey[] = {
+    qb->linkedValue(parentOp, "id"), nullptr
+  };
+
+  NdbQueryOptions opts;
+  opts.setAggregation(agg);
+  const NdbLinkedOperand *grpLink = qb->linkedValue(parentOp, "grp");
+  opts.addLinkedProjection(grpLink);
+
+  const NdbQueryLookupOperationDef *childOp =
+      qb->readTuple(childTab, joinKey, &opts);
+  if (childOp == nullptr) {
+    printf("FAILED (readTuple: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  NdbQuery *query = trans->createQuery(queryDef);
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    printf("FAILED (execute: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {}
+  if (outcome == NdbQuery::NextResult_error) {
+    printf("FAILED (nextResult: %s)\n", query->getNdbError().message);
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+
+  NdbAggregator *resultAgg = query->getAggregator();
+  if (resultAgg == nullptr) {
+    printf("FAILED (getAggregator returned nullptr)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+
+  struct Result14 { Int64 sum_val; Int64 count; };
+  std::map<Int32, Result14> actual;
+  for (;;) {
+    NdbAggregator::ResultRecord rec = resultAgg->FetchResultRecord();
+    if (rec.end()) break;
+
+    NdbAggregator::Column grp = rec.FetchGroupbyColumn();
+    Int32 grpVal = grp.data_int32();
+    NdbAggregator::Result sumRes = rec.FetchAggregationResult();
+    Int64 sumVal = sumRes.data_int64();
+    NdbAggregator::Result cntRes = rec.FetchAggregationResult();
+    Int64 cntVal = cntRes.data_int64();
+
+    actual[grpVal] = {sumVal, cntVal};
+    V("  grp=%d SUM=%lld COUNT=%lld\n",
+      grpVal, (long long)sumVal, (long long)cntVal);
+  }
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  restarter.insertErrorInAllNodes(0);
+  V("  ERROR_INSERT cleared\n");
+
+  if (actual.size() != 10) {
+    printf("FAILED (expected 10 groups, got %zu)\n", actual.size());
+    return -1;
+  }
+
+  /* Verify: group g → SUM(val) = 100*g + 4500, COUNT = 10 */
+  for (Int32 g = 1; g <= 10; g++) {
+    auto it = actual.find(g);
+    if (it == actual.end()) {
+      printf("FAILED (missing group %d)\n", g);
+      return -1;
+    }
+    Int64 expectedSum = (Int64)g * 100 + 4500;
+    if (it->second.sum_val != expectedSum) {
+      printf("FAILED (group %d: expected SUM=%lld, got %lld)\n",
+             g, (long long)expectedSum, (long long)it->second.sum_val);
+      return -1;
+    }
+    if (it->second.count != 10) {
+      printf("FAILED (group %d: expected COUNT=10, got %lld)\n",
+             g, (long long)it->second.count);
+      return -1;
+    }
+  }
+
+  /* Cross-check with MySQL */
+  {
+    if (mysql_query(conn,
+          "SELECT p.grp, SUM(c.val), COUNT(*) "
+          "FROM t14_parent p JOIN t14_child c ON c.parent_id = p.id "
+          "GROUP BY p.grp ORDER BY p.grp") != 0) {
+      printf("FAILED (MySQL cross-check: %s)\n", mysql_error(conn));
+      return -1;
+    }
+    MYSQL_RES *result = mysql_store_result(conn);
+    MYSQL_ROW row;
+    while ((row = mysql_fetch_row(result)) != nullptr) {
+      Int32 grp = atoi(row[0]);
+      Int64 sqlSum = atoll(row[1]);
+      Int64 sqlCnt = atoll(row[2]);
+      auto it = actual.find(grp);
+      if (it == actual.end() ||
+          it->second.sum_val != sqlSum ||
+          it->second.count != sqlCnt) {
+        printf("FAILED (MySQL cross-check: grp=%d mismatch)\n", grp);
+        mysql_free_result(result);
+        return -1;
+      }
+    }
+    mysql_free_result(result);
+    V("  MySQL cross-check OK\n");
+  }
+
+  printf("OK (10 groups, maxGroups=3 eviction merge verified)\n");
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Test 15: ERROR_INSERT 5090 with all aggregate functions             */
+/*                                                                     */
+/* SQL equivalent:                                                     */
+/*   SELECT p.grp, SUM(c.val), COUNT(c.val), MIN(c.val), MAX(c.val)   */
+/*   FROM t14_parent p JOIN t14_child c ON c.parent_id = p.id          */
+/*   GROUP BY p.grp                                                    */
+/*                                                                     */
+/* Reuses t14 tables. Verifies that SUM, COUNT, MIN, MAX all merge     */
+/* correctly when groups are evicted and re-accumulated.               */
+/* ------------------------------------------------------------------ */
+
+static int
+testEviction5090AllAggs(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
+{
+  printf("Test 15: Eviction 5090 with SUM/COUNT/MIN/MAX ... ");
+  fflush(stdout);
+
+  if (restarter.insertErrorInAllNodes(5090) != 0) {
+    printf("FAILED (insertErrorInAllNodes(5090))\n");
+    return -1;
+  }
+  V("\n  ERROR_INSERT 5090 set (maxGroups=3)\n");
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(T14_PARENT);
+  dict->invalidateTable(T14_CHILD);
+  const NdbDictionary::Table *parentTab = dict->getTable(T14_PARENT);
+  const NdbDictionary::Table *childTab = dict->getTable(T14_CHILD);
+  if (parentTab == nullptr || childTab == nullptr) {
+    printf("FAILED (table lookup: %s)\n", dict->getNdbError().message);
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+
+  const NdbDictionary::Column *grpCol = parentTab->getColumn("grp");
+  if (grpCol == nullptr) {
+    printf("FAILED (column lookup)\n");
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+
+  NdbAggregator agg(childTab);
+  if (!agg.GroupByLinked(0, grpCol) ||
+      !agg.LoadColumn("val", 0) ||
+      !agg.Sum(0, 0) ||
+      !agg.Count(1, 0) ||
+      !agg.Min(2, 0) ||
+      !agg.Max(3, 0) ||
+      !agg.Finalize()) {
+    printf("FAILED (agg program: %s)\n", agg.GetError().err_msg_);
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  const NdbQueryTableScanOperationDef *parentOp = qb->scanTable(parentTab);
+
+  const NdbQueryOperand *joinKey[] = {
+    qb->linkedValue(parentOp, "id"), nullptr
+  };
+
+  NdbQueryOptions opts;
+  opts.setAggregation(agg);
+  const NdbLinkedOperand *grpLink = qb->linkedValue(parentOp, "grp");
+  opts.addLinkedProjection(grpLink);
+
+  const NdbQueryLookupOperationDef *childOp =
+      qb->readTuple(childTab, joinKey, &opts);
+  if (childOp == nullptr) {
+    printf("FAILED (readTuple: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  NdbQuery *query = trans->createQuery(queryDef);
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    printf("FAILED (execute: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {}
+  if (outcome == NdbQuery::NextResult_error) {
+    printf("FAILED (nextResult: %s)\n", query->getNdbError().message);
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+
+  NdbAggregator *resultAgg = query->getAggregator();
+  if (resultAgg == nullptr) {
+    printf("FAILED (getAggregator returned nullptr)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+
+  struct Result15 { Int64 sum_val; Int64 count; Int64 min_val; Int64 max_val; };
+  std::map<Int32, Result15> actual;
+  for (;;) {
+    NdbAggregator::ResultRecord rec = resultAgg->FetchResultRecord();
+    if (rec.end()) break;
+
+    NdbAggregator::Column grp = rec.FetchGroupbyColumn();
+    Int32 grpVal = grp.data_int32();
+    NdbAggregator::Result sumRes = rec.FetchAggregationResult();
+    Int64 sumVal = sumRes.data_int64();
+    NdbAggregator::Result cntRes = rec.FetchAggregationResult();
+    Int64 cntVal = cntRes.data_int64();
+    NdbAggregator::Result minRes = rec.FetchAggregationResult();
+    Int64 minVal = minRes.data_int64();
+    NdbAggregator::Result maxRes = rec.FetchAggregationResult();
+    Int64 maxVal = maxRes.data_int64();
+
+    actual[grpVal] = {sumVal, cntVal, minVal, maxVal};
+    V("  grp=%d SUM=%lld COUNT=%lld MIN=%lld MAX=%lld\n",
+      grpVal, (long long)sumVal, (long long)cntVal,
+      (long long)minVal, (long long)maxVal);
+  }
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  restarter.insertErrorInAllNodes(0);
+  V("  ERROR_INSERT cleared\n");
+
+  if (actual.size() != 10) {
+    printf("FAILED (expected 10 groups, got %zu)\n", actual.size());
+    return -1;
+  }
+
+  /* Verify each group:
+   * Group g has ids: g, g+10, g+20, ..., g+90
+   * val = id * 10, so vals: g*10, (g+10)*10, ..., (g+90)*10
+   * SUM = 100*g + 4500
+   * COUNT = 10
+   * MIN = g * 10
+   * MAX = (g + 90) * 10
+   */
+  for (Int32 g = 1; g <= 10; g++) {
+    auto it = actual.find(g);
+    if (it == actual.end()) {
+      printf("FAILED (missing group %d)\n", g);
+      return -1;
+    }
+    Int64 expectedSum = (Int64)g * 100 + 4500;
+    Int64 expectedMin = (Int64)g * 10;
+    Int64 expectedMax = (Int64)(g + 90) * 10;
+    const Result15 &r = it->second;
+    if (r.sum_val != expectedSum || r.count != 10 ||
+        r.min_val != expectedMin || r.max_val != expectedMax) {
+      printf("FAILED (group %d: expected SUM=%lld COUNT=10 MIN=%lld MAX=%lld, "
+             "got SUM=%lld COUNT=%lld MIN=%lld MAX=%lld)\n",
+             g, (long long)expectedSum, (long long)expectedMin,
+             (long long)expectedMax,
+             (long long)r.sum_val, (long long)r.count,
+             (long long)r.min_val, (long long)r.max_val);
+      return -1;
+    }
+  }
+
+  /* Cross-check with MySQL */
+  {
+    if (mysql_query(conn,
+          "SELECT p.grp, SUM(c.val), COUNT(c.val), MIN(c.val), MAX(c.val) "
+          "FROM t14_parent p JOIN t14_child c ON c.parent_id = p.id "
+          "GROUP BY p.grp ORDER BY p.grp") != 0) {
+      printf("FAILED (MySQL cross-check: %s)\n", mysql_error(conn));
+      return -1;
+    }
+    MYSQL_RES *result = mysql_store_result(conn);
+    MYSQL_ROW row;
+    while ((row = mysql_fetch_row(result)) != nullptr) {
+      Int32 grp = atoi(row[0]);
+      Int64 sqlSum = atoll(row[1]);
+      Int64 sqlCnt = atoll(row[2]);
+      Int64 sqlMin = atoll(row[3]);
+      Int64 sqlMax = atoll(row[4]);
+      auto it = actual.find(grp);
+      if (it == actual.end() ||
+          it->second.sum_val != sqlSum || it->second.count != sqlCnt ||
+          it->second.min_val != sqlMin || it->second.max_val != sqlMax) {
+        printf("FAILED (MySQL cross-check: grp=%d mismatch)\n", grp);
+        mysql_free_result(result);
+        return -1;
+      }
+    }
+    mysql_free_result(result);
+    V("  MySQL cross-check OK\n");
+  }
+
+  printf("OK (10 groups, all 4 agg functions merge verified)\n");
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Test 16: ERROR_INSERT 5090 on 3-way join with linked attributes     */
+/*                                                                     */
+/* SQL equivalent:                                                     */
+/*   SELECT r.area, SUM(l.amount), COUNT(*)                            */
+/*   FROM t16_region r                                                 */
+/*   JOIN t16_order o ON o.region_id = r.id                            */
+/*   JOIN t16_line l ON l.order_id = o.region_id                       */
+/*   GROUP BY r.area                                                   */
+/*                                                                     */
+/* 8 regions, 8 orders, 8 lines → 8 groups. With maxGroups=3,         */
+/* eviction exercises linked-attribute pass-through from grandparent   */
+/* (region.area) through parent (order) to leaf (line) under eviction. */
+/* ------------------------------------------------------------------ */
+
+static const char *T16_REGION = "t16_region";
+static const char *T16_ORDER  = "t16_order";
+static const char *T16_LINE   = "t16_line";
+
+static int
+createTest16Tables(MYSQL *conn)
+{
+  sqlExec(conn, "DROP TABLE IF EXISTS t16_line");
+  sqlExec(conn, "DROP TABLE IF EXISTS t16_order");
+  sqlExec(conn, "DROP TABLE IF EXISTS t16_region");
+
+  if (sqlExec(conn,
+        "CREATE TABLE t16_region ("
+        "  id INT NOT NULL PRIMARY KEY,"
+        "  area INT NOT NULL"
+        ") ENGINE=NDB") != 0) return -1;
+
+  if (sqlExec(conn,
+        "CREATE TABLE t16_order ("
+        "  region_id INT NOT NULL PRIMARY KEY,"
+        "  discount BIGINT NOT NULL"
+        ") ENGINE=NDB") != 0) return -1;
+
+  if (sqlExec(conn,
+        "CREATE TABLE t16_line ("
+        "  order_id INT NOT NULL PRIMARY KEY,"
+        "  amount BIGINT NOT NULL"
+        ") ENGINE=NDB") != 0) return -1;
+
+  V("Created t16 tables\n");
+  return 0;
+}
+
+static int
+insertTest16Data(MYSQL *conn)
+{
+  /* 8 regions with distinct areas 1..8
+   * 8 orders (1:1 with regions), discount = area * 10
+   * 8 lines (1:1 with orders), amount = area * 100
+   *
+   * GROUP BY r.area:
+   *   area=g → SUM(amount) = g*100, COUNT(*) = 1
+   */
+  if (sqlExec(conn,
+        "INSERT INTO t16_region VALUES "
+        "(1,1),(2,2),(3,3),(4,4),(5,5),(6,6),(7,7),(8,8)") != 0) return -1;
+
+  if (sqlExec(conn,
+        "INSERT INTO t16_order VALUES "
+        "(1,10),(2,20),(3,30),(4,40),(5,50),(6,60),(7,70),(8,80)") != 0)
+    return -1;
+
+  if (sqlExec(conn,
+        "INSERT INTO t16_line VALUES "
+        "(1,100),(2,200),(3,300),(4,400),(5,500),(6,600),(7,700),(8,800)") != 0)
+    return -1;
+
+  V("Inserted 8+8+8 rows into t16 tables\n");
+  return 0;
+}
+
+static int
+dropTest16Tables(MYSQL *conn)
+{
+  sqlExec(conn, "DROP TABLE IF EXISTS t16_line");
+  sqlExec(conn, "DROP TABLE IF EXISTS t16_order");
+  sqlExec(conn, "DROP TABLE IF EXISTS t16_region");
+  V("Dropped t16 tables\n");
+  return 0;
+}
+
+static int
+testEviction5090ThreeWay(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
+{
+  printf("Test 16: Eviction 5090 on 3-way join ... ");
+  fflush(stdout);
+
+  if (restarter.insertErrorInAllNodes(5090) != 0) {
+    printf("FAILED (insertErrorInAllNodes(5090))\n");
+    return -1;
+  }
+  V("\n  ERROR_INSERT 5090 set (maxGroups=3)\n");
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(T16_REGION);
+  dict->invalidateTable(T16_ORDER);
+  dict->invalidateTable(T16_LINE);
+  const NdbDictionary::Table *regionTab = dict->getTable(T16_REGION);
+  const NdbDictionary::Table *orderTab = dict->getTable(T16_ORDER);
+  const NdbDictionary::Table *lineTab = dict->getTable(T16_LINE);
+  if (regionTab == nullptr || orderTab == nullptr || lineTab == nullptr) {
+    printf("FAILED (table lookup: %s)\n", dict->getNdbError().message);
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+
+  const NdbDictionary::Column *areaCol = regionTab->getColumn("area");
+  if (areaCol == nullptr) {
+    printf("FAILED (column lookup)\n");
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+
+  /* Aggregation program on leaf (t16_line):
+   *   GROUP BY linked position 0 (= region.area, grandparent)
+   *   SUM(amount) → agg[0]
+   *   COUNT(*)    → agg[1]
+   */
+  NdbAggregator agg(lineTab);
+  if (!agg.GroupByLinked(0, areaCol) ||
+      !agg.LoadColumn("amount", 0) ||
+      !agg.Sum(0, 0) ||
+      !agg.Count(1, 0) ||
+      !agg.Finalize()) {
+    printf("FAILED (agg program: %s)\n", agg.GetError().err_msg_);
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  if (qb == nullptr) {
+    printf("FAILED (NdbQueryBuilder::create)\n");
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+
+  /* Node 0: scan t16_region */
+  const NdbQueryTableScanOperationDef *regionOp = qb->scanTable(regionTab);
+  if (regionOp == nullptr) {
+    printf("FAILED (scanTable: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+
+  /* Node 1: lookup t16_order (region_id = region.id) */
+  const NdbQueryOperand *orderJoinKey[] = {
+    qb->linkedValue(regionOp, "id"), nullptr
+  };
+  const NdbQueryLookupOperationDef *orderOp =
+      qb->readTuple(orderTab, orderJoinKey);
+  if (orderOp == nullptr) {
+    printf("FAILED (readTuple order: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+
+  /* Node 2: lookup t16_line (order_id = order.region_id) with aggregation */
+  const NdbQueryOperand *lineJoinKey[] = {
+    qb->linkedValue(orderOp, "region_id"), nullptr
+  };
+
+  NdbQueryOptions lineOpts;
+  lineOpts.setAggregation(agg);
+  const NdbLinkedOperand *areaLink = qb->linkedValue(regionOp, "area");
+  if (areaLink == nullptr) {
+    printf("FAILED (linkedValue area: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+  lineOpts.addLinkedProjection(areaLink);
+
+  const NdbQueryLookupOperationDef *lineOp =
+      qb->readTuple(lineTab, lineJoinKey, &lineOpts);
+  if (lineOp == nullptr) {
+    printf("FAILED (readTuple line: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  NdbQuery *query = trans->createQuery(queryDef);
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    printf("FAILED (execute: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {}
+  if (outcome == NdbQuery::NextResult_error) {
+    printf("FAILED (nextResult: %s)\n", query->getNdbError().message);
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+
+  NdbAggregator *resultAgg = query->getAggregator();
+  if (resultAgg == nullptr) {
+    printf("FAILED (getAggregator returned nullptr)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+
+  struct Result16 { Int64 sum_amount; Int64 count; };
+  std::map<Int32, Result16> actual;
+  for (;;) {
+    NdbAggregator::ResultRecord rec = resultAgg->FetchResultRecord();
+    if (rec.end()) break;
+
+    NdbAggregator::Column area = rec.FetchGroupbyColumn();
+    Int32 areaVal = area.data_int32();
+    NdbAggregator::Result sumRes = rec.FetchAggregationResult();
+    Int64 sumVal = sumRes.data_int64();
+    NdbAggregator::Result cntRes = rec.FetchAggregationResult();
+    Int64 cntVal = cntRes.data_int64();
+
+    actual[areaVal] = {sumVal, cntVal};
+    V("  area=%d SUM=%lld COUNT=%lld\n",
+      areaVal, (long long)sumVal, (long long)cntVal);
+  }
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  restarter.insertErrorInAllNodes(0);
+  V("  ERROR_INSERT cleared\n");
+
+  if (actual.size() != 8) {
+    printf("FAILED (expected 8 groups, got %zu)\n", actual.size());
+    return -1;
+  }
+
+  /* Verify: area=g → SUM(amount) = g*100, COUNT = 1 */
+  for (Int32 g = 1; g <= 8; g++) {
+    auto it = actual.find(g);
+    if (it == actual.end()) {
+      printf("FAILED (missing area group %d)\n", g);
+      return -1;
+    }
+    Int64 expectedSum = (Int64)g * 100;
+    if (it->second.sum_amount != expectedSum || it->second.count != 1) {
+      printf("FAILED (area=%d: expected SUM=%lld COUNT=1, got SUM=%lld COUNT=%lld)\n",
+             g, (long long)expectedSum,
+             (long long)it->second.sum_amount, (long long)it->second.count);
+      return -1;
+    }
+  }
+
+  /* Cross-check with MySQL */
+  {
+    if (mysql_query(conn,
+          "SELECT r.area, SUM(l.amount), COUNT(*) "
+          "FROM t16_region r "
+          "JOIN t16_order o ON o.region_id = r.id "
+          "JOIN t16_line l ON l.order_id = o.region_id "
+          "GROUP BY r.area ORDER BY r.area") != 0) {
+      printf("FAILED (MySQL cross-check: %s)\n", mysql_error(conn));
+      return -1;
+    }
+    MYSQL_RES *result = mysql_store_result(conn);
+    MYSQL_ROW row;
+    while ((row = mysql_fetch_row(result)) != nullptr) {
+      Int32 area = atoi(row[0]);
+      Int64 sqlSum = atoll(row[1]);
+      Int64 sqlCnt = atoll(row[2]);
+      auto it = actual.find(area);
+      if (it == actual.end() ||
+          it->second.sum_amount != sqlSum ||
+          it->second.count != sqlCnt) {
+        printf("FAILED (MySQL cross-check: area=%d mismatch)\n", area);
+        mysql_free_result(result);
+        return -1;
+      }
+    }
+    mysql_free_result(result);
+    V("  MySQL cross-check OK\n");
+  }
+
+  printf("OK (8 groups, 3-way join eviction merge verified)\n");
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Test 17: Combined ERROR_INSERT 5090 + 4040 (dual eviction)          */
+/*                                                                     */
+/* SQL equivalent:                                                     */
+/*   SELECT p.grp, SUM(c.val), COUNT(*)                                */
+/*   FROM t14_parent p JOIN t14_child c ON c.parent_id = p.id          */
+/*   GROUP BY p.grp                                                    */
+/*                                                                     */
+/* Reuses t14 tables (100 rows, 10 groups). Both error inserts active: */
+/* 5090 limits hash table to 3 groups (hard eviction), while 4040      */
+/* forces intermittent eviction every ~7th row when >=3 groups exist.  */
+/* This creates maximum eviction pressure — groups may be evicted      */
+/* multiple times and re-accumulated. The merge must still be correct. */
+/* ------------------------------------------------------------------ */
+
+static int
+testEviction5090And4040(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
+{
+  printf("Test 17: Combined eviction 5090 + 4040 ... ");
+  fflush(stdout);
+
+  if (restarter.insertErrorInAllNodes(5090) != 0) {
+    printf("FAILED (insertErrorInAllNodes(5090))\n");
+    return -1;
+  }
+  if (restarter.insertErrorInAllNodes(4040) != 0) {
+    printf("FAILED (insertErrorInAllNodes(4040))\n");
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+  V("\n  ERROR_INSERT 5090 + 4040 set\n");
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(T14_PARENT);
+  dict->invalidateTable(T14_CHILD);
+  const NdbDictionary::Table *parentTab = dict->getTable(T14_PARENT);
+  const NdbDictionary::Table *childTab = dict->getTable(T14_CHILD);
+  if (parentTab == nullptr || childTab == nullptr) {
+    printf("FAILED (table lookup: %s)\n", dict->getNdbError().message);
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+
+  const NdbDictionary::Column *grpCol = parentTab->getColumn("grp");
+  if (grpCol == nullptr) {
+    printf("FAILED (column lookup)\n");
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+
+  NdbAggregator agg(childTab);
+  if (!agg.GroupByLinked(0, grpCol) ||
+      !agg.LoadColumn("val", 0) ||
+      !agg.Sum(0, 0) ||
+      !agg.Count(1, 0) ||
+      !agg.Finalize()) {
+    printf("FAILED (agg program: %s)\n", agg.GetError().err_msg_);
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  const NdbQueryTableScanOperationDef *parentOp = qb->scanTable(parentTab);
+
+  const NdbQueryOperand *joinKey[] = {
+    qb->linkedValue(parentOp, "id"), nullptr
+  };
+
+  NdbQueryOptions opts;
+  opts.setAggregation(agg);
+  const NdbLinkedOperand *grpLink = qb->linkedValue(parentOp, "grp");
+  opts.addLinkedProjection(grpLink);
+
+  const NdbQueryLookupOperationDef *childOp =
+      qb->readTuple(childTab, joinKey, &opts);
+  if (childOp == nullptr) {
+    printf("FAILED (readTuple: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  NdbQuery *query = trans->createQuery(queryDef);
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    printf("FAILED (execute: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {}
+  if (outcome == NdbQuery::NextResult_error) {
+    printf("FAILED (nextResult: %s)\n", query->getNdbError().message);
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+
+  NdbAggregator *resultAgg = query->getAggregator();
+  if (resultAgg == nullptr) {
+    printf("FAILED (getAggregator returned nullptr)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+
+  struct Result17 { Int64 sum_val; Int64 count; };
+  std::map<Int32, Result17> actual;
+  for (;;) {
+    NdbAggregator::ResultRecord rec = resultAgg->FetchResultRecord();
+    if (rec.end()) break;
+
+    NdbAggregator::Column grp = rec.FetchGroupbyColumn();
+    Int32 grpVal = grp.data_int32();
+    NdbAggregator::Result sumRes = rec.FetchAggregationResult();
+    Int64 sumVal = sumRes.data_int64();
+    NdbAggregator::Result cntRes = rec.FetchAggregationResult();
+    Int64 cntVal = cntRes.data_int64();
+
+    actual[grpVal] = {sumVal, cntVal};
+    V("  grp=%d SUM=%lld COUNT=%lld\n",
+      grpVal, (long long)sumVal, (long long)cntVal);
+  }
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  restarter.insertErrorInAllNodes(0);
+  V("  ERROR_INSERT cleared\n");
+
+  if (actual.size() != 10) {
+    printf("FAILED (expected 10 groups, got %zu)\n", actual.size());
+    return -1;
+  }
+
+  /* Same expected results as Test 14 */
+  for (Int32 g = 1; g <= 10; g++) {
+    auto it = actual.find(g);
+    if (it == actual.end()) {
+      printf("FAILED (missing group %d)\n", g);
+      return -1;
+    }
+    Int64 expectedSum = (Int64)g * 100 + 4500;
+    if (it->second.sum_val != expectedSum) {
+      printf("FAILED (group %d: expected SUM=%lld, got %lld)\n",
+             g, (long long)expectedSum, (long long)it->second.sum_val);
+      return -1;
+    }
+    if (it->second.count != 10) {
+      printf("FAILED (group %d: expected COUNT=10, got %lld)\n",
+             g, (long long)it->second.count);
+      return -1;
+    }
+  }
+
+  /* Cross-check with MySQL */
+  {
+    if (mysql_query(conn,
+          "SELECT p.grp, SUM(c.val), COUNT(*) "
+          "FROM t14_parent p JOIN t14_child c ON c.parent_id = p.id "
+          "GROUP BY p.grp ORDER BY p.grp") != 0) {
+      printf("FAILED (MySQL cross-check: %s)\n", mysql_error(conn));
+      return -1;
+    }
+    MYSQL_RES *result = mysql_store_result(conn);
+    MYSQL_ROW row;
+    while ((row = mysql_fetch_row(result)) != nullptr) {
+      Int32 grp = atoi(row[0]);
+      Int64 sqlSum = atoll(row[1]);
+      Int64 sqlCnt = atoll(row[2]);
+      auto it = actual.find(grp);
+      if (it == actual.end() ||
+          it->second.sum_val != sqlSum ||
+          it->second.count != sqlCnt) {
+        printf("FAILED (MySQL cross-check: grp=%d mismatch)\n", grp);
+        mysql_free_result(result);
+        return -1;
+      }
+    }
+    mysql_free_result(result);
+    V("  MySQL cross-check OK\n");
+  }
+
+  printf("OK (10 groups, dual eviction merge verified)\n");
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* Main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -3893,6 +4888,40 @@ int main(int argc, char **argv)
             exitCode = 1;
           }
           dropTest13Tables(conn);
+        }
+
+        /* Tests 14, 15, 17: Eviction via ERROR_INSERT 5090 (reuse t14 tables) */
+        if (shouldRun(14) || shouldRun(15) || shouldRun(17)) {
+          NdbRestarter restarter(connectString);
+          if (createTest14Tables(conn) == 0 && insertTest14Data(conn) == 0) {
+            if (shouldRun(14)) {
+              if (testEviction5090GroupBy(&ndb, conn, restarter) != 0)
+                exitCode = 1;
+            }
+            if (shouldRun(15)) {
+              if (testEviction5090AllAggs(&ndb, conn, restarter) != 0)
+                exitCode = 1;
+            }
+            if (shouldRun(17)) {
+              if (testEviction5090And4040(&ndb, conn, restarter) != 0)
+                exitCode = 1;
+            }
+          } else {
+            exitCode = 1;
+          }
+          dropTest14Tables(conn);
+        }
+
+        /* Test 16: Eviction 5090 on 3-way join */
+        if (shouldRun(16)) {
+          NdbRestarter restarter(connectString);
+          if (createTest16Tables(conn) == 0 && insertTest16Data(conn) == 0) {
+            if (testEviction5090ThreeWay(&ndb, conn, restarter) != 0)
+              exitCode = 1;
+          } else {
+            exitCode = 1;
+          }
+          dropTest16Tables(conn);
         }
 
         mysql_close(conn);
