@@ -245,6 +245,15 @@ outer 5-table join. This pattern is common in TPC-H (Q2, Q4, Q17, Q20, Q22).
      MySQL's pushed join builder may have practical limits
    - Verify SPJ topology constraints for deep/wide join trees
 
+4. **Scalar subquery in HAVING clause**
+   - Q11: `HAVING SUM(...) > (SELECT SUM(...) * 0.0001 FROM ...)`
+   - Non-correlated subquery producing a scalar used in HAVING filter
+   - MySQL likely evaluates the subquery independently, then uses the result
+     as a constant in the HAVING filter — outer query pushdown unaffected
+   - HAVING evaluation (Phase 6) already uses Item_sum pushed values
+   - Verify MySQL doesn't merge/transform this in a way that breaks the
+     push path for the outer query
+
 **Target query (TPC-H Q2):**
 ```sql
 SELECT s_acctbal, s_name, n_name, p_partkey, p_mfgr,
@@ -370,6 +379,56 @@ FROM (
 ) AS shipping
 GROUP BY supp_nation, cust_nation, l_year
 ORDER BY supp_nation, cust_nation, l_year;
+```
+
+### Phase 19: CASE in Aggregates & Post-Aggregation Expressions (Priority: Medium)
+
+TPC-H Q8 (National Market Share) uses CASE inside SUM and division of two
+aggregate results. 8-table join with derived table.
+
+**What's needed:**
+
+1. **CASE expression inside aggregate function**
+   - Q8: `SUM(CASE WHEN nation = 'BRAZIL' THEN volume ELSE 0 END)`
+   - NdbAggregator already supports CASE (testCaseAgg, Phases 1-6), but
+     `ndb_can_push_aggregation()` requires aggregate arguments to be
+     `Item::FIELD_ITEM` (ha_ndbcluster_push_agg.cc:112)
+   - CASE produces `Item_func_case`, not a field — rejected today
+   - Need to detect and compile CASE into NdbAggregator program at the
+     MySQL handler level
+   - For RonSQL: verify CASE expression support in aggregates
+
+2. **Post-aggregation arithmetic expressions in SELECT/HAVING**
+   - Q8: `SUM(CASE...) / SUM(volume) AS mkt_share` — division of two aggregates
+   - Q11: `SUM(ps_supplycost * ps_availqty) * 0.0001` — aggregate times constant
+   - These are `Item_func_div`/`Item_func_mul` over `Item_sum` with pushed values
+   - MySQL evaluates post-pushdown — verify that Item_sum::val_real() with
+     pushed values composes correctly through arithmetic Item_func nodes
+
+3. **8-table join aggregation at MySQL handler level**
+   - Extends Phase 18.5 (6-table) — verify SPJ topology constraints and
+     handler limits for 8-table pushed joins with aggregation
+
+**Target query (TPC-H Q8):**
+```sql
+SELECT o_year,
+       SUM(CASE WHEN nation = 'BRAZIL' THEN volume ELSE 0 END)
+         / SUM(volume) AS mkt_share
+FROM (
+  SELECT EXTRACT(YEAR FROM o_orderdate) AS o_year,
+         l_extendedprice * (1 - l_discount) AS volume,
+         n2.n_name AS nation
+  FROM part, supplier, lineitem, orders, customer,
+       nation n1, nation n2, region
+  WHERE p_partkey = l_partkey AND s_suppkey = l_suppkey
+    AND l_orderkey = o_orderkey AND o_custkey = c_custkey
+    AND c_nationkey = n1.n_nationkey AND n1.n_regionkey = r_regionkey
+    AND r_name = 'AMERICA' AND s_nationkey = n2.n_nationkey
+    AND o_orderdate BETWEEN '1995-01-01' AND '1996-12-31'
+    AND p_type = 'ECONOMY ANODIZED STEEL'
+) AS all_nations
+GROUP BY o_year
+ORDER BY o_year;
 ```
 
 ### Future: Outer Join Aggregation Support (Priority: Low)
