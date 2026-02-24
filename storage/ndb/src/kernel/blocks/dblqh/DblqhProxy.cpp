@@ -2353,7 +2353,8 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
                                  JoinAggSetupReq::AggProgramSectionNum));
     Uint32 progLen = ptr.sz;
     Uint32 *progBuf =
-      (Uint32 *)ndbd_malloc(progLen * sizeof(Uint32));
+      (Uint32 *)lc_ndbd_pool_malloc(progLen * sizeof(Uint32),
+                                     RG_QUERY_MEMORY, getThreadId(), false);
     ndbrequire(progBuf != nullptr);
     copy(progBuf, ptr);
     state->m_agg_program = progBuf;
@@ -2365,7 +2366,8 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
     Uint32 numIds = rcvPtr.sz;
     ndbrequire(numIds > 0);
     Uint32 *idsBuf =
-      (Uint32 *)ndbd_malloc(numIds * sizeof(Uint32));
+      (Uint32 *)lc_ndbd_pool_malloc(numIds * sizeof(Uint32),
+                                     RG_QUERY_MEMORY, getThreadId(), false);
     ndbrequire(idsBuf != nullptr);
     copy(idsBuf, rcvPtr);
     state->m_receiverIds = idsBuf;
@@ -2409,8 +2411,9 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   } else {
     jam();
     Uint32 num_threads = state->m_num_threads;
-    AggInterpreter **arr = (AggInterpreter **)ndbd_malloc(
-        num_threads * sizeof(AggInterpreter *));
+    AggInterpreter **arr = (AggInterpreter **)lc_ndbd_pool_malloc(
+        num_threads * sizeof(AggInterpreter *),
+        RG_QUERY_MEMORY, getThreadId(), false);
     ndbrequire(arr != nullptr);
     Uint32 per_thread_budget = budget_pages / num_threads;
     if (per_thread_budget < 4) {
@@ -2479,15 +2482,13 @@ DblqhProxy::execJOIN_AGG_RELEASE_REQ(Signal *signal) {
     jam();
     // Free aggregation program buffer
     if (state->m_agg_program != nullptr) {
-      ndbd_free(state->m_agg_program,
-                state->m_agg_program_len * sizeof(Uint32));
+      lc_ndbd_pool_free(state->m_agg_program);
       state->m_agg_program = nullptr;
       state->m_agg_program_len = 0;
     }
     // Free receiver IDs array
     if (state->m_receiverIds != nullptr) {
-      ndbd_free(state->m_receiverIds,
-                state->m_numReceiverIds * sizeof(Uint32));
+      lc_ndbd_pool_free(state->m_receiverIds);
       state->m_receiverIds = nullptr;
       state->m_numReceiverIds = 0;
     }
@@ -2510,8 +2511,7 @@ DblqhProxy::execJOIN_AGG_RELEASE_REQ(Signal *signal) {
           state->m_per_thread_interpreters[i] = nullptr;
         }
       }
-      ndbd_free(state->m_per_thread_interpreters,
-                state->m_num_threads * sizeof(AggInterpreter *));
+      lc_ndbd_pool_free(state->m_per_thread_interpreters);
       state->m_per_thread_interpreters = nullptr;
     }
 
