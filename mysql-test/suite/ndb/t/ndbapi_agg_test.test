@@ -1,0 +1,22 @@
+-- source include/have_ndb.inc
+-- source include/have_ndbapi_examples.inc
+
+let MASTER_MYSOCK=`select @@socket`;
+
+let $tls = `SELECT COUNT(*) > 0 FROM ndbinfo.transporters WHERE encrypted = 1`;
+if ($tls) {
+  let HOME=$MYSQL_TMP_DIR;
+  let HOMEPATH=$MYSQL_TMP_DIR;
+  --force-cpdir $MYSQLTEST_VARDIR/std_data/ndb-tls/active $HOME/ndb-tls
+}
+
+# Run the test binary.  Stdout ([TEST] lines) goes directly to MTR result.
+# Stderr (debug trace) is discarded.
+--exec $NDB_EXAMPLES_DIR/ndb_ndbapi_agg_test $MASTER_MYSOCK "$NDB_CONNECTSTRING" 2>/dev/null
+
+# Clean up database created by the test program
+DROP DATABASE IF EXISTS agg_test;
+
+if ($tls) {
+  --force-rmdir $HOME/ndb-tls
+}
