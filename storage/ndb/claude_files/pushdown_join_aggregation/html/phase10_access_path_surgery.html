@@ -1,0 +1,828 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RONDB-733 Phase 10: AccessPath Surgery for Pushed Join Aggregation</title>
+<style>
+  :root {
+    --bg: #1a1a2e;
+    --surface: #16213e;
+    --surface2: #0f3460;
+    --accent: #e94560;
+    --accent2: #53d8fb;
+    --text: #eee;
+    --text-dim: #aab;
+    --green: #4ec9b0;
+    --yellow: #dcdcaa;
+    --blue: #569cd6;
+    --orange: #ce9178;
+    --purple: #c586c0;
+    --red: #f44747;
+    --border: #334;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    padding: 2rem;
+    max-width: 1100px;
+    margin: 0 auto;
+  }
+  h1 {
+    font-size: 2rem;
+    color: var(--accent2);
+    border-bottom: 2px solid var(--accent);
+    padding-bottom: 0.5rem;
+    margin-bottom: 1.5rem;
+  }
+  h2 {
+    font-size: 1.5rem;
+    color: var(--accent2);
+    margin-top: 2.5rem;
+    margin-bottom: 1rem;
+    padding-left: 0.5rem;
+    border-left: 4px solid var(--accent);
+  }
+  h3 {
+    font-size: 1.15rem;
+    color: var(--green);
+    margin-top: 1.5rem;
+    margin-bottom: 0.5rem;
+  }
+  p { margin-bottom: 1rem; }
+  a { color: var(--accent2); }
+
+  .tree-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.5rem;
+    margin: 1rem 0 1.5rem;
+    font-family: 'Cascadia Code', 'Fira Code', 'Menlo', monospace;
+    font-size: 0.9rem;
+    line-height: 1.6;
+    overflow-x: auto;
+    white-space: pre;
+  }
+  .tree-box .node {
+    color: var(--blue);
+    font-weight: bold;
+  }
+  .tree-box .removed {
+    color: var(--red);
+    text-decoration: line-through;
+    opacity: 0.7;
+  }
+  .tree-box .kept {
+    color: var(--green);
+    font-weight: bold;
+  }
+  .tree-box .comment {
+    color: var(--text-dim);
+    font-style: italic;
+  }
+
+  code {
+    font-family: 'Cascadia Code', 'Fira Code', 'Menlo', monospace;
+    background: var(--surface);
+    padding: 0.15rem 0.4rem;
+    border-radius: 3px;
+    font-size: 0.88rem;
+  }
+  pre {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.2rem 1.5rem;
+    margin: 1rem 0 1.5rem;
+    overflow-x: auto;
+    font-family: 'Cascadia Code', 'Fira Code', 'Menlo', monospace;
+    font-size: 0.85rem;
+    line-height: 1.6;
+  }
+  pre .kw { color: var(--blue); }
+  pre .fn { color: var(--yellow); }
+  pre .str { color: var(--orange); }
+  pre .cmt { color: var(--text-dim); font-style: italic; }
+  pre .type { color: var(--green); }
+  pre .lit { color: var(--accent2); }
+
+  .diagram {
+    display: flex;
+    gap: 2rem;
+    flex-wrap: wrap;
+    justify-content: center;
+    margin: 1.5rem 0;
+  }
+  .diagram-panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.5rem;
+    flex: 1;
+    min-width: 300px;
+    max-width: 480px;
+  }
+  .diagram-panel h4 {
+    text-align: center;
+    color: var(--accent);
+    margin-bottom: 1rem;
+    font-size: 1rem;
+  }
+  .diagram-panel pre {
+    background: transparent;
+    border: none;
+    padding: 0;
+    margin: 0;
+    font-size: 0.85rem;
+  }
+
+  .flow-arrow {
+    display: block;
+    text-align: center;
+    font-size: 2rem;
+    color: var(--accent);
+    margin: 0.5rem 0;
+  }
+
+  .callout {
+    background: var(--surface2);
+    border-left: 4px solid var(--accent);
+    border-radius: 0 8px 8px 0;
+    padding: 1rem 1.5rem;
+    margin: 1rem 0 1.5rem;
+  }
+  .callout.green { border-left-color: var(--green); }
+  .callout.blue { border-left-color: var(--accent2); }
+  .callout strong { color: var(--accent2); }
+
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 1rem 0 1.5rem;
+    font-size: 0.9rem;
+  }
+  th, td {
+    border: 1px solid var(--border);
+    padding: 0.6rem 1rem;
+    text-align: left;
+  }
+  th {
+    background: var(--surface2);
+    color: var(--accent2);
+    font-weight: 600;
+  }
+  td { background: var(--surface); }
+  tr:hover td { background: var(--surface2); }
+
+  .file-ref {
+    font-family: 'Cascadia Code', 'Fira Code', 'Menlo', monospace;
+    font-size: 0.82rem;
+    color: var(--text-dim);
+  }
+
+  .toc {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.2rem 1.5rem;
+    margin-bottom: 2rem;
+  }
+  .toc h3 { color: var(--accent2); margin-bottom: 0.5rem; }
+  .toc ol { padding-left: 1.5rem; }
+  .toc li { margin: 0.3rem 0; }
+  .toc a { text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+
+<h1>RONDB-733 Phase 10: AccessPath Surgery for Pushed Join Aggregation</h1>
+
+<p>
+This document explains how MySQL's query optimizer builds AccessPath trees for
+aggregate queries, and how RonDB's aggregation pushdown modifies those trees
+to route aggregate computation to NDB data nodes instead of the MySQL server.
+</p>
+
+<nav class="toc">
+<h3>Contents</h3>
+<ol>
+  <li><a href="#background">Background: What Is Aggregation Pushdown?</a></li>
+  <li><a href="#optimizer">How the MySQL Query Optimizer Builds Aggregate AccessPaths</a></li>
+  <li><a href="#aggregate">The AGGREGATE Iterator</a></li>
+  <li><a href="#temptable">The TEMPTABLE_AGGREGATE Iterator</a></li>
+  <li><a href="#problem">The Problem: Why Surgery Is Needed</a></li>
+  <li><a href="#surgery">The AccessPath Surgery</a></li>
+  <li><a href="#strip">strip_pushed_child_nljs(): Removing Pushed Join Children</a></li>
+  <li><a href="#itemsum">Item_sum Modifications: Bridging Pushed Values to Temp Tables</a></li>
+  <li><a href="#valdecimal">The val_decimal() Fix: Why SUM Returned Zero</a></li>
+  <li><a href="#summary">Summary of Changes</a></li>
+  <li><a href="#files">Files Modified</a></li>
+</ol>
+</nav>
+
+
+<!-- ─────────────────────────────────────────── -->
+<h2 id="background">1. Background: What Is Aggregation Pushdown?</h2>
+
+<p>
+In a standard MySQL query like:
+</p>
+<pre>
+<span class="kw">SELECT</span> t1.grp, <span class="fn">SUM</span>(t3.amount), <span class="fn">COUNT</span>(*)
+<span class="kw">FROM</span> t1 <span class="kw">JOIN</span> t2 <span class="kw">ON</span> t2.pk = t1.pk
+         <span class="kw">JOIN</span> t3 <span class="kw">ON</span> t3.pk = t2.pk
+<span class="kw">GROUP BY</span> t1.grp;
+</pre>
+
+<p>
+MySQL normally fetches every matching row from the storage engine, then computes
+<code>SUM</code> and <code>COUNT</code> itself using its aggregate iterators.
+With <strong>aggregation pushdown</strong>, the NDB data nodes compute the
+aggregates directly, returning only the grouped summary rows (e.g., 3 rows for
+groups A/B/C instead of all 8 individual rows). This dramatically reduces
+network traffic and CPU work at the MySQL server.
+</p>
+
+<p>
+RonDB implements this via the <code>NdbAggregator</code> program, which is
+attached to a pushed join query. The data node's DBLQH block runs the
+aggregation engine (<code>AggInterpreter</code>) on the leaf rows of the join,
+and DBSPJ coordinates sending grouped results back to the API.
+</p>
+
+<div class="callout">
+<strong>Phase 10</strong> extended this to 3+ way joins (e.g., <code>t1 &rarr; t2 &rarr; t3</code>).
+The NDB data node side already worked for multi-table joins. The challenge was
+entirely in the MySQL server's AccessPath tree surgery.
+</div>
+
+
+<!-- ─────────────────────────────────────────── -->
+<h2 id="optimizer">2. How the MySQL Query Optimizer Builds Aggregate AccessPaths</h2>
+
+<p>
+MySQL's optimizer represents the physical execution plan as a tree of
+<code>AccessPath</code> nodes. Each node corresponds to an iterator that
+produces rows. For our 3-way join aggregate query, the optimizer produces
+one of two tree shapes depending on whether ORDER BY / LIMIT is present:
+</p>
+
+<div class="diagram">
+  <div class="diagram-panel">
+    <h4>Simple GROUP BY (no ORDER BY)</h4>
+<pre>
+<span class="node">AGGREGATE</span>
+  ├─ <span class="node">NESTED_LOOP_JOIN</span>
+  ├   ├─ <span class="node">NESTED_LOOP_JOIN</span>
+  ├   ├   ├─ <span class="node">TABLE_SCAN</span> (t1)
+  ├   ├   └─ <span class="node">EQ_REF</span> (t2)
+  ├   └─ <span class="node">EQ_REF</span> (t3)
+</pre>
+  </div>
+  <div class="diagram-panel">
+    <h4>GROUP BY + ORDER BY + LIMIT</h4>
+<pre>
+<span class="node">SORT</span>
+  ├─ <span class="node">LIMIT_OFFSET</span>
+  ├   ├─ <span class="node">TEMPTABLE_AGGREGATE</span>
+  ├   ├   ├─ <span class="node">TABLE_SCAN</span> (temp table)
+  ├   ├   └─ subquery: <span class="node">AGGREGATE</span>
+  ├   ├       └─ <span class="node">NESTED_LOOP_JOIN</span>
+  ├   ├           ├─ <span class="node">NESTED_LOOP_JOIN</span>
+  ├   ├           ├   ├─ <span class="node">TABLE_SCAN</span> (t1)
+  ├   ├           ├   └─ <span class="node">EQ_REF</span> (t2)
+  ├   ├           └─ <span class="node">EQ_REF</span> (t3)
+</pre>
+  </div>
+</div>
+
+<p>
+The optimizer chooses TEMPTABLE_AGGREGATE when it needs to <em>materialize</em>
+aggregate results into a temporary table so that upstream operators (SORT, LIMIT,
+HAVING) can operate on concrete stored rows.
+</p>
+
+
+<!-- ─────────────────────────────────────────── -->
+<h2 id="aggregate">3. The AGGREGATE Iterator</h2>
+
+<p>
+The <code>AGGREGATE</code> AccessPath creates an <code>AggregateIterator</code>
+that implements the standard aggregation algorithm:
+</p>
+
+<pre>
+<span class="cmt">// Pseudocode for AggregateIterator::Read()</span>
+<span class="kw">while</span> (child-&gt;<span class="fn">Read</span>() == <span class="lit">0</span>) {
+    <span class="cmt">// For each input row, accumulate into Item_sum objects</span>
+    <span class="kw">for</span> (<span class="kw">each</span> Item_sum *func) {
+        func-&gt;<span class="fn">add</span>();  <span class="cmt">// reads from the record buffer</span>
+    }
+    <span class="kw">if</span> (group_changed) {
+        <span class="kw">return</span> <span class="lit">0</span>;  <span class="cmt">// Emit the completed group</span>
+    }
+}
+</pre>
+
+<div class="callout">
+<strong>Key point:</strong> <code>Item_sum::add()</code> reads column values from MySQL's
+record buffer (the <code>TABLE::record[0]</code> memory area). It assumes the storage
+engine has placed individual row data there via <code>setResultRowRef()</code>.
+</div>
+
+
+<!-- ─────────────────────────────────────────── -->
+<h2 id="temptable">4. The TEMPTABLE_AGGREGATE Iterator</h2>
+
+<p>
+<code>TEMPTABLE_AGGREGATE</code> wraps an AGGREGATE subquery and materializes
+its results into a temporary table. This is needed when the result set must
+be sorted, limited, or re-scanned. Its execution flow is:
+</p>
+
+<pre>
+<span class="cmt">// Pseudocode for TemptableAggregateIterator::Init()</span>
+<span class="kw">while</span> (subquery-&gt;<span class="fn">Read</span>() == <span class="lit">0</span>) {     <span class="cmt">// Read rows from the AGGREGATE child</span>
+    <span class="kw">if</span> (new_group) {
+        <span class="fn">init_tmptable_sum_functions</span>();   <span class="cmt">// calls reset_field() on each Item_sum</span>
+        <span class="fn">INSERT</span> into temp table;
+    } <span class="kw">else</span> {
+        <span class="fn">update_tmptable_sum_functions</span>(); <span class="cmt">// calls update_field() on each Item_sum</span>
+        <span class="fn">UPDATE</span> temp table row;
+    }
+}
+
+<span class="cmt">// TemptableAggregateIterator::Read() then scans the temp table</span>
+<span class="kw">return</span> table_scan-&gt;<span class="fn">Read</span>();  <span class="cmt">// returns materialized aggregate rows</span>
+</pre>
+
+<p>The critical methods involved:</p>
+
+<table>
+<tr>
+  <th>Method</th>
+  <th>Called When</th>
+  <th>Purpose</th>
+</tr>
+<tr>
+  <td><code>reset_field()</code></td>
+  <td>First row of a new group</td>
+  <td>Store the initial aggregate value into <code>result_field</code> (temp table column)</td>
+</tr>
+<tr>
+  <td><code>update_field()</code></td>
+  <td>Subsequent rows of same group</td>
+  <td>Accumulate the value into the existing <code>result_field</code></td>
+</tr>
+</table>
+
+
+<!-- ─────────────────────────────────────────── -->
+<h2 id="problem">5. The Problem: Why Surgery Is Needed</h2>
+
+<p>
+When aggregation is pushed to NDB, each row returned by the storage engine is
+already a <strong>complete aggregate result</strong> for one group. The data
+node has already computed <code>SUM</code>, <code>COUNT</code>, <code>MIN</code>,
+<code>MAX</code> — the MySQL server just needs to pass them through.
+</p>
+
+<p>However, the AccessPath tree still contains the standard aggregate iterators.
+Without modification, here's what goes wrong:</p>
+
+<div class="callout">
+<strong>Problem 1 &mdash; AGGREGATE re-aggregates:</strong>
+The <code>AGGREGATE</code> iterator calls <code>Item_sum::add()</code>, which tries to
+read individual column values from <code>TABLE::record[0]</code>. But with pushed
+aggregation, <em>no individual field values exist in the record buffer</em> &mdash;
+each row IS the aggregate result, delivered via <code>set_pushed_value_int()</code>
+on the Item_sum objects. The <code>add()</code> calls produce garbage.
+</div>
+
+<div class="callout">
+<strong>Problem 2 &mdash; TEMPTABLE_AGGREGATE must stay:</strong>
+Simply removing TEMPTABLE_AGGREGATE (as was tried during development) breaks
+ORDER BY and LIMIT queries. The <code>SORT</code> iterator above it needs
+materialized rows in a temp table to sort. Without the temp table, Sort uses
+"addon fields" that read from the record buffer, but pushed aggregate values
+live on Item_sum objects, not in any record buffer. This caused ORDER BY queries
+to show duplicate rows with the last group's values.
+</div>
+
+
+<!-- ─────────────────────────────────────────── -->
+<h2 id="surgery">6. The AccessPath Surgery</h2>
+
+<p>
+The solution, implemented in <code>fixup_pushed_access_paths()</code>
+<span class="file-ref">(ha_ndbcluster.cc)</span>, handles the two AccessPath
+types differently:
+</p>
+
+<h3>Case 1: Standalone AGGREGATE</h3>
+
+<p>
+When AGGREGATE appears without a wrapping TEMPTABLE_AGGREGATE (simple GROUP BY,
+no ORDER BY/LIMIT), we <strong>remove it entirely</strong>, replacing it with
+the root table scan:
+</p>
+
+<div class="diagram">
+  <div class="diagram-panel">
+    <h4>Before Surgery</h4>
+<pre>
+<span class="removed">AGGREGATE</span>
+  └─ <span class="removed">NESTED_LOOP_JOIN</span>
+      ├─ <span class="removed">NESTED_LOOP_JOIN</span>
+      ├   ├─ <span class="kept">TABLE_SCAN (t1)</span>
+      ├   └─ EQ_REF (t2)  <span class="comment">&larr; pushed child</span>
+      └─ EQ_REF (t3)  <span class="comment">&larr; pushed child</span>
+</pre>
+  </div>
+  <div class="diagram-panel">
+    <h4>After Surgery</h4>
+<pre>
+<span class="kept">TABLE_SCAN (t1)</span>
+<span class="comment">
+  AGGREGATE removed &mdash; would re-aggregate.
+  NLJs removed &mdash; pushed children don't
+  produce individual rows at MySQL level.
+  Only the root table scan remains.</span>
+</pre>
+  </div>
+</div>
+
+<pre>
+<span class="kw">case</span> <span class="type">AccessPath</span>::<span class="lit">AGGREGATE</span>: {
+  <span class="kw">if</span> (has_pushed_aggregation) {
+    <span class="cmt">// Remove AGGREGATE — it would re-aggregate from record buffer.</span>
+    <span class="cmt">// Replace with the NLJ-stripped child (root table scan).</span>
+    <span class="type">AccessPath</span> *child =
+        <span class="fn">strip_pushed_child_nljs</span>(subpath-&gt;<span class="fn">aggregate</span>().child);
+    *subpath = *child;
+    <span class="kw">return false</span>;  <span class="cmt">// Re-walk the replaced node</span>
+  }
+  <span class="kw">break</span>;
+}
+</pre>
+
+<p>Returning <code>false</code> tells the walker to re-visit the node (which is
+now the TABLE_SCAN) so that any TABLE-level fixups still apply.</p>
+
+
+<h3>Case 2: TEMPTABLE_AGGREGATE</h3>
+
+<p>
+When TEMPTABLE_AGGREGATE wraps an AGGREGATE (queries with ORDER BY / LIMIT),
+we <strong>keep TEMPTABLE_AGGREGATE</strong> but gut its subquery, removing the
+inner AGGREGATE and the NLJs:
+</p>
+
+<div class="diagram">
+  <div class="diagram-panel">
+    <h4>Before Surgery</h4>
+<pre>
+SORT
+  └─ <span class="kept">TEMPTABLE_AGGREGATE</span>
+      ├─ TABLE_SCAN (temp)
+      └─ subquery: <span class="removed">AGGREGATE</span>
+          └─ <span class="removed">NESTED_LOOP_JOIN</span>
+              ├─ <span class="removed">NESTED_LOOP_JOIN</span>
+              ├   ├─ <span class="kept">TABLE_SCAN (t1)</span>
+              ├   └─ EQ_REF (t2)
+              └─ EQ_REF (t3)
+</pre>
+  </div>
+  <div class="diagram-panel">
+    <h4>After Surgery</h4>
+<pre>
+SORT
+  └─ <span class="kept">TEMPTABLE_AGGREGATE</span>
+      ├─ TABLE_SCAN (temp)
+      └─ subquery: <span class="kept">TABLE_SCAN (t1)</span>
+<span class="comment">
+  TEMPTABLE_AGGREGATE stays &mdash; Sort needs it.
+  Inner AGGREGATE removed &mdash; no re-aggregation.
+  NLJs removed &mdash; pushed children handled by NDB.
+  reset_field() stores pushed values into temp table.</span>
+</pre>
+  </div>
+</div>
+
+<pre>
+<span class="kw">case</span> <span class="type">AccessPath</span>::<span class="lit">TEMPTABLE_AGGREGATE</span>: {
+  <span class="kw">if</span> (has_pushed_aggregation) {
+    <span class="cmt">// Keep TEMPTABLE_AGGREGATE — materializes results for SORT/LIMIT.</span>
+    <span class="cmt">// Remove the inner AGGREGATE and strip pushed-join-child NLJs.</span>
+    <span class="type">AccessPath</span> *sub = subpath-&gt;<span class="fn">temptable_aggregate</span>().subquery_path;
+    <span class="kw">if</span> (sub-&gt;type == <span class="type">AccessPath</span>::<span class="lit">AGGREGATE</span>) {
+      sub = sub-&gt;<span class="fn">aggregate</span>().child;
+    }
+    sub = <span class="fn">strip_pushed_child_nljs</span>(sub);
+    subpath-&gt;<span class="fn">temptable_aggregate</span>().subquery_path = sub;
+    <span class="kw">return true</span>;  <span class="cmt">// Don't walk children — we handled the subquery</span>
+  }
+  <span class="kw">break</span>;
+}
+</pre>
+
+<p>
+Returning <code>true</code> stops the walker from descending further &mdash; we've
+already rewritten the subquery path ourselves.
+</p>
+
+
+<!-- ─────────────────────────────────────────── -->
+<h2 id="strip">7. strip_pushed_child_nljs(): Removing Pushed Join Children</h2>
+
+<p>
+In a pushed join, tables t2 and t3 are "pushed children" &mdash; their rows
+are fetched by the NDB data node as part of the pushed join, not by MySQL
+iterators. The NESTED_LOOP_JOIN nodes for these children must be stripped
+because their inner side produces no rows at the MySQL level.
+</p>
+
+<pre>
+<span class="cmt">// ha_ndbcluster_push_agg.cc</span>
+<span class="type">AccessPath</span> *<span class="fn">strip_pushed_child_nljs</span>(<span class="type">AccessPath</span> *path) {
+  <span class="kw">while</span> (path-&gt;type == <span class="type">AccessPath</span>::<span class="lit">NESTED_LOOP_JOIN</span>) {
+    <span class="kw">const</span> <span class="type">TABLE</span> *inner_table =
+        <span class="fn">GetBasicTable</span>(path-&gt;<span class="fn">nested_loop_join</span>().inner);
+    <span class="kw">if</span> (inner_table != <span class="lit">nullptr</span> &amp;&amp;
+        inner_table-&gt;file-&gt;<span class="fn">member_of_pushed_join</span>() != <span class="lit">nullptr</span> &amp;&amp;
+        inner_table-&gt;file-&gt;<span class="fn">member_of_pushed_join</span>() != inner_table) {
+      <span class="cmt">// Inner side is a pushed-join child (not the root) — strip this NLJ</span>
+      path = path-&gt;<span class="fn">nested_loop_join</span>().outer;
+    } <span class="kw">else</span> {
+      <span class="kw">break</span>;
+    }
+  }
+  <span class="kw">return</span> path;
+}
+</pre>
+
+<p>The function walks iteratively (not recursively) because NLJs nest linearly
+for PK-lookup chains. Each iteration peels one pushed child from the outermost
+NLJ, following the <code>outer</code> pointer until it reaches the root
+TABLE_SCAN:</p>
+
+<div class="tree-box"><span class="node">NLJ</span> (inner=t3, <span class="removed">pushed child</span>)        &#x27A1; follow outer
+  └─ outer: <span class="node">NLJ</span> (inner=t2, <span class="removed">pushed child</span>) &#x27A1; follow outer
+      └─ outer: <span class="kept">TABLE_SCAN</span> (t1, root)     &#x27A1; <span class="kept">return this</span></div>
+
+<p>
+The check <code>member_of_pushed_join() != inner_table</code> distinguishes
+pushed <em>children</em> from the pushed join <em>root</em>. The root table's
+<code>member_of_pushed_join()</code> returns a pointer to its own table,
+while children return a pointer to the root.
+</p>
+
+
+<!-- ─────────────────────────────────────────── -->
+<h2 id="itemsum">8. Item_sum Modifications: Bridging Pushed Values to Temp Tables</h2>
+
+<p>
+After surgery, the TEMPTABLE_AGGREGATE's subquery is a bare TABLE_SCAN. When
+this scan reads a row, the pushed aggregate values are available on the
+<code>Item_sum</code> objects via <code>m_pushed_value_int</code> /
+<code>m_pushed_value_double</code>, set by the handler's
+<code>ndb_fetch_next_aggregate_row()</code>.
+</p>
+
+<p>
+TEMPTABLE_AGGREGATE calls <code>reset_field()</code> to store these values
+into the temp table. But the original <code>reset_field()</code> implementations
+try to read from the record buffer or call <code>val_*()</code> on child
+expressions &mdash; which don't have the right data. We need to intercept and
+store the pushed values directly:
+</p>
+
+<h3>Item_sum_sum::reset_field()</h3>
+<pre>
+<span class="kw">void</span> <span class="type">Item_sum_sum</span>::<span class="fn">reset_field</span>() {
+  <span class="kw">if</span> (m_pushed_aggregate) {
+    <span class="kw">if</span> (m_pushed_null) {
+      result_field-&gt;<span class="fn">set_null</span>();
+    } <span class="kw">else</span> {
+      result_field-&gt;<span class="fn">set_notnull</span>();
+      <span class="kw">if</span> (hybrid_type == <span class="lit">DECIMAL_RESULT</span>) {
+        <span class="type">my_decimal</span> dec;
+        <span class="fn">int2my_decimal</span>(<span class="lit">E_DEC_FATAL_ERROR</span>, m_pushed_value_int, <span class="lit">false</span>, &amp;dec);
+        result_field-&gt;<span class="fn">store_decimal</span>(&amp;dec);
+      } <span class="kw">else</span> {
+        <span class="fn">float8store</span>(result_field-&gt;<span class="fn">field_ptr</span>(), m_pushed_value_double);
+      }
+    }
+    <span class="kw">return</span>;
+  }
+  <span class="cmt">// ... original code for non-pushed path ...</span>
+}
+</pre>
+
+<h3>Item_sum_count::reset_field()</h3>
+<pre>
+<span class="kw">void</span> <span class="type">Item_sum_count</span>::<span class="fn">reset_field</span>() {
+  <span class="kw">if</span> (m_pushed_aggregate) {
+    <span class="fn">int8store</span>(result_field-&gt;<span class="fn">field_ptr</span>(), m_pushed_value_int);
+    <span class="kw">return</span>;
+  }
+  <span class="cmt">// ... original code ...</span>
+}
+</pre>
+
+<h3>Item_sum_hybrid::reset_field() (MIN/MAX)</h3>
+<pre>
+<span class="kw">void</span> <span class="type">Item_sum_hybrid</span>::<span class="fn">reset_field</span>() {
+  <span class="kw">if</span> (m_pushed_aggregate) {
+    <span class="kw">if</span> (m_pushed_null) {
+      result_field-&gt;<span class="fn">set_null</span>();
+    } <span class="kw">else</span> {
+      result_field-&gt;<span class="fn">set_notnull</span>();
+      result_field-&gt;<span class="fn">store</span>(m_pushed_value_int, unsigned_flag);
+    }
+    <span class="kw">return</span>;
+  }
+  <span class="cmt">// ... original switch on hybrid_type ...</span>
+}
+</pre>
+
+<h3>update_field() &mdash; No-Op Guards</h3>
+<p>
+Each pushed row is a <em>complete, distinct</em> aggregate group. The
+TEMPTABLE_AGGREGATE iterator should never encounter a duplicate group key,
+so <code>update_field()</code> should not be called. A defensive guard is
+added anyway:
+</p>
+<pre>
+<span class="kw">void</span> <span class="type">Item_sum_sum</span>::<span class="fn">update_field</span>() {
+  <span class="kw">if</span> (m_pushed_aggregate) <span class="kw">return</span>;  <span class="cmt">// Already the correct aggregate result</span>
+  <span class="cmt">// ... original code ...</span>
+}
+</pre>
+
+<p>The same guard is added to <code>Item_sum_count::update_field()</code> and
+<code>Item_sum_hybrid::update_field()</code>.</p>
+
+
+<!-- ─────────────────────────────────────────── -->
+<h2 id="valdecimal">9. The val_decimal() Fix: Why SUM Returned Zero</h2>
+
+<p>
+During development, all tests passed except SUM always returned 0. The root
+cause was subtle:
+</p>
+
+<div class="callout">
+For <code>SUM</code> on <code>INT</code> columns, MySQL internally uses
+<code>hybrid_type == DECIMAL_RESULT</code>. When the output pipeline formats the
+result, it calls <code>Item_sum_sum::val_decimal()</code>, <strong>not</strong>
+<code>val_int()</code>.
+</div>
+
+<p>
+The pushed aggregate check had been added to <code>val_int()</code> and
+<code>val_real()</code>, but <code>val_decimal()</code> was missed. It fell
+through to the original code which read from uninitialised decimal buffers,
+producing zero:
+</p>
+
+<pre>
+<span class="type">my_decimal</span> *<span class="type">Item_sum_sum</span>::<span class="fn">val_decimal</span>(<span class="type">my_decimal</span> *val) {
+  <span class="cmt">// THIS CHECK WAS MISSING &mdash; causing SUM to return 0</span>
+  <span class="kw">if</span> (m_pushed_aggregate) {
+    null_value = m_pushed_null;
+    <span class="kw">if</span> (null_value) <span class="kw">return nullptr</span>;
+    <span class="fn">int2my_decimal</span>(<span class="lit">E_DEC_FATAL_ERROR</span>, m_pushed_value_int, <span class="lit">false</span>, val);
+    <span class="kw">return</span> val;
+  }
+  <span class="cmt">// ... original decimal/real handling ...</span>
+}
+</pre>
+
+<p>
+The fix converts the pushed integer value to a <code>my_decimal</code> via
+<code>int2my_decimal()</code>, matching how MySQL stores SUM results internally.
+</p>
+
+
+<!-- ─────────────────────────────────────────── -->
+<h2 id="summary">10. Summary of Changes</h2>
+
+<p>The complete data flow with pushed aggregation:</p>
+
+<div class="tree-box"><span class="comment">1. NDB data nodes compute aggregates (SUM, COUNT, MIN, MAX per group)</span>
+<span class="comment">2. Results arrive at MySQL handler via NdbAggregator</span>
+<span class="comment">3. ndb_fetch_next_aggregate_row() sets:</span>
+     &bull; GROUP BY columns in record buffer (store_group_column)
+     &bull; Item_sum pushed values (set_pushed_value_int/double/null)
+
+<span class="comment">4a. Simple GROUP BY (AGGREGATE removed):</span>
+     TABLE_SCAN &rarr; handler returns pushed rows directly
+     Item_sum::val_int() / val_decimal() reads m_pushed_value_int
+
+<span class="comment">4b. ORDER BY / LIMIT (TEMPTABLE_AGGREGATE kept):</span>
+     TABLE_SCAN &rarr; handler returns pushed rows
+     TEMPTABLE_AGGREGATE calls reset_field() &rarr; stores pushed value into temp table
+     SORT reads from temp table &rarr; correct ORDER BY</div>
+
+<table>
+<tr>
+  <th>Discovery</th>
+  <th>Impact</th>
+  <th>Solution</th>
+</tr>
+<tr>
+  <td>AGGREGATE calls <code>add()</code> from record buffer</td>
+  <td>Re-aggregates garbage values</td>
+  <td>Remove AGGREGATE from AccessPath tree</td>
+</tr>
+<tr>
+  <td>TEMPTABLE_AGGREGATE needed by SORT</td>
+  <td>Removing it breaks ORDER BY / LIMIT</td>
+  <td>Keep TEMPTABLE_AGGREGATE, only remove inner AGGREGATE + NLJs</td>
+</tr>
+<tr>
+  <td><code>reset_field()</code> reads record buffer</td>
+  <td>Temp table gets wrong values</td>
+  <td>Add <code>m_pushed_aggregate</code> check; store pushed values directly</td>
+</tr>
+<tr>
+  <td><code>val_decimal()</code> missing pushed check</td>
+  <td>SUM on INT returns 0</td>
+  <td>Add <code>m_pushed_aggregate</code> check; convert via <code>int2my_decimal()</code></td>
+</tr>
+<tr>
+  <td>Pushed NLJ children produce no rows</td>
+  <td>NLJ iterators fail or return empty</td>
+  <td><code>strip_pushed_child_nljs()</code> peels them off</td>
+</tr>
+</table>
+
+
+<!-- ─────────────────────────────────────────── -->
+<h2 id="files">11. Files Modified</h2>
+
+<table>
+<tr>
+  <th>File</th>
+  <th>Changes</th>
+</tr>
+<tr>
+  <td><code>storage/ndb/plugin/ha_ndbcluster.cc</code></td>
+  <td>
+    AGGREGATE and TEMPTABLE_AGGREGATE cases in <code>fixup_pushed_access_paths()</code>.
+    <code>create_pushed_join()</code>: restore <code>m_pushed_agg_mode</code>,
+    skip <code>setResultRowRef()</code> for aggregate queries.
+    <code>close_scan()</code>: clear <code>m_pushed_agg_join</code>.
+  </td>
+</tr>
+<tr>
+  <td><code>storage/ndb/plugin/ha_ndbcluster_push_agg.cc</code></td>
+  <td>
+    <code>strip_pushed_child_nljs()</code> (moved here from ha_ndbcluster.cc).
+    Leaf-table validation for aggregate source columns.
+    Chain topology enforcement for aggregate query trees.
+    <code>ndb_fetch_next_aggregate_row()</code>: write_set bitmap handling.
+  </td>
+</tr>
+<tr>
+  <td><code>storage/ndb/plugin/ha_ndbcluster_push_agg.h</code></td>
+  <td>
+    Declaration of <code>strip_pushed_child_nljs()</code>.
+    Forward declaration of <code>AccessPath</code>.
+  </td>
+</tr>
+<tr>
+  <td><code>sql/item_sum.cc</code></td>
+  <td>
+    <code>Item_sum_sum::val_decimal()</code>: pushed aggregate check.
+    <code>reset_field()</code>: pushed value storage for SUM, COUNT, MIN/MAX.
+    <code>update_field()</code>: no-op guards for SUM, COUNT, MIN/MAX.
+  </td>
+</tr>
+<tr>
+  <td><code>storage/ndb/src/kernel/blocks/dbspj/DbspjMain.cpp</code></td>
+  <td>
+    Suppress user projection (PI_ATTR_LIST) for intermediate aggregate nodes.
+    Prevents READ_PACKED columns in TRANSID_AI that DBSPJ cannot parse.
+  </td>
+</tr>
+<tr>
+  <td><code>storage/ndb/src/ndbapi/NdbQueryOperation.cpp</code></td>
+  <td>
+    Allow empty projection for intermediate nodes with children.
+  </td>
+</tr>
+</table>
+
+<p style="margin-top: 3rem; color: var(--text-dim); font-size: 0.85rem; text-align: center;">
+  RONDB-733 &mdash; Pushdown Join Aggregation &mdash; Phase 10
+</p>
+
+</body>
+</html>
