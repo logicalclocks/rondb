@@ -1005,6 +1005,58 @@ DELIMITER ;|
 --exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT o.o_custkey, SUM(l.l_quantity) FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id WHERE l.l_quantity > o.o_custkey GROUP BY o.o_custkey;' 2>&1
 
 --echo
+--echo
+--echo === Test 49: Error — no suitable index for join column ===
+--echo Expected error: No suitable index for join columns
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE noindex_child (
+  ni_id INT NOT NULL,
+  ni_orderkey INT NOT NULL,
+  ni_val INT NOT NULL,
+  PRIMARY KEY USING HASH (ni_id)
+) ENGINE=NDB;
+INSERT INTO noindex_child VALUES (1, 1, 10), (2, 2, 20);
+--enable_warnings
+--enable_query_log
+
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT o.o_id, SUM(ni.ni_val) FROM orders AS o JOIN noindex_child AS ni ON ni.ni_orderkey = o.o_id GROUP BY o.o_id;' 2>&1
+
+--disable_query_log
+DROP TABLE noindex_child;
+--enable_query_log
+
+--echo
+--echo
+--echo === Test 50: Error — ungrouped column in SELECT ===
+--echo Expected error: Ungrouped column in non-aggregated SELECT expression
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT o.o_custkey, o.o_status, SUM(l.l_quantity) FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id GROUP BY o.o_custkey;' 2>&1
+
+--echo
+--echo
+--echo === Test 51: Error — ORDER BY column not in GROUP BY ===
+--echo Expected error: ORDER BY column not in GROUP BY clause
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT o.o_custkey, SUM(l.l_quantity) FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id GROUP BY o.o_custkey ORDER BY o.o_status;' 2>&1
+
+--echo
+--echo
+--echo === Test 52: Error — unknown table alias ===
+--echo Expected error: Unknown table alias
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT x.o_custkey, SUM(l.l_quantity) FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id GROUP BY x.o_custkey;' 2>&1
+
+--echo
+--echo
+--echo === Test 53: Error — unimplemented keyword (LEFT JOIN) ===
+--echo Expected error: Unimplemented keyword
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT o.o_custkey, SUM(l.l_quantity) FROM orders AS o LEFT JOIN lineitem AS l ON l.l_orderkey = o.o_id GROUP BY o.o_custkey;' 2>&1
+
+--echo
 --echo === Cleanup ===
 
 DROP TABLE line_details;

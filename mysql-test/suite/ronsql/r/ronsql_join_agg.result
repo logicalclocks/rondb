@@ -1049,6 +1049,44 @@ Expected error: WHERE condition references columns from multiple tables
 Error handling: RPE
 ronsql_cli caught exception: WHERE condition references columns from multiple tables in a single comparison or OR branch. Split into separate AND conditions, each referencing only one table.
 
+
+=== Test 49: Error — no suitable index for join column ===
+Expected error: No suitable index for join columns
+Cannot push join: no suitable index on join columns for table 'noindex_child'. Create a primary key, unique index, or ordered index on the join columns.
+Error handling: RPE
+ronsql_cli caught exception: No suitable index for join columns.
+
+
+=== Test 50: Error — ungrouped column in SELECT ===
+Expected error: Ungrouped column in non-aggregated SELECT expression
+Syntax error: SELECT expression refers to ungrouped column `o_status` outside of aggregate function.
+You can either add this column to the GROUP BY clause, or use it within an aggregate function e.g. Sum(`o_status`).
+Error handling: RPE
+ronsql_cli caught exception: Ungrouped column in non-aggregated SELECT expression.
+
+
+=== Test 51: Error — ORDER BY column not in GROUP BY ===
+Expected error: ORDER BY column not in GROUP BY clause
+Syntax error: ORDER BY refers to column `o_status` which is not in the GROUP BY clause.
+Error handling: RPE
+ronsql_cli caught exception: ORDER BY column not in GROUP BY clause.
+
+
+=== Test 52: Error — unknown table alias ===
+Expected error: Unknown table alias
+Unknown table alias 'x' in column 'x.o_custkey'.
+Error handling: RPE
+ronsql_cli caught exception: Unknown table alias.
+
+
+=== Test 53: Error — unimplemented keyword (LEFT JOIN) ===
+Expected error: Unimplemented keyword
+Syntax error in SQL statement: Unimplemented keyword. If this was intended as an identifier, use backtick quotation.
+> SELECT o.o_custkey, SUM(l.l_quantity) FROM orders AS o LEFT JOIN lineitem AS l ON l.l_orderkey = o.o_id GROUP BY o.o_custkey;
+!                                                        ^^^^
+Error handling: RPE
+ronsql_cli caught exception: Syntax error.
+
 === Cleanup ===
 DROP TABLE line_details;
 DROP TABLE big_lineitem;
