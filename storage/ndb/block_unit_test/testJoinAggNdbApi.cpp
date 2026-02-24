@@ -4642,6 +4642,464 @@ testEviction5090And4040(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
 }
 
 /* ------------------------------------------------------------------ */
+/* Test 18: Multi-fragment aggregation with large dataset               */
+/*                                                                     */
+/* SQL equivalent:                                                     */
+/*   SELECT p.grp, SUM(c.val), COUNT(*)                                */
+/*   FROM t18_parent p JOIN t18_child c ON c.parent_id = p.id          */
+/*   GROUP BY p.grp                                                    */
+/*                                                                     */
+/* 2000 rows, 20 groups of 100. Tables use PARTITION_BALANCE=          */
+/* FOR_RP_BY_LDM_X_2 for 16 fragments (8 LDMs × 2). With             */
+/* BatchSize=990, the 2000-row root scan requires SCAN_NEXTREQ         */
+/* continuation across multiple batches and fragments.                 */
+/* ------------------------------------------------------------------ */
+
+static const char *T18_PARENT = "t18_parent";
+static const char *T18_CHILD  = "t18_child";
+
+static int
+createTest18Tables(MYSQL *conn)
+{
+  sqlExec(conn, "DROP TABLE IF EXISTS t18_child");
+  sqlExec(conn, "DROP TABLE IF EXISTS t18_parent");
+
+  if (sqlExec(conn,
+        "CREATE TABLE t18_parent ("
+        "  id INT NOT NULL PRIMARY KEY,"
+        "  grp INT NOT NULL"
+        ") ENGINE=NDB "
+        "COMMENT='NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM_X_2'") != 0)
+    return -1;
+
+  if (sqlExec(conn,
+        "CREATE TABLE t18_child ("
+        "  parent_id INT NOT NULL PRIMARY KEY,"
+        "  val BIGINT NOT NULL"
+        ") ENGINE=NDB "
+        "COMMENT='NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM_X_2'") != 0)
+    return -1;
+
+  V("Created t18_parent, t18_child (PARTITION_BALANCE=FOR_RP_BY_LDM_X_2)\n");
+  return 0;
+}
+
+static int
+insertTest18Data(MYSQL *conn)
+{
+  /* 2000 parents: id=1..2000, grp = ((id-1) % 20) + 1
+   * 2000 children: parent_id=id, val = id * 10
+   *
+   * Group g contains ids: g, g+20, g+40, ..., g+1980 (100 rows each)
+   * SUM(val) for group g = 10 * (g + g+20 + g+40 + ... + g+1980)
+   *                       = 10 * (100*g + 20*(0+1+2+...+99))
+   *                       = 10 * (100*g + 99000) = 1000*g + 990000
+   * COUNT(*) for each group = 100
+   */
+  char buf[65536];
+  int pos = snprintf(buf, sizeof(buf), "INSERT INTO t18_parent VALUES ");
+  for (int i = 1; i <= 2000; i++) {
+    if (i > 1) pos += snprintf(buf + pos, sizeof(buf) - pos, ",");
+    int grp = ((i - 1) % 20) + 1;
+    pos += snprintf(buf + pos, sizeof(buf) - pos, "(%d,%d)", i, grp);
+  }
+  if (sqlExec(conn, buf) != 0) return -1;
+
+  pos = snprintf(buf, sizeof(buf), "INSERT INTO t18_child VALUES ");
+  for (int i = 1; i <= 2000; i++) {
+    if (i > 1) pos += snprintf(buf + pos, sizeof(buf) - pos, ",");
+    pos += snprintf(buf + pos, sizeof(buf) - pos, "(%d,%d)", i, i * 10);
+  }
+  if (sqlExec(conn, buf) != 0) return -1;
+
+  V("Inserted 2000 t18_parent + 2000 t18_child rows\n");
+  return 0;
+}
+
+static int
+dropTest18Tables(MYSQL *conn)
+{
+  sqlExec(conn, "DROP TABLE IF EXISTS t18_child");
+  sqlExec(conn, "DROP TABLE IF EXISTS t18_parent");
+  V("Dropped t18_parent, t18_child\n");
+  return 0;
+}
+
+static int
+testMultiFragment(Ndb *ndb, MYSQL *conn)
+{
+  printf("Test 18: Multi-fragment aggregation (2000 rows, 16 frags) ... ");
+  fflush(stdout);
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(T18_PARENT);
+  dict->invalidateTable(T18_CHILD);
+  const NdbDictionary::Table *parentTab = dict->getTable(T18_PARENT);
+  const NdbDictionary::Table *childTab = dict->getTable(T18_CHILD);
+  if (parentTab == nullptr || childTab == nullptr) {
+    printf("FAILED (table lookup: %s)\n", dict->getNdbError().message);
+    return -1;
+  }
+
+  V("\n  t18_parent fragmentCount=%u\n", parentTab->getFragmentCount());
+
+  const NdbDictionary::Column *grpCol = parentTab->getColumn("grp");
+  if (grpCol == nullptr) {
+    printf("FAILED (column lookup)\n");
+    return -1;
+  }
+
+  NdbAggregator agg(childTab);
+  if (!agg.GroupByLinked(0, grpCol) ||
+      !agg.LoadColumn("val", 0) ||
+      !agg.Sum(0, 0) ||
+      !agg.Count(1, 0) ||
+      !agg.Finalize()) {
+    printf("FAILED (agg program: %s)\n", agg.GetError().err_msg_);
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  const NdbQueryTableScanOperationDef *parentOp = qb->scanTable(parentTab);
+
+  const NdbQueryOperand *joinKey[] = {
+    qb->linkedValue(parentOp, "id"), nullptr
+  };
+
+  NdbQueryOptions opts;
+  opts.setAggregation(agg);
+  const NdbLinkedOperand *grpLink = qb->linkedValue(parentOp, "grp");
+  opts.addLinkedProjection(grpLink);
+
+  const NdbQueryLookupOperationDef *childOp =
+      qb->readTuple(childTab, joinKey, &opts);
+  if (childOp == nullptr) {
+    printf("FAILED (readTuple: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  NdbQuery *query = trans->createQuery(queryDef);
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    printf("FAILED (execute: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbQuery::NextResultOutcome outcome;
+  Uint32 batchCount = 0;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {
+    batchCount++;
+  }
+  if (outcome == NdbQuery::NextResult_error) {
+    printf("FAILED (nextResult: %s)\n", query->getNdbError().message);
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+  V("  Scan consumed %u batch rows\n", batchCount);
+
+  NdbAggregator *resultAgg = query->getAggregator();
+  if (resultAgg == nullptr) {
+    printf("FAILED (getAggregator returned nullptr)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  struct Result18 { Int64 sum_val; Int64 count; };
+  std::map<Int32, Result18> actual;
+  for (;;) {
+    NdbAggregator::ResultRecord rec = resultAgg->FetchResultRecord();
+    if (rec.end()) break;
+
+    NdbAggregator::Column grp = rec.FetchGroupbyColumn();
+    Int32 grpVal = grp.data_int32();
+    NdbAggregator::Result sumRes = rec.FetchAggregationResult();
+    Int64 sumVal = sumRes.data_int64();
+    NdbAggregator::Result cntRes = rec.FetchAggregationResult();
+    Int64 cntVal = cntRes.data_int64();
+
+    actual[grpVal] = {sumVal, cntVal};
+    V("  grp=%d SUM=%lld COUNT=%lld\n",
+      grpVal, (long long)sumVal, (long long)cntVal);
+  }
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  if (actual.size() != 20) {
+    printf("FAILED (expected 20 groups, got %zu)\n", actual.size());
+    return -1;
+  }
+
+  /* Verify: group g → SUM(val) = 1000*g + 990000, COUNT = 100 */
+  for (Int32 g = 1; g <= 20; g++) {
+    auto it = actual.find(g);
+    if (it == actual.end()) {
+      printf("FAILED (missing group %d)\n", g);
+      return -1;
+    }
+    Int64 expectedSum = (Int64)g * 1000 + 990000;
+    if (it->second.sum_val != expectedSum) {
+      printf("FAILED (group %d: expected SUM=%lld, got %lld)\n",
+             g, (long long)expectedSum, (long long)it->second.sum_val);
+      return -1;
+    }
+    if (it->second.count != 100) {
+      printf("FAILED (group %d: expected COUNT=100, got %lld)\n",
+             g, (long long)it->second.count);
+      return -1;
+    }
+  }
+
+  /* Cross-check with MySQL */
+  {
+    if (mysql_query(conn,
+          "SELECT p.grp, SUM(c.val), COUNT(*) "
+          "FROM t18_parent p JOIN t18_child c ON c.parent_id = p.id "
+          "GROUP BY p.grp ORDER BY p.grp") != 0) {
+      printf("FAILED (MySQL cross-check: %s)\n", mysql_error(conn));
+      return -1;
+    }
+    MYSQL_RES *result = mysql_store_result(conn);
+    MYSQL_ROW row;
+    while ((row = mysql_fetch_row(result)) != nullptr) {
+      Int32 grp = atoi(row[0]);
+      Int64 sqlSum = atoll(row[1]);
+      Int64 sqlCnt = atoll(row[2]);
+      auto it = actual.find(grp);
+      if (it == actual.end() ||
+          it->second.sum_val != sqlSum ||
+          it->second.count != sqlCnt) {
+        printf("FAILED (MySQL cross-check: grp=%d mismatch)\n", grp);
+        mysql_free_result(result);
+        return -1;
+      }
+    }
+    mysql_free_result(result);
+    V("  MySQL cross-check OK\n");
+  }
+
+  printf("OK (20 groups, multi-fragment SCAN_NEXTREQ verified)\n");
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Test 19: Multi-fragment + eviction (ERROR_INSERT 5090)               */
+/*                                                                     */
+/* SQL equivalent:                                                     */
+/*   SELECT p.grp, SUM(c.val), COUNT(*)                                */
+/*   FROM t18_parent p JOIN t18_child c ON c.parent_id = p.id          */
+/*   GROUP BY p.grp                                                    */
+/*                                                                     */
+/* Reuses t18 tables (2000 rows, 16 fragments, 20 groups).             */
+/* ERROR_INSERT 5090 limits hash table to 3 groups. Combined with      */
+/* SCAN_NEXTREQ batching across 16 fragments, this tests the hardest   */
+/* scenario: eviction occurring across multiple scan continuation      */
+/* rounds with data scattered across many fragments.                   */
+/* ------------------------------------------------------------------ */
+
+static int
+testMultiFragmentEviction(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
+{
+  printf("Test 19: Multi-fragment + eviction 5090 (2000 rows, 16 frags) ... ");
+  fflush(stdout);
+
+  if (restarter.insertErrorInAllNodes(5090) != 0) {
+    printf("FAILED (insertErrorInAllNodes(5090))\n");
+    return -1;
+  }
+  V("\n  ERROR_INSERT 5090 set (maxGroups=3)\n");
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(T18_PARENT);
+  dict->invalidateTable(T18_CHILD);
+  const NdbDictionary::Table *parentTab = dict->getTable(T18_PARENT);
+  const NdbDictionary::Table *childTab = dict->getTable(T18_CHILD);
+  if (parentTab == nullptr || childTab == nullptr) {
+    printf("FAILED (table lookup: %s)\n", dict->getNdbError().message);
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+
+  const NdbDictionary::Column *grpCol = parentTab->getColumn("grp");
+  if (grpCol == nullptr) {
+    printf("FAILED (column lookup)\n");
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+
+  NdbAggregator agg(childTab);
+  if (!agg.GroupByLinked(0, grpCol) ||
+      !agg.LoadColumn("val", 0) ||
+      !agg.Sum(0, 0) ||
+      !agg.Count(1, 0) ||
+      !agg.Finalize()) {
+    printf("FAILED (agg program: %s)\n", agg.GetError().err_msg_);
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  const NdbQueryTableScanOperationDef *parentOp = qb->scanTable(parentTab);
+
+  const NdbQueryOperand *joinKey[] = {
+    qb->linkedValue(parentOp, "id"), nullptr
+  };
+
+  NdbQueryOptions opts;
+  opts.setAggregation(agg);
+  const NdbLinkedOperand *grpLink = qb->linkedValue(parentOp, "grp");
+  opts.addLinkedProjection(grpLink);
+
+  const NdbQueryLookupOperationDef *childOp =
+      qb->readTuple(childTab, joinKey, &opts);
+  if (childOp == nullptr) {
+    printf("FAILED (readTuple: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  NdbQuery *query = trans->createQuery(queryDef);
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    printf("FAILED (execute: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {}
+  if (outcome == NdbQuery::NextResult_error) {
+    printf("FAILED (nextResult: %s)\n", query->getNdbError().message);
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+
+  NdbAggregator *resultAgg = query->getAggregator();
+  if (resultAgg == nullptr) {
+    printf("FAILED (getAggregator returned nullptr)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+
+  struct Result19 { Int64 sum_val; Int64 count; };
+  std::map<Int32, Result19> actual;
+  for (;;) {
+    NdbAggregator::ResultRecord rec = resultAgg->FetchResultRecord();
+    if (rec.end()) break;
+
+    NdbAggregator::Column grp = rec.FetchGroupbyColumn();
+    Int32 grpVal = grp.data_int32();
+    NdbAggregator::Result sumRes = rec.FetchAggregationResult();
+    Int64 sumVal = sumRes.data_int64();
+    NdbAggregator::Result cntRes = rec.FetchAggregationResult();
+    Int64 cntVal = cntRes.data_int64();
+
+    actual[grpVal] = {sumVal, cntVal};
+    V("  grp=%d SUM=%lld COUNT=%lld\n",
+      grpVal, (long long)sumVal, (long long)cntVal);
+  }
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  restarter.insertErrorInAllNodes(0);
+  V("  ERROR_INSERT cleared\n");
+
+  if (actual.size() != 20) {
+    printf("FAILED (expected 20 groups, got %zu)\n", actual.size());
+    return -1;
+  }
+
+  /* Same expected results as Test 18 */
+  for (Int32 g = 1; g <= 20; g++) {
+    auto it = actual.find(g);
+    if (it == actual.end()) {
+      printf("FAILED (missing group %d)\n", g);
+      return -1;
+    }
+    Int64 expectedSum = (Int64)g * 1000 + 990000;
+    if (it->second.sum_val != expectedSum) {
+      printf("FAILED (group %d: expected SUM=%lld, got %lld)\n",
+             g, (long long)expectedSum, (long long)it->second.sum_val);
+      return -1;
+    }
+    if (it->second.count != 100) {
+      printf("FAILED (group %d: expected COUNT=100, got %lld)\n",
+             g, (long long)it->second.count);
+      return -1;
+    }
+  }
+
+  /* Cross-check with MySQL */
+  {
+    if (mysql_query(conn,
+          "SELECT p.grp, SUM(c.val), COUNT(*) "
+          "FROM t18_parent p JOIN t18_child c ON c.parent_id = p.id "
+          "GROUP BY p.grp ORDER BY p.grp") != 0) {
+      printf("FAILED (MySQL cross-check: %s)\n", mysql_error(conn));
+      return -1;
+    }
+    MYSQL_RES *result = mysql_store_result(conn);
+    MYSQL_ROW row;
+    while ((row = mysql_fetch_row(result)) != nullptr) {
+      Int32 grp = atoi(row[0]);
+      Int64 sqlSum = atoll(row[1]);
+      Int64 sqlCnt = atoll(row[2]);
+      auto it = actual.find(grp);
+      if (it == actual.end() ||
+          it->second.sum_val != sqlSum ||
+          it->second.count != sqlCnt) {
+        printf("FAILED (MySQL cross-check: grp=%d mismatch)\n", grp);
+        mysql_free_result(result);
+        return -1;
+      }
+    }
+    mysql_free_result(result);
+    V("  MySQL cross-check OK\n");
+  }
+
+  printf("OK (20 groups, multi-fragment eviction merge verified)\n");
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* Main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -4922,6 +5380,23 @@ int main(int argc, char **argv)
             exitCode = 1;
           }
           dropTest16Tables(conn);
+        }
+
+        /* Tests 18, 19: Multi-fragment + SCAN_NEXTREQ (reuse t18 tables) */
+        if (shouldRun(18) || shouldRun(19)) {
+          NdbRestarter restarter(connectString);
+          if (createTest18Tables(conn) == 0 && insertTest18Data(conn) == 0) {
+            if (shouldRun(18)) {
+              if (testMultiFragment(&ndb, conn) != 0) exitCode = 1;
+            }
+            if (shouldRun(19)) {
+              if (testMultiFragmentEviction(&ndb, conn, restarter) != 0)
+                exitCode = 1;
+            }
+          } else {
+            exitCode = 1;
+          }
+          dropTest18Tables(conn);
         }
 
         mysql_close(conn);

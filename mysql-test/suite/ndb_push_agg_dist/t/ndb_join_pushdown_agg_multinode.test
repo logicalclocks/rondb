@@ -1,0 +1,189 @@
+--source include/have_ndb.inc
+
+--echo ############################################################
+--echo # RONDB-733 Step 4b: Multi-Node Aggregation Pushdown
+--echo ############################################################
+--echo #
+--echo # Tests pushed join aggregation across 2 data nodes.
+--echo # Data is distributed across both nodes; each node runs
+--echo # independent aggregation, and COMPLETE merges results.
+--echo #
+--echo # Runs under the standard ndb suite (2 data nodes).
+--echo #
+
+# Verify ndb_join_pushdown is enabled (required for pushed joins)
+--let $join_pushdown = `SELECT @@ndb_join_pushdown`
+if (!$join_pushdown)
+{
+  --skip ndb_join_pushdown must be enabled
+}
+
+--echo ############################################################
+--echo # Setup: Create tables and load data
+--echo ############################################################
+--echo # 100 rows in parent, spread across 2 data nodes via hash
+--echo # distribution on PK. Child tables use PK lookups.
+
+CREATE TABLE t1 (
+  pk INT PRIMARY KEY,
+  grp INT NOT NULL,
+  region VARCHAR(20) NOT NULL
+) ENGINE=NDB;
+
+CREATE TABLE t2 (
+  pk INT PRIMARY KEY,
+  cat VARCHAR(20) NOT NULL,
+  discount INT NOT NULL
+) ENGINE=NDB;
+
+CREATE TABLE t3 (
+  pk INT PRIMARY KEY,
+  amount INT NOT NULL,
+  qty INT NOT NULL
+) ENGINE=NDB;
+
+# Generate 100 rows: 10 groups of 10 rows each
+# grp = ((pk-1) % 10) + 1
+# region cycles: North, South, East, West, Central
+# cat cycles: X, Y, Z
+# discount = pk * 2
+# amount = pk * 100
+# qty = pk * 5
+
+--disable_query_log
+let $i = 1;
+while ($i <= 100) {
+  eval INSERT INTO t1 VALUES ($i, (($i - 1) % 10) + 1,
+    ELT((($i - 1) % 5) + 1, 'North', 'South', 'East', 'West', 'Central'));
+  eval INSERT INTO t2 VALUES ($i,
+    ELT((($i - 1) % 3) + 1, 'X', 'Y', 'Z'),
+    $i * 2);
+  eval INSERT INTO t3 VALUES ($i, $i * 100, $i * 5);
+  inc $i;
+}
+--enable_query_log
+
+--echo ############################################################
+--echo # Test 1: 2-way join, SUM + COUNT GROUP BY
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+--sorted_result
+SELECT t1.grp, SUM(t2.discount), COUNT(*)
+FROM t1 JOIN t2 ON t2.pk = t1.pk
+GROUP BY t1.grp;
+
+SET ndb_join_pushdown_aggregate=ON;
+--sorted_result
+SELECT t1.grp, SUM(t2.discount), COUNT(*)
+FROM t1 JOIN t2 ON t2.pk = t1.pk
+GROUP BY t1.grp;
+
+--echo ############################################################
+--echo # Test 2: 3-way join, SUM + COUNT GROUP BY root column
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+--sorted_result
+SELECT t1.grp, SUM(t3.amount), COUNT(*)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp;
+
+SET ndb_join_pushdown_aggregate=ON;
+--sorted_result
+SELECT t1.grp, SUM(t3.amount), COUNT(*)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp;
+
+--echo ############################################################
+--echo # Test 3: All 4 aggregate functions
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+--sorted_result
+SELECT t1.grp, SUM(t3.amount), COUNT(*), MIN(t3.amount), MAX(t3.amount)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp;
+
+SET ndb_join_pushdown_aggregate=ON;
+--sorted_result
+SELECT t1.grp, SUM(t3.amount), COUNT(*), MIN(t3.amount), MAX(t3.amount)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp;
+
+--echo ############################################################
+--echo # Test 4: Multi-column GROUP BY (root + leaf)
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+--sorted_result
+SELECT t1.grp, t3.qty, SUM(t3.amount)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp, t3.qty;
+
+SET ndb_join_pushdown_aggregate=ON;
+--sorted_result
+SELECT t1.grp, t3.qty, SUM(t3.amount)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp, t3.qty;
+
+--echo ############################################################
+--echo # Test 5: Global aggregation (no GROUP BY)
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT COUNT(*), SUM(t3.amount), MIN(t3.amount), MAX(t3.amount)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk;
+
+SET ndb_join_pushdown_aggregate=ON;
+SELECT COUNT(*), SUM(t3.amount), MIN(t3.amount), MAX(t3.amount)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk;
+
+--echo ############################################################
+--echo # Test 6: HAVING + ORDER BY + LIMIT
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT t1.grp, SUM(t3.amount) AS total, COUNT(*) AS cnt
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp
+HAVING cnt >= 10
+ORDER BY total ASC
+LIMIT 3;
+
+SET ndb_join_pushdown_aggregate=ON;
+SELECT t1.grp, SUM(t3.amount) AS total, COUNT(*) AS cnt
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp
+HAVING cnt >= 10
+ORDER BY total ASC
+LIMIT 3;
+
+--echo ############################################################
+--echo # Test 7: GROUP BY on VARCHAR column from root
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+--sorted_result
+SELECT t1.region, SUM(t3.amount), COUNT(*)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.region;
+
+SET ndb_join_pushdown_aggregate=ON;
+--sorted_result
+SELECT t1.region, SUM(t3.amount), COUNT(*)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.region;
+
+--echo ############################################################
+--echo # Test 8: GROUP BY on root + intermediate columns
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+--sorted_result
+SELECT t1.grp, t2.cat, COUNT(*), SUM(t3.amount)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp, t2.cat;
+
+SET ndb_join_pushdown_aggregate=ON;
+--sorted_result
+SELECT t1.grp, t2.cat, COUNT(*), SUM(t3.amount)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp, t2.cat;
+
+--echo ############################################################
+--echo # Cleanup
+--echo ############################################################
+DROP TABLE t3, t2, t1;

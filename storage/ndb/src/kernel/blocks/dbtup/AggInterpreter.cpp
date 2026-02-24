@@ -2519,12 +2519,13 @@ char* GBHashTable::findInBucket(Uint32 b, const char* key,
         break;
       }
       if (m_col_types[i].cs != nullptr) {
-        // Collation-aware comparison
-        Uint32 byteSize = ah1.getByteSize();
+        // Collation-aware comparison: each key may have a different
+        // byteSize (e.g. VARCHAR 'East'=5 vs 'Central'=8) even when
+        // the word-padded dataSize is the same.
         int cmp = (*m_col_types[i].cmpFn)(
             m_col_types[i].cs,
-            p1 + 1, byteSize,
-            p2 + 1, byteSize);
+            p1 + 1, ah1.getByteSize(),
+            p2 + 1, ah2.getByteSize());
         if (cmp != 0) {
           match = false;
           break;

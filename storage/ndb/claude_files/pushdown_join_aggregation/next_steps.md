@@ -137,13 +137,19 @@ Tests 14–17 in `testJoinAggNdbApi.cpp` verify eviction through the NDB API:
 All tests verify partial TRANSID_AI → API merge → correct final results,
 with MySQL cross-check for each.
 
-#### 4b. Multi-Fragment / Multi-Node
+#### 4b. Multi-Fragment / Multi-Node ✅ COMPLETE
 
-Current tests run on a single data node. Test with:
-- Multiple fragments of the root scan table
-- Verify that SCAN_NEXTREQ batching works correctly
-- Verify that each node's aggregation state is independent
-- Verify COMPLETE merges results from all nodes
+**NDB API tests** (Tests 18-19 in `testJoinAggNdbApi.cpp`):
+- **Test 18**: 2000 rows across 16 fragments (PARTITION_BALANCE=FOR_RP_BY_LDM_X_2),
+  20 groups, SUM+COUNT — forces SCAN_NEXTREQ batching across fragments
+- **Test 19**: Same + ERROR_INSERT 5090 (maxGroups=3) — eviction during
+  multi-fragment SCAN_NEXTREQ batching
+
+**SQL-level MTR test** (`mysql-test/suite/ndb_push_agg_dist/`):
+- New suite with 2 data nodes (NoOfReplicas=2)
+- `ndb_join_pushdown_agg_multinode.test`: 100 rows distributed across both
+  nodes, 8 test categories comparing pushdown ON vs OFF
+- Run: `./mtr --suite=ndb_push_agg_dist ndb_join_pushdown_agg_multinode`
 
 #### 4c. Abort / Error Paths
 
