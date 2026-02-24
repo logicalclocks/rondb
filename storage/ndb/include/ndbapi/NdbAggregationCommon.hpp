@@ -25,6 +25,8 @@
 #define NDBAGGREGATIONCOMMON_H_
 #include <cstring>
 #include <cstdint>
+
+struct CHARSET_INFO;
 /*
  * MOZ
  * Turn off the PA_CHECK to stop validate aggregation
@@ -127,18 +129,24 @@ struct GBHashEntry {
   Uint32 len;
 };
 
-struct GBHashEntryCmp {
-  bool operator() (const GBHashEntry& n1, const GBHashEntry& n2) const {
-    Uint32 len = n1.len > n2.len ?
-                  n2.len : n1.len;
+struct GBColMeta {
+  Uint32 typeId;
+  const CHARSET_INFO *cs;
+};
 
-    int ret = memcmp(n1.ptr, n2.ptr, len);
-    if (ret == 0) {
-      return n1.len < n2.len;
-    } else {
-      return ret < 0;
-    }
-  }
+struct GBCmpContext {
+  Uint32 n_cols;
+  bool all_binary_cmp;
+  GBColMeta col_meta[MAX_AGG_N_GROUPBY_COLS];
+};
+
+struct GBHashEntryCmp {
+  GBCmpContext *ctx;
+
+  GBHashEntryCmp() : ctx(nullptr) {}
+  explicit GBHashEntryCmp(GBCmpContext *c) : ctx(c) {}
+
+  bool operator() (const GBHashEntry& n1, const GBHashEntry& n2) const;
 };
 
 #endif  // NDBAGGREGATIONCOMMON_H_
