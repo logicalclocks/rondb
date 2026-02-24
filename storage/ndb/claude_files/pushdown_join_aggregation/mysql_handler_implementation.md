@@ -1,10 +1,27 @@
-# MySQL Handler Implementation Plan (RONDB-733, Phase 9)
+# MySQL Handler Implementation Plan (RONDB-733)
 
 This document is the step-by-step implementation plan for integrating pushdown
 join aggregation into the MySQL server handler layer. Each phase is designed
 to be independently testable and committable.
 
 See `mysql_join_agg.md` for the architecture analysis.
+
+## Completion Status
+
+| Phase | Description | Status |
+|-------|-------------|--------|
+| 1 | Feature gate + infrastructure | COMPLETE |
+| 2 | Aggregation candidate detection | COMPLETE |
+| 3 | NdbAggregator program build | COMPLETE |
+| 4 | AccessPath surgery + Item_sum pushed values | COMPLETE |
+| 5 | Runtime result flow | COMPLETE |
+| 6 | HAVING, ORDER BY, LIMIT | COMPLETE |
+| 7 | Implicit aggregation (no GROUP BY) | COMPLETE |
+| 8 | Wider type support (all NDB types) | COMPLETE |
+| 9 | Multi-table GROUP BY (linked projections) | COMPLETE |
+| 10 | 3+ way joins | COMPLETE |
+| 11 | EXPLAIN support | TODO |
+| 12 | SQL-level MTR test suite | TODO |
 
 ## Design Principles
 

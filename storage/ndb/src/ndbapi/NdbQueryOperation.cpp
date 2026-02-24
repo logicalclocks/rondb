@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2011, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -5041,6 +5041,7 @@ int NdbQueryOperationImpl::prepareAttrInfo(Uint32Buffer &attrInfo,
     // Leaf operations with empty projections are not supported,
     // unless this is an aggregate leaf (results come via aggregation,
     // not through the normal row projection path).
+    // has children (intermediate node providing linked attributes).
     if (getNoOfChildOperations() == 0 && !def.isAggregateLeaf() &&
         !def.isQueryAggregation()) {
       return QRY_EMPTY_PROJECTION;

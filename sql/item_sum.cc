@@ -2074,6 +2074,12 @@ String *Item_sum_sum::val_str(String *str) {
 }
 
 my_decimal *Item_sum_sum::val_decimal(my_decimal *val) {
+  if (m_pushed_aggregate) {
+    null_value = m_pushed_null;
+    if (null_value) return nullptr;
+    int2my_decimal(E_DEC_FATAL_ERROR, m_pushed_value_int, false, val);
+    return val;
+  }
   if (m_is_window_function) {
     if (hybrid_type != DECIMAL_RESULT) return val_decimal_from_real(val);
 
@@ -3348,6 +3354,15 @@ void Item_sum_num::reset_field() {
 }
 
 void Item_sum_hybrid::reset_field() {
+  if (m_pushed_aggregate) {
+    if (m_pushed_null) {
+      result_field->set_null();
+    } else {
+      result_field->set_notnull();
+      result_field->store(m_pushed_value_int, unsigned_flag);
+    }
+    return;
+  }
   switch (hybrid_type) {
     case STRING_RESULT: {
       if (args[0]->is_temporal()) {
@@ -3428,6 +3443,21 @@ void Item_sum_hybrid::reset_field() {
 
 void Item_sum_sum::reset_field() {
   assert(aggr->Aggrtype() != Aggregator::DISTINCT_AGGREGATOR);
+  if (m_pushed_aggregate) {
+    if (m_pushed_null) {
+      result_field->set_null();
+    } else {
+      result_field->set_notnull();
+      if (hybrid_type == DECIMAL_RESULT) {
+        my_decimal dec;
+        int2my_decimal(E_DEC_FATAL_ERROR, m_pushed_value_int, false, &dec);
+        result_field->store_decimal(&dec);
+      } else {
+        float8store(result_field->field_ptr(), m_pushed_value_double);
+      }
+    }
+    return;
+  }
   if (hybrid_type == DECIMAL_RESULT) {
     my_decimal value, *arg_val = args[0]->val_decimal(&value);
     if (!arg_val)  // Null
@@ -3445,9 +3475,12 @@ void Item_sum_sum::reset_field() {
 }
 
 void Item_sum_count::reset_field() {
-  longlong nr = 0;
   assert(aggr->Aggrtype() != Aggregator::DISTINCT_AGGREGATOR);
-
+  if (m_pushed_aggregate) {
+    int8store(result_field->field_ptr(), m_pushed_value_int);
+    return;
+  }
+  longlong nr = 0;
   if (!args[0]->is_nullable() || !args[0]->is_null()) nr = 1;
   int8store(result_field->field_ptr(), nr);
 }
@@ -3517,6 +3550,7 @@ void Item_sum_bit::update_field() {
 void Item_sum_sum::update_field() {
   DBUG_TRACE;
   assert(aggr->Aggrtype() != Aggregator::DISTINCT_AGGREGATOR);
+  if (m_pushed_aggregate) return;  // Already the correct aggregate result
   if (hybrid_type == DECIMAL_RESULT) {
     my_decimal value, *arg_val = args[0]->val_decimal(&value);
     if (!args[0]->null_value) {
@@ -3544,6 +3578,7 @@ void Item_sum_sum::update_field() {
 }
 
 void Item_sum_count::update_field() {
+  if (m_pushed_aggregate) return;  // Already the correct aggregate result
   longlong nr;
   uchar *res = result_field->field_ptr();
 
@@ -3589,6 +3624,7 @@ void Item_sum_avg::update_field() {
 }
 
 void Item_sum_hybrid::update_field() {
+  if (m_pushed_aggregate) return;  // Already the correct aggregate result
   switch (hybrid_type) {
     case STRING_RESULT:
       if (args[0]->is_temporal())

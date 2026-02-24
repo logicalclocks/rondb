@@ -37,6 +37,7 @@
 
 #include "sql/item.h"
 #include "sql/item_sum.h"
+#include "sql/join_optimizer/access_path.h"
 #include "sql/sql_optimizer.h"
 #include "sql/table.h"
 #include "storage/ndb/include/ndbapi/NdbAggregator.hpp"
@@ -44,6 +45,26 @@
 #include "storage/ndb/plugin/ha_ndbcluster_push.h"
 #include "storage/ndb/src/ndbapi/NdbQueryBuilder.hpp"
 #include "storage/ndb/src/ndbapi/NdbQueryOperation.hpp"
+
+/**
+ * When aggregation is pushed, walk down through NESTED_LOOP_JOINs whose
+ * inner side is a pushed-join child and return the outermost 'outer' path
+ * that is not such a join — i.e., the root table scan.
+ */
+AccessPath *strip_pushed_child_nljs(AccessPath *path) {
+  while (path->type == AccessPath::NESTED_LOOP_JOIN) {
+    const TABLE *inner_table =
+        GetBasicTable(path->nested_loop_join().inner);
+    if (inner_table != nullptr &&
+        inner_table->file->member_of_pushed_join() != nullptr &&
+        inner_table->file->member_of_pushed_join() != inner_table) {
+      path = path->nested_loop_join().outer;
+    } else {
+      break;
+    }
+  }
+  return path;
+}
 
 /**
  * Check if the aggregate functions and GROUP BY in a JOIN are pushable.
@@ -95,7 +116,7 @@ static bool ndb_can_push_aggregation(const JOIN *join) {
   }
 
   // GROUP BY columns must all be simple field references from pushed tables.
-  for (ORDER *group = join->group_list.order; group != nullptr;
+  for (ORDER *group = join->query_block->group_list.first; group != nullptr;
        group = group->next) {
     Item *item = *(group->item);
     if (item->type() != Item::FIELD_ITEM) return false;
@@ -143,13 +164,12 @@ static NdbAggregator *ndb_build_aggregation_program(
   // Map GROUP BY columns. Columns from parent tables use GroupByLinked(),
   // columns from the leaf table use GroupBy().
   Uint32 linked_pos = 0;
-  for (ORDER *group = join->group_list.order; group != nullptr;
+  for (ORDER *group = join->query_block->group_list.first; group != nullptr;
        group = group->next) {
     const auto *field_item = down_cast<const Item_field *>(*(group->item));
     const int col_id = field_item->field->field_index();
     const uint tab_idx =
         find_table_index(tables, table_count, field_item->field->table);
-
     if (tab_idx == leaf_tab_no) {
       // Leaf table column — direct GROUP BY.
       if (!agg->GroupBy(col_id)) {
@@ -183,9 +203,22 @@ static NdbAggregator *ndb_build_aggregation_program(
       case Item_sum::SUM_FUNC:
       case Item_sum::MIN_FUNC:
       case Item_sum::MAX_FUNC: {
-        // SUM/MIN/MAX(leaf_column): load column, then aggregate.
+        // SUM/MIN/MAX(column): load column, then aggregate.
+        // The column must be from the leaf table, since LoadColumn()
+        // operates on the leaf table's column namespace.
         const auto *field_item =
             down_cast<const Item_field *>((*func)->arguments()[0]);
+        const uint agg_tab_idx =
+            find_table_index(tables, table_count, field_item->field->table);
+        if (agg_tab_idx != leaf_tab_no) {
+          // Aggregate source column not on leaf table — can't push.
+          DBUG_PRINT("info",
+                     ("ndb_push_aggregation: aggregate source on table %u, "
+                      "leaf is %u — cannot push",
+                      agg_tab_idx, leaf_tab_no));
+          delete agg;
+          return nullptr;
+        }
         const int col_id = field_item->field->field_index();
 
         if (!agg->LoadColumn(col_id, kReg1)) {
@@ -257,7 +290,7 @@ void ndb_apply_aggregation_options(ndb_pushed_builder_ctx &builder,
 
   // Add linked projections for GROUP BY columns from parent tables.
   const JOIN *join = builder.m_join;
-  for (ORDER *group = join->group_list.order; group != nullptr;
+  for (ORDER *group = join->query_block->group_list.first; group != nullptr;
        group = group->next) {
     const auto *field_item = down_cast<const Item_field *>(*(group->item));
     const uint tab_idx = find_table_index(
@@ -284,7 +317,9 @@ bool ndb_push_aggregation(THD *, const JOIN *join,
     }
   }
 
-  if (!ndb_can_push_aggregation(join)) return false;
+  if (!ndb_can_push_aggregation(join)) {
+    return false;
+  }
 
   // Find the leaf table (last in join scope).
   uint leaf_tab_no = 0;
@@ -309,6 +344,31 @@ bool ndb_push_aggregation(THD *, const JOIN *join,
   // Store the aggregator on the builder for build_query() to use.
   builder.m_aggregator = agg;
 
+  // Force chain topology for the aggregation rebuild.
+  // The optimizer may create flat trees (e.g., root with 2 direct children)
+  // when join keys are transitive. In aggregate mode, "orphan" leaf nodes
+  // (non-aggregate leaves with no children) cause DBSPJ issues because they
+  // have no projection and no aggregate role.  Force each non-root table's
+  // parent to be the immediately preceding table in the join scope, creating
+  // a chain: root → t1 → t2 → ... → leaf.  The linked key operands still
+  // reference the original table (possibly a grandparent), and DBSPJ handles
+  // grandparent references correctly via level counting.
+  // Must also recompute m_ancestors to match the new parents.
+  {
+    const uint root_no = builder.m_join_root->get_table_no();
+    uint prev_tab_no = root_no;
+    for (uint t = root_no + 1; t < builder.m_table_count; t++) {
+      if (builder.m_join_scope.contain(t)) {
+        builder.m_tables[t].m_parent = prev_tab_no;
+        // Recompute ancestors: parent's ancestors + parent itself
+        builder.m_tables[t].m_ancestors =
+            builder.m_tables[prev_tab_no].m_ancestors;
+        builder.m_tables[t].m_ancestors.add(prev_tab_no);
+        prev_tab_no = t;
+      }
+    }
+  }
+
   // Rebuild the query with aggregation attached. build_query() will call
   // ndb_apply_aggregation_options() for the leaf table, which calls
   // setAggregation() and addLinkedProjection() on its NdbQueryOptions.
@@ -325,6 +385,25 @@ bool ndb_push_aggregation(THD *, const JOIN *join,
     delete agg;
     builder.m_aggregator = nullptr;
     return false;
+  }
+
+  // Verify the query tree forms a chain (root → ... → leaf).
+  // Aggregation pushdown requires each node to have at most 1 child.
+  // Flat trees (e.g., root with 2 children) have sibling branches that
+  // produce leaf nodes with no projection and no aggregate role, which
+  // DBSPJ cannot handle in aggregate mode.
+  for (Uint32 i = 0; i < query_def->getNoOfOperations(); i++) {
+    const NdbQueryOperationDef *op = query_def->getQueryOperation(i);
+    if (op->getNoOfChildOperations() > 1) {
+      DBUG_PRINT("info",
+                 ("ndb_push_aggregation: op %u has %u children, "
+                  "not a chain — cannot push",
+                  i, op->getNoOfChildOperations()));
+      query_def->destroy();
+      delete agg;
+      builder.m_aggregator = nullptr;
+      return false;
+    }
   }
 
   // Create a new ndb_pushed_join with the aggregation-enabled query def.
@@ -464,8 +543,7 @@ static int store_group_column(NdbAggregator::Column &col, Field *field) {
  * @return 0 on success, error code on failure
  */
 static int ndb_init_aggregate_results(NdbQueryOperation *pushed_op,
-                                      bool force_send,
-                                      NdbAggregator *agg) {
+                                      bool force_send) {
   // Drain the scan — aggregate results accumulate in the NdbAggregator
   // as TRANSID_AI data arrives during nextResult() calls.
   NdbQuery::NextResultOutcome result;
@@ -476,7 +554,9 @@ static int ndb_init_aggregate_results(NdbQueryOperation *pushed_op,
     return HA_ERR_INTERNAL_ERROR;
   }
 
-  agg->PrepareResults();
+  // PrepareResults() is already called by NdbQueryImpl::processAggResults()
+  // when the scan reaches EndOfData.  Do NOT call it again here — a second
+  // call would reset the result iterator and lose accumulated groups.
   return 0;
 }
 
@@ -497,11 +577,17 @@ static int ndb_fetch_next_aggregate_row(NdbAggregator *agg,
   }
 
   // Populate GROUP BY columns in MySQL's row buffer.
-  for (ORDER *group = join->group_list.order; group != nullptr;
+  // Temporarily mark all columns writable — the aggregate pushdown path
+  // writes GROUP BY columns that may not be in the normal write_set.
+  for (ORDER *group = join->query_block->group_list.first; group != nullptr;
        group = group->next) {
     NdbAggregator::Column col = rec.FetchGroupbyColumn();
     const auto *field_item = down_cast<const Item_field *>(*(group->item));
-    const int err = store_group_column(col, field_item->field);
+    Field *field = field_item->field;
+    my_bitmap_map *old_map =
+        dbug_tmp_use_all_columns(field->table, field->table->write_set);
+    const int err = store_group_column(col, field);
+    dbug_tmp_restore_column_map(field->table->write_set, old_map);
     if (err) return err;
   }
 
@@ -533,11 +619,13 @@ static int ndb_fetch_next_aggregate_row(NdbAggregator *agg,
 
 int ndb_fetch_pushed_aggregate(ha_ndbcluster *handler) {
   NdbAggregator *agg = handler->m_active_query->getAggregator();
-  if (agg == nullptr) return HA_ERR_INTERNAL_ERROR;
+  if (agg == nullptr) {
+    return HA_ERR_INTERNAL_ERROR;
+  }
 
   if (!handler->m_agg_results_initialized) {
     const int err = ndb_init_aggregate_results(
-        handler->m_pushed_operation, handler->m_thd_ndb->m_force_send, agg);
+        handler->m_pushed_operation, handler->m_thd_ndb->m_force_send);
     if (err) return err;
     handler->m_agg_results_initialized = true;
   }

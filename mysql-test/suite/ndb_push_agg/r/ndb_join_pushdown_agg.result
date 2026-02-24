@@ -1,0 +1,269 @@
+############################################################
+# RONDB-733 Phase 10: 3+ Way Join Aggregation Pushdown
+############################################################
+# Create 3 tables forming a PK-lookup chain for pushed joins
+CREATE TABLE t1 (
+pk INT PRIMARY KEY,
+grp VARCHAR(20),
+region INT
+) ENGINE=NDB;
+CREATE TABLE t2 (
+pk INT PRIMARY KEY,
+cat VARCHAR(20),
+discount INT
+) ENGINE=NDB;
+CREATE TABLE t3 (
+pk INT PRIMARY KEY,
+amount INT,
+qty INT
+) ENGINE=NDB;
+# Load test data
+INSERT INTO t1 VALUES
+(1, 'A', 10), (2, 'A', 20), (3, 'B', 30),
+(4, 'B', 10), (5, 'C', 20), (6, 'C', 30),
+(7, 'A', 10), (8, 'B', 20);
+INSERT INTO t2 VALUES
+(1, 'X', 5),  (2, 'X', 10), (3, 'Y', 15),
+(4, 'Y', 20), (5, 'X', 25), (6, 'Z', 30),
+(7, 'Z', 5),  (8, 'X', 10);
+INSERT INTO t3 VALUES
+(1, 100, 10), (2, 200, 20), (3, 300, 30),
+(4, 400, 40), (5, 500, 50), (6, 600, 60),
+(7, 700, 70), (8, 800, 80);
+############################################################
+# Test 1: GROUP BY root, SUM + COUNT on leaf
+############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT t1.grp, SUM(t3.amount), COUNT(*)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp;
+grp	SUM(t3.amount)	COUNT(*)
+A	1000	3
+B	1500	3
+C	1100	2
+SET ndb_join_pushdown_aggregate=ON;
+SELECT t1.grp, SUM(t3.amount), COUNT(*)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp;
+grp	SUM(t3.amount)	COUNT(*)
+A	1000	3
+B	1500	3
+C	1100	2
+############################################################
+# Test 2: Multi-table GROUP BY: root + leaf
+############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT t1.grp, t3.qty, SUM(t3.amount)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp, t3.qty;
+grp	qty	SUM(t3.amount)
+A	10	100
+A	20	200
+A	70	700
+B	30	300
+B	40	400
+B	80	800
+C	50	500
+C	60	600
+SET ndb_join_pushdown_aggregate=ON;
+SELECT t1.grp, t3.qty, SUM(t3.amount)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp, t3.qty;
+grp	qty	SUM(t3.amount)
+A	10	100
+A	20	200
+A	70	700
+B	30	300
+B	40	400
+B	80	800
+C	50	500
+C	60	600
+############################################################
+# Test 3: GROUP BY root + intermediate, COUNT(*)
+############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT t1.grp, t2.cat, COUNT(*)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp, t2.cat;
+grp	cat	COUNT(*)
+A	X	2
+A	Z	1
+B	X	1
+B	Y	2
+C	X	1
+C	Z	1
+SET ndb_join_pushdown_aggregate=ON;
+SELECT t1.grp, t2.cat, COUNT(*)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp, t2.cat;
+grp	cat	COUNT(*)
+A	X	2
+A	Z	1
+B	X	1
+B	Y	2
+C	X	1
+C	Z	1
+############################################################
+# Test 4: All 4 aggregate functions on leaf
+############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT t1.grp, COUNT(*), SUM(t3.amount), MIN(t3.amount), MAX(t3.amount)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp;
+grp	COUNT(*)	SUM(t3.amount)	MIN(t3.amount)	MAX(t3.amount)
+A	3	1000	100	700
+B	3	1500	300	800
+C	2	1100	500	600
+SET ndb_join_pushdown_aggregate=ON;
+SELECT t1.grp, COUNT(*), SUM(t3.amount), MIN(t3.amount), MAX(t3.amount)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp;
+grp	COUNT(*)	SUM(t3.amount)	MIN(t3.amount)	MAX(t3.amount)
+A	3	1000	100	700
+B	3	1500	300	800
+C	2	1100	500	600
+############################################################
+# Test 5: HAVING with 3-way join
+############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT t1.grp, SUM(t3.amount) AS total
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp
+HAVING total > 1000;
+grp	total
+B	1500
+C	1100
+SET ndb_join_pushdown_aggregate=ON;
+SELECT t1.grp, SUM(t3.amount) AS total
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp
+HAVING total > 1000;
+grp	total
+B	1500
+C	1100
+############################################################
+# Test 6: ORDER BY + LIMIT
+############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT t1.grp, SUM(t3.amount) AS total
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp
+ORDER BY total DESC
+LIMIT 2;
+grp	total
+B	1500
+C	1100
+SET ndb_join_pushdown_aggregate=ON;
+SELECT t1.grp, SUM(t3.amount) AS total
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp
+ORDER BY total DESC
+LIMIT 2;
+grp	total
+B	1500
+C	1100
+############################################################
+# Test 7: Implicit aggregation (no GROUP BY)
+############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT COUNT(*), SUM(t3.amount), MIN(t3.amount), MAX(t3.amount)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk;
+COUNT(*)	SUM(t3.amount)	MIN(t3.amount)	MAX(t3.amount)
+8	3600	100	800
+SET ndb_join_pushdown_aggregate=ON;
+SELECT COUNT(*), SUM(t3.amount), MIN(t3.amount), MAX(t3.amount)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk;
+COUNT(*)	SUM(t3.amount)	MIN(t3.amount)	MAX(t3.amount)
+8	3600	100	800
+############################################################
+# Test 8: NULL values in aggregate column
+############################################################
+# Add a row with NULL amount
+INSERT INTO t1 VALUES (9, 'A', 10);
+INSERT INTO t2 VALUES (9, 'X', 0);
+INSERT INTO t3 VALUES (9, NULL, 90);
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT t1.grp, SUM(t3.amount), COUNT(*), MIN(t3.amount), MAX(t3.amount)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp;
+grp	SUM(t3.amount)	COUNT(*)	MIN(t3.amount)	MAX(t3.amount)
+A	1000	4	100	700
+B	1500	3	300	800
+C	1100	2	500	600
+SET ndb_join_pushdown_aggregate=ON;
+SELECT t1.grp, SUM(t3.amount), COUNT(*), MIN(t3.amount), MAX(t3.amount)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp;
+grp	SUM(t3.amount)	COUNT(*)	MIN(t3.amount)	MAX(t3.amount)
+A	1000	4	100	700
+B	1500	3	300	800
+C	1100	2	500	600
+############################################################
+# Test 9: Non-pushable fallback (SUM on intermediate table)
+# SUM(t2.discount) is on intermediate, not leaf — should fall
+# back to MySQL aggregation and still produce correct results
+############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT t1.grp, SUM(t2.discount)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp;
+grp	SUM(t2.discount)
+A	20
+B	45
+C	55
+SET ndb_join_pushdown_aggregate=ON;
+SELECT t1.grp, SUM(t2.discount)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp;
+grp	SUM(t2.discount)
+A	20
+B	45
+C	55
+############################################################
+# Test 10: GROUP BY on all three tables
+############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT t1.region, t2.cat, t3.qty, SUM(t3.amount)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.region, t2.cat, t3.qty;
+region	cat	qty	SUM(t3.amount)
+10	X	10	100
+10	X	90	NULL
+10	Y	40	400
+10	Z	70	700
+20	X	20	200
+20	X	50	500
+20	X	80	800
+30	Y	30	300
+30	Z	60	600
+SET ndb_join_pushdown_aggregate=ON;
+SELECT t1.region, t2.cat, t3.qty, SUM(t3.amount)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.region, t2.cat, t3.qty;
+region	cat	qty	SUM(t3.amount)
+10	X	10	100
+10	X	90	NULL
+10	Y	40	400
+10	Z	70	700
+20	X	20	200
+20	X	50	500
+20	X	80	800
+30	Y	30	300
+30	Z	60	600
+############################################################
+# Test 11: Empty result set
+############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT t1.grp, SUM(t3.amount)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+WHERE t1.pk = 999
+GROUP BY t1.grp;
+grp	SUM(t3.amount)
+SET ndb_join_pushdown_aggregate=ON;
+SELECT t1.grp, SUM(t3.amount)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+WHERE t1.pk = 999
+GROUP BY t1.grp;
+grp	SUM(t3.amount)
+# Cleanup
+DROP TABLE t3, t2, t1;

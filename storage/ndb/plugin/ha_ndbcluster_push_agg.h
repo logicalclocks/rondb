@@ -43,6 +43,7 @@
 #ifndef HA_NDBCLUSTER_PUSH_AGG_H
 #define HA_NDBCLUSTER_PUSH_AGG_H
 
+struct AccessPath;
 class THD;
 class JOIN;
 class ha_ndbcluster;
@@ -77,6 +78,14 @@ bool ndb_push_aggregation(THD *thd, const JOIN *join,
 void ndb_apply_aggregation_options(ndb_pushed_builder_ctx &builder,
                                    unsigned int tab_no,
                                    NdbQueryOptions *options);
+
+/**
+ * Strip NESTED_LOOP_JOINs whose inner side is a pushed-join child,
+ * returning the root table scan path. Used by AccessPath surgery
+ * in fixup_pushed_access_paths() to remove pushed-join-child NLJs
+ * when aggregation is pushed.
+ */
+AccessPath *strip_pushed_child_nljs(AccessPath *path);
 
 /**
  * Fetch the next pushed aggregate result.

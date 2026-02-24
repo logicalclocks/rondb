@@ -51,7 +51,7 @@
 #include "sql/partition_info.h"
 #include "sql/sql_alter.h"
 #include "sql/sql_class.h"
-#include "sql/sql_executor.h"  // QEP_TAB
+#include "sql/sql_executor.h"   // QEP_TAB
 #include "sql/sql_lex.h"
 #include "sql/sql_plugin_var.h"  // SYS_VAR
 #include "sql/transaction.h"
@@ -6679,6 +6679,10 @@ int ha_ndbcluster::close_scan() {
   if (m_active_query) {
     m_active_query->close(m_thd_ndb->m_force_send);
     m_active_query = nullptr;
+    // Clear the aggregate join pointer when closing an actual active scan.
+    // Don't clear it in the rnd_init() path (m_active_query == nullptr)
+    // since it's needed in create_pushed_join() to restore m_pushed_agg_mode.
+    m_pushed_agg_join = nullptr;
   }
   m_pushed_agg_mode = false;
   m_agg_results_initialized = false;
@@ -14783,8 +14787,10 @@ static void fixup_pushed_access_paths(THD *thd, AccessPath *path,
       case AccessPath::AGGREGATE: {
         if (has_pushed_aggregation) {
           // Aggregation is pushed to data nodes — remove the AGGREGATE
-          // AccessPath by replacing it with its child.
-          AccessPath *child = subpath->aggregate().child;
+          // iterator (which would re-aggregate from record buffer values).
+          // Replace with the NLJ-stripped child (root table scan).
+          AccessPath *child =
+              strip_pushed_child_nljs(subpath->aggregate().child);
           *subpath = *child;
           return false;  // Re-walk the replaced node
         }
@@ -14796,9 +14802,19 @@ static void fixup_pushed_access_paths(THD *thd, AccessPath *path,
       }
       case AccessPath::TEMPTABLE_AGGREGATE: {
         if (has_pushed_aggregation) {
-          AccessPath *child = subpath->temptable_aggregate().subquery_path;
-          *subpath = *child;
-          return false;
+          // Keep TEMPTABLE_AGGREGATE — it materializes aggregate results into
+          // a temp table, which SORT/LIMIT nodes above need.  Remove the
+          // inner AGGREGATE (which would re-aggregate) and strip
+          // pushed-join-child NLJs, leaving just the root table scan.
+          // Item_sum::reset_field() handles pushed values when storing
+          // into the temp table.
+          AccessPath *sub = subpath->temptable_aggregate().subquery_path;
+          if (sub->type == AccessPath::AGGREGATE) {
+            sub = sub->aggregate().child;
+          }
+          sub = strip_pushed_child_nljs(sub);
+          subpath->temptable_aggregate().subquery_path = sub;
+          return true;  // Don't walk children — we handled the subquery
         }
 #ifndef NDEBUG
         assert(!has_pushed_members_outside_of_branch(
@@ -14958,6 +14974,7 @@ int ndbcluster_push_to_engine(THD *thd, AccessPath *root_path, JOIN *join) {
   // Modify the AccessPath structure to reflect pushed execution.
   fixup_pushed_access_paths(thd, root_path, join, /*filter=*/nullptr,
                             has_pushed_aggregation);
+
   return 0;
 }
 
@@ -15058,6 +15075,16 @@ int ha_ndbcluster::create_pushed_join(const NdbQueryParamValue *keyFieldParams,
 
   if (unlikely(query == nullptr)) ERR_RETURN(m_thd_ndb->trans->getNdbError());
 
+  // Restore aggregation mode.  m_pushed_agg_mode was set during
+  // prepare_push_join() but gets cleared by close_scan() which runs
+  // between optimization and execution (called from rnd_init/index_init).
+  // Use the persistent m_pushed_agg_join (set during prepare, not cleared
+  // by close_scan) to re-detect.
+  if (m_pushed_agg_join != nullptr) {
+    m_pushed_agg_mode = true;
+    m_agg_results_initialized = false;
+  }
+
   // Bind to instantiated NdbQueryOperations.
   for (uint i = 0; i < m_pushed_join_member->get_operation_count(); i++) {
     const TABLE *const tab = m_pushed_join_member->get_table(i);
@@ -15106,11 +15133,20 @@ int ha_ndbcluster::create_pushed_join(const NdbQueryParamValue *keyFieldParams,
       }
     }
 
-    // Bind to result buffers
-    int res = op->setResultRowRef(
-        handler->m_ndb_record, handler->_m_next_row,
-        handler->m_table_map->get_column_mask(tab->read_set));
-    if (unlikely(res)) ERR_RETURN(query->getNdbError());
+    // Bind to result buffers.
+    // For aggregate queries, no operation needs user projection
+    // (PI_ATTR_LIST) — aggregate results arrive via NDB_AGG_RECEIVER
+    // (from JOIN_AGG_COMPLETE_REQ handling), not per-row TRANSID_AI.
+    // Skipping setResultRowRef() for all operations avoids
+    // READ_PACKED columns in TRANSID_AI that DBSPJ cannot parse.
+    // The scan drain loop handles 0-row batches correctly, reaching
+    // EndOfData which triggers processAggResults().
+    if (!m_pushed_agg_mode) {
+      int res = op->setResultRowRef(
+          handler->m_ndb_record, handler->_m_next_row,
+          handler->m_table_map->get_column_mask(tab->read_set));
+      if (unlikely(res)) ERR_RETURN(query->getNdbError());
+    }
 
     // We clear 'm_next_row' to say that no row was fetched from the query yet.
     handler->_m_next_row = nullptr;

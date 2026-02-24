@@ -9994,20 +9994,45 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
       Uint32 sum_read = 0;
       Uint32 dst[MAX_ATTRIBUTES_IN_TABLE + 2];
 
+      /**
+       * For aggregation queries (RT_AGGREGATE set on request):
+       * Only the aggregate leaf node (T_AGGREGATE_LEAF) sends results
+       * to the API. Non-leaf nodes pass data only via linked attributes
+       * to child nodes; the aggregation program is executed at the leaf.
+       *
+       * Normally the NDB API should not set PI_ATTR_LIST for non-leaf
+       * operations in aggregate queries (ha_ndbcluster skips
+       * setResultRowRef for them). This guard is defensive: if
+       * PI_ATTR_LIST is present, suppress the user projection and
+       * FLUSH_AI to avoid READ_PACKED columns (unparseable by
+       * buildRowHeader) in the TRANSID_AI sent to DBSPJ.
+       */
+      const bool isAggregateRequest =
+          (requestPtr.p->m_bits & Request::RT_AGGREGATE) != 0;
+      const bool isAggregateLeaf =
+          (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) != 0;
+      const bool suppressFlushAI = isAggregateRequest && !isAggregateLeaf;
+
       if (paramBits & DABits::PI_ATTR_LIST) {
         jam();
         Uint32 len = *param.ptr++;
         DEBUG("PI_ATTR_LIST");
 
-        treeNodePtr.p->m_bits |= TreeNode::T_USER_PROJECTION;
-        err = DbspjErr::OutOfSectionMemory;
-        if (!appendToSection(attrInfoPtrI, param.ptr, len)) {
-          jam();
-          break;
+        if (!suppressFlushAI) {
+          treeNodePtr.p->m_bits |= TreeNode::T_USER_PROJECTION;
+          err = DbspjErr::OutOfSectionMemory;
+          if (!appendToSection(attrInfoPtrI, param.ptr, len)) {
+            jam();
+            break;
+          }
+          sum_read += len;
+        } else {
+          DEB_AGGREGATION(("(%u) Suppressing user projection for "
+                           "intermediate aggregate node",
+                           instance()));
         }
 
         param.ptr += len;
-        sum_read += len;
 
         /**
          * We have just added a 'USER_PROJECTION' which is the
@@ -10027,25 +10052,7 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
          * Also need to have this under API-version control, as
          * older API versions assumed that all SPJ results were
          * returned as 'long' signals.
-         *
-         * For aggregation queries (RT_AGGREGATE set on request):
-         * Only the aggregate leaf node (T_AGGREGATE_LEAF) sends results
-         * to the API. Intermediate nodes suppress FLUSH_AI, passing data
-         * only via linked attributes to child nodes. The aggregation
-         * program is executed by DBLQH at the leaf node.
          */
-        const bool isAggregateRequest =
-            (requestPtr.p->m_bits & Request::RT_AGGREGATE) != 0;
-        const bool isAggregateLeaf =
-            (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) != 0;
-        const bool suppressFlushAI = isAggregateRequest && !isAggregateLeaf;
-
-        if (suppressFlushAI) {
-          DEB_AGGREGATION(("(%u) Suppressing FLUSH_AI for intermediate "
-                           "aggregate node",
-                           instance()));
-        }
-
         if (!suppressFlushAI &&
             (treeBits & DABits::NI_LINKED_ATTR || requestPtr.p->isScan())) {
           /**
