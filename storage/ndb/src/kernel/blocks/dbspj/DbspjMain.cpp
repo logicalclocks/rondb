@@ -9780,7 +9780,8 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
     const Uint32 mask = DABits::NI_LINKED_ATTR | DABits::NI_ATTR_INTERPRET |
                         DABits::NI_ATTR_LINKED;
 
-    if (((treeBits & mask) | (paramBits & DABits::PI_ATTR_LIST)) != 0) {
+    if (((treeBits & mask) |
+         (paramBits & (DABits::PI_ATTR_LIST | DABits::PI_ATTR_INTERPRET))) != 0) {
       jam();
       /**
        * OPTIONAL PART 3: attrinfo handling

@@ -973,6 +973,24 @@ bool NdbAggregator::Skip(Uint32 skip_count) {
   return true;
 }
 
+bool NdbAggregator::RepeatAgg(Uint32 agg_id, Uint32 reg_id) {
+  if (agg_id >= MAX_AGGREGATION_OP_SIZE) {
+    SetError(kErrInvalidAggNo);
+    return false;
+  }
+  if (agg_ops_[agg_id] == kOpUnknown) {
+    SetError(kErrAggNoUsed);
+    return false;
+  }
+  if (reg_id >= kRegTotal) {
+    SetError(kErrInvalidRegNo);
+    return false;
+  }
+  buffer_[curr_prog_pos_++] =
+      (agg_ops_[agg_id]) << 26 | (reg_id & 0x0F) << 16 | agg_id;
+  return true;
+}
+
 bool NdbAggregator::Finalize() {
   if (curr_prog_pos_ == PROGRAM_HEADER_SIZE) {
     SetError(kErrEmptyProgram);

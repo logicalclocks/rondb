@@ -180,6 +180,7 @@ public:
     FORALL_INSTRUCTIONS(INSTR_ENUM)
     EmbeddedInterp,    // dest=case_index, src=0
     Skip,              // dest=0, src=0 (placeholder)
+    AggRepeat,         // dest=agg_index, src=reg (CASE ELSE arm duplicate)
   };
 #undef INSTR_ENUM
   struct Instr

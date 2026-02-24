@@ -379,7 +379,8 @@ AggregationAPICompiler::svm_init()
     ndbrequire(dest < m_aggs.size()); \
     require_reg(src); \
     svm_use(src, is_first_compilation); \
-    ndbrequire(m_aggs[dest].expr == r[src]); \
+    if (m_aggs[dest].expr->op != ExprOp::Case) \
+      ndbrequire(m_aggs[dest].expr == r[src]); \
     break;
 void
 AggregationAPICompiler::svm_execute(AggregationAPICompiler::Instr* instr,
@@ -407,6 +408,11 @@ AggregationAPICompiler::svm_execute(AggregationAPICompiler::Instr* instr,
   case SVMInstrType::EmbeddedInterp:
     break;
   case SVMInstrType::Skip:
+    break;
+  case SVMInstrType::AggRepeat:
+    ndbrequire(dest < m_aggs.size());
+    require_reg(src);
+    svm_use(src, is_first_compilation);
     break;
   default:
     // Unknown instruction
@@ -497,6 +503,9 @@ AggregationAPICompiler::compile()
     switch (m_program[i].type)
     {
     FORALL_AGGS(AGG_CASE)
+    case SVMInstrType::AggRepeat:
+      ndbrequire(m_program[i].dest == next_aggregate - 1);
+      break;
     default:
       void(); // Do nothing
     }
@@ -546,8 +555,13 @@ AggregationAPICompiler::compile(AggExpr* agg, Uint32 idx)
     m_cases[case_idx].else_start = m_program.size();
     Uint32 else_reg;
     if (!compile(case_expr->right, &else_reg)) return false;
-    pushInstr(agg->agg_type, idx, else_reg, false);
+    pushInstr(SVMInstrType::AggRepeat, idx, else_reg, true);
     m_cases[case_idx].else_end = m_program.size();
+
+    // Values loaded inside CASE arms are conditional — they may not have
+    // executed at runtime depending on the branch taken. Clear SVM register
+    // tracking to prevent subsequent code from reusing them.
+    svm_init();
 
     return true;
   }
@@ -927,6 +941,12 @@ AggregationAPICompiler::dead_code_elimination()
       break;
     FORALL_ARITHMETIC_OPS(OPERATOR_CASE)
     FORALL_AGGS(AGG_CASE)
+    case SVMInstrType::AggRepeat:
+      ndbrequire(dest < m_aggs.size());
+      require_reg(src);
+      this_instr_is_useful = true;
+      reg_needed[src] = true;
+      break;
     case SVMInstrType::EmbeddedInterp:
     case SVMInstrType::Skip:
       this_instr_is_useful = true;
@@ -1137,6 +1157,11 @@ AggregationAPICompiler::print(Instr* instr)
     break;
   FORALL_ARITHMETIC_OPS(OPERATOR_CASE)
   FORALL_AGGS(AGG_CASE)
+  case SVMInstrType::AggRepeat:
+    ndbrequire(dest < m_aggs.size());
+    require_reg(src);
+    m_out << "AggRep A" << d2(dest) << "  r" << d2(src);
+    break;
   case SVMInstrType::EmbeddedInterp:
     m_out << "EmbInt C" << d2(dest) << "  ---";
     break;

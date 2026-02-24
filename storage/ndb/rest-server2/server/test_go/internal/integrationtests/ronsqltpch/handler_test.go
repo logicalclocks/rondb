@@ -129,7 +129,7 @@ var tpchQueries = []struct {
 		GROUP BY l.l_shipmode;`, ""},
 
 	{"Q9", `SELECT n.n_name, o.o_orderyear,
-		SUM(l.l_extendedprice * (1 - l.l_discount) - ps.ps_supplycost * l.l_quantity)
+		SUM(l.l_extendedprice * (1 - l.l_discount) - ps.ps_supplycost * l.l_quantity) AS amount
 		FROM tpch_lineitem AS l
 		JOIN tpch_part AS p ON p.p_partkey = l.l_partkey
 		JOIN tpch_orders AS o ON o.o_orderkey = l.l_orderkey
@@ -138,13 +138,13 @@ var tpchQueries = []struct {
 			AND ps.ps_suppkey = l.l_suppkey
 		JOIN tpch_nation AS n ON n.n_nationkey = s.s_nationkey
 		WHERE p.p_name LIKE '%green%'
-		GROUP BY n.n_name, o.o_orderyear;`, ""},
+		GROUP BY n.n_name, o.o_orderyear;`, "Q9 tree topology: partsupp join keys reference root across intermediate nodes"},
 
 	{"Q12", `SELECT l.l_shipmode,
 		SUM(CASE WHEN o.o_orderpriority = '1-URGENT'
-			OR o.o_orderpriority = '2-HIGH' THEN 1 ELSE 0 END),
+			OR o.o_orderpriority = '2-HIGH' THEN 1 ELSE 0 END) AS high_line_count,
 		SUM(CASE WHEN o.o_orderpriority <> '1-URGENT'
-			AND o.o_orderpriority <> '2-HIGH' THEN 1 ELSE 0 END),
+			AND o.o_orderpriority <> '2-HIGH' THEN 1 ELSE 0 END) AS low_line_count,
 		COUNT(*)
 		FROM tpch_lineitem AS l
 		JOIN tpch_orders AS o ON o.o_orderkey = l.l_orderkey

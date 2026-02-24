@@ -22,7 +22,8 @@
     }
   },
   "Log": {
-    "Level": "INFO"
+    "Level": "INFO",
+    "LogQueries": true
   },
   "Testing": {
     "MySQL": {

@@ -1537,6 +1537,7 @@ RonSQLPreparer::execute_join()
   for (Uint32 i = 1; i < plan.num_ops; i++) {
     JoinOp& op = plan.ops[i];
     NdbQueryOptions opts;
+    opts.setMatchType(NdbQueryOptions::MatchNonNull);
 
     // Build linked key from parent
     const NdbQueryOperand* keys[MAX_JOIN_KEY_COLS + 1];
@@ -2601,6 +2602,9 @@ RonSQLPreparer::programAggregator(NdbAggregator* aggregator)
     case AggregationAPICompiler::SVMInstrType::Count:
       programAggregator_do_or_fail(aggregator->Count(dest, src));
       break;
+    case AggregationAPICompiler::SVMInstrType::AggRepeat:
+      programAggregator_do_or_fail(aggregator->RepeatAgg(dest, src));
+      break;
     case AggregationAPICompiler::SVMInstrType::EmbeddedInterp:
     {
       auto& ci = m_agg->m_cases[dest];
@@ -2729,6 +2733,9 @@ RonSQLPreparer::programAggregator_join(NdbAggregator* aggregator)
       break;
     case AggregationAPICompiler::SVMInstrType::Count:
       programAggregator_do_or_fail(aggregator->Count(dest, src));
+      break;
+    case AggregationAPICompiler::SVMInstrType::AggRepeat:
+      programAggregator_do_or_fail(aggregator->RepeatAgg(dest, src));
       break;
     case AggregationAPICompiler::SVMInstrType::EmbeddedInterp:
     {
