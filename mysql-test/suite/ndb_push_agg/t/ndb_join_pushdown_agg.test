@@ -566,11 +566,13 @@ WHERE tp1.pk = 999;
 --echo ############################################################
 # Use a constant GROUP BY expression that evaluates the same for all rows
 SET ndb_join_pushdown_aggregate=OFF;
+--sorted_result
 SELECT 'all' AS grp, COUNT(*), SUM(tp2.val_int), MIN(tp2.val_double), MAX(tp2.val_double)
 FROM tp1 JOIN tp2 ON tp2.pk = tp1.pk
 GROUP BY grp;
 
 SET ndb_join_pushdown_aggregate=ON;
+--sorted_result
 SELECT 'all' AS grp, COUNT(*), SUM(tp2.val_int), MIN(tp2.val_double), MAX(tp2.val_double)
 FROM tp1 JOIN tp2 ON tp2.pk = tp1.pk
 GROUP BY grp;
@@ -582,6 +584,37 @@ SET ndb_join_pushdown_aggregate=ON;
 --replace_column 4 # 7 # 8 # 9 # 10 # 11 #
 EXPLAIN SELECT tp1.grp, SUM(tp2.val_int)
 FROM tp1 JOIN tp2 ON tp2.pk = tp1.pk
+GROUP BY tp1.grp;
+
+--echo ############################################################
+--echo # Test 34: COUNT(nullable_column) — skips NULLs correctly
+--echo ############################################################
+# Insert a row with NULL val_int to test COUNT(column) NULL skipping
+INSERT INTO tp2 VALUES (100, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+INSERT INTO tp1 VALUES (100, 1);
+
+SET ndb_join_pushdown_aggregate=OFF;
+--sorted_result
+SELECT tp1.grp, COUNT(tp2.val_int), COUNT(*)
+FROM tp1 JOIN tp2 ON tp2.pk = tp1.pk
+GROUP BY tp1.grp;
+
+SET ndb_join_pushdown_aggregate=ON;
+--sorted_result
+SELECT tp1.grp, COUNT(tp2.val_int), COUNT(*)
+FROM tp1 JOIN tp2 ON tp2.pk = tp1.pk
+GROUP BY tp1.grp;
+
+DELETE FROM tp2 WHERE pk = 100;
+DELETE FROM tp1 WHERE pk = 100;
+
+--echo ############################################################
+--echo # Test 35: LEFT JOIN — aggregation NOT pushed (outer join)
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=ON;
+--replace_column 4 # 7 # 8 # 9 # 10 # 11 #
+EXPLAIN SELECT tp1.grp, COUNT(*)
+FROM tp1 LEFT JOIN tp2 ON tp2.pk = tp1.pk
 GROUP BY tp1.grp;
 
 --echo # Cleanup type tables

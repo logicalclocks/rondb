@@ -92,13 +92,19 @@ static bool ndb_can_push_aggregation(const JOIN *join) {
   for (Item_sum **func = join->sum_funcs; *func != nullptr; func++) {
     switch ((*func)->sum_func()) {
       case Item_sum::COUNT_FUNC:
-        // COUNT(*) is always pushable.
-        // COUNT(column) where column is nullable cannot be pushed yet
-        // because the data node counts all rows without NULL checking.
+        // COUNT(*) and COUNT(column) are both pushable.
+        // COUNT(column) correctly skips NULLs — the data node's Count()
+        // function (AggInterpreter.cpp) checks a.is_null and returns
+        // without incrementing.
+        // COUNT(column) where column is a field must be from a pushed table.
         if ((*func)->argument_count() == 1) {
           Item *arg = (*func)->arguments()[0];
-          if (arg->type() == Item::FIELD_ITEM && arg->is_nullable()) {
-            return false;
+          if (arg->type() == Item::FIELD_ITEM) {
+            const auto *field_item = down_cast<const Item_field *>(arg);
+            if (field_item->field->table->file->member_of_pushed_join() ==
+                nullptr) {
+              return false;
+            }
           }
         }
         break;
@@ -201,10 +207,34 @@ static NdbAggregator *ndb_build_aggregation_program(
   for (Item_sum **func = join->sum_funcs; *func != nullptr; func++) {
     switch ((*func)->sum_func()) {
       case Item_sum::COUNT_FUNC: {
-        // COUNT(*): load constant 1, then count.
-        if (!agg->LoadUint64(1, kReg1) || !agg->Count(agg_id, kReg1)) {
-          delete agg;
-          return nullptr;
+        // COUNT(*) has args[0] as Item_int(0); COUNT(column) has Item_field.
+        Item *count_arg = (*func)->arguments()[0];
+        if (count_arg->type() == Item::FIELD_ITEM) {
+          // COUNT(column): load the column so Count() can skip NULLs.
+          const auto *field_item =
+              down_cast<const Item_field *>(count_arg);
+          const uint count_tab_idx =
+              find_table_index(tables, table_count, field_item->field->table);
+          if (count_tab_idx != leaf_tab_no) {
+            DBUG_PRINT("info",
+                       ("ndb_push_aggregation: COUNT(column) source on "
+                        "table %u, leaf is %u — cannot push",
+                        count_tab_idx, leaf_tab_no));
+            delete agg;
+            return nullptr;
+          }
+          const int col_id = field_item->field->field_index();
+          if (!agg->LoadColumn(col_id, kReg1) ||
+              !agg->Count(agg_id, kReg1)) {
+            delete agg;
+            return nullptr;
+          }
+        } else {
+          // COUNT(*): load constant 1, count always increments.
+          if (!agg->LoadUint64(1, kReg1) || !agg->Count(agg_id, kReg1)) {
+            delete agg;
+            return nullptr;
+          }
         }
         break;
       }
@@ -327,6 +357,27 @@ bool ndb_push_aggregation(THD *, const JOIN *join,
 
   if (!ndb_can_push_aggregation(join)) {
     return false;
+  }
+
+  // Reject aggregation with outer/anti/semi joins.
+  // Aggregation runs in DBLQH on the leaf table via handleJoinAggRow.
+  // For outer joins, when the inner-side table has no match, DBSPJ produces
+  // a NULL-extended row at the coordinator level that DBLQH never sees.
+  // This causes incorrect COUNT(*) and missing groups.
+  {
+    const pushed_table &root = builder.m_tables[0];
+    for (uint i = 1; i < builder.m_table_count; i++) {
+      if (!builder.m_join_scope.contain(i)) continue;
+      const pushed_table &tab = builder.m_tables[i];
+      if (tab.isOuterJoined(root) || tab.isSemiJoined(root) ||
+          tab.isAntiJoined(root)) {
+        DBUG_PRINT("info",
+                   ("ndb_push_aggregation: table %u has outer/semi/anti join "
+                    "— cannot push aggregation",
+                    i));
+        return false;
+      }
+    }
   }
 
   // Find the leaf table (last in join scope).
