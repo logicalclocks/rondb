@@ -233,7 +233,7 @@ QueryPlanner::findUniqueIndex(const NdbDictionary::Dictionary *dict,
     for (Uint32 c = 0; c < num_cols; c++)
     {
       bool found = false;
-      for (int j = 0; j < idx->getNoOfColumns(); j++)
+      for (Uint32 j = 0; j < (Uint32)idx->getNoOfColumns(); j++)
       {
         const NdbDictionary::Column *idx_col = idx->getColumn(j);
         if (idx_col != NULL &&
