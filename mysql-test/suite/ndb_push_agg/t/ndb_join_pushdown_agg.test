@@ -224,6 +224,7 @@ GROUP BY t1.grp;
 --echo # Test 12: EXPLAIN shows pushed join aggregation
 --echo ############################################################
 SET ndb_join_pushdown_aggregate=ON;
+--sorted_result
 --replace_column 4 # 7 # 8 # 9 # 10 # 11 #
 EXPLAIN SELECT t1.grp, SUM(t3.amount), COUNT(*)
 FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
@@ -233,6 +234,7 @@ GROUP BY t1.grp;
 --echo # Test 13: EXPLAIN without aggregation pushdown
 --echo ############################################################
 SET ndb_join_pushdown_aggregate=OFF;
+--sorted_result
 --replace_column 4 # 7 # 8 # 9 # 10 # 11 #
 EXPLAIN SELECT t1.grp, SUM(t3.amount), COUNT(*)
 FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
@@ -581,6 +583,7 @@ GROUP BY grp;
 --echo # Test 33: EXPLAIN on 2-way join with aggregation
 --echo ############################################################
 SET ndb_join_pushdown_aggregate=ON;
+--sorted_result
 --replace_column 4 # 7 # 8 # 9 # 10 # 11 #
 EXPLAIN SELECT tp1.grp, SUM(tp2.val_int)
 FROM tp1 JOIN tp2 ON tp2.pk = tp1.pk
@@ -612,6 +615,7 @@ DELETE FROM tp1 WHERE pk = 100;
 --echo # Test 35: LEFT JOIN — aggregation NOT pushed (outer join)
 --echo ############################################################
 SET ndb_join_pushdown_aggregate=ON;
+--sorted_result
 --replace_column 4 # 7 # 8 # 9 # 10 # 11 #
 EXPLAIN SELECT tp1.grp, COUNT(*)
 FROM tp1 LEFT JOIN tp2 ON tp2.pk = tp1.pk

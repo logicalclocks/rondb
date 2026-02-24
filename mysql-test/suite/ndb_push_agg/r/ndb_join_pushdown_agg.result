@@ -689,21 +689,21 @@ SELECT 'all' AS grp, COUNT(*), SUM(tp2.val_int), MIN(tp2.val_double), MAX(tp2.va
 FROM tp1 JOIN tp2 ON tp2.pk = tp1.pk
 GROUP BY grp;
 grp	COUNT(*)	SUM(tp2.val_int)	MIN(tp2.val_double)	MAX(tp2.val_double)
-all	2	70	30.75	40.125
+Warning	1052	Column 'grp' in group statement is ambiguous
+Warnings:
 all	1	50	50.5	50.5
 all	2	30	10.25	20.5
-Warnings:
-Warning	1052	Column 'grp' in group statement is ambiguous
+all	2	70	30.75	40.125
 SET ndb_join_pushdown_aggregate=ON;
 SELECT 'all' AS grp, COUNT(*), SUM(tp2.val_int), MIN(tp2.val_double), MAX(tp2.val_double)
 FROM tp1 JOIN tp2 ON tp2.pk = tp1.pk
 GROUP BY grp;
 grp	COUNT(*)	SUM(tp2.val_int)	MIN(tp2.val_double)	MAX(tp2.val_double)
+Warning	1052	Column 'grp' in group statement is ambiguous
+Warnings:
+all	1	50	0	0
 all	2	30	0	0
 all	2	70	0	0
-all	1	50	0	0
-Warnings:
-Warning	1052	Column 'grp' in group statement is ambiguous
 ############################################################
 # Test 33: EXPLAIN on 2-way join with aggregation
 ############################################################
@@ -716,5 +716,40 @@ id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered
 1	SIMPLE	tp2	#	eq_ref	PRIMARY	#	#	#	#	#	Child of 'tp1' in pushed join@1
 Warnings:
 Note	1003	/* select#1 */ select `test`.`tp1`.`grp` AS `grp`,sum(`test`.`tp2`.`val_int`) AS `SUM(tp2.val_int)` from `test`.`tp1` join `test`.`tp2` where (`test`.`tp2`.`pk` = `test`.`tp1`.`pk`) group by `test`.`tp1`.`grp`
+############################################################
+# Test 34: COUNT(nullable_column) — skips NULLs correctly
+############################################################
+INSERT INTO tp2 VALUES (100, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+INSERT INTO tp1 VALUES (100, 1);
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT tp1.grp, COUNT(tp2.val_int), COUNT(*)
+FROM tp1 JOIN tp2 ON tp2.pk = tp1.pk
+GROUP BY tp1.grp;
+grp	COUNT(tp2.val_int)	COUNT(*)
+1	2	3
+2	2	2
+3	1	1
+SET ndb_join_pushdown_aggregate=ON;
+SELECT tp1.grp, COUNT(tp2.val_int), COUNT(*)
+FROM tp1 JOIN tp2 ON tp2.pk = tp1.pk
+GROUP BY tp1.grp;
+grp	COUNT(tp2.val_int)	COUNT(*)
+1	2	3
+2	2	2
+3	1	1
+DELETE FROM tp2 WHERE pk = 100;
+DELETE FROM tp1 WHERE pk = 100;
+############################################################
+# Test 35: LEFT JOIN — aggregation NOT pushed (outer join)
+############################################################
+SET ndb_join_pushdown_aggregate=ON;
+EXPLAIN SELECT tp1.grp, COUNT(*)
+FROM tp1 LEFT JOIN tp2 ON tp2.pk = tp1.pk
+GROUP BY tp1.grp;
+id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
+1	SIMPLE	tp1	#	ALL	NULL	#	#	#	#	#	Parent of 2 pushed join@1; Using temporary
+1	SIMPLE	tp2	#	eq_ref	PRIMARY	#	#	#	#	#	Child of 'tp1' in pushed join@1
+Warnings:
+Note	1003	/* select#1 */ select `test`.`tp1`.`grp` AS `grp`,count(0) AS `COUNT(*)` from `test`.`tp1` left join `test`.`tp2` on((`test`.`tp2`.`pk` = `test`.`tp1`.`pk`)) where true group by `test`.`tp1`.`grp`
 # Cleanup type tables
 DROP TABLE tp2, tp1;
