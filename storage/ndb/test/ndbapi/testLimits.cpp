@@ -860,10 +860,11 @@ int testDropSignalFragments(NDBT_Context *ctx, NDBT_Step *step) {
 
   /* SEND > ((2 * MAX_SEND_MESSAGE_BYTESIZE) + SOME EXTRA)
    * This way we get at least 3 fragments
-   * However, as this is generally > 64kB, it's too much AttrInfo for
-   * a ScanTabReq, so the 'success' case returns error 874
+   * However, as the total AttrInfo exceeds ZATTR_BUFFER_SIZE (32768 words),
+   * it's too much AttrInfo for a ScanTabReq, so the 'success' case
+   * returns error 874
    */
-  const Uint32 PROG_WORDS = 16500;
+  const Uint32 PROG_WORDS = 33000;
 
   struct SubCase {
     Uint32 errorInsertCode;
