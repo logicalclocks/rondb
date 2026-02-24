@@ -291,8 +291,14 @@ work with semi-join semantics in SPJ.
    - Q4: `o_orderdate < date_add('1993-07-01', interval '3' month)`
    - For NDB: MySQL evaluates constant date expressions before pushdown,
      so ha_ndbcluster_cond receives a resolved date constant — no issue
-   - For RonSQL: DATE_ADD() with interval MONTH needs verification
+   - For RonSQL: DATE_ADD() with interval MONTH/YEAR needs verification
      alongside existing DATE_SUB() support (Phase 15.5)
+
+4. **BETWEEN support (RonSQL)**
+   - Q6: `l_discount BETWEEN 0.06 - 0.01 AND 0.06 + 0.01`
+   - For NDB: MySQL rewrites BETWEEN as two comparisons before pushdown —
+     no issue
+   - For RonSQL: verify BETWEEN is supported in the parser/grammar
 
 **Target query (TPC-H Q4):**
 ```sql
@@ -307,6 +313,65 @@ GROUP BY o_orderpriority
 ORDER BY o_orderpriority;
 ```
 
+### Phase 18: Expressions in GROUP BY, Derived Tables, Cross-Table OR (Priority: Medium)
+
+TPC-H Q7 (Volume Shipping) is a 6-table join with a derived table and
+aggregation on expressions. Introduces several new requirements.
+
+**What's needed:**
+
+1. **Expression in GROUP BY (EXTRACT)**
+   - Q7: `EXTRACT(YEAR FROM l_shipdate) AS l_year` used in GROUP BY
+   - `ndb_can_push_aggregation()` requires GROUP BY items to be simple
+     `Item::FIELD_ITEM` (ha_ndbcluster_push_agg.cc:130)
+   - EXTRACT produces `Item_extract`, not a field reference — rejected today
+   - Need to compile expression-based GROUP BY keys into the NdbAggregator
+     program, or evaluate via NDB interpreted code
+   - For RonSQL: verify EXTRACT() function support
+
+2. **Derived table (inline view) merging with aggregation**
+   - Q7 aggregates over a derived table `shipping` wrapping a 6-table join
+   - If MySQL merges the derived table, it becomes a flat 6-table join with
+     aggregation — potentially pushable via existing SPJ path
+   - If MySQL materializes it, aggregation runs on a temporary table — not
+     pushable
+   - Need to verify MySQL optimizer behavior and whether the merged form
+     is visible to the NDB push path
+
+3. **Cross-table OR predicate**
+   - Q7: `(n1.n_name = 'GERMANY' AND n2.n_name = 'FRANCE') OR
+          (n1.n_name = 'FRANCE' AND n2.n_name = 'GERMANY')`
+   - OR conditions spanning different tables cannot be pushed as a single
+     NDB scan filter — MySQL must evaluate post-join or SPJ needs to handle it
+
+4. **Self-join with aggregation**
+   - Q7: `nation n1, nation n2` — same NDB table with different aliases
+   - SPJ supports self-joins but verify correctness with aggregation pushdown
+     since both operations reference the same tableId/schemaVersion
+
+5. **6-table join aggregation at MySQL handler level**
+   - bench_q9_dbtc tests 6-table join aggregation at NDB API level
+   - MySQL handler integration for 6+ table pushed aggregation needs testing
+
+**Target query (TPC-H Q7):**
+```sql
+SELECT supp_nation, cust_nation, l_year, SUM(volume) AS revenue
+FROM (
+  SELECT n1.n_name AS supp_nation, n2.n_name AS cust_nation,
+         EXTRACT(YEAR FROM l_shipdate) AS l_year,
+         l_extendedprice * (1 - l_discount) AS volume
+  FROM supplier, lineitem, orders, customer, nation n1, nation n2
+  WHERE s_suppkey = l_suppkey AND o_orderkey = l_orderkey
+    AND c_custkey = o_custkey AND s_nationkey = n1.n_nationkey
+    AND c_nationkey = n2.n_nationkey
+    AND ((n1.n_name = 'GERMANY' AND n2.n_name = 'FRANCE')
+      OR (n1.n_name = 'FRANCE' AND n2.n_name = 'GERMANY'))
+    AND l_shipdate BETWEEN '1995-01-01' AND '1996-12-31'
+) AS shipping
+GROUP BY supp_nation, cust_nation, l_year
+ORDER BY supp_nation, cust_nation, l_year;
+```
+
 ### Future: Outer Join Aggregation Support (Priority: Low)
 
 To support aggregation with outer joins, DBSPJ would need to participate in
@@ -316,6 +381,21 @@ the aggregation when it produces NULL-extended rows for unmatched outer joins:
   forwarding to DBLQH with a special "null row" marker)
 - Requires architectural changes to the aggregation protocol
 - Blocked on the outer join restriction (Phase 14) being implemented first
+
+### Test Suite Fixes: Non-Deterministic Result Order (Priority: High)
+
+Existing MTR test cases for pushdown aggregation may produce results in
+non-deterministic order because NDB's group-by hash map does not guarantee
+output order. When aggregation is pushed, results come back in hash iteration
+order rather than MySQL's usual sort-based grouping order.
+
+**Fix:** Add `--sorted_result` directives or explicit `ORDER BY` clauses to
+affected test cases in:
+- `mysql-test/suite/ndb_push_agg/t/ndb_join_pushdown_agg.test`
+- Any other MTR tests that compare aggregate pushdown ON vs OFF results
+
+Without this fix, test results are flaky — passing or failing depending on
+hash table layout which varies across runs and platforms.
 
 ### 5b. 64-bit rowsExamined (Priority: Low)
 
