@@ -830,7 +830,36 @@ DELIMITER ;|
 
 --echo
 --echo
---echo === Test 44: Error — cross-table comparison ===
+--echo === Test 44: Group eviction with ERROR_INSERT 5090 ===
+
+--source include/check_ndb_debug.inc
+
+if ($have_ndb_debug)
+{
+--exec $NDB_MGM -e "ALL ERROR 5090" > /dev/null 2>&1
+
+DELIMITER |;
+
+let $QUERY=
+SELECT o.o_id, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_id, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_id|
+
+DELIMITER ;|
+
+--exec $NDB_MGM -e "ALL ERROR 0" > /dev/null 2>&1
+}
+
+--echo
+--echo
+--echo === Test 45: Error — cross-table comparison ===
 --echo Expected error: WHERE condition references columns from multiple tables
 --error 1
 --exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT o.o_custkey, SUM(l.l_quantity) FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id WHERE l.l_quantity > o.o_custkey GROUP BY o.o_custkey;' 2>&1
