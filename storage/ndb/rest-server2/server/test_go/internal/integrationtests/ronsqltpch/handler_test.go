@@ -43,7 +43,6 @@ import (
 
 // TPC-H queries adapted for RonSQL.
 // These match the bench_*_ndbapi programs in block_unit_test/.
-// Skipped: Q9 (needs LIKE), Q12 (needs CASE+IN).
 // BETWEEN rewritten to >= AND <=; ORDER BY omitted (sort externally).
 var tpchQueries = []struct {
 	Name string
@@ -67,8 +66,7 @@ var tpchQueries = []struct {
 		JOIN tpch_orders AS o ON o.o_orderkey = l.l_orderkey
 		JOIN tpch_customer AS c ON c.c_custkey = o.o_custkey
 		WHERE c.c_mktsegment = 'BUILDING'
-		GROUP BY o.o_orderyear, o.o_orderpriority;`,
-		"CHAR comparison in WHERE (c_mktsegment)"},
+		GROUP BY o.o_orderyear, o.o_orderpriority;`, ""},
 
 	{"Q5", `SELECT n.n_name,
 		SUM(l.l_extendedprice * (1 - l.l_discount))
@@ -78,8 +76,7 @@ var tpchQueries = []struct {
 		JOIN tpch_nation AS n ON n.n_nationkey = c.c_nationkey
 		JOIN tpch_region AS r ON r.r_regionkey = n.n_regionkey
 		WHERE r.r_name = 'ASIA'
-		GROUP BY n.n_name;`,
-		"CHAR comparison in WHERE (r_name)"},
+		GROUP BY n.n_name;`, ""},
 
 	{"Q2", `SELECT r.r_name,
 		MIN(ps.ps_supplycost), MAX(ps.ps_supplycost),
@@ -90,8 +87,7 @@ var tpchQueries = []struct {
 		JOIN tpch_nation AS n ON n.n_nationkey = s.s_nationkey
 		JOIN tpch_region AS r ON r.r_regionkey = n.n_regionkey
 		WHERE p.p_size > 25
-		GROUP BY r.r_name;`,
-		"empty projection on tpch_part (only used in WHERE)"},
+		GROUP BY r.r_name;`, ""},
 
 	{"Q10", `SELECT c.c_name,
 		SUM(l.l_extendedprice * (1 - l.l_discount)), COUNT(*)
@@ -107,8 +103,7 @@ var tpchQueries = []struct {
 		JOIN tpch_supplier AS s ON s.s_suppkey = ps.ps_suppkey
 		JOIN tpch_nation AS n ON n.n_nationkey = s.s_nationkey
 		WHERE n.n_name = 'GERMANY'
-		GROUP BY ps.ps_partkey;`,
-		"CHAR comparison in WHERE (n_name)"},
+		GROUP BY ps.ps_partkey;`, ""},
 
 	{"nogroup", `SELECT COUNT(*),
 		SUM(l.l_extendedprice), SUM(l.l_quantity),
@@ -116,8 +111,7 @@ var tpchQueries = []struct {
 		FROM tpch_lineitem AS l
 		JOIN tpch_orders AS o ON o.o_orderkey = l.l_orderkey
 		JOIN tpch_customer AS c ON c.c_custkey = o.o_custkey
-		WHERE c.c_mktsegment = 'AUTOMOBILE';`,
-		"CHAR comparison in WHERE (c_mktsegment)"},
+		WHERE c.c_mktsegment = 'AUTOMOBILE';`, ""},
 
 	{"orderscan", `SELECT o.o_orderyear,
 		SUM(o.o_totalprice), COUNT(*),
@@ -132,6 +126,30 @@ var tpchQueries = []struct {
 		FROM tpch_lineitem AS l
 		JOIN tpch_orders AS o ON o.o_orderkey = l.l_orderkey
 		WHERE l.l_shipdate >= '1994-01-01' AND l.l_shipdate <= '1994-12-31'
+		GROUP BY l.l_shipmode;`, ""},
+
+	{"Q9", `SELECT n.n_name, o.o_orderyear,
+		SUM(l.l_extendedprice * (1 - l.l_discount) - ps.ps_supplycost * l.l_quantity)
+		FROM tpch_lineitem AS l
+		JOIN tpch_part AS p ON p.p_partkey = l.l_partkey
+		JOIN tpch_orders AS o ON o.o_orderkey = l.l_orderkey
+		JOIN tpch_supplier AS s ON s.s_suppkey = l.l_suppkey
+		JOIN tpch_partsupp AS ps ON ps.ps_partkey = l.l_partkey
+			AND ps.ps_suppkey = l.l_suppkey
+		JOIN tpch_nation AS n ON n.n_nationkey = s.s_nationkey
+		WHERE p.p_name LIKE '%green%'
+		GROUP BY n.n_name, o.o_orderyear;`, ""},
+
+	{"Q12", `SELECT l.l_shipmode,
+		SUM(CASE WHEN o.o_orderpriority = '1-URGENT'
+			OR o.o_orderpriority = '2-HIGH' THEN 1 ELSE 0 END),
+		SUM(CASE WHEN o.o_orderpriority <> '1-URGENT'
+			AND o.o_orderpriority <> '2-HIGH' THEN 1 ELSE 0 END),
+		COUNT(*)
+		FROM tpch_lineitem AS l
+		JOIN tpch_orders AS o ON o.o_orderkey = l.l_orderkey
+		WHERE l.l_shipmode IN ('MAIL', 'SHIP')
+		AND l.l_shipdate >= '1994-01-01' AND l.l_shipdate <= '1994-12-31'
 		GROUP BY l.l_shipmode;`, ""},
 }
 
