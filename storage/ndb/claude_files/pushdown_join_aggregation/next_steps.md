@@ -169,13 +169,19 @@ These are documented in coordinator_implementation.md sections 8–9
 but not yet implemented. They improve observability and correctness
 for large-scale queries but are not required for basic functionality.
 
-#### 5a. Eviction Row Tracking
+#### 5a. Eviction Row Tracking ✅ ALREADY IMPLEMENTED
 
-Track evicted group rows through the signal chain:
-- LQHKEYCONF → DBSPJ: report per-operation eviction count
-- DBSPJ accumulates in `m_agg_rows_sent_to_api` on Request
-- SCAN_FRAGCONF → DBTC: report cumulative evictions
-- DBTC uses for flow control (throttle SCAN_NEXTREQ if API backlogged)
+Implemented as part of Phase 7 coordinator work. The full tracking chain is:
+- `handleJoinAggRow` (DbtupExecQuery.cpp:5055-5130): `evict_count` → `req_struct->read_length`
+- LQHKEYCONF `readLen` carries eviction count to DBSPJ
+- DBSPJ `lookup_execLQHKEYCONF` (DbspjMain.cpp:5314-5323): accumulates in `m_rows`
+- SCAN_FRAGCONF `completedOps = m_rows` reports to DBTC
+- DBTC forwards via SCAN_TABCONF `m_ops` to API
+
+Flow control: DBSPJ bypass optimization (DbspjMain.cpp:2581-2618) skips
+SCAN_FRAGCONF→DBTC→API round-trip when `m_rows == 0` (no evictions).
+When evictions occur, natural SCAN_TABCONF/SCAN_NEXTREQ backpressure
+ensures the API controls the pace. Verified by eviction tests 14-19.
 
 #### 5b. 64-bit rowsExamined
 
