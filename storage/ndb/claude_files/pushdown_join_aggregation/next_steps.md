@@ -25,6 +25,13 @@
   pass-through of GROUP BY columns
 - Table metadata (tableId, schemaVersion) prepended to linked attr entries
   for type-aware column resolution
+- Eviction row tracking through signal chain:
+  handleJoinAggRow → LQHKEYCONF readLen → DBSPJ m_rows →
+  SCAN_FRAGCONF completedOps → DBTC SCAN_TABCONF m_ops → API
+- DBSPJ bypass optimization: skip SCAN_FRAGCONF→DBTC→API round-trip
+  when m_rows == 0 (no evictions), with SCAN_HBREP heartbeats
+- Dynamic memory: Request arrays (m_lookup_node_data, m_aggStateKeys)
+  dynamically allocated via lc_ndbd_pool_malloc sized to MAX_NDB_NODES
 
 **NDB API Integration — Phase 8 (Steps 1–10, all complete):**
 - NdbQueryOptions: `setAggregation()`, `addLinkedProjection()` API
@@ -59,34 +66,6 @@
 - Phase 9: Multi-table GROUP BY via linked projections — GROUP BY columns
   from non-root tables passed through SPJ linked attributes
 
-**Additional completed work:**
-- Scan-scan join aggregation support (DBSPJ dummy program + child scan)
-- ERROR_INSERT 4040 for intermittent group eviction testing
-- 10 TPC-H NDB API benchmarks (Q1, Q3, Q4, Q5, Q9, Q10, Q12, Q13, Q18, Q19)
-- DBSPJ parallelism optimization: bypass DBTC/API round-trip for JoinAgg batches
-
-### Test Coverage
-
-| Test | Signal Path | What It Tests |
-|------|-------------|---------------|
-| testJoinAgg (18 tests) | Direct DBLQH | All agg types, GROUP BY, eviction, mutex-free, empty table, negative values, flow control, rowsExamined |
-| testJoinAggSpj (7 tests) | DBTC→DBSPJ→DBLQH | Basic aggregation through full QueryTree, empty/single row, large dataset, many groups |
-| testJoinAggScanScan | DBTC→DBSPJ→DBLQH | Scan-scan join aggregation |
-| testJoinAggNdbApi (6+ tests) | NdbQueryBuilder API | SUM/GROUP BY, COUNT+SUM, multi-agg GROUP BY, 3-way join, wide type coverage |
-| testCaseAgg | Direct DBLQH | CASE expression in aggregation |
-| benchJoinAgg | Direct DBLQH (LQHKEYREQ) | Performance: pipelined lookups with linked attrs |
-| bench_q12_tpch | Direct DBLQH (LQHKEYREQ) | TPC-H Q12 with CASE, CHAR comparison, date filters |
-| bench_q12_dbtc | DBTC→DBSPJ→DBLQH | TPC-H Q12 through full orchestration with pushdown WHERE filter |
-| bench_q9_dbtc | DBTC→DBSPJ→DBLQH | TPC-H Q9: 6-table join with multi-level linked attrs, composite keys |
-| bench_q9_ndbapi | NDB API | TPC-H Q9 via NdbQueryBuilder |
-| 10 TPC-H benchmarks | NDB API | Q1, Q3, Q4, Q5, Q9, Q10, Q12, Q13, Q18, Q19 |
-| load_tpch | — | TPC-H data loader |
-
-**MTR test suite:** `mysql-test/suite/ndb_push_agg/` wraps block_unit_tests
-for automated regression testing (5 functional tests + 4 benchmarks).
-
----
-
 **MySQL Handler — Phase 10: 3+ Way Joins:**
 - Added leaf-table validation for SUM/MIN/MAX aggregate source columns in
   `ndb_build_aggregation_program()` — prevents silently loading wrong column
@@ -96,106 +75,102 @@ for automated regression testing (5 functional tests + 4 benchmarks).
 - MTR test: `mysql-test/suite/ndb_push_agg/t/ndb_join_pushdown_agg.test`
   (11 SQL-level test cases for 3-way join aggregation)
 
+**EXPLAIN Support — Phase 11** (commit 72aace778d1):
+- Added `ET_PUSHED_JOIN_AGGREGATION` to Extra_tag enum and format arrays
+- Added `has_pushed_aggregation()` virtual method to handler interface
+- Implemented in ha_ndbcluster using `m_pushed_agg_join` pointer
+- Clear `m_pushed_agg_join` in `reset()` to avoid stale state across queries
+- Shows "Using pushed join aggregation" in EXPLAIN Extra on root table
+- MTR EXPLAIN tests verify annotation appears ON and disappears OFF
+
+**SQL-Level MTR Test Suite — Phase 12** (commit aff382f93e1):
+- 20 new test cases (14-33) in `ndb_join_pushdown_agg.test` covering:
+  2-way joins, single row/group, empty results, COUNT(column) vs COUNT(*)
+  with NULLs, HAVING+ORDER BY+LIMIT, multiple aggregates on same column,
+  type coverage (INT/BIGINT/FLOAT/DOUBLE/DATE/DATETIME/CHAR/VARCHAR),
+  GROUP BY on all types, MIN/MAX on strings/dates, all-NULL columns, EXPLAIN
+- Fix: reject COUNT(nullable_column) pushdown in `ndb_can_push_aggregation()`
+  since data node Count instruction does not skip NULL values
+  (Note: this restriction is lifted in Phase 14 — Count() actually does skip NULLs)
+
+**ERROR_INSERT Eviction Testing — Phase 13** (commit 0a88b35840e):
+- ERROR_INSERT 5090 (force maxGroups=3) and 4040 (intermittent eviction)
+  for testing group eviction through the full signal chain
+
+**Additional completed work:**
+- Scan-scan join aggregation support (DBSPJ dummy program + child scan)
+- 10 TPC-H NDB API benchmarks (Q1, Q3, Q4, Q5, Q9, Q10, Q12, Q13, Q18, Q19)
+
+### Integration Test Coverage
+
+**NDB API tests** (testJoinAggNdbApi.cpp, Tests 1–22):
+
+| Test | What It Tests |
+|------|---------------|
+| 1–13 | SUM/GROUP BY, COUNT+SUM, multi-agg, 3-way join, type coverage |
+| 14–17 | Eviction via ERROR_INSERT 5090/4040: 2-table, all agg funcs, 3-way, dual pressure |
+| 18–19 | Multi-fragment (2000 rows, 16 fragments), eviction during SCAN_NEXTREQ batching |
+| 20 | SETUP_REF via ERROR_INSERT 5091: graceful failure, RELEASE, recovery |
+| 21 | Early close: execute then close immediately, SCAN_CLOSE → RELEASE path |
+| 22 | COMPLETE_REF via ERROR_INSERT 5092: scan runs, COMPLETE fails, cleanup |
+
+**Block-level tests** (testJoinAgg):
+
+| Test | What It Tests |
+|------|---------------|
+| testJoinAgg (18 tests) | All agg types, GROUP BY, eviction, mutex-free, empty table, negative values, flow control, rowsExamined |
+| testJoinAggSpj (7 tests) | Full QueryTree through DBTC→DBSPJ→DBLQH |
+| testJoinAggScanScan | Scan-scan join aggregation |
+| testCaseAgg | CASE expression in aggregation |
+| Benchmarks | benchJoinAgg, bench_q12_tpch, bench_q12_dbtc, bench_q9_dbtc, bench_q9_ndbapi, 10 TPC-H |
+
+**MTR test suites:**
+- `mysql-test/suite/ndb_push_agg/` — block_unit_tests wrapper (5 functional + 4 benchmarks)
+- `mysql-test/suite/ndb_push_agg/t/ndb_join_pushdown_agg.test` — 33 SQL-level test cases
+- `mysql-test/suite/ndb_push_agg_dist/` — 2-node distributed tests (8 categories)
+
 ---
 
-## Next Steps
+## Remaining Work
 
-### 1. EXPLAIN Support (Priority: High)
+### Phase 14: COUNT(column) Pushdown & Outer Join Restriction (Priority: High)
 
-Make EXPLAIN output show when aggregation has been pushed. Add a note like
-"Using pushed join aggregation" to the Extra column, similar to how
-"Using pushed join" is shown for pushed joins.
+**COUNT(column) for nullable columns:**
+The Phase 12 fix rejected COUNT(nullable_column), but the data node's
+`Count()` function (AggInterpreter.cpp:1365-1368) already checks `a.is_null`
+and skips NULL values without incrementing. The fix is to:
+1. Remove the nullable rejection in `ndb_can_push_aggregation()`
+   (ha_ndbcluster_push_agg.cc:98-102)
+2. Differentiate COUNT(*) vs COUNT(column) in `ndb_build_aggregation_program()`
+   — COUNT(*) keeps `LoadUint64(1)`, COUNT(column) uses `LoadColumn(col_id)`
+   so the register carries NULL info to Count()
+3. Same leaf-table restriction as SUM/MIN/MAX (LoadColumn namespace)
 
-### 3. SQL-Level MTR Test Suite (Priority: High)
+**Outer/anti/semi join restriction:**
+No explicit rejection exists today. Aggregation with outer joins would produce
+incorrect results because:
+- Aggregation runs in DBLQH on the leaf table via `handleJoinAggRow`
+- For outer joins, when the inner-side table has no match, DBSPJ produces a
+  NULL-extended row at the coordinator level
+- DBLQH never processes this non-existent row, so COUNT(*) misses it and
+  groups that exist only due to unmatched outer rows are entirely missing
+- Add rejection in `ndb_push_aggregation()` using `isOuterJoined()`,
+  `isAntiJoined()`, `isSemiJoined()` from pushed_table (ha_ndbcluster_push.h:405-416)
 
-Write comprehensive MTR tests exercising pushdown aggregation through SQL.
-The existing `ndb_push_agg` suite tests block-level/NDB API programs;
-this suite tests the full MySQL→handler→NDB API→data node path.
+**MTR tests:** COUNT(nullable_column) push+skip-NULLs, LEFT JOIN EXPLAIN rejection.
 
-**Test file:** `mysql-test/suite/ndb/t/ndb_join_pushdown_agg.test`
+### Future: Outer Join Aggregation Support (Priority: Low)
 
-**Categories:**
-1. Basic correctness: Each aggregate function with ON/OFF comparison
-2. GROUP BY: single column, multi-column, multi-table
-3. Types: INT, BIGINT, FLOAT, DOUBLE, CHAR, VARCHAR, DATE
-4. Edge cases: empty tables, single row, NULL values, all-NULL groups
-5. Post-aggregation: HAVING, ORDER BY, LIMIT, combined
-6. Implicit aggregation (no GROUP BY)
-7. Multi-way joins: 3-table, 4-table
-8. Fallback: queries that can't be pushed produce correct MySQL results
-9. EXPLAIN: verify pushed aggregation appears in output
+To support aggregation with outer joins, DBSPJ would need to participate in
+the aggregation when it produces NULL-extended rows for unmatched outer joins:
+- When LQHKEYREF arrives for an outer-joined lookup, DBSPJ must inject a
+  NULL-extended row into the aggregation engine (either at DBSPJ level or by
+  forwarding to DBLQH with a special "null row" marker)
+- Requires architectural changes to the aggregation protocol
+- Blocked on the outer join restriction (Phase 14) being implemented first
 
-### 4. More Integration Tests (Priority: Medium)
-
-#### 4a. Eviction Through NDB API Path ✅ COMPLETE
-
-Tests 14–17 in `testJoinAggNdbApi.cpp` verify eviction through the NDB API:
-- **Test 14**: ERROR_INSERT 5090 (maxGroups=3), 2-table join, 10 groups, SUM+COUNT
-- **Test 15**: ERROR_INSERT 5090 with all agg functions (SUM/COUNT/MIN/MAX)
-- **Test 16**: ERROR_INSERT 5090 on 3-way join (linked attribute pass-through)
-- **Test 17**: Combined ERROR_INSERT 5090 + 4040 (dual eviction pressure)
-All tests verify partial TRANSID_AI → API merge → correct final results,
-with MySQL cross-check for each.
-
-#### 4b. Multi-Fragment / Multi-Node ✅ COMPLETE
-
-**NDB API tests** (Tests 18-19 in `testJoinAggNdbApi.cpp`):
-- **Test 18**: 2000 rows across 16 fragments (PARTITION_BALANCE=FOR_RP_BY_LDM_X_2),
-  20 groups, SUM+COUNT — forces SCAN_NEXTREQ batching across fragments
-- **Test 19**: Same + ERROR_INSERT 5090 (maxGroups=3) — eviction during
-  multi-fragment SCAN_NEXTREQ batching
-
-**SQL-level MTR test** (`mysql-test/suite/ndb_push_agg_dist/`):
-- New suite with 2 data nodes (NoOfReplicas=2)
-- `ndb_join_pushdown_agg_multinode.test`: 100 rows distributed across both
-  nodes, 8 test categories comparing pushdown ON vs OFF
-- Run: `./mtr --suite=ndb_push_agg_dist ndb_join_pushdown_agg_multinode`
-
-#### 4c. Abort / Error Paths ✅ COMPLETE
-
-**Tests 20-22 in `testJoinAggNdbApi.cpp`:**
-- **Test 20**: ERROR_INSERT 5091 forces JOIN_AGG_SETUP_REF (simulated pool
-  exhaustion). Verifies query fails gracefully, DBTC sends RELEASE to all
-  nodes, and subsequent queries succeed.
-- **Test 21**: Early query close — starts aggregation scan, closes immediately
-  without reading results. Exercises SCAN_CLOSE → JOIN_AGG_RELEASE_REQ path.
-- **Test 22**: ERROR_INSERT 5092 forces JOIN_AGG_COMPLETE_REF during
-  finalization. Scan runs normally but COMPLETE fails, DBTC releases state
-  and aborts. Verifies no crash and correct cleanup.
-
-### 5. Secondary Features (Priority: Low)
-
-These are documented in coordinator_implementation.md sections 8–9
-but not yet implemented. They improve observability and correctness
-for large-scale queries but are not required for basic functionality.
-
-#### 5a. Eviction Row Tracking ✅ ALREADY IMPLEMENTED
-
-Implemented as part of Phase 7 coordinator work. The full tracking chain is:
-- `handleJoinAggRow` (DbtupExecQuery.cpp:5055-5130): `evict_count` → `req_struct->read_length`
-- LQHKEYCONF `readLen` carries eviction count to DBSPJ
-- DBSPJ `lookup_execLQHKEYCONF` (DbspjMain.cpp:5314-5323): accumulates in `m_rows`
-- SCAN_FRAGCONF `completedOps = m_rows` reports to DBTC
-- DBTC forwards via SCAN_TABCONF `m_ops` to API
-
-Flow control: DBSPJ bypass optimization (DbspjMain.cpp:2581-2618) skips
-SCAN_FRAGCONF→DBTC→API round-trip when `m_rows == 0` (no evictions).
-When evictions occur, natural SCAN_TABCONF/SCAN_NEXTREQ backpressure
-ensures the API controls the pace. Verified by eviction tests 14-19.
-
-#### 5b. 64-bit rowsExamined
+### 5b. 64-bit rowsExamined (Priority: Low)
 
 For very large joins (millions of leaf rows), the 32-bit rowsExamined
 counter may overflow. Extend SCAN_FRAGCONF with version-gated
 SignalLength_v3 carrying the upper 32 bits.
-
-#### 5c. Dynamic Memory in DBSPJ Request ✅ COMPLETE
-
-Replaced fixed arrays in Request struct (Dbspj.hpp) with dynamically
-allocated pointers via `lc_ndbd_pool_malloc`:
-- `Uint16 m_lookup_node_data[145]` → `Uint16 *m_lookup_node_data`
-- `Uint32 m_aggStateKeys[145]` → `Uint32 *m_aggStateKeys`
-Both allocated as a single block sized to `MAX_NDB_NODES` (runtime,
-typically 48) in `do_init()`, freed via `lc_ndbd_pool_free` in `cleanup()`.
-Saves 582 bytes per Request (66.9% reduction) for improved ArenaPool
-utilization.
