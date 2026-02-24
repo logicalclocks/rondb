@@ -159,6 +159,65 @@ incorrect results because:
 
 **MTR tests:** COUNT(nullable_column) push+skip-NULLs, LEFT JOIN EXPLAIN rejection.
 
+### Phase 15: Single-Table Aggregation Pushdown (Priority: High)
+
+Single-table aggregate queries (e.g., TPC-H Q1 on lineitem) cannot use pushdown
+today because the RONDB-733 framework requires a pushed join (SPJ path).
+`ndb_push_aggregation()` checks `member_of_pushed_join() != nullptr` for all
+tables (ha_ndbcluster_push_agg.cc:321-326), which is always nullptr for
+single-table scans.
+
+**What's needed:**
+
+1. **Single-table aggregation path in ha_ndbcluster**
+   - New code path that attaches an NdbAggregator program to a plain
+     SCAN_FRAGREQ without SPJ, or route single-table scans through SPJ
+     as a degenerate 1-table "join"
+   - Detection: single-table query with pushable aggregates, no join required
+
+2. **AVG support**
+   - `ndb_can_push_aggregation()` rejects AVG (falls through to default
+     return false at ha_ndbcluster_push_agg.cc:121)
+   - NdbAggregator has no native AVG — only COUNT, SUM, MIN, MAX
+   - Rewrite AVG(x) as SUM(x) + COUNT(x) at the MySQL handler level
+   - Compute AVG = SUM/COUNT when fetching results in
+     `ndb_fetch_next_aggregate_row()`
+   - Benefits both join and single-table paths
+
+3. **DECIMAL precision**
+   - RonSQL test (ronsql_dbt3_1_2.test) shows DECIMAL→double precision loss:
+     MySQL `26777.986560` vs RonSQL `26777.986559999998`
+   - Root cause: NdbAggregator converts DECIMAL to double internally
+     (noted in test line 81: "remove convert-to-double shortcut")
+   - Need native DECIMAL arithmetic in NdbAggregator
+
+4. **Arithmetic expressions in aggregate arguments**
+   - TPC-H Q1: `SUM(l_extendedprice * (1 - l_discount))`
+   - `ndb_can_push_aggregation()` requires arguments to be simple
+     Item::FIELD_ITEM (ha_ndbcluster_push_agg.cc:112)
+   - Need to compile arithmetic expressions into NdbAggregator program,
+     or evaluate via NDB interpreted program before feeding to aggregator
+
+5. **WHERE with date functions (verification)**
+   - TPC-H Q1: `WHERE l_shipDATE <= date_sub('1998-12-01', interval '90' day)`
+   - For single-table path, the WHERE filter compiles into the scan's
+     interpreted program (existing ha_ndbcluster_cond infrastructure)
+   - Verify condition pushdown integrates correctly with aggregation path
+
+**Target query (TPC-H Q1):**
+```sql
+SELECT l_returnflag, l_linestatus,
+       SUM(l_quantity), SUM(l_extendedprice),
+       SUM(l_extendedprice * (1 - l_discount)),
+       SUM(l_extendedprice * (1 - l_discount) * (1 + l_tax)),
+       AVG(l_quantity), AVG(l_extendedprice), AVG(l_discount),
+       COUNT(*)
+FROM lineitem
+WHERE l_shipdate <= date_sub('1998-12-01', interval '90' day)
+GROUP BY l_returnflag, l_linestatus
+ORDER BY l_returnflag, l_linestatus;
+```
+
 ### Future: Outer Join Aggregation Support (Priority: Low)
 
 To support aggregation with outer joins, DBSPJ would need to participate in
