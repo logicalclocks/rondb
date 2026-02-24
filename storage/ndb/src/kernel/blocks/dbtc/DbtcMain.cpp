@@ -17722,7 +17722,7 @@ void Dbtc::execSCAN_FRAGCONF(Signal *signal) {
     scanFragptr.p->m_apiPtr[3]));
 
   BlockReference lqhRef = scanFragptr.p->lqhBlockref;
-  if (sig_len == ScanFragConf::SignalLength_query) {
+  if (sig_len >= ScanFragConf::SignalLength_query) {
     jamDebug();
     check_blockref(conf->senderRef);
     scanFragptr.p->lqhBlockref = conf->senderRef;
