@@ -859,7 +859,147 @@ DELIMITER ;|
 
 --echo
 --echo
---echo === Test 45: Error — cross-table comparison ===
+--echo === Test 45: Large dataset (1000+ rows, 100+ groups) ===
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE big_orders (
+  bo_id INT NOT NULL,
+  bo_custkey INT NOT NULL,
+  bo_region INT NOT NULL,
+  PRIMARY KEY USING HASH (bo_id)
+) ENGINE=NDB;
+
+CREATE INDEX idx_bo_custkey ON big_orders (bo_custkey);
+
+CREATE TABLE big_lineitem (
+  bl_id INT NOT NULL,
+  bl_orderkey INT NOT NULL,
+  bl_qty INT NOT NULL,
+  bl_price INT NOT NULL,
+  PRIMARY KEY USING HASH (bl_id)
+) ENGINE=NDB;
+
+CREATE INDEX idx_bl_orderkey ON big_lineitem (bl_orderkey);
+
+# Generate 200 orders across 100 custkeys and 5 regions
+DELIMITER $$;
+CREATE PROCEDURE gen_big_data()
+BEGIN
+  DECLARE i INT DEFAULT 1;
+  WHILE i <= 200 DO
+    INSERT INTO big_orders VALUES (i, ((i - 1) MOD 100) + 1, ((i - 1) MOD 5) + 1);
+    SET i = i + 1;
+  END WHILE;
+  SET i = 1;
+  WHILE i <= 1200 DO
+    INSERT INTO big_lineitem VALUES (i, ((i - 1) MOD 200) + 1, (i MOD 50) + 1, (i MOD 100) * 10 + 5);
+    SET i = i + 1;
+  END WHILE;
+END$$
+DELIMITER ;$$
+
+CALL gen_big_data();
+DROP PROCEDURE gen_big_data;
+
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+let $QUERY=
+SELECT bo.bo_custkey, SUM(bl.bl_qty), COUNT(bl.bl_id), MIN(bl.bl_price), MAX(bl.bl_price)
+FROM big_orders AS bo JOIN big_lineitem AS bl ON bl.bl_orderkey = bo.bo_id
+GROUP BY bo.bo_custkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result line count ==
+--disable_query_log
+SELECT COUNT(*) AS group_count FROM (
+  SELECT bo.bo_custkey
+  FROM big_orders AS bo JOIN big_lineitem AS bl ON bl.bl_orderkey = bo.bo_id
+  GROUP BY bo.bo_custkey
+) t|
+--enable_query_log
+
+--echo
+--echo
+--echo === Test 46: Large dataset grouped by region (fewer groups, more rows per group) ===
+
+let $QUERY=
+SELECT bo.bo_region, SUM(bl.bl_qty), COUNT(*), AVG(bl.bl_price)
+FROM big_orders AS bo JOIN big_lineitem AS bl ON bl.bl_orderkey = bo.bo_id
+GROUP BY bo.bo_region;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT bo.bo_region, SUM(bl.bl_qty), COUNT(*), AVG(bl.bl_price)
+FROM big_orders AS bo JOIN big_lineitem AS bl ON bl.bl_orderkey = bo.bo_id
+GROUP BY bo.bo_region|
+
+--echo
+--echo
+--echo === Test 47: 4-table join chain ===
+
+DELIMITER ;|
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE line_details (
+  ld_id INT NOT NULL,
+  ld_linekey INT NOT NULL,
+  ld_weight INT NOT NULL,
+  ld_note_val INT NOT NULL,
+  PRIMARY KEY USING HASH (ld_id)
+) ENGINE=NDB;
+
+CREATE INDEX idx_ld_linekey ON line_details (ld_linekey);
+
+INSERT INTO line_details VALUES
+  (1, 1, 5, 10),
+  (2, 1, 8, 20),
+  (3, 2, 3, 15),
+  (4, 3, 7, 25),
+  (5, 4, 2, 30),
+  (6, 5, 9, 35),
+  (7, 5, 4, 40),
+  (8, 6, 6, 45),
+  (9, 7, 1, 50),
+  (10, 8, 10, 55),
+  (11, 9, 3, 60),
+  (12, 10, 7, 65);
+
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+let $QUERY=
+SELECT c.c_name, SUM(ld.ld_weight), COUNT(ld.ld_id)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+JOIN line_details AS ld ON ld.ld_linekey = l.l_id
+GROUP BY c.c_name;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_name, SUM(ld.ld_weight), COUNT(ld.ld_id)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+JOIN line_details AS ld ON ld.ld_linekey = l.l_id
+GROUP BY c.c_name|
+
+DELIMITER ;|
+
+--echo
+--echo
+--echo === Test 48: Error — cross-table comparison ===
 --echo Expected error: WHERE condition references columns from multiple tables
 --error 1
 --exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT o.o_custkey, SUM(l.l_quantity) FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id WHERE l.l_quantity > o.o_custkey GROUP BY o.o_custkey;' 2>&1
@@ -867,6 +1007,9 @@ DELIMITER ;|
 --echo
 --echo === Cleanup ===
 
+DROP TABLE line_details;
+DROP TABLE big_lineitem;
+DROP TABLE big_orders;
 DROP TABLE activities;
 DROP TABLE shipments;
 DROP TABLE parts;

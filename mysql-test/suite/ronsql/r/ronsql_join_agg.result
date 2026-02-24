@@ -972,12 +972,87 @@ o_id	SUM(l.l_quantity)
 5	75
 
 
-=== Test 45: Error — cross-table comparison ===
+=== Test 45: Large dataset (1000+ rows, 100+ groups) ===
+== Query ==
+SELECT bo.bo_custkey, SUM(bl.bl_qty), COUNT(bl.bl_id), MIN(bl.bl_price), MAX(bl.bl_price)
+FROM big_orders AS bo JOIN big_lineitem AS bl ON bl.bl_orderkey = bo.bo_id
+GROUP BY bo.bo_custkey;
+
+Number of output lines, including header: 101
+
+== Diff ==
+==========
+
+
+
+== Expected result line count ==
+group_count
+100
+
+
+=== Test 46: Large dataset grouped by region (fewer groups, more rows per group) ===
+== Query ==
+SELECT bo.bo_region, SUM(bl.bl_qty), COUNT(*), AVG(bl.bl_price)
+FROM big_orders AS bo JOIN big_lineitem AS bl ON bl.bl_orderkey = bo.bo_id
+GROUP BY bo.bo_region;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT bo.bo_region, SUM(bl.bl_qty), COUNT(*), AVG(bl.bl_price)
+FROM big_orders AS bo JOIN big_lineitem AS bl ON bl.bl_orderkey = bo.bo_id
+GROUP BY bo.bo_region|
+bo_region	SUM(bl.bl_qty)	COUNT(*)	AVG(bl.bl_price)
+1	5880	240	490.0000
+2	6120	240	500.0000
+3	6360	240	510.0000
+4	6600	240	520.0000
+5	5640	240	480.0000
+
+
+=== Test 47: 4-table join chain ===
+== Query ==
+SELECT c.c_name, SUM(ld.ld_weight), COUNT(ld.ld_id)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+JOIN line_details AS ld ON ld.ld_linekey = l.l_id
+GROUP BY c.c_name;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_name, SUM(ld.ld_weight), COUNT(ld.ld_id)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+JOIN line_details AS ld ON ld.ld_linekey = l.l_id
+GROUP BY c.c_name|
+c_name	SUM(ld.ld_weight)	COUNT(ld.ld_id)
+Alice	25	5
+Bob	30	5
+Charlie	10	2
+
+
+=== Test 48: Error — cross-table comparison ===
 Expected error: WHERE condition references columns from multiple tables
 Error handling: RPE
 ronsql_cli caught exception: WHERE condition references columns from multiple tables in a single comparison or OR branch. Split into separate AND conditions, each referencing only one table.
 
 === Cleanup ===
+DROP TABLE line_details;
+DROP TABLE big_lineitem;
+DROP TABLE big_orders;
 DROP TABLE activities;
 DROP TABLE shipments;
 DROP TABLE parts;
