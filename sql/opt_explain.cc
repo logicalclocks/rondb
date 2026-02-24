@@ -1033,6 +1033,12 @@ bool Explain_table_base::explain_extra_common(int range_scan_type, uint keyno) {
       buff.append(buf, len);
       if (push_extra(ET_PUSHED_JOIN, buff)) return true;
     }
+
+    // Check if this pushed join also has aggregation pushed.
+    // Only show on the root table (pushed_root == table).
+    if (pushed_root == table && table->file->has_pushed_aggregation()) {
+      if (push_extra(ET_PUSHED_JOIN_AGGREGATION)) return true;
+    }
   }
 
   switch (range_scan_type) {

@@ -73,6 +73,7 @@ static const char *traditional_extra_tags[ET_total] = {
     "unique row not found",             // ET_UNIQUE_ROW_NOT_FOUND
     "Impossible ON condition",          // ET_IMPOSSIBLE_ON_CONDITION
     "",                                 // ET_PUSHED_JOIN
+    "Using pushed join aggregation",    // ET_PUSHED_JOIN_AGGREGATION
     "Ft_hints:",                        // ET_FT_HINTS
     "Backward index scan",              // ET_BACKWARD_SCAN
     "Recursive",                        // ET_RECURSIVE

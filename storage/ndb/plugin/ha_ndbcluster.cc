@@ -7256,6 +7256,7 @@ int ha_ndbcluster::reset() {
   m_pushed_join_member = nullptr;
   m_pushed_join_operation = -1;
   m_disable_pushed_join = false;
+  m_pushed_agg_join = nullptr;
 
   /* reset flags set by extra calls */
   m_read_before_write_removal_possible = false;
@@ -15206,6 +15207,10 @@ table_map ha_ndbcluster::tables_in_pushed_join() const {
     map |= m_pushed_join_member->get_table(i)->pos_in_table_list->map();
   }
   return map;
+}
+
+bool ha_ndbcluster::has_pushed_aggregation() const {
+  return m_pushed_agg_join != nullptr;
 }
 
 /*

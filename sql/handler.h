@@ -6207,6 +6207,10 @@ class handler {
   ///   part of a pushed join.
   virtual table_map tables_in_pushed_join() const { return 0; }
 
+  /// @returns true if this handler has pushed aggregation attached to a
+  ///   pushed join query (used for EXPLAIN output).
+  virtual bool has_pushed_aggregation() const { return false; }
+
   int ha_index_read_pushed(uchar *buf, const uchar *key,
                            key_part_map keypart_map);
 

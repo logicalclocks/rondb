@@ -265,5 +265,31 @@ FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
 WHERE t1.pk = 999
 GROUP BY t1.grp;
 grp	SUM(t3.amount)
+############################################################
+# Test 12: EXPLAIN shows pushed join aggregation
+############################################################
+SET ndb_join_pushdown_aggregate=ON;
+EXPLAIN SELECT t1.grp, SUM(t3.amount), COUNT(*)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp;
+id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
+1	SIMPLE	t1	#	ALL	PRIMARY	#	#	#	#	#	Parent of 3 pushed join@1; Using pushed join aggregation; Using temporary
+1	SIMPLE	t2	#	eq_ref	PRIMARY	#	#	#	#	#	Child of 't1' in pushed join@1
+1	SIMPLE	t3	#	eq_ref	PRIMARY	#	#	#	#	#	Child of 't2' in pushed join@1
+Warnings:
+Note	1003	/* select#1 */ select `test`.`t1`.`grp` AS `grp`,sum(`test`.`t3`.`amount`) AS `SUM(t3.amount)`,count(0) AS `COUNT(*)` from `test`.`t1` join `test`.`t2` join `test`.`t3` where ((`test`.`t2`.`pk` = `test`.`t1`.`pk`) and (`test`.`t3`.`pk` = `test`.`t1`.`pk`)) group by `test`.`t1`.`grp`
+############################################################
+# Test 13: EXPLAIN without aggregation pushdown
+############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+EXPLAIN SELECT t1.grp, SUM(t3.amount), COUNT(*)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp;
+id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
+1	SIMPLE	t1	#	ALL	PRIMARY	#	#	#	#	#	Parent of 3 pushed join@1; Using temporary
+1	SIMPLE	t2	#	eq_ref	PRIMARY	#	#	#	#	#	Child of 't1' in pushed join@1
+1	SIMPLE	t3	#	eq_ref	PRIMARY	#	#	#	#	#	Child of 't1' in pushed join@1
+Warnings:
+Note	1003	/* select#1 */ select `test`.`t1`.`grp` AS `grp`,sum(`test`.`t3`.`amount`) AS `SUM(t3.amount)`,count(0) AS `COUNT(*)` from `test`.`t1` join `test`.`t2` join `test`.`t3` where ((`test`.`t2`.`pk` = `test`.`t1`.`pk`) and (`test`.`t3`.`pk` = `test`.`t1`.`pk`)) group by `test`.`t1`.`grp`
 # Cleanup
 DROP TABLE t3, t2, t1;
