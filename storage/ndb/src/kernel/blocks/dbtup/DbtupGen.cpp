@@ -76,6 +76,10 @@ void Dbtup::initData()
   c_noOfBuildIndexRec = 32;
 
   c_debug_count = 0;
+#ifdef ERROR_INSERT
+  m_copy_tuple_alloc_count = 0;
+  m_copy_tuple_saved_count = 0;
+#endif
 
   // Records with constant sizes
   init_list_sizes();

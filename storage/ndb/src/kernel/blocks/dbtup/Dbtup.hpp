@@ -2495,6 +2495,15 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
   Uint32 m_delayed_commit;
   Uint32 m_continue_report_commit_counter;
   bool check_delayed_commit(Signal *, TupCommitReq *, Uint32);
+
+  /**
+   * Copy tuple allocation counter for leak detection.
+   * Incremented in alloc_copy_tuple, decremented in free_copy_tuple.
+   * Used via DumpStateOrd: TupSaveCopyTupleCount saves, and
+   * TupCheckCopyTupleCount verifies count matches saved value.
+   */
+  Uint64 m_copy_tuple_alloc_count;
+  Uint64 m_copy_tuple_saved_count;
 #endif
   void set_commit_started(Uint32 leaderOperPtrI);
   void set_commit_performed(OperationrecPtr firstOperPtr, Fragrecord *fragPtrP);
@@ -4068,6 +4077,9 @@ public:
     Uint32 *dst = *ptr;
     if (unlikely(dst == 0))
       return nullptr;
+#ifdef ERROR_INSERT
+    m_copy_tuple_alloc_count++;
+#endif
     if (init) {
       std::memset(dst, 0, tabPtrP->total_rec_size);
     } else {
@@ -4082,6 +4094,9 @@ public:
   }
 
   void free_copy_tuple(Uint32 **ptr) {
+#ifdef ERROR_INSERT
+    m_copy_tuple_alloc_count--;
+#endif
     lc_ndbd_pool_free(*ptr);
     *ptr = nullptr;
   }

@@ -501,6 +501,18 @@ Dbtup::execDUMP_STATE_ORD(Signal* signal)
     return;
   }
 #endif
+#ifdef ERROR_INSERT
+  if (type == DumpStateOrd::TupSaveCopyTupleCount) {
+    jam();
+    m_copy_tuple_saved_count = m_copy_tuple_alloc_count;
+    return;
+  }
+  if (type == DumpStateOrd::TupCheckCopyTupleCount) {
+    jam();
+    ndbrequire(m_copy_tuple_alloc_count == m_copy_tuple_saved_count);
+    return;
+  }
+#endif
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
   if (type == DumpStateOrd::TupSetTransientPoolMaxSize) {
     jam();

@@ -321,3 +321,57 @@ Fix (branch autotest_fixes):
    received, treat it as non-fatal: skip the stats operation by setting
    `m_sub_index_stat_dml = true` and `m_sub_index_stat_mon = true`, then
    continue with `createSubOps()` instead of `abortSubOps()`.
+
+## Example: Analyzing the 2026-02-09 Run (daily-basic--07)
+
+This run had 32 tests: 29 passed, 1 failed, 2 skipped.
+
+**Test #12: testBasic -n Bug27756 — FAILED(256)**
+
+No crashes. The test reported "Memleak detected" for 9 out of 15 table types.
+The test runs 5 iterations of insert → interpretedUpdateTuple →
+getValue(COPY_ROWID) → delete → commit/rollback, then checks that all
+COPY_ROWID values are identical. If they differ, it reports a memory leak.
+
+Results by table type:
+- PASS (all 5 addresses same): T3, T6, T13, T17, D1, I3
+- FAIL (addresses change at iteration 4): T1, T2, T4, T14, T15, T16, D2, I1, I2
+
+Root cause: Copy tuples are now allocated via `lc_ndbd_pool_malloc` (Dbtup.hpp)
+instead of the old page-based `c_undo_buffer`. The old allocator reused the
+same page locations deterministically, so COPY_ROWID stayed constant. The new
+pool allocator does not guarantee address reuse — freed memory may be returned
+at different addresses. This is NOT a real memory leak, but the test's
+detection method (address comparison) is incompatible with the new allocator.
+
+All table types are well below the 10KB row size limit mentioned in the test
+comment (largest is T3 at ~5500 bytes), so this is not a row-size issue.
+
+Fix approach (branch autotest_fixes):
+Since `lc_ndbd_pool_malloc` has no automatic leak discovery, add a copy tuple
+allocation counter under `#ifdef ERROR_INSERT` (autotest always runs with
+ERROR_INSERT enabled):
+
+1. Add `m_copy_tuple_alloc_count` counter to Dbtup (under `#ifdef ERROR_INSERT`)
+   - Incremented in `alloc_copy_tuple()`, decremented in `free_copy_tuple()`
+2. Add `m_copy_tuple_saved_count` to save a snapshot of the counter
+3. Add two DumpStateOrd handlers in DBTUP (error insert range 4000-4999):
+   - DUMP code A: saves current counter (`m_copy_tuple_saved_count =
+     m_copy_tuple_alloc_count`)
+   - DUMP code B: checks counter matches saved value, crashes (ndbrequire)
+     if they differ — this converts a silent leak into a FAILED(101)
+4. Update `runBug27756` in testBasic.cpp:
+   - Before loop: `restarter.dumpStateAllNodes({DUMP_A})` to save counter
+   - Run the existing insert/update/delete loop (remove COPY_ROWID read
+     and address comparison)
+   - After loop: `restarter.dumpStateAllNodes({DUMP_B})` to verify counter
+   - If any node crashes, the test fails with FAILED(101) indicating a real
+     copy tuple leak
+
+Key code locations:
+- `Dbtup::alloc_copy_tuple()` — Dbtup.hpp:4055 (lc_ndbd_pool_malloc)
+- `Dbtup::free_copy_tuple()` — Dbtup.hpp:4079 (lc_ndbd_pool_free)
+- `COPY_ROWID` handler — DbtupRoutines.cpp:3450
+- `m_copy_tuple_location` — now `Uint32*` (was `Local_key`), Dbtup.hpp:1057
+- Error insert range for DBTUP: 4000-4999 (Cmvmi.cpp:1135-1140)
+- DumpStateOrd handler: DbtupGen.cpp (execDUMP_STATE_ORD)

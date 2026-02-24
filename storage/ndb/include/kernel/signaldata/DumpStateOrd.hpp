@@ -180,6 +180,8 @@ class DumpStateOrd {
     LqhDumpOpRecLookup = 2358,
 
     TupDumpOneScanRec = 2380,
+    TupSaveCopyTupleCount = 2381,
+    TupCheckCopyTupleCount = 2382,
 
     AccDumpOneScanRec = 2400,
     AccDumpAllScanRec = 2401,
