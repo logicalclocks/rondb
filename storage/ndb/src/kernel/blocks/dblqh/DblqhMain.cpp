@@ -1348,9 +1348,18 @@ void Dblqh::execCONTINUEB(Signal *signal) {
       return;
     case ZREBUILD_ORDERED_INDEXES: {
       jam();
-      ndbrequire(m_current_rebuild_indexes_ongoing <
-                 MAX_OUTSTANDING_REBUILD_INDEXES);
       jamData(m_current_rebuild_indexes_ongoing);
+      if (m_current_rebuild_indexes_ongoing >= MAX_OUTSTANDING_REBUILD_INDEXES) {
+        /**
+         * This CONTINUEB is stale - the BUILD_INDX_IMPL_CONF handler
+         * has already filled the rebuild slot via rebuildOrderedIndexes().
+         * This can happen when DBTUP completes an index build quickly and
+         * the CONF is processed before a previously queued CONTINUEB.
+         * Safe to ignore - CONF handlers will continue driving progress.
+         */
+        jam();
+        return;
+      }
       m_next_table_rebuild_indexes++;
       if (m_next_table_rebuild_indexes < ctabrecFileSize) {
         jam();
