@@ -171,6 +171,7 @@ ndb_fully_replicated	#
 ndb_index_stat_enable	#
 ndb_index_stat_option	#
 ndb_join_pushdown	#
+ndb_join_pushdown_aggregate	#
 ndb_log_apply_status	#
 ndb_log_bin	#
 ndb_log_binlog_index	#
