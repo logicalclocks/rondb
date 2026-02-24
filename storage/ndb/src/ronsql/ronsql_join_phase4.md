@@ -8,8 +8,8 @@ Projection-only joins (no GROUP BY / no aggregation) are deferred.
 
 ## Prerequisites
 
-Phase 3 must be completed first — specifically Step 20 (WHERE filter on
-child/middle tables) from `ronsql_join_phase3.md`.
+Phase 3 is complete (all steps including Step 20 WHERE filter on
+child/middle tables).
 
 ---
 
@@ -265,21 +265,28 @@ messages rather than cryptic failures.
 ## Implementation Order
 
 ### Phase 4 (aggregation completeness)
-1. **Step 25** — HAVING (new parser + post-filter logic)
-2. **Step 26** — ORDER BY on aggregated results (likely mostly works)
-3. **Step 27** — LIMIT on aggregated results (likely mostly works)
+1. **Step 25** — HAVING (new parser + post-filter logic) — **DONE**
+2. **Step 26** — ORDER BY on aggregated results — **DONE**
+3. **Step 27** — LIMIT on aggregated results — **DONE**
 4. **Step 28** — COUNT(DISTINCT) (most complex, may need AggInterpreter)
 
 ### Phase 5 (broader SQL)
 5. **Step 29** — LEFT JOIN (new grammar + NdbQueryOptions match type)
-6. **Step 30** — Multi-table GROUP BY (likely verify + test)
-7. **Step 31** — Self-joins (likely verify + test)
+6. **Step 30** — Multi-table GROUP BY — **DONE** (verified + tested)
+7. **Step 31** — Self-joins — **DONE** (verified + tested)
 8. **Step 32** — Data type coverage (test-only)
 
 ### Phase 6 (robustness)
 9. **Step 33** — Eviction through RonSQL
 10. **Step 34** — Large-scale stress
 11. **Step 35** — Error messages
+
+### Additional features implemented (beyond original plan)
+- CHAR column type in WHERE comparisons
+- LIKE operator in WHERE clauses
+- IN operator in WHERE clauses
+- CASE/WHEN/THEN/ELSE/END in aggregation expressions
+- TPC-H Q9/Q12 end-to-end tests via REST API
 
 ## Verification
 

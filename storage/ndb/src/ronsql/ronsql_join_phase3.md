@@ -177,12 +177,14 @@ aggregate results.
 2. **Step 21** — COUNT(*) (likely already works, just verify + test) — **DONE**
 3. **Step 23** — AVG (likely already works, just verify + test) — **DONE**
 4. **Step 24** — Mixed expressions (likely already works, just test) — **DONE**
-5. **Step 20** — WHERE on child tables (new feature, highest complexity)
+5. **Step 20** — WHERE on child tables (new feature, highest complexity) — **DONE**
 6. ~~**Step 22**~~ — Projection-only joins — **DEFERRED** (out of scope,
    current focus is aggregation queries only)
 
 Steps 21, 23, 24 were verification-only (tests added, all working).
-Step 20 is the remaining feature implementation for Phase 3.
+Step 20 implemented WHERE filters on child/middle tables.
+
+**Phase 3 is COMPLETE.**
 
 ## Verification
 
