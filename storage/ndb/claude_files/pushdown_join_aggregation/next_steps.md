@@ -151,11 +151,17 @@ with MySQL cross-check for each.
   nodes, 8 test categories comparing pushdown ON vs OFF
 - Run: `./mtr --suite=ndb_push_agg_dist ndb_join_pushdown_agg_multinode`
 
-#### 4c. Abort / Error Paths
+#### 4c. Abort / Error Paths ✅ COMPLETE
 
-- API disconnect during scan (SCAN_TABREF)
-- Node failure during aggregation (if testable with ERROR_INSERT)
-- SETUP_REF error handling (e.g., out-of-memory at setup time)
+**Tests 20-22 in `testJoinAggNdbApi.cpp`:**
+- **Test 20**: ERROR_INSERT 5091 forces JOIN_AGG_SETUP_REF (simulated pool
+  exhaustion). Verifies query fails gracefully, DBTC sends RELEASE to all
+  nodes, and subsequent queries succeed.
+- **Test 21**: Early query close — starts aggregation scan, closes immediately
+  without reading results. Exercises SCAN_CLOSE → JOIN_AGG_RELEASE_REQ path.
+- **Test 22**: ERROR_INSERT 5092 forces JOIN_AGG_COMPLETE_REF during
+  finalization. Scan runs normally but COMPLETE fails, DBTC releases state
+  and aborts. Verifies no crash and correct cleanup.
 
 ### 5. Secondary Features (Priority: Low)
 

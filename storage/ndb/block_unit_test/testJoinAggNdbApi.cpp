@@ -5100,6 +5100,487 @@ testMultiFragmentEviction(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
 }
 
 /* ------------------------------------------------------------------ */
+/* Helper: build, execute, and verify the standard t14 aggregation     */
+/* query.  Returns 0 on success. Used by Tests 20-22 to confirm the   */
+/* cluster is healthy after an error path has been exercised.          */
+/* ------------------------------------------------------------------ */
+
+static int
+runAndVerifyT14Query(Ndb *ndb, MYSQL *conn, const char *label)
+{
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(T14_PARENT);
+  dict->invalidateTable(T14_CHILD);
+  const NdbDictionary::Table *parentTab = dict->getTable(T14_PARENT);
+  const NdbDictionary::Table *childTab = dict->getTable(T14_CHILD);
+  if (parentTab == nullptr || childTab == nullptr) {
+    printf("FAILED (%s: table lookup: %s)\n", label, dict->getNdbError().message);
+    return -1;
+  }
+
+  const NdbDictionary::Column *grpCol = parentTab->getColumn("grp");
+  if (grpCol == nullptr) {
+    printf("FAILED (%s: column lookup)\n", label);
+    return -1;
+  }
+
+  NdbAggregator agg(childTab);
+  if (!agg.GroupByLinked(0, grpCol) ||
+      !agg.LoadColumn("val", 0) ||
+      !agg.Sum(0, 0) ||
+      !agg.Count(1, 0) ||
+      !agg.Finalize()) {
+    printf("FAILED (%s: agg program: %s)\n", label, agg.GetError().err_msg_);
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  const NdbQueryTableScanOperationDef *parentOp = qb->scanTable(parentTab);
+  const NdbQueryOperand *joinKey[] = {
+    qb->linkedValue(parentOp, "id"), nullptr
+  };
+  NdbQueryOptions opts;
+  opts.setAggregation(agg);
+  const NdbLinkedOperand *grpLink = qb->linkedValue(parentOp, "grp");
+  opts.addLinkedProjection(grpLink);
+
+  const NdbQueryLookupOperationDef *childOp =
+      qb->readTuple(childTab, joinKey, &opts);
+  if (childOp == nullptr) {
+    printf("FAILED (%s: readTuple: %s)\n", label, qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (%s: prepare: %s)\n", label, qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  NdbQuery *query = trans->createQuery(queryDef);
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    printf("FAILED (%s: execute: %s)\n", label, trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {}
+  if (outcome == NdbQuery::NextResult_error) {
+    printf("FAILED (%s: nextResult: %s)\n", label, query->getNdbError().message);
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbAggregator *resultAgg = query->getAggregator();
+  if (resultAgg == nullptr) {
+    printf("FAILED (%s: getAggregator returned nullptr)\n", label);
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  std::map<Int32, std::pair<Int64, Int64>> actual;
+  for (;;) {
+    NdbAggregator::ResultRecord rec = resultAgg->FetchResultRecord();
+    if (rec.end()) break;
+    NdbAggregator::Column grp = rec.FetchGroupbyColumn();
+    Int32 grpVal = grp.data_int32();
+    NdbAggregator::Result sumRes = rec.FetchAggregationResult();
+    Int64 sumVal = sumRes.data_int64();
+    NdbAggregator::Result cntRes = rec.FetchAggregationResult();
+    Int64 cntVal = cntRes.data_int64();
+    actual[grpVal] = {sumVal, cntVal};
+  }
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  if (actual.size() != 10) {
+    printf("FAILED (%s: expected 10 groups, got %zu)\n", label, actual.size());
+    return -1;
+  }
+
+  /* Verify: group g → SUM(val) = 100*g + 4500, COUNT = 10 */
+  for (Int32 g = 1; g <= 10; g++) {
+    auto it = actual.find(g);
+    if (it == actual.end()) {
+      printf("FAILED (%s: missing group %d)\n", label, g);
+      return -1;
+    }
+    Int64 expectedSum = (Int64)g * 100 + 4500;
+    if (it->second.first != expectedSum || it->second.second != 10) {
+      printf("FAILED (%s: group %d: SUM=%lld COUNT=%lld, "
+             "expected SUM=%lld COUNT=10)\n",
+             label, g, (long long)it->second.first,
+             (long long)it->second.second, (long long)expectedSum);
+      return -1;
+    }
+  }
+
+  /* MySQL cross-check */
+  if (mysql_query(conn,
+        "SELECT p.grp, SUM(c.val), COUNT(*) "
+        "FROM t14_parent p JOIN t14_child c ON c.parent_id = p.id "
+        "GROUP BY p.grp ORDER BY p.grp") != 0) {
+    printf("FAILED (%s: MySQL cross-check: %s)\n", label, mysql_error(conn));
+    return -1;
+  }
+  MYSQL_RES *result = mysql_store_result(conn);
+  MYSQL_ROW row;
+  while ((row = mysql_fetch_row(result)) != nullptr) {
+    Int32 grp = atoi(row[0]);
+    Int64 sqlSum = atoll(row[1]);
+    Int64 sqlCnt = atoll(row[2]);
+    auto it = actual.find(grp);
+    if (it == actual.end() ||
+        it->second.first != sqlSum ||
+        it->second.second != sqlCnt) {
+      printf("FAILED (%s: MySQL cross-check grp=%d mismatch)\n", label, grp);
+      mysql_free_result(result);
+      return -1;
+    }
+  }
+  mysql_free_result(result);
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Test 20: SETUP_REF error handling (ERROR_INSERT 5091)               */
+/*                                                                     */
+/* Forces JOIN_AGG_SETUP_REQ to return SETUP_REF (simulated pool       */
+/* exhaustion). Verifies the query fails gracefully and no node        */
+/* crashes.  Then re-runs without error to confirm cleanup.            */
+/* ------------------------------------------------------------------ */
+
+static int
+testSetupRef(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
+{
+  printf("Test 20: SETUP_REF error handling (ERROR_INSERT 5091) ... ");
+  fflush(stdout);
+
+  if (restarter.insertErrorInAllNodes(5091) != 0) {
+    printf("FAILED (insertErrorInAllNodes(5091))\n");
+    return -1;
+  }
+  V("\n  ERROR_INSERT 5091 set (force SETUP_REF)\n");
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(T14_PARENT);
+  dict->invalidateTable(T14_CHILD);
+  const NdbDictionary::Table *parentTab = dict->getTable(T14_PARENT);
+  const NdbDictionary::Table *childTab = dict->getTable(T14_CHILD);
+  if (parentTab == nullptr || childTab == nullptr) {
+    printf("FAILED (table lookup: %s)\n", dict->getNdbError().message);
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+
+  const NdbDictionary::Column *grpCol = parentTab->getColumn("grp");
+
+  NdbAggregator agg(childTab);
+  if (!agg.GroupByLinked(0, grpCol) ||
+      !agg.LoadColumn("val", 0) ||
+      !agg.Sum(0, 0) ||
+      !agg.Count(1, 0) ||
+      !agg.Finalize()) {
+    printf("FAILED (agg program: %s)\n", agg.GetError().err_msg_);
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  const NdbQueryTableScanOperationDef *parentOp = qb->scanTable(parentTab);
+  const NdbQueryOperand *joinKey[] = {
+    qb->linkedValue(parentOp, "id"), nullptr
+  };
+  NdbQueryOptions opts;
+  opts.setAggregation(agg);
+  const NdbLinkedOperand *grpLink = qb->linkedValue(parentOp, "grp");
+  opts.addLinkedProjection(grpLink);
+
+  const NdbQueryLookupOperationDef *childOp =
+      qb->readTuple(childTab, joinKey, &opts);
+  if (childOp == nullptr) {
+    printf("FAILED (readTuple: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+  qb->destroy();
+
+  /* Execute — expect failure from SETUP_REF */
+  NdbTransaction *trans = ndb->startTransaction();
+  NdbQuery *query = trans->createQuery(queryDef);
+
+  bool gotError = false;
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    V("  execute() returned error (expected): %s\n",
+      trans->getNdbError().message);
+    gotError = true;
+  } else {
+    /* execute succeeded — error should appear at nextResult */
+    NdbQuery::NextResultOutcome outcome;
+    while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {}
+    if (outcome == NdbQuery::NextResult_error) {
+      V("  nextResult() returned error (expected): %s\n",
+        query->getNdbError().message);
+      gotError = true;
+    }
+  }
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  restarter.insertErrorInAllNodes(0);
+  V("  ERROR_INSERT cleared\n");
+
+  if (!gotError) {
+    printf("FAILED (expected error from SETUP_REF, but query succeeded)\n");
+    return -1;
+  }
+
+  /* Verify no crash: re-run same query without error insert */
+  V("  Re-running query to verify cluster health...\n");
+  if (runAndVerifyT14Query(ndb, conn, "post-SETUP_REF") != 0) {
+    return -1;
+  }
+
+  printf("OK (SETUP_REF handled, cleanup verified)\n");
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Test 21: Early query close (no ERROR_INSERT)                        */
+/*                                                                     */
+/* Starts an aggregation scan, then closes the query immediately       */
+/* without reading any results.  This exercises the SCAN_CLOSE →       */
+/* JOIN_AGG_RELEASE_REQ path.  Verifies no crash and no leaked state.  */
+/* ------------------------------------------------------------------ */
+
+static int
+testEarlyClose(Ndb *ndb, MYSQL *conn)
+{
+  printf("Test 21: Early query close ... ");
+  fflush(stdout);
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(T14_PARENT);
+  dict->invalidateTable(T14_CHILD);
+  const NdbDictionary::Table *parentTab = dict->getTable(T14_PARENT);
+  const NdbDictionary::Table *childTab = dict->getTable(T14_CHILD);
+  if (parentTab == nullptr || childTab == nullptr) {
+    printf("FAILED (table lookup: %s)\n", dict->getNdbError().message);
+    return -1;
+  }
+
+  const NdbDictionary::Column *grpCol = parentTab->getColumn("grp");
+
+  NdbAggregator agg(childTab);
+  if (!agg.GroupByLinked(0, grpCol) ||
+      !agg.LoadColumn("val", 0) ||
+      !agg.Sum(0, 0) ||
+      !agg.Count(1, 0) ||
+      !agg.Finalize()) {
+    printf("FAILED (agg program: %s)\n", agg.GetError().err_msg_);
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  const NdbQueryTableScanOperationDef *parentOp = qb->scanTable(parentTab);
+  const NdbQueryOperand *joinKey[] = {
+    qb->linkedValue(parentOp, "id"), nullptr
+  };
+  NdbQueryOptions opts;
+  opts.setAggregation(agg);
+  const NdbLinkedOperand *grpLink = qb->linkedValue(parentOp, "grp");
+  opts.addLinkedProjection(grpLink);
+
+  const NdbQueryLookupOperationDef *childOp =
+      qb->readTuple(childTab, joinKey, &opts);
+  if (childOp == nullptr) {
+    printf("FAILED (readTuple: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  /* Start query, then close immediately without reading results */
+  NdbTransaction *trans = ndb->startTransaction();
+  NdbQuery *query = trans->createQuery(queryDef);
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    V("\n  execute() returned error: %s\n", trans->getNdbError().message);
+    /* Even if execute fails, close and proceed to verify */
+  }
+
+  V("\n  Closing query immediately (no nextResult calls)\n");
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  /* Verify no crash: run same query to completion */
+  V("  Re-running query to verify cluster health...\n");
+  if (runAndVerifyT14Query(ndb, conn, "post-early-close") != 0) {
+    return -1;
+  }
+
+  printf("OK (early close handled, cleanup verified)\n");
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Test 22: COMPLETE_REF error handling (ERROR_INSERT 5092)            */
+/*                                                                     */
+/* Forces JOIN_AGG_COMPLETE_REQ to return COMPLETE_REF. The scan       */
+/* runs normally but the finalization phase fails, causing DBTC        */
+/* to release state and abort. Verifies graceful error and no crash.   */
+/* ------------------------------------------------------------------ */
+
+static int
+testCompleteRef(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
+{
+  printf("Test 22: COMPLETE_REF error handling (ERROR_INSERT 5092) ... ");
+  fflush(stdout);
+
+  if (restarter.insertErrorInAllNodes(5092) != 0) {
+    printf("FAILED (insertErrorInAllNodes(5092))\n");
+    return -1;
+  }
+  V("\n  ERROR_INSERT 5092 set (force COMPLETE_REF)\n");
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(T14_PARENT);
+  dict->invalidateTable(T14_CHILD);
+  const NdbDictionary::Table *parentTab = dict->getTable(T14_PARENT);
+  const NdbDictionary::Table *childTab = dict->getTable(T14_CHILD);
+  if (parentTab == nullptr || childTab == nullptr) {
+    printf("FAILED (table lookup: %s)\n", dict->getNdbError().message);
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+
+  const NdbDictionary::Column *grpCol = parentTab->getColumn("grp");
+
+  NdbAggregator agg(childTab);
+  if (!agg.GroupByLinked(0, grpCol) ||
+      !agg.LoadColumn("val", 0) ||
+      !agg.Sum(0, 0) ||
+      !agg.Count(1, 0) ||
+      !agg.Finalize()) {
+    printf("FAILED (agg program: %s)\n", agg.GetError().err_msg_);
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  const NdbQueryTableScanOperationDef *parentOp = qb->scanTable(parentTab);
+  const NdbQueryOperand *joinKey[] = {
+    qb->linkedValue(parentOp, "id"), nullptr
+  };
+  NdbQueryOptions opts;
+  opts.setAggregation(agg);
+  const NdbLinkedOperand *grpLink = qb->linkedValue(parentOp, "grp");
+  opts.addLinkedProjection(grpLink);
+
+  const NdbQueryLookupOperationDef *childOp =
+      qb->readTuple(childTab, joinKey, &opts);
+  if (childOp == nullptr) {
+    printf("FAILED (readTuple: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+  qb->destroy();
+
+  /* Execute — scan runs but COMPLETE phase will fail */
+  NdbTransaction *trans = ndb->startTransaction();
+  NdbQuery *query = trans->createQuery(queryDef);
+
+  bool gotError = false;
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    V("  execute() returned error: %s\n", trans->getNdbError().message);
+    gotError = true;
+  } else {
+    NdbQuery::NextResultOutcome outcome;
+    while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {}
+    if (outcome == NdbQuery::NextResult_error) {
+      V("  nextResult() returned error (expected): %s\n",
+        query->getNdbError().message);
+      gotError = true;
+    } else {
+      /* Scan completed — try getAggregator; error might be deferred */
+      NdbAggregator *resultAgg = query->getAggregator();
+      if (resultAgg == nullptr) {
+        V("  getAggregator() returned nullptr (expected after COMPLETE_REF)\n");
+        gotError = true;
+      } else {
+        NdbAggregator::ResultRecord rec = resultAgg->FetchResultRecord();
+        if (rec.end()) {
+          V("  No aggregation results (expected after COMPLETE_REF)\n");
+          gotError = true;
+        }
+      }
+    }
+  }
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  restarter.insertErrorInAllNodes(0);
+  V("  ERROR_INSERT cleared\n");
+
+  if (!gotError) {
+    printf("FAILED (expected error from COMPLETE_REF, but query succeeded)\n");
+    return -1;
+  }
+
+  /* Verify no crash: re-run same query without error insert */
+  V("  Re-running query to verify cluster health...\n");
+  if (runAndVerifyT14Query(ndb, conn, "post-COMPLETE_REF") != 0) {
+    return -1;
+  }
+
+  printf("OK (COMPLETE_REF handled, cleanup verified)\n");
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* Main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -5397,6 +5878,25 @@ int main(int argc, char **argv)
             exitCode = 1;
           }
           dropTest18Tables(conn);
+        }
+
+        /* Tests 20, 21, 22: Abort/Error path tests (reuse t14 tables) */
+        if (shouldRun(20) || shouldRun(21) || shouldRun(22)) {
+          NdbRestarter restarter(connectString);
+          if (createTest14Tables(conn) == 0 && insertTest14Data(conn) == 0) {
+            if (shouldRun(20)) {
+              if (testSetupRef(&ndb, conn, restarter) != 0) exitCode = 1;
+            }
+            if (shouldRun(21)) {
+              if (testEarlyClose(&ndb, conn) != 0) exitCode = 1;
+            }
+            if (shouldRun(22)) {
+              if (testCompleteRef(&ndb, conn, restarter) != 0) exitCode = 1;
+            }
+          } else {
+            exitCode = 1;
+          }
+          dropTest14Tables(conn);
         }
 
         mysql_close(conn);

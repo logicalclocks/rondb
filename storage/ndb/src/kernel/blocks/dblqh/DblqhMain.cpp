@@ -18029,6 +18029,23 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
   const Uint32 aggStateKey = req->aggStateKey;
   const Uint32 maxBatchRows = req->maxBatchRows;
 
+#ifdef ERROR_INSERT
+  if (ERROR_INSERTED(5092)) {
+    jam();
+    CLEAR_ERROR_INSERT_VALUE;
+    JoinAggCompleteRef *ref =
+      (JoinAggCompleteRef *)signal->getDataPtrSend();
+    ref->senderRef = reference();
+    ref->senderData = senderData;
+    ref->requestId = requestId;
+    ref->errorCode = ZJOIN_AGG_STATE_NOT_FOUND;
+    ref->errorLine = __LINE__;
+    sendSignal(senderRef, GSN_JOIN_AGG_COMPLETE_REF,
+               signal, JoinAggCompleteRef::SignalLength, JBB);
+    return;
+  }
+#endif
+
   JoinAggregationState *state = getJoinAggState(aggStateKey);
   if (state == nullptr) {
     jam();

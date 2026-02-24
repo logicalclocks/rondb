@@ -2260,6 +2260,25 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   const Uint32 senderData = req->senderData;
   const Uint32 requestId = req->requestId;
 
+#ifdef ERROR_INSERT
+  if (ERROR_INSERTED(5091)) {
+    jam();
+    CLEAR_ERROR_INSERT_VALUE;
+    SectionHandle handle(this, signal);
+    releaseSections(handle);
+    JoinAggSetupRef *ref =
+      (JoinAggSetupRef *)signal->getDataPtrSend();
+    ref->senderRef = reference();
+    ref->senderData = senderData;
+    ref->requestId = requestId;
+    ref->errorCode = ZJOIN_AGG_STATE_ALLOC_FAILED;
+    ref->errorLine = __LINE__;
+    sendSignal(senderRef, GSN_JOIN_AGG_SETUP_REF,
+               signal, JoinAggSetupRef::SignalLength, JBB);
+    return;
+  }
+#endif
+
   // Seize a JoinAggregationState record from the static pool
   Uint32 key = seizeJoinAggState();
   if (key == RNIL) {
