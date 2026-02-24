@@ -1277,8 +1277,8 @@ class Dbspj : public SimulatedBlock {
         m_suspended_tree_nodes;  // Nodes suspended by SPJ congestion control
     Uint32 m_rows;               // Rows accumulated in current batch
     Uint32 m_outstanding;        // Outstanding signals, when 0, batch is done
-    Uint16 m_lookup_node_data[ABS_MAX_NDB_NODES];
-    Uint32 m_aggStateKeys[ABS_MAX_NDB_NODES];
+    Uint16 *m_lookup_node_data;  // Dynamically allocated [MAX_NDB_NODES]
+    Uint32 *m_aggStateKeys;      // Dynamically allocated [MAX_NDB_NODES]
     NdbNodeBitmask m_aggNodes;
     NDB_TICKS m_lastHbrepTicks;  // Last time SCAN_HBREP was sent during JoinAgg bypass
     ArenaHead m_arena;

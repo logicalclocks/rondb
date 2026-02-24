@@ -1126,8 +1126,18 @@ void Dbspj::do_init(Request *requestP, const LqhKeyReq *req, Uint32 senderRef) {
   requestP->m_transId[1] = req->transId2;
   requestP->m_rootFragId = LqhKeyReq::getFragmentId(req->fragmentData);
   requestP->m_rootFragCnt = 1;
-  std::memset(requestP->m_lookup_node_data, 0,
-              sizeof(requestP->m_lookup_node_data));
+  {
+    const Uint32 max_nodes = MAX_NDB_NODES;
+    const size_t alloc_size = max_nodes * sizeof(Uint32) +
+                              max_nodes * sizeof(Uint16);
+    void *mem = lc_ndbd_pool_malloc(alloc_size, RG_QUERY_MEMORY,
+                                    getThreadId(), true);
+    ndbrequire(mem != nullptr);
+    requestP->m_aggStateKeys = static_cast<Uint32 *>(mem);
+    requestP->m_lookup_node_data =
+        reinterpret_cast<Uint16 *>(
+            static_cast<char *>(mem) + max_nodes * sizeof(Uint32));
+  }
 #ifdef SPJ_TRACE_TIME
   requestP->m_cnt_batches = 0;
   requestP->m_sum_rows = 0;
@@ -1370,7 +1380,7 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
         Uint32 nodeId, aggKey;
         ndbrequire(reader.getWord(&nodeId));
         ndbrequire(reader.getWord(&aggKey));
-        ndbrequire(nodeId < ABS_MAX_NDB_NODES);
+        ndbrequire(nodeId < MAX_NDB_NODES);
         requestPtr.p->m_aggStateKeys[nodeId] = aggKey;
         requestPtr.p->m_aggNodes.set(nodeId);
       }
@@ -1460,8 +1470,18 @@ void Dbspj::do_init(Request *requestP, const ScanFragReq *req,
   requestP->m_rootResultData = req->resultData;
   requestP->m_rootFragId = req->fragmentNoKeyLen;
   requestP->m_rootFragCnt = 0;  // Filled in later
-  std::memset(requestP->m_lookup_node_data, 0,
-              sizeof(requestP->m_lookup_node_data));
+  {
+    const Uint32 max_nodes = MAX_NDB_NODES;
+    const size_t alloc_size = max_nodes * sizeof(Uint32) +
+                              max_nodes * sizeof(Uint16);
+    void *mem = lc_ndbd_pool_malloc(alloc_size, RG_QUERY_MEMORY,
+                                    getThreadId(), true);
+    ndbrequire(mem != nullptr);
+    requestP->m_aggStateKeys = static_cast<Uint32 *>(mem);
+    requestP->m_lookup_node_data =
+        reinterpret_cast<Uint16 *>(
+            static_cast<char *>(mem) + max_nodes * sizeof(Uint32));
+  }
   requestP->m_aggNodes.clear();
   requestP->m_lastHbrepTicks = getHighResTimer();
 #ifdef SPJ_TRACE_TIME
@@ -3265,6 +3285,12 @@ void Dbspj::cleanup(Ptr<Request> requestPtr, bool in_hash) {
     ndbrequire(in_hash ==
                m_lookup_request_hash.remove(requestPtr, *requestPtr.p));
   }
+  // Free dynamic per-node arrays (allocated as single block in do_init)
+  if (requestPtr.p->m_aggStateKeys != nullptr) {
+    lc_ndbd_pool_free(requestPtr.p->m_aggStateKeys);
+    requestPtr.p->m_aggStateKeys = nullptr;
+    requestPtr.p->m_lookup_node_data = nullptr;
+  }
   ArenaHead ah = requestPtr.p->m_arena;
   m_request_pool.release(requestPtr);
   m_arenaAllocator.release(ah);
@@ -5054,7 +5080,7 @@ void Dbspj::lookup_send(Signal *signal, Ptr<Request> requestPtr,
     } else if (cnt > 0) {
       // Register signal 'cnt' required before completion
       jam();
-      ndbassert(Tnode < NDB_ARRAY_SIZE(requestPtr.p->m_lookup_node_data));
+      ndbassert(Tnode < MAX_NDB_NODES);
       requestPtr.p->m_completed_tree_nodes.clear(treeNodePtr.p->m_node_no);
       requestPtr.p->m_outstanding += cnt;
       requestPtr.p->m_lookup_node_data[Tnode] += cnt;

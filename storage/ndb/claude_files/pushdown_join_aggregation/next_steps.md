@@ -189,9 +189,13 @@ For very large joins (millions of leaf rows), the 32-bit rowsExamined
 counter may overflow. Extend SCAN_FRAGCONF with version-gated
 SignalLength_v3 carrying the upper 32 bits.
 
-#### 5c. Dynamic Memory in DBSPJ Request
+#### 5c. Dynamic Memory in DBSPJ Request ✅ COMPLETE
 
-coordinator_implementation.md Section 1 proposes replacing the fixed
-`m_lookup_node_data[ABS_MAX_NDB_NODES]` array with dynamically
-allocated memory to reduce per-Request size. Currently uses fixed
-arrays (working but not memory-optimal).
+Replaced fixed arrays in Request struct (Dbspj.hpp) with dynamically
+allocated pointers via `lc_ndbd_pool_malloc`:
+- `Uint16 m_lookup_node_data[145]` → `Uint16 *m_lookup_node_data`
+- `Uint32 m_aggStateKeys[145]` → `Uint32 *m_aggStateKeys`
+Both allocated as a single block sized to `MAX_NDB_NODES` (runtime,
+typically 48) in `do_init()`, freed via `lc_ndbd_pool_free` in `cleanup()`.
+Saves 582 bytes per Request (66.9% reduction) for improved ArenaPool
+utilization.
