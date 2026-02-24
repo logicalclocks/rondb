@@ -34,6 +34,8 @@
 #include <mutex>
 #include <condition_variable>
 #include <NdbSleep.h>
+#include <ctime>
+#include <random>
 
 NdbMutex *globalConfigsMutex = nullptr;
 template <typename T> class SafeQueue {
@@ -63,6 +65,260 @@ APIKeyCache *apiKeyCachePtr = nullptr;
 extern RDRSRonDBConnectionPool *rdrsRonDBConnectionPool;
 const std::string HOPSWORKS_TEST_API_KEY =
     "bkYjEz6OTZyevbqt.ocHajJhnE0ytBh8zbYj3IXupyMqeMZp8PW464eTxzxqP5afBjodEQUgY0lmL33ub";
+
+// NDB varchar helpers: prepare length-prefixed buffer for setValue()
+static void prepare_short_varchar(char *buf, const char *str, size_t len) {
+  buf[0] = (char)len;
+  memcpy(buf + 1, str, len);
+}
+
+static void prepare_medium_varchar(char *buf, const char *str, size_t len) {
+  buf[0] = (char)(len & 0xFF);
+  buf[1] = (char)((len >> 8) & 0xFF);
+  memcpy(buf + 2, str, len);
+}
+
+// Insert a row into hopsworks.api_key via NDB API (for event tests)
+static bool ndb_insert_api_key(int id,
+                                const char *prefix,
+                                const char *secret,
+                                const char *salt,
+                                const char *name,
+                                int user_id) {
+  Ndb *ndb = nullptr;
+  RS_Status rs = rdrsRonDBConnectionPool->GetMetadataNdbObject(&ndb);
+  if (rs.http_code != SUCCESS) {
+    std::cerr << "Failed to get NDB object" << std::endl;
+    return false;
+  }
+
+  if (ndb->setDatabaseName(HOPSWORKS) != 0) {
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  const NdbDictionary::Table *tab = ndb->getDictionary()->getTable(API_KEY);
+  if (tab == nullptr) {
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  NdbTransaction *tx = ndb->startTransaction();
+  if (tx == nullptr) {
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  NdbOperation *op = tx->getNdbOperation(tab);
+  if (op == nullptr || op->insertTuple() != 0) {
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  // PK: id (int)
+  if (op->equal("id", id) != 0) {
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  // prefix (varchar(45) - short var: 1-byte length prefix)
+  char prefix_buf[API_KEY_PREFIX_SIZE];
+  memset(prefix_buf, 0, sizeof(prefix_buf));
+  prepare_short_varchar(prefix_buf, prefix, strlen(prefix));
+  if (op->setValue("prefix", prefix_buf) != 0) {
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  // secret (varchar(512) - medium var: 2-byte length prefix)
+  char secret_buf[API_KEY_SECRET_SIZE];
+  memset(secret_buf, 0, sizeof(secret_buf));
+  prepare_medium_varchar(secret_buf, secret, strlen(secret));
+  if (op->setValue("secret", secret_buf) != 0) {
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  // salt (varchar(256) - medium var: 2-byte length prefix)
+  char salt_buf[API_KEY_SALT_SIZE];
+  memset(salt_buf, 0, sizeof(salt_buf));
+  prepare_medium_varchar(salt_buf, salt, strlen(salt));
+  if (op->setValue("salt", salt_buf) != 0) {
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  // name (varchar(45) - short var: 1-byte length prefix)
+  char name_buf[API_KEY_NAME_SIZE];
+  memset(name_buf, 0, sizeof(name_buf));
+  prepare_short_varchar(name_buf, name, strlen(name));
+  if (op->setValue("name", name_buf) != 0) {
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  // user_id (int)
+  if (op->setValue("user_id", user_id) != 0) {
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  // created (timestamp - 4-byte seconds since epoch)
+  Uint32 now = (Uint32)time(nullptr);
+  if (op->setValue("created", now) != 0) {
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  // modified (timestamp)
+  if (op->setValue("modified", now) != 0) {
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  // reserved (tinyint, DEFAULT 0)
+  if (op->setValue("reserved", (Int32)0) != 0) {
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  if (tx->execute(NdbTransaction::Commit) != 0) {
+    std::cerr << "NDB insert failed: " << tx->getNdbError().code
+              << " " << tx->getNdbError().message << std::endl;
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  ndb->closeTransaction(tx);
+  rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+  return true;
+}
+
+// Update the secret column of a row in hopsworks.api_key by PK (id) via NDB API
+static bool ndb_update_api_key_secret(int id, const char *new_secret) {
+  Ndb *ndb = nullptr;
+  RS_Status rs = rdrsRonDBConnectionPool->GetMetadataNdbObject(&ndb);
+  if (rs.http_code != SUCCESS) {
+    std::cerr << "Failed to get NDB object" << std::endl;
+    return false;
+  }
+
+  if (ndb->setDatabaseName(HOPSWORKS) != 0) {
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  const NdbDictionary::Table *tab = ndb->getDictionary()->getTable(API_KEY);
+  if (tab == nullptr) {
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  NdbTransaction *tx = ndb->startTransaction();
+  if (tx == nullptr) {
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  NdbOperation *op = tx->getNdbOperation(tab);
+  if (op == nullptr || op->updateTuple() != 0) {
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  // PK: id
+  if (op->equal("id", id) != 0) {
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  // secret (varchar(512) - medium var: 2-byte length prefix)
+  char secret_buf[API_KEY_SECRET_SIZE];
+  memset(secret_buf, 0, sizeof(secret_buf));
+  prepare_medium_varchar(secret_buf, new_secret, strlen(new_secret));
+  if (op->setValue("secret", secret_buf) != 0) {
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  if (tx->execute(NdbTransaction::Commit) != 0) {
+    std::cerr << "NDB update failed: " << tx->getNdbError().code
+              << " " << tx->getNdbError().message << std::endl;
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  ndb->closeTransaction(tx);
+  rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+  return true;
+}
+
+// Delete a row from hopsworks.api_key by primary key (id) via NDB API
+static bool ndb_delete_api_key_by_id(int id) {
+  Ndb *ndb = nullptr;
+  RS_Status rs = rdrsRonDBConnectionPool->GetMetadataNdbObject(&ndb);
+  if (rs.http_code != SUCCESS) {
+    std::cerr << "Failed to get NDB object" << std::endl;
+    return false;
+  }
+
+  if (ndb->setDatabaseName(HOPSWORKS) != 0) {
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  const NdbDictionary::Table *tab = ndb->getDictionary()->getTable(API_KEY);
+  if (tab == nullptr) {
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  NdbTransaction *tx = ndb->startTransaction();
+  if (tx == nullptr) {
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  NdbOperation *op = tx->getNdbOperation(tab);
+  if (op == nullptr || op->deleteTuple() != 0) {
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  if (op->equal("id", id) != 0) {
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  if (tx->execute(NdbTransaction::Commit) != 0) {
+    std::cerr << "NDB delete failed: " << tx->getNdbError().code
+              << " " << tx->getNdbError().message << std::endl;
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  ndb->closeTransaction(tx);
+  rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+  return true;
+}
 
 class APIKeyTest : public ::testing::Test {
  protected:
@@ -160,6 +416,39 @@ TEST_F(APIKeyTest, TestAPIKey1) {
   stop_api_key_cache();
 }
 
+// Verify preload populates cache and preloaded keys validate
+TEST_F(APIKeyTest, TestPreload) {
+  apiKeyCachePtr = start_api_key_cache();
+  AllConfigs conf = AllConfigs::get_all();
+  if (!conf.security.apiKey.useHopsworksAPIKeys) {
+    std::cout << "tests may fail because Hopsworks API keys are deactivated" << std::endl;
+  }
+
+  apiKeyCachePtr->preload_all_keys();
+  EXPECT_GT(apiKeyCachePtr->size(), 0u)
+      << "Cache should have preloaded entries";
+
+  // Verify the known test key works after preload (no lazy load needed)
+  RS_Status status = apiKeyCachePtr->validate_api_key(HOPSWORKS_TEST_API_KEY, {DB001}, nullptr);
+  EXPECT_EQ(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Preloaded key should validate: " << status.message;
+
+  // Verify unauthorized DB still fails
+  status = apiKeyCachePtr->validate_api_key(HOPSWORKS_TEST_API_KEY, {"nonexistent_db"}, nullptr);
+  EXPECT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Unauthorized DB should be rejected";
+
+  // Verify generated keys validate after preload
+  std::ostringstream oss;
+  oss << std::setw(16) << std::setfill('0') << 0 << "." << HopsworksAPIKey_SECRET;
+  std::string generatedKey = oss.str();
+  status = apiKeyCachePtr->validate_api_key(generatedKey, {DB001}, nullptr);
+  EXPECT_EQ(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Preloaded generated key should validate: " << status.message;
+
+  stop_api_key_cache();
+}
+
 void test_update_cache_every_n_seconds(APIKeyCache *cache,
                                        const AllConfigs &conf) {
   std::string apiKey = HOPSWORKS_TEST_API_KEY;
@@ -173,8 +462,7 @@ void test_update_cache_every_n_seconds(APIKeyCache *cache,
 
   auto lastUpdated1 = cache->last_updated(apiKey);
   // waiting 2 * cacheRefreshIntervalMS to ensure the update trigger has run
-  NdbSleep_MilliSleep(2 * (conf.security.apiKey.cacheRefreshIntervalMS +
-                           conf.security.apiKey.cacheRefreshIntervalJitterMS));
+  NdbSleep_MilliSleep(2 * (conf.security.apiKey.cacheRefreshIntervalMS));
   auto lastUpdated2 = cache->last_updated(apiKey);
   EXPECT_NE(lastUpdated1, lastUpdated2) << "Cache entry was not updated";
 
@@ -193,13 +481,11 @@ TEST_F(APIKeyTest, TestAPIKeyCache1) {
 
   // To speed up the tests
   conf.security.apiKey.cacheRefreshIntervalMS       = 1000;
-  conf.security.apiKey.cacheRefreshIntervalJitterMS = 100;
-  conf.security.apiKey.cacheUnusedEntriesEvictionMS =
-      conf.security.apiKey.cacheRefreshIntervalMS * 4;
   auto status = AllConfigs::set_all(conf);
   if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
     FAIL() << "Failed to set config: " << status.message;
   }
+  apiKeyCachePtr->start_background_threads();
   test_update_cache_every_n_seconds(apiKeyCachePtr, conf);
   stop_api_key_cache();
 }
@@ -217,9 +503,7 @@ void test_update_cache_every_n_seconds_unauthorized(APIKeyCache *cache,
 
   auto lastUpdated1 = cache->last_updated(apiKey);
   // waiting 2 * cacheRefreshIntervalMS to ensure the update trigger has run
-  NdbSleep_MilliSleep(2 * (conf.security.apiKey.cacheRefreshIntervalMS +
-                           conf.security.apiKey.cacheRefreshIntervalJitterMS +
-                           conf.security.apiKey.cacheUnusedEntriesEvictionMS));
+  NdbSleep_MilliSleep(2 * (conf.security.apiKey.cacheRefreshIntervalMS));
   auto lastUpdated2 = cache->last_updated(apiKey);
   EXPECT_NE(lastUpdated1, lastUpdated2) << "Cache entry was not updated";
 }
@@ -234,13 +518,11 @@ TEST_F(APIKeyTest, TestAPIKeyCache2) {
 
   // To speed up the tests
   conf.security.apiKey.cacheRefreshIntervalMS       = 1000;
-  conf.security.apiKey.cacheRefreshIntervalJitterMS = 100;
-  conf.security.apiKey.cacheUnusedEntriesEvictionMS =
-      conf.security.apiKey.cacheRefreshIntervalMS * 2;
   auto status = AllConfigs::set_all(conf);
   if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
     FAIL() << "Failed to set config: " << status.message;
   }
+  apiKeyCachePtr->start_background_threads();
   test_update_cache_every_n_seconds_unauthorized(apiKeyCachePtr, conf);
   stop_api_key_cache();
 }
@@ -296,14 +578,12 @@ void test_load(APIKeyCache *cache, const AllConfigs &conf) {
     EXPECT_EQ(failCount, 0) << failCount << " key validations failed" << std::endl;
   }
 
-  // wait for eviction time to pass
-  NdbSleep_MilliSleep(2 * (conf.security.apiKey.cacheRefreshIntervalMS +
-                          conf.security.apiKey.cacheUnusedEntriesEvictionMS +
-                          conf.security.apiKey.cacheRefreshIntervalJitterMS));
+  // Valid keys exist in DB, so they should NOT be evicted — they get refreshed.
+  // Wait for a refresh cycle and verify entries are still cached.
+  NdbSleep_MilliSleep(2 * conf.security.apiKey.cacheRefreshIntervalMS);
 
-  std::string cacheContent = cache->to_string();
-  EXPECT_EQ(cache->size(), 0) << "Cache was not cleared. Expected 0. Got " << cache->size()
-                              << " entries in the cache: " << cacheContent << std::endl;
+  EXPECT_GT(cache->size(), 0u)
+      << "Valid keys should remain cached (refreshed, not evicted)";
 }
 
 // Test load. Generate lots of api key requests
@@ -316,13 +596,11 @@ TEST_F(APIKeyTest, TestAPIKeyCache3) {
 
   // To speed up the tests
   conf.security.apiKey.cacheRefreshIntervalMS       = 1000;
-  conf.security.apiKey.cacheRefreshIntervalJitterMS = 100;
-  conf.security.apiKey.cacheUnusedEntriesEvictionMS =
-      conf.security.apiKey.cacheRefreshIntervalMS * 2;
   auto status = AllConfigs::set_all(conf);
   if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
     FAIL() << "Failed to set config: " << status.message;
   }
+  apiKeyCachePtr->start_background_threads();
   test_load(apiKeyCachePtr, conf);
   stop_api_key_cache();
 }
@@ -435,10 +713,8 @@ void test_load_with_bad_keys(APIKeyCache *cache, const AllConfigs &conf) {
     EXPECT_EQ(failCount, 0) << failCount << " key validations failed" << std::endl;
   }
 
-  // wait for eviction time to pass
-  NdbSleep_MilliSleep(2 * (conf.security.apiKey.cacheRefreshIntervalMS +
-                           conf.security.apiKey.cacheUnusedEntriesEvictionMS +
-                           conf.security.apiKey.cacheRefreshIntervalJitterMS));
+  // Wait for refresh cycle + invalid entry TTL (hardcoded 5s) to pass
+  NdbSleep_MilliSleep(2 * (conf.security.apiKey.cacheRefreshIntervalMS) + 5000);
 
   std::string cacheContent = cache->to_string();
   EXPECT_EQ(cache->size(), 0) << "Cache was not cleared. Expected 0. Got " << cache->size()
@@ -455,20 +731,649 @@ TEST_F(APIKeyTest, TestAPIKeyCache4) {
 
   // To speed up the tests
   conf.security.apiKey.cacheRefreshIntervalMS       = 1000;
-  conf.security.apiKey.cacheRefreshIntervalJitterMS = 100;
-  conf.security.apiKey.cacheUnusedEntriesEvictionMS =
-      conf.security.apiKey.cacheRefreshIntervalMS * 2;
   auto status = AllConfigs::set_all(conf);
   if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
     FAIL() << "Failed to set config: " << status.message;
   }
+  apiKeyCachePtr->start_background_threads();
   test_load_with_bad_keys(apiKeyCachePtr, conf);
+  stop_api_key_cache();
+}
+
+// Test that NDB event INSERT is detected by the event watcher
+TEST_F(APIKeyTest, TestEventInsert) {
+  apiKeyCachePtr = start_api_key_cache();
+  AllConfigs conf = AllConfigs::get_all();
+  if (!conf.security.apiKey.useHopsworksAPIKeys) {
+    std::cout << "tests may fail because Hopsworks API keys are deactivated" << std::endl;
+  }
+
+  const int test_id = 99999;
+  const char *test_prefix = "EVT_INSERT_TEST1";  // 16 chars
+  const char *test_secret =
+      "709faa77accc3f30394cfb53b67253ba64881528cb3056eea110703ca430cce4";
+  const char *test_salt =
+      "1/1TxiaiIB01rIcY2E36iuwKP6fm2GzBaNaQqOVGMhH0AvcIlIzaUIw0fMDjKNLa0OWxAOrfTSPqAolpI/n+ug==";
+  const int test_user_id = 10000;
+
+
+  conf.security.apiKey.cacheRefreshIntervalMS       = 10000;
+  auto confStatus = AllConfigs::set_all(conf);
+  if (confStatus.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
+    FAIL() << "Failed to set config: " << confStatus.message;
+  }
+
+  // Cleanup leftover from any previous failed run (before preload)
+  ndb_delete_api_key_by_id(test_id);
+
+  apiKeyCachePtr->preload_all_keys();
+  unsigned size_before = apiKeyCachePtr->size();
+
+  apiKeyCachePtr->start_background_threads();
+
+  // Give event watcher time to subscribe
+  NdbSleep_MilliSleep(2000);
+
+  // Insert the row via NDB
+  ASSERT_TRUE(ndb_insert_api_key(test_id, test_prefix, test_secret, test_salt,
+                                  "evt_test", test_user_id))
+      << "Failed to insert test API key via NDB";
+
+  // Wait for event watcher to detect the INSERT (polls every 1s)
+  NdbSleep_MilliSleep(3000);
+
+  // Verify the cache grew
+  EXPECT_GT(apiKeyCachePtr->size(), size_before)
+      << "Cache should have gained an entry from the event INSERT";
+
+  // Verify the key validates
+  std::string fullKey = std::string(test_prefix) + "." + HopsworksAPIKey_SECRET;
+  RS_Status status = apiKeyCachePtr->validate_api_key(fullKey, {DB001}, nullptr);
+  EXPECT_EQ(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Event-inserted key should validate: " << status.message;
+
+  // Verify unauthorized DB still fails
+  status = apiKeyCachePtr->validate_api_key(fullKey, {"nonexistent_db"}, nullptr);
+  EXPECT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Unauthorized DB should be rejected for event-inserted key";
+
+  // Cleanup: delete the inserted row
+  ASSERT_TRUE(ndb_delete_api_key_by_id(test_id))
+      << "Failed to cleanup test API key";
+
+  stop_api_key_cache();
+}
+
+// Test that NDB event DELETE is detected by the event watcher
+TEST_F(APIKeyTest, TestEventDelete) {
+  apiKeyCachePtr = start_api_key_cache();
+  AllConfigs conf = AllConfigs::get_all();
+  if (!conf.security.apiKey.useHopsworksAPIKeys) {
+    std::cout << "tests may fail because Hopsworks API keys are deactivated" << std::endl;
+  }
+
+
+  conf.security.apiKey.cacheRefreshIntervalMS       = 10000;
+  auto confStatus = AllConfigs::set_all(conf);
+  if (confStatus.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
+    FAIL() << "Failed to set config: " << confStatus.message;
+  }
+
+  apiKeyCachePtr->preload_all_keys();
+  apiKeyCachePtr->start_background_threads();
+
+  // Give event watcher time to subscribe
+  NdbSleep_MilliSleep(2000);
+
+  // Use generated key #0 (id=2, prefix="0000000000000000")
+  const int delete_id = 2;
+  const char *delete_prefix = "0000000000000000";
+  std::string fullKey = std::string(delete_prefix) + "." + HopsworksAPIKey_SECRET;
+
+  // Verify key IS in cache (preloaded) and validates
+  RS_Status status = apiKeyCachePtr->validate_api_key(fullKey, {DB001}, nullptr);
+  ASSERT_EQ(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Preloaded key should validate before delete: " << status.message;
+
+  unsigned size_before = apiKeyCachePtr->size();
+
+  // Delete the row via NDB
+  ASSERT_TRUE(ndb_delete_api_key_by_id(delete_id))
+      << "Failed to delete API key via NDB";
+
+  // Wait for event watcher to detect the DELETE
+  NdbSleep_MilliSleep(3000);
+
+  // The event watcher marks deleted entries as IS_INVALID (the refresh thread
+  // handles actual eviction). Verify the key no longer validates.
+  status = apiKeyCachePtr->validate_api_key(fullKey, {DB001}, nullptr);
+  EXPECT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Deleted key should fail validation";
+
+  // Cleanup: re-insert the deleted key so other test runs still work
+  const char *test_secret =
+      "709faa77accc3f30394cfb53b67253ba64881528cb3056eea110703ca430cce4";
+  const char *test_salt =
+      "1/1TxiaiIB01rIcY2E36iuwKP6fm2GzBaNaQqOVGMhH0AvcIlIzaUIw0fMDjKNLa0OWxAOrfTSPqAolpI/n+ug==";
+  ASSERT_TRUE(ndb_insert_api_key(delete_id, delete_prefix, test_secret,
+                                  test_salt, "name0", 10000))
+      << "Failed to re-insert deleted API key for cleanup";
+
+  stop_api_key_cache();
+}
+
+// Test that NDB event UPDATE is detected by the event watcher and cache entry is updated
+TEST_F(APIKeyTest, TestEventUpdate) {
+  apiKeyCachePtr = start_api_key_cache();
+  AllConfigs conf = AllConfigs::get_all();
+  if (!conf.security.apiKey.useHopsworksAPIKeys) {
+    std::cout << "tests may fail because Hopsworks API keys are deactivated" << std::endl;
+  }
+
+
+  conf.security.apiKey.cacheRefreshIntervalMS       = 10000;
+  auto confStatus = AllConfigs::set_all(conf);
+  if (confStatus.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
+    FAIL() << "Failed to set config: " << confStatus.message;
+  }
+
+  apiKeyCachePtr->preload_all_keys();
+  apiKeyCachePtr->start_background_threads();
+
+  // Give event watcher time to subscribe
+  NdbSleep_MilliSleep(2000);
+
+  // Use generated key #1 (id=3, prefix="0000000000000001")
+  const int update_id = 3;
+  const char *update_prefix = "0000000000000001";
+  std::string fullKey = std::string(update_prefix) + "." + HopsworksAPIKey_SECRET;
+
+  // Verify key validates before update
+  RS_Status status = apiKeyCachePtr->validate_api_key(fullKey, {DB001}, nullptr);
+  ASSERT_EQ(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Preloaded key should validate before update: " << status.message;
+
+  // Update secret to something different — this makes SHA256(client_secret + salt) != new_secret
+  const char *bogus_secret =
+      "0000000000000000000000000000000000000000000000000000000000000000";
+  ASSERT_TRUE(ndb_update_api_key_secret(update_id, bogus_secret))
+      << "Failed to update API key secret via NDB";
+
+  // Wait for event watcher to detect the UPDATE
+  NdbSleep_MilliSleep(3000);
+
+  // Verify the key no longer validates (hash mismatch: stored secret changed)
+  status = apiKeyCachePtr->validate_api_key(fullKey, {DB001}, nullptr);
+  EXPECT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Key should fail validation after secret was updated in DB";
+
+  // Cleanup: restore original secret
+  const char *original_secret =
+      "709faa77accc3f30394cfb53b67253ba64881528cb3056eea110703ca430cce4";
+  ASSERT_TRUE(ndb_update_api_key_secret(update_id, original_secret))
+      << "Failed to restore original API key secret";
+
+  stop_api_key_cache();
+}
+
+// Test that keys not in cache fall back to lazy loading
+TEST_F(APIKeyTest, TestLazyLoadFallback) {
+  apiKeyCachePtr = start_api_key_cache();
+  AllConfigs conf = AllConfigs::get_all();
+  if (!conf.security.apiKey.useHopsworksAPIKeys) {
+    std::cout << "tests may fail because Hopsworks API keys are deactivated" << std::endl;
+  }
+
+
+  conf.security.apiKey.cacheRefreshIntervalMS       = 10000;
+  auto confStatus = AllConfigs::set_all(conf);
+  if (confStatus.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
+    FAIL() << "Failed to set config: " << confStatus.message;
+  }
+
+  // Do NOT preload and do NOT start event watcher — only start refresh thread
+  // so lazy-load is the only path for discovering keys
+
+  // The HOPSWORKS_TEST_API_KEY is already in the DB but not in cache
+  EXPECT_EQ(apiKeyCachePtr->size(), 0u)
+      << "Cache should be empty before any validation";
+
+  // Validate — should trigger lazy load path (update_cache)
+  RS_Status status = apiKeyCachePtr->validate_api_key(HOPSWORKS_TEST_API_KEY, {DB001}, nullptr);
+  EXPECT_EQ(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Lazy load should validate key from DB: " << status.message;
+
+  // Verify the key is now in cache
+  EXPECT_GT(apiKeyCachePtr->size(), 0u)
+      << "Cache should have an entry after lazy load";
+
+  // Second validation should hit cache (no lazy load)
+  status = apiKeyCachePtr->validate_api_key(HOPSWORKS_TEST_API_KEY, {DB001}, nullptr);
+  EXPECT_EQ(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Cached key should validate on second call: " << status.message;
+
+  // Unauthorized DB still fails
+  status = apiKeyCachePtr->validate_api_key(HOPSWORKS_TEST_API_KEY, {"nonexistent_db"}, nullptr);
+  EXPECT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Unauthorized DB should be rejected even after lazy load";
+
+  stop_api_key_cache();
+}
+
+// Test that calling preload_all_keys() twice doesn't create duplicate entries
+TEST_F(APIKeyTest, TestPreloadIdempotent) {
+  apiKeyCachePtr = start_api_key_cache();
+  AllConfigs conf = AllConfigs::get_all();
+  if (!conf.security.apiKey.useHopsworksAPIKeys) {
+    std::cout << "tests may fail because Hopsworks API keys are deactivated" << std::endl;
+  }
+
+
+  conf.security.apiKey.cacheRefreshIntervalMS       = 10000;
+  auto confStatus = AllConfigs::set_all(conf);
+  if (confStatus.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
+    FAIL() << "Failed to set config: " << confStatus.message;
+  }
+
+  apiKeyCachePtr->preload_all_keys();
+  unsigned size_after_first = apiKeyCachePtr->size();
+  EXPECT_GT(size_after_first, 0u)
+      << "Cache should have entries after first preload";
+
+  // Preload again — load_single_key should skip already-cached prefixes
+  apiKeyCachePtr->preload_all_keys();
+  unsigned size_after_second = apiKeyCachePtr->size();
+
+  EXPECT_EQ(size_after_first, size_after_second)
+      << "Second preload should not create duplicate entries. "
+      << "First: " << size_after_first << ", Second: " << size_after_second;
+
+  // Verify keys still validate after double preload
+  RS_Status status = apiKeyCachePtr->validate_api_key(HOPSWORKS_TEST_API_KEY, {DB001}, nullptr);
+  EXPECT_EQ(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Key should still validate after double preload: " << status.message;
+
+  stop_api_key_cache();
+}
+
+// Test that a valid prefix with a wrong secret returns "bad API key"
+// (not "not authorized to access DB"), verifying that the hash check
+// runs before DB-access results are revealed (Bug 3 fix).
+TEST_F(APIKeyTest, TestHashMismatch) {
+  apiKeyCachePtr = start_api_key_cache();
+  AllConfigs conf = AllConfigs::get_all();
+  if (!conf.security.apiKey.useHopsworksAPIKeys) {
+    std::cout << "tests may fail because Hopsworks API keys are deactivated" << std::endl;
+  }
+
+  conf.security.apiKey.cacheRefreshIntervalMS = 10000;
+  auto confStatus = AllConfigs::set_all(conf);
+  if (confStatus.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
+    FAIL() << "Failed to set config: " << confStatus.message;
+  }
+
+  // Preload so prefix "0000000000000000" is in cache with valid DB list
+  apiKeyCachePtr->preload_all_keys();
+
+  // Construct key with valid prefix but bogus secret
+  std::string badKey = std::string("0000000000000000") +
+      ".AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
+  // Validate against an authorized DB — should fail with "bad API key"
+  // (not "not authorized to access DB")
+  RS_Status status = apiKeyCachePtr->validate_api_key(badKey, {DB001}, nullptr);
+  EXPECT_NE(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Bad secret should be rejected";
+  EXPECT_NE(std::string(status.message).find("bad API key"), std::string::npos)
+      << "Error should be 'bad API key', got: " << status.message;
+
+  stop_api_key_cache();
+}
+
+// Test concurrent validation of the SAME key from many threads.
+// Exercises the lock-free SHA256 path: multiple threads hold lock_shared()
+// on the same partition, copy secret+salt, release lock, then compute
+// SHA256 in parallel without blocking each other.
+TEST_F(APIKeyTest, TestConcurrentSameKey) {
+  apiKeyCachePtr = start_api_key_cache();
+  AllConfigs conf = AllConfigs::get_all();
+  if (!conf.security.apiKey.useHopsworksAPIKeys) {
+    std::cout << "tests may fail because Hopsworks API keys are deactivated" << std::endl;
+  }
+
+  conf.security.apiKey.cacheRefreshIntervalMS = 10000;
+  auto confStatus = AllConfigs::set_all(conf);
+  if (confStatus.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
+    FAIL() << "Failed to set config: " << confStatus.message;
+  }
+
+  // Preload so the key is already cached — all threads hit the in-memory path
+  apiKeyCachePtr->preload_all_keys();
+
+  const int numThreads = 100;
+  SafeQueue<bool> results;
+
+  std::vector<std::thread> threads;
+  threads.reserve(numThreads);
+  for (int i = 0; i < numThreads; ++i) {
+    threads.push_back(std::thread([&results] {
+      // All threads validate the SAME key against the SAME database
+      RS_Status status =
+          apiKeyCachePtr->validate_api_key(HOPSWORKS_TEST_API_KEY, {DB001}, nullptr);
+      results.push(status.http_code ==
+                   static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK));
+    }));
+  }
+
+  for (auto &t : threads) {
+    t.join();
+  }
+
+  int failCount = 0;
+  for (int i = 0; i < numThreads; ++i) {
+    if (!results.pop()) {
+      failCount++;
+    }
+  }
+  EXPECT_EQ(failCount, 0)
+      << failCount << " of " << numThreads
+      << " concurrent same-key validations failed";
+
+  stop_api_key_cache();
+}
+
+// Test concurrent lazy-load: multiple threads validate the same key
+// simultaneously when it's NOT in cache. One thread enters IS_VALIDATING
+// (does the DB lookup), others wait on the condition variable.
+TEST_F(APIKeyTest, TestConcurrentLazyLoad) {
+  apiKeyCachePtr = start_api_key_cache();
+  AllConfigs conf = AllConfigs::get_all();
+  if (!conf.security.apiKey.useHopsworksAPIKeys) {
+    std::cout << "tests may fail because Hopsworks API keys are deactivated" << std::endl;
+  }
+
+  conf.security.apiKey.cacheRefreshIntervalMS = 10000;
+  auto confStatus = AllConfigs::set_all(conf);
+  if (confStatus.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
+    FAIL() << "Failed to set config: " << confStatus.message;
+  }
+
+  // Do NOT preload — cache is empty, all threads hit the lazy-load path
+  EXPECT_EQ(apiKeyCachePtr->size(), 0u) << "Cache should be empty";
+
+  const int numThreads = 50;
+  SafeQueue<bool> results;
+
+  // All threads validate the SAME key — one will create the IS_VALIDATING
+  // entry, others will wait on the condition variable until it's resolved.
+  std::vector<std::thread> threads;
+  threads.reserve(numThreads);
+  for (int i = 0; i < numThreads; ++i) {
+    threads.push_back(std::thread([&results] {
+      RS_Status status =
+          apiKeyCachePtr->validate_api_key(HOPSWORKS_TEST_API_KEY, {DB001}, nullptr);
+      results.push(status.http_code ==
+                   static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK));
+    }));
+  }
+
+  for (auto &t : threads) {
+    t.join();
+  }
+
+  int failCount = 0;
+  for (int i = 0; i < numThreads; ++i) {
+    if (!results.pop()) {
+      failCount++;
+    }
+  }
+  EXPECT_EQ(failCount, 0)
+      << failCount << " of " << numThreads
+      << " concurrent lazy-load validations failed";
+
+  // Only one cache entry should exist (no duplicates from concurrent inserts)
+  EXPECT_EQ(apiKeyCachePtr->size(), 1u)
+      << "Concurrent lazy-load should create exactly one cache entry";
+
+  stop_api_key_cache();
+}
+
+// Test that the refresh thread evicts a key that was deleted from the DB.
+// Uses lazy-load (not preload) so only one entry is in cache,
+// keeping refresh cycles fast.
+TEST_F(APIKeyTest, TestRefreshEviction) {
+  apiKeyCachePtr = start_api_key_cache();
+  AllConfigs conf = AllConfigs::get_all();
+  if (!conf.security.apiKey.useHopsworksAPIKeys) {
+    std::cout << "tests may fail because Hopsworks API keys are deactivated" << std::endl;
+  }
+
+  // Use a test key that we can insert/delete without affecting other tests.
+  const int test_id = 99998;
+  const char *test_prefix = "RFSH_EVICT_TEST1";  // 16 chars
+  const char *test_secret =
+      "709faa77accc3f30394cfb53b67253ba64881528cb3056eea110703ca430cce4";
+  const char *test_salt =
+      "1/1TxiaiIB01rIcY2E36iuwKP6fm2GzBaNaQqOVGMhH0AvcIlIzaUIw0fMDjKNLa0OWxAOrfTSPqAolpI/n+ug==";
+  const int test_user_id = 10000;
+
+  // Cleanup leftover from any previous failed run
+  ndb_delete_api_key_by_id(test_id);
+
+  // Insert the test key
+  ASSERT_TRUE(ndb_insert_api_key(test_id, test_prefix, test_secret,
+                                  test_salt, "evict_test", test_user_id))
+      << "Failed to insert test API key";
+
+  // Fast refresh interval so the test completes quickly
+  conf.security.apiKey.cacheRefreshIntervalMS = 1000;
+  auto confStatus = AllConfigs::set_all(conf);
+  if (confStatus.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
+    FAIL() << "Failed to set config: " << confStatus.message;
+  }
+
+  // Do NOT preload — lazy-load just this one key to keep cache small
+  std::string fullKey = std::string(test_prefix) + "." + HopsworksAPIKey_SECRET;
+  RS_Status status = apiKeyCachePtr->validate_api_key(fullKey, {DB001}, nullptr);
+  ASSERT_EQ(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Test key should validate via lazy load: " << status.message;
+  ASSERT_EQ(apiKeyCachePtr->size(), 1u) << "Only the test key should be cached";
+
+  // Start refresh thread (+ event watcher)
+  apiKeyCachePtr->start_background_threads();
+
+  // Give event watcher time to subscribe
+  NdbSleep_MilliSleep(2000);
+
+  // Delete the key from DB
+  ASSERT_TRUE(ndb_delete_api_key_by_id(test_id))
+      << "Failed to delete test API key from DB";
+
+  // Wait for: event watcher to detect DELETE and mark IS_INVALID (~2s) +
+  // invalid entry TTL (5s) + refresh thread to evict (~2s)
+  NdbSleep_MilliSleep(10000);
+
+  // The refresh thread should have evicted the deleted key
+  EXPECT_EQ(apiKeyCachePtr->size(), 0u)
+      << "Cache should be empty after refresh eviction";
+
+  stop_api_key_cache();
+}
+
+// Test that preload_all_keys() picks up new entries inserted during an
+// event gap (simulates what happens on event watcher reconnect).
+TEST_F(APIKeyTest, TestReconnectPreloadPicksUpNewEntry) {
+  apiKeyCachePtr = start_api_key_cache();
+
+  // Preload existing keys
+  apiKeyCachePtr->preload_all_keys();
+  unsigned initial_size = apiKeyCachePtr->size();
+  ASSERT_GT(initial_size, 0u) << "Preload should have loaded some keys";
+
+  // Insert a new API key into DB (simulating INSERT during event gap)
+  const int test_id = 99997;
+  const char *test_prefix = "RECONNECT_TEST01";  // 16 chars
+  const char *test_secret =
+      "709faa77accc3f30394cfb53b67253ba64881528cb3056eea110703ca430cce4";
+  const char *test_salt =
+      "1/1TxiaiIB01rIcY2E36iuwKP6fm2GzBaNaQqOVGMhH0AvcIlIzaUIw0fMDjKNLa0OWxAOrfTSPqAolpI/n+ug==";
+  const int test_user_id = 10000;
+
+  ndb_delete_api_key_by_id(test_id);  // cleanup from previous runs
+  ASSERT_TRUE(ndb_insert_api_key(test_id, test_prefix, test_secret,
+                                  test_salt, "reconnect_test", test_user_id))
+      << "Failed to insert test API key";
+
+  // Preload again (this is what the event watcher does on reconnect)
+  apiKeyCachePtr->preload_all_keys();
+  EXPECT_EQ(apiKeyCachePtr->size(), initial_size + 1)
+      << "Preload should pick up the new key";
+
+  // Verify the new key is usable
+  std::string fullKey = std::string(test_prefix) + "." + HopsworksAPIKey_SECRET;
+  RS_Status status = apiKeyCachePtr->validate_api_key(fullKey, {DB001}, nullptr);
+  EXPECT_EQ(status.http_code, static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Reconnect-preloaded key should validate: " << status.message;
+
+  // Cleanup
+  ndb_delete_api_key_by_id(test_id);
+  stop_api_key_cache();
+}
+
+// Test that the refresh thread evicts a key that was deleted from DB during
+// an event gap.  On reconnect the event watcher wakes the refresh thread
+// (NdbCondition_Broadcast) so it runs immediately instead of waiting for
+// the full refresh interval.  This test simulates that scenario:
+//   1. Preload a key into cache
+//   2. Delete it from DB (no event watcher running → DELETE is missed)
+//   3. Start background threads (refresh + event watcher)
+//   4. The refresh thread discovers the key is gone and evicts it
+TEST_F(APIKeyTest, TestReconnectRefreshEvictsMissedDelete) {
+  apiKeyCachePtr = start_api_key_cache();
+  AllConfigs conf = AllConfigs::get_all();
+
+  // Fast refresh so the test completes quickly
+  conf.security.apiKey.cacheRefreshIntervalMS = 1000;
+  auto confStatus = AllConfigs::set_all(conf);
+  ASSERT_EQ(confStatus.http_code,
+            static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK));
+
+  const int test_id = 99995;
+  const char *test_prefix = "RCONN_DEL_TEST01";  // 16 chars
+  const char *test_secret =
+      "709faa77accc3f30394cfb53b67253ba64881528cb3056eea110703ca430cce4";
+  const char *test_salt =
+      "1/1TxiaiIB01rIcY2E36iuwKP6fm2GzBaNaQqOVGMhH0AvcIlIzaUIw0fMDjKNLa0OWxAOrfTSPqAolpI/n+ug==";
+  const int test_user_id = 10000;
+
+  // Insert test key and preload it into cache
+  ndb_delete_api_key_by_id(test_id);
+  ASSERT_TRUE(ndb_insert_api_key(test_id, test_prefix, test_secret,
+                                  test_salt, "rconn_del", test_user_id))
+      << "Failed to insert test API key";
+  apiKeyCachePtr->preload_all_keys();
+
+  // Verify key validates
+  std::string fullKey = std::string(test_prefix) + "." + HopsworksAPIKey_SECRET;
+  RS_Status status = apiKeyCachePtr->validate_api_key(fullKey, {DB001}, nullptr);
+  ASSERT_EQ(status.http_code,
+            static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Preloaded key should validate: " << status.message;
+
+  unsigned size_before = apiKeyCachePtr->size();
+
+  // Delete from DB while no event watcher is running (simulates missed DELETE)
+  ASSERT_TRUE(ndb_delete_api_key_by_id(test_id))
+      << "Failed to delete test key from DB";
+
+  // Start background threads — the refresh thread will discover the key
+  // is gone from DB and evict it.  (The event watcher can't help here
+  // because the DELETE happened before it subscribed.)
+  apiKeyCachePtr->start_background_threads();
+
+  // Wait for: refresh cycle (1s) to find key missing from DB,
+  // mark IS_INVALID, then invalid entry TTL (5s) to expire,
+  // then next refresh cycle (1s) to evict.  Add margin.
+  NdbSleep_MilliSleep(9000);
+
+  EXPECT_EQ(apiKeyCachePtr->size(), size_before - 1)
+      << "Refresh thread should have evicted the deleted key";
+
+  // Key should no longer validate
+  status = apiKeyCachePtr->validate_api_key(fullKey, {DB001}, nullptr);
+  EXPECT_NE(status.http_code,
+            static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Deleted key should not validate after refresh eviction";
+
+  stop_api_key_cache();
+}
+
+// End-to-end reconnect test: forces the event watcher to tear down and
+// reconnect, then verifies that a key inserted during the gap is picked
+// up by the reconnect preload.
+TEST_F(APIKeyTest, TestEndToEndReconnect) {
+  apiKeyCachePtr = start_api_key_cache();
+  apiKeyCachePtr->preload_all_keys();
+  apiKeyCachePtr->start_background_threads();
+
+  // Wait for event watcher to subscribe
+  NdbSleep_MilliSleep(2000);
+
+  const int test_id = 99993;
+  const char *test_prefix = "E2E_RECONNECT_01";  // 16 chars
+  const char *test_secret =
+      "709faa77accc3f30394cfb53b67253ba64881528cb3056eea110703ca430cce4";
+  const char *test_salt =
+      "1/1TxiaiIB01rIcY2E36iuwKP6fm2GzBaNaQqOVGMhH0AvcIlIzaUIw0fMDjKNLa0OWxAOrfTSPqAolpI/n+ug==";
+  const int test_user_id = 10000;
+
+  ndb_delete_api_key_by_id(test_id);
+
+  // Force the event watcher to disconnect.  This triggers the full
+  // err: path (tear down subscription → backoff sleep → retry:).
+  apiKeyCachePtr->force_reconnect();
+
+  // Wait for the watcher to enter backoff sleep (1s), then insert during
+  // the gap so the INSERT event is missed.
+  NdbSleep_MilliSleep(500);
+
+  ASSERT_TRUE(ndb_insert_api_key(test_id, test_prefix, test_secret,
+                                  test_salt, "e2e_rconn", test_user_id))
+      << "Failed to insert test API key";
+
+  // Wait for: remaining backoff (0.5s) + reconnect setup + preload
+  NdbSleep_MilliSleep(5000);
+
+  // Verify the key was picked up by reconnect preload
+  std::string fullKey = std::string(test_prefix) + "." + HopsworksAPIKey_SECRET;
+  RS_Status status = apiKeyCachePtr->validate_api_key(fullKey, {DB001}, nullptr);
+  EXPECT_EQ(status.http_code,
+            static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK))
+      << "Reconnect preload should have picked up the new key: "
+      << status.message;
+
+  // Cleanup
+  ndb_delete_api_key_by_id(test_id);
   stop_api_key_cache();
 }
 
 int main(int argc, char **argv) {
   ndb_init();
   globalConfigsMutex = NdbMutex_Create();
+
+  // Load config from RDRS_CONFIG_FILE (needed for correct NDB connection settings)
+  std::string configFile;
+  const char *env_config_file_path = std::getenv("RDRS_CONFIG_FILE");
+  if (env_config_file_path != nullptr) {
+    configFile = env_config_file_path;
+  }
+  RS_Status status = AllConfigs::init(configFile);
+  if (status.http_code !=
+        static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
+    std::cerr << "Error loading config: " << status.message << std::endl;
+    return 1;
+  }
+
   testing::InitGoogleTest(&argc, argv);
   testing::Environment* const my_env =
     testing::AddGlobalTestEnvironment(new MyEnvironment);

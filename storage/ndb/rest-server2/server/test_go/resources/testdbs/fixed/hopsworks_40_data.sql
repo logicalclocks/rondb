@@ -100,24 +100,6 @@ VALUES
         '2022-06-01 13:28:05'
     );
 
--- We're inserting our test API key into the database, so we can test authentication
--- This API key is:
---      bkYjEz6OTZyevbqt.ocHajJhnE0ytBh8zbYj3IXupyMqeMZp8PW464eTxzxqP5afBjodEQUgY0lmL33ub
-INSERT INTO
-    `api_key`
-VALUES
-    (
-        1,
-        'bkYjEz6OTZyevbqt',
-        '709faa77accc3f30394cfb53b67253ba64881528cb3056eea110703ca430cce4',
-        '1/1TxiaiIB01rIcY2E36iuwKP6fm2GzBaNaQqOVGMhH0AvcIlIzaUIw0fMDjKNLa0OWxAOrfTSPqAolpI/n+ug==',
-        '2022-06-14 10:27:03',
-        '2022-06-14 10:27:03',
-        'myapikey1',
-        10000,
-        0
-    );
-
 INSERT INTO
     `feature_store`
 VALUES

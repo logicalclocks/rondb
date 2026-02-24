@@ -226,6 +226,232 @@ RS_Status find_api_key(const char *prefix, HopsworksAPIKey *api_key) {
   return status;
 }
 
+RS_Status find_all_api_keys_int(Ndb *ndb_object,
+                                std::vector<HopsworksAPIKeyEntry> *keys) {
+  NdbError err;
+  const NdbDictionary::Table *table_dict;
+  NdbTransaction *tx;
+  NdbScanOperation *scanOp;
+
+  RS_Status status = select_table(ndb_object,
+                                  HOPSWORKS,
+                                  API_KEY,
+                                  &table_dict);
+  if (unlikely(status.http_code != SUCCESS)) {
+    return status;
+  }
+  status = start_transaction(ndb_object, &tx);
+  if (unlikely(status.http_code != SUCCESS)) {
+    return status;
+  }
+  scanOp = tx->getNdbScanOperation(table_dict);
+  if (unlikely(scanOp == nullptr)) {
+    err = tx->getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(err,
+      std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
+  }
+  if (unlikely(scanOp->readTuples(NdbOperation::LM_CommittedRead) != 0)) {
+    err = scanOp->getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(err,
+      std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
+  }
+
+  NdbRecAttr *prefix_attr = scanOp->getValue("prefix");
+  NdbRecAttr *secret_attr = scanOp->getValue("secret");
+  NdbRecAttr *salt_attr = scanOp->getValue("salt");
+  NdbRecAttr *user_id_attr = scanOp->getValue("user_id");
+
+  if (unlikely(prefix_attr == nullptr ||
+               secret_attr == nullptr ||
+               salt_attr == nullptr ||
+               user_id_attr == nullptr)) {
+    err = scanOp->getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(err,
+      std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
+  }
+  if (unlikely(tx->execute(NdbTransaction::NoCommit) != 0)) {
+    err = tx->getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(err,
+      std::string(rdrsErrorMessage(ERROR_TRANSACTION_EXEC_FAILED)));
+  }
+  bool check;
+  while ((check = scanOp->nextResult(true)) == 0) {
+    do {
+      Uint32 prefix_bytes;
+      const char *prefix_start = nullptr;
+      if (unlikely(GetByteArray(
+                     prefix_attr, &prefix_start, &prefix_bytes) != 0)) {
+        ndb_object->closeTransaction(tx);
+        return RS_CLIENT_ERROR(
+          std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
+      }
+
+      Uint32 secret_bytes;
+      const char *secret_start = nullptr;
+      if (unlikely(GetByteArray(
+                     secret_attr, &secret_start, &secret_bytes) != 0)) {
+        ndb_object->closeTransaction(tx);
+        return RS_CLIENT_ERROR(
+          std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
+      }
+
+      Uint32 salt_bytes;
+      const char *salt_start = nullptr;
+      if (unlikely(GetByteArray(
+                     salt_attr, &salt_start, &salt_bytes) != 0)) {
+        ndb_object->closeTransaction(tx);
+        return RS_CLIENT_ERROR(
+          std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
+      }
+
+      keys->push_back({
+        std::string(prefix_start, prefix_bytes),
+        std::string(secret_start, secret_bytes),
+        std::string(salt_start, salt_bytes),
+        user_id_attr->int32_value()
+      });
+    } while ((check = scanOp->nextResult(false)) == 0);
+  }
+  NdbError error = scanOp->getNdbError();
+  ndb_object->closeTransaction(tx);
+  if (unlikely(error.code != 4120 /*Scan already complete*/)) {
+    return RS_RONDB_SERVER_ERROR(
+      error, "Failed Reading API Keys. Fn find_all_api_keys_int");
+  }
+  return RS_OK;
+}
+
+RS_Status find_all_api_keys(std::vector<HopsworksAPIKeyEntry> *keys) {
+  Ndb *ndb_object = nullptr;
+  RS_Status status = rdrsRonDBConnectionPool->GetMetadataNdbObject(&ndb_object);
+  if (unlikely(status.http_code != SUCCESS)) {
+    return status;
+  }
+  METADATA_OP_RETRY_HANDLER(
+    keys->clear();
+    status = find_all_api_keys_int(ndb_object, keys);
+    HandleSchemaErrors(ndb_object,
+                       status,
+                       {std::make_tuple(HOPSWORKS, API_KEY)});
+  )
+  rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb_object, &status);
+  return status;
+}
+
+static RS_Status find_api_key_by_id_int(Ndb *ndb_object,
+                                         int id,
+                                         HopsworksAPIKeyEntry *entry) {
+  NdbError err;
+  const NdbDictionary::Table *table_dict;
+  NdbTransaction *tx;
+
+  RS_Status status = select_table(ndb_object,
+                                  HOPSWORKS,
+                                  API_KEY,
+                                  &table_dict);
+  if (unlikely(status.http_code != SUCCESS)) {
+    return status;
+  }
+  status = start_transaction(ndb_object, &tx);
+  if (unlikely(status.http_code != SUCCESS)) {
+    return status;
+  }
+
+  NdbOperation *op = tx->getNdbOperation(table_dict);
+  if (unlikely(op == nullptr)) {
+    err = tx->getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(err,
+      std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
+  }
+  if (unlikely(op->readTuple(NdbOperation::LM_CommittedRead) != 0)) {
+    err = op->getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(err,
+      std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
+  }
+  if (unlikely(op->equal("id", id) != 0)) {
+    err = op->getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(err,
+      std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
+  }
+
+  NdbRecAttr *prefix_attr = op->getValue("prefix");
+  NdbRecAttr *secret_attr = op->getValue("secret");
+  NdbRecAttr *salt_attr   = op->getValue("salt");
+  NdbRecAttr *user_id_attr = op->getValue("user_id");
+
+  if (unlikely(prefix_attr == nullptr ||
+               secret_attr == nullptr ||
+               salt_attr == nullptr ||
+               user_id_attr == nullptr)) {
+    err = op->getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(err,
+      std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
+  }
+  if (unlikely(tx->execute(NdbTransaction::Commit) != 0)) {
+    err = tx->getNdbError();
+    ndb_object->closeTransaction(tx);
+    if (err.code == 626) {  // Tuple did not exist
+      return RS_CLIENT_404_ERROR();
+    }
+    return RS_RONDB_SERVER_ERROR(err,
+      std::string(rdrsErrorMessage(ERROR_TRANSACTION_EXEC_FAILED)));
+  }
+
+  Uint32 prefix_bytes;
+  const char *prefix_start = nullptr;
+  if (unlikely(GetByteArray(prefix_attr, &prefix_start, &prefix_bytes) != 0)) {
+    ndb_object->closeTransaction(tx);
+    return RS_CLIENT_ERROR(
+      std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
+  }
+  Uint32 secret_bytes;
+  const char *secret_start = nullptr;
+  if (unlikely(GetByteArray(secret_attr, &secret_start, &secret_bytes) != 0)) {
+    ndb_object->closeTransaction(tx);
+    return RS_CLIENT_ERROR(
+      std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
+  }
+  Uint32 salt_bytes;
+  const char *salt_start = nullptr;
+  if (unlikely(GetByteArray(salt_attr, &salt_start, &salt_bytes) != 0)) {
+    ndb_object->closeTransaction(tx);
+    return RS_CLIENT_ERROR(
+      std::string(rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
+  }
+
+  entry->prefix = std::string(prefix_start, prefix_bytes);
+  entry->secret = std::string(secret_start, secret_bytes);
+  entry->salt = std::string(salt_start, salt_bytes);
+  entry->user_id = user_id_attr->int32_value();
+
+  ndb_object->closeTransaction(tx);
+  return RS_OK;
+}
+
+RS_Status find_api_key_by_id(int id, HopsworksAPIKeyEntry *entry) {
+  Ndb *ndb_object = nullptr;
+  RS_Status status = rdrsRonDBConnectionPool->GetMetadataNdbObject(&ndb_object);
+  if (unlikely(status.http_code != SUCCESS)) {
+    return status;
+  }
+  METADATA_OP_RETRY_HANDLER(
+    status = find_api_key_by_id_int(ndb_object, id, entry);
+    HandleSchemaErrors(ndb_object,
+                       status,
+                       {std::make_tuple(HOPSWORKS, API_KEY)});
+  )
+  rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb_object, &status);
+  return status;
+}
+
 RS_Status find_user_int(Ndb *ndb_object,
                         Uint32 uid,
                         HopsworksUsers *users) {

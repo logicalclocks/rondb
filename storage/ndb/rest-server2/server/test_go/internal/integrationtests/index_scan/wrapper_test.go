@@ -45,7 +45,7 @@ func TestMain(m *testing.M) {
 	}()
 
 	conf := config.GetAll()
-	conf.Log.Level = "info" // Set to debug level for index_scan tests log messages
+	conf.Log.Level = "warn" // Set to debug level for index_scan tests log messages
 	log.InitLogger(conf.Log)
 
 	cleanup, err := integrationtests.InitialiseTesting(conf)

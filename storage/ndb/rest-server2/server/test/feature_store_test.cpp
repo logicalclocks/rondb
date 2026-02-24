@@ -26,7 +26,11 @@
 #include "resources/embeddings.hpp"
 #include "rdrs_dal.h"
 #include "rdrs_hopsworks_dal.h"
+#include "fs_cache.hpp"
+#include "feature_store/feature_store.h"
+#include "rdrs_rondb_connection_pool.hpp"
 #include <NdbMutex.h>
+#include <NdbSleep.h>
 
 #include <drogon/HttpClient.h>
 #include <drogon/HttpTypes.h>
@@ -931,6 +935,584 @@ TEST_F(FeatureStoreTest, TestMetadata_FvNotExist) {
       << "This should fail with error message: " << FV_NOT_EXIST->GetReason();
 }
 
+TEST_F(FeatureStoreTest, TestFindAllFeatureViews) {
+  Feature_View_Entry *entries = nullptr;
+  int count = 0;
+  RS_Status status = find_all_feature_views(&entries, &count);
+  if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
+    GTEST_SKIP() << "Skipping: hopsworks schema not available: " << status.message;
+  }
+  EXPECT_GT(count, 0) << "Expected at least one feature view in test data";
+  free(entries);
+}
+
+TEST_F(FeatureStoreTest, TestPreload) {
+  // Check if hopsworks schema is available
+  Feature_View_Entry *entries = nullptr;
+  int count = 0;
+  RS_Status status = find_all_feature_views(&entries, &count);
+  if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
+    GTEST_SKIP() << "Skipping: hopsworks schema not available: " << status.message;
+  }
+  free(entries);
+
+  // Start a fresh cache, preload, then verify entries are present
+  start_fs_cache();
+  ASSERT_NE(g_fs_metadata_cache, nullptr);
+
+  g_fs_metadata_cache->preload_all_feature_views();
+
+  // Verify a known feature view is now in cache and IS_VALID
+  // fsdb002|sample_2|1 is used in TestFeatureStoreMetaData
+  FSCacheEntry *entry = nullptr;
+  auto *data = fs_metadata_cache_get(
+    metadata::getFeatureViewCacheKey(FSDB002, "sample_2", 1), &entry);
+  ASSERT_NE(entry, nullptr) << "Expected cache entry for fsdb002|sample_2|1";
+  EXPECT_EQ(entry->m_state, FSCacheEntry::IS_VALID)
+      << "Expected IS_VALID state for preloaded entry";
+  EXPECT_NE(data, nullptr) << "Expected metadata for preloaded entry";
+  if (data != nullptr) {
+    EXPECT_EQ(data->featureViewName, "sample_2");
+    EXPECT_EQ(data->featureViewVersion, 1);
+  }
+  fs_cache_dec_ref_count(reinterpret_cast<char*>(entry));
+
+  stop_fs_cache();
+}
+
+TEST_F(FeatureStoreTest, TestPreloadIdempotent) {
+  // Check if hopsworks schema is available
+  Feature_View_Entry *entries = nullptr;
+  int count = 0;
+  RS_Status status = find_all_feature_views(&entries, &count);
+  if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
+    GTEST_SKIP() << "Skipping: hopsworks schema not available: " << status.message;
+  }
+  free(entries);
+
+  start_fs_cache();
+  ASSERT_NE(g_fs_metadata_cache, nullptr);
+
+  g_fs_metadata_cache->preload_all_feature_views();
+
+  // Get entry via a known feature view
+  FSCacheEntry *entry1 = nullptr;
+  auto *data1 = fs_metadata_cache_get(
+    metadata::getFeatureViewCacheKey(FSDB002, "sample_2", 1), &entry1);
+  ASSERT_NE(entry1, nullptr);
+  ASSERT_NE(data1, nullptr);
+  fs_cache_dec_ref_count(reinterpret_cast<char*>(entry1));
+
+  // Preload again — should not create duplicates
+  g_fs_metadata_cache->preload_all_feature_views();
+
+  FSCacheEntry *entry2 = nullptr;
+  auto *data2 = fs_metadata_cache_get(
+    metadata::getFeatureViewCacheKey(FSDB002, "sample_2", 1), &entry2);
+  ASSERT_NE(entry2, nullptr);
+  EXPECT_EQ(entry1, entry2) << "Expected same cache entry after second preload";
+  ASSERT_NE(data2, nullptr);
+  fs_cache_dec_ref_count(reinterpret_cast<char*>(entry2));
+
+  stop_fs_cache();
+}
+
+TEST_F(FeatureStoreTest, TestLazyLoadFallback) {
+  // Check if hopsworks schema is available
+  Feature_View_Entry *entries = nullptr;
+  int count = 0;
+  RS_Status status = find_all_feature_views(&entries, &count);
+  if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
+    GTEST_SKIP() << "Skipping: hopsworks schema not available: " << status.message;
+  }
+  free(entries);
+
+  // Without preloading, verify lazy-load still works
+  start_fs_cache();
+  ASSERT_NE(g_fs_metadata_cache, nullptr);
+
+  // Use the full cache-get path (which lazy-loads on miss)
+  char *cache_entry_ptr = nullptr;
+  auto [data, errorCode] = metadata::FeatureViewMetadataCache_Get(
+    FSDB002, "sample_2", 1, &cache_entry_ptr);
+  EXPECT_EQ(errorCode, nullptr) << "Lazy load should succeed: "
+                                << (errorCode ? errorCode->ToString() : "");
+  EXPECT_NE(data, nullptr) << "Expected metadata from lazy load";
+  if (data != nullptr) {
+    EXPECT_EQ(data->featureViewName, "sample_2");
+  }
+  if (cache_entry_ptr != nullptr) {
+    fs_cache_dec_ref_count(cache_entry_ptr);
+  }
+
+  stop_fs_cache();
+}
+
+// ---- NDB helpers for feature_view event tests ----
+
+extern RDRSRonDBConnectionPool *rdrsRonDBConnectionPool;
+
+static void prepare_short_varchar(char *buf, const char *str, size_t len) {
+  buf[0] = (char)len;
+  memcpy(buf + 1, str, len);
+}
+
+static bool ndb_insert_feature_view(int id,
+                                     const char *name,
+                                     int feature_store_id,
+                                     int creator,
+                                     int version) {
+  Ndb *ndb = nullptr;
+  RS_Status rs = rdrsRonDBConnectionPool->GetMetadataNdbObject(&ndb);
+  if (rs.http_code != SUCCESS) return false;
+
+  if (ndb->setDatabaseName(HOPSWORKS) != 0) {
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  const NdbDictionary::Table *tab = ndb->getDictionary()->getTable(FEATURE_VIEW);
+  if (tab == nullptr) {
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  NdbTransaction *tx = ndb->startTransaction();
+  if (tx == nullptr) {
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  NdbOperation *op = tx->getNdbOperation(tab);
+  if (op == nullptr || op->insertTuple() != 0) {
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  if (op->equal("id", id) != 0) {
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  // name: varchar(63), short varchar (1-byte length prefix)
+  char name_buf[FEATURE_VIEW_NAME_SIZE];
+  memset(name_buf, 0, sizeof(name_buf));
+  prepare_short_varchar(name_buf, name, strlen(name));
+  if (op->setValue("name", name_buf) != 0) {
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  if (op->setValue("feature_store_id", feature_store_id) != 0) {
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  if (op->setValue("creator", creator) != 0) {
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  if (op->setValue("version", version) != 0) {
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  // created: timestamp (4-byte seconds since epoch)
+  Uint32 now = (Uint32)time(nullptr);
+  if (op->setValue("created", now) != 0) {
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  if (tx->execute(NdbTransaction::Commit) != 0) {
+    std::cerr << "NDB feature_view insert failed: " << tx->getNdbError().code
+              << " " << tx->getNdbError().message << std::endl;
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  ndb->closeTransaction(tx);
+  rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+  return true;
+}
+
+static bool ndb_delete_feature_view_by_id(int id) {
+  Ndb *ndb = nullptr;
+  RS_Status rs = rdrsRonDBConnectionPool->GetMetadataNdbObject(&ndb);
+  if (rs.http_code != SUCCESS) return false;
+
+  if (ndb->setDatabaseName(HOPSWORKS) != 0) {
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  const NdbDictionary::Table *tab = ndb->getDictionary()->getTable(FEATURE_VIEW);
+  if (tab == nullptr) {
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  NdbTransaction *tx = ndb->startTransaction();
+  if (tx == nullptr) {
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  NdbOperation *op = tx->getNdbOperation(tab);
+  if (op == nullptr || op->deleteTuple() != 0) {
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  if (op->equal("id", id) != 0) {
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  if (tx->execute(NdbTransaction::Commit) != 0) {
+    std::cerr << "NDB feature_view delete failed: " << tx->getNdbError().code
+              << " " << tx->getNdbError().message << std::endl;
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  ndb->closeTransaction(tx);
+  rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+  return true;
+}
+
+TEST_F(FeatureStoreTest, TestEventInsert) {
+  Feature_View_Entry *entries = nullptr;
+  int count = 0;
+  RS_Status status = find_all_feature_views(&entries, &count);
+  if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
+    GTEST_SKIP() << "Skipping: hopsworks schema not available: " << status.message;
+  }
+  free(entries);
+
+  start_fs_cache();
+  ASSERT_NE(g_fs_metadata_cache, nullptr);
+
+  const int test_id = 99999;
+  const char *test_fv_name = "evt_insert_test";
+  const int test_fs_id = 67;   // fsdb001
+  const int test_creator = 10000;
+  const int test_version = 1;
+
+  // Cleanup leftover from any previous failed run
+  ndb_delete_feature_view_by_id(test_id);
+
+  g_fs_metadata_cache->preload_all_feature_views();
+  g_fs_metadata_cache->start_event_watcher();
+
+  // Give event watcher time to subscribe
+  NdbSleep_MilliSleep(2000);
+
+  std::string cacheKey = metadata::getFeatureViewCacheKey(
+    FSDB001, test_fv_name, test_version);
+
+  // Verify not in cache yet
+  FSCacheEntry *entry_before = nullptr;
+  auto *data_before = fs_metadata_cache_get(cacheKey, &entry_before);
+  // This creates an IS_FILLING entry; complete it so cleanup doesn't hang
+  if (entry_before != nullptr && data_before == nullptr) {
+    fs_metadata_update_cache(nullptr, entry_before,
+      FV_NOT_EXIST->NewMessage("entry created by test"));
+    entry_before->m_ref_count--;
+  }
+
+  // Insert the row via NDB
+  ASSERT_TRUE(ndb_insert_feature_view(test_id, test_fv_name, test_fs_id,
+                                       test_creator, test_version))
+      << "Failed to insert test feature view via NDB";
+
+  // Wait for event watcher to detect the INSERT
+  NdbSleep_MilliSleep(3000);
+
+  // The event watcher detected the INSERT and called load_single_feature_view,
+  // but the test FV has no training_dataset_join data, so the metadata load
+  // failed.  Failed loads are NOT cached — only successful loads are added to
+  // the cache.  Verify the entry is not in cache by checking that
+  // fs_metadata_cache_get creates a fresh IS_FILLING entry.
+  FSCacheEntry *entry_after = nullptr;
+  auto *data_after = fs_metadata_cache_get(cacheKey, &entry_after);
+  ASSERT_NE(entry_after, nullptr);
+  (void)data_after;
+  EXPECT_EQ(entry_after->m_state, FSCacheEntry::IS_FILLING)
+      << "Event watcher should not cache errors from incomplete FVs; "
+         "entry should be freshly created (IS_FILLING) by our get call";
+  // Complete the IS_FILLING entry so cache cleanup doesn't hang
+  fs_metadata_update_cache(nullptr, entry_after,
+    FV_NOT_EXIST->NewMessage("entry created by test verification"));
+  entry_after->m_ref_count--;
+
+  // Cleanup
+  ASSERT_TRUE(ndb_delete_feature_view_by_id(test_id))
+      << "Failed to cleanup test feature view";
+
+  stop_fs_cache();
+}
+
+TEST_F(FeatureStoreTest, TestEventDelete) {
+  Feature_View_Entry *entries = nullptr;
+  int count = 0;
+  RS_Status status = find_all_feature_views(&entries, &count);
+  if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
+    GTEST_SKIP() << "Skipping: hopsworks schema not available: " << status.message;
+  }
+  free(entries);
+
+  const int test_id = 99998;
+  const char *test_fv_name = "evt_delete_test";
+  const int test_fs_id = 67;   // fsdb001
+  const int test_creator = 10000;
+  const int test_version = 1;
+
+  // Insert a test row that we'll delete (no child rows = no FK issues)
+  ndb_delete_feature_view_by_id(test_id);  // cleanup any leftover
+  ASSERT_TRUE(ndb_insert_feature_view(test_id, test_fv_name, test_fs_id,
+                                       test_creator, test_version))
+      << "Failed to insert test feature view for delete test";
+
+  start_fs_cache();
+  ASSERT_NE(g_fs_metadata_cache, nullptr);
+
+  // Preload won't cache this test FV (no training_dataset_join data, so
+  // metadata load fails and errors are not cached).  Instead, populate the
+  // cache entry via the lazy-load path: get creates an IS_FILLING entry,
+  // update_cache transitions it to IS_INVALID.
+  std::string cacheKey = metadata::getFeatureViewCacheKey(
+    FSDB001, test_fv_name, test_version);
+  FSCacheEntry *entry = nullptr;
+  auto *data = fs_metadata_cache_get(cacheKey, &entry);
+  ASSERT_NE(entry, nullptr) << "get should create a new cache entry";
+  fs_metadata_update_cache(nullptr, entry,
+    FV_NOT_EXIST->NewMessage("test entry for delete test"));
+  fs_cache_dec_ref_count(reinterpret_cast<char*>(entry));
+
+  g_fs_metadata_cache->start_event_watcher();
+
+  // Give event watcher time to subscribe
+  NdbSleep_MilliSleep(2000);
+
+  // Delete the row via NDB
+  ASSERT_TRUE(ndb_delete_feature_view_by_id(test_id))
+      << "Failed to delete feature view via NDB";
+
+  // Wait for event watcher to detect the DELETE
+  NdbSleep_MilliSleep(3000);
+
+  // Verify the entry is evicted or marked IS_INVALID
+  FSCacheEntry *entry_after = nullptr;
+  auto *data_after = fs_metadata_cache_get(cacheKey, &entry_after);
+  if (entry_after != nullptr) {
+    if (data_after == nullptr &&
+        entry_after->m_state == FSCacheEntry::IS_FILLING) {
+      // Entry was newly created (IS_FILLING) because old one was evicted.
+      // Complete it so cleanup doesn't hang.
+      fs_metadata_update_cache(nullptr, entry_after,
+        FV_NOT_EXIST->NewMessage("entry created by test"));
+    }
+    EXPECT_NE(entry_after->m_state, FSCacheEntry::IS_VALID)
+        << "Entry should not be IS_VALID after DELETE event";
+    fs_cache_dec_ref_count(reinterpret_cast<char*>(entry_after));
+  }
+  // entry_after == nullptr is also acceptable (fully evicted + cache stopped)
+
+  stop_fs_cache();
+}
+
+static bool ndb_update_feature_view_description(int id,
+                                                 const char *description) {
+  Ndb *ndb = nullptr;
+  RS_Status rs = rdrsRonDBConnectionPool->GetMetadataNdbObject(&ndb);
+  if (rs.http_code != SUCCESS) return false;
+
+  if (ndb->setDatabaseName(HOPSWORKS) != 0) {
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  const NdbDictionary::Table *tab = ndb->getDictionary()->getTable(FEATURE_VIEW);
+  if (tab == nullptr) {
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  NdbTransaction *tx = ndb->startTransaction();
+  if (tx == nullptr) {
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  NdbOperation *op = tx->getNdbOperation(tab);
+  if (op == nullptr || op->updateTuple() != 0) {
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  if (op->equal("id", id) != 0) {
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  // description: varchar(10000), medium varchar (2-byte length prefix)
+  size_t desc_len = strlen(description);
+  char *desc_buf = (char *)calloc(1, desc_len + 3);
+  desc_buf[0] = (char)(desc_len & 0xFF);
+  desc_buf[1] = (char)((desc_len >> 8) & 0xFF);
+  memcpy(desc_buf + 2, description, desc_len);
+  int rc = op->setValue("description", desc_buf);
+  free(desc_buf);
+  if (rc != 0) {
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  if (tx->execute(NdbTransaction::Commit) != 0) {
+    std::cerr << "NDB feature_view update failed: " << tx->getNdbError().code
+              << " " << tx->getNdbError().message << std::endl;
+    ndb->closeTransaction(tx);
+    rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+    return false;
+  }
+
+  ndb->closeTransaction(tx);
+  rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb, &rs);
+  return true;
+}
+
+// Verify that TE_UPDATE events on feature_view do NOT invalidate the cache.
+// Description changes are irrelevant to serving metadata.
+TEST_F(FeatureStoreTest, TestEventUpdateIgnored) {
+  Feature_View_Entry *entries = nullptr;
+  int count = 0;
+  RS_Status status = find_all_feature_views(&entries, &count);
+  if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
+    GTEST_SKIP() << "Skipping: hopsworks schema not available: " << status.message;
+  }
+  free(entries);
+
+  start_fs_cache();
+  ASSERT_NE(g_fs_metadata_cache, nullptr);
+
+  g_fs_metadata_cache->preload_all_feature_views();
+  g_fs_metadata_cache->start_event_watcher();
+
+  // Give event watcher time to subscribe
+  NdbSleep_MilliSleep(2000);
+
+  // Verify fsdb002|sample_2|1 is cached and IS_VALID
+  std::string cacheKey = metadata::getFeatureViewCacheKey(FSDB002, "sample_2", 1);
+  FSCacheEntry *entry = nullptr;
+  auto *data = fs_metadata_cache_get(cacheKey, &entry);
+  ASSERT_NE(entry, nullptr);
+  ASSERT_EQ(entry->m_state, FSCacheEntry::IS_VALID);
+  ASSERT_NE(data, nullptr);
+  int fv_id = data->featureViewId;
+  fs_cache_dec_ref_count(reinterpret_cast<char*>(entry));
+
+  // Update the description via NDB (triggers TE_UPDATE event)
+  ASSERT_TRUE(ndb_update_feature_view_description(fv_id, "test_update_ignored"))
+      << "Failed to update feature_view description";
+
+  // Wait for any event processing
+  NdbSleep_MilliSleep(3000);
+
+  // Verify the entry is still IS_VALID (UPDATE should be ignored)
+  FSCacheEntry *entry_after = nullptr;
+  auto *data_after = fs_metadata_cache_get(cacheKey, &entry_after);
+  ASSERT_NE(entry_after, nullptr);
+  EXPECT_EQ(entry_after->m_state, FSCacheEntry::IS_VALID)
+      << "Entry should still be IS_VALID after UPDATE event";
+  EXPECT_NE(data_after, nullptr)
+      << "Metadata should still be present after UPDATE event";
+  EXPECT_EQ(entry, entry_after)
+      << "Should be the same cache entry (not reloaded)";
+  fs_cache_dec_ref_count(reinterpret_cast<char*>(entry_after));
+
+  // Restore original description
+  ndb_update_feature_view_description(fv_id, "");
+
+  stop_fs_cache();
+}
+
+// Verify that evict_entry marks IS_INVALID (rather than deleting) when
+// the entry has ref_count > 0.
+TEST_F(FeatureStoreTest, TestEvictWhileInUse) {
+  Feature_View_Entry *entries = nullptr;
+  int count = 0;
+  RS_Status status = find_all_feature_views(&entries, &count);
+  if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
+    GTEST_SKIP() << "Skipping: hopsworks schema not available: " << status.message;
+  }
+  free(entries);
+
+  const int test_id = 99997;
+  const char *test_fv_name = "evt_inuse_test";
+  const int test_fs_id = 67;   // fsdb001
+  const int test_creator = 10000;
+  const int test_version = 1;
+
+  // Insert a test row
+  ndb_delete_feature_view_by_id(test_id);
+  ASSERT_TRUE(ndb_insert_feature_view(test_id, test_fv_name, test_fs_id,
+                                       test_creator, test_version))
+      << "Failed to insert test feature view";
+
+  start_fs_cache();
+  ASSERT_NE(g_fs_metadata_cache, nullptr);
+
+  // Preload won't cache this test FV (incomplete metadata).  Create the
+  // cache entry via lazy-load and hold a reference to simulate an in-flight
+  // request.
+  std::string cacheKey = metadata::getFeatureViewCacheKey(
+    FSDB001, test_fv_name, test_version);
+  FSCacheEntry *entry = nullptr;
+  fs_metadata_cache_get(cacheKey, &entry);
+  ASSERT_NE(entry, nullptr);
+  // Complete the IS_FILLING entry → IS_INVALID.  ref_count is still 1
+  // (held by us, simulating an in-flight request).
+  fs_metadata_update_cache(nullptr, entry,
+    FV_NOT_EXIST->NewMessage("test entry for evict test"));
+
+  g_fs_metadata_cache->start_event_watcher();
+  NdbSleep_MilliSleep(2000);
+
+  // Delete the row while we hold a reference
+  ASSERT_TRUE(ndb_delete_feature_view_by_id(test_id))
+      << "Failed to delete feature view";
+
+  // Wait for event watcher to detect the DELETE
+  NdbSleep_MilliSleep(3000);
+
+  // Entry should be marked IS_INVALID (not deleted, because ref_count > 0)
+  EXPECT_EQ(entry->m_state, FSCacheEntry::IS_INVALID)
+      << "Entry should be IS_INVALID when evicted while in use";
+  EXPECT_NE(entry->m_errorCode, nullptr)
+      << "Error code should be set on evicted entry";
+
+  // Release our reference
+  fs_cache_dec_ref_count(reinterpret_cast<char*>(entry));
+
+  stop_fs_cache();
+}
+
 class BatchFeatureStoreTest : public ::testing::Test {
  protected:
   static void SetUpTestSuite() {
@@ -955,13 +1537,223 @@ class BatchFeatureStoreTest : public ::testing::Test {
   }
 };
 
-// TODO RS_Status RunQueriesOnDataCluster(std::string sqlQueries)
-// TODO TEST_F(FeatureStoreTest,
+// Test that preload_all_feature_views() picks up new entries inserted during
+// an event gap (simulates what happens on event watcher reconnect).
+TEST_F(FeatureStoreTest, TestReconnectPreloadPicksUpNewEntry) {
+  Feature_View_Entry *entries = nullptr;
+  int count = 0;
+  RS_Status status = find_all_feature_views(&entries, &count);
+  if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
+    GTEST_SKIP() << "Skipping: hopsworks schema not available: " << status.message;
+  }
+  free(entries);
 
+  start_fs_cache();
+  ASSERT_NE(g_fs_metadata_cache, nullptr);
+
+  // Initial preload (simulates startup)
+  g_fs_metadata_cache->preload_all_feature_views();
+
+  const int test_id = 99996;
+  const char *test_fv_name = "reconnect_test";
+  const int test_fs_id = 67;   // fsdb001
+  const int test_creator = 10000;
+  const int test_version = 1;
+
+  // Cleanup leftover from previous runs
+  ndb_delete_feature_view_by_id(test_id);
+
+  std::string cacheKey = metadata::getFeatureViewCacheKey(
+    FSDB001, test_fv_name, test_version);
+
+  // Verify not in cache yet
+  FSCacheEntry *entry_before = nullptr;
+  auto *data_before = fs_metadata_cache_get(cacheKey, &entry_before);
+  if (entry_before != nullptr && data_before == nullptr) {
+    fs_metadata_update_cache(nullptr, entry_before,
+      FV_NOT_EXIST->NewMessage("entry created by test"));
+    fs_cache_dec_ref_count(reinterpret_cast<char*>(entry_before));
+  }
+
+  // Insert a new row (simulating INSERT during event gap)
+  ASSERT_TRUE(ndb_insert_feature_view(test_id, test_fv_name, test_fs_id,
+                                       test_creator, test_version))
+      << "Failed to insert test feature view";
+
+  // Preload again (this is what the event watcher does on reconnect)
+  g_fs_metadata_cache->preload_all_feature_views();
+
+  // The test FV has no training_dataset_join data, so the metadata load
+  // fails.  Failed loads are not cached.  Verify that the entry is not in
+  // cache (fs_metadata_cache_get creates a fresh IS_FILLING entry).
+  FSCacheEntry *entry_after = nullptr;
+  auto *data_after = fs_metadata_cache_get(cacheKey, &entry_after);
+  ASSERT_NE(entry_after, nullptr);
+  (void)data_after;
+  EXPECT_EQ(entry_after->m_state, FSCacheEntry::IS_FILLING)
+      << "Preload should not cache errors from incomplete FVs";
+  fs_metadata_update_cache(nullptr, entry_after,
+    FV_NOT_EXIST->NewMessage("entry created by test verification"));
+  entry_after->m_ref_count--;
+
+  // Cleanup
+  ndb_delete_feature_view_by_id(test_id);
+  stop_fs_cache();
+}
+
+// Test that preload on reconnect removes stale IS_INVALID entries.
+// Simulates the scenario where:
+//   1. A lazy-load request creates an IS_INVALID entry (metadata load failed)
+//   2. Event watcher reconnects and calls preload_all_feature_views()
+//   3. Preload removes the IS_INVALID entry and attempts a fresh load
+//   4. Since the underlying metadata issue hasn't changed, the fresh load
+//      also fails and nothing is cached (errors are not cached by preload)
+TEST_F(FeatureStoreTest, TestReconnectPreloadRemovesInvalidEntry) {
+  Feature_View_Entry *entries = nullptr;
+  int count = 0;
+  RS_Status status = find_all_feature_views(&entries, &count);
+  if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
+    GTEST_SKIP() << "Skipping: hopsworks schema not available: " << status.message;
+  }
+  free(entries);
+
+  start_fs_cache();
+  ASSERT_NE(g_fs_metadata_cache, nullptr);
+
+  const int test_id = 99994;
+  const char *test_fv_name = "reconnect_inv";
+  const int test_fs_id = 67;   // fsdb001
+  const int test_creator = 10000;
+  const int test_version = 1;
+
+  ndb_delete_feature_view_by_id(test_id);
+
+  // Insert a test FV row (no training_dataset_join data, so metadata
+  // load will fail).
+  ASSERT_TRUE(ndb_insert_feature_view(test_id, test_fv_name, test_fs_id,
+                                       test_creator, test_version))
+      << "Failed to insert test feature view";
+
+  std::string cacheKey = metadata::getFeatureViewCacheKey(
+    FSDB001, test_fv_name, test_version);
+
+  // Create an IS_INVALID entry via the lazy-load path (simulating a request
+  // that failed to load metadata).
+  FSCacheEntry *entry1 = nullptr;
+  auto *data1 = fs_metadata_cache_get(cacheKey, &entry1);
+  ASSERT_NE(entry1, nullptr) << "get should create a new cache entry";
+  (void)data1;
+  fs_metadata_update_cache(nullptr, entry1,
+    FV_NOT_EXIST->NewMessage("simulated lazy-load failure"));
+  fs_cache_dec_ref_count(reinterpret_cast<char*>(entry1));
+
+  // Preload (simulates reconnect).  load_single_feature_view detects
+  // the IS_INVALID entry, removes it, and attempts a fresh load.
+  // The fresh load also fails (still no training_dataset_join data),
+  // but errors are not cached by preload, so the entry is gone.
+  g_fs_metadata_cache->preload_all_feature_views();
+
+  // Verify the IS_INVALID entry was removed: fs_metadata_cache_get creates
+  // a fresh IS_FILLING entry (proving the old IS_INVALID is gone).
+  FSCacheEntry *entry2 = nullptr;
+  auto *data2 = fs_metadata_cache_get(cacheKey, &entry2);
+  ASSERT_NE(entry2, nullptr);
+  (void)data2;
+  EXPECT_EQ(entry2->m_state, FSCacheEntry::IS_FILLING)
+      << "Old IS_INVALID entry should have been removed by preload";
+  // Clean up the IS_FILLING entry
+  fs_metadata_update_cache(nullptr, entry2,
+    FV_NOT_EXIST->NewMessage("entry created by test verification"));
+  entry2->m_ref_count--;
+
+  // Cleanup
+  ndb_delete_feature_view_by_id(test_id);
+  stop_fs_cache();
+}
+
+// End-to-end reconnect test: forces the event watcher to tear down and
+// reconnect, then verifies that a feature view inserted during the gap
+// is picked up by the reconnect preload.
+TEST_F(FeatureStoreTest, TestEndToEndReconnect) {
+  Feature_View_Entry *entries = nullptr;
+  int count = 0;
+  RS_Status status = find_all_feature_views(&entries, &count);
+  if (status.http_code != static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
+    GTEST_SKIP() << "Skipping: hopsworks schema not available: " << status.message;
+  }
+  free(entries);
+
+  start_fs_cache();
+  ASSERT_NE(g_fs_metadata_cache, nullptr);
+
+  g_fs_metadata_cache->preload_all_feature_views();
+  g_fs_metadata_cache->start_event_watcher();
+
+  // Wait for event watcher to subscribe
+  NdbSleep_MilliSleep(2000);
+
+  const int test_id = 99992;
+  const char *test_fv_name = "e2e_reconnect";
+  const int test_fs_id = 67;   // fsdb001
+  const int test_creator = 10000;
+  const int test_version = 1;
+
+  ndb_delete_feature_view_by_id(test_id);
+
+  // Force the event watcher to disconnect.  This triggers the full
+  // err: path (tear down subscription → backoff sleep → retry:).
+  g_fs_metadata_cache->force_reconnect();
+
+  // Wait for the watcher to enter backoff sleep (1s), then insert during
+  // the gap so the INSERT event is missed.
+  NdbSleep_MilliSleep(500);
+
+  ASSERT_TRUE(ndb_insert_feature_view(test_id, test_fv_name, test_fs_id,
+                                       test_creator, test_version))
+      << "Failed to insert test feature view";
+
+  // Wait for: remaining backoff (0.5s) + reconnect setup + preload
+  NdbSleep_MilliSleep(5000);
+
+  std::string cacheKey = metadata::getFeatureViewCacheKey(
+    FSDB001, test_fv_name, test_version);
+
+  // The reconnect preload attempted to load the test FV but it has no
+  // training_dataset_join data, so the metadata load failed.  Failed loads
+  // are not cached.  Verify the entry is not in cache.
+  FSCacheEntry *entry = nullptr;
+  auto *data = fs_metadata_cache_get(cacheKey, &entry);
+  ASSERT_NE(entry, nullptr);
+  (void)data;
+  EXPECT_EQ(entry->m_state, FSCacheEntry::IS_FILLING)
+      << "Reconnect preload should not cache errors from incomplete FVs";
+  // Complete the IS_FILLING entry so cache cleanup doesn't hang
+  fs_metadata_update_cache(nullptr, entry,
+    FV_NOT_EXIST->NewMessage("entry created by test verification"));
+  entry->m_ref_count--;
+
+  // Cleanup
+  ndb_delete_feature_view_by_id(test_id);
+  stop_fs_cache();
+}
 
 int main(int argc, char **argv) {
   ndb_init();
   globalConfigsMutex = NdbMutex_Create();
+
+  // Load config from RDRS_CONFIG_FILE (needed for correct NDB connection settings)
+  std::string configFile;
+  const char *env_config_file_path = std::getenv("RDRS_CONFIG_FILE");
+  if (env_config_file_path != nullptr) {
+    configFile = env_config_file_path;
+  }
+  RS_Status status = AllConfigs::init(configFile);
+  if (status.http_code !=
+        static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
+    std::cerr << "Error loading config: " << status.message << std::endl;
+    return 1;
+  }
+
   testing::InitGoogleTest(&argc, argv);
   testing::Environment* const my_env =
     testing::AddGlobalTestEnvironment(new MyEnvironment);

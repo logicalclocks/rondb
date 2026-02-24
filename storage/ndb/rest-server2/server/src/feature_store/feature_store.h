@@ -137,6 +137,19 @@ RS_Status find_feature_group_schema(const char *subject_name, int project_id, ch
  */
 RS_Status find_on_demand_feature_group(int id, OnDemandFeatureGroup *odfg);
 
+typedef struct Feature_View_Entry {
+  int id;
+  char name[FEATURE_VIEW_NAME_SIZE];
+  int feature_store_id;
+  int version;
+} Feature_View_Entry;
+
+/**
+ * Find all feature views (full table scan)
+ * SELECT id, name, feature_store_id, version FROM feature_view
+ */
+RS_Status find_all_feature_views(Feature_View_Entry **entries, int *count);
+
 #endif
 #ifdef __cplusplus
 }

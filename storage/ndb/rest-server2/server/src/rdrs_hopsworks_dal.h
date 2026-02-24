@@ -17,12 +17,12 @@
  * USA.
  */
 
+#ifndef STORAGE_NDB_REST_SERVER2_SERVER_SRC_RDRS_HOPSWORKS_DAL_H_
+#define STORAGE_NDB_REST_SERVER2_SERVER_SRC_RDRS_HOPSWORKS_DAL_H_
+
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-#ifndef STORAGE_NDB_REST_SERVER2_SERVER_SRC_RDRS_HOPSWORKS_DAL_H_
-#define STORAGE_NDB_REST_SERVER2_SERVER_SRC_RDRS_HOPSWORKS_DAL_H_
 
 #include "rdrs_dal.h"
 #include "rdrs_const.h"
@@ -64,8 +64,24 @@ RS_Status find_all_projects(int uid,
                             int *count,
                             char **username_ptr);
 
-#endif
-
 #ifdef __cplusplus
-}
+}  // extern "C"
+
+#include <string>
+#include <vector>
+
+struct HopsworksAPIKeyEntry {
+  std::string prefix;
+  std::string secret;
+  std::string salt;
+  int user_id;
+};
+
+RS_Status find_all_api_keys(std::vector<HopsworksAPIKeyEntry> *keys);
+
+// PK read by integer id — returns prefix, secret, salt, user_id
+RS_Status find_api_key_by_id(int id, HopsworksAPIKeyEntry *entry);
+
+#endif  // __cplusplus
+
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_RDRS_HOPSWORKS_DAL_H_
