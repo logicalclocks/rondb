@@ -849,12 +849,114 @@ o_custkey	SUM(o2.o_id)
 300	5
 
 
-=== Test 40: Error — cross-table comparison ===
+=== Test 40: VARCHAR join key ===
+== Query ==
+SELECT s.s_name, SUM(p.p_price)
+FROM suppliers AS s JOIN parts AS p ON p.p_suppcode = s.s_code
+GROUP BY s.s_name;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT s.s_name, SUM(p.p_price)
+FROM suppliers AS s JOIN parts AS p ON p.p_suppcode = s.s_code
+GROUP BY s.s_name|
+s_name	SUM(p.p_price)
+Acme	125
+Bolt Co	90
+Gear Inc	90
+
+
+=== Test 41: BIGINT join key ===
+== Query ==
+SELECT p.p_id, SUM(sh.sh_qty)
+FROM parts AS p JOIN shipments AS sh ON sh.sh_partid = p.p_id
+GROUP BY p.p_id;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT p.p_id, SUM(sh.sh_qty)
+FROM parts AS p JOIN shipments AS sh ON sh.sh_partid = p.p_id
+GROUP BY p.p_id|
+p_id	SUM(sh.sh_qty)
+1001	30
+1002	15
+1003	25
+1004	30
+1005	5
+
+
+=== Test 42: DATE join key ===
+== Query ==
+SELECT sh.sh_date, SUM(a.a_amount)
+FROM shipments AS sh JOIN activities AS a ON a.a_date = sh.sh_date
+GROUP BY sh.sh_date;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT sh.sh_date, SUM(a.a_amount)
+FROM shipments AS sh JOIN activities AS a ON a.a_date = sh.sh_date
+GROUP BY sh.sh_date|
+sh_date	SUM(a.a_amount)
+2024-01-15	360
+2024-02-20	700
+2024-03-10	300
+
+
+=== Test 43: 3-table join with VARCHAR + BIGINT keys ===
+== Query ==
+SELECT s.s_name, SUM(sh.sh_qty)
+FROM suppliers AS s
+JOIN parts AS p ON p.p_suppcode = s.s_code
+JOIN shipments AS sh ON sh.sh_partid = p.p_id
+GROUP BY s.s_name;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT s.s_name, SUM(sh.sh_qty)
+FROM suppliers AS s
+JOIN parts AS p ON p.p_suppcode = s.s_code
+JOIN shipments AS sh ON sh.sh_partid = p.p_id
+GROUP BY s.s_name|
+s_name	SUM(sh.sh_qty)
+Acme	45
+Bolt Co	55
+Gear Inc	5
+
+
+=== Test 44: Error — cross-table comparison ===
 Expected error: WHERE condition references columns from multiple tables
 Error handling: RPE
 ronsql_cli caught exception: WHERE condition references columns from multiple tables in a single comparison or OR branch. Split into separate AND conditions, each referencing only one table.
 
 === Cleanup ===
+DROP TABLE activities;
+DROP TABLE shipments;
+DROP TABLE parts;
+DROP TABLE suppliers;
 DROP TABLE order_extra;
 DROP TABLE lineitem;
 DROP TABLE orders;
