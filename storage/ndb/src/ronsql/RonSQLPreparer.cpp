@@ -39,6 +39,7 @@
 #include <my_base.h>
 #include "decimal.h"
 #include <decimal_utils.hpp>
+#include <kernel/Interpreter.hpp>
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_RONSQLPREPARER 1
@@ -2600,6 +2601,29 @@ RonSQLPreparer::programAggregator(NdbAggregator* aggregator)
     case AggregationAPICompiler::SVMInstrType::Count:
       programAggregator_do_or_fail(aggregator->Count(dest, src));
       break;
+    case AggregationAPICompiler::SVMInstrType::EmbeddedInterp:
+    {
+      auto& ci = m_agg->m_cases[dest];
+      Uint32 then_raw = m_agg->raw_word_size(ci.then_start, ci.skip_pos);
+      Uint32 skip_raw = 1;
+      Uint32 then_arm_total = then_raw + skip_raw;
+      generate_embedded_condition(aggregator, ci.condition, then_arm_total);
+      break;
+    }
+    case AggregationAPICompiler::SVMInstrType::Skip:
+    {
+      for (Uint32 c = 0; c < m_agg->m_cases.size(); c++)
+      {
+        if (m_agg->m_cases[c].skip_pos == i)
+        {
+          auto& ci = m_agg->m_cases[c];
+          Uint32 else_raw = m_agg->raw_word_size(ci.else_start, ci.else_end);
+          programAggregator_do_or_fail(aggregator->Skip(else_raw));
+          break;
+        }
+      }
+      break;
+    }
     default:
       // Unknown instruction
       abort();
@@ -2706,10 +2730,166 @@ RonSQLPreparer::programAggregator_join(NdbAggregator* aggregator)
     case AggregationAPICompiler::SVMInstrType::Count:
       programAggregator_do_or_fail(aggregator->Count(dest, src));
       break;
+    case AggregationAPICompiler::SVMInstrType::EmbeddedInterp:
+    {
+      auto& ci = m_agg->m_cases[dest];
+      Uint32 then_raw = m_agg->raw_word_size(ci.then_start, ci.skip_pos);
+      Uint32 skip_raw = 1;
+      Uint32 then_arm_total = then_raw + skip_raw;
+      generate_embedded_condition(aggregator, ci.condition, then_arm_total);
+      break;
+    }
+    case AggregationAPICompiler::SVMInstrType::Skip:
+    {
+      for (Uint32 c = 0; c < m_agg->m_cases.size(); c++)
+      {
+        if (m_agg->m_cases[c].skip_pos == i)
+        {
+          auto& ci = m_agg->m_cases[c];
+          Uint32 else_raw = m_agg->raw_word_size(ci.else_start, ci.else_end);
+          programAggregator_do_or_fail(aggregator->Skip(else_raw));
+          break;
+        }
+      }
+      break;
+    }
     default:
       abort();
     }
   }
+}
+
+void
+RonSQLPreparer::generate_embedded_condition(
+    NdbAggregator* aggregator,
+    ConditionalExpression* ce,
+    Uint32 then_arm_raw_size)
+{
+  // Two patterns supported:
+  //   OR: (col = 'X' OR col = 'Y') → branch to THEN on match, fall-through ELSE
+  //   AND: (col <> 'X' AND col <> 'Y') → branch to ELSE on inverted match,
+  //                                       fall-through THEN
+  //   Single atom: handled as OR with one atom
+  DynamicArray<ConditionalExpression*> atoms(m_amalloc);
+  bool is_and = false;
+
+  if (ce->op == T_AND || ce->op == T_OR)
+  {
+    is_and = (ce->op == T_AND);
+    TokenKind flatten_op = ce->op;
+    ConditionalExpression* node = ce;
+    while (node->op == flatten_op)
+    {
+      atoms.push(node->args.right);
+      node = node->args.left;
+    }
+    atoms.push(node);
+  }
+  else
+  {
+    atoms.push(ce);
+  }
+
+  // Compute embedded word sizes.
+  // The embedded interpreter runs interpreterNextLab() which reads columns via
+  // readAttributes() from the local tuple. For join queries, only columns on
+  // the aggregation leaf table are accessible — columns from parent tables
+  // arrive as linked attributes in the signal buffer, not readable by attrId.
+  Uint32 total_branch_words = 0;
+  for (Uint32 a = 0; a < atoms.size(); a++)
+  {
+    ConditionalExpression* atom = atoms[a];
+    ndbrequire(atom->op == T_EQUALS || atom->op == T_NOT_EQUALS);
+    ConditionalExpression* col_side = atom->args.left;
+    ndbrequire(col_side->op == T_IDENTIFIER);
+    if (m_column_table_idx != NULL)
+    {
+      Uint32 leaf_idx = m_join_plan.agg_leaf_idx;
+      require_prm(m_column_table_idx[col_side->col_idx] == leaf_idx,
+                  "CASE condition column must be on the aggregation leaf table. "
+                  "Columns from parent tables in CASE conditions are not yet "
+                  "supported.");
+    }
+    const NdbDictionary::Column* col = m_column_map[col_side->col_idx];
+    Uint32 byte_len = col->getLength();
+    Uint32 data_words = (byte_len + 3) / 4;
+    total_branch_words += 2 + data_words;
+  }
+  Uint32 emb_len = total_branch_words + 6;
+
+  // For OR:  branches → second_exit (THEN), fall-through → first_exit (ELSE)
+  // For AND: branches → second_exit (ELSE), fall-through → first_exit (THEN)
+  Uint32 second_exit_label = emb_len - 3;
+  Uint32 first_exit_skip_offset =
+      is_and ? 0 : then_arm_raw_size;
+  Uint32 second_exit_skip_offset =
+      is_and ? then_arm_raw_size : 0;
+
+  programAggregator_do_or_fail(aggregator->EmbeddedInterp(emb_len));
+
+  Uint32 pos = 0;
+  for (Uint32 a = 0; a < atoms.size(); a++)
+  {
+    ConditionalExpression* atom = atoms[a];
+    ConditionalExpression* col_side = atom->args.left;
+    ConditionalExpression* val_side = atom->args.right;
+    const NdbDictionary::Column* col = m_column_map[col_side->col_idx];
+    NdbAttrId attr_id = m_column_attrId_map[col_side->col_idx];
+    Uint32 byte_len = col->getLength();
+    Uint32 data_words = (byte_len + 3) / 4;
+
+    Uint32 branch_offset = second_exit_label - pos;
+
+    // For OR with EQ atoms: BranchCol(EQ) → THEN on match
+    // For AND with NE atoms: invert NE to EQ, BranchCol(EQ) → ELSE on match
+    Interpreter::BinaryCondition cond;
+    if (is_and)
+    {
+      // AND: invert the atom condition for the branch
+      cond = (atom->op == T_NOT_EQUALS) ? Interpreter::EQ : Interpreter::NE;
+    }
+    else
+    {
+      // OR: branch on the atom condition directly
+      cond = (atom->op == T_EQUALS) ? Interpreter::EQ : Interpreter::NE;
+    }
+
+    programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+        Interpreter::BranchCol(cond, Interpreter::NULL_CMP_EQUAL) |
+        (branch_offset << 16)));
+    programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+        Interpreter::BranchCol_2(attr_id, byte_len)));
+
+    raw_value rv = encode_constant(val_side, col);
+    Uint32 padded_len = data_words * 4;
+    Uint8* buf = m_amalloc->alloc_exc<Uint8>(padded_len);
+    memcpy(buf, rv.val, rv.len);
+    if (padded_len > rv.len)
+      memset(buf + rv.len, 0, padded_len - rv.len);
+    for (Uint32 w = 0; w < data_words; w++)
+    {
+      Uint32 word;
+      memcpy(&word, buf + w * 4, 4);
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(word));
+    }
+    pos += 2 + data_words;
+  }
+
+  // First exit (fall-through)
+  programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+      Interpreter::LoadConst16(2, first_exit_skip_offset)));
+  programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+      Interpreter::WriteInterpreterOutput(2, 0)));
+  programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+      Interpreter::ExitOK()));
+
+  // Second exit (branched to)
+  programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+      Interpreter::LoadConst16(2, second_exit_skip_offset)));
+  programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+      Interpreter::WriteInterpreterOutput(2, 0)));
+  programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+      Interpreter::ExitOK()));
 }
 #undef programAggregator_do_or_fail
 

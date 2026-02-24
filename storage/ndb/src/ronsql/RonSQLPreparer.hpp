@@ -218,6 +218,9 @@ private:
                                             int maxdepth);
   void programAggregator(NdbAggregator* aggregator);
   void programAggregator_join(NdbAggregator* aggregator);
+  void generate_embedded_condition(NdbAggregator* aggregator,
+                                   struct ConditionalExpression* ce,
+                                   Uint32 then_arm_raw_size);
   void print_result_json(NdbAggregator* aggregator);
   void print();
   void print(struct ConditionalExpression* ce,

@@ -41,6 +41,7 @@ AggregationAPICompiler::AggregationAPICompiler
   m_exprs(amalloc),
   m_aggs(amalloc),
   m_constants(amalloc),
+  m_cases(amalloc),
   m_program(amalloc)
 {}
 
@@ -296,6 +297,31 @@ AggregationAPICompiler::ConstantInteger(Int64 int_64)
 }
 
 AggregationAPICompiler::Expr*
+AggregationAPICompiler::CaseExpr(ConditionalExpression* condition,
+                                  Expr* then_expr,
+                                  Expr* else_expr)
+{
+  if (m_status == Status::FAILED) return NULL;
+  require_status(PROGRAMMING);
+  ndbrequire(then_expr != NULL);
+  ndbrequire(else_expr != NULL);
+  ndbrequire(m_exprs.has_item(then_expr));
+  ndbrequire(m_exprs.has_item(else_expr));
+  Expr e;
+  e.op = ExprOp::Case;
+  e.left = then_expr;
+  e.right = else_expr;
+  e.case_condition = condition;
+  e.idx = 0;
+  e.est_regs = 1;
+  e.eval_left_first = true;
+  then_expr->usage++;
+  else_expr->usage++;
+  m_exprs.push(e);
+  return &m_exprs.last_item();
+}
+
+AggregationAPICompiler::Expr*
 AggregationAPICompiler::public_arithmetic_expression_helper(ExprOp op,
                                                             Expr* x,
                                                             Expr* y)
@@ -378,6 +404,10 @@ AggregationAPICompiler::svm_execute(AggregationAPICompiler::Instr* instr,
     break;
   FORALL_ARITHMETIC_OPS(OPERATOR_CASE)
   FORALL_AGGS(AGG_CASE)
+  case SVMInstrType::EmbeddedInterp:
+    break;
+  case SVMInstrType::Skip:
+    break;
   default:
     // Unknown instruction
     abort();
@@ -413,8 +443,10 @@ AggregationAPICompiler::svm_use(Uint32 reg, bool is_first_compilation)
 
 #define AGG_CASE(Name) \
     case SVMInstrType::Name: \
-      ndbrequire(m_program[i].dest == next_aggregate); \
-      next_aggregate++; \
+      if (m_program[i].dest == next_aggregate) \
+        next_aggregate++; \
+      else \
+        ndbrequire(m_program[i].dest == next_aggregate - 1); \
       break;
 bool
 AggregationAPICompiler::compile()
@@ -451,6 +483,7 @@ AggregationAPICompiler::compile()
   }
   for (Uint32 i=0; i<m_exprs.size(); i++)
   {
+    if (m_exprs[i].op == ExprOp::Case) continue;
     ndbrequire(m_exprs[i].usage == m_exprs[i].program_usage);
   }
   dead_code_elimination();
@@ -477,6 +510,47 @@ bool
 AggregationAPICompiler::compile(AggExpr* agg, Uint32 idx)
 {
   require_status(COMPILING);
+  if (agg->expr->op == ExprOp::Case)
+  {
+    Expr* case_expr = agg->expr;
+    bool is_first = !case_expr->has_been_compiled;
+    case_expr->has_been_compiled = true;
+
+    CaseInfo ci;
+    ci.condition = case_expr->case_condition;
+    Uint32 case_idx = m_cases.size();
+    m_cases.push(ci);
+
+    // EmbeddedInterp placeholder
+    Instr emb_instr;
+    emb_instr.type = SVMInstrType::EmbeddedInterp;
+    emb_instr.dest = case_idx;
+    emb_instr.src = 0;
+    m_program.push(emb_instr);
+
+    // THEN arm
+    m_cases[case_idx].then_start = m_program.size();
+    Uint32 then_reg;
+    if (!compile(case_expr->left, &then_reg)) return false;
+    pushInstr(agg->agg_type, idx, then_reg, is_first);
+
+    // Skip placeholder
+    m_cases[case_idx].skip_pos = m_program.size();
+    Instr skip_instr;
+    skip_instr.type = SVMInstrType::Skip;
+    skip_instr.dest = 0;
+    skip_instr.src = 0;
+    m_program.push(skip_instr);
+
+    // ELSE arm
+    m_cases[case_idx].else_start = m_program.size();
+    Uint32 else_reg;
+    if (!compile(case_expr->right, &else_reg)) return false;
+    pushInstr(agg->agg_type, idx, else_reg, false);
+    m_cases[case_idx].else_end = m_program.size();
+
+    return true;
+  }
   Uint32 reg;
   if (!compile(agg->expr, &reg))
   {
@@ -853,6 +927,10 @@ AggregationAPICompiler::dead_code_elimination()
       break;
     FORALL_ARITHMETIC_OPS(OPERATOR_CASE)
     FORALL_AGGS(AGG_CASE)
+    case SVMInstrType::EmbeddedInterp:
+    case SVMInstrType::Skip:
+      this_instr_is_useful = true;
+      break;
     default:
       // Unknown instruction
       abort();
@@ -1059,6 +1137,12 @@ AggregationAPICompiler::print(Instr* instr)
     break;
   FORALL_ARITHMETIC_OPS(OPERATOR_CASE)
   FORALL_AGGS(AGG_CASE)
+  case SVMInstrType::EmbeddedInterp:
+    m_out << "EmbInt C" << d2(dest) << "  ---";
+    break;
+  case SVMInstrType::Skip:
+    m_out << "Skip   ---  " << d2(src);
+    break;
   default:
     // Unknown instruction
     abort();
@@ -1071,3 +1155,17 @@ AggregationAPICompiler::print(Instr* instr)
 /*
  * End of Aggregation Program Printer
  */
+
+Uint32
+AggregationAPICompiler::raw_word_size(Uint32 start, Uint32 end)
+{
+  Uint32 count = 0;
+  for (Uint32 i = start; i < end; i++)
+  {
+    if (m_program[i].type == SVMInstrType::LoadConstantInteger)
+      count += 3;
+    else
+      count += 1;
+  }
+  return count;
+}
