@@ -11664,7 +11664,16 @@ Dblqh::acckeyconf_tupkeyreq(Signal* signal, TcConnectionrec* regTcPtr,
   jamDataDebug(totReclenAi);
   if (totReclenAi > 0) {
     ndbassert(attrInfoIVal != RNIL);
-    c_tup->copyAttrinfo(totReclenAi, attrInfoIVal);
+    const Uint32 copyError = c_tup->copyAttrinfo(totReclenAi, attrInfoIVal);
+    if (unlikely(copyError != 0)) {
+      jam();
+      TupKeyRef *ref = (TupKeyRef *)signal->getDataPtr();
+      ref->userRef = regTcPtr->userpointer;
+      ref->errorCode = copyError;
+      ref->noExecInstructions = 0;
+      execTUPKEYREF(signal);
+      return;
+    }
   }
   if (likely(c_tup->execTUPKEYREQ(signal, regTcPtr, nullptr)))
   {

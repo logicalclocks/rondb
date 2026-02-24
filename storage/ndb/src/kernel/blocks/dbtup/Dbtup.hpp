@@ -3271,7 +3271,7 @@ public:
   Uint32 copyAttrinfo(Uint32 storedProcId,
                       bool interpretedFlag,
                       void* scan_rec = nullptr);
-  void copyAttrinfo(Uint32 expectedLen, Uint32 attrInfoIVal);
+  Uint32 copyAttrinfo(Uint32 expectedLen, Uint32 attrInfoIVal);
 
   void nextAttrInfoParam(Uint32 storedProcId);
 
@@ -3981,9 +3981,14 @@ public:
   Uint32 cownNodeId;
   Uint32 czero;
 
-  // A little bit bigger to cover overwrites in copy algorithms (16384 real
-  // size).
-#define ZATTR_BUFFER_SIZE 24000
+  // Must be large enough to hold attrinfo for interpreted operations with
+  // MAX_ATTRIBUTES_IN_TABLE (4096) columns: 5-word header + initialRead
+  // (up to 4096) + finalUpdate (up to MAX_TUPLE_SIZE_IN_WORDS + 4096) +
+  // finalRead (up to 4096) + program + subroutines. Also used for trigger
+  // before/after value buffers requiring MAX_TUPLE_SIZE_IN_WORDS +
+  // MAX_ATTRIBUTES_IN_TABLE (22096) words. Includes headroom for copy
+  // algorithm overwrites.
+#define ZATTR_BUFFER_SIZE 32768
   Uint32 clogMemBuffer[ZATTR_BUFFER_SIZE + 16];
   Uint32 coutBuffer[ZATTR_BUFFER_SIZE + 16];
   Uint32 cinBuffer[ZATTR_BUFFER_SIZE + 16];
