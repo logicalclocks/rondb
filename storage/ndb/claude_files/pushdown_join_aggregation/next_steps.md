@@ -218,6 +218,95 @@ GROUP BY l_returnflag, l_linestatus
 ORDER BY l_returnflag, l_linestatus;
 ```
 
+### Phase 16: Correlated Subquery Support for Aggregation (Priority: Medium)
+
+TPC-H Q2 (Minimum Cost Supplier) has a correlated scalar subquery with
+`MIN(ps_supplycost)` inside a 4-table join, correlated on `p_partkey` from the
+outer 5-table join. This pattern is common in TPC-H (Q2, Q4, Q17, Q20, Q22).
+
+**What's needed:**
+
+1. **Correlated subquery decorrelation**
+   - NDB SPJ has no subquery support — the MySQL optimizer must decorrelate
+     the subquery into a derived table or semi-join before pushdown is possible
+   - Verify what MySQL's optimizer produces for Q2 and whether the resulting
+     plan is a flat join that SPJ can handle
+
+2. **Scalar subquery result as join predicate**
+   - `ps_supplycost = (SELECT MIN(...))` compares a column to a subquery result
+   - If decorrelated into a derived table, this becomes an equi-join on
+     (p_partkey, min_cost), which SPJ can handle
+   - The derived table itself (4-table join + MIN aggregate) is pushable
+     with existing aggregation support
+
+3. **Large join tree support**
+   - Q2 outer query is 5 tables; with decorrelated subquery it could be 9+ tables
+   - NDB SPJ supports up to MAX_NDB_NODES tables in a pushed join, but
+     MySQL's pushed join builder may have practical limits
+   - Verify SPJ topology constraints for deep/wide join trees
+
+**Target query (TPC-H Q2):**
+```sql
+SELECT s_acctbal, s_name, n_name, p_partkey, p_mfgr,
+       s_address, s_phone, s_comment
+FROM part, supplier, partsupp, nation, region
+WHERE p_partkey = ps_partkey AND s_suppkey = ps_suppkey
+  AND p_size = 15 AND p_type LIKE '%BRASS'
+  AND s_nationkey = n_nationkey AND n_regionkey = r_regionkey
+  AND r_name = 'EUROPE'
+  AND ps_supplycost = (
+    SELECT MIN(ps_supplycost)
+    FROM partsupp, supplier, nation, region
+    WHERE p_partkey = ps_partkey AND s_suppkey = ps_suppkey
+      AND s_nationkey = n_nationkey AND n_regionkey = r_regionkey
+      AND r_name = 'EUROPE')
+ORDER BY s_acctbal DESC, n_name, s_name, p_partkey
+LIMIT 100;
+```
+
+### Phase 17: Semi-Join Aggregation & Related Features (Priority: Medium)
+
+TPC-H Q4 (Order Priority Checking) uses EXISTS with a correlated subquery,
+which MySQL converts to a semi-join. This requires aggregation pushdown to
+work with semi-join semantics in SPJ.
+
+**What's needed:**
+
+1. **Semi-join with aggregation pushdown**
+   - MySQL converts `EXISTS (SELECT ... WHERE l_orderkey = o_orderkey ...)`
+     to a semi-join with first-match semantics
+   - NDB SPJ already has `NI_FIRST_MATCH` (QueryTree.hpp) for semi-joins
+   - Verify that aggregation pushdown works when a join node uses
+     first-match/semi-join — the aggregation runs on the leaf table,
+     but semi-join may change which node is the leaf or how rows flow
+   - Phase 16 covers correlated scalar subqueries (Q2); this covers
+     EXISTS/semi-join which is a different optimizer transformation
+
+2. **Cross-column comparison in pushed filters**
+   - Q4 subquery: `l_commitdate < l_receiptdate` (column vs column)
+   - NDB interpreter supports column-vs-column comparison
+   - For RonSQL: verify cross-column comparison support in WHERE clauses
+
+3. **DATE_ADD() support (RonSQL)**
+   - Q4: `o_orderdate < date_add('1993-07-01', interval '3' month)`
+   - For NDB: MySQL evaluates constant date expressions before pushdown,
+     so ha_ndbcluster_cond receives a resolved date constant — no issue
+   - For RonSQL: DATE_ADD() with interval MONTH needs verification
+     alongside existing DATE_SUB() support (Phase 15.5)
+
+**Target query (TPC-H Q4):**
+```sql
+SELECT o_orderpriority, COUNT(*) AS order_count
+FROM orders
+WHERE o_orderdate >= '1993-07-01'
+  AND o_orderdate < date_add('1993-07-01', interval '3' month)
+  AND EXISTS (
+    SELECT * FROM lineitem
+    WHERE l_orderkey = o_orderkey AND l_commitdate < l_receiptdate)
+GROUP BY o_orderpriority
+ORDER BY o_orderpriority;
+```
+
 ### Future: Outer Join Aggregation Support (Priority: Low)
 
 To support aggregation with outer joins, DBSPJ would need to participate in
