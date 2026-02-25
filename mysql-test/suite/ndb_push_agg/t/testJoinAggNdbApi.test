@@ -1,7 +1,8 @@
 --source include/have_ndb.inc
 
 --echo Running testJoinAggNdbApi
---exec $NDB_PUSH_AGG_DIR/testJoinAggNdbApi -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT --skip 6 > /dev/null 2>&1
+--replace_regex /Connect string: .*/Connect string: #/ /MySQL port: .*/MySQL port: #/
+--exec $NDB_PUSH_AGG_DIR/testJoinAggNdbApi -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT 2>&1
 --echo PASSED
 
 # Clean up database created by test program

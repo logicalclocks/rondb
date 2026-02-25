@@ -1,3 +1,31 @@
 Running testJoinAggNdbApi
+=== testJoinAggNdbApi ===
+Connect string: #
+MySQL port: #
+
+Test 1: SUM(amount) GROUP BY grp ... OK (2 groups)
+Test 2: COUNT(*), SUM(amount) ... OK (count=3, sum=600)
+Test 3: COUNT(*), SUM(amount) GROUP BY grp ... OK (2 groups)
+Test 4: 3-way join with linked param filter ... OK (3 groups)
+Test 5: MIN/MAX/SUM/COUNT with NULL values ... OK (2 groups, NULL handling verified)
+Test 6: CHAR GROUP BY with index scan ... OK (3 groups, CHAR GROUP BY with index scan)
+Test 7: 4-way join with composite key ... OK (2 groups, 4-way join with composite key)
+Test 8: Arithmetic expression (Mul + Minus) ... OK (2 groups, arithmetic expression)
+Test 9: Empty result (filter rejects all) ... OK (0 groups, empty result)
+Test 10: High cardinality GROUP BY (20 groups) ... OK (20 groups, SUM=MIN=MAX verified)
+Test 11: Global aggregation on 3-way join ... OK (COUNT=3 SUM=900 MIN=100 MAX=500)
+Test 12: All-NULL aggregation column ... OK (2 groups, all-NULL vs non-NULL verified)
+Test 13: Forced eviction (ERROR_INSERT 4040) GROUP BY ... OK (20 groups, eviction merge verified)
+Test 14: Forced eviction (ERROR_INSERT 5090) GROUP BY ... OK (10 groups, maxGroups=3 eviction merge verified)
+Test 15: Eviction 5090 with SUM/COUNT/MIN/MAX ... OK (10 groups, all 4 agg functions merge verified)
+Test 16: Eviction 5090 on 3-way join ... OK (8 groups, 3-way join eviction merge verified)
+Test 17: Combined eviction 5090 + 4040 ... OK (10 groups, dual eviction merge verified)
+Test 18: Multi-fragment aggregation (2000 rows, 16 frags) ... OK (20 groups, multi-fragment SCAN_NEXTREQ verified)
+Test 19: Multi-fragment + eviction 5090 (2000 rows, 16 frags) ... OK (20 groups, multi-fragment eviction merge verified)
+Test 20: SETUP_REF error handling (ERROR_INSERT 5091) ... OK (SETUP_REF handled, cleanup verified)
+Test 21: Early query close ... OK (early close handled, cleanup verified)
+Test 22: COMPLETE_REF error handling (ERROR_INSERT 5092) ... OK (COMPLETE_REF handled, cleanup verified)
+
+All tests PASSED
 PASSED
 DROP DATABASE IF EXISTS test_db;
