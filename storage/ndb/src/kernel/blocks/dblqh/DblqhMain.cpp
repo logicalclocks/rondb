@@ -11669,7 +11669,6 @@ Dblqh::acckeyconf_tupkeyreq(Signal* signal, TcConnectionrec* regTcPtr,
     if (unlikely(copyError != 0)) {
       jam();
       TupKeyRef *ref = (TupKeyRef *)signal->getDataPtr();
-      ref->userRef = regTcPtr->userpointer;
       ref->errorCode = copyError;
       ref->noExecInstructions = 0;
       execTUPKEYREF(signal);
