@@ -3896,12 +3896,11 @@ int runFragmentedScanOtherApi(NDBT_Context *ctx, NDBT_Step *step) {
    * testing TC cleanup of fragmented signals from a
    * failed API
    */
-  /* SEND > ((2 * MAX_SEND_MESSAGE_BYTESIZE) + SOME EXTRA)
-   * This way we get at least 3 fragments
-   * However, as this is generally > 64kB, it's too much AttrInfo for
-   * a ScanTabReq, so the 'success' case returns error 874
+  /* Must exceed ZATTR_BUFFER_SIZE (32768) so that TUP rejects the scan
+   * with error 874 (too much AttrInfo).  Also > 2 * MAX_SEND_MESSAGE_BYTESIZE
+   * so the signal is fragmented into 3+ pieces.
    */
-  const Uint32 PROG_WORDS = 16500;
+  const Uint32 PROG_WORDS = 33000;
 
   /* Use heap rather than stack as stack is too small in
    * STEP thread
