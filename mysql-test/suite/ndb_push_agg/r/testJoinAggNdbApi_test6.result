@@ -1,3 +1,10 @@
 Running testJoinAggNdbApi --only 6
+=== testJoinAggNdbApi ===
+Connect string: #
+MySQL port: #
+
+Test 6: CHAR GROUP BY with index scan ... OK (3 groups, CHAR GROUP BY with index scan)
+
+All tests PASSED
 PASSED
 DROP DATABASE IF EXISTS test_db;

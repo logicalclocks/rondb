@@ -1802,121 +1802,150 @@ testCharGroupByWithIndex(Ndb *ndb, MYSQL *conn)
   fflush(stdout);
 
   NdbDictionary::Dictionary *dict = ndb->getDictionary();
-  dict->removeCachedIndex("idx_cat_name", T6_CATEGORY);
-  dict->removeCachedTable(T6_CATEGORY);
-  dict->removeCachedTable(T6_PRODUCT);
-  const NdbDictionary::Table *catTab = dict->getTable(T6_CATEGORY);
-  const NdbDictionary::Table *prodTab = dict->getTable(T6_PRODUCT);
-  const NdbDictionary::Index *catIdx =
-      dict->getIndex("idx_cat_name", T6_CATEGORY);
-  if (catTab == nullptr || prodTab == nullptr || catIdx == nullptr) {
-    printf("FAILED (table/index lookup: %s)\n", dict->getNdbError().message);
-    return -1;
-  }
-  V("\n  catTab: id=%d ver=%d  prodTab: id=%d ver=%d\n",
-    catTab->getObjectId(), catTab->getObjectVersion(),
-    prodTab->getObjectId(), prodTab->getObjectVersion());
-  V("  catIdx: id=%d ver=%d\n",
-    catIdx->getObjectId(), catIdx->getObjectVersion());
 
-  const NdbDictionary::Column *catNameCol = catTab->getColumn("cat_name");
-  if (catNameCol == nullptr) {
-    printf("FAILED (column lookup)\n");
-    return -1;
-  }
+  /* Retry loop: DBSPJ may reject the pushed query with error 1227
+   * (Invalid schema version) if DBLQH has a different schema version
+   * than what the NDB API's GlobalDictCache returns.
+   *
+   * Root cause: removeCachedTable() calls release() WITHOUT the
+   * invalidate flag.  If the GlobalDictCache entry has refCount > 0,
+   * it silently stays in cache.  The next getTable() finds it and
+   * returns the stale version — never going to DBDICT for a refresh.
+   *
+   * Fix: use invalidateTable() which calls release() WITH the
+   * invalidate flag, marking the entry as DROPPED so it gets
+   * deleted from GlobalDictCache.  Then getTable() must go to
+   * DBDICT for a fresh copy with the correct schema version. */
+  const int MAX_SCHEMA_RETRIES = 3;
+  NdbAggregator *resultAgg = nullptr;
+  NdbQuery *query = nullptr;
+  NdbTransaction *trans = nullptr;
+  const NdbQueryDef *queryDef = nullptr;
 
-  NdbAggregator agg(prodTab);
-  if (!agg.GroupByLinked(0, catNameCol) ||
-      !agg.LoadColumn("price", 0) ||
-      !agg.Sum(0, 0) ||
-      !agg.Finalize()) {
-    printf("FAILED (agg program: %s)\n", agg.GetError().err_msg_);
-    return -1;
-  }
-
-  /* Warm-up: simple index scan to force NDB API schema version sync
-   * with data nodes before building the pushed query. */
-  {
-    NdbTransaction *warmup = ndb->startTransaction();
-    if (warmup != nullptr) {
-      NdbIndexScanOperation *sop =
-          warmup->getNdbIndexScanOperation(catIdx, catTab);
-      if (sop != nullptr) {
-        sop->readTuples(NdbOperation::LM_CommittedRead);
-        if (warmup->execute(NdbTransaction::NoCommit) == 0) {
-          sop->nextResult(true);
-        }
-      }
-      warmup->close();
+  for (int attempt = 0; attempt < MAX_SCHEMA_RETRIES; attempt++) {
+    /* invalidateTable/invalidateIndex force the GlobalDictCache
+     * entry to be marked DROPPED, unlike removeCachedTable which
+     * only decrements refCount and may leave the stale entry. */
+    dict->invalidateIndex("idx_cat_name", T6_CATEGORY);
+    dict->invalidateTable(T6_CATEGORY);
+    dict->invalidateTable(T6_PRODUCT);
+    const NdbDictionary::Table *catTab = dict->getTable(T6_CATEGORY);
+    const NdbDictionary::Table *prodTab = dict->getTable(T6_PRODUCT);
+    const NdbDictionary::Index *catIdx =
+        dict->getIndex("idx_cat_name", T6_CATEGORY);
+    if (catTab == nullptr || prodTab == nullptr || catIdx == nullptr) {
+      printf("FAILED (table/index lookup: %s)\n", dict->getNdbError().message);
+      return -1;
     }
-  }
+    V("\n  [attempt %d] catTab: id=%d ver=0x%x  prodTab: id=%d ver=0x%x  "
+       "catIdx: id=%d ver=0x%x\n",
+      attempt,
+      catTab->getObjectId(), catTab->getObjectVersion(),
+      prodTab->getObjectId(), prodTab->getObjectVersion(),
+      catIdx->getObjectId(), catIdx->getObjectVersion());
 
-  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+    const NdbDictionary::Column *catNameCol = catTab->getColumn("cat_name");
+    if (catNameCol == nullptr) {
+      printf("FAILED (column lookup)\n");
+      return -1;
+    }
 
-  /* Index bound: cat_name >= 'A' AND cat_name <= 'Z'
-   * Use constValue(const char*) which auto-pads to column byte size */
-  const NdbQueryOperand *lowKey[] = {
-    qb->constValue("A"), nullptr
-  };
-  const NdbQueryOperand *highKey[] = {
-    qb->constValue("Z"), nullptr
-  };
-  NdbQueryIndexBound bound(lowKey, true, highKey, true);
+    NdbAggregator agg(prodTab);
+    if (!agg.GroupByLinked(0, catNameCol) ||
+        !agg.LoadColumn("price", 0) ||
+        !agg.Sum(0, 0) ||
+        !agg.Finalize()) {
+      printf("FAILED (agg program: %s)\n", agg.GetError().err_msg_);
+      return -1;
+    }
 
-  const NdbQueryIndexScanOperationDef *catOp =
-      qb->scanIndex(catIdx, catTab, &bound);
-  if (catOp == nullptr) {
-    printf("FAILED (scanIndex: %s)\n", qb->getNdbError().message);
+    NdbQueryBuilder *qb = NdbQueryBuilder::create();
+
+    const NdbQueryOperand *lowKey[] = {
+      qb->constValue("A"), nullptr
+    };
+    const NdbQueryOperand *highKey[] = {
+      qb->constValue("Z"), nullptr
+    };
+    NdbQueryIndexBound bound(lowKey, true, highKey, true);
+
+    const NdbQueryIndexScanOperationDef *catOp =
+        qb->scanIndex(catIdx, catTab, &bound);
+    if (catOp == nullptr) {
+      printf("FAILED (scanIndex: %s)\n", qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+
+    const NdbQueryOperand *joinKey[] = {
+      qb->linkedValue(catOp, "id"), nullptr
+    };
+
+    NdbQueryOptions opts;
+    opts.setAggregation(agg);
+    const NdbLinkedOperand *catNameLink = qb->linkedValue(catOp, "cat_name");
+    opts.addLinkedProjection(catNameLink);
+
+    const NdbQueryLookupOperationDef *prodOp =
+        qb->readTuple(prodTab, joinKey, &opts);
+    if (prodOp == nullptr) {
+      printf("FAILED (readTuple: %s)\n", qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
+
+    queryDef = qb->prepare(ndb);
+    if (queryDef == nullptr) {
+      printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+      qb->destroy();
+      return -1;
+    }
     qb->destroy();
-    return -1;
+
+    trans = ndb->startTransaction();
+    query = trans->createQuery(queryDef);
+
+    if (trans->execute(NdbTransaction::NoCommit) != 0) {
+      int errCode = trans->getNdbError().code;
+      if (errCode == 1227 && attempt < MAX_SCHEMA_RETRIES - 1) {
+        printf("(schema retry %d) ", attempt + 1);
+        fflush(stdout);
+        trans->close();
+        queryDef->destroy();
+        continue;
+      }
+      printf("FAILED (execute: code=%d %s)\n",
+             errCode, trans->getNdbError().message);
+      trans->close();
+      queryDef->destroy();
+      return -1;
+    }
+
+    NdbQuery::NextResultOutcome outcome;
+    while ((outcome = query->nextResult(true)) ==
+           NdbQuery::NextResult_gotRow) {}
+    if (outcome == NdbQuery::NextResult_error) {
+      int errCode = query->getNdbError().code;
+      if (errCode == 1227 && attempt < MAX_SCHEMA_RETRIES - 1) {
+        printf("(schema retry %d) ", attempt + 1);
+        fflush(stdout);
+        query->close();
+        trans->close();
+        queryDef->destroy();
+        continue;
+      }
+      printf("FAILED (nextResult: code=%d %s)\n",
+             errCode, query->getNdbError().message);
+      query->close();
+      trans->close();
+      queryDef->destroy();
+      return -1;
+    }
+
+    resultAgg = query->getAggregator();
+    break;  /* Success — exit retry loop */
   }
 
-  const NdbQueryOperand *joinKey[] = {
-    qb->linkedValue(catOp, "id"), nullptr
-  };
-
-  NdbQueryOptions opts;
-  opts.setAggregation(agg);
-  const NdbLinkedOperand *catNameLink = qb->linkedValue(catOp, "cat_name");
-  opts.addLinkedProjection(catNameLink);
-
-  const NdbQueryLookupOperationDef *prodOp =
-      qb->readTuple(prodTab, joinKey, &opts);
-  if (prodOp == nullptr) {
-    printf("FAILED (readTuple: %s)\n", qb->getNdbError().message);
-    qb->destroy();
-    return -1;
-  }
-
-  const NdbQueryDef *queryDef = qb->prepare(ndb);
-  if (queryDef == nullptr) {
-    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
-    qb->destroy();
-    return -1;
-  }
-  qb->destroy();
-
-  NdbTransaction *trans = ndb->startTransaction();
-  NdbQuery *query = trans->createQuery(queryDef);
-
-  if (trans->execute(NdbTransaction::NoCommit) != 0) {
-    printf("FAILED (execute: %s)\n", trans->getNdbError().message);
-    trans->close();
-    queryDef->destroy();
-    return -1;
-  }
-
-  NdbQuery::NextResultOutcome outcome;
-  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {}
-  if (outcome == NdbQuery::NextResult_error) {
-    printf("FAILED (nextResult: %s)\n", query->getNdbError().message);
-    query->close();
-    trans->close();
-    queryDef->destroy();
-    return -1;
-  }
-
-  NdbAggregator *resultAgg = query->getAggregator();
   if (resultAgg == nullptr) {
     printf("FAILED (getAggregator returned nullptr)\n");
     query->close();

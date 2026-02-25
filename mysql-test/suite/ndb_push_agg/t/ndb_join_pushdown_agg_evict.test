@@ -310,3 +310,4 @@ GROUP BY t1.grp;
 
 --echo # Cleanup
 DROP TABLE t3, t2, t1;
+--remove_file $NDB_TOOLS_OUTPUT

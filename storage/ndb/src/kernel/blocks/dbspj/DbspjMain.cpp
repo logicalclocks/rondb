@@ -9300,10 +9300,16 @@ Uint32 Dbspj::appendFromParent(Uint32 &dst, Local_pattern_store &pattern,
     case QueryPattern::P_ATTRINFO:
       jam();
       if (addTableMeta) {
+        // Use the primary table's version (not index table version).
+        // m_schemaVersion is the index table version for index scans,
+        // but linked attr data is validated against primaryTableId in DBLQH.
+        TableRecordPtr primaryTabRec;
+        primaryTabRec.i = treeNodePtr.p->m_primaryTableId;
+        ptrAss(primaryTabRec, m_tableRecord);
         return appendAttrinfoWithTableMeta(
             dst, targetRow.m_row_data, val,
             treeNodePtr.p->m_primaryTableId,
-            treeNodePtr.p->m_schemaVersion, hasNull);
+            primaryTabRec.p->m_currentSchemaVersion, hasNull);
       } else {
         return appendAttrinfoToSection(dst, targetRow.m_row_data, val, hasNull);
       }
@@ -9413,10 +9419,14 @@ Uint32 Dbspj::expand(Uint32 &_dst, Local_pattern_store &pattern,
         if (addTableMeta) {
           Ptr<TreeNode> srcNode;
           ndbrequire(m_treenode_pool.getPtr(srcNode, row.m_src_node_ptrI));
+          // Use primary table's version (not index table version).
+          TableRecordPtr primaryTabRec;
+          primaryTabRec.i = srcNode.p->m_primaryTableId;
+          ptrAss(primaryTabRec, m_tableRecord);
           err = appendAttrinfoWithTableMeta(
               dst, row.m_row_data, val,
               srcNode.p->m_primaryTableId,
-              srcNode.p->m_schemaVersion, hasNull);
+              primaryTabRec.p->m_currentSchemaVersion, hasNull);
         } else {
           err = appendAttrinfoToSection(dst, row.m_row_data, val, hasNull);
         }
