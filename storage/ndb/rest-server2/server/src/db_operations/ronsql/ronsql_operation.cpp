@@ -52,13 +52,17 @@ RS_Status ronsql_op(RonSQLExecParams& params) {
       if (is_last_attempt) {
         err << "Caught RonSQLRetryableError after " << max_attempts
             << " attempts: " << e.what() << ".\n";
-        return RS_SERVER_ERROR(std::string(rdrsErrorMessage(ERROR_RONSQL_TEMPORARY)));
+        return RS_SERVER_ERROR(
+            std::string(rdrsErrorMessage(ERROR_RONSQL_TEMPORARY)) +
+            " Detail: " + e.what());
       }
       ndb_retry_sleep(50);
     }
     catch (RonSQLPermanentError& e) {
       err << "Caught exception: " << e.what() << "\n";
-      return RS_SERVER_ERROR(std::string(rdrsErrorMessage(ERROR_RONSQL_PERMANENT)));
+      return RS_SERVER_ERROR(
+          std::string(rdrsErrorMessage(ERROR_RONSQL_PERMANENT)) +
+          " Detail: " + e.what());
     }
     catch (...) {
       // This should never happen

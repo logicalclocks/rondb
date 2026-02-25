@@ -1,3 +1,5 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
 SET time_zone = "+00:00";
 Row count boundary_orderby:
 SELECT count(*) FROM boundary_orderby;
@@ -480,34 +482,6 @@ ORDER BY c_a ASC, c_b ASC, c_c ASC;
 Number of output lines, including header: 13
 
 == Diff ==
---- mysql.out
-+++ ronsql.out
-@@ -1,13 +1,13 @@
- c_a	c_b	c_c	count(*)	sum(val)	min(val)	max(val)	avg(val)
--NULL	NULL	NULL	4	100	10	40	25.0000
--NULL	10	100	4	100	10	40	25.0000
--1	10	100	4	100	10	40	25.0000
--1	10	200	4	100	10	40	25.0000
--1	20	100	4	100	10	40	25.0000
--1	20	200	4	100	10	40	25.0000
--2	10	100	4	100	10	40	25.0000
--2	10	200	4	100	10	40	25.0000
--2	20	100	4	100	10	40	25.0000
--2	20	200	4	100	10	40	25.0000
--3	10	100	4	100	10	40	25.0000
--3	20	200	4	100	10	40	25.0000
-+NULL	NULL	NULL	4	100	10	40	25
-+NULL	10	100	4	100	10	40	25
-+1	10	100	4	100	10	40	25
-+1	10	200	4	100	10	40	25
-+1	20	100	4	100	10	40	25
-+1	20	200	4	100	10	40	25
-+2	10	100	4	100	10	40	25
-+2	10	200	4	100	10	40	25
-+2	20	100	4	100	10	40	25
-+2	20	200	4	100	10	40	25
-+3	10	100	4	100	10	40	25
-+3	20	200	4	100	10	40	25
 ==========
 
 

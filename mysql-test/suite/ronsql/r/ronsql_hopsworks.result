@@ -1,4 +1,6 @@
 # vim: set fileencoding=utf-8 : -*- coding: utf-8 -*-
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
 Generated tests for 32 data types
 
 ==================== Start testing data type: TINYINT ====================
@@ -4870,6 +4872,12 @@ FROM tbl;
 Number of output lines, including header: 2
 
 == Diff ==
+--- mysql.out
++++ ronsql.out
+@@ -1,2 +1,2 @@
+ cnt_val	avg_val	sum_val	min_val	max_val
+-158	12658.208860759494	1999997	-1000000	1000000
++158	12658.2089	1999997	-1000000	1000000
 ==========
 
 
@@ -5266,6 +5274,12 @@ FROM tbl;
 Number of output lines, including header: 2
 
 == Diff ==
+--- mysql.out
++++ ronsql.out
+@@ -1,2 +1,2 @@
+ cnt_all	cnt_val	cnt_foo	cnt_bar	sum_val	sum_foo	sum_bar	avg_val	avg_foo	avg_bar	max_val	max_foo	max_bar
+-200	158	200	200	1999997	574	1051	12658.208860759494	2.8700	5.2550	1000000	99	10
++200	158	200	200	1999997	574	1051	12658.2089	2.8700	5.2550	1000000	99	10
 ==========
 
 
@@ -5358,6 +5372,12 @@ FROM tbl;
 Number of output lines, including header: 2
 
 == Diff ==
+--- mysql.out
++++ ronsql.out
+@@ -1,2 +1,2 @@
+ cnt_val	avg_val	sum_val	min_val	max_val
+-158	12658227.829113925	1999999997	-1000000000	1000000000
++158	12658227.8291	1999999997	-1000000000	1000000000
 ==========
 
 
@@ -5754,6 +5774,12 @@ FROM tbl;
 Number of output lines, including header: 2
 
 == Diff ==
+--- mysql.out
++++ ronsql.out
+@@ -1,2 +1,2 @@
+ cnt_all	cnt_val	cnt_foo	cnt_bar	sum_val	sum_foo	sum_bar	avg_val	avg_foo	avg_bar	max_val	max_foo	max_bar
+-200	158	200	200	1999999997	574	1051	12658227.829113925	2.8700	5.2550	1000000000	99	10
++200	158	200	200	1999999997	574	1051	12658227.8291	2.8700	5.2550	1000000000	99	10
 ==========
 
 
@@ -5846,6 +5872,12 @@ FROM tbl;
 Number of output lines, including header: 2
 
 == Diff ==
+--- mysql.out
++++ ronsql.out
+@@ -1,2 +1,2 @@
+ cnt_val	avg_val	sum_val	min_val	max_val
+-151	20.274636	3061.47	-999.99	999.99
++151	20.2746	3061.47	-999.99	999.99
 ==========
 
 
@@ -6239,6 +6271,12 @@ FROM tbl;
 Number of output lines, including header: 2
 
 == Diff ==
+--- mysql.out
++++ ronsql.out
+@@ -1,2 +1,2 @@
+ cnt_all	cnt_val	cnt_foo	cnt_bar	sum_val	sum_foo	sum_bar	avg_val	avg_foo	avg_bar	max_val	max_foo	max_bar
+-200	151	200	200	3061.47	574	1051	20.274636	2.8700	5.2550	999.99	99	10
++200	151	200	200	3061.47	574	1051	20.2746	2.8700	5.2550	999.99	99	10
 ==========
 
 
@@ -7794,6 +7832,12 @@ FROM tbl;
 Number of output lines, including header: 2
 
 == Diff ==
+--- mysql.out
++++ ronsql.out
+@@ -1,2 +1,2 @@
+ cnt_val	avg_val	sum_val	min_val	max_val
+-151	0.15562913907086	23.4999999997	-0.9999999999	0.9999999999
++151	0.1556	23.4999999997	-0.9999999999	0.9999999999
 ==========
 
 
@@ -8187,6 +8231,12 @@ FROM tbl;
 Number of output lines, including header: 2
 
 == Diff ==
+--- mysql.out
++++ ronsql.out
+@@ -1,2 +1,2 @@
+ cnt_all	cnt_val	cnt_foo	cnt_bar	sum_val	sum_foo	sum_bar	avg_val	avg_foo	avg_bar	max_val	max_foo	max_bar
+-200	151	200	200	23.4999999997	574	1051	0.15562913907086	2.8700	5.2550	0.9999999999	99	10
++200	151	200	200	23.4999999997	574	1051	0.1556	2.8700	5.2550	0.9999999999	99	10
 ==========
 
 

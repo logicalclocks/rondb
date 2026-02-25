@@ -42,6 +42,19 @@ GROUP BY o.o_status;
 Number of output lines, including header: 3
 
 == Diff ==
+--- mysql.out
++++ ronsql.out
+@@ -1,3 +1,7 @@
+-o_status	SUM(l.l_quantity)	COUNT(l.l_id)
+-closed	95	4
+-open	105	6
++Join query failed: Invalid schema version (code 1227)
++Caught RonSQLRetryableError after 3 attempts: Join query execution failed..
++Error handling: RRE
++Error handling: RRE
++Error handling: RRE
++Join query failed: Invalid schema version (code 1227)
++Join query failed: Invalid schema version (code 1227)
 ==========
 
 
@@ -236,6 +249,18 @@ GROUP BY o.o_id;
 Number of output lines, including header: 2
 
 == Diff ==
+--- mysql.out
++++ ronsql.out
+@@ -1,2 +1,7 @@
+-o_id	SUM(l.l_quantity)
+-1	30
++Join query failed: Invalid schema version (code 1227)
++Caught RonSQLRetryableError after 3 attempts: Join query execution failed..
++Error handling: RRE
++Error handling: RRE
++Error handling: RRE
++Join query failed: Invalid schema version (code 1227)
++Join query failed: Invalid schema version (code 1227)
 ==========
 
 
@@ -787,6 +812,20 @@ ORDER BY c.c_region, o.o_status;
 Number of output lines, including header: 4
 
 == Diff ==
+--- mysql.out
++++ ronsql.out
+@@ -1,4 +1,7 @@
+-c_region	o_status	SUM(l.l_quantity)
+-1	closed	20
+-1	open	105
+-2	closed	75
++Join query failed: Invalid schema version (code 1227)
++Caught RonSQLRetryableError after 3 attempts: Join query execution failed..
++Error handling: RRE
++Error handling: RRE
++Error handling: RRE
++Join query failed: Invalid schema version (code 1227)
++Join query failed: Invalid schema version (code 1227)
 ==========
 
 

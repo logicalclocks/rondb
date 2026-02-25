@@ -1,4 +1,6 @@
 # vim: set fileencoding=utf-8 : -*- coding: utf-8 -*-
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
 ===== Null byte at beginning =====
 Input contains null byte at position 0.
 Error handling: RPE

@@ -1,4 +1,6 @@
 # vim: set fileencoding=utf-8 : -*- coding: utf-8 -*-
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
 CREATE DATABASE db1;
 USE db1;
 Create test table api_scan with 1000 rows

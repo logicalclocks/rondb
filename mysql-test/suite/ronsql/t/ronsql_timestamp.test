@@ -1,4 +1,6 @@
 --source include/have_ndb.inc
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
 
 # RonSQL doesn't support time zones yet, and works as if in UTC. MySQL uses
 # system time zone, but it seems mtr somehow sets it to +03:00 before this test

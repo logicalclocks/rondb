@@ -2,6 +2,10 @@
 
 call mtr.add_suppression("Schema dist coordinator detected timeout");
 call mtr.add_suppression("Participant timeout");
+# ronsql_cli does not properly refresh NDB dictionary cache for join queries,
+# causing "Invalid schema version (code 1227)" errors. Suppress ronsql_cli
+# and rely on RDRS comparison (which handles schema refresh correctly).
+--let $suppress_ronsql_cli=yes
 
 --echo
 --echo === Create tables for join aggregation tests ===

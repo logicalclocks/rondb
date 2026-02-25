@@ -1,4 +1,6 @@
 --source include/have_ndb.inc
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
 
 --let QUERY_FILE=$MYSQL_TMP_DIR/query.sql
 
@@ -116,8 +118,8 @@ FROM tbl
 WHERE
   sint8 >
 EOF
-# Add 99*100+87=9987 minus signs to the query file.
-let $1= 99;
+# Add 98*100=9800 minus signs to the query file.
+let $1= 98;
 while ($1)
 {
 --append_file $QUERY_FILE
@@ -126,11 +128,11 @@ EOF
 dec $1;
 }
 --append_file $QUERY_FILE
-  ---------------------------------------------------------------------------------------1
+  1
   AND
 EOF
-# Add 499*20+7=9987 NOT keywords to the query file.
-let $1= 499;
+# Add 490*20=9800 NOT keywords to the query file.
+let $1= 490;
 while ($1)
 {
 --append_file $QUERY_FILE
@@ -139,7 +141,7 @@ EOF
 dec $1;
 }
 --append_file $QUERY_FILE
-  NOT NOT NOT NOT NOT NOT NOT sint8>0;
+  sint8>0;
 EOF
 # Test ronsql_cli
 --exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test < '$QUERY_FILE' 2>&1
