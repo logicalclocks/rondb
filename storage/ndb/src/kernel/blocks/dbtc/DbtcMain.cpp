@@ -6177,6 +6177,16 @@ void Dbtc::execSIGNAL_DROPPED_REP(Signal *signal) {
       regApiPtr->transid[1] = transId2;
       regApiPtr->returncode = ZGET_DATAREC_ERROR;
 
+      /* Clear TF_NOT_OUTSTANDING_FLAG since the dropped TCKEYREQ
+       * represents an outstanding operation from the API's perspective.
+       * The normal TCKEYREQ processing path clears this flag, but
+       * a dropped signal never reaches that code. Without clearing it,
+       * releaseAbortResources() will not send the error response back
+       * to the API, causing the API to hang waiting for a response.
+       */
+      tc_clearbit(regApiPtr->m_flags,
+                  ApiConnectRecord::TF_NOT_OUTSTANDING_FLAG);
+
       /* Set m_exec_flag according to the dropped request */
       regApiPtr->m_flags |=
           TcKeyReq::getExecuteFlag(truncatedTcKeyReq->requestInfo)
