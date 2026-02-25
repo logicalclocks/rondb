@@ -263,11 +263,11 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
         GBHashEntry new_aggs{agg_rec + gb_cols_len, agg_res_len};
 
         // RONDB-831: COUNT() over zero rows should result in 0, not NULL.
-        // Therefore, replace NULLs with 0 for all COUNT results.
+        // Therefore, replace NULLs/UNDEFINED with 0 for all COUNT results.
         for (Uint32 i = 0; i < n_agg_results_; i++) {
           if (agg_ops_[i] == kOpCount) {
             AggResItem* item = reinterpret_cast<AggResItem*>(new_aggs.ptr) + i;
-            if (item->is_null) {
+            if (item->is_null || item->type == NDB_TYPE_UNDEFINED) {
               item->type = NDB_TYPE_BIGINT;
               item->is_unsigned = 1;
               item->is_null = false;
@@ -289,17 +289,30 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
         DEB_TRACE();
         for (Uint32 i = 0; i < n_agg_results; i++) {
           DEB_TRACE();
-          assert(((res[i].type == NDB_TYPE_BIGINT &&
-                  (res[i].is_unsigned == agg_res_ptr[i].is_unsigned ||
-                   agg_res_ptr[i].is_null)) ||
-                  res[i].type == NDB_TYPE_DOUBLE) &&
-                  res[i].type == agg_res_ptr[i].type);
+          // Handle NDB_TYPE_UNDEFINED and NULL cases before merging.
+          // Mirrors kernel mergeAccumulators() logic.
+          if (res[i].type == NDB_TYPE_UNDEFINED) {
+            continue;
+          }
+          if (agg_res_ptr[i].type == NDB_TYPE_UNDEFINED) {
+            agg_res_ptr[i] = res[i];
+            continue;
+          }
           if (res[i].is_null) {
             DEB_TRACE();
-          } else if (agg_res_ptr[i].is_null) {
+            continue;
+          }
+          if (agg_res_ptr[i].is_null) {
             DEB_TRACE();
             agg_res_ptr[i] = res[i];
-          } else {
+            continue;
+          }
+          // Both sides are non-null with real types — check consistency.
+          assert(((res[i].type == NDB_TYPE_BIGINT &&
+                  res[i].is_unsigned == agg_res_ptr[i].is_unsigned) ||
+                  res[i].type == NDB_TYPE_DOUBLE) &&
+                  res[i].type == agg_res_ptr[i].type);
+          {
             DEB_TRACE();
             agg_res_ptr[i].type = res[i].type;
             agg_res_ptr[i].is_unsigned = res[i].is_unsigned;
@@ -884,14 +897,12 @@ bool NdbAggregator::GroupBy(const char* name) {
   result_size_est_ += (sizeof(AttributeHeader) + ((col->getSizeInBytes() + 3) & (~3)));
 
   gb_col_ids_[n_gb_cols_] = col_id;
+  gb_columns_[n_gb_cols_] = col;
   n_gb_cols_++;
 
   if (col->getStorageType() == NDB_STORAGETYPE_DISK) {
     disk_columns_ = true;
   }
-
-  gb_columns_[n_gb_cols_] = col;
-  n_gb_cols_++;
 
   return true;
 }
@@ -1025,9 +1036,12 @@ bool NdbAggregator::Finalize() {
     gb_cmp_ctx_.n_cols = n_gb_cols_;
     bool all_binary = true;
     for (Uint32 i = 0; i < n_gb_cols_; i++) {
-      const NdbDictionary::Column* col =
-          table_impl_->getColumn(gb_col_ids_[i]);
-      assert(col != nullptr);
+      const NdbDictionary::Column* col = gb_columns_[i];
+      if (col == nullptr) {
+        // Linked column without metadata — skip charset check,
+        // kernel handles collation for linked columns.
+        continue;
+      }
       gb_cmp_ctx_.col_meta[i].typeId = (Uint32)col->getType();
       gb_cmp_ctx_.col_meta[i].cs = col->getCharset();
       if (col->getCharset() != nullptr) {

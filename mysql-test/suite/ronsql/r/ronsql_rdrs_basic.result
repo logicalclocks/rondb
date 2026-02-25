@@ -94,7 +94,7 @@ Warning	1681	Integer display width is deprecated and will be removed in a future
 == Valid API key not authorized for db2 ==
 API key not authorized to access db2
 == Invalid API key attempted for db1 ==
-API key found in cache but invalid
+API key found in cache but is invalid
 == Invalid API key attempted for db2 ==
 API key found in cache but is invalid
 ===== Test explain mode =====
@@ -350,46 +350,46 @@ The program for post-processing and output has 8 instructions.
 UPDATE db1.api_scan SET cchar = 'GROUPåäö_2' where cchar = 'GROUPxxx_2';
 == CLI, SELECT, outputFormat=JSON ==
 [{"c":null,"max(sint16)":32566}
+,{"c":"GROUPåäö_2","max(sint16)":32679}
 ,{"c":"GROUPxxx_1","max(sint16)":32312}
 ,{"c":"GROUPxxx_3","max(sint16)":32675}
 ,{"c":"GROUPxxx_4","max(sint16)":31560}
-,{"c":"GROUPåäö_2","max(sint16)":32679}
 ]
 == RDRS, SELECT, outputFormat=JSON ==
 {"data":
 [{"c":null,"max(sint16)":32566}
+,{"c":"GROUPåäö_2","max(sint16)":32679}
 ,{"c":"GROUPxxx_1","max(sint16)":32312}
 ,{"c":"GROUPxxx_3","max(sint16)":32675}
 ,{"c":"GROUPxxx_4","max(sint16)":31560}
-,{"c":"GROUPåäö_2","max(sint16)":32679}
 ]
 }
 == CLI, SELECT, outputFormat=TEXT ==
 c	max(sint16)
 NULL	32566
+GROUPåäö_2	32679
 GROUPxxx_1	32312
 GROUPxxx_3	32675
 GROUPxxx_4	31560
-GROUPåäö_2	32679
 == RDRS, SELECT, outputFormat=TEXT ==
 c	max(sint16)
 NULL	32566
+GROUPåäö_2	32679
 GROUPxxx_1	32312
 GROUPxxx_3	32675
 GROUPxxx_4	31560
-GROUPåäö_2	32679
 == CLI, SELECT, outputFormat=TEXT_NOHEADER ==
 NULL	32566
+GROUPåäö_2	32679
 GROUPxxx_1	32312
 GROUPxxx_3	32675
 GROUPxxx_4	31560
-GROUPåäö_2	32679
 == RDRS, SELECT, outputFormat=TEXT_NOHEADER ==
 NULL	32566
+GROUPåäö_2	32679
 GROUPxxx_1	32312
 GROUPxxx_3	32675
 GROUPxxx_4	31560
-GROUPåäö_2	32679
 == CLI, EXPLAIN SELECT, outputFormat=TEXT ==
 Query parse tree:
 SELECT
@@ -482,19 +482,19 @@ The program for post-processing and output has 8 instructions.
 == Before ALTER TABLE, old query via RDRS ==
 {"data":
 [{"c":null,"max(sint16)":32566}
+,{"c":"GROUPåäö_2","max(sint16)":32679}
 ,{"c":"GROUPxxx_1","max(sint16)":32312}
 ,{"c":"GROUPxxx_3","max(sint16)":32675}
 ,{"c":"GROUPxxx_4","max(sint16)":31560}
-,{"c":"GROUPåäö_2","max(sint16)":32679}
 ]
 }
 == Before ALTER TABLE, old query via CLI ==
 c	max(sint16)
 NULL	32566
+GROUPåäö_2	32679
 GROUPxxx_1	32312
 GROUPxxx_3	32675
 GROUPxxx_4	31560
-GROUPåäö_2	32679
 == Before ALTER TABLE, new query via RDRS ==
 Failed to get column `sint16_altered`.
 Note that column names are case sensitive.
@@ -516,17 +516,17 @@ ronsql_cli caught exception: Could not find column (column names are case sensit
 == After ALTER TABLE, new query via CLI ==
 c	max(sint16_altered)
 NULL	32566
+GROUPåäö_2	32679
 GROUPxxx_1	32312
 GROUPxxx_3	32675
 GROUPxxx_4	31560
-GROUPåäö_2	32679
 == After ALTER TABLE, new query via RDRS ==
 {"data":
 [{"c":null,"max(sint16_altered)":32566}
+,{"c":"GROUPåäö_2","max(sint16_altered)":32679}
 ,{"c":"GROUPxxx_1","max(sint16_altered)":32312}
 ,{"c":"GROUPxxx_3","max(sint16_altered)":32675}
 ,{"c":"GROUPxxx_4","max(sint16_altered)":31560}
-,{"c":"GROUPåäö_2","max(sint16_altered)":32679}
 ]
 }
 ===== Cleanup =====

@@ -259,7 +259,7 @@ class AggInterpreter {
                  Uint32 thread_id):
     m_prog(nullptr), m_prog_len(prog_len), m_cur_pos(0),
     m_inited(false), m_n_gb_cols(0), m_gb_cols(nullptr),
-    gb_cmp_inited_(false),
+    m_gb_cmp_inited(false),
     m_n_agg_results(0),
     m_agg_results(nullptr), m_agg_prog_start_pos(0),
     m_gb_map(nullptr), m_n_groups(0),
@@ -419,8 +419,8 @@ class AggInterpreter {
 
   Uint32 m_n_gb_cols;
   Uint32* m_gb_cols;
-  GBCmpContext gb_cmp_ctx_;
-  bool gb_cmp_inited_;
+  GBCmpContext m_gb_cmp_ctx;
+  bool m_gb_cmp_inited;
   Uint32 m_n_agg_results;
   AggResItem* m_agg_results;
   Uint32 m_agg_prog_start_pos;

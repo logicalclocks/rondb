@@ -425,10 +425,9 @@ bool AggInterpreter::Init(const Uint32* prog) {
     while (i < m_n_gb_cols && m_cur_pos < m_prog_len) {
       m_gb_cols[i++] = m_prog[m_cur_pos++];
     }
-    gb_cmp_ctx_.n_cols = 0;
-    gb_cmp_ctx_.all_binary_cmp = false;
-    m_gb_map_buf = std::map<GBHashEntry, GBHashEntry, GBHashEntryCmp>(
-                     GBHashEntryCmp(&gb_cmp_ctx_));
+    m_gb_cmp_ctx.n_cols = 0;
+    m_gb_cmp_ctx.all_binary_cmp = false;
+    m_gb_map_buf->clear();
     m_gb_map = m_gb_map_buf;
     m_gb_map->init(GB_HASH_BUCKET_COUNT);
   }
@@ -1587,27 +1586,27 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
       }
     }
 
-    if (!gb_cmp_inited_) {
-      gb_cmp_ctx_.n_cols = n_gb_cols_;
+    if (!m_gb_cmp_inited) {
+      m_gb_cmp_ctx.n_cols = m_n_gb_cols;
       bool all_binary = true;
-      for (Uint32 i = 0; i < n_gb_cols_; i++) {
-        Uint32 attrId = gb_cols_[i] >> 16;
+      for (Uint32 i = 0; i < m_n_gb_cols; i++) {
+        Uint32 attrId = m_gb_cols[i] >> 16;
         const Uint32* attrDescriptor = req_struct->tablePtrP->tabDescriptor +
           (attrId * ZAD_SIZE);
         const Uint32 TattrDesc1 = attrDescriptor[0];
         const Uint32 TattrDesc2 = attrDescriptor[1];
-        gb_cmp_ctx_.col_meta[i].typeId =
+        m_gb_cmp_ctx.col_meta[i].typeId =
             AttributeDescriptor::getType(TattrDesc1);
-        gb_cmp_ctx_.col_meta[i].cs = nullptr;
+        m_gb_cmp_ctx.col_meta[i].cs = nullptr;
         if (AttributeOffset::getCharsetFlag(TattrDesc2)) {
           all_binary = false;
           const Uint32 pos = AttributeOffset::getCharsetPos(TattrDesc2);
-          gb_cmp_ctx_.col_meta[i].cs =
+          m_gb_cmp_ctx.col_meta[i].cs =
               req_struct->tablePtrP->charsetArray[pos];
         }
       }
-      gb_cmp_ctx_.all_binary_cmp = all_binary;
-      gb_cmp_inited_ = true;
+      m_gb_cmp_ctx.all_binary_cmp = all_binary;
+      m_gb_cmp_inited = true;
     }
 
     Uint32 len_in_char = m_attr_read_pos * sizeof(Uint32);
