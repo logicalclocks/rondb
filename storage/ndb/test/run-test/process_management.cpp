@@ -32,7 +32,12 @@ extern unsigned long long opt_mgm_tls;
 
 bool ProcessManagement::startAllProcesses() {
   if (clusterProcessesStatus == ProcessesStatus::RUNNING) {
-    g_logger.debug("All processes already RUNNING. No action required");
+    g_logger.debug("All processes already RUNNING, verifying NDB nodes started");
+    if (!verifyNdbNodesStarted()) {
+      g_logger.critical("NDB data nodes not in STARTED state");
+      clusterProcessesStatus = ProcessesStatus::ERROR;
+      return false;
+    }
     return true;
   }
 
@@ -480,6 +485,62 @@ bool ProcessManagement::waitNdb(int goal) {
   }
 
   return cnt == config.m_clusters.size();
+}
+
+bool ProcessManagement::verifyNdbNodesStarted() {
+  if (!connectNdbMgm()) {
+    g_logger.warning("Failed to connect to NDB management server");
+    return false;
+  }
+
+  time_t now = time(0);
+  time_t end = now + 120;
+
+  while (now < end) {
+    bool all_started = true;
+    for (unsigned i = 0; i < config.m_clusters.size(); i++) {
+      atrt_cluster *cluster = config.m_clusters[i];
+
+      if (strcmp(cluster->m_name.c_str(), ".atrt") == 0) continue;
+
+      NdbMgmHandle handle = 0;
+      for (unsigned j = 0; j < cluster->m_processes.size(); j++) {
+        atrt_process &proc = *cluster->m_processes[j];
+        if ((proc.m_type & atrt_process::AP_NDB_MGMD) != 0) {
+          handle = proc.m_ndb_mgm_handle;
+          break;
+        }
+      }
+
+      if (handle == 0) continue;
+
+      struct ndb_mgm_cluster_state *state = ndb_mgm_get_status(handle);
+      if (state == 0) {
+        g_logger.warning("Failed to get NDB status from management server");
+        all_started = false;
+        break;
+      }
+      NdbAutoPtr<void> tmp(state);
+
+      for (int j = 0; j < state->no_of_nodes; j++) {
+        if (state->node_states[j].node_type == NDB_MGM_NODE_TYPE_NDB) {
+          if (state->node_states[j].node_status != NDB_MGM_NODE_STATUS_STARTED) {
+            all_started = false;
+            break;
+          }
+        }
+      }
+      if (!all_started) break;
+    }
+
+    if (all_started) return true;
+
+    NdbSleep_SecSleep(1);
+    now = time(0);
+  }
+
+  g_logger.critical("Timed out waiting for NDB data nodes to reach STARTED state");
+  return false;
 }
 
 bool ProcessManagement::checkClusterStatus(int types) {

@@ -67,6 +67,7 @@ class ProcessManagement {
   bool connectNdbMgm(atrt_process &proc);
   bool checkClusterStatus(int types);
   bool waitNdb(int goal);
+  bool verifyNdbNodesStarted();
   int checkNdbOrServersFailures();
   bool updateStatus(int types, bool fail_on_missing = true);
   bool waitForProcessesToStop(int types = atrt_process::AP_ALL,

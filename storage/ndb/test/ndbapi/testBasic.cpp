@@ -1565,22 +1565,30 @@ int runDeleteRead(NDBT_Context *ctx, NDBT_Step *step) {
 
 int runBug27756(NDBT_Context *ctx, NDBT_Step *step) {
   Ndb *pNdb = GETNDB(step);
-  // NdbDictionary::Dictionary * dict = pNdb->getDictionary();
 
   HugoOperations ops(*ctx->getTab());
 
   int loops = ctx->getNumLoops();
-  //const int rows = ctx->getNumRecords();
 
   /**
-   * This test case will only work if we can fit 3 copy rows in
-   * the same page. Thus row size cannot go beyond around 10 kB
-   * for any table tested with this test. If it goes beyond this
-   * then each loop will use more than one copy page and the next
-   * loop will use the second page first. Thus it won't show a
-   * memory leak, but rather an inefficiency of the test case.
+   * Verify that copy tuples are properly freed during
+   * insert/update/delete with commit and rollback cycles.
+   *
+   * Copy tuples are allocated via lc_ndbd_pool_malloc which does not
+   * guarantee address reuse, so we use a DBTUP allocation counter
+   * (available in ERROR_INSERT builds) to detect leaks:
+   * - Save the counter before the loop
+   * - Run insert/update/delete cycles with mixed commit/rollback
+   * - Check the counter matches the saved value after the loop
+   * If they differ, the data node crashes (ndbrequire), causing
+   * the test to fail with FAILED(101).
    */
-  Vector<Uint64> copies;
+  NdbRestarter restarter;
+  int save = DumpStateOrd::TupSaveCopyTupleCount;
+  int check = DumpStateOrd::TupCheckCopyTupleCount;
+
+  restarter.dumpStateAllNodes(&save, 1);
+
   while (loops--) {
     ops.startTransaction(pNdb);
     ops.pkInsertRecord(pNdb, 1, 1);
@@ -1590,11 +1598,8 @@ int runBug27756(NDBT_Context *ctx, NDBT_Step *step) {
     NdbOperation *op = pTrans->getNdbOperation(ctx->getTab()->getName());
     op->interpretedUpdateTuple();
     ops.equalForRow(op, 1);
-    NdbRecAttr *attr = op->getValue(NdbDictionary::Column::COPY_ROWID);
     ops.execute_NoCommit(pNdb);
 
-    copies.push_back(attr->u_64_value());
-    ndbout_c("copy at: %llx", copies.back());
     ops.execute_NoCommit(pNdb);
 
     ops.pkDeleteRecord(pNdb, 1, 1);
@@ -1610,11 +1615,7 @@ int runBug27756(NDBT_Context *ctx, NDBT_Step *step) {
     }
   }
 
-  for (Uint32 i = 0; i < copies.size(); i++)
-    if (copies[i] != copies.back()) {
-      ndbout_c("Memleak detected");
-      return NDBT_FAILED;
-    }
+  restarter.dumpStateAllNodes(&check, 1);
 
   return NDBT_OK;
 }

@@ -5693,17 +5693,9 @@ sub ndb_extract_ndbd_log_info($$) {
   my $ndbd_log = "";
 
   if ($dump_out_file) {
-    my $ndbd_log_file_start_lines = 100;
-    my $ndbd_log_file_end_lines   = 200;
-    my $ndbd_log_file_name        = "$ndbd_log_path/ndbd.log";
-    my @log_lines = ndb_get_log_lines($ndbd_log_file_name,
-                                      $ndbd_log_file_start_lines,
-                                      $ndbd_log_file_end_lines);
+    my $ndbd_log_file_name = "$ndbd_log_path/ndbd.log";
     $ndbd_log =
-      $ndbd_log . "\nFailed data node output log ($ndbd_log_file_name):\n" .
-      "-----------FAILED DATA NODE OUTPUT LOG START--------\n" .
-      join("", @log_lines) .
-      "-----------FAILED DATA NODE OUTPUT LOG END----------\n";
+      $ndbd_log . "\nData node crash detected, output log: $ndbd_log_file_name\n";
   }
 
   # For all ndbds, we look for error and trace files
@@ -5711,27 +5703,14 @@ sub ndb_extract_ndbd_log_info($$) {
   my @ndb_error_files = glob("$ndbd_log_path/ndb_*_error.log");
   my $num_error_files = scalar @ndb_error_files;
   if ($num_error_files) {
-    # Found an error file, let's go further
-    if ($num_error_files > 1) {
-      mtr_error(
-             "More than one error file found : " . join(" ", @ndb_error_files));
-    }
-
     my $ndbd_error_file_name = $ndb_error_files[0];
-    my @log_lines = ndb_get_log_lines($ndbd_error_file_name, 10000, 10000)
-      ;    # Get everything from the error file.
     $ndbd_log =
-      $ndbd_log . "\nFound data node error log ($ndbd_error_file_name):\n" .
-      "\n-----------DATA NODE ERROR LOG START--------\n" .
-      join("", @log_lines) . "\n-----------DATA NODE ERROR LOG END----------\n";
+      $ndbd_log . "  Error log: $ndbd_error_file_name\n";
 
     my @ndb_trace_files = glob("$ndbd_log_path/ndb_*_trace*");
     my $num_trace_files = scalar @ndb_trace_files;
     if ($num_trace_files) {
-      $ndbd_log = $ndbd_log . "\nFound crash trace files :\n  " .
-        join("\n  ", @ndb_trace_files) . "\n\n";
-
-      # Now find most recent set of trace files..
+      # Find most recent crash trace number
       my $max_trace_num = 0;
       foreach my $trace_file (@ndb_trace_files) {
         my $trace_num = ndb_get_trace_num_from_filename($trace_file);
@@ -5740,27 +5719,23 @@ sub ndb_extract_ndbd_log_info($$) {
         }
       }
 
-      $ndbd_log =
-        $ndbd_log . "\nDumping excerpts from crash number $max_trace_num\n";
-
-      # Now print a chunk of em
+      # List trace files for the most recent crash
+      my @latest_trace_files;
       foreach my $trace_file (@ndb_trace_files) {
         if (ndb_get_trace_num_from_filename($trace_file) eq $max_trace_num) {
-          my $ndbd_trace_file_start_lines = 2500;
-          my $ndbd_trace_file_end_lines   = 0;
-          @log_lines =
-            ndb_get_log_lines($trace_file, $ndbd_trace_file_start_lines,
-                              $ndbd_trace_file_end_lines);
-
-          $ndbd_log =
-            $ndbd_log . "\nData node trace file : $trace_file\n" .
-            "\n-----------DATA NODE TRACE LOG START--------\n" .
-            join("", @log_lines) .
-            "\n-----------DATA NODE TRACE LOG END----------\n";
+          push(@latest_trace_files, $trace_file);
         }
       }
+
+      my $num_latest = scalar @latest_trace_files;
+      $ndbd_log =
+        $ndbd_log . "  Crash trace files from crash $max_trace_num " .
+        "($num_latest files, $num_trace_files total):\n";
+      foreach my $trace_file (@latest_trace_files) {
+        $ndbd_log = $ndbd_log . "    $trace_file\n";
+      }
     } else {
-      $ndbd_log = $ndbd_log . "\n No trace files! \n";
+      $ndbd_log = $ndbd_log . "  No trace files found.\n";
     }
   }
 

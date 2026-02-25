@@ -900,7 +900,7 @@ zero32(Uint8* dstPtr, const Uint32 len)
   }
 } 
 
-void Dbtup::copyAttrinfo(Uint32 expectedLen, Uint32 attrInfoIVal) {
+Uint32 Dbtup::copyAttrinfo(Uint32 expectedLen, Uint32 attrInfoIVal) {
   ndbassert(expectedLen > 0 || attrInfoIVal == RNIL);
 
   if (expectedLen > 0) {
@@ -913,13 +913,18 @@ void Dbtup::copyAttrinfo(Uint32 expectedLen, Uint32 attrInfoIVal) {
     getSection(sectionPtr, attrInfoIVal);
 
     ndbrequire(sectionPtr.sz == expectedLen);
-    ndbrequire(sectionPtr.sz < ZATTR_BUFFER_SIZE);
+
+    if (unlikely(sectionPtr.sz >= ZATTR_BUFFER_SIZE)) {
+      jam();
+      return ZTOO_MUCH_ATTRINFO_ERROR;
+    }
 
     /* Copy attrInfo data into linear buffer */
     // TODO : Consider operating TUP out of first segment where
     // appropriate
     copy(cinBuffer, attrInfoIVal);
   }
+  return 0;
 }
 
 Uint32 Dbtup::copyAttrinfo(Uint32 storedProcId,

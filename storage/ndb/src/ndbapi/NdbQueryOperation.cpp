@@ -5144,6 +5144,7 @@ bool NdbQueryOperationImpl::execTRANSID_AI(const Uint32 *ptr, Uint32 len) {
 
     // Extract tuple correlation.
     tupleCorrelation = correlData.getTupleCorrelation();
+    len -= CorrelationData::wordCount;
   }
 
   if (traceSignals) {

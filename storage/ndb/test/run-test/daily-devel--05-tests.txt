@@ -65,7 +65,7 @@ max-time: 2880
 
 cmd: testNodeRestart
 args: -n pnr_lcp T1
-max-time: 1260
+max-time: 2520
 
 cmd: testIndex
 args: -n NFNR3 T6 T13

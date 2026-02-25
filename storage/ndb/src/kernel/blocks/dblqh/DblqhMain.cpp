@@ -1348,9 +1348,18 @@ void Dblqh::execCONTINUEB(Signal *signal) {
       return;
     case ZREBUILD_ORDERED_INDEXES: {
       jam();
-      ndbrequire(m_current_rebuild_indexes_ongoing <
-                 MAX_OUTSTANDING_REBUILD_INDEXES);
       jamData(m_current_rebuild_indexes_ongoing);
+      if (m_current_rebuild_indexes_ongoing >= MAX_OUTSTANDING_REBUILD_INDEXES) {
+        /**
+         * This CONTINUEB is stale - the BUILD_INDX_IMPL_CONF handler
+         * has already filled the rebuild slot via rebuildOrderedIndexes().
+         * This can happen when DBTUP completes an index build quickly and
+         * the CONF is processed before a previously queued CONTINUEB.
+         * Safe to ignore - CONF handlers will continue driving progress.
+         */
+        jam();
+        return;
+      }
       m_next_table_rebuild_indexes++;
       if (m_next_table_rebuild_indexes < ctabrecFileSize) {
         jam();
@@ -11410,6 +11419,7 @@ void Dblqh::execACCKEYCONF(Signal *signal) {
      */
     ndbrequire(regTcPtr->abortState == TcConnectionrec::ABORT_IDLE);
     regTcPtr->abortState = TcConnectionrec::ABORT_FROM_LQH;
+    regTcPtr->errorCode = ZTIME_OUT_ERROR;
     handlePendingAbort(signal, regTcPtr);
     return;
   }
@@ -11664,7 +11674,15 @@ Dblqh::acckeyconf_tupkeyreq(Signal* signal, TcConnectionrec* regTcPtr,
   jamDataDebug(totReclenAi);
   if (totReclenAi > 0) {
     ndbassert(attrInfoIVal != RNIL);
-    c_tup->copyAttrinfo(totReclenAi, attrInfoIVal);
+    const Uint32 copyError = c_tup->copyAttrinfo(totReclenAi, attrInfoIVal);
+    if (unlikely(copyError != 0)) {
+      jam();
+      TupKeyRef *ref = (TupKeyRef *)signal->getDataPtr();
+      ref->errorCode = copyError;
+      ref->noExecInstructions = 0;
+      execTUPKEYREF(signal);
+      return;
+    }
   }
   if (likely(c_tup->execTUPKEYREQ(signal, regTcPtr, nullptr)))
   {

@@ -3477,6 +3477,8 @@ lc_mempool_long_lived_pool_malloc(size_t size_in_words,
   if (size_in_words > MIN_LONG_AREA_SIZE_IN_WORDS)
   {
     start_pos = get_array_pos(size_in_words - 1) + 1;
+    if (start_pos >= NUM_FREE_AREA_LISTS)
+      start_pos = NUM_FREE_AREA_LISTS - 1;
   }
   lc_uint32 start_min_size_in_words = get_min_size_given_array_pos(start_pos);
   DEB_REM_AREA(("(words)size: %zu, start_pos: %u, start_min_size: %u",

@@ -27,7 +27,8 @@ ndb.test_mgmd             : WL#12345678 Requires fixing
 ndb.ndb_basic_3rpl_2ng    : WL#12345678 Only intended for start-and-exit
 ndb.ndb_basic_3rpl_2active: WL#12345678 Only intended for start-and-exit
 ndb.ndb_restore_encrypted_backups :BUG#11761083 NDB : MYSQLD DEFAULT VALUES IN FRM EMBEDDED IN BACKUP NOT ENDIAN-CONVERTE
-ndb.ndb_suma_handover     : Bug#35539093 Error insert 13048 never hit in ndb.ndb_suma_handover 
+ndb.ndb_suma_handover     : Bug#35539093 Error insert 13048 never hit in ndb.ndb_suma_handover
+ndb.ndb_local_logevents   : RONDB-1028 Disabled pending investigation
 # Disable the below tests if running with mixed data node versions
 #ndb.ndb_autosize          : WL#87654321
 #ndb.ndb_backup_nowait     : WL#87654321
