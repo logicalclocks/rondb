@@ -2589,7 +2589,9 @@ testEmptyResult(Ndb *ndb, MYSQL *conn)
   printf("Test 9: Empty result (filter rejects all) ... ");
   fflush(stdout);
 
-  const NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(PARENT_TABLE);
+  dict->invalidateTable(CHILD_TABLE);
   const NdbDictionary::Table *parentTab = dict->getTable(PARENT_TABLE);
   const NdbDictionary::Table *childTab = dict->getTable(CHILD_TABLE);
   if (parentTab == nullptr || childTab == nullptr) {
@@ -2977,6 +2979,9 @@ testGlobalAggThreeWay(Ndb *ndb, MYSQL *conn)
   fflush(stdout);
 
   NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(T4_REGION);
+  dict->invalidateTable(T4_ORDER);
+  dict->invalidateTable(T4_LINE);
   const NdbDictionary::Table *regionTab = dict->getTable(T4_REGION);
   const NdbDictionary::Table *orderTab = dict->getTable(T4_ORDER);
   const NdbDictionary::Table *lineTab = dict->getTable(T4_LINE);
@@ -5760,27 +5765,14 @@ int main(int argc, char **argv)
               exitCode = 1;
             }
           }
-
-          /* Test 9: Empty result (filter rejects all child rows) */
-          if (shouldRun(9)) {
-            if (testEmptyResult(&ndb, conn) != 0) {
-              exitCode = 1;
-            }
-          }
         }
         dropTestTables(conn);
 
         /* Test 4: 3-way join with linked param filter */
-        /* Test 11: Global aggregation on 3-way join (reuses t4 tables) */
-        if (shouldRun(4) || shouldRun(11)) {
+        if (shouldRun(4)) {
           if (createTest4Tables(conn) == 0 &&
               insertTest4Data(conn) == 0) {
-            if (shouldRun(4)) {
-              if (testThreeWayJoin(&ndb, conn) != 0) exitCode = 1;
-            }
-            if (shouldRun(11)) {
-              if (testGlobalAggThreeWay(&ndb, conn) != 0) exitCode = 1;
-            }
+            if (testThreeWayJoin(&ndb, conn) != 0) exitCode = 1;
           } else {
             exitCode = 1;
           }
@@ -5827,6 +5819,16 @@ int main(int argc, char **argv)
           dropTest8Tables(conn);
         }
 
+        /* Test 9: Empty result (filter rejects all child rows) */
+        if (shouldRun(9)) {
+          if (createTestTables(conn) == 0 && insertTestData(conn) == 0) {
+            if (testEmptyResult(&ndb, conn) != 0) exitCode = 1;
+          } else {
+            exitCode = 1;
+          }
+          dropTestTables(conn);
+        }
+
         /* Test 10: High cardinality GROUP BY (20 groups) */
         if (shouldRun(10)) {
           if (createTest10Tables(conn) == 0 && insertTest10Data(conn) == 0) {
@@ -5835,6 +5837,17 @@ int main(int argc, char **argv)
             exitCode = 1;
           }
           dropTest10Tables(conn);
+        }
+
+        /* Test 11: Global aggregation on 3-way join */
+        if (shouldRun(11)) {
+          if (createTest4Tables(conn) == 0 &&
+              insertTest4Data(conn) == 0) {
+            if (testGlobalAggThreeWay(&ndb, conn) != 0) exitCode = 1;
+          } else {
+            exitCode = 1;
+          }
+          dropTest4Tables(conn);
         }
 
         /* Test 12: All-NULL aggregation column */
@@ -5858,22 +5871,24 @@ int main(int argc, char **argv)
           dropTest13Tables(conn);
         }
 
-        /* Tests 14, 15, 17: Eviction via ERROR_INSERT 5090 (reuse t14 tables) */
-        if (shouldRun(14) || shouldRun(15) || shouldRun(17)) {
+        /* Test 14: Eviction via ERROR_INSERT 5090 */
+        if (shouldRun(14)) {
           NdbRestarter restarter(connectString);
           if (createTest14Tables(conn) == 0 && insertTest14Data(conn) == 0) {
-            if (shouldRun(14)) {
-              if (testEviction5090GroupBy(&ndb, conn, restarter) != 0)
-                exitCode = 1;
-            }
-            if (shouldRun(15)) {
-              if (testEviction5090AllAggs(&ndb, conn, restarter) != 0)
-                exitCode = 1;
-            }
-            if (shouldRun(17)) {
-              if (testEviction5090And4040(&ndb, conn, restarter) != 0)
-                exitCode = 1;
-            }
+            if (testEviction5090GroupBy(&ndb, conn, restarter) != 0)
+              exitCode = 1;
+          } else {
+            exitCode = 1;
+          }
+          dropTest14Tables(conn);
+        }
+
+        /* Test 15: Eviction 5090 with SUM/COUNT/MIN/MAX */
+        if (shouldRun(15)) {
+          NdbRestarter restarter(connectString);
+          if (createTest14Tables(conn) == 0 && insertTest14Data(conn) == 0) {
+            if (testEviction5090AllAggs(&ndb, conn, restarter) != 0)
+              exitCode = 1;
           } else {
             exitCode = 1;
           }
@@ -5892,36 +5907,66 @@ int main(int argc, char **argv)
           dropTest16Tables(conn);
         }
 
-        /* Tests 18, 19: Multi-fragment + SCAN_NEXTREQ (reuse t18 tables) */
-        if (shouldRun(18) || shouldRun(19)) {
+        /* Test 17: Combined eviction 5090 + 4040 */
+        if (shouldRun(17)) {
           NdbRestarter restarter(connectString);
+          if (createTest14Tables(conn) == 0 && insertTest14Data(conn) == 0) {
+            if (testEviction5090And4040(&ndb, conn, restarter) != 0)
+              exitCode = 1;
+          } else {
+            exitCode = 1;
+          }
+          dropTest14Tables(conn);
+        }
+
+        /* Test 18: Multi-fragment aggregation */
+        if (shouldRun(18)) {
           if (createTest18Tables(conn) == 0 && insertTest18Data(conn) == 0) {
-            if (shouldRun(18)) {
-              if (testMultiFragment(&ndb, conn) != 0) exitCode = 1;
-            }
-            if (shouldRun(19)) {
-              if (testMultiFragmentEviction(&ndb, conn, restarter) != 0)
-                exitCode = 1;
-            }
+            if (testMultiFragment(&ndb, conn) != 0) exitCode = 1;
           } else {
             exitCode = 1;
           }
           dropTest18Tables(conn);
         }
 
-        /* Tests 20, 21, 22: Abort/Error path tests (reuse t14 tables) */
-        if (shouldRun(20) || shouldRun(21) || shouldRun(22)) {
+        /* Test 19: Multi-fragment + eviction 5090 */
+        if (shouldRun(19)) {
+          NdbRestarter restarter(connectString);
+          if (createTest18Tables(conn) == 0 && insertTest18Data(conn) == 0) {
+            if (testMultiFragmentEviction(&ndb, conn, restarter) != 0)
+              exitCode = 1;
+          } else {
+            exitCode = 1;
+          }
+          dropTest18Tables(conn);
+        }
+
+        /* Test 20: SETUP_REF error handling */
+        if (shouldRun(20)) {
           NdbRestarter restarter(connectString);
           if (createTest14Tables(conn) == 0 && insertTest14Data(conn) == 0) {
-            if (shouldRun(20)) {
-              if (testSetupRef(&ndb, conn, restarter) != 0) exitCode = 1;
-            }
-            if (shouldRun(21)) {
-              if (testEarlyClose(&ndb, conn) != 0) exitCode = 1;
-            }
-            if (shouldRun(22)) {
-              if (testCompleteRef(&ndb, conn, restarter) != 0) exitCode = 1;
-            }
+            if (testSetupRef(&ndb, conn, restarter) != 0) exitCode = 1;
+          } else {
+            exitCode = 1;
+          }
+          dropTest14Tables(conn);
+        }
+
+        /* Test 21: Early query close */
+        if (shouldRun(21)) {
+          if (createTest14Tables(conn) == 0 && insertTest14Data(conn) == 0) {
+            if (testEarlyClose(&ndb, conn) != 0) exitCode = 1;
+          } else {
+            exitCode = 1;
+          }
+          dropTest14Tables(conn);
+        }
+
+        /* Test 22: COMPLETE_REF error handling */
+        if (shouldRun(22)) {
+          NdbRestarter restarter(connectString);
+          if (createTest14Tables(conn) == 0 && insertTest14Data(conn) == 0) {
+            if (testCompleteRef(&ndb, conn, restarter) != 0) exitCode = 1;
           } else {
             exitCode = 1;
           }

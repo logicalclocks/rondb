@@ -1,7 +1,7 @@
 --source include/have_ndb.inc
 
 --echo Running testJoinAggNdbApi
---replace_regex /Connect string: .*/Connect string: #/ /MySQL port: .*/MySQL port: #/
+--replace_regex /Connect string: .*/Connect string: #/ /MySQL port: .*/MySQL port: #/ /Connecting to management server at [^\n]*\n//
 --exec $NDB_PUSH_AGG_DIR/testJoinAggNdbApi -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT 2>&1
 --echo PASSED
 

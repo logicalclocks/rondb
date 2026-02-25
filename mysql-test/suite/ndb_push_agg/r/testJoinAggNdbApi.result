@@ -3,9 +3,9 @@ Running testJoinAggNdbApi
 Connect string: #
 MySQL port: #
 
-Test 1: SUM(amount) GROUP BY grp ... OK (2 groups)
-Test 2: COUNT(*), SUM(amount) ... OK (count=3, sum=600)
-Test 3: COUNT(*), SUM(amount) GROUP BY grp ... OK (2 groups)
+Test 1: SUM(amount) GROUP BY grp ... OK (3 groups)
+Test 2: COUNT(*), SUM(amount) ... OK (count=5, sum=1500)
+Test 3: COUNT(*), SUM(amount) GROUP BY grp ... OK (3 groups)
 Test 4: 3-way join with linked param filter ... OK (3 groups)
 Test 5: MIN/MAX/SUM/COUNT with NULL values ... OK (2 groups, NULL handling verified)
 Test 6: CHAR GROUP BY with index scan ... OK (3 groups, CHAR GROUP BY with index scan)
