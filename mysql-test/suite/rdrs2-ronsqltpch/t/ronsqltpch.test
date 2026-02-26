@@ -1,3 +1,4 @@
+--source include/not_parallel.inc
 --source include/have_ndb.inc
 
 # Skip if load_tpch binary is not available
@@ -11,7 +12,7 @@ if (!$NDB_PUSH_AGG_DIR) {
 --echo PASSED
 
 # Run Go tests (runs twice: without TLS and with TLS)
---source suite/rdrs2-golang/include/run_gotest.inc
+--source suite/rdrs2-ronsqltpch/include/run_gotest.inc
 
 # Cleanup TPC-H tables
 --disable_query_log
