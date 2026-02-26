@@ -431,7 +431,7 @@ int Dbtup::readAttributes(KeyReqStruct *req_struct, const Uint32 *inBuffer,
       {
         const Uint32* attrDescr = req_struct->tablePtrP->tabDescriptor +
           (attributeId * ZAD_SIZE);
-        const Uint32 TattrDesc1 = attrDescr[0];
+        [[maybe_unused]] const Uint32 TattrDesc1 = attrDescr[0];
         ndbassert(attrDescriptor == TattrDesc1);
       }
       Uint32 attrDes2 = attr_descr[descr_index + 1];

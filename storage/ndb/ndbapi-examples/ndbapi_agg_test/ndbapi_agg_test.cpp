@@ -63,6 +63,13 @@
   PRINT_ERROR(error.code, error.message); \
   exit(-1); }
 
+/* Ensure side-effectful calls are not stripped by NDEBUG */
+#ifdef NDEBUG
+#define VERIFY(expr) ((void)(expr))
+#else
+#define VERIFY(expr) assert(expr)
+#endif
+
 static const char *DB_NAME = "agg_test";
 
 /* ----------------------------------------------------------------
@@ -477,16 +484,16 @@ static bool run_test_1(TestContext &ctx) {
     APIERROR(trans->getNdbError());
 
   NdbAggregator agg(table);
-  assert(agg.GroupBy("name"));
-  assert(agg.LoadColumn("val_int", kReg1));
-  assert(agg.Sum(0, kReg1));
-  assert(agg.LoadColumn("val_int", kReg1));
-  assert(agg.Count(1, kReg1));
-  assert(agg.LoadColumn("val_bigint", kReg1));
-  assert(agg.Min(2, kReg1));
-  assert(agg.LoadColumn("val_double", kReg1));
-  assert(agg.Max(3, kReg1));
-  assert(agg.Finalize());
+  VERIFY(agg.GroupBy("name"));
+  VERIFY(agg.LoadColumn("val_int", kReg1));
+  VERIFY(agg.Sum(0, kReg1));
+  VERIFY(agg.LoadColumn("val_int", kReg1));
+  VERIFY(agg.Count(1, kReg1));
+  VERIFY(agg.LoadColumn("val_bigint", kReg1));
+  VERIFY(agg.Min(2, kReg1));
+  VERIFY(agg.LoadColumn("val_double", kReg1));
+  VERIFY(agg.Max(3, kReg1));
+  VERIFY(agg.Finalize());
 
   if (scanOp->setAggregationCode(&agg) == -1) {
     std::cout << trans->getNdbError().message << std::endl;
@@ -605,13 +612,13 @@ static bool run_test_2(TestContext &ctx) {
     APIERROR(trans->getNdbError());
 
   NdbAggregator agg(table);
-  assert(agg.GroupBy("name"));
-  assert(agg.GroupBy("val_small"));
-  assert(agg.LoadColumn("val_int", kReg1));
-  assert(agg.Sum(0, kReg1));
-  assert(agg.LoadColumn("val_bigint", kReg1));
-  assert(agg.Count(1, kReg1));
-  assert(agg.Finalize());
+  VERIFY(agg.GroupBy("name"));
+  VERIFY(agg.GroupBy("val_small"));
+  VERIFY(agg.LoadColumn("val_int", kReg1));
+  VERIFY(agg.Sum(0, kReg1));
+  VERIFY(agg.LoadColumn("val_bigint", kReg1));
+  VERIFY(agg.Count(1, kReg1));
+  VERIFY(agg.Finalize());
 
   if (scanOp->setAggregationCode(&agg) == -1) {
     std::cout << trans->getNdbError().message << std::endl;
@@ -737,16 +744,16 @@ static bool run_test_3(TestContext &ctx) {
     APIERROR(trans->getNdbError());
 
   NdbAggregator agg(table);
-  assert(agg.GroupBy("val_tiny"));
-  assert(agg.LoadColumn("val_bigint", kReg1));
-  assert(agg.Sum(0, kReg1));
-  assert(agg.LoadColumn("val_int", kReg1));
-  assert(agg.Min(1, kReg1));
-  assert(agg.LoadColumn("val_uint", kReg1));
-  assert(agg.Max(2, kReg1));
-  assert(agg.LoadColumn("val_int", kReg1));
-  assert(agg.Count(3, kReg1));
-  assert(agg.Finalize());
+  VERIFY(agg.GroupBy("val_tiny"));
+  VERIFY(agg.LoadColumn("val_bigint", kReg1));
+  VERIFY(agg.Sum(0, kReg1));
+  VERIFY(agg.LoadColumn("val_int", kReg1));
+  VERIFY(agg.Min(1, kReg1));
+  VERIFY(agg.LoadColumn("val_uint", kReg1));
+  VERIFY(agg.Max(2, kReg1));
+  VERIFY(agg.LoadColumn("val_int", kReg1));
+  VERIFY(agg.Count(3, kReg1));
+  VERIFY(agg.Finalize());
 
   if (scanOp->setAggregationCode(&agg) == -1) {
     std::cout << trans->getNdbError().message << std::endl;
@@ -864,15 +871,15 @@ static bool run_test_4(TestContext &ctx) {
 
   NdbAggregator agg(table);
   /* No GroupBy */
-  assert(agg.LoadColumn("val_int", kReg1));
-  assert(agg.Sum(0, kReg1));
-  assert(agg.LoadColumn("val_int", kReg1));
-  assert(agg.Count(1, kReg1));
-  assert(agg.LoadColumn("val_double", kReg1));
-  assert(agg.Min(2, kReg1));
-  assert(agg.LoadColumn("val_bigint", kReg1));
-  assert(agg.Max(3, kReg1));
-  assert(agg.Finalize());
+  VERIFY(agg.LoadColumn("val_int", kReg1));
+  VERIFY(agg.Sum(0, kReg1));
+  VERIFY(agg.LoadColumn("val_int", kReg1));
+  VERIFY(agg.Count(1, kReg1));
+  VERIFY(agg.LoadColumn("val_double", kReg1));
+  VERIFY(agg.Min(2, kReg1));
+  VERIFY(agg.LoadColumn("val_bigint", kReg1));
+  VERIFY(agg.Max(3, kReg1));
+  VERIFY(agg.Finalize());
 
   if (scanOp->setAggregationCode(&agg) == -1) {
     std::cout << trans->getNdbError().message << std::endl;
@@ -987,12 +994,12 @@ static bool run_test_5(TestContext &ctx) {
   }
 
   NdbAggregator agg(table);
-  assert(agg.GroupBy("name"));
-  assert(agg.LoadColumn("val_int", kReg1));
-  assert(agg.Sum(0, kReg1));
-  assert(agg.LoadColumn("val_int", kReg1));
-  assert(agg.Count(1, kReg1));
-  assert(agg.Finalize());
+  VERIFY(agg.GroupBy("name"));
+  VERIFY(agg.LoadColumn("val_int", kReg1));
+  VERIFY(agg.Sum(0, kReg1));
+  VERIFY(agg.LoadColumn("val_int", kReg1));
+  VERIFY(agg.Count(1, kReg1));
+  VERIFY(agg.Finalize());
 
   if (scanOp->setAggregationCode(&agg) == -1) {
     std::cout << trans->getNdbError().message << std::endl;
@@ -1111,23 +1118,23 @@ static bool run_test_6(TestContext &ctx) {
     APIERROR(trans->getNdbError());
 
   NdbAggregator agg(table);
-  assert(agg.GroupBy("category"));
+  VERIFY(agg.GroupBy("category"));
   /* SUM(val_int + val_bigint) */
-  assert(agg.LoadColumn("val_int", kReg1));
-  assert(agg.LoadColumn("val_bigint", kReg2));
-  assert(agg.Add(kReg1, kReg2));
-  assert(agg.Sum(0, kReg1));
+  VERIFY(agg.LoadColumn("val_int", kReg1));
+  VERIFY(agg.LoadColumn("val_bigint", kReg2));
+  VERIFY(agg.Add(kReg1, kReg2));
+  VERIFY(agg.Sum(0, kReg1));
   /* MAX(val_double * 2.5) */
-  assert(agg.LoadColumn("val_double", kReg1));
-  assert(agg.LoadDouble(2.5, kReg2));
-  assert(agg.Mul(kReg1, kReg2));
-  assert(agg.Max(1, kReg1));
+  VERIFY(agg.LoadColumn("val_double", kReg1));
+  VERIFY(agg.LoadDouble(2.5, kReg2));
+  VERIFY(agg.Mul(kReg1, kReg2));
+  VERIFY(agg.Max(1, kReg1));
   /* MIN(val_uint - val_small) */
-  assert(agg.LoadColumn("val_uint", kReg1));
-  assert(agg.LoadColumn("val_small", kReg2));
-  assert(agg.Minus(kReg1, kReg2));
-  assert(agg.Min(2, kReg1));
-  assert(agg.Finalize());
+  VERIFY(agg.LoadColumn("val_uint", kReg1));
+  VERIFY(agg.LoadColumn("val_small", kReg2));
+  VERIFY(agg.Minus(kReg1, kReg2));
+  VERIFY(agg.Min(2, kReg1));
+  VERIFY(agg.Finalize());
 
   if (scanOp->setAggregationCode(&agg) == -1) {
     std::cout << trans->getNdbError().message << std::endl;
@@ -1247,12 +1254,12 @@ static bool run_test_7(TestContext &ctx) {
     APIERROR(trans->getNdbError());
 
   NdbAggregator agg(table);
-  assert(agg.GroupBy("val_tiny"));
-  assert(agg.LoadColumn("val_dec", kReg1));
-  assert(agg.Sum(0, kReg1));
-  assert(agg.LoadColumn("val_dec2", kReg1));
-  assert(agg.Max(1, kReg1));
-  assert(agg.Finalize());
+  VERIFY(agg.GroupBy("val_tiny"));
+  VERIFY(agg.LoadColumn("val_dec", kReg1));
+  VERIFY(agg.Sum(0, kReg1));
+  VERIFY(agg.LoadColumn("val_dec2", kReg1));
+  VERIFY(agg.Max(1, kReg1));
+  VERIFY(agg.Finalize());
 
   if (scanOp->setAggregationCode(&agg) == -1) {
     std::cout << trans->getNdbError().message << std::endl;
@@ -1368,12 +1375,12 @@ static bool run_test_8(TestContext &ctx) {
     APIERROR(trans->getNdbError());
 
   NdbAggregator agg(table);
-  assert(agg.GroupBy("name"));
-  assert(agg.LoadColumn("nullable_int", kReg1));
-  assert(agg.Count(0, kReg1));
-  assert(agg.LoadColumn("val_int", kReg1));
-  assert(agg.Sum(1, kReg1));
-  assert(agg.Finalize());
+  VERIFY(agg.GroupBy("name"));
+  VERIFY(agg.LoadColumn("nullable_int", kReg1));
+  VERIFY(agg.Count(0, kReg1));
+  VERIFY(agg.LoadColumn("val_int", kReg1));
+  VERIFY(agg.Sum(1, kReg1));
+  VERIFY(agg.Finalize());
 
   if (scanOp->setAggregationCode(&agg) == -1) {
     std::cout << trans->getNdbError().message << std::endl;
@@ -1511,12 +1518,12 @@ static bool run_test_9(TestContext &ctx) {
     APIERROR(indexOp->getNdbError());
 
   NdbAggregator agg(table);
-  assert(agg.GroupBy("name"));
-  assert(agg.LoadColumn("val_int", kReg1));
-  assert(agg.Sum(0, kReg1));
-  assert(agg.LoadColumn("val_int", kReg1));
-  assert(agg.Count(1, kReg1));
-  assert(agg.Finalize());
+  VERIFY(agg.GroupBy("name"));
+  VERIFY(agg.LoadColumn("val_int", kReg1));
+  VERIFY(agg.Sum(0, kReg1));
+  VERIFY(agg.LoadColumn("val_int", kReg1));
+  VERIFY(agg.Count(1, kReg1));
+  VERIFY(agg.Finalize());
 
   if (indexOp->setAggregationCode(&agg) == -1) {
     std::cout << trans->getNdbError().message << std::endl;
@@ -1674,16 +1681,16 @@ static bool run_test_10(TestContext &ctx) {
   }
 
   NdbAggregator agg(table);
-  assert(agg.GroupBy("category"));
+  VERIFY(agg.GroupBy("category"));
   /* SUM(val_int + val_bigint) */
-  assert(agg.LoadColumn("val_int", kReg1));
-  assert(agg.LoadColumn("val_bigint", kReg2));
-  assert(agg.Add(kReg1, kReg2));
-  assert(agg.Sum(0, kReg1));
+  VERIFY(agg.LoadColumn("val_int", kReg1));
+  VERIFY(agg.LoadColumn("val_bigint", kReg2));
+  VERIFY(agg.Add(kReg1, kReg2));
+  VERIFY(agg.Sum(0, kReg1));
   /* MIN(val_double) */
-  assert(agg.LoadColumn("val_double", kReg1));
-  assert(agg.Min(1, kReg1));
-  assert(agg.Finalize());
+  VERIFY(agg.LoadColumn("val_double", kReg1));
+  VERIFY(agg.Min(1, kReg1));
+  VERIFY(agg.Finalize());
 
   if (indexOp->setAggregationCode(&agg) == -1) {
     std::cout << trans->getNdbError().message << std::endl;
@@ -1805,12 +1812,12 @@ static bool run_test_11(TestContext &ctx) {
     APIERROR(trans->getNdbError());
 
   NdbAggregator agg(table);
-  assert(agg.GroupBy("name"));
-  assert(agg.LoadColumn("val_int", kReg1));
-  assert(agg.Sum(0, kReg1));
-  assert(agg.LoadColumn("val_int", kReg1));
-  assert(agg.Count(1, kReg1));
-  assert(agg.Finalize());
+  VERIFY(agg.GroupBy("name"));
+  VERIFY(agg.LoadColumn("val_int", kReg1));
+  VERIFY(agg.Sum(0, kReg1));
+  VERIFY(agg.LoadColumn("val_int", kReg1));
+  VERIFY(agg.Count(1, kReg1));
+  VERIFY(agg.Finalize());
 
   if (scanOp->setAggregationCode(&agg) == -1) {
     std::cout << trans->getNdbError().message << std::endl;
@@ -1977,11 +1984,11 @@ static bool run_test_13(TestContext &ctx) {
 
   NdbAggregator agg(table);
   /* SUM(val_biguint - CAST(1000 AS UNSIGNED)) */
-  assert(agg.LoadColumn("val_biguint", kReg1));
-  assert(agg.LoadUint64(1000, kReg2));
-  assert(agg.Minus(kReg1, kReg2));
-  assert(agg.Sum(0, kReg1));
-  assert(agg.Finalize());
+  VERIFY(agg.LoadColumn("val_biguint", kReg1));
+  VERIFY(agg.LoadUint64(1000, kReg2));
+  VERIFY(agg.Minus(kReg1, kReg2));
+  VERIFY(agg.Sum(0, kReg1));
+  VERIFY(agg.Finalize());
 
   if (scanOp->setAggregationCode(&agg) == -1) {
     std::cout << trans->getNdbError().message << std::endl;
@@ -2132,11 +2139,11 @@ static bool run_test_15(TestContext &ctx) {
   NdbAggregator agg(table);
   /* SUM(LLONG_MIN * val_tiny)
    * LLONG_MIN = -9223372036854775808 = -9223372036854775807 - 1 */
-  assert(agg.LoadInt64(-9223372036854775807LL - 1, kReg1));
-  assert(agg.LoadColumn("val_tiny", kReg2));
-  assert(agg.Mul(kReg1, kReg2));
-  assert(agg.Sum(0, kReg1));
-  assert(agg.Finalize());
+  VERIFY(agg.LoadInt64(-9223372036854775807LL - 1, kReg1));
+  VERIFY(agg.LoadColumn("val_tiny", kReg2));
+  VERIFY(agg.Mul(kReg1, kReg2));
+  VERIFY(agg.Sum(0, kReg1));
+  VERIFY(agg.Finalize());
 
   if (scanOp->setAggregationCode(&agg) == -1) {
     std::cout << trans->getNdbError().message << std::endl;
@@ -2290,11 +2297,11 @@ static bool run_test_14(TestContext &ctx) {
   NdbAggregator agg(table);
   /* SUM(val_bigint - LLONG_MAX)
    * Both operands are signed BIGINT. */
-  assert(agg.LoadColumn("val_bigint", kReg1));
-  assert(agg.LoadInt64(9223372036854775807LL, kReg2));
-  assert(agg.Minus(kReg1, kReg2));
-  assert(agg.Sum(0, kReg1));
-  assert(agg.Finalize());
+  VERIFY(agg.LoadColumn("val_bigint", kReg1));
+  VERIFY(agg.LoadInt64(9223372036854775807LL, kReg2));
+  VERIFY(agg.Minus(kReg1, kReg2));
+  VERIFY(agg.Sum(0, kReg1));
+  VERIFY(agg.Finalize());
 
   if (scanOp->setAggregationCode(&agg) == -1) {
     std::cout << trans->getNdbError().message << std::endl;
@@ -2443,11 +2450,11 @@ static bool run_test_12(TestContext &ctx) {
   NdbAggregator agg(table);
   /* No GroupBy — aggregate all qualifying rows */
   /* SUM(val_int % val_uint) */
-  assert(agg.LoadColumn("val_int", kReg1));
-  assert(agg.LoadColumn("val_uint", kReg2));
-  assert(agg.Mod(kReg1, kReg2));
-  assert(agg.Sum(0, kReg1));
-  assert(agg.Finalize());
+  VERIFY(agg.LoadColumn("val_int", kReg1));
+  VERIFY(agg.LoadColumn("val_uint", kReg2));
+  VERIFY(agg.Mod(kReg1, kReg2));
+  VERIFY(agg.Sum(0, kReg1));
+  VERIFY(agg.Finalize());
 
   if (scanOp->setAggregationCode(&agg) == -1) {
     std::cout << trans->getNdbError().message << std::endl;
@@ -2545,13 +2552,13 @@ static bool run_test_16(TestContext &ctx) {
     APIERROR(trans->getNdbError());
 
   NdbAggregator agg(table);
-  assert(agg.GroupBy("val_tiny"));
-  assert(agg.GroupBy("val_small"));
-  assert(agg.LoadColumn("val_int", kReg1));
-  assert(agg.Sum(0, kReg1));
-  assert(agg.LoadColumn("val_int", kReg1));
-  assert(agg.Count(1, kReg1));
-  assert(agg.Finalize());
+  VERIFY(agg.GroupBy("val_tiny"));
+  VERIFY(agg.GroupBy("val_small"));
+  VERIFY(agg.LoadColumn("val_int", kReg1));
+  VERIFY(agg.Sum(0, kReg1));
+  VERIFY(agg.LoadColumn("val_int", kReg1));
+  VERIFY(agg.Count(1, kReg1));
+  VERIFY(agg.Finalize());
 
   if (scanOp->setAggregationCode(&agg) == -1) {
     std::cout << trans->getNdbError().message << std::endl;
@@ -2670,12 +2677,12 @@ static bool run_test_17(TestContext &ctx) {
     APIERROR(trans->getNdbError());
 
   NdbAggregator agg(table);
-  assert(agg.GroupBy("nullable_int"));
-  assert(agg.LoadColumn("val_int", kReg1));
-  assert(agg.Sum(0, kReg1));
-  assert(agg.LoadColumn("val_int", kReg1));
-  assert(agg.Count(1, kReg1));
-  assert(agg.Finalize());
+  VERIFY(agg.GroupBy("nullable_int"));
+  VERIFY(agg.LoadColumn("val_int", kReg1));
+  VERIFY(agg.Sum(0, kReg1));
+  VERIFY(agg.LoadColumn("val_int", kReg1));
+  VERIFY(agg.Count(1, kReg1));
+  VERIFY(agg.Finalize());
 
   if (scanOp->setAggregationCode(&agg) == -1) {
     std::cout << trans->getNdbError().message << std::endl;
