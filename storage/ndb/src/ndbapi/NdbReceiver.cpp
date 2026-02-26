@@ -1585,6 +1585,23 @@ int NdbReceiver::execTRANSID_AI(const Uint32 *aDataPtr,
   }
   Uint32 calc_total_len = row_ref->m_row_recv - row_ref->m_row_release_ptr;
   require(calc_total_len == totalLen);
+
+  /**
+   * For SPJ query operations, the reassembled row data may contain a
+   * trailing CORR_FACTOR64 (3 words) that was already extracted from the
+   * signal header. Strip it before buffering/unpacking to prevent it from
+   * leaking through to handle_rec_attrs().
+   * This mirrors the len adjustment in
+   * NdbQueryOperationImpl::execTRANSID_AI() for non-fragmented signals.
+   */
+  if (getType() == NDB_QUERY_OPERATION && totalLen >= 3) {
+    const Uint32 *endPtr = row_ref->m_row_release_ptr + totalLen;
+    const AttributeHeader ah(*(endPtr - 3));
+    if (ah.getAttributeId() == AttributeHeader::CORR_FACTOR64) {
+      totalLen -= 3;
+    }
+  }
+
 #ifdef VM_TRACE
   print_checksum(row_ref->m_row_release_ptr, totalLen, __LINE__);
 #endif

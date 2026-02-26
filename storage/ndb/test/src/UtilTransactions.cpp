@@ -48,7 +48,7 @@ int UtilTransactions::clearTable(Ndb *pNdb, NdbScanOperation::ScanFlag flags,
   // Scan all records exclusive and delete
   // them one by one
   int retryAttempt = 0;
-  const int retryMax = 10;
+  const int retryMax = 100;
   int check;
   NdbScanOperation *pOp;
   NdbError err;

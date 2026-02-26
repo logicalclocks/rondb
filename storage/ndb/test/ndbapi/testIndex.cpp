@@ -3586,7 +3586,7 @@ TESTCASE("FireTrigOverload", "") {
   TC_PROPERTY("LoggedIndexes", (unsigned)0);
   TC_PROPERTY("NotOnlyPkId",
               (unsigned)1);  // Index must be non PK to fire triggers
-  TC_PROPERTY(NDBT_TestCase::getStepThreadStackSizePropName(), 128 * 1024);
+  TC_PROPERTY(NDBT_TestCase::getStepThreadStackSizePropName(), 256 * 1024);
   INITIALIZER(createRandomIndex);
   INITIALIZER(runClearTable);
   STEP(runTrigOverload);

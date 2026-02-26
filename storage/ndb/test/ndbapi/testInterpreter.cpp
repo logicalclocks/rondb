@@ -357,7 +357,7 @@ int runTestBug34107(NDBT_Context *ctx, NDBT_Step *step) {
   const NdbDictionary::Table *pTab = ctx->getTab();
   Ndb *pNdb = GETNDB(step);
   const Uint32 okSize = 10000;
-  const Uint32 tooBig = 30000;
+  const Uint32 tooBig = 40000;
 
   Uint32 codeBuff[tooBig];
 
