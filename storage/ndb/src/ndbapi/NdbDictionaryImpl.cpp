@@ -7833,7 +7833,7 @@ int NdbDictionaryImpl::createDefaultNdbRecord(
    */
   DBUG_ENTER("NdbDictionaryImpl::createNdbRecords()");
   NdbDictionary::RecordSpecification
-    spec_stack[OLD_NDB_MAX_ATTRIBUTES_IN_TABLE];
+    spec_stack[OLD_NDB_MAX_ATTRIBUTES_IN_TABLE] = {};
   NdbDictionary::RecordSpecification *spec = &spec_stack[0];
 
   NdbRecord *rec;
@@ -7980,7 +7980,7 @@ int NdbDictionaryImpl::createDefaultNdbRecord(
   rec = createRecord(tableOrIndex,
                      spec,
                      numCols,
-                     sizeof(spec_stack[0]),
+                     sizeof(NdbDictionary::RecordSpecification),
                      0,      // No special flags
                      true);  // default record
   if (unlikely(numCols > OLD_NDB_MAX_ATTRIBUTES_IN_TABLE)) {

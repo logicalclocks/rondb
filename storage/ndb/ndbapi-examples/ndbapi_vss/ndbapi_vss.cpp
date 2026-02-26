@@ -340,10 +340,10 @@ int scan_vector_search(Ndb * myNdb)
     }
 
     NdbAggregator aggregator(myTable);
-    bool ret = aggregator.VectorSearch("vec",
-                                       g_target_vec,
-                                       DIMS,
-                                       g_top_n);
+    [[maybe_unused]] bool ret = aggregator.VectorSearch("vec",
+                                                        g_target_vec,
+                                                        DIMS,
+                                                        g_top_n);
     assert(ret);
     if (myScanOp->setAggregationCode(&aggregator) == -1) {
       std::cout << myTrans->getNdbError().message << std::endl;
@@ -449,10 +449,10 @@ int scan_index_vector_search(Ndb *myNdb) {
   }
 
   NdbAggregator aggregator(myTable);
-  bool ret = aggregator.VectorSearch("vec",
-                                     g_target_vec,
-                                     DIMS,
-                                     g_top_n);
+  [[maybe_unused]] bool ret = aggregator.VectorSearch("vec",
+                                                      g_target_vec,
+                                                      DIMS,
+                                                      g_top_n);
   assert(ret);
   if (myIndexScanOp->setAggregationCode(&aggregator) == -1) {
     std::cout << myTrans->getNdbError().message << std::endl;

@@ -65,8 +65,8 @@ GBHashEntryCmp::operator()(const GBHashEntry &n1,
 
   const char *p1 = n1.ptr;
   const char *p2 = n2.ptr;
-  const char *end1 = n1.ptr + n1.len;
-  const char *end2 = n2.ptr + n2.len;
+  [[maybe_unused]] const char *end1 = n1.ptr + n1.len;
+  [[maybe_unused]] const char *end2 = n2.ptr + n2.len;
 
   for (Uint32 i = 0; i < ctx->n_cols; i++) {
     assert(p1 + sizeof(Uint32) <= end1);

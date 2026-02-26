@@ -321,7 +321,7 @@ static int scan_vector_search(Ndb *myNdb, uint32_t top_n,
     }
 
     NdbAggregator aggregator(myTable);
-    bool ret = aggregator.VectorSearch("vec", g_target_vec, DIMS, top_n);
+    [[maybe_unused]] bool ret = aggregator.VectorSearch("vec", g_target_vec, DIMS, top_n);
     assert(ret);
     if (myScanOp->setAggregationCode(&aggregator) == -1) {
       fprintf(stderr, "setAggregationCode failed: %s\n",
@@ -507,7 +507,7 @@ static int index_scan_vector_search_bounds_only(
   if (myTable == NULL) APIERROR(myDict->getNdbError());
 
   NdbAggregator aggregator(myTable);
-  bool ret = aggregator.VectorSearch("vec", g_target_vec, DIMS, top_n);
+  [[maybe_unused]] bool ret = aggregator.VectorSearch("vec", g_target_vec, DIMS, top_n);
   assert(ret);
   if (myIndexScanOp->setAggregationCode(&aggregator) == -1) {
     fprintf(stderr, "setAggregationCode failed: %s\n",
@@ -712,7 +712,7 @@ static int index_scan_vector_search_bounds_filter(
   if (myTable == NULL) APIERROR(myDict->getNdbError());
 
   NdbAggregator aggregator(myTable);
-  bool ret = aggregator.VectorSearch("vec", g_target_vec, DIMS, top_n);
+  [[maybe_unused]] bool ret = aggregator.VectorSearch("vec", g_target_vec, DIMS, top_n);
   assert(ret);
   if (myIndexScanOp->setAggregationCode(&aggregator) == -1) {
     fprintf(stderr, "setAggregationCode failed: %s\n",

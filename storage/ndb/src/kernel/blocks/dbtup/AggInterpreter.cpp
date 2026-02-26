@@ -68,8 +68,8 @@ GBHashEntryCmp::operator()(const GBHashEntry &n1,
 
   const char *p1 = n1.ptr;
   const char *p2 = n2.ptr;
-  const char *end1 = n1.ptr + n1.len;
-  const char *end2 = n2.ptr + n2.len;
+  [[maybe_unused]] const char *end1 = n1.ptr + n1.len;
+  [[maybe_unused]] const char *end2 = n2.ptr + n2.len;
 
   for (Uint32 i = 0; i < ctx->n_cols; i++) {
     assert(p1 + sizeof(Uint32) <= end1);
@@ -2775,7 +2775,7 @@ Int32 AggInterpreter::CandidateAllocator::Init(Uint32 thread_id) {
   size_t last_slots = max_candidates_ % slots_per_full_segment_;
   size_t last_size = last_slots * slot_size_;
 
-  size_t num_segments = full_segments + (last_slots > 0 ? 1 : 0);
+  [[maybe_unused]] size_t num_segments = full_segments + (last_slots > 0 ? 1 : 0);
 
   VS_INTERP_TRACE(table_id_, frag_id_,
       "Init CandidateAllocator: slot_size=%lu, slots_per_full_seg=%lu, "
