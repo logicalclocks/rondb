@@ -33,7 +33,7 @@
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_ELEM_COUNT 1
-#define DEBUG_VARPART_ALLOC 1
+//#define DEBUG_VARPART_ALLOC 1
 #endif
 
 #ifdef DEBUG_ELEM_COUNT

@@ -68,8 +68,8 @@
 //#define DEBUG_DISK 1
 //#define DEBUG_ELEM_COUNT 1
 //#define DEBUG_COPY_TUPLE 1
-#define DEBUG_JOIN_AGG_TRACE 1
-#define DEBUG_VARPART_EXPAND 1
+//#define DEBUG_JOIN_AGG_TRACE 1
+//#define DEBUG_VARPART_EXPAND 1
 #endif
 
 #ifdef DEBUG_COPY_TUPLE
