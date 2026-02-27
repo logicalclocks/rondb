@@ -1179,6 +1179,8 @@ int runEventApplier(NDBT_Context *ctx, NDBT_Step *step) {
 
   while (!ctx->isTestStopped()) {
     int count = 0;
+    int ins_count = 0, upd_count = 0, del_count = 0;
+    int perm_err_count = 0, incons_count = 0, nondata_count = 0;
     Uint64 stop_gci = ~(Uint64)0;
     Uint64 curr_gci = 0;
     Uint64 prev_gci = 0;
@@ -1186,6 +1188,13 @@ int runEventApplier(NDBT_Context *ctx, NDBT_Step *step) {
 
     while (!ctx->isTestStopped() && curr_gci <= stop_gci) {
       ndb->pollEvents(100, &curr_gci);
+      Uint64 incons_gci = 0;
+      if (!ndb->isConsistent(incons_gci)) {
+        g_err << "INCONSISTENT epoch detected: "
+              << Uint32(incons_gci >> 32) << "/"
+              << Uint32(incons_gci) << endl;
+        incons_count++;
+      }
       while ((pOp = ndb->nextEvent()) != 0) {
         require(pOp == pCreate);
 
@@ -1197,8 +1206,13 @@ int runEventApplier(NDBT_Context *ctx, NDBT_Step *step) {
         }
 
         if (pOp->getEventType() >=
-            NdbDictionary::Event::TE_FIRST_NON_DATA_EVENT)
+            NdbDictionary::Event::TE_FIRST_NON_DATA_EVENT) {
+          g_err << "Non-data event: type=" << pOp->getEventType2()
+                << " epoch=" << Uint32(pOp->getEpoch() >> 32)
+                << "/" << Uint32(pOp->getEpoch()) << endl;
+          nondata_count++;
           continue;
+        }
 
         int noRetries = 0;
         do {
@@ -1221,6 +1235,7 @@ int runEventApplier(NDBT_Context *ctx, NDBT_Step *step) {
 
           switch (pOp->getEventType()) {
             case NdbDictionary::Event::TE_INSERT:
+              ins_count++;
               if (op->writeTuple()) {
                 g_err << "insertTuple " << op->getNdbError().code << " "
                       << op->getNdbError().message << endl;
@@ -1229,6 +1244,7 @@ int runEventApplier(NDBT_Context *ctx, NDBT_Step *step) {
               }
               break;
             case NdbDictionary::Event::TE_DELETE:
+              del_count++;
               if (op->deleteTuple()) {
                 g_err << "deleteTuple " << op->getNdbError().code << " "
                       << op->getNdbError().message << endl;
@@ -1237,6 +1253,7 @@ int runEventApplier(NDBT_Context *ctx, NDBT_Step *step) {
               }
               break;
             case NdbDictionary::Event::TE_UPDATE:
+              upd_count++;
               if (op->writeTuple()) {
                 g_err << "updateTuple " << op->getNdbError().code << " "
                       << op->getNdbError().message << endl;
@@ -1338,7 +1355,16 @@ int runEventApplier(NDBT_Context *ctx, NDBT_Step *step) {
 
           if (trans->getNdbError().status == NdbError::PermanentError) {
             g_err << "Ignoring execute failed " << trans->getNdbError().code
-                  << " " << trans->getNdbError().message << endl;
+                  << " " << trans->getNdbError().message
+                  << " eventType=" << pOp->getEventType()
+                  << " epoch=" << Uint32(pOp->getEpoch() >> 32)
+                  << "/" << Uint32(pOp->getEpoch());
+            for (int c = 0; c < n_columns; c++) {
+              if (table->getColumn(c)->getPrimaryKey())
+                g_err << " pk[" << c << "]=" << recAttr[c]->u_32_value();
+            }
+            g_err << endl;
+            perm_err_count++;
 
             trans->close();
             count++;
@@ -1359,10 +1385,17 @@ int runEventApplier(NDBT_Context *ctx, NDBT_Step *step) {
       stop_gci = Uint64(stop_gci_lo) | (Uint64(stop_gci_hi) << 32);
     }
 
-    ndbout_c("Applied gci: %u/%u, %d events", Uint32(stop_gci >> 32),
-             Uint32(stop_gci), count);
+    ndbout_c("Applied gci: %u/%u, %d events"
+             " (ins=%d upd=%d del=%d perm_err=%d incons=%d nondata=%d)",
+             Uint32(stop_gci >> 32), Uint32(stop_gci), count,
+             ins_count, upd_count, del_count,
+             perm_err_count, incons_count, nondata_count);
     if (hugoTrans.compare(GETNDB(step), shadow, 0)) {
-      g_err << "compare failed" << endl;
+      g_err << "compare failed: events applied=" << count
+            << " ins=" << ins_count << " upd=" << upd_count
+            << " del=" << del_count << " perm_err=" << perm_err_count
+            << " incons=" << incons_count << " nondata=" << nondata_count
+            << endl;
       result = NDBT_FAILED;
       goto end;
     }
