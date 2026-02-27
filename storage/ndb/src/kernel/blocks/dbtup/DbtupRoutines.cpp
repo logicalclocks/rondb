@@ -3786,7 +3786,7 @@ void Dbtup::flush_read_buffer(KeyReqStruct *req_struct, const Uint32 *outBuf,
                     3 * 4);
         transIdAILong->attrData[0] = resultRef;
       } else {
-        ndbabort(); //TODO can this happen?
+        jam();
         sig_len = TransIdAILong::HeaderLength + 1;
         transIdAILong->correlationData[0] = resultRef;
       }
