@@ -69,6 +69,7 @@
 //#define DEBUG_ELEM_COUNT 1
 //#define DEBUG_COPY_TUPLE 1
 #define DEBUG_JOIN_AGG_TRACE 1
+#define DEBUG_VARPART_EXPAND 1
 #endif
 
 #ifdef DEBUG_COPY_TUPLE
@@ -164,6 +165,12 @@
 #define DEB_JOIN_AGG(arglist) do { g_eventLogger->info arglist ; } while (0)
 #else
 #define DEB_JOIN_AGG(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_VARPART_EXPAND
+#define DEB_VAR_EXPAND(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_VAR_EXPAND(arglist) do { } while (0)
 #endif
 
 //#define TRACE_INTERPRETER 1
@@ -8958,6 +8965,21 @@ Dbtup::expand_tuple(KeyReqStruct* req_struct,
           Ptr<Page> var_page;
           flex_data= get_ptr(&var_page, *var_ref);
           flex_len= get_len(&var_page, *var_ref);
+          DEB_VAR_EXPAND(("(%u) expand_tuple MM_READ: tab(%u,%u),"
+                          " row(%u,%u), var_ref(%u,%u),"
+                          " flex_len: %u, bits: 0x%x,"
+                          " flex_data[0]: 0x%08x",
+                          instance(),
+                          req_struct->fragPtrP->fragTableId,
+                          req_struct->fragPtrP->fragmentId,
+                          req_struct->frag_page_id,
+                          req_struct->operPtrP->
+                            m_tuple_location.m_page_idx,
+                          var_ref->m_page_no,
+                          var_ref->m_page_idx,
+                          flex_len,
+                          bits,
+                          flex_len > 0 ? flex_data[0] : 0));
           jam();
           /**
            * Coming here with MM_GROWN set is possible if we are coming here
@@ -8995,6 +9017,18 @@ Dbtup::expand_tuple(KeyReqStruct* req_struct,
           step = (Varpart_copy::SZ32 + flex_len); // 1+ is for extra word
           req_struct->m_varpart_page_ptr[MM] = req_struct->m_page_ptr;
           sizes[MM]= flex_len;
+          DEB_VAR_EXPAND(("(%u) expand_tuple MM_COPY: tab(%u,%u),"
+                          " row(%u,%u), flex_len: %u, bits: 0x%x,"
+                          " flex_data[0]: 0x%08x",
+                          instance(),
+                          req_struct->fragPtrP->fragTableId,
+                          req_struct->fragPtrP->fragmentId,
+                          req_struct->frag_page_id,
+                          req_struct->operPtrP->
+                            m_tuple_location.m_page_idx,
+                          flex_len,
+                          bits,
+                          flex_len > 0 ? flex_data[0] : 0));
           jamDebug();
           jamDataDebug(flex_len);
         }
@@ -9025,6 +9059,22 @@ Dbtup::expand_tuple(KeyReqStruct* req_struct,
       ndbassert((ptrdiff_t)flex_len >= (dynstart - flex_data));
       dyn_len -= Uint32(dynstart - flex_data);
       dyn_data = dynstart;
+      DEB_VAR_EXPAND(("(%u) expand_tuple VAR_TO_DYN %s: tab(%u,%u),"
+                      " row(%u,%u), num_vars: %u,"
+                      " varlen: %u, flex_len: %u,"
+                      " var_overhead: %u, dyn_len: %u",
+                      instance(),
+                      ind == MM ? "MM" : "DD",
+                      req_struct->fragPtrP->fragTableId,
+                      req_struct->fragPtrP->fragmentId,
+                      req_struct->frag_page_id,
+                      req_struct->operPtrP->
+                        m_tuple_location.m_page_idx,
+                      num_vars,
+                      varlen,
+                      flex_len,
+                      Uint32(dynstart - flex_data),
+                      dyn_len));
     }
     if (num_dyns)
     {
@@ -9039,6 +9089,26 @@ Dbtup::expand_tuple(KeyReqStruct* req_struct,
       dst->m_dyn_len_offset= num_dynvar+num_dynfix;
       dst->m_max_dyn_offset= tabPtrP->m_offsets[ind].m_max_dyn_offset;
       dst->m_dyn_data_ptr= (char*)dst_ptr;
+      DEB_VAR_EXPAND(("(%u) expand_dyn_part %s: tab(%u,%u),"
+                      " row(%u,%u), dyn_len: %u,"
+                      " max_bmlen: %u, dyn_data: %p,"
+                      " flex_data: %p, flex_len: %u,"
+                      " dyn_data[0]: 0x%08x,"
+                      " dyn_data[1]: 0x%08x",
+                      instance(),
+                      ind == MM ? "MM" : "DD",
+                      req_struct->fragPtrP->fragTableId,
+                      req_struct->fragPtrP->fragmentId,
+                      req_struct->frag_page_id,
+                      req_struct->operPtrP->
+                        m_tuple_location.m_page_idx,
+                      dyn_len,
+                      tabPtrP->m_offsets[ind].m_dyn_null_words,
+                      dyn_data,
+                      flex_data,
+                      flex_len,
+                      dyn_len > 0 ? dyn_data[0] : 0,
+                      dyn_len > 1 ? dyn_data[1] : 0));
       dst_ptr= expand_dyn_part(dst,
                                dyn_data,
                                dyn_len,
@@ -9482,6 +9552,18 @@ void Dbtup::shrink_tuple(KeyReqStruct *req_struct, Uint32 sizes[2],
       Uint32 varpart_len_words = Uint32(dst_ptr - varstart);
       ndbassert(varpart_len_words <= MAX_EXPANDED_TUPLE_SIZE_IN_WORDS);
       vp->m_len = varpart_len_words;
+      DEB_VAR_EXPAND(("(%u) shrink_tuple %s: tab(%u,%u),"
+                      " row(%u,%u), varpart_len: %u,"
+                      " vp->m_data[0]: 0x%08x",
+                      instance(),
+                      ind == MM ? "MM" : "DD",
+                      req_struct->fragPtrP->fragTableId,
+                      req_struct->fragPtrP->fragmentId,
+                      req_struct->frag_page_id,
+                      req_struct->operPtrP->
+                        m_tuple_location.m_page_idx,
+                      varpart_len_words,
+                      varpart_len_words > 0 ? vp->m_data[0] : 0));
       if (ind == MM)
       {
         sizes[MM] = varpart_len_words;
