@@ -47,6 +47,7 @@ NDB_ADD_EXECUTABLE(bench_q12_tpch bench_q12_tpch.cpp NDBTEST NDBCLIENT MYSQLCLIE
 NDB_ADD_EXECUTABLE(testJoinAggSpj testJoinAggSpj.cpp NDBTEST NDBCLIENT MYSQLCLIENT)
 NDB_ADD_EXECUTABLE(bench_q12_dbtc bench_q12_dbtc.cpp NDBTEST NDBCLIENT MYSQLCLIENT)
 NDB_ADD_EXECUTABLE(load_tpch load_tpch.cpp NDBTEST NDBCLIENT MYSQLCLIENT)
+TARGET_LINK_LIBRARIES(load_tpch ndbgeneral)
 NDB_ADD_EXECUTABLE(bench_q9_dbtc bench_q9_dbtc.cpp NDBTEST NDBCLIENT MYSQLCLIENT)
 
 # testJoinAggNdbApi needs NdbQueryBuilder.hpp from src/ndbapi
