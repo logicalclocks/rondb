@@ -312,7 +312,7 @@ if(! -d "$opt_srcdir/libmysqld")
       if ($opt_with_zlib_dir ne "bundled");
     push(@args, "-DWITH_ZLIB=$opt_with_zlib_dir");
   }
-  push(@args, "-DWITH_SSL=/usr/local/ssl");
+  #push(@args, "-DWITH_SSL=/usr/local/ssl");
   if ($opt_localstatedir)
   {
     push(@args, "-DMYSQL_DATADIR=$opt_localstatedir"); 
