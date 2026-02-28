@@ -91,6 +91,7 @@ static const char *json_extra_tags[ET_total] = {
     "impossible_on_condition",             // ET_IMPOSSIBLE_ON_CONDITION
     "pushed_join",                         // ET_PUSHED_JOIN
     "pushed_join_aggregation",             // ET_PUSHED_JOIN_AGGREGATION
+    "pushed_aggregation",                  // ET_PUSHED_AGGREGATION
     "ft_hints",                            // ET_FT_HINTS
     "backward_index_scan",                 // ET_BACKWARD_SCAN
     "recursive",                           // ET_RECURSIVE

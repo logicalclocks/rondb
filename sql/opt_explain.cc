@@ -1041,6 +1041,11 @@ bool Explain_table_base::explain_extra_common(int range_scan_type, uint keyno) {
     }
   }
 
+  // Single-table pushed aggregation (no pushed join involved).
+  if (!pushed_root && table->file->has_pushed_aggregation()) {
+    if (push_extra(ET_PUSHED_AGGREGATION)) return true;
+  }
+
   switch (range_scan_type) {
     case AccessPath::ROWID_UNION:
     case AccessPath::ROWID_INTERSECTION:
