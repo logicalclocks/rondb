@@ -6694,7 +6694,7 @@ int ha_ndbcluster::close_scan() {
     // Clear the aggregate join pointer when closing an actual active scan.
     // Don't clear it in the rnd_init() path (m_active_query == nullptr)
     // since it's needed in create_pushed_join() to restore m_pushed_agg_mode.
-    m_pushed_agg_join = nullptr;
+    m_agg_join = nullptr;
   }
   m_pushed_agg_mode = false;
   m_agg_results_initialized = false;
@@ -7270,7 +7270,7 @@ int ha_ndbcluster::reset() {
   m_pushed_join_member = nullptr;
   m_pushed_join_operation = -1;
   m_disable_pushed_join = false;
-  m_pushed_agg_join = nullptr;
+  m_agg_join = nullptr;
   delete m_stm_aggregator;
   m_stm_aggregator = nullptr;
 
@@ -14935,7 +14935,7 @@ int ndbcluster_push_to_engine(THD *thd, AccessPath *root_path, JOIN *join) {
         pushed_builder.m_tables[0].get_table()->file);
     root_handler->m_pushed_agg_mode = true;
     root_handler->m_agg_results_initialized = false;
-    root_handler->m_pushed_agg_join = join;
+    root_handler->m_agg_join = join;
   }
 
   /**
@@ -15101,9 +15101,9 @@ int ha_ndbcluster::create_pushed_join(const NdbQueryParamValue *keyFieldParams,
   // Restore aggregation mode.  m_pushed_agg_mode was set during
   // prepare_push_join() but gets cleared by close_scan() which runs
   // between optimization and execution (called from rnd_init/index_init).
-  // Use the persistent m_pushed_agg_join (set during prepare, not cleared
+  // Use the persistent m_agg_join (set during prepare, not cleared
   // by close_scan) to re-detect.
-  if (m_pushed_agg_join != nullptr) {
+  if (m_agg_join != nullptr) {
     m_pushed_agg_mode = true;
     m_agg_results_initialized = false;
   }
@@ -15232,7 +15232,7 @@ table_map ha_ndbcluster::tables_in_pushed_join() const {
 }
 
 bool ha_ndbcluster::has_pushed_aggregation() const {
-  return m_pushed_agg_join != nullptr;
+  return m_agg_join != nullptr;
 }
 
 /*

@@ -689,7 +689,7 @@ int ndb_fetch_pushed_aggregate(ha_ndbcluster *handler) {
     if (err) return err;
     handler->m_agg_results_initialized = true;
   }
-  return ndb_fetch_next_aggregate_row(agg, handler->m_pushed_agg_join);
+  return ndb_fetch_next_aggregate_row(agg, handler->m_agg_join);
 }
 
 /**
@@ -903,10 +903,10 @@ int ndb_start_stm_aggregate_scan(ha_ndbcluster *handler,
     return ndb_to_mysql_error(&op->getNdbError());
   }
   return ndb_fetch_next_aggregate_row(handler->m_stm_aggregator,
-                                      handler->m_pushed_agg_join);
+                                      handler->m_agg_join);
 }
 
 int ndb_fetch_stm_aggregate(ha_ndbcluster *handler) {
   return ndb_fetch_next_aggregate_row(handler->m_stm_aggregator,
-                                      handler->m_pushed_agg_join);
+                                      handler->m_agg_join);
 }

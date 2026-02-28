@@ -747,7 +747,7 @@ class ha_ndbcluster : public handler, public Partition_handler {
   // Pushed aggregation state (set during push, used during fetch).
   bool m_pushed_agg_mode{false};
   bool m_agg_results_initialized{false};
-  const JOIN *m_pushed_agg_join{nullptr};
+  const JOIN *m_agg_join{nullptr};
 
   // Single-table aggregation pushdown state.
   NdbAggregator *m_stm_aggregator{nullptr};
