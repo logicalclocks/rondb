@@ -3899,6 +3899,12 @@ int ha_ndbcluster::ordered_index_scan(const key_range *start_key,
     NdbInterpretedCode code(m_table);
     generate_scan_filter(&code, &options);
 
+    if (m_stm_aggregator != nullptr) {
+      options.optionsPresent |=
+          NdbScanOperation::ScanOptions::SO_AGGREGATION;
+      options.aggregationCode = m_stm_aggregator;
+    }
+
     get_read_set(true, active_index);
     if (!(op = trans->scanIndex(key_rec, row_rec, lm,
                                 m_table_map->get_column_mask(table->read_set),
@@ -3911,11 +3917,14 @@ int ha_ndbcluster::ordered_index_scan(const key_range *start_key,
     m_thd_ndb->m_scan_count++;
     m_thd_ndb->m_pruned_scan_count += (op->getPruned() ? 1 : 0);
 
+    m_active_cursor = op;
+
+    if (m_stm_aggregator != nullptr)
+      return ndb_start_stm_aggregate_scan(this, op);
+
     if (uses_blob_value(table->read_set) &&
         get_blob_values(op, nullptr, table->read_set) != 0)
       ERR_RETURN(op->getNdbError());
-
-    m_active_cursor = op;
   }
 
   if (sorted) {
@@ -6481,6 +6490,8 @@ int ha_ndbcluster::index_next(uchar *buf) {
   DBUG_TRACE;
   TTL_HANDLER_TRACE(m_share->table_name, "ha_ndbcluster::index_next");
   ha_statistic_increment(&System_status_var::ha_read_next_count);
+  if (m_active_cursor && m_stm_aggregator != nullptr)
+    return ndb_fetch_stm_aggregate(this);
   const int error = next_result(buf);
   return error;
 }
