@@ -4341,6 +4341,7 @@ static int scanupdateindex(Par par, const ITab &itab, BSet &bset, bool calc) {
   con2.connect(con);
   CHK(con2.startTransaction() == 0);
   uint batch = 0;
+  bool scanaborted = false;
   while (1) {
     int ret;
     uint err = par.m_catcherr;
@@ -4348,6 +4349,7 @@ static int scanupdateindex(Par par, const ITab &itab, BSet &bset, bool calc) {
     if (ret != 0) break;
     if (err) {
       LL1("scanupdateindex [scan] stop on " << con.errname(err));
+      scanaborted = true;
       break;
     }
     if (par.m_scanstop != 0 && urandom(par.m_scanstop) == 0) {
@@ -4384,6 +4386,7 @@ static int scanupdateindex(Par par, const ITab &itab, BSet &bset, bool calc) {
         set.unlock();
         if (err) {
           LL1("scanupdateindex [update] stop on " << con2.errname(err));
+          scanaborted = true;
           goto out;
         }
         LL4("scanupdateindex committed batch");
@@ -4398,7 +4401,12 @@ static int scanupdateindex(Par par, const ITab &itab, BSet &bset, bool calc) {
 out:
   con2.closeTransaction();
   if (par.m_verify) {
-    CHK(set1.verify(par, set2, true) == 0);
+    // skip exact set verification if scan was aborted by caught error
+    // (deadlock etc) since set2 will be incomplete, but still verify
+    // ordering of the rows that were scanned
+    if (!scanaborted) {
+      CHK(set1.verify(par, set2, true) == 0);
+    }
     if (par.m_ordered) CHK(set2.verifyorder(par, itab, par.m_descending) == 0);
   }
   LL3("scanupdateindex " << itab.m_name << " rows updated=" << count);
@@ -4584,6 +4592,7 @@ static int mixedoperations(Par par) {
 }
 
 static int parallelorderedupdate(Par par) {
+  par.m_catcherr |= Con::ErrDeadlock;
   const Tab &tab = par.tab();
   uint k = 0;
   for (uint i = 0; i < tab.m_itabs; i++) {
