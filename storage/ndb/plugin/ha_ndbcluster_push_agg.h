@@ -26,14 +26,14 @@
 /**
  * @file ha_ndbcluster_push_agg.h
  *
- * Aggregation pushdown for NDB pushed joins.
+ * Aggregation pushdown for NDB pushed joins and single-table queries.
  *
- * When a fully-pushed join query has GROUP BY + aggregate functions
- * (COUNT, SUM, MIN, MAX), the aggregation can be pushed to the data
- * nodes via the NdbAggregator program. This file declares the functions
- * for detecting pushable aggregation, building the aggregation program,
- * rebuilding the NdbQueryDef with aggregation attached, and fetching
- * aggregate results.
+ * When a fully-pushed join query or a single-table query has GROUP BY +
+ * aggregate functions (COUNT, SUM, MIN, MAX), the aggregation can be
+ * pushed to the data nodes via the NdbAggregator program. This file
+ * declares the functions for detecting pushable aggregation, building
+ * the aggregation program, rebuilding the NdbQueryDef with aggregation
+ * attached, and fetching aggregate results.
  *
  * All substantial aggregation pushdown logic lives in
  * ha_ndbcluster_push_agg.cc. Existing files receive only small hooks
@@ -102,5 +102,18 @@ AccessPath *strip_pushed_child_nljs(AccessPath *path);
  *         NextResult_scanComplete when done, or error code
  */
 int ndb_fetch_pushed_aggregate(ha_ndbcluster *handler);
+
+/**
+ * Detect whether a single-table aggregate query can be pushed.
+ * Called from ndbcluster_push_to_engine() when no join aggregation
+ * was pushed.
+ *
+ * Validates that the query has pushable aggregate functions and
+ * GROUP BY columns, all referencing the single table.
+ *
+ * @return true if aggregation was pushed, false otherwise
+ */
+bool ndb_push_single_table_aggregation(THD *thd, const JOIN *join,
+                                       const ndb_pushed_builder_ctx &builder);
 
 #endif  // HA_NDBCLUSTER_PUSH_AGG_H

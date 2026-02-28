@@ -686,6 +686,8 @@ class ndb_pushed_builder_ctx {
   friend void ndb_apply_aggregation_options(ndb_pushed_builder_ctx &builder,
                                             uint tab_no,
                                             NdbQueryOptions *options);
+  friend bool ndb_push_single_table_aggregation(
+      THD *thd, const JOIN *join, const ndb_pushed_builder_ctx &builder);
 
  public:
   ndb_pushed_builder_ctx(const THD *thd, const AccessPath *root_path,

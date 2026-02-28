@@ -379,6 +379,15 @@ static MYSQL_THDVAR_BOOL(join_pushdown_aggregate, /* name */
                          false    /* default */
 );
 
+static MYSQL_THDVAR_BOOL(
+    pushdown_aggregate, /* name */
+    PLUGIN_VAR_OPCMDARG,
+    "Enable pushing down of aggregation for single-table queries to datanodes",
+    nullptr, /* check func. */
+    nullptr, /* update func. */
+    false    /* default */
+);
+
 static MYSQL_THDVAR_BOOL(log_exclusive_reads, /* name */
                          PLUGIN_VAR_OPCMDARG,
                          "Log primary key reads with exclusive locks "
@@ -14908,6 +14917,12 @@ int ndbcluster_push_to_engine(THD *thd, AccessPath *root_path, JOIN *join) {
   if (THDVAR(thd, join_pushdown_aggregate)) {
     has_pushed_aggregation = ndb_push_aggregation(thd, join, pushed_builder);
   }
+
+  // Check if single-table aggregation can be pushed.
+  if (!has_pushed_aggregation && THDVAR(thd, pushdown_aggregate)) {
+    has_pushed_aggregation =
+        ndb_push_single_table_aggregation(thd, join, pushed_builder);
+  }
   if (has_pushed_aggregation) {
     auto *root_handler = down_cast<ha_ndbcluster *>(
         pushed_builder.m_tables[0].get_table()->file);
@@ -19297,6 +19312,7 @@ static SYS_VAR *system_variables[] = {
     MYSQL_SYSVAR(deferred_constraints),
     MYSQL_SYSVAR(join_pushdown),
     MYSQL_SYSVAR(join_pushdown_aggregate),
+    MYSQL_SYSVAR(pushdown_aggregate),
     MYSQL_SYSVAR(log_exclusive_reads),
     MYSQL_SYSVAR(read_backup),
     MYSQL_SYSVAR(data_node_neighbour),

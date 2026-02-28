@@ -26,7 +26,7 @@
 /**
  * @file ha_ndbcluster_push_agg.cc
  *
- * Aggregation pushdown for NDB pushed joins — implementation.
+ * Aggregation pushdown for NDB pushed joins and single-table queries.
  *
  * Contains all logic for detecting pushable aggregation queries,
  * building NdbAggregator programs, rebuilding the NdbQueryDef with
@@ -689,4 +689,95 @@ int ndb_fetch_pushed_aggregate(ha_ndbcluster *handler) {
     handler->m_agg_results_initialized = true;
   }
   return ndb_fetch_next_aggregate_row(agg, handler->m_pushed_agg_join);
+}
+
+/**
+ * Check if a single-table query's aggregate functions and GROUP BY
+ * columns are pushable.
+ *
+ * Validates:
+ * - Query has aggregate functions (COUNT/SUM/MIN/MAX, no DISTINCT)
+ * - No ROLLUP
+ * - GROUP BY columns are simple field references from the single table
+ * - Aggregate arguments are field references from the single table
+ *
+ * @param join        MySQL JOIN with aggregation info
+ * @param table       The single MySQL TABLE involved
+ * @return true if aggregation is pushable
+ */
+static bool ndb_can_push_single_table_aggregation(const JOIN *join,
+                                                   const TABLE *table) {
+  if (join->sum_funcs == nullptr || join->sum_funcs[0] == nullptr) {
+    return false;
+  }
+
+  if (join->query_block->olap != UNSPECIFIED_OLAP_TYPE) {
+    return false;
+  }
+
+  for (Item_sum **func = join->sum_funcs; *func != nullptr; func++) {
+    switch ((*func)->sum_func()) {
+      case Item_sum::COUNT_FUNC:
+        if ((*func)->argument_count() == 1) {
+          Item *arg = (*func)->arguments()[0];
+          if (arg->type() == Item::FIELD_ITEM) {
+            const auto *field_item = down_cast<const Item_field *>(arg);
+            if (field_item->field->table != table) {
+              return false;
+            }
+          }
+        }
+        break;
+      case Item_sum::SUM_FUNC:
+      case Item_sum::MIN_FUNC:
+      case Item_sum::MAX_FUNC: {
+        if ((*func)->argument_count() != 1) return false;
+        Item *arg = (*func)->arguments()[0];
+        if (arg->type() != Item::FIELD_ITEM) return false;
+        const auto *field_item = down_cast<const Item_field *>(arg);
+        if (field_item->field->table != table) {
+          return false;
+        }
+        break;
+      }
+      default:
+        return false;
+    }
+  }
+
+  for (ORDER *group = join->query_block->group_list.first; group != nullptr;
+       group = group->next) {
+    Item *item = *(group->item);
+    if (item->type() != Item::FIELD_ITEM) return false;
+    const auto *field_item = down_cast<const Item_field *>(item);
+    if (field_item->field->table != table) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+bool ndb_push_single_table_aggregation(THD *, const JOIN *join,
+                                       const ndb_pushed_builder_ctx &builder) {
+  if (builder.m_table_count != 1) {
+    return false;
+  }
+
+  const TABLE *table = builder.m_tables[0].get_table();
+  if (table == nullptr) {
+    return false;
+  }
+
+  if (!ndb_can_push_single_table_aggregation(join, table)) {
+    return false;
+  }
+
+  DBUG_PRINT("info",
+             ("ndb_push_single_table_aggregation: query detected as pushable "
+              "on table %s",
+              table->s->table_name.str));
+
+  // Phase 1: detection only — do not push yet.
+  return false;
 }
