@@ -1543,70 +1543,58 @@ int NdbScanOperation::setAggregationCode(const NdbAggregator *code)
 }
 
 int NdbScanOperation::DoAggregation() {
-  DEB_TRACE();
-
   if (m_aggregation_code == nullptr ||
       !m_aggregation_code->finalized())
   {
-    DEB_TRACE();
     setErrorCodeAbort(4560); //  NdbAggregator::Finalize() not called.
     return -1;
   }
 
   NdbRecAttr* myRecAttr;
-  Uint32 col = 0xFF00;
-  DEB_TRACE();
-  myRecAttr = getValue(col);
-  DEB_TRACE();
+  if (!m_scanUsingOldApi) {
+    // NdbRecord scan: use getValue_NdbRecord_scan() directly.
+    // The normal getValue() path fails because getColumn(0xFF00)
+    // returns nullptr for the aggregation pseudo-column.
+    myRecAttr = getValue_NdbRecord_scan(nullptr, nullptr, 0, 0);
+  } else {
+    // Old-style scan: use the standard getValue() path.
+    Uint32 col = 0xFF00;
+    myRecAttr = getValue(col);
+  }
   if (myRecAttr == nullptr) {
     return -1;
   }
 
   const bool useNdbRecord = !m_scanUsingOldApi;
 
-  DEB_TRACE();
   if (m_transConnection->execute(NdbTransaction::NoCommit) != 0) {
     return -1;
   }
 
-  DEB_TRACE();
   while (true) {
     int check;
     if (useNdbRecord) {
       const char *dummy_row;
-      check = nextResult(&dummy_row, true);
+      check = nextResult(&dummy_row, true, false);
     } else {
       check = nextResult(true);
     }
     switch(check) {
     case -1:
-      // Permanent error
-      DEB_TRACE();
       return -1;
     case 0:
-      // Progress getting data
       if (m_aggregation_code->ProcessRes(myRecAttr->aRef())) {
-        // Done processing data fetched so far
-        DEB_TRACE();
         continue;
       } else {
-        // This is unexpected
-        DEB_TRACE();
         return -1;
       }
     case 1:
       // Scan complete.
-      DEB_TRACE();
       m_aggregation_code->PrepareResults();
       return 0;
     case 2:
-      // No more data available immediately. This should never happen because
-      // nextResult is called with fetchAllowed = true.
-      DEB_TRACE();
       abort();
     default:
-      // This should never happen
-      DEB_TRACE();
       abort();
     }
   }

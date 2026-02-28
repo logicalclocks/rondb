@@ -902,11 +902,19 @@ int ndb_start_stm_aggregate_scan(ha_ndbcluster *handler,
   if (op->DoAggregation() != 0) {
     return ndb_to_mysql_error(&op->getNdbError());
   }
-  return ndb_fetch_next_aggregate_row(handler->m_stm_aggregator,
-                                      handler->m_agg_join);
+  const int res = ndb_fetch_next_aggregate_row(handler->m_stm_aggregator,
+                                               handler->m_agg_join);
+  if (res == NdbQuery::NextResult_scanComplete) {
+    return HA_ERR_END_OF_FILE;
+  }
+  return res;
 }
 
 int ndb_fetch_stm_aggregate(ha_ndbcluster *handler) {
-  return ndb_fetch_next_aggregate_row(handler->m_stm_aggregator,
-                                      handler->m_agg_join);
+  const int res = ndb_fetch_next_aggregate_row(handler->m_stm_aggregator,
+                                               handler->m_agg_join);
+  if (res == NdbQuery::NextResult_scanComplete) {
+    return HA_ERR_END_OF_FILE;
+  }
+  return res;
 }

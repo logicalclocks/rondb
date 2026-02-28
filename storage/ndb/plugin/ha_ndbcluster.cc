@@ -14826,7 +14826,12 @@ static void fixup_pushed_access_paths(THD *thd, AccessPath *path,
           AccessPath *child =
               strip_pushed_child_nljs(subpath->aggregate().child);
           *subpath = *child;
-          return false;  // Re-walk the replaced node
+          // Explicitly re-walk the replaced node so that any FILTER
+          // within it is properly processed by fixup_pushed_access_paths
+          // (the walker would skip the lambda for the replaced node itself).
+          fixup_pushed_access_paths(thd, subpath, join, filter,
+                                    has_pushed_aggregation);
+          return true;  // Already walked children
         }
 #ifndef NDEBUG
         assert(!has_pushed_members_outside_of_branch(subpath->aggregate().child,
