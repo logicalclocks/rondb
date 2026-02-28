@@ -1,0 +1,441 @@
+--source include/have_ndb.inc
+
+--echo ############################################################
+--echo # RONDB-733: Single-Table Aggregation Pushdown
+--echo ############################################################
+
+--echo ############################################################
+--echo # Section A: Create main test table and load data
+--echo ############################################################
+
+CREATE TABLE t1 (
+  pk INT PRIMARY KEY,
+  grp INT,
+  val INT,
+  val_null INT
+) ENGINE=NDB;
+
+INSERT INTO t1 VALUES
+  (1,  1, 10,  100),
+  (2,  1, 20,  NULL),
+  (3,  1, 30,  300),
+  (4,  1, 40,  NULL),
+  (5,  2, 50,  500),
+  (6,  2, 60,  600),
+  (7,  2, 70,  NULL),
+  (8,  3, 80,  800),
+  (9,  3, 90,  900),
+  (10, 3, 100, 1000),
+  (11, 3, 110, NULL),
+  (12, 3, 120, 1200);
+
+--echo ############################################################
+--echo # Test 1: GROUP BY single column, COUNT(*)
+--echo ############################################################
+SET ndb_pushdown_aggregate=OFF;
+--sorted_result
+SELECT grp, COUNT(*) FROM t1 GROUP BY grp;
+
+SET ndb_pushdown_aggregate=ON;
+--sorted_result
+SELECT grp, COUNT(*) FROM t1 GROUP BY grp;
+
+--echo ############################################################
+--echo # Test 2: GROUP BY single column, SUM
+--echo ############################################################
+SET ndb_pushdown_aggregate=OFF;
+--sorted_result
+SELECT grp, SUM(val) FROM t1 GROUP BY grp;
+
+SET ndb_pushdown_aggregate=ON;
+--sorted_result
+SELECT grp, SUM(val) FROM t1 GROUP BY grp;
+
+--echo ############################################################
+--echo # Test 3: GROUP BY single column, MIN + MAX
+--echo ############################################################
+SET ndb_pushdown_aggregate=OFF;
+--sorted_result
+SELECT grp, MIN(val), MAX(val) FROM t1 GROUP BY grp;
+
+SET ndb_pushdown_aggregate=ON;
+--sorted_result
+SELECT grp, MIN(val), MAX(val) FROM t1 GROUP BY grp;
+
+--echo ############################################################
+--echo # Test 4: All 4 aggregate functions
+--echo ############################################################
+SET ndb_pushdown_aggregate=OFF;
+--sorted_result
+SELECT grp, COUNT(*), SUM(val), MIN(val), MAX(val) FROM t1 GROUP BY grp;
+
+SET ndb_pushdown_aggregate=ON;
+--sorted_result
+SELECT grp, COUNT(*), SUM(val), MIN(val), MAX(val) FROM t1 GROUP BY grp;
+
+--echo ############################################################
+--echo # Test 5: Multi-column GROUP BY
+--echo ############################################################
+SET ndb_pushdown_aggregate=OFF;
+--sorted_result
+SELECT grp, val, COUNT(*) FROM t1 GROUP BY grp, val;
+
+SET ndb_pushdown_aggregate=ON;
+--sorted_result
+SELECT grp, val, COUNT(*) FROM t1 GROUP BY grp, val;
+
+--echo ############################################################
+--echo # Test 6: COUNT(nullable_col) vs COUNT(*)
+--echo ############################################################
+SET ndb_pushdown_aggregate=OFF;
+--sorted_result
+SELECT grp, COUNT(val_null), COUNT(*) FROM t1 GROUP BY grp;
+
+SET ndb_pushdown_aggregate=ON;
+--sorted_result
+SELECT grp, COUNT(val_null), COUNT(*) FROM t1 GROUP BY grp;
+
+--echo ############################################################
+--echo # Test 7: HAVING
+--echo ############################################################
+SET ndb_pushdown_aggregate=OFF;
+--sorted_result
+SELECT grp, SUM(val) AS total FROM t1 GROUP BY grp HAVING total > 200;
+
+SET ndb_pushdown_aggregate=ON;
+--sorted_result
+SELECT grp, SUM(val) AS total FROM t1 GROUP BY grp HAVING total > 200;
+
+--echo ############################################################
+--echo # Test 8: ORDER BY aggregate
+--echo ############################################################
+SET ndb_pushdown_aggregate=OFF;
+SELECT grp, SUM(val) AS total FROM t1 GROUP BY grp ORDER BY total DESC;
+
+SET ndb_pushdown_aggregate=ON;
+SELECT grp, SUM(val) AS total FROM t1 GROUP BY grp ORDER BY total DESC;
+
+--echo ############################################################
+--echo # Test 9: LIMIT
+--echo ############################################################
+SET ndb_pushdown_aggregate=OFF;
+SELECT grp, SUM(val) AS total FROM t1 GROUP BY grp ORDER BY grp LIMIT 2;
+
+SET ndb_pushdown_aggregate=ON;
+SELECT grp, SUM(val) AS total FROM t1 GROUP BY grp ORDER BY grp LIMIT 2;
+
+--echo ############################################################
+--echo # Test 10: HAVING + ORDER BY + LIMIT
+--echo ############################################################
+SET ndb_pushdown_aggregate=OFF;
+SELECT grp, SUM(val) AS total FROM t1
+  GROUP BY grp HAVING total > 100 ORDER BY total DESC LIMIT 2;
+
+SET ndb_pushdown_aggregate=ON;
+SELECT grp, SUM(val) AS total FROM t1
+  GROUP BY grp HAVING total > 100 ORDER BY total DESC LIMIT 2;
+
+--echo ############################################################
+--echo # Test 11: Implicit aggregation — COUNT(*) only
+--echo ############################################################
+SET ndb_pushdown_aggregate=OFF;
+SELECT COUNT(*) FROM t1;
+
+SET ndb_pushdown_aggregate=ON;
+SELECT COUNT(*) FROM t1;
+
+--echo ############################################################
+--echo # Test 12: Implicit aggregation — multiple aggregates
+--echo ############################################################
+SET ndb_pushdown_aggregate=OFF;
+SELECT COUNT(*), SUM(val), MIN(val), MAX(val) FROM t1;
+
+SET ndb_pushdown_aggregate=ON;
+SELECT COUNT(*), SUM(val), MIN(val), MAX(val) FROM t1;
+
+--echo ############################################################
+--echo # Test 13: Implicit aggregation with WHERE
+--echo ############################################################
+SET ndb_pushdown_aggregate=OFF;
+SELECT COUNT(*), SUM(val) FROM t1 WHERE grp = 1;
+
+SET ndb_pushdown_aggregate=ON;
+SELECT COUNT(*), SUM(val) FROM t1 WHERE grp = 1;
+
+--echo ############################################################
+--echo # Test 14: WHERE with GROUP BY
+--echo ############################################################
+SET ndb_pushdown_aggregate=OFF;
+--sorted_result
+SELECT grp, SUM(val) FROM t1 WHERE val > 50 GROUP BY grp;
+
+SET ndb_pushdown_aggregate=ON;
+--sorted_result
+SELECT grp, SUM(val) FROM t1 WHERE val > 50 GROUP BY grp;
+
+--echo ############################################################
+--echo # Test 15: WHERE single row
+--echo ############################################################
+SET ndb_pushdown_aggregate=OFF;
+SELECT grp, SUM(val) FROM t1 WHERE pk = 1 GROUP BY grp;
+
+SET ndb_pushdown_aggregate=ON;
+SELECT grp, SUM(val) FROM t1 WHERE pk = 1 GROUP BY grp;
+
+--echo ############################################################
+--echo # Test 16: Empty table
+--echo ############################################################
+CREATE TABLE t_empty (
+  pk INT PRIMARY KEY,
+  grp INT,
+  val INT
+) ENGINE=NDB;
+
+SET ndb_pushdown_aggregate=OFF;
+SELECT COUNT(*) FROM t_empty;
+SELECT COUNT(*), SUM(val), MIN(val), MAX(val) FROM t_empty;
+--sorted_result
+SELECT grp, COUNT(*) FROM t_empty GROUP BY grp;
+
+SET ndb_pushdown_aggregate=ON;
+SELECT COUNT(*) FROM t_empty;
+SELECT COUNT(*), SUM(val), MIN(val), MAX(val) FROM t_empty;
+--sorted_result
+SELECT grp, COUNT(*) FROM t_empty GROUP BY grp;
+
+DROP TABLE t_empty;
+
+--echo ############################################################
+--echo # Test 17: Single row table
+--echo ############################################################
+CREATE TABLE t_one (
+  pk INT PRIMARY KEY,
+  grp INT,
+  val INT
+) ENGINE=NDB;
+INSERT INTO t_one VALUES (1, 1, 42);
+
+SET ndb_pushdown_aggregate=OFF;
+SELECT COUNT(*), SUM(val), MIN(val), MAX(val) FROM t_one;
+SELECT grp, SUM(val) FROM t_one GROUP BY grp;
+
+SET ndb_pushdown_aggregate=ON;
+SELECT COUNT(*), SUM(val), MIN(val), MAX(val) FROM t_one;
+SELECT grp, SUM(val) FROM t_one GROUP BY grp;
+
+DROP TABLE t_one;
+
+--echo ############################################################
+--echo # Test 18: All-NULL aggregate column
+--echo ############################################################
+SET ndb_pushdown_aggregate=OFF;
+--sorted_result
+SELECT grp, SUM(val_null), MIN(val_null), MAX(val_null)
+FROM t1 WHERE val_null IS NULL GROUP BY grp;
+
+SET ndb_pushdown_aggregate=ON;
+--sorted_result
+SELECT grp, SUM(val_null), MIN(val_null), MAX(val_null)
+FROM t1 WHERE val_null IS NULL GROUP BY grp;
+
+--echo ############################################################
+--echo # Section G: Index scan tests
+--echo ############################################################
+CREATE TABLE t_idx (
+  pk INT PRIMARY KEY,
+  idx_col INT,
+  val INT,
+  INDEX ix1 (idx_col)
+) ENGINE=NDB;
+
+INSERT INTO t_idx VALUES
+  (1,  10, 100),
+  (2,  10, 200),
+  (3,  20, 300),
+  (4,  20, 400),
+  (5,  30, 500),
+  (6,  30, 600),
+  (7,  40, 700),
+  (8,  40, 800);
+
+--echo ############################################################
+--echo # Test 19: Index range scan with aggregation
+--echo ############################################################
+SET ndb_pushdown_aggregate=OFF;
+--sorted_result
+SELECT idx_col, SUM(val) FROM t_idx
+WHERE idx_col BETWEEN 10 AND 30 GROUP BY idx_col;
+
+SET ndb_pushdown_aggregate=ON;
+--sorted_result
+SELECT idx_col, SUM(val) FROM t_idx
+WHERE idx_col BETWEEN 10 AND 30 GROUP BY idx_col;
+
+--echo ############################################################
+--echo # Test 20: Index range scan with implicit aggregation
+--echo ############################################################
+SET ndb_pushdown_aggregate=OFF;
+SELECT COUNT(*), SUM(val) FROM t_idx WHERE idx_col > 20;
+
+SET ndb_pushdown_aggregate=ON;
+SELECT COUNT(*), SUM(val) FROM t_idx WHERE idx_col > 20;
+
+DROP TABLE t_idx;
+
+--echo ############################################################
+--echo # Section H: Type coverage
+--echo ############################################################
+CREATE TABLE t_types (
+  pk INT PRIMARY KEY,
+  grp_int INT,
+  val_bigint BIGINT,
+  val_float FLOAT,
+  val_double DOUBLE,
+  val_date DATE,
+  val_char CHAR(10),
+  val_varchar VARCHAR(20)
+) ENGINE=NDB;
+
+INSERT INTO t_types VALUES
+  (1, 1, 1000000000, 1.5,  1.25,  '2025-01-01', 'alpha', 'foo'),
+  (2, 1, 2000000000, 2.5,  2.75,  '2025-01-01', 'alpha', 'foo'),
+  (3, 1, 3000000000, 3.5,  3.25,  '2025-01-15', 'beta',  'bar'),
+  (4, 2, 4000000000, 4.5,  4.75,  '2025-01-15', 'beta',  'bar'),
+  (5, 2, 5000000000, 5.5,  5.25,  '2025-02-01', 'gamma', 'baz'),
+  (6, 2, 6000000000, 6.5,  6.75,  '2025-02-01', 'gamma', 'baz');
+
+--echo ############################################################
+--echo # Test 21: SUM/MIN/MAX on BIGINT
+--echo ############################################################
+SET ndb_pushdown_aggregate=OFF;
+--sorted_result
+SELECT grp_int, SUM(val_bigint), MIN(val_bigint), MAX(val_bigint)
+FROM t_types GROUP BY grp_int;
+
+SET ndb_pushdown_aggregate=ON;
+--sorted_result
+SELECT grp_int, SUM(val_bigint), MIN(val_bigint), MAX(val_bigint)
+FROM t_types GROUP BY grp_int;
+
+--echo ############################################################
+--echo # Test 22: SUM/MIN/MAX on FLOAT
+--echo ############################################################
+SET ndb_pushdown_aggregate=OFF;
+--sorted_result
+SELECT grp_int, SUM(val_float), MIN(val_float), MAX(val_float)
+FROM t_types GROUP BY grp_int;
+
+SET ndb_pushdown_aggregate=ON;
+--sorted_result
+SELECT grp_int, SUM(val_float), MIN(val_float), MAX(val_float)
+FROM t_types GROUP BY grp_int;
+
+--echo ############################################################
+--echo # Test 23: SUM/MIN/MAX on DOUBLE
+--echo ############################################################
+SET ndb_pushdown_aggregate=OFF;
+--sorted_result
+SELECT grp_int, SUM(val_double), MIN(val_double), MAX(val_double)
+FROM t_types GROUP BY grp_int;
+
+SET ndb_pushdown_aggregate=ON;
+--sorted_result
+SELECT grp_int, SUM(val_double), MIN(val_double), MAX(val_double)
+FROM t_types GROUP BY grp_int;
+
+--echo ############################################################
+--echo # Test 24: GROUP BY DATE
+--echo ############################################################
+SET ndb_pushdown_aggregate=OFF;
+--sorted_result
+SELECT val_date, COUNT(*), SUM(val_bigint)
+FROM t_types GROUP BY val_date;
+
+SET ndb_pushdown_aggregate=ON;
+--sorted_result
+SELECT val_date, COUNT(*), SUM(val_bigint)
+FROM t_types GROUP BY val_date;
+
+--echo ############################################################
+--echo # Test 25: GROUP BY CHAR
+--echo ############################################################
+SET ndb_pushdown_aggregate=OFF;
+--sorted_result
+SELECT val_char, SUM(val_bigint) FROM t_types GROUP BY val_char;
+
+SET ndb_pushdown_aggregate=ON;
+--sorted_result
+SELECT val_char, SUM(val_bigint) FROM t_types GROUP BY val_char;
+
+--echo ############################################################
+--echo # Test 26: GROUP BY VARCHAR
+--echo ############################################################
+SET ndb_pushdown_aggregate=OFF;
+--sorted_result
+SELECT val_varchar, SUM(val_bigint) FROM t_types GROUP BY val_varchar;
+
+SET ndb_pushdown_aggregate=ON;
+--sorted_result
+SELECT val_varchar, SUM(val_bigint) FROM t_types GROUP BY val_varchar;
+
+DROP TABLE t_types;
+
+--echo ############################################################
+--echo # Section I: Fallback — unsupported queries
+--echo ############################################################
+
+--echo ############################################################
+--echo # Test 27: COUNT(DISTINCT) — not pushable, MySQL fallback
+--echo ############################################################
+SET ndb_pushdown_aggregate=OFF;
+--sorted_result
+SELECT grp, COUNT(DISTINCT val) FROM t1 GROUP BY grp;
+
+SET ndb_pushdown_aggregate=ON;
+--sorted_result
+SELECT grp, COUNT(DISTINCT val) FROM t1 GROUP BY grp;
+
+--echo ############################################################
+--echo # Test 28: AVG — not pushable, MySQL fallback
+--echo ############################################################
+SET ndb_pushdown_aggregate=OFF;
+--sorted_result
+SELECT grp, AVG(val) FROM t1 GROUP BY grp;
+
+SET ndb_pushdown_aggregate=ON;
+--sorted_result
+SELECT grp, AVG(val) FROM t1 GROUP BY grp;
+
+--echo ############################################################
+--echo # Test 29: ROLLUP — not pushable, MySQL fallback
+--echo ############################################################
+SET ndb_pushdown_aggregate=OFF;
+--sorted_result
+SELECT grp, SUM(val) FROM t1 GROUP BY grp WITH ROLLUP;
+
+SET ndb_pushdown_aggregate=ON;
+--sorted_result
+SELECT grp, SUM(val) FROM t1 GROUP BY grp WITH ROLLUP;
+
+--echo ############################################################
+--echo # Section J: EXPLAIN
+--echo ############################################################
+
+--echo ############################################################
+--echo # Test 30: EXPLAIN with pushdown ON
+--echo ############################################################
+SET ndb_pushdown_aggregate=ON;
+--replace_column 4 # 7 # 8 # 9 # 10 # 11 #
+EXPLAIN SELECT grp, SUM(val), COUNT(*) FROM t1 GROUP BY grp;
+
+--echo ############################################################
+--echo # Test 31: EXPLAIN with pushdown OFF
+--echo ############################################################
+SET ndb_pushdown_aggregate=OFF;
+--replace_column 4 # 7 # 8 # 9 # 10 # 11 #
+EXPLAIN SELECT grp, SUM(val), COUNT(*) FROM t1 GROUP BY grp;
+
+--echo ############################################################
+--echo # Cleanup
+--echo ############################################################
+DROP TABLE t1;
