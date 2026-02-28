@@ -59,6 +59,7 @@ class NdbIndexStat;
 class ha_ndbcluster_cond;
 class NdbQuery;
 class NdbQueryOperation;
+class NdbAggregator;
 class NdbQueryOperationTypeWrapper;
 class NdbQueryParamValue;
 class ndb_pushed_join;
@@ -371,6 +372,11 @@ class ha_ndbcluster : public handler, public Partition_handler {
   friend bool ndb_push_aggregation(THD *thd, const JOIN *join,
                                    ndb_pushed_builder_ctx &builder);
   friend int ndb_fetch_pushed_aggregate(ha_ndbcluster *handler);
+  friend bool ndb_push_single_table_aggregation(
+      THD *thd, const JOIN *join, const ndb_pushed_builder_ctx &builder);
+  friend int ndb_start_stm_aggregate_scan(ha_ndbcluster *handler,
+                                          NdbScanOperation *op);
+  friend int ndb_fetch_stm_aggregate(ha_ndbcluster *handler);
 
  private:
   bool maybe_pushable_join(const char *&reason) const;
@@ -742,6 +748,9 @@ class ha_ndbcluster : public handler, public Partition_handler {
   bool m_pushed_agg_mode{false};
   bool m_agg_results_initialized{false};
   const JOIN *m_pushed_agg_join{nullptr};
+
+  // Single-table aggregation pushdown state.
+  NdbAggregator *m_stm_aggregator{nullptr};
 
   /* In case we failed to push a 'pushed_cond', the handler will evaluate it */
   ha_ndbcluster_cond m_cond;

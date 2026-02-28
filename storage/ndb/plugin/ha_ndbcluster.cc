@@ -4069,6 +4069,9 @@ int ha_ndbcluster::full_table_scan(const KEY *key_info,
     assert(m_active_cursor == nullptr);
     m_active_cursor = op;
 
+    if (m_stm_aggregator != nullptr)
+      return ndb_start_stm_aggregate_scan(this, op);
+
     if (uses_blob_value(table->read_set) &&
         get_blob_values(op, nullptr, table->read_set) != 0)
       ERR_RETURN(op->getNdbError());
@@ -6738,7 +6741,9 @@ int ha_ndbcluster::rnd_next(uchar *buf) {
   ha_statistic_increment(&System_status_var::ha_read_rnd_next_count);
 
   int error;
-  if (m_active_cursor || m_active_query)
+  if (m_active_cursor && m_stm_aggregator != nullptr)
+    error = ndb_fetch_stm_aggregate(this);
+  else if (m_active_cursor || m_active_query)
     error = next_result(buf);
   else
     error = full_table_scan(nullptr, nullptr, nullptr, buf);
@@ -7266,6 +7271,8 @@ int ha_ndbcluster::reset() {
   m_pushed_join_operation = -1;
   m_disable_pushed_join = false;
   m_pushed_agg_join = nullptr;
+  delete m_stm_aggregator;
+  m_stm_aggregator = nullptr;
 
   /* reset flags set by extra calls */
   m_read_before_write_removal_possible = false;

@@ -49,6 +49,7 @@ class JOIN;
 class ha_ndbcluster;
 class ndb_pushed_builder_ctx;
 class NdbQueryOptions;
+class NdbScanOperation;
 
 /**
  * Entry point for aggregation pushdown.
@@ -115,5 +116,26 @@ int ndb_fetch_pushed_aggregate(ha_ndbcluster *handler);
  */
 bool ndb_push_single_table_aggregation(THD *thd, const JOIN *join,
                                        const ndb_pushed_builder_ctx &builder);
+
+/**
+ * Attach aggregation program to scan, execute DoAggregation() to drain
+ * the scan and merge per-fragment results, then return the first
+ * aggregate result row.
+ *
+ * Called from ha_ndbcluster::full_table_scan() when m_stm_aggregator is set.
+ *
+ * @return 0 for row found, or NDB error mapped to MySQL error code
+ */
+int ndb_start_stm_aggregate_scan(ha_ndbcluster *handler,
+                                 NdbScanOperation *op);
+
+/**
+ * Fetch the next single-table pushed aggregate result.
+ * Called from ha_ndbcluster::rnd_next() on subsequent calls after
+ * ndb_start_stm_aggregate_scan() returned the first row.
+ *
+ * @return 0 for row found, HA_ERR_END_OF_FILE when done, or error code
+ */
+int ndb_fetch_stm_aggregate(ha_ndbcluster *handler);
 
 #endif  // HA_NDBCLUSTER_PUSH_AGG_H

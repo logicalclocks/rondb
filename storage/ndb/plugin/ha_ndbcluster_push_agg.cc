@@ -41,6 +41,7 @@
 #include "sql/sql_optimizer.h"
 #include "sql/table.h"
 #include "storage/ndb/include/ndbapi/NdbAggregator.hpp"
+#include "storage/ndb/include/ndbapi/NdbScanOperation.hpp"
 #include "storage/ndb/plugin/ha_ndbcluster.h"
 #include "storage/ndb/plugin/ha_ndbcluster_push.h"
 #include "storage/ndb/src/ndbapi/NdbQueryBuilder.hpp"
@@ -758,6 +759,105 @@ static bool ndb_can_push_single_table_aggregation(const JOIN *join,
   return true;
 }
 
+/**
+ * Build an NdbAggregator program for a single-table aggregate query.
+ *
+ * All GROUP BY columns and aggregate arguments are on the same table,
+ * so no linked projections are needed.
+ *
+ * @param join      MySQL JOIN with aggregation info
+ * @param ndb_table The NDB table definition
+ * @return heap-allocated NdbAggregator on success, nullptr on failure
+ */
+static NdbAggregator *ndb_build_stm_aggregation_program(
+    const JOIN *join, const NdbDictionary::Table *ndb_table) {
+  NdbAggregator *agg = new NdbAggregator(ndb_table);
+
+  for (ORDER *group = join->query_block->group_list.first; group != nullptr;
+       group = group->next) {
+    const auto *field_item = down_cast<const Item_field *>(*(group->item));
+    const int col_id = field_item->field->field_index();
+    if (!agg->GroupBy(col_id)) {
+      delete agg;
+      return nullptr;
+    }
+  }
+
+  Uint32 agg_id = 0;
+  for (Item_sum **func = join->sum_funcs; *func != nullptr; func++) {
+    switch ((*func)->sum_func()) {
+      case Item_sum::COUNT_FUNC: {
+        Item *count_arg = (*func)->arguments()[0];
+        if (count_arg->type() == Item::FIELD_ITEM) {
+          const auto *field_item =
+              down_cast<const Item_field *>(count_arg);
+          const int col_id = field_item->field->field_index();
+          if (!agg->LoadColumn(col_id, kReg1) ||
+              !agg->Count(agg_id, kReg1)) {
+            delete agg;
+            return nullptr;
+          }
+        } else {
+          if (!agg->LoadUint64(1, kReg1) || !agg->Count(agg_id, kReg1)) {
+            delete agg;
+            return nullptr;
+          }
+        }
+        break;
+      }
+      case Item_sum::SUM_FUNC:
+      case Item_sum::MIN_FUNC:
+      case Item_sum::MAX_FUNC: {
+        const auto *field_item =
+            down_cast<const Item_field *>((*func)->arguments()[0]);
+        const int col_id = field_item->field->field_index();
+        if (!agg->LoadColumn(col_id, kReg1)) {
+          delete agg;
+          return nullptr;
+        }
+        switch ((*func)->sum_func()) {
+          case Item_sum::SUM_FUNC:
+            if (!agg->Sum(agg_id, kReg1)) {
+              delete agg;
+              return nullptr;
+            }
+            break;
+          case Item_sum::MIN_FUNC:
+            if (!agg->Min(agg_id, kReg1)) {
+              delete agg;
+              return nullptr;
+            }
+            break;
+          case Item_sum::MAX_FUNC:
+            if (!agg->Max(agg_id, kReg1)) {
+              delete agg;
+              return nullptr;
+            }
+            break;
+          default:
+            break;
+        }
+        break;
+      }
+      default:
+        delete agg;
+        return nullptr;
+    }
+    agg_id++;
+  }
+
+  if (!agg->Finalize()) {
+    delete agg;
+    return nullptr;
+  }
+
+  DBUG_PRINT("info",
+             ("ndb_build_stm_aggregation_program: built program "
+              "with %u aggregates",
+              agg_id));
+  return agg;
+}
+
 bool ndb_push_single_table_aggregation(THD *, const JOIN *join,
                                        const ndb_pushed_builder_ctx &builder) {
   if (builder.m_table_count != 1) {
@@ -773,11 +873,40 @@ bool ndb_push_single_table_aggregation(THD *, const JOIN *join,
     return false;
   }
 
+  const auto *h = down_cast<const ha_ndbcluster *>(table->file);
+  const NdbDictionary::Table *ndb_table = h->m_table;
+  if (ndb_table == nullptr) {
+    return false;
+  }
+
+  NdbAggregator *agg = ndb_build_stm_aggregation_program(join, ndb_table);
+  if (agg == nullptr) {
+    return false;
+  }
+
+  auto *handler = down_cast<ha_ndbcluster *>(table->file);
+  handler->m_stm_aggregator = agg;
+
   DBUG_PRINT("info",
-             ("ndb_push_single_table_aggregation: query detected as pushable "
+             ("ndb_push_single_table_aggregation: aggregation pushed "
               "on table %s",
               table->s->table_name.str));
+  return true;
+}
 
-  // Phase 1: detection only — do not push yet.
-  return false;
+int ndb_start_stm_aggregate_scan(ha_ndbcluster *handler,
+                                 NdbScanOperation *op) {
+  if (op->setAggregationCode(handler->m_stm_aggregator) != 0) {
+    return ndb_to_mysql_error(&op->getNdbError());
+  }
+  if (op->DoAggregation() != 0) {
+    return ndb_to_mysql_error(&op->getNdbError());
+  }
+  return ndb_fetch_next_aggregate_row(handler->m_stm_aggregator,
+                                      handler->m_pushed_agg_join);
+}
+
+int ndb_fetch_stm_aggregate(ha_ndbcluster *handler) {
+  return ndb_fetch_next_aggregate_row(handler->m_stm_aggregator,
+                                      handler->m_pushed_agg_join);
 }

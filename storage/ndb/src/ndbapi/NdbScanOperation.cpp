@@ -1502,12 +1502,6 @@ void NdbScanOperation::freeInterpretedCodeOldApi() {
 
 int NdbScanOperation::setAggregationCode(const NdbAggregator *code)
 {
-  if (theStatus == NdbOperation::UseNdbRecord)
-  {
-    setErrorCodeAbort(4284); // Cannot mix NdbRecAttr and NdbRecord methods...
-    return -1;
-  }
-
   if (code == nullptr || !code->finalized())
   {
     setErrorCodeAbort(4560); //  NdbAggregatior::Finalise() not called.
