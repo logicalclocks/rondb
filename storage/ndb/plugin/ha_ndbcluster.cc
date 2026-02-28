@@ -4057,6 +4057,12 @@ int ha_ndbcluster::full_table_scan(const KEY *key_info,
         ERR_RETURN(code.getNdbError());
     }
 
+    if (m_stm_aggregator != nullptr) {
+      options.optionsPresent |=
+          NdbScanOperation::ScanOptions::SO_AGGREGATION;
+      options.aggregationCode = m_stm_aggregator;
+    }
+
     get_read_set(true, MAX_KEY);
     if (!(op = trans->scanTable(
               m_ndb_record, lm, m_table_map->get_column_mask(table->read_set),

@@ -333,6 +333,19 @@ int NdbScanOperation::handleScanOptions(const ScanOptions *options) {
     m_customData = options->customData;
   }
 
+  if (options->optionsPresent & ScanOptions::SO_AGGREGATION) {
+    if (options->aggregationCode == nullptr ||
+        !options->aggregationCode->finalized()) {
+      setErrorCodeAbort(4560);  // NdbAggregator::Finalize() not called.
+      return -1;
+    }
+    m_aggregation_code =
+        const_cast<NdbAggregator *>(options->aggregationCode);
+    if (options->aggregationCode->disk_columns()) {
+      m_flags &= ~Uint8(OF_NO_DISK);
+    }
+  }
+
   /* Preferred form of partitioning information */
   if (options->optionsPresent & ScanOptions::SO_PART_INFO) {
     Uint32 partValue = 0;
@@ -1502,6 +1515,13 @@ void NdbScanOperation::freeInterpretedCodeOldApi() {
 
 int NdbScanOperation::setAggregationCode(const NdbAggregator *code)
 {
+  if (theStatus == NdbOperation::UseNdbRecord)
+  {
+    // For NdbRecord scans, use ScanOptions::SO_AGGREGATION instead.
+    setErrorCodeAbort(4284);
+    return -1;
+  }
+
   if (code == nullptr || !code->finalized())
   {
     setErrorCodeAbort(4560); //  NdbAggregatior::Finalise() not called.
@@ -1542,6 +1562,8 @@ int NdbScanOperation::DoAggregation() {
     return -1;
   }
 
+  const bool useNdbRecord = !m_scanUsingOldApi;
+
   DEB_TRACE();
   if (m_transConnection->execute(NdbTransaction::NoCommit) != 0) {
     return -1;
@@ -1549,7 +1571,13 @@ int NdbScanOperation::DoAggregation() {
 
   DEB_TRACE();
   while (true) {
-    int check = nextResult(true);
+    int check;
+    if (useNdbRecord) {
+      const char *dummy_row;
+      check = nextResult(&dummy_row, true);
+    } else {
+      check = nextResult(true);
+    }
     switch(check) {
     case -1:
       // Permanent error
@@ -3219,6 +3247,22 @@ NdbScanOperation::getValue_NdbRecord_scan(const NdbColumnImpl* attrInfo,
                                           Uint32 aStartPos,
                                           Uint32 aSize) {
   DBUG_ENTER("NdbScanOperation::getValue_NdbRecord_scan");
+
+  if (attrInfo == nullptr) {
+    // Aggregation result column — no ATTRINFO needed, just a RecAttr
+    // to receive the aggregation data from TRANSID_AI.
+    if (m_aggregation_code == nullptr) {
+      setErrorCodeAbort(4004);
+      DBUG_RETURN(nullptr);
+    }
+    NdbRecAttr *ra = theReceiver.getValue(nullptr, aValue);
+    if (!ra) {
+      setErrorCodeAbort(4000);
+      DBUG_RETURN(nullptr);
+    }
+    DBUG_RETURN(ra);
+  }
+
   int res;
   NdbRecAttr *ra;
   DBUG_PRINT("info", ("Column: %u", attrInfo->m_attrId));

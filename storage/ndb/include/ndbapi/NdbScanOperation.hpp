@@ -167,7 +167,8 @@ class NdbScanOperation : public NdbOperation {
                 SO_TTL_IGNORE   = 0x100,
                 SO_TTL_ONLY_EXPIRED = 0x200,
                 SO_SET_INPUT_PARAM = 0x400,
-                SO_USE_STANDARD_SCAN = 0x800
+                SO_USE_STANDARD_SCAN = 0x800,
+                SO_AGGREGATION = 0x1000
     };
 
     /* Flags controlling scan behaviour
@@ -212,6 +213,9 @@ class NdbScanOperation : public NdbOperation {
     /* Partition information for bounding this scan */
     const Ndb::PartitionSpec *partitionInfo;
     Uint32 sizeOfPartInfo;
+
+    /* Aggregation program to execute as part of the scan */
+    const NdbAggregator *aggregationCode;
   };
 
   /**

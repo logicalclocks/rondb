@@ -896,9 +896,9 @@ bool ndb_push_single_table_aggregation(THD *, const JOIN *join,
 
 int ndb_start_stm_aggregate_scan(ha_ndbcluster *handler,
                                  NdbScanOperation *op) {
-  if (op->setAggregationCode(handler->m_stm_aggregator) != 0) {
-    return ndb_to_mysql_error(&op->getNdbError());
-  }
+  // Aggregation code was attached via ScanOptions::SO_AGGREGATION
+  // before scanTable(). DoAggregation() executes the scan, drains
+  // all fragments, and merges per-fragment results API-side.
   if (op->DoAggregation() != 0) {
     return ndb_to_mysql_error(&op->getNdbError());
   }
