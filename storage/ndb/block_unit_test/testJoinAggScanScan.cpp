@@ -2258,6 +2258,10 @@ int main(int argc, char **argv)
     }
   }
 
+  /* Redirect stdout to stderr; only PASSED/FAILED goes to real stdout */
+  int mtr_fd = dup(fileno(stdout));
+  dup2(fileno(stderr), fileno(stdout));
+
   printf("=== testJoinAggScanScan ===\n");
   printf("Connect string: %s\n", connectString);
   printf("MySQL port: %d\n\n", mysqlPort);
@@ -2357,6 +2361,10 @@ int main(int argc, char **argv)
 
   ndb_end(0);
 
-  printf("\n%s\n", exitCode == 0 ? "All tests PASSED" : "Some tests FAILED");
+  if (exitCode == 0) {
+    write(mtr_fd, "PASSED\n", 7);
+  }
+  close(mtr_fd);
+
   return exitCode;
 }

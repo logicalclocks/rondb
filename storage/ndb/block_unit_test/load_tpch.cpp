@@ -844,6 +844,10 @@ int main(int argc, char **argv)
 
   if (connectString == nullptr) connectString = "localhost:1186";
 
+  /* Redirect stdout to stderr; only PASSED/FAILED goes to real stdout */
+  int mtr_fd = dup(fileno(stdout));
+  dup2(fileno(stderr), fileno(stdout));
+
   ScaleParams sp = computeScale(scaleFactor);
   Uint32 totalLineItems = sp.numOrders * sp.linesPerOrder;
 
@@ -926,6 +930,11 @@ int main(int argc, char **argv)
   } while (0);
 
   ndb_end(0);
+
+  if (result == 0) {
+    write(mtr_fd, "PASSED\n", 7);
+  }
+  close(mtr_fd);
 
   return result;
 }

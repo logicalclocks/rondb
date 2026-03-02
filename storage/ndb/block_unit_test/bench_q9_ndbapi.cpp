@@ -602,7 +602,7 @@ usage(const char *prog)
 
 int main(int argc, char **argv)
 {
-  const char *connectString = "localhost:1186";
+  const char *connectString = nullptr;
   int mysqlPort = 3306;
   int numIterations = 3;
 
@@ -625,6 +625,12 @@ int main(int argc, char **argv)
       return 1;
     }
   }
+
+  if (connectString == nullptr) connectString = "localhost:1186";
+
+  /* Redirect stdout to stderr; only PASSED/FAILED goes to real stdout */
+  int mtr_fd = dup(fileno(stdout));
+  dup2(fileno(stderr), fileno(stdout));
 
   printf("bench_q9_ndbapi: TPC-H Q9 6-table pushdown join benchmark (NDB API)\n");
   printf("  Connect: %s  MySQL port: %d\n", connectString, mysqlPort);
@@ -678,7 +684,10 @@ int main(int argc, char **argv)
 
   ndb_end(0);
 
-  printf(result == 0 ? "*** ALL ITERATIONS PASSED ***\n"
-                      : "*** SOME ITERATIONS FAILED ***\n");
+  if (result == 0) {
+    write(mtr_fd, "PASSED\n", 7);
+  }
+  close(mtr_fd);
+
   return result;
 }

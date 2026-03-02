@@ -1736,6 +1736,10 @@ int main(int argc, char **argv)
 
   if (connectString == nullptr) connectString = "localhost:1186";
 
+  /* Redirect stdout to stderr; only PASSED/FAILED goes to real stdout */
+  int mtr_fd = dup(fileno(stdout));
+  dup2(fileno(stderr), fileno(stdout));
+
   Uint32 totalLineitems = numOrders * linesPerOrder;
   printf("bench_q12_tpch: TPC-H Q12 with embedded CASE aggregation\n");
   printf("  Connect: %s  MySQL port: %d\n", connectString, mysqlPort);
@@ -1751,7 +1755,10 @@ int main(int argc, char **argv)
   int result = doRun();
   ndb_end(0);
 
-  printf(result == 0 ? "\n*** ALL ITERATIONS PASSED ***\n"
-                      : "\n*** SOME ITERATIONS FAILED ***\n");
+  if (result == 0) {
+    write(mtr_fd, "PASSED\n", 7);
+  }
+  close(mtr_fd);
+
   return result;
 }

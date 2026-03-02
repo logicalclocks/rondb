@@ -1449,6 +1449,10 @@ int main(int argc, char **argv)
 
   if (connectString == nullptr) connectString = "localhost:1186";
 
+  /* Redirect stdout to stderr; only PASSED/FAILED goes to real stdout */
+  int mtr_fd = dup(fileno(stdout));
+  dup2(fileno(stderr), fileno(stdout));
+
   printf("bench_q9_dbtc: TPC-H Q9 6-table pushdown join benchmark\n");
   printf("  Connect: %s  MySQL port: %d\n", connectString, mysqlPort);
   printf("  Iterations: %d  Parallel: %u  Receivers: %u\n\n",
@@ -1558,7 +1562,10 @@ int main(int argc, char **argv)
 
   ndb_end(0);
 
-  printf(result == 0 ? "\n*** ALL ITERATIONS PASSED ***\n"
-                      : "\n*** SOME ITERATIONS FAILED ***\n");
+  if (result == 0) {
+    write(mtr_fd, "PASSED\n", 7);
+  }
+  close(mtr_fd);
+
   return result;
 }

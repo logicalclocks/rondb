@@ -474,6 +474,10 @@ int main(int argc, char **argv)
     }
   }
 
+  /* Redirect stdout to stderr; only PASSED/FAILED goes to real stdout */
+  int mtr_fd = dup(fileno(stdout));
+  dup2(fileno(stderr), fileno(stdout));
+
   printf("bench_datescan_ndbapi: DATE index scan benchmark (NDB API)\n");
   printf("  Connect: %s  MySQL port: %d\n", connectString, mysqlPort);
   printf("  Iterations: %d\n\n", numIterations);
@@ -526,7 +530,10 @@ int main(int argc, char **argv)
 
   ndb_end(0);
 
-  printf(result == 0 ? "*** ALL ITERATIONS PASSED ***\n"
-                      : "*** SOME ITERATIONS FAILED ***\n");
+  if (result == 0) {
+    write(mtr_fd, "PASSED\n", 7);
+  }
+  close(mtr_fd);
+
   return result;
 }

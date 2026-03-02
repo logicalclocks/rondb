@@ -8,7 +8,7 @@ if (!$NDB_PUSH_AGG_DIR) {
 
 # Load TPC-H data
 --echo Loading TPC-H data
---exec $NDB_PUSH_AGG_DIR/load_tpch -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT --sf 0.01 > /dev/null 2>&1
+--exec $NDB_PUSH_AGG_DIR/load_tpch -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT --sf 0.01
 --echo PASSED
 
 # Run Go tests (runs twice: without TLS and with TLS)
