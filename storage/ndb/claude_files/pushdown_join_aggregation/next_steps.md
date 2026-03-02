@@ -396,7 +396,10 @@ aggregate results. 8-table join with derived table.
    - CASE produces `Item_func_case`, not a field — rejected today
    - Need to detect and compile CASE into NdbAggregator program at the
      MySQL handler level
-   - For RonSQL: verify CASE expression support in aggregates
+   - RonSQL: CASE in aggregates already fully implemented (parser grammar
+     `CASE WHEN cond_expr THEN arith_expr ELSE arith_expr END` in
+     RonSQLParser.y, CaseExpr/EmbeddedInterp/Skip/AggRepeat in
+     AggregationAPICompiler, tested by testCaseAgg + bench_q12_tpch)
 
 2. **Post-aggregation arithmetic expressions in SELECT/HAVING**
    - Q8: `SUM(CASE...) / SUM(volume) AS mkt_share` — division of two aggregates

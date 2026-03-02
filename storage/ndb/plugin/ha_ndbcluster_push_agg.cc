@@ -36,6 +36,7 @@
 #include "storage/ndb/plugin/ha_ndbcluster_push_agg.h"
 
 #include "sql/item.h"
+#include "sql/item_cmpfunc.h"
 #include "sql/item_sum.h"
 #include "sql/join_optimizer/access_path.h"
 #include "sql/sql_optimizer.h"
@@ -43,6 +44,12 @@
 #include "storage/ndb/include/ndbapi/NdbAggregator.hpp"
 #include "storage/ndb/include/ndbapi/NdbScanOperation.hpp"
 #include "storage/ndb/plugin/ha_ndbcluster.h"
+
+// Interpreter.hpp uses NONE as an enum value; ndb_opts.h defines it as a macro.
+#ifdef NONE
+#undef NONE
+#endif
+#include <kernel/Interpreter.hpp>
 #include "storage/ndb/plugin/ha_ndbcluster_push.h"
 #include "storage/ndb/src/ndbapi/NdbQueryBuilder.hpp"
 #include "storage/ndb/src/ndbapi/NdbQueryOperation.hpp"
@@ -65,6 +72,287 @@ AccessPath *strip_pushed_child_nljs(AccessPath *path) {
     }
   }
   return path;
+}
+
+/**
+ * Check if a CASE expression is a pushable searched CASE with a single
+ * WHEN/THEN/ELSE where the WHEN is a simple integer comparison and the
+ * THEN/ELSE values are integer constants or field references.
+ *
+ * @param arg         The candidate CASE item
+ * @param leaf_table  If non-null, require fields to belong to this table.
+ *                    If null, require fields from a pushed-join table.
+ * @return true if the CASE is pushable
+ */
+static bool is_pushable_case_expr(const Item *arg, const TABLE *leaf_table) {
+  if (arg->type() != Item::FUNC_ITEM) return false;
+  const auto *func = down_cast<const Item_func *>(arg);
+  if (func->functype() != Item_func::CASE_FUNC) return false;
+  const auto *case_item = down_cast<const Item_func_case *>(arg);
+
+  // Must be searched CASE (no expression between CASE and WHEN).
+  if (case_item->get_first_expr_num() >= 0) return false;
+
+  // Must have an ELSE clause.
+  if (case_item->get_else_expr_num() < 0) return false;
+
+  // Compute ncases: argument_count minus optional first_expr/else entries.
+  int ncases = static_cast<int>(case_item->argument_count());
+  if (case_item->get_else_expr_num() >= 0) ncases--;
+  // Require exactly one WHEN/THEN pair (ncases == 2).
+  if (ncases != 2) return false;
+
+  Item **args = case_item->arguments();
+  const int else_idx = case_item->get_else_expr_num();
+
+  // Validate WHEN condition: must be a simple comparison.
+  Item *when_item = args[0];
+  if (when_item->type() != Item::FUNC_ITEM) return false;
+  const auto *when_func = down_cast<const Item_func *>(when_item);
+  switch (when_func->functype()) {
+    case Item_func::EQ_FUNC:
+    case Item_func::NE_FUNC:
+    case Item_func::LT_FUNC:
+    case Item_func::LE_FUNC:
+    case Item_func::GT_FUNC:
+    case Item_func::GE_FUNC:
+      break;
+    default:
+      return false;
+  }
+  if (when_func->argument_count() != 2) return false;
+  Item *cmp_left = when_func->arguments()[0];
+  Item *cmp_right = when_func->arguments()[1];
+
+  // One side must be an integer field, the other an integer constant.
+  const Item_field *field_item = nullptr;
+  if (cmp_left->type() == Item::FIELD_ITEM &&
+      cmp_right->type() == Item::INT_ITEM) {
+    field_item = down_cast<const Item_field *>(cmp_left);
+  } else if (cmp_left->type() == Item::INT_ITEM &&
+             cmp_right->type() == Item::FIELD_ITEM) {
+    field_item = down_cast<const Item_field *>(cmp_right);
+  } else {
+    return false;
+  }
+  if (!is_integer_type(field_item->field->type())) return false;
+
+  // Validate field table membership.
+  if (leaf_table != nullptr) {
+    if (field_item->field->table != leaf_table) return false;
+  } else {
+    if (field_item->field->table->file->member_of_pushed_join() == nullptr)
+      return false;
+  }
+
+  // Validate THEN and ELSE: must be integer constant or integer field.
+  auto check_value_item = [&](Item *item) -> bool {
+    if (item->type() == Item::INT_ITEM) return true;
+    if (item->type() == Item::FIELD_ITEM) {
+      const auto *fi = down_cast<const Item_field *>(item);
+      if (!is_integer_type(fi->field->type())) return false;
+      if (leaf_table != nullptr) {
+        return fi->field->table == leaf_table;
+      } else {
+        return fi->field->table->file->member_of_pushed_join() != nullptr;
+      }
+    }
+    return false;
+  };
+
+  if (!check_value_item(args[1])) return false;       // THEN
+  if (!check_value_item(args[else_idx])) return false;  // ELSE
+
+  return true;
+}
+
+/**
+ * Map MySQL comparison functype to NDB interpreter BRANCH_XX_REG_REG opcode.
+ * REG_REG opcodes are NOT inverted (unlike the NdbInterpretedCode API).
+ */
+static Uint32 get_branch_opcode(Item_func::Functype ft) {
+  switch (ft) {
+    case Item_func::EQ_FUNC:
+      return Interpreter::BRANCH_EQ_REG_REG;
+    case Item_func::NE_FUNC:
+      return Interpreter::BRANCH_NE_REG_REG;
+    case Item_func::LT_FUNC:
+      return Interpreter::BRANCH_LT_REG_REG;
+    case Item_func::LE_FUNC:
+      return Interpreter::BRANCH_LE_REG_REG;
+    case Item_func::GT_FUNC:
+      return Interpreter::BRANCH_GT_REG_REG;
+    case Item_func::GE_FUNC:
+      return Interpreter::BRANCH_GE_REG_REG;
+    default:
+      return 0;
+  }
+}
+
+/**
+ * Emit an NdbAggregator program for a CASE aggregate expression.
+ *
+ * Builds an embedded interpreter program for the WHEN condition,
+ * followed by aggregation arms for the THEN and ELSE paths.
+ *
+ * Pattern: SUM/MIN/MAX/COUNT(CASE WHEN col OP const THEN val ELSE val END)
+ *
+ * The embedded interpreter evaluates the condition and writes a skip offset
+ * to interpreter output[0].  The aggregation program reads that offset to
+ * select the THEN or ELSE arm.
+ *
+ * @param case_item  The CASE expression (already validated by is_pushable_case_expr)
+ * @param ndb_table  The NDB table for column attribute lookups
+ * @param agg        The NdbAggregator being built
+ * @param agg_type   The aggregate function type (SUM, MIN, MAX, COUNT)
+ * @param agg_id     The aggregate slot ID
+ * @return true on success, false on failure
+ */
+static bool emit_case_aggregation(const Item_func_case *case_item,
+                                  const NdbDictionary::Table *ndb_table,
+                                  NdbAggregator *agg,
+                                  Item_sum::Sumfunctype agg_type,
+                                  Uint32 agg_id) {
+  Item **args = case_item->arguments();
+  const int else_idx = case_item->get_else_expr_num();
+
+  // Extract WHEN comparison components.
+  const auto *when_func = down_cast<const Item_func *>(args[0]);
+  Item *cmp_left = when_func->arguments()[0];
+  Item *cmp_right = when_func->arguments()[1];
+
+  // Identify which comparison arg is the field and which is the constant.
+  const Item_field *cmp_field;
+  Item_int *cmp_const;
+  bool field_on_left;
+  if (cmp_left->type() == Item::FIELD_ITEM) {
+    cmp_field = down_cast<const Item_field *>(cmp_left);
+    cmp_const = down_cast<Item_int *>(cmp_right);
+    field_on_left = true;
+  } else {
+    cmp_field = down_cast<const Item_field *>(cmp_right);
+    cmp_const = down_cast<Item_int *>(cmp_left);
+    field_on_left = false;
+  }
+
+  // Get NDB attribute ID for the comparison field.
+  const NdbDictionary::Column *ndb_col =
+      ndb_table->getColumn(cmp_field->field->field_index());
+  if (ndb_col == nullptr) return false;
+  const Uint32 attr_id = ndb_col->getAttrId();
+
+  const longlong const_val = cmp_const->val_int();
+  const bool use_const16 = (const_val >= 0 && const_val <= 65535);
+  const Uint32 const_words = use_const16 ? 1 : 3;
+
+  // Compute THEN/ELSE arm sizes.
+  Item *then_item = args[1];
+  Item *else_item = args[else_idx];
+  const Uint32 then_load_words =
+      (then_item->type() == Item::INT_ITEM) ? 3 : 1;  // LoadInt64 or LoadColumn
+  const Uint32 else_load_words =
+      (else_item->type() == Item::INT_ITEM) ? 3 : 1;
+  const Uint32 then_arm_words = then_load_words + 1;  // load + agg op
+  const Uint32 else_arm_words = else_load_words + 1;  // load + RepeatAgg
+  const Uint32 else_skip_offset = then_arm_words + 1;  // THEN arm + Skip
+
+  // Embedded interpreter layout:
+  //   [0]              READ_ATTR_INTO_REG reg0, attr_id
+  //   [1..const_words] LOAD_CONST16/64 reg1, const_val
+  //   [1+const_words]  BRANCH_XX reg0/reg1, offset=4  → THEN
+  //   ELSE path:
+  //   [2+const_words]  LOAD_CONST16 reg2, else_skip_offset
+  //   [3+const_words]  WRITE_INTERPRETER_OUTPUT reg2, 0
+  //   [4+const_words]  EXIT_OK
+  //   THEN path:
+  //   [5+const_words]  LOAD_CONST16 reg2, 0
+  //   [6+const_words]  WRITE_INTERPRETER_OUTPUT reg2, 0
+  //   [7+const_words]  EXIT_OK
+  const Uint32 emb_len = 8 + const_words;
+
+  // Emit the embedded interpreter block.
+  if (!agg->EmbeddedInterp(emb_len)) return false;
+
+  // READ_ATTR_INTO_REG reg0, attr_id
+  if (!agg->EmitEmbeddedWord(Interpreter::Read(attr_id, 0))) return false;
+
+  // LOAD_CONST16/64 reg1, const_val
+  if (use_const16) {
+    if (!agg->EmitEmbeddedWord(
+            Interpreter::LoadConst16(1, static_cast<Uint32>(const_val))))
+      return false;
+  } else {
+    if (!agg->EmitEmbeddedWord(Interpreter::LoadConst64(1))) return false;
+    // Emit the 64-bit constant value as 2 words.
+    Int64 val64 = static_cast<Int64>(const_val);
+    Uint32 data[2];
+    memcpy(data, &val64, sizeof(Int64));
+    if (!agg->EmitEmbeddedWord(data[0])) return false;
+    if (!agg->EmitEmbeddedWord(data[1])) return false;
+  }
+
+  // BRANCH_XX_REG_REG with offset=4 (always 4, see layout above).
+  // If field is on the left: left_reg=reg0(col), right_reg=reg1(const).
+  // If field is on the right: left_reg=reg1(const), right_reg=reg0(col).
+  const Uint32 branch_opcode = get_branch_opcode(when_func->functype());
+  const Uint32 left_reg = field_on_left ? 0 : 1;
+  const Uint32 right_reg = field_on_left ? 1 : 0;
+  if (!agg->EmitEmbeddedWord(branch_opcode | (left_reg << 6) |
+                             (right_reg << 9) | (4 << 16)))
+    return false;
+
+  // ELSE path: skip_offset = else_skip_offset (skip past THEN arm + Skip).
+  if (!agg->EmitEmbeddedWord(
+          Interpreter::LoadConst16(2, else_skip_offset)))
+    return false;
+  if (!agg->EmitEmbeddedWord(Interpreter::WriteInterpreterOutput(2, 0)))
+    return false;
+  if (!agg->EmitEmbeddedWord(Interpreter::ExitOK())) return false;
+
+  // THEN path: skip_offset = 0 (land at start of agg arms).
+  if (!agg->EmitEmbeddedWord(Interpreter::LoadConst16(2, 0))) return false;
+  if (!agg->EmitEmbeddedWord(Interpreter::WriteInterpreterOutput(2, 0)))
+    return false;
+  if (!agg->EmitEmbeddedWord(Interpreter::ExitOK())) return false;
+
+  // Emit aggregation arms.
+  // THEN arm: load value, aggregate, skip past ELSE.
+  auto emit_load = [&](Item *item) -> bool {
+    if (item->type() == Item::INT_ITEM) {
+      return agg->LoadInt64(item->val_int(), kReg1);
+    } else {
+      const auto *fi = down_cast<const Item_field *>(item);
+      const NdbDictionary::Column *col =
+          ndb_table->getColumn(fi->field->field_index());
+      if (col == nullptr) return false;
+      return agg->LoadColumn(col->getAttrId(), kReg1);
+    }
+  };
+
+  if (!emit_load(then_item)) return false;
+  switch (agg_type) {
+    case Item_sum::SUM_FUNC:
+      if (!agg->Sum(agg_id, kReg1)) return false;
+      break;
+    case Item_sum::MIN_FUNC:
+      if (!agg->Min(agg_id, kReg1)) return false;
+      break;
+    case Item_sum::MAX_FUNC:
+      if (!agg->Max(agg_id, kReg1)) return false;
+      break;
+    case Item_sum::COUNT_FUNC:
+      if (!agg->Count(agg_id, kReg1)) return false;
+      break;
+    default:
+      return false;
+  }
+  if (!agg->Skip(else_arm_words)) return false;
+
+  // ELSE arm: load value, repeat aggregate.
+  if (!emit_load(else_item)) return false;
+  if (!agg->RepeatAgg(agg_id, kReg1)) return false;
+
+  return true;
 }
 
 /**
@@ -97,7 +385,7 @@ static bool ndb_can_push_aggregation(const JOIN *join) {
         // COUNT(column) correctly skips NULLs — the data node's Count()
         // function (AggInterpreter.cpp) checks a.is_null and returns
         // without incrementing.
-        // COUNT(column) where column is a field must be from a pushed table.
+        // COUNT(CASE ...) is pushable if the CASE is a valid pattern.
         if ((*func)->argument_count() == 1) {
           Item *arg = (*func)->arguments()[0];
           if (arg->type() == Item::FIELD_ITEM) {
@@ -106,20 +394,25 @@ static bool ndb_can_push_aggregation(const JOIN *join) {
                 nullptr) {
               return false;
             }
+          } else if (arg->type() == Item::FUNC_ITEM) {
+            if (!is_pushable_case_expr(arg, nullptr)) return false;
           }
         }
         break;
       case Item_sum::SUM_FUNC:
       case Item_sum::MIN_FUNC:
       case Item_sum::MAX_FUNC: {
-        // Must have exactly one argument that is a field reference
-        // from a pushed table.
+        // Must have exactly one argument: a field reference from a pushed
+        // table, or a pushable CASE expression.
         if ((*func)->argument_count() != 1) return false;
         Item *arg = (*func)->arguments()[0];
-        if (arg->type() != Item::FIELD_ITEM) return false;
-        const auto *field_item = down_cast<const Item_field *>(arg);
-        if (field_item->field->table->file->member_of_pushed_join() ==
-            nullptr) {
+        if (arg->type() == Item::FIELD_ITEM) {
+          const auto *field_item = down_cast<const Item_field *>(arg);
+          if (field_item->field->table->file->member_of_pushed_join() ==
+              nullptr) {
+            return false;
+          }
+        } else if (!is_pushable_case_expr(arg, nullptr)) {
           return false;
         }
         break;
@@ -209,6 +502,7 @@ static NdbAggregator *ndb_build_aggregation_program(
     switch ((*func)->sum_func()) {
       case Item_sum::COUNT_FUNC: {
         // COUNT(*) has args[0] as Item_int(0); COUNT(column) has Item_field.
+        // COUNT(CASE ...) has args[0] as Item_func_case.
         Item *count_arg = (*func)->arguments()[0];
         if (count_arg->type() == Item::FIELD_ITEM) {
           // COUNT(column): load the column so Count() can skip NULLs.
@@ -230,6 +524,14 @@ static NdbAggregator *ndb_build_aggregation_program(
             delete agg;
             return nullptr;
           }
+        } else if (count_arg->type() == Item::FUNC_ITEM) {
+          const auto *case_item =
+              down_cast<const Item_func_case *>(count_arg);
+          if (!emit_case_aggregation(case_item, leaf_ndb_tab, agg,
+                                     (*func)->sum_func(), agg_id)) {
+            delete agg;
+            return nullptr;
+          }
         } else {
           // COUNT(*): load constant 1, count always increments.
           if (!agg->LoadUint64(1, kReg1) || !agg->Count(agg_id, kReg1)) {
@@ -242,49 +544,57 @@ static NdbAggregator *ndb_build_aggregation_program(
       case Item_sum::SUM_FUNC:
       case Item_sum::MIN_FUNC:
       case Item_sum::MAX_FUNC: {
-        // SUM/MIN/MAX(column): load column, then aggregate.
-        // The column must be from the leaf table, since LoadColumn()
-        // operates on the leaf table's column namespace.
-        const auto *field_item =
-            down_cast<const Item_field *>((*func)->arguments()[0]);
-        const uint agg_tab_idx =
-            find_table_index(tables, table_count, field_item->field->table);
-        if (agg_tab_idx != leaf_tab_no) {
-          // Aggregate source column not on leaf table — can't push.
-          DBUG_PRINT("info",
-                     ("ndb_push_aggregation: aggregate source on table %u, "
-                      "leaf is %u — cannot push",
-                      agg_tab_idx, leaf_tab_no));
-          delete agg;
-          return nullptr;
-        }
-        const int col_id = field_item->field->field_index();
+        Item *arg = (*func)->arguments()[0];
+        if (arg->type() == Item::FIELD_ITEM) {
+          // SUM/MIN/MAX(column): load column, then aggregate.
+          // The column must be from the leaf table, since LoadColumn()
+          // operates on the leaf table's column namespace.
+          const auto *field_item = down_cast<const Item_field *>(arg);
+          const uint agg_tab_idx =
+              find_table_index(tables, table_count, field_item->field->table);
+          if (agg_tab_idx != leaf_tab_no) {
+            DBUG_PRINT("info",
+                       ("ndb_push_aggregation: aggregate source on table %u, "
+                        "leaf is %u — cannot push",
+                        agg_tab_idx, leaf_tab_no));
+            delete agg;
+            return nullptr;
+          }
+          const int col_id = field_item->field->field_index();
 
-        if (!agg->LoadColumn(col_id, kReg1)) {
-          delete agg;
-          return nullptr;
-        }
-        switch ((*func)->sum_func()) {
-          case Item_sum::SUM_FUNC:
-            if (!agg->Sum(agg_id, kReg1)) {
-              delete agg;
-              return nullptr;
-            }
-            break;
-          case Item_sum::MIN_FUNC:
-            if (!agg->Min(agg_id, kReg1)) {
-              delete agg;
-              return nullptr;
-            }
-            break;
-          case Item_sum::MAX_FUNC:
-            if (!agg->Max(agg_id, kReg1)) {
-              delete agg;
-              return nullptr;
-            }
-            break;
-          default:
-            break;
+          if (!agg->LoadColumn(col_id, kReg1)) {
+            delete agg;
+            return nullptr;
+          }
+          switch ((*func)->sum_func()) {
+            case Item_sum::SUM_FUNC:
+              if (!agg->Sum(agg_id, kReg1)) {
+                delete agg;
+                return nullptr;
+              }
+              break;
+            case Item_sum::MIN_FUNC:
+              if (!agg->Min(agg_id, kReg1)) {
+                delete agg;
+                return nullptr;
+              }
+              break;
+            case Item_sum::MAX_FUNC:
+              if (!agg->Max(agg_id, kReg1)) {
+                delete agg;
+                return nullptr;
+              }
+              break;
+            default:
+              break;
+          }
+        } else if (arg->type() == Item::FUNC_ITEM) {
+          const auto *case_item = down_cast<const Item_func_case *>(arg);
+          if (!emit_case_aggregation(case_item, leaf_ndb_tab, agg,
+                                     (*func)->sum_func(), agg_id)) {
+            delete agg;
+            return nullptr;
+          }
         }
         break;
       }
@@ -726,6 +1036,8 @@ static bool ndb_can_push_single_table_aggregation(const JOIN *join,
             if (field_item->field->table != table) {
               return false;
             }
+          } else if (arg->type() == Item::FUNC_ITEM) {
+            if (!is_pushable_case_expr(arg, table)) return false;
           }
         }
         break;
@@ -734,9 +1046,12 @@ static bool ndb_can_push_single_table_aggregation(const JOIN *join,
       case Item_sum::MAX_FUNC: {
         if ((*func)->argument_count() != 1) return false;
         Item *arg = (*func)->arguments()[0];
-        if (arg->type() != Item::FIELD_ITEM) return false;
-        const auto *field_item = down_cast<const Item_field *>(arg);
-        if (field_item->field->table != table) {
+        if (arg->type() == Item::FIELD_ITEM) {
+          const auto *field_item = down_cast<const Item_field *>(arg);
+          if (field_item->field->table != table) {
+            return false;
+          }
+        } else if (!is_pushable_case_expr(arg, table)) {
           return false;
         }
         break;
@@ -797,6 +1112,14 @@ static NdbAggregator *ndb_build_stm_aggregation_program(
             delete agg;
             return nullptr;
           }
+        } else if (count_arg->type() == Item::FUNC_ITEM) {
+          const auto *case_item =
+              down_cast<const Item_func_case *>(count_arg);
+          if (!emit_case_aggregation(case_item, ndb_table, agg,
+                                     (*func)->sum_func(), agg_id)) {
+            delete agg;
+            return nullptr;
+          }
         } else {
           if (!agg->LoadUint64(1, kReg1) || !agg->Count(agg_id, kReg1)) {
             delete agg;
@@ -808,34 +1131,43 @@ static NdbAggregator *ndb_build_stm_aggregation_program(
       case Item_sum::SUM_FUNC:
       case Item_sum::MIN_FUNC:
       case Item_sum::MAX_FUNC: {
-        const auto *field_item =
-            down_cast<const Item_field *>((*func)->arguments()[0]);
-        const int col_id = field_item->field->field_index();
-        if (!agg->LoadColumn(col_id, kReg1)) {
-          delete agg;
-          return nullptr;
-        }
-        switch ((*func)->sum_func()) {
-          case Item_sum::SUM_FUNC:
-            if (!agg->Sum(agg_id, kReg1)) {
-              delete agg;
-              return nullptr;
-            }
-            break;
-          case Item_sum::MIN_FUNC:
-            if (!agg->Min(agg_id, kReg1)) {
-              delete agg;
-              return nullptr;
-            }
-            break;
-          case Item_sum::MAX_FUNC:
-            if (!agg->Max(agg_id, kReg1)) {
-              delete agg;
-              return nullptr;
-            }
-            break;
-          default:
-            break;
+        Item *arg = (*func)->arguments()[0];
+        if (arg->type() == Item::FIELD_ITEM) {
+          const auto *field_item = down_cast<const Item_field *>(arg);
+          const int col_id = field_item->field->field_index();
+          if (!agg->LoadColumn(col_id, kReg1)) {
+            delete agg;
+            return nullptr;
+          }
+          switch ((*func)->sum_func()) {
+            case Item_sum::SUM_FUNC:
+              if (!agg->Sum(agg_id, kReg1)) {
+                delete agg;
+                return nullptr;
+              }
+              break;
+            case Item_sum::MIN_FUNC:
+              if (!agg->Min(agg_id, kReg1)) {
+                delete agg;
+                return nullptr;
+              }
+              break;
+            case Item_sum::MAX_FUNC:
+              if (!agg->Max(agg_id, kReg1)) {
+                delete agg;
+                return nullptr;
+              }
+              break;
+            default:
+              break;
+          }
+        } else if (arg->type() == Item::FUNC_ITEM) {
+          const auto *case_item = down_cast<const Item_func_case *>(arg);
+          if (!emit_case_aggregation(case_item, ndb_table, agg,
+                                     (*func)->sum_func(), agg_id)) {
+            delete agg;
+            return nullptr;
+          }
         }
         break;
       }

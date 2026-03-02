@@ -439,3 +439,137 @@ EXPLAIN SELECT grp, SUM(val), COUNT(*) FROM t1 GROUP BY grp;
 --echo # Cleanup
 --echo ############################################################
 DROP TABLE t1;
+
+--echo ############################################################
+--echo # Phase 19: CASE in Single-Table Aggregates
+--echo ############################################################
+
+CREATE TABLE tc (
+  pk INT PRIMARY KEY,
+  grp INT,
+  val INT,
+  flag INT
+) ENGINE=NDB;
+
+INSERT INTO tc VALUES
+  (1, 1, 10, 1), (2, 1, 20, 0), (3, 1, 30, 1),
+  (4, 2, 40, 0), (5, 2, 50, 1), (6, 2, 60, 0),
+  (7, 3, 70, 1), (8, 3, 80, 0);
+
+--echo ############################################################
+--echo # Test 32: SUM(CASE WHEN val <= 30 THEN 1 ELSE 0 END)
+--echo ############################################################
+SET ndb_pushdown_aggregate=OFF;
+--sorted_result
+SELECT grp,
+       SUM(CASE WHEN val <= 30 THEN 1 ELSE 0 END) AS cnt_low
+FROM tc GROUP BY grp;
+
+SET ndb_pushdown_aggregate=ON;
+--sorted_result
+SELECT grp,
+       SUM(CASE WHEN val <= 30 THEN 1 ELSE 0 END) AS cnt_low
+FROM tc GROUP BY grp;
+
+--echo ############################################################
+--echo # Test 33: All 6 comparison operators
+--echo ############################################################
+SET ndb_pushdown_aggregate=OFF;
+SELECT
+  SUM(CASE WHEN val =  30 THEN 1 ELSE 0 END) AS eq_30,
+  SUM(CASE WHEN val != 30 THEN 1 ELSE 0 END) AS ne_30,
+  SUM(CASE WHEN val <  30 THEN 1 ELSE 0 END) AS lt_30,
+  SUM(CASE WHEN val <= 30 THEN 1 ELSE 0 END) AS le_30,
+  SUM(CASE WHEN val >  30 THEN 1 ELSE 0 END) AS gt_30,
+  SUM(CASE WHEN val >= 30 THEN 1 ELSE 0 END) AS ge_30
+FROM tc;
+
+SET ndb_pushdown_aggregate=ON;
+SELECT
+  SUM(CASE WHEN val =  30 THEN 1 ELSE 0 END) AS eq_30,
+  SUM(CASE WHEN val != 30 THEN 1 ELSE 0 END) AS ne_30,
+  SUM(CASE WHEN val <  30 THEN 1 ELSE 0 END) AS lt_30,
+  SUM(CASE WHEN val <= 30 THEN 1 ELSE 0 END) AS le_30,
+  SUM(CASE WHEN val >  30 THEN 1 ELSE 0 END) AS gt_30,
+  SUM(CASE WHEN val >= 30 THEN 1 ELSE 0 END) AS ge_30
+FROM tc;
+
+--echo ############################################################
+--echo # Test 34: CASE with field ref in THEN arm
+--echo ############################################################
+SET ndb_pushdown_aggregate=OFF;
+--sorted_result
+SELECT grp,
+       SUM(CASE WHEN flag = 1 THEN val ELSE 0 END) AS flagged_sum
+FROM tc GROUP BY grp;
+
+SET ndb_pushdown_aggregate=ON;
+--sorted_result
+SELECT grp,
+       SUM(CASE WHEN flag = 1 THEN val ELSE 0 END) AS flagged_sum
+FROM tc GROUP BY grp;
+
+--echo ############################################################
+--echo # Test 35: COUNT, MIN, MAX with CASE
+--echo ############################################################
+SET ndb_pushdown_aggregate=OFF;
+--sorted_result
+SELECT grp,
+       COUNT(CASE WHEN val > 20 THEN 1 ELSE 0 END) AS cnt,
+       MIN(CASE WHEN flag = 1 THEN val ELSE 999 END) AS min_flagged,
+       MAX(CASE WHEN flag = 1 THEN val ELSE 0 END) AS max_flagged
+FROM tc GROUP BY grp;
+
+SET ndb_pushdown_aggregate=ON;
+--sorted_result
+SELECT grp,
+       COUNT(CASE WHEN val > 20 THEN 1 ELSE 0 END) AS cnt,
+       MIN(CASE WHEN flag = 1 THEN val ELSE 999 END) AS min_flagged,
+       MAX(CASE WHEN flag = 1 THEN val ELSE 0 END) AS max_flagged
+FROM tc GROUP BY grp;
+
+--echo ############################################################
+--echo # Test 36: Multiple CASE aggregates in one query
+--echo ############################################################
+SET ndb_pushdown_aggregate=OFF;
+--sorted_result
+SELECT grp,
+       SUM(CASE WHEN val <= 30 THEN 1 ELSE 0 END) AS low,
+       SUM(CASE WHEN val > 30  THEN 1 ELSE 0 END) AS high,
+       SUM(CASE WHEN flag = 1  THEN val ELSE 0 END) AS fsum
+FROM tc GROUP BY grp;
+
+SET ndb_pushdown_aggregate=ON;
+--sorted_result
+SELECT grp,
+       SUM(CASE WHEN val <= 30 THEN 1 ELSE 0 END) AS low,
+       SUM(CASE WHEN val > 30  THEN 1 ELSE 0 END) AS high,
+       SUM(CASE WHEN flag = 1  THEN val ELSE 0 END) AS fsum
+FROM tc GROUP BY grp;
+
+--echo ############################################################
+--echo # Test 37: Multi-WHEN CASE falls back to MySQL (not pushed)
+--echo ############################################################
+SET ndb_pushdown_aggregate=ON;
+--sorted_result
+SELECT grp,
+       SUM(CASE WHEN val <= 20 THEN 1
+                WHEN val <= 50 THEN 2
+                ELSE 3 END) AS bucketed
+FROM tc GROUP BY grp;
+
+--echo ############################################################
+--echo # Test 38: Implicit aggregation (no GROUP BY) with CASE
+--echo ############################################################
+SET ndb_pushdown_aggregate=OFF;
+SELECT SUM(CASE WHEN val <= 40 THEN 1 ELSE 0 END) AS low,
+       SUM(CASE WHEN flag = 1 THEN val ELSE 0 END) AS fsum
+FROM tc;
+
+SET ndb_pushdown_aggregate=ON;
+SELECT SUM(CASE WHEN val <= 40 THEN 1 ELSE 0 END) AS low,
+       SUM(CASE WHEN flag = 1 THEN val ELSE 0 END) AS fsum
+FROM tc;
+
+--echo # Cleanup CASE tables
+DROP TABLE tc;

@@ -753,3 +753,177 @@ Note	1003	/* select#1 */ select `test`.`tp1`.`grp` AS `grp`,count(0) AS `COUNT(*
 Warnings:
 # Cleanup type tables
 DROP TABLE tp2, tp1;
+############################################################
+# Phase 19: CASE in Aggregates
+############################################################
+# Create tables for CASE tests
+CREATE TABLE tc1 (
+pk INT PRIMARY KEY,
+grp INT
+) ENGINE=NDB;
+CREATE TABLE tc2 (
+pk INT PRIMARY KEY,
+val INT,
+flag INT
+) ENGINE=NDB;
+INSERT INTO tc1 VALUES (1,1),(2,1),(3,1),(4,2),(5,2),(6,2),(7,3),(8,3);
+INSERT INTO tc2 VALUES
+(1, 10, 1), (2, 20, 0), (3, 30, 1),
+(4, 40, 0), (5, 50, 1), (6, 60, 0),
+(7, 70, 1), (8, 80, 0);
+############################################################
+# Test 36: SUM(CASE WHEN val <= 30 THEN 1 ELSE 0 END)
+############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT tc1.grp,
+SUM(CASE WHEN tc2.val <= 30 THEN 1 ELSE 0 END) AS cnt_low
+FROM tc1 JOIN tc2 ON tc2.pk = tc1.pk
+GROUP BY tc1.grp;
+grp	cnt_low
+1	3
+2	0
+3	0
+SET ndb_join_pushdown_aggregate=ON;
+SELECT tc1.grp,
+SUM(CASE WHEN tc2.val <= 30 THEN 1 ELSE 0 END) AS cnt_low
+FROM tc1 JOIN tc2 ON tc2.pk = tc1.pk
+GROUP BY tc1.grp;
+grp	cnt_low
+1	3
+2	0
+3	0
+############################################################
+# Test 37: All 6 comparison operators
+############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT
+SUM(CASE WHEN tc2.val =  30 THEN 1 ELSE 0 END) AS eq_30,
+SUM(CASE WHEN tc2.val != 30 THEN 1 ELSE 0 END) AS ne_30,
+SUM(CASE WHEN tc2.val <  30 THEN 1 ELSE 0 END) AS lt_30,
+SUM(CASE WHEN tc2.val <= 30 THEN 1 ELSE 0 END) AS le_30,
+SUM(CASE WHEN tc2.val >  30 THEN 1 ELSE 0 END) AS gt_30,
+SUM(CASE WHEN tc2.val >= 30 THEN 1 ELSE 0 END) AS ge_30
+FROM tc1 JOIN tc2 ON tc2.pk = tc1.pk;
+eq_30	ne_30	lt_30	le_30	gt_30	ge_30
+1	7	2	3	5	6
+SET ndb_join_pushdown_aggregate=ON;
+SELECT
+SUM(CASE WHEN tc2.val =  30 THEN 1 ELSE 0 END) AS eq_30,
+SUM(CASE WHEN tc2.val != 30 THEN 1 ELSE 0 END) AS ne_30,
+SUM(CASE WHEN tc2.val <  30 THEN 1 ELSE 0 END) AS lt_30,
+SUM(CASE WHEN tc2.val <= 30 THEN 1 ELSE 0 END) AS le_30,
+SUM(CASE WHEN tc2.val >  30 THEN 1 ELSE 0 END) AS gt_30,
+SUM(CASE WHEN tc2.val >= 30 THEN 1 ELSE 0 END) AS ge_30
+FROM tc1 JOIN tc2 ON tc2.pk = tc1.pk;
+eq_30	ne_30	lt_30	le_30	gt_30	ge_30
+1	7	2	3	5	6
+############################################################
+# Test 38: CASE with field ref in THEN arm
+# SUM(CASE WHEN flag=1 THEN val ELSE 0 END)
+############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT tc1.grp,
+SUM(CASE WHEN tc2.flag = 1 THEN tc2.val ELSE 0 END) AS flagged_sum
+FROM tc1 JOIN tc2 ON tc2.pk = tc1.pk
+GROUP BY tc1.grp;
+grp	flagged_sum
+1	40
+2	50
+3	70
+SET ndb_join_pushdown_aggregate=ON;
+SELECT tc1.grp,
+SUM(CASE WHEN tc2.flag = 1 THEN tc2.val ELSE 0 END) AS flagged_sum
+FROM tc1 JOIN tc2 ON tc2.pk = tc1.pk
+GROUP BY tc1.grp;
+grp	flagged_sum
+1	40
+2	50
+3	70
+############################################################
+# Test 39: COUNT, MIN, MAX with CASE
+############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT tc1.grp,
+COUNT(CASE WHEN tc2.val > 20 THEN 1 ELSE 0 END) AS cnt,
+MIN(CASE WHEN tc2.flag = 1 THEN tc2.val ELSE 999 END) AS min_flagged,
+MAX(CASE WHEN tc2.flag = 1 THEN tc2.val ELSE 0 END) AS max_flagged
+FROM tc1 JOIN tc2 ON tc2.pk = tc1.pk
+GROUP BY tc1.grp;
+grp	cnt	min_flagged	max_flagged
+1	3	10	30
+2	3	50	50
+3	2	70	70
+SET ndb_join_pushdown_aggregate=ON;
+SELECT tc1.grp,
+COUNT(CASE WHEN tc2.val > 20 THEN 1 ELSE 0 END) AS cnt,
+MIN(CASE WHEN tc2.flag = 1 THEN tc2.val ELSE 999 END) AS min_flagged,
+MAX(CASE WHEN tc2.flag = 1 THEN tc2.val ELSE 0 END) AS max_flagged
+FROM tc1 JOIN tc2 ON tc2.pk = tc1.pk
+GROUP BY tc1.grp;
+grp	cnt	min_flagged	max_flagged
+1	3	10	30
+2	3	50	50
+3	2	70	70
+############################################################
+# Test 40: Multiple CASE aggregates in one query
+############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT tc1.grp,
+SUM(CASE WHEN tc2.val <= 30 THEN 1 ELSE 0 END) AS low,
+SUM(CASE WHEN tc2.val > 30  THEN 1 ELSE 0 END) AS high,
+SUM(CASE WHEN tc2.flag = 1  THEN tc2.val ELSE 0 END) AS fsum
+FROM tc1 JOIN tc2 ON tc2.pk = tc1.pk
+GROUP BY tc1.grp;
+grp	low	high	fsum
+1	3	0	40
+2	0	3	50
+3	0	2	70
+SET ndb_join_pushdown_aggregate=ON;
+SELECT tc1.grp,
+SUM(CASE WHEN tc2.val <= 30 THEN 1 ELSE 0 END) AS low,
+SUM(CASE WHEN tc2.val > 30  THEN 1 ELSE 0 END) AS high,
+SUM(CASE WHEN tc2.flag = 1  THEN tc2.val ELSE 0 END) AS fsum
+FROM tc1 JOIN tc2 ON tc2.pk = tc1.pk
+GROUP BY tc1.grp;
+grp	low	high	fsum
+1	3	0	40
+2	0	3	50
+3	0	2	70
+############################################################
+# Test 41: Single-table CASE aggregation
+############################################################
+SET ndb_pushdown_aggregate=OFF;
+SELECT flag,
+SUM(CASE WHEN val <= 30 THEN 1 ELSE 0 END) AS cnt_low,
+SUM(CASE WHEN flag = 1 THEN val ELSE 0 END) AS flagged_sum
+FROM tc2
+GROUP BY flag;
+flag	cnt_low	flagged_sum
+0	1	0
+1	2	160
+SET ndb_pushdown_aggregate=ON;
+SELECT flag,
+SUM(CASE WHEN val <= 30 THEN 1 ELSE 0 END) AS cnt_low,
+SUM(CASE WHEN flag = 1 THEN val ELSE 0 END) AS flagged_sum
+FROM tc2
+GROUP BY flag;
+flag	cnt_low	flagged_sum
+0	1	0
+1	2	160
+############################################################
+# Test 42: Multi-WHEN CASE falls back to MySQL (not pushed)
+# This has 2 WHEN clauses — should silently fall back
+############################################################
+SET ndb_join_pushdown_aggregate=ON;
+SELECT tc1.grp,
+SUM(CASE WHEN tc2.val <= 20 THEN 1
+WHEN tc2.val <= 50 THEN 2
+ELSE 3 END) AS bucketed
+FROM tc1 JOIN tc2 ON tc2.pk = tc1.pk
+GROUP BY tc1.grp;
+grp	bucketed
+1	4
+2	7
+3	6
+# Cleanup CASE tables
+DROP TABLE tc2, tc1;
