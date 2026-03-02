@@ -6638,6 +6638,8 @@ int ha_ndbcluster::read_range_first(const key_range *start_key,
 
 int ha_ndbcluster::read_range_next() {
   DBUG_TRACE;
+  if (m_active_cursor && m_stm_aggregator != nullptr)
+    return ndb_fetch_stm_aggregate(this);
   return next_result(table->record[0]);
 }
 
@@ -13942,7 +13944,8 @@ int ha_ndbcluster::multi_range_read_init(RANGE_SEQ_IF *seq_funcs,
                                           table_share->reclength) ||
       (m_pushed_join_operation == PUSHED_ROOT && !m_disable_pushed_join &&
        !m_pushed_join_member->get_query_def().isScanQuery()) ||
-      m_delete_cannot_batch || m_update_cannot_batch) {
+      m_delete_cannot_batch || m_update_cannot_batch ||
+      m_stm_aggregator != nullptr) {
     m_disable_multi_read = true;
     return handler::multi_range_read_init(seq_funcs, seq_init_param, n_ranges,
                                           mode, buffer);
@@ -14853,7 +14856,11 @@ static void fixup_pushed_access_paths(THD *thd, AccessPath *path,
           }
           sub = strip_pushed_child_nljs(sub);
           subpath->temptable_aggregate().subquery_path = sub;
-          return true;  // Don't walk children — we handled the subquery
+          // Re-walk the modified child so that any FILTER within it
+          // is processed by accept_pushed_conditions.
+          fixup_pushed_access_paths(thd, sub, join, filter,
+                                    has_pushed_aggregation);
+          return true;  // Already walked children
         }
 #ifndef NDEBUG
         assert(!has_pushed_members_outside_of_branch(

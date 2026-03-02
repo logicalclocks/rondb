@@ -1823,6 +1823,14 @@ bool ndb_push_single_table_aggregation(THD *, const JOIN *join,
     return false;
   }
 
+  // STM aggregation requires a scan (full table or index scan).
+  // Single-row access methods (PK/unique key lookup) are not scans
+  // and the STM aggregation path would never execute.
+  const enum_access_type jt = builder.m_tables[0].get_access_type();
+  if (jt == AT_PRIMARY_KEY || jt == AT_UNIQUE_KEY || jt == AT_OTHER) {
+    return false;
+  }
+
   if (!ndb_can_push_single_table_aggregation(join, table)) {
     return false;
   }

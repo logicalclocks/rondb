@@ -229,6 +229,8 @@ grp	SUM(val)
 SET ndb_pushdown_aggregate=ON;
 SELECT grp, SUM(val) FROM t1 WHERE val > 50 GROUP BY grp;
 grp	SUM(val)
+2	130
+3	500
 ############################################################
 # Test 15: WHERE single row
 ############################################################
@@ -239,7 +241,7 @@ grp	SUM(val)
 SET ndb_pushdown_aggregate=ON;
 SELECT grp, SUM(val) FROM t1 WHERE pk = 1 GROUP BY grp;
 grp	SUM(val)
-1	NULL
+1	10
 ############################################################
 # Test 16: Empty table
 ############################################################
@@ -305,9 +307,9 @@ SET ndb_pushdown_aggregate=ON;
 SELECT grp, SUM(val_null), MIN(val_null), MAX(val_null)
 FROM t1 WHERE val_null IS NULL GROUP BY grp;
 grp	SUM(val_null)	MIN(val_null)	MAX(val_null)
-1	400	100	300
-2	1100	500	600
-3	3900	800	1200
+1	NULL	NULL	NULL
+2	NULL	NULL	NULL
+3	NULL	NULL	NULL
 ############################################################
 # Section G: Index scan tests
 ############################################################
@@ -340,12 +342,9 @@ SET ndb_pushdown_aggregate=ON;
 SELECT idx_col, SUM(val) FROM t_idx
 WHERE idx_col BETWEEN 10 AND 30 GROUP BY idx_col;
 idx_col	SUM(val)
-10	NULL
-10	NULL
-20	NULL
-20	NULL
-30	NULL
-30	NULL
+10	300
+20	700
+30	1100
 ############################################################
 # Test 20: Index range scan with implicit aggregation
 ############################################################
@@ -356,10 +355,7 @@ COUNT(*)	SUM(val)
 SET ndb_pushdown_aggregate=ON;
 SELECT COUNT(*), SUM(val) FROM t_idx WHERE idx_col > 20;
 COUNT(*)	SUM(val)
-0	NULL
-0	NULL
-0	NULL
-0	NULL
+4	2600
 DROP TABLE t_idx;
 ############################################################
 # Section H: Type coverage
