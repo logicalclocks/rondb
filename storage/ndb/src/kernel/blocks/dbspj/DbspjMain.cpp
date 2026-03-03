@@ -5831,11 +5831,11 @@ void Dbspj::execJOIN_AGG_NULL_ROW_CONF(Signal *signal) {
 
   Ptr<Request> requestPtr;
   requestPtr.i = conf->requestPtrI;
-  ndbrequire(m_request_pool.getPtr(requestPtr));
+  m_request_pool.getPtr(requestPtr);
 
   Ptr<TreeNode> treeNodePtr;
   treeNodePtr.i = conf->treeNodePtrI;
-  ndbrequire(m_treenode_pool.getPtr(treeNodePtr));
+  m_treenode_pool.getPtr(treeNodePtr);
 
   lookup_countSignal(signal, requestPtr, treeNodePtr, 1);
 

@@ -18315,7 +18315,7 @@ void Dblqh::execJOIN_AGG_NULL_ROW_REQ(Signal *signal) {
   SectionHandle handle(this, signal);
   ndbrequire(handle.m_cnt == 1);
   SegmentedSectionPtr sec_ptr;
-  ndbrequire(getSection(sec_ptr, handle.m_ptr[0].i));
+  ndbrequire(handle.getSection(sec_ptr, 0));
 
   Uint32 linked_buf[256];
   Uint32 linked_len = sec_ptr.sz;
