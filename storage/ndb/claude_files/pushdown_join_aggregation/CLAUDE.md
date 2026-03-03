@@ -15,6 +15,7 @@ pushed down to data nodes so intermediate results don't round-trip to the API.
 - `coordinator_implementation.md` — DBSPJ coordinator implementation details
 - `trace_file_analysis.md` — NDB trace/crash log analysis guide
 - `next_steps.md` — Remaining work: MySQL handler integration, secondary features
+  (references RonSQL subquery plan in `storage/ndb/src/ronsql/ronsql_join_phase7.md`)
 - `ndbapi_integration_plan.md` — NDB API integration plan (Steps 1-10, all complete)
 - `ndbapi_integration_implementation.md` — NDB API integration implementation details
 - `mysql_join_agg.md` — MySQL handler integration architecture (Phase 9)

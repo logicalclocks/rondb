@@ -288,6 +288,18 @@ messages rather than cryptic failures.
 - CASE/WHEN/THEN/ELSE/END in aggregation expressions
 - TPC-H Q9/Q12 end-to-end tests via REST API
 
+---
+
+## Phase 7 — Subquery Support
+
+See `ronsql_join_phase7.md` for the full plan. Hybrid approach:
+- Multi-phase execution for uncorrelated subqueries (scalar, IN-list)
+- Decorrelation into semi-join/anti-join for correlated subqueries
+  (EXISTS, NOT EXISTS, correlated scalar with aggregation)
+- Leverages SPJ's existing `MatchFirst`/`MatchNullOnly` support
+
+Steps 36-44. Prerequisite: Step 29 (LEFT JOIN) for MatchType infrastructure.
+
 ## Verification
 
 After each step:

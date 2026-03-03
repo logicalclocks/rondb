@@ -74,8 +74,10 @@ Rules:
 ### What is NOT supported (fail with clear error)
 
 - `LEFT JOIN`, `RIGHT JOIN`, `CROSS JOIN` — inner join only for now
-- Subqueries
-- Self-joins
+  (LEFT JOIN planned for Phase 5 Step 29)
+- Subqueries — planned for Phase 7 (see `ronsql_join_phase7.md`):
+  uncorrelated scalar/IN via multi-phase execution, correlated
+  EXISTS/NOT EXISTS via decorrelation to semi-join/anti-join
 - Non-equi-join conditions (e.g., `ON t2.val > t1.val`)
 - Multiple join conditions on the same child (e.g., composite foreign keys
   — this requires multi-column linked values, deferred to Phase 2)
@@ -454,3 +456,13 @@ Clear error messages for unsupported constructs:
   (Phase 2: composite keys)
 - `MAX_LINKED_PROJS = 16` — maximum linked projections (GROUP BY columns
   from parent tables)
+
+## Phase Plan Index
+
+| Phase | File | Description |
+|-------|------|-------------|
+| 1 | `ronsql_join_impl.md` | Steps 1-12: lexer, parser, AST, schema, planner, execution |
+| 2 | `ronsql_join_phase2.md` | Steps 12b-18: test fixes, WHERE, parent-col agg, composite keys |
+| 3 | `ronsql_join_phase3.md` | Steps 19-24: test split, COUNT(*), AVG, child WHERE filters |
+| 4-6 | `ronsql_join_phase4.md` | Steps 25-35: HAVING, ORDER BY, LIMIT, LEFT JOIN, robustness |
+| 7 | `ronsql_join_phase7.md` | Steps 36-44: subquery support (hybrid multi-phase + decorrelation) |

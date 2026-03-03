@@ -189,7 +189,16 @@ TPC-H Q2 (Minimum Cost Supplier) has a correlated scalar subquery with
 `MIN(ps_supplycost)` inside a 4-table join, correlated on `p_partkey` from the
 outer 5-table join. This pattern is common in TPC-H (Q2, Q4, Q17, Q20, Q22).
 
-**What's needed:**
+**RonSQL plan**: `storage/ndb/src/ronsql/ronsql_join_phase7.md` (Phase 7,
+Steps 36-44) covers subquery support using a hybrid approach:
+- Multi-phase execution for uncorrelated subqueries (Steps 38-39)
+- Decorrelation to semi-join/anti-join for correlated EXISTS/NOT EXISTS (Steps 41-42)
+- Materialization + hash-join for correlated scalar subquery with agg (Step 43)
+
+**MySQL handler**: Depends on what MySQL's optimizer produces — may decorrelate
+into a flat join that SPJ can handle without handler-side subquery logic.
+
+**What's needed (MySQL handler side):**
 
 1. **Correlated subquery decorrelation**
    - NDB SPJ has no subquery support — the MySQL optimizer must decorrelate
@@ -243,6 +252,11 @@ LIMIT 100;
 TPC-H Q4 (Order Priority Checking) uses EXISTS with a correlated subquery,
 which MySQL converts to a semi-join. This requires aggregation pushdown to
 work with semi-join semantics in SPJ.
+
+**RonSQL plan**: Covered by Phase 7 Steps 40-42 in
+`storage/ndb/src/ronsql/ronsql_join_phase7.md`. RonSQL decorrelates
+EXISTS → semi-join with `MatchFirst`, NOT EXISTS → anti-join with
+`MatchNullOnly`, leveraging SPJ's existing FIRST_MATCH/ANTI_JOIN support.
 
 **What's needed:**
 
