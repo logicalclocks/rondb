@@ -1,6 +1,6 @@
 # Pushdown Join Aggregation — Next Steps
 
-## Current Status (February 2026)
+## Current Status (March 2026)
 
 ### Completed
 
@@ -46,7 +46,7 @@
 - Result handling: accumulate-then-process via `processAggResults()`
 - Public API: `NdbQuery::getAggregator()` → `FetchResultRecord()`
 
-**MySQL Handler Integration — Phases 1–9 (all complete):**
+**MySQL Handler: Join Aggregation — Phases 1–13 (all complete):**
 - Phase 1: Feature gate (`ndb_join_pushdown_aggregate` THDVAR, default OFF),
   `ha_ndbcluster_push_agg.h/.cc` stubs, CMakeLists wiring
 - Phase 2: Aggregation candidate detection in `ndb_can_push_aggregation()`:
@@ -65,37 +65,59 @@
   (FLOAT, DOUBLE, CHAR, VARCHAR, DATE, DATETIME, TIMESTAMP, etc.)
 - Phase 9: Multi-table GROUP BY via linked projections — GROUP BY columns
   from non-root tables passed through SPJ linked attributes
+- Phase 10: 3+ way joins — leaf-table validation for aggregate source columns
+- Phase 11: EXPLAIN — "Using pushed join aggregation" in Extra column
+- Phase 12: SQL-level MTR test suite — 33 test cases
+- Phase 13: ERROR_INSERT eviction testing (5090, 4040)
 
-**MySQL Handler — Phase 10: 3+ Way Joins:**
-- Added leaf-table validation for SUM/MIN/MAX aggregate source columns in
-  `ndb_build_aggregation_program()` — prevents silently loading wrong column
-  from intermediate table when LoadColumn() operates on leaf table namespace
-- Verified: no explicit 2-table restriction existed; code already supported
-  multi-table GROUP BY via linked projections
-- MTR test: `mysql-test/suite/ndb_push_agg/t/ndb_join_pushdown_agg.test`
-  (11 SQL-level test cases for 3-way join aggregation)
+**Phase 14: COUNT(column) Pushdown & Outer Join Restriction** (commit cdf07458e75):
+- COUNT(nullable_column): removed incorrect rejection; data node Count()
+  already skips NULLs. COUNT(*) uses LoadUint64(1), COUNT(column) uses
+  LoadColumn(col_id) so NULL info reaches Count()
+- Outer/anti/semi join rejection: aggregation pushdown now explicitly
+  rejected when any pushed table uses outer/anti/semi join semantics
+- MTR tests: COUNT nullable column, LEFT JOIN EXPLAIN rejection
 
-**EXPLAIN Support — Phase 11** (commit 72aace778d1):
-- Added `ET_PUSHED_JOIN_AGGREGATION` to Extra_tag enum and format arrays
-- Added `has_pushed_aggregation()` virtual method to handler interface
-- Implemented in ha_ndbcluster using `m_pushed_agg_join` pointer
-- Clear `m_pushed_agg_join` in `reset()` to avoid stale state across queries
-- Shows "Using pushed join aggregation" in EXPLAIN Extra on root table
-- MTR EXPLAIN tests verify annotation appears ON and disappears OFF
+**Single-Table Aggregation Pushdown (STM) — Phases 1–10 (all complete):**
+- Phase 1: `ndb_pushdown_aggregate` THDVAR (separate from join agg),
+  `ndb_push_single_table_aggregation()` detection
+- Phase 2: `ndb_build_stm_aggregation_program()`, `ndb_start_stm_aggregate_scan()`,
+  `ndb_fetch_stm_aggregate()` — full scan path via NdbScanOperation
+- Phase 3: AccessPath surgery for single-table (reuses join agg infrastructure)
+- Phase 4: Scan execution with SO_AGGREGATION in ScanOptions for NdbRecord scans,
+  DoAggregation() for API-side per-fragment result merge
+- Phase 5: WHERE pushdown integration verified (NdbScanFilter + aggregation compose)
+- Phase 6: Index scan aggregation — SO_AGGREGATION in ordered_index_scan(),
+  aggregation intercept in index_next()
+- Phase 7: EXPLAIN — `ET_PUSHED_AGGREGATION` ("Using pushed aggregation")
+- Phase 8: HAVING, ORDER BY, LIMIT verified working
+- Phase 9: Implicit aggregation (no GROUP BY) verified working
+- Phase 10: MTR test suite — 31 test cases in `ndb_pushdown_agg.test`
+- Bug fixes: NdbRecord scan support (getValue_NdbRecord_scan), NextResult
+  translation to HA_ERR_END_OF_FILE, FILTER child crash in fixup, default
+  MRR fallback when m_stm_aggregator is set, read_range_next() intercept
+- Bug fix: FLOAT/DOUBLE MIN/MAX — Item_sum_hybrid::reset_field() now checks
+  hybrid_type == REAL_RESULT and uses result_field->store(double)
+- Bug fix: WHERE not pushed — fixup_pushed_access_paths() TEMPTABLE_AGGREGATE
+  case now re-walks children so FILTER nodes are processed
+- Bug fix: Reject PK/unique key lookups (single-row access never executes scan path)
 
-**SQL-Level MTR Test Suite — Phase 12** (commit aff382f93e1):
-- 20 new test cases (14-33) in `ndb_join_pushdown_agg.test` covering:
-  2-way joins, single row/group, empty results, COUNT(column) vs COUNT(*)
-  with NULLs, HAVING+ORDER BY+LIMIT, multiple aggregates on same column,
-  type coverage (INT/BIGINT/FLOAT/DOUBLE/DATE/DATETIME/CHAR/VARCHAR),
-  GROUP BY on all types, MIN/MAX on strings/dates, all-NULL columns, EXPLAIN
-- Fix: reject COUNT(nullable_column) pushdown in `ndb_can_push_aggregation()`
-  since data node Count instruction does not skip NULL values
-  (Note: this restriction is lifted in Phase 14 — Count() actually does skip NULLs)
+**CASE Expressions in Aggregation Pushdown** (commits a08fee2a695, d1c5983f18e):
+- Searched CASE: `SUM(CASE WHEN col OP const THEN val ELSE val END)`
+- Simple CASE: `SUM(CASE col WHEN val1 THEN v1 WHEN val2 THEN v2 ELSE ve END)`
+- Multi-WHEN CASE with up to 32 WHEN/THEN pairs
+- String column comparisons (CHAR EQ/NE) in CASE conditions
+- Works in both join and single-table aggregation paths
 
 **ERROR_INSERT Eviction Testing — Phase 13** (commit 0a88b35840e):
 - ERROR_INSERT 5116 (force maxGroups=3) and 4040 (intermittent eviction)
   for testing group eviction through the full signal chain
+**Arithmetic Expressions in Aggregation** (commit d1c5983f18e):
+- Arithmetic operators (+, -, *) in THEN/ELSE values and directly in
+  SUM/MIN/MAX arguments (e.g., `SUM(l_extendedprice * (1 - l_discount))`)
+- Recursive expression tree compilation into NdbAggregator program
+- DECIMAL aggregation fix: `m_pushed_is_double` flag on Item_sum so
+  val_decimal() and reset_field() use correct pushed value type
 
 **Additional completed work:**
 - Scan-scan join aggregation support (DBSPJ dummy program + child scan)
@@ -126,99 +148,42 @@
 
 **MTR test suites:**
 - `mysql-test/suite/ndb_push_agg/` — block_unit_tests wrapper (5 functional + 4 benchmarks)
-- `mysql-test/suite/ndb_push_agg/t/ndb_join_pushdown_agg.test` — 33 SQL-level test cases
+- `mysql-test/suite/ndb_push_agg/t/ndb_join_pushdown_agg.test` — 35 SQL-level join agg tests
+- `mysql-test/suite/ndb_push_agg/t/ndb_pushdown_agg.test` — 31 SQL-level single-table agg tests
 - `mysql-test/suite/ndb_push_agg_dist/` — 2-node distributed tests (8 categories)
 
 ---
 
 ## Remaining Work
 
-### Phase 14: COUNT(column) Pushdown & Outer Join Restriction (Priority: High)
+### Phase 15: AVG Support (Priority: High)
 
-**COUNT(column) for nullable columns:**
-The Phase 12 fix rejected COUNT(nullable_column), but the data node's
-`Count()` function (AggInterpreter.cpp:1365-1368) already checks `a.is_null`
-and skips NULL values without incrementing. The fix is to:
-1. Remove the nullable rejection in `ndb_can_push_aggregation()`
-   (ha_ndbcluster_push_agg.cc:98-102)
-2. Differentiate COUNT(*) vs COUNT(column) in `ndb_build_aggregation_program()`
-   — COUNT(*) keeps `LoadUint64(1)`, COUNT(column) uses `LoadColumn(col_id)`
-   so the register carries NULL info to Count()
-3. Same leaf-table restriction as SUM/MIN/MAX (LoadColumn namespace)
-
-**Outer/anti/semi join restriction:**
-No explicit rejection exists today. Aggregation with outer joins would produce
-incorrect results because:
-- Aggregation runs in DBLQH on the leaf table via `handleJoinAggRow`
-- For outer joins, when the inner-side table has no match, DBSPJ produces a
-  NULL-extended row at the coordinator level
-- DBLQH never processes this non-existent row, so COUNT(*) misses it and
-  groups that exist only due to unmatched outer rows are entirely missing
-- Add rejection in `ndb_push_aggregation()` using `isOuterJoined()`,
-  `isAntiJoined()`, `isSemiJoined()` from pushed_table (ha_ndbcluster_push.h:405-416)
-
-**MTR tests:** COUNT(nullable_column) push+skip-NULLs, LEFT JOIN EXPLAIN rejection.
-
-### Phase 15: Single-Table Aggregation Pushdown (Priority: High)
-
-Single-table aggregate queries (e.g., TPC-H Q1 on lineitem) cannot use pushdown
-today because the RONDB-733 framework requires a pushed join (SPJ path).
-`ndb_push_aggregation()` checks `member_of_pushed_join() != nullptr` for all
-tables (ha_ndbcluster_push_agg.cc:321-326), which is always nullptr for
-single-table scans.
+AVG is currently rejected by both `ndb_can_push_aggregation()` and
+`ndb_push_single_table_aggregation()`. NdbAggregator has no native AVG.
 
 **What's needed:**
+- Rewrite AVG(x) as SUM(x) + COUNT(x) at the MySQL handler level
+- In `ndb_build_aggregation_program()` / `ndb_build_stm_aggregation_program()`:
+  emit two aggregation slots (one SUM, one COUNT) for each AVG
+- In `ndb_fetch_next_aggregate_row()` / `ndb_fetch_stm_aggregate()`:
+  compute AVG = SUM/COUNT when populating Item_sum pushed values
+- Handle NULL: if COUNT is 0, AVG is NULL
+- Benefits both join and single-table paths
 
-1. **Single-table aggregation path in ha_ndbcluster**
-   - New code path that attaches an NdbAggregator program to a plain
-     SCAN_FRAGREQ without SPJ, or route single-table scans through SPJ
-     as a degenerate 1-table "join"
-   - Detection: single-table query with pushable aggregates, no join required
+**Target**: TPC-H Q1 `AVG(l_quantity), AVG(l_extendedprice), AVG(l_discount)`
 
-2. **AVG support**
-   - `ndb_can_push_aggregation()` rejects AVG (falls through to default
-     return false at ha_ndbcluster_push_agg.cc:121)
-   - NdbAggregator has no native AVG — only COUNT, SUM, MIN, MAX
-   - Rewrite AVG(x) as SUM(x) + COUNT(x) at the MySQL handler level
-   - Compute AVG = SUM/COUNT when fetching results in
-     `ndb_fetch_next_aggregate_row()`
-   - Benefits both join and single-table paths
+### Phase 16: DECIMAL Precision (Priority: High)
 
-3. **DECIMAL precision**
-   - RonSQL test (ronsql_dbt3_1_2.test) shows DECIMAL→double precision loss:
-     MySQL `26777.986560` vs RonSQL `26777.986559999998`
-   - Root cause: NdbAggregator converts DECIMAL to double internally
-     (noted in test line 81: "remove convert-to-double shortcut")
-   - Need native DECIMAL arithmetic in NdbAggregator
+RonSQL test (ronsql_dbt3_1_2.test) shows DECIMAL→double precision loss:
+MySQL `26777.986560` vs RonSQL `26777.986559999998`.
 
-4. **Arithmetic expressions in aggregate arguments**
-   - TPC-H Q1: `SUM(l_extendedprice * (1 - l_discount))`
-   - `ndb_can_push_aggregation()` requires arguments to be simple
-     Item::FIELD_ITEM (ha_ndbcluster_push_agg.cc:112)
-   - Need to compile arithmetic expressions into NdbAggregator program,
-     or evaluate via NDB interpreted program before feeding to aggregator
+**What's needed:**
+- Native DECIMAL arithmetic in NdbAggregator (currently converts DECIMAL
+  to double internally)
+- Or: keep double internally but convert back to DECIMAL at result time
+  with proper rounding to match MySQL's precision guarantees
 
-5. **WHERE with date functions (verification)**
-   - TPC-H Q1: `WHERE l_shipDATE <= date_sub('1998-12-01', interval '90' day)`
-   - For single-table path, the WHERE filter compiles into the scan's
-     interpreted program (existing ha_ndbcluster_cond infrastructure)
-   - Verify condition pushdown integrates correctly with aggregation path
-
-**Target query (TPC-H Q1):**
-```sql
-SELECT l_returnflag, l_linestatus,
-       SUM(l_quantity), SUM(l_extendedprice),
-       SUM(l_extendedprice * (1 - l_discount)),
-       SUM(l_extendedprice * (1 - l_discount) * (1 + l_tax)),
-       AVG(l_quantity), AVG(l_extendedprice), AVG(l_discount),
-       COUNT(*)
-FROM lineitem
-WHERE l_shipdate <= date_sub('1998-12-01', interval '90' day)
-GROUP BY l_returnflag, l_linestatus
-ORDER BY l_returnflag, l_linestatus;
-```
-
-### Phase 16: Correlated Subquery Support for Aggregation (Priority: Medium)
+### Phase 17: Correlated Subquery Support for Aggregation (Priority: Medium)
 
 TPC-H Q2 (Minimum Cost Supplier) has a correlated scalar subquery with
 `MIN(ps_supplycost)` inside a 4-table join, correlated on `p_partkey` from the
@@ -273,7 +238,7 @@ ORDER BY s_acctbal DESC, n_name, s_name, p_partkey
 LIMIT 100;
 ```
 
-### Phase 17: Semi-Join Aggregation & Related Features (Priority: Medium)
+### Phase 18: Semi-Join Aggregation & Related Features (Priority: Medium)
 
 TPC-H Q4 (Order Priority Checking) uses EXISTS with a correlated subquery,
 which MySQL converts to a semi-join. This requires aggregation pushdown to
@@ -288,7 +253,7 @@ work with semi-join semantics in SPJ.
    - Verify that aggregation pushdown works when a join node uses
      first-match/semi-join — the aggregation runs on the leaf table,
      but semi-join may change which node is the leaf or how rows flow
-   - Phase 16 covers correlated scalar subqueries (Q2); this covers
+   - Phase 17 covers correlated scalar subqueries (Q2); this covers
      EXISTS/semi-join which is a different optimizer transformation
 
 2. **Cross-column comparison in pushed filters**
@@ -301,7 +266,7 @@ work with semi-join semantics in SPJ.
    - For NDB: MySQL evaluates constant date expressions before pushdown,
      so ha_ndbcluster_cond receives a resolved date constant — no issue
    - For RonSQL: DATE_ADD() with interval MONTH/YEAR needs verification
-     alongside existing DATE_SUB() support (Phase 15.5)
+     alongside existing DATE_SUB() support (if added)
 
 4. **BETWEEN support (RonSQL)**
    - Q6: `l_discount BETWEEN 0.06 - 0.01 AND 0.06 + 0.01`
@@ -322,7 +287,7 @@ GROUP BY o_orderpriority
 ORDER BY o_orderpriority;
 ```
 
-### Phase 18: Expressions in GROUP BY, Derived Tables, Cross-Table OR (Priority: Medium)
+### Phase 19: Expressions in GROUP BY, Derived Tables, Cross-Table OR (Priority: Medium)
 
 TPC-H Q7 (Volume Shipping) is a 6-table join with a derived table and
 aggregation on expressions. Introduces several new requirements.
@@ -381,36 +346,25 @@ GROUP BY supp_nation, cust_nation, l_year
 ORDER BY supp_nation, cust_nation, l_year;
 ```
 
-### Phase 19: CASE in Aggregates & Post-Aggregation Expressions (Priority: Medium)
+### Phase 20: Post-Aggregation Expressions & Large Join Trees (Priority: Medium)
 
-TPC-H Q8 (National Market Share) uses CASE inside SUM and division of two
-aggregate results. 8-table join with derived table.
+TPC-H Q8 (National Market Share) uses division of two aggregate results.
+8-table join with derived table. CASE in aggregates is already supported
+(see completed work above).
 
 **What's needed:**
 
-1. **CASE expression inside aggregate function**
-   - Q8: `SUM(CASE WHEN nation = 'BRAZIL' THEN volume ELSE 0 END)`
-   - NdbAggregator already supports CASE (testCaseAgg, Phases 1-6), but
-     `ndb_can_push_aggregation()` requires aggregate arguments to be
-     `Item::FIELD_ITEM` (ha_ndbcluster_push_agg.cc:112)
-   - CASE produces `Item_func_case`, not a field — rejected today
-   - Need to detect and compile CASE into NdbAggregator program at the
-     MySQL handler level
-   - RonSQL: CASE in aggregates already fully implemented (parser grammar
-     `CASE WHEN cond_expr THEN arith_expr ELSE arith_expr END` in
-     RonSQLParser.y, CaseExpr/EmbeddedInterp/Skip/AggRepeat in
-     AggregationAPICompiler, tested by testCaseAgg + bench_q12_tpch)
-
-2. **Post-aggregation arithmetic expressions in SELECT/HAVING**
+1. **Post-aggregation arithmetic expressions in SELECT/HAVING**
    - Q8: `SUM(CASE...) / SUM(volume) AS mkt_share` — division of two aggregates
    - Q11: `SUM(ps_supplycost * ps_availqty) * 0.0001` — aggregate times constant
    - These are `Item_func_div`/`Item_func_mul` over `Item_sum` with pushed values
    - MySQL evaluates post-pushdown — verify that Item_sum::val_real() with
      pushed values composes correctly through arithmetic Item_func nodes
 
-3. **8-table join aggregation at MySQL handler level**
-   - Extends Phase 18.5 (6-table) — verify SPJ topology constraints and
-     handler limits for 8-table pushed joins with aggregation
+2. **6-table and 8-table join aggregation at MySQL handler level**
+   - bench_q9_dbtc tests 6-table join aggregation at NDB API level
+   - Verify SPJ topology constraints and handler limits for 6+ and 8-table
+     pushed joins with aggregation through MySQL
 
 **Target query (TPC-H Q8):**
 ```sql
@@ -442,11 +396,12 @@ the aggregation when it produces NULL-extended rows for unmatched outer joins:
   NULL-extended row into the aggregation engine (either at DBSPJ level or by
   forwarding to DBLQH with a special "null row" marker)
 - Requires architectural changes to the aggregation protocol
-- Blocked on the outer join restriction (Phase 14) being implemented first
+- The outer join restriction (Phase 14) is already implemented — this would
+  lift that restriction
 
-### Test Suite Fixes: Non-Deterministic Result Order (Priority: High)
+### Test Suite Fixes: Non-Deterministic Result Order (Priority: Medium)
 
-Existing MTR test cases for pushdown aggregation may produce results in
+MTR test cases for pushdown aggregation may produce results in
 non-deterministic order because NDB's group-by hash map does not guarantee
 output order. When aggregation is pushed, results come back in hash iteration
 order rather than MySQL's usual sort-based grouping order.
@@ -454,6 +409,7 @@ order rather than MySQL's usual sort-based grouping order.
 **Fix:** Add `--sorted_result` directives or explicit `ORDER BY` clauses to
 affected test cases in:
 - `mysql-test/suite/ndb_push_agg/t/ndb_join_pushdown_agg.test`
+- `mysql-test/suite/ndb_push_agg/t/ndb_pushdown_agg.test`
 - Any other MTR tests that compare aggregate pushdown ON vs OFF results
 
 Without this fix, test results are flaky — passing or failing depending on
