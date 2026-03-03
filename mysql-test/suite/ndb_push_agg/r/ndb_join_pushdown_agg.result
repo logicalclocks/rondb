@@ -471,9 +471,9 @@ SELECT tp1.grp, SUM(tp2.val_float), MIN(tp2.val_float), MAX(tp2.val_float)
 FROM tp1 JOIN tp2 ON tp2.pk = tp1.pk
 GROUP BY tp1.grp;
 grp	SUM(tp2.val_float)	MIN(tp2.val_float)	MAX(tp2.val_float)
-1	4	0	0
-2	8	0	0
-3	5.5	0	0
+1	4	1.5	2.5
+2	8	3.5	4.5
+3	5.5	5.5	5.5
 ############################################################
 # Test 22: SUM/MIN/MAX on DOUBLE
 ############################################################
@@ -490,9 +490,9 @@ SELECT tp1.grp, SUM(tp2.val_double), MIN(tp2.val_double), MAX(tp2.val_double)
 FROM tp1 JOIN tp2 ON tp2.pk = tp1.pk
 GROUP BY tp1.grp;
 grp	SUM(tp2.val_double)	MIN(tp2.val_double)	MAX(tp2.val_double)
-1	30.75	0	0
-2	70.875	0	0
-3	50.5	0	0
+1	30.75	10.25	20.5
+2	70.875	30.75	40.125
+3	50.5	50.5	50.5
 ############################################################
 # Test 23: GROUP BY on DATE column
 ############################################################
@@ -701,9 +701,9 @@ GROUP BY grp;
 grp	COUNT(*)	SUM(tp2.val_int)	MIN(tp2.val_double)	MAX(tp2.val_double)
 Warning	1052	Column 'grp' in group statement is ambiguous
 Warnings:
-all	1	50	0	0
-all	2	30	0	0
-all	2	70	0	0
+all	1	50	50.5	50.5
+all	2	30	10.25	20.5
+all	2	70	30.75	40.125
 ############################################################
 # Test 33: EXPLAIN on 2-way join with aggregation
 ############################################################
@@ -911,9 +911,19 @@ flag	cnt_low	flagged_sum
 0	1	0
 1	2	160
 ############################################################
-# Test 42: Multi-WHEN CASE falls back to MySQL (not pushed)
-# This has 2 WHEN clauses — should silently fall back
+# Test 42: Multi-WHEN CASE (now pushed)
 ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT tc1.grp,
+SUM(CASE WHEN tc2.val <= 20 THEN 1
+WHEN tc2.val <= 50 THEN 2
+ELSE 3 END) AS bucketed
+FROM tc1 JOIN tc2 ON tc2.pk = tc1.pk
+GROUP BY tc1.grp;
+grp	bucketed
+1	4
+2	7
+3	6
 SET ndb_join_pushdown_aggregate=ON;
 SELECT tc1.grp,
 SUM(CASE WHEN tc2.val <= 20 THEN 1
@@ -925,5 +935,70 @@ grp	bucketed
 1	4
 2	7
 3	6
+############################################################
+# Test 43: Simple CASE
+############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT tc1.grp,
+SUM(CASE tc2.flag WHEN 1 THEN tc2.val
+WHEN 0 THEN 0
+ELSE -1 END) AS sval
+FROM tc1 JOIN tc2 ON tc2.pk = tc1.pk
+GROUP BY tc1.grp;
+grp	sval
+1	40
+2	50
+3	70
+SET ndb_join_pushdown_aggregate=ON;
+SELECT tc1.grp,
+SUM(CASE tc2.flag WHEN 1 THEN tc2.val
+WHEN 0 THEN 0
+ELSE -1 END) AS sval
+FROM tc1 JOIN tc2 ON tc2.pk = tc1.pk
+GROUP BY tc1.grp;
+grp	sval
+1	40
+2	50
+3	70
+############################################################
+# Test 44: Arithmetic directly in SUM
+############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT tc1.grp, SUM(tc2.val * 2) AS dbl
+FROM tc1 JOIN tc2 ON tc2.pk = tc1.pk
+GROUP BY tc1.grp;
+grp	dbl
+1	120
+2	300
+3	300
+SET ndb_join_pushdown_aggregate=ON;
+SELECT tc1.grp, SUM(tc2.val * 2) AS dbl
+FROM tc1 JOIN tc2 ON tc2.pk = tc1.pk
+GROUP BY tc1.grp;
+grp	dbl
+1	120
+2	300
+3	300
+############################################################
+# Test 45: Arithmetic in CASE THEN
+############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT tc1.grp,
+SUM(CASE WHEN tc2.flag = 1 THEN tc2.val * 2 ELSE tc2.val END) AS wt
+FROM tc1 JOIN tc2 ON tc2.pk = tc1.pk
+GROUP BY tc1.grp;
+grp	wt
+1	100
+2	200
+3	220
+SET ndb_join_pushdown_aggregate=ON;
+SELECT tc1.grp,
+SUM(CASE WHEN tc2.flag = 1 THEN tc2.val * 2 ELSE tc2.val END) AS wt
+FROM tc1 JOIN tc2 ON tc2.pk = tc1.pk
+GROUP BY tc1.grp;
+grp	wt
+1	100
+2	200
+3	220
 # Cleanup CASE tables
 DROP TABLE tc2, tc1;

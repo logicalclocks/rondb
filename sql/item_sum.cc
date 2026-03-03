@@ -2077,7 +2077,11 @@ my_decimal *Item_sum_sum::val_decimal(my_decimal *val) {
   if (m_pushed_aggregate) {
     null_value = m_pushed_null;
     if (null_value) return nullptr;
-    int2my_decimal(E_DEC_FATAL_ERROR, m_pushed_value_int, false, val);
+    if (m_pushed_is_double) {
+      double2my_decimal(E_DEC_FATAL_ERROR, m_pushed_value_double, val);
+    } else {
+      int2my_decimal(E_DEC_FATAL_ERROR, m_pushed_value_int, false, val);
+    }
     return val;
   }
   if (m_is_window_function) {
@@ -3044,6 +3048,16 @@ longlong Item_sum_hybrid::val_date_temporal() {
 
 my_decimal *Item_sum_hybrid::val_decimal(my_decimal *val) {
   assert(fixed);
+  if (m_pushed_aggregate) {
+    null_value = m_pushed_null;
+    if (null_value) return nullptr;
+    if (m_pushed_is_double) {
+      double2my_decimal(E_DEC_FATAL_ERROR, m_pushed_value_double, val);
+    } else {
+      int2my_decimal(E_DEC_FATAL_ERROR, m_pushed_value_int, false, val);
+    }
+    return val;
+  }
   if (m_is_window_function) {
     if (wf_common_init()) {
       return error_decimal(val);
@@ -3359,7 +3373,11 @@ void Item_sum_hybrid::reset_field() {
       result_field->set_null();
     } else {
       result_field->set_notnull();
-      result_field->store(m_pushed_value_int, unsigned_flag);
+      if (m_pushed_is_double) {
+        result_field->store(m_pushed_value_double);
+      } else {
+        result_field->store(m_pushed_value_int, unsigned_flag);
+      }
     }
     return;
   }
@@ -3450,7 +3468,11 @@ void Item_sum_sum::reset_field() {
       result_field->set_notnull();
       if (hybrid_type == DECIMAL_RESULT) {
         my_decimal dec;
-        int2my_decimal(E_DEC_FATAL_ERROR, m_pushed_value_int, false, &dec);
+        if (m_pushed_is_double) {
+          double2my_decimal(E_DEC_FATAL_ERROR, m_pushed_value_double, &dec);
+        } else {
+          int2my_decimal(E_DEC_FATAL_ERROR, m_pushed_value_int, false, &dec);
+        }
         result_field->store_decimal(&dec);
       } else {
         float8store(result_field->field_ptr(), m_pushed_value_double);

@@ -767,15 +767,76 @@ FROM tc2
 GROUP BY flag;
 
 --echo ############################################################
---echo # Test 42: Multi-WHEN CASE falls back to MySQL (not pushed)
---echo # This has 2 WHEN clauses — should silently fall back
+--echo # Test 42: Multi-WHEN CASE (now pushed)
 --echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+--sorted_result
+SELECT tc1.grp,
+       SUM(CASE WHEN tc2.val <= 20 THEN 1
+                WHEN tc2.val <= 50 THEN 2
+                ELSE 3 END) AS bucketed
+FROM tc1 JOIN tc2 ON tc2.pk = tc1.pk
+GROUP BY tc1.grp;
+
 SET ndb_join_pushdown_aggregate=ON;
 --sorted_result
 SELECT tc1.grp,
        SUM(CASE WHEN tc2.val <= 20 THEN 1
                 WHEN tc2.val <= 50 THEN 2
                 ELSE 3 END) AS bucketed
+FROM tc1 JOIN tc2 ON tc2.pk = tc1.pk
+GROUP BY tc1.grp;
+
+--echo ############################################################
+--echo # Test 43: Simple CASE
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+--sorted_result
+SELECT tc1.grp,
+       SUM(CASE tc2.flag WHEN 1 THEN tc2.val
+                         WHEN 0 THEN 0
+                         ELSE -1 END) AS sval
+FROM tc1 JOIN tc2 ON tc2.pk = tc1.pk
+GROUP BY tc1.grp;
+
+SET ndb_join_pushdown_aggregate=ON;
+--sorted_result
+SELECT tc1.grp,
+       SUM(CASE tc2.flag WHEN 1 THEN tc2.val
+                         WHEN 0 THEN 0
+                         ELSE -1 END) AS sval
+FROM tc1 JOIN tc2 ON tc2.pk = tc1.pk
+GROUP BY tc1.grp;
+
+--echo ############################################################
+--echo # Test 44: Arithmetic directly in SUM
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+--sorted_result
+SELECT tc1.grp, SUM(tc2.val * 2) AS dbl
+FROM tc1 JOIN tc2 ON tc2.pk = tc1.pk
+GROUP BY tc1.grp;
+
+SET ndb_join_pushdown_aggregate=ON;
+--sorted_result
+SELECT tc1.grp, SUM(tc2.val * 2) AS dbl
+FROM tc1 JOIN tc2 ON tc2.pk = tc1.pk
+GROUP BY tc1.grp;
+
+--echo ############################################################
+--echo # Test 45: Arithmetic in CASE THEN
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+--sorted_result
+SELECT tc1.grp,
+       SUM(CASE WHEN tc2.flag = 1 THEN tc2.val * 2 ELSE tc2.val END) AS wt
+FROM tc1 JOIN tc2 ON tc2.pk = tc1.pk
+GROUP BY tc1.grp;
+
+SET ndb_join_pushdown_aggregate=ON;
+--sorted_result
+SELECT tc1.grp,
+       SUM(CASE WHEN tc2.flag = 1 THEN tc2.val * 2 ELSE tc2.val END) AS wt
 FROM tc1 JOIN tc2 ON tc2.pk = tc1.pk
 GROUP BY tc1.grp;
 

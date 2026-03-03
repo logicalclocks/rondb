@@ -807,17 +807,20 @@ class Item_sum : public Item_func {
   int64_t m_pushed_value_int{0};
   double m_pushed_value_double{0.0};
   bool m_pushed_null{false};
+  bool m_pushed_is_double{false};
 
  public:
   void set_pushed_value_int(int64_t val) {
     m_pushed_aggregate = true;
     m_pushed_value_int = val;
+    m_pushed_is_double = false;
     m_pushed_null = false;
     null_value = false;
   }
   void set_pushed_value_double(double val) {
     m_pushed_aggregate = true;
     m_pushed_value_double = val;
+    m_pushed_is_double = true;
     m_pushed_null = false;
     null_value = false;
   }

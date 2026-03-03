@@ -548,8 +548,16 @@ SELECT grp,
 FROM tc GROUP BY grp;
 
 --echo ############################################################
---echo # Test 37: Multi-WHEN CASE falls back to MySQL (not pushed)
+--echo # Test 37: Multi-WHEN CASE (now pushed)
 --echo ############################################################
+SET ndb_pushdown_aggregate=OFF;
+--sorted_result
+SELECT grp,
+       SUM(CASE WHEN val <= 20 THEN 1
+                WHEN val <= 50 THEN 2
+                ELSE 3 END) AS bucketed
+FROM tc GROUP BY grp;
+
 SET ndb_pushdown_aggregate=ON;
 --sorted_result
 SELECT grp,
@@ -571,5 +579,176 @@ SELECT SUM(CASE WHEN val <= 40 THEN 1 ELSE 0 END) AS low,
        SUM(CASE WHEN flag = 1 THEN val ELSE 0 END) AS fsum
 FROM tc;
 
+--echo ############################################################
+--echo # Test 39: Simple CASE (CASE col WHEN val THEN ...)
+--echo ############################################################
+SET ndb_pushdown_aggregate=OFF;
+--sorted_result
+SELECT grp,
+       SUM(CASE flag WHEN 1 THEN val WHEN 0 THEN 0 ELSE -1 END) AS sval
+FROM tc GROUP BY grp;
+
+SET ndb_pushdown_aggregate=ON;
+--sorted_result
+SELECT grp,
+       SUM(CASE flag WHEN 1 THEN val WHEN 0 THEN 0 ELSE -1 END) AS sval
+FROM tc GROUP BY grp;
+
+--echo ############################################################
+--echo # Test 40: Arithmetic directly in SUM
+--echo ############################################################
+SET ndb_pushdown_aggregate=OFF;
+--sorted_result
+SELECT grp, SUM(val * 2) AS dbl, SUM(val + flag) AS vf
+FROM tc GROUP BY grp;
+
+SET ndb_pushdown_aggregate=ON;
+--sorted_result
+SELECT grp, SUM(val * 2) AS dbl, SUM(val + flag) AS vf
+FROM tc GROUP BY grp;
+
+--echo ############################################################
+--echo # Test 41: Arithmetic in CASE THEN/ELSE
+--echo ############################################################
+SET ndb_pushdown_aggregate=OFF;
+--sorted_result
+SELECT grp,
+       SUM(CASE WHEN flag = 1 THEN val * 2 ELSE val END) AS wt
+FROM tc GROUP BY grp;
+
+SET ndb_pushdown_aggregate=ON;
+--sorted_result
+SELECT grp,
+       SUM(CASE WHEN flag = 1 THEN val * 2 ELSE val END) AS wt
+FROM tc GROUP BY grp;
+
+--echo ############################################################
+--echo # Test 42: 3-WHEN CASE with arithmetic
+--echo ############################################################
+SET ndb_pushdown_aggregate=OFF;
+--sorted_result
+SELECT grp,
+       SUM(CASE WHEN val <= 20 THEN val
+                WHEN val <= 50 THEN val * 2
+                WHEN val <= 80 THEN val * 3
+                ELSE 0 END) AS scaled
+FROM tc GROUP BY grp;
+
+SET ndb_pushdown_aggregate=ON;
+--sorted_result
+SELECT grp,
+       SUM(CASE WHEN val <= 20 THEN val
+                WHEN val <= 50 THEN val * 2
+                WHEN val <= 80 THEN val * 3
+                ELSE 0 END) AS scaled
+FROM tc GROUP BY grp;
+
 --echo # Cleanup CASE tables
 DROP TABLE tc;
+
+--echo ############################################################
+--echo # Test 43: String CASE - CHAR column comparison
+--echo ############################################################
+CREATE TABLE ts (
+  pk INT PRIMARY KEY,
+  grp INT,
+  status CHAR(10),
+  val INT
+) ENGINE=NDB;
+
+INSERT INTO ts VALUES (1, 1, 'ACTIVE', 100);
+INSERT INTO ts VALUES (2, 1, 'INACTIVE', 50);
+INSERT INTO ts VALUES (3, 1, 'ACTIVE', 200);
+INSERT INTO ts VALUES (4, 2, 'PENDING', 75);
+INSERT INTO ts VALUES (5, 2, 'ACTIVE', 150);
+INSERT INTO ts VALUES (6, 2, 'INACTIVE', 25);
+
+SET ndb_pushdown_aggregate=OFF;
+--sorted_result
+SELECT grp,
+       SUM(CASE WHEN status = 'ACTIVE' THEN 1 ELSE 0 END) AS active_cnt,
+       SUM(CASE WHEN status = 'ACTIVE' THEN val ELSE 0 END) AS active_sum
+FROM ts GROUP BY grp;
+
+SET ndb_pushdown_aggregate=ON;
+--sorted_result
+SELECT grp,
+       SUM(CASE WHEN status = 'ACTIVE' THEN 1 ELSE 0 END) AS active_cnt,
+       SUM(CASE WHEN status = 'ACTIVE' THEN val ELSE 0 END) AS active_sum
+FROM ts GROUP BY grp;
+
+--echo ############################################################
+--echo # Test 44: Multi-WHEN string CASE
+--echo ############################################################
+SET ndb_pushdown_aggregate=OFF;
+--sorted_result
+SELECT grp,
+       SUM(CASE WHEN status = 'ACTIVE' THEN 1
+                WHEN status = 'PENDING' THEN 1
+                ELSE 0 END) AS non_inactive
+FROM ts GROUP BY grp;
+
+SET ndb_pushdown_aggregate=ON;
+--sorted_result
+SELECT grp,
+       SUM(CASE WHEN status = 'ACTIVE' THEN 1
+                WHEN status = 'PENDING' THEN 1
+                ELSE 0 END) AS non_inactive
+FROM ts GROUP BY grp;
+
+--echo ############################################################
+--echo # Test 45: Simple CASE with CHAR search
+--echo ############################################################
+SET ndb_pushdown_aggregate=OFF;
+--sorted_result
+SELECT grp,
+       SUM(CASE status WHEN 'ACTIVE' THEN val
+                       WHEN 'PENDING' THEN val
+                       ELSE 0 END) AS asum
+FROM ts GROUP BY grp;
+
+SET ndb_pushdown_aggregate=ON;
+--sorted_result
+SELECT grp,
+       SUM(CASE status WHEN 'ACTIVE' THEN val
+                       WHEN 'PENDING' THEN val
+                       ELSE 0 END) AS asum
+FROM ts GROUP BY grp;
+
+--echo ############################################################
+--echo # Test 46: DECIMAL arithmetic (TPC-H Q9 pattern)
+--echo ############################################################
+CREATE TABLE td (
+  pk INT PRIMARY KEY,
+  grp INT,
+  price DECIMAL(10,2),
+  discount DECIMAL(5,2),
+  qty INT
+) ENGINE=NDB;
+
+INSERT INTO td VALUES (1, 1, 100.00, 0.10, 5);
+INSERT INTO td VALUES (2, 1, 200.00, 0.20, 3);
+INSERT INTO td VALUES (3, 2, 150.00, 0.05, 10);
+INSERT INTO td VALUES (4, 2, 50.00,  0.15, 8);
+
+SET ndb_pushdown_aggregate=OFF;
+--sorted_result
+SELECT grp, SUM(price * (1 - discount)) AS revenue
+FROM td GROUP BY grp;
+
+SET ndb_pushdown_aggregate=ON;
+--sorted_result
+SELECT grp, SUM(price * (1 - discount)) AS revenue
+FROM td GROUP BY grp;
+
+--echo ############################################################
+--echo # Test 47: Fallback - unsupported patterns
+--echo ############################################################
+--echo # DIV in arithmetic falls back
+SET ndb_pushdown_aggregate=ON;
+--sorted_result
+SELECT grp, SUM(val / 2) AS half FROM ts GROUP BY grp;
+
+--echo # Cleanup
+DROP TABLE ts;
+DROP TABLE td;

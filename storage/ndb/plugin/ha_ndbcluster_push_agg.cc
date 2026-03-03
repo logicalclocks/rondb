@@ -75,41 +75,27 @@ AccessPath *strip_pushed_child_nljs(AccessPath *path) {
 }
 
 /**
- * Check if a CASE expression is a pushable searched CASE with a single
- * WHEN/THEN/ELSE where the WHEN is a simple integer comparison and the
- * THEN/ELSE values are integer constants or field references.
- *
- * @param arg         The candidate CASE item
- * @param leaf_table  If non-null, require fields to belong to this table.
- *                    If null, require fields from a pushed-join table.
- * @return true if the CASE is pushable
+ * Check if a field belongs to the correct table for pushdown.
  */
-static bool is_pushable_case_expr(const Item *arg, const TABLE *leaf_table) {
-  if (arg->type() != Item::FUNC_ITEM) return false;
-  const auto *func = down_cast<const Item_func *>(arg);
-  if (func->functype() != Item_func::CASE_FUNC) return false;
-  const auto *case_item = down_cast<const Item_func_case *>(arg);
+static bool check_field_table(const Item_field *fi, const TABLE *leaf_table) {
+  if (leaf_table != nullptr) {
+    return fi->field->table == leaf_table;
+  } else {
+    return fi->field->table->file->member_of_pushed_join() != nullptr;
+  }
+}
 
-  // Must be searched CASE (no expression between CASE and WHEN).
-  if (case_item->get_first_expr_num() >= 0) return false;
-
-  // Must have an ELSE clause.
-  if (case_item->get_else_expr_num() < 0) return false;
-
-  // Compute ncases: argument_count minus optional first_expr/else entries.
-  int ncases = static_cast<int>(case_item->argument_count());
-  if (case_item->get_else_expr_num() >= 0) ncases--;
-  // Require exactly one WHEN/THEN pair (ncases == 2).
-  if (ncases != 2) return false;
-
-  Item **args = case_item->arguments();
-  const int else_idx = case_item->get_else_expr_num();
-
-  // Validate WHEN condition: must be a simple comparison.
-  Item *when_item = args[0];
+/**
+ * Check if a WHEN comparison is pushable.
+ * Supports integer field vs integer constant (all 6 operators) and
+ * CHAR field vs string constant (EQ/NE only).
+ */
+static bool is_pushable_comparison(Item *when_item,
+                                   const TABLE *leaf_table) {
   if (when_item->type() != Item::FUNC_ITEM) return false;
   const auto *when_func = down_cast<const Item_func *>(when_item);
-  switch (when_func->functype()) {
+  const auto functype = when_func->functype();
+  switch (functype) {
     case Item_func::EQ_FUNC:
     case Item_func::NE_FUNC:
     case Item_func::LT_FUNC:
@@ -124,7 +110,7 @@ static bool is_pushable_case_expr(const Item *arg, const TABLE *leaf_table) {
   Item *cmp_left = when_func->arguments()[0];
   Item *cmp_right = when_func->arguments()[1];
 
-  // One side must be an integer field, the other an integer constant.
+  // Integer field vs integer constant.
   const Item_field *field_item = nullptr;
   if (cmp_left->type() == Item::FIELD_ITEM &&
       cmp_right->type() == Item::INT_ITEM) {
@@ -132,36 +118,149 @@ static bool is_pushable_case_expr(const Item *arg, const TABLE *leaf_table) {
   } else if (cmp_left->type() == Item::INT_ITEM &&
              cmp_right->type() == Item::FIELD_ITEM) {
     field_item = down_cast<const Item_field *>(cmp_right);
-  } else {
+  }
+  if (field_item != nullptr && is_integer_type(field_item->field->type())) {
+    return check_field_table(field_item, leaf_table);
+  }
+
+  // CHAR field vs string constant (EQ/NE only).
+  if (functype != Item_func::EQ_FUNC && functype != Item_func::NE_FUNC)
     return false;
+  field_item = nullptr;
+  if (cmp_left->type() == Item::FIELD_ITEM &&
+      cmp_right->type() == Item::STRING_ITEM) {
+    field_item = down_cast<const Item_field *>(cmp_left);
+  } else if (cmp_left->type() == Item::STRING_ITEM &&
+             cmp_right->type() == Item::FIELD_ITEM) {
+    field_item = down_cast<const Item_field *>(cmp_right);
   }
-  if (!is_integer_type(field_item->field->type())) return false;
+  if (field_item == nullptr) return false;
+  // Only fixed-length CHAR (MYSQL_TYPE_STRING). VARCHAR/BLOB not supported.
+  if (field_item->field->type() != MYSQL_TYPE_STRING) return false;
+  return check_field_table(field_item, leaf_table);
+}
 
-  // Validate field table membership.
-  if (leaf_table != nullptr) {
-    if (field_item->field->table != leaf_table) return false;
-  } else {
-    if (field_item->field->table->file->member_of_pushed_join() == nullptr)
-      return false;
+/**
+ * Check if an arithmetic expression is pushable for aggregation.
+ * Accepts: numeric fields, integer/real/decimal constants, and
+ * arithmetic operators (+, -, *) applied recursively.
+ *
+ * @param item        The expression to check
+ * @param leaf_table  Table membership constraint (see check_field_table)
+ * @param depth       Recursion depth (max 8 due to register limit)
+ */
+static bool is_pushable_arithmetic_expr(const Item *item,
+                                        const TABLE *leaf_table,
+                                        int depth = 0) {
+  if (depth > 7) return false;
+  if (item->type() == Item::INT_ITEM) return true;
+  if (item->type() == Item::REAL_ITEM) return true;
+  if (item->type() == Item::DECIMAL_ITEM) return true;
+  if (item->type() == Item::FIELD_ITEM) {
+    const auto *fi = down_cast<const Item_field *>(item);
+    if (!is_numeric_type(fi->field->type())) return false;
+    return check_field_table(fi, leaf_table);
   }
-
-  // Validate THEN and ELSE: must be integer constant or integer field.
-  auto check_value_item = [&](Item *item) -> bool {
-    if (item->type() == Item::INT_ITEM) return true;
-    if (item->type() == Item::FIELD_ITEM) {
-      const auto *fi = down_cast<const Item_field *>(item);
-      if (!is_integer_type(fi->field->type())) return false;
-      if (leaf_table != nullptr) {
-        return fi->field->table == leaf_table;
-      } else {
-        return fi->field->table->file->member_of_pushed_join() != nullptr;
-      }
+  if (item->type() == Item::FUNC_ITEM) {
+    const auto *func = down_cast<const Item_func *>(item);
+    switch (func->functype()) {
+      case Item_func::PLUS_FUNC:
+      case Item_func::MINUS_FUNC:
+      case Item_func::MUL_FUNC:
+        break;
+      default:
+        return false;
     }
-    return false;
-  };
+    if (func->argument_count() != 2) return false;
+    return is_pushable_arithmetic_expr(func->arguments()[0], leaf_table,
+                                       depth + 1) &&
+           is_pushable_arithmetic_expr(func->arguments()[1], leaf_table,
+                                       depth + 1);
+  }
+  return false;
+}
 
-  if (!check_value_item(args[1])) return false;       // THEN
-  if (!check_value_item(args[else_idx])) return false;  // ELSE
+/**
+ * Check if a value item (THEN/ELSE) is pushable: integer constant,
+ * integer field, or arithmetic expression.
+ */
+static bool is_pushable_value_item(Item *item, const TABLE *leaf_table) {
+  if (item->type() == Item::INT_ITEM) return true;
+  if (item->type() == Item::FIELD_ITEM) {
+    const auto *fi = down_cast<const Item_field *>(item);
+    if (!is_numeric_type(fi->field->type())) return false;
+    return check_field_table(fi, leaf_table);
+  }
+  if (item->type() == Item::FUNC_ITEM) {
+    return is_pushable_arithmetic_expr(item, leaf_table);
+  }
+  return false;
+}
+
+/**
+ * Check if a CASE expression is pushable for aggregation.
+ *
+ * Supports:
+ * - Searched CASE: CASE WHEN cond1 THEN v1 [WHEN cond2 THEN v2 ...] ELSE ve END
+ * - Simple CASE:   CASE col WHEN val1 THEN v1 [WHEN val2 THEN v2 ...] ELSE ve END
+ * - Integer comparisons with all 6 operators (searched) or EQ (simple)
+ *
+ * @param arg         The candidate CASE item
+ * @param leaf_table  If non-null, require fields to belong to this table.
+ *                    If null, require fields from a pushed-join table.
+ * @return true if the CASE is pushable
+ */
+static bool is_pushable_case_expr(const Item *arg, const TABLE *leaf_table) {
+  if (arg->type() != Item::FUNC_ITEM) return false;
+  const auto *func = down_cast<const Item_func *>(arg);
+  if (func->functype() != Item_func::CASE_FUNC) return false;
+  const auto *case_item = down_cast<const Item_func_case *>(arg);
+
+  // Must have an ELSE clause.
+  if (case_item->get_else_expr_num() < 0) return false;
+
+  // Compute ncases: total WHEN/THEN items (excluding first_expr and else).
+  int ncases = static_cast<int>(case_item->argument_count());
+  if (case_item->get_first_expr_num() >= 0) ncases--;
+  if (case_item->get_else_expr_num() >= 0) ncases--;
+  // Must have at least one WHEN/THEN pair and be even.
+  if (ncases < 2 || (ncases % 2) != 0) return false;
+
+  Item **args = case_item->arguments();
+  const int else_idx = case_item->get_else_expr_num();
+  const int first_expr_num = case_item->get_first_expr_num();
+
+  if (first_expr_num >= 0) {
+    // Simple CASE: CASE col WHEN val1 THEN v1 ...
+    // Search expression must be an integer or CHAR field.
+    Item *search_expr = args[first_expr_num];
+    if (search_expr->type() != Item::FIELD_ITEM) return false;
+    const auto *search_field = down_cast<const Item_field *>(search_expr);
+    const bool is_int_search = is_integer_type(search_field->field->type());
+    const bool is_char_search =
+        (search_field->field->type() == MYSQL_TYPE_STRING);
+    if (!is_int_search && !is_char_search) return false;
+    if (!check_field_table(search_field, leaf_table)) return false;
+
+    // Each WHEN value must match the search type, each THEN must be pushable.
+    for (int i = 0; i < ncases; i += 2) {
+      if (is_int_search) {
+        if (args[i]->type() != Item::INT_ITEM) return false;
+      } else {
+        if (args[i]->type() != Item::STRING_ITEM) return false;
+      }
+      if (!is_pushable_value_item(args[i + 1], leaf_table)) return false;
+    }
+  } else {
+    // Searched CASE: CASE WHEN cond1 THEN v1 ...
+    for (int i = 0; i < ncases; i += 2) {
+      if (!is_pushable_comparison(args[i], leaf_table)) return false;
+      if (!is_pushable_value_item(args[i + 1], leaf_table)) return false;
+    }
+  }
+
+  // Validate ELSE value.
+  if (!is_pushable_value_item(args[else_idx], leaf_table)) return false;
 
   return true;
 }
@@ -190,38 +289,166 @@ static Uint32 get_branch_opcode(Item_func::Functype ft) {
 }
 
 /**
- * Emit an NdbAggregator program for a CASE aggregate expression.
- *
- * Builds an embedded interpreter program for the WHEN condition,
- * followed by aggregation arms for the THEN and ELSE paths.
- *
- * Pattern: SUM/MIN/MAX/COUNT(CASE WHEN col OP const THEN val ELSE val END)
- *
- * The embedded interpreter evaluates the condition and writes a skip offset
- * to interpreter output[0].  The aggregation program reads that offset to
- * select the THEN or ELSE arm.
- *
- * @param case_item  The CASE expression (already validated by is_pushable_case_expr)
- * @param ndb_table  The NDB table for column attribute lookups
- * @param agg        The NdbAggregator being built
- * @param agg_type   The aggregate function type (SUM, MIN, MAX, COUNT)
- * @param agg_id     The aggregate slot ID
- * @return true on success, false on failure
+ * Count agg program words needed to load/compute an expression.
+ * Handles constants, fields, and arithmetic expression trees.
+ * DECIMAL columns require an extra word for precision/scale info.
  */
-static bool emit_case_aggregation(const Item_func_case *case_item,
-                                  const NdbDictionary::Table *ndb_table,
-                                  NdbAggregator *agg,
-                                  Item_sum::Sumfunctype agg_type,
-                                  Uint32 agg_id) {
-  Item **args = case_item->arguments();
-  const int else_idx = case_item->get_else_expr_num();
+static Uint32 count_expr_words(Item *item,
+                               const NdbDictionary::Table *ndb_table) {
+  switch (item->type()) {
+    case Item::INT_ITEM:
+    case Item::REAL_ITEM:
+    case Item::DECIMAL_ITEM:
+      return 3;  // LoadInt64 or LoadDouble
+    case Item::FIELD_ITEM: {
+      const auto *fi = down_cast<const Item_field *>(item);
+      const NdbDictionary::Column *col =
+          ndb_table->getColumn(fi->field->field_index());
+      if (col != nullptr &&
+          (col->getType() == NdbDictionary::Column::Decimal ||
+           col->getType() == NdbDictionary::Column::Decimalunsigned)) {
+        return 2;  // LoadColumn + decimal info word
+      }
+      return 1;  // LoadColumn
+    }
+    case Item::FUNC_ITEM: {
+      const auto *func = down_cast<const Item_func *>(item);
+      return count_expr_words(func->arguments()[0], ndb_table) +
+             count_expr_words(func->arguments()[1], ndb_table) +
+             1;  // +1 for arith op
+    }
+    default:
+      return 0;
+  }
+}
 
-  // Extract WHEN comparison components.
-  const auto *when_func = down_cast<const Item_func *>(args[0]);
+/**
+ * Emit an expression (constant, field, or arithmetic tree) into the
+ * NdbAggregator program, putting the result in target_reg.
+ *
+ * For constants in arithmetic context: uses LoadDouble when the parent
+ * expression involves DECIMAL/REAL types, LoadInt64 for pure integer.
+ *
+ * @param item          The expression to emit
+ * @param ndb_table     NDB table for column lookups
+ * @param agg           The NdbAggregator being built
+ * @param target_reg    Register to store the result
+ * @param next_free_reg Next available register (incremented by recursive calls)
+ * @param use_double    If true, load integer constants as double (for DECIMAL context)
+ */
+static bool emit_expr(Item *item, const NdbDictionary::Table *ndb_table,
+                      NdbAggregator *agg, Uint32 target_reg,
+                      Uint32 *next_free_reg, bool use_double) {
+  switch (item->type()) {
+    case Item::INT_ITEM:
+      if (use_double)
+        return agg->LoadDouble(item->val_real(), target_reg);
+      else
+        return agg->LoadInt64(item->val_int(), target_reg);
+    case Item::REAL_ITEM:
+    case Item::DECIMAL_ITEM:
+      return agg->LoadDouble(item->val_real(), target_reg);
+    case Item::FIELD_ITEM: {
+      const auto *fi = down_cast<const Item_field *>(item);
+      const NdbDictionary::Column *col =
+          ndb_table->getColumn(fi->field->field_index());
+      if (col == nullptr) return false;
+      return agg->LoadColumn(col->getAttrId(), target_reg);
+    }
+    case Item::FUNC_ITEM: {
+      const auto *func = down_cast<const Item_func *>(item);
+      // Determine if children should use double loading.
+      bool child_use_double =
+          use_double || func->result_type() == DECIMAL_RESULT ||
+          func->result_type() == REAL_RESULT;
+
+      // Emit left operand into target_reg.
+      if (!emit_expr(func->arguments()[0], ndb_table, agg, target_reg,
+                     next_free_reg, child_use_double))
+        return false;
+
+      // Emit right operand into next available register.
+      Uint32 right_reg = (*next_free_reg)++;
+      if (right_reg > kReg8) return false;  // Out of registers.
+      if (!emit_expr(func->arguments()[1], ndb_table, agg, right_reg,
+                     next_free_reg, child_use_double))
+        return false;
+
+      // Emit arithmetic operation.
+      switch (func->functype()) {
+        case Item_func::PLUS_FUNC:
+          return agg->Add(target_reg, right_reg);
+        case Item_func::MINUS_FUNC:
+          return agg->Minus(target_reg, right_reg);
+        case Item_func::MUL_FUNC:
+          return agg->Mul(target_reg, right_reg);
+        default:
+          return false;
+      }
+    }
+    default:
+      return false;
+  }
+}
+
+/**
+ * Emit a value expression into the NdbAggregator, result in kReg1.
+ * Handles integer constants, fields, and arithmetic trees.
+ */
+static bool emit_value_load(Item *item,
+                            const NdbDictionary::Table *ndb_table,
+                            NdbAggregator *agg) {
+  Uint32 next_free = kReg2;
+  return emit_expr(item, ndb_table, agg, kReg1, &next_free, false);
+}
+
+/**
+ * Count agg program words for a value expression.
+ */
+static Uint32 count_value_load_words(Item *item,
+                                     const NdbDictionary::Table *ndb_table) {
+  return count_expr_words(item, ndb_table);
+}
+
+/**
+ * Emit the primary aggregate operation for a CASE arm.
+ */
+static bool emit_agg_op(NdbAggregator *agg, Item_sum::Sumfunctype agg_type,
+                         Uint32 agg_id) {
+  switch (agg_type) {
+    case Item_sum::SUM_FUNC:
+      return agg->Sum(agg_id, kReg1);
+    case Item_sum::MIN_FUNC:
+      return agg->Min(agg_id, kReg1);
+    case Item_sum::MAX_FUNC:
+      return agg->Max(agg_id, kReg1);
+    case Item_sum::COUNT_FUNC:
+      return agg->Count(agg_id, kReg1);
+    default:
+      return false;
+  }
+}
+
+/**
+ * Compute the number of embedded interpreter words for one integer
+ * comparison: READ_ATTR + LOAD_CONST + BRANCH.
+ */
+static Uint32 int_comparison_words(longlong const_val) {
+  const bool use_const16 = (const_val >= 0 && const_val <= 65535);
+  // READ_ATTR(1) + LOAD_CONST16(1) or LOAD_CONST64(3) + BRANCH(1)
+  return 1 + (use_const16 ? 1 : 3) + 1;
+}
+
+/**
+ * Emit one integer comparison + branch in the embedded interpreter.
+ * Returns the position after the BRANCH instruction.
+ */
+static bool emit_int_comparison_branch(
+    const Item_func *when_func, const NdbDictionary::Table *ndb_table,
+    NdbAggregator *agg, Uint32 branch_offset) {
   Item *cmp_left = when_func->arguments()[0];
   Item *cmp_right = when_func->arguments()[1];
 
-  // Identify which comparison arg is the field and which is the constant.
   const Item_field *cmp_field;
   Item_int *cmp_const;
   bool field_on_left;
@@ -235,55 +462,23 @@ static bool emit_case_aggregation(const Item_func_case *case_item,
     field_on_left = false;
   }
 
-  // Get NDB attribute ID for the comparison field.
   const NdbDictionary::Column *ndb_col =
       ndb_table->getColumn(cmp_field->field->field_index());
   if (ndb_col == nullptr) return false;
   const Uint32 attr_id = ndb_col->getAttrId();
 
-  const longlong const_val = cmp_const->val_int();
-  const bool use_const16 = (const_val >= 0 && const_val <= 65535);
-  const Uint32 const_words = use_const16 ? 1 : 3;
-
-  // Compute THEN/ELSE arm sizes.
-  Item *then_item = args[1];
-  Item *else_item = args[else_idx];
-  const Uint32 then_load_words =
-      (then_item->type() == Item::INT_ITEM) ? 3 : 1;  // LoadInt64 or LoadColumn
-  const Uint32 else_load_words =
-      (else_item->type() == Item::INT_ITEM) ? 3 : 1;
-  const Uint32 then_arm_words = then_load_words + 1;  // load + agg op
-  const Uint32 else_arm_words = else_load_words + 1;  // load + RepeatAgg
-  const Uint32 else_skip_offset = then_arm_words + 1;  // THEN arm + Skip
-
-  // Embedded interpreter layout:
-  //   [0]              READ_ATTR_INTO_REG reg0, attr_id
-  //   [1..const_words] LOAD_CONST16/64 reg1, const_val
-  //   [1+const_words]  BRANCH_XX reg0/reg1, offset=4  → THEN
-  //   ELSE path:
-  //   [2+const_words]  LOAD_CONST16 reg2, else_skip_offset
-  //   [3+const_words]  WRITE_INTERPRETER_OUTPUT reg2, 0
-  //   [4+const_words]  EXIT_OK
-  //   THEN path:
-  //   [5+const_words]  LOAD_CONST16 reg2, 0
-  //   [6+const_words]  WRITE_INTERPRETER_OUTPUT reg2, 0
-  //   [7+const_words]  EXIT_OK
-  const Uint32 emb_len = 8 + const_words;
-
-  // Emit the embedded interpreter block.
-  if (!agg->EmbeddedInterp(emb_len)) return false;
-
   // READ_ATTR_INTO_REG reg0, attr_id
   if (!agg->EmitEmbeddedWord(Interpreter::Read(attr_id, 0))) return false;
 
   // LOAD_CONST16/64 reg1, const_val
+  const longlong const_val = cmp_const->val_int();
+  const bool use_const16 = (const_val >= 0 && const_val <= 65535);
   if (use_const16) {
     if (!agg->EmitEmbeddedWord(
             Interpreter::LoadConst16(1, static_cast<Uint32>(const_val))))
       return false;
   } else {
     if (!agg->EmitEmbeddedWord(Interpreter::LoadConst64(1))) return false;
-    // Emit the 64-bit constant value as 2 words.
     Int64 val64 = static_cast<Int64>(const_val);
     Uint32 data[2];
     memcpy(data, &val64, sizeof(Int64));
@@ -291,65 +486,460 @@ static bool emit_case_aggregation(const Item_func_case *case_item,
     if (!agg->EmitEmbeddedWord(data[1])) return false;
   }
 
-  // BRANCH_XX_REG_REG with offset=4 (always 4, see layout above).
-  // If field is on the left: left_reg=reg0(col), right_reg=reg1(const).
-  // If field is on the right: left_reg=reg1(const), right_reg=reg0(col).
+  // BRANCH_XX_REG_REG
   const Uint32 branch_opcode = get_branch_opcode(when_func->functype());
   const Uint32 left_reg = field_on_left ? 0 : 1;
   const Uint32 right_reg = field_on_left ? 1 : 0;
   if (!agg->EmitEmbeddedWord(branch_opcode | (left_reg << 6) |
-                             (right_reg << 9) | (4 << 16)))
+                             (right_reg << 9) |
+                             (branch_offset << 16)))
     return false;
 
-  // ELSE path: skip_offset = else_skip_offset (skip past THEN arm + Skip).
+  return true;
+}
+
+/**
+ * Emit one simple-CASE value comparison + branch in the embedded interpreter.
+ * The search field has already been loaded into reg0.
+ */
+static bool emit_simple_case_branch(Item *when_val, NdbAggregator *agg,
+                                    Uint32 branch_offset) {
+  const longlong val = when_val->val_int();
+  const bool use_const16 = (val >= 0 && val <= 65535);
+  if (use_const16) {
+    if (!agg->EmitEmbeddedWord(
+            Interpreter::LoadConst16(1, static_cast<Uint32>(val))))
+      return false;
+  } else {
+    if (!agg->EmitEmbeddedWord(Interpreter::LoadConst64(1))) return false;
+    Int64 val64 = static_cast<Int64>(val);
+    Uint32 data[2];
+    memcpy(data, &val64, sizeof(Int64));
+    if (!agg->EmitEmbeddedWord(data[0])) return false;
+    if (!agg->EmitEmbeddedWord(data[1])) return false;
+  }
+
+  // BRANCH_EQ_REG_REG reg0(search), reg1(val)
+  if (!agg->EmitEmbeddedWord(Interpreter::BRANCH_EQ_REG_REG | (0 << 6) |
+                             (1 << 9) | (branch_offset << 16)))
+    return false;
+
+  return true;
+}
+
+/**
+ * Compute embedded words for one simple-CASE comparison: LOAD_CONST + BRANCH.
+ * For integer values. For string values, use string_branch_words().
+ */
+static Uint32 simple_case_comparison_words(longlong val) {
+  const bool use_const16 = (val >= 0 && val <= 65535);
+  return (use_const16 ? 1 : 3) + 1;  // LOAD_CONST + BRANCH
+}
+
+/**
+ * Compute embedded words for a BRANCH_ATTR_OP_ARG string comparison.
+ * Total: 2 (opcode + attr/len) + ((col_byte_len + 3) >> 2) data words.
+ */
+static Uint32 string_branch_words(Uint32 col_byte_len) {
+  return 2 + ((col_byte_len + 3) >> 2);
+}
+
+/**
+ * Emit a BRANCH_ATTR_OP_ARG string comparison + branch.
+ *
+ * @param attr_id        NDB attribute ID for the CHAR column
+ * @param col_byte_len   Column byte length from NdbDictionary::Column::getLength()
+ * @param str_val        The constant string to compare against
+ * @param str_len        Length of str_val in bytes
+ * @param cond           Interpreter::EQ or Interpreter::NE
+ * @param branch_offset  Branch target offset from this instruction
+ * @param agg            The NdbAggregator to emit into
+ */
+static bool emit_string_branch(Uint32 attr_id, Uint32 col_byte_len,
+                                const char *str_val, uint str_len,
+                                Interpreter::BinaryCondition cond,
+                                Uint32 branch_offset, NdbAggregator *agg) {
+  // Word 0: BranchCol encoding with branch offset.
   if (!agg->EmitEmbeddedWord(
-          Interpreter::LoadConst16(2, else_skip_offset)))
+          Interpreter::BranchCol(cond, Interpreter::NULL_CMP_EQUAL) |
+          (branch_offset << 16)))
     return false;
-  if (!agg->EmitEmbeddedWord(Interpreter::WriteInterpreterOutput(2, 0)))
-    return false;
-  if (!agg->EmitEmbeddedWord(Interpreter::ExitOK())) return false;
 
-  // THEN path: skip_offset = 0 (land at start of agg arms).
-  if (!agg->EmitEmbeddedWord(Interpreter::LoadConst16(2, 0))) return false;
-  if (!agg->EmitEmbeddedWord(Interpreter::WriteInterpreterOutput(2, 0)))
+  // Word 1: (attr_id << 16) | col_byte_len.
+  if (!agg->EmitEmbeddedWord(
+          Interpreter::BranchCol_2(attr_id, col_byte_len)))
     return false;
-  if (!agg->EmitEmbeddedWord(Interpreter::ExitOK())) return false;
 
-  // Emit aggregation arms.
-  // THEN arm: load value, aggregate, skip past ELSE.
-  auto emit_load = [&](Item *item) -> bool {
-    if (item->type() == Item::INT_ITEM) {
-      return agg->LoadInt64(item->val_int(), kReg1);
+  // Words 2+: space-padded string data, 4-byte aligned.
+  const Uint32 data_words = (col_byte_len + 3) >> 2;
+  char buf[256];  // Max CHAR column is 255 bytes.
+  if (col_byte_len > sizeof(buf)) return false;
+  memset(buf, ' ', col_byte_len);
+  memcpy(buf, str_val, str_len < col_byte_len ? str_len : col_byte_len);
+  // Zero-pad the last partial word if needed.
+  Uint32 total_bytes = data_words * 4;
+  if (total_bytes > col_byte_len) {
+    memset(buf + col_byte_len, 0, total_bytes - col_byte_len);
+  }
+  const Uint32 *words = reinterpret_cast<const Uint32 *>(buf);
+  for (Uint32 w = 0; w < data_words; w++) {
+    if (!agg->EmitEmbeddedWord(words[w])) return false;
+  }
+
+  return true;
+}
+
+/**
+ * Check if a searched CASE WHEN condition is a string comparison.
+ */
+static bool is_string_comparison(Item *when_item) {
+  if (when_item->type() != Item::FUNC_ITEM) return false;
+  const auto *when_func = down_cast<const Item_func *>(when_item);
+  Item *cmp_left = when_func->arguments()[0];
+  Item *cmp_right = when_func->arguments()[1];
+  if (cmp_left->type() == Item::FIELD_ITEM &&
+      cmp_right->type() == Item::STRING_ITEM) {
+    return down_cast<const Item_field *>(cmp_left)->field->type() ==
+           MYSQL_TYPE_STRING;
+  }
+  if (cmp_left->type() == Item::STRING_ITEM &&
+      cmp_right->type() == Item::FIELD_ITEM) {
+    return down_cast<const Item_field *>(cmp_right)->field->type() ==
+           MYSQL_TYPE_STRING;
+  }
+  return false;
+}
+
+/**
+ * Compute embedded words for one searched-CASE WHEN condition.
+ * Dispatches between integer comparison and string comparison.
+ */
+static Uint32 searched_comparison_words(Item *when_item,
+                                        const NdbDictionary::Table *ndb_table) {
+  if (is_string_comparison(when_item)) {
+    const auto *when_func = down_cast<const Item_func *>(when_item);
+    Item *cmp_left = when_func->arguments()[0];
+    Item *cmp_right = when_func->arguments()[1];
+    const Item_field *field_item;
+    if (cmp_left->type() == Item::FIELD_ITEM)
+      field_item = down_cast<const Item_field *>(cmp_left);
+    else
+      field_item = down_cast<const Item_field *>(cmp_right);
+    const NdbDictionary::Column *ndb_col =
+        ndb_table->getColumn(field_item->field->field_index());
+    return string_branch_words(ndb_col->getLength());
+  }
+  // Integer comparison.
+  const auto *when_func = down_cast<const Item_func *>(when_item);
+  Item *cmp_left = when_func->arguments()[0];
+  Item *cmp_right = when_func->arguments()[1];
+  Item_int *cmp_const;
+  if (cmp_left->type() == Item::INT_ITEM)
+    cmp_const = down_cast<Item_int *>(cmp_left);
+  else
+    cmp_const = down_cast<Item_int *>(cmp_right);
+  return int_comparison_words(cmp_const->val_int());
+}
+
+/**
+ * Emit one searched-CASE WHEN condition + branch.
+ * Dispatches between integer and string comparisons.
+ */
+static bool emit_searched_comparison_branch(
+    Item *when_item, const NdbDictionary::Table *ndb_table,
+    NdbAggregator *agg, Uint32 branch_offset) {
+  if (is_string_comparison(when_item)) {
+    const auto *when_func = down_cast<const Item_func *>(when_item);
+    Item *cmp_left = when_func->arguments()[0];
+    Item *cmp_right = when_func->arguments()[1];
+    const Item_field *field_item;
+    Item *str_item;
+    if (cmp_left->type() == Item::FIELD_ITEM) {
+      field_item = down_cast<const Item_field *>(cmp_left);
+      str_item = cmp_right;
     } else {
-      const auto *fi = down_cast<const Item_field *>(item);
-      const NdbDictionary::Column *col =
-          ndb_table->getColumn(fi->field->field_index());
-      if (col == nullptr) return false;
-      return agg->LoadColumn(col->getAttrId(), kReg1);
+      field_item = down_cast<const Item_field *>(cmp_right);
+      str_item = cmp_left;
     }
-  };
+    const NdbDictionary::Column *ndb_col =
+        ndb_table->getColumn(field_item->field->field_index());
+    if (ndb_col == nullptr) return false;
 
-  if (!emit_load(then_item)) return false;
-  switch (agg_type) {
-    case Item_sum::SUM_FUNC:
-      if (!agg->Sum(agg_id, kReg1)) return false;
-      break;
-    case Item_sum::MIN_FUNC:
-      if (!agg->Min(agg_id, kReg1)) return false;
-      break;
-    case Item_sum::MAX_FUNC:
-      if (!agg->Max(agg_id, kReg1)) return false;
-      break;
-    case Item_sum::COUNT_FUNC:
-      if (!agg->Count(agg_id, kReg1)) return false;
-      break;
-    default:
+    // Map MySQL functype to Interpreter::BinaryCondition.
+    Interpreter::BinaryCondition cond =
+        (when_func->functype() == Item_func::EQ_FUNC) ? Interpreter::EQ
+                                                       : Interpreter::NE;
+
+    // Get string value.
+    String tmp;
+    String *str = str_item->val_str(&tmp);
+    if (str == nullptr) return false;
+
+    return emit_string_branch(ndb_col->getAttrId(), ndb_col->getLength(),
+                              str->ptr(), str->length(), cond, branch_offset,
+                              agg);
+  }
+
+  // Integer comparison.
+  return emit_int_comparison_branch(
+      down_cast<const Item_func *>(when_item), ndb_table, agg, branch_offset);
+}
+
+/**
+ * Compute embedded words for one simple-CASE comparison.
+ * For string search: uses BRANCH_ATTR_OP_ARG.
+ * For integer search: uses LOAD_CONST + BRANCH_EQ_REG_REG.
+ */
+static Uint32 simple_case_cond_words(Item *when_val, bool is_string_search,
+                                     const NdbDictionary::Table *ndb_table,
+                                     Item *search_expr) {
+  if (is_string_search) {
+    const auto *search_field = down_cast<const Item_field *>(search_expr);
+    const NdbDictionary::Column *ndb_col =
+        ndb_table->getColumn(search_field->field->field_index());
+    return string_branch_words(ndb_col->getLength());
+  }
+  return simple_case_comparison_words(when_val->val_int());
+}
+
+/**
+ * Emit one simple-CASE value comparison + branch.
+ * For string search: uses BRANCH_ATTR_OP_ARG EQ.
+ * For integer search: uses LOAD_CONST + BRANCH_EQ_REG_REG.
+ */
+static bool emit_simple_case_cond_branch(Item *when_val,
+                                         bool is_string_search,
+                                         Item *search_expr,
+                                         const NdbDictionary::Table *ndb_table,
+                                         NdbAggregator *agg,
+                                         Uint32 branch_offset) {
+  if (is_string_search) {
+    const auto *search_field = down_cast<const Item_field *>(search_expr);
+    const NdbDictionary::Column *ndb_col =
+        ndb_table->getColumn(search_field->field->field_index());
+    if (ndb_col == nullptr) return false;
+    String tmp;
+    String *str = when_val->val_str(&tmp);
+    if (str == nullptr) return false;
+    return emit_string_branch(ndb_col->getAttrId(), ndb_col->getLength(),
+                              str->ptr(), str->length(), Interpreter::EQ,
+                              branch_offset, agg);
+  }
+  return emit_simple_case_branch(when_val, agg, branch_offset);
+}
+
+/**
+ * Emit an NdbAggregator program for a CASE aggregate expression.
+ *
+ * Supports searched CASE with multiple WHEN/THEN pairs and simple CASE.
+ * Builds an embedded interpreter program for the conditions, followed by
+ * aggregation arms for each THEN value and the ELSE value.
+ *
+ * The embedded interpreter evaluates conditions and writes a skip offset
+ * to interpreter output[0].  The aggregation program reads that offset to
+ * select the correct arm.
+ *
+ * @param case_item  The CASE expression (already validated)
+ * @param ndb_table  The NDB table for column attribute lookups
+ * @param agg        The NdbAggregator being built
+ * @param agg_type   The aggregate function type (SUM, MIN, MAX, COUNT)
+ * @param agg_id     The aggregate slot ID
+ * @return true on success, false on failure
+ */
+static bool emit_case_aggregation(const Item_func_case *case_item,
+                                  const NdbDictionary::Table *ndb_table,
+                                  NdbAggregator *agg,
+                                  Item_sum::Sumfunctype agg_type,
+                                  Uint32 agg_id) {
+  Item **args = case_item->arguments();
+  const int else_idx = case_item->get_else_expr_num();
+  const int first_expr_num = case_item->get_first_expr_num();
+  const bool is_simple_case = (first_expr_num >= 0);
+
+  // Compute ncases (WHEN/THEN item count, excluding first_expr and else).
+  int ncases = static_cast<int>(case_item->argument_count());
+  if (first_expr_num >= 0) ncases--;
+  if (else_idx >= 0) ncases--;
+  const int n_pairs = ncases / 2;
+
+  // --- Phase 1: Compute sizes ---
+
+  // Per-condition embedded interpreter words (excluding the output blocks).
+  // For searched CASE: READ_ATTR + LOAD_CONST + BRANCH per condition.
+  // For simple CASE: LOAD_CONST + BRANCH per condition (READ_ATTR once at top).
+  static constexpr Uint32 MAX_CASE_PAIRS = 32;
+  Uint32 cond_words[MAX_CASE_PAIRS];
+  if (n_pairs > (int)MAX_CASE_PAIRS) return false;
+
+  // For simple CASE with string search, BRANCH_ATTR_OP_ARG includes the
+  // attribute read, so no separate READ_ATTR needed. For integer search,
+  // READ_ATTR is emitted once at the top.
+  const bool is_string_search =
+      is_simple_case &&
+      (down_cast<const Item_field *>(args[first_expr_num])
+           ->field->type() == MYSQL_TYPE_STRING);
+
+  Uint32 total_cond_words = 0;
+  if (is_simple_case) {
+    if (!is_string_search) {
+      total_cond_words += 1;  // READ_ATTR for integer search (once)
+    }
+    for (int i = 0; i < n_pairs; i++) {
+      cond_words[i] = simple_case_cond_words(args[i * 2], is_string_search,
+                                             ndb_table, args[first_expr_num]);
+      total_cond_words += cond_words[i];
+    }
+  } else {
+    for (int i = 0; i < n_pairs; i++) {
+      cond_words[i] = searched_comparison_words(args[i * 2], ndb_table);
+      total_cond_words += cond_words[i];
+    }
+  }
+
+  // Output blocks: 3 words each (LOAD_CONST16 + WRITE_INTERP_OUTPUT + EXIT_OK).
+  // One block for ELSE (fall-through) + one block per THEN label.
+  const Uint32 output_block_words = 3;
+  const Uint32 total_output_words =
+      output_block_words * (static_cast<Uint32>(n_pairs) + 1);
+
+  const Uint32 emb_len = total_cond_words + total_output_words;
+
+  // Per-arm agg words: load + agg_op (first arm) or load + RepeatAgg (rest).
+  // Each arm except the last also has a Skip(1 word).
+  Uint32 arm_words[MAX_CASE_PAIRS + 1];  // n_pairs THEN arms + 1 ELSE arm
+  for (int i = 0; i < n_pairs; i++) {
+    arm_words[i] = count_value_load_words(args[i * 2 + 1], ndb_table) + 1;  // load + op
+  }
+  arm_words[n_pairs] =
+      count_value_load_words(args[else_idx], ndb_table) + 1;  // ELSE: load + RepeatAgg
+
+  // Compute skip offsets for each arm's output block in the embedded interp.
+  // skip_offset = number of agg words to skip from the start of the agg arms
+  // to reach this arm.
+  // ARM_0 (THEN_0): skip_offset = 0
+  // ARM_1 (THEN_1): skip_offset = arm_words[0] + 1(Skip)
+  // ARM_2 (THEN_2): skip_offset = arm_words[0]+1 + arm_words[1]+1
+  // ...
+  // ARM_N (ELSE):   skip_offset = sum of (arm_words[i]+1) for i in 0..N-1
+  Uint32 skip_offsets[MAX_CASE_PAIRS + 1];
+  skip_offsets[0] = 0;
+  for (int i = 1; i <= n_pairs; i++) {
+    skip_offsets[i] = skip_offsets[i - 1] + arm_words[i - 1] + 1;  // +1 for Skip
+  }
+
+  // Each arm's Skip count = remaining words after this arm.
+  // ARM_i Skip = sum of (arm_words[j] + 1) for j in (i+1..n_pairs-1) + arm_words[n_pairs]
+  // (Last THEN arm skips past ELSE arm; ELSE arm has no Skip.)
+
+  // --- Phase 2: Emit embedded interpreter ---
+
+  if (!agg->EmbeddedInterp(emb_len)) return false;
+
+  // For simple CASE with integer search: load search field into reg0 once.
+  // (String search uses BRANCH_ATTR_OP_ARG which reads the attr internally.)
+  if (is_simple_case && !is_string_search) {
+    Item *search_expr = args[first_expr_num];
+    const auto *search_field = down_cast<const Item_field *>(search_expr);
+    const NdbDictionary::Column *ndb_col =
+        ndb_table->getColumn(search_field->field->field_index());
+    if (ndb_col == nullptr) return false;
+    if (!agg->EmitEmbeddedWord(Interpreter::Read(ndb_col->getAttrId(), 0)))
       return false;
   }
-  if (!agg->Skip(else_arm_words)) return false;
 
-  // ELSE arm: load value, repeat aggregate.
-  if (!emit_load(else_item)) return false;
+  // Emit conditions with branches to THEN labels.
+  //
+  // Layout:
+  //   [conditions...]
+  //   [ELSE output block]     <- fall-through after all conditions
+  //   [THEN_0 output block]
+  //   ...
+  //   [THEN_{N-1} output block]
+  //
+  // For BRANCH_ATTR_OP_ARG (string), the branch offset is from the first
+  // word of the instruction (not the last). For BRANCH_XX_REG_REG (integer),
+  // the offset is also from the BRANCH instruction word itself.
+  // Both use "offset from the instruction word that contains the offset field".
+
+  Uint32 cond_pos = (is_simple_case && !is_string_search) ? 1 : 0;
+  for (int i = 0; i < n_pairs; i++) {
+    // For BRANCH_ATTR_OP_ARG: offset is from the first word of instruction.
+    // For BRANCH_XX_REG_REG: offset is from the BRANCH word (last of cond).
+    // BRANCH_ATTR_OP_ARG stores offset in word 0 bits[31:16].
+    // BRANCH_XX_REG_REG stores offset in the single instruction word bits[31:16].
+    // Both: branch target = instruction_pos + offset.
+    // For int: instruction_pos = cond_pos + cond_words[i] - 1 (BRANCH is last)
+    // For string: instruction_pos = cond_pos (BRANCH_ATTR_OP_ARG is first word)
+    bool is_str_cond;
+    if (is_simple_case)
+      is_str_cond = is_string_search;
+    else
+      is_str_cond = is_string_comparison(args[i * 2]);
+
+    Uint32 branch_instr_pos;
+    if (is_str_cond) {
+      branch_instr_pos = cond_pos;  // BRANCH_ATTR_OP_ARG is at start
+    } else {
+      branch_instr_pos = cond_pos + cond_words[i] - 1;  // BRANCH is at end
+    }
+
+    Uint32 then_label_pos =
+        total_cond_words + output_block_words * (1 + static_cast<Uint32>(i));
+    Uint32 branch_offset = then_label_pos - branch_instr_pos;
+
+    if (is_simple_case) {
+      if (!emit_simple_case_cond_branch(args[i * 2], is_string_search,
+                                        args[first_expr_num], ndb_table, agg,
+                                        branch_offset))
+        return false;
+    } else {
+      if (!emit_searched_comparison_branch(args[i * 2], ndb_table, agg,
+                                           branch_offset))
+        return false;
+    }
+    cond_pos += cond_words[i];
+  }
+
+  // ELSE output block (fall-through when no condition matched).
+  if (!agg->EmitEmbeddedWord(
+          Interpreter::LoadConst16(2, skip_offsets[n_pairs])))
+    return false;
+  if (!agg->EmitEmbeddedWord(Interpreter::WriteInterpreterOutput(2, 0)))
+    return false;
+  if (!agg->EmitEmbeddedWord(Interpreter::ExitOK())) return false;
+
+  // THEN output blocks.
+  for (int i = 0; i < n_pairs; i++) {
+    if (!agg->EmitEmbeddedWord(
+            Interpreter::LoadConst16(2, skip_offsets[i])))
+      return false;
+    if (!agg->EmitEmbeddedWord(Interpreter::WriteInterpreterOutput(2, 0)))
+      return false;
+    if (!agg->EmitEmbeddedWord(Interpreter::ExitOK())) return false;
+  }
+
+  // --- Phase 3: Emit aggregation arms ---
+
+  // Total remaining words after each arm (for Skip count).
+  // After ARM_i, remaining = sum of (arm_words[j]+1) for j in (i+1..n_pairs-1)
+  //                         + arm_words[n_pairs]
+  // ELSE arm (ARM_{n_pairs}) has no Skip.
+
+  for (int i = 0; i < n_pairs; i++) {
+    // THEN arm i.
+    if (!emit_value_load(args[i * 2 + 1], ndb_table, agg)) return false;
+    if (i == 0) {
+      if (!emit_agg_op(agg, agg_type, agg_id)) return false;
+    } else {
+      if (!agg->RepeatAgg(agg_id, kReg1)) return false;
+    }
+    // Skip past remaining arms.
+    Uint32 remaining = skip_offsets[n_pairs] - skip_offsets[i + 1];
+    if (!agg->Skip(remaining + arm_words[n_pairs])) return false;
+  }
+
+  // ELSE arm.
+  if (!emit_value_load(args[else_idx], ndb_table, agg)) return false;
   if (!agg->RepeatAgg(agg_id, kReg1)) return false;
 
   return true;
@@ -403,7 +993,7 @@ static bool ndb_can_push_aggregation(const JOIN *join) {
       case Item_sum::MIN_FUNC:
       case Item_sum::MAX_FUNC: {
         // Must have exactly one argument: a field reference from a pushed
-        // table, or a pushable CASE expression.
+        // table, a pushable CASE expression, or a pushable arithmetic expr.
         if ((*func)->argument_count() != 1) return false;
         Item *arg = (*func)->arguments()[0];
         if (arg->type() == Item::FIELD_ITEM) {
@@ -412,7 +1002,12 @@ static bool ndb_can_push_aggregation(const JOIN *join) {
               nullptr) {
             return false;
           }
-        } else if (!is_pushable_case_expr(arg, nullptr)) {
+        } else if (arg->type() == Item::FUNC_ITEM) {
+          if (!is_pushable_case_expr(arg, nullptr) &&
+              !is_pushable_arithmetic_expr(arg, nullptr)) {
+            return false;
+          }
+        } else {
           return false;
         }
         break;
@@ -589,11 +1184,22 @@ static NdbAggregator *ndb_build_aggregation_program(
               break;
           }
         } else if (arg->type() == Item::FUNC_ITEM) {
-          const auto *case_item = down_cast<const Item_func_case *>(arg);
-          if (!emit_case_aggregation(case_item, leaf_ndb_tab, agg,
-                                     (*func)->sum_func(), agg_id)) {
-            delete agg;
-            return nullptr;
+          const auto *func_item = down_cast<const Item_func *>(arg);
+          if (func_item->functype() == Item_func::CASE_FUNC) {
+            const auto *case_item =
+                down_cast<const Item_func_case *>(arg);
+            if (!emit_case_aggregation(case_item, leaf_ndb_tab, agg,
+                                       (*func)->sum_func(), agg_id)) {
+              delete agg;
+              return nullptr;
+            }
+          } else {
+            // Arithmetic expression: emit expr then agg op.
+            if (!emit_value_load(arg, leaf_ndb_tab, agg) ||
+                !emit_agg_op(agg, (*func)->sum_func(), agg_id)) {
+              delete agg;
+              return nullptr;
+            }
           }
         }
         break;
@@ -1051,7 +1657,12 @@ static bool ndb_can_push_single_table_aggregation(const JOIN *join,
           if (field_item->field->table != table) {
             return false;
           }
-        } else if (!is_pushable_case_expr(arg, table)) {
+        } else if (arg->type() == Item::FUNC_ITEM) {
+          if (!is_pushable_case_expr(arg, table) &&
+              !is_pushable_arithmetic_expr(arg, table)) {
+            return false;
+          }
+        } else {
           return false;
         }
         break;
@@ -1162,11 +1773,22 @@ static NdbAggregator *ndb_build_stm_aggregation_program(
               break;
           }
         } else if (arg->type() == Item::FUNC_ITEM) {
-          const auto *case_item = down_cast<const Item_func_case *>(arg);
-          if (!emit_case_aggregation(case_item, ndb_table, agg,
-                                     (*func)->sum_func(), agg_id)) {
-            delete agg;
-            return nullptr;
+          const auto *func_item = down_cast<const Item_func *>(arg);
+          if (func_item->functype() == Item_func::CASE_FUNC) {
+            const auto *case_item =
+                down_cast<const Item_func_case *>(arg);
+            if (!emit_case_aggregation(case_item, ndb_table, agg,
+                                       (*func)->sum_func(), agg_id)) {
+              delete agg;
+              return nullptr;
+            }
+          } else {
+            // Arithmetic expression: emit expr then agg op.
+            if (!emit_value_load(arg, ndb_table, agg) ||
+                !emit_agg_op(agg, (*func)->sum_func(), agg_id)) {
+              delete agg;
+              return nullptr;
+            }
           }
         }
         break;

@@ -409,8 +409,8 @@ SET ndb_pushdown_aggregate=ON;
 SELECT grp_int, SUM(val_float), MIN(val_float), MAX(val_float)
 FROM t_types GROUP BY grp_int;
 grp_int	SUM(val_float)	MIN(val_float)	MAX(val_float)
-1	7.5	0	0
-2	16.5	0	0
+1	7.5	1.5	3.5
+2	16.5	4.5	6.5
 ############################################################
 # Test 23: SUM/MIN/MAX on DOUBLE
 ############################################################
@@ -424,8 +424,8 @@ SET ndb_pushdown_aggregate=ON;
 SELECT grp_int, SUM(val_double), MIN(val_double), MAX(val_double)
 FROM t_types GROUP BY grp_int;
 grp_int	SUM(val_double)	MIN(val_double)	MAX(val_double)
-1	7.25	0	0
-2	16.75	0	0
+1	7.25	1.25	3.25
+2	16.75	4.75	6.75
 ############################################################
 # Test 24: GROUP BY DATE
 ############################################################
@@ -672,8 +672,18 @@ grp	low	high	fsum
 2	0	3	50
 3	0	2	70
 ############################################################
-# Test 37: Multi-WHEN CASE falls back to MySQL (not pushed)
+# Test 37: Multi-WHEN CASE (now pushed)
 ############################################################
+SET ndb_pushdown_aggregate=OFF;
+SELECT grp,
+SUM(CASE WHEN val <= 20 THEN 1
+WHEN val <= 50 THEN 2
+ELSE 3 END) AS bucketed
+FROM tc GROUP BY grp;
+grp	bucketed
+1	4
+2	7
+3	6
 SET ndb_pushdown_aggregate=ON;
 SELECT grp,
 SUM(CASE WHEN val <= 20 THEN 1
@@ -699,5 +709,196 @@ SUM(CASE WHEN flag = 1 THEN val ELSE 0 END) AS fsum
 FROM tc;
 low	fsum
 4	160
+############################################################
+# Test 39: Simple CASE (CASE col WHEN val THEN ...)
+############################################################
+SET ndb_pushdown_aggregate=OFF;
+SELECT grp,
+SUM(CASE flag WHEN 1 THEN val WHEN 0 THEN 0 ELSE -1 END) AS sval
+FROM tc GROUP BY grp;
+grp	sval
+1	40
+2	50
+3	70
+SET ndb_pushdown_aggregate=ON;
+SELECT grp,
+SUM(CASE flag WHEN 1 THEN val WHEN 0 THEN 0 ELSE -1 END) AS sval
+FROM tc GROUP BY grp;
+grp	sval
+1	40
+2	50
+3	70
+############################################################
+# Test 40: Arithmetic directly in SUM
+############################################################
+SET ndb_pushdown_aggregate=OFF;
+SELECT grp, SUM(val * 2) AS dbl, SUM(val + flag) AS vf
+FROM tc GROUP BY grp;
+grp	dbl	vf
+1	120	62
+2	300	151
+3	300	151
+SET ndb_pushdown_aggregate=ON;
+SELECT grp, SUM(val * 2) AS dbl, SUM(val + flag) AS vf
+FROM tc GROUP BY grp;
+grp	dbl	vf
+1	120	62
+2	300	151
+3	300	151
+############################################################
+# Test 41: Arithmetic in CASE THEN/ELSE
+############################################################
+SET ndb_pushdown_aggregate=OFF;
+SELECT grp,
+SUM(CASE WHEN flag = 1 THEN val * 2 ELSE val END) AS wt
+FROM tc GROUP BY grp;
+grp	wt
+1	100
+2	200
+3	220
+SET ndb_pushdown_aggregate=ON;
+SELECT grp,
+SUM(CASE WHEN flag = 1 THEN val * 2 ELSE val END) AS wt
+FROM tc GROUP BY grp;
+grp	wt
+1	100
+2	200
+3	220
+############################################################
+# Test 42: 3-WHEN CASE with arithmetic
+############################################################
+SET ndb_pushdown_aggregate=OFF;
+SELECT grp,
+SUM(CASE WHEN val <= 20 THEN val
+WHEN val <= 50 THEN val * 2
+WHEN val <= 80 THEN val * 3
+ELSE 0 END) AS scaled
+FROM tc GROUP BY grp;
+grp	scaled
+1	90
+2	360
+3	450
+SET ndb_pushdown_aggregate=ON;
+SELECT grp,
+SUM(CASE WHEN val <= 20 THEN val
+WHEN val <= 50 THEN val * 2
+WHEN val <= 80 THEN val * 3
+ELSE 0 END) AS scaled
+FROM tc GROUP BY grp;
+grp	scaled
+1	90
+2	360
+3	450
 # Cleanup CASE tables
 DROP TABLE tc;
+############################################################
+# Test 43: String CASE - CHAR column comparison
+############################################################
+CREATE TABLE ts (
+pk INT PRIMARY KEY,
+grp INT,
+status CHAR(10),
+val INT
+) ENGINE=NDB;
+INSERT INTO ts VALUES (1, 1, 'ACTIVE', 100);
+INSERT INTO ts VALUES (2, 1, 'INACTIVE', 50);
+INSERT INTO ts VALUES (3, 1, 'ACTIVE', 200);
+INSERT INTO ts VALUES (4, 2, 'PENDING', 75);
+INSERT INTO ts VALUES (5, 2, 'ACTIVE', 150);
+INSERT INTO ts VALUES (6, 2, 'INACTIVE', 25);
+SET ndb_pushdown_aggregate=OFF;
+SELECT grp,
+SUM(CASE WHEN status = 'ACTIVE' THEN 1 ELSE 0 END) AS active_cnt,
+SUM(CASE WHEN status = 'ACTIVE' THEN val ELSE 0 END) AS active_sum
+FROM ts GROUP BY grp;
+grp	active_cnt	active_sum
+1	2	300
+2	1	150
+SET ndb_pushdown_aggregate=ON;
+SELECT grp,
+SUM(CASE WHEN status = 'ACTIVE' THEN 1 ELSE 0 END) AS active_cnt,
+SUM(CASE WHEN status = 'ACTIVE' THEN val ELSE 0 END) AS active_sum
+FROM ts GROUP BY grp;
+grp	active_cnt	active_sum
+1	2	300
+2	1	150
+############################################################
+# Test 44: Multi-WHEN string CASE
+############################################################
+SET ndb_pushdown_aggregate=OFF;
+SELECT grp,
+SUM(CASE WHEN status = 'ACTIVE' THEN 1
+WHEN status = 'PENDING' THEN 1
+ELSE 0 END) AS non_inactive
+FROM ts GROUP BY grp;
+grp	non_inactive
+1	2
+2	2
+SET ndb_pushdown_aggregate=ON;
+SELECT grp,
+SUM(CASE WHEN status = 'ACTIVE' THEN 1
+WHEN status = 'PENDING' THEN 1
+ELSE 0 END) AS non_inactive
+FROM ts GROUP BY grp;
+grp	non_inactive
+1	2
+2	2
+############################################################
+# Test 45: Simple CASE with CHAR search
+############################################################
+SET ndb_pushdown_aggregate=OFF;
+SELECT grp,
+SUM(CASE status WHEN 'ACTIVE' THEN val
+WHEN 'PENDING' THEN val
+ELSE 0 END) AS asum
+FROM ts GROUP BY grp;
+grp	asum
+1	300
+2	225
+SET ndb_pushdown_aggregate=ON;
+SELECT grp,
+SUM(CASE status WHEN 'ACTIVE' THEN val
+WHEN 'PENDING' THEN val
+ELSE 0 END) AS asum
+FROM ts GROUP BY grp;
+grp	asum
+1	300
+2	225
+############################################################
+# Test 46: DECIMAL arithmetic (TPC-H Q9 pattern)
+############################################################
+CREATE TABLE td (
+pk INT PRIMARY KEY,
+grp INT,
+price DECIMAL(10,2),
+discount DECIMAL(5,2),
+qty INT
+) ENGINE=NDB;
+INSERT INTO td VALUES (1, 1, 100.00, 0.10, 5);
+INSERT INTO td VALUES (2, 1, 200.00, 0.20, 3);
+INSERT INTO td VALUES (3, 2, 150.00, 0.05, 10);
+INSERT INTO td VALUES (4, 2, 50.00,  0.15, 8);
+SET ndb_pushdown_aggregate=OFF;
+SELECT grp, SUM(price * (1 - discount)) AS revenue
+FROM td GROUP BY grp;
+grp	revenue
+1	250.0000
+2	185.0000
+SET ndb_pushdown_aggregate=ON;
+SELECT grp, SUM(price * (1 - discount)) AS revenue
+FROM td GROUP BY grp;
+grp	revenue
+1	250.0000
+2	185.0000
+############################################################
+# Test 47: Fallback - unsupported patterns
+############################################################
+# DIV in arithmetic falls back
+SET ndb_pushdown_aggregate=ON;
+SELECT grp, SUM(val / 2) AS half FROM ts GROUP BY grp;
+grp	half
+1	175.0000
+2	125.0000
+# Cleanup
+DROP TABLE ts;
+DROP TABLE td;
