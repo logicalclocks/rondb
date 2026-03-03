@@ -147,12 +147,13 @@ extern void rsqlp_error(RSQLP_LTYPE* yylloc, yyscan_t yyscanner, const char* s);
     JoinClause* head;
     JoinClause* tail;
   } join_list;
+  struct SelectStatement* subquery_stmt;
 }
 
 %token<bival> T_INT
 %token<fpval> T_FLOAT
 %token T_COUNT T_MAX T_MIN T_SUM T_AVG T_LEFT T_RIGHT
-%token T_EXPLAIN T_SELECT T_FROM T_JOIN T_ON T_GROUP T_BY T_HAVING T_ORDER T_ASC T_DESC T_AS T_WHERE T_LIMIT
+%token T_EXISTS T_EXPLAIN T_SELECT T_FROM T_JOIN T_ON T_GROUP T_BY T_HAVING T_ORDER T_ASC T_DESC T_AS T_WHERE T_LIMIT
 %token T_SEMICOLON
 %token T_OR T_XOR T_AND T_NOT T_EQUALS T_GE T_GT T_LE T_LT T_NOT_EQUALS T_IS T_NULL T_LIKE T_IN T_BITWISE_OR T_BITWISE_AND T_BITSHIFT_LEFT T_BITSHIFT_RIGHT T_PLUS T_MINUS T_MULTIPLY T_SLASH T_DIV T_MODULO T_BITWISE_XOR T_EXCLAMATION T_DOT
 %token T_INTERVAL T_DATE_ADD T_DATE_SUB T_EXTRACT T_MICROSECOND T_SECOND T_MINUTE T_HOUR T_DAY T_WEEK T_MONTH T_QUARTER T_YEAR T_SECOND_MICROSECOND T_MINUTE_MICROSECOND T_MINUTE_SECOND T_HOUR_MICROSECOND T_HOUR_SECOND T_HOUR_MINUTE T_DAY_MICROSECOND T_DAY_SECOND T_DAY_MINUTE T_DAY_HOUR T_YEAR_MONTH
@@ -161,6 +162,7 @@ extern void rsqlp_error(RSQLP_LTYPE* yylloc, yyscan_t yyscanner, const char* s);
 // RonSQLPreparer.cpp needs some values that are inequal to all tokens. They
 // need to be declared here but aren't used in the lexer or parser.
 %token I_MYSQL_TIME
+%token I_IN_SUBQUERY I_SUBQUERY
 
 /*
  * MySQL operator presedence, strongest binding first:
@@ -220,6 +222,7 @@ extern void rsqlp_error(RSQLP_LTYPE* yylloc, yyscan_t yyscanner, const char* s);
 %type<join_clause> join_clause
 %type<join_condition> join_condition join_condition_list
 %type<join_list> join_list
+%type<subquery_stmt> subquery
 
 %start selectstatement
 
@@ -507,6 +510,40 @@ cond_expr:
                                           $$->having_agg.agg_index = context->get_agg()->Sum($3);
                                           $$->having_agg.agg_index2 = context->get_agg()->Count($3);
                                         }
+| T_EXISTS T_LEFT subquery T_RIGHT    {
+                                          initptr($$);
+                                          $$->op = T_EXISTS;
+                                          $$->subquery.stmt = $3;
+                                        }
+| cond_expr T_IN T_LEFT subquery T_RIGHT
+                                        {
+                                          initptr($$);
+                                          $$->op = I_IN_SUBQUERY;
+                                          $$->in_subquery.expr = $1;
+                                          $$->in_subquery.stmt = $4;
+                                        }
+| T_LEFT subquery T_RIGHT             {
+                                          initptr($$);
+                                          $$->op = I_SUBQUERY;
+                                          $$->subquery.stmt = $2;
+                                        }
+
+subquery:
+  T_SELECT outputlist T_FROM table_ref join_list where_opt
+  groupby_opt having_opt orderby_opt limit_opt
+  {
+    $$ = context->get_allocator()->alloc_exc<SelectStatement>(1);
+    $$->do_explain = false;
+    $$->outputs = $2.head;
+    $$->root_table = $4;
+    $$->table = $4->name;
+    $$->joins = $5.head;
+    $$->where_expression = $6;
+    $$->groupby_columns = $7;
+    $$->having_expression = $8;
+    $$->orderby_columns = $9;
+    $$->limit = $10;
+  }
 
 interval_type:
   T_MICROSECOND                         { $$ = T_MICROSECOND; }

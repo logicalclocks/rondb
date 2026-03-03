@@ -1,0 +1,26 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== Create tables for subquery tests ===
+
+
+=== Test 1: Error — EXISTS subquery (not yet supported) ===
+Expected error: subqueries not implemented
+Error handling: RPE
+ronsql_cli caught exception: RonSQL feature not implemented: subqueries
+
+
+=== Test 2: Error — IN subquery (not yet supported) ===
+Expected error: subqueries not implemented
+Error handling: RPE
+ronsql_cli caught exception: RonSQL feature not implemented: subqueries
+
+
+=== Test 3: Error — scalar subquery (not yet supported) ===
+Expected error: subqueries not implemented
+Error handling: RPE
+ronsql_cli caught exception: RonSQL feature not implemented: subqueries
+
+=== Cleanup ===
+DROP TABLE lineitem;
+DROP TABLE orders;

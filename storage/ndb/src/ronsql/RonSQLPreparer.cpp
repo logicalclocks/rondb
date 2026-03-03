@@ -87,6 +87,7 @@ using std::endl;
   throw RonSQLPermanentError("RonSQL feature not implemented: " description)
 
 static const char* interval_type_name(TokenKind interval_type);
+static bool has_subquery(const ConditionalExpression* ce);
 
 DEFINE_FORMATTER(quoted_identifier, LexString, {
   os.put('`');
@@ -626,6 +627,38 @@ RonSQLPreparer::has_width(size_t pos)
   return true;
 }
 
+static bool
+has_subquery(const ConditionalExpression* ce)
+{
+  if (ce == NULL) return false;
+  if (ce->op == T_EXISTS || ce->op == I_IN_SUBQUERY || ce->op == I_SUBQUERY)
+    return true;
+  // Recurse into binary/unary operator children
+  switch (ce->op)
+  {
+    case T_IS:
+      return has_subquery(ce->is.arg);
+    case T_INTERVAL:
+      return has_subquery(ce->interval.arg);
+    case T_EXTRACT:
+      return has_subquery(ce->extract.arg);
+    case T_IDENTIFIER:
+    case T_INT:
+    case T_FLOAT:
+    case T_STRING:
+    case I_MYSQL_TIME:
+    case T_SUM:
+    case T_MIN:
+    case T_MAX:
+    case T_COUNT:
+    case T_AVG:
+      return false;
+    default:
+      // Binary/unary operators: check both sides
+      return has_subquery(ce->args.left) || has_subquery(ce->args.right);
+  }
+}
+
 void
 RonSQLPreparer::load()
 {
@@ -648,6 +681,10 @@ RonSQLPreparer::load()
   // yet.
   Ndb* ndb = m_conf.ndb;
   if (ndb == NULL) return;
+
+  if (has_subquery(m_context.ast_root.where_expression) ||
+      has_subquery(m_context.ast_root.having_expression))
+    feature_not_implemented("subqueries");
 
   bool is_join = (m_context.ast_root.joins != NULL);
 

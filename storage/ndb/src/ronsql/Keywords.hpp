@@ -49,6 +49,7 @@ static const struct { const char* text; const TokenKind value; } keywords_implem
   kwdef(DIV),
   kwdef(ELSE),
   kwdef(END),
+  kwdef(EXISTS),
   kwdef(EXPLAIN),
   kwdef(EXTRACT),
   kwdef(FROM),

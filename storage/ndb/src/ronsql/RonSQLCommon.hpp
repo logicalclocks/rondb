@@ -117,6 +117,8 @@ struct Outputs
   struct Outputs* next;
 };
 
+struct SelectStatement;  // forward declaration for subquery support
+
 struct ConditionalExpression
 {
   TokenKind op;
@@ -156,6 +158,15 @@ struct ConditionalExpression
       Uint32 agg_index;   // register in m_regs_a (SUM, COUNT, MIN, MAX, or AVG sum)
       Uint32 agg_index2;  // only for AVG: the count register
     } having_agg;
+    struct
+    {
+      SelectStatement *stmt;  // op == T_EXISTS or I_SUBQUERY
+    } subquery;
+    struct
+    {
+      struct ConditionalExpression *expr;
+      SelectStatement *stmt;  // op == I_IN_SUBQUERY
+    } in_subquery;
   };
 };
 

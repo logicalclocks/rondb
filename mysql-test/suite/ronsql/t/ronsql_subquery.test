@@ -1,0 +1,78 @@
+--source include/have_ndb.inc
+
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+--echo
+--echo === Create tables for subquery tests ===
+--echo
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE orders (
+  o_id INT NOT NULL,
+  o_custkey INT NOT NULL,
+  o_status VARCHAR(10) NOT NULL,
+  PRIMARY KEY USING HASH (o_id)
+) ENGINE=NDB;
+
+CREATE TABLE lineitem (
+  l_id INT NOT NULL,
+  l_orderkey INT NOT NULL,
+  l_quantity INT NOT NULL,
+  l_price INT NOT NULL,
+  PRIMARY KEY USING HASH (l_id),
+  INDEX idx_orderkey (l_orderkey)
+) ENGINE=NDB;
+
+CREATE INDEX idx_custkey ON orders (o_custkey);
+CREATE INDEX idx_oid ON orders (o_id);
+
+INSERT INTO orders VALUES
+  (1, 100, 'open'),
+  (2, 100, 'closed'),
+  (3, 200, 'open'),
+  (4, 200, 'open'),
+  (5, 300, 'closed');
+
+INSERT INTO lineitem VALUES
+  (1, 1, 10, 100),
+  (2, 1, 20, 200),
+  (3, 2, 5, 50),
+  (4, 2, 15, 150),
+  (5, 3, 30, 300),
+  (6, 3, 25, 250),
+  (7, 4, 8, 80),
+  (8, 4, 12, 120),
+  (9, 5, 40, 400),
+  (10, 5, 35, 350);
+
+--enable_warnings
+--enable_query_log
+
+--echo
+--echo === Test 1: Error — EXISTS subquery (not yet supported) ===
+--echo Expected error: subqueries not implemented
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT o.o_custkey, COUNT(*) FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id WHERE EXISTS (SELECT l2.l_quantity FROM lineitem AS l2 WHERE l2.l_orderkey = o.o_id GROUP BY l2.l_quantity) GROUP BY o.o_custkey;' 2>&1
+
+--echo
+--echo
+--echo === Test 2: Error — IN subquery (not yet supported) ===
+--echo Expected error: subqueries not implemented
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT o.o_custkey, SUM(l.l_quantity) FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id WHERE o.o_custkey IN (SELECT o2.o_custkey FROM orders AS o2 WHERE o2.o_custkey >= 200 GROUP BY o2.o_custkey) GROUP BY o.o_custkey;' 2>&1
+
+--echo
+--echo
+--echo === Test 3: Error — scalar subquery (not yet supported) ===
+--echo Expected error: subqueries not implemented
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT o.o_custkey, SUM(l.l_quantity) FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id WHERE l.l_quantity > (SELECT MIN(l2.l_quantity) FROM lineitem AS l2 GROUP BY l2.l_quantity) GROUP BY o.o_custkey;' 2>&1
+
+--echo
+--echo === Cleanup ===
+
+DROP TABLE lineitem;
+DROP TABLE orders;
