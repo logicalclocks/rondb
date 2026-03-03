@@ -2338,6 +2338,10 @@ bool Item_sum_avg::add() {
 
 double Item_sum_avg::val_real() {
   assert(fixed);
+  if (m_pushed_aggregate) {
+    null_value = m_pushed_null;
+    return m_pushed_value_double;
+  }
   if (m_is_window_function) {
     if (wf_common_init()) return 0.0;
 
@@ -2364,6 +2368,13 @@ my_decimal *Item_sum_avg::val_decimal(my_decimal *val) {
   my_decimal cnt;
   const my_decimal *sum_dec;
   assert(fixed);
+
+  if (m_pushed_aggregate) {
+    null_value = m_pushed_null;
+    if (null_value) return nullptr;
+    double2my_decimal(E_DEC_FATAL_ERROR, m_pushed_value_double, val);
+    return val;
+  }
 
   if (m_is_window_function) {
     if (hybrid_type != DECIMAL_RESULT) {
@@ -3508,6 +3519,31 @@ void Item_sum_count::reset_field() {
 }
 
 void Item_sum_avg::reset_field() {
+  if (m_pushed_aggregate) {
+    uchar *res = result_field->field_ptr();
+    if (m_pushed_null) {
+      result_field->set_null();
+      if (hybrid_type == DECIMAL_RESULT) {
+        memset(res, 0, dec_bin_size + sizeof(longlong));
+      } else {
+        memset(res, 0, sizeof(double) + sizeof(longlong));
+      }
+    } else {
+      result_field->set_notnull();
+      if (hybrid_type == DECIMAL_RESULT) {
+        my_decimal dec;
+        double2my_decimal(E_DEC_FATAL_ERROR, m_pushed_value_double, &dec);
+        my_decimal2binary(E_DEC_FATAL_ERROR, &dec, res, f_precision, f_scale);
+        res += dec_bin_size;
+      } else {
+        float8store(res, m_pushed_value_double);
+        res += sizeof(double);
+      }
+      const longlong tmp = 1;
+      int8store(res, tmp);
+    }
+    return;
+  }
   uchar *res = result_field->field_ptr();
   assert(aggr->Aggrtype() != Aggregator::DISTINCT_AGGREGATOR);
   if (hybrid_type == DECIMAL_RESULT) {
@@ -3611,6 +3647,7 @@ void Item_sum_count::update_field() {
 
 void Item_sum_avg::update_field() {
   DBUG_TRACE;
+  if (m_pushed_aggregate) return;
   longlong field_count;
   uchar *res = result_field->field_ptr();
 

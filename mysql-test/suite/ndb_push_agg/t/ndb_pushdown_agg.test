@@ -749,6 +749,194 @@ SET ndb_pushdown_aggregate=ON;
 --sorted_result
 SELECT grp, SUM(val / 2) AS half FROM ts GROUP BY grp;
 
+--echo ############################################################
+--echo # Section G: AVG aggregate pushdown
+--echo ############################################################
+
+CREATE TABLE ta (
+  pk INT PRIMARY KEY,
+  grp INT,
+  val INT,
+  val_null INT,
+  val_float FLOAT,
+  val_double DOUBLE
+) ENGINE=NDB;
+
+INSERT INTO ta VALUES
+  (1,  1, 10,  100,  1.5,  1.25),
+  (2,  1, 20,  NULL, 2.5,  2.75),
+  (3,  1, 30,  300,  3.5,  3.25),
+  (4,  1, 40,  NULL, 4.5,  4.75),
+  (5,  2, 50,  500,  5.5,  5.25),
+  (6,  2, 60,  600,  6.5,  6.75),
+  (7,  2, 70,  NULL, 7.5,  7.25),
+  (8,  3, 80,  800,  8.5,  8.25),
+  (9,  3, 90,  900,  9.5,  9.25),
+  (10, 3, 100, 1000, 10.5, 10.25),
+  (11, 3, 110, NULL, 11.5, 11.25),
+  (12, 3, 120, 1200, 12.5, 12.25);
+
+--echo ############################################################
+--echo # Test 48: AVG with GROUP BY
+--echo ############################################################
+SET ndb_pushdown_aggregate=OFF;
+--sorted_result
+SELECT grp, AVG(val) FROM ta GROUP BY grp;
+
+SET ndb_pushdown_aggregate=ON;
+--sorted_result
+SELECT grp, AVG(val) FROM ta GROUP BY grp;
+
+--echo ############################################################
+--echo # Test 49: AVG with NULL values
+--echo ############################################################
+SET ndb_pushdown_aggregate=OFF;
+--sorted_result
+SELECT grp, AVG(val_null) FROM ta GROUP BY grp;
+
+SET ndb_pushdown_aggregate=ON;
+--sorted_result
+SELECT grp, AVG(val_null) FROM ta GROUP BY grp;
+
+--echo ############################################################
+--echo # Test 50: Implicit AVG (no GROUP BY)
+--echo ############################################################
+SET ndb_pushdown_aggregate=OFF;
+SELECT AVG(val) FROM ta;
+
+SET ndb_pushdown_aggregate=ON;
+SELECT AVG(val) FROM ta;
+
+--echo ############################################################
+--echo # Test 51: AVG mixed with SUM, COUNT, MIN, MAX
+--echo ############################################################
+SET ndb_pushdown_aggregate=OFF;
+--sorted_result
+SELECT grp, AVG(val), SUM(val), COUNT(*), MIN(val), MAX(val)
+FROM ta GROUP BY grp;
+
+SET ndb_pushdown_aggregate=ON;
+--sorted_result
+SELECT grp, AVG(val), SUM(val), COUNT(*), MIN(val), MAX(val)
+FROM ta GROUP BY grp;
+
+--echo ############################################################
+--echo # Test 52: Multiple AVGs on different columns
+--echo ############################################################
+SET ndb_pushdown_aggregate=OFF;
+--sorted_result
+SELECT grp, AVG(val), AVG(val_null)
+FROM ta GROUP BY grp;
+
+SET ndb_pushdown_aggregate=ON;
+--sorted_result
+SELECT grp, AVG(val), AVG(val_null)
+FROM ta GROUP BY grp;
+
+--echo ############################################################
+--echo # Test 53: AVG on FLOAT column
+--echo ############################################################
+SET ndb_pushdown_aggregate=OFF;
+--sorted_result
+SELECT grp, AVG(val_float) FROM ta GROUP BY grp;
+
+SET ndb_pushdown_aggregate=ON;
+--sorted_result
+SELECT grp, AVG(val_float) FROM ta GROUP BY grp;
+
+--echo ############################################################
+--echo # Test 54: AVG on DOUBLE column
+--echo ############################################################
+SET ndb_pushdown_aggregate=OFF;
+--sorted_result
+SELECT grp, AVG(val_double) FROM ta GROUP BY grp;
+
+SET ndb_pushdown_aggregate=ON;
+--sorted_result
+SELECT grp, AVG(val_double) FROM ta GROUP BY grp;
+
+--echo ############################################################
+--echo # Test 55: AVG with HAVING
+--echo ############################################################
+SET ndb_pushdown_aggregate=OFF;
+--sorted_result
+SELECT grp, AVG(val) AS avg_val FROM ta GROUP BY grp HAVING avg_val > 50;
+
+SET ndb_pushdown_aggregate=ON;
+--sorted_result
+SELECT grp, AVG(val) AS avg_val FROM ta GROUP BY grp HAVING avg_val > 50;
+
+--echo ############################################################
+--echo # Test 56: AVG with ORDER BY and LIMIT
+--echo ############################################################
+SET ndb_pushdown_aggregate=OFF;
+SELECT grp, AVG(val) AS avg_val FROM ta GROUP BY grp ORDER BY avg_val LIMIT 2;
+
+SET ndb_pushdown_aggregate=ON;
+SELECT grp, AVG(val) AS avg_val FROM ta GROUP BY grp ORDER BY avg_val LIMIT 2;
+
+--echo ############################################################
+--echo # Test 57: AVG(DISTINCT) should not be pushed (fallback)
+--echo ############################################################
+SET ndb_pushdown_aggregate=ON;
+--sorted_result
+SELECT grp, AVG(DISTINCT val) FROM ta GROUP BY grp;
+
+--echo ############################################################
+--echo # Test 58: EXPLAIN shows pushed aggregation for AVG
+--echo ############################################################
+SET ndb_pushdown_aggregate=ON;
+--replace_column 1 # 2 # 3 # 4 # 5 # 6 # 7 # 8 # 9 # 10 #
+EXPLAIN SELECT grp, AVG(val) FROM ta GROUP BY grp;
+
+--echo ############################################################
+--echo # Test 59: AVG of all NULLs in a group
+--echo ############################################################
+CREATE TABLE ta_nulls (
+  pk INT PRIMARY KEY,
+  grp INT,
+  val INT
+) ENGINE=NDB;
+
+INSERT INTO ta_nulls VALUES (1, 1, NULL), (2, 1, NULL), (3, 2, 10);
+
+SET ndb_pushdown_aggregate=OFF;
+--sorted_result
+SELECT grp, AVG(val) FROM ta_nulls GROUP BY grp;
+
+SET ndb_pushdown_aggregate=ON;
+--sorted_result
+SELECT grp, AVG(val) FROM ta_nulls GROUP BY grp;
+
+DROP TABLE ta_nulls;
+
+--echo ############################################################
+--echo # Test 60: AVG with CASE expression
+--echo ############################################################
+SET ndb_pushdown_aggregate=OFF;
+--sorted_result
+SELECT grp,
+       AVG(CASE WHEN status = 'ACTIVE' THEN val ELSE 0 END) AS avg_active
+FROM ts GROUP BY grp;
+
+SET ndb_pushdown_aggregate=ON;
+--sorted_result
+SELECT grp,
+       AVG(CASE WHEN status = 'ACTIVE' THEN val ELSE 0 END) AS avg_active
+FROM ts GROUP BY grp;
+
+--echo ############################################################
+--echo # Test 61: AVG with arithmetic expression
+--echo ############################################################
+SET ndb_pushdown_aggregate=OFF;
+--sorted_result
+SELECT grp, AVG(val * 2) AS avg_double FROM ta GROUP BY grp;
+
+SET ndb_pushdown_aggregate=ON;
+--sorted_result
+SELECT grp, AVG(val * 2) AS avg_double FROM ta GROUP BY grp;
+
 --echo # Cleanup
+DROP TABLE ta;
 DROP TABLE ts;
 DROP TABLE td;

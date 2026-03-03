@@ -989,6 +989,7 @@ static bool ndb_can_push_aggregation(const JOIN *join) {
           }
         }
         break;
+      case Item_sum::AVG_FUNC:
       case Item_sum::SUM_FUNC:
       case Item_sum::MIN_FUNC:
       case Item_sum::MAX_FUNC: {
@@ -1013,7 +1014,7 @@ static bool ndb_can_push_aggregation(const JOIN *join) {
         break;
       }
       default:
-        // Unsupported: COUNT_DISTINCT, SUM_DISTINCT, AVG, GROUP_CONCAT, etc.
+        // Unsupported: COUNT_DISTINCT, SUM_DISTINCT, AVG_DISTINCT, etc.
         return false;
     }
   }
@@ -1091,7 +1092,8 @@ static NdbAggregator *ndb_build_aggregation_program(
     }
   }
 
-  // Map aggregate functions.
+  // Map aggregate functions.  AVG uses two agg slots (SUM + COUNT),
+  // so agg_id advances by 2 for AVG and by 1 for other functions.
   Uint32 agg_id = 0;
   for (Item_sum **func = join->sum_funcs; *func != nullptr; func++) {
     switch ((*func)->sum_func()) {
@@ -1134,6 +1136,49 @@ static NdbAggregator *ndb_build_aggregation_program(
             return nullptr;
           }
         }
+        agg_id++;
+        break;
+      }
+      case Item_sum::AVG_FUNC: {
+        // AVG(x) decomposes into SUM(x) at agg_id and COUNT(x) at agg_id+1.
+        Item *arg = (*func)->arguments()[0];
+        if (arg->type() == Item::FIELD_ITEM) {
+          const auto *field_item = down_cast<const Item_field *>(arg);
+          const uint agg_tab_idx =
+              find_table_index(tables, table_count, field_item->field->table);
+          if (agg_tab_idx != leaf_tab_no) {
+            delete agg;
+            return nullptr;
+          }
+          const int col_id = field_item->field->field_index();
+          if (!agg->LoadColumn(col_id, kReg1) ||
+              !agg->Sum(agg_id, kReg1) ||
+              !agg->Count(agg_id + 1, kReg1)) {
+            delete agg;
+            return nullptr;
+          }
+        } else if (arg->type() == Item::FUNC_ITEM) {
+          const auto *func_item = down_cast<const Item_func *>(arg);
+          if (func_item->functype() == Item_func::CASE_FUNC) {
+            const auto *case_item =
+                down_cast<const Item_func_case *>(arg);
+            if (!emit_case_aggregation(case_item, leaf_ndb_tab, agg,
+                                       Item_sum::SUM_FUNC, agg_id) ||
+                !emit_case_aggregation(case_item, leaf_ndb_tab, agg,
+                                       Item_sum::COUNT_FUNC, agg_id + 1)) {
+              delete agg;
+              return nullptr;
+            }
+          } else {
+            if (!emit_value_load(arg, leaf_ndb_tab, agg) ||
+                !agg->Sum(agg_id, kReg1) ||
+                !agg->Count(agg_id + 1, kReg1)) {
+              delete agg;
+              return nullptr;
+            }
+          }
+        }
+        agg_id += 2;
         break;
       }
       case Item_sum::SUM_FUNC:
@@ -1202,13 +1247,13 @@ static NdbAggregator *ndb_build_aggregation_program(
             }
           }
         }
+        agg_id++;
         break;
       }
       default:
         delete agg;
         return nullptr;
     }
-    agg_id++;
   }
 
   if (!agg->Finalize()) {
@@ -1568,24 +1613,52 @@ static int ndb_fetch_next_aggregate_row(NdbAggregator *agg,
   }
 
   // Set pushed values on Item_sum aggregate functions.
+  // AVG uses two agg slots (SUM + COUNT), so fetch two results for it.
   for (Item_sum **func = join->sum_funcs; *func != nullptr; func++) {
-    NdbAggregator::Result res = rec.FetchAggregationResult();
-    if (res.is_null()) {
-      (*func)->set_pushed_null();
+    if ((*func)->sum_func() == Item_sum::AVG_FUNC) {
+      // AVG: fetch SUM result, then COUNT result, compute SUM/COUNT.
+      NdbAggregator::Result sum_res = rec.FetchAggregationResult();
+      NdbAggregator::Result cnt_res = rec.FetchAggregationResult();
+      const uint64_t count = cnt_res.is_null() ? 0 : cnt_res.data_uint64();
+      if (count == 0 || sum_res.is_null()) {
+        (*func)->set_pushed_null();
+      } else {
+        double sum_val;
+        switch (sum_res.type()) {
+          case NdbDictionary::Column::Bigint:
+            sum_val = static_cast<double>(sum_res.data_int64());
+            break;
+          case NdbDictionary::Column::Bigunsigned:
+            sum_val = static_cast<double>(sum_res.data_uint64());
+            break;
+          case NdbDictionary::Column::Double:
+            sum_val = sum_res.data_double();
+            break;
+          default:
+            return HA_ERR_INTERNAL_ERROR;
+        }
+        const double avg_val = sum_val / static_cast<double>(count);
+        (*func)->set_pushed_value_double(avg_val);
+      }
     } else {
-      switch (res.type()) {
-        case NdbDictionary::Column::Bigint:
-          (*func)->set_pushed_value_int(res.data_int64());
-          break;
-        case NdbDictionary::Column::Bigunsigned:
-          (*func)->set_pushed_value_int(
-              static_cast<int64_t>(res.data_uint64()));
-          break;
-        case NdbDictionary::Column::Double:
-          (*func)->set_pushed_value_double(res.data_double());
-          break;
-        default:
-          return HA_ERR_INTERNAL_ERROR;
+      NdbAggregator::Result res = rec.FetchAggregationResult();
+      if (res.is_null()) {
+        (*func)->set_pushed_null();
+      } else {
+        switch (res.type()) {
+          case NdbDictionary::Column::Bigint:
+            (*func)->set_pushed_value_int(res.data_int64());
+            break;
+          case NdbDictionary::Column::Bigunsigned:
+            (*func)->set_pushed_value_int(
+                static_cast<int64_t>(res.data_uint64()));
+            break;
+          case NdbDictionary::Column::Double:
+            (*func)->set_pushed_value_double(res.data_double());
+            break;
+          default:
+            return HA_ERR_INTERNAL_ERROR;
+        }
       }
     }
   }
@@ -1647,6 +1720,7 @@ static bool ndb_can_push_single_table_aggregation(const JOIN *join,
           }
         }
         break;
+      case Item_sum::AVG_FUNC:
       case Item_sum::SUM_FUNC:
       case Item_sum::MIN_FUNC:
       case Item_sum::MAX_FUNC: {
@@ -1737,6 +1811,43 @@ static NdbAggregator *ndb_build_stm_aggregation_program(
             return nullptr;
           }
         }
+        agg_id++;
+        break;
+      }
+      case Item_sum::AVG_FUNC: {
+        // AVG(x) decomposes into SUM(x) at agg_id and COUNT(x) at agg_id+1.
+        Item *arg = (*func)->arguments()[0];
+        if (arg->type() == Item::FIELD_ITEM) {
+          const auto *field_item = down_cast<const Item_field *>(arg);
+          const int col_id = field_item->field->field_index();
+          if (!agg->LoadColumn(col_id, kReg1) ||
+              !agg->Sum(agg_id, kReg1) ||
+              !agg->Count(agg_id + 1, kReg1)) {
+            delete agg;
+            return nullptr;
+          }
+        } else if (arg->type() == Item::FUNC_ITEM) {
+          const auto *func_item = down_cast<const Item_func *>(arg);
+          if (func_item->functype() == Item_func::CASE_FUNC) {
+            const auto *case_item =
+                down_cast<const Item_func_case *>(arg);
+            if (!emit_case_aggregation(case_item, ndb_table, agg,
+                                       Item_sum::SUM_FUNC, agg_id) ||
+                !emit_case_aggregation(case_item, ndb_table, agg,
+                                       Item_sum::COUNT_FUNC, agg_id + 1)) {
+              delete agg;
+              return nullptr;
+            }
+          } else {
+            if (!emit_value_load(arg, ndb_table, agg) ||
+                !agg->Sum(agg_id, kReg1) ||
+                !agg->Count(agg_id + 1, kReg1)) {
+              delete agg;
+              return nullptr;
+            }
+          }
+        }
+        agg_id += 2;
         break;
       }
       case Item_sum::SUM_FUNC:
@@ -1791,13 +1902,13 @@ static NdbAggregator *ndb_build_stm_aggregation_program(
             }
           }
         }
+        agg_id++;
         break;
       }
       default:
         delete agg;
         return nullptr;
     }
-    agg_id++;
   }
 
   if (!agg->Finalize()) {
@@ -1845,7 +1956,6 @@ bool ndb_push_single_table_aggregation(THD *, const JOIN *join,
   if (agg == nullptr) {
     return false;
   }
-
   auto *handler = down_cast<ha_ndbcluster *>(table->file);
   handler->m_stm_aggregator = agg;
 
