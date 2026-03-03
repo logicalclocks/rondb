@@ -639,6 +639,91 @@ and emit the appropriate interpreter instructions.
 
 ---
 
+## Step 45: Non-Aggregate (Projection-Only) Query Execution
+
+### Problem
+RonSQL currently rejects any query without aggregate functions with
+`"Not an aggregate query."` (RonSQLPreparer.cpp line ~404). Subquery
+inner queries often return raw column values without aggregation, e.g.,
+`WHERE col IN (SELECT x FROM t2 WHERE y > 5)` — the inner SELECT
+returns plain `x` values, not `SUM(x)` or `COUNT(*)`.
+
+Beyond subqueries, projection-only execution is also useful for
+standalone queries (`SELECT col1, col2 FROM t WHERE ...`) and derived
+tables (Phase 19).
+
+### Approach
+Add an execution path that bypasses the AggregationAPICompiler and
+NdbAggregator, returning raw scan/lookup rows directly. The key
+changes:
+
+1. **Remove the aggregate-only gate**: in `load()`, allow queries
+   with no aggregate outputs to proceed instead of throwing an error.
+
+2. **Non-aggregate scan execution**: execute a plain `NdbScanOperation`
+   (or `NdbIndexScanOperation`) without calling `setAggregationCode()`
+   or `DoAggregation()`. Iterate results with `nextResult()` and
+   output each row directly.
+
+3. **Non-aggregate join execution**: execute via `NdbQueryBuilder` /
+   `NdbQuery` without setting aggregation options on the leaf
+   operation. Iterate `NdbQuery::nextResult()` and read column values
+   from the leaf (or all) operations via `getValue()`.
+
+4. **Result output**: reuse the existing output formatting (TEXT/JSON)
+   but emit one row per scan result instead of one row per aggregate
+   group.
+
+### Sub-steps
+
+- **45a.** Remove the `"Not an aggregate query"` rejection in
+  `load()`. Instead, set a flag (`m_is_aggregate = false`) and skip
+  `AggregationAPICompiler` initialization for non-aggregate queries.
+
+- **45b.** Add `execute_projection()` for single-table non-aggregate
+  scans: open scan, iterate `nextResult()`, output each row. Handle
+  WHERE filter pushdown (existing `setInterpretedCode` path works
+  unchanged).
+
+- **45c.** Add non-aggregate path in `execute_join()`: build the
+  NdbQuery tree without aggregation options. For each `nextResult()`,
+  read column values from the appropriate query operations and output.
+
+- **45d.** Support ORDER BY and LIMIT for non-aggregate queries
+  (client-side sort + row count limit, reusing existing logic).
+
+- **45e.** MTR tests:
+  - `SELECT col1, col2 FROM t WHERE col1 > 5` — single-table projection
+  - `SELECT o.o_id, l.l_quantity FROM orders o JOIN lineitem l
+    ON l.l_orderkey = o.o_id WHERE o.o_custkey = 100` — join projection
+  - `SELECT x FROM t ORDER BY x LIMIT 10` — with ORDER BY + LIMIT
+  - Verify aggregate queries still work unchanged
+
+### Files to modify
+- `storage/ndb/src/ronsql/RonSQLPreparer.cpp`
+- `storage/ndb/src/ronsql/RonSQLPreparer.hpp` (if new methods/flags needed)
+- `mysql-test/suite/ronsql/t/ronsql_subquery.test` (or new test file)
+
+### Design considerations
+
+For subquery inner queries specifically, Step 39 could work around the
+lack of projection-only execution by wrapping the inner query as
+`SELECT col FROM t GROUP BY col` (effectively a DISTINCT). This
+produces the same value set via the existing aggregate path. However,
+this workaround has overhead (hash table, group tracking) and doesn't
+generalize. Step 45 provides the clean solution.
+
+The non-aggregate path also enables standalone projection queries as a
+first-class RonSQL feature, which is valuable independently of
+subqueries.
+
+GROUP BY without aggregation (`SELECT col FROM t GROUP BY col`) is a
+distinct feature (DISTINCT semantics) that can continue to use the
+aggregate path. Step 45 is specifically for queries with NO GROUP BY
+and NO aggregate functions.
+
+---
+
 ## Implementation Order
 
 ### Foundation (can start immediately)
@@ -656,10 +741,16 @@ and emit the appropriate interpreter instructions.
 8. **Step 42** — Correlated NOT EXISTS → anti-join
 9. **Step 43** — Correlated scalar subquery with aggregation (Q2)
 
+### Non-aggregate execution (needed for subquery inner queries)
+10. **Step 45** — Non-aggregate (projection-only) query execution
+
 Steps 36-37 and 44 are independent and can proceed in parallel.
 Steps 38-39 depend on 36-37.
 Steps 41-42 depend on 36 and 40.
 Step 43 depends on 36, 37, and 40.
+Step 45 is needed by Step 39 (IN-subquery inner queries that return raw
+column values). Can be deferred until Step 39 is attempted, or the
+IN-subquery inner query can use a GROUP BY workaround initially.
 
 ## Open Questions
 
@@ -669,13 +760,9 @@ Step 43 depends on 36, 37, and 40.
    Q4-style queries (aggregate on outer, semi-join on inner) can be a
    single NdbQuery. See Step 40 design considerations.
 
-2. **Projection-only inner queries**: IN-subqueries return raw column
-   values, not aggregates. RonSQL currently requires aggregation on
-   every query. Relaxing this for subqueries (Step 39) has implications
-   for the broader "projection-only queries" work (Step 22, deferred).
-   Decide whether to solve this narrowly (wrap IN-subquery as
-   `GROUP BY col` to get distinct values) or broadly (enable non-aggregate
-   execution).
+2. **Projection-only inner queries**: Resolved — Step 45 adds
+   non-aggregate query execution. Step 39 can initially use a
+   `GROUP BY col` workaround, then switch to Step 45 when available.
 
 3. **Materialization storage**: Step 43 materializes the inner query
    result into a hash map. For large result sets, this could use
