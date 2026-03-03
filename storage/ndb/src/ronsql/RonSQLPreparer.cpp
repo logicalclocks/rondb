@@ -32,6 +32,10 @@
 #include "RonSQLLexer.l.hpp"
 #include "RonSQLPreparer.hpp"
 #include <iostream>
+#include <sstream>
+#include <cstdlib>
+#include <cerrno>
+#include <climits>
 #include "define_formatter.hpp"
 #include "my_time.h"
 #include "mysql_time.h"
@@ -87,7 +91,6 @@ using std::endl;
   throw RonSQLPermanentError("RonSQL feature not implemented: " description)
 
 static const char* interval_type_name(TokenKind interval_type);
-static bool has_subquery(const ConditionalExpression* ce);
 
 DEFINE_FORMATTER(quoted_identifier, LexString, {
   os.put('`');
@@ -126,14 +129,17 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
   m_context(*this),
   m_columns(conf.amalloc),
   m_column_qualifiers(conf.amalloc),
+  m_col_is_inner(conf.amalloc),
   m_indexes(conf.amalloc),
   m_toplevel_conditions(conf.amalloc),
-  m_scan_config_candidates(conf.amalloc)
+  m_scan_config_candidates(conf.amalloc),
+  m_subquery_infos(conf.amalloc)
 {
   ndbrequire(m_status == Status::BEGIN);
   try {
     configure();
     parse();
+    analyze_subqueries();
     load();
     if (m_context.ast_root.joins == NULL)
       plan_index_and_filter();
@@ -238,6 +244,10 @@ classify_ce_table(struct ConditionalExpression* ce, Uint32* col_table_idx)
     return classify_ce_table(ce->interval.arg, col_table_idx);
   case T_EXTRACT:
     return classify_ce_table(ce->extract.arg, col_table_idx);
+  case T_EXISTS:
+  case I_IN_SUBQUERY:
+  case I_SUBQUERY:
+    return -1;  // Subqueries are treated as constants
   default:
     // Constants, strings, etc. — no column reference
     return -1;
@@ -627,38 +637,6 @@ RonSQLPreparer::has_width(size_t pos)
   return true;
 }
 
-static bool
-has_subquery(const ConditionalExpression* ce)
-{
-  if (ce == NULL) return false;
-  if (ce->op == T_EXISTS || ce->op == I_IN_SUBQUERY || ce->op == I_SUBQUERY)
-    return true;
-  // Recurse into binary/unary operator children
-  switch (ce->op)
-  {
-    case T_IS:
-      return has_subquery(ce->is.arg);
-    case T_INTERVAL:
-      return has_subquery(ce->interval.arg);
-    case T_EXTRACT:
-      return has_subquery(ce->extract.arg);
-    case T_IDENTIFIER:
-    case T_INT:
-    case T_FLOAT:
-    case T_STRING:
-    case I_MYSQL_TIME:
-    case T_SUM:
-    case T_MIN:
-    case T_MAX:
-    case T_COUNT:
-    case T_AVG:
-      return false;
-    default:
-      // Binary/unary operators: check both sides
-      return has_subquery(ce->args.left) || has_subquery(ce->args.right);
-  }
-}
-
 void
 RonSQLPreparer::load()
 {
@@ -681,10 +659,6 @@ RonSQLPreparer::load()
   // yet.
   Ndb* ndb = m_conf.ndb;
   if (ndb == NULL) return;
-
-  if (has_subquery(m_context.ast_root.where_expression) ||
-      has_subquery(m_context.ast_root.having_expression))
-    feature_not_implemented("subqueries");
 
   bool is_join = (m_context.ast_root.joins != NULL);
 
@@ -769,6 +743,11 @@ RonSQLPreparer::load_single_table()
   const NdbDictionary::Column** col_map =
       m_amalloc->alloc_exc<const NdbDictionary::Column*>(m_columns.size());
   for (Uint32 col_idx = 0; col_idx < m_columns.size(); col_idx++) {
+    if (m_col_is_inner.size() > col_idx && m_col_is_inner[col_idx]) {
+      col_id_map[col_idx] = -1;
+      col_map[col_idx] = NULL;
+      continue;
+    }
     const char* col_name = DBG(m_columns[DBG(col_idx)].c_str());
     const NdbDictionary::Column* col = m_table->getColumn(col_name);
     if (col == NULL) {
@@ -811,6 +790,12 @@ RonSQLPreparer::load_join()
 
   for (Uint32 col_idx = 0; col_idx < num_cols; col_idx++)
   {
+    if (m_col_is_inner.size() > col_idx && m_col_is_inner[col_idx]) {
+      col_id_map[col_idx] = -1;
+      col_map[col_idx] = NULL;
+      col_table_idx[col_idx] = 0;
+      continue;
+    }
     const char* col_name = m_columns[col_idx].c_str();
     const char* qualifier = m_column_qualifiers[col_idx].c_str();
 
@@ -1156,6 +1141,61 @@ RonSQLPreparer::generate_scan_config_candidates()
 }
 
 void
+RonSQLPreparer::analyze_subqueries()
+{
+  analyze_subqueries_ce(m_context.ast_root.where_expression);
+  analyze_subqueries_ce(m_context.ast_root.having_expression);
+}
+
+void
+RonSQLPreparer::analyze_subqueries_ce(ConditionalExpression* ce)
+{
+  if (ce == NULL) return;
+  switch (ce->op)
+  {
+  case I_SUBQUERY:
+  {
+    SubqueryInfo info;
+    info.ce_node = ce;
+    info.inner_stmt = ce->subquery.stmt;
+    m_subquery_infos.push(info);
+    m_has_subqueries = true;
+    return;
+  }
+  case T_EXISTS:
+    feature_not_implemented("EXISTS subqueries");
+  case I_IN_SUBQUERY:
+    feature_not_implemented("IN-subqueries");
+  case T_IS:
+    analyze_subqueries_ce(ce->is.arg);
+    return;
+  case T_INTERVAL:
+    analyze_subqueries_ce(ce->interval.arg);
+    return;
+  case T_EXTRACT:
+    analyze_subqueries_ce(ce->extract.arg);
+    return;
+  case T_IDENTIFIER:
+  case T_INT:
+  case T_FLOAT:
+  case T_STRING:
+  case I_MYSQL_TIME:
+  case T_SUM:
+  case T_MIN:
+  case T_MAX:
+  case T_COUNT:
+  case T_AVG:
+  case T_NULL:
+    return;
+  default:
+    // Binary/unary operators: recurse into both sides
+    analyze_subqueries_ce(ce->args.left);
+    analyze_subqueries_ce(ce->args.right);
+    return;
+  }
+}
+
+void
 RonSQLPreparer::compile()
 {
   // Compile aggregation program if applicable
@@ -1213,6 +1253,196 @@ RonSQLPreparer::determine_explain()
 }
 
 void
+RonSQLPreparer::execute_subqueries()
+{
+  for (Uint32 i = 0; i < m_subquery_infos.size(); i++)
+  {
+    SubqueryInfo& info = m_subquery_infos[i];
+    SelectStatement* inner = info.inner_stmt;
+    ndbrequire(inner->sql_begin != NULL && inner->sql_end != NULL);
+    ndbrequire(inner->sql_end > inner->sql_begin);
+
+    // Extract inner SQL from the original buffer
+    size_t inner_len = inner->sql_end - inner->sql_begin;
+
+    // Build a standalone SQL buffer with semicolon and two NUL terminators
+    // (flex requirement)
+    size_t buf_len = inner_len + 1 /* ; */ + 2 /* NUL NUL */;
+    char* buf = new char[buf_len];
+    memcpy(buf, inner->sql_begin, inner_len);
+    buf[inner_len] = ';';
+    buf[inner_len + 1] = '\0';
+    buf[inner_len + 2] = '\0';
+
+    std::ostringstream oss;
+    std::ostringstream ess;
+
+    try
+    {
+      // Create arena allocator for inner preparer
+      ArenaMalloc inner_amalloc(RonSQLExecParams::ARENA_MALLOC_PAGE_SIZE);
+
+      // Set up inner execution parameters
+      RonSQLExecParams inner_params;
+      inner_params.sql_buffer = buf;
+      inner_params.sql_len = buf_len;
+      inner_params.amalloc = &inner_amalloc;
+      inner_params.ndb = m_conf.ndb;
+      inner_params.output_format = RonSQLExecParams::OutputFormat::TEXT_NOHEADER;
+      inner_params.out_stream = &oss;
+      inner_params.err_stream = &ess;
+      inner_params.explain_mode = RonSQLExecParams::ExplainMode::FORBID;
+
+      // Create and execute inner preparer
+      {
+        RonSQLPreparer inner_preparer(inner_params);
+        inner_preparer.execute();
+      }
+
+      // Parse the TEXT_NOHEADER output
+      std::string result_str = oss.str();
+      // Trim trailing newline
+      while (!result_str.empty() &&
+             (result_str.back() == '\n' || result_str.back() == '\r'))
+        result_str.pop_back();
+
+      if (result_str == "NULL" || result_str.empty())
+      {
+        info.result.is_null = true;
+      }
+      else
+      {
+        // Try integer first
+        char* endptr = NULL;
+        errno = 0;
+        long long ll = strtoll(result_str.c_str(), &endptr, 10);
+        if (endptr != NULL && *endptr == '\0' && errno == 0)
+        {
+          info.result.is_null = false;
+          info.result.is_float = false;
+          info.result.int_val = (Int64)ll;
+        }
+        else
+        {
+          // Try float
+          errno = 0;
+          double dbl = strtod(result_str.c_str(), &endptr);
+          if (endptr != NULL && *endptr == '\0' && errno == 0)
+          {
+            info.result.is_null = false;
+            info.result.is_float = true;
+            info.result.float_val = dbl;
+          }
+          else
+          {
+            throw RonSQLPermanentError(
+                "Subquery returned a non-numeric result.");
+          }
+        }
+      }
+    }
+    catch (const RonSQLPermanentError&)
+    {
+      delete[] buf;
+      throw;
+    }
+    catch (const RonSQLRetryableError&)
+    {
+      delete[] buf;
+      throw;
+    }
+    catch (const std::exception& e)
+    {
+      delete[] buf;
+      std::string msg = "Subquery execution failed: ";
+      msg += e.what();
+      throw RonSQLPermanentError(msg);
+    }
+    catch (...)
+    {
+      delete[] buf;
+      throw;
+    }
+    delete[] buf;
+  }
+}
+
+void
+RonSQLPreparer::substitute_subquery_results()
+{
+  substitute_subquery_results_ce(&m_context.ast_root.where_expression);
+  substitute_subquery_results_ce(&m_context.ast_root.having_expression);
+}
+
+void
+RonSQLPreparer::substitute_subquery_results_ce(ConditionalExpression** ce_ptr)
+{
+  ConditionalExpression* ce = *ce_ptr;
+  if (ce == NULL) return;
+
+  if (ce->op == I_SUBQUERY)
+  {
+    // Find matching SubqueryInfo
+    for (Uint32 i = 0; i < m_subquery_infos.size(); i++)
+    {
+      if (m_subquery_infos[i].ce_node == ce)
+      {
+        SubqueryResult& result = m_subquery_infos[i].result;
+        if (result.is_null)
+        {
+          ce->op = T_NULL;
+        }
+        else if (result.is_float)
+        {
+          ce->op = T_FLOAT;
+          ce->constant_float.dbl = result.float_val;
+          ce->constant_float.ls = LexString{NULL, 0};
+        }
+        else
+        {
+          ce->op = T_INT;
+          ce->constant_integer = result.int_val;
+        }
+        return;
+      }
+    }
+    // Should not happen — every I_SUBQUERY node should have a SubqueryInfo
+    ndbrequire(false);
+    return;
+  }
+
+  switch (ce->op)
+  {
+  case T_IS:
+    substitute_subquery_results_ce(&ce->is.arg);
+    return;
+  case T_INTERVAL:
+    substitute_subquery_results_ce(&ce->interval.arg);
+    return;
+  case T_EXTRACT:
+    substitute_subquery_results_ce(&ce->extract.arg);
+    return;
+  case T_IDENTIFIER:
+  case T_INT:
+  case T_FLOAT:
+  case T_STRING:
+  case I_MYSQL_TIME:
+  case T_SUM:
+  case T_MIN:
+  case T_MAX:
+  case T_COUNT:
+  case T_AVG:
+  case T_NULL:
+    return;
+  default:
+    // Binary/unary operators: recurse into both sides
+    substitute_subquery_results_ce(&ce->args.left);
+    substitute_subquery_results_ce(&ce->args.right);
+    return;
+  }
+}
+
+void
 RonSQLPreparer::execute()
 {
   DEB_TRACE();
@@ -1248,6 +1478,11 @@ RonSQLPreparer::execute()
     }
     DEB_TRACE();
     require_prm(ndb != NULL, "Cannot query without ndb object.");
+
+    if (m_has_subqueries) {
+      execute_subqueries();
+      substitute_subquery_results();
+    }
 
     if (m_context.ast_root.joins != NULL) {
       execute_join();
@@ -3355,6 +3590,8 @@ RonSQLPreparer::Context::column_name_to_idx(LexCString col_name)
 {
   DynamicArray<LexCString>& columns = m_parser.m_columns;
   DynamicArray<LexCString>& qualifiers = m_parser.m_column_qualifiers;
+  DynamicArray<bool>& is_inner = m_parser.m_col_is_inner;
+  bool in_subquery = (m_subquery_depth > 0);
   Uint32 sz = columns.size();
   for (Uint32 i=0; i < sz; i++)
   {
@@ -3365,6 +3602,7 @@ RonSQLPreparer::Context::column_name_to_idx(LexCString col_name)
   }
   columns.push(col_name);
   qualifiers.push(LexCString{NULL, 0});
+  is_inner.push(in_subquery);
   return sz;
 }
 
@@ -3374,6 +3612,8 @@ RonSQLPreparer::Context::qualified_column_name_to_idx(
 {
   DynamicArray<LexCString>& columns = m_parser.m_columns;
   DynamicArray<LexCString>& qualifiers = m_parser.m_column_qualifiers;
+  DynamicArray<bool>& is_inner = m_parser.m_col_is_inner;
+  bool in_subquery = (m_subquery_depth > 0);
   Uint32 sz = columns.size();
   for (Uint32 i = 0; i < sz; i++)
   {
@@ -3384,6 +3624,7 @@ RonSQLPreparer::Context::qualified_column_name_to_idx(
   }
   columns.push(col_name);
   qualifiers.push(table_qualifier);
+  is_inner.push(in_subquery);
   return sz;
 }
 
@@ -3427,6 +3668,24 @@ RonSQLPreparer::Context::set_err_state(ErrState state,
 AggregationAPICompiler*
 RonSQLPreparer::Context::get_agg()
 {
+  if (m_subquery_depth > 0)
+  {
+    if (m_inner_agg == NULL)
+    {
+      RonSQLPreparer* _this = &m_parser;
+      std::function<const char*(uint)> column_idx_to_name =
+        [_this](Uint32 idx) -> const char*
+        {
+          return _this->column_idx_to_name(idx).c_str();
+        };
+      m_inner_agg = new (get_allocator()->alloc_exc<AggregationAPICompiler>(1))
+        AggregationAPICompiler(column_idx_to_name,
+                               *m_parser.m_conf.out_stream,
+                               *m_parser.m_conf.err_stream,
+                               m_parser.m_amalloc);
+    }
+    return m_inner_agg;
+  }
   if (m_parser.m_agg)
   {
     return m_parser.m_agg;
@@ -3450,6 +3709,21 @@ RonSQLPreparer::Context::get_agg()
                            *m_parser.m_conf.err_stream,
                            m_parser.m_amalloc);
   return m_parser.m_agg;
+}
+
+void
+RonSQLPreparer::Context::enter_subquery()
+{
+  m_subquery_depth++;
+  m_inner_agg = NULL;
+}
+
+void
+RonSQLPreparer::Context::leave_subquery()
+{
+  ndbrequire(m_subquery_depth > 0);
+  m_subquery_depth--;
+  m_inner_agg = NULL;
 }
 
 ArenaMalloc*

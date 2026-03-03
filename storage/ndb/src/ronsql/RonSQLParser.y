@@ -529,20 +529,24 @@ cond_expr:
                                         }
 
 subquery:
+  { context->enter_subquery(); }
   T_SELECT outputlist T_FROM table_ref join_list where_opt
   groupby_opt having_opt orderby_opt limit_opt
   {
+    context->leave_subquery();
     $$ = context->get_allocator()->alloc_exc<SelectStatement>(1);
     $$->do_explain = false;
-    $$->outputs = $2.head;
-    $$->root_table = $4;
-    $$->table = $4->name;
-    $$->joins = $5.head;
-    $$->where_expression = $6;
-    $$->groupby_columns = $7;
-    $$->having_expression = $8;
-    $$->orderby_columns = $9;
-    $$->limit = $10;
+    $$->outputs = $3.head;
+    $$->root_table = $5;
+    $$->table = $5->name;
+    $$->joins = $6.head;
+    $$->where_expression = $7;
+    $$->groupby_columns = $8;
+    $$->having_expression = $9;
+    $$->orderby_columns = $10;
+    $$->limit = $11;
+    $$->sql_begin = (@2).begin;
+    $$->sql_end = (@11).end;
   }
 
 interval_type:

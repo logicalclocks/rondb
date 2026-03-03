@@ -111,6 +111,8 @@ public:
     ErrState m_err_state = ErrState::NONE;
     const char* m_err_pos = NULL;
     size_t m_err_len = 0;
+    int m_subquery_depth = 0;
+    AggregationAPICompiler* m_inner_agg = NULL;
   public:
     Context(RonSQLPreparer& parser):
       m_parser(parser)
@@ -120,6 +122,8 @@ public:
     ArenaMalloc* get_allocator();
     Uint32 column_name_to_idx(LexCString);
     Uint32 qualified_column_name_to_idx(LexCString table, LexCString column);
+    void enter_subquery();
+    void leave_subquery();
     SelectStatement ast_root;
   };
 private:
@@ -138,6 +142,7 @@ private:
   Context m_context;
   DynamicArray<LexCString> m_columns;
   DynamicArray<LexCString> m_column_qualifiers; /* table qualifier per col_idx */
+  DynamicArray<bool> m_col_is_inner; /* true for columns from inner subqueries */
   NdbAttrId* m_column_attrId_map = NULL;
   const NdbDictionary::Column** m_column_map = NULL;
   Uint32* m_column_table_idx = NULL;
@@ -169,6 +174,15 @@ private:
   ScanConfig* m_scan_config = NULL;
 
   AggregationAPICompiler* m_agg = NULL;
+
+  // Subquery orchestration
+  struct SubqueryInfo {
+    ConditionalExpression* ce_node;  // The SubqueryExpr node in outer AST
+    SelectStatement* inner_stmt;     // For sql_begin/sql_end access
+    SubqueryResult result;           // Populated during execution
+  };
+  DynamicArray<SubqueryInfo> m_subquery_infos;
+  bool m_has_subqueries = false;
   ResultPrinter* m_resultprinter = NULL;
   LexCString column_idx_to_name(uint);
   void (*m_print_json_string)(std::basic_ostream<char>& out, const char* str) = NULL;
@@ -187,6 +201,8 @@ private:
   void plan_index_and_filter();
   void collect_toplevel_conditions(ConditionalExpression* ce);
   void generate_scan_config_candidates();
+  void analyze_subqueries();
+  void analyze_subqueries_ce(ConditionalExpression* ce);
   void compile();
   void build_agg_linked_projections();
   void determine_explain();
@@ -198,6 +214,9 @@ public:
   void execute(); // todo make sure we can execute several times, do not mutate. Make this a separate object that takes a preparer as const input (This todo from review 2024-08-22 with MR)
 private:
   void cleanup_trans();
+  void execute_subqueries();
+  void substitute_subquery_results();
+  void substitute_subquery_results_ce(ConditionalExpression** ce_ptr);
   void execute_join();
   void collect_pk_equalities(struct ConditionalExpression* ce,
                              const NdbDictionary::Table* table,

@@ -218,6 +218,15 @@ struct SelectStatement
   struct ConditionalExpression* having_expression = NULL;
   struct OrderbyColumns* orderby_columns = NULL;
   Int64 limit = -1; // -1 means no limit
+  char* sql_begin = NULL;  // Start of inner query SQL (points into original buffer)
+  char* sql_end = NULL;    // End of inner query SQL
+};
+
+struct SubqueryResult {
+  bool is_null = true;
+  Int64 int_val = 0;
+  double float_val = 0.0;
+  bool is_float = false;
 };
 
 /* RonSQL uses 4 types of exceptions:
