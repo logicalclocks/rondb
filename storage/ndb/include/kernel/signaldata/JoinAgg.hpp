@@ -142,6 +142,27 @@ struct JoinAggNodeFailRep {
   Uint32 failedNodeId;
 };
 
+// DBSPJ → DblqhProxy: inject a null-extended row for outer join aggregation
+// when DBSPJ skips LQHKEYREQ because the key is NULL.
+struct JoinAggNullRowReq {
+  static constexpr Uint32 SignalLength = 6;
+  Uint32 senderRef;
+  Uint32 aggStateKey;
+  Uint32 transId[2];
+  Uint32 requestPtrI;   // DBSPJ request pointer (for routing CONF back)
+  Uint32 treeNodePtrI;  // DBSPJ tree node pointer
+  // Long section 0: linked_attr_data (parent column values with table metadata)
+};
+
+// DblqhProxy → DBSPJ: null-extended row has been processed
+struct JoinAggNullRowConf {
+  static constexpr Uint32 SignalLength = 4;
+  Uint32 senderRef;
+  Uint32 aggStateKey;
+  Uint32 requestPtrI;
+  Uint32 treeNodePtrI;
+};
+
 #undef JAM_FILE_ID
 
 #endif

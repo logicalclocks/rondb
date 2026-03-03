@@ -59,6 +59,7 @@ class JoinAggInterpreter : public PushdownInterpreter {
     m_processed_rows(0),
     m_result_size(0),
     m_linked_attr_data(nullptr), m_linked_attr_len(0),
+    m_null_local_columns(false),
     m_use_mutex(false), m_max_groups(0),
     m_chunks(nullptr), m_chunks_tail(nullptr),
     m_current_chunk(nullptr), m_total_chunk_bytes(0),
@@ -96,6 +97,10 @@ class JoinAggInterpreter : public PushdownInterpreter {
       const Uint32* linked_attr_data,
       Uint32 linked_attr_len);
   Int32 finalizeResults();
+  Int32 processNullExtendedRow(
+      const Uint32* linked_attr_data,
+      Uint32 linked_attr_len);
+
   Int32 getResultData(Uint32* buffer, Uint32 buffer_size,
                       Uint32* bytes_written);
   Uint32 mergeFrom(JoinAggInterpreter* other, Uint32 max_groups);
@@ -152,8 +157,9 @@ class JoinAggInterpreter : public PushdownInterpreter {
   decimal_digit_t m_decimal_buf[DECIMAL_BUFF_LENGTH];
 
   // Linked attribute buffer for join aggregation
-  const Uint32* m_linked_attr_data;   // Points to current row's linked attrs
-  Uint32 m_linked_attr_len;           // Current length in words
+  const Uint32* m_linked_attr_data;// Points to current row's linked attrs
+  Uint32 m_linked_attr_len;        // Current length in words
+  bool m_null_local_columns;       // When true, local column read NULL
 
   // MUTEX_BASED locking: protects m_gb_map and accumulators during
   // concurrent access from multiple LDM threads.
@@ -189,6 +195,7 @@ class JoinAggInterpreter : public PushdownInterpreter {
   uchar *m_xfrm_buf;
   Uint32 m_xfrm_buf_len;
   Int32 initGBTypes(Dbtup* block_tup, Dbtup::KeyReqStruct* req_struct);
+  void initGBTypesForNullLocal(Dbtup* block_tup);
 
   Uint32* m_prog_buf;
   Uint32* m_gb_cols_buf;

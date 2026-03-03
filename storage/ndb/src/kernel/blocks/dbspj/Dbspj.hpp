@@ -90,6 +90,7 @@ class Dbspj : public SimulatedBlock {
   void execSCAN_FRAGCONF(Signal *signal);
   void execSCAN_HBREP(Signal *signal);
   void execTRANSID_AI(Signal *signal);
+  void execJOIN_AGG_NULL_ROW_CONF(Signal *signal);
 
   /**
    * General signals
@@ -1609,6 +1610,8 @@ class Dbspj : public SimulatedBlock {
                                  NdbNodeBitmask);
 
   void lookup_sendLeafCONF(Signal *, Ptr<Request>, Ptr<TreeNode>, Uint32 node);
+  Uint32 sendJoinAggNullRow(Signal *, Ptr<Request>, Ptr<TreeNode>,
+                            const RowPtr &);
   void lookup_cleanup(Ptr<Request>, Ptr<TreeNode>);
 
   Uint32 handle_special_hash(Uint32 tableId, Uint32 dstHash[4],

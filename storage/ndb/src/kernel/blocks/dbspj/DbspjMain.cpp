@@ -42,6 +42,7 @@
 #include <signaldata/DiGetNodes.hpp>
 #include <signaldata/DihScanTab.hpp>
 #include <signaldata/DropTab.hpp>
+#include <signaldata/JoinAgg.hpp>
 #include <signaldata/LqhKey.hpp>
 #include <signaldata/PrepDropTab.hpp>
 #include <signaldata/QueryTree.hpp>
@@ -5012,6 +5013,10 @@ void Dbspj::lookup_send(Signal *signal, Ptr<Request> requestPtr,
     Uint32 nodeId = refToNode(ref);
     ndbrequire(requestPtr.p->m_aggNodes.get(nodeId));
     LqhKeyReq::setJoinAggFlag(req->attrLen, 1);
+    if (!(treeNodePtr.p->m_bits & TreeNode::T_INNER_JOIN)) {
+      jam();
+      LqhKeyReq::setOuterJoinAggFlag(req->attrLen, 1);
+    }
     req->variableData[var_index + 4] = requestPtr.p->m_aggStateKeys[nodeId];
     agg_extra = 1;
   }
@@ -5519,6 +5524,19 @@ void Dbspj::lookup_parent_row(Signal *signal, Ptr<Request> requestPtr,
         releaseSection(ptrI);
         ptrI = RNIL;
 
+        /**
+         * Outer join aggregation: NULL key means no child match, but
+         * we still need to feed a null-extended row to the aggregation
+         * engine. Build linked_attr_data and send JOIN_AGG_NULL_ROW_REQ.
+         */
+        if ((treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) &&
+            !(treeNodePtr.p->m_bits & TreeNode::T_INNER_JOIN)) {
+          jam();
+          err = sendJoinAggNullRow(signal, requestPtr, treeNodePtr, rowRef);
+          if (unlikely(err != 0)) break;
+          return;
+        }
+
         /* Send KEYREF(errCode=626) as required by lookup request protocol */
         if (requestPtr.p->isLookup()) {
           jam();
@@ -5735,6 +5753,97 @@ void Dbspj::lookup_parent_row(Signal *signal, Ptr<Request> requestPtr,
 void Dbspj::lookup_abort(Signal *signal, Ptr<Request> requestPtr,
                          Ptr<TreeNode> treeNodePtr) {
   jam();
+}
+
+/**
+ * sendJoinAggNullRow
+ *
+ * Called when keyIsNull for an outer-join aggregation leaf.
+ * Expands the attrParamPattern to get linked parent data, then sends
+ * JOIN_AGG_NULL_ROW_REQ to DBLQH instance 1 on the local node.
+ */
+Uint32 Dbspj::sendJoinAggNullRow(Signal *signal, Ptr<Request> requestPtr,
+                                 Ptr<TreeNode> treeNodePtr,
+                                 const RowPtr &rowRef) {
+  jam();
+  Uint32 nodeId = getOwnNodeId();
+  ndbrequire(requestPtr.p->m_aggNodes.get(nodeId));
+
+  /* Expand attrParamPattern to get linked attribute data */
+  Uint32 linkedPtrI = RNIL;
+  {
+    LocalArenaPool<DataBufferSegment<14>> pool(requestPtr.p->m_arena,
+                                               m_dependency_map_pool);
+    Local_pattern_store pattern(pool, treeNodePtr.p->m_attrParamPattern);
+    bool hasNull;
+    Uint32 err = expand(linkedPtrI, pattern, rowRef, hasNull,
+                        true /* addTableMeta */);
+    if (unlikely(err != 0)) {
+      jam();
+      releaseSection(linkedPtrI);
+      return err;
+    }
+  }
+
+  /* Build and send JOIN_AGG_NULL_ROW_REQ */
+  JoinAggNullRowReq *req =
+      (JoinAggNullRowReq *)signal->getDataPtrSend();
+  req->senderRef = reference();
+  req->aggStateKey = requestPtr.p->m_aggStateKeys[nodeId];
+  req->transId[0] = requestPtr.p->m_transId[0];
+  req->transId[1] = requestPtr.p->m_transId[1];
+  req->requestPtrI = requestPtr.i;
+  req->treeNodePtrI = treeNodePtr.i;
+
+  SectionHandle handle(this);
+  handle.m_ptr[0].i = linkedPtrI;
+  {
+    SegmentedSectionPtr ptr;
+    getSection(ptr, linkedPtrI);
+    handle.m_ptr[0].p = ptr.p;
+    handle.m_ptr[0].sz = ptr.sz;
+  }
+  handle.m_cnt = 1;
+
+  Uint32 ref = numberToRef(DBLQH, 1, nodeId);
+  sendSignal(ref, GSN_JOIN_AGG_NULL_ROW_REQ, signal,
+             JoinAggNullRowReq::SignalLength, JBB, &handle);
+
+  /* Track outstanding: one CONF expected */
+  requestPtr.p->m_outstanding++;
+  requestPtr.p->m_lookup_node_data[nodeId]++;
+  requestPtr.p->m_completed_tree_nodes.clear(treeNodePtr.p->m_node_no);
+  treeNodePtr.p->m_lookup_data.m_outstanding++;
+
+  return 0;
+}
+
+/**
+ * execJOIN_AGG_NULL_ROW_CONF
+ *
+ * DBLQH has processed the null-extended row through the aggregation
+ * engine. Decrement outstanding counts and handle completion.
+ */
+void Dbspj::execJOIN_AGG_NULL_ROW_CONF(Signal *signal) {
+  jamEntry();
+  const JoinAggNullRowConf *conf =
+      (const JoinAggNullRowConf *)signal->getDataPtr();
+
+  Ptr<Request> requestPtr;
+  requestPtr.i = conf->requestPtrI;
+  ndbrequire(m_request_pool.getPtr(requestPtr));
+
+  Ptr<TreeNode> treeNodePtr;
+  treeNodePtr.i = conf->treeNodePtrI;
+  ndbrequire(m_treenode_pool.getPtr(treeNodePtr));
+
+  lookup_countSignal(signal, requestPtr, treeNodePtr, 1);
+
+  if (requestPtr.p->m_completed_tree_nodes.get(
+          treeNodePtr.p->m_node_no)) {
+    jam();
+    handleTreeNodeComplete(signal, requestPtr, treeNodePtr);
+  }
 }
 
 Uint32 Dbspj::lookup_execNODE_FAILREP(Signal *signal, Ptr<Request> requestPtr,

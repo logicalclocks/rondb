@@ -9176,6 +9176,7 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
   regTcPtr->m_dealloc_state = TcConnectionrec::DA_IDLE;
   regTcPtr->m_query_thread = 0;
   regTcPtr->m_join_agg_state_key = RNIL;
+  regTcPtr->m_outer_join_agg = 0;
   regTcPtr->m_dealloc_data.m_dealloc_ref_count = RNIL;
   {
     regTcPtr->operation = (Operation_t)op == ZREAD_EX ? ZREAD : (Operation_t)op;
@@ -9378,6 +9379,8 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
                         ZNODEFAIL_BEFORE_COMMIT, tcConnectptr);
       return;
     }
+    regTcPtr->m_outer_join_agg =
+        LqhKeyReq::getOuterJoinAggFlag(attrLenFlags);
   }
 
   if (LqhKeyReq::getRowidFlag(Treqinfo)) {
@@ -15026,6 +15029,19 @@ void Dblqh::continueACCKEYREF(Signal *signal, TcConnectionrecPtr tcConnectptr,
   ndbrequire(tcPtr->activeCreat == Fragrecord::AC_NORMAL);
   ndbrequire(!LqhKeyReq::getNrCopyFlag(tcPtr->reqinfo));
 
+  /*
+   * Outer join aggregation: key-not-found means the child has no match.
+   * Process a null-extended row (parent columns real, child columns NULL)
+   * and send LQHKEYCONF instead of LQHKEYREF.
+   */
+  if (errorCode == 626 &&
+      tcPtr->m_join_agg_state_key != RNIL &&
+      tcPtr->m_outer_join_agg) {
+    jam();
+    handleOuterJoinAggKeyNotFound(signal, tcConnectptr);
+    return;
+  }
+
   /**
    * Not only primary replica can get ZTUPLE_ALREADY_EXIST || ZNO_TUPLE_FOUND
    *
@@ -15046,6 +15062,115 @@ void Dblqh::continueACCKEYREF(Signal *signal, TcConnectionrecPtr tcConnectptr,
   tcPtr->abortState = TcConnectionrec::ABORT_FROM_LQH;
   abortCommonLab(signal, tcConnectptr);
 }  // Dblqh::execACCKEYREF()
+
+/*
+ * handleOuterJoinAggKeyNotFound
+ *
+ * Called when a join-agg outer-join child lookup gets key-not-found (626).
+ * Extracts linked attribute data from ATTRINFO, feeds a null-extended row
+ * to the AggInterpreter (local columns return NULL), then sends LQHKEYCONF.
+ */
+void Dblqh::handleOuterJoinAggKeyNotFound(Signal *signal,
+                                           TcConnectionrecPtr tcConnectptr) {
+  TcConnectionrec *const regTcPtr = tcConnectptr.p;
+
+  /* 1. Abort ACC — the key lookup started but key was not found.
+   *    canBlock=0: safe because we arrived from ACCKEYREF (not pending). */
+  regTcPtr->transactionState = TcConnectionrec::WAIT_ACC_ABORT;
+  c_acc->execACC_ABORTREQ(signal,
+                           regTcPtr->accConnectrec,
+                           regTcPtr->accConnectPtrP,
+                           0);
+  ndbrequire(signal->theData[1] == 0);
+
+  /* 2. Abort TUP — prepareTUPKEYREQ was called before ACC, so clean up. */
+  signal->theData[0] = regTcPtr->tupConnectrec;
+  c_tup->do_tup_abortreq(signal, 0);
+
+  /* 3. Extract linked attribute data from ATTRINFO section.
+   *
+   * Layout: [5-word header] [interpreter program...] [subroutine section]
+   *   header[0] = initReadLen, [1] = interpretLen, [2] = finalUpdateLen,
+   *   [3] = finalReadLen, [4] = subRoutineLen (= RsubLen)
+   *   Subroutine section starts at word (5 + header[0..3])
+   *   First word of subroutine section is paramLen.
+   *   linked_data = subroutine + 1, linked_len = RsubLen - 1
+   */
+  const Uint32 *linked_data = nullptr;
+  Uint32 linked_len = 0;
+  Uint32 attrInfoBuf[256];
+  Uint32 attrInfoLen = regTcPtr->currTupAiLen;
+
+  if (attrInfoLen > 0 && regTcPtr->attrInfoIVal != RNIL) {
+    ndbrequire(attrInfoLen <= 256);
+    copy(attrInfoBuf, regTcPtr->attrInfoIVal);
+
+    Uint32 RsubLen = attrInfoBuf[4];
+    if (RsubLen > 0) {
+      Uint32 sub_offset = 5 + attrInfoBuf[0] + attrInfoBuf[1] +
+                          attrInfoBuf[2] + attrInfoBuf[3];
+      ndbrequire(sub_offset + RsubLen <= attrInfoLen);
+      linked_data = &attrInfoBuf[sub_offset + 1];
+      linked_len = RsubLen - 1;
+    }
+  }
+
+  /* 4. Feed null-extended row to AggInterpreter */
+  JoinAggregationState *state =
+      getJoinAggState(regTcPtr->m_join_agg_state_key);
+  ndbrequire(state != nullptr);
+
+  AggInterpreter *interp;
+  if (state->m_strategy == JoinAggregationState::MUTEX_FREE) {
+    Uint32 thr_idx = instance() - 1;
+    ndbrequire(thr_idx < state->m_num_threads);
+    interp = state->m_per_thread_interpreters[thr_idx];
+  } else {
+    interp = state->m_agg_interpreter;
+  }
+  ndbrequire(interp != nullptr);
+
+retry:
+  Int32 ret = interp->processNullExtendedRow(linked_data, linked_len);
+  if (ret == AGG_EVICT_NEEDED) {
+    jamDebug();
+    Uint32 evict_buf[MAX_AGG_RESULT_BATCH_BYTES / sizeof(Uint32)];
+    Uint32 words_written = 0;
+    Int32 evict_ret = interp->evictOneGroup(
+        evict_buf, MAX_AGG_RESULT_BATCH_BYTES / sizeof(Uint32),
+        &words_written);
+    ndbrequire(evict_ret == 0);
+
+    TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
+    {
+      Uint32 key_len = evict_buf[3] >> 16;
+      const char *key_data = reinterpret_cast<const char*>(&evict_buf[4]);
+      transIdAI->connectPtr =
+          state->selectReceiverData(key_data, key_len);
+    }
+    transIdAI->transId[0] = state->m_transid[0];
+    transIdAI->transId[1] = state->m_transid[1];
+
+    LinearSectionPtr ptr[3];
+    ptr[0].p = evict_buf;
+    ptr[0].sz = words_written;
+    sendSignal(state->m_resultRef, GSN_TRANSID_AI, signal,
+               TransIdAI::HeaderLength, JBB, ptr, 1);
+
+    state->m_rows_sent++;
+    goto retry;
+  }
+  ndbrequire(ret == 0);
+  state->m_completed_ops.fetch_add(1, std::memory_order_relaxed);
+
+  /* 5. Send LQHKEYCONF (no data, readlenAi = 0) */
+  regTcPtr->readlenAi = 0;
+  regTcPtr->numFiredTriggers = 0;
+  sendLqhkeyconfTc(signal, regTcPtr->tcBlockref, tcConnectptr);
+
+  /* 6. Clean up operation */
+  cleanUp(signal, tcConnectptr);
+}
 
 void Dblqh::abortStateHandlerLab(Signal *signal,
                                  const TcConnectionrecPtr tcConnectptr) {
@@ -18163,6 +18288,95 @@ bool Dblqh::checkJoinAggNodeFailed(Signal* signal, Uint32 aggStateKey,
     return true;
   }
   return false;
+}
+
+/*
+ * execJOIN_AGG_NULL_ROW_REQ
+ *
+ * Handles the edge case where DBSPJ skips LQHKEYREQ because the lookup
+ * key is NULL (outer join, no key to look up). DBSPJ sends the linked
+ * attribute data directly so we can feed a null-extended row to the
+ * AggInterpreter.
+ */
+void Dblqh::execJOIN_AGG_NULL_ROW_REQ(Signal *signal) {
+  jamEntry();
+  const JoinAggNullRowReq *req =
+    (const JoinAggNullRowReq *)signal->getDataPtr();
+
+  const Uint32 senderRef = req->senderRef;
+  const Uint32 aggStateKey = req->aggStateKey;
+  const Uint32 requestPtrI = req->requestPtrI;
+  const Uint32 treeNodePtrI = req->treeNodePtrI;
+
+  JoinAggregationState *state = getJoinAggState(aggStateKey);
+  ndbrequire(state != nullptr);
+
+  /* Read linked attribute data from long section 0 */
+  SectionHandle handle(this, signal);
+  ndbrequire(handle.m_cnt == 1);
+  SegmentedSectionPtr sec_ptr;
+  ndbrequire(getSection(sec_ptr, handle.m_ptr[0].i));
+
+  Uint32 linked_buf[256];
+  Uint32 linked_len = sec_ptr.sz;
+  ndbrequire(linked_len <= 256);
+  copy(linked_buf, sec_ptr.i);
+  releaseSections(handle);
+
+  /* Select interpreter based on strategy.
+   * Use instance 1 (thread 0) since this signal is routed to instance 1. */
+  AggInterpreter *interp;
+  if (state->m_strategy == JoinAggregationState::MUTEX_FREE) {
+    Uint32 thr_idx = instance() - 1;
+    ndbrequire(thr_idx < state->m_num_threads);
+    interp = state->m_per_thread_interpreters[thr_idx];
+  } else {
+    interp = state->m_agg_interpreter;
+  }
+  ndbrequire(interp != nullptr);
+
+retry:
+  Int32 ret = interp->processNullExtendedRow(linked_buf, linked_len);
+  if (ret == AGG_EVICT_NEEDED) {
+    jamDebug();
+    Uint32 evict_buf[MAX_AGG_RESULT_BATCH_BYTES / sizeof(Uint32)];
+    Uint32 words_written = 0;
+    Int32 evict_ret = interp->evictOneGroup(
+        evict_buf, MAX_AGG_RESULT_BATCH_BYTES / sizeof(Uint32),
+        &words_written);
+    ndbrequire(evict_ret == 0);
+
+    TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
+    {
+      Uint32 key_len = evict_buf[3] >> 16;
+      const char *key_data = reinterpret_cast<const char*>(&evict_buf[4]);
+      transIdAI->connectPtr =
+          state->selectReceiverData(key_data, key_len);
+    }
+    transIdAI->transId[0] = state->m_transid[0];
+    transIdAI->transId[1] = state->m_transid[1];
+
+    LinearSectionPtr ptr[3];
+    ptr[0].p = evict_buf;
+    ptr[0].sz = words_written;
+    sendSignal(state->m_resultRef, GSN_TRANSID_AI, signal,
+               TransIdAI::HeaderLength, JBB, ptr, 1);
+
+    state->m_rows_sent++;
+    goto retry;
+  }
+  ndbrequire(ret == 0);
+  state->m_completed_ops.fetch_add(1, std::memory_order_relaxed);
+
+  /* Send CONF back to DBSPJ */
+  JoinAggNullRowConf *conf =
+    (JoinAggNullRowConf *)signal->getDataPtrSend();
+  conf->senderRef = reference();
+  conf->aggStateKey = aggStateKey;
+  conf->requestPtrI = requestPtrI;
+  conf->treeNodePtrI = treeNodePtrI;
+  sendSignal(senderRef, GSN_JOIN_AGG_NULL_ROW_CONF,
+             signal, JoinAggNullRowConf::SignalLength, JBB);
 }
 
 void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,

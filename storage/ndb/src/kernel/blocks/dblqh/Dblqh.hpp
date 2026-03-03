@@ -3023,6 +3023,7 @@ class Dblqh : public SimulatedBlock {
     Uint8 m_use_rowid;
     Uint8 m_query_thread;
     Uint32 m_join_agg_state_key;    // Pool index for shared join agg state (RNIL if none)
+    Uint8 m_outer_join_agg;         // Outer join aggregation flag (handle key-not-found)
     enum dealloc_states {
       /*
        * Example set of dealloc ops:
@@ -3315,6 +3316,7 @@ private:
   void execMEMCHECKREQ(Signal* signal);
   void execSCAN_FRAGREQ(Signal* signal);
   void execJOIN_AGG_COMPLETE_REQ(Signal* signal);
+  void execJOIN_AGG_NULL_ROW_REQ(Signal* signal);
   void execJOIN_AGG_SEND_CONF(Signal* signal);
   bool checkJoinAggNodeFailed(Signal* signal, Uint32 aggStateKey,
                               Uint32 senderRef);
@@ -3579,6 +3581,7 @@ private:
   bool remove_from_prepare_log_queue(Signal *signal, TcConnectionrecPtr tcPtr);
   bool getFragmentrec(Uint32 fragId);
   void handlePendingAbort(Signal*, TcConnectionrec*);
+  void handleOuterJoinAggKeyNotFound(Signal*, TcConnectionrecPtr);
 public:
   void getIndexTupFragPtrI(Uint32 tableId,
                            Uint32 fragId,
