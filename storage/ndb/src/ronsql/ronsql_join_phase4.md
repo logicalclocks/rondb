@@ -274,12 +274,12 @@ messages rather than cryptic failures.
 5. **Step 29** — LEFT JOIN (new grammar + NdbQueryOptions match type)
 6. **Step 30** — Multi-table GROUP BY — **DONE** (verified + tested)
 7. **Step 31** — Self-joins — **DONE** (verified + tested)
-8. **Step 32** — Data type coverage (test-only)
+8. **Step 32** — Data type coverage — **DONE** (Tests 40-43: VARCHAR, BIGINT, DATE join keys)
 
 ### Phase 6 (robustness)
-9. **Step 33** — Eviction through RonSQL
-10. **Step 34** — Large-scale stress
-11. **Step 35** — Error messages
+9. **Step 33** — Eviction through RonSQL — **DONE** (Test 44: ERROR_INSERT 5090)
+10. **Step 34** — Large-scale stress — **DONE** (Tests 45-47: 200 orders/1200 lineitems, 4-table chain)
+11. **Step 35** — Error messages — **DONE** (Tests 48-53: 6 error cases with clear messages)
 
 ### Additional features implemented (beyond original plan)
 - CHAR column type in WHERE comparisons
