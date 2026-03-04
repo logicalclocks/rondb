@@ -42,6 +42,9 @@
  *  10. Single row table (table_size=1, top_n=1)
  *  11. Zero vector target (all-zero query vector)
  *  12. Multiple iterations (3 targets, same table, no stale state)
+ *  13. VS + PA interleaved (factory dispatch + cleanup)
+ *  14. Rapid successive VS (20 iterations, destructor/allocator stability)
+ *  15. Segment boundary top_n (CandidateAllocator reuse transition)
  */
 
 #ifdef _WIN32
@@ -942,6 +945,83 @@ static int validate_results(Ndb *myNdb,
   return 0;
 }
 
+/* ------------------------------------------------------------------ */
+/*  PA (pushdown aggregation) helper: COUNT(*) + SUM(val)             */
+/* ------------------------------------------------------------------ */
+
+static int run_pa_count_sum(Ndb *myNdb, Uint64 *out_count, Int64 *out_sum) {
+  const NdbDictionary::Dictionary *myDict = myNdb->getDictionary();
+  const NdbDictionary::Table *myTable = myDict->getTable(TABLE_NAME);
+  if (myTable == NULL) APIERROR(myDict->getNdbError());
+
+  NdbTransaction *myTrans = myNdb->startTransaction();
+  if (myTrans == NULL) APIERROR(myNdb->getNdbError());
+
+  NdbScanOperation *myScanOp = myTrans->getNdbScanOperation(myTable);
+  if (myScanOp == NULL) {
+    fprintf(stderr, "getNdbScanOperation failed: %s\n",
+            myTrans->getNdbError().message);
+    myNdb->closeTransaction(myTrans);
+    return -1;
+  }
+
+  if (myScanOp->readTuples(NdbOperation::LM_CommittedRead) != 0) {
+    APIERROR(myTrans->getNdbError());
+  }
+
+  NdbAggregator aggregator(myTable);
+  /* agg_id 0: COUNT(*) — load constant 1 (never null), count it */
+  aggregator.LoadUint64(1, kReg1);
+  aggregator.Count(0, kReg1);
+  /* agg_id 1: SUM(val) */
+  aggregator.LoadColumn("val", kReg1);
+  aggregator.Sum(1, kReg1);
+  aggregator.Finalize();
+
+  if (myScanOp->setAggregationCode(&aggregator) == -1) {
+    fprintf(stderr, "setAggregationCode(PA) failed: %s\n",
+            myTrans->getNdbError().message);
+    myNdb->closeTransaction(myTrans);
+    return -1;
+  }
+
+  if (myScanOp->DoAggregation() == -1) {
+    NdbError err = myTrans->getNdbError();
+    fprintf(stderr, "DoAggregation failed: %s\n", err.message);
+    myNdb->closeTransaction(myTrans);
+    return -1;
+  }
+
+  /* No GROUP BY → exactly one ResultRecord */
+  NdbAggregator::ResultRecord record = aggregator.FetchResultRecord();
+  if (record.end()) {
+    fprintf(stderr, "PA: no aggregation results\n");
+    myNdb->closeTransaction(myTrans);
+    return -1;
+  }
+
+  /* agg_id 0: COUNT(*) */
+  NdbAggregator::Result result = record.FetchAggregationResult();
+  if (result.end()) {
+    fprintf(stderr, "PA: missing COUNT result\n");
+    myNdb->closeTransaction(myTrans);
+    return -1;
+  }
+  *out_count = result.data_uint64();
+
+  /* agg_id 1: SUM(val) */
+  result = record.FetchAggregationResult();
+  if (result.end()) {
+    fprintf(stderr, "PA: missing SUM result\n");
+    myNdb->closeTransaction(myTrans);
+    return -1;
+  }
+  *out_sum = result.data_int64();
+
+  myNdb->closeTransaction(myTrans);
+  return 0;
+}
+
 /* ================================================================== */
 /*  Test cases                                                        */
 /* ================================================================== */
@@ -1337,6 +1417,175 @@ static int run_test_multi_iteration(Ndb *myNdb, MYSQL &mysql) {
   return 0;
 }
 
+/*
+ * Test 13: VS + PA interleaved on the same connection
+ *   Phase 1: VS scan + cross-validate
+ *   Phase 2: PA scan — verify COUNT(*)=200, SUM(val)=2010000
+ *   Phase 3: VS scan with new target + cross-validate
+ *   Exercises factory dispatch and cleanup between VS and PA.
+ */
+static int run_test_vs_pa_interleaved(Ndb *myNdb, MYSQL &mysql) {
+  const uint32_t top_n = 10;
+  const int table_size = 200;
+  /* SUM(val) = 100*(1+2+...+200) = 100*200*201/2 = 2,010,000 */
+  const Int64 expected_sum = (Int64)100 * table_size * (table_size + 1) / 2;
+
+  truncate_table(mysql, myNdb);
+  insert_rows(mysql, table_size);
+
+  /* Phase 1: VS scan */
+  init_target();
+  {
+    std::vector<Int32> pushdown_pks, baseline_pks;
+    if (scan_vector_search(myNdb, top_n, pushdown_pks) != 0) {
+      fprintf(stderr, "[vs_pa_interleaved] Phase 1 VS failed\n");
+      return 1;
+    }
+    if (table_scan_regular(myNdb, top_n, baseline_pks) != 0) {
+      fprintf(stderr, "[vs_pa_interleaved] Phase 1 baseline failed\n");
+      return 1;
+    }
+    if (pushdown_pks.size() != top_n) {
+      fprintf(stderr, "[vs_pa_interleaved] Phase 1: expected %u, got %zu\n",
+              top_n, pushdown_pks.size());
+      return 1;
+    }
+    if (validate_results(myNdb, pushdown_pks, baseline_pks,
+                         "vs_pa_interleaved[phase1]") != 0)
+      return 1;
+  }
+
+  /* Phase 2: PA scan */
+  {
+    Uint64 count = 0;
+    Int64 sum = 0;
+    if (run_pa_count_sum(myNdb, &count, &sum) != 0) {
+      fprintf(stderr, "[vs_pa_interleaved] Phase 2 PA failed\n");
+      return 1;
+    }
+    if (count != (Uint64)table_size) {
+      fprintf(stderr, "[vs_pa_interleaved] COUNT(*): expected %d, got %llu\n",
+              table_size, (unsigned long long)count);
+      return 1;
+    }
+    if (sum != expected_sum) {
+      fprintf(stderr, "[vs_pa_interleaved] SUM(val): expected %lld, got %lld\n",
+              (long long)expected_sum, (long long)sum);
+      return 1;
+    }
+  }
+
+  /* Phase 3: VS scan with new target */
+  init_target();
+  {
+    std::vector<Int32> pushdown_pks, baseline_pks;
+    if (scan_vector_search(myNdb, top_n, pushdown_pks) != 0) {
+      fprintf(stderr, "[vs_pa_interleaved] Phase 3 VS failed\n");
+      return 1;
+    }
+    if (table_scan_regular(myNdb, top_n, baseline_pks) != 0) {
+      fprintf(stderr, "[vs_pa_interleaved] Phase 3 baseline failed\n");
+      return 1;
+    }
+    if (pushdown_pks.size() != top_n) {
+      fprintf(stderr, "[vs_pa_interleaved] Phase 3: expected %u, got %zu\n",
+              top_n, pushdown_pks.size());
+      return 1;
+    }
+    if (validate_results(myNdb, pushdown_pks, baseline_pks,
+                         "vs_pa_interleaved[phase3]") != 0)
+      return 1;
+  }
+
+  return 0;
+}
+
+/*
+ * Test 14: Rapid successive VS scans
+ *   20 iterations, cycling top_n through {1, 5, 10, 50, 100}.
+ *   Exercises rapid create/destroy of VecSearchInterpreter.
+ */
+static int run_test_rapid_successive_vs(Ndb *myNdb, MYSQL &mysql) {
+  const int table_size = 200;
+  const int n_iters = 20;
+  const uint32_t top_n_cycle[] = {1, 5, 10, 50, 100};
+  const int cycle_len = sizeof(top_n_cycle) / sizeof(top_n_cycle[0]);
+
+  truncate_table(mysql, myNdb);
+  insert_rows(mysql, table_size);
+
+  for (int iter = 0; iter < n_iters; iter++) {
+    uint32_t top_n = top_n_cycle[iter % cycle_len];
+    init_target();
+
+    std::vector<Int32> pushdown_pks, baseline_pks;
+
+    if (scan_vector_search(myNdb, top_n, pushdown_pks) != 0) {
+      fprintf(stderr, "[rapid_successive_vs] Pushdown failed at iter %d\n",
+              iter);
+      return 1;
+    }
+    if (table_scan_regular(myNdb, top_n, baseline_pks) != 0) {
+      fprintf(stderr, "[rapid_successive_vs] Baseline failed at iter %d\n",
+              iter);
+      return 1;
+    }
+
+    size_t expected = std::min((uint32_t)table_size, top_n);
+    if (pushdown_pks.size() != expected) {
+      fprintf(stderr,
+              "[rapid_successive_vs] iter %d (top_n=%u): expected %zu, "
+              "got %zu\n",
+              iter, top_n, expected, pushdown_pks.size());
+      return 1;
+    }
+
+    char label[64];
+    snprintf(label, sizeof(label), "rapid_successive_vs[%d]", iter);
+    if (validate_results(myNdb, pushdown_pks, baseline_pks, label) != 0) {
+      return 1;
+    }
+  }
+
+  return 0;
+}
+
+/*
+ * Test 15: Segment boundary top_n
+ *   top_n=1024, table_size=5000.
+ *   With DIMS=128, slot_size ~628 bytes => slots_per_segment=1024 => exact
+ *   boundary.  5000 rows guarantees ~3976 evictions and reuse_started
+ *   transition in CandidateAllocator.
+ */
+static int run_test_segment_boundary_top_n(Ndb *myNdb, MYSQL &mysql) {
+  const uint32_t top_n = 1024;
+  const int table_size = 5000;
+
+  truncate_table(mysql, myNdb);
+  insert_rows(mysql, table_size);
+  init_target();
+
+  std::vector<Int32> pushdown_pks, baseline_pks;
+
+  if (scan_vector_search(myNdb, top_n, pushdown_pks) != 0) {
+    fprintf(stderr, "[segment_boundary_top_n] Pushdown failed\n");
+    return 1;
+  }
+  if (table_scan_regular(myNdb, top_n, baseline_pks) != 0) {
+    fprintf(stderr, "[segment_boundary_top_n] Baseline failed\n");
+    return 1;
+  }
+
+  if (pushdown_pks.size() != top_n) {
+    fprintf(stderr, "[segment_boundary_top_n] Expected %u, got %zu\n",
+            top_n, pushdown_pks.size());
+    return 1;
+  }
+
+  return validate_results(myNdb, pushdown_pks, baseline_pks,
+                          "segment_boundary_top_n");
+}
+
 /* ================================================================== */
 /*  Test runner                                                       */
 /* ================================================================== */
@@ -1358,7 +1607,10 @@ static TestCase test_cases[] = {
     {"index_empty_range",    run_test_index_empty_range},
     {"single_row",           run_test_single_row},
     {"zero_target",          run_test_zero_target},
-    {"multi_iteration",      run_test_multi_iteration},
+    {"multi_iteration",          run_test_multi_iteration},
+    {"vs_pa_interleaved",        run_test_vs_pa_interleaved},
+    {"rapid_successive_vs",      run_test_rapid_successive_vs},
+    {"segment_boundary_top_n",   run_test_segment_boundary_top_n},
 };
 
 int main(int argc, char **argv) {

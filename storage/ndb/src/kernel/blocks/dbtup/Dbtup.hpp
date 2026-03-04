@@ -306,11 +306,14 @@ inline const Uint32 *ALIGN_WORD(const void *ptr) {
 
 class Dbtux;
 class AggInterpreter;
+class JoinAggInterpreter;
 
 class Dbtup : public SimulatedBlock {
   friend class DbtupProxy;
   friend class Suma;
   friend class AggInterpreter;
+  friend class JoinAggInterpreter;
+  friend class VecSearchInterpreter;
 
  public:
   struct KeyReqStruct;
@@ -531,7 +534,7 @@ struct Fragoperrec {
       m_transId2(0),
       m_savePointId(0),
       m_accLockOp(RNIL),
-      m_aggregation(0)
+      m_has_pushdown(0)
     {}
 
     enum State {
@@ -589,8 +592,8 @@ struct Fragoperrec {
     };
     Uint32 prevList;
 
-    // Aggregation
-    Uint32 m_aggregation;
+    // Pushdown (aggregation or vector search)
+    Uint32 m_has_pushdown;
   };
   static constexpr Uint32 DBTUP_SCAN_OPERATION_TRANSIENT_POOL_INDEX = 3;
   typedef Ptr<ScanOp> ScanOpPtr;

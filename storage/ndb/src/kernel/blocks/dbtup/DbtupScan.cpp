@@ -35,6 +35,7 @@
 #include "../dblqh/Dblqh.hpp"
 #include "Dbtup.hpp"
 #include "AggInterpreter.hpp"
+#include "VecSearchInterpreter.hpp"
 
 #define JAM_FILE_ID 408
 
@@ -331,7 +332,7 @@ void Dbtup::execACC_SCANREQ(Signal *signal) {
     scan.m_transId2 = req->transId2;
     scan.m_savePointId = req->savePointId;
     scan.m_accLockOp = RNIL;
-    scan.m_aggregation = AccScanReq::getAggregationFlag(req->requestInfo);
+    scan.m_has_pushdown = AccScanReq::getAggregationFlag(req->requestInfo);
     scan.m_last_seen = __LINE__;
 
     // conf
@@ -529,11 +530,12 @@ void Dbtup::execACC_CHECK_SCAN(Signal *signal) {
 
 #ifdef DEBUG_VS_TUP_SCAN
   if (scan.m_state == ScanOp::Last) {
-    ndbrequire(scan.m_aggregation);
+    ndbrequire(scan.m_has_pushdown);
     VS_TUP_SCAN_TRACE(scan.m_tableId, frag.fragmentId,
         "Jump into DBTUP from realtime break");
     Dblqh::ScanRecord* ptr = c_lqh->get_scan_ptr(scan.m_userPtr);
-    ndbrequire(ptr->m_agg_interpreter->vec_search_scan_done());
+    ndbrequire(ptr->m_vs_interpreter != nullptr &&
+               ptr->m_vs_interpreter->vec_search_scan_done());
   }
 #endif // DEBUG_VS_TUP_SCAN
 
@@ -796,7 +798,7 @@ void Dbtup::scanReply(Signal *signal, ScanOpPtr scanPtr) {
      * distinguish it and do the actions properly
      *
      */
-    if (scan.m_aggregation) {
+    if (scan.m_has_pushdown) {
       VS_TUP_SCAN_TRACE(scan.m_tableId, frag.fragmentId,
           "Vector search scan completed");
       /*

@@ -576,9 +576,8 @@ bool Dbtup::SendAggResToAPI(Signal* signal, const void* lqhTcConnectrec,
                               (Dblqh::TcConnectionrec*)lqhTcConnectrec;
   // PA related
   Dblqh::ScanRecord* lqhScanPtrP = (Dblqh::ScanRecord*)lqhScanRecord;
-  ndbrequire(lqhScanPtrP->m_aggregation == true &&
+  ndbrequire(lqhScanPtrP->m_has_pushdown == true &&
              lqhScanPtrP->m_agg_interpreter != nullptr);
-  ndbrequire(!lqhScanPtrP->m_agg_interpreter->vec_search());
   AggInterpreter* interp = lqhScanPtrP->m_agg_interpreter;
   Uint32 res_len = interp->PrepareAggResIfNeeded(signal, true);
   const auto* gb_map = interp->gb_map();
@@ -600,7 +599,7 @@ bool Dbtup::SendAggResToAPI(Signal* signal, const void* lqhTcConnectrec,
     lqhScanPtrP->m_agg_curr_batch_size_rows = 1;
     SendAggregationResult(signal, res_len, lqhScanPtrP->scanApiBlockref);
   }
-  PA_RONDB_TRACE(lqhScanPtrP->m_aggregation,
+  PA_RONDB_TRACE(lqhScanPtrP->m_has_pushdown,
       lqhOpPtrP->tableref, interp->frag_id(),
       "Dbtup::SendAggResToAPI(), "
       "End-scan, send at last, res_len: %u, all_sent: %u,"

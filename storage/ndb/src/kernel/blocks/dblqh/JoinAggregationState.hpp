@@ -32,7 +32,7 @@
 
 #define JAM_FILE_ID 447
 
-class AggInterpreter;
+class JoinAggInterpreter;
 
 /**
  * JoinAggregationState
@@ -49,7 +49,7 @@ class AggInterpreter;
  * Thread safety:
  *   - Immutable fields set at creation, no locking needed for reads
  *   - Atomic counters for operation tracking
- *   - MUTEX_BASED strategy: per-group locking in AggInterpreter
+ *   - MUTEX_BASED strategy: per-group locking in JoinAggInterpreter
  *   - MUTEX_FREE strategy: per-thread interpreters, no locking during ops
  *
  * Managed by a static ArrayPool in SimulatedBlock. The nextPool field
@@ -65,8 +65,8 @@ struct JoinAggregationState {
   // Concurrency Strategy
   //------------------------------------------------------------------
   enum ConcurrencyStrategy : Uint32 {
-    MUTEX_BASED = 0,    // One shared AggInterpreter with per-group mutex
-    MUTEX_FREE = 1      // One AggInterpreter per thread, no mutexes
+    MUTEX_BASED = 0,    // One shared JoinAggInterpreter with per-group mutex
+    MUTEX_FREE = 1      // One JoinAggInterpreter per thread, no mutexes
   };
 
   //------------------------------------------------------------------
@@ -111,8 +111,8 @@ struct JoinAggregationState {
   // MUTEX_BASED: single shared interpreter with per-group locking
   // MUTEX_FREE:  per-thread interpreters, no mutexes during operations
   //------------------------------------------------------------------
-  AggInterpreter* m_agg_interpreter;       // MUTEX_BASED: shared interpreter
-  AggInterpreter** m_per_thread_interpreters;
+  JoinAggInterpreter* m_agg_interpreter;       // MUTEX_BASED: shared interpreter
+  JoinAggInterpreter** m_per_thread_interpreters;
                                            // MUTEX_FREE: one per thread
                                            // Allocated via ndbd_malloc:
                                            //   m_num_threads * sizeof(ptr)

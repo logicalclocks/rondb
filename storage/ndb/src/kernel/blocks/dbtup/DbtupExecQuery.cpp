@@ -46,6 +46,9 @@
 #include "AttributeOffset.hpp"
 #include "Dbtup.hpp"
 #include "AggInterpreter.hpp"
+#include "JoinAggInterpreter.hpp"
+#include "PushdownInterpreter.hpp"
+#include "VecSearchInterpreter.hpp"
 #include "dblqh/JoinAggregationState.hpp"
 #include "my_time.h"
 #include "my_systime.h"
@@ -1006,10 +1009,11 @@ Uint32 Dbtup::copyAttrinfo(Uint32 storedProcId,
       // prepare_fragptr.p->fragmentId with ScanRecord
       Dblqh::ScanRecord* scan_rec_ptr =
                         reinterpret_cast<Dblqh::ScanRecord*>(scan_rec);
-      if (scan_rec_ptr->m_aggregation &&
-          scan_rec_ptr->m_agg_interpreter == nullptr) {
+      if (scan_rec_ptr->m_has_pushdown &&
+          scan_rec_ptr->m_agg_interpreter == nullptr &&
+          scan_rec_ptr->m_vs_interpreter == nullptr) {
         /*
-         * Initialize agg_interpreter resources
+         * Initialize pushdown interpreter resources
          * 1. get 1st program word to verify Magic number
          */
         ndbrequire(reader.getWord(pos));
@@ -1023,22 +1027,15 @@ Uint32 Dbtup::copyAttrinfo(Uint32 storedProcId,
         ndbrequire(reader.getWords(pos, proc_len - 1));
         ndbrequire((cinBuffer[proc_start] >> 16) == 0x0721);
 
-        // 3. construct agg_interpreter
-        void* page_ptr = lc_ndbd_pool_malloc(32 * 1024, RG_DATAMEM,
-                                             getThreadId(), false);
-        if (page_ptr == nullptr) {
-          g_eventLogger->error("Alloc mem for pushdown aggregation interpreter failed");
-        }
-        ndbrequire(page_ptr != nullptr);
-        scan_rec_ptr->m_agg_interpreter =
-          new(page_ptr) AggInterpreter(proc_len,
-                              prepare_fragptr.p->fragTableId,
-                              prepare_fragptr.p->fragmentId,
-                              getThreadId());
-        ndbrequire(scan_rec_ptr->m_agg_interpreter->Init(&cinBuffer[proc_start]));
-        scan_rec_ptr->m_agg_interpreter->initChunkAllocator(
-            getThreadId(), 4 /* budget_pages = 128KB */,
-            4 /* available_pages = same, no upgrade */);
+        // 3. construct the appropriate interpreter via factory
+        auto result = PushdownInterpreterFactory::Create(
+            &cinBuffer[proc_start], proc_len,
+            prepare_fragptr.p->fragTableId,
+            prepare_fragptr.p->fragmentId,
+            getThreadId());
+        ndbrequire(result.agg != nullptr || result.vs != nullptr);
+        scan_rec_ptr->m_agg_interpreter = result.agg;
+        scan_rec_ptr->m_vs_interpreter = result.vs;
       }
     }
   } else {
@@ -5039,7 +5036,7 @@ Dbtup::checkNullAttributes(KeyReqStruct * req_struct,
 /**
  * handleJoinAggRow
  *
- * Feed a row into the join aggregation AggInterpreter instead of
+ * Feed a row into the join aggregation JoinAggInterpreter instead of
  * sending via TRANSID_AI.  Selects the correct interpreter based
  * on the concurrency strategy and increments m_completed_ops.
  *
@@ -5054,7 +5051,7 @@ int Dbtup::handleJoinAggRow(KeyReqStruct *req_struct,
   JoinAggregationState *state =
       getJoinAggState(req_struct->m_join_agg_state_key);
   ndbrequire(state != nullptr);
-  AggInterpreter *interp;
+  JoinAggInterpreter *interp;
   if (state->m_strategy == JoinAggregationState::MUTEX_FREE) {
     Uint32 thr_idx = instance() - 1;
     ndbrequire(thr_idx < state->m_num_threads);
@@ -5363,9 +5360,9 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
     if (req_struct->scan_rec != nullptr) {
       Dblqh::ScanRecord* scan_rec_ptr =
                     reinterpret_cast<Dblqh::ScanRecord*>(req_struct->scan_rec);
-        if (unlikely(scan_rec_ptr->m_aggregation == true &&
-            scan_rec_ptr->m_agg_interpreter->vec_search() &&
-            !scan_rec_ptr->m_agg_interpreter->IsCandidateBufAllocated())) {
+        if (unlikely(scan_rec_ptr->m_has_pushdown == true &&
+            scan_rec_ptr->m_vs_interpreter != nullptr &&
+            !scan_rec_ptr->m_vs_interpreter->IsCandidateBufAllocated())) {
 
           vec_max_rec_size_ptr = &vec_max_rec_size;
           get_vec_max_rec_size = true;
@@ -5433,45 +5430,40 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
       Dblqh::ScanRecord* scan_rec_ptr =
                     reinterpret_cast<Dblqh::ScanRecord*>(req_struct->scan_rec);
       // Moz
-      if (scan_rec_ptr->m_aggregation == true) {
-        ndbrequire(scan_rec_ptr->m_agg_interpreter != nullptr);
+      if (scan_rec_ptr->m_has_pushdown == true) {
+        ndbrequire(scan_rec_ptr->m_agg_interpreter != nullptr ||
+                   scan_rec_ptr->m_vs_interpreter != nullptr);
         if (unlikely(get_vec_max_rec_size)) {
           /*
            * VS related
            * We’ve already calculated the theoretical maximum result record size.
-           * Now it’s time to pass it to m_agg_interpreter to guide it in preallocating
+           * Now it’s time to pass it to m_vs_interpreter to guide it in preallocating
            * the buffer for maintaining the top-k vector search results.
            */
-          scan_rec_ptr->m_agg_interpreter->set_vec_max_rec_size(vec_max_rec_size);
+          ndbrequire(scan_rec_ptr->m_vs_interpreter != nullptr);
+          scan_rec_ptr->m_vs_interpreter->set_vec_max_rec_size(vec_max_rec_size);
         }
         /*
          * update req_struct->read_length here, which will update the
          * Dblqh::ScanRecord::m_curr_batch_size_bytes later in the
-         * Dblqh::scanTupkeyConfLab, even we don't use that variable
+         * Dblqh::scanTupkeyConfLab, even we don’t use that variable
          * to decide whether reaches batch limitation. For aggregation,
          * we use Dblqh::ScanRecord::m_agg_curr_batch_size_bytes.
          * req_struct->read_length would be updated in ProcessRec().
          */
         bool vec_update_candidate = false;
-        int ret = scan_rec_ptr->m_agg_interpreter->ProcessRec(this, req_struct,
-                                                       &vec_update_candidate);
-        if (ret == AGG_EVICT_NEEDED) {
-          Uint32 flush_len = scan_rec_ptr->m_agg_interpreter->
-                                PrepareAggResIfNeeded(signal, true);
-          if (flush_len != 0) {
-            TransIdAI * flushAI = (TransIdAI *)signal->getDataPtrSend();
-            flushAI->connectPtr = req_struct->tc_operation_ptr;
-            flushAI->transId[0] = req_struct->trans_id1;
-            flushAI->transId[1] = req_struct->trans_id2;
-            SendAggregationResult(signal, flush_len, req_struct->rec_blockref);
-          }
-          ret = scan_rec_ptr->m_agg_interpreter->ProcessRec(this, req_struct,
-                                                       &vec_update_candidate);
+        int ret = 0;
+        if (scan_rec_ptr->m_agg_interpreter != nullptr) {
+          ret = scan_rec_ptr->m_agg_interpreter->ProcessRec(this, req_struct);
+        } else {
+          ret = scan_rec_ptr->m_vs_interpreter->ProcessRec(this, req_struct,
+                                                         &vec_update_candidate);
         }
         if (ret != 0) {
           return TUPKEY_abort(req_struct, ret);
         }
-        if (!scan_rec_ptr->m_agg_interpreter->vec_search()) {
+        if (scan_rec_ptr->m_agg_interpreter != nullptr) {
+          /* PA path */
           Uint32 res_len = scan_rec_ptr->m_agg_interpreter->
             PrepareAggResIfNeeded(signal, false);
           if (res_len != 0) {
@@ -5479,21 +5471,6 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
             ndbrequire(req_struct->agg_curr_batch_size_bytes == 0);
             req_struct->agg_curr_batch_size_rows = 1;
             req_struct->agg_curr_batch_size_bytes = res_len * sizeof(Uint32);
-            /*
-             * NEW:
-             * We don't need to update req_struct->read_length here.
-             * Instead, we update req_struct->agg_curr_batch_size_bytes,
-             * it would return to LQH by TupKeyConf from returnTUPKEYCONF(),
-             * which will finally update scanPtr->m_agg_curr_batch_size_bytes.
-             * And we use scanPtr->m_agg_curr_batch_size_bytes to indicate
-             * the batch size for aggregation.
-             *
-             * OLD COMMENT:
-             * We need to req_struct->read_length here, which will update
-             * the Dblqh::ScanRecord::m_curr_batch_size_bytes later in
-             * the Dblqh::scanTupkeyConfLab
-             * // req_struct->read_length = res_len;
-             */
             TransIdAI * transIdAI=  (TransIdAI *)signal->getDataPtrSend();
             transIdAI->connectPtr = req_struct->tc_operation_ptr;
             transIdAI->transId[0] = req_struct->trans_id1;
@@ -5503,15 +5480,13 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
           req_struct->agg_n_res_recs = scan_rec_ptr->
             m_agg_interpreter->NumOfResRecords();
         } else if (vec_update_candidate) {
-          // Uint32* ptr = &signal->theData[25];
-          // g_eventLogger->info("Prepare Copy: %u %u", ptr[0], ptr[1]);
-          int ret = scan_rec_ptr->m_agg_interpreter->
+          /* VS path */
+          int ret = scan_rec_ptr->m_vs_interpreter->
                              CopyVecCandidateFromSignal(signal,
                                               RattroutCounter);
           if (ret != 0) {
             return TUPKEY_abort(req_struct, ret);
           }
-        } else {
         }
         return 0;
       } else if (req_struct->m_join_agg_state_key != RNIL) {

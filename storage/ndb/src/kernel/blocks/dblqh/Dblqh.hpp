@@ -70,6 +70,7 @@ class Dbacc;
 class Dbtup;
 class Dbtux;
 class Lgman;
+class VecSearchInterpreter;
 
 class FsReadWriteReq;
 
@@ -109,10 +110,9 @@ class FsReadWriteReq;
   } while (0)
 
 #define VS_NEED_PRINT(scanPtr) \
-  ((scanPtr != nullptr) && (scanPtr->m_aggregation) && \
-   (scanPtr->m_agg_interpreter->vec_search()) && \
-   (scanPtr->m_agg_interpreter->table_id() == PA_TABLE_ID) && \
-   (scanPtr->m_agg_interpreter->frag_id() == PA_PART_ID))
+  ((scanPtr != nullptr) && (scanPtr->m_vs_interpreter != nullptr) && \
+   (scanPtr->m_vs_interpreter->table_id() == PA_TABLE_ID) && \
+   (scanPtr->m_vs_interpreter->frag_id() == PA_PART_ID))
 
 #define VS_RONDB_TRACE(scanPtr, format, ...) \
   do { \
@@ -685,11 +685,12 @@ class Dblqh : public SimulatedBlock {
       m_takeOverRefCount(0),
       m_reserved(0),
       m_send_early_hbrep(0),
-      m_aggregation(0),
+      m_has_pushdown(0),
       m_agg_curr_batch_size_rows(0),
       m_agg_curr_batch_size_bytes(0),
       m_agg_n_res_recs(0),
       m_agg_interpreter(nullptr),
+      m_vs_interpreter(nullptr),
       m_join_agg_state_key(RNIL),
       m_join_agg_evict_rows(0),
       m_rows_examined(0),
@@ -820,8 +821,8 @@ class Dblqh : public SimulatedBlock {
     Uint8 m_send_early_hbrep;
     Uint8 m_par_ordered_scan_flag;
     Uint8 m_continous_scan_state;
-    // Aggregation
-    Uint8 m_aggregation;
+    // Pushdown (aggregation or vector search)
+    Uint8 m_has_pushdown;
     Uint32 m_agg_curr_batch_size_rows; // [0, 1], 1 indicates a "aggregation
                                        // batch completed", which means either
                                        // size of group map in aggregation
@@ -836,6 +837,7 @@ class Dblqh : public SimulatedBlock {
                              // that we won't send a scanfragconf with 0 completed_ops
                              // to the TC, which could cause incorrect aggregation result.
     AggInterpreter* m_agg_interpreter;
+    VecSearchInterpreter* m_vs_interpreter;
     Uint32 m_join_agg_state_key;    // Pool index for shared join agg state (RNIL if none)
     Uint32 m_join_agg_evict_rows;   // Evicted group rows sent to API during this scan batch
     Uint32 m_rows_examined;          // Total rows examined in this scan batch

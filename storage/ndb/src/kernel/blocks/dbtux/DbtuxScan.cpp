@@ -364,7 +364,7 @@ void Dbtux::execACC_SCANREQ(Signal *signal) {
         AccScanReq::getReadCommittedFlag(req->requestInfo);
     scanPtr.p->m_lockMode = AccScanReq::getLockMode(req->requestInfo);
     scanPtr.p->m_descending = AccScanReq::getDescendingFlag(req->requestInfo);
-    scanPtr.p->m_aggregation = AccScanReq::getAggregationFlag(req->requestInfo);
+    scanPtr.p->m_has_pushdown = AccScanReq::getAggregationFlag(req->requestInfo);
     c_ctx.scanPtr = scanPtr;
 
     /*
@@ -1048,7 +1048,7 @@ void Dbtux::continue_scan(Signal *signal, ScanOpPtr scanPtr, Frag &frag,
      *
      *   Dblqh::exec_next_scan_conf() -> Dblqh::continue_next_scan_conf()
      */
-    if (scan.m_aggregation) {
+    if (scan.m_has_pushdown) {
       conf->vectorScanDone = true;
     }
     signal->setLength(NextScanConf::SignalLengthNoTuple);

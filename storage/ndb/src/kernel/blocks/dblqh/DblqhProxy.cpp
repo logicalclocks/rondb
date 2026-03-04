@@ -26,7 +26,7 @@
 #include "Dblqh.hpp"
 #include "DblqhCommon.hpp"
 #include "JoinAggregationState.hpp"
-#include "dbtup/AggInterpreter.hpp"
+#include "dbtup/JoinAggInterpreter.hpp"
 
 #include <signaldata/DumpStateOrd.hpp>
 #include <signaldata/ExecFragReq.hpp>
@@ -2393,17 +2393,17 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   }
   state->m_memory_budget_pages = budget_pages;
 
-  // Allocate AggInterpreter(s) based on strategy.
+  // Allocate JoinAggInterpreter(s) based on strategy.
   if (state->m_strategy == JoinAggregationState::MUTEX_BASED) {
     jam();
     void *page = lc_ndbd_pool_malloc(MEM_CHUNK_SIZE, RG_QUERY_MEMORY,
                                      getThreadId(), false);
     ndbrequire(page != nullptr);
-    AggInterpreter *interp =
-      new (page) AggInterpreter(state->m_agg_program_len,
-                                req->tableId,
-                                0,
-                                getThreadId());
+    JoinAggInterpreter *interp =
+      new (page) JoinAggInterpreter(state->m_agg_program_len,
+                                    req->tableId,
+                                    0,
+                                    getThreadId());
     interp->Init(state->m_agg_program);
     interp->setUseMutex(true);
     interp->initChunkAllocator(getThreadId(), budget_pages, available_pages);
@@ -2411,8 +2411,8 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   } else {
     jam();
     Uint32 num_threads = state->m_num_threads;
-    AggInterpreter **arr = (AggInterpreter **)lc_ndbd_pool_malloc(
-        num_threads * sizeof(AggInterpreter *),
+    JoinAggInterpreter **arr = (JoinAggInterpreter **)lc_ndbd_pool_malloc(
+        num_threads * sizeof(JoinAggInterpreter *),
         RG_QUERY_MEMORY, getThreadId(), false);
     ndbrequire(arr != nullptr);
     Uint32 per_thread_budget = budget_pages / num_threads;
@@ -2423,11 +2423,11 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
       void *page = lc_ndbd_pool_malloc(MEM_CHUNK_SIZE, RG_QUERY_MEMORY,
                                        getThreadId(), false);
       ndbrequire(page != nullptr);
-      AggInterpreter *interp =
-        new (page) AggInterpreter(state->m_agg_program_len,
-                                  req->tableId,
-                                  0,
-                                  getThreadId());
+      JoinAggInterpreter *interp =
+        new (page) JoinAggInterpreter(state->m_agg_program_len,
+                                      req->tableId,
+                                      0,
+                                      getThreadId());
       interp->Init(state->m_agg_program);
       interp->initChunkAllocator(getThreadId(), per_thread_budget,
                                    available_pages);
@@ -2493,11 +2493,11 @@ DblqhProxy::execJOIN_AGG_RELEASE_REQ(Signal *signal) {
       state->m_numReceiverIds = 0;
     }
 
-    // Free AggInterpreter(s)
+    // Free JoinAggInterpreter(s)
     if (state->m_agg_interpreter != nullptr) {
       jam();
       state->m_agg_interpreter->freeAllChunks();
-      state->m_agg_interpreter->~AggInterpreter();
+      state->m_agg_interpreter->~JoinAggInterpreter();
       lc_ndbd_pool_free(state->m_agg_interpreter);
       state->m_agg_interpreter = nullptr;
     }
@@ -2506,7 +2506,7 @@ DblqhProxy::execJOIN_AGG_RELEASE_REQ(Signal *signal) {
       for (Uint32 i = 0; i < state->m_num_threads; i++) {
         if (state->m_per_thread_interpreters[i] != nullptr) {
           state->m_per_thread_interpreters[i]->freeAllChunks();
-          state->m_per_thread_interpreters[i]->~AggInterpreter();
+          state->m_per_thread_interpreters[i]->~JoinAggInterpreter();
           lc_ndbd_pool_free(state->m_per_thread_interpreters[i]);
           state->m_per_thread_interpreters[i] = nullptr;
         }

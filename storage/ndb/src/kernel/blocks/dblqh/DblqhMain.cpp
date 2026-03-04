@@ -109,6 +109,9 @@
 #include "../backup/Backup.hpp"
 #include "../dbtux/Dbtux.hpp"
 #include "../dbtup/AggInterpreter.hpp"
+#include "../dbtup/JoinAggInterpreter.hpp"
+#include "../dbtup/PushdownInterpreter.hpp"
+#include "../dbtup/VecSearchInterpreter.hpp"
 
 /**
  * overload handling...
@@ -6063,7 +6066,7 @@ void Dblqh::execTUPKEYCONF(Signal *signal) {
       Uint32 readLen = tupKeyConf->readLength;
       Uint32 last_row = tupKeyConf->lastRow;
       Uint32 numExecInstructions = tupKeyConf->noExecInstructions;
-      if (scanPtr->m_aggregation) {
+      if (scanPtr->m_has_pushdown) {
         if (tupKeyConf->agg_batch_size_bytes) {
           /*
            * PA related
@@ -16848,14 +16851,14 @@ void Dblqh::exec_next_scan_conf(Signal *signal, bool ttl_ignore_for_ral) {
    * 2. vectorScanDone indicates the normal scan is done, so
    * mark the m_vec_search_scan_done of the interpreter to true
    */
-  if (unlikely(vectorScanDone && scanPtr->m_aggregation &&
-      scanPtr->m_agg_interpreter->vec_search() &&
+  if (unlikely(vectorScanDone && scanPtr->m_has_pushdown &&
+      scanPtr->m_vs_interpreter != nullptr &&
       // Just set it to 'done' once
-      !scanPtr->m_agg_interpreter->vec_search_scan_done())) {
-    scanPtr->m_agg_interpreter->set_vec_search_scan_done(true);
+      !scanPtr->m_vs_interpreter->vec_search_scan_done())) {
+    scanPtr->m_vs_interpreter->set_vec_search_scan_done(true);
     scanPtr->m_curr_batch_size_rows = 0;
     scanPtr->m_curr_batch_size_bytes = 0;
-    scanPtr->m_agg_interpreter->PrepareVecCandidates();
+    scanPtr->m_vs_interpreter->PrepareVecCandidates();
     VS_RONDB_TRACE(scanPtr, "Prepared vector candidates");
   }
   continue_next_scan_conf(signal, scanPtr->scanState, scanPtr);
@@ -16864,9 +16867,9 @@ void Dblqh::exec_next_scan_conf(Signal *signal, bool ttl_ignore_for_ral) {
 void Dblqh::continue_next_scan_conf(Signal *signal,
                                     ScanRecord::ScanState scanState,
                                     ScanRecord *const scanPtr) {
-  if (unlikely(scanPtr && scanPtr->m_aggregation &&
-      scanPtr->m_agg_interpreter->vec_search() &&
-      scanPtr->m_agg_interpreter->vec_search_scan_done())) {
+  if (unlikely(scanPtr && scanPtr->m_has_pushdown &&
+      scanPtr->m_vs_interpreter != nullptr &&
+      scanPtr->m_vs_interpreter->vec_search_scan_done())) {
     NextScanConf* nextScanConf = (NextScanConf *)&signal->theData[0];
     ndbrequire(
         /*
@@ -16907,8 +16910,8 @@ void Dblqh::continue_next_scan_conf(Signal *signal,
          * Because of this, the original assertion would fail — so we add an
          * exception here specifically for vector search.
          */
-        (scanPtr->m_aggregation && scanPtr->m_agg_interpreter->vec_search() &&
-         scanPtr->m_agg_interpreter->vec_search_scan_done()));
+        (scanPtr->m_has_pushdown && scanPtr->m_vs_interpreter != nullptr &&
+         scanPtr->m_vs_interpreter->vec_search_scan_done()));
   }
 #endif
   switch (scanState) {
@@ -17209,7 +17212,7 @@ void Dblqh::continueScanNextReqLab(Signal *signal,
     return;
   }  // if
 
-  if (scanPtr->m_aggregation &&
+  if (scanPtr->m_has_pushdown &&
       scanPtr->m_agg_interpreter != nullptr &&
       scanPtr->m_agg_interpreter->gb_map() != nullptr &&
       !scanPtr->m_agg_interpreter->gb_map()->empty()) {
@@ -17256,13 +17259,13 @@ void Dblqh::scanNextLoopLab(Signal *signal, Uint32 clientPtrI, Uint32 accOpPtr,
    * PA related
    * statemach
    */
-  ndbrequire(!scanPtr->m_aggregation ||
+  ndbrequire(!scanPtr->m_has_pushdown ||
              (scanPtr->scanState == ScanRecord::WAIT_NEXT_SCAN ||
              scanPtr->scanState == ScanRecord::WAIT_SCAN_NEXTREQ));
   scanPtr->scanState = ScanRecord::WAIT_NEXT_SCAN;
   scanPtr->scan_lastSeen = __LINE__;
   if (unlikely(in_send_next_scan == 0)) {
-    bool debug_pa_print = PA_NEED_PRINT(scanPtr->m_aggregation,
+    bool debug_pa_print = PA_NEED_PRINT(scanPtr->m_has_pushdown,
                             fragPtr->tabRef, fragPtr->fragId);
     send_next_NEXT_SCANREQ(signal,
                            block,
@@ -17302,7 +17305,7 @@ void Dblqh::scanLockReleasedLab(Signal* signal,
   FragrecordPtr regFragptr;
   regFragptr.i = regTcPtr->fragmentptr;
   ndbrequire(c_fragment_pool.getPtr(regFragptr));
-  PA_RONDB_TRACE(scanPtr->m_aggregation,
+  PA_RONDB_TRACE(scanPtr->m_has_pushdown,
                  regFragptr.p->tabRef, regFragptr.p->fragId,
                  "Dblqh::scanLockReleasedLab(), "
                  "scanPtr->scanReleaseCount: %u, "
@@ -17341,8 +17344,9 @@ void Dblqh::scanLockReleasedLab(Signal* signal,
        * aggregation
        */
       if (VS_NEED_PRINT(scanPtr)) {
-        if (scanPtr->m_agg_interpreter->vec_search_scan_done() &&
-            scanPtr->m_agg_interpreter->next_send_idx() < 0) {
+        if (scanPtr->m_vs_interpreter != nullptr &&
+            scanPtr->m_vs_interpreter->vec_search_scan_done() &&
+            scanPtr->m_vs_interpreter->next_send_idx() < 0) {
           g_eventLogger->info("[VS_RONDB_TRACE] Vector search closeScanLab");
         }
       }
@@ -17388,7 +17392,7 @@ void Dblqh::scanLockReleasedLab(Signal* signal,
      * See more details at Dblqh::scanTupkeyConfLab(),
      * search for [PA-COMMENT] there.
      */
-    if (scanPtr->m_aggregation) {
+    if (scanPtr->m_has_pushdown) {
       // TODO (Zhao)
       // double check: 0 : 1 ?
       // ndbrequire(scanPtr->m_agg_n_res_recs == 0);
@@ -18064,7 +18068,7 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
     return;
   }
   {
-    AggInterpreter *interp = (state->m_strategy ==
+    JoinAggInterpreter *interp = (state->m_strategy ==
         JoinAggregationState::MUTEX_FREE)
         ? state->m_per_thread_interpreters[0]
         : state->m_agg_interpreter;
@@ -18123,7 +18127,7 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
 #endif
 
   if (state->m_strategy == JoinAggregationState::MUTEX_FREE) {
-    AggInterpreter **interps = state->m_per_thread_interpreters;
+    JoinAggInterpreter **interps = state->m_per_thread_interpreters;
     const Uint32 num_threads = state->m_num_threads;
 
     while (merge_idx < num_threads) {
@@ -18155,7 +18159,7 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
    * Merge complete (or MUTEX_BASED — no merge needed).
    * Select the result interpreter, finalize, and start sending.
    */
-  AggInterpreter *interp;
+  JoinAggInterpreter *interp;
   if (state->m_strategy == JoinAggregationState::MUTEX_FREE) {
     interp = state->m_per_thread_interpreters[0];
   } else {
@@ -18254,7 +18258,7 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
   JoinAggregationState *state = getJoinAggState(aggStateKey);
   ndbrequire(state != nullptr);
 
-  AggInterpreter *interp;
+  JoinAggInterpreter *interp;
   if (state->m_strategy == JoinAggregationState::MUTEX_FREE) {
     interp = state->m_per_thread_interpreters[0];
   } else {
@@ -18265,7 +18269,7 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
   const Uint32 n_gb_cols = interp->n_gb_cols();
   const Uint32 n_agg_results = interp->n_agg_results();
   const Uint32 v_len = interp->val_len();
-  GBHashTable *gb_map = interp->gb_map_mutable();
+  JoinGBHashTable *gb_map = interp->gb_map_mutable();
   Uint32 batch_count = 0;
 
   if (gb_map != nullptr) {
@@ -18740,7 +18744,7 @@ void Dblqh::continueAfterReceivingAllAiLab(
    * PA related
    * statemach
    */
-  ndbrequire(!scanPtr->m_aggregation ||
+  ndbrequire(!scanPtr->m_has_pushdown ||
              scanPtr->scanState == ScanRecord::SCAN_FREE);
   scanPtr->scanState = ScanRecord::WAIT_ACC_SCAN;
   AccScanReq *req = (AccScanReq *)&signal->theData[0];
@@ -18751,7 +18755,7 @@ void Dblqh::continueAfterReceivingAllAiLab(
   AccScanReq::setReadCommittedFlag(requestInfo, scanPtr->readCommitted);
   AccScanReq::setDescendingFlag(requestInfo, scanPtr->descending);
   AccScanReq::setStatScanFlag(requestInfo, scanPtr->statScan);
-  AccScanReq::setAggregationFlag(requestInfo, scanPtr->m_aggregation);
+  AccScanReq::setAggregationFlag(requestInfo, scanPtr->m_has_pushdown);
 
   if (refToMain(regTcPtr->clientBlockref) == getBACKUP()) {
     if (scanPtr->lcpScan) {
@@ -18988,7 +18992,7 @@ void Dblqh::storedProcConfScanLab(Signal *signal,
      * PA related
      * statemach
      */
-    ndbrequire(!scanPtr->m_aggregation ||
+    ndbrequire(!scanPtr->m_has_pushdown ||
                scanPtr->scanState == ScanRecord::WAIT_ACC_SCAN);
     scanPtr->scanState = ScanRecord::WAIT_NEXT_SCAN;
     scanPtr->scan_lastSeen = __LINE__;
@@ -19002,7 +19006,7 @@ void Dblqh::storedProcConfScanLab(Signal *signal,
      * }
      * regFragptr.p is expected to be same with fragptr.p here.
      */
-    bool debug_pa_print = PA_NEED_PRINT(scanPtr->m_aggregation,
+    bool debug_pa_print = PA_NEED_PRINT(scanPtr->m_has_pushdown,
                                    fragptr.p->tabRef, fragptr.p->fragId);
     if (likely(in_send_next_scan == 0)) {
       send_next_NEXT_SCANREQ(signal,
@@ -19322,9 +19326,9 @@ void Dblqh::nextScanConfScanLab(Signal *signal, ScanRecord *const scanPtr,
                                 Uint32 fragId, Uint32 accOpPtr,
                                 const TcConnectionrecPtr tcConnectptr) {
   TcConnectionrec *const regTcPtr = tcConnectptr.p;
-  bool vec_search_sending_phase = scanPtr->m_aggregation &&
-                         scanPtr->m_agg_interpreter->vec_search() &&
-                         scanPtr->m_agg_interpreter->vec_search_scan_done();
+  bool vec_search_sending_phase = scanPtr->m_has_pushdown &&
+                         scanPtr->m_vs_interpreter != nullptr &&
+                         scanPtr->m_vs_interpreter->vec_search_scan_done();
    /*
     * VS related
     * In a normal scan, the condition 'fragId != RNIL && accOpPtr != RNIL'
@@ -19374,7 +19378,7 @@ void Dblqh::nextScanConfScanLab(Signal *signal, ScanRecord *const scanPtr,
        * If the original result set is empty due to filtering or an empty table,
        * we *do* need to enter the else branch to close the scan.
        */
-      if (scanPtr->m_agg_interpreter->next_send_idx() >= 0 ) {
+      if (scanPtr->m_vs_interpreter->next_send_idx() >= 0 ) {
         /*
          * VS related
          * [For sending vector search result]
@@ -19506,7 +19510,7 @@ void Dblqh::nextScanConfScanLab(Signal *signal, ScanRecord *const scanPtr,
       /*
        * Filter out the pushdown vector search case
        */
-      if (unlikely(scanPtr->m_aggregation) && !scanPtr->m_agg_interpreter->vec_search()) {
+      if (unlikely(scanPtr->m_has_pushdown) && scanPtr->m_agg_interpreter != nullptr) {
         if (!c_tup->SendAggResToAPI(signal, tcConnectptr.p, scanPtr)) {
           jam();
           sendScanFragConf(signal, ZFALSE, tcConnectptr.p);
@@ -19585,12 +19589,12 @@ Dblqh::next_scanconf_tupkeyreq(Signal* signal,
    * [For sending vector search result]
    * 4. Send 1 vector search result
    */
-  if (unlikely(scanPtr->m_aggregation &&
-      scanPtr->m_agg_interpreter->vec_search() &&
-      scanPtr->m_agg_interpreter->vec_search_scan_done())) {
-    ndbrequire(scanPtr->m_agg_interpreter->next_send_idx() >= 0);
+  if (unlikely(scanPtr->m_has_pushdown &&
+      scanPtr->m_vs_interpreter != nullptr &&
+      scanPtr->m_vs_interpreter->vec_search_scan_done())) {
+    ndbrequire(scanPtr->m_vs_interpreter->next_send_idx() >= 0);
 
-    Uint32 res_len = scanPtr->m_agg_interpreter->CopyOneVecCandidateToSignal(signal);
+    Uint32 res_len = scanPtr->m_vs_interpreter->CopyOneVecCandidateToSignal(signal);
     ndbrequire(res_len != 0);
     TransIdAI * transIdAI=  (TransIdAI *)signal->getDataPtrSend();
     transIdAI->connectPtr = scanPtr->scanApiOpPtr[scanPtr->scanApiOpPtr_index];
@@ -19633,7 +19637,7 @@ Dblqh::next_scanconf_tupkeyreq(Signal* signal,
      * in above code, so here the lastRow could be true, then the
      * scan process will start ending phase
 		 */
-    tupKeyConf->lastRow = scanPtr->m_agg_interpreter->next_send_idx() < 0;
+    tupKeyConf->lastRow = scanPtr->m_vs_interpreter->next_send_idx() < 0;
     tupKeyConf->rowid = 0;
     tupKeyConf->noExecInstructions = 0;
     tupKeyConf->agg_batch_size_rows = 0;
@@ -19899,7 +19903,7 @@ void Dblqh::scanTupkeyConfLab(Signal* signal,
     read_len += sendKeyinfo20(signal, scanPtr, regTcPtr);
   }  // if
 
-  if (!scanPtr->m_aggregation) {
+  if (!scanPtr->m_has_pushdown) {
     /*
      * PA related
      * In aggregation mode, since we don't follow batch strategy 100%,
@@ -19950,7 +19954,7 @@ void Dblqh::scanTupkeyConfLab(Signal* signal,
   FragrecordPtr regFragptr;
   regFragptr.i = regTcPtr->fragmentptr;
   ndbrequire(c_fragment_pool.getPtr(regFragptr));
-  debug_pa_print = PA_NEED_PRINT(scanPtr->m_aggregation,
+  debug_pa_print = PA_NEED_PRINT(scanPtr->m_has_pushdown,
                           regFragptr.p->tabRef, regFragptr.p->fragId);
   }
 #endif // DEBUG_PA
@@ -20104,11 +20108,11 @@ void Dblqh::scanTupkeyRefLab(Signal* signal,
 
   // 'time_passed' is in slices of 10ms
   const Uint32 time_passed = cLqhTimeOutCount - tcConnectptr.p->tcTimer;
-  bool can_skip_for_pushdown = scanPtr->m_aggregation &&
-           ((!scanPtr->m_agg_interpreter->vec_search() && /* Normal agg */
+  bool can_skip_for_pushdown = scanPtr->m_has_pushdown &&
+           ((scanPtr->m_agg_interpreter != nullptr && /* Normal agg */
              scanPtr->m_agg_n_res_recs != 0) ||
-            (scanPtr->m_agg_interpreter->vec_search() && /* vector search */
-             scanPtr->m_agg_interpreter->HasAnyVecResult()));
+            (scanPtr->m_vs_interpreter != nullptr && /* vector search */
+             scanPtr->m_vs_interpreter->HasAnyVecResult()));
   if (unlikely(rows && time_passed > 1) &&
       (scanPtr->m_continous_scan_state == ScanRecord::CONTINOUS_SCAN_IDLE) &&
       (refToMain(scanPtr->scanApiBlockref) != DBSPJ || time_passed > 10 ) &&
@@ -20128,7 +20132,7 @@ void Dblqh::scanTupkeyRefLab(Signal* signal,
      * stop without waiting for the remaining results, which could cause
      * incorrect error in the final results.
      *
-     * We can simply just check scanPtr->m_aggregation here to make aggregation
+     * We can simply just check scanPtr->m_has_pushdown here to make aggregation
      * scan skip this if. But I would like to introduce an extra one
      * scanPtr->m_agg_n_res_recs to achieve this,
      * which can help us trace and show more details of aggregation scan process.
@@ -20151,16 +20155,16 @@ void Dblqh::scanTupkeyRefLab(Signal* signal,
   } else {
 #ifdef DEBUG_PA
     if (scanPtr->m_agg_n_res_recs) {
-      PA_RONDB_TRACE(scanPtr->m_aggregation,
+      PA_RONDB_TRACE(scanPtr->m_has_pushdown,
                      regTcPtr->tableref, scanPtr->m_agg_interpreter->frag_id(),
                      "Dblqh::scanTupkeyRefLab(), "
                      "SKIP send scanfragconf, scanPtr->m_agg_n_res_recs: %u",
                      scanPtr->m_agg_n_res_recs);
     }
-    if (scanPtr->m_agg_interpreter &&
-        scanPtr->m_agg_interpreter->HasAnyVecResult()) {
-      PA_RONDB_TRACE(scanPtr->m_aggregation,
-                     regTcPtr->tableref, scanPtr->m_agg_interpreter->frag_id(),
+    if (scanPtr->m_vs_interpreter &&
+        scanPtr->m_vs_interpreter->HasAnyVecResult()) {
+      PA_RONDB_TRACE(scanPtr->m_has_pushdown,
+                     regTcPtr->tableref, scanPtr->m_vs_interpreter->frag_id(),
                      "Dblqh::scanTupkeyRefLab(), "
                      "SKIP send scanfragconf, scanPtr->m_agg_interpreter has "
                      "local vector search results");
@@ -20196,7 +20200,7 @@ void Dblqh::closeScanLab(Signal *signal, TcConnectionrec *regTcPtr) {
    * PA related
    * statemach
    */
-  ndbrequire(!scanPtr->m_aggregation ||
+  ndbrequire(!scanPtr->m_has_pushdown ||
              (scanPtr->scanState == ScanRecord::WAIT_SCAN_NEXTREQ ||
              scanPtr->scanState == ScanRecord::WAIT_NEXT_SCAN));
   scanPtr->scanState = ScanRecord::WAIT_CLOSE_SCAN;
@@ -20441,7 +20445,11 @@ Uint32 Dblqh::initScanrec(const ScanFragReq *scanFragReq,
   scanPtr->rangeScan = rangeScan;
   scanPtr->prioAFlag = prioAFlag;
   scanPtr->m_first_match_flag = firstMatch;
-  scanPtr->m_aggregation = aggregation;
+  // m_has_pushdown and m_join_agg_state_key are mutually exclusive:
+  // - m_has_pushdown is set by PA/VS (AggregationFlag from DBTC/API).
+  // - m_join_agg_state_key is set by PJA (JoinAggFlag from DBSPJ).
+  // They gate different code paths in DbtupExecQuery — do not set both.
+  scanPtr->m_has_pushdown = aggregation;
   scanPtr->m_join_agg_state_key = RNIL;
   scanPtr->m_ttl_ignore = ttl_ignore;
   scanPtr->m_ttl_ignore_for_ral = false;
@@ -20555,6 +20563,9 @@ Uint32 Dblqh::initScanrec(const ScanFragReq *scanFragReq,
       scanPtr->scanApiOpPtr[3],
       scanPtr->scanApiOpPtr_index));
   }
+  // m_join_agg_state_key is for PJA only (JoinAggFlag set by DBSPJ).
+  // Mutually exclusive with m_has_pushdown (PA/VS from DBTC/API).
+  // They gate different code paths in DbtupExecQuery — do not set both.
   if (ScanFragReq::getJoinAggFlag(reqinfo)) {
     jam();
     scanPtr->m_join_agg_state_key =
@@ -20982,7 +20993,7 @@ void Dblqh::init_release_scanrec(ScanRecord *scanPtr) {
    * PA related
    * reset aggregation variables
    */
-  scanPtr->m_aggregation = false;
+  scanPtr->m_has_pushdown = false;
   scanPtr->m_agg_curr_batch_size_rows = 0;
   scanPtr->m_agg_curr_batch_size_bytes = 0;
   scanPtr->m_agg_n_res_recs = 0;
@@ -20992,21 +21003,13 @@ void Dblqh::init_release_scanrec(ScanRecord *scanPtr) {
    */
   if (scanPtr->m_agg_interpreter != nullptr) {
     AggInterpreter* ptr = scanPtr->m_agg_interpreter;
-    /*
-     * TODO (Zhao)
-     * potential crash here.
-     * gb_map may be non-empty if API closes scan
-     * while lqh is processing. double check here.
-     * (CHECKED).
-     */
     ndbrequire(ptr->gb_map()->empty());
-    /*
-     * We need to free the memory allocated specifically for vector search
-     * before destroying the AggInterpreter object.
-     */
-    ptr->FreeMemForVectorSearch();
-    AggInterpreter::Destruct(ptr);
+    PushdownInterpreter::Destruct(ptr);
     scanPtr->m_agg_interpreter = nullptr;
+  }
+  if (scanPtr->m_vs_interpreter != nullptr) {
+    PushdownInterpreter::Destruct(scanPtr->m_vs_interpreter);
+    scanPtr->m_vs_interpreter = nullptr;
   }
 }
 
@@ -21379,9 +21382,9 @@ void Dblqh::send_next_NEXT_SCANREQ(Signal* signal,
     scanPtr->scan_lastSeen = __LINE__;
     signal->m_extra_signals++;
     jamDebug();
-    if (unlikely(scanPtr->m_aggregation &&
-        scanPtr->m_agg_interpreter->vec_search() &&
-        scanPtr->m_agg_interpreter->vec_search_scan_done())) {
+    if (unlikely(scanPtr->m_has_pushdown &&
+        scanPtr->m_vs_interpreter != nullptr &&
+        scanPtr->m_vs_interpreter->vec_search_scan_done())) {
 
       NextScanConf *const conf = (NextScanConf *)signal->getDataPtrSend();
       ndbrequire(scanptr.p == scanPtr);
@@ -21441,10 +21444,10 @@ void Dblqh::send_next_NEXT_SCANREQ(Signal* signal,
        * m_in_send_next_scan before entering continue_next_scan_conf().
        */
       Uint32 next_value = RNIL;
-      if (scanPtr->m_agg_interpreter->next_send_idx() > 0) {
+      if (scanPtr->m_vs_interpreter->next_send_idx() > 0) {
         // The next one is not the last, keep looping after sending the next one
         next_value = 2;
-      } else if (scanPtr->m_agg_interpreter->next_send_idx() == 0) {
+      } else if (scanPtr->m_vs_interpreter->next_send_idx() == 0) {
         // The next one is the last one, will finish looping after sending it
         next_value = 1;
       } else {
@@ -21473,10 +21476,10 @@ void Dblqh::send_next_NEXT_SCANREQ(Signal* signal,
         ndbrequire(next_value == 1);
         m_in_send_next_scan = 1;
       }
-    } else if (unlikely(scanPtr->m_aggregation &&
-          scanPtr->m_agg_interpreter->vec_search() &&
-          scanPtr->m_agg_interpreter->vec_search_scan_done() &&
-          scanPtr->m_agg_interpreter->next_send_idx() < 0)) {
+    } else if (unlikely(scanPtr->m_has_pushdown &&
+          scanPtr->m_vs_interpreter != nullptr &&
+          scanPtr->m_vs_interpreter->vec_search_scan_done() &&
+          scanPtr->m_vs_interpreter->next_send_idx() < 0)) {
       VS_RONDB_TRACE(scanPtr, "Send vector search result completed");
     } else {
       block->EXECUTE_DIRECT_FN(f, signal);
@@ -21507,7 +21510,7 @@ void Dblqh::sendScanFragConf(Signal *signal,
   jamDebug();
   ScanRecord * const scanPtr = scanptr.p;
   Uint32 continous_scan_state = scanPtr->m_continous_scan_state;
-  Uint32 aggregation = scanPtr->m_aggregation;
+  Uint32 aggregation = scanPtr->m_has_pushdown;
   if (continous_scan_state != ScanRecord::CONTINOUS_SCAN_IDLE) {
     /**
      * We are performing a continous scan and we have now reached a point
@@ -21549,7 +21552,7 @@ void Dblqh::sendScanFragConf(Signal *signal,
     FragrecordPtr regFragptr;
     regFragptr.i = regTcPtr->fragmentptr;
     ndbrequire(c_fragment_pool.getPtr(regFragptr));
-    debug_pa_print = PA_NEED_PRINT(scanPtr->m_aggregation,
+    debug_pa_print = PA_NEED_PRINT(scanPtr->m_has_pushdown,
                             regFragptr.p->tabRef, regFragptr.p->fragId);
     if (debug_pa_print) {
       ndbrequire(regFragptr.p->fragId == scanPtr->m_agg_interpreter->frag_id());
@@ -21609,12 +21612,11 @@ void Dblqh::sendScanFragConf(Signal *signal,
 	 * scanPtr->m_agg_interpreter may never get constructed.
 	 * Therefore, we need to check the value of m_agg_interpreter here.
    */
-  bool is_vector_search = (scanPtr->m_aggregation && scanPtr->m_agg_interpreter != nullptr &&
-                           scanPtr->m_agg_interpreter->vec_search());
-  Uint32 tmp_completed_ops = (scanPtr->m_aggregation && !is_vector_search) ?
+  bool is_vector_search = (scanPtr->m_has_pushdown && scanPtr->m_vs_interpreter != nullptr);
+  Uint32 tmp_completed_ops = (scanPtr->m_has_pushdown && !is_vector_search) ?
                                     scanPtr->m_agg_curr_batch_size_rows :
                                     scanPtr->m_curr_batch_size_rows;
-  Uint32 tmp_total_len = (scanPtr->m_aggregation && !is_vector_search) ?
+  Uint32 tmp_total_len = (scanPtr->m_has_pushdown && !is_vector_search) ?
                                 scanPtr->m_agg_curr_batch_size_bytes :
                                 scanPtr->m_curr_batch_size_bytes;
   ndbassert((scanPtr->m_agg_curr_batch_size_bytes % sizeof(Uint32)) == 0);
@@ -21635,7 +21637,7 @@ void Dblqh::sendScanFragConf(Signal *signal,
            scanPtr->scanState == ScanRecord::WAIT_ACC_SCAN ||
            /* For vector search, check [Explaination] below */
            (scanPtr->scanState == ScanRecord::WAIT_NEXT_SCAN &&
-            scanPtr->m_agg_interpreter->vec_search()));
+            scanPtr->m_vs_interpreter != nullptr));
            /*
             * [Explanation]:
             * In vector search, we may reach this point after the first normal scan completes
@@ -38684,17 +38686,14 @@ void TraceLCP::restore(SimulatedBlock &lqh, Signal *sig) {
 #endif
 
 Dblqh::ScanRecord::~ScanRecord() {
-
-  AggInterpreter* ptr = m_agg_interpreter;
-  if (ptr != nullptr) {
-    /*
-     * We need to free the memory allocated specifically for vector search
-     * before destroying the AggInterpreter object.
-     */
-    ptr->FreeMemForVectorSearch();
-    AggInterpreter::Destruct(ptr);
+  if (m_agg_interpreter != nullptr) {
+    PushdownInterpreter::Destruct(m_agg_interpreter);
+    m_agg_interpreter = nullptr;
   }
-  m_agg_interpreter = nullptr;
+  if (m_vs_interpreter != nullptr) {
+    PushdownInterpreter::Destruct(m_vs_interpreter);
+    m_vs_interpreter = nullptr;
+  }
 }
 
 bool
@@ -38704,9 +38703,9 @@ Dblqh::ScanRecord::check_scan_batch_completed(bool debug_pa_print) const {
    *  1. Normal pushdown aggregation
    *  2. First round of scan in vector search
    */
-  if (unlikely(m_aggregation) &&
-      !(m_agg_interpreter->vec_search() &&
-        m_agg_interpreter->vec_search_scan_done())) {
+  if (unlikely(m_has_pushdown) &&
+      !(m_vs_interpreter != nullptr &&
+        m_vs_interpreter->vec_search_scan_done())) {
     /*
      * if m_agg_curr_batch_size_bytes != 0, means some aggregation
      * results have been sent to API as a batch because of group hash

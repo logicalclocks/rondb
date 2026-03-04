@@ -26,22 +26,22 @@
 
 #include "NdbAggregationCommon.hpp"
 
-bool TestIfSumOverflowsUint64(Uint64 arg1, Uint64 arg2) {
+inline bool TestIfSumOverflowsUint64(Uint64 arg1, Uint64 arg2) {
   return ULLONG_MAX - arg1 < arg2;
 }
 
-void SetRegisterNull(Register* reg) {
+inline void SetRegisterNull(Register* reg) {
   reg->is_null = true;
   reg->value.val_int64 = 0;
   reg->is_unsigned = false;
 }
 
-void ResetRegister(Register* reg) {
+inline void ResetRegister(Register* reg) {
   reg->type = NDB_TYPE_UNDEFINED;
   SetRegisterNull(reg);
 }
 
-Int32 RegPlusReg(const Register& a, const Register& b, Register* res) {
+inline Int32 RegPlusReg(const Register& a, const Register& b, Register* res) {
   assert(a.type != NDB_TYPE_UNDEFINED && b.type != NDB_TYPE_UNDEFINED);
 
   DataType res_type = NDB_TYPE_UNDEFINED;
@@ -152,7 +152,7 @@ Int32 RegPlusReg(const Register& a, const Register& b, Register* res) {
   return 0;
 }
 
-Int32 RegMinusReg(const Register& a, const Register& b,
+inline Int32 RegMinusReg(const Register& a, const Register& b,
                            Register* res) {
   assert(a.type != NDB_TYPE_UNDEFINED && b.type != NDB_TYPE_UNDEFINED);
 
@@ -271,7 +271,7 @@ Int32 RegMinusReg(const Register& a, const Register& b,
   return 0;
 }
 
-Int32 RegMulReg(const Register& a, const Register& b, Register* res) {
+inline Int32 RegMulReg(const Register& a, const Register& b, Register* res) {
   assert(a.type != NDB_TYPE_UNDEFINED && b.type != NDB_TYPE_UNDEFINED);
 
   DataType res_type = NDB_TYPE_UNDEFINED;
@@ -447,7 +447,7 @@ Int32 RegMulReg(const Register& a, const Register& b, Register* res) {
   return 0;
 }
 
-int32_t RegDivReg(const Register& tmp_a, const Register& tmp_b, Register* res,
+inline int32_t RegDivReg(const Register& tmp_a, const Register& tmp_b, Register* res,
                   bool is_div_int) {
 
   Register a(tmp_a);
@@ -615,7 +615,7 @@ int32_t RegDivReg(const Register& tmp_a, const Register& tmp_b, Register* res,
   return 0;
 }
 
-Int32 RegModReg(const Register& a, const Register& b, Register* res) {
+inline Int32 RegModReg(const Register& a, const Register& b, Register* res) {
   assert(a.type != NDB_TYPE_UNDEFINED && b.type != NDB_TYPE_UNDEFINED);
 
   DataType res_type = NDB_TYPE_UNDEFINED;
@@ -722,7 +722,7 @@ Int32 RegModReg(const Register& a, const Register& b, Register* res) {
  * PlusBigint - Addition for BIGINT (handles signed/unsigned dynamically)
  * Precondition: a.type == NDB_TYPE_BIGINT, b.type == NDB_TYPE_BIGINT
  */
-Int32 RegPlusBigint(const Register& a, const Register& b, Register* res) {
+inline Int32 RegPlusBigint(const Register& a, const Register& b, Register* res) {
   bool unsigned_flag = (a.is_unsigned | b.is_unsigned);
 
   if (unlikely(a.is_null || b.is_null)) {
@@ -790,7 +790,7 @@ Int32 RegPlusBigint(const Register& a, const Register& b, Register* res) {
  * PlusDouble - Addition for double precision floats
  * Precondition: a and b contain double values
  */
-Int32 RegPlusDouble(const Register& a, const Register& b, Register* res) {
+inline Int32 RegPlusDouble(const Register& a, const Register& b, Register* res) {
   if (unlikely(a.is_null || b.is_null)) {
     SetRegisterNull(res);
     res->type = NDB_TYPE_DOUBLE;
@@ -815,7 +815,7 @@ Int32 RegPlusDouble(const Register& a, const Register& b, Register* res) {
  * MinusBigint - Subtraction for BIGINT (handles signed/unsigned dynamically)
  * Precondition: a.type == NDB_TYPE_BIGINT, b.type == NDB_TYPE_BIGINT
  */
-Int32 RegMinusBigint(const Register& a, const Register& b, Register* res) {
+inline Int32 RegMinusBigint(const Register& a, const Register& b, Register* res) {
   bool unsigned_flag = (a.is_unsigned | b.is_unsigned);
 
   if (unlikely(a.is_null || b.is_null)) {
@@ -885,7 +885,7 @@ Int32 RegMinusBigint(const Register& a, const Register& b, Register* res) {
  * MinusDouble - Subtraction for double precision floats
  * Precondition: a and b contain double values
  */
-Int32 RegMinusDouble(const Register& a, const Register& b, Register* res) {
+inline Int32 RegMinusDouble(const Register& a, const Register& b, Register* res) {
   if (unlikely(a.is_null || b.is_null)) {
     SetRegisterNull(res);
     res->type = NDB_TYPE_DOUBLE;
@@ -910,7 +910,7 @@ Int32 RegMinusDouble(const Register& a, const Register& b, Register* res) {
  * MulBigint - Multiplication for BIGINT (handles signed/unsigned dynamically)
  * Precondition: a.type == NDB_TYPE_BIGINT, b.type == NDB_TYPE_BIGINT
  */
-Int32 RegMulBigint(const Register& a, const Register& b, Register* res) {
+inline Int32 RegMulBigint(const Register& a, const Register& b, Register* res) {
   bool unsigned_flag = (a.is_unsigned | b.is_unsigned);
 
   if (unlikely(a.is_null || b.is_null)) {
@@ -1030,7 +1030,7 @@ Int32 RegMulBigint(const Register& a, const Register& b, Register* res) {
  * MulDouble - Multiplication for double precision floats
  * Precondition: a and b contain double values
  */
-Int32 RegMulDouble(const Register& a, const Register& b, Register* res) {
+inline Int32 RegMulDouble(const Register& a, const Register& b, Register* res) {
   if (unlikely(a.is_null || b.is_null)) {
     SetRegisterNull(res);
     res->type = NDB_TYPE_DOUBLE;
@@ -1055,7 +1055,7 @@ Int32 RegMulDouble(const Register& a, const Register& b, Register* res) {
  * DivDouble - Division returning double
  * Precondition: a and b contain double values
  */
-Int32 RegDivDouble(const Register& a, const Register& b, Register* res) {
+inline Int32 RegDivDouble(const Register& a, const Register& b, Register* res) {
   if (unlikely(a.is_null || b.is_null)) {
     SetRegisterNull(res);
     res->type = NDB_TYPE_DOUBLE;
@@ -1087,7 +1087,7 @@ Int32 RegDivDouble(const Register& a, const Register& b, Register* res) {
  * DivIntBigint - Integer division for BIGINT (handles signed/unsigned dynamically)
  * Precondition: a.type == NDB_TYPE_BIGINT, b.type == NDB_TYPE_BIGINT
  */
-Int32 RegDivIntBigint(const Register& a, const Register& b, Register* res) {
+inline Int32 RegDivIntBigint(const Register& a, const Register& b, Register* res) {
   bool unsigned_flag = (a.is_unsigned | b.is_unsigned);
 
   if (unlikely(a.is_null || b.is_null)) {
