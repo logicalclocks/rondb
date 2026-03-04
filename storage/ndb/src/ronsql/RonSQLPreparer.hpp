@@ -186,6 +186,7 @@ private:
   };
   DynamicArray<SubqueryInfo> m_subquery_infos;
   bool m_has_subqueries = false;
+
   ResultPrinter* m_resultprinter = NULL;
   LexCString column_idx_to_name(uint);
   void (*m_print_json_string)(std::basic_ostream<char>& out, const char* str) = NULL;
@@ -206,6 +207,7 @@ private:
   void generate_scan_config_candidates();
   void analyze_subqueries();
   void analyze_subqueries_ce(ConditionalExpression* ce);
+  void decorrelate_exists();
   void compile();
   void build_agg_linked_projections();
   void determine_explain();

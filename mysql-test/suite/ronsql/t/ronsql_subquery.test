@@ -58,18 +58,22 @@ INSERT INTO lineitem VALUES
 --enable_query_log
 
 --echo
---echo === Test 1: Error — EXISTS subquery (not yet supported) ===
---echo Expected error: EXISTS subqueries not implemented
---error 1
---exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT o_custkey, SUM(o_total) FROM orders WHERE EXISTS (SELECT MIN(l_quantity) FROM lineitem) GROUP BY o_custkey;' 2>&1
+--echo === Test 1: EXISTS subquery — basic semi-join ===
+--echo All orders have lineitems, so all orders match
 
---echo
+DELIMITER |;
+let $QUERY=
+SELECT o_custkey, SUM(o_total)
+FROM orders
+WHERE EXISTS (SELECT l_id FROM lineitem WHERE l_orderkey = o_id)
+GROUP BY o_custkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
 --echo
 --echo === Test 2: IN subquery — scalar inner result ===
 --echo o_custkey IN (SELECT MAX(l_orderkey) FROM lineitem)
 --echo MAX(l_orderkey) = 5, so rows with o_custkey = 5 are included (but no such row)
 
-DELIMITER |;
 let $QUERY=
 SELECT o_custkey, SUM(o_total)
 FROM orders
@@ -218,6 +222,69 @@ SELECT l_orderkey, SUM(l_quantity), SUM(l_price)
 FROM lineitem
 WHERE l_quantity < l_price AND l_price > 100
 GROUP BY l_orderkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 15: EXISTS with filter on inner ===
+--echo Only orders with lineitem quantity > 20
+
+let $QUERY=
+SELECT o_id, SUM(o_total)
+FROM orders
+WHERE EXISTS (SELECT l_id FROM lineitem WHERE l_orderkey = o_id AND l_quantity > 20)
+GROUP BY o_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 16: EXISTS with no match ===
+--echo l_quantity > 999 matches nothing
+
+let $QUERY=
+SELECT o_id, SUM(o_total)
+FROM orders
+WHERE EXISTS (SELECT l_id FROM lineitem WHERE l_orderkey = o_id AND l_quantity > 999)
+GROUP BY o_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 17: EXISTS with COUNT(*) aggregation ===
+--echo Count orders per custkey that have lineitems
+
+let $QUERY=
+SELECT o_custkey, COUNT(*)
+FROM orders
+WHERE EXISTS (SELECT l_id FROM lineitem WHERE l_orderkey = o_id)
+GROUP BY o_custkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 18: EXISTS with outer WHERE filter ===
+--echo Orders with custkey = 200 that have lineitems
+
+let $QUERY=
+SELECT o_id, SUM(o_total)
+FROM orders
+WHERE o_custkey = 200
+  AND EXISTS (SELECT l_id FROM lineitem WHERE l_orderkey = o_id)
+GROUP BY o_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 19: NOT EXISTS error ===
+--echo Expected error: NOT EXISTS not implemented
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT o_custkey, COUNT(*) FROM orders WHERE NOT EXISTS (SELECT l_id FROM lineitem WHERE l_orderkey = o_id) GROUP BY o_custkey;' 2>&1
+
+--echo
+--echo
+--echo === Test 20: EXISTS with qualified column names ===
+--echo Using table aliases in correlation predicate
+
+let $QUERY=
+SELECT o.o_custkey, SUM(o.o_total)
+FROM orders AS o
+WHERE EXISTS (SELECT l.l_id FROM lineitem AS l WHERE l.l_orderkey = o.o_id)
+GROUP BY o.o_custkey;|
 --source suite/ronsql/include/ronsql_compare.inc
 
 --echo

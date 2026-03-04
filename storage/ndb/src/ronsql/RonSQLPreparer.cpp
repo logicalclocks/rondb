@@ -36,6 +36,8 @@
 #include <cstdlib>
 #include <cerrno>
 #include <climits>
+#include <vector>
+#include <string>
 #include "define_formatter.hpp"
 #include "my_time.h"
 #include "mysql_time.h"
@@ -660,10 +662,13 @@ RonSQLPreparer::load()
   Ndb* ndb = m_conf.ndb;
   if (ndb == NULL) return;
 
-  bool is_join = (m_context.ast_root.joins != NULL);
-
   // Populate m_dict
   m_dict = ndb->getDictionary();
+
+  // Transform EXISTS subqueries into IN subqueries (may set m_has_subqueries)
+  decorrelate_exists();
+
+  bool is_join = (m_context.ast_root.joins != NULL);
 
   if (is_join) {
     load_join();
@@ -1140,6 +1145,398 @@ RonSQLPreparer::generate_scan_config_candidates()
   }
 }
 
+/*
+ * Walk a CE tree and throw if T_EXISTS is found.
+ * Used after decorrelation to catch EXISTS inside OR (unsupported).
+ */
+static void
+check_no_nested_exists(struct ConditionalExpression* ce)
+{
+  if (ce == NULL) return;
+  if (ce->op == T_EXISTS)
+    throw RonSQLPermanentError(
+        "EXISTS subquery inside OR is not supported. "
+        "EXISTS must be a top-level AND conjunct in WHERE.");
+  switch (ce->op)
+  {
+  case T_IS:
+    check_no_nested_exists(ce->is.arg);
+    return;
+  case T_INTERVAL:
+    check_no_nested_exists(ce->interval.arg);
+    return;
+  case T_EXTRACT:
+    check_no_nested_exists(ce->extract.arg);
+    return;
+  case T_IDENTIFIER:
+  case T_INT:
+  case T_FLOAT:
+  case T_STRING:
+  case I_MYSQL_TIME:
+  case T_NULL:
+  case I_SUBQUERY:
+  case I_IN_SUBQUERY:
+    return;
+  default:
+    check_no_nested_exists(ce->args.left);
+    check_no_nested_exists(ce->args.right);
+    return;
+  }
+}
+
+void
+RonSQLPreparer::decorrelate_exists()
+{
+  ConditionalExpression* where_ce = m_context.ast_root.where_expression;
+  if (where_ce == NULL) return;
+
+  // Flatten outer WHERE into AND conjuncts
+  ConditionalExpression* conjuncts[MAX_WHERE_CONJUNCTS];
+  Uint32 num_conjuncts = 0;
+  flatten_and_conjuncts(where_ce, conjuncts, &num_conjuncts);
+
+  // Check if any conjunct is T_EXISTS
+  bool has_exists = false;
+  for (Uint32 i = 0; i < num_conjuncts; i++)
+  {
+    if (conjuncts[i]->op == T_EXISTS)
+    {
+      has_exists = true;
+      break;
+    }
+  }
+  if (!has_exists) return;
+
+  SelectStatement& ast = m_context.ast_root;
+
+  // Kept conjuncts (non-EXISTS, plus IN-subquery nodes generated below)
+  ConditionalExpression* kept[MAX_WHERE_CONJUNCTS];
+  Uint32 num_kept = 0;
+
+  for (Uint32 i = 0; i < num_conjuncts; i++)
+  {
+    if (conjuncts[i]->op != T_EXISTS)
+    {
+      require_prm(num_kept < MAX_WHERE_CONJUNCTS,
+                  "Too many WHERE conjuncts after decorrelation.");
+      kept[num_kept++] = conjuncts[i];
+      continue;
+    }
+
+    // Process EXISTS conjunct — transform into IN subquery
+    SelectStatement* inner_stmt = conjuncts[i]->subquery.stmt;
+    require_prm(inner_stmt != NULL,
+                "EXISTS subquery has no inner statement.");
+    require_prm(inner_stmt->joins == NULL,
+                "EXISTS subquery with inner joins not supported.");
+    require_prm(inner_stmt->table.c_str() != NULL,
+                "EXISTS subquery has no inner table.");
+
+    // Look up inner table in dictionary
+    const NdbDictionary::Table* inner_table =
+        m_dict->getTable(inner_stmt->table.c_str());
+    require_prm(inner_table != NULL,
+                "EXISTS subquery references unknown table.");
+
+    // Flatten inner WHERE
+    ConditionalExpression* inner_conjuncts[MAX_WHERE_CONJUNCTS];
+    Uint32 num_inner = 0;
+    flatten_and_conjuncts(inner_stmt->where_expression,
+                          inner_conjuncts, &num_inner);
+
+    require_prm(num_inner > 0,
+                "EXISTS subquery must have a WHERE clause with "
+                "correlation predicates.");
+
+    // Classify inner conjuncts: find correlation predicate and
+    // collect non-correlation predicates
+    Uint32 outer_col_idx = UINT32_MAX;
+    const char* inner_col_name = NULL;
+    Uint32 num_correlation = 0;
+    ConditionalExpression* non_corr[MAX_WHERE_CONJUNCTS];
+    Uint32 num_non_corr = 0;
+
+    for (Uint32 j = 0; j < num_inner; j++)
+    {
+      ConditionalExpression* ic = inner_conjuncts[j];
+
+      // Check for correlation predicate: T_EQUALS between two T_IDENTIFIERs
+      if (ic->op == T_EQUALS &&
+          ic->args.left != NULL && ic->args.left->op == T_IDENTIFIER &&
+          ic->args.right != NULL && ic->args.right->op == T_IDENTIFIER)
+      {
+        Uint32 left_idx = ic->args.left->col_idx;
+        Uint32 right_idx = ic->args.right->col_idx;
+        const char* left_name = m_columns[left_idx].c_str();
+        const char* right_name = m_columns[right_idx].c_str();
+
+        // Check qualifier first, then dictionary to determine inner/outer
+        LexCString left_qual = m_column_qualifiers[left_idx];
+        LexCString right_qual = m_column_qualifiers[right_idx];
+
+        bool left_is_inner;
+        bool right_is_inner;
+
+        LexCString inner_alias = inner_stmt->root_table != NULL
+            ? inner_stmt->root_table->alias
+            : inner_stmt->table;
+
+        if (left_qual.c_str() != NULL)
+          left_is_inner = (left_qual == inner_alias);
+        else
+          left_is_inner = (inner_table->getColumn(left_name) != NULL);
+
+        if (right_qual.c_str() != NULL)
+          right_is_inner = (right_qual == inner_alias);
+        else
+          right_is_inner = (inner_table->getColumn(right_name) != NULL);
+
+        if (left_is_inner != right_is_inner)
+        {
+          // Correlation predicate: one inner, one outer
+          require_prm(num_correlation == 0,
+                      "EXISTS subquery with multiple correlation "
+                      "predicates not supported (use single-column "
+                      "correlation).");
+          outer_col_idx = left_is_inner ? right_idx : left_idx;
+          inner_col_name = left_is_inner ? left_name : right_name;
+          num_correlation++;
+          continue;
+        }
+      }
+
+      // Non-correlation predicate
+      require_prm(num_non_corr < MAX_WHERE_CONJUNCTS,
+                  "Too many non-correlation predicates in EXISTS.");
+      non_corr[num_non_corr++] = ic;
+    }
+
+    require_prm(num_correlation == 1,
+                "EXISTS subquery must have exactly one correlation "
+                "predicate (inner.col = outer.col).");
+
+    // Build the inner SQL string for the IN subquery.
+    // Format: SELECT <inner_col> FROM <table> [WHERE ...] GROUP BY <inner_col>
+    //
+    // For the WHERE clause, we extract the original text of each
+    // non-correlation predicate from the source buffer. Since individual
+    // CE nodes don't carry position info, we extract text spans from the
+    // original inner query and remove the correlation predicate.
+    //
+    // Simplified approach: extract the whole inner WHERE text from
+    // sql_begin..sql_end and use it minus the correlation predicate.
+    // For robustness, we build the SQL using the inner table name and
+    // inner column name, then splice in non-correlation predicate text.
+
+    const char* inner_table_name = inner_stmt->table.c_str();
+    LexCString inner_alias = inner_stmt->root_table != NULL
+        ? inner_stmt->root_table->alias
+        : inner_stmt->table;
+    bool has_alias = (inner_stmt->root_table != NULL &&
+                      !(inner_alias == inner_stmt->table));
+
+    // Build inner SQL string
+    std::ostringstream sql;
+    sql << "SELECT MIN(" << inner_col_name << ")"
+        << " FROM " << inner_table_name;
+    if (has_alias)
+      sql << " AS " << inner_alias.c_str();
+
+    if (num_non_corr > 0)
+    {
+      // We need to serialize non-correlation predicates back to SQL.
+      // Extract the original inner SQL text and remove the correlation part.
+      // Strategy: use the original SQL between sql_begin and sql_end,
+      // which is the complete inner SELECT. We need just the WHERE part
+      // without the correlation predicate.
+      //
+      // Alternative: serialize simple predicates (col op const).
+      // For now, extract the original WHERE clause text and strip the
+      // correlation predicate textually. This is fragile but works for
+      // simple cases like "l_orderkey = o_id AND l_quantity > 20".
+      //
+      // More robust: find WHERE keyword in inner SQL, then for each AND
+      // conjunct, check if it contains both the inner and outer column
+      // names of the correlation. Skip that one, keep the rest.
+
+      ndbrequire(inner_stmt->sql_begin != NULL &&
+                 inner_stmt->sql_end != NULL);
+      std::string inner_sql(inner_stmt->sql_begin,
+                            inner_stmt->sql_end - inner_stmt->sql_begin);
+
+      // Find WHERE keyword (case-insensitive)
+      size_t where_pos = std::string::npos;
+      for (size_t p = 0; p + 5 <= inner_sql.size(); p++)
+      {
+        if ((inner_sql[p] == 'W' || inner_sql[p] == 'w') &&
+            (inner_sql[p+1] == 'H' || inner_sql[p+1] == 'h') &&
+            (inner_sql[p+2] == 'E' || inner_sql[p+2] == 'e') &&
+            (inner_sql[p+3] == 'R' || inner_sql[p+3] == 'r') &&
+            (inner_sql[p+4] == 'E' || inner_sql[p+4] == 'e') &&
+            (p + 5 == inner_sql.size() || inner_sql[p+5] == ' '))
+        {
+          where_pos = p;
+          break;
+        }
+      }
+
+      if (where_pos != std::string::npos)
+      {
+        // Extract the WHERE clause text (everything after "WHERE ")
+        std::string where_text = inner_sql.substr(where_pos + 6);
+
+        // Strip GROUP BY / ORDER BY / LIMIT if present
+        for (const char* kw : {"GROUP BY", "ORDER BY", "LIMIT",
+                                "group by", "order by", "limit"})
+        {
+          size_t kw_pos = where_text.find(kw);
+          if (kw_pos != std::string::npos)
+            where_text = where_text.substr(0, kw_pos);
+        }
+
+        // Trim trailing whitespace
+        while (!where_text.empty() &&
+               (where_text.back() == ' ' || where_text.back() == '\n' ||
+                where_text.back() == '\r' || where_text.back() == '\t'))
+          where_text.pop_back();
+
+        // Now split by AND and remove the correlation predicate.
+        // The correlation predicate contains both the outer column name
+        // and the inner column name connected by '='.
+        const char* outer_col_name = m_columns[outer_col_idx].c_str();
+        std::vector<std::string> and_parts;
+        size_t pos = 0;
+        while (pos < where_text.size())
+        {
+          // Find next AND (case-insensitive)
+          size_t and_pos = std::string::npos;
+          for (size_t p = pos; p + 3 <= where_text.size(); p++)
+          {
+            if ((where_text[p] == 'A' || where_text[p] == 'a') &&
+                (where_text[p+1] == 'N' || where_text[p+1] == 'n') &&
+                (where_text[p+2] == 'D' || where_text[p+2] == 'd') &&
+                (p == 0 || where_text[p-1] == ' ') &&
+                (p + 3 >= where_text.size() || where_text[p+3] == ' '))
+            {
+              and_pos = p;
+              break;
+            }
+          }
+          std::string part;
+          if (and_pos == std::string::npos)
+          {
+            part = where_text.substr(pos);
+            pos = where_text.size();
+          }
+          else
+          {
+            part = where_text.substr(pos, and_pos - pos);
+            pos = and_pos + 3; // skip "AND"
+          }
+          // Trim
+          while (!part.empty() && part.front() == ' ') part.erase(0, 1);
+          while (!part.empty() && part.back() == ' ') part.pop_back();
+          if (part.empty()) continue;
+
+          // Check if this part is the correlation predicate
+          bool is_correlation = false;
+          if (part.find(outer_col_name) != std::string::npos &&
+              part.find(inner_col_name) != std::string::npos &&
+              part.find('=') != std::string::npos)
+          {
+            is_correlation = true;
+          }
+          if (!is_correlation)
+            and_parts.push_back(part);
+        }
+
+        if (!and_parts.empty())
+        {
+          sql << " WHERE ";
+          for (size_t p = 0; p < and_parts.size(); p++)
+          {
+            if (p > 0) sql << " AND ";
+            sql << and_parts[p];
+          }
+        }
+      }
+    }
+
+    sql << " GROUP BY " << inner_col_name;
+
+    std::string sql_str = sql.str();
+    size_t sql_len = sql_str.size();
+    char* sql_buf = m_amalloc->alloc_exc<char>(sql_len + 1);
+    memcpy(sql_buf, sql_str.c_str(), sql_len);
+    sql_buf[sql_len] = '\0';
+
+    // Create a new inner SelectStatement for the IN subquery
+    SelectStatement* new_inner = m_amalloc->alloc_exc<SelectStatement>(1);
+    new (new_inner) SelectStatement();
+    new_inner->table = inner_stmt->table;
+    new_inner->root_table = inner_stmt->root_table;
+    new_inner->sql_begin = sql_buf;
+    new_inner->sql_end = sql_buf + sql_len;
+
+    // Build the outer column reference CE node (LHS of IN)
+    // The outer column was marked as inner during subquery parsing
+    // (m_subquery_depth > 0 at parse time). Clear the flag since it's
+    // actually an outer reference used in the WHERE clause.
+    if (outer_col_idx < m_col_is_inner.size())
+      m_col_is_inner[outer_col_idx] = false;
+
+    ConditionalExpression* outer_ref =
+        m_amalloc->alloc_exc<ConditionalExpression>(1);
+    outer_ref->op = T_IDENTIFIER;
+    outer_ref->col_idx = outer_col_idx;
+
+    // Transform the T_EXISTS CE node into I_IN_SUBQUERY in-place
+    ConditionalExpression* in_node = conjuncts[i];
+    in_node->op = I_IN_SUBQUERY;
+    in_node->in_subquery.expr = outer_ref;
+    in_node->in_subquery.stmt = new_inner;
+
+    // Register in m_subquery_infos (since analyze_subqueries already ran)
+    SubqueryInfo info;
+    info.ce_node = in_node;
+    info.inner_stmt = new_inner;
+    info.is_in_subquery = true;
+    info.in_expr = outer_ref;
+    info.in_values = new (m_amalloc->alloc_exc<DynamicArray<SubqueryResult>>(1))
+      DynamicArray<SubqueryResult>(m_amalloc);
+    m_subquery_infos.push(info);
+    m_has_subqueries = true;
+
+    // Keep the transformed IN-subquery node in the WHERE
+    require_prm(num_kept < MAX_WHERE_CONJUNCTS,
+                "Too many WHERE conjuncts after decorrelation.");
+    kept[num_kept++] = in_node;
+  }
+
+  // Rebuild outer WHERE from kept conjuncts
+  ConditionalExpression* rebuilt = NULL;
+  for (Uint32 i = 0; i < num_kept; i++)
+  {
+    if (rebuilt == NULL)
+    {
+      rebuilt = kept[i];
+    }
+    else
+    {
+      ConditionalExpression* combined =
+          m_amalloc->alloc_exc<ConditionalExpression>(1);
+      combined->op = T_AND;
+      combined->args.left = rebuilt;
+      combined->args.right = kept[i];
+      rebuilt = combined;
+    }
+  }
+  ast.where_expression = rebuilt;
+
+  // Check no nested EXISTS remain (e.g., inside OR)
+  check_no_nested_exists(ast.where_expression);
+}
+
 void
 RonSQLPreparer::analyze_subqueries()
 {
@@ -1163,7 +1560,15 @@ RonSQLPreparer::analyze_subqueries_ce(ConditionalExpression* ce)
     return;
   }
   case T_EXISTS:
-    feature_not_implemented("EXISTS subqueries");
+    // Transformed into I_IN_SUBQUERY in decorrelate_exists() during load().
+    // SubqueryInfo is registered there, not here.
+    return;
+  case T_NOT:
+  case T_EXCLAMATION:
+    if (ce->args.left != NULL && ce->args.left->op == T_EXISTS)
+      feature_not_implemented("NOT EXISTS subqueries");
+    analyze_subqueries_ce(ce->args.left);
+    return;
   case I_IN_SUBQUERY:
   {
     SubqueryInfo info;
@@ -1950,6 +2355,7 @@ RonSQLPreparer::execute_join()
     NdbQueryOptions opts;
     switch (op.match_type) {
     case JoinOp::SEMI_JOIN:
+      opts.setMatchType(NdbQueryOptions::MatchNonNull);
       opts.setMatchType(NdbQueryOptions::MatchFirst);
       break;
     case JoinOp::ANTI_JOIN:

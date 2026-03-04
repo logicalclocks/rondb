@@ -4,10 +4,20 @@ call mtr.add_suppression("Participant timeout");
 === Create tables for subquery tests ===
 
 
-=== Test 1: Error — EXISTS subquery (not yet supported) ===
-Expected error: EXISTS subqueries not implemented
-Error handling: RPE
-ronsql_cli caught exception: RonSQL feature not implemented: EXISTS subqueries
+=== Test 1: EXISTS subquery — basic semi-join ===
+All orders have lineitems, so all orders match
+== Query ==
+SELECT o_custkey, SUM(o_total)
+FROM orders
+WHERE EXISTS (SELECT l_id FROM lineitem WHERE l_orderkey = o_id)
+GROUP BY o_custkey;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
 
 
 === Test 2: IN subquery — scalar inner result ===
@@ -223,6 +233,93 @@ WHERE l_quantity < l_price AND l_price > 100
 GROUP BY l_orderkey;
 
 Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+
+=== Test 15: EXISTS with filter on inner ===
+Only orders with lineitem quantity > 20
+== Query ==
+SELECT o_id, SUM(o_total)
+FROM orders
+WHERE EXISTS (SELECT l_id FROM lineitem WHERE l_orderkey = o_id AND l_quantity > 20)
+GROUP BY o_id;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+
+=== Test 16: EXISTS with no match ===
+l_quantity > 999 matches nothing
+== Query ==
+SELECT o_id, SUM(o_total)
+FROM orders
+WHERE EXISTS (SELECT l_id FROM lineitem WHERE l_orderkey = o_id AND l_quantity > 999)
+GROUP BY o_id;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+
+=== Test 17: EXISTS with COUNT(*) aggregation ===
+Count orders per custkey that have lineitems
+== Query ==
+SELECT o_custkey, COUNT(*)
+FROM orders
+WHERE EXISTS (SELECT l_id FROM lineitem WHERE l_orderkey = o_id)
+GROUP BY o_custkey;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+
+=== Test 18: EXISTS with outer WHERE filter ===
+Orders with custkey = 200 that have lineitems
+== Query ==
+SELECT o_id, SUM(o_total)
+FROM orders
+WHERE o_custkey = 200
+AND EXISTS (SELECT l_id FROM lineitem WHERE l_orderkey = o_id)
+GROUP BY o_id;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+
+=== Test 19: NOT EXISTS error ===
+Expected error: NOT EXISTS not implemented
+Error handling: RPE
+ronsql_cli caught exception: RonSQL feature not implemented: NOT EXISTS subqueries
+
+
+=== Test 20: EXISTS with qualified column names ===
+Using table aliases in correlation predicate
+== Query ==
+SELECT o.o_custkey, SUM(o.o_total)
+FROM orders AS o
+WHERE EXISTS (SELECT l.l_id FROM lineitem AS l WHERE l.l_orderkey = o.o_id)
+GROUP BY o.o_custkey;
+
+Number of output lines, including header: 4
 
 == Diff ==
 ==========
