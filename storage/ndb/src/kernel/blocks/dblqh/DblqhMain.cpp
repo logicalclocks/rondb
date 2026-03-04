@@ -15099,7 +15099,7 @@ void Dblqh::handleOuterJoinAggKeyNotFound(Signal *signal,
   const Uint32 *linked_data = nullptr;
   Uint32 linked_len = 0;
   Uint32 attrInfoBuf[256];
-  Uint32 attrInfoLen = regTcPtr->currTupAiLen;
+  Uint32 attrInfoLen = regTcPtr->currReclenAi;
 
   if (attrInfoLen > 0 && regTcPtr->attrInfoIVal != RNIL) {
     ndbrequire(attrInfoLen <= 256);

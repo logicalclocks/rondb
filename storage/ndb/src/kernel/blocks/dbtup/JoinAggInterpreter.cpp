@@ -1919,7 +1919,7 @@ void JoinAggInterpreter::initGBTypesForNullLocal(Dbtup* block_tup) {
         p += 1 + AttributeHeader::getDataSize(*p);
         pos_count++;
       }
-      if (p + 2 < p_end) {
+      if (p + 2 < p_end && block_tup != nullptr) {
         Uint32 tableId = p[0];
         if (tableId < block_tup->cnoOfTablerec) {
           Dbtup::Tablerec* tab = &block_tup->tablerec[tableId];

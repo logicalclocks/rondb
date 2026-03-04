@@ -113,11 +113,13 @@ struct TableMeta {
  * COUNT(*), SUM(child.val)
  * No GROUP BY.
  * child.val is a local column (attrId without LINKED_COL_FLAG).
+ * COUNT(*) uses a constant register (always non-null) so that null-extended
+ * rows from outer joins are still counted.
  */
 static std::vector<Uint32>
 buildAggProgram_CountSum(Uint32 childValAttrId)
 {
-  const Uint32 PROG_LEN = 11;
+  const Uint32 PROG_LEN = 14;
   std::vector<Uint32> prog(PROG_LEN);
 
   prog[0] = (AGG_MAGIC << 16) | PROG_LEN;
@@ -125,11 +127,16 @@ buildAggProgram_CountSum(Uint32 childValAttrId)
   prog[2] = PUSHDOWN_AGGREGATION_VERSION;
   prog[3] = prog[4] = prog[5] = prog[6] = prog[7] = 0;
 
-  /* LoadCol child.val (local column) */
-  prog[8] = (kOpLoadCol << 26) | (COL_TYPE_BIGINT << 21) | (0 << 16) |
-             childValAttrId;
-  prog[9] = (kOpCount << 26) | (0 << 16) | 0;   /* COUNT → agg[0] */
-  prog[10] = (kOpSum << 26) | (0 << 16) | 1;    /* SUM → agg[1] */
+  /* LoadConst 1 → register 1 (for COUNT(*), always non-null) */
+  prog[8] = (kOpLoadConst << 26) | (NDB_TYPE_BIGUNSIGNED << 21) | (1 << 16);
+  Uint64 one = 1;
+  memcpy(&prog[9], &one, sizeof(Uint64));
+
+  /* LoadCol child.val → register 0 (for SUM, null when no child match) */
+  prog[11] = (kOpLoadCol << 26) | (COL_TYPE_BIGINT << 21) | (0 << 16) |
+              childValAttrId;
+  prog[12] = (kOpCount << 26) | (1 << 16) | 0;   /* COUNT(reg1) → agg[0] */
+  prog[13] = (kOpSum << 26) | (0 << 16) | 1;     /* SUM(reg0) → agg[1] */
 
   return prog;
 }
@@ -146,7 +153,7 @@ buildAggProgram_CountSum(Uint32 childValAttrId)
 static std::vector<Uint32>
 buildAggProgram_GroupByCountSum(Uint32 linkedGrpIdx, Uint32 childValAttrId)
 {
-  const Uint32 PROG_LEN = 12;
+  const Uint32 PROG_LEN = 15;
   std::vector<Uint32> prog(PROG_LEN);
 
   prog[0] = (AGG_MAGIC << 16) | PROG_LEN;
@@ -157,11 +164,16 @@ buildAggProgram_GroupByCountSum(Uint32 linkedGrpIdx, Uint32 childValAttrId)
   /* GROUP BY: linked column at index linkedGrpIdx */
   prog[8] = (linkedGrpIdx | LINKED_COL_FLAG) << 16;
 
-  /* LoadCol child.val (local column) */
-  prog[9] = (kOpLoadCol << 26) | (COL_TYPE_BIGINT << 21) | (0 << 16) |
-             childValAttrId;
-  prog[10] = (kOpCount << 26) | (0 << 16) | 0;  /* COUNT → agg[0] */
-  prog[11] = (kOpSum << 26) | (0 << 16) | 1;    /* SUM → agg[1] */
+  /* LoadConst 1 → register 1 (for COUNT(*), always non-null) */
+  prog[9] = (kOpLoadConst << 26) | (NDB_TYPE_BIGUNSIGNED << 21) | (1 << 16);
+  Uint64 one = 1;
+  memcpy(&prog[10], &one, sizeof(Uint64));
+
+  /* LoadCol child.val → register 0 (for SUM, null when no child match) */
+  prog[12] = (kOpLoadCol << 26) | (COL_TYPE_BIGINT << 21) | (0 << 16) |
+              childValAttrId;
+  prog[13] = (kOpCount << 26) | (1 << 16) | 0;  /* COUNT(reg1) → agg[0] */
+  prog[14] = (kOpSum << 26) | (0 << 16) | 1;    /* SUM(reg0) → agg[1] */
 
   return prog;
 }
@@ -193,7 +205,8 @@ buildOuterJoinQueryTree(const TableMeta &parent, const TableMeta &child,
 
   Uint32 linkedAttrCount = includeGrpLinked ? 2 : 1;
   const Uint32 node0_len = 4 + linkedAttrCount;
-  const Uint32 node1_len = 7;  /* 4 fixed + 1 parent + 2 key pattern */
+  /* node1: 4 fixed + 1 parent + 2 key pattern + (2 if NI_ATTR_LINKED) */
+  const Uint32 node1_len = 7 + (includeGrpLinked ? 2 : 0);
   const Uint32 tree_len = 1 + node0_len + node1_len;
 
   /* Word 0: QueryTree cnt_len */
@@ -211,8 +224,10 @@ buildOuterJoinQueryTree(const TableMeta &parent, const TableMeta &child,
   /* NI_LINKED_ATTR: packed list header = (first_attrId << 16) | count */
   ai.push_back((parent.attrIdPk << 16) | linkedAttrCount);
   if (includeGrpLinked) {
-    /* Second linked attr: parent.grp */
-    ai.push_back((parent.attrIdCol2 << 16) | 0);
+    /* Second linked attr: parent.grp
+     * unpackList reads subsequent words' LOWER 16 bits first, so
+     * attrId goes in the lower half, padding in the upper half. */
+    ai.push_back(parent.attrIdCol2);
   }
 
   /* Node 1: QN_LOOKUP (aggregate leaf, outer join) */
@@ -220,8 +235,12 @@ buildOuterJoinQueryTree(const TableMeta &parent, const TableMeta &child,
   QueryNode::setOpLen(n1_len, QueryNode::QN_LOOKUP, node1_len);
   ai.push_back(n1_len);
   /* NO NI_INNER_JOIN — this is the outer join flag */
-  ai.push_back(DABits::NI_HAS_PARENT | DABits::NI_KEY_LINKED |
-               DABits::NI_AGGREGATE | DABits::NI_AGGREGATE_LEAF);
+  Uint32 n1_bits = DABits::NI_HAS_PARENT | DABits::NI_KEY_LINKED |
+                   DABits::NI_AGGREGATE | DABits::NI_AGGREGATE_LEAF;
+  if (includeGrpLinked) {
+    n1_bits |= DABits::NI_ATTR_LINKED;
+  }
+  ai.push_back(n1_bits);
   ai.push_back(child.tableId);
   ai.push_back(child.schemaVersion);
   /* NI_HAS_PARENT: parent is node 0 */
@@ -230,6 +249,12 @@ buildOuterJoinQueryTree(const TableMeta &parent, const TableMeta &child,
   ai.push_back((0 << 16) | 1);
   /* Key pattern: col(0) = linked col 0 = parent.pk */
   ai.push_back(QueryPattern::col(0));
+  if (includeGrpLinked) {
+    /* NI_ATTR_LINKED: (len_prg=0 | len_pattern=1<<16), pattern=attrInfo(1)
+     * Passes parent.grp (linked index 1) to child's attrinfo subroutine. */
+    ai.push_back((1u << 16) | 0u);
+    ai.push_back(QueryPattern::attrInfo(1));
+  }
 
   /* ---- Parameter section ---- */
 
@@ -246,13 +271,21 @@ buildOuterJoinQueryTree(const TableMeta &parent, const TableMeta &child,
   ai.push_back(0);
   ai.push_back(0);
 
-  /* Param 1: QN_LookupParameters (NodeSize=3) */
+  /* Param 1: QN_LookupParameters */
+  Uint32 p1_param_len = QN_LookupParameters::NodeSize +
+                         (includeGrpLinked ? 2 : 0);
   Uint32 p1_len = 0;
   QueryNodeParameters::setOpLen(p1_len, QueryNodeParameters::QN_LOOKUP,
-                                QN_LookupParameters::NodeSize);
+                                p1_param_len);
   ai.push_back(p1_len);
-  ai.push_back(0);             /* requestInfo */
+  ai.push_back(includeGrpLinked ? DABits::PI_ATTR_INTERPRET : 0);
   ai.push_back(receiverId);    /* resultData */
+  if (includeGrpLinked) {
+    /* PI_ATTR_INTERPRET: minimal ExitOK program creates interpreter framing
+     * so NI_ATTR_LINKED subroutine section can carry linked parent data. */
+    ai.push_back(1);                   /* program_len=1 */
+    ai.push_back(18);                     /* EXIT_OK instruction (opcode 18) */
+  }
 
   return ai;
 }
@@ -403,7 +436,7 @@ releaseTcConnect(SignalSender &ss, Uint32 nodeId,
 /* SCAN_TABREQ                                                         */
 /* ------------------------------------------------------------------ */
 
-static Uint32
+Uint32
 buildScanTabReqInfo()
 {
   Uint32 requestInfo = 0;
@@ -876,7 +909,7 @@ testPartialMatchGroupBy(Ndb *ndb, SignalSender &ss, Uint32 nodeId, MYSQL *conn)
     buildOuterJoinQueryTree(parentMeta, childMeta, receiverId, true);
   /* GROUP BY linked col 1 (parent.grp), COUNT(*) → agg[0], SUM(child.val) → agg[1] */
   std::vector<Uint32> aggProgram =
-    buildAggProgram_GroupByCountSum(1, childMeta.attrIdCol2);
+    buildAggProgram_GroupByCountSum(0, childMeta.attrIdCol2);
 
   rc = sendScanTabReq(ss, nodeId, apiConnectPtr, tcRef,
                       parentMeta, queryTree, aggProgram, receiverId);
