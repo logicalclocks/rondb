@@ -270,12 +270,16 @@ GROUP BY o_id;|
 --source suite/ronsql/include/ronsql_compare.inc
 
 --echo
---echo === Test 19: NOT EXISTS error ===
---echo Expected error: NOT EXISTS not implemented
---error 1
---exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT o_custkey, COUNT(*) FROM orders WHERE NOT EXISTS (SELECT l_id FROM lineitem WHERE l_orderkey = o_id) GROUP BY o_custkey;' 2>&1
+--echo === Test 19: NOT EXISTS — no matching lineitems ===
+--echo No lineitem has l_quantity > 999, so NOT EXISTS is true for all orders
 
---echo
+let $QUERY=
+SELECT o_id, SUM(o_total)
+FROM orders
+WHERE NOT EXISTS (SELECT l_id FROM lineitem WHERE l_orderkey = o_id AND l_quantity > 999)
+GROUP BY o_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
 --echo
 --echo === Test 20: EXISTS with qualified column names ===
 --echo Using table aliases in correlation predicate
@@ -285,6 +289,40 @@ SELECT o.o_custkey, SUM(o.o_total)
 FROM orders AS o
 WHERE EXISTS (SELECT l.l_id FROM lineitem AS l WHERE l.l_orderkey = o.o_id)
 GROUP BY o.o_custkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 21: NOT EXISTS — all orders have lineitems ===
+--echo NOT EXISTS returns empty (every order has at least one lineitem)
+
+let $QUERY=
+SELECT o_id, SUM(o_total)
+FROM orders
+WHERE NOT EXISTS (SELECT l_id FROM lineitem WHERE l_orderkey = o_id)
+GROUP BY o_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 22: NOT EXISTS — partial match ===
+--echo Orders 1,2,4 have no lineitems with l_quantity > 20
+
+let $QUERY=
+SELECT o_id, SUM(o_total)
+FROM orders
+WHERE NOT EXISTS (SELECT l_id FROM lineitem WHERE l_orderkey = o_id AND l_quantity > 20)
+GROUP BY o_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 23: NOT EXISTS with outer filter ===
+--echo custkey = 200 AND no high-qty lineitems: only order 4
+
+let $QUERY=
+SELECT o_id, SUM(o_total)
+FROM orders
+WHERE o_custkey = 200
+  AND NOT EXISTS (SELECT l_id FROM lineitem WHERE l_orderkey = o_id AND l_quantity > 20)
+GROUP BY o_id;|
 --source suite/ronsql/include/ronsql_compare.inc
 
 --echo

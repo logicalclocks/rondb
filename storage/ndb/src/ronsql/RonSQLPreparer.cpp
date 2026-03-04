@@ -1195,11 +1195,18 @@ RonSQLPreparer::decorrelate_exists()
   Uint32 num_conjuncts = 0;
   flatten_and_conjuncts(where_ce, conjuncts, &num_conjuncts);
 
-  // Check if any conjunct is T_EXISTS
+  // Check if any conjunct is T_EXISTS or NOT EXISTS (T_NOT/T_EXCLAMATION wrapping T_EXISTS)
   bool has_exists = false;
   for (Uint32 i = 0; i < num_conjuncts; i++)
   {
     if (conjuncts[i]->op == T_EXISTS)
+    {
+      has_exists = true;
+      break;
+    }
+    if ((conjuncts[i]->op == T_NOT || conjuncts[i]->op == T_EXCLAMATION) &&
+        conjuncts[i]->args.left != NULL &&
+        conjuncts[i]->args.left->op == T_EXISTS)
     {
       has_exists = true;
       break;
@@ -1215,7 +1222,22 @@ RonSQLPreparer::decorrelate_exists()
 
   for (Uint32 i = 0; i < num_conjuncts; i++)
   {
-    if (conjuncts[i]->op != T_EXISTS)
+    // Extract EXISTS node (possibly wrapped in T_NOT/T_EXCLAMATION)
+    bool is_not_exists = false;
+    ConditionalExpression* exists_node = NULL;
+
+    if (conjuncts[i]->op == T_EXISTS)
+    {
+      exists_node = conjuncts[i];
+    }
+    else if ((conjuncts[i]->op == T_NOT || conjuncts[i]->op == T_EXCLAMATION) &&
+             conjuncts[i]->args.left != NULL &&
+             conjuncts[i]->args.left->op == T_EXISTS)
+    {
+      exists_node = conjuncts[i]->args.left;
+      is_not_exists = true;
+    }
+    else
     {
       require_prm(num_kept < MAX_WHERE_CONJUNCTS,
                   "Too many WHERE conjuncts after decorrelation.");
@@ -1223,8 +1245,8 @@ RonSQLPreparer::decorrelate_exists()
       continue;
     }
 
-    // Process EXISTS conjunct — transform into IN subquery
-    SelectStatement* inner_stmt = conjuncts[i]->subquery.stmt;
+    // Process EXISTS/NOT EXISTS conjunct — transform into IN subquery
+    SelectStatement* inner_stmt = exists_node->subquery.stmt;
     require_prm(inner_stmt != NULL,
                 "EXISTS subquery has no inner statement.");
     require_prm(inner_stmt->joins == NULL,
@@ -1491,14 +1513,13 @@ RonSQLPreparer::decorrelate_exists()
     outer_ref->col_idx = outer_col_idx;
 
     // Transform the T_EXISTS CE node into I_IN_SUBQUERY in-place
-    ConditionalExpression* in_node = conjuncts[i];
-    in_node->op = I_IN_SUBQUERY;
-    in_node->in_subquery.expr = outer_ref;
-    in_node->in_subquery.stmt = new_inner;
+    exists_node->op = I_IN_SUBQUERY;
+    exists_node->in_subquery.expr = outer_ref;
+    exists_node->in_subquery.stmt = new_inner;
 
     // Register in m_subquery_infos (since analyze_subqueries already ran)
     SubqueryInfo info;
-    info.ce_node = in_node;
+    info.ce_node = exists_node;
     info.inner_stmt = new_inner;
     info.is_in_subquery = true;
     info.in_expr = outer_ref;
@@ -1507,10 +1528,12 @@ RonSQLPreparer::decorrelate_exists()
     m_subquery_infos.push(info);
     m_has_subqueries = true;
 
-    // Keep the transformed IN-subquery node in the WHERE
+    // Keep the transformed node in the WHERE:
+    // - EXISTS: keep exists_node (now I_IN_SUBQUERY)
+    // - NOT EXISTS: keep conjuncts[i] (T_NOT wrapper, child is now I_IN_SUBQUERY)
     require_prm(num_kept < MAX_WHERE_CONJUNCTS,
                 "Too many WHERE conjuncts after decorrelation.");
-    kept[num_kept++] = in_node;
+    kept[num_kept++] = is_not_exists ? conjuncts[i] : exists_node;
   }
 
   // Rebuild outer WHERE from kept conjuncts
@@ -1565,8 +1588,7 @@ RonSQLPreparer::analyze_subqueries_ce(ConditionalExpression* ce)
     return;
   case T_NOT:
   case T_EXCLAMATION:
-    if (ce->args.left != NULL && ce->args.left->op == T_EXISTS)
-      feature_not_implemented("NOT EXISTS subqueries");
+    // NOT EXISTS handled in decorrelate_exists() — T_NOT wraps I_IN_SUBQUERY.
     analyze_subqueries_ce(ce->args.left);
     return;
   case I_IN_SUBQUERY:
