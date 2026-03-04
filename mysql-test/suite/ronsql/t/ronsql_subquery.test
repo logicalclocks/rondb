@@ -65,10 +65,17 @@ INSERT INTO lineitem VALUES
 
 --echo
 --echo
---echo === Test 2: Error — IN subquery (not yet supported) ===
---echo Expected error: IN-subqueries not implemented
---error 1
---exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT o_custkey, SUM(o_total) FROM orders WHERE o_custkey IN (SELECT MAX(l_orderkey) FROM lineitem) GROUP BY o_custkey;' 2>&1
+--echo === Test 2: IN subquery — scalar inner result ===
+--echo o_custkey IN (SELECT MAX(l_orderkey) FROM lineitem)
+--echo MAX(l_orderkey) = 5, so rows with o_custkey = 5 are included (but no such row)
+
+DELIMITER |;
+let $QUERY=
+SELECT o_custkey, SUM(o_total)
+FROM orders
+WHERE o_custkey IN (SELECT MAX(l_orderkey) FROM lineitem)
+GROUP BY o_custkey;|
+--source suite/ronsql/include/ronsql_compare.inc
 
 --echo
 --echo
@@ -76,7 +83,6 @@ INSERT INTO lineitem VALUES
 --echo l_quantity > (SELECT MIN(l_quantity) FROM lineitem)
 --echo MIN(l_quantity) = 5, so rows with l_quantity > 5 are included
 
-DELIMITER |;
 let $QUERY=
 SELECT l_orderkey, SUM(l_quantity), COUNT(*)
 FROM lineitem
@@ -141,6 +147,76 @@ SELECT l_orderkey, SUM(l_quantity), SUM(l_price)
 FROM lineitem
 WHERE l_quantity > (SELECT MIN(l_quantity) FROM lineitem)
   AND l_price < (SELECT MAX(l_price) FROM lineitem)
+GROUP BY l_orderkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 9: IN subquery — multiple values from GROUP BY ===
+--echo l_orderkey IN (SELECT MIN(l_orderkey) FROM lineitem GROUP BY l_orderkey)
+--echo All l_orderkey values (1-5), so all rows match
+
+let $QUERY=
+SELECT l_orderkey, SUM(l_quantity), COUNT(*)
+FROM lineitem
+WHERE l_orderkey IN (SELECT MIN(l_orderkey) FROM lineitem GROUP BY l_orderkey)
+GROUP BY l_orderkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 10: IN subquery — selective inner WHERE ===
+--echo l_orderkey IN (SELECT MIN(l_orderkey) FROM lineitem WHERE l_quantity > 20 GROUP BY l_orderkey)
+--echo Inner returns l_orderkey 3 and 5 (rows with quantity > 20)
+
+let $QUERY=
+SELECT l_orderkey, SUM(l_price)
+FROM lineitem
+WHERE l_orderkey IN (SELECT MIN(l_orderkey) FROM lineitem WHERE l_quantity > 20 GROUP BY l_orderkey)
+GROUP BY l_orderkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 11: IN subquery — inner WHERE filters to empty ===
+--echo l_orderkey IN (SELECT MIN(l_orderkey) FROM lineitem WHERE l_quantity > 999 GROUP BY l_orderkey)
+--echo Inner returns no rows, so no outer rows match
+
+let $QUERY=
+SELECT l_orderkey, SUM(l_quantity)
+FROM lineitem
+WHERE l_orderkey IN (SELECT MIN(l_orderkey) FROM lineitem WHERE l_quantity > 999 GROUP BY l_orderkey)
+GROUP BY l_orderkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 12: IN subquery with AND condition ===
+--echo l_orderkey IN (...) AND l_quantity > 10
+
+let $QUERY=
+SELECT l_orderkey, SUM(l_price)
+FROM lineitem
+WHERE l_orderkey IN (SELECT MIN(l_orderkey) FROM lineitem GROUP BY l_orderkey)
+  AND l_quantity > 10
+GROUP BY l_orderkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 13: Cross-column comparison — less than ===
+--echo WHERE l_quantity < l_price (column vs column)
+
+let $QUERY=
+SELECT l_orderkey, SUM(l_quantity), SUM(l_price)
+FROM lineitem
+WHERE l_quantity < l_price
+GROUP BY l_orderkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 14: Cross-column comparison combined with constant ===
+--echo WHERE l_quantity < l_price AND l_price > 100
+
+let $QUERY=
+SELECT l_orderkey, SUM(l_quantity), SUM(l_price)
+FROM lineitem
+WHERE l_quantity < l_price AND l_price > 100
 GROUP BY l_orderkey;|
 --source suite/ronsql/include/ronsql_compare.inc
 

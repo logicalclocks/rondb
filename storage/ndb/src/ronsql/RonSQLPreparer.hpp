@@ -179,7 +179,10 @@ private:
   struct SubqueryInfo {
     ConditionalExpression* ce_node;  // The SubqueryExpr node in outer AST
     SelectStatement* inner_stmt;     // For sql_begin/sql_end access
-    SubqueryResult result;           // Populated during execution
+    SubqueryResult result;           // Populated during execution (scalar)
+    bool is_in_subquery = false;     // true for I_IN_SUBQUERY
+    ConditionalExpression* in_expr = NULL; // LHS expression (col IN (...))
+    DynamicArray<SubqueryResult>* in_values = NULL; // Multi-value results
   };
   DynamicArray<SubqueryInfo> m_subquery_infos;
   bool m_has_subqueries = false;

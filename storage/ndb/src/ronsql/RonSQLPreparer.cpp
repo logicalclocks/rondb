@@ -1165,7 +1165,18 @@ RonSQLPreparer::analyze_subqueries_ce(ConditionalExpression* ce)
   case T_EXISTS:
     feature_not_implemented("EXISTS subqueries");
   case I_IN_SUBQUERY:
-    feature_not_implemented("IN-subqueries");
+  {
+    SubqueryInfo info;
+    info.ce_node = ce;
+    info.inner_stmt = ce->in_subquery.stmt;
+    info.is_in_subquery = true;
+    info.in_expr = ce->in_subquery.expr;
+    info.in_values = new (m_amalloc->alloc_exc<DynamicArray<SubqueryResult>>(1))
+      DynamicArray<SubqueryResult>(m_amalloc);
+    m_subquery_infos.push(info);
+    m_has_subqueries = true;
+    return;
+  }
   case T_IS:
     analyze_subqueries_ce(ce->is.arg);
     return;
@@ -1306,13 +1317,63 @@ RonSQLPreparer::execute_subqueries()
              (result_str.back() == '\n' || result_str.back() == '\r'))
         result_str.pop_back();
 
-      if (result_str == "NULL" || result_str.empty())
+      if (info.is_in_subquery)
+      {
+        // IN-subquery: parse multi-line output, one value per line
+        std::istringstream iss(result_str);
+        std::string line;
+        while (std::getline(iss, line))
+        {
+          while (!line.empty() && line.back() == '\r') line.pop_back();
+          if (line.empty()) continue;
+          SubqueryResult val;
+          if (line == "NULL")
+          {
+            val.is_null = true;
+          }
+          else
+          {
+            char* endptr = NULL;
+            errno = 0;
+            long long ll = strtoll(line.c_str(), &endptr, 10);
+            if (endptr != NULL && *endptr == '\0' && errno == 0)
+            {
+              val.is_null = false;
+              val.is_float = false;
+              val.int_val = (Int64)ll;
+            }
+            else
+            {
+              errno = 0;
+              double dbl = strtod(line.c_str(), &endptr);
+              if (endptr != NULL && *endptr == '\0' && errno == 0)
+              {
+                val.is_null = false;
+                val.is_float = true;
+                val.float_val = dbl;
+              }
+              else
+              {
+                throw RonSQLPermanentError(
+                    "IN-subquery returned a non-numeric result.");
+              }
+            }
+          }
+          info.in_values->push(val);
+        }
+        if (info.in_values->size() > 1000)
+        {
+          throw RonSQLPermanentError(
+              "IN-subquery returned more than 1000 values.");
+        }
+      }
+      else if (result_str == "NULL" || result_str.empty())
       {
         info.result.is_null = true;
       }
       else
       {
-        // Try integer first
+        // Scalar subquery: single-value parsing
         char* endptr = NULL;
         errno = 0;
         long long ll = strtoll(result_str.c_str(), &endptr, 10);
@@ -1379,6 +1440,84 @@ RonSQLPreparer::substitute_subquery_results_ce(ConditionalExpression** ce_ptr)
 {
   ConditionalExpression* ce = *ce_ptr;
   if (ce == NULL) return;
+
+  if (ce->op == I_IN_SUBQUERY)
+  {
+    for (Uint32 i = 0; i < m_subquery_infos.size(); i++)
+    {
+      if (m_subquery_infos[i].ce_node == ce)
+      {
+        DynamicArray<SubqueryResult>* values = m_subquery_infos[i].in_values;
+        ConditionalExpression* in_expr = m_subquery_infos[i].in_expr;
+
+        if (values->size() == 0)
+        {
+          // Empty result set: always false via col != col
+          ce->op = T_NOT_EQUALS;
+          ce->args.left = in_expr;
+          ce->args.right = in_expr;
+          return;
+        }
+
+        // Build OR-chain: expr = v1 OR expr = v2 OR ...
+        ConditionalExpression* result = NULL;
+        for (Uint32 j = 0; j < values->size(); j++)
+        {
+          SubqueryResult& val = (*values)[j];
+          if (val.is_null) continue;  // NULL = x is never true
+
+          ConditionalExpression* const_node =
+            m_amalloc->alloc_exc<ConditionalExpression>(1);
+          if (val.is_float)
+          {
+            const_node->op = T_FLOAT;
+            const_node->constant_float.dbl = val.float_val;
+            const_node->constant_float.ls = LexString{NULL, 0};
+          }
+          else
+          {
+            const_node->op = T_INT;
+            const_node->constant_integer = val.int_val;
+          }
+
+          ConditionalExpression* eq =
+            m_amalloc->alloc_exc<ConditionalExpression>(1);
+          eq->op = T_EQUALS;
+          eq->args.left = in_expr;
+          eq->args.right = const_node;
+
+          if (result == NULL)
+          {
+            result = eq;
+          }
+          else
+          {
+            ConditionalExpression* or_node =
+              m_amalloc->alloc_exc<ConditionalExpression>(1);
+            or_node->op = T_OR;
+            or_node->args.left = result;
+            or_node->args.right = eq;
+            result = or_node;
+          }
+        }
+
+        if (result == NULL)
+        {
+          // All values were NULL: always false via col != col
+          ce->op = T_NOT_EQUALS;
+          ce->args.left = in_expr;
+          ce->args.right = in_expr;
+        }
+        else
+        {
+          *ce = *result;
+        }
+        return;
+      }
+    }
+    ndbrequire(false);
+    return;
+  }
 
   if (ce->op == I_SUBQUERY)
   {

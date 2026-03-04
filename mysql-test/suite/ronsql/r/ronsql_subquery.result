@@ -10,10 +10,22 @@ Error handling: RPE
 ronsql_cli caught exception: RonSQL feature not implemented: EXISTS subqueries
 
 
-=== Test 2: Error — IN subquery (not yet supported) ===
-Expected error: IN-subqueries not implemented
-Error handling: RPE
-ronsql_cli caught exception: RonSQL feature not implemented: IN-subqueries
+=== Test 2: IN subquery — scalar inner result ===
+o_custkey IN (SELECT MAX(l_orderkey) FROM lineitem)
+MAX(l_orderkey) = 5, so rows with o_custkey = 5 are included (but no such row)
+== Query ==
+SELECT o_custkey, SUM(o_total)
+FROM orders
+WHERE o_custkey IN (SELECT MAX(l_orderkey) FROM lineitem)
+GROUP BY o_custkey;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
 
 
 === Test 3: Scalar subquery in WHERE — single table ===
@@ -108,6 +120,106 @@ SELECT l_orderkey, SUM(l_quantity), SUM(l_price)
 FROM lineitem
 WHERE l_quantity > (SELECT MIN(l_quantity) FROM lineitem)
 AND l_price < (SELECT MAX(l_price) FROM lineitem)
+GROUP BY l_orderkey;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+
+=== Test 9: IN subquery — multiple values from GROUP BY ===
+l_orderkey IN (SELECT MIN(l_orderkey) FROM lineitem GROUP BY l_orderkey)
+All l_orderkey values (1-5), so all rows match
+== Query ==
+SELECT l_orderkey, SUM(l_quantity), COUNT(*)
+FROM lineitem
+WHERE l_orderkey IN (SELECT MIN(l_orderkey) FROM lineitem GROUP BY l_orderkey)
+GROUP BY l_orderkey;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+
+=== Test 10: IN subquery — selective inner WHERE ===
+l_orderkey IN (SELECT MIN(l_orderkey) FROM lineitem WHERE l_quantity > 20 GROUP BY l_orderkey)
+Inner returns l_orderkey 3 and 5 (rows with quantity > 20)
+== Query ==
+SELECT l_orderkey, SUM(l_price)
+FROM lineitem
+WHERE l_orderkey IN (SELECT MIN(l_orderkey) FROM lineitem WHERE l_quantity > 20 GROUP BY l_orderkey)
+GROUP BY l_orderkey;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+
+=== Test 11: IN subquery — inner WHERE filters to empty ===
+l_orderkey IN (SELECT MIN(l_orderkey) FROM lineitem WHERE l_quantity > 999 GROUP BY l_orderkey)
+Inner returns no rows, so no outer rows match
+== Query ==
+SELECT l_orderkey, SUM(l_quantity)
+FROM lineitem
+WHERE l_orderkey IN (SELECT MIN(l_orderkey) FROM lineitem WHERE l_quantity > 999 GROUP BY l_orderkey)
+GROUP BY l_orderkey;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+
+=== Test 12: IN subquery with AND condition ===
+l_orderkey IN (...) AND l_quantity > 10
+== Query ==
+SELECT l_orderkey, SUM(l_price)
+FROM lineitem
+WHERE l_orderkey IN (SELECT MIN(l_orderkey) FROM lineitem GROUP BY l_orderkey)
+AND l_quantity > 10
+GROUP BY l_orderkey;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+
+=== Test 13: Cross-column comparison — less than ===
+WHERE l_quantity < l_price (column vs column)
+== Query ==
+SELECT l_orderkey, SUM(l_quantity), SUM(l_price)
+FROM lineitem
+WHERE l_quantity < l_price
+GROUP BY l_orderkey;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+
+=== Test 14: Cross-column comparison combined with constant ===
+WHERE l_quantity < l_price AND l_price > 100
+== Query ==
+SELECT l_orderkey, SUM(l_quantity), SUM(l_price)
+FROM lineitem
+WHERE l_quantity < l_price AND l_price > 100
 GROUP BY l_orderkey;
 
 Number of output lines, including header: 6
