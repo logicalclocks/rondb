@@ -13,7 +13,7 @@ call mtr.add_suppression("Participant timeout");
 CREATE TABLE orders (
   o_id INT NOT NULL,
   o_custkey INT NOT NULL,
-  o_status VARCHAR(10) NOT NULL,
+  o_total INT NOT NULL,
   PRIMARY KEY USING HASH (o_id)
 ) ENGINE=NDB;
 
@@ -26,15 +26,21 @@ CREATE TABLE lineitem (
   INDEX idx_orderkey (l_orderkey)
 ) ENGINE=NDB;
 
+CREATE TABLE empty_table (
+  e_id INT NOT NULL,
+  e_val INT NOT NULL,
+  PRIMARY KEY USING HASH (e_id)
+) ENGINE=NDB;
+
 CREATE INDEX idx_custkey ON orders (o_custkey);
 CREATE INDEX idx_oid ON orders (o_id);
 
 INSERT INTO orders VALUES
-  (1, 100, 'open'),
-  (2, 100, 'closed'),
-  (3, 200, 'open'),
-  (4, 200, 'open'),
-  (5, 300, 'closed');
+  (1, 100, 500),
+  (2, 100, 300),
+  (3, 200, 700),
+  (4, 200, 200),
+  (5, 300, 400);
 
 INSERT INTO lineitem VALUES
   (1, 1, 10, 100),
@@ -53,26 +59,95 @@ INSERT INTO lineitem VALUES
 
 --echo
 --echo === Test 1: Error — EXISTS subquery (not yet supported) ===
---echo Expected error: subqueries not implemented
+--echo Expected error: EXISTS subqueries not implemented
 --error 1
---exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT o.o_custkey, COUNT(*) FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id WHERE EXISTS (SELECT l2.l_quantity FROM lineitem AS l2 WHERE l2.l_orderkey = o.o_id GROUP BY l2.l_quantity) GROUP BY o.o_custkey;' 2>&1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT o_custkey, SUM(o_total) FROM orders WHERE EXISTS (SELECT MIN(l_quantity) FROM lineitem) GROUP BY o_custkey;' 2>&1
 
 --echo
 --echo
 --echo === Test 2: Error — IN subquery (not yet supported) ===
---echo Expected error: subqueries not implemented
+--echo Expected error: IN-subqueries not implemented
 --error 1
---exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT o.o_custkey, SUM(l.l_quantity) FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id WHERE o.o_custkey IN (SELECT o2.o_custkey FROM orders AS o2 WHERE o2.o_custkey >= 200 GROUP BY o2.o_custkey) GROUP BY o.o_custkey;' 2>&1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT o_custkey, SUM(o_total) FROM orders WHERE o_custkey IN (SELECT MAX(l_orderkey) FROM lineitem) GROUP BY o_custkey;' 2>&1
 
 --echo
 --echo
---echo === Test 3: Error — scalar subquery (not yet supported) ===
---echo Expected error: subqueries not implemented
---error 1
---exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT o.o_custkey, SUM(l.l_quantity) FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id WHERE l.l_quantity > (SELECT MIN(l2.l_quantity) FROM lineitem AS l2 GROUP BY l2.l_quantity) GROUP BY o.o_custkey;' 2>&1
+--echo === Test 3: Scalar subquery in WHERE — single table ===
+--echo l_quantity > (SELECT MIN(l_quantity) FROM lineitem)
+--echo MIN(l_quantity) = 5, so rows with l_quantity > 5 are included
+
+DELIMITER |;
+let $QUERY=
+SELECT l_orderkey, SUM(l_quantity), COUNT(*)
+FROM lineitem
+WHERE l_quantity > (SELECT MIN(l_quantity) FROM lineitem)
+GROUP BY l_orderkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 4: Scalar subquery with inner WHERE ===
+--echo l_quantity > (SELECT MIN(l_quantity) FROM lineitem WHERE l_price > 100)
+--echo MIN where price > 100 = 12, so rows with l_quantity > 12 are included
+
+let $QUERY=
+SELECT l_orderkey, SUM(l_quantity), COUNT(*)
+FROM lineitem
+WHERE l_quantity > (SELECT MIN(l_quantity) FROM lineitem WHERE l_price > 100)
+GROUP BY l_orderkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 5: Scalar subquery — MAX in WHERE ===
+--echo l_price < (SELECT MAX(l_price) FROM lineitem)
+--echo MAX(l_price) = 400, so rows with l_price < 400 are included
+
+let $QUERY=
+SELECT l_orderkey, SUM(l_quantity), SUM(l_price)
+FROM lineitem
+WHERE l_price < (SELECT MAX(l_price) FROM lineitem)
+GROUP BY l_orderkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 6: Scalar subquery — SUM in WHERE with equality ===
+--echo o_total = (SELECT MIN(o_total) FROM orders)
+--echo MIN(o_total) = 200
+
+let $QUERY=
+SELECT o_custkey, COUNT(*), SUM(o_total)
+FROM orders
+WHERE o_total = (SELECT MIN(o_total) FROM orders)
+GROUP BY o_custkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 7: Scalar subquery — COUNT as scalar ===
+--echo l_quantity > (SELECT COUNT(*) FROM lineitem) means l_quantity > 10
+
+let $QUERY=
+SELECT l_orderkey, SUM(l_price)
+FROM lineitem
+WHERE l_quantity > (SELECT COUNT(*) FROM lineitem)
+GROUP BY l_orderkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 8: Multiple scalar subqueries in WHERE ===
+--echo l_quantity > (SELECT MIN(l_quantity) FROM lineitem)
+--echo AND l_price < (SELECT MAX(l_price) FROM lineitem)
+
+let $QUERY=
+SELECT l_orderkey, SUM(l_quantity), SUM(l_price)
+FROM lineitem
+WHERE l_quantity > (SELECT MIN(l_quantity) FROM lineitem)
+  AND l_price < (SELECT MAX(l_price) FROM lineitem)
+GROUP BY l_orderkey;|
+--source suite/ronsql/include/ronsql_compare.inc
 
 --echo
 --echo === Cleanup ===
 
+DELIMITER ;|
+DROP TABLE empty_table;
 DROP TABLE lineitem;
 DROP TABLE orders;

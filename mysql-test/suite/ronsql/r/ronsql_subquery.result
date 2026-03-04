@@ -5,22 +5,120 @@ call mtr.add_suppression("Participant timeout");
 
 
 === Test 1: Error — EXISTS subquery (not yet supported) ===
-Expected error: subqueries not implemented
+Expected error: EXISTS subqueries not implemented
 Error handling: RPE
-ronsql_cli caught exception: RonSQL feature not implemented: subqueries
+ronsql_cli caught exception: RonSQL feature not implemented: EXISTS subqueries
 
 
 === Test 2: Error — IN subquery (not yet supported) ===
-Expected error: subqueries not implemented
+Expected error: IN-subqueries not implemented
 Error handling: RPE
-ronsql_cli caught exception: RonSQL feature not implemented: subqueries
+ronsql_cli caught exception: RonSQL feature not implemented: IN-subqueries
 
 
-=== Test 3: Error — scalar subquery (not yet supported) ===
-Expected error: subqueries not implemented
-Error handling: RPE
-ronsql_cli caught exception: RonSQL feature not implemented: subqueries
+=== Test 3: Scalar subquery in WHERE — single table ===
+l_quantity > (SELECT MIN(l_quantity) FROM lineitem)
+MIN(l_quantity) = 5, so rows with l_quantity > 5 are included
+== Query ==
+SELECT l_orderkey, SUM(l_quantity), COUNT(*)
+FROM lineitem
+WHERE l_quantity > (SELECT MIN(l_quantity) FROM lineitem)
+GROUP BY l_orderkey;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+
+=== Test 4: Scalar subquery with inner WHERE ===
+l_quantity > (SELECT MIN(l_quantity) FROM lineitem WHERE l_price > 100)
+MIN where price > 100 = 12, so rows with l_quantity > 12 are included
+== Query ==
+SELECT l_orderkey, SUM(l_quantity), COUNT(*)
+FROM lineitem
+WHERE l_quantity > (SELECT MIN(l_quantity) FROM lineitem WHERE l_price > 100)
+GROUP BY l_orderkey;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+
+=== Test 5: Scalar subquery — MAX in WHERE ===
+l_price < (SELECT MAX(l_price) FROM lineitem)
+MAX(l_price) = 400, so rows with l_price < 400 are included
+== Query ==
+SELECT l_orderkey, SUM(l_quantity), SUM(l_price)
+FROM lineitem
+WHERE l_price < (SELECT MAX(l_price) FROM lineitem)
+GROUP BY l_orderkey;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+
+=== Test 6: Scalar subquery — SUM in WHERE with equality ===
+o_total = (SELECT MIN(o_total) FROM orders)
+MIN(o_total) = 200
+== Query ==
+SELECT o_custkey, COUNT(*), SUM(o_total)
+FROM orders
+WHERE o_total = (SELECT MIN(o_total) FROM orders)
+GROUP BY o_custkey;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== Test 7: Scalar subquery — COUNT as scalar ===
+l_quantity > (SELECT COUNT(*) FROM lineitem) means l_quantity > 10
+== Query ==
+SELECT l_orderkey, SUM(l_price)
+FROM lineitem
+WHERE l_quantity > (SELECT COUNT(*) FROM lineitem)
+GROUP BY l_orderkey;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+
+=== Test 8: Multiple scalar subqueries in WHERE ===
+l_quantity > (SELECT MIN(l_quantity) FROM lineitem)
+AND l_price < (SELECT MAX(l_price) FROM lineitem)
+== Query ==
+SELECT l_orderkey, SUM(l_quantity), SUM(l_price)
+FROM lineitem
+WHERE l_quantity > (SELECT MIN(l_quantity) FROM lineitem)
+AND l_price < (SELECT MAX(l_price) FROM lineitem)
+GROUP BY l_orderkey;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
 
 === Cleanup ===
+DROP TABLE empty_table;
 DROP TABLE lineitem;
 DROP TABLE orders;
