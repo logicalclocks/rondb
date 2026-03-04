@@ -2318,6 +2318,11 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   state->m_per_thread_interpreters = nullptr;
   state->m_agg_program = nullptr;
   state->m_agg_program_len = 0;
+  state->m_outer_join_agg_scan = false;
+  state->m_num_scan_ranges.store(0, std::memory_order_relaxed);
+  for (Uint32 i = 0; i < JoinAggregationState::MAX_SCAN_RANGES / 32; i++) {
+    state->m_matched_ranges[i].store(0, std::memory_order_relaxed);
+  }
 
   // Populate immutable identification fields
   state->m_transid[0] = req->transid[0];

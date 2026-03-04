@@ -91,6 +91,7 @@ class Dbspj : public SimulatedBlock {
   void execSCAN_HBREP(Signal *signal);
   void execTRANSID_AI(Signal *signal);
   void execJOIN_AGG_NULL_ROW_CONF(Signal *signal);
+  void execJOIN_AGG_MATCH_CONF(Signal *signal);
 
   /**
    * General signals
@@ -848,7 +849,10 @@ class Dbspj : public SimulatedBlock {
           m_predecessors(),
           m_dependencies(),
           m_resumeEvents(0),
-          m_scanAncestorPtrI(RNIL)
+          m_scanAncestorPtrI(RNIL),
+          m_agg_match_bitmask(nullptr),
+          m_agg_match_outstanding(0),
+          m_agg_num_ranges(0)
 #ifdef SPJ_TRACE_TIME
           ,m_scan_fragconf_count(0)
           ,m_scan_fragconf_len(0)
@@ -870,6 +874,9 @@ class Dbspj : public SimulatedBlock {
           m_dependencies(),
           m_resumeEvents(0),
           m_scanAncestorPtrI(RNIL),
+          m_agg_match_bitmask(nullptr),
+          m_agg_match_outstanding(0),
+          m_agg_num_ranges(0),
           nextList(RNIL),
           prevList(RNIL),
           nextCursor(RNIL)
@@ -1175,6 +1182,10 @@ class Dbspj : public SimulatedBlock {
      * this node is a member of.
      */
     Uint32 m_scanAncestorPtrI;
+
+    Uint32 *m_agg_match_bitmask;     // Combined match bitmask (ndbd_malloc'd)
+    Uint32 m_agg_match_outstanding;  // Pending MATCH_CONFs
+    Uint32 m_agg_num_ranges;         // Number of parent rows (= scan ranges)
 
     union {
       LookupData m_lookup_data;

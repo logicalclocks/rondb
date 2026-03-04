@@ -161,6 +161,22 @@ struct JoinAggregationState {
   }
 
   //------------------------------------------------------------------
+  // Outer join scan aggregation: per-range match tracking
+  //------------------------------------------------------------------
+  static const Uint32 MAX_SCAN_RANGES = 4096;
+  bool m_outer_join_agg_scan;
+  std::atomic<Uint32> m_num_scan_ranges;
+  std::atomic<Uint32> m_matched_ranges[MAX_SCAN_RANGES / 32];
+
+  void setMatchedRange(Uint32 range_no) {
+    if (range_no < MAX_SCAN_RANGES) {
+      Uint32 word = range_no / 32;
+      Uint32 bit = 1u << (range_no % 32);
+      m_matched_ranges[word].fetch_or(bit, std::memory_order_relaxed);
+    }
+  }
+
+  //------------------------------------------------------------------
   // State Machine (atomic — checked by any thread, set single-threaded)
   //------------------------------------------------------------------
   std::atomic<State> m_state;
@@ -203,6 +219,8 @@ struct JoinAggregationState {
     m_routeRef(0),
     m_receiverIds(nullptr),
     m_numReceiverIds(0),
+    m_outer_join_agg_scan(false),
+    m_num_scan_ranges(0),
     m_state(IDLE),
     m_error_code(0),
     m_key(RNIL),

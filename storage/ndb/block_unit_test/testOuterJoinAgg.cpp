@@ -96,13 +96,23 @@ static const Uint32 LINKED_COL_FLAG = 0x8000;
 /* Table metadata                                                      */
 /* ------------------------------------------------------------------ */
 
+static const char *PARENT_SS_TABLE = "parent_oj_ss";
+static const char *CHILD_SS_TABLE = "child_oj_ss";
+static const char *CHILD_SS_INDEX = "ix_jc";
+
 struct TableMeta {
   Uint32 tableId;
   Uint32 schemaVersion;
   Uint32 attrIdPk;
   Uint32 attrIdCol2;   // grp for parent, val for child
+  Uint32 attrIdCol3;   // third column (val for scan-scan child)
   Uint32 fragCount;
   std::vector<Uint32> fragNodes;
+};
+
+struct IndexMeta {
+  Uint32 indexId;
+  Uint32 indexVersion;
 };
 
 /* ------------------------------------------------------------------ */
@@ -337,6 +347,7 @@ getTableMeta(Ndb *ndb, const char *tableName, TableMeta &meta,
   meta.schemaVersion = ptab->getObjectVersion();
   meta.attrIdPk = ptab->getColumn(pkCol)->getAttrId();
   meta.attrIdCol2 = ptab->getColumn(col2)->getAttrId();
+  meta.attrIdCol3 = 0;
   meta.fragCount = ptab->getFragmentCount();
 
   meta.fragNodes.resize(meta.fragCount);
@@ -740,6 +751,276 @@ dropTables(MYSQL *conn)
 {
   sqlExec(conn, "DROP TABLE IF EXISTS child_oj");
   sqlExec(conn, "DROP TABLE IF EXISTS parent_oj");
+}
+
+/* ------------------------------------------------------------------ */
+/* Scan-scan table helpers                                             */
+/* ------------------------------------------------------------------ */
+
+static int
+getTableMeta3(Ndb *ndb, const char *tableName, TableMeta &meta,
+              const char *pkCol, const char *col2, const char *col3)
+{
+  int rc = getTableMeta(ndb, tableName, meta, pkCol, col2);
+  if (rc != 0) return rc;
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  const NdbDictionary::Table *ptab = dict->getTable(tableName);
+  meta.attrIdCol3 = ptab->getColumn(col3)->getAttrId();
+  return 0;
+}
+
+static int
+getIndexMeta(Ndb *ndb, const char *indexName, const char *tableName,
+             IndexMeta &meta)
+{
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateIndex(indexName, tableName);
+  const NdbDictionary::Index *idx = dict->getIndex(indexName, tableName);
+  if (idx == nullptr) {
+    fprintf(stderr, "getIndex(%s, %s) failed: %s\n",
+            indexName, tableName, dict->getNdbError().message);
+    return -1;
+  }
+  meta.indexId = idx->getObjectId();
+  meta.indexVersion = idx->getObjectVersion();
+  return 0;
+}
+
+static int
+createScanScanTables(MYSQL *conn, Ndb *ndb,
+                     TableMeta &parentMeta, TableMeta &childMeta,
+                     IndexMeta &indexMeta)
+{
+  sqlExec(conn, "DROP TABLE IF EXISTS child_oj_ss");
+  sqlExec(conn, "DROP TABLE IF EXISTS parent_oj_ss");
+
+  if (sqlExec(conn,
+        "CREATE TABLE parent_oj_ss ("
+        "  pk BIGINT NOT NULL PRIMARY KEY,"
+        "  join_col BIGINT NOT NULL,"
+        "  grp BIGINT NOT NULL"
+        ") ENGINE=NDB") != 0)
+    return -1;
+
+  if (sqlExec(conn,
+        "CREATE TABLE child_oj_ss ("
+        "  pk BIGINT NOT NULL PRIMARY KEY,"
+        "  join_col BIGINT NOT NULL,"
+        "  val BIGINT NOT NULL,"
+        "  KEY ix_jc (join_col)"
+        ") ENGINE=NDB") != 0)
+    return -1;
+
+  if (getTableMeta3(ndb, PARENT_SS_TABLE, parentMeta,
+                    "pk", "join_col", "grp") != 0) return -1;
+  if (getTableMeta3(ndb, CHILD_SS_TABLE, childMeta,
+                    "pk", "join_col", "val") != 0) return -1;
+  if (getIndexMeta(ndb, CHILD_SS_INDEX, CHILD_SS_TABLE, indexMeta) != 0)
+    return -1;
+
+  V("Parent SS '%s': id=%u version=%u pk=%u join_col=%u grp=%u frags=%u\n",
+    PARENT_SS_TABLE, parentMeta.tableId, parentMeta.schemaVersion,
+    parentMeta.attrIdPk, parentMeta.attrIdCol2, parentMeta.attrIdCol3,
+    parentMeta.fragCount);
+  V("Child SS '%s': id=%u version=%u pk=%u join_col=%u val=%u frags=%u\n",
+    CHILD_SS_TABLE, childMeta.tableId, childMeta.schemaVersion,
+    childMeta.attrIdPk, childMeta.attrIdCol2, childMeta.attrIdCol3,
+    childMeta.fragCount);
+  V("Index '%s': id=%u version=%u\n",
+    CHILD_SS_INDEX, indexMeta.indexId, indexMeta.indexVersion);
+  return 0;
+}
+
+static void
+dropScanScanTables(MYSQL *conn)
+{
+  sqlExec(conn, "DROP TABLE IF EXISTS child_oj_ss");
+  sqlExec(conn, "DROP TABLE IF EXISTS parent_oj_ss");
+}
+
+/* ------------------------------------------------------------------ */
+/* QueryTree builder for scan-scan outer join                          */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Build QueryTree for a 2-node scan-scan outer join with aggregation:
+ *
+ *   Node 0: QN_SCAN_FRAG on parent_oj_ss
+ *           NI_AGGREGATE | NI_LINKED_ATTR (passes join_col to child)
+ *
+ *   Node 1: QN_SCAN_FRAG on ordered index ix_jc of child_oj_ss
+ *           NI_HAS_PARENT | NI_KEY_LINKED | NI_AGGREGATE | NI_AGGREGATE_LEAF
+ *           NO NI_INNER_JOIN (outer join semantics)
+ *           Key = BoundEQ on linked col 0 (parent.join_col)
+ */
+static std::vector<Uint32>
+buildOuterJoinQueryTree_ScanScan(const TableMeta &parent,
+                                  const IndexMeta &childIndex,
+                                  Uint32 childIndexVersion,
+                                  Uint32 receiverId)
+{
+  std::vector<Uint32> ai;
+
+  /* Node 0: 4 fixed + 1 NI_LINKED_ATTR (1 attr) = 5 words */
+  const Uint32 node0_len = 5;
+  /* Node 1: 4 fixed + 1 NI_HAS_PARENT + 4 NI_KEY_LINKED = 9 words */
+  const Uint32 node1_len = 9;
+  const Uint32 tree_len = 1 + node0_len + node1_len;
+
+  /* Word 0: QueryTree cnt_len */
+  Uint32 cnt_len = 0;
+  QueryTree::setCntLen(cnt_len, 2, tree_len);
+  ai.push_back(cnt_len);
+
+  /* Node 0: QN_SCAN_FRAG (root scan on parent) */
+  Uint32 n0_len = 0;
+  QueryNode::setOpLen(n0_len, QueryNode::QN_SCAN_FRAG, node0_len);
+  ai.push_back(n0_len);
+  ai.push_back(DABits::NI_AGGREGATE | DABits::NI_LINKED_ATTR);
+  ai.push_back(parent.tableId);
+  ai.push_back(parent.schemaVersion);
+  /* NI_LINKED_ATTR: 1 attribute (join_col) */
+  ai.push_back((parent.attrIdCol2 << 16) | 1);
+
+  /* Node 1: QN_SCAN_FRAG (child scan on ordered index, outer join agg leaf) */
+  Uint32 n1_len = 0;
+  QueryNode::setOpLen(n1_len, QueryNode::QN_SCAN_FRAG, node1_len);
+  ai.push_back(n1_len);
+  /* NO NI_INNER_JOIN — outer join */
+  Uint32 n1_bits = DABits::NI_HAS_PARENT | DABits::NI_KEY_LINKED |
+                   DABits::NI_AGGREGATE | DABits::NI_AGGREGATE_LEAF;
+  ai.push_back(n1_bits);
+  ai.push_back(childIndex.indexId);
+  ai.push_back(childIndexVersion);
+  /* NI_HAS_PARENT: parent is node 0 */
+  ai.push_back((0 << 16) | 1);
+  /* NI_KEY_LINKED: paramCnt=0, patternLen=3 */
+  ai.push_back((0 << 16) | 3);
+  /* Key pattern: BoundEQ on linked col 0 */
+  ai.push_back(QueryPattern::data(1));      /* P_DATA(1): 1 word of constant */
+  ai.push_back(4);                          /* BoundEQ = 4 */
+  ai.push_back(QueryPattern::attrInfo(0));  /* P_ATTRINFO(0): col 0 with AttributeHeader */
+
+  /* ---- Parameter section ---- */
+
+  /* Param 0: QN_ScanFragParameters (NodeSize=8) for root scan */
+  Uint32 p0_len = 0;
+  QueryNodeParameters::setOpLen(p0_len, QueryNodeParameters::QN_SCAN_FRAG,
+                                QN_ScanFragParameters::NodeSize);
+  ai.push_back(p0_len);
+  ai.push_back(0);             /* requestInfo */
+  ai.push_back(receiverId);    /* resultData */
+  ai.push_back(256);           /* batch_size_rows */
+  ai.push_back(65536);         /* batch_size_bytes */
+  ai.push_back(0);
+  ai.push_back(0);
+  ai.push_back(0);
+
+  /* Param 1: QN_ScanFragParameters (NodeSize=8) for child scan */
+  Uint32 p1_len = 0;
+  QueryNodeParameters::setOpLen(p1_len, QueryNodeParameters::QN_SCAN_FRAG,
+                                QN_ScanFragParameters::NodeSize);
+  ai.push_back(p1_len);
+  ai.push_back(0);             /* requestInfo */
+  ai.push_back(receiverId);    /* resultData */
+  ai.push_back(256);           /* batch_size_rows */
+  ai.push_back(65536);         /* batch_size_bytes */
+  ai.push_back(0);
+  ai.push_back(0);
+  ai.push_back(0);
+
+  return ai;
+}
+
+/* ------------------------------------------------------------------ */
+/* SUM(CASE WHEN child.val IS NOT NULL THEN child.val ELSE 0 END),    */
+/* COUNT(*)                                                            */
+/* ------------------------------------------------------------------ */
+
+static std::vector<Uint32>
+buildAggProgram_SumCase(Uint32 childValAttrId)
+{
+  /*
+   * Layout:
+   * [0..7]   Header (8 words)
+   * [8]      kOpEmbeddedInterp | emb_len (8 words)
+   * [9..16]  Embedded NDB interpreter:
+   *            READ_ATTR_INTO_REG reg0, childValAttrId
+   *            BRANCH_REG_NE_NULL reg0, label→5 (THEN)
+   *          ELSE (val IS NULL):
+   *            LOAD_CONST16 reg2, 3 (THEN arm size)
+   *            WriteInterpreterOutput reg2, 0
+   *            EXIT_OK
+   *          THEN (val NOT NULL):
+   *            LOAD_CONST16 reg2, 0
+   *            WriteInterpreterOutput reg2, 0
+   *            EXIT_OK
+   * [17]     kOpLoadCol child.val → reg0
+   * [18]     kOpSum reg0 → agg[0]
+   * [19]     kOpSkip 4 (skip ELSE arm)
+   * [20]     kOpLoadConst 0 → reg0
+   * [21..22] constant 0 (two words)
+   * [23]     kOpSum reg0 → agg[0]
+   * [24]     kOpLoadConst 1 → reg1
+   * [25..26] constant 1 (two words)
+   * [27]     kOpCount reg1 → agg[1]
+   */
+  const Uint32 PROG_LEN = 28;
+  std::vector<Uint32> prog(PROG_LEN);
+
+  /* Header */
+  prog[0] = (AGG_MAGIC << 16) | PROG_LEN;
+  prog[1] = (0u << 16) | 2u;  /* n_gb_cols=0, n_agg_results=2 */
+  prog[2] = PUSHDOWN_AGGREGATION_VERSION;
+  prog[3] = prog[4] = prog[5] = prog[6] = prog[7] = 0;
+
+  /* [8]: kOpEmbeddedInterp with 8 words of embedded program */
+  prog[8] = (kOpEmbeddedInterp << 26) | 8;
+
+  /* Embedded interpreter program (8 words at [9..16]) */
+  /* [9] READ_ATTR_INTO_REG reg0, childValAttrId */
+  prog[9] = (childValAttrId << 16) | (0 << 6) | 1;  /* opcode 1 = READ_ATTR_INTO_REG */
+  /* [10] BRANCH_REG_NE_NULL reg0, offset 4 → THEN path at emb[5] */
+  prog[10] = (4 << 16) | (0 << 6) | 11;  /* opcode 11 = BRANCH_REG_NE_NULL */
+  /* ELSE path (val IS NULL): */
+  /* [11] LOAD_CONST16 reg2, 3 (THEN arm = 3 words to skip) */
+  prog[11] = (3 << 16) | (2 << 6) | 4;  /* opcode 4 = LOAD_CONST16 */
+  /* [12] WriteInterpreterOutput reg2, slot 0 */
+  /* Raw: (reg << 6) + (slot << 16) + LOAD_CONST_MEM(59) + (1 << 15) */
+  prog[12] = (2 << 6) + (0 << 16) + 59 + (1 << 15);
+  /* [13] EXIT_OK = 18 */
+  prog[13] = 18;
+  /* THEN path (val NOT NULL): */
+  /* [14] LOAD_CONST16 reg2, 0 (skip_offset = 0) */
+  prog[14] = (0 << 16) | (2 << 6) | 4;
+  /* [15] WriteInterpreterOutput reg2, slot 0 */
+  prog[15] = (2 << 6) + (0 << 16) + 59 + (1 << 15);
+  /* [16] EXIT_OK = 18 */
+  prog[16] = 18;
+
+  /* After embedded interp: */
+  /* THEN arm (skip_offset=0, executed when val NOT NULL): */
+  /* [17] LoadCol child.val → reg0 */
+  prog[17] = (kOpLoadCol << 26) | (COL_TYPE_BIGINT << 21) | (0 << 16) |
+              childValAttrId;
+  /* [18] Sum reg0 → agg[0] */
+  prog[18] = (kOpSum << 26) | (0 << 16) | 0;
+  /* [19] kOpSkip 4 (skip over ELSE arm) */
+  prog[19] = (kOpSkip << 26) | 4;
+  /* ELSE arm (skip_offset=3, executed when val IS NULL): */
+  /* [20] LoadConst 0 → reg0 */
+  prog[20] = (kOpLoadConst << 26) | (NDB_TYPE_BIGUNSIGNED << 21) | (0 << 16);
+  { Uint64 zero = 0; memcpy(&prog[21], &zero, sizeof(Uint64)); }
+  /* [23] Sum reg0 → agg[0] */
+  prog[23] = (kOpSum << 26) | (0 << 16) | 0;
+  /* Common: */
+  /* [24] LoadConst 1 → reg1 */
+  prog[24] = (kOpLoadConst << 26) | (NDB_TYPE_BIGUNSIGNED << 21) | (1 << 16);
+  { Uint64 one = 1; memcpy(&prog[25], &one, sizeof(Uint64)); }
+  /* [27] Count reg1 → agg[1] */
+  prog[27] = (kOpCount << 26) | (1 << 16) | 1;
+
+  return prog;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1183,6 +1464,256 @@ testNoMatch(Ndb *ndb, SignalSender &ss, Uint32 nodeId, MYSQL *conn)
 }
 
 /* ------------------------------------------------------------------ */
+/* Test 5: Scan-scan partial match — LEFT JOIN on ordered index         */
+/* ------------------------------------------------------------------ */
+
+/*
+ * parent_oj_ss: pk=1..10, join_col=pk, grp=1
+ * child_oj_ss:  pk=1..5, join_col=pk, val=pk*10
+ *
+ * LEFT JOIN: parent rows 6-10 have no matching child in ordered index scan.
+ * Expected:
+ *   COUNT(*) = 10 (all parent rows)
+ *   SUM(child.val) = 10+20+30+40+50 = 150
+ */
+static int
+testScanScanPartialMatch(Ndb *ndb, SignalSender &ss, Uint32 nodeId, MYSQL *conn)
+{
+  printf("Test 5: Scan-scan partial match (10 parent, 5 child) COUNT/SUM ... ");
+  fflush(stdout);
+
+  ss.unlock();
+  TableMeta parentMeta, childMeta;
+  IndexMeta indexMeta;
+  int rc = createScanScanTables(conn, ndb, parentMeta, childMeta, indexMeta);
+  if (rc == 0) {
+    rc = sqlExec(conn,
+      "INSERT INTO parent_oj_ss VALUES "
+      "(1,1,1),(2,2,1),(3,3,1),(4,4,1),(5,5,1),"
+      "(6,6,1),(7,7,1),(8,8,1),(9,9,1),(10,10,1)");
+  }
+  if (rc == 0) {
+    rc = sqlExec(conn,
+      "INSERT INTO child_oj_ss VALUES "
+      "(1,1,10),(2,2,20),(3,3,30),(4,4,40),(5,5,50)");
+  }
+  ss.lock();
+  if (rc != 0) { printf("FAIL (setup)\n"); return -1; }
+
+  Uint32 apiConnectPtr = 0, tcRef = 0;
+  if (seizeTcConnect(ss, nodeId, apiConnectPtr, tcRef) != 0) {
+    ss.unlock(); dropScanScanTables(conn); ss.lock();
+    printf("FAIL (TC seize)\n");
+    return -1;
+  }
+
+  Uint32 receiverId = 42;
+  std::vector<Uint32> queryTree =
+    buildOuterJoinQueryTree_ScanScan(parentMeta, indexMeta,
+                                      indexMeta.indexVersion, receiverId);
+  /* COUNT(*) → agg[0], SUM(child.val) → agg[1] */
+  std::vector<Uint32> aggProgram =
+    buildAggProgram_CountSum(childMeta.attrIdCol3);
+
+  rc = sendScanTabReq(ss, nodeId, apiConnectPtr, tcRef,
+                      parentMeta, queryTree, aggProgram, receiverId);
+  if (rc != 0) {
+    releaseTcConnect(ss, nodeId, apiConnectPtr, tcRef);
+    ss.unlock(); dropScanScanTables(conn); ss.lock();
+    printf("FAIL (send)\n");
+    return -1;
+  }
+
+  std::vector<AggResult> results;
+  rc = collectResults(ss, results, apiConnectPtr, tcRef, nodeId);
+  releaseTcConnect(ss, nodeId, apiConnectPtr, tcRef);
+
+  if (rc != 0) {
+    ss.unlock(); dropScanScanTables(conn); ss.lock();
+    printf("FAIL (collect)\n");
+    return -1;
+  }
+
+  Uint64 totalCount = 0;
+  Int64 totalSum = 0;
+  for (const auto &r : results) {
+    for (const auto &g : r.groups) {
+      totalCount += extractCountBigint(g.second, 0);
+      totalSum += extractSumBigint(g.second, 1);
+    }
+  }
+
+  V("  Result: COUNT=%llu, SUM=%lld\n",
+    (unsigned long long)totalCount, (long long)totalSum);
+
+  if (totalCount != 10 || totalSum != 150) {
+    printf("FAIL (expected COUNT=10 SUM=150, got COUNT=%llu SUM=%lld)\n",
+           (unsigned long long)totalCount, (long long)totalSum);
+    ss.unlock(); dropScanScanTables(conn); ss.lock();
+    return -1;
+  }
+
+  /* SQL verification */
+  ss.unlock();
+  {
+    char query[512];
+    snprintf(query, sizeof(query),
+             "SELECT COUNT(*), SUM(c.val) FROM parent_oj_ss p "
+             "LEFT JOIN child_oj_ss c ON p.join_col = c.join_col");
+    if (mysql_query(conn, query) != 0) {
+      fprintf(stderr, "SQL verify failed: %s\n", mysql_error(conn));
+      dropScanScanTables(conn); ss.lock();
+      printf("FAIL (SQL)\n");
+      return -1;
+    }
+    MYSQL_RES *res = mysql_store_result(conn);
+    MYSQL_ROW row = mysql_fetch_row(res);
+    Uint64 sqlCount = row && row[0] ? (Uint64)atoll(row[0]) : 0;
+    Int64 sqlSum = row && row[1] ? (Int64)atoll(row[1]) : 0;
+    mysql_free_result(res);
+    if (sqlCount != 10 || sqlSum != 150) {
+      fprintf(stderr, "SQL verify mismatch: COUNT=%llu SUM=%lld\n",
+              (unsigned long long)sqlCount, (long long)sqlSum);
+      dropScanScanTables(conn); ss.lock();
+      printf("FAIL (SQL verify)\n");
+      return -1;
+    }
+    V("  SQL verify: COUNT=%llu SUM=%lld — matches\n",
+      (unsigned long long)sqlCount, (long long)sqlSum);
+  }
+  dropScanScanTables(conn);
+  ss.lock();
+
+  printf("PASS\n");
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Test 6: Scan-scan SUM(CASE WHEN child.val IS NOT NULL ...)          */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Same data as Test 5.
+ * Agg: SUM(CASE WHEN child.val IS NOT NULL THEN child.val ELSE 0 END) → agg[0]
+ *      COUNT(*) → agg[1]
+ *
+ * Expected: SUM_CASE=150, COUNT=10
+ */
+static int
+testScanScanSumCase(Ndb *ndb, SignalSender &ss, Uint32 nodeId, MYSQL *conn)
+{
+  printf("Test 6: Scan-scan SUM(CASE WHEN val IS NOT NULL ...) ... ");
+  fflush(stdout);
+
+  ss.unlock();
+  TableMeta parentMeta, childMeta;
+  IndexMeta indexMeta;
+  int rc = createScanScanTables(conn, ndb, parentMeta, childMeta, indexMeta);
+  if (rc == 0) {
+    rc = sqlExec(conn,
+      "INSERT INTO parent_oj_ss VALUES "
+      "(1,1,1),(2,2,1),(3,3,1),(4,4,1),(5,5,1),"
+      "(6,6,1),(7,7,1),(8,8,1),(9,9,1),(10,10,1)");
+  }
+  if (rc == 0) {
+    rc = sqlExec(conn,
+      "INSERT INTO child_oj_ss VALUES "
+      "(1,1,10),(2,2,20),(3,3,30),(4,4,40),(5,5,50)");
+  }
+  ss.lock();
+  if (rc != 0) { printf("FAIL (setup)\n"); return -1; }
+
+  Uint32 apiConnectPtr = 0, tcRef = 0;
+  if (seizeTcConnect(ss, nodeId, apiConnectPtr, tcRef) != 0) {
+    ss.unlock(); dropScanScanTables(conn); ss.lock();
+    printf("FAIL (TC seize)\n");
+    return -1;
+  }
+
+  Uint32 receiverId = 42;
+  std::vector<Uint32> queryTree =
+    buildOuterJoinQueryTree_ScanScan(parentMeta, indexMeta,
+                                      indexMeta.indexVersion, receiverId);
+  /* SUM(CASE...) → agg[0], COUNT(*) → agg[1] */
+  std::vector<Uint32> aggProgram =
+    buildAggProgram_SumCase(childMeta.attrIdCol3);
+
+  rc = sendScanTabReq(ss, nodeId, apiConnectPtr, tcRef,
+                      parentMeta, queryTree, aggProgram, receiverId);
+  if (rc != 0) {
+    releaseTcConnect(ss, nodeId, apiConnectPtr, tcRef);
+    ss.unlock(); dropScanScanTables(conn); ss.lock();
+    printf("FAIL (send)\n");
+    return -1;
+  }
+
+  std::vector<AggResult> results;
+  rc = collectResults(ss, results, apiConnectPtr, tcRef, nodeId);
+  releaseTcConnect(ss, nodeId, apiConnectPtr, tcRef);
+
+  if (rc != 0) {
+    ss.unlock(); dropScanScanTables(conn); ss.lock();
+    printf("FAIL (collect)\n");
+    return -1;
+  }
+
+  Int64 totalSumCase = 0;
+  Uint64 totalCount = 0;
+  for (const auto &r : results) {
+    for (const auto &g : r.groups) {
+      totalSumCase += extractSumBigint(g.second, 0);
+      totalCount += extractCountBigint(g.second, 1);
+    }
+  }
+
+  V("  Result: SUM_CASE=%lld, COUNT=%llu\n",
+    (long long)totalSumCase, (unsigned long long)totalCount);
+
+  if (totalSumCase != 150 || totalCount != 10) {
+    printf("FAIL (expected SUM_CASE=150 COUNT=10, "
+           "got SUM_CASE=%lld COUNT=%llu)\n",
+           (long long)totalSumCase, (unsigned long long)totalCount);
+    ss.unlock(); dropScanScanTables(conn); ss.lock();
+    return -1;
+  }
+
+  /* SQL verification */
+  ss.unlock();
+  {
+    char query[512];
+    snprintf(query, sizeof(query),
+             "SELECT SUM(CASE WHEN c.val IS NOT NULL THEN c.val ELSE 0 END), "
+             "COUNT(*) FROM parent_oj_ss p "
+             "LEFT JOIN child_oj_ss c ON p.join_col = c.join_col");
+    if (mysql_query(conn, query) != 0) {
+      fprintf(stderr, "SQL verify failed: %s\n", mysql_error(conn));
+      dropScanScanTables(conn); ss.lock();
+      printf("FAIL (SQL)\n");
+      return -1;
+    }
+    MYSQL_RES *res = mysql_store_result(conn);
+    MYSQL_ROW row = mysql_fetch_row(res);
+    Int64 sqlSumCase = row && row[0] ? (Int64)atoll(row[0]) : 0;
+    Uint64 sqlCount = row && row[1] ? (Uint64)atoll(row[1]) : 0;
+    mysql_free_result(res);
+    if (sqlSumCase != 150 || sqlCount != 10) {
+      fprintf(stderr, "SQL verify mismatch: SUM_CASE=%lld COUNT=%llu\n",
+              (long long)sqlSumCase, (unsigned long long)sqlCount);
+      dropScanScanTables(conn); ss.lock();
+      printf("FAIL (SQL verify)\n");
+      return -1;
+    }
+    V("  SQL verify: SUM_CASE=%lld COUNT=%llu — matches\n",
+      (long long)sqlSumCase, (unsigned long long)sqlCount);
+  }
+  dropScanScanTables(conn);
+  ss.lock();
+
+  printf("PASS\n");
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* Main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -1275,6 +1806,8 @@ int main(int argc, char *argv[])
       if (testPartialMatchGroupBy(&ndb, ss, (Uint32)nodeId, conn) != 0) result = 1;
       if (testAllMatch(&ndb, ss, (Uint32)nodeId, conn) != 0) result = 1;
       if (testNoMatch(&ndb, ss, (Uint32)nodeId, conn) != 0) result = 1;
+      if (testScanScanPartialMatch(&ndb, ss, (Uint32)nodeId, conn) != 0) result = 1;
+      if (testScanScanSumCase(&ndb, ss, (Uint32)nodeId, conn) != 0) result = 1;
 
       ss.unlock();
     }

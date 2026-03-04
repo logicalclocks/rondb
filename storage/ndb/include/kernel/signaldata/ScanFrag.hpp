@@ -165,6 +165,9 @@ class ScanFragReq {
 
   static void setJoinAggFlag(Uint32 &requestInfo, Uint32 val);
   static Uint32 getJoinAggFlag(const Uint32 &requestInfo);
+
+  static void setOuterJoinAggFlag(Uint32 &requestInfo, Uint32 val);
+  static Uint32 getOuterJoinAggFlag(const Uint32 &requestInfo);
 };
 
 /*
@@ -420,6 +423,7 @@ class ScanFragNextReq {
 #define SF_PAR_ORDERED_SCAN_SHIFT (26)
 #define SF_USER_ID_SHIFT (27)
 #define SF_JOIN_AGG_SHIFT (28)
+#define SF_OUTER_JOIN_AGG_SHIFT (29)
 
 inline Uint32 ScanFragReq::getLockMode(const Uint32 &requestInfo) {
   return (requestInfo >> SF_LOCK_MODE_SHIFT) & SF_LOCK_MODE_MASK;
@@ -679,6 +683,16 @@ inline void ScanFragReq::setJoinAggFlag(Uint32 &requestInfo, UintR val) {
 
 inline Uint32 ScanFragReq::getJoinAggFlag(const Uint32 &requestInfo) {
   return (requestInfo >> SF_JOIN_AGG_SHIFT) & 1;
+}
+
+inline void ScanFragReq::setOuterJoinAggFlag(Uint32 &requestInfo, UintR val) {
+  ASSERT_BOOL(val, "ScanFragReq::setOuterJoinAggFlag");
+  requestInfo = (requestInfo & ~(1 << SF_OUTER_JOIN_AGG_SHIFT)) |
+                (val << SF_OUTER_JOIN_AGG_SHIFT);
+}
+
+inline Uint32 ScanFragReq::getOuterJoinAggFlag(const Uint32 &requestInfo) {
+  return (requestInfo >> SF_OUTER_JOIN_AGG_SHIFT) & 1;
 }
 
 /**

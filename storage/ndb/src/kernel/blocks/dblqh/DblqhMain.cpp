@@ -164,12 +164,19 @@
 //#define DEBUG_CONT_SCAN 1
 //#define DEBUG_INDEX_BUILD 1
 //#define DEBUG_JOIN_AGG 1
+//#define DEBUG_MATCH 1
 #endif
 
 #ifdef DEBUG_JOIN_AGG
 #define DEB_JOIN_AGG(arglist) do { g_eventLogger->info arglist ; } while (0)
 #else
 #define DEB_JOIN_AGG(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_MATCH
+#define DEB_MATCH(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_MATCH(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_CONT_SCAN 
@@ -18311,16 +18318,20 @@ void Dblqh::execJOIN_AGG_NULL_ROW_REQ(Signal *signal) {
   JoinAggregationState *state = getJoinAggState(aggStateKey);
   ndbrequire(state != nullptr);
 
-  /* Read linked attribute data from long section 0 */
+  /* Read linked attribute data from long section 0 (if present) */
   SectionHandle handle(this, signal);
-  ndbrequire(handle.m_cnt == 1);
-  SegmentedSectionPtr sec_ptr;
-  ndbrequire(handle.getSection(sec_ptr, 0));
+  ndbrequire(handle.m_cnt <= 1);
 
   Uint32 linked_buf[256];
-  Uint32 linked_len = sec_ptr.sz;
-  ndbrequire(linked_len <= 256);
-  copy(linked_buf, sec_ptr.i);
+  Uint32 linked_len = 0;
+  if (handle.m_cnt == 1) {
+    jam();
+    SegmentedSectionPtr sec_ptr;
+    ndbrequire(handle.getSection(sec_ptr, 0));
+    linked_len = sec_ptr.sz;
+    ndbrequire(linked_len <= 256);
+    copy(linked_buf, sec_ptr.i);
+  }
   releaseSections(handle);
 
   /* Select interpreter based on strategy.
@@ -18377,6 +18388,62 @@ retry:
   conf->treeNodePtrI = treeNodePtrI;
   sendSignal(senderRef, GSN_JOIN_AGG_NULL_ROW_CONF,
              signal, JoinAggNullRowConf::SignalLength, JBB);
+}
+
+void Dblqh::execJOIN_AGG_MATCH_REQ(Signal *signal) {
+  jamEntry();
+  const JoinAggMatchReq *req =
+    (const JoinAggMatchReq *)signal->getDataPtr();
+  const Uint32 senderRef = req->senderRef;
+  const Uint32 aggStateKey = req->aggStateKey;
+
+  JoinAggregationState *state = getJoinAggState(aggStateKey);
+  ndbrequire(state != nullptr);
+
+  Uint32 num_ranges = state->m_num_scan_ranges.load(
+    std::memory_order_acquire);
+  Uint32 bitmask_words = (num_ranges + 31) / 32;
+  Uint32 buf[JoinAggregationState::MAX_SCAN_RANGES / 32];
+  for (Uint32 i = 0; i < bitmask_words; i++) {
+    buf[i] = state->m_matched_ranges[i].load(std::memory_order_relaxed);
+  }
+
+  DEB_MATCH(("(%u) MATCH_REQ: aggStateKey=%u num_ranges=%u "
+             "bitmask_words=%u outer_join=%u",
+             instance(), aggStateKey, num_ranges, bitmask_words,
+             (Uint32)state->m_outer_join_agg_scan));
+#ifdef DEBUG_MATCH
+  for (Uint32 i = 0; i < bitmask_words; i++) {
+    DEB_MATCH(("(%u) MATCH_REQ: bitmask[%u] = 0x%08x",
+               instance(), i, buf[i]));
+  }
+#endif
+
+  // Reset matched ranges for next batch
+  for (Uint32 i = 0; i < bitmask_words; i++) {
+    state->m_matched_ranges[i].store(0, std::memory_order_relaxed);
+  }
+  state->m_num_scan_ranges.store(0, std::memory_order_relaxed);
+
+  SectionHandle handle(this);
+  if (bitmask_words > 0) {
+    SegmentedSectionPtr secPtr;
+    ndbrequire(import(secPtr, buf, bitmask_words));
+    handle.m_ptr[0] = secPtr;
+    handle.m_cnt = 1;
+  }
+
+  JoinAggMatchConf *conf =
+    (JoinAggMatchConf *)signal->getDataPtrSend();
+  conf->senderRef = reference();
+  conf->aggStateKey = aggStateKey;
+  conf->requestPtrI = req->requestPtrI;
+  conf->treeNodePtrI = req->treeNodePtrI;
+  conf->numBitmaskWords = bitmask_words;
+  sendSignal(senderRef, GSN_JOIN_AGG_MATCH_CONF, signal,
+             JoinAggMatchConf::SignalLength, JBB, &handle);
+  DEB_MATCH(("(%u) MATCH_CONF sent: bitmask_words=%u to ref=0x%x",
+             instance(), bitmask_words, senderRef));
 }
 
 void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
@@ -19789,6 +19856,7 @@ void Dblqh::nextScanConfScanLab(Signal *signal, ScanRecord *const scanPtr,
      *       REQUEST IS RECEIVED. IF WE DO NOT HAVE ANY NEED FOR
      *       LOCKS WE CAN CLOSE THE SCAN IMMEDIATELY.
      * --------------------------------------------------------------------- */
+
     /*************************************************************
      *       STOP THE SCAN PROCESS IF THIS HAS BEEN REQUESTED.
      ************************************************************ */
@@ -20205,6 +20273,21 @@ void Dblqh::scanTupkeyConfLab(Signal* signal,
     jam();
     if (read_len > 0) {
       scanPtr->m_join_agg_evict_rows++;
+    }
+    if (scanPtr->m_outer_join_agg_scan) {
+      JoinAggregationState *state =
+        getJoinAggState(scanPtr->m_join_agg_state_key);
+      Uint32 range_no = regTcPtr->m_scan_curr_range_no;
+      DEB_MATCH(("(%u) setMatchedRange: key=%u range_no=%u read_len=%u",
+                 instance(), scanPtr->m_join_agg_state_key,
+                 range_no, read_len));
+      state->setMatchedRange(range_no);
+      Uint32 old_val = state->m_num_scan_ranges.load(
+        std::memory_order_relaxed);
+      while (old_val < range_no + 1) {
+        state->m_num_scan_ranges.compare_exchange_weak(
+          old_val, range_no + 1, std::memory_order_relaxed);
+      }
     }
   } else {
     scanPtr->m_exec_direct_batch_size_words += read_len;
@@ -20868,6 +20951,14 @@ Uint32 Dblqh::initScanrec(const ScanFragReq *scanFragReq,
       jam();
       return ZNODEFAIL_BEFORE_COMMIT;
     }
+  }
+  if (ScanFragReq::getOuterJoinAggFlag(reqinfo)) {
+    jam();
+    scanPtr->m_outer_join_agg_scan = 1;
+    DEB_MATCH(("(%u) SCAN_FRAGREQ: OuterJoinAggFlag=1 aggKey=%u",
+               instance(), scanPtr->m_join_agg_state_key));
+  } else {
+    scanPtr->m_outer_join_agg_scan = 0;
   }
   ndbassert(sig_len == extra_len_index + ScanFragReq::SignalLength);
   (void)sig_len;

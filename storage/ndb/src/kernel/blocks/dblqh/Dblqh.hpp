@@ -697,6 +697,7 @@ class Dblqh : public SimulatedBlock {
       m_join_agg_state_key(RNIL),
       m_join_agg_evict_rows(0),
       m_rows_examined(0),
+      m_outer_join_agg_scan(0),
       m_ttl_purge_window_size(0)
     {
     }
@@ -844,6 +845,7 @@ class Dblqh : public SimulatedBlock {
     Uint32 m_join_agg_state_key;    // Pool index for shared join agg state (RNIL if none)
     Uint32 m_join_agg_evict_rows;   // Evicted group rows sent to API during this scan batch
     Uint32 m_rows_examined;          // Total rows examined in this scan batch
+    Uint8 m_outer_join_agg_scan;     // Set from OuterJoinAggFlag in SCAN_FRAGREQ
     // TTL
     Uint8 m_ttl_ignore;         // ignore set by API
     Uint8 m_ttl_ignore_for_ral; // ignore set by Read after lock
@@ -3317,6 +3319,7 @@ private:
   void execSCAN_FRAGREQ(Signal* signal);
   void execJOIN_AGG_COMPLETE_REQ(Signal* signal);
   void execJOIN_AGG_NULL_ROW_REQ(Signal* signal);
+  void execJOIN_AGG_MATCH_REQ(Signal* signal);
   void execJOIN_AGG_SEND_CONF(Signal* signal);
   bool checkJoinAggNodeFailed(Signal* signal, Uint32 aggStateKey,
                               Uint32 senderRef);
