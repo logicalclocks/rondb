@@ -183,6 +183,8 @@ private:
     bool is_in_subquery = false;     // true for I_IN_SUBQUERY
     ConditionalExpression* in_expr = NULL; // LHS expression (col IN (...))
     DynamicArray<SubqueryResult>* in_values = NULL; // Multi-value results
+    bool is_corr_scalar = false;     // true for I_CORR_SCALAR
+    DynamicArray<CorrelatedPair>* corr_values = NULL; // (key,val) pairs
   };
   DynamicArray<SubqueryInfo> m_subquery_infos;
   bool m_has_subqueries = false;
@@ -208,6 +210,7 @@ private:
   void analyze_subqueries();
   void analyze_subqueries_ce(ConditionalExpression* ce);
   void decorrelate_exists();
+  void decorrelate_scalar();
   void compile();
   void build_agg_linked_projections();
   void determine_explain();

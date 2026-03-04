@@ -386,6 +386,92 @@ Number of output lines, including header: 2
 
 
 
+=== Test 24: Correlated scalar subquery — less than ===
+o_total < (SELECT SUM(l_price) FROM lineitem WHERE l_orderkey = o_id)
+SUM per orderkey: (1,300),(2,200),(3,550),(4,200),(5,750)
+Only order 5 qualifies (400 < 750)
+== Query ==
+SELECT o_id, SUM(o_total)
+FROM orders
+WHERE o_total < (SELECT SUM(l_price) FROM lineitem WHERE l_orderkey = o_id)
+GROUP BY o_id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== Test 25: Correlated scalar subquery — equality ===
+o_total = (SELECT SUM(l_price) FROM lineitem WHERE l_orderkey = o_id)
+Only order 4 qualifies (200 = 200)
+== Query ==
+SELECT o_id, SUM(o_total)
+FROM orders
+WHERE o_total = (SELECT SUM(l_price) FROM lineitem WHERE l_orderkey = o_id)
+GROUP BY o_id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== Test 26: Correlated scalar subquery — greater than ===
+o_total > (SELECT SUM(l_price) FROM lineitem WHERE l_orderkey = o_id)
+Orders 1,2,3 qualify: (500>300, 300>200, 700>550)
+== Query ==
+SELECT o_id, SUM(o_total)
+FROM orders
+WHERE o_total > (SELECT SUM(l_price) FROM lineitem WHERE l_orderkey = o_id)
+GROUP BY o_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+
+=== Test 27: Correlated scalar subquery with outer filter ===
+o_custkey = 200 AND o_total > SUM(l_price): only order 3 (700>550)
+== Query ==
+SELECT o_id, SUM(o_total)
+FROM orders
+WHERE o_custkey = 200
+AND o_total > (SELECT SUM(l_price) FROM lineitem WHERE l_orderkey = o_id)
+GROUP BY o_id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== Test 28: Correlated scalar subquery with inner filter ===
+o_total > (SELECT SUM(l_price) FROM lineitem WHERE l_orderkey = o_id AND l_quantity > 20)
+Inner SUM where qty>20: (3,550),(5,750). Only order 3 qualifies (700>550)
+== Query ==
+SELECT o_id, SUM(o_total)
+FROM orders
+WHERE o_total > (SELECT SUM(l_price) FROM lineitem WHERE l_orderkey = o_id AND l_quantity > 20)
+GROUP BY o_id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
 === Cleanup ===
 DROP TABLE empty_table;
 DROP TABLE lineitem;

@@ -162,7 +162,7 @@ extern void rsqlp_error(RSQLP_LTYPE* yylloc, yyscan_t yyscanner, const char* s);
 // RonSQLPreparer.cpp needs some values that are inequal to all tokens. They
 // need to be declared here but aren't used in the lexer or parser.
 %token I_MYSQL_TIME
-%token I_IN_SUBQUERY I_SUBQUERY
+%token I_IN_SUBQUERY I_SUBQUERY I_CORR_SCALAR
 
 /*
  * MySQL operator presedence, strongest binding first:

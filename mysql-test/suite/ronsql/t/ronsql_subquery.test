@@ -326,6 +326,67 @@ GROUP BY o_id;|
 --source suite/ronsql/include/ronsql_compare.inc
 
 --echo
+--echo === Test 24: Correlated scalar subquery — less than ===
+--echo o_total < (SELECT SUM(l_price) FROM lineitem WHERE l_orderkey = o_id)
+--echo SUM per orderkey: (1,300),(2,200),(3,550),(4,200),(5,750)
+--echo Only order 5 qualifies (400 < 750)
+
+let $QUERY=
+SELECT o_id, SUM(o_total)
+FROM orders
+WHERE o_total < (SELECT SUM(l_price) FROM lineitem WHERE l_orderkey = o_id)
+GROUP BY o_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 25: Correlated scalar subquery — equality ===
+--echo o_total = (SELECT SUM(l_price) FROM lineitem WHERE l_orderkey = o_id)
+--echo Only order 4 qualifies (200 = 200)
+
+let $QUERY=
+SELECT o_id, SUM(o_total)
+FROM orders
+WHERE o_total = (SELECT SUM(l_price) FROM lineitem WHERE l_orderkey = o_id)
+GROUP BY o_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 26: Correlated scalar subquery — greater than ===
+--echo o_total > (SELECT SUM(l_price) FROM lineitem WHERE l_orderkey = o_id)
+--echo Orders 1,2,3 qualify: (500>300, 300>200, 700>550)
+
+let $QUERY=
+SELECT o_id, SUM(o_total)
+FROM orders
+WHERE o_total > (SELECT SUM(l_price) FROM lineitem WHERE l_orderkey = o_id)
+GROUP BY o_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 27: Correlated scalar subquery with outer filter ===
+--echo o_custkey = 200 AND o_total > SUM(l_price): only order 3 (700>550)
+
+let $QUERY=
+SELECT o_id, SUM(o_total)
+FROM orders
+WHERE o_custkey = 200
+  AND o_total > (SELECT SUM(l_price) FROM lineitem WHERE l_orderkey = o_id)
+GROUP BY o_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 28: Correlated scalar subquery with inner filter ===
+--echo o_total > (SELECT SUM(l_price) FROM lineitem WHERE l_orderkey = o_id AND l_quantity > 20)
+--echo Inner SUM where qty>20: (3,550),(5,750). Only order 3 qualifies (700>550)
+
+let $QUERY=
+SELECT o_id, SUM(o_total)
+FROM orders
+WHERE o_total > (SELECT SUM(l_price) FROM lineitem WHERE l_orderkey = o_id AND l_quantity > 20)
+GROUP BY o_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
 --echo === Cleanup ===
 
 DELIMITER ;|
