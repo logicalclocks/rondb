@@ -1948,7 +1948,18 @@ RonSQLPreparer::execute_join()
   for (Uint32 i = 1; i < plan.num_ops; i++) {
     JoinOp& op = plan.ops[i];
     NdbQueryOptions opts;
-    opts.setMatchType(NdbQueryOptions::MatchNonNull);
+    switch (op.match_type) {
+    case JoinOp::SEMI_JOIN:
+      opts.setMatchType(NdbQueryOptions::MatchFirst);
+      break;
+    case JoinOp::ANTI_JOIN:
+      opts.setMatchType(NdbQueryOptions::MatchNullOnly);
+      break;
+    case JoinOp::INNER:
+    default:
+      opts.setMatchType(NdbQueryOptions::MatchNonNull);
+      break;
+    }
 
     // Build linked key from parent
     const NdbQueryOperand* keys[MAX_JOIN_KEY_COLS + 1];

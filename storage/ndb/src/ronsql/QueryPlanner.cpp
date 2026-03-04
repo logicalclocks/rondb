@@ -57,6 +57,7 @@ QueryPlanner::plan(
   rootOp.alias = root_table->alias;
   rootOp.parent_op_idx = 0;
   rootOp.is_root = true;
+  rootOp.match_type = JoinOp::INNER;
   rootOp.num_key_cols = 0;
   out.num_ops = 1;
 
@@ -87,6 +88,7 @@ QueryPlanner::plan(
     childOp.table = child_ndb_table;
     childOp.alias = jc->table.alias;
     childOp.is_root = false;
+    childOp.match_type = JoinOp::INNER;
 
     Uint32 num_keys = 0;
     Uint32 parent_idx = 0;
