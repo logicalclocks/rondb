@@ -1,0 +1,925 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Outer Join Match Tracking for Pushdown Join Aggregation</title>
+<style>
+  :root {
+    --bg: #fdfdfd;
+    --fg: #1a1a1a;
+    --accent: #2563eb;
+    --accent-light: #dbeafe;
+    --border: #d1d5db;
+    --code-bg: #f3f4f6;
+    --table-header: #f0f4ff;
+    --pro: #059669;
+    --con: #dc2626;
+    --note-bg: #fffbeb;
+    --note-border: #f59e0b;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: var(--fg);
+    background: var(--bg);
+    line-height: 1.65;
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 2rem 1.5rem 4rem;
+  }
+  h1 { font-size: 1.75rem; margin-bottom: 0.25rem; color: var(--accent); }
+  h2 { font-size: 1.35rem; margin-top: 2.5rem; margin-bottom: 0.75rem; border-bottom: 2px solid var(--accent-light); padding-bottom: 0.3rem; }
+  h3 { font-size: 1.1rem; margin-top: 1.5rem; margin-bottom: 0.5rem; }
+  p { margin-bottom: 0.75rem; }
+  .subtitle { color: #6b7280; font-size: 0.95rem; margin-bottom: 2rem; }
+  ul, ol { margin: 0.5rem 0 1rem 1.5rem; }
+  li { margin-bottom: 0.3rem; }
+  code {
+    font-family: "SF Mono", "Fira Code", "Cascadia Code", Menlo, Consolas, monospace;
+    font-size: 0.88em;
+    background: var(--code-bg);
+    padding: 0.15em 0.35em;
+    border-radius: 3px;
+  }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 1rem;
+    overflow-x: auto;
+    margin: 0.75rem 0 1.25rem;
+    font-size: 0.85rem;
+    line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; }
+  .kw { color: #7c3aed; font-weight: 600; }
+  .ty { color: #0369a1; }
+  .cm { color: #6b7280; font-style: italic; }
+  .num { color: #b45309; }
+  .str { color: #059669; }
+  .fn { color: #c2410c; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1rem 0 1.5rem;
+    font-size: 0.9rem;
+  }
+  th, td { border: 1px solid var(--border); padding: 0.5rem 0.75rem; text-align: left; }
+  th { background: var(--table-header); font-weight: 600; }
+  tr:nth-child(even) { background: #fafbfc; }
+  .pro { color: var(--pro); font-weight: 600; }
+  .con { color: var(--con); font-weight: 600; }
+  .note {
+    background: var(--note-bg);
+    border-left: 4px solid var(--note-border);
+    padding: 0.75rem 1rem;
+    margin: 1rem 0;
+    border-radius: 0 4px 4px 0;
+    font-size: 0.92rem;
+  }
+  .diagram-container {
+    margin: 1.25rem 0;
+    text-align: center;
+    overflow-x: auto;
+  }
+  .diagram-container svg {
+    max-width: 100%;
+    height: auto;
+  }
+  .diagram-label {
+    font-size: 0.85rem;
+    color: #6b7280;
+    margin-top: 0.25rem;
+    font-style: italic;
+  }
+  .verdict {
+    background: #f0fdf4;
+    border: 1px solid #86efac;
+    border-radius: 6px;
+    padding: 1rem 1.25rem;
+    margin: 1rem 0;
+  }
+  .section-anchor { color: var(--accent); text-decoration: none; }
+  .section-anchor:hover { text-decoration: underline; }
+  .toc { background: var(--code-bg); border-radius: 6px; padding: 1rem 1.5rem; margin-bottom: 2rem; }
+  .toc ul { list-style: none; margin: 0.25rem 0 0 0; }
+  .toc li { margin-bottom: 0.2rem; }
+  .toc a { color: var(--accent); text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+
+<h1>Outer Join Match Tracking for Pushdown Join Aggregation</h1>
+<p class="subtitle">RONDB-733 &mdash; Design document comparing bitmask exchange vs. TRANSID_AI approaches</p>
+
+<nav class="toc">
+  <strong>Contents</strong>
+  <ul>
+    <li><a href="#problem">1. Problem Statement</a></li>
+    <li><a href="#implemented">2. Implemented Approach: Bitmask Exchange Protocol</a></li>
+    <li><a href="#alternative">3. Alternative Approach: TRANSID_AI Notification</a></li>
+    <li><a href="#comparison">4. Comparison</a></li>
+    <li><a href="#latency">4.1 Latency Analysis</a></li>
+    <li><a href="#analysis">5. Analysis &amp; Conclusion</a></li>
+  </ul>
+</nav>
+
+<!-- ================================================================== -->
+<h2 id="problem">1. Problem Statement</h2>
+
+<p>In pushdown join aggregation, <strong>DBLQH routes child scan rows through the
+aggregation engine</strong> and sends aggregated results directly to the API node.
+The flag <code>T_EXPECT_TRANSID_AI</code> is <em>not</em> set on aggregate leaf nodes,
+so <strong>DBSPJ never sees per-row child results</strong>.</p>
+
+<p>For <strong>outer joins</strong>, DBSPJ must identify which parent rows had
+<em>no matching child row</em> so it can inject null-extended rows into the aggregate.
+In normal (non-aggregate) outer joins DBSPJ tracks matches via the
+<code>m_matched</code> bitmask updated in <code>execTRANSID_AI</code> &mdash; but that
+path is unavailable here because TRANSID_AI signals are suppressed.</p>
+
+<div class="note">
+  <strong>Core tension:</strong> aggregate leaves bypass DBSPJ for efficiency, but outer
+  join semantics require DBSPJ-level knowledge of which parent rows were matched.
+</div>
+
+<!-- ================================================================== -->
+<h2 id="implemented">2. Implemented Approach: Bitmask Exchange Protocol</h2>
+
+<h3>2.1 Overview</h3>
+<p>Each DBLQH worker atomically marks matched scan ranges in a shared bitmask during
+scan processing. After the child scan completes, DBSPJ sends a single
+<code>JOIN_AGG_MATCH_REQ</code> signal per data node. DBLQH instance&nbsp;1 reads the
+bitmask, returns it in a <code>JOIN_AGG_MATCH_CONF</code> long section, and resets
+it for the next batch. DBSPJ ORs the per-node bitmasks and injects null rows for
+unmatched parent rows.</p>
+
+<h3>2.2 Signal Definitions</h3>
+
+<pre><code><span class="cm">// GSN 963 &mdash; DBSPJ &rarr; DBLQH instance 1</span>
+<span class="kw">struct</span> <span class="ty">JoinAggMatchReq</span> {
+  <span class="kw">static constexpr</span> <span class="ty">Uint32</span> SignalLength = <span class="num">6</span>;
+  <span class="ty">Uint32</span> senderRef;      <span class="cm">// DBSPJ block reference</span>
+  <span class="ty">Uint32</span> aggStateKey;    <span class="cm">// Pool index for JoinAggregationState</span>
+  <span class="ty">Uint32</span> transId[<span class="num">2</span>];     <span class="cm">// Transaction ID</span>
+  <span class="ty">Uint32</span> requestPtrI;    <span class="cm">// DBSPJ Request pool pointer</span>
+  <span class="ty">Uint32</span> treeNodePtrI;   <span class="cm">// DBSPJ TreeNode pool pointer</span>
+};
+
+<span class="cm">// GSN 964 &mdash; DBLQH instance 1 &rarr; DBSPJ</span>
+<span class="kw">struct</span> <span class="ty">JoinAggMatchConf</span> {
+  <span class="kw">static constexpr</span> <span class="ty">Uint32</span> SignalLength = <span class="num">5</span>;
+  <span class="ty">Uint32</span> senderRef;        <span class="cm">// DBLQH instance 1 reference</span>
+  <span class="ty">Uint32</span> aggStateKey;      <span class="cm">// Echo</span>
+  <span class="ty">Uint32</span> requestPtrI;      <span class="cm">// Echo</span>
+  <span class="ty">Uint32</span> treeNodePtrI;     <span class="cm">// Echo</span>
+  <span class="ty">Uint32</span> numBitmaskWords;  <span class="cm">// Words in long section 0</span>
+  <span class="cm">// Long section 0: matched_ranges bitmask</span>
+};</code></pre>
+
+<h3>2.3 Shared State</h3>
+
+<pre><code><span class="kw">struct</span> <span class="ty">JoinAggregationState</span> {
+  <span class="kw">static const</span> <span class="ty">Uint32</span> MAX_SCAN_RANGES = <span class="num">4096</span>;
+  <span class="ty">bool</span> m_outer_join_agg_scan;
+  <span class="ty">std::atomic</span>&lt;<span class="ty">Uint32</span>&gt; m_num_scan_ranges;
+  <span class="ty">std::atomic</span>&lt;<span class="ty">Uint32</span>&gt; m_matched_ranges[MAX_SCAN_RANGES / <span class="num">32</span>]; <span class="cm">// 128 words</span>
+
+  <span class="kw">void</span> <span class="fn">setMatchedRange</span>(<span class="ty">Uint32</span> range_no) {
+    <span class="kw">if</span> (range_no &lt; MAX_SCAN_RANGES) {
+      <span class="ty">Uint32</span> word = range_no / <span class="num">32</span>;
+      <span class="ty">Uint32</span> bit  = <span class="num">1u</span> &lt;&lt; (range_no % <span class="num">32</span>);
+      m_matched_ranges[word].<span class="fn">fetch_or</span>(bit, std::memory_order_relaxed);
+    }
+  }
+};</code></pre>
+
+<h3>2.4 Signal Flow</h3>
+
+<div class="diagram-container">
+<svg viewBox="0 0 820 380" xmlns="http://www.w3.org/2000/svg" font-family="'SF Mono', Menlo, Consolas, monospace" font-size="12">
+  <!-- Participants -->
+  <rect x="30" y="10" width="100" height="32" rx="4" fill="#dbeafe" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="80" y="30" text-anchor="middle" font-weight="600" fill="#1e40af">DBSPJ</text>
+
+  <rect x="280" y="10" width="140" height="32" rx="4" fill="#fef3c7" stroke="#d97706" stroke-width="1.5"/>
+  <text x="350" y="30" text-anchor="middle" font-weight="600" fill="#92400e">DBLQH Inst 1</text>
+
+  <rect x="560" y="10" width="160" height="32" rx="4" fill="#fef3c7" stroke="#d97706" stroke-width="1.5"/>
+  <text x="640" y="30" text-anchor="middle" font-weight="600" fill="#92400e">DBLQH Workers</text>
+
+  <!-- Lifelines -->
+  <line x1="80" y1="42" x2="80" y2="370" stroke="#9ca3af" stroke-dasharray="4,3"/>
+  <line x1="350" y1="42" x2="350" y2="370" stroke="#9ca3af" stroke-dasharray="4,3"/>
+  <line x1="640" y1="42" x2="640" y2="370" stroke="#9ca3af" stroke-dasharray="4,3"/>
+
+  <!-- Phase 1: Scan processing -->
+  <rect x="10" y="56" width="780" height="110" rx="4" fill="#f0fdf4" fill-opacity="0.5" stroke="#86efac" stroke-dasharray="3,3"/>
+  <text x="20" y="72" font-size="11" fill="#059669" font-weight="600">Phase 1: Child scan processing (per row)</text>
+
+  <line x1="640" y1="95" x2="640" y2="95" stroke="none"/>
+  <text x="650" y="95" font-size="10.5" fill="#374151">Child row matches parent range_no</text>
+  <text x="650" y="112" font-size="10.5" fill="#374151" font-weight="600">setMatchedRange(range_no)</text>
+  <text x="650" y="129" font-size="10.5" fill="#6b7280">atomic fetch_or on m_matched_ranges</text>
+
+  <rect x="620" y="82" width="185" height="55" rx="3" fill="none" stroke="#059669" stroke-width="1" stroke-dasharray="2,2"/>
+
+  <!-- Arrow: Workers set bits (self-arrow) -->
+  <path d="M640,145 C680,145 680,155 640,155" fill="none" stroke="#059669" stroke-width="1.5" marker-end="url(#arrowGreen)"/>
+  <text x="688" y="154" font-size="10" fill="#059669">fetch_or bit</text>
+
+  <!-- Phase 2: Match exchange -->
+  <rect x="10" y="175" width="530" height="185" rx="4" fill="#eff6ff" fill-opacity="0.5" stroke="#93c5fd" stroke-dasharray="3,3"/>
+  <text x="20" y="191" font-size="11" fill="#2563eb" font-weight="600">Phase 2: Match exchange (after scan completes)</text>
+
+  <!-- REQ arrow -->
+  <line x1="80" y1="215" x2="342" y2="215" stroke="#2563eb" stroke-width="1.5" marker-end="url(#arrowBlue)"/>
+  <text x="210" y="210" text-anchor="middle" font-size="10.5" fill="#1e40af" font-weight="600">JOIN_AGG_MATCH_REQ</text>
+  <text x="210" y="225" text-anchor="middle" font-size="10" fill="#6b7280">(per data node)</text>
+
+  <!-- Inst 1 reads bitmask -->
+  <path d="M350,240 C390,240 390,260 350,260" fill="none" stroke="#d97706" stroke-width="1.5" marker-end="url(#arrowOrange)"/>
+  <text x="398" y="248" font-size="10" fill="#92400e">load m_matched_ranges[]</text>
+  <text x="398" y="261" font-size="10" fill="#92400e">reset to 0</text>
+
+  <!-- CONF arrow -->
+  <line x1="350" y1="285" x2="88" y2="285" stroke="#059669" stroke-width="1.5" marker-end="url(#arrowGreen)"/>
+  <text x="218" y="280" text-anchor="middle" font-size="10.5" fill="#065f46" font-weight="600">JOIN_AGG_MATCH_CONF</text>
+  <text x="218" y="295" text-anchor="middle" font-size="10" fill="#6b7280">long section: bitmask words</text>
+
+  <!-- DBSPJ processes -->
+  <path d="M80,310 C40,310 40,330 80,330" fill="none" stroke="#2563eb" stroke-width="1.5" marker-end="url(#arrowBlue)"/>
+  <text x="5" y="316" font-size="10" fill="#1e40af">OR bitmasks</text>
+  <text x="5" y="329" font-size="10" fill="#1e40af">inject null rows</text>
+
+  <!-- Arrow markers -->
+  <defs>
+    <marker id="arrowBlue" viewBox="0 0 10 6" refX="10" refY="3" markerWidth="8" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,3 L0,6 Z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrowGreen" viewBox="0 0 10 6" refX="10" refY="3" markerWidth="8" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,3 L0,6 Z" fill="#059669"/>
+    </marker>
+    <marker id="arrowOrange" viewBox="0 0 10 6" refX="10" refY="3" markerWidth="8" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,3 L0,6 Z" fill="#d97706"/>
+    </marker>
+    <marker id="arrowRed" viewBox="0 0 10 6" refX="10" refY="3" markerWidth="8" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,3 L0,6 Z" fill="#dc2626"/>
+    </marker>
+  </defs>
+</svg>
+<div class="diagram-label">Figure 1: Bitmask exchange signal flow</div>
+</div>
+
+<h3>2.5 Data Flow</h3>
+
+<div class="diagram-container">
+<svg viewBox="0 0 820 340" xmlns="http://www.w3.org/2000/svg" font-family="'SF Mono', Menlo, Consolas, monospace" font-size="12">
+  <!-- Data node box -->
+  <rect x="250" y="10" width="340" height="260" rx="6" fill="#fefce8" fill-opacity="0.4" stroke="#d97706" stroke-width="1.5"/>
+  <text x="420" y="30" text-anchor="middle" font-size="11" fill="#92400e" font-weight="600">Data Node (DBLQH)</text>
+
+  <!-- Worker boxes -->
+  <rect x="270" y="50" width="120" height="60" rx="4" fill="#fff7ed" stroke="#fb923c"/>
+  <text x="330" y="70" text-anchor="middle" font-size="10" font-weight="600" fill="#9a3412">Worker LDM 2</text>
+  <text x="330" y="85" text-anchor="middle" font-size="9.5" fill="#78716c">scan rows &rarr; agg engine</text>
+  <text x="330" y="100" text-anchor="middle" font-size="9.5" fill="#059669" font-weight="600">setMatchedRange()</text>
+
+  <rect x="420" y="50" width="120" height="60" rx="4" fill="#fff7ed" stroke="#fb923c"/>
+  <text x="480" y="70" text-anchor="middle" font-size="10" font-weight="600" fill="#9a3412">Worker LDM 3</text>
+  <text x="480" y="85" text-anchor="middle" font-size="9.5" fill="#78716c">scan rows &rarr; agg engine</text>
+  <text x="480" y="100" text-anchor="middle" font-size="9.5" fill="#059669" font-weight="600">setMatchedRange()</text>
+
+  <!-- Shared bitmask -->
+  <rect x="300" y="130" width="230" height="50" rx="4" fill="#dbeafe" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="415" y="150" text-anchor="middle" font-size="10.5" font-weight="600" fill="#1e40af">m_matched_ranges[]</text>
+  <text x="415" y="165" text-anchor="middle" font-size="10" fill="#3b82f6">std::atomic&lt;Uint32&gt; &times; 128</text>
+
+  <!-- Arrows: workers to bitmask -->
+  <line x1="330" y1="110" x2="375" y2="130" stroke="#059669" stroke-width="1.5" marker-end="url(#arrowGreen)"/>
+  <line x1="480" y1="110" x2="455" y2="130" stroke="#059669" stroke-width="1.5" marker-end="url(#arrowGreen)"/>
+  <text x="330" y="125" font-size="9" fill="#059669">fetch_or</text>
+  <text x="465" y="125" font-size="9" fill="#059669">fetch_or</text>
+
+  <!-- Instance 1 box -->
+  <rect x="310" y="200" width="210" height="50" rx="4" fill="#fef3c7" stroke="#d97706"/>
+  <text x="415" y="220" text-anchor="middle" font-size="10" font-weight="600" fill="#92400e">Instance 1</text>
+  <text x="415" y="235" text-anchor="middle" font-size="9.5" fill="#78716c">reads bitmask, resets, sends CONF</text>
+
+  <!-- Arrow: bitmask to inst 1 -->
+  <line x1="415" y1="180" x2="415" y2="198" stroke="#d97706" stroke-width="1.5" marker-end="url(#arrowOrange)"/>
+
+  <!-- DBSPJ box -->
+  <rect x="30" y="120" width="150" height="60" rx="6" fill="#dbeafe" fill-opacity="0.7" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="105" y="143" text-anchor="middle" font-size="11" font-weight="600" fill="#1e40af">DBSPJ</text>
+  <text x="105" y="160" text-anchor="middle" font-size="9.5" fill="#3b82f6">OR bitmasks from all nodes</text>
+
+  <!-- API box -->
+  <rect x="30" y="260" width="150" height="45" rx="6" fill="#f0fdf4" stroke="#059669" stroke-width="1.5"/>
+  <text x="105" y="283" text-anchor="middle" font-size="11" font-weight="600" fill="#065f46">API Node</text>
+  <text x="105" y="296" text-anchor="middle" font-size="9.5" fill="#059669">receives aggregate results</text>
+
+  <!-- REQ/CONF arrows -->
+  <line x1="180" y1="138" x2="308" y2="210" stroke="#2563eb" stroke-width="1.5" marker-end="url(#arrowBlue)"/>
+  <text x="220" y="163" font-size="9.5" fill="#1e40af" transform="rotate(17,220,163)">MATCH_REQ</text>
+
+  <line x1="310" y1="238" x2="182" y2="162" stroke="#059669" stroke-width="1.5" marker-end="url(#arrowGreen)"/>
+  <text x="265" y="216" font-size="9.5" fill="#065f46" transform="rotate(-20,265,216)">MATCH_CONF</text>
+
+  <!-- Agg results to API -->
+  <line x1="330" y1="100" x2="155" y2="260" stroke="#dc2626" stroke-width="1.2" stroke-dasharray="5,3" marker-end="url(#arrowRed)"/>
+  <text x="210" y="200" font-size="9" fill="#dc2626" transform="rotate(-35,210,200)">agg results (direct)</text>
+
+  <!-- Null rows from DBSPJ -->
+  <line x1="105" y1="180" x2="105" y2="258" stroke="#7c3aed" stroke-width="1.5" marker-end="url(#arrowPurple)"/>
+  <text x="112" y="225" font-size="9.5" fill="#7c3aed">null rows for</text>
+  <text x="112" y="237" font-size="9.5" fill="#7c3aed">unmatched parents</text>
+
+  <defs>
+    <marker id="arrowPurple" viewBox="0 0 10 6" refX="10" refY="3" markerWidth="8" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,3 L0,6 Z" fill="#7c3aed"/>
+    </marker>
+  </defs>
+</svg>
+<div class="diagram-label">Figure 2: Data flow &mdash; workers set bits, instance 1 returns bitmask, DBSPJ injects nulls</div>
+</div>
+
+<h3>2.6 Step-by-Step Protocol</h3>
+
+<ol>
+  <li>
+    <strong>ScanFragReq setup</strong> &mdash; DBSPJ sets <code>OuterJoinAggFlag</code>
+    (bit&nbsp;29) and passes <code>aggStateKey</code> in <code>variableData</code>. DBLQH
+    stores it on the scan record and sets <code>m_outer_join_agg_scan&nbsp;=&nbsp;1</code>.
+  </li>
+  <li>
+    <strong>During scan</strong> &mdash; Each DBLQH worker processes child rows through the
+    aggregation engine. When a row matches (i.e.&nbsp;<code>read_len&nbsp;&gt;&nbsp;0</code>),
+    the worker calls <code>setMatchedRange(range_no)</code>, which performs an
+    <code>atomic&nbsp;fetch_or</code> on the shared <code>m_matched_ranges</code> array.
+    It also updates <code>m_num_scan_ranges</code> via compare-exchange to track the highest
+    range number seen.
+  </li>
+  <li>
+    <strong>All fragments complete</strong> &mdash; DBSPJ detects the child scan is done.
+    It allocates a zeroed bitmask (<code>m_agg_match_bitmask</code>) via
+    <code>ndbd_malloc</code> and sends <code>JOIN_AGG_MATCH_REQ</code> to DBLQH
+    instance&nbsp;1 on every data node that has aggregation state
+    (<code>m_aggNodes</code> bitmask). Tracks outstanding count in
+    <code>m_agg_match_outstanding</code>.
+  </li>
+  <li>
+    <strong>DBLQH instance 1 responds</strong> &mdash; Loads the atomic
+    <code>m_matched_ranges</code> into a stack buffer, resets the bitmask and
+    <code>m_num_scan_ranges</code> to zero (isolating the next batch), then sends
+    <code>JOIN_AGG_MATCH_CONF</code> with the bitmask as long section&nbsp;0.
+  </li>
+  <li>
+    <strong>DBSPJ ORs bitmasks</strong> &mdash; As each <code>CONF</code> arrives,
+    DBSPJ ORs the incoming bitmask into its combined <code>m_agg_match_bitmask</code>.
+    A parent range is "matched" if <em>any</em> data node reported a match.
+  </li>
+  <li>
+    <strong>Null row injection</strong> &mdash; When the last <code>CONF</code> arrives
+    (<code>m_agg_match_outstanding&nbsp;==&nbsp;0</code>), DBSPJ iterates parent rows
+    in the scan ancestor. For each row whose bit is <em>not</em> set, it calls
+    <code>sendJoinAggNullRow</code>, which expands linked attributes from the parent
+    row and sends a <code>JOIN_AGG_NULL_ROW_REQ</code> to DBLQH. The aggregation engine
+    processes the null-extended row, producing the correct outer join aggregate result.
+  </li>
+</ol>
+
+<h3>2.7 Key Implementation Details</h3>
+<ul>
+  <li><strong>Thread safety:</strong> <code>std::atomic&lt;Uint32&gt;</code> with
+    <code>memory_order_relaxed</code>. No locks needed &mdash; each worker ORs
+    independently, and the bitmask is only read after all workers finish.</li>
+  <li><strong>Capacity:</strong> 4096 scan ranges (128 &times; 32 bits). Matches the
+    maximum batch size for pushed scan-scan joins.</li>
+  <li><strong>Batch isolation:</strong> Instance 1 resets the bitmask on read, ensuring
+    the next <code>SCAN_NEXTREQ</code> batch starts clean.</li>
+  <li><strong>Memory:</strong> 512 bytes on the data node (shared state), plus a
+    small <code>ndbd_malloc</code> allocation on DBSPJ (freed after null row processing).</li>
+</ul>
+
+<!-- ================================================================== -->
+<h2 id="alternative">3. Alternative Approach: TRANSID_AI Notification</h2>
+
+<h3>3.1 Overview</h3>
+<p>Instead of suppressing <code>TRANSID_AI</code> for aggregate leaf nodes, have DBLQH
+send a <em>lightweight</em> <code>TRANSID_AI</code> to DBSPJ for each matching child row
+(in addition to routing the row through the aggregation engine). DBSPJ would then use its
+existing <code>m_matched</code> per-row tracking, identical to the non-aggregate outer
+join path.</p>
+
+<h3>3.2 Required Changes</h3>
+<ul>
+  <li>Set <code>T_EXPECT_TRANSID_AI</code> on aggregate leaf nodes that are outer joins.</li>
+  <li>Add <code>T_BUFFER_MATCH</code> on the scan ancestor to buffer match state per parent row.</li>
+  <li>DBLQH: after routing a child row through the aggregation engine, also send a
+    <code>TRANSID_AI</code> to DBSPJ with (at minimum) the <code>range_no</code>.</li>
+  <li>DBSPJ: <code>execTRANSID_AI</code> would mark the parent row as matched via existing
+    <code>m_matched</code> logic.</li>
+</ul>
+
+<h3>3.3 Signal Flow</h3>
+
+<div class="diagram-container">
+<svg viewBox="0 0 820 360" xmlns="http://www.w3.org/2000/svg" font-family="'SF Mono', Menlo, Consolas, monospace" font-size="12">
+  <!-- Participants -->
+  <rect x="30" y="10" width="100" height="32" rx="4" fill="#dbeafe" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="80" y="30" text-anchor="middle" font-weight="600" fill="#1e40af">DBSPJ</text>
+
+  <rect x="280" y="10" width="180" height="32" rx="4" fill="#fef3c7" stroke="#d97706" stroke-width="1.5"/>
+  <text x="370" y="30" text-anchor="middle" font-weight="600" fill="#92400e">DBLQH Workers</text>
+
+  <rect x="600" y="10" width="130" height="32" rx="4" fill="#f0fdf4" stroke="#059669" stroke-width="1.5"/>
+  <text x="665" y="30" text-anchor="middle" font-weight="600" fill="#065f46">API Node</text>
+
+  <!-- Lifelines -->
+  <line x1="80" y1="42" x2="80" y2="350" stroke="#9ca3af" stroke-dasharray="4,3"/>
+  <line x1="370" y1="42" x2="370" y2="350" stroke="#9ca3af" stroke-dasharray="4,3"/>
+  <line x1="665" y1="42" x2="665" y2="350" stroke="#9ca3af" stroke-dasharray="4,3"/>
+
+  <!-- Per-row loop -->
+  <rect x="10" y="55" width="770" height="140" rx="4" fill="#fef2f2" fill-opacity="0.3" stroke="#fca5a5" stroke-dasharray="3,3"/>
+  <text x="20" y="72" font-size="11" fill="#dc2626" font-weight="600">Per matching child row (repeated M times)</text>
+
+  <!-- Row through agg engine -->
+  <path d="M370,95 C410,95 410,115 370,115" fill="none" stroke="#d97706" stroke-width="1.5" marker-end="url(#arrowOrange)"/>
+  <text x="418" y="100" font-size="10" fill="#92400e">route through</text>
+  <text x="418" y="113" font-size="10" fill="#92400e">agg engine</text>
+
+  <!-- Agg results to API -->
+  <line x1="370" y1="130" x2="657" y2="130" stroke="#059669" stroke-width="1.5" marker-end="url(#arrowGreen)"/>
+  <text x="513" y="125" text-anchor="middle" font-size="10" fill="#065f46">aggregate result &rarr; API</text>
+
+  <!-- TRANSID_AI to DBSPJ -->
+  <line x1="370" y1="155" x2="88" y2="155" stroke="#dc2626" stroke-width="1.5" marker-end="url(#arrowRed)"/>
+  <text x="228" y="150" text-anchor="middle" font-size="10.5" fill="#991b1b" font-weight="600">TRANSID_AI (match notification)</text>
+  <text x="228" y="168" text-anchor="middle" font-size="10" fill="#dc2626">per row &mdash; carries range_no</text>
+
+  <!-- DBSPJ marks matched -->
+  <path d="M80,175 C40,175 40,195 80,195" fill="none" stroke="#2563eb" stroke-width="1.5" marker-end="url(#arrowBlue)"/>
+  <text x="5" y="189" font-size="10" fill="#1e40af">set m_matched[row]</text>
+
+  <!-- After scan completes -->
+  <rect x="10" y="210" width="200" height="90" rx="4" fill="#eff6ff" fill-opacity="0.5" stroke="#93c5fd" stroke-dasharray="3,3"/>
+  <text x="20" y="227" font-size="11" fill="#2563eb" font-weight="600">After scan completes</text>
+
+  <!-- DBSPJ iterates -->
+  <path d="M80,250 C40,250 40,270 80,270" fill="none" stroke="#2563eb" stroke-width="1.5" marker-end="url(#arrowBlue)"/>
+  <text x="5" y="257" font-size="10" fill="#1e40af">iterate parents,</text>
+  <text x="5" y="269" font-size="10" fill="#1e40af">inject null rows</text>
+
+  <!-- Null rows to API -->
+  <line x1="80" y1="320" x2="657" y2="320" stroke="#7c3aed" stroke-width="1.5" marker-end="url(#arrowPurple)"/>
+  <text x="370" y="315" text-anchor="middle" font-size="10" fill="#7c3aed">null-extended aggregate rows for unmatched parents</text>
+</svg>
+<div class="diagram-label">Figure 3: TRANSID_AI notification &mdash; per-row signals from DBLQH to DBSPJ</div>
+</div>
+
+<h3>3.4 Advantages</h3>
+<ul>
+  <li>Reuses existing DBSPJ <code>m_matched</code> infrastructure &mdash; no new signal types needed.</li>
+  <li>No atomic bitmask machinery on the data node.</li>
+  <li>Immediate per-row tracking; DBSPJ knows match status in real time.</li>
+</ul>
+
+<h3>3.5 Drawbacks</h3>
+<ul>
+  <li>Sends <em>M</em> <code>TRANSID_AI</code> signals per batch (one per matching child row),
+    instead of <em>N</em> signals (one per data node). For typical OLAP workloads,
+    M &gt;&gt; N.</li>
+  <li><code>TRANSID_AI</code> carries row data, not just a match flag &mdash; unnecessary
+    bandwidth even if we strip it to a minimal payload.</li>
+  <li>High fan-out risk: large child result sets can cause signal congestion on the
+    DBSPJ node, increasing latency for all concurrent queries.</li>
+  <li>Re-introduces the overhead that pushdown aggregation was designed to eliminate
+    (per-row signaling to the coordinator).</li>
+</ul>
+
+<!-- ================================================================== -->
+<h2 id="comparison">4. Comparison</h2>
+
+<table>
+  <thead>
+    <tr>
+      <th style="width:22%">Aspect</th>
+      <th style="width:39%">Bitmask Exchange (Implemented)</th>
+      <th style="width:39%">TRANSID_AI Notification</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Signals per batch</strong></td>
+      <td class="pro">O(N) &mdash; N = data nodes, typically 2&ndash;8</td>
+      <td class="con">O(M) &mdash; M = matching child rows per batch</td>
+    </tr>
+    <tr>
+      <td><strong>Signals total (B batches)</strong></td>
+      <td class="pro">O(B &times; N)</td>
+      <td class="con">O(B &times; M), where M &gt;&gt; N for OLAP</td>
+    </tr>
+    <tr>
+      <td><strong>Bandwidth</strong></td>
+      <td class="pro">Compact bitmask (few Uint32 words)</td>
+      <td class="con">Full TRANSID_AI per row</td>
+    </tr>
+    <tr>
+      <td><strong>DBSPJ CPU</strong></td>
+      <td class="pro">Minimal &mdash; OR bitmasks, iterate parents</td>
+      <td class="con">Process every child row signal</td>
+    </tr>
+    <tr>
+      <td><strong>New infrastructure</strong></td>
+      <td>2 new GSN signals (963, 964), atomic bitmask</td>
+      <td class="pro">Reuses existing TRANSID_AI + m_matched</td>
+    </tr>
+    <tr>
+      <td><strong>Code complexity</strong></td>
+      <td class="con">Higher &mdash; new protocol, atomics, reset</td>
+      <td class="pro">Lower &mdash; reuses existing path</td>
+    </tr>
+    <tr>
+      <td><strong>Thread safety</strong></td>
+      <td>Requires atomic fetch_or on m_matched_ranges</td>
+      <td class="pro">No extra threading concerns</td>
+    </tr>
+    <tr>
+      <td><strong>Memory in DBSPJ</strong></td>
+      <td class="pro">Small ndbd_malloc bitmask</td>
+      <td>Per-row match tracking in parent rows</td>
+    </tr>
+    <tr>
+      <td><strong>Congestion risk</strong></td>
+      <td class="pro">None &mdash; deferred, bounded signal count</td>
+      <td class="con">High fan-out can congest DBSPJ</td>
+    </tr>
+    <tr>
+      <td><strong>Latency (small queries)</strong></td>
+      <td class="con">+1 round-trip per batch (~100&ndash;400&nbsp;&mu;s each)</td>
+      <td class="pro">Zero post-scan delay &mdash; match state known inline</td>
+    </tr>
+    <tr>
+      <td><strong>Latency (multi-batch)</strong></td>
+      <td class="con">B &times; RT accumulates on critical path (10 batches &asymp; 2 ms)</td>
+      <td class="pro">No per-batch synchronization overhead</td>
+    </tr>
+    <tr>
+      <td><strong>Latency (large queries)</strong></td>
+      <td class="pro">B &times; RT still small vs. total scan time</td>
+      <td class="con">Per-row signals add scheduling overhead, risk congestion</td>
+    </tr>
+    <tr>
+      <td><strong>Scalability</strong></td>
+      <td class="pro">Cost independent of result set size</td>
+      <td class="con">Cost proportional to result set size</td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- ================================================================== -->
+<h3 id="latency">4.1 Latency Analysis</h3>
+
+<p>The comparison table above shows the bitmask exchange is more efficient in throughput
+and signal count. But what about <strong>end-to-end query latency</strong>, particularly
+for small queries where the scan itself is fast?</p>
+
+<h4>The bitmask round-trip penalty</h4>
+
+<p>The bitmask exchange adds a <strong>synchronous round-trip after the child scan
+completes</strong>. DBSPJ cannot inject null rows (and thus cannot finish the query)
+until all <code>JOIN_AGG_MATCH_CONF</code> responses arrive. The timeline looks like:</p>
+
+<div class="diagram-container">
+<svg viewBox="0 0 820 230" xmlns="http://www.w3.org/2000/svg" font-family="'SF Mono', Menlo, Consolas, monospace" font-size="11">
+  <!-- Timeline arrows -->
+  <line x1="40" y1="40" x2="790" y2="40" stroke="#9ca3af" stroke-width="1"/>
+  <text x="415" y="22" text-anchor="middle" font-size="10" fill="#6b7280" font-weight="600">Bitmask Exchange &mdash; Time &rarr;</text>
+
+  <line x1="40" y1="150" x2="790" y2="150" stroke="#9ca3af" stroke-width="1"/>
+  <text x="415" y="132" text-anchor="middle" font-size="10" fill="#6b7280" font-weight="600">TRANSID_AI &mdash; Time &rarr;</text>
+
+  <!-- Bitmask timeline phases -->
+  <rect x="40" y="45" width="320" height="30" rx="3" fill="#fef3c7" stroke="#d97706"/>
+  <text x="200" y="64" text-anchor="middle" font-size="10" fill="#92400e" font-weight="600">Child scan (rows &rarr; agg engine)</text>
+
+  <rect x="365" y="45" width="180" height="30" rx="3" fill="#dbeafe" stroke="#2563eb"/>
+  <text x="455" y="58" text-anchor="middle" font-size="9.5" fill="#1e40af" font-weight="600">MATCH_REQ &rarr; CONF</text>
+  <text x="455" y="70" text-anchor="middle" font-size="9" fill="#3b82f6">round-trip to all nodes</text>
+
+  <rect x="550" y="45" width="120" height="30" rx="3" fill="#ede9fe" stroke="#7c3aed"/>
+  <text x="610" y="64" text-anchor="middle" font-size="9.5" fill="#6d28d9" font-weight="600">Null row inject</text>
+
+  <rect x="675" y="45" width="60" height="30" rx="3" fill="#f0fdf4" stroke="#059669"/>
+  <text x="705" y="64" text-anchor="middle" font-size="9.5" fill="#065f46" font-weight="600">Done</text>
+
+  <!-- Bitmask wait annotation -->
+  <line x1="360" y1="82" x2="360" y2="102" stroke="#dc2626" stroke-width="1" stroke-dasharray="2,2"/>
+  <line x1="545" y1="82" x2="545" y2="102" stroke="#dc2626" stroke-width="1" stroke-dasharray="2,2"/>
+  <line x1="360" y1="92" x2="545" y2="92" stroke="#dc2626" stroke-width="1.5"/>
+  <polygon points="362,89 362,95 356,92" fill="#dc2626"/>
+  <polygon points="543,89 543,95 549,92" fill="#dc2626"/>
+  <text x="452" y="108" text-anchor="middle" font-size="9.5" fill="#dc2626" font-weight="600">added latency</text>
+
+  <!-- TRANSID_AI timeline phases -->
+  <rect x="40" y="155" width="370" height="30" rx="3" fill="#fef3c7" stroke="#d97706"/>
+  <text x="225" y="168" text-anchor="middle" font-size="10" fill="#92400e" font-weight="600">Child scan + per-row TRANSID_AI to DBSPJ</text>
+  <text x="225" y="180" text-anchor="middle" font-size="9" fill="#78716c">(match tracking happens inline)</text>
+
+  <rect x="415" y="155" width="120" height="30" rx="3" fill="#ede9fe" stroke="#7c3aed"/>
+  <text x="475" y="174" text-anchor="middle" font-size="9.5" fill="#6d28d9" font-weight="600">Null row inject</text>
+
+  <rect x="540" y="155" width="60" height="30" rx="3" fill="#f0fdf4" stroke="#059669"/>
+  <text x="570" y="174" text-anchor="middle" font-size="9.5" fill="#065f46" font-weight="600">Done</text>
+
+  <!-- Advantage annotation -->
+  <line x1="600" y1="158" x2="735" y2="58" stroke="#059669" stroke-width="1" stroke-dasharray="3,3"/>
+  <text x="698" y="118" font-size="9" fill="#059669" transform="rotate(-35,698,118)">earlier completion</text>
+</svg>
+<div class="diagram-label">Figure 4: Latency timeline comparison for a small query</div>
+</div>
+
+<p>The key latency components:</p>
+
+<ul>
+  <li><strong>Intra-node signal</strong> (same host, via job buffer): ~10&ndash;50 &mu;s</li>
+  <li><strong>Cross-node signal</strong> (network round-trip): ~50&ndash;200 &mu;s</li>
+  <li><strong>MATCH_REQ/CONF round-trip</strong>: one cross-node signal per data node,
+    sent in parallel &mdash; latency is the <em>slowest</em> response, typically
+    ~100&ndash;400 &mu;s</li>
+</ul>
+
+<h4>Small queries (single batch): the bitmask penalty matters</h4>
+
+<p>Consider a small outer join query that scans 10 child rows across 4 data nodes.
+The scan itself completes in perhaps 100&ndash;500&nbsp;&mu;s. The post-scan
+MATCH_REQ/CONF round-trip then adds another ~100&ndash;400&nbsp;&mu;s &mdash;
+potentially <strong>doubling the query latency</strong>.</p>
+
+<p>With the TRANSID_AI approach, the same query would send 10 extra per-row signals
+during the scan (negligible overhead for 10 rows), and DBSPJ would already know
+the match state when the scan completes &mdash; null row injection begins immediately
+with <strong>zero post-scan delay</strong>.</p>
+
+<div class="note">
+  <strong>Example:</strong> A lookup-style outer join that touches 5 parent rows with
+  3 matching children. Bitmask exchange: ~200&nbsp;&mu;s scan + ~200&nbsp;&mu;s
+  round-trip = ~400&nbsp;&mu;s. TRANSID_AI: ~200&nbsp;&mu;s scan + 3 inline signals
+  = ~210&nbsp;&mu;s. The bitmask approach is ~2&times; slower here.
+</div>
+
+<h4>Multi-batch queries: the round-trip accumulates</h4>
+
+<p>The single-batch analysis above understates the cost. A scan-scan pushed join
+processes parent rows in batches (up to <code>MAX_SCAN_RANGES</code> = 4096 per batch).
+For a query with <em>B</em> batches, DBSPJ sends <code>JOIN_AGG_MATCH_REQ</code>
+<strong>once per batch</strong>, because the bitmask must be read and reset before the
+next batch can start. The MATCH_REQ/CONF round-trip sits on the critical path
+between batches:</p>
+
+<div class="diagram-container">
+<svg viewBox="0 0 820 290" xmlns="http://www.w3.org/2000/svg" font-family="'SF Mono', Menlo, Consolas, monospace" font-size="11">
+  <!-- Bitmask multi-batch timeline -->
+  <text x="415" y="18" text-anchor="middle" font-size="10" fill="#6b7280" font-weight="600">Bitmask Exchange &mdash; B batches &mdash; Time &rarr;</text>
+  <line x1="30" y1="35" x2="800" y2="35" stroke="#9ca3af" stroke-width="1"/>
+
+  <!-- Batch 1 -->
+  <rect x="30" y="40" width="150" height="26" rx="3" fill="#fef3c7" stroke="#d97706"/>
+  <text x="105" y="57" text-anchor="middle" font-size="9" fill="#92400e" font-weight="600">Scan batch 1</text>
+  <rect x="183" y="40" width="70" height="26" rx="3" fill="#dbeafe" stroke="#2563eb"/>
+  <text x="218" y="57" text-anchor="middle" font-size="8.5" fill="#1e40af" font-weight="600">REQ/CONF</text>
+  <rect x="256" y="40" width="45" height="26" rx="3" fill="#ede9fe" stroke="#7c3aed"/>
+  <text x="278" y="57" text-anchor="middle" font-size="8" fill="#6d28d9">nulls</text>
+
+  <!-- Batch 2 -->
+  <rect x="305" y="40" width="150" height="26" rx="3" fill="#fef3c7" stroke="#d97706"/>
+  <text x="380" y="57" text-anchor="middle" font-size="9" fill="#92400e" font-weight="600">Scan batch 2</text>
+  <rect x="458" y="40" width="70" height="26" rx="3" fill="#dbeafe" stroke="#2563eb"/>
+  <text x="493" y="57" text-anchor="middle" font-size="8.5" fill="#1e40af" font-weight="600">REQ/CONF</text>
+  <rect x="531" y="40" width="45" height="26" rx="3" fill="#ede9fe" stroke="#7c3aed"/>
+  <text x="553" y="57" text-anchor="middle" font-size="8" fill="#6d28d9">nulls</text>
+
+  <!-- Dots -->
+  <text x="590" y="57" font-size="14" fill="#9ca3af">...</text>
+
+  <!-- Batch B -->
+  <rect x="618" y="40" width="100" height="26" rx="3" fill="#fef3c7" stroke="#d97706"/>
+  <text x="668" y="57" text-anchor="middle" font-size="9" fill="#92400e" font-weight="600">Scan batch B</text>
+  <rect x="721" y="40" width="50" height="26" rx="3" fill="#dbeafe" stroke="#2563eb"/>
+  <text x="746" y="57" text-anchor="middle" font-size="8" fill="#1e40af" font-weight="600">R/C</text>
+  <rect x="774" y="40" width="26" height="26" rx="3" fill="#f0fdf4" stroke="#059669"/>
+  <text x="787" y="56" text-anchor="middle" font-size="8" fill="#065f46">fin</text>
+
+  <!-- Annotation: B round-trips -->
+  <line x1="183" y1="72" x2="183" y2="88" stroke="#dc2626" stroke-width="1" stroke-dasharray="2,2"/>
+  <line x1="253" y1="72" x2="253" y2="88" stroke="#dc2626" stroke-width="1" stroke-dasharray="2,2"/>
+  <line x1="183" y1="82" x2="253" y2="82" stroke="#dc2626" stroke-width="1.5"/>
+  <line x1="458" y1="72" x2="458" y2="88" stroke="#dc2626" stroke-width="1" stroke-dasharray="2,2"/>
+  <line x1="528" y1="72" x2="528" y2="88" stroke="#dc2626" stroke-width="1" stroke-dasharray="2,2"/>
+  <line x1="458" y1="82" x2="528" y2="82" stroke="#dc2626" stroke-width="1.5"/>
+  <line x1="721" y1="72" x2="721" y2="88" stroke="#dc2626" stroke-width="1" stroke-dasharray="2,2"/>
+  <line x1="771" y1="72" x2="771" y2="88" stroke="#dc2626" stroke-width="1" stroke-dasharray="2,2"/>
+  <line x1="721" y1="82" x2="771" y2="82" stroke="#dc2626" stroke-width="1.5"/>
+  <text x="415" y="102" text-anchor="middle" font-size="9.5" fill="#dc2626" font-weight="600">B &times; round-trip on critical path (total: B &times; ~200 &mu;s)</text>
+
+  <!-- TRANSID_AI multi-batch timeline -->
+  <text x="415" y="140" text-anchor="middle" font-size="10" fill="#6b7280" font-weight="600">TRANSID_AI &mdash; B batches &mdash; Time &rarr;</text>
+  <line x1="30" y1="155" x2="800" y2="155" stroke="#9ca3af" stroke-width="1"/>
+
+  <!-- Batch 1 -->
+  <rect x="30" y="160" width="170" height="26" rx="3" fill="#fef3c7" stroke="#d97706"/>
+  <text x="115" y="177" text-anchor="middle" font-size="9" fill="#92400e" font-weight="600">Scan batch 1 + inline match</text>
+  <rect x="203" y="160" width="45" height="26" rx="3" fill="#ede9fe" stroke="#7c3aed"/>
+  <text x="225" y="177" text-anchor="middle" font-size="8" fill="#6d28d9">nulls</text>
+
+  <!-- Batch 2 -->
+  <rect x="252" y="160" width="170" height="26" rx="3" fill="#fef3c7" stroke="#d97706"/>
+  <text x="337" y="177" text-anchor="middle" font-size="9" fill="#92400e" font-weight="600">Scan batch 2 + inline match</text>
+  <rect x="425" y="160" width="45" height="26" rx="3" fill="#ede9fe" stroke="#7c3aed"/>
+  <text x="447" y="177" text-anchor="middle" font-size="8" fill="#6d28d9">nulls</text>
+
+  <!-- Dots -->
+  <text x="485" y="177" font-size="14" fill="#9ca3af">...</text>
+
+  <!-- Batch B -->
+  <rect x="510" y="160" width="120" height="26" rx="3" fill="#fef3c7" stroke="#d97706"/>
+  <text x="570" y="177" text-anchor="middle" font-size="9" fill="#92400e" font-weight="600">Scan batch B</text>
+  <rect x="633" y="160" width="26" height="26" rx="3" fill="#f0fdf4" stroke="#059669"/>
+  <text x="646" y="176" text-anchor="middle" font-size="8" fill="#065f46">fin</text>
+
+  <!-- Earlier completion annotation -->
+  <line x1="659" y1="163" x2="800" y2="52" stroke="#059669" stroke-width="1" stroke-dasharray="3,3"/>
+  <text x="752" y="112" font-size="9" fill="#059669" transform="rotate(-38,752,112)">earlier by B &times; RT</text>
+
+  <!-- Quantitative box -->
+  <rect x="60" y="210" width="700" height="65" rx="5" fill="#fff7ed" stroke="#f59e0b" stroke-width="1"/>
+  <text x="415" y="230" text-anchor="middle" font-size="10.5" fill="#92400e" font-weight="600">Accumulated round-trip cost for typical multi-batch queries</text>
+  <text x="415" y="248" text-anchor="middle" font-size="10" fill="#78716c">B = 5 batches, RT = 200 &mu;s &rarr; 5 &times; 200 = <tspan font-weight="600" fill="#dc2626">1.0 ms</tspan> added</text>
+  <text x="415" y="264" text-anchor="middle" font-size="10" fill="#78716c">B = 10 batches, RT = 200 &mu;s &rarr; 10 &times; 200 = <tspan font-weight="600" fill="#dc2626">2.0 ms</tspan> added</text>
+</svg>
+<div class="diagram-label">Figure 5: Multi-batch latency &mdash; MATCH_REQ/CONF round-trip repeats on every batch</div>
+</div>
+
+<p>The total added latency from bitmask exchange is <strong>B &times; RT</strong>,
+where <em>B</em> is the number of batches and <em>RT</em> is the MATCH_REQ/CONF
+round-trip time (~100&ndash;400&nbsp;&mu;s). This is a <em>serial</em> cost &mdash;
+each batch must complete its match exchange before the next parent batch can be
+requested via <code>SCAN_NEXTREQ</code>.</p>
+
+<p>With TRANSID_AI, there is <strong>no per-batch synchronization overhead</strong> for
+match tracking. Match state is known inline as the scan runs. The only post-batch
+work is iterating the parent rows to inject null rows, which is purely local on DBSPJ.</p>
+
+<div class="note">
+  <strong>Example:</strong> A medium-sized outer join aggregate query with
+  1000 parent rows batched at 128 per batch (B&nbsp;=&nbsp;8), with an average of
+  200 matching child rows per batch across 4 data nodes. Bitmask adds
+  8&nbsp;&times;&nbsp;200&nbsp;&mu;s&nbsp;=&nbsp;<strong>1.6&nbsp;ms</strong> of
+  serial round-trip latency. If each batch scan takes ~2&nbsp;ms, the total scan time
+  is ~16&nbsp;ms, and the match exchange adds ~10% overhead. Over the same query,
+  TRANSID_AI would send 1600 extra signals total (200&nbsp;&times;&nbsp;8), costing
+  ~5&ndash;8&nbsp;ms in signal processing. The two approaches are comparable here.
+</div>
+
+<h4>Large queries: both costs grow, but differently</h4>
+
+<p>For larger queries the picture depends on how batch count and rows-per-batch scale:</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>Scenario</th>
+      <th>Batches (B)</th>
+      <th>Rows/batch</th>
+      <th>Bitmask added latency</th>
+      <th>TRANSID_AI signal cost</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Small OLTP-ish</td>
+      <td>1</td>
+      <td>10</td>
+      <td>~200 &mu;s</td>
+      <td class="pro">~30 &mu;s</td>
+    </tr>
+    <tr>
+      <td>Medium analytical</td>
+      <td>8</td>
+      <td>200</td>
+      <td>~1.6 ms</td>
+      <td>~5 ms</td>
+    </tr>
+    <tr>
+      <td>TPC-H style</td>
+      <td>50</td>
+      <td>2000</td>
+      <td>~10 ms</td>
+      <td class="con">~300 ms + congestion</td>
+    </tr>
+    <tr>
+      <td>Large analytical</td>
+      <td>200</td>
+      <td>4000</td>
+      <td>~40 ms</td>
+      <td class="con">~2.4 s + severe congestion</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>The bitmask cost grows as <strong>O(B &times; N)</strong> signals (B batches &times;
+N data nodes), adding <strong>O(B &times; RT)</strong> latency. The TRANSID_AI cost
+grows as <strong>O(B &times; M)</strong> signals where M is matching rows per batch.
+Since M typically grows much faster than N (hundreds or thousands vs. 2&ndash;8), the
+bitmask approach wins decisively as queries get larger, despite the per-batch penalty.</p>
+
+<h4>The crossover point (per batch)</h4>
+
+<p>Within a single batch, the two approaches cross over when the per-row signal cost of
+TRANSID_AI equals the fixed round-trip cost of the bitmask exchange:</p>
+
+<ul>
+  <li>MATCH_REQ/CONF fixed cost per batch: ~200&nbsp;&mu;s (one network round-trip)</li>
+  <li>TRANSID_AI marginal cost per row: ~2&ndash;5&nbsp;&mu;s (signal scheduling
+    + <code>execTRANSID_AI</code> processing on DBSPJ)</li>
+  <li>Crossover: ~40&ndash;100 matching child rows per batch</li>
+</ul>
+
+<p>For multi-batch queries, the total crossover is at the same ratio &mdash; the
+per-batch costs simply multiply by B on both sides. Queries below ~50 matching rows
+per batch favor TRANSID_AI; above ~100, the bitmask wins.</p>
+
+<h4>Why the penalty is acceptable</h4>
+
+<p>Pushdown join aggregation targets <strong>OLAP workloads</strong> &mdash; queries that
+aggregate large result sets (GROUP BY over joins). These queries typically have hundreds
+to thousands of matching child rows per batch, well above the ~50-row crossover.
+A query with only 10 matching rows per batch is unlikely to benefit from pushdown
+aggregation at all (the aggregation engine setup cost exceeds any savings from avoiding
+API round-trips).</p>
+
+<p>Even in the worst case for the bitmask approach (many batches, few matching rows
+each), the accumulated round-trip cost stays modest in absolute terms: 10 batches
+adds ~2&nbsp;ms, 50 batches adds ~10&nbsp;ms. For the queries where this matters,
+the total query time is dominated by scan processing, not by the match exchange.</p>
+
+<p>The bitmask round-trip is also <strong>fully parallelized across data nodes</strong>
+within each batch. DBSPJ sends all MATCH_REQ signals at once and waits for the
+slowest response. The per-batch latency does not grow with the number of data
+nodes &mdash; it stays at one round-trip regardless of cluster size.</p>
+
+<!-- ================================================================== -->
+<h2 id="analysis">5. Analysis &amp; Conclusion</h2>
+
+<p>The two approaches represent fundamentally different trade-offs between
+<strong>implementation simplicity</strong> and <strong>runtime efficiency</strong>:</p>
+
+<ul>
+  <li>The <strong>bitmask exchange</strong> sends <em>O(N)</em> signals where
+    <em>N</em> = number of data nodes (typically 2&ndash;8). The payload is a compact
+    bitmask of at most 128 words (512 bytes for 4096 ranges).</li>
+  <li>The <strong>TRANSID_AI approach</strong> sends <em>O(M)</em> signals where
+    <em>M</em> = number of matching child rows. For typical OLAP aggregation workloads,
+    <em>M</em> can range from thousands to millions.</li>
+</ul>
+
+<div class="verdict">
+  <strong>The bitmask exchange approach is the correct choice</strong> for pushdown join
+  aggregation. The entire purpose of pushing aggregation to the data nodes is to
+  <em>avoid</em> per-row signaling between DBLQH and the coordinator. Introducing per-row
+  TRANSID_AI signals for match tracking would negate much of that benefit. The additional
+  implementation complexity of the bitmask protocol is modest and well-isolated
+  (two new signal types, one shared atomic bitmask), while the runtime savings are
+  substantial &mdash; especially for the large-result-set OLAP queries that pushdown
+  aggregation targets.
+  <br><br>
+  The TRANSID_AI approach does have a <strong>latency advantage for queries with few
+  matching rows per batch</strong> (&lt;50), where the per-batch MATCH_REQ/CONF
+  round-trip is a significant fraction of batch processing time. This accumulates
+  over multiple batches: B&nbsp;batches add B&nbsp;&times;&nbsp;~200&nbsp;&mu;s of
+  serial latency. However, queries with so few matching rows per batch rarely benefit
+  from pushdown aggregation at all &mdash; the aggregation engine setup cost already
+  exceeds the savings from avoiding API round-trips. For the OLAP workloads where
+  pushdown aggregation is valuable (hundreds or thousands of matching rows per batch),
+  the per-batch round-trip is dwarfed by the scan processing time, while the
+  TRANSID_AI signal flood would be catastrophic.
+</div>
+
+<p>The bitmask approach also preserves the <strong>signal congestion safety</strong> of the
+aggregate path. DBLQH workers operate independently on row data and only interact with DBSPJ
+through bounded, deferred signals. This keeps the DBSPJ node free to coordinate other
+concurrent queries.</p>
+
+<div class="note">
+  <strong>Implementation note:</strong> The bitmask protocol is fully implemented and tested.
+  See <code>JoinAgg.hpp</code> (GSN 963/964), <code>JoinAggregationState.hpp</code>
+  (shared atomic bitmask), <code>DbspjMain.cpp</code> (CONF handling + null row injection),
+  and <code>DblqhMain.cpp</code> (REQ handling + setMatchedRange).
+</div>
+
+</body>
+</html>
