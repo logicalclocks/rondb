@@ -16851,7 +16851,8 @@ void Dblqh::exec_next_scan_conf(Signal *signal, bool ttl_ignore_for_ral) {
    * 2. vectorScanDone indicates the normal scan is done, so
    * mark the m_vec_search_scan_done of the interpreter to true
    */
-  if (unlikely(vectorScanDone && scanPtr->m_has_pushdown &&
+  // m_vs_interpreter != nullptr implies m_has_pushdown == true
+  if (unlikely(vectorScanDone &&
       scanPtr->m_vs_interpreter != nullptr &&
       // Just set it to 'done' once
       !scanPtr->m_vs_interpreter->vec_search_scan_done())) {
@@ -16867,7 +16868,8 @@ void Dblqh::exec_next_scan_conf(Signal *signal, bool ttl_ignore_for_ral) {
 void Dblqh::continue_next_scan_conf(Signal *signal,
                                     ScanRecord::ScanState scanState,
                                     ScanRecord *const scanPtr) {
-  if (unlikely(scanPtr && scanPtr->m_has_pushdown &&
+  // m_vs_interpreter != nullptr implies m_has_pushdown == true
+  if (unlikely(scanPtr &&
       scanPtr->m_vs_interpreter != nullptr &&
       scanPtr->m_vs_interpreter->vec_search_scan_done())) {
     NextScanConf* nextScanConf = (NextScanConf *)&signal->theData[0];
@@ -17212,8 +17214,8 @@ void Dblqh::continueScanNextReqLab(Signal *signal,
     return;
   }  // if
 
-  if (scanPtr->m_has_pushdown &&
-      scanPtr->m_agg_interpreter != nullptr &&
+  // m_agg_interpreter != nullptr implies m_has_pushdown == true
+  if (scanPtr->m_agg_interpreter != nullptr &&
       scanPtr->m_agg_interpreter->gb_map() != nullptr &&
       !scanPtr->m_agg_interpreter->gb_map()->empty()) {
     jam();
@@ -17392,13 +17394,12 @@ void Dblqh::scanLockReleasedLab(Signal* signal,
      * See more details at Dblqh::scanTupkeyConfLab(),
      * search for [PA-COMMENT] there.
      */
+#ifdef DEBUG_PA
     if (scanPtr->m_has_pushdown) {
-      // TODO (Zhao)
-      // double check: 0 : 1 ?
-      // ndbrequire(scanPtr->m_agg_n_res_recs == 0);
-      g_eventLogger->info("scanPtr->m_agg_n_res_recs: %u",
+      g_eventLogger->info("[PA_RONDB_TRACE] scanPtr->m_agg_n_res_recs: %u",
                          scanPtr->m_agg_n_res_recs);
     }
+#endif // DEBUG_PA
     scanPtr->scan_lastSeen = __LINE__;
     sendScanFragConf(signal, ZFALSE, regTcPtr);
   } else {
@@ -19510,7 +19511,8 @@ void Dblqh::nextScanConfScanLab(Signal *signal, ScanRecord *const scanPtr,
       /*
        * Filter out the pushdown vector search case
        */
-      if (unlikely(scanPtr->m_has_pushdown) && scanPtr->m_agg_interpreter != nullptr) {
+      // m_agg_interpreter != nullptr implies m_has_pushdown == true
+      if (scanPtr->m_agg_interpreter != nullptr) {
         if (!c_tup->SendAggResToAPI(signal, tcConnectptr.p, scanPtr)) {
           jam();
           sendScanFragConf(signal, ZFALSE, tcConnectptr.p);
@@ -20563,7 +20565,8 @@ Uint32 Dblqh::initScanrec(const ScanFragReq *scanFragReq,
       scanPtr->scanApiOpPtr[3],
       scanPtr->scanApiOpPtr_index));
   }
-  // m_join_agg_state_key is for PJA only (JoinAggFlag set by DBSPJ).
+  // m_join_agg_state_key is for Pushdown Join Aggregation only
+  // (JoinAggFlag set by DBSPJ).
   // Mutually exclusive with m_has_pushdown (PA/VS from DBTC/API).
   // They gate different code paths in DbtupExecQuery — do not set both.
   if (ScanFragReq::getJoinAggFlag(reqinfo)) {

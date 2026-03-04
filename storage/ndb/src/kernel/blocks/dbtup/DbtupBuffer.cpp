@@ -576,8 +576,8 @@ bool Dbtup::SendAggResToAPI(Signal* signal, const void* lqhTcConnectrec,
                               (Dblqh::TcConnectionrec*)lqhTcConnectrec;
   // PA related
   Dblqh::ScanRecord* lqhScanPtrP = (Dblqh::ScanRecord*)lqhScanRecord;
-  ndbrequire(lqhScanPtrP->m_has_pushdown == true &&
-             lqhScanPtrP->m_agg_interpreter != nullptr);
+  // m_agg_interpreter != nullptr implies m_has_pushdown == true
+  ndbrequire(lqhScanPtrP->m_agg_interpreter != nullptr);
   AggInterpreter* interp = lqhScanPtrP->m_agg_interpreter;
   Uint32 res_len = interp->PrepareAggResIfNeeded(signal, true);
   const auto* gb_map = interp->gb_map();
