@@ -245,6 +245,14 @@ class NdbQueryOptions {
   int setAggregation(const NdbAggregator &agg);
 
   /**
+   * Enable inline TRANSID_AI match tracking for outer join aggregate leaf.
+   * When true, DBLQH sends per-row match notifications to DBSPJ instead
+   * of the bitmask exchange protocol. Lower latency for small result sets.
+   * Only meaningful when setAggregation() is also called (no MatchNonNull).
+   */
+  int setInlineMatch(bool enable);
+
+  /**
    * Request that a linked column from a parent operation be included in
    * the SPJ projection. Required when the aggregation program references
    * parent columns (e.g., GROUP BY on a parent column).

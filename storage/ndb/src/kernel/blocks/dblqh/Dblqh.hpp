@@ -848,6 +848,7 @@ class Dblqh : public SimulatedBlock {
     Uint32 m_rows_examined;          // Total rows examined in this scan batch
     Uint8 m_outer_join_agg_scan;     // Set from OuterJoinAggFlag in SCAN_FRAGREQ
     Uint8 m_inline_match_scan;       // Set from InlineMatchFlag in SCAN_FRAGREQ
+    Uint32 m_join_agg_range_offset;  // Bitmask offset for outer join (from DBSPJ)
     // TTL
     Uint8 m_ttl_ignore;         // ignore set by API
     Uint8 m_ttl_ignore_for_ral; // ignore set by Read after lock

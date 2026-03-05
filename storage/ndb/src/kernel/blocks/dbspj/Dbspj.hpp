@@ -852,7 +852,8 @@ class Dbspj : public SimulatedBlock {
           m_scanAncestorPtrI(RNIL),
           m_agg_match_bitmask(nullptr),
           m_agg_match_outstanding(0),
-          m_agg_num_ranges(0)
+          m_agg_num_ranges(0),
+          m_agg_range_start(0)
 #ifdef SPJ_TRACE_TIME
           ,m_scan_fragconf_count(0)
           ,m_scan_fragconf_len(0)
@@ -877,6 +878,7 @@ class Dbspj : public SimulatedBlock {
           m_agg_match_bitmask(nullptr),
           m_agg_match_outstanding(0),
           m_agg_num_ranges(0),
+          m_agg_range_start(0),
           nextList(RNIL),
           prevList(RNIL),
           nextCursor(RNIL)
@@ -1193,6 +1195,7 @@ class Dbspj : public SimulatedBlock {
     Uint32 *m_agg_match_bitmask;     // Combined match bitmask (ndbd_malloc'd)
     Uint32 m_agg_match_outstanding;  // Pending MATCH_CONFs
     Uint32 m_agg_num_ranges;         // Number of parent rows (= scan ranges)
+    Uint32 m_agg_range_start;        // Range offset for this batch in DBLQH bitmask
 
     union {
       LookupData m_lookup_data;
@@ -1300,6 +1303,7 @@ class Dbspj : public SimulatedBlock {
     Uint16 *m_lookup_node_data;  // Dynamically allocated [MAX_NDB_NODES]
     Uint32 *m_aggStateKeys;      // Dynamically allocated [MAX_NDB_NODES]
     NdbNodeBitmask m_aggNodes;
+    Uint32 m_agg_range_start;    // Outer join bitmask range offset (from DBTC)
     NDB_TICKS m_lastHbrepTicks;  // Last time SCAN_HBREP was sent during JoinAgg bypass
     ArenaHead m_arena;
 

@@ -66,7 +66,7 @@
 //#define DEBUG_AGGREGATION 1
 //#define DEBUG_TRANSID_AI 1
 //#define DEBUG_JOIN_AGG_TRACE 1
-//#define DEBUG_MATCH 1
+#define DEBUG_MATCH 1
 #endif
 
 #ifdef DEBUG_TRANSID_AI
@@ -1491,6 +1491,7 @@ void Dbspj::do_init(Request *requestP, const ScanFragReq *req,
             static_cast<char *>(mem) + max_nodes * sizeof(Uint32));
   }
   requestP->m_aggNodes.clear();
+  requestP->m_agg_range_start = 0;
   requestP->m_lastHbrepTicks = getHighResTimer();
 #ifdef SPJ_TRACE_TIME
   requestP->m_cnt_batches = 0;
@@ -1499,10 +1500,15 @@ void Dbspj::do_init(Request *requestP, const ScanFragReq *req,
   requestP->m_sum_waiting = 0;
   requestP->m_save_time = NdbTick_getCurrentTicks();
 #endif
+  Uint32 var_offset = 0;
   if (ScanFragReq::getUserIdFlag(req->requestInfo)) {
     requestP->m_user_id = req->variableData[0];
+    var_offset++;
   } else {
     requestP->m_user_id = RNIL;
+  }
+  if (ScanFragReq::getJoinAggFlag(req->requestInfo)) {
+    requestP->m_agg_range_start = req->variableData[var_offset];
   }
 }
 
@@ -5852,6 +5858,10 @@ Uint32 Dbspj::sendJoinAggNullRow(Signal *signal, Ptr<Request> requestPtr,
   jam();
   Uint32 nodeId = getOwnNodeId();
   ndbrequire(requestPtr.p->m_aggNodes.get(nodeId));
+  DEB_MATCH(("DBSPJ sendJoinAggNullRow: treeNode=%u nodeId=%u "
+             "corr=0x%x",
+             treeNodePtr.p->m_node_no, nodeId,
+             rowRef.m_src_correlation));
 
   /* Expand attrParamPattern to get linked attribute data */
   Uint32 linkedPtrI = RNIL;
@@ -5979,7 +5989,7 @@ void Dbspj::execJOIN_AGG_MATCH_CONF(Signal *signal) {
     SegmentedSectionPtr secPtr;
     ndbrequire(handle.getSection(secPtr, 0));
     Uint32 words = secPtr.sz;
-    // MAX_SCAN_RANGES / 32 = 4096 / 32 = 128
+    // 4096 / 32 = 128 (max bitmask words for 12-bit corrId range)
     Uint32 buf[128];
     ndbrequire(words <= 128);
     copy(buf, secPtr);
@@ -7342,6 +7352,11 @@ void Dbspj::scanFrag_parent_row(Signal *signal, Ptr<Request> requestPtr,
       if (hasNull) {
         jam();
         DEBUG("Key contain NULL values, ignoring it");
+        DEB_MATCH(("DBSPJ scanFrag_parent_row: hasNull key for "
+                   "treeNode=%u corr=0x%x AGG_LEAF=%u INNER=%u",
+                   treeNodePtr.p->m_node_no, rowRef.m_src_correlation,
+                   !!(treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF),
+                   !!(treeNodePtr.p->m_bits & TreeNode::T_INNER_JOIN)));
         ndbassert((treeNodePtr.p->m_bits & TreeNode::T_ONE_SHOT) == 0);
         // Ignore this request as 'NULL == <column>' will never give a match
         releaseSection(keyPtrI);
@@ -7870,9 +7885,10 @@ Uint32 Dbspj::scanFrag_send(Signal *signal, Ptr<Request> requestPtr,
         ScanFragReq::setInlineMatchFlag(req->requestInfo, 1);
       } else {
         ScanFragReq::setOuterJoinAggFlag(req->requestInfo, 1);
+        agg_extra = 2;  // aggStateKey + rangeStart
         DEB_MATCH(("DBSPJ scanFrag_send: OuterJoinAggFlag=1 "
-                   "treeNode=%u bits=0x%x",
-                   treeNodePtr.i, treeNodePtr.p->m_bits));
+                   "treeNode=%u rangeStart=%u",
+                   treeNodePtr.i, requestPtr.p->m_agg_range_start));
       }
     }
   }
@@ -8125,6 +8141,11 @@ Uint32 Dbspj::scanFrag_send(Signal *signal, Ptr<Request> requestPtr,
         ndbrequire(requestPtr.p->m_aggNodes.get(nodeId));
         req->variableData[var_index + 2] =
             requestPtr.p->m_aggStateKeys[nodeId];
+        if (agg_extra > 1) {
+          jam();
+          req->variableData[var_index + 3] =
+              requestPtr.p->m_agg_range_start;
+        }
       }
       if (!ScanFragReq::getRangeScanFlag(req->requestInfo)) {
         c_Counters.incr_counter(CI_LOCAL_TABLE_SCANS_SENT, 1);
@@ -8849,11 +8870,14 @@ void Dbspj::scanFrag_execSCAN_FRAGCONF(Signal *signal, Ptr<Request> requestPtr,
             mreq->transId[1] = requestPtr.p->m_transId[1];
             mreq->requestPtrI = requestPtr.i;
             mreq->treeNodePtrI = treeNodePtr.i;
+            mreq->rangeStart = requestPtr.p->m_agg_range_start;
+            mreq->rangeCount = treeNodePtr.p->m_agg_num_ranges;
 
             Uint32 ref = numberToRef(DBLQH, 1, nodeId);
             DEB_MATCH(("DBSPJ: sending MATCH_REQ to node=%u "
-                       "aggStateKey=%u ref=0x%x",
-                       nodeId, requestPtr.p->m_aggStateKeys[nodeId], ref));
+                       "aggStateKey=%u rangeStart=%u rangeCount=%u ref=0x%x",
+                       nodeId, requestPtr.p->m_aggStateKeys[nodeId],
+                       mreq->rangeStart, mreq->rangeCount, ref));
             sendSignal(ref, GSN_JOIN_AGG_MATCH_REQ, signal,
                        JoinAggMatchReq::SignalLength, JBB);
 

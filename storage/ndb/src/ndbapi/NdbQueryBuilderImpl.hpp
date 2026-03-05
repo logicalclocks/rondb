@@ -288,7 +288,8 @@ class NdbQueryOptionsImpl {
         m_aggDiskColumns(false),
         m_aggTable(nullptr),
         m_aggGbColumns(nullptr),
-        m_linkedProjection(0) {}
+        m_linkedProjection(0),
+        m_inlineMatch(false) {}
   NdbQueryOptionsImpl(const NdbQueryOptionsImpl &);
   ~NdbQueryOptionsImpl();
 
@@ -306,6 +307,7 @@ class NdbQueryOptionsImpl {
   const Vector<const NdbLinkedOperandImpl *> &getLinkedProjection() const {
     return m_linkedProjection;
   }
+  bool getInlineMatch() const { return m_inlineMatch; }
 
  private:
   NdbQueryOptions::MatchType m_matchType;
@@ -330,6 +332,9 @@ class NdbQueryOptionsImpl {
 
   // Linked operands for parent column projection in aggregation
   Vector<const NdbLinkedOperandImpl *> m_linkedProjection;
+
+  // Enable inline TRANSID_AI match tracking for outer join agg leaf
+  bool m_inlineMatch;
 
   /**
    * Assign NdbInterpretedCode by taking a deep copy of 'src'

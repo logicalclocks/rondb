@@ -18610,12 +18610,19 @@ bool Dbtc::sendScanFragReq(Signal *signal, ScanRecordPtr scanptr,
       ScanFragReq::setUserIdFlag(req->requestInfo, 1);
     }
   }
+  // Pass rangeStart for outer join bitmask (right after userId, before TTL/etc.)
+  if (scanP->m_joinAgg) {
+    jam();
+    req->variableData[extra_len] = scanP->m_aggRangeNext;
+    extra_len++;
+    scanP->m_aggRangeNext += 4096;
+  }
 
   // set ttl_purge_window_size if needed;
   if (ScanFragReq::getTTLOnlyExpiredFragFlag(requestInfo)) {
     /*
      * Based on the ndbassert below, it seems that getCorrFactorFlag
-     * won’t be set in this context. That means variableData[0] and
+     * won't be set in this context. That means variableData[0] and
      * variableData[1] are not used, so we can safely use variableData[0] here.
      */
     req->variableData[0] = scanP->m_ttl_purge_window_size;
@@ -28720,6 +28727,7 @@ void Dbtc::execJOIN_AGG_SETUP_CONF(Signal *signal) {
     scanptr.p->m_aggKeysSectionPtrI = RNIL;
     ndbrequire(appendToSection(
         scanptr.p->m_aggKeysSectionPtrI, keyData, idx));
+    scanptr.p->m_aggRangeNext = 0;
 
     scanptr.p->scanState = ScanRecord::RUNNING;
     ApiConnectRecordPtr apiConnectptr;

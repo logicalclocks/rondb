@@ -1,5 +1,5 @@
 /* Copyright (c) 2008, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -2319,9 +2319,16 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   state->m_agg_program = nullptr;
   state->m_agg_program_len = 0;
   state->m_outer_join_agg_scan = false;
-  state->m_num_scan_ranges.store(0, std::memory_order_relaxed);
-  for (Uint32 i = 0; i < JoinAggregationState::MAX_SCAN_RANGES / 32; i++) {
-    state->m_matched_ranges[i].store(0, std::memory_order_relaxed);
+  {
+    // Allocate bitmask: 4096 bits (128 words) per SPJ worker.
+    // Support up to 48 concurrent SPJ workers per aggregation.
+    Uint32 bitmask_words = 48 * 128;
+    state->m_matched_ranges = (std::atomic<Uint32> *)
+        lc_ndbd_pool_malloc(bitmask_words * sizeof(Uint32),
+                            RG_QUERY_MEMORY, getThreadId(), true);
+    ndbrequire(state->m_matched_ranges != nullptr);
+    state->m_matched_ranges_words = bitmask_words;
+    state->m_range_counter.store(0, std::memory_order_relaxed);
   }
 
   // Populate immutable identification fields
@@ -2503,6 +2510,13 @@ DblqhProxy::execJOIN_AGG_RELEASE_REQ(Signal *signal) {
       lc_ndbd_pool_free(state->m_receiverIds);
       state->m_receiverIds = nullptr;
       state->m_numReceiverIds = 0;
+    }
+
+    // Free matched ranges bitmask
+    if (state->m_matched_ranges != nullptr) {
+      lc_ndbd_pool_free(state->m_matched_ranges);
+      state->m_matched_ranges = nullptr;
+      state->m_matched_ranges_words = 0;
     }
 
     // Free JoinAggInterpreter(s)

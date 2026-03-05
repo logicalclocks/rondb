@@ -2022,6 +2022,7 @@ class Dbtc : public SimulatedBlock {
       Uint32 m_aggStateKeys[];  // Flexible array member, sized at allocation
     };
     JoinAggNodeState *m_joinAggNodes;  // nullptr when not JoinAgg
+    Uint32 m_aggRangeNext;  // Next rangeStart for outer join bitmask (increments by 4096)
   };
   typedef Ptr<ScanRecord> ScanRecordPtr;
   typedef TransientPool<ScanRecord> ScanRecord_pool;

@@ -443,6 +443,17 @@ int NdbQueryOptions::setAggregation(const NdbAggregator &agg) {
   return m_pimpl->copyAggregation(agg);
 }
 
+int NdbQueryOptions::setInlineMatch(bool enable) {
+  if (m_pimpl == &defaultOptions) {
+    m_pimpl = new NdbQueryOptionsImpl;
+    if (unlikely(m_pimpl == nullptr)) {
+      return Err_MemoryAlloc;
+    }
+  }
+  m_pimpl->m_inlineMatch = enable;
+  return 0;
+}
+
 int NdbQueryOptions::addLinkedProjection(const NdbLinkedOperand *operand) {
   if (unlikely(operand == nullptr)) {
     return QRY_REQ_ARG_IS_NULL;
@@ -508,7 +519,8 @@ NdbQueryOptionsImpl::NdbQueryOptionsImpl(const NdbQueryOptionsImpl &src)
       m_aggDiskColumns(src.m_aggDiskColumns),
       m_aggTable(src.m_aggTable),
       m_aggGbColumns(nullptr),
-      m_linkedProjection(src.m_linkedProjection) {
+      m_linkedProjection(src.m_linkedProjection),
+      m_inlineMatch(src.m_inlineMatch) {
   if (src.m_interpretedCode != nullptr) {
     copyInterpretedCode(*src.m_interpretedCode);
   }
@@ -1808,7 +1820,7 @@ NdbQueryOperationDefImpl::NdbQueryOperationDefImpl(
     : m_isPrepared(false),
       m_diskInChildProjection(false),
       m_isAggregateLeaf(options.hasAggregation()),
-      m_useInlineMatch(false),
+      m_useInlineMatch(options.getInlineMatch()),
       m_queryHasAggregation(false),
       m_table(table),
       m_ident(ident),

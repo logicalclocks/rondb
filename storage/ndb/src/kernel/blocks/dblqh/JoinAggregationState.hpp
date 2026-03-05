@@ -162,15 +162,22 @@ struct JoinAggregationState {
 
   //------------------------------------------------------------------
   // Outer join scan aggregation: per-range match tracking
+  // Bitmask is dynamically allocated via lc_ndbd_pool_malloc.
+  // m_range_counter is atomically incremented by DBSPJ threads to
+  // allocate non-overlapping range blocks in the shared bitmask.
   //------------------------------------------------------------------
-  static const Uint32 MAX_SCAN_RANGES = 4096;
   bool m_outer_join_agg_scan;
-  std::atomic<Uint32> m_num_scan_ranges;
-  std::atomic<Uint32> m_matched_ranges[MAX_SCAN_RANGES / 32];
+  std::atomic<Uint32> *m_matched_ranges;     // lc_ndbd_pool_malloc'd
+  Uint32 m_matched_ranges_words;             // Allocated size in words
+  std::atomic<Uint32> m_range_counter;       // Next available range position
+
+  Uint32 allocateRangeBlock(Uint32 count) {
+    return m_range_counter.fetch_add(count, std::memory_order_relaxed);
+  }
 
   void setMatchedRange(Uint32 range_no) {
-    if (range_no < MAX_SCAN_RANGES) {
-      Uint32 word = range_no / 32;
+    Uint32 word = range_no / 32;
+    if (word < m_matched_ranges_words) {
       Uint32 bit = 1u << (range_no % 32);
       m_matched_ranges[word].fetch_or(bit, std::memory_order_relaxed);
     }
@@ -220,7 +227,9 @@ struct JoinAggregationState {
     m_receiverIds(nullptr),
     m_numReceiverIds(0),
     m_outer_join_agg_scan(false),
-    m_num_scan_ranges(0),
+    m_matched_ranges(nullptr),
+    m_matched_ranges_words(0),
+    m_range_counter(0),
     m_state(IDLE),
     m_error_code(0),
     m_key(RNIL),
