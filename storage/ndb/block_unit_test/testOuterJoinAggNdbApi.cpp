@@ -37,6 +37,7 @@
  * Tests 1-4:   scan-lookup outer join (COUNT(c.pk) semantics)
  * Tests 5-8:   scan-scan outer join (COUNT(c.pk) semantics)
  * Tests 9-12:  COUNT(*) via LoadUint64(1) — counts all rows incl. unmatched
+ * Tests 13-17: Multi-batch scan-scan (5000 parent rows, forces multiple batches)
  *
  * Usage: testOuterJoinAggNdbApi -c <connect_string> -m <mysql_port> [-v]
  *        [--only N] [--skip N]
@@ -405,6 +406,95 @@ insertNoMatchScanScan(MYSQL *conn)
         "(100,100,10),(101,101,20),(102,102,30),(103,103,40),(104,104,50)") != 0)
     return -1;
   V("Inserted no-match scan-scan data\n");
+  return 0;
+}
+
+/* Helper: insert parent_ss rows in batches of 500 */
+static int
+insertParentBatch(MYSQL *conn, int nParent)
+{
+  static const int BATCH = 500;
+  char buf[16384];
+  for (int start = 1; start <= nParent; start += BATCH) {
+    int end = start + BATCH - 1;
+    if (end > nParent) end = nParent;
+    char *p = buf;
+    p += sprintf(p, "INSERT INTO oj_parent_ss VALUES ");
+    for (int i = start; i <= end; i++) {
+      int grp = (i - 1) / 1250 + 1;
+      if (i > start) *p++ = ',';
+      p += sprintf(p, "(%d,%d,%d)", i, i, grp);
+    }
+    if (sqlExec(conn, buf) != 0) return -1;
+  }
+  V("Inserted %d parent_ss rows\n", nParent);
+  return 0;
+}
+
+/* Multi-batch consecutive match:
+ * parent_ss: 5000 rows, pk=1..5000, join_col=pk, grp=(pk-1)/1250+1
+ * child_ss:  2500 rows, pk=1..2500, join_col=pk, val=pk*10
+ * First 2500 parents match, last 2500 don't.
+ * COUNT(c.pk)=2500, SUM=10*(1+2+...+2500)=31262500, COUNT(*)=5000
+ */
+static int
+insertMultiBatchScanScan(MYSQL *conn)
+{
+  sqlExec(conn, "DELETE FROM oj_child_ss");
+  sqlExec(conn, "DELETE FROM oj_parent_ss");
+
+  if (insertParentBatch(conn, 5000) != 0) return -1;
+
+  static const int NCHILD = 2500;
+  static const int BATCH = 500;
+  char buf[16384];
+  for (int start = 1; start <= NCHILD; start += BATCH) {
+    int end = start + BATCH - 1;
+    if (end > NCHILD) end = NCHILD;
+    char *p = buf;
+    p += sprintf(p, "INSERT INTO oj_child_ss VALUES ");
+    for (int i = start; i <= end; i++) {
+      if (i > start) *p++ = ',';
+      p += sprintf(p, "(%d,%d,%d)", i, i, i * 10);
+    }
+    if (sqlExec(conn, buf) != 0) return -1;
+  }
+  V("Inserted %d child_ss rows (consecutive match)\n", NCHILD);
+
+  return 0;
+}
+
+/* Multi-batch alternating match:
+ * parent_ss: 5000 rows, pk=1..5000, join_col=pk, grp=(pk-1)/1250+1
+ * child_ss:  2500 rows matching odd join_cols: pk=1,3,5,...,4999
+ * Matches and non-matches interleaved across batches.
+ * COUNT(c.pk)=2500, SUM=10*(1+3+5+...+4999)=62500000, COUNT(*)=5000
+ */
+static int
+insertAlternatingMatchScanScan(MYSQL *conn)
+{
+  sqlExec(conn, "DELETE FROM oj_child_ss");
+  sqlExec(conn, "DELETE FROM oj_parent_ss");
+
+  if (insertParentBatch(conn, 5000) != 0) return -1;
+
+  static const int BATCH = 500;
+  char buf[16384];
+  for (int start = 1; start <= 4999; start += BATCH * 2) {
+    int end = start + BATCH * 2 - 2;
+    if (end > 4999) end = 4999;
+    char *p = buf;
+    p += sprintf(p, "INSERT INTO oj_child_ss VALUES ");
+    bool first = true;
+    for (int jc = start; jc <= end; jc += 2) {
+      if (!first) *p++ = ',';
+      p += sprintf(p, "(%d,%d,%d)", jc, jc, jc * 10);
+      first = false;
+    }
+    if (sqlExec(conn, buf) != 0) return -1;
+  }
+  V("Inserted 2500 child_ss rows (alternating match)\n");
+
   return 0;
 }
 
@@ -1755,6 +1845,232 @@ testCountStarNoMatchScanScan(Ndb *ndb, MYSQL *conn)
   return 0;
 }
 
+/* ================================================================== */
+/* Multi-batch tests (Tests 13-17)                                     */
+/*                                                                     */
+/* Use 5000 parent rows to force many NEXTREQ batches.                 */
+/* Tests exercise the per-SPJ-worker bitmask range offset logic.       */
+/* ================================================================== */
+
+/* ------------------------------------------------------------------ */
+/* Test 13: Multi-batch scan-scan consecutive match COUNT/SUM (bitmask)*/
+/*                                                                     */
+/* 5000 parent, 2500 child (join_col 1-2500 match).                   */
+/* COUNT(c.pk)=2500, SUM=10*(1+2+...+2500)=31262500.                  */
+/* ------------------------------------------------------------------ */
+
+static int
+testMultiBatchConsecutiveScanScan(Ndb *ndb, MYSQL *conn)
+{
+  printf("Test 13: Multi-batch scan-scan consecutive match COUNT/SUM (bitmask) ... ");
+  fflush(stdout);
+
+  if (insertMultiBatchScanScan(conn) != 0) {
+    printf("FAILED (data setup)\n");
+    return -1;
+  }
+
+  if (verifyScalarWithMysql(conn, "Test 13",
+        "SELECT COUNT(c.pk), COALESCE(SUM(c.val),0) "
+        "FROM oj_parent_ss p LEFT JOIN oj_child_ss c "
+        "ON c.join_col = p.join_col",
+        {2500, 31262500}) != 0) {
+    printf("FAILED (MySQL verification)\n");
+    return -1;
+  }
+
+  if (runScalarOuterJoinScanScan(ndb, "Test 13", 2500, 31262500,
+                                  false /*bitmask*/) != 0) return -1;
+
+  printf("OK (count=2500, sum=31262500)\n");
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Test 14: Multi-batch scan-scan consecutive match COUNT/SUM (inline) */
+/*                                                                     */
+/* Same data as Test 13, inline match protocol.                        */
+/* ------------------------------------------------------------------ */
+
+static int
+testMultiBatchConsecutiveScanScanInline(Ndb *ndb, MYSQL *conn)
+{
+  printf("Test 14: Multi-batch scan-scan consecutive match COUNT/SUM (inline) ... ");
+  fflush(stdout);
+
+  if (insertMultiBatchScanScan(conn) != 0) {
+    printf("FAILED (data setup)\n");
+    return -1;
+  }
+
+  if (verifyScalarWithMysql(conn, "Test 14",
+        "SELECT COUNT(c.pk), COALESCE(SUM(c.val),0) "
+        "FROM oj_parent_ss p LEFT JOIN oj_child_ss c "
+        "ON c.join_col = p.join_col",
+        {2500, 31262500}) != 0) {
+    printf("FAILED (MySQL verification)\n");
+    return -1;
+  }
+
+  if (runScalarOuterJoinScanScan(ndb, "Test 14", 2500, 31262500,
+                                  true /*inline match*/) != 0) return -1;
+
+  printf("OK (count=2500, sum=31262500)\n");
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Test 15: Multi-batch scan-scan consecutive match COUNT(*) (bitmask) */
+/*                                                                     */
+/* Same data. COUNT(*)=5000 (all rows incl. unmatched), SUM=31262500. */
+/* ------------------------------------------------------------------ */
+
+static int
+testMultiBatchConsecutiveCountStar(Ndb *ndb, MYSQL *conn)
+{
+  printf("Test 15: Multi-batch scan-scan consecutive COUNT(*) (bitmask) ... ");
+  fflush(stdout);
+
+  if (insertMultiBatchScanScan(conn) != 0) {
+    printf("FAILED (data setup)\n");
+    return -1;
+  }
+
+  if (verifyScalarWithMysql(conn, "Test 15",
+        "SELECT COUNT(*), COALESCE(SUM(c.val),0) "
+        "FROM oj_parent_ss p LEFT JOIN oj_child_ss c "
+        "ON c.join_col = p.join_col",
+        {5000, 31262500}) != 0) {
+    printf("FAILED (MySQL verification)\n");
+    return -1;
+  }
+
+  if (runCountStarOuterJoinScanScan(ndb, "Test 15", 5000, 31262500,
+                                     false /*bitmask*/) != 0) return -1;
+
+  printf("OK (count=5000, sum=31262500)\n");
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Test 16: Multi-batch scan-scan alternating match COUNT(*) (bitmask) */
+/*                                                                     */
+/* 5000 parent, child matches odd join_cols (1,3,...,4999).            */
+/* Matches and non-matches interleaved across batches.                 */
+/* COUNT(*)=5000, SUM=10*(1+3+5+...+4999)=62500000.                  */
+/* ------------------------------------------------------------------ */
+
+static int
+testMultiBatchAlternatingCountStar(Ndb *ndb, MYSQL *conn)
+{
+  printf("Test 16: Multi-batch scan-scan alternating match COUNT(*) (bitmask) ... ");
+  fflush(stdout);
+
+  if (insertAlternatingMatchScanScan(conn) != 0) {
+    printf("FAILED (data setup)\n");
+    return -1;
+  }
+
+  if (verifyScalarWithMysql(conn, "Test 16",
+        "SELECT COUNT(*), COALESCE(SUM(c.val),0) "
+        "FROM oj_parent_ss p LEFT JOIN oj_child_ss c "
+        "ON c.join_col = p.join_col",
+        {5000, 62500000}) != 0) {
+    printf("FAILED (MySQL verification)\n");
+    return -1;
+  }
+
+  if (runCountStarOuterJoinScanScan(ndb, "Test 16", 5000, 62500000,
+                                     false /*bitmask*/) != 0) return -1;
+
+  printf("OK (count=5000, sum=62500000)\n");
+  return 0;
+}
+
+/* 1-to-many match:
+ * parent_ss: 5000 rows, pk=1..5000, join_col=pk, grp=(pk-1)/1250+1
+ * child_ss:  4000 rows:
+ *   join_col 1-1000:  2 children each (pk=j and pk=j+5000), val=j*10
+ *   join_col 1001-3000: 1 child each (pk=j), val=j*10
+ *   join_col 3001-5000: no child
+ * COUNT(c.pk)=4000, COUNT(*)=6000, SUM=50020000
+ */
+static int
+insertOneToManyScanScan(MYSQL *conn)
+{
+  sqlExec(conn, "DELETE FROM oj_child_ss");
+  sqlExec(conn, "DELETE FROM oj_parent_ss");
+
+  if (insertParentBatch(conn, 5000) != 0) return -1;
+
+  static const int BATCH = 500;
+  char buf[16384];
+
+  /* First set: pk=1..3000, join_col=pk, val=pk*10 */
+  for (int start = 1; start <= 3000; start += BATCH) {
+    int end = start + BATCH - 1;
+    if (end > 3000) end = 3000;
+    char *p = buf;
+    p += sprintf(p, "INSERT INTO oj_child_ss VALUES ");
+    for (int i = start; i <= end; i++) {
+      if (i > start) *p++ = ',';
+      p += sprintf(p, "(%d,%d,%d)", i, i, i * 10);
+    }
+    if (sqlExec(conn, buf) != 0) return -1;
+  }
+
+  /* Second set: pk=5001..6000, join_col=1..1000 (duplicates for 1-to-many) */
+  for (int start = 5001; start <= 6000; start += BATCH) {
+    int end = start + BATCH - 1;
+    if (end > 6000) end = 6000;
+    char *p = buf;
+    p += sprintf(p, "INSERT INTO oj_child_ss VALUES ");
+    for (int i = start; i <= end; i++) {
+      int jc = i - 5000;
+      if (i > start) *p++ = ',';
+      p += sprintf(p, "(%d,%d,%d)", i, jc, jc * 10);
+    }
+    if (sqlExec(conn, buf) != 0) return -1;
+  }
+
+  V("Inserted 4000 child_ss rows (1-to-many)\n");
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Test 17: Multi-batch scan-scan 1-to-many COUNT(*) (bitmask)         */
+/*                                                                     */
+/* 5000 parent, 4000 child with 1-to-many for join_col 1-1000.        */
+/* COUNT(*)=6000 (!=5000 parent rows), SUM=50020000.                  */
+/* ------------------------------------------------------------------ */
+
+static int
+testMultiBatchOneToManyCountStar(Ndb *ndb, MYSQL *conn)
+{
+  printf("Test 17: Multi-batch scan-scan 1-to-many COUNT(*) (bitmask) ... ");
+  fflush(stdout);
+
+  if (insertOneToManyScanScan(conn) != 0) {
+    printf("FAILED (data setup)\n");
+    return -1;
+  }
+
+  if (verifyScalarWithMysql(conn, "Test 17",
+        "SELECT COUNT(*), COALESCE(SUM(c.val),0) "
+        "FROM oj_parent_ss p LEFT JOIN oj_child_ss c "
+        "ON c.join_col = p.join_col",
+        {6000, 50020000}) != 0) {
+    printf("FAILED (MySQL verification)\n");
+    return -1;
+  }
+
+  if (runCountStarOuterJoinScanScan(ndb, "Test 17", 6000, 50020000,
+                                     false /*bitmask*/) != 0) return -1;
+
+  printf("OK (count=6000, sum=50020000)\n");
+  return 0;
+}
+
 /* ------------------------------------------------------------------ */
 /* Usage and main                                                      */
 /* ------------------------------------------------------------------ */
@@ -1885,6 +2201,23 @@ int main(int argc, char **argv)
             }
             if (shouldRun(12)) {
               if (testCountStarNoMatchScanScan(&ndb, conn) != 0) exitCode = 1;
+            }
+
+            /* Tests 13-16: Multi-batch scan-scan (100 parent rows) */
+            if (shouldRun(13)) {
+              if (testMultiBatchConsecutiveScanScan(&ndb, conn) != 0) exitCode = 1;
+            }
+            if (shouldRun(14)) {
+              if (testMultiBatchConsecutiveScanScanInline(&ndb, conn) != 0) exitCode = 1;
+            }
+            if (shouldRun(15)) {
+              if (testMultiBatchConsecutiveCountStar(&ndb, conn) != 0) exitCode = 1;
+            }
+            if (shouldRun(16)) {
+              if (testMultiBatchAlternatingCountStar(&ndb, conn) != 0) exitCode = 1;
+            }
+            if (shouldRun(17)) {
+              if (testMultiBatchOneToManyCountStar(&ndb, conn) != 0) exitCode = 1;
             }
           } else {
             exitCode = 1;
