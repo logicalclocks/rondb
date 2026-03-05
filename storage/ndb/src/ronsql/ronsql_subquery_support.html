@@ -1,0 +1,777 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RonSQL Subquery Support</title>
+<style>
+  :root {
+    --bg: #fafbfc;
+    --card: #ffffff;
+    --border: #d0d7de;
+    --accent: #0969da;
+    --accent2: #1a7f37;
+    --accent3: #8250df;
+    --accent4: #cf222e;
+    --text: #1f2328;
+    --muted: #656d76;
+    --code-bg: #f6f8fa;
+    --done: #1a7f37;
+    --planned: #bf8700;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 32px 24px 64px;
+  }
+  h1 { font-size: 2em; margin-bottom: 8px; }
+  h2 { font-size: 1.5em; margin: 40px 0 16px; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+  h3 { font-size: 1.17em; margin: 24px 0 12px; }
+  p { margin-bottom: 12px; }
+  .subtitle { color: var(--muted); font-size: 1.1em; margin-bottom: 32px; }
+  code {
+    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+    font-size: 0.88em;
+    background: var(--code-bg);
+    padding: 2px 6px;
+    border-radius: 4px;
+  }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    overflow-x: auto;
+    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+    font-size: 0.85em;
+    line-height: 1.5;
+    margin: 12px 0 20px;
+  }
+  pre .kw { color: #cf222e; font-weight: 600; }
+  pre .fn { color: #8250df; }
+  pre .str { color: #0a3069; }
+  pre .cmt { color: #6e7781; font-style: italic; }
+
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px 24px;
+    margin: 16px 0;
+  }
+  .card h3 { margin-top: 0; }
+
+  .badge {
+    display: inline-block;
+    font-size: 0.75em;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 12px;
+    vertical-align: middle;
+    margin-left: 8px;
+  }
+  .badge-done { background: #dafbe1; color: var(--done); }
+  .badge-planned { background: #fff8c5; color: var(--planned); }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 16px 0;
+    font-size: 0.92em;
+  }
+  th, td {
+    text-align: left;
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+  }
+  th { background: var(--code-bg); font-weight: 600; }
+  tr:nth-child(even) { background: #f6f8fa; }
+
+  /* Architecture diagrams rendered as SVG */
+  .diagram-container {
+    text-align: center;
+    margin: 24px 0;
+  }
+  svg text { font-family: 'SFMono-Regular', Consolas, monospace; }
+
+  .test-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin: 16px 0;
+  }
+  @media (max-width: 640px) {
+    .test-grid { grid-template-columns: 1fr; }
+  }
+  .test-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px 16px;
+    font-size: 0.9em;
+  }
+  .test-card .label {
+    font-weight: 600;
+    color: var(--accent);
+    font-size: 0.8em;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .test-card code { font-size: 0.82em; }
+
+  .flow-step {
+    display: flex;
+    align-items: flex-start;
+    gap: 16px;
+    margin: 12px 0;
+  }
+  .flow-num {
+    flex-shrink: 0;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: white;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 0.85em;
+  }
+  .flow-num.green { background: var(--accent2); }
+  .flow-num.purple { background: var(--accent3); }
+  .flow-content { flex: 1; }
+  .flow-content strong { display: block; margin-bottom: 2px; }
+</style>
+</head>
+<body>
+
+<h1>RonSQL Subquery Support</h1>
+<p class="subtitle">RONDB-733 &mdash; Phase 7: Subquery support in the RonSQL query engine</p>
+
+<!-- ============================================================ -->
+<h2>Overview</h2>
+
+<p>
+RonSQL now supports subqueries in the <code>WHERE</code> clause through a
+<strong>multi-phase execution</strong> architecture. Inner subqueries are
+executed first as standalone RonSQL queries; their results are then
+substituted as constants or filter expressions into the outer query.
+Correlated subqueries are <strong>decorrelated</strong> at preparation time
+so they can also run as standalone queries.
+</p>
+
+<p>Five types of subquery are currently supported:</p>
+
+<table>
+<thead>
+<tr><th>Type</th><th>Pattern</th><th>Status</th></tr>
+</thead>
+<tbody>
+<tr><td>Uncorrelated Scalar</td><td><code>col &gt; (SELECT MIN(x) FROM t)</code></td><td><span class="badge badge-done">Done</span></td></tr>
+<tr><td>Uncorrelated IN</td><td><code>col IN (SELECT x FROM t GROUP BY x)</code></td><td><span class="badge badge-done">Done</span></td></tr>
+<tr><td>Correlated EXISTS</td><td><code>EXISTS (SELECT ... WHERE inner.k = outer.k)</code></td><td><span class="badge badge-done">Done</span></td></tr>
+<tr><td>Correlated NOT EXISTS</td><td><code>NOT EXISTS (SELECT ... WHERE inner.k = outer.k)</code></td><td><span class="badge badge-done">Done</span></td></tr>
+<tr><td>Correlated Scalar</td><td><code>col &gt; (SELECT SUM(x) FROM t WHERE t.k = outer.k)</code></td><td><span class="badge badge-done">Done</span></td></tr>
+</tbody>
+</table>
+
+<!-- ============================================================ -->
+<h2>Architecture</h2>
+
+<div class="diagram-container">
+<svg viewBox="0 0 720 420" width="720" height="420" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background -->
+  <rect width="720" height="420" fill="#fafbfc" rx="8"/>
+
+  <!-- Title -->
+  <text x="360" y="30" text-anchor="middle" font-size="15" font-weight="700" fill="#1f2328">Multi-Phase Subquery Execution Pipeline</text>
+
+  <!-- Phase boxes -->
+  <!-- 1. Parse -->
+  <rect x="40" y="55" width="130" height="60" rx="8" fill="#ddf4ff" stroke="#54aeff" stroke-width="1.5"/>
+  <text x="105" y="80" text-anchor="middle" font-size="11" font-weight="700" fill="#0969da">1. Parse</text>
+  <text x="105" y="96" text-anchor="middle" font-size="9.5" fill="#0969da">I_SUBQUERY, T_EXISTS</text>
+
+  <!-- 2. Analyze -->
+  <rect x="195" y="55" width="130" height="60" rx="8" fill="#ddf4ff" stroke="#54aeff" stroke-width="1.5"/>
+  <text x="260" y="80" text-anchor="middle" font-size="11" font-weight="700" fill="#0969da">2. Analyze</text>
+  <text x="260" y="96" text-anchor="middle" font-size="9.5" fill="#0969da">Register SubqueryInfo</text>
+
+  <!-- 3. Decorrelate -->
+  <rect x="350" y="55" width="150" height="60" rx="8" fill="#e8def8" stroke="#8250df" stroke-width="1.5"/>
+  <text x="425" y="80" text-anchor="middle" font-size="11" font-weight="700" fill="#8250df">3. Decorrelate</text>
+  <text x="425" y="96" text-anchor="middle" font-size="9.5" fill="#8250df">EXISTS/Scalar &rarr; IN/OR</text>
+
+  <!-- 4. Plan & Compile -->
+  <rect x="525" y="55" width="150" height="60" rx="8" fill="#ddf4ff" stroke="#54aeff" stroke-width="1.5"/>
+  <text x="600" y="80" text-anchor="middle" font-size="11" font-weight="700" fill="#0969da">4. Plan &amp; Compile</text>
+  <text x="600" y="96" text-anchor="middle" font-size="9.5" fill="#0969da">Index, filter, aggregation</text>
+
+  <!-- Arrows between phases 1-4 -->
+  <line x1="170" y1="85" x2="195" y2="85" stroke="#656d76" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="325" y1="85" x2="350" y2="85" stroke="#656d76" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="500" y1="85" x2="525" y2="85" stroke="#656d76" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- Execution section -->
+  <rect x="40" y="145" width="635" height="250" rx="8" fill="none" stroke="#d0d7de" stroke-width="1" stroke-dasharray="6,3"/>
+  <text x="55" y="165" font-size="12" font-weight="700" fill="#656d76">Execution Phase</text>
+
+  <!-- 5. Execute Inner -->
+  <rect x="65" y="185" width="190" height="80" rx="8" fill="#dafbe1" stroke="#1a7f37" stroke-width="1.5"/>
+  <text x="160" y="210" text-anchor="middle" font-size="11" font-weight="700" fill="#1a7f37">5. Execute Inner Subqueries</text>
+  <text x="160" y="228" text-anchor="middle" font-size="9.5" fill="#1a7f37">Standalone RonSQLPreparer</text>
+  <text x="160" y="244" text-anchor="middle" font-size="9.5" fill="#1a7f37">for each SubqueryInfo</text>
+
+  <!-- 6. Substitute -->
+  <rect x="295" y="185" width="170" height="80" rx="8" fill="#e8def8" stroke="#8250df" stroke-width="1.5"/>
+  <text x="380" y="210" text-anchor="middle" font-size="11" font-weight="700" fill="#8250df">6. Substitute Results</text>
+  <text x="380" y="228" text-anchor="middle" font-size="9.5" fill="#8250df">I_SUBQUERY &rarr; T_INT</text>
+  <text x="380" y="244" text-anchor="middle" font-size="9.5" fill="#8250df">I_CORR_SCALAR &rarr; OR-chain</text>
+
+  <!-- 7. Execute Outer -->
+  <rect x="505" y="185" width="150" height="80" rx="8" fill="#dafbe1" stroke="#1a7f37" stroke-width="1.5"/>
+  <text x="580" y="210" text-anchor="middle" font-size="11" font-weight="700" fill="#1a7f37">7. Execute Outer</text>
+  <text x="580" y="228" text-anchor="middle" font-size="9.5" fill="#1a7f37">NDB scan + filter</text>
+  <text x="580" y="244" text-anchor="middle" font-size="9.5" fill="#1a7f37">with substituted values</text>
+
+  <!-- Arrows in execution -->
+  <line x1="255" y1="225" x2="295" y2="225" stroke="#656d76" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="465" y1="225" x2="505" y2="225" stroke="#656d76" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- Example annotation -->
+  <rect x="65" y="290" width="590" height="90" rx="6" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1"/>
+  <text x="80" y="312" font-size="10" font-weight="600" fill="#656d76">Example: correlated scalar</text>
+  <text x="80" y="330" font-size="10" fill="#1f2328">User writes: <tspan font-weight="600">WHERE o_total &gt; (SELECT SUM(l_price) FROM lineitem WHERE l_orderkey = o_id)</tspan></text>
+  <text x="80" y="348" font-size="10" fill="#8250df">Inner runs: <tspan font-weight="600">SELECT l_orderkey, SUM(l_price) FROM lineitem GROUP BY l_orderkey</tspan></text>
+  <text x="80" y="366" font-size="10" fill="#1a7f37">Outer sees: <tspan font-weight="600">WHERE (o_id=1 AND o_total&gt;300) OR (o_id=2 AND o_total&gt;200) OR ...</tspan></text>
+
+  <!-- Arrow marker -->
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#656d76"/>
+    </marker>
+  </defs>
+</svg>
+</div>
+
+<!-- ============================================================ -->
+<h2>1. Uncorrelated Scalar Subquery</h2>
+
+<div class="card">
+<h3>How it works</h3>
+<p>
+The inner <code>SELECT</code> returns a single value (e.g., <code>MIN</code>, <code>MAX</code>,
+<code>COUNT</code>, <code>SUM</code>). It is executed as a standalone query, and the result
+is substituted as a literal constant into the outer <code>WHERE</code> clause.
+</p>
+
+<pre><span class="cmt">-- Query as written:</span>
+<span class="kw">SELECT</span> l_orderkey, <span class="fn">SUM</span>(l_quantity), <span class="fn">COUNT</span>(*)
+<span class="kw">FROM</span> lineitem
+<span class="kw">WHERE</span> l_quantity &gt; (<span class="kw">SELECT</span> <span class="fn">MIN</span>(l_quantity) <span class="kw">FROM</span> lineitem)
+<span class="kw">GROUP BY</span> l_orderkey;
+
+<span class="cmt">-- Inner returns: 5</span>
+<span class="cmt">-- Outer becomes:</span>
+<span class="kw">SELECT</span> l_orderkey, <span class="fn">SUM</span>(l_quantity), <span class="fn">COUNT</span>(*)
+<span class="kw">FROM</span> lineitem
+<span class="kw">WHERE</span> l_quantity &gt; <span class="str">5</span>
+<span class="kw">GROUP BY</span> l_orderkey;</pre>
+
+<p>Supported comparison operators: <code>=</code>, <code>!=</code>, <code>&gt;</code>, <code>&gt;=</code>, <code>&lt;</code>, <code>&lt;=</code>. Multiple subqueries can appear in the same <code>WHERE</code> clause connected by <code>AND</code>.</p>
+</div>
+
+<div class="diagram-container">
+<svg viewBox="0 0 540 160" width="540" height="160" xmlns="http://www.w3.org/2000/svg">
+  <rect width="540" height="160" fill="#fafbfc" rx="6"/>
+  <text x="270" y="22" text-anchor="middle" font-size="12" font-weight="700" fill="#1f2328">Uncorrelated Scalar: AST Transformation</text>
+
+  <!-- Before -->
+  <rect x="20" y="40" width="220" height="100" rx="6" fill="#fff8c5" stroke="#bf8700"/>
+  <text x="130" y="60" text-anchor="middle" font-size="10" font-weight="600" fill="#bf8700">Before (parse time)</text>
+  <text x="130" y="82" text-anchor="middle" font-size="11" fill="#1f2328">T_GT</text>
+  <text x="80" y="102" text-anchor="middle" font-size="10" fill="#656d76">T_IDENTIFIER</text>
+  <text x="180" y="102" text-anchor="middle" font-size="10" fill="#8250df">I_SUBQUERY</text>
+  <text x="80" y="118" text-anchor="middle" font-size="9" fill="#656d76">l_quantity</text>
+  <text x="180" y="118" text-anchor="middle" font-size="9" fill="#8250df">MIN(l_qty)</text>
+  <line x1="130" y1="86" x2="80" y2="94" stroke="#656d76" stroke-width="1"/>
+  <line x1="130" y1="86" x2="180" y2="94" stroke="#656d76" stroke-width="1"/>
+
+  <!-- Arrow -->
+  <line x1="250" y1="90" x2="290" y2="90" stroke="#656d76" stroke-width="1.5" marker-end="url(#arrow2)"/>
+  <text x="270" y="82" text-anchor="middle" font-size="9" fill="#656d76">substitute</text>
+
+  <!-- After -->
+  <rect x="300" y="40" width="220" height="100" rx="6" fill="#dafbe1" stroke="#1a7f37"/>
+  <text x="410" y="60" text-anchor="middle" font-size="10" font-weight="600" fill="#1a7f37">After (execution time)</text>
+  <text x="410" y="82" text-anchor="middle" font-size="11" fill="#1f2328">T_GT</text>
+  <text x="360" y="102" text-anchor="middle" font-size="10" fill="#656d76">T_IDENTIFIER</text>
+  <text x="460" y="102" text-anchor="middle" font-size="10" fill="#1a7f37">T_INT</text>
+  <text x="360" y="118" text-anchor="middle" font-size="9" fill="#656d76">l_quantity</text>
+  <text x="460" y="118" text-anchor="middle" font-size="9" fill="#1a7f37">5</text>
+  <line x1="410" y1="86" x2="360" y2="94" stroke="#656d76" stroke-width="1"/>
+  <line x1="410" y1="86" x2="460" y2="94" stroke="#656d76" stroke-width="1"/>
+
+  <defs><marker id="arrow2" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" fill="#656d76"/></marker></defs>
+</svg>
+</div>
+
+<!-- ============================================================ -->
+<h2>2. Uncorrelated IN Subquery</h2>
+
+<div class="card">
+<h3>How it works</h3>
+<p>
+The inner query returns multiple rows. Each value is collected into a list, then substituted as an OR-chain of equality comparisons.
+The inner query must return a single column. A <code>GROUP BY</code> with an aggregate wrapper like <code>MIN(col)</code> can be used to produce distinct values.
+</p>
+
+<pre><span class="cmt">-- Query as written:</span>
+<span class="kw">SELECT</span> l_orderkey, <span class="fn">SUM</span>(l_price)
+<span class="kw">FROM</span> lineitem
+<span class="kw">WHERE</span> l_orderkey <span class="kw">IN</span> (<span class="kw">SELECT</span> <span class="fn">MIN</span>(l_orderkey)
+                       <span class="kw">FROM</span> lineitem
+                       <span class="kw">WHERE</span> l_quantity &gt; 20
+                       <span class="kw">GROUP BY</span> l_orderkey)
+<span class="kw">GROUP BY</span> l_orderkey;
+
+<span class="cmt">-- Inner returns: {3, 5}</span>
+<span class="cmt">-- Outer becomes:</span>
+<span class="kw">WHERE</span> l_orderkey = <span class="str">3</span> <span class="kw">OR</span> l_orderkey = <span class="str">5</span></pre>
+
+<p>A safety limit of <strong>1000 values</strong> prevents excessive OR-chain expansion.</p>
+</div>
+
+<!-- ============================================================ -->
+<h2>3. Correlated EXISTS / NOT EXISTS</h2>
+
+<div class="card">
+<h3>How it works</h3>
+<p>
+Correlated <code>EXISTS</code> and <code>NOT EXISTS</code> are
+<strong>decorrelated</strong> at preparation time. The correlation predicate
+(<code>inner.col = outer.col</code>) is removed from the inner <code>WHERE</code>,
+and the correlation column is added to the inner <code>SELECT</code> and
+<code>GROUP BY</code>. The result is transformed into an <code>IN</code> subquery.
+</p>
+
+<pre><span class="cmt">-- Original EXISTS:</span>
+<span class="kw">WHERE EXISTS</span> (<span class="kw">SELECT</span> l_id <span class="kw">FROM</span> lineitem
+              <span class="kw">WHERE</span> l_orderkey = o_id <span class="kw">AND</span> l_quantity &gt; 20)
+
+<span class="cmt">-- Decorrelated inner SQL:</span>
+<span class="kw">SELECT</span> <span class="fn">MIN</span>(l_orderkey) <span class="kw">FROM</span> lineitem
+<span class="kw">WHERE</span> l_quantity &gt; 20
+<span class="kw">GROUP BY</span> l_orderkey
+
+<span class="cmt">-- Outer becomes:</span>
+<span class="kw">WHERE</span> o_id <span class="kw">IN</span> (<span class="str">3</span>, <span class="str">5</span>)</pre>
+
+<p>
+For <code>NOT EXISTS</code>, the same decorrelation applies but the resulting
+<code>IN</code> subquery is wrapped in <code>T_NOT</code>, producing a
+<em>not-in</em> filter: outer rows matching <em>none</em> of the inner
+values pass the filter.
+</p>
+</div>
+
+<div class="diagram-container">
+<svg viewBox="0 0 620 200" width="620" height="200" xmlns="http://www.w3.org/2000/svg">
+  <rect width="620" height="200" fill="#fafbfc" rx="6"/>
+  <text x="310" y="22" text-anchor="middle" font-size="12" font-weight="700" fill="#1f2328">EXISTS Decorrelation Flow</text>
+
+  <!-- Step boxes -->
+  <rect x="20" y="45" width="130" height="55" rx="6" fill="#fff8c5" stroke="#bf8700"/>
+  <text x="85" y="66" text-anchor="middle" font-size="10" font-weight="600" fill="#bf8700">T_EXISTS</text>
+  <text x="85" y="82" text-anchor="middle" font-size="9" fill="#656d76">correlated inner</text>
+
+  <rect x="180" y="45" width="130" height="55" rx="6" fill="#e8def8" stroke="#8250df"/>
+  <text x="245" y="66" text-anchor="middle" font-size="10" font-weight="600" fill="#8250df">decorrelate_exists()</text>
+  <text x="245" y="82" text-anchor="middle" font-size="9" fill="#656d76">remove correlation pred</text>
+
+  <rect x="340" y="45" width="130" height="55" rx="6" fill="#ddf4ff" stroke="#54aeff"/>
+  <text x="405" y="66" text-anchor="middle" font-size="10" font-weight="600" fill="#0969da">I_IN_SUBQUERY</text>
+  <text x="405" y="82" text-anchor="middle" font-size="9" fill="#656d76">uncorrelated inner</text>
+
+  <rect x="500" y="45" width="100" height="55" rx="6" fill="#dafbe1" stroke="#1a7f37"/>
+  <text x="550" y="66" text-anchor="middle" font-size="10" font-weight="600" fill="#1a7f37">OR-chain</text>
+  <text x="550" y="82" text-anchor="middle" font-size="9" fill="#656d76">o_id=3 OR o_id=5</text>
+
+  <line x1="150" y1="72" x2="180" y2="72" stroke="#656d76" stroke-width="1.5" marker-end="url(#arrow2)"/>
+  <line x1="310" y1="72" x2="340" y2="72" stroke="#656d76" stroke-width="1.5" marker-end="url(#arrow2)"/>
+  <line x1="470" y1="72" x2="500" y2="72" stroke="#656d76" stroke-width="1.5" marker-end="url(#arrow2)"/>
+
+  <!-- NOT EXISTS variant -->
+  <rect x="20" y="125" width="580" height="55" rx="6" fill="#f6f8fa" stroke="#d0d7de"/>
+  <text x="30" y="148" font-size="10" font-weight="600" fill="#656d76">NOT EXISTS variant:</text>
+  <text x="30" y="166" font-size="10" fill="#1f2328">T_NOT &rarr; T_EXISTS becomes T_NOT &rarr; I_IN_SUBQUERY. Filter: rows NOT matching any inner value pass.</text>
+</svg>
+</div>
+
+<!-- ============================================================ -->
+<h2>4. Correlated Scalar Subquery with Aggregation</h2>
+
+<div class="card">
+<h3>How it works</h3>
+<p>
+A correlated scalar subquery references an outer column inside the inner
+<code>WHERE</code> clause. RonSQL <strong>decorrelates</strong> it by:
+</p>
+
+<div class="flow-step">
+  <div class="flow-num purple">1</div>
+  <div class="flow-content">
+    <strong>Detect</strong>
+    Find comparison conjuncts where one side is a subquery with a correlated inner <code>WHERE</code>.
+  </div>
+</div>
+<div class="flow-step">
+  <div class="flow-num purple">2</div>
+  <div class="flow-content">
+    <strong>Decorrelate</strong>
+    Remove the correlation predicate, add the correlation column to <code>SELECT</code> + <code>GROUP BY</code>.
+  </div>
+</div>
+<div class="flow-step">
+  <div class="flow-num green">3</div>
+  <div class="flow-content">
+    <strong>Execute</strong>
+    Run the decorrelated inner query &mdash; produces <code>(key, value)</code> pairs.
+  </div>
+</div>
+<div class="flow-step">
+  <div class="flow-num green">4</div>
+  <div class="flow-content">
+    <strong>Substitute</strong>
+    Replace the comparison with an OR-chain of AND-pairs in the outer filter.
+  </div>
+</div>
+
+<pre><span class="cmt">-- Original query:</span>
+<span class="kw">SELECT</span> o_id, <span class="fn">SUM</span>(o_total) <span class="kw">FROM</span> orders
+<span class="kw">WHERE</span> o_total &gt; (<span class="kw">SELECT</span> <span class="fn">SUM</span>(l_price)
+                  <span class="kw">FROM</span> lineitem
+                  <span class="kw">WHERE</span> l_orderkey = o_id)
+<span class="kw">GROUP BY</span> o_id;
+
+<span class="cmt">-- Decorrelated inner (2 columns):</span>
+<span class="kw">SELECT</span> l_orderkey, <span class="fn">SUM</span>(l_price)
+<span class="kw">FROM</span> lineitem
+<span class="kw">GROUP BY</span> l_orderkey
+<span class="cmt">-- Returns: (1,300), (2,200), (3,550), (4,200), (5,750)</span>
+
+<span class="cmt">-- Outer WHERE becomes:</span>
+<span class="kw">WHERE</span> (o_id=<span class="str">1</span> <span class="kw">AND</span> o_total&gt;<span class="str">300</span>)
+   <span class="kw">OR</span> (o_id=<span class="str">2</span> <span class="kw">AND</span> o_total&gt;<span class="str">200</span>)
+   <span class="kw">OR</span> (o_id=<span class="str">3</span> <span class="kw">AND</span> o_total&gt;<span class="str">550</span>)
+   <span class="kw">OR</span> (o_id=<span class="str">4</span> <span class="kw">AND</span> o_total&gt;<span class="str">200</span>)
+   <span class="kw">OR</span> (o_id=<span class="str">5</span> <span class="kw">AND</span> o_total&gt;<span class="str">750</span>)</pre>
+
+<p>
+All six comparison operators are supported. When the subquery appears on the
+<em>left</em> side of the comparison (e.g., <code>(SELECT ...) &lt; col</code>),
+the operator is automatically <strong>flipped</strong>.
+</p>
+</div>
+
+<div class="diagram-container">
+<svg viewBox="0 0 640 180" width="640" height="180" xmlns="http://www.w3.org/2000/svg">
+  <rect width="640" height="180" fill="#fafbfc" rx="6"/>
+  <text x="320" y="22" text-anchor="middle" font-size="12" font-weight="700" fill="#1f2328">Correlated Scalar: AST Node Lifecycle</text>
+
+  <rect x="20" y="42" width="120" height="50" rx="6" fill="#fff8c5" stroke="#bf8700"/>
+  <text x="80" y="62" text-anchor="middle" font-size="10" font-weight="600" fill="#bf8700">T_GT</text>
+  <text x="80" y="78" text-anchor="middle" font-size="9" fill="#656d76">col &gt; I_SUBQUERY</text>
+
+  <rect x="170" y="42" width="120" height="50" rx="6" fill="#e8def8" stroke="#8250df"/>
+  <text x="230" y="62" text-anchor="middle" font-size="10" font-weight="600" fill="#8250df">I_CORR_SCALAR</text>
+  <text x="230" y="78" text-anchor="middle" font-size="9" fill="#656d76">cmp_op, key_expr</text>
+
+  <rect x="320" y="42" width="140" height="50" rx="6" fill="#ddf4ff" stroke="#54aeff"/>
+  <text x="390" y="62" text-anchor="middle" font-size="10" font-weight="600" fill="#0969da">Execute inner</text>
+  <text x="390" y="78" text-anchor="middle" font-size="9" fill="#656d76">(key,val) pairs</text>
+
+  <rect x="490" y="42" width="130" height="50" rx="6" fill="#dafbe1" stroke="#1a7f37"/>
+  <text x="555" y="62" text-anchor="middle" font-size="10" font-weight="600" fill="#1a7f37">T_OR chain</text>
+  <text x="555" y="78" text-anchor="middle" font-size="9" fill="#656d76">(k=v AND col&gt;x) ...</text>
+
+  <line x1="140" y1="67" x2="170" y2="67" stroke="#656d76" stroke-width="1.5" marker-end="url(#arrow2)"/>
+  <line x1="290" y1="67" x2="320" y2="67" stroke="#656d76" stroke-width="1.5" marker-end="url(#arrow2)"/>
+  <line x1="460" y1="67" x2="490" y2="67" stroke="#656d76" stroke-width="1.5" marker-end="url(#arrow2)"/>
+
+  <!-- Labels below -->
+  <text x="80" y="115" text-anchor="middle" font-size="9" fill="#656d76">parse()</text>
+  <text x="230" y="115" text-anchor="middle" font-size="9" fill="#656d76">decorrelate_scalar()</text>
+  <text x="390" y="115" text-anchor="middle" font-size="9" fill="#656d76">execute_subqueries()</text>
+  <text x="555" y="115" text-anchor="middle" font-size="9" fill="#656d76">substitute_results()</text>
+
+  <!-- Phase labels -->
+  <rect x="30" y="130" width="80" height="20" rx="3" fill="#fff8c5"/>
+  <text x="70" y="144" text-anchor="middle" font-size="8.5" font-weight="600" fill="#bf8700">Preparation</text>
+  <rect x="185" y="130" width="80" height="20" rx="3" fill="#e8def8"/>
+  <text x="225" y="144" text-anchor="middle" font-size="8.5" font-weight="600" fill="#8250df">Preparation</text>
+  <rect x="350" y="130" width="80" height="20" rx="3" fill="#dafbe1"/>
+  <text x="390" y="144" text-anchor="middle" font-size="8.5" font-weight="600" fill="#1a7f37">Execution</text>
+  <rect x="510" y="130" width="80" height="20" rx="3" fill="#dafbe1"/>
+  <text x="550" y="144" text-anchor="middle" font-size="8.5" font-weight="600" fill="#1a7f37">Execution</text>
+</svg>
+</div>
+
+<!-- ============================================================ -->
+<h2>Test Coverage</h2>
+
+<p>28 MTR tests in <code>mysql-test/suite/ronsql/t/ronsql_subquery.test</code> validate all subquery types using two tables (<code>orders</code> and <code>lineitem</code>) with known data.</p>
+
+<h3>Uncorrelated Scalar (Tests 3&ndash;8)</h3>
+<div class="test-grid">
+  <div class="test-card">
+    <div class="label">Test 3</div>
+    <code>l_quantity &gt; (SELECT MIN(...))</code>
+  </div>
+  <div class="test-card">
+    <div class="label">Test 4</div>
+    <code>... MIN(...) with inner WHERE</code>
+  </div>
+  <div class="test-card">
+    <div class="label">Test 5</div>
+    <code>l_price &lt; (SELECT MAX(...))</code>
+  </div>
+  <div class="test-card">
+    <div class="label">Test 6</div>
+    <code>o_total = (SELECT MIN(...))</code>
+  </div>
+  <div class="test-card">
+    <div class="label">Test 7</div>
+    <code>l_quantity &gt; (SELECT COUNT(*))</code>
+  </div>
+  <div class="test-card">
+    <div class="label">Test 8</div>
+    <code>Multiple scalar subqueries AND</code>
+  </div>
+</div>
+
+<h3>Uncorrelated IN (Tests 2, 9&ndash;12)</h3>
+<div class="test-grid">
+  <div class="test-card">
+    <div class="label">Test 2</div>
+    <code>col IN (SELECT MAX(...) ...)</code>
+  </div>
+  <div class="test-card">
+    <div class="label">Test 9</div>
+    <code>IN (SELECT ... GROUP BY) &mdash; all match</code>
+  </div>
+  <div class="test-card">
+    <div class="label">Test 10</div>
+    <code>IN with selective inner WHERE</code>
+  </div>
+  <div class="test-card">
+    <div class="label">Test 11</div>
+    <code>IN &mdash; inner returns empty</code>
+  </div>
+</div>
+
+<h3>Correlated EXISTS (Tests 1, 15&ndash;18, 20)</h3>
+<div class="test-grid">
+  <div class="test-card">
+    <div class="label">Test 1</div>
+    <code>EXISTS &mdash; basic semi-join</code>
+  </div>
+  <div class="test-card">
+    <div class="label">Test 15</div>
+    <code>EXISTS with inner l_quantity &gt; 20</code>
+  </div>
+  <div class="test-card">
+    <div class="label">Test 16</div>
+    <code>EXISTS with no match</code>
+  </div>
+  <div class="test-card">
+    <div class="label">Test 18</div>
+    <code>EXISTS + outer WHERE filter</code>
+  </div>
+  <div class="test-card">
+    <div class="label">Test 20</div>
+    <code>EXISTS with table aliases</code>
+  </div>
+  <div class="test-card">
+    <div class="label">Test 17</div>
+    <code>EXISTS + COUNT(*) aggregation</code>
+  </div>
+</div>
+
+<h3>Correlated NOT EXISTS (Tests 19, 21&ndash;23)</h3>
+<div class="test-grid">
+  <div class="test-card">
+    <div class="label">Test 19</div>
+    <code>NOT EXISTS &mdash; no inner match</code>
+  </div>
+  <div class="test-card">
+    <div class="label">Test 21</div>
+    <code>NOT EXISTS &mdash; all have lineitems</code>
+  </div>
+  <div class="test-card">
+    <div class="label">Test 22</div>
+    <code>NOT EXISTS &mdash; partial match</code>
+  </div>
+  <div class="test-card">
+    <div class="label">Test 23</div>
+    <code>NOT EXISTS + outer filter</code>
+  </div>
+</div>
+
+<h3>Correlated Scalar (Tests 24&ndash;28)</h3>
+<div class="test-grid">
+  <div class="test-card">
+    <div class="label">Test 24</div>
+    <code>o_total &lt; (SELECT SUM(...) WHERE ...=o_id)</code>
+  </div>
+  <div class="test-card">
+    <div class="label">Test 25</div>
+    <code>o_total = (SELECT SUM(...) WHERE ...=o_id)</code>
+  </div>
+  <div class="test-card">
+    <div class="label">Test 26</div>
+    <code>o_total &gt; (SELECT SUM(...) WHERE ...=o_id)</code>
+  </div>
+  <div class="test-card">
+    <div class="label">Test 27</div>
+    <code>Correlated scalar + outer filter</code>
+  </div>
+  <div class="test-card">
+    <div class="label">Test 28</div>
+    <code>Correlated scalar + inner filter</code>
+  </div>
+</div>
+
+<h3>Cross-Column Comparison (Tests 13&ndash;14)</h3>
+<div class="test-grid">
+  <div class="test-card">
+    <div class="label">Test 13</div>
+    <code>WHERE l_quantity &lt; l_price</code>
+  </div>
+  <div class="test-card">
+    <div class="label">Test 14</div>
+    <code>col &lt; col AND col &gt; const</code>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<h2>Implementation Steps</h2>
+
+<table>
+<thead>
+<tr><th>Step</th><th>Description</th><th>Key Function / File</th><th>Status</th></tr>
+</thead>
+<tbody>
+<tr>
+  <td>36</td>
+  <td>Parser &amp; AST infrastructure for subqueries</td>
+  <td><code>RonSQLParser.y</code>, <code>RonSQLCommon.hpp</code></td>
+  <td><span class="badge badge-done">Done</span></td>
+</tr>
+<tr>
+  <td>37</td>
+  <td>Multi-phase execution orchestrator</td>
+  <td><code>execute_subqueries()</code>, <code>substitute_subquery_results()</code></td>
+  <td><span class="badge badge-done">Done</span></td>
+</tr>
+<tr>
+  <td>38</td>
+  <td>Uncorrelated scalar subqueries</td>
+  <td><code>I_SUBQUERY</code> &rarr; <code>T_INT</code> / <code>T_FLOAT</code></td>
+  <td><span class="badge badge-done">Done</span></td>
+</tr>
+<tr>
+  <td>39</td>
+  <td>Uncorrelated IN subqueries</td>
+  <td><code>I_IN_SUBQUERY</code> &rarr; OR-chain of equalities</td>
+  <td><span class="badge badge-done">Done</span></td>
+</tr>
+<tr>
+  <td>40</td>
+  <td>Semi-join / anti-join in QueryPlanner</td>
+  <td><code>QueryPlanner.cpp</code> (MatchFirst / MatchNullOnly)</td>
+  <td><span class="badge badge-done">Done</span> (unused&mdash;see note)</td>
+</tr>
+<tr>
+  <td>41</td>
+  <td>Correlated EXISTS &rarr; IN transformation</td>
+  <td><code>decorrelate_exists()</code></td>
+  <td><span class="badge badge-done">Done</span></td>
+</tr>
+<tr>
+  <td>42</td>
+  <td>Correlated NOT EXISTS &rarr; NOT IN</td>
+  <td><code>T_NOT</code> wrapping <code>I_IN_SUBQUERY</code></td>
+  <td><span class="badge badge-done">Done</span></td>
+</tr>
+<tr>
+  <td>43</td>
+  <td>Correlated scalar subquery with aggregation</td>
+  <td><code>decorrelate_scalar()</code>, <code>I_CORR_SCALAR</code></td>
+  <td><span class="badge badge-done">Done</span></td>
+</tr>
+<tr>
+  <td>44</td>
+  <td>Cross-column comparison in WHERE</td>
+  <td><code>apply_filter_cmp()</code></td>
+  <td><span class="badge badge-done">Done</span></td>
+</tr>
+<tr>
+  <td>45</td>
+  <td>Non-aggregate (projection-only) queries</td>
+  <td>&mdash;</td>
+  <td><span class="badge badge-planned">Planned</span></td>
+</tr>
+</tbody>
+</table>
+
+<p style="margin-top:16px; color: var(--muted); font-size: 0.9em;">
+<strong>Note on Step 40:</strong> The semi-join infrastructure (MatchFirst / MatchNullOnly) was added to QueryPlanner but is currently unused.
+Semi-joins don't work with aggregation pushdown because <code>handleJoinAggRow</code> bypasses the FirstMatch check in <code>sendReadAttrinfo</code>.
+EXISTS/NOT EXISTS subqueries use the IN-subquery transformation path instead.
+</p>
+
+<!-- ============================================================ -->
+<h2>Limitations</h2>
+
+<div class="card">
+<h3>Current constraints</h3>
+<ul style="margin-left: 20px; margin-top: 8px;">
+  <li>Subqueries must appear as <strong>top-level AND conjuncts</strong> in WHERE (not inside OR).</li>
+  <li>Correlated subqueries support only a <strong>single correlation predicate</strong> (<code>inner.col = outer.col</code>).</li>
+  <li>IN subqueries and correlated scalar subqueries are limited to <strong>1000 result rows</strong>.</li>
+  <li>Subquery inner queries must be <strong>single-table</strong> (no inner joins).</li>
+  <li>Inner queries currently require an <strong>aggregate function</strong> (e.g., <code>MIN</code>, <code>SUM</code>) &mdash; plain projection queries are not yet supported (Step 45).</li>
+  <li>NULL values in subquery results are skipped (comparison with NULL is always false).</li>
+  <li>Subqueries in <code>HAVING</code> clause are parsed but follow the same execution pipeline.</li>
+</ul>
+</div>
+
+<!-- ============================================================ -->
+<h2>Source Files</h2>
+
+<table>
+<thead>
+<tr><th>File</th><th>Role</th></tr>
+</thead>
+<tbody>
+<tr><td><code>RonSQLParser.y</code></td><td>Grammar rules for <code>(SELECT ...)</code>, <code>EXISTS</code>, <code>IN (SELECT ...)</code></td></tr>
+<tr><td><code>RonSQLCommon.hpp</code></td><td>AST types: <code>ConditionalExpression</code> union members for subqueries</td></tr>
+<tr><td><code>RonSQLPreparer.hpp</code></td><td><code>SubqueryInfo</code> struct, function declarations</td></tr>
+<tr><td><code>RonSQLPreparer.cpp</code></td><td>Core logic: <code>decorrelate_exists()</code>, <code>decorrelate_scalar()</code>, <code>execute_subqueries()</code>, <code>substitute_subquery_results_ce()</code></td></tr>
+<tr><td><code>ronsql_subquery.test</code></td><td>28 MTR tests covering all subquery types</td></tr>
+</tbody>
+</table>
+
+<p style="margin-top: 48px; color: var(--muted); font-size: 0.85em; text-align: center;">
+RonSQL Subquery Support &mdash; RONDB-733 Phase 7 &mdash; March 2026
+</p>
+
+</body>
+</html>
