@@ -352,65 +352,246 @@ The inner query must return a single column. A <code>GROUP BY</code> with an agg
 <h2>3. Correlated EXISTS / NOT EXISTS</h2>
 
 <div class="card">
-<h3>How it works</h3>
+<h3>The problem</h3>
 <p>
-Correlated <code>EXISTS</code> and <code>NOT EXISTS</code> are
-<strong>decorrelated</strong> at preparation time. The correlation predicate
-(<code>inner.col = outer.col</code>) is removed from the inner <code>WHERE</code>,
-and the correlation column is added to the inner <code>SELECT</code> and
-<code>GROUP BY</code>. The result is transformed into an <code>IN</code> subquery.
+A correlated <code>EXISTS</code> subquery references an outer column:
 </p>
-
-<pre><span class="cmt">-- Original EXISTS:</span>
+<pre><span class="kw">SELECT</span> o_id, <span class="fn">SUM</span>(o_total) <span class="kw">FROM</span> orders
 <span class="kw">WHERE EXISTS</span> (<span class="kw">SELECT</span> l_id <span class="kw">FROM</span> lineitem
               <span class="kw">WHERE</span> l_orderkey = o_id <span class="kw">AND</span> l_quantity &gt; 20)
+<span class="kw">GROUP BY</span> o_id;</pre>
+<p>
+The inner query says "find lineitems for <em>this</em> order with quantity &gt; 20."
+Conceptually, the database would run the inner query once per outer row, substituting
+each outer <code>o_id</code> value. That's expensive and can't be executed as a
+standalone query (the inner parser would fail on the unknown column <code>o_id</code>).
+</p>
+</div>
 
-<span class="cmt">-- Decorrelated inner SQL:</span>
-<span class="kw">SELECT</span> <span class="fn">MIN</span>(l_orderkey) <span class="kw">FROM</span> lineitem
+<div class="card">
+<h3>The insight: EXISTS really asks "which keys have matches?"</h3>
+<p>
+Think about what <code>EXISTS</code> actually tests. For each outer row, it asks:
+<em>"Is there at least one lineitem where <code>l_orderkey</code> equals my <code>o_id</code>
+and <code>l_quantity &gt; 20</code>?"</em>
+</p>
+<p>
+We can answer this question for <strong>all outer rows at once</strong> by flipping the
+perspective: instead of checking each outer row against the inner table, we ask the inner
+table: <em>"Which distinct <code>l_orderkey</code> values have at least one row with
+<code>l_quantity &gt; 20</code>?"</em> That gives us the <strong>complete set of matching keys</strong>.
+Then the outer query just needs to check if its <code>o_id</code> is in that set.
+</p>
+</div>
+
+<div class="card">
+<h3>Step-by-step decorrelation</h3>
+
+<p>Starting with the inner query:</p>
+<pre><span class="kw">SELECT</span> l_id <span class="kw">FROM</span> lineitem
+<span class="kw">WHERE</span> l_orderkey = o_id <span class="kw">AND</span> l_quantity &gt; 20</pre>
+
+<div class="flow-step">
+  <div class="flow-num purple">1</div>
+  <div class="flow-content">
+    <strong>Identify the correlation predicate</strong>
+    The condition <code>l_orderkey = o_id</code> links the inner table to the outer table.
+    <code>l_orderkey</code> belongs to <code>lineitem</code> (inner); <code>o_id</code>
+    belongs to <code>orders</code> (outer). This is the correlation.
+  </div>
+</div>
+<div class="flow-step">
+  <div class="flow-num purple">2</div>
+  <div class="flow-content">
+    <strong>Remove the correlation predicate from WHERE</strong>
+    What remains is the non-correlation filter: <code>l_quantity &gt; 20</code>.
+    This filter still makes sense as a standalone condition on the inner table.
+  </div>
+</div>
+<div class="flow-step">
+  <div class="flow-num purple">3</div>
+  <div class="flow-content">
+    <strong>Add GROUP BY on the correlation column</strong>
+    We add <code>GROUP BY l_orderkey</code> to produce one row per distinct key value.
+    The SELECT becomes <code>SELECT MIN(l_orderkey)</code> &mdash; the <code>MIN()</code>
+    wrapper is needed because RonSQL currently requires an aggregate function. It's
+    harmless since we're grouping by that very column, so <code>MIN(x) = x</code> within
+    each group.
+  </div>
+</div>
+<div class="flow-step">
+  <div class="flow-num green">4</div>
+  <div class="flow-content">
+    <strong>Execute as standalone query</strong>
+    The rewritten inner query runs independently:
+  </div>
+</div>
+
+<pre><span class="kw">SELECT</span> <span class="fn">MIN</span>(l_orderkey) <span class="kw">FROM</span> lineitem
 <span class="kw">WHERE</span> l_quantity &gt; 20
-<span class="kw">GROUP BY</span> l_orderkey
+<span class="kw">GROUP BY</span> l_orderkey;
+<span class="cmt">-- Returns: {3, 5}
+-- (orders 3 and 5 have lineitems with quantity &gt; 20)</span></pre>
+
+<div class="flow-step">
+  <div class="flow-num green">5</div>
+  <div class="flow-content">
+    <strong>Replace EXISTS with IN</strong>
+    The outer <code>WHERE</code> clause becomes:
+  </div>
+</div>
+
+<pre><span class="kw">WHERE</span> o_id <span class="kw">IN</span> (<span class="str">3</span>, <span class="str">5</span>)
+<span class="cmt">-- which expands to: WHERE o_id = 3 OR o_id = 5</span></pre>
+
+<p>This is equivalent to the original <code>EXISTS</code>. An outer row passes the filter
+if and only if its <code>o_id</code> appears in the set of matching inner keys.</p>
+</div>
+
+<div class="card">
+<h3>Why this is correct</h3>
+<p>The key insight is an equivalence from relational algebra. The original query:</p>
+<pre><span class="cmt">-- "For this order, does any matching lineitem exist?"</span>
+<span class="kw">WHERE EXISTS</span> (<span class="kw">SELECT</span> ... <span class="kw">FROM</span> lineitem
+              <span class="kw">WHERE</span> lineitem.key = orders.key <span class="kw">AND</span> filter)</pre>
+<p>is logically identical to:</p>
+<pre><span class="cmt">-- "Is this order's key in the set of all keys that have matches?"</span>
+<span class="kw">WHERE</span> orders.key <span class="kw">IN</span> (<span class="kw">SELECT</span> lineitem.key <span class="kw">FROM</span> lineitem <span class="kw">WHERE</span> filter
+                       <span class="kw">GROUP BY</span> lineitem.key)</pre>
+<p>
+Both ask the same question &mdash; just from different directions. The <code>EXISTS</code> form
+loops over outer rows and probes the inner table. The <code>IN</code> form pre-computes the
+set of all matching keys, then filters. The result set is identical because an outer row
+with key <em>k</em> satisfies <code>EXISTS (...WHERE inner.key = k AND filter)</code> if
+and only if <em>k</em> appears in <code>{inner.key | filter}</code>.
+</p>
+</div>
+
+<div class="card">
+<h3>Concrete example with data</h3>
+<table>
+<thead><tr><th colspan="4" style="text-align:center">orders</th></tr>
+<tr><th>o_id</th><th>o_custkey</th><th>o_total</th><th></th></tr></thead>
+<tbody>
+<tr><td>1</td><td>100</td><td>500</td><td></td></tr>
+<tr><td>2</td><td>100</td><td>300</td><td></td></tr>
+<tr><td>3</td><td>200</td><td>700</td><td></td></tr>
+<tr><td>4</td><td>200</td><td>200</td><td></td></tr>
+<tr><td>5</td><td>300</td><td>400</td><td></td></tr>
+</tbody>
+</table>
+<table>
+<thead><tr><th colspan="4" style="text-align:center">lineitem (only rows with l_quantity &gt; 20)</th></tr>
+<tr><th>l_id</th><th>l_orderkey</th><th>l_quantity</th><th>l_price</th></tr></thead>
+<tbody>
+<tr><td>5</td><td>3</td><td>30</td><td>300</td></tr>
+<tr><td>6</td><td>3</td><td>25</td><td>250</td></tr>
+<tr><td>9</td><td>5</td><td>40</td><td>400</td></tr>
+<tr><td>10</td><td>5</td><td>35</td><td>350</td></tr>
+</tbody>
+</table>
+<p>
+The distinct <code>l_orderkey</code> values with <code>l_quantity &gt; 20</code> are
+<strong>{3, 5}</strong>. So <code>EXISTS</code> is true for orders 3 and 5, and false
+for orders 1, 2, 4. The <code>IN (3, 5)</code> filter produces the identical result.
+</p>
+</div>
+
+<div class="card">
+<h3>NOT EXISTS: the exact inverse</h3>
+<p>
+<code>NOT EXISTS</code> asks: <em>"Is there NO matching lineitem for this order?"</em>
+The decorrelation is identical &mdash; we compute the same set of matching keys.
+The only difference is the outer filter is <strong>negated</strong>:
+</p>
+<pre><span class="cmt">-- NOT EXISTS (... WHERE l_orderkey = o_id AND l_quantity &gt; 20)</span>
+<span class="cmt">-- Inner returns matching keys: {3, 5}</span>
 
 <span class="cmt">-- Outer becomes:</span>
-<span class="kw">WHERE</span> o_id <span class="kw">IN</span> (<span class="str">3</span>, <span class="str">5</span>)</pre>
-
+<span class="kw">WHERE NOT</span> (o_id = <span class="str">3</span> <span class="kw">OR</span> o_id = <span class="str">5</span>)
+<span class="cmt">-- i.e., keep orders whose o_id is NOT in {3, 5}
+-- Result: orders 1, 2, 4</span></pre>
 <p>
-For <code>NOT EXISTS</code>, the same decorrelation applies but the resulting
-<code>IN</code> subquery is wrapped in <code>T_NOT</code>, producing a
-<em>not-in</em> filter: outer rows matching <em>none</em> of the inner
-values pass the filter.
+In the AST, this is represented as <code>T_NOT</code> wrapping the <code>I_IN_SUBQUERY</code>
+node. The <code>NOT</code> is pushed into the NDB scan filter, which applies De Morgan's
+law: <code>NOT (a OR b OR c)</code> becomes <code>(NOT a) AND (NOT b) AND (NOT c)</code>,
+i.e., the row must not equal any of the values.
 </p>
 </div>
 
 <div class="diagram-container">
-<svg viewBox="0 0 620 200" width="620" height="200" xmlns="http://www.w3.org/2000/svg">
-  <rect width="620" height="200" fill="#fafbfc" rx="6"/>
-  <text x="310" y="22" text-anchor="middle" font-size="12" font-weight="700" fill="#1f2328">EXISTS Decorrelation Flow</text>
+<svg viewBox="0 0 700 340" width="700" height="340" xmlns="http://www.w3.org/2000/svg">
+  <rect width="700" height="340" fill="#fafbfc" rx="6"/>
+  <text x="350" y="24" text-anchor="middle" font-size="13" font-weight="700" fill="#1f2328">EXISTS Decorrelation: Before and After</text>
 
-  <!-- Step boxes -->
-  <rect x="20" y="45" width="130" height="55" rx="6" fill="#fff8c5" stroke="#bf8700"/>
-  <text x="85" y="66" text-anchor="middle" font-size="10" font-weight="600" fill="#bf8700">T_EXISTS</text>
-  <text x="85" y="82" text-anchor="middle" font-size="9" fill="#656d76">correlated inner</text>
+  <!-- EXISTS row -->
+  <text x="20" y="56" font-size="11" font-weight="700" fill="#1a7f37">EXISTS</text>
 
-  <rect x="180" y="45" width="130" height="55" rx="6" fill="#e8def8" stroke="#8250df"/>
-  <text x="245" y="66" text-anchor="middle" font-size="10" font-weight="600" fill="#8250df">decorrelate_exists()</text>
-  <text x="245" y="82" text-anchor="middle" font-size="9" fill="#656d76">remove correlation pred</text>
+  <rect x="20" y="65" width="200" height="80" rx="6" fill="#fff8c5" stroke="#bf8700"/>
+  <text x="30" y="84" font-size="9.5" font-weight="600" fill="#bf8700">Original inner WHERE:</text>
+  <text x="30" y="100" font-size="9.5" fill="#1f2328">l_orderkey = o_id</text>
+  <text x="30" y="114" font-size="9.5" fill="#1f2328">AND l_quantity &gt; 20</text>
+  <text x="30" y="132" font-size="8.5" fill="#cf222e">&#x26A0; o_id is unknown here</text>
 
-  <rect x="340" y="45" width="130" height="55" rx="6" fill="#ddf4ff" stroke="#54aeff"/>
-  <text x="405" y="66" text-anchor="middle" font-size="10" font-weight="600" fill="#0969da">I_IN_SUBQUERY</text>
-  <text x="405" y="82" text-anchor="middle" font-size="9" fill="#656d76">uncorrelated inner</text>
+  <line x1="225" y1="105" x2="255" y2="105" stroke="#656d76" stroke-width="1.5" marker-end="url(#arrow2)"/>
 
-  <rect x="500" y="45" width="100" height="55" rx="6" fill="#dafbe1" stroke="#1a7f37"/>
-  <text x="550" y="66" text-anchor="middle" font-size="10" font-weight="600" fill="#1a7f37">OR-chain</text>
-  <text x="550" y="82" text-anchor="middle" font-size="9" fill="#656d76">o_id=3 OR o_id=5</text>
+  <rect x="260" y="65" width="200" height="80" rx="6" fill="#e8def8" stroke="#8250df"/>
+  <text x="270" y="84" font-size="9.5" font-weight="600" fill="#8250df">Rewritten standalone:</text>
+  <text x="270" y="100" font-size="9.5" fill="#1f2328">SELECT MIN(l_orderkey)</text>
+  <text x="270" y="114" font-size="9.5" fill="#1f2328">FROM lineitem</text>
+  <text x="270" y="128" font-size="9.5" fill="#1f2328">WHERE l_quantity &gt; 20</text>
+  <text x="270" y="142" font-size="9.5" fill="#1f2328">GROUP BY l_orderkey</text>
 
-  <line x1="150" y1="72" x2="180" y2="72" stroke="#656d76" stroke-width="1.5" marker-end="url(#arrow2)"/>
-  <line x1="310" y1="72" x2="340" y2="72" stroke="#656d76" stroke-width="1.5" marker-end="url(#arrow2)"/>
-  <line x1="470" y1="72" x2="500" y2="72" stroke="#656d76" stroke-width="1.5" marker-end="url(#arrow2)"/>
+  <line x1="465" y1="105" x2="495" y2="105" stroke="#656d76" stroke-width="1.5" marker-end="url(#arrow2)"/>
 
-  <!-- NOT EXISTS variant -->
-  <rect x="20" y="125" width="580" height="55" rx="6" fill="#f6f8fa" stroke="#d0d7de"/>
-  <text x="30" y="148" font-size="10" font-weight="600" fill="#656d76">NOT EXISTS variant:</text>
-  <text x="30" y="166" font-size="10" fill="#1f2328">T_NOT &rarr; T_EXISTS becomes T_NOT &rarr; I_IN_SUBQUERY. Filter: rows NOT matching any inner value pass.</text>
+  <rect x="500" y="72" width="80" height="32" rx="4" fill="#ddf4ff" stroke="#54aeff"/>
+  <text x="540" y="93" text-anchor="middle" font-size="10" font-weight="600" fill="#0969da">{3, 5}</text>
+
+  <line x1="585" y1="88" x2="600" y2="88" stroke="#656d76" stroke-width="1.5" marker-end="url(#arrow2)"/>
+
+  <rect x="605" y="65" width="80" height="80" rx="6" fill="#dafbe1" stroke="#1a7f37"/>
+  <text x="615" y="84" font-size="9.5" font-weight="600" fill="#1a7f37">Outer filter:</text>
+  <text x="615" y="102" font-size="9.5" fill="#1f2328">o_id IN</text>
+  <text x="615" y="116" font-size="9.5" fill="#1f2328">(3, 5)</text>
+  <text x="615" y="136" font-size="8.5" fill="#1a7f37">&#x2713; orders 3, 5</text>
+
+  <!-- Separator -->
+  <line x1="20" y1="165" x2="680" y2="165" stroke="#d0d7de" stroke-width="1" stroke-dasharray="4,3"/>
+
+  <!-- NOT EXISTS row -->
+  <text x="20" y="190" font-size="11" font-weight="700" fill="#cf222e">NOT EXISTS</text>
+
+  <rect x="20" y="200" width="200" height="80" rx="6" fill="#fff8c5" stroke="#bf8700"/>
+  <text x="30" y="219" font-size="9.5" font-weight="600" fill="#bf8700">Original inner WHERE:</text>
+  <text x="30" y="235" font-size="9.5" fill="#1f2328">l_orderkey = o_id</text>
+  <text x="30" y="249" font-size="9.5" fill="#1f2328">AND l_quantity &gt; 20</text>
+  <text x="30" y="267" font-size="8.5" fill="#656d76">(identical to EXISTS)</text>
+
+  <line x1="225" y1="240" x2="255" y2="240" stroke="#656d76" stroke-width="1.5" marker-end="url(#arrow2)"/>
+
+  <rect x="260" y="200" width="200" height="80" rx="6" fill="#e8def8" stroke="#8250df"/>
+  <text x="270" y="219" font-size="9.5" font-weight="600" fill="#8250df">Same rewritten query:</text>
+  <text x="270" y="235" font-size="9.5" fill="#1f2328">SELECT MIN(l_orderkey)</text>
+  <text x="270" y="249" font-size="9.5" fill="#1f2328">FROM lineitem</text>
+  <text x="270" y="263" font-size="9.5" fill="#1f2328">WHERE l_quantity &gt; 20</text>
+  <text x="270" y="277" font-size="9.5" fill="#1f2328">GROUP BY l_orderkey</text>
+
+  <line x1="465" y1="240" x2="495" y2="240" stroke="#656d76" stroke-width="1.5" marker-end="url(#arrow2)"/>
+
+  <rect x="500" y="207" width="80" height="32" rx="4" fill="#ddf4ff" stroke="#54aeff"/>
+  <text x="540" y="228" text-anchor="middle" font-size="10" font-weight="600" fill="#0969da">{3, 5}</text>
+
+  <line x1="585" y1="223" x2="600" y2="223" stroke="#656d76" stroke-width="1.5" marker-end="url(#arrow2)"/>
+
+  <rect x="605" y="200" width="80" height="80" rx="6" fill="#ffebe9" stroke="#cf222e"/>
+  <text x="615" y="219" font-size="9.5" font-weight="600" fill="#cf222e">Outer filter:</text>
+  <text x="615" y="237" font-size="9.5" fill="#1f2328">o_id NOT IN</text>
+  <text x="615" y="251" font-size="9.5" fill="#1f2328">(3, 5)</text>
+  <text x="615" y="271" font-size="8.5" fill="#cf222e">&#x2713; orders 1, 2, 4</text>
+
+  <!-- Summary -->
+  <rect x="20" y="300" width="660" height="28" rx="4" fill="#f6f8fa" stroke="#d0d7de"/>
+  <text x="350" y="319" text-anchor="middle" font-size="10" fill="#656d76">The inner query is identical for both &mdash; only the outer filter polarity differs (IN vs NOT IN).</text>
 </svg>
 </div>
 
