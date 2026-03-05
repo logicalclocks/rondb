@@ -15129,7 +15129,7 @@ void Dblqh::handleOuterJoinAggKeyNotFound(Signal *signal,
       getJoinAggState(regTcPtr->m_join_agg_state_key);
   ndbrequire(state != nullptr);
 
-  AggInterpreter *interp;
+  JoinAggInterpreter *interp;
   if (state->m_strategy == JoinAggregationState::MUTEX_FREE) {
     Uint32 thr_idx = instance() - 1;
     ndbrequire(thr_idx < state->m_num_threads);
@@ -18341,7 +18341,7 @@ void Dblqh::execJOIN_AGG_NULL_ROW_REQ(Signal *signal) {
 
   /* Select interpreter based on strategy.
    * Use instance 1 (thread 0) since this signal is routed to instance 1. */
-  AggInterpreter *interp;
+  JoinAggInterpreter *interp;
   if (state->m_strategy == JoinAggregationState::MUTEX_FREE) {
     Uint32 thr_idx = instance() - 1;
     ndbrequire(thr_idx < state->m_num_threads);

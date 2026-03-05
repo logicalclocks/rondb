@@ -1965,8 +1965,7 @@ Int32 JoinAggInterpreter::processNullExtendedRow(
   m_linked_attr_len = linked_attr_len;
   m_null_local_columns = true;
 
-  bool dummy = false;
-  Int32 ret = ProcessRec(nullptr, nullptr, &dummy);
+  Int32 ret = ProcessRec(nullptr, nullptr);
 
   m_null_local_columns = false;
   m_linked_attr_data = nullptr;
