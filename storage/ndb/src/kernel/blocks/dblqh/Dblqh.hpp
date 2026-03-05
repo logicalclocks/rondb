@@ -698,6 +698,7 @@ class Dblqh : public SimulatedBlock {
       m_join_agg_evict_rows(0),
       m_rows_examined(0),
       m_outer_join_agg_scan(0),
+      m_inline_match_scan(0),
       m_ttl_purge_window_size(0)
     {
     }
@@ -846,6 +847,7 @@ class Dblqh : public SimulatedBlock {
     Uint32 m_join_agg_evict_rows;   // Evicted group rows sent to API during this scan batch
     Uint32 m_rows_examined;          // Total rows examined in this scan batch
     Uint8 m_outer_join_agg_scan;     // Set from OuterJoinAggFlag in SCAN_FRAGREQ
+    Uint8 m_inline_match_scan;       // Set from InlineMatchFlag in SCAN_FRAGREQ
     // TTL
     Uint8 m_ttl_ignore;         // ignore set by API
     Uint8 m_ttl_ignore_for_ral; // ignore set by Read after lock

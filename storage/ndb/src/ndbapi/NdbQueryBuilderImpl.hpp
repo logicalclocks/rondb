@@ -553,6 +553,9 @@ class NdbQueryOperationDefImpl {
   /** True if this operation is the aggregate leaf of a join aggregation query.*/
   bool m_isAggregateLeaf;
 
+  /** True if inline match tracking should be used for outer join agg leaf. */
+  bool m_useInlineMatch;
+
   /** True if the enclosing query has aggregation (set before serialization).*/
   bool m_queryHasAggregation;
 

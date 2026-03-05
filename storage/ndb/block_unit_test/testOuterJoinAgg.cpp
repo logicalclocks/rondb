@@ -857,7 +857,8 @@ static std::vector<Uint32>
 buildOuterJoinQueryTree_ScanScan(const TableMeta &parent,
                                   const IndexMeta &childIndex,
                                   Uint32 childIndexVersion,
-                                  Uint32 receiverId)
+                                  Uint32 receiverId,
+                                  bool inlineMatch = false)
 {
   std::vector<Uint32> ai;
 
@@ -889,6 +890,9 @@ buildOuterJoinQueryTree_ScanScan(const TableMeta &parent,
   /* NO NI_INNER_JOIN — outer join */
   Uint32 n1_bits = DABits::NI_HAS_PARENT | DABits::NI_KEY_LINKED |
                    DABits::NI_AGGREGATE | DABits::NI_AGGREGATE_LEAF;
+  if (inlineMatch) {
+    n1_bits |= DABits::NI_AGG_INLINE_MATCH;
+  }
   ai.push_back(n1_bits);
   ai.push_back(childIndex.indexId);
   ai.push_back(childIndexVersion);
@@ -1714,6 +1718,192 @@ testScanScanSumCase(Ndb *ndb, SignalSender &ss, Uint32 nodeId, MYSQL *conn)
 }
 
 /* ------------------------------------------------------------------ */
+/* Test 7: Scan-scan partial match — inline match (TRANSID_AI)         */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Same data and expected results as Test 5, but uses the inline match
+ * code path (NI_AGG_INLINE_MATCH). DBLQH sends per-row TRANSID_AI
+ * match notifications instead of the bitmask exchange protocol.
+ */
+static int
+testScanScanPartialMatch_InlineMatch(Ndb *ndb, SignalSender &ss,
+                                      Uint32 nodeId, MYSQL *conn)
+{
+  printf("Test 7: Scan-scan partial match INLINE MATCH COUNT/SUM ... ");
+  fflush(stdout);
+
+  ss.unlock();
+  TableMeta parentMeta, childMeta;
+  IndexMeta indexMeta;
+  int rc = createScanScanTables(conn, ndb, parentMeta, childMeta, indexMeta);
+  if (rc == 0) {
+    rc = sqlExec(conn,
+      "INSERT INTO parent_oj_ss VALUES "
+      "(1,1,1),(2,2,1),(3,3,1),(4,4,1),(5,5,1),"
+      "(6,6,1),(7,7,1),(8,8,1),(9,9,1),(10,10,1)");
+  }
+  if (rc == 0) {
+    rc = sqlExec(conn,
+      "INSERT INTO child_oj_ss VALUES "
+      "(1,1,10),(2,2,20),(3,3,30),(4,4,40),(5,5,50)");
+  }
+  ss.lock();
+  if (rc != 0) { printf("FAIL (setup)\n"); return -1; }
+
+  Uint32 apiConnectPtr = 0, tcRef = 0;
+  if (seizeTcConnect(ss, nodeId, apiConnectPtr, tcRef) != 0) {
+    ss.unlock(); dropScanScanTables(conn); ss.lock();
+    printf("FAIL (TC seize)\n");
+    return -1;
+  }
+
+  Uint32 receiverId = 42;
+  std::vector<Uint32> queryTree =
+    buildOuterJoinQueryTree_ScanScan(parentMeta, indexMeta,
+                                      indexMeta.indexVersion, receiverId,
+                                      true /* inlineMatch */);
+  std::vector<Uint32> aggProgram =
+    buildAggProgram_CountSum(childMeta.attrIdCol3);
+
+  rc = sendScanTabReq(ss, nodeId, apiConnectPtr, tcRef,
+                      parentMeta, queryTree, aggProgram, receiverId);
+  if (rc != 0) {
+    releaseTcConnect(ss, nodeId, apiConnectPtr, tcRef);
+    ss.unlock(); dropScanScanTables(conn); ss.lock();
+    printf("FAIL (send)\n");
+    return -1;
+  }
+
+  std::vector<AggResult> results;
+  rc = collectResults(ss, results, apiConnectPtr, tcRef, nodeId);
+  releaseTcConnect(ss, nodeId, apiConnectPtr, tcRef);
+
+  if (rc != 0) {
+    ss.unlock(); dropScanScanTables(conn); ss.lock();
+    printf("FAIL (collect)\n");
+    return -1;
+  }
+
+  Uint64 totalCount = 0;
+  Int64 totalSum = 0;
+  for (const auto &r : results) {
+    for (const auto &g : r.groups) {
+      totalCount += extractCountBigint(g.second, 0);
+      totalSum += extractSumBigint(g.second, 1);
+    }
+  }
+
+  V("  Result: COUNT=%llu, SUM=%lld\n",
+    (unsigned long long)totalCount, (long long)totalSum);
+
+  if (totalCount != 10 || totalSum != 150) {
+    printf("FAIL (expected COUNT=10 SUM=150, got COUNT=%llu SUM=%lld)\n",
+           (unsigned long long)totalCount, (long long)totalSum);
+    ss.unlock(); dropScanScanTables(conn); ss.lock();
+    return -1;
+  }
+
+  ss.unlock(); dropScanScanTables(conn); ss.lock();
+
+  printf("PASS\n");
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Test 8: Scan-scan SUM(CASE ...) — inline match (TRANSID_AI)         */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Same data and expected results as Test 6, but uses the inline match
+ * code path (NI_AGG_INLINE_MATCH).
+ */
+static int
+testScanScanSumCase_InlineMatch(Ndb *ndb, SignalSender &ss,
+                                 Uint32 nodeId, MYSQL *conn)
+{
+  printf("Test 8: Scan-scan SUM(CASE ...) INLINE MATCH ... ");
+  fflush(stdout);
+
+  ss.unlock();
+  TableMeta parentMeta, childMeta;
+  IndexMeta indexMeta;
+  int rc = createScanScanTables(conn, ndb, parentMeta, childMeta, indexMeta);
+  if (rc == 0) {
+    rc = sqlExec(conn,
+      "INSERT INTO parent_oj_ss VALUES "
+      "(1,1,1),(2,2,1),(3,3,1),(4,4,1),(5,5,1),"
+      "(6,6,1),(7,7,1),(8,8,1),(9,9,1),(10,10,1)");
+  }
+  if (rc == 0) {
+    rc = sqlExec(conn,
+      "INSERT INTO child_oj_ss VALUES "
+      "(1,1,10),(2,2,20),(3,3,30),(4,4,40),(5,5,50)");
+  }
+  ss.lock();
+  if (rc != 0) { printf("FAIL (setup)\n"); return -1; }
+
+  Uint32 apiConnectPtr = 0, tcRef = 0;
+  if (seizeTcConnect(ss, nodeId, apiConnectPtr, tcRef) != 0) {
+    ss.unlock(); dropScanScanTables(conn); ss.lock();
+    printf("FAIL (TC seize)\n");
+    return -1;
+  }
+
+  Uint32 receiverId = 42;
+  std::vector<Uint32> queryTree =
+    buildOuterJoinQueryTree_ScanScan(parentMeta, indexMeta,
+                                      indexMeta.indexVersion, receiverId,
+                                      true /* inlineMatch */);
+  std::vector<Uint32> aggProgram =
+    buildAggProgram_SumCase(childMeta.attrIdCol3);
+
+  rc = sendScanTabReq(ss, nodeId, apiConnectPtr, tcRef,
+                      parentMeta, queryTree, aggProgram, receiverId);
+  if (rc != 0) {
+    releaseTcConnect(ss, nodeId, apiConnectPtr, tcRef);
+    ss.unlock(); dropScanScanTables(conn); ss.lock();
+    printf("FAIL (send)\n");
+    return -1;
+  }
+
+  std::vector<AggResult> results;
+  rc = collectResults(ss, results, apiConnectPtr, tcRef, nodeId);
+  releaseTcConnect(ss, nodeId, apiConnectPtr, tcRef);
+
+  if (rc != 0) {
+    ss.unlock(); dropScanScanTables(conn); ss.lock();
+    printf("FAIL (collect)\n");
+    return -1;
+  }
+
+  Int64 totalSumCase = 0;
+  Uint64 totalCount = 0;
+  for (const auto &r : results) {
+    for (const auto &g : r.groups) {
+      totalSumCase += extractSumBigint(g.second, 0);
+      totalCount += extractCountBigint(g.second, 1);
+    }
+  }
+
+  V("  Result: SUM_CASE=%lld, COUNT=%llu\n",
+    (long long)totalSumCase, (unsigned long long)totalCount);
+
+  if (totalSumCase != 150 || totalCount != 10) {
+    printf("FAIL (expected SUM_CASE=150 COUNT=10, "
+           "got SUM_CASE=%lld COUNT=%llu)\n",
+           (long long)totalSumCase, (unsigned long long)totalCount);
+    ss.unlock(); dropScanScanTables(conn); ss.lock();
+    return -1;
+  }
+
+  ss.unlock(); dropScanScanTables(conn); ss.lock();
+
+  printf("PASS\n");
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* Main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -1808,6 +1998,8 @@ int main(int argc, char *argv[])
       if (testNoMatch(&ndb, ss, (Uint32)nodeId, conn) != 0) result = 1;
       if (testScanScanPartialMatch(&ndb, ss, (Uint32)nodeId, conn) != 0) result = 1;
       if (testScanScanSumCase(&ndb, ss, (Uint32)nodeId, conn) != 0) result = 1;
+      if (testScanScanPartialMatch_InlineMatch(&ndb, ss, (Uint32)nodeId, conn) != 0) result = 1;
+      if (testScanScanSumCase_InlineMatch(&ndb, ss, (Uint32)nodeId, conn) != 0) result = 1;
 
       ss.unlock();
     }

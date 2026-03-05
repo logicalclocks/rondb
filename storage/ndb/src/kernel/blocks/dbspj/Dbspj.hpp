@@ -1075,6 +1075,13 @@ class Dbspj : public SimulatedBlock {
        */
       T_AGGREGATE_LEAF = 0x1000000,
 
+      /**
+       * When set on a T_AGGREGATE_LEAF outer join node, DBLQH sends
+       * inline TRANSID_AI match notifications instead of using the
+       * bitmask exchange protocol (JOIN_AGG_MATCH_REQ/CONF).
+       */
+      T_AGG_INLINE_MATCH = 0x2000000,
+
       // End marker...
       T_END = 0
     };

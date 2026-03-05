@@ -2351,13 +2351,19 @@ Uint32 Dbspj::appendTreeNode(Ptr<Request> requestPtr, Ptr<TreeNode> treeNodePtr,
     /**
      * Outer join aggregation leaf: buffer parent rows so we can iterate
      * them during null row injection for unmatched parents.
-     * Match tracking is done via DBLQH matched_ranges bitmask, not
-     * per-row T_BUFFER_MATCH.
      */
     if ((treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) &&
         !(treeNodePtr.p->m_bits & TreeNode::T_INNER_JOIN)) {
       jam();
-      scanAncestorPtr.p->m_bits |= TreeNode::T_BUFFER_ROW;
+      if (treeNodePtr.p->m_bits & TreeNode::T_AGG_INLINE_MATCH) {
+        // Inline match: use existing m_matched tracking via TRANSID_AI
+        scanAncestorPtr.p->m_bits |=
+            TreeNode::T_BUFFER_ROW | TreeNode::T_BUFFER_MAP |
+            TreeNode::T_BUFFER_MATCH;
+      } else {
+        // Bitmask exchange: just buffer parent rows for null row iteration
+        scanAncestorPtr.p->m_bits |= TreeNode::T_BUFFER_ROW;
+      }
     }
   }
 
@@ -3867,6 +3873,56 @@ void Dbspj::execTRANSID_AI(Signal *signal) {
   for (Uint32 i = 0; i < linearPtr.sz; i++) printf("0x%.8x ", linearPtr.p[i]);
   printf("\n");
 #endif
+
+  /**
+   * Inline match notification from DBLQH for outer join aggregate leaf.
+   * Payload is a single word: the correlation value (m_corrFactorLo).
+   * We skip row counting (don't call countSignal) so that m_rows_received
+   * stays 0, matching m_rows_expecting which is also not incremented.
+   * Just set the m_matched bit on the scan ancestor and return.
+   */
+  if (treeNodePtr.p->m_bits & TreeNode::T_AGG_INLINE_MATCH) {
+    jam();
+    ndbrequire(linearPtr.sz == 1);
+    Uint32 correlation = linearPtr.p[0];
+
+    if (unlikely(requestPtr.p->m_state & Request::RS_ABORTING)) {
+      jam();
+    } else if ((requestPtr.p->m_bits & Request::RT_MULTI_SCAN) != 0) {
+      jam();
+      Uint32 scanAncestorPtrI = treeNodePtr.p->m_scanAncestorPtrI;
+      while (scanAncestorPtrI != RNIL) {
+        jam();
+        Ptr<TreeNode> scanAncestorPtr;
+        ndbrequire(m_treenode_pool.getPtr(scanAncestorPtr, scanAncestorPtrI));
+        if ((scanAncestorPtr.p->m_bits & TreeNode::T_BUFFER_MATCH) == 0) {
+          jam();
+          break;
+        }
+
+        RowPtr scanAncestorRow;
+        scanAncestorRow.m_src_node_ptrI = scanAncestorPtr.i;
+        getBufferedRow(scanAncestorPtr, (correlation >> 16),
+                       &scanAncestorRow);
+
+        if (scanAncestorRow.m_matched->get(treeNodePtr.p->m_node_no)) {
+          jam();
+          break;
+        }
+        scanAncestorRow.m_matched->set(treeNodePtr.p->m_node_no);
+        correlation = scanAncestorRow.m_src_correlation;
+        scanAncestorPtrI = scanAncestorPtr.p->m_scanAncestorPtrI;
+      }
+    }
+
+    if (requestPtr.p->m_completed_tree_nodes.get(treeNodePtr.p->m_node_no)) {
+      jam();
+      handleTreeNodeComplete(signal, requestPtr, treeNodePtr);
+    }
+    jam();
+    checkBatchComplete(signal, requestPtr);
+    return;
+  }
 
   /**
    * Register signal as arrived.
@@ -7801,6 +7857,7 @@ Uint32 Dbspj::scanFrag_send(Signal *signal, Ptr<Request> requestPtr,
    */
   ScanFragReq::setJoinAggFlag(req->requestInfo, 0);
   ScanFragReq::setOuterJoinAggFlag(req->requestInfo, 0);
+  ScanFragReq::setInlineMatchFlag(req->requestInfo, 0);
   Uint32 agg_extra = 0;
   if (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) {
     jam();
@@ -7808,10 +7865,15 @@ Uint32 Dbspj::scanFrag_send(Signal *signal, Ptr<Request> requestPtr,
     agg_extra = 1;
     if (!(treeNodePtr.p->m_bits & TreeNode::T_INNER_JOIN)) {
       jam();
-      ScanFragReq::setOuterJoinAggFlag(req->requestInfo, 1);
-      DEB_MATCH(("DBSPJ scanFrag_send: OuterJoinAggFlag=1 "
-                 "treeNode=%u bits=0x%x",
-                 treeNodePtr.i, treeNodePtr.p->m_bits));
+      if (treeNodePtr.p->m_bits & TreeNode::T_AGG_INLINE_MATCH) {
+        jam();
+        ScanFragReq::setInlineMatchFlag(req->requestInfo, 1);
+      } else {
+        ScanFragReq::setOuterJoinAggFlag(req->requestInfo, 1);
+        DEB_MATCH(("DBSPJ scanFrag_send: OuterJoinAggFlag=1 "
+                   "treeNode=%u bits=0x%x",
+                   treeNodePtr.i, treeNodePtr.p->m_bits));
+      }
     }
   }
   // req->variableData[0] // set below
@@ -8543,7 +8605,14 @@ void Dbspj::scanFrag_execSCAN_FRAGCONF(Signal *signal, Ptr<Request> requestPtr,
 
   if (treeNodePtr.p->m_bits & TreeNode::T_EXPECT_TRANSID_AI) {
     jam();
-    data.m_rows_expecting += rows;
+    /**
+     * For inline match, we skip countSignal in execTRANSID_AI so
+     * m_rows_received stays 0. Don't increment m_rows_expecting either,
+     * so the completion check (m_rows_received == m_rows_expecting) passes.
+     */
+    if (!(treeNodePtr.p->m_bits & TreeNode::T_AGG_INLINE_MATCH)) {
+      data.m_rows_expecting += rows;
+    }
   }
 
   ndbrequire(data.m_frags_outstanding);
@@ -8701,72 +8770,109 @@ void Dbspj::scanFrag_execSCAN_FRAGCONF(Signal *signal, Ptr<Request> requestPtr,
 
     /**
      * Outer join aggregation: when child scan is fully complete,
-     * request match bitmasks from all data nodes to determine which
-     * parent rows had no child match (need null row injection).
+     * determine which parent rows had no child match and inject null rows.
+     * Two modes:
+     * - Bitmask exchange (default): request bitmasks from data nodes
+     * - Inline match: check m_matched bits set by TRANSID_AI notifications
      */
     if ((treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) &&
         !(treeNodePtr.p->m_bits & TreeNode::T_INNER_JOIN) &&
         treeNodePtr.p->m_scanAncestorPtrI != RNIL &&
         data.m_frags_complete == data.m_fragCount) {
       jam();
-      Ptr<TreeNode> scanAncestorPtr;
-      ndbrequire(m_treenode_pool.getPtr(scanAncestorPtr,
-                                        treeNodePtr.p->m_scanAncestorPtrI));
-      Uint32 numRanges = 0;
-      RowIterator countIter;
-      for (first(scanAncestorPtr.p->m_rows, countIter);
-           !countIter.isNull(); next(countIter)) {
-        numRanges++;
-      }
 
-      Uint32 bitmask_words = (numRanges + 31) / 32;
-      if (bitmask_words > 0) {
-        treeNodePtr.p->m_agg_match_bitmask =
-          (Uint32 *)ndbd_malloc(bitmask_words * sizeof(Uint32));
-        ndbrequire(treeNodePtr.p->m_agg_match_bitmask != nullptr);
-        memset(treeNodePtr.p->m_agg_match_bitmask, 0,
-               bitmask_words * sizeof(Uint32));
-      }
-      treeNodePtr.p->m_agg_num_ranges = numRanges;
-      DEB_MATCH(("DBSPJ: match exchange start: numRanges=%u "
-                 "bitmask_words=%u treeNode=%u scanAncestor=%u",
-                 numRanges, bitmask_words,
-                 treeNodePtr.i, treeNodePtr.p->m_scanAncestorPtrI));
-
-      Uint32 match_cnt = 0;
-      for (Uint32 nodeId = 1; nodeId < MAX_NDB_NODES; nodeId++) {
-        if (requestPtr.p->m_aggNodes.get(nodeId)) {
-          JoinAggMatchReq *mreq =
-            (JoinAggMatchReq *)signal->getDataPtrSend();
-          mreq->senderRef = reference();
-          mreq->aggStateKey = requestPtr.p->m_aggStateKeys[nodeId];
-          mreq->transId[0] = requestPtr.p->m_transId[0];
-          mreq->transId[1] = requestPtr.p->m_transId[1];
-          mreq->requestPtrI = requestPtr.i;
-          mreq->treeNodePtrI = treeNodePtr.i;
-
-          Uint32 ref = numberToRef(DBLQH, 1, nodeId);
-          DEB_MATCH(("DBSPJ: sending MATCH_REQ to node=%u "
-                     "aggStateKey=%u ref=0x%x",
-                     nodeId, requestPtr.p->m_aggStateKeys[nodeId], ref));
-          sendSignal(ref, GSN_JOIN_AGG_MATCH_REQ, signal,
-                     JoinAggMatchReq::SignalLength, JBB);
-
-          requestPtr.p->m_outstanding++;
-          requestPtr.p->m_lookup_node_data[nodeId]++;
-          match_cnt++;
-        }
-      }
-      treeNodePtr.p->m_agg_match_outstanding = match_cnt;
-      DEB_MATCH(("DBSPJ: match_cnt=%u outstanding=%u",
-                 match_cnt, requestPtr.p->m_outstanding));
-
-      if (match_cnt > 0) {
+      if (treeNodePtr.p->m_bits & TreeNode::T_AGG_INLINE_MATCH) {
+        /**
+         * Inline match: m_matched bits were set by TRANSID_AI notifications.
+         * Iterate parent rows and inject null rows for unmatched.
+         */
         jam();
-        // Decrement scan's outstanding (normally done at completion below)
-        ndbassert(requestPtr.p->m_outstanding > 0);
-        requestPtr.p->m_outstanding--;
-        return;  // Defer completion to execJOIN_AGG_MATCH_CONF
+        Ptr<TreeNode> scanAncestorPtr;
+        ndbrequire(m_treenode_pool.getPtr(scanAncestorPtr,
+                                          treeNodePtr.p->m_scanAncestorPtrI));
+        RowIterator iter;
+        for (first(scanAncestorPtr.p->m_rows, iter);
+             !iter.isNull(); next(iter)) {
+          jam();
+          RowPtr parentRow;
+          parentRow.m_src_node_ptrI = scanAncestorPtr.i;
+          setupRowPtr(scanAncestorPtr, parentRow, iter.m_base.m_row_ptr);
+          if (parentRow.m_matched == nullptr ||
+              !parentRow.m_matched->get(treeNodePtr.p->m_node_no)) {
+            jam();
+            Uint32 err = sendJoinAggNullRow(signal, requestPtr,
+                                            treeNodePtr, parentRow);
+            if (unlikely(err != 0)) {
+              abort(signal, requestPtr, err);
+              return;
+            }
+          }
+        }
+        // Fall through to completion check below
+      } else {
+        /**
+         * Bitmask exchange: request match bitmasks from all data nodes.
+         */
+        jam();
+        Ptr<TreeNode> scanAncestorPtr;
+        ndbrequire(m_treenode_pool.getPtr(scanAncestorPtr,
+                                          treeNodePtr.p->m_scanAncestorPtrI));
+        Uint32 numRanges = 0;
+        RowIterator countIter;
+        for (first(scanAncestorPtr.p->m_rows, countIter);
+             !countIter.isNull(); next(countIter)) {
+          numRanges++;
+        }
+
+        Uint32 bitmask_words = (numRanges + 31) / 32;
+        if (bitmask_words > 0) {
+          treeNodePtr.p->m_agg_match_bitmask =
+            (Uint32 *)ndbd_malloc(bitmask_words * sizeof(Uint32));
+          ndbrequire(treeNodePtr.p->m_agg_match_bitmask != nullptr);
+          memset(treeNodePtr.p->m_agg_match_bitmask, 0,
+                 bitmask_words * sizeof(Uint32));
+        }
+        treeNodePtr.p->m_agg_num_ranges = numRanges;
+        DEB_MATCH(("DBSPJ: match exchange start: numRanges=%u "
+                   "bitmask_words=%u treeNode=%u scanAncestor=%u",
+                   numRanges, bitmask_words,
+                   treeNodePtr.i, treeNodePtr.p->m_scanAncestorPtrI));
+
+        Uint32 match_cnt = 0;
+        for (Uint32 nodeId = 1; nodeId < MAX_NDB_NODES; nodeId++) {
+          if (requestPtr.p->m_aggNodes.get(nodeId)) {
+            JoinAggMatchReq *mreq =
+              (JoinAggMatchReq *)signal->getDataPtrSend();
+            mreq->senderRef = reference();
+            mreq->aggStateKey = requestPtr.p->m_aggStateKeys[nodeId];
+            mreq->transId[0] = requestPtr.p->m_transId[0];
+            mreq->transId[1] = requestPtr.p->m_transId[1];
+            mreq->requestPtrI = requestPtr.i;
+            mreq->treeNodePtrI = treeNodePtr.i;
+
+            Uint32 ref = numberToRef(DBLQH, 1, nodeId);
+            DEB_MATCH(("DBSPJ: sending MATCH_REQ to node=%u "
+                       "aggStateKey=%u ref=0x%x",
+                       nodeId, requestPtr.p->m_aggStateKeys[nodeId], ref));
+            sendSignal(ref, GSN_JOIN_AGG_MATCH_REQ, signal,
+                       JoinAggMatchReq::SignalLength, JBB);
+
+            requestPtr.p->m_outstanding++;
+            requestPtr.p->m_lookup_node_data[nodeId]++;
+            match_cnt++;
+          }
+        }
+        treeNodePtr.p->m_agg_match_outstanding = match_cnt;
+        DEB_MATCH(("DBSPJ: match_cnt=%u outstanding=%u",
+                   match_cnt, requestPtr.p->m_outstanding));
+
+        if (match_cnt > 0) {
+          jam();
+          // Decrement scan's outstanding (normally done at completion below)
+          ndbassert(requestPtr.p->m_outstanding > 0);
+          requestPtr.p->m_outstanding--;
+          return;  // Defer completion to execJOIN_AGG_MATCH_CONF
+        }
       }
     }
 
@@ -10129,6 +10235,10 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
                          "results to API",
                          instance()));
         treeNodePtr.p->m_bits |= TreeNode::T_AGGREGATE_LEAF;
+        if (treeBits & DABits::NI_AGG_INLINE_MATCH) {
+          jam();
+          treeNodePtr.p->m_bits |= TreeNode::T_AGG_INLINE_MATCH;
+        }
       }
     }  // DABits::NI_AGGREGATE
 
@@ -10577,7 +10687,8 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
           break;
         }
         sum_read += cnt;
-        if (!(treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF)) {
+        if (!(treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) ||
+            (treeNodePtr.p->m_bits & TreeNode::T_AGG_INLINE_MATCH)) {
           treeNodePtr.p->m_bits |= TreeNode::T_EXPECT_TRANSID_AI;
         }
 
@@ -10606,11 +10717,11 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
           break;
         }
         sum_read += cnt;
-        if (!(treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF)) {
+        if (!(treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) ||
+            (treeNodePtr.p->m_bits & TreeNode::T_AGG_INLINE_MATCH)) {
           treeNodePtr.p->m_bits |= TreeNode::T_EXPECT_TRANSID_AI;
         }
       }
-
       if (interpreted) {
         jam();
         /**
@@ -10664,6 +10775,18 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
         jam();
         break;
       }
+    }
+
+    /**
+     * Inline match aggregate leaf: DBLQH sends TRANSID_AI with raw
+     * correlation (no CORR_FACTOR32 projection needed — corrFactorLo
+     * comes from scan range key setup). Set the flag unconditionally
+     * here since Optional Part 3 may have been skipped entirely.
+     */
+    if ((treeNodePtr.p->m_bits & TreeNode::T_AGG_INLINE_MATCH) &&
+        !(treeNodePtr.p->m_bits & TreeNode::T_EXPECT_TRANSID_AI)) {
+      jam();
+      treeNodePtr.p->m_bits |= TreeNode::T_EXPECT_TRANSID_AI;
     }
 
     return 0;

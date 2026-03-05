@@ -1808,6 +1808,7 @@ NdbQueryOperationDefImpl::NdbQueryOperationDefImpl(
     : m_isPrepared(false),
       m_diskInChildProjection(false),
       m_isAggregateLeaf(options.hasAggregation()),
+      m_useInlineMatch(false),
       m_queryHasAggregation(false),
       m_table(table),
       m_ident(ident),
@@ -2487,6 +2488,9 @@ int NdbQueryPKLookupOperationDefImpl ::serializeOperation(
     requestInfo |= DABits::NI_AGGREGATE;
     if (m_isAggregateLeaf) {
       requestInfo |= DABits::NI_AGGREGATE_LEAF;
+      if (m_useInlineMatch) {
+        requestInfo |= DABits::NI_AGG_INLINE_MATCH;
+      }
     }
   }
 
@@ -2630,6 +2634,9 @@ int NdbQueryIndexOperationDefImpl ::serializeOperation(
     requestInfo |= DABits::NI_AGGREGATE;
     if (m_isAggregateLeaf) {
       requestInfo |= DABits::NI_AGGREGATE_LEAF;
+      if (m_useInlineMatch) {
+        requestInfo |= DABits::NI_AGG_INLINE_MATCH;
+      }
     }
   }
 
@@ -2733,6 +2740,9 @@ int NdbQueryScanOperationDefImpl::serialize(const Ndb *ndb,
     requestInfo |= DABits::NI_AGGREGATE;
     if (m_isAggregateLeaf) {
       requestInfo |= DABits::NI_AGGREGATE_LEAF;
+      if (m_useInlineMatch) {
+        requestInfo |= DABits::NI_AGG_INLINE_MATCH;
+      }
     }
   }
 

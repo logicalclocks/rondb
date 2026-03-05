@@ -20274,7 +20274,25 @@ void Dblqh::scanTupkeyConfLab(Signal* signal,
     if (read_len > 0) {
       scanPtr->m_join_agg_evict_rows++;
     }
-    if (scanPtr->m_outer_join_agg_scan) {
+    if (scanPtr->m_inline_match_scan) {
+      /**
+       * Inline match: send lightweight TRANSID_AI to DBSPJ with the
+       * correlation value (m_corrFactorLo). DBSPJ uses this to set
+       * m_matched on the scan ancestor row. Payload is a single word.
+       */
+      jam();
+      Uint32 corrValue = regTcPtr->m_corrFactorLo;
+      TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
+      transIdAI->connectPtr =
+          scanPtr->scanApiOpPtr[scanPtr->scanApiOpPtr_index];
+      transIdAI->transId[0] = regTcPtr->transid[0];
+      transIdAI->transId[1] = regTcPtr->transid[1];
+      LinearSectionPtr ptr[1];
+      ptr[0].p = &corrValue;
+      ptr[0].sz = 1;
+      sendSignal(scanPtr->scanApiBlockref, GSN_TRANSID_AI, signal,
+                 TransIdAI::HeaderLength, JBB, ptr, 1);
+    } else if (scanPtr->m_outer_join_agg_scan) {
       JoinAggregationState *state =
         getJoinAggState(scanPtr->m_join_agg_state_key);
       Uint32 range_no = regTcPtr->m_scan_curr_range_no;
@@ -20955,10 +20973,18 @@ Uint32 Dblqh::initScanrec(const ScanFragReq *scanFragReq,
   if (ScanFragReq::getOuterJoinAggFlag(reqinfo)) {
     jam();
     scanPtr->m_outer_join_agg_scan = 1;
+    scanPtr->m_inline_match_scan = 0;
     DEB_MATCH(("(%u) SCAN_FRAGREQ: OuterJoinAggFlag=1 aggKey=%u",
+               instance(), scanPtr->m_join_agg_state_key));
+  } else if (ScanFragReq::getInlineMatchFlag(reqinfo)) {
+    jam();
+    scanPtr->m_outer_join_agg_scan = 0;
+    scanPtr->m_inline_match_scan = 1;
+    DEB_MATCH(("(%u) SCAN_FRAGREQ: InlineMatchFlag=1 aggKey=%u",
                instance(), scanPtr->m_join_agg_state_key));
   } else {
     scanPtr->m_outer_join_agg_scan = 0;
+    scanPtr->m_inline_match_scan = 0;
   }
   ndbassert(sig_len == extra_len_index + ScanFragReq::SignalLength);
   (void)sig_len;
