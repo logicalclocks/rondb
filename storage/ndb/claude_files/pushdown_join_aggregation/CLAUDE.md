@@ -35,7 +35,7 @@ pushed down to data nodes so intermediate results don't round-trip to the API.
 
 ### Signal Flow
 ```
-DBSPJ → JOIN_AGG_SETUP_REQ → DblqhProxy → creates JoinAggregationState
+DBTC → JOIN_AGG_SETUP_REQ → DblqhProxy → creates JoinAggregationState
 DBSPJ → SCAN_FRAGREQ (with join agg flag) → LDM threads → handleJoinAggRow → AggInterpreter
 DBSPJ → JOIN_AGG_COMPLETE_REQ → DblqhProxy → merge + finalize → TRANSID_AI results
 DBSPJ → JOIN_AGG_RELEASE_REQ → DblqhProxy → cleanup

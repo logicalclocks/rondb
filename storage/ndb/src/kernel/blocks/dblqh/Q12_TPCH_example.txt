@@ -55,7 +55,7 @@ ORDERS:
 
 Phase 1: Setup
 --------------
-DBSPJ sends JOIN_AGG_SETUP_REQ to each data node with ORDERS fragments:
+DBTC sends JOIN_AGG_SETUP_REQ to each data node with ORDERS fragments:
 
 JOIN_AGG_SETUP_REQ:
   transid[2]          = <transaction ID>

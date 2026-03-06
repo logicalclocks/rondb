@@ -89,7 +89,7 @@ struct JoinAggregationState {
   Uint32 m_transid[2];           // Transaction ID
   Uint32 m_senderData;           // SPJ request identifier
   Uint32 m_requestId;            // Unique request ID for this aggregation
-  BlockReference m_senderRef;    // DBSPJ block reference
+  BlockReference m_senderRef;    // DBTC block reference
   BlockReference m_apiRef;       // API block reference for results
 
   //------------------------------------------------------------------

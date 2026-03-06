@@ -20,7 +20,7 @@ nodes.
 ### Prerequisites (All Complete)
 
 - DBLQH/DBTUP: AggInterpreter, JoinAggregationState, handleJoinAggRow (Phases 1-6)
-- DBTC/DBSPJ: JOIN_AGG_SETUP/COMPLETE/RELEASE, aggStateKeys (Phase 7)
+- DBTC: JOIN_AGG_SETUP/COMPLETE/RELEASE, aggStateKeys (Phase 7)
 - NDB API: NdbQueryOptions::setAggregation(), NdbQuery::getAggregator() (Phase 8)
 
 ---

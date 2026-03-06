@@ -284,11 +284,11 @@ can look up the shared state via `getJoinAggState(key)`.
 
 #### Phase 1: Setup (New Signal)
 
-DBSPJ sends `JOIN_AGG_SETUP_REQ` to each data node that has fragments of the leaf table:
+DBTC sends `JOIN_AGG_SETUP_REQ` to each data node that has fragments of the leaf table:
 
 ```cpp
 // Signal: JOIN_AGG_SETUP_REQ
-// Sent from: DBSPJ
+// Sent from: DBTC
 // Handled by: DblqhProxy (one per data node with leaf table fragments)
 // Purpose: Seize and initialize shared aggregation state before operations start
 
@@ -1149,9 +1149,9 @@ Send TRANSID_AI with aggregated results
 Send JOIN_AGG_COMPLETE_CONF
 ```
 
-### Strategy Selection by Dbspj
+### Strategy Selection by Dbtc
 
-Dbspj selects the concurrency strategy in JOIN_AGG_SETUP_REQ. Both
+Dbtc selects the concurrency strategy in JOIN_AGG_SETUP_REQ. Both
 strategies must produce identical results, making it possible to
 verify correctness by running the same query with each strategy and
 comparing output.
@@ -1168,7 +1168,7 @@ comparing output.
 #### Heuristic
 
 ```cpp
-// In Dbspj, when preparing JOIN_AGG_SETUP_REQ:
+// In Dbtc, when preparing JOIN_AGG_SETUP_REQ:
 Uint32 strategy;
 if (estimated_group_count <= num_query_threads * 2) {
     // Low cardinality: mutex contention likely on hot groups.
@@ -1420,7 +1420,7 @@ The memory limits are governed by the overall QUERY_MEMORY pool size, which is a
 ### Complete Signal Flow Diagram
 
 ```
-DBSPJ                              DblqhProxy / Dblqh                     DBTUP
+DBTC / DBSPJ                       DblqhProxy / Dblqh                     DBTUP
   |                                      |                                  |
   |====== Setup Phase (DblqhProxy, single-threaded) ====================  |
   |                                      |                                  |
@@ -1434,7 +1434,7 @@ DBSPJ                              DblqhProxy / Dblqh                     DBTUP
   | JOIN_AGG_SETUP_CONF(aggStateKey=key) |                                  |
   |<-------------------------------------|                                  |
   |                                      |                                  |
-  | Dbspj stores aggStateKey for use     |                                  |
+  | Dbtc stores aggStateKey for use      |                                  |
   | in all subsequent operations         |                                  |
   |                                      |                                  |
   |====== Operations Phase (Dblqh workers, parallel, any thread) ========  |
