@@ -266,11 +266,6 @@ FSMetadataCache::get_fs_metadata(const std::string &fs_key,
 #endif
   *entry = cacheEntry;
   metadata::FeatureViewMetadata *data = cacheEntry->m_data;
-  NdbMutex_Lock(m_queueLock[key_cache_id]);
-  cacheEntry->m_lastUsed = NdbTick_getCurrentTicks();
-  remove_entry(cacheEntry, key_cache_id);
-  insert_last(cacheEntry, key_cache_id);
-  NdbMutex_Unlock(m_queueLock[key_cache_id]);
   NdbMutex_Unlock(cacheEntry->m_waitLock);
   return data;
 }
@@ -286,17 +281,15 @@ FSMetadataCache::allocate_empty_cache_entry(
     return nullptr;
   }
   DEB_FS("FS Key %s inserted in cache with refCount: 1", fs_key.c_str());
-  // Start with ref_count=1 so the eviction thread won't evict this entry
-  // while we release the lock and do the slow DB fetch below.  Decremented
-  // back to 0 after the entry state is set to IS_VALID/IS_INVALID.
+  // Start with ref_count=1 so the entry stays alive while we release the
+  // lock and do the slow DB fetch below.  Decremented back to 0 after the
+  // entry state is set to IS_VALID/IS_INVALID.
   newCacheEntry->m_ref_count = 1;
   newCacheEntry->m_key_cache_id = key_cache_id;
   newCacheEntry->m_key = fs_key;
   m_fs_cache[key_cache_id][fs_key] = newCacheEntry;
 
-  /* Insert last in double linked list for handling refresh interval */
   NdbMutex_Lock(m_queueLock[key_cache_id]);
-  newCacheEntry->m_lastUsed = NdbTick_getCurrentTicks();
   insert_last(newCacheEntry, key_cache_id);
   NdbMutex_Unlock(m_queueLock[key_cache_id]);
   return newCacheEntry;
@@ -519,7 +512,6 @@ void FSMetadataCache::load_single_feature_view(const std::string &fsName,
   m_fs_cache[key_cache_id][cacheKey] = newEntry;
 
   NdbMutex_Lock(m_queueLock[key_cache_id]);
-  newEntry->m_lastUsed = NdbTick_getCurrentTicks();
   insert_last(newEntry, key_cache_id);
   NdbMutex_Unlock(m_queueLock[key_cache_id]);
   NdbMutex_Unlock(m_rwLock[key_cache_id]);
@@ -635,7 +627,6 @@ void FSMetadataCache::evict_entry(const std::string &cacheKey) {
       entry->m_errorCode = FV_NOT_EXIST->NewMessage(
         "Feature view was deleted");
     }
-    entry->m_lastUsed = NdbTick_getCurrentTicks();
     NdbCondition_Broadcast(entry->m_waitCond);
     NdbMutex_Unlock(entry->m_waitLock);
     NdbMutex_Unlock(m_rwLock[key_cache_id]);
