@@ -184,6 +184,7 @@ ErrorBundle ErrorCodes[] = {
   { 20019, HA_ERR_NO_SUCH_TABLE, SE, "Query table not defined" },
   { 20020, HA_ERR_NO_SUCH_TABLE, SE, "Query table is being dropped" },
   { 20021, HA_ERR_TABLE_DEF_CHANGED, SE, "Query table definition has changed" },
+  { 20022, DMEC, IE, "Invalid aggregate flags in pushed query tree" },
 
   /**
    * DICT FK kernel and ndbapi error codes

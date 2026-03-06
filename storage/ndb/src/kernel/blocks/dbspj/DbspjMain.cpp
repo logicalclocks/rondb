@@ -1538,6 +1538,7 @@ Dbspj::build(Build_context& ctx,
   Uint32 err = DbspjErr::ZeroLengthQueryTree;
   ctx.m_cnt = 0;
   ctx.m_scan_cnt = 0;
+  ctx.m_aggregate_node_count = 0;
 
   tree.getWord(&tmp0);
   Uint32 loop = QueryTree::getNodeCnt(tmp0);
@@ -1752,6 +1753,67 @@ Dbspj::build(Build_context& ctx,
   if (ctx.m_scan_cnt > 1) {
     jam();
     requestPtr.p->m_bits |= Request::RT_MULTI_SCAN;
+  }
+
+  /**
+   * Validate aggregate flag consistency before execution.
+   * The NDB API sets NI_AGGREGATE on every node and NI_AGGREGATE_LEAF
+   * on exactly one leaf node. Verify this to catch malformed queries
+   * early rather than crashing later in DBTC/DBLQH.
+   */
+  if (requestPtr.p->m_bits & Request::RT_AGGREGATE) {
+    jam();
+    Uint32 aggregate_leaf_count = 0;
+    bool aggregate_leaf_is_leaf = false;
+
+    Local_TreeNode_list list(m_treenode_pool, requestPtr.p->m_nodes);
+    Ptr<TreeNode> treeNodePtr;
+    for (list.first(treeNodePtr); !treeNodePtr.isNull();
+         list.next(treeNodePtr)) {
+      if (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) {
+        jam();
+        aggregate_leaf_count++;
+        aggregate_leaf_is_leaf = treeNodePtr.p->isLeaf();
+      }
+    }
+
+    err = DbspjErr::InvalidAggregateFlags;
+    if (unlikely(ctx.m_aggregate_node_count != ctx.m_cnt)) {
+      jam();
+      g_eventLogger->debug(
+          "DBSPJ %u: NI_AGGREGATE set on %u of %u nodes, expected all",
+          instance(), ctx.m_aggregate_node_count, ctx.m_cnt);
+      goto error;
+    }
+    if (unlikely(aggregate_leaf_count != 1)) {
+      jam();
+      g_eventLogger->debug(
+          "DBSPJ %u: Found %u T_AGGREGATE_LEAF nodes, expected exactly 1",
+          instance(), aggregate_leaf_count);
+      goto error;
+    }
+    if (unlikely(!aggregate_leaf_is_leaf)) {
+      jam();
+      g_eventLogger->debug(
+          "DBSPJ %u: T_AGGREGATE_LEAF is set on a non-leaf node",
+          instance());
+      goto error;
+    }
+  } else {
+    /**
+     * No aggregation on the request - verify no node has NI_AGGREGATE.
+     * Currently structurally impossible since parseDA() always sets
+     * RT_AGGREGATE when NI_AGGREGATE is seen, but kept as a defensive
+     * check in case parseDA() is refactored in the future.
+     */
+    if (unlikely(ctx.m_aggregate_node_count != 0)) {
+      jam();
+      err = DbspjErr::InvalidAggregateFlags;
+      g_eventLogger->debug(
+          "DBSPJ %u: NI_AGGREGATE on %u nodes but RT_AGGREGATE not set",
+          instance(), ctx.m_aggregate_node_count);
+      goto error;
+    }
   }
 
   // Set up the order of execution plan
@@ -9680,6 +9742,7 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
       DEB_AGGREGATION(("(%u) AGGREGATE: request contains aggregation",
                        instance()));
       requestPtr.p->m_bits |= Request::RT_AGGREGATE;
+      ctx.m_aggregate_node_count++;
 
       if (treeBits & DABits::NI_AGGREGATE_LEAF) {
         jam();

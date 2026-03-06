@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2011, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -443,6 +443,7 @@ class Dbspj : public SimulatedBlock {
     Uint32 m_resultData;  // API
     Uint32 m_senderRef;   // TC (used for routing)
     Uint32 m_scan_cnt;
+    Uint32 m_aggregate_node_count;  // Nodes with NI_AGGREGATE flag
     Signal *m_start_signal;  // Argument to first node in tree
 
     TreeNodeBitMask m_scans;  // TreeNodes doing scans
