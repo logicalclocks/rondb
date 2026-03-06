@@ -727,7 +727,7 @@ retry:
     event.setTable(*tab);
     event.addTableEvent(NdbDictionary::Event::TE_INSERT);
     event.addTableEvent(NdbDictionary::Event::TE_DELETE);
-    event.mergeEvents(true);
+    event.mergeEvents(false);
     for (int col = 0; col < tab->getNoOfColumns(); col++) {
       event.addEventColumn(col);
     }
@@ -749,7 +749,7 @@ retry:
       ndb->getNdbError().code, ndb->getNdbError().message);
     goto err;
   }
-  ev_op->mergeEvents(true);
+  ev_op->mergeEvents(false);
 
   // Register PK column
   id_val = ev_op->getValue("id");
