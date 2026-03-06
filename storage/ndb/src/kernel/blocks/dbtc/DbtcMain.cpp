@@ -17019,6 +17019,13 @@ void Dbtc::releaseScanResources(Signal *signal, ScanRecordPtr scanPtr,
     scanPtr.p->scanAttrInfoPtr = RNIL;
   }
 
+  /**
+   * m_aggProgramPtrI should have been released in execJOIN_AGG_SETUP_CONF
+   * after all data nodes received the program.
+   * m_aggKeysSectionPtrI should have been released at send time when the
+   * last SCAN_FRAGREQ was sent to DBSPJ (releaseAtSend).
+   * These are safety nets for abnormal cleanup paths (e.g. scan abort).
+   */
   if (scanPtr.p->m_aggProgramPtrI != RNIL) {
     releaseSection(scanPtr.p->m_aggProgramPtrI);
     scanPtr.p->m_aggProgramPtrI = RNIL;
@@ -28502,6 +28509,17 @@ void Dbtc::execJOIN_AGG_SETUP_CONF(Signal *signal) {
 
   if (scanptr.p->m_aggNodesOutstanding == 0) {
     jam();
+
+    /**
+     * The agg program has been sent to all data nodes and is no longer
+     * needed in DBTC. Release the section memory early rather than
+     * keeping it until releaseScanResources().
+     */
+    if (scanptr.p->m_aggProgramPtrI != RNIL) {
+      releaseSection(scanptr.p->m_aggProgramPtrI);
+      scanptr.p->m_aggProgramPtrI = RNIL;
+    }
+
     Uint32 keyData[ABS_MAX_NDB_NODES * 2];
     Uint32 idx = 0;
     NdbNodeBitmask nodes = scanptr.p->m_aggNodes;
