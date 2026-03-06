@@ -4965,9 +4965,6 @@ void Dbspj::lookup_send(Signal *signal, Ptr<Request> requestPtr,
     req->variableData[0] = requestPtr.p->m_user_id;
     var_index++;
   }
-  req->variableData[var_index + 2] = treeNodePtr.p->m_send.m_correlation;
-  req->variableData[var_index + 3] = requestPtr.p->m_rootResultData;
-
   if (!treeNodePtr.p->isLeaf() || requestPtr.p->isScan()) {
     // Non-LEAF want reply to SPJ instead of ApiClient.
     LqhKeyReq::setNormalProtocolFlag(req->requestInfo, 1);
@@ -4982,6 +4979,10 @@ void Dbspj::lookup_send(Signal *signal, Ptr<Request> requestPtr,
     req->tcBlockref = requestPtr.p->m_senderRef;
   }
 
+  req->variableData[var_index + 2] = treeNodePtr.p->m_send.m_correlation;
+  req->variableData[var_index + 3] = requestPtr.p->m_rootResultData;
+
+
   SectionHandle handle(this);
 
   Uint32 ref = treeNodePtr.p->m_send.m_ref;
@@ -4991,6 +4992,18 @@ void Dbspj::lookup_send(Signal *signal, Ptr<Request> requestPtr,
   Uint32 agg_extra = 0;
   if (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) {
     jam();
+    /**
+     * aggStateKey is placed at var_index + 4, which assumes DBLQH's
+     * nextPos walk over variableData arrives here after:
+     *   ApplicationAddressFlag=1 (2 words) + CorrFactorFlag=1 (2 words).
+     * This requires that SameClientAndTcFlag, ReturnedReadLenAIFlag,
+     * RowidFlag and GCIFlag are all 0, as set in lookup_build().
+     */
+    ndbassert(LqhKeyReq::getSameClientAndTcFlag(req->requestInfo) == 0);
+    ndbassert(LqhKeyReq::getReturnedReadLenAIFlag(req->requestInfo) == 0);
+    ndbassert(LqhKeyReq::getRowidFlag(req->requestInfo) == 0);
+    ndbassert(LqhKeyReq::getGCIFlag(req->requestInfo) == 0);
+
     Uint32 nodeId = refToNode(ref);
     ndbrequire(requestPtr.p->m_aggNodes.get(nodeId));
     LqhKeyReq::setJoinAggFlag(req->attrLen, 1);
@@ -7738,7 +7751,8 @@ Uint32 Dbspj::scanFrag_send(Signal *signal, Ptr<Request> requestPtr,
       g_eventLogger->info("SCAN_FRAGREQ to %x", fragPtr.p->m_ref);
       printSCAN_FRAGREQ(
           stdout, signal->getDataPtrSend(),
-          NDB_ARRAY_SIZE(treeNodePtr.p->m_scanFrag_data.m_scanFragReq) + var_index + agg_extra,
+          NDB_ARRAY_SIZE(treeNodePtr.p->m_scanFrag_data.m_scanFragReq) +
+          var_index + agg_extra,
           DBLQH);
       printf("ATTRINFO: ");
       print(handle.m_ptr[0], stdout);
