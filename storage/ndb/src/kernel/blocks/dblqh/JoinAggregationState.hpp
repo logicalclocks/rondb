@@ -75,12 +75,13 @@ struct JoinAggregationState {
   enum State : Uint32 {
     IDLE = 0,
     SETUP_COMPLETE = 1,    // Ready to receive operations
-    ACCUMULATING = 2,      // Receiving operations, accumulating results
     FINALIZING = 3,        // All ops done, preparing results
     SENDING_RESULTS = 4,   // Sending results to API
     COMPLETED = 5,         // All results sent
     ERROR = 6,
-    ABORTING = 7
+    ABORTING = 7,
+    WAITING_SEND_CONF = 8,  // Paused at batch limit, waiting for SEND_CONF
+    NODE_FAIL_ABORT = 9     // DBTC node failed, scans closed, awaiting release
   };
 
   //------------------------------------------------------------------

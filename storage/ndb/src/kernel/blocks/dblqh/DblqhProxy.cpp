@@ -187,6 +187,8 @@ DblqhProxy::DblqhProxy(Block_context &ctx)
                &DblqhProxy::execJOIN_AGG_SETUP_REQ);
   addRecSignal(GSN_JOIN_AGG_RELEASE_REQ,
                &DblqhProxy::execJOIN_AGG_RELEASE_REQ);
+  addRecSignal(GSN_JOIN_AGG_NODE_FAIL_REP,
+               &DblqhProxy::execJOIN_AGG_NODE_FAIL_REP);
 }
 
 DblqhProxy::~DblqhProxy() {}
@@ -2476,6 +2478,7 @@ DblqhProxy::execJOIN_AGG_RELEASE_REQ(Signal *signal) {
   const Uint32 senderData = req->senderData;
   const Uint32 requestId = req->requestId;
   const Uint32 aggStateKey = req->aggStateKey;
+  const Uint32 noReply = req->noReply;
 
   JoinAggregationState *state = getJoinAggState(aggStateKey);
   if (state != nullptr) {
@@ -2519,13 +2522,55 @@ DblqhProxy::execJOIN_AGG_RELEASE_REQ(Signal *signal) {
     releaseJoinAggState(aggStateKey);
   }
 
-  JoinAggReleaseConf *conf =
-    (JoinAggReleaseConf *)signal->getDataPtrSend();
-  conf->senderRef = reference();
-  conf->senderData = senderData;
-  conf->requestId = requestId;
-  sendSignal(senderRef, GSN_JOIN_AGG_RELEASE_CONF,
-             signal, JoinAggReleaseConf::SignalLength, JBB);
+  if (!noReply) {
+    jam();
+    JoinAggReleaseConf *conf =
+      (JoinAggReleaseConf *)signal->getDataPtrSend();
+    conf->senderRef = reference();
+    conf->senderData = senderData;
+    conf->requestId = requestId;
+    sendSignal(senderRef, GSN_JOIN_AGG_RELEASE_CONF,
+               signal, JoinAggReleaseConf::SignalLength, JBB);
+  }
+}
+
+void
+DblqhProxy::execJOIN_AGG_NODE_FAIL_REP(Signal *signal) {
+  jamEntry();
+  const JoinAggNodeFailRep *rep =
+    (const JoinAggNodeFailRep *)signal->getDataPtr();
+  const Uint32 failedNodeId = rep->failedNodeId;
+
+  /**
+   * All blocks have completed node failure handling for this node.
+   * Release agg states owned by the failed DBTC node by sending
+   * fire-and-forget RELEASE_REQ to ourselves for each one.
+   */
+  const Uint32 poolSize = getJoinAggStatePoolSize();
+  for (Uint32 k = 0; k < poolSize; k++) {
+    JoinAggregationState *state = getJoinAggState(k);
+    if (state == nullptr) continue;
+    if (refToNode(state->m_senderRef) != failedNodeId) continue;
+    const JoinAggregationState::State aggState = state->m_state.load();
+    if (aggState == JoinAggregationState::NODE_FAIL_ABORT ||
+        aggState == JoinAggregationState::SETUP_COMPLETE ||
+        aggState == JoinAggregationState::COMPLETED ||
+        aggState == JoinAggregationState::ERROR ||
+        aggState == JoinAggregationState::WAITING_SEND_CONF) {
+      jam();
+      JoinAggReleaseReq *req =
+          (JoinAggReleaseReq *)signal->getDataPtrSend();
+      req->senderRef = reference();
+      req->senderData = 0;
+      req->requestId = 0;
+      req->transid[0] = 0;
+      req->transid[1] = 0;
+      req->aggStateKey = k;
+      req->noReply = 1;
+      sendSignal(reference(), GSN_JOIN_AGG_RELEASE_REQ, signal,
+                 JoinAggReleaseReq::SignalLength, JBB);
+    }
+  }
 }
 
 BLOCK_FUNCTIONS(DblqhProxy)

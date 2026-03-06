@@ -1070,5 +1070,6 @@ const GsnName SignalNames[] = {
   ,{ GSN_JOIN_AGG_RELEASE_CONF, "JOIN_AGG_RELEASE_CONF" }
   ,{ GSN_JOIN_AGG_SEND_REQ, "JOIN_AGG_SEND_REQ" }
   ,{ GSN_JOIN_AGG_SEND_CONF, "JOIN_AGG_SEND_CONF" }
+  ,{ GSN_JOIN_AGG_NODE_FAIL_REP, "JOIN_AGG_NODE_FAIL_REP" }
 };
 const unsigned short NO_OF_SIGNAL_NAMES = sizeof(SignalNames) / sizeof(GsnName);

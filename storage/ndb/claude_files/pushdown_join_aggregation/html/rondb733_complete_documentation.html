@@ -550,7 +550,7 @@ and working up through the coordinator, NDB API, and finally the MySQL handler l
     <span class="phase-tag">COMPLETE</span>
   </div>
   <p>Added <code>JoinAggregationState</code> struct with TransientPool-based allocation in SimulatedBlock.
-  Node-level pool shared across all LDM threads. State machine: IDLE → SETUP_COMPLETE → ACCUMULATING → FINALIZING → SENDING_RESULTS → COMPLETED.</p>
+  Node-level pool shared across all LDM threads. State machine: IDLE → SETUP_COMPLETE → FINALIZING → SENDING_RESULTS → COMPLETED.</p>
 </div>
 
 <div class="phase-card kernel">

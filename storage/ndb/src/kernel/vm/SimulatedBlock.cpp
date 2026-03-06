@@ -6098,6 +6098,10 @@ void SimulatedBlock::releaseJoinAggState(Uint32 key) {
   s_joinAggStatePool.release(ptr);
 }
 
+Uint32 SimulatedBlock::getJoinAggStatePoolSize() {
+  return s_joinAggStatePoolSize;
+}
+
 #if defined(USE_INIT_GLOBAL_VARIABLES)
 void SimulatedBlock::checkInitGlobalVariables() {
   jam();

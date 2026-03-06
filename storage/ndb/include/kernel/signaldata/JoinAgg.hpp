@@ -97,12 +97,13 @@ struct JoinAggCompleteRef {
 };
 
 struct JoinAggReleaseReq {
-  static constexpr Uint32 SignalLength = 6;
+  static constexpr Uint32 SignalLength = 7;
   Uint32 senderRef;
   Uint32 senderData;
   Uint32 requestId;
   Uint32 transid[2];
   Uint32 aggStateKey;
+  Uint32 noReply;  // If set, DBLQH will not send RELEASE_CONF
 };
 
 struct JoinAggReleaseConf {
@@ -131,6 +132,14 @@ struct JoinAggSendConf {
   Uint32 requestId;
   Uint32 aggStateKey;
   Uint32 maxBatchRows;    // next batch limit
+};
+
+// DBDIH → DblqhProxy: "All blocks completed node failure handling for this
+// node. Release all join aggregation states in NODE_FAIL_ABORT state owned
+// by the failed node."
+struct JoinAggNodeFailRep {
+  static constexpr Uint32 SignalLength = 1;
+  Uint32 failedNodeId;
 };
 
 #undef JAM_FILE_ID

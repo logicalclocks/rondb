@@ -2246,6 +2246,7 @@ public:
   static JoinAggregationState* getJoinAggState(Uint32 key);
   static void releaseJoinAggState(Uint32 key);
   static void initJoinAggStatePool(Uint32 max_recs);
+  static Uint32 getJoinAggStatePoolSize();
 
  protected:
   /**

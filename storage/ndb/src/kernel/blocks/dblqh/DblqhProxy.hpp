@@ -589,6 +589,7 @@ class DblqhProxy : public LocalProxy {
   // GSN_JOIN_AGG signals (setup + release handled by proxy)
   void execJOIN_AGG_SETUP_REQ(Signal*);
   void execJOIN_AGG_RELEASE_REQ(Signal*);
+  void execJOIN_AGG_NODE_FAIL_REP(Signal*);
 };
 
 #undef JAM_FILE_ID

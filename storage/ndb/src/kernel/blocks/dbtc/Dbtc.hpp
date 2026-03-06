@@ -1917,7 +1917,8 @@ class Dbtc : public SimulatedBlock {
       RUNNING = 4,
       CLOSING_SCAN = 5,
       WAIT_JOIN_AGG_SETUP = 6,
-      WAIT_JOIN_AGG_COMPLETE = 7
+      WAIT_JOIN_AGG_COMPLETE = 7,
+      WAIT_JOIN_AGG_RELEASE = 8
     };
 
     // State of this scan
@@ -2004,8 +2005,11 @@ class Dbtc : public SimulatedBlock {
     Uint32 m_aggKeysSectionPtrI;
     Uint32 m_aggReceiverId;  // API-side NdbReceiver ID for agg results
     NdbNodeBitmask m_aggNodes;
+    NdbNodeBitmask m_aggNodesPending;  // Nodes we're waiting for a response from
     Uint32 m_aggNodesOutstanding;
     bool m_joinAgg;
+    bool m_aggPhaseFailed;         // Error received during current agg phase
+    Uint32 m_aggErrorCode;         // Error code from first failure
     Uint32 m_aggStateKeys[ABS_MAX_NDB_NODES];
   };
   typedef Ptr<ScanRecord> ScanRecordPtr;
@@ -2326,6 +2330,7 @@ class Dbtc : public SimulatedBlock {
   void sendJoinAggSetupReqs(Signal *, ScanRecordPtr, ApiConnectRecordPtr);
   void sendJoinAggCompleteReqs(Signal *, ScanRecordPtr);
   void sendJoinAggReleaseReqs(Signal *, ScanRecordPtr);
+  void joinAggAbortAfterRelease(Signal *, ScanRecordPtr);
 
   void checkGcpFinished(Signal* signal);
   void commitGciHandling(Signal* signal,

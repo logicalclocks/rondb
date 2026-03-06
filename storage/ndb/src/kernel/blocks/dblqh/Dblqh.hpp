@@ -466,6 +466,9 @@ class FsReadWriteReq;
 #define ZSCAN_CONTINOUS_SCAN_LOCK_ERROR 2202
 #endif
 
+/* Node failure error code — same value as DBTC's ZNODEFAIL_BEFORE_COMMIT */
+#define ZNODEFAIL_BEFORE_COMMIT 286
+
 /* Join aggregation error codes (outside DBLQH_C for DblqhProxy) */
 #define ZJOIN_AGG_STATE_ALLOC_FAILED       1250
 #define ZJOIN_AGG_STATE_NOT_FOUND          1251
@@ -3313,6 +3316,8 @@ private:
   void execSCAN_FRAGREQ(Signal* signal);
   void execJOIN_AGG_COMPLETE_REQ(Signal* signal);
   void execJOIN_AGG_SEND_CONF(Signal* signal);
+  bool checkJoinAggNodeFailed(Signal* signal, Uint32 aggStateKey,
+                              Uint32 senderRef);
   void continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
                             Uint32 merge_idx,
                             Uint32 senderRef, Uint32 senderData,

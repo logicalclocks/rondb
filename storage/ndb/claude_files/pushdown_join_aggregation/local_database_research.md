@@ -165,7 +165,6 @@ struct JoinAggregationState {
     enum State {
         IDLE = 0,
         SETUP_COMPLETE = 1,    // Ready to receive operations
-        ACCUMULATING = 2,      // Receiving operations, accumulating results
         FINALIZING = 3,        // All ops done, preparing results
         SENDING_RESULTS = 4,   // Sending results to API
         COMPLETED = 5,         // All results sent
@@ -793,7 +792,7 @@ if (state->m_state.load(std::memory_order_acquire) == State::ERROR) {
 }
 
 // State transition (compare-and-swap)
-State expected = State::ACCUMULATING;
+State expected = State::SETUP_COMPLETE;
 if (state->m_state.compare_exchange_strong(expected, State::FINALIZING)) {
     // Won the race to finalize
 }
@@ -831,7 +830,7 @@ void processRowForJoinAgg(JoinAggregationState* state,
     if (result != 0) {
         // Handle error atomically
         state->m_failed_ops.fetch_add(1);
-        State expected = State::ACCUMULATING;
+        State expected = State::SETUP_COMPLETE;
         state->m_state.compare_exchange_strong(expected, State::ERROR);
     }
 }

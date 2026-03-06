@@ -95,6 +95,7 @@
 #include <signaldata/FsCloseReq.hpp>
 #include <signaldata/FsOpenReq.hpp>
 #include <signaldata/IsolateOrd.hpp>
+#include <signaldata/JoinAgg.hpp>
 #include <signaldata/LqhFrag.hpp>
 #include <signaldata/PrepDropTab.hpp>
 #include <signaldata/SumaImpl.hpp>
@@ -12148,6 +12149,21 @@ void Dbdih::execNF_COMPLETEREP(Signal *signal) {
   /*     ALL BLOCKS IN THIS NODE HAVE COMPLETED THEIR PART OF HANDLING THE   */
   /*     NODE FAILURE. WE CAN NOW REPORT THIS COMPLETION TO ALL OTHER NODES. */
   /* ----------------------------------------------------------------------- */
+  /**
+   * All blocks (DBLQH, DBQLQH, DBTC, etc.) have finished node failure
+   * handling. All scans referencing join aggregation states owned by the
+   * failed node have been closed, and new operations are rejected by
+   * LQHKEYREQ/SCAN_FRAGREQ checks. Tell DblqhProxy to release orphaned
+   * agg states.
+   */
+  {
+    JoinAggNodeFailRep *rep =
+        (JoinAggNodeFailRep *)signal->getDataPtrSend();
+    rep->failedNodeId = failedNodePtr.i;
+    sendSignal(DBLQH_REF, GSN_JOIN_AGG_NODE_FAIL_REP, signal,
+               JoinAggNodeFailRep::SignalLength, JBB);
+  }
+
   NodeRecordPtr nodePtr;
   for (nodePtr.i = 1; nodePtr.i <= m_max_node_id; nodePtr.i++) {
     jam();

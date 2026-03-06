@@ -1086,7 +1086,6 @@ void Dblqh::execCONTINUEB(Signal *signal) {
   case ZHANDLE_TC_FAILED_SCANS:
   {
     jam();
-    ndbrequire(m_is_query_block);
     handle_tc_failed_scans(signal, data0, data1);
     return;
   }
@@ -9370,6 +9369,15 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
     jam();
     regTcPtr->m_join_agg_state_key = lqhKeyReq->variableData[nextPos];
     nextPos++;
+    JoinAggregationState *aggState =
+        getJoinAggState(regTcPtr->m_join_agg_state_key);
+    if (aggState != nullptr &&
+        !getNodeInfo(refToNode(aggState->m_senderRef)).m_connected) {
+      jam();
+      earlyKeyReqAbort(signal, lqhKeyReq,
+                        ZNODEFAIL_BEFORE_COMMIT, tcConnectptr);
+      return;
+    }
   }
 
   if (LqhKeyReq::getRowidFlag(Treqinfo)) {
@@ -15692,10 +15700,7 @@ void Dblqh::execNODE_FAILREP(Signal *signal) {
       Thostptr.i = nodeId;
       ptrCheckGuard(Thostptr, chostFileSize, hostRecord);
       Thostptr.p->nodestatus = ZNODE_DOWN;
-      if (m_is_query_block)
-      {
-        send_handle_tc_failed_scans(signal, nodeId, 0);
-      }
+      send_handle_tc_failed_scans(signal, nodeId, 0);
       DEB_NODE_STATUS(("(%u,%u) Node %u DOWN",
                        instance(),
                        m_is_query_block,
@@ -15754,8 +15759,12 @@ Dblqh::handle_tc_failed_scans(Signal *signal,
     else if (startPtrI == RNIL)
     {
       /**
-       * Finished with scanning operations used by scans in
-       * query threads.
+       * Finished scanning all operations. All scans referencing agg
+       * states owned by the failed DBTC node have received close
+       * requests on this query block. The actual release of agg
+       * states happens later via JOIN_AGG_NODE_FAIL_REP sent from
+       * DBDIH to DblqhProxy after ALL blocks complete node failure
+       * handling — this ensures no thread is still accessing them.
        */
       /* Perform block-level ndbd failure handling */
       Callback cb = { safe_cast(&Dblqh::ndbdFailBlockCleanupCallback),
@@ -15773,7 +15782,25 @@ Dblqh::handle_tc_failed_scans(Signal *signal,
         scanPtr.i = tcPtr.p->tcScanRec;
         ndbrequire(c_scanRecordPool.getValidPtr(scanPtr));
         ndbrequire(scanPtr.p->scanType == ScanRecord::SCAN);
-        if (refToNode(tcPtr.p->tcBlockref) == nodeId)
+        bool shouldAbort = (refToNode(tcPtr.p->tcBlockref) == nodeId);
+        if (!shouldAbort &&
+            scanPtr.p->m_join_agg_state_key != RNIL) {
+          /**
+           * Scan has join aggregation state. Check if the DBTC node
+           * that owns the aggregation has failed. DBSPJ may be on a
+           * different (alive) node, but the query must be aborted
+           * since the DBTC coordinator is gone.
+           */
+          JoinAggregationState *aggState =
+              getJoinAggState(scanPtr.p->m_join_agg_state_key);
+          if (aggState != nullptr &&
+              refToNode(aggState->m_senderRef) == nodeId) {
+            shouldAbort = true;
+            aggState->m_state.store(
+                JoinAggregationState::NODE_FAIL_ABORT);
+          }
+        }
+        if (shouldAbort)
         {
           /**
            * Close scan by using SCAN_NEXTREQ, we need to send the
@@ -18109,10 +18136,40 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
                        senderRef, senderData, requestId);
 }
 
+/**
+ * Check if the DBTC node that owns this aggregation has died.
+ * If so, no RELEASE_REQ will ever arrive — send a fire-and-forget
+ * release to the proxy and return true to stop processing.
+ */
+bool Dblqh::checkJoinAggNodeFailed(Signal* signal, Uint32 aggStateKey,
+                                   Uint32 senderRef) {
+  if (!getNodeInfo(refToNode(senderRef)).m_connected) {
+    jam();
+    JoinAggReleaseReq *req =
+        (JoinAggReleaseReq *)signal->getDataPtrSend();
+    req->senderRef = reference();
+    req->senderData = 0;
+    req->requestId = 0;
+    req->transid[0] = 0;
+    req->transid[1] = 0;
+    req->aggStateKey = aggStateKey;
+    req->noReply = 1;
+    sendSignal(DBLQH_REF, GSN_JOIN_AGG_RELEASE_REQ, signal,
+               JoinAggReleaseReq::SignalLength, JBB);
+    return true;
+  }
+  return false;
+}
+
 void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
                                  Uint32 merge_idx,
                                  Uint32 senderRef, Uint32 senderData,
                                  Uint32 requestId) {
+  if (checkJoinAggNodeFailed(signal, aggStateKey, senderRef)) {
+    jam();
+    return;
+  }
+
   JoinAggregationState *state = getJoinAggState(aggStateKey);
   ndbrequire(state != nullptr);
 
@@ -18250,6 +18307,11 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
                                 Uint32 num_result_rows, Uint32 total_bytes,
                                 Uint32 senderRef, Uint32 senderData,
                                 Uint32 requestId) {
+  if (checkJoinAggNodeFailed(signal, aggStateKey, senderRef)) {
+    jam();
+    return;
+  }
+
 #ifdef VM_TRACE
   static const Uint32 GROUPS_PER_BATCH = 2;
 #else
@@ -18331,6 +18393,7 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
          */
         jam();
         state->m_rows_sent = num_result_rows;
+        state->m_state.store(JoinAggregationState::WAITING_SEND_CONF);
         JoinAggSendReq *sendReq =
           (JoinAggSendReq *)signal->getDataPtrSend();
         sendReq->senderRef = reference();
@@ -18388,6 +18451,7 @@ void Dblqh::execJOIN_AGG_SEND_CONF(Signal *signal) {
   ndbrequire(state != nullptr);
 
   state->m_max_batch_rows = maxBatchRows;
+  state->m_state.store(JoinAggregationState::SENDING_RESULTS);
 
   continueJoinAggSend(signal, aggStateKey,
                       state->m_rows_sent, 0,
@@ -20574,6 +20638,13 @@ Uint32 Dblqh::initScanrec(const ScanFragReq *scanFragReq,
     scanPtr->m_join_agg_state_key =
       scanFragReq->variableData[extra_len_index];
     extra_len_index++;
+    JoinAggregationState *aggState =
+        getJoinAggState(scanPtr->m_join_agg_state_key);
+    if (aggState != nullptr &&
+        !getNodeInfo(refToNode(aggState->m_senderRef)).m_connected) {
+      jam();
+      return ZNODEFAIL_BEFORE_COMMIT;
+    }
   }
   ndbassert(sig_len == extra_len_index + ScanFragReq::SignalLength);
   (void)sig_len;
