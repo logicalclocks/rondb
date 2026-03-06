@@ -18,6 +18,7 @@
 package testutils
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -125,10 +126,19 @@ func runQueriesWithConnection(sqlQueries string, dbConnection *sql.DB) error {
 	// the last semi-colon will produce an empty last element
 	splitQueries = splitQueries[:len(splitQueries)-1]
 
+	// Pin a single underlying connection for all statements.  sql.DB is
+	// a connection pool — each Exec() may pick a different connection,
+	// which breaks session variables like SET FOREIGN_KEY_CHECKS.
+	conn, err := dbConnection.Conn(context.Background())
+	if err != nil {
+		return fmt.Errorf("failed to get dedicated connection: %w", err)
+	}
+	defer conn.Close()
+
 	for _, query := range splitQueries {
 		query := strings.TrimSpace(query)
 		log.Debugf("running query: \n%s", query)
-		_, err := dbConnection.Exec(query)
+		_, err := conn.ExecContext(context.Background(), query)
 		if err != nil {
 			return fmt.Errorf("failed to run SQL query '%s'; error: %v", query, err)
 		}

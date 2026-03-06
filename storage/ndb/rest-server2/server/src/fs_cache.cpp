@@ -375,46 +375,42 @@ void FSMetadataCache::remove_entry(FSCacheEntry *entry, Uint32 key_cache_id) {
 
 void FSMetadataCache::cache_entry_updater(Uint32 key_cache_id) {
   m_is_thread_running = true;
-  const Uint64 eviction_ms =
-   (Uint64)globalConfigs.featureStore.featureStoreMetadataCache.cacheUnusedEntriesEvictionMS;
   while (true) {
-    Uint32 sleepMillis = 100;
+    NdbMutex_Lock(m_sleepLock);
+    if (!m_stopped)
+      NdbCondition_WaitTimeout(m_sleepCond,
+                               m_sleepLock,
+                               1000);
+    bool stopped = m_stopped;
+    NdbMutex_Unlock(m_sleepLock);
+
+    if (!stopped) continue;
+
+    // Shutdown: drain all cache entries with ref_count == 0
     NdbMutex_Lock(m_rwLock[key_cache_id]);
     FSCacheEntry* first_entry = m_first_cache_entry[key_cache_id];
     if (first_entry != nullptr) {
-      NDB_TICKS now = NdbTick_getCurrentTicks();
       NdbMutex_Lock(first_entry->m_waitLock);
       if (first_entry->m_ref_count == 0) {
-        NDB_TICKS lastUsed = first_entry->m_lastUsed;
-        Uint64 milliSeconds = NdbTick_Elapsed(lastUsed, now).milliSec();
-        if (m_stopped || (milliSeconds >= eviction_ms)) {
-          DEB_FS("FS Key %s deleted", first_entry->m_key.c_str());
-          m_fs_cache[key_cache_id].erase(first_entry->m_key);
-          //unregister complex features from golang layer
-          if (first_entry->m_data != nullptr && 
-              first_entry->m_data->complexFeatures.size() != 0){
-            for (auto& [key, val] : first_entry->m_data->complexFeatures) {
-              val.unregister_with_go_layer();
-            }
+        DEB_FS("FS Key %s deleted (shutdown)", first_entry->m_key.c_str());
+        m_fs_cache[key_cache_id].erase(first_entry->m_key);
+        if (first_entry->m_data != nullptr &&
+            first_entry->m_data->complexFeatures.size() != 0) {
+          for (auto& [key, val] : first_entry->m_data->complexFeatures) {
+            val.unregister_with_go_layer();
           }
-          NdbMutex_Unlock(m_rwLock[key_cache_id]);
-          NdbMutex_Lock(m_queueLock[key_cache_id]);
-          remove_entry(first_entry, key_cache_id);
-          NdbMutex_Unlock(m_queueLock[key_cache_id]);
-          NdbMutex_Unlock(first_entry->m_waitLock);
-          delete first_entry;
-          continue;
         }
-      } else {
-#ifdef DEBUG_FS
-      int ref_count = first_entry->m_ref_count;
-      DEB_FS("FS Key %s ready for delete, ref_count: %d",
-             first_entry->m_key.c_str(), ref_count);
-#endif
+        NdbMutex_Unlock(m_rwLock[key_cache_id]);
+        NdbMutex_Lock(m_queueLock[key_cache_id]);
+        remove_entry(first_entry, key_cache_id);
+        NdbMutex_Unlock(m_queueLock[key_cache_id]);
+        NdbMutex_Unlock(first_entry->m_waitLock);
+        delete first_entry;
+        continue;
       }
       NdbMutex_Unlock(first_entry->m_waitLock);
-    } else if (m_stopped) {
-      /* We have no more cache entries to update so can safely stop here */
+    } else {
+      // No more cache entries — shutdown complete
       NdbMutex_Unlock(m_rwLock[key_cache_id]);
       NdbMutex_Lock(m_sleepLock);
       m_is_thread_running = false;
@@ -423,12 +419,6 @@ void FSMetadataCache::cache_entry_updater(Uint32 key_cache_id) {
       return;
     }
     NdbMutex_Unlock(m_rwLock[key_cache_id]);
-    NdbMutex_Lock(m_sleepLock);
-    if (!m_stopped)
-      NdbCondition_WaitTimeout(m_sleepCond,
-                               m_sleepLock,
-                               sleepMillis);
-    NdbMutex_Unlock(m_sleepLock);
   }
 }
 
