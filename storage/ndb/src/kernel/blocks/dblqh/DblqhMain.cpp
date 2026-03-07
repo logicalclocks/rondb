@@ -18316,8 +18316,9 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
 #ifdef VM_TRACE
   static const Uint32 GROUPS_PER_BATCH = 2;
 #else
-  static const Uint32 GROUPS_PER_BATCH = 16;
+  static const Uint32 GROUPS_PER_BATCH = 256;
 #endif
+  static const Uint32 MAX_BATCH_SIGNAL_BYTES = 64 * 1024;
 
   JoinAggregationState *state = getJoinAggState(aggStateKey);
   ndbrequire(state != nullptr);
@@ -18335,6 +18336,7 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
   const Uint32 v_len = interp->val_len();
   JoinGBHashTable *gb_map = interp->gb_map_mutable();
   Uint32 batch_count = 0;
+  Uint32 batch_signal_bytes = 0;
 
   if (gb_map != nullptr) {
     for (auto iter = gb_map->begin(); iter.valid();) {
@@ -18377,6 +18379,8 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
       num_result_rows++;
       total_bytes += pos * sizeof(Uint32);
       batch_count++;
+      batch_signal_bytes +=
+          (3 + TransIdAI::HeaderLength + 1 + pos) * sizeof(Uint32);
 
       gb_map->eraseAndNext(iter);
 
@@ -18408,7 +18412,8 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
         return;
       }
 
-      if (batch_count >= GROUPS_PER_BATCH) {
+      if (batch_count >= GROUPS_PER_BATCH ||
+          batch_signal_bytes >= MAX_BATCH_SIGNAL_BYTES) {
         jam();
         signal->theData[0] = ZCONTINUE_JOIN_AGG_SEND;
         signal->theData[1] = aggStateKey;
