@@ -180,6 +180,7 @@ class DumpStateOrd {
     LqhDumpOpRecLookup = 2358,
     LqhSkipTcNodeCheck = 2359,
     LqhRestoreTcNodeCheck = 2360,
+    LqhDumpJoinAggStates = 2361,  // Verify all join agg states are released
 
     TupDumpOneScanRec = 2380,
     TupSaveCopyTupleCount = 2381,

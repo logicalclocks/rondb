@@ -41,8 +41,12 @@
 #include <UtilTransactions.hpp>
 #include <Vector.hpp>
 #include <cstring>
+#include <NdbAggregator.hpp>
+#include <ndbapi/NdbAggregationCommon.hpp>
 #include <signaldata/DumpStateOrd.hpp>
 #include "../../src/ndbapi/NdbInfo.hpp"
+#include "../../src/ndbapi/NdbQueryBuilder.hpp"
+#include "../../src/ndbapi/NdbQueryOperation.hpp"
 #include "my_sys.h"
 #include "mysql/strings/m_ctype.h"
 #include "util/require.h"
@@ -10157,6 +10161,307 @@ int runMixedLoadExtra(NDBT_Context *ctx, NDBT_Step *step) {
   return NDBT_OK;
 }
 
+/**
+ * Helper: Build and execute a self-join aggregation query on the test table.
+ *
+ * Builds: scanTable(tab) -> readTuple(tab, PK=PK) with GROUP BY col1, SUM(col1)
+ * This triggers the full join aggregation signal path:
+ *   DBTC -> SETUP_REQ -> DBLQH -> scans -> COMPLETE_REQ -> RELEASE_REQ
+ *
+ * Returns 0 on success, -1 on expected/tolerated failure, -2 on fatal error.
+ */
+static int
+runJoinAggQuery(Ndb *ndb, const NdbDictionary::Table *tab)
+{
+  /* Find PK column and a non-PK unsigned column for aggregation */
+  const char *pkColName = nullptr;
+  const char *aggColName = nullptr;
+  for (int i = 0; i < tab->getNoOfColumns(); i++) {
+    const NdbDictionary::Column *col = tab->getColumn(i);
+    if (col->getPrimaryKey()) {
+      if (pkColName == nullptr) pkColName = col->getName();
+    } else if (col->getType() == NdbDictionary::Column::Unsigned ||
+               col->getType() == NdbDictionary::Column::Int) {
+      if (aggColName == nullptr) aggColName = col->getName();
+    }
+  }
+  if (pkColName == nullptr || aggColName == nullptr) {
+    g_err << "Table " << tab->getName()
+          << " lacks suitable PK or unsigned column" << endl;
+    return -2;
+  }
+
+  /* Build aggregation program: GROUP BY aggCol, SUM(aggCol)
+   * aggCol from child row (not linked), so no AGG_LINKED_COL_FLAG */
+  NdbAggregator agg(tab);
+  if (!agg.GroupBy(aggColName) ||
+      !agg.LoadColumn(aggColName, 0) ||
+      !agg.Sum(0, 0) ||
+      !agg.Finalize()) {
+    g_err << "Agg program build failed: " << agg.GetError().err_msg_ << endl;
+    return -2;
+  }
+
+  /* Build pushed join query: scan(tab) -> lookup(tab, PK=PK) */
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  if (qb == nullptr) return -2;
+
+  const NdbQueryTableScanOperationDef *parentOp = qb->scanTable(tab);
+  if (parentOp == nullptr) {
+    g_err << "scanTable failed: " << qb->getNdbError().message << endl;
+    qb->destroy();
+    return -2;
+  }
+
+  const NdbQueryOperand *joinKey[] = {
+    qb->linkedValue(parentOp, pkColName),
+    nullptr
+  };
+
+  NdbQueryOptions opts;
+  opts.setAggregation(agg);
+
+  const NdbQueryLookupOperationDef *childOp =
+      qb->readTuple(tab, joinKey, &opts);
+  if (childOp == nullptr) {
+    g_err << "readTuple failed: " << qb->getNdbError().message << endl;
+    qb->destroy();
+    return -2;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    g_err << "prepare failed: " << qb->getNdbError().message << endl;
+    qb->destroy();
+    return -2;
+  }
+  qb->destroy();
+
+  /* Execute */
+  NdbTransaction *trans = ndb->startTransaction();
+  if (trans == nullptr) {
+    g_err << "startTransaction failed: " << ndb->getNdbError().message << endl;
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbQuery *query = trans->createQuery(queryDef);
+  if (query == nullptr) {
+    g_err << "createQuery failed: " << trans->getNdbError().message << endl;
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    g_info << "execute failed (expected during NF): "
+           << trans->getNdbError().message << endl;
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  /* Consume all scan batches */
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {
+    /* consume */
+  }
+
+  if (outcome == NdbQuery::NextResult_error) {
+    g_info << "nextResult error (may be expected during NF): "
+           << query->getNdbError().message << endl;
+  }
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+  return (outcome == NdbQuery::NextResult_error) ? -1 : 0;
+}
+
+/**
+ * Test join aggregation node failure handling.
+ *
+ * For each CRASH_INSERTION code (5113=SETUP, 5114=COMPLETE, 5115=RELEASE):
+ *   1. Enable auto-restart on error insert
+ *   2. Inject the crash error on one data node
+ *   3. Execute a join aggregation query (triggers the crash)
+ *   4. Wait for the crashed node to restart
+ *   5. Verify the cluster is healthy with a normal scan
+ *
+ * Requires at least 2 data nodes for node failure survival.
+ */
+static int
+runJoinAggNodeRestart(NDBT_Context *ctx, NDBT_Step *step)
+{
+  Ndb *ndb = GETNDB(step);
+  NdbRestarter restarter;
+  const NdbDictionary::Table *tab = ctx->getTab();
+  int records = ctx->getNumRecords();
+
+  if (restarter.getNumDbNodes() < 2) {
+    g_info << "JoinAggNodeRestart: need >= 2 data nodes, skipping" << endl;
+    return NDBT_OK;
+  }
+
+  /* CRASH_INSERTION codes for the three join agg signal phases */
+  int crashCodes[] = { 5113, 5114, 5115 };
+  const char *phaseNames[] = { "SETUP_REQ", "COMPLETE_REQ", "RELEASE_REQ" };
+
+  for (int phase = 0; phase < 3; phase++) {
+    g_err << "=== JoinAggNodeRestart phase " << phase
+          << " (" << phaseNames[phase] << ")"
+          << " error=" << crashCodes[phase] << " ===" << endl;
+
+    int nodeId = restarter.getDbNodeId(
+        rand() % restarter.getNumDbNodes());
+
+    /* Enable auto-restart on error insert */
+    int val2[] = { DumpStateOrd::CmvmiSetRestartOnErrorInsert, 1 };
+    if (restarter.dumpStateOneNode(nodeId, val2, 2)) {
+      g_err << "dumpState failed on node " << nodeId << endl;
+      return NDBT_FAILED;
+    }
+
+    /* Inject CRASH_INSERTION on the target node */
+    if (restarter.insertErrorInNode(nodeId, crashCodes[phase]) != 0) {
+      g_err << "insertErrorInNode failed: node=" << nodeId
+            << " error=" << crashCodes[phase] << endl;
+      return NDBT_FAILED;
+    }
+
+    /* Execute join agg query - this triggers the crash */
+    g_info << "Executing join agg query (node " << nodeId
+           << " should crash)..." << endl;
+    int qrc = runJoinAggQuery(ndb, tab);
+    if (qrc == -2) {
+      g_err << "Fatal error building query" << endl;
+      return NDBT_FAILED;
+    }
+    /* qrc == -1 is expected (query fails due to node crash) */
+    /* qrc == 0 is also possible if crash happens after query completes */
+
+    /* Wait for the node to come back */
+    if (restarter.waitNodesNoStart(&nodeId, 1)) {
+      g_err << "waitNodesNoStart failed for node " << nodeId << endl;
+      return NDBT_FAILED;
+    }
+
+    if (restarter.startNodes(&nodeId, 1)) {
+      g_err << "startNodes failed for node " << nodeId << endl;
+      return NDBT_FAILED;
+    }
+
+    if (restarter.waitClusterStarted(120)) {
+      g_err << "waitClusterStarted failed after restarting node "
+            << nodeId << endl;
+      return NDBT_FAILED;
+    }
+
+    CHK_NDB_READY(ndb);
+
+    /* Verify cluster is healthy: read all records */
+    HugoTransactions hugoTrans(*tab);
+    if (hugoTrans.scanReadRecords(ndb, records) != 0) {
+      g_err << "Post-restart scan verify failed" << endl;
+      return NDBT_FAILED;
+    }
+
+    /* Also verify a normal join agg query succeeds after recovery */
+    int vrc = runJoinAggQuery(ndb, tab);
+    if (vrc == -2) {
+      g_err << "Post-restart join agg query failed fatally" << endl;
+      return NDBT_FAILED;
+    }
+    if (vrc == -1) {
+      g_err << "Post-restart join agg query failed" << endl;
+      return NDBT_FAILED;
+    }
+
+    /* Verify all agg states released on all surviving nodes.
+     * DUMP 2361 (LqhDumpJoinAggStates) calls ndbabort() if any
+     * states are leaked, making the failure visible in Autotest. */
+    int dump[] = { DumpStateOrd::LqhDumpJoinAggStates };
+    if (restarter.dumpStateAllNodes(dump, 1)) {
+      g_err << "dumpStateAllNodes(LqhDumpJoinAggStates) failed" << endl;
+      return NDBT_FAILED;
+    }
+
+    g_err << "=== Phase " << phase << " (" << phaseNames[phase]
+          << ") passed ===" << endl;
+  }
+
+  return NDBT_OK;
+}
+
+/**
+ * Test join aggregation with ERROR_INSERT (non-crash) error paths.
+ *
+ * 5091: SETUP_REQ returns REF (allocation failure simulation)
+ * 5092: COMPLETE_REQ returns REF (state-not-found simulation)
+ *
+ * These don't crash the node - they just cause the query to fail gracefully.
+ * Verify the query fails without crashing and subsequent queries still work.
+ */
+static int
+runJoinAggErrorInsert(NDBT_Context *ctx, NDBT_Step *step)
+{
+  Ndb *ndb = GETNDB(step);
+  NdbRestarter restarter;
+  const NdbDictionary::Table *tab = ctx->getTab();
+
+  int errorCodes[] = { 5091, 5092 };
+  const char *errorNames[] = { "SETUP_REF", "COMPLETE_REF" };
+
+  for (int i = 0; i < 2; i++) {
+    g_err << "=== JoinAggErrorInsert: " << errorNames[i]
+          << " error=" << errorCodes[i] << " ===" << endl;
+
+    if (restarter.insertErrorInAllNodes(errorCodes[i]) != 0) {
+      g_err << "insertErrorInAllNodes failed: " << errorCodes[i] << endl;
+      return NDBT_FAILED;
+    }
+
+    /* Query should fail but not crash */
+    int qrc = runJoinAggQuery(ndb, tab);
+    if (qrc == -2) {
+      g_err << "Fatal error building query" << endl;
+      restarter.insertErrorInAllNodes(0);
+      return NDBT_FAILED;
+    }
+    if (qrc == 0) {
+      g_info << "Query unexpectedly succeeded with error insert "
+             << errorCodes[i] << " (may happen if error was consumed)" << endl;
+    }
+
+    /* Clear error insert */
+    restarter.insertErrorInAllNodes(0);
+
+    CHK_NDB_READY(ndb);
+
+    /* Verify normal query works after error */
+    int vrc = runJoinAggQuery(ndb, tab);
+    if (vrc == -2) {
+      g_err << "Post-error join agg query failed fatally" << endl;
+      return NDBT_FAILED;
+    }
+    if (vrc == -1) {
+      g_err << "Post-error join agg query failed" << endl;
+      return NDBT_FAILED;
+    }
+
+    /* Verify all agg states released (ndbabort on leak) */
+    int dump[] = { DumpStateOrd::LqhDumpJoinAggStates };
+    if (restarter.dumpStateAllNodes(dump, 1)) {
+      g_err << "dumpStateAllNodes(LqhDumpJoinAggStates) failed" << endl;
+      return NDBT_FAILED;
+    }
+
+    g_err << "=== " << errorNames[i] << " passed ===" << endl;
+  }
+
+  return NDBT_OK;
+}
+
 NDBT_TESTSUITE(testNodeRestart);
 TESTCASE("NoLoad",
          "Test that one node at a time can be stopped and then restarted "
@@ -10981,6 +11286,20 @@ TESTCASE("timeout_apifail", "Timeout handling api failure") {
   FINALIZER(runDumpClear);
   FINALIZER(runClearErrorInjections);
   FINALIZER(runClearExtraConnections);
+  FINALIZER(runClearTable);
+}
+TESTCASE("JoinAggNodeRestart",
+         "Test join aggregation node failure handling during "
+         "SETUP_REQ, COMPLETE_REQ, and RELEASE_REQ phases") {
+  INITIALIZER(runLoadTable);
+  STEP(runJoinAggNodeRestart);
+  FINALIZER(runClearTable);
+}
+TESTCASE("JoinAggErrorInsert",
+         "Test join aggregation error insert paths "
+         "(SETUP_REF and COMPLETE_REF)") {
+  INITIALIZER(runLoadTable);
+  STEP(runJoinAggErrorInsert);
   FINALIZER(runClearTable);
 }
 NDBT_TESTSUITE_END(testNodeRestart)

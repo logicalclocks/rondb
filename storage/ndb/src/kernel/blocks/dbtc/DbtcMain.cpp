@@ -28786,7 +28786,12 @@ void Dbtc::execJOIN_AGG_COMPLETE_REF(Signal *signal) {
   ndbrequire(scanptr.p->scanState == ScanRecord::WAIT_JOIN_AGG_COMPLETE);
 
   Uint32 nodeId = refToNode(ref->senderRef);
-  scanptr.p->m_aggNodes.clear(nodeId);
+  /**
+   * Do NOT clear nodeId from m_aggNodes here — the agg state was
+   * successfully created during SETUP and still exists on that node.
+   * It must remain in m_aggNodes so sendJoinAggReleaseReqs sends
+   * RELEASE_REQ to free it.
+   */
   scanptr.p->m_aggNodesPending.clear(nodeId);
   scanptr.p->m_aggNodesOutstanding--;
 

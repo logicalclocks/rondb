@@ -74,3 +74,11 @@ cmd: testInterpreter
 args: T6
 max-time: 180
 
+cmd: testNodeRestart
+args: -n JoinAggNodeRestart T1
+max-time: 900
+
+cmd: testNodeRestart
+args: -n JoinAggErrorInsert T1
+max-time: 300
+

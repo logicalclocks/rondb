@@ -15716,13 +15716,12 @@ void Dblqh::execNODE_FAILREP(Signal *signal) {
         TfoundNodes++;
       }//if
     }//for
-    if (!m_is_query_block)
-    {
-      /* Perform block-level ndbd failure handling */
-      Callback cb = { safe_cast(&Dblqh::ndbdFailBlockCleanupCallback),
-                      Tdata[i] };
-      simBlockNodeFailure(signal, Tdata[i], cb);
-    }
+    /**
+     * simBlockNodeFailure is called from handle_tc_failed_scans
+     * when scan processing is complete (for all worker types).
+     * Do NOT call it directly here — that would cause a duplicate
+     * NF_COMPLETEREP from non-query-block workers.
+     */
   }
   ndbrequire(TnoOfNodes == TfoundNodes);
   setup_nodegroup_info();
@@ -18060,6 +18059,8 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
   const Uint32 requestId = req->requestId;
   const Uint32 aggStateKey = req->aggStateKey;
   const Uint32 maxBatchRows = req->maxBatchRows;
+
+  CRASH_INSERTION(5114);  // Crash node on COMPLETE_REQ for join agg NF testing
 
 #ifdef ERROR_INSERT
   if (ERROR_INSERTED(5092)) {
@@ -36422,6 +36423,28 @@ void Dblqh::execDUMP_STATE_ORD(Signal *signal) {
   Uint32 arg = dumpState->args[0];
 
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
+  if (signal->theData[0] == DumpStateOrd::LqhDumpJoinAggStates) {
+    jam();
+    /**
+     * Verify all join aggregation states have been released.
+     * Sent to instance 1 (proxy thread) which owns the pool.
+     * Crashes the node if any states are leaked — makes failures
+     * immediately visible in Autotest.
+     */
+    const Uint32 poolSize = getJoinAggStatePoolSize();
+    for (Uint32 k = 0; k < poolSize; k++) {
+      JoinAggregationState *state = getJoinAggState(k);
+      if (state != nullptr) {
+        g_eventLogger->info("DUMP 2361: leaked agg state key=%u "
+                            "requestId=%u state=%u senderRef=0x%x",
+                            k, state->m_requestId,
+                            (Uint32)state->m_state.load(),
+                            state->m_senderRef);
+        ndbabort();
+      }
+    }
+    return;
+  }
   if (signal->theData[0] == DumpStateOrd::LqhSkipTcNodeCheck) {
     jam();
     m_skip_tc_node_check = true;

@@ -28,7 +28,10 @@ Next NDBFS 2002
 Next DBACC 3007
 4040: Force intermittent group eviction in join aggregation (every ~7 rows)
 Next DBTUP 4041
-Next DBLQH 5113
+5113: CRASH_INSERTION in execJOIN_AGG_SETUP_REQ (DblqhProxy) — node failure testing
+5114: CRASH_INSERTION in execJOIN_AGG_COMPLETE_REQ (Dblqh) — node failure testing
+5115: CRASH_INSERTION in execJOIN_AGG_RELEASE_REQ (DblqhProxy) — node failure testing
+Next DBLQH 5116
 Next DBDICT 6229
 Next DBDIH 7251
 Next DBTC 8127

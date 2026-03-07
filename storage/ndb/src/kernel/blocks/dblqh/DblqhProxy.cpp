@@ -2262,6 +2262,8 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   const Uint32 senderData = req->senderData;
   const Uint32 requestId = req->requestId;
 
+  CRASH_INSERTION(5113);  // Crash node on SETUP_REQ for join agg NF testing
+
 #ifdef ERROR_INSERT
   if (ERROR_INSERTED(5091)) {
     jam();
@@ -2479,6 +2481,8 @@ DblqhProxy::execJOIN_AGG_RELEASE_REQ(Signal *signal) {
   const Uint32 requestId = req->requestId;
   const Uint32 aggStateKey = req->aggStateKey;
   const Uint32 noReply = req->noReply;
+
+  CRASH_INSERTION(5115);  // Crash node on RELEASE_REQ for join agg NF testing
 
   JoinAggregationState *state = getJoinAggState(aggStateKey);
   if (state != nullptr) {

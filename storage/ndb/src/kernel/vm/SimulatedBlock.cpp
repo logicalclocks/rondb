@@ -6085,7 +6085,11 @@ JoinAggregationState* SimulatedBlock::getJoinAggState(Uint32 key) {
   if (key == RNIL || key >= s_joinAggStatePoolSize) {
     return nullptr;
   }
-  return s_joinAggStatePool.getPtr(key);
+  Ptr<JoinAggregationState> ptr;
+  if (s_joinAggStatePool.getPtr(ptr, key)) {
+    return ptr.p;
+  }
+  return nullptr;
 }
 
 void SimulatedBlock::releaseJoinAggState(Uint32 key) {
