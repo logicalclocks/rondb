@@ -12297,76 +12297,6 @@ void Dbtc::checkScanActiveInFailedLqh(Signal *signal, Uint32 scanPtrI,
   checkNodeFailComplete(signal, failedNodeId, HostRecord::NF_CHECK_SCAN);
 }
 
-/**
- * Handle node failure for join aggregation phases.
- * For nodes still pending, fake the appropriate signal and let
- * the existing exec handlers deal with state transitions:
- *  - SETUP: fake SETUP_REF (must abort, agg state lost)
- *  - COMPLETE: fake COMPLETE_REF (must abort, agg state lost)
- *  - RELEASE: fake RELEASE_CONF (cleanup only, query done)
- *
- * For SETUP/COMPLETE: a node that already responded but now died
- * also triggers abort — its aggregation state is lost.
- * For RELEASE: no abort needed, results already sent to NDB API.
- *
- * Returns true if the failed node was involved in this scan's
- * join aggregation.
- */
-bool Dbtc::handleJoinAggNodeFailure(Signal *signal, ScanRecordPtr scanptr,
-                                    Uint32 failedNodeId) {
-  const ScanRecord::ScanState state = scanptr.p->scanState;
-
-  if ((state == ScanRecord::WAIT_JOIN_AGG_SETUP ||
-       state == ScanRecord::WAIT_JOIN_AGG_COMPLETE ||
-       state == ScanRecord::WAIT_JOIN_AGG_RELEASE) &&
-      scanptr.p->m_aggNodesPending.get(failedNodeId)) {
-    jam();
-    const Uint32 failedRef = numberToRef(DBLQH, failedNodeId);
-    if (state == ScanRecord::WAIT_JOIN_AGG_SETUP) {
-      jam();
-      JoinAggSetupRef *ref =
-          (JoinAggSetupRef *)signal->getDataPtrSend();
-      ref->senderRef = failedRef;
-      ref->senderData = scanptr.i;
-      ref->errorCode = ZNODEFAIL_BEFORE_COMMIT;
-      execJOIN_AGG_SETUP_REF(signal);
-    } else if (state == ScanRecord::WAIT_JOIN_AGG_COMPLETE) {
-      jam();
-      JoinAggCompleteRef *ref =
-          (JoinAggCompleteRef *)signal->getDataPtrSend();
-      ref->senderRef = failedRef;
-      ref->senderData = scanptr.i;
-      ref->errorCode = ZNODEFAIL_BEFORE_COMMIT;
-      execJOIN_AGG_COMPLETE_REF(signal);
-    } else {
-      jam();
-      JoinAggReleaseConf *conf =
-          (JoinAggReleaseConf *)signal->getDataPtrSend();
-      conf->senderRef = failedRef;
-      conf->senderData = scanptr.i;
-      execJOIN_AGG_RELEASE_CONF(signal);
-    }
-    return true;
-
-  } else if ((state == ScanRecord::WAIT_JOIN_AGG_SETUP ||
-              state == ScanRecord::WAIT_JOIN_AGG_COMPLETE) &&
-             scanptr.p->m_aggNodes.get(failedNodeId)) {
-    jam();
-    /**
-     * Node already responded but is now dead — its aggregation
-     * state is lost. Must abort even though we're not waiting
-     * for its response. Remove from aggNodes and set failure.
-     */
-    scanptr.p->m_aggNodes.clear(failedNodeId);
-    if (!scanptr.p->m_aggPhaseFailed) {
-      scanptr.p->m_aggPhaseFailed = true;
-      scanptr.p->m_aggErrorCode = ZNODEFAIL_BEFORE_COMMIT;
-    }
-    return true;
-  }
-  return false;
-}
-
 void Dbtc::nodeFailCheckTransactions(Signal *signal, Uint32 transPtrI,
                                      Uint32 failedNodeId) {
   jam();
@@ -16285,91 +16215,6 @@ SCAN_TAB_error_no_state_change:
   return;
 }  // Dbtc::execSCAN_TABREQ()
 
-/**
- * Parse JoinAgg combined KeyInfo section format:
- *   Word 0:              boundsLen (0 if no bounds)
- *   Words 1..boundsLen:  bounds data
- *   Word boundsLen+1:    aggReceiverId (API receiver for results)
- *   Remaining words:     aggregation program
- * Splits bounds from agg program into separate scan record fields.
- */
-void Dbtc::parseJoinAggKeyInfo(ScanRecordPtr scanptr, SectionHandle &handle,
-                               Uint32 keyLen) {
-  scanptr.p->m_joinAgg = true;
-  scanptr.p->scanKeyInfoPtr = RNIL;
-  scanptr.p->m_aggProgramPtrI = RNIL;
-
-  SectionReader reader(handle.m_ptr[ScanTabReq::KeyInfoSectionNum].i,
-                       getSectionSegmentPool());
-  Uint32 boundsLen;
-  ndbrequire(reader.getWord(&boundsLen));
-  ndbrequire(2 + boundsLen <= keyLen);  // +2 for boundsLen word + receiverId
-
-  if (boundsLen > 0) {
-    /* Extract bounds into scanKeyInfoPtr */
-    Uint32 remaining = boundsLen;
-    while (remaining > 0) {
-      const Uint32 *readPtr;
-      Uint32 actualLen;
-      ndbrequire(reader.getWordsPtr(remaining, readPtr, actualLen));
-      ndbrequire(appendToSection(scanptr.p->scanKeyInfoPtr,
-                                   readPtr, actualLen));
-      remaining -= actualLen;
-    }
-  }
-
-  /* Extract aggReceiverId */
-  ndbrequire(reader.getWord(&scanptr.p->m_aggReceiverId));
-
-  /* Remaining words = aggregation program */
-  const Uint32 aggLen = keyLen - 2 - boundsLen;
-  if (aggLen > 0) {
-    Uint32 remaining = aggLen;
-    while (remaining > 0) {
-      const Uint32 *readPtr;
-      Uint32 actualLen;
-      ndbrequire(reader.getWordsPtr(remaining, readPtr, actualLen));
-      ndbrequire(appendToSection(scanptr.p->m_aggProgramPtrI,
-                                   readPtr, actualLen));
-      remaining -= actualLen;
-    }
-  }
-
-  /* Release original combined section */
-  releaseSection(handle.m_ptr[ScanTabReq::KeyInfoSectionNum].i);
-  handle.m_ptr[ScanTabReq::KeyInfoSectionNum].i = RNIL;
-  handle.m_ptr[ScanTabReq::KeyInfoSectionNum].sz = 0;
-
-#ifdef DEBUG_JOIN_AGG_TRACE
-  DEB_JOIN_AGG(("DBTC parseJoinAggKeyInfo: boundsLen=%u"
-                 " aggReceiverId=0x%x aggProgramPtrI=0x%x"
-                 " total_keyLen=%u",
-                 boundsLen, scanptr.p->m_aggReceiverId,
-                 scanptr.p->m_aggProgramPtrI, keyLen));
-  /* Dump aggProgram contents */
-  if (scanptr.p->m_aggProgramPtrI != RNIL) {
-    SegmentedSectionPtr aggPtr;
-    getSection(aggPtr, scanptr.p->m_aggProgramPtrI);
-    Uint32 aggSz = aggPtr.sz;
-    DEB_JOIN_AGG(("  aggProgram (%u words):", aggSz));
-    SectionReader aggRdr(scanptr.p->m_aggProgramPtrI,
-                         getSectionSegmentPool());
-    Uint32 tmpBuf[16];
-    Uint32 remaining = aggSz;
-    Uint32 offset = 0;
-    while (remaining > 0) {
-      Uint32 chunk = (remaining > 16) ? 16 : remaining;
-      for (Uint32 j = 0; j < chunk; j++)
-        ndbrequire(aggRdr.getWord(&tmpBuf[j]));
-      for (Uint32 j = 0; j < chunk; j++)
-        DEB_JOIN_AGG(("    [%u] 0x%08x", offset + j, tmpBuf[j]));
-      offset += chunk;
-      remaining -= chunk;
-    }
-  }
-#endif
-}
-
 Dbtc::ScanFragRec::ScanFragRec()
     : m_magic(Magic::make(TYPE_ID)),
       lqhScanFragId(RNIL),
@@ -17155,52 +17000,6 @@ void Dbtc::releaseScanResources(Signal *signal, ScanRecordPtr scanPtr,
   apiConnectptr.p->apiConnectstate = CS_CONNECTED;
   setApiConTimer(apiConnectptr, 0, __LINE__);
 }  // Dbtc::releaseScanResources()
-
-/**
- * Release join aggregation resources held by a scan record.
- * m_aggProgramPtrI and m_aggKeysSectionPtrI are normally released
- * earlier (at SETUP_CONF / SCAN_FRAGREQ send time). These are
- * safety nets for abnormal cleanup paths (e.g. scan abort).
- * If m_aggNodes is still set, send fire-and-forget RELEASE_REQ
- * to free agg states on remaining data nodes.
- */
-void Dbtc::releaseJoinAggResources(Signal *signal, ScanRecordPtr scanPtr) {
-  if (scanPtr.p->m_aggProgramPtrI != RNIL) {
-    releaseSection(scanPtr.p->m_aggProgramPtrI);
-    scanPtr.p->m_aggProgramPtrI = RNIL;
-  }
-  if (scanPtr.p->m_aggKeysSectionPtrI != RNIL) {
-    releaseSection(scanPtr.p->m_aggKeysSectionPtrI);
-    scanPtr.p->m_aggKeysSectionPtrI = RNIL;
-  }
-  if (scanPtr.p->m_joinAgg && !scanPtr.p->m_aggNodes.isclear()) {
-    jam();
-    NdbNodeBitmask nodes = scanPtr.p->m_aggNodes;
-    scanPtr.p->m_aggNodes.clear();
-
-    ApiConnectRecordPtr apiPtr;
-    apiPtr.i = scanPtr.p->scanApiRec;
-    c_apiConnectRecordPool.getPtr(apiPtr);
-
-    for (Uint32 nodeId = nodes.find_first();
-         nodeId != NdbNodeBitmask::NotFound;
-         nodeId = nodes.find_next(nodeId + 1)) {
-      if (!getNodeInfo(nodeId).m_connected) continue;
-      JoinAggReleaseReq *req =
-          (JoinAggReleaseReq *)signal->getDataPtrSend();
-      req->senderRef = reference();
-      req->senderData = scanPtr.i;
-      req->requestId = scanPtr.p->scanApiRec;
-      req->transid[0] = apiPtr.p->transid[0];
-      req->transid[1] = apiPtr.p->transid[1];
-      req->aggStateKey = scanPtr.p->m_aggStateKeys[nodeId];
-      req->noReply = 1;
-      Uint32 ref = numberToRef(DBLQH, nodeId);
-      sendSignal(ref, GSN_JOIN_AGG_RELEASE_REQ, signal,
-                 JoinAggReleaseReq::SignalLength, JBB);
-    }
-  }
-}
 
 bool Dbtc::sendDihGetNodeReq(Signal *signal, ScanRecordPtr scanptr,
                              ScanFragLocationPtr &fragLocationPtr,
@@ -28575,6 +28374,207 @@ void Dbtc::debug_db_no_queue(DatabaseRecordPtr databaseRecordPtr,
 }
 
 // Join aggregation orchestration (Phase 7)
+
+/**
+ * Parse JoinAgg combined KeyInfo section format:
+ *   Word 0:              boundsLen (0 if no bounds)
+ *   Words 1..boundsLen:  bounds data
+ *   Word boundsLen+1:    aggReceiverId (API receiver for results)
+ *   Remaining words:     aggregation program
+ * Splits bounds from agg program into separate scan record fields.
+ */
+void Dbtc::parseJoinAggKeyInfo(ScanRecordPtr scanptr, SectionHandle &handle,
+                               Uint32 keyLen) {
+  scanptr.p->m_joinAgg = true;
+  scanptr.p->scanKeyInfoPtr = RNIL;
+  scanptr.p->m_aggProgramPtrI = RNIL;
+
+  SectionReader reader(handle.m_ptr[ScanTabReq::KeyInfoSectionNum].i,
+                       getSectionSegmentPool());
+  Uint32 boundsLen;
+  ndbrequire(reader.getWord(&boundsLen));
+  ndbrequire(2 + boundsLen <= keyLen);  // +2 for boundsLen word + receiverId
+
+  if (boundsLen > 0) {
+    /* Extract bounds into scanKeyInfoPtr */
+    Uint32 remaining = boundsLen;
+    while (remaining > 0) {
+      const Uint32 *readPtr;
+      Uint32 actualLen;
+      ndbrequire(reader.getWordsPtr(remaining, readPtr, actualLen));
+      ndbrequire(appendToSection(scanptr.p->scanKeyInfoPtr,
+                                   readPtr, actualLen));
+      remaining -= actualLen;
+    }
+  }
+
+  /* Extract aggReceiverId */
+  ndbrequire(reader.getWord(&scanptr.p->m_aggReceiverId));
+
+  /* Remaining words = aggregation program */
+  const Uint32 aggLen = keyLen - 2 - boundsLen;
+  if (aggLen > 0) {
+    Uint32 remaining = aggLen;
+    while (remaining > 0) {
+      const Uint32 *readPtr;
+      Uint32 actualLen;
+      ndbrequire(reader.getWordsPtr(remaining, readPtr, actualLen));
+      ndbrequire(appendToSection(scanptr.p->m_aggProgramPtrI,
+                                   readPtr, actualLen));
+      remaining -= actualLen;
+    }
+  }
+
+  /* Release original combined section */
+  releaseSection(handle.m_ptr[ScanTabReq::KeyInfoSectionNum].i);
+  handle.m_ptr[ScanTabReq::KeyInfoSectionNum].i = RNIL;
+  handle.m_ptr[ScanTabReq::KeyInfoSectionNum].sz = 0;
+
+#ifdef DEBUG_JOIN_AGG_TRACE
+  DEB_JOIN_AGG(("DBTC parseJoinAggKeyInfo: boundsLen=%u"
+                 " aggReceiverId=0x%x aggProgramPtrI=0x%x"
+                 " total_keyLen=%u",
+                 boundsLen, scanptr.p->m_aggReceiverId,
+                 scanptr.p->m_aggProgramPtrI, keyLen));
+  /* Dump aggProgram contents */
+  if (scanptr.p->m_aggProgramPtrI != RNIL) {
+    SegmentedSectionPtr aggPtr;
+    getSection(aggPtr, scanptr.p->m_aggProgramPtrI);
+    Uint32 aggSz = aggPtr.sz;
+    DEB_JOIN_AGG(("  aggProgram (%u words):", aggSz));
+    SectionReader aggRdr(scanptr.p->m_aggProgramPtrI,
+                         getSectionSegmentPool());
+    Uint32 tmpBuf[16];
+    Uint32 remaining = aggSz;
+    Uint32 offset = 0;
+    while (remaining > 0) {
+      Uint32 chunk = (remaining > 16) ? 16 : remaining;
+      for (Uint32 j = 0; j < chunk; j++)
+        ndbrequire(aggRdr.getWord(&tmpBuf[j]));
+      for (Uint32 j = 0; j < chunk; j++)
+        DEB_JOIN_AGG(("    [%u] 0x%08x", offset + j, tmpBuf[j]));
+      offset += chunk;
+      remaining -= chunk;
+    }
+  }
+#endif
+}
+
+/**
+ * Release join aggregation resources held by a scan record.
+ * m_aggProgramPtrI and m_aggKeysSectionPtrI are normally released
+ * earlier (at SETUP_CONF / SCAN_FRAGREQ send time). These are
+ * safety nets for abnormal cleanup paths (e.g. scan abort).
+ * If m_aggNodes is still set, send fire-and-forget RELEASE_REQ
+ * to free agg states on remaining data nodes.
+ */
+void Dbtc::releaseJoinAggResources(Signal *signal, ScanRecordPtr scanPtr) {
+  if (scanPtr.p->m_aggProgramPtrI != RNIL) {
+    releaseSection(scanPtr.p->m_aggProgramPtrI);
+    scanPtr.p->m_aggProgramPtrI = RNIL;
+  }
+  if (scanPtr.p->m_aggKeysSectionPtrI != RNIL) {
+    releaseSection(scanPtr.p->m_aggKeysSectionPtrI);
+    scanPtr.p->m_aggKeysSectionPtrI = RNIL;
+  }
+  if (scanPtr.p->m_joinAgg && !scanPtr.p->m_aggNodes.isclear()) {
+    jam();
+    NdbNodeBitmask nodes = scanPtr.p->m_aggNodes;
+    scanPtr.p->m_aggNodes.clear();
+
+    ApiConnectRecordPtr apiPtr;
+    apiPtr.i = scanPtr.p->scanApiRec;
+    c_apiConnectRecordPool.getPtr(apiPtr);
+
+    for (Uint32 nodeId = nodes.find_first();
+         nodeId != NdbNodeBitmask::NotFound;
+         nodeId = nodes.find_next(nodeId + 1)) {
+      if (!getNodeInfo(nodeId).m_connected) continue;
+      JoinAggReleaseReq *req =
+          (JoinAggReleaseReq *)signal->getDataPtrSend();
+      req->senderRef = reference();
+      req->senderData = scanPtr.i;
+      req->requestId = scanPtr.p->scanApiRec;
+      req->transid[0] = apiPtr.p->transid[0];
+      req->transid[1] = apiPtr.p->transid[1];
+      req->aggStateKey = scanPtr.p->m_aggStateKeys[nodeId];
+      req->noReply = 1;
+      Uint32 ref = numberToRef(DBLQH, nodeId);
+      sendSignal(ref, GSN_JOIN_AGG_RELEASE_REQ, signal,
+                 JoinAggReleaseReq::SignalLength, JBB);
+    }
+  }
+}
+
+/**
+ * Handle node failure for join aggregation phases.
+ * For nodes still pending, fake the appropriate signal and let
+ * the existing exec handlers deal with state transitions:
+ *  - SETUP: fake SETUP_REF (must abort, agg state lost)
+ *  - COMPLETE: fake COMPLETE_REF (must abort, agg state lost)
+ *  - RELEASE: fake RELEASE_CONF (cleanup only, query done)
+ *
+ * For SETUP/COMPLETE: a node that already responded but now died
+ * also triggers abort — its aggregation state is lost.
+ * For RELEASE: no abort needed, results already sent to NDB API.
+ *
+ * Returns true if the failed node was involved in this scan's
+ * join aggregation.
+ */
+bool Dbtc::handleJoinAggNodeFailure(Signal *signal, ScanRecordPtr scanptr,
+                                    Uint32 failedNodeId) {
+  const ScanRecord::ScanState state = scanptr.p->scanState;
+
+  if ((state == ScanRecord::WAIT_JOIN_AGG_SETUP ||
+       state == ScanRecord::WAIT_JOIN_AGG_COMPLETE ||
+       state == ScanRecord::WAIT_JOIN_AGG_RELEASE) &&
+      scanptr.p->m_aggNodesPending.get(failedNodeId)) {
+    jam();
+    const Uint32 failedRef = numberToRef(DBLQH, failedNodeId);
+    if (state == ScanRecord::WAIT_JOIN_AGG_SETUP) {
+      jam();
+      JoinAggSetupRef *ref =
+          (JoinAggSetupRef *)signal->getDataPtrSend();
+      ref->senderRef = failedRef;
+      ref->senderData = scanptr.i;
+      ref->errorCode = ZNODEFAIL_BEFORE_COMMIT;
+      execJOIN_AGG_SETUP_REF(signal);
+    } else if (state == ScanRecord::WAIT_JOIN_AGG_COMPLETE) {
+      jam();
+      JoinAggCompleteRef *ref =
+          (JoinAggCompleteRef *)signal->getDataPtrSend();
+      ref->senderRef = failedRef;
+      ref->senderData = scanptr.i;
+      ref->errorCode = ZNODEFAIL_BEFORE_COMMIT;
+      execJOIN_AGG_COMPLETE_REF(signal);
+    } else {
+      jam();
+      JoinAggReleaseConf *conf =
+          (JoinAggReleaseConf *)signal->getDataPtrSend();
+      conf->senderRef = failedRef;
+      conf->senderData = scanptr.i;
+      execJOIN_AGG_RELEASE_CONF(signal);
+    }
+    return true;
+
+  } else if ((state == ScanRecord::WAIT_JOIN_AGG_SETUP ||
+              state == ScanRecord::WAIT_JOIN_AGG_COMPLETE) &&
+             scanptr.p->m_aggNodes.get(failedNodeId)) {
+    jam();
+    /**
+     * Node already responded but is now dead — its aggregation
+     * state is lost. Must abort even though we're not waiting
+     * for its response. Remove from aggNodes and set failure.
+     */
+    scanptr.p->m_aggNodes.clear(failedNodeId);
+    if (!scanptr.p->m_aggPhaseFailed) {
+      scanptr.p->m_aggPhaseFailed = true;
+      scanptr.p->m_aggErrorCode = ZNODEFAIL_BEFORE_COMMIT;
+    }
+    return true;
+  }
+  return false;
+}
 
 void Dbtc::sendJoinAggSetupReqs(Signal *signal, ScanRecordPtr scanptr,
                                 ApiConnectRecordPtr apiConnectptr) {
