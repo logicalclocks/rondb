@@ -16152,87 +16152,7 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
     scanptr.p->scanAttrInfoPtr = handle.m_ptr[ScanTabReq::AttrInfoSectionNum].i;
     if (ScanTabReq::getJoinAggFlag(ri) && keyLen) {
       jam();
-      /**
-       * JoinAgg: Section 2 has combined format:
-       *   Word 0:              boundsLen (0 if no bounds)
-       *   Words 1..boundsLen:  bounds data
-       *   Word boundsLen+1:    aggReceiverId (API receiver for results)
-       *   Remaining words:     aggregation program
-       * Parse this header to split bounds from agg program.
-       */
-      scanptr.p->m_joinAgg = true;
-      scanptr.p->scanKeyInfoPtr = RNIL;
-      scanptr.p->m_aggProgramPtrI = RNIL;
-
-      SectionReader reader(handle.m_ptr[ScanTabReq::KeyInfoSectionNum].i,
-                           getSectionSegmentPool());
-      Uint32 boundsLen;
-      ndbrequire(reader.getWord(&boundsLen));
-      ndbrequire(2 + boundsLen <= keyLen);  // +2 for boundsLen word + receiverId
-
-      if (boundsLen > 0) {
-        /* Extract bounds into scanKeyInfoPtr */
-        Uint32 remaining = boundsLen;
-        while (remaining > 0) {
-          const Uint32 *readPtr;
-          Uint32 actualLen;
-          ndbrequire(reader.getWordsPtr(remaining, readPtr, actualLen));
-          ndbrequire(appendToSection(scanptr.p->scanKeyInfoPtr,
-                                     readPtr, actualLen));
-          remaining -= actualLen;
-        }
-      }
-
-      /* Extract aggReceiverId */
-      ndbrequire(reader.getWord(&scanptr.p->m_aggReceiverId));
-
-      /* Remaining words = aggregation program */
-      const Uint32 aggLen = keyLen - 2 - boundsLen;
-      if (aggLen > 0) {
-        Uint32 remaining = aggLen;
-        while (remaining > 0) {
-          const Uint32 *readPtr;
-          Uint32 actualLen;
-          ndbrequire(reader.getWordsPtr(remaining, readPtr, actualLen));
-          ndbrequire(appendToSection(scanptr.p->m_aggProgramPtrI,
-                                     readPtr, actualLen));
-          remaining -= actualLen;
-        }
-      }
-
-      /* Release original combined section */
-      releaseSection(handle.m_ptr[ScanTabReq::KeyInfoSectionNum].i);
-      handle.m_ptr[ScanTabReq::KeyInfoSectionNum].i = RNIL;
-      handle.m_ptr[ScanTabReq::KeyInfoSectionNum].sz = 0;
-
-#ifdef DEBUG_JOIN_AGG_TRACE
-      DEB_JOIN_AGG(("DBTC execSCAN_TABREQ JoinAgg Section 2 parsed:"
-                     " boundsLen=%u aggReceiverId=0x%x aggProgramPtrI=0x%x"
-                     " total_keyLen=%u",
-                     boundsLen, scanptr.p->m_aggReceiverId,
-                     scanptr.p->m_aggProgramPtrI, keyLen));
-      /* Dump aggProgram contents */
-      if (scanptr.p->m_aggProgramPtrI != RNIL) {
-        SegmentedSectionPtr aggPtr;
-        getSection(aggPtr, scanptr.p->m_aggProgramPtrI);
-        Uint32 aggSz = aggPtr.sz;
-        DEB_JOIN_AGG(("  aggProgram (%u words):", aggSz));
-        SectionReader aggRdr(scanptr.p->m_aggProgramPtrI,
-                             getSectionSegmentPool());
-        Uint32 tmpBuf[16];
-        Uint32 remaining = aggSz;
-        Uint32 offset = 0;
-        while (remaining > 0) {
-          Uint32 chunk = (remaining > 16) ? 16 : remaining;
-          for (Uint32 j = 0; j < chunk; j++)
-            ndbrequire(aggRdr.getWord(&tmpBuf[j]));
-          for (Uint32 j = 0; j < chunk; j++)
-            DEB_JOIN_AGG(("    [%u] 0x%08x", offset + j, tmpBuf[j]));
-          offset += chunk;
-          remaining -= chunk;
-        }
-      }
-#endif
+      parseJoinAggKeyInfo(scanptr, handle, keyLen);
     } else if (keyLen) {
       jamDebug();
       scanptr.p->scanKeyInfoPtr = handle.m_ptr[ScanTabReq::KeyInfoSectionNum].i;
@@ -16364,6 +16284,91 @@ SCAN_TAB_error_no_state_change:
   ndbassert(transP->apiConnectstate != CS_DISCONNECTED);
   return;
 }  // Dbtc::execSCAN_TABREQ()
+
+/**
+ * Parse JoinAgg combined KeyInfo section format:
+ *   Word 0:              boundsLen (0 if no bounds)
+ *   Words 1..boundsLen:  bounds data
+ *   Word boundsLen+1:    aggReceiverId (API receiver for results)
+ *   Remaining words:     aggregation program
+ * Splits bounds from agg program into separate scan record fields.
+ */
+void Dbtc::parseJoinAggKeyInfo(ScanRecordPtr scanptr, SectionHandle &handle,
+                               Uint32 keyLen) {
+  scanptr.p->m_joinAgg = true;
+  scanptr.p->scanKeyInfoPtr = RNIL;
+  scanptr.p->m_aggProgramPtrI = RNIL;
+
+  SectionReader reader(handle.m_ptr[ScanTabReq::KeyInfoSectionNum].i,
+                       getSectionSegmentPool());
+  Uint32 boundsLen;
+  ndbrequire(reader.getWord(&boundsLen));
+  ndbrequire(2 + boundsLen <= keyLen);  // +2 for boundsLen word + receiverId
+
+  if (boundsLen > 0) {
+    /* Extract bounds into scanKeyInfoPtr */
+    Uint32 remaining = boundsLen;
+    while (remaining > 0) {
+      const Uint32 *readPtr;
+      Uint32 actualLen;
+      ndbrequire(reader.getWordsPtr(remaining, readPtr, actualLen));
+      ndbrequire(appendToSection(scanptr.p->scanKeyInfoPtr,
+                                   readPtr, actualLen));
+      remaining -= actualLen;
+    }
+  }
+
+  /* Extract aggReceiverId */
+  ndbrequire(reader.getWord(&scanptr.p->m_aggReceiverId));
+
+  /* Remaining words = aggregation program */
+  const Uint32 aggLen = keyLen - 2 - boundsLen;
+  if (aggLen > 0) {
+    Uint32 remaining = aggLen;
+    while (remaining > 0) {
+      const Uint32 *readPtr;
+      Uint32 actualLen;
+      ndbrequire(reader.getWordsPtr(remaining, readPtr, actualLen));
+      ndbrequire(appendToSection(scanptr.p->m_aggProgramPtrI,
+                                   readPtr, actualLen));
+      remaining -= actualLen;
+    }
+  }
+
+  /* Release original combined section */
+  releaseSection(handle.m_ptr[ScanTabReq::KeyInfoSectionNum].i);
+  handle.m_ptr[ScanTabReq::KeyInfoSectionNum].i = RNIL;
+  handle.m_ptr[ScanTabReq::KeyInfoSectionNum].sz = 0;
+
+#ifdef DEBUG_JOIN_AGG_TRACE
+  DEB_JOIN_AGG(("DBTC parseJoinAggKeyInfo: boundsLen=%u"
+                 " aggReceiverId=0x%x aggProgramPtrI=0x%x"
+                 " total_keyLen=%u",
+                 boundsLen, scanptr.p->m_aggReceiverId,
+                 scanptr.p->m_aggProgramPtrI, keyLen));
+  /* Dump aggProgram contents */
+  if (scanptr.p->m_aggProgramPtrI != RNIL) {
+    SegmentedSectionPtr aggPtr;
+    getSection(aggPtr, scanptr.p->m_aggProgramPtrI);
+    Uint32 aggSz = aggPtr.sz;
+    DEB_JOIN_AGG(("  aggProgram (%u words):", aggSz));
+    SectionReader aggRdr(scanptr.p->m_aggProgramPtrI,
+                         getSectionSegmentPool());
+    Uint32 tmpBuf[16];
+    Uint32 remaining = aggSz;
+    Uint32 offset = 0;
+    while (remaining > 0) {
+      Uint32 chunk = (remaining > 16) ? 16 : remaining;
+      for (Uint32 j = 0; j < chunk; j++)
+        ndbrequire(aggRdr.getWord(&tmpBuf[j]));
+      for (Uint32 j = 0; j < chunk; j++)
+        DEB_JOIN_AGG(("    [%u] 0x%08x", offset + j, tmpBuf[j]));
+      offset += chunk;
+      remaining -= chunk;
+    }
+  }
+#endif
+}
 
 Dbtc::ScanFragRec::ScanFragRec()
     : m_magic(Magic::make(TYPE_ID)),
