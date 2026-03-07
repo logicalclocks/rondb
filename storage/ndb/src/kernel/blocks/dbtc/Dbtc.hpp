@@ -2625,6 +2625,8 @@ class Dbtc : public SimulatedBlock {
 
   void checkScanActiveInFailedLqh(Signal *signal, Uint32 scanPtrI,
                                   Uint32 failedNodeId);
+  bool handleJoinAggNodeFailure(Signal *signal, ScanRecordPtr scanptr,
+                                Uint32 failedNodeId);
 
   void nodeFailCheckTransactions(Signal *, Uint32 transPtrI,
                                  Uint32 failedNodeId);

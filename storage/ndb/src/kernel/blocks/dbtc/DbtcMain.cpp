@@ -12268,76 +12268,9 @@ void Dbtc::checkScanActiveInFailedLqh(Signal *signal, Uint32 scanPtrI,
       }
     }
 
-    /**
-     * Handle node failure for join aggregation phases.
-     * For nodes still pending, fake the appropriate signal and let
-     * the existing exec handlers deal with state transitions:
-     *  - SETUP: fake SETUP_REF (must abort, agg state lost)
-     *  - COMPLETE: fake COMPLETE_REF (must abort, agg state lost)
-     *  - RELEASE: fake RELEASE_CONF (cleanup only, query done)
-     *
-     * For SETUP/COMPLETE: a node that already responded but now died
-     * also triggers abort — its aggregation state is lost.
-     * For RELEASE: no abort needed, results already sent to NDB API.
-     */
     if (scanptr.p->m_joinAgg) {
       jam();
-      const ScanRecord::ScanState state = scanptr.p->scanState;
-
-      if ((state == ScanRecord::WAIT_JOIN_AGG_SETUP ||
-           state == ScanRecord::WAIT_JOIN_AGG_COMPLETE ||
-           state == ScanRecord::WAIT_JOIN_AGG_RELEASE) &&
-          scanptr.p->m_aggNodesPending.get(failedNodeId)) {
-        jam();
-        /**
-         * Node died while we're waiting for its response. Fake the
-         * appropriate signal and let the existing handler deal with
-         * state transitions:
-         *  - SETUP: fake a SETUP_REF (must abort, agg state lost)
-         *  - COMPLETE: fake a COMPLETE_REF (must abort, agg state lost)
-         *  - RELEASE: fake a RELEASE_CONF (cleanup only, query done)
-         */
-        const Uint32 failedRef = numberToRef(DBLQH, failedNodeId);
-        if (state == ScanRecord::WAIT_JOIN_AGG_SETUP) {
-          jam();
-          JoinAggSetupRef *ref =
-              (JoinAggSetupRef *)signal->getDataPtrSend();
-          ref->senderRef = failedRef;
-          ref->senderData = scanptr.i;
-          ref->errorCode = ZNODEFAIL_BEFORE_COMMIT;
-          execJOIN_AGG_SETUP_REF(signal);
-        } else if (state == ScanRecord::WAIT_JOIN_AGG_COMPLETE) {
-          jam();
-          JoinAggCompleteRef *ref =
-              (JoinAggCompleteRef *)signal->getDataPtrSend();
-          ref->senderRef = failedRef;
-          ref->senderData = scanptr.i;
-          ref->errorCode = ZNODEFAIL_BEFORE_COMMIT;
-          execJOIN_AGG_COMPLETE_REF(signal);
-        } else {
-          jam();
-          JoinAggReleaseConf *conf =
-              (JoinAggReleaseConf *)signal->getDataPtrSend();
-          conf->senderRef = failedRef;
-          conf->senderData = scanptr.i;
-          execJOIN_AGG_RELEASE_CONF(signal);
-        }
-        found = true;
-
-      } else if ((state == ScanRecord::WAIT_JOIN_AGG_SETUP ||
-                  state == ScanRecord::WAIT_JOIN_AGG_COMPLETE) &&
-                 scanptr.p->m_aggNodes.get(failedNodeId)) {
-        jam();
-        /**
-         * Node already responded but is now dead — its aggregation
-         * state is lost. Must abort even though we're not waiting
-         * for its response. Remove from aggNodes and set failure.
-         */
-        scanptr.p->m_aggNodes.clear(failedNodeId);
-        if (!scanptr.p->m_aggPhaseFailed) {
-          scanptr.p->m_aggPhaseFailed = true;
-          scanptr.p->m_aggErrorCode = ZNODEFAIL_BEFORE_COMMIT;
-        }
+      if (handleJoinAggNodeFailure(signal, scanptr, failedNodeId)) {
         found = true;
       }
     }
@@ -12362,6 +12295,76 @@ void Dbtc::checkScanActiveInFailedLqh(Signal *signal, Uint32 scanPtrI,
     return;
   }  // for
   checkNodeFailComplete(signal, failedNodeId, HostRecord::NF_CHECK_SCAN);
+}
+
+/**
+ * Handle node failure for join aggregation phases.
+ * For nodes still pending, fake the appropriate signal and let
+ * the existing exec handlers deal with state transitions:
+ *  - SETUP: fake SETUP_REF (must abort, agg state lost)
+ *  - COMPLETE: fake COMPLETE_REF (must abort, agg state lost)
+ *  - RELEASE: fake RELEASE_CONF (cleanup only, query done)
+ *
+ * For SETUP/COMPLETE: a node that already responded but now died
+ * also triggers abort — its aggregation state is lost.
+ * For RELEASE: no abort needed, results already sent to NDB API.
+ *
+ * Returns true if the failed node was involved in this scan's
+ * join aggregation.
+ */
+bool Dbtc::handleJoinAggNodeFailure(Signal *signal, ScanRecordPtr scanptr,
+                                    Uint32 failedNodeId) {
+  const ScanRecord::ScanState state = scanptr.p->scanState;
+
+  if ((state == ScanRecord::WAIT_JOIN_AGG_SETUP ||
+       state == ScanRecord::WAIT_JOIN_AGG_COMPLETE ||
+       state == ScanRecord::WAIT_JOIN_AGG_RELEASE) &&
+      scanptr.p->m_aggNodesPending.get(failedNodeId)) {
+    jam();
+    const Uint32 failedRef = numberToRef(DBLQH, failedNodeId);
+    if (state == ScanRecord::WAIT_JOIN_AGG_SETUP) {
+      jam();
+      JoinAggSetupRef *ref =
+          (JoinAggSetupRef *)signal->getDataPtrSend();
+      ref->senderRef = failedRef;
+      ref->senderData = scanptr.i;
+      ref->errorCode = ZNODEFAIL_BEFORE_COMMIT;
+      execJOIN_AGG_SETUP_REF(signal);
+    } else if (state == ScanRecord::WAIT_JOIN_AGG_COMPLETE) {
+      jam();
+      JoinAggCompleteRef *ref =
+          (JoinAggCompleteRef *)signal->getDataPtrSend();
+      ref->senderRef = failedRef;
+      ref->senderData = scanptr.i;
+      ref->errorCode = ZNODEFAIL_BEFORE_COMMIT;
+      execJOIN_AGG_COMPLETE_REF(signal);
+    } else {
+      jam();
+      JoinAggReleaseConf *conf =
+          (JoinAggReleaseConf *)signal->getDataPtrSend();
+      conf->senderRef = failedRef;
+      conf->senderData = scanptr.i;
+      execJOIN_AGG_RELEASE_CONF(signal);
+    }
+    return true;
+
+  } else if ((state == ScanRecord::WAIT_JOIN_AGG_SETUP ||
+              state == ScanRecord::WAIT_JOIN_AGG_COMPLETE) &&
+             scanptr.p->m_aggNodes.get(failedNodeId)) {
+    jam();
+    /**
+     * Node already responded but is now dead — its aggregation
+     * state is lost. Must abort even though we're not waiting
+     * for its response. Remove from aggNodes and set failure.
+     */
+    scanptr.p->m_aggNodes.clear(failedNodeId);
+    if (!scanptr.p->m_aggPhaseFailed) {
+      scanptr.p->m_aggPhaseFailed = true;
+      scanptr.p->m_aggErrorCode = ZNODEFAIL_BEFORE_COMMIT;
+    }
+    return true;
+  }
+  return false;
 }
 
 void Dbtc::nodeFailCheckTransactions(Signal *signal, Uint32 transPtrI,
