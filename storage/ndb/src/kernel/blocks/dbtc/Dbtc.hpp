@@ -2004,13 +2004,23 @@ class Dbtc : public SimulatedBlock {
     Uint32 m_aggProgramPtrI;
     Uint32 m_aggKeysSectionPtrI;
     Uint32 m_aggReceiverId;  // API-side NdbReceiver ID for agg results
-    NdbNodeBitmask m_aggNodes;
-    NdbNodeBitmask m_aggNodesPending;  // Nodes we're waiting for a response from
     Uint32 m_aggNodesOutstanding;
     bool m_joinAgg;
     bool m_aggPhaseFailed;         // Error received during current agg phase
     Uint32 m_aggErrorCode;         // Error code from first failure
-    Uint32 m_aggStateKeys[ABS_MAX_NDB_NODES];
+
+    /**
+     * Per-node join agg state, dynamically allocated via
+     * lc_ndbd_pool_malloc only for JoinAgg queries to avoid ~620
+     * bytes overhead in every ScanRecord. Sized to MAX_NDB_NODES
+     * (the runtime cluster max) rather than ABS_MAX_NDB_NODES.
+     */
+    struct JoinAggNodeState {
+      NdbNodeBitmask m_aggNodes;
+      NdbNodeBitmask m_aggNodesPending;
+      Uint32 m_aggStateKeys[];  // Flexible array member, sized at allocation
+    };
+    JoinAggNodeState *m_joinAggNodes;  // nullptr when not JoinAgg
   };
   typedef Ptr<ScanRecord> ScanRecordPtr;
   typedef TransientPool<ScanRecord> ScanRecord_pool;

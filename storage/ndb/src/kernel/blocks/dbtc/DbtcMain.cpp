@@ -16296,9 +16296,8 @@ Uint32 Dbtc::initScanrec(ScanRecordPtr scanptr, const ScanTabReq *scanTabReq,
   scanptr.p->m_joinAgg = false;
   scanptr.p->m_aggPhaseFailed = false;
   scanptr.p->m_aggErrorCode = 0;
-  scanptr.p->m_aggNodes.clear();
-  scanptr.p->m_aggNodesPending.clear();
   scanptr.p->m_aggNodesOutstanding = 0;
+  scanptr.p->m_joinAggNodes = nullptr;
 
   DEB_SCAN_MANY(("(%u) SCAN_TABREQ, batch_size: %u",
     instance(), scanptr.p->batch_size_rows));
@@ -18868,11 +18867,11 @@ void Dbtc::sendScanTabConf(Signal *signal, const ScanRecordPtr scanPtr,
                    " m_joinAgg=%u m_aggNodes.isclear=%u scanState=%u"
                    " scanPtr.i=%u",
                    scanPtr.p->m_joinAgg,
-                   scanPtr.p->m_aggNodes.isclear(),
+                   scanPtr.p->m_joinAggNodes->m_aggNodes.isclear(),
                    scanPtr.p->scanState,
                    scanPtr.i));
 #endif
-    if (scanPtr.p->m_joinAgg && !scanPtr.p->m_aggNodes.isclear()) {
+    if (scanPtr.p->m_joinAgg && !scanPtr.p->m_joinAggNodes->m_aggNodes.isclear()) {
       jam();
       scanPtr.p->scanState = ScanRecord::WAIT_JOIN_AGG_COMPLETE;
       scanPtr.p->m_aggPhaseFailed = false;
@@ -28389,6 +28388,16 @@ void Dbtc::parseJoinAggKeyInfo(ScanRecordPtr scanptr, SectionHandle &handle,
   scanptr.p->scanKeyInfoPtr = RNIL;
   scanptr.p->m_aggProgramPtrI = RNIL;
 
+  /* Allocate per-node join agg state sized to MAX_NDB_NODES */
+  const Uint32 maxNodes = MAX_NDB_NODES;
+  const size_t allocSize = sizeof(ScanRecord::JoinAggNodeState) +
+                           maxNodes * sizeof(Uint32);
+  auto *aggNodes = (ScanRecord::JoinAggNodeState *)
+      lc_ndbd_pool_malloc(allocSize, RG_TRANSACTION_MEMORY,
+                          getThreadId(), true);
+  ndbrequire(aggNodes != nullptr);
+  scanptr.p->m_joinAggNodes = aggNodes;
+
   SectionReader reader(handle.m_ptr[ScanTabReq::KeyInfoSectionNum].i,
                        getSectionSegmentPool());
   Uint32 boundsLen;
@@ -28477,32 +28486,37 @@ void Dbtc::releaseJoinAggResources(Signal *signal, ScanRecordPtr scanPtr) {
     releaseSection(scanPtr.p->m_aggKeysSectionPtrI);
     scanPtr.p->m_aggKeysSectionPtrI = RNIL;
   }
-  if (scanPtr.p->m_joinAgg && !scanPtr.p->m_aggNodes.isclear()) {
-    jam();
-    NdbNodeBitmask nodes = scanPtr.p->m_aggNodes;
-    scanPtr.p->m_aggNodes.clear();
+  if (scanPtr.p->m_joinAggNodes != nullptr) {
+    auto *aggNodes = scanPtr.p->m_joinAggNodes;
+    if (!aggNodes->m_aggNodes.isclear()) {
+      jam();
+      NdbNodeBitmask nodes = aggNodes->m_aggNodes;
+      aggNodes->m_aggNodes.clear();
 
-    ApiConnectRecordPtr apiPtr;
-    apiPtr.i = scanPtr.p->scanApiRec;
-    c_apiConnectRecordPool.getPtr(apiPtr);
+      ApiConnectRecordPtr apiPtr;
+      apiPtr.i = scanPtr.p->scanApiRec;
+      c_apiConnectRecordPool.getPtr(apiPtr);
 
-    for (Uint32 nodeId = nodes.find_first();
-         nodeId != NdbNodeBitmask::NotFound;
-         nodeId = nodes.find_next(nodeId + 1)) {
-      if (!getNodeInfo(nodeId).m_connected) continue;
-      JoinAggReleaseReq *req =
-          (JoinAggReleaseReq *)signal->getDataPtrSend();
-      req->senderRef = reference();
-      req->senderData = scanPtr.i;
-      req->requestId = scanPtr.p->scanApiRec;
-      req->transid[0] = apiPtr.p->transid[0];
-      req->transid[1] = apiPtr.p->transid[1];
-      req->aggStateKey = scanPtr.p->m_aggStateKeys[nodeId];
-      req->noReply = 1;
-      Uint32 ref = numberToRef(DBLQH, nodeId);
-      sendSignal(ref, GSN_JOIN_AGG_RELEASE_REQ, signal,
-                 JoinAggReleaseReq::SignalLength, JBB);
+      for (Uint32 nodeId = nodes.find_first();
+           nodeId != NdbNodeBitmask::NotFound;
+           nodeId = nodes.find_next(nodeId + 1)) {
+        if (!getNodeInfo(nodeId).m_connected) continue;
+        JoinAggReleaseReq *req =
+            (JoinAggReleaseReq *)signal->getDataPtrSend();
+        req->senderRef = reference();
+        req->senderData = scanPtr.i;
+        req->requestId = scanPtr.p->scanApiRec;
+        req->transid[0] = apiPtr.p->transid[0];
+        req->transid[1] = apiPtr.p->transid[1];
+        req->aggStateKey = aggNodes->m_aggStateKeys[nodeId];
+        req->noReply = 1;
+        Uint32 ref = numberToRef(DBLQH, nodeId);
+        sendSignal(ref, GSN_JOIN_AGG_RELEASE_REQ, signal,
+                   JoinAggReleaseReq::SignalLength, JBB);
+      }
     }
+    lc_ndbd_pool_free(aggNodes);
+    scanPtr.p->m_joinAggNodes = nullptr;
   }
 }
 
@@ -28528,7 +28542,7 @@ bool Dbtc::handleJoinAggNodeFailure(Signal *signal, ScanRecordPtr scanptr,
   if ((state == ScanRecord::WAIT_JOIN_AGG_SETUP ||
        state == ScanRecord::WAIT_JOIN_AGG_COMPLETE ||
        state == ScanRecord::WAIT_JOIN_AGG_RELEASE) &&
-      scanptr.p->m_aggNodesPending.get(failedNodeId)) {
+      scanptr.p->m_joinAggNodes->m_aggNodesPending.get(failedNodeId)) {
     jam();
     const Uint32 failedRef = numberToRef(DBLQH, failedNodeId);
     if (state == ScanRecord::WAIT_JOIN_AGG_SETUP) {
@@ -28559,14 +28573,14 @@ bool Dbtc::handleJoinAggNodeFailure(Signal *signal, ScanRecordPtr scanptr,
 
   } else if ((state == ScanRecord::WAIT_JOIN_AGG_SETUP ||
               state == ScanRecord::WAIT_JOIN_AGG_COMPLETE) &&
-             scanptr.p->m_aggNodes.get(failedNodeId)) {
+             scanptr.p->m_joinAggNodes->m_aggNodes.get(failedNodeId)) {
     jam();
     /**
      * Node already responded but is now dead — its aggregation
      * state is lost. Must abort even though we're not waiting
      * for its response. Remove from aggNodes and set failure.
      */
-    scanptr.p->m_aggNodes.clear(failedNodeId);
+    scanptr.p->m_joinAggNodes->m_aggNodes.clear(failedNodeId);
     if (!scanptr.p->m_aggPhaseFailed) {
       scanptr.p->m_aggPhaseFailed = true;
       scanptr.p->m_aggErrorCode = ZNODEFAIL_BEFORE_COMMIT;
@@ -28578,8 +28592,8 @@ bool Dbtc::handleJoinAggNodeFailure(Signal *signal, ScanRecordPtr scanptr,
 
 void Dbtc::sendJoinAggSetupReqs(Signal *signal, ScanRecordPtr scanptr,
                                 ApiConnectRecordPtr apiConnectptr) {
-  scanptr.p->m_aggNodes.clear();
-  scanptr.p->m_aggNodesPending.clear();
+  scanptr.p->m_joinAggNodes->m_aggNodes.clear();
+  scanptr.p->m_joinAggNodes->m_aggNodesPending.clear();
   scanptr.p->m_aggNodesOutstanding = 0;
   scanptr.p->m_aggPhaseFailed = false;
   scanptr.p->m_aggErrorCode = 0;
@@ -28624,8 +28638,8 @@ void Dbtc::sendJoinAggSetupReqs(Signal *signal, ScanRecordPtr scanptr,
     Uint32 ref = numberToRef(DBLQH, nodeId);
     sendSignal(ref, GSN_JOIN_AGG_SETUP_REQ, signal,
                JoinAggSetupReq::SignalLength, JBB, &handle);
-    scanptr.p->m_aggNodes.set(nodeId);
-    scanptr.p->m_aggNodesPending.set(nodeId);
+    scanptr.p->m_joinAggNodes->m_aggNodes.set(nodeId);
+    scanptr.p->m_joinAggNodes->m_aggNodesPending.set(nodeId);
     scanptr.p->m_aggNodesOutstanding++;
   }
 
@@ -28647,8 +28661,8 @@ void Dbtc::execJOIN_AGG_SETUP_CONF(Signal *signal) {
   ndbrequire(scanptr.p->scanState == ScanRecord::WAIT_JOIN_AGG_SETUP);
 
   Uint32 nodeId = refToNode(conf->senderRef);
-  scanptr.p->m_aggStateKeys[nodeId] = conf->aggStateKey;
-  scanptr.p->m_aggNodesPending.clear(nodeId);
+  scanptr.p->m_joinAggNodes->m_aggStateKeys[nodeId] = conf->aggStateKey;
+  scanptr.p->m_joinAggNodes->m_aggNodesPending.clear(nodeId);
   scanptr.p->m_aggNodesOutstanding--;
 
   /**
@@ -28673,7 +28687,7 @@ void Dbtc::execJOIN_AGG_SETUP_CONF(Signal *signal) {
       scanptr.p->m_aggPhaseFailed = false;
       Uint32 errorCode = scanptr.p->m_aggErrorCode;
 
-      if (!scanptr.p->m_aggNodes.isclear()) {
+      if (!scanptr.p->m_joinAggNodes->m_aggNodes.isclear()) {
         jam();
         sendJoinAggReleaseReqs(signal, scanptr);
       } else {
@@ -28688,12 +28702,12 @@ void Dbtc::execJOIN_AGG_SETUP_CONF(Signal *signal) {
 
     Uint32 keyData[ABS_MAX_NDB_NODES * 2];
     Uint32 idx = 0;
-    NdbNodeBitmask nodes = scanptr.p->m_aggNodes;
+    NdbNodeBitmask nodes = scanptr.p->m_joinAggNodes->m_aggNodes;
     for (Uint32 nid = nodes.find_first();
          nid != NdbNodeBitmask::NotFound;
          nid = nodes.find_next(nid + 1)) {
       keyData[idx++] = nid;
-      keyData[idx++] = scanptr.p->m_aggStateKeys[nid];
+      keyData[idx++] = scanptr.p->m_joinAggNodes->m_aggStateKeys[nid];
     }
     scanptr.p->m_aggKeysSectionPtrI = RNIL;
     ndbrequire(appendToSection(
@@ -28719,8 +28733,8 @@ void Dbtc::execJOIN_AGG_SETUP_REF(Signal *signal) {
   ndbrequire(scanptr.p->scanState == ScanRecord::WAIT_JOIN_AGG_SETUP);
 
   Uint32 nodeId = refToNode(ref->senderRef);
-  scanptr.p->m_aggNodes.clear(nodeId);
-  scanptr.p->m_aggNodesPending.clear(nodeId);
+  scanptr.p->m_joinAggNodes->m_aggNodes.clear(nodeId);
+  scanptr.p->m_joinAggNodes->m_aggNodesPending.clear(nodeId);
   scanptr.p->m_aggNodesOutstanding--;
 
   /**
@@ -28742,7 +28756,7 @@ void Dbtc::execJOIN_AGG_SETUP_REF(Signal *signal) {
     scanptr.p->m_aggPhaseFailed = false;
     Uint32 errorCode = scanptr.p->m_aggErrorCode;
 
-    if (!scanptr.p->m_aggNodes.isclear()) {
+    if (!scanptr.p->m_joinAggNodes->m_aggNodes.isclear()) {
       jam();
       sendJoinAggReleaseReqs(signal, scanptr);
     } else {
@@ -28767,7 +28781,7 @@ void Dbtc::execJOIN_AGG_COMPLETE_CONF(Signal *signal) {
   ndbrequire(scanptr.p->scanState == ScanRecord::WAIT_JOIN_AGG_COMPLETE);
 
   Uint32 nodeId = refToNode(conf->senderRef);
-  scanptr.p->m_aggNodesPending.clear(nodeId);
+  scanptr.p->m_joinAggNodes->m_aggNodesPending.clear(nodeId);
   scanptr.p->m_aggNodesOutstanding--;
 
   if (scanptr.p->m_aggNodesOutstanding == 0) {
@@ -28799,7 +28813,7 @@ void Dbtc::execJOIN_AGG_COMPLETE_REF(Signal *signal) {
    * It must remain in m_aggNodes so sendJoinAggReleaseReqs sends
    * RELEASE_REQ to free it.
    */
-  scanptr.p->m_aggNodesPending.clear(nodeId);
+  scanptr.p->m_joinAggNodes->m_aggNodesPending.clear(nodeId);
   scanptr.p->m_aggNodesOutstanding--;
 
   if (!scanptr.p->m_aggPhaseFailed) {
@@ -28827,7 +28841,7 @@ void Dbtc::execJOIN_AGG_RELEASE_CONF(Signal *signal) {
   ndbrequire(scanptr.p->scanState == ScanRecord::WAIT_JOIN_AGG_RELEASE);
 
   Uint32 nodeId = refToNode(conf->senderRef);
-  scanptr.p->m_aggNodesPending.clear(nodeId);
+  scanptr.p->m_joinAggNodes->m_aggNodesPending.clear(nodeId);
   scanptr.p->m_aggNodesOutstanding--;
 
   if (scanptr.p->m_aggNodesOutstanding == 0) {
@@ -28855,7 +28869,7 @@ void Dbtc::execJOIN_AGG_SEND_REQ(Signal *signal) {
 }
 
 void Dbtc::sendJoinAggCompleteReqs(Signal *signal, ScanRecordPtr scanptr) {
-  scanptr.p->m_aggNodesPending.clear();
+  scanptr.p->m_joinAggNodes->m_aggNodesPending.clear();
   scanptr.p->m_aggNodesOutstanding = 0;
 
   ApiConnectRecordPtr apiPtr;
@@ -28866,7 +28880,7 @@ void Dbtc::sendJoinAggCompleteReqs(Signal *signal, ScanRecordPtr scanptr) {
   DEB_JOIN_AGG(("DBTC sendJoinAggCompleteReqs: scanPtr.i=%u",
                  scanptr.i));
 #endif
-  NdbNodeBitmask nodes = scanptr.p->m_aggNodes;
+  NdbNodeBitmask nodes = scanptr.p->m_joinAggNodes->m_aggNodes;
   for (Uint32 nodeId = nodes.find_first();
        nodeId != NdbNodeBitmask::NotFound;
        nodeId = nodes.find_next(nodeId + 1)) {
@@ -28876,7 +28890,7 @@ void Dbtc::sendJoinAggCompleteReqs(Signal *signal, ScanRecordPtr scanptr) {
        * Node died — remove from aggNodes. Its state is lost.
        * Don't send COMPLETE_REQ, don't expect a response.
        */
-      scanptr.p->m_aggNodes.clear(nodeId);
+      scanptr.p->m_joinAggNodes->m_aggNodes.clear(nodeId);
       if (!scanptr.p->m_aggPhaseFailed) {
         scanptr.p->m_aggPhaseFailed = true;
         scanptr.p->m_aggErrorCode = ZNODEFAIL_BEFORE_COMMIT;
@@ -28890,13 +28904,13 @@ void Dbtc::sendJoinAggCompleteReqs(Signal *signal, ScanRecordPtr scanptr) {
     req->requestId = scanptr.p->scanApiRec;
     req->transid[0] = apiPtr.p->transid[0];
     req->transid[1] = apiPtr.p->transid[1];
-    req->aggStateKey = scanptr.p->m_aggStateKeys[nodeId];
+    req->aggStateKey = scanptr.p->m_joinAggNodes->m_aggStateKeys[nodeId];
     req->maxBatchRows = 256;
 
     Uint32 ref = numberToRef(DBLQH, 1, nodeId);
     sendSignal(ref, GSN_JOIN_AGG_COMPLETE_REQ, signal,
                JoinAggCompleteReq::SignalLength, JBB);
-    scanptr.p->m_aggNodesPending.set(nodeId);
+    scanptr.p->m_joinAggNodes->m_aggNodesPending.set(nodeId);
     scanptr.p->m_aggNodesOutstanding++;
   }
 
@@ -28911,14 +28925,14 @@ void Dbtc::sendJoinAggCompleteReqs(Signal *signal, ScanRecordPtr scanptr) {
 
 void Dbtc::sendJoinAggReleaseReqs(Signal *signal, ScanRecordPtr scanptr) {
   scanptr.p->scanState = ScanRecord::WAIT_JOIN_AGG_RELEASE;
-  scanptr.p->m_aggNodesPending.clear();
+  scanptr.p->m_joinAggNodes->m_aggNodesPending.clear();
   scanptr.p->m_aggNodesOutstanding = 0;
 
   ApiConnectRecordPtr apiPtr;
   apiPtr.i = scanptr.p->scanApiRec;
   c_apiConnectRecordPool.getPtr(apiPtr);
 
-  NdbNodeBitmask nodes = scanptr.p->m_aggNodes;
+  NdbNodeBitmask nodes = scanptr.p->m_joinAggNodes->m_aggNodes;
   for (Uint32 nodeId = nodes.find_first();
        nodeId != NdbNodeBitmask::NotFound;
        nodeId = nodes.find_next(nodeId + 1)) {
@@ -28928,7 +28942,7 @@ void Dbtc::sendJoinAggReleaseReqs(Signal *signal, ScanRecordPtr scanptr) {
        * Node died — its aggregation state is lost with it.
        * No need to send RELEASE_REQ.
        */
-      scanptr.p->m_aggNodes.clear(nodeId);
+      scanptr.p->m_joinAggNodes->m_aggNodes.clear(nodeId);
       continue;
     }
     JoinAggReleaseReq *req =
@@ -28938,16 +28952,16 @@ void Dbtc::sendJoinAggReleaseReqs(Signal *signal, ScanRecordPtr scanptr) {
     req->requestId = scanptr.p->scanApiRec;
     req->transid[0] = apiPtr.p->transid[0];
     req->transid[1] = apiPtr.p->transid[1];
-    req->aggStateKey = scanptr.p->m_aggStateKeys[nodeId];
+    req->aggStateKey = scanptr.p->m_joinAggNodes->m_aggStateKeys[nodeId];
     req->noReply = 0;
 
     Uint32 ref = numberToRef(DBLQH, nodeId);
     sendSignal(ref, GSN_JOIN_AGG_RELEASE_REQ, signal,
                JoinAggReleaseReq::SignalLength, JBB);
-    scanptr.p->m_aggNodesPending.set(nodeId);
+    scanptr.p->m_joinAggNodes->m_aggNodesPending.set(nodeId);
     scanptr.p->m_aggNodesOutstanding++;
   }
-  scanptr.p->m_aggNodes.clear();
+  scanptr.p->m_joinAggNodes->m_aggNodes.clear();
 
   if (scanptr.p->m_aggNodesOutstanding == 0) {
     jam();
