@@ -190,6 +190,13 @@ class NdbQueryImpl {
    */
   int prepareSend();
 
+  /** Prepare aggregation receivers, program, and aggregator (RONDB-733). */
+  int prepareAggregation();
+
+  /** Trace SCAN_TABREQ sections for JoinAgg debugging (no-op without
+   *  DEBUG_JOIN_AGG_TRACE). */
+  void traceJoinAggScanTabReq(const Uint32Buffer &combinedAggSec2);
+
   /** Send prepared signals from this NdbQuery to start execution
    *  @return #signals sent, -1 if error.
    */

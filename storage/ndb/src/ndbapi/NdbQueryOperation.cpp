@@ -3198,62 +3198,11 @@ int NdbQueryImpl::prepareSend() {
     NdbWorker::buildReceiverIdMap(m_workers, m_workerCount);
   }
 
-  /**
-   * Aggregation setup (RONDB-733):
-   * If the query has an aggregate leaf, allocate dedicated receivers
-   * for aggregation results and copy the aggregation program for Section 2.
-   */
+  // Aggregation setup (RONDB-733)
   if (m_hasAggregation) {
-    assert(getQueryDef().isScanQuery());
-    const Uint32 aggLeafOpNo = getQueryDef().getAggregateLeafOpNo();
-    const NdbQueryOperationDefImpl &aggLeafDef =
-        getQueryDef().getQueryOperation(aggLeafOpNo);
-    const NdbQueryOptionsImpl &aggOpts = aggLeafDef.getOptions();
-
-    // Copy agg program buffer for later use in doSend() Section 2
-    const Uint32 *progBuf = aggOpts.getAggProgramBuffer();
-    const Uint32 progLen = aggOpts.getAggProgramLen();
-    assert(progBuf != nullptr && progLen > 0);
-    for (Uint32 i = 0; i < progLen; i++) {
-      m_aggProgram.append(progBuf[i]);
-    }
-    if (unlikely(m_aggProgram.isMemoryExhausted())) {
-      setErrorCode(Err_MemoryAlloc);
+    if (prepareAggregation() != 0) {
       return -1;
     }
-
-    // Allocate NdbReceiver objects for aggregation results.
-    // Use m_workerCount receivers — one per SPJ worker gives good
-    // hash distribution for group routing.
-    Ndb *const ndb = m_transaction.getNdb();
-    m_numAggReceivers = m_workerCount;
-    m_aggReceivers = new NdbReceiver *[m_numAggReceivers];
-    if (unlikely(m_aggReceivers == nullptr)) {
-      setErrorCode(Err_MemoryAlloc);
-      return -1;
-    }
-    for (Uint32 i = 0; i < m_numAggReceivers; i++) {
-      NdbReceiver *rec = ndb->getNdbScanRec();
-      if (unlikely(rec == nullptr)) {
-        setErrorCode(Err_MemoryAlloc);
-        return -1;
-      }
-      rec->init(NdbReceiver::NDB_AGG_RECEIVER, this);
-      m_aggReceivers[i] = rec;
-    }
-
-    // Create NdbAggregator for result collection.
-    // Use the table from the aggregate leaf operation.
-    const NdbTableImpl *aggTable = aggOpts.getAggTable();
-    assert(aggTable != nullptr);
-    m_aggregator = new NdbAggregator(aggTable->m_facade);
-    // Initialize aggregator from program header so ProcessRes knows
-    // n_gb_cols, n_agg_results, and agg_ops for result parsing.
-    // Pass GROUP BY column definitions for correct type info in
-    // FetchGroupbyColumn() (especially for linked parent columns).
-    m_aggregator->initForResults(progBuf, progLen,
-                                 aggOpts.getAggGbColumns(),
-                                 aggOpts.getAggNGroupByCols());
   }
 
 #ifdef TRACE_SERIALIZATION
@@ -3270,6 +3219,65 @@ int NdbQueryImpl::prepareSend() {
   m_state = Prepared;
   return 0;
 }  // NdbQueryImpl::prepareSend
+
+/**
+ * Aggregation setup (RONDB-733):
+ * Allocate dedicated receivers for aggregation results, copy the
+ * aggregation program for Section 2, and create NdbAggregator.
+ */
+int NdbQueryImpl::prepareAggregation() {
+  assert(getQueryDef().isScanQuery());
+  const Uint32 aggLeafOpNo = getQueryDef().getAggregateLeafOpNo();
+  const NdbQueryOperationDefImpl &aggLeafDef =
+      getQueryDef().getQueryOperation(aggLeafOpNo);
+  const NdbQueryOptionsImpl &aggOpts = aggLeafDef.getOptions();
+
+  // Copy agg program buffer for later use in doSend() Section 2
+  const Uint32 *progBuf = aggOpts.getAggProgramBuffer();
+  const Uint32 progLen = aggOpts.getAggProgramLen();
+  assert(progBuf != nullptr && progLen > 0);
+  for (Uint32 i = 0; i < progLen; i++) {
+    m_aggProgram.append(progBuf[i]);
+  }
+  if (unlikely(m_aggProgram.isMemoryExhausted())) {
+    setErrorCode(Err_MemoryAlloc);
+    return -1;
+  }
+
+  // Allocate NdbReceiver objects for aggregation results.
+  // Use m_workerCount receivers — one per SPJ worker gives good
+  // hash distribution for group routing.
+  Ndb *const ndb = m_transaction.getNdb();
+  m_numAggReceivers = m_workerCount;
+  m_aggReceivers = new NdbReceiver *[m_numAggReceivers];
+  if (unlikely(m_aggReceivers == nullptr)) {
+    setErrorCode(Err_MemoryAlloc);
+    return -1;
+  }
+  for (Uint32 i = 0; i < m_numAggReceivers; i++) {
+    NdbReceiver *rec = ndb->getNdbScanRec();
+    if (unlikely(rec == nullptr)) {
+      setErrorCode(Err_MemoryAlloc);
+      return -1;
+    }
+    rec->init(NdbReceiver::NDB_AGG_RECEIVER, this);
+    m_aggReceivers[i] = rec;
+  }
+
+  // Create NdbAggregator for result collection.
+  // Use the table from the aggregate leaf operation.
+  const NdbTableImpl *aggTable = aggOpts.getAggTable();
+  assert(aggTable != nullptr);
+  m_aggregator = new NdbAggregator(aggTable->m_facade);
+  // Initialize aggregator from program header so ProcessRes knows
+  // n_gb_cols, n_agg_results, and agg_ops for result parsing.
+  // Pass GROUP BY column definitions for correct type info in
+  // FetchGroupbyColumn() (especially for linked parent columns).
+  m_aggregator->initForResults(progBuf, progLen,
+                               aggOpts.getAggGbColumns(),
+                               aggOpts.getAggNGroupByCols());
+  return 0;
+}  // NdbQueryImpl::prepareAggregation
 
 /** This iterator is used for inserting a sequence of receiver ids
  * for the initial batch of a scan into a section via a GenericSectionPtr.*/
@@ -3401,6 +3409,67 @@ Remark:         Send a TCKEYREQ or SCAN_TABREQ (long) signal depending of
                 the query being either a lookup or scan type.
                 KEYINFO and ATTRINFO are included as part of the long signal
 ******************************************************************************/
+#ifdef DEBUG_JOIN_AGG_TRACE
+/**
+ * Trace SCAN_TABREQ sections for JoinAgg debugging.
+ */
+void NdbQueryImpl::traceJoinAggScanTabReq(
+    const Uint32Buffer &combinedAggSec2) {
+  fprintf(stderr, "\n====== NdbQuery SCAN_TABREQ (JoinAgg) ======\n");
+  fprintf(stderr, "workerCount=%u, scanParallelism=%u\n",
+          m_workerCount, m_workerCount);
+
+  /* Section 0: worker receiver IDs (for SPJ scan results) */
+  fprintf(stderr, "--- Section 0: Worker Receiver IDs (%u) ---\n",
+          m_workerCount);
+  for (Uint32 i = 0; i < m_workerCount; i++)
+    fprintf(stderr, "  worker[%u] receiverId=0x%x\n",
+            i, m_workers[i].getReceiverId());
+
+  /* Section 1: AttrInfo = QueryTree + Parameters */
+  fprintf(stderr, "--- Section 1: AttrInfo / QueryTree (%u words) ---\n",
+          m_attrInfo.getSize());
+  {
+    const Uint32 *ai = m_attrInfo.addr();
+    Uint32 aiSz = m_attrInfo.getSize();
+    /* Decode QueryTree header */
+    if (aiSz > 0) {
+      Uint32 cnt_len = ai[0];
+      fprintf(stderr, "  QueryTree header: cnt=%u, len=%u\n",
+              cnt_len >> 16, cnt_len & 0xFFFF);
+    }
+    DEB_JOIN_AGG("AttrInfo (QueryTree+Params)", ai, aiSz);
+  }
+
+  /* Section 2: Combined [boundsLen, bounds, aggReceiverId, aggProgram] */
+  fprintf(stderr,
+          "--- Section 2: Combined AggSection (%u words) ---\n",
+          combinedAggSec2.getSize());
+  {
+    const Uint32 *s2 = combinedAggSec2.addr();
+    Uint32 s2Sz = combinedAggSec2.getSize();
+    if (s2Sz > 0) {
+      Uint32 bLen = s2[0];
+      fprintf(stderr, "  boundsLen=%u\n", bLen);
+      if (1 + bLen < s2Sz)
+        fprintf(stderr, "  aggReceiverId=0x%x\n", s2[1 + bLen]);
+      Uint32 progStart = 2 + bLen;
+      if (progStart < s2Sz) {
+        fprintf(stderr, "  aggProgram (%u words):\n", s2Sz - progStart);
+        for (Uint32 i = progStart; i < s2Sz && i < progStart + 12; i++)
+          fprintf(stderr, "    [%u] 0x%08x\n", i - progStart, s2[i]);
+        if (s2Sz - progStart > 12)
+          fprintf(stderr, "    ... (%u more words)\n",
+                  s2Sz - progStart - 12);
+      }
+    }
+  }
+  fprintf(stderr, "============================================\n\n");
+}
+#else
+void NdbQueryImpl::traceJoinAggScanTabReq(const Uint32Buffer &) {}
+#endif  /* DEBUG_JOIN_AGG_TRACE */
+
 int NdbQueryImpl::doSend(int nodeId, bool lastFlag) {
   if (unlikely(m_state != Prepared)) {
     assert(m_state >= Initial && m_state < Destructed);
@@ -3612,60 +3681,9 @@ int NdbQueryImpl::doSend(int nodeId, bool lastFlag) {
     }
     DBUG_PRINT("info", ("Send SCAN_TABREQ: NdbQueryOperation"));
 
-#ifdef DEBUG_JOIN_AGG_TRACE
     if (m_hasAggregation) {
-      fprintf(stderr, "\n====== NdbQuery SCAN_TABREQ (JoinAgg) ======\n");
-      fprintf(stderr, "workerCount=%u, scanParallelism=%u\n",
-              m_workerCount, m_workerCount);
-
-      /* Section 0: worker receiver IDs (for SPJ scan results) */
-      fprintf(stderr, "--- Section 0: Worker Receiver IDs (%u) ---\n",
-              m_workerCount);
-      for (Uint32 i = 0; i < m_workerCount; i++)
-        fprintf(stderr, "  worker[%u] receiverId=0x%x\n",
-                i, m_workers[i].getReceiverId());
-
-      /* Section 1: AttrInfo = QueryTree + Parameters */
-      fprintf(stderr, "--- Section 1: AttrInfo / QueryTree (%u words) ---\n",
-              m_attrInfo.getSize());
-      {
-        const Uint32 *ai = m_attrInfo.addr();
-        Uint32 aiSz = m_attrInfo.getSize();
-        /* Decode QueryTree header */
-        if (aiSz > 0) {
-          Uint32 cnt_len = ai[0];
-          fprintf(stderr, "  QueryTree header: cnt=%u, len=%u\n",
-                  cnt_len >> 16, cnt_len & 0xFFFF);
-        }
-        DEB_JOIN_AGG("AttrInfo (QueryTree+Params)", ai, aiSz);
-      }
-
-      /* Section 2: Combined [boundsLen, bounds, aggReceiverId, aggProgram] */
-      fprintf(stderr,
-              "--- Section 2: Combined AggSection (%u words) ---\n",
-              combinedAggSec2.getSize());
-      {
-        const Uint32 *s2 = combinedAggSec2.addr();
-        Uint32 s2Sz = combinedAggSec2.getSize();
-        if (s2Sz > 0) {
-          Uint32 bLen = s2[0];
-          fprintf(stderr, "  boundsLen=%u\n", bLen);
-          if (1 + bLen < s2Sz)
-            fprintf(stderr, "  aggReceiverId=0x%x\n", s2[1 + bLen]);
-          Uint32 progStart = 2 + bLen;
-          if (progStart < s2Sz) {
-            fprintf(stderr, "  aggProgram (%u words):\n", s2Sz - progStart);
-            for (Uint32 i = progStart; i < s2Sz && i < progStart + 12; i++)
-              fprintf(stderr, "    [%u] 0x%08x\n", i - progStart, s2[i]);
-            if (s2Sz - progStart > 12)
-              fprintf(stderr, "    ... (%u more words)\n",
-                      s2Sz - progStart - 12);
-          }
-        }
-      }
-      fprintf(stderr, "============================================\n\n");
+      traceJoinAggScanTabReq(combinedAggSec2);
     }
-#endif  /* DEBUG_JOIN_AGG_TRACE */
 
     /* Send Fragmented as SCAN_TABREQ can be large */
     const int res =
