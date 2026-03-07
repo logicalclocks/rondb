@@ -17112,54 +17112,7 @@ void Dbtc::releaseScanResources(Signal *signal, ScanRecordPtr scanPtr,
     scanPtr.p->scanAttrInfoPtr = RNIL;
   }
 
-  /**
-   * m_aggProgramPtrI should have been released in execJOIN_AGG_SETUP_CONF
-   * after all data nodes received the program.
-   * m_aggKeysSectionPtrI should have been released at send time when the
-   * last SCAN_FRAGREQ was sent to DBSPJ (releaseAtSend).
-   * These are safety nets for abnormal cleanup paths (e.g. scan abort).
-   */
-  if (scanPtr.p->m_aggProgramPtrI != RNIL) {
-    releaseSection(scanPtr.p->m_aggProgramPtrI);
-    scanPtr.p->m_aggProgramPtrI = RNIL;
-  }
-  if (scanPtr.p->m_aggKeysSectionPtrI != RNIL) {
-    releaseSection(scanPtr.p->m_aggKeysSectionPtrI);
-    scanPtr.p->m_aggKeysSectionPtrI = RNIL;
-  }
-  /**
-   * m_aggNodes should already be clear — release requests are sent
-   * during the WAIT_JOIN_AGG_RELEASE phase and m_aggNodes is cleared
-   * by sendJoinAggReleaseReqs(). This is a safety net for cases where
-   * the scan is aborted before reaching the release phase.
-   */
-  if (scanPtr.p->m_joinAgg && !scanPtr.p->m_aggNodes.isclear()) {
-    jam();
-    NdbNodeBitmask nodes = scanPtr.p->m_aggNodes;
-    scanPtr.p->m_aggNodes.clear();
-
-    ApiConnectRecordPtr apiPtr;
-    apiPtr.i = scanPtr.p->scanApiRec;
-    c_apiConnectRecordPool.getPtr(apiPtr);
-
-    for (Uint32 nodeId = nodes.find_first();
-         nodeId != NdbNodeBitmask::NotFound;
-         nodeId = nodes.find_next(nodeId + 1)) {
-      if (!getNodeInfo(nodeId).m_connected) continue;
-      JoinAggReleaseReq *req =
-          (JoinAggReleaseReq *)signal->getDataPtrSend();
-      req->senderRef = reference();
-      req->senderData = scanPtr.i;
-      req->requestId = scanPtr.p->scanApiRec;
-      req->transid[0] = apiPtr.p->transid[0];
-      req->transid[1] = apiPtr.p->transid[1];
-      req->aggStateKey = scanPtr.p->m_aggStateKeys[nodeId];
-      req->noReply = 1;
-      Uint32 ref = numberToRef(DBLQH, nodeId);
-      sendSignal(ref, GSN_JOIN_AGG_RELEASE_REQ, signal,
-                 JoinAggReleaseReq::SignalLength, JBB);
-    }
-  }
+  releaseJoinAggResources(signal, scanPtr);
 
   ndbrequire(scanPtr.p->m_running_scan_frags.isEmpty());
   ndbrequire(scanPtr.p->m_queued_scan_frags.isEmpty());
@@ -17202,6 +17155,52 @@ void Dbtc::releaseScanResources(Signal *signal, ScanRecordPtr scanPtr,
   apiConnectptr.p->apiConnectstate = CS_CONNECTED;
   setApiConTimer(apiConnectptr, 0, __LINE__);
 }  // Dbtc::releaseScanResources()
+
+/**
+ * Release join aggregation resources held by a scan record.
+ * m_aggProgramPtrI and m_aggKeysSectionPtrI are normally released
+ * earlier (at SETUP_CONF / SCAN_FRAGREQ send time). These are
+ * safety nets for abnormal cleanup paths (e.g. scan abort).
+ * If m_aggNodes is still set, send fire-and-forget RELEASE_REQ
+ * to free agg states on remaining data nodes.
+ */
+void Dbtc::releaseJoinAggResources(Signal *signal, ScanRecordPtr scanPtr) {
+  if (scanPtr.p->m_aggProgramPtrI != RNIL) {
+    releaseSection(scanPtr.p->m_aggProgramPtrI);
+    scanPtr.p->m_aggProgramPtrI = RNIL;
+  }
+  if (scanPtr.p->m_aggKeysSectionPtrI != RNIL) {
+    releaseSection(scanPtr.p->m_aggKeysSectionPtrI);
+    scanPtr.p->m_aggKeysSectionPtrI = RNIL;
+  }
+  if (scanPtr.p->m_joinAgg && !scanPtr.p->m_aggNodes.isclear()) {
+    jam();
+    NdbNodeBitmask nodes = scanPtr.p->m_aggNodes;
+    scanPtr.p->m_aggNodes.clear();
+
+    ApiConnectRecordPtr apiPtr;
+    apiPtr.i = scanPtr.p->scanApiRec;
+    c_apiConnectRecordPool.getPtr(apiPtr);
+
+    for (Uint32 nodeId = nodes.find_first();
+         nodeId != NdbNodeBitmask::NotFound;
+         nodeId = nodes.find_next(nodeId + 1)) {
+      if (!getNodeInfo(nodeId).m_connected) continue;
+      JoinAggReleaseReq *req =
+          (JoinAggReleaseReq *)signal->getDataPtrSend();
+      req->senderRef = reference();
+      req->senderData = scanPtr.i;
+      req->requestId = scanPtr.p->scanApiRec;
+      req->transid[0] = apiPtr.p->transid[0];
+      req->transid[1] = apiPtr.p->transid[1];
+      req->aggStateKey = scanPtr.p->m_aggStateKeys[nodeId];
+      req->noReply = 1;
+      Uint32 ref = numberToRef(DBLQH, nodeId);
+      sendSignal(ref, GSN_JOIN_AGG_RELEASE_REQ, signal,
+                 JoinAggReleaseReq::SignalLength, JBB);
+    }
+  }
+}
 
 bool Dbtc::sendDihGetNodeReq(Signal *signal, ScanRecordPtr scanptr,
                              ScanFragLocationPtr &fragLocationPtr,

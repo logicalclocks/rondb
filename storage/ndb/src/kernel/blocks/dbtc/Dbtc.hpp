@@ -2117,6 +2117,7 @@ class Dbtc : public SimulatedBlock {
   void execSCAN_TABREQ(Signal *signal);
   void parseJoinAggKeyInfo(ScanRecordPtr scanptr, SectionHandle &handle,
                            Uint32 keyLen);
+  void releaseJoinAggResources(Signal *signal, ScanRecordPtr scanPtr);
   void execSCAN_TABINFO(Signal *signal);
   void execSCAN_FRAGCONF(Signal *signal);
   void execSCAN_FRAGREF(Signal *signal);
