@@ -1755,65 +1755,10 @@ Dbspj::build(Build_context& ctx,
     requestPtr.p->m_bits |= Request::RT_MULTI_SCAN;
   }
 
-  /**
-   * Validate aggregate flag consistency before execution.
-   * The NDB API sets NI_AGGREGATE on every node and NI_AGGREGATE_LEAF
-   * on exactly one leaf node. Verify this to catch malformed queries
-   * early rather than crashing later in DBTC/DBLQH.
-   */
-  if (requestPtr.p->m_bits & Request::RT_AGGREGATE) {
+  err = validateAggregateFlags(ctx, requestPtr);
+  if (unlikely(err != 0)) {
     jam();
-    Uint32 aggregate_leaf_count = 0;
-    bool aggregate_leaf_is_leaf = false;
-
-    Local_TreeNode_list list(m_treenode_pool, requestPtr.p->m_nodes);
-    Ptr<TreeNode> treeNodePtr;
-    for (list.first(treeNodePtr); !treeNodePtr.isNull();
-         list.next(treeNodePtr)) {
-      if (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) {
-        jam();
-        aggregate_leaf_count++;
-        aggregate_leaf_is_leaf = treeNodePtr.p->isLeaf();
-      }
-    }
-
-    err = DbspjErr::InvalidAggregateFlags;
-    if (unlikely(ctx.m_aggregate_node_count != ctx.m_cnt)) {
-      jam();
-      g_eventLogger->debug(
-          "DBSPJ %u: NI_AGGREGATE set on %u of %u nodes, expected all",
-          instance(), ctx.m_aggregate_node_count, ctx.m_cnt);
-      goto error;
-    }
-    if (unlikely(aggregate_leaf_count != 1)) {
-      jam();
-      g_eventLogger->debug(
-          "DBSPJ %u: Found %u T_AGGREGATE_LEAF nodes, expected exactly 1",
-          instance(), aggregate_leaf_count);
-      goto error;
-    }
-    if (unlikely(!aggregate_leaf_is_leaf)) {
-      jam();
-      g_eventLogger->debug(
-          "DBSPJ %u: T_AGGREGATE_LEAF is set on a non-leaf node",
-          instance());
-      goto error;
-    }
-  } else {
-    /**
-     * No aggregation on the request - verify no node has NI_AGGREGATE.
-     * Currently structurally impossible since parseDA() always sets
-     * RT_AGGREGATE when NI_AGGREGATE is seen, but kept as a defensive
-     * check in case parseDA() is refactored in the future.
-     */
-    if (unlikely(ctx.m_aggregate_node_count != 0)) {
-      jam();
-      err = DbspjErr::InvalidAggregateFlags;
-      g_eventLogger->debug(
-          "DBSPJ %u: NI_AGGREGATE on %u nodes but RT_AGGREGATE not set",
-          instance(), ctx.m_aggregate_node_count);
-      goto error;
-    }
+    goto error;
   }
 
   // Set up the order of execution plan
@@ -1831,6 +1776,63 @@ Dbspj::build(Build_context& ctx,
 error:
   jam();
   return err;
+}
+
+/**
+ * Validate aggregate flag consistency before execution.
+ * The NDB API sets NI_AGGREGATE on every node and NI_AGGREGATE_LEAF
+ * on exactly one leaf node. Verify this to catch malformed queries
+ * early rather than crashing later in DBTC/DBLQH.
+ */
+Uint32
+Dbspj::validateAggregateFlags(Build_context &ctx, Ptr<Request> requestPtr) {
+  if (requestPtr.p->m_bits & Request::RT_AGGREGATE) {
+    jam();
+    Uint32 aggregate_leaf_count = 0;
+    bool aggregate_leaf_is_leaf = false;
+
+    Local_TreeNode_list list(m_treenode_pool, requestPtr.p->m_nodes);
+    Ptr<TreeNode> treeNodePtr;
+    for (list.first(treeNodePtr); !treeNodePtr.isNull();
+         list.next(treeNodePtr)) {
+      if (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) {
+        jam();
+        aggregate_leaf_count++;
+        aggregate_leaf_is_leaf = treeNodePtr.p->isLeaf();
+      }
+    }
+
+    if (unlikely(ctx.m_aggregate_node_count != ctx.m_cnt)) {
+      jam();
+      g_eventLogger->debug(
+          "DBSPJ %u: NI_AGGREGATE set on %u of %u nodes, expected all",
+          instance(), ctx.m_aggregate_node_count, ctx.m_cnt);
+      return DbspjErr::InvalidAggregateFlags;
+    }
+    if (unlikely(aggregate_leaf_count != 1)) {
+      jam();
+      g_eventLogger->debug(
+          "DBSPJ %u: Found %u T_AGGREGATE_LEAF nodes, expected exactly 1",
+          instance(), aggregate_leaf_count);
+      return DbspjErr::InvalidAggregateFlags;
+    }
+    if (unlikely(!aggregate_leaf_is_leaf)) {
+      jam();
+      g_eventLogger->debug(
+          "DBSPJ %u: T_AGGREGATE_LEAF is set on a non-leaf node",
+          instance());
+      return DbspjErr::InvalidAggregateFlags;
+    }
+  } else {
+    if (unlikely(ctx.m_aggregate_node_count != 0)) {
+      jam();
+      g_eventLogger->debug(
+          "DBSPJ %u: NI_AGGREGATE on %u nodes but RT_AGGREGATE not set",
+          instance(), ctx.m_aggregate_node_count);
+      return DbspjErr::InvalidAggregateFlags;
+    }
+  }
+  return 0;
 }
 
 /**
@@ -2651,52 +2653,11 @@ void Dbspj::batchComplete(Signal *signal, Ptr<Request> requestPtr) {
       }
     }
 
-    /**
-     * For JoinAgg queries, aggregate rows accumulate in DBLQH's aggregation
-     * engine — no rows are sent to the API per batch unless eviction occurs.
-     * When m_rows == 0 (no evicted groups sent to API), skip the
-     * SCAN_FRAGCONF → DBTC → API → SCAN_NEXTREQ round-trip and fetch the
-     * next batch directly from DBLQH.
-     * When m_rows > 0 (eviction happened), fall through to sendConf so the
-     * API receives SCAN_TABCONF for the evicted group rows.
-     */
     if (!is_complete && requestPtr.p->m_errCode == 0 &&
         !requestPtr.p->m_aggNodes.isclear() &&
         requestPtr.p->m_rows == 0) {
       jam();
-      cleanupBatch(requestPtr, /*done=*/false);
-
-      /**
-       * Send heartbeat to DBTC to prevent scan fragment timeout.
-       * DBTC's timer is only reset by SCAN_FRAGCONF or SCAN_HBREP.
-       * Since we bypass SCAN_FRAGCONF, send SCAN_HBREP periodically.
-       */
-      {
-        const NDB_TICKS now = getHighResTimer();
-        if (NdbTick_Elapsed(requestPtr.p->m_lastHbrepTicks, now).milliSec()
-                >= 20) {
-          jam();
-          signal->theData[0] = requestPtr.p->m_senderData;
-          signal->theData[1] = requestPtr.p->m_transId[0];
-          signal->theData[2] = requestPtr.p->m_transId[1];
-          sendSignal(requestPtr.p->m_senderRef, GSN_SCAN_HBREP, signal, 3,
-                     JBB);
-          requestPtr.p->m_lastHbrepTicks = now;
-        }
-      }
-
-      Ptr<TreeNode> treeNodePtr;
-      Local_TreeNodeCursor_list list(m_treenode_pool,
-                                     requestPtr.p->m_cursor_nodes);
-      for (list.first(treeNodePtr); !treeNodePtr.isNull();
-           list.next(treeNodePtr)) {
-        if (treeNodePtr.p->m_state == TreeNode::TN_ACTIVE) {
-          jam();
-          (this->*(treeNodePtr.p->m_info->m_execSCAN_NEXTREQ))(
-              signal, requestPtr, treeNodePtr);
-        }
-      }
-      ndbassert(requestPtr.p->m_outstanding > 0);
+      handleJoinAggNextBatch(signal, requestPtr);
       return;
     }
     sendConf(signal, requestPtr, is_complete);
@@ -2724,6 +2685,50 @@ void Dbspj::batchComplete(Signal *signal, Ptr<Request> requestPtr) {
      */
     cleanupBatch(requestPtr, /*done=*/true);
   }
+}
+
+/**
+ * For JoinAgg queries, aggregate rows accumulate in DBLQH's aggregation
+ * engine — no rows are sent to the API per batch unless eviction occurs.
+ * When m_rows == 0 (no evicted groups sent to API), skip the
+ * SCAN_FRAGCONF → DBTC → API → SCAN_NEXTREQ round-trip and fetch the
+ * next batch directly from DBLQH.
+ */
+void
+Dbspj::handleJoinAggNextBatch(Signal *signal, Ptr<Request> requestPtr) {
+  cleanupBatch(requestPtr, /*done=*/false);
+
+  /**
+   * Send heartbeat to DBTC to prevent scan fragment timeout.
+   * DBTC's timer is only reset by SCAN_FRAGCONF or SCAN_HBREP.
+   * Since we bypass SCAN_FRAGCONF, send SCAN_HBREP periodically.
+   */
+  {
+    const NDB_TICKS now = getHighResTimer();
+    if (NdbTick_Elapsed(requestPtr.p->m_lastHbrepTicks, now).milliSec()
+            >= 20) {
+      jam();
+      signal->theData[0] = requestPtr.p->m_senderData;
+      signal->theData[1] = requestPtr.p->m_transId[0];
+      signal->theData[2] = requestPtr.p->m_transId[1];
+      sendSignal(requestPtr.p->m_senderRef, GSN_SCAN_HBREP, signal, 3,
+                 JBB);
+      requestPtr.p->m_lastHbrepTicks = now;
+    }
+  }
+
+  Ptr<TreeNode> treeNodePtr;
+  Local_TreeNodeCursor_list list(m_treenode_pool,
+                                 requestPtr.p->m_cursor_nodes);
+  for (list.first(treeNodePtr); !treeNodePtr.isNull();
+       list.next(treeNodePtr)) {
+    if (treeNodePtr.p->m_state == TreeNode::TN_ACTIVE) {
+      jam();
+      (this->*(treeNodePtr.p->m_info->m_execSCAN_NEXTREQ))(
+          signal, requestPtr, treeNodePtr);
+    }
+  }
+  ndbassert(requestPtr.p->m_outstanding > 0);
 }
 
 /**

@@ -1462,6 +1462,7 @@ class Dbspj : public SimulatedBlock {
    */
   const OpInfo *getOpInfo(Uint32 op);
   Uint32 build(Build_context &, Ptr<Request>, SectionReader &, SectionReader &);
+  Uint32 validateAggregateFlags(Build_context &, Ptr<Request>);
   Uint32 initRowBuffers(Ptr<Request>);
 
   void setupAncestors(Ptr<Request> requestPtr, Ptr<TreeNode> treeNodePtr,
@@ -1487,6 +1488,7 @@ class Dbspj : public SimulatedBlock {
   void checkPrepareComplete(Signal *, Ptr<Request>);
   void checkBatchComplete(Signal *, Ptr<Request>);
   void batchComplete(Signal *, Ptr<Request>);
+  void handleJoinAggNextBatch(Signal *, Ptr<Request>);
   void prepareNextBatch(Signal *, Ptr<Request>);
   void sendConf(Signal *, Ptr<Request>, bool is_complete);
   void complete(Signal *, Ptr<Request>);
