@@ -3614,6 +3614,10 @@ int NdbQueryImpl::doSend(int nodeId, bool lastFlag) {
       tSignal.setLength(ScanTabReq::StaticLength + 4);
     }
     if (m_hasAggregation) {
+      if (!ndbd_support_pushdown_join_agg(ndb.getMinDbNodeVersion())) {
+        setErrorCode(Err_FunctionNotImplemented);
+        return -1;
+      }
       ScanTabReq::setJoinAggFlag(reqInfo, 1);
       scanTabReq->scanParallelism = m_workerCount * m_fragsPerWorker;
       tSignal.setLength(ScanTabReq::StaticLength + 5);

@@ -15803,6 +15803,13 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
     errCode = 4003;  // Function not implemented
     goto SCAN_TAB_error;
   }
+  if (unlikely(ScanTabReq::getJoinAggFlag(ri) &&
+               !ndbd_support_pushdown_join_agg(
+                   getNodeVersionInfo().m_type[NodeInfo::DB].m_min_version))) {
+    jam();
+    errCode = 4003;  // Function not implemented
+    goto SCAN_TAB_error;
+  }
 
   ptrAss(tabptr, tableRecord);
   if ((aiLength == 0) || (!tabptr.p->checkTable(schemaVersion)) ||
