@@ -5034,6 +5034,53 @@ Dbtup::checkNullAttributes(KeyReqStruct * req_struct,
 /* final read separately since we might want to read values before  */
 /* and after changes, the interpreter can write column values.      */
 /**
+ * Extract linked column data from cinBuffer sub-region, reset
+ * read_length, and call handleJoinAggRow.
+ */
+int Dbtup::prepareAndHandleJoinAggRow(KeyReqStruct *req_struct,
+                                      Uint32 RsubLen) {
+  const Uint32 *linked_data = nullptr;
+  Uint32 linked_len = 0;
+  if (RsubLen > 0) {
+    const Uint32 *sub_start =
+        &cinBuffer[5 + cinBuffer[0] + cinBuffer[1] +
+                    cinBuffer[2] + cinBuffer[3]];
+    // Skip the paramLen word prepended by DBSPJ T_ATTRINFO_CONSTRUCTED
+    linked_data = sub_start + 1;
+    linked_len = RsubLen - 1;
+  }
+#ifdef DEBUG_JOIN_AGG_TRACE
+  DEB_JOIN_AGG(("DBTUP prepareAndHandleJoinAggRow: "
+                 "cinBuffer header: initRead=%u interp=%u "
+                 "finalUpd=%u finalRead=%u subLen=%u  "
+                 "linked_len=%u",
+                 cinBuffer[0], cinBuffer[1], cinBuffer[2],
+                 cinBuffer[3], cinBuffer[4], linked_len));
+  if (linked_data && linked_len > 0) {
+    const Uint32 *p = linked_data;
+    const Uint32 *p_end = linked_data + linked_len;
+    Uint32 idx = 0;
+    while (p < p_end) {
+      Uint32 hdr = *p;
+      Uint32 attrId = AttributeHeader::getAttributeId(hdr);
+      Uint32 dSz = AttributeHeader::getDataSize(hdr);
+      DEB_JOIN_AGG(("  linked[%u]: AttrHeader=0x%08x "
+                     "(attrId=%u dataSize=%u)",
+                     idx, hdr, attrId, dSz));
+      p += 1 + dSz;
+      idx++;
+    }
+  } else {
+    DEB_JOIN_AGG(("  linked data: EMPTY (RsubLen=%u)", RsubLen));
+  }
+#endif
+  // Reset read_length: the final-read projection (FLUSH_AI) may have
+  // set it, but ProcessRec requires read_length == 0 on entry.
+  req_struct->read_length = 0;
+  return handleJoinAggRow(req_struct, linked_data, linked_len);
+}
+
+/**
  * handleJoinAggRow
  *
  * Feed a row into the join aggregation JoinAggInterpreter instead of
@@ -5491,46 +5538,7 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
         return 0;
       } else if (req_struct->m_join_agg_state_key != RNIL) {
         jamDebug();
-        const Uint32 *linked_data = nullptr;
-        Uint32 linked_len = 0;
-        if (RsubLen > 0) {
-          const Uint32 *sub_start =
-              &cinBuffer[5 + cinBuffer[0] + cinBuffer[1] +
-                          cinBuffer[2] + cinBuffer[3]];
-          // Skip the paramLen word prepended by DBSPJ T_ATTRINFO_CONSTRUCTED
-          linked_data = sub_start + 1;
-          linked_len = RsubLen - 1;
-        }
-#ifdef DEBUG_JOIN_AGG_TRACE
-        DEB_JOIN_AGG(("DBTUP handleJoinAggRow (interp path): "
-                       "cinBuffer header: initRead=%u interp=%u "
-                       "finalUpd=%u finalRead=%u subLen=%u  "
-                       "linked_len=%u",
-                       cinBuffer[0], cinBuffer[1], cinBuffer[2],
-                       cinBuffer[3], cinBuffer[4], linked_len));
-        if (linked_data && linked_len > 0) {
-          /* Dump linked data: sequence of AttributeHeader+data */
-          const Uint32 *p = linked_data;
-          const Uint32 *p_end = linked_data + linked_len;
-          Uint32 idx = 0;
-          while (p < p_end) {
-            Uint32 hdr = *p;
-            Uint32 attrId = AttributeHeader::getAttributeId(hdr);
-            Uint32 dSz = AttributeHeader::getDataSize(hdr);
-            DEB_JOIN_AGG(("  linked[%u]: AttrHeader=0x%08x "
-                           "(attrId=%u dataSize=%u)",
-                           idx, hdr, attrId, dSz));
-            p += 1 + dSz;
-            idx++;
-          }
-        } else {
-          DEB_JOIN_AGG(("  linked data: EMPTY (RsubLen=%u)", RsubLen));
-        }
-#endif
-        // Reset read_length: the final-read projection (FLUSH_AI) may have
-        // set it, but ProcessRec requires read_length == 0 on entry.
-        req_struct->read_length = 0;
-        int res = handleJoinAggRow(req_struct, linked_data, linked_len);
+        int res = prepareAndHandleJoinAggRow(req_struct, RsubLen);
         if (res != 0) return res;
       } else {
         sendReadAttrinfo(signal, req_struct, RattroutCounter);
@@ -5538,45 +5546,7 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
     } else {
       if (req_struct->m_join_agg_state_key != RNIL) {
         jamDebug();
-        const Uint32 *linked_data = nullptr;
-        Uint32 linked_len = 0;
-        if (RsubLen > 0) {
-          const Uint32 *sub_start =
-              &cinBuffer[5 + cinBuffer[0] + cinBuffer[1] +
-                          cinBuffer[2] + cinBuffer[3]];
-          // Skip the paramLen word prepended by DBSPJ T_ATTRINFO_CONSTRUCTED
-          linked_data = sub_start + 1;
-          linked_len = RsubLen - 1;
-        }
-#ifdef DEBUG_JOIN_AGG_TRACE
-        DEB_JOIN_AGG(("DBTUP handleJoinAggRow (non-interp path): "
-                       "cinBuffer header: initRead=%u interp=%u "
-                       "finalUpd=%u finalRead=%u subLen=%u  "
-                       "linked_len=%u",
-                       cinBuffer[0], cinBuffer[1], cinBuffer[2],
-                       cinBuffer[3], cinBuffer[4], linked_len));
-        if (linked_data && linked_len > 0) {
-          const Uint32 *p = linked_data;
-          const Uint32 *p_end = linked_data + linked_len;
-          Uint32 idx = 0;
-          while (p < p_end) {
-            Uint32 hdr = *p;
-            Uint32 attrId = AttributeHeader::getAttributeId(hdr);
-            Uint32 dSz = AttributeHeader::getDataSize(hdr);
-            DEB_JOIN_AGG(("  linked[%u]: AttrHeader=0x%08x "
-                           "(attrId=%u dataSize=%u)",
-                           idx, hdr, attrId, dSz));
-            p += 1 + dSz;
-            idx++;
-          }
-        } else {
-          DEB_JOIN_AGG(("  linked data: EMPTY (RsubLen=%u)", RsubLen));
-        }
-#endif
-        // Reset read_length: the final-read projection (FLUSH_AI) may have
-        // set it, but ProcessRec requires read_length == 0 on entry.
-        req_struct->read_length = 0;
-        int res = handleJoinAggRow(req_struct, linked_data, linked_len);
+        int res = prepareAndHandleJoinAggRow(req_struct, RsubLen);
         if (res != 0) return res;
       } else {
         sendReadAttrinfo(signal, req_struct, RattroutCounter);
