@@ -1587,6 +1587,7 @@ class Dbtc : public SimulatedBlock {
     bool inPackedList;
 
     Uint32 m_location_domain_id;
+    Uint32 m_round_robin_instance;
 
     /* Discrete states of API failure handling for logs etc */
     enum ApiFailStates {

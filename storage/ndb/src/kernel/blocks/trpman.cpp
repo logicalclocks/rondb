@@ -1,6 +1,6 @@
 /*
   Copyright (c) 2011, 2025, Oracle and/or its affiliates.
-  Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+  Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
@@ -1233,6 +1233,8 @@ Trpman::distribute_signal(SignalHeader * const header,
   {
     return get_lqhkeyreq_ref(handle, instance_no);
   } else if (gsn == GSN_SCAN_FRAGREQ) {
+    return get_scan_fragreq_ref(handle, instance_no);
+  } else if (gsn == GSN_JOIN_AGG_COMPLETE_REQ) {
     return get_scan_fragreq_ref(handle, instance_no);
   } else {
     return 0;

@@ -835,6 +835,7 @@ sendReleaseReq(SignalSender &ss, Uint32 nodeId, Uint32 aggStateKey)
   req->transid[0] = FAKE_TRANS_ID1;
   req->transid[1] = FAKE_TRANS_ID2;
   req->aggStateKey = aggStateKey;
+  req->noReply = 0;
 
   ssig.set(ss, 0, DBLQH, GSN_JOIN_AGG_RELEASE_REQ,
            JoinAggReleaseReq::SignalLength);

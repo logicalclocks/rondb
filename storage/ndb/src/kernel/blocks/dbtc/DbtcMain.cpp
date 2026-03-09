@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -18869,17 +18869,17 @@ void Dbtc::sendScanTabConf(Signal *signal, const ScanRecordPtr scanPtr,
   if (scanPtr.p->m_delivered_scan_frags.isEmpty() &&
       scanPtr.p->m_running_scan_frags.isEmpty()) {
     jam();
-#ifdef DEBUG_JOIN_AGG_TRACE
-    DEB_JOIN_AGG(("DBTC sendScanTabConf EndOfData check:"
-                   " m_joinAgg=%u m_aggNodes.isclear=%u scanState=%u"
-                   " scanPtr.i=%u",
-                   scanPtr.p->m_joinAgg,
-                   scanPtr.p->m_joinAggNodes->m_aggNodes.isclear(),
-                   scanPtr.p->scanState,
-                   scanPtr.i));
-#endif
     if (scanPtr.p->m_joinAgg && !scanPtr.p->m_joinAggNodes->m_aggNodes.isclear()) {
       jam();
+#ifdef DEBUG_JOIN_AGG_TRACE
+      DEB_JOIN_AGG(("DBTC sendScanTabConf EndOfData check:"
+                     " m_joinAgg=%u m_aggNodes.isclear=%u scanState=%u"
+                     " scanPtr.i=%u",
+                     scanPtr.p->m_joinAgg,
+                     scanPtr.p->m_joinAggNodes->m_aggNodes.isclear(),
+                     scanPtr.p->scanState,
+                     scanPtr.i));
+#endif
       scanPtr.p->scanState = ScanRecord::WAIT_JOIN_AGG_COMPLETE;
       scanPtr.p->m_aggPhaseFailed = false;
       scanPtr.p->m_aggErrorCode = 0;
@@ -19063,6 +19063,7 @@ void Dbtc::inithost(Signal *signal) {
   for (hostptr.i = 0; hostptr.i < chostFilesize; hostptr.i++) {
     ptrAss(hostptr, hostRecord);
     hostptr.p->hostStatus = HS_DEAD;
+    hostptr.p->m_round_robin_instance = 1;
     DEB_NODE_STATUS(("(%u) Node: %u now dead",
                      instance(),
                      hostptr.i));
@@ -28914,7 +28915,19 @@ void Dbtc::sendJoinAggCompleteReqs(Signal *signal, ScanRecordPtr scanptr) {
     req->aggStateKey = scanptr.p->m_joinAggNodes->m_aggStateKeys[nodeId];
     req->maxBatchRows = 256;
 
-    Uint32 ref = numberToRef(DBLQH, 1, nodeId);
+    HostRecordPtr Thostptr;
+    Thostptr.i = nodeId;
+    ptrCheckGuard(Thostptr, MAX_NDB_NODES, hostRecord);
+
+    Uint32 instance = Thostptr.p->m_round_robin_instance++;
+    if (instance >= getNodeInfo(nodeId).m_lqh_workers) {
+      jam();
+      Thostptr.p->m_round_robin_instance = 1;
+    }
+    Uint32 ref = numberToRef(V_QUERY, 1, nodeId);
+    if (nodeId == getOwnNodeId()) {
+      ref = get_scan_fragreq_ref(&m_distribution_handle, instance);
+    }
     sendSignal(ref, GSN_JOIN_AGG_COMPLETE_REQ, signal,
                JoinAggCompleteReq::SignalLength, JBB);
     scanptr.p->m_joinAggNodes->m_aggNodesPending.set(nodeId);
