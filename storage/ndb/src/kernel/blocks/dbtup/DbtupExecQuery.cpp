@@ -2061,7 +2061,6 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
   req_struct.agg_curr_batch_size_rows = 0;
   req_struct.agg_curr_batch_size_bytes = 0;
   req_struct.agg_n_res_recs = 0;
-  req_struct.m_join_agg_state_key = lqhOpPtrP->m_join_agg_state_key;
 
   req_struct.ttl_purge_window_size = 0;
 
@@ -2168,6 +2167,7 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
     req_struct.m_row_id.m_page_no = row_id_page_no;
     req_struct.m_row_id.m_page_idx = row_id_page_idx;
     req_struct.scan_rec = nullptr;
+    req_struct.m_join_agg_state_key = lqhOpPtrP->m_join_agg_state_key;
     regOperPtr->ttl_ignore = lqhOpPtrP->ttl_ignore;
     regOperPtr->ttl_only_expired = lqhOpPtrP->ttl_only_expired;
 #ifdef TTL_DEBUG

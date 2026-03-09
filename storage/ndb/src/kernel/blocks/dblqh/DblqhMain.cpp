@@ -15780,8 +15780,11 @@ Dblqh::handle_tc_failed_scans(Signal *signal,
         ScanRecordPtr scanPtr;
         scanPtr.i = tcPtr.p->tcScanRec;
         ndbrequire(c_scanRecordPool.getValidPtr(scanPtr));
-        ndbrequire(scanPtr.p->scanType == ScanRecord::SCAN);
-        bool shouldAbort = (refToNode(tcPtr.p->tcBlockref) == nodeId);
+        bool shouldAbort = false;
+        if (scanPtr.p->scanType != ScanRecord::COPY) {
+          ndbrequire(scanPtr.p->scanType == ScanRecord::SCAN);
+          shouldAbort = (refToNode(tcPtr.p->tcBlockref) == nodeId);
+        }
         if (!shouldAbort &&
             scanPtr.p->m_join_agg_state_key != RNIL) {
           /**
@@ -22241,6 +22244,12 @@ void Dblqh::execCOPY_FRAGREQ(Signal *signal) {
     scanPtr->scanAccPtr = RNIL;
     scanPtr->scan_lastSeen = __LINE__;
     scanPtr->scan_check_lcp_stop = 0;
+    scanPtr->m_has_pushdown = false;
+    scanPtr->m_join_agg_state_key = RNIL;
+    scanPtr->m_vs_interpreter = nullptr;
+    scanPtr->m_agg_interpreter = nullptr;
+    scanPtr->m_join_agg_evict_rows = 0;
+    scanPtr->m_rows_examined = 0;
     m_scan_direct_count = ZMAX_SCAN_DIRECT_COUNT - 6;
     fragptr.p->m_scanNumberMask.clear(FirstNR_ScanNo + scanNumberIndex);
     c_check_scanptr_i[ZCOPY_FRAGREQ_CHECK_INDEX + scanNumberIndex] = scanptr.i;
