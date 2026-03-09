@@ -54,6 +54,12 @@
 #include "storage/ndb/src/ndbapi/NdbQueryBuilder.hpp"
 #include "storage/ndb/src/ndbapi/NdbQueryOperation.hpp"
 
+// AggBuildContext is defined in ha_ndbcluster_push.h
+
+// Forward declaration — defined further down, but needed by emit_expr().
+static uint find_table_index(const pushed_table *tables, uint table_count,
+                             const TABLE *mysql_table);
+
 /**
  * When aggregation is pushed, walk down through NESTED_LOOP_JOINs whose
  * inner side is a pushed-join child and return the outermost 'outer' path
@@ -329,16 +335,21 @@ static Uint32 count_expr_words(Item *item,
  * For constants in arithmetic context: uses LoadDouble when the parent
  * expression involves DECIMAL/REAL types, LoadInt64 for pure integer.
  *
+ * When ctx is non-null, fields from parent tables use LoadLinkedColumn()
+ * with a linked projection position from the AggBuildContext.
+ *
  * @param item          The expression to emit
- * @param ndb_table     NDB table for column lookups
+ * @param ndb_table     NDB table for column lookups (leaf table)
  * @param agg           The NdbAggregator being built
  * @param target_reg    Register to store the result
  * @param next_free_reg Next available register (incremented by recursive calls)
  * @param use_double    If true, load integer constants as double (for DECIMAL context)
+ * @param ctx           Build context for linked column resolution (may be nullptr)
  */
 static bool emit_expr(Item *item, const NdbDictionary::Table *ndb_table,
                       NdbAggregator *agg, Uint32 target_reg,
-                      Uint32 *next_free_reg, bool use_double) {
+                      Uint32 *next_free_reg, bool use_double,
+                      AggBuildContext *ctx = nullptr) {
   switch (item->type()) {
     case Item::INT_ITEM:
       if (use_double)
@@ -350,6 +361,20 @@ static bool emit_expr(Item *item, const NdbDictionary::Table *ndb_table,
       return agg->LoadDouble(item->val_real(), target_reg);
     case Item::FIELD_ITEM: {
       const auto *fi = down_cast<const Item_field *>(item);
+      if (ctx != nullptr) {
+        const uint tab_idx = find_table_index(ctx->tables, ctx->table_count,
+                                              fi->field->table);
+        if (tab_idx != ctx->leaf_tab_no) {
+          // Parent-table column: use LoadLinkedColumn.
+          const int col_id = fi->field->field_index();
+          const Uint32 pos = ctx->get_or_add_linked(tab_idx, col_id);
+          if (pos == ~Uint32(0)) return false;
+          const NdbDictionary::Column *parent_col =
+              ctx->ndb_tables[tab_idx]->getColumn(col_id);
+          if (parent_col == nullptr) return false;
+          return agg->LoadLinkedColumn(pos, target_reg, parent_col);
+        }
+      }
       const NdbDictionary::Column *col =
           ndb_table->getColumn(fi->field->field_index());
       if (col == nullptr) return false;
@@ -364,14 +389,14 @@ static bool emit_expr(Item *item, const NdbDictionary::Table *ndb_table,
 
       // Emit left operand into target_reg.
       if (!emit_expr(func->arguments()[0], ndb_table, agg, target_reg,
-                     next_free_reg, child_use_double))
+                     next_free_reg, child_use_double, ctx))
         return false;
 
       // Emit right operand into next available register.
       Uint32 right_reg = (*next_free_reg)++;
       if (right_reg > kReg8) return false;  // Out of registers.
       if (!emit_expr(func->arguments()[1], ndb_table, agg, right_reg,
-                     next_free_reg, child_use_double))
+                     next_free_reg, child_use_double, ctx))
         return false;
 
       // Emit arithmetic operation.
@@ -394,12 +419,14 @@ static bool emit_expr(Item *item, const NdbDictionary::Table *ndb_table,
 /**
  * Emit a value expression into the NdbAggregator, result in kReg1.
  * Handles integer constants, fields, and arithmetic trees.
+ * When ctx is non-null, parent-table fields use LoadLinkedColumn().
  */
 static bool emit_value_load(Item *item,
                             const NdbDictionary::Table *ndb_table,
-                            NdbAggregator *agg) {
+                            NdbAggregator *agg,
+                            AggBuildContext *ctx = nullptr) {
   Uint32 next_free = kReg2;
-  return emit_expr(item, ndb_table, agg, kReg1, &next_free, false);
+  return emit_expr(item, ndb_table, agg, kReg1, &next_free, false, ctx);
 }
 
 /**
@@ -750,7 +777,8 @@ static bool emit_case_aggregation(const Item_func_case *case_item,
                                   const NdbDictionary::Table *ndb_table,
                                   NdbAggregator *agg,
                                   Item_sum::Sumfunctype agg_type,
-                                  Uint32 agg_id) {
+                                  Uint32 agg_id,
+                                  AggBuildContext *ctx = nullptr) {
   Item **args = case_item->arguments();
   const int else_idx = case_item->get_else_expr_num();
   const int first_expr_num = case_item->get_first_expr_num();
@@ -927,7 +955,7 @@ static bool emit_case_aggregation(const Item_func_case *case_item,
 
   for (int i = 0; i < n_pairs; i++) {
     // THEN arm i.
-    if (!emit_value_load(args[i * 2 + 1], ndb_table, agg)) return false;
+    if (!emit_value_load(args[i * 2 + 1], ndb_table, agg, ctx)) return false;
     if (i == 0) {
       if (!emit_agg_op(agg, agg_type, agg_id)) return false;
     } else {
@@ -939,7 +967,7 @@ static bool emit_case_aggregation(const Item_func_case *case_item,
   }
 
   // ELSE arm.
-  if (!emit_value_load(args[else_idx], ndb_table, agg)) return false;
+  if (!emit_value_load(args[else_idx], ndb_table, agg, ctx)) return false;
   if (!agg->RepeatAgg(agg_id, kReg1)) return false;
 
   return true;
@@ -1046,28 +1074,64 @@ static uint find_table_index(const pushed_table *tables, uint table_count,
 }
 
 /**
+ * Emit a column load (local or linked) for a simple field reference in
+ * an aggregate argument.  For leaf-table columns uses LoadColumn(),
+ * for parent-table columns uses LoadLinkedColumn() via the context.
+ */
+static bool emit_field_load(const Item_field *field_item,
+                            NdbAggregator *agg, Uint32 reg_id,
+                            AggBuildContext &ctx) {
+  const uint tab_idx = find_table_index(ctx.tables, ctx.table_count,
+                                        field_item->field->table);
+  const int col_id = field_item->field->field_index();
+  if (tab_idx != ctx.leaf_tab_no) {
+    // Parent-table column: use LoadLinkedColumn.
+    const Uint32 pos = ctx.get_or_add_linked(tab_idx, col_id);
+    if (pos == ~Uint32(0)) return false;
+    const NdbDictionary::Column *parent_col =
+        ctx.ndb_tables[tab_idx]->getColumn(col_id);
+    if (parent_col == nullptr) return false;
+    return agg->LoadLinkedColumn(pos, reg_id, parent_col);
+  }
+  // Leaf table column: use LoadColumn.
+  return agg->LoadColumn(col_id, reg_id);
+}
+
+/**
  * Build an NdbAggregator program from the MySQL query plan.
  *
- * Supports multi-table GROUP BY: columns from the leaf table use GroupBy(),
- * columns from parent tables use GroupByLinked() with linked projections.
- * Aggregate arguments (SUM/MIN/MAX) must be from the leaf table.
+ * Supports multi-table GROUP BY and aggregate arguments: columns from the
+ * leaf table use GroupBy()/LoadColumn(), columns from parent tables use
+ * GroupByLinked()/LoadLinkedColumn() with linked projections.
+ *
+ * Cross-table arithmetic expressions (e.g. SUM(t1.a + t2.b)) are supported:
+ * each field reference resolves to the correct table via the AggBuildContext.
  *
  * @param join           MySQL JOIN containing aggregation info
  * @param tables         The pushed table array
  * @param table_count    Number of tables in the array
  * @param leaf_tab_no    Table index of the leaf table
  * @param ndb_tables     Array of NDB table pointers indexed by table position
+ * @param ctx            Build context; populated with linked column entries
  * @return heap-allocated NdbAggregator on success, nullptr on failure
  */
 static NdbAggregator *ndb_build_aggregation_program(
     const JOIN *join, const pushed_table *tables, uint table_count,
-    uint leaf_tab_no, const NdbDictionary::Table *const *ndb_tables) {
+    uint leaf_tab_no, const NdbDictionary::Table *const *ndb_tables,
+    AggBuildContext &ctx) {
   const NdbDictionary::Table *leaf_ndb_tab = ndb_tables[leaf_tab_no];
   NdbAggregator *agg = new NdbAggregator(leaf_ndb_tab);
 
+  // Initialize context.
+  ctx.tables = tables;
+  ctx.table_count = table_count;
+  ctx.leaf_tab_no = leaf_tab_no;
+  ctx.ndb_tables = ndb_tables;
+  ctx.n_linked_cols = 0;
+  ctx.next_linked_pos = 0;
+
   // Map GROUP BY columns. Columns from parent tables use GroupByLinked(),
   // columns from the leaf table use GroupBy().
-  Uint32 linked_pos = 0;
   for (ORDER *group = join->query_block->group_list.first; group != nullptr;
        group = group->next) {
     const auto *field_item = down_cast<const Item_field *>(*(group->item));
@@ -1082,10 +1146,16 @@ static NdbAggregator *ndb_build_aggregation_program(
       }
     } else {
       // Parent table column — linked GROUP BY.
+      // Register in context to assign a linked position.
+      const Uint32 pos = ctx.get_or_add_linked(tab_idx, col_id);
+      if (pos == ~Uint32(0)) {
+        delete agg;
+        return nullptr;
+      }
       const NdbDictionary::Column *parent_col =
           ndb_tables[tab_idx]->getColumn(col_id);
       if (parent_col == nullptr ||
-          !agg->GroupByLinked(linked_pos++, parent_col)) {
+          !agg->GroupByLinked(pos, parent_col)) {
         delete agg;
         return nullptr;
       }
@@ -1105,18 +1175,7 @@ static NdbAggregator *ndb_build_aggregation_program(
           // COUNT(column): load the column so Count() can skip NULLs.
           const auto *field_item =
               down_cast<const Item_field *>(count_arg);
-          const uint count_tab_idx =
-              find_table_index(tables, table_count, field_item->field->table);
-          if (count_tab_idx != leaf_tab_no) {
-            DBUG_PRINT("info",
-                       ("ndb_push_aggregation: COUNT(column) source on "
-                        "table %u, leaf is %u — cannot push",
-                        count_tab_idx, leaf_tab_no));
-            delete agg;
-            return nullptr;
-          }
-          const int col_id = field_item->field->field_index();
-          if (!agg->LoadColumn(col_id, kReg1) ||
+          if (!emit_field_load(field_item, agg, kReg1, ctx) ||
               !agg->Count(agg_id, kReg1)) {
             delete agg;
             return nullptr;
@@ -1125,7 +1184,7 @@ static NdbAggregator *ndb_build_aggregation_program(
           const auto *case_item =
               down_cast<const Item_func_case *>(count_arg);
           if (!emit_case_aggregation(case_item, leaf_ndb_tab, agg,
-                                     (*func)->sum_func(), agg_id)) {
+                                     (*func)->sum_func(), agg_id, &ctx)) {
             delete agg;
             return nullptr;
           }
@@ -1144,14 +1203,7 @@ static NdbAggregator *ndb_build_aggregation_program(
         Item *arg = (*func)->arguments()[0];
         if (arg->type() == Item::FIELD_ITEM) {
           const auto *field_item = down_cast<const Item_field *>(arg);
-          const uint agg_tab_idx =
-              find_table_index(tables, table_count, field_item->field->table);
-          if (agg_tab_idx != leaf_tab_no) {
-            delete agg;
-            return nullptr;
-          }
-          const int col_id = field_item->field->field_index();
-          if (!agg->LoadColumn(col_id, kReg1) ||
+          if (!emit_field_load(field_item, agg, kReg1, ctx) ||
               !agg->Sum(agg_id, kReg1) ||
               !agg->Count(agg_id + 1, kReg1)) {
             delete agg;
@@ -1163,14 +1215,14 @@ static NdbAggregator *ndb_build_aggregation_program(
             const auto *case_item =
                 down_cast<const Item_func_case *>(arg);
             if (!emit_case_aggregation(case_item, leaf_ndb_tab, agg,
-                                       Item_sum::SUM_FUNC, agg_id) ||
+                                       Item_sum::SUM_FUNC, agg_id, &ctx) ||
                 !emit_case_aggregation(case_item, leaf_ndb_tab, agg,
-                                       Item_sum::COUNT_FUNC, agg_id + 1)) {
+                                       Item_sum::COUNT_FUNC, agg_id + 1, &ctx)) {
               delete agg;
               return nullptr;
             }
           } else {
-            if (!emit_value_load(arg, leaf_ndb_tab, agg) ||
+            if (!emit_value_load(arg, leaf_ndb_tab, agg, &ctx) ||
                 !agg->Sum(agg_id, kReg1) ||
                 !agg->Count(agg_id + 1, kReg1)) {
               delete agg;
@@ -1186,23 +1238,9 @@ static NdbAggregator *ndb_build_aggregation_program(
       case Item_sum::MAX_FUNC: {
         Item *arg = (*func)->arguments()[0];
         if (arg->type() == Item::FIELD_ITEM) {
-          // SUM/MIN/MAX(column): load column, then aggregate.
-          // The column must be from the leaf table, since LoadColumn()
-          // operates on the leaf table's column namespace.
+          // SUM/MIN/MAX(column): load column (local or linked), then aggregate.
           const auto *field_item = down_cast<const Item_field *>(arg);
-          const uint agg_tab_idx =
-              find_table_index(tables, table_count, field_item->field->table);
-          if (agg_tab_idx != leaf_tab_no) {
-            DBUG_PRINT("info",
-                       ("ndb_push_aggregation: aggregate source on table %u, "
-                        "leaf is %u — cannot push",
-                        agg_tab_idx, leaf_tab_no));
-            delete agg;
-            return nullptr;
-          }
-          const int col_id = field_item->field->field_index();
-
-          if (!agg->LoadColumn(col_id, kReg1)) {
+          if (!emit_field_load(field_item, agg, kReg1, ctx)) {
             delete agg;
             return nullptr;
           }
@@ -1234,13 +1272,13 @@ static NdbAggregator *ndb_build_aggregation_program(
             const auto *case_item =
                 down_cast<const Item_func_case *>(arg);
             if (!emit_case_aggregation(case_item, leaf_ndb_tab, agg,
-                                       (*func)->sum_func(), agg_id)) {
+                                       (*func)->sum_func(), agg_id, &ctx)) {
               delete agg;
               return nullptr;
             }
           } else {
             // Arithmetic expression: emit expr then agg op.
-            if (!emit_value_load(arg, leaf_ndb_tab, agg) ||
+            if (!emit_value_load(arg, leaf_ndb_tab, agg, &ctx) ||
                 !emit_agg_op(agg, (*func)->sum_func(), agg_id)) {
               delete agg;
               return nullptr;
@@ -1263,8 +1301,8 @@ static NdbAggregator *ndb_build_aggregation_program(
 
   DBUG_PRINT("info",
              ("ndb_push_aggregation: built NdbAggregator program "
-              "with %u linked GROUP BY columns and %u aggregates",
-              linked_pos, agg_id));
+              "with %u linked columns (%u total) and %u aggregates",
+              ctx.n_linked_cols, ctx.next_linked_pos, agg_id));
   return agg;
 }
 
@@ -1273,7 +1311,11 @@ static NdbAggregator *ndb_build_aggregation_program(
  *
  * Called from build_query() when m_aggregator is set. For the leaf table
  * (last in join scope), calls setAggregation() on its NdbQueryOptions and
- * adds linked projections for GROUP BY columns from parent tables.
+ * adds linked projections for all parent-table columns used in GROUP BY
+ * and aggregate expressions (tracked by the AggBuildContext).
+ *
+ * Linked projections are emitted in position order (0, 1, 2, ...) matching
+ * the linked_pos assigned during program building.
  *
  * This function is a friend of ndb_pushed_builder_ctx.
  */
@@ -1288,20 +1330,23 @@ void ndb_apply_aggregation_options(ndb_pushed_builder_ctx &builder,
 
   options->setAggregation(*builder.m_aggregator);
 
-  // Add linked projections for GROUP BY columns from parent tables.
-  const JOIN *join = builder.m_join;
-  for (ORDER *group = join->query_block->group_list.first; group != nullptr;
-       group = group->next) {
-    const auto *field_item = down_cast<const Item_field *>(*(group->item));
-    const uint tab_idx = find_table_index(
-        builder.m_tables, builder.m_table_count, field_item->field->table);
-
-    if (tab_idx != leaf_tab_no) {
-      // Parent column — create linked projection.
-      const NdbQueryOperationDef *parent_op = builder.m_tables[tab_idx].m_op;
-      const NdbLinkedOperand *linked = builder.m_builder->linkedValue(
-          parent_op, field_item->original_field_name());
-      options->addLinkedProjection(linked);
+  // Add linked projections for all parent-table columns tracked in the
+  // AggBuildContext, in position order.  This covers both GROUP BY and
+  // aggregate expression columns.
+  const AggBuildContext &ctx = builder.m_agg_build_ctx;
+  for (Uint32 pos = 0; pos < ctx.next_linked_pos; pos++) {
+    // Find the entry with this position.
+    for (uint i = 0; i < ctx.n_linked_cols; i++) {
+      if (ctx.linked_cols[i].linked_pos == pos) {
+        const uint tab_idx = ctx.linked_cols[i].tab_idx;
+        const NdbDictionary::Column *ndb_col = ctx.linked_cols[i].ndb_col;
+        const NdbQueryOperationDef *parent_op =
+            builder.m_tables[tab_idx].m_op;
+        const NdbLinkedOperand *linked = builder.m_builder->linkedValue(
+            parent_op, ndb_col->getName());
+        options->addLinkedProjection(linked);
+        break;
+      }
     }
   }
 }
@@ -1359,7 +1404,7 @@ bool ndb_push_aggregation(THD *, const JOIN *join,
   // Build the NdbAggregator program on the heap.
   NdbAggregator *agg = ndb_build_aggregation_program(
       join, builder.m_tables, builder.m_table_count, leaf_tab_no,
-      ndb_tables);
+      ndb_tables, builder.m_agg_build_ctx);
   if (agg == nullptr) return false;
 
   // Store the aggregator on the builder for build_query() to use.

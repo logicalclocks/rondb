@@ -39,6 +39,52 @@ class NdbAggregator;
 class ndb_pushed_builder_ctx;
 struct Index_lookup;
 struct NdbError;
+struct pushed_table;
+
+/**
+ * Context for building aggregation programs with linked column support.
+ *
+ * Tracks linked projection positions for parent-table columns used in
+ * both GROUP BY and aggregate expressions.  Each unique (tab_idx, col_id)
+ * pair gets a single linked position, shared across all references.
+ */
+struct AggBuildContext {
+  static constexpr uint MAX_LINKED_COLS = 64;
+
+  struct LinkedColEntry {
+    uint tab_idx;
+    int col_id;
+    Uint32 linked_pos;
+    const NdbDictionary::Column *ndb_col;
+  };
+
+  const pushed_table *tables{nullptr};
+  uint table_count{0};
+  uint leaf_tab_no{0};
+  const NdbDictionary::Table *const *ndb_tables{nullptr};
+
+  LinkedColEntry linked_cols[MAX_LINKED_COLS];
+  uint n_linked_cols{0};
+  Uint32 next_linked_pos{0};
+
+  /**
+   * Look up or allocate a linked position for a parent-table column.
+   * Returns the linked position, or UINT32_MAX on overflow.
+   */
+  Uint32 get_or_add_linked(uint tab_idx, int col_id) {
+    for (uint i = 0; i < n_linked_cols; i++) {
+      if (linked_cols[i].tab_idx == tab_idx &&
+          linked_cols[i].col_id == col_id) {
+        return linked_cols[i].linked_pos;
+      }
+    }
+    if (n_linked_cols >= MAX_LINKED_COLS) return ~Uint32(0);
+    const Uint32 pos = next_linked_pos++;
+    linked_cols[n_linked_cols++] = {tab_idx, col_id, pos,
+        ndb_tables[tab_idx]->getColumn(col_id)};
+    return pos;
+  }
+};
 
 /**
  * This type is used in conjunction with the 'pushed_table' objects and
@@ -814,6 +860,13 @@ class ndb_pushed_builder_ctx {
   // NdbAggregator program for aggregation pushdown (heap-allocated).
   // Set by ndb_push_aggregation() and used during build_query() rebuild.
   NdbAggregator *m_aggregator{nullptr};
+
+  // Linked column registry for aggregation pushdown.
+  // Tracks all parent-table columns used in GROUP BY and aggregate
+  // expressions, with their linked projection positions.
+  // Set by ndb_build_aggregation_program(), used by
+  // ndb_apply_aggregation_options() to emit linked projections.
+  AggBuildContext m_agg_build_ctx{};
 
   // Number of pushed_tables
   uint m_table_count;
