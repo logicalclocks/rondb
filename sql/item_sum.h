@@ -808,6 +808,10 @@ class Item_sum : public Item_func {
   double m_pushed_value_double{0.0};
   bool m_pushed_null{false};
   bool m_pushed_is_double{false};
+  // For AVG pushdown: store raw SUM and COUNT so reset_field() can write
+  // the integer SUM (which fits f_scale=0) and the real COUNT, letting
+  // Item_avg_field::val_decimal() do the division with prec_increment.
+  uint64_t m_pushed_avg_count{0};
 
  public:
   void set_pushed_value_int(int64_t val) {
@@ -820,6 +824,29 @@ class Item_sum : public Item_func {
   void set_pushed_value_double(double val) {
     m_pushed_aggregate = true;
     m_pushed_value_double = val;
+    m_pushed_is_double = true;
+    m_pushed_null = false;
+    null_value = false;
+  }
+  /**
+   * Set pushed AVG result as raw SUM + COUNT.
+   * The temp table field for AVG stores (sum, count) with f_scale=0 for
+   * integer columns.  Storing a pre-computed fractional average would
+   * truncate to integer.  Instead store the raw SUM and COUNT so that
+   * Item_avg_field::val_decimal() divides correctly with prec_increment.
+   */
+  void set_pushed_avg(int64_t sum_int, uint64_t count) {
+    m_pushed_aggregate = true;
+    m_pushed_value_int = sum_int;
+    m_pushed_avg_count = count;
+    m_pushed_is_double = false;
+    m_pushed_null = false;
+    null_value = false;
+  }
+  void set_pushed_avg_double(double sum_dbl, uint64_t count) {
+    m_pushed_aggregate = true;
+    m_pushed_value_double = sum_dbl;
+    m_pushed_avg_count = count;
     m_pushed_is_double = true;
     m_pushed_null = false;
     null_value = false;

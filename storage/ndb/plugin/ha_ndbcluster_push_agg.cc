@@ -1661,29 +1661,30 @@ static int ndb_fetch_next_aggregate_row(NdbAggregator *agg,
   // AVG uses two agg slots (SUM + COUNT), so fetch two results for it.
   for (Item_sum **func = join->sum_funcs; *func != nullptr; func++) {
     if ((*func)->sum_func() == Item_sum::AVG_FUNC) {
-      // AVG: fetch SUM result, then COUNT result, compute SUM/COUNT.
+      // AVG: fetch SUM and COUNT results.  Pass the raw values to
+      // Item_sum_avg so that reset_field() can store them with the
+      // correct precision (f_scale=0 for INT columns would truncate
+      // a pre-computed fractional average).
       NdbAggregator::Result sum_res = rec.FetchAggregationResult();
       NdbAggregator::Result cnt_res = rec.FetchAggregationResult();
       const uint64_t count = cnt_res.is_null() ? 0 : cnt_res.data_uint64();
       if (count == 0 || sum_res.is_null()) {
         (*func)->set_pushed_null();
       } else {
-        double sum_val;
         switch (sum_res.type()) {
           case NdbDictionary::Column::Bigint:
-            sum_val = static_cast<double>(sum_res.data_int64());
+            (*func)->set_pushed_avg(sum_res.data_int64(), count);
             break;
           case NdbDictionary::Column::Bigunsigned:
-            sum_val = static_cast<double>(sum_res.data_uint64());
+            (*func)->set_pushed_avg(
+                static_cast<int64_t>(sum_res.data_uint64()), count);
             break;
           case NdbDictionary::Column::Double:
-            sum_val = sum_res.data_double();
+            (*func)->set_pushed_avg_double(sum_res.data_double(), count);
             break;
           default:
             return HA_ERR_INTERNAL_ERROR;
         }
-        const double avg_val = sum_val / static_cast<double>(count);
-        (*func)->set_pushed_value_double(avg_val);
       }
     } else {
       NdbAggregator::Result res = rec.FetchAggregationResult();

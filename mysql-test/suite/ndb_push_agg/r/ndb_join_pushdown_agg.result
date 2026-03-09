@@ -1002,3 +1002,131 @@ grp	wt
 3	220
 # Cleanup CASE tables
 DROP TABLE tc2, tc1;
+############################################################
+# AVG in Pushed Joins
+############################################################
+# Create tables for AVG tests
+CREATE TABLE ta1 (
+pk INT PRIMARY KEY,
+grp INT
+) ENGINE=NDB;
+CREATE TABLE ta2 (
+pk INT PRIMARY KEY,
+val INT,
+val_null INT
+) ENGINE=NDB;
+INSERT INTO ta1 VALUES (1,1),(2,1),(3,1),(4,2),(5,2),(6,2),(7,3),(8,3);
+INSERT INTO ta2 VALUES
+(1, 10, 10), (2, 20, NULL), (3, 30, 30),
+(4, 40, NULL), (5, 50, 50), (6, 60, 60),
+(7, 70, NULL), (8, 80, 80);
+############################################################
+# Test 46: AVG on leaf column (2-way join)
+############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT ta1.grp, AVG(ta2.val)
+FROM ta1 JOIN ta2 ON ta2.pk = ta1.pk
+GROUP BY ta1.grp;
+grp	AVG(ta2.val)
+1	20.0000
+2	50.0000
+3	75.0000
+SET ndb_join_pushdown_aggregate=ON;
+SELECT ta1.grp, AVG(ta2.val)
+FROM ta1 JOIN ta2 ON ta2.pk = ta1.pk
+GROUP BY ta1.grp;
+grp	AVG(ta2.val)
+1	20.0000
+2	50.0000
+3	75.0000
+############################################################
+# Test 47: AVG with NULLs on leaf column
+############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT ta1.grp, AVG(ta2.val_null)
+FROM ta1 JOIN ta2 ON ta2.pk = ta1.pk
+GROUP BY ta1.grp;
+grp	AVG(ta2.val_null)
+1	20.0000
+2	55.0000
+3	80.0000
+SET ndb_join_pushdown_aggregate=ON;
+SELECT ta1.grp, AVG(ta2.val_null)
+FROM ta1 JOIN ta2 ON ta2.pk = ta1.pk
+GROUP BY ta1.grp;
+grp	AVG(ta2.val_null)
+1	20.0000
+2	55.0000
+3	80.0000
+############################################################
+# Test 48: Implicit AVG (no GROUP BY)
+############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT AVG(ta2.val)
+FROM ta1 JOIN ta2 ON ta2.pk = ta1.pk;
+AVG(ta2.val)
+45.0000
+SET ndb_join_pushdown_aggregate=ON;
+SELECT AVG(ta2.val)
+FROM ta1 JOIN ta2 ON ta2.pk = ta1.pk;
+AVG(ta2.val)
+45.0000
+############################################################
+# Test 49: AVG mixed with SUM, COUNT
+############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT ta1.grp, AVG(ta2.val), SUM(ta2.val), COUNT(*)
+FROM ta1 JOIN ta2 ON ta2.pk = ta1.pk
+GROUP BY ta1.grp;
+grp	AVG(ta2.val)	SUM(ta2.val)	COUNT(*)
+1	20.0000	60	3
+2	50.0000	150	3
+3	75.0000	150	2
+SET ndb_join_pushdown_aggregate=ON;
+SELECT ta1.grp, AVG(ta2.val), SUM(ta2.val), COUNT(*)
+FROM ta1 JOIN ta2 ON ta2.pk = ta1.pk
+GROUP BY ta1.grp;
+grp	AVG(ta2.val)	SUM(ta2.val)	COUNT(*)
+1	20.0000	60	3
+2	50.0000	150	3
+3	75.0000	150	2
+############################################################
+# Test 50: Multiple AVGs
+############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT ta1.grp, AVG(ta2.val), AVG(ta2.val_null)
+FROM ta1 JOIN ta2 ON ta2.pk = ta1.pk
+GROUP BY ta1.grp;
+grp	AVG(ta2.val)	AVG(ta2.val_null)
+1	20.0000	20.0000
+2	50.0000	55.0000
+3	75.0000	80.0000
+SET ndb_join_pushdown_aggregate=ON;
+SELECT ta1.grp, AVG(ta2.val), AVG(ta2.val_null)
+FROM ta1 JOIN ta2 ON ta2.pk = ta1.pk
+GROUP BY ta1.grp;
+grp	AVG(ta2.val)	AVG(ta2.val_null)
+1	20.0000	20.0000
+2	50.0000	55.0000
+3	75.0000	80.0000
+############################################################
+# Test 51: AVG with arithmetic expression
+############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT ta1.grp, AVG(ta2.val * 2)
+FROM ta1 JOIN ta2 ON ta2.pk = ta1.pk
+GROUP BY ta1.grp;
+grp	AVG(ta2.val * 2)
+1	40.0000
+2	100.0000
+3	150.0000
+SET ndb_join_pushdown_aggregate=ON;
+SELECT ta1.grp, AVG(ta2.val * 2)
+FROM ta1 JOIN ta2 ON ta2.pk = ta1.pk
+GROUP BY ta1.grp;
+grp	AVG(ta2.val * 2)
+1	40.0000
+2	100.0000
+3	150.0000
+# Cleanup AVG tables
+DROP TABLE ta2, ta1;

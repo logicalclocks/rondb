@@ -842,3 +842,115 @@ GROUP BY tc1.grp;
 
 --echo # Cleanup CASE tables
 DROP TABLE tc2, tc1;
+
+--echo ############################################################
+--echo # AVG in Pushed Joins
+--echo ############################################################
+
+--echo # Create tables for AVG tests
+CREATE TABLE ta1 (
+  pk INT PRIMARY KEY,
+  grp INT
+) ENGINE=NDB;
+
+CREATE TABLE ta2 (
+  pk INT PRIMARY KEY,
+  val INT,
+  val_null INT
+) ENGINE=NDB;
+
+INSERT INTO ta1 VALUES (1,1),(2,1),(3,1),(4,2),(5,2),(6,2),(7,3),(8,3);
+
+INSERT INTO ta2 VALUES
+  (1, 10, 10), (2, 20, NULL), (3, 30, 30),
+  (4, 40, NULL), (5, 50, 50), (6, 60, 60),
+  (7, 70, NULL), (8, 80, 80);
+
+--echo ############################################################
+--echo # Test 46: AVG on leaf column (2-way join)
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+--sorted_result
+SELECT ta1.grp, AVG(ta2.val)
+FROM ta1 JOIN ta2 ON ta2.pk = ta1.pk
+GROUP BY ta1.grp;
+
+SET ndb_join_pushdown_aggregate=ON;
+--sorted_result
+SELECT ta1.grp, AVG(ta2.val)
+FROM ta1 JOIN ta2 ON ta2.pk = ta1.pk
+GROUP BY ta1.grp;
+
+--echo ############################################################
+--echo # Test 47: AVG with NULLs on leaf column
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+--sorted_result
+SELECT ta1.grp, AVG(ta2.val_null)
+FROM ta1 JOIN ta2 ON ta2.pk = ta1.pk
+GROUP BY ta1.grp;
+
+SET ndb_join_pushdown_aggregate=ON;
+--sorted_result
+SELECT ta1.grp, AVG(ta2.val_null)
+FROM ta1 JOIN ta2 ON ta2.pk = ta1.pk
+GROUP BY ta1.grp;
+
+--echo ############################################################
+--echo # Test 48: Implicit AVG (no GROUP BY)
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT AVG(ta2.val)
+FROM ta1 JOIN ta2 ON ta2.pk = ta1.pk;
+
+SET ndb_join_pushdown_aggregate=ON;
+SELECT AVG(ta2.val)
+FROM ta1 JOIN ta2 ON ta2.pk = ta1.pk;
+
+--echo ############################################################
+--echo # Test 49: AVG mixed with SUM, COUNT
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+--sorted_result
+SELECT ta1.grp, AVG(ta2.val), SUM(ta2.val), COUNT(*)
+FROM ta1 JOIN ta2 ON ta2.pk = ta1.pk
+GROUP BY ta1.grp;
+
+SET ndb_join_pushdown_aggregate=ON;
+--sorted_result
+SELECT ta1.grp, AVG(ta2.val), SUM(ta2.val), COUNT(*)
+FROM ta1 JOIN ta2 ON ta2.pk = ta1.pk
+GROUP BY ta1.grp;
+
+--echo ############################################################
+--echo # Test 50: Multiple AVGs
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+--sorted_result
+SELECT ta1.grp, AVG(ta2.val), AVG(ta2.val_null)
+FROM ta1 JOIN ta2 ON ta2.pk = ta1.pk
+GROUP BY ta1.grp;
+
+SET ndb_join_pushdown_aggregate=ON;
+--sorted_result
+SELECT ta1.grp, AVG(ta2.val), AVG(ta2.val_null)
+FROM ta1 JOIN ta2 ON ta2.pk = ta1.pk
+GROUP BY ta1.grp;
+
+--echo ############################################################
+--echo # Test 51: AVG with arithmetic expression
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+--sorted_result
+SELECT ta1.grp, AVG(ta2.val * 2)
+FROM ta1 JOIN ta2 ON ta2.pk = ta1.pk
+GROUP BY ta1.grp;
+
+SET ndb_join_pushdown_aggregate=ON;
+--sorted_result
+SELECT ta1.grp, AVG(ta2.val * 2)
+FROM ta1 JOIN ta2 ON ta2.pk = ta1.pk
+GROUP BY ta1.grp;
+
+--echo # Cleanup AVG tables
+DROP TABLE ta2, ta1;

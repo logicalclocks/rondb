@@ -49,6 +49,23 @@ INSERT INTO t3 VALUES
   (7, 700, 70), (8, 800, 80);
 
 --echo ############################################################
+--echo # EXPLAIN: Verify 2-way join order (t1 root, t2 child)
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=ON;
+--replace_column 10 # 11 #
+EXPLAIN SELECT t2.cat, SUM(t1.region)
+FROM t1 JOIN t2 ON t2.pk = t1.pk
+GROUP BY t2.cat;
+
+--echo ############################################################
+--echo # EXPLAIN: Verify 3-way join order (t1 root, t2/t3 children)
+--echo ############################################################
+--replace_column 10 # 11 #
+EXPLAIN SELECT t1.grp, SUM(t1.region + t3.amount)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp;
+
+--echo ############################################################
 --echo # Test A1: SUM on root table column (2-way join)
 --echo ############################################################
 SET ndb_join_pushdown_aggregate=OFF;
@@ -272,6 +289,184 @@ FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk;
 SET ndb_join_pushdown_aggregate=ON;
 SELECT COUNT(*), SUM(t1.region), MIN(t2.discount), MAX(t2.discount)
 FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk;
+
+--echo ############################################################
+--echo # Test E1: AVG on linked column in 3-way join
+--echo # AVG(t1.region) with GROUP BY on leaf column
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+--sorted_result
+SELECT t3.qty, AVG(t1.region)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t3.qty;
+
+SET ndb_join_pushdown_aggregate=ON;
+--sorted_result
+SELECT t3.qty, AVG(t1.region)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t3.qty;
+
+--echo ############################################################
+--echo # Test E2: AVG on intermediate table linked column
+--echo # AVG(t2.discount) with GROUP BY on leaf column
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+--sorted_result
+SELECT t3.qty, AVG(t2.discount)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t3.qty;
+
+SET ndb_join_pushdown_aggregate=ON;
+--sorted_result
+SELECT t3.qty, AVG(t2.discount)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t3.qty;
+
+--echo ############################################################
+--echo # Test E3: AVG on leaf column (non-linked baseline)
+--echo # AVG(t3.amount) — should work, no linked columns needed
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+--sorted_result
+SELECT t2.cat, AVG(t3.amount)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t2.cat;
+
+SET ndb_join_pushdown_aggregate=ON;
+--sorted_result
+SELECT t2.cat, AVG(t3.amount)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t2.cat;
+
+--echo ############################################################
+--echo # Test E4: AVG with NULLs on linked column
+--echo ############################################################
+INSERT INTO t1 VALUES (9, 'A', NULL);
+INSERT INTO t2 VALUES (9, 'X', 0);
+
+SET ndb_join_pushdown_aggregate=OFF;
+--sorted_result
+SELECT t2.cat, AVG(t1.region)
+FROM t1 JOIN t2 ON t2.pk = t1.pk
+GROUP BY t2.cat;
+
+SET ndb_join_pushdown_aggregate=ON;
+--sorted_result
+SELECT t2.cat, AVG(t1.region)
+FROM t1 JOIN t2 ON t2.pk = t1.pk
+GROUP BY t2.cat;
+
+DELETE FROM t2 WHERE pk = 9;
+DELETE FROM t1 WHERE pk = 9;
+
+--echo ############################################################
+--echo # Test E5: Manual AVG decomposition (SUM/COUNT) on linked col
+--echo # Diagnostic: If SUM and COUNT individually are correct,
+--echo # this should give the correct AVG even if AVG() is buggy.
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+--sorted_result
+SELECT t2.cat, SUM(t1.region), COUNT(t1.region),
+       SUM(t1.region)/COUNT(t1.region) AS manual_avg
+FROM t1 JOIN t2 ON t2.pk = t1.pk
+GROUP BY t2.cat;
+
+SET ndb_join_pushdown_aggregate=ON;
+--sorted_result
+SELECT t2.cat, SUM(t1.region), COUNT(t1.region),
+       SUM(t1.region)/COUNT(t1.region) AS manual_avg
+FROM t1 JOIN t2 ON t2.pk = t1.pk
+GROUP BY t2.cat;
+
+--echo ############################################################
+--echo # Test E6: Implicit AVG (no GROUP BY) on linked column
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT AVG(t1.region)
+FROM t1 JOIN t2 ON t2.pk = t1.pk;
+
+SET ndb_join_pushdown_aggregate=ON;
+SELECT AVG(t1.region)
+FROM t1 JOIN t2 ON t2.pk = t1.pk;
+
+--echo ############################################################
+--echo # Test E7: AVG mixed with SUM/COUNT on linked columns
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+--sorted_result
+SELECT t2.cat, AVG(t1.region), SUM(t1.region), COUNT(t1.region)
+FROM t1 JOIN t2 ON t2.pk = t1.pk
+GROUP BY t2.cat;
+
+SET ndb_join_pushdown_aggregate=ON;
+--sorted_result
+SELECT t2.cat, AVG(t1.region), SUM(t1.region), COUNT(t1.region)
+FROM t1 JOIN t2 ON t2.pk = t1.pk
+GROUP BY t2.cat;
+
+--echo ############################################################
+--echo # Test F1: AVG with cross-table arithmetic
+--echo # AVG(t1.region + t3.amount)
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+--sorted_result
+SELECT t1.grp, AVG(t1.region + t3.amount)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp;
+
+SET ndb_join_pushdown_aggregate=ON;
+--sorted_result
+SELECT t1.grp, AVG(t1.region + t3.amount)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp;
+
+--echo ############################################################
+--echo # Test F2: MIN/MAX with cross-table arithmetic
+--echo # MIN(t1.region + t3.amount), MAX(t2.discount * t3.qty)
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+--sorted_result
+SELECT t1.grp, MIN(t1.region + t3.amount), MAX(t2.discount * t3.qty)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp;
+
+SET ndb_join_pushdown_aggregate=ON;
+--sorted_result
+SELECT t1.grp, MIN(t1.region + t3.amount), MAX(t2.discount * t3.qty)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp;
+
+--echo ############################################################
+--echo # Test F3: COUNT(*) and SUM with linked GROUP BY
+--echo # GROUP BY on root column, COUNT and SUM on leaf
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+--sorted_result
+SELECT t1.grp, COUNT(*), SUM(t3.amount)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp;
+
+SET ndb_join_pushdown_aggregate=ON;
+--sorted_result
+SELECT t1.grp, COUNT(*), SUM(t3.amount)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp;
+
+--echo ############################################################
+--echo # Test F4: Multiple linked GROUP BY columns
+--echo # GROUP BY on root + intermediate columns
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+--sorted_result
+SELECT t1.grp, t2.cat, SUM(t3.amount)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp, t2.cat;
+
+SET ndb_join_pushdown_aggregate=ON;
+--sorted_result
+SELECT t1.grp, t2.cat, SUM(t3.amount)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp, t2.cat;
 
 --echo # Cleanup
 DROP TABLE t3, t2, t1;
