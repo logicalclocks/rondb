@@ -13,6 +13,12 @@
 -- You should have received a copy of the GNU General Public License
 -- along with this program. If not, see <http://www.gnu.org/licenses/>.
 
+-- Disable FK checks so we can insert feature_view dependencies (training_dataset_join,
+-- training_dataset_feature, serving_key) before feature_view itself. This ensures that
+-- when the feature_view INSERT fires an NDB event, the event watcher's
+-- load_single_feature_view() finds all dependent rows and caches successfully.
+SET FOREIGN_KEY_CHECKS=0;
+
 INSERT INTO
     `users`
 VALUES
@@ -243,188 +249,10 @@ VALUES
         3090 , 'sample_4'                , 67    , Timestamp('2023-05-08 15:20:51') , 10000   , 1       , NULL        , 2       , NULL     , NULL    , 2065    , 'ts'       , 1              , NULL       , NULL            , FALSE      , 0
     );
 
-INSERT INTO
-    `feature_view`
-VALUES
-    (
-        2059, 'sample_1', 67, Timestamp('2023-04-21 09:52:51'), 10000, 1, ''
-    ),
-    (
-        2060, 'sample_2', 67, Timestamp('2023-04-21 09:52:52'), 10000, 1, ''
-    ),
-    (
-        2061, 'sample_1n2', 67, Timestamp('2023-04-21 09:52:53'), 10000, 1, ''
-    ),
-    (
-        4119, 'sample_1n2_no_prefix', 67, Timestamp('2023-04-21 09:52:53'), 10000, 1, ''
-    ),
-    (
-        2064, 'sample_2', 1091, Timestamp('2023-04-21 10:03:49'), 10000, 1, ''
-    ),
-    (
-        2065, 'sample_1n2', 1091, Timestamp('2023-04-21 10:03:51'), 10000, 1, ''
-    ),
-    (
-        2066, 'sample_share_1n2', 67, Timestamp('2023-04-21 11:10:32'), 10000, 1, ''
-    ),
-    (
-        2063, 'sample_1', 1091, Timestamp('2023-04-21 10:03:48'), 10000, 2, ''
-    ),
-    /**
-    SELECT `fg0`.`id1` `id1`, `fg0`.`id2` `id2`, `fg0`.`ts` `ts`, `fg0`.`bigint` `bigint`
-    FROM `test_ken_featurestore`.`sample_3_1` `fg0`
-    */
-    (
-        2078, 'sample_3', 67, Timestamp('2023-05-09 06:59:06'), 10000, 1, ''
-    ),
-    /**
-    SELECT `fg0`.`id1` `id1`, `fg0`.`id2` `id2`, `fg0`.`ts` `ts`, `fg0`.`bigint` `bigint`, `fg0`.`string` `string`, `fg0`.`date` `date`, `fg0`.`bool` `bool`, `fg0`.`float` `float`, `fg0`.`double` `double`, `fg0`.`binary` `binary`
-    FROM `test_ken_featurestore`.`sample_3_1` `fg0`
-    */
-    (
-	    2079, 'sample_3', 67, Timestamp('2023-05-09 12:10:53'), 10000, 2, ''
-    ),
-    /**
-    SELECT `fg0`.`id1` `id1`, `fg0`.`ts` `ts`, `fg0`.`data1` `data1`, `fg0`.`data2` `data2`, `fg1`.`id1` `fg1_id1`, `fg1`.`ts` `fg1_ts`, `fg1`.`data1` `fg1_data1`, `fg1`.`data2` `fg1_data2`
-    FROM `test_ken_featurestore`.`sample_1_1` `fg0`
-    INNER JOIN `test_ken_featurestore`.`sample_1_2` `fg1` ON `fg0`.`id1` = `fg1`.`id1`
-    */
-    (
-	    2080, 'sample_1n1', 67, Timestamp('2023-05-10 10:45:26'), 10000, 1, ''
-    ),
-    (
-        2085, 'sample_4', 66, Timestamp('2023-05-23 15:31:53'), 10000, 1, ''
-    ),
-    /**
-    SELECT `fg1`.`id1` `id1`, `fg1`.`ts` `ts`, `fg1`.`data1` `data1`, `fg1`.`data2` `data2`, `fg0`.`id1` `fg2_id1`, `fg0`.`ts` `fg2_ts`, `fg0`.`data1` `fg2_data1`, `fg0`.`data2` `fg2_data2`
-    FROM `test_ken`.`sample_1_1` `fg1`
-    INNER JOIN `test_ken`.`sample_2_1` `fg0` ON `fg1`.`id1` = `fg0`.`id1`
-    */
-    (
-	    3082, 'sample_1n2_label', 67, Timestamp('2023-06-05 13:13:35'), 10000, 1, ''
-    ),
-    /**
-    SELECT `fg1`.`data1` `data1`, `fg0`.`id1` `fg2_id1`, `fg0`.`ts` `fg2_ts`, `fg0`.`data1` `fg2_data1`, `fg0`.`data2` `fg2_data2`
-    FROM `test_ken`.`sample_1_1` `fg1`
-    INNER JOIN `test_ken`.`sample_2_1` `fg0` ON `fg1`.`id1` = `fg0`.`id1`
-    */
-    (
-        3083, 'sample_1n2_labelonly', 67, Timestamp('2023-06-05 13:15:14'), 10000, 1, ''
-    ),
-    -- SELECT `fg0`.`id1` `id1`, `fg0`.`data` `data`\nFROM `test_ken`.`sample_cache_1` `fg0`
-    (
-	    3086, 'sample_cache', 67, Timestamp('2023-06-15 11:49:52'), 10000, 1, ''
-    ),
-    /**
-    SELECT `fg0`.`id1` `id1`, `fg0`.`ts` `ts`, `fg0`.`data1` `data1`, `fg0`.`data2` `data2`, `fg1`.`id1` `fg1_id1`, `fg1`.`ts` `fg1_ts`, `fg1`.`data1` `fg1_data1`, `fg1`.`data2` `fg1_data2`
-    FROM `test_ken_featurestore`.`sample_1_1` `fg0`
-    INNER JOIN `test_ken_featurestore`.`sample_1_1` `fg1` ON `fg0`.`id1` = `fg1`.`id1`
-    */
-    (
-	    3087, 'sample_1n1_self', 67, Timestamp('2023-05-10 10:45:26'), 10000, 1, ''
-    ),
-    (
-	    3088, 'test_deleted_fg', 67, Timestamp('2023-05-10 10:45:26'), 10000, 1, ''
-    ),
-    (
-	    3089, 'test_deleted_joint_fg', 67, Timestamp('2023-05-10 10:45:26'), 10000, 1, ''
-    ),
-    /**
-    SELECT `fg0`.`id1` `id1`, `fg0`.`ts` `ts`, `fg0`.`data1` `data1`, `fg0`.`data2` `data2`, `fg1`.`bigint` `bigint`
-    FROM `test_ken_featurestore`.`sample_1_1` `fg0`
-    INNER JOIN `test_ken_featurestore`.`sample_3_1` `fg1` ON `fg0`.`id1` = `fg1`.`bigint`
-    */
-    (
-        4113, 'sample_1n3', 67, Timestamp('2023-08-08 14:00:53'), 10000, 1, ''
-    ),
-    /**
-    SELECT `fg0`.`id1` `id1`, `fg0`.`ts` `ts`, `fg0`.`data1` `data1`, `fg0`.`data2` `data2`, `fg1`.`bigint` `bigint`
-    FROM `test_ken_featurestore`.`sample_1_1` `fg0`
-    INNER JOIN `test_ken_featurestore`.`sample_3_1` `fg1` ON `fg0`.`data1` = `fg1`.`id1`
-    */
-    (
-        4114, 'sample_1n3_joinoncol', 67, Timestamp('2023-08-09 09:08:02'), 10000, 1, ''
-    ),
-    /**
-    SELECT `fg0`.`id1` `id1`, `fg0`.`ts` `ts`, `fg0`.`data1` `data1`, `fg0`.`data2` `data2`, `fg1`.`bigint` `bigint`
-    FROM `test_ken_featurestore`.`sample_1_1` `fg0`
-    INNER JOIN `test_ken_featurestore`.`sample_3_1` `fg1` ON `fg0`.`data1` = `fg1`.`bigint`
-    */
-    (
-        4115, 'sample_1n3_joincoloncol', 67, Timestamp('2023-08-09 09:29:37'), 10000, 1, ''
-    ),
-    /**
-    SELECT `fg1`.`id1` `id1`, `fg0`.`id1` `fg2_id1`
-    FROM `test_ken`.`sample_1_1` `fg1`
-    INNER JOIN `test_ken`.`sample_2_1` `fg0` ON `fg1`.`id1` = `fg0`.`id1`
-    */
-    (
-        4116, 'sample_1n2_pkonly', 67, Timestamp('2023-06-05 13:13:35'), 10000, 1, ''
-    ),
-    /**
-    SELECT `fg0`.`id1` `id1`, `fg0`.`ts` `ts`, `fg0`.`array` `array`, `fg0`.`struct` `struct`
-    FROM `test_ken_featurestore`.`sample_complex_type_1` `fg0`
-    */
-    (
-	    19, 'sample_complex_type', 1091, Timestamp('2023-09-26 10:03:16'), 10000, 1, ''
-    ),
-    (
-	    20, 'sample_complex_type_512', 1091, Timestamp('2023-09-26 10:03:16'), 10000, 1, ''
-    ),
-    (
-	    21, 'date_array', 1091, Timestamp('2023-09-26 10:03:16'), 10000, 1, ''
-    ),
-    (
-	    22, 'caps', 68, Timestamp('2023-09-26 10:03:16'), 10000, 1, ''
-    ),
-    (
-	    23, 'complex_example', 68, Timestamp('2023-09-26 10:03:16'), 10000, 1, ''
-    ),
-    (
-	    24, 'fv_spine_group', 69, Timestamp('2023-09-26 10:03:16'), 10000, 1, ''
-    ),
-    /**
-    SELECT `fg0`.`id1` `id1`, `fg0`.`ts` `ts`, `fg0`.`data1` `data1`, `fg0`.`data2` `data2`, `fg1`.`id1` `id1`, `fg1`.`bigint` `bigint`
-    FROM `test_ken_featurestore`.`sample_1_1` `fg0`
-    INNER JOIN `test_ken_featurestore`.`sample_3_1` `fg1` ON `fg0`.`bigint` = `fg1`.`id1`
-    */
-    (
-        4117, 'sample_1n3_pk', 67, Timestamp('2023-08-08 14:00:53'), 10000, 1, ''
-    ),
-    /**
-    SELECT `fg0`.`id1` `id1`, `fg0`.`ts` `ts`, `fg0`.`data1` `data1`, `fg0`.`data2` `data2`, `fg1`.`id1` `id1`, `fg1`.`bigint` `bigint`
-    FROM `test_ken_featurestore`.`sample_1_1` `fg0`
-    INNER JOIN `test_ken_featurestore`.`sample_3_1` `fg1` ON `fg0`.`bigint` = `fg1`.`id1`
-    */
-    (
-        4118, 'sample_1n3_no_prefix_pk', 67, Timestamp('2023-08-08 14:00:53'), 10000, 1, ''
-    ),
-    /**
-    SELECT `fg0`.`id1` `id1`, `fg0`.`ts` `ts`, `fg0`.`data1` `data1`, `fg0`.`data2` `data2`, `fg1`.`id1` `right_id1`, `fg1`.`id2` `right_id2`, `fg1`.`bigint` `right_bigint`
-    FROM `test_ken_featurestore`.`sample_4_1` `fg0`
-    INNER JOIN `test_ken_featurestore`.`sample_3_1` `fg1` ON `fg0`.`id1` = `fg1`.`id2`
-    */
-    (
-        4120, 'sample_4n3_on_id', 67, Timestamp('2023-08-08 14:00:53'), 10000, 1, ''    
-    ),
-    (
-        4121, 'sample_share_complex', 67, Timestamp('2023-09-26 10:03:16'), 10000, 1, ''
-    );
+-- Insert feature_view dependencies BEFORE feature_view so that the NDB event
+-- watcher can successfully load metadata when the feature_view INSERT fires.
 
 INSERT INTO
-    `feature_view_link`
-VALUES
-    (
-        1, 24, 37, 'FSDB004', 'spine', 1
-    ),
-    (
-        2, 24, 38, 'FSDB004', 'fg1', 1
-    ),
-    (
-        3, 24, 39, 'FSDB004', 'fg2', 1
-    );
-
-INSERT INTO 
     `training_dataset_join`
 VALUES
     (
@@ -1093,7 +921,7 @@ VALUES
         5184, NULL, 31, 'struct', 'struct<int1:bigint,int2:bigint>', 5142, 7, 0, 0, 0, 4121, NULL
     );
 
-INSERT INTO 
+INSERT INTO
     `serving_key`
 VALUES
     (
@@ -1241,16 +1069,16 @@ VALUES
         1519, NULL, 'id1', NULL, 0, 3090, 1, 4120
     ),
     (
-        1520, NULL, 'id', NULL, 0, 32, 1, 20 
+        1520, NULL, 'id', NULL, 0, 32, 1, 20
     ),
     (
-        1521, NULL, 'pk', NULL, 0, 33, 1, 21 
+        1521, NULL, 'pk', NULL, 0, 33, 1, 21
     ),
     (
-        1522, NULL, 'id', NULL, 0, 34, 1, 22 
+        1522, NULL, 'id', NULL, 0, 34, 1, 22
     ),
     (
-        1523, NULL, 'id', NULL, 0, 35, 1, 23 
+        1523, NULL, 'id', NULL, 0, 35, 1, 23
     ),
     (
         1524, NULL, 'id1', NULL, 0, 2069, 1, 4121
@@ -1268,7 +1096,6 @@ VALUES
     (
     1528 , NULL   , 'id' , NULL , 0 , 37   , 1 , 24
     );
-
 
 INSERT INTO
     `schemas`
@@ -1292,25 +1119,25 @@ VALUES
 	    25, '{"type":"record","name":"complex_example_1","namespace":"caps_featurestore.db","fields":[{"name":"id","type":["null","long"]},{"name":"ts","type":["null","long"]},{"name":"array","type":["null",{"type":"array","items":["null","long"]}]},{"name":"struct","type":["null",{"type":"record","name":"r854762204","namespace":"struct","fields":[{"name":"int1","type":["null","long"]},{"name":"int2","type":["null","long"]}]}]}]}', 1003
     ),
 
-    ( 
+    (
       26, '{"type":"record","name":"inferencelog","fields":[{"name":"modelId","type":"int"},{"name":"modelName","type":"string"},{"name":"modelVersion","type":"int"},{"name":"requestTimestamp","type":"long"},{"name":"responseHttpCode","type":"int"},{"name":"inferenceRequest","type":"string"},{"name":"inferenceResponse","type":"string"}]}',1004
     ),
-    ( 
+    (
       27, '{"type":"record","name":"inferencelog","fields":[{"name":"modelId","type":"int"},{"name":"modelName","type":"string"},{"name":"modelVersion","type":"int"},{"name":"requestTimestamp","type":"long"},{"name":"responseHttpCode","type":"int"},{"name":"inferenceRequest","type":"string"},{"name":"inferenceResponse","type":"string"},{"name":"servingType","type":"string"}]}',1004
     ),
-    ( 
+    (
       28, '{"type":"record","name":"inferencelog","fields":[{"name":"modelId","type":"int"},{"name":"modelName","type":"string"},{"name":"modelVersion","type":"int"},{"name":"requestTimestamp","type":"long"},{"name":"responseHttpCode","type":"int"},{"name":"inferenceRequest","type":"string"},{"name":"inferenceResponse","type":"string"},{"name":"modelServer","type":"string"},{"name":"servingTool","type":"string"}]}',1004
     ),
-    ( 
+    (
       29, '{"type":"record","name":"inferencelog","fields":[{"name":"servingId","type":"int"},{"name":"modelName","type":"string"},{"name":"modelVersion","type":"int"},{"name":"requestTimestamp","type":"long"},{"name":"responseHttpCode","type":"int"},{"name":"inferenceId","type":"string"},{"name":"messageType","type":"string"},{"name":"payload","type":"string"}]}',1004
     ),
-    ( 
+    (
       30, '{"type":"record","name":"iris_modal_1","namespace":"project_featurestore.db","fields":[{"name":"index","type":["null","long"]},{"name":"sepal_length","type":["null","double"]},{"name":"sepal_width","type":["null","double"]},{"name":"petal_length","type":["null","double"]},{"name":"petal_width","type":["null","double"]},{"name":"variety","type":["null","string"]}]}',1004
     ),
-    ( 
+    (
       31, '{"type":"record","name":"fg1_1","namespace":"project_featurestore.db","fields":[{"name":"id","type":["null","long"]},{"name":"ts","type":["null",{"type":"int","logicalType":"date"}]},{"name":"col2","type":["null","long"]}]}',1004
     ),
-    ( 
+    (
       32, '{"type":"record","name":"fg2_1","namespace":"project_featurestore.db","fields":[{"name":"id","type":["null","long"]},{"name":"ts","type":["null",{"type":"int","logicalType":"date"}]},{"name":"col2","type":["null","double"]}]}',1004
     );
 
@@ -1356,3 +1183,188 @@ VALUES
         32  , 'fg2_1'           , 1 , 32 , 1004 , Timestamp('2025-10-15 12:19:21')
     ) ;
 
+-- feature_view is inserted LAST so that when the NDB event watcher receives
+-- the INSERT event, all dependent rows (training_dataset_join,
+-- training_dataset_feature, serving_key, schemas, subjects) already exist.
+INSERT INTO
+    `feature_view`
+VALUES
+    (
+        2059, 'sample_1', 67, Timestamp('2023-04-21 09:52:51'), 10000, 1, ''
+    ),
+    (
+        2060, 'sample_2', 67, Timestamp('2023-04-21 09:52:52'), 10000, 1, ''
+    ),
+    (
+        2061, 'sample_1n2', 67, Timestamp('2023-04-21 09:52:53'), 10000, 1, ''
+    ),
+    (
+        4119, 'sample_1n2_no_prefix', 67, Timestamp('2023-04-21 09:52:53'), 10000, 1, ''
+    ),
+    (
+        2064, 'sample_2', 1091, Timestamp('2023-04-21 10:03:49'), 10000, 1, ''
+    ),
+    (
+        2065, 'sample_1n2', 1091, Timestamp('2023-04-21 10:03:51'), 10000, 1, ''
+    ),
+    (
+        2066, 'sample_share_1n2', 67, Timestamp('2023-04-21 11:10:32'), 10000, 1, ''
+    ),
+    (
+        2063, 'sample_1', 1091, Timestamp('2023-04-21 10:03:48'), 10000, 2, ''
+    ),
+    /**
+    SELECT `fg0`.`id1` `id1`, `fg0`.`id2` `id2`, `fg0`.`ts` `ts`, `fg0`.`bigint` `bigint`
+    FROM `test_ken_featurestore`.`sample_3_1` `fg0`
+    */
+    (
+        2078, 'sample_3', 67, Timestamp('2023-05-09 06:59:06'), 10000, 1, ''
+    ),
+    /**
+    SELECT `fg0`.`id1` `id1`, `fg0`.`id2` `id2`, `fg0`.`ts` `ts`, `fg0`.`bigint` `bigint`, `fg0`.`string` `string`, `fg0`.`date` `date`, `fg0`.`bool` `bool`, `fg0`.`float` `float`, `fg0`.`double` `double`, `fg0`.`binary` `binary`
+    FROM `test_ken_featurestore`.`sample_3_1` `fg0`
+    */
+    (
+	    2079, 'sample_3', 67, Timestamp('2023-05-09 12:10:53'), 10000, 2, ''
+    ),
+    /**
+    SELECT `fg0`.`id1` `id1`, `fg0`.`ts` `ts`, `fg0`.`data1` `data1`, `fg0`.`data2` `data2`, `fg1`.`id1` `fg1_id1`, `fg1`.`ts` `fg1_ts`, `fg1`.`data1` `fg1_data1`, `fg1`.`data2` `fg1_data2`
+    FROM `test_ken_featurestore`.`sample_1_1` `fg0`
+    INNER JOIN `test_ken_featurestore`.`sample_1_2` `fg1` ON `fg0`.`id1` = `fg1`.`id1`
+    */
+    (
+	    2080, 'sample_1n1', 67, Timestamp('2023-05-10 10:45:26'), 10000, 1, ''
+    ),
+    (
+        2085, 'sample_4', 66, Timestamp('2023-05-23 15:31:53'), 10000, 1, ''
+    ),
+    /**
+    SELECT `fg1`.`id1` `id1`, `fg1`.`ts` `ts`, `fg1`.`data1` `data1`, `fg1`.`data2` `data2`, `fg0`.`id1` `fg2_id1`, `fg0`.`ts` `fg2_ts`, `fg0`.`data1` `fg2_data1`, `fg0`.`data2` `fg2_data2`
+    FROM `test_ken`.`sample_1_1` `fg1`
+    INNER JOIN `test_ken`.`sample_2_1` `fg0` ON `fg1`.`id1` = `fg0`.`id1`
+    */
+    (
+	    3082, 'sample_1n2_label', 67, Timestamp('2023-06-05 13:13:35'), 10000, 1, ''
+    ),
+    /**
+    SELECT `fg1`.`data1` `data1`, `fg0`.`id1` `fg2_id1`, `fg0`.`ts` `fg2_ts`, `fg0`.`data1` `fg2_data1`, `fg0`.`data2` `fg2_data2`
+    FROM `test_ken`.`sample_1_1` `fg1`
+    INNER JOIN `test_ken`.`sample_2_1` `fg0` ON `fg1`.`id1` = `fg0`.`id1`
+    */
+    (
+        3083, 'sample_1n2_labelonly', 67, Timestamp('2023-06-05 13:15:14'), 10000, 1, ''
+    ),
+    -- SELECT `fg0`.`id1` `id1`, `fg0`.`data` `data`\nFROM `test_ken`.`sample_cache_1` `fg0`
+    (
+	    3086, 'sample_cache', 67, Timestamp('2023-06-15 11:49:52'), 10000, 1, ''
+    ),
+    /**
+    SELECT `fg0`.`id1` `id1`, `fg0`.`ts` `ts`, `fg0`.`data1` `data1`, `fg0`.`data2` `data2`, `fg1`.`id1` `fg1_id1`, `fg1`.`ts` `fg1_ts`, `fg1`.`data1` `fg1_data1`, `fg1`.`data2` `fg1_data2`
+    FROM `test_ken_featurestore`.`sample_1_1` `fg0`
+    INNER JOIN `test_ken_featurestore`.`sample_1_1` `fg1` ON `fg0`.`id1` = `fg1`.`id1`
+    */
+    (
+	    3087, 'sample_1n1_self', 67, Timestamp('2023-05-10 10:45:26'), 10000, 1, ''
+    ),
+    (
+	    3088, 'test_deleted_fg', 67, Timestamp('2023-05-10 10:45:26'), 10000, 1, ''
+    ),
+    (
+	    3089, 'test_deleted_joint_fg', 67, Timestamp('2023-05-10 10:45:26'), 10000, 1, ''
+    ),
+    /**
+    SELECT `fg0`.`id1` `id1`, `fg0`.`ts` `ts`, `fg0`.`data1` `data1`, `fg0`.`data2` `data2`, `fg1`.`bigint` `bigint`
+    FROM `test_ken_featurestore`.`sample_1_1` `fg0`
+    INNER JOIN `test_ken_featurestore`.`sample_3_1` `fg1` ON `fg0`.`id1` = `fg1`.`bigint`
+    */
+    (
+        4113, 'sample_1n3', 67, Timestamp('2023-08-08 14:00:53'), 10000, 1, ''
+    ),
+    /**
+    SELECT `fg0`.`id1` `id1`, `fg0`.`ts` `ts`, `fg0`.`data1` `data1`, `fg0`.`data2` `data2`, `fg1`.`bigint` `bigint`
+    FROM `test_ken_featurestore`.`sample_1_1` `fg0`
+    INNER JOIN `test_ken_featurestore`.`sample_3_1` `fg1` ON `fg0`.`data1` = `fg1`.`id1`
+    */
+    (
+        4114, 'sample_1n3_joinoncol', 67, Timestamp('2023-08-09 09:08:02'), 10000, 1, ''
+    ),
+    /**
+    SELECT `fg0`.`id1` `id1`, `fg0`.`ts` `ts`, `fg0`.`data1` `data1`, `fg0`.`data2` `data2`, `fg1`.`bigint` `bigint`
+    FROM `test_ken_featurestore`.`sample_1_1` `fg0`
+    INNER JOIN `test_ken_featurestore`.`sample_3_1` `fg1` ON `fg0`.`data1` = `fg1`.`bigint`
+    */
+    (
+        4115, 'sample_1n3_joincoloncol', 67, Timestamp('2023-08-09 09:29:37'), 10000, 1, ''
+    ),
+    /**
+    SELECT `fg1`.`id1` `id1`, `fg0`.`id1` `fg2_id1`
+    FROM `test_ken`.`sample_1_1` `fg1`
+    INNER JOIN `test_ken`.`sample_2_1` `fg0` ON `fg1`.`id1` = `fg0`.`id1`
+    */
+    (
+        4116, 'sample_1n2_pkonly', 67, Timestamp('2023-06-05 13:13:35'), 10000, 1, ''
+    ),
+    /**
+    SELECT `fg0`.`id1` `id1`, `fg0`.`ts` `ts`, `fg0`.`array` `array`, `fg0`.`struct` `struct`
+    FROM `test_ken_featurestore`.`sample_complex_type_1` `fg0`
+    */
+    (
+	    19, 'sample_complex_type', 1091, Timestamp('2023-09-26 10:03:16'), 10000, 1, ''
+    ),
+    (
+	    20, 'sample_complex_type_512', 1091, Timestamp('2023-09-26 10:03:16'), 10000, 1, ''
+    ),
+    (
+	    21, 'date_array', 1091, Timestamp('2023-09-26 10:03:16'), 10000, 1, ''
+    ),
+    (
+	    22, 'caps', 68, Timestamp('2023-09-26 10:03:16'), 10000, 1, ''
+    ),
+    (
+	    23, 'complex_example', 68, Timestamp('2023-09-26 10:03:16'), 10000, 1, ''
+    ),
+    (
+	    24, 'fv_spine_group', 69, Timestamp('2023-09-26 10:03:16'), 10000, 1, ''
+    ),
+    /**
+    SELECT `fg0`.`id1` `id1`, `fg0`.`ts` `ts`, `fg0`.`data1` `data1`, `fg0`.`data2` `data2`, `fg1`.`id1` `id1`, `fg1`.`bigint` `bigint`
+    FROM `test_ken_featurestore`.`sample_1_1` `fg0`
+    INNER JOIN `test_ken_featurestore`.`sample_3_1` `fg1` ON `fg0`.`bigint` = `fg1`.`id1`
+    */
+    (
+        4117, 'sample_1n3_pk', 67, Timestamp('2023-08-08 14:00:53'), 10000, 1, ''
+    ),
+    /**
+    SELECT `fg0`.`id1` `id1`, `fg0`.`ts` `ts`, `fg0`.`data1` `data1`, `fg0`.`data2` `data2`, `fg1`.`id1` `id1`, `fg1`.`bigint` `bigint`
+    FROM `test_ken_featurestore`.`sample_1_1` `fg0`
+    INNER JOIN `test_ken_featurestore`.`sample_3_1` `fg1` ON `fg0`.`bigint` = `fg1`.`id1`
+    */
+    (
+        4118, 'sample_1n3_no_prefix_pk', 67, Timestamp('2023-08-08 14:00:53'), 10000, 1, ''
+    ),
+    /**
+    SELECT `fg0`.`id1` `id1`, `fg0`.`ts` `ts`, `fg0`.`data1` `data1`, `fg0`.`data2` `data2`, `fg1`.`id1` `right_id1`, `fg1`.`id2` `right_id2`, `fg1`.`bigint` `right_bigint`
+    FROM `test_ken_featurestore`.`sample_4_1` `fg0`
+    INNER JOIN `test_ken_featurestore`.`sample_3_1` `fg1` ON `fg0`.`id1` = `fg1`.`id2`
+    */
+    (
+        4120, 'sample_4n3_on_id', 67, Timestamp('2023-08-08 14:00:53'), 10000, 1, ''
+    ),
+    (
+        4121, 'sample_share_complex', 67, Timestamp('2023-09-26 10:03:16'), 10000, 1, ''
+    );
+
+INSERT INTO
+    `feature_view_link`
+VALUES
+    (
+        1, 24, 37, 'FSDB004', 'spine', 1
+    ),
+    (
+        2, 24, 38, 'FSDB004', 'fg1', 1
+    ),
+    (
+        3, 24, 39, 'FSDB004', 'fg2', 1
+    );
+
+SET FOREIGN_KEY_CHECKS=1;
