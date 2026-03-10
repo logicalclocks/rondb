@@ -266,11 +266,6 @@ FSMetadataCache::get_fs_metadata(const std::string &fs_key,
 #endif
   *entry = cacheEntry;
   metadata::FeatureViewMetadata *data = cacheEntry->m_data;
-  NdbMutex_Lock(m_queueLock[key_cache_id]);
-  cacheEntry->m_lastUsed = NdbTick_getCurrentTicks();
-  remove_entry(cacheEntry, key_cache_id);
-  insert_last(cacheEntry, key_cache_id);
-  NdbMutex_Unlock(m_queueLock[key_cache_id]);
   NdbMutex_Unlock(cacheEntry->m_waitLock);
   return data;
 }
@@ -286,17 +281,15 @@ FSMetadataCache::allocate_empty_cache_entry(
     return nullptr;
   }
   DEB_FS("FS Key %s inserted in cache with refCount: 1", fs_key.c_str());
-  // Start with ref_count=1 so the eviction thread won't evict this entry
-  // while we release the lock and do the slow DB fetch below.  Decremented
-  // back to 0 after the entry state is set to IS_VALID/IS_INVALID.
+  // Start with ref_count=1 so the entry stays alive while we release the
+  // lock and do the slow DB fetch below.  Decremented back to 0 after the
+  // entry state is set to IS_VALID/IS_INVALID.
   newCacheEntry->m_ref_count = 1;
   newCacheEntry->m_key_cache_id = key_cache_id;
   newCacheEntry->m_key = fs_key;
   m_fs_cache[key_cache_id][fs_key] = newCacheEntry;
 
-  /* Insert last in double linked list for handling refresh interval */
   NdbMutex_Lock(m_queueLock[key_cache_id]);
-  newCacheEntry->m_lastUsed = NdbTick_getCurrentTicks();
   insert_last(newCacheEntry, key_cache_id);
   NdbMutex_Unlock(m_queueLock[key_cache_id]);
   return newCacheEntry;
@@ -375,46 +368,42 @@ void FSMetadataCache::remove_entry(FSCacheEntry *entry, Uint32 key_cache_id) {
 
 void FSMetadataCache::cache_entry_updater(Uint32 key_cache_id) {
   m_is_thread_running = true;
-  const Uint64 eviction_ms =
-   (Uint64)globalConfigs.featureStore.featureStoreMetadataCache.cacheUnusedEntriesEvictionMS;
   while (true) {
-    Uint32 sleepMillis = 100;
+    NdbMutex_Lock(m_sleepLock);
+    if (!m_stopped)
+      NdbCondition_WaitTimeout(m_sleepCond,
+                               m_sleepLock,
+                               1000);
+    bool stopped = m_stopped;
+    NdbMutex_Unlock(m_sleepLock);
+
+    if (!stopped) continue;
+
+    // Shutdown: drain all cache entries with ref_count == 0
     NdbMutex_Lock(m_rwLock[key_cache_id]);
     FSCacheEntry* first_entry = m_first_cache_entry[key_cache_id];
     if (first_entry != nullptr) {
-      NDB_TICKS now = NdbTick_getCurrentTicks();
       NdbMutex_Lock(first_entry->m_waitLock);
       if (first_entry->m_ref_count == 0) {
-        NDB_TICKS lastUsed = first_entry->m_lastUsed;
-        Uint64 milliSeconds = NdbTick_Elapsed(lastUsed, now).milliSec();
-        if (m_stopped || (milliSeconds >= eviction_ms)) {
-          DEB_FS("FS Key %s deleted", first_entry->m_key.c_str());
-          m_fs_cache[key_cache_id].erase(first_entry->m_key);
-          //unregister complex features from golang layer
-          if (first_entry->m_data != nullptr && 
-              first_entry->m_data->complexFeatures.size() != 0){
-            for (auto& [key, val] : first_entry->m_data->complexFeatures) {
-              val.unregister_with_go_layer();
-            }
+        DEB_FS("FS Key %s deleted (shutdown)", first_entry->m_key.c_str());
+        m_fs_cache[key_cache_id].erase(first_entry->m_key);
+        if (first_entry->m_data != nullptr &&
+            first_entry->m_data->complexFeatures.size() != 0) {
+          for (auto& [key, val] : first_entry->m_data->complexFeatures) {
+            val.unregister_with_go_layer();
           }
-          NdbMutex_Unlock(m_rwLock[key_cache_id]);
-          NdbMutex_Lock(m_queueLock[key_cache_id]);
-          remove_entry(first_entry, key_cache_id);
-          NdbMutex_Unlock(m_queueLock[key_cache_id]);
-          NdbMutex_Unlock(first_entry->m_waitLock);
-          delete first_entry;
-          continue;
         }
-      } else {
-#ifdef DEBUG_FS
-      int ref_count = first_entry->m_ref_count;
-      DEB_FS("FS Key %s ready for delete, ref_count: %d",
-             first_entry->m_key.c_str(), ref_count);
-#endif
+        NdbMutex_Unlock(m_rwLock[key_cache_id]);
+        NdbMutex_Lock(m_queueLock[key_cache_id]);
+        remove_entry(first_entry, key_cache_id);
+        NdbMutex_Unlock(m_queueLock[key_cache_id]);
+        NdbMutex_Unlock(first_entry->m_waitLock);
+        delete first_entry;
+        continue;
       }
       NdbMutex_Unlock(first_entry->m_waitLock);
-    } else if (m_stopped) {
-      /* We have no more cache entries to update so can safely stop here */
+    } else {
+      // No more cache entries — shutdown complete
       NdbMutex_Unlock(m_rwLock[key_cache_id]);
       NdbMutex_Lock(m_sleepLock);
       m_is_thread_running = false;
@@ -423,12 +412,6 @@ void FSMetadataCache::cache_entry_updater(Uint32 key_cache_id) {
       return;
     }
     NdbMutex_Unlock(m_rwLock[key_cache_id]);
-    NdbMutex_Lock(m_sleepLock);
-    if (!m_stopped)
-      NdbCondition_WaitTimeout(m_sleepCond,
-                               m_sleepLock,
-                               sleepMillis);
-    NdbMutex_Unlock(m_sleepLock);
   }
 }
 
@@ -529,7 +512,6 @@ void FSMetadataCache::load_single_feature_view(const std::string &fsName,
   m_fs_cache[key_cache_id][cacheKey] = newEntry;
 
   NdbMutex_Lock(m_queueLock[key_cache_id]);
-  newEntry->m_lastUsed = NdbTick_getCurrentTicks();
   insert_last(newEntry, key_cache_id);
   NdbMutex_Unlock(m_queueLock[key_cache_id]);
   NdbMutex_Unlock(m_rwLock[key_cache_id]);
@@ -645,7 +627,6 @@ void FSMetadataCache::evict_entry(const std::string &cacheKey) {
       entry->m_errorCode = FV_NOT_EXIST->NewMessage(
         "Feature view was deleted");
     }
-    entry->m_lastUsed = NdbTick_getCurrentTicks();
     NdbCondition_Broadcast(entry->m_waitCond);
     NdbMutex_Unlock(entry->m_waitLock);
     NdbMutex_Unlock(m_rwLock[key_cache_id]);
@@ -727,7 +708,7 @@ retry:
     event.setTable(*tab);
     event.addTableEvent(NdbDictionary::Event::TE_INSERT);
     event.addTableEvent(NdbDictionary::Event::TE_DELETE);
-    event.mergeEvents(true);
+    event.mergeEvents(false);
     for (int col = 0; col < tab->getNoOfColumns(); col++) {
       event.addEventColumn(col);
     }
@@ -749,7 +730,7 @@ retry:
       ndb->getNdbError().code, ndb->getNdbError().message);
     goto err;
   }
-  ev_op->mergeEvents(true);
+  ev_op->mergeEvents(false);
 
   // Register PK column
   id_val = ev_op->getValue("id");
