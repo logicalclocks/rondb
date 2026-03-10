@@ -2337,7 +2337,7 @@ if (WITH_SIMSIMD)
         -Wno-unknown-pragmas -Wno-error=unknown-pragmas
         -Wno-unused-variable -Wno-error=unused-variable
         -Wno-unused-const-variable
-        -Wno-error=unused-but-set-variable -Wno-error=unused-function
+        -Wno-unused-but-set-variable -Wno-unused-function
         -Wno-error=cpp -Wno-cpp
       )
       # …and propagate minimal relaxation to consumers that include the headers.
@@ -2357,6 +2357,7 @@ if (WITH_SIMSIMD)
       )
     endif()
   endif()
+
 endif()
 
 IF(NOT WITHOUT_SERVER)
