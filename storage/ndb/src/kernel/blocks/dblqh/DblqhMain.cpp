@@ -17423,12 +17423,10 @@ void Dblqh::scanLockReleasedLab(Signal* signal,
      * See more details at Dblqh::scanTupkeyConfLab(),
      * search for [PA-COMMENT] there.
      */
+#ifdef DEBUG_PA
     if (scanPtr->m_has_pushdown) {
-      // TODO (Zhao)
-      // double check: 0 : 1 ?
-      // ndbrequire(scanPtr->m_agg_n_res_recs == 0);
-      g_eventLogger->info("scanPtr->m_agg_n_res_recs: %u",
-                         scanPtr->m_agg_n_res_recs);
+      g_eventLogger->info("[PA_RONDB_TRACE] scanPtr->m_agg_n_res_recs: %u",
+                          scanPtr->m_agg_n_res_recs);
     }
 #endif // DEBUG_PA
     scanPtr->scan_lastSeen = __LINE__;
