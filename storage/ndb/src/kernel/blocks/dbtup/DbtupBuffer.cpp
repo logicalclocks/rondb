@@ -570,19 +570,25 @@ void Dbtup::sendReadAttrinfo(Signal *signal, KeyReqStruct *req_struct,
   }
 }
 
-void Dbtup::SendAggResToAPI(Signal* signal, const void* lqhTcConnectrec,
+bool Dbtup::SendAggResToAPI(Signal* signal, const void* lqhTcConnectrec,
                             void* lqhScanRecord) {
   const Dblqh::TcConnectionrec* lqhOpPtrP =
                               (Dblqh::TcConnectionrec*)lqhTcConnectrec;
   // PA related
   Dblqh::ScanRecord* lqhScanPtrP = (Dblqh::ScanRecord*)lqhScanRecord;
-  ndbrequire(lqhScanPtrP->m_aggregation == true &&
-             lqhScanPtrP->m_agg_interpreter != nullptr);
-  ndbrequire(!lqhScanPtrP->m_agg_interpreter->vec_search());
-  Uint32 res_len = lqhScanPtrP->m_agg_interpreter->PrepareAggResIfNeeded(signal, true);
-  lqhScanPtrP->m_agg_n_res_recs = lqhScanPtrP->m_agg_interpreter->NumOfResRecords(true);
+  // m_agg_interpreter != nullptr implies m_has_pushdown == true
+  ndbrequire(lqhScanPtrP->m_agg_interpreter != nullptr);
+  AggInterpreter* interp = lqhScanPtrP->m_agg_interpreter;
+  Uint32 res_len = interp->PrepareAggResIfNeeded(signal, true);
+  const auto* gb_map = interp->gb_map();
+  bool all_sent = (gb_map == nullptr || gb_map->empty());
+  if (all_sent) {
+    lqhScanPtrP->m_agg_n_res_recs = interp->NumOfResRecords(true);
+  }
   if (res_len != 0) {
-    ndbrequire(lqhScanPtrP->m_agg_n_res_recs == 0);
+    if (all_sent) {
+      ndbrequire(lqhScanPtrP->m_agg_n_res_recs == 0);
+    }
     TransIdAI * transIdAI=  (TransIdAI *)signal->getDataPtrSend();
     transIdAI->connectPtr = lqhScanPtrP->scanApiOpPtr[lqhScanPtrP->scanApiOpPtr_index];
     transIdAI->transId[0] = lqhOpPtrP->transid[0];
@@ -593,13 +599,14 @@ void Dbtup::SendAggResToAPI(Signal* signal, const void* lqhTcConnectrec,
     lqhScanPtrP->m_agg_curr_batch_size_rows = 1;
     SendAggregationResult(signal, res_len, lqhScanPtrP->scanApiBlockref);
   }
-  PA_RONDB_TRACE(lqhScanPtrP->m_aggregation,
-      lqhOpPtrP->tableref, lqhScanPtrP->m_agg_interpreter->frag_id(),
+  PA_RONDB_TRACE(lqhScanPtrP->m_has_pushdown,
+      lqhOpPtrP->tableref, interp->frag_id(),
       "Dbtup::SendAggResToAPI(), "
-      "End-scan, send at last, res_len: %u,"
+      "End-scan, send at last, res_len: %u, all_sent: %u,"
       " trans[0]: %u, trans[2]: %u, connectPtr: %u, blockref: %u"
       ", size_rows[%u, %u], size_bytes: [%u, %u], n_res_recs: %u\n",
       res_len,
+      (Uint32)all_sent,
       lqhOpPtrP->transid[0],
       lqhOpPtrP->transid[1],
       lqhScanPtrP->scanApiOpPtr[lqhScanPtrP->scanApiOpPtr_index],
@@ -609,4 +616,5 @@ void Dbtup::SendAggResToAPI(Signal* signal, const void* lqhTcConnectrec,
       lqhScanPtrP->m_agg_curr_batch_size_bytes,
       lqhScanPtrP->m_curr_batch_size_bytes,
       lqhScanPtrP->m_agg_n_res_recs);
+  return all_sent;
 }

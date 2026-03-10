@@ -32,6 +32,7 @@
 #include <pc.hpp>
 #include "Dbtc.hpp"
 #include "ndb_global.h"
+#include <signaldata/JoinAgg.hpp>
 #include "util/require.h"
 
 #define JAM_FILE_ID 349
@@ -614,6 +615,13 @@ Dbtc::Dbtc(Block_context& ctx, Uint32 instanceNo):
   addRecSignal(GSN_SCAN_TABREF, &Dbtc::execSCAN_TABREF);
   addRecSignal(GSN_SCAN_TABCONF, &Dbtc::execSCAN_TABCONF);
   addRecSignal(GSN_KEYINFO20, &Dbtc::execKEYINFO20);
+
+  addRecSignal(GSN_JOIN_AGG_SETUP_CONF, &Dbtc::execJOIN_AGG_SETUP_CONF);
+  addRecSignal(GSN_JOIN_AGG_SETUP_REF, &Dbtc::execJOIN_AGG_SETUP_REF);
+  addRecSignal(GSN_JOIN_AGG_COMPLETE_CONF, &Dbtc::execJOIN_AGG_COMPLETE_CONF);
+  addRecSignal(GSN_JOIN_AGG_COMPLETE_REF, &Dbtc::execJOIN_AGG_COMPLETE_REF);
+  addRecSignal(GSN_JOIN_AGG_RELEASE_CONF, &Dbtc::execJOIN_AGG_RELEASE_CONF);
+  addRecSignal(GSN_JOIN_AGG_SEND_REQ, &Dbtc::execJOIN_AGG_SEND_REQ);
 
   hostRecord = 0;
   tableRecord = 0;

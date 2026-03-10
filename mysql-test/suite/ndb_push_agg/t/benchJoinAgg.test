@@ -1,0 +1,4 @@
+--source include/have_ndb.inc
+
+--echo Running benchJoinAgg
+--exec $NDB_PUSH_AGG_DIR/benchJoinAgg -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT --orders 4000 --iterations 1

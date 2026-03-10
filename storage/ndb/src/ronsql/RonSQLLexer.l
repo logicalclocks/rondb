@@ -291,6 +291,7 @@ SINGLE_QUOTED_STRING_CHARACTER_EXCEPT_APOSTROPHE_AND_BACKSLASH         [^\0\047\
 "+"       keyword(PLUS);
 ","       keyword(COMMA);
 "-"       keyword(MINUS);
+"."       keyword(DOT);
 "/"       keyword(SLASH);
 ";"       keyword(SEMICOLON);
 "<"       keyword(LT);
@@ -523,7 +524,7 @@ SINGLE_QUOTED_STRING_CHARACTER_EXCEPT_APOSTROPHE_AND_BACKSLASH         [^\0\047\
 
  /* Bottom section for rules to catch errors */
 
-[\001-\010\013\014\016-\037\042\043\056\072\077-\100\133-\135\137\173\175-\177] {
+[\001-\010\013\014\016-\037\042\043\072\077-\100\133-\135\137\173\175-\177] {
   /*
    * We have no default rule. Instead, this rule is carefully maintained to
    * catch anything that other rules won't. This is mostly for documentation

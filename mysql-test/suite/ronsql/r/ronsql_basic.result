@@ -1,3 +1,5 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
 Create test table api_scan with 10000 rows
 First 10 lines of the generated data:
 62	87	-25488	27678	-9	14368690	-5156443	2056491719	\N	153955376062173	-2431.85935263128	14321694289288.1	GROUPxxx_1

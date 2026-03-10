@@ -74,6 +74,7 @@
 
 #include "KeyDescriptor.hpp"
 
+#include "../blocks/dblqh/JoinAggregationState.hpp"
 #include <EventLogger.hpp>
 
 #define JAM_FILE_ID 252
@@ -6057,6 +6058,53 @@ Uint32 SimulatedBlock::m_num_distribution_threads = 0;
 Uint32 SimulatedBlock::m_max_nodeid = 0;
 Uint32 SimulatedBlock::m_max_ndb_nodeid = 0;
 bool SimulatedBlock::m_inited_rr_groups = false;
+
+/**
+ * Join Aggregation State Pool — node-level, shared across all instances.
+ * Seize/release only from DblqhProxy (single-threaded).
+ * getJoinAggState() safe from any LDM thread (O(1) pool index lookup).
+ */
+static ArrayPool<JoinAggregationState> s_joinAggStatePool;
+static Uint32 s_joinAggStatePoolSize = 0;
+
+void SimulatedBlock::initJoinAggStatePool(Uint32 max_recs) {
+  s_joinAggStatePool.setSize(max_recs);
+  s_joinAggStatePoolSize = max_recs;
+}
+
+Uint32 SimulatedBlock::seizeJoinAggState() {
+  Ptr<JoinAggregationState> ptr;
+  if (s_joinAggStatePool.seize(ptr)) {
+    ptr.p->m_key = ptr.i;
+    return ptr.i;
+  }
+  return RNIL;
+}
+
+JoinAggregationState* SimulatedBlock::getJoinAggState(Uint32 key) {
+  if (key == RNIL || key >= s_joinAggStatePoolSize) {
+    return nullptr;
+  }
+  Ptr<JoinAggregationState> ptr;
+  if (s_joinAggStatePool.getPtr(ptr, key)) {
+    return ptr.p;
+  }
+  return nullptr;
+}
+
+void SimulatedBlock::releaseJoinAggState(Uint32 key) {
+  if (key == RNIL || key >= s_joinAggStatePoolSize) {
+    return;
+  }
+  Ptr<JoinAggregationState> ptr;
+  ptr.i = key;
+  s_joinAggStatePool.getPtr(ptr);
+  s_joinAggStatePool.release(ptr);
+}
+
+Uint32 SimulatedBlock::getJoinAggStatePoolSize() {
+  return s_joinAggStatePoolSize;
+}
 
 #if defined(USE_INIT_GLOBAL_VARIABLES)
 void SimulatedBlock::checkInitGlobalVariables() {

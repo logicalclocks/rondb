@@ -117,6 +117,8 @@ struct Outputs
   struct Outputs* next;
 };
 
+struct SelectStatement;  // forward declaration for subquery support
+
 struct ConditionalExpression
 {
   TokenKind op;
@@ -151,6 +153,20 @@ struct ConditionalExpression
     } extract;
     LexString string;
     MYSQL_TIME mysql_time;
+    struct
+    {
+      Uint32 agg_index;   // register in m_regs_a (SUM, COUNT, MIN, MAX, or AVG sum)
+      Uint32 agg_index2;  // only for AVG: the count register
+    } having_agg;
+    struct
+    {
+      SelectStatement *stmt;  // op == T_EXISTS or I_SUBQUERY
+    } subquery;
+    struct
+    {
+      struct ConditionalExpression *expr;
+      SelectStatement *stmt;  // op == I_IN_SUBQUERY
+    } in_subquery;
   };
 };
 
@@ -167,13 +183,39 @@ struct OrderbyColumns
   struct OrderbyColumns* next;
 };
 
+struct TableRef
+{
+  LexCString database;     /* database name, or {NULL, 0} if unqualified */
+  LexCString name;         /* table name */
+  LexCString alias;        /* alias, or same as name if no alias */
+};
+
+struct JoinCondition
+{
+  LexCString child_table;  /* child table alias/name */
+  LexCString child_column; /* child column name */
+  LexCString parent_table; /* parent table alias/name */
+  LexCString parent_column;/* parent column name */
+  struct JoinCondition *next;  /* for multi-column ON conditions */
+};
+
+struct JoinClause
+{
+  TableRef table;
+  JoinCondition *conditions;  /* linked list of ON conditions */
+  struct JoinClause *next;
+};
+
 struct SelectStatement
 {
   bool do_explain = false;
   Outputs* outputs = NULL;
-  LexCString table = LexCString{ NULL, 0};
+  LexCString table = LexCString{NULL, 0};
+  TableRef *root_table = NULL;
+  JoinClause *joins = NULL;
   struct ConditionalExpression* where_expression = NULL;
   struct GroupbyColumns* groupby_columns = NULL;
+  struct ConditionalExpression* having_expression = NULL;
   struct OrderbyColumns* orderby_columns = NULL;
   Int64 limit = -1; // -1 means no limit
 };

@@ -47,6 +47,7 @@
 // #include <NdbIndexScanOperation.hpp>
 
 class Ndb;
+class NdbAggregator;
 struct NdbError;
 class NdbParamOperand;
 class NdbQueryOperation;
@@ -215,6 +216,16 @@ class NdbQuery {
    * @return An error object with information about the latest error.
    */
   const NdbError &getNdbError() const;
+
+  /**
+   * Get the NdbAggregator associated with this query's aggregation,
+   * or nullptr if the query does not use aggregation.
+   *
+   * After the query has been executed and all scan batches consumed,
+   * call PrepareResults() on the returned aggregator, then iterate
+   * with FetchResultRecord().
+   */
+  NdbAggregator *getAggregator() const;
 
   /** Get object implementing NdbQuery interface.*/
   NdbQueryImpl &getImpl() const { return m_impl; }

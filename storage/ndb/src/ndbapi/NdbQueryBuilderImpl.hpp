@@ -281,11 +281,31 @@ class NdbQueryOptionsImpl {
         m_firstUpper(nullptr),
         m_firstInner(nullptr),
         m_interpretedCode(nullptr),
-        m_parameters(0) {}
+        m_parameters(0),
+        m_aggProgramBuffer(nullptr),
+        m_aggProgramLen(0),
+        m_aggNGroupByCols(0),
+        m_aggDiskColumns(false),
+        m_aggTable(nullptr),
+        m_aggGbColumns(nullptr),
+        m_linkedProjection(0) {}
   NdbQueryOptionsImpl(const NdbQueryOptionsImpl &);
   ~NdbQueryOptionsImpl();
 
   NdbQueryOptions::ScanOrdering getOrdering() const { return m_scanOrder; }
+
+  bool hasAggregation() const { return m_aggProgramBuffer != nullptr; }
+  const Uint32 *getAggProgramBuffer() const { return m_aggProgramBuffer; }
+  Uint32 getAggProgramLen() const { return m_aggProgramLen; }
+  Uint32 getAggNGroupByCols() const { return m_aggNGroupByCols; }
+  bool getAggDiskColumns() const { return m_aggDiskColumns; }
+  const NdbTableImpl *getAggTable() const { return m_aggTable; }
+  const NdbDictionary::Column *const *getAggGbColumns() const {
+    return m_aggGbColumns;
+  }
+  const Vector<const NdbLinkedOperandImpl *> &getLinkedProjection() const {
+    return m_linkedProjection;
+  }
 
  private:
   NdbQueryOptions::MatchType m_matchType;
@@ -296,11 +316,32 @@ class NdbQueryOptionsImpl {
   const NdbInterpretedCode *m_interpretedCode;
   Vector<const NdbQueryOperandImpl *> m_parameters;
 
+  // Aggregation program (deep-copied from NdbAggregator)
+  Uint32 *m_aggProgramBuffer;
+  Uint32 m_aggProgramLen;
+  Uint32 m_aggNGroupByCols;
+  bool m_aggDiskColumns;
+  const NdbTableImpl *m_aggTable;
+
+  // Column definitions for GROUP BY columns (local and linked).
+  // Dynamically allocated array of n_gb_cols pointers, deep-copied
+  // from NdbAggregator::gb_columns() during copyAggregation().
+  const NdbDictionary::Column **m_aggGbColumns;
+
+  // Linked operands for parent column projection in aggregation
+  Vector<const NdbLinkedOperandImpl *> m_linkedProjection;
+
   /**
    * Assign NdbInterpretedCode by taking a deep copy of 'src'
    * @return possible error code.
    */
   int copyInterpretedCode(const NdbInterpretedCode &src);
+
+  /**
+   * Deep-copy aggregation program from a finalized NdbAggregator.
+   * @return possible error code.
+   */
+  int copyAggregation(const NdbAggregator &src);
 
   NdbQueryOptionsImpl &operator=(const NdbQueryOptionsImpl &);  // Not impl.
 };
@@ -312,6 +353,7 @@ class NdbQueryOptionsImpl {
 class NdbQueryOperationDefImpl {
   friend class NdbQueryOperationDef;
   friend class NdbQueryOperationImpl;
+  friend class NdbQueryDefImpl;
   friend class NdbQueryImpl;
 
  public:
@@ -379,6 +421,12 @@ class NdbQueryOperationDefImpl {
   const NdbInterpretedCode *getInterpretedCode() const {
     return m_options.m_interpretedCode;
   }
+
+  bool isAggregateLeaf() const { return m_isAggregateLeaf; }
+
+  bool isQueryAggregation() const { return m_queryHasAggregation; }
+
+  const NdbQueryOptionsImpl &getOptions() const { return m_options; }
 
   const Vector<const NdbQueryOperandImpl *> &getInterpretedParams() const {
     return m_options.m_parameters;
@@ -501,6 +549,12 @@ class NdbQueryOperationDefImpl {
    * disk columns.
    */
   bool m_diskInChildProjection;
+
+  /** True if this operation is the aggregate leaf of a join aggregation query.*/
+  bool m_isAggregateLeaf;
+
+  /** True if the enclosing query has aggregation (set before serialization).*/
+  bool m_queryHasAggregation;
 
  private:
   bool isChildOf(const NdbQueryOperationDefImpl *parentOp) const;
@@ -662,12 +716,18 @@ class NdbQueryDefImpl {
   /** Get serialized representation of query definition.*/
   const Uint32Buffer &getSerialized() const { return m_serializedDef; }
 
+  bool hasAggregation() const { return m_hasAggregation; }
+  Uint32 getAggregateLeafOpNo() const { return m_aggregateLeafOpNo; }
+
  private:
   NdbQueryDef m_interface;
 
   Vector<NdbQueryOperationDefImpl *> m_operations;
   Vector<NdbQueryOperandImpl *> m_operands;
   Uint32Buffer m_serializedDef;
+
+  bool m_hasAggregation;
+  Uint32 m_aggregateLeafOpNo;
 };  // class NdbQueryDefImpl
 
 class NdbQueryBuilderImpl {

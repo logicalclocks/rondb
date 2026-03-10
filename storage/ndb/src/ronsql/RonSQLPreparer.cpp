@@ -25,6 +25,9 @@
 */
 
 #include "AggregationAPICompiler.hpp"
+#include "NdbQueryBuilder.hpp"
+#include "NdbQueryOperation.hpp"
+#include "QueryPlanner.hpp"
 #include "RonSQLParser.y.hpp"
 #include "RonSQLLexer.l.hpp"
 #include "RonSQLPreparer.hpp"
@@ -36,6 +39,7 @@
 #include <my_base.h>
 #include "decimal.h"
 #include <decimal_utils.hpp>
+#include <kernel/Interpreter.hpp>
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_RONSQLPREPARER 1
@@ -83,6 +87,7 @@ using std::endl;
   throw RonSQLPermanentError("RonSQL feature not implemented: " description)
 
 static const char* interval_type_name(TokenKind interval_type);
+static bool has_subquery(const ConditionalExpression* ce);
 
 DEFINE_FORMATTER(quoted_identifier, LexString, {
   os.put('`');
@@ -120,6 +125,7 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
   m_amalloc(conf.amalloc),
   m_context(*this),
   m_columns(conf.amalloc),
+  m_column_qualifiers(conf.amalloc),
   m_indexes(conf.amalloc),
   m_toplevel_conditions(conf.amalloc),
   m_scan_config_candidates(conf.amalloc)
@@ -129,8 +135,11 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
     configure();
     parse();
     load();
-    plan_index_and_filter();
+    if (m_context.ast_root.joins == NULL)
+      plan_index_and_filter();
     compile();
+    if (m_context.ast_root.joins != NULL)
+      build_agg_linked_projections();
     determine_explain();
     m_status = Status::PREPARED;
   }
@@ -173,6 +182,92 @@ require_tmp(bool condition, const char* msg)
 {
   if (likely(condition)) return;
   throw RonSQLRetryableError(msg);
+}
+
+/*
+ * Walk a ConditionalExpression subtree and determine which table its
+ * columns reference.  Returns:
+ *   >= 0 : all columns belong to that table index
+ *     -1 : no column references (constant-only subtree)
+ *     -2 : columns span multiple tables (cross-table condition)
+ */
+static Int32
+classify_ce_table(struct ConditionalExpression* ce, Uint32* col_table_idx)
+{
+  if (ce == NULL)
+    return -1;
+  switch (ce->op)
+  {
+  case T_IDENTIFIER:
+    return (Int32)col_table_idx[ce->col_idx];
+  case T_OR:
+  case T_AND:
+  case T_EQUALS:
+  case T_NOT_EQUALS:
+  case T_GE:
+  case T_GT:
+  case T_LE:
+  case T_LT:
+  case T_PLUS:
+  case T_MINUS:
+  case T_MULTIPLY:
+  case T_SLASH:
+  case T_DIV:
+  case T_MODULO:
+  case T_BITWISE_OR:
+  case T_BITWISE_AND:
+  case T_BITSHIFT_LEFT:
+  case T_BITSHIFT_RIGHT:
+  case T_BITWISE_XOR:
+  case T_DATE_ADD:
+  case T_DATE_SUB:
+  {
+    Int32 left_t = classify_ce_table(ce->args.left, col_table_idx);
+    Int32 right_t = classify_ce_table(ce->args.right, col_table_idx);
+    if (left_t == -1) return right_t;
+    if (right_t == -1) return left_t;
+    if (left_t == right_t) return left_t;
+    return -2;  // cross-table
+  }
+  case T_NOT:
+  case T_EXCLAMATION:
+    return classify_ce_table(ce->args.left, col_table_idx);
+  case T_IS:
+    return classify_ce_table(ce->is.arg, col_table_idx);
+  case T_INTERVAL:
+    return classify_ce_table(ce->interval.arg, col_table_idx);
+  case T_EXTRACT:
+    return classify_ce_table(ce->extract.arg, col_table_idx);
+  default:
+    // Constants, strings, etc. — no column reference
+    return -1;
+  }
+}
+
+static const Uint32 MAX_WHERE_CONJUNCTS = 64;
+
+/*
+ * Flatten nested AND nodes into an array of conjuncts.
+ */
+static void
+flatten_and_conjuncts(struct ConditionalExpression* ce,
+                      ConditionalExpression** conjuncts,
+                      Uint32* count)
+{
+  if (ce == NULL) return;
+  if (ce->op == T_AND)
+  {
+    flatten_and_conjuncts(ce->args.left, conjuncts, count);
+    flatten_and_conjuncts(ce->args.right, conjuncts, count);
+    return;
+  }
+  if (*count >= MAX_WHERE_CONJUNCTS)
+  {
+    throw RonSQLPermanentError(
+        "WHERE clause has too many top-level AND conditions.");
+  }
+  conjuncts[*count] = ce;
+  (*count)++;
 }
 
 void
@@ -291,16 +386,18 @@ RonSQLPreparer::parse()
       }
       outputs = outputs->next;
     }
+    bool has_having_aggregates = (m_agg != NULL &&
+                                  m_context.ast_root.having_expression != NULL);
     if (m_agg == NULL)
     {
       ndbrequire(!has_aggregate_outputs);
     }
     else
     {
-      ndbrequire(has_aggregate_outputs);
+      ndbrequire(has_aggregate_outputs || has_having_aggregates);
       ndbrequire(m_agg->getStatus() == AggregationAPICompiler::Status::PROGRAMMING);
     }
-    if (!has_aggregate_outputs)
+    if (!has_aggregate_outputs && !has_having_aggregates)
     {
       ndbrequire(m_conf.err_stream != NULL);
       std::basic_ostream<char>& err = *m_conf.err_stream;
@@ -530,11 +627,42 @@ RonSQLPreparer::has_width(size_t pos)
   return true;
 }
 
+static bool
+has_subquery(const ConditionalExpression* ce)
+{
+  if (ce == NULL) return false;
+  if (ce->op == T_EXISTS || ce->op == I_IN_SUBQUERY || ce->op == I_SUBQUERY)
+    return true;
+  // Recurse into binary/unary operator children
+  switch (ce->op)
+  {
+    case T_IS:
+      return has_subquery(ce->is.arg);
+    case T_INTERVAL:
+      return has_subquery(ce->interval.arg);
+    case T_EXTRACT:
+      return has_subquery(ce->extract.arg);
+    case T_IDENTIFIER:
+    case T_INT:
+    case T_FLOAT:
+    case T_STRING:
+    case I_MYSQL_TIME:
+    case T_SUM:
+    case T_MIN:
+    case T_MAX:
+    case T_COUNT:
+    case T_AVG:
+      return false;
+    default:
+      // Binary/unary operators: check both sides
+      return has_subquery(ce->args.left) || has_subquery(ce->args.right);
+  }
+}
+
 void
 RonSQLPreparer::load()
 {
   DEB_TRACE();
-  std::basic_ostream<char>& err = *m_conf.err_stream;
   /*
    * During parsing, strings that were claimed to be column names were inserted
    * into m_columns. The element indexes in m_columns, usually called col_idx,
@@ -552,105 +680,319 @@ RonSQLPreparer::load()
   // we'll still be able to do a (partial) EXPLAIN SELECT, so no need to fail
   // yet.
   Ndb* ndb = m_conf.ndb;
-  if (ndb != NULL) {
-    // Populate m_dict
-    m_dict = ndb->getDictionary();
-    // Populate m_table
-    m_table = DBG(m_dict->getTable(DBG(m_context.ast_root.table.c_str())));
-    // getTable returns a cached table if it exists, otherwise the cache it
-    // updated. Therefore, getTable cannot return NULL due to an out-of-date
-    // cache, it always means that the table does not exist. Therefore, we use
-    // require_prm to indicate that schema reloading will solve this issue.
-    require_prm(m_table != NULL,
-                "Failed to get table. Note that RonSQL only supports tables"
-                " with ENGINE=NDB.");
-    // Populate m_indexes
-    NdbDictionary::Dictionary::List index_list;
-    ndbrequire(m_dict != NULL);
-    ndbrequire(m_table != NULL);
-    require_sch(m_dict->listIndexes(index_list, *m_table) == 0,
-                "Failed to list indexes.");
-    bool err_failed_to_get_index = false;
-    bool err_object_status_not_retrieved = false;
-    bool err_table_verid_mismatch = false;
-    for(Uint32 i = 0; i < index_list.count; i++) {
-      NdbDictionary::Dictionary::List::Element& list_element =
-        index_list.elements[i];
-      if (list_element.state != NdbDictionary::Object::StateOnline) {
-        // listIndexes() returns indexes in all states while this function is
-        // only interested in indexes that are online and usable. Filtering out
-        // indexes in other states is particularly important when metadata is
-        // being restored as they may be in StateBuilding indicating that all
-        // metadata related to the table hasn't been restored yet.
-        DEB_TRACE();
-        continue;
-      }
-      if (list_element.type == NdbDictionary::Object::UniqueHashIndex) {
-        // We are not interested in hash indexes
-        DEB_TRACE();
-        continue;
-      }
-      require_bug(list_element.type == NdbDictionary::Object::OrderedIndex,
-                  "Unexpected index type.");
-      const NdbDictionary::Index* index = m_dict->getIndex(list_element.name,
-                                                           *m_table);
-      // On detecting possible schema errors we still need to finish populating
-      // m_indexes. The detection of an error is saved in bool err_* variables.
-      if (index == NULL) {
-        // A NULL index here is a little strange. Perhaps the index was deleted
-        // after it was listed above?
-        err_failed_to_get_index = true;
-        DEB_TRACE();
-        continue;
-      }
-      if (DBG(index->getObjectStatus()) !=
-          NdbDictionary::Object::Status::Retrieved) {
-        DEB_TRACE();
-        err_object_status_not_retrieved = true;
-      }
-      if(DBG(index->getTableId()) != DBG(m_table->getObjectId()) ||
-         DBG(index->getTableVersion()) != DBG(m_table->getObjectVersion())) {
-        DEB_TRACE();
-        err_table_verid_mismatch = true;
-      }
-      m_indexes.push(index);
-    }
-    // m_indexes is now populated, so we are allowed to throw schema errors.
-    require_sch(DBG(m_table->getObjectStatus()) ==
-                NdbDictionary::Object::Status::Retrieved,
-                "Schema cache for table not up to date.");
-    if (err_failed_to_get_index) {
+  if (ndb == NULL) return;
+
+  if (has_subquery(m_context.ast_root.where_expression) ||
+      has_subquery(m_context.ast_root.having_expression))
+    feature_not_implemented("subqueries");
+
+  bool is_join = (m_context.ast_root.joins != NULL);
+
+  // Populate m_dict
+  m_dict = ndb->getDictionary();
+
+  if (is_join) {
+    load_join();
+  } else {
+    load_single_table();
+  }
+}
+
+void
+RonSQLPreparer::load_single_table()
+{
+  std::basic_ostream<char>& err = *m_conf.err_stream;
+  // Populate m_table
+  m_table = DBG(m_dict->getTable(DBG(m_context.ast_root.table.c_str())));
+  require_prm(m_table != NULL,
+              "Failed to get table. Note that RonSQL only supports tables"
+              " with ENGINE=NDB.");
+  // Populate m_indexes
+  NdbDictionary::Dictionary::List index_list;
+  ndbrequire(m_dict != NULL);
+  ndbrequire(m_table != NULL);
+  require_sch(m_dict->listIndexes(index_list, *m_table) == 0,
+              "Failed to list indexes.");
+  bool err_failed_to_get_index = false;
+  bool err_object_status_not_retrieved = false;
+  bool err_table_verid_mismatch = false;
+  for(Uint32 i = 0; i < index_list.count; i++) {
+    NdbDictionary::Dictionary::List::Element& list_element =
+      index_list.elements[i];
+    if (list_element.state != NdbDictionary::Object::StateOnline) {
       DEB_TRACE();
-      throw RonSQLMaybeStaleSchema("Failed to get index.");
+      continue;
     }
-    if (err_object_status_not_retrieved) {
+    if (list_element.type == NdbDictionary::Object::UniqueHashIndex) {
       DEB_TRACE();
-      throw RonSQLMaybeStaleSchema("Schema cache for index not up to date.");
+      continue;
     }
-    if (err_table_verid_mismatch) {
+    require_bug(list_element.type == NdbDictionary::Object::OrderedIndex,
+                "Unexpected index type.");
+    const NdbDictionary::Index* index = m_dict->getIndex(list_element.name,
+                                                         *m_table);
+    if (index == NULL) {
+      err_failed_to_get_index = true;
       DEB_TRACE();
-      throw RonSQLMaybeStaleSchema("Index's table id/version did not match"
-                                   " table's object id/version.");
+      continue;
     }
-    // Populate m_column_attrId_map and m_column_map
-    NdbAttrId* col_id_map = m_amalloc->alloc_exc<NdbAttrId>(m_columns.size());
-    const NdbDictionary::Column** col_map =
-        m_amalloc->alloc_exc<const NdbDictionary::Column*>(m_columns.size());
-    for (Uint32 col_idx = 0; col_idx < m_columns.size(); col_idx++) {
-      const char* col_name = DBG(m_columns[DBG(col_idx)].c_str());
-      const NdbDictionary::Column* col = m_table->getColumn(col_name);
-      if (col == NULL) {
-        err << "Failed to get column " << quoted_identifier(col_name) << "."
-            << endl << "Note that column names are case sensitive." << endl;
-        DEB_TRACE();
-        throw RonSQLMaybeStaleSchema("Could not find column (column names are"
-                                     " case sensitive).");
+    if (DBG(index->getObjectStatus()) !=
+        NdbDictionary::Object::Status::Retrieved) {
+      DEB_TRACE();
+      err_object_status_not_retrieved = true;
+    }
+    if(DBG(index->getTableId()) != DBG(m_table->getObjectId()) ||
+       DBG(index->getTableVersion()) != DBG(m_table->getObjectVersion())) {
+      DEB_TRACE();
+      err_table_verid_mismatch = true;
+    }
+    m_indexes.push(index);
+  }
+  require_sch(DBG(m_table->getObjectStatus()) ==
+              NdbDictionary::Object::Status::Retrieved,
+              "Schema cache for table not up to date.");
+  if (err_failed_to_get_index) {
+    DEB_TRACE();
+    throw RonSQLMaybeStaleSchema("Failed to get index.");
+  }
+  if (err_object_status_not_retrieved) {
+    DEB_TRACE();
+    throw RonSQLMaybeStaleSchema("Schema cache for index not up to date.");
+  }
+  if (err_table_verid_mismatch) {
+    DEB_TRACE();
+    throw RonSQLMaybeStaleSchema("Index's table id/version did not match"
+                                 " table's object id/version.");
+  }
+  // Populate m_column_attrId_map and m_column_map
+  NdbAttrId* col_id_map = m_amalloc->alloc_exc<NdbAttrId>(m_columns.size());
+  const NdbDictionary::Column** col_map =
+      m_amalloc->alloc_exc<const NdbDictionary::Column*>(m_columns.size());
+  for (Uint32 col_idx = 0; col_idx < m_columns.size(); col_idx++) {
+    const char* col_name = DBG(m_columns[DBG(col_idx)].c_str());
+    const NdbDictionary::Column* col = m_table->getColumn(col_name);
+    if (col == NULL) {
+      err << "Failed to get column " << quoted_identifier(col_name) << "."
+          << endl << "Note that column names are case sensitive." << endl;
+      DEB_TRACE();
+      throw RonSQLMaybeStaleSchema("Could not find column (column names are"
+                                   " case sensitive).");
+    }
+    col_id_map[col_idx] = DBG(col->getAttrId());
+    col_map[col_idx] = col;
+  }
+  m_column_attrId_map = col_id_map;
+  m_column_map = col_map;
+}
+
+void
+RonSQLPreparer::load_join()
+{
+  std::basic_ostream<char>& err = *m_conf.err_stream;
+
+  // Build the join plan via QueryPlanner
+  QueryPlanner::plan(
+      m_context.ast_root.root_table,
+      m_context.ast_root.joins,
+      m_dict,
+      err,
+      m_join_plan);
+
+  // Set m_table to root table (used by existing code paths)
+  m_table = m_join_plan.ops[0].table;
+
+  // Resolve columns: match each column to its table
+  Uint32 num_cols = m_columns.size();
+  NdbAttrId* col_id_map = m_amalloc->alloc_exc<NdbAttrId>(num_cols);
+  const NdbDictionary::Column** col_map =
+      m_amalloc->alloc_exc<const NdbDictionary::Column*>(num_cols);
+  Uint32* col_table_idx =
+      m_amalloc->alloc_exc<Uint32>(num_cols);
+
+  for (Uint32 col_idx = 0; col_idx < num_cols; col_idx++)
+  {
+    const char* col_name = m_columns[col_idx].c_str();
+    const char* qualifier = m_column_qualifiers[col_idx].c_str();
+
+    if (qualifier != NULL)
+    {
+      // Qualified column: find the table by alias
+      bool found = false;
+      for (Uint32 t = 0; t < m_join_plan.num_ops; t++)
+      {
+        if (strcmp(m_join_plan.ops[t].alias.c_str(), qualifier) == 0)
+        {
+          const NdbDictionary::Column* col =
+              m_join_plan.ops[t].table->getColumn(col_name);
+          if (col == NULL)
+          {
+            err << "Column '" << qualifier << "." << col_name
+                << "' not found in table '"
+                << m_join_plan.ops[t].table->getName() << "'." << endl;
+            throw RonSQLMaybeStaleSchema("Column not found.");
+          }
+          col_id_map[col_idx] = col->getAttrId();
+          col_map[col_idx] = col;
+          col_table_idx[col_idx] = t;
+          found = true;
+          break;
+        }
       }
-      col_id_map[col_idx] = DBG(col->getAttrId());
-      col_map[col_idx] = col;
+      if (!found)
+      {
+        err << "Unknown table alias '" << qualifier << "' in column '"
+            << qualifier << "." << col_name << "'." << endl;
+        throw RonSQLPermanentError("Unknown table alias.");
+      }
     }
-    m_column_attrId_map = col_id_map;
-    m_column_map = col_map;
+    else
+    {
+      // Unqualified column: search all tables
+      Uint32 match_count = 0;
+      Uint32 match_table = 0;
+      const NdbDictionary::Column* match_col = NULL;
+      for (Uint32 t = 0; t < m_join_plan.num_ops; t++)
+      {
+        const NdbDictionary::Column* col =
+            m_join_plan.ops[t].table->getColumn(col_name);
+        if (col != NULL)
+        {
+          match_count++;
+          match_table = t;
+          match_col = col;
+        }
+      }
+      if (match_count == 0)
+      {
+        err << "Column '" << col_name << "' not found in any joined table."
+            << endl;
+        throw RonSQLMaybeStaleSchema("Column not found.");
+      }
+      if (match_count > 1)
+      {
+        err << "Ambiguous column '" << col_name
+            << "' found in multiple tables. Use 'table.column' syntax."
+            << endl;
+        throw RonSQLPermanentError("Ambiguous column.");
+      }
+      col_id_map[col_idx] = match_col->getAttrId();
+      col_map[col_idx] = match_col;
+      col_table_idx[col_idx] = match_table;
+    }
+  }
+
+  m_column_attrId_map = col_id_map;
+  m_column_map = col_map;
+  m_column_table_idx = col_table_idx;
+
+  // Classify WHERE conditions by table for per-table filter pushdown
+  classify_where_by_table();
+
+  // Build linked projections for GROUP BY columns on non-leaf tables
+  Uint32 leaf_idx = m_join_plan.agg_leaf_idx;
+  struct GroupbyColumns* groupby = m_context.ast_root.groupby_columns;
+  while (groupby != NULL)
+  {
+    Uint32 col_idx = groupby->col_idx;
+    if (col_table_idx[col_idx] != leaf_idx)
+    {
+      require_prm(m_join_plan.num_linked_projs < MAX_LINKED_PROJS,
+                  "Too many linked projections.");
+      JoinPlan::LinkedProj& lp =
+          m_join_plan.linked_projs[m_join_plan.num_linked_projs];
+      lp.source_op_idx = col_table_idx[col_idx];
+      lp.column_name = m_columns[col_idx].c_str();
+      m_join_plan.num_linked_projs++;
+    }
+    groupby = groupby->next;
+  }
+}
+
+void
+RonSQLPreparer::classify_where_by_table()
+{
+  for (Uint32 t = 0; t < MAX_JOIN_TABLES; t++)
+    m_join_where_ce[t] = NULL;
+
+  ConditionalExpression* where_ce = m_context.ast_root.where_expression;
+  if (where_ce == NULL) return;
+
+  // Flatten top-level AND conjuncts
+  ConditionalExpression* conjuncts[MAX_WHERE_CONJUNCTS];
+  Uint32 num_conjuncts = 0;
+  flatten_and_conjuncts(where_ce, conjuncts, &num_conjuncts);
+
+  // Classify each conjunct by table
+  for (Uint32 i = 0; i < num_conjuncts; i++)
+  {
+    Int32 table_idx = classify_ce_table(conjuncts[i], m_column_table_idx);
+
+    if (table_idx == -2)
+    {
+      throw RonSQLPermanentError(
+          "WHERE condition references columns from multiple tables in a "
+          "single comparison or OR branch. Split into separate AND "
+          "conditions, each referencing only one table.");
+    }
+
+    // Constant-only conditions: assign to root table
+    if (table_idx == -1)
+      table_idx = 0;
+
+    // Accumulate conditions for this table
+    if (m_join_where_ce[table_idx] == NULL)
+    {
+      m_join_where_ce[table_idx] = conjuncts[i];
+    }
+    else
+    {
+      // Build AND(existing, new_conjunct)
+      ConditionalExpression* combined =
+          m_amalloc->alloc_exc<ConditionalExpression>(1);
+      combined->op = T_AND;
+      combined->args.left = m_join_where_ce[table_idx];
+      combined->args.right = conjuncts[i];
+      m_join_where_ce[table_idx] = combined;
+    }
+  }
+}
+
+static Uint32
+find_or_add_linked_proj(JoinPlan& plan, Uint32 op_idx, const char* col_name)
+{
+  for (Uint32 j = 0; j < plan.num_linked_projs; j++)
+  {
+    if (plan.linked_projs[j].source_op_idx == op_idx &&
+        strcmp(plan.linked_projs[j].column_name, col_name) == 0)
+      return j;
+  }
+  require_prm(plan.num_linked_projs < MAX_LINKED_PROJS,
+              "Too many linked projections.");
+  JoinPlan::LinkedProj& lp = plan.linked_projs[plan.num_linked_projs];
+  lp.source_op_idx = op_idx;
+  lp.column_name = col_name;
+  return plan.num_linked_projs++;
+}
+
+void
+RonSQLPreparer::build_agg_linked_projections()
+{
+  if (m_agg == NULL)
+    return;
+  Uint32 leaf_idx = m_join_plan.agg_leaf_idx;
+  DynamicArray<AggregationAPICompiler::Instr>& program = m_agg->m_program;
+  for (Uint32 i = 0; i < program.size(); i++)
+  {
+    if (program[i].type == AggregationAPICompiler::SVMInstrType::Load)
+    {
+      Uint32 col_idx = program[i].src;
+      if (m_column_table_idx[col_idx] != leaf_idx)
+      {
+        find_or_add_linked_proj(m_join_plan,
+                                m_column_table_idx[col_idx],
+                                m_columns[col_idx].c_str());
+      }
+    }
   }
 }
 
@@ -906,6 +1248,13 @@ RonSQLPreparer::execute()
     }
     DEB_TRACE();
     require_prm(ndb != NULL, "Cannot query without ndb object.");
+
+    if (m_context.ast_root.joins != NULL) {
+      execute_join();
+      cleanup_trans();
+      return;
+    }
+
     ndbrequire(m_trans == NULL);
     m_trans = DBG(ndb->startTransaction());
     require_run(m_trans != NULL, "Failed to start transaction.");
@@ -1039,6 +1388,285 @@ RonSQLPreparer::cleanup_trans() {
     DBGV(ndb->closeTransaction(m_trans));
     m_trans = NULL;
   }
+}
+
+void
+RonSQLPreparer::collect_pk_equalities(
+    struct ConditionalExpression* ce,
+    const NdbDictionary::Table* table,
+    struct ConditionalExpression* pk_const[])
+{
+  if (ce == NULL) return;
+  if (ce->op == T_AND)
+  {
+    collect_pk_equalities(ce->args.left, table, pk_const);
+    collect_pk_equalities(ce->args.right, table, pk_const);
+    return;
+  }
+  if (ce->op != T_EQUALS) return;
+
+  ConditionalExpression* col_side = NULL;
+  ConditionalExpression* const_side = NULL;
+  if (ce->args.left->op == T_IDENTIFIER && ce->args.right->op != T_IDENTIFIER)
+  {
+    col_side = ce->args.left;
+    const_side = ce->args.right;
+  }
+  else if (ce->args.right->op == T_IDENTIFIER && ce->args.left->op != T_IDENTIFIER)
+  {
+    col_side = ce->args.right;
+    const_side = ce->args.left;
+  }
+  else return;
+
+  const char* col_name = m_columns[col_side->col_idx].c_str();
+  int nkeys = table->getNoOfPrimaryKeys();
+  for (int k = 0; k < nkeys; k++)
+  {
+    const char* pk_name = table->getPrimaryKey(k);
+    if (pk_name != NULL && strcmp(pk_name, col_name) == 0)
+    {
+      pk_const[k] = const_side;
+      break;
+    }
+  }
+}
+
+void
+RonSQLPreparer::execute_join()
+{
+  Ndb* ndb = m_conf.ndb;
+  ndbrequire(m_trans == NULL);
+  m_trans = ndb->startTransaction();
+  require_run(m_trans != NULL, "Failed to start transaction.");
+
+  JoinPlan& plan = m_join_plan;
+
+  // Build aggregator on the leaf table
+  const NdbDictionary::Table* leaf_table =
+      plan.ops[plan.agg_leaf_idx].table;
+  NdbAggregator aggregator(leaf_table);
+  programAggregator_join(&aggregator);
+  require_prm(aggregator.Finalize(), "Failed to finalize aggregator.");
+
+  // Build NdbQueryBuilder tree
+  NdbQueryBuilder* qb = NdbQueryBuilder::create();
+  ndbrequire(qb != NULL);
+
+  const NdbQueryOperationDef* opDefs[MAX_JOIN_TABLES];
+
+  // Root operation: PK lookup if WHERE fully covers PK, else TABLE_SCAN.
+  // When children have scan ops, NDB doesn't support lookup root, so use
+  // an ordered index scan on PK with equality bounds instead.
+  {
+    NdbQueryOptions rootOpts;
+    const NdbDictionary::Table* root_table = plan.ops[0].table;
+    ConditionalExpression* where_ce = NULL;
+    bool pk_covered = false;
+    bool has_scan_child = false;
+    int nkeys = 0;
+    ConditionalExpression* pk_const[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY];
+
+    if (m_join_where_ce[0] != NULL)
+    {
+      where_ce = simplify_ce(m_join_where_ce[0], -1);
+
+      // Check if WHERE fully covers the root PK with equality constants
+      nkeys = root_table->getNoOfPrimaryKeys();
+      for (int k = 0; k < nkeys; k++)
+        pk_const[k] = NULL;
+      collect_pk_equalities(where_ce, root_table, pk_const);
+      pk_covered = true;
+      for (int k = 0; k < nkeys; k++)
+      {
+        if (pk_const[k] == NULL) { pk_covered = false; break; }
+      }
+
+      if (pk_covered)
+      {
+        for (Uint32 ci = 1; ci < plan.num_ops; ci++)
+        {
+          if (plan.ops[ci].type == JoinOp::INDEX_SCAN ||
+              plan.ops[ci].type == JoinOp::TABLE_SCAN)
+          {
+            has_scan_child = true;
+            break;
+          }
+        }
+      }
+    }
+
+    if (pk_covered && !has_scan_child)
+    {
+      // All children are lookups — use readTuple PK lookup for root
+      const NdbQueryOperand* pk_keys[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 1];
+      for (int k = 0; k < nkeys; k++)
+      {
+        const char* pk_name = root_table->getPrimaryKey(k);
+        const NdbDictionary::Column* pk_col =
+            root_table->getColumn(pk_name);
+        ndbrequire(pk_col != NULL);
+        raw_value rv = encode_constant(pk_const[k], pk_col);
+        pk_keys[k] = qb->constValue(rv.val, rv.len);
+        require_run(pk_keys[k] != NULL,
+                    "Failed to create const value for PK lookup.");
+      }
+      pk_keys[nkeys] = nullptr;
+      opDefs[0] = qb->readTuple(root_table, pk_keys, &rootOpts);
+      require_run(opDefs[0] != NULL, "Failed to create root PK lookup.");
+    }
+    else if (pk_covered && has_scan_child)
+    {
+      // Children have scans — NDB doesn't support lookup root with scan
+      // children. Use ordered index scan on PK with equality bounds.
+      const char* pk_col_names[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY];
+      for (int k = 0; k < nkeys; k++)
+        pk_col_names[k] = root_table->getPrimaryKey(k);
+      const NdbDictionary::Index* pk_ordered_idx =
+          QueryPlanner::findOrderedIndex(
+              m_dict, root_table, pk_col_names, (Uint32)nkeys);
+      if (pk_ordered_idx != NULL)
+      {
+        const NdbQueryOperand* pk_keys[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 1];
+        for (int k = 0; k < nkeys; k++)
+        {
+          const NdbDictionary::Column* pk_col =
+              root_table->getColumn(pk_col_names[k]);
+          ndbrequire(pk_col != NULL);
+          raw_value rv = encode_constant(pk_const[k], pk_col);
+          pk_keys[k] = qb->constValue(rv.val, rv.len);
+          require_run(pk_keys[k] != NULL,
+                      "Failed to create const value for PK index scan.");
+        }
+        pk_keys[nkeys] = nullptr;
+        NdbQueryIndexBound bound(pk_keys);
+        opDefs[0] = qb->scanIndex(pk_ordered_idx, root_table,
+                                  &bound, &rootOpts);
+        require_run(opDefs[0] != NULL,
+                    "Failed to create root PK index scan.");
+      }
+      else
+      {
+        // No ordered index on PK — fall back to table scan with filter
+        pk_covered = false;
+      }
+    }
+
+    if (!pk_covered)
+    {
+      NdbInterpretedCode code(root_table);
+      if (where_ce != NULL)
+      {
+        NdbScanFilter filter(&code);
+        filter.setSqlCmpSemantics();
+        filter.begin(NdbScanFilter::AND);
+        apply_filter(&filter, where_ce);
+        filter.end();
+        code.finalise();
+        rootOpts.setInterpretedCode(code);
+      }
+      opDefs[0] = qb->scanTable(root_table, &rootOpts);
+      require_run(opDefs[0] != NULL, "Failed to create root scan.");
+    }
+  }
+
+  // Child operations
+  for (Uint32 i = 1; i < plan.num_ops; i++) {
+    JoinOp& op = plan.ops[i];
+    NdbQueryOptions opts;
+    opts.setMatchType(NdbQueryOptions::MatchNonNull);
+
+    // Build linked key from parent
+    const NdbQueryOperand* keys[MAX_JOIN_KEY_COLS + 1];
+    for (Uint32 k = 0; k < op.num_key_cols; k++) {
+      keys[k] = qb->linkedValue(opDefs[op.parent_op_idx],
+                                 op.parent_key_col_names[k]);
+      require_run(keys[k] != NULL, "Failed to create linked value.");
+    }
+    keys[op.num_key_cols] = nullptr;
+
+    // Attach WHERE filter for this child table (if any)
+    NdbInterpretedCode child_code(op.table);
+    if (m_join_where_ce[i] != NULL)
+    {
+      ConditionalExpression* child_ce = simplify_ce(m_join_where_ce[i], -1);
+      NdbScanFilter filter(&child_code);
+      filter.setSqlCmpSemantics();
+      filter.begin(NdbScanFilter::AND);
+      apply_filter(&filter, child_ce);
+      filter.end();
+      child_code.finalise();
+      opts.setInterpretedCode(child_code);
+    }
+
+    // Attach aggregation to leaf
+    if (i == plan.agg_leaf_idx) {
+      require_run(opts.setAggregation(aggregator) == 0,
+                  "Failed to set aggregation.");
+      // Add linked projections for GROUP BY on parent columns
+      for (Uint32 j = 0; j < plan.num_linked_projs; j++) {
+        NdbLinkedOperand* lv = qb->linkedValue(
+            opDefs[plan.linked_projs[j].source_op_idx],
+            plan.linked_projs[j].column_name);
+        require_run(lv != NULL, "Failed to create linked projection.");
+        require_run(opts.addLinkedProjection(lv) == 0,
+                    "Failed to add linked projection.");
+      }
+    }
+
+    switch (op.type) {
+    case JoinOp::PK_LOOKUP:
+      opDefs[i] = qb->readTuple(op.table, keys, &opts);
+      break;
+    case JoinOp::UNIQUE_LOOKUP:
+      opDefs[i] = qb->readTuple(op.index, op.table, keys, &opts);
+      break;
+    case JoinOp::INDEX_SCAN:
+    {
+      NdbQueryIndexBound bound(keys);
+      opDefs[i] = qb->scanIndex(op.index, op.table, &bound, &opts);
+      break;
+    }
+    default:
+      abort();
+    }
+    require_run(opDefs[i] != NULL, "Failed to create child operation.");
+  }
+
+  // Prepare and execute
+  const NdbQueryDef* queryDef = qb->prepare(ndb);
+  require_run(queryDef != NULL, "Failed to prepare query.");
+
+  NdbQuery* query = m_trans->createQuery(queryDef);
+  require_run(query != NULL, "Failed to create query.");
+
+  require_run(m_trans->execute(NdbTransaction::NoCommit) == 0,
+              "Failed to execute transaction.");
+
+  // Consume all rows
+  NdbQuery::NextResultOutcome rc;
+  while ((rc = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {}
+  if (rc == NdbQuery::NextResult_error)
+  {
+    const NdbError& err = query->getNdbError();
+    std::basic_ostream<char>& errout = *m_conf.err_stream;
+    errout << "Join query failed: " << err.message
+           << " (code " << err.code << ")" << std::endl;
+    query->close();
+    queryDef->destroy();
+    qb->destroy();
+    throw RonSQLRetryableError("Join query execution failed.");
+  }
+
+  // Collect and print aggregation results
+  NdbAggregator* resultAgg = query->getAggregator();
+  ndbrequire(resultAgg != NULL);
+  m_resultprinter->print_result(resultAgg, m_conf.out_stream);
+
+  // Cleanup
+  query->close();
+  queryDef->destroy();
+  qb->destroy();
 }
 
 std::ostream& operator<<(std::ostream& os, const NdbError& err) {
@@ -1338,6 +1966,10 @@ RonSQLPreparer::apply_filter(NdbScanFilter* filter,
   case T_NOT_EQUALS:
     apply_filter_cmp(filter, NdbScanFilter::COND_NE, ce->args.left, ce->args.right);
     break;
+  case T_LIKE:
+    apply_filter_like(filter, NdbScanFilter::COND_LIKE,
+                      ce->args.left, ce->args.right);
+    break;
   default:
     throw RonSQLPermanentError("Non-boolean term in WHERE condition");
   }
@@ -1368,6 +2000,26 @@ RonSQLPreparer::apply_filter_cmp(NdbScanFilter* filter,
                               DBG(m_column_attrId_map[left->col_idx]),
                               DBG(rv).val,
                               rv.len)) >= 0,
+              filter_fail);
+}
+
+void
+RonSQLPreparer::apply_filter_like(NdbScanFilter* filter,
+                                   NdbScanFilter::BinaryCondition cond,
+                                   struct ConditionalExpression* left,
+                                   struct ConditionalExpression* right)
+{
+  if (left->op != T_IDENTIFIER) {
+    throw RonSQLPermanentError("LIKE requires a column name on the left side");
+  }
+  if (right->op != T_STRING) {
+    throw RonSQLPermanentError("LIKE requires a string pattern on the right side");
+  }
+  ndbrequire(m_column_attrId_map != NULL);
+  require_sch(DBG(filter->cmp(cond,
+                               m_column_attrId_map[left->col_idx],
+                               right->string.str,
+                               right->string.len)) >= 0,
               filter_fail);
 }
 
@@ -1437,6 +2089,8 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
     [[fallthrough]];
   case NdbDictionary::Column::Type::Decimalunsigned:
     tk = DECIMAL; break;
+  case NdbDictionary::Column::Type::Char:
+    tk = STR; maxlen = col->getLength(); lenbytes = 0; break;
   case NdbDictionary::Column::Type::Varchar:
     tk = STR; maxlen = 255; lenbytes = 1; break;
   case NdbDictionary::Column::Type::Longvarchar:
@@ -1450,7 +2104,7 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
   default:
     throw RonSQLMaybeStaleSchema("Unsupported column type in comparison"
                                  " condition. Supported types are integer"
-                                 " types, VARCHAR, DATE, DATETIME and"
+                                 " types, CHAR, VARCHAR, DATE, DATETIME and"
                                  " TIMESTAMP.");
   }
   if (op == T_INT && tk == INT) {
@@ -1543,6 +2197,18 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
                                  " are supported.");
   }
   if (op == T_STRING && tk == STR) {
+    if (lenbytes == 0) {
+      // CHAR: fixed-length, right-padded with spaces, no length prefix
+      Uint32 col_len = col->getLength();
+      if (ce->string.len > static_cast<size_t>(col_len)) {
+        throw RonSQLMaybeStaleSchema("CHAR column compared to a string literal"
+                                     " that is too long.");
+      }
+      Uint8* val = m_amalloc->alloc_exc<Uint8>(col_len);
+      memcpy(val, ce->string.str, ce->string.len);
+      memset(val + ce->string.len, ' ', col_len - ce->string.len);
+      return raw_value{ val, col_len };
+    }
     if (ce->string.len > static_cast<size_t>(maxlen)) {
       throw RonSQLMaybeStaleSchema("VARCHAR column compared to a string literal"
                                    " that is too long. Note that if the column"
@@ -1556,8 +2222,9 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
     return raw_value{ val, static_cast<Uint32>(lenbytes + ce->string.len) };
   }
   if (tk == STR) {
-    throw RonSQLMaybeStaleSchema("VARCHAR column compared to an incompatible"
-                                 " value. Only string literals are supported.");
+    throw RonSQLMaybeStaleSchema("CHAR/VARCHAR column compared to an"
+                                 " incompatible value. Only string literals"
+                                 " are supported.");
   }
   if (tk == TIME) {
     MYSQL_TIME mt;
@@ -1972,11 +2639,301 @@ RonSQLPreparer::programAggregator(NdbAggregator* aggregator)
     case AggregationAPICompiler::SVMInstrType::Count:
       programAggregator_do_or_fail(aggregator->Count(dest, src));
       break;
+    case AggregationAPICompiler::SVMInstrType::AggRepeat:
+      programAggregator_do_or_fail(aggregator->RepeatAgg(dest, src));
+      break;
+    case AggregationAPICompiler::SVMInstrType::EmbeddedInterp:
+    {
+      auto& ci = m_agg->m_cases[dest];
+      Uint32 then_raw = m_agg->raw_word_size(ci.then_start, ci.skip_pos);
+      Uint32 skip_raw = 1;
+      Uint32 then_arm_total = then_raw + skip_raw;
+      generate_embedded_condition(aggregator, ci.condition, then_arm_total);
+      break;
+    }
+    case AggregationAPICompiler::SVMInstrType::Skip:
+    {
+      for (Uint32 c = 0; c < m_agg->m_cases.size(); c++)
+      {
+        if (m_agg->m_cases[c].skip_pos == i)
+        {
+          auto& ci = m_agg->m_cases[c];
+          Uint32 else_raw = m_agg->raw_word_size(ci.else_start, ci.else_end);
+          programAggregator_do_or_fail(aggregator->Skip(else_raw));
+          break;
+        }
+      }
+      break;
+    }
     default:
       // Unknown instruction
       abort();
     }
   }
+}
+
+void
+RonSQLPreparer::programAggregator_join(NdbAggregator* aggregator)
+{
+  std::basic_ostream<char>& err = *m_conf.err_stream;
+  SelectStatement& ast_root = m_context.ast_root;
+  Uint32 leaf_idx = m_join_plan.agg_leaf_idx;
+
+  // Program groupby columns — use GroupByLinked for parent columns
+  assert(m_column_attrId_map != NULL);
+  Uint32 linked_proj_pos = 0;
+  struct GroupbyColumns* groupby = ast_root.groupby_columns;
+  while (groupby != NULL)
+  {
+    Uint32 col_idx = groupby->col_idx;
+    if (m_column_table_idx[col_idx] == leaf_idx)
+    {
+      programAggregator_do_or_fail
+        (aggregator->GroupBy(m_column_attrId_map[col_idx]));
+    }
+    else
+    {
+      programAggregator_do_or_fail
+        (aggregator->GroupByLinked(linked_proj_pos, m_column_map[col_idx]));
+      linked_proj_pos++;
+    }
+    groupby = groupby->next;
+  }
+
+  // Program aggregations — same as single-table path
+  assert(m_agg != NULL);
+  DynamicArray<AggregationAPICompiler::Instr>& program = m_agg->m_program;
+  for (Uint32 i = 0; i < program.size(); i++)
+  {
+    AggregationAPICompiler::Instr* instr = &program[i];
+    Uint32 dest = instr->dest;
+    Uint32 src = instr->src;
+    switch (instr->type)
+    {
+    case AggregationAPICompiler::SVMInstrType::Load:
+    {
+      if (m_column_table_idx[src] != leaf_idx)
+      {
+        Uint32 lp_pos = find_or_add_linked_proj(
+            m_join_plan, m_column_table_idx[src],
+            m_columns[src].c_str());
+        programAggregator_do_or_fail
+          (aggregator->LoadLinkedColumn(lp_pos, dest, m_column_map[src]));
+      }
+      else
+      {
+        NdbAttrId col_id = m_column_attrId_map[src];
+        if (!aggregator->LoadColumn(col_id, dest))
+        {
+          err << "Failed writing aggregation program "
+                 "when attempting to load column "
+              << quoted_identifier(m_columns[src]) << endl;
+          throw RonSQLMaybeStaleSchema(
+              "Failed writing aggregation program");
+        }
+      }
+      break;
+    }
+    case AggregationAPICompiler::SVMInstrType::LoadConstantInteger:
+      programAggregator_do_or_fail
+        (aggregator->LoadInt64(m_agg->m_constants[src].int_64, dest));
+      break;
+    case AggregationAPICompiler::SVMInstrType::Mov:
+      programAggregator_do_or_fail(aggregator->Mov(dest, src));
+      break;
+    case AggregationAPICompiler::SVMInstrType::Add:
+      programAggregator_do_or_fail(aggregator->Add(dest, src));
+      break;
+    case AggregationAPICompiler::SVMInstrType::Minus:
+      programAggregator_do_or_fail(aggregator->Minus(dest, src));
+      break;
+    case AggregationAPICompiler::SVMInstrType::Mul:
+      programAggregator_do_or_fail(aggregator->Mul(dest, src));
+      break;
+    case AggregationAPICompiler::SVMInstrType::Div:
+      programAggregator_do_or_fail(aggregator->Div(dest, src));
+      break;
+    case AggregationAPICompiler::SVMInstrType::DivInt:
+      programAggregator_do_or_fail(aggregator->DivInt(dest, src));
+      break;
+    case AggregationAPICompiler::SVMInstrType::Rem:
+      programAggregator_do_or_fail(aggregator->Mod(dest, src));
+      break;
+    case AggregationAPICompiler::SVMInstrType::Sum:
+      programAggregator_do_or_fail(aggregator->Sum(dest, src));
+      break;
+    case AggregationAPICompiler::SVMInstrType::Min:
+      programAggregator_do_or_fail(aggregator->Min(dest, src));
+      break;
+    case AggregationAPICompiler::SVMInstrType::Max:
+      programAggregator_do_or_fail(aggregator->Max(dest, src));
+      break;
+    case AggregationAPICompiler::SVMInstrType::Count:
+      programAggregator_do_or_fail(aggregator->Count(dest, src));
+      break;
+    case AggregationAPICompiler::SVMInstrType::AggRepeat:
+      programAggregator_do_or_fail(aggregator->RepeatAgg(dest, src));
+      break;
+    case AggregationAPICompiler::SVMInstrType::EmbeddedInterp:
+    {
+      auto& ci = m_agg->m_cases[dest];
+      Uint32 then_raw = m_agg->raw_word_size(ci.then_start, ci.skip_pos);
+      Uint32 skip_raw = 1;
+      Uint32 then_arm_total = then_raw + skip_raw;
+      generate_embedded_condition(aggregator, ci.condition, then_arm_total);
+      break;
+    }
+    case AggregationAPICompiler::SVMInstrType::Skip:
+    {
+      for (Uint32 c = 0; c < m_agg->m_cases.size(); c++)
+      {
+        if (m_agg->m_cases[c].skip_pos == i)
+        {
+          auto& ci = m_agg->m_cases[c];
+          Uint32 else_raw = m_agg->raw_word_size(ci.else_start, ci.else_end);
+          programAggregator_do_or_fail(aggregator->Skip(else_raw));
+          break;
+        }
+      }
+      break;
+    }
+    default:
+      abort();
+    }
+  }
+}
+
+void
+RonSQLPreparer::generate_embedded_condition(
+    NdbAggregator* aggregator,
+    ConditionalExpression* ce,
+    Uint32 then_arm_raw_size)
+{
+  // Two patterns supported:
+  //   OR: (col = 'X' OR col = 'Y') → branch to THEN on match, fall-through ELSE
+  //   AND: (col <> 'X' AND col <> 'Y') → branch to ELSE on inverted match,
+  //                                       fall-through THEN
+  //   Single atom: handled as OR with one atom
+  DynamicArray<ConditionalExpression*> atoms(m_amalloc);
+  bool is_and = false;
+
+  if (ce->op == T_AND || ce->op == T_OR)
+  {
+    is_and = (ce->op == T_AND);
+    TokenKind flatten_op = ce->op;
+    ConditionalExpression* node = ce;
+    while (node->op == flatten_op)
+    {
+      atoms.push(node->args.right);
+      node = node->args.left;
+    }
+    atoms.push(node);
+  }
+  else
+  {
+    atoms.push(ce);
+  }
+
+  // Compute embedded word sizes.
+  // The embedded interpreter runs interpreterNextLab() which reads columns via
+  // readAttributes() from the local tuple. For join queries, only columns on
+  // the aggregation leaf table are accessible — columns from parent tables
+  // arrive as linked attributes in the signal buffer, not readable by attrId.
+  Uint32 total_branch_words = 0;
+  for (Uint32 a = 0; a < atoms.size(); a++)
+  {
+    ConditionalExpression* atom = atoms[a];
+    ndbrequire(atom->op == T_EQUALS || atom->op == T_NOT_EQUALS);
+    ConditionalExpression* col_side = atom->args.left;
+    ndbrequire(col_side->op == T_IDENTIFIER);
+    if (m_column_table_idx != NULL)
+    {
+      Uint32 leaf_idx = m_join_plan.agg_leaf_idx;
+      require_prm(m_column_table_idx[col_side->col_idx] == leaf_idx,
+                  "CASE condition column must be on the aggregation leaf table. "
+                  "Columns from parent tables in CASE conditions are not yet "
+                  "supported.");
+    }
+    const NdbDictionary::Column* col = m_column_map[col_side->col_idx];
+    Uint32 byte_len = col->getLength();
+    Uint32 data_words = (byte_len + 3) / 4;
+    total_branch_words += 2 + data_words;
+  }
+  Uint32 emb_len = total_branch_words + 6;
+
+  // For OR:  branches → second_exit (THEN), fall-through → first_exit (ELSE)
+  // For AND: branches → second_exit (ELSE), fall-through → first_exit (THEN)
+  Uint32 second_exit_label = emb_len - 3;
+  Uint32 first_exit_skip_offset =
+      is_and ? 0 : then_arm_raw_size;
+  Uint32 second_exit_skip_offset =
+      is_and ? then_arm_raw_size : 0;
+
+  programAggregator_do_or_fail(aggregator->EmbeddedInterp(emb_len));
+
+  Uint32 pos = 0;
+  for (Uint32 a = 0; a < atoms.size(); a++)
+  {
+    ConditionalExpression* atom = atoms[a];
+    ConditionalExpression* col_side = atom->args.left;
+    ConditionalExpression* val_side = atom->args.right;
+    const NdbDictionary::Column* col = m_column_map[col_side->col_idx];
+    NdbAttrId attr_id = m_column_attrId_map[col_side->col_idx];
+    Uint32 byte_len = col->getLength();
+    Uint32 data_words = (byte_len + 3) / 4;
+
+    Uint32 branch_offset = second_exit_label - pos;
+
+    // For OR with EQ atoms: BranchCol(EQ) → THEN on match
+    // For AND with NE atoms: invert NE to EQ, BranchCol(EQ) → ELSE on match
+    Interpreter::BinaryCondition cond;
+    if (is_and)
+    {
+      // AND: invert the atom condition for the branch
+      cond = (atom->op == T_NOT_EQUALS) ? Interpreter::EQ : Interpreter::NE;
+    }
+    else
+    {
+      // OR: branch on the atom condition directly
+      cond = (atom->op == T_EQUALS) ? Interpreter::EQ : Interpreter::NE;
+    }
+
+    programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+        Interpreter::BranchCol(cond, Interpreter::NULL_CMP_EQUAL) |
+        (branch_offset << 16)));
+    programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+        Interpreter::BranchCol_2(attr_id, byte_len)));
+
+    raw_value rv = encode_constant(val_side, col);
+    Uint32 padded_len = data_words * 4;
+    Uint8* buf = m_amalloc->alloc_exc<Uint8>(padded_len);
+    memcpy(buf, rv.val, rv.len);
+    if (padded_len > rv.len)
+      memset(buf + rv.len, 0, padded_len - rv.len);
+    for (Uint32 w = 0; w < data_words; w++)
+    {
+      Uint32 word;
+      memcpy(&word, buf + w * 4, 4);
+      programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(word));
+    }
+    pos += 2 + data_words;
+  }
+
+  // First exit (fall-through)
+  programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+      Interpreter::LoadConst16(2, first_exit_skip_offset)));
+  programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+      Interpreter::WriteInterpreterOutput(2, 0)));
+  programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+      Interpreter::ExitOK()));
+
+  // Second exit (branched to)
+  programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+      Interpreter::LoadConst16(2, second_exit_skip_offset)));
+  programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+      Interpreter::WriteInterpreterOutput(2, 0)));
+  programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+      Interpreter::ExitOK()));
 }
 #undef programAggregator_do_or_fail
 
@@ -2397,15 +3354,36 @@ Uint32
 RonSQLPreparer::Context::column_name_to_idx(LexCString col_name)
 {
   DynamicArray<LexCString>& columns = m_parser.m_columns;
+  DynamicArray<LexCString>& qualifiers = m_parser.m_column_qualifiers;
   Uint32 sz = columns.size();
   for (Uint32 i=0; i < sz; i++)
   {
-    if (columns[i] == col_name)
+    if (columns[i] == col_name && qualifiers[i].c_str() == NULL)
     {
       return i;
     }
   }
   columns.push(col_name);
+  qualifiers.push(LexCString{NULL, 0});
+  return sz;
+}
+
+Uint32
+RonSQLPreparer::Context::qualified_column_name_to_idx(
+    LexCString table_qualifier, LexCString col_name)
+{
+  DynamicArray<LexCString>& columns = m_parser.m_columns;
+  DynamicArray<LexCString>& qualifiers = m_parser.m_column_qualifiers;
+  Uint32 sz = columns.size();
+  for (Uint32 i = 0; i < sz; i++)
+  {
+    if (columns[i] == col_name && qualifiers[i] == table_qualifier)
+    {
+      return i;
+    }
+  }
+  columns.push(col_name);
+  qualifiers.push(table_qualifier);
   return sz;
 }
 

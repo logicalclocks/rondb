@@ -61,6 +61,10 @@ call heavy_read(100);
 --enable_result_log
 # NOTE don't check for warnings...as it doesnt fail consistenly
 
+# Allow send buffers to drain after the unlimited-batch read
+# before starting the batched read test
+--sleep 2
+
 set ndb_blob_read_batch_bytes=100 * 1024;
 
 --echo Now heavy read should succeed

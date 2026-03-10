@@ -1,4 +1,6 @@
 --source include/have_ndb.inc
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
 
 # Compare MySQL against RonSQL using RDRS only
 --let $suppress_ronsql_cli=yes

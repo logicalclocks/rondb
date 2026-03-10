@@ -53,7 +53,7 @@ if ($skip_sort!='')
 --echo
 --exec echo Number of output lines, including header: `grep -Fc '' '$MYSQL_TMP_DIR/mysql.out.sorted'`
 
---exec curl --fail-with-body -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/ronsql-rdrs-body > $MYSQL_TMP_DIR/ronsql-rdrs.out
+--exec curl -s -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/ronsql-rdrs-body > $MYSQL_TMP_DIR/ronsql-rdrs.out
 if ($canonicalization_script)
 {
   --exec sed -r '$canonicalization_script' $MYSQL_TMP_DIR/ronsql-rdrs.out > $MYSQL_TMP_DIR/ronsql-rdrs.out.canon
@@ -94,16 +94,30 @@ if ($skip_sort!='')
 {
   --exec cp $MYSQL_TMP_DIR/ronsql-cli.out $MYSQL_TMP_DIR/ronsql-cli.out.sorted
 }
+if ($strict_diff=='')
+{
 # todo The "|| true" at the end makes this test succeed no matter what the
 # results are. Remove it when possible.
 --exec diff -u --label ronsql-cli.out $MYSQL_TMP_DIR/ronsql-cli.out.sorted --label ronsql-rdrs.out $MYSQL_TMP_DIR/ronsql-rdrs.out.sorted || true
 }
+if ($strict_diff!='')
+{
+--exec diff -u --label ronsql-cli.out $MYSQL_TMP_DIR/ronsql-cli.out.sorted --label ronsql-rdrs.out $MYSQL_TMP_DIR/ronsql-rdrs.out.sorted
+}
+}
 
 --echo
 --echo == Diff ==
+if ($strict_diff=='')
+{
 # todo The "|| true" at the end makes this test succeed no matter what the
 # results are. Remove it when possible.
 --exec diff -u --label mysql.out $MYSQL_TMP_DIR/mysql.out.sorted --label ronsql.out $MYSQL_TMP_DIR/ronsql-rdrs.out.sorted || true
+}
+if ($strict_diff!='')
+{
+--exec diff -u --label mysql.out $MYSQL_TMP_DIR/mysql.out.sorted --label ronsql.out $MYSQL_TMP_DIR/ronsql-rdrs.out.sorted
+}
 --remove_file $MYSQL_TMP_DIR/ronsql-query.sql
 --remove_file $MYSQL_TMP_DIR/ronsql-rdrs-body
 --remove_file $MYSQL_TMP_DIR/ronsql-rdrs-body-1

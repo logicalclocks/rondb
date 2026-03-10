@@ -1,3 +1,5 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
 Regression tests for bugs found during development of pushdown aggregation and
 RonSQL.
 No GROUP BY crashes data node

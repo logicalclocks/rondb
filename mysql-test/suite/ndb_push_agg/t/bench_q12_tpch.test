@@ -1,0 +1,4 @@
+--source include/have_ndb.inc
+
+--echo Running bench_q12_tpch
+--exec $NDB_PUSH_AGG_DIR/bench_q12_tpch -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT --orders 4000 --iterations 1

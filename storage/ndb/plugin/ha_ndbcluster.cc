@@ -51,7 +51,7 @@
 #include "sql/partition_info.h"
 #include "sql/sql_alter.h"
 #include "sql/sql_class.h"
-#include "sql/sql_executor.h"  // QEP_TAB
+#include "sql/sql_executor.h"   // QEP_TAB
 #include "sql/sql_lex.h"
 #include "sql/sql_plugin_var.h"  // SYS_VAR
 #include "sql/transaction.h"
@@ -68,6 +68,7 @@
 #include "storage/ndb/plugin/ha_ndbcluster_cond.h"
 #include "storage/ndb/plugin/ha_ndbcluster_connection.h"
 #include "storage/ndb/plugin/ha_ndbcluster_push.h"
+#include "storage/ndb/plugin/ha_ndbcluster_push_agg.h"
 #include "storage/ndb/plugin/ndb_anyvalue.h"
 #include "storage/ndb/plugin/ndb_applier.h"
 #include "storage/ndb/plugin/ndb_binlog_client.h"
@@ -367,6 +368,24 @@ static MYSQL_THDVAR_BOOL(join_pushdown, /* name */
                          nullptr, /* check func. */
                          nullptr, /* update func. */
                          true     /* default */
+);
+
+static MYSQL_THDVAR_BOOL(join_pushdown_aggregate, /* name */
+                         PLUGIN_VAR_OPCMDARG,
+                         "Enable pushing down of aggregation for pushed joins "
+                         "to datanodes",
+                         nullptr, /* check func. */
+                         nullptr, /* update func. */
+                         false    /* default */
+);
+
+static MYSQL_THDVAR_BOOL(
+    pushdown_aggregate, /* name */
+    PLUGIN_VAR_OPCMDARG,
+    "Enable pushing down of aggregation for single-table queries to datanodes",
+    nullptr, /* check func. */
+    nullptr, /* update func. */
+    false    /* default */
 );
 
 static MYSQL_THDVAR_BOOL(log_exclusive_reads, /* name */
@@ -3306,6 +3325,10 @@ int ha_ndbcluster::fetch_next_pushed() {
   DBUG_TRACE;
   assert(m_pushed_operation);
 
+  if (m_pushed_agg_mode) {
+    return ndb_fetch_pushed_aggregate(this);
+  }
+
   /**
    * Only prepare result & status from this operation in pushed join.
    * Consecutive rows are prepared through ::index_read_pushed() and
@@ -3876,6 +3899,12 @@ int ha_ndbcluster::ordered_index_scan(const key_range *start_key,
     NdbInterpretedCode code(m_table);
     generate_scan_filter(&code, &options);
 
+    if (m_stm_aggregator != nullptr) {
+      options.optionsPresent |=
+          NdbScanOperation::ScanOptions::SO_AGGREGATION;
+      options.aggregationCode = m_stm_aggregator;
+    }
+
     get_read_set(true, active_index);
     if (!(op = trans->scanIndex(key_rec, row_rec, lm,
                                 m_table_map->get_column_mask(table->read_set),
@@ -3888,11 +3917,14 @@ int ha_ndbcluster::ordered_index_scan(const key_range *start_key,
     m_thd_ndb->m_scan_count++;
     m_thd_ndb->m_pruned_scan_count += (op->getPruned() ? 1 : 0);
 
+    m_active_cursor = op;
+
+    if (m_stm_aggregator != nullptr)
+      return ndb_start_stm_aggregate_scan(this, op);
+
     if (uses_blob_value(table->read_set) &&
         get_blob_values(op, nullptr, table->read_set) != 0)
       ERR_RETURN(op->getNdbError());
-
-    m_active_cursor = op;
   }
 
   if (sorted) {
@@ -4034,6 +4066,12 @@ int ha_ndbcluster::full_table_scan(const KEY *key_info,
         ERR_RETURN(code.getNdbError());
     }
 
+    if (m_stm_aggregator != nullptr) {
+      options.optionsPresent |=
+          NdbScanOperation::ScanOptions::SO_AGGREGATION;
+      options.aggregationCode = m_stm_aggregator;
+    }
+
     get_read_set(true, MAX_KEY);
     if (!(op = trans->scanTable(
               m_ndb_record, lm, m_table_map->get_column_mask(table->read_set),
@@ -4045,6 +4083,9 @@ int ha_ndbcluster::full_table_scan(const KEY *key_info,
 
     assert(m_active_cursor == nullptr);
     m_active_cursor = op;
+
+    if (m_stm_aggregator != nullptr)
+      return ndb_start_stm_aggregate_scan(this, op);
 
     if (uses_blob_value(table->read_set) &&
         get_blob_values(op, nullptr, table->read_set) != 0)
@@ -6449,6 +6490,8 @@ int ha_ndbcluster::index_next(uchar *buf) {
   DBUG_TRACE;
   TTL_HANDLER_TRACE(m_share->table_name, "ha_ndbcluster::index_next");
   ha_statistic_increment(&System_status_var::ha_read_next_count);
+  if (m_active_cursor && m_stm_aggregator != nullptr)
+    return ndb_fetch_stm_aggregate(this);
   const int error = next_result(buf);
   return error;
 }
@@ -6595,6 +6638,8 @@ int ha_ndbcluster::read_range_first(const key_range *start_key,
 
 int ha_ndbcluster::read_range_next() {
   DBUG_TRACE;
+  if (m_active_cursor && m_stm_aggregator != nullptr)
+    return ndb_fetch_stm_aggregate(this);
   return next_result(table->record[0]);
 }
 
@@ -6665,7 +6710,13 @@ int ha_ndbcluster::close_scan() {
   if (m_active_query) {
     m_active_query->close(m_thd_ndb->m_force_send);
     m_active_query = nullptr;
+    // Clear the aggregate join pointer when closing an actual active scan.
+    // Don't clear it in the rnd_init() path (m_active_query == nullptr)
+    // since it's needed in create_pushed_join() to restore m_pushed_agg_mode.
+    m_agg_join = nullptr;
   }
+  m_pushed_agg_mode = false;
+  m_agg_results_initialized = false;
 
   m_cond.cond_close();
 
@@ -6709,7 +6760,9 @@ int ha_ndbcluster::rnd_next(uchar *buf) {
   ha_statistic_increment(&System_status_var::ha_read_rnd_next_count);
 
   int error;
-  if (m_active_cursor || m_active_query)
+  if (m_active_cursor && m_stm_aggregator != nullptr)
+    error = ndb_fetch_stm_aggregate(this);
+  else if (m_active_cursor || m_active_query)
     error = next_result(buf);
   else
     error = full_table_scan(nullptr, nullptr, nullptr, buf);
@@ -7236,6 +7289,9 @@ int ha_ndbcluster::reset() {
   m_pushed_join_member = nullptr;
   m_pushed_join_operation = -1;
   m_disable_pushed_join = false;
+  m_agg_join = nullptr;
+  delete m_stm_aggregator;
+  m_stm_aggregator = nullptr;
 
   /* reset flags set by extra calls */
   m_read_before_write_removal_possible = false;
@@ -13888,7 +13944,8 @@ int ha_ndbcluster::multi_range_read_init(RANGE_SEQ_IF *seq_funcs,
                                           table_share->reclength) ||
       (m_pushed_join_operation == PUSHED_ROOT && !m_disable_pushed_join &&
        !m_pushed_join_member->get_query_def().isScanQuery()) ||
-      m_delete_cannot_batch || m_update_cannot_batch) {
+      m_delete_cannot_batch || m_update_cannot_batch ||
+      m_stm_aggregator != nullptr) {
     m_disable_multi_read = true;
     return handler::multi_range_read_init(seq_funcs, seq_init_param, n_ranges,
                                           mode, buffer);
@@ -14656,12 +14713,15 @@ static bool has_pushed_members_outside_of_branch(AccessPath *path,
  * to query elements which got pushed down to the NDB engine.
  */
 static void fixup_pushed_access_paths(THD *thd, AccessPath *path,
-                                      const JOIN *join, AccessPath *filter) {
+                                      const JOIN *join, AccessPath *filter,
+                                      bool has_pushed_aggregation) {
   /**
    * Define the lambda function which modify the Accesspath to take advantage
    * of whatever we pushed to the NDB engine.
    */
-  auto fixupFunc = [thd, filter](AccessPath *subpath, const JOIN *join) {
+  auto fixupFunc = [thd, filter,
+                    has_pushed_aggregation](AccessPath *subpath,
+                                           const JOIN *join) {
     /**
      * Note that for most of the cases handled below, we manually handle the
      * child-walk, and 'return true' which will stop the 'upper' callee from
@@ -14708,7 +14768,8 @@ static void fixup_pushed_access_paths(THD *thd, AccessPath *path,
        */
       case AccessPath::FILTER: {
         auto &param = subpath->filter();
-        fixup_pushed_access_paths(thd, param.child, join, /*filter=*/subpath);
+        fixup_pushed_access_paths(thd, param.child, join, /*filter=*/subpath,
+                                  has_pushed_aggregation);
 
         if (param.condition == nullptr) {
           // Entire FILTER condition was pushed down.
@@ -14760,21 +14821,55 @@ static void fixup_pushed_access_paths(THD *thd, AccessPath *path,
         break;
       }
 
-#ifndef NDEBUG
-      // Below, debug only: Assert Query_scope containment.
-      // For some operations this is stricter than what was set up by
-      // ndb_pushed_builder_ctx::construct(), where only a Join_scope was
-      // constructed. (See further below)
       case AccessPath::AGGREGATE: {
+        if (has_pushed_aggregation) {
+          // Aggregation is pushed to data nodes — remove the AGGREGATE
+          // iterator (which would re-aggregate from record buffer values).
+          // Replace with the NLJ-stripped child (root table scan).
+          AccessPath *child =
+              strip_pushed_child_nljs(subpath->aggregate().child);
+          *subpath = *child;
+          // Explicitly re-walk the replaced node so that any FILTER
+          // within it is properly processed by fixup_pushed_access_paths
+          // (the walker would skip the lambda for the replaced node itself).
+          fixup_pushed_access_paths(thd, subpath, join, filter,
+                                    has_pushed_aggregation);
+          return true;  // Already walked children
+        }
+#ifndef NDEBUG
         assert(!has_pushed_members_outside_of_branch(subpath->aggregate().child,
                                                      join));
+#endif
         break;
       }
       case AccessPath::TEMPTABLE_AGGREGATE: {
+        if (has_pushed_aggregation) {
+          // Keep TEMPTABLE_AGGREGATE — it materializes aggregate results into
+          // a temp table, which SORT/LIMIT nodes above need.  Remove the
+          // inner AGGREGATE (which would re-aggregate) and strip
+          // pushed-join-child NLJs, leaving just the root table scan.
+          // Item_sum::reset_field() handles pushed values when storing
+          // into the temp table.
+          AccessPath *sub = subpath->temptable_aggregate().subquery_path;
+          if (sub->type == AccessPath::AGGREGATE) {
+            sub = sub->aggregate().child;
+          }
+          sub = strip_pushed_child_nljs(sub);
+          subpath->temptable_aggregate().subquery_path = sub;
+          // Re-walk the modified child so that any FILTER within it
+          // is processed by accept_pushed_conditions.
+          fixup_pushed_access_paths(thd, sub, join, filter,
+                                    has_pushed_aggregation);
+          return true;  // Already walked children
+        }
+#ifndef NDEBUG
         assert(!has_pushed_members_outside_of_branch(
             subpath->temptable_aggregate().subquery_path, join));
+#endif
         break;
       }
+#ifndef NDEBUG
+      // Below, debug only: Assert Query_scope containment.
       case AccessPath::STREAM: {
         assert(!has_pushed_members_outside_of_branch(subpath->stream().child,
                                                      join));
@@ -14853,6 +14948,25 @@ int ndbcluster_push_to_engine(THD *thd, AccessPath *root_path, JOIN *join) {
     }
   }
 
+  // Check if aggregation can also be pushed for a fully-pushed join.
+  bool has_pushed_aggregation = false;
+  if (THDVAR(thd, join_pushdown_aggregate)) {
+    has_pushed_aggregation = ndb_push_aggregation(thd, join, pushed_builder);
+  }
+
+  // Check if single-table aggregation can be pushed.
+  if (!has_pushed_aggregation && THDVAR(thd, pushdown_aggregate)) {
+    has_pushed_aggregation =
+        ndb_push_single_table_aggregation(thd, join, pushed_builder);
+  }
+  if (has_pushed_aggregation) {
+    auto *root_handler = down_cast<ha_ndbcluster *>(
+        pushed_builder.m_tables[0].get_table()->file);
+    root_handler->m_pushed_agg_mode = true;
+    root_handler->m_agg_results_initialized = false;
+    root_handler->m_agg_join = join;
+  }
+
   /**
    * For those tables not being join-pushed we may still be able to
    * push any conditions on the table. (There are less restrictions on whether
@@ -14910,7 +15024,9 @@ int ndbcluster_push_to_engine(THD *thd, AccessPath *root_path, JOIN *join) {
     }
   }
   // Modify the AccessPath structure to reflect pushed execution.
-  fixup_pushed_access_paths(thd, root_path, join, /*filter=*/nullptr);
+  fixup_pushed_access_paths(thd, root_path, join, /*filter=*/nullptr,
+                            has_pushed_aggregation);
+
   return 0;
 }
 
@@ -15011,6 +15127,16 @@ int ha_ndbcluster::create_pushed_join(const NdbQueryParamValue *keyFieldParams,
 
   if (unlikely(query == nullptr)) ERR_RETURN(m_thd_ndb->trans->getNdbError());
 
+  // Restore aggregation mode.  m_pushed_agg_mode was set during
+  // prepare_push_join() but gets cleared by close_scan() which runs
+  // between optimization and execution (called from rnd_init/index_init).
+  // Use the persistent m_agg_join (set during prepare, not cleared
+  // by close_scan) to re-detect.
+  if (m_agg_join != nullptr) {
+    m_pushed_agg_mode = true;
+    m_agg_results_initialized = false;
+  }
+
   // Bind to instantiated NdbQueryOperations.
   for (uint i = 0; i < m_pushed_join_member->get_operation_count(); i++) {
     const TABLE *const tab = m_pushed_join_member->get_table(i);
@@ -15059,11 +15185,20 @@ int ha_ndbcluster::create_pushed_join(const NdbQueryParamValue *keyFieldParams,
       }
     }
 
-    // Bind to result buffers
-    int res = op->setResultRowRef(
-        handler->m_ndb_record, handler->_m_next_row,
-        handler->m_table_map->get_column_mask(tab->read_set));
-    if (unlikely(res)) ERR_RETURN(query->getNdbError());
+    // Bind to result buffers.
+    // For aggregate queries, no operation needs user projection
+    // (PI_ATTR_LIST) — aggregate results arrive via NDB_AGG_RECEIVER
+    // (from JOIN_AGG_COMPLETE_REQ handling), not per-row TRANSID_AI.
+    // Skipping setResultRowRef() for all operations avoids
+    // READ_PACKED columns in TRANSID_AI that DBSPJ cannot parse.
+    // The scan drain loop handles 0-row batches correctly, reaching
+    // EndOfData which triggers processAggResults().
+    if (!m_pushed_agg_mode) {
+      int res = op->setResultRowRef(
+          handler->m_ndb_record, handler->_m_next_row,
+          handler->m_table_map->get_column_mask(tab->read_set));
+      if (unlikely(res)) ERR_RETURN(query->getNdbError());
+    }
 
     // We clear 'm_next_row' to say that no row was fetched from the query yet.
     handler->_m_next_row = nullptr;
@@ -15123,6 +15258,10 @@ table_map ha_ndbcluster::tables_in_pushed_join() const {
     map |= m_pushed_join_member->get_table(i)->pos_in_table_list->map();
   }
   return map;
+}
+
+bool ha_ndbcluster::has_pushed_aggregation() const {
+  return m_agg_join != nullptr;
 }
 
 /*
@@ -19208,6 +19347,8 @@ static SYS_VAR *system_variables[] = {
     MYSQL_SYSVAR(replica_blob_write_batch_bytes),
     MYSQL_SYSVAR(deferred_constraints),
     MYSQL_SYSVAR(join_pushdown),
+    MYSQL_SYSVAR(join_pushdown_aggregate),
+    MYSQL_SYSVAR(pushdown_aggregate),
     MYSQL_SYSVAR(log_exclusive_reads),
     MYSQL_SYSVAR(read_backup),
     MYSQL_SYSVAR(data_node_neighbour),

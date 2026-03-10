@@ -1,0 +1,1092 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== Create tables for join aggregation tests ===
+
+
+
+=== Test 5: 3-table join, GROUP BY on root, SUM on leaf ===
+== Query ==
+SELECT c.c_region, SUM(l.l_quantity)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY c.c_region;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_region, SUM(l.l_quantity)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY c.c_region|
+c_region	SUM(l.l_quantity)
+1	125
+2	75
+
+
+=== Test 6: 3-table join, GROUP BY on middle table ===
+== Query ==
+SELECT o.o_status, SUM(l.l_quantity), COUNT(l.l_id)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_status;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.o_status, SUM(l.l_quantity), COUNT(l.l_id)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_status|
+o_status	SUM(l.l_quantity)	COUNT(l.l_id)
+closed	95	4
+open	105	6
+
+
+=== Test 7: 3-table join, GROUP BY on root, MIN/MAX on leaf ===
+== Query ==
+SELECT c.c_name, MIN(l.l_price), MAX(l.l_price)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY c.c_name;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_name, MIN(l.l_price), MAX(l.l_price)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY c.c_name|
+c_name	MIN(l.l_price)	MAX(l.l_price)
+Alice	50	200
+Bob	80	300
+Charlie	350	400
+
+
+=== Test 8: WHERE filter on root table ===
+== Query ==
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+WHERE o.o_custkey = 100
+GROUP BY o.o_custkey;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+WHERE o.o_custkey = 100
+GROUP BY o.o_custkey|
+o_custkey	SUM(l.l_quantity)
+100	50
+
+
+=== Test 9: WHERE with range on root table ===
+== Query ==
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+WHERE o.o_custkey >= 200
+GROUP BY o.o_custkey;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+WHERE o.o_custkey >= 200
+GROUP BY o.o_custkey|
+o_custkey	SUM(l.l_quantity)
+200	75
+300	75
+
+
+=== Test 11: SUM on parent column ===
+== Query ==
+SELECT o.o_status, SUM(o.o_custkey)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_status;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.o_status, SUM(o.o_custkey)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_status|
+o_status	SUM(o.o_custkey)
+closed	800
+open	1000
+
+
+=== Test 12: Mixed SUM on parent + child columns ===
+== Query ==
+SELECT o.o_custkey, SUM(o.o_custkey), SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.o_custkey, SUM(o.o_custkey), SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey|
+o_custkey	SUM(o.o_custkey)	SUM(l.l_quantity)
+100	400	50
+200	800	75
+300	600	75
+
+
+=== Test 10: WHERE filter on leaf table ===
+== Query ==
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+WHERE l.l_quantity > 10
+GROUP BY o.o_custkey;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+WHERE l.l_quantity > 10
+GROUP BY o.o_custkey|
+o_custkey	SUM(l.l_quantity)
+100	35
+200	67
+300	75
+
+
+=== Test 13: Composite PK join (multi-column ON) ===
+== Query ==
+SELECT o.o_custkey, SUM(oe.oe_note_val)
+FROM orders AS o JOIN order_extra AS oe
+ON oe.oe_orderid = o.o_id AND oe.oe_custkey = o.o_custkey
+GROUP BY o.o_custkey;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.o_custkey, SUM(oe.oe_note_val)
+FROM orders AS o JOIN order_extra AS oe
+ON oe.oe_orderid = o.o_id AND oe.oe_custkey = o.o_custkey
+GROUP BY o.o_custkey|
+o_custkey	SUM(oe.oe_note_val)
+100	30
+200	70
+300	50
+
+
+=== Test 14: Root PK lookup (WHERE covers full PK) ===
+== Query ==
+SELECT o.o_id, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+WHERE o.o_id = 1
+GROUP BY o.o_id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.o_id, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+WHERE o.o_id = 1
+GROUP BY o.o_id|
+o_id	SUM(l.l_quantity)
+1	30
+
+
+=== Test 15: COUNT(*) on join ===
+== Query ==
+SELECT o.o_custkey, COUNT(*)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.o_custkey, COUNT(*)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey|
+o_custkey	COUNT(*)
+100	4
+200	4
+300	2
+
+
+=== Test 16: AVG aggregate on join ===
+== Query ==
+SELECT o.o_custkey, AVG(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.o_custkey, AVG(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey|
+o_custkey	AVG(l.l_quantity)
+100	12.5000
+200	18.7500
+300	37.5000
+
+
+=== Test 17: Expression inside aggregate ===
+== Query ==
+SELECT o.o_custkey, SUM(l.l_quantity * l.l_price)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.o_custkey, SUM(l.l_quantity * l.l_price)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey|
+o_custkey	SUM(l.l_quantity * l.l_price)
+100	7500
+200	17330
+300	28250
+
+
+=== Test 18: WHERE filter on root + leaf tables ===
+== Query ==
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+WHERE o.o_custkey = 100 AND l.l_price > 100
+GROUP BY o.o_custkey;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+WHERE o.o_custkey = 100 AND l.l_price > 100
+GROUP BY o.o_custkey|
+o_custkey	SUM(l.l_quantity)
+100	35
+
+
+=== Test 19: WHERE filter on middle table (3-table join) ===
+== Query ==
+SELECT c.c_region, SUM(l.l_quantity)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+WHERE o.o_id >= 3
+GROUP BY c.c_region;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_region, SUM(l.l_quantity)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+WHERE o.o_id >= 3
+GROUP BY c.c_region|
+c_region	SUM(l.l_quantity)
+1	75
+2	75
+
+
+=== Test 21: ORDER BY group column ASC ===
+== Query ==
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+ORDER BY o.o_custkey;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+ORDER BY o.o_custkey|
+o_custkey	SUM(l.l_quantity)
+100	50
+200	75
+300	75
+
+
+=== Test 22: ORDER BY group column DESC ===
+== Query ==
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+ORDER BY o.o_custkey DESC;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+ORDER BY o.o_custkey DESC|
+o_custkey	SUM(l.l_quantity)
+100	50
+200	75
+300	75
+
+
+=== Test 23: ORDER BY with LIMIT ===
+== Query ==
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+ORDER BY o.o_custkey DESC
+LIMIT 2;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+ORDER BY o.o_custkey DESC
+LIMIT 2|
+o_custkey	SUM(l.l_quantity)
+200	75
+300	75
+
+
+=== Test 24: LIMIT with ORDER BY ===
+== Query ==
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+ORDER BY o.o_custkey
+LIMIT 2;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+ORDER BY o.o_custkey
+LIMIT 2|
+o_custkey	SUM(l.l_quantity)
+100	50
+200	75
+
+
+=== Test 25: 3-table join with ORDER BY and LIMIT ===
+== Query ==
+SELECT c.c_name, SUM(l.l_quantity)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY c.c_name
+ORDER BY c.c_name
+LIMIT 2;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_name, SUM(l.l_quantity)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY c.c_name
+ORDER BY c.c_name
+LIMIT 2|
+c_name	SUM(l.l_quantity)
+Alice	50
+Bob	75
+
+
+=== Test 27: HAVING with SUM ===
+== Query ==
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING SUM(l.l_quantity) > 50;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING SUM(l.l_quantity) > 50|
+o_custkey	SUM(l.l_quantity)
+200	75
+300	75
+
+
+=== Test 28: HAVING with COUNT(*) ===
+== Query ==
+SELECT o.o_custkey, COUNT(*)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING COUNT(*) >= 4;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.o_custkey, COUNT(*)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING COUNT(*) >= 4|
+o_custkey	COUNT(*)
+100	4
+200	4
+
+
+=== Test 29: HAVING filters all groups (empty result) ===
+== Query ==
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING SUM(l.l_quantity) > 9999;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING SUM(l.l_quantity) > 9999|
+o_custkey	SUM(l.l_quantity)
+
+
+=== Test 30: HAVING with AND ===
+== Query ==
+SELECT o.o_custkey, SUM(l.l_quantity), COUNT(*)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING SUM(l.l_quantity) >= 75 AND COUNT(*) >= 4;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.o_custkey, SUM(l.l_quantity), COUNT(*)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING SUM(l.l_quantity) >= 75 AND COUNT(*) >= 4|
+o_custkey	SUM(l.l_quantity)	COUNT(*)
+200	75	4
+
+
+=== Test 31: 3-table join with HAVING ===
+== Query ==
+SELECT c.c_name, SUM(l.l_quantity)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY c.c_name
+HAVING SUM(l.l_quantity) >= 75;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_name, SUM(l.l_quantity)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY c.c_name
+HAVING SUM(l.l_quantity) >= 75|
+c_name	SUM(l.l_quantity)
+Bob	75
+Charlie	75
+
+
+=== Test 32: HAVING + ORDER BY + LIMIT ===
+== Query ==
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING SUM(l.l_quantity) >= 50
+ORDER BY o.o_custkey DESC
+LIMIT 2;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING SUM(l.l_quantity) >= 50
+ORDER BY o.o_custkey DESC
+LIMIT 2|
+o_custkey	SUM(l.l_quantity)
+200	75
+300	75
+
+
+=== Test 33: HAVING aggregate not in SELECT ===
+== Query ==
+SELECT o.o_custkey
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING SUM(l.l_quantity) > 50;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.o_custkey
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING SUM(l.l_quantity) > 50|
+o_custkey
+200
+300
+
+
+=== Test 34: HAVING COUNT(*) not in SELECT ===
+== Query ==
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING COUNT(*) >= 4;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING COUNT(*) >= 4|
+o_custkey	SUM(l.l_quantity)
+100	50
+200	75
+
+
+=== Test 35: Multi-table GROUP BY (parent + child) ===
+== Query ==
+SELECT o.o_custkey, l.l_price, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey, l.l_price
+ORDER BY o.o_custkey, l.l_price;
+
+Number of output lines, including header: 11
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.o_custkey, l.l_price, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey, l.l_price
+ORDER BY o.o_custkey, l.l_price|
+o_custkey	l_price	SUM(l.l_quantity)
+100	100	10
+100	150	15
+100	200	20
+100	50	5
+200	120	12
+200	250	25
+200	300	30
+200	80	8
+300	350	35
+300	400	40
+
+
+=== Test 36: Multi-table GROUP BY (root + leaf, 3-table) ===
+== Query ==
+SELECT c.c_region, l.l_price, SUM(l.l_quantity)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY c.c_region, l.l_price
+ORDER BY c.c_region, l.l_price;
+
+Number of output lines, including header: 11
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_region, l.l_price, SUM(l.l_quantity)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY c.c_region, l.l_price
+ORDER BY c.c_region, l.l_price|
+c_region	l_price	SUM(l.l_quantity)
+1	100	10
+1	120	12
+1	150	15
+1	200	20
+1	250	25
+1	300	30
+1	50	5
+1	80	8
+2	350	35
+2	400	40
+
+
+=== Test 37: Multi-table GROUP BY (root + middle, 3-table) ===
+== Query ==
+SELECT c.c_region, o.o_status, SUM(l.l_quantity)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY c.c_region, o.o_status
+ORDER BY c.c_region, o.o_status;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_region, o.o_status, SUM(l.l_quantity)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY c.c_region, o.o_status
+ORDER BY c.c_region, o.o_status|
+c_region	o_status	SUM(l.l_quantity)
+1	closed	20
+1	open	105
+2	closed	75
+
+
+=== Test 38: Self-join with COUNT(*) ===
+== Query ==
+SELECT o1.o_status, COUNT(*)
+FROM orders AS o1 JOIN orders AS o2 ON o2.o_custkey = o1.o_custkey
+GROUP BY o1.o_status;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o1.o_status, COUNT(*)
+FROM orders AS o1 JOIN orders AS o2 ON o2.o_custkey = o1.o_custkey
+GROUP BY o1.o_status|
+o_status	COUNT(*)
+closed	3
+open	6
+
+
+=== Test 39: Self-join with SUM ===
+== Query ==
+SELECT o1.o_custkey, SUM(o2.o_id)
+FROM orders AS o1 JOIN orders AS o2 ON o2.o_custkey = o1.o_custkey
+GROUP BY o1.o_custkey;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o1.o_custkey, SUM(o2.o_id)
+FROM orders AS o1 JOIN orders AS o2 ON o2.o_custkey = o1.o_custkey
+GROUP BY o1.o_custkey|
+o_custkey	SUM(o2.o_id)
+100	6
+200	14
+300	5
+
+
+=== Test 40: VARCHAR join key ===
+== Query ==
+SELECT s.s_name, SUM(p.p_price)
+FROM suppliers AS s JOIN parts AS p ON p.p_suppcode = s.s_code
+GROUP BY s.s_name;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT s.s_name, SUM(p.p_price)
+FROM suppliers AS s JOIN parts AS p ON p.p_suppcode = s.s_code
+GROUP BY s.s_name|
+s_name	SUM(p.p_price)
+Acme	125
+Bolt Co	90
+Gear Inc	90
+
+
+=== Test 41: BIGINT join key ===
+== Query ==
+SELECT p.p_id, SUM(sh.sh_qty)
+FROM parts AS p JOIN shipments AS sh ON sh.sh_partid = p.p_id
+GROUP BY p.p_id;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT p.p_id, SUM(sh.sh_qty)
+FROM parts AS p JOIN shipments AS sh ON sh.sh_partid = p.p_id
+GROUP BY p.p_id|
+p_id	SUM(sh.sh_qty)
+1001	30
+1002	15
+1003	25
+1004	30
+1005	5
+
+
+=== Test 42: DATE join key ===
+== Query ==
+SELECT sh.sh_date, SUM(a.a_amount)
+FROM shipments AS sh JOIN activities AS a ON a.a_date = sh.sh_date
+GROUP BY sh.sh_date;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT sh.sh_date, SUM(a.a_amount)
+FROM shipments AS sh JOIN activities AS a ON a.a_date = sh.sh_date
+GROUP BY sh.sh_date|
+sh_date	SUM(a.a_amount)
+2024-01-15	360
+2024-02-20	700
+2024-03-10	300
+
+
+=== Test 43: 3-table join with VARCHAR + BIGINT keys ===
+== Query ==
+SELECT s.s_name, SUM(sh.sh_qty)
+FROM suppliers AS s
+JOIN parts AS p ON p.p_suppcode = s.s_code
+JOIN shipments AS sh ON sh.sh_partid = p.p_id
+GROUP BY s.s_name;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT s.s_name, SUM(sh.sh_qty)
+FROM suppliers AS s
+JOIN parts AS p ON p.p_suppcode = s.s_code
+JOIN shipments AS sh ON sh.sh_partid = p.p_id
+GROUP BY s.s_name|
+s_name	SUM(sh.sh_qty)
+Acme	45
+Bolt Co	55
+Gear Inc	5
+
+
+=== Test 44: Group eviction with ERROR_INSERT 5116 ===
+== Query ==
+SELECT o.o_id, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_id;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.o_id, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_id|
+o_id	SUM(l.l_quantity)
+1	30
+2	20
+3	55
+4	20
+5	75
+
+
+=== Test 45: Large dataset (1000+ rows, 100+ groups) ===
+== Query ==
+SELECT bo.bo_custkey, SUM(bl.bl_qty), COUNT(bl.bl_id), MIN(bl.bl_price), MAX(bl.bl_price)
+FROM big_orders AS bo JOIN big_lineitem AS bl ON bl.bl_orderkey = bo.bo_id
+GROUP BY bo.bo_custkey;
+
+Number of output lines, including header: 101
+
+== Diff ==
+==========
+
+
+
+== Expected result line count ==
+group_count
+100
+
+
+=== Test 46: Large dataset grouped by region (fewer groups, more rows per group) ===
+== Query ==
+SELECT bo.bo_region, SUM(bl.bl_qty), COUNT(*), AVG(bl.bl_price)
+FROM big_orders AS bo JOIN big_lineitem AS bl ON bl.bl_orderkey = bo.bo_id
+GROUP BY bo.bo_region;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT bo.bo_region, SUM(bl.bl_qty), COUNT(*), AVG(bl.bl_price)
+FROM big_orders AS bo JOIN big_lineitem AS bl ON bl.bl_orderkey = bo.bo_id
+GROUP BY bo.bo_region|
+bo_region	SUM(bl.bl_qty)	COUNT(*)	AVG(bl.bl_price)
+1	5880	240	490.0000
+2	6120	240	500.0000
+3	6360	240	510.0000
+4	6600	240	520.0000
+5	5640	240	480.0000
+
+
+=== Test 47: 4-table join chain ===
+== Query ==
+SELECT c.c_name, SUM(ld.ld_weight), COUNT(ld.ld_id)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+JOIN line_details AS ld ON ld.ld_linekey = l.l_id
+GROUP BY c.c_name;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.c_name, SUM(ld.ld_weight), COUNT(ld.ld_id)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+JOIN line_details AS ld ON ld.ld_linekey = l.l_id
+GROUP BY c.c_name|
+c_name	SUM(ld.ld_weight)	COUNT(ld.ld_id)
+Alice	25	5
+Bob	30	5
+Charlie	10	2
+
+
+=== Test 48: Error — cross-table comparison ===
+Expected error: WHERE condition references columns from multiple tables
+Error handling: RPE
+ronsql_cli caught exception: WHERE condition references columns from multiple tables in a single comparison or OR branch. Split into separate AND conditions, each referencing only one table.
+
+
+=== Test 49: Error — no suitable index for join column ===
+Expected error: No suitable index for join columns
+Cannot push join: no suitable index on join columns for table 'noindex_child'. Create a primary key, unique index, or ordered index on the join columns.
+Error handling: RPE
+ronsql_cli caught exception: No suitable index for join columns.
+
+
+=== Test 50: Error — ungrouped column in SELECT ===
+Expected error: Ungrouped column in non-aggregated SELECT expression
+Syntax error: SELECT expression refers to ungrouped column `o_status` outside of aggregate function.
+You can either add this column to the GROUP BY clause, or use it within an aggregate function e.g. Sum(`o_status`).
+Error handling: RPE
+ronsql_cli caught exception: Ungrouped column in non-aggregated SELECT expression.
+
+
+=== Test 51: Error — ORDER BY column not in GROUP BY ===
+Expected error: ORDER BY column not in GROUP BY clause
+Syntax error: ORDER BY refers to column `o_status` which is not in the GROUP BY clause.
+Error handling: RPE
+ronsql_cli caught exception: ORDER BY column not in GROUP BY clause.
+
+
+=== Test 52: Error — unknown table alias ===
+Expected error: Unknown table alias
+Unknown table alias 'x' in column 'x.o_custkey'.
+Error handling: RPE
+ronsql_cli caught exception: Unknown table alias.
+
+
+=== Test 53: Error — unimplemented keyword (LEFT JOIN) ===
+Expected error: Unimplemented keyword
+Syntax error in SQL statement: Unimplemented keyword. If this was intended as an identifier, use backtick quotation.
+> SELECT o.o_custkey, SUM(l.l_quantity) FROM orders AS o LEFT JOIN lineitem AS l ON l.l_orderkey = o.o_id GROUP BY o.o_custkey;
+!                                                        ^^^^
+Error handling: RPE
+ronsql_cli caught exception: Syntax error.
+
+=== Cleanup ===
+DROP TABLE line_details;
+DROP TABLE big_lineitem;
+DROP TABLE big_orders;
+DROP TABLE activities;
+DROP TABLE shipments;
+DROP TABLE parts;
+DROP TABLE suppliers;
+DROP TABLE order_extra;
+DROP TABLE lineitem;
+DROP TABLE orders;
+DROP TABLE customer;

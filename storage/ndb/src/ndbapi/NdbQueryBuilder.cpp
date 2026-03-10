@@ -33,6 +33,7 @@
 
 #include <NdbInterpretedCode.hpp>
 #include <NdbRecord.hpp>
+#include <NdbAggregator.hpp>
 #include "AttributeHeader.hpp"
 #include "NdbDictionaryImpl.hpp"
 #include "NdbOut.hpp"
@@ -432,6 +433,35 @@ int NdbQueryOptions::setInterpretedCode(const NdbInterpretedCode &code) {
   return m_pimpl->copyInterpretedCode(code);
 }
 
+int NdbQueryOptions::setAggregation(const NdbAggregator &agg) {
+  if (m_pimpl == &defaultOptions) {
+    m_pimpl = new NdbQueryOptionsImpl;
+    if (unlikely(m_pimpl == nullptr)) {
+      return Err_MemoryAlloc;
+    }
+  }
+  return m_pimpl->copyAggregation(agg);
+}
+
+int NdbQueryOptions::addLinkedProjection(const NdbLinkedOperand *operand) {
+  if (unlikely(operand == nullptr)) {
+    return QRY_REQ_ARG_IS_NULL;
+  }
+  if (m_pimpl == &defaultOptions) {
+    m_pimpl = new NdbQueryOptionsImpl;
+    if (unlikely(m_pimpl == nullptr)) {
+      return Err_MemoryAlloc;
+    }
+  }
+  const NdbLinkedOperandImpl *impl =
+      static_cast<const NdbLinkedOperandImpl *>(&operand->getImpl());
+  if (unlikely(m_pimpl->m_linkedProjection.push_back(impl) != 0)) {
+    assert(errno == ENOMEM);
+    return Err_MemoryAlloc;
+  }
+  return 0;
+}
+
 int NdbQueryOptions::setParameters(const NdbQueryOperand *const parameters[]) {
   if (m_pimpl == &defaultOptions) {
     m_pimpl = new NdbQueryOptionsImpl;
@@ -458,7 +488,11 @@ int NdbQueryOptions::setParameters(const NdbQueryOperand *const parameters[]) {
   return 0;
 }
 
-NdbQueryOptionsImpl::~NdbQueryOptionsImpl() { delete m_interpretedCode; }
+NdbQueryOptionsImpl::~NdbQueryOptionsImpl() {
+  delete m_interpretedCode;
+  delete[] m_aggProgramBuffer;
+  delete[] m_aggGbColumns;
+}
 
 NdbQueryOptionsImpl::NdbQueryOptionsImpl(const NdbQueryOptionsImpl &src)
     : m_matchType(src.m_matchType),
@@ -467,9 +501,33 @@ NdbQueryOptionsImpl::NdbQueryOptionsImpl(const NdbQueryOptionsImpl &src)
       m_firstUpper(src.m_firstUpper),
       m_firstInner(src.m_firstInner),
       m_interpretedCode(nullptr),
-      m_parameters(src.m_parameters) {
+      m_parameters(src.m_parameters),
+      m_aggProgramBuffer(nullptr),
+      m_aggProgramLen(src.m_aggProgramLen),
+      m_aggNGroupByCols(src.m_aggNGroupByCols),
+      m_aggDiskColumns(src.m_aggDiskColumns),
+      m_aggTable(src.m_aggTable),
+      m_aggGbColumns(nullptr),
+      m_linkedProjection(src.m_linkedProjection) {
   if (src.m_interpretedCode != nullptr) {
     copyInterpretedCode(*src.m_interpretedCode);
+  }
+  if (src.m_aggProgramBuffer != nullptr && src.m_aggProgramLen > 0) {
+    m_aggProgramBuffer = new Uint32[src.m_aggProgramLen];
+    if (likely(m_aggProgramBuffer != nullptr)) {
+      memcpy(m_aggProgramBuffer, src.m_aggProgramBuffer,
+             src.m_aggProgramLen * sizeof(Uint32));
+    } else {
+      m_aggProgramLen = 0;
+    }
+  }
+  if (src.m_aggGbColumns != nullptr && src.m_aggNGroupByCols > 0) {
+    m_aggGbColumns =
+        new const NdbDictionary::Column *[src.m_aggNGroupByCols];
+    if (likely(m_aggGbColumns != nullptr)) {
+      memcpy(m_aggGbColumns, src.m_aggGbColumns,
+             src.m_aggNGroupByCols * sizeof(const NdbDictionary::Column *));
+    }
   }
 }
 
@@ -501,6 +559,48 @@ int NdbQueryOptionsImpl::copyInterpretedCode(const NdbInterpretedCode &src) {
   if (m_interpretedCode) delete m_interpretedCode;
 
   m_interpretedCode = interpretedCode;
+  return 0;
+}
+
+/*
+ * Deep-copy the aggregation program buffer from a finalized NdbAggregator.
+ */
+int NdbQueryOptionsImpl::copyAggregation(const NdbAggregator &src) {
+  if (unlikely(!src.finalized())) {
+    return Err_FinaliseNotCalled;
+  }
+  const Uint32 len = src.instructions_length();
+  if (len == 0) {
+    return 0;
+  }
+
+  Uint32 *buffer = new Uint32[len];
+  if (unlikely(buffer == nullptr)) {
+    return Err_MemoryAlloc;
+  }
+  memcpy(buffer, src.buffer(), len * sizeof(Uint32));
+
+  /* Replace existing aggregation program */
+  delete[] m_aggProgramBuffer;
+
+  m_aggProgramBuffer = buffer;
+  m_aggProgramLen = len;
+  m_aggNGroupByCols = src.n_gb_cols();
+  m_aggDiskColumns = src.disk_columns();
+  m_aggTable = src.table_impl();
+
+  /* Copy GROUP BY column definitions (shallow copy of dictionary pointers) */
+  delete[] m_aggGbColumns;
+  m_aggGbColumns = nullptr;
+  if (m_aggNGroupByCols > 0) {
+    m_aggGbColumns =
+        new const NdbDictionary::Column *[m_aggNGroupByCols];
+    if (unlikely(m_aggGbColumns == nullptr)) {
+      return Err_MemoryAlloc;
+    }
+    memcpy(m_aggGbColumns, src.gb_columns(),
+           m_aggNGroupByCols * sizeof(const NdbDictionary::Column *));
+  }
   return 0;
 }
 
@@ -1091,11 +1191,40 @@ NdbQueryOperand *NdbQueryBuilderImpl::addOperand(NdbQueryOperandImpl *operand) {
 NdbQueryDefImpl::NdbQueryDefImpl(
     const Ndb *ndb, const Vector<NdbQueryOperationDefImpl *> &operations,
     const Vector<NdbQueryOperandImpl *> &operands, int &error)
-    : m_interface(*this), m_operations(0), m_operands(0) {
+    : m_interface(*this),
+      m_operations(0),
+      m_operands(0),
+      m_hasAggregation(false),
+      m_aggregateLeafOpNo(0) {
   if (m_operations.assign(operations) || m_operands.assign(operands)) {
     // Failed to allocate memory in Vector::assign().
     error = Err_MemoryAlloc;
     return;
+  }
+
+  // Scan operations to find aggregate leaf and validate constraints
+  for (Uint32 i = 0; i < m_operations.size(); i++) {
+    if (m_operations[i]->isAggregateLeaf()) {
+      if (m_hasAggregation) {
+        // Multiple aggregate leaves not allowed
+        error = QRY_WRONG_OPERATION_TYPE;
+        return;
+      }
+      if (i == 0) {
+        // Aggregate leaf must not be the root operation
+        error = QRY_WRONG_OPERATION_TYPE;
+        return;
+      }
+      m_hasAggregation = true;
+      m_aggregateLeafOpNo = i;
+    }
+  }
+
+  // Set query-level aggregation flag on all operations (for serialization)
+  if (m_hasAggregation) {
+    for (Uint32 i = 0; i < m_operations.size(); i++) {
+      m_operations[i]->m_queryHasAggregation = true;
+    }
   }
 
   /* Grab first word, such that serialization of operation 0 will start from
@@ -1678,6 +1807,8 @@ NdbQueryOperationDefImpl::NdbQueryOperationDefImpl(
     const char *ident, Uint32 opNo, Uint32 internalOpNo, int &error)
     : m_isPrepared(false),
       m_diskInChildProjection(false),
+      m_isAggregateLeaf(options.hasAggregation()),
+      m_queryHasAggregation(false),
       m_table(table),
       m_ident(ident),
       m_opNo(opNo),
@@ -2267,9 +2398,12 @@ Uint32 NdbQueryOperationDefImpl::appendParamConstructor(
     Uint32Buffer &serializedDef) const {
   const Vector<const NdbQueryOperandImpl *> &interpretedParams =
       getInterpretedParams();
+  const Vector<const NdbLinkedOperandImpl *> &linkedProj =
+      m_options.getLinkedProjection();
 
   const Uint32 paramSize = interpretedParams.size();
-  if (paramSize == 0) return 0;
+  const Uint32 linkedSize = linkedProj.size();
+  if (paramSize == 0 && linkedSize == 0) return 0;
 
   const Uint32 startPos = serializedDef.getSize();
   serializedDef.append(0);  // Grab first word for length field, updated at end
@@ -2280,12 +2414,12 @@ Uint32 NdbQueryOperationDefImpl::appendParamConstructor(
    * value should be constructed from. This is the same way we encode how
    * lookup-keys, index-bounds and prune-keys are constructed.
    * (Also reuse the same SPJ code for constructing these items)
+   *
+   * The linkedProjection contains additional parent columns needed by the
+   * aggregation program (e.g., GROUP BY on a parent column).  These are
+   * appended after the interpreted params in the same P_ATTRINFO pattern.
    */
-  for (Uint32 i = 0; i < paramSize; ++i) {
-    assert(interpretedParams[i]->getKind() == NdbQueryOperandImpl::Linked);
-    const NdbLinkedOperandImpl *param =
-        static_cast<const NdbLinkedOperandImpl *>(interpretedParams[i]);
-
+  auto appendLinkedOperand = [&](const NdbLinkedOperandImpl *param) {
     const NdbQueryOperationDefImpl *parent = getParentOperation();
 
     Uint32 levels = 0;
@@ -2306,6 +2440,16 @@ Uint32 NdbQueryOperationDefImpl::appendParamConstructor(
 
     const Uint32 columnIx = param->getLinkedColumnIx();
     serializedDef.append(QueryPattern::attrInfo(columnIx));
+  };
+
+  for (Uint32 i = 0; i < paramSize; ++i) {
+    assert(interpretedParams[i]->getKind() == NdbQueryOperandImpl::Linked);
+    appendLinkedOperand(
+        static_cast<const NdbLinkedOperandImpl *>(interpretedParams[i]));
+  }
+
+  for (Uint32 i = 0; i < linkedSize; ++i) {
+    appendLinkedOperand(linkedProj[i]);
   }
 
   // Set total length of param constructor pattern.
@@ -2337,6 +2481,13 @@ int NdbQueryPKLookupOperationDefImpl ::serializeOperation(
   }
   if (getMatchType() & NdbQueryOptions::MatchNullOnly) {
     requestInfo |= DABits::NI_ANTI_JOIN;
+  }
+
+  if (m_queryHasAggregation) {
+    requestInfo |= DABits::NI_AGGREGATE;
+    if (m_isAggregateLeaf) {
+      requestInfo |= DABits::NI_AGGREGATE_LEAF;
+    }
   }
 
   /**
@@ -2417,6 +2568,10 @@ int NdbQueryIndexOperationDefImpl ::serializeOperation(
       requestInfo |= DABits::NI_ANTI_JOIN;
     }
 
+    if (m_queryHasAggregation) {
+      requestInfo |= DABits::NI_AGGREGATE;
+    }
+
     // Optional part1: Make list of parent nodes.
     assert(getInternalOpNo() > 0);
     requestInfo |= appendParentList(serializedDef);
@@ -2470,6 +2625,13 @@ int NdbQueryIndexOperationDefImpl ::serializeOperation(
 
   // Always INNER_JOINed with its index parent
   requestInfo |= DABits::NI_INNER_JOIN;
+
+  if (m_queryHasAggregation) {
+    requestInfo |= DABits::NI_AGGREGATE;
+    if (m_isAggregateLeaf) {
+      requestInfo |= DABits::NI_AGGREGATE_LEAF;
+    }
+  }
 
   /**
    * NOTE: Order of sections within the optional part is fixed as:
@@ -2565,6 +2727,13 @@ int NdbQueryScanOperationDefImpl::serialize(const Ndb *ndb,
   }
   if (getMatchType() & NdbQueryOptions::MatchNullOnly) {
     requestInfo |= DABits::NI_ANTI_JOIN;
+  }
+
+  if (m_queryHasAggregation) {
+    requestInfo |= DABits::NI_AGGREGATE;
+    if (m_isAggregateLeaf) {
+      requestInfo |= DABits::NI_AGGREGATE_LEAF;
+    }
   }
 
   // Optional part1: Make list of parent nodes.

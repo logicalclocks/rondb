@@ -1,0 +1,28 @@
+--source include/not_parallel.inc
+--source include/have_ndb.inc
+
+# Skip if load_tpch binary is not available
+if (!$NDB_PUSH_AGG_DIR) {
+  --skip NDB push agg binaries not built (need load_tpch)
+}
+
+# Load TPC-H data
+--echo Loading TPC-H data
+--exec $NDB_PUSH_AGG_DIR/load_tpch -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT --sf 0.01
+
+# Run Go tests (runs twice: without TLS and with TLS)
+--source suite/rdrs2-ronsqltpch/include/run_gotest.inc
+
+# Cleanup TPC-H tables
+--disable_query_log
+--disable_warnings
+DROP TABLE IF EXISTS tpch_lineitem;
+DROP TABLE IF EXISTS tpch_orders;
+DROP TABLE IF EXISTS tpch_partsupp;
+DROP TABLE IF EXISTS tpch_customer;
+DROP TABLE IF EXISTS tpch_supplier;
+DROP TABLE IF EXISTS tpch_part;
+DROP TABLE IF EXISTS tpch_nation;
+DROP TABLE IF EXISTS tpch_region;
+--enable_warnings
+--enable_query_log

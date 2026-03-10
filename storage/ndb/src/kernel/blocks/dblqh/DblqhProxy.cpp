@@ -25,6 +25,8 @@
 #include "DblqhProxy.hpp"
 #include "Dblqh.hpp"
 #include "DblqhCommon.hpp"
+#include "JoinAggregationState.hpp"
+#include "dbtup/JoinAggInterpreter.hpp"
 
 #include <signaldata/DumpStateOrd.hpp>
 #include <signaldata/ExecFragReq.hpp>
@@ -180,6 +182,13 @@ DblqhProxy::DblqhProxy(Block_context &ctx)
   addRecSignal(GSN_QUOTA_OVERLOAD_REP,
                &DblqhProxy::execQUOTA_OVERLOAD_REP);
 
+  // GSN_JOIN_AGG signals (setup + release handled by proxy)
+  addRecSignal(GSN_JOIN_AGG_SETUP_REQ,
+               &DblqhProxy::execJOIN_AGG_SETUP_REQ);
+  addRecSignal(GSN_JOIN_AGG_RELEASE_REQ,
+               &DblqhProxy::execJOIN_AGG_RELEASE_REQ);
+  addRecSignal(GSN_JOIN_AGG_NODE_FAIL_REP,
+               &DblqhProxy::execJOIN_AGG_NODE_FAIL_REP);
 }
 
 DblqhProxy::~DblqhProxy() {}
@@ -224,6 +233,9 @@ void DblqhProxy::callREAD_CONFIG_REQ(Signal *signal) {
   D("proxy:" << V(c_tableRecSize));
   Uint32 i;
   for (i = 0; i < c_tableRecSize; i++) c_tableRec[i] = 0;
+
+  initJoinAggStatePool(64);
+
   backREAD_CONFIG_REQ(signal);
 }
 
@@ -2238,4 +2250,331 @@ DblqhProxy::execQUOTA_OVERLOAD_REP(Signal *signal)
                QuotaOverloadRep::SignalLength, JBB);
   }
 }
+// ---- JOIN_AGG_SETUP_REQ ----
+
+void
+DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
+  jamEntry();
+  const JoinAggSetupReq *req =
+    (const JoinAggSetupReq *)signal->getDataPtr();
+
+  const Uint32 senderRef = req->senderRef;
+  const Uint32 senderData = req->senderData;
+  const Uint32 requestId = req->requestId;
+
+  CRASH_INSERTION(5113);  // Crash node on SETUP_REQ for join agg NF testing
+
+#ifdef ERROR_INSERT
+  if (ERROR_INSERTED(5117)) {
+    jam();
+    CLEAR_ERROR_INSERT_VALUE;
+    SectionHandle handle(this, signal);
+    releaseSections(handle);
+    JoinAggSetupRef *ref =
+      (JoinAggSetupRef *)signal->getDataPtrSend();
+    ref->senderRef = reference();
+    ref->senderData = senderData;
+    ref->requestId = requestId;
+    ref->errorCode = ZJOIN_AGG_STATE_ALLOC_FAILED;
+    ref->errorLine = __LINE__;
+    sendSignal(senderRef, GSN_JOIN_AGG_SETUP_REF,
+               signal, JoinAggSetupRef::SignalLength, JBB);
+    return;
+  }
+#endif
+
+  // Seize a JoinAggregationState record from the static pool
+  Uint32 key = seizeJoinAggState();
+  if (key == RNIL) {
+    jam();
+    SectionHandle handle(this, signal);
+    releaseSections(handle);
+    JoinAggSetupRef *ref =
+      (JoinAggSetupRef *)signal->getDataPtrSend();
+    ref->senderRef = reference();
+    ref->senderData = senderData;
+    ref->requestId = requestId;
+    ref->errorCode = ZJOIN_AGG_STATE_ALLOC_FAILED;
+    ref->errorLine = __LINE__;
+    sendSignal(senderRef, GSN_JOIN_AGG_SETUP_REF,
+               signal, JoinAggSetupRef::SignalLength, JBB);
+    return;
+  }
+
+  JoinAggregationState *state = getJoinAggState(key);
+  ndbrequire(state != nullptr);
+
+  // Initialize runtime counters (TransientPool::seize doesn't call constructor)
+  state->m_outstanding_ops.store(0);
+  state->m_completed_ops.store(0);
+  state->m_failed_ops.store(0);
+  state->m_agg_curr_batch_size_rows = 0;
+  state->m_agg_curr_batch_size_bytes = 0;
+  state->m_rows_sent = 0;
+  state->m_max_batch_rows = 0;
+  state->m_state.store(JoinAggregationState::IDLE);
+  state->m_error_code = 0;
+  state->m_agg_interpreter = nullptr;
+  state->m_per_thread_interpreters = nullptr;
+  state->m_agg_program = nullptr;
+  state->m_agg_program_len = 0;
+
+  // Populate immutable identification fields
+  state->m_transid[0] = req->transid[0];
+  state->m_transid[1] = req->transid[1];
+  state->m_senderData = senderData;
+  state->m_requestId = requestId;
+  state->m_senderRef = senderRef;
+
+  // Result routing
+  state->m_resultRef = req->resultRef;
+  state->m_resultData = req->resultData;
+  state->m_routeRef = req->routeRef;
+
+  // Concurrency strategy
+  if (req->concurrencyStrategy ==
+      JoinAggSetupReq::STRATEGY_MUTEX_FREE) {
+    state->m_strategy = JoinAggregationState::MUTEX_FREE;
+  } else {
+    state->m_strategy = JoinAggregationState::MUTEX_BASED;
+  }
+  state->m_num_threads = globalData.ndbMtQueryWorkers;
+
+  // Expected operations
+  state->m_total_ops_expected = req->expectedOpCount;
+
+  // Copy aggregation program (section 0) and receiver IDs (section 1)
+  state->m_agg_program = nullptr;
+  state->m_agg_program_len = 0;
+  state->m_receiverIds = nullptr;
+  state->m_numReceiverIds = 0;
+  {
+    ndbrequire(signal->getNoOfSections() == 2);
+    SectionHandle handle(this, signal);
+
+    SegmentedSectionPtr ptr;
+    ndbrequire(handle.getSection(ptr,
+                                 JoinAggSetupReq::AggProgramSectionNum));
+    Uint32 progLen = ptr.sz;
+    Uint32 *progBuf =
+      (Uint32 *)lc_ndbd_pool_malloc(progLen * sizeof(Uint32),
+                                     RG_QUERY_MEMORY, getThreadId(), false);
+    ndbrequire(progBuf != nullptr);
+    copy(progBuf, ptr);
+    state->m_agg_program = progBuf;
+    state->m_agg_program_len = progLen;
+
+    SegmentedSectionPtr rcvPtr;
+    ndbrequire(handle.getSection(rcvPtr,
+                                 JoinAggSetupReq::ReceiverIdsSectionNum));
+    Uint32 numIds = rcvPtr.sz;
+    ndbrequire(numIds > 0);
+    Uint32 *idsBuf =
+      (Uint32 *)lc_ndbd_pool_malloc(numIds * sizeof(Uint32),
+                                     RG_QUERY_MEMORY, getThreadId(), false);
+    ndbrequire(idsBuf != nullptr);
+    copy(idsBuf, rcvPtr);
+    state->m_receiverIds = idsBuf;
+    state->m_numReceiverIds = numIds;
+
+    releaseSections(handle);
+  }
+
+  // Determine memory budget from global query memory availability.
+  Resource_limit rl;
+  m_ctx.m_mm.get_resource_limit_nolock(RG_QUERY_MEMORY, rl);
+  Uint32 available_pages = (rl.m_max > rl.m_curr)
+                             ? (rl.m_max - rl.m_curr) : 0;
+  Uint32 free_shared = m_ctx.m_mm.get_free_shared_nolock();
+  if (available_pages > free_shared) {
+    available_pages = free_shared;
+  }
+  // Initial budget: 1% of available pages, min 4 pages.
+  // Grows incrementally via bookMoreMemory() when more is needed.
+  Uint32 budget_pages = available_pages / 100;
+  if (budget_pages < 4) {
+    budget_pages = 4;
+  }
+  state->m_memory_budget_pages = budget_pages;
+
+  // Allocate JoinAggInterpreter(s) based on strategy.
+  if (state->m_strategy == JoinAggregationState::MUTEX_BASED) {
+    jam();
+    void *page = lc_ndbd_pool_malloc(MEM_CHUNK_SIZE, RG_QUERY_MEMORY,
+                                     getThreadId(), false);
+    ndbrequire(page != nullptr);
+    JoinAggInterpreter *interp =
+      new (page) JoinAggInterpreter(state->m_agg_program_len,
+                                    req->tableId,
+                                    0,
+                                    getThreadId());
+    interp->Init(state->m_agg_program);
+    interp->setUseMutex(true);
+    interp->initChunkAllocator(getThreadId(), budget_pages, available_pages);
+    state->m_agg_interpreter = interp;
+  } else {
+    jam();
+    Uint32 num_threads = state->m_num_threads;
+    JoinAggInterpreter **arr = (JoinAggInterpreter **)lc_ndbd_pool_malloc(
+        num_threads * sizeof(JoinAggInterpreter *),
+        RG_QUERY_MEMORY, getThreadId(), false);
+    ndbrequire(arr != nullptr);
+    Uint32 per_thread_budget = budget_pages / num_threads;
+    if (per_thread_budget < 4) {
+      per_thread_budget = 4;
+    }
+    for (Uint32 i = 0; i < num_threads; i++) {
+      void *page = lc_ndbd_pool_malloc(MEM_CHUNK_SIZE, RG_QUERY_MEMORY,
+                                       getThreadId(), false);
+      ndbrequire(page != nullptr);
+      JoinAggInterpreter *interp =
+        new (page) JoinAggInterpreter(state->m_agg_program_len,
+                                      req->tableId,
+                                      0,
+                                      getThreadId());
+      interp->Init(state->m_agg_program);
+      interp->initChunkAllocator(getThreadId(), per_thread_budget,
+                                   available_pages);
+      arr[i] = interp;
+    }
+    state->m_per_thread_interpreters = arr;
+  }
+
+  state->m_state.store(JoinAggregationState::SETUP_COMPLETE);
+
+  if (ERROR_INSERTED(5116)) {
+    jam();
+    // Force eviction by limiting each interpreter to 3 groups max.
+    // When a 4th distinct group arrives, processRecWithLinkedAttrs()
+    // returns AGG_EVICT_NEEDED, triggering the eviction path in
+    // handleJoinAggRow().
+    if (state->m_strategy == JoinAggregationState::MUTEX_BASED) {
+      state->m_agg_interpreter->setMaxGroups(3);
+    } else {
+      for (Uint32 i = 0; i < state->m_num_threads; i++) {
+        state->m_per_thread_interpreters[i]->setMaxGroups(3);
+      }
+    }
+  }
+
+  // Send CONF with the pool key
+  JoinAggSetupConf *conf =
+    (JoinAggSetupConf *)signal->getDataPtrSend();
+  conf->senderRef = reference();
+  conf->senderData = senderData;
+  conf->requestId = requestId;
+  conf->aggStateKey = key;
+  sendSignal(senderRef, GSN_JOIN_AGG_SETUP_CONF,
+             signal, JoinAggSetupConf::SignalLength, JBB);
+}
+
+// ---- JOIN_AGG_RELEASE_REQ ----
+
+void
+DblqhProxy::execJOIN_AGG_RELEASE_REQ(Signal *signal) {
+  jamEntry();
+  const JoinAggReleaseReq *req =
+    (const JoinAggReleaseReq *)signal->getDataPtr();
+
+  const Uint32 senderRef = req->senderRef;
+  const Uint32 senderData = req->senderData;
+  const Uint32 requestId = req->requestId;
+  const Uint32 aggStateKey = req->aggStateKey;
+  const Uint32 noReply = req->noReply;
+
+  CRASH_INSERTION(5115);  // Crash node on RELEASE_REQ for join agg NF testing
+
+  JoinAggregationState *state = getJoinAggState(aggStateKey);
+  if (state != nullptr) {
+    jam();
+    // Free aggregation program buffer
+    if (state->m_agg_program != nullptr) {
+      lc_ndbd_pool_free(state->m_agg_program);
+      state->m_agg_program = nullptr;
+      state->m_agg_program_len = 0;
+    }
+    // Free receiver IDs array
+    if (state->m_receiverIds != nullptr) {
+      lc_ndbd_pool_free(state->m_receiverIds);
+      state->m_receiverIds = nullptr;
+      state->m_numReceiverIds = 0;
+    }
+
+    // Free JoinAggInterpreter(s)
+    if (state->m_agg_interpreter != nullptr) {
+      jam();
+      state->m_agg_interpreter->freeAllChunks();
+      state->m_agg_interpreter->~JoinAggInterpreter();
+      lc_ndbd_pool_free(state->m_agg_interpreter);
+      state->m_agg_interpreter = nullptr;
+    }
+    if (state->m_per_thread_interpreters != nullptr) {
+      jam();
+      for (Uint32 i = 0; i < state->m_num_threads; i++) {
+        if (state->m_per_thread_interpreters[i] != nullptr) {
+          state->m_per_thread_interpreters[i]->freeAllChunks();
+          state->m_per_thread_interpreters[i]->~JoinAggInterpreter();
+          lc_ndbd_pool_free(state->m_per_thread_interpreters[i]);
+          state->m_per_thread_interpreters[i] = nullptr;
+        }
+      }
+      lc_ndbd_pool_free(state->m_per_thread_interpreters);
+      state->m_per_thread_interpreters = nullptr;
+    }
+
+    // Release the pool record
+    releaseJoinAggState(aggStateKey);
+  }
+
+  if (!noReply) {
+    jam();
+    JoinAggReleaseConf *conf =
+      (JoinAggReleaseConf *)signal->getDataPtrSend();
+    conf->senderRef = reference();
+    conf->senderData = senderData;
+    conf->requestId = requestId;
+    sendSignal(senderRef, GSN_JOIN_AGG_RELEASE_CONF,
+               signal, JoinAggReleaseConf::SignalLength, JBB);
+  }
+}
+
+void
+DblqhProxy::execJOIN_AGG_NODE_FAIL_REP(Signal *signal) {
+  jamEntry();
+  const JoinAggNodeFailRep *rep =
+    (const JoinAggNodeFailRep *)signal->getDataPtr();
+  const Uint32 failedNodeId = rep->failedNodeId;
+
+  /**
+   * All blocks have completed node failure handling for this node.
+   * Release agg states owned by the failed DBTC node by sending
+   * fire-and-forget RELEASE_REQ to ourselves for each one.
+   */
+  const Uint32 poolSize = getJoinAggStatePoolSize();
+  for (Uint32 k = 0; k < poolSize; k++) {
+    JoinAggregationState *state = getJoinAggState(k);
+    if (state == nullptr) continue;
+    if (refToNode(state->m_senderRef) != failedNodeId) continue;
+    const JoinAggregationState::State aggState = state->m_state.load();
+    if (aggState == JoinAggregationState::NODE_FAIL_ABORT ||
+        aggState == JoinAggregationState::SETUP_COMPLETE ||
+        aggState == JoinAggregationState::COMPLETED ||
+        aggState == JoinAggregationState::ERROR ||
+        aggState == JoinAggregationState::WAITING_SEND_CONF) {
+      jam();
+      JoinAggReleaseReq *req =
+          (JoinAggReleaseReq *)signal->getDataPtrSend();
+      req->senderRef = reference();
+      req->senderData = 0;
+      req->requestId = 0;
+      req->transid[0] = 0;
+      req->transid[1] = 0;
+      req->aggStateKey = k;
+      req->noReply = 1;
+      sendSignal(reference(), GSN_JOIN_AGG_RELEASE_REQ, signal,
+                 JoinAggReleaseReq::SignalLength, JBB);
+    }
+  }
+}
+
 BLOCK_FUNCTIONS(DblqhProxy)

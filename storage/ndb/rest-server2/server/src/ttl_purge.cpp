@@ -1001,6 +1001,7 @@ static my_time_t sec_since_epoch(const MYSQL_TIME &mt) {
 void TTLPurger::PurgeWorkerJob() {
   bool purge_trx_started = false;
   bool update_objects = false;
+  bool in_table_loop = false;
   std::map<std::string, TTLInfo> local_ttl_cache;
   Int32 shard = -1;
   Int32 n_purge_nodes = 0;
@@ -1049,6 +1050,7 @@ void TTLPurger::PurgeWorkerJob() {
   int pre_trx_failures = 0;  // Tracks pre-transaction errors across rounds
   do {
     // Reset local accumulators at start of each round
+    in_table_loop = false;
     local_rows_purged = 0;
     local_table_metrics.clear();
     // Read config once at the start of each round (single shared_lock)
@@ -1167,6 +1169,7 @@ void TTLPurger::PurgeWorkerJob() {
     UpdateStatus(TTLPurgeStatus::State::kRunning);
     sleep_between_each_round = true;
     dict = worker_ndb_->getDictionary();
+    in_table_loop = true;
     for (iter = local_ttl_cache.begin(); iter != local_ttl_cache.end();
          iter++) {
       if (purge_worker_exit_) {
@@ -1845,6 +1848,14 @@ err:
           purge_worker_asks_for_retry_ = true;
           purge_worker_exit_ = true;
           UpdateStatus(TTLPurgeStatus::State::kError);
+          break;
+        }
+        if (!in_table_loop) {
+          // Error occurred before entering the main table iteration loop
+          // (e.g., GetShard/GetPurgeWindow/UpdateLease failed after cache
+          // was cleared and repopulated). The iterator 'iter' may be
+          // invalidated by local_ttl_cache.clear(). Break out to restart
+          // the round instead of trying to advance the invalid iterator.
           break;
         }
         continue;  // skip to next table

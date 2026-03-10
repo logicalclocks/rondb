@@ -25,6 +25,8 @@ INCLUDE_DIRECTORIES(
   # Since we generate header files RonSQLParser.y.hpp and RonSQLLexer.l.hpp into
   # the binary dir, we need to include it in the include path
   ${CMAKE_CURRENT_BINARY_DIR}
+  # NdbQueryBuilder.hpp is in src/ndbapi (not the public include dir)
+  ${CMAKE_SOURCE_DIR}/storage/ndb/src/ndbapi
   )
 
 # Generate parser
@@ -50,6 +52,7 @@ set_source_files_properties(${CMAKE_CURRENT_BINARY_DIR}/RonSQLLexer.l.cpp
 ADD_CONVENIENCE_LIBRARY(ronsql
   AggregationAPICompiler.cpp
   LexString.cpp
+  QueryPlanner.cpp
   ResultPrinter.cpp
   RonSQLPreparer.cpp
   ${CMAKE_CURRENT_BINARY_DIR}/RonSQLParser.y.cpp

@@ -112,7 +112,7 @@ sleep 11;
 COMMIT;
 
 # Only the future-dated row (col_a=3, col_c=300) survives
-SELECT col_a, col_c FROM test.sz ORDER BY col_a;
+SELECT col_a, col_c FROM test.sz;
 
 --source include/rpl/wait_for_ndb_committed_to_binlog.inc
 --sync_slave_with_master
@@ -175,14 +175,14 @@ INSERT INTO test.sz VALUES
 sleep 11;
 
 # FOR UPDATE: lock rows with col_c >= 7 (rows 7,8,9,10)
-SELECT col_a, col_c FROM test.sz WHERE col_c >= 7 FOR UPDATE;
+SELECT col_a, col_c FROM test.sz WHERE col_c >= 7 ORDER BY col_a FOR UPDATE;
 
 # UPDATE: set col_c = 100 where col_c <= 3 (rows 1,2,3)
 UPDATE test.sz SET col_c = 100 WHERE col_c <= 3;
 SELECT ROW_COUNT();
 
 # FOR SHARE: verify updated rows
-SELECT col_a, col_c FROM test.sz WHERE col_a <= 3 FOR SHARE;
+SELECT col_a, col_c FROM test.sz WHERE col_a <= 3 ORDER BY col_a FOR SHARE;
 
 # DELETE: remove rows with col_c >= 20 (none match since max is 100 or 10)
 # Original Python: DELETE FROM sz WHERE col_c >= 20 (deletes rows with col_c=100)

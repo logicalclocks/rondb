@@ -151,6 +151,20 @@ struct DABits {
      */
     NI_ANTI_JOIN = 0x1000,
 
+    /**
+     * This request contains an aggregation operation.
+     * When set, only the aggregate leaf node sends results to API.
+     * Intermediate nodes pass data via linked attributes only.
+     */
+    NI_AGGREGATE = 0x2000,
+
+    /**
+     * This node is the aggregation leaf - it executes the aggregation
+     * program (in DBLQH) and sends aggregated results to the API.
+     * Must be set together with NI_AGGREGATE on exactly one leaf node.
+     */
+    NI_AGGREGATE_LEAF = 0x4000,
+
     NI_END = 0
   };
 
@@ -179,6 +193,14 @@ struct DABits {
      * contains at least one disk column.
      */
     PI_DISK_ATTR = 0x10,
+
+    /**
+     * The parameter object contains an aggregation program.
+     * This program is passed to DBLQH which executes the aggregation.
+     * Only valid when NI_AGGREGATE_LEAF is set on the node.
+     */
+    PI_ATTR_AGGREGATE = 0x20,
+
     PI_END = 0
   };
 };

@@ -1993,6 +1993,10 @@ bool Item_sum_sum::add() {
 
 longlong Item_sum_sum::val_int() {
   assert(fixed);
+  if (m_pushed_aggregate) {
+    null_value = m_pushed_null;
+    return m_pushed_value_int;
+  }
   if (m_window != nullptr) {
     if (hybrid_type == REAL_RESULT) {
       return llrint_with_overflow_check(val_real());
@@ -2018,6 +2022,10 @@ longlong Item_sum_sum::val_int() {
 double Item_sum_sum::val_real() {
   DBUG_TRACE;
   assert(fixed);
+  if (m_pushed_aggregate) {
+    null_value = m_pushed_null;
+    return m_pushed_value_double;
+  }
   if (m_is_window_function) {
     if (wf_common_init()) return 0.0;
 
@@ -2066,6 +2074,16 @@ String *Item_sum_sum::val_str(String *str) {
 }
 
 my_decimal *Item_sum_sum::val_decimal(my_decimal *val) {
+  if (m_pushed_aggregate) {
+    null_value = m_pushed_null;
+    if (null_value) return nullptr;
+    if (m_pushed_is_double) {
+      double2my_decimal(E_DEC_FATAL_ERROR, m_pushed_value_double, val);
+    } else {
+      int2my_decimal(E_DEC_FATAL_ERROR, m_pushed_value_int, false, val);
+    }
+    return val;
+  }
   if (m_is_window_function) {
     if (hybrid_type != DECIMAL_RESULT) return val_decimal_from_real(val);
 
@@ -2215,6 +2233,10 @@ bool Item_sum_count::add() {
 longlong Item_sum_count::val_int() {
   DBUG_TRACE;
   assert(fixed);
+  if (m_pushed_aggregate) {
+    null_value = m_pushed_null;
+    return m_pushed_value_int;
+  }
   if (m_is_window_function) {
     if (wf_common_init()) return 0;
 
@@ -2316,6 +2338,13 @@ bool Item_sum_avg::add() {
 
 double Item_sum_avg::val_real() {
   assert(fixed);
+  if (m_pushed_aggregate) {
+    null_value = m_pushed_null;
+    if (m_pushed_null || m_pushed_avg_count == 0) return 0.0;
+    const double sum = m_pushed_is_double ? m_pushed_value_double
+                                          : static_cast<double>(m_pushed_value_int);
+    return sum / static_cast<double>(m_pushed_avg_count);
+  }
   if (m_is_window_function) {
     if (wf_common_init()) return 0.0;
 
@@ -2342,6 +2371,16 @@ my_decimal *Item_sum_avg::val_decimal(my_decimal *val) {
   my_decimal cnt;
   const my_decimal *sum_dec;
   assert(fixed);
+
+  if (m_pushed_aggregate) {
+    null_value = m_pushed_null;
+    if (null_value || m_pushed_avg_count == 0) return nullptr;
+    const double sum = m_pushed_is_double ? m_pushed_value_double
+                                          : static_cast<double>(m_pushed_value_int);
+    const double avg = sum / static_cast<double>(m_pushed_avg_count);
+    double2my_decimal(E_DEC_FATAL_ERROR, avg, val);
+    return val;
+  }
 
   if (m_is_window_function) {
     if (hybrid_type != DECIMAL_RESULT) {
@@ -2966,6 +3005,10 @@ bool Item_sum_hybrid::compute() {
 
 double Item_sum_hybrid::val_real() {
   assert(fixed);
+  if (m_pushed_aggregate) {
+    null_value = m_pushed_null;
+    return m_pushed_value_double;
+  }
   if (m_is_window_function) {
     if (wf_common_init()) return 0.0;
     bool ret = false;
@@ -2980,6 +3023,10 @@ double Item_sum_hybrid::val_real() {
 
 longlong Item_sum_hybrid::val_int() {
   assert(fixed);
+  if (m_pushed_aggregate) {
+    null_value = m_pushed_null;
+    return m_pushed_value_int;
+  }
   if (m_is_window_function) {
     if (wf_common_init()) return 0;
     bool ret = false;
@@ -3018,6 +3065,16 @@ longlong Item_sum_hybrid::val_date_temporal() {
 
 my_decimal *Item_sum_hybrid::val_decimal(my_decimal *val) {
   assert(fixed);
+  if (m_pushed_aggregate) {
+    null_value = m_pushed_null;
+    if (null_value) return nullptr;
+    if (m_pushed_is_double) {
+      double2my_decimal(E_DEC_FATAL_ERROR, m_pushed_value_double, val);
+    } else {
+      int2my_decimal(E_DEC_FATAL_ERROR, m_pushed_value_int, false, val);
+    }
+    return val;
+  }
   if (m_is_window_function) {
     if (wf_common_init()) {
       return error_decimal(val);
@@ -3328,6 +3385,19 @@ void Item_sum_num::reset_field() {
 }
 
 void Item_sum_hybrid::reset_field() {
+  if (m_pushed_aggregate) {
+    if (m_pushed_null) {
+      result_field->set_null();
+    } else {
+      result_field->set_notnull();
+      if (m_pushed_is_double) {
+        result_field->store(m_pushed_value_double);
+      } else {
+        result_field->store(m_pushed_value_int, unsigned_flag);
+      }
+    }
+    return;
+  }
   switch (hybrid_type) {
     case STRING_RESULT: {
       if (args[0]->is_temporal()) {
@@ -3408,6 +3478,25 @@ void Item_sum_hybrid::reset_field() {
 
 void Item_sum_sum::reset_field() {
   assert(aggr->Aggrtype() != Aggregator::DISTINCT_AGGREGATOR);
+  if (m_pushed_aggregate) {
+    if (m_pushed_null) {
+      result_field->set_null();
+    } else {
+      result_field->set_notnull();
+      if (hybrid_type == DECIMAL_RESULT) {
+        my_decimal dec;
+        if (m_pushed_is_double) {
+          double2my_decimal(E_DEC_FATAL_ERROR, m_pushed_value_double, &dec);
+        } else {
+          int2my_decimal(E_DEC_FATAL_ERROR, m_pushed_value_int, false, &dec);
+        }
+        result_field->store_decimal(&dec);
+      } else {
+        float8store(result_field->field_ptr(), m_pushed_value_double);
+      }
+    }
+    return;
+  }
   if (hybrid_type == DECIMAL_RESULT) {
     my_decimal value, *arg_val = args[0]->val_decimal(&value);
     if (!arg_val)  // Null
@@ -3425,14 +3514,54 @@ void Item_sum_sum::reset_field() {
 }
 
 void Item_sum_count::reset_field() {
-  longlong nr = 0;
   assert(aggr->Aggrtype() != Aggregator::DISTINCT_AGGREGATOR);
-
+  if (m_pushed_aggregate) {
+    int8store(result_field->field_ptr(), m_pushed_value_int);
+    return;
+  }
+  longlong nr = 0;
   if (!args[0]->is_nullable() || !args[0]->is_null()) nr = 1;
   int8store(result_field->field_ptr(), nr);
 }
 
 void Item_sum_avg::reset_field() {
+  if (m_pushed_aggregate) {
+    uchar *res = result_field->field_ptr();
+    if (m_pushed_null) {
+      result_field->set_null();
+      if (hybrid_type == DECIMAL_RESULT) {
+        memset(res, 0, dec_bin_size + sizeof(longlong));
+      } else {
+        memset(res, 0, sizeof(double) + sizeof(longlong));
+      }
+    } else {
+      result_field->set_notnull();
+      // Store the raw SUM and COUNT (not the pre-computed average).
+      // The temp table field uses f_scale=0 for AVG(int_column), so
+      // storing a fractional average truncates.  The real division
+      // happens in Item_avg_field::val_decimal() with prec_increment.
+      if (hybrid_type == DECIMAL_RESULT) {
+        my_decimal dec;
+        if (m_pushed_is_double) {
+          double2my_decimal(E_DEC_FATAL_ERROR, m_pushed_value_double, &dec);
+        } else {
+          int2my_decimal(E_DEC_FATAL_ERROR, m_pushed_value_int, false, &dec);
+        }
+        my_decimal2binary(E_DEC_FATAL_ERROR, &dec, res, f_precision, f_scale);
+        res += dec_bin_size;
+      } else {
+        if (m_pushed_is_double) {
+          float8store(res, m_pushed_value_double);
+        } else {
+          float8store(res, static_cast<double>(m_pushed_value_int));
+        }
+        res += sizeof(double);
+      }
+      const longlong count = static_cast<longlong>(m_pushed_avg_count);
+      int8store(res, count);
+    }
+    return;
+  }
   uchar *res = result_field->field_ptr();
   assert(aggr->Aggrtype() != Aggregator::DISTINCT_AGGREGATOR);
   if (hybrid_type == DECIMAL_RESULT) {
@@ -3497,6 +3626,7 @@ void Item_sum_bit::update_field() {
 void Item_sum_sum::update_field() {
   DBUG_TRACE;
   assert(aggr->Aggrtype() != Aggregator::DISTINCT_AGGREGATOR);
+  if (m_pushed_aggregate) return;  // Already the correct aggregate result
   if (hybrid_type == DECIMAL_RESULT) {
     my_decimal value, *arg_val = args[0]->val_decimal(&value);
     if (!args[0]->null_value) {
@@ -3524,6 +3654,7 @@ void Item_sum_sum::update_field() {
 }
 
 void Item_sum_count::update_field() {
+  if (m_pushed_aggregate) return;  // Already the correct aggregate result
   longlong nr;
   uchar *res = result_field->field_ptr();
 
@@ -3534,6 +3665,7 @@ void Item_sum_count::update_field() {
 
 void Item_sum_avg::update_field() {
   DBUG_TRACE;
+  if (m_pushed_aggregate) return;
   longlong field_count;
   uchar *res = result_field->field_ptr();
 
@@ -3569,6 +3701,7 @@ void Item_sum_avg::update_field() {
 }
 
 void Item_sum_hybrid::update_field() {
+  if (m_pushed_aggregate) return;  // Already the correct aggregate result
   switch (hybrid_type) {
     case STRING_RESULT:
       if (args[0]->is_temporal())

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024, 2025, Hopsworks and/or its affiliates.
+ * Copyright (c) 2024, 2026, Hopsworks and/or its affiliates.
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License, version 2.0,
  * as published by the Free Software Foundation.
@@ -30,34 +30,24 @@
 #include "include/my_byteorder.h"
 #include "AggInterpreter.hpp"
 #include "InterpreterCommonOp.hpp"
+#include "util/require.h"
 #include "decimal.h"
 #include "Dbtup.hpp"
 #include <NdbSqlUtil.hpp>
+#include <Interpreter.hpp>
 
-#include <simsimd/simsimd.h>
-
-Uint32 AggInterpreter::g_buf_len_ = READ_BUF_WORD_SIZE;
+Uint32 AggInterpreter::g_attr_read_buf_len_ = ATTR_READ_BUF_WORD_SIZE;
 Uint32 AggInterpreter::g_result_header_size_ = 3 * sizeof(Uint32);
 Uint32 AggInterpreter::g_result_header_size_per_group_ = sizeof(Uint32);
 
 /*
- * VS related
- * Since we allocate one page (32 KB) to accommodate the vector search
- * program — with a maximum size of MAX_VEC_SEARCH_PROGRAM_WORD_SIZE (8192 words) —
- * this effectively limits the maximum supported vector dimension.
- *
- * We also allocate a 1-page (32 KB) buffer for reading vector column values.
- * This buffer has a capacity of 8192 words, which is slightly larger than
- * the size of a vector with the current maximum dimension (MAX_VEC_DIMS = 8100).
+ * GBHashEntryCmp::operator() — charset-aware comparison for std::map ordering.
+ * Duplicated from NdbAggregator.cpp (kernel and API are separate link targets).
  */
-Uint32 AggInterpreter::g_vec_buf_len_ = MAX_VEC_SEARCH_PROGRAM_WORD_SIZE; /* float */
-
 bool
 GBHashEntryCmp::operator()(const GBHashEntry &n1,
                            const GBHashEntry &n2) const {
   if (ctx == nullptr || ctx->n_cols == 0 || ctx->all_binary_cmp) {
-    /* Binary comparison: safe when all group-by columns are
-       non-charset-aware, since binary identity equals semantic identity. */
     Uint32 len = n1.len < n2.len ? n1.len : n2.len;
     int ret = memcmp(n1.ptr, n2.ptr, len);
     if (ret == 0) {
@@ -98,11 +88,10 @@ GBHashEntryCmp::operator()(const GBHashEntry &n1,
       return ret < 0;
     }
 
-    /* Advance past header + word-aligned data */
     p1 += sizeof(Uint32) + ah1.getDataSize() * sizeof(Uint32);
     p2 += sizeof(Uint32) + ah2.getDataSize() * sizeof(Uint32);
   }
-  return false;  /* All columns equal */
+  return false;
 }
 
 /*
@@ -110,9 +99,19 @@ GBHashEntryCmp::operator()(const GBHashEntry &n1,
  * Turn on the DEBUG_PA_INTERP
  * to trace AggInterpreter on partition DEBUG_PA_INTERP_PART_ID
  */
+#if (defined(VM_TRACE) || defined(ERROR_INSERT))
 #undef DEBUG_PA_INTERP
 // #define DEBUG_PA_INTERP 1
+#define DEBUG_AGG 1
+#endif
 #define DEBUG_PA_INTERP_PART_ID 0
+
+#ifdef DEBUG_AGG
+#define DEB_AGG(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_AGG(arglist) do { } while (0)
+#endif
+
 #ifdef DEBUG_PA_INTERP
 #define PA_INTERP_TRACE(part_id, format, ...) \
   do {\
@@ -145,167 +144,240 @@ GBHashEntryCmp::operator()(const GBHashEntry &n1,
 #define VS_INTERP_TRACE(table_id, part_id, format, ...) {}
 #endif // DEBUG_VS_INTERP
 
+/**
+ * validateEmbeddedProgram — validate an embedded old-interpreter program
+ * at Init() time ("compile" step).
+ *
+ * Walks the instruction stream and checks:
+ * 1. All opcodes are in the allowed whitelist (no CALL, RETURN, EXIT_REFUSE,
+ *    WRITE_ATTR, heap memory ops)
+ * 2. All branch offsets are forward-only (bit 31 = 0)
+ * 3. All branch targets fall within the embedded program bounds
+ * 4. Instruction lengths computed via getInstructionPreProcessingInfo are valid
+ *
+ * Returns true if the program is safe to execute in interpreterNextLab.
+ */
+bool AggInterpreter::validateEmbeddedProgram(
+    const Uint32* emb_prog, Uint32 emb_len) {
+  Uint32 pc = 0;
+  while (pc < emb_len) {
+    Uint32 instr = emb_prog[pc];
+    Uint32 opCode = Interpreter::getOpCode(instr);
+
+    /* Check opcode whitelist */
+    switch (opCode) {
+      /* Load/store register operations */
+      case Interpreter::READ_ATTR_INTO_REG:
+      case Interpreter::LOAD_CONST_NULL:
+      case Interpreter::LOAD_CONST16:
+      case Interpreter::LOAD_CONST32:
+      case Interpreter::LOAD_CONST64:
+      /* Arithmetic */
+      case Interpreter::ADD_REG_REG:
+      case Interpreter::SUB_REG_REG:
+      /* Unconditional branch */
+      case Interpreter::BRANCH:
+      /* Null-check branches */
+      case Interpreter::BRANCH_REG_EQ_NULL:
+      case Interpreter::BRANCH_REG_NE_NULL:
+      /* Register comparison branches */
+      case Interpreter::BRANCH_EQ_REG_REG:
+      case Interpreter::BRANCH_NE_REG_REG:
+      case Interpreter::BRANCH_LT_REG_REG:
+      case Interpreter::BRANCH_LE_REG_REG:
+      case Interpreter::BRANCH_GT_REG_REG:
+      case Interpreter::BRANCH_GE_REG_REG:
+      /* Exit */
+      case Interpreter::EXIT_OK:
+      /* Column comparison branches */
+      case Interpreter::BRANCH_ATTR_OP_ARG:
+      case Interpreter::BRANCH_ATTR_EQ_NULL:
+      case Interpreter::BRANCH_ATTR_NE_NULL:
+      /* Output for skip_offset communication */
+      case Interpreter::WRITE_INTERPRETER_OUTPUT:
+        break;  /* Allowed */
+
+      default:
+        g_eventLogger->warning(
+            "validateEmbeddedProgram: forbidden opcode %u at pc=%u",
+            opCode, pc);
+        return false;
+    }
+
+    /* Validate branch targets: forward-only, within bounds */
+    bool is_branch = false;
+    switch (opCode) {
+      case Interpreter::BRANCH:
+      case Interpreter::BRANCH_REG_EQ_NULL:
+      case Interpreter::BRANCH_REG_NE_NULL:
+      case Interpreter::BRANCH_EQ_REG_REG:
+      case Interpreter::BRANCH_NE_REG_REG:
+      case Interpreter::BRANCH_LT_REG_REG:
+      case Interpreter::BRANCH_LE_REG_REG:
+      case Interpreter::BRANCH_GT_REG_REG:
+      case Interpreter::BRANCH_GE_REG_REG:
+      case Interpreter::BRANCH_ATTR_OP_ARG:
+      case Interpreter::BRANCH_ATTR_EQ_NULL:
+      case Interpreter::BRANCH_ATTR_NE_NULL:
+        is_branch = true;
+        break;
+      default:
+        break;
+    }
+
+    if (is_branch) {
+      Uint32 direction = instr >> 31;
+      if (direction != 0) {
+        g_eventLogger->warning(
+            "validateEmbeddedProgram: backward branch at pc=%u", pc);
+        return false;
+      }
+      Uint32 offset = (instr >> 16) & 0x7FFF;
+      /* Target = pc + offset (brancher logic: TprogramCounter-- then + offset) */
+      Uint32 target = pc + offset;
+      if (target >= emb_len) {
+        g_eventLogger->warning(
+            "validateEmbeddedProgram: branch target %u out of bounds "
+            "(emb_len=%u) at pc=%u", target, emb_len, pc);
+        return false;
+      }
+    }
+
+    /* Advance to next instruction using getInstructionPreProcessingInfo */
+    Interpreter::InstructionPreProcessing processing;
+    Uint32* next = Interpreter::getInstructionPreProcessingInfo(
+        const_cast<Uint32*>(&emb_prog[pc]), processing);
+    if (next == nullptr) {
+      g_eventLogger->warning(
+          "validateEmbeddedProgram: invalid instruction at pc=%u", pc);
+      return false;
+    }
+    Uint32 instr_len = (Uint32)(next - &emb_prog[pc]);
+    pc += instr_len;
+  }
+
+  return true;
+}
+
 bool AggInterpreter::Init(const Uint32* prog) {
-  if (inited_) {
+  if (m_inited) {
     return true;
   }
 
+  require(prog != nullptr);
+
   /* 0. Prepare the buffer and copy the program */
-#ifdef PA_MALLOC
-  // TODO (Zhao)
-  // VS related
-	assert(prog_len_ <= MAX_VEC_SEARCH_PROGRAM_WORD_SIZE);
-  if (prog_len_ <= MAX_AGG_PROGRAM_WORD_SIZE) {
-    /*
-		 * Use inline prog_buf_ for aggregation or
-     * small-dimension vector search queries.
-     */
-    prog_ = prog_buf_;
-  } else {
-    /* Use external buf for large-dimension vector search queries. */
-    void* page_ptr = lc_ndbd_pool_malloc(32 * 1024, RG_QUERY_MEMORY,
-        thread_id_, false);
-    if (page_ptr == nullptr) {
-      g_eventLogger->error("Alloc mem for pushdown vector search interpreter failed");
-      return false;
-    }
-    ext_prog_buf_ = static_cast<Uint32*>(page_ptr);
-    prog_ = ext_prog_buf_;
-  }
-  alloc_len_ = 0;
-#else
-  prog_ = new Uint32[prog_len];
-#endif // PA_MALLOC
-  memcpy(prog_, prog, prog_len_ * sizeof(Uint32));
-  memset(buf_, 0, READ_BUF_WORD_SIZE * sizeof(Uint32));
-  memset(decimal_buf_, 0, sizeof(Int32) * DECIMAL_BUFF_LENGTH);
-  decimal_.buf = decimal_buf_;
-  decimal_.len = DECIMAL_BUFF_LENGTH;
+  assert(m_prog_len <= MAX_AGG_PROGRAM_WORD_SIZE);
+  m_prog = m_prog_buf;
+  memcpy(m_prog, prog, m_prog_len * sizeof(Uint32));
+  memset(m_attr_read_buf, 0, sizeof(m_attr_read_buf));
+  memset(m_decimal_buf, 0, sizeof(Int32) * DECIMAL_BUFF_LENGTH);
+  m_decimal.buf = m_decimal_buf;
+  m_decimal.len = DECIMAL_BUFF_LENGTH;
 
 
   Uint32 value = 0;
   /*
    * 1. Double check the magic num and  total length of program.
    */
-  value = prog_[cur_pos_++];
+  value = m_prog[m_cur_pos++];
   assert(((value & 0xFFFF0000) >> 16) == 0x0721);
-  assert((value & 0xFFFF) == prog_len_);
+  assert((value & 0xFFFF) == m_prog_len);
 
   /*
    * 2. Get num of columns for group by and num of aggregation results;
    */
-  value = prog_[cur_pos_++];
-  n_gb_cols_ = (value >> 16) & 0xFFFF;
-  n_agg_results_ = value & 0xFFFF;
+  value = m_prog[m_cur_pos++];
+  m_n_gb_cols = (value >> 16) & 0xFFFF;
+  m_n_agg_results = value & 0xFFFF;
 
-  Uint32 version = prog_[cur_pos_++];
+  Uint32 version = m_prog[m_cur_pos++];
   if (version > PUSHDOWN_AGGREGATION_VERSION) {
     g_eventLogger->warning("Pushdown aggregation program version(%u) is "
                            "not compatible with "
                            "the version (%u) on data node",
                            version, PUSHDOWN_AGGREGATION_VERSION);
     /*
-     * Return with inited_ = false, and
+     * Return with m_inited = false, and
      * ProcessRec() will handle this incompatible issue.
      */
     return true;
   }
 
-  if (prog_[cur_pos_] & 0x80000000) {
-    vec_search_ = true;
-    assert((prog_[cur_pos_] & 0x7FFFFFFF) == 0);
-    cur_pos_++;
-  } else {
-    assert(vec_search_ == false);
-    // Skip the next 5 reserved Uint32 elements
-    assert(prog_[cur_pos_] == 0);
-    cur_pos_ += 5;
-  }
-
-  if (vec_search_) {
-    value = prog_[cur_pos_++];
-    vec_type_ = (value >> 24) & 0xFF;
-    vec_metric_ = (value >> 16) & 0xFF;
-    vec_dims_ = value & 0xFFFF;
-
-    value = prog_[cur_pos_++];
-    vec_top_n_ = (value) & 0xFFFF;
-    vec_col_idx_ = (value >> 16) & 0xFFFF;
-    value = prog_[cur_pos_++];
-    vec_size_in_bytes_ = (value & 0xFFFFFFFF);
-    // g_eventLogger->info("frag_id: %lld, type: %u, metric: %u, dims: %u, vec_col_idx: %u, vec_top_n: %u, size: %u\n",
-    //     frag_id_, vec_type_, vec_metric_, vec_dims_, vec_col_idx_, vec_top_n_, vec_size_in_bytes_);
-
-    vec_start_pos_ = cur_pos_;
-
-#ifdef PA_MALLOC
-    void* page_ptr = lc_ndbd_pool_malloc(32 * 1024, RG_QUERY_MEMORY,
-        thread_id_, false);
-    if (page_ptr == nullptr) {
-      g_eventLogger->error("Alloc mem for pushdown vector search interpreter failed");
-      return false;
-    }
-    vec_buf_ = static_cast<Uint32*>(page_ptr);
-#else
-    vec_buf_ = new Uint32[g_vec_buf_len_];
-#endif // PA_MALLOC
-
-    inited_ = true;
-    return true;
-  }
+  /* Skip the next 5 reserved Uint32 elements (word 3 = VS flag, not set for PA) */
+  assert((m_prog[m_cur_pos] & 0x80000000) == 0);
+  assert(m_prog[m_cur_pos] == 0);
+  m_cur_pos += 5;
 
   /*
    * 3. Get all the group by columns id.
    */
-  if (n_gb_cols_) {
-#ifdef PA_MALLOC
-    assert(n_gb_cols_ <= MAX_AGG_N_GROUPBY_COLS);
-    gb_cols_ = gb_cols_buf_;
-#else
-    gb_cols_ = new Uint32[n_gb_cols_];
-#endif // PA_MALLOC
+  if (m_n_gb_cols) {
+    assert(m_n_gb_cols <= MAX_AGG_N_GROUPBY_COLS);
+    m_gb_cols = m_gb_cols_buf;
 
     Uint32 i = 0;
-    while (i < n_gb_cols_ && cur_pos_ < prog_len_) {
-      gb_cols_[i++] = prog_[cur_pos_++];
+    while (i < m_n_gb_cols && m_cur_pos < m_prog_len) {
+      m_gb_cols[i++] = m_prog[m_cur_pos++];
     }
-#ifdef PA_MALLOC
-    gb_cmp_ctx_.n_cols = 0;
-    gb_cmp_ctx_.all_binary_cmp = false;
-    gb_map_buf_ = std::map<GBHashEntry, GBHashEntry, GBHashEntryCmp>(
-                      GBHashEntryCmp(&gb_cmp_ctx_));
-    gb_map_ = &gb_map_buf_;
-#else
-    gb_cmp_ctx_.n_cols = 0;
-    gb_cmp_ctx_.all_binary_cmp = false;
-    gb_map_ = new std::map<GBHashEntry, GBHashEntry, GBHashEntryCmp>(
-                      GBHashEntryCmp(&gb_cmp_ctx_));
-#endif // PA_MALLOC
+    m_gb_cmp_ctx.n_cols = 0;
+    m_gb_cmp_ctx.all_binary_cmp = false;
+    m_gb_map_buf = std::map<GBHashEntry, GBHashEntry, GBHashEntryCmp>(
+                      GBHashEntryCmp(&m_gb_cmp_ctx));
+    m_gb_map = &m_gb_map_buf;
+    m_alloc_len = 0;
   }
 
   /*
    * 4. Reset all aggregation results
    */
-  if (n_agg_results_) {
-#ifdef PA_MALLOC
-    assert(n_agg_results_ <= MAX_AGG_N_RESULTS);
-    agg_results_ = agg_results_buf_;
-#else
-    agg_results_ = new AggResItem[n_agg_results_];
-#endif // PA_MALLOC
-    Uint32 i = 0;
-    while (i < n_agg_results_) {
-      agg_results_[i].type = NDB_TYPE_UNDEFINED;
-      agg_results_[i].value.val_int64 = 0;
-      agg_results_[i].is_unsigned = false;
-      agg_results_[i].is_null = true;
-      i++;
+  if (m_n_agg_results) {
+    assert(m_n_agg_results <= MAX_AGG_N_RESULTS);
+    m_agg_results = m_agg_results_buf;
+    for (Uint32 i = 0; i < m_n_agg_results; i++) {
+      m_agg_results[i].type = NDB_TYPE_UNDEFINED;
+      m_agg_results[i].value.val_int64 = 0;
+      m_agg_results[i].is_unsigned = false;
+      m_agg_results[i].is_null = true;
     }
   }
 
-  inited_ = true;
-  agg_prog_start_pos_ = cur_pos_;
-  memset(registers_, 0, sizeof(registers_));
+  m_inited = true;
+  m_agg_prog_start_pos = m_cur_pos;
+  memset(m_registers, 0, sizeof(m_registers));
+
+  /*
+   * 5. Validate any embedded interpreter blocks in the aggregation program.
+   *    This "compiles" the embedded programs to ensure they will execute
+   *    correctly in interpreterNextLab.
+   */
+  {
+    Uint32 scan_pos = m_agg_prog_start_pos;
+    while (scan_pos < m_prog_len) {
+      Uint32 w = m_prog[scan_pos];
+      Uint8 op = (w & 0xFC000000) >> 26;
+      if (op == kOpEmbeddedInterp) {
+        Uint32 emb_len = w & 0xFFFF;
+        if (scan_pos + 1 + emb_len > m_prog_len ||
+            !validateEmbeddedProgram(&m_prog[scan_pos + 1], emb_len)) {
+          g_eventLogger->warning(
+              "AggInterpreter::Init: embedded program validation failed "
+              "at scan_pos=%u", scan_pos);
+          m_inited = false;
+          return false;
+        }
+        scan_pos += 1 + emb_len;  /* skip header + embedded words */
+      } else if (op == kOpLoadConst) {
+        scan_pos += 3;  /* header + 2 constant value words */
+      } else if (op == kOpLoadCol) {
+        Uint32 type = (w & 0x03E00000) >> 21;
+        scan_pos += (type == NDB_TYPE_DECIMAL ||
+                     type == NDB_TYPE_DECIMALUNSIGNED) ? 2 : 1;
+      } else {
+        scan_pos++;
+      }
+    }
+  }
 
   return true;
 }
@@ -325,7 +397,7 @@ bool AggInterpreter::Init(const Uint32* prog) {
  * Must be called after Init() and before the first ProcessRec().
  */
 bool AggInterpreter::OptimizeProgram() {
-  if (!inited_) {
+  if (!m_inited) {
     return false;
   }
 
@@ -336,10 +408,10 @@ bool AggInterpreter::OptimizeProgram() {
   }
 
   // Single pass: analyze and rewrite the program
-  Uint32 exec_pos = agg_prog_start_pos_;
+  Uint32 exec_pos = m_agg_prog_start_pos;
 
-  while (exec_pos < prog_len_) {
-    Uint32 value = prog_[exec_pos];
+  while (exec_pos < m_prog_len) {
+    Uint32 value = m_prog[exec_pos];
     Uint8 op = (value & 0xFC000000) >> 26;
     Uint32 reg_index, reg_index2;
     DataType type;
@@ -391,7 +463,7 @@ bool AggInterpreter::OptimizeProgram() {
         } else {
           reg_types[reg_index] = NDB_TYPE_UNDEFINED;
         }
-        prog_[exec_pos] = (new_op << 26) | (value & 0x03FFFFFF);
+        m_prog[exec_pos] = (new_op << 26) | (value & 0x03FFFFFF);
         break;
 
       case kOpMinus:
@@ -408,7 +480,7 @@ bool AggInterpreter::OptimizeProgram() {
         } else {
           reg_types[reg_index] = NDB_TYPE_UNDEFINED;
         }
-        prog_[exec_pos] = (new_op << 26) | (value & 0x03FFFFFF);
+        m_prog[exec_pos] = (new_op << 26) | (value & 0x03FFFFFF);
         break;
 
       case kOpMul:
@@ -425,7 +497,7 @@ bool AggInterpreter::OptimizeProgram() {
         } else {
           reg_types[reg_index] = NDB_TYPE_UNDEFINED;
         }
-        prog_[exec_pos] = (new_op << 26) | (value & 0x03FFFFFF);
+        m_prog[exec_pos] = (new_op << 26) | (value & 0x03FFFFFF);
         break;
 
       case kOpDiv:
@@ -433,7 +505,7 @@ bool AggInterpreter::OptimizeProgram() {
         // Division always produces double
         new_op = kOpDivDouble;
         reg_types[reg_index] = NDB_TYPE_DOUBLE;
-        prog_[exec_pos] = (new_op << 26) | (value & 0x03FFFFFF);
+        m_prog[exec_pos] = (new_op << 26) | (value & 0x03FFFFFF);
         break;
 
       case kOpDivInt:
@@ -444,7 +516,7 @@ bool AggInterpreter::OptimizeProgram() {
           new_op = kOpDivIntBigint;
         }
         reg_types[reg_index] = NDB_TYPE_BIGINT;
-        prog_[exec_pos] = (new_op << 26) | (value & 0x03FFFFFF);
+        m_prog[exec_pos] = (new_op << 26) | (value & 0x03FFFFFF);
         break;
 
       case kOpMod:
@@ -470,7 +542,7 @@ bool AggInterpreter::OptimizeProgram() {
           new_op = kOpSumBigint;
         }
         if (new_op != op) {
-          prog_[exec_pos] = (new_op << 26) | (value & 0x03FFFFFF);
+          m_prog[exec_pos] = (new_op << 26) | (value & 0x03FFFFFF);
         }
         break;
 
@@ -482,7 +554,7 @@ bool AggInterpreter::OptimizeProgram() {
           new_op = kOpMaxBigint;
         }
         if (new_op != op) {
-          prog_[exec_pos] = (new_op << 26) | (value & 0x03FFFFFF);
+          m_prog[exec_pos] = (new_op << 26) | (value & 0x03FFFFFF);
         }
         break;
 
@@ -494,13 +566,23 @@ bool AggInterpreter::OptimizeProgram() {
           new_op = kOpMinBigint;
         }
         if (new_op != op) {
-          prog_[exec_pos] = (new_op << 26) | (value & 0x03FFFFFF);
+          m_prog[exec_pos] = (new_op << 26) | (value & 0x03FFFFFF);
         }
         break;
 
       case kOpCount:
         // Count always produces BIGINT - no optimization needed
         break;
+
+      case kOpEmbeddedInterp:
+      {
+        Uint32 emb_len = value & 0xFFFF;
+        exec_pos += emb_len;  /* skip embedded words; exec_pos++ below adds 1 */
+        break;
+      }
+
+      case kOpSkip:
+        break;  /* 1-word instruction, exec_pos++ below handles it */
 
       default:
         break;
@@ -1250,153 +1332,42 @@ static Int32 Count(const Register& a, AggResItem* res, bool print) {
  *          Others returned by readAttributes
  */
 Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
-        Dbtup::KeyReqStruct* req_struct,
-        bool* vec_update_candidate) {
-  // assert(inited_);
-  // assert(req_struct->read_length == 0);
-  if (!inited_ || req_struct->read_length != 0) {
-    g_eventLogger->debug("AggInterpreter::ProcessRec error, inited: %d, read_length: %u",
-            inited_, req_struct->read_length);
+        Dbtup::KeyReqStruct* req_struct) {
+  if (!m_inited || req_struct->read_length != 0) {
+    g_eventLogger->debug("AggInterpreter::ProcessRec ZAGG_OTHER_ERROR at entry: "
+            "inited=%d, read_length=%u",
+            m_inited, req_struct->read_length);
     return ZAGG_OTHER_ERROR;
   }
 
-  *vec_update_candidate = false;
-  if (unlikely(vec_search_)) {
-    Uint32 vec_col_idx = (vec_col_idx_ & 0x0000FFFF) << 16;
-    int ret = block_tup->readAttributes(req_struct, &(vec_col_idx), 1,
-                  vec_buf_ + vec_buf_pos_, g_vec_buf_len_ - vec_buf_pos_);
-    if (ret < 0) {
-      g_eventLogger->debug("read vector column error: %d", ret);
-      return -ret;
-    }
-    AttributeHeader* header = nullptr;
-    header = reinterpret_cast<AttributeHeader*>(vec_buf_ + vec_buf_pos_);
-    const Uint32* attrDescriptor = req_struct->tablePtrP->tabDescriptor +
-      (((vec_col_idx) >> 16) * ZAD_SIZE);
-    const Uint32 TattrDesc1 = attrDescriptor[0];
-    // const Uint32 TattrDesc2 = attrDescriptor[1];
-    const Uint32 type_id = AttributeDescriptor::getType(TattrDesc1);
-    const Uint32 array_type = AttributeDescriptor::getArrayType(TattrDesc1);
-
-#ifdef DEBUG_VS_INTERP
-    const Uint32 attributeId = header->getAttributeId();
-    assert(attributeId == (vec_col_idx >> 16));
-    const Uint32 size = AttributeDescriptor::getSize(TattrDesc1);
-    const Uint32 size_in_bytes = AttributeDescriptor::getSizeInBytes(TattrDesc1);
-    const Uint32 size_in_words = AttributeDescriptor::getSizeInWords(TattrDesc1);
-    const Uint32 array_size = AttributeDescriptor::getArraySize(TattrDesc1);
-    const Uint32 nullable = AttributeDescriptor::getNullable(TattrDesc1);
-    const Uint32 distri_key = AttributeDescriptor::getDKey(TattrDesc1);
-    const Uint32 primary_key = AttributeDescriptor::getPrimaryKey(TattrDesc1);
-    const Uint32 dynamic = AttributeDescriptor::getDynamic(TattrDesc1);
-    const Uint32 disk_based = AttributeDescriptor::getDiskBased(TattrDesc1);
-    VS_INTERP_TRACE(table_id_, frag_id_,
-         "AttributeDescriptor, attributeId: %u, type_id: %u, size: %u, "
-         "size_in_bytes: %u, size_in_words: %u, array_type: %u, "
-         "array_size: %u, nullable: %u, distri_key: %u, primary_key: %u "
-         "dynamic: %u, disk_based: %u",
-         attributeId, type_id, size, size_in_bytes, size_in_words, array_type,
-         array_size, nullable, distri_key, primary_key, dynamic, disk_based);
-#endif  // DEBUG_VS_INTERP
-
-    if (type_id != NDB_TYPE_LONGVARBINARY) {
-      g_eventLogger->debug("Unsupported vector column type: %u", type_id);
-      return ZAGG_COL_TYPE_UNSUPPORTED;
-    }
-
-    Uint32 length_bytes = 0;
-    if (array_type == NDB_ARRAYTYPE_SHORT_VAR) {
-      length_bytes = 1;
-    } else if (array_type == NDB_ARRAYTYPE_MEDIUM_VAR) {
-      length_bytes = 2;
-    } else {
-      assert(0);
-    }
-    Uint32 dims = 0;
-    if (!header->isNULL()) {
-#if DEBUG
-      Uint32 len = header->getByteSize();
-      assert(len >= length_bytes);
-#endif  // DEBUG
-      if (length_bytes == 1) {
-        dims = *((Uint8*)header->getDataPtr());
-      } else {
-        dims = *((Uint16*)header->getDataPtr());
-        // assert((dims & 0x00008000) == 1);
-        // dims = (dims & 0x00007FFF);
-      }
-      assert(vec_dims_ == dims / sizeof(float));
-    } else {
-      assert(0);
-    }
-
-    double distance = 0;
-    float* target = (float* )&(prog_[vec_start_pos_]);
-    float* current = (float* )((char*)header->getDataPtr() + length_bytes);
-    simsimd_l2sq_f32(current, target, vec_dims_, &distance);
-    // simsimd_l2sq_f32_serial(current, target, vec_dims_, &distance);
-    curr_distance_ = distance;
-    if (vec_top_n_ != 0 &&
-        (vec_top_n_results_.size() < vec_top_n_ ||
-        distance < vec_top_n_results_.top()->distance_)) {
-      *vec_update_candidate = true;
-    }
-
-    return 0;
-  }
-
   AggResItem* agg_res_ptr = nullptr;
-  if (n_gb_cols_) {
-    char* agg_rec = nullptr;
+  if (m_n_gb_cols) {
+    if (!m_gb_cmp_inited) {
+      initGBCmpCtx(block_tup, req_struct);
+    }
 
     AttributeHeader* header = nullptr;
-    buf_pos_ = 0;
-    for (Uint32 i = 0; i < n_gb_cols_; i++) {
-      int ret = block_tup->readAttributes(req_struct, &(gb_cols_[i]), 1,
-                    buf_ + buf_pos_, g_buf_len_ - buf_pos_);
-      // assert(ret >= 0);
+    m_attr_read_pos = 0;
+    for (Uint32 i = 0; i < m_n_gb_cols; i++) {
+      int ret = block_tup->readAttributes(req_struct, &(m_gb_cols[i]), 1,
+                    m_attr_read_buf + m_attr_read_pos, g_attr_read_buf_len_ - m_attr_read_pos);
       if (ret < 0) {
-        g_eventLogger->debug("read group by column error: %d", ret);
+        DEB_AGG(("read group by column error: %d", ret));
         return -ret;
       }
-      header = reinterpret_cast<AttributeHeader*>(buf_ + buf_pos_);
-      buf_pos_ += (1 + header->getDataSize());
+      header = reinterpret_cast<AttributeHeader*>(m_attr_read_buf + m_attr_read_pos);
+      m_attr_read_pos += (1 + header->getDataSize());
     }
 
-    if (!gb_cmp_inited_) {
-      gb_cmp_ctx_.n_cols = n_gb_cols_;
-      bool all_binary = true;
-      for (Uint32 i = 0; i < n_gb_cols_; i++) {
-        Uint32 attrId = gb_cols_[i] >> 16;
-        const Uint32* attrDescriptor = req_struct->tablePtrP->tabDescriptor +
-          (attrId * ZAD_SIZE);
-        const Uint32 TattrDesc1 = attrDescriptor[0];
-        const Uint32 TattrDesc2 = attrDescriptor[1];
-        gb_cmp_ctx_.col_meta[i].typeId =
-            AttributeDescriptor::getType(TattrDesc1);
-        gb_cmp_ctx_.col_meta[i].cs = nullptr;
-        if (AttributeOffset::getCharsetFlag(TattrDesc2)) {
-          all_binary = false;
-          const Uint32 pos = AttributeOffset::getCharsetPos(TattrDesc2);
-          gb_cmp_ctx_.col_meta[i].cs =
-              req_struct->tablePtrP->charsetArray[pos];
-        }
-      }
-      gb_cmp_ctx_.all_binary_cmp = all_binary;
-      gb_cmp_inited_ = true;
-    }
-
-    Uint32 len_in_char = buf_pos_ * sizeof(Uint32);
-    GBHashEntry entry{reinterpret_cast<char*>(buf_), len_in_char};
-    auto iter = gb_map_->find(entry);
-    if (iter != gb_map_->end()) {
-      header = reinterpret_cast<AttributeHeader*>(iter->first.ptr);
-      agg_res_ptr = reinterpret_cast<AggResItem*>(iter->second.ptr);
-      PA_INTERP_TRACE(frag_id_,
-                      "Found GBHashEntry, id: %u, byte_size: %u, "
-                      "data_size: %u, is_null: %u",
-                      header->getAttributeId(), header->getByteSize(),
-                      header->getDataSize(), header->isNULL());
+    Uint32 len_in_char = m_attr_read_pos * sizeof(Uint32);
+    GBHashEntry lookup_key;
+    lookup_key.ptr = reinterpret_cast<char*>(m_attr_read_buf);
+    lookup_key.len = len_in_char;
+    auto it = m_gb_map->find(lookup_key);
+    if (it != m_gb_map->end()) {
+      agg_res_ptr = reinterpret_cast<AggResItem*>(it->second.ptr);
+      PA_INTERP_TRACE(m_frag_id,
+                      "Found GBHashEntry, len: %u", len_in_char);
     } else {
       /*
        * update req_struct->read_length here, which will update the
@@ -1404,52 +1375,52 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
        * Dblqh::scanTupkeyConfLab, even we don't use that variable
        * to decide whether reaches batch limitation. Only increase
        * Dblqh::ScanRecord::m_curr_batch_size_bytes when new group
-       * item is inserted into gb_map_.
+       * item is inserted into m_gb_map.
        * For aggregation,
        * we use Dblqh::ScanRecord::m_agg_curr_batch_size_bytes to
        * indicate batch limitation
        */
       req_struct->read_length = (len_in_char +
-                       n_agg_results_ * sizeof(AggResItem)) / sizeof(Int32);
+                       m_n_agg_results * sizeof(AggResItem)) / sizeof(Int32);
 
-      // we use result_size_ to decide whether need to send some aggregation
+      // we use m_result_size to decide whether need to send some aggregation
       // results to API.
-      result_size_ += len_in_char +
-                       n_agg_results_ * sizeof(AggResItem);
-#ifdef PA_MALLOC
-      agg_rec = MemAlloc(len_in_char +
-                          n_agg_results_ * sizeof(AggResItem));
-#else
-      agg_rec = new char[len_in_char +
-                        n_agg_results_ * sizeof(AggResItem)];
-#endif // PA_MALLOC
-      memset(agg_rec, 0, len_in_char +
-                        n_agg_results_ * sizeof(AggResItem));
-      memcpy(agg_rec, reinterpret_cast<char*>(buf_), len_in_char);
-      GBHashEntry new_entry{agg_rec, len_in_char};
+      m_result_size += len_in_char +
+                       m_n_agg_results * sizeof(AggResItem);
+      Uint32 total_alloc = len_in_char +
+                           m_n_agg_results * sizeof(AggResItem);
+      char* agg_rec = MemAlloc(total_alloc);
+      if (agg_rec == nullptr) {
+        return ZAGG_OTHER_ERROR;
+      }
+      memset(agg_rec, 0, total_alloc);
+      memcpy(agg_rec, reinterpret_cast<char*>(m_attr_read_buf), len_in_char);
 
-      gb_map_->insert(std::pair<GBHashEntry, GBHashEntry>(
-                      new_entry,
-            GBHashEntry{agg_rec + len_in_char,
-            static_cast<Uint32>(n_agg_results_ * sizeof(AggResItem))}));
-      n_groups_ = gb_map_->size();
+      GBHashEntry map_key;
+      map_key.ptr = agg_rec;
+      map_key.len = len_in_char;
+      GBHashEntry map_val;
+      map_val.ptr = agg_rec + len_in_char;
+      map_val.len = m_n_agg_results * sizeof(AggResItem);
+      m_gb_map->insert(std::make_pair(map_key, map_val));
+      m_n_groups = m_gb_map->size();
       agg_res_ptr = reinterpret_cast<AggResItem*>(agg_rec + len_in_char);
 
       // Initialize the new group's aggregation slots
-      assert(n_agg_results_ <= MAX_AGG_N_RESULTS);
-      for (Uint32 i = 0; i < n_agg_results_; i++) {
+      assert(m_n_agg_results <= MAX_AGG_N_RESULTS);
+      for (Uint32 i = 0; i < m_n_agg_results; i++) {
         agg_res_ptr[i].type = NDB_TYPE_UNDEFINED;
         agg_res_ptr[i].value.val_int64 = 0;
         agg_res_ptr[i].is_unsigned = false;
         agg_res_ptr[i].is_null = true;
-        assert(agg_res_ptr[i].type == agg_results_[i].type);
-        assert(agg_res_ptr[i].value.val_int64 == agg_results_[i].value.val_int64);
-        assert(agg_res_ptr[i].is_unsigned == agg_results_[i].is_unsigned);
-        assert(agg_res_ptr[i].is_null == agg_results_[i].is_null);
+        assert(agg_res_ptr[i].type == m_agg_results[i].type);
+        assert(agg_res_ptr[i].value.val_int64 == m_agg_results[i].value.val_int64);
+        assert(agg_res_ptr[i].is_unsigned == m_agg_results[i].is_unsigned);
+        assert(agg_res_ptr[i].is_null == m_agg_results[i].is_null);
       }
     }
   } else {
-    agg_res_ptr = agg_results_;
+    agg_res_ptr = m_agg_results;
   }
 
   Uint32 col_index;
@@ -1474,13 +1445,13 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
   longlong dec_val_ll = 0;
   ulonglong dec_val_ull = 0;
 
-  Uint32 exec_pos = agg_prog_start_pos_;
-  bool debug_print = (frag_id_ == DEBUG_PA_INTERP_PART_ID);
-  while (exec_pos < prog_len_) {
-    value = prog_[exec_pos++];
+  Uint32 exec_pos = m_agg_prog_start_pos;
+  bool debug_print = (m_frag_id == DEBUG_PA_INTERP_PART_ID);
+  while (exec_pos < m_prog_len) {
+    value = m_prog[exec_pos++];
     Uint8 op = (value & 0xFC000000) >> 26;
     int ret = 0;
-    buf_pos_ = 0;
+    m_attr_read_pos = 0;
     AttributeHeader* header = nullptr;
 
     switch (op) {
@@ -1488,11 +1459,10 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
         reg_index = (value >> 12) & 0x0F;
         reg_index2 = (value >> 8) & 0x0F;
 
-        ret = RegPlusReg(registers_[reg_index], registers_[reg_index2],
-                  &registers_[reg_index]);
-        // assert(ret >= 0);
+        ret = RegPlusReg(m_registers[reg_index], m_registers[reg_index2],
+                  &m_registers[reg_index]);
         if (ret < 0) {
-          g_eventLogger->debug("Overflow[PLUS], value is out of range");
+          DEB_AGG(("Overflow[PLUS], value is out of range"));
           return ZAGG_MATH_OVERFLOW;
         }
         break;
@@ -1500,11 +1470,10 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
         reg_index = (value >> 12) & 0x0F;
         reg_index2 = (value >> 8) & 0x0F;
 
-        ret = RegMinusReg(registers_[reg_index], registers_[reg_index2],
-                  &registers_[reg_index]);
-        // assert(ret >= 0);
+        ret = RegMinusReg(m_registers[reg_index], m_registers[reg_index2],
+                  &m_registers[reg_index]);
         if (ret < 0) {
-          g_eventLogger->debug("Overflow[MINUS], value is out of range");
+          DEB_AGG(("Overflow[MINUS], value is out of range"));
           return ZAGG_MATH_OVERFLOW;
         }
         break;
@@ -1512,11 +1481,10 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
         reg_index = (value >> 12) & 0x0F;
         reg_index2 = (value >> 8) & 0x0F;
 
-        ret = RegMulReg(registers_[reg_index], registers_[reg_index2],
-                  &registers_[reg_index]);
-        // assert(ret >= 0);
+        ret = RegMulReg(m_registers[reg_index], m_registers[reg_index2],
+                  &m_registers[reg_index]);
         if (ret < 0) {
-          g_eventLogger->debug("Overflow[MUL], value is out of range");
+          DEB_AGG(("Overflow[MUL], value is out of range"));
           return ZAGG_MATH_OVERFLOW;
         }
         break;
@@ -1524,11 +1492,10 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
         reg_index = (value >> 12) & 0x0F;
         reg_index2 = (value >> 8) & 0x0F;
 
-        ret = RegDivReg(registers_[reg_index], registers_[reg_index2],
-                  &registers_[reg_index], false);
-        // assert(ret >= 0);
+        ret = RegDivReg(m_registers[reg_index], m_registers[reg_index2],
+                  &m_registers[reg_index], false);
         if (ret < 0) {
-          g_eventLogger->debug("Overflow[DIV], value is out of range");
+          DEB_AGG(("Overflow[DIV], value is out of range"));
           return ZAGG_MATH_OVERFLOW;
         }
         break;
@@ -1536,11 +1503,10 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
         reg_index = (value >> 12) & 0x0F;
         reg_index2 = (value >> 8) & 0x0F;
 
-        ret = RegDivReg(registers_[reg_index], registers_[reg_index2],
-                  &registers_[reg_index], true);
-        // assert(ret >= 0);
+        ret = RegDivReg(m_registers[reg_index], m_registers[reg_index2],
+                  &m_registers[reg_index], true);
         if (ret < 0) {
-          g_eventLogger->debug("Overflow[DIVINT], value is out of range");
+          DEB_AGG(("Overflow[DIVINT], value is out of range"));
           return ZAGG_MATH_OVERFLOW;
         }
         break;
@@ -1548,11 +1514,10 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
         reg_index = (value >> 12) & 0x0F;
         reg_index2 = (value >> 8) & 0x0F;
 
-        ret = RegModReg(registers_[reg_index], registers_[reg_index2],
-                  &registers_[reg_index]);
-        // assert(ret >= 0);
+        ret = RegModReg(m_registers[reg_index], m_registers[reg_index2],
+                  &m_registers[reg_index]);
         if (ret < 0) {
-          g_eventLogger->debug("Overflow[MOD], value is out of range");
+          DEB_AGG(("Overflow[MOD], value is out of range"));
           return ZAGG_MATH_OVERFLOW;
         }
         break;
@@ -1561,10 +1526,10 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
       case kOpPlusBigint:
         reg_index = (value >> 12) & 0x0F;
         reg_index2 = (value >> 8) & 0x0F;
-        ret = RegPlusBigint(registers_[reg_index], registers_[reg_index2],
-                  &registers_[reg_index]);
+        ret = RegPlusBigint(m_registers[reg_index], m_registers[reg_index2],
+                  &m_registers[reg_index]);
         if (ret < 0) {
-          g_eventLogger->debug("Overflow[PlusBigint], value is out of range");
+          DEB_AGG(("Overflow[PlusBigint], value is out of range"));
           return ZAGG_MATH_OVERFLOW;
         }
         break;
@@ -1572,10 +1537,10 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
       case kOpPlusDouble:
         reg_index = (value >> 12) & 0x0F;
         reg_index2 = (value >> 8) & 0x0F;
-        ret = RegPlusDouble(registers_[reg_index], registers_[reg_index2],
-                  &registers_[reg_index]);
+        ret = RegPlusDouble(m_registers[reg_index], m_registers[reg_index2],
+                  &m_registers[reg_index]);
         if (ret < 0) {
-          g_eventLogger->debug("Overflow[PlusDouble], value is out of range");
+          DEB_AGG(("Overflow[PlusDouble], value is out of range"));
           return ZAGG_MATH_OVERFLOW;
         }
         break;
@@ -1584,10 +1549,10 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
       case kOpMinusBigint:
         reg_index = (value >> 12) & 0x0F;
         reg_index2 = (value >> 8) & 0x0F;
-        ret = RegMinusBigint(registers_[reg_index], registers_[reg_index2],
-                  &registers_[reg_index]);
+        ret = RegMinusBigint(m_registers[reg_index], m_registers[reg_index2],
+                  &m_registers[reg_index]);
         if (ret < 0) {
-          g_eventLogger->debug("Overflow[MinusBigint], value is out of range");
+          DEB_AGG(("Overflow[MinusBigint], value is out of range"));
           return ZAGG_MATH_OVERFLOW;
         }
         break;
@@ -1595,10 +1560,10 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
       case kOpMinusDouble:
         reg_index = (value >> 12) & 0x0F;
         reg_index2 = (value >> 8) & 0x0F;
-        ret = RegMinusDouble(registers_[reg_index], registers_[reg_index2],
-                  &registers_[reg_index]);
+        ret = RegMinusDouble(m_registers[reg_index], m_registers[reg_index2],
+                  &m_registers[reg_index]);
         if (ret < 0) {
-          g_eventLogger->debug("Overflow[MinusDouble], value is out of range");
+          DEB_AGG(("Overflow[MinusDouble], value is out of range"));
           return ZAGG_MATH_OVERFLOW;
         }
         break;
@@ -1607,10 +1572,10 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
       case kOpMulBigint:
         reg_index = (value >> 12) & 0x0F;
         reg_index2 = (value >> 8) & 0x0F;
-        ret = RegMulBigint(registers_[reg_index], registers_[reg_index2],
-                  &registers_[reg_index]);
+        ret = RegMulBigint(m_registers[reg_index], m_registers[reg_index2],
+                  &m_registers[reg_index]);
         if (ret < 0) {
-          g_eventLogger->debug("Overflow[MulBigint], value is out of range");
+          DEB_AGG(("Overflow[MulBigint], value is out of range"));
           return ZAGG_MATH_OVERFLOW;
         }
         break;
@@ -1618,10 +1583,10 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
       case kOpMulDouble:
         reg_index = (value >> 12) & 0x0F;
         reg_index2 = (value >> 8) & 0x0F;
-        ret = RegMulDouble(registers_[reg_index], registers_[reg_index2],
-                  &registers_[reg_index]);
+        ret = RegMulDouble(m_registers[reg_index], m_registers[reg_index2],
+                  &m_registers[reg_index]);
         if (ret < 0) {
-          g_eventLogger->debug("Overflow[MulDouble], value is out of range");
+          DEB_AGG(("Overflow[MulDouble], value is out of range"));
           return ZAGG_MATH_OVERFLOW;
         }
         break;
@@ -1630,10 +1595,10 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
       case kOpDivDouble:
         reg_index = (value >> 12) & 0x0F;
         reg_index2 = (value >> 8) & 0x0F;
-        ret = RegDivDouble(registers_[reg_index], registers_[reg_index2],
-                  &registers_[reg_index]);
+        ret = RegDivDouble(m_registers[reg_index], m_registers[reg_index2],
+                  &m_registers[reg_index]);
         if (ret < 0) {
-          g_eventLogger->debug("Overflow[DivDouble], value is out of range");
+          DEB_AGG(("Overflow[DivDouble], value is out of range"));
           return ZAGG_MATH_OVERFLOW;
         }
         break;
@@ -1641,10 +1606,10 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
       case kOpDivIntBigint:
         reg_index = (value >> 12) & 0x0F;
         reg_index2 = (value >> 8) & 0x0F;
-        ret = RegDivIntBigint(registers_[reg_index], registers_[reg_index2],
-                  &registers_[reg_index]);
+        ret = RegDivIntBigint(m_registers[reg_index], m_registers[reg_index2],
+                  &m_registers[reg_index]);
         if (ret < 0) {
-          g_eventLogger->debug("Overflow[DivIntBigint], value is out of range");
+          DEB_AGG(("Overflow[DivIntBigint], value is out of range"));
           return ZAGG_MATH_OVERFLOW;
         }
         break;
@@ -1653,36 +1618,35 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
         type = (value & 0x03E00000) >> 21;
         is_unsigned = IsUnsigned(type);
         reg_index = (value & 0x000F0000) >> 16;
-        col_index = (value & 0x0000FFFF) << 16;
-
-        ret = block_tup->readAttributes(req_struct, &(col_index), 1,
-                  buf_ + buf_pos_, g_buf_len_ - buf_pos_);
-        // assert(ret >= 0);
-        if (ret < 0) {
-          g_eventLogger->debug("read column error: %d", ret);
-          return -ret;
+        {
+          col_index = (value & 0x0000FFFF) << 16;
+          ret = block_tup->readAttributes(req_struct, &(col_index), 1,
+                    m_attr_read_buf + m_attr_read_pos, g_attr_read_buf_len_ - m_attr_read_pos);
+          if (ret < 0) {
+            DEB_AGG(("read column error: %d", ret));
+            return -ret;
+          }
+          header = reinterpret_cast<AttributeHeader*>(m_attr_read_buf + m_attr_read_pos);
+          attrDescriptor = req_struct->tablePtrP->tabDescriptor +
+              (((col_index) >> 16) * ZAD_SIZE);
+          assert(header->getAttributeId() == (col_index >> 16));
+          assert(type == AttributeDescriptor::getType(attrDescriptor[0]));
         }
-        header = reinterpret_cast<AttributeHeader*>(buf_ + buf_pos_);
-        attrDescriptor = req_struct->tablePtrP->tabDescriptor +
-          (((col_index) >> 16) * ZAD_SIZE);
-        assert(header->getAttributeId() == (col_index >> 16));
-
-        assert(type == AttributeDescriptor::getType(attrDescriptor[0]));
-        // assert(TypeSupported(type));
         if (!TypeSupported(type)) {
-          g_eventLogger->debug("Unsupported column type: %u", type);
+          DEB_AGG(("Unsupported column type: %u", type));
           return ZAGG_COL_TYPE_UNSUPPORTED;
         }
 
         if (type == NDB_TYPE_DECIMAL ||
             type == NDB_TYPE_DECIMALUNSIGNED) {
-          if (unlikely(exec_pos >= prog_len_)) {
-            g_eventLogger->warning("Pushdown aggregation program ended in the"
-                                   " middle of an instruction.");
+          if (unlikely(exec_pos >= m_prog_len)) {
+            g_eventLogger->debug("AggInterpreter::ProcessRec ZAGG_OTHER_ERROR: "
+                "kOpLoadCol DECIMAL overflow exec_pos=%u prog_len=%u",
+                exec_pos, m_prog_len);
             return ZAGG_OTHER_ERROR;
           }
           decimal_info =
-              sint4korr(reinterpret_cast<char*>(&prog_[exec_pos++]));
+              sint4korr(reinterpret_cast<char*>(&m_prog[exec_pos++]));
           precision = decimal_info >> 16;
           scale = decimal_info & 0xFFFF;
         } else {
@@ -1690,120 +1654,119 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
           scale = 0;
         }
 
-        ResetRegister(&registers_[reg_index]);
-        registers_[reg_index].type = AlignedType(type, scale);
-        registers_[reg_index].is_unsigned = is_unsigned;
-        registers_[reg_index].is_null = header->isNULL();
-        if (registers_[reg_index].is_null) {
+        ResetRegister(&m_registers[reg_index]);
+        m_registers[reg_index].type = AlignedType(type, scale);
+        m_registers[reg_index].is_unsigned = is_unsigned;
+        m_registers[reg_index].is_null = header->isNULL();
+        if (m_registers[reg_index].is_null) {
           // Column has a null value
-          PA_INTERP_TRACE(frag_id_,
+          PA_INTERP_TRACE(m_frag_id,
                           "Load NULL, type: %u",
-                          registers_[reg_index].type);
-          registers_[reg_index].value.val_int64 = 0;
+                          m_registers[reg_index].type);
+          m_registers[reg_index].value.val_int64 = 0;
           break;
         }
         switch (type) {
           case NDB_TYPE_TINYINT:
-            registers_[reg_index].value.val_int64 =
-                *reinterpret_cast<Int8*>(&buf_[buf_pos_ + 1]);
-            PA_INTERP_TRACE(frag_id_,
+            m_registers[reg_index].value.val_int64 =
+                *reinterpret_cast<Int8*>(&m_attr_read_buf[m_attr_read_pos + 1]);
+            PA_INTERP_TRACE(m_frag_id,
                             "Load NDB_TYPE_TINYINT %lld",
-                            registers_[reg_index].value.val_int64);
+                            m_registers[reg_index].value.val_int64);
             break;
           case NDB_TYPE_SMALLINT:
-            registers_[reg_index].value.val_int64 =
-                sint2korr(reinterpret_cast<char*>(&buf_[buf_pos_ + 1]));
-            PA_INTERP_TRACE(frag_id_,
+            m_registers[reg_index].value.val_int64 =
+                sint2korr(reinterpret_cast<char*>(&m_attr_read_buf[m_attr_read_pos + 1]));
+            PA_INTERP_TRACE(m_frag_id,
                             "Load NDB_TYPE_SMALLINT %lld",
-                            registers_[reg_index].value.val_int64);
+                            m_registers[reg_index].value.val_int64);
             break;
           case NDB_TYPE_MEDIUMINT:
-            registers_[reg_index].value.val_int64 =
-                sint3korr(reinterpret_cast<char*>(&buf_[buf_pos_ + 1]));
-            PA_INTERP_TRACE(frag_id_,
+            m_registers[reg_index].value.val_int64 =
+                sint3korr(reinterpret_cast<char*>(&m_attr_read_buf[m_attr_read_pos + 1]));
+            PA_INTERP_TRACE(m_frag_id,
                             "Load NDB_TYPE_MEDIUM %lld",
-                            registers_[reg_index].value.val_int64);
+                            m_registers[reg_index].value.val_int64);
             break;
           case NDB_TYPE_INT:
-            registers_[reg_index].value.val_int64 =
-                sint4korr(reinterpret_cast<char*>(&buf_[buf_pos_ + 1]));
-            PA_INTERP_TRACE(frag_id_,
+            m_registers[reg_index].value.val_int64 =
+                sint4korr(reinterpret_cast<char*>(&m_attr_read_buf[m_attr_read_pos + 1]));
+            PA_INTERP_TRACE(m_frag_id,
                             "Load NDB_TYPE_INT %lld",
-                            registers_[reg_index].value.val_int64);
+                            m_registers[reg_index].value.val_int64);
             break;
           case NDB_TYPE_BIGINT:
-            registers_[reg_index].value.val_int64 =
-                sint8korr(reinterpret_cast<char*>(&buf_[buf_pos_ + 1]));
-            PA_INTERP_TRACE(frag_id_,
+            m_registers[reg_index].value.val_int64 =
+                sint8korr(reinterpret_cast<char*>(&m_attr_read_buf[m_attr_read_pos + 1]));
+            PA_INTERP_TRACE(m_frag_id,
                             "Load NDB_TYPE_BIGINT %lld",
-                            registers_[reg_index].value.val_int64);
+                            m_registers[reg_index].value.val_int64);
             break;
           case NDB_TYPE_TINYUNSIGNED:
-            registers_[reg_index].value.val_uint64 =
-                *reinterpret_cast<Uint8*>(&buf_[buf_pos_ + 1]);
-            PA_INTERP_TRACE(frag_id_,
+            m_registers[reg_index].value.val_uint64 =
+                *reinterpret_cast<Uint8*>(&m_attr_read_buf[m_attr_read_pos + 1]);
+            PA_INTERP_TRACE(m_frag_id,
                             "Load NDB_TYPE_TINYUNSIGNED %llu",
-                            registers_[reg_index].value.val_uint64);
+                            m_registers[reg_index].value.val_uint64);
             break;
           case NDB_TYPE_SMALLUNSIGNED:
-            registers_[reg_index].value.val_uint64 =
-                uint2korr(reinterpret_cast<char*>(&buf_[buf_pos_ + 1]));
-            PA_INTERP_TRACE(frag_id_,
+            m_registers[reg_index].value.val_uint64 =
+                uint2korr(reinterpret_cast<char*>(&m_attr_read_buf[m_attr_read_pos + 1]));
+            PA_INTERP_TRACE(m_frag_id,
                             "Load NDB_TYPE_SMALLUNSIGNED %llu",
-                            registers_[reg_index].value.val_uint64);
+                            m_registers[reg_index].value.val_uint64);
             break;
           case NDB_TYPE_MEDIUMUNSIGNED:
-            registers_[reg_index].value.val_uint64 =
-                uint3korr(reinterpret_cast<char*>(&buf_[buf_pos_ + 1]));
-            PA_INTERP_TRACE(frag_id_,
+            m_registers[reg_index].value.val_uint64 =
+                uint3korr(reinterpret_cast<char*>(&m_attr_read_buf[m_attr_read_pos + 1]));
+            PA_INTERP_TRACE(m_frag_id,
                             "Load NDB_TYPE_MEDIUMUNSIGNED %llu",
-                            registers_[reg_index].value.val_uint64);
+                            m_registers[reg_index].value.val_uint64);
             break;
           case NDB_TYPE_UNSIGNED:
-            registers_[reg_index].value.val_uint64 =
-                uint4korr(reinterpret_cast<char*>(&buf_[buf_pos_ + 1]));
-            PA_INTERP_TRACE(frag_id_,
+            m_registers[reg_index].value.val_uint64 =
+                uint4korr(reinterpret_cast<char*>(&m_attr_read_buf[m_attr_read_pos + 1]));
+            PA_INTERP_TRACE(m_frag_id,
                             "Load NDB_TYPE_UNSIGNED %llu",
-                            registers_[reg_index].value.val_uint64);
+                            m_registers[reg_index].value.val_uint64);
             break;
           case NDB_TYPE_BIGUNSIGNED:
-            registers_[reg_index].value.val_uint64 =
-                uint8korr(reinterpret_cast<char*>(&buf_[buf_pos_ + 1]));
-            PA_INTERP_TRACE(frag_id_,
+            m_registers[reg_index].value.val_uint64 =
+                uint8korr(reinterpret_cast<char*>(&m_attr_read_buf[m_attr_read_pos + 1]));
+            PA_INTERP_TRACE(m_frag_id,
                             "Load NDB_TYPE_BIGUNSIGNED %llu",
-                            registers_[reg_index].value.val_uint64);
+                            m_registers[reg_index].value.val_uint64);
             break;
           case NDB_TYPE_FLOAT:
-            registers_[reg_index].value.val_double =
-                floatget(reinterpret_cast<unsigned char*>(&buf_[buf_pos_ + 1]));
-            PA_INTERP_TRACE(frag_id_,
+            m_registers[reg_index].value.val_double =
+                floatget(reinterpret_cast<unsigned char*>(&m_attr_read_buf[m_attr_read_pos + 1]));
+            PA_INTERP_TRACE(m_frag_id,
                             "Load NDB_TYPE_FLOAT %lf",
-                            registers_[reg_index].value.val_double);
+                            m_registers[reg_index].value.val_double);
             break;
           case NDB_TYPE_DOUBLE:
-            registers_[reg_index].value.val_double =
+            m_registers[reg_index].value.val_double =
                 doubleget(reinterpret_cast<unsigned char*>(
-                      &buf_[buf_pos_ + 1]));
-            PA_INTERP_TRACE(frag_id_,
+                      &m_attr_read_buf[m_attr_read_pos + 1]));
+            PA_INTERP_TRACE(m_frag_id,
                             "Load NDB_TYPE_DOUBLE %lf",
-                            registers_[reg_index].value.val_double);
+                            m_registers[reg_index].value.val_double);
             break;
           case NDB_TYPE_DECIMAL:
             assert(static_cast<Uint32>(decimal_bin_size(precision, scale)) ==
-                AttributeDescriptor::getSizeInBytes(attrDescriptor[0]));
+                header->getByteSize());
             // memset(decimal.buf, 0, sizeof(Int32) * DECIMAL_BUFF_LENGTH);
-            dec_ret = bin2decimal(reinterpret_cast<const uchar*>(&buf_[buf_pos_ + 1]),
-                      &decimal_, precision, scale);
-            // assert(dec_ret == E_DEC_OK);
+            dec_ret = bin2decimal(reinterpret_cast<const uchar*>(&m_attr_read_buf[m_attr_read_pos + 1]),
+                      &m_decimal, precision, scale);
             if (dec_ret != E_DEC_OK) {
-              dec_buf_ptr = reinterpret_cast<Uint8*>(&buf_[buf_pos_ + 1]);
+              dec_buf_ptr = reinterpret_cast<Uint8*>(&m_attr_read_buf[m_attr_read_pos + 1]);
               char log_buf[128];
               sprintf(log_buf, "Error while parsing decimal: ");
               for (Uint32 i = 0;
-                  i < AttributeDescriptor::getSizeInBytes(attrDescriptor[0]); i++) {
+                  i < header->getByteSize(); i++) {
                 sprintf(log_buf + strlen(log_buf), "%x ", *(dec_buf_ptr + i));
               }
-              g_eventLogger->debug("%s", log_buf);
+              DEB_AGG(("%s", log_buf));
               if (dec_ret == E_DEC_OVERFLOW) {
                 return ZAGG_DECIMAL_PARSE_OVERFLOW;
               } else {
@@ -1814,26 +1777,25 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
              * Moz
              * convert from decimal to double or bigint.
              */
-            assert(registers_[reg_index].is_unsigned == false);
+            assert(m_registers[reg_index].is_unsigned == false);
             if (scale != 0) {
-              assert(registers_[reg_index].type == NDB_TYPE_DOUBLE);
-              dec_ret = decimal2double(&decimal_, &dec_val_dbl);
-              registers_[reg_index].value.val_double = dec_val_dbl;
+              assert(m_registers[reg_index].type == NDB_TYPE_DOUBLE);
+              dec_ret = decimal2double(&m_decimal, &dec_val_dbl);
+              m_registers[reg_index].value.val_double = dec_val_dbl;
             } else {
-              assert(registers_[reg_index].type == NDB_TYPE_BIGINT);
-              dec_ret = decimal2longlong(&decimal_, &dec_val_ll);
-              registers_[reg_index].value.val_int64 = dec_val_ll;
+              assert(m_registers[reg_index].type == NDB_TYPE_BIGINT);
+              dec_ret = decimal2longlong(&m_decimal, &dec_val_ll);
+              m_registers[reg_index].value.val_int64 = dec_val_ll;
             }
-            // assert(dec_ret == E_DEC_OK);
             if (dec_ret != E_DEC_OK) {
-              dec_buf_ptr = reinterpret_cast<Uint8*>(&buf_[buf_pos_ + 1]);
+              dec_buf_ptr = reinterpret_cast<Uint8*>(&m_attr_read_buf[m_attr_read_pos + 1]);
               char log_buf[128];
               sprintf(log_buf, "Error while converting decimal: ");
               for (Uint32 i = 0;
-                  i < AttributeDescriptor::getSizeInBytes(attrDescriptor[0]); i++) {
+                  i < header->getByteSize(); i++) {
                 sprintf(log_buf + strlen(log_buf), "%x ", *(dec_buf_ptr + i));
               }
-              g_eventLogger->debug("%s", log_buf);
+              DEB_AGG(("%s", log_buf));
               if (dec_ret == E_DEC_OVERFLOW) {
                 return ZAGG_DECIMAL_CONV_OVERFLOW;
               } else {
@@ -1842,32 +1804,31 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
             }
 #ifdef DEBUG_PA_INTERP
             if (scale != 0) {
-              PA_INTERP_TRACE(frag_id_,
+              PA_INTERP_TRACE(m_frag_id,
                               "Load NDB_TYPE_DECIMAL[double] %lf",
-                              registers_[reg_index].value.val_double);
+                              m_registers[reg_index].value.val_double);
             } else {
-              PA_INTERP_TRACE(frag_id_,
+              PA_INTERP_TRACE(m_frag_id,
                               "Load NDB_TYPE_DECIMAL[int64] %lld",
-                              registers_[reg_index].value.val_int64);
+                              m_registers[reg_index].value.val_int64);
             }
 #endif // DEBUG_PA_INTERP
           break;
         case NDB_TYPE_DECIMALUNSIGNED:
             assert(static_cast<Uint32>(decimal_bin_size(precision, scale)) ==
-                AttributeDescriptor::getSizeInBytes(attrDescriptor[0]));
+                header->getByteSize());
             // memset(decimal.buf, 0, sizeof(Int32) * DECIMAL_BUFF_LENGTH);
-            dec_ret = bin2decimal(reinterpret_cast<const uchar*>(&buf_[buf_pos_ + 1]),
-                      &decimal_, precision, scale);
-            // assert(dec_ret == E_DEC_OK);
+            dec_ret = bin2decimal(reinterpret_cast<const uchar*>(&m_attr_read_buf[m_attr_read_pos + 1]),
+                      &m_decimal, precision, scale);
             if (dec_ret != E_DEC_OK) {
-              dec_buf_ptr = reinterpret_cast<Uint8*>(&buf_[buf_pos_ + 1]);
+              dec_buf_ptr = reinterpret_cast<Uint8*>(&m_attr_read_buf[m_attr_read_pos + 1]);
               char log_buf[128];
               sprintf(log_buf, "Error while parsing decimal: ");
               for (Uint32 i = 0;
-                  i < AttributeDescriptor::getSizeInBytes(attrDescriptor[0]); i++) {
+                  i < header->getByteSize(); i++) {
                 sprintf(log_buf + strlen(log_buf), "%x ", *(dec_buf_ptr + i));
               }
-              g_eventLogger->debug("%s", log_buf);
+              DEB_AGG(("%s", log_buf));
               if (dec_ret == E_DEC_OVERFLOW) {
                 return ZAGG_DECIMAL_PARSE_OVERFLOW;
               } else {
@@ -1878,29 +1839,28 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
              * Moz
              * convert from decimal unsigned to double or bigint.
              */
-            assert(registers_[reg_index].is_unsigned == true);
-            if(unlikely(decimal_.sign)) {
+            assert(m_registers[reg_index].is_unsigned == true);
+            if(unlikely(m_decimal.sign)) {
               return ZAGG_DECIMAL_CONV_ERROR;
             }
             if (scale != 0) {
-              assert(registers_[reg_index].type == NDB_TYPE_DOUBLE);
-              dec_ret = decimal2double(&decimal_, &dec_val_dbl);
-              registers_[reg_index].value.val_double = dec_val_dbl;
+              assert(m_registers[reg_index].type == NDB_TYPE_DOUBLE);
+              dec_ret = decimal2double(&m_decimal, &dec_val_dbl);
+              m_registers[reg_index].value.val_double = dec_val_dbl;
             } else {
-              assert(registers_[reg_index].type == NDB_TYPE_BIGINT);
-              dec_ret = decimal2ulonglong(&decimal_, &dec_val_ull);
-              registers_[reg_index].value.val_uint64 = dec_val_ull;
+              assert(m_registers[reg_index].type == NDB_TYPE_BIGINT);
+              dec_ret = decimal2ulonglong(&m_decimal, &dec_val_ull);
+              m_registers[reg_index].value.val_uint64 = dec_val_ull;
             }
-            // assert(dec_ret == E_DEC_OK);
             if (dec_ret != E_DEC_OK) {
-              dec_buf_ptr = reinterpret_cast<Uint8*>(&buf_[buf_pos_ + 1]);
+              dec_buf_ptr = reinterpret_cast<Uint8*>(&m_attr_read_buf[m_attr_read_pos + 1]);
               char log_buf[128];
               sprintf(log_buf, "Error while converting decimal: ");
               for (Uint32 i = 0;
-                  i < AttributeDescriptor::getSizeInBytes(attrDescriptor[0]); i++) {
+                  i < header->getByteSize(); i++) {
                 sprintf(log_buf + strlen(log_buf), "%x ", *(dec_buf_ptr + i));
               }
-              g_eventLogger->debug("%s", log_buf);
+              DEB_AGG(("%s", log_buf));
               if (dec_ret == E_DEC_OVERFLOW) {
                 return ZAGG_DECIMAL_CONV_OVERFLOW;
               } else {
@@ -1909,19 +1869,18 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
             }
 #ifdef DEBUG_PA_INTERP
             if (scale != 0) {
-              PA_INTERP_TRACE(frag_id_,
+              PA_INTERP_TRACE(m_frag_id,
                               "Load NDB_TYPE_DECIMALUNSIGNED[double] %lf",
-                              registers_[reg_index].value.val_double);
+                              m_registers[reg_index].value.val_double);
             } else {
-              PA_INTERP_TRACE(frag_id_,
+              PA_INTERP_TRACE(m_frag_id,
                               "Load NDB_TYPE_DECIMALUNSIGEND[uint64] %llu",
-                              registers_[reg_index].value.val_uint64);
+                              m_registers[reg_index].value.val_uint64);
             }
 #endif // DEBUG_PA_INTERP
           break;
 
           default:
-            // assert(0);
             return ZAGG_LOAD_COL_WRONG_TYPE;
         }
         break;
@@ -1930,41 +1889,41 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
         reg_index = (value & 0x000F0000) >> 16;
         assert(type == NDB_TYPE_BIGINT || type == NDB_TYPE_BIGUNSIGNED ||
                type == NDB_TYPE_DOUBLE);
-        ResetRegister(&registers_[reg_index]);
-        registers_[reg_index].type = AlignedType(type, 0);
-        registers_[reg_index].is_unsigned = IsUnsigned(type);
-        registers_[reg_index].is_null = false;
-        if (unlikely(exec_pos + 2 > prog_len_)) {
-          g_eventLogger->warning("Pushdown aggregation program ended in the"
-                                 " middle of an instruction.");
+        ResetRegister(&m_registers[reg_index]);
+        m_registers[reg_index].type = AlignedType(type, 0);
+        m_registers[reg_index].is_unsigned = IsUnsigned(type);
+        m_registers[reg_index].is_null = false;
+        if (unlikely(exec_pos + 2 > m_prog_len)) {
+          g_eventLogger->debug("AggInterpreter::ProcessRec ZAGG_OTHER_ERROR: "
+              "kOpLoadConst overflow exec_pos=%u prog_len=%u",
+              exec_pos, m_prog_len);
           return ZAGG_OTHER_ERROR;
         }
         switch (type) {
           case NDB_TYPE_BIGINT:
-            registers_[reg_index].value.val_int64 =
-                sint8korr(reinterpret_cast<char*>(&prog_[exec_pos]));
-              PA_INTERP_TRACE(frag_id_,
+            m_registers[reg_index].value.val_int64 =
+                sint8korr(reinterpret_cast<char*>(&m_prog[exec_pos]));
+              PA_INTERP_TRACE(m_frag_id,
                               "LoadConst[%u] NDB_TYPE_BIGINT %lld",
-                              reg_index, registers_[reg_index].value.val_int64);
+                              reg_index, m_registers[reg_index].value.val_int64);
             break;
           case NDB_TYPE_BIGUNSIGNED:
-            registers_[reg_index].value.val_uint64 =
-                uint8korr(reinterpret_cast<char*>(&prog_[exec_pos]));
-              PA_INTERP_TRACE(frag_id_,
+            m_registers[reg_index].value.val_uint64 =
+                uint8korr(reinterpret_cast<char*>(&m_prog[exec_pos]));
+              PA_INTERP_TRACE(m_frag_id,
                               "LoadConst[%u] "
                               "NDB_TYPE_BIGUNSIGNED %llu",
-                              reg_index, registers_[reg_index].value.val_uint64);
+                              reg_index, m_registers[reg_index].value.val_uint64);
             break;
           case NDB_TYPE_DOUBLE:
-            registers_[reg_index].value.val_double =
+            m_registers[reg_index].value.val_double =
                 doubleget(reinterpret_cast<unsigned char*>(
-                      &prog_[exec_pos]));
-              PA_INTERP_TRACE(frag_id_,
+                      &m_prog[exec_pos]));
+              PA_INTERP_TRACE(m_frag_id,
                               "LoadConst[%u] NDB_TYPE_DOUBLE %lf",
-                              reg_index, registers_[reg_index].value.val_double);
+                              reg_index, m_registers[reg_index].value.val_double);
             break;
           default:
-            // assert(0);
             return ZAGG_LOAD_CONST_WRONG_TYPE;
         }
         exec_pos += 2;
@@ -1973,8 +1932,8 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
         reg_index = (value >> 12 ) & 0x0F;
         reg_index2 = (value >> 8 ) & 0x0F;
 
-        registers_[reg_index] = registers_[reg_index2];
-        PA_INTERP_TRACE(frag_id_,
+        m_registers[reg_index] = m_registers[reg_index2];
+        PA_INTERP_TRACE(m_frag_id,
                         "Move [%u]->[%u]",
                         reg_index2, reg_index);
         break;
@@ -1982,10 +1941,9 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
         reg_index = (value & 0x000F0000) >> 16;
         agg_index = (value & 0x0000FFFF);
 
-        ret = Sum(registers_[reg_index], &agg_res_ptr[agg_index], debug_print);
-        // assert(ret >= 0);
+        ret = Sum(m_registers[reg_index], &agg_res_ptr[agg_index], debug_print);
         if (ret < 0) {
-          g_eventLogger->debug("Overflow[SUM], value is out of range");
+          DEB_AGG(("Overflow[SUM], value is out of range"));
           return ZAGG_MATH_OVERFLOW;
         }
         break;
@@ -1993,31 +1951,28 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
         reg_index = (value & 0x000F0000) >> 16;
         agg_index = (value & 0x0000FFFF);
 
-        ret = Max(registers_[reg_index], &agg_res_ptr[agg_index], debug_print);
-        // assert(ret >= 0);
+        ret = Max(m_registers[reg_index], &agg_res_ptr[agg_index], debug_print);
         break;
       case kOpMin:
         reg_index = (value & 0x000F0000) >> 16;
         agg_index = (value & 0x0000FFFF);
 
-        ret = Min(registers_[reg_index], &agg_res_ptr[agg_index], debug_print);
-        // assert(ret >= 0);
+        ret = Min(m_registers[reg_index], &agg_res_ptr[agg_index], debug_print);
         break;
       case kOpCount:
         reg_index = (value & 0x000F0000) >> 16;
         agg_index = (value & 0x0000FFFF);
 
-        ret = Count(registers_[reg_index], &agg_res_ptr[agg_index], debug_print);
-        // assert(ret >= 0);
+        ret = Count(m_registers[reg_index], &agg_res_ptr[agg_index], debug_print);
         break;
 
       // Type-specific Sum operations
       case kOpSumBigint:
         reg_index = (value & 0x000F0000) >> 16;
         agg_index = (value & 0x0000FFFF);
-        ret = SumBigint(registers_[reg_index], &agg_res_ptr[agg_index], debug_print);
+        ret = SumBigint(m_registers[reg_index], &agg_res_ptr[agg_index], debug_print);
         if (ret < 0) {
-          g_eventLogger->debug("Overflow[SumBigint], value is out of range");
+          DEB_AGG(("Overflow[SumBigint], value is out of range"));
           return ZAGG_MATH_OVERFLOW;
         }
         break;
@@ -2025,9 +1980,9 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
       case kOpSumDouble:
         reg_index = (value & 0x000F0000) >> 16;
         agg_index = (value & 0x0000FFFF);
-        ret = SumDouble(registers_[reg_index], &agg_res_ptr[agg_index], debug_print);
+        ret = SumDouble(m_registers[reg_index], &agg_res_ptr[agg_index], debug_print);
         if (ret < 0) {
-          g_eventLogger->debug("Overflow[SumDouble], value is out of range");
+          DEB_AGG(("Overflow[SumDouble], value is out of range"));
           return ZAGG_MATH_OVERFLOW;
         }
         break;
@@ -2036,68 +1991,110 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
       case kOpMaxBigint:
         reg_index = (value & 0x000F0000) >> 16;
         agg_index = (value & 0x0000FFFF);
-        ret = MaxBigint(registers_[reg_index], &agg_res_ptr[agg_index], debug_print);
+        ret = MaxBigint(m_registers[reg_index], &agg_res_ptr[agg_index], debug_print);
         break;
 
       case kOpMaxDouble:
         reg_index = (value & 0x000F0000) >> 16;
         agg_index = (value & 0x0000FFFF);
-        ret = MaxDouble(registers_[reg_index], &agg_res_ptr[agg_index], debug_print);
+        ret = MaxDouble(m_registers[reg_index], &agg_res_ptr[agg_index], debug_print);
         break;
 
       // Type-specific Min operations
       case kOpMinBigint:
         reg_index = (value & 0x000F0000) >> 16;
         agg_index = (value & 0x0000FFFF);
-        ret = MinBigint(registers_[reg_index], &agg_res_ptr[agg_index], debug_print);
+        ret = MinBigint(m_registers[reg_index], &agg_res_ptr[agg_index], debug_print);
         break;
 
       case kOpMinDouble:
         reg_index = (value & 0x000F0000) >> 16;
         agg_index = (value & 0x0000FFFF);
-        ret = MinDouble(registers_[reg_index], &agg_res_ptr[agg_index], debug_print);
+        ret = MinDouble(m_registers[reg_index], &agg_res_ptr[agg_index], debug_print);
         break;
 
+      case kOpSkip:
+      {
+        Uint32 skip_count = value & 0xFFFF;
+        exec_pos += skip_count;
+        break;
+      }
+
+      case kOpEmbeddedInterp:
+      {
+        Uint32 emb_len = value & 0xFFFF;
+        if (exec_pos + emb_len > m_prog_len) {
+          g_eventLogger->debug("AggInterpreter::ProcessRec ZAGG_OTHER_ERROR: "
+              "embedded interp len overflow exec_pos=%u emb_len=%u "
+              "prog_len=%u", exec_pos, emb_len, m_prog_len);
+          return ZAGG_OTHER_ERROR;
+        }
+
+        /* Save and reset instruction counter (interpreterNextLab asserts 0) */
+        Uint32 saved_instr_count = req_struct->no_exec_instructions;
+        req_struct->no_exec_instructions = 0;
+
+        /* Local output buffer — avoids corrupting outer interpreter coutBuffer */
+        Uint32 local_tmpArea[16];
+
+        int rc = block_tup->interpreterNextLab(
+            req_struct->signal, req_struct,
+            &m_prog[exec_pos], emb_len,   /* main program = embedded portion */
+            nullptr, 0,                   /* no subroutines */
+            local_tmpArea, 16);
+
+        req_struct->no_exec_instructions = saved_instr_count;
+
+        if (rc < 0) {
+          return ZAGG_EMBEDDED_INTERP_ERROR;
+        }
+
+        /* Read skip_offset written by WRITE_INTERPRETER_OUTPUT in embedded prog */
+        Uint32 skip_offset = block_tup->c_interpreter_output[0];
+        exec_pos += emb_len + skip_offset;
+        break;
+      }
+
       default:
-        // assert(0);
         return ZAGG_WRONG_OPERATION;
     }
   }
-  processed_rows_++;
+  m_processed_rows++;
   return 0;
 }
 
 void AggInterpreter::Print() {
   char log_buf[1024];
-  if (n_gb_cols_) {
-    if (gb_map_) {
+  if (m_n_gb_cols) {
+    if (m_gb_map) {
       sprintf(log_buf, "Group by columns: [");
-      for (Uint32 i = 0; i < n_gb_cols_; i++) {
-        if (i != n_gb_cols_ - 1) {
-          sprintf(log_buf + strlen(log_buf), "%u ", gb_cols_[i] >> 16);
+      for (Uint32 i = 0; i < m_n_gb_cols; i++) {
+        if (i != m_n_gb_cols - 1) {
+          sprintf(log_buf + strlen(log_buf), "%u ", m_gb_cols[i] >> 16);
         } else {
-          sprintf(log_buf + strlen(log_buf), "%u", gb_cols_[i] >> 16);
+          sprintf(log_buf + strlen(log_buf), "%u", m_gb_cols[i] >> 16);
         }
       }
       sprintf(log_buf + strlen(log_buf), "]");
       g_eventLogger->info("%s", log_buf);
       log_buf[0] = '\0';
 
-      g_eventLogger->info("Num of groups: %lu, Aggregation results:",
-                          gb_map_->size());
-      for (auto iter = gb_map_->begin(); iter != gb_map_->end(); iter++) {
+      g_eventLogger->info("Num of groups: %zu, Aggregation results:",
+                          m_gb_map->size());
+      for (auto iter = m_gb_map->begin(); iter != m_gb_map->end(); ++iter) {
         int pos = 0;
+        char* data = iter->first.ptr;
         sprintf(log_buf, "(");
-        for (Uint32 i = 0; i < n_gb_cols_; i++) {
-          if (i != n_gb_cols_ - 1) {
-            sprintf(log_buf + strlen(log_buf), "%u: %p, ", i, iter->first.ptr + pos);
+        for (Uint32 i = 0; i < m_n_gb_cols; i++) {
+          if (i != m_n_gb_cols - 1) {
+            sprintf(log_buf + strlen(log_buf), "%u: %p, ", i, data + pos);
           } else {
-            sprintf(log_buf + strlen(log_buf), "%u: %p): ", i, iter->first.ptr + pos);
+            sprintf(log_buf + strlen(log_buf), "%u: %p): ", i, data + pos);
           }
         }
 
         AggResItem* item = reinterpret_cast<AggResItem*>(iter->second.ptr);
-        for (Uint32 i = 0; i < n_agg_results_; i++) {
+        for (Uint32 i = 0; i < m_n_agg_results; i++) {
           sprintf(log_buf + strlen(log_buf), "(%u, %u, %u)", item[i].type,
                   item[i].is_unsigned, item[i].is_null);
           if (item[i].is_null) {
@@ -2119,9 +2116,9 @@ void AggInterpreter::Print() {
       }
     }
   } else {
-    AggResItem* item = agg_results_;
+    AggResItem* item = m_agg_results;
     log_buf[0] = '\0';
-    for (Uint32 i = 0; i < n_agg_results_; i++) {
+    for (Uint32 i = 0; i < m_n_agg_results; i++) {
       sprintf(log_buf + strlen(log_buf), "(%u, %u, %u)", item[i].type,
               item[i].is_unsigned, item[i].is_null);
       if (item[i].is_null) {
@@ -2143,322 +2140,80 @@ void AggInterpreter::Print() {
   }
 }
 
-// NOTICE: Need to define agg_ops[] before using this func.
-void AggInterpreter::MergePrint(const AggInterpreter* in1,
-                                   const AggInterpreter* in2) {
-  assert(in1 != nullptr && in2 != nullptr);
-  assert(in1->n_agg_results_ == in2->n_agg_results_);
-  auto iter1 = in1->gb_map_->begin();
-  auto iter2 = in2->gb_map_->begin();
-  char log_buf[1024];
-  log_buf[0] = '\0';
 
-  while (iter1 != in1->gb_map_->end() && iter2 != in2->gb_map_->end()) {
-    Uint32 len1 = iter1->first.len;
-    Uint32 len2 = iter2->first.len;
-#ifdef NDEBUG
-    (void)len2;
-#endif // NDEBUG
-    assert(len1 == len2);
+void AggInterpreter::initGBCmpCtx(Dbtup* block_tup,
+                                  Dbtup::KeyReqStruct* req_struct) {
+  m_gb_cmp_ctx.n_cols = m_n_gb_cols;
+  m_gb_cmp_ctx.all_binary_cmp = true;
+  for (Uint32 i = 0; i < m_n_gb_cols; i++) {
+    Uint32 attr_id = m_gb_cols[i] >> 16;
+    GBColMeta &meta = m_gb_cmp_ctx.col_meta[i];
 
-    int ret = memcmp(iter1->first.ptr, iter2->first.ptr, len1);
-    if (ret < 0) {
-      int pos = 0;
-      sprintf(log_buf + strlen(log_buf), "(");
-      for (Uint32 i = 0; i < in1->n_gb_cols_; i++) {
-        if (i != in1->n_gb_cols_ - 1) {
-          sprintf(log_buf + strlen(log_buf), "%u: %p, ", i, iter1->first.ptr + pos);
-        } else {
-          sprintf(log_buf + strlen(log_buf), "%u: %p): ", i, iter1->first.ptr + pos);
-        }
-      }
-      AggResItem* item = reinterpret_cast<AggResItem*>(iter1->second.ptr);
-      for (Uint32 i = 0; i < in1->n_agg_results_; i++) {
-        sprintf(log_buf + strlen(log_buf), "(%u, %u, %u)", item[i].type,
-            item[i].is_unsigned, item[i].is_null);
-        if (item[i].is_null) {
-          sprintf(log_buf + strlen(log_buf), "[NULL]");
-        } else {
-          switch (item[i].type) {
-            case NDB_TYPE_BIGINT:
-              sprintf(log_buf + strlen(log_buf), "[%15lld]", item[i].value.val_int64);
-              break;
-            case NDB_TYPE_DOUBLE:
-              sprintf(log_buf + strlen(log_buf), "[%31.16f]", item[i].value.val_double);
-              break;
-            default:
-              assert(0);
-          }
-        }
-      }
-      g_eventLogger->info("%s", log_buf);
-      log_buf[0] = '\0';
-      iter1++;
-    } else if (ret > 0) {
-      int pos = 0;
-      sprintf(log_buf + strlen(log_buf), "(");
-      for (Uint32 i = 0; i < in2->n_gb_cols_; i++) {
-        if (i != in2->n_gb_cols_ - 1) {
-          sprintf(log_buf + strlen(log_buf), "%u: %p, ", i, iter2->first.ptr + pos);
-        } else {
-          sprintf(log_buf + strlen(log_buf), "%u: %p): ", i, iter2->first.ptr + pos);
-        }
-      }
-      AggResItem* item = reinterpret_cast<AggResItem*>(iter2->second.ptr);
-      for (Uint32 i = 0; i < in2->n_agg_results_; i++) {
-        sprintf(log_buf + strlen(log_buf), "(%u, %u, %u)", item[i].type,
-            item[i].is_unsigned, item[i].is_null);
-        if (item[i].is_null) {
-          sprintf(log_buf + strlen(log_buf), "[NULL]");
-        } else {
-          switch (item[i].type) {
-            case NDB_TYPE_BIGINT:
-              sprintf(log_buf + strlen(log_buf), "[%15lld]", item[i].value.val_int64);
-              break;
-            case NDB_TYPE_DOUBLE:
-              sprintf(log_buf + strlen(log_buf), "[%31.16f]", item[i].value.val_double);
-              break;
-            default:
-              assert(0);
-          }
-        }
-      }
-      g_eventLogger->info("%s", log_buf);
-      log_buf[0] = '\0';
-      iter2++;
-    } else {
-      int pos = 0;
-      sprintf(log_buf + strlen(log_buf), "(");
-      for (Uint32 i = 0; i < in1->n_gb_cols_; i++) {
-        if (i != in1->n_gb_cols_ - 1) {
-          sprintf(log_buf + strlen(log_buf), "%u: %p, ", i, iter1->first.ptr + pos);
-        } else {
-          sprintf(log_buf + strlen(log_buf), "%u: %p): ", i, iter1->first.ptr + pos);
-        }
-      }
-      AggResItem* item1 = reinterpret_cast<AggResItem*>(iter1->second.ptr);
-      AggResItem* item2 = reinterpret_cast<AggResItem*>(iter2->second.ptr);
-      AggResItem result;
-      // NOTICE: Need to define agg_ops[] first.
-      Uint32 agg_ops[32];
-      for (Uint32 i = 0; i < in1->n_agg_results_; i++) {
-        assert(((item1[i].type == NDB_TYPE_BIGINT &&
-                item1[i].is_unsigned == item2[i].is_unsigned) ||
-                item1[i].type == NDB_TYPE_DOUBLE) &&
-                item1[i].type == item2[i].type);
-        if (item1[i].is_null) {
-          result = item2[i];
-        } else if (item2[i].is_null) {
-          result = item1[i];
-        } else {
-          result.type = item1[i].type;
-          result.is_unsigned = item1[i].is_unsigned;
-          switch (agg_ops[i]) {
-            case kOpSum:
-              if (item1[i].type == NDB_TYPE_BIGINT) {
-                if (item1[i].is_unsigned) {
-                  result.value.val_uint64 = (item1[i].value.val_uint64 +
-                                                 item2[i].value.val_uint64);
-                } else {
-                  result.value.val_int64 = (item1[i].value.val_int64 +
-                                                 item2[i].value.val_int64);
-                }
-              } else {
-                assert(item1[i].type == NDB_TYPE_DOUBLE);
-                result.value.val_double = (item1[i].value.val_double +
-                                               item2[i].value.val_double);
-              }
-              break;
-            case kOpCount:
-              assert(item1[i].type == NDB_TYPE_BIGINT);
-              assert(item1[i].is_unsigned == 1);
-              result.value.val_int64 = (item1[i].value.val_int64 +
-                                             item2[i].value.val_int64);
-              break;
-            case kOpMax:
-              if (item1[i].type == NDB_TYPE_BIGINT) {
-                if (item1[i].is_unsigned) {
-                  result.value.val_uint64 =
-                    item1[i].value.val_uint64 >= item2[i].value.val_uint64 ?
-                    item1[i].value.val_uint64 : item2[i].value.val_uint64;
-                } else {
-                  result.value.val_int64 =
-                    item1[i].value.val_int64 >= item2[i].value.val_int64 ?
-                    item1[i].value.val_int64 : item2[i].value.val_int64;
-                }
-              } else {
-                assert(item1[i].type == NDB_TYPE_DOUBLE);
-                result.value.val_double =
-                  item1[i].value.val_double >= item2[i].value.val_double ?
-                  item1[i].value.val_double : item2[i].value.val_double;
-              }
-              break;
-            case kOpMin:
-              if (item1[i].type == NDB_TYPE_BIGINT) {
-                if (item1[i].is_unsigned) {
-                  result.value.val_uint64 =
-                    item1[i].value.val_uint64 <= item2[i].value.val_uint64 ?
-                    item1[i].value.val_uint64 : item2[i].value.val_uint64;
-                } else {
-                  result.value.val_int64 =
-                    item1[i].value.val_int64 <= item2[i].value.val_int64 ?
-                    item1[i].value.val_int64 : item2[i].value.val_int64;
-                }
-              } else {
-                assert(item1[i].type == NDB_TYPE_DOUBLE);
-                result.value.val_double =
-                  item1[i].value.val_double <= item2[i].value.val_double ?
-                  item1[i].value.val_double : item2[i].value.val_double;
-              }
-              break;
-            default:
-              assert(0);
-              break;
-          }
-        }
-        sprintf(log_buf + strlen(log_buf), "(%u, %u, %u)", result.type,
-            result.is_unsigned, result.is_null);
-        if (result.is_null) {
-          sprintf(log_buf + strlen(log_buf), "[NULL]");
-        } else {
-          switch (result.type) {
-            case NDB_TYPE_BIGINT:
-              sprintf(log_buf + strlen(log_buf), "[%15lld]", result.value.val_int64);
-              break;
-            case NDB_TYPE_DOUBLE:
-              sprintf(log_buf + strlen(log_buf), "[%31.16f]", result.value.val_double);
-              break;
-            default:
-              assert(0);
-          }
-        }
-      }
-      g_eventLogger->info("%s", log_buf);
-      log_buf[0] = '\0';
-      iter1++;
-      iter2++;
+    const Uint32* attrDesc = req_struct->tablePtrP->tabDescriptor +
+        attr_id * ZAD_SIZE;
+    meta.typeId = AttributeDescriptor::getType(attrDesc[0]);
+    meta.cs = nullptr;
+    if (AttributeOffset::getCharsetFlag(attrDesc[1])) {
+      Uint32 csPos = AttributeOffset::getCharsetPos(attrDesc[1]);
+      meta.cs = req_struct->tablePtrP->charsetArray[csPos];
+      m_gb_cmp_ctx.all_binary_cmp = false;
     }
   }
-  while (iter1 != in1->gb_map_->end()) {
-    int pos = 0;
-    sprintf(log_buf + strlen(log_buf), "(");
-    for (Uint32 i = 0; i < in1->n_gb_cols_; i++) {
-      if (i != in1->n_gb_cols_ - 1) {
-        sprintf(log_buf + strlen(log_buf), "%u: %p, ", i, iter1->first.ptr + pos);
-      } else {
-        sprintf(log_buf + strlen(log_buf), "%u: %p): ", i, iter1->first.ptr + pos);
-      }
-    }
-    AggResItem* item = reinterpret_cast<AggResItem*>(iter1->second.ptr);
-    for (Uint32 i = 0; i < in1->n_agg_results_; i++) {
-      sprintf(log_buf + strlen(log_buf), "(%u, %u, %u)", item[i].type,
-          item[i].is_unsigned, item[i].is_null);
-      if (item[i].is_null) {
-        sprintf(log_buf + strlen(log_buf), "[NULL]");
-      } else {
-        switch (item[i].type) {
-          case NDB_TYPE_BIGINT:
-            sprintf(log_buf + strlen(log_buf), "[%15lld]", item[i].value.val_int64);
-            break;
-          case NDB_TYPE_DOUBLE:
-            sprintf(log_buf + strlen(log_buf), "[%31.16f]", item[i].value.val_double);
-            break;
-          default:
-            assert(0);
-        }
-      }
-    }
-    g_eventLogger->info("%s", log_buf);
-    log_buf[0] = '\0';
-  }
-  while (iter2 != in2->gb_map_->end()) {
-    int pos = 0;
-    sprintf(log_buf + strlen(log_buf), "(");
-    for (Uint32 i = 0; i < in2->n_gb_cols_; i++) {
-      if (i != in2->n_gb_cols_ - 1) {
-        sprintf(log_buf + strlen(log_buf), "%u: %p, ", i, iter2->first.ptr + pos);
-      } else {
-        sprintf(log_buf + strlen(log_buf), "%u: %p): ", i, iter2->first.ptr + pos);
-      }
-    }
-    AggResItem* item = reinterpret_cast<AggResItem*>(iter2->second.ptr);
-    for (Uint32 i = 0; i < in2->n_agg_results_; i++) {
-      sprintf(log_buf + strlen(log_buf), "(%u, %u, %u)", item[i].type,
-          item[i].is_unsigned, item[i].is_null);
-      if (item[i].is_null) {
-        sprintf(log_buf + strlen(log_buf), "[NULL]");
-      } else {
-        switch (item[i].type) {
-          case NDB_TYPE_BIGINT:
-            sprintf(log_buf + strlen(log_buf), "[%15lld]", item[i].value.val_int64);
-            break;
-          case NDB_TYPE_DOUBLE:
-            sprintf(log_buf + strlen(log_buf), "[%31.16f]", item[i].value.val_double);
-            break;
-          default:
-            assert(0);
-        }
-      }
-    }
-    g_eventLogger->info("%s", log_buf);
-    log_buf[0] = '\0';
-    iter2++;
-  }
+  m_gb_cmp_inited = true;
 }
 
 
 Uint32 AggInterpreter::PrepareAggResIfNeeded(Signal* signal, bool force) {
   // Limitation
-  Uint32 total_size = result_size_ +
-                  (gb_map_ ?
-                   gb_map_->size() * g_result_header_size_per_group_ : 0) +
+  Uint32 total_size = m_result_size +
+                  (m_gb_map ?
+                   m_gb_map->size() * g_result_header_size_per_group_ : 0) +
                   g_result_header_size_;
-  if (!force && (gb_map_ == nullptr ||
+  if (!force && (m_gb_map == nullptr ||
         total_size < DEF_AGG_RESULT_BATCH_BYTES)) {
     return 0;
   }
   if (force &&
-      (n_gb_cols_ != 0 && (gb_map_ == nullptr || gb_map_->size() == 0))) {
-    assert(result_size_ == 0);
+      (m_n_gb_cols != 0 && (m_gb_map == nullptr || m_gb_map->size() == 0))) {
+    assert(m_result_size == 0);
     return 0;
   }
   Uint32* data_buf = (&signal->theData[25]);
   Uint32 pos = 0;
-  assert(n_gb_cols_ < 0xFFFF);
-  assert(n_agg_results_ < 0xFFFF);
+  assert(m_n_gb_cols < 0xFFFF);
+  assert(m_n_agg_results < 0xFFFF);
 
-  if (n_gb_cols_) {
+  if (m_n_gb_cols) {
     data_buf[pos++] = AttributeHeader::AGG_RESULT << 16 | 0x0721;
-    data_buf[pos++] = n_gb_cols_ << 16 | n_agg_results_;
-    data_buf[pos++] = gb_map_->size();
-    for (auto iter = gb_map_->begin(); iter != gb_map_->end();) {
-      assert(iter->first.len % 4 == 0 && iter->first.len < 0xFFFF);
-      assert(iter->second.len % 4 == 0 && iter->second.len < 0xFFFF);
-      data_buf[pos++] = iter->first.len << 16 | iter->second.len;
-      assert(iter->first.ptr + (iter->first.len + iter->second.len) ==
-          iter->second.ptr + iter->second.len);
+    data_buf[pos++] = m_n_gb_cols << 16 | m_n_agg_results;
+    Uint32 n_groups_pos = pos++;
+    const Uint32 v_len = val_len();
+    Uint32 n_groups = 0;
+    for (auto iter = m_gb_map->begin(); iter != m_gb_map->end();) {
+      Uint32 key_len = iter->first.len;
+      assert(key_len % 4 == 0 && key_len < 0xFFFF);
+      assert(v_len % 4 == 0 && v_len < 0xFFFF);
+      data_buf[pos++] = key_len << 16 | v_len;
       MEMCOPY_NO_WORDS(&data_buf[pos], iter->first.ptr,
-          (iter->first.len + iter->second.len) >> 2);
-      pos += ((iter->first.len + iter->second.len) >> 2);
-#ifndef PA_MALLOC
-      delete[] iter->first.ptr;
-#endif // !PA_MALLOC
-      gb_map_->erase(iter++);
-      result_size_ = 0;
+          key_len >> 2);
+      MEMCOPY_NO_WORDS(&data_buf[pos + (key_len >> 2)], iter->second.ptr,
+          v_len >> 2);
+      pos += ((key_len + v_len) >> 2);
+      iter = m_gb_map->erase(iter);
+      n_groups++;
     }
-#ifdef PA_MALLOC
-    alloc_len_ = 0;
-#endif // PA_MALLOC
-    assert(gb_map_->empty());
+    data_buf[n_groups_pos] = n_groups;
+    m_alloc_len = 0;
+    m_result_size = 0;
   } else {
     data_buf[pos++] = AttributeHeader::AGG_RESULT << 16 | 0x0721;
-    data_buf[pos++] = n_gb_cols_ << 16 | n_agg_results_;
+    data_buf[pos++] = m_n_gb_cols << 16 | m_n_agg_results;
     data_buf[pos++] = 0;
-    data_buf[pos++] = 0 << 16 | (n_agg_results_ * sizeof(AggResItem));
-    assert(gb_map_ == nullptr);
-    MEMCOPY_NO_WORDS(&data_buf[pos], agg_results_,
-        (n_agg_results_ * sizeof(AggResItem)) >> 2);
-    pos += ((n_agg_results_ * sizeof(AggResItem)) >> 2);
+    data_buf[pos++] = 0 << 16 | (m_n_agg_results * sizeof(AggResItem));
+    assert(m_gb_map == nullptr);
+    MEMCOPY_NO_WORDS(&data_buf[pos], m_agg_results,
+        (m_n_agg_results * sizeof(AggResItem)) >> 2);
+    pos += ((m_n_agg_results * sizeof(AggResItem)) >> 2);
   }
 
 #if defined(PA_CHECK) && !defined(NDEBUG)
@@ -2523,12 +2278,12 @@ Uint32 AggInterpreter::PrepareAggResIfNeeded(Signal* signal, bool force) {
       }
     } else {
       assert(n_gb_cols == 0);
-      assert(n_agg_results == n_agg_results_);
+      assert(n_agg_results == m_n_agg_results);
       assert(n_res_items == 0);
       Uint32 gb_cols_len = data_buf[parse_pos] >> 16;
       Uint32 agg_res_len = data_buf[parse_pos++] & 0xFFFF;
       assert(gb_cols_len == 0);
-      assert(agg_res_len == n_agg_results_ * sizeof(AggResItem));
+      assert(agg_res_len == m_n_agg_results * sizeof(AggResItem));
       parse_pos += (agg_res_len >> 2);
     }
   }
@@ -2552,15 +2307,15 @@ Uint32 AggInterpreter::NumOfResRecords(bool last_time) {
      * if it's not the last time PrepareAggResIfNeeded,
      * here we can return the real value.
      * NOTICE:
-     * always return 1 even if gb_map_ is empty().
+     * always return 1 even if m_gb_map is empty().
      * In this situation: pushdown aggregation with filter and
      * group by. 99% rows has been filtered out which means
-     * gb_map_ has big chance to stay empty. In order to stop
+     * m_gb_map has big chance to stay empty. In order to stop
      * Dblqh::scanTupkeyRefLab send scanfragconf before aggregation
      * scan finishes. here return 1 to stop that.
      */
-    if (gb_map_) {
-      return (gb_map_->empty() ? 1 : gb_map_->size());
+    if (m_gb_map) {
+      return (m_gb_map->empty() ? 1 : m_gb_map->size());
     } else {
       /*
        * In non-groupby mode, before we send the result to API
@@ -2577,288 +2332,18 @@ Uint32 AggInterpreter::NumOfResRecords(bool last_time) {
      * aggregation is going to finish.
      * We assert all results have been sent and return 0 here.
      */
-    if (gb_map_) {
-      assert(gb_map_->empty());
+    if (m_gb_map) {
+      assert(m_gb_map->empty());
     }
     return 0;
   }
 }
 
-#ifdef PA_MALLOC
 char* AggInterpreter::MemAlloc(Uint32 len) {
-  if (alloc_len_ + len >= MAX_AGG_RESULT_BATCH_BYTES) {
-    return nullptr;
-  } else {
-    char* ptr = &(mem_buf_[alloc_len_]);
-    alloc_len_ += len;
-    return ptr;
-  }
-}
-
-void AggInterpreter::Destruct(AggInterpreter* ptr) {
-  if (ptr == nullptr) {
-    return;
-  }
-  ptr->~AggInterpreter();
-  lc_ndbd_pool_free(ptr);
-}
-#endif // PA_MALLOC
-Int32 AggInterpreter::CopyVecCandidateFromSignal(Signal* signal,
-                                                Uint32 ToutBufIndex) {
-  if (candidate_allocator_ == nullptr) {
-    VS_INTERP_TRACE(table_id_, frag_id_,
-                    "CandidateAllocator pre-allocating memory, "
-                    "top_n: %u, vec_max_rec_size: %u, actual_rec_size: %u",
-                    vec_top_n_, vec_max_rec_size_, ToutBufIndex);
-#ifdef PA_MALLOC
-    void* ca_mem = lc_ndbd_pool_malloc(
-        sizeof(CandidateAllocator), RG_QUERY_MEMORY, thread_id_, false);
-    if (ca_mem == nullptr) {
-      g_eventLogger->error("Alloc mem for CandidateAllocator failed");
-      return ZAGG_ALLOC_MEM_FAILED;
-    }
-    candidate_allocator_ = new (ca_mem) CandidateAllocator(
-        vec_top_n_, vec_max_rec_size_, table_id_, frag_id_);
-#else
-    candidate_allocator_ = new CandidateAllocator(
-        vec_top_n_, vec_max_rec_size_, table_id_, frag_id_);
-#endif
-    int ret = candidate_allocator_ -> Init(thread_id_);
-    if (ret != 0) {
-      return ret;
-    }
-  }
-  // The actual record size can't be larger than the vec_max_rec_size_
-  // TODO (Zhao)
-  // handle this error
-  assert(ToutBufIndex <= vec_max_rec_size_);
-
-  if (vec_top_n_results_.size() >= vec_top_n_) {
-    Candidate* knockout = vec_top_n_results_.top();
-    VS_INTERP_TRACE(table_id_, frag_id_,
-                    "Picked the candidate with distance %lf, idx: %d as the next knockout",
-        knockout->distance_,
-        knockout->idx_in_allocator_);
-    vec_top_n_results_.pop();
-    candidate_allocator_->set_next_index(knockout->idx_in_allocator_);
-    // No need to delete 'knockout' — it will be reused by the next selected candidate.
-    // delete knockout;
-  }
-
-  Candidate* selected = candidate_allocator_->
-      Allocate(curr_distance_, &(signal->theData[25]), ToutBufIndex);
-  if (selected == nullptr) {
-    return -1;
-  }
-  vec_top_n_results_.push(selected);
-  VS_INTERP_TRACE(table_id_, frag_id_,
-                  "Push one candidate with distance %lf, [%lu/%u], idx_in_allocator: %u",
-                  curr_distance_, vec_top_n_results_.size(), vec_top_n_,
-                  selected->idx_in_allocator_);
-  return 0;
-}
-
-void AggInterpreter::PrepareVecCandidates() {
-  vec_top_n_results_final_.clear();
-  while (!vec_top_n_results_.empty()) {
-    vec_top_n_results_final_.push_back(vec_top_n_results_.top());
-    vec_top_n_results_.pop();
-  }
-  next_send_idx_ = vec_top_n_results_final_.size() - 1;
-  VS_INTERP_TRACE(table_id_, frag_id_,
-                  "PrepareVecCandidates %lu",
-                  vec_top_n_results_final_.size());
-}
-
-Uint32 AggInterpreter::CopyOneVecCandidateToSignal(Signal* signal) {
-  if (next_send_idx_ >= 0) {
-    Candidate* next_send = vec_top_n_results_final_[next_send_idx_];
-    if (next_send->actual_buf_len_ > 3) {
-      // Fast path
-      AttributeHeader header = *(AttributeHeader*)(next_send->buf_ + next_send->actual_buf_len_ - 3);
-      if (header.getAttributeId() == AttributeHeader::VEC_DISTANCE &&
-          *(double*)(next_send->buf_ + next_send->actual_buf_len_ - 2) == 721.721) {
-        /* Fill in the vec_closes_ to the reserved area which contains the magic word 721.721*/
-        *(double*)(next_send->buf_ + next_send->actual_buf_len_ - 2) = next_send->distance_;
-      }
-    } else {
-      // TODO (Zhao)
-      // It doesn’t seem to work with index scans, since in an index scan
-      // there is an NdbRecord (READ_PACKED) packet at the beginning of the result.
-      Uint32 pos = 0;
-      while (pos < next_send->actual_buf_len_) {
-        AttributeHeader header = *(AttributeHeader*)(next_send->buf_ + pos);
-        if (header.getAttributeId() == AttributeHeader::VEC_DISTANCE) {
-#ifdef DEBUG_VS_INTERP
-          double value = *(double*)(next_send->buf_ + pos + 1);
-          VS_INTERP_TRACE(table_id_, frag_id_,
-                          "CopyOneToSignalForSending, attributeId: %d, value: %lf",
-                          header.getAttributeId(), value);
-#endif  // DEBUG_VS_INTERP
-          *(double*)(next_send->buf_ + pos + 1) = next_send->distance_;
-        }
-        pos += header.getDataSize() + 1;
-      }
-    }
-    Uint32 copy_len = next_send->actual_buf_len_;
-    if (next_send != nullptr && next_send->actual_buf_len_ != 0) {
-      memcpy((void*)(&signal->theData[25]), next_send->buf_,
-          next_send->actual_buf_len_ * sizeof(Uint32));
-      VS_INTERP_TRACE(table_id_, frag_id_,
-                      "CopyOneToSignalForSending, len: %u, idx: %d",
-                      next_send->actual_buf_len_, next_send_idx_);
-      vec_n_candidates_sent_++;
-      vec_size_candidates_sent_ += next_send->actual_buf_len_;
-    }
-
-    vec_top_n_results_final_[next_send_idx_] = nullptr;
-    next_send_idx_--;
-    /*
-     * Don’t release the memory here — CandidateAllocator will handle it.
-     */
-    // delete next_send;
-    return copy_len;
-  } else {
-    return 0;
-  }
-}
-
-void AggInterpreter::set_vec_max_rec_size(Uint32 size) {
-	/*
-	 * vec_max_rec_size_ is only used to calculate the preallocated memory size
-	 * for candidate_allocator_, so it doesn’t make sense to set it
-	 * after candidate_allocator_ has already been initialized.
-	 */
-  if (!candidate_allocator_) {
-    // 10% bigger
-    vec_max_rec_size_ = static_cast<int>(std::ceil(size * 1.1));
-    VS_INTERP_TRACE(table_id_, frag_id_, "Adjust vec_max_rec_size: %u -> %u",
-                    size, vec_max_rec_size_);
-  }
-}
-
-Uint32 AggInterpreter::CandidateAllocator::g_max_results_size = 100 * 1024 * 1024; /*100 MB*/
-Uint32 AggInterpreter::CandidateAllocator::g_segment_size = 1 * 1024 * 1024; /*1 MB*/
-
-static inline size_t highest_power_of_two_leq(size_t x) {
-  // x > 0
-  return size_t(1) << (8 * sizeof(size_t) - 1 - __builtin_clzl(x));
-}
-
-Int32 AggInterpreter::CandidateAllocator::Init(Uint32 thread_id) {
-  if (init_) {
-    return 0;
-  }
-
-  if (total_size_ > g_max_results_size) {
-    g_eventLogger->warning(
-        "Vector search result size %lu exceeds max pool %u",
-        total_size_, g_max_results_size);
-    return ZAGG_VS_TOO_BIG_RESULT;
-  }
-
-  if (slot_size_ > g_segment_size) {
-    g_eventLogger->error(
-        "slot_size %lu > segment_size %u, cannot allocate candidates safely",
-        slot_size_, g_segment_size);
-    return ZAGG_VS_TOO_BIG_RESULT;
-  }
-
-  size_t raw = g_segment_size / slot_size_;
-  assert(raw > 0);
-  slots_per_full_segment_ = highest_power_of_two_leq(raw);
-  shift_k_ = __builtin_ctzl(slots_per_full_segment_);
-  // slots_per_full_segment_ = g_segment_size / slot_size_;
-  // assert(slots_per_full_segment_ > 0);
-
-  size_t full_segments = max_candidates_ / slots_per_full_segment_;
-  size_t last_slots = max_candidates_ % slots_per_full_segment_;
-  size_t last_size = last_slots * slot_size_;
-
-  [[maybe_unused]] size_t num_segments = full_segments + (last_slots > 0 ? 1 : 0);
-
-  VS_INTERP_TRACE(table_id_, frag_id_,
-      "Init CandidateAllocator: slot_size=%lu, slots_per_full_seg=%lu, "
-      "full_segments=%lu, last_slots=%lu",
-      slot_size_, slots_per_full_segment_, full_segments, last_slots);
-
-#ifdef PA_MALLOC
-  assert(num_segments <= MAX_CANDIDATE_SEGMENTS);
-#else
-  segments_.reserve(num_segments);
-#endif
-
-  for (size_t i = 0; i < full_segments; i++) {
-#ifdef PA_MALLOC
-    void* page_ptr = lc_ndbd_pool_malloc(g_segment_size, RG_QUERY_MEMORY,
-        thread_id, false);
-    if (!page_ptr) {
-      g_eventLogger->error("Failed allocating segment %lu", i);
-      return ZAGG_ALLOC_MEM_FAILED;
-    }
-    segments_[n_segments_++] = {(char*)page_ptr, g_segment_size};
-#else
-    char* buf = (char*)::operator new(g_segment_size);
-    segments_.push_back({buf, g_segment_size});
-#endif // PA_MALLOC
-  }
-
-  if (last_size > 0) {
-#ifdef PA_MALLOC
-    void* page_ptr = lc_ndbd_pool_malloc(last_size, RG_QUERY_MEMORY,
-        thread_id, false);
-    if (!page_ptr) {
-      g_eventLogger->error("Failed allocating last segment");
-      return ZAGG_ALLOC_MEM_FAILED;
-    }
-    segments_[n_segments_++] = {(char*)page_ptr, last_size};
-#else
-    char* buf = (char*)::operator new(last_size);
-    segments_.push_back({buf, last_size});
-#endif // PA_MALLOC
-  }
-
-  init_ = true;
-  return 0;
-}
-
-AggInterpreter::Candidate* AggInterpreter::CandidateAllocator::Allocate(
-    double distance, const Uint32* tuple, Uint32 actual_buf_len) {
-  if (next_index_ >= max_candidates_) {
+  if (m_alloc_len + len > MAX_AGG_RESULT_BATCH_BYTES) {
     return nullptr;
   }
-
-  // size_t seg_id = next_index_ / slots_per_full_segment_;
-  // size_t slot_off = next_index_ % slots_per_full_segment_;
-	size_t seg_id   = next_index_ >> shift_k_;
-	size_t slot_off = next_index_ & (slots_per_full_segment_ - 1);
-
-#ifdef PA_MALLOC
-  assert(seg_id < n_segments_);
-#else
-  assert(seg_id < segments_.size());
-#endif
-
-  char* base = segments_[seg_id].ptr;
-  char* ptr = base + slot_off * slot_size_;
-
-  assert(ptr + slot_size_ <= base + segments_[seg_id].size);
-
-  VS_INTERP_TRACE(table_id_, frag_id_,
-      "Alloc idx=%lu -> seg=%lu slot_off=%lu",
-      next_index_, seg_id, slot_off);
-
-  Candidate* c = new (ptr) Candidate(distance, actual_buf_len, next_index_);
-  c->Init(tuple);
-
-  if (!reuse_started_) {
-    ++next_index_;
-  }
-  if (!reuse_started_ && next_index_ == max_candidates_) {
-    VS_INTERP_TRACE(table_id_, frag_id_, "CandidateAllocator reuse started");
-    next_index_ = 0;
-    reuse_started_ = true;
-  }
-
-  return c;
+  char* ptr = &(m_mem_buf[m_alloc_len]);
+  m_alloc_len += len;
+  return ptr;
 }

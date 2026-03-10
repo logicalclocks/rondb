@@ -59,6 +59,8 @@ bool printSCAN_FRAGREQ(FILE *output, const Uint32 *theData, Uint32 len,
     fprintf(output, "(cs)");
   if (ScanFragReq::getTTLOnlyExpiredFragFlag(sig->requestInfo))
     fprintf(output, "(ttl)");
+  if (ScanFragReq::getJoinAggFlag(sig->requestInfo))
+    fprintf(output, "(join_agg)");
   if (ScanFragReq::getNoDiskFlag(sig->requestInfo))
     fprintf(output, "(nodisk)");
   else
@@ -88,7 +90,8 @@ bool printSCAN_FRAGREQ(FILE *output, const Uint32 *theData, Uint32 len,
 
   if (ScanFragReq::getCorrFactorFlag(sig->requestInfo) ||
       ScanFragReq::getParallelOrderedScanFlag(sig->requestInfo) ||
-      ScanFragReq::getTTLOnlyExpiredFragFlag(sig->requestInfo)) {
+      ScanFragReq::getTTLOnlyExpiredFragFlag(sig->requestInfo) ||
+      ScanFragReq::getJoinAggFlag(sig->requestInfo)) {
     Uint32 num_extra = len - ScanFragReq::SignalLength;
     for (Uint32 i = 0; i < num_extra; i++) {
       fprintf(output, " variableData[%u]: 0x%x\n", i, sig->variableData[i]);

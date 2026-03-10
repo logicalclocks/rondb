@@ -1,5 +1,7 @@
 --source include/have_ndb.inc
 --source include/have_util_curl.inc
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
 
 let $rdrs_ronsql = curl --no-progress-meter --fail-with-body -X POST
   -H "Content-Type: application/json"

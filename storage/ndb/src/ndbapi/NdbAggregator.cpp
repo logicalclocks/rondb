@@ -121,6 +121,7 @@ NdbAggregator::NdbAggregator(const NdbDictionary::Table* table) :
     }
     memset(agg_ops_, kOpUnknown, MAX_AGGREGATION_OP_SIZE * 4);
     vec_result_final_.clear();
+    memset(gb_columns_, 0, sizeof(gb_columns_));
 }
 
 NdbAggregator::~NdbAggregator() {
@@ -141,6 +142,58 @@ NdbAggregator::~NdbAggregator() {
   for (Uint32 i = 0; i < vec_result_final_.size(); i++) {
     delete vec_result_final_[i];
   }
+}
+
+void NdbAggregator::initForResults(const Uint32 *programBuffer,
+                                   Uint32 programLen,
+                                   const NdbDictionary::Column *const *gbColumns,
+                                   Uint32 nGbColumns) {
+  assert(programLen >= PROGRAM_HEADER_SIZE);
+  // Word 1: (n_gb_cols << 16) | n_agg_results
+  n_gb_cols_ = programBuffer[1] >> 16;
+  n_agg_results_ = programBuffer[1] & 0xFFFF;
+
+  // Allocate gb_map if GROUP BY is used
+  if (n_gb_cols_ > 0 && gb_map_ == nullptr) {
+    gb_map_ = new std::map<GBHashEntry, GBHashEntry, GBHashEntryCmp>();
+  }
+
+  // Allocate agg_results for non-GROUP-BY case
+  if (n_gb_cols_ == 0 && agg_results_ == nullptr && n_agg_results_ > 0) {
+    agg_results_ = new AggResItem[n_agg_results_];
+    for (Uint32 i = 0; i < n_agg_results_; i++) {
+      agg_results_[i].type = NDB_TYPE_UNDEFINED;
+      agg_results_[i].value.val_int64 = 0;
+      agg_results_[i].is_unsigned = false;
+      agg_results_[i].is_null = true;
+    }
+  }
+
+  // Store GROUP BY column definitions for FetchGroupbyColumn().
+  memset(gb_columns_, 0, sizeof(gb_columns_));
+  if (gbColumns != nullptr) {
+    for (Uint32 i = 0; i < nGbColumns && i < MAX_AGG_N_GROUPBY_COLS; i++) {
+      gb_columns_[i] = gbColumns[i];
+    }
+  }
+
+  // Parse instructions to extract agg_ops for COUNT null→0 fixup.
+  // Instructions start at PROGRAM_HEADER_SIZE + n_gb_cols_.
+  Uint32 instrStart = PROGRAM_HEADER_SIZE + n_gb_cols_;
+  for (Uint32 i = instrStart; i < programLen; i++) {
+    Uint32 op = (programBuffer[i] >> 26) & 0x3F;
+    if (op == kOpSum || op == kOpMax || op == kOpMin || op == kOpCount ||
+        op == kOpSumBigint || op == kOpSumDouble ||
+        op == kOpMaxBigint || op == kOpMaxDouble ||
+        op == kOpMinBigint || op == kOpMinDouble) {
+      Uint32 agg_id = programBuffer[i] & 0xFFFF;
+      if (agg_id < MAX_AGG_N_RESULTS) {
+        agg_ops_[agg_id] = (InterpreterOp)op;
+      }
+    }
+  }
+
+  finalized_ = true;
 }
 
 Int32 NdbAggregator::ProcessRes(char* buf) {
@@ -210,11 +263,11 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
         GBHashEntry new_aggs{agg_rec + gb_cols_len, agg_res_len};
 
         // RONDB-831: COUNT() over zero rows should result in 0, not NULL.
-        // Therefore, replace NULLs with 0 for all COUNT results.
+        // Therefore, replace NULLs/UNDEFINED with 0 for all COUNT results.
         for (Uint32 i = 0; i < n_agg_results_; i++) {
           if (agg_ops_[i] == kOpCount) {
             AggResItem* item = reinterpret_cast<AggResItem*>(new_aggs.ptr) + i;
-            if (item->is_null) {
+            if (item->is_null || item->type == NDB_TYPE_UNDEFINED) {
               item->type = NDB_TYPE_BIGINT;
               item->is_unsigned = 1;
               item->is_null = false;
@@ -236,17 +289,30 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
         DEB_TRACE();
         for (Uint32 i = 0; i < n_agg_results; i++) {
           DEB_TRACE();
-          assert(((res[i].type == NDB_TYPE_BIGINT &&
-                  (res[i].is_unsigned == agg_res_ptr[i].is_unsigned ||
-                   agg_res_ptr[i].is_null)) ||
-                  res[i].type == NDB_TYPE_DOUBLE) &&
-                  res[i].type == agg_res_ptr[i].type);
+          // Handle NDB_TYPE_UNDEFINED and NULL cases before merging.
+          // Mirrors kernel mergeAccumulators() logic.
+          if (res[i].type == NDB_TYPE_UNDEFINED) {
+            continue;
+          }
+          if (agg_res_ptr[i].type == NDB_TYPE_UNDEFINED) {
+            agg_res_ptr[i] = res[i];
+            continue;
+          }
           if (res[i].is_null) {
             DEB_TRACE();
-          } else if (agg_res_ptr[i].is_null) {
+            continue;
+          }
+          if (agg_res_ptr[i].is_null) {
             DEB_TRACE();
             agg_res_ptr[i] = res[i];
-          } else {
+            continue;
+          }
+          // Both sides are non-null with real types — check consistency.
+          assert(((res[i].type == NDB_TYPE_BIGINT &&
+                  res[i].is_unsigned == agg_res_ptr[i].is_unsigned) ||
+                  res[i].type == NDB_TYPE_DOUBLE) &&
+                  res[i].type == agg_res_ptr[i].type);
+          {
             DEB_TRACE();
             agg_res_ptr[i].type = res[i].type;
             agg_res_ptr[i].is_unsigned = res[i].is_unsigned;
@@ -564,6 +630,41 @@ bool NdbAggregator::LoadColumn(Int32 col_id, Uint32 reg_id) {
   return true;
 }
 
+bool NdbAggregator::LoadLinkedColumn(Uint32 position, Uint32 reg_id,
+                                     const NdbDictionary::Column *col) {
+  if (col == nullptr) {
+    SetError(kErrInvalidColumnId);
+    return false;
+  }
+  NdbDictionary::Column::Type type = col->getType();
+  if (!TypeSupported(type)) {
+    SetError(kErrUnSupportedColumn);
+    return false;
+  }
+  if (reg_id >= kRegTotal) {
+    SetError(kErrInvalidRegNo);
+    return false;
+  }
+
+  Uint32 col_id = AGG_LINKED_COL_FLAG | position;
+  buffer_[curr_prog_pos_++] =
+    (kOpLoadCol) << 26 |
+    (type & 0x1F) << 21 |
+    (reg_id & 0x0F) << 16 |
+    col_id;
+
+  if (type == NdbDictionary::Column::Decimal ||
+      type == NdbDictionary::Column::Decimalunsigned) {
+    Int32 decimal_info = col->getPrecision() << 16 |
+                           col->getScale();
+    int4store(reinterpret_cast<char*>(&buffer_[curr_prog_pos_]),
+              decimal_info);
+    curr_prog_pos_++;
+  }
+
+  return true;
+}
+
 bool NdbAggregator::LoadUint64(Uint64 value, Uint32 reg_id) {
   buffer_[curr_prog_pos_++] =
     (kOpLoadConst) << 26 |
@@ -790,11 +891,13 @@ bool NdbAggregator::GroupBy(const char* name) {
     return false;
   }
   Int32 col_id = col->getAttrId();
-  buffer_[curr_prog_pos_++] = col_id << 16;
+  buffer_[curr_prog_pos_++] =
+      (col_id << 16) | (col->getType() & AGG_GB_COL_TYPE_MASK);
 
   result_size_est_ += (sizeof(AttributeHeader) + ((col->getSizeInBytes() + 3) & (~3)));
 
   gb_col_ids_[n_gb_cols_] = col_id;
+  gb_columns_[n_gb_cols_] = col;
   n_gb_cols_++;
 
   if (col->getStorageType() == NDB_STORAGETYPE_DISK) {
@@ -805,8 +908,15 @@ bool NdbAggregator::GroupBy(const char* name) {
 }
 
 bool NdbAggregator::GroupBy(Int32 col_id) {
-  const NdbDictionary::Column* col = table_impl_->getColumn(col_id);
-  if (col == nullptr) {
+  // AGG_LINKED_COL_FLAG (bit 15): column is from parent table in a pushed join.
+  // Strip for table lookup but preserve in the program buffer.
+  const Int32 raw_col_id = col_id & ~AGG_LINKED_COL_FLAG;
+  const bool is_linked = (col_id & AGG_LINKED_COL_FLAG) != 0;
+
+  const NdbDictionary::Column* col = table_impl_->getColumn(raw_col_id);
+  if (col == nullptr && !is_linked) {
+    // For linked (parent) columns, the column may not exist in the child table.
+    // We cannot validate it here — the kernel will validate at execution time.
     SetError(kErrInvalidColumnId);
     return false;
   }
@@ -816,17 +926,79 @@ bool NdbAggregator::GroupBy(Int32 col_id) {
     SetError(kErrUnSupportedColumn);
     return false;
   }
+
   buffer_[curr_prog_pos_++] = col_id << 16;
 
-  result_size_est_ += (sizeof(AttributeHeader) + ((col->getSizeInBytes() + 3) & (~3)));
+  if (col != nullptr) {
+    result_size_est_ += (sizeof(AttributeHeader) + ((col->getSizeInBytes() + 3) & (~3)));
+    if (col->getStorageType() == NDB_STORAGETYPE_DISK) {
+      disk_columns_ = true;
+    }
+  } else {
+    // Linked column: estimate 8 bytes (bigint) for size estimation
+    result_size_est_ += (sizeof(AttributeHeader) + 8);
+  }
 
-  gb_col_ids_[n_gb_cols_] = col_id;
+  /* For non-linked columns store the column definition; for linked columns
+     the caller should use GroupByLinked() to supply the parent column. */
+  gb_columns_[n_gb_cols_] = is_linked ? nullptr : col;
   n_gb_cols_++;
 
-  if (col->getStorageType() == NDB_STORAGETYPE_DISK) {
+  return true;
+}
+
+bool NdbAggregator::GroupByLinked(Uint32 position,
+                                  const NdbDictionary::Column *parentCol) {
+  if (parentCol == nullptr) {
+    SetError(kErrInvalidColumnId);
+    return false;
+  }
+  Uint32 col_id = position | AGG_LINKED_COL_FLAG;
+  buffer_[curr_prog_pos_++] =
+      (col_id << 16) | (parentCol->getType() & AGG_GB_COL_TYPE_MASK);
+
+  result_size_est_ += (sizeof(AttributeHeader) +
+                        ((parentCol->getSizeInBytes() + 3) & (~3)));
+  if (parentCol->getStorageType() == NDB_STORAGETYPE_DISK) {
     disk_columns_ = true;
   }
 
+  gb_columns_[n_gb_cols_] = parentCol;
+  n_gb_cols_++;
+  return true;
+}
+
+bool NdbAggregator::EmbeddedInterp(Uint32 embedded_length) {
+  buffer_[curr_prog_pos_++] =
+      (kOpEmbeddedInterp << 26) | (embedded_length & 0xFFFF);
+  return true;
+}
+
+bool NdbAggregator::EmitEmbeddedWord(Uint32 word) {
+  buffer_[curr_prog_pos_++] = word;
+  return true;
+}
+
+bool NdbAggregator::Skip(Uint32 skip_count) {
+  buffer_[curr_prog_pos_++] = (kOpSkip << 26) | (skip_count & 0xFFFF);
+  return true;
+}
+
+bool NdbAggregator::RepeatAgg(Uint32 agg_id, Uint32 reg_id) {
+  if (agg_id >= MAX_AGGREGATION_OP_SIZE) {
+    SetError(kErrInvalidAggNo);
+    return false;
+  }
+  if (agg_ops_[agg_id] == kOpUnknown) {
+    SetError(kErrAggNoUsed);
+    return false;
+  }
+  if (reg_id >= kRegTotal) {
+    SetError(kErrInvalidRegNo);
+    return false;
+  }
+  buffer_[curr_prog_pos_++] =
+      (agg_ops_[agg_id]) << 26 | (reg_id & 0x0F) << 16 | agg_id;
   return true;
 }
 
@@ -864,9 +1036,12 @@ bool NdbAggregator::Finalize() {
     gb_cmp_ctx_.n_cols = n_gb_cols_;
     bool all_binary = true;
     for (Uint32 i = 0; i < n_gb_cols_; i++) {
-      const NdbDictionary::Column* col =
-          table_impl_->getColumn(gb_col_ids_[i]);
-      assert(col != nullptr);
+      const NdbDictionary::Column* col = gb_columns_[i];
+      if (col == nullptr) {
+        // Linked column without metadata — skip charset check,
+        // kernel handles collation for linked columns.
+        continue;
+      }
       gb_cmp_ctx_.col_meta[i].typeId = (Uint32)col->getType();
       gb_cmp_ctx_.col_meta[i].cs = col->getCharset();
       if (col->getCharset() != nullptr) {
@@ -969,14 +1144,28 @@ NdbAggregator::Column NdbAggregator::ResultRecord::FetchGroupbyColumn() {
   curr_group_pos_ += sizeof(AttributeHeader);
 
   Uint32 id = header.getAttributeId();
-  const NdbDictionary::Column* col =
-                      aggregator_->table_impl()->getColumn(id);
-  if (col == nullptr) {
-    abort();
-  }
-  NdbDictionary::Column::Type type = col->getType();
-  bool is_null = header.isNULL();
   Uint32 byte_size = header.getByteSize();
+
+  /* Determine column type.  gb_columns_[] has the authoritative column
+     definition for each GROUP BY column — for local columns it points
+     into the leaf table's dictionary, for linked columns it points into
+     the ancestor table's dictionary (set via GroupByLinked / initForResults).
+     Fall back to leaf table lookup only when gb_columns_ is not set. */
+  Uint32 gb_idx = curr_gb_col_index_++;
+  const NdbDictionary::Column *gb_col =
+      (gb_idx < MAX_AGG_N_GROUPBY_COLS)
+          ? aggregator_->gb_columns_[gb_idx] : nullptr;
+  NdbDictionary::Column::Type type;
+  if (gb_col != nullptr) {
+    type = gb_col->getType();
+  } else {
+    const NdbDictionary::Column *col =
+        aggregator_->table_impl()->getColumn(id);
+    type = (col != nullptr) ? col->getType()
+                            : NdbDictionary::Column::Undefined;
+  }
+
+  bool is_null = header.isNULL();
   Uint32 word_size = header.getDataSize() * sizeof(Int32);
   char* ptr = is_null ? nullptr : group_records_.ptr + curr_group_pos_;
   if (is_null) {

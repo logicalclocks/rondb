@@ -70,6 +70,7 @@ class Dbacc;
 class Dbtup;
 class Dbtux;
 class Lgman;
+class VecSearchInterpreter;
 
 class FsReadWriteReq;
 
@@ -109,10 +110,9 @@ class FsReadWriteReq;
   } while (0)
 
 #define VS_NEED_PRINT(scanPtr) \
-  ((scanPtr != nullptr) && (scanPtr->m_aggregation) && \
-   (scanPtr->m_agg_interpreter->vec_search()) && \
-   (scanPtr->m_agg_interpreter->table_id() == PA_TABLE_ID) && \
-   (scanPtr->m_agg_interpreter->frag_id() == PA_PART_ID))
+  ((scanPtr != nullptr) && (scanPtr->m_vs_interpreter != nullptr) && \
+   (scanPtr->m_vs_interpreter->table_id() == PA_TABLE_ID) && \
+   (scanPtr->m_vs_interpreter->frag_id() == PA_PART_ID))
 
 #define VS_RONDB_TRACE(scanPtr, format, ...) \
   do { \
@@ -131,6 +131,8 @@ class FsReadWriteReq;
 #define VS_RONDB_TRACE(scanPtr, format, ...) do {} while (0)
 
 #endif // DEBUG_PA
+
+#define ZINVALID_SCHEMA_VERSION 1227
 
 #ifdef DBLQH_C
 // Constants
@@ -353,6 +355,8 @@ class FsReadWriteReq;
 #define ZHANDLE_TC_FAILED_SCANS 42
 #define ZRESUME_BLOCKED_COPY_FRAGMENT 43
 #define ZUPDATE_CPU_USAGE 44
+#define ZCONTINUE_JOIN_AGG_SEND 45
+#define ZCONTINUE_JOIN_AGG_MERGE 46
 
 /* ------------------------------------------------------------------------- */
 /*        NODE STATE DURING SYSTEM RESTART, VARIABLES CNODES_SR_STATE        */
@@ -425,7 +429,6 @@ class FsReadWriteReq;
 #define ZTOO_MANY_FRAGMENTS 1224
 #define ZTABLE_NOT_DEFINED 1225
 #define ZDROP_TABLE_IN_PROGRESS 1226
-#define ZINVALID_SCHEMA_VERSION 1227
 #define ZTABLE_READ_ONLY 1233
 #define ZREDO_IO_PROBLEM 1234
 #define ZNO_SUCH_FRAGMENT_ID 1235
@@ -462,6 +465,21 @@ class FsReadWriteReq;
 #define ZTIME_OUT_ERROR 266
 #define ZSCAN_CONTINOUS_SCAN_LOCK_ERROR 2202
 #endif
+
+/* Node failure error code — same value as DBTC's ZNODEFAIL_BEFORE_COMMIT */
+#define ZNODEFAIL_BEFORE_COMMIT 286
+
+/* Join aggregation error codes (outside DBLQH_C for DblqhProxy) */
+#define ZJOIN_AGG_STATE_ALLOC_FAILED       1250
+#define ZJOIN_AGG_STATE_NOT_FOUND          1251
+#define ZJOIN_AGG_INTERPRETER_INIT_FAILED  1252
+#define ZJOIN_AGG_INTERPRETER_ERROR        1253
+#define ZJOIN_AGG_OP_COUNT_MISMATCH        1254
+#define ZJOIN_AGG_PARENT_DATA_ERROR        1255
+#define ZJOIN_AGG_RESULT_TOO_LARGE         1256
+#define ZJOIN_AGG_TIMEOUT                  1257
+#define ZJOIN_AGG_ALREADY_FINALIZED        1258
+#define ZJOIN_AGG_MUTEX_ERROR              1259
 
 /**
  * @class dblqh
@@ -567,6 +585,9 @@ class Dblqh : public SimulatedBlock {
   bool m_is_query_block;
   bool m_is_recover_block;
   bool m_is_in_query_thread;
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+  bool m_skip_tc_node_check;
+#endif
   enum LcpCloseState {
     LCP_IDLE = 0,
     LCP_RUNNING = 1,       // LCP is running
@@ -667,11 +688,15 @@ class Dblqh : public SimulatedBlock {
       m_takeOverRefCount(0),
       m_reserved(0),
       m_send_early_hbrep(0),
-      m_aggregation(0),
+      m_has_pushdown(0),
       m_agg_curr_batch_size_rows(0),
       m_agg_curr_batch_size_bytes(0),
       m_agg_n_res_recs(0),
       m_agg_interpreter(nullptr),
+      m_vs_interpreter(nullptr),
+      m_join_agg_state_key(RNIL),
+      m_join_agg_evict_rows(0),
+      m_rows_examined(0),
       m_ttl_purge_window_size(0)
     {
     }
@@ -799,8 +824,8 @@ class Dblqh : public SimulatedBlock {
     Uint8 m_send_early_hbrep;
     Uint8 m_par_ordered_scan_flag;
     Uint8 m_continous_scan_state;
-    // Aggregation
-    Uint8 m_aggregation;
+    // Pushdown (aggregation or vector search)
+    Uint8 m_has_pushdown;
     Uint32 m_agg_curr_batch_size_rows; // [0, 1], 1 indicates a "aggregation
                                        // batch completed", which means either
                                        // size of group map in aggregation
@@ -815,6 +840,10 @@ class Dblqh : public SimulatedBlock {
                              // that we won't send a scanfragconf with 0 completed_ops
                              // to the TC, which could cause incorrect aggregation result.
     AggInterpreter* m_agg_interpreter;
+    VecSearchInterpreter* m_vs_interpreter;
+    Uint32 m_join_agg_state_key;    // Pool index for shared join agg state (RNIL if none)
+    Uint32 m_join_agg_evict_rows;   // Evicted group rows sent to API during this scan batch
+    Uint32 m_rows_examined;          // Total rows examined in this scan batch
     // TTL
     Uint8 m_ttl_ignore;         // ignore set by API
     Uint8 m_ttl_ignore_for_ral; // ignore set by Read after lock
@@ -2993,6 +3022,7 @@ class Dblqh : public SimulatedBlock {
     Uint8 m_disk_table;
     Uint8 m_use_rowid;
     Uint8 m_query_thread;
+    Uint32 m_join_agg_state_key;    // Pool index for shared join agg state (RNIL if none)
     enum dealloc_states {
       /*
        * Example set of dealloc ops:
@@ -3284,6 +3314,18 @@ private:
   void execCOMPLETEREQ(Signal* signal);
   void execMEMCHECKREQ(Signal* signal);
   void execSCAN_FRAGREQ(Signal* signal);
+  void execJOIN_AGG_COMPLETE_REQ(Signal* signal);
+  void execJOIN_AGG_SEND_CONF(Signal* signal);
+  bool checkJoinAggNodeFailed(Signal* signal, Uint32 aggStateKey,
+                              Uint32 senderRef);
+  void continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
+                            Uint32 merge_idx,
+                            Uint32 senderRef, Uint32 senderData,
+                            Uint32 requestId);
+  void continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
+                           Uint32 num_result_rows, Uint32 total_bytes,
+                           Uint32 senderRef, Uint32 senderData,
+                           Uint32 requestId);
   void execSCAN_NEXTREQ(Signal* signal);
   void execACC_SCANREF(Signal* signal, TcConnectionrecPtr);
   void execNEXT_SCANREF(Signal* signal);

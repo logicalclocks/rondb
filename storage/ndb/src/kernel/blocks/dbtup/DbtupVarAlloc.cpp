@@ -33,12 +33,19 @@
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_ELEM_COUNT 1
+//#define DEBUG_VARPART_ALLOC 1
 #endif
 
 #ifdef DEBUG_ELEM_COUNT
 #define DEB_ELEM_COUNT(arglist) do { g_eventLogger->info arglist ; } while (0)
 #else
 #define DEB_ELEM_COUNT(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_VARPART_ALLOC
+#define DEB_VAR_ALLOC(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_VAR_ALLOC(arglist) do { } while (0)
 #endif
 
 void Dbtup::init_list_sizes(void) {
@@ -134,6 +141,17 @@ Dbtup::alloc_var_part(Uint32 * err,
                   from_line));
   key->m_page_no = pagePtr.i;
   key->m_page_idx = idx;
+  DEB_VAR_ALLOC(("(%u) alloc_var_part: tab(%u,%u),"
+                 " var_ref(%u,%u), alloc_size: %u,"
+                 " free_space: %u, from_line: %u",
+                 instance(),
+                 fragPtr->fragTableId,
+                 fragPtr->fragmentId,
+                 pagePtr.i,
+                 idx,
+                 alloc_size,
+                 ((Var_page *)pagePtr.p)->free_space,
+                 from_line));
 
   update_free_page_list(fragPtr, pagePtr);
   return ((Var_page *)pagePtr.p)->get_ptr(idx);
@@ -152,6 +170,17 @@ void Dbtup::free_var_part(Fragrecord* fragPtr,
   Ptr<Page> pagePtr;
   if (key->m_page_no != RNIL) {
     ndbrequire(c_page_pool.getPtr(pagePtr, key->m_page_no));
+    DEB_VAR_ALLOC(("(%u) free_var_part: tab(%u,%u),"
+                   " var_ref(%u,%u), entry_len: %u,"
+                   " free_space: %u",
+                   instance(),
+                   fragPtr->fragTableId,
+                   fragPtr->fragmentId,
+                   key->m_page_no,
+                   key->m_page_idx,
+                   ((Var_page *)pagePtr.p)->get_entry_len(
+                     key->m_page_idx),
+                   ((Var_page *)pagePtr.p)->free_space));
     ndbassert(fragPtr->m_varWordsFree >= ((Var_page *)pagePtr.p)->free_space);
     fragPtr->m_varWordsFree -= ((Var_page *)pagePtr.p)->free_space;
     ((Var_page *)pagePtr.p)->free_record(key->m_page_idx, Var_page::CHAIN);
@@ -231,6 +260,16 @@ void Dbtup::free_var_rec(Fragrecord* fragPtr,
 void Dbtup::free_var_part(Fragrecord* fragPtr,
                           PagePtr pagePtr,
                           Uint32 page_idx) {
+  DEB_VAR_ALLOC(("(%u) free_var_part(page): tab(%u,%u),"
+                 " var_ref(%u,%u), entry_len: %u,"
+                 " free_space: %u",
+                 instance(),
+                 fragPtr->fragTableId,
+                 fragPtr->fragmentId,
+                 pagePtr.i,
+                 page_idx,
+                 ((Var_page *)pagePtr.p)->get_entry_len(page_idx),
+                 ((Var_page *)pagePtr.p)->free_space));
   ndbassert(fragPtr->m_varWordsFree >= ((Var_page *)pagePtr.p)->free_space);
   fragPtr->m_varWordsFree -= ((Var_page *)pagePtr.p)->free_space;
   ((Var_page *)pagePtr.p)->free_record(page_idx, Var_page::CHAIN);
@@ -276,6 +315,17 @@ Uint32 *Dbtup::realloc_var_part(Uint32 *err,
   Var_page *pageP = (Var_page *)pagePtr.p;
   Local_key oldref;
   refptr->copyout(&oldref);
+  DEB_VAR_ALLOC(("(%u) realloc_var_part: tab(%u,%u),"
+                 " old_ref(%u,%u), oldsz: %u, newsz: %u,"
+                 " free_space: %u",
+                 instance(),
+                 fragPtr->fragTableId,
+                 fragPtr->fragmentId,
+                 oldref.m_page_no,
+                 oldref.m_page_idx,
+                 oldsz,
+                 newsz,
+                 pageP->free_space));
 
   ndbassert(newsz);
   ndbassert(add);

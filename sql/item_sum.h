@@ -798,6 +798,65 @@ class Item_sum : public Item_func {
   void add_json_info(Json_object *obj) override {
     obj->add_alias("distinct", create_dom_ptr<Json_boolean>(with_distinct));
   }
+
+  // Pushed aggregate support (NDB aggregation pushdown).
+  // When m_pushed_aggregate is true, val_int()/val_real() return the
+  // pre-computed values instead of computing from accumulated state.
+ protected:
+  bool m_pushed_aggregate{false};
+  int64_t m_pushed_value_int{0};
+  double m_pushed_value_double{0.0};
+  bool m_pushed_null{false};
+  bool m_pushed_is_double{false};
+  // For AVG pushdown: store raw SUM and COUNT so reset_field() can write
+  // the integer SUM (which fits f_scale=0) and the real COUNT, letting
+  // Item_avg_field::val_decimal() do the division with prec_increment.
+  uint64_t m_pushed_avg_count{0};
+
+ public:
+  void set_pushed_value_int(int64_t val) {
+    m_pushed_aggregate = true;
+    m_pushed_value_int = val;
+    m_pushed_is_double = false;
+    m_pushed_null = false;
+    null_value = false;
+  }
+  void set_pushed_value_double(double val) {
+    m_pushed_aggregate = true;
+    m_pushed_value_double = val;
+    m_pushed_is_double = true;
+    m_pushed_null = false;
+    null_value = false;
+  }
+  /**
+   * Set pushed AVG result as raw SUM + COUNT.
+   * The temp table field for AVG stores (sum, count) with f_scale=0 for
+   * integer columns.  Storing a pre-computed fractional average would
+   * truncate to integer.  Instead store the raw SUM and COUNT so that
+   * Item_avg_field::val_decimal() divides correctly with prec_increment.
+   */
+  void set_pushed_avg(int64_t sum_int, uint64_t count) {
+    m_pushed_aggregate = true;
+    m_pushed_value_int = sum_int;
+    m_pushed_avg_count = count;
+    m_pushed_is_double = false;
+    m_pushed_null = false;
+    null_value = false;
+  }
+  void set_pushed_avg_double(double sum_dbl, uint64_t count) {
+    m_pushed_aggregate = true;
+    m_pushed_value_double = sum_dbl;
+    m_pushed_avg_count = count;
+    m_pushed_is_double = true;
+    m_pushed_null = false;
+    null_value = false;
+  }
+  void set_pushed_null() {
+    m_pushed_aggregate = true;
+    m_pushed_null = true;
+    null_value = true;
+  }
+  bool is_pushed_aggregate() const { return m_pushed_aggregate; }
 };
 
 class Unique;

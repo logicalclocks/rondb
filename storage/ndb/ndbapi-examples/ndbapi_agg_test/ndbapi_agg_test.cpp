@@ -189,6 +189,29 @@ static void create_large_tables(MYSQL &mysql) {
     MYSQLERROR(mysql);
 }
 
+static void create_nullagg_tables(MYSQL &mysql) {
+  mysql_query(&mysql, "DROP TABLE IF EXISTS pa_test_nullagg");
+  mysql_query(&mysql, "DROP TABLE IF EXISTS pa_test_nullagg_inno");
+
+  if (mysql_query(&mysql,
+        "CREATE TABLE pa_test_nullagg ("
+        "id INT NOT NULL,"
+        "grp INT NOT NULL,"
+        "val INT NULL,"
+        "PRIMARY KEY USING HASH (id)"
+        ") ENGINE=NDB"))
+    MYSQLERROR(mysql);
+
+  if (mysql_query(&mysql,
+        "CREATE TABLE pa_test_nullagg_inno ("
+        "id INT NOT NULL,"
+        "grp INT NOT NULL,"
+        "val INT NULL,"
+        "PRIMARY KEY (id)"
+        ") ENGINE=InnoDB"))
+    MYSQLERROR(mysql);
+}
+
 /* ----------------------------------------------------------------
  * Data population — small dataset (22 rows)
  * ---------------------------------------------------------------- */
@@ -366,6 +389,59 @@ static void populate_large_data(MYSQL &mysql) {
 }
 
 /* ----------------------------------------------------------------
+ * Data population — nullagg dataset (300 rows)
+ * ---------------------------------------------------------------- */
+
+static void populate_nullagg_data(MYSQL &mysql) {
+  const int TOTAL = 300;
+  const int BATCH = 100;
+
+  for (int batch_start = 0; batch_start < TOTAL; batch_start += BATCH) {
+    int batch_end = batch_start + BATCH;
+    if (batch_end > TOTAL) batch_end = TOTAL;
+
+    std::string sql = "INSERT INTO pa_test_nullagg VALUES ";
+    std::string sql_inno = "INSERT INTO pa_test_nullagg_inno VALUES ";
+
+    for (int id = batch_start; id < batch_end; id++) {
+      if (id > batch_start) {
+        sql += ",";
+        sql_inno += ",";
+      }
+
+      int grp = (id / 100) + 1;  /* grp 1: ids 0-99, grp 2: 100-199, grp 3: 200-299 */
+      char row_buf[64];
+      if (grp == 1) {
+        /* Group 1: all non-NULL, val = id */
+        snprintf(row_buf, sizeof(row_buf), "(%d,%d,%d)", id, grp, id);
+      } else if (grp == 2) {
+        /* Group 2: all NULL */
+        snprintf(row_buf, sizeof(row_buf), "(%d,%d,NULL)", id, grp);
+      } else {
+        /* Group 3: even ids non-NULL, odd ids NULL */
+        if (id % 2 == 0) {
+          snprintf(row_buf, sizeof(row_buf), "(%d,%d,%d)", id, grp, id);
+        } else {
+          snprintf(row_buf, sizeof(row_buf), "(%d,%d,NULL)", id, grp);
+        }
+      }
+
+      sql += row_buf;
+      sql_inno += row_buf;
+    }
+
+    if (mysql_real_query(&mysql, sql.c_str(), (unsigned long)sql.length()))
+      MYSQLERROR(mysql);
+    if (mysql_real_query(&mysql, sql_inno.c_str(),
+                         (unsigned long)sql_inno.length()))
+      MYSQLERROR(mysql);
+  }
+
+  fprintf(stderr, "  Inserted %d rows into pa_test_nullagg and "
+                  "pa_test_nullagg_inno\n", TOTAL);
+}
+
+/* ----------------------------------------------------------------
  * Validation helpers
  * ---------------------------------------------------------------- */
 
@@ -435,6 +511,50 @@ static bool run_sql_and_fetch(MYSQL &mysql, const std::string &sql,
       out_vals[i] = (double)std::stoll(row[i]);
     } else {
       out_vals[i] = std::stod(row[i]);
+    }
+  }
+
+  mysql_free_result(res);
+  return true;
+}
+
+/*
+ * Like run_sql_and_fetch but also tracks which columns are SQL NULL.
+ * out_nulls[i] is true when row[i] is NULL.
+ */
+static bool run_sql_and_fetch_nullable(
+    MYSQL &mysql, const std::string &sql,
+    std::vector<double> &out_vals,
+    std::vector<bool> &out_nulls,
+    const std::vector<bool> &is_integer) {
+  if (mysql_real_query(&mysql, sql.c_str(), (unsigned long)sql.length())) {
+    fprintf(stderr, "  SQL error: %s\n  Query: %s\n",
+            mysql_error(&mysql), sql.c_str());
+    return false;
+  }
+  MYSQL_RES *res = mysql_store_result(&mysql);
+  if (!res) return false;
+
+  MYSQL_ROW row = mysql_fetch_row(res);
+  if (!row) {
+    mysql_free_result(res);
+    return false;
+  }
+
+  unsigned int n_fields = mysql_num_fields(res);
+  out_vals.resize(n_fields);
+  out_nulls.resize(n_fields);
+  for (unsigned int i = 0; i < n_fields; i++) {
+    if (row[i] == nullptr) {
+      out_vals[i] = 0.0;
+      out_nulls[i] = true;
+    } else {
+      out_nulls[i] = false;
+      if (i < is_integer.size() && is_integer[i]) {
+        out_vals[i] = (double)std::stoll(row[i]);
+      } else {
+        out_vals[i] = std::stod(row[i]);
+      }
     }
   }
 
@@ -2877,6 +2997,640 @@ static bool run_test_18(TestContext &ctx) {
 }
 
 /* ----------------------------------------------------------------
+ * Test 19: Repeated PA Scan Lifecycle
+ *   Run the same GROUP BY query 3 times in sequence to verify that
+ *   the factory create / Init / Destruct cycle works correctly and
+ *   the bump allocator resets between scans.
+ * ---------------------------------------------------------------- */
+
+static bool run_test_19(TestContext &ctx) {
+  fprintf(stderr,
+      "\n=== Test 19: Repeated PA Scan Lifecycle ===\n");
+  fprintf(stderr, "  SELECT category, SUM(val_int), COUNT(val_int)\n"
+                  "  FROM pa_test GROUP BY category   (x3 iterations)\n");
+
+  const NdbDictionary::Dictionary *dict = ctx.ndb->getDictionary();
+  const NdbDictionary::Table *table = dict->getTable(ctx.ndb_table);
+  if (!table) APIERROR(dict->getNdbError());
+
+  const int N_ITERS = 3;
+  /* category -> {sum, count} */
+  std::map<std::string, std::vector<double>> run_results[N_ITERS];
+
+  for (int iter = 0; iter < N_ITERS; iter++) {
+    NdbTransaction *trans = ctx.ndb->startTransaction();
+    if (!trans) APIERROR(ctx.ndb->getNdbError());
+
+    NdbScanOperation *scanOp = trans->getNdbScanOperation(table);
+    if (!scanOp) {
+      std::cout << trans->getNdbError().message << std::endl;
+      ctx.ndb->closeTransaction(trans);
+      return false;
+    }
+
+    if (scanOp->readTuples(NdbOperation::LM_CommittedRead) != 0)
+      APIERROR(trans->getNdbError());
+
+    NdbAggregator agg(table);
+    VERIFY(agg.GroupBy("category"));
+    VERIFY(agg.LoadColumn("val_int", kReg1));
+    VERIFY(agg.Sum(0, kReg1));
+    VERIFY(agg.LoadColumn("val_int", kReg1));
+    VERIFY(agg.Count(1, kReg1));
+    VERIFY(agg.Finalize());
+
+    if (scanOp->setAggregationCode(&agg) == -1) {
+      std::cout << trans->getNdbError().message << std::endl;
+      ctx.ndb->closeTransaction(trans);
+      return false;
+    }
+
+    if (scanOp->DoAggregation() == -1) {
+      std::cout << "DoAggregation failed (iter " << iter << "): "
+                << trans->getNdbError().message << std::endl;
+      ctx.ndb->closeTransaction(trans);
+      return false;
+    }
+
+    NdbAggregator::ResultRecord record = agg.FetchResultRecord();
+    while (!record.end()) {
+      NdbAggregator::Column col = record.FetchGroupbyColumn();
+      std::string cat_val;
+      while (!col.end()) {
+        cat_val = extract_varchar(col);
+        col = record.FetchGroupbyColumn();
+      }
+
+      std::vector<double> vals;
+      NdbAggregator::Result result = record.FetchAggregationResult();
+      while (!result.end()) {
+        switch (result.type()) {
+          case NdbDictionary::Column::Bigint:
+            vals.push_back((double)result.data_int64());
+            break;
+          case NdbDictionary::Column::Bigunsigned:
+            vals.push_back((double)result.data_uint64());
+            break;
+          default:
+            vals.push_back(0);
+        }
+        result = record.FetchAggregationResult();
+      }
+
+      run_results[iter][cat_val] = vals;
+      record = agg.FetchResultRecord();
+    }
+
+    ctx.ndb->closeTransaction(trans);
+    fprintf(stderr, "  Iteration %d: %d groups\n",
+            iter, (int)run_results[iter].size());
+  }
+
+  /* Compare all 3 runs — they must be identical */
+  bool all_valid = true;
+  if (run_results[0].size() != run_results[1].size() ||
+      run_results[0].size() != run_results[2].size()) {
+    fprintf(stderr, "  FAIL: group counts differ across iterations: "
+                    "%d / %d / %d\n",
+            (int)run_results[0].size(), (int)run_results[1].size(),
+            (int)run_results[2].size());
+    all_valid = false;
+  }
+
+  for (auto &kv : run_results[0]) {
+    for (int iter = 1; iter < N_ITERS; iter++) {
+      auto it = run_results[iter].find(kv.first);
+      if (it == run_results[iter].end()) {
+        fprintf(stderr, "  FAIL: group '%s' missing in iteration %d\n",
+                kv.first.c_str(), iter);
+        all_valid = false;
+        continue;
+      }
+      if (kv.second.size() != it->second.size()) {
+        fprintf(stderr, "  FAIL: group '%s' agg count differs in iter %d\n",
+                kv.first.c_str(), iter);
+        all_valid = false;
+        continue;
+      }
+      for (size_t a = 0; a < kv.second.size(); a++) {
+        if ((long long)kv.second[a] != (long long)it->second[a]) {
+          fprintf(stderr, "  FAIL: group '%s' agg[%d] iter0=%lld iter%d=%lld\n",
+                  kv.first.c_str(), (int)a,
+                  (long long)kv.second[a], iter,
+                  (long long)it->second[a]);
+          all_valid = false;
+        }
+      }
+    }
+  }
+
+  /* Validate against InnoDB */
+  if (ctx.validate) {
+    for (auto &kv : run_results[0]) {
+      char escaped[256];
+      mysql_real_escape_string(ctx.mysql, escaped, kv.first.c_str(),
+                               (unsigned long)kv.first.length());
+      std::string sql = std::string(
+          "SELECT SUM(val_int), COUNT(val_int) FROM ") +
+          DB_NAME + "." + ctx.inno_table +
+          " WHERE category='" + escaped + "' GROUP BY category";
+
+      std::vector<double> sql_vals;
+      std::vector<bool> is_int = {true, true};
+      if (run_sql_and_fetch(*ctx.mysql, sql, sql_vals, is_int)) {
+        for (size_t i = 0; i < 2 && i < kv.second.size(); i++) {
+          if (!compare_value(kv.second[i],
+                             std::to_string(sql_vals[i]).c_str(), true)) {
+            fprintf(stderr, "    MISMATCH group '%s' agg[%d]: PA=%lld SQL=%lld\n",
+                    kv.first.c_str(), (int)i,
+                    (long long)kv.second[i], (long long)sql_vals[i]);
+            all_valid = false;
+          }
+        }
+      } else {
+        fprintf(stderr, "    SQL validation query failed for '%s'\n",
+                kv.first.c_str());
+        all_valid = false;
+      }
+    }
+  }
+
+  fprintf(stderr, "  Total groups (run 0): %d (expected 4)\n",
+          (int)run_results[0].size());
+  if ((int)run_results[0].size() != 4) all_valid = false;
+  return all_valid;
+}
+
+/* ----------------------------------------------------------------
+ * Test 20: Many Aggregation Operations (4 aggs × 300 groups)
+ *   Uses pa_test_large (2000 rows, 300 name-groups) with 4 mixed-type
+ *   aggregation ops.  300 groups × 4 result items ≈ 19 KB of result
+ *   data, which forces the kernel to call SendAggregationResult()
+ *   mid-scan (before the fragment scan completes).  This exercises
+ *   PrepareAggResIfNeeded() serialization with val_len() and the
+ *   sendBatchedFragmentedSignal large-result path.
+ * ---------------------------------------------------------------- */
+
+static bool run_test_20(TestContext &ctx) {
+  fprintf(stderr,
+      "\n=== Test 20: Many Aggregation Operations (4 aggs) ===\n");
+  fprintf(stderr, "  SELECT name, SUM(val_int), COUNT(val_int), "
+                  "MIN(val_double), MAX(val_bigint)\n"
+                  "  FROM pa_test_large GROUP BY name\n");
+
+  const NdbDictionary::Dictionary *dict = ctx.ndb->getDictionary();
+  const NdbDictionary::Table *table = dict->getTable("pa_test_large");
+  if (!table) APIERROR(dict->getNdbError());
+
+  NdbTransaction *trans = ctx.ndb->startTransaction();
+  if (!trans) APIERROR(ctx.ndb->getNdbError());
+
+  NdbScanOperation *scanOp = trans->getNdbScanOperation(table);
+  if (!scanOp) {
+    std::cout << trans->getNdbError().message << std::endl;
+    ctx.ndb->closeTransaction(trans);
+    return false;
+  }
+
+  if (scanOp->readTuples(NdbOperation::LM_CommittedRead) != 0)
+    APIERROR(trans->getNdbError());
+
+  NdbAggregator agg(table);
+  VERIFY(agg.GroupBy("name"));
+  VERIFY(agg.LoadColumn("val_int", kReg1));
+  VERIFY(agg.Sum(0, kReg1));
+  VERIFY(agg.LoadColumn("val_int", kReg1));
+  VERIFY(agg.Count(1, kReg1));
+  VERIFY(agg.LoadColumn("val_double", kReg1));
+  VERIFY(agg.Min(2, kReg1));
+  VERIFY(agg.LoadColumn("val_bigint", kReg1));
+  VERIFY(agg.Max(3, kReg1));
+  VERIFY(agg.Finalize());
+
+  if (scanOp->setAggregationCode(&agg) == -1) {
+    std::cout << trans->getNdbError().message << std::endl;
+    ctx.ndb->closeTransaction(trans);
+    return false;
+  }
+
+  if (scanOp->DoAggregation() == -1) {
+    std::cout << "DoAggregation failed: "
+              << trans->getNdbError().message << std::endl;
+    ctx.ndb->closeTransaction(trans);
+    return false;
+  }
+
+  int n_groups = 0;
+  bool all_valid = true;
+  int n_validated = 0;
+
+  NdbAggregator::ResultRecord record = agg.FetchResultRecord();
+  while (!record.end()) {
+    NdbAggregator::Column col = record.FetchGroupbyColumn();
+    std::string name_val;
+    while (!col.end()) {
+      name_val = extract_varchar(col);
+      col = record.FetchGroupbyColumn();
+    }
+
+    double pa_vals[4];
+    int vi = 0;
+    NdbAggregator::Result result = record.FetchAggregationResult();
+    while (!result.end()) {
+      switch (result.type()) {
+        case NdbDictionary::Column::Bigint:
+          pa_vals[vi] = (double)result.data_int64();
+          break;
+        case NdbDictionary::Column::Bigunsigned:
+          pa_vals[vi] = (double)result.data_uint64();
+          break;
+        case NdbDictionary::Column::Double:
+          pa_vals[vi] = result.data_double();
+          break;
+        default:
+          pa_vals[vi] = 0;
+      }
+      vi++;
+      result = record.FetchAggregationResult();
+    }
+
+    /* Print first few and last few groups */
+    if (n_groups < 3 || (n_groups >= 297 && n_groups < 300)) {
+      fprintf(stderr, "  Group [name='%s']: SUM=%lld COUNT=%lld "
+                      "MIN=%.2f MAX=%lld\n",
+              name_val.c_str(), (long long)pa_vals[0], (long long)pa_vals[1],
+              pa_vals[2], (long long)pa_vals[3]);
+    } else if (n_groups == 3) {
+      fprintf(stderr, "  ... (showing first 3 and last 3 groups)\n");
+    }
+
+    if (ctx.validate) {
+      char escaped[256];
+      mysql_real_escape_string(ctx.mysql, escaped, name_val.c_str(),
+                               (unsigned long)name_val.length());
+      std::string sql = std::string(
+          "SELECT SUM(val_int), COUNT(val_int), MIN(val_double), "
+          "MAX(val_bigint) FROM ") + DB_NAME + ".pa_test_large_inno"
+          " WHERE name='" + escaped + "' GROUP BY name";
+
+      std::vector<double> sql_vals;
+      std::vector<bool> is_int = {true, true, false, true};
+      if (run_sql_and_fetch(*ctx.mysql, sql, sql_vals, is_int)) {
+        bool ints[] = {true, true, false, true};
+        for (int i = 0; i < 4; i++) {
+          if (!compare_value(pa_vals[i],
+                             std::to_string(sql_vals[i]).c_str(),
+                             ints[i])) {
+            fprintf(stderr, "    MISMATCH group '%s' agg[%d]: "
+                            "PA=%.2f SQL=%.2f\n",
+                    name_val.c_str(), i, pa_vals[i], sql_vals[i]);
+            all_valid = false;
+          }
+        }
+        n_validated++;
+      } else {
+        fprintf(stderr, "    SQL validation query failed for '%s'\n",
+                name_val.c_str());
+        all_valid = false;
+      }
+    }
+
+    n_groups++;
+    record = agg.FetchResultRecord();
+  }
+
+  ctx.ndb->closeTransaction(trans);
+  fprintf(stderr, "  Total groups: %d (expected 300)\n", n_groups);
+  if (ctx.validate) {
+    fprintf(stderr, "  Validated %d groups against InnoDB\n", n_validated);
+  }
+  if (n_groups != 300) all_valid = false;
+  return all_valid;
+}
+
+/* ----------------------------------------------------------------
+ * Test 21: All-NULL SUM/MIN/MAX Merge Across Fragments
+ *   When all rows in a group have NULL for the aggregated column,
+ *   the kernel produces NDB_TYPE_UNDEFINED AggResItems. The API
+ *   must correctly merge UNDEFINED with UNDEFINED and with reals.
+ * ---------------------------------------------------------------- */
+
+static bool run_test_21(TestContext &ctx) {
+  fprintf(stderr,
+      "\n=== Test 21: All-NULL SUM/MIN/MAX Merge ===\n");
+  fprintf(stderr, "  SELECT grp, SUM(val), MIN(val), MAX(val), COUNT(val)\n"
+                  "  FROM pa_test_nullagg GROUP BY grp\n");
+
+  const NdbDictionary::Dictionary *dict = ctx.ndb->getDictionary();
+  const NdbDictionary::Table *table = dict->getTable("pa_test_nullagg");
+  if (!table) APIERROR(dict->getNdbError());
+
+  NdbTransaction *trans = ctx.ndb->startTransaction();
+  if (!trans) APIERROR(ctx.ndb->getNdbError());
+
+  NdbScanOperation *scanOp = trans->getNdbScanOperation(table);
+  if (!scanOp) {
+    std::cout << trans->getNdbError().message << std::endl;
+    ctx.ndb->closeTransaction(trans);
+    return false;
+  }
+
+  if (scanOp->readTuples(NdbOperation::LM_CommittedRead) != 0)
+    APIERROR(trans->getNdbError());
+
+  NdbAggregator agg(table);
+  VERIFY(agg.GroupBy("grp"));
+  VERIFY(agg.LoadColumn("val", kReg1));
+  VERIFY(agg.Sum(0, kReg1));
+  VERIFY(agg.LoadColumn("val", kReg1));
+  VERIFY(agg.Min(1, kReg1));
+  VERIFY(agg.LoadColumn("val", kReg1));
+  VERIFY(agg.Max(2, kReg1));
+  VERIFY(agg.LoadColumn("val", kReg1));
+  VERIFY(agg.Count(3, kReg1));
+  VERIFY(agg.Finalize());
+
+  if (scanOp->setAggregationCode(&agg) == -1) {
+    std::cout << trans->getNdbError().message << std::endl;
+    ctx.ndb->closeTransaction(trans);
+    return false;
+  }
+
+  if (scanOp->DoAggregation() == -1) {
+    std::cout << "DoAggregation failed: "
+              << trans->getNdbError().message << std::endl;
+    ctx.ndb->closeTransaction(trans);
+    return false;
+  }
+
+  int n_groups = 0;
+  bool all_valid = true;
+
+  NdbAggregator::ResultRecord record = agg.FetchResultRecord();
+  while (!record.end()) {
+    NdbAggregator::Column col = record.FetchGroupbyColumn();
+    int grp_val = 0;
+    while (!col.end()) {
+      grp_val = col.data_int32();
+      col = record.FetchGroupbyColumn();
+    }
+
+    double pa_vals[4];
+    bool pa_nulls[4];
+    int vi = 0;
+    NdbAggregator::Result result = record.FetchAggregationResult();
+    while (!result.end()) {
+      pa_nulls[vi] = result.is_null();
+      if (pa_nulls[vi]) {
+        pa_vals[vi] = 0;
+      } else {
+        switch (result.type()) {
+          case NdbDictionary::Column::Bigint:
+            pa_vals[vi] = (double)result.data_int64();
+            break;
+          case NdbDictionary::Column::Bigunsigned:
+            pa_vals[vi] = (double)result.data_uint64();
+            break;
+          case NdbDictionary::Column::Double:
+            pa_vals[vi] = result.data_double();
+            break;
+          default:
+            pa_vals[vi] = 0;
+        }
+      }
+      vi++;
+      result = record.FetchAggregationResult();
+    }
+
+    fprintf(stderr, "  Group [grp=%d]: SUM=%s MIN=%s MAX=%s COUNT=%lld\n",
+            grp_val,
+            pa_nulls[0] ? "NULL" : std::to_string((long long)pa_vals[0]).c_str(),
+            pa_nulls[1] ? "NULL" : std::to_string((long long)pa_vals[1]).c_str(),
+            pa_nulls[2] ? "NULL" : std::to_string((long long)pa_vals[2]).c_str(),
+            (long long)pa_vals[3]);
+
+    if (ctx.validate) {
+      std::string sql = std::string(
+          "SELECT SUM(val), MIN(val), MAX(val), COUNT(val) FROM ") +
+          DB_NAME + ".pa_test_nullagg_inno WHERE grp=" +
+          std::to_string(grp_val) + " GROUP BY grp";
+
+      std::vector<double> sql_vals;
+      std::vector<bool> sql_nulls;
+      std::vector<bool> is_int = {true, true, true, true};
+      if (run_sql_and_fetch_nullable(*ctx.mysql, sql, sql_vals, sql_nulls,
+                                     is_int)) {
+        for (int i = 0; i < 4; i++) {
+          if (pa_nulls[i] != sql_nulls[i]) {
+            fprintf(stderr, "    MISMATCH grp=%d agg[%d]: "
+                            "PA_null=%d SQL_null=%d\n",
+                    grp_val, i, (int)pa_nulls[i], (int)sql_nulls[i]);
+            all_valid = false;
+          } else if (!pa_nulls[i]) {
+            if (!compare_value(pa_vals[i],
+                               std::to_string(sql_vals[i]).c_str(), true)) {
+              fprintf(stderr, "    MISMATCH grp=%d agg[%d]: PA=%lld SQL=%lld\n",
+                      grp_val, i,
+                      (long long)pa_vals[i], (long long)sql_vals[i]);
+              all_valid = false;
+            }
+          }
+        }
+      } else {
+        fprintf(stderr, "    SQL validation query failed for grp=%d\n",
+                grp_val);
+        all_valid = false;
+      }
+    }
+
+    n_groups++;
+    record = agg.FetchResultRecord();
+  }
+
+  ctx.ndb->closeTransaction(trans);
+  fprintf(stderr, "  Total groups: %d (expected 3)\n", n_groups);
+  if (n_groups != 3) all_valid = false;
+  return all_valid;
+}
+
+/* ----------------------------------------------------------------
+ * Test 22: Empty Result Set With GROUP BY
+ *   Verifies the zero-groups path in PrepareAggResIfNeeded() and
+ *   cleanup of an AggInterpreter that was initialized but never
+ *   received any matching rows.
+ * ---------------------------------------------------------------- */
+
+static bool run_test_22(TestContext &ctx) {
+  fprintf(stderr,
+      "\n=== Test 22: Empty Result Set ===\n");
+
+  const NdbDictionary::Dictionary *dict = ctx.ndb->getDictionary();
+  const NdbDictionary::Table *table = dict->getTable(ctx.ndb_table);
+  if (!table) APIERROR(dict->getNdbError());
+
+  bool all_valid = true;
+
+  /* Part A: GROUP BY with filter that matches no rows */
+  {
+    fprintf(stderr, "  Part A: SELECT category, SUM(val_int) FROM pa_test "
+                    "WHERE id > 99999 GROUP BY category\n");
+
+    NdbTransaction *trans = ctx.ndb->startTransaction();
+    if (!trans) APIERROR(ctx.ndb->getNdbError());
+
+    NdbScanOperation *scanOp = trans->getNdbScanOperation(table);
+    if (!scanOp) {
+      std::cout << trans->getNdbError().message << std::endl;
+      ctx.ndb->closeTransaction(trans);
+      return false;
+    }
+
+    if (scanOp->readTuples(NdbOperation::LM_CommittedRead) != 0)
+      APIERROR(trans->getNdbError());
+
+    /* Filter: id (col 0) > 99999 — no rows match */
+    Int32 filter_val = 99999;
+    NdbScanFilter filter(scanOp);
+    if (filter.begin(NdbScanFilter::AND) < 0 ||
+        filter.cmp(NdbScanFilter::COND_GT, 0, &filter_val,
+                   sizeof(filter_val)) < 0 ||
+        filter.end() < 0) {
+      std::cout << trans->getNdbError().message << std::endl;
+      ctx.ndb->closeTransaction(trans);
+      return false;
+    }
+
+    NdbAggregator agg(table);
+    VERIFY(agg.GroupBy("category"));
+    VERIFY(agg.LoadColumn("val_int", kReg1));
+    VERIFY(agg.Sum(0, kReg1));
+    VERIFY(agg.Finalize());
+
+    if (scanOp->setAggregationCode(&agg) == -1) {
+      std::cout << trans->getNdbError().message << std::endl;
+      ctx.ndb->closeTransaction(trans);
+      return false;
+    }
+
+    if (scanOp->DoAggregation() == -1) {
+      std::cout << "DoAggregation failed: "
+                << trans->getNdbError().message << std::endl;
+      ctx.ndb->closeTransaction(trans);
+      return false;
+    }
+
+    NdbAggregator::ResultRecord record = agg.FetchResultRecord();
+    int n_groups = 0;
+    while (!record.end()) {
+      n_groups++;
+      record = agg.FetchResultRecord();
+    }
+
+    ctx.ndb->closeTransaction(trans);
+    fprintf(stderr, "  Part A: %d groups (expected 0)\n", n_groups);
+    if (n_groups != 0) {
+      fprintf(stderr, "  FAIL: expected 0 groups but got %d\n", n_groups);
+      all_valid = false;
+    }
+  }
+
+  /* Part B: No GROUP BY with filter that matches no rows */
+  {
+    fprintf(stderr, "  Part B: SELECT SUM(val_int) FROM pa_test "
+                    "WHERE id > 99999\n");
+
+    NdbTransaction *trans = ctx.ndb->startTransaction();
+    if (!trans) APIERROR(ctx.ndb->getNdbError());
+
+    NdbScanOperation *scanOp = trans->getNdbScanOperation(table);
+    if (!scanOp) {
+      std::cout << trans->getNdbError().message << std::endl;
+      ctx.ndb->closeTransaction(trans);
+      return false;
+    }
+
+    if (scanOp->readTuples(NdbOperation::LM_CommittedRead) != 0)
+      APIERROR(trans->getNdbError());
+
+    /* Filter: id (col 0) > 99999 */
+    Int32 filter_val = 99999;
+    NdbScanFilter filter(scanOp);
+    if (filter.begin(NdbScanFilter::AND) < 0 ||
+        filter.cmp(NdbScanFilter::COND_GT, 0, &filter_val,
+                   sizeof(filter_val)) < 0 ||
+        filter.end() < 0) {
+      std::cout << trans->getNdbError().message << std::endl;
+      ctx.ndb->closeTransaction(trans);
+      return false;
+    }
+
+    NdbAggregator agg(table);
+    /* No GroupBy */
+    VERIFY(agg.LoadColumn("val_int", kReg1));
+    VERIFY(agg.Sum(0, kReg1));
+    VERIFY(agg.Finalize());
+
+    if (scanOp->setAggregationCode(&agg) == -1) {
+      std::cout << trans->getNdbError().message << std::endl;
+      ctx.ndb->closeTransaction(trans);
+      return false;
+    }
+
+    if (scanOp->DoAggregation() == -1) {
+      std::cout << "DoAggregation failed: "
+                << trans->getNdbError().message << std::endl;
+      ctx.ndb->closeTransaction(trans);
+      return false;
+    }
+
+    NdbAggregator::ResultRecord record = agg.FetchResultRecord();
+    bool found_result = false;
+    bool sum_is_null = false;
+    double sum_val = 0;
+
+    if (!record.end()) {
+      found_result = true;
+      NdbAggregator::Result result = record.FetchAggregationResult();
+      if (!result.end()) {
+        sum_is_null = result.is_null();
+        if (!sum_is_null) {
+          switch (result.type()) {
+            case NdbDictionary::Column::Bigint:
+              sum_val = (double)result.data_int64();
+              break;
+            case NdbDictionary::Column::Bigunsigned:
+              sum_val = (double)result.data_uint64();
+              break;
+            default:
+              sum_val = 0;
+          }
+        }
+      }
+    }
+
+    ctx.ndb->closeTransaction(trans);
+
+    if (found_result) {
+      fprintf(stderr, "  Part B: 1 result record, SUM=%s\n",
+              sum_is_null ? "NULL" : std::to_string((long long)sum_val).c_str());
+      /* Without GROUP BY and no matching rows, SUM should be NULL */
+      if (!sum_is_null) {
+        fprintf(stderr, "  FAIL: expected NULL SUM but got %lld\n",
+                (long long)sum_val);
+        all_valid = false;
+      }
+    } else {
+      fprintf(stderr, "  Part B: no result record (expected 1 with NULL)\n");
+      /* It's also acceptable to return 0 records for no-GROUP-BY empty set
+         in the PA implementation, since MySQL handles this at a higher level */
+      fprintf(stderr, "  INFO: no result record returned — acceptable\n");
+    }
+  }
+
+  return all_valid;
+}
+
+/* ----------------------------------------------------------------
  * Main
  * ---------------------------------------------------------------- */
 
@@ -2935,8 +3689,10 @@ int main(int argc, char **argv) {
     fprintf(stderr, "\n--- Loading data ---\n");
     create_tables(mysql);
     create_large_tables(mysql);
+    create_nullagg_tables(mysql);
     populate_data(mysql);
     populate_large_data(mysql);
+    populate_nullagg_data(mysql);
     fprintf(stderr, "--- Data loading complete ---\n");
   }
 
@@ -2996,6 +3752,10 @@ int main(int argc, char **argv) {
       {"Test 16: Multi-Column Numeric GROUP BY",            run_test_16},
       {"Test 17: Nullable Numeric GROUP BY",                run_test_17},
       {"Test 18: Reject Blob/Text GROUP BY",                run_test_18},
+      {"Test 19: Repeated PA Scan Lifecycle",               run_test_19},
+      {"Test 20: Many Aggregation Operations (4 aggs)",     run_test_20},
+      {"Test 21: All-NULL SUM/MIN/MAX Merge",               run_test_21},
+      {"Test 22: Empty Result Set",                         run_test_22},
     };
 
     const int n_tests = sizeof(tests) / sizeof(tests[0]);

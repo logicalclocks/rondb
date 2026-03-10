@@ -45,6 +45,8 @@ cd mysql-test
 
 Test files: `t/*.test` (input), `r/*.result` (expected output)
 
+MTR automatically starts and stops the required cluster (mysqld, ndbd, ndb_mgmd, rdrs) as part of running the tests — no manual cluster setup is needed.
+
 ### Rondis MTR Tests
 Located in `mysql-test/suite/rondis/`:
 - `t/rondis_basic.test` - Basic Redis commands (GET, SET, HSET, etc.)
@@ -120,6 +122,15 @@ See `tools/rondb-cli/CLAUDE.md` for detailed rondb-cli documentation.
 - `/client/` - MySQL CLI tools
 - `/mysql-test/` - Integration test suite
 
+### Pushdown Join Aggregation (RONDB-733)
+Design and implementation docs in `storage/ndb/claude_files/pushdown_join_aggregation/`:
+- `CLAUDE.md` — DBLQH block overview and join aggregation context
+- `local_database_research.md` — Architecture: signal flow, shared state, aggregation engine
+- `local_database_implementation.md` — DBLQH implementation plan (Phases 1-6, complete)
+- `coordinator.md` — DBSPJ protocol and aggregate design
+- `coordinator_research.md` — DBTC orchestration plan (Phase 7: SETUP/COMPLETE/RELEASE)
+- `coordinator_implementation.md` — DBSPJ implementation notes (Phase 7: aggStateKeys, lookup_send)
+
 ### Rondis Server Implementation
 ```
 storage/ndb/src/rondis/
@@ -169,6 +180,10 @@ Rondis stores Redis data in NDB tables. The `redis_0` database contains tables l
 ```sql
 SELECT redis_key, value FROM redis_0.string_keys WHERE redis_key LIKE 'user:%'
 ```
+
+## NDB Important Notes
+
+- **Always create NDB tables through MySQL** (CREATE TABLE ... ENGINE=NDB), never through the NDB API directly. Tables created via the NDB API are not visible to MySQL servers. If you need table metadata (tableId, schemaVersion) for signal-level tests, create the table via MySQL first, then look up metadata via the NDB dictionary API.
 
 ## Security Notes
 

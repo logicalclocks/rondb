@@ -77,6 +77,7 @@
 #include "portlib/mt-asm.h"
 
 struct CHARSET_INFO;
+struct JoinAggregationState;
 
 #define JAM_FILE_ID 248
 
@@ -2233,6 +2234,19 @@ public:
   static void set_max_nodeid(Uint32 max_nodeid);
   static Uint32 get_max_ndb_nodeid();
   static void set_max_ndb_nodeid(Uint32 max_ndb_nodeid);
+
+  //------------------------------------------------------------------
+  // Join Aggregation State Pool (node-level, shared across all instances)
+  //
+  // Provides O(1) key-based access to shared aggregation state.
+  // Seize/release: called only from DblqhProxy (single-threaded).
+  // getJoinAggState: safe from any LDM thread (direct pool index lookup).
+  //------------------------------------------------------------------
+  static Uint32 seizeJoinAggState();
+  static JoinAggregationState* getJoinAggState(Uint32 key);
+  static void releaseJoinAggState(Uint32 key);
+  static void initJoinAggStatePool(Uint32 max_recs);
+  static Uint32 getJoinAggStatePoolSize();
 
  protected:
   /**

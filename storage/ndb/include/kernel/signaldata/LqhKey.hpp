@@ -51,6 +51,11 @@ class LqhKeyReq {
   friend class Dbtup;
 
   /**
+   * For testing
+   */
+  friend struct LqhKeyReqBuilder;
+
+  /**
    * For printing
    */
   friend bool printLQHKEYREQ(FILE *output, const Uint32 *theData, Uint32 len,
@@ -105,6 +110,8 @@ class LqhKeyReq {
   static UintR getDistributionKey(const UintR &scanData);
   static UintR getReorgFlag(const UintR &scanData);
   static void setReorgFlag(UintR &scanData, Uint32 val);
+  static Uint8 getJoinAggFlag(const UintR &scanData);
+  static void setJoinAggFlag(UintR &scanData, UintR val);
 
   static UintR getTableId(const UintR &tableSchemaVersion);
   static UintR getSchemaVersion(const UintR &tableSchemaVersion);
@@ -279,6 +286,7 @@ class LqhKeyReq {
     SI_SCAN_TO_SHIFT = 25,
     SI_REORG_SHIFT = 26,
     SI_REORG_MASK = 3,
+    SI_JOIN_AGG_SHIFT = 28,
   };
 };
 
@@ -343,11 +351,12 @@ class LqhKeyReq {
  * d = Distribution key         -  8 Bit  -> max 255 (17-24)
  * t = Scan take over indicator -  1 Bit (25)
  * m = Reorg value              -  2 Bit (26-27)
+ * J = Join aggregation flag    -  1 Bit (28)
  *
  *           1111111111222222222233
  * 01234567890123456789012345678901
- * aaaaaaaaaaaaaaaapddddddddtmm       (Short LQHKEYREQ)
- *                 pddddddddtmm       (Long LQHKEYREQ)
+ * aaaaaaaaaaaaaaaapddddddddtmmJ       (Short LQHKEYREQ)
+ *                 pddddddddtmmJ       (Long LQHKEYREQ)
  */
 
 inline UintR LqhKeyReq::getAttrLen(const UintR &scanData) {
@@ -459,7 +468,16 @@ inline void LqhKeyReq::setReorgFlag(UintR &scanData, UintR val) {
   scanData |= (val << SI_REORG_SHIFT);
 }
 
-#if 0  
+inline Uint8 LqhKeyReq::getJoinAggFlag(const UintR &scanData) {
+  return (Uint8)((scanData >> SI_JOIN_AGG_SHIFT) & 1);
+}
+
+inline void LqhKeyReq::setJoinAggFlag(UintR &scanData, UintR val) {
+  ASSERT_BOOL(val, "LqhKeyReq::setJoinAggFlag");
+  scanData |= (val << SI_JOIN_AGG_SHIFT);
+}
+
+#if 0
 inline
 void
 

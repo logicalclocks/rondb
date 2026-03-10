@@ -25,6 +25,7 @@
 #include "storage/ndb/src/ronsql/RonSQLPreparer.hpp"
 #include "api_key.hpp"
 #include <metrics.hpp>
+#include "logger.hpp"
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_SQL_CTRL 1
@@ -158,6 +159,10 @@ void RonSQLCtrl::ronsql(
   }
 
   DEB_TRACE();
+  if (globalConfigs.log.logQueries) {
+    std::string msg = "RonSQL query [" + database + "]: " + reqStruct.query;
+    rdrs_logger::info(msg);
+  }
   status = ronsql_dal(database.c_str(),
                       &params,
                       currentThreadIndex);

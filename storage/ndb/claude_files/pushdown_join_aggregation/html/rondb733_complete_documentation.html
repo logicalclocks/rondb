@@ -1,0 +1,1340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RONDB-733: Pushdown Join Aggregation — Complete Documentation</title>
+<style>
+  :root {
+    --bg: #1a1a2e;
+    --surface: #16213e;
+    --surface2: #0f3460;
+    --accent: #e94560;
+    --accent2: #53d8fb;
+    --text: #eee;
+    --text-dim: #aab;
+    --green: #4ec9b0;
+    --yellow: #dcdcaa;
+    --blue: #569cd6;
+    --orange: #ce9178;
+    --purple: #c586c0;
+    --red: #f44747;
+    --border: #334;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    padding: 2rem;
+    max-width: 1200px;
+    margin: 0 auto;
+  }
+  h1 {
+    font-size: 2.2rem;
+    color: var(--accent2);
+    border-bottom: 3px solid var(--accent);
+    padding-bottom: 0.5rem;
+    margin-bottom: 0.5rem;
+  }
+  .subtitle {
+    color: var(--text-dim);
+    font-size: 1.1rem;
+    margin-bottom: 2rem;
+  }
+  h2 {
+    font-size: 1.6rem;
+    color: var(--accent2);
+    margin-top: 3rem;
+    margin-bottom: 1rem;
+    padding-left: 0.5rem;
+    border-left: 4px solid var(--accent);
+  }
+  h3 {
+    font-size: 1.2rem;
+    color: var(--green);
+    margin-top: 2rem;
+    margin-bottom: 0.5rem;
+  }
+  h4 {
+    font-size: 1.05rem;
+    color: var(--yellow);
+    margin-top: 1.5rem;
+    margin-bottom: 0.4rem;
+  }
+  p { margin-bottom: 1rem; }
+  a { color: var(--accent2); }
+  ul, ol { margin: 0.5rem 0 1rem 1.5rem; }
+  li { margin-bottom: 0.3rem; }
+
+  code {
+    font-family: 'Cascadia Code', 'Fira Code', 'Menlo', monospace;
+    background: var(--surface);
+    padding: 0.15rem 0.4rem;
+    border-radius: 3px;
+    font-size: 0.88rem;
+  }
+  pre {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.2rem 1.5rem;
+    margin: 1rem 0 1.5rem;
+    font-family: 'Cascadia Code', 'Fira Code', 'Menlo', monospace;
+    font-size: 0.85rem;
+    line-height: 1.5;
+    overflow-x: auto;
+    white-space: pre;
+  }
+
+  .stat-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 1rem;
+    margin: 1.5rem 0;
+  }
+  .stat-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.2rem;
+    text-align: center;
+  }
+  .stat-card .number {
+    font-size: 2rem;
+    font-weight: bold;
+    color: var(--accent2);
+  }
+  .stat-card .label {
+    color: var(--text-dim);
+    font-size: 0.9rem;
+  }
+
+  .diagram-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.5rem;
+    margin: 1.5rem 0;
+    overflow-x: auto;
+  }
+  .diagram-box .caption {
+    color: var(--text-dim);
+    font-size: 0.85rem;
+    text-align: center;
+    margin-top: 0.5rem;
+    font-style: italic;
+  }
+
+  .phase-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.5rem;
+    margin: 1rem 0;
+    border-left: 4px solid var(--green);
+  }
+  .phase-card.kernel { border-left-color: var(--accent); }
+  .phase-card.api { border-left-color: var(--blue); }
+  .phase-card.mysql { border-left-color: var(--purple); }
+  .phase-card.test { border-left-color: var(--yellow); }
+  .phase-card .phase-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.5rem;
+  }
+  .phase-card .phase-title {
+    font-weight: bold;
+    color: var(--accent2);
+    font-size: 1.05rem;
+  }
+  .phase-card .phase-tag {
+    background: var(--surface2);
+    color: var(--green);
+    padding: 0.2rem 0.6rem;
+    border-radius: 20px;
+    font-size: 0.75rem;
+    font-weight: bold;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1rem 0 1.5rem;
+    font-size: 0.9rem;
+  }
+  th {
+    background: var(--surface2);
+    color: var(--accent2);
+    padding: 0.7rem 1rem;
+    text-align: left;
+    border-bottom: 2px solid var(--accent);
+  }
+  td {
+    padding: 0.6rem 1rem;
+    border-bottom: 1px solid var(--border);
+  }
+  tr:hover td { background: rgba(83, 216, 251, 0.05); }
+
+  .toc {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.5rem 2rem;
+    margin: 1.5rem 0;
+  }
+  .toc h3 { color: var(--accent2); margin-top: 0; }
+  .toc ol { margin: 0.5rem 0 0 1.5rem; }
+  .toc li { margin-bottom: 0.3rem; }
+  .toc a { text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+  .toc .toc-sub { margin-left: 1.5rem; font-size: 0.9rem; }
+
+  .callout {
+    background: var(--surface2);
+    border-left: 4px solid var(--accent);
+    border-radius: 0 8px 8px 0;
+    padding: 1rem 1.5rem;
+    margin: 1rem 0;
+  }
+  .callout.info { border-left-color: var(--blue); }
+  .callout.warn { border-left-color: var(--yellow); }
+  .callout.success { border-left-color: var(--green); }
+
+  svg text { font-family: 'Segoe UI', system-ui, sans-serif; }
+
+  .file-list {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.5rem;
+    margin: 1rem 0;
+    font-family: 'Cascadia Code', 'Fira Code', 'Menlo', monospace;
+    font-size: 0.82rem;
+    line-height: 1.8;
+  }
+  .file-list .dir { color: var(--blue); font-weight: bold; }
+  .file-list .file { color: var(--green); }
+  .file-list .desc { color: var(--text-dim); }
+</style>
+</head>
+<body>
+
+<h1>RONDB-733: Pushdown Join Aggregation</h1>
+<p class="subtitle">Complete documentation of changes since commit <code>a30aec15</code> — A feature that pushes GROUP BY aggregation
+  down to NDB data nodes for multi-table joins, eliminating intermediate row transfer to the API.</p>
+
+<!-- Stats -->
+<div class="stat-grid">
+  <div class="stat-card">
+    <div class="number">200</div>
+    <div class="label">Commits</div>
+  </div>
+  <div class="stat-card">
+    <div class="number">151</div>
+    <div class="label">Files Changed</div>
+  </div>
+  <div class="stat-card">
+    <div class="number">~58K</div>
+    <div class="label">Lines Added</div>
+  </div>
+  <div class="stat-card">
+    <div class="number">14</div>
+    <div class="label">Implementation Phases</div>
+  </div>
+</div>
+
+<!-- Table of Contents -->
+<div class="toc">
+  <h3>Table of Contents</h3>
+  <ol>
+    <li><a href="#overview">High-Level Overview</a></li>
+    <li><a href="#architecture">System Architecture</a>
+      <div class="toc-sub">
+        <a href="#signal-flow">Signal Flow</a> &middot;
+        <a href="#component-roles">Component Roles</a> &middot;
+        <a href="#data-flow">Data Flow Diagram</a>
+      </div>
+    </li>
+    <li><a href="#phases">Implementation Phases</a>
+      <div class="toc-sub">
+        <a href="#ph-kernel">Phases 1-6: DBLQH Kernel</a> &middot;
+        <a href="#ph-coordinator">Phase 7: DBTC/DBSPJ Coordinator</a> &middot;
+        <a href="#ph-ndbapi">Phase 8: NDB API</a> &middot;
+        <a href="#ph-mysql">Phases 9-14: MySQL Handler</a>
+      </div>
+    </li>
+    <li><a href="#dblqh">DBLQH Implementation Details</a>
+      <div class="toc-sub">
+        <a href="#agginterpreter">AggInterpreter &amp; JoinAggInterpreter</a> &middot;
+        <a href="#memory">Chunk-Based Memory Allocator</a> &middot;
+        <a href="#eviction">Group Eviction</a> &middot;
+        <a href="#concurrency">Concurrency Strategies</a>
+      </div>
+    </li>
+    <li><a href="#coordinator-detail">Coordinator Protocol Details</a></li>
+    <li><a href="#ndbapi-detail">NDB API Integration Details</a></li>
+    <li><a href="#mysql-detail">MySQL Handler Integration Details</a></li>
+    <li><a href="#testing">Testing Infrastructure</a></li>
+    <li><a href="#design-decisions">Key Design Decisions</a></li>
+    <li><a href="#files">File Index</a></li>
+  </ol>
+</div>
+
+<!-- ================================================================== -->
+<h2 id="overview">1. High-Level Overview</h2>
+
+<p>
+  Pushdown Join Aggregation allows queries like <code>SELECT region, SUM(amount) FROM orders JOIN customers ON ... GROUP BY region</code>
+  to execute the aggregation <em>inside the NDB data nodes</em> rather than transferring millions of intermediate join rows
+  back to the MySQL server or API application for aggregation.
+</p>
+
+<p>
+  Before this feature, NDB could push down multi-table joins (SPJ — Select-Project-Join) so that child-table lookups
+  happen inside the data nodes. But the final aggregation (GROUP BY + SUM/COUNT/MIN/MAX) always happened at the API,
+  requiring all intermediate rows to be transferred over the network. For analytical queries over large datasets,
+  this network transfer dominated query time.
+</p>
+
+<div class="callout info">
+  <strong>Key Insight:</strong> By aggregating at the leaf table's LDM thread — where the join rows are already assembled —
+  we send only the aggregated group results (typically a few rows) instead of millions of intermediate rows. For TPC-H Q12
+  on a 1GB dataset, this reduces network transfer from ~600K rows to just 2 group rows.
+</div>
+
+<p>The feature spans four major subsystems:</p>
+<ul>
+  <li><strong>DBLQH/DBTUP</strong> — The aggregation engine: receives rows, groups them, computes aggregates, manages memory</li>
+  <li><strong>DBTC/DBSPJ</strong> — The coordinator: orchestrates setup, routes aggregation programs, triggers completion</li>
+  <li><strong>NDB API</strong> — Client-side: builds aggregation programs, sends them with queries, receives results</li>
+  <li><strong>MySQL Handler</strong> — SQL integration: detects pushable aggregations, builds programs, replaces AccessPath nodes</li>
+</ul>
+
+<!-- ================================================================== -->
+<h2 id="architecture">2. System Architecture</h2>
+
+<h3 id="signal-flow">Signal Flow</h3>
+
+<div class="diagram-box">
+<svg viewBox="0 0 900 680" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background regions -->
+  <rect x="20" y="30" width="180" height="620" rx="10" fill="#1a2744" stroke="#334" stroke-width="1"/>
+  <text x="110" y="55" fill="#c586c0" font-size="13" text-anchor="middle" font-weight="bold">MySQL / API</text>
+
+  <rect x="220" y="30" width="180" height="620" rx="10" fill="#1a2744" stroke="#334" stroke-width="1"/>
+  <text x="310" y="55" fill="#569cd6" font-size="13" text-anchor="middle" font-weight="bold">DBTC</text>
+
+  <rect x="420" y="30" width="180" height="620" rx="10" fill="#1a2744" stroke="#334" stroke-width="1"/>
+  <text x="510" y="55" fill="#4ec9b0" font-size="13" text-anchor="middle" font-weight="bold">DBSPJ</text>
+
+  <rect x="620" y="30" width="260" height="620" rx="10" fill="#1a2744" stroke="#334" stroke-width="1"/>
+  <text x="750" y="55" fill="#e94560" font-size="13" text-anchor="middle" font-weight="bold">DBLQH / DBTUP</text>
+
+  <!-- Step 1: SCAN_TABREQ -->
+  <circle cx="110" cy="95" r="16" fill="#0f3460" stroke="#53d8fb" stroke-width="2"/>
+  <text x="110" y="100" fill="#53d8fb" font-size="12" text-anchor="middle" font-weight="bold">1</text>
+  <line x1="126" y1="95" x2="280" y2="95" stroke="#53d8fb" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="200" y="88" fill="#aab" font-size="10" text-anchor="middle">SCAN_TABREQ</text>
+  <text x="200" y="108" fill="#dcdcaa" font-size="9" text-anchor="middle">[JoinAgg flag + agg program in Section 2]</text>
+
+  <!-- Step 2: JOIN_AGG_SETUP_REQ -->
+  <circle cx="310" cy="155" r="16" fill="#0f3460" stroke="#53d8fb" stroke-width="2"/>
+  <text x="310" y="160" fill="#53d8fb" font-size="12" text-anchor="middle" font-weight="bold">2</text>
+  <line x1="340" y1="155" x2="620" y2="155" stroke="#e94560" stroke-width="2" marker-end="url(#arrow)" stroke-dasharray="6,3"/>
+  <text x="480" y="148" fill="#aab" font-size="10" text-anchor="middle">JOIN_AGG_SETUP_REQ</text>
+  <text x="480" y="168" fill="#dcdcaa" font-size="9" text-anchor="middle">[agg program → each data node]</text>
+
+  <!-- Step 3: JOIN_AGG_SETUP_CONF -->
+  <circle cx="750" cy="205" r="16" fill="#0f3460" stroke="#53d8fb" stroke-width="2"/>
+  <text x="750" y="210" fill="#53d8fb" font-size="12" text-anchor="middle" font-weight="bold">3</text>
+  <line x1="620" y1="205" x2="340" y2="205" stroke="#4ec9b0" stroke-width="2" marker-end="url(#arrow)" stroke-dasharray="6,3"/>
+  <text x="480" y="198" fill="#aab" font-size="10" text-anchor="middle">JOIN_AGG_SETUP_CONF</text>
+  <text x="480" y="218" fill="#dcdcaa" font-size="9" text-anchor="middle">[returns aggStateKey per node]</text>
+
+  <!-- Step 4: SCAN_FRAGREQ -->
+  <circle cx="310" cy="265" r="16" fill="#0f3460" stroke="#53d8fb" stroke-width="2"/>
+  <text x="310" y="270" fill="#53d8fb" font-size="12" text-anchor="middle" font-weight="bold">4</text>
+  <line x1="340" y1="265" x2="480" y2="265" stroke="#569cd6" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="410" y="258" fill="#aab" font-size="10" text-anchor="middle">SCAN_FRAGREQ</text>
+  <text x="410" y="278" fill="#dcdcaa" font-size="9" text-anchor="middle">[aggStateKeys section]</text>
+
+  <!-- Step 5: LQHKEYREQ / SCAN_FRAGREQ to LDM -->
+  <circle cx="510" cy="325" r="16" fill="#0f3460" stroke="#53d8fb" stroke-width="2"/>
+  <text x="510" y="330" fill="#53d8fb" font-size="12" text-anchor="middle" font-weight="bold">5</text>
+  <line x1="540" y1="325" x2="620" y2="325" stroke="#e94560" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="600" y="318" fill="#aab" font-size="10" text-anchor="middle">LQHKEYREQ</text>
+  <text x="700" y="338" fill="#dcdcaa" font-size="9" text-anchor="middle">[JoinAggFlag + aggStateKey in variableData]</text>
+
+  <!-- Step 5b: Row processing -->
+  <rect x="650" y="360" width="210" height="60" rx="6" fill="#2a1a2e" stroke="#e94560" stroke-width="1"/>
+  <text x="755" y="380" fill="#e94560" font-size="11" text-anchor="middle" font-weight="bold">Row Processing Loop</text>
+  <text x="755" y="398" fill="#aab" font-size="9" text-anchor="middle">handleJoinAggRow() → AggInterpreter</text>
+  <text x="755" y="412" fill="#aab" font-size="9" text-anchor="middle">GROUP BY + aggregate accumulation</text>
+
+  <!-- Step 6: TRANSID_AI (evicted groups, direct to API) -->
+  <circle cx="750" cy="455" r="16" fill="#0f3460" stroke="#53d8fb" stroke-width="2"/>
+  <text x="750" y="460" fill="#53d8fb" font-size="12" text-anchor="middle" font-weight="bold">6</text>
+  <path d="M 650 455 C 400 455, 300 440, 130 455" fill="none" stroke="#dcdcaa" stroke-width="2" marker-end="url(#arrow)" stroke-dasharray="4,3"/>
+  <text x="400" y="440" fill="#dcdcaa" font-size="10" text-anchor="middle">TRANSID_AI (evicted groups → API)</text>
+
+  <!-- Step 7: SCAN_FRAGCONF -->
+  <line x1="480" y1="505" x2="340" y2="505" stroke="#569cd6" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="410" y="498" fill="#aab" font-size="10" text-anchor="middle">SCAN_FRAGCONF</text>
+
+  <!-- Step 8: JOIN_AGG_COMPLETE_REQ -->
+  <circle cx="310" cy="545" r="16" fill="#0f3460" stroke="#53d8fb" stroke-width="2"/>
+  <text x="310" y="550" fill="#53d8fb" font-size="12" text-anchor="middle" font-weight="bold">7</text>
+  <line x1="340" y1="545" x2="620" y2="545" stroke="#e94560" stroke-width="2" marker-end="url(#arrow)" stroke-dasharray="6,3"/>
+  <text x="480" y="538" fill="#aab" font-size="10" text-anchor="middle">JOIN_AGG_COMPLETE_REQ</text>
+
+  <!-- Step 9: TRANSID_AI remaining + COMPLETE_CONF -->
+  <circle cx="750" cy="590" r="16" fill="#0f3460" stroke="#53d8fb" stroke-width="2"/>
+  <text x="750" y="595" fill="#53d8fb" font-size="12" text-anchor="middle" font-weight="bold">8</text>
+  <path d="M 650 590 C 400 590, 300 575, 130 590" fill="none" stroke="#4ec9b0" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="400" y="575" fill="#4ec9b0" font-size="10" text-anchor="middle">TRANSID_AI (remaining groups → API)</text>
+  <line x1="620" y1="620" x2="340" y2="620" stroke="#4ec9b0" stroke-width="2" marker-end="url(#arrow)" stroke-dasharray="6,3"/>
+  <text x="480" y="638" fill="#aab" font-size="10" text-anchor="middle">JOIN_AGG_COMPLETE_CONF + RELEASE</text>
+
+  <!-- Arrow marker -->
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#53d8fb"/>
+    </marker>
+  </defs>
+</svg>
+<div class="caption">Figure 1: Complete signal flow for pushdown join aggregation. Dashed lines indicate signals that cross node boundaries.</div>
+</div>
+
+<h3 id="component-roles">Component Roles</h3>
+
+<table>
+  <tr><th>Component</th><th>Role</th><th>Key Additions</th></tr>
+  <tr>
+    <td><code>MySQL Handler</code></td>
+    <td>Detects pushable aggregations in SQL queries, builds NdbAggregator programs, removes AGGREGATE AccessPath nodes</td>
+    <td><code>ha_ndbcluster_push_agg.h/.cc</code> (new), Item_sum pushed value interface</td>
+  </tr>
+  <tr>
+    <td><code>NDB API</code></td>
+    <td>Builds query definitions with aggregation, serializes programs, receives/merges results</td>
+    <td><code>NdbQueryOptions::setAggregation()</code>, NDB_AGG_RECEIVER type, Section 2 combined format</td>
+  </tr>
+  <tr>
+    <td><code>DBTC</code></td>
+    <td>Orchestrates 3-phase protocol: SETUP → run joins → COMPLETE → RELEASE</td>
+    <td><code>sendJoinAggSetupReqs()</code>, aggStateKeys section, <code>sendJoinAggCompleteReqs()</code></td>
+  </tr>
+  <tr>
+    <td><code>DBSPJ</code></td>
+    <td>Routes aggStateKey in LQHKEYREQ, suppresses intermediate TRANSID_AI for aggregate leaves</td>
+    <td>RT_AGGREGATE flag, aggStateKey in variableData, T_EXPECT_TRANSID_AI suppression</td>
+  </tr>
+  <tr>
+    <td><code>DBLQH</code></td>
+    <td>Manages JoinAggregationState lifecycle, routes rows to interpreters, sends results</td>
+    <td>JoinAggregationState pool, JOIN_AGG signal handlers, CONTINUEB yielding</td>
+  </tr>
+  <tr>
+    <td><code>DBTUP</code></td>
+    <td>Intercepts rows at handleJoinAggRow() before sendReadAttrinfo, feeds AggInterpreter</td>
+    <td>handleJoinAggRow() in 3 execution paths, linked attribute passing</td>
+  </tr>
+</table>
+
+<h3 id="data-flow">Data Flow: Before vs After</h3>
+
+<div class="diagram-box">
+<svg viewBox="0 0 900 320" xmlns="http://www.w3.org/2000/svg">
+  <!-- BEFORE -->
+  <text x="225" y="25" fill="#f44747" font-size="14" text-anchor="middle" font-weight="bold">BEFORE: Without Pushdown</text>
+  <rect x="30" y="40" width="120" height="40" rx="6" fill="#2a1a2e" stroke="#569cd6" stroke-width="1.5"/>
+  <text x="90" y="65" fill="#569cd6" font-size="11" text-anchor="middle">Root Scan</text>
+  <rect x="170" y="40" width="120" height="40" rx="6" fill="#2a1a2e" stroke="#e94560" stroke-width="1.5"/>
+  <text x="230" y="65" fill="#e94560" font-size="11" text-anchor="middle">Child Lookup</text>
+  <rect x="310" y="40" width="120" height="40" rx="6" fill="#2a1a2e" stroke="#dcdcaa" stroke-width="1.5"/>
+  <text x="370" y="58" fill="#dcdcaa" font-size="10" text-anchor="middle">TRANSID_AI</text>
+  <text x="370" y="72" fill="#aab" font-size="9" text-anchor="middle">600K rows</text>
+
+  <line x1="150" y1="60" x2="168" y2="60" stroke="#aab" stroke-width="1.5" marker-end="url(#arrow2)"/>
+  <line x1="290" y1="60" x2="308" y2="60" stroke="#aab" stroke-width="1.5" marker-end="url(#arrow2)"/>
+
+  <rect x="30" y="105" width="400" height="40" rx="6" fill="#2a1a2e" stroke="#c586c0" stroke-width="1.5"/>
+  <text x="230" y="125" fill="#c586c0" font-size="11" text-anchor="middle">MySQL Server: sort → group → aggregate → 2 result rows</text>
+  <line x1="370" y1="80" x2="230" y2="103" stroke="#aab" stroke-width="1" stroke-dasharray="3,3"/>
+
+  <!-- AFTER -->
+  <text x="225" y="190" fill="#4ec9b0" font-size="14" text-anchor="middle" font-weight="bold">AFTER: With Pushdown</text>
+  <rect x="30" y="205" width="120" height="40" rx="6" fill="#2a1a2e" stroke="#569cd6" stroke-width="1.5"/>
+  <text x="90" y="230" fill="#569cd6" font-size="11" text-anchor="middle">Root Scan</text>
+  <rect x="170" y="205" width="120" height="40" rx="6" fill="#2a1a2e" stroke="#e94560" stroke-width="1.5"/>
+  <text x="230" y="222" fill="#e94560" font-size="10" text-anchor="middle">Child Lookup +</text>
+  <text x="230" y="237" fill="#e94560" font-size="10" text-anchor="middle">AggInterpreter</text>
+  <rect x="310" y="205" width="120" height="40" rx="6" fill="#1a3a2e" stroke="#4ec9b0" stroke-width="1.5"/>
+  <text x="370" y="222" fill="#4ec9b0" font-size="10" text-anchor="middle">TRANSID_AI</text>
+  <text x="370" y="237" fill="#4ec9b0" font-size="9" text-anchor="middle" font-weight="bold">2 rows only!</text>
+
+  <line x1="150" y1="225" x2="168" y2="225" stroke="#aab" stroke-width="1.5" marker-end="url(#arrow2)"/>
+  <line x1="290" y1="225" x2="308" y2="225" stroke="#aab" stroke-width="1.5" marker-end="url(#arrow2)"/>
+
+  <rect x="30" y="270" width="400" height="35" rx="6" fill="#1a3a2e" stroke="#4ec9b0" stroke-width="1.5"/>
+  <text x="230" y="292" fill="#4ec9b0" font-size="11" text-anchor="middle">MySQL Server: directly returns 2 pre-aggregated rows</text>
+  <line x1="370" y1="245" x2="230" y2="268" stroke="#4ec9b0" stroke-width="1" stroke-dasharray="3,3"/>
+
+  <defs>
+    <marker id="arrow2" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#aab"/>
+    </marker>
+  </defs>
+</svg>
+<div class="caption">Figure 2: Data volume comparison. TPC-H Q12 example: 600K intermediate rows reduced to 2 aggregated group rows.</div>
+</div>
+
+<!-- ================================================================== -->
+<h2 id="phases">3. Implementation Phases</h2>
+
+<p>The feature was built bottom-up across 14 phases, starting from the data node kernel
+and working up through the coordinator, NDB API, and finally the MySQL handler layer.</p>
+
+<div class="diagram-box">
+<svg viewBox="0 0 900 200" xmlns="http://www.w3.org/2000/svg">
+  <!-- Timeline -->
+  <line x1="40" y1="100" x2="860" y2="100" stroke="#334" stroke-width="2"/>
+
+  <!-- Phase groups -->
+  <rect x="40" y="60" width="250" height="30" rx="5" fill="#3a1a2e" stroke="#e94560" stroke-width="1.5"/>
+  <text x="165" y="80" fill="#e94560" font-size="11" text-anchor="middle" font-weight="bold">Phases 1-6: DBLQH Kernel</text>
+  <text x="165" y="130" fill="#aab" font-size="9" text-anchor="middle">Signal infra, state mgmt,</text>
+  <text x="165" y="143" fill="#aab" font-size="9" text-anchor="middle">interpreter, memory, eviction</text>
+
+  <rect x="300" y="60" width="180" height="30" rx="5" fill="#1a2744" stroke="#569cd6" stroke-width="1.5"/>
+  <text x="390" y="80" fill="#569cd6" font-size="11" text-anchor="middle" font-weight="bold">Phase 7: Coordinator</text>
+  <text x="390" y="130" fill="#aab" font-size="9" text-anchor="middle">DBTC + DBSPJ protocol</text>
+
+  <rect x="490" y="60" width="130" height="30" rx="5" fill="#1a2744" stroke="#4ec9b0" stroke-width="1.5"/>
+  <text x="555" y="80" fill="#4ec9b0" font-size="11" text-anchor="middle" font-weight="bold">Phase 8: API</text>
+  <text x="555" y="130" fill="#aab" font-size="9" text-anchor="middle">NdbQueryBuilder</text>
+
+  <rect x="630" y="60" width="220" height="30" rx="5" fill="#1a2744" stroke="#c586c0" stroke-width="1.5"/>
+  <text x="740" y="80" fill="#c586c0" font-size="11" text-anchor="middle" font-weight="bold">Phases 9-14: MySQL</text>
+  <text x="740" y="130" fill="#aab" font-size="9" text-anchor="middle">Handler, EXPLAIN, MTR tests,</text>
+  <text x="740" y="143" fill="#aab" font-size="9" text-anchor="middle">eviction tests, COUNT(col)</text>
+
+  <!-- Dots on timeline -->
+  <circle cx="40" cy="100" r="5" fill="#e94560"/>
+  <circle cx="300" cy="100" r="5" fill="#569cd6"/>
+  <circle cx="490" cy="100" r="5" fill="#4ec9b0"/>
+  <circle cx="630" cy="100" r="5" fill="#c586c0"/>
+  <circle cx="860" cy="100" r="5" fill="#53d8fb"/>
+</svg>
+<div class="caption">Figure 3: Implementation timeline — bottom-up from kernel to SQL layer.</div>
+</div>
+
+<h3 id="ph-kernel">Phases 1-6: DBLQH Kernel Engine</h3>
+
+<div class="phase-card kernel">
+  <div class="phase-header">
+    <span class="phase-title">Phase 1: Signal Infrastructure</span>
+    <span class="phase-tag">COMPLETE</span>
+  </div>
+  <p>Defined 8 new GSN signals (944-951) for the JOIN_AGG protocol: SETUP_REQ/CONF/REF,
+  COMPLETE_REQ/CONF/REF, RELEASE_REQ/CONF. Created <code>JoinAgg.hpp</code> signal definitions and
+  registered handlers in DBLQH, DBTC, and DBSPJ.</p>
+</div>
+
+<div class="phase-card kernel">
+  <div class="phase-header">
+    <span class="phase-title">Phase 2: State Management</span>
+    <span class="phase-tag">COMPLETE</span>
+  </div>
+  <p>Added <code>JoinAggregationState</code> struct with TransientPool-based allocation in SimulatedBlock.
+  Node-level pool shared across all LDM threads. State machine: IDLE → SETUP_COMPLETE → FINALIZING → SENDING_RESULTS → COMPLETED.</p>
+</div>
+
+<div class="phase-card kernel">
+  <div class="phase-header">
+    <span class="phase-title">Phase 3: Signal Flags &amp; Routing</span>
+    <span class="phase-tag">COMPLETE</span>
+  </div>
+  <p>Added JoinAggFlag to LQHKEYREQ (bit 7 of attrLenFlags) and SCAN_FRAGREQ (SF_JOIN_AGG_SHIFT = 25).
+  DblqhProxy routes SETUP and RELEASE to main thread; COMPLETE routed to V_QUERY workers for merge.</p>
+</div>
+
+<div class="phase-card kernel">
+  <div class="phase-header">
+    <span class="phase-title">Phase 4: Row Processing Integration</span>
+    <span class="phase-tag">COMPLETE</span>
+  </div>
+  <p>Added <code>handleJoinAggRow()</code> interception in DBTUP at three paths: non-interpreted,
+  interpreted scan, and interpreted non-scan. Rows are fed to AggInterpreter just before
+  <code>sendReadAttrinfo</code>. Linked parent attributes passed via cinBuffer section 4.</p>
+</div>
+
+<div class="phase-card kernel">
+  <div class="phase-header">
+    <span class="phase-title">Phase 5: Completion &amp; Result Sending</span>
+    <span class="phase-tag">COMPLETE</span>
+  </div>
+  <p>Implemented <code>execJOIN_AGG_COMPLETE_REQ</code>: merges per-thread interpreters (MUTEX_FREE)
+  or finalizes shared interpreter (MUTEX_BASED), then sends groups in batches of 16 via
+  TRANSID_AI with CONTINUEB yielding (signal 45) to prevent thread starvation.</p>
+</div>
+
+<div class="phase-card kernel">
+  <div class="phase-header">
+    <span class="phase-title">Phase 6: Memory &amp; Concurrency</span>
+    <span class="phase-tag">COMPLETE</span>
+  </div>
+  <p>Four sub-phases:</p>
+  <ul>
+    <li><strong>6a:</strong> JoinAggInterpreter with chunk-based memory allocator (32KB pages, 25% of RG_QUERY_MEMORY budget)</li>
+    <li><strong>6b:</strong> Group eviction under memory pressure — oldest group serialized to TRANSID_AI, sent to API</li>
+    <li><strong>6c:</strong> MUTEX_BASED strategy with <code>std::mutex</code> for low-cardinality GROUP BY</li>
+    <li><strong>6d:</strong> MUTEX_FREE strategy with per-thread interpreters and bucket-level merge at completion</li>
+  </ul>
+</div>
+
+<h3 id="ph-coordinator">Phase 7: DBTC/DBSPJ Coordinator</h3>
+
+<div class="phase-card api">
+  <div class="phase-header">
+    <span class="phase-title">Phase 7: Three-Phase Orchestration</span>
+    <span class="phase-tag">COMPLETE</span>
+  </div>
+  <p><strong>SETUP:</strong> DBTC extracts agg program from Section 2, sends JOIN_AGG_SETUP_REQ to each data node,
+  collects aggStateKeys into a section attached to SCAN_FRAGREQ.</p>
+  <p><strong>RUN:</strong> DBSPJ routes aggStateKey in LQHKEYREQ variableData for child lookups. Suppresses
+  T_EXPECT_TRANSID_AI for aggregate leaf nodes — no per-row results sent.</p>
+  <p><strong>COMPLETE:</strong> After all SCAN_FRAGCONFs received, DBTC sends JOIN_AGG_COMPLETE_REQ to all nodes.
+  Data nodes merge, finalize, and send remaining groups via TRANSID_AI.</p>
+  <p><strong>RELEASE:</strong> Final cleanup of JoinAggregationState pools.</p>
+</div>
+
+<h3 id="ph-ndbapi">Phase 8: NDB API</h3>
+
+<div class="phase-card api">
+  <div class="phase-header">
+    <span class="phase-title">Phase 8: NDB API Integration</span>
+    <span class="phase-tag">COMPLETE</span>
+  </div>
+  <p>Extended <code>NdbQueryOptions</code> with <code>setAggregation()</code> and <code>addLinkedProjection()</code>.
+  Added DABits NI_AGGREGATE (0x2000) and NI_AGGREGATE_LEAF (0x4000) for serialization.
+  New receiver type NDB_AGG_RECEIVER (5) for dedicated result dispatch.
+  Section 2 combined format: <code>[boundsLen, bounds..., aggReceiverId, aggProgram...]</code>.</p>
+</div>
+
+<h3 id="ph-mysql">Phases 9-14: MySQL Handler Integration</h3>
+
+<div class="phase-card mysql">
+  <div class="phase-header">
+    <span class="phase-title">Phases 9-10: Detection &amp; Program Building</span>
+    <span class="phase-tag">COMPLETE</span>
+  </div>
+  <p>Feature-gated by <code>ndb_join_pushdown_aggregate</code> session variable. <code>ndb_can_push_aggregation()</code>
+  validates: entire join must be pushed, only COUNT/SUM/MIN/MAX (no DISTINCT/ROLLUP).
+  <code>ndb_build_aggregation_program()</code> maps MySQL Item_sum objects to NdbAggregator instructions,
+  including linked projections for multi-table GROUP BY.</p>
+</div>
+
+<div class="phase-card mysql">
+  <div class="phase-header">
+    <span class="phase-title">Phase 10: AccessPath Surgery</span>
+    <span class="phase-tag">COMPLETE</span>
+  </div>
+  <p>Removes AGGREGATE/TEMPTABLE_AGGREGATE node from AccessPath tree entirely, replacing it
+  with the pushed join child. Adds <code>m_pushed_aggregate</code>, <code>m_pushed_value_int/double</code>, <code>m_pushed_null</code>
+  to Item_sum base class with early-return in <code>val_int()</code>/<code>val_real()</code> for 4 subclasses.</p>
+</div>
+
+<div class="phase-card mysql">
+  <div class="phase-header">
+    <span class="phase-title">Phase 11: EXPLAIN Support</span>
+    <span class="phase-tag">COMPLETE</span>
+  </div>
+  <p>Added "Pushed aggregate" annotation to EXPLAIN output when join aggregation is pushed down.</p>
+</div>
+
+<div class="phase-card mysql">
+  <div class="phase-header">
+    <span class="phase-title">Phase 12: SQL-Level MTR Tests</span>
+    <span class="phase-tag">COMPLETE</span>
+  </div>
+  <p>Comprehensive SQL test suite in <code>mysql-test/suite/ndb_push_agg/</code>: 2-way and 3-way joins,
+  GROUP BY on root/child/both, all aggregate functions, NULL handling, HAVING, ORDER BY, LIMIT.</p>
+</div>
+
+<div class="phase-card mysql">
+  <div class="phase-header">
+    <span class="phase-title">Phase 13: Eviction Testing</span>
+    <span class="phase-tag">COMPLETE</span>
+  </div>
+  <p>ERROR_INSERT 5090 forces maxGroups=3 to trigger eviction at SQL level.
+  ERROR_INSERT 4040 for intermittent eviction testing. Verifies correct results
+  even when groups are evicted mid-scan and merged at the API.</p>
+</div>
+
+<div class="phase-card mysql">
+  <div class="phase-header">
+    <span class="phase-title">Phase 14: COUNT(column) &amp; Outer Join Restriction</span>
+    <span class="phase-tag">COMPLETE</span>
+  </div>
+  <p>Added support for <code>COUNT(column)</code> (excludes NULLs, unlike COUNT(*)).
+  Added restriction to reject pushdown for outer joins where NULL padding would
+  affect aggregate correctness.</p>
+</div>
+
+<!-- ================================================================== -->
+<h2 id="dblqh">4. DBLQH Implementation Details</h2>
+
+<h3 id="agginterpreter">AggInterpreter &amp; JoinAggInterpreter</h3>
+
+<p>The feature introduced a new interpreter class hierarchy for pushdown operations:</p>
+
+<div class="diagram-box">
+<svg viewBox="0 0 800 280" xmlns="http://www.w3.org/2000/svg">
+  <!-- Base class -->
+  <rect x="280" y="10" width="220" height="50" rx="8" fill="#0f3460" stroke="#569cd6" stroke-width="2"/>
+  <text x="390" y="32" fill="#569cd6" font-size="12" text-anchor="middle" font-weight="bold">PushdownInterpreter</text>
+  <text x="390" y="48" fill="#aab" font-size="10" text-anchor="middle">abstract base class</text>
+
+  <!-- Children -->
+  <rect x="30" y="120" width="230" height="60" rx="8" fill="#2a1a2e" stroke="#e94560" stroke-width="2"/>
+  <text x="145" y="142" fill="#e94560" font-size="11" text-anchor="middle" font-weight="bold">AggInterpreter</text>
+  <text x="145" y="158" fill="#aab" font-size="9" text-anchor="middle">Lean: 32KB page-resident</text>
+  <text x="145" y="172" fill="#aab" font-size="9" text-anchor="middle">Normal scan pushdown (256 buckets)</text>
+
+  <rect x="280" y="120" width="230" height="60" rx="8" fill="#2a1a2e" stroke="#4ec9b0" stroke-width="2"/>
+  <text x="395" y="142" fill="#4ec9b0" font-size="11" text-anchor="middle" font-weight="bold">JoinAggInterpreter</text>
+  <text x="395" y="158" fill="#aab" font-size="9" text-anchor="middle">Dynamic: chunk allocator, mutex</text>
+  <text x="395" y="172" fill="#aab" font-size="9" text-anchor="middle">Join pushdown (1024 buckets)</text>
+
+  <rect x="530" y="120" width="230" height="60" rx="8" fill="#1a2744" stroke="#dcdcaa" stroke-width="2"/>
+  <text x="645" y="142" fill="#dcdcaa" font-size="11" text-anchor="middle" font-weight="bold">VecSearchInterpreter</text>
+  <text x="645" y="158" fill="#aab" font-size="9" text-anchor="middle">Top-N vector search</text>
+  <text x="645" y="172" fill="#aab" font-size="9" text-anchor="middle">Priority queue + candidates</text>
+
+  <!-- Inheritance lines -->
+  <line x1="145" y1="118" x2="390" y2="62" stroke="#aab" stroke-width="1.5"/>
+  <line x1="395" y1="118" x2="390" y2="62" stroke="#aab" stroke-width="1.5"/>
+  <line x1="645" y1="118" x2="390" y2="62" stroke="#aab" stroke-width="1.5"/>
+
+  <!-- GBHashTable -->
+  <rect x="80" y="210" width="180" height="40" rx="6" fill="#16213e" stroke="#569cd6" stroke-width="1"/>
+  <text x="170" y="235" fill="#569cd6" font-size="10" text-anchor="middle">GBHashTable&lt;256&gt;</text>
+
+  <rect x="330" y="210" width="180" height="40" rx="6" fill="#16213e" stroke="#4ec9b0" stroke-width="1"/>
+  <text x="420" y="235" fill="#4ec9b0" font-size="10" text-anchor="middle">JoinGBHashTable&lt;1024&gt;</text>
+
+  <line x1="145" y1="180" x2="170" y2="208" stroke="#aab" stroke-width="1" stroke-dasharray="3,3"/>
+  <line x1="395" y1="180" x2="420" y2="208" stroke="#aab" stroke-width="1" stroke-dasharray="3,3"/>
+</svg>
+<div class="caption">Figure 4: Interpreter class hierarchy. JoinAggInterpreter was split from AggInterpreter in the final PR to separate concerns.</div>
+</div>
+
+<p>Key differences between the two aggregation interpreters:</p>
+<table>
+  <tr><th>Feature</th><th>AggInterpreter</th><th>JoinAggInterpreter</th></tr>
+  <tr><td>Use case</td><td>Single-table scan pushdown</td><td>Multi-table join pushdown</td></tr>
+  <tr><td>Memory model</td><td>Inline buffers on 32KB page</td><td>Dynamic chunk allocation</td></tr>
+  <tr><td>Hash buckets</td><td>256</td><td>1024</td></tr>
+  <tr><td>Linked attributes</td><td>No</td><td>Yes — parent columns via bit-15 encoding</td></tr>
+  <tr><td>Concurrency</td><td>Single-threaded per scan</td><td>MUTEX_BASED or MUTEX_FREE</td></tr>
+  <tr><td>Eviction</td><td>No</td><td>Yes — evict oldest group under memory pressure</td></tr>
+  <tr><td>Merge support</td><td>No</td><td>Yes — mergeFrom() and mergeAllByBucket()</td></tr>
+</table>
+
+<h3 id="memory">Chunk-Based Memory Allocator</h3>
+
+<div class="diagram-box">
+<svg viewBox="0 0 800 300" xmlns="http://www.w3.org/2000/svg">
+  <!-- Memory budget bar -->
+  <text x="400" y="25" fill="#accent2" font-size="12" text-anchor="middle" font-weight="bold" fill="#53d8fb">RG_QUERY_MEMORY Budget (25% of available)</text>
+
+  <!-- Chunks -->
+  <rect x="40" y="50" width="160" height="80" rx="6" fill="#1a3a2e" stroke="#4ec9b0" stroke-width="2"/>
+  <text x="120" y="70" fill="#4ec9b0" font-size="11" text-anchor="middle" font-weight="bold">Chunk 0 (32KB)</text>
+  <rect x="55" y="80" width="30" height="20" rx="3" fill="#0f3460" stroke="#569cd6" stroke-width="1"/>
+  <text x="70" y="94" fill="#569cd6" font-size="8" text-anchor="middle">G1</text>
+  <rect x="90" y="80" width="30" height="20" rx="3" fill="#0f3460" stroke="#569cd6" stroke-width="1"/>
+  <text x="105" y="94" fill="#569cd6" font-size="8" text-anchor="middle">G2</text>
+  <rect x="125" y="80" width="30" height="20" rx="3" fill="#0f3460" stroke="#569cd6" stroke-width="1"/>
+  <text x="140" y="94" fill="#569cd6" font-size="8" text-anchor="middle">G3</text>
+  <rect x="160" y="80" width="30" height="20" rx="3" fill="#2a2a2e" stroke="#334" stroke-width="1"/>
+  <text x="175" y="94" fill="#aab" font-size="8" text-anchor="middle">free</text>
+  <text x="120" y="120" fill="#aab" font-size="9" text-anchor="middle">live_groups: 3</text>
+
+  <rect x="220" y="50" width="160" height="80" rx="6" fill="#1a3a2e" stroke="#4ec9b0" stroke-width="2"/>
+  <text x="300" y="70" fill="#4ec9b0" font-size="11" text-anchor="middle" font-weight="bold">Chunk 1 (32KB)</text>
+  <rect x="235" y="80" width="30" height="20" rx="3" fill="#0f3460" stroke="#569cd6" stroke-width="1"/>
+  <text x="250" y="94" fill="#569cd6" font-size="8" text-anchor="middle">G4</text>
+  <rect x="270" y="80" width="30" height="20" rx="3" fill="#0f3460" stroke="#569cd6" stroke-width="1"/>
+  <text x="285" y="94" fill="#569cd6" font-size="8" text-anchor="middle">G5</text>
+  <rect x="305" y="80" width="65" height="20" rx="3" fill="#2a2a2e" stroke="#334" stroke-width="1"/>
+  <text x="338" y="94" fill="#aab" font-size="8" text-anchor="middle">free space</text>
+  <text x="300" y="120" fill="#aab" font-size="9" text-anchor="middle">live_groups: 2</text>
+
+  <rect x="400" y="50" width="160" height="80" rx="6" fill="#2a1a2e" stroke="#f44747" stroke-width="2" stroke-dasharray="4,3"/>
+  <text x="480" y="70" fill="#f44747" font-size="11" text-anchor="middle" font-weight="bold">Chunk 2 (freed)</text>
+  <text x="480" y="95" fill="#aab" font-size="9" text-anchor="middle">live_groups: 0</text>
+  <text x="480" y="110" fill="#aab" font-size="9" text-anchor="middle">→ returned to pool</text>
+
+  <!-- Arrow between chunks -->
+  <line x1="200" y1="90" x2="218" y2="90" stroke="#aab" stroke-width="1" marker-end="url(#arrow2)"/>
+  <line x1="380" y1="90" x2="398" y2="90" stroke="#aab" stroke-width="1" marker-end="url(#arrow2)" stroke-dasharray="3,3"/>
+
+  <!-- Group data layout -->
+  <text x="400" y="170" fill="#53d8fb" font-size="12" text-anchor="middle" font-weight="bold">Group Entry Layout (24-byte overhead)</text>
+  <rect x="60" y="185" width="680" height="50" rx="6" fill="#16213e" stroke="#334" stroke-width="1"/>
+
+  <rect x="65" y="190" width="100" height="40" rx="3" fill="#0f3460" stroke="#569cd6" stroke-width="1"/>
+  <text x="115" y="207" fill="#569cd6" font-size="9" text-anchor="middle">chunk_next</text>
+  <text x="115" y="222" fill="#aab" font-size="8" text-anchor="middle">8 bytes (ptr)</text>
+
+  <rect x="170" y="190" width="100" height="40" rx="3" fill="#0f3460" stroke="#4ec9b0" stroke-width="1"/>
+  <text x="220" y="207" fill="#4ec9b0" font-size="9" text-anchor="middle">hash_next</text>
+  <text x="220" y="222" fill="#aab" font-size="8" text-anchor="middle">8 bytes (ptr)</text>
+
+  <rect x="275" y="190" width="70" height="40" rx="3" fill="#0f3460" stroke="#dcdcaa" stroke-width="1"/>
+  <text x="310" y="207" fill="#dcdcaa" font-size="9" text-anchor="middle">key_len</text>
+  <text x="310" y="222" fill="#aab" font-size="8" text-anchor="middle">4 bytes</text>
+
+  <rect x="350" y="190" width="80" height="40" rx="3" fill="#0f3460" stroke="#dcdcaa" stroke-width="1"/>
+  <text x="390" y="207" fill="#dcdcaa" font-size="9" text-anchor="middle">chunk_off</text>
+  <text x="390" y="222" fill="#aab" font-size="8" text-anchor="middle">4 bytes</text>
+
+  <rect x="435" y="190" width="130" height="40" rx="3" fill="#2a1a2e" stroke="#e94560" stroke-width="1.5"/>
+  <text x="500" y="207" fill="#e94560" font-size="9" text-anchor="middle">GROUP BY key data</text>
+  <text x="500" y="222" fill="#aab" font-size="8" text-anchor="middle">variable length</text>
+
+  <rect x="570" y="190" width="165" height="40" rx="3" fill="#2a1a2e" stroke="#c586c0" stroke-width="1.5"/>
+  <text x="653" y="207" fill="#c586c0" font-size="9" text-anchor="middle">Accumulator values</text>
+  <text x="653" y="222" fill="#aab" font-size="8" text-anchor="middle">(SUM, COUNT, MIN, MAX)</text>
+</svg>
+<div class="caption">Figure 5: Chunk-based memory allocator. Each 32KB chunk holds multiple groups. When live_groups reaches 0, chunk is freed.</div>
+</div>
+
+<h3 id="eviction">Group Eviction Under Memory Pressure</h3>
+
+<p>When the aggregation hash table cannot accommodate a new group (budget exhausted),
+the oldest group is evicted:</p>
+
+<ol>
+  <li><code>evictOneGroup()</code> serializes the oldest group to a TRANSID_AI signal buffer</li>
+  <li>The evicted group is sent directly to the API receiver (bypassing DBSPJ)</li>
+  <li>Group memory is freed from the chunk allocator</li>
+  <li>The new group is inserted into the freed space</li>
+  <li>The API's NdbAggregator merges evicted groups with final results</li>
+</ol>
+
+<div class="callout warn">
+  <strong>Correctness guarantee:</strong> Evicted groups are partial aggregates. The API uses
+  <code>NdbAggregator::ProcessRes()</code> to merge partial results from the same group
+  (keyed by GROUP BY values) using the same accumulator logic. This works because all
+  aggregate operations (SUM, COUNT, MIN, MAX) are associative and commutative.
+</div>
+
+<h3 id="concurrency">Concurrency Strategies</h3>
+
+<div class="diagram-box">
+<svg viewBox="0 0 800 280" xmlns="http://www.w3.org/2000/svg">
+  <!-- MUTEX_BASED -->
+  <text x="200" y="25" fill="#e94560" font-size="13" text-anchor="middle" font-weight="bold">MUTEX_BASED</text>
+  <text x="200" y="42" fill="#aab" font-size="10" text-anchor="middle">Single shared interpreter, std::mutex</text>
+
+  <rect x="120" y="55" width="160" height="50" rx="6" fill="#2a1a2e" stroke="#e94560" stroke-width="1.5"/>
+  <text x="200" y="75" fill="#e94560" font-size="11" text-anchor="middle" font-weight="bold">Shared AggInterp</text>
+  <text x="200" y="92" fill="#aab" font-size="9" text-anchor="middle">protected by mutex</text>
+
+  <!-- Threads pointing to shared -->
+  <rect x="40" y="130" width="70" height="25" rx="4" fill="#0f3460" stroke="#569cd6" stroke-width="1"/>
+  <text x="75" y="147" fill="#569cd6" font-size="9" text-anchor="middle">Thread 0</text>
+  <rect x="120" y="130" width="70" height="25" rx="4" fill="#0f3460" stroke="#569cd6" stroke-width="1"/>
+  <text x="155" y="147" fill="#569cd6" font-size="9" text-anchor="middle">Thread 1</text>
+  <rect x="200" y="130" width="70" height="25" rx="4" fill="#0f3460" stroke="#569cd6" stroke-width="1"/>
+  <text x="235" y="147" fill="#569cd6" font-size="9" text-anchor="middle">Thread 2</text>
+  <rect x="280" y="130" width="70" height="25" rx="4" fill="#0f3460" stroke="#569cd6" stroke-width="1"/>
+  <text x="315" y="147" fill="#569cd6" font-size="9" text-anchor="middle">Thread 3</text>
+  <line x1="75" y1="128" x2="200" y2="107" stroke="#aab" stroke-width="1"/>
+  <line x1="155" y1="128" x2="200" y2="107" stroke="#aab" stroke-width="1"/>
+  <line x1="235" y1="128" x2="200" y2="107" stroke="#aab" stroke-width="1"/>
+  <line x1="315" y1="128" x2="200" y2="107" stroke="#aab" stroke-width="1"/>
+
+  <text x="200" y="185" fill="#aab" font-size="9" text-anchor="middle">Low contention for few groups</text>
+  <text x="200" y="200" fill="#aab" font-size="9" text-anchor="middle">No merge needed at completion</text>
+
+  <!-- MUTEX_FREE -->
+  <text x="600" y="25" fill="#4ec9b0" font-size="13" text-anchor="middle" font-weight="bold">MUTEX_FREE</text>
+  <text x="600" y="42" fill="#aab" font-size="10" text-anchor="middle">Per-thread interpreters, merge at end</text>
+
+  <!-- Per-thread interpreters -->
+  <rect x="440" y="55" width="70" height="50" rx="6" fill="#1a3a2e" stroke="#4ec9b0" stroke-width="1.5"/>
+  <text x="475" y="75" fill="#4ec9b0" font-size="9" text-anchor="middle" font-weight="bold">Interp 0</text>
+  <rect x="520" y="55" width="70" height="50" rx="6" fill="#1a3a2e" stroke="#4ec9b0" stroke-width="1.5"/>
+  <text x="555" y="75" fill="#4ec9b0" font-size="9" text-anchor="middle" font-weight="bold">Interp 1</text>
+  <rect x="600" y="55" width="70" height="50" rx="6" fill="#1a3a2e" stroke="#4ec9b0" stroke-width="1.5"/>
+  <text x="635" y="75" fill="#4ec9b0" font-size="9" text-anchor="middle" font-weight="bold">Interp 2</text>
+  <rect x="680" y="55" width="70" height="50" rx="6" fill="#1a3a2e" stroke="#4ec9b0" stroke-width="1.5"/>
+  <text x="715" y="75" fill="#4ec9b0" font-size="9" text-anchor="middle" font-weight="bold">Interp 3</text>
+
+  <!-- Threads -->
+  <rect x="440" y="130" width="70" height="25" rx="4" fill="#0f3460" stroke="#569cd6" stroke-width="1"/>
+  <text x="475" y="147" fill="#569cd6" font-size="9" text-anchor="middle">Thread 0</text>
+  <rect x="520" y="130" width="70" height="25" rx="4" fill="#0f3460" stroke="#569cd6" stroke-width="1"/>
+  <text x="555" y="147" fill="#569cd6" font-size="9" text-anchor="middle">Thread 1</text>
+  <rect x="600" y="130" width="70" height="25" rx="4" fill="#0f3460" stroke="#569cd6" stroke-width="1"/>
+  <text x="635" y="147" fill="#569cd6" font-size="9" text-anchor="middle">Thread 2</text>
+  <rect x="680" y="130" width="70" height="25" rx="4" fill="#0f3460" stroke="#569cd6" stroke-width="1"/>
+  <text x="715" y="147" fill="#569cd6" font-size="9" text-anchor="middle">Thread 3</text>
+  <line x1="475" y1="128" x2="475" y2="107" stroke="#aab" stroke-width="1"/>
+  <line x1="555" y1="128" x2="555" y2="107" stroke="#aab" stroke-width="1"/>
+  <line x1="635" y1="128" x2="635" y2="107" stroke="#aab" stroke-width="1"/>
+  <line x1="715" y1="128" x2="715" y2="107" stroke="#aab" stroke-width="1"/>
+
+  <!-- Merge arrow -->
+  <text x="600" y="185" fill="#dcdcaa" font-size="10" text-anchor="middle" font-weight="bold">At COMPLETE: mergeAllByBucket()</text>
+  <rect x="520" y="200" width="160" height="35" rx="6" fill="#2a1a2e" stroke="#dcdcaa" stroke-width="1.5"/>
+  <text x="600" y="222" fill="#dcdcaa" font-size="10" text-anchor="middle">Merged into Interp 0</text>
+  <line x1="475" y1="107" x2="600" y2="198" stroke="#dcdcaa" stroke-width="1" stroke-dasharray="3,3"/>
+  <line x1="555" y1="107" x2="600" y2="198" stroke="#dcdcaa" stroke-width="1" stroke-dasharray="3,3"/>
+  <line x1="635" y1="107" x2="600" y2="198" stroke="#dcdcaa" stroke-width="1" stroke-dasharray="3,3"/>
+  <line x1="715" y1="107" x2="600" y2="198" stroke="#dcdcaa" stroke-width="1" stroke-dasharray="3,3"/>
+</svg>
+<div class="caption">Figure 6: Two concurrency strategies. MUTEX_FREE is the default, chosen for high-cardinality GROUP BY scenarios.</div>
+</div>
+
+<!-- ================================================================== -->
+<h2 id="coordinator-detail">5. Coordinator Protocol Details</h2>
+
+<h3>DBTC ScanRecord Extensions</h3>
+<pre>
+// New fields in DBTC ScanRecord:
+Uint32 m_aggProgramPtrI;     // Section pointer to agg program
+Uint32 m_aggKeysSectionPtrI; // Section pointer to aggStateKeys
+Uint32 m_aggStateKeys[];     // Per-node state keys from SETUP_CONF
+Uint32 m_aggNodes;           // NdbNodeBitmask of participating nodes
+Uint32 m_aggNodesOutstanding;// Count of pending SETUP/COMPLETE responses
+</pre>
+
+<h3>Section 2 Combined Format</h3>
+<p>The aggregation program shares Section 2 with index bounds in SCAN_TABREQ:</p>
+<pre>
+Word 0:                boundsLen (0 if no bounds)
+Words 1..boundsLen:    bounds data (for index scans)
+Word boundsLen+1:      aggReceiverId (API receiver ID for result routing)
+Remaining words:       aggregation program (NdbAggregator bytecode)
+</pre>
+
+<p>DBTC splits this in <code>execSCAN_TABREQ</code>:</p>
+<ul>
+  <li>Bounds → <code>scanKeyInfoPtr</code></li>
+  <li>Receiver ID → <code>m_aggReceiverId</code></li>
+  <li>Program → <code>m_aggProgramPtrI</code> (kept as section for forwarding to DBLQH)</li>
+</ul>
+
+<h3>aggStateKeys Section in SCAN_FRAGREQ</h3>
+<p>After SETUP completes, DBTC builds a section of (nodeId, aggStateKey) pairs and attaches
+it to SCAN_FRAGREQ for DBSPJ. DBSPJ extracts the key for each node and appends it to
+LQHKEYREQ variableData when sending child lookups to leaf tables.</p>
+
+<h3>DBSPJ Optimizations</h3>
+<ul>
+  <li><strong>T_EXPECT_TRANSID_AI suppression:</strong> Aggregate leaf nodes don't send per-row results.
+    DBSPJ skips waiting for TRANSID_AI, only expecting LQHKEYCONF.</li>
+  <li><strong>RT_AGGREGATE flag:</strong> Marks the Request as containing aggregation, changing routing behavior.</li>
+  <li><strong>JoinAgg bypass:</strong> For large result sets, DBSPJ can bypass DBTC/API round-trip for
+    batch flow control, sending heartbeats (SCAN_HBREP) to keep the connection alive.</li>
+</ul>
+
+<!-- ================================================================== -->
+<h2 id="ndbapi-detail">6. NDB API Integration Details</h2>
+
+<h3>NdbAggregator Program Building</h3>
+<pre>
+NdbAggregator agg;
+agg.LoadColumn(0, col_shipmode);    // Load column for GROUP BY
+agg.GroupBy(0);                      // GROUP BY on loaded column
+agg.GroupByLinked(1, col_priority);  // GROUP BY on parent table column
+agg.Sum(2, col_amount);             // SUM aggregate
+agg.Count(3);                       // COUNT(*)
+agg.Finalize();                     // Seal the program
+
+// Attach to query definition
+NdbQueryOptions opts;
+opts.setAggregation(agg);
+opts.addLinkedProjection(parentOp, linkedCols, numLinkedCols);
+</pre>
+
+<h3>Linked Column Resolution (Bit-15 Encoding)</h3>
+<p>Columns from parent tables in a multi-table GROUP BY use a special encoding:</p>
+<pre>
+// Column ID encoding in aggregation program:
+// Bit 15 (0x8000) = 0  → local column (from leaf table)
+// Bit 15 (0x8000) = 1  → linked column (from parent table)
+// Bits 0-14            → position index in linked attribute buffer
+
+Example: GroupByLinked(position=2, col_id) → stored as 0x8002
+AggInterpreter resolves by scanning AttributeHeader chain to position 2
+</pre>
+
+<h3>Result Routing</h3>
+<p>Each data node sends aggregated results directly to the API via TRANSID_AI. For
+GROUP BY queries, the receiver is selected by hashing the GROUP BY key:</p>
+<pre>
+receiverData = selectReceiverData(key, key_len)
+             = receiverIds[hash(key, key_len) % numReceiverIds]
+</pre>
+<p>This ensures the same group from different data nodes arrives at the same API receiver,
+where NdbAggregator merges partial results.</p>
+
+<!-- ================================================================== -->
+<h2 id="mysql-detail">7. MySQL Handler Integration Details</h2>
+
+<h3>Detection and Validation</h3>
+<p><code>ndb_can_push_aggregation()</code> checks:</p>
+<ul>
+  <li>Feature gate: <code>SET ndb_join_pushdown_aggregate = ON</code></li>
+  <li>Entire join must already be pushed (SPJ)</li>
+  <li>Only COUNT(*), COUNT(col), SUM, MIN, MAX supported</li>
+  <li>No DISTINCT, ROLLUP, or window functions</li>
+  <li>All GROUP BY columns must come from pushed tables</li>
+  <li>No outer joins (NULL padding would corrupt aggregates)</li>
+</ul>
+
+<h3>AccessPath Tree Surgery</h3>
+
+<div class="diagram-box">
+<svg viewBox="0 0 800 280" xmlns="http://www.w3.org/2000/svg">
+  <!-- BEFORE tree -->
+  <text x="200" y="20" fill="#f44747" font-size="13" text-anchor="middle" font-weight="bold">Before Surgery</text>
+
+  <rect x="130" y="30" width="140" height="35" rx="6" fill="#2a1a2e" stroke="#f44747" stroke-width="2"/>
+  <text x="200" y="52" fill="#f44747" font-size="10" text-anchor="middle">AGGREGATE</text>
+
+  <rect x="100" y="90" width="200" height="35" rx="6" fill="#2a1a2e" stroke="#dcdcaa" stroke-width="1.5"/>
+  <text x="200" y="112" fill="#dcdcaa" font-size="10" text-anchor="middle">SORT (for GROUP BY)</text>
+
+  <rect x="110" y="150" width="180" height="35" rx="6" fill="#2a1a2e" stroke="#c586c0" stroke-width="1.5"/>
+  <text x="200" y="172" fill="#c586c0" font-size="10" text-anchor="middle">NESTED_LOOP_JOIN</text>
+
+  <rect x="120" y="210" width="160" height="35" rx="6" fill="#1a3a2e" stroke="#4ec9b0" stroke-width="1.5"/>
+  <text x="200" y="232" fill="#4ec9b0" font-size="10" text-anchor="middle">TABLE_SCAN (pushed)</text>
+
+  <line x1="200" y1="65" x2="200" y2="88" stroke="#aab" stroke-width="1"/>
+  <line x1="200" y1="125" x2="200" y2="148" stroke="#aab" stroke-width="1"/>
+  <line x1="200" y1="185" x2="200" y2="208" stroke="#aab" stroke-width="1"/>
+
+  <!-- Arrow -->
+  <text x="400" y="130" fill="#53d8fb" font-size="24" text-anchor="middle">→</text>
+  <text x="400" y="155" fill="#53d8fb" font-size="10" text-anchor="middle">surgery</text>
+
+  <!-- AFTER tree -->
+  <text x="600" y="20" fill="#4ec9b0" font-size="13" text-anchor="middle" font-weight="bold">After Surgery</text>
+
+  <rect x="520" y="100" width="160" height="35" rx="6" fill="#1a3a2e" stroke="#4ec9b0" stroke-width="2"/>
+  <text x="600" y="117" fill="#4ec9b0" font-size="10" text-anchor="middle" font-weight="bold">TABLE_SCAN (pushed)</text>
+  <text x="600" y="148" fill="#aab" font-size="9" text-anchor="middle">Returns pre-aggregated rows</text>
+  <text x="600" y="163" fill="#aab" font-size="9" text-anchor="middle">directly from data nodes</text>
+
+  <!-- Removed nodes -->
+  <rect x="520" y="200" width="160" height="55" rx="6" fill="#1a1a2e" stroke="#334" stroke-width="1" stroke-dasharray="4,3"/>
+  <text x="600" y="220" fill="#aab" font-size="9" text-anchor="middle" style="text-decoration: line-through; opacity: 0.5;">AGGREGATE — removed</text>
+  <text x="600" y="235" fill="#aab" font-size="9" text-anchor="middle" style="text-decoration: line-through; opacity: 0.5;">SORT — removed</text>
+  <text x="600" y="250" fill="#aab" font-size="9" text-anchor="middle" style="text-decoration: line-through; opacity: 0.5;">NLJ — removed</text>
+</svg>
+<div class="caption">Figure 7: AccessPath tree surgery. The AGGREGATE, SORT, and NESTED_LOOP_JOIN nodes are removed entirely.
+The root TABLE_SCAN handler returns pre-aggregated rows directly.</div>
+</div>
+
+<h3>Item_sum Pushed Value Interface</h3>
+<pre>
+class Item_sum {
+  // Added for pushdown:
+  bool m_pushed_aggregate{false};
+  int64_t m_pushed_value_int{0};
+  double m_pushed_value_double{0.0};
+  bool m_pushed_null{false};
+
+  void set_pushed_value_int(int64_t val);
+  void set_pushed_value_double(double val);
+  void set_pushed_null();
+};
+
+// In Item_sum_count::val_int():
+if (m_pushed_aggregate) {
+  if (m_pushed_null) { null_value = true; return 0; }
+  null_value = false;
+  return m_pushed_value_int;  // ← short-circuit: skip MySQL evaluation
+}
+// ... original code ...
+</pre>
+
+<h3>Result Fetch Loop</h3>
+<pre>
+int ndb_fetch_pushed_aggregate(ha_ndbcluster *handler) {
+  NdbAggregator *agg = ...;
+  NdbAggregator::ResultRecord rec;
+
+  if (agg->NextResultRecord(&amp;rec) != 0)
+    return HA_ERR_END_OF_FILE;
+
+  // Populate GROUP BY fields
+  for (int i = 0; i < num_gb_cols; i++) {
+    Field *field = table->field[gb_col_idx[i]];
+    // Copy GROUP BY value from rec to MySQL Field buffer
+  }
+
+  // Set pushed values on Item_sum objects
+  for (int i = 0; i < num_aggs; i++) {
+    Item_sum *item = join->sum_funcs[i];
+    NdbAggregator::Result *res = rec.GetResult(i);
+    if (res->IsNull())
+      item->set_pushed_null();
+    else
+      item->set_pushed_value_int(res->GetInt64());
+  }
+  return 0;  // Row available
+}
+</pre>
+
+<!-- ================================================================== -->
+<h2 id="testing">8. Testing Infrastructure</h2>
+
+<p>The feature has an extensive multi-level testing strategy:</p>
+
+<div class="diagram-box">
+<svg viewBox="0 0 800 300" xmlns="http://www.w3.org/2000/svg">
+  <!-- Test pyramid -->
+  <polygon points="400,20 700,270 100,270" fill="none" stroke="#334" stroke-width="2"/>
+
+  <!-- Level 1: Block unit tests -->
+  <rect x="180" y="200" width="440" height="50" rx="6" fill="#2a1a2e" stroke="#e94560" stroke-width="1.5"/>
+  <text x="400" y="220" fill="#e94560" font-size="12" text-anchor="middle" font-weight="bold">Block Unit Tests (Direct Signal Level)</text>
+  <text x="400" y="238" fill="#aab" font-size="10" text-anchor="middle">testJoinAgg, testCaseAgg, benchJoinAgg, bench_q12_tpch, bench_q9_dbtc</text>
+
+  <!-- Level 2: SPJ integration -->
+  <rect x="220" y="140" width="360" height="45" rx="6" fill="#1a2744" stroke="#569cd6" stroke-width="1.5"/>
+  <text x="400" y="158" fill="#569cd6" font-size="12" text-anchor="middle" font-weight="bold">SPJ Integration Tests</text>
+  <text x="400" y="175" fill="#aab" font-size="10" text-anchor="middle">testJoinAggSpj, testJoinAggScanScan, bench_q12_dbtc</text>
+
+  <!-- Level 3: NDB API -->
+  <rect x="260" y="85" width="280" height="40" rx="6" fill="#1a3a2e" stroke="#4ec9b0" stroke-width="1.5"/>
+  <text x="400" y="103" fill="#4ec9b0" font-size="12" text-anchor="middle" font-weight="bold">NDB API Tests</text>
+  <text x="400" y="118" fill="#aab" font-size="10" text-anchor="middle">testJoinAggNdbApi, bench_q9_ndbapi, 10 TPC-H benchmarks</text>
+
+  <!-- Level 4: SQL MTR -->
+  <rect x="310" y="35" width="180" height="35" rx="6" fill="#1a2744" stroke="#c586c0" stroke-width="1.5"/>
+  <text x="400" y="50" fill="#c586c0" font-size="11" text-anchor="middle" font-weight="bold">SQL MTR Tests</text>
+  <text x="400" y="65" fill="#aab" font-size="9" text-anchor="middle">ndb_push_agg suite</text>
+</svg>
+<div class="caption">Figure 8: Test pyramid — from raw kernel signals at the base to full SQL integration at the top.</div>
+</div>
+
+<table>
+  <tr><th>Test</th><th>Signal Path</th><th>Coverage</th></tr>
+  <tr>
+    <td><code>testJoinAgg</code></td>
+    <td>Direct → DBLQH</td>
+    <td>All agg types, GROUP BY, eviction, mutex-free, flow control, error paths (21 tests)</td>
+  </tr>
+  <tr>
+    <td><code>testJoinAggSpj</code></td>
+    <td>DBTC → DBSPJ → DBLQH</td>
+    <td>Full QueryTree path, empty/single/large datasets</td>
+  </tr>
+  <tr>
+    <td><code>testJoinAggScanScan</code></td>
+    <td>NdbQueryBuilder → scan-scan</td>
+    <td>Scan-scan joins, composite index, NULLs, 3-way joins (8 tests)</td>
+  </tr>
+  <tr>
+    <td><code>testJoinAggNdbApi</code></td>
+    <td>NdbQueryBuilder → full</td>
+    <td>SUM, COUNT, multi-agg, 3-way join with linked attrs</td>
+  </tr>
+  <tr>
+    <td><code>testCaseAgg</code></td>
+    <td>Direct → DBLQH</td>
+    <td>Embedded CASE expressions in aggregation programs</td>
+  </tr>
+  <tr>
+    <td><code>bench_q12_*</code></td>
+    <td>Various</td>
+    <td>TPC-H Q12: 2-table join, CASE aggregation, CHAR comparison, DATE filters</td>
+  </tr>
+  <tr>
+    <td><code>bench_q9_*</code></td>
+    <td>DBTC + NDB API</td>
+    <td>TPC-H Q9: 6-table join, multi-level linked attrs, SUM with GROUP BY</td>
+  </tr>
+  <tr>
+    <td><code>ndb_join_pushdown_agg</code></td>
+    <td>MySQL → full</td>
+    <td>SQL-level 2-way and 3-way joins, all aggregate functions</td>
+  </tr>
+  <tr>
+    <td><code>ndb_join_pushdown_agg_evict</code></td>
+    <td>MySQL → full</td>
+    <td>ERROR_INSERT 5090/4040 eviction correctness at SQL level</td>
+  </tr>
+</table>
+
+<h3>TPC-H Benchmark Suite</h3>
+<p>A comprehensive TPC-H data loader (<code>load_tpch</code>) and benchmark suite covering queries
+Q2-Q5, Q9-Q12 via both raw signal and NDB API paths. The <code>bench_tpch</code> MTR test
+orchestrates all benchmarks in a single run with data load and cleanup.</p>
+
+<!-- ================================================================== -->
+<h2 id="design-decisions">9. Key Design Decisions</h2>
+
+<h3>Bottom-Up Development Order</h3>
+<div class="callout success">
+  <strong>Decision:</strong> Build from kernel (DBLQH) up to SQL handler, not top-down.<br>
+  <strong>Rationale:</strong> The aggregation engine at the data node is the most complex and
+  performance-critical component. Building it first with direct signal tests enabled rapid
+  iteration without the overhead of full SQL roundtrips. Each layer was tested independently
+  before integration.
+</div>
+
+<h3>Per-Thread vs Shared Interpreter</h3>
+<div class="callout info">
+  <strong>Decision:</strong> Default to MUTEX_FREE (per-thread interpreters).<br>
+  <strong>Rationale:</strong> NDB data nodes use multiple LDM threads for parallel scan processing.
+  A shared interpreter with mutex creates contention at high cardinalities. Per-thread
+  interpreters eliminate all contention; the merge at COMPLETE phase is O(N_threads × N_groups)
+  but happens only once. MUTEX_BASED remains available for low-cardinality cases.
+</div>
+
+<h3>AccessPath Surgery vs Pass-Through</h3>
+<div class="callout info">
+  <strong>Decision:</strong> Remove AGGREGATE node from AccessPath tree entirely.<br>
+  <strong>Rationale:</strong> Making AGGREGATE a pass-through would still require MySQL's group-change
+  detection, sorting, and expression evaluation overhead. Removing the node entirely lets the
+  root handler return pre-aggregated rows directly, eliminating all MySQL-side aggregation cost.
+  The Item_sum early-return mechanism provides the bridge.
+</div>
+
+<h3>Direct API Sending for Evicted Groups</h3>
+<div class="callout info">
+  <strong>Decision:</strong> Evicted groups bypass DBSPJ and send directly to the API receiver.<br>
+  <strong>Rationale:</strong> DBSPJ is designed for row-level flow control. Routing evicted aggregate
+  groups through DBSPJ would add complexity for no benefit. The API receiver can merge partial
+  aggregates regardless of arrival order thanks to the commutative/associative property of
+  the supported aggregate operations.
+</div>
+
+<h3>Section 2 Multiplexing</h3>
+<div class="callout info">
+  <strong>Decision:</strong> Share Section 2 between bounds and aggregation program.<br>
+  <strong>Rationale:</strong> Adding a new section would require changes to all signal handling code.
+  The combined format with a bounds length prefix allows zero-copy splitting in DBTC and
+  is backward compatible (non-aggregate queries have no extra data after bounds).
+</div>
+
+<!-- ================================================================== -->
+<h2 id="files">10. File Index</h2>
+
+<h3>New Files</h3>
+<div class="file-list">
+<span class="dir">storage/ndb/include/kernel/signaldata/</span>
+  <span class="file">JoinAgg.hpp</span> <span class="desc">— Signal definitions for JOIN_AGG protocol (8 signals)</span>
+
+<span class="dir">storage/ndb/src/kernel/blocks/dblqh/</span>
+  <span class="file">JoinAggregationState.hpp</span> <span class="desc">— Shared state struct for join aggregation</span>
+
+<span class="dir">storage/ndb/src/kernel/blocks/dbtup/</span>
+  <span class="file">PushdownInterpreter.hpp/.cpp</span> <span class="desc">— Base class for pushdown interpreters</span>
+  <span class="file">JoinAggInterpreter.hpp/.cpp</span> <span class="desc">— Join-aware aggregation interpreter</span>
+  <span class="file">VecSearchInterpreter.hpp/.cpp</span> <span class="desc">— Vector search interpreter (refactored out)</span>
+  <span class="file">AggHashTable.hpp</span> <span class="desc">— Templated hash table for group-by lookup</span>
+  <span class="file">InterpreterCommonOp.hpp</span> <span class="desc">— Shared interpreter operations</span>
+
+<span class="dir">storage/ndb/plugin/</span>
+  <span class="file">ha_ndbcluster_push_agg.h</span> <span class="desc">— MySQL handler aggregation pushdown header</span>
+  <span class="file">ha_ndbcluster_push_agg.cc</span> <span class="desc">— MySQL handler aggregation pushdown implementation (~700 lines)</span>
+
+<span class="dir">storage/ndb/block_unit_test/</span>
+  <span class="file">testJoinAgg.cpp</span> <span class="desc">— Direct DBLQH signal tests (21 tests, 3920 lines)</span>
+  <span class="file">testJoinAggSpj.cpp</span> <span class="desc">— DBTC→DBSPJ→DBLQH integration tests (1798 lines)</span>
+  <span class="file">testJoinAggScanScan.cpp</span> <span class="desc">— Scan-scan join tests (8 tests, 2370 lines)</span>
+  <span class="file">testJoinAggNdbApi.cpp</span> <span class="desc">— NDB API integration tests (5985 lines)</span>
+  <span class="file">testCaseAgg.cpp</span> <span class="desc">— CASE expression aggregation tests</span>
+  <span class="file">benchJoinAgg.cpp</span> <span class="desc">— Join aggregation performance benchmark</span>
+  <span class="file">bench_q9_dbtc.cpp</span> <span class="desc">— TPC-H Q9 via raw DBTC signals</span>
+  <span class="file">bench_q9_ndbapi.cpp</span> <span class="desc">— TPC-H Q9 via NDB API</span>
+  <span class="file">bench_q12_tpch.cpp</span> <span class="desc">— TPC-H Q12 via direct DBLQH</span>
+  <span class="file">bench_q12_dbtc.cpp</span> <span class="desc">— TPC-H Q12 via full orchestration</span>
+  <span class="file">load_tpch.cpp</span> <span class="desc">— TPC-H data loader</span>
+  <span class="file">bench_q{2-5,10,11}_ndbapi.cpp</span> <span class="desc">— Additional TPC-H benchmarks</span>
+
+<span class="dir">mysql-test/suite/ndb_push_agg/</span>
+  <span class="file">my.cnf</span> <span class="desc">— Cluster configuration (8 CPUs, 2GB DataMemory)</span>
+  <span class="file">t/*.test</span> <span class="desc">— MTR test input files (12 tests)</span>
+  <span class="file">r/*.result</span> <span class="desc">— Expected output files</span>
+</div>
+
+<h3>Modified Files (Key Changes)</h3>
+<div class="file-list">
+<span class="dir">storage/ndb/src/kernel/blocks/dblqh/</span>
+  <span class="file">DblqhMain.cpp</span> <span class="desc">— JOIN_AGG signal handlers, SCAN_FRAGREQ/LQHKEYREQ aggregation flag processing</span>
+  <span class="file">DblqhProxy.cpp</span> <span class="desc">— SETUP/RELEASE routing, state pool management, interpreter allocation</span>
+  <span class="file">Dblqh.hpp</span> <span class="desc">— ScanRecord extensions (m_join_agg_state_key, m_rows_examined)</span>
+
+<span class="dir">storage/ndb/src/kernel/blocks/dbtup/</span>
+  <span class="file">AggInterpreter.hpp/.cpp</span> <span class="desc">— Refactored to lean single-table aggregation</span>
+  <span class="file">DbtupExecQuery.cpp</span> <span class="desc">— handleJoinAggRow() interception at 3 execution paths</span>
+
+<span class="dir">storage/ndb/src/kernel/blocks/dbspj/</span>
+  <span class="file">Dbspj.hpp</span> <span class="desc">— RT_AGGREGATE flag, aggStateKeys in Request</span>
+  <span class="file">DbspjMain.cpp</span> <span class="desc">— LQHKEYREQ JoinAggFlag, suppressed TRANSID_AI for aggregate leaves</span>
+
+<span class="dir">storage/ndb/src/kernel/blocks/dbtc/</span>
+  <span class="file">Dbtc.hpp</span> <span class="desc">— ScanRecord aggregation fields</span>
+  <span class="file">DbtcMain.cpp</span> <span class="desc">— SETUP/COMPLETE/RELEASE orchestration, Section 2 parsing</span>
+  <span class="file">DbtcInit.cpp</span> <span class="desc">— Signal handler registration</span>
+
+<span class="dir">storage/ndb/src/ndbapi/</span>
+  <span class="file">NdbQueryBuilder.cpp</span> <span class="desc">— setAggregation(), addLinkedProjection(), DABits serialization</span>
+  <span class="file">NdbQueryOperation.cpp</span> <span class="desc">— doSend() Section 2 combined format, m_fragsPerWorker override</span>
+  <span class="file">Ndbif.cpp</span> <span class="desc">— NDB_AGG_RECEIVER dispatch for TRANSID_AI routing</span>
+  <span class="file">NdbReceiver.cpp</span> <span class="desc">— CORR_FACTOR64 stripping for fragmented SPJ signals</span>
+
+<span class="dir">storage/ndb/plugin/</span>
+  <span class="file">ha_ndbcluster.cc</span> <span class="desc">— THDVAR, hooks in push_to_engine/fixup/create/fetch (~30 lines)</span>
+  <span class="file">ha_ndbcluster.h</span> <span class="desc">— m_pushed_agg_mode member</span>
+  <span class="file">ha_ndbcluster_push.h/.cc</span> <span class="desc">— setAggregation() call site, m_has_aggregation flag</span>
+
+<span class="dir">sql/</span>
+  <span class="file">item_sum.h</span> <span class="desc">— Pushed value members + setters (~15 lines)</span>
+  <span class="file">item_sum.cc</span> <span class="desc">— Early-return in 4 subclass val_int()/val_real() methods (~8 lines)</span>
+
+<span class="dir">storage/ndb/include/kernel/</span>
+  <span class="file">signaldata/LqhKey.hpp</span> <span class="desc">— JoinAggFlag bit 7 in attrLenFlags</span>
+  <span class="file">signaldata/ScanFrag.hpp</span> <span class="desc">— SF_JOIN_AGG_SHIFT = 25, rowsExamined fields</span>
+  <span class="file">signaldata/ScanTab.hpp</span> <span class="desc">— JoinAgg flag bit in ScanTabReq</span>
+  <span class="file">GlobalSignalNumbers.h</span> <span class="desc">— GSN 944-951 for JOIN_AGG signals</span>
+</div>
+
+<h3>Statistics Summary</h3>
+<table>
+  <tr><th>Category</th><th>New Lines</th><th>Files</th></tr>
+  <tr><td>Kernel blocks (DBLQH, DBTUP, DBTC, DBSPJ)</td><td>~9,500</td><td>~20</td></tr>
+  <tr><td>NDB API</td><td>~500</td><td>~10</td></tr>
+  <tr><td>MySQL Handler</td><td>~800</td><td>~6</td></tr>
+  <tr><td>Signal definitions</td><td>~300</td><td>~5</td></tr>
+  <tr><td>Block unit tests</td><td>~29,000</td><td>~24</td></tr>
+  <tr><td>MTR tests &amp; configs</td><td>~2,000</td><td>~25</td></tr>
+  <tr><td>Documentation</td><td>~15,000</td><td>~20</td></tr>
+  <tr><td><strong>Total</strong></td><td><strong>~57,600</strong></td><td><strong>151</strong></td></tr>
+</table>
+
+<!-- Footer -->
+<div style="margin-top: 4rem; padding-top: 1rem; border-top: 1px solid var(--border); text-align: center; color: var(--text-dim); font-size: 0.85rem;">
+  <p>Generated for RONDB-733 — Pushdown Join Aggregation<br>
+  Commit range: <code>a30aec15..97285b8e</code> | Branch: <code>RONDB-733-mysql</code><br>
+  Documentation generated March 2026</p>
+</div>
+
+</body>
+</html>

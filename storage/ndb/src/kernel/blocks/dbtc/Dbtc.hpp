@@ -1587,6 +1587,7 @@ class Dbtc : public SimulatedBlock {
     bool inPackedList;
 
     Uint32 m_location_domain_id;
+    Uint32 m_round_robin_instance;
 
     /* Discrete states of API failure handling for logs etc */
     enum ApiFailStates {
@@ -1915,7 +1916,10 @@ class Dbtc : public SimulatedBlock {
       WAIT_AI = 2,
       WAIT_FRAGMENT_COUNT = 3,
       RUNNING = 4,
-      CLOSING_SCAN = 5
+      CLOSING_SCAN = 5,
+      WAIT_JOIN_AGG_SETUP = 6,
+      WAIT_JOIN_AGG_COMPLETE = 7,
+      WAIT_JOIN_AGG_RELEASE = 8
     };
 
     // State of this scan
@@ -1996,6 +2000,28 @@ class Dbtc : public SimulatedBlock {
     NDB_TICKS m_start_ticks;
 
     Uint32 m_ttl_purge_window_size;
+
+    // Join aggregation state (Phase 7)
+    Uint32 m_aggProgramPtrI;
+    Uint32 m_aggKeysSectionPtrI;
+    Uint32 m_aggReceiverId;  // API-side NdbReceiver ID for agg results
+    Uint32 m_aggNodesOutstanding;
+    bool m_joinAgg;
+    bool m_aggPhaseFailed;         // Error received during current agg phase
+    Uint32 m_aggErrorCode;         // Error code from first failure
+
+    /**
+     * Per-node join agg state, dynamically allocated via
+     * lc_ndbd_pool_malloc only for JoinAgg queries to avoid ~620
+     * bytes overhead in every ScanRecord. Sized to MAX_NDB_NODES
+     * (the runtime cluster max) rather than ABS_MAX_NDB_NODES.
+     */
+    struct JoinAggNodeState {
+      NdbNodeBitmask m_aggNodes;
+      NdbNodeBitmask m_aggNodesPending;
+      Uint32 m_aggStateKeys[];  // Flexible array member, sized at allocation
+    };
+    JoinAggNodeState *m_joinAggNodes;  // nullptr when not JoinAgg
   };
   typedef Ptr<ScanRecord> ScanRecordPtr;
   typedef TransientPool<ScanRecord> ScanRecord_pool;
@@ -2100,9 +2126,18 @@ class Dbtc : public SimulatedBlock {
   void execTC_SCHVERREQ(Signal *signal);
   void execTAB_COMMITREQ(Signal *signal);
   void execSCAN_TABREQ(Signal *signal);
+  void parseJoinAggKeyInfo(ScanRecordPtr scanptr, SectionHandle &handle,
+                           Uint32 keyLen);
+  void releaseJoinAggResources(Signal *signal, ScanRecordPtr scanPtr);
   void execSCAN_TABINFO(Signal *signal);
   void execSCAN_FRAGCONF(Signal *signal);
   void execSCAN_FRAGREF(Signal *signal);
+  void execJOIN_AGG_SETUP_CONF(Signal *signal);
+  void execJOIN_AGG_SETUP_REF(Signal *signal);
+  void execJOIN_AGG_COMPLETE_CONF(Signal *signal);
+  void execJOIN_AGG_COMPLETE_REF(Signal *signal);
+  void execJOIN_AGG_RELEASE_CONF(Signal *signal);
+  void execJOIN_AGG_SEND_REQ(Signal *signal);
   void execREAD_CONFIG_REQ(Signal *signal);
   void execLQH_TRANSCONF(Signal *signal);
   void execCOMPLETECONF(Signal *signal);
@@ -2279,7 +2314,7 @@ class Dbtc : public SimulatedBlock {
   void initScanTcrec(Signal *signal);
   Uint32 initScanrec(ScanRecordPtr, const class ScanTabReq *,
                      const UintR scanParallel, const Uint32 apiPtr[],
-                     Uint32 apiConnectPtr);
+                     Uint32 numReceiverIds, Uint32 apiConnectPtr);
   void initScanfragrec(Signal *signal);
   void releaseScanResources(Signal *, ScanRecordPtr,
                             ApiConnectRecordPtr apiConnectptr,
@@ -2306,7 +2341,11 @@ class Dbtc : public SimulatedBlock {
   void send_close_scan(Signal*, ScanFragRecPtr, const ApiConnectRecordPtr);
   void close_scan_req(Signal*, ScanRecordPtr, bool received_req, ApiConnectRecordPtr apiConnectptr);
   void close_scan_req_send_conf(Signal*, ScanRecordPtr, ApiConnectRecordPtr apiConnectptr);
-  
+  void sendJoinAggSetupReqs(Signal *, ScanRecordPtr, ApiConnectRecordPtr);
+  void sendJoinAggCompleteReqs(Signal *, ScanRecordPtr);
+  void sendJoinAggReleaseReqs(Signal *, ScanRecordPtr);
+  void joinAggAbortAfterRelease(Signal *, ScanRecordPtr);
+
   void checkGcpFinished(Signal* signal);
   void commitGciHandling(Signal* signal,
                          Uint64 Tgci,
@@ -2600,6 +2639,8 @@ class Dbtc : public SimulatedBlock {
 
   void checkScanActiveInFailedLqh(Signal *signal, Uint32 scanPtrI,
                                   Uint32 failedNodeId);
+  bool handleJoinAggNodeFailure(Signal *signal, ScanRecordPtr scanptr,
+                                Uint32 failedNodeId);
 
   void nodeFailCheckTransactions(Signal *, Uint32 transPtrI,
                                  Uint32 failedNodeId);

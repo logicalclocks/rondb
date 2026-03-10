@@ -16,4 +16,8 @@
 [TEST] Test 16: Multi-Column Numeric GROUP BY: PASS
 [TEST] Test 17: Nullable Numeric GROUP BY: PASS
 [TEST] Test 18: Reject Blob/Text GROUP BY: PASS
+[TEST] Test 19: Repeated PA Scan Lifecycle: PASS
+[TEST] Test 20: Many Aggregation Operations (4 aggs): PASS
+[TEST] Test 21: All-NULL SUM/MIN/MAX Merge: PASS
+[TEST] Test 22: Empty Result Set: PASS
 DROP DATABASE IF EXISTS agg_test;

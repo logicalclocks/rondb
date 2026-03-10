@@ -1,0 +1,1158 @@
+<!DOCTYPE html>
+<!-- saved from url=(0138)file:///Users/mikael/mysql_trees/rondb_2604/storage/ndb/claude_files/pushdown_join_aggregation/html/pushdown_join_aggregation_changes.html -->
+<html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pushdown Join Aggregation — Changes to the Pushed Join Architecture</title>
+<style>
+  :root {
+    --bg: #1a1a2e;
+    --surface: #16213e;
+    --surface2: #0f3460;
+    --accent: #e94560;
+    --accent2: #53d8fb;
+    --text: #eee;
+    --text-dim: #aab;
+    --green: #4ec9b0;
+    --yellow: #dcdcaa;
+    --blue: #569cd6;
+    --orange: #ce9178;
+    --purple: #c586c0;
+    --red: #f44747;
+    --border: #334;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    padding: 2rem;
+    max-width: 1200px;
+    margin: 0 auto;
+  }
+  h1 { font-size: 2.2rem; color: var(--accent2); border-bottom: 3px solid var(--accent); padding-bottom: 0.5rem; margin-bottom: 0.5rem; }
+  .subtitle { color: var(--text-dim); font-size: 1.1rem; margin-bottom: 2rem; }
+  h2 { font-size: 1.6rem; color: var(--accent2); margin-top: 3rem; margin-bottom: 1rem; padding-left: 0.5rem; border-left: 4px solid var(--accent); }
+  h3 { font-size: 1.2rem; color: var(--green); margin-top: 2rem; margin-bottom: 0.5rem; }
+  h4 { font-size: 1.05rem; color: var(--yellow); margin-top: 1.5rem; margin-bottom: 0.4rem; }
+  p { margin-bottom: 1rem; }
+  a { color: var(--accent2); }
+  ul, ol { margin: 0.5rem 0 1rem 1.5rem; }
+  li { margin-bottom: 0.3rem; }
+  code { font-family: 'Cascadia Code', 'Fira Code', 'Menlo', monospace; background: var(--surface); padding: 0.15rem 0.4rem; border-radius: 3px; font-size: 0.88rem; }
+  pre { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 1.2rem 1.5rem; margin: 1rem 0 1.5rem; font-family: 'Cascadia Code', 'Fira Code', 'Menlo', monospace; font-size: 0.85rem; line-height: 1.5; overflow-x: auto; white-space: pre; }
+  table { width: 100%; border-collapse: collapse; margin: 1rem 0 1.5rem; font-size: 0.9rem; }
+  th { background: var(--surface2); color: var(--accent2); padding: 0.7rem 1rem; text-align: left; border-bottom: 2px solid var(--accent); }
+  td { padding: 0.6rem 1rem; border-bottom: 1px solid var(--border); }
+  tr:hover td { background: rgba(83, 216, 251, 0.05); }
+
+  .diagram-box { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 1.5rem; margin: 1.5rem 0; overflow-x: auto; }
+  .diagram-box .caption { color: var(--text-dim); font-size: 0.85rem; text-align: center; margin-top: 0.5rem; font-style: italic; }
+  .callout { background: var(--surface2); border-left: 4px solid var(--accent); border-radius: 0 8px 8px 0; padding: 1rem 1.5rem; margin: 1rem 0; }
+  .callout.info { border-left-color: var(--blue); }
+  .callout.warn { border-left-color: var(--yellow); }
+  .callout.success { border-left-color: var(--green); }
+  svg text { font-family: 'Segoe UI', system-ui, sans-serif; }
+
+  .toc { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 1.5rem 2rem; margin: 1.5rem 0; }
+  .toc h3 { color: var(--accent2); margin-top: 0; }
+  .toc ol { margin: 0.5rem 0 0 1.5rem; }
+  .toc li { margin-bottom: 0.3rem; }
+  .toc a { text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+  .toc .toc-sub { margin-left: 1.5rem; font-size: 0.9rem; }
+
+  .figure { margin: 1.5rem 0; }
+
+  .diff-table td:first-child { font-weight: bold; color: var(--green); white-space: nowrap; }
+</style>
+</head>
+<body>
+
+<h1>Pushdown Join Aggregation</h1>
+<p class="subtitle">How RONDB-733 extends the pushed join architecture to execute aggregation
+inside data nodes — new signals, changed data paths, concurrency strategies, and implications
+for batch sizing, fanout, and buffer management.</p>
+
+<p>This document is a companion to
+<a href="file:///Users/mikael/mysql_trees/rondb_2604/storage/ndb/claude_files/pushdown_join_aggregation/html/pushed_join_without_aggregation.html">NDB Pushed Joins (Without Aggregation)</a>,
+which describes the baseline DBSPJ architecture. Here we focus on what <strong>changes</strong>
+when aggregation is pushed down alongside the join.</p>
+
+<!-- Table of Contents -->
+<div class="toc">
+  <h3>Table of Contents</h3>
+  <ol>
+    <li><a href="file:///Users/mikael/mysql_trees/rondb_2604/storage/ndb/claude_files/pushdown_join_aggregation/html/pushdown_join_aggregation_changes.html#overview">Architectural Overview: What Changes</a></li>
+    <li><a href="file:///Users/mikael/mysql_trees/rondb_2604/storage/ndb/claude_files/pushdown_join_aggregation/html/pushdown_join_aggregation_changes.html#signal-lifecycle">New Signal Lifecycle: SETUP / COMPLETE / RELEASE</a></li>
+    <li><a href="file:///Users/mikael/mysql_trees/rondb_2604/storage/ndb/claude_files/pushdown_join_aggregation/html/pushdown_join_aggregation_changes.html#data-path">Changed Data Path: Row Interception and Aggregation</a></li>
+    <li><a href="file:///Users/mikael/mysql_trees/rondb_2604/storage/ndb/claude_files/pushdown_join_aggregation/html/pushdown_join_aggregation_changes.html#shared-state">Shared State: JoinAggregationState and Cross-LDM Coordination</a></li>
+    <li><a href="file:///Users/mikael/mysql_trees/rondb_2604/storage/ndb/claude_files/pushdown_join_aggregation/html/pushdown_join_aggregation_changes.html#concurrency">Concurrency Strategies: Mutex-Based vs. Mutex-Free</a></li>
+    <li><a href="file:///Users/mikael/mysql_trees/rondb_2604/storage/ndb/claude_files/pushdown_join_aggregation/html/pushdown_join_aggregation_changes.html#eviction">Group Eviction: When the Hash Map Fills Up</a></li>
+    <li><a href="file:///Users/mikael/mysql_trees/rondb_2604/storage/ndb/claude_files/pushdown_join_aggregation/html/pushdown_join_aggregation_changes.html#flow-control">Result Flow Control: JOIN_AGG_SEND_REQ/CONF</a></li>
+    <li><a href="file:///Users/mikael/mysql_trees/rondb_2604/storage/ndb/claude_files/pushdown_join_aggregation/html/pushdown_join_aggregation_changes.html#fanout-batch">Impact on Fanout, Batch Sizing, and Parallelism</a></li>
+    <li><a href="file:///Users/mikael/mysql_trees/rondb_2604/storage/ndb/claude_files/pushdown_join_aggregation/html/pushdown_join_aggregation_changes.html#api-changes">NDB API Changes: Receivers, Programs, and Result Merging</a></li>
+    <li><a href="file:///Users/mikael/mysql_trees/rondb_2604/storage/ndb/claude_files/pushdown_join_aggregation/html/pushdown_join_aggregation_changes.html#future">Potential Optimizations Not Yet Exploited</a></li>
+  </ol>
+</div>
+
+<!-- ================================================================== -->
+<h2 id="overview">1. Architectural Overview: What Changes</h2>
+
+<p>In a regular pushed join, DBLQH processes each row from the NDB interpreter and sends it
+directly to the NDB API via TRANSID_AI. With pushdown join aggregation, the row is
+<strong>intercepted</strong> before it reaches the API: instead of being forwarded, it is fed into
+a <code>JoinAggInterpreter</code> that maintains a GROUP BY hash map and accumulates aggregate
+values (SUM, COUNT, MIN, MAX, etc.). Only the final aggregated groups are sent to the API.</p>
+
+<p>This requires three major architectural additions that don't exist in the regular pushed join path:</p>
+
+<ol>
+  <li><strong>A signal lifecycle</strong> (SETUP / COMPLETE / RELEASE) managed by DBTC, separate from
+    the normal SCAN_FRAGREQ flow, to create and destroy aggregation state on each data node</li>
+  <li><strong>Shared state across LDM threads</strong> (JoinAggregationState), coordinated by DblqhProxy,
+    because aggregation must combine results from multiple fragments processed by different threads</li>
+  <li><strong>A new interpreter engine</strong> (JoinAggInterpreter) with its own chunk allocator,
+    hash map, group eviction, and flow-controlled result delivery</li>
+</ol>
+
+<div class="callout info">
+  <strong>Companion document:</strong> The baseline pushed join architecture (signal flow,
+  DBSPJ data structures, linked columns, batch sizing, congestion control) is documented in
+  <a href="file:///Users/mikael/mysql_trees/rondb_2604/storage/ndb/claude_files/pushdown_join_aggregation/html/pushed_join_without_aggregation.html">NDB Pushed Joins (Without Aggregation)</a>.
+  This document assumes familiarity with that material and focuses only on the delta.
+</div>
+
+<h3>Side-by-Side Comparison</h3>
+
+<table class="diff-table">
+<tbody><tr>
+  <th style="width:22%;">Dimension</th>
+  <th style="width:39%;">Regular Pushed Join</th>
+  <th style="width:39%;">With Aggregation (RONDB-733)</th>
+</tr>
+<tr>
+  <td>Result path</td>
+  <td>Per-row TRANSID_AI from DBLQH → API</td>
+  <td>Rows intercepted by JoinAggInterpreter; batched aggregated groups sent via TRANSID_AI</td>
+</tr>
+<tr>
+  <td>Setup</td>
+  <td>None — SCAN_FRAGREQ is sufficient</td>
+  <td>JOIN_AGG_SETUP_REQ creates JoinAggregationState on each data node before scans begin</td>
+</tr>
+<tr>
+  <td>State scope</td>
+  <td>Per-operation, per-LDM-thread</td>
+  <td>Per data node — shared across all LDM threads via DblqhProxy</td>
+</tr>
+<tr>
+  <td>Concurrency</td>
+  <td>Each LDM thread independent</td>
+  <td>Mutex-based (shared interpreter) or mutex-free (per-thread interpreters + merge)</td>
+</tr>
+<tr>
+  <td>Memory</td>
+  <td>Per-operation batch buffers</td>
+  <td>Budget pages allocated at SETUP time; chunk allocator for GROUP BY hash map</td>
+</tr>
+<tr>
+  <td>Flow control</td>
+  <td>Implicit (batch fills → SCAN_FRAGCONF)</td>
+  <td>Explicit JOIN_AGG_SEND_REQ/CONF loop between DBLQH and DBTC</td>
+</tr>
+<tr>
+  <td>Completion</td>
+  <td>Last SCAN_FRAGCONF with EndOfData</td>
+  <td>JOIN_AGG_COMPLETE_REQ triggers finalization + merge + result streaming</td>
+</tr>
+<tr>
+  <td>Intermediate tables</td>
+  <td>Send TRANSID_AI (result rows) to API</td>
+  <td>No result rows sent — data flows only via linked attributes to leaf</td>
+</tr>
+<tr>
+  <td>MultiFragFlag</td>
+  <td>ON (bundles fragments per node)</td>
+  <td>OFF — each fragment gets separate DBSPJ instance for maximum parallelism</td>
+</tr>
+</tbody></table>
+
+<!-- ================================================================== -->
+<h2 id="signal-lifecycle">2. New Signal Lifecycle: SETUP / COMPLETE / RELEASE</h2>
+
+<p>Regular pushed joins need only SCAN_FRAGREQ/CONF to drive the query. Aggregation adds
+a three-phase signal protocol managed by DBTC that brackets the scan execution:</p>
+
+<div class="diagram-box">
+<svg viewBox="0 0 920 580" xmlns="http://www.w3.org/2000/svg" font-family="Consolas, monospace">
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="none" stroke="#569cd6" stroke-width="1.2"></path>
+    </marker>
+    <marker id="arr-grn" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="none" stroke="#4ec9b0" stroke-width="1.2"></path>
+    </marker>
+    <marker id="arr-red" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="none" stroke="#e94560" stroke-width="1.2"></path>
+    </marker>
+    <marker id="arr-ylw" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="none" stroke="#dcdcaa" stroke-width="1.2"></path>
+    </marker>
+    <marker id="arr-prp" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="none" stroke="#c586c0" stroke-width="1.2"></path>
+    </marker>
+  </defs>
+
+  <text x="460" y="22" fill="#dcdcaa" font-size="14" text-anchor="middle" font-weight="bold">Figure 1: Aggregation Signal Lifecycle</text>
+
+  <!-- Column headers -->
+  <rect x="30" y="35" width="120" height="530" rx="8" fill="#1a2744" stroke="#334"></rect>
+  <text x="90" y="58" fill="#c586c0" font-size="11" text-anchor="middle" font-weight="bold">NDB API</text>
+
+  <rect x="180" y="35" width="140" height="530" rx="8" fill="#1a2744" stroke="#334"></rect>
+  <text x="250" y="58" fill="#569cd6" font-size="11" text-anchor="middle" font-weight="bold">DBTC</text>
+
+  <rect x="350" y="35" width="180" height="530" rx="8" fill="#1a2744" stroke="#334"></rect>
+  <text x="440" y="58" fill="#4ec9b0" font-size="11" text-anchor="middle" font-weight="bold">DBSPJ</text>
+
+  <rect x="560" y="35" width="150" height="530" rx="8" fill="#1a2744" stroke="#334"></rect>
+  <text x="635" y="58" fill="#e94560" font-size="11" text-anchor="middle" font-weight="bold">DblqhProxy</text>
+
+  <rect x="740" y="35" width="160" height="530" rx="8" fill="#1a2744" stroke="#334"></rect>
+  <text x="820" y="53" fill="#dcdcaa" font-size="11" text-anchor="middle" font-weight="bold">DBLQH Workers</text>
+  <text x="820" y="66" fill="#888" font-size="8" text-anchor="middle">(LDM threads)</text>
+
+  <!-- Phase 1: SETUP -->
+  <rect x="20" y="75" width="890" height="100" rx="0" fill="rgba(78,201,176,0.06)" stroke="none"></rect>
+  <text x="15" y="90" fill="#4ec9b0" font-size="9" transform="rotate(90, 15, 90)">SETUP</text>
+
+  <!-- 1. SCAN_TABREQ -->
+  <text x="90" y="95" fill="#aab" font-size="9" text-anchor="middle">SCAN_TABREQ</text>
+  <text x="90" y="107" fill="#888" font-size="7" text-anchor="middle">[JoinAggFlag, aggProgram]</text>
+  <line x1="130" y1="100" x2="220" y2="100" stroke="#569cd6" stroke-width="1.5" marker-end="url(#arr)"></line>
+
+  <!-- 2. DBTC sends SETUP_REQ -->
+  <text x="250" y="130" fill="#aab" font-size="9" text-anchor="middle">JOIN_AGG_SETUP_REQ</text>
+  <text x="250" y="142" fill="#888" font-size="7" text-anchor="middle">[aggProgram, receiverIds]</text>
+  <line x1="290" y1="135" x2="590" y2="135" stroke="#4ec9b0" stroke-width="1.5" marker-end="url(#arr-grn)" stroke-dasharray="6,3"></line>
+
+  <!-- 3. DblqhProxy creates state -->
+  <text x="635" y="155" fill="#ce9178" font-size="8" text-anchor="middle">Create JoinAggregationState</text>
+  <text x="635" y="165" fill="#ce9178" font-size="8" text-anchor="middle">Allocate interpreters</text>
+
+  <!-- 4. SETUP_CONF -->
+  <line x1="590" y1="170" x2="290" y2="170" stroke="#4ec9b0" stroke-width="1.2" marker-end="url(#arr-grn)" stroke-dasharray="4,3"></line>
+  <text x="440" y="166" fill="#4ec9b0" font-size="8" text-anchor="middle">SETUP_CONF [aggStateKey]</text>
+
+  <!-- Phase 2: RUNNING -->
+  <rect x="20" y="180" width="890" height="155" rx="0" fill="rgba(86,156,214,0.06)" stroke="none"></rect>
+  <text x="15" y="200" fill="#569cd6" font-size="9" transform="rotate(90, 15, 200)">RUNNING</text>
+
+  <!-- 5. Fragment scans begin -->
+  <text x="250" y="200" fill="#aab" font-size="9" text-anchor="middle">SCAN_FRAGREQ</text>
+  <text x="250" y="212" fill="#888" font-size="7" text-anchor="middle">[aggStateKey in section]</text>
+  <line x1="290" y1="205" x2="400" y2="205" stroke="#569cd6" stroke-width="1.5" marker-end="url(#arr)"></line>
+  <line x1="500" y1="205" x2="770" y2="205" stroke="#e94560" stroke-width="1.5" marker-end="url(#arr-red)"></line>
+  <text x="640" y="200" fill="#888" font-size="8" text-anchor="middle">child ops</text>
+
+  <!-- 6. Rows processed → intercepted -->
+  <text x="820" y="240" fill="#e94560" font-size="9" text-anchor="middle">handleJoinAggRow()</text>
+  <text x="820" y="252" fill="#888" font-size="8" text-anchor="middle">rows → JoinAggInterpreter</text>
+  <text x="820" y="264" fill="#888" font-size="8" text-anchor="middle">(NO per-row TRANSID_AI)</text>
+
+  <!-- 7. Evicted groups if hash map full -->
+  <line x1="770" y1="280" x2="130" y2="280" stroke="#dcdcaa" stroke-width="1.2" marker-end="url(#arr-ylw)" stroke-dasharray="4,3"></line>
+  <text x="440" y="276" fill="#dcdcaa" font-size="8" text-anchor="middle">TRANSID_AI (evicted partial groups, hash-routed to receiver)</text>
+
+  <!-- 8. Scan batches complete -->
+  <line x1="770" y1="305" x2="420" y2="305" stroke="#e94560" stroke-width="1.2" marker-end="url(#arr-red)"></line>
+  <text x="590" y="300" fill="#888" font-size="8" text-anchor="middle">SCAN_FRAGCONF</text>
+  <line x1="400" y1="320" x2="270" y2="320" stroke="#569cd6" stroke-width="1.2" marker-end="url(#arr)"></line>
+  <text x="335" y="316" fill="#888" font-size="8" text-anchor="middle">SCAN_FRAGCONF (EndOfData)</text>
+
+  <!-- Phase 3: COMPLETE -->
+  <rect x="20" y="340" width="890" height="110" rx="0" fill="rgba(233,69,96,0.06)" stroke="none"></rect>
+  <text x="15" y="370" fill="#e94560" font-size="9" transform="rotate(90, 15, 370)">COMPLETE</text>
+
+  <!-- 9. COMPLETE_REQ -->
+  <text x="250" y="360" fill="#aab" font-size="9" text-anchor="middle">JOIN_AGG_COMPLETE_REQ</text>
+  <text x="250" y="372" fill="#888" font-size="7" text-anchor="middle">[aggStateKey, maxBatchRows]</text>
+  <line x1="290" y1="365" x2="770" y2="365" stroke="#e94560" stroke-width="1.5" marker-end="url(#arr-red)" stroke-dasharray="6,3"></line>
+
+  <!-- 10. Merge + send results -->
+  <text x="820" y="395" fill="#ce9178" font-size="8" text-anchor="middle">Merge per-thread interpreters</text>
+  <text x="820" y="407" fill="#ce9178" font-size="8" text-anchor="middle">Serialize final groups</text>
+
+  <!-- 11. Batched results to API -->
+  <line x1="770" y1="418" x2="130" y2="418" stroke="#dcdcaa" stroke-width="1.5" marker-end="url(#arr-ylw)"></line>
+  <text x="440" y="414" fill="#dcdcaa" font-size="9" text-anchor="middle">TRANSID_AI (final aggregated groups, batched)</text>
+
+  <!-- 12. Flow control loop -->
+  <line x1="770" y1="435" x2="270" y2="435" stroke="#c586c0" stroke-width="1.0" marker-end="url(#arr-prp)" stroke-dasharray="3,3"></line>
+  <text x="520" y="432" fill="#c586c0" font-size="7" text-anchor="middle">JOIN_AGG_SEND_REQ (pause, batch full)</text>
+  <line x1="270" y1="443" x2="770" y2="443" stroke="#c586c0" stroke-width="1.0" marker-end="url(#arr-prp)" stroke-dasharray="3,3"></line>
+  <text x="520" y="451" fill="#c586c0" font-size="7" text-anchor="middle">JOIN_AGG_SEND_CONF (continue, new maxBatchRows)</text>
+
+  <!-- Phase 4: RELEASE -->
+  <rect x="20" y="455" width="890" height="100" rx="0" fill="rgba(220,220,170,0.06)" stroke="none"></rect>
+  <text x="15" y="480" fill="#dcdcaa" font-size="9" transform="rotate(90, 15, 480)">RELEASE</text>
+
+  <!-- 13. COMPLETE_CONF -->
+  <line x1="770" y1="475" x2="270" y2="475" stroke="#e94560" stroke-width="1.2" marker-end="url(#arr-red)" stroke-dasharray="4,3"></line>
+  <text x="520" y="471" fill="#e94560" font-size="8" text-anchor="middle">COMPLETE_CONF [numResultRows, resultBytes]</text>
+
+  <!-- 14. RELEASE_REQ -->
+  <line x1="270" y1="500" x2="590" y2="500" stroke="#dcdcaa" stroke-width="1.2" marker-end="url(#arr-ylw)" stroke-dasharray="4,3"></line>
+  <text x="430" y="496" fill="#888" font-size="8" text-anchor="middle">JOIN_AGG_RELEASE_REQ</text>
+
+  <!-- 15. DblqhProxy frees state -->
+  <text x="635" y="520" fill="#ce9178" font-size="8" text-anchor="middle">Free interpreters, program,</text>
+  <text x="635" y="530" fill="#ce9178" font-size="8" text-anchor="middle">receiverIds, pool record</text>
+
+  <!-- 16. RELEASE_CONF -->
+  <line x1="590" y1="540" x2="270" y2="540" stroke="#dcdcaa" stroke-width="1.0" marker-end="url(#arr-ylw)" stroke-dasharray="4,3"></line>
+  <text x="430" y="536" fill="#888" font-size="8" text-anchor="middle">RELEASE_CONF</text>
+
+  <!-- 17. Scan complete to API -->
+  <line x1="220" y1="555" x2="130" y2="555" stroke="#569cd6" stroke-width="1.2" marker-end="url(#arr)"></line>
+  <text x="175" y="551" fill="#888" font-size="8" text-anchor="middle">SCAN_TABCONF</text>
+</svg>
+<div class="caption">Figure 1: The four-phase aggregation lifecycle. SETUP creates shared state, RUNNING
+accumulates rows into GROUP BY hash maps (with optional eviction), COMPLETE finalizes and
+streams batched results, RELEASE frees all resources.</div>
+</div>
+
+<h3>Signal Definitions (JoinAgg.hpp)</h3>
+
+<table>
+<tbody><tr><th>Signal</th><th>Direction</th><th>Key Payload</th></tr>
+<tr>
+  <td><code>JOIN_AGG_SETUP_REQ</code></td>
+  <td>DBTC → DblqhProxy</td>
+  <td>transid, tableId, concurrencyStrategy, resultRef/Data, Section 0: aggProgram, Section 1: receiverIds</td>
+</tr>
+<tr>
+  <td><code>JOIN_AGG_SETUP_CONF</code></td>
+  <td>DblqhProxy → DBTC</td>
+  <td><code>aggStateKey</code> — pool index for O(1) lookup by all worker threads</td>
+</tr>
+<tr>
+  <td><code>JOIN_AGG_COMPLETE_REQ</code></td>
+  <td>DBTC → DBLQH worker</td>
+  <td>aggStateKey, maxBatchRows (controls result batch size)</td>
+</tr>
+<tr>
+  <td><code>JOIN_AGG_COMPLETE_CONF</code></td>
+  <td>DBLQH worker → DBTC</td>
+  <td>numResultRows, resultBytes (final statistics)</td>
+</tr>
+<tr>
+  <td><code>JOIN_AGG_SEND_REQ</code></td>
+  <td>DBLQH → DBTC</td>
+  <td>"I've batched N rows, pausing (receiver not ready)"</td>
+</tr>
+<tr>
+  <td><code>JOIN_AGG_SEND_CONF</code></td>
+  <td>DBTC → DBLQH</td>
+  <td>"Continue, new maxBatchRows = M"</td>
+</tr>
+<tr>
+  <td><code>JOIN_AGG_RELEASE_REQ</code></td>
+  <td>DBTC → DblqhProxy</td>
+  <td>aggStateKey</td>
+</tr>
+<tr>
+  <td><code>JOIN_AGG_RELEASE_CONF</code></td>
+  <td>DblqhProxy → DBTC</td>
+  <td>(acknowledgement)</td>
+</tr>
+</tbody></table>
+
+<div class="callout warn">
+  <strong>SETUP and RELEASE go to DblqhProxy</strong> (single-threaded, manages pool), while
+  <strong>COMPLETE goes to a DBLQH worker</strong> (which performs the merge and result serialization).
+  This is because SETUP/RELEASE need coordinated pool management, while COMPLETE needs access to
+  the LDM execution environment for sending TRANSID_AI signals.
+</div>
+
+<!-- ================================================================== -->
+<h2 id="data-path">3. Changed Data Path: Row Interception and Aggregation</h2>
+
+<p>In a regular pushed join, the NDB interpreter processes each row (WHERE clause), and if
+it passes, the row is sent via TRANSID_AI — one signal for the API (result data) and one
+for DBSPJ (linked columns for child dispatch). With aggregation, the leaf table's data path
+is fundamentally different:</p>
+
+<div class="diagram-box">
+<svg viewBox="0 0 920 320" xmlns="http://www.w3.org/2000/svg" font-family="Consolas, monospace">
+  <text x="460" y="22" fill="#dcdcaa" font-size="13" text-anchor="middle" font-weight="bold">Figure 2: Row Processing — Regular vs. Aggregation</text>
+
+  <!-- Regular path (top) -->
+  <text x="30" y="55" fill="#569cd6" font-size="11" font-weight="bold">Regular Pushed Join (leaf table):</text>
+
+  <rect x="30" y="65" width="140" height="40" rx="4" fill="#0f3460" stroke="#569cd6" stroke-width="1"></rect>
+  <text x="100" y="89" fill="#569cd6" font-size="9" text-anchor="middle">NDB Interpreter</text>
+  <text x="100" y="100" fill="#888" font-size="7" text-anchor="middle">(WHERE clause)</text>
+
+  <line x1="170" y1="85" x2="210" y2="85" stroke="#aab" stroke-width="1.2" marker-end="url(#arr)"></line>
+  <text x="190" y="78" fill="#888" font-size="7" text-anchor="middle">EXIT_OK</text>
+
+  <rect x="210" y="65" width="160" height="40" rx="4" fill="#0f3460" stroke="#4ec9b0" stroke-width="1"></rect>
+  <text x="290" y="89" fill="#4ec9b0" font-size="9" text-anchor="middle">sendReadAttrinfo()</text>
+
+  <line x1="370" y1="75" x2="470" y2="60" stroke="#dcdcaa" stroke-width="1.2" marker-end="url(#arr-ylw)"></line>
+  <text x="460" y="52" fill="#dcdcaa" font-size="8">TRANSID_AI → API (result row)</text>
+
+  <line x1="370" y1="95" x2="470" y2="110" stroke="#4ec9b0" stroke-width="1.2" marker-end="url(#arr-grn)"></line>
+  <text x="460" y="118" fill="#4ec9b0" font-size="8">TRANSID_AI → DBSPJ (linked cols)</text>
+
+  <!-- Aggregation path (bottom) -->
+  <text x="30" y="165" fill="#e94560" font-size="11" font-weight="bold">Pushdown Join Aggregation (leaf table):</text>
+
+  <rect x="30" y="175" width="140" height="40" rx="4" fill="#0f3460" stroke="#569cd6" stroke-width="1"></rect>
+  <text x="100" y="199" fill="#569cd6" font-size="9" text-anchor="middle">NDB Interpreter</text>
+  <text x="100" y="210" fill="#888" font-size="7" text-anchor="middle">(WHERE clause)</text>
+
+  <line x1="170" y1="195" x2="210" y2="195" stroke="#aab" stroke-width="1.2" marker-end="url(#arr)"></line>
+  <text x="190" y="188" fill="#888" font-size="7" text-anchor="middle">EXIT_OK</text>
+
+  <rect x="210" y="175" width="180" height="40" rx="4" fill="#2a1520" stroke="#e94560" stroke-width="1.5"></rect>
+  <text x="300" y="195" fill="#e94560" font-size="9" text-anchor="middle" font-weight="bold">handleJoinAggRow()</text>
+  <text x="300" y="210" fill="#888" font-size="7" text-anchor="middle">(INTERCEPTS — no TRANSID_AI)</text>
+
+  <line x1="390" y1="195" x2="430" y2="195" stroke="#e94560" stroke-width="1.2" marker-end="url(#arr-red)"></line>
+
+  <rect x="430" y="170" width="220" height="50" rx="4" fill="#0f3460" stroke="#e94560" stroke-width="1"></rect>
+  <text x="540" y="192" fill="#e94560" font-size="9" text-anchor="middle">JoinAggInterpreter</text>
+  <text x="540" y="206" fill="#888" font-size="8" text-anchor="middle">processRecWithLinkedAttrs()</text>
+  <text x="540" y="216" fill="#888" font-size="7" text-anchor="middle">GROUP BY hash map + accumulators</text>
+
+  <!-- Eviction path -->
+  <line x1="650" y1="195" x2="690" y2="195" stroke="#dcdcaa" stroke-width="1.0" stroke-dasharray="4,3" marker-end="url(#arr-ylw)"></line>
+  <text x="700" y="188" fill="#dcdcaa" font-size="8">If map full:</text>
+  <text x="700" y="200" fill="#dcdcaa" font-size="8">evictOneGroup()</text>
+  <text x="700" y="212" fill="#888" font-size="7">→ TRANSID_AI</text>
+  <text x="700" y="224" fill="#888" font-size="7">(partial group)</text>
+
+  <!-- Final results (at COMPLETE) -->
+  <rect x="430" y="240" width="220" height="40" rx="4" fill="#1a2a1a" stroke="#4ec9b0" stroke-width="1"></rect>
+  <text x="540" y="258" fill="#4ec9b0" font-size="9" text-anchor="middle">At COMPLETE: serialize all groups</text>
+  <text x="540" y="272" fill="#888" font-size="7" text-anchor="middle">→ batched TRANSID_AI → API</text>
+
+  <line x1="540" y1="220" x2="540" y2="240" stroke="#4ec9b0" stroke-width="1" marker-end="url(#arr-grn)"></line>
+
+  <!-- Key difference callout -->
+  <rect x="30" y="290" width="870" height="25" rx="4" fill="#2a2a1a" stroke="#dcdcaa" stroke-width="0.5"></rect>
+  <text x="460" y="307" fill="#dcdcaa" font-size="9" text-anchor="middle">Key: handleJoinAggRow() replaces sendReadAttrinfo() — rows are consumed, not forwarded</text>
+</svg>
+<div class="caption">Figure 2: In regular joins, every matching row generates a TRANSID_AI to the API.
+With aggregation, handleJoinAggRow() consumes rows into the GROUP BY hash map. Only aggregated
+groups are eventually sent.</div>
+</div>
+
+<h3>Intermediate Tables: No Result Rows</h3>
+
+<p>In a regular pushed join, <strong>all</strong> tables in the join tree send their result rows
+to the API (each with a FLUSH_AI marker in the AttrInfo). With aggregation, only the
+<strong>leaf table</strong> (marked with <code>NI_AGGREGATE_LEAF</code> in the QueryTree)
+produces result data. Intermediate tables pass data only through linked attributes for child
+dispatch — they never send TRANSID_AI result rows to the API. This makes sense: the API
+doesn't need the intermediate rows, only the final aggregated result.</p>
+
+<!-- ================================================================== -->
+<h2 id="shared-state">4. Shared State: JoinAggregationState and Cross-LDM Coordination</h2>
+
+<p>In regular pushed joins, each SCAN_FRAGREQ is completely independent — each LDM thread
+processes its fragment(s) with no shared state. Aggregation changes this fundamentally:
+all LDM threads on a data node must contribute to the <strong>same</strong> aggregation result.
+This requires shared state managed by DblqhProxy.</p>
+
+<h3>JoinAggregationState Structure</h3>
+
+<p>Created by DblqhProxy during JOIN_AGG_SETUP_REQ, one per data node per query:</p>
+
+<pre>struct JoinAggregationState {
+  // Immutable after SETUP (no synchronization needed)
+  Uint32 m_transid[2];
+  Uint32 m_senderRef, m_senderData, m_requestId;
+  Uint32 m_resultRef, m_resultData, m_routeRef;     // API routing
+  Uint32 *m_agg_program;                             // Aggregation bytecode (ndbd_malloc'd)
+  Uint32  m_agg_program_len;
+  Uint32 *m_receiverIds;                             // Hash-partitioned result routing
+  Uint32  m_numReceiverIds;
+  Uint32  m_strategy;                                // MUTEX_BASED or MUTEX_FREE
+
+  // Interpreter(s) — depends on strategy
+  JoinAggInterpreter *m_agg_interpreter;             // MUTEX_BASED: single shared
+  JoinAggInterpreter **m_per_thread_interpreters;    // MUTEX_FREE: one per LDM thread
+  Uint32 m_num_threads;
+
+  // Atomic operation tracking
+  std::atomic&lt;Uint32&gt; m_outstanding_ops;
+  std::atomic&lt;Uint32&gt; m_completed_ops;
+  std::atomic&lt;Uint32&gt; m_failed_ops;
+  Uint32 m_total_ops_expected;
+
+  // Result streaming state
+  Uint32 m_agg_curr_batch_size_rows;
+  Uint32 m_agg_curr_batch_size_bytes;
+  Uint32 m_rows_sent;
+  Uint32 m_max_batch_rows;                           // Flow control limit
+
+  // State machine (atomic)
+  // IDLE → SETUP_COMPLETE → ACCUMULATING → FINALIZING → SENDING_RESULTS → COMPLETED
+};
+</pre>
+
+<h3>DblqhProxy: The Coordinator</h3>
+
+<p>DblqhProxy is the single-threaded proxy block that runs outside of any LDM thread. It handles
+SETUP and RELEASE because these require coordinated pool management. Its responsibilities:</p>
+
+<ul>
+  <li><strong>SETUP:</strong> Seize pool record, calculate initial memory budget (1% of available
+    <code>RG_QUERY_MEMORY</code> pages, min 4 pages = 128KB — grows dynamically as needed),
+    ndbd_malloc the aggregation program and receiver IDs, create interpreter(s), initialize chunk allocators</li>
+  <li><strong>RELEASE:</strong> Free interpreter chunks, free program buffer, free receiver IDs array,
+    release pool record back to TransientPool</li>
+</ul>
+
+<div class="callout info">
+  <strong>aggStateKey for O(1) lookup:</strong> SETUP_CONF returns an <code>aggStateKey</code>
+  (a TransientPool index) that is embedded in subsequent SCAN_FRAGREQs. Each DBLQH worker
+  can look up the shared JoinAggregationState in O(1) without any search — critical for
+  performance since every row processed must access this state.
+</div>
+
+<!-- ================================================================== -->
+<h2 id="concurrency">5. Concurrency Strategies: Mutex-Based vs. Mutex-Free</h2>
+
+<p>Multiple LDM threads on the same data node process different fragments of the same table
+concurrently. They all need to accumulate into the same GROUP BY hash map. Two strategies
+are supported:</p>
+
+<div class="diagram-box">
+<svg viewBox="0 0 920 300" xmlns="http://www.w3.org/2000/svg" font-family="Consolas, monospace">
+  <text x="460" y="22" fill="#dcdcaa" font-size="13" text-anchor="middle" font-weight="bold">Figure 3: Concurrency Strategies</text>
+
+  <!-- Mutex-based (left) -->
+  <rect x="20" y="40" width="420" height="240" rx="8" fill="#16213e" stroke="#e94560" stroke-width="1"></rect>
+  <text x="230" y="65" fill="#e94560" font-size="12" text-anchor="middle" font-weight="bold">MUTEX_BASED (strategy = 0)</text>
+
+  <rect x="40" y="80" width="100" height="30" rx="4" fill="#0f3460" stroke="#569cd6"></rect>
+  <text x="90" y="100" fill="#569cd6" font-size="9" text-anchor="middle">LDM Thread 0</text>
+  <rect x="40" y="115" width="100" height="30" rx="4" fill="#0f3460" stroke="#569cd6"></rect>
+  <text x="90" y="135" fill="#569cd6" font-size="9" text-anchor="middle">LDM Thread 1</text>
+  <rect x="40" y="150" width="100" height="30" rx="4" fill="#0f3460" stroke="#569cd6"></rect>
+  <text x="90" y="170" fill="#569cd6" font-size="9" text-anchor="middle">LDM Thread 2</text>
+  <rect x="40" y="185" width="100" height="30" rx="4" fill="#0f3460" stroke="#569cd6"></rect>
+  <text x="90" y="205" fill="#569cd6" font-size="9" text-anchor="middle">LDM Thread 3</text>
+
+  <line x1="140" y1="95" x2="230" y2="135" stroke="#aab" stroke-width="1"></line>
+  <line x1="140" y1="130" x2="230" y2="135" stroke="#aab" stroke-width="1"></line>
+  <line x1="140" y1="165" x2="230" y2="135" stroke="#aab" stroke-width="1"></line>
+  <line x1="140" y1="200" x2="230" y2="135" stroke="#aab" stroke-width="1"></line>
+
+  <rect x="230" y="100" width="190" height="70" rx="6" fill="#2a1520" stroke="#e94560" stroke-width="1.5"></rect>
+  <text x="325" y="122" fill="#e94560" font-size="10" text-anchor="middle" font-weight="bold">Single Interpreter</text>
+  <text x="325" y="138" fill="#aab" font-size="8" text-anchor="middle">std::mutex protects hash map</text>
+  <text x="325" y="152" fill="#888" font-size="8" text-anchor="middle">All threads serialize here</text>
+
+  <text x="230" y="200" fill="#4ec9b0" font-size="9">1 interpreter, shared budget</text>
+  <text x="230" y="215" fill="#f44" font-size="9">Contention: HIGH</text>
+  <text x="230" y="230" fill="#aab" font-size="9">No merge needed</text>
+  <text x="230" y="245" fill="#888" font-size="8">Best for: few LDM threads</text>
+  <text x="230" y="260" fill="#888" font-size="8">Memory grows via chunk allocator</text>
+
+  <!-- Mutex-free (right) -->
+  <rect x="480" y="40" width="420" height="240" rx="8" fill="#16213e" stroke="#4ec9b0" stroke-width="1"></rect>
+  <text x="690" y="65" fill="#4ec9b0" font-size="12" text-anchor="middle" font-weight="bold">MUTEX_FREE (strategy = 1)</text>
+
+  <rect x="500" y="80" width="100" height="30" rx="4" fill="#0f3460" stroke="#569cd6"></rect>
+  <text x="550" y="100" fill="#569cd6" font-size="9" text-anchor="middle">LDM Thread 0</text>
+  <rect x="500" y="115" width="100" height="30" rx="4" fill="#0f3460" stroke="#569cd6"></rect>
+  <text x="550" y="135" fill="#569cd6" font-size="9" text-anchor="middle">LDM Thread 1</text>
+  <rect x="500" y="150" width="100" height="30" rx="4" fill="#0f3460" stroke="#569cd6"></rect>
+  <text x="550" y="170" fill="#569cd6" font-size="9" text-anchor="middle">LDM Thread 2</text>
+  <rect x="500" y="185" width="100" height="30" rx="4" fill="#0f3460" stroke="#569cd6"></rect>
+  <text x="550" y="205" fill="#569cd6" font-size="9" text-anchor="middle">LDM Thread 3</text>
+
+  <rect x="640" y="80" width="90" height="30" rx="4" fill="#1a2a1a" stroke="#4ec9b0"></rect>
+  <text x="685" y="100" fill="#4ec9b0" font-size="8" text-anchor="middle">Interp[0]</text>
+  <rect x="640" y="115" width="90" height="30" rx="4" fill="#1a2a1a" stroke="#4ec9b0"></rect>
+  <text x="685" y="135" fill="#4ec9b0" font-size="8" text-anchor="middle">Interp[1]</text>
+  <rect x="640" y="150" width="90" height="30" rx="4" fill="#1a2a1a" stroke="#4ec9b0"></rect>
+  <text x="685" y="170" fill="#4ec9b0" font-size="8" text-anchor="middle">Interp[2]</text>
+  <rect x="640" y="185" width="90" height="30" rx="4" fill="#1a2a1a" stroke="#4ec9b0"></rect>
+  <text x="685" y="205" fill="#4ec9b0" font-size="8" text-anchor="middle">Interp[3]</text>
+
+  <line x1="600" y1="95" x2="640" y2="95" stroke="#4ec9b0" stroke-width="1" marker-end="url(#arr-grn)"></line>
+  <line x1="600" y1="130" x2="640" y2="130" stroke="#4ec9b0" stroke-width="1" marker-end="url(#arr-grn)"></line>
+  <line x1="600" y1="165" x2="640" y2="165" stroke="#4ec9b0" stroke-width="1" marker-end="url(#arr-grn)"></line>
+  <line x1="600" y1="200" x2="640" y2="200" stroke="#4ec9b0" stroke-width="1" marker-end="url(#arr-grn)"></line>
+
+  <rect x="760" y="110" width="120" height="45" rx="4" fill="#2a2a1a" stroke="#dcdcaa" stroke-width="1"></rect>
+  <text x="820" y="130" fill="#dcdcaa" font-size="8" text-anchor="middle">Merge at</text>
+  <text x="820" y="143" fill="#dcdcaa" font-size="8" text-anchor="middle">COMPLETE</text>
+
+  <line x1="730" y1="95" x2="760" y2="120" stroke="#dcdcaa" stroke-width="0.8" stroke-dasharray="3,3"></line>
+  <line x1="730" y1="130" x2="760" y2="130" stroke="#dcdcaa" stroke-width="0.8" stroke-dasharray="3,3"></line>
+  <line x1="730" y1="165" x2="760" y2="140" stroke="#dcdcaa" stroke-width="0.8" stroke-dasharray="3,3"></line>
+  <line x1="730" y1="200" x2="760" y2="150" stroke="#dcdcaa" stroke-width="0.8" stroke-dasharray="3,3"></line>
+
+  <text x="640" y="230" fill="#4ec9b0" font-size="9">N interpreters, per-thread budget</text>
+  <text x="640" y="245" fill="#4ec9b0" font-size="9">Contention: ZERO</text>
+  <text x="810" y="230" fill="#dcdcaa" font-size="9">Merge required</text>
+  <text x="810" y="245" fill="#888" font-size="8">Best for: many LDM threads</text>
+  <text x="640" y="260" fill="#888" font-size="8">Each interpreter grows independently</text>
+</svg>
+<div class="caption">Figure 3: Mutex-based shares one interpreter (high contention, shared budget);
+mutex-free gives each thread its own interpreter (zero contention, merge at completion).
+Both strategies grow memory dynamically via chunk allocation.</div>
+</div>
+
+<p>The strategy is specified in JOIN_AGG_SETUP_REQ and cannot be changed during execution.
+For mutex-free, the merge phase at COMPLETE iterates through each per-thread interpreter's
+hash map, combining groups with matching keys by merging their accumulator values (e.g.,
+adding SUM values, taking MAX of MAX values).</p>
+
+<h3>5.1 Chunk-Based Memory Allocator</h3>
+
+<p>Each JoinAggInterpreter uses a <strong>chunk-based allocator</strong> for GROUP BY data.
+The interpreter object itself is placed in an initial 32KB page
+(<code>MEM_CHUNK_SIZE = 32768</code>), but group data is allocated in additional 32KB chunks
+that are acquired dynamically from <code>lc_ndbd_pool_malloc()</code> as needed. There is
+<strong>no fixed 32KB-per-thread limit</strong> — memory grows on demand up to the available
+system memory in the <code>RG_QUERY_MEMORY</code> resource group.</p>
+
+<pre>// JoinAggInterpreter — chunk-based memory growth
+
+struct MemChunk {
+  char     *data;          // Usable data (after MemChunk header)
+  Uint32    capacity;      // MEM_CHUNK_SIZE - sizeof(MemChunk)
+  Uint32    used;          // Current allocation offset
+  Uint32    live_groups;   // Active groups in this chunk
+  MemChunk *next, *prev;   // Doubly-linked list
+};
+
+// Fields tracking memory state:
+MemChunk *m_chunks;              // Head of chunk list
+MemChunk *m_current_chunk;       // Active chunk for new allocations
+Uint32    m_total_chunk_bytes;   // Sum of all allocated chunks
+Uint32    m_memory_budget;       // Current budget (grows dynamically)
+Uint32    m_budget_increment;    // How much to grow budget each time
+Uint32    m_total_available;     // System-wide limit (RG_QUERY_MEMORY)
+</pre>
+
+<h4>Budget Calculation at SETUP</h4>
+
+<pre>// DblqhProxy.cpp — execJOIN_AGG_SETUP_REQ
+
+// Query available memory in the RG_QUERY_MEMORY resource group
+Resource_limit rl;
+m_ctx.m_mm.get_resource_limit_nolock(RG_QUERY_MEMORY, rl);
+available_pages = MIN(rl.m_max - rl.m_curr, free_shared_pages);
+
+// Initial budget: 1% of available, minimum 4 pages (128 KB)
+budget_pages = MAX(available_pages / 100, 4);
+
+// For mutex-free: divide budget across threads
+per_thread_budget = MAX(budget_pages / num_threads, 4);
+
+// Each interpreter gets:
+interp-&gt;initChunkAllocator(thread_id, per_thread_budget, available_pages);
+//   m_memory_budget  = per_thread_budget × MEM_CHUNK_SIZE  (e.g., 128 KB)
+//   m_budget_increment = m_memory_budget                    (doubles each growth)
+//   m_total_available  = available_pages × MEM_CHUNK_SIZE   (system limit)
+</pre>
+
+<h4>Dynamic Growth: bookMoreMemory()</h4>
+
+<p>When a new group needs memory and the current chunk is full, <code>allocNewChunk()</code>
+is called. If allocating another 32KB chunk would exceed the current budget,
+<code>bookMoreMemory()</code> extends the budget:</p>
+
+<pre>// JoinAggInterpreter::allocNewChunk()
+
+if (m_total_chunk_bytes + MEM_CHUNK_SIZE &gt; m_memory_budget) {
+    if (!bookMoreMemory())      // Try to grow budget
+        return nullptr;         // System memory exhausted
+}
+void *page = lc_ndbd_pool_malloc(MEM_CHUNK_SIZE, RG_QUERY_MEMORY,
+                                 m_thread_id, false);
+m_total_chunk_bytes += MEM_CHUNK_SIZE;
+// ... initialize MemChunk, append to linked list ...
+
+// bookMoreMemory():
+bool bookMoreMemory() {
+    Uint32 new_budget = m_memory_budget + m_budget_increment;
+    if (new_budget &gt; m_total_available)
+        return false;           // No more system memory
+    m_memory_budget = new_budget;
+    return true;                // Budget extended
+}
+</pre>
+
+<div class="diagram-box">
+<svg viewBox="0 0 920 200" xmlns="http://www.w3.org/2000/svg" font-family="Consolas, monospace">
+  <text x="460" y="22" fill="#dcdcaa" font-size="13" text-anchor="middle" font-weight="bold">Figure 3b: Dynamic Chunk Growth</text>
+
+  <!-- Initial state -->
+  <text x="30" y="55" fill="#888" font-size="9">SETUP:</text>
+  <rect x="90" y="40" width="80" height="35" rx="4" fill="#0f3460" stroke="#4ec9b0" stroke-width="1.5"></rect>
+  <text x="130" y="62" fill="#4ec9b0" font-size="8" text-anchor="middle">Interp obj</text>
+  <text x="130" y="72" fill="#888" font-size="7" text-anchor="middle">32KB page</text>
+
+  <rect x="180" y="40" width="60" height="35" rx="4" fill="#16213e" stroke="#4ec9b0" stroke-width="1"></rect>
+  <text x="210" y="62" fill="#4ec9b0" font-size="7" text-anchor="middle">Chunk 0</text>
+
+  <text x="260" y="62" fill="#888" font-size="9">budget = 128KB (4 pages)</text>
+
+  <!-- After some groups -->
+  <text x="30" y="105" fill="#888" font-size="9">Growing:</text>
+  <rect x="90" y="90" width="80" height="35" rx="4" fill="#0f3460" stroke="#4ec9b0" stroke-width="1.5"></rect>
+  <text x="130" y="112" fill="#4ec9b0" font-size="8" text-anchor="middle">Interp obj</text>
+  <rect x="180" y="90" width="60" height="35" rx="4" fill="#16213e" stroke="#569cd6" stroke-width="1"></rect>
+  <text x="210" y="112" fill="#569cd6" font-size="7" text-anchor="middle">Chunk 0</text>
+  <rect x="250" y="90" width="60" height="35" rx="4" fill="#16213e" stroke="#569cd6" stroke-width="1"></rect>
+  <text x="280" y="112" fill="#569cd6" font-size="7" text-anchor="middle">Chunk 1</text>
+  <rect x="320" y="90" width="60" height="35" rx="4" fill="#16213e" stroke="#569cd6" stroke-width="1"></rect>
+  <text x="350" y="112" fill="#569cd6" font-size="7" text-anchor="middle">Chunk 2</text>
+  <rect x="390" y="90" width="60" height="35" rx="4" fill="#16213e" stroke="#569cd6" stroke-width="1"></rect>
+  <text x="420" y="112" fill="#569cd6" font-size="7" text-anchor="middle">Chunk 3</text>
+
+  <text x="470" y="105" fill="#dcdcaa" font-size="9">budget exhausted → bookMoreMemory()</text>
+  <text x="470" y="118" fill="#888" font-size="8">budget grows: 128KB → 256KB</text>
+
+  <!-- Extended -->
+  <text x="30" y="160" fill="#888" font-size="9">Extended:</text>
+  <rect x="90" y="145" width="80" height="35" rx="4" fill="#0f3460" stroke="#4ec9b0" stroke-width="1.5"></rect>
+  <text x="130" y="167" fill="#4ec9b0" font-size="8" text-anchor="middle">Interp obj</text>
+  <rect x="180" y="145" width="60" height="35" rx="4" fill="#16213e" stroke="#569cd6" stroke-width="1"></rect>
+  <text x="210" y="162" fill="#569cd6" font-size="7" text-anchor="middle">0</text>
+  <rect x="250" y="145" width="60" height="35" rx="4" fill="#16213e" stroke="#569cd6" stroke-width="1"></rect>
+  <text x="280" y="162" fill="#569cd6" font-size="7" text-anchor="middle">1</text>
+  <rect x="320" y="145" width="60" height="35" rx="4" fill="#16213e" stroke="#569cd6" stroke-width="1"></rect>
+  <text x="350" y="162" fill="#569cd6" font-size="7" text-anchor="middle">2</text>
+  <rect x="390" y="145" width="60" height="35" rx="4" fill="#16213e" stroke="#569cd6" stroke-width="1"></rect>
+  <text x="420" y="162" fill="#569cd6" font-size="7" text-anchor="middle">3</text>
+  <rect x="460" y="145" width="60" height="35" rx="4" fill="#1a2a1a" stroke="#4ec9b0" stroke-width="1.5"></rect>
+  <text x="490" y="162" fill="#4ec9b0" font-size="7" text-anchor="middle">4</text>
+  <rect x="530" y="145" width="60" height="35" rx="4" fill="#1a2a1a" stroke="#4ec9b0" stroke-width="1.5"></rect>
+  <text x="560" y="162" fill="#4ec9b0" font-size="7" text-anchor="middle">5</text>
+  <text x="610" y="155" fill="#888" font-size="8">...</text>
+
+  <text x="650" y="160" fill="#4ec9b0" font-size="9">Continues growing up to</text>
+  <text x="650" y="175" fill="#4ec9b0" font-size="9">m_total_available (system limit)</text>
+
+  <!-- Limit annotation -->
+  <rect x="650" y="185" width="250" height="15" rx="3" fill="#2a2a1a" stroke="#dcdcaa" stroke-width="0.5"></rect>
+  <text x="775" y="196" fill="#dcdcaa" font-size="8" text-anchor="middle">Only fails when RG_QUERY_MEMORY exhausted</text>
+</svg>
+<div class="caption">Figure 3b: Memory grows in 32KB chunks. The budget starts small (1% of available, min 128KB)
+and extends on demand via bookMoreMemory() until system memory is exhausted.</div>
+</div>
+
+<div class="callout info">
+  <strong>Contrast with AggInterpreter:</strong> The regular (non-join) <code>AggInterpreter</code>
+  used for single-table scan aggregation fits <em>entirely</em> in one 32KB page with inline
+  buffers and a <code>std::map</code>. The <code>JoinAggInterpreter</code> was separated
+  specifically to support dynamic chunk growth, the 1024-bucket hash table, linked attribute
+  processing, and group eviction — none of which the simpler AggInterpreter needs.
+</div>
+
+<!-- ================================================================== -->
+<h2 id="eviction">6. Group Eviction: When Memory Runs Out</h2>
+
+<p>In production, <code>m_max_groups</code> is <strong>0 (unlimited)</strong> — the hash map can
+hold as many groups as memory allows. Eviction is triggered when the chunk allocator can no
+longer allocate memory for a new group, i.e., when <code>allocGroupData()</code> returns
+<code>nullptr</code> because <code>allocNewChunk()</code> failed (system memory exhausted after
+repeated <code>bookMoreMemory()</code> attempts). This is the real-world eviction trigger.</p>
+
+<p>The code returns <code>AGG_EVICT_NEEDED</code> in two cases:</p>
+
+<pre>// JoinAggInterpreter::processRecWithLinkedAttrs() — two eviction triggers
+
+// 1. m_max_groups limit hit (only non-zero in ERROR_INSERT testing)
+if (m_max_groups &gt; 0 &amp;&amp; m_n_groups &gt;= m_max_groups) {
+    return AGG_EVICT_NEEDED;
+}
+
+// 2. Memory allocation failure (the real production trigger)
+char *agg_rec = allocGroupData(rec_len, key_len);
+if (agg_rec == nullptr) {
+    return AGG_EVICT_NEEDED;   // No memory for new group
+}
+</pre>
+
+<p>The caller in <code>handleJoinAggRow()</code> handles both cases identically — evict one
+existing group and retry:</p>
+
+<pre>// DbtupExecQuery.cpp — handleJoinAggRow() eviction loop
+
+retry:
+  Int32 ret = interp-&gt;processRecWithLinkedAttrs(row, linked_data, linked_len);
+
+  if (ret == AGG_EVICT_NEEDED) {
+      // Evict one group to free memory (or free a group count slot)
+      Int32 evict_ret = interp-&gt;evictOneGroup(buf, buf_size, &amp;words_written);
+
+      // Send evicted group as a partial result via TRANSID_AI
+      // Hash-route to correct receiver: receiverIds[hash(key) % numReceiverIds]
+      Uint32 receiverId = state-&gt;selectReceiverData(evicted_key, key_len);
+      sendSignal(state-&gt;m_resultRef, GSN_TRANSID_AI, signal, ...);
+      state-&gt;m_rows_sent++;
+
+      goto retry;   // Now there's room — insert the new group
+  }
+</pre>
+
+<p>Evicted groups are <strong>partial results</strong> — they contain the accumulated aggregates
+for that group <em>so far</em>. The NDB API's aggregator must merge partial results for the
+same group key from multiple evictions and multiple data nodes. This is why the receiver
+routing uses a hash of the group key: all partial results for the same group always arrive
+at the same API receiver, enabling local merge without cross-receiver coordination.</p>
+
+<div class="callout info">
+  <strong>In practice, eviction is rare.</strong> Since the chunk allocator grows dynamically
+  (Section 5.1) up to the full <code>RG_QUERY_MEMORY</code> capacity, eviction only occurs
+  when the data node's query memory resource group is genuinely exhausted — typically only
+  for queries with extremely high GROUP BY cardinality or when multiple concurrent aggregation
+  queries compete for memory.
+</div>
+
+<div class="callout warn">
+  <strong>Testing eviction:</strong> Since eviction is rare in production, two ERROR_INSERT
+  codes exist to force it during testing:
+  <ul>
+    <li><strong>ERROR_INSERT 5090:</strong> Forces <code>setMaxGroups(3)</code> during SETUP,
+      so the 4th distinct group triggers eviction regardless of available memory</li>
+    <li><strong>ERROR_INSERT 4040:</strong> Randomly evicts every 7th row when the map has more
+      than 2 groups, stressing the eviction and partial-result merge paths</li>
+  </ul>
+</div>
+
+<!-- ================================================================== -->
+<h2 id="flow-control">7. Result Flow Control: JOIN_AGG_SEND_REQ/CONF</h2>
+
+<p>In regular pushed joins, DBLQH sends individual rows via TRANSID_AI as they are processed,
+with no explicit flow control between DBLQH and the API (batch size limits the output
+implicitly). With aggregation, the result volume can be large (many groups) and is produced
+in a burst during the COMPLETE phase. Explicit flow control prevents overwhelming the API:</p>
+
+<pre>// DBLQH — continueJoinAggSend() result streaming loop
+
+while (groups remaining in hash map) {
+    serialize next group → TRANSID_AI buffer
+    m_agg_curr_batch_size_rows++;
+    m_agg_curr_batch_size_bytes += group_bytes;
+
+    if (m_agg_curr_batch_size_rows &gt;= m_max_batch_rows) {
+        // Batch full — send what we have, then pause
+        flush TRANSID_AI signals to API;
+
+        // Ask DBTC for permission to continue
+        send JOIN_AGG_SEND_REQ(rows_sent, bytes_sent);
+        return;  // Will resume when SEND_CONF arrives
+    }
+}
+
+// All groups sent — finalize
+send JOIN_AGG_COMPLETE_CONF(numResultRows, resultBytes);
+</pre>
+
+<p>When DBTC receives JOIN_AGG_SEND_REQ, it checks whether the API has consumed the previous
+batch (receiver ready). If so, it replies with JOIN_AGG_SEND_CONF containing a new
+<code>maxBatchRows</code> limit (typically 256). DBLQH resumes serialization from where it
+paused.</p>
+
+<table>
+<tbody><tr><th>Constant</th><th>Value</th><th>Purpose</th></tr>
+<tr><td><code>GROUPS_PER_BATCH</code></td><td>16 (prod), 2 (debug)</td><td>Minimum groups before checking batch limit</td></tr>
+<tr><td><code>MERGE_GROUPS_PER_BATCH</code></td><td>256 (prod), 2 (debug)</td><td>Groups merged per RT-break in mutex-based merge</td></tr>
+<tr><td><code>maxBatchRows</code></td><td>256</td><td>Returned by DBTC in SEND_CONF</td></tr>
+<tr><td><code>MAX_AGG_RESULT_BATCH_BYTES</code></td><td>8192</td><td>Byte limit per result batch</td></tr>
+</tbody></table>
+
+<!-- ================================================================== -->
+<h2 id="fanout-batch">8. Impact on Fanout, Batch Sizing, and Parallelism</h2>
+
+<p>Aggregation changes several assumptions that the regular pushed join batch sizing
+relies on. This section describes those differences and their implications.</p>
+
+<h3>8.1 MultiFragFlag Disabled: Maximum TC-Thread Parallelism</h3>
+
+<p>For regular (unordered) pushed joins, the API bundles multiple fragments per worker
+(<code>fragsPerWorker = rootFragments / dataNodes</code>) using MultiFragFlag. This sends
+one SCAN_FRAGREQ per data node, with all that node's fragments bundled into a single
+DBSPJ instance.</p>
+
+<p>Aggregation <strong>forces <code>fragsPerWorker = 1</code></strong>, disabling MultiFragFlag.
+Each fragment gets its own SCAN_FRAGREQ to a <strong>separate DBSPJ instance</strong> on a
+different TC thread:</p>
+
+<pre>// NdbQueryOperation.cpp — fragsPerWorker for aggregation
+
+if (m_hasAggregation) {
+    // Each fragment gets its own SCAN_FRAGREQ to a separate DBSPJ instance
+    // for maximum parallelism across TC threads. Multi-fragment bundling would
+    // serialize all fragments on a node into one DBSPJ instance.
+    m_fragsPerWorker = 1;
+}
+</pre>
+
+<div class="callout success">
+  <strong>Why this makes sense for aggregation:</strong> Multi-fragment bundling saves
+  API round-trips by reducing the number of SCAN_FRAGREQs. But aggregation results are
+  per-<em>node</em> (not per-fragment) — the savings from bundling don't apply. Meanwhile,
+  distributing fragments across DBSPJ instances gives parallelism across TC threads,
+  which is more valuable for the compute-intensive aggregation workload.
+</div>
+
+<h3>8.2 scanParallelism: Explicit vs. Implicit</h3>
+
+<p>For regular queries, DBTC derives <code>scanParallelism</code> from the number of
+receiver IDs in Section 0 of SCAN_TABREQ. With aggregation, Section 0 carries
+<strong>aggregation receiver IDs</strong> (hash-partitioned result routing), not scan
+worker handles. The actual scan parallelism must be communicated separately:</p>
+
+<pre>// NdbQueryOperation.cpp — explicit scanParallelism for aggregation
+
+if (m_hasAggregation) {
+    ScanTabReq::setJoinAggFlag(reqInfo, 1);
+    scanTabReq-&gt;scanParallelism = m_workerCount * m_fragsPerWorker;
+    // Stored in DATA word 15 of SCAN_TABREQ (extended format)
+}
+
+// DbtcMain.cpp — reading scanParallelism
+if (ScanTabReq::getJoinAggFlag(ri))
+    scanParallel = scanTabReq-&gt;scanParallelism;   // Explicit
+else
+    scanParallel = numReceiverIds;                 // Implicit from Section 0
+</pre>
+
+<h3>8.3 Batch Byte Size: Different Semantics</h3>
+
+<p>For regular pushed joins, <code>batch_size_bytes</code> controls the amount of data received
+at the API — directly tied to API receive buffer capacity. For aggregation, the root scan's
+<code>batch_size_bytes</code> controls <strong>DBLQH → DBSPJ throughput</strong> (raw scan rows
+flowing through the join), not API buffer size (the API receives only aggregated groups, which
+are much smaller).</p>
+
+<pre>// NdbQueryOperation.cpp — restore batch_byte_size for aggregation root
+
+if (getQuery().m_hasAggregation &amp;&amp; getParentOperation() == nullptr) {
+    // For aggregate root scans, batch_byte_size controls DBLQH→DBSPJ
+    // throughput, not API receive buffer. result_bufsize() caps it to
+    // the tiny API buffer (no getValue columns). Restore to the value
+    // from calculate_batch_size() so config BatchByteSize takes effect.
+    m_maxBatchBytes = batchByteSize;
+}
+</pre>
+
+<div class="callout info">
+  <strong>Result size reduction:</strong> A join that produces 100,000 rows with aggregation
+  might yield only 50 aggregated groups. The API receive buffer only needs to hold these 50
+  groups, not the 100,000 intermediate rows. The intermediate rows are consumed entirely
+  within the data nodes by the JoinAggInterpreter.
+</div>
+
+<h3>8.4 Fanout and estmMaxKeys()</h3>
+
+<p>The fanout estimation machinery (<code>estmMaxKeys()</code>, <code>m_recsPrKeyStat</code>,
+<code>scanFrag_parallelism()</code>) described in the
+<a href="file:///Users/mikael/mysql_trees/rondb_2604/storage/ndb/claude_files/pushdown_join_aggregation/html/pushed_join_without_aggregation.html#fanout-stats">companion document</a> still
+operates normally for the join portion of the query. The root scan and child operations
+still use batch buffers with the same sizing logic. What changes is the <strong>leaf
+table's output</strong>:</p>
+
+<ul>
+  <li>In a regular join, the leaf table's rows flow to the API, and its batch buffer capacity
+    is the binding constraint in <code>estmMaxKeys()</code></li>
+  <li>With aggregation, the leaf table's rows are consumed by JoinAggInterpreter — they never
+    reach the API. The binding constraint shifts to the <strong>JoinAggInterpreter's hash map
+    capacity</strong> (m_max_groups) and <strong>chunk allocator budget</strong> instead of
+    the scan batch buffer</li>
+  <li>If the hash map fills, eviction handles the overflow (partial results sent to API),
+    so the scan never stalls — it just produces more partial groups that need merging</li>
+</ul>
+
+<p>This means aggregation queries are <strong>less sensitive to batch size tuning</strong> for
+the leaf table — the critical resource is the aggregation memory budget, not the batch
+buffer. However, the join tables above the leaf still use normal batch sizing, so tuning
+those remains relevant.</p>
+
+<!-- ================================================================== -->
+<h2 id="api-changes">9. NDB API Changes: Receivers, Programs, and Result Merging</h2>
+
+<h3>9.1 Aggregation Receivers</h3>
+
+<p>The NDB API allocates a set of <code>NdbReceiver</code> objects specifically for aggregation
+results, separate from the regular scan receivers. The count equals the number of workers
+(<code>m_workerCount</code>), providing hash-partitioned result routing:</p>
+
+<pre>// NdbQueryOperation.cpp — prepareSend()
+
+m_numAggReceivers = m_workerCount;
+m_aggReceivers = new NdbReceiver *[m_numAggReceivers];
+
+for (Uint32 i = 0; i &lt; m_numAggReceivers; i++) {
+    NdbReceiver *rec = ndb-&gt;getNdbScanRec();
+    rec-&gt;init(NdbReceiver::NDB_AGG_RECEIVER, this);
+    m_aggReceivers[i] = rec;
+}
+</pre>
+
+<p>Each receiver gets a disjoint subset of group keys (via hash routing at the data node).
+Because the same group key from different data nodes always maps to the same receiver,
+merging partial results happens locally within each receiver — no cross-receiver
+coordination needed.</p>
+
+<h3>9.2 Aggregation Program Transmission</h3>
+
+<p>The aggregation bytecode (the program that tells JoinAggInterpreter which columns to
+GROUP BY and which aggregates to compute) is packed into Section 2 of SCAN_TABREQ
+alongside any bounds data:</p>
+
+<pre>Section 2 layout for aggregation:
+  [boundsLen]                    // Uint32: length of bounds data (0 if none)
+  [bounds data...]               // boundsLen words
+  [aggReceiverId]                // Uint32: object map ID for result routing
+  [aggregation program...]       // Variable-length bytecode
+</pre>
+
+<p>DBTC extracts the bounds and forwards the remaining data (receiver ID + program) to
+DblqhProxy via JOIN_AGG_SETUP_REQ sections.</p>
+
+<h3>9.3 Result Collection and Merging</h3>
+
+<p>Aggregated results arrive as TRANSID_AI signals at the aggregation receivers. The API
+accumulates these in <code>m_aggResultData</code> with offset tracking per batch. After all
+scan batches complete (EndOfData), the API processes all accumulated batches:</p>
+
+<pre>// NdbQueryImpl::processAggResults()
+
+for each batch received on aggregation receivers:
+    skip AttributeHeader (1 word)
+    feed remaining data to m_aggregator-&gt;ProcessRes()
+
+m_aggregator-&gt;PrepareResults()
+// User calls query-&gt;getAggregator()-&gt;FetchResultRecord() to iterate
+</pre>
+
+<p><code>ProcessRes()</code> merges partial aggregates from multiple data nodes and from
+eviction: if two partial results share the same group key, their SUM values are added,
+COUNT values are added, MAX values take the larger, etc.</p>
+
+<!-- ================================================================== -->
+<h2 id="future">10. Potential Optimizations Not Yet Exploited</h2>
+
+<p>The current implementation prioritizes correctness and simplicity. Several optimizations
+are architecturally possible but not yet implemented:</p>
+
+<h3>10.1 Larger Batch Budgets for Aggregation</h3>
+
+<div class="callout info">
+  <strong>Opportunity:</strong> Since aggregated results are much smaller than raw join rows
+  (50 groups vs. 100,000 rows), the API receive buffer is underutilized. The root scan's
+  <code>batch_size_bytes</code> could be increased specifically for aggregation queries to
+  allow more raw rows to flow through the join pipeline per batch, reducing SCAN_NEXTREQ
+  round-trips.
+  <br><br>
+  <strong>Current state:</strong> The API already restores <code>batchByteSize</code> for
+  aggregation root scans (not capping to the tiny API buffer), but the cluster-level
+  <code>BatchByteSize</code> config still applies uniformly. A per-query override for
+  aggregation could yield significant throughput gains for large joins.
+</div>
+
+<h3>10.2 Adaptive Congestion Thresholds</h3>
+
+<div class="callout info">
+  <strong>Opportunity:</strong> DBSPJ's congestion control (Section 9 of the companion document)
+  uses fixed thresholds: defer at 256 outstanding, resume at 128. For aggregation queries,
+  the child operations feed rows into a hash map (not into API buffers), so the "congestion"
+  semantics differ. The hash map can absorb rows much faster than API network delivery, so
+  higher thresholds could be used, reducing the frequency of defer/resume cycles.
+  <br><br>
+  <strong>Current state:</strong> The same <code>HighlyCongestedLimit</code> (256) and
+  <code>MildlyCongestedLimit</code> (128) apply regardless of whether aggregation is active.
+</div>
+
+<h3>10.3 Pipelined Result Delivery</h3>
+
+<div class="callout info">
+  <strong>Opportunity:</strong> Currently, aggregation follows a strict sequence:
+  <ol>
+    <li>SETUP (blocking)</li>
+    <li>RUNNING — all scans complete, all rows accumulated</li>
+    <li>COMPLETE — finalize, merge per-thread interpreters, stream all results</li>
+  </ol>
+  Results are not delivered until <em>all</em> scans have finished. For queries with many
+  fragments, some fragments complete long before others. Partial results from completed
+  fragments could be streamed to the API while other fragments are still scanning, reducing
+  latency to first result.
+  <br><br>
+  <strong>Challenge:</strong> Partial results would need to be clearly marked as non-final,
+  and the API aggregator would need to handle streaming merge. The JOIN_AGG_SEND_REQ/CONF
+  flow control already exists and could be extended to support this.
+</div>
+
+<h3>10.4 Adaptive Receiver Count</h3>
+
+<div class="callout info">
+  <strong>Opportunity:</strong> Currently, <code>m_numAggReceivers = m_workerCount</code>
+  (fixed). For queries with very few distinct groups (e.g., <code>GROUP BY country</code>
+  with ~200 countries), fewer receivers would suffice and reduce overhead. For queries with
+  millions of distinct groups, more receivers could improve parallelism.
+  <br><br>
+  <strong>Challenge:</strong> Receiver count must be known before execution (at SETUP time),
+  but the number of distinct groups is often unknown. Could use optimizer estimates or hints
+  from the query definition.
+</div>
+
+<h3>10.5 Memory-Adaptive Concurrency Strategy</h3>
+
+<div class="callout info">
+  <strong>Opportunity:</strong> The concurrency strategy (mutex-based vs. mutex-free) is
+  currently chosen by the query builder. An adaptive approach could:
+  <ul>
+    <li>Start with mutex-free if memory budget allows (budget / num_threads ≥ min_chunk_size)</li>
+    <li>Fall back to mutex-based if memory is tight</li>
+    <li>Consider the expected GROUP BY cardinality: few groups favor mutex-based (less memory
+      waste), many groups favor mutex-free (less contention per insert)</li>
+  </ul>
+  <strong>Current state:</strong> Strategy is fixed at query definition time and cannot
+  adapt to runtime conditions.
+</div>
+
+<h3>10.6 Aggregation-Aware estmMaxKeys()</h3>
+
+<div class="callout info">
+  <strong>Opportunity:</strong> The <code>estmMaxKeys()</code> function estimates how many
+  root keys can fit in child batch buffers based on fanout statistics. For aggregation queries,
+  the leaf table's "output" is not rows but aggregated groups — a dramatic reduction. An
+  aggregation-aware version could use the hash map capacity and expected group count instead of
+  the scan batch buffer to estimate the leaf's constraint, potentially allowing larger root
+  batches.
+  <br><br>
+  <strong>Current state:</strong> <code>estmMaxKeys()</code> treats the aggregation leaf
+  identically to a regular leaf scan, using <code>batch_size_rows / fanout</code> as the
+  constraint. Since the hash map handles overflow via eviction, this underestimates the
+  actual capacity.
+</div>
+
+<!-- Footer -->
+<div style="margin-top: 4rem; padding-top: 1rem; border-top: 1px solid var(--border); text-align: center; color: var(--text-dim); font-size: 0.85rem;">
+  <p>RONDB-733: Pushdown Join Aggregation — Architecture Changes<br>
+  Companion to: <a href="file:///Users/mikael/mysql_trees/rondb_2604/storage/ndb/claude_files/pushdown_join_aggregation/html/pushed_join_without_aggregation.html">NDB Pushed Joins (Without Aggregation)</a><br>
+  Key source files: <code>DblqhProxy.cpp</code>, <code>DblqhMain.cpp</code>,
+  <code>DbtupExecQuery.cpp</code>, <code>JoinAggregationState.hpp</code>,
+  <code>JoinAggInterpreter.hpp/cpp</code>, <code>NdbQueryOperation.cpp</code></p>
+</div>
+
+
+
+</body></html>

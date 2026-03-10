@@ -250,6 +250,7 @@ inline const Uint32 *ALIGN_WORD(const void *ptr) {
 #define ZAGG_OTHER_ERROR 1869
 #define ZAGG_ALLOC_MEM_FAILED 1870
 #define ZAGG_VS_TOO_BIG_RESULT 1871
+#define ZAGG_EMBEDDED_INTERP_ERROR 1872
 
 /* SOME WORD POSITIONS OF FIELDS IN SOME HEADERS */
 
@@ -305,11 +306,14 @@ inline const Uint32 *ALIGN_WORD(const void *ptr) {
 
 class Dbtux;
 class AggInterpreter;
+class JoinAggInterpreter;
 
 class Dbtup : public SimulatedBlock {
   friend class DbtupProxy;
   friend class Suma;
   friend class AggInterpreter;
+  friend class JoinAggInterpreter;
+  friend class VecSearchInterpreter;
 
  public:
   struct KeyReqStruct;
@@ -530,7 +534,7 @@ struct Fragoperrec {
       m_transId2(0),
       m_savePointId(0),
       m_accLockOp(RNIL),
-      m_aggregation(0)
+      m_has_pushdown(0)
     {}
 
     enum State {
@@ -588,8 +592,8 @@ struct Fragoperrec {
     };
     Uint32 prevList;
 
-    // Aggregation
-    Uint32 m_aggregation;
+    // Pushdown (aggregation or vector search)
+    Uint32 m_has_pushdown;
   };
   static constexpr Uint32 DBTUP_SCAN_OPERATION_TRANSIENT_POOL_INDEX = 3;
   typedef Ptr<ScanOp> ScanOpPtr;
@@ -2193,6 +2197,7 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
     Uint32 agg_curr_batch_size_rows;
     Uint32 agg_curr_batch_size_bytes;
     Uint32 agg_n_res_recs;
+    Uint32 m_join_agg_state_key;  // Pool index for join agg state (RNIL if none)
     Uint32 ttl_purge_window_size;
   };
 
@@ -2855,6 +2860,9 @@ private:
   //------------------------------------------------------------------
   void sendReadAttrinfo(Signal *signal, KeyReqStruct *req_struct,
                         Uint32 TnoOfData);
+  int handleJoinAggRow(KeyReqStruct *req_struct,
+                       const Uint32 *linked_data, Uint32 linked_len);
+  int prepareAndHandleJoinAggRow(KeyReqStruct *req_struct, Uint32 RsubLen);
   bool writeLogMemory(KeyReqStruct *req_struct,
                       const char *input_ptr,
                       Uint32 byte_size);
@@ -3284,7 +3292,7 @@ public:
 
   void nextAttrInfoParam(Uint32 storedProcId);
 
-  void SendAggResToAPI(Signal*, const void* lqhTcConnectrec, void* lqhScanRecord);
+  bool SendAggResToAPI(Signal*, const void* lqhTcConnectrec, void* lqhScanRecord);
   /**
    * Used by Restore...
    */

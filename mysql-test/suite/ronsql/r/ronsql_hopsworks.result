@@ -1,4 +1,6 @@
 # vim: set fileencoding=utf-8 : -*- coding: utf-8 -*-
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
 Generated tests for 32 data types
 
 ==================== Start testing data type: TINYINT ====================
@@ -4870,6 +4872,12 @@ FROM tbl;
 Number of output lines, including header: 2
 
 == Diff ==
+--- mysql.out
++++ ronsql.out
+@@ -1,2 +1,2 @@
+ cnt_val	avg_val	sum_val	min_val	max_val
+-158	12658.208860759494	1999997	-1000000	1000000
++158	12658.2089	1999997	-1000000	1000000
 ==========
 
 
@@ -5266,6 +5274,12 @@ FROM tbl;
 Number of output lines, including header: 2
 
 == Diff ==
+--- mysql.out
++++ ronsql.out
+@@ -1,2 +1,2 @@
+ cnt_all	cnt_val	cnt_foo	cnt_bar	sum_val	sum_foo	sum_bar	avg_val	avg_foo	avg_bar	max_val	max_foo	max_bar
+-200	158	200	200	1999997	574	1051	12658.208860759494	2.8700	5.2550	1000000	99	10
++200	158	200	200	1999997	574	1051	12658.2089	2.8700	5.2550	1000000	99	10
 ==========
 
 
@@ -5358,6 +5372,12 @@ FROM tbl;
 Number of output lines, including header: 2
 
 == Diff ==
+--- mysql.out
++++ ronsql.out
+@@ -1,2 +1,2 @@
+ cnt_val	avg_val	sum_val	min_val	max_val
+-158	12658227.829113925	1999999997	-1000000000	1000000000
++158	12658227.8291	1999999997	-1000000000	1000000000
 ==========
 
 
@@ -5754,6 +5774,12 @@ FROM tbl;
 Number of output lines, including header: 2
 
 == Diff ==
+--- mysql.out
++++ ronsql.out
+@@ -1,2 +1,2 @@
+ cnt_all	cnt_val	cnt_foo	cnt_bar	sum_val	sum_foo	sum_bar	avg_val	avg_foo	avg_bar	max_val	max_foo	max_bar
+-200	158	200	200	1999999997	574	1051	12658227.829113925	2.8700	5.2550	1000000000	99	10
++200	158	200	200	1999999997	574	1051	12658227.8291	2.8700	5.2550	1000000000	99	10
 ==========
 
 
@@ -5846,6 +5872,12 @@ FROM tbl;
 Number of output lines, including header: 2
 
 == Diff ==
+--- mysql.out
++++ ronsql.out
+@@ -1,2 +1,2 @@
+ cnt_val	avg_val	sum_val	min_val	max_val
+-151	20.274636	3061.47	-999.99	999.99
++151	20.2746	3061.47	-999.99	999.99
 ==========
 
 
@@ -6239,6 +6271,12 @@ FROM tbl;
 Number of output lines, including header: 2
 
 == Diff ==
+--- mysql.out
++++ ronsql.out
+@@ -1,2 +1,2 @@
+ cnt_all	cnt_val	cnt_foo	cnt_bar	sum_val	sum_foo	sum_bar	avg_val	avg_foo	avg_bar	max_val	max_foo	max_bar
+-200	151	200	200	3061.47	574	1051	20.274636	2.8700	5.2550	999.99	99	10
++200	151	200	200	3061.47	574	1051	20.2746	2.8700	5.2550	999.99	99	10
 ==========
 
 
@@ -7794,6 +7832,12 @@ FROM tbl;
 Number of output lines, including header: 2
 
 == Diff ==
+--- mysql.out
++++ ronsql.out
+@@ -1,2 +1,2 @@
+ cnt_val	avg_val	sum_val	min_val	max_val
+-151	0.15562913907086	23.4999999997	-0.9999999999	0.9999999999
++151	0.1556	23.4999999997	-0.9999999999	0.9999999999
 ==========
 
 
@@ -8187,6 +8231,12 @@ FROM tbl;
 Number of output lines, including header: 2
 
 == Diff ==
+--- mysql.out
++++ ronsql.out
+@@ -1,2 +1,2 @@
+ cnt_all	cnt_val	cnt_foo	cnt_bar	sum_val	sum_foo	sum_bar	avg_val	avg_foo	avg_bar	max_val	max_foo	max_bar
+-200	151	200	200	23.4999999997	574	1051	0.15562913907086	2.8700	5.2550	0.9999999999	99	10
++200	151	200	200	23.4999999997	574	1051	0.1556	2.8700	5.2550	0.9999999999	99	10
 ==========
 
 
@@ -14770,15 +14820,15 @@ VARCHAR(30) CHARACTER SET utf8mb4: JSON format GROUP BY
 [{"val":null,"cnt":22}
 ,{"val":"","cnt":14}
 ,{"val":"a","cnt":16}
+,{"val":"åäö_测试","cnt":9}
+,{"val":"𝕳𝖊𝖑𝖑𝖔🌍","cnt":23}
 ,{"val":"val1","cnt":14}
 ,{"val":"val2","cnt":20}
 ,{"val":"val3","cnt":17}
-,{"val":"åäö_测试","cnt":9}
-,{"val":"𝕳𝖊𝖑𝖑𝖔🌍","cnt":23}
+,{"val":"y𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳","cnt":13}
 ,{"val":"yyyyyyyyyyyyyyyyyyyyyyyyyyyyyx","cnt":14}
 ,{"val":"yyyyyyyyyyyyyyyyyyyyyyyyyyyyyy","cnt":18}
 ,{"val":"yyyyyyyyyyyyyyyyyyyyyyyyyyyyyz","cnt":20}
-,{"val":"y𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳","cnt":13}
 ]
 }
 ==========
@@ -15359,15 +15409,15 @@ Number of output lines, including header: 2
 VARCHAR(767) CHARACTER SET utf8mb4: JSON format GROUP BY
 {"data":
 [{"val":null,"cnt":28}
-,{"val":"yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy","cnt":21}
 ,{"val":"","cnt":15}
 ,{"val":"a","cnt":18}
+,{"val":"åäö_测试","cnt":21}
+,{"val":"𝕳𝖊𝖑𝖑𝖔🌍","cnt":20}
 ,{"val":"val1","cnt":22}
 ,{"val":"val2","cnt":19}
 ,{"val":"val3","cnt":12}
-,{"val":"åäö_测试","cnt":21}
-,{"val":"𝕳𝖊𝖑𝖑𝖔🌍","cnt":20}
 ,{"val":"y𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳𝕳","cnt":24}
+,{"val":"yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy","cnt":21}
 ]
 }
 ==========
@@ -17110,18 +17160,18 @@ VARCHAR(100) CHARACTER SET latin2: JSON format GROUP BY
 [{"val":null,"cnt":15}
 ,{"val":"","cnt":10}
 ,{"val":"a","cnt":13}
+,{"val":"ABC","cnt":17}
 ,{"val":"Kz","cnt":13}
 ,{"val":"Ln","cnt":11}
-,{"val":"Lp","cnt":21}
-,{"val":"Ma","cnt":16}
-,{"val":"ABC","cnt":17}
-,{"val":"XYZ","cnt":18}
 ,{"val":"Lodz","cnt":4}
+,{"val":"Lp","cnt":21}
+,{"val":"Łódź","cnt":12}
+,{"val":"Łódź_test","cnt":11}
+,{"val":"Ma","cnt":16}
 ,{"val":"val1","cnt":10}
 ,{"val":"val2","cnt":13}
 ,{"val":"val3","cnt":16}
-,{"val":"Łódź","cnt":12}
-,{"val":"Łódź_test","cnt":11}
+,{"val":"XYZ","cnt":18}
 ]
 }
 ==========

@@ -34,6 +34,7 @@
 #include "ArenaMalloc.hpp"
 #include "DynamicArray.hpp"
 #include "LexString.hpp"
+#include "QueryPlanner.hpp"
 #include "ResultPrinter.hpp"
 #include "RonSQLCommon.hpp"
 
@@ -118,6 +119,7 @@ public:
     AggregationAPICompiler* get_agg();
     ArenaMalloc* get_allocator();
     Uint32 column_name_to_idx(LexCString);
+    Uint32 qualified_column_name_to_idx(LexCString table, LexCString column);
     SelectStatement ast_root;
   };
 private:
@@ -135,10 +137,14 @@ private:
   ArenaMalloc* m_amalloc;
   Context m_context;
   DynamicArray<LexCString> m_columns;
+  DynamicArray<LexCString> m_column_qualifiers; /* table qualifier per col_idx */
   NdbAttrId* m_column_attrId_map = NULL;
   const NdbDictionary::Column** m_column_map = NULL;
+  Uint32* m_column_table_idx = NULL;
   const NdbDictionary::Dictionary* m_dict = NULL;
   const NdbDictionary::Table* m_table = NULL;
+  JoinPlan m_join_plan;
+  ConditionalExpression* m_join_where_ce[MAX_JOIN_TABLES];
   DynamicArray<const NdbDictionary::Index*> m_indexes;
   NdbTransaction* m_trans = NULL;
   yyscan_t m_scanner;
@@ -175,10 +181,14 @@ private:
   void parse();
   bool has_width(size_t pos);
   void load();
+  void load_single_table();
+  void load_join();
+  void classify_where_by_table();
   void plan_index_and_filter();
   void collect_toplevel_conditions(ConditionalExpression* ce);
   void generate_scan_config_candidates();
   void compile();
+  void build_agg_linked_projections();
   void determine_explain();
   bool unload_schema();
   void handle_ronsql_exception(std::exception_ptr eptr);
@@ -188,17 +198,29 @@ public:
   void execute(); // todo make sure we can execute several times, do not mutate. Make this a separate object that takes a preparer as const input (This todo from review 2024-08-22 with MR)
 private:
   void cleanup_trans();
+  void execute_join();
+  void collect_pk_equalities(struct ConditionalExpression* ce,
+                             const NdbDictionary::Table* table,
+                             struct ConditionalExpression* pk_const[]);
   void apply_filter_top_level(NdbScanFilter* filter);
   void apply_filter(NdbScanFilter* filter, struct ConditionalExpression* ce);
   void apply_filter_cmp(NdbScanFilter* filter,
                         NdbScanFilter::BinaryCondition cond,
                         struct ConditionalExpression* left,
                         struct ConditionalExpression* right);
+  void apply_filter_like(NdbScanFilter* filter,
+                         NdbScanFilter::BinaryCondition cond,
+                         struct ConditionalExpression* left,
+                         struct ConditionalExpression* right);
   raw_value encode_constant(struct ConditionalExpression *ce,
                             const NdbDictionary::Column* col);
   struct ConditionalExpression* simplify_ce(struct ConditionalExpression* ce,
                                             int maxdepth);
   void programAggregator(NdbAggregator* aggregator);
+  void programAggregator_join(NdbAggregator* aggregator);
+  void generate_embedded_condition(NdbAggregator* aggregator,
+                                   struct ConditionalExpression* ce,
+                                   Uint32 then_arm_raw_size);
   void print_result_json(NdbAggregator* aggregator);
   void print();
   void print(struct ConditionalExpression* ce,

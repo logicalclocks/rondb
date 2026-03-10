@@ -55,7 +55,7 @@ INSERT INTO test.sz VALUES(2, SYSDATE(), 200);
 INSERT INTO test.sz VALUES(3, DATE_ADD(SYSDATE(), INTERVAL 1 DAY), 300);
 INSERT INTO test.sz VALUES(4, SYSDATE(), 400);
 COMMIT;
-SELECT col_a, col_c FROM test.sz ORDER BY col_a;
+SELECT col_a, col_c FROM test.sz;
 col_a	col_c
 3	300
 SELECT col_a, col_c FROM test.sz;
@@ -79,7 +79,7 @@ INSERT INTO test.sz VALUES
 (4, SYSDATE(), 4), (5, SYSDATE(), 5), (6, SYSDATE(), 6),
 (7, SYSDATE(), 7), (8, SYSDATE(), 8), (9, SYSDATE(), 9),
 (10, SYSDATE(), 10);
-SELECT col_a, col_c FROM test.sz WHERE col_c >= 7 FOR UPDATE;
+SELECT col_a, col_c FROM test.sz WHERE col_c >= 7 ORDER BY col_a FOR UPDATE;
 col_a	col_c
 7	7
 8	8
@@ -89,11 +89,11 @@ UPDATE test.sz SET col_c = 100 WHERE col_c <= 3;
 SELECT ROW_COUNT();
 ROW_COUNT()
 3
-SELECT col_a, col_c FROM test.sz WHERE col_a <= 3 FOR SHARE;
+SELECT col_a, col_c FROM test.sz WHERE col_a <= 3 ORDER BY col_a FOR SHARE;
 col_a	col_c
-3	100
-2	100
 1	100
+2	100
+3	100
 DELETE FROM test.sz WHERE col_c >= 20;
 SELECT ROW_COUNT();
 ROW_COUNT()

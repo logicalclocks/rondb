@@ -56,7 +56,7 @@ id	name	value
 #
 # Test 6: READ using rondb-cli REST API (pk-read)
 #
-[*] POST /0.1.0/cli_test/batch_test/pk-read
+[*] POST /0.2.0/cli_test/batch_test/pk-read
 {
   "filters": [
     {
@@ -85,7 +85,7 @@ id	name	value
     "value": 150
   }
 }
-[*] POST /0.1.0/cli_test/batch_test/pk-read
+[*] POST /0.2.0/cli_test/batch_test/pk-read
 {
   "filters": [
     {

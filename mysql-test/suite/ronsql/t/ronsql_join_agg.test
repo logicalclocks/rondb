@@ -1,0 +1,1079 @@
+--source include/have_ndb.inc
+
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+# ronsql_cli does not properly refresh NDB dictionary cache for join queries,
+# causing "Invalid schema version (code 1227)" errors. Suppress ronsql_cli
+# and rely on RDRS comparison (which handles schema refresh correctly).
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--echo
+--echo === Create tables for join aggregation tests ===
+--echo
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE orders (
+  o_id INT NOT NULL,
+  o_custkey INT NOT NULL,
+  o_status VARCHAR(10) NOT NULL,
+  PRIMARY KEY USING HASH (o_id)
+) ENGINE=NDB;
+
+CREATE TABLE lineitem (
+  l_id INT NOT NULL,
+  l_orderkey INT NOT NULL,
+  l_quantity INT NOT NULL,
+  l_price INT NOT NULL,
+  PRIMARY KEY USING HASH (l_id),
+  INDEX idx_orderkey (l_orderkey)
+) ENGINE=NDB;
+
+INSERT INTO orders VALUES
+  (1, 100, 'open'),
+  (2, 100, 'closed'),
+  (3, 200, 'open'),
+  (4, 200, 'open'),
+  (5, 300, 'closed');
+
+INSERT INTO lineitem VALUES
+  (1, 1, 10, 100),
+  (2, 1, 20, 200),
+  (3, 2, 5, 50),
+  (4, 2, 15, 150),
+  (5, 3, 30, 300),
+  (6, 3, 25, 250),
+  (7, 4, 8, 80),
+  (8, 4, 12, 120),
+  (9, 5, 40, 400),
+  (10, 5, 35, 350);
+
+CREATE TABLE customer (
+  c_id INT NOT NULL,
+  c_name VARCHAR(20) NOT NULL,
+  c_region INT NOT NULL,
+  PRIMARY KEY USING HASH (c_id)
+) ENGINE=NDB;
+
+CREATE INDEX idx_custkey ON orders (o_custkey);
+CREATE INDEX idx_oid ON orders (o_id);
+
+INSERT INTO customer VALUES
+  (100, 'Alice', 1),
+  (200, 'Bob', 1),
+  (300, 'Charlie', 2);
+
+CREATE TABLE order_extra (
+  oe_orderid INT NOT NULL,
+  oe_custkey INT NOT NULL,
+  oe_note_val INT NOT NULL,
+  PRIMARY KEY USING HASH (oe_orderid, oe_custkey)
+) ENGINE=NDB;
+
+INSERT INTO order_extra VALUES
+  (1, 100, 10),
+  (2, 100, 20),
+  (3, 200, 30),
+  (4, 200, 40),
+  (5, 300, 50);
+
+CREATE TABLE suppliers (
+  s_id INT NOT NULL,
+  s_name VARCHAR(20) NOT NULL,
+  s_code VARCHAR(10) NOT NULL,
+  PRIMARY KEY USING HASH (s_id)
+) ENGINE=NDB;
+
+CREATE INDEX idx_scode ON suppliers (s_code);
+
+CREATE TABLE parts (
+  p_id BIGINT NOT NULL,
+  p_suppcode VARCHAR(10) NOT NULL,
+  p_price INT NOT NULL,
+  PRIMARY KEY USING HASH (p_id)
+) ENGINE=NDB;
+
+CREATE INDEX idx_suppcode ON parts (p_suppcode);
+
+CREATE TABLE shipments (
+  sh_id INT NOT NULL,
+  sh_partid BIGINT NOT NULL,
+  sh_date DATE NOT NULL,
+  sh_qty INT NOT NULL,
+  PRIMARY KEY USING HASH (sh_id)
+) ENGINE=NDB;
+
+CREATE INDEX idx_partid ON shipments (sh_partid);
+
+CREATE TABLE activities (
+  a_id INT NOT NULL,
+  a_date DATE NOT NULL,
+  a_type VARCHAR(10) NOT NULL,
+  a_amount INT NOT NULL,
+  PRIMARY KEY USING HASH (a_id)
+) ENGINE=NDB;
+
+CREATE INDEX idx_adate ON activities (a_date);
+
+INSERT INTO suppliers VALUES
+  (1, 'Acme', 'SUP-001'),
+  (2, 'Bolt Co', 'SUP-002'),
+  (3, 'Gear Inc', 'SUP-003');
+
+INSERT INTO parts VALUES
+  (1001, 'SUP-001', 50),
+  (1002, 'SUP-001', 75),
+  (1003, 'SUP-002', 30),
+  (1004, 'SUP-002', 60),
+  (1005, 'SUP-003', 90);
+
+INSERT INTO shipments VALUES
+  (1, 1001, '2024-01-15', 10),
+  (2, 1001, '2024-02-20', 20),
+  (3, 1002, '2024-01-15', 15),
+  (4, 1003, '2024-02-20', 25),
+  (5, 1004, '2024-03-10', 30),
+  (6, 1005, '2024-01-15', 5);
+
+INSERT INTO activities VALUES
+  (1, '2024-01-15', 'sale', 100),
+  (2, '2024-01-15', 'return', 20),
+  (3, '2024-02-20', 'sale', 200),
+  (4, '2024-02-20', 'sale', 150),
+  (5, '2024-03-10', 'sale', 300);
+
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo
+--echo === Test 5: 3-table join, GROUP BY on root, SUM on leaf ===
+
+let $QUERY=
+SELECT c.c_region, SUM(l.l_quantity)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY c.c_region;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_region, SUM(l.l_quantity)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY c.c_region|
+
+--echo
+--echo
+--echo === Test 6: 3-table join, GROUP BY on middle table ===
+
+let $QUERY=
+SELECT o.o_status, SUM(l.l_quantity), COUNT(l.l_id)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_status;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_status, SUM(l.l_quantity), COUNT(l.l_id)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_status|
+
+--echo
+--echo
+--echo === Test 7: 3-table join, GROUP BY on root, MIN/MAX on leaf ===
+
+let $QUERY=
+SELECT c.c_name, MIN(l.l_price), MAX(l.l_price)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY c.c_name;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_name, MIN(l.l_price), MAX(l.l_price)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY c.c_name|
+
+--echo
+--echo
+--echo === Test 8: WHERE filter on root table ===
+
+let $QUERY=
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+WHERE o.o_custkey = 100
+GROUP BY o.o_custkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+WHERE o.o_custkey = 100
+GROUP BY o.o_custkey|
+
+--echo
+--echo
+--echo === Test 9: WHERE with range on root table ===
+
+let $QUERY=
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+WHERE o.o_custkey >= 200
+GROUP BY o.o_custkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+WHERE o.o_custkey >= 200
+GROUP BY o.o_custkey|
+
+--echo
+--echo
+--echo === Test 11: SUM on parent column ===
+
+let $QUERY=
+SELECT o.o_status, SUM(o.o_custkey)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_status;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_status, SUM(o.o_custkey)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_status|
+
+--echo
+--echo
+--echo === Test 12: Mixed SUM on parent + child columns ===
+
+let $QUERY=
+SELECT o.o_custkey, SUM(o.o_custkey), SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_custkey, SUM(o.o_custkey), SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey|
+
+--echo
+--echo
+--echo === Test 10: WHERE filter on leaf table ===
+
+let $QUERY=
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+WHERE l.l_quantity > 10
+GROUP BY o.o_custkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+WHERE l.l_quantity > 10
+GROUP BY o.o_custkey|
+
+--echo
+--echo
+--echo === Test 13: Composite PK join (multi-column ON) ===
+
+let $QUERY=
+SELECT o.o_custkey, SUM(oe.oe_note_val)
+FROM orders AS o JOIN order_extra AS oe
+  ON oe.oe_orderid = o.o_id AND oe.oe_custkey = o.o_custkey
+GROUP BY o.o_custkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_custkey, SUM(oe.oe_note_val)
+FROM orders AS o JOIN order_extra AS oe
+  ON oe.oe_orderid = o.o_id AND oe.oe_custkey = o.o_custkey
+GROUP BY o.o_custkey|
+
+--echo
+--echo
+--echo === Test 14: Root PK lookup (WHERE covers full PK) ===
+
+let $QUERY=
+SELECT o.o_id, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+WHERE o.o_id = 1
+GROUP BY o.o_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_id, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+WHERE o.o_id = 1
+GROUP BY o.o_id|
+
+--echo
+--echo
+--echo === Test 15: COUNT(*) on join ===
+
+let $QUERY=
+SELECT o.o_custkey, COUNT(*)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_custkey, COUNT(*)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey|
+
+--echo
+--echo
+--echo === Test 16: AVG aggregate on join ===
+
+let $QUERY=
+SELECT o.o_custkey, AVG(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_custkey, AVG(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey|
+
+--echo
+--echo
+--echo === Test 17: Expression inside aggregate ===
+
+let $QUERY=
+SELECT o.o_custkey, SUM(l.l_quantity * l.l_price)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_custkey, SUM(l.l_quantity * l.l_price)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey|
+
+--echo
+--echo
+--echo === Test 18: WHERE filter on root + leaf tables ===
+
+let $QUERY=
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+WHERE o.o_custkey = 100 AND l.l_price > 100
+GROUP BY o.o_custkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+WHERE o.o_custkey = 100 AND l.l_price > 100
+GROUP BY o.o_custkey|
+
+--echo
+--echo
+--echo === Test 19: WHERE filter on middle table (3-table join) ===
+
+let $QUERY=
+SELECT c.c_region, SUM(l.l_quantity)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+WHERE o.o_id >= 3
+GROUP BY c.c_region;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_region, SUM(l.l_quantity)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+WHERE o.o_id >= 3
+GROUP BY c.c_region|
+
+--echo
+--echo
+--echo === Test 21: ORDER BY group column ASC ===
+
+let $QUERY=
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+ORDER BY o.o_custkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+ORDER BY o.o_custkey|
+
+--echo
+--echo
+--echo === Test 22: ORDER BY group column DESC ===
+
+let $QUERY=
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+ORDER BY o.o_custkey DESC;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+ORDER BY o.o_custkey DESC|
+
+--echo
+--echo
+--echo === Test 23: ORDER BY with LIMIT ===
+
+let $QUERY=
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+ORDER BY o.o_custkey DESC
+LIMIT 2;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+ORDER BY o.o_custkey DESC
+LIMIT 2|
+
+--echo
+--echo
+--echo === Test 24: LIMIT with ORDER BY ===
+
+let $QUERY=
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+ORDER BY o.o_custkey
+LIMIT 2;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+ORDER BY o.o_custkey
+LIMIT 2|
+
+--echo
+--echo
+--echo === Test 25: 3-table join with ORDER BY and LIMIT ===
+
+let $QUERY=
+SELECT c.c_name, SUM(l.l_quantity)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY c.c_name
+ORDER BY c.c_name
+LIMIT 2;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_name, SUM(l.l_quantity)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY c.c_name
+ORDER BY c.c_name
+LIMIT 2|
+
+--echo
+--echo
+--echo === Test 27: HAVING with SUM ===
+
+let $QUERY=
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING SUM(l.l_quantity) > 50;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING SUM(l.l_quantity) > 50|
+
+--echo
+--echo
+--echo === Test 28: HAVING with COUNT(*) ===
+
+let $QUERY=
+SELECT o.o_custkey, COUNT(*)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING COUNT(*) >= 4;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_custkey, COUNT(*)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING COUNT(*) >= 4|
+
+--echo
+--echo
+--echo === Test 29: HAVING filters all groups (empty result) ===
+
+let $QUERY=
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING SUM(l.l_quantity) > 9999;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING SUM(l.l_quantity) > 9999|
+
+--echo
+--echo
+--echo === Test 30: HAVING with AND ===
+
+let $QUERY=
+SELECT o.o_custkey, SUM(l.l_quantity), COUNT(*)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING SUM(l.l_quantity) >= 75 AND COUNT(*) >= 4;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_custkey, SUM(l.l_quantity), COUNT(*)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING SUM(l.l_quantity) >= 75 AND COUNT(*) >= 4|
+
+--echo
+--echo
+--echo === Test 31: 3-table join with HAVING ===
+
+let $QUERY=
+SELECT c.c_name, SUM(l.l_quantity)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY c.c_name
+HAVING SUM(l.l_quantity) >= 75;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_name, SUM(l.l_quantity)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY c.c_name
+HAVING SUM(l.l_quantity) >= 75|
+
+--echo
+--echo
+--echo === Test 32: HAVING + ORDER BY + LIMIT ===
+
+let $QUERY=
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING SUM(l.l_quantity) >= 50
+ORDER BY o.o_custkey DESC
+LIMIT 2;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING SUM(l.l_quantity) >= 50
+ORDER BY o.o_custkey DESC
+LIMIT 2|
+
+--echo
+--echo
+--echo === Test 33: HAVING aggregate not in SELECT ===
+
+let $QUERY=
+SELECT o.o_custkey
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING SUM(l.l_quantity) > 50;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_custkey
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING SUM(l.l_quantity) > 50|
+
+--echo
+--echo
+--echo === Test 34: HAVING COUNT(*) not in SELECT ===
+
+let $QUERY=
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING COUNT(*) >= 4;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_custkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey
+HAVING COUNT(*) >= 4|
+
+--echo
+--echo
+--echo === Test 35: Multi-table GROUP BY (parent + child) ===
+
+let $QUERY=
+SELECT o.o_custkey, l.l_price, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey, l.l_price
+ORDER BY o.o_custkey, l.l_price;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_custkey, l.l_price, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey, l.l_price
+ORDER BY o.o_custkey, l.l_price|
+
+--echo
+--echo
+--echo === Test 36: Multi-table GROUP BY (root + leaf, 3-table) ===
+
+let $QUERY=
+SELECT c.c_region, l.l_price, SUM(l.l_quantity)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY c.c_region, l.l_price
+ORDER BY c.c_region, l.l_price;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_region, l.l_price, SUM(l.l_quantity)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY c.c_region, l.l_price
+ORDER BY c.c_region, l.l_price|
+
+--echo
+--echo
+--echo === Test 37: Multi-table GROUP BY (root + middle, 3-table) ===
+
+let $QUERY=
+SELECT c.c_region, o.o_status, SUM(l.l_quantity)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY c.c_region, o.o_status
+ORDER BY c.c_region, o.o_status;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_region, o.o_status, SUM(l.l_quantity)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY c.c_region, o.o_status
+ORDER BY c.c_region, o.o_status|
+
+--echo
+--echo
+--echo === Test 38: Self-join with COUNT(*) ===
+
+let $QUERY=
+SELECT o1.o_status, COUNT(*)
+FROM orders AS o1 JOIN orders AS o2 ON o2.o_custkey = o1.o_custkey
+GROUP BY o1.o_status;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o1.o_status, COUNT(*)
+FROM orders AS o1 JOIN orders AS o2 ON o2.o_custkey = o1.o_custkey
+GROUP BY o1.o_status|
+
+--echo
+--echo
+--echo === Test 39: Self-join with SUM ===
+
+let $QUERY=
+SELECT o1.o_custkey, SUM(o2.o_id)
+FROM orders AS o1 JOIN orders AS o2 ON o2.o_custkey = o1.o_custkey
+GROUP BY o1.o_custkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o1.o_custkey, SUM(o2.o_id)
+FROM orders AS o1 JOIN orders AS o2 ON o2.o_custkey = o1.o_custkey
+GROUP BY o1.o_custkey|
+
+--echo
+--echo
+--echo === Test 40: VARCHAR join key ===
+
+let $QUERY=
+SELECT s.s_name, SUM(p.p_price)
+FROM suppliers AS s JOIN parts AS p ON p.p_suppcode = s.s_code
+GROUP BY s.s_name;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT s.s_name, SUM(p.p_price)
+FROM suppliers AS s JOIN parts AS p ON p.p_suppcode = s.s_code
+GROUP BY s.s_name|
+
+--echo
+--echo
+--echo === Test 41: BIGINT join key ===
+
+let $QUERY=
+SELECT p.p_id, SUM(sh.sh_qty)
+FROM parts AS p JOIN shipments AS sh ON sh.sh_partid = p.p_id
+GROUP BY p.p_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT p.p_id, SUM(sh.sh_qty)
+FROM parts AS p JOIN shipments AS sh ON sh.sh_partid = p.p_id
+GROUP BY p.p_id|
+
+--echo
+--echo
+--echo === Test 42: DATE join key ===
+
+let $QUERY=
+SELECT sh.sh_date, SUM(a.a_amount)
+FROM shipments AS sh JOIN activities AS a ON a.a_date = sh.sh_date
+GROUP BY sh.sh_date;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT sh.sh_date, SUM(a.a_amount)
+FROM shipments AS sh JOIN activities AS a ON a.a_date = sh.sh_date
+GROUP BY sh.sh_date|
+
+--echo
+--echo
+--echo === Test 43: 3-table join with VARCHAR + BIGINT keys ===
+
+let $QUERY=
+SELECT s.s_name, SUM(sh.sh_qty)
+FROM suppliers AS s
+JOIN parts AS p ON p.p_suppcode = s.s_code
+JOIN shipments AS sh ON sh.sh_partid = p.p_id
+GROUP BY s.s_name;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT s.s_name, SUM(sh.sh_qty)
+FROM suppliers AS s
+JOIN parts AS p ON p.p_suppcode = s.s_code
+JOIN shipments AS sh ON sh.sh_partid = p.p_id
+GROUP BY s.s_name|
+
+DELIMITER ;|
+
+--echo
+--echo
+--echo === Test 44: Group eviction with ERROR_INSERT 5116 ===
+
+--source include/check_ndb_debug.inc
+
+if ($have_ndb_debug)
+{
+--exec $NDB_MGM -e "ALL ERROR 5116" > /dev/null 2>&1
+
+DELIMITER |;
+
+let $QUERY=
+SELECT o.o_id, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT o.o_id, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_id|
+
+DELIMITER ;|
+
+--exec $NDB_MGM -e "ALL ERROR 0" > /dev/null 2>&1
+}
+
+--echo
+--echo
+--echo === Test 45: Large dataset (1000+ rows, 100+ groups) ===
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE big_orders (
+  bo_id INT NOT NULL,
+  bo_custkey INT NOT NULL,
+  bo_region INT NOT NULL,
+  PRIMARY KEY USING HASH (bo_id)
+) ENGINE=NDB;
+
+CREATE INDEX idx_bo_custkey ON big_orders (bo_custkey);
+
+CREATE TABLE big_lineitem (
+  bl_id INT NOT NULL,
+  bl_orderkey INT NOT NULL,
+  bl_qty INT NOT NULL,
+  bl_price INT NOT NULL,
+  PRIMARY KEY USING HASH (bl_id)
+) ENGINE=NDB;
+
+CREATE INDEX idx_bl_orderkey ON big_lineitem (bl_orderkey);
+
+# Generate 200 orders across 100 custkeys and 5 regions
+DELIMITER $$;
+CREATE PROCEDURE gen_big_data()
+BEGIN
+  DECLARE i INT DEFAULT 1;
+  WHILE i <= 200 DO
+    INSERT INTO big_orders VALUES (i, ((i - 1) MOD 100) + 1, ((i - 1) MOD 5) + 1);
+    SET i = i + 1;
+  END WHILE;
+  SET i = 1;
+  WHILE i <= 1200 DO
+    INSERT INTO big_lineitem VALUES (i, ((i - 1) MOD 200) + 1, (i MOD 50) + 1, (i MOD 100) * 10 + 5);
+    SET i = i + 1;
+  END WHILE;
+END$$
+DELIMITER ;$$
+
+CALL gen_big_data();
+DROP PROCEDURE gen_big_data;
+
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+let $QUERY=
+SELECT bo.bo_custkey, SUM(bl.bl_qty), COUNT(bl.bl_id), MIN(bl.bl_price), MAX(bl.bl_price)
+FROM big_orders AS bo JOIN big_lineitem AS bl ON bl.bl_orderkey = bo.bo_id
+GROUP BY bo.bo_custkey;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result line count ==
+--disable_query_log
+SELECT COUNT(*) AS group_count FROM (
+  SELECT bo.bo_custkey
+  FROM big_orders AS bo JOIN big_lineitem AS bl ON bl.bl_orderkey = bo.bo_id
+  GROUP BY bo.bo_custkey
+) t|
+--enable_query_log
+
+--echo
+--echo
+--echo === Test 46: Large dataset grouped by region (fewer groups, more rows per group) ===
+
+let $QUERY=
+SELECT bo.bo_region, SUM(bl.bl_qty), COUNT(*), AVG(bl.bl_price)
+FROM big_orders AS bo JOIN big_lineitem AS bl ON bl.bl_orderkey = bo.bo_id
+GROUP BY bo.bo_region;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT bo.bo_region, SUM(bl.bl_qty), COUNT(*), AVG(bl.bl_price)
+FROM big_orders AS bo JOIN big_lineitem AS bl ON bl.bl_orderkey = bo.bo_id
+GROUP BY bo.bo_region|
+
+--echo
+--echo
+--echo === Test 47: 4-table join chain ===
+
+DELIMITER ;|
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE line_details (
+  ld_id INT NOT NULL,
+  ld_linekey INT NOT NULL,
+  ld_weight INT NOT NULL,
+  ld_note_val INT NOT NULL,
+  PRIMARY KEY USING HASH (ld_id)
+) ENGINE=NDB;
+
+CREATE INDEX idx_ld_linekey ON line_details (ld_linekey);
+
+INSERT INTO line_details VALUES
+  (1, 1, 5, 10),
+  (2, 1, 8, 20),
+  (3, 2, 3, 15),
+  (4, 3, 7, 25),
+  (5, 4, 2, 30),
+  (6, 5, 9, 35),
+  (7, 5, 4, 40),
+  (8, 6, 6, 45),
+  (9, 7, 1, 50),
+  (10, 8, 10, 55),
+  (11, 9, 3, 60),
+  (12, 10, 7, 65);
+
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+let $QUERY=
+SELECT c.c_name, SUM(ld.ld_weight), COUNT(ld.ld_id)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+JOIN line_details AS ld ON ld.ld_linekey = l.l_id
+GROUP BY c.c_name;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.c_name, SUM(ld.ld_weight), COUNT(ld.ld_id)
+FROM customer AS c
+JOIN orders AS o ON o.o_custkey = c.c_id
+JOIN lineitem AS l ON l.l_orderkey = o.o_id
+JOIN line_details AS ld ON ld.ld_linekey = l.l_id
+GROUP BY c.c_name|
+
+DELIMITER ;|
+
+--echo
+--echo
+--echo === Test 48: Error — cross-table comparison ===
+--echo Expected error: WHERE condition references columns from multiple tables
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT o.o_custkey, SUM(l.l_quantity) FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id WHERE l.l_quantity > o.o_custkey GROUP BY o.o_custkey;' 2>&1
+
+--echo
+--echo
+--echo === Test 49: Error — no suitable index for join column ===
+--echo Expected error: No suitable index for join columns
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE noindex_child (
+  ni_id INT NOT NULL,
+  ni_orderkey INT NOT NULL,
+  ni_val INT NOT NULL,
+  PRIMARY KEY USING HASH (ni_id)
+) ENGINE=NDB;
+INSERT INTO noindex_child VALUES (1, 1, 10), (2, 2, 20);
+--enable_warnings
+--enable_query_log
+
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT o.o_id, SUM(ni.ni_val) FROM orders AS o JOIN noindex_child AS ni ON ni.ni_orderkey = o.o_id GROUP BY o.o_id;' 2>&1
+
+--disable_query_log
+DROP TABLE noindex_child;
+--enable_query_log
+
+--echo
+--echo
+--echo === Test 50: Error — ungrouped column in SELECT ===
+--echo Expected error: Ungrouped column in non-aggregated SELECT expression
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT o.o_custkey, o.o_status, SUM(l.l_quantity) FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id GROUP BY o.o_custkey;' 2>&1
+
+--echo
+--echo
+--echo === Test 51: Error — ORDER BY column not in GROUP BY ===
+--echo Expected error: ORDER BY column not in GROUP BY clause
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT o.o_custkey, SUM(l.l_quantity) FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id GROUP BY o.o_custkey ORDER BY o.o_status;' 2>&1
+
+--echo
+--echo
+--echo === Test 52: Error — unknown table alias ===
+--echo Expected error: Unknown table alias
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT x.o_custkey, SUM(l.l_quantity) FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id GROUP BY x.o_custkey;' 2>&1
+
+--echo
+--echo
+--echo === Test 53: Error — unimplemented keyword (LEFT JOIN) ===
+--echo Expected error: Unimplemented keyword
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT o.o_custkey, SUM(l.l_quantity) FROM orders AS o LEFT JOIN lineitem AS l ON l.l_orderkey = o.o_id GROUP BY o.o_custkey;' 2>&1
+
+--echo
+--echo === Cleanup ===
+
+DROP TABLE line_details;
+DROP TABLE big_lineitem;
+DROP TABLE big_orders;
+DROP TABLE activities;
+DROP TABLE shipments;
+DROP TABLE parts;
+DROP TABLE suppliers;
+DROP TABLE order_extra;
+DROP TABLE lineitem;
+DROP TABLE orders;
+DROP TABLE customer;

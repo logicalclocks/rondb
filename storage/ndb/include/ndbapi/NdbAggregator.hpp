@@ -202,6 +202,7 @@ class NdbAggregator {
     ResultRecord(const NdbAggregator* aggregator,
         const GBHashEntry group, const GBHashEntry result, bool end) :
       aggregator_(aggregator), group_records_(group), curr_group_pos_(0),
+      curr_gb_col_index_(0),
       result_records_(result), curr_result_pos_(0), end_(end) {
     }
     bool end() {
@@ -213,6 +214,7 @@ class NdbAggregator {
     const NdbAggregator* aggregator_;
     GBHashEntry group_records_;
     Uint32 curr_group_pos_;
+    Uint32 curr_gb_col_index_;
     GBHashEntry result_records_;
     Uint32 curr_result_pos_;
     bool end_;
@@ -245,10 +247,33 @@ class NdbAggregator {
     return disk_columns_;
   }
 
+  /**
+   * Initialize this aggregator for receiving results, given a program buffer.
+   * Reads the program header to set n_gb_cols, n_agg_results, and allocates
+   * the gb_map if needed. Must be called before ProcessRes() when the
+   * aggregator was not built with GroupBy/Sum/etc. calls.
+   *
+   * @param gbColumns  Optional array of NdbDictionary::Column pointers for
+   *                   each GROUP BY column (local and linked).  Provides full
+   *                   column metadata (type, precision, charset, etc.) to
+   *                   FetchGroupbyColumn().  May be nullptr for backward
+   *                   compatibility (falls back to leaf table lookup).
+   * @param nGbColumns Number of entries in gbColumns array.
+   */
+  void initForResults(const Uint32 *programBuffer, Uint32 programLen,
+                      const NdbDictionary::Column *const *gbColumns = nullptr,
+                      Uint32 nGbColumns = 0);
+
+  const NdbDictionary::Column *const *gb_columns() const {
+    return gb_columns_;
+  }
+
   Int32 ProcessRes(char* buf);
 
   bool LoadColumn(const char* name, Uint32 reg_id);
   bool LoadColumn(Int32 col_id, Uint32 reg_id);
+  bool LoadLinkedColumn(Uint32 position, Uint32 reg_id,
+                        const NdbDictionary::Column *col);
   bool LoadUint64(Uint64 value, Uint32 reg_id);
   bool LoadInt64(Int64 value, Uint32 reg_id);
   bool LoadDouble(double value, Uint32 reg_id);
@@ -267,6 +292,13 @@ class NdbAggregator {
 
   bool GroupBy(const char* name);
   bool GroupBy(Int32 col_id);
+  bool GroupByLinked(Uint32 position, const NdbDictionary::Column *parentCol);
+
+  // Embedded interpreter support for CASE expressions
+  bool EmbeddedInterp(Uint32 embedded_length);
+  bool EmitEmbeddedWord(Uint32 word);
+  bool Skip(Uint32 skip_count);
+  bool RepeatAgg(Uint32 agg_id, Uint32 reg_id);
 
   bool Finalize();
 
@@ -328,6 +360,14 @@ class NdbAggregator {
   bool TypeSupported(NdbDictionary::Column::Type type);
   const NdbTableImpl* table_impl_;
   Uint32 buffer_[MAX_VEC_SEARCH_PROGRAM_WORD_SIZE];
+
+  /* Column definitions for each GROUP BY column.  For local columns this
+   * points into the child table's dictionary entry; for linked columns
+   * (from a parent/grandparent) it points into that ancestor table's
+   * dictionary entry.  Set during GroupBy()/GroupByLinked() on the build
+   * side and transferred through NdbQueryOptions to the result-side
+   * aggregator via initForResults(). */
+  const NdbDictionary::Column *gb_columns_[MAX_AGG_N_GROUPBY_COLS];
 
   Uint32 n_gb_cols_;
   Uint32 gb_col_ids_[MAX_AGG_N_GROUPBY_COLS];

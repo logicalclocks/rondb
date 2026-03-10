@@ -26,6 +26,7 @@
 #include <iomanip>
 #include "m_string.h"
 #include "ResultPrinter.hpp"
+#include "RonSQLParser.y.hpp"
 #include "define_formatter.hpp"
 #include "RonSQLPreparer.hpp"
 #include "mysql/strings/dtoa.h"
@@ -99,7 +100,8 @@ ResultPrinter::ResultPrinter(ArenaMalloc* amalloc,
   m_outputs(amalloc),
   m_col_idx_groupby_map(amalloc),
   m_orderby_specs(amalloc),
-  m_has_orderby(query->orderby_columns != NULL)
+  m_has_orderby(query->orderby_columns != NULL ||
+                query->having_expression != NULL)
 {
   assert(amalloc != NULL);
   assert(query != NULL);
@@ -237,6 +239,11 @@ ResultPrinter::compile()
       }
       o = o->next;
     }
+  }
+  // Account for aggregates referenced only in HAVING (not in SELECT)
+  if (m_query->having_expression != NULL)
+  {
+    scan_having_max_agg(m_query->having_expression, number_of_aggregates);
   }
   m_num_groupby_cols = m_groupby_cols.size();
   m_num_aggregates = number_of_aggregates;
@@ -760,7 +767,13 @@ ResultPrinter::print_stored_record(StoredRow& row, std::ostream& out)
           double numerator = convert_result_to_double(result_sum);
           double denominator = convert_result_to_double(result_count);
           double result = numerator / denominator;
-          print_float_or_double(out, result);
+          char buffer[FLOATING_POINT_BUFFER];
+          bool error;
+          my_fcvt(result, 4, buffer, &error);
+          if (error)
+            out << m_null_representation;
+          else
+            out << buffer;
         }
       }
       break;
@@ -831,7 +844,13 @@ ResultPrinter::print_result_ordered(NdbAggregator* aggregator,
        record = aggregator->FetchResultRecord())
   {
     DEB_TRACE();
-    rows.push(store_record(record));
+    StoredRow row = store_record(record);
+    if (m_query->having_expression != NULL &&
+        !evaluate_having(m_query->having_expression))
+    {
+      continue;
+    }
+    rows.push(row);
   }
   Uint32 num_rows = rows.size();
   if (num_rows == 0)
@@ -1257,7 +1276,13 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
           double numerator = convert_result_to_double(result_sum);
           double denominator = convert_result_to_double(result_count);
           double result = numerator / denominator;
-          print_float_or_double(out, result);
+          char buffer[FLOATING_POINT_BUFFER];
+          bool error;
+          my_fcvt(result, 4, buffer, &error);
+          if (error)
+            out << m_null_representation;
+          else
+            out << buffer;
         }
       }
       break;
@@ -1582,6 +1607,127 @@ convert_result_to_double(NdbAggregator::Result result)
   default:
     throw RonSQLPermanentError("Unexpected data type in results underlying AVG."
                                " Please report a bug.");
+  }
+}
+
+void
+ResultPrinter::scan_having_max_agg(const ConditionalExpression* expr,
+                                   Uint32& max_idx)
+{
+  if (expr == NULL) return;
+  switch (expr->op)
+  {
+  case T_SUM:
+  case T_COUNT:
+  case T_MIN:
+  case T_MAX:
+    max_idx = max(max_idx, expr->having_agg.agg_index + 1);
+    break;
+  case T_AVG:
+    max_idx = max(max_idx, expr->having_agg.agg_index + 1);
+    max_idx = max(max_idx, expr->having_agg.agg_index2 + 1);
+    break;
+  case T_AND:
+  case T_OR:
+  case T_EQUALS:
+  case T_NOT_EQUALS:
+  case T_GT:
+  case T_GE:
+  case T_LT:
+  case T_LE:
+  case T_PLUS:
+  case T_MINUS:
+  case T_MULTIPLY:
+  case T_SLASH:
+    scan_having_max_agg(expr->args.left, max_idx);
+    scan_having_max_agg(expr->args.right, max_idx);
+    break;
+  case T_NOT:
+  case T_EXCLAMATION:
+    scan_having_max_agg(expr->args.left, max_idx);
+    break;
+  default:
+    break;
+  }
+}
+
+double
+ResultPrinter::evaluate_having_value(const ConditionalExpression* expr)
+{
+  switch (expr->op)
+  {
+  case T_SUM:
+  case T_COUNT:
+  case T_MIN:
+  case T_MAX:
+    return convert_result_to_double(m_regs_a[expr->having_agg.agg_index]);
+  case T_AVG:
+  {
+    double numerator =
+      convert_result_to_double(m_regs_a[expr->having_agg.agg_index]);
+    double denominator =
+      convert_result_to_double(m_regs_a[expr->having_agg.agg_index2]);
+    return numerator / denominator;
+  }
+  case T_INT:
+    return static_cast<double>(expr->constant_integer);
+  case T_FLOAT:
+    return expr->constant_float.dbl;
+  case T_PLUS:
+    return evaluate_having_value(expr->args.left) +
+           evaluate_having_value(expr->args.right);
+  case T_MINUS:
+    if (expr->args.left == NULL)
+      return -evaluate_having_value(expr->args.right);
+    return evaluate_having_value(expr->args.left) -
+           evaluate_having_value(expr->args.right);
+  case T_MULTIPLY:
+    return evaluate_having_value(expr->args.left) *
+           evaluate_having_value(expr->args.right);
+  case T_SLASH:
+    return evaluate_having_value(expr->args.left) /
+           evaluate_having_value(expr->args.right);
+  default:
+    throw RonSQLPermanentError(
+      "Unsupported expression type in HAVING clause.");
+  }
+}
+
+bool
+ResultPrinter::evaluate_having(const ConditionalExpression* expr)
+{
+  switch (expr->op)
+  {
+  case T_AND:
+    return evaluate_having(expr->args.left) &&
+           evaluate_having(expr->args.right);
+  case T_OR:
+    return evaluate_having(expr->args.left) ||
+           evaluate_having(expr->args.right);
+  case T_NOT:
+  case T_EXCLAMATION:
+    return !evaluate_having(expr->args.left);
+  case T_GT:
+    return evaluate_having_value(expr->args.left) >
+           evaluate_having_value(expr->args.right);
+  case T_GE:
+    return evaluate_having_value(expr->args.left) >=
+           evaluate_having_value(expr->args.right);
+  case T_LT:
+    return evaluate_having_value(expr->args.left) <
+           evaluate_having_value(expr->args.right);
+  case T_LE:
+    return evaluate_having_value(expr->args.left) <=
+           evaluate_having_value(expr->args.right);
+  case T_EQUALS:
+    return evaluate_having_value(expr->args.left) ==
+           evaluate_having_value(expr->args.right);
+  case T_NOT_EQUALS:
+    return evaluate_having_value(expr->args.left) !=
+           evaluate_having_value(expr->args.right);
+  default:
+    throw RonSQLPermanentError(
+      "Unsupported operator in HAVING clause.");
   }
 }
 

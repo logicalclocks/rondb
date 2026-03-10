@@ -52,6 +52,16 @@ struct CHARSET_INFO;
 #define MAX_VEC_DIMS 8100
 #define MAX_CANDIDATE_SEGMENTS 256
 
+/* Bit 15 in column ID: column is from parent table in a pushed join.
+ * Used with GroupBy() and LoadColumn() to reference linked parent columns. */
+#define AGG_LINKED_COL_FLAG 0x8000
+
+/* GROUP BY column word encoding: (col_id << 16) | (col_type & 0xFF)
+ * Lower 8 bits store the NdbDictionary::Column::Type enum value so that
+ * linked GROUP BY columns are self-describing (the parent table's column
+ * type is not otherwise available on the API result side). */
+#define AGG_GB_COL_TYPE_MASK 0xFF
+
 #define PUSHDOWN_AGGREGATION_VERSION 2
 enum InterpreterOp {
   kOpUnknown = 0,
@@ -86,6 +96,10 @@ enum InterpreterOp {
   kOpMulDouble,
   kOpDivDouble,       // Floating point division (result is always double)
   kOpDivIntBigint,    // Integer division for BIGINT
+
+  // Embedded interpreter support for CASE expressions
+  kOpEmbeddedInterp,  // Invoke embedded old-interpreter code block
+  kOpSkip,            // Unconditional forward skip in aggregation program
 
   kOpTotal
 };

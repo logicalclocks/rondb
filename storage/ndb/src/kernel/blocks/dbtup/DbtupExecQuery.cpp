@@ -46,6 +46,10 @@
 #include "AttributeOffset.hpp"
 #include "Dbtup.hpp"
 #include "AggInterpreter.hpp"
+#include "JoinAggInterpreter.hpp"
+#include "PushdownInterpreter.hpp"
+#include "VecSearchInterpreter.hpp"
+#include "dblqh/JoinAggregationState.hpp"
 #include "my_time.h"
 #include "my_systime.h"
 #include <signaldata/AccLock.hpp>
@@ -67,6 +71,8 @@
 //#define DEBUG_DISK 1
 //#define DEBUG_ELEM_COUNT 1
 //#define DEBUG_COPY_TUPLE 1
+//#define DEBUG_JOIN_AGG_TRACE 1
+//#define DEBUG_VARPART_EXPAND 1
 #endif
 
 #ifdef DEBUG_COPY_TUPLE
@@ -151,6 +157,23 @@
 #define DEB_LCP_LGMAN(arglist) \
   do {                         \
   } while (0)
+#endif
+
+/**
+ * DEBUG_JOIN_AGG_TRACE: Dump cinBuffer header and linked data extracted
+ * from the subroutine section before passing to AggInterpreter.
+ * Uncomment the define in the #if block above to activate.
+ */
+#ifdef DEBUG_JOIN_AGG_TRACE
+#define DEB_JOIN_AGG(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_JOIN_AGG(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_VARPART_EXPAND
+#define DEB_VAR_EXPAND(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_VAR_EXPAND(arglist) do { } while (0)
 #endif
 
 //#define TRACE_INTERPRETER 1
@@ -986,10 +1009,11 @@ Uint32 Dbtup::copyAttrinfo(Uint32 storedProcId,
       // prepare_fragptr.p->fragmentId with ScanRecord
       Dblqh::ScanRecord* scan_rec_ptr =
                         reinterpret_cast<Dblqh::ScanRecord*>(scan_rec);
-      if (scan_rec_ptr->m_aggregation &&
-          scan_rec_ptr->m_agg_interpreter == nullptr) {
+      if (scan_rec_ptr->m_has_pushdown &&
+          scan_rec_ptr->m_agg_interpreter == nullptr &&
+          scan_rec_ptr->m_vs_interpreter == nullptr) {
         /*
-         * Initialize agg_interpreter resources
+         * Initialize pushdown interpreter resources
          * 1. get 1st program word to verify Magic number
          */
         ndbrequire(reader.getWord(pos));
@@ -1003,27 +1027,15 @@ Uint32 Dbtup::copyAttrinfo(Uint32 storedProcId,
         ndbrequire(reader.getWords(pos, proc_len - 1));
         ndbrequire((cinBuffer[proc_start] >> 16) == 0x0721);
 
-        // 3. construct agg_interpreter
-#ifdef PA_MALLOC
-        void* page_ptr = lc_ndbd_pool_malloc(32 * 1024, RG_DATAMEM,
-                                             getThreadId(), false);
-        if (page_ptr == nullptr) {
-          g_eventLogger->error("Alloc mem for pushdown aggregation interpreter failed");
-        }
-        ndbrequire(page_ptr != nullptr);
-        scan_rec_ptr->m_agg_interpreter =
-          new(page_ptr) AggInterpreter(&cinBuffer[proc_start], proc_len,
-                              prepare_fragptr.p->fragTableId,
-                              prepare_fragptr.p->fragmentId,
-                              getThreadId());
-#else
-        scan_rec_ptr->m_agg_interpreter =
-          new AggInterpreter(&cinBuffer[proc_start], proc_len,
-                              prepare_fragptr.p->fragTableId,
-                              prepare_fragptr.p->fragmentId,
-                              getThreadId());
-#endif // PA_MALLOC
-        ndbrequire(scan_rec_ptr->m_agg_interpreter->Init(&cinBuffer[proc_start]));
+        // 3. construct the appropriate interpreter via factory
+        auto result = PushdownInterpreterFactory::Create(
+            &cinBuffer[proc_start], proc_len,
+            prepare_fragptr.p->fragTableId,
+            prepare_fragptr.p->fragmentId,
+            getThreadId());
+        ndbrequire(result.agg != nullptr || result.vs != nullptr);
+        scan_rec_ptr->m_agg_interpreter = result.agg;
+        scan_rec_ptr->m_vs_interpreter = result.vs;
       }
     }
   } else {
@@ -2091,6 +2103,7 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
     req_struct.m_row_id.m_page_idx = ZNIL;
 #endif
     req_struct.scan_rec = lqhScanPtrP;
+    req_struct.m_join_agg_state_key = lqhScanPtrP->m_join_agg_state_key;
     /*
      * TTL related
      */
@@ -2154,6 +2167,7 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
     req_struct.m_row_id.m_page_no = row_id_page_no;
     req_struct.m_row_id.m_page_idx = row_id_page_idx;
     req_struct.scan_rec = nullptr;
+    req_struct.m_join_agg_state_key = lqhOpPtrP->m_join_agg_state_key;
     regOperPtr->ttl_ignore = lqhOpPtrP->ttl_ignore;
     regOperPtr->ttl_only_expired = lqhOpPtrP->ttl_only_expired;
 #ifdef TTL_DEBUG
@@ -3207,6 +3221,21 @@ int Dbtup::handleReadReq(
   if (!req_struct->interpreted_exec)
   {
     jamDebug();
+    if (req_struct->m_join_agg_state_key != RNIL) {
+      jam();
+      /*
+       * Join aggregation without old interpreter: the aggregate
+       * interpreter reads child-table columns directly via DBTUP
+       * readAttributes.  No linked parent data is available in
+       * the non-interpreted AttrInfo layout.
+       */
+      int res = handleJoinAggRow(req_struct, nullptr, 0);
+      if (res != 0) {
+        tupkeyErrorLab(req_struct);
+        return -1;
+      }
+      return 0;
+    }
     int ret = readAttributes(req_struct, &cinBuffer[0],
                              req_struct->attrinfo_len, dst, dstLen);
     if (likely(ret >= 0)) {
@@ -5004,6 +5033,160 @@ Dbtup::checkNullAttributes(KeyReqStruct * req_struct,
 /* For updates it still makes sense to handle initial read and      */
 /* final read separately since we might want to read values before  */
 /* and after changes, the interpreter can write column values.      */
+/**
+ * Extract linked column data from cinBuffer sub-region, reset
+ * read_length, and call handleJoinAggRow.
+ */
+int Dbtup::prepareAndHandleJoinAggRow(KeyReqStruct *req_struct,
+                                      Uint32 RsubLen) {
+  const Uint32 *linked_data = nullptr;
+  Uint32 linked_len = 0;
+  if (RsubLen > 0) {
+    const Uint32 *sub_start =
+        &cinBuffer[5 + cinBuffer[0] + cinBuffer[1] +
+                    cinBuffer[2] + cinBuffer[3]];
+    // Skip the paramLen word prepended by DBSPJ T_ATTRINFO_CONSTRUCTED
+    linked_data = sub_start + 1;
+    linked_len = RsubLen - 1;
+  }
+#ifdef DEBUG_JOIN_AGG_TRACE
+  DEB_JOIN_AGG(("DBTUP prepareAndHandleJoinAggRow: "
+                 "cinBuffer header: initRead=%u interp=%u "
+                 "finalUpd=%u finalRead=%u subLen=%u  "
+                 "linked_len=%u",
+                 cinBuffer[0], cinBuffer[1], cinBuffer[2],
+                 cinBuffer[3], cinBuffer[4], linked_len));
+  if (linked_data && linked_len > 0) {
+    const Uint32 *p = linked_data;
+    const Uint32 *p_end = linked_data + linked_len;
+    Uint32 idx = 0;
+    while (p < p_end) {
+      Uint32 hdr = *p;
+      Uint32 attrId = AttributeHeader::getAttributeId(hdr);
+      Uint32 dSz = AttributeHeader::getDataSize(hdr);
+      DEB_JOIN_AGG(("  linked[%u]: AttrHeader=0x%08x "
+                     "(attrId=%u dataSize=%u)",
+                     idx, hdr, attrId, dSz));
+      p += 1 + dSz;
+      idx++;
+    }
+  } else {
+    DEB_JOIN_AGG(("  linked data: EMPTY (RsubLen=%u)", RsubLen));
+  }
+#endif
+  // Reset read_length: the final-read projection (FLUSH_AI) may have
+  // set it, but ProcessRec requires read_length == 0 on entry.
+  req_struct->read_length = 0;
+  return handleJoinAggRow(req_struct, linked_data, linked_len);
+}
+
+/**
+ * handleJoinAggRow
+ *
+ * Feed a row into the join aggregation JoinAggInterpreter instead of
+ * sending via TRANSID_AI.  Selects the correct interpreter based
+ * on the concurrency strategy and increments m_completed_ops.
+ *
+ * If the interpreter returns AGG_EVICT_NEEDED (group map is full),
+ * evicts one group by sending it via TRANSID_AI, then retries.
+ *
+ * Returns 0 on success, or the TUPKEY_abort return value on error.
+ */
+int Dbtup::handleJoinAggRow(KeyReqStruct *req_struct,
+                            const Uint32 *linked_data,
+                            Uint32 linked_len) {
+  JoinAggregationState *state =
+      getJoinAggState(req_struct->m_join_agg_state_key);
+  ndbrequire(state != nullptr);
+  JoinAggInterpreter *interp;
+  if (state->m_strategy == JoinAggregationState::MUTEX_FREE) {
+    Uint32 thr_idx = instance() - 1;
+    ndbrequire(thr_idx < state->m_num_threads);
+    interp = state->m_per_thread_interpreters[thr_idx];
+  } else {
+    interp = state->m_agg_interpreter;
+  }
+  ndbrequire(interp != nullptr);
+
+  Uint32 evict_count = 0;
+
+retry:
+  Int32 ret = interp->processRecWithLinkedAttrs(
+      this, req_struct, linked_data, linked_len);
+  if (ret == AGG_EVICT_NEEDED) {
+    jamDebug();
+    Uint32 evict_buf[MAX_AGG_RESULT_BATCH_BYTES / sizeof(Uint32)];
+    Uint32 words_written = 0;
+    Int32 evict_ret = interp->evictOneGroup(
+        evict_buf, MAX_AGG_RESULT_BATCH_BYTES / sizeof(Uint32),
+        &words_written);
+    ndbrequire(evict_ret == 0);
+
+    Signal *signal = req_struct->signal;
+    TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
+    {
+      Uint32 key_len = evict_buf[3] >> 16;
+      const char *key_data = reinterpret_cast<const char*>(&evict_buf[4]);
+      transIdAI->connectPtr =
+          state->selectReceiverData(key_data, key_len);
+    }
+    transIdAI->transId[0] = state->m_transid[0];
+    transIdAI->transId[1] = state->m_transid[1];
+
+    LinearSectionPtr ptr[3];
+    ptr[0].p = evict_buf;
+    ptr[0].sz = words_written;
+    sendSignal(state->m_resultRef, GSN_TRANSID_AI, signal,
+               TransIdAI::HeaderLength, JBB, ptr, 1);
+
+    state->m_rows_sent++;
+    evict_count++;
+    goto retry;
+  }
+  if (ret != 0) {
+    return TUPKEY_abort(req_struct, ret);
+  }
+  state->m_completed_ops.fetch_add(1, std::memory_order_relaxed);
+
+#ifdef ERROR_INSERT
+  if (ERROR_INSERTED(4040) &&
+      interp->gb_map_mutable() != nullptr &&
+      interp->gb_map_mutable()->size() > 2 &&
+      (state->m_completed_ops.load(std::memory_order_relaxed) % 7) == 0) {
+    jamDebug();
+    Uint32 evict_buf[MAX_AGG_RESULT_BATCH_BYTES / sizeof(Uint32)];
+    Uint32 words_written = 0;
+    Int32 evict_ret = interp->evictOneGroup(
+        evict_buf, MAX_AGG_RESULT_BATCH_BYTES / sizeof(Uint32),
+        &words_written);
+    ndbrequire(evict_ret == 0);
+
+    Signal *signal = req_struct->signal;
+    TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
+    {
+      Uint32 key_len = evict_buf[3] >> 16;
+      const char *key_data = reinterpret_cast<const char*>(&evict_buf[4]);
+      transIdAI->connectPtr =
+          state->selectReceiverData(key_data, key_len);
+    }
+    transIdAI->transId[0] = state->m_transid[0];
+    transIdAI->transId[1] = state->m_transid[1];
+
+    LinearSectionPtr ptr[3];
+    ptr[0].p = evict_buf;
+    ptr[0].sz = words_written;
+    sendSignal(state->m_resultRef, GSN_TRANSID_AI, signal,
+               TransIdAI::HeaderLength, JBB, ptr, 1);
+
+    state->m_rows_sent++;
+    evict_count++;
+  }
+#endif
+
+  req_struct->read_length = evict_count;
+  return 0;
+}
+
 /* ---------------------------------------------------------------- */
 /* ---------------------------------------------------------------- */
 /* ----------------- INTERPRETED EXECUTION  ----------------------- */
@@ -5224,9 +5407,9 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
     if (req_struct->scan_rec != nullptr) {
       Dblqh::ScanRecord* scan_rec_ptr =
                     reinterpret_cast<Dblqh::ScanRecord*>(req_struct->scan_rec);
-        if (unlikely(scan_rec_ptr->m_aggregation == true &&
-            scan_rec_ptr->m_agg_interpreter->vec_search() &&
-            !scan_rec_ptr->m_agg_interpreter->IsCandidateBufAllocated())) {
+        if (unlikely(scan_rec_ptr->m_has_pushdown == true &&
+            scan_rec_ptr->m_vs_interpreter != nullptr &&
+            !scan_rec_ptr->m_vs_interpreter->IsCandidateBufAllocated())) {
 
           vec_max_rec_size_ptr = &vec_max_rec_size;
           get_vec_max_rec_size = true;
@@ -5294,32 +5477,40 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
       Dblqh::ScanRecord* scan_rec_ptr =
                     reinterpret_cast<Dblqh::ScanRecord*>(req_struct->scan_rec);
       // Moz
-      if (scan_rec_ptr->m_aggregation == true) {
-        ndbrequire(scan_rec_ptr->m_agg_interpreter != nullptr);
+      if (scan_rec_ptr->m_has_pushdown == true) {
+        ndbrequire(scan_rec_ptr->m_agg_interpreter != nullptr ||
+                   scan_rec_ptr->m_vs_interpreter != nullptr);
         if (unlikely(get_vec_max_rec_size)) {
           /*
            * VS related
            * We’ve already calculated the theoretical maximum result record size.
-           * Now it’s time to pass it to m_agg_interpreter to guide it in preallocating
+           * Now it’s time to pass it to m_vs_interpreter to guide it in preallocating
            * the buffer for maintaining the top-k vector search results.
            */
-          scan_rec_ptr->m_agg_interpreter->set_vec_max_rec_size(vec_max_rec_size);
+          ndbrequire(scan_rec_ptr->m_vs_interpreter != nullptr);
+          scan_rec_ptr->m_vs_interpreter->set_vec_max_rec_size(vec_max_rec_size);
         }
         /*
          * update req_struct->read_length here, which will update the
          * Dblqh::ScanRecord::m_curr_batch_size_bytes later in the
-         * Dblqh::scanTupkeyConfLab, even we don't use that variable
+         * Dblqh::scanTupkeyConfLab, even we don’t use that variable
          * to decide whether reaches batch limitation. For aggregation,
          * we use Dblqh::ScanRecord::m_agg_curr_batch_size_bytes.
          * req_struct->read_length would be updated in ProcessRec().
          */
         bool vec_update_candidate = false;
-        int ret = scan_rec_ptr->m_agg_interpreter->ProcessRec(this, req_struct,
-                                                       &vec_update_candidate);
+        int ret = 0;
+        if (scan_rec_ptr->m_agg_interpreter != nullptr) {
+          ret = scan_rec_ptr->m_agg_interpreter->ProcessRec(this, req_struct);
+        } else {
+          ret = scan_rec_ptr->m_vs_interpreter->ProcessRec(this, req_struct,
+                                                         &vec_update_candidate);
+        }
         if (ret != 0) {
           return TUPKEY_abort(req_struct, ret);
         }
-        if (!scan_rec_ptr->m_agg_interpreter->vec_search()) {
+        if (scan_rec_ptr->m_agg_interpreter != nullptr) {
+          /* PA path */
           Uint32 res_len = scan_rec_ptr->m_agg_interpreter->
             PrepareAggResIfNeeded(signal, false);
           if (res_len != 0) {
@@ -5327,21 +5518,6 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
             ndbrequire(req_struct->agg_curr_batch_size_bytes == 0);
             req_struct->agg_curr_batch_size_rows = 1;
             req_struct->agg_curr_batch_size_bytes = res_len * sizeof(Uint32);
-            /*
-             * NEW:
-             * We don't need to update req_struct->read_length here.
-             * Instead, we update req_struct->agg_curr_batch_size_bytes,
-             * it would return to LQH by TupKeyConf from returnTUPKEYCONF(),
-             * which will finally update scanPtr->m_agg_curr_batch_size_bytes.
-             * And we use scanPtr->m_agg_curr_batch_size_bytes to indicate
-             * the batch size for aggregation.
-             *
-             * OLD COMMENT:
-             * We need to req_struct->read_length here, which will update
-             * the Dblqh::ScanRecord::m_curr_batch_size_bytes later in
-             * the Dblqh::scanTupkeyConfLab
-             * // req_struct->read_length = res_len;
-             */
             TransIdAI * transIdAI=  (TransIdAI *)signal->getDataPtrSend();
             transIdAI->connectPtr = req_struct->tc_operation_ptr;
             transIdAI->transId[0] = req_struct->trans_id1;
@@ -5351,22 +5527,30 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
           req_struct->agg_n_res_recs = scan_rec_ptr->
             m_agg_interpreter->NumOfResRecords();
         } else if (vec_update_candidate) {
-          // Uint32* ptr = &signal->theData[25];
-          // g_eventLogger->info("Prepare Copy: %u %u", ptr[0], ptr[1]);
-          int ret = scan_rec_ptr->m_agg_interpreter->
+          /* VS path */
+          int ret = scan_rec_ptr->m_vs_interpreter->
                              CopyVecCandidateFromSignal(signal,
                                               RattroutCounter);
           if (ret != 0) {
             return TUPKEY_abort(req_struct, ret);
           }
-        } else {
         }
         return 0;
+      } else if (req_struct->m_join_agg_state_key != RNIL) {
+        jamDebug();
+        int res = prepareAndHandleJoinAggRow(req_struct, RsubLen);
+        if (res != 0) return res;
       } else {
         sendReadAttrinfo(signal, req_struct, RattroutCounter);
       }
     } else {
-      sendReadAttrinfo(signal, req_struct, RattroutCounter);
+      if (req_struct->m_join_agg_state_key != RNIL) {
+        jamDebug();
+        int res = prepareAndHandleJoinAggRow(req_struct, RsubLen);
+        if (res != 0) return res;
+      } else {
+        sendReadAttrinfo(signal, req_struct, RattroutCounter);
+      }
     }
     if (req_struct->log_size > 0)
     {
@@ -5500,25 +5684,25 @@ inline Uint32 Dbtup::brancher(Uint32 TheInstruction, Uint32 TprogramCounter) {
 const Uint32 *Dbtup::lookupInterpreterParameter(Uint32 paramNo,
                                                 const Uint32 *subptr) const {
   /**
-   * The parameters...are stored in the subroutine section
-   *
-   * WORD2         WORD3       WORD4         WORD5
-   * [ P0 HEADER ] [ P0 DATA ] [ P1 HEADER ] [ P1 DATA ]
-   *
-   * len=4 <=> 1 word
+   * The parameters are stored in the subroutine section.
+   * Each entry has format: [tableId] [tableVersion] [AH] [data...]
+   * where tableId and tableVersion identify the source table of the
+   * linked attribute (for schema version validation).
    */
   const Uint32 sublen = *subptr;
   ndbassert(sublen > 0);
 
   Uint32 pos = 1;
   while (paramNo) {
-    const Uint32 *head = subptr + pos;
-    const Uint32 len = AttributeHeader::getDataSize(*head);
+    if (unlikely(pos + 2 >= sublen)) return nullptr;
+    pos += 2;  // skip tableId + tableVersion
+    const Uint32 len = AttributeHeader::getDataSize(*(subptr + pos));
     paramNo--;
-    pos += 1 + len;
-    if (unlikely(pos >= sublen)) return nullptr;
+    pos += 1 + len;  // skip AH + data
   }
-
+  if (unlikely(pos + 2 >= sublen)) return nullptr;
+  pos += 2;  // skip tableId + tableVersion of target param
+  if (unlikely(pos >= sublen)) return nullptr;
   const Uint32 *head = subptr + pos;
   const Uint32 len = AttributeHeader::getDataSize(*head);
   if (unlikely(pos + 1 + len > sublen)) return nullptr;
@@ -8726,6 +8910,21 @@ Dbtup::expand_tuple(KeyReqStruct* req_struct,
           Ptr<Page> var_page;
           flex_data= get_ptr(&var_page, *var_ref);
           flex_len= get_len(&var_page, *var_ref);
+          DEB_VAR_EXPAND(("(%u) expand_tuple MM_READ: tab(%u,%u),"
+                          " row(%u,%u), var_ref(%u,%u),"
+                          " flex_len: %u, bits: 0x%x,"
+                          " flex_data[0]: 0x%08x",
+                          instance(),
+                          req_struct->fragPtrP->fragTableId,
+                          req_struct->fragPtrP->fragmentId,
+                          req_struct->frag_page_id,
+                          req_struct->operPtrP->
+                            m_tuple_location.m_page_idx,
+                          var_ref->m_page_no,
+                          var_ref->m_page_idx,
+                          flex_len,
+                          bits,
+                          flex_len > 0 ? flex_data[0] : 0));
           jam();
           /**
            * Coming here with MM_GROWN set is possible if we are coming here
@@ -8763,6 +8962,18 @@ Dbtup::expand_tuple(KeyReqStruct* req_struct,
           step = (Varpart_copy::SZ32 + flex_len); // 1+ is for extra word
           req_struct->m_varpart_page_ptr[MM] = req_struct->m_page_ptr;
           sizes[MM]= flex_len;
+          DEB_VAR_EXPAND(("(%u) expand_tuple MM_COPY: tab(%u,%u),"
+                          " row(%u,%u), flex_len: %u, bits: 0x%x,"
+                          " flex_data[0]: 0x%08x",
+                          instance(),
+                          req_struct->fragPtrP->fragTableId,
+                          req_struct->fragPtrP->fragmentId,
+                          req_struct->frag_page_id,
+                          req_struct->operPtrP->
+                            m_tuple_location.m_page_idx,
+                          flex_len,
+                          bits,
+                          flex_len > 0 ? flex_data[0] : 0));
           jamDebug();
           jamDataDebug(flex_len);
         }
@@ -8793,6 +9004,22 @@ Dbtup::expand_tuple(KeyReqStruct* req_struct,
       ndbassert((ptrdiff_t)flex_len >= (dynstart - flex_data));
       dyn_len -= Uint32(dynstart - flex_data);
       dyn_data = dynstart;
+      DEB_VAR_EXPAND(("(%u) expand_tuple VAR_TO_DYN %s: tab(%u,%u),"
+                      " row(%u,%u), num_vars: %u,"
+                      " varlen: %u, flex_len: %u,"
+                      " var_overhead: %u, dyn_len: %u",
+                      instance(),
+                      ind == MM ? "MM" : "DD",
+                      req_struct->fragPtrP->fragTableId,
+                      req_struct->fragPtrP->fragmentId,
+                      req_struct->frag_page_id,
+                      req_struct->operPtrP->
+                        m_tuple_location.m_page_idx,
+                      num_vars,
+                      varlen,
+                      flex_len,
+                      Uint32(dynstart - flex_data),
+                      dyn_len));
     }
     if (num_dyns)
     {
@@ -8807,6 +9034,26 @@ Dbtup::expand_tuple(KeyReqStruct* req_struct,
       dst->m_dyn_len_offset= num_dynvar+num_dynfix;
       dst->m_max_dyn_offset= tabPtrP->m_offsets[ind].m_max_dyn_offset;
       dst->m_dyn_data_ptr= (char*)dst_ptr;
+      DEB_VAR_EXPAND(("(%u) expand_dyn_part %s: tab(%u,%u),"
+                      " row(%u,%u), dyn_len: %u,"
+                      " max_bmlen: %u, dyn_data: %p,"
+                      " flex_data: %p, flex_len: %u,"
+                      " dyn_data[0]: 0x%08x,"
+                      " dyn_data[1]: 0x%08x",
+                      instance(),
+                      ind == MM ? "MM" : "DD",
+                      req_struct->fragPtrP->fragTableId,
+                      req_struct->fragPtrP->fragmentId,
+                      req_struct->frag_page_id,
+                      req_struct->operPtrP->
+                        m_tuple_location.m_page_idx,
+                      dyn_len,
+                      tabPtrP->m_offsets[ind].m_dyn_null_words,
+                      dyn_data,
+                      flex_data,
+                      flex_len,
+                      dyn_len > 0 ? dyn_data[0] : 0,
+                      dyn_len > 1 ? dyn_data[1] : 0));
       dst_ptr= expand_dyn_part(dst,
                                dyn_data,
                                dyn_len,
@@ -9250,6 +9497,18 @@ void Dbtup::shrink_tuple(KeyReqStruct *req_struct, Uint32 sizes[2],
       Uint32 varpart_len_words = Uint32(dst_ptr - varstart);
       ndbassert(varpart_len_words <= MAX_EXPANDED_TUPLE_SIZE_IN_WORDS);
       vp->m_len = varpart_len_words;
+      DEB_VAR_EXPAND(("(%u) shrink_tuple %s: tab(%u,%u),"
+                      " row(%u,%u), varpart_len: %u,"
+                      " vp->m_data[0]: 0x%08x",
+                      instance(),
+                      ind == MM ? "MM" : "DD",
+                      req_struct->fragPtrP->fragTableId,
+                      req_struct->fragPtrP->fragmentId,
+                      req_struct->frag_page_id,
+                      req_struct->operPtrP->
+                        m_tuple_location.m_page_idx,
+                      varpart_len_words,
+                      varpart_len_words > 0 ? vp->m_data[0] : 0));
       if (ind == MM)
       {
         sizes[MM] = varpart_len_words;

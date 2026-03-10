@@ -1,3 +1,5 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
 Create test table api_scan with 10 rows
 First 10 lines of the generated data:
 62	87	-25488	27678	-9	14368690	-5156443	2056491719	\N	153955376062173	-2431.85935263128	14321694289288.1	GROUPxxx_1
@@ -90,6 +92,18 @@ GROUP BY cchar;
 Number of output lines, including header: 5
 
 == Diff ==
+--- mysql.out
++++ ronsql.out
+@@ -1,5 +1,5 @@
+ char_gr	sum(cfloat)	count(cfloat)	avg(cfloat)
+-GROUPxxx_1	-26943.366455078125	3	-8981.122151692709
+-GROUPxxx_2	-1356.0107421875	2	-678.00537109375
+-GROUPxxx_3	-2876.3091430664062	2	-1438.1545715332031
+-GROUPxxx_4	12174.7412109375	2	6087.37060546875
++GROUPxxx_1	-26943.366455078125	3	-8981.1222
++GROUPxxx_2	-1356.0107421875	2	-678.0054
++GROUPxxx_3	-2876.3091430664062	2	-1438.1546
++GROUPxxx_4	12174.7412109375	2	6087.3706
 ==========
 
 
@@ -106,6 +120,18 @@ GROUP BY cchar;
 Number of output lines, including header: 5
 
 == Diff ==
+--- mysql.out
++++ ronsql.out
+@@ -1,5 +1,5 @@
+ char_gr	sum(cdouble)	count(cdouble)	avg(cdouble)
+-GROUPxxx_1	20787937496592.4	3	6929312498864.13
+-GROUPxxx_2	72000078434680.8	3	24000026144893.598
+-GROUPxxx_3	0	1	0
+-GROUPxxx_4	94652679066921.8	2	47326339533460.9
++GROUPxxx_1	20787937496592.4	3	6929312498864.130
++GROUPxxx_2	72000078434680.8	3	24000026144893.5980
++GROUPxxx_3	0	1	0.0000
++GROUPxxx_4	94652679066921.8	2	47326339533460.9000
 ==========
 
 

@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2011, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -26,6 +26,7 @@
 
 #include "NdbQueryOperation.hpp"
 #include <ndb_global.h>
+#include <NdbAggregator.hpp>
 #include <NdbDictionary.hpp>
 #include <NdbIndexScanOperation.hpp>
 #include "API.hpp"
@@ -50,6 +51,28 @@
 #define DEBUG_CRASH() assert(false)
 #else
 #define DEBUG_CRASH()
+#endif
+
+/**
+ * DEBUG_JOIN_AGG_TRACE: Enable hex dumps of QueryTree (AttrInfo section 1)
+ * and combined Section 2 (bounds + aggReceiverId + aggProgram) as sent
+ * from NDB API in SCAN_TABREQ.  Uncomment to activate.
+ */
+#ifdef VM_TRACE
+//#define DEBUG_JOIN_AGG_TRACE 1
+#endif
+
+#ifdef DEBUG_JOIN_AGG_TRACE
+static void dumpJoinAggHex(const char *label, const Uint32 *buf, Uint32 len) {
+  fprintf(stderr, "=== NdbQuery %s (%u words) ===\n", label, len);
+  for (Uint32 i = 0; i < len; i++) {
+    fprintf(stderr, "  [%3u] 0x%08x", i, buf[i]);
+    if ((i % 4) == 3 || i == len - 1) fprintf(stderr, "\n");
+  }
+}
+#define DEB_JOIN_AGG(label, buf, len) dumpJoinAggHex(label, buf, len)
+#else
+#define DEB_JOIN_AGG(label, buf, len) do {} while(0)
 #endif
 
 /** To prevent compiler warnings about variables that are only used in asserts
@@ -1787,6 +1810,72 @@ int NdbQuery::isPrunable(bool &prunable) const {
   return m_impl.isPrunable(prunable);
 }
 
+NdbAggregator *NdbQuery::getAggregator() const {
+  return m_impl.getAggregator();
+}
+
+void NdbQueryImpl::execAggTRANSID_AI(const Uint32 *data, Uint32 len) {
+  if (len == 0) return;
+  m_aggResultOffsets.append(m_aggResultData.getSize());
+  Uint32 *dst = m_aggResultData.alloc(len);
+  if (likely(dst != nullptr)) {
+    memcpy(dst, data, len * sizeof(Uint32));
+  }
+}
+
+void NdbQueryImpl::execAggTRANSID_AI_frag(const Uint32 *data, Uint32 len,
+                                           Uint32 fragInfo) {
+  if (len == 0) return;
+  if (fragInfo == 1) {
+    // First fragment: record batch offset
+    m_aggResultOffsets.append(m_aggResultData.getSize());
+  }
+  Uint32 *dst = m_aggResultData.alloc(len);
+  if (likely(dst != nullptr)) {
+    memcpy(dst, data, len * sizeof(Uint32));
+  }
+}
+
+int NdbQueryImpl::processAggResults() {
+  if (!m_hasAggregation || m_aggregator == nullptr) return 0;
+
+  const Uint32 numBatches = m_aggResultOffsets.getSize();
+#ifdef DEBUG_JOIN_AGG_TRACE
+  const Uint32 totalWords = m_aggResultData.getSize();
+  fprintf(stderr, "[AGG] processAggResults: %u batches, %u total words\n",
+          numBatches, totalWords);
+#endif
+  for (Uint32 i = 0; i < numBatches; i++) {
+    const Uint32 offset = m_aggResultOffsets.addr()[i];
+    const Uint32 nextOffset = (i + 1 < numBatches)
+                                  ? m_aggResultOffsets.addr()[i + 1]
+                                  : m_aggResultData.getSize();
+    const Uint32 batchLen = nextOffset - offset;
+    const Uint32 *batchData = m_aggResultData.addr() + offset;
+
+#ifdef DEBUG_JOIN_AGG_TRACE
+    fprintf(stderr, "[AGG]   batch %u: offset=%u len=%u words:", i, offset, batchLen);
+    for (Uint32 w = 0; w < batchLen && w < 16; w++) {
+      fprintf(stderr, " %08x", batchData[w]);
+    }
+    fprintf(stderr, "\n");
+#endif
+
+    /**
+     * Kernel sends [AttributeHeader, n_gb_cols|n_agg_results, ...].
+     * NdbAggregator::ProcessRes() expects data starting from the
+     * n_gb_cols|n_agg_results word, so skip the first word
+     * (AttributeHeader).
+     */
+    if (batchLen > 1) {
+      m_aggregator->ProcessRes(
+          const_cast<char *>(reinterpret_cast<const char *>(batchData + 1)));
+    }
+  }
+  m_aggregator->PrepareResults();
+  return 0;
+}
+
 NdbQueryOperation::NdbQueryOperation(NdbQueryOperationImpl &impl)
     : m_impl(impl) {}
 NdbQueryOperation::~NdbQueryOperation() {}
@@ -2115,6 +2204,13 @@ NdbQueryImpl::NdbQueryImpl(NdbTransaction &trans,
       m_shortestBound(0xffffffff),
       m_attrInfo(),
       m_keyInfo(),
+      m_hasAggregation(queryDef.hasAggregation()),
+      m_aggregator(nullptr),
+      m_aggProgram(),
+      m_aggReceivers(nullptr),
+      m_numAggReceivers(0),
+      m_aggResultData(),
+      m_aggResultOffsets(),
       m_startIndicator(false),
       m_commitIndicator(false),
       m_prunability(Prune_No),
@@ -2188,6 +2284,22 @@ void NdbQueryImpl::postFetchRelease() {
   }
   delete[] m_workers;
   m_workers = nullptr;
+
+  // Release aggregation resources
+  if (m_aggReceivers != nullptr) {
+    Ndb *const ndb = m_transaction.getNdb();
+    for (Uint32 i = 0; i < m_numAggReceivers; i++) {
+      m_aggReceivers[i]->release();
+      ndb->releaseNdbScanRec(m_aggReceivers[i]);
+    }
+    delete[] m_aggReceivers;
+    m_aggReceivers = nullptr;
+    m_numAggReceivers = 0;
+  }
+  // Keep m_aggregator alive — user accesses it via getAggregator()
+  // after scan completes. It is deleted in close().
+  m_aggResultData.releaseExtend();
+  m_aggResultOffsets.releaseExtend();
 
   m_rowBufferAlloc.reset();
   m_tupleSetAlloc.reset();
@@ -2537,6 +2649,9 @@ NdbQuery::NextResultOutcome NdbQueryImpl::nextRootResult(bool fetchAllowed,
           assert(m_applFrags.getCurrent() == nullptr);
           getRoot().nullifyResult();
           m_state = EndOfData;
+          if (m_hasAggregation) {
+            processAggResults();
+          }
           postFetchRelease();
           return NdbQuery::NextResult_scanComplete;
 
@@ -2762,6 +2877,11 @@ int NdbQueryImpl::close(bool forceSend) {
     m_state = Closed;  // Even if it was previously 'Failed' it is closed now!
   }
 
+  // Delete aggregator after close — user may have accessed it via
+  // getAggregator() between scan completion and close().
+  delete m_aggregator;
+  m_aggregator = nullptr;
+
   /** BEWARE:
    *  Don't refer NdbQueryDef or its NdbQueryOperationDefs after ::close()
    *  as the application is allowed to destruct the Def's after this point.
@@ -2921,6 +3041,14 @@ int NdbQueryImpl::prepareSend() {
                    m_transaction.getNdb()->getMinDbNodeVersion())) {
       // 'MultiFragment' not supported by all datanodes, partially upgraded?
       m_fragsPerWorker = 1;
+    } else if (m_hasAggregation) {
+      // Aggregate queries: each fragment gets its own SCAN_FRAGREQ to a
+      // separate DBSPJ instance for maximum parallelism across TC threads.
+      // Multi-fragment bundling would send all fragments on a node to one
+      // DBSPJ instance, serializing the work. Since aggregation results
+      // are per-node (not per-fragment), the extra API round-trips that
+      // multi-fragment workers avoid are not a concern.
+      m_fragsPerWorker = 1;
     } else {
       NdbNodeBitmask dataNodes;
       Uint32 cnt = 0;
@@ -3070,6 +3198,13 @@ int NdbQueryImpl::prepareSend() {
     NdbWorker::buildReceiverIdMap(m_workers, m_workerCount);
   }
 
+  // Aggregation setup (RONDB-733)
+  if (m_hasAggregation) {
+    if (prepareAggregation() != 0) {
+      return -1;
+    }
+  }
+
 #ifdef TRACE_SERIALIZATION
   ndbout << "Serialized ATTRINFO : ";
   for (Uint32 i = 0; i < m_attrInfo.getSize(); i++) {
@@ -3084,6 +3219,65 @@ int NdbQueryImpl::prepareSend() {
   m_state = Prepared;
   return 0;
 }  // NdbQueryImpl::prepareSend
+
+/**
+ * Aggregation setup (RONDB-733):
+ * Allocate dedicated receivers for aggregation results, copy the
+ * aggregation program for Section 2, and create NdbAggregator.
+ */
+int NdbQueryImpl::prepareAggregation() {
+  assert(getQueryDef().isScanQuery());
+  const Uint32 aggLeafOpNo = getQueryDef().getAggregateLeafOpNo();
+  const NdbQueryOperationDefImpl &aggLeafDef =
+      getQueryDef().getQueryOperation(aggLeafOpNo);
+  const NdbQueryOptionsImpl &aggOpts = aggLeafDef.getOptions();
+
+  // Copy agg program buffer for later use in doSend() Section 2
+  const Uint32 *progBuf = aggOpts.getAggProgramBuffer();
+  const Uint32 progLen = aggOpts.getAggProgramLen();
+  assert(progBuf != nullptr && progLen > 0);
+  for (Uint32 i = 0; i < progLen; i++) {
+    m_aggProgram.append(progBuf[i]);
+  }
+  if (unlikely(m_aggProgram.isMemoryExhausted())) {
+    setErrorCode(Err_MemoryAlloc);
+    return -1;
+  }
+
+  // Allocate NdbReceiver objects for aggregation results.
+  // Use m_workerCount receivers — one per SPJ worker gives good
+  // hash distribution for group routing.
+  Ndb *const ndb = m_transaction.getNdb();
+  m_numAggReceivers = m_workerCount;
+  m_aggReceivers = new NdbReceiver *[m_numAggReceivers];
+  if (unlikely(m_aggReceivers == nullptr)) {
+    setErrorCode(Err_MemoryAlloc);
+    return -1;
+  }
+  for (Uint32 i = 0; i < m_numAggReceivers; i++) {
+    NdbReceiver *rec = ndb->getNdbScanRec();
+    if (unlikely(rec == nullptr)) {
+      setErrorCode(Err_MemoryAlloc);
+      return -1;
+    }
+    rec->init(NdbReceiver::NDB_AGG_RECEIVER, this);
+    m_aggReceivers[i] = rec;
+  }
+
+  // Create NdbAggregator for result collection.
+  // Use the table from the aggregate leaf operation.
+  const NdbTableImpl *aggTable = aggOpts.getAggTable();
+  assert(aggTable != nullptr);
+  m_aggregator = new NdbAggregator(aggTable->m_facade);
+  // Initialize aggregator from program header so ProcessRes knows
+  // n_gb_cols, n_agg_results, and agg_ops for result parsing.
+  // Pass GROUP BY column definitions for correct type info in
+  // FetchGroupbyColumn() (especially for linked parent columns).
+  m_aggregator->initForResults(progBuf, progLen,
+                               aggOpts.getAggGbColumns(),
+                               aggOpts.getAggNGroupByCols());
+  return 0;
+}  // NdbQueryImpl::prepareAggregation
 
 /** This iterator is used for inserting a sequence of receiver ids
  * for the initial batch of a scan into a section via a GenericSectionPtr.*/
@@ -3215,6 +3409,67 @@ Remark:         Send a TCKEYREQ or SCAN_TABREQ (long) signal depending of
                 the query being either a lookup or scan type.
                 KEYINFO and ATTRINFO are included as part of the long signal
 ******************************************************************************/
+#ifdef DEBUG_JOIN_AGG_TRACE
+/**
+ * Trace SCAN_TABREQ sections for JoinAgg debugging.
+ */
+void NdbQueryImpl::traceJoinAggScanTabReq(
+    const Uint32Buffer &combinedAggSec2) {
+  fprintf(stderr, "\n====== NdbQuery SCAN_TABREQ (JoinAgg) ======\n");
+  fprintf(stderr, "workerCount=%u, scanParallelism=%u\n",
+          m_workerCount, m_workerCount);
+
+  /* Section 0: worker receiver IDs (for SPJ scan results) */
+  fprintf(stderr, "--- Section 0: Worker Receiver IDs (%u) ---\n",
+          m_workerCount);
+  for (Uint32 i = 0; i < m_workerCount; i++)
+    fprintf(stderr, "  worker[%u] receiverId=0x%x\n",
+            i, m_workers[i].getReceiverId());
+
+  /* Section 1: AttrInfo = QueryTree + Parameters */
+  fprintf(stderr, "--- Section 1: AttrInfo / QueryTree (%u words) ---\n",
+          m_attrInfo.getSize());
+  {
+    const Uint32 *ai = m_attrInfo.addr();
+    Uint32 aiSz = m_attrInfo.getSize();
+    /* Decode QueryTree header */
+    if (aiSz > 0) {
+      Uint32 cnt_len = ai[0];
+      fprintf(stderr, "  QueryTree header: cnt=%u, len=%u\n",
+              cnt_len >> 16, cnt_len & 0xFFFF);
+    }
+    DEB_JOIN_AGG("AttrInfo (QueryTree+Params)", ai, aiSz);
+  }
+
+  /* Section 2: Combined [boundsLen, bounds, aggReceiverId, aggProgram] */
+  fprintf(stderr,
+          "--- Section 2: Combined AggSection (%u words) ---\n",
+          combinedAggSec2.getSize());
+  {
+    const Uint32 *s2 = combinedAggSec2.addr();
+    Uint32 s2Sz = combinedAggSec2.getSize();
+    if (s2Sz > 0) {
+      Uint32 bLen = s2[0];
+      fprintf(stderr, "  boundsLen=%u\n", bLen);
+      if (1 + bLen < s2Sz)
+        fprintf(stderr, "  aggReceiverId=0x%x\n", s2[1 + bLen]);
+      Uint32 progStart = 2 + bLen;
+      if (progStart < s2Sz) {
+        fprintf(stderr, "  aggProgram (%u words):\n", s2Sz - progStart);
+        for (Uint32 i = progStart; i < s2Sz && i < progStart + 12; i++)
+          fprintf(stderr, "    [%u] 0x%08x\n", i - progStart, s2[i]);
+        if (s2Sz - progStart > 12)
+          fprintf(stderr, "    ... (%u more words)\n",
+                  s2Sz - progStart - 12);
+      }
+    }
+  }
+  fprintf(stderr, "============================================\n\n");
+}
+#else
+void NdbQueryImpl::traceJoinAggScanTabReq(const Uint32Buffer &) {}
+#endif  /* DEBUG_JOIN_AGG_TRACE */
+
 int NdbQueryImpl::doSend(int nodeId, bool lastFlag) {
   if (unlikely(m_state != Prepared)) {
     assert(m_state >= Initial && m_state < Destructed);
@@ -3358,6 +3613,15 @@ int NdbQueryImpl::doSend(int nodeId, bool lastFlag) {
       scanTabReq->userIdVersion = getNdbTransaction().m_user_id_version;
       tSignal.setLength(ScanTabReq::StaticLength + 4);
     }
+    if (m_hasAggregation) {
+      if (!ndbd_support_pushdown_join_agg(ndb.getMinDbNodeVersion())) {
+        setErrorCode(Err_FunctionNotImplemented);
+        return -1;
+      }
+      ScanTabReq::setJoinAggFlag(reqInfo, 1);
+      scanTabReq->scanParallelism = m_workerCount * m_fragsPerWorker;
+      tSignal.setLength(ScanTabReq::StaticLength + 5);
+    }
     scanTabReq->requestInfo = reqInfo;
 
     /**
@@ -3368,12 +3632,40 @@ int NdbQueryImpl::doSend(int nodeId, bool lastFlag) {
      * Section 0 : List of receiver Ids NDBAPI has allocated
      *             for the scan
      * Section 1 : ATTRINFO section
-     * Section 2 : Optional KEYINFO section
+     * Section 2 : Optional KEYINFO section.
+     *             For JoinAgg: [boundsLen, bounds..., aggProgram...]
      */
+
+    /**
+     * For JoinAgg queries, section 2 carries both optional bounds,
+     * the agg receiver ID, and the aggregation program:
+     *   Word 0:              boundsLen (0 if no bounds)
+     *   Words 1..boundsLen:  bounds data (from m_keyInfo)
+     *   Word boundsLen+1:    aggReceiverId (object map ID for results)
+     *   Remaining words:     aggregation program
+     * DBTC parses this header to split bounds from agg program,
+     * and uses aggReceiverId as resultData in JOIN_AGG_SETUP_REQ.
+     */
+    Uint32Buffer combinedAggSec2;
+    if (m_hasAggregation) {
+      assert(m_aggProgram.getSize() > 0);
+      assert(m_numAggReceivers > 0);
+      const Uint32 boundsLen = m_keyInfo.getSize();
+      combinedAggSec2.append(boundsLen);
+      if (boundsLen > 0) {
+        combinedAggSec2.append(m_keyInfo);
+      }
+      combinedAggSec2.append(m_aggReceivers[0]->getId());
+      combinedAggSec2.append(m_aggProgram);
+      assert(!combinedAggSec2.isMemoryExhausted());
+    }
+
     GenericSectionPtr secs[3];
     InitialReceiverIdIterator receiverIdIter(m_workers, m_workerCount);
     LinearSectionIterator attrInfoIter(m_attrInfo.addr(), m_attrInfo.getSize());
     LinearSectionIterator keyInfoIter(m_keyInfo.addr(), m_keyInfo.getSize());
+    LinearSectionIterator combinedAggIter(combinedAggSec2.addr(),
+                                          combinedAggSec2.getSize());
 
     secs[0].sectionIter = &receiverIdIter;
     secs[0].sz = m_workerCount;
@@ -3382,12 +3674,21 @@ int NdbQueryImpl::doSend(int nodeId, bool lastFlag) {
     secs[1].sz = m_attrInfo.getSize();
 
     Uint32 numSections = 2;
-    if (m_keyInfo.getSize() > 0) {
+    if (m_hasAggregation) {
+      secs[2].sectionIter = &combinedAggIter;
+      secs[2].sz = combinedAggSec2.getSize();
+      numSections = 3;
+    } else if (m_keyInfo.getSize() > 0) {
       secs[2].sectionIter = &keyInfoIter;
       secs[2].sz = m_keyInfo.getSize();
       numSections = 3;
     }
     DBUG_PRINT("info", ("Send SCAN_TABREQ: NdbQueryOperation"));
+
+    if (m_hasAggregation) {
+      traceJoinAggScanTabReq(combinedAggSec2);
+    }
+
     /* Send Fragmented as SCAN_TABREQ can be large */
     const int res =
         impl->sendFragmentedSignal(&tSignal, nodeId, secs, numSections);
@@ -4743,11 +5044,28 @@ int NdbQueryOperationImpl::prepareAttrInfo(Uint32Buffer &attrInfo,
     if (unlikely(error)) {
       return error;
     }
+  } else if (def.isAggregateLeaf() &&
+             def.getOptions().getLinkedProjection().size() > 0) {
+    /**
+     * Aggregate leaf with linked parent columns needs a minimal interpreter
+     * program (ExitOK) so that DBSPJ creates the 5-word interpreter header.
+     * Without it, the linked data appended to the subroutine section has no
+     * proper framing and DBTUP misinterprets it as column read attributes.
+     */
+    requestInfo |= DABits::PI_ATTR_INTERPRET;
+    // PI_ATTR_INTERPRET format: [len_word, program...]
+    // len_word = (subroutine_len << 16) | program_len
+    attrInfo.append(1);     // program_len=1, subroutine_len=0
+    attrInfo.append(0x12);  // Interpreter::ExitOK (opcode 18)
   }
 
   if (m_ndbRecord == nullptr && m_firstRecAttr == nullptr) {
-    // Leaf operations with empty projections are not supported.
-    if (getNoOfChildOperations() == 0) {
+    // Leaf operations with empty projections are not supported,
+    // unless this is an aggregate leaf (results come via aggregation,
+    // not through the normal row projection path).
+    // has children (intermediate node providing linked attributes).
+    if (getNoOfChildOperations() == 0 && !def.isAggregateLeaf() &&
+        !def.isQueryAggregation()) {
       return QRY_EMPTY_PROJECTION;
     }
   } else {
@@ -5569,6 +5887,14 @@ Uint32 NdbQueryOperationImpl::getMaxBatchBytes() const {
                                 /*key_size = */ 0, needRangeNo(),
                                 withCorrelation, batchFrags, batchRows,
                                 m_maxBatchBytes, m_resultBufferSize);
+
+    if (getQuery().m_hasAggregation && getParentOperation() == nullptr) {
+      // For aggregate root scans, batch_byte_size controls DBLQH→DBSPJ
+      // throughput, not API receive buffer. result_bufsize() caps it to
+      // the tiny API buffer (no getValue columns). Restore to the value
+      // from calculate_batch_size() so config BatchByteSize takes effect.
+      m_maxBatchBytes = batchByteSize;
+    }
   }
 
   return m_maxBatchBytes;

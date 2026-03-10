@@ -10,3 +10,6 @@
 [TEST] single_row: PASS
 [TEST] zero_target: PASS
 [TEST] multi_iteration: PASS
+[TEST] vs_pa_interleaved: PASS
+[TEST] rapid_successive_vs: PASS
+[TEST] segment_boundary_top_n: PASS

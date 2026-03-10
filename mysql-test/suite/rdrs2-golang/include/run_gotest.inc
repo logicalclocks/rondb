@@ -71,14 +71,16 @@ if (join("\n", @actual_mtr) ne join("\n", @expected_mtr)) {
     die "Mismatch in MTR test lists\n";
 }
 
-# Make sure the existing Golang tests match the values in the map above
-my @actual_go = sort `go list ./...`;
-chomp @actual_go;
+# Make sure every mapped Golang package exists (extra packages are allowed
+# since some may be tested by other suites, e.g. rdrs2-ronsqltpch).
+my %actual_go = map { chomp; $_ => 1 } `go list ./...`;
 my @expected_go = sort values %mtr_to_go;
-if (join("\n", @actual_go) ne join("\n", @expected_go)) {
-    print "Golang tests listed in run_gotest.inc:\n", join("\n", @expected_go), "\n";
-    print "Existing Golang tests:\n", join("\n", @actual_go), "\n";
-    die "Mismatch in Golang test lists\n";
+for my $pkg (@expected_go) {
+    if (!$actual_go{$pkg}) {
+        print "Golang tests listed in run_gotest.inc:\n", join("\n", @expected_go), "\n";
+        print "Existing Golang tests:\n", join("\n", sort keys %actual_go), "\n";
+        die "Mapped Go package '$pkg' not found by 'go list ./...'\n";
+    }
 }
 
 # Find the go test package mapped to by the currently executing MTR test

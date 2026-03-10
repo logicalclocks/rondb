@@ -52,6 +52,7 @@ struct trp_node {
  public:
   void set_connected(bool connected) {
     assert(defined);
+    if (!connected) m_api_reg_conf = false;
     m_connected = connected;
   }
   bool is_connected(void) const {

@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2011, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -62,7 +62,9 @@
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_HASH 1
-#define DEBUG_TRANSID_AI 1
+//#define DEBUG_AGGREGATION 1
+//#define DEBUG_TRANSID_AI 1
+#define DEBUG_JOIN_AGG_TRACE 1
 #endif
 
 #ifdef DEBUG_TRANSID_AI
@@ -75,6 +77,35 @@
 #define DEB_HASH(arglist) do { g_eventLogger->info arglist ; } while (0)
 #else
 #define DEB_HASH(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_AGGREGATION
+#define DEB_AGGREGATION(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_AGGREGATION(arglist) do { } while (0)
+#endif
+
+/**
+ * DEBUG_JOIN_AGG_TRACE: Hex dump of QueryTree nodes as received by DBSPJ,
+ * showing tree/param bits, NI_ATTR_LINKED pattern, and PI_ATTR_INTERPRET
+ * details per node.  Uncomment the define above to activate.
+ */
+#ifdef DEBUG_JOIN_AGG_TRACE
+#define DEB_JOIN_AGG(arglist) do { g_eventLogger->info arglist ; } while (0)
+static void dumpWordsToLog(const char *label, const Uint32 *buf, Uint32 len) {
+  char line[256];
+  int pos = 0;
+  g_eventLogger->info("DBSPJ %s (%u words):", label, len);
+  for (Uint32 i = 0; i < len; i++) {
+    pos += snprintf(line + pos, sizeof(line) - pos, " 0x%08x", buf[i]);
+    if ((i % 6) == 5 || i == len - 1) {
+      g_eventLogger->info("  [%u..] %s", i - (i % 6), line);
+      pos = 0;
+    }
+  }
+}
+#else
+#define DEB_JOIN_AGG(arglist) do { } while (0)
 #endif
 
 extern EventLogger* g_eventLogger;
@@ -119,10 +150,10 @@ static constexpr Uint32 ResumeCongestedQuota = 32;
  * DEBUG options for different parts of SPJ block.
  * Comment out those part you don't want DEBUG'ed.
  */
-// #define DEBUG(x) ndbout << "DBSPJ: "<< x << endl
-// #define DEBUG_DICT(x) ndbout << "DBSPJ: "<< x << endl
-// #define DEBUG_LQHKEYREQ
-// #define DEBUG_SCAN_FRAGREQ
+//#define DEBUG(x) ndbout << "DBSPJ: "<< x << endl
+//#define DEBUG_DICT(x) ndbout << "DBSPJ: "<< x << endl
+//#define DEBUG_LQHKEYREQ
+//#define DEBUG_SCAN_FRAGREQ
 #endif
 
 /**
@@ -1095,8 +1126,18 @@ void Dbspj::do_init(Request *requestP, const LqhKeyReq *req, Uint32 senderRef) {
   requestP->m_transId[1] = req->transId2;
   requestP->m_rootFragId = LqhKeyReq::getFragmentId(req->fragmentData);
   requestP->m_rootFragCnt = 1;
-  std::memset(requestP->m_lookup_node_data, 0,
-              sizeof(requestP->m_lookup_node_data));
+  {
+    const Uint32 max_nodes = MAX_NDB_NODES;
+    const size_t alloc_size = max_nodes * sizeof(Uint32) +
+                              max_nodes * sizeof(Uint16);
+    void *mem = lc_ndbd_pool_malloc(alloc_size, RG_QUERY_MEMORY,
+                                    getThreadId(), true);
+    ndbrequire(mem != nullptr);
+    requestP->m_aggStateKeys = static_cast<Uint32 *>(mem);
+    requestP->m_lookup_node_data =
+        reinterpret_cast<Uint16 *>(
+            static_cast<char *>(mem) + max_nodes * sizeof(Uint32));
+  }
 #ifdef SPJ_TRACE_TIME
   requestP->m_cnt_batches = 0;
   requestP->m_sum_rows = 0;
@@ -1328,6 +1369,23 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
       }
     }
 
+    Uint32 aggKeysPtrI = RNIL;
+    if (ScanFragReq::getJoinAggFlag(req->requestInfo)) {
+      jam();
+      sectionCnt--;
+      aggKeysPtrI = handle.m_ptr[sectionCnt].i;
+      SectionReader reader(aggKeysPtrI, getSectionSegmentPool());
+      Uint32 numPairs = reader.getSize() / 2;
+      for (Uint32 i = 0; i < numPairs; i++) {
+        Uint32 nodeId, aggKey;
+        ndbrequire(reader.getWord(&nodeId));
+        ndbrequire(reader.getWord(&aggKey));
+        ndbrequire(nodeId < MAX_NDB_NODES);
+        requestPtr.p->m_aggStateKeys[nodeId] = aggKey;
+        requestPtr.p->m_aggNodes.set(nodeId);
+      }
+    }
+
     {
       SectionReader treeReader(attrPtr, getSectionSegmentPool());
       SectionReader paramReader(attrPtr, getSectionSegmentPool());
@@ -1358,6 +1416,7 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
       }
       release(attrPtr);
       releaseSection(fragIdsPtrI);  // MultiFrag list
+      releaseSection(aggKeysPtrI);  // aggStateKeys (no-op if RNIL)
       handle.clear();
     }
 
@@ -1411,8 +1470,20 @@ void Dbspj::do_init(Request *requestP, const ScanFragReq *req,
   requestP->m_rootResultData = req->resultData;
   requestP->m_rootFragId = req->fragmentNoKeyLen;
   requestP->m_rootFragCnt = 0;  // Filled in later
-  std::memset(requestP->m_lookup_node_data, 0,
-              sizeof(requestP->m_lookup_node_data));
+  {
+    const Uint32 max_nodes = MAX_NDB_NODES;
+    const size_t alloc_size = max_nodes * sizeof(Uint32) +
+                              max_nodes * sizeof(Uint16);
+    void *mem = lc_ndbd_pool_malloc(alloc_size, RG_QUERY_MEMORY,
+                                    getThreadId(), true);
+    ndbrequire(mem != nullptr);
+    requestP->m_aggStateKeys = static_cast<Uint32 *>(mem);
+    requestP->m_lookup_node_data =
+        reinterpret_cast<Uint16 *>(
+            static_cast<char *>(mem) + max_nodes * sizeof(Uint32));
+  }
+  requestP->m_aggNodes.clear();
+  requestP->m_lastHbrepTicks = getHighResTimer();
 #ifdef SPJ_TRACE_TIME
   requestP->m_cnt_batches = 0;
   requestP->m_sum_rows = 0;
@@ -1467,6 +1538,7 @@ Dbspj::build(Build_context& ctx,
   Uint32 err = DbspjErr::ZeroLengthQueryTree;
   ctx.m_cnt = 0;
   ctx.m_scan_cnt = 0;
+  ctx.m_aggregate_node_count = 0;
 
   tree.getWord(&tmp0);
   Uint32 loop = QueryTree::getNodeCnt(tmp0);
@@ -1512,13 +1584,38 @@ Dbspj::build(Build_context& ctx,
     }
 
 #if defined(DEBUG_LQHKEYREQ) || defined(DEBUG_SCAN_FRAGREQ)
-    printf("node: ");
+    printf("node: len: %u, ", node_len);
     for (Uint32 i = 0; i < node_len; i++) printf("0x%.8x ", m_buffer0[i]);
     printf("\n");
 
-    printf("param: ");
+    printf("param: param_len: %u, ", param_len);
     for (Uint32 i = 0; i < param_len; i++) printf("0x%.8x ", m_buffer1[i]);
     printf("\n");
+#endif
+
+#ifdef DEBUG_JOIN_AGG_TRACE
+    {
+      /* Decode tree node header and flags */
+      Uint32 treeBits = (node_len > 1) ? m_buffer0[1] : 0;
+      Uint32 paramBits = (param_len > 1) ? m_buffer1[1] : 0;
+      DEB_JOIN_AGG(("DBSPJ build() node[%u]: op=%u len=%u  "
+                     "treeBits=0x%08x paramBits=0x%08x",
+                     ctx.m_cnt, node_op, node_len, treeBits, paramBits));
+      /* Decode key flags */
+      const char *agg = (treeBits & DABits::NI_AGGREGATE) ? " NI_AGGREGATE" : "";
+      const char *aggLeaf = (treeBits & DABits::NI_AGGREGATE_LEAF) ? " NI_AGGREGATE_LEAF" : "";
+      const char *linked = (treeBits & DABits::NI_LINKED_ATTR) ? " NI_LINKED_ATTR" : "";
+      const char *keyLnk = (treeBits & DABits::NI_KEY_LINKED) ? " NI_KEY_LINKED" : "";
+      const char *attrInt = (treeBits & DABits::NI_ATTR_INTERPRET) ? " NI_ATTR_INTERPRET" : "";
+      const char *attrLnk = (treeBits & DABits::NI_ATTR_LINKED) ? " NI_ATTR_LINKED" : "";
+      const char *piInt = (paramBits & DABits::PI_ATTR_INTERPRET) ? " PI_ATTR_INTERPRET" : "";
+      const char *piList = (paramBits & DABits::PI_ATTR_LIST) ? " PI_ATTR_LIST" : "";
+      DEB_JOIN_AGG(("  flags:%s%s%s%s%s%s%s%s",
+                     agg, aggLeaf, linked, keyLnk, attrInt, attrLnk,
+                     piInt, piList));
+      dumpWordsToLog("  tree node", m_buffer0, node_len);
+      dumpWordsToLog("  param node", m_buffer1, param_len);
+    }
 #endif
 
     err = DbspjErr::UnknowQueryOperation;
@@ -1658,6 +1755,12 @@ Dbspj::build(Build_context& ctx,
     requestPtr.p->m_bits |= Request::RT_MULTI_SCAN;
   }
 
+  err = validateAggregateFlags(ctx, requestPtr);
+  if (unlikely(err != 0)) {
+    jam();
+    goto error;
+  }
+
   // Set up the order of execution plan
   buildExecPlan(requestPtr);
 
@@ -1673,6 +1776,63 @@ Dbspj::build(Build_context& ctx,
 error:
   jam();
   return err;
+}
+
+/**
+ * Validate aggregate flag consistency before execution.
+ * The NDB API sets NI_AGGREGATE on every node and NI_AGGREGATE_LEAF
+ * on exactly one leaf node. Verify this to catch malformed queries
+ * early rather than crashing later in DBTC/DBLQH.
+ */
+Uint32
+Dbspj::validateAggregateFlags(Build_context &ctx, Ptr<Request> requestPtr) {
+  if (requestPtr.p->m_bits & Request::RT_AGGREGATE) {
+    jam();
+    Uint32 aggregate_leaf_count = 0;
+    bool aggregate_leaf_is_leaf = false;
+
+    Local_TreeNode_list list(m_treenode_pool, requestPtr.p->m_nodes);
+    Ptr<TreeNode> treeNodePtr;
+    for (list.first(treeNodePtr); !treeNodePtr.isNull();
+         list.next(treeNodePtr)) {
+      if (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) {
+        jam();
+        aggregate_leaf_count++;
+        aggregate_leaf_is_leaf = treeNodePtr.p->isLeaf();
+      }
+    }
+
+    if (unlikely(ctx.m_aggregate_node_count != ctx.m_cnt)) {
+      jam();
+      g_eventLogger->debug(
+          "DBSPJ %u: NI_AGGREGATE set on %u of %u nodes, expected all",
+          instance(), ctx.m_aggregate_node_count, ctx.m_cnt);
+      return DbspjErr::InvalidAggregateFlags;
+    }
+    if (unlikely(aggregate_leaf_count != 1)) {
+      jam();
+      g_eventLogger->debug(
+          "DBSPJ %u: Found %u T_AGGREGATE_LEAF nodes, expected exactly 1",
+          instance(), aggregate_leaf_count);
+      return DbspjErr::InvalidAggregateFlags;
+    }
+    if (unlikely(!aggregate_leaf_is_leaf)) {
+      jam();
+      g_eventLogger->debug(
+          "DBSPJ %u: T_AGGREGATE_LEAF is set on a non-leaf node",
+          instance());
+      return DbspjErr::InvalidAggregateFlags;
+    }
+  } else {
+    if (unlikely(ctx.m_aggregate_node_count != 0)) {
+      jam();
+      g_eventLogger->debug(
+          "DBSPJ %u: NI_AGGREGATE on %u nodes but RT_AGGREGATE not set",
+          instance(), ctx.m_aggregate_node_count);
+      return DbspjErr::InvalidAggregateFlags;
+    }
+  }
+  return 0;
 }
 
 /**
@@ -2492,6 +2652,14 @@ void Dbspj::batchComplete(Signal *signal, Ptr<Request> requestPtr) {
         }
       }
     }
+
+    if (!is_complete && requestPtr.p->m_errCode == 0 &&
+        !requestPtr.p->m_aggNodes.isclear() &&
+        requestPtr.p->m_rows == 0) {
+      jam();
+      handleJoinAggNextBatch(signal, requestPtr);
+      return;
+    }
     sendConf(signal, requestPtr, is_complete);
   } else if (is_complete && need_complete_phase) {
     jam();
@@ -2517,6 +2685,50 @@ void Dbspj::batchComplete(Signal *signal, Ptr<Request> requestPtr) {
      */
     cleanupBatch(requestPtr, /*done=*/true);
   }
+}
+
+/**
+ * For JoinAgg queries, aggregate rows accumulate in DBLQH's aggregation
+ * engine — no rows are sent to the API per batch unless eviction occurs.
+ * When m_rows == 0 (no evicted groups sent to API), skip the
+ * SCAN_FRAGCONF → DBTC → API → SCAN_NEXTREQ round-trip and fetch the
+ * next batch directly from DBLQH.
+ */
+void
+Dbspj::handleJoinAggNextBatch(Signal *signal, Ptr<Request> requestPtr) {
+  cleanupBatch(requestPtr, /*done=*/false);
+
+  /**
+   * Send heartbeat to DBTC to prevent scan fragment timeout.
+   * DBTC's timer is only reset by SCAN_FRAGCONF or SCAN_HBREP.
+   * Since we bypass SCAN_FRAGCONF, send SCAN_HBREP periodically.
+   */
+  {
+    const NDB_TICKS now = getHighResTimer();
+    if (NdbTick_Elapsed(requestPtr.p->m_lastHbrepTicks, now).milliSec()
+            >= 20) {
+      jam();
+      signal->theData[0] = requestPtr.p->m_senderData;
+      signal->theData[1] = requestPtr.p->m_transId[0];
+      signal->theData[2] = requestPtr.p->m_transId[1];
+      sendSignal(requestPtr.p->m_senderRef, GSN_SCAN_HBREP, signal, 3,
+                 JBB);
+      requestPtr.p->m_lastHbrepTicks = now;
+    }
+  }
+
+  Ptr<TreeNode> treeNodePtr;
+  Local_TreeNodeCursor_list list(m_treenode_pool,
+                                 requestPtr.p->m_cursor_nodes);
+  for (list.first(treeNodePtr); !treeNodePtr.isNull();
+       list.next(treeNodePtr)) {
+    if (treeNodePtr.p->m_state == TreeNode::TN_ACTIVE) {
+      jam();
+      (this->*(treeNodePtr.p->m_info->m_execSCAN_NEXTREQ))(
+          signal, requestPtr, treeNodePtr);
+    }
+  }
+  ndbassert(requestPtr.p->m_outstanding > 0);
 }
 
 /**
@@ -2726,6 +2938,17 @@ void Dbspj::sendConf(Signal *signal, Ptr<Request> requestPtr,
           ndbassert(treeNodePtr.p->m_node_no <= 31);
           activeMask |= (1 << treeNodePtr.p->m_node_no);
         }
+#ifdef SPJ_TRACE_TIME
+        if (is_complete) {
+          g_eventLogger->info("node[%u], #LQHKEYCONF: %u, #LQHKEYREF: %u,"
+                              " #SCAN_FRAGCONF: %u, SCAN_FRAGCONF_len: %u",
+            treeNodePtr.p->m_node_no,
+            treeNodePtr.p->m_lqhkeyconf_count,
+            treeNodePtr.p->m_lqhkeyref_count,
+            treeNodePtr.p->m_scan_fragconf_count,
+            treeNodePtr.p->m_scan_fragconf_len);
+        }
+#endif
       }
       conf->activeMask = activeMask;
       c_Counters.incr_counter(CI_SCAN_BATCHES_RETURNED, 1);
@@ -3129,6 +3352,12 @@ void Dbspj::cleanup(Ptr<Request> requestPtr, bool in_hash) {
     ndbrequire(in_hash ==
                m_lookup_request_hash.remove(requestPtr, *requestPtr.p));
   }
+  // Free dynamic per-node arrays (allocated as single block in do_init)
+  if (requestPtr.p->m_aggStateKeys != nullptr) {
+    lc_ndbd_pool_free(requestPtr.p->m_aggStateKeys);
+    requestPtr.p->m_aggStateKeys = nullptr;
+    requestPtr.p->m_lookup_node_data = nullptr;
+  }
   ArenaHead ah = requestPtr.p->m_arena;
   m_request_pool.release(requestPtr);
   m_arenaAllocator.release(ah);
@@ -3246,6 +3475,9 @@ void Dbspj::execLQHKEYREF(Signal *signal) {
         << ", node: " << treeNodePtr.p->m_node_no
         << ", request: " << requestPtr.i << ", errorCode: " << ref->errorCode);
 
+#ifdef SPJ_TRACE_TIME
+  treeNodePtr.p->m_lqhkeyref_count++;
+#endif
   ndbrequire(treeNodePtr.p->m_info && treeNodePtr.p->m_info->m_execLQHKEYREF);
   (this->*(treeNodePtr.p->m_info->m_execLQHKEYREF))(signal, requestPtr,
                                                     treeNodePtr);
@@ -3270,6 +3502,9 @@ void Dbspj::execLQHKEYCONF(Signal *signal) {
         << ", node: " << treeNodePtr.p->m_node_no
         << ", request: " << requestPtr.i);
 
+#ifdef SPJ_TRACE_TIME
+  treeNodePtr.p->m_lqhkeyconf_count++;
+#endif
   ndbrequire(treeNodePtr.p->m_info && treeNodePtr.p->m_info->m_execLQHKEYCONF);
   (this->*(treeNodePtr.p->m_info->m_execLQHKEYCONF))(signal, requestPtr,
                                                      treeNodePtr);
@@ -3410,6 +3645,10 @@ void Dbspj::execSCAN_FRAGCONF(Signal *signal) {
     jam();
     scanFragHandlePtr.p->m_next_ref = conf->senderRef;
   }
+#ifdef SPJ_TRACE_TIME
+  treeNodePtr.p->m_scan_fragconf_count++;
+  treeNodePtr.p->m_scan_fragconf_len += conf->total_len;
+#endif
   ndbrequire(treeNodePtr.p->m_info &&
              treeNodePtr.p->m_info->m_execSCAN_FRAGCONF);
   (this->*(treeNodePtr.p->m_info->m_execSCAN_FRAGCONF))(
@@ -4731,9 +4970,6 @@ void Dbspj::lookup_send(Signal *signal, Ptr<Request> requestPtr,
     req->variableData[0] = requestPtr.p->m_user_id;
     var_index++;
   }
-  req->variableData[var_index + 2] = treeNodePtr.p->m_send.m_correlation;
-  req->variableData[var_index + 3] = requestPtr.p->m_rootResultData;
-
   if (!treeNodePtr.p->isLeaf() || requestPtr.p->isScan()) {
     // Non-LEAF want reply to SPJ instead of ApiClient.
     LqhKeyReq::setNormalProtocolFlag(req->requestInfo, 1);
@@ -4748,11 +4984,37 @@ void Dbspj::lookup_send(Signal *signal, Ptr<Request> requestPtr,
     req->tcBlockref = requestPtr.p->m_senderRef;
   }
 
+  req->variableData[var_index + 2] = treeNodePtr.p->m_send.m_correlation;
+  req->variableData[var_index + 3] = requestPtr.p->m_rootResultData;
+
+
   SectionHandle handle(this);
 
   Uint32 ref = treeNodePtr.p->m_send.m_ref;
   Uint32 keyInfoPtrI = treeNodePtr.p->m_send.m_keyInfoPtrI;
   Uint32 attrInfoPtrI = treeNodePtr.p->m_send.m_attrInfoPtrI;
+
+  Uint32 agg_extra = 0;
+  if (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) {
+    jam();
+    /**
+     * aggStateKey is placed at var_index + 4, which assumes DBLQH's
+     * nextPos walk over variableData arrives here after:
+     *   ApplicationAddressFlag=1 (2 words) + CorrFactorFlag=1 (2 words).
+     * This requires that SameClientAndTcFlag, ReturnedReadLenAIFlag,
+     * RowidFlag and GCIFlag are all 0, as set in lookup_build().
+     */
+    ndbassert(LqhKeyReq::getSameClientAndTcFlag(req->requestInfo) == 0);
+    ndbassert(LqhKeyReq::getReturnedReadLenAIFlag(req->requestInfo) == 0);
+    ndbassert(LqhKeyReq::getRowidFlag(req->requestInfo) == 0);
+    ndbassert(LqhKeyReq::getGCIFlag(req->requestInfo) == 0);
+
+    Uint32 nodeId = refToNode(ref);
+    ndbrequire(requestPtr.p->m_aggNodes.get(nodeId));
+    LqhKeyReq::setJoinAggFlag(req->attrLen, 1);
+    req->variableData[var_index + 4] = requestPtr.p->m_aggStateKeys[nodeId];
+    agg_extra = 1;
+  }
 
   Uint32 err = 0;
 
@@ -4844,7 +5106,7 @@ void Dbspj::lookup_send(Signal *signal, Ptr<Request> requestPtr,
 #if defined DEBUG_LQHKEYREQ
     g_eventLogger->info("LQHKEYREQ to %x", ref);
     printLQHKEYREQ(stdout, signal->getDataPtrSend(),
-                   NDB_ARRAY_SIZE(treeNodePtr.p->m_lookup_data.m_lqhKeyReqm_lqhKeyReqm_lqhKeyReqm_lqhKeyReqm_lqhKeyReqm_lqhKeyReqm_lqhKeyReqm_lqhKeyReq),
+                   NDB_ARRAY_SIZE(treeNodePtr.p->m_lookup_data.m_lqhKeyReq),
                    DBLQH);
     printf("KEYINFO: ");
     print(handle.m_ptr[0], stdout);
@@ -4898,7 +5160,7 @@ void Dbspj::lookup_send(Signal *signal, Ptr<Request> requestPtr,
     } else if (cnt > 0) {
       // Register signal 'cnt' required before completion
       jam();
-      ndbassert(Tnode < NDB_ARRAY_SIZE(requestPtr.p->m_lookup_node_data));
+      ndbassert(Tnode < MAX_NDB_NODES);
       requestPtr.p->m_completed_tree_nodes.clear(treeNodePtr.p->m_node_no);
       requestPtr.p->m_outstanding += cnt;
       requestPtr.p->m_lookup_node_data[Tnode] += cnt;
@@ -4923,7 +5185,8 @@ void Dbspj::lookup_send(Signal *signal, Ptr<Request> requestPtr,
       }
     }
     sendSignal(ref, GSN_LQHKEYREQ, signal,
-               NDB_ARRAY_SIZE(treeNodePtr.p->m_lookup_data.m_lqhKeyReq) + var_index,
+               NDB_ARRAY_SIZE(treeNodePtr.p->m_lookup_data.m_lqhKeyReq) +
+                   var_index + agg_extra,
                JBB,
                &handle);
 
@@ -5154,7 +5417,17 @@ void Dbspj::lookup_execLQHKEYCONF(Signal *signal, Ptr<Request> requestPtr,
                                   Ptr<TreeNode> treeNodePtr) {
   ndbrequire(!(requestPtr.p->isLookup() && treeNodePtr.p->isLeaf()));
 
-  if (treeNodePtr.p->m_bits & TreeNode::T_USER_PROJECTION) {
+  if (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) {
+    /**
+     * JoinAgg leaf: lookup results go to the aggregation engine, not the API.
+     * Only evicted groups are sent to the API. The eviction count is
+     * carried in LQHKEYCONF::readLen (set by handleJoinAggRow).
+     */
+    jam();
+    const LqhKeyConf *conf =
+        reinterpret_cast<const LqhKeyConf *>(signal->getDataPtr());
+    requestPtr.p->m_rows += conf->readLen;
+  } else if (treeNodePtr.p->m_bits & TreeNode::T_USER_PROJECTION) {
     jam();
     requestPtr.p->m_rows++;
   }
@@ -5279,8 +5552,47 @@ void Dbspj::lookup_parent_row(Signal *signal, Ptr<Request> requestPtr,
     Uint32 attrInfoPtrI = treeNodePtr.p->m_send.m_attrInfoPtrI;
     if (treeNodePtr.p->m_bits & TreeNode::T_ATTRINFO_CONSTRUCTED) {
       jam();
-      // Need to build a modified attrInfo, extended with a parameter
-      // build with the 'attrParamPattern' applied to the parent rowRef
+      /**
+       * T_ATTRINFO_CONSTRUCTED — runtime expansion of linked parent data.
+       *
+       * When a child operation has NI_ATTR_LINKED set in the QueryTree,
+       * the base attrInfo (built at setup time in OPTIONAL PART 3) contains
+       * a 5-word interpreter header and possibly an ExitOK instruction, but
+       * the linked parent data is only available at runtime when the parent
+       * row arrives.
+       *
+       * This block duplicates the base attrInfo, appends a paramLen
+       * placeholder word, then expands the m_attrParamPattern (built from
+       * P_ATTRINFO entries in the QueryTree) using the parent row values.
+       * The P_ATTRINFO pattern copies AttributeHeader + data for each
+       * linked attribute from the parent's linked-attr list.
+       *
+       * After expansion, paramLen = new_size - org_size, which includes the
+       * paramLen word itself plus all expanded attribute data.  This value
+       * is written back into the section at position org_size AND into
+       * sectionptrs[4] (the subRoutineLen field of the 5-word interpreter
+       * header).
+       *
+       * The resulting attrInfo layout sent in LQHKEYREQ to DBLQH:
+       *
+       *   cinBuffer[0] = initReadLen      (0 for join-agg-only operations)
+       *   cinBuffer[1] = interpretLen     (1 for ExitOK)
+       *   cinBuffer[2] = finalUpdateLen   (0)
+       *   cinBuffer[3] = finalReadLen     (0)
+       *   cinBuffer[4] = subRoutineLen    (= paramLen = 1 + expand_words)
+       *   cinBuffer[5] = ExitOK instruction
+       *   --- subroutine section starts here ---
+       *   cinBuffer[6] = paramLen value   (redundant copy)
+       *   cinBuffer[7] = AttributeHeader(attrId, dataSize) for linked col
+       *   cinBuffer[8..] = column data (padded to word boundary)
+       *
+       * DBTUP's interpreter extracts the subroutine section starting at
+       * cinBuffer[5 + initReadLen + interpretLen + finalUpdateLen + finalReadLen]
+       * = cinBuffer[6].  Since cinBuffer[6] is the paramLen word (not actual
+       * linked data), DBTUP must skip it: linked_data = sub_start + 1,
+       * linked_len = RsubLen - 1.  The AggInterpreter then scans linked_data
+       * for AttributeHeaders matching LINKED_COL_FLAG column references.
+       */
       DEBUG("parent_row w/ T_ATTRINFO_CONSTRUCTED");
       Uint32 tmp = RNIL;
 
@@ -5327,7 +5639,8 @@ void Dbspj::lookup_parent_row(Signal *signal, Ptr<Request> requestPtr,
       LocalArenaPool<DataBufferSegment<14>> pool(requestPtr.p->m_arena,
                                                  m_dependency_map_pool);
       Local_pattern_store pattern(pool, treeNodePtr.p->m_attrParamPattern);
-      err = expand(tmp, pattern, rowRef, hasNull);
+      err = expand(tmp, pattern, rowRef, hasNull,
+                   true /* addTableMeta for linked attr params */);
       if (unlikely(err != 0)) {
         jam();
         releaseSection(tmp);
@@ -5342,6 +5655,29 @@ void Dbspj::lookup_parent_row(Signal *signal, Ptr<Request> requestPtr,
       Uint32 new_size = ptr.sz;
       paramLen = new_size - org_size;
       writeToSection(tmp, org_size, &paramLen, 1);
+
+#ifdef DEBUG_JOIN_AGG_TRACE
+      DEB_JOIN_AGG(("T_ATTRINFO_CONSTRUCTED expand: org_size=%u "
+                     "new_size=%u paramLen=%u (linked data = %u words)",
+                     org_size, new_size, paramLen,
+                     paramLen > 1 ? paramLen - 1 : 0));
+      /* Dump the expanded attrInfo to see 5-word header + interp + linked */
+      {
+        Uint32 dump_buf[64];
+        Uint32 dump_len = (new_size < 64) ? new_size : 64;
+        SectionReader rdr(tmp, getSectionSegmentPool());
+        for (Uint32 di = 0; di < dump_len; di++) {
+          ndbrequire(rdr.getWord(&dump_buf[di]));
+        }
+        if (dump_len >= 5) {
+          DEB_JOIN_AGG(("  cinBuffer: initRead=%u interp=%u finalUpd=%u "
+                         "finalRead=%u subLen=%u",
+                         dump_buf[0], dump_buf[1], dump_buf[2],
+                         dump_buf[3], dump_buf[4]));
+        }
+        dumpWordsToLog("  expanded attrInfo", dump_buf, dump_len);
+      }
+#endif
 
       Uint32 *sectionptrs = ptr.p->theData;
       sectionptrs[4] = paramLen;
@@ -6718,7 +7054,8 @@ void Dbspj::scanFrag_parent_row(Signal *signal, Ptr<Request> requestPtr,
       }
       bool hasNull = false;
       Local_pattern_store pattern(pool, treeNodePtr.p->m_attrParamPattern);
-      err = expand(paramPtrI, pattern, rowRef, hasNull);
+      err = expand(paramPtrI, pattern, rowRef, hasNull,
+                   true /* addTableMeta for linked attr params */);
       if (unlikely(err != 0)) {
         jam();
         break;
@@ -7172,6 +7509,22 @@ Uint32 Dbspj::scanFrag_send(Signal *signal, Ptr<Request> requestPtr,
       reinterpret_cast<ScanFragReq *>(data.m_scanFragReq);
 
   memcpy(req, org, sizeof(data.m_scanFragReq));
+  /*
+   * Clear JoinAggFlag for root scan to DBLQH.  The flag was set by DBTC
+   * to indicate the DBTC→DBSPJ request carries aggStateKeys (in a
+   * section).  The root scan itself does not aggregate.
+   *
+   * For child scans that are aggregation leaves (T_AGGREGATE_LEAF),
+   * re-enable JoinAggFlag and pass the per-node aggStateKey in
+   * variableData[var_index + 2] (after corrIdStart + rootResultData).
+   */
+  ScanFragReq::setJoinAggFlag(req->requestInfo, 0);
+  Uint32 agg_extra = 0;
+  if (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) {
+    jam();
+    ScanFragReq::setJoinAggFlag(req->requestInfo, 1);
+    agg_extra = 1;
+  }
   // req->variableData[0] // set below
   Uint32 var_index = 0;
   if (requestPtr.p->m_user_id != RNIL) {
@@ -7403,7 +7756,8 @@ Uint32 Dbspj::scanFrag_send(Signal *signal, Ptr<Request> requestPtr,
       g_eventLogger->info("SCAN_FRAGREQ to %x", fragPtr.p->m_ref);
       printSCAN_FRAGREQ(
           stdout, signal->getDataPtrSend(),
-          NDB_ARRAY_SIZE(treeNodePtr.p->m_scanFrag_data.m_scanFragReq) + var_index,
+          NDB_ARRAY_SIZE(treeNodePtr.p->m_scanFrag_data.m_scanFragReq) +
+          var_index + agg_extra,
           DBLQH);
       printf("ATTRINFO: ");
       print(handle.m_ptr[0], stdout);
@@ -7415,6 +7769,12 @@ Uint32 Dbspj::scanFrag_send(Signal *signal, Ptr<Request> requestPtr,
 
       Uint32 ref = fragPtr.p->m_ref;
       Uint32 nodeId = refToNode(ref);
+      if (agg_extra) {
+        jam();
+        ndbrequire(requestPtr.p->m_aggNodes.get(nodeId));
+        req->variableData[var_index + 2] =
+            requestPtr.p->m_aggStateKeys[nodeId];
+      }
       if (!ScanFragReq::getRangeScanFlag(req->requestInfo)) {
         c_Counters.incr_counter(CI_LOCAL_TABLE_SCANS_SENT, 1);
       } else if (nodeId == getOwnNodeId()) {
@@ -7592,7 +7952,7 @@ Uint32 Dbspj::scanFrag_send(Signal *signal, Ptr<Request> requestPtr,
           ref,
           GSN_SCAN_FRAGREQ,
           signal,
-          NDB_ARRAY_SIZE(data.m_scanFragReq) + var_index,
+          NDB_ARRAY_SIZE(data.m_scanFragReq) + var_index + agg_extra,
           JBB,
           &handle,
           !releaseAtSend);  // Keep sent sections, unless last send
@@ -7884,7 +8244,10 @@ void Dbspj::scanFrag_execSCAN_FRAGCONF(Signal *signal, Ptr<Request> requestPtr,
     }
   }
 
-  requestPtr.p->m_rows += rows;
+  if (requestPtr.p->m_aggNodes.isclear() ||
+      (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF)) {
+    requestPtr.p->m_rows += rows;
+  }
   fragPtr.p->m_totalRows += rows;
   data.m_totalRows += rows;
   data.m_totalBytes += bytes;
@@ -8923,6 +9286,16 @@ Uint32 Dbspj::appendAttrinfoToSection(Uint32 &dst, const RowPtr::Row &row,
   return appendToSection(dst, ptr, 1 + len) ? 0 : DbspjErr::OutOfSectionMemory;
 }
 
+Uint32 Dbspj::appendAttrinfoWithTableMeta(
+    Uint32 &dst, const RowPtr::Row &row,
+    Uint32 col, Uint32 tableId, Uint32 schemaVersion, bool &hasNull) {
+  jam();
+  Uint32 meta[2] = {tableId, schemaVersion};
+  if (unlikely(!appendToSection(dst, meta, 2)))
+    return DbspjErr::OutOfSectionMemory;
+  return appendAttrinfoToSection(dst, row, col, hasNull);
+}
+
 /**
  * 'PkCol' is the composite NDB$PK column in an unique index consisting of
  * a fragment id and the composite PK value (all PK columns concatenated)
@@ -8942,7 +9315,7 @@ Uint32 Dbspj::appendPkColToSection(Uint32 &dst, const RowPtr::Row &row,
 Uint32 Dbspj::appendFromParent(Uint32 &dst, Local_pattern_store &pattern,
                                Local_pattern_store::ConstDataBufferIterator &it,
                                Uint32 levels, const RowPtr &rowptr,
-                               bool &hasNull) {
+                               bool &hasNull, bool addTableMeta) {
   jam();
   Ptr<TreeNode> treeNodePtr;
   ndbrequire(m_treenode_pool.getPtr(treeNodePtr, rowptr.m_src_node_ptrI));
@@ -9007,7 +9380,20 @@ Uint32 Dbspj::appendFromParent(Uint32 &dst, Local_pattern_store &pattern,
       return appendPkColToSection(dst, targetRow.m_row_data, val);
     case QueryPattern::P_ATTRINFO:
       jam();
-      return appendAttrinfoToSection(dst, targetRow.m_row_data, val, hasNull);
+      if (addTableMeta) {
+        // Use the primary table's version (not index table version).
+        // m_schemaVersion is the index table version for index scans,
+        // but linked attr data is validated against primaryTableId in DBLQH.
+        TableRecordPtr primaryTabRec;
+        primaryTabRec.i = treeNodePtr.p->m_primaryTableId;
+        ptrAss(primaryTabRec, m_tableRecord);
+        return appendAttrinfoWithTableMeta(
+            dst, targetRow.m_row_data, val,
+            treeNodePtr.p->m_primaryTableId,
+            primaryTabRec.p->m_currentSchemaVersion, hasNull);
+      } else {
+        return appendAttrinfoToSection(dst, targetRow.m_row_data, val, hasNull);
+      }
     case QueryPattern::P_DATA:
       jam();
       // retrieving DATA from parent...is...an error
@@ -9088,7 +9474,8 @@ Uint32 Dbspj::appendDataToSection(
  * This function takes a pattern and a row and expands it into a section
  */
 Uint32 Dbspj::expand(Uint32 &_dst, Local_pattern_store &pattern,
-                     const RowPtr &row, bool &hasNull) {
+                     const RowPtr &row, bool &hasNull,
+                     bool addTableMeta) {
   Uint32 err;
   Uint32 dst = _dst;
   hasNull = false;
@@ -9108,10 +9495,24 @@ Uint32 Dbspj::expand(Uint32 &_dst, Local_pattern_store &pattern,
         jam();
         err = appendPkColToSection(dst, row.m_row_data, val);
         break;
-      case QueryPattern::P_ATTRINFO:
+      case QueryPattern::P_ATTRINFO: {
         jam();
-        err = appendAttrinfoToSection(dst, row.m_row_data, val, hasNull);
+        if (addTableMeta) {
+          Ptr<TreeNode> srcNode;
+          ndbrequire(m_treenode_pool.getPtr(srcNode, row.m_src_node_ptrI));
+          // Use primary table's version (not index table version).
+          TableRecordPtr primaryTabRec;
+          primaryTabRec.i = srcNode.p->m_primaryTableId;
+          ptrAss(primaryTabRec, m_tableRecord);
+          err = appendAttrinfoWithTableMeta(
+              dst, row.m_row_data, val,
+              srcNode.p->m_primaryTableId,
+              primaryTabRec.p->m_currentSchemaVersion, hasNull);
+        } else {
+          err = appendAttrinfoToSection(dst, row.m_row_data, val, hasNull);
+        }
         break;
+      }
       case QueryPattern::P_DATA:
         jam();
         err = appendDataToSection(dst, pattern, it, val, hasNull);
@@ -9121,7 +9522,8 @@ Uint32 Dbspj::expand(Uint32 &_dst, Local_pattern_store &pattern,
         // P_PARENT is a prefix to another pattern token
         // that permits code to access rows from earlier than immediate parent
         // val is no of levels to move up the tree
-        err = appendFromParent(dst, pattern, it, val, row, hasNull);
+        err = appendFromParent(dst, pattern, it, val, row, hasNull,
+                               addTableMeta);
         break;
         // PARAM's was converted to DATA by ::expand(pattern...)
       case QueryPattern::P_PARAM:
@@ -9237,14 +9639,17 @@ Uint32 Dbspj::expand(Local_pattern_store &dst, Ptr<TreeNode> treeNodePtr,
       case QueryPattern::P_UNQ_PK:
       case QueryPattern::P_ATTRINFO:
         jam();
+        DEBUG("P_COL/P_UNQ_PK/P_ATTRINFO");
         err = appendToPattern(dst, pattern, 1);
         break;
       case QueryPattern::P_DATA:
         jam();
+        DEBUG("P_DATA");
         err = appendToPattern(dst, pattern, val + 1);
         break;
       case QueryPattern::P_PARAM:
         jam();
+        DEBUG("P_PARAM");
         // NOTE: Converted to P_DATA by appendParamToPattern
         ndbassert(val < paramCnt);
         err = appendParamToPattern(dst, row, val);
@@ -9252,6 +9657,7 @@ Uint32 Dbspj::expand(Local_pattern_store &dst, Ptr<TreeNode> treeNodePtr,
         break;
       case QueryPattern::P_PARAM_HEADER:
         jam();
+        DEBUG("P_PARAM_HEADER");
         // NOTE: Converted to P_DATA by appendParamHeadToPattern
         ndbassert(val < paramCnt);
         err = appendParamHeadToPattern(dst, row, val);
@@ -9260,6 +9666,7 @@ Uint32 Dbspj::expand(Local_pattern_store &dst, Ptr<TreeNode> treeNodePtr,
       case QueryPattern::P_PARENT:  // Prefix to P_COL
       {
         jam();
+        DEBUG("P_PARENT");
         err = appendToPattern(dst, pattern, 1);
         if (unlikely(err)) {
           jam();
@@ -9348,6 +9755,22 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
       DEBUG("FIRST_MATCH optimization used for ANTI_JOIN");
       treeNodePtr.p->m_bits |= TreeNode::T_FIRST_MATCH;
     }  // DABits::NI_ANTI_JOIN
+
+    if (treeBits & DABits::NI_AGGREGATE) {
+      jam();
+      DEB_AGGREGATION(("(%u) AGGREGATE: request contains aggregation",
+                       instance()));
+      requestPtr.p->m_bits |= Request::RT_AGGREGATE;
+      ctx.m_aggregate_node_count++;
+
+      if (treeBits & DABits::NI_AGGREGATE_LEAF) {
+        jam();
+        DEB_AGGREGATION(("(%u) AGGREGATE_LEAF: this node sends aggregated "
+                         "results to API",
+                         instance()));
+        treeNodePtr.p->m_bits |= TreeNode::T_AGGREGATE_LEAF;
+      }
+    }  // DABits::NI_AGGREGATE
 
     if (treeBits & DABits::NI_HAS_PARENT) {
       jam();
@@ -9475,7 +9898,8 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
     const Uint32 mask = DABits::NI_LINKED_ATTR | DABits::NI_ATTR_INTERPRET |
                         DABits::NI_ATTR_LINKED;
 
-    if (((treeBits & mask) | (paramBits & DABits::PI_ATTR_LIST)) != 0) {
+    if (((treeBits & mask) |
+         (paramBits & (DABits::PI_ATTR_LIST | DABits::PI_ATTR_INTERPRET))) != 0) {
       jam();
       /**
        * OPTIONAL PART 3: attrinfo handling
@@ -9504,6 +9928,7 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
           (treeNodePtr.p->m_bits & TreeNode::T_ATTR_INTERPRETED);
 
       if (interpreted) {
+        DEBUG("interpreted");
         static constexpr Uint32 sections[5] = {0, 0, 0, 0, 0};
         /**
          * Add section headers for interpreted execution
@@ -9567,6 +9992,11 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
             jam();
             DEBUG("NI_ATTR_LINKED"
                   << ", len_pattern:" << len_pattern);
+#ifdef DEBUG_JOIN_AGG_TRACE
+            DEB_JOIN_AGG(("parseDA NI_ATTR_LINKED: len_prg=%u len_pattern=%u",
+                           len_prg, len_pattern));
+            dumpWordsToLog("  linked pattern", tree.ptr, len_pattern);
+#endif
             /**
              * Expand pattern into a new pattern (with linked values)
              * Real attrInfo will be constructed with another expand
@@ -9619,6 +10049,12 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
           const Uint32 len2 = *param.ptr++;
           const Uint32 program_len = len2 & 0xFFFF;
           const Uint32 subroutine_len = len2 >> 16;
+#ifdef DEBUG_JOIN_AGG_TRACE
+          DEB_JOIN_AGG(("parseDA PI_ATTR_INTERPRET: program_len=%u "
+                         "subroutine_len=%u",
+                         program_len, subroutine_len));
+          dumpWordsToLog("  interp program", param.ptr, program_len);
+#endif
           err = DbspjErr::OutOfSectionMemory;
           if (unlikely(
                   !appendToSection(attrInfoPtrI, param.ptr, program_len))) {
@@ -9676,20 +10112,45 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
       Uint32 sum_read = 0;
       Uint32 dst[MAX_ATTRIBUTES_IN_TABLE + 2];
 
+      /**
+       * For aggregation queries (RT_AGGREGATE set on request):
+       * Only the aggregate leaf node (T_AGGREGATE_LEAF) sends results
+       * to the API. Non-leaf nodes pass data only via linked attributes
+       * to child nodes; the aggregation program is executed at the leaf.
+       *
+       * Normally the NDB API should not set PI_ATTR_LIST for non-leaf
+       * operations in aggregate queries (ha_ndbcluster skips
+       * setResultRowRef for them). This guard is defensive: if
+       * PI_ATTR_LIST is present, suppress the user projection and
+       * FLUSH_AI to avoid READ_PACKED columns (unparseable by
+       * buildRowHeader) in the TRANSID_AI sent to DBSPJ.
+       */
+      const bool isAggregateRequest =
+          (requestPtr.p->m_bits & Request::RT_AGGREGATE) != 0;
+      const bool isAggregateLeaf =
+          (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) != 0;
+      const bool suppressFlushAI = isAggregateRequest && !isAggregateLeaf;
+
       if (paramBits & DABits::PI_ATTR_LIST) {
         jam();
         Uint32 len = *param.ptr++;
         DEBUG("PI_ATTR_LIST");
 
-        treeNodePtr.p->m_bits |= TreeNode::T_USER_PROJECTION;
-        err = DbspjErr::OutOfSectionMemory;
-        if (!appendToSection(attrInfoPtrI, param.ptr, len)) {
-          jam();
-          break;
+        if (!suppressFlushAI) {
+          treeNodePtr.p->m_bits |= TreeNode::T_USER_PROJECTION;
+          err = DbspjErr::OutOfSectionMemory;
+          if (!appendToSection(attrInfoPtrI, param.ptr, len)) {
+            jam();
+            break;
+          }
+          sum_read += len;
+        } else {
+          DEB_AGGREGATION(("(%u) Suppressing user projection for "
+                           "intermediate aggregate node",
+                           instance()));
         }
 
         param.ptr += len;
-        sum_read += len;
 
         /**
          * We have just added a 'USER_PROJECTION' which is the
@@ -9710,7 +10171,8 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
          * older API versions assumed that all SPJ results were
          * returned as 'long' signals.
          */
-        if (treeBits & DABits::NI_LINKED_ATTR || requestPtr.p->isScan()) {
+        if (!suppressFlushAI &&
+            (treeBits & DABits::NI_LINKED_ATTR || requestPtr.p->isScan())) {
           /**
            * Insert a FLUSH_AI of 'USER_PROJECTION' result (to client)
            * before 'LINKED_ATTR' results to SPJ is produced.
@@ -9755,7 +10217,9 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
           break;
         }
         sum_read += cnt;
-        treeNodePtr.p->m_bits |= TreeNode::T_EXPECT_TRANSID_AI;
+        if (!(treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF)) {
+          treeNodePtr.p->m_bits |= TreeNode::T_EXPECT_TRANSID_AI;
+        }
 
         // Having a key projection for LINKED child, implies not-LEAF
         treeNodePtr.p->m_bits &= ~(Uint32)TreeNode::T_LEAF;
@@ -9782,7 +10246,9 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
           break;
         }
         sum_read += cnt;
-        treeNodePtr.p->m_bits |= TreeNode::T_EXPECT_TRANSID_AI;
+        if (!(treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF)) {
+          treeNodePtr.p->m_bits |= TreeNode::T_EXPECT_TRANSID_AI;
+        }
       }
 
       if (interpreted) {
@@ -9822,11 +10288,19 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
     if (treeNodePtr.p->m_send.m_attrInfoPtrI == RNIL) {
       jam();
 
-      // Add dummy interpreted program.
-      Uint32 tmp = Interpreter::ExitOK();
+      /**
+       * Add a proper interpreted program with the 5-word section header
+       * that DBTUP copyAttrinfo expects when interpretedFlag is set.
+       * Header: [InitLen=0, ProgLen=1, SubrLen=0, ParamLen=0, RsubLen=0]
+       * followed by a single ExitOK instruction.
+       *
+       * This is needed because DBSPJ never sets NotInterpretedFlag, so
+       * DBLQH/DBTUP always process child scan attrInfo in interpreted mode.
+       */
+      Uint32 tmp[6] = {0, 1, 0, 0, 0, Interpreter::ExitOK()};
       err = DbspjErr::OutOfSectionMemory;
-      if (unlikely(!appendToSection(treeNodePtr.p->m_send.m_attrInfoPtrI, &tmp,
-                                    1))) {
+      if (unlikely(!appendToSection(treeNodePtr.p->m_send.m_attrInfoPtrI, tmp,
+                                    6))) {
         jam();
         break;
       }

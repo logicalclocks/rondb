@@ -140,19 +140,29 @@ extern void rsqlp_error(RSQLP_LTYPE* yylloc, yyscan_t yyscanner, const char* s);
   struct OrderbyColumns* orderby_cols;
   struct ConditionalExpression* conditional_expression;
   AggregationAPICompiler::Expr* arith_expr;
+  struct TableRef* table_ref;
+  struct JoinClause* join_clause;
+  struct JoinCondition* join_condition;
+  struct {
+    JoinClause* head;
+    JoinClause* tail;
+  } join_list;
+  struct SelectStatement* subquery_stmt;
 }
 
 %token<bival> T_INT
 %token<fpval> T_FLOAT
 %token T_COUNT T_MAX T_MIN T_SUM T_AVG T_LEFT T_RIGHT
-%token T_EXPLAIN T_SELECT T_FROM T_GROUP T_BY T_ORDER T_ASC T_DESC T_AS T_WHERE T_LIMIT
+%token T_EXISTS T_EXPLAIN T_SELECT T_FROM T_JOIN T_ON T_GROUP T_BY T_HAVING T_ORDER T_ASC T_DESC T_AS T_WHERE T_LIMIT
 %token T_SEMICOLON
-%token T_OR T_XOR T_AND T_NOT T_EQUALS T_GE T_GT T_LE T_LT T_NOT_EQUALS T_IS T_NULL T_BITWISE_OR T_BITWISE_AND T_BITSHIFT_LEFT T_BITSHIFT_RIGHT T_PLUS T_MINUS T_MULTIPLY T_SLASH T_DIV T_MODULO T_BITWISE_XOR T_EXCLAMATION
+%token T_OR T_XOR T_AND T_NOT T_EQUALS T_GE T_GT T_LE T_LT T_NOT_EQUALS T_IS T_NULL T_LIKE T_IN T_BITWISE_OR T_BITWISE_AND T_BITSHIFT_LEFT T_BITSHIFT_RIGHT T_PLUS T_MINUS T_MULTIPLY T_SLASH T_DIV T_MODULO T_BITWISE_XOR T_EXCLAMATION T_DOT
 %token T_INTERVAL T_DATE_ADD T_DATE_SUB T_EXTRACT T_MICROSECOND T_SECOND T_MINUTE T_HOUR T_DAY T_WEEK T_MONTH T_QUARTER T_YEAR T_SECOND_MICROSECOND T_MINUTE_MICROSECOND T_MINUTE_SECOND T_HOUR_MICROSECOND T_HOUR_SECOND T_HOUR_MINUTE T_DAY_MICROSECOND T_DAY_SECOND T_DAY_MINUTE T_DAY_HOUR T_YEAR_MONTH
+%token T_CASE T_WHEN T_THEN T_ELSE T_END
 
 // RonSQLPreparer.cpp needs some values that are inequal to all tokens. They
 // need to be declared here but aren't used in the lexer or parser.
 %token I_MYSQL_TIME
+%token I_IN_SUBQUERY I_SUBQUERY
 
 /*
  * MySQL operator presedence, strongest binding first:
@@ -181,7 +191,7 @@ extern void rsqlp_error(RSQLP_LTYPE* yylloc, yyscan_t yyscanner, const char* s);
 %left T_XOR
 %left T_AND
 %precedence T_NOT
-%left T_EQUALS T_GE T_GT T_LE T_LT T_NOT_EQUALS T_IS
+%left T_EQUALS T_GE T_GT T_LE T_LT T_NOT_EQUALS T_IS T_LIKE T_IN
 %left T_BITWISE_OR
 %left T_BITWISE_AND
 %left T_BITSHIFT_LEFT T_BITSHIFT_RIGHT
@@ -206,23 +216,33 @@ extern void rsqlp_error(RSQLP_LTYPE* yylloc, yyscan_t yyscanner, const char* s);
 %type<outputs_linked_list> outputlist
 %type<tokenkindval> aggfun interval_type
 %type<arith_expr> arith_expr
-%type<conditional_expression> where_opt cond_expr
+%type<conditional_expression> where_opt cond_expr having_opt in_list
 %type<bival> limit_opt
+%type<table_ref> table_ref
+%type<join_clause> join_clause
+%type<join_condition> join_condition join_condition_list
+%type<join_list> join_list
+%type<subquery_stmt> subquery
 
 %start selectstatement
 
 %%
 
 selectstatement:
-  explain_opt T_SELECT outputlist T_FROM identifier_c where_opt groupby_opt orderby_opt limit_opt T_SEMICOLON
+  explain_opt T_SELECT outputlist T_FROM table_ref join_list where_opt groupby_opt having_opt orderby_opt limit_opt T_SEMICOLON
   {
     context->ast_root.do_explain = $1;
     context->ast_root.outputs = $3.head;
-    context->ast_root.table = $5;
-    context->ast_root.where_expression = $6;
-    context->ast_root.groupby_columns = $7;
-    context->ast_root.orderby_columns = $8;
-    context->ast_root.limit = $9;
+    context->ast_root.root_table = $5;
+    context->ast_root.table = $5->name;
+    if ($6.head != NULL) {
+      context->ast_root.joins = $6.head;
+    }
+    context->ast_root.where_expression = $7;
+    context->ast_root.groupby_columns = $8;
+    context->ast_root.having_expression = $9;
+    context->ast_root.orderby_columns = $10;
+    context->ast_root.limit = $11;
     /*
      * These asserts make sure the definition of TokenKind matches both the
      * yychar variable in RonSQLzparser.y.cpp:rsqlp_parse() and the underlying
@@ -278,6 +298,13 @@ nonaliased_output:
                                           $$->output_name = $1;
                                           $$->next = NULL;
                                         }
+| identifier_c T_DOT identifier_c      {
+                                          initptr($$);
+                                          $$->type = Outputs::Type::COLUMN;
+                                          $$->column.col_idx = context->qualified_column_name_to_idx($1, $3);
+                                          $$->output_name = $3;
+                                          $$->next = NULL;
+                                        }
 | aggfun T_LEFT arith_expr T_RIGHT      { init_aggfun($$, @$, $1, $3); }
 | T_COUNT T_LEFT arith_expr T_RIGHT     {
                                           // This needs to be a separate rule from the "aggfun..."
@@ -306,6 +333,7 @@ aggfun:
 
 arith_expr:
   identifier_c                          { $$ = context->get_agg()->Load(context->column_name_to_idx($1)); }
+| identifier_c T_DOT identifier_c      { $$ = context->get_agg()->Load(context->qualified_column_name_to_idx($1, $3)); }
 | T_INT                                 { $$ = context->get_agg()->ConstantInteger($1); }
 | T_MINUS arith_expr                    { $$ = context->get_agg()->Minus(context->get_agg()->ConstantInteger(0), $2); }
 | T_LEFT arith_expr T_RIGHT             { $$ = $2; }
@@ -315,11 +343,87 @@ arith_expr:
 | arith_expr T_SLASH arith_expr         { $$ = context->get_agg()->Div($1, $3); }
 | arith_expr T_DIV arith_expr           { $$ = context->get_agg()->DivInt($1, $3); }
 | arith_expr T_MODULO arith_expr        { $$ = context->get_agg()->Rem($1, $3); }
+| T_CASE T_WHEN cond_expr T_THEN arith_expr T_ELSE arith_expr T_END
+                                        { $$ = context->get_agg()->CaseExpr($3, $5, $7); }
 
 identifier:
   T_IDENTIFIER                          { $$ = $1; }
 identifier_c:
   identifier                            { $$ = $1.to_LexCString(context->get_allocator()); }
+
+table_ref:
+  identifier_c
+  {
+    initptr($$);
+    $$->database = LexCString{NULL, 0};
+    $$->name = $1;
+    $$->alias = $1;
+  }
+| identifier_c T_DOT identifier_c
+  {
+    initptr($$);
+    $$->database = $1;
+    $$->name = $3;
+    $$->alias = $3;
+  }
+| identifier_c T_AS identifier_c
+  {
+    initptr($$);
+    $$->database = LexCString{NULL, 0};
+    $$->name = $1;
+    $$->alias = $3;
+  }
+| identifier_c T_DOT identifier_c T_AS identifier_c
+  {
+    initptr($$);
+    $$->database = $1;
+    $$->name = $3;
+    $$->alias = $5;
+  }
+
+join_list:
+  %empty                                { $$.head = NULL; $$.tail = NULL; }
+| join_list join_clause                 { if ($1.head == NULL) {
+                                            $$.head = $2; $$.tail = $2;
+                                          } else {
+                                            $$.head = $1.head; $$.tail = $2;
+                                            $1.tail->next = $2;
+                                          }
+                                        }
+
+join_clause:
+  T_JOIN table_ref T_ON join_condition_list
+  {
+    initptr($$);
+    $$->table = *$2;
+    $$->conditions = $4;
+    $$->next = NULL;
+  }
+
+join_condition_list:
+  join_condition
+  {
+    $$ = $1;
+  }
+| join_condition_list T_AND join_condition
+  {
+    /* Append $3 to end of list starting at $1 */
+    struct JoinCondition *tail = $1;
+    while (tail->next != NULL) tail = tail->next;
+    tail->next = $3;
+    $$ = $1;
+  }
+
+join_condition:
+  identifier_c T_DOT identifier_c T_EQUALS identifier_c T_DOT identifier_c
+  {
+    initptr($$);
+    $$->child_table = $1;
+    $$->child_column = $3;
+    $$->parent_table = $5;
+    $$->parent_column = $7;
+    $$->next = NULL;
+  }
 
 where_opt:
   %empty                                { $$ = NULL; }
@@ -327,6 +431,7 @@ where_opt:
 
 cond_expr:
   identifier_c                          { initptr($$); $$->op = T_IDENTIFIER; $$->col_idx = context->column_name_to_idx($1); }
+| identifier_c T_DOT identifier_c      { initptr($$); $$->op = T_IDENTIFIER; $$->col_idx = context->qualified_column_name_to_idx($1, $3); }
 | T_STRING                              { initptr($$); $$->op = T_STRING; $$->string = $1; }
 | T_INT                                 { initptr($$); $$->op = T_INT; $$->constant_integer = $1; }
 | T_FLOAT                               { initptr($$); $$->op = T_FLOAT; $$->constant_float.dbl = $1.dbl; $$->constant_float.ls = $1.ls; }
@@ -342,6 +447,25 @@ cond_expr:
 | cond_expr T_LE cond_expr              { init_cond($$, $1, T_LE, $3); }
 | cond_expr T_LT cond_expr              { init_cond($$, $1, T_LT, $3); }
 | cond_expr T_NOT_EQUALS cond_expr      { init_cond($$, $1, T_NOT_EQUALS, $3); }
+| cond_expr T_LIKE cond_expr            { init_cond($$, $1, T_LIKE, $3); }
+| cond_expr T_IN T_LEFT in_list T_RIGHT {
+    /* Expand col IN (a, b, c) to col = a OR col = b OR col = c */
+    ConditionalExpression* item = $4;
+    $$ = NULL;
+    while (item != NULL) {
+      ConditionalExpression* next = item->args.right;
+      ConditionalExpression* eq;
+      init_cond(eq, $1, T_EQUALS, item->args.left);
+      if ($$ == NULL) {
+        $$ = eq;
+      } else {
+        ConditionalExpression* or_node;
+        init_cond(or_node, $$, T_OR, eq);
+        $$ = or_node;
+      }
+      item = next;
+    }
+  }
 | cond_expr T_IS T_NULL                 { initptr($$); $$->op = T_IS; $$->is.arg = $1; $$->is.null = true; }
 | cond_expr T_IS T_NOT T_NULL           { initptr($$); $$->op = T_IS; $$->is.arg = $1; $$->is.null = false; }
 | cond_expr T_BITWISE_OR cond_expr      { init_cond($$, $1, T_BITWISE_OR, $3); }
@@ -360,6 +484,66 @@ cond_expr:
 | T_DATE_ADD T_LEFT cond_expr T_COMMA cond_expr T_RIGHT     { init_cond($$, $3, T_DATE_ADD, $5); }
 | T_DATE_SUB T_LEFT cond_expr T_COMMA cond_expr T_RIGHT     { init_cond($$, $3, T_DATE_SUB, $5); }
 | T_EXTRACT T_LEFT interval_type T_FROM cond_expr T_RIGHT   { initptr($$); $$->op = T_EXTRACT; $$->extract.interval_type = $3; $$->extract.arg = $5; }
+| aggfun T_LEFT arith_expr T_RIGHT    {
+                                          initptr($$);
+                                          $$->op = $1;
+                                          switch($1) {
+                                            case T_SUM: $$->having_agg.agg_index = context->get_agg()->Sum($3); break;
+                                            case T_MIN: $$->having_agg.agg_index = context->get_agg()->Min($3); break;
+                                            case T_MAX: $$->having_agg.agg_index = context->get_agg()->Max($3); break;
+                                            default: abort();
+                                          }
+                                        }
+| T_COUNT T_LEFT arith_expr T_RIGHT   {
+                                          initptr($$);
+                                          $$->op = T_COUNT;
+                                          $$->having_agg.agg_index = context->get_agg()->Count($3);
+                                        }
+| T_COUNT T_LEFT T_MULTIPLY T_RIGHT   {
+                                          initptr($$);
+                                          $$->op = T_COUNT;
+                                          $$->having_agg.agg_index = context->get_agg()->Count(context->get_agg()->ConstantInteger(1));
+                                        }
+| T_AVG T_LEFT arith_expr T_RIGHT     {
+                                          initptr($$);
+                                          $$->op = T_AVG;
+                                          $$->having_agg.agg_index = context->get_agg()->Sum($3);
+                                          $$->having_agg.agg_index2 = context->get_agg()->Count($3);
+                                        }
+| T_EXISTS T_LEFT subquery T_RIGHT    {
+                                          initptr($$);
+                                          $$->op = T_EXISTS;
+                                          $$->subquery.stmt = $3;
+                                        }
+| cond_expr T_IN T_LEFT subquery T_RIGHT
+                                        {
+                                          initptr($$);
+                                          $$->op = I_IN_SUBQUERY;
+                                          $$->in_subquery.expr = $1;
+                                          $$->in_subquery.stmt = $4;
+                                        }
+| T_LEFT subquery T_RIGHT             {
+                                          initptr($$);
+                                          $$->op = I_SUBQUERY;
+                                          $$->subquery.stmt = $2;
+                                        }
+
+subquery:
+  T_SELECT outputlist T_FROM table_ref join_list where_opt
+  groupby_opt having_opt orderby_opt limit_opt
+  {
+    $$ = context->get_allocator()->alloc_exc<SelectStatement>(1);
+    $$->do_explain = false;
+    $$->outputs = $2.head;
+    $$->root_table = $4;
+    $$->table = $4->name;
+    $$->joins = $5.head;
+    $$->where_expression = $6;
+    $$->groupby_columns = $7;
+    $$->having_expression = $8;
+    $$->orderby_columns = $9;
+    $$->limit = $10;
+  }
 
 interval_type:
   T_MICROSECOND                         { $$ = T_MICROSECOND; }
@@ -383,6 +567,14 @@ interval_type:
 | T_DAY_HOUR                            { $$ = T_DAY_HOUR; }
 | T_YEAR_MONTH                          { $$ = T_YEAR_MONTH; }
 
+in_list:
+  cond_expr                             { init_cond($$, $1, T_COMMA, NULL); }
+| in_list T_COMMA cond_expr            { init_cond($$, $3, T_COMMA, $1); }
+
+having_opt:
+  %empty                                { $$ = NULL; }
+| T_HAVING cond_expr                    { $$ = $2; }
+
 groupby_opt:
   %empty                                { $$ = NULL; }
 | T_GROUP T_BY groupby_cols             { $$ = $3; }
@@ -392,7 +584,8 @@ groupby_cols:
 | groupby_col T_COMMA groupby_cols      { $$ = $1; $$->next = $3; }
 
 groupby_col:
-identifier_c                            { initptr($$); $$->col_idx = context->column_name_to_idx($1); $$->next = NULL; }
+  identifier_c                          { initptr($$); $$->col_idx = context->column_name_to_idx($1); $$->next = NULL; }
+| identifier_c T_DOT identifier_c      { initptr($$); $$->col_idx = context->qualified_column_name_to_idx($1, $3); $$->next = NULL; }
 
 orderby_opt:
   %empty                                { $$ = NULL; }
@@ -409,6 +602,9 @@ orderby_col:
   identifier_c                          { initptr($$); $$->col_idx = context->column_name_to_idx($1); $$->ascending = true; $$->next = NULL; }
 | identifier_c T_ASC                    { initptr($$); $$->col_idx = context->column_name_to_idx($1); $$->ascending = true; $$->next = NULL; }
 | identifier_c T_DESC                   { initptr($$); $$->col_idx = context->column_name_to_idx($1); $$->ascending = false; $$->next = NULL; }
+| identifier_c T_DOT identifier_c      { initptr($$); $$->col_idx = context->qualified_column_name_to_idx($1, $3); $$->ascending = true; $$->next = NULL; }
+| identifier_c T_DOT identifier_c T_ASC  { initptr($$); $$->col_idx = context->qualified_column_name_to_idx($1, $3); $$->ascending = true; $$->next = NULL; }
+| identifier_c T_DOT identifier_c T_DESC { initptr($$); $$->col_idx = context->qualified_column_name_to_idx($1, $3); $$->ascending = false; $$->next = NULL; }
 
 limit_opt:
   %empty                                { $$ = -1; }

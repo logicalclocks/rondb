@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2011, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -46,7 +46,7 @@ class SectionReader;
 struct QueryNode;
 struct QueryNodeParameters;
 
-// #define SPJ_TRACE_TIME
+#define SPJ_TRACE_TIME
 
 class Dbspj : public SimulatedBlock {
  public:
@@ -443,6 +443,7 @@ class Dbspj : public SimulatedBlock {
     Uint32 m_resultData;  // API
     Uint32 m_senderRef;   // TC (used for routing)
     Uint32 m_scan_cnt;
+    Uint32 m_aggregate_node_count;  // Nodes with NI_AGGREGATE flag
     Signal *m_start_signal;  // Argument to first node in tree
 
     TreeNodeBitMask m_scans;  // TreeNodes doing scans
@@ -846,7 +847,14 @@ class Dbspj : public SimulatedBlock {
           m_predecessors(),
           m_dependencies(),
           m_resumeEvents(0),
-          m_scanAncestorPtrI(RNIL) {}
+          m_scanAncestorPtrI(RNIL)
+#ifdef SPJ_TRACE_TIME
+          ,m_scan_fragconf_count(0)
+          ,m_scan_fragconf_len(0)
+          ,m_lqhkeyconf_count(0)
+          ,m_lqhkeyref_count(0)
+#endif
+    {}
 
     TreeNode(Uint32 request)
         : m_magic(MAGIC),
@@ -863,7 +871,14 @@ class Dbspj : public SimulatedBlock {
           m_scanAncestorPtrI(RNIL),
           nextList(RNIL),
           prevList(RNIL),
-          nextCursor(RNIL) {
+          nextCursor(RNIL)
+#ifdef SPJ_TRACE_TIME
+          ,m_scan_fragconf_count(0)
+          ,m_scan_fragconf_len(0)
+          ,m_lqhkeyconf_count(0)
+          ,m_lqhkeyref_count(0)
+#endif
+    {
       //    m_send.m_ref = 0;
       m_send.m_correlation = 0;
       m_send.m_keyInfoPtrI = RNIL;
@@ -1045,6 +1060,13 @@ class Dbspj : public SimulatedBlock {
        */
       T_REDUCE_KEYS = 0x800000,
 
+      /**
+       * This node is the aggregation leaf - only this node sends
+       * results to the API when aggregation is active.
+       * The aggregation program is executed by DBLQH (black box to SPJ).
+       */
+      T_AGGREGATE_LEAF = 0x1000000,
+
       // End marker...
       T_END = 0
     };
@@ -1182,6 +1204,12 @@ class Dbspj : public SimulatedBlock {
     };
     Uint32 prevList;
     Uint32 nextCursor;
+#ifdef SPJ_TRACE_TIME
+    Uint32 m_scan_fragconf_count;
+    Uint32 m_scan_fragconf_len;
+    Uint32 m_lqhkeyconf_count;
+    Uint32 m_lqhkeyref_count;
+#endif
   };  // struct TreeNode
 
   static const Ptr<TreeNode> NullTreeNodePtr;
@@ -1208,6 +1236,8 @@ class Dbspj : public SimulatedBlock {
       RT_NEED_COMPLETE = 0x20  // Does any node need m_complete hook
       ,
       RT_REPEAT_SCAN_RESULT = 0x40  // Repeat bushy scan result when required
+      ,
+      RT_AGGREGATE = 0x80  // Request contains aggregation (only leaf sends to API)
     };
 
     enum RequestState {
@@ -1248,7 +1278,10 @@ class Dbspj : public SimulatedBlock {
         m_suspended_tree_nodes;  // Nodes suspended by SPJ congestion control
     Uint32 m_rows;               // Rows accumulated in current batch
     Uint32 m_outstanding;        // Outstanding signals, when 0, batch is done
-    Uint16 m_lookup_node_data[ABS_MAX_NDB_NODES];
+    Uint16 *m_lookup_node_data;  // Dynamically allocated [MAX_NDB_NODES]
+    Uint32 *m_aggStateKeys;      // Dynamically allocated [MAX_NDB_NODES]
+    NdbNodeBitmask m_aggNodes;
+    NDB_TICKS m_lastHbrepTicks;  // Last time SCAN_HBREP was sent during JoinAgg bypass
     ArenaHead m_arena;
 
 #ifdef SPJ_TRACE_TIME
@@ -1429,6 +1462,7 @@ class Dbspj : public SimulatedBlock {
    */
   const OpInfo *getOpInfo(Uint32 op);
   Uint32 build(Build_context &, Ptr<Request>, SectionReader &, SectionReader &);
+  Uint32 validateAggregateFlags(Build_context &, Ptr<Request>);
   Uint32 initRowBuffers(Ptr<Request>);
 
   void setupAncestors(Ptr<Request> requestPtr, Ptr<TreeNode> treeNodePtr,
@@ -1454,6 +1488,7 @@ class Dbspj : public SimulatedBlock {
   void checkPrepareComplete(Signal *, Ptr<Request>);
   void checkBatchComplete(Signal *, Ptr<Request>);
   void batchComplete(Signal *, Ptr<Request>);
+  void handleJoinAggNextBatch(Signal *, Ptr<Request>);
   void prepareNextBatch(Signal *, Ptr<Request>);
   void sendConf(Signal *, Ptr<Request>, bool is_complete);
   void complete(Signal *, Ptr<Request>);
@@ -1526,14 +1561,18 @@ class Dbspj : public SimulatedBlock {
   Uint32 appendPkColToSection(Uint32 &ptrI, const RowPtr::Row &, Uint32 col);
   Uint32 appendAttrinfoToSection(Uint32 &, const RowPtr::Row &, Uint32 col,
                                  bool &hasNull);
+  Uint32 appendAttrinfoWithTableMeta(Uint32 &dst, const RowPtr::Row &row,
+                                     Uint32 col, Uint32 tableId,
+                                     Uint32 schemaVersion, bool &hasNull);
   Uint32 appendDataToSection(Uint32 &ptrI, Local_pattern_store &,
                              Local_pattern_store::ConstDataBufferIterator &,
                              Uint32 len, bool &hasNull);
   Uint32 appendFromParent(Uint32 &ptrI, Local_pattern_store &,
                           Local_pattern_store::ConstDataBufferIterator &,
-                          Uint32 level, const RowPtr &, bool &hasNull);
+                          Uint32 level, const RowPtr &, bool &hasNull,
+                          bool addTableMeta = false);
   Uint32 expand(Uint32 &ptrI, Local_pattern_store &p, const RowPtr &r,
-                bool &hasNull);
+                bool &hasNull, bool addTableMeta = false);
   Uint32 expand(Uint32 &ptrI, DABuffer &pattern, Uint32 len, DABuffer &param,
                 Uint32 cnt, bool &hasNull);
   Uint32 expand(Local_pattern_store &dst, Ptr<TreeNode> treeNodePtr,

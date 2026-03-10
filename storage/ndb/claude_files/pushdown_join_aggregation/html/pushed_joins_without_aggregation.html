@@ -1,0 +1,2429 @@
+<!DOCTYPE html>
+<!-- saved from url=(0136)file:///Users/mikael/mysql_trees/rondb_2604/storage/ndb/claude_files/pushdown_join_aggregation/html/pushed_join_without_aggregation.html -->
+<html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NDB Pushed Joins (Without Aggregation) — DBSPJ Architecture</title>
+<style>
+  :root {
+    --bg: #1a1a2e;
+    --surface: #16213e;
+    --surface2: #0f3460;
+    --accent: #e94560;
+    --accent2: #53d8fb;
+    --text: #eee;
+    --text-dim: #aab;
+    --green: #4ec9b0;
+    --yellow: #dcdcaa;
+    --blue: #569cd6;
+    --orange: #ce9178;
+    --purple: #c586c0;
+    --red: #f44747;
+    --border: #334;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    padding: 2rem;
+    max-width: 1200px;
+    margin: 0 auto;
+  }
+  h1 { font-size: 2.2rem; color: var(--accent2); border-bottom: 3px solid var(--accent); padding-bottom: 0.5rem; margin-bottom: 0.5rem; }
+  .subtitle { color: var(--text-dim); font-size: 1.1rem; margin-bottom: 2rem; }
+  h2 { font-size: 1.6rem; color: var(--accent2); margin-top: 3rem; margin-bottom: 1rem; padding-left: 0.5rem; border-left: 4px solid var(--accent); }
+  h3 { font-size: 1.2rem; color: var(--green); margin-top: 2rem; margin-bottom: 0.5rem; }
+  h4 { font-size: 1.05rem; color: var(--yellow); margin-top: 1.5rem; margin-bottom: 0.4rem; }
+  p { margin-bottom: 1rem; }
+  a { color: var(--accent2); }
+  ul, ol { margin: 0.5rem 0 1rem 1.5rem; }
+  li { margin-bottom: 0.3rem; }
+  code { font-family: 'Cascadia Code', 'Fira Code', 'Menlo', monospace; background: var(--surface); padding: 0.15rem 0.4rem; border-radius: 3px; font-size: 0.88rem; }
+  pre { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 1.2rem 1.5rem; margin: 1rem 0 1.5rem; font-family: 'Cascadia Code', 'Fira Code', 'Menlo', monospace; font-size: 0.85rem; line-height: 1.5; overflow-x: auto; white-space: pre; }
+  table { width: 100%; border-collapse: collapse; margin: 1rem 0 1.5rem; font-size: 0.9rem; }
+  th { background: var(--surface2); color: var(--accent2); padding: 0.7rem 1rem; text-align: left; border-bottom: 2px solid var(--accent); }
+  td { padding: 0.6rem 1rem; border-bottom: 1px solid var(--border); }
+  tr:hover td { background: rgba(83, 216, 251, 0.05); }
+
+  .diagram-box { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 1.5rem; margin: 1.5rem 0; overflow-x: auto; }
+  .diagram-box .caption { color: var(--text-dim); font-size: 0.85rem; text-align: center; margin-top: 0.5rem; font-style: italic; }
+  .callout { background: var(--surface2); border-left: 4px solid var(--accent); border-radius: 0 8px 8px 0; padding: 1rem 1.5rem; margin: 1rem 0; }
+  .callout.info { border-left-color: var(--blue); }
+  .callout.warn { border-left-color: var(--yellow); }
+  .callout.success { border-left-color: var(--green); }
+  svg text { font-family: 'Segoe UI', system-ui, sans-serif; }
+
+  .toc { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 1.5rem 2rem; margin: 1.5rem 0; }
+  .toc h3 { color: var(--accent2); margin-top: 0; }
+  .toc ol { margin: 0.5rem 0 0 1.5rem; }
+  .toc li { margin-bottom: 0.3rem; }
+  .toc a { text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+  .toc .toc-sub { margin-left: 1.5rem; font-size: 0.9rem; }
+</style>
+</head>
+<body>
+
+<h1>NDB Pushed Joins (Without Aggregation)</h1>
+<p class="subtitle">How DBSPJ executes multi-table joins inside data nodes using linked columns, correlation IDs,
+and adaptive batch sizing — with a focus on the DBSPJ block and its interaction with DBTC and the NDB API.</p>
+
+<!-- Table of Contents -->
+<div class="toc">
+  <h3>Table of Contents</h3>
+  <ol>
+    <li><a href="file:///Users/mikael/mysql_trees/rondb_2604/storage/ndb/claude_files/pushdown_join_aggregation/html/pushed_join_without_aggregation.html#overview">Overview: What is a Pushed Join?</a></li>
+    <li><a href="file:///Users/mikael/mysql_trees/rondb_2604/storage/ndb/claude_files/pushdown_join_aggregation/html/pushed_join_without_aggregation.html#signal-flow">End-to-End Signal Flow</a> (Scan-Lookup &amp; Scan-Scan)</li>
+    <li><a href="file:///Users/mikael/mysql_trees/rondb_2604/storage/ndb/claude_files/pushdown_join_aggregation/html/pushed_join_without_aggregation.html#dbtc-dbspj">DBTC–DBSPJ Interaction and Parallelism</a></li>
+    <li><a href="file:///Users/mikael/mysql_trees/rondb_2604/storage/ndb/claude_files/pushdown_join_aggregation/html/pushed_join_without_aggregation.html#query-tree">Query Tree Format (High Level)</a></li>
+    <li><a href="file:///Users/mikael/mysql_trees/rondb_2604/storage/ndb/claude_files/pushdown_join_aggregation/html/pushed_join_without_aggregation.html#dbspj-internals">DBSPJ Internal Data Structures</a>
+      <div class="toc-sub">
+        <a href="file:///Users/mikael/mysql_trees/rondb_2604/storage/ndb/claude_files/pushdown_join_aggregation/html/pushed_join_without_aggregation.html#request">Request</a> ·
+        <a href="file:///Users/mikael/mysql_trees/rondb_2604/storage/ndb/claude_files/pushdown_join_aggregation/html/pushed_join_without_aggregation.html#treenode">TreeNode</a> ·
+        <a href="file:///Users/mikael/mysql_trees/rondb_2604/storage/ndb/claude_files/pushdown_join_aggregation/html/pushed_join_without_aggregation.html#scanfraghandle">ScanFragHandle</a> ·
+        <a href="file:///Users/mikael/mysql_trees/rondb_2604/storage/ndb/claude_files/pushdown_join_aggregation/html/pushed_join_without_aggregation.html#rowbuffer">Row Buffers</a>
+      </div>
+    </li>
+    <li><a href="file:///Users/mikael/mysql_trees/rondb_2604/storage/ndb/claude_files/pushdown_join_aggregation/html/pushed_join_without_aggregation.html#linked-columns">Linked Columns: Moving Data Between Tables</a></li>
+    <li><a href="file:///Users/mikael/mysql_trees/rondb_2604/storage/ndb/claude_files/pushdown_join_aggregation/html/pushed_join_without_aggregation.html#correlation-ids">Correlation IDs: Parent–Child Row Matching</a></li>
+    <li><a href="file:///Users/mikael/mysql_trees/rondb_2604/storage/ndb/claude_files/pushdown_join_aggregation/html/pushed_join_without_aggregation.html#batch-sizes">Batch Size Calculation</a>
+      <div class="toc-sub">
+        <a href="file:///Users/mikael/mysql_trees/rondb_2604/storage/ndb/claude_files/pushdown_join_aggregation/html/pushed_join_without_aggregation.html#api-batch">API Side</a> ·
+        <a href="file:///Users/mikael/mysql_trees/rondb_2604/storage/ndb/claude_files/pushdown_join_aggregation/html/pushed_join_without_aggregation.html#dbspj-batch">DBSPJ Side</a> ·
+        <a href="file:///Users/mikael/mysql_trees/rondb_2604/storage/ndb/claude_files/pushdown_join_aggregation/html/pushed_join_without_aggregation.html#parallelism">Adaptive Parallelism</a>
+      </div>
+    </li>
+    <li><a href="file:///Users/mikael/mysql_trees/rondb_2604/storage/ndb/claude_files/pushdown_join_aggregation/html/pushed_join_without_aggregation.html#congestion">Congestion Control and Deferred Operations</a></li>
+    <li><a href="file:///Users/mikael/mysql_trees/rondb_2604/storage/ndb/claude_files/pushdown_join_aggregation/html/pushed_join_without_aggregation.html#increasing-parallelism">Increasing Parallelism via Batch Sizes</a></li>
+  </ol>
+</div>
+
+<!-- ================================================================== -->
+<h2 id="overview">1. Overview: What is a Pushed Join?</h2>
+
+<p>
+  In NDB Cluster, a <strong>pushed join</strong> (or SPJ join) pushes multi-table join execution
+  down to the data nodes. Instead of the MySQL server fetching rows from one table and then
+  issuing separate requests for each matching row in the next table, the entire join tree
+  is sent as a single query plan to DBSPJ (the Select-Project-Join block), which orchestrates
+  all the child lookups and scans from within the data node cluster — child operations
+  can target <strong>any data node</strong>, not just the node where DBSPJ runs.
+</p>
+
+<p>
+  The core idea: for each row produced by the <strong>root scan</strong>, DBSPJ automatically
+  performs the child lookups (or child scans) using column values from
+  the parent row as join keys. These column values are called <strong>linked columns</strong>.
+  DBLQH sends result rows from all tables directly to the NDB API via TRANSID_AI signals,
+  each tagged with <strong>correlation IDs</strong> that allow the API to reconstruct the join result
+  by matching child rows to their parent rows.
+</p>
+
+<div class="callout info">
+  <strong>Key Benefit:</strong> Without pushed joins, a 2-table join with 10,000 root rows would require
+  10,000 separate network round-trips from the API to the data nodes for child lookups. With pushed joins,
+  DBSPJ orchestrates all child lookups internally within the cluster (sending LQHKEYREQ or
+  SCAN_FRAGREQ to any data node holding the relevant fragment) — saving those round-trips.
+  The API still receives all rows (root and child) directly from DBLQH via TRANSID_AI signals, and
+  uses correlation IDs to assemble the final join result. The savings come from eliminated round-trips,
+  not reduced data volume.
+</div>
+
+<!-- ================================================================== -->
+<h2 id="signal-flow">2. End-to-End Signal Flow</h2>
+
+<p>The following diagram shows the complete signal flow for a pushed join query
+(root table scan + child PK lookup). A key architectural detail: DBLQH sends <strong>two separate
+TRANSID_AI signals</strong> for each row — one directly to the NDB API (the result row with correlation ID)
+and one to DBSPJ (linked column values for dispatching child operations). The API thus receives all
+row data directly from DBLQH, not via DBSPJ.</p>
+
+<div class="diagram-box">
+<svg viewBox="0 0 950 1000" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background columns -->
+  <rect x="20" y="30" width="160" height="950" rx="10" fill="#1a2744" stroke="#334"></rect>
+  <text x="100" y="55" fill="#c586c0" font-size="13" text-anchor="middle" font-weight="bold">NDB API</text>
+
+  <rect x="200" y="30" width="160" height="950" rx="10" fill="#1a2744" stroke="#334"></rect>
+  <text x="280" y="55" fill="#569cd6" font-size="13" text-anchor="middle" font-weight="bold">DBTC</text>
+
+  <rect x="380" y="30" width="200" height="950" rx="10" fill="#1a2744" stroke="#334"></rect>
+  <text x="480" y="55" fill="#4ec9b0" font-size="13" text-anchor="middle" font-weight="bold">DBSPJ</text>
+
+  <rect x="600" y="30" width="160" height="950" rx="10" fill="#1a2744" stroke="#334"></rect>
+  <text x="680" y="50" fill="#e94560" font-size="13" text-anchor="middle" font-weight="bold">DBLQH (Root)</text>
+  <text x="680" y="66" fill="#aab" font-size="8" text-anchor="middle">same node as DBSPJ</text>
+
+  <rect x="780" y="30" width="150" height="950" rx="10" fill="#1a2744" stroke="#334"></rect>
+  <text x="855" y="50" fill="#dcdcaa" font-size="13" text-anchor="middle" font-weight="bold">DBLQH (Child)</text>
+  <text x="855" y="66" fill="#aab" font-size="8" text-anchor="middle">any node in cluster</text>
+
+  <!-- Step 1: SCAN_TABREQ -->
+  <circle cx="100" cy="100" r="15" fill="#0f3460" stroke="#53d8fb" stroke-width="2"></circle>
+  <text x="100" y="105" fill="#53d8fb" font-size="11" text-anchor="middle" font-weight="bold">1</text>
+  <line x1="120" y1="100" x2="260" y2="100" stroke="#53d8fb" stroke-width="2" marker-end="url(#arr)"></line>
+  <text x="190" y="93" fill="#aab" font-size="10" text-anchor="middle">SCAN_TABREQ</text>
+  <text x="190" y="115" fill="#dcdcaa" font-size="8" text-anchor="middle">[ViaSPJ flag, QueryTree in AttrInfo, batch sizes]</text>
+
+  <!-- Step 2: SCAN_FRAGREQ to DBSPJ -->
+  <circle cx="280" cy="160" r="15" fill="#0f3460" stroke="#53d8fb" stroke-width="2"></circle>
+  <text x="280" y="165" fill="#53d8fb" font-size="11" text-anchor="middle" font-weight="bold">2</text>
+  <line x1="300" y1="160" x2="460" y2="160" stroke="#569cd6" stroke-width="2" marker-end="url(#arr)"></line>
+  <text x="380" y="153" fill="#aab" font-size="10" text-anchor="middle">SCAN_FRAGREQ</text>
+  <text x="380" y="175" fill="#dcdcaa" font-size="8" text-anchor="middle">[per-fragment, QueryTree + KeyInfo sections]</text>
+
+  <!-- Step 3: DBSPJ parses and sends root scan -->
+  <circle cx="480" cy="220" r="15" fill="#0f3460" stroke="#53d8fb" stroke-width="2"></circle>
+  <text x="480" y="225" fill="#53d8fb" font-size="11" text-anchor="middle" font-weight="bold">3</text>
+  <line x1="510" y1="220" x2="660" y2="220" stroke="#4ec9b0" stroke-width="2" marker-end="url(#arr)"></line>
+  <text x="585" y="213" fill="#aab" font-size="10" text-anchor="middle">SCAN_FRAGREQ</text>
+  <text x="585" y="235" fill="#dcdcaa" font-size="8" text-anchor="middle">[root table scan to LQH]</text>
+
+  <!-- Step 4a: Root row TRANSID_AI directly to NDB API -->
+  <circle cx="680" cy="290" r="15" fill="#0f3460" stroke="#53d8fb" stroke-width="2"></circle>
+  <text x="680" y="295" fill="#53d8fb" font-size="11" text-anchor="middle" font-weight="bold">4a</text>
+  <path d="M 660 290 C 400 275, 250 275, 120 290" fill="none" stroke="#e94560" stroke-width="2" marker-end="url(#arr)"></path>
+  <text x="380" y="268" fill="#e94560" font-size="10" text-anchor="middle" font-weight="bold">TRANSID_AI → API (direct!)</text>
+  <text x="380" y="283" fill="#dcdcaa" font-size="8" text-anchor="middle">[root row user projection + CORR_FACTOR corrId]</text>
+
+  <!-- Step 4b: Root row TRANSID_AI to DBSPJ (linked cols) -->
+  <circle cx="680" cy="350" r="15" fill="#0f3460" stroke="#53d8fb" stroke-width="2"></circle>
+  <text x="680" y="355" fill="#53d8fb" font-size="11" text-anchor="middle" font-weight="bold">4b</text>
+  <line x1="660" y1="350" x2="510" y2="350" stroke="#e94560" stroke-width="2" marker-end="url(#arr)"></line>
+  <text x="585" y="343" fill="#aab" font-size="10" text-anchor="middle">TRANSID_AI → DBSPJ</text>
+  <text x="585" y="365" fill="#dcdcaa" font-size="8" text-anchor="middle">[linked column values only, for child dispatch]</text>
+
+  <!-- Step 5: DBSPJ processes linked cols, dispatches child lookup -->
+  <rect x="400" y="385" width="160" height="40" rx="5" fill="#1a3a2e" stroke="#4ec9b0" stroke-width="1"></rect>
+  <text x="480" y="402" fill="#4ec9b0" font-size="9" text-anchor="middle" font-weight="bold">DBSPJ: expand patterns</text>
+  <text x="480" y="416" fill="#aab" font-size="8" text-anchor="middle">build child key from linked cols</text>
+
+  <!-- Step 5: LQHKEYREQ for child lookup -->
+  <circle cx="480" cy="460" r="15" fill="#0f3460" stroke="#53d8fb" stroke-width="2"></circle>
+  <text x="480" y="465" fill="#53d8fb" font-size="11" text-anchor="middle" font-weight="bold">5</text>
+  <line x1="510" y1="460" x2="835" y2="460" stroke="#4ec9b0" stroke-width="2" marker-end="url(#arr)"></line>
+  <text x="670" y="453" fill="#aab" font-size="10" text-anchor="middle">LQHKEYREQ</text>
+  <text x="670" y="475" fill="#dcdcaa" font-size="8" text-anchor="middle">[key = expanded linked col, corrId in variableData]</text>
+
+  <!-- Step 6a: Child row TRANSID_AI directly to NDB API -->
+  <circle cx="855" cy="530" r="15" fill="#0f3460" stroke="#53d8fb" stroke-width="2"></circle>
+  <text x="855" y="535" fill="#53d8fb" font-size="11" text-anchor="middle" font-weight="bold">6a</text>
+  <path d="M 835 530 C 500 515, 250 515, 120 530" fill="none" stroke="#dcdcaa" stroke-width="2" marker-end="url(#arr)"></path>
+  <text x="450" y="510" fill="#dcdcaa" font-size="10" text-anchor="middle" font-weight="bold">TRANSID_AI → API (direct!)</text>
+  <text x="450" y="525" fill="#dcdcaa" font-size="8" text-anchor="middle">[child row user projection + CORR_FACTOR with parent corrId]</text>
+
+  <!-- Step 6b: Child TRANSID_AI to DBSPJ (linked cols if grandchild) -->
+  <circle cx="855" cy="590" r="15" fill="#0f3460" stroke="#53d8fb" stroke-width="2"></circle>
+  <text x="855" y="595" fill="#53d8fb" font-size="11" text-anchor="middle" font-weight="bold">6b</text>
+  <line x1="835" y1="590" x2="510" y2="590" stroke="#dcdcaa" stroke-width="2" marker-end="url(#arr)"></line>
+  <text x="670" y="583" fill="#aab" font-size="10" text-anchor="middle">TRANSID_AI → DBSPJ</text>
+  <text x="670" y="605" fill="#dcdcaa" font-size="8" text-anchor="middle">[linked cols for grandchild dispatch, if any]</text>
+
+  <!-- Step 7: LQHKEYCONF to DBSPJ -->
+  <circle cx="855" cy="650" r="15" fill="#0f3460" stroke="#53d8fb" stroke-width="2"></circle>
+  <text x="855" y="655" fill="#53d8fb" font-size="11" text-anchor="middle" font-weight="bold">7</text>
+  <line x1="835" y1="650" x2="510" y2="650" stroke="#dcdcaa" stroke-width="1.5" marker-end="url(#arr)"></line>
+  <text x="670" y="643" fill="#aab" font-size="10" text-anchor="middle">LQHKEYCONF</text>
+  <text x="670" y="665" fill="#dcdcaa" font-size="8" text-anchor="middle">[child lookup complete]</text>
+
+  <!-- Repeat bracket (steps 4-7 loop) -->
+  <rect x="405" y="275" width="155" height="400" rx="8" fill="none" stroke="#4ec9b0" stroke-width="1" stroke-dasharray="4,4" opacity="0.4"></rect>
+  <text x="560" y="475" fill="#4ec9b0" font-size="9" transform="rotate(90 560 475)" opacity="0.6">repeats per root row in batch</text>
+
+  <!-- Dual TRANSID_AI highlight box -->
+  <rect x="615" y="278" width="145" height="95" rx="6" fill="none" stroke="#f44747" stroke-width="1.5" stroke-dasharray="6,3" opacity="0.7"></rect>
+  <text x="688" y="310" fill="#f44747" font-size="8" text-anchor="middle" opacity="0.8">DBLQH sends TWO</text>
+  <text x="688" y="322" fill="#f44747" font-size="8" text-anchor="middle" opacity="0.8">TRANSID_AI signals</text>
+
+  <!-- Step 8: SCAN_FRAGCONF from root LQH to DBSPJ -->
+  <circle cx="680" cy="720" r="15" fill="#0f3460" stroke="#53d8fb" stroke-width="2"></circle>
+  <text x="680" y="725" fill="#53d8fb" font-size="11" text-anchor="middle" font-weight="bold">8</text>
+  <line x1="660" y1="720" x2="510" y2="720" stroke="#e94560" stroke-width="2" marker-end="url(#arr)"></line>
+  <text x="585" y="713" fill="#aab" font-size="10" text-anchor="middle">SCAN_FRAGCONF</text>
+  <text x="585" y="735" fill="#dcdcaa" font-size="8" text-anchor="middle">[root scan batch complete, completedOps=N]</text>
+
+  <!-- Step 9: SCAN_FRAGCONF DBSPJ to DBTC -->
+  <circle cx="480" cy="790" r="15" fill="#0f3460" stroke="#53d8fb" stroke-width="2"></circle>
+  <text x="480" y="795" fill="#53d8fb" font-size="11" text-anchor="middle" font-weight="bold">9</text>
+  <line x1="460" y1="790" x2="300" y2="790" stroke="#4ec9b0" stroke-width="2" marker-end="url(#arr)"></line>
+  <text x="380" y="783" fill="#aab" font-size="10" text-anchor="middle">SCAN_FRAGCONF</text>
+  <text x="380" y="805" fill="#dcdcaa" font-size="8" text-anchor="middle">[all children complete, batch done]</text>
+
+  <!-- Step 10: SCAN_TABCONF to API -->
+  <circle cx="280" cy="860" r="15" fill="#0f3460" stroke="#53d8fb" stroke-width="2"></circle>
+  <text x="280" y="865" fill="#53d8fb" font-size="11" text-anchor="middle" font-weight="bold">10</text>
+  <line x1="260" y1="860" x2="120" y2="860" stroke="#569cd6" stroke-width="2" marker-end="url(#arr)"></line>
+  <text x="190" y="853" fill="#aab" font-size="10" text-anchor="middle">SCAN_TABCONF</text>
+  <text x="190" y="875" fill="#dcdcaa" font-size="8" text-anchor="middle">[batch info, hasMore flag]</text>
+
+  <!-- Step 11: SCAN_NEXTREQ for more batches -->
+  <circle cx="100" cy="935" r="15" fill="#0f3460" stroke="#53d8fb" stroke-width="2"></circle>
+  <text x="100" y="940" fill="#53d8fb" font-size="11" text-anchor="middle" font-weight="bold">11</text>
+  <line x1="120" y1="935" x2="260" y2="935" stroke="#53d8fb" stroke-width="1.5" marker-end="url(#arr)" stroke-dasharray="5,3"></line>
+  <text x="190" y="928" fill="#aab" font-size="10" text-anchor="middle">SCAN_NEXTREQ</text>
+  <text x="190" y="950" fill="#dcdcaa" font-size="8" text-anchor="middle">[request next batch, repeat from step 3]</text>
+
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#53d8fb"></polygon>
+    </marker>
+  </defs>
+</svg>
+<div class="caption">Figure 1: Complete signal flow for a 2-table pushed join (root scan + child PK lookup).
+DBLQH sends two separate TRANSID_AI signals per row: one directly to the NDB API (result row + corrId)
+and one to DBSPJ (linked columns for child dispatch). Steps 4–7 repeat for every root row in the batch.
+Step 8 (SCAN_FRAGCONF from root LQH) signals the root batch is complete; DBSPJ waits for all
+child LQHKEYCONFs before sending its own SCAN_FRAGCONF to DBTC (step 9).</div>
+</div>
+
+<h3>Scan-Scan Join Variant (Multi-Fragment)</h3>
+
+<p>When the child operation is a <strong>scan</strong> (not a PK lookup), the signal flow changes
+significantly. As each parent row arrives via TRANSID_AI, <code>scanFrag_parent_row()</code>
+expands the key pattern into a <strong>range bound</strong> and appends it to the fragment's
+<code>m_rangePtrI</code> section — with the parent's correlation ID embedded in bound word 0
+via <code>scanFrag_fixupBound()</code>. After all parent rows in the batch have been processed,
+each SCAN_FRAGREQ sent to child LQH carries <strong>all accumulated range bounds</strong> (one per
+parent row), so a single child scan processes multiple parent-derived ranges simultaneously.</p>
+
+<p>DBSPJ dispatches these SCAN_FRAGREQs to <strong>multiple child fragments in parallel</strong>,
+where each fragment may reside on <strong>any data node</strong> in the cluster. The number of
+fragments started simultaneously is controlled by <code>scanFrag_parallelism()</code>, which
+adapts based on runtime fanout statistics. Each child fragment independently returns rows
+via dual TRANSID_AI and signals completion via SCAN_FRAGCONF. DBSPJ tracks
+<code>m_frags_outstanding</code> and waits for all fragments before reporting batch complete.</p>
+
+<div class="diagram-box">
+<svg viewBox="0 0 1100 1380" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background columns -->
+  <rect x="20" y="30" width="140" height="1330" rx="10" fill="#1a2744" stroke="#334"></rect>
+  <text x="90" y="55" fill="#c586c0" font-size="13" text-anchor="middle" font-weight="bold">NDB API</text>
+
+  <rect x="175" y="30" width="130" height="1330" rx="10" fill="#1a2744" stroke="#334"></rect>
+  <text x="240" y="55" fill="#569cd6" font-size="13" text-anchor="middle" font-weight="bold">DBTC</text>
+
+  <rect x="320" y="30" width="190" height="1330" rx="10" fill="#1a2744" stroke="#334"></rect>
+  <text x="415" y="55" fill="#4ec9b0" font-size="13" text-anchor="middle" font-weight="bold">DBSPJ</text>
+
+  <rect x="525" y="30" width="140" height="1330" rx="10" fill="#1a2744" stroke="#334"></rect>
+  <text x="595" y="50" fill="#e94560" font-size="13" text-anchor="middle" font-weight="bold">DBLQH (Root)</text>
+  <text x="595" y="66" fill="#aab" font-size="8" text-anchor="middle">same node as DBSPJ</text>
+
+  <!-- Child fragment columns (may be on different nodes) -->
+  <rect x="680" y="30" width="120" height="1330" rx="10" fill="#1a2744" stroke="#334"></rect>
+  <text x="740" y="47" fill="#dcdcaa" font-size="11" text-anchor="middle" font-weight="bold">Child LQH</text>
+  <text x="740" y="60" fill="#dcdcaa" font-size="10" text-anchor="middle">Frag 0</text>
+  <text x="740" y="73" fill="#aab" font-size="7" text-anchor="middle">(node A)</text>
+
+  <rect x="815" y="30" width="120" height="1330" rx="10" fill="#1a2744" stroke="#334"></rect>
+  <text x="875" y="47" fill="#dcdcaa" font-size="11" text-anchor="middle" font-weight="bold">Child LQH</text>
+  <text x="875" y="60" fill="#dcdcaa" font-size="10" text-anchor="middle">Frag 1</text>
+  <text x="875" y="73" fill="#aab" font-size="7" text-anchor="middle">(node B)</text>
+
+  <rect x="950" y="30" width="120" height="1330" rx="10" fill="#1a2744" stroke="#334"></rect>
+  <text x="1010" y="47" fill="#ce9178" font-size="11" text-anchor="middle" font-weight="bold">Child LQH</text>
+  <text x="1010" y="60" fill="#ce9178" font-size="10" text-anchor="middle">Frag 2</text>
+  <text x="1010" y="73" fill="#aab" font-size="7" text-anchor="middle">(node A)</text>
+  <text x="1010" y="85" fill="#aab" font-size="7" text-anchor="middle">(not yet started)</text>
+
+  <!-- ============ SETUP PHASE ============ -->
+
+  <!-- Step 1: SCAN_TABREQ -->
+  <circle cx="90" cy="100" r="14" fill="#0f3460" stroke="#53d8fb" stroke-width="2"></circle>
+  <text x="90" y="105" fill="#53d8fb" font-size="11" text-anchor="middle" font-weight="bold">1</text>
+  <line x1="108" y1="100" x2="222" y2="100" stroke="#53d8fb" stroke-width="2" marker-end="url(#arr2)"></line>
+  <text x="165" y="93" fill="#aab" font-size="10" text-anchor="middle">SCAN_TABREQ</text>
+
+  <!-- Step 2: SCAN_FRAGREQ to DBSPJ -->
+  <circle cx="240" cy="150" r="14" fill="#0f3460" stroke="#53d8fb" stroke-width="2"></circle>
+  <text x="240" y="155" fill="#53d8fb" font-size="11" text-anchor="middle" font-weight="bold">2</text>
+  <line x1="258" y1="150" x2="397" y2="150" stroke="#569cd6" stroke-width="2" marker-end="url(#arr2)"></line>
+  <text x="328" y="143" fill="#aab" font-size="10" text-anchor="middle">SCAN_FRAGREQ</text>
+
+  <!-- Step 3: Root scan to LQH -->
+  <circle cx="415" cy="200" r="14" fill="#0f3460" stroke="#53d8fb" stroke-width="2"></circle>
+  <text x="415" y="205" fill="#53d8fb" font-size="11" text-anchor="middle" font-weight="bold">3</text>
+  <line x1="433" y1="200" x2="577" y2="200" stroke="#4ec9b0" stroke-width="2" marker-end="url(#arr2)"></line>
+  <text x="505" y="193" fill="#aab" font-size="10" text-anchor="middle">SCAN_FRAGREQ</text>
+  <text x="505" y="215" fill="#dcdcaa" font-size="8" text-anchor="middle">[root table scan]</text>
+
+  <!-- ============ ROOT ROW PHASE (repeats) ============ -->
+
+  <!-- Step 4a: Root row TRANSID_AI directly to API -->
+  <circle cx="595" cy="270" r="14" fill="#0f3460" stroke="#53d8fb" stroke-width="2"></circle>
+  <text x="595" y="275" fill="#53d8fb" font-size="11" text-anchor="middle" font-weight="bold">4a</text>
+  <path d="M 577 270 C 350 255, 200 255, 108 270" fill="none" stroke="#e94560" stroke-width="2" marker-end="url(#arr2)"></path>
+  <text x="330" y="252" fill="#e94560" font-size="9" text-anchor="middle" font-weight="bold">TRANSID_AI → API (direct!)</text>
+
+  <!-- Step 4b: Root row TRANSID_AI to DBSPJ -->
+  <circle cx="595" cy="320" r="14" fill="#0f3460" stroke="#53d8fb" stroke-width="2"></circle>
+  <text x="595" y="325" fill="#53d8fb" font-size="11" text-anchor="middle" font-weight="bold">4b</text>
+  <line x1="577" y1="320" x2="433" y2="320" stroke="#e94560" stroke-width="2" marker-end="url(#arr2)"></line>
+  <text x="505" y="313" fill="#aab" font-size="9" text-anchor="middle">TRANSID_AI → DBSPJ</text>
+  <text x="505" y="335" fill="#dcdcaa" font-size="8" text-anchor="middle">[linked cols for child dispatch]</text>
+
+  <!-- DBSPJ accumulates bounds -->
+  <rect x="335" y="350" width="160" height="55" rx="5" fill="#1a3a2e" stroke="#4ec9b0" stroke-width="1"></rect>
+  <text x="415" y="367" fill="#4ec9b0" font-size="9" text-anchor="middle" font-weight="bold">scanFrag_parent_row()</text>
+  <text x="415" y="381" fill="#aab" font-size="8" text-anchor="middle">expand pattern → range bound</text>
+  <text x="415" y="394" fill="#aab" font-size="8" text-anchor="middle">append to fragPtr.m_rangePtrI</text>
+
+  <!-- Repeat bracket for root rows -->
+  <rect x="340" y="258" width="148" height="155" rx="8" fill="none" stroke="#4ec9b0" stroke-width="1" stroke-dasharray="4,4" opacity="0.4"></rect>
+  <text x="488" y="335" fill="#4ec9b0" font-size="8" transform="rotate(90 488 335)" opacity="0.6">repeats per root row</text>
+
+  <!-- Dual TRANSID_AI highlight -->
+  <rect x="540" y="258" width="110" height="82" rx="6" fill="none" stroke="#f44747" stroke-width="1.5" stroke-dasharray="6,3" opacity="0.7"></rect>
+  <text x="595" y="286" fill="#f44747" font-size="7" text-anchor="middle" opacity="0.8">TWO TRANSID_AI</text>
+
+  <!-- ============ ROOT BATCH COMPLETE ============ -->
+
+  <!-- Step 5: Root SCAN_FRAGCONF -->
+  <circle cx="595" cy="445" r="14" fill="#0f3460" stroke="#53d8fb" stroke-width="2"></circle>
+  <text x="595" y="450" fill="#53d8fb" font-size="11" text-anchor="middle" font-weight="bold">5</text>
+  <line x1="577" y1="445" x2="433" y2="445" stroke="#e94560" stroke-width="2" marker-end="url(#arr2)"></line>
+  <text x="505" y="438" fill="#aab" font-size="10" text-anchor="middle">SCAN_FRAGCONF</text>
+  <text x="505" y="458" fill="#dcdcaa" font-size="8" text-anchor="middle">[root batch complete]</text>
+
+  <!-- DBSPJ: parent_batch_complete + parallelism calc -->
+  <rect x="335" y="475" width="160" height="55" rx="5" fill="#1a3a2e" stroke="#dcdcaa" stroke-width="1"></rect>
+  <text x="415" y="492" fill="#dcdcaa" font-size="9" text-anchor="middle" font-weight="bold">parent_batch_complete()</text>
+  <text x="415" y="506" fill="#aab" font-size="8" text-anchor="middle">scanFrag_parallelism() = 2</text>
+  <text x="415" y="519" fill="#aab" font-size="8" text-anchor="middle">→ start Frag 0 + Frag 1 now</text>
+
+  <!-- ============ CHILD MULTI-FRAGMENT DISPATCH ============ -->
+
+  <!-- Step 6: SCAN_FRAGREQ to child Frag 0 -->
+  <circle cx="415" cy="560" r="14" fill="#0f3460" stroke="#53d8fb" stroke-width="2"></circle>
+  <text x="415" y="565" fill="#53d8fb" font-size="11" text-anchor="middle" font-weight="bold">6</text>
+  <line x1="433" y1="555" x2="722" y2="555" stroke="#4ec9b0" stroke-width="2" marker-end="url(#arr2)"></line>
+  <text x="578" y="548" fill="#aab" font-size="9" text-anchor="middle">SCAN_FRAGREQ</text>
+  <text x="578" y="568" fill="#dcdcaa" font-size="7" text-anchor="middle">[N range bounds (1 per parent row), corrIdStart=0, bs_rows=125]</text>
+
+  <!-- Step 6: SCAN_FRAGREQ to child Frag 1 -->
+  <line x1="433" y1="570" x2="857" y2="570" stroke="#4ec9b0" stroke-width="2" marker-end="url(#arr2)"></line>
+  <text x="645" y="583" fill="#dcdcaa" font-size="7" text-anchor="middle">[N range bounds (1 per parent row), corrIdStart=125, bs_rows=125]</text>
+
+  <!-- Frag 2 shown as waiting -->
+  <rect x="960" y="550" width="100" height="30" rx="4" fill="#0f3460" stroke="#ce9178" stroke-width="1" stroke-dasharray="3,3" opacity="0.5"></rect>
+  <text x="1010" y="569" fill="#ce9178" font-size="8" text-anchor="middle" opacity="0.7">SFH_NOT_STARTED</text>
+
+  <!-- ============ FRAG 0 RETURNS ROWS ============ -->
+
+  <!-- Frag 0: child rows TRANSID_AI to API -->
+  <circle cx="740" cy="625" r="14" fill="#0f3460" stroke="#53d8fb" stroke-width="2"></circle>
+  <text x="740" y="630" fill="#53d8fb" font-size="11" text-anchor="middle" font-weight="bold">7a</text>
+  <path d="M 722 625 C 420 612, 220 612, 108 625" fill="none" stroke="#dcdcaa" stroke-width="1.5" marker-end="url(#arr2)"></path>
+  <text x="380" y="608" fill="#dcdcaa" font-size="8" text-anchor="middle" font-weight="bold">TRANSID_AI → API (Frag 0 rows)</text>
+
+  <!-- Frag 0: TRANSID_AI to DBSPJ -->
+  <circle cx="740" cy="670" r="14" fill="#0f3460" stroke="#53d8fb" stroke-width="2"></circle>
+  <text x="740" y="675" fill="#53d8fb" font-size="11" text-anchor="middle" font-weight="bold">7b</text>
+  <line x1="722" y1="670" x2="433" y2="670" stroke="#dcdcaa" stroke-width="1.5" marker-end="url(#arr2)"></line>
+  <text x="578" y="663" fill="#aab" font-size="8" text-anchor="middle">TRANSID_AI → DBSPJ (Frag 0 linked cols)</text>
+
+  <!-- Repeat bracket for Frag 0 rows -->
+  <rect x="695" y="613" width="90" height="78" rx="6" fill="none" stroke="#dcdcaa" stroke-width="1" stroke-dasharray="3,3" opacity="0.4"></rect>
+  <text x="787" y="655" fill="#dcdcaa" font-size="7" text-anchor="middle" opacity="0.6">fanout rows</text>
+
+  <!-- ============ FRAG 1 RETURNS ROWS (in parallel) ============ -->
+
+  <!-- Frag 1: child rows TRANSID_AI to API -->
+  <circle cx="875" cy="635" r="14" fill="#0f3460" stroke="#53d8fb" stroke-width="2"></circle>
+  <text x="875" y="640" fill="#53d8fb" font-size="11" text-anchor="middle" font-weight="bold">7a</text>
+  <path d="M 857 635 C 500 620, 250 620, 108 635" fill="none" stroke="#dcdcaa" stroke-width="1.5" marker-end="url(#arr2)" stroke-dasharray="6,2"></path>
+  <text x="500" y="620" fill="#dcdcaa" font-size="7" text-anchor="middle">TRANSID_AI → API (Frag 1 rows, in parallel)</text>
+
+  <!-- Frag 1: TRANSID_AI to DBSPJ -->
+  <circle cx="875" cy="680" r="14" fill="#0f3460" stroke="#53d8fb" stroke-width="2"></circle>
+  <text x="875" y="685" fill="#53d8fb" font-size="11" text-anchor="middle" font-weight="bold">7b</text>
+  <line x1="857" y1="680" x2="433" y2="680" stroke="#dcdcaa" stroke-width="1.5" marker-end="url(#arr2)" stroke-dasharray="6,2"></line>
+
+  <!-- Repeat bracket for Frag 1 rows -->
+  <rect x="830" y="623" width="90" height="78" rx="6" fill="none" stroke="#dcdcaa" stroke-width="1" stroke-dasharray="3,3" opacity="0.4"></rect>
+  <text x="922" y="665" fill="#dcdcaa" font-size="7" text-anchor="middle" opacity="0.6">fanout rows</text>
+
+  <!-- ============ FRAGMENT SCAN_FRAGCONFs ============ -->
+
+  <!-- Frag 0: SCAN_FRAGCONF -->
+  <circle cx="740" cy="730" r="14" fill="#0f3460" stroke="#53d8fb" stroke-width="2"></circle>
+  <text x="740" y="735" fill="#53d8fb" font-size="11" text-anchor="middle" font-weight="bold">8</text>
+  <line x1="722" y1="730" x2="433" y2="730" stroke="#dcdcaa" stroke-width="2" marker-end="url(#arr2)"></line>
+  <text x="578" y="723" fill="#aab" font-size="9" text-anchor="middle">SCAN_FRAGCONF (Frag 0)</text>
+  <text x="578" y="743" fill="#dcdcaa" font-size="7" text-anchor="middle">[completedOps=M, done=1] → m_frags_outstanding-- (now 1)</text>
+
+  <!-- Frag 1: SCAN_FRAGCONF (done=0, has more data) -->
+  <circle cx="875" cy="775" r="14" fill="#0f3460" stroke="#53d8fb" stroke-width="2"></circle>
+  <text x="875" y="780" fill="#53d8fb" font-size="11" text-anchor="middle" font-weight="bold">8</text>
+  <line x1="857" y1="775" x2="433" y2="775" stroke="#dcdcaa" stroke-width="2" marker-end="url(#arr2)"></line>
+  <text x="645" y="768" fill="#aab" font-size="9" text-anchor="middle">SCAN_FRAGCONF (Frag 1)</text>
+  <text x="645" y="788" fill="#dcdcaa" font-size="7" text-anchor="middle">[completedOps=K, done=0] → m_frags_outstanding=0, Frag 1 in SFH_WAIT_NEXTREQ</text>
+
+  <!-- ============ DBSPJ: all outstanding done, check state ============ -->
+  <rect x="335" y="800" width="160" height="55" rx="5" fill="#1a3a2e" stroke="#4ec9b0" stroke-width="1"></rect>
+  <text x="415" y="815" fill="#4ec9b0" font-size="8" text-anchor="middle" font-weight="bold">m_frags_outstanding == 0</text>
+  <text x="415" y="828" fill="#aab" font-size="8" text-anchor="middle">Frag 0: SFH_COMPLETE</text>
+  <text x="415" y="841" fill="#aab" font-size="8" text-anchor="middle">Frag 1: SFH_WAIT_NEXTREQ</text>
+  <text x="415" y="854" fill="#dcdcaa" font-size="7" text-anchor="middle">→ send SCAN_NEXTREQ to Frag 1 + start Frag 2</text>
+
+  <!-- ============ SECOND WAVE: SCAN_NEXTREQ + start Frag 2 ============ -->
+
+  <!-- SCAN_NEXTREQ to Frag 1 -->
+  <circle cx="415" cy="895" r="14" fill="#0f3460" stroke="#53d8fb" stroke-width="2"></circle>
+  <text x="415" y="900" fill="#53d8fb" font-size="11" text-anchor="middle" font-weight="bold">9a</text>
+  <line x1="433" y1="890" x2="857" y2="890" stroke="#4ec9b0" stroke-width="1.5" marker-end="url(#arr2)" stroke-dasharray="5,3"></line>
+  <text x="645" y="883" fill="#aab" font-size="9" text-anchor="middle">SCAN_NEXTREQ (Frag 1)</text>
+  <text x="645" y="903" fill="#dcdcaa" font-size="7" text-anchor="middle">[continue scanning, new corrIdStart]</text>
+
+  <!-- SCAN_FRAGREQ to Frag 2 (first time) -->
+  <line x1="433" y1="905" x2="992" y2="905" stroke="#4ec9b0" stroke-width="2" marker-end="url(#arr2)"></line>
+  <text x="713" y="918" fill="#ce9178" font-size="8" text-anchor="middle">SCAN_FRAGREQ (Frag 2 — first start)</text>
+
+  <!-- Frag 2 state change -->
+  <rect x="960" y="920" width="100" height="22" rx="4" fill="#0f3460" stroke="#ce9178" stroke-width="1" opacity="0.8"></rect>
+  <text x="1010" y="935" fill="#ce9178" font-size="8" text-anchor="middle">SFH_SCANNING</text>
+
+  <!-- ============ Frag 1 + Frag 2 return rows ============ -->
+  <circle cx="875" cy="965" r="14" fill="#0f3460" stroke="#53d8fb" stroke-width="2"></circle>
+  <text x="875" y="970" fill="#53d8fb" font-size="9" text-anchor="middle" font-weight="bold">7a/b</text>
+  <path d="M 857 965 C 500 955, 250 955, 108 965" fill="none" stroke="#dcdcaa" stroke-width="1.5" marker-end="url(#arr2)"></path>
+  <text x="480" y="953" fill="#dcdcaa" font-size="7" text-anchor="middle">TRANSID_AI → API (Frag 1 continued)</text>
+
+  <circle cx="1010" cy="978" r="14" fill="#0f3460" stroke="#53d8fb" stroke-width="2"></circle>
+  <text x="1010" y="983" fill="#53d8fb" font-size="9" text-anchor="middle" font-weight="bold">7a/b</text>
+  <path d="M 992 978 C 550 968, 250 968, 108 978" fill="none" stroke="#ce9178" stroke-width="1.5" marker-end="url(#arr2)" stroke-dasharray="6,2"></path>
+  <text x="550" y="968" fill="#ce9178" font-size="7" text-anchor="middle">TRANSID_AI → API (Frag 2 rows)</text>
+
+  <!-- Final SCAN_FRAGCONFs -->
+  <circle cx="875" cy="1035" r="12" fill="#0f3460" stroke="#53d8fb" stroke-width="1.5"></circle>
+  <text x="875" y="1039" fill="#53d8fb" font-size="9" text-anchor="middle">8</text>
+  <line x1="862" y1="1035" x2="433" y2="1035" stroke="#dcdcaa" stroke-width="1.5" marker-end="url(#arr2)"></line>
+  <text x="648" y="1028" fill="#aab" font-size="8" text-anchor="middle">SCAN_FRAGCONF (Frag 1, done=1)</text>
+
+  <circle cx="1010" cy="1060" r="12" fill="#0f3460" stroke="#53d8fb" stroke-width="1.5"></circle>
+  <text x="1010" y="1064" fill="#53d8fb" font-size="9" text-anchor="middle">8</text>
+  <line x1="997" y1="1060" x2="433" y2="1060" stroke="#ce9178" stroke-width="1.5" marker-end="url(#arr2)"></line>
+  <text x="715" y="1053" fill="#ce9178" font-size="8" text-anchor="middle">SCAN_FRAGCONF (Frag 2, done=1)</text>
+
+  <!-- ============ ALL FRAGMENTS COMPLETE ============ -->
+  <rect x="335" y="1080" width="160" height="40" rx="5" fill="#1a3a2e" stroke="#4ec9b0" stroke-width="1"></rect>
+  <text x="415" y="1095" fill="#4ec9b0" font-size="8" text-anchor="middle" font-weight="bold">All frags complete</text>
+  <text x="415" y="1108" fill="#aab" font-size="8" text-anchor="middle">m_frags_complete == 3</text>
+
+  <!-- Step 10: SCAN_FRAGCONF DBSPJ to DBTC -->
+  <circle cx="415" cy="1150" r="14" fill="#0f3460" stroke="#53d8fb" stroke-width="2"></circle>
+  <text x="415" y="1155" fill="#53d8fb" font-size="11" text-anchor="middle" font-weight="bold">10</text>
+  <line x1="397" y1="1150" x2="258" y2="1150" stroke="#4ec9b0" stroke-width="2" marker-end="url(#arr2)"></line>
+  <text x="328" y="1143" fill="#aab" font-size="10" text-anchor="middle">SCAN_FRAGCONF</text>
+  <text x="328" y="1163" fill="#dcdcaa" font-size="8" text-anchor="middle">[all child scans done]</text>
+
+  <!-- Step 11: SCAN_TABCONF to API -->
+  <circle cx="240" cy="1210" r="14" fill="#0f3460" stroke="#53d8fb" stroke-width="2"></circle>
+  <text x="240" y="1215" fill="#53d8fb" font-size="11" text-anchor="middle" font-weight="bold">11</text>
+  <line x1="222" y1="1210" x2="108" y2="1210" stroke="#569cd6" stroke-width="2" marker-end="url(#arr2)"></line>
+  <text x="165" y="1203" fill="#aab" font-size="10" text-anchor="middle">SCAN_TABCONF</text>
+  <text x="165" y="1223" fill="#dcdcaa" font-size="8" text-anchor="middle">[batch info, hasMore]</text>
+
+  <!-- Step 12: SCAN_NEXTREQ for more root batches -->
+  <circle cx="90" cy="1280" r="14" fill="#0f3460" stroke="#53d8fb" stroke-width="2"></circle>
+  <text x="90" y="1285" fill="#53d8fb" font-size="11" text-anchor="middle" font-weight="bold">12</text>
+  <line x1="108" y1="1280" x2="222" y2="1280" stroke="#53d8fb" stroke-width="1.5" marker-end="url(#arr2)" stroke-dasharray="5,3"></line>
+  <text x="165" y="1273" fill="#aab" font-size="10" text-anchor="middle">SCAN_NEXTREQ</text>
+  <text x="165" y="1293" fill="#dcdcaa" font-size="8" text-anchor="middle">[next root batch]</text>
+
+  <!-- ============ PARALLELISM ANNOTATION ============ -->
+  <rect x="680" y="540" width="255" height="50" rx="6" fill="#0f3460" stroke="#4ec9b0" stroke-width="1.5" stroke-dasharray="4,2"></rect>
+  <text x="808" y="558" fill="#4ec9b0" font-size="9" text-anchor="middle" font-weight="bold">Wave 1: parallelism = 2</text>
+  <text x="808" y="575" fill="#aab" font-size="8" text-anchor="middle">Frag 0 + Frag 1 started, Frag 2 waits</text>
+
+  <rect x="815" y="885" width="255" height="50" rx="6" fill="#0f3460" stroke="#ce9178" stroke-width="1.5" stroke-dasharray="4,2"></rect>
+  <text x="943" y="903" fill="#ce9178" font-size="9" text-anchor="middle" font-weight="bold">Wave 2: Frag 1 continued + Frag 2 started</text>
+  <text x="943" y="920" fill="#aab" font-size="8" text-anchor="middle">DBSPJ adapts parallelism based on observed fanout</text>
+
+  <defs>
+    <marker id="arr2" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#53d8fb"></polygon>
+    </marker>
+  </defs>
+</svg>
+<div class="caption">Figure 1b: Signal flow for a 2-table pushed join (root scan + <strong>child scan</strong>) with 3 child fragments.
+DBSPJ uses adaptive parallelism: Wave 1 starts Frag 0 and Frag 1 in parallel while Frag 2 waits (SFH_NOT_STARTED).
+When both SCAN_FRAGCONFs arrive, DBSPJ sends SCAN_NEXTREQ to Frag 1 (which has more data) and starts Frag 2 (Wave 2).
+Once all fragments report done, DBSPJ sends SCAN_FRAGCONF to DBTC. Each <code>corrIdStart</code> is incremented by <code>bs_rows</code>
+per fragment to ensure unique correlation ID ranges.</div>
+</div>
+
+<div class="callout warn">
+  <strong>Scan-Scan vs Scan-Lookup — Key Differences:</strong>
+  <ul style="margin-top: 0.5rem;">
+    <li><strong>Timing:</strong> Lookups are dispatched immediately per parent row; child scans are deferred until the parent batch is complete (<code>parent_batch_complete()</code> triggers <code>scanFrag_send()</code>)</li>
+    <li><strong>Bounds accumulation:</strong> <code>scanFrag_parent_row()</code> appends range bounds to <code>fragPtr.m_rangePtrI</code> with correlation IDs embedded in bound word 0 via <code>scanFrag_fixupBound()</code></li>
+    <li><strong>Fanout:</strong> Each parent row can produce 0 or many child rows (range scan), vs exactly 0 or 1 for PK lookups</li>
+    <li><strong>Multi-fragment parallelism:</strong> <code>scanFrag_parallelism()</code> determines how many fragments to start simultaneously, adapting based on <code>m_recsPrKeyStat</code> (95th percentile fanout). Remaining fragments start as earlier ones complete</li>
+    <li><strong>Pruning:</strong> If <code>T_PRUNE_PATTERN</code> is set, each parent row's bounds go to a specific fragment based on <code>computePartitionHash()</code>; otherwise all fragments scan the same bounds</li>
+    <li><strong>Fragment state machine:</strong> Each <code>ScanFragHandle</code> transitions: SFH_NOT_STARTED → SFH_SCANNING → SFH_WAIT_NEXTREQ → SFH_SCANNING → ... → SFH_COMPLETE</li>
+    <li><strong>corrIdStart partitioning:</strong> Each fragment gets a unique <code>corrIdStart</code> range (incremented by <code>bs_rows</code> per fragment) so correlation IDs don't collide across fragments</li>
+  </ul>
+</div>
+
+<!-- ================================================================== -->
+<h2 id="dbtc-dbspj">3. DBTC–DBSPJ Interaction and Parallelism</h2>
+
+<p>DBTC's role is to receive the query from the API and distribute work across
+multiple DBSPJ instances for parallel execution.</p>
+
+<h3>Fragment Distribution</h3>
+
+<p>An NDB table is partitioned into <strong>fragments</strong>, each stored on a data node.
+DBTC determines which fragments to scan and maps each to a DBSPJ instance:</p>
+
+<div class="diagram-box">
+<svg viewBox="0 0 900 460" xmlns="http://www.w3.org/2000/svg">
+  <!-- API -->
+  <rect x="350" y="10" width="200" height="40" rx="6" fill="#2a1a2e" stroke="#c586c0" stroke-width="1.5"></rect>
+  <text x="450" y="35" fill="#c586c0" font-size="12" text-anchor="middle" font-weight="bold">NDB API (SCAN_TABREQ)</text>
+
+  <!-- DBTC -->
+  <rect x="330" y="80" width="240" height="50" rx="8" fill="#0f3460" stroke="#569cd6" stroke-width="2"></rect>
+  <text x="450" y="100" fill="#569cd6" font-size="13" text-anchor="middle" font-weight="bold">DBTC</text>
+  <text x="450" y="118" fill="#aab" font-size="9" text-anchor="middle">Round-robin: cspjInstanceRR++ % 120</text>
+  <line x1="450" y1="50" x2="450" y2="78" stroke="#aab" stroke-width="1.5" marker-end="url(#arr)"></line>
+
+  <!-- DBSPJ instances -->
+  <rect x="50" y="170" width="160" height="55" rx="6" fill="#1a3a2e" stroke="#4ec9b0" stroke-width="1.5"></rect>
+  <text x="130" y="190" fill="#4ec9b0" font-size="11" text-anchor="middle" font-weight="bold">DBSPJ Instance 1</text>
+  <text x="130" y="208" fill="#aab" font-size="9" text-anchor="middle">(TC thread 1)</text>
+  <text x="130" y="220" fill="#dcdcaa" font-size="8" text-anchor="middle">Frags: 0, 1</text>
+
+  <rect x="250" y="170" width="160" height="55" rx="6" fill="#1a3a2e" stroke="#4ec9b0" stroke-width="1.5"></rect>
+  <text x="330" y="190" fill="#4ec9b0" font-size="11" text-anchor="middle" font-weight="bold">DBSPJ Instance 2</text>
+  <text x="330" y="208" fill="#aab" font-size="9" text-anchor="middle">(TC thread 2)</text>
+  <text x="330" y="220" fill="#dcdcaa" font-size="8" text-anchor="middle">Frags: 2, 3</text>
+
+  <rect x="450" y="170" width="160" height="55" rx="6" fill="#1a3a2e" stroke="#4ec9b0" stroke-width="1.5"></rect>
+  <text x="530" y="190" fill="#4ec9b0" font-size="11" text-anchor="middle" font-weight="bold">DBSPJ Instance 3</text>
+  <text x="530" y="208" fill="#aab" font-size="9" text-anchor="middle">(TC thread 3)</text>
+  <text x="530" y="220" fill="#dcdcaa" font-size="8" text-anchor="middle">Frags: 4, 5</text>
+
+  <rect x="650" y="170" width="160" height="55" rx="6" fill="#1a3a2e" stroke="#4ec9b0" stroke-width="1.5"></rect>
+  <text x="730" y="190" fill="#4ec9b0" font-size="11" text-anchor="middle" font-weight="bold">DBSPJ Instance 4</text>
+  <text x="730" y="208" fill="#aab" font-size="9" text-anchor="middle">(TC thread 4)</text>
+  <text x="730" y="220" fill="#dcdcaa" font-size="8" text-anchor="middle">Frags: 6, 7</text>
+
+  <!-- Arrows from DBTC to DBSPJ -->
+  <line x1="380" y1="130" x2="130" y2="168" stroke="#569cd6" stroke-width="1.5" marker-end="url(#arr)"></line>
+  <line x1="420" y1="130" x2="330" y2="168" stroke="#569cd6" stroke-width="1.5" marker-end="url(#arr)"></line>
+  <line x1="480" y1="130" x2="530" y2="168" stroke="#569cd6" stroke-width="1.5" marker-end="url(#arr)"></line>
+  <line x1="520" y1="130" x2="730" y2="168" stroke="#569cd6" stroke-width="1.5" marker-end="url(#arr)"></line>
+
+  <!-- Root DBLQH instances below (one per fragment, on same node as DBSPJ) -->
+  <text x="450" y="248" fill="#e94560" font-size="10" text-anchor="middle" font-weight="bold">Root Table LQH Instances (one per fragment)</text>
+
+  <rect x="50" y="265" width="70" height="30" rx="4" fill="#2a1a2e" stroke="#e94560" stroke-width="1"></rect>
+  <text x="85" y="284" fill="#e94560" font-size="9" text-anchor="middle">LQH F0</text>
+  <rect x="140" y="265" width="70" height="30" rx="4" fill="#2a1a2e" stroke="#e94560" stroke-width="1"></rect>
+  <text x="175" y="284" fill="#e94560" font-size="9" text-anchor="middle">LQH F1</text>
+  <line x1="100" y1="225" x2="85" y2="263" stroke="#aab" stroke-width="1" marker-end="url(#arr)"></line>
+  <line x1="160" y1="225" x2="175" y2="263" stroke="#aab" stroke-width="1" marker-end="url(#arr)"></line>
+
+  <rect x="250" y="265" width="70" height="30" rx="4" fill="#2a1a2e" stroke="#e94560" stroke-width="1"></rect>
+  <text x="285" y="284" fill="#e94560" font-size="9" text-anchor="middle">LQH F2</text>
+  <rect x="340" y="265" width="70" height="30" rx="4" fill="#2a1a2e" stroke="#e94560" stroke-width="1"></rect>
+  <text x="375" y="284" fill="#e94560" font-size="9" text-anchor="middle">LQH F3</text>
+  <line x1="300" y1="225" x2="285" y2="263" stroke="#aab" stroke-width="1" marker-end="url(#arr)"></line>
+  <line x1="360" y1="225" x2="375" y2="263" stroke="#aab" stroke-width="1" marker-end="url(#arr)"></line>
+
+  <rect x="450" y="265" width="70" height="30" rx="4" fill="#2a1a2e" stroke="#e94560" stroke-width="1"></rect>
+  <text x="485" y="284" fill="#e94560" font-size="9" text-anchor="middle">LQH F4</text>
+  <rect x="540" y="265" width="70" height="30" rx="4" fill="#2a1a2e" stroke="#e94560" stroke-width="1"></rect>
+  <text x="575" y="284" fill="#e94560" font-size="9" text-anchor="middle">LQH F5</text>
+  <line x1="500" y1="225" x2="485" y2="263" stroke="#aab" stroke-width="1" marker-end="url(#arr)"></line>
+  <line x1="560" y1="225" x2="575" y2="263" stroke="#aab" stroke-width="1" marker-end="url(#arr)"></line>
+
+  <rect x="650" y="265" width="70" height="30" rx="4" fill="#2a1a2e" stroke="#e94560" stroke-width="1"></rect>
+  <text x="685" y="284" fill="#e94560" font-size="9" text-anchor="middle">LQH F6</text>
+  <rect x="740" y="265" width="70" height="30" rx="4" fill="#2a1a2e" stroke="#e94560" stroke-width="1"></rect>
+  <text x="775" y="284" fill="#e94560" font-size="9" text-anchor="middle">LQH F7</text>
+  <line x1="700" y1="225" x2="685" y2="263" stroke="#aab" stroke-width="1" marker-end="url(#arr)"></line>
+  <line x1="760" y1="225" x2="775" y2="263" stroke="#aab" stroke-width="1" marker-end="url(#arr)"></line>
+
+  <!-- Child lookups: DBSPJ sends to ANY node -->
+  <text x="450" y="320" fill="#dcdcaa" font-size="10" text-anchor="middle" font-weight="bold">Child Lookups / Scans</text>
+  <rect x="100" y="335" width="700" height="50" rx="8" fill="#0f3460" stroke="#dcdcaa" stroke-width="1.5" stroke-dasharray="4,3"></rect>
+  <text x="450" y="355" fill="#dcdcaa" font-size="10" text-anchor="middle">DBSPJ sends LQHKEYREQ / SCAN_FRAGREQ to <tspan font-weight="bold" fill="#f44747">any data node</tspan> in the cluster</text>
+  <text x="450" y="372" fill="#aab" font-size="9" text-anchor="middle">Child table fragments may reside on different nodes than where DBSPJ runs — routed via block references</text>
+
+  <!-- Annotation -->
+  <text x="450" y="420" fill="#aab" font-size="10" text-anchor="middle">Without MultiFragFlag: each root fragment gets a separate DBSPJ instance (max parallelism across TC threads)</text>
+  <text x="450" y="440" fill="#aab" font-size="9" text-anchor="middle">Root scans are local (same node), but child operations are remote-capable (cross-node LQHKEYREQ/SCAN_FRAGREQ)</text>
+</svg>
+<div class="caption">Figure 2: DBTC distributes root table fragments across DBSPJ instances using round-robin.
+Each DBSPJ instance scans its assigned root fragments locally, but child lookups and scans
+can target DBLQH on <em>any</em> data node where the child table fragment resides.</div>
+</div>
+
+<h3>MultiFragFlag Optimization</h3>
+<p>When <code>MultiFragFlag</code> is set in SCAN_TABREQ (default for SPJ queries), DBTC bundles
+multiple fragments destined for the same data node into a <strong>single SCAN_FRAGREQ</strong>.
+Fragment locations are sorted by <code>primaryBlockRef</code> so adjacent fragments on the same
+node are grouped together. The fragment IDs are appended to a list section in the signal.</p>
+
+<p>This reduces signal overhead but decreases cross-thread parallelism, since all bundled
+fragments share one DBSPJ instance. The trade-off favors reduced overhead for typical OLTP
+workloads where fragment count is moderate.</p>
+
+<h3>Without MultiFragFlag</h3>
+<p>Each fragment gets a <strong>different</strong> DBSPJ instance (via round-robin <code>cspjInstanceRR++ % 120</code>),
+maximizing parallelism across TC threads. This is used when maximum throughput is needed,
+such as with aggregation queries.</p>
+
+<!-- ================================================================== -->
+<h2 id="query-tree">4. Query Tree Format (High Level)</h2>
+
+<p>The query plan is serialized as a <strong>QueryTree</strong> and sent as the AttrInfo section
+of SCAN_FRAGREQ. It contains two interleaved sequences: node definitions and node parameters.</p>
+
+<div class="diagram-box">
+<svg viewBox="0 0 900 180" xmlns="http://www.w3.org/2000/svg">
+  <!-- Section layout -->
+  <text x="450" y="22" fill="#53d8fb" font-size="13" text-anchor="middle" font-weight="bold">AttrInfo Section (QueryTree)</text>
+
+  <rect x="30" y="40" width="130" height="50" rx="5" fill="#0f3460" stroke="#569cd6" stroke-width="1.5"></rect>
+  <text x="95" y="60" fill="#569cd6" font-size="10" text-anchor="middle" font-weight="bold">QN_Header</text>
+  <text x="95" y="78" fill="#aab" font-size="8" text-anchor="middle">tree_len, #nodes</text>
+
+  <rect x="170" y="40" width="140" height="50" rx="5" fill="#2a1a2e" stroke="#4ec9b0" stroke-width="1.5"></rect>
+  <text x="240" y="58" fill="#4ec9b0" font-size="10" text-anchor="middle" font-weight="bold">QueryNode[0]</text>
+  <text x="240" y="75" fill="#aab" font-size="8" text-anchor="middle">Root scan def</text>
+
+  <rect x="320" y="40" width="140" height="50" rx="5" fill="#2a1a2e" stroke="#e94560" stroke-width="1.5"></rect>
+  <text x="390" y="58" fill="#e94560" font-size="10" text-anchor="middle" font-weight="bold">QueryNode[1]</text>
+  <text x="390" y="75" fill="#aab" font-size="8" text-anchor="middle">Child lookup def</text>
+
+  <rect x="475" y="40" width="10" height="50" rx="2" fill="#334"></rect>
+  <text x="500" y="70" fill="#aab" font-size="10">...</text>
+
+  <rect x="530" y="40" width="160" height="50" rx="5" fill="#1a3a2e" stroke="#dcdcaa" stroke-width="1.5"></rect>
+  <text x="610" y="58" fill="#dcdcaa" font-size="10" text-anchor="middle" font-weight="bold">QN_Parameters[0]</text>
+  <text x="610" y="75" fill="#aab" font-size="8" text-anchor="middle">Root: projection, bounds</text>
+
+  <rect x="700" y="40" width="170" height="50" rx="5" fill="#1a3a2e" stroke="#dcdcaa" stroke-width="1.5"></rect>
+  <text x="785" y="58" fill="#dcdcaa" font-size="10" text-anchor="middle" font-weight="bold">QN_Parameters[1]</text>
+  <text x="785" y="75" fill="#aab" font-size="8" text-anchor="middle">Child: key pattern, linked attrs</text>
+
+  <!-- Arrows -->
+  <line x1="160" y1="65" x2="168" y2="65" stroke="#aab" stroke-width="1" marker-end="url(#arr)"></line>
+  <line x1="310" y1="65" x2="318" y2="65" stroke="#aab" stroke-width="1" marker-end="url(#arr)"></line>
+
+  <!-- Node info bits -->
+  <text x="450" y="120" fill="#53d8fb" font-size="11" text-anchor="middle" font-weight="bold">Key QueryNode RequestInfo Bits</text>
+  <text x="150" y="145" fill="#569cd6" font-size="9" text-anchor="middle">NI_HAS_PARENT (0x01)</text>
+  <text x="350" y="145" fill="#4ec9b0" font-size="9" text-anchor="middle">NI_KEY_LINKED (0x02)</text>
+  <text x="550" y="145" fill="#dcdcaa" font-size="9" text-anchor="middle">NI_LINKED_ATTR (0x10)</text>
+  <text x="750" y="145" fill="#e94560" font-size="9" text-anchor="middle">NI_ATTR_INTERPRET (0x20)</text>
+  <text x="150" y="165" fill="#aab" font-size="8" text-anchor="middle">has parent operation</text>
+  <text x="350" y="165" fill="#aab" font-size="8" text-anchor="middle">key uses parent columns</text>
+  <text x="550" y="165" fill="#aab" font-size="8" text-anchor="middle">projection has linked attrs</text>
+  <text x="750" y="165" fill="#aab" font-size="8" text-anchor="middle">has interpreted program</text>
+</svg>
+<div class="caption">Figure 3: QueryTree layout in the AttrInfo section. Node definitions are followed by per-node parameters.</div>
+</div>
+
+<p>Each <strong>QueryNode</strong> contains: operation type (scan, lookup, unique index lookup),
+table/index ID, schema version, parent node reference, and RequestInfo flags indicating
+what linked data is needed. The <strong>QueryNodeParameters</strong> contain the actual patterns
+for constructing keys and attribute projections from parent row data.</p>
+
+<!-- ================================================================== -->
+<h2 id="dbspj-internals">5. DBSPJ Internal Data Structures</h2>
+
+<h3 id="request">Request</h3>
+
+<p>A <code>Request</code> represents a complete pushed join query being executed by one DBSPJ instance.
+It tracks the overall state and coordinates all tree nodes.</p>
+
+<div class="diagram-box">
+<svg viewBox="0 0 960 260" xmlns="http://www.w3.org/2000/svg">
+  <rect x="20" y="10" width="920" height="240" rx="10" fill="#16213e" stroke="#569cd6" stroke-width="2"></rect>
+  <text x="480" y="35" fill="#569cd6" font-size="14" text-anchor="middle" font-weight="bold">Request</text>
+
+  <!-- State -->
+  <rect x="40" y="50" width="290" height="90" rx="6" fill="#0f3460" stroke="#334" stroke-width="1"></rect>
+  <text x="185" y="70" fill="#53d8fb" font-size="10" text-anchor="middle" font-weight="bold">State &amp; Identity</text>
+  <text x="50" y="90" fill="#aab" font-size="9">m_state: RS_BUILDING → RS_RUNNING</text>
+  <text x="50" y="103" fill="#aab" font-size="9">             → RS_COMPLETING</text>
+  <text x="50" y="119" fill="#aab" font-size="9">m_transId[2], m_senderRef, m_senderData</text>
+  <text x="50" y="135" fill="#aab" font-size="9">m_rootFragId, m_rootFragCnt</text>
+
+  <!-- Tree nodes -->
+  <rect x="345" y="50" width="280" height="90" rx="6" fill="#0f3460" stroke="#334" stroke-width="1"></rect>
+  <text x="485" y="70" fill="#53d8fb" font-size="10" text-anchor="middle" font-weight="bold">Tree Nodes</text>
+  <text x="355" y="90" fill="#aab" font-size="9">m_nodes: TreeNode_list (all nodes)</text>
+  <text x="355" y="106" fill="#aab" font-size="9">m_node_cnt: number of nodes in tree</text>
+  <text x="355" y="122" fill="#aab" font-size="9">m_active_tree_nodes: bitmask of active</text>
+  <text x="355" y="138" fill="#aab" font-size="9">m_completed_tree_nodes: bitmask of done</text>
+
+  <!-- Batch tracking -->
+  <rect x="640" y="50" width="280" height="90" rx="6" fill="#0f3460" stroke="#334" stroke-width="1"></rect>
+  <text x="780" y="70" fill="#53d8fb" font-size="10" text-anchor="middle" font-weight="bold">Batch Tracking</text>
+  <text x="650" y="90" fill="#aab" font-size="9">m_rows: rows accumulated in batch</text>
+  <text x="650" y="106" fill="#aab" font-size="9">m_outstanding: signals still in flight</text>
+  <text x="650" y="122" fill="#aab" font-size="9">m_cnt_active: active tree nodes</text>
+  <text x="650" y="138" fill="#aab" font-size="9">m_suspended_tree_nodes: congestion</text>
+
+  <!-- Bits -->
+  <rect x="40" y="155" width="290" height="30" rx="6" fill="#0f3460" stroke="#334" stroke-width="1"></rect>
+  <text x="185" y="175" fill="#dcdcaa" font-size="9" text-anchor="middle">m_bits: RT_SCAN | RT_MULTI_SCAN | RT_AGGREGATE</text>
+
+  <!-- Memory -->
+  <rect x="345" y="155" width="575" height="30" rx="6" fill="#0f3460" stroke="#334" stroke-width="1"></rect>
+  <text x="633" y="175" fill="#53d8fb" font-size="9" text-anchor="middle">m_arena (ArenaHead) — per-request pool for patterns, rows, sections</text>
+
+  <!-- Completion -->
+  <text x="480" y="215" fill="#4ec9b0" font-size="10" text-anchor="middle" font-weight="bold">Batch complete when: m_outstanding == 0 &amp;&amp; all active nodes have reported</text>
+  <text x="480" y="235" fill="#aab" font-size="9" text-anchor="middle">m_lookup_node_data[MAX_NDB_NODES] — dynamically allocated per-node lookup data</text>
+</svg>
+<div class="caption">Figure 4: The Request struct — one per DBSPJ query instance.</div>
+</div>
+
+<h3 id="treenode">TreeNode</h3>
+
+<p>Each table operation in the join tree is represented by a <code>TreeNode</code>. It stores the
+operation type (via <code>OpInfo</code> function pointers), parent link, child list, pattern
+stores for linked columns, and per-batch row buffers.</p>
+
+<div class="diagram-box">
+<svg viewBox="0 0 960 420" xmlns="http://www.w3.org/2000/svg">
+  <rect x="20" y="10" width="920" height="400" rx="10" fill="#16213e" stroke="#4ec9b0" stroke-width="2"></rect>
+  <text x="480" y="35" fill="#4ec9b0" font-size="14" text-anchor="middle" font-weight="bold">TreeNode</text>
+
+  <!-- Identity -->
+  <rect x="40" y="50" width="280" height="80" rx="6" fill="#0f3460" stroke="#334"></rect>
+  <text x="180" y="68" fill="#53d8fb" font-size="10" text-anchor="middle" font-weight="bold">Identity &amp; State</text>
+  <text x="50" y="86" fill="#aab" font-size="9">m_node_no</text>
+  <text x="50" y="100" fill="#aab" font-size="9">m_state: TN_INACTIVE → TN_ACTIVE</text>
+  <text x="50" y="114" fill="#aab" font-size="9">m_info → OpInfo (lookup or scan vtable)</text>
+  <text x="50" y="128" fill="#aab" font-size="9">m_tableOrIndexId, m_schemaVersion</text>
+
+  <!-- Tree topology -->
+  <rect x="335" y="50" width="290" height="80" rx="6" fill="#0f3460" stroke="#334"></rect>
+  <text x="480" y="68" fill="#53d8fb" font-size="10" text-anchor="middle" font-weight="bold">Tree Topology</text>
+  <text x="345" y="86" fill="#aab" font-size="9">m_parentPtrI → parent TreeNode (RNIL if root)</text>
+  <text x="345" y="102" fill="#aab" font-size="9">m_child_nodes → descendants (data-dependent)</text>
+  <text x="345" y="118" fill="#aab" font-size="9">m_next_nodes → execution-order successors</text>
+
+  <!-- Bits -->
+  <rect x="640" y="50" width="280" height="80" rx="6" fill="#0f3460" stroke="#334"></rect>
+  <text x="780" y="68" fill="#53d8fb" font-size="10" text-anchor="middle" font-weight="bold">Behavior Flags (m_bits)</text>
+  <text x="650" y="86" fill="#aab" font-size="9">T_LEAF — is leaf node (no children)</text>
+  <text x="650" y="102" fill="#aab" font-size="9">T_BUFFER_ROW — buffer rows for child</text>
+  <text x="650" y="118" fill="#aab" font-size="9">T_KEYINFO_CONSTRUCTED — key from pattern</text>
+
+  <!-- Pattern stores (linked columns) -->
+  <rect x="40" y="145" width="430" height="70" rx="6" fill="#2a1a2e" stroke="#dcdcaa" stroke-width="1.5"></rect>
+  <text x="255" y="163" fill="#dcdcaa" font-size="10" text-anchor="middle" font-weight="bold">Pattern Stores (Linked Column Definitions)</text>
+  <text x="50" y="183" fill="#aab" font-size="9">m_keyPattern — how to build key from parent row</text>
+  <text x="50" y="199" fill="#aab" font-size="9">m_attrParamPattern — linked attrs for child params</text>
+
+  <!-- Send struct -->
+  <rect x="485" y="145" width="435" height="70" rx="6" fill="#2a1a2e" stroke="#e94560" stroke-width="1.5"></rect>
+  <text x="703" y="163" fill="#e94560" font-size="10" text-anchor="middle" font-weight="bold">Send Context (m_send)</text>
+  <text x="495" y="183" fill="#aab" font-size="9">m_ref — destination block reference</text>
+  <text x="495" y="199" fill="#aab" font-size="9">m_correlation — [parentTupleId:16 | tupleId:16]</text>
+
+  <!-- Row buffers -->
+  <rect x="40" y="230" width="430" height="75" rx="6" fill="#2a1a2e" stroke="#c586c0" stroke-width="1.5"></rect>
+  <text x="255" y="248" fill="#c586c0" font-size="10" text-anchor="middle" font-weight="bold">Row Buffers (Per-Batch)</text>
+  <text x="50" y="268" fill="#aab" font-size="9">m_batchArena — memory arena for current batch</text>
+  <text x="50" y="284" fill="#aab" font-size="9">m_rowBuffer — page-based row storage</text>
+  <text x="50" y="300" fill="#aab" font-size="9">m_rows (RowCollection) — MAP or LIST</text>
+
+  <!-- Operation data union -->
+  <rect x="485" y="230" width="435" height="75" rx="6" fill="#2a1a2e" stroke="#569cd6" stroke-width="1.5"></rect>
+  <text x="703" y="248" fill="#569cd6" font-size="10" text-anchor="middle" font-weight="bold">Operation Data (union)</text>
+  <text x="495" y="268" fill="#4ec9b0" font-size="9">LookupData: m_lqhKeyReq[template], m_outstanding</text>
+  <text x="495" y="284" fill="#e94560" font-size="9">ScanFragData: m_fragments[], m_parallelism, m_corrIdStart</text>
+  <text x="495" y="300" fill="#aab" font-size="9">m_recsPrKeyStat — fanout statistics for parallelism calc</text>
+
+  <!-- Bitmasks -->
+  <rect x="40" y="320" width="880" height="40" rx="6" fill="#0f3460" stroke="#334"></rect>
+  <text x="480" y="338" fill="#53d8fb" font-size="10" text-anchor="middle" font-weight="bold">Topology Bitmasks</text>
+  <text x="480" y="354" fill="#aab" font-size="9" text-anchor="middle">m_ancestors | m_coverage (all descendants) | m_predecessors (exec-before) | m_dependencies (inner-join deps)</text>
+
+  <!-- Deferred ops -->
+  <rect x="40" y="375" width="880" height="25" rx="4" fill="#0f3460" stroke="#334"></rect>
+  <text x="480" y="392" fill="#dcdcaa" font-size="9" text-anchor="middle">m_deferred (DeferredParentOps) — correlation IDs queued when congested; resumed when outstanding drops</text>
+</svg>
+<div class="caption">Figure 5: The TreeNode struct — one per table operation in the join tree.</div>
+</div>
+
+<h3 id="scanfraghandle">ScanFragHandle</h3>
+
+<p>For scan operations, each fragment being scanned gets its own <code>ScanFragHandle</code>:</p>
+<pre>struct ScanFragHandle {
+  Uint32 m_treeNodePtrI;  // Owning TreeNode
+  Uint32 m_fragId;        // Fragment ID
+  SFH_State m_state;      // NOT_STARTED → SCANNING → WAIT_NEXTREQ → COMPLETE
+  Uint32 m_ref;           // LQH block reference for this fragment
+  Uint32 m_rangePtrI;     // Section pointer: accumulated key bounds
+  Uint32 m_paramPtrI;     // Section pointer: accumulated linked attr params
+  Uint32 m_rangeCnt;      // Number of key bounds accumulated
+  Uint32 m_keysSent;      // Keys sent in last SCAN_FRAGREQ
+  Uint32 m_totalRows;     // Total rows received from this fragment
+};
+</pre>
+
+<h3 id="rowbuffer">Row Buffers</h3>
+
+<p>DBSPJ uses a page-based row buffer system. When a parent row arrives (TRANSID_AI),
+it is stored in the TreeNode's RowBuffer so that children can later extract linked column
+values from it.</p>
+
+<div class="diagram-box">
+<svg viewBox="0 0 900 220" xmlns="http://www.w3.org/2000/svg">
+  <!-- RowCollection -->
+  <rect x="30" y="10" width="200" height="60" rx="8" fill="#0f3460" stroke="#c586c0" stroke-width="2"></rect>
+  <text x="130" y="32" fill="#c586c0" font-size="11" text-anchor="middle" font-weight="bold">RowCollection</text>
+  <text x="130" y="52" fill="#aab" font-size="9" text-anchor="middle">COLLECTION_MAP or COLLECTION_LIST</text>
+
+  <!-- MAP branch -->
+  <rect x="50" y="90" width="150" height="55" rx="6" fill="#2a1a2e" stroke="#569cd6" stroke-width="1"></rect>
+  <text x="125" y="108" fill="#569cd6" font-size="10" text-anchor="middle" font-weight="bold">RowMap</text>
+  <text x="125" y="125" fill="#aab" font-size="8" text-anchor="middle">Array indexed by correlationId</text>
+  <text x="125" y="138" fill="#aab" font-size="8" text-anchor="middle">O(1) random access to parent row</text>
+  <line x1="100" y1="70" x2="125" y2="88" stroke="#aab" stroke-width="1" marker-end="url(#arr)"></line>
+
+  <!-- LIST branch -->
+  <rect x="230" y="90" width="150" height="55" rx="6" fill="#2a1a2e" stroke="#4ec9b0" stroke-width="1"></rect>
+  <text x="305" y="108" fill="#4ec9b0" font-size="10" text-anchor="middle" font-weight="bold">SLFifoRowList</text>
+  <text x="305" y="125" fill="#aab" font-size="8" text-anchor="middle">Singly-linked FIFO list</text>
+  <text x="305" y="138" fill="#aab" font-size="8" text-anchor="middle">Sequential iteration only</text>
+  <line x1="160" y1="70" x2="305" y2="88" stroke="#aab" stroke-width="1" marker-end="url(#arr)"></line>
+
+  <!-- Pages -->
+  <rect x="450" y="10" width="420" height="200" rx="8" fill="#16213e" stroke="#334" stroke-width="1"></rect>
+  <text x="660" y="32" fill="#53d8fb" font-size="11" text-anchor="middle" font-weight="bold">RowBuffer (Page-Based)</text>
+
+  <rect x="470" y="50" width="120" height="70" rx="4" fill="#0f3460" stroke="#569cd6" stroke-width="1"></rect>
+  <text x="530" y="70" fill="#569cd6" font-size="9" text-anchor="middle" font-weight="bold">Page 0</text>
+  <rect x="480" y="80" width="100" height="12" rx="2" fill="#2a1a2e" stroke="#4ec9b0" stroke-width="0.5"></rect>
+  <text x="530" y="90" fill="#4ec9b0" font-size="7" text-anchor="middle">Row (corrId=0)</text>
+  <rect x="480" y="95" width="100" height="12" rx="2" fill="#2a1a2e" stroke="#4ec9b0" stroke-width="0.5"></rect>
+  <text x="530" y="105" fill="#4ec9b0" font-size="7" text-anchor="middle">Row (corrId=1)</text>
+
+  <rect x="610" y="50" width="120" height="70" rx="4" fill="#0f3460" stroke="#569cd6" stroke-width="1"></rect>
+  <text x="670" y="70" fill="#569cd6" font-size="9" text-anchor="middle" font-weight="bold">Page 1</text>
+  <rect x="620" y="80" width="100" height="12" rx="2" fill="#2a1a2e" stroke="#4ec9b0" stroke-width="0.5"></rect>
+  <text x="670" y="90" fill="#4ec9b0" font-size="7" text-anchor="middle">Row (corrId=2)</text>
+  <rect x="620" y="95" width="100" height="12" rx="2" fill="#2a1a2e" stroke="#dcdcaa" stroke-width="0.5"></rect>
+  <text x="670" y="105" fill="#dcdcaa" font-size="7" text-anchor="middle">free space</text>
+
+  <text x="660" y="150" fill="#aab" font-size="9" text-anchor="middle">m_stack_pos tracks next free position</text>
+  <text x="660" y="166" fill="#aab" font-size="9" text-anchor="middle">RowRef = { m_page_id, m_page_pos }</text>
+  <text x="660" y="182" fill="#aab" font-size="9" text-anchor="middle">Each row: [Header: len + offsets] [Data: attr values]</text>
+  <text x="660" y="198" fill="#aab" font-size="9" text-anchor="middle">RowMap stores RowRef per correlationId for O(1) lookup</text>
+
+  <line x1="235" y1="115" x2="448" y2="85" stroke="#aab" stroke-width="1" stroke-dasharray="3,3"></line>
+</svg>
+<div class="caption">Figure 6: Row buffer system. RowMap provides O(1) access by correlation ID for child operations to look up parent rows.</div>
+</div>
+
+<!-- ================================================================== -->
+<h2 id="linked-columns">6. Linked Columns: Moving Data Between Tables</h2>
+
+<p>Linked columns are the mechanism by which DBSPJ passes column values from parent rows
+to child operations. They serve two purposes:</p>
+<ol>
+  <li><strong>Join key construction:</strong> The child's primary key is built from parent column values (e.g., <code>WHERE child.id = parent.child_id</code>)</li>
+  <li><strong>Linked attribute passing:</strong> Parent columns needed by grandchild operations are forwarded through intermediate nodes</li>
+</ol>
+
+<h3>Pattern System</h3>
+
+<p>Linked columns are defined using a <strong>pattern language</strong> stored in the QueryTree.
+When DBSPJ receives a parent row, it <strong>expands</strong> these patterns using the actual
+row data to produce concrete key values and attribute parameters.</p>
+
+<div class="diagram-box">
+<svg viewBox="0 0 960 680" xmlns="http://www.w3.org/2000/svg">
+  <text x="480" y="22" fill="#53d8fb" font-size="14" text-anchor="middle" font-weight="bold">Pattern Types in QueryTree</text>
+
+  <!-- P_COL -->
+  <rect x="30" y="40" width="200" height="70" rx="6" fill="#2a1a2e" stroke="#569cd6" stroke-width="1.5"></rect>
+  <text x="130" y="60" fill="#569cd6" font-size="11" text-anchor="middle" font-weight="bold">P_COL (0x2)</text>
+  <text x="130" y="80" fill="#aab" font-size="9" text-anchor="middle">Extract column value from current row</text>
+  <text x="130" y="95" fill="#dcdcaa" font-size="8" text-anchor="middle">Encoding: (P_COL &lt;&lt; 16) | colNo</text>
+
+  <!-- P_PARENT -->
+  <rect x="250" y="40" width="200" height="70" rx="6" fill="#2a1a2e" stroke="#4ec9b0" stroke-width="1.5"></rect>
+  <text x="350" y="60" fill="#4ec9b0" font-size="11" text-anchor="middle" font-weight="bold">P_PARENT (0x5)</text>
+  <text x="350" y="80" fill="#aab" font-size="9" text-anchor="middle">Navigate up N levels in tree</text>
+  <text x="350" y="95" fill="#dcdcaa" font-size="8" text-anchor="middle">Encoding: (P_PARENT &lt;&lt; 16) | levels</text>
+
+  <!-- P_ATTRINFO -->
+  <rect x="470" y="40" width="215" height="70" rx="6" fill="#2a1a2e" stroke="#e94560" stroke-width="1.5"></rect>
+  <text x="578" y="60" fill="#e94560" font-size="11" text-anchor="middle" font-weight="bold">P_ATTRINFO (0x7)</text>
+  <text x="578" y="80" fill="#aab" font-size="9" text-anchor="middle">Column with AttributeHeader from row</text>
+  <text x="578" y="95" fill="#dcdcaa" font-size="8" text-anchor="middle">Encoding: (P_ATTRINFO &lt;&lt; 16) | colNo</text>
+
+  <!-- P_DATA -->
+  <rect x="705" y="40" width="215" height="70" rx="6" fill="#2a1a2e" stroke="#dcdcaa" stroke-width="1.5"></rect>
+  <text x="813" y="60" fill="#dcdcaa" font-size="11" text-anchor="middle" font-weight="bold">P_DATA (0x1)</text>
+  <text x="813" y="80" fill="#aab" font-size="9" text-anchor="middle">Inline constant data</text>
+  <text x="813" y="95" fill="#dcdcaa" font-size="8" text-anchor="middle">Encoding: (P_DATA &lt;&lt; 16) | wordCount</text>
+
+  <!-- ============ 3-TABLE JOIN SCHEMA ============ -->
+  <text x="480" y="140" fill="#53d8fb" font-size="13" text-anchor="middle" font-weight="bold">Example: 3-Table Join — Orders → LineItems → Parts</text>
+
+  <!-- Join tree diagram -->
+  <rect x="60" y="155" width="160" height="50" rx="6" fill="#2a1a2e" stroke="#569cd6" stroke-width="2"></rect>
+  <text x="140" y="175" fill="#569cd6" font-size="11" text-anchor="middle" font-weight="bold">Orders (root scan)</text>
+  <text x="140" y="192" fill="#aab" font-size="8" text-anchor="middle">cols: o_id, o_date, o_region</text>
+
+  <rect x="310" y="155" width="180" height="50" rx="6" fill="#2a1a2e" stroke="#4ec9b0" stroke-width="2"></rect>
+  <text x="400" y="175" fill="#4ec9b0" font-size="11" text-anchor="middle" font-weight="bold">LineItems (PK lookup)</text>
+  <text x="400" y="192" fill="#aab" font-size="8" text-anchor="middle">cols: l_id, l_order_id, l_part_id, l_qty</text>
+
+  <rect x="590" y="155" width="160" height="50" rx="6" fill="#2a1a2e" stroke="#e94560" stroke-width="2"></rect>
+  <text x="670" y="175" fill="#e94560" font-size="11" text-anchor="middle" font-weight="bold">Parts (PK lookup)</text>
+  <text x="670" y="192" fill="#aab" font-size="8" text-anchor="middle">cols: p_id, p_name, p_type</text>
+
+  <!-- Join arrows -->
+  <line x1="220" y1="180" x2="308" y2="180" stroke="#dcdcaa" stroke-width="1.5" marker-end="url(#arr)"></line>
+  <text x="264" y="173" fill="#dcdcaa" font-size="7" text-anchor="middle">l_order_id = o_id</text>
+  <line x1="490" y1="180" x2="588" y2="180" stroke="#dcdcaa" stroke-width="1.5" marker-end="url(#arr)"></line>
+  <text x="539" y="173" fill="#dcdcaa" font-size="7" text-anchor="middle">p_id = l_part_id</text>
+
+  <!-- Node labels -->
+  <text x="140" y="217" fill="#569cd6" font-size="8" text-anchor="middle">Node 0 (grandparent)</text>
+  <text x="400" y="217" fill="#4ec9b0" font-size="8" text-anchor="middle">Node 1 (parent)</text>
+  <text x="670" y="217" fill="#e94560" font-size="8" text-anchor="middle">Node 2 (child)</text>
+
+  <!-- ============ NODE 1: Key pattern (parent link) ============ -->
+  <text x="480" y="248" fill="#4ec9b0" font-size="12" text-anchor="middle" font-weight="bold">Node 1 (LineItems) — Key Pattern: P_PARENT(0) = go to Orders</text>
+
+  <rect x="40" y="260" width="880" height="55" rx="6" fill="#16213e" stroke="#4ec9b0" stroke-width="1"></rect>
+  <text x="55" y="282" fill="#dcdcaa" font-size="10">m_keyPattern:</text>
+  <rect x="190" y="270" width="100" height="28" rx="4" fill="#0f3460" stroke="#4ec9b0" stroke-width="1"></rect>
+  <text x="240" y="289" fill="#4ec9b0" font-size="9" text-anchor="middle">P_PARENT(0)</text>
+  <rect x="300" y="270" width="100" height="28" rx="4" fill="#0f3460" stroke="#569cd6" stroke-width="1"></rect>
+  <text x="350" y="289" fill="#569cd6" font-size="9" text-anchor="middle">P_COL(0)</text>
+  <text x="430" y="289" fill="#aab" font-size="9">→ navigate to parent (Orders), extract o_id → child key = l_order_id</text>
+
+  <text x="55" y="307" fill="#dcdcaa" font-size="10">m_attrParamPattern:</text>
+  <text x="230" y="307" fill="#aab" font-size="9">(none — Node 1 has no linked attrs to forward)</text>
+
+  <!-- ============ NODE 2: Key pattern (parent link) + attr pattern (grandparent link) ============ -->
+  <text x="480" y="345" fill="#e94560" font-size="12" text-anchor="middle" font-weight="bold">Node 2 (Parts) — Key from parent, linked attrs from grandparent</text>
+
+  <rect x="40" y="358" width="880" height="55" rx="6" fill="#16213e" stroke="#e94560" stroke-width="1"></rect>
+  <text x="55" y="380" fill="#dcdcaa" font-size="10">m_keyPattern:</text>
+  <rect x="190" y="368" width="100" height="28" rx="4" fill="#0f3460" stroke="#4ec9b0" stroke-width="1"></rect>
+  <text x="240" y="387" fill="#4ec9b0" font-size="9" text-anchor="middle">P_PARENT(0)</text>
+  <rect x="300" y="368" width="100" height="28" rx="4" fill="#0f3460" stroke="#569cd6" stroke-width="1"></rect>
+  <text x="350" y="387" fill="#569cd6" font-size="9" text-anchor="middle">P_COL(2)</text>
+  <text x="430" y="387" fill="#aab" font-size="9">→ navigate to parent (LineItems), extract l_part_id → child key = p_id</text>
+
+  <!-- Attr param pattern with grandparent link -->
+  <rect x="40" y="420" width="880" height="80" rx="6" fill="#16213e" stroke="#f44747" stroke-width="1.5"></rect>
+  <text x="55" y="442" fill="#dcdcaa" font-size="10">m_attrParamPattern:</text>
+  <rect x="230" y="432" width="100" height="25" rx="4" fill="#0f3460" stroke="#f44747" stroke-width="1.5"></rect>
+  <text x="280" y="449" fill="#f44747" font-size="9" text-anchor="middle" font-weight="bold">P_PARENT(1)</text>
+  <rect x="340" y="432" width="110" height="25" rx="4" fill="#0f3460" stroke="#e94560" stroke-width="1"></rect>
+  <text x="395" y="449" fill="#e94560" font-size="9" text-anchor="middle">P_ATTRINFO(1)</text>
+  <rect x="460" y="432" width="100" height="25" rx="4" fill="#0f3460" stroke="#f44747" stroke-width="1.5"></rect>
+  <text x="510" y="449" fill="#f44747" font-size="9" text-anchor="middle" font-weight="bold">P_PARENT(1)</text>
+  <rect x="570" y="432" width="110" height="25" rx="4" fill="#0f3460" stroke="#e94560" stroke-width="1"></rect>
+  <text x="625" y="449" fill="#e94560" font-size="9" text-anchor="middle">P_ATTRINFO(2)</text>
+
+  <text x="480" y="477" fill="#aab" font-size="9" text-anchor="middle">→ P_PARENT(1): skip 1 level past LineItems to reach <tspan fill="#f44747" font-weight="bold">Orders (grandparent)</tspan></text>
+  <text x="480" y="492" fill="#aab" font-size="9" text-anchor="middle">→ extract o_date (col #1) and o_region (col #2) with AttributeHeaders — forwarded to Parts' DBLQH as linked params</text>
+
+  <!-- ============ VISUAL: How P_PARENT(N) navigates the tree ============ -->
+  <text x="480" y="530" fill="#53d8fb" font-size="13" text-anchor="middle" font-weight="bold">How P_PARENT(N) Navigates the Join Tree</text>
+
+  <!-- Tree nodes -->
+  <rect x="380" y="545" width="120" height="35" rx="5" fill="#2a1a2e" stroke="#569cd6" stroke-width="2"></rect>
+  <text x="440" y="567" fill="#569cd6" font-size="10" text-anchor="middle" font-weight="bold">Orders</text>
+
+  <rect x="380" y="600" width="120" height="35" rx="5" fill="#2a1a2e" stroke="#4ec9b0" stroke-width="2"></rect>
+  <text x="440" y="622" fill="#4ec9b0" font-size="10" text-anchor="middle" font-weight="bold">LineItems</text>
+
+  <rect x="380" y="655" width="120" height="35" rx="5" fill="#2a1a2e" stroke="#e94560" stroke-width="2"></rect>
+  <text x="440" y="677" fill="#e94560" font-size="10" text-anchor="middle" font-weight="bold">Parts</text>
+
+  <!-- Tree lines -->
+  <line x1="440" y1="580" x2="440" y2="598" stroke="#aab" stroke-width="1.5"></line>
+  <line x1="440" y1="635" x2="440" y2="653" stroke="#aab" stroke-width="1.5"></line>
+
+  <!-- P_PARENT(0) arrow from Parts -->
+  <path d="M 502 672 C 560 672, 580 622, 502 618" fill="none" stroke="#4ec9b0" stroke-width="2" marker-end="url(#arr)"></path>
+  <text x="575" y="640" fill="#4ec9b0" font-size="9" text-anchor="middle" font-weight="bold">P_PARENT(0)</text>
+  <text x="575" y="655" fill="#aab" font-size="8" text-anchor="middle">→ LineItems</text>
+  <text x="575" y="668" fill="#aab" font-size="8" text-anchor="middle">(used in key pattern)</text>
+
+  <!-- P_PARENT(1) arrow from Parts to Orders -->
+  <path d="M 502 662 C 650 650, 680 570, 502 563" fill="none" stroke="#f44747" stroke-width="2" marker-end="url(#arr)"></path>
+  <text x="680" y="600" fill="#f44747" font-size="9" text-anchor="middle" font-weight="bold">P_PARENT(1)</text>
+  <text x="680" y="615" fill="#aab" font-size="8" text-anchor="middle">→ skip LineItems,</text>
+  <text x="680" y="628" fill="#aab" font-size="8" text-anchor="middle">reach Orders</text>
+  <text x="680" y="641" fill="#aab" font-size="8" text-anchor="middle">(used in attr pattern)</text>
+
+  <!-- P_PARENT(0) arrow from LineItems to Orders -->
+  <path d="M 378 618 C 320 618, 300 572, 378 563" fill="none" stroke="#4ec9b0" stroke-width="1.5" marker-end="url(#arr)"></path>
+  <text x="295" y="588" fill="#4ec9b0" font-size="9" text-anchor="middle">P_PARENT(0)</text>
+  <text x="295" y="601" fill="#aab" font-size="8" text-anchor="middle">→ Orders</text>
+</svg>
+<div class="caption">Figure 7: The pattern language for linked columns, illustrated with a 3-table join. P_PARENT(0) navigates
+to the immediate parent, while P_PARENT(1) skips one level to reach the grandparent — enabling the child (Parts)
+to access columns from Orders that were not available in the intermediate LineItems row.</div>
+</div>
+
+<h3>Expansion Process</h3>
+
+<p>When a parent row arrives in DBSPJ (via TRANSID_AI from DBLQH), the <code>expand()</code>
+method is called to build concrete key/attribute sections from patterns:</p>
+
+<pre>// In lookup_parent_row():
+// 1. Expand key pattern → build child's primary key from parent columns
+expand(keyPtrI, m_keyPattern, parentRowRef, keyIsNull);
+
+// 2. Expand attr param pattern → build linked attributes for child's params
+expand(attrPtrI, m_attrParamPattern, parentRowRef, hasNull, addTableMeta=true);
+
+// The expand() function walks the pattern:
+for each pattern entry:
+  switch (type):
+    P_PARENT:  navigate up 'levels' to target ancestor row
+    P_COL:     extract column value from target row, append to section
+    P_ATTRINFO: extract column with AttributeHeader, append to section
+    P_DATA:    copy inline constant data to section
+</pre>
+
+<h3>How Linked Attributes Flow Through the Join Tree</h3>
+
+<div class="diagram-box">
+<svg viewBox="0 0 900 280" xmlns="http://www.w3.org/2000/svg">
+  <!-- 3-table join: grandparent → parent → child -->
+  <rect x="50" y="50" width="200" height="60" rx="8" fill="#2a1a2e" stroke="#569cd6" stroke-width="2"></rect>
+  <text x="150" y="75" fill="#569cd6" font-size="12" text-anchor="middle" font-weight="bold">Grandparent (root scan)</text>
+  <text x="150" y="95" fill="#aab" font-size="9" text-anchor="middle">cols: gp_id, gp_name, gp_region</text>
+
+  <rect x="350" y="50" width="200" height="60" rx="8" fill="#2a1a2e" stroke="#4ec9b0" stroke-width="2"></rect>
+  <text x="450" y="75" fill="#4ec9b0" font-size="12" text-anchor="middle" font-weight="bold">Parent (PK lookup)</text>
+  <text x="450" y="95" fill="#aab" font-size="9" text-anchor="middle">cols: p_id, p_gp_id, p_amount</text>
+
+  <rect x="650" y="50" width="200" height="60" rx="8" fill="#2a1a2e" stroke="#e94560" stroke-width="2"></rect>
+  <text x="750" y="75" fill="#e94560" font-size="12" text-anchor="middle" font-weight="bold">Child (PK lookup)</text>
+  <text x="750" y="95" fill="#aab" font-size="9" text-anchor="middle">cols: c_id, c_p_id, c_value</text>
+
+  <!-- Join arrows -->
+  <line x1="250" y1="80" x2="348" y2="80" stroke="#dcdcaa" stroke-width="2" marker-end="url(#arr)"></line>
+  <text x="300" y="72" fill="#dcdcaa" font-size="8" text-anchor="middle">key: p_gp_id = gp_id</text>
+  <line x1="550" y1="80" x2="648" y2="80" stroke="#dcdcaa" stroke-width="2" marker-end="url(#arr)"></line>
+  <text x="600" y="72" fill="#dcdcaa" font-size="8" text-anchor="middle">key: c_p_id = p_id</text>
+
+  <!-- Linked attr flow -->
+  <text x="450" y="145" fill="#53d8fb" font-size="12" text-anchor="middle" font-weight="bold">Linked Attribute Data Flow</text>
+
+  <!-- Step 1: Root scan returns row with linked projection -->
+  <rect x="50" y="165" width="200" height="40" rx="4" fill="#0f3460" stroke="#569cd6" stroke-width="1"></rect>
+  <text x="150" y="183" fill="#569cd6" font-size="9" text-anchor="middle">TRANSID_AI: gp_id, gp_name,</text>
+  <text x="150" y="197" fill="#dcdcaa" font-size="8" text-anchor="middle">+ linked: gp_region (for grandchild GROUP BY)</text>
+
+  <!-- Step 2: DBSPJ expands key pattern + passes linked attrs -->
+  <rect x="350" y="165" width="200" height="40" rx="4" fill="#0f3460" stroke="#4ec9b0" stroke-width="1"></rect>
+  <text x="450" y="183" fill="#4ec9b0" font-size="9" text-anchor="middle">LQHKEYREQ key=gp_id</text>
+  <text x="450" y="197" fill="#dcdcaa" font-size="8" text-anchor="middle">+ attrParams: gp_region (forwarded)</text>
+
+  <!-- Step 3: Parent returns with its linked attrs -->
+  <rect x="350" y="220" width="200" height="40" rx="4" fill="#0f3460" stroke="#4ec9b0" stroke-width="1"></rect>
+  <text x="450" y="238" fill="#4ec9b0" font-size="9" text-anchor="middle">TRANSID_AI: p_id, p_amount,</text>
+  <text x="450" y="252" fill="#dcdcaa" font-size="8" text-anchor="middle">+ linked: gp_region (received as param)</text>
+
+  <!-- Step 4: Child lookup uses grandparent data -->
+  <rect x="650" y="220" width="200" height="40" rx="4" fill="#0f3460" stroke="#e94560" stroke-width="1"></rect>
+  <text x="750" y="238" fill="#e94560" font-size="9" text-anchor="middle">LQHKEYREQ key=p_id</text>
+  <text x="750" y="252" fill="#dcdcaa" font-size="8" text-anchor="middle">+ attrParams: gp_region (from grandparent!)</text>
+
+  <!-- Flow arrows -->
+  <line x1="250" y1="185" x2="348" y2="185" stroke="#dcdcaa" stroke-width="1.5" marker-end="url(#arr)"></line>
+  <line x1="450" y1="205" x2="450" y2="218" stroke="#dcdcaa" stroke-width="1.5" marker-end="url(#arr)"></line>
+  <line x1="550" y1="240" x2="648" y2="240" stroke="#dcdcaa" stroke-width="1.5" marker-end="url(#arr)"></line>
+</svg>
+<div class="caption">Figure 8: In a 3-way join, linked attributes from the grandparent flow through the parent node
+to reach the child — enabling GROUP BY or WHERE on grandparent columns at the leaf.</div>
+</div>
+
+<!-- ================================================================== -->
+<h2 id="correlation-ids">7. Correlation IDs: Parent–Child Row Matching</h2>
+
+<p>Every row returned from DBLQH via TRANSID_AI includes a <strong>correlation data</strong>
+suffix. This allows the API to match child rows to their parent rows and reconstruct
+the join result.</p>
+
+<h3>Correlation Data Format</h3>
+<pre>// Appended as the last 3 words of every TRANSID_AI row:
+Word 0: AttributeHeader (CORR_FACTOR64 = 0xFFE8, size=2)
+Word 1: [parentTupleId : 16 bits | tupleId : 16 bits]
+Word 2: rootReceiverId (identifies which SPJ worker produced this row)
+</pre>
+
+<h3>How It Works</h3>
+
+<div class="diagram-box">
+<svg viewBox="0 0 900 310" xmlns="http://www.w3.org/2000/svg">
+  <!-- Parent batch -->
+  <text x="200" y="22" fill="#569cd6" font-size="12" text-anchor="middle" font-weight="bold">Root Table Rows (Batch)</text>
+  <rect x="50" y="35" width="120" height="35" rx="4" fill="#0f3460" stroke="#569cd6" stroke-width="1"></rect>
+  <text x="110" y="57" fill="#569cd6" font-size="9" text-anchor="middle">Row A (tupleId=0)</text>
+  <rect x="180" y="35" width="120" height="35" rx="4" fill="#0f3460" stroke="#569cd6" stroke-width="1"></rect>
+  <text x="240" y="57" fill="#569cd6" font-size="9" text-anchor="middle">Row B (tupleId=1)</text>
+  <rect x="310" y="35" width="120" height="35" rx="4" fill="#0f3460" stroke="#569cd6" stroke-width="1"></rect>
+  <text x="370" y="57" fill="#569cd6" font-size="9" text-anchor="middle">Row C (tupleId=2)</text>
+
+  <!-- Child rows -->
+  <text x="250" y="105" fill="#4ec9b0" font-size="12" text-anchor="middle" font-weight="bold">Child Table Rows (via LQHKEYREQ)</text>
+
+  <rect x="50" y="120" width="170" height="35" rx="4" fill="#0f3460" stroke="#4ec9b0" stroke-width="1"></rect>
+  <text x="135" y="142" fill="#4ec9b0" font-size="9" text-anchor="middle">Child X (parent=0, tuple=3)</text>
+
+  <rect x="230" y="120" width="170" height="35" rx="4" fill="#0f3460" stroke="#4ec9b0" stroke-width="1"></rect>
+  <text x="315" y="142" fill="#4ec9b0" font-size="9" text-anchor="middle">Child Y (parent=1, tuple=4)</text>
+
+  <rect x="410" y="120" width="170" height="35" rx="4" fill="#0f3460" stroke="#4ec9b0" stroke-width="1"></rect>
+  <text x="495" y="142" fill="#4ec9b0" font-size="9" text-anchor="middle">Child Z (parent=2, tuple=5)</text>
+
+  <!-- Correlation lines -->
+  <line x1="110" y1="70" x2="135" y2="118" stroke="#dcdcaa" stroke-width="1.5" stroke-dasharray="3,3"></line>
+  <line x1="240" y1="70" x2="315" y2="118" stroke="#dcdcaa" stroke-width="1.5" stroke-dasharray="3,3"></line>
+  <line x1="370" y1="70" x2="495" y2="118" stroke="#dcdcaa" stroke-width="1.5" stroke-dasharray="3,3"></line>
+
+  <!-- API side -->
+  <text x="450" y="190" fill="#c586c0" font-size="12" text-anchor="middle" font-weight="bold">NDB API: Correlating Results</text>
+  <rect x="50" y="205" width="800" height="90" rx="8" fill="#16213e" stroke="#c586c0" stroke-width="1"></rect>
+  <text x="65" y="225" fill="#aab" font-size="9">1. API receives Row A (tupleId=0) from root scan → stores in result[0]</text>
+  <text x="65" y="242" fill="#aab" font-size="9">2. API receives Child X (parentTupleId=0, tupleId=3) → matches to result[0] → join pair (A, X)</text>
+  <text x="65" y="259" fill="#aab" font-size="9">3. API receives Row B (tupleId=1) → stores in result[1]</text>
+  <text x="65" y="276" fill="#aab" font-size="9">4. API receives Child Y (parentTupleId=1, tupleId=4) → matches to result[1] → join pair (B, Y)</text>
+  <text x="65" y="293" fill="#aab" font-size="9">5. rootReceiverId in Word 2 routes to the correct NdbWorker (hash: receiverId &gt;&gt; 2 % numWorkers)</text>
+</svg>
+<div class="caption">Figure 9: Correlation IDs link child rows back to their parent rows. The API uses TupleCorrelation
+to reconstruct join pairs from the interleaved TRANSID_AI stream.</div>
+</div>
+
+<div class="callout warn">
+  <strong>12-bit Correlation ID Limit:</strong> Tuple IDs are 12 bits (max 4096 = <code>MaxCorrelationId</code>).
+  This limits the maximum batch size for parent operations that have children. The batch size
+  is capped at <code>4096 / fragsPerWorker</code> rows to ensure unique correlation IDs within a batch.
+</div>
+
+<!-- ================================================================== -->
+<h2 id="batch-sizes">8. Batch Size Calculation</h2>
+
+<p>Batch sizes are calculated at two levels: the NDB API sets the overall budget,
+and DBSPJ adaptively distributes it across fragments based on runtime statistics.</p>
+
+<h3 id="api-batch">API-Side Batch Size</h3>
+
+<pre>// NdbQueryOperationImpl::calculateBatchedRows()
+
+// Step 1: Start with configured max batch rows for root scan
+Uint32 maxBatchRows = myClosestScan-&gt;m_maxBatchRows;
+
+// Step 2: Apply NdbReceiver limits (considers parallelism)
+NdbReceiver::calculate_batch_size(
+    parallelism,          // number of fragments in parallel
+    maxBatchRows,         // in/out: capped by transport limits
+    batchByteSize,        // in/out: byte budget
+    MAX_PARALLEL_OP_PER_SCAN_SPJ);  // hard limit: 4000 rows
+
+// Step 3: Apply 12-bit correlation ID constraint (parents only)
+if (has_children) {
+    maxBatchRows = MIN(maxBatchRows, 4096 / fragsPerWorker);
+}
+
+// Step 4: Reconcile with all child operations recursively
+for each child:
+    childMax = child-&gt;calculateBatchedRows(myClosestScan);
+    maxBatchRows = MIN(maxBatchRows, childMax);
+</pre>
+
+<p>The API sends the root scan's limits in SCAN_TABREQ:</p>
+<table>
+  <tbody><tr><th>Field</th><th>Description</th><th>Typical Value</th></tr>
+  <tr><td><code>batch_size_rows</code></td><td>Max rows per batch</td><td>256–4000</td></tr>
+  <tr><td><code>batch_size_bytes</code></td><td>Max bytes per batch</td><td>64KB–1MB</td></tr>
+  <tr><td><code>first_batch_size</code></td><td>Initial batch (may differ)</td><td>Same as batch_size_rows</td></tr>
+  <tr><td><code>scanParallelism</code></td><td>Fragments to scan in parallel</td><td>= workerCount × fragsPerWorker</td></tr>
+</tbody></table>
+
+<h3 id="child-buffer">Child Scan Buffer Sizing: API → QueryTree → DBSPJ</h3>
+
+<p>The root scan's batch limits travel in SCAN_TABREQ. But <strong>child</strong> scan operations
+have their own independent batch sizes, which are serialized into the <strong>QueryTree</strong>
+that the API sends alongside SCAN_TABREQ. Understanding this propagation chain is key to
+understanding the "budget" that <code>estmMaxKeys()</code> tries to stay within.</p>
+
+<h4>Step 1: API calculates per-operation batch sizes</h4>
+
+<p>Each scan operation in the query tree calls <code>calculateBatchedRows()</code> independently.
+The critical concept is <code>myClosestScan</code> — each operation tracks its closest scan
+ancestor:</p>
+
+<pre>// NdbQueryOperationImpl::calculateBatchedRows(closestScan)
+
+if (isScanOperation()) {
+    myClosestScan = this;                    // I am a scan — use my own batch
+} else {
+    myClosestScan = closestScan;             // Lookup — inherit parent scan's batch
+}
+
+// For this scan: calculate batch from NdbReceiver defaults
+maxBatchRows = myClosestScan-&gt;m_maxBatchRows;   // 0 = use cluster config default
+NdbReceiver::calculate_batch_size(parallelism, maxBatchRows, batchByteSize, ...);
+
+// Parent scans: cap by 12-bit correlation ID
+if (has_children)
+    maxBatchRows = MIN(maxBatchRows, 4096 / fragsPerWorker);
+
+// Recursively constrain children
+for each child:
+    childMax = child-&gt;calculateBatchedRows(myClosestScan);
+    maxBatchRows = MIN(maxBatchRows, childMax);
+
+if (isScanOperation()) {
+    m_maxBatchRows = maxBatchRows;           // Store final batch for this scan
+    return 0xFFFFFFFF;                       // Don't constrain parent scan
+} else {
+    return maxBatchRows;                     // Lookup: constrain parent scan
+}
+</pre>
+
+<div class="callout info">
+  <strong>Scan operations return 0xFFFFFFFF:</strong> When a child <em>scan</em> calls
+  <code>calculateBatchedRows()</code>, it stores its own <code>m_maxBatchRows</code> but
+  returns <code>0xFFFFFFFF</code> (no constraint) to its parent. This is because child scans
+  have their own independent batch buffers — they don't consume the parent's buffer.
+  Only child <em>lookups</em> constrain the parent scan, since lookup responses share the
+  parent scan's batch buffer. This means each scan in the tree gets its own budget,
+  calculated independently from cluster config defaults.
+</div>
+
+<h4>Step 2: API serializes child batch sizes into QueryTree</h4>
+
+<p>After <code>calculateBatchedRows()</code> runs for the whole tree, each scan operation's
+<code>m_maxBatchRows</code> and <code>m_maxBatchBytes</code> are serialized into the QueryTree
+as <code>QN_ScanFragParameters</code>. This is the data structure that DBSPJ will parse at
+build time:</p>
+
+<pre>// NdbQueryOperationImpl::prepareAttrInfo() — for each child scan
+
+QN_ScanFragParameters *param = ...;
+
+// CRITICAL: multiply by fragsPerWorker for multi-fragment bundling
+const Uint32 batchRows  = getMaxBatchRows()  * fragsPerWorker;
+const Uint32 batchBytes = getMaxBatchBytes() * fragsPerWorker;
+
+param-&gt;batch_size_rows  = batchRows;     // Stored in QueryTree
+param-&gt;batch_size_bytes = batchBytes;    // Stored in QueryTree
+</pre>
+
+<h4>Step 3: DBSPJ extracts child batch sizes at build time</h4>
+
+<p>When DBSPJ receives the QueryTree in SCAN_TABREQ, it calls <code>scanFrag_build()</code>
+for each scan node. For child scans, the batch sizes come from the QueryTree parameters
+(not from SCAN_TABREQ — that only contains the root's batch):</p>
+
+<pre>// Dbspj::scanFrag_build() — for CHILD scans
+
+const QN_ScanFragParameters *param = ...;   // From QueryTree
+
+// Extract child's independent batch size
+dst-&gt;batch_size_rows  = param-&gt;batch_size_rows;    // Child's own row budget
+dst-&gt;batch_size_bytes = param-&gt;batch_size_bytes;    // Child's own byte budget
+
+// Stored in TreeNode's m_scanFragReq template — used for all SCAN_FRAGREQs
+</pre>
+
+<p>These stored values become the <code>org-&gt;batch_size_rows</code> and
+<code>org-&gt;batch_size_bytes</code> that <code>scanFrag_getBatchSize()</code> reads at
+runtime.</p>
+
+<div class="diagram-box">
+<svg viewBox="0 0 920 280" xmlns="http://www.w3.org/2000/svg" font-family="Consolas, monospace">
+  <text x="460" y="22" fill="#dcdcaa" font-size="13" text-anchor="middle" font-weight="bold">Figure 10c: Child Batch Size Propagation Chain</text>
+
+  <!-- API side -->
+  <rect x="20" y="45" width="280" height="100" rx="6" fill="#0f3460" stroke="#53d8fb" stroke-width="1.5"></rect>
+  <text x="160" y="65" fill="#53d8fb" font-size="10" text-anchor="middle" font-weight="bold">NDB API</text>
+  <text x="30" y="85" fill="#aab" font-size="9">calculateBatchedRows()</text>
+  <text x="30" y="100" fill="#ccc" font-size="8">→ Root: m_maxBatchRows = 1000</text>
+  <text x="30" y="114" fill="#ccc" font-size="8">→ Child scan: m_maxBatchRows = 500</text>
+  <text x="30" y="128" fill="#ccc" font-size="8">→ Each scan computed independently</text>
+  <text x="30" y="140" fill="#888" font-size="7">(child scan returns 0xFFFFFFFF to parent)</text>
+
+  <!-- Arrow to QueryTree -->
+  <line x1="300" y1="95" x2="340" y2="95" stroke="#aab" stroke-width="1.5" marker-end="url(#arr)"></line>
+  <text x="320" y="85" fill="#888" font-size="7" text-anchor="middle">serialize</text>
+
+  <!-- QueryTree -->
+  <rect x="340" y="45" width="240" height="100" rx="6" fill="#16213e" stroke="#4ec9b0" stroke-width="1.5"></rect>
+  <text x="460" y="65" fill="#4ec9b0" font-size="10" text-anchor="middle" font-weight="bold">QueryTree (in SCAN_TABREQ)</text>
+  <text x="350" y="85" fill="#aab" font-size="9">Root: in SCAN_TABREQ header</text>
+  <text x="350" y="100" fill="#aab" font-size="9">Child: QN_ScanFragParameters</text>
+  <text x="360" y="116" fill="#ce9178" font-size="8">batch_size_rows = 500</text>
+  <text x="360" y="130" fill="#ce9178" font-size="8">batch_size_bytes = 32768</text>
+  <text x="350" y="142" fill="#888" font-size="7">(× fragsPerWorker if multi-frag)</text>
+
+  <!-- Arrow to DBSPJ -->
+  <line x1="580" y1="95" x2="620" y2="95" stroke="#aab" stroke-width="1.5" marker-end="url(#arr)"></line>
+  <text x="600" y="85" fill="#888" font-size="7" text-anchor="middle">build</text>
+
+  <!-- DBSPJ build -->
+  <rect x="620" y="45" width="280" height="100" rx="6" fill="#1a2a1a" stroke="#e94560" stroke-width="1.5"></rect>
+  <text x="760" y="65" fill="#e94560" font-size="10" text-anchor="middle" font-weight="bold">DBSPJ scanFrag_build()</text>
+  <text x="630" y="85" fill="#aab" font-size="9">Extract from QN_ScanFragParameters</text>
+  <text x="630" y="100" fill="#aab" font-size="9">Store in m_scanFragReq template</text>
+  <text x="640" y="116" fill="#ce9178" font-size="8">org-&gt;batch_size_rows = 500</text>
+  <text x="640" y="130" fill="#ce9178" font-size="8">org-&gt;batch_size_bytes = 32768</text>
+  <text x="630" y="142" fill="#888" font-size="7">Used by scanFrag_getBatchSize()</text>
+
+  <!-- Runtime adjustment -->
+  <line x1="760" y1="145" x2="760" y2="170" stroke="#aab" stroke-width="1.5" marker-end="url(#arr)"></line>
+
+  <rect x="540" y="170" width="360" height="90" rx="6" fill="#1e1e2e" stroke="#dcdcaa" stroke-width="1"></rect>
+  <text x="720" y="190" fill="#dcdcaa" font-size="10" text-anchor="middle" font-weight="bold">Runtime: scanFrag_getBatchSize()</text>
+  <text x="550" y="208" fill="#ccc" font-size="8">availableRows = 500 − m_totalRows (already received)</text>
+  <text x="550" y="222" fill="#ccc" font-size="8">if parent: MIN(availableRows, MaxCorrelationId − corrIdStart)</text>
+  <text x="550" y="236" fill="#ccc" font-size="8">if recSizeStat valid: MIN(availableRows, availableBytes / estmRecSize)</text>
+  <text x="550" y="252" fill="#888" font-size="7">→ Final: divided by parallelism → per-fragment bs_rows sent in SCAN_FRAGREQ</text>
+
+  <!-- estmMaxKeys reference -->
+  <rect x="20" y="175" width="490" height="80" rx="6" fill="#2a2a1a" stroke="#ff0" stroke-width="0.8"></rect>
+  <text x="265" y="195" fill="#ff0" font-size="10" text-anchor="middle" font-weight="bold">estmMaxKeys() uses this child budget</text>
+  <text x="30" y="215" fill="#ccc" font-size="8">maxKeys = scanFrag_getBatchSize(child) / accumulated_fanout</text>
+  <text x="30" y="232" fill="#ccc" font-size="8">If child has batch_size_rows=500 and fanout=12.8 → maxKeys = 39</text>
+  <text x="30" y="248" fill="#888" font-size="7">Prevents parent from generating more child rows than the child buffer can hold</text>
+</svg>
+<div class="caption">Figure 10c: Child batch sizes originate in the API's calculateBatchedRows(), travel through the
+QueryTree as QN_ScanFragParameters, are extracted by DBSPJ at build time, and are refined at runtime
+by scanFrag_getBatchSize().</div>
+</div>
+
+<h4>Lookup children: no independent buffer</h4>
+
+<p>Unlike child scans, child <strong>lookups</strong> (LQHKEYREQ operations) do not have their
+own batch_size_rows — each lookup returns exactly one row. Instead, the parent scan's batch
+buffer must have room for all lookup responses. This is why lookup children <em>do</em>
+constrain their parent scan in <code>calculateBatchedRows()</code>: if the parent generates
+1000 rows and each spawns a lookup, the parent scan's batch must accommodate 1000 lookup
+responses. The constraint flows upward: a lookup child returns its <code>myClosestScan</code>'s
+<code>maxBatchRows</code>, ensuring the ancestor scan doesn't generate more lookups than it
+has buffer for.</p>
+
+<h3 id="dbspj-batch">DBSPJ-Side Runtime Adjustment</h3>
+
+<p>At runtime, DBSPJ further refines the child's configured batch size in
+<code>scanFrag_getBatchSize()</code>, accounting for rows already received and runtime
+statistics:</p>
+
+<pre>// Dbspj::scanFrag_getBatchSize()
+// How many rows can we still fetch into the available batch buffers?
+
+// Available rows = configured batch size − already received rows
+availableBatchRows = org-&gt;batch_size_rows − data.m_totalRows;
+
+// For parent nodes: also limited by remaining correlation IDs (12-bit)
+if (!isLeaf())
+    availableBatchRows = MIN(availableBatchRows, MaxCorrelationId − m_corrIdStart);
+
+// Available bytes = configured batch bytes − already received bytes
+availableBatchBytes = org-&gt;batch_size_bytes − data.m_totalBytes;
+
+// Use record size statistics to estimate rows that fit in available bytes
+if (m_recSizeStat.isValid()) {
+    batchLimitedByBytes = availableBatchBytes / estmRecSize;
+    batchSizeRows = MIN(batchSizeRows, batchLimitedByBytes);
+}
+</pre>
+
+<h3 id="parallelism">Adaptive Parallelism in DBSPJ</h3>
+
+<p>DBSPJ dynamically calculates how many fragments to scan in parallel using
+<code>scanFrag_parallelism()</code>. It uses runtime fanout statistics from previous
+batches to estimate optimal parallelism:</p>
+
+<pre>// Dbspj::scanFrag_parallelism()
+
+maxParallelism = MIN(batchSizeRows, frags_not_complete);
+minParallelism = MIN(rootFragCount, maxParallelism);
+
+if (T_SCAN_PARALLEL flag set)
+    return maxParallelism;  // Full parallel: all fragments at once
+
+if (no statistics yet)
+    return minParallelism;  // Conservative: start with rootFragCount
+
+// Use 95th percentile of records-per-key fanout
+estmRecsPrKey = m_recsPrKeyStat.getUpperEstimate();
+estmRowsSelected = keysToSend × estmRecsPrKey;
+
+// Parallelism = how many fragments we can afford given batch budget
+parallelism = (batchSizeRows × frags_not_started) / estmRowsSelected;
+parallelism = CLAMP(parallelism, minParallelism, maxParallelism);
+</pre>
+
+<div class="diagram-box">
+<svg viewBox="0 0 900 220" xmlns="http://www.w3.org/2000/svg">
+  <text x="450" y="22" fill="#53d8fb" font-size="13" text-anchor="middle" font-weight="bold">Batch Size Distribution: Total Budget → Per-Fragment</text>
+
+  <rect x="50" y="40" width="200" height="50" rx="6" fill="#0f3460" stroke="#53d8fb" stroke-width="2"></rect>
+  <text x="150" y="60" fill="#53d8fb" font-size="11" text-anchor="middle" font-weight="bold">Total Batch Budget</text>
+  <text x="150" y="78" fill="#aab" font-size="9" text-anchor="middle">rows=1000, bytes=256KB</text>
+
+  <line x1="250" y1="65" x2="320" y2="65" stroke="#aab" stroke-width="1.5" marker-end="url(#arr)"></line>
+  <text x="285" y="55" fill="#aab" font-size="8" text-anchor="middle">÷ parallelism</text>
+
+  <rect x="320" y="40" width="250" height="50" rx="6" fill="#0f3460" stroke="#4ec9b0" stroke-width="2"></rect>
+  <text x="445" y="58" fill="#4ec9b0" font-size="10" text-anchor="middle" font-weight="bold">scanFrag_parallelism() = 4</text>
+  <text x="445" y="78" fill="#aab" font-size="9" text-anchor="middle">based on fanout stats from previous batches</text>
+
+  <line x1="570" y1="65" x2="630" y2="65" stroke="#aab" stroke-width="1.5" marker-end="url(#arr)"></line>
+
+  <rect x="630" y="40" width="230" height="50" rx="6" fill="#0f3460" stroke="#e94560" stroke-width="2"></rect>
+  <text x="745" y="58" fill="#e94560" font-size="10" text-anchor="middle" font-weight="bold">Per-Fragment Batch</text>
+  <text x="745" y="78" fill="#aab" font-size="9" text-anchor="middle">bs_rows=250, bs_bytes=64KB</text>
+
+  <!-- Second level: child budget derived from parent fanout -->
+  <text x="450" y="120" fill="#53d8fb" font-size="11" text-anchor="middle" font-weight="bold">estmMaxKeys() — Child Branch Budget Estimation</text>
+
+  <rect x="100" y="140" width="300" height="60" rx="6" fill="#16213e" stroke="#334"></rect>
+  <text x="250" y="160" fill="#aab" font-size="9" text-anchor="middle">Parent's batchRows / (fanout × fragCount) = maxKeys</text>
+  <text x="250" y="178" fill="#aab" font-size="9" text-anchor="middle">e.g., 1000 / (3.2 × 8) = 39 keys from parent</text>
+  <text x="250" y="194" fill="#dcdcaa" font-size="8" text-anchor="middle">This limits how many parent rows generate child operations</text>
+
+  <rect x="450" y="140" width="400" height="60" rx="6" fill="#16213e" stroke="#334"></rect>
+  <text x="650" y="160" fill="#aab" font-size="9" text-anchor="middle">Recursive: for each child branch, compute estmMaxKeys with</text>
+  <text x="650" y="178" fill="#aab" font-size="9" text-anchor="middle">accumulated fanout = parent_fanout × child_recsPrKey × fragCount</text>
+  <text x="650" y="194" fill="#dcdcaa" font-size="8" text-anchor="middle">The minimum across all branches determines the parent's effective batch size</text>
+</svg>
+<div class="caption">Figure 10: Batch budget flows from total → per-fragment → child branch estimation.
+The system adapts based on observed fanout from previous batches.</div>
+</div>
+
+<h3 id="fanout-stats">Fanout Statistics: IncrementalStatistics</h3>
+
+<p>DBSPJ uses an adaptive statistical estimator (<code>IncrementalStatistics</code>, based on
+<code>NdbStatistics</code> in <code>stat_utils.hpp</code>) to track runtime fanout. The estimator
+uses a <strong>hybrid approach</strong>: simple moving average for the first 5 samples, then
+exponentially weighted moving average (EWMA) afterwards so that recent batches carry more weight
+than old ones.</p>
+
+<pre>// NdbStatistics — Welford's online algorithm with EWMA transition
+
+void update(double sample) {
+  if (m_noOfSamples == 0) {
+    m_mean = sample;
+    m_sumSquare = 0;
+    m_noOfSamples = 1;
+  } else {
+    const double delta = sample - m_mean;
+
+    if (m_noOfSamples == m_maxSamples) {   // Window full (5 samples)
+      m_sumSquare -= (m_sumSquare / m_noOfSamples);  // Expire oldest contribution
+      m_noOfSamples--;                                // Make room for new sample
+    }
+
+    m_noOfSamples++;
+    m_mean += (delta / m_noOfSamples);                // Updated mean
+    m_sumSquare += fabs(delta * (sample - m_mean));   // Updated variance
+  }
+}
+
+double getStdDev() const {
+  return (m_noOfSamples &gt; 1) ? sqrt(m_sumSquare / (m_noOfSamples - 1)) : 0;
+}
+</pre>
+
+<p>Two key statistics are tracked per <code>ScanFragData</code>:</p>
+
+<table style="width:100%; border-collapse:collapse; margin:1em 0;">
+<tbody><tr style="border-bottom:1px solid #444;">
+  <th style="text-align:left; padding:6px; color:#4ec9b0;">Statistic</th>
+  <th style="text-align:left; padding:6px; color:#4ec9b0;">Measures</th>
+  <th style="text-align:left; padding:6px; color:#4ec9b0;">Sampled When</th>
+</tr>
+<tr style="border-bottom:1px solid #333;">
+  <td style="padding:6px;"><code>m_recsPrKeyStat</code></td>
+  <td style="padding:6px;">Rows returned per key/bound sent <em>per fragment</em> (fanout)</td>
+  <td style="padding:6px;">Fragment completes: <code>completedRows / completedKeys</code></td>
+</tr>
+<tr style="border-bottom:1px solid #333;">
+  <td style="padding:6px;"><code>m_recSizeStat</code></td>
+  <td style="padding:6px;">Bytes consumed per row (record size)</td>
+  <td style="padding:6px;">Batch completes: <code>totalBytes / totalRows</code></td>
+</tr>
+</tbody></table>
+
+<h4>How m_recsPrKeyStat Is Collected</h4>
+
+<p>Each <code>ScanFragHandle</code> tracks <code>m_keysSent</code> (the number of range bounds
+dispatched to that fragment) and <code>m_totalRows</code> (rows returned). When a fragment
+completes scanning (all ranges exhausted), these are accumulated into the shared
+<code>ScanFragData</code>:</p>
+
+<pre>// DbspjMain.cpp — scanFrag_execSCAN_FRAGCONF(), after fragment completes
+
+data.m_completedKeys += fragPtr.p-&gt;m_keysSent;   // Keys sent to this fragment
+data.m_completedRows += fragPtr.p-&gt;m_totalRows;   // Rows received back
+
+// When all fragments in this wave complete:
+if (data.m_completedKeys &gt; 0) {
+    const double recsPrKey = double(data.m_completedRows)
+                           / data.m_completedKeys;
+    data.m_recsPrKeyStat.sample(recsPrKey);        // Feed into estimator
+
+    data.m_completedKeys = 0;   // Reset for next wave
+    data.m_completedRows = 0;
+}
+</pre>
+
+<h4>Upper Estimate: 95th Percentile</h4>
+
+<p>When DBSPJ needs a conservative (high) fanout estimate — to avoid overshooting batch
+buffers — it uses the <strong>95th percentile</strong>:</p>
+
+<pre>// IncrementalStatistics::getUpperEstimate()
+
+double getUpperEstimate() const {
+  return (m_noOfSamples &gt;= 2)
+    ? getMean() + (2 * getStdDev())   // ≈ 95th percentile (normal approx.)
+    : getMean() * 1.20;               // Only 1 sample: add 20% safety margin
+}
+</pre>
+
+<div class="callout info">
+  <strong>Why 95th percentile?</strong> If the actual fanout exceeds the estimate, rows
+  overflow the batch buffer, causing DBSPJ to request SCAN_NEXTREQ round-trips. Using the
+  mean would underestimate half the time. The 95th percentile (mean + 2σ) provides
+  a conservative bound that overestimates only ~5% of the time, at the cost of slightly
+  underutilizing batch buffers on average.
+</div>
+
+<h3 id="estm-max-keys">Recursive Fanout Estimation: estmMaxKeys()</h3>
+
+<p><code>estmMaxKeys()</code> walks the query tree top-down, accumulating the compound fanout
+through each level, and returns the maximum number of root keys that can be processed
+without overflowing any child's batch buffer. It is used for sorted-order optimization:
+if <code>estmMaxKeys() ≥ 2.0</code>, DBSPJ can safely request more root rows.</p>
+
+<pre>// Dbspj::estmMaxKeys() — recursive fanout accumulation
+
+double estmMaxKeys(requestPtr, treeNodePtr, fanout) {
+  double maxKeys = 99999.99;    // No constraint unless this is a scan
+
+  if (treeNodePtr is a scan) {
+    // Multiply accumulated fanout by this node's records-per-key
+    if (statistics available) {
+      if (isLeaf)
+        fanout *= m_recsPrKeyStat.getUpperEstimate();   // Conservative (95th pct)
+      else
+        fanout *= m_recsPrKeyStat.getMean();             // Mean for intermediates
+    }
+
+    // Non-pruned scans hit ALL fragments — multiply by fragment count
+    if (!pruned)
+      fanout *= fragCount;
+
+    // How many keys fit in the available batch buffer?
+    batchRows = scanFrag_getBatchSize(treeNodePtr, ...);
+    maxKeys = batchRows / fanout;
+  }
+
+  // Recurse into every child — take the MINIMUM (bottleneck)
+  for each child of treeNodePtr:
+    childMaxKeys = estmMaxKeys(requestPtr, child, fanout);
+    maxKeys = MIN(maxKeys, childMaxKeys);
+
+  return maxKeys;
+}
+</pre>
+
+<div class="callout warn">
+  <strong>Leaf vs. non-leaf distinction:</strong> Leaf scans use <code>getUpperEstimate()</code>
+  (95th percentile) because overestimating at the leaf is the safest — it avoids buffer overflow
+  at the terminal node. Non-leaf (intermediate) scans use <code>getMean()</code> because the
+  accumulated fanout already compounds conservatively through the tree, and using upper estimates
+  at every level would make the estimate excessively pessimistic.
+</div>
+
+<h4>Worked Example: 3-Table Join</h4>
+
+<p>Consider <code>Orders → LineItems → Parts</code> where Orders has 8 unpruned fragments:</p>
+
+<div class="diagram-box">
+<svg viewBox="0 0 920 340" xmlns="http://www.w3.org/2000/svg" font-family="Consolas, monospace">
+  <text x="460" y="22" fill="#dcdcaa" font-size="13" text-anchor="middle" font-weight="bold">Figure 10b: estmMaxKeys() Worked Example</text>
+
+  <!-- Root: Orders scan -->
+  <rect x="330" y="40" width="260" height="55" rx="6" fill="#0f3460" stroke="#53d8fb" stroke-width="1.5"></rect>
+  <text x="460" y="60" fill="#53d8fb" font-size="11" text-anchor="middle" font-weight="bold">Orders (root scan)</text>
+  <text x="460" y="78" fill="#aab" font-size="9" text-anchor="middle">batchRows = 1000, fanout in = 1.0</text>
+
+  <!-- Arrow to LineItems -->
+  <line x1="390" y1="95" x2="230" y2="130" stroke="#4ec9b0" stroke-width="1.5" marker-end="url(#arr)"></line>
+  <text x="280" y="108" fill="#4ec9b0" font-size="9" text-anchor="middle">1:N scan</text>
+
+  <!-- Arrow to Parts -->
+  <line x1="530" y1="95" x2="690" y2="130" stroke="#e94560" stroke-width="1.5" marker-end="url(#arr)"></line>
+  <text x="640" y="108" fill="#e94560" font-size="9" text-anchor="middle">1:1 lookup</text>
+
+  <!-- LineItems (child scan, non-leaf) -->
+  <rect x="50" y="130" width="360" height="90" rx="6" fill="#16213e" stroke="#4ec9b0" stroke-width="1.5"></rect>
+  <text x="230" y="150" fill="#4ec9b0" font-size="11" text-anchor="middle" font-weight="bold">LineItems (child scan, 4 frags, not pruned)</text>
+  <text x="230" y="168" fill="#aab" font-size="9" text-anchor="middle">recsPrKey mean = 3.2, batchRows = 500</text>
+  <text x="230" y="186" fill="#dcdcaa" font-size="9" text-anchor="middle">fanout = 1.0 × 3.2 × 4 frags = 12.8</text>
+  <text x="230" y="204" fill="#ce9178" font-size="10" text-anchor="middle">maxKeys = 500 / 12.8 = 39.0</text>
+
+  <!-- Parts (child lookup, leaf) -->
+  <rect x="530" y="130" width="360" height="70" rx="6" fill="#16213e" stroke="#e94560" stroke-width="1.5"></rect>
+  <text x="710" y="150" fill="#e94560" font-size="11" text-anchor="middle" font-weight="bold">Parts (lookup, leaf)</text>
+  <text x="710" y="168" fill="#aab" font-size="9" text-anchor="middle">Lookups: fanout assumed 1:1</text>
+  <text x="710" y="186" fill="#ce9178" font-size="10" text-anchor="middle">maxKeys = 99999.99 (no scan constraint)</text>
+
+  <!-- Arrow to Supplier (grandchild) -->
+  <line x1="230" y1="220" x2="230" y2="250" stroke="#c586c0" stroke-width="1.5" marker-end="url(#arr)"></line>
+  <text x="260" y="238" fill="#c586c0" font-size="9">1:1 lookup</text>
+
+  <!-- Supplier (grandchild lookup, leaf) -->
+  <rect x="70" y="252" width="320" height="70" rx="6" fill="#16213e" stroke="#c586c0" stroke-width="1.5"></rect>
+  <text x="230" y="272" fill="#c586c0" font-size="11" text-anchor="middle" font-weight="bold">Supplier (lookup, leaf)</text>
+  <text x="230" y="290" fill="#aab" font-size="9" text-anchor="middle">Lookups: fanout assumed 1:1</text>
+  <text x="230" y="308" fill="#ce9178" font-size="10" text-anchor="middle">maxKeys = 99999.99 (no scan constraint)</text>
+
+  <!-- Final result -->
+  <rect x="530" y="260" width="360" height="55" rx="6" fill="#1a2a1a" stroke="#dcdcaa" stroke-width="1.5"></rect>
+  <text x="710" y="282" fill="#dcdcaa" font-size="11" text-anchor="middle" font-weight="bold">Result: MIN(39.0, 99999, 99999) = 39</text>
+  <text x="710" y="300" fill="#aab" font-size="9" text-anchor="middle">Root can safely process 39 keys per batch</text>
+
+  <!-- Annotation -->
+  <text x="460" y="335" fill="#888" font-size="9" text-anchor="middle">LineItems is the bottleneck: its scan fanout × fragment count limits the root batch size</text>
+</svg>
+</div>
+
+<p>The bottleneck is the <strong>LineItems scan</strong>: with a mean fanout of 3.2 rows per key
+across 4 fragments, each root key generates 12.8 LineItem rows on average. Given a 500-row batch
+buffer, only 39 root keys can be processed before the child buffer fills up. Lookups (Parts,
+Supplier) impose no scan-level constraint because they don't accumulate rows in batch buffers
+the same way.</p>
+
+<div class="callout info">
+  <strong>Pruned vs. non-pruned scans:</strong> If the LineItems scan were <strong>pruned</strong>
+  (e.g., partition key known from parent), the query hits only 1 fragment instead of all 4.
+  The fanout would be <code>1.0 × 3.2 × 1 = 3.2</code>, allowing
+  <code>500 / 3.2 = 156</code> root keys per batch — a 4× improvement. Pruned scans are
+  indicated by <code>T_PRUNE_PATTERN</code> or <code>T_CONST_PRUNE</code> flags on the TreeNode.
+</div>
+
+<!-- ================================================================== -->
+<h2 id="congestion">9. Congestion Control and Deferred Operations</h2>
+
+<p>When join fanout is high, a single parent batch can spawn thousands of child operations.
+Without throttling, this would exhaust memory and signal buffers. DBSPJ uses a
+<strong>hysteresis-based congestion control</strong> mechanism that defers child dispatch when
+outstanding operations are too high, then resumes in controlled bursts when capacity frees up.</p>
+
+<h3>9.1 Threshold Constants</h3>
+
+<p>Three constants in <code>DbspjMain.cpp</code> govern congestion behavior:</p>
+
+<table style="width:100%; border-collapse:collapse; margin:1em 0;">
+<tbody><tr style="border-bottom:1px solid #444;">
+  <th style="text-align:left; padding:6px; color:#4ec9b0;">Constant</th>
+  <th style="text-align:left; padding:6px; color:#4ec9b0;">Value</th>
+  <th style="text-align:left; padding:6px; color:#4ec9b0;">Purpose</th>
+</tr>
+<tr style="border-bottom:1px solid #333;">
+  <td style="padding:6px;"><code>HighlyCongestedLimit</code></td>
+  <td style="padding:6px;">256</td>
+  <td style="padding:6px;">When <code>m_outstanding ≥ 256</code>, new child operations are <strong>deferred</strong></td>
+</tr>
+<tr style="border-bottom:1px solid #333;">
+  <td style="padding:6px;"><code>MildlyCongestedLimit</code></td>
+  <td style="padding:6px;">128</td>
+  <td style="padding:6px;">When <code>m_outstanding &lt; 128</code>, deferred operations begin <strong>resuming</strong></td>
+</tr>
+<tr style="border-bottom:1px solid #333;">
+  <td style="padding:6px;"><code>ResumeCongestedQuota</code></td>
+  <td style="padding:6px;">32</td>
+  <td style="padding:6px;">Maximum operations resumed per <strong>RT-break</strong> cycle</td>
+</tr>
+</tbody></table>
+
+<p>The gap between 256 (defer) and 128 (resume) creates <strong>hysteresis</strong> — preventing
+rapid oscillation between deferring and resuming. The system only starts resuming once outstanding
+operations have dropped significantly below the defer threshold.</p>
+
+<h3>9.2 Congestion Check: When to Defer</h3>
+
+<p>The congestion check occurs in the row-processing path. When DBSPJ processes a parent row
+and is about to dispatch child operations (lookups or scans), it checks:</p>
+
+<pre>// DbspjMain.cpp — inside row processing for child dispatch
+if (treeNodePtr.p-&gt;m_bits &amp; TreeNode::T_CHK_CONGESTION)
+{
+  if (requestPtr.p-&gt;m_outstanding &gt;= HighlyCongestedLimit)
+  {
+    // Don't dispatch — defer this parent row's correlation ID
+    jam();
+    registerActiveCursor(requestPtr, treeNodePtr);
+    handleTreeNodeComplete(signal, requestPtr, treeNodePtr);
+
+    // Queue the correlation ID for later replay
+    treeNodePtr.p-&gt;m_deferred.m_correlations.append(corrVal);
+
+    // Mark this node as suspended
+    requestPtr.p-&gt;m_suspended_tree_nodes |= (1 &lt;&lt; treeNodePtr.p-&gt;m_node_no);
+    return;
+  }
+}
+</pre>
+
+<h3>9.3 DeferredParentOps: What Gets Stored</h3>
+
+<p>The <code>DeferredParentOps</code> structure is deliberately lightweight — it stores only
+<strong>correlation IDs</strong> (4 bytes each), not full row copies:</p>
+
+<pre>struct DeferredParentOps {
+  Uint32 m_corrIdStart;                        // First correlation ID in this batch
+  SLFifoRowList m_correlations;                // Queue of deferred corrIds
+};
+</pre>
+
+<p>The actual parent row data remains in the scan ancestor's <code>m_rows</code> RowCollection,
+indexed by correlation ID. When replay occurs, <code>m_parent_batch_repeat()</code> looks up
+each deferred corrId to retrieve the original row. This avoids duplicating row storage.</p>
+
+<h3>9.4 Resume Mechanism</h3>
+
+<p>Resumption is triggered by <code>lookup_countSignal()</code>, called when an
+<code>LQHKEYCONF</code> or <code>LQHKEYREF</code> arrives (i.e., a child lookup completes).
+Each completed lookup decrements <code>m_outstanding</code>. When it drops below
+<code>MildlyCongestedLimit</code> (128):</p>
+
+<pre>// DbspjMain.cpp — lookup_countSignal()
+requestPtr.p-&gt;m_outstanding--;
+
+if (requestPtr.p-&gt;m_outstanding &lt; MildlyCongestedLimit &amp;&amp;
+    requestPtr.p-&gt;m_suspended_tree_nodes != 0)
+{
+  jam();
+  resumeCongestedNode(signal, requestPtr);
+}
+</pre>
+
+<p><code>resumeCongestedNode()</code> iterates through <code>m_suspended_tree_nodes</code>,
+finding each suspended TreeNode and calling its <code>m_parent_batch_repeat()</code> handler.
+This replays deferred correlation IDs, dispatching the child operations that were originally
+held back.</p>
+
+<h3>9.5 RT-Break Quota</h3>
+
+<p>To prevent <code>resumeCongestedNode()</code> from running too long in a single real-time
+break, it processes at most <code>ResumeCongestedQuota</code> (32) operations before yielding.
+If more deferred operations remain, the TreeNode stays in <code>m_suspended_tree_nodes</code>
+and will be resumed again when the next <code>lookup_countSignal()</code> fires.</p>
+
+<p>This ensures the data node thread remains responsive to other signals even during
+large resume bursts.</p>
+
+<h3>9.6 Congestion Control Flow</h3>
+
+<div class="figure">
+<svg viewBox="0 0 900 520" xmlns="http://www.w3.org/2000/svg" font-family="Consolas, monospace">
+  <defs>
+    <marker id="cc-arrow" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="none" stroke="#569cd6" stroke-width="1.2"></path>
+    </marker>
+    <marker id="cc-arrow-red" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="none" stroke="#f44" stroke-width="1.2"></path>
+    </marker>
+    <marker id="cc-arrow-grn" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="none" stroke="#4ec9b0" stroke-width="1.2"></path>
+    </marker>
+  </defs>
+
+  <!-- Title -->
+  <text x="450" y="24" fill="#dcdcaa" font-size="14" text-anchor="middle" font-weight="bold">Figure 11: Congestion Control — Defer / Resume Cycle</text>
+
+  <!-- Timeline axis -->
+  <line x1="60" y1="60" x2="60" y2="500" stroke="#555" stroke-width="1"></line>
+  <text x="50" y="55" fill="#888" font-size="10" text-anchor="end">time →</text>
+
+  <!-- Phase 1: Normal dispatch -->
+  <rect x="80" y="60" width="780" height="60" rx="4" fill="#1a2a1a" stroke="#4ec9b0" stroke-width="0.8"></rect>
+  <text x="90" y="80" fill="#4ec9b0" font-size="11" font-weight="bold">Phase 1: Normal Dispatch</text>
+  <text x="90" y="98" fill="#ccc" font-size="10">Parent rows arrive → child LQHKEYREQ dispatched immediately</text>
+  <text x="90" y="112" fill="#888" font-size="9">m_outstanding: 0 → 50 → 130 → 220 → 255</text>
+
+  <!-- Phase 2: Congestion triggered -->
+  <rect x="80" y="135" width="780" height="80" rx="4" fill="#2a1a1a" stroke="#f44" stroke-width="0.8"></rect>
+  <text x="90" y="155" fill="#f44" font-size="11" font-weight="bold">Phase 2: Congestion — m_outstanding ≥ 256</text>
+  <text x="90" y="173" fill="#ccc" font-size="10">New parent rows arrive but child dispatch is <tspan fill="#f44">deferred</tspan></text>
+  <text x="90" y="191" fill="#ccc" font-size="10">corrIds queued in <tspan fill="#ce9178">m_deferred.m_correlations</tspan> (4 bytes each)</text>
+  <text x="90" y="206" fill="#888" font-size="9">TreeNode added to m_suspended_tree_nodes bitmask</text>
+
+  <!-- m_outstanding gauge -->
+  <rect x="680" y="145" width="170" height="60" rx="3" fill="#1e1e2e" stroke="#555"></rect>
+  <text x="765" y="162" fill="#aab" font-size="9" text-anchor="middle">m_outstanding</text>
+  <!-- Bar background -->
+  <rect x="695" y="170" width="140" height="12" rx="2" fill="#333"></rect>
+  <!-- Bar fill (full = congested) -->
+  <rect x="695" y="170" width="140" height="12" rx="2" fill="#f44" opacity="0.6"></rect>
+  <text x="765" y="180" fill="#fff" font-size="8" text-anchor="middle">256+ (HIGHLY CONGESTED)</text>
+  <!-- Threshold markers -->
+  <line x1="765" y1="168" x2="765" y2="185" stroke="#ff0" stroke-width="1" stroke-dasharray="2,2"></line>
+  <text x="765" y="198" fill="#ff0" font-size="7" text-anchor="middle">128 (resume)</text>
+
+  <!-- Phase 3: Draining -->
+  <rect x="80" y="230" width="780" height="70" rx="4" fill="#1a1a2a" stroke="#569cd6" stroke-width="0.8"></rect>
+  <text x="90" y="250" fill="#569cd6" font-size="11" font-weight="bold">Phase 3: Draining — LQHKEYCONF/REF arriving</text>
+  <text x="90" y="268" fill="#ccc" font-size="10">Each completed lookup decrements m_outstanding via <tspan fill="#dcdcaa">lookup_countSignal()</tspan></text>
+  <text x="90" y="286" fill="#888" font-size="9">m_outstanding: 256 → 200 → 150 → 127  (still deferring new rows while draining)</text>
+
+  <!-- Phase 4: Resume -->
+  <rect x="80" y="315" width="780" height="85" rx="4" fill="#1a2a2a" stroke="#4ec9b0" stroke-width="0.8"></rect>
+  <text x="90" y="335" fill="#4ec9b0" font-size="11" font-weight="bold">Phase 4: Resume — m_outstanding &lt; 128</text>
+  <text x="90" y="353" fill="#ccc" font-size="10"><tspan fill="#dcdcaa">resumeCongestedNode()</tspan> replays deferred corrIds via <tspan fill="#dcdcaa">m_parent_batch_repeat()</tspan></text>
+  <text x="90" y="371" fill="#ccc" font-size="10">Up to <tspan fill="#ce9178">32</tspan> operations per RT-break (ResumeCongestedQuota)</text>
+  <text x="90" y="389" fill="#888" font-size="9">If more deferred corrIds remain → node stays suspended → next LQHKEYCONF triggers another resume burst</text>
+
+  <!-- RT-break detail box -->
+  <rect x="600" y="320" width="250" height="75" rx="3" fill="#1e1e2e" stroke="#4ec9b0" stroke-width="0.5"></rect>
+  <text x="725" y="338" fill="#4ec9b0" font-size="9" text-anchor="middle" font-weight="bold">RT-Break Quota</text>
+  <text x="615" y="355" fill="#ccc" font-size="9">Burst 1: replay corrIds[0..31]</text>
+  <text x="615" y="370" fill="#ccc" font-size="9">Burst 2: replay corrIds[32..63]</text>
+  <text x="615" y="385" fill="#888" font-size="8">... until m_deferred is empty</text>
+
+  <!-- Phase 5: Back to normal -->
+  <rect x="80" y="415" width="780" height="50" rx="4" fill="#1a2a1a" stroke="#4ec9b0" stroke-width="0.8"></rect>
+  <text x="90" y="435" fill="#4ec9b0" font-size="11" font-weight="bold">Phase 5: Normal — all deferred corrIds replayed</text>
+  <text x="90" y="453" fill="#ccc" font-size="10">TreeNode cleared from m_suspended_tree_nodes → new rows dispatch immediately again</text>
+
+  <!-- Arrows on left timeline -->
+  <circle cx="60" cy="90" r="4" fill="#4ec9b0"></circle>
+  <circle cx="60" cy="175" r="4" fill="#f44"></circle>
+  <circle cx="60" cy="265" r="4" fill="#569cd6"></circle>
+  <circle cx="60" cy="357" r="4" fill="#4ec9b0"></circle>
+  <circle cx="60" cy="440" r="4" fill="#4ec9b0"></circle>
+
+  <!-- Hysteresis annotation -->
+  <rect x="200" y="475" width="500" height="30" rx="4" fill="#2a2a1a" stroke="#ff0" stroke-width="0.5"></rect>
+  <text x="450" y="495" fill="#ff0" font-size="10" text-anchor="middle">Hysteresis gap: defer at 256, resume at 128 — prevents rapid oscillation</text>
+</svg>
+<div class="caption">Figure 11: The congestion control lifecycle. Operations are deferred when outstanding
+count hits 256, then resumed in bursts of 32 once it drops below 128.</div>
+</div>
+
+<h3>9.7 Interaction with checkBatchComplete()</h3>
+
+<p>When all parent rows in a batch have been processed but some TreeNodes are suspended
+(have deferred correlation IDs), <code>checkBatchComplete()</code> will not complete the
+batch. The request remains active until all deferred operations have been replayed and
+their child responses received. Only when <code>m_suspended_tree_nodes == 0</code> and
+<code>m_outstanding == 0</code> and <code>m_active_tree_nodes == 0</code> can the batch
+truly complete.</p>
+
+<div class="callout info">
+  <strong>Why only correlation IDs?</strong> Storing full parent rows in
+  <code>DeferredParentOps</code> would double memory usage under congestion — exactly
+  when memory pressure is highest. Instead, only 4-byte corrIds are stored. The actual
+  row data lives in the scan ancestor's <code>m_rows</code> RowCollection (already allocated),
+  and <code>m_parent_batch_repeat()</code> looks up each row by its corrId during replay.
+  This means congestion deferral adds only ~4 bytes per deferred parent row.
+</div>
+
+<!-- ================================================================== -->
+<h2 id="increasing-parallelism">10. Tuning Parallelism and Batch Sizes</h2>
+
+<p>There are several levers available for increasing parallelism in pushed joins.
+Configuration can be applied at three levels: <strong>NDB Cluster config</strong> (config.ini, affects
+all connections), <strong>MySQL session variables</strong> (per-connection), and <strong>NDB API methods</strong>
+(per-query-operation).</p>
+
+<h3>10.1 Configuration Levels Overview</h3>
+
+<div class="diagram-box">
+<svg viewBox="0 0 920 200" xmlns="http://www.w3.org/2000/svg" font-family="Consolas, monospace">
+  <text x="460" y="22" fill="#dcdcaa" font-size="13" text-anchor="middle" font-weight="bold">Figure 12: Configuration Layers — Cluster → Session → Query</text>
+
+  <!-- Layer 1: Cluster Config -->
+  <rect x="20" y="40" width="280" height="140" rx="6" fill="#0f3460" stroke="#53d8fb" stroke-width="1.5"></rect>
+  <text x="160" y="62" fill="#53d8fb" font-size="11" text-anchor="middle" font-weight="bold">NDB Cluster Config (config.ini)</text>
+  <text x="160" y="80" fill="#aab" font-size="9" text-anchor="middle">Applies to all API connections</text>
+  <line x1="30" y1="88" x2="290" y2="88" stroke="#334" stroke-width="0.5"></line>
+  <text x="35" y="106" fill="#4ec9b0" font-size="9">BatchSize = 384</text>
+  <text x="200" y="106" fill="#888" font-size="8">(rows)</text>
+  <text x="35" y="122" fill="#4ec9b0" font-size="9">BatchByteSize = 32768</text>
+  <text x="200" y="122" fill="#888" font-size="8">(bytes)</text>
+  <text x="35" y="138" fill="#4ec9b0" font-size="9">MaxScanBatchSize = 32768</text>
+  <text x="215" y="138" fill="#888" font-size="8">(bytes)</text>
+  <text x="35" y="158" fill="#888" font-size="8">Set under [ndbd default] or [api]</text>
+  <text x="35" y="172" fill="#888" font-size="8">Requires cluster restart to change</text>
+
+  <!-- Arrow -->
+  <line x1="300" y1="110" x2="330" y2="110" stroke="#aab" stroke-width="1.5" marker-end="url(#arr)"></line>
+  <text x="315" y="100" fill="#888" font-size="7" text-anchor="middle">defaults</text>
+
+  <!-- Layer 2: MySQL Session -->
+  <rect x="330" y="40" width="280" height="140" rx="6" fill="#16213e" stroke="#4ec9b0" stroke-width="1.5"></rect>
+  <text x="470" y="62" fill="#4ec9b0" font-size="11" text-anchor="middle" font-weight="bold">MySQL Session Variables</text>
+  <text x="470" y="80" fill="#aab" font-size="9" text-anchor="middle">SET per connection (thread-local)</text>
+  <line x1="340" y1="88" x2="600" y2="88" stroke="#334" stroke-width="0.5"></line>
+  <text x="345" y="106" fill="#4ec9b0" font-size="9">ndb_batch_size = 0</text>
+  <text x="510" y="106" fill="#888" font-size="8">(bytes, 0=default)</text>
+  <text x="345" y="122" fill="#4ec9b0" font-size="9">ndb_join_pushdown = ON</text>
+  <text x="345" y="138" fill="#4ec9b0" font-size="9">ndb_optimized_node_selection</text>
+  <text x="345" y="158" fill="#888" font-size="8">SET SESSION ndb_batch_size = 65536;</text>
+  <text x="345" y="172" fill="#888" font-size="8">No restart needed, immediate effect</text>
+
+  <!-- Arrow -->
+  <line x1="610" y1="110" x2="640" y2="110" stroke="#aab" stroke-width="1.5" marker-end="url(#arr)"></line>
+  <text x="625" y="100" fill="#888" font-size="7" text-anchor="middle">overrides</text>
+
+  <!-- Layer 3: NDB API -->
+  <rect x="640" y="40" width="260" height="140" rx="6" fill="#1a2a1a" stroke="#e94560" stroke-width="1.5"></rect>
+  <text x="770" y="62" fill="#e94560" font-size="11" text-anchor="middle" font-weight="bold">NDB API (per operation)</text>
+  <text x="770" y="80" fill="#aab" font-size="9" text-anchor="middle">C++ API calls on NdbQueryOperation</text>
+  <line x1="650" y1="88" x2="890" y2="88" stroke="#334" stroke-width="0.5"></line>
+  <text x="655" y="106" fill="#4ec9b0" font-size="9">setBatchSize(rows)</text>
+  <text x="655" y="122" fill="#4ec9b0" font-size="9">setParallelism(n)</text>
+  <text x="655" y="138" fill="#4ec9b0" font-size="9">setMaxParallelism()</text>
+  <text x="655" y="158" fill="#4ec9b0" font-size="9">setAdaptiveParallelism()</text>
+  <text x="655" y="172" fill="#888" font-size="8">Finest granularity, per-query control</text>
+</svg>
+</div>
+
+<h3>10.2 NDB Cluster Configuration (config.ini)</h3>
+
+<p>These parameters are set in <code>config.ini</code> under the <code>[api]</code> section and
+serve as defaults for all API connections (including all MySQL Server connections). They are read
+at connection time via <code>ndb_cluster_connection.cpp</code> and stored in the per-connection
+<code>m_ndbapiconfig</code> struct.</p>
+
+<table style="width:100%; border-collapse:collapse; margin:1em 0;">
+<tbody><tr style="border-bottom:1px solid #444;">
+  <th style="text-align:left; padding:6px; color:#4ec9b0;">Parameter</th>
+  <th style="text-align:left; padding:6px; color:#4ec9b0;">Default</th>
+  <th style="text-align:left; padding:6px; color:#4ec9b0;">Range</th>
+  <th style="text-align:left; padding:6px; color:#4ec9b0;">Effect</th>
+</tr>
+<tr style="border-bottom:1px solid #333;">
+  <td style="padding:6px;"><code>BatchSize</code></td>
+  <td style="padding:6px;">384</td>
+  <td style="padding:6px;">1 – MAX_PARALLEL_OP</td>
+  <td style="padding:6px;">Default batch size in <strong>rows</strong> per fragment</td>
+</tr>
+<tr style="border-bottom:1px solid #333;">
+  <td style="padding:6px;"><code>BatchByteSize</code></td>
+  <td style="padding:6px;">32 KB</td>
+  <td style="padding:6px;">1 KB – 1 MB</td>
+  <td style="padding:6px;">Default batch size in <strong>bytes</strong> per fragment</td>
+</tr>
+<tr style="border-bottom:1px solid #333;">
+  <td style="padding:6px;"><code>MaxScanBatchSize</code></td>
+  <td style="padding:6px;">32 KB</td>
+  <td style="padding:6px;">1 KB – 16 MB</td>
+  <td style="padding:6px;">Maximum <strong>collective</strong> batch size across all fragments of one scan</td>
+</tr>
+</tbody></table>
+
+<p>These flow into the batch calculation as follows:</p>
+
+<pre>// ndb_cluster_connection.cpp — read from config at connect time
+m_ndbapiconfig.m_scan_batch_size  = CFG_MAX_SCAN_BATCH_SIZE;   // MaxScanBatchSize
+m_ndbapiconfig.m_batch_byte_size  = CFG_BATCH_BYTE_SIZE;       // BatchByteSize
+m_ndbapiconfig.m_batch_size       = CFG_BATCH_SIZE;            // BatchSize
+
+// NdbReceiver::calculate_batch_size() — uses these as caps:
+//   maxBatchRows = MIN(user_requested, m_batch_size)
+//   batchByteSize = MIN(maxBatchRows * m_batch_byte_size, m_scan_batch_size)
+</pre>
+
+<div class="callout info">
+  <strong>config.ini example:</strong>
+<pre style="margin:0.5em 0;">[api]
+BatchSize=1000              # More rows per fragment (default 384)
+BatchByteSize=131072        # 128 KB per fragment (default 32 KB)
+MaxScanBatchSize=524288     # 512 KB total across all fragments (default 32 KB)
+</pre>
+  Requires a <strong>rolling restart</strong> of API nodes (MySQL Servers) to take effect.
+  Data nodes do not need to restart.
+</div>
+
+<h3>10.3 MySQL Session Variables</h3>
+
+<p>MySQL exposes several thread-local variables via <code>SET SESSION</code> that override or
+complement the cluster-level defaults. These are defined as <code>MYSQL_THDVAR</code> in
+<code>ha_ndbcluster.cc</code>.</p>
+
+<h4>ndb_batch_size (bytes)</h4>
+
+<pre>-- Override the byte budget for this session
+SET SESSION ndb_batch_size = 65536;   -- 64 KB (default: 0 = use cluster config)
+</pre>
+
+<p>When set to a non-zero value, this overrides <code>BatchByteSize</code> from config.ini for
+this connection. It is applied in <code>ha_ndbcluster::transaction_checks()</code> at the start
+of each transaction:</p>
+
+<pre>// ha_ndbcluster.cc — transaction_checks()
+m_batch_size = THDVAR(thd, batch_size);   // ndb_batch_size session variable
+</pre>
+
+<p>This controls the byte budget for <strong>all</strong> NDB scans in this session, including
+both standalone scans and pushed join scans.</p>
+
+<h4>ndb_join_pushdown (boolean)</h4>
+
+<pre>-- Disable pushed joins for this session (debug/comparison)
+SET SESSION ndb_join_pushdown = OFF;
+
+-- Re-enable (default)
+SET SESSION ndb_join_pushdown = ON;
+</pre>
+
+<p>When <code>OFF</code>, the MySQL optimizer will not attempt to push multi-table joins down
+to data nodes. Each table is scanned independently and joined at the MySQL Server. This is
+useful for performance comparisons or when pushed joins produce suboptimal plans.</p>
+
+<h4>ndb_optimized_node_selection</h4>
+
+<pre>-- Control how transactions select data nodes
+SET SESSION ndb_optimized_node_selection = 3;   -- Default: 0
+</pre>
+
+<p>Influences which data node is chosen as the transaction coordinator. Higher values enable
+more sophisticated locality-based selection, which can reduce network hops for pushed joins
+when the root table's primary fragment is on a specific node.</p>
+
+<h4>ndb_use_exact_count</h4>
+
+<pre>-- Use exact row counts for query planning (slower but more accurate plans)
+SET SESSION ndb_use_exact_count = ON;   -- Default: OFF
+</pre>
+
+<p>When enabled, the MySQL optimizer gets accurate row count estimates from NDB, which can
+lead to better join ordering decisions and more appropriate batch size choices for pushed
+joins.</p>
+
+<h4>ndb_force_send</h4>
+
+<pre>-- Disable adaptive send (force immediate send of all signals)
+SET SESSION ndb_force_send = ON;   -- Default: ON
+</pre>
+
+<p>When <code>ON</code>, signal buffers are flushed to data nodes immediately without waiting
+for additional operations to batch. For pushed joins with high parallelism, this ensures
+SCAN_FRAGREQs are dispatched without delay.</p>
+
+<h4>Viewing current settings</h4>
+
+<pre>-- Show all NDB-related session variables
+SHOW SESSION VARIABLES LIKE 'ndb%';
+
+-- Key ones for pushed join tuning:
+SELECT @@ndb_batch_size, @@ndb_join_pushdown, @@ndb_use_exact_count;
+</pre>
+
+<h3>10.4 NDB API Methods (Per-Operation)</h3>
+
+<p>When using the NDB API directly (not through MySQL), the <code>NdbQueryOperation</code>
+class provides fine-grained control over batch sizes and parallelism for each scan operation
+in a pushed join query tree.</p>
+
+<h4>setBatchSize(Uint32 batchSize)</h4>
+
+<pre>// Set maximum rows per batch for this scan operation
+NdbQueryOperation *rootScan = query-&gt;getQueryOperation(0u);
+rootScan-&gt;setBatchSize(2000);   // 0 = use default from cluster config
+
+// Constraint: for non-root scans, batchSize &gt;= fragmentCount
+// (each fragment must be able to return at least 1 row)
+</pre>
+
+<p>Sets <code>m_maxBatchRows</code> which flows into <code>calculateBatchedRows()</code>.
+For parent operations (those with children), the effective batch size is further capped at
+<code>4096 / fragsPerWorker</code> to respect the 12-bit correlation ID limit.</p>
+
+<h4>setParallelism(Uint32 parallelism)</h4>
+
+<pre>// Fix the number of fragments scanned in parallel
+rootScan-&gt;setParallelism(8);   // Scan 8 fragments simultaneously
+
+// Constraints:
+//   - Only for root scan operations
+//   - Cannot be used with ordered (sorted) index scans
+//   - 0 = max parallelism (all fragments at once)
+</pre>
+
+<p>Overrides DBSPJ's adaptive parallelism for the root scan. The value is sent as
+<code>scanParallelism</code> in SCAN_TABREQ, and DBTC allocates that many
+<code>ScanFragRec</code> handles. Child scan parallelism is always adaptive and cannot be
+directly overridden from the API.</p>
+
+<h4>setMaxParallelism()</h4>
+
+<pre>// Scan all fragments in parallel from the start
+rootScan-&gt;setMaxParallelism();
+
+// Equivalent to setParallelism(rootFragments)
+// Maximizes throughput at the cost of higher memory usage
+</pre>
+
+<h4>setAdaptiveParallelism()</h4>
+
+<pre>// Let DBSPJ dynamically choose parallelism (default for child scans)
+childScan-&gt;setAdaptiveParallelism();
+
+// DBSPJ starts conservatively (rootFragCount fragments) then adjusts
+// based on m_recsPrKeyStat fanout statistics from previous batches
+</pre>
+
+<p>This is the default for non-root scan operations. Root scans default to max parallelism.
+Adaptive parallelism uses <code>scanFrag_parallelism()</code> which was described in
+Section 8.</p>
+
+<h4>Complete NDB API Example</h4>
+
+<pre>// Building a pushed join query with tuned batch sizes
+NdbQueryBuilder builder(ndb);
+
+// Define query tree: Orders → LineItems (scan-scan join)
+const NdbQueryTableScanOperationDef *ordersScan =
+    builder.scanTable(ordersTable);
+const NdbQueryIndexScanOperationDef *lineitemsScan =
+    builder.scanIndex(lineitemsIndex, ordersScan, ...);
+
+NdbQuery *query = transaction-&gt;createQuery(&amp;builder.prepare(), ...);
+
+// Tune root scan: large batches, full parallelism
+NdbQueryOperation *root = query-&gt;getQueryOperation(0u);
+root-&gt;setBatchSize(4000);          // Max rows per batch
+root-&gt;setMaxParallelism();         // All fragments in parallel
+
+// Child scan: let DBSPJ adapt
+NdbQueryOperation *child = query-&gt;getQueryOperation(1u);
+child-&gt;setBatchSize(2000);         // Allow large child batches
+// child parallelism is always adaptive — controlled by DBSPJ
+
+transaction-&gt;execute(NoCommit);
+</pre>
+
+<h3>10.5 How MySQL Server Uses These Settings</h3>
+
+<p>When the MySQL optimizer decides to push a join, the handler in
+<code>ha_ndbcluster_push.cc</code> builds an <code>NdbQuery</code> and applies configuration
+from the session variables. The flow is:</p>
+
+<pre>// ha_ndbcluster_push.cc — simplified flow
+
+1. MySQL optimizer calls handler-&gt;make_pushed_join()
+   → Checks: THDVAR(thd, join_pushdown) == true?
+
+2. Build NdbQueryDef from the join plan
+   → Each table becomes an NdbQueryOperationDef
+
+3. At execution time, create NdbQuery from NdbQueryDef
+   → Root scan gets batch size from:
+      a. ndb_batch_size session variable (if non-zero)
+      b. Else cluster config BatchByteSize / BatchSize
+   → Parallelism: root always max, children adaptive
+
+4. NdbQueryOperation::calculateBatchedRows() runs:
+   → Applies correlation ID cap (4096 / fragsPerWorker)
+   → Recursively reduces to min acceptable across children
+   → Byte limit from ndb_batch_size or BatchByteSize
+
+5. SCAN_TABREQ sent to DBTC with:
+   batch_size_rows, batch_size_bytes, scanParallelism
+</pre>
+
+<div class="callout warn">
+  <strong>MySQL Server has no direct control over child scan parallelism.</strong>
+  The MySQL handler sets the root scan's batch size and parallelism. Child operations
+  (both lookups and scans) have their batch sizes derived from the root's budget via
+  <code>calculateBatchedRows()</code>, and child scan parallelism is always adaptive
+  (managed by DBSPJ's <code>scanFrag_parallelism()</code> using runtime fanout statistics).
+  The only way to influence child behavior from MySQL is by increasing the root batch
+  budget, which gives children more room to work with.
+</div>
+
+<h3>10.6 Table Partitioning</h3>
+
+<p>The number of table fragments (partitions) directly determines the maximum parallelism
+for scans on that table. More fragments means more independent scan units that can be
+distributed across DBSPJ instances.</p>
+
+<pre>-- Default: NDB auto-partitions based on data node count and LDM threads
+-- Typically: fragments = dataNodes × LDM_threads_per_node
+
+-- Explicit partitioning for higher parallelism:
+CREATE TABLE orders (
+  order_id INT PRIMARY KEY,
+  customer_id INT,
+  order_date DATE
+) ENGINE=NDB
+  PARTITION BY KEY(order_id)
+  PARTITIONS 32;             -- 32 fragments instead of default
+
+-- MAX_ROWS hint (alternative — NDB infers partition count):
+CREATE TABLE lineitems (
+  ...
+) ENGINE=NDB
+  MAX_ROWS=100000000;        -- Hint: expect 100M rows → more partitions
+</pre>
+
+<div class="callout info">
+  <strong>Impact on pushed joins:</strong> With 32 partitions across 4 data nodes (8 per node)
+  and MultiFragFlag OFF, each DBTC distributes fragments across TC threads using round-robin
+  DBSPJ instance assignment. With 4 TC threads per node, this gives 4×4 = 16 DBSPJ instances
+  working in parallel. Increasing partitions beyond the number of TC threads × data nodes
+  doesn't add more DBSPJ parallelism, but does allow finer-grained work distribution within
+  each DBSPJ instance's adaptive parallelism.
+</div>
+
+<h3>10.7 MultiFragFlag (Automatic)</h3>
+
+<p><code>MultiFragFlag</code> controls whether multiple fragments are bundled into a single
+SCAN_FRAGREQ to one DBSPJ instance (reducing signal overhead) or each fragment gets its own
+SCAN_FRAGREQ to a different DBSPJ instance (maximizing TC-thread parallelism). This is
+<strong>not user-configurable</strong> — it is automatically determined by the query structure:</p>
+
+<table style="width:100%; border-collapse:collapse; margin:1em 0;">
+<tbody><tr style="border-bottom:1px solid #444;">
+  <th style="text-align:left; padding:6px; color:#4ec9b0;">Condition</th>
+  <th style="text-align:left; padding:6px; color:#4ec9b0;">fragsPerWorker</th>
+  <th style="text-align:left; padding:6px; color:#4ec9b0;">MultiFragFlag</th>
+  <th style="text-align:left; padding:6px; color:#4ec9b0;">DBSPJ Parallelism</th>
+</tr>
+<tr style="border-bottom:1px solid #333;">
+  <td style="padding:6px;">Standard (unordered) scan</td>
+  <td style="padding:6px;"><code>rootFrags / dataNodes</code></td>
+  <td style="padding:6px;">ON</td>
+  <td style="padding:6px;">1 instance per data node</td>
+</tr>
+<tr style="border-bottom:1px solid #333;">
+  <td style="padding:6px;">Ordered (sorted) scan</td>
+  <td style="padding:6px;">1</td>
+  <td style="padding:6px;">OFF</td>
+  <td style="padding:6px;">1 instance per fragment</td>
+</tr>
+<tr style="border-bottom:1px solid #333;">
+  <td style="padding:6px;">Aggregation query (RONDB-733)</td>
+  <td style="padding:6px;">1</td>
+  <td style="padding:6px;">OFF</td>
+  <td style="padding:6px;">1 instance per fragment</td>
+</tr>
+<tr style="border-bottom:1px solid #333;">
+  <td style="padding:6px;">Pruned scan (single fragment)</td>
+  <td style="padding:6px;">1</td>
+  <td style="padding:6px;">OFF</td>
+  <td style="padding:6px;">1 instance</td>
+</tr>
+</tbody></table>
+
+<pre>// NdbQueryOperation.cpp — fragsPerWorker determination (simplified)
+if (pruned)
+    m_fragsPerWorker = 1;
+else if (orderedScan)
+    m_fragsPerWorker = 1;     // Merge-sort needs per-fragment streams
+else if (m_hasAggregation)
+    m_fragsPerWorker = 1;     // Maximize TC-thread parallelism
+else
+    m_fragsPerWorker = rootFragments / dataNodeCount;  // Bundle for efficiency
+
+if (m_fragsPerWorker &gt; 1)
+    ScanTabReq::setMultiFragFlag(reqInfo, 1);
+</pre>
+
+<h3>10.8 Practical Tuning Guide</h3>
+
+<p>The following table summarizes common tuning scenarios for pushed joins:</p>
+
+<table style="width:100%; border-collapse:collapse; margin:1em 0;">
+<tbody><tr style="border-bottom:1px solid #444;">
+  <th style="text-align:left; padding:6px; color:#53d8fb;">Symptom</th>
+  <th style="text-align:left; padding:6px; color:#53d8fb;">Likely Cause</th>
+  <th style="text-align:left; padding:6px; color:#53d8fb;">Configuration Fix</th>
+</tr>
+<tr style="border-bottom:1px solid #333;">
+  <td style="padding:6px;">Many SCAN_NEXTREQ round-trips</td>
+  <td style="padding:6px;">Batch too small for fanout</td>
+  <td style="padding:6px;"><code>SET ndb_batch_size = 131072;</code> or increase <code>BatchSize</code>/<code>BatchByteSize</code> in config.ini</td>
+</tr>
+<tr style="border-bottom:1px solid #333;">
+  <td style="padding:6px;">Only 1 TC thread active</td>
+  <td style="padding:6px;">MultiFragFlag ON, all fragments bundled</td>
+  <td style="padding:6px;">Use ordered index scan (forces fragsPerWorker=1) or use aggregation query</td>
+</tr>
+<tr style="border-bottom:1px solid #333;">
+  <td style="padding:6px;">Child scans start slowly</td>
+  <td style="padding:6px;">Adaptive parallelism conservative start</td>
+  <td style="padding:6px;">NDB API: <code>setMaxParallelism()</code> on root; or increase partitions so <code>minParallelism</code> is higher</td>
+</tr>
+<tr style="border-bottom:1px solid #333;">
+  <td style="padding:6px;">Byte limit hit before row limit</td>
+  <td style="padding:6px;">Large rows exhaust byte budget</td>
+  <td style="padding:6px;"><code>SET ndb_batch_size = 262144;</code> or <code>BatchByteSize=262144</code> and <code>MaxScanBatchSize=1048576</code></td>
+</tr>
+<tr style="border-bottom:1px solid #333;">
+  <td style="padding:6px;">Pushed join slower than non-pushed</td>
+  <td style="padding:6px;">Bad join order or excessive fanout</td>
+  <td style="padding:6px;"><code>SET ndb_join_pushdown = OFF;</code> to compare; <code>SET ndb_use_exact_count = ON;</code> for better plans</td>
+</tr>
+<tr style="border-bottom:1px solid #333;">
+  <td style="padding:6px;">Low parallelism across nodes</td>
+  <td style="padding:6px;">Too few partitions</td>
+  <td style="padding:6px;"><code>ALTER TABLE t REORGANIZE PARTITION;</code> or recreate with more <code>PARTITIONS</code></td>
+</tr>
+</tbody></table>
+
+<h3>Theoretical Maximum Parallelism</h3>
+
+<pre>Total parallelism = dataNodes × partitionsPerNode × (1 if MultiFrag, else TC_threads)
+
+Example with MultiFrag OFF (ordered/aggregation scans):
+  4 data nodes × 8 partitions/node × 4 TC threads = 128 parallel DBSPJ instances
+  batch_size_rows per fragment = total_batch / 128
+
+With MultiFrag ON (default unordered scans):
+  4 data nodes × 1 DBSPJ instance per node = 4 parallel instances
+  Each instance handles 8 fragments sequentially within one thread
+  batch_size_rows per fragment = total_batch / (8 fragments bundled)
+</pre>
+
+<div class="callout warn">
+  <strong>Key insight:</strong> The batch size budget
+  (<code>batch_size_rows</code> and <code>batch_size_bytes</code>) is divided by the parallelism
+  to get per-fragment limits: <code>bs_rows = availableRows / parallelism</code>.
+  If the total budget is too small relative to the parallelism, each fragment gets
+  very few rows per batch, causing excessive NEXTREQ round-trips. When increasing parallelism
+  (more partitions, MultiFragFlag OFF), also increase <code>BatchSize</code> and
+  <code>BatchByteSize</code> proportionally so per-fragment batches remain adequately sized.
+</div>
+
+<!-- Footer -->
+<div style="margin-top: 4rem; padding-top: 1rem; border-top: 1px solid var(--border); text-align: center; color: var(--text-dim); font-size: 0.85rem;">
+  <p>NDB Pushed Joins (Without Aggregation) — DBSPJ Architecture Documentation<br>
+  Key source files: <code>storage/ndb/src/kernel/blocks/dbspj/DbspjMain.cpp</code> (10,318 lines),
+  <code>Dbspj.hpp</code> (1,726 lines), <code>NdbQueryOperation.cpp</code> (68K lines)<br>
+  Documentation generated March 2026</p>
+</div>
+
+
+
+</body></html>

@@ -35,6 +35,7 @@
 #include "NdbApiSignal.hpp"
 
 // Forward declarations
+class NdbAggregator;
 class NdbTableImpl;
 class NdbIndexImpl;
 class NdbApiSignal;
@@ -189,6 +190,13 @@ class NdbQueryImpl {
    */
   int prepareSend();
 
+  /** Prepare aggregation receivers, program, and aggregator (RONDB-733). */
+  int prepareAggregation();
+
+  /** Trace SCAN_TABREQ sections for JoinAgg debugging (no-op without
+   *  DEBUG_JOIN_AGG_TRACE). */
+  void traceJoinAggScanTabReq(const Uint32Buffer &combinedAggSec2);
+
   /** Send prepared signals from this NdbQuery to start execution
    *  @return #signals sent, -1 if error.
    */
@@ -260,6 +268,33 @@ class NdbQueryImpl {
   NdbBulkAllocator &getTupleSetAlloc() { return m_tupleSetAlloc; }
 
   NdbBulkAllocator &getRowBufferAlloc() { return m_rowBufferAlloc; }
+
+  /** True if this query has aggregation attached to a leaf operation. */
+  bool hasAggregation() const { return m_hasAggregation; }
+
+  /** Get the NdbAggregator for retrieving aggregated results.
+   *  Returns nullptr if this query does not use aggregation.
+   *  Only valid after query execution has completed.
+   */
+  NdbAggregator *getAggregator() const { return m_aggregator; }
+
+  /** Called from Ndbif.cpp TRANSID_AI dispatch for NDB_AGG_RECEIVER.
+   *  Stores raw aggregation result data for later processing.
+   *  Non-fragmented variant: records batch offset and copies data.
+   */
+  void execAggTRANSID_AI(const Uint32 *data, Uint32 len);
+
+  /** Fragmented variant: accumulates fragment data.
+   *  Records batch offset only on first fragment (fragInfo==1).
+   */
+  void execAggTRANSID_AI_frag(const Uint32 *data, Uint32 len,
+                               Uint32 fragInfo);
+
+  /** Process all accumulated aggregation results through NdbAggregator.
+   *  Called after scan completes. Feeds each batch to ProcessRes()
+   *  (skipping the AttributeHeader word), then calls PrepareResults().
+   */
+  int processAggResults();
 
  private:
   /** Possible return values from NdbQueryImpl::awaitMoreResults.
@@ -499,6 +534,36 @@ class NdbQueryImpl {
    */
   Uint32Buffer m_attrInfo;  // ATTRINFO: QueryTree + serialized parameters
   Uint32Buffer m_keyInfo;   // KEYINFO:  Lookup key or scan bounds
+
+  /**
+   * Aggregation support (RONDB-733):
+   * When a query has an aggregate leaf operation, the kernel computes
+   * aggregation on data nodes and sends results back to dedicated receivers.
+   */
+  bool m_hasAggregation;
+
+  /** NdbAggregator for collecting and merging partial results from receivers.
+   *  Owned by this NdbQueryImpl; deleted in postFetchRelease().
+   */
+  NdbAggregator *m_aggregator;
+
+  /** Aggregation program buffer (copied from query definition).
+   *  Sent in SCAN_TABREQ Section 2.
+   */
+  Uint32Buffer m_aggProgram;
+
+  /** Receivers dedicated to receiving aggregation TRANSID_AI results. */
+  NdbReceiver **m_aggReceivers;
+  Uint32 m_numAggReceivers;
+
+  /** Raw aggregation result data received via TRANSID_AI.
+   *  Each batch (one or more TRANSID_AI signals) is stored contiguously.
+   *  m_aggResultOffsets[i] gives the start offset for batch i within
+   *  m_aggResultData. Data format from kernel starts with an
+   *  AttributeHeader word followed by the NdbAggregator-compatible format.
+   */
+  Uint32Buffer m_aggResultData;
+  Uint32Buffer m_aggResultOffsets;
 
   /** True if this query starts a new transaction. */
   bool m_startIndicator;

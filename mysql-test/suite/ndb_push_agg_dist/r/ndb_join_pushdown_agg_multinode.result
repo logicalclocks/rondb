@@ -1,0 +1,480 @@
+############################################################
+# RONDB-733 Step 4b: Multi-Node Aggregation Pushdown
+############################################################
+#
+# Tests pushed join aggregation across 2 data nodes.
+# Data is distributed across both nodes; each node runs
+# independent aggregation, and COMPLETE merges results.
+#
+# Runs under the standard ndb suite (2 data nodes).
+#
+############################################################
+# Setup: Create tables and load data
+############################################################
+# 100 rows in parent, spread across 2 data nodes via hash
+# distribution on PK. Child tables use PK lookups.
+CREATE TABLE t1 (
+pk INT PRIMARY KEY,
+grp INT NOT NULL,
+region VARCHAR(20) NOT NULL
+) ENGINE=NDB;
+CREATE TABLE t2 (
+pk INT PRIMARY KEY,
+cat VARCHAR(20) NOT NULL,
+discount INT NOT NULL
+) ENGINE=NDB;
+CREATE TABLE t3 (
+pk INT PRIMARY KEY,
+amount INT NOT NULL,
+qty INT NOT NULL
+) ENGINE=NDB;
+############################################################
+# Test 1: 2-way join, SUM + COUNT GROUP BY
+############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT t1.grp, SUM(t2.discount), COUNT(*)
+FROM t1 JOIN t2 ON t2.pk = t1.pk
+GROUP BY t1.grp;
+grp	SUM(t2.discount)	COUNT(*)
+1	920	10
+10	1100	10
+2	940	10
+3	960	10
+4	980	10
+5	1000	10
+6	1020	10
+7	1040	10
+8	1060	10
+9	1080	10
+SET ndb_join_pushdown_aggregate=ON;
+SELECT t1.grp, SUM(t2.discount), COUNT(*)
+FROM t1 JOIN t2 ON t2.pk = t1.pk
+GROUP BY t1.grp;
+grp	SUM(t2.discount)	COUNT(*)
+1	920	10
+10	1100	10
+2	940	10
+3	960	10
+4	980	10
+5	1000	10
+6	1020	10
+7	1040	10
+8	1060	10
+9	1080	10
+############################################################
+# Test 2: 3-way join, SUM + COUNT GROUP BY root column
+############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT t1.grp, SUM(t3.amount), COUNT(*)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp;
+grp	SUM(t3.amount)	COUNT(*)
+1	46000	10
+10	55000	10
+2	47000	10
+3	48000	10
+4	49000	10
+5	50000	10
+6	51000	10
+7	52000	10
+8	53000	10
+9	54000	10
+SET ndb_join_pushdown_aggregate=ON;
+SELECT t1.grp, SUM(t3.amount), COUNT(*)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp;
+grp	SUM(t3.amount)	COUNT(*)
+1	46000	10
+10	55000	10
+2	47000	10
+3	48000	10
+4	49000	10
+5	50000	10
+6	51000	10
+7	52000	10
+8	53000	10
+9	54000	10
+############################################################
+# Test 3: All 4 aggregate functions
+############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT t1.grp, SUM(t3.amount), COUNT(*), MIN(t3.amount), MAX(t3.amount)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp;
+grp	SUM(t3.amount)	COUNT(*)	MIN(t3.amount)	MAX(t3.amount)
+1	46000	10	100	9100
+10	55000	10	1000	10000
+2	47000	10	200	9200
+3	48000	10	300	9300
+4	49000	10	400	9400
+5	50000	10	500	9500
+6	51000	10	600	9600
+7	52000	10	700	9700
+8	53000	10	800	9800
+9	54000	10	900	9900
+SET ndb_join_pushdown_aggregate=ON;
+SELECT t1.grp, SUM(t3.amount), COUNT(*), MIN(t3.amount), MAX(t3.amount)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp;
+grp	SUM(t3.amount)	COUNT(*)	MIN(t3.amount)	MAX(t3.amount)
+1	46000	10	100	9100
+10	55000	10	1000	10000
+2	47000	10	200	9200
+3	48000	10	300	9300
+4	49000	10	400	9400
+5	50000	10	500	9500
+6	51000	10	600	9600
+7	52000	10	700	9700
+8	53000	10	800	9800
+9	54000	10	900	9900
+############################################################
+# Test 4: Multi-column GROUP BY (root + leaf)
+############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT t1.grp, t3.qty, SUM(t3.amount)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp, t3.qty;
+grp	qty	SUM(t3.amount)
+1	105	2100
+1	155	3100
+1	205	4100
+1	255	5100
+1	305	6100
+1	355	7100
+1	405	8100
+1	455	9100
+1	5	100
+1	55	1100
+10	100	2000
+10	150	3000
+10	200	4000
+10	250	5000
+10	300	6000
+10	350	7000
+10	400	8000
+10	450	9000
+10	50	1000
+10	500	10000
+2	10	200
+2	110	2200
+2	160	3200
+2	210	4200
+2	260	5200
+2	310	6200
+2	360	7200
+2	410	8200
+2	460	9200
+2	60	1200
+3	115	2300
+3	15	300
+3	165	3300
+3	215	4300
+3	265	5300
+3	315	6300
+3	365	7300
+3	415	8300
+3	465	9300
+3	65	1300
+4	120	2400
+4	170	3400
+4	20	400
+4	220	4400
+4	270	5400
+4	320	6400
+4	370	7400
+4	420	8400
+4	470	9400
+4	70	1400
+5	125	2500
+5	175	3500
+5	225	4500
+5	25	500
+5	275	5500
+5	325	6500
+5	375	7500
+5	425	8500
+5	475	9500
+5	75	1500
+6	130	2600
+6	180	3600
+6	230	4600
+6	280	5600
+6	30	600
+6	330	6600
+6	380	7600
+6	430	8600
+6	480	9600
+6	80	1600
+7	135	2700
+7	185	3700
+7	235	4700
+7	285	5700
+7	335	6700
+7	35	700
+7	385	7700
+7	435	8700
+7	485	9700
+7	85	1700
+8	140	2800
+8	190	3800
+8	240	4800
+8	290	5800
+8	340	6800
+8	390	7800
+8	40	800
+8	440	8800
+8	490	9800
+8	90	1800
+9	145	2900
+9	195	3900
+9	245	4900
+9	295	5900
+9	345	6900
+9	395	7900
+9	445	8900
+9	45	900
+9	495	9900
+9	95	1900
+SET ndb_join_pushdown_aggregate=ON;
+SELECT t1.grp, t3.qty, SUM(t3.amount)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp, t3.qty;
+grp	qty	SUM(t3.amount)
+1	105	2100
+1	155	3100
+1	205	4100
+1	255	5100
+1	305	6100
+1	355	7100
+1	405	8100
+1	455	9100
+1	5	100
+1	55	1100
+10	100	2000
+10	150	3000
+10	200	4000
+10	250	5000
+10	300	6000
+10	350	7000
+10	400	8000
+10	450	9000
+10	50	1000
+10	500	10000
+2	10	200
+2	110	2200
+2	160	3200
+2	210	4200
+2	260	5200
+2	310	6200
+2	360	7200
+2	410	8200
+2	460	9200
+2	60	1200
+3	115	2300
+3	15	300
+3	165	3300
+3	215	4300
+3	265	5300
+3	315	6300
+3	365	7300
+3	415	8300
+3	465	9300
+3	65	1300
+4	120	2400
+4	170	3400
+4	20	400
+4	220	4400
+4	270	5400
+4	320	6400
+4	370	7400
+4	420	8400
+4	470	9400
+4	70	1400
+5	125	2500
+5	175	3500
+5	225	4500
+5	25	500
+5	275	5500
+5	325	6500
+5	375	7500
+5	425	8500
+5	475	9500
+5	75	1500
+6	130	2600
+6	180	3600
+6	230	4600
+6	280	5600
+6	30	600
+6	330	6600
+6	380	7600
+6	430	8600
+6	480	9600
+6	80	1600
+7	135	2700
+7	185	3700
+7	235	4700
+7	285	5700
+7	335	6700
+7	35	700
+7	385	7700
+7	435	8700
+7	485	9700
+7	85	1700
+8	140	2800
+8	190	3800
+8	240	4800
+8	290	5800
+8	340	6800
+8	390	7800
+8	40	800
+8	440	8800
+8	490	9800
+8	90	1800
+9	145	2900
+9	195	3900
+9	245	4900
+9	295	5900
+9	345	6900
+9	395	7900
+9	445	8900
+9	45	900
+9	495	9900
+9	95	1900
+############################################################
+# Test 5: Global aggregation (no GROUP BY)
+############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT COUNT(*), SUM(t3.amount), MIN(t3.amount), MAX(t3.amount)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk;
+COUNT(*)	SUM(t3.amount)	MIN(t3.amount)	MAX(t3.amount)
+100	505000	100	10000
+SET ndb_join_pushdown_aggregate=ON;
+SELECT COUNT(*), SUM(t3.amount), MIN(t3.amount), MAX(t3.amount)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk;
+COUNT(*)	SUM(t3.amount)	MIN(t3.amount)	MAX(t3.amount)
+100	505000	100	10000
+############################################################
+# Test 6: HAVING + ORDER BY + LIMIT
+############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT t1.grp, SUM(t3.amount) AS total, COUNT(*) AS cnt
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp
+HAVING cnt >= 10
+ORDER BY total ASC
+LIMIT 3;
+grp	total	cnt
+1	46000	10
+2	47000	10
+3	48000	10
+SET ndb_join_pushdown_aggregate=ON;
+SELECT t1.grp, SUM(t3.amount) AS total, COUNT(*) AS cnt
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp
+HAVING cnt >= 10
+ORDER BY total ASC
+LIMIT 3;
+grp	total	cnt
+1	46000	10
+2	47000	10
+3	48000	10
+############################################################
+# Test 7: GROUP BY on VARCHAR column from root
+############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT t1.region, SUM(t3.amount), COUNT(*)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.region;
+region	SUM(t3.amount)	COUNT(*)
+Central	105000	20
+East	101000	20
+North	97000	20
+South	99000	20
+West	103000	20
+SET ndb_join_pushdown_aggregate=ON;
+SELECT t1.region, SUM(t3.amount), COUNT(*)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.region;
+region	SUM(t3.amount)	COUNT(*)
+Central	105000	20
+East	101000	20
+North	97000	20
+South	99000	20
+West	103000	20
+############################################################
+# Test 8: GROUP BY on root + intermediate columns
+############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT t1.grp, t2.cat, COUNT(*), SUM(t3.amount)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp, t2.cat;
+grp	cat	COUNT(*)	SUM(t3.amount)
+1	X	4	18400
+1	Y	3	12300
+1	Z	3	15300
+10	X	4	22000
+10	Y	3	15000
+10	Z	3	18000
+2	X	3	15600
+2	Y	4	18800
+2	Z	3	12600
+3	X	3	12900
+3	Y	3	15900
+3	Z	4	19200
+4	X	4	19600
+4	Y	3	13200
+4	Z	3	16200
+5	X	3	16500
+5	Y	4	20000
+5	Z	3	13500
+6	X	3	13800
+6	Y	3	16800
+6	Z	4	20400
+7	X	4	20800
+7	Y	3	14100
+7	Z	3	17100
+8	X	3	17400
+8	Y	4	21200
+8	Z	3	14400
+9	X	3	14700
+9	Y	3	17700
+9	Z	4	21600
+SET ndb_join_pushdown_aggregate=ON;
+SELECT t1.grp, t2.cat, COUNT(*), SUM(t3.amount)
+FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp, t2.cat;
+grp	cat	COUNT(*)	SUM(t3.amount)
+1	X	4	18400
+1	Y	3	12300
+1	Z	3	15300
+10	X	4	22000
+10	Y	3	15000
+10	Z	3	18000
+2	X	3	15600
+2	Y	4	18800
+2	Z	3	12600
+3	X	3	12900
+3	Y	3	15900
+3	Z	4	19200
+4	X	4	19600
+4	Y	3	13200
+4	Z	3	16200
+5	X	3	16500
+5	Y	4	20000
+5	Z	3	13500
+6	X	3	13800
+6	Y	3	16800
+6	Z	4	20400
+7	X	4	20800
+7	Y	3	14100
+7	Z	3	17100
+8	X	3	17400
+8	Y	4	21200
+8	Z	3	14400
+9	X	3	14700
+9	Y	3	17700
+9	Z	4	21600
+############################################################
+# Cleanup
+############################################################
+DROP TABLE t3, t2, t1;

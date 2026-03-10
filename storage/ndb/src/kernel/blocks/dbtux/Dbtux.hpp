@@ -421,8 +421,8 @@ private:
     };
     Uint32 prevList;
 
-    // Aggregation
-    Uint32 m_aggregation;
+    // Pushdown (aggregation or vector search)
+    Uint32 m_has_pushdown;
     ScanOp();
   };
   static constexpr Uint32 DBTUX_SCAN_OPERATION_TRANSIENT_POOL_INDEX = 0;

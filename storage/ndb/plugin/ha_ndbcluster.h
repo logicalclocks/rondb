@@ -59,9 +59,11 @@ class NdbIndexStat;
 class ha_ndbcluster_cond;
 class NdbQuery;
 class NdbQueryOperation;
+class NdbAggregator;
 class NdbQueryOperationTypeWrapper;
 class NdbQueryParamValue;
 class ndb_pushed_join;
+class ndb_pushed_builder_ctx;
 
 enum NDB_INDEX_TYPE {
   UNDEFINED_INDEX = 0,
@@ -367,6 +369,14 @@ class ha_ndbcluster : public handler, public Partition_handler {
 
   friend int ndbcluster_push_to_engine(THD *thd, AccessPath *, JOIN *);
   friend void accept_pushed_conditions(const TABLE *table, AccessPath *filter);
+  friend bool ndb_push_aggregation(THD *thd, const JOIN *join,
+                                   ndb_pushed_builder_ctx &builder);
+  friend int ndb_fetch_pushed_aggregate(ha_ndbcluster *handler);
+  friend bool ndb_push_single_table_aggregation(
+      THD *thd, const JOIN *join, const ndb_pushed_builder_ctx &builder);
+  friend int ndb_start_stm_aggregate_scan(ha_ndbcluster *handler,
+                                          NdbScanOperation *op);
+  friend int ndb_fetch_stm_aggregate(ha_ndbcluster *handler);
 
  private:
   bool maybe_pushable_join(const char *&reason) const;
@@ -376,6 +386,7 @@ class ha_ndbcluster : public handler, public Partition_handler {
   const TABLE *member_of_pushed_join() const override;
   const TABLE *parent_of_pushed_join() const override;
   table_map tables_in_pushed_join() const override;
+  bool has_pushed_aggregation() const override;
 
   int index_read_pushed(uchar *buf, const uchar *key,
                         key_part_map keypart_map) override;
@@ -732,6 +743,14 @@ class ha_ndbcluster : public handler, public Partition_handler {
   bool m_disable_pushed_join;             // Pushed execution allowed?
   NdbQuery *m_active_query;               // Pushed query instance executing
   NdbQueryOperation *m_pushed_operation;  // Pushed operation instance
+
+  // Pushed aggregation state (set during push, used during fetch).
+  bool m_pushed_agg_mode{false};
+  bool m_agg_results_initialized{false};
+  const JOIN *m_agg_join{nullptr};
+
+  // Single-table aggregation pushdown state.
+  NdbAggregator *m_stm_aggregator{nullptr};
 
   /* In case we failed to push a 'pushed_cond', the handler will evaluate it */
   ha_ndbcluster_cond m_cond;

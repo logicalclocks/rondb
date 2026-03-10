@@ -333,6 +333,19 @@ int NdbScanOperation::handleScanOptions(const ScanOptions *options) {
     m_customData = options->customData;
   }
 
+  if (options->optionsPresent & ScanOptions::SO_AGGREGATION) {
+    if (options->aggregationCode == nullptr ||
+        !options->aggregationCode->finalized()) {
+      setErrorCodeAbort(4560);  // NdbAggregator::Finalize() not called.
+      return -1;
+    }
+    m_aggregation_code =
+        const_cast<NdbAggregator *>(options->aggregationCode);
+    if (options->aggregationCode->disk_columns()) {
+      m_flags &= ~Uint8(OF_NO_DISK);
+    }
+  }
+
   /* Preferred form of partitioning information */
   if (options->optionsPresent & ScanOptions::SO_PART_INFO) {
     Uint32 partValue = 0;
@@ -1504,7 +1517,8 @@ int NdbScanOperation::setAggregationCode(const NdbAggregator *code)
 {
   if (theStatus == NdbOperation::UseNdbRecord)
   {
-    setErrorCodeAbort(4284); // Cannot mix NdbRecAttr and NdbRecord methods...
+    // For NdbRecord scans, use ScanOptions::SO_AGGREGATION instead.
+    setErrorCodeAbort(4284);
     return -1;
   }
 
@@ -1529,62 +1543,58 @@ int NdbScanOperation::setAggregationCode(const NdbAggregator *code)
 }
 
 int NdbScanOperation::DoAggregation() {
-  DEB_TRACE();
-
   if (m_aggregation_code == nullptr ||
       !m_aggregation_code->finalized())
   {
-    DEB_TRACE();
     setErrorCodeAbort(4560); //  NdbAggregator::Finalize() not called.
     return -1;
   }
 
   NdbRecAttr* myRecAttr;
-  Uint32 col = 0xFF00;
-  DEB_TRACE();
-  myRecAttr = getValue(col);
-  DEB_TRACE();
+  if (!m_scanUsingOldApi) {
+    // NdbRecord scan: use getValue_NdbRecord_scan() directly.
+    // The normal getValue() path fails because getColumn(0xFF00)
+    // returns nullptr for the aggregation pseudo-column.
+    myRecAttr = getValue_NdbRecord_scan(nullptr, nullptr, 0, 0);
+  } else {
+    // Old-style scan: use the standard getValue() path.
+    Uint32 col = 0xFF00;
+    myRecAttr = getValue(col);
+  }
   if (myRecAttr == nullptr) {
     return -1;
   }
 
-  DEB_TRACE();
+  const bool useNdbRecord = !m_scanUsingOldApi;
+
   if (m_transConnection->execute(NdbTransaction::NoCommit) != 0) {
     return -1;
   }
 
-  DEB_TRACE();
   while (true) {
-    int check = nextResult(true);
+    int check;
+    if (useNdbRecord) {
+      const char *dummy_row;
+      check = nextResult(&dummy_row, true, false);
+    } else {
+      check = nextResult(true);
+    }
     switch(check) {
     case -1:
-      // Permanent error
-      DEB_TRACE();
       return -1;
     case 0:
-      // Progress getting data
       if (m_aggregation_code->ProcessRes(myRecAttr->aRef())) {
-        // Done processing data fetched so far
-        DEB_TRACE();
         continue;
       } else {
-        // This is unexpected
-        DEB_TRACE();
         return -1;
       }
     case 1:
       // Scan complete.
-      DEB_TRACE();
       m_aggregation_code->PrepareResults();
       return 0;
     case 2:
-      // No more data available immediately. This should never happen because
-      // nextResult is called with fetchAllowed = true.
-      DEB_TRACE();
       abort();
     default:
-      // This should never happen
-      DEB_TRACE();
       abort();
     }
   }
@@ -3225,6 +3235,22 @@ NdbScanOperation::getValue_NdbRecord_scan(const NdbColumnImpl* attrInfo,
                                           Uint32 aStartPos,
                                           Uint32 aSize) {
   DBUG_ENTER("NdbScanOperation::getValue_NdbRecord_scan");
+
+  if (attrInfo == nullptr) {
+    // Aggregation result column — no ATTRINFO needed, just a RecAttr
+    // to receive the aggregation data from TRANSID_AI.
+    if (m_aggregation_code == nullptr) {
+      setErrorCodeAbort(4004);
+      DBUG_RETURN(nullptr);
+    }
+    NdbRecAttr *ra = theReceiver.getValue(nullptr, aValue);
+    if (!ra) {
+      setErrorCodeAbort(4000);
+      DBUG_RETURN(nullptr);
+    }
+    DBUG_RETURN(ra);
+  }
+
   int res;
   NdbRecAttr *ra;
   DBUG_PRINT("info", ("Column: %u", attrInfo->m_attrId));

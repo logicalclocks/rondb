@@ -1,0 +1,7 @@
+--source include/have_ndb.inc
+
+--echo Running testJoinAggScanScan
+--exec $NDB_PUSH_AGG_DIR/testJoinAggScanScan -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT
+
+# Clean up database created by test program
+DROP DATABASE IF EXISTS test_db;

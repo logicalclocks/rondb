@@ -673,6 +673,8 @@ Dblqh::Dblqh(Block_context &ctx, Uint32 instanceNumber, Uint32 blockNo)
     addRecSignal(GSN_MEMCHECKREQ, &Dblqh::execMEMCHECKREQ);
 #endif
     addRecSignal(GSN_SCAN_FRAGREQ, &Dblqh::execSCAN_FRAGREQ);
+    addRecSignal(GSN_JOIN_AGG_COMPLETE_REQ, &Dblqh::execJOIN_AGG_COMPLETE_REQ);
+    addRecSignal(GSN_JOIN_AGG_SEND_CONF, &Dblqh::execJOIN_AGG_SEND_CONF);
     addRecSignal(GSN_SCAN_NEXTREQ, &Dblqh::execSCAN_NEXTREQ);
     addRecSignal(GSN_NEXT_SCANCONF, &Dblqh::execNEXT_SCANCONF);
     addRecSignal(GSN_NEXT_SCANREF, &Dblqh::execNEXT_SCANREF);
@@ -776,6 +778,9 @@ Dblqh::Dblqh(Block_context &ctx, Uint32 instanceNumber, Uint32 blockNo)
                  &Dblqh::execRESUME_COPY_FRAG_REQ);
     m_is_query_block = false;
     m_is_in_query_thread = false;
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+    m_skip_tc_node_check = false;
+#endif
     m_ldm_instance_used = this;
     m_acc_block = DBACC;
     m_tup_block = DBTUP;
@@ -787,6 +792,9 @@ Dblqh::Dblqh(Block_context &ctx, Uint32 instanceNumber, Uint32 blockNo)
     ndbrequire(blockNo == DBQLQH);
     m_is_query_block = true;
     m_is_in_query_thread = true;
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+    m_skip_tc_node_check = false;
+#endif
     m_acc_block = DBQACC;
     m_tup_block = DBQTUP;
     m_lqh_block = DBQLQH;
@@ -820,6 +828,8 @@ Dblqh::Dblqh(Block_context &ctx, Uint32 instanceNumber, Uint32 blockNo)
     addRecSignal(GSN_ABORT, &Dblqh::execABORT);
     addRecSignal(GSN_ABORTREQ, &Dblqh::execABORTREQ);
     addRecSignal(GSN_SCAN_FRAGREQ, &Dblqh::execSCAN_FRAGREQ);
+    addRecSignal(GSN_JOIN_AGG_COMPLETE_REQ, &Dblqh::execJOIN_AGG_COMPLETE_REQ);
+    addRecSignal(GSN_JOIN_AGG_SEND_CONF, &Dblqh::execJOIN_AGG_SEND_CONF);
     addRecSignal(GSN_SCAN_NEXTREQ, &Dblqh::execSCAN_NEXTREQ);
     addRecSignal(GSN_NEXT_SCANCONF, &Dblqh::execNEXT_SCANCONF);
     addRecSignal(GSN_NEXT_SCANREF, &Dblqh::execNEXT_SCANREF);

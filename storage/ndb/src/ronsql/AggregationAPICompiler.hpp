@@ -67,6 +67,7 @@ class AggregationAPICompiler_Expr
     Load,
     LoadConstantInt,
     FORALL_ARITHMETIC_OPS(ARITHMETIC_ENUM)
+    Case,
   };
 #undef ARITHMETIC_ENUM
   using Expr = AggregationAPICompiler_Expr;
@@ -89,6 +90,7 @@ private:
                            // in calculation but excluding uses in
                            // re-calculation. Only used for asserts.
   bool has_been_compiled = false; // Only used to determine program_usage.
+  ConditionalExpression* case_condition = NULL; // Only for Case op
 };
 
 class AggregationAPICompiler
@@ -176,6 +178,9 @@ public:
   enum class SVMInstrType
   {
     FORALL_INSTRUCTIONS(INSTR_ENUM)
+    EmbeddedInterp,    // dest=case_index, src=0
+    Skip,              // dest=0, src=0 (placeholder)
+    AggRepeat,         // dest=agg_index, src=reg (CASE ELSE arm duplicate)
   };
 #undef INSTR_ENUM
   struct Instr
@@ -187,6 +192,21 @@ public:
 private:
   void svm_execute(Instr* instr, bool is_first_compilation);
   void svm_use(Uint32 reg, bool is_first_compilation);
+
+  // Case expression support:
+public:
+  struct CaseInfo
+  {
+    ConditionalExpression* condition;
+    Uint32 then_start;   // program index: first THEN arm instruction
+    Uint32 skip_pos;     // program index: Skip instruction
+    Uint32 else_start;   // program index: first ELSE arm instruction
+    Uint32 else_end;     // program index: one past last ELSE arm instruction
+  };
+  DynamicArray<CaseInfo> m_cases;
+  Expr* CaseExpr(ConditionalExpression* condition,
+                 Expr* then_expr, Expr* else_expr);
+  Uint32 raw_word_size(Uint32 start, Uint32 end);
 
   // Aggregation Compiler:
 public:

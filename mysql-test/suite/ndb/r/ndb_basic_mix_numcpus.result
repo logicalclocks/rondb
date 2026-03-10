@@ -171,6 +171,7 @@ ndb_fully_replicated	#
 ndb_index_stat_enable	#
 ndb_index_stat_option	#
 ndb_join_pushdown	#
+ndb_join_pushdown_aggregate	#
 ndb_log_apply_status	#
 ndb_log_bin	#
 ndb_log_binlog_index	#
@@ -196,6 +197,7 @@ ndb_mgmd_host	#
 ndb_nodeid	#
 ndb_optimization_delay	#
 ndb_optimized_node_selection	#
+ndb_pushdown_aggregate	#
 ndb_read_backup	#
 ndb_recv_thread_activation_threshold	#
 ndb_recv_thread_cpu_mask	#

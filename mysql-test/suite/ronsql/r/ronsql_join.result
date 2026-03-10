@@ -1,0 +1,103 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== Create tables for join tests ===
+
+
+
+=== Test 1: Basic 2-table join with GROUP BY on parent, SUM on child ===
+== Query ==
+SELECT o.o_custkey, SUM(l.l_quantity), SUM(l.l_price)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.o_custkey, SUM(l.l_quantity), SUM(l.l_price)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey|
+o_custkey	SUM(l.l_quantity)	SUM(l.l_price)
+100	50	500
+200	75	750
+300	75	750
+
+
+=== Test 2: COUNT aggregate on join ===
+== Query ==
+SELECT o.o_custkey, COUNT(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.o_custkey, COUNT(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey|
+o_custkey	COUNT(l.l_quantity)
+100	4
+200	4
+300	2
+
+
+=== Test 3: MIN/MAX aggregate on join ===
+== Query ==
+SELECT o.o_custkey, MIN(l.l_price), MAX(l.l_price)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.o_custkey, MIN(l.l_price), MAX(l.l_price)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY o.o_custkey|
+o_custkey	MIN(l.l_price)	MAX(l.l_price)
+100	50	200
+200	80	300
+300	350	400
+
+
+=== Test 4: GROUP BY on leaf column ===
+== Query ==
+SELECT l.l_orderkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY l.l_orderkey;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT l.l_orderkey, SUM(l.l_quantity)
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+GROUP BY l.l_orderkey|
+l_orderkey	SUM(l.l_quantity)
+1	30
+2	20
+3	55
+4	20
+5	75
+
+=== Cleanup ===
+DROP TABLE lineitem;
+DROP TABLE orders;

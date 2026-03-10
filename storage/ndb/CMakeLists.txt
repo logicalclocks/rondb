@@ -49,6 +49,7 @@ IF(NOT WITHOUT_SERVER)
     plugin/ha_ndbcluster.cc
     plugin/ha_ndbcluster_cond.cc
     plugin/ha_ndbcluster_push.cc
+    plugin/ha_ndbcluster_push_agg.cc
     plugin/ha_ndbcluster_connection.cc
     plugin/ha_ndbcluster_binlog.cc
     plugin/ha_ndb_index_stat.cc
@@ -350,6 +351,9 @@ ENDIF()
 
 ADD_SUBDIRECTORY(tools)
 ADD_SUBDIRECTORY(test)
+IF(WITH_NDB_TEST)
+  ADD_SUBDIRECTORY(block_unit_test)
+ENDIF()
 IF(WITH_NDB_TEST)
   ADD_SUBDIRECTORY(src/cw/cpcd)
 ENDIF()

@@ -127,6 +127,13 @@
 //#define DO_TRANSIENT_POOL_STAT 1
 //#define DEBUG_FREE_PAGE 1
 //#define DEBUG_CHECK_PAGE_ALLOCATED 1
+//#define DEBUG_SUMA_RESEND 1
+#endif
+
+#ifdef DEBUG_SUMA_RESEND
+#define DEB_SUMA_RESEND(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_SUMA_RESEND(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_CHECK_PAGE_ALLOCATED
@@ -5211,6 +5218,9 @@ void Suma::doFIRE_TRIG_ORD(Signal *signal, LinearSectionPtr lsptr[3]) {
     Uint32 key_header_size = lsptr[0].sz + buffer_header_sz;
     if (unlikely(buffering_disabled())) {
       jam();
+      DEB_SUMA_RESEND(("SUMA: FIRE_TRIG_ORD buffering disabled,"
+                        " dropping event bucket=%u gci=%u/%u event=%u",
+                        bucket, Uint32(gci >> 32), Uint32(gci), event));
       DBUG_VOID_RETURN;
     }
     /* Start by packing the header and the key part */
@@ -5222,6 +5232,9 @@ void Suma::doFIRE_TRIG_ORD(Signal *signal, LinearSectionPtr lsptr[3]) {
                          1);
     if (unlikely(buffering_disabled())) {
       jam();
+      DEB_SUMA_RESEND(("SUMA: FIRE_TRIG_ORD OOB mid-record part=1"
+                        " bucket=%u gci=%u/%u event=%u",
+                        bucket, Uint32(gci >> 32), Uint32(gci), event));
       DBUG_VOID_RETURN;
     }
 
@@ -5247,6 +5260,9 @@ void Suma::doFIRE_TRIG_ORD(Signal *signal, LinearSectionPtr lsptr[3]) {
                            2);
       if (unlikely(buffering_disabled())) {
         jam();
+        DEB_SUMA_RESEND(("SUMA: FIRE_TRIG_ORD OOB mid-record part=2"
+                          " bucket=%u gci=%u/%u event=%u",
+                          bucket, Uint32(gci >> 32), Uint32(gci), event));
         DBUG_VOID_RETURN;
       }
       Uint32 num_bytes = MAX_SUMA_BUFFER_SIZE * 4;
@@ -5263,6 +5279,9 @@ void Suma::doFIRE_TRIG_ORD(Signal *signal, LinearSectionPtr lsptr[3]) {
                            3);
       if (unlikely(buffering_disabled())) {
         jam();
+        DEB_SUMA_RESEND(("SUMA: FIRE_TRIG_ORD OOB mid-record part=3"
+                          " bucket=%u gci=%u/%u event=%u",
+                          bucket, Uint32(gci >> 32), Uint32(gci), event));
         DBUG_VOID_RETURN;
       }
       Uint32 num_bytes = sz1 * 4;
@@ -5281,6 +5300,9 @@ void Suma::doFIRE_TRIG_ORD(Signal *signal, LinearSectionPtr lsptr[3]) {
                            4);
       if (unlikely(buffering_disabled())) {
         jam();
+        DEB_SUMA_RESEND(("SUMA: FIRE_TRIG_ORD OOB mid-record part=4"
+                          " bucket=%u gci=%u/%u event=%u",
+                          bucket, Uint32(gci >> 32), Uint32(gci), event));
         DBUG_VOID_RETURN;
       }
       Uint32 num_bytes = MAX_SUMA_BUFFER_SIZE * 4;
@@ -5297,6 +5319,9 @@ void Suma::doFIRE_TRIG_ORD(Signal *signal, LinearSectionPtr lsptr[3]) {
                            5);
       if (unlikely(buffering_disabled())) {
         jam();
+        DEB_SUMA_RESEND(("SUMA: FIRE_TRIG_ORD OOB mid-record part=5"
+                          " bucket=%u gci=%u/%u event=%u",
+                          bucket, Uint32(gci >> 32), Uint32(gci), event));
         DBUG_VOID_RETURN;
       }
       Uint32 num_bytes = sz2 * 4;
@@ -8223,6 +8248,10 @@ void Suma::resend_bucket(Signal *signal, Uint32 buck, Uint64 min_gci,
         } else {
           jam();
           // Next part of data on next page.
+          DEB_SUMA_RESEND(("SUMA: resend_bucket page traversal"
+                            " bucket=%u expected_part=%u"
+                            " next_page=%u words_used will be read",
+                            buck, expected_part, next_page));
           last_page = next_page;
           CHECK_PAGE(next_page);
           page = c_page_pool.getPtr(next_page);
@@ -8338,7 +8367,21 @@ void Suma::resend_bucket(Signal *signal, Uint32 buck, Uint64 min_gci,
                                     subPtr.p->m_subscribers,
                                     dest_ptr,
                                     nptr);
+        } else {
+          DEB_SUMA_RESEND(("SUMA: resend_bucket skipping event"
+                            " schema version mismatch bucket=%u"
+                            " gci=%u/%u event=%u subPtrI=%u"
+                            " buffered=%u current=%u",
+                            buck, Uint32(last_gci >> 32),
+                            Uint32(last_gci), event, subPtrI,
+                            schemaVersion, tabPtr.p->m_schemaVersion));
         }
+      } else {
+        DEB_SUMA_RESEND(("SUMA: resend_bucket skipping event"
+                          " invalid subscription bucket=%u"
+                          " gci=%u/%u event=%u subPtrI=%u",
+                          buck, Uint32(last_gci >> 32),
+                          Uint32(last_gci), event, subPtrI));
       }
     }
   }
