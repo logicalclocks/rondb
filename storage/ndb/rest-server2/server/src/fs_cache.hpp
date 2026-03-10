@@ -35,7 +35,6 @@
 #include <chrono>
 #include <ndb_init.h>
 #include <ndb_types.h>
-#include <NdbTick.h>
 #include <NdbSleep.h>
 #include <NdbMutex.h>
 #include <NdbCondition.h>
@@ -56,7 +55,6 @@ class FSCacheEntry {
   std::shared_ptr<RestErrorCode> m_errorCode;
   FSCacheEntry* m_next_cache_entry;
   FSCacheEntry* m_prev_cache_entry;
-  NDB_TICKS m_lastUsed;
   NdbMutex *m_waitLock;
   NdbCondition *m_waitCond;
   Uint32 m_key_cache_id;

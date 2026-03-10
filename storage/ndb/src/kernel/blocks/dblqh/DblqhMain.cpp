@@ -163,7 +163,7 @@
 //#define DEBUG_QUOTAS 1
 //#define DEBUG_CONT_SCAN 1
 //#define DEBUG_INDEX_BUILD 1
-#define DEBUG_JOIN_AGG 1
+//#define DEBUG_JOIN_AGG 1
 #endif
 
 #ifdef DEBUG_JOIN_AGG

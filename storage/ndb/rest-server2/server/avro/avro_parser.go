@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"reflect"
 	"time"
+	"unicode"
 
 	"github.com/hamba/avro/v2"
 )
@@ -187,10 +188,21 @@ func isAvroNullType(schema avro.Schema) bool {
 	return false
 }
 
-// This exports Struct's members
+// capitalizeMember makes an Avro field name into a valid exported Go
+// identifier.  The original name is preserved in the struct tag.
 func capitalizeMember(s string) string {
 	if len(s) == 0 {
 		return s
 	}
-	return string(s[0]-32) + s[1:]
+	runes := []rune(s)
+	if unicode.IsLower(runes[0]) {
+		runes[0] = unicode.ToUpper(runes[0])
+		return string(runes)
+	}
+	if unicode.IsUpper(runes[0]) {
+		return s
+	}
+	// Starts with digit, underscore, or non-letter — prefix to make a
+	// valid exported Go identifier.
+	return "X_" + s
 }
