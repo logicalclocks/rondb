@@ -445,23 +445,17 @@ o_custkey	SUM(l.l_quantity)
 300	75
 
 
-=== Test 24: LIMIT without ORDER BY ===
+=== Test 24: LIMIT with ORDER BY ===
 == Query ==
 SELECT o.o_custkey, SUM(l.l_quantity)
 FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
 GROUP BY o.o_custkey
+ORDER BY o.o_custkey
 LIMIT 2;
 
 Number of output lines, including header: 3
 
 == Diff ==
---- mysql.out
-+++ ronsql.out
-@@ -1,3 +1,3 @@
- o_custkey	SUM(l.l_quantity)
- 100	50
--200	75
-+300	75
 ==========
 
 
@@ -470,6 +464,7 @@ Number of output lines, including header: 3
 SELECT o.o_custkey, SUM(l.l_quantity)
 FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
 GROUP BY o.o_custkey
+ORDER BY o.o_custkey
 LIMIT 2|
 o_custkey	SUM(l.l_quantity)
 100	50
@@ -564,10 +559,6 @@ HAVING SUM(l.l_quantity) > 9999;
 Number of output lines, including header: 0
 
 == Diff ==
---- mysql.out
-+++ ronsql.out
-@@ -0,0 +1 @@
-+o_custkey	SUM(l.l_quantity)
 ==========
 
 
@@ -947,7 +938,7 @@ Bolt Co	55
 Gear Inc	5
 
 
-=== Test 44: Group eviction with ERROR_INSERT 5090 ===
+=== Test 44: Group eviction with ERROR_INSERT 5116 ===
 == Query ==
 SELECT o.o_id, SUM(l.l_quantity)
 FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id

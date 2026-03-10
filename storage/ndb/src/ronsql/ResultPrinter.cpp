@@ -859,17 +859,6 @@ ResultPrinter::print_result_ordered(NdbAggregator* aggregator,
     {
       out << "[]\n";
     }
-    else if (m_tsv_output && m_tsv_headers)
-    {
-      bool first_column = true;
-      for (Uint32 i = 0; i < m_outputs.size(); i++)
-      {
-        Outputs* o = m_outputs[i];
-        if (first_column) first_column = false; else out << '\t';
-        out << o->output_name;
-      }
-      out << '\n';
-    }
     return;
   }
   // Copy to a plain array for std::sort (DynamicArray lacks random-access

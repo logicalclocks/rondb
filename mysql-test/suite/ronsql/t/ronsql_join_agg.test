@@ -6,6 +6,7 @@ call mtr.add_suppression("Participant timeout");
 # causing "Invalid schema version (code 1227)" errors. Suppress ronsql_cli
 # and rely on RDRS comparison (which handles schema refresh correctly).
 --let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
 
 --echo
 --echo === Create tables for join aggregation tests ===
@@ -476,12 +477,13 @@ LIMIT 2|
 
 --echo
 --echo
---echo === Test 24: LIMIT without ORDER BY ===
+--echo === Test 24: LIMIT with ORDER BY ===
 
 let $QUERY=
 SELECT o.o_custkey, SUM(l.l_quantity)
 FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
 GROUP BY o.o_custkey
+ORDER BY o.o_custkey
 LIMIT 2;|
 --source suite/ronsql/include/ronsql_compare.inc
 
@@ -490,6 +492,7 @@ LIMIT 2;|
 SELECT o.o_custkey, SUM(l.l_quantity)
 FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
 GROUP BY o.o_custkey
+ORDER BY o.o_custkey
 LIMIT 2|
 
 --echo
@@ -834,13 +837,13 @@ DELIMITER ;|
 
 --echo
 --echo
---echo === Test 44: Group eviction with ERROR_INSERT 5090 ===
+--echo === Test 44: Group eviction with ERROR_INSERT 5116 ===
 
 --source include/check_ndb_debug.inc
 
 if ($have_ndb_debug)
 {
---exec $NDB_MGM -e "ALL ERROR 5090" > /dev/null 2>&1
+--exec $NDB_MGM -e "ALL ERROR 5116" > /dev/null 2>&1
 
 DELIMITER |;
 

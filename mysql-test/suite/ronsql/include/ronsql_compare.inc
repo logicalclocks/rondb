@@ -94,16 +94,30 @@ if ($skip_sort!='')
 {
   --exec cp $MYSQL_TMP_DIR/ronsql-cli.out $MYSQL_TMP_DIR/ronsql-cli.out.sorted
 }
+if ($strict_diff=='')
+{
 # todo The "|| true" at the end makes this test succeed no matter what the
 # results are. Remove it when possible.
 --exec diff -u --label ronsql-cli.out $MYSQL_TMP_DIR/ronsql-cli.out.sorted --label ronsql-rdrs.out $MYSQL_TMP_DIR/ronsql-rdrs.out.sorted || true
 }
+if ($strict_diff!='')
+{
+--exec diff -u --label ronsql-cli.out $MYSQL_TMP_DIR/ronsql-cli.out.sorted --label ronsql-rdrs.out $MYSQL_TMP_DIR/ronsql-rdrs.out.sorted
+}
+}
 
 --echo
 --echo == Diff ==
+if ($strict_diff=='')
+{
 # todo The "|| true" at the end makes this test succeed no matter what the
 # results are. Remove it when possible.
 --exec diff -u --label mysql.out $MYSQL_TMP_DIR/mysql.out.sorted --label ronsql.out $MYSQL_TMP_DIR/ronsql-rdrs.out.sorted || true
+}
+if ($strict_diff!='')
+{
+--exec diff -u --label mysql.out $MYSQL_TMP_DIR/mysql.out.sorted --label ronsql.out $MYSQL_TMP_DIR/ronsql-rdrs.out.sorted
+}
 --remove_file $MYSQL_TMP_DIR/ronsql-query.sql
 --remove_file $MYSQL_TMP_DIR/ronsql-rdrs-body
 --remove_file $MYSQL_TMP_DIR/ronsql-rdrs-body-1
