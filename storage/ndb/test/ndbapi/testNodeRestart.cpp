@@ -10396,8 +10396,8 @@ runJoinAggNodeRestart(NDBT_Context *ctx, NDBT_Step *step)
 /**
  * Test join aggregation with ERROR_INSERT (non-crash) error paths.
  *
- * 5091: SETUP_REQ returns REF (allocation failure simulation)
- * 5092: COMPLETE_REQ returns REF (state-not-found simulation)
+ * 5117: SETUP_REQ returns REF (allocation failure simulation)
+ * 5118: COMPLETE_REQ returns REF (state-not-found simulation)
  *
  * These don't crash the node - they just cause the query to fail gracefully.
  * Verify the query fails without crashing and subsequent queries still work.
@@ -10409,7 +10409,7 @@ runJoinAggErrorInsert(NDBT_Context *ctx, NDBT_Step *step)
   NdbRestarter restarter;
   const NdbDictionary::Table *tab = ctx->getTab();
 
-  int errorCodes[] = { 5091, 5092 };
+  int errorCodes[] = { 5117, 5118 };
   const char *errorNames[] = { "SETUP_REF", "COMPLETE_REF" };
 
   for (int i = 0; i < 2; i++) {

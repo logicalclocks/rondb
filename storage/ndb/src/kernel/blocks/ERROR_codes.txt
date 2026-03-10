@@ -31,7 +31,10 @@ Next DBTUP 4041
 5113: CRASH_INSERTION in execJOIN_AGG_SETUP_REQ (DblqhProxy) — node failure testing
 5114: CRASH_INSERTION in execJOIN_AGG_COMPLETE_REQ (Dblqh) — node failure testing
 5115: CRASH_INSERTION in execJOIN_AGG_RELEASE_REQ (DblqhProxy) — node failure testing
-Next DBLQH 5116
+5116: Force join aggregation group eviction by limiting maxGroups to 3 (DblqhProxy)
+5117: Simulate JOIN_AGG_SETUP_REF allocation failure in DblqhProxy
+5118: Simulate JOIN_AGG_COMPLETE_REF state-not-found in Dblqh
+Next DBLQH 5119
 Next DBDICT 6229
 Next DBDIH 7251
 Next DBTC 8127

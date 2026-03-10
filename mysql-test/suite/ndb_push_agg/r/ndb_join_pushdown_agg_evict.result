@@ -5,7 +5,7 @@
 # Tests that pushed join aggregation produces correct results
 # when the NDB aggregation hash table is forced to evict groups
 # mid-scan. Uses ERROR_INSERT codes:
-#   5090 - Forces maxGroups=3 (evicts when 4th group arrives)
+#   5116 - Forces maxGroups=3 (evicts when 4th group arrives)
 #   4040 - Intermittent eviction every ~7th row
 #
 # Create 3 tables forming a PK-lookup chain for pushed joins
@@ -61,7 +61,7 @@ INSERT INTO t3 VALUES
 (46,4600, 46), (47,4700, 47), (48,4800, 48), (49,4900, 49), (50,5000, 50),
 (51,5100, 51), (52,5200, 52), (53,5300, 53), (54,5400, 54), (55,5500, 55);
 ============================================================
-Section A: ERROR_INSERT 5090 (maxGroups=3, forced eviction)
+Section A: ERROR_INSERT 5116 (maxGroups=3, forced eviction)
 ============================================================
 ############################################################
 # Test A1: 3-way join, SUM + COUNT, 8 groups with eviction
@@ -80,7 +80,7 @@ E	15000	6
 F	15600	6
 G	16200	6
 H	16800	6
-# With error insert 5090 (maxGroups=3) and pushdown
+# With error insert 5116 (maxGroups=3) and pushdown
 SET ndb_join_pushdown_aggregate=ON;
 SELECT t1.grp, SUM(t3.amount), COUNT(*)
 FROM t1 JOIN t2 ON t2.pk = t1.pk JOIN t3 ON t3.pk = t2.pk
@@ -318,10 +318,10 @@ B	18200	7
 G	16200	6
 H	16800	6
 ============================================================
-Section C: Both 5090 + 4040 combined
+Section C: ERROR_INSERT 4040 additional tests
 ============================================================
 ############################################################
-# Test C1: Both error inserts active — maxGroups=3 + intermittent
+# Test C1: 4040 intermittent eviction — all aggregates
 ############################################################
 SET ndb_join_pushdown_aggregate=OFF;
 SELECT t1.grp, SUM(t3.amount), COUNT(*), MIN(t3.amount), MAX(t3.amount)
@@ -350,7 +350,7 @@ F	15600	6	600	4600
 G	16200	6	700	4700
 H	16800	6	800	4800
 ############################################################
-# Test C2: 2-way join with both error inserts
+# Test C2: 4040 intermittent eviction — 2-way join
 ############################################################
 SET ndb_join_pushdown_aggregate=OFF;
 SELECT t1.grp, SUM(t2.discount), COUNT(*), MIN(t2.discount), MAX(t2.discount)
@@ -379,7 +379,7 @@ F	120	6	10	30
 G	90	6	5	25
 H	120	6	10	30
 ############################################################
-# Test C3: All aggregates on both columns, both errors
+# Test C3: 4040 intermittent eviction — all aggregates on both columns
 ############################################################
 SET ndb_join_pushdown_aggregate=OFF;
 SELECT t1.grp, SUM(t3.amount), SUM(t3.qty), COUNT(*),

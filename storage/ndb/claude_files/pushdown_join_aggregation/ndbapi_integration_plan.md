@@ -248,7 +248,7 @@ Uses NdbQueryBuilder (not SignalSender):
 5. After completion, iterate `query->getAggregator()->FetchResultRecord()`
 6. Verify against expected values
 
-Test cases: basic SUM/COUNT, empty table, single group, multiple groups, index scan root with bounds, eviction (ERROR_INSERT 5090).
+Test cases: basic SUM/COUNT, empty table, single group, multiple groups, index scan root with bounds, eviction (ERROR_INSERT 5116).
 
 ---
 

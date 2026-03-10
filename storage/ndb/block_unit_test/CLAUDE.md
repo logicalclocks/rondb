@@ -25,7 +25,7 @@ testJoinAgg -c <connect_string> -m <mysql_port> [--verbose]
 1. `SELECT SUM(b) FROM t GROUP BY a` — group-by with SUM aggregation (SCAN_FRAGREQ)
 2. `SELECT COUNT(*), SUM(b) FROM t` — non-group-by with COUNT and SUM (SCAN_FRAGREQ)
 3. High-cardinality GROUP BY — 200 groups, MUTEX_FREE strategy, exercises merge/send batching
-4. Eviction via ERROR_INSERT 5090 — forces max 3 groups, tests eviction path with
+4. Eviction via ERROR_INSERT 5116 — forces max 3 groups, tests eviction path with
    interleaved TRANSID_AI during scan phase
 5. LQHKEYREQ with join aggregation — key operations (not scans), tests JoinAggFlag
    in LqhKeyReq variable data, uses DUMP 2359/2360 to bypass tc-node check

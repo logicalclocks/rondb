@@ -18066,7 +18066,7 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
   CRASH_INSERTION(5114);  // Crash node on COMPLETE_REQ for join agg NF testing
 
 #ifdef ERROR_INSERT
-  if (ERROR_INSERTED(5092)) {
+  if (ERROR_INSERTED(5118)) {
     jam();
     CLEAR_ERROR_INSERT_VALUE;
     JoinAggCompleteRef *ref =

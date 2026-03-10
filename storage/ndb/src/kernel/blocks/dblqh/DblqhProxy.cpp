@@ -2265,7 +2265,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   CRASH_INSERTION(5113);  // Crash node on SETUP_REQ for join agg NF testing
 
 #ifdef ERROR_INSERT
-  if (ERROR_INSERTED(5091)) {
+  if (ERROR_INSERTED(5117)) {
     jam();
     CLEAR_ERROR_INSERT_VALUE;
     SectionHandle handle(this, signal);
@@ -2442,7 +2442,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
 
   state->m_state.store(JoinAggregationState::SETUP_COMPLETE);
 
-  if (ERROR_INSERTED(5090)) {
+  if (ERROR_INSERTED(5116)) {
     jam();
     // Force eviction by limiting each interpreter to 3 groups max.
     // When a 4th distinct group arrives, processRecWithLinkedAttrs()

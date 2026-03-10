@@ -12,7 +12,7 @@
 - handleJoinAggRow interception in DbtupExecQuery
 - Group eviction with TRANSID_AI to API when hash table full
 - rowsExamined in SCAN_FRAGCONF (version-gated)
-- ERROR_INSERT 5090 for forced eviction testing
+- ERROR_INSERT 5116 for forced eviction testing
 
 **Coordinator (DBTC/DBSPJ) — Phase 7:**
 - DBTC: JOIN_AGG_SETUP_REQ/CONF handling, aggStateKeys section building,
@@ -94,7 +94,7 @@
   (Note: this restriction is lifted in Phase 14 — Count() actually does skip NULLs)
 
 **ERROR_INSERT Eviction Testing — Phase 13** (commit 0a88b35840e):
-- ERROR_INSERT 5090 (force maxGroups=3) and 4040 (intermittent eviction)
+- ERROR_INSERT 5116 (force maxGroups=3) and 4040 (intermittent eviction)
   for testing group eviction through the full signal chain
 
 **Additional completed work:**
@@ -108,7 +108,7 @@
 | Test | What It Tests |
 |------|---------------|
 | 1–13 | SUM/GROUP BY, COUNT+SUM, multi-agg, 3-way join, type coverage |
-| 14–17 | Eviction via ERROR_INSERT 5090/4040: 2-table, all agg funcs, 3-way, dual pressure |
+| 14–17 | Eviction via ERROR_INSERT 5116/4040: 2-table, all agg funcs, 3-way, dual pressure |
 | 18–19 | Multi-fragment (2000 rows, 16 fragments), eviction during SCAN_NEXTREQ batching |
 | 20 | SETUP_REF via ERROR_INSERT 5091: graceful failure, RELEASE, recovery |
 | 21 | Early close: execute then close immediately, SCAN_CLOSE → RELEASE path |

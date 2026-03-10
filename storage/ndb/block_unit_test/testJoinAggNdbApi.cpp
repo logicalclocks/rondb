@@ -3681,14 +3681,14 @@ testEvictionGroupBy(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
 }
 
 /* ------------------------------------------------------------------ */
-/* Test 14: Forced eviction via ERROR_INSERT 5090 (maxGroups=3)        */
+/* Test 14: Forced eviction via ERROR_INSERT 5116 (maxGroups=3)        */
 /*                                                                     */
 /* SQL equivalent:                                                     */
 /*   SELECT p.grp, SUM(c.val), COUNT(*)                                */
 /*   FROM t14_parent p JOIN t14_child c ON c.parent_id = p.id          */
 /*   GROUP BY p.grp                                                    */
 /*                                                                     */
-/* 100 rows, 10 groups of 10. ERROR_INSERT 5090 forces maxGroups=3,    */
+/* 100 rows, 10 groups of 10. ERROR_INSERT 5116 forces maxGroups=3,    */
 /* causing hard-limit eviction whenever a 4th group arrives. Evicted   */
 /* groups are sent as partial TRANSID_AI results; the NDB API must     */
 /* merge them correctly with the final COMPLETE batch.                 */
@@ -3761,16 +3761,16 @@ dropTest14Tables(MYSQL *conn)
 }
 
 static int
-testEviction5090GroupBy(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
+testEviction5116GroupBy(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
 {
-  printf("Test 14: Forced eviction (ERROR_INSERT 5090) GROUP BY ... ");
+  printf("Test 14: Forced eviction (ERROR_INSERT 5116) GROUP BY ... ");
   fflush(stdout);
 
-  if (restarter.insertErrorInAllNodes(5090) != 0) {
-    printf("FAILED (insertErrorInAllNodes(5090))\n");
+  if (restarter.insertErrorInAllNodes(5116) != 0) {
+    printf("FAILED (insertErrorInAllNodes(5116))\n");
     return -1;
   }
-  V("\n  ERROR_INSERT 5090 set (maxGroups=3)\n");
+  V("\n  ERROR_INSERT 5116 set (maxGroups=3)\n");
 
   NdbDictionary::Dictionary *dict = ndb->getDictionary();
   dict->invalidateTable(T14_PARENT);
@@ -3946,7 +3946,7 @@ testEviction5090GroupBy(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
 }
 
 /* ------------------------------------------------------------------ */
-/* Test 15: ERROR_INSERT 5090 with all aggregate functions             */
+/* Test 15: ERROR_INSERT 5116 with all aggregate functions             */
 /*                                                                     */
 /* SQL equivalent:                                                     */
 /*   SELECT p.grp, SUM(c.val), COUNT(c.val), MIN(c.val), MAX(c.val)   */
@@ -3958,16 +3958,16 @@ testEviction5090GroupBy(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
 /* ------------------------------------------------------------------ */
 
 static int
-testEviction5090AllAggs(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
+testEviction5116AllAggs(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
 {
-  printf("Test 15: Eviction 5090 with SUM/COUNT/MIN/MAX ... ");
+  printf("Test 15: Eviction 5116 with SUM/COUNT/MIN/MAX ... ");
   fflush(stdout);
 
-  if (restarter.insertErrorInAllNodes(5090) != 0) {
-    printf("FAILED (insertErrorInAllNodes(5090))\n");
+  if (restarter.insertErrorInAllNodes(5116) != 0) {
+    printf("FAILED (insertErrorInAllNodes(5116))\n");
     return -1;
   }
-  V("\n  ERROR_INSERT 5090 set (maxGroups=3)\n");
+  V("\n  ERROR_INSERT 5116 set (maxGroups=3)\n");
 
   NdbDictionary::Dictionary *dict = ndb->getDictionary();
   dict->invalidateTable(T14_PARENT);
@@ -4162,7 +4162,7 @@ testEviction5090AllAggs(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
 }
 
 /* ------------------------------------------------------------------ */
-/* Test 16: ERROR_INSERT 5090 on 3-way join with linked attributes     */
+/* Test 16: ERROR_INSERT 5116 on 3-way join with linked attributes     */
 /*                                                                     */
 /* SQL equivalent:                                                     */
 /*   SELECT r.area, SUM(l.amount), COUNT(*)                            */
@@ -4248,16 +4248,16 @@ dropTest16Tables(MYSQL *conn)
 }
 
 static int
-testEviction5090ThreeWay(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
+testEviction5116ThreeWay(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
 {
-  printf("Test 16: Eviction 5090 on 3-way join ... ");
+  printf("Test 16: Eviction 5116 on 3-way join ... ");
   fflush(stdout);
 
-  if (restarter.insertErrorInAllNodes(5090) != 0) {
-    printf("FAILED (insertErrorInAllNodes(5090))\n");
+  if (restarter.insertErrorInAllNodes(5116) != 0) {
+    printf("FAILED (insertErrorInAllNodes(5116))\n");
     return -1;
   }
-  V("\n  ERROR_INSERT 5090 set (maxGroups=3)\n");
+  V("\n  ERROR_INSERT 5116 set (maxGroups=3)\n");
 
   NdbDictionary::Dictionary *dict = ndb->getDictionary();
   dict->invalidateTable(T16_REGION);
@@ -4471,7 +4471,7 @@ testEviction5090ThreeWay(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
 }
 
 /* ------------------------------------------------------------------ */
-/* Test 17: Combined ERROR_INSERT 5090 + 4040 (dual eviction)          */
+/* Test 17: Combined ERROR_INSERT 5116 + 4040 (dual eviction)          */
 /*                                                                     */
 /* SQL equivalent:                                                     */
 /*   SELECT p.grp, SUM(c.val), COUNT(*)                                */
@@ -4479,20 +4479,20 @@ testEviction5090ThreeWay(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
 /*   GROUP BY p.grp                                                    */
 /*                                                                     */
 /* Reuses t14 tables (100 rows, 10 groups). Both error inserts active: */
-/* 5090 limits hash table to 3 groups (hard eviction), while 4040      */
+/* 5116 limits hash table to 3 groups (hard eviction), while 4040      */
 /* forces intermittent eviction every ~7th row when >=3 groups exist.  */
 /* This creates maximum eviction pressure — groups may be evicted      */
 /* multiple times and re-accumulated. The merge must still be correct. */
 /* ------------------------------------------------------------------ */
 
 static int
-testEviction5090And4040(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
+testEviction5116And4040(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
 {
-  printf("Test 17: Combined eviction 5090 + 4040 ... ");
+  printf("Test 17: Combined eviction 5116 + 4040 ... ");
   fflush(stdout);
 
-  if (restarter.insertErrorInAllNodes(5090) != 0) {
-    printf("FAILED (insertErrorInAllNodes(5090))\n");
+  if (restarter.insertErrorInAllNodes(5116) != 0) {
+    printf("FAILED (insertErrorInAllNodes(5116))\n");
     return -1;
   }
   if (restarter.insertErrorInAllNodes(4040) != 0) {
@@ -4500,7 +4500,7 @@ testEviction5090And4040(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
     restarter.insertErrorInAllNodes(0);
     return -1;
   }
-  V("\n  ERROR_INSERT 5090 + 4040 set\n");
+  V("\n  ERROR_INSERT 5116 + 4040 set\n");
 
   NdbDictionary::Dictionary *dict = ndb->getDictionary();
   dict->invalidateTable(T14_PARENT);
@@ -4934,7 +4934,7 @@ testMultiFragment(Ndb *ndb, MYSQL *conn)
 }
 
 /* ------------------------------------------------------------------ */
-/* Test 19: Multi-fragment + eviction (ERROR_INSERT 5090)               */
+/* Test 19: Multi-fragment + eviction (ERROR_INSERT 5116)               */
 /*                                                                     */
 /* SQL equivalent:                                                     */
 /*   SELECT p.grp, SUM(c.val), COUNT(*)                                */
@@ -4942,7 +4942,7 @@ testMultiFragment(Ndb *ndb, MYSQL *conn)
 /*   GROUP BY p.grp                                                    */
 /*                                                                     */
 /* Reuses t18 tables (2000 rows, 16 fragments, 20 groups).             */
-/* ERROR_INSERT 5090 limits hash table to 3 groups. Combined with      */
+/* ERROR_INSERT 5116 limits hash table to 3 groups. Combined with      */
 /* SCAN_NEXTREQ batching across 16 fragments, this tests the hardest   */
 /* scenario: eviction occurring across multiple scan continuation      */
 /* rounds with data scattered across many fragments.                   */
@@ -4951,14 +4951,14 @@ testMultiFragment(Ndb *ndb, MYSQL *conn)
 static int
 testMultiFragmentEviction(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
 {
-  printf("Test 19: Multi-fragment + eviction 5090 (2000 rows, 16 frags) ... ");
+  printf("Test 19: Multi-fragment + eviction 5116 (2000 rows, 16 frags) ... ");
   fflush(stdout);
 
-  if (restarter.insertErrorInAllNodes(5090) != 0) {
-    printf("FAILED (insertErrorInAllNodes(5090))\n");
+  if (restarter.insertErrorInAllNodes(5116) != 0) {
+    printf("FAILED (insertErrorInAllNodes(5116))\n");
     return -1;
   }
-  V("\n  ERROR_INSERT 5090 set (maxGroups=3)\n");
+  V("\n  ERROR_INSERT 5116 set (maxGroups=3)\n");
 
   NdbDictionary::Dictionary *dict = ndb->getDictionary();
   dict->invalidateTable(T18_PARENT);
@@ -5290,7 +5290,7 @@ runAndVerifyT14Query(Ndb *ndb, MYSQL *conn, const char *label)
 }
 
 /* ------------------------------------------------------------------ */
-/* Test 20: SETUP_REF error handling (ERROR_INSERT 5091)               */
+/* Test 20: SETUP_REF error handling (ERROR_INSERT 5117)               */
 /*                                                                     */
 /* Forces JOIN_AGG_SETUP_REQ to return SETUP_REF (simulated pool       */
 /* exhaustion). Verifies the query fails gracefully and no node        */
@@ -5300,14 +5300,14 @@ runAndVerifyT14Query(Ndb *ndb, MYSQL *conn, const char *label)
 static int
 testSetupRef(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
 {
-  printf("Test 20: SETUP_REF error handling (ERROR_INSERT 5091) ... ");
+  printf("Test 20: SETUP_REF error handling (ERROR_INSERT 5117) ... ");
   fflush(stdout);
 
-  if (restarter.insertErrorInAllNodes(5091) != 0) {
-    printf("FAILED (insertErrorInAllNodes(5091))\n");
+  if (restarter.insertErrorInAllNodes(5117) != 0) {
+    printf("FAILED (insertErrorInAllNodes(5117))\n");
     return -1;
   }
-  V("\n  ERROR_INSERT 5091 set (force SETUP_REF)\n");
+  V("\n  ERROR_INSERT 5117 set (force SETUP_REF)\n");
 
   NdbDictionary::Dictionary *dict = ndb->getDictionary();
   dict->invalidateTable(T14_PARENT);
@@ -5490,7 +5490,7 @@ testEarlyClose(Ndb *ndb, MYSQL *conn)
 }
 
 /* ------------------------------------------------------------------ */
-/* Test 22: COMPLETE_REF error handling (ERROR_INSERT 5092)            */
+/* Test 22: COMPLETE_REF error handling (ERROR_INSERT 5118)            */
 /*                                                                     */
 /* Forces JOIN_AGG_COMPLETE_REQ to return COMPLETE_REF. The scan       */
 /* runs normally but the finalization phase fails, causing DBTC        */
@@ -5500,14 +5500,14 @@ testEarlyClose(Ndb *ndb, MYSQL *conn)
 static int
 testCompleteRef(Ndb *ndb, MYSQL *conn, NdbRestarter &restarter)
 {
-  printf("Test 22: COMPLETE_REF error handling (ERROR_INSERT 5092) ... ");
+  printf("Test 22: COMPLETE_REF error handling (ERROR_INSERT 5118) ... ");
   fflush(stdout);
 
-  if (restarter.insertErrorInAllNodes(5092) != 0) {
-    printf("FAILED (insertErrorInAllNodes(5092))\n");
+  if (restarter.insertErrorInAllNodes(5118) != 0) {
+    printf("FAILED (insertErrorInAllNodes(5118))\n");
     return -1;
   }
-  V("\n  ERROR_INSERT 5092 set (force COMPLETE_REF)\n");
+  V("\n  ERROR_INSERT 5118 set (force COMPLETE_REF)\n");
 
   NdbDictionary::Dictionary *dict = ndb->getDictionary();
   dict->invalidateTable(T14_PARENT);
@@ -5871,11 +5871,11 @@ int main(int argc, char **argv)
           dropTest13Tables(conn);
         }
 
-        /* Test 14: Eviction via ERROR_INSERT 5090 */
+        /* Test 14: Eviction via ERROR_INSERT 5116 */
         if (shouldRun(14)) {
           NdbRestarter restarter(connectString);
           if (createTest14Tables(conn) == 0 && insertTest14Data(conn) == 0) {
-            if (testEviction5090GroupBy(&ndb, conn, restarter) != 0)
+            if (testEviction5116GroupBy(&ndb, conn, restarter) != 0)
               exitCode = 1;
           } else {
             exitCode = 1;
@@ -5883,11 +5883,11 @@ int main(int argc, char **argv)
           dropTest14Tables(conn);
         }
 
-        /* Test 15: Eviction 5090 with SUM/COUNT/MIN/MAX */
+        /* Test 15: Eviction 5116 with SUM/COUNT/MIN/MAX */
         if (shouldRun(15)) {
           NdbRestarter restarter(connectString);
           if (createTest14Tables(conn) == 0 && insertTest14Data(conn) == 0) {
-            if (testEviction5090AllAggs(&ndb, conn, restarter) != 0)
+            if (testEviction5116AllAggs(&ndb, conn, restarter) != 0)
               exitCode = 1;
           } else {
             exitCode = 1;
@@ -5895,11 +5895,11 @@ int main(int argc, char **argv)
           dropTest14Tables(conn);
         }
 
-        /* Test 16: Eviction 5090 on 3-way join */
+        /* Test 16: Eviction 5116 on 3-way join */
         if (shouldRun(16)) {
           NdbRestarter restarter(connectString);
           if (createTest16Tables(conn) == 0 && insertTest16Data(conn) == 0) {
-            if (testEviction5090ThreeWay(&ndb, conn, restarter) != 0)
+            if (testEviction5116ThreeWay(&ndb, conn, restarter) != 0)
               exitCode = 1;
           } else {
             exitCode = 1;
@@ -5907,11 +5907,11 @@ int main(int argc, char **argv)
           dropTest16Tables(conn);
         }
 
-        /* Test 17: Combined eviction 5090 + 4040 */
+        /* Test 17: Combined eviction 5116 + 4040 */
         if (shouldRun(17)) {
           NdbRestarter restarter(connectString);
           if (createTest14Tables(conn) == 0 && insertTest14Data(conn) == 0) {
-            if (testEviction5090And4040(&ndb, conn, restarter) != 0)
+            if (testEviction5116And4040(&ndb, conn, restarter) != 0)
               exitCode = 1;
           } else {
             exitCode = 1;
@@ -5929,7 +5929,7 @@ int main(int argc, char **argv)
           dropTest18Tables(conn);
         }
 
-        /* Test 19: Multi-fragment + eviction 5090 */
+        /* Test 19: Multi-fragment + eviction 5116 */
         if (shouldRun(19)) {
           NdbRestarter restarter(connectString);
           if (createTest18Tables(conn) == 0 && insertTest18Data(conn) == 0) {
