@@ -107,7 +107,14 @@ void Socket::closeWrite()
     if (::shutdown(sockFd_, SD_SEND) < 0)
 #endif
     {
-        LOG_SYSERR << "sockets::shutdownWrite";
+        if (errno == ENOTCONN)
+        {
+            LOG_WARN << "sockets::shutdownWrite - peer already disconnected";
+        }
+        else
+        {
+            LOG_SYSERR << "sockets::shutdownWrite";
+        }
     }
 }
 int Socket::read(char *buffer, uint64_t len)
