@@ -208,6 +208,8 @@ struct JoinCondition
 
 struct JoinClause
 {
+  enum JoinType { INNER_JOIN, LEFT_OUTER_JOIN };
+  JoinType join_type;
   TableRef table;
   JoinCondition *conditions;  /* linked list of ON conditions */
   struct JoinClause *next;

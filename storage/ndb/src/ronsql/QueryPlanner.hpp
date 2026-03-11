@@ -36,7 +36,7 @@ static const Uint32 MAX_LINKED_PROJS = 16;
 struct JoinOp
 {
   enum Type { TABLE_SCAN, INDEX_SCAN, PK_LOOKUP, UNIQUE_LOOKUP };
-  enum MatchType { INNER, SEMI_JOIN, ANTI_JOIN };
+  enum MatchType { INNER, LEFT_OUTER, SEMI_JOIN, ANTI_JOIN };
   Type type;
   MatchType match_type;
   const NdbDictionary::Table *table;

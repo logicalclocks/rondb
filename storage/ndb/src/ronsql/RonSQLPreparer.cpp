@@ -3038,6 +3038,9 @@ RonSQLPreparer::execute_join()
     case JoinOp::ANTI_JOIN:
       opts.setMatchType(NdbQueryOptions::MatchNullOnly);
       break;
+    case JoinOp::LEFT_OUTER:
+      // MatchAll is the default (outer join) — no setMatchType needed
+      break;
     case JoinOp::INNER:
     default:
       opts.setMatchType(NdbQueryOptions::MatchNonNull);

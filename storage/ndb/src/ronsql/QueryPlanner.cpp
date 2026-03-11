@@ -88,7 +88,8 @@ QueryPlanner::plan(
     childOp.table = child_ndb_table;
     childOp.alias = jc->table.alias;
     childOp.is_root = false;
-    childOp.match_type = JoinOp::INNER;
+    childOp.match_type = (jc->join_type == JoinClause::LEFT_OUTER_JOIN)
+        ? JoinOp::LEFT_OUTER : JoinOp::INNER;
 
     Uint32 num_keys = 0;
     Uint32 parent_idx = 0;

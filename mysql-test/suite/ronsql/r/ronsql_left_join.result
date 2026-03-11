@@ -1,0 +1,242 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== Create tables for LEFT JOIN tests ===
+
+
+
+=== Test 1: Basic LEFT JOIN with SUM ===
+== Query ==
+SELECT p.p_name, SUM(c.c_value)
+FROM parent AS p
+LEFT JOIN child AS c ON c.c_parent_id = p.p_id
+GROUP BY p.p_name;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT p.p_name, SUM(c.c_value)
+FROM parent AS p
+LEFT JOIN child AS c ON c.c_parent_id = p.p_id
+GROUP BY p.p_name|
+p_name	SUM(c.c_value)
+Alice	300
+Bob	300
+Charlie	900
+Diana	NULL
+Eve	NULL
+
+
+=== Test 2: LEFT OUTER JOIN syntax (synonym) ===
+== Query ==
+SELECT p.p_name, SUM(c.c_value)
+FROM parent AS p
+LEFT OUTER JOIN child AS c ON c.c_parent_id = p.p_id
+GROUP BY p.p_name;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT p.p_name, SUM(c.c_value)
+FROM parent AS p
+LEFT OUTER JOIN child AS c ON c.c_parent_id = p.p_id
+GROUP BY p.p_name|
+p_name	SUM(c.c_value)
+Alice	300
+Bob	300
+Charlie	900
+Diana	NULL
+Eve	NULL
+
+
+=== Test 3: LEFT JOIN + COUNT(*) ===
+== Query ==
+SELECT p.p_name, COUNT(*)
+FROM parent AS p
+LEFT JOIN child AS c ON c.c_parent_id = p.p_id
+GROUP BY p.p_name;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT p.p_name, COUNT(*)
+FROM parent AS p
+LEFT JOIN child AS c ON c.c_parent_id = p.p_id
+GROUP BY p.p_name|
+p_name	COUNT(*)
+Alice	2
+Bob	1
+Charlie	2
+Diana	1
+Eve	1
+
+
+=== Test 4: LEFT JOIN + COUNT(child_col) skips NULLs ===
+== Query ==
+SELECT p.p_name, COUNT(c.c_value)
+FROM parent AS p
+LEFT JOIN child AS c ON c.c_parent_id = p.p_id
+GROUP BY p.p_name;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT p.p_name, COUNT(c.c_value)
+FROM parent AS p
+LEFT JOIN child AS c ON c.c_parent_id = p.p_id
+GROUP BY p.p_name|
+p_name	COUNT(c.c_value)
+Alice	2
+Bob	1
+Charlie	2
+Diana	0
+Eve	0
+
+
+=== Test 5: LEFT JOIN + GROUP BY parent region ===
+== Query ==
+SELECT p.p_region, SUM(c.c_value), COUNT(c.c_id)
+FROM parent AS p
+LEFT JOIN child AS c ON c.c_parent_id = p.p_id
+GROUP BY p.p_region;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT p.p_region, SUM(c.c_value), COUNT(c.c_id)
+FROM parent AS p
+LEFT JOIN child AS c ON c.c_parent_id = p.p_id
+GROUP BY p.p_region|
+p_region	SUM(c.c_value)	COUNT(c.c_id)
+1	600	3
+2	900	2
+3	NULL	0
+
+
+=== Test 6: Mixed INNER + LEFT JOIN ===
+== Query ==
+SELECT p.p_name, SUM(g.g_qty)
+FROM parent AS p
+JOIN child AS c ON c.c_parent_id = p.p_id
+LEFT JOIN grandchild AS g ON g.g_child_id = c.c_id
+GROUP BY p.p_name;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT p.p_name, SUM(g.g_qty)
+FROM parent AS p
+JOIN child AS c ON c.c_parent_id = p.p_id
+LEFT JOIN grandchild AS g ON g.g_child_id = c.c_id
+GROUP BY p.p_name|
+p_name	SUM(g.g_qty)
+Alice	15
+Bob	15
+Charlie	20
+
+
+=== Test 7: Multiple LEFT JOINs (known incorrect — DBSPJ limitation) ===
+# Chained LEFT JOINs produce wrong results with pushdown aggregation.
+# DBSPJ null row injection only handles T_AGGREGATE_LEAF, not intermediate
+# outer join nodes. Unmatched parents from the first LEFT JOIN are lost,
+# and SUM values are inflated. This is aggregation-specific; non-aggregated
+# chained LEFT JOINs work correctly via the MySQL handler layer.
+== Query ==
+SELECT p.p_name, SUM(c.c_value), SUM(g.g_qty)
+FROM parent AS p
+LEFT JOIN child AS c ON c.c_parent_id = p.p_id
+LEFT JOIN grandchild AS g ON g.g_child_id = c.c_id
+GROUP BY p.p_name;
+
+Number of output lines, including header: 6
+
+== Diff ==
+--- mysql.out
++++ ronsql.out
+@@ -1,6 +1,4 @@
+ p_name	SUM(c.c_value)	SUM(g.g_qty)
+-Alice	400	15
++Alice	500	15
+ Bob	300	15
+-Charlie	900	20
+-Diana	NULL	NULL
+-Eve	NULL	NULL
++Charlie	1300	20
+==========
+
+
+
+== Expected result (MySQL, correct) ==
+SELECT p.p_name, SUM(c.c_value), SUM(g.g_qty)
+FROM parent AS p
+LEFT JOIN child AS c ON c.c_parent_id = p.p_id
+LEFT JOIN grandchild AS g ON g.g_child_id = c.c_id
+GROUP BY p.p_name|
+p_name	SUM(c.c_value)	SUM(g.g_qty)
+Alice	400	15
+Bob	300	15
+Charlie	900	20
+Diana	NULL	NULL
+Eve	NULL	NULL
+
+
+=== Test 8: LEFT JOIN + MIN/MAX ===
+== Query ==
+SELECT p.p_name, MIN(c.c_value), MAX(c.c_value)
+FROM parent AS p
+LEFT JOIN child AS c ON c.c_parent_id = p.p_id
+GROUP BY p.p_name;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT p.p_name, MIN(c.c_value), MAX(c.c_value)
+FROM parent AS p
+LEFT JOIN child AS c ON c.c_parent_id = p.p_id
+GROUP BY p.p_name|
+p_name	MIN(c.c_value)	MAX(c.c_value)
+Alice	100	200
+Bob	300	300
+Charlie	400	500
+Diana	NULL	NULL
+Eve	NULL	NULL
+
+=== Cleanup ===
+DROP TABLE grandchild;
+DROP TABLE child;
+DROP TABLE parent;

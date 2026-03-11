@@ -1070,11 +1070,11 @@ Error handling: RPE
 ronsql_cli caught exception: Unknown table alias.
 
 
-=== Test 53: Error — unimplemented keyword (LEFT JOIN) ===
+=== Test 53: Error — unimplemented keyword (RIGHT JOIN) ===
 Expected error: Unimplemented keyword
 Syntax error in SQL statement: Unimplemented keyword. If this was intended as an identifier, use backtick quotation.
-> SELECT o.o_custkey, SUM(l.l_quantity) FROM orders AS o LEFT JOIN lineitem AS l ON l.l_orderkey = o.o_id GROUP BY o.o_custkey;
-!                                                        ^^^^
+> SELECT o.o_custkey, SUM(l.l_quantity) FROM orders AS o RIGHT JOIN lineitem AS l ON l.l_orderkey = o.o_id GROUP BY o.o_custkey;
+!                                                        ^^^^^
 Error handling: RPE
 ronsql_cli caught exception: Syntax error.
 
