@@ -369,12 +369,8 @@ CLASS
 
 CLASS
 (FeatureStoreMetadataCache,
- CM(Uint32, cacheUnusedEntriesEvictionMS, CacheUnusedEntriesEvictionMS, 1800000,
-    "") // 30 min
  CM(Uint32, preloadThreads, PreloadThreads, 3,
     "Number of threads for parallel feature view preloading at startup")
- PROBLEM(cacheUnusedEntriesEvictionMS <= 0,
-         "cache unused entries eviction must be greater than 0")
  PROBLEM(preloadThreads <= 0,
          "preload threads must be greater than 0")
 )

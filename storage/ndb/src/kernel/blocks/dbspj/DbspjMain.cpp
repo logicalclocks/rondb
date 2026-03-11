@@ -64,7 +64,7 @@
 //#define DEBUG_HASH 1
 //#define DEBUG_AGGREGATION 1
 //#define DEBUG_TRANSID_AI 1
-#define DEBUG_JOIN_AGG_TRACE 1
+//#define DEBUG_JOIN_AGG_TRACE 1
 #endif
 
 #ifdef DEBUG_TRANSID_AI

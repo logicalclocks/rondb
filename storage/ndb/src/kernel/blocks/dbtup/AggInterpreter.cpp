@@ -48,6 +48,8 @@ bool
 GBHashEntryCmp::operator()(const GBHashEntry &n1,
                            const GBHashEntry &n2) const {
   if (ctx == nullptr || ctx->n_cols == 0 || ctx->all_binary_cmp) {
+    /* Binary comparison: safe when all group-by columns are
+       non-charset-aware, since binary identity equals semantic identity. */
     Uint32 len = n1.len < n2.len ? n1.len : n2.len;
     int ret = memcmp(n1.ptr, n2.ptr, len);
     if (ret == 0) {
@@ -88,10 +90,11 @@ GBHashEntryCmp::operator()(const GBHashEntry &n1,
       return ret < 0;
     }
 
+    /* Advance past header + word-aligned data */
     p1 += sizeof(Uint32) + ah1.getDataSize() * sizeof(Uint32);
     p2 += sizeof(Uint32) + ah2.getDataSize() * sizeof(Uint32);
   }
-  return false;
+  return false;  /* All columns equal */
 }
 
 /*
