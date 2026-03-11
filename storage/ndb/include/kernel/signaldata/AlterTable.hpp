@@ -67,9 +67,10 @@ struct AlterTableReq {
   m = Modified attribute
   S = TTL sec
   O = TTL col
+  B = Ring Buffer size
            1111111111222222222233
  01234567890123456789012345678901
- nfdrtsafrcCuUFRmSO--------------
+ nfdrtsafrcCuUFRmSOB-------------
 */
 #define NAME_SHIFT (0)
 #define FRM_SHIFT (1)
@@ -89,6 +90,7 @@ struct AlterTableReq {
 #define MODIFY_ATTR_SHIFT (15)
 #define TTL_SEC_SHIFT (16)
 #define TTL_COL_SHIFT (17)
+#define RING_BUFFER_SIZE_SHIFT (18)
 
   /**
    * Getters and setters
@@ -125,6 +127,8 @@ struct AlterTableReq {
   static Uint8 getTTLSecFlag(const UintR &changeMask);
   static void setTTLColFlag(UintR &changeMask, Uint32 tsFlg);
   static Uint8 getTTLColFlag(const UintR &changeMask);
+  static void setRingBufferSizeFlag(UintR &changeMask, Uint32 rbFlag);
+  static Uint8 getRingBufferSizeFlag(const UintR &changeMask);
 
   /**
    * These flags are never used.
@@ -325,6 +329,15 @@ inline Uint8 AlterTableReq::getTTLColFlag(const UintR &changeMask) {
 
 inline void AlterTableReq::setTTLColFlag(UintR &changeMask, Uint32 rbFlag) {
   changeMask |= (rbFlag << TTL_COL_SHIFT);
+}
+
+inline Uint8 AlterTableReq::getRingBufferSizeFlag(const UintR &changeMask) {
+  return (Uint8)((changeMask >> RING_BUFFER_SIZE_SHIFT) & 1);
+}
+
+inline void AlterTableReq::setRingBufferSizeFlag(UintR &changeMask,
+                                                  Uint32 rbFlag) {
+  changeMask |= (rbFlag << RING_BUFFER_SIZE_SHIFT);
 }
 
 struct AlterTableConf {

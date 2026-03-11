@@ -290,6 +290,9 @@ class Dbdict : public SimulatedBlock {
       fullyReplicatedTriggerId = RNIL;
       ttlSec = RNIL;
       ttlColumnNo = RNIL;
+      ringBufferSize = RNIL;
+      ringIdxColNo = RNIL;
+      ringMetaColNo = RNIL;
     }
     static bool isCompatible(Uint32 type)
     { return DictTabInfo::isTable(type) || DictTabInfo::isIndex(type); }
@@ -491,6 +494,13 @@ class Dbdict : public SimulatedBlock {
      */
     Uint32 ttlSec;
     Uint32 ttlColumnNo;
+
+    /*
+     * Ring Buffer
+     */
+    Uint32 ringBufferSize;
+    Uint32 ringIdxColNo;
+    Uint32 ringMetaColNo;
   };
   typedef TransientPool<TableRecord> TableRecord_pool;
   typedef DLFifoList<TableRecord_pool> TableRecord_list;

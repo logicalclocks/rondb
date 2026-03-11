@@ -1,0 +1,266 @@
+# ndb_ring_buffer_create.test
+#
+# Tests for RING_BUFFER CREATE TABLE DDL parsing and metadata plumbing.
+# Validates COMMENT syntax, column constraints, SHOW CREATE TABLE round-trip,
+# mutual exclusion with TTL, and DROP TABLE.
+
+--source include/have_ndb.inc
+
+--echo #
+--echo # Case 1: Basic CREATE TABLE with RING_BUFFER — success
+--echo #
+
+CREATE TABLE test.t1 (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL,
+    ring_meta VARBINARY(64),
+    data VARCHAR(100),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=RING_BUFFER=400@ring_idx@ring_meta";
+
+SHOW CREATE TABLE test.t1;
+
+DROP TABLE test.t1;
+
+--echo #
+--echo # Case 2: RING_BUFFER with INT UNSIGNED ring_idx — success
+--echo #
+
+CREATE TABLE test.t2 (
+    client_id INT NOT NULL,
+    ring_idx INT UNSIGNED NOT NULL,
+    ring_meta VARBINARY(16),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=RING_BUFFER=100@ring_idx@ring_meta";
+
+SHOW CREATE TABLE test.t2;
+
+DROP TABLE test.t2;
+
+--echo #
+--echo # Case 3: RING_BUFFER with size = 1 (minimum) — success
+--echo #
+
+CREATE TABLE test.t3 (
+    pk INT NOT NULL,
+    ring_idx INT NOT NULL,
+    ring_meta VARBINARY(16),
+    PRIMARY KEY (pk, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=RING_BUFFER=1@ring_idx@ring_meta";
+
+SHOW CREATE TABLE test.t3;
+
+DROP TABLE test.t3;
+
+--echo #
+--echo # Case 4: RING_BUFFER with large size (2147483647) — success
+--echo #
+
+CREATE TABLE test.t4 (
+    pk INT NOT NULL,
+    ring_idx INT NOT NULL,
+    ring_meta VARBINARY(16),
+    PRIMARY KEY (pk, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=RING_BUFFER=2147483647@ring_idx@ring_meta";
+
+SHOW CREATE TABLE test.t4;
+
+DROP TABLE test.t4;
+
+--echo #
+--echo # Case 5: RING_BUFFER = OFF — success (no ring buffer set)
+--echo #
+
+CREATE TABLE test.t5 (
+    pk INT NOT NULL,
+    ring_idx INT NOT NULL,
+    ring_meta VARBINARY(16),
+    PRIMARY KEY (pk, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=RING_BUFFER=off";
+
+SHOW CREATE TABLE test.t5;
+
+DROP TABLE test.t5;
+
+--echo #
+--echo # Case 6: Combined COMMENT with PARTITION_BALANCE — success
+--echo #
+
+CREATE TABLE test.t6 (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL,
+    ring_meta VARBINARY(64),
+    data VARCHAR(100),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM,RING_BUFFER=200@ring_idx@ring_meta";
+
+SHOW CREATE TABLE test.t6;
+
+DROP TABLE test.t6;
+
+--echo #
+--echo # Case 7: Error — ring_idx column is not INT type (BIGINT)
+--echo #
+
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE test.t7 (
+    client_id INT NOT NULL,
+    ring_idx BIGINT NOT NULL,
+    ring_meta VARBINARY(64),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=RING_BUFFER=400@ring_idx@ring_meta";
+
+--echo #
+--echo # Case 8: Error — ring_idx column is not the last PK column
+--echo #
+
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE test.t8 (
+    ring_idx INT NOT NULL,
+    client_id INT NOT NULL,
+    ring_meta VARBINARY(64),
+    PRIMARY KEY (ring_idx, client_id)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=RING_BUFFER=400@ring_idx@ring_meta";
+
+--echo #
+--echo # Case 9: Error — ring_meta column is not VARBINARY (VARCHAR used)
+--echo #
+
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE test.t9 (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL,
+    ring_meta VARCHAR(64),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=RING_BUFFER=400@ring_idx@ring_meta";
+
+--echo #
+--echo # Case 10: Error — ring_meta column VARBINARY too small (< 16)
+--echo #
+
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE test.t10 (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL,
+    ring_meta VARBINARY(8),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=RING_BUFFER=400@ring_idx@ring_meta";
+
+--echo #
+--echo # Case 11: Error — ring_meta column is NOT NULL (must be nullable)
+--echo #
+
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE test.t11 (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL,
+    ring_meta VARBINARY(64) NOT NULL,
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=RING_BUFFER=400@ring_idx@ring_meta";
+
+--echo #
+--echo # Case 12: Error — size = 0 (below minimum)
+--echo #
+
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE test.t12 (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL,
+    ring_meta VARBINARY(64),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=RING_BUFFER=0@ring_idx@ring_meta";
+
+--echo #
+--echo # Case 13: Error — size exceeds maximum (2147483648)
+--echo #
+
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE test.t13 (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL,
+    ring_meta VARBINARY(64),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=RING_BUFFER=2147483648@ring_idx@ring_meta";
+
+--echo #
+--echo # Case 14: Error — malformed format (missing second @)
+--echo #
+
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE test.t14 (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL,
+    ring_meta VARBINARY(64),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=RING_BUFFER=400@ring_idx";
+
+--echo #
+--echo # Case 15: Error — ring_idx column not found in table
+--echo #
+
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE test.t15 (
+    client_id INT NOT NULL,
+    idx INT NOT NULL,
+    ring_meta VARBINARY(64),
+    PRIMARY KEY (client_id, idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=RING_BUFFER=400@nonexistent@ring_meta";
+
+--echo #
+--echo # Case 16: Error — ring_meta column not found in table
+--echo #
+
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE test.t16 (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL,
+    meta VARBINARY(64),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=RING_BUFFER=400@ring_idx@nonexistent";
+
+--echo #
+--echo # Case 17: Error — TTL and RING_BUFFER mutual exclusion
+--echo #
+
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE test.t17 (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL,
+    ring_meta VARBINARY(64),
+    ts TIMESTAMP,
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=TTL=60@ts,RING_BUFFER=400@ring_idx@ring_meta";
+
+--echo #
+--echo # Case 18: Error — size is not a number
+--echo #
+
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE test.t18 (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL,
+    ring_meta VARBINARY(64),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=RING_BUFFER=abc@ring_idx@ring_meta";
+
+--echo #
+--echo # Done
+--echo #

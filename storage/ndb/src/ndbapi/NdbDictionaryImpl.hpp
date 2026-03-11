@@ -406,6 +406,13 @@ class NdbTableImpl : public NdbDictionary::Table, public NdbDictObjectImpl {
    */
   Uint32 m_ttl_sec;
   Uint32 m_ttl_col_no;
+
+  /**
+   * Ring Buffer
+   */
+  Uint32 m_ring_buffer_size;
+  Uint32 m_ring_idx_col_no;
+  Uint32 m_ring_meta_col_no;
 };
 
 class NdbIndexImpl : public NdbDictionary::Index, public NdbDictObjectImpl {

@@ -992,6 +992,9 @@ void NdbTableImpl::init() {
   m_use_new_hash_function = ndbd_support_new_hash_function(NDB_VERSION_D);
   m_ttl_sec = RNIL;
   m_ttl_col_no = RNIL;
+  m_ring_buffer_size = RNIL;
+  m_ring_idx_col_no = RNIL;
+  m_ring_meta_col_no = RNIL;
 
   NdbMutex_Init(&m_primary_node_mutex);
 #ifdef VM_TRACE
@@ -1212,6 +1215,21 @@ bool NdbTableImpl::equal(const NdbTableImpl &obj) const {
     DBUG_RETURN(false);
   }
 
+  if (m_ring_buffer_size != obj.m_ring_buffer_size)
+  {
+    DBUG_RETURN(false);
+  }
+
+  if (m_ring_idx_col_no != obj.m_ring_idx_col_no)
+  {
+    DBUG_RETURN(false);
+  }
+
+  if (m_ring_meta_col_no != obj.m_ring_meta_col_no)
+  {
+    DBUG_RETURN(false);
+  }
+
   DBUG_RETURN(true);
 }
 
@@ -1289,6 +1307,12 @@ int NdbTableImpl::assign(const NdbTableImpl &org) {
    */
   m_ttl_sec = org.m_ttl_sec;
   m_ttl_col_no = org.m_ttl_col_no;
+  /*
+   * Ring Buffer related
+   */
+  m_ring_buffer_size = org.m_ring_buffer_size;
+  m_ring_idx_col_no = org.m_ring_idx_col_no;
+  m_ring_meta_col_no = org.m_ring_meta_col_no;
 
   DBUG_PRINT("info", ("NdbTableImpl::assign %u, m_use_new_hash_function: %u",
                        m_primaryTableId,
@@ -3854,6 +3878,9 @@ NdbDictInterface::parseTableInfo(NdbTableImpl ** ret,
    */
   impl->setTTLSec(tableDesc->TTLSec);
   impl->setTTLColumnNo(tableDesc->TTLColumnNo);
+  impl->setRingBufferSize(tableDesc->RingBufferSize);
+  impl->setRingIdxColumnNo(tableDesc->RingIdxColumnNo);
+  impl->setRingMetaColumnNo(tableDesc->RingMetaColumnNo);
 
 
   DBUG_PRINT("info", ("parseTableInfo(%u): m_logging: %u, partitionBalance: %d"
@@ -4578,6 +4605,11 @@ int NdbDictInterface::compChangeMask(const NdbTableImpl &old_impl,
   if (impl.m_ttl_col_no != old_impl.m_ttl_col_no) {
     AlterTableReq::setTTLColFlag(change_mask, true);
   }
+  if (impl.m_ring_buffer_size != old_impl.m_ring_buffer_size ||
+      impl.m_ring_idx_col_no != old_impl.m_ring_idx_col_no ||
+      impl.m_ring_meta_col_no != old_impl.m_ring_meta_col_no) {
+    AlterTableReq::setRingBufferSizeFlag(change_mask, true);
+  }
 
   /*
     Check for new columns.
@@ -4779,6 +4811,10 @@ int NdbDictInterface::serializeTableDesc(NdbTableImpl &impl,
                        impl.m_internalName.c_str(),
                        impl.m_ttl_sec, impl.m_ttl_col_no);
 #endif  // TTL_DEBUG
+
+  tmpTab->RingBufferSize = impl.m_ring_buffer_size;
+  tmpTab->RingIdxColumnNo = impl.m_ring_idx_col_no;
+  tmpTab->RingMetaColumnNo = impl.m_ring_meta_col_no;
 
   const char *tablespace_name = impl.m_tablespace_name.c_str();
 loop:

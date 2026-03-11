@@ -201,6 +201,11 @@ void Dbtup::execCREATE_TAB_REQ(Signal *signal) {
                   regTabPtr.p->m_ttl_sec,
                   regTabPtr.p->m_ttl_col_no);
 
+  // Ring Buffer related
+  regTabPtr.p->m_ring_buffer_size = req->ringBufferSize;
+  regTabPtr.p->m_ring_idx_col_no = req->ringIdxColumnNo;
+  regTabPtr.p->m_ring_meta_col_no = req->ringMetaColumnNo;
+
   regTabPtr.p->m_offsets[MM].m_disk_ref_offset = 0;
   regTabPtr.p->m_offsets[MM].m_null_words = 0;
   regTabPtr.p->m_offsets[MM].m_fix_header_size = 0;
@@ -1130,6 +1135,8 @@ void Dbtup::execALTER_TAB_REQ(Signal *signal) {
     } else if (AlterTableReq::getTTLSecFlag(req->changeMask) ||
                AlterTableReq::getTTLColFlag(req->changeMask)) {
       signal->header.m_noOfSections = 0;
+    } else if (AlterTableReq::getRingBufferSizeFlag(req->changeMask)) {
+      signal->header.m_noOfSections = 0;
     }
     handleAlterTablePrepare(signal, req, regTabPtr);
     return;
@@ -1467,6 +1474,9 @@ Dbtup::handleAlterTablePrepare(Signal *signal,
     }
     regAlterTabOpPtr.p->ttlSec = req->ttlSec;
     regAlterTabOpPtr.p->ttlColumnNo = req->ttlColumnNo;
+    regAlterTabOpPtr.p->ringBufferSize = req->ringBufferSize;
+    regAlterTabOpPtr.p->ringIdxColNo = req->ringIdxColumnNo;
+    regAlterTabOpPtr.p->ringMetaColNo = req->ringMetaColumnNo;
     connectPtr = regAlterTabOpPtr.i;
   } else if (AlterTableReq::getTTLSecFlag(req->changeMask) ||
              AlterTableReq::getTTLColFlag(req->changeMask)) {
@@ -1474,6 +1484,13 @@ Dbtup::handleAlterTablePrepare(Signal *signal,
     seizeAlterTabOperation(regAlterTabOpPtr);
     regAlterTabOpPtr.p->ttlSec = req->ttlSec;
     regAlterTabOpPtr.p->ttlColumnNo = req->ttlColumnNo;
+    connectPtr = regAlterTabOpPtr.i;
+  } else if (AlterTableReq::getRingBufferSizeFlag(req->changeMask)) {
+    AlterTabOperationPtr regAlterTabOpPtr;
+    seizeAlterTabOperation(regAlterTabOpPtr);
+    regAlterTabOpPtr.p->ringBufferSize = req->ringBufferSize;
+    regAlterTabOpPtr.p->ringIdxColNo = req->ringIdxColumnNo;
+    regAlterTabOpPtr.p->ringMetaColNo = req->ringMetaColumnNo;
     connectPtr = regAlterTabOpPtr.i;
   }
 
@@ -1555,6 +1572,13 @@ void Dbtup::handleAlterTableCommit(Signal *signal, const AlterTabReq *req,
                            regTabPtr->m_ttl_sec,
                            regTabPtr->m_ttl_col_no);
     }
+    /* Apply Ring Buffer changes for combined AddAttr+RingBuffer ALTER. */
+    if (AlterTableReq::getRingBufferSizeFlag(req->changeMask)) {
+      jam();
+      regTabPtr->m_ring_buffer_size = regAlterTabOpPtr.p->ringBufferSize;
+      regTabPtr->m_ring_idx_col_no = regAlterTabOpPtr.p->ringIdxColNo;
+      regTabPtr->m_ring_meta_col_no = regAlterTabOpPtr.p->ringMetaColNo;
+    }
 
     releaseAlterTabOpRec(regAlterTabOpPtr);
 
@@ -1620,6 +1644,19 @@ void Dbtup::handleAlterTableCommit(Signal *signal, const AlterTabReq *req,
                          req->tableId,
                          regTabPtr->m_ttl_sec,
                          regTabPtr->m_ttl_col_no);
+    releaseAlterTabOpRec(regAlterTabOpPtr);
+  }
+
+  /* Ring Buffer-only ALTER (no AddAttr). */
+  if (!AlterTableReq::getAddAttrFlag(req->changeMask) &&
+      AlterTableReq::getRingBufferSizeFlag(req->changeMask)) {
+    jam();
+    AlterTabOperationPtr regAlterTabOpPtr;
+    regAlterTabOpPtr.i = req->connectPtr;
+    ptrCheckGuard(regAlterTabOpPtr, cnoOfAlterTabOps, alterTabOperRec);
+    regTabPtr->m_ring_buffer_size = regAlterTabOpPtr.p->ringBufferSize;
+    regTabPtr->m_ring_idx_col_no = regAlterTabOpPtr.p->ringIdxColNo;
+    regTabPtr->m_ring_meta_col_no = regAlterTabOpPtr.p->ringMetaColNo;
     releaseAlterTabOpRec(regAlterTabOpPtr);
   }
 
@@ -1692,6 +1729,13 @@ void Dbtup::handleAlterTableAbort(Signal *signal, const AlterTabReq *req,
     }
   } else if ((AlterTableReq::getTTLSecFlag(req->changeMask) ||
               AlterTableReq::getTTLColFlag(req->changeMask)) &&
+             req->connectPtr != RNIL) {
+    jam();
+    AlterTabOperationPtr regAlterTabOpPtr;
+    regAlterTabOpPtr.i = req->connectPtr;
+    ptrCheckGuard(regAlterTabOpPtr, cnoOfAlterTabOps, alterTabOperRec);
+    releaseAlterTabOpRec(regAlterTabOpPtr);
+  } else if (AlterTableReq::getRingBufferSizeFlag(req->changeMask) &&
              req->connectPtr != RNIL) {
     jam();
     AlterTabOperationPtr regAlterTabOpPtr;

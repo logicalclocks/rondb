@@ -1,0 +1,254 @@
+#
+# Case 1: Basic CREATE TABLE with RING_BUFFER — success
+#
+CREATE TABLE test.t1 (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL,
+ring_meta VARBINARY(64),
+data VARCHAR(100),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=400@ring_idx@ring_meta";
+SHOW CREATE TABLE test.t1;
+Table	Create Table
+t1	CREATE TABLE `t1` (
+  `client_id` int NOT NULL,
+  `ring_idx` int NOT NULL,
+  `ring_meta` varbinary(64) DEFAULT NULL,
+  `data` varchar(100) DEFAULT NULL,
+  PRIMARY KEY (`client_id`,`ring_idx`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=RING_BUFFER=400@ring_idx@ring_meta'
+DROP TABLE test.t1;
+#
+# Case 2: RING_BUFFER with INT UNSIGNED ring_idx — success
+#
+CREATE TABLE test.t2 (
+client_id INT NOT NULL,
+ring_idx INT UNSIGNED NOT NULL,
+ring_meta VARBINARY(16),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=100@ring_idx@ring_meta";
+SHOW CREATE TABLE test.t2;
+Table	Create Table
+t2	CREATE TABLE `t2` (
+  `client_id` int NOT NULL,
+  `ring_idx` int unsigned NOT NULL,
+  `ring_meta` varbinary(16) DEFAULT NULL,
+  PRIMARY KEY (`client_id`,`ring_idx`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=RING_BUFFER=100@ring_idx@ring_meta'
+DROP TABLE test.t2;
+#
+# Case 3: RING_BUFFER with size = 1 (minimum) — success
+#
+CREATE TABLE test.t3 (
+pk INT NOT NULL,
+ring_idx INT NOT NULL,
+ring_meta VARBINARY(16),
+PRIMARY KEY (pk, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=1@ring_idx@ring_meta";
+SHOW CREATE TABLE test.t3;
+Table	Create Table
+t3	CREATE TABLE `t3` (
+  `pk` int NOT NULL,
+  `ring_idx` int NOT NULL,
+  `ring_meta` varbinary(16) DEFAULT NULL,
+  PRIMARY KEY (`pk`,`ring_idx`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=RING_BUFFER=1@ring_idx@ring_meta'
+DROP TABLE test.t3;
+#
+# Case 4: RING_BUFFER with large size (2147483647) — success
+#
+CREATE TABLE test.t4 (
+pk INT NOT NULL,
+ring_idx INT NOT NULL,
+ring_meta VARBINARY(16),
+PRIMARY KEY (pk, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=2147483647@ring_idx@ring_meta";
+SHOW CREATE TABLE test.t4;
+Table	Create Table
+t4	CREATE TABLE `t4` (
+  `pk` int NOT NULL,
+  `ring_idx` int NOT NULL,
+  `ring_meta` varbinary(16) DEFAULT NULL,
+  PRIMARY KEY (`pk`,`ring_idx`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=RING_BUFFER=2147483647@ring_idx@ring_meta'
+DROP TABLE test.t4;
+#
+# Case 5: RING_BUFFER = OFF — success (no ring buffer set)
+#
+CREATE TABLE test.t5 (
+pk INT NOT NULL,
+ring_idx INT NOT NULL,
+ring_meta VARBINARY(16),
+PRIMARY KEY (pk, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=off";
+SHOW CREATE TABLE test.t5;
+Table	Create Table
+t5	CREATE TABLE `t5` (
+  `pk` int NOT NULL,
+  `ring_idx` int NOT NULL,
+  `ring_meta` varbinary(16) DEFAULT NULL,
+  PRIMARY KEY (`pk`,`ring_idx`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=RING_BUFFER=off'
+DROP TABLE test.t5;
+#
+# Case 6: Combined COMMENT with PARTITION_BALANCE — success
+#
+CREATE TABLE test.t6 (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL,
+ring_meta VARBINARY(64),
+data VARCHAR(100),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM,RING_BUFFER=200@ring_idx@ring_meta";
+SHOW CREATE TABLE test.t6;
+Table	Create Table
+t6	CREATE TABLE `t6` (
+  `client_id` int NOT NULL,
+  `ring_idx` int NOT NULL,
+  `ring_meta` varbinary(64) DEFAULT NULL,
+  `data` varchar(100) DEFAULT NULL,
+  PRIMARY KEY (`client_id`,`ring_idx`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM,RING_BUFFER=200@ring_idx@ring_meta'
+DROP TABLE test.t6;
+#
+# Case 7: Error — ring_idx column is not INT type (BIGINT)
+#
+CREATE TABLE test.t7 (
+client_id INT NOT NULL,
+ring_idx BIGINT NOT NULL,
+ring_meta VARBINARY(64),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=400@ring_idx@ring_meta";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Ring index column must be INT type'
+#
+# Case 8: Error — ring_idx column is not the last PK column
+#
+CREATE TABLE test.t8 (
+ring_idx INT NOT NULL,
+client_id INT NOT NULL,
+ring_meta VARBINARY(64),
+PRIMARY KEY (ring_idx, client_id)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=400@ring_idx@ring_meta";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Ring index column must be the last column of the PRIMARY KEY'
+#
+# Case 9: Error — ring_meta column is not VARBINARY (VARCHAR used)
+#
+CREATE TABLE test.t9 (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL,
+ring_meta VARCHAR(64),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=400@ring_idx@ring_meta";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Ring meta column must be VARBINARY type'
+#
+# Case 10: Error — ring_meta column VARBINARY too small (< 16)
+#
+CREATE TABLE test.t10 (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL,
+ring_meta VARBINARY(8),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=400@ring_idx@ring_meta";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Ring meta column must be VARBINARY with length >= 16'
+#
+# Case 11: Error — ring_meta column is NOT NULL (must be nullable)
+#
+CREATE TABLE test.t11 (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL,
+ring_meta VARBINARY(64) NOT NULL,
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=400@ring_idx@ring_meta";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Ring meta column must be nullable'
+#
+# Case 12: Error — size = 0 (below minimum)
+#
+CREATE TABLE test.t12 (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL,
+ring_meta VARBINARY(64),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=0@ring_idx@ring_meta";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Ring buffer size must be >= 1 and <= 2147483647'
+#
+# Case 13: Error — size exceeds maximum (2147483648)
+#
+CREATE TABLE test.t13 (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL,
+ring_meta VARBINARY(64),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=2147483648@ring_idx@ring_meta";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Ring buffer size must be >= 1 and <= 2147483647'
+#
+# Case 14: Error — malformed format (missing second @)
+#
+CREATE TABLE test.t14 (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL,
+ring_meta VARBINARY(64),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=400@ring_idx";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'RING_BUFFER format: 'SIZE@idx_col@meta_col''
+#
+# Case 15: Error — ring_idx column not found in table
+#
+CREATE TABLE test.t15 (
+client_id INT NOT NULL,
+idx INT NOT NULL,
+ring_meta VARBINARY(64),
+PRIMARY KEY (client_id, idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=400@nonexistent@ring_meta";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Ring index column not found in table'
+#
+# Case 16: Error — ring_meta column not found in table
+#
+CREATE TABLE test.t16 (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL,
+meta VARBINARY(64),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=400@ring_idx@nonexistent";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Ring meta column not found in table'
+#
+# Case 17: Error — TTL and RING_BUFFER mutual exclusion
+#
+CREATE TABLE test.t17 (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL,
+ring_meta VARBINARY(64),
+ts TIMESTAMP,
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=TTL=60@ts,RING_BUFFER=400@ring_idx@ring_meta";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'A table cannot be both TTL and RING_BUFFER'
+#
+# Case 18: Error — size is not a number
+#
+CREATE TABLE test.t18 (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL,
+ring_meta VARBINARY(64),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=abc@ring_idx@ring_meta";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Invalid RING_BUFFER format, size must be a positive integer'
+#
+# Done
+#
