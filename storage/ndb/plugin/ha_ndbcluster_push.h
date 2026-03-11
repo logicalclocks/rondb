@@ -730,6 +730,7 @@ class ndb_pushed_builder_ctx {
   friend bool ndb_push_aggregation(THD *thd, const JOIN *join,
                                    ndb_pushed_builder_ctx &builder,
                                    bool allow_outer_join);
+  friend void ndb_clear_pushed_agg_state(ndb_pushed_builder_ctx &builder);
   friend void ndb_apply_aggregation_options(ndb_pushed_builder_ctx &builder,
                                             uint tab_no,
                                             NdbQueryOptions *options);

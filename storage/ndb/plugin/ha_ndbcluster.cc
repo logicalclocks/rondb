@@ -3495,7 +3495,9 @@ inline int ha_ndbcluster::next_result(uchar *buf) {
   } else if (m_active_query) {
     res = fetch_next_pushed();
     if (res == NdbQuery::NextResult_gotRow) {
-      assert(pushed_cond == nullptr ||
+      // In aggregate mode, rows are pre-aggregated results — the pushed
+      // condition was already applied during the scan, not re-evaluable here.
+      assert(m_pushed_agg_mode || pushed_cond == nullptr ||
              const_cast<Item *>(pushed_cond)->val_int());
       return 0;  // Found a row
     } else if (res == NdbQuery::NextResult_scanComplete) {
@@ -14971,6 +14973,11 @@ int ndbcluster_push_to_engine(THD *thd, AccessPath *root_path, JOIN *join) {
     has_pushed_aggregation =
         ndb_push_single_table_aggregation(thd, join, pushed_builder);
   }
+  // Clear m_pushed_agg_mode on all builder tables — a previous
+  // push_to_engine call may have set it on a handler that is now a
+  // child in a wider pushed join (push_to_engine is called multiple
+  // times with different table subsets as the optimizer explores plans).
+  ndb_clear_pushed_agg_state(pushed_builder);
   if (has_pushed_aggregation) {
     auto *root_handler = down_cast<ha_ndbcluster *>(
         pushed_builder.m_tables[0].get_table()->file);

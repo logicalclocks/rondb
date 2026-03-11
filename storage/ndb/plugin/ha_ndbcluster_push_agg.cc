@@ -61,6 +61,22 @@ static uint find_table_index(const pushed_table *tables, uint table_count,
                              const TABLE *mysql_table);
 
 /**
+ * Unwrap transparent AccessPath nodes (FILTER, etc.) to find the
+ * underlying basic table path.  GetBasicTable() only handles leaf
+ * path types — this helper looks through wrapper nodes first.
+ */
+static const TABLE *get_inner_table(const AccessPath *path) {
+  while (path != nullptr) {
+    if (path->type == AccessPath::FILTER) {
+      path = path->filter().child;
+    } else {
+      return GetBasicTable(path);
+    }
+  }
+  return nullptr;
+}
+
+/**
  * When aggregation is pushed, walk down through NESTED_LOOP_JOINs whose
  * inner side is a pushed-join child and return the outermost 'outer' path
  * that is not such a join — i.e., the root table scan.
@@ -68,7 +84,7 @@ static uint find_table_index(const pushed_table *tables, uint table_count,
 AccessPath *strip_pushed_child_nljs(AccessPath *path) {
   while (path->type == AccessPath::NESTED_LOOP_JOIN) {
     const TABLE *inner_table =
-        GetBasicTable(path->nested_loop_join().inner);
+        get_inner_table(path->nested_loop_join().inner);
     if (inner_table != nullptr &&
         inner_table->file->member_of_pushed_join() != nullptr &&
         inner_table->file->member_of_pushed_join() != inner_table) {
@@ -364,6 +380,7 @@ static bool emit_expr(Item *item, const NdbDictionary::Table *ndb_table,
       if (ctx != nullptr) {
         const uint tab_idx = find_table_index(ctx->tables, ctx->table_count,
                                               fi->field->table);
+        if (tab_idx >= ctx->table_count) return false;
         if (tab_idx != ctx->leaf_tab_no) {
           // Parent-table column: use LoadLinkedColumn.
           const int col_id = fi->field->field_index();
@@ -1083,6 +1100,7 @@ static bool emit_field_load(const Item_field *field_item,
                             AggBuildContext &ctx) {
   const uint tab_idx = find_table_index(ctx.tables, ctx.table_count,
                                         field_item->field->table);
+  if (tab_idx >= ctx.table_count) return false;
   const int col_id = field_item->field->field_index();
   if (tab_idx != ctx.leaf_tab_no) {
     // Parent-table column: use LoadLinkedColumn.
@@ -1138,6 +1156,11 @@ static NdbAggregator *ndb_build_aggregation_program(
     const int col_id = field_item->field->field_index();
     const uint tab_idx =
         find_table_index(tables, table_count, field_item->field->table);
+    if (tab_idx >= table_count) {
+      // GROUP BY column references a table not in the builder scope.
+      delete agg;
+      return nullptr;
+    }
     if (tab_idx == leaf_tab_no) {
       // Leaf table column — direct GROUP BY.
       if (!agg->GroupBy(col_id)) {
@@ -1727,7 +1750,24 @@ static int ndb_fetch_next_aggregate_row(NdbAggregator *agg,
   return NdbQuery::NextResult_gotRow;
 }
 
+void ndb_clear_pushed_agg_state(ndb_pushed_builder_ctx &builder) {
+  for (uint i = 0; i < builder.m_table_count; i++) {
+    const TABLE *tab = builder.m_tables[i].get_table();
+    if (tab != nullptr) {
+      auto *h = down_cast<ha_ndbcluster *>(tab->file);
+      h->m_pushed_agg_mode = false;
+      h->m_agg_join = nullptr;
+    }
+  }
+}
+
 int ndb_fetch_pushed_aggregate(ha_ndbcluster *handler) {
+  if (handler->m_active_query == nullptr) {
+    // Safety: should not reach here on a child handler (m_pushed_agg_mode
+    // should only be set on the root).  Return end-of-file to avoid crash.
+    assert(false);
+    return HA_ERR_END_OF_FILE;
+  }
   NdbAggregator *agg = handler->m_active_query->getAggregator();
   if (agg == nullptr) {
     return HA_ERR_INTERNAL_ERROR;

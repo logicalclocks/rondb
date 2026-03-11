@@ -106,6 +106,15 @@ AccessPath *strip_pushed_child_nljs(AccessPath *path);
 int ndb_fetch_pushed_aggregate(ha_ndbcluster *handler);
 
 /**
+ * Clear m_pushed_agg_mode on all handlers in the builder.
+ * Called before (re-)setting aggregation mode to ensure that
+ * previous push_to_engine() calls (which may have set
+ * m_pushed_agg_mode on a handler that is now a child in a
+ * wider pushed join) do not leave stale state.
+ */
+void ndb_clear_pushed_agg_state(ndb_pushed_builder_ctx &builder);
+
+/**
  * Detect whether a single-table aggregate query can be pushed.
  * Called from ndbcluster_push_to_engine() when no join aggregation
  * was pushed.
