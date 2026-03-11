@@ -1566,6 +1566,10 @@ class Dbtc : public SimulatedBlock {
      */
     Uint8 m_ttl_ignore;
     Uint8 m_ttl_only_expired;
+    /*
+     * Ring Buffer related
+     */
+    Uint8 m_ring_buffer_op;
     /* End of TCKEYREQ/TCINDXREQ only fields */
   };
 

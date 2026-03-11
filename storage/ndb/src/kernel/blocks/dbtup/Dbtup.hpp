@@ -228,6 +228,11 @@ inline const Uint32 *ALIGN_WORD(const void *ptr) {
 #define ZTOO_MUCH_INPUT_PARAM 938
 #define ZWRONG_INPUT_PARAM_COLUMN 939
 
+/*
+ * Ring Buffer related
+ */
+#define ZRING_BUFFER_DIRECT_WRITE_ERROR 940
+
 #define MAX_INPUT_PARAMS 16
 
 /*
@@ -1001,7 +1006,8 @@ struct Operationrec {
     get_disk_page_flags(RNIL),
     original_op_type(ZREAD),
     ttl_ignore(0),
-    ttl_only_expired(0)
+    ttl_only_expired(0),
+    ring_buffer_op(0)
   {
     op_struct.bit_field.in_active_list = false;
     op_struct.bit_field.tupVersion = ZNIL;
@@ -1178,6 +1184,7 @@ struct Operationrec {
     Uint32 original_op_type;
     Uint8 ttl_ignore;
     Uint8 ttl_only_expired;
+    Uint8 ring_buffer_op;
   };
 
   Uint32 m_base_header_bits;

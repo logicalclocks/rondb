@@ -4182,6 +4182,7 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
     regCachePtr->m_noWait = TcKeyReq::getNoWaitFlag(Treqinfo);
     regCachePtr->m_ttl_ignore = TcKeyReq::getTTLIgnoreFlag(Treqinfo);
     regCachePtr->m_ttl_only_expired = TcKeyReq::getTTLOnlyExpiredFlag(Treqinfo);
+    regCachePtr->m_ring_buffer_op = TcKeyReq::getRingBufferOpFlag(Treqinfo);
   } else {
     TkeyLength = TcKeyReq::getKeyLength(Treqinfo);
     TattrLen = TcKeyReq::getAttrinfoLen(tcKeyReq->attrLen);
@@ -4195,6 +4196,7 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
      */
     regCachePtr->m_ttl_ignore = 0;
     regCachePtr->m_ttl_only_expired = 0;
+    regCachePtr->m_ring_buffer_op = 0;
   }
   bool util_flag = ZFALSE;
   if (unlikely(refToMain(sendersBlockRef) == DBUTIL))
@@ -5461,6 +5463,7 @@ void Dbtc::sendlqhkeyreq(Signal *signal, BlockReference TBRef,
     (replica_applier == ApiConnectRecord::TF_REPLICA_APPLIER));
   LqhKeyReq::setTTLIgnoreFlag(Tdata10, regCachePtr->m_ttl_ignore);
   LqhKeyReq::setTTLOnlyExpiredFlag(Tdata10, regCachePtr->m_ttl_only_expired);
+  LqhKeyReq::setRingBufferOpFlag(Tdata10, regCachePtr->m_ring_buffer_op);
 
   /* -----------------------------------------------------------------------
    * If we are sending a short LQHKEYREQ, then there will be some AttrInfo

@@ -2101,6 +2101,7 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
       regOperPtr->ttl_ignore = 0;
     }
     regOperPtr->ttl_only_expired = lqhScanPtrP->m_ttl_only_expired;
+    regOperPtr->ring_buffer_op = 0; /* Scans never carry ring_buffer_op */
 
     TTL_RONDB_TRACE(prepare_fragptr.p->fragTableId,
                     "Dbtup::execTUPKEYREQ(), Ignore TTL[%u, %u]: %u, "
@@ -2155,6 +2156,7 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
     req_struct.scan_rec = nullptr;
     regOperPtr->ttl_ignore = lqhOpPtrP->ttl_ignore;
     regOperPtr->ttl_only_expired = lqhOpPtrP->ttl_only_expired;
+    regOperPtr->ring_buffer_op = lqhOpPtrP->ring_buffer_op;
 #ifdef TTL_DEBUG
     if (regOperPtr->ttl_ignore) {
       TTL_RONDB_TRACE(prepare_fragptr.p->fragTableId,
@@ -2321,6 +2323,25 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
   const Uint32 Roptype = regOperPtr->op_type;
 
   regOperPtr->m_any_value = 0;
+
+  /**
+   * Ring Buffer write guard:
+   * Reject write operations on ring-buffer tables unless the operation
+   * carries OO_RING_BUFFER_OP or OO_REPLICA_APPLIER flag.
+   */
+  if (unlikely(is_ring_buffer_table(regTabPtr))) {
+    if (Roptype == ZINSERT || Roptype == ZWRITE ||
+        Roptype == ZUPDATE || Roptype == ZDELETE) {
+      const bool is_replica_applier =
+          (flags & Dblqh::TcConnectionrec::OP_REPLICA_APPLIER) != 0;
+      if (!regOperPtr->ring_buffer_op && !is_replica_applier) {
+        jam();
+        terrorCode = ZRING_BUFFER_DIRECT_WRITE_ERROR;
+        tupkeyErrorLab(&req_struct);
+        return false;
+      }
+    }
+  }
 
   const Uint32 loc_prepare_page_id = prepare_page_no;
   /**

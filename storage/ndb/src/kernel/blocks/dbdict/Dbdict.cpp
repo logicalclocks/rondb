@@ -10903,7 +10903,11 @@ void Dbdict::alterTable_toLocal(Signal *signal, SchemaOpPtr op_ptr) {
 
     ptr[0].p = newAttrData;
     ptr[0].sz = 2 * impl_req->noOfNewAttr;
-    sendSignal(blockRef, GSN_ALTER_TAB_REQ, signal, AlterTabReq::SignalLength,
+    Uint32 sig_len = AlterTabReq::SignalLength;
+    if (ring_buffer_changed) {
+      sig_len = AlterTabReq::SignalLengthWithRingBuffer;
+    }
+    sendSignal(blockRef, GSN_ALTER_TAB_REQ, signal, sig_len,
                JBB, ptr, 1);
   } else if (blockNo == DBDIH &&
              AlterTableReq::getAddFragFlag(req->changeMask)) {

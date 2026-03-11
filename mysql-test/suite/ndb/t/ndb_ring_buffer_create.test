@@ -12,7 +12,7 @@
 
 CREATE TABLE test.t1 (
     client_id INT NOT NULL,
-    ring_idx INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
     ring_meta VARBINARY(64),
     data VARCHAR(100),
     PRIMARY KEY (client_id, ring_idx)
@@ -29,7 +29,7 @@ DROP TABLE test.t1;
 
 CREATE TABLE test.t2 (
     client_id INT NOT NULL,
-    ring_idx INT UNSIGNED NOT NULL,
+    ring_idx INT UNSIGNED NOT NULL DEFAULT 0,
     ring_meta VARBINARY(16),
     PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
@@ -45,7 +45,7 @@ DROP TABLE test.t2;
 
 CREATE TABLE test.t3 (
     pk INT NOT NULL,
-    ring_idx INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
     ring_meta VARBINARY(16),
     PRIMARY KEY (pk, ring_idx)
 ) ENGINE = NDB,
@@ -61,7 +61,7 @@ DROP TABLE test.t3;
 
 CREATE TABLE test.t4 (
     pk INT NOT NULL,
-    ring_idx INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
     ring_meta VARBINARY(16),
     PRIMARY KEY (pk, ring_idx)
 ) ENGINE = NDB,
@@ -77,7 +77,7 @@ DROP TABLE test.t4;
 
 CREATE TABLE test.t5 (
     pk INT NOT NULL,
-    ring_idx INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
     ring_meta VARBINARY(16),
     PRIMARY KEY (pk, ring_idx)
 ) ENGINE = NDB,
@@ -93,7 +93,7 @@ DROP TABLE test.t5;
 
 CREATE TABLE test.t6 (
     client_id INT NOT NULL,
-    ring_idx INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
     ring_meta VARBINARY(64),
     data VARCHAR(100),
     PRIMARY KEY (client_id, ring_idx)
@@ -111,7 +111,7 @@ DROP TABLE test.t6;
 --error ER_ILLEGAL_HA_CREATE_OPTION
 CREATE TABLE test.t7 (
     client_id INT NOT NULL,
-    ring_idx BIGINT NOT NULL,
+    ring_idx BIGINT NOT NULL DEFAULT 0,
     ring_meta VARBINARY(64),
     PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
@@ -123,7 +123,7 @@ CREATE TABLE test.t7 (
 
 --error ER_ILLEGAL_HA_CREATE_OPTION
 CREATE TABLE test.t8 (
-    ring_idx INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
     client_id INT NOT NULL,
     ring_meta VARBINARY(64),
     PRIMARY KEY (ring_idx, client_id)
@@ -137,7 +137,7 @@ CREATE TABLE test.t8 (
 --error ER_ILLEGAL_HA_CREATE_OPTION
 CREATE TABLE test.t9 (
     client_id INT NOT NULL,
-    ring_idx INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
     ring_meta VARCHAR(64),
     PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
@@ -150,7 +150,7 @@ CREATE TABLE test.t9 (
 --error ER_ILLEGAL_HA_CREATE_OPTION
 CREATE TABLE test.t10 (
     client_id INT NOT NULL,
-    ring_idx INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
     ring_meta VARBINARY(8),
     PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
@@ -163,7 +163,7 @@ CREATE TABLE test.t10 (
 --error ER_ILLEGAL_HA_CREATE_OPTION
 CREATE TABLE test.t11 (
     client_id INT NOT NULL,
-    ring_idx INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
     ring_meta VARBINARY(64) NOT NULL,
     PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
@@ -176,7 +176,7 @@ CREATE TABLE test.t11 (
 --error ER_ILLEGAL_HA_CREATE_OPTION
 CREATE TABLE test.t12 (
     client_id INT NOT NULL,
-    ring_idx INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
     ring_meta VARBINARY(64),
     PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
@@ -189,7 +189,7 @@ CREATE TABLE test.t12 (
 --error ER_ILLEGAL_HA_CREATE_OPTION
 CREATE TABLE test.t13 (
     client_id INT NOT NULL,
-    ring_idx INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
     ring_meta VARBINARY(64),
     PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
@@ -202,7 +202,7 @@ CREATE TABLE test.t13 (
 --error ER_ILLEGAL_HA_CREATE_OPTION
 CREATE TABLE test.t14 (
     client_id INT NOT NULL,
-    ring_idx INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
     ring_meta VARBINARY(64),
     PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
@@ -228,7 +228,7 @@ CREATE TABLE test.t15 (
 --error ER_ILLEGAL_HA_CREATE_OPTION
 CREATE TABLE test.t16 (
     client_id INT NOT NULL,
-    ring_idx INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
     meta VARBINARY(64),
     PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
@@ -241,7 +241,7 @@ CREATE TABLE test.t16 (
 --error ER_ILLEGAL_HA_CREATE_OPTION
 CREATE TABLE test.t17 (
     client_id INT NOT NULL,
-    ring_idx INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
     ring_meta VARBINARY(64),
     ts TIMESTAMP,
     PRIMARY KEY (client_id, ring_idx)
@@ -255,11 +255,24 @@ CREATE TABLE test.t17 (
 --error ER_ILLEGAL_HA_CREATE_OPTION
 CREATE TABLE test.t18 (
     client_id INT NOT NULL,
-    ring_idx INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
     ring_meta VARBINARY(64),
     PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
   COMMENT="NDB_TABLE=RING_BUFFER=abc@ring_idx@ring_meta";
+
+--echo #
+--echo # Case 19: Error — ring_idx column has no DEFAULT value
+--echo #
+
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE test.t19 (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL,
+    ring_meta VARBINARY(64),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=RING_BUFFER=400@ring_idx@ring_meta";
 
 --echo #
 --echo # Done

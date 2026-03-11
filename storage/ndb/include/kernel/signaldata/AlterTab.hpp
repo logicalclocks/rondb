@@ -32,7 +32,8 @@
 #define JAM_FILE_ID 72
 
 struct AlterTabReq {
-  static constexpr Uint32 SignalLength = 17;
+  static constexpr Uint32 SignalLength = 14;
+  static constexpr Uint32 SignalLengthWithRingBuffer = 17;
 
   enum RequestType {
     AlterTablePrepare = 0,  // Prepare alter table

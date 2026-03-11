@@ -423,6 +423,7 @@ ErrorBundle ErrorCodes[] = {
   { 937,  DMEC, AE, "Inconsistency in input parameters" },
   { 938,  DMEC, AE, "Too much input parameters" },
   { 939,  DMEC, AE, "Wrong column for input parameters" },
+  { 940,  DMEC, AE, "Direct write to ring-buffer table not allowed. Use MySQL handler INSERT/UPDATE/DELETE." },
   { 4000, DMEC, IE, "MEMORY ALLOCATION ERROR" },
   { 4001, DMEC, IE, "Signal Definition Error" },
   { 4005, DMEC, IE, "Internal Error in NdbApi" },
