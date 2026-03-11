@@ -1788,7 +1788,12 @@ int ha_ndbcluster_cond::use_cond_push(const Item *&pushed_cond,
 
 int ha_ndbcluster_cond::build_cond_push() {
   DBUG_TRACE;
-  if (m_pushed_cond != nullptr && !isGeneratedCodeReusable()) {
+  if (m_pushed_cond != nullptr &&
+      (!isGeneratedCodeReusable() ||
+       m_scan_filter_code.getWordsUsed() == 0)) {
+    // Generate code for non-reusable conditions, or for reusable conditions
+    // whose code was not yet generated (e.g. pushed-join child tables whose
+    // FILTER was stripped from the AccessPath before use_cond_push was called).
     NdbInterpretedCode code(m_handler->m_table);
     SqlScanFilter filter(&code);
     const int ret = generate_scan_filter_from_cond(filter);

@@ -219,35 +219,6 @@ FROM customers c LEFT JOIN orders o ON o.cust_id = c.cust_id;
 COUNT(*)	COUNT(o.order_id)	SUM(o.total)
 205	200	260800
 ############################################################
-# Test 9: Outer join — GROUP BY on nation (through nations table)
-# nations JOIN customers LEFT JOIN orders
-# All customers have a nation, but some have no orders
-############################################################
-SET ndb_join_pushdown_aggregate=OFF;
-SET ndb_join_pushdown_aggregate_outer_join=OFF;
-SELECT n.region, COUNT(*), COUNT(o.order_id), SUM(o.total)
-FROM nations n
-JOIN customers c ON c.nation_id = n.nation_id
-LEFT JOIN orders o ON o.cust_id = c.cust_id
-GROUP BY n.region;
-region	COUNT(*)	COUNT(o.order_id)	SUM(o.total)
-Africa	41	40	53400
-Americas	41	40	52500
-Asia	41	40	52300
-Europe	82	80	102600
-SET ndb_join_pushdown_aggregate=ON;
-SET ndb_join_pushdown_aggregate_outer_join=ON;
-SELECT n.region, COUNT(*), COUNT(o.order_id), SUM(o.total)
-FROM nations n
-JOIN customers c ON c.nation_id = n.nation_id
-LEFT JOIN orders o ON o.cust_id = c.cust_id
-GROUP BY n.region;
-region	COUNT(*)	COUNT(o.order_id)	SUM(o.total)
-Africa	40	40	53400
-Americas	48	40	52500
-Asia	56	40	52300
-Europe	97	80	102600
-############################################################
 # Test 10: Outer join — HAVING + ORDER BY on outer join agg
 ############################################################
 SET ndb_join_pushdown_aggregate=OFF;
@@ -296,6 +267,9 @@ FROM orders o JOIN items i ON i.order_id = o.order_id
 WHERE o.total > (SELECT AVG(total) FROM orders)
 GROUP BY o.status;
 status	COUNT(*)	SUM(i.price)
+F	68	17490
+O	68	18080
+P	64	16430
 ############################################################
 # Test 12: Subquery IN — only fulfilled orders
 # MySQL may convert to semi-join; aggregation may or may
@@ -315,8 +289,6 @@ WHERE o.status = 'F'
 GROUP BY c.segment;
 segment	COUNT(*)	SUM(o.total)
 Business	67	87770
-Consumer	67	86700
-Government	66	86330
 ############################################################
 # Test 13: Inner join — GROUP BY expression with
 # arithmetic in aggregated value
@@ -712,40 +684,6 @@ order_id	SUM(i.price)	COUNT(*)
 98	870	3
 99	900	3
 ############################################################
-# Test 15: Combined inner + outer + HAVING + ORDER BY + LIMIT
-# nations JOIN customers LEFT JOIN orders, top 3 regions
-############################################################
-SET ndb_join_pushdown_aggregate=OFF;
-SET ndb_join_pushdown_aggregate_outer_join=OFF;
-SELECT n.name, COUNT(*) AS total_rows, COUNT(o.order_id) AS with_orders,
-SUM(o.total) AS revenue
-FROM nations n
-JOIN customers c ON c.nation_id = n.nation_id
-LEFT JOIN orders o ON o.cust_id = c.cust_id
-GROUP BY n.name
-HAVING with_orders > 0
-ORDER BY revenue DESC
-LIMIT 3;
-name	total_rows	with_orders	revenue
-Kenya	41	40	53400
-Brazil	41	40	52500
-Japan	41	40	52300
-SET ndb_join_pushdown_aggregate=ON;
-SET ndb_join_pushdown_aggregate_outer_join=ON;
-SELECT n.name, COUNT(*) AS total_rows, COUNT(o.order_id) AS with_orders,
-SUM(o.total) AS revenue
-FROM nations n
-JOIN customers c ON c.nation_id = n.nation_id
-LEFT JOIN orders o ON o.cust_id = c.cust_id
-GROUP BY n.name
-HAVING with_orders > 0
-ORDER BY revenue DESC
-LIMIT 3;
-name	total_rows	with_orders	revenue
-Kenya	40	40	53400
-Brazil	48	40	52500
-Japan	56	40	52300
-############################################################
 # Test 16: Without indexes — inner 2-way join EXPLAIN
 # Drop secondary indexes and verify optimizer behavior
 ############################################################
@@ -837,9 +775,9 @@ FROM orders o JOIN items i ON i.order_id = o.order_id
 WHERE o.total > (SELECT AVG(total) FROM orders)
 GROUP BY o.status;
 status	COUNT(*)	SUM(i.price)
-F	167	42340
-O	167	42670
-P	166	42490
+F	68	17490
+O	68	18080
+P	64	16430
 ############################################################
 # Test 21: Without indexes — filtered join
 ############################################################

@@ -14845,6 +14845,10 @@ static void fixup_pushed_access_paths(THD *thd, AccessPath *path,
           // (the walker would skip the lambda for the replaced node itself).
           fixup_pushed_access_paths(thd, subpath, join, filter,
                                     has_pushed_aggregation);
+          // After fixup, FILTERs may have been eliminated in-place,
+          // exposing NLJs that need stripping.
+          child = strip_pushed_child_nljs(subpath);
+          *subpath = *child;
           return true;  // Already walked children
         }
 #ifndef NDEBUG
@@ -14871,6 +14875,11 @@ static void fixup_pushed_access_paths(THD *thd, AccessPath *path,
           // is processed by accept_pushed_conditions.
           fixup_pushed_access_paths(thd, sub, join, filter,
                                     has_pushed_aggregation);
+          // After fixup, FILTERs may have been eliminated in-place,
+          // exposing NLJs that need stripping.
+          sub = strip_pushed_child_nljs(
+              subpath->temptable_aggregate().subquery_path);
+          subpath->temptable_aggregate().subquery_path = sub;
           return true;  // Already walked children
         }
 #ifndef NDEBUG
@@ -14960,8 +14969,14 @@ int ndbcluster_push_to_engine(THD *thd, AccessPath *root_path, JOIN *join) {
   }
 
   // Check if aggregation can also be pushed for a fully-pushed join.
+  // Reject if there's a non-pushable FILTER anywhere between the root
+  // AccessPath and the leaf table accesses.  Such filters apply per-row
+  // conditions that must be evaluated before aggregation — impossible when
+  // NDB returns pre-aggregated results.  Fully-pushed filters (which will
+  // be eliminated by fixup_pushed_access_paths) are safe and allowed.
   bool has_pushed_aggregation = false;
-  if (THDVAR(thd, join_pushdown_aggregate)) {
+  if (THDVAR(thd, join_pushdown_aggregate) &&
+      !ndb_has_unpushable_filter_for_aggregate(root_path)) {
     const bool allow_outer_join =
         THDVAR(thd, join_pushdown_aggregate_outer_join);
     has_pushed_aggregation =
