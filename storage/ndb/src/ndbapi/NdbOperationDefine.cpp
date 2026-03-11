@@ -1588,6 +1588,9 @@ int NdbOperation::handleOperationOptions(const OperationType type,
   if (opts->optionsPresent & OperationOptions::OO_TTL_ONLY_EXPIRED) {
     op->m_flags |= OF_TTL_ONLY_EXPIRED;
   }
+  if (opts->optionsPresent & OperationOptions::OO_RING_BUFFER_OP) {
+    op->m_flags |= OF_RING_BUFFER_OP;
+  }
   if (opts->optionsPresent & OperationOptions::OO_BATCH_SAFE_FLAG) {
     op->theBatchSafeFlag = 1;
   }

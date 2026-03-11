@@ -1,0 +1,169 @@
+#
+# Setup: Create a ring-buffer table with size=4
+#
+CREATE TABLE test.rb (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+event_data VARCHAR(100),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=4@ring_idx@ring_meta";
+#
+# Case 1: Single-row insert — first insert for PK prefix
+# Expected: ring_idx=1 assigned, meta row created
+#
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'event_A');
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 1 AND ring_idx = 1;
+client_id	ring_idx	event_data
+1	1	event_A
+#
+# Case 2: Multiple inserts fill ring sequentially
+#
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'event_B');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'event_C');
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'event_D');
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 1
+ORDER BY ring_idx;
+client_id	ring_idx	event_data
+1	0	NULL
+1	1	event_A
+1	2	event_B
+1	3	event_C
+1	4	event_D
+#
+# Case 3: Ring wraps — oldest entry overwritten
+# 5th insert should overwrite slot 1
+#
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'event_E');
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 1
+ORDER BY ring_idx;
+client_id	ring_idx	event_data
+1	0	NULL
+1	1	event_E
+1	2	event_B
+1	3	event_C
+1	4	event_D
+#
+# Case 4: Additional wrap — slot 2 overwritten
+#
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'event_F');
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 1
+ORDER BY ring_idx;
+client_id	ring_idx	event_data
+1	0	NULL
+1	1	event_E
+1	2	event_F
+1	3	event_C
+1	4	event_D
+#
+# Case 5: Different PK prefix — independent ring
+#
+INSERT INTO test.rb (client_id, event_data) VALUES (2, 'client2_A');
+INSERT INTO test.rb (client_id, event_data) VALUES (2, 'client2_B');
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 2
+ORDER BY ring_idx;
+client_id	ring_idx	event_data
+2	0	NULL
+2	1	client2_A
+2	2	client2_B
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 1
+ORDER BY ring_idx;
+client_id	ring_idx	event_data
+1	0	NULL
+1	1	event_E
+1	2	event_F
+1	3	event_C
+1	4	event_D
+#
+# Case 6: User specifying ring_idx in INSERT is rejected
+#
+INSERT INTO test.rb (client_id, ring_idx, event_data)
+VALUES (3, 5, 'bad_insert');
+ERROR HY000: Table storage engine for 'Cannot specify ring_idx column in INSERT on ring-buffer table' doesn't have this option
+#
+# Case 7: User specifying ring_meta in INSERT is rejected
+#
+INSERT INTO test.rb (client_id, ring_meta, event_data)
+VALUES (3, 'bad_meta', 'bad_insert');
+ERROR HY000: Table storage engine for 'Cannot specify ring_meta column in INSERT on ring-buffer table' doesn't have this option
+#
+# Case 8: REPLACE INTO ring-buffer table is rejected
+#
+REPLACE INTO test.rb (client_id, event_data) VALUES (1, 'replaced');
+ERROR HY000: Table storage engine for 'REPLACE is not allowed on ring-buffer tables' doesn't have this option
+#
+# Case 9: INSERT ON DUPLICATE KEY UPDATE is rejected
+#
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'iodku')
+ON DUPLICATE KEY UPDATE event_data = 'updated';
+ERROR HY000: Table storage engine for 'INSERT ON DUPLICATE KEY UPDATE is not allowed on ring-buffer tables' doesn't have this option
+#
+# Case 10: Verify meta row is visible via direct PK lookup (ring_idx=0)
+#
+SELECT client_id, ring_idx, HEX(ring_meta) FROM test.rb
+WHERE client_id = 1 AND ring_idx = 0;
+client_id	ring_idx	HEX(ring_meta)
+1	0	0100000003000000040000000000000006000000000000000000000000000000
+#
+# Case 11: Ring size = 1 (single slot — every insert overwrites)
+#
+CREATE TABLE test.rb1 (
+pk INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+val VARCHAR(50),
+PRIMARY KEY (pk, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=1@ring_idx@ring_meta";
+INSERT INTO test.rb1 (pk, val) VALUES (1, 'first');
+SELECT pk, ring_idx, val FROM test.rb1 WHERE pk = 1 AND ring_idx = 1;
+pk	ring_idx	val
+1	1	first
+INSERT INTO test.rb1 (pk, val) VALUES (1, 'second');
+SELECT pk, ring_idx, val FROM test.rb1 WHERE pk = 1 AND ring_idx = 1;
+pk	ring_idx	val
+1	1	first
+INSERT INTO test.rb1 (pk, val) VALUES (1, 'third');
+SELECT pk, ring_idx, val FROM test.rb1 WHERE pk = 1 AND ring_idx = 1;
+pk	ring_idx	val
+1	1	third
+DROP TABLE test.rb1;
+#
+# Case 12: Multi-column PK prefix
+#
+CREATE TABLE test.rb_multi (
+region INT NOT NULL,
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+event_data VARCHAR(100),
+PRIMARY KEY (region, client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=3@ring_idx@ring_meta";
+INSERT INTO test.rb_multi (region, client_id, event_data)
+VALUES (1, 100, 'r1c100_A');
+INSERT INTO test.rb_multi (region, client_id, event_data)
+VALUES (1, 100, 'r1c100_B');
+INSERT INTO test.rb_multi (region, client_id, event_data)
+VALUES (1, 200, 'r1c200_A');
+SELECT region, client_id, ring_idx, event_data FROM test.rb_multi
+ORDER BY region, client_id, ring_idx;
+region	client_id	ring_idx	event_data
+1	100	0	NULL
+1	100	1	r1c100_A
+1	100	2	r1c100_B
+1	200	0	NULL
+1	200	1	r1c200_A
+DROP TABLE test.rb_multi;
+#
+# Cleanup
+#
+DROP TABLE test.rb;
+# Done.

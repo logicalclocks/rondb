@@ -3,7 +3,7 @@
 #
 CREATE TABLE test.t1 (
 client_id INT NOT NULL,
-ring_idx INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
 ring_meta VARBINARY(64),
 data VARCHAR(100),
 PRIMARY KEY (client_id, ring_idx)
@@ -13,7 +13,7 @@ SHOW CREATE TABLE test.t1;
 Table	Create Table
 t1	CREATE TABLE `t1` (
   `client_id` int NOT NULL,
-  `ring_idx` int NOT NULL,
+  `ring_idx` int NOT NULL DEFAULT '0',
   `ring_meta` varbinary(64) DEFAULT NULL,
   `data` varchar(100) DEFAULT NULL,
   PRIMARY KEY (`client_id`,`ring_idx`)
@@ -24,7 +24,7 @@ DROP TABLE test.t1;
 #
 CREATE TABLE test.t2 (
 client_id INT NOT NULL,
-ring_idx INT UNSIGNED NOT NULL,
+ring_idx INT UNSIGNED NOT NULL DEFAULT 0,
 ring_meta VARBINARY(16),
 PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
@@ -33,7 +33,7 @@ SHOW CREATE TABLE test.t2;
 Table	Create Table
 t2	CREATE TABLE `t2` (
   `client_id` int NOT NULL,
-  `ring_idx` int unsigned NOT NULL,
+  `ring_idx` int unsigned NOT NULL DEFAULT '0',
   `ring_meta` varbinary(16) DEFAULT NULL,
   PRIMARY KEY (`client_id`,`ring_idx`)
 ) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=RING_BUFFER=100@ring_idx@ring_meta'
@@ -43,7 +43,7 @@ DROP TABLE test.t2;
 #
 CREATE TABLE test.t3 (
 pk INT NOT NULL,
-ring_idx INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
 ring_meta VARBINARY(16),
 PRIMARY KEY (pk, ring_idx)
 ) ENGINE = NDB,
@@ -52,7 +52,7 @@ SHOW CREATE TABLE test.t3;
 Table	Create Table
 t3	CREATE TABLE `t3` (
   `pk` int NOT NULL,
-  `ring_idx` int NOT NULL,
+  `ring_idx` int NOT NULL DEFAULT '0',
   `ring_meta` varbinary(16) DEFAULT NULL,
   PRIMARY KEY (`pk`,`ring_idx`)
 ) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=RING_BUFFER=1@ring_idx@ring_meta'
@@ -62,7 +62,7 @@ DROP TABLE test.t3;
 #
 CREATE TABLE test.t4 (
 pk INT NOT NULL,
-ring_idx INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
 ring_meta VARBINARY(16),
 PRIMARY KEY (pk, ring_idx)
 ) ENGINE = NDB,
@@ -71,7 +71,7 @@ SHOW CREATE TABLE test.t4;
 Table	Create Table
 t4	CREATE TABLE `t4` (
   `pk` int NOT NULL,
-  `ring_idx` int NOT NULL,
+  `ring_idx` int NOT NULL DEFAULT '0',
   `ring_meta` varbinary(16) DEFAULT NULL,
   PRIMARY KEY (`pk`,`ring_idx`)
 ) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=RING_BUFFER=2147483647@ring_idx@ring_meta'
@@ -81,7 +81,7 @@ DROP TABLE test.t4;
 #
 CREATE TABLE test.t5 (
 pk INT NOT NULL,
-ring_idx INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
 ring_meta VARBINARY(16),
 PRIMARY KEY (pk, ring_idx)
 ) ENGINE = NDB,
@@ -90,7 +90,7 @@ SHOW CREATE TABLE test.t5;
 Table	Create Table
 t5	CREATE TABLE `t5` (
   `pk` int NOT NULL,
-  `ring_idx` int NOT NULL,
+  `ring_idx` int NOT NULL DEFAULT '0',
   `ring_meta` varbinary(16) DEFAULT NULL,
   PRIMARY KEY (`pk`,`ring_idx`)
 ) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=RING_BUFFER=off'
@@ -100,7 +100,7 @@ DROP TABLE test.t5;
 #
 CREATE TABLE test.t6 (
 client_id INT NOT NULL,
-ring_idx INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
 ring_meta VARBINARY(64),
 data VARCHAR(100),
 PRIMARY KEY (client_id, ring_idx)
@@ -110,7 +110,7 @@ SHOW CREATE TABLE test.t6;
 Table	Create Table
 t6	CREATE TABLE `t6` (
   `client_id` int NOT NULL,
-  `ring_idx` int NOT NULL,
+  `ring_idx` int NOT NULL DEFAULT '0',
   `ring_meta` varbinary(64) DEFAULT NULL,
   `data` varchar(100) DEFAULT NULL,
   PRIMARY KEY (`client_id`,`ring_idx`)
@@ -121,7 +121,7 @@ DROP TABLE test.t6;
 #
 CREATE TABLE test.t7 (
 client_id INT NOT NULL,
-ring_idx BIGINT NOT NULL,
+ring_idx BIGINT NOT NULL DEFAULT 0,
 ring_meta VARBINARY(64),
 PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
@@ -131,7 +131,7 @@ ERROR HY000: Table storage engine 'ndbcluster' does not support the create optio
 # Case 8: Error — ring_idx column is not the last PK column
 #
 CREATE TABLE test.t8 (
-ring_idx INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
 client_id INT NOT NULL,
 ring_meta VARBINARY(64),
 PRIMARY KEY (ring_idx, client_id)
@@ -143,7 +143,7 @@ ERROR HY000: Table storage engine 'ndbcluster' does not support the create optio
 #
 CREATE TABLE test.t9 (
 client_id INT NOT NULL,
-ring_idx INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
 ring_meta VARCHAR(64),
 PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
@@ -154,7 +154,7 @@ ERROR HY000: Table storage engine 'ndbcluster' does not support the create optio
 #
 CREATE TABLE test.t10 (
 client_id INT NOT NULL,
-ring_idx INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
 ring_meta VARBINARY(8),
 PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
@@ -165,7 +165,7 @@ ERROR HY000: Table storage engine 'ndbcluster' does not support the create optio
 #
 CREATE TABLE test.t11 (
 client_id INT NOT NULL,
-ring_idx INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
 ring_meta VARBINARY(64) NOT NULL,
 PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
@@ -176,7 +176,7 @@ ERROR HY000: Table storage engine 'ndbcluster' does not support the create optio
 #
 CREATE TABLE test.t12 (
 client_id INT NOT NULL,
-ring_idx INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
 ring_meta VARBINARY(64),
 PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
@@ -187,7 +187,7 @@ ERROR HY000: Table storage engine 'ndbcluster' does not support the create optio
 #
 CREATE TABLE test.t13 (
 client_id INT NOT NULL,
-ring_idx INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
 ring_meta VARBINARY(64),
 PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
@@ -198,7 +198,7 @@ ERROR HY000: Table storage engine 'ndbcluster' does not support the create optio
 #
 CREATE TABLE test.t14 (
 client_id INT NOT NULL,
-ring_idx INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
 ring_meta VARBINARY(64),
 PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
@@ -220,7 +220,7 @@ ERROR HY000: Table storage engine 'ndbcluster' does not support the create optio
 #
 CREATE TABLE test.t16 (
 client_id INT NOT NULL,
-ring_idx INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
 meta VARBINARY(64),
 PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
@@ -231,7 +231,7 @@ ERROR HY000: Table storage engine 'ndbcluster' does not support the create optio
 #
 CREATE TABLE test.t17 (
 client_id INT NOT NULL,
-ring_idx INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
 ring_meta VARBINARY(64),
 ts TIMESTAMP,
 PRIMARY KEY (client_id, ring_idx)
@@ -243,12 +243,23 @@ ERROR HY000: Table storage engine 'ndbcluster' does not support the create optio
 #
 CREATE TABLE test.t18 (
 client_id INT NOT NULL,
-ring_idx INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
 ring_meta VARBINARY(64),
 PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
 COMMENT="NDB_TABLE=RING_BUFFER=abc@ring_idx@ring_meta";
 ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Invalid RING_BUFFER format, size must be a positive integer'
+#
+# Case 19: Error — ring_idx column has no DEFAULT value
+#
+CREATE TABLE test.t19 (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL,
+ring_meta VARBINARY(64),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=RING_BUFFER=400@ring_idx@ring_meta";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Ring index column must have DEFAULT (e.g. 0)'
 #
 # Done
 #

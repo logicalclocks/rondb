@@ -507,6 +507,7 @@ class ha_ndbcluster : public handler, public Partition_handler {
   int flush_bulk_insert(bool allow_batch = false);
   int ndb_write_row(uchar *record, bool primary_key_update,
                     bool batched_update);
+  int ndb_ring_buffer_write_row(uchar *record);
 
   bool start_bulk_delete() override;
   int end_bulk_delete() override;

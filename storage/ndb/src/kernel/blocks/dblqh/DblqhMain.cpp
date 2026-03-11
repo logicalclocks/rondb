@@ -9144,6 +9144,7 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
    */
   regTcPtr->ttl_ignore = LqhKeyReq::getTTLIgnoreFlag(Treqinfo);
   regTcPtr->ttl_only_expired = LqhKeyReq::getTTLOnlyExpiredFlag(Treqinfo);
+  regTcPtr->ring_buffer_op = LqhKeyReq::getRingBufferOpFlag(Treqinfo);
   TTL_RONDB_TRACE(tabptr.i, "Dblqh::execLQHKEYREQ(), ttl_ignore: %u, only_expired: %u",
                   regTcPtr->ttl_ignore,
                   regTcPtr->ttl_only_expired);
@@ -12418,6 +12419,7 @@ void Dblqh::packLqhkeyreqLab(Signal *signal,
    * in other places as well
    */
   LqhKeyReq::setTTLIgnoreFlag(Treqinfo, regTcPtr->ttl_ignore);
+  LqhKeyReq::setRingBufferOpFlag(Treqinfo, regTcPtr->ring_buffer_op);
 
 #ifdef VM_TRACE
   if (LqhKeyReq::getRowidFlag(Treqinfo)) {
