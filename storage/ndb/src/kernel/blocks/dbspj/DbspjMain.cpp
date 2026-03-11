@@ -66,7 +66,7 @@
 //#define DEBUG_AGGREGATION 1
 //#define DEBUG_TRANSID_AI 1
 //#define DEBUG_JOIN_AGG_TRACE 1
-#define DEBUG_MATCH 1
+//#define DEBUG_MATCH 1
 #endif
 
 #ifdef DEBUG_TRANSID_AI
@@ -1836,6 +1836,69 @@ Dbspj::validateAggregateFlags(Build_context &ctx, Ptr<Request> requestPtr) {
           "DBSPJ %u: T_AGGREGATE_LEAF is set on a non-leaf node",
           instance());
       return DbspjErr::InvalidAggregateFlags;
+    }
+
+    /**
+     * Mark all ancestors of the aggregate leaf with T_AGGREGATE_ANCESTOR.
+     * This enables intermediate outer join nodes to detect that they need
+     * to propagate null rows down to the aggregate leaf when they get no
+     * match (chained outer join support).
+     */
+    for (list.first(treeNodePtr); !treeNodePtr.isNull();
+         list.next(treeNodePtr)) {
+      if (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) {
+        jam();
+        Uint32 parentPtrI = treeNodePtr.p->m_parentPtrI;
+        while (parentPtrI != RNIL) {
+          jam();
+          Ptr<TreeNode> ancestorPtr;
+          ndbrequire(m_treenode_pool.getPtr(ancestorPtr, parentPtrI));
+          ancestorPtr.p->m_bits |= TreeNode::T_AGGREGATE_ANCESTOR;
+          parentPtrI = ancestorPtr.p->m_parentPtrI;
+        }
+        break;  // Only one aggregate leaf
+      }
+    }
+
+    /**
+     * Enable match tracking on the scan ancestor for intermediate
+     * outer join aggregate ancestors. When such a node gets LQHKEYREF(626),
+     * DBSPJ doesn't have the parent rowRef. Instead, we track which parent
+     * rows were matched via TRANSID_AI, and at completion iterate unmatched
+     * rows to inject null rows for the aggregate leaf.
+     */
+    for (list.first(treeNodePtr); !treeNodePtr.isNull();
+         list.next(treeNodePtr)) {
+      if ((treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_ANCESTOR) &&
+          !(treeNodePtr.p->m_bits & TreeNode::T_INNER_JOIN)) {
+        jam();
+        /**
+         * Find the nearest scan ancestor by walking m_parentPtrI.
+         * We can't use m_scanAncestorPtrI here because setupAncestors()
+         * hasn't been called yet at this point in the build sequence.
+         */
+        Ptr<TreeNode> scanAncestorPtr;
+        Uint32 parentPtrI = treeNodePtr.p->m_parentPtrI;
+        bool found = false;
+        while (parentPtrI != RNIL) {
+          jam();
+          ndbrequire(m_treenode_pool.getPtr(scanAncestorPtr, parentPtrI));
+          if (scanAncestorPtr.p->isScan()) {
+            found = true;
+            break;
+          }
+          parentPtrI = scanAncestorPtr.p->m_parentPtrI;
+        }
+        if (!found) {
+          jam();
+          continue;  // No scan ancestor - skip this node
+        }
+        scanAncestorPtr.p->m_bits |=
+            TreeNode::T_BUFFER_ROW | TreeNode::T_BUFFER_MAP |
+            TreeNode::T_BUFFER_MATCH;
+        requestPtr.p->m_bits |= Request::RT_AGG_ANCESTOR_MATCH;
+        break;  // Only need to set this once (all ancestors share scan root)
+      }
     }
   } else {
     if (unlikely(ctx.m_aggregate_node_count != 0)) {
@@ -3964,7 +4027,8 @@ void Dbspj::execTRANSID_AI(Signal *signal) {
     }
 
     // Set 'matched' bit in previous scan ancestors
-    if ((requestPtr.p->m_bits & Request::RT_MULTI_SCAN) != 0) {
+    if ((requestPtr.p->m_bits &
+         (Request::RT_MULTI_SCAN | Request::RT_AGG_ANCESTOR_MATCH)) != 0) {
       RowPtr scanAncestorRow(row);
       Uint32 scanAncestorPtrI = treeNodePtr.p->m_scanAncestorPtrI;
       while (scanAncestorPtrI != RNIL)  // or 'break' below
@@ -4061,6 +4125,15 @@ void Dbspj::execTRANSID_AI(Signal *signal) {
    */
   if (requestPtr.p->m_completed_tree_nodes.get(treeNodePtr.p->m_node_no)) {
     jam();
+    // Inject null rows for unmatched parents of aggregate ancestor nodes
+    if (treeNodePtr.p->isLookup()) {
+      Uint32 err = handleAggAncestorLookupComplete(
+          signal, requestPtr, treeNodePtr);
+      if (unlikely(err != 0)) {
+        abort(signal, requestPtr, err);
+        return;
+      }
+    }
     handleTreeNodeComplete(signal, requestPtr, treeNodePtr);
   }
 
@@ -5400,6 +5473,15 @@ void Dbspj::lookup_execLQHKEYREF(Signal *signal, Ptr<Request> requestPtr,
 
   if (requestPtr.p->m_completed_tree_nodes.get(treeNodePtr.p->m_node_no)) {
     jam();
+    // Inject null rows for unmatched parents of aggregate ancestor nodes
+    if (treeNodePtr.p->isLookup()) {
+      Uint32 err2 = handleAggAncestorLookupComplete(
+          signal, requestPtr, treeNodePtr);
+      if (unlikely(err2 != 0)) {
+        abort(signal, requestPtr, err2);
+        return;
+      }
+    }
     // We have received all rows for this treeNode in this batch.
     handleTreeNodeComplete(signal, requestPtr, treeNodePtr);
   }
@@ -5532,6 +5614,15 @@ void Dbspj::lookup_execLQHKEYCONF(Signal *signal, Ptr<Request> requestPtr,
 
   if (requestPtr.p->m_completed_tree_nodes.get(treeNodePtr.p->m_node_no)) {
     jam();
+    // Inject null rows for unmatched parents of aggregate ancestor nodes
+    if (treeNodePtr.p->isLookup()) {
+      Uint32 err = handleAggAncestorLookupComplete(
+          signal, requestPtr, treeNodePtr);
+      if (unlikely(err != 0)) {
+        abort(signal, requestPtr, err);
+        return;
+      }
+    }
     // We have received all rows for this treeNode in this batch.
     handleTreeNodeComplete(signal, requestPtr, treeNodePtr);
   }
@@ -5627,6 +5718,16 @@ void Dbspj::lookup_parent_row(Signal *signal, Ptr<Request> requestPtr,
           return;
         }
 
+        /**
+         * Chained outer join: intermediate outer join ancestor has no match.
+         * Don't inject null row inline - completion-time match tracking
+         * (handleAggAncestorLookupComplete) handles both NULL key and
+         * KEYREF(626) cases uniformly by iterating unmatched parent rows.
+         * The match bit for this parent will NOT be set (no TRANSID_AI
+         * arrives since no LQHKEYREQ was sent), so completion handler
+         * will detect it as unmatched.
+         */
+
         /* Send KEYREF(errCode=626) as required by lookup request protocol */
         if (requestPtr.p->isLookup()) {
           jam();
@@ -5639,6 +5740,15 @@ void Dbspj::lookup_parent_row(Signal *signal, Ptr<Request> requestPtr,
         if (requestPtr.p->m_completed_tree_nodes.get(
                 treeNodePtr.p->m_node_no)) {
           jam();
+          // Inject null rows for unmatched parents of aggregate ancestors
+          if (treeNodePtr.p->isLookup()) {
+            Uint32 err2 = handleAggAncestorLookupComplete(
+                signal, requestPtr, treeNodePtr);
+            if (unlikely(err2 != 0)) {
+              abort(signal, requestPtr, err2);
+              return;
+            }
+          }
           handleTreeNodeComplete(signal, requestPtr, treeNodePtr);
         }
 
@@ -5852,9 +5962,156 @@ void Dbspj::lookup_abort(Signal *signal, Ptr<Request> requestPtr,
  * Expands the attrParamPattern to get linked parent data, then sends
  * JOIN_AGG_NULL_ROW_REQ to DBLQH instance 1 on the local node.
  */
+/**
+ * propagateNullToAggLeaf()
+ *
+ * Called when an intermediate outer join node (MatchAll, T_AGGREGATE_ANCESTOR)
+ * has no match (NULL key). Walks down the tree toward the aggregate leaf.
+ * If any intermediate node has T_INNER_JOIN (MatchNonNull), the null row is
+ * blocked and we return without injecting. Otherwise, call sendJoinAggNullRow()
+ * on the aggregate leaf with the original parent row and an adjusted level
+ * count so the P_PARENT pattern entries resolve correctly despite starting
+ * from a higher-level ancestor.
+ *
+ * @param treeNodePtr  The unmatched intermediate node (T_AGGREGATE_ANCESTOR)
+ * @param rowRef       The parent row that triggered this node (from scan root)
+ * @return 0 on success, error code on failure
+ */
+Uint32 Dbspj::propagateNullToAggLeaf(Signal *signal,
+                                      Ptr<Request> requestPtr,
+                                      Ptr<TreeNode> treeNodePtr,
+                                      const RowPtr &rowRef) {
+  jam();
+  DEB_MATCH(("DBSPJ propagateNullToAggLeaf: from node=%u corr=0x%x",
+             treeNodePtr.p->m_node_no, rowRef.m_src_correlation));
+
+  /**
+   * Walk from this node down toward the aggregate leaf via m_child_nodes.
+   * At each level, find the child that has T_AGGREGATE_ANCESTOR or
+   * T_AGGREGATE_LEAF. Count the number of levels traversed for the
+   * parentLevelAdjust parameter.
+   *
+   * Also count the level of the unmatched node itself (since the leaf's
+   * attrParamPattern expects rowRef from the leaf's direct parent, but
+   * we're passing rowRef from the unmatched node's parent).
+   */
+  Uint32 levelAdjust = 1;  // The unmatched node itself is one level
+  Ptr<TreeNode> current = treeNodePtr;
+
+  for (;;) {
+    LocalArenaPool<DataBufferSegment<14>> pool(requestPtr.p->m_arena,
+                                               m_dependency_map_pool);
+    Local_dependency_map children(pool, current.p->m_child_nodes);
+    Dependency_map::ConstDataBufferIterator it;
+    bool found = false;
+
+    for (children.first(it); !it.isNull(); children.next(it)) {
+      Ptr<TreeNode> childPtr;
+      ndbrequire(m_treenode_pool.getPtr(childPtr, *it.data));
+
+      if (childPtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) {
+        jam();
+        /* Reached the leaf - send null row with level adjustment */
+        DEB_MATCH(("DBSPJ propagateNullToAggLeaf: reached leaf node=%u "
+                   "levelAdjust=%u",
+                   childPtr.p->m_node_no, levelAdjust));
+        return sendJoinAggNullRow(signal, requestPtr, childPtr,
+                                  rowRef, levelAdjust);
+      }
+
+      if (childPtr.p->m_bits & TreeNode::T_AGGREGATE_ANCESTOR) {
+        jam();
+        if (childPtr.p->m_bits & TreeNode::T_INNER_JOIN) {
+          jam();
+          /**
+           * INNER JOIN blocks null propagation. This parent row is
+           * correctly filtered out - it should not contribute to results.
+           */
+          DEB_MATCH(("DBSPJ propagateNullToAggLeaf: blocked by INNER JOIN "
+                     "at node=%u", childPtr.p->m_node_no));
+          return 0;
+        }
+        current = childPtr;
+        levelAdjust++;
+        found = true;
+        break;
+      }
+    }
+    ndbrequire(found);
+  }
+}
+
+/**
+ * handleAggAncestorLookupComplete()
+ *
+ * Called when all lookups for an intermediate outer join aggregate ancestor
+ * node have completed (m_outstanding == 0). Iterates the scan ancestor's
+ * buffered rows and injects null rows for any parents that were NOT matched
+ * by this node's lookups (match bits set via TRANSID_AI processing).
+ *
+ * Handles both failure modes:
+ * 1. NULL key in lookup_parent_row (no LQHKEYREQ sent, no TRANSID_AI)
+ * 2. LQHKEYREF(626) from DBLQH (valid key but no row, no TRANSID_AI)
+ *
+ * @return 0 on success, error code on failure
+ */
+Uint32 Dbspj::handleAggAncestorLookupComplete(Signal *signal,
+                                               Ptr<Request> requestPtr,
+                                               Ptr<TreeNode> treeNodePtr) {
+  jam();
+
+  if (!(treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_ANCESTOR) ||
+      (treeNodePtr.p->m_bits & TreeNode::T_INNER_JOIN) ||
+      treeNodePtr.p->m_scanAncestorPtrI == RNIL) {
+    jam();
+    return 0;
+  }
+
+  DEB_MATCH(("DBSPJ handleAggAncestorLookupComplete: node=%u",
+             treeNodePtr.p->m_node_no));
+
+  Ptr<TreeNode> scanAncestorPtr;
+  ndbrequire(m_treenode_pool.getPtr(scanAncestorPtr,
+                                    treeNodePtr.p->m_scanAncestorPtrI));
+
+  if (!(scanAncestorPtr.p->m_bits & TreeNode::T_BUFFER_MATCH)) {
+    jam();
+    return 0;  // No match tracking configured
+  }
+
+  Uint32 null_rows_sent = 0;
+  RowIterator iter;
+  for (first(scanAncestorPtr.p->m_rows, iter);
+       !iter.isNull(); next(iter)) {
+    jam();
+    RowPtr parentRow;
+    parentRow.m_src_node_ptrI = scanAncestorPtr.i;
+    setupRowPtr(scanAncestorPtr, parentRow, iter.m_base.m_row_ptr);
+
+    if (parentRow.m_matched == nullptr ||
+        !parentRow.m_matched->get(treeNodePtr.p->m_node_no)) {
+      jam();
+      null_rows_sent++;
+      DEB_MATCH(("DBSPJ handleAggAncestorLookupComplete: "
+                 "unmatched parent corr=0x%x -> propagate null",
+                 parentRow.m_src_correlation));
+      Uint32 err = propagateNullToAggLeaf(signal, requestPtr,
+                                           treeNodePtr, parentRow);
+      if (unlikely(err != 0)) {
+        jam();
+        return err;
+      }
+    }
+  }
+  DEB_MATCH(("DBSPJ handleAggAncestorLookupComplete: "
+             "null_rows_sent=%u", null_rows_sent));
+  return 0;
+}
+
 Uint32 Dbspj::sendJoinAggNullRow(Signal *signal, Ptr<Request> requestPtr,
                                  Ptr<TreeNode> treeNodePtr,
-                                 const RowPtr &rowRef) {
+                                 const RowPtr &rowRef,
+                                 Uint32 parentLevelAdjust) {
   jam();
   Uint32 nodeId = getOwnNodeId();
   ndbrequire(requestPtr.p->m_aggNodes.get(nodeId));
@@ -5871,7 +6128,7 @@ Uint32 Dbspj::sendJoinAggNullRow(Signal *signal, Ptr<Request> requestPtr,
     Local_pattern_store pattern(pool, treeNodePtr.p->m_attrParamPattern);
     bool hasNull;
     Uint32 err = expand(linkedPtrI, pattern, rowRef, hasNull,
-                        true /* addTableMeta */);
+                        true /* addTableMeta */, parentLevelAdjust);
     if (unlikely(err != 0)) {
       jam();
       releaseSection(linkedPtrI);
@@ -9805,14 +10062,38 @@ Uint32 Dbspj::appendPkColToSection(Uint32 &dst, const RowPtr::Row &row,
 Uint32 Dbspj::appendFromParent(Uint32 &dst, Local_pattern_store &pattern,
                                Local_pattern_store::ConstDataBufferIterator &it,
                                Uint32 levels, const RowPtr &rowptr,
-                               bool &hasNull, bool addTableMeta) {
+                               bool &hasNull, bool addTableMeta,
+                               Uint32 parentLevelAdjust) {
   jam();
   Ptr<TreeNode> treeNodePtr;
   ndbrequire(m_treenode_pool.getPtr(treeNodePtr, rowptr.m_src_node_ptrI));
   Uint32 corrVal = rowptr.m_src_correlation;
   RowPtr targetRow;
+
+  /**
+   * parentLevelAdjust is used for chained outer join null propagation.
+   * When an intermediate outer join node has no match and we propagate
+   * a null row to the aggregate leaf, the rowRef comes from a higher-level
+   * ancestor than the pattern expects. Subtract the adjustment to
+   * compensate. If levels becomes 0, read from rowRef directly.
+   */
+  ndbassert(levels >= parentLevelAdjust);
+  levels -= parentLevelAdjust;
+
   DEBUG("appendFromParent-of"
-        << " node: " << treeNodePtr.p->m_node_no);
+        << " node: " << treeNodePtr.p->m_node_no
+        << " levels: " << levels);
+
+  if (levels == 0) {
+    /**
+     * After level adjustment, levels=0 means the column we need is on
+     * the rowRef's own node. Set up targetRow from the rowRef directly.
+     */
+    jam();
+    targetRow.m_row_data = rowptr.m_row_data;
+    targetRow.m_src_node_ptrI = rowptr.m_src_node_ptrI;
+  }
+
   while (levels--) {
     jam();
     if (unlikely(treeNodePtr.p->m_parentPtrI == RNIL)) {
@@ -9965,7 +10246,8 @@ Uint32 Dbspj::appendDataToSection(
  */
 Uint32 Dbspj::expand(Uint32 &_dst, Local_pattern_store &pattern,
                      const RowPtr &row, bool &hasNull,
-                     bool addTableMeta) {
+                     bool addTableMeta,
+                     Uint32 parentLevelAdjust) {
   Uint32 err;
   Uint32 dst = _dst;
   hasNull = false;
@@ -10013,7 +10295,7 @@ Uint32 Dbspj::expand(Uint32 &_dst, Local_pattern_store &pattern,
         // that permits code to access rows from earlier than immediate parent
         // val is no of levels to move up the tree
         err = appendFromParent(dst, pattern, it, val, row, hasNull,
-                               addTableMeta);
+                               addTableMeta, parentLevelAdjust);
         break;
         // PARAM's was converted to DATA by ::expand(pattern...)
       case QueryPattern::P_PARAM:

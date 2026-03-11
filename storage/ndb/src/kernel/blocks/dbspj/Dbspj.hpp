@@ -1084,6 +1084,13 @@ class Dbspj : public SimulatedBlock {
        */
       T_AGG_INLINE_MATCH = 0x2000000,
 
+      /**
+       * Set on every TreeNode that is a proper ancestor of the
+       * T_AGGREGATE_LEAF node. Used to detect intermediate outer join
+       * nodes that need null row propagation for chained outer joins.
+       */
+      T_AGGREGATE_ANCESTOR = 0x4000000,
+
       // End marker...
       T_END = 0
     };
@@ -1260,6 +1267,8 @@ class Dbspj : public SimulatedBlock {
       RT_REPEAT_SCAN_RESULT = 0x40  // Repeat bushy scan result when required
       ,
       RT_AGGREGATE = 0x80  // Request contains aggregation (only leaf sends to API)
+      ,
+      RT_AGG_ANCESTOR_MATCH = 0x100  // Match tracking for intermediate agg ancestors
     };
 
     enum RequestState {
@@ -1593,9 +1602,11 @@ class Dbspj : public SimulatedBlock {
   Uint32 appendFromParent(Uint32 &ptrI, Local_pattern_store &,
                           Local_pattern_store::ConstDataBufferIterator &,
                           Uint32 level, const RowPtr &, bool &hasNull,
-                          bool addTableMeta = false);
+                          bool addTableMeta = false,
+                          Uint32 parentLevelAdjust = 0);
   Uint32 expand(Uint32 &ptrI, Local_pattern_store &p, const RowPtr &r,
-                bool &hasNull, bool addTableMeta = false);
+                bool &hasNull, bool addTableMeta = false,
+                Uint32 parentLevelAdjust = 0);
   Uint32 expand(Uint32 &ptrI, DABuffer &pattern, Uint32 len, DABuffer &param,
                 Uint32 cnt, bool &hasNull);
   Uint32 expand(Local_pattern_store &dst, Ptr<TreeNode> treeNodePtr,
@@ -1633,7 +1644,11 @@ class Dbspj : public SimulatedBlock {
 
   void lookup_sendLeafCONF(Signal *, Ptr<Request>, Ptr<TreeNode>, Uint32 node);
   Uint32 sendJoinAggNullRow(Signal *, Ptr<Request>, Ptr<TreeNode>,
-                            const RowPtr &);
+                            const RowPtr &,
+                            Uint32 parentLevelAdjust = 0);
+  Uint32 propagateNullToAggLeaf(Signal *, Ptr<Request>, Ptr<TreeNode>,
+                                const RowPtr &);
+  Uint32 handleAggAncestorLookupComplete(Signal *, Ptr<Request>, Ptr<TreeNode>);
   void lookup_cleanup(Ptr<Request>, Ptr<TreeNode>);
 
   Uint32 handle_special_hash(Uint32 tableId, Uint32 dstHash[4],
