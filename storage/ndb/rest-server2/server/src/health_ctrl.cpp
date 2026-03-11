@@ -82,11 +82,12 @@ void HealthCtrl::health(
   }
   RonDB_Stats stats;
   (void)get_rondb_stats(&stats);
-  if (stats.connection_state) {
+  if (stats.connection_state == CONNECTED) {
     resp->setBody("1");
+    resp->setStatusCode(drogon::HttpStatusCode::k200OK);
   } else {
     resp->setBody("0");
+    resp->setStatusCode(drogon::HttpStatusCode::k503ServiceUnavailable);
   }
-  resp->setStatusCode(drogon::HttpStatusCode::k200OK);
   callback(resp);
 }
