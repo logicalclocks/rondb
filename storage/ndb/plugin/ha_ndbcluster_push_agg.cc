@@ -1352,7 +1352,8 @@ void ndb_apply_aggregation_options(ndb_pushed_builder_ctx &builder,
 }
 
 bool ndb_push_aggregation(THD *, const JOIN *join,
-                          ndb_pushed_builder_ctx &builder) {
+                          ndb_pushed_builder_ctx &builder,
+                          bool allow_outer_join) {
   // All tables in the builder must be part of a pushed join.
   // If any table is not pushed, MySQL still needs raw rows for joining.
   for (uint i = 0; i < builder.m_table_count; i++) {
@@ -1366,21 +1367,26 @@ bool ndb_push_aggregation(THD *, const JOIN *join,
     return false;
   }
 
-  // Reject aggregation with outer/anti/semi joins.
-  // Aggregation runs in DBLQH on the leaf table via handleJoinAggRow.
-  // For outer joins, when the inner-side table has no match, DBSPJ produces
-  // a NULL-extended row at the coordinator level that DBLQH never sees.
-  // This causes incorrect COUNT(*) and missing groups.
+  // Reject aggregation with semi/anti joins (not yet supported).
+  // Outer joins are supported when allow_outer_join is true:
+  // DBSPJ tracks matched/unmatched parents and injects null-extended rows
+  // into the aggregation engine via JOIN_AGG_NULL_ROW_REQ/CONF.
   {
     const pushed_table &root = builder.m_tables[0];
     for (uint i = 1; i < builder.m_table_count; i++) {
       if (!builder.m_join_scope.contain(i)) continue;
       const pushed_table &tab = builder.m_tables[i];
-      if (tab.isOuterJoined(root) || tab.isSemiJoined(root) ||
-          tab.isAntiJoined(root)) {
+      if (tab.isSemiJoined(root) || tab.isAntiJoined(root)) {
         DBUG_PRINT("info",
-                   ("ndb_push_aggregation: table %u has outer/semi/anti join "
+                   ("ndb_push_aggregation: table %u has semi/anti join "
                     "— cannot push aggregation",
+                    i));
+        return false;
+      }
+      if (!allow_outer_join && tab.isOuterJoined(root)) {
+        DBUG_PRINT("info",
+                   ("ndb_push_aggregation: table %u has outer join "
+                    "— ndb_join_pushdown_aggregate_outer_join is OFF",
                     i));
         return false;
       }

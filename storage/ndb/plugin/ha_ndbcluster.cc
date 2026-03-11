@@ -379,6 +379,15 @@ static MYSQL_THDVAR_BOOL(join_pushdown_aggregate, /* name */
                          false    /* default */
 );
 
+static MYSQL_THDVAR_BOOL(join_pushdown_aggregate_outer_join, /* name */
+                         PLUGIN_VAR_OPCMDARG,
+                         "Enable pushing down of aggregation for pushed joins "
+                         "involving outer joins to datanodes",
+                         nullptr, /* check func. */
+                         nullptr, /* update func. */
+                         false    /* default */
+);
+
 static MYSQL_THDVAR_BOOL(
     pushdown_aggregate, /* name */
     PLUGIN_VAR_OPCMDARG,
@@ -14951,7 +14960,10 @@ int ndbcluster_push_to_engine(THD *thd, AccessPath *root_path, JOIN *join) {
   // Check if aggregation can also be pushed for a fully-pushed join.
   bool has_pushed_aggregation = false;
   if (THDVAR(thd, join_pushdown_aggregate)) {
-    has_pushed_aggregation = ndb_push_aggregation(thd, join, pushed_builder);
+    const bool allow_outer_join =
+        THDVAR(thd, join_pushdown_aggregate_outer_join);
+    has_pushed_aggregation =
+        ndb_push_aggregation(thd, join, pushed_builder, allow_outer_join);
   }
 
   // Check if single-table aggregation can be pushed.
@@ -19348,6 +19360,7 @@ static SYS_VAR *system_variables[] = {
     MYSQL_SYSVAR(deferred_constraints),
     MYSQL_SYSVAR(join_pushdown),
     MYSQL_SYSVAR(join_pushdown_aggregate),
+    MYSQL_SYSVAR(join_pushdown_aggregate_outer_join),
     MYSQL_SYSVAR(pushdown_aggregate),
     MYSQL_SYSVAR(log_exclusive_reads),
     MYSQL_SYSVAR(read_backup),

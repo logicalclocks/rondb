@@ -612,9 +612,11 @@ DELETE FROM tp2 WHERE pk = 100;
 DELETE FROM tp1 WHERE pk = 100;
 
 --echo ############################################################
---echo # Test 35: LEFT JOIN — aggregation NOT pushed (outer join)
+--echo # Test 35: LEFT JOIN — aggregation NOT pushed when
+--echo # ndb_join_pushdown_aggregate_outer_join=OFF
 --echo ############################################################
 SET ndb_join_pushdown_aggregate=ON;
+SET ndb_join_pushdown_aggregate_outer_join=OFF;
 --sorted_result
 --replace_column 4 # 7 # 8 # 9 # 10 # 11 #
 EXPLAIN SELECT tp1.grp, COUNT(*)
@@ -623,6 +625,207 @@ GROUP BY tp1.grp;
 
 --echo # Cleanup type tables
 DROP TABLE tp2, tp1;
+
+--echo ############################################################
+--echo # Phase 21: Outer Join Aggregation Pushdown
+--echo ############################################################
+
+--echo # Create tables for outer join tests.
+--echo # oj1 (parent): pk 1-8, grp column for GROUP BY
+--echo # oj2 (child):  pk 1,2,3,5,7 — missing 4,6,8 to test unmatched parents
+
+CREATE TABLE oj1 (
+  pk INT PRIMARY KEY,
+  grp INT
+) ENGINE=NDB;
+
+CREATE TABLE oj2 (
+  pk INT PRIMARY KEY,
+  val INT,
+  val_null INT
+) ENGINE=NDB;
+
+INSERT INTO oj1 VALUES (1,1),(2,1),(3,2),(4,2),(5,3),(6,3),(7,1),(8,2);
+
+INSERT INTO oj2 VALUES
+  (1, 10, 10), (2, 20, NULL), (3, 30, 30),
+  (5, 50, 50), (7, 70, NULL);
+# Missing child rows for pk=4,6,8 — these parents are unmatched in LEFT JOIN
+
+--echo ############################################################
+--echo # Test 36: LEFT JOIN + COUNT(*) + GROUP BY
+--echo # Unmatched parents (pk=4,6,8) contribute count=1 each
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SET ndb_join_pushdown_aggregate_outer_join=OFF;
+--sorted_result
+SELECT oj1.grp, COUNT(*)
+FROM oj1 LEFT JOIN oj2 ON oj2.pk = oj1.pk
+GROUP BY oj1.grp;
+
+SET ndb_join_pushdown_aggregate=ON;
+SET ndb_join_pushdown_aggregate_outer_join=ON;
+--sorted_result
+SELECT oj1.grp, COUNT(*)
+FROM oj1 LEFT JOIN oj2 ON oj2.pk = oj1.pk
+GROUP BY oj1.grp;
+
+--echo ############################################################
+--echo # Test 37: LEFT JOIN + COUNT(child_col) + GROUP BY
+--echo # Unmatched parents contribute count=0
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SET ndb_join_pushdown_aggregate_outer_join=OFF;
+--sorted_result
+SELECT oj1.grp, COUNT(oj2.val)
+FROM oj1 LEFT JOIN oj2 ON oj2.pk = oj1.pk
+GROUP BY oj1.grp;
+
+SET ndb_join_pushdown_aggregate=ON;
+SET ndb_join_pushdown_aggregate_outer_join=ON;
+--sorted_result
+SELECT oj1.grp, COUNT(oj2.val)
+FROM oj1 LEFT JOIN oj2 ON oj2.pk = oj1.pk
+GROUP BY oj1.grp;
+
+--echo ############################################################
+--echo # Test 38: LEFT JOIN + SUM(child_col) + GROUP BY
+--echo # Unmatched parents contribute NULL to SUM
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SET ndb_join_pushdown_aggregate_outer_join=OFF;
+--sorted_result
+SELECT oj1.grp, SUM(oj2.val)
+FROM oj1 LEFT JOIN oj2 ON oj2.pk = oj1.pk
+GROUP BY oj1.grp;
+
+SET ndb_join_pushdown_aggregate=ON;
+SET ndb_join_pushdown_aggregate_outer_join=ON;
+--sorted_result
+SELECT oj1.grp, SUM(oj2.val)
+FROM oj1 LEFT JOIN oj2 ON oj2.pk = oj1.pk
+GROUP BY oj1.grp;
+
+--echo ############################################################
+--echo # Test 39: LEFT JOIN + MIN/MAX(child_col) + GROUP BY
+--echo # Unmatched parents don't affect MIN/MAX
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SET ndb_join_pushdown_aggregate_outer_join=OFF;
+--sorted_result
+SELECT oj1.grp, MIN(oj2.val), MAX(oj2.val)
+FROM oj1 LEFT JOIN oj2 ON oj2.pk = oj1.pk
+GROUP BY oj1.grp;
+
+SET ndb_join_pushdown_aggregate=ON;
+SET ndb_join_pushdown_aggregate_outer_join=ON;
+--sorted_result
+SELECT oj1.grp, MIN(oj2.val), MAX(oj2.val)
+FROM oj1 LEFT JOIN oj2 ON oj2.pk = oj1.pk
+GROUP BY oj1.grp;
+
+--echo ############################################################
+--echo # Test 40: LEFT JOIN + multiple aggregates in same query
+--echo # COUNT(*), COUNT(col), SUM(col) together
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SET ndb_join_pushdown_aggregate_outer_join=OFF;
+--sorted_result
+SELECT oj1.grp, COUNT(*), COUNT(oj2.val), SUM(oj2.val)
+FROM oj1 LEFT JOIN oj2 ON oj2.pk = oj1.pk
+GROUP BY oj1.grp;
+
+SET ndb_join_pushdown_aggregate=ON;
+SET ndb_join_pushdown_aggregate_outer_join=ON;
+--sorted_result
+SELECT oj1.grp, COUNT(*), COUNT(oj2.val), SUM(oj2.val)
+FROM oj1 LEFT JOIN oj2 ON oj2.pk = oj1.pk
+GROUP BY oj1.grp;
+
+--echo ############################################################
+--echo # Test 41: LEFT JOIN + COUNT(*) without GROUP BY
+--echo # Implicit aggregation — single row result
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SET ndb_join_pushdown_aggregate_outer_join=OFF;
+SELECT COUNT(*), COUNT(oj2.val), SUM(oj2.val)
+FROM oj1 LEFT JOIN oj2 ON oj2.pk = oj1.pk;
+
+SET ndb_join_pushdown_aggregate=ON;
+SET ndb_join_pushdown_aggregate_outer_join=ON;
+SELECT COUNT(*), COUNT(oj2.val), SUM(oj2.val)
+FROM oj1 LEFT JOIN oj2 ON oj2.pk = oj1.pk;
+
+--echo ############################################################
+--echo # Test 42: LEFT JOIN + HAVING filter on aggregate
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SET ndb_join_pushdown_aggregate_outer_join=OFF;
+--sorted_result
+SELECT oj1.grp, COUNT(*), SUM(oj2.val)
+FROM oj1 LEFT JOIN oj2 ON oj2.pk = oj1.pk
+GROUP BY oj1.grp
+HAVING COUNT(*) >= 3;
+
+SET ndb_join_pushdown_aggregate=ON;
+SET ndb_join_pushdown_aggregate_outer_join=ON;
+--sorted_result
+SELECT oj1.grp, COUNT(*), SUM(oj2.val)
+FROM oj1 LEFT JOIN oj2 ON oj2.pk = oj1.pk
+GROUP BY oj1.grp
+HAVING COUNT(*) >= 3;
+
+--echo ############################################################
+--echo # Test 43: LEFT JOIN + ORDER BY + LIMIT
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SET ndb_join_pushdown_aggregate_outer_join=OFF;
+SELECT oj1.grp, COUNT(*), SUM(oj2.val) AS total
+FROM oj1 LEFT JOIN oj2 ON oj2.pk = oj1.pk
+GROUP BY oj1.grp
+ORDER BY oj1.grp
+LIMIT 2;
+
+SET ndb_join_pushdown_aggregate=ON;
+SET ndb_join_pushdown_aggregate_outer_join=ON;
+SELECT oj1.grp, COUNT(*), SUM(oj2.val) AS total
+FROM oj1 LEFT JOIN oj2 ON oj2.pk = oj1.pk
+GROUP BY oj1.grp
+ORDER BY oj1.grp
+LIMIT 2;
+
+--echo ############################################################
+--echo # Test 44: LEFT JOIN + COUNT(nullable_column)
+--echo # oj2.val_null has NULLs for pk=2,7 — mixed with unmatched
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SET ndb_join_pushdown_aggregate_outer_join=OFF;
+--sorted_result
+SELECT oj1.grp, COUNT(oj2.val_null), COUNT(oj2.val), COUNT(*)
+FROM oj1 LEFT JOIN oj2 ON oj2.pk = oj1.pk
+GROUP BY oj1.grp;
+
+SET ndb_join_pushdown_aggregate=ON;
+SET ndb_join_pushdown_aggregate_outer_join=ON;
+--sorted_result
+SELECT oj1.grp, COUNT(oj2.val_null), COUNT(oj2.val), COUNT(*)
+FROM oj1 LEFT JOIN oj2 ON oj2.pk = oj1.pk
+GROUP BY oj1.grp;
+
+--echo ############################################################
+--echo # Test 45: LEFT JOIN — EXPLAIN shows pushed join aggregation
+--echo ############################################################
+SET ndb_join_pushdown_aggregate=ON;
+SET ndb_join_pushdown_aggregate_outer_join=ON;
+--sorted_result
+--replace_column 4 # 7 # 8 # 9 # 10 # 11 #
+EXPLAIN SELECT oj1.grp, COUNT(*), SUM(oj2.val)
+FROM oj1 LEFT JOIN oj2 ON oj2.pk = oj1.pk
+GROUP BY oj1.grp;
+
+--echo # Cleanup outer join tables
+SET ndb_join_pushdown_aggregate_outer_join=OFF;
+DROP TABLE oj2, oj1;
 
 --echo ############################################################
 --echo # Phase 19: CASE in Aggregates

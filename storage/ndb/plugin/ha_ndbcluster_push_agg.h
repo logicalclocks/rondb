@@ -62,7 +62,8 @@ class NdbScanOperation;
  * @return true if aggregation was pushed, false otherwise
  */
 bool ndb_push_aggregation(THD *thd, const JOIN *join,
-                          ndb_pushed_builder_ctx &builder);
+                          ndb_pushed_builder_ctx &builder,
+                          bool allow_outer_join);
 
 /**
  * Apply aggregation options to the leaf table during build_query().
