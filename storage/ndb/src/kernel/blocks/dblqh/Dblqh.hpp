@@ -2621,7 +2621,13 @@ class Dblqh : public SimulatedBlock {
     Tablerec() : m_ttl_sec(RNIL),
                  m_ttl_col_no(RNIL),
                  tmp_ttl_sec(RNIL),
-                 tmp_ttl_col_no(RNIL) {
+                 tmp_ttl_col_no(RNIL),
+                 m_ring_buffer_size(RNIL),
+                 m_ring_idx_col_no(RNIL),
+                 m_ring_meta_col_no(RNIL),
+                 tmp_ring_buffer_size(RNIL),
+                 tmp_ring_idx_col_no(RNIL),
+                 tmp_ring_meta_col_no(RNIL) {
     }
     enum TableStatus {
       TABLE_DEFINED = 0,
@@ -2683,6 +2689,15 @@ class Dblqh : public SimulatedBlock {
     Uint32 m_ttl_col_no;
     Uint32 tmp_ttl_sec;
     Uint32 tmp_ttl_col_no;
+    /*
+     * Ring Buffer
+     */
+    Uint32 m_ring_buffer_size;
+    Uint32 m_ring_idx_col_no;
+    Uint32 m_ring_meta_col_no;
+    Uint32 tmp_ring_buffer_size;
+    Uint32 tmp_ring_idx_col_no;
+    Uint32 tmp_ring_meta_col_no;
   };  // Size 100 bytes
   typedef Ptr<Tablerec> TablerecPtr;
   bool is_ttl_table(Uint32 table_id);

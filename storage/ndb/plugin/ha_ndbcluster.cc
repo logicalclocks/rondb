@@ -8172,6 +8172,7 @@ static const struct NDB_Modifier ndb_table_modifiers[] = {
     {NDB_Modifier::M_BOOL, STRING_WITH_LEN("FULLY_REPLICATED"), 0, {0}},
     {NDB_Modifier::M_STRING, STRING_WITH_LEN("PARTITION_BALANCE"), 0, {0}},
     {NDB_Modifier::M_STRING, STRING_WITH_LEN("TTL"), 0, {0}},
+    {NDB_Modifier::M_STRING, STRING_WITH_LEN("RING_BUFFER"), 0, {0}},
     {NDB_Modifier::M_BOOL, nullptr, 0, 0, {0}}};
 
 static const char *ndb_column_modifier_prefix = "NDB_COLUMN=";
@@ -8976,7 +8977,8 @@ enum COMMENT_ITEMS {
   READ_BACKUP = 1,
   FULLY_REPLICATED = 2,
   PARTITION_BALANCE = 3,
-  TTL = 4
+  TTL = 4,
+  RING_BUFFER = 5
 };
 
 /**
@@ -9003,6 +9005,7 @@ int ha_ndbcluster::get_old_table_comment_items(THD *thd,
       table_modifiers.get("FULLY_REPLICATED");
   const NDB_Modifier *mod_frags = table_modifiers.get("PARTITION_BALANCE");
   const NDB_Modifier *mod_ttl = table_modifiers.get("TTL");
+  const NDB_Modifier *mod_ring_buffer = table_modifiers.get("RING_BUFFER");
 
   if (mod_nologging->m_found) comment_items_shown[NOLOGGING] = true;
   if (mod_read_backup->m_found) comment_items_shown[READ_BACKUP] = true;
@@ -9011,6 +9014,9 @@ int ha_ndbcluster::get_old_table_comment_items(THD *thd,
   if (mod_frags->m_found) comment_items_shown[PARTITION_BALANCE] = true;
   if (mod_ttl->m_found) {
     comment_items_shown[TTL] = true;
+  }
+  if (mod_ring_buffer->m_found) {
+    comment_items_shown[RING_BUFFER] = true;
   }
   return 0;
 }
@@ -9066,6 +9072,7 @@ void ha_ndbcluster::update_comment_info(THD *thd, HA_CREATE_INFO *create_info,
       table_modifiers.get("FULLY_REPLICATED");
   const NDB_Modifier *mod_frags = table_modifiers.get("PARTITION_BALANCE");
   const NDB_Modifier * mod_ttl = table_modifiers.get("TTL");
+  const NDB_Modifier *mod_ring_buffer = table_modifiers.get("RING_BUFFER");
 
   // Get the comment items from the old Ndb table
   bool old_nologging = !ndbtab->getLogging();
@@ -9240,9 +9247,33 @@ void ha_ndbcluster::update_comment_info(THD *thd, HA_CREATE_INFO *create_info,
     }
   }
 
+  bool add_ring_buffer = false;
+  if (!mod_ring_buffer->m_found) {
+    if (old_table_comment[RING_BUFFER]) {
+      add_ring_buffer = true;
+      NDB_Modifiers old_table_modifiers(ndb_table_modifier_prefix,
+                                        ndb_table_modifiers);
+      if (old_table_modifiers.loadComment(
+            table->s->comment.str, table->s->comment.length) == -1) {
+        push_warning_printf(thd, Sql_condition::SL_WARNING,
+                            ER_ILLEGAL_HA_CREATE_OPTION, "%s",
+                            table_modifiers.getErrMsg());
+        my_error(ER_ILLEGAL_HA_CREATE_OPTION, MYF(0), ndbcluster_hton_name,
+                 "Syntax error in COMMENT modifier");
+        return;
+      }
+
+      char old_rb_str[256] = {0};
+      strncpy(old_rb_str,
+             old_table_modifiers.get("RING_BUFFER")->m_val_str.str,
+             old_table_modifiers.get("RING_BUFFER")->m_val_str.len);
+
+      table_modifiers.set("RING_BUFFER", old_rb_str);
+    }
+  }
 
   if (!(add_nologging || add_read_backup || add_fully_replicated ||
-        add_part_bal || add_ttl)) {
+        add_part_bal || add_ttl || add_ring_buffer)) {
     /* No change of comment is needed. */
     return;
   }
@@ -9789,6 +9820,136 @@ int ha_ndbcluster::create(const char *path [[maybe_unused]],
     ndb_log_info("[API]parse TTL successfully: TTL = %u sec, TTL_COLUMN = %s",
                   ttl_sec, ttl_column.c_str());
   }
+
+  /* Ring Buffer parsing */
+  const NDB_Modifier *mod_ring_buffer = table_modifiers.get("RING_BUFFER");
+  bool found_ring_buffer = false;
+  uint32_t ring_buffer_size = RNIL;
+  std::string ring_idx_col_name;
+  std::string ring_meta_col_name;
+  uint32_t ring_idx_col_no = RNIL;
+  uint32_t ring_meta_col_no = RNIL;
+
+  if (mod_ring_buffer->m_found) {
+    std::string rb_comment(mod_ring_buffer->m_val_str.str,
+                           mod_ring_buffer->m_val_str.len);
+
+    /* Check for "off" */
+    if (!my_strcasecmp(system_charset_info,
+                       mod_ring_buffer->m_val_str.str, "off")) {
+      ndb_log_info("[API] RING_BUFFER = OFF");
+    } else {
+      /* Parse: size@ring_idx_column@ring_meta_column */
+      std::size_t pos1 = rb_comment.find('@');
+      if (pos1 == std::string::npos || pos1 == 0) {
+        return create.failed_illegal_create_option(
+            "RING_BUFFER format: 'SIZE@idx_col@meta_col'");
+      }
+      std::size_t pos2 = rb_comment.find('@', pos1 + 1);
+      if (pos2 == std::string::npos || pos2 == pos1 + 1) {
+        return create.failed_illegal_create_option(
+            "RING_BUFFER format: 'SIZE@idx_col@meta_col'");
+      }
+      if (rb_comment.find('@', pos2 + 1) != std::string::npos) {
+        return create.failed_illegal_create_option(
+            "RING_BUFFER format: 'SIZE@idx_col@meta_col'");
+      }
+
+      /* Validate size */
+      std::string size_str = rb_comment.substr(0, pos1);
+      for (std::size_t i = 0; i < size_str.length(); i++) {
+        if (size_str.at(i) < '0' || size_str.at(i) > '9') {
+          return create.failed_illegal_create_option(
+              "Invalid RING_BUFFER format, size must be a positive integer");
+        }
+      }
+      if (size_str.length() > 10) {
+        return create.failed_illegal_create_option(
+            "Ring buffer size must be >= 1 and <= 2147483647");
+      }
+      int64_t size_raw = std::stoll(size_str);
+      if (size_raw < 1 || size_raw > 0x7FFFFFFF) {
+        return create.failed_illegal_create_option(
+            "Ring buffer size must be >= 1 and <= 2147483647");
+      }
+      ring_buffer_size = static_cast<uint32_t>(size_raw);
+
+      ring_idx_col_name = rb_comment.substr(pos1 + 1, pos2 - pos1 - 1);
+      ring_meta_col_name = rb_comment.substr(pos2 + 1);
+      if (ring_meta_col_name.empty()) {
+        return create.failed_illegal_create_option(
+            "Invalid RING_BUFFER format, ring meta column name is empty");
+      }
+
+      /* Validate ring_idx column */
+      bool found_idx = false;
+      for (uint i = 0; i < table->s->fields; i++) {
+        Field *const field = table->field[i];
+        if (!my_strcasecmp(system_charset_info,
+                           field->field_name,
+                           ring_idx_col_name.c_str())) {
+          if (field->real_type() != MYSQL_TYPE_LONG) {
+            return create.failed_illegal_create_option(
+                "Ring index column must be INT type");
+          }
+          found_idx = true;
+          break;
+        }
+      }
+      if (!found_idx) {
+        return create.failed_illegal_create_option(
+            "Ring index column not found in table");
+      }
+
+      /* Validate ring_idx is the last PK column */
+      KEY *pk = &table->s->key_info[0];
+      uint last_pk_idx = pk->user_defined_key_parts - 1;
+      if (my_strcasecmp(system_charset_info,
+                        pk->key_part[last_pk_idx].field->field_name,
+                        ring_idx_col_name.c_str())) {
+        return create.failed_illegal_create_option(
+            "Ring index column must be the last column of the PRIMARY KEY");
+      }
+
+      /* Validate ring_meta column */
+      bool found_meta = false;
+      for (uint i = 0; i < table->s->fields; i++) {
+        Field *const field = table->field[i];
+        if (!my_strcasecmp(system_charset_info,
+                           field->field_name,
+                           ring_meta_col_name.c_str())) {
+          if (field->real_type() != MYSQL_TYPE_VARCHAR ||
+              field->charset() != &my_charset_bin) {
+            return create.failed_illegal_create_option(
+                "Ring meta column must be VARBINARY type");
+          }
+          if (field->field_length < 16) {
+            return create.failed_illegal_create_option(
+                "Ring meta column must be VARBINARY with length >= 16");
+          }
+          if (!field->is_nullable()) {
+            return create.failed_illegal_create_option(
+                "Ring meta column must be nullable");
+          }
+          found_meta = true;
+          break;
+        }
+      }
+      if (!found_meta) {
+        return create.failed_illegal_create_option(
+            "Ring meta column not found in table");
+      }
+
+      found_ring_buffer = true;
+    }
+  }
+
+  /* Mutual exclusion: TTL and RING_BUFFER */
+  if (found_ttl && found_ring_buffer) {
+    return create.failed_illegal_create_option(
+        "A table cannot be both TTL and RING_BUFFER");
+  }
+
   NdbDictionary::Object::PartitionBalance part_bal =
       g_default_partition_balance;
   if (parsePartitionBalance(thd, mod_frags, &part_bal) == false) {
@@ -10102,6 +10263,16 @@ int ha_ndbcluster::create(const char *path [[maybe_unused]],
                         col.getType());
         }
       }
+      if (found_ring_buffer) {
+        if (!my_strcasecmp(system_charset_info,
+            col.getName(), ring_idx_col_name.c_str())) {
+          ring_idx_col_no = tab.getColumn(col.getName())->getColumnNo();
+        }
+        if (!my_strcasecmp(system_charset_info,
+            col.getName(), ring_meta_col_name.c_str())) {
+          ring_meta_col_no = tab.getColumn(col.getName())->getColumnNo();
+        }
+      }
     }
   }
   if (found_ttl) {
@@ -10109,6 +10280,11 @@ int ha_ndbcluster::create(const char *path [[maybe_unused]],
     tab.setTTLSec(ttl_sec);
     tab.setTTLColumnNo(ttl_column_no);
     // assert(tab.isTTLEnabled());
+  }
+  if (found_ring_buffer) {
+    tab.setRingBufferSize(ring_buffer_size);
+    tab.setRingIdxColumnNo(ring_idx_col_no);
+    tab.setRingMetaColumnNo(ring_meta_col_no);
   }
 
   tmp_restore_column_map(table->read_set, old_map);

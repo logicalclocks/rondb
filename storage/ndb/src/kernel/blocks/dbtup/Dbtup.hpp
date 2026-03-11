@@ -423,6 +423,9 @@ struct Fragoperrec {
     Uint32 *dynTableDescriptor[2];
     Uint32 ttlSec;
     Uint32 ttlColumnNo;
+    Uint32 ringBufferSize;
+    Uint32 ringIdxColNo;
+    Uint32 ringMetaColNo;
   };
   typedef Ptr<AlterTabOperation> AlterTabOperationPtr;
 
@@ -1340,7 +1343,10 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
           deferredDeleteTriggers(triggerPool),
           tuxCustomTriggers(triggerPool),
           m_ttl_sec(RNIL),
-          m_ttl_col_no(RNIL) {}
+          m_ttl_col_no(RNIL),
+          m_ring_buffer_size(RNIL),
+          m_ring_idx_col_no(RNIL),
+          m_ring_meta_col_no(RNIL) {}
 
     AttributeMask notNullAttributeMask;
     AttributeMask blobAttributeMask;
@@ -1532,6 +1538,13 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
      */
     Uint32 m_ttl_sec;
     Uint32 m_ttl_col_no;
+
+    /*
+     * Ring Buffer
+     */
+    Uint32 m_ring_buffer_size;
+    Uint32 m_ring_idx_col_no;
+    Uint32 m_ring_meta_col_no;
   };
   Uint32 m_read_ctl_file_data[BackupFormat::LCP_CTL_FILE_BUFFER_SIZE_IN_WORDS];
   /*
@@ -4460,6 +4473,18 @@ public:
     tablePtr.i = table_id;
     ptrCheckGuard(tablePtr, cnoOfTablerec, tablerec);
     return is_ttl_table(tablePtr.p);
+  }
+
+  bool is_ring_buffer_table(Tablerec* tabptr) {
+    ndbassert(tabptr != nullptr);
+    return (tabptr->m_ring_buffer_size != RNIL);
+  }
+
+  bool is_ring_buffer_table(Uint32 table_id) {
+    TablerecPtr tablePtr;
+    tablePtr.i = table_id;
+    ptrCheckGuard(tablePtr, cnoOfTablerec, tablerec);
+    return is_ring_buffer_table(tablePtr.p);
   }
 
 public:
