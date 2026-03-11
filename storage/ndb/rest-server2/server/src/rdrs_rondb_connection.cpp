@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023, 2025, Hopsworks and/or its affiliates.
+ * Copyright (c) 2023, 2026, Hopsworks and/or its affiliates.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -95,9 +95,15 @@ RS_Status RDRSRonDBConnection::Connect() {
         + std::string(" RetCode: ") + std::to_string(retCode));
     }
     retCode = ndbConnection->wait_until_ready(30, 30);
-    if (retCode != 0) {
+    if (retCode == 1) {
+      // Partial availability: at least one data node is connected but not all.
+      // This is acceptable - the cluster can serve requests with partial nodes.
+      rdrs_logger::warn(
+        "Not all data nodes are connected, but at least one is available. "
+        "Proceeding with partial cluster availability.");
+    } else if (retCode != 0) {
       RS_Status status = RS_SERVER_ERROR(
-        std::string(rdrsErrorMessage(ERROR_CLUSTER_NOT_READY)) + 
+        std::string(rdrsErrorMessage(ERROR_CLUSTER_NOT_READY)) +
         std::string(" RetCode: ") + std::to_string(retCode) +
         std::string(" Lastest Error: ") +
         std::to_string(ndbConnection->get_latest_error()) +
