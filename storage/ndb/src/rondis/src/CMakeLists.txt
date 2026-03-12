@@ -33,6 +33,8 @@ ADD_CONVENIENCE_LIBRARY(rondis
   db_operations.cc
   dispatch_thread.cc
   interpreted_code.cc
+  mysql_conn.cc
+  mysql_protocol.cc
   pink_conn.cc
   pink_epoll.cc
   pink_thread.cc

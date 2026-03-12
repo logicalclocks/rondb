@@ -46,6 +46,7 @@ constexpr const char* const usageHelp =
 #include <NdbMutex.h>
 
 #include "rondis_thread.h"
+#include "mysql_conn.h"
 #include "rondb.h"
 #include "rdrs_rondb_connection_pool.hpp"
 #include "metrics.hpp"
@@ -74,6 +75,10 @@ static RondisHandle* g_rondis_handle = nullptr;
 static ServerThread* g_rondis_thread = nullptr;
 static Uint32 *g_database_index = nullptr;
 static bool g_rondis_running = false;
+static ConnFactory* g_mysql_router_conn_factory = nullptr;
+static MysqlHandle* g_mysql_router_handle = nullptr;
+static ServerThread* g_mysql_router_thread = nullptr;
+static bool g_mysql_router_running = false;
 static int g_exit_code = 0;
 TTLPurger* g_ttl_purger = nullptr;
 NdbMutex *globalConfigsMutex = nullptr;
@@ -88,6 +93,22 @@ static void do_exit() {
   if (jsonParsers != nullptr) {
     delete[] jsonParsers;
     jsonParsers = nullptr;
+  }
+  if (g_mysql_router_running) {
+    g_mysql_router_thread->StopThread();
+    g_mysql_router_running = false;
+  }
+  if (g_mysql_router_thread) {
+    delete g_mysql_router_thread;
+    g_mysql_router_thread = nullptr;
+  }
+  if (g_mysql_router_handle) {
+    delete g_mysql_router_handle;
+    g_mysql_router_handle = nullptr;
+  }
+  if (g_mysql_router_conn_factory) {
+    delete g_mysql_router_conn_factory;
+    g_mysql_router_conn_factory = nullptr;
   }
   if (g_rondis_running) {
     g_rondis_thread->StopThread();
@@ -413,6 +434,41 @@ int main(int argc, char *argv[]) {
       globalConfigs.rondis.serverIP.c_str(),
       globalConfigs.rondis.serverPort,
       globalConfigs.rondis.numDatabases);
+  }
+
+  // Start MySQL protocol router
+  if (globalConfigs.mysqlRouter.enable) {
+    g_mysql_router_conn_factory = new MysqlConnFactory(
+        globalConfigs.mysqlRouter.backendHost.c_str(),
+        globalConfigs.mysqlRouter.backendPort);
+    g_mysql_router_handle = new MysqlHandle();
+
+    printf("Starting MySQL Router on %s:%u with %u threads "
+           "(backend %s:%u)\n",
+        globalConfigs.mysqlRouter.serverIP.c_str(),
+        globalConfigs.mysqlRouter.serverPort,
+        globalConfigs.mysqlRouter.numThreads,
+        globalConfigs.mysqlRouter.backendHost.c_str(),
+        globalConfigs.mysqlRouter.backendPort);
+
+    g_mysql_router_thread = NewDispatchThread(
+        globalConfigs.mysqlRouter.serverIP,
+        globalConfigs.mysqlRouter.serverPort,
+        globalConfigs.mysqlRouter.numThreads,
+        g_mysql_router_conn_factory,
+        1000,
+        1000,
+        g_mysql_router_handle);
+
+    if (g_mysql_router_thread->StartThread() != 0) {
+      printf("Error starting MySQL router thread\n");
+      g_exit_code = 1;
+      do_exit();
+    }
+    g_mysql_router_running = true;
+    printf("MySQL Router running on %s:%u\n",
+        globalConfigs.mysqlRouter.serverIP.c_str(),
+        globalConfigs.mysqlRouter.serverPort);
   }
 
   if (globalConfigs.security.tls.enableTLS) {
