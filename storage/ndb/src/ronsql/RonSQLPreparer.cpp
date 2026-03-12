@@ -1279,7 +1279,6 @@ RonSQLPreparer::decorrelate_exists()
     Uint32 outer_col_idx = UINT32_MAX;
     const char* inner_col_name = NULL;
     Uint32 num_correlation = 0;
-    ConditionalExpression* non_corr[MAX_WHERE_CONJUNCTS];
     Uint32 num_non_corr = 0;
 
     for (Uint32 j = 0; j < num_inner; j++)
@@ -1334,7 +1333,7 @@ RonSQLPreparer::decorrelate_exists()
       // Non-correlation predicate
       require_prm(num_non_corr < MAX_WHERE_CONJUNCTS,
                   "Too many non-correlation predicates in EXISTS.");
-      non_corr[num_non_corr++] = ic;
+      num_non_corr++;
     }
 
     require_prm(num_correlation == 1,
@@ -1772,7 +1771,6 @@ RonSQLPreparer::decorrelate_scalar()
     Uint32 outer_col_idx = UINT32_MAX;
     const char* inner_col_name = NULL;
     Uint32 num_correlation = 0;
-    ConditionalExpression* non_corr[MAX_WHERE_CONJUNCTS];
     Uint32 num_non_corr = 0;
 
     for (Uint32 j = 0; j < num_inner; j++)
@@ -1822,7 +1820,7 @@ RonSQLPreparer::decorrelate_scalar()
 
       require_prm(num_non_corr < MAX_WHERE_CONJUNCTS,
                   "Too many non-correlation predicates.");
-      non_corr[num_non_corr++] = ic;
+      num_non_corr++;
     }
 
     if (num_correlation != 1)
