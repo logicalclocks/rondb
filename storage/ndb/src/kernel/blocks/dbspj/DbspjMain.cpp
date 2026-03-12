@@ -7692,6 +7692,14 @@ void Dbspj::scanFrag_parent_row(Signal *signal, Ptr<Request> requestPtr,
           err = sendJoinAggNullRow(signal, requestPtr, treeNodePtr, rowRef);
           if (unlikely(err != 0)) break;
         }
+        // Intermediate outer join ancestor: propagate null down to leaf
+        if ((treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_ANCESTOR) &&
+            !(treeNodePtr.p->m_bits & TreeNode::T_INNER_JOIN)) {
+          jam();
+          err = propagateNullToAggLeaf(signal, requestPtr, treeNodePtr,
+                                       rowRef);
+          if (unlikely(err != 0)) break;
+        }
         return;  // Bailout, SCANREQ would have returned 0 rows anyway
       }
       scanFrag_fixupBound(keyPtrI, rowRef.m_src_correlation);
