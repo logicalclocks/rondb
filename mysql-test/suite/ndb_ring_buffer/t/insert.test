@@ -133,13 +133,16 @@ CREATE TABLE test.rb1 (
   COMMENT="NDB_TABLE=RING_BUFFER=1@ring_idx@ring_meta";
 
 INSERT INTO test.rb1 (pk, val) VALUES (1, 'first');
-SELECT pk, ring_idx, val FROM test.rb1 WHERE pk = 1 AND ring_idx = 1;
+# Show ALL data rows (ring_idx > 0) to verify only 1 slot is used
+SELECT pk, ring_idx, val FROM test.rb1 WHERE pk = 1 AND ring_idx > 0 ORDER BY ring_idx;
 
 INSERT INTO test.rb1 (pk, val) VALUES (1, 'second');
-SELECT pk, ring_idx, val FROM test.rb1 WHERE pk = 1 AND ring_idx = 1;
+# ring_size=1: 2nd insert should overwrite slot 1, not create slot 2
+SELECT pk, ring_idx, val FROM test.rb1 WHERE pk = 1 AND ring_idx > 0 ORDER BY ring_idx;
 
 INSERT INTO test.rb1 (pk, val) VALUES (1, 'third');
-SELECT pk, ring_idx, val FROM test.rb1 WHERE pk = 1 AND ring_idx = 1;
+# Still only 1 data row at slot 1
+SELECT pk, ring_idx, val FROM test.rb1 WHERE pk = 1 AND ring_idx > 0 ORDER BY ring_idx;
 
 DROP TABLE test.rb1;
 

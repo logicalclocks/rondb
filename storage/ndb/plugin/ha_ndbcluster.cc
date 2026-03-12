@@ -4896,14 +4896,15 @@ struct Ring_meta {
     reserved_2 = uint8korr(buf + 24);
   }
 
-  void init_first_insert() {
+  void init_first_insert(Uint32 ring_size) {
     version = RING_META_VERSION;
     reserved_0 = 0;
-    next_pos = 2;  /* First insert goes to slot 1, next is slot 2 */
-    count = 1;
+    next_pos = 1;  /* First insert goes to slot 1 */
+    count = 0;
     reserved_1 = 0;
-    total_inserts = 1;
+    total_inserts = 0;
     reserved_2 = 0;
+    advance(ring_size);  /* Sets next_pos, count=1, total_inserts=1 */
   }
 
   void advance(Uint32 ring_size) {
@@ -4914,10 +4915,123 @@ struct Ring_meta {
 };
 
 /**
+  Flush the pending ring-buffer meta write for the current batch.
+
+  Called when a PK prefix changes mid-batch or from end_bulk_insert().
+  Writes the cached meta state to NDB using record[1] (which holds the
+  PK prefix from the meta read) and executes.
+*/
+int ha_ndbcluster::flush_ring_buffer_batch() {
+  DBUG_TRACE;
+  if (!m_rb_batch_active) return 0;
+
+  Thd_ndb *thd_ndb = m_thd_ndb;
+  NdbTransaction *trans = thd_ndb->trans;
+  assert(trans);
+
+  const Uint32 ring_idx_col_no = m_table->getRingIdxColumnNo();
+  const Uint32 ring_meta_col_no = m_table->getRingMetaColumnNo();
+  Field *ring_idx_field = table->field[ring_idx_col_no];
+  Field *ring_meta_field = table->field[ring_meta_col_no];
+
+  const NdbRecord *key_rec =
+      m_index[table_share->primary_key].ndb_unique_record_row;
+
+  /*
+   * Ensure ring columns are in write_set/read_set.
+   * They may have been cleared by write_row() cleanup if we're called
+   * from end_bulk_insert().
+   *
+   * We intentionally do NOT clear these bits on exit — the caller is
+   * responsible for cleanup.  When called from write_row(), the cleanup
+   * label clears them; when called from end_bulk_insert(), the caller
+   * clears them explicitly after this function returns.
+   */
+  bitmap_set_bit(table->write_set, ring_idx_field->field_index());
+  bitmap_set_bit(table->write_set, ring_meta_field->field_index());
+  bitmap_set_bit(table->read_set, ring_idx_field->field_index());
+  bitmap_set_bit(table->read_set, ring_meta_field->field_index());
+
+  /* Pack cached meta state */
+  Ring_meta meta;
+  meta.version = RING_META_VERSION;
+  meta.reserved_0 = 0;
+  meta.next_pos = m_rb_batch_next_pos;
+  meta.count = m_rb_batch_count;
+  meta.reserved_1 = 0;
+  meta.total_inserts = m_rb_batch_total_inserts;
+  meta.reserved_2 = 0;
+
+  uchar meta_packed[RING_META_SIZE];
+  meta.pack(meta_packed);
+
+  /* Prepare record[1] for meta write */
+  uchar *meta_rec = table->record[1];
+  ptrdiff_t row_offset = meta_rec - table->record[0];
+
+  ring_idx_field->move_field_offset(row_offset);
+  ring_idx_field->store(0, true);
+  ring_idx_field->move_field_offset(-row_offset);
+
+  ring_meta_field->move_field_offset(row_offset);
+  ring_meta_field->set_notnull();
+  ring_meta_field->store((const char *)meta_packed, RING_META_SIZE,
+                         &my_charset_bin);
+  ring_meta_field->move_field_offset(-row_offset);
+
+  /* Build meta column mask: PK columns + ring_meta */
+  const Uint32 bitmapSz = (NDB_MAX_ATTRIBUTES_IN_TABLE + 31) / 32;
+  uint32 metaMaskSpace[bitmapSz];
+  MY_BITMAP metaMask;
+  bitmap_init(&metaMask, metaMaskSpace, table->s->fields);
+
+  KEY *pk_info = table->key_info + table_share->primary_key;
+  for (uint i = 0; i < pk_info->user_defined_key_parts; i++) {
+    bitmap_set_bit(&metaMask, pk_info->key_part[i].field->field_index());
+  }
+  bitmap_set_bit(&metaMask, ring_meta_field->field_index());
+
+  uchar *meta_mask = m_table_map->get_column_mask(&metaMask);
+
+  NdbOperation::OperationOptions meta_opts;
+  memset(&meta_opts, 0, sizeof(meta_opts));
+  meta_opts.optionsPresent =
+      NdbOperation::OperationOptions::OO_RING_BUFFER_OP;
+
+  const NdbOperation *meta_op;
+  if (!m_rb_batch_meta_existed) {
+    meta_op = trans->insertTuple(key_rec, (const char *)meta_rec, m_ndb_record,
+                                 (char *)meta_rec, meta_mask, &meta_opts,
+                                 sizeof(NdbOperation::OperationOptions));
+  } else {
+    meta_op = trans->updateTuple(key_rec, (const char *)meta_rec, m_ndb_record,
+                                 (char *)meta_rec, meta_mask, &meta_opts,
+                                 sizeof(NdbOperation::OperationOptions));
+  }
+
+  if (!meta_op) {
+    m_rb_batch_active = false;
+    return ndb_err(trans);
+  }
+
+  if (execute_no_commit(thd_ndb, trans, false) != 0) {
+    m_rb_batch_active = false;
+    return ndb_err(trans);
+  }
+
+  m_rb_batch_active = false;
+  return 0;
+}
+
+/**
   Insert one record into a ring-buffer NDB table.
 
   Handles meta row management (ring_idx=0) and assigns ring_idx
   automatically. Sets OO_RING_BUFFER_OP on all write operations.
+
+  For bulk INSERTs (m_rows_to_insert > 1), caches meta state in memory
+  and batches data writes to reduce NDB round-trips from 2N to 2 per
+  PK-prefix group.
 
   Note on affected rows: each ring buffer INSERT always modifies 2 NDB rows
   (meta row + data row), but the MySQL handler framework counts each
@@ -5003,6 +5117,75 @@ int ha_ndbcluster::ndb_ring_buffer_write_row(uchar *record) {
     }
   }
 
+  /*
+   * Path A: Check if we have a cached batch for the same PK prefix.
+   * If so, compute the next slot in memory and queue the data write
+   * without a meta read or execute.
+   */
+  if (m_rb_batch_active) {
+    bool prefix_match = true;
+    KEY *pk_info = table->key_info + table_share->primary_key;
+    for (uint i = 0; i < pk_info->user_defined_key_parts; i++) {
+      Field *kp_field = pk_info->key_part[i].field;
+      if (kp_field->field_index() == ring_idx_col_no) continue;
+      ptrdiff_t off = kp_field->offset(table->record[0]);
+      if (memcmp(record + off, table->record[1] + off,
+                 kp_field->pack_length()) != 0) {
+        prefix_match = false;
+        break;
+      }
+    }
+
+    if (prefix_match) {
+      /* Batch hit: advance cached meta state in memory */
+      Uint32 data_slot = m_rb_batch_next_pos;
+      bool ring_full = (m_rb_batch_count >= ring_buffer_size);
+      m_rb_batch_next_pos = (m_rb_batch_next_pos % ring_buffer_size) + 1;
+      if (m_rb_batch_count < ring_buffer_size) m_rb_batch_count++;
+      m_rb_batch_total_inserts++;
+
+      /* Queue data write at ring_idx=data_slot */
+      ring_idx_field->store(data_slot, true);
+      ring_meta_field->set_null();
+
+      uchar *data_mask = m_table_map->get_column_mask(table->write_set);
+
+      NdbOperation::OperationOptions write_opts;
+      memset(&write_opts, 0, sizeof(write_opts));
+      write_opts.optionsPresent =
+          NdbOperation::OperationOptions::OO_RING_BUFFER_OP;
+
+      const NdbOperation *data_op = trans->writeTuple(
+          key_rec, (const char *)record, m_ndb_record, (char *)record,
+          data_mask, &write_opts, sizeof(NdbOperation::OperationOptions));
+
+      if (!data_op) {
+        ret = ndb_err(trans);
+        goto cleanup;
+      }
+
+      ha_statistic_increment(&System_status_var::ha_write_count);
+      m_trans_table_stats->update_uncommitted_rows(ring_full ? 0 : 1);
+
+      /*
+       * Check if NDB operation buffer is getting full.  If so, flush
+       * the batch (meta write + execute) so that the next row re-enters
+       * via Path B with a fresh meta read.  This bounds memory usage
+       * the same way normal table bulk inserts do.
+       */
+      if (thd_ndb->add_row_check_if_batch_full(m_bytes_per_write)) {
+        ret = flush_ring_buffer_batch();
+        if (ret != 0) goto cleanup;
+      }
+
+      goto cleanup;
+    }
+
+    /* Prefix mismatch: flush old batch before reading new meta */
+    ret = flush_ring_buffer_batch();
+    if (ret != 0) goto cleanup;
+  }
+
   {
     /*
      * Step 1: Read meta row (ring_idx=0) with exclusive lock.
@@ -5050,7 +5233,7 @@ int ha_ndbcluster::ndb_ring_buffer_write_row(uchar *record) {
     bool ring_full = false;
 
     if (meta_not_found) {
-      meta.init_first_insert();
+      meta.init_first_insert(ring_buffer_size);
       data_slot = 1;
     } else {
       /* Unpack ring_meta from meta_result (record[1]) */
@@ -5059,13 +5242,13 @@ int ha_ndbcluster::ndb_ring_buffer_write_row(uchar *record) {
       meta_field_in_result->move_field_offset(row_offset);
 
       if (meta_field_in_result->is_null()) {
-        meta.init_first_insert();
+        meta.init_first_insert(ring_buffer_size);
         data_slot = 1;
       } else {
         String meta_str;
         meta_field_in_result->val_str(&meta_str);
         if (meta_str.length() < RING_META_SIZE) {
-          meta.init_first_insert();
+          meta.init_first_insert(ring_buffer_size);
           data_slot = 1;
         } else {
           meta.unpack((const uchar *)meta_str.ptr());
@@ -5105,80 +5288,127 @@ int ha_ndbcluster::ndb_ring_buffer_write_row(uchar *record) {
       m_trans_table_stats->update_uncommitted_rows(row_delta);
     }
 
-    /*
-     * Step 3: Write data row at ring_idx=data_slot.
-     * writeTuple (upsert) handles both first write and overwrite.
-     */
-    ring_idx_field->store(data_slot, true);
-    ring_meta_field->set_null();
+    if (m_rows_to_insert > 1) {
+      /*
+       * Path B: Bulk mode — queue data write only, defer meta write.
+       * Cache meta state for subsequent same-prefix rows (Path A).
+       */
+      ring_idx_field->store(data_slot, true);
+      ring_meta_field->set_null();
 
-    /* Column mask: write_set already has ring columns added above */
-    uchar *data_mask = m_table_map->get_column_mask(table->write_set);
+      uchar *data_mask = m_table_map->get_column_mask(table->write_set);
 
-    NdbOperation::OperationOptions write_opts;
-    memset(&write_opts, 0, sizeof(write_opts));
-    write_opts.optionsPresent =
-        NdbOperation::OperationOptions::OO_RING_BUFFER_OP;
+      NdbOperation::OperationOptions write_opts;
+      memset(&write_opts, 0, sizeof(write_opts));
+      write_opts.optionsPresent =
+          NdbOperation::OperationOptions::OO_RING_BUFFER_OP;
 
-    const NdbOperation *data_op = trans->writeTuple(
-        key_rec, (const char *)record, m_ndb_record, (char *)record,
-        data_mask, &write_opts, sizeof(NdbOperation::OperationOptions));
+      const NdbOperation *data_op = trans->writeTuple(
+          key_rec, (const char *)record, m_ndb_record, (char *)record,
+          data_mask, &write_opts, sizeof(NdbOperation::OperationOptions));
 
-    if (!data_op) {
-      ret = ndb_err(trans);
-      goto cleanup;
-    }
+      if (!data_op) {
+        ret = ndb_err(trans);
+        goto cleanup;
+      }
 
-    /*
-     * Step 4: Insert or update meta row.
-     */
-    uchar meta_packed[RING_META_SIZE];
-    meta.pack(meta_packed);
+      /* Ensure record[1] has ring_idx=0 for meta write at flush */
+      ptrdiff_t rec1_offset = table->record[1] - table->record[0];
+      ring_idx_field->move_field_offset(rec1_offset);
+      ring_idx_field->store(0, true);
+      ring_idx_field->move_field_offset(-rec1_offset);
 
-    ring_idx_field->store(0, true);
-    ring_meta_field->set_notnull();
-    ring_meta_field->store((const char *)meta_packed, RING_META_SIZE,
-                           &my_charset_bin);
+      /* Cache batch state */
+      m_rb_batch_active = true;
+      m_rb_batch_meta_existed = !meta_not_found;
+      m_rb_batch_next_pos = meta.next_pos;
+      m_rb_batch_count = meta.count;
+      m_rb_batch_total_inserts = meta.total_inserts;
 
-    /* Meta mask: PK columns + ring_meta */
-    const Uint32 bitmapSz = (NDB_MAX_ATTRIBUTES_IN_TABLE + 31) / 32;
-    uint32 metaMaskSpace[bitmapSz];
-    MY_BITMAP metaMask;
-    bitmap_init(&metaMask, metaMaskSpace, table->s->fields);
-
-    KEY *pk_info = table->key_info + table_share->primary_key;
-    for (uint i = 0; i < pk_info->user_defined_key_parts; i++) {
-      bitmap_set_bit(&metaMask, pk_info->key_part[i].field->field_index());
-    }
-    bitmap_set_bit(&metaMask, ring_meta_field->field_index());
-
-    uchar *meta_mask = m_table_map->get_column_mask(&metaMask);
-
-    NdbOperation::OperationOptions meta_opts;
-    memset(&meta_opts, 0, sizeof(meta_opts));
-    meta_opts.optionsPresent =
-        NdbOperation::OperationOptions::OO_RING_BUFFER_OP;
-
-    const NdbOperation *meta_op;
-    if (meta_not_found) {
-      meta_op = trans->insertTuple(key_rec, (const char *)record, m_ndb_record,
-                                   (char *)record, meta_mask, &meta_opts,
-                                   sizeof(NdbOperation::OperationOptions));
+      /*
+       * Account for both the data row and the deferred meta row write.
+       * The meta row is smaller (PK + ring_meta), but we use
+       * m_bytes_per_write as a conservative upper bound to ensure the
+       * batch-full check doesn't let us exceed NDB's hard limits.
+       */
+      thd_ndb->m_unsent_bytes += 2 * m_bytes_per_write;
     } else {
-      meta_op = trans->updateTuple(key_rec, (const char *)record, m_ndb_record,
-                                   (char *)record, meta_mask, &meta_opts,
-                                   sizeof(NdbOperation::OperationOptions));
-    }
+      /*
+       * Path C: Single-row mode — queue data write + meta write, execute.
+       * This is the original behavior, unchanged.
+       */
+      ring_idx_field->store(data_slot, true);
+      ring_meta_field->set_null();
 
-    if (!meta_op) {
-      ret = ndb_err(trans);
-      goto cleanup;
-    }
+      uchar *data_mask = m_table_map->get_column_mask(table->write_set);
 
-    /* Execute data write + meta insert/update together */
-    if (execute_no_commit(thd_ndb, trans, false) != 0) {
-      ret = ndb_err(trans);
-      goto cleanup;
+      NdbOperation::OperationOptions write_opts;
+      memset(&write_opts, 0, sizeof(write_opts));
+      write_opts.optionsPresent =
+          NdbOperation::OperationOptions::OO_RING_BUFFER_OP;
+
+      const NdbOperation *data_op = trans->writeTuple(
+          key_rec, (const char *)record, m_ndb_record, (char *)record,
+          data_mask, &write_opts, sizeof(NdbOperation::OperationOptions));
+
+      if (!data_op) {
+        ret = ndb_err(trans);
+        goto cleanup;
+      }
+
+      /*
+       * Insert or update meta row.
+       */
+      uchar meta_packed[RING_META_SIZE];
+      meta.pack(meta_packed);
+
+      ring_idx_field->store(0, true);
+      ring_meta_field->set_notnull();
+      ring_meta_field->store((const char *)meta_packed, RING_META_SIZE,
+                             &my_charset_bin);
+
+      /* Meta mask: PK columns + ring_meta */
+      const Uint32 bitmapSz = (NDB_MAX_ATTRIBUTES_IN_TABLE + 31) / 32;
+      uint32 metaMaskSpace[bitmapSz];
+      MY_BITMAP metaMask;
+      bitmap_init(&metaMask, metaMaskSpace, table->s->fields);
+
+      KEY *pk_info = table->key_info + table_share->primary_key;
+      for (uint i = 0; i < pk_info->user_defined_key_parts; i++) {
+        bitmap_set_bit(&metaMask, pk_info->key_part[i].field->field_index());
+      }
+      bitmap_set_bit(&metaMask, ring_meta_field->field_index());
+
+      uchar *meta_mask = m_table_map->get_column_mask(&metaMask);
+
+      NdbOperation::OperationOptions meta_opts;
+      memset(&meta_opts, 0, sizeof(meta_opts));
+      meta_opts.optionsPresent =
+          NdbOperation::OperationOptions::OO_RING_BUFFER_OP;
+
+      const NdbOperation *meta_op;
+      if (meta_not_found) {
+        meta_op =
+            trans->insertTuple(key_rec, (const char *)record, m_ndb_record,
+                               (char *)record, meta_mask, &meta_opts,
+                               sizeof(NdbOperation::OperationOptions));
+      } else {
+        meta_op =
+            trans->updateTuple(key_rec, (const char *)record, m_ndb_record,
+                               (char *)record, meta_mask, &meta_opts,
+                               sizeof(NdbOperation::OperationOptions));
+      }
+
+      if (!meta_op) {
+        ret = ndb_err(trans);
+        goto cleanup;
+      }
+
+      /* Execute data write + meta insert/update together */
+      if (execute_no_commit(thd_ndb, trans, false) != 0) {
+        ret = ndb_err(trans);
+        goto cleanup;
+      }
     }
   }
 
@@ -7586,6 +7816,9 @@ int ha_ndbcluster::reset() {
    * TTL related
    */
   m_ttl_ignore = false;
+
+  m_rb_batch_active = false;
+
   return 0;
 }
 
@@ -7638,11 +7871,14 @@ void ha_ndbcluster::start_bulk_insert(ha_rows rows) {
   DBUG_TRACE;
   DBUG_PRINT("enter", ("rows: %d", (int)rows));
 
-  if (!m_use_write && m_ignore_dup_key) {
+  if (!m_use_write && m_ignore_dup_key &&
+      !(m_table && m_table->isRingBuffer())) {
     /*
       compare if expression with that in write_row
       we have a situation where peek_indexed_rows() will be called
-      so we cannot batch
+      so we cannot batch.
+      Ring buffer tables bypass peek_indexed_rows() entirely, so
+      they can still batch.
     */
     DBUG_PRINT("info", ("Batching turned off as duplicate key is "
                         "ignored by using peek_row"));
@@ -7670,6 +7906,29 @@ int ha_ndbcluster::end_bulk_insert() {
 
   DBUG_TRACE;
   // Check if last inserts need to be flushed
+
+  /* Flush any pending ring-buffer batch meta write */
+  if (m_table && m_table->isRingBuffer() && m_rb_batch_active) {
+    /*
+     * flush_ring_buffer_batch() sets write_set/read_set bits for ring
+     * columns but does not clear them — we must clean up here.
+     */
+    const Uint32 ring_idx_col_no = m_table->getRingIdxColumnNo();
+    const Uint32 ring_meta_col_no = m_table->getRingMetaColumnNo();
+    int rb_err = flush_ring_buffer_batch();
+    bitmap_clear_bit(table->write_set,
+                     table->field[ring_idx_col_no]->field_index());
+    bitmap_clear_bit(table->write_set,
+                     table->field[ring_meta_col_no]->field_index());
+    bitmap_clear_bit(table->read_set,
+                     table->field[ring_idx_col_no]->field_index());
+    bitmap_clear_bit(table->read_set,
+                     table->field[ring_meta_col_no]->field_index());
+    if (rb_err != 0) {
+      set_my_errno(rb_err);
+      return rb_err;
+    }
+  }
 
   THD *thd = table->in_use;
   Thd_ndb *thd_ndb = m_thd_ndb;
