@@ -5988,14 +5988,18 @@ Uint32 Dbspj::propagateNullToAggLeaf(Signal *signal,
   /**
    * Walk from this node down toward the aggregate leaf via m_child_nodes.
    * At each level, find the child that has T_AGGREGATE_ANCESTOR or
-   * T_AGGREGATE_LEAF. Count the number of levels traversed for the
-   * parentLevelAdjust parameter.
+   * T_AGGREGATE_LEAF. If an INNER JOIN is encountered, null propagation
+   * is blocked. Once the leaf is found, compute parentLevelAdjust as the
+   * distance from the leaf's parent to the scan ancestor. This value is
+   * constant regardless of which intermediate node is unmatched.
    *
-   * Also count the level of the unmatched node itself (since the leaf's
-   * attrParamPattern expects rowRef from the leaf's direct parent, but
-   * we're passing rowRef from the unmatched node's parent).
+   * The P_PARENT levels in the leaf's attrParamPattern encode the hop
+   * count from the leaf's parent to the linked value's source node.
+   * In normal flow, expand() receives a rowRef from the leaf's parent.
+   * For null propagation, rowRef comes from the scan ancestor, so
+   * parentLevelAdjust = (distance from leaf's parent to scan ancestor)
+   * compensates exactly.
    */
-  Uint32 levelAdjust = 1;  // The unmatched node itself is one level
   Ptr<TreeNode> current = treeNodePtr;
 
   for (;;) {
@@ -6011,7 +6015,23 @@ Uint32 Dbspj::propagateNullToAggLeaf(Signal *signal,
 
       if (childPtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) {
         jam();
-        /* Reached the leaf - send null row with level adjustment */
+        /**
+         * Reached the leaf. Compute parentLevelAdjust by walking from
+         * current (the leaf's parent) up to the scan ancestor.
+         */
+        Uint32 levelAdjust = 0;
+        Ptr<TreeNode> walkPtr = current;
+        Ptr<TreeNode> scanAncestorPtr;
+        ndbrequire(childPtr.p->m_scanAncestorPtrI != RNIL);
+        ndbrequire(m_treenode_pool.getPtr(scanAncestorPtr,
+                                           childPtr.p->m_scanAncestorPtrI));
+        while (walkPtr.i != scanAncestorPtr.i) {
+          jam();
+          levelAdjust++;
+          ndbrequire(walkPtr.p->m_parentPtrI != RNIL);
+          ndbrequire(m_treenode_pool.getPtr(walkPtr,
+                                             walkPtr.p->m_parentPtrI));
+        }
         DEB_MATCH(("DBSPJ propagateNullToAggLeaf: reached leaf node=%u "
                    "levelAdjust=%u",
                    childPtr.p->m_node_no, levelAdjust));
@@ -6032,7 +6052,6 @@ Uint32 Dbspj::propagateNullToAggLeaf(Signal *signal,
           return 0;
         }
         current = childPtr;
-        levelAdjust++;
         found = true;
         break;
       }
@@ -6079,6 +6098,32 @@ Uint32 Dbspj::handleAggAncestorLookupComplete(Signal *signal,
     return 0;  // No match tracking configured
   }
 
+  /**
+   * For deeper intermediates (not direct children of the scan ancestor),
+   * we must check that the parent node matched before injecting a null
+   * row. If our parent didn't match, the parent's handler (or a
+   * higher-level handler) already injected a null for this row.
+   *
+   * Find the nearest outer join T_AGGREGATE_ANCESTOR parent between
+   * us and the scan ancestor.
+   */
+  Uint32 parentNodeNo = RNIL;
+  {
+    Ptr<TreeNode> walkPtr;
+    Uint32 parentPtrI = treeNodePtr.p->m_parentPtrI;
+    while (parentPtrI != RNIL && parentPtrI != scanAncestorPtr.i) {
+      jam();
+      ndbrequire(m_treenode_pool.getPtr(walkPtr, parentPtrI));
+      if ((walkPtr.p->m_bits & TreeNode::T_AGGREGATE_ANCESTOR) &&
+          !(walkPtr.p->m_bits & TreeNode::T_INNER_JOIN)) {
+        jam();
+        parentNodeNo = walkPtr.p->m_node_no;
+        break;
+      }
+      parentPtrI = walkPtr.p->m_parentPtrI;
+    }
+  }
+
   Uint32 null_rows_sent = 0;
   RowIterator iter;
   for (first(scanAncestorPtr.p->m_rows, iter);
@@ -6091,10 +6136,25 @@ Uint32 Dbspj::handleAggAncestorLookupComplete(Signal *signal,
     if (parentRow.m_matched == nullptr ||
         !parentRow.m_matched->get(treeNodePtr.p->m_node_no)) {
       jam();
+
+      /**
+       * If we have an outer join ancestor between us and the scan root,
+       * only inject if that ancestor matched this row. If the ancestor
+       * didn't match, it will handle null injection for all its
+       * descendants (including us).
+       */
+      if (parentNodeNo != RNIL &&
+          (parentRow.m_matched == nullptr ||
+           !parentRow.m_matched->get(parentNodeNo))) {
+        jam();
+        continue;  // Parent didn't match - skip, parent handles it
+      }
+
       null_rows_sent++;
       DEB_MATCH(("DBSPJ handleAggAncestorLookupComplete: "
                  "unmatched parent corr=0x%x -> propagate null",
                  parentRow.m_src_correlation));
+
       Uint32 err = propagateNullToAggLeaf(signal, requestPtr,
                                            treeNodePtr, parentRow);
       if (unlikely(err != 0)) {
