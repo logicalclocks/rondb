@@ -1310,7 +1310,7 @@ void Qmgr::execCM_REGREQ(Signal *signal) {
     return;
   }
 
-  if (MAX_NODES > ABS_MAX_NODES) {
+  if (MAX_NODES > (OLD_MAX_NODES + 1)) {
     jam();
     if (!ndbd_support_2k_api_nodes(startingVersion)) {
       /**
@@ -5287,7 +5287,7 @@ void Qmgr::execAPI_REGREQ(Signal *signal) {
       compatability_check = false;
     }
   }
-  if (compatability_check && (MAX_NODES > OLD_MAX_NODES)) {
+  if (compatability_check && (MAX_NODES > (OLD_MAX_NODES + 1))) {
     /**
      * This node is expecting nodes with high node ids due to the
      * configuration. This means that no API nodes are allowed to
