@@ -5996,9 +5996,11 @@ Uint32 Dbspj::propagateNullToAggLeaf(Signal *signal,
    * The P_PARENT levels in the leaf's attrParamPattern encode the hop
    * count from the leaf's parent to the linked value's source node.
    * In normal flow, expand() receives a rowRef from the leaf's parent.
-   * For null propagation, rowRef comes from the scan ancestor, so
-   * parentLevelAdjust = (distance from leaf's parent to scan ancestor)
-   * compensates exactly.
+   * For null propagation, rowRef comes from some ancestor, so
+   * parentLevelAdjust = (distance from leaf's parent to rowRef source)
+   * compensates exactly. We walk to rowRef.m_src_node_ptrI (not the
+   * leaf's m_scanAncestorPtrI) to handle scan-scan trees where the
+   * leaf's scan ancestor differs from the rowRef's source.
    */
   Ptr<TreeNode> current = treeNodePtr;
 
@@ -6021,11 +6023,17 @@ Uint32 Dbspj::propagateNullToAggLeaf(Signal *signal,
          */
         Uint32 levelAdjust = 0;
         Ptr<TreeNode> walkPtr = current;
-        Ptr<TreeNode> scanAncestorPtr;
-        ndbrequire(childPtr.p->m_scanAncestorPtrI != RNIL);
-        ndbrequire(m_treenode_pool.getPtr(scanAncestorPtr,
-                                           childPtr.p->m_scanAncestorPtrI));
-        while (walkPtr.i != scanAncestorPtr.i) {
+        /**
+         * Walk from leaf's parent up to the rowRef's source node.
+         * This gives the correct parentLevelAdjust for ALL cases:
+         * - Lookup intermediates: rowRef from scan ancestor
+         * - Scan intermediates: rowRef from scan ancestor (root scan)
+         * - Nested scan-scan: rowRef from root scan, but leaf's
+         *   m_scanAncestorPtrI may point to an intermediate scan.
+         *   Walking to rowRef.m_src_node_ptrI gives the correct
+         *   distance to the actual row source.
+         */
+        while (walkPtr.i != rowRef.m_src_node_ptrI) {
           jam();
           levelAdjust++;
           ndbrequire(walkPtr.p->m_parentPtrI != RNIL);
