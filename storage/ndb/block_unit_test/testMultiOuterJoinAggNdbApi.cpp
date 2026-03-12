@@ -65,6 +65,12 @@
  * Test 10: GROUP BY deep intermediate (scan -> LEFT lkp -> LEFT lkp -> LEFT lkp)
  *          GROUP BY b.b_cat, COUNT(*), SUM(leaf.score)
  *
+ * Test 11: Sibling branch + aggregation (scan -> LEFT lkp + LEFT lkp -> LEFT lkp)
+ *          GROUP BY items.category, COUNT(*), SUM(shipment.cost)
+ *
+ * Test 12: Sibling branch + GROUP BY root (scan -> LEFT lkp + LEFT lkp -> LEFT lkp)
+ *          GROUP BY orders.priority, COUNT(*), SUM(shipment.cost)
+ *
  * Usage: testMultiOuterJoinAggNdbApi -c <connect_string> -m <mysql_port> [-v]
  *        [--only N] [--skip N]
  */
@@ -164,6 +170,12 @@ static const char *OJ12_ROOT = "oj12_root";
 static const char *OJ12_A    = "oj12_a";
 static const char *OJ12_B    = "oj12_b";
 static const char *OJ12_LEAF = "oj12_leaf";
+
+/* Tests 11-12: sibling outer join branch tables */
+static const char *OJ13_ORDERS   = "oj13_orders";
+static const char *OJ13_DETAILS  = "oj13_details";
+static const char *OJ13_ITEMS    = "oj13_items";
+static const char *OJ13_SHIPMENT = "oj13_shipment";
 
 /* Sentinel for NULL group-by values */
 static const Int32 NULL_GROUP = INT_MIN;
@@ -3376,6 +3388,568 @@ testGroupByDeepIntermediate(Ndb *ndb, MYSQL *conn)
   return 0;
 }
 
+/* ================================================================== */
+/* Tests 11-12: Sibling outer join branches                            */
+/*                                                                     */
+/* Query tree topology (branching, not linear):                        */
+/*   oj13_orders (scan, root)                                          */
+/*     ├── oj13_details (lookup, LEFT JOIN) — sibling, NOT on agg path */
+/*     └── oj13_items (lookup, LEFT JOIN, T_AGGREGATE_ANCESTOR)        */
+/*           └── oj13_shipment (lookup, LEFT JOIN, T_AGGREGATE_LEAF)   */
+/*                                                                     */
+/* Verifies that sibling branches don't interfere with aggregation.    */
+/* T_AGGREGATE_ANCESTOR is only set on the path root→items→shipment.   */
+/* The details node is a sibling that participates in the query but    */
+/* does NOT affect aggregation null propagation.                       */
+/* ================================================================== */
+
+static int
+createTest11Tables(MYSQL *conn)
+{
+  sqlExec(conn, "DROP TABLE IF EXISTS oj13_shipment");
+  sqlExec(conn, "DROP TABLE IF EXISTS oj13_items");
+  sqlExec(conn, "DROP TABLE IF EXISTS oj13_details");
+  sqlExec(conn, "DROP TABLE IF EXISTS oj13_orders");
+
+  if (sqlExec(conn,
+        "CREATE TABLE oj13_orders ("
+        "  id INT NOT NULL PRIMARY KEY,"
+        "  priority INT NOT NULL"
+        ") ENGINE=NDB") != 0) return -1;
+  V("Created table %s\n", OJ13_ORDERS);
+
+  if (sqlExec(conn,
+        "CREATE TABLE oj13_details ("
+        "  order_id INT NOT NULL PRIMARY KEY,"
+        "  note INT NOT NULL"
+        ") ENGINE=NDB") != 0) return -1;
+  V("Created table %s\n", OJ13_DETAILS);
+
+  if (sqlExec(conn,
+        "CREATE TABLE oj13_items ("
+        "  order_id INT NOT NULL PRIMARY KEY,"
+        "  category INT NOT NULL"
+        ") ENGINE=NDB") != 0) return -1;
+  V("Created table %s\n", OJ13_ITEMS);
+
+  if (sqlExec(conn,
+        "CREATE TABLE oj13_shipment ("
+        "  item_id INT NOT NULL PRIMARY KEY,"
+        "  cost BIGINT NOT NULL"
+        ") ENGINE=NDB") != 0) return -1;
+  V("Created table %s\n", OJ13_SHIPMENT);
+
+  return 0;
+}
+
+static int
+insertTest11Data(MYSQL *conn)
+{
+  if (sqlExec(conn,
+        "INSERT INTO oj13_orders VALUES "
+        "(1,10),(2,20),(3,30),(4,40)") != 0) return -1;
+  V("Inserted 4 order rows\n");
+
+  /* details: orders 2,4 have no detail (sibling no-match) */
+  if (sqlExec(conn,
+        "INSERT INTO oj13_details VALUES "
+        "(1,100),(3,300)") != 0) return -1;
+  V("Inserted 2 detail rows\n");
+
+  /* items: orders 3,4 have no item (agg path no-match) */
+  if (sqlExec(conn,
+        "INSERT INTO oj13_items VALUES "
+        "(1,500),(2,600)") != 0) return -1;
+  V("Inserted 2 item rows\n");
+
+  /* shipment: item 2 has no shipment (leaf no-match) */
+  if (sqlExec(conn,
+        "INSERT INTO oj13_shipment VALUES (1,25)") != 0) return -1;
+  V("Inserted 1 shipment row\n");
+
+  return 0;
+}
+
+static int
+dropTest11Tables(MYSQL *conn)
+{
+  sqlExec(conn, "DROP TABLE IF EXISTS oj13_shipment");
+  sqlExec(conn, "DROP TABLE IF EXISTS oj13_items");
+  sqlExec(conn, "DROP TABLE IF EXISTS oj13_details");
+  sqlExec(conn, "DROP TABLE IF EXISTS oj13_orders");
+  V("Dropped test 11 tables\n");
+  return 0;
+}
+
+/* ================================================================== */
+/* Test 11: Sibling branch + aggregation on one branch                 */
+/*                                                                     */
+/* SQL: SELECT COALESCE(i.category, -2147483648), COUNT(*),            */
+/*             COALESCE(SUM(s.cost), 0)                                */
+/*      FROM oj13_orders o                                             */
+/*      LEFT JOIN oj13_details d ON d.order_id = o.id                  */
+/*      LEFT JOIN oj13_items i ON i.order_id = o.id                    */
+/*      LEFT JOIN oj13_shipment s ON s.item_id = i.order_id            */
+/*      GROUP BY i.category                                            */
+/*                                                                     */
+/* Expected:                                                           */
+/*   cat=500:  order 1 → item(500) → shipment(25) → COUNT=1, SUM=25  */
+/*   cat=600:  order 2 → item(600) → no shipment  → COUNT=1, SUM=0   */
+/*   cat=NULL: orders 3,4 → no item               → COUNT=2, SUM=0   */
+/* ================================================================== */
+
+static int
+testSiblingBranch(Ndb *ndb, MYSQL *conn)
+{
+  printf("Test 11: Sibling branch + aggregation (scan→LEFT+LEFT→LEFT) ... ");
+  fflush(stdout);
+
+  std::map<Int32, std::pair<Int64, Int64>> expected = {
+    {500, {1, 25}},          /* order 1 → item(500) → shipment(25) */
+    {600, {1, 0}},           /* order 2 → item(600) → no shipment */
+    {NULL_GROUP, {2, 0}}     /* orders 3,4 → no item */
+  };
+
+  /* Verify with MySQL */
+  if (verifyGroupByWithMysql(conn, "Test 11",
+        "SELECT COALESCE(i.category, -2147483648), COUNT(*), "
+        "COALESCE(SUM(s.cost),0) "
+        "FROM oj13_orders o "
+        "LEFT JOIN oj13_details d ON d.order_id = o.id "
+        "LEFT JOIN oj13_items i ON i.order_id = o.id "
+        "LEFT JOIN oj13_shipment s ON s.item_id = i.order_id "
+        "GROUP BY i.category ORDER BY i.category",
+        expected) != 0) {
+    printf("FAILED (MySQL verification)\n");
+    return -1;
+  }
+
+  /* Build NDB pushdown query */
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(OJ13_ORDERS);
+  dict->invalidateTable(OJ13_DETAILS);
+  dict->invalidateTable(OJ13_ITEMS);
+  dict->invalidateTable(OJ13_SHIPMENT);
+  const NdbDictionary::Table *ordersTab = dict->getTable(OJ13_ORDERS);
+  const NdbDictionary::Table *detailsTab = dict->getTable(OJ13_DETAILS);
+  const NdbDictionary::Table *itemsTab = dict->getTable(OJ13_ITEMS);
+  const NdbDictionary::Table *shipTab = dict->getTable(OJ13_SHIPMENT);
+  if (ordersTab == nullptr || detailsTab == nullptr ||
+      itemsTab == nullptr || shipTab == nullptr) {
+    printf("FAILED (table lookup: %s)\n", dict->getNdbError().message);
+    return -1;
+  }
+
+  const NdbDictionary::Column *categoryCol = itemsTab->getColumn("category");
+  if (categoryCol == nullptr) {
+    printf("FAILED (column lookup: category)\n");
+    return -1;
+  }
+
+  /* Aggregation: GROUP BY items.category, COUNT(*), SUM(shipment.cost) */
+  NdbAggregator agg(shipTab);
+  if (!agg.GroupByLinked(0, categoryCol) ||
+      !agg.LoadUint64(1, 0) ||
+      !agg.LoadColumn("cost", 1) ||
+      !agg.Count(0, 0) ||
+      !agg.Sum(1, 1) ||
+      !agg.Finalize()) {
+    printf("FAILED (agg program: %s)\n", agg.GetError().err_msg_);
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  if (qb == nullptr) {
+    printf("FAILED (NdbQueryBuilder::create)\n");
+    return -1;
+  }
+
+  /* Node 0: scan oj13_orders */
+  const NdbQueryTableScanOperationDef *ordersOp = qb->scanTable(ordersTab);
+  if (ordersOp == nullptr) {
+    printf("FAILED (scanTable: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  /* Node 1: lookup oj13_details (LEFT JOIN — sibling, NOT on agg path) */
+  const NdbQueryOperand *detKey[] = {
+    qb->linkedValue(ordersOp, "id"), nullptr
+  };
+  const NdbQueryLookupOperationDef *detOp =
+      qb->readTuple(detailsTab, detKey, nullptr);
+  if (detOp == nullptr) {
+    printf("FAILED (readTuple details: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  /* Node 2: lookup oj13_items (LEFT JOIN — on agg path) */
+  const NdbQueryOperand *itemKey[] = {
+    qb->linkedValue(ordersOp, "id"), nullptr
+  };
+  const NdbQueryLookupOperationDef *itemOp =
+      qb->readTuple(itemsTab, itemKey, nullptr);
+  if (itemOp == nullptr) {
+    printf("FAILED (readTuple items: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  /* Node 3: lookup oj13_shipment (LEFT JOIN, aggregate leaf)
+   * Linked projection: items.category (from sibling's sibling) */
+  const NdbQueryOperand *shipKey[] = {
+    qb->linkedValue(itemOp, "order_id"), nullptr
+  };
+  NdbQueryOptions shipOpts;
+  shipOpts.setAggregation(agg);
+  const NdbLinkedOperand *catLink = qb->linkedValue(itemOp, "category");
+  if (catLink == nullptr) {
+    printf("FAILED (linkedValue category: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  shipOpts.addLinkedProjection(catLink);
+
+  const NdbQueryLookupOperationDef *shipOp =
+      qb->readTuple(shipTab, shipKey, &shipOpts);
+  if (shipOp == nullptr) {
+    printf("FAILED (readTuple shipment: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  if (trans == nullptr) {
+    printf("FAILED (startTransaction: %s)\n", ndb->getNdbError().message);
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbQuery *query = trans->createQuery(queryDef);
+  if (query == nullptr) {
+    printf("FAILED (createQuery: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    printf("FAILED (execute: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {}
+  if (outcome == NdbQuery::NextResult_error) {
+    printf("FAILED (nextResult: %s)\n", query->getNdbError().message);
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbAggregator *resultAgg = query->getAggregator();
+  if (resultAgg == nullptr) {
+    printf("FAILED (getAggregator returned nullptr)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  std::map<Int32, std::pair<Int64, Int64>> actual;
+  for (;;) {
+    NdbAggregator::ResultRecord rec = resultAgg->FetchResultRecord();
+    if (rec.end()) break;
+    NdbAggregator::Column grpValCol = rec.FetchGroupbyColumn();
+    Int32 grpVal;
+    if (grpValCol.is_null()) {
+      grpVal = NULL_GROUP;
+    } else {
+      grpVal = grpValCol.data_int32();
+    }
+    NdbAggregator::Result countRes = rec.FetchAggregationResult();
+    Int64 countVal = countRes.data_int64();
+    NdbAggregator::Result sumRes = rec.FetchAggregationResult();
+    Int64 sumVal = sumRes.data_int64();
+    actual[grpVal] = {countVal, sumVal};
+    V("  NDB: category=%d COUNT=%lld SUM=%lld%s\n",
+      grpVal, (long long)countVal, (long long)sumVal,
+      grpVal == NULL_GROUP ? " (NULL)" : "");
+  }
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  if (actual.size() != expected.size()) {
+    printf("FAILED (expected %zu groups, got %zu)\n",
+           expected.size(), actual.size());
+    for (const auto &a : actual) {
+      printf("  got: category=%d COUNT=%lld SUM=%lld\n",
+             a.first, (long long)a.second.first, (long long)a.second.second);
+    }
+    return -1;
+  }
+
+  for (const auto &e : expected) {
+    auto it = actual.find(e.first);
+    if (it == actual.end() ||
+        it->second.first != e.second.first ||
+        it->second.second != e.second.second) {
+      printf("FAILED (group category=%d mismatch)\n", e.first);
+      return -1;
+    }
+  }
+
+  printf("OK (3 groups)\n");
+  return 0;
+}
+
+/* ================================================================== */
+/* Test 12: Sibling branch + GROUP BY root column                      */
+/*                                                                     */
+/* Same schema/data as Test 11 but GROUP BY orders.priority (root).    */
+/* Verifies linked projections from root work with sibling branches.   */
+/*                                                                     */
+/* SQL: SELECT o.priority, COUNT(*), COALESCE(SUM(s.cost), 0)          */
+/*      FROM oj13_orders o                                             */
+/*      LEFT JOIN oj13_details d ON d.order_id = o.id                  */
+/*      LEFT JOIN oj13_items i ON i.order_id = o.id                    */
+/*      LEFT JOIN oj13_shipment s ON s.item_id = i.order_id            */
+/*      GROUP BY o.priority                                            */
+/*                                                                     */
+/* Expected:                                                           */
+/*   priority=10: order 1 → shipment(25) → COUNT=1, SUM=25            */
+/*   priority=20: order 2 → no shipment  → COUNT=1, SUM=0             */
+/*   priority=30: order 3 → no item      → COUNT=1, SUM=0             */
+/*   priority=40: order 4 → no item      → COUNT=1, SUM=0             */
+/* ================================================================== */
+
+static int
+testSiblingBranchGroupByRoot(Ndb *ndb, MYSQL *conn)
+{
+  printf("Test 12: Sibling branch + GROUP BY root (scan→LEFT+LEFT→LEFT) ... ");
+  fflush(stdout);
+
+  std::map<Int32, std::pair<Int64, Int64>> expected = {
+    {10, {1, 25}},    /* order 1 → item → shipment(25) */
+    {20, {1, 0}},     /* order 2 → item → no shipment */
+    {30, {1, 0}},     /* order 3 → no item */
+    {40, {1, 0}}      /* order 4 → no item */
+  };
+
+  /* Verify with MySQL */
+  if (verifyGroupByWithMysql(conn, "Test 12",
+        "SELECT o.priority, COUNT(*), COALESCE(SUM(s.cost),0) "
+        "FROM oj13_orders o "
+        "LEFT JOIN oj13_details d ON d.order_id = o.id "
+        "LEFT JOIN oj13_items i ON i.order_id = o.id "
+        "LEFT JOIN oj13_shipment s ON s.item_id = i.order_id "
+        "GROUP BY o.priority ORDER BY o.priority",
+        expected) != 0) {
+    printf("FAILED (MySQL verification)\n");
+    return -1;
+  }
+
+  /* Build NDB pushdown query */
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(OJ13_ORDERS);
+  dict->invalidateTable(OJ13_DETAILS);
+  dict->invalidateTable(OJ13_ITEMS);
+  dict->invalidateTable(OJ13_SHIPMENT);
+  const NdbDictionary::Table *ordersTab = dict->getTable(OJ13_ORDERS);
+  const NdbDictionary::Table *detailsTab = dict->getTable(OJ13_DETAILS);
+  const NdbDictionary::Table *itemsTab = dict->getTable(OJ13_ITEMS);
+  const NdbDictionary::Table *shipTab = dict->getTable(OJ13_SHIPMENT);
+  if (ordersTab == nullptr || detailsTab == nullptr ||
+      itemsTab == nullptr || shipTab == nullptr) {
+    printf("FAILED (table lookup: %s)\n", dict->getNdbError().message);
+    return -1;
+  }
+
+  const NdbDictionary::Column *priorityCol = ordersTab->getColumn("priority");
+  if (priorityCol == nullptr) {
+    printf("FAILED (column lookup: priority)\n");
+    return -1;
+  }
+
+  /* Aggregation: GROUP BY orders.priority, COUNT(*), SUM(shipment.cost) */
+  NdbAggregator agg(shipTab);
+  if (!agg.GroupByLinked(0, priorityCol) ||
+      !agg.LoadUint64(1, 0) ||
+      !agg.LoadColumn("cost", 1) ||
+      !agg.Count(0, 0) ||
+      !agg.Sum(1, 1) ||
+      !agg.Finalize()) {
+    printf("FAILED (agg program: %s)\n", agg.GetError().err_msg_);
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  if (qb == nullptr) {
+    printf("FAILED (NdbQueryBuilder::create)\n");
+    return -1;
+  }
+
+  /* Node 0: scan oj13_orders */
+  const NdbQueryTableScanOperationDef *ordersOp = qb->scanTable(ordersTab);
+  if (ordersOp == nullptr) {
+    printf("FAILED (scanTable: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  /* Node 1: lookup oj13_details (LEFT JOIN — sibling) */
+  const NdbQueryOperand *detKey[] = {
+    qb->linkedValue(ordersOp, "id"), nullptr
+  };
+  const NdbQueryLookupOperationDef *detOp =
+      qb->readTuple(detailsTab, detKey, nullptr);
+  if (detOp == nullptr) {
+    printf("FAILED (readTuple details: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  /* Node 2: lookup oj13_items (LEFT JOIN — agg path) */
+  const NdbQueryOperand *itemKey[] = {
+    qb->linkedValue(ordersOp, "id"), nullptr
+  };
+  const NdbQueryLookupOperationDef *itemOp =
+      qb->readTuple(itemsTab, itemKey, nullptr);
+  if (itemOp == nullptr) {
+    printf("FAILED (readTuple items: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  /* Node 3: lookup oj13_shipment (LEFT JOIN, aggregate leaf)
+   * Linked projection: orders.priority (from root, P_PARENT path) */
+  const NdbQueryOperand *shipKey[] = {
+    qb->linkedValue(itemOp, "order_id"), nullptr
+  };
+  NdbQueryOptions shipOpts;
+  shipOpts.setAggregation(agg);
+  const NdbLinkedOperand *prioLink = qb->linkedValue(ordersOp, "priority");
+  if (prioLink == nullptr) {
+    printf("FAILED (linkedValue priority: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  shipOpts.addLinkedProjection(prioLink);
+
+  const NdbQueryLookupOperationDef *shipOp =
+      qb->readTuple(shipTab, shipKey, &shipOpts);
+  if (shipOp == nullptr) {
+    printf("FAILED (readTuple shipment: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  if (trans == nullptr) {
+    printf("FAILED (startTransaction: %s)\n", ndb->getNdbError().message);
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbQuery *query = trans->createQuery(queryDef);
+  if (query == nullptr) {
+    printf("FAILED (createQuery: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    printf("FAILED (execute: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {}
+  if (outcome == NdbQuery::NextResult_error) {
+    printf("FAILED (nextResult: %s)\n", query->getNdbError().message);
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbAggregator *resultAgg = query->getAggregator();
+  if (resultAgg == nullptr) {
+    printf("FAILED (getAggregator returned nullptr)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  std::map<Int32, std::pair<Int64, Int64>> actual;
+  for (;;) {
+    NdbAggregator::ResultRecord rec = resultAgg->FetchResultRecord();
+    if (rec.end()) break;
+    NdbAggregator::Column grpValCol = rec.FetchGroupbyColumn();
+    Int32 grpVal = grpValCol.data_int32();
+    NdbAggregator::Result countRes = rec.FetchAggregationResult();
+    Int64 countVal = countRes.data_int64();
+    NdbAggregator::Result sumRes = rec.FetchAggregationResult();
+    Int64 sumVal = sumRes.data_int64();
+    actual[grpVal] = {countVal, sumVal};
+    V("  NDB: priority=%d COUNT=%lld SUM=%lld\n",
+      grpVal, (long long)countVal, (long long)sumVal);
+  }
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  if (actual.size() != expected.size()) {
+    printf("FAILED (expected %zu groups, got %zu)\n",
+           expected.size(), actual.size());
+    for (const auto &a : actual) {
+      printf("  got: priority=%d COUNT=%lld SUM=%lld\n",
+             a.first, (long long)a.second.first, (long long)a.second.second);
+    }
+    return -1;
+  }
+
+  for (const auto &e : expected) {
+    auto it = actual.find(e.first);
+    if (it == actual.end() ||
+        it->second.first != e.second.first ||
+        it->second.second != e.second.second) {
+      printf("FAILED (group priority=%d mismatch)\n", e.first);
+      return -1;
+    }
+  }
+
+  printf("OK (4 groups)\n");
+  return 0;
+}
+
 /* ------------------------------------------------------------------ */
 /* Usage and main                                                      */
 /* ------------------------------------------------------------------ */
@@ -3560,6 +4134,25 @@ int main(int argc, char **argv)
               exitCode = 1;
             }
             dropTest10Tables(conn);
+          }
+
+          /* Tests 11-12: sibling outer join branches (shared tables) */
+          if (shouldRun(11) || shouldRun(12)) {
+            if (createTest11Tables(conn) == 0 &&
+                insertTest11Data(conn) == 0) {
+              /* Test 11: sibling branch + GROUP BY intermediate */
+              if (shouldRun(11)) {
+                if (testSiblingBranch(&ndb, conn) != 0) exitCode = 1;
+              }
+              /* Test 12: sibling branch + GROUP BY root */
+              if (shouldRun(12)) {
+                if (testSiblingBranchGroupByRoot(&ndb, conn) != 0)
+                  exitCode = 1;
+              }
+            } else {
+              exitCode = 1;
+            }
+            dropTest11Tables(conn);
           }
         }
 

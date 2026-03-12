@@ -847,15 +847,14 @@ the way down. No additional changes needed beyond Phase 1.
 |-------|-------|--------|--------|
 | 1 | T_AGGREGATE_ANCESTOR flag + propagateNullToAggLeaf() | Medium | **DONE** |
 | 2 | Completion-time match tracking for lookup ancestors | Medium | **DONE** |
-| 3 | 4-way mixed join (INNER blockers) | Small | Already works (Phase 1) |
-| 4 | Scan-scan intermediate nodes | Large | Not started |
-| 5 | General linked projection | Medium | Not started |
-| 6 | Complex topologies | Small | Not started |
+| 3 | 4-way mixed join (INNER blockers) | Small | **DONE** (works via Phase 1) |
+| 4 | Scan-scan intermediate nodes | Large | **DONE** (4 commits) |
+| 5 | General linked projection (nullNodes bitmask) | Medium | **DONE** |
+| 6 | Complex topologies (sibling branches) | Small | Not started |
 
-**Phase 1 + 2 are implemented and compile.** Combined, they handle both NULL
-key and KEYREF(626) cases for intermediate lookup ancestors via completion-time
-match tracking. Phase 3 works automatically (INNER JOIN blocks propagation).
-Phase 4 is the major follow-on work for scan intermediate nodes.
+All phases through 5 are complete. Phase 4 added scan intermediate null
+propagation (NULL key + completion-time). Phase 5 added Uint64 nullNodes
+bitmask for intermediate column linked projections in expand()/appendFromParent().
 
 ---
 
@@ -881,3 +880,122 @@ nodes requires careful design.
 
 **Low risk**: Phase 5 (linked projections) — modifying `expand()` with a null
 bitmask is conceptually simple but touches a foundational function.
+
+---
+
+## Phase 6: Complex Topologies — Implementation Plan
+
+### Analysis
+
+Phase 6 verifies that sibling branches (query trees with branching, not just
+linear chains) work correctly with aggregation. After code analysis, **no DBSPJ
+code changes are needed** — the existing implementation is already correct:
+
+1. **T_AGGREGATE_ANCESTOR flag-setting** walks UP from the single aggregate leaf
+   via `m_parentPtrI`. Only nodes on the direct path from root to leaf get the
+   flag. Sibling branches are NOT marked, so they don't interfere with
+   aggregation null propagation.
+
+2. **propagateNullToAggLeaf()** walks DOWN through `m_child_nodes` following
+   only children with `T_AGGREGATE_ANCESTOR` or `T_AGGREGATE_LEAF`. Siblings
+   without these flags are skipped correctly.
+
+3. **handleAggAncestorComplete()** is gated by `T_AGGREGATE_ANCESTOR`. Nodes
+   on sibling branches don't have the flag, so they never trigger completion-time
+   null injection.
+
+4. **Sibling nodes' null extension** is handled by MySQL's client-side outer
+   join processing for non-aggregation columns. The aggregation path is unaffected.
+
+### Step 6.1: Sibling Outer Join Test
+
+**Test 11**: Sibling outer join branches with aggregation on one branch.
+
+Query tree topology:
+```
+oj13_orders (scan, root)
+  ├── oj13_details (lookup, LEFT JOIN) — sibling, NOT on aggregation path
+  └── oj13_items (lookup, LEFT JOIN, T_AGGREGATE_ANCESTOR)
+        └── oj13_shipment (lookup, LEFT JOIN, T_AGGREGATE_LEAF)
+```
+
+SQL equivalent:
+```sql
+SELECT i.category, COUNT(*), COALESCE(SUM(s.cost), 0)
+FROM oj13_orders o
+LEFT JOIN oj13_details d ON d.order_id = o.id     -- sibling branch
+LEFT JOIN oj13_items i ON i.order_id = o.id        -- aggregation path
+LEFT JOIN oj13_shipment s ON s.item_id = i.order_id
+GROUP BY i.category
+```
+
+This tests that:
+- The sibling (oj13_details) having no match for some orders does NOT affect
+  the aggregation through oj13_items → oj13_shipment
+- Orders with no items correctly produce NULL category groups
+- The T_AGGREGATE_ANCESTOR flag is NOT set on oj13_details
+
+**Schema:**
+```sql
+CREATE TABLE oj13_orders   (id INT PK, priority INT) ENGINE=NDB;
+CREATE TABLE oj13_details  (order_id INT PK, note INT) ENGINE=NDB;
+CREATE TABLE oj13_items    (order_id INT PK, category INT) ENGINE=NDB;
+CREATE TABLE oj13_shipment (item_id INT PK, cost BIGINT) ENGINE=NDB;
+```
+
+**Data:**
+- orders: (1,10),(2,20),(3,30),(4,40)
+- details: (1,100),(3,300) — orders 2,4 have no detail (sibling no-match)
+- items: (1,500),(2,600) — orders 3,4 have no item (agg path no-match)
+- shipment: (1,25) — item 2 has no shipment (leaf no-match)
+
+**Expected results (GROUP BY i.category):**
+- category=500: order 1 → item(500) → shipment(25) → COUNT=1, SUM=25
+- category=600: order 2 → item(600) → no shipment → COUNT=1, SUM=0
+- category=NULL: orders 3,4 → no item → COUNT=2, SUM=0
+
+### Step 6.2: Sibling With GROUP BY on Root Column
+
+**Test 12**: Same sibling topology but GROUP BY on root column to verify
+linked projections from root work correctly when a sibling branch exists.
+
+Same schema as Test 11, but:
+```sql
+SELECT o.priority, COUNT(*), COALESCE(SUM(s.cost), 0)
+FROM oj13_orders o
+LEFT JOIN oj13_details d ON d.order_id = o.id
+LEFT JOIN oj13_items i ON i.order_id = o.id
+LEFT JOIN oj13_shipment s ON s.item_id = i.order_id
+GROUP BY o.priority
+```
+
+**Expected results (GROUP BY o.priority):**
+- priority=10: order 1 → item → shipment(25) → COUNT=1, SUM=25
+- priority=20: order 2 → item → no shipment → COUNT=1, SUM=0
+- priority=30: order 3 → no item → COUNT=1, SUM=0
+- priority=40: order 4 → no item → COUNT=1, SUM=0
+
+### Step 6.3: Verification (No Code Changes)
+
+After tests pass, update plan status to DONE.
+
+### Implementation Order
+
+| Step | Description | Type |
+|------|-------------|------|
+| 6.1 | Test 11: sibling branch + aggregation | Test only |
+| 6.2 | Test 12: sibling branch + GROUP BY root | Test only |
+| 6.3 | Update plan status | Documentation |
+
+### Files to Modify
+
+| File | Changes |
+|------|---------|
+| `testMultiOuterJoinAggNdbApi.cpp` | Add Tests 11-12 (sibling branch topology) |
+| `chained_outer_join_plan.md` | Update Phase 6 status to DONE |
+
+### Risk
+
+**Very low.** No DBSPJ code changes. The tests verify that existing flag-setting
+and walk-down logic correctly ignores sibling branches. If any test fails, it
+would indicate a previously unknown bug in the flag propagation or tree traversal.

@@ -3901,7 +3901,25 @@ void Dbspj::execTRANSID_AI(Signal *signal) {
   ndbassert(checkRequest(requestPtr));
   ndbassert(
       !requestPtr.p->m_completed_tree_nodes.get(treeNodePtr.p->m_node_no));
-  ndbassert(treeNodePtr.p->m_bits & TreeNode::T_EXPECT_TRANSID_AI);
+
+  /**
+   * Unexpected TRANSID_AI: node didn't request any column reads.
+   * This happens for dead sibling nodes in aggregation queries — nodes
+   * not on the aggregation path with no children and no user projection.
+   * DBLQH still sends TRANSID_AI for the lookup, but lookup_send()
+   * didn't count it in m_outstanding. Consume without processing to
+   * avoid m_outstanding underflow. LQHKEYCONF/SCAN_FRAGCONF handles
+   * the expected count.
+   */
+  if (unlikely(
+          !(treeNodePtr.p->m_bits & TreeNode::T_EXPECT_TRANSID_AI))) {
+    jam();
+    if (signal->getNoOfSections() > 0) {
+      SectionHandle handle(this, signal);
+      releaseSections(handle);
+    }
+    return;
+  }
 
   DEBUG("execTRANSID_AI"
         << ", node: " << treeNodePtr.p->m_node_no
