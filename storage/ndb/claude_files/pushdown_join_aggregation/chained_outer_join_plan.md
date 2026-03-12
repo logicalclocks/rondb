@@ -401,18 +401,99 @@ filters null rows).
 
 ---
 
-## Phase 4: Scan-Scan Intermediate Nodes
+## Phase 4: Scan Intermediate Nodes — IMPLEMENTATION PLAN
 
-Extend to handle cases where intermediate nodes are scans (not lookups).
+### Overview
 
-### Step 4.1: Modify `scanFrag_parent_row` (NULL Key Path)
+Extend chained outer join aggregation to handle cases where intermediate nodes
+are **scans** (scanIndex via NdbQueryIndexBound), not lookups. Currently only
+lookup intermediates work (Phase 2). Tests 4 and 6 in testMultiOuterJoinAggNdbApi
+demonstrate the gap:
 
-**File: `DbspjMain.cpp`, line ~7364**
+- Test 4: `scan → LEFT scan → LEFT lookup [leaf]` — scan intermediate, 2 missing groups
+- Test 6: `scan → LEFT scan → LEFT scan → LEFT lookup [leaf]` — two scan intermediates
 
-Same pattern as Step 1.3: add `T_AGGREGATE_ANCESTOR` check after existing
-`T_AGGREGATE_LEAF` check:
+### Background: Why Lookup Intermediates Work but Scan Intermediates Don't
+
+For **lookup** intermediates (Phase 2), `handleAggAncestorLookupComplete()` fires
+when the lookup node's `m_lookup_data.m_outstanding` reaches 0. At that point,
+TRANSID_AI match tracking has already set `m_matched` bits on the scan ancestor's
+buffered rows for every lookup that succeeded. Unmatched rows get null injection
+via `propagateNullToAggLeaf()`.
+
+For **scan** intermediates, the analogous completion point is when
+`data.m_frags_complete == data.m_fragCount` in `scanFrag_execSCAN_FRAGCONF()`.
+Currently this only triggers null injection for `T_AGGREGATE_LEAF` scan nodes
+(line 9116). The existing match tracking mechanisms are:
+
+1. **Bitmask exchange** (`JOIN_AGG_MATCH_REQ/CONF`): DBLQH tracks which ranges
+   matched using the aggregate state. This is DBLQH-side tracking — only works
+   for the aggregate leaf because only the leaf has a DBLQH aggregate state.
+   **Cannot be used for intermediate scans.**
+
+2. **Inline match** (`T_AGG_INLINE_MATCH`): TRANSID_AI processing in DBSPJ
+   sets `m_matched->set(treeNodePtr.p->m_node_no)` on the scan ancestor's
+   buffered rows (line 4052 in `execTRANSID_AI`). This is DBSPJ-side tracking
+   and already works per-node. **Can be used for intermediate scans.**
+
+3. **RT_AGG_ANCESTOR_MATCH**: The mechanism added in Phase 2 for lookup
+   intermediates. Also sets `m_matched` bits via TRANSID_AI. **Already works
+   for scan intermediates** — TRANSID_AI from scan child rows flows through
+   the same match tracking code.
+
+**Key insight**: The `m_matched` bits on the scan ancestor's rows are ALREADY
+being set correctly for scan intermediate nodes (via TRANSID_AI processing in
+`execTRANSID_AI`). The only missing piece is the **completion-time check** —
+iterating unmatched rows and calling `propagateNullToAggLeaf()` when the
+intermediate scan finishes.
+
+### Prerequisites and Constraints
+
+1. **Inline match mode required**: The bitmask exchange protocol
+   (`JOIN_AGG_MATCH_REQ/CONF`) cannot be used for intermediates because it
+   relies on DBLQH aggregate state which only exists for the leaf. All
+   intermediate scan ancestor null tracking must use inline match
+   (`m_matched` bits set via TRANSID_AI).
+
+2. **Scan ancestor must have T_BUFFER_MATCH**: The scan ancestor (root scan)
+   must buffer rows with match bitmasks. This is already set up in
+   `validateAggregateFlags()` when `RT_AGG_ANCESTOR_MATCH` is enabled.
+
+3. **Parent match check required**: Same as Phase 2 — deeper intermediates
+   must check that their parent's match bit is set before injecting, to
+   prevent duplicate injection when a higher-level node already handled
+   the null row.
+
+4. **Multi-batch considerations**: Scan children may span multiple batches
+   via SCAN_NEXTREQ. The completion point (`m_frags_complete == m_fragCount`)
+   is final — it fires exactly once when all fragments report "no more rows."
+   This is safe for null injection because all scan results have been
+   delivered by that point.
+
+5. **Scan-scan scheduling**: In RT_MULTI_SCAN queries, scan children are
+   deferred (TN_EXEC_WAIT) and resumed (TN_RESUME_NODE) when the parent
+   scan completes a batch. The match bits are checked in `resumeBufferedNode()`
+   for scheduling purposes. Phase 4 null injection should happen AFTER the
+   intermediate scan's own completion, not during resume.
+
+### Step 4.1: scanFrag_parent_row — NULL Key Path
+
+**File: `DbspjMain.cpp`, `scanFrag_parent_row()` line ~7669**
+
+When a scan child's key expansion produces NULL values (`hasNull == true`),
+the scan is known to produce zero matches. Currently only `T_AGGREGATE_LEAF`
+gets null injection here. Add `T_AGGREGATE_ANCESTOR` handling:
 
 ```cpp
+// Existing code (line 7681):
+if ((treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) &&
+    !(treeNodePtr.p->m_bits & TreeNode::T_INNER_JOIN)) {
+  jam();
+  err = sendJoinAggNullRow(signal, requestPtr, treeNodePtr, rowRef);
+  if (unlikely(err != 0)) break;
+}
+
+// ADD after the existing block:
 if ((treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_ANCESTOR) &&
     !(treeNodePtr.p->m_bits & TreeNode::T_INNER_JOIN)) {
   jam();
@@ -421,33 +502,283 @@ if ((treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_ANCESTOR) &&
 }
 ```
 
-### Step 4.2: Modify `scanFrag_complete` for Intermediate Scan Nodes
+**Note**: For the NULL key case, we have `rowRef` available (the parent row
+that triggered this scan child). `propagateNullToAggLeaf()` walks down to
+the aggregate leaf and computes the correct `parentLevelAdjust` by measuring
+the distance from the leaf's parent to the scan ancestor.
 
-When an intermediate scan node with `T_AGGREGATE_ANCESTOR` (not `T_AGGREGATE_LEAF`)
-completes, it must check for parent rows that had no child scan match and
-propagate null rows to the aggregate leaf.
+**Important**: The `rowRef` here may come from the scan ancestor (root scan)
+or from an intermediate scan. `propagateNullToAggLeaf()` already handles both
+cases correctly — `parentLevelAdjust` is computed from the leaf's perspective,
+not from the unmatched node's.
 
-This is similar to the existing scan completion logic at line 8799, but for
-ancestors instead of leaves. The match tracking (bitmask exchange or inline
-match) must work per-intermediate-node.
+### Step 4.2: scanFrag_execSCAN_FRAGCONF — Completion-Time Null Injection
 
-**This is significantly more complex** because:
-- The bitmask exchange protocol (`JOIN_AGG_MATCH_REQ/CONF`) is specific to
-  the aggregate leaf's DBLQH state
-- Inline match bits (`m_matched`) are set per-node, so they can track intermediate
-  nodes too
-- A new bitmask exchange mechanism (or reuse of inline match) is needed for
-  intermediate scan ancestors
+**File: `DbspjMain.cpp`, `scanFrag_execSCAN_FRAGCONF()` line ~9116**
 
-**Recommendation**: For Phase 4, require `T_AGG_INLINE_MATCH` mode for queries
-with intermediate outer join scan nodes. The inline match bits already support
-per-node tracking via `m_matched->set(treeNodePtr.p->m_node_no)`.
+Add a new code block **after** the existing `T_AGGREGATE_LEAF` completion check
+(or restructure to handle both). When an intermediate scan with
+`T_AGGREGATE_ANCESTOR` completes all fragments:
 
-### Step 4.3: Add New Tests
+```cpp
+// After the existing T_AGGREGATE_LEAF block (line 9116-9215):
+if ((treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_ANCESTOR) &&
+    !(treeNodePtr.p->m_bits & TreeNode::T_INNER_JOIN) &&
+    treeNodePtr.p->m_scanAncestorPtrI != RNIL &&
+    data.m_frags_complete == data.m_fragCount) {
+  jam();
 
-Add scan-scan intermediate outer join tests to `testMultiOuterJoinAggNdbApi`:
-- Test 3: `scan → LEFT scan → LEFT lookup [leaf]` (requires index on intermediate)
-- Test 4: `scan → LEFT scan → LEFT scan [leaf]` (all scans)
+  Ptr<TreeNode> scanAncestorPtr;
+  ndbrequire(m_treenode_pool.getPtr(scanAncestorPtr,
+                                    treeNodePtr.p->m_scanAncestorPtrI));
+
+  if (scanAncestorPtr.p->m_bits & TreeNode::T_BUFFER_MATCH) {
+    jam();
+
+    // Find nearest outer join T_AGGREGATE_ANCESTOR parent (same as Phase 2)
+    Uint32 parentNodeNo = RNIL;
+    {
+      Ptr<TreeNode> walkPtr;
+      Uint32 parentPtrI = treeNodePtr.p->m_parentPtrI;
+      while (parentPtrI != RNIL && parentPtrI != scanAncestorPtr.i) {
+        ndbrequire(m_treenode_pool.getPtr(walkPtr, parentPtrI));
+        if ((walkPtr.p->m_bits & TreeNode::T_AGGREGATE_ANCESTOR) &&
+            !(walkPtr.p->m_bits & TreeNode::T_INNER_JOIN)) {
+          parentNodeNo = walkPtr.p->m_node_no;
+          break;
+        }
+        parentPtrI = walkPtr.p->m_parentPtrI;
+      }
+    }
+
+    RowIterator iter;
+    for (first(scanAncestorPtr.p->m_rows, iter);
+         !iter.isNull(); next(iter)) {
+      jam();
+      RowPtr parentRow;
+      parentRow.m_src_node_ptrI = scanAncestorPtr.i;
+      setupRowPtr(scanAncestorPtr, parentRow, iter.m_base.m_row_ptr);
+
+      if (parentRow.m_matched == nullptr ||
+          !parentRow.m_matched->get(treeNodePtr.p->m_node_no)) {
+        jam();
+        // Parent match check: skip if a higher-level ancestor
+        // already handled null injection for this row
+        if (parentNodeNo != RNIL &&
+            (parentRow.m_matched == nullptr ||
+             !parentRow.m_matched->get(parentNodeNo))) {
+          jam();
+          continue;
+        }
+
+        Uint32 err = propagateNullToAggLeaf(signal, requestPtr,
+                                             treeNodePtr, parentRow);
+        if (unlikely(err != 0)) {
+          abort(signal, requestPtr, err);
+          return;
+        }
+      }
+    }
+  }
+}
+```
+
+**Key differences from the T_AGGREGATE_LEAF path**:
+
+1. Uses `propagateNullToAggLeaf()` instead of `sendJoinAggNullRow()` — walks
+   down the tree to find the leaf, checking for INNER JOIN blockers.
+2. Includes parent match check (same as `handleAggAncestorLookupComplete()` in
+   Phase 2) to prevent duplicate injection.
+3. Does NOT use bitmask exchange — relies entirely on `m_matched` bits set by
+   TRANSID_AI processing.
+4. Does NOT need `T_AGG_INLINE_MATCH` to be explicitly set on the intermediate
+   scan. The `m_matched` bits are already set by the general TRANSID_AI match
+   tracking code enabled by `RT_AGG_ANCESTOR_MATCH`.
+
+**Completion timing**: `data.m_frags_complete == data.m_fragCount` means ALL
+fragments of this scan have reported completion. No more TRANSID_AI will arrive
+for this scan. All match bits are final. This is the correct point to iterate
+unmatched rows.
+
+**No double-invocation risk**: Unlike lookup intermediates (where m_outstanding
+can oscillate to 0 multiple times), scan completion fires ONCE — when all
+fragments are done. The scan never restarts within the same batch cycle. So
+the null injection happens exactly once per intermediate scan per batch.
+
+### Step 4.3: validateAggregateFlags — Ensure Match Tracking for Scan Intermediates
+
+**File: `DbspjMain.cpp`, `validateAggregateFlags()` line ~1837**
+
+The current code already handles scan intermediates in the second loop
+(which sets `T_BUFFER_ROW | T_BUFFER_MAP | T_BUFFER_MATCH` on the scan ancestor
+and `RT_AGG_ANCESTOR_MATCH` on the request). However, verify that:
+
+1. The loop covers scan nodes with `T_AGGREGATE_ANCESTOR` (not just lookup nodes).
+   The current condition is:
+   ```cpp
+   if ((treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_ANCESTOR) &&
+       !(treeNodePtr.p->m_bits & TreeNode::T_INNER_JOIN))
+   ```
+   This correctly matches both scan and lookup intermediates.
+
+2. The `break` after the first match still makes sense. Currently it breaks
+   after finding the first (closest to root) outer join ancestor. With scan
+   intermediates, there may be multiple scan intermediates at different levels.
+   All of them share the same scan ancestor (the root scan), so one
+   `T_BUFFER_MATCH` setup is sufficient.
+
+3. `RT_AGG_ANCESTOR_MATCH` causes TRANSID_AI match tracking for ALL nodes
+   (scan and lookup alike). This is already the case — the check at line 4031
+   is `(requestPtr.p->m_bits & (RT_MULTI_SCAN | RT_AGG_ANCESTOR_MATCH))`.
+
+**Expected result**: No code changes needed in `validateAggregateFlags()`.
+The existing Phase 2 setup already covers scan intermediates.
+
+### Step 4.4: Verify TRANSID_AI Match Tracking for Scan Children
+
+The TRANSID_AI match tracking in `execTRANSID_AI` (line 4030-4054) uses
+`treeNodePtr.p->m_scanAncestorPtrI` to find the scan ancestor and
+`scanAncestorRow.m_src_correlation >> 16` to find the row position.
+
+For a scan child (scanIndex), when a matching row is found, LDM sends
+TRANSID_AI to DBSPJ with the child's treeNode and correlation. The correlation
+includes the parent row position from the SCAN_FRAGREQ range key (set by
+`scanFrag_fixupBound()` which encodes `corrVal` from `rowRef.m_src_correlation`).
+
+**Verification needed**: Confirm that:
+1. TRANSID_AI for scan child rows correctly sets `m_matched` bits on the scan
+   ancestor's buffered rows.
+2. The `corrVal >> 16` extraction gives the correct row position for the SCAN
+   root's row buffer (not an intermediate scan's buffer).
+
+This should work because the correlation flows through the same chain as for
+lookup nodes: scan root row → `scanFrag_parent_row` → SCAN_FRAGREQ range key →
+LDM → TRANSID_AI → `execTRANSID_AI` → `m_matched->set()`.
+
+**For scan-scan-scan trees** (root scan → scan A → scan B → leaf), scan B's
+`m_scanAncestorPtrI` points to scan A (not the root scan). The match tracking
+code walks up through `scanAncestorPtrI` chain (line 4053:
+`scanAncestorPtrI = scanAncestorPtr.p->m_scanAncestorPtrI`). So scan B's
+TRANSID_AI would first set bits on scan A's buffered rows, then walk up to the
+root scan's buffered rows. This means the root scan's `m_matched` bits are set
+for BOTH scan A and scan B nodes.
+
+However, for the completion-time check in Step 4.2, the intermediate scan (A)
+uses `treeNodePtr.p->m_scanAncestorPtrI` which points to the ROOT scan. This
+is correct — it iterates root scan rows and checks if scan A's bit is set.
+
+**Potential issue**: In a scan-scan-scan tree, scan A's `m_scanAncestorPtrI` is
+the root scan. But for `propagateNullToAggLeaf()`, the `rowRef` comes from the
+root scan. The `parentLevelAdjust` computation walks from the leaf's parent up
+to `childPtr.p->m_scanAncestorPtrI` (the leaf's scan ancestor). If the leaf's
+scan ancestor is scan A (not the root), the `parentLevelAdjust` would be
+computed relative to scan A, but the rowRef comes from the root scan. This
+would be a mismatch.
+
+**Resolution**: For scan-scan-scan trees, `propagateNullToAggLeaf()` needs to
+use the same scan ancestor that the unmatched intermediate iterates. Since
+`handleAggAncestorLookupComplete` and the new scan completion code both iterate
+the root scan's rows, the rowRef is from the root scan. The
+`parentLevelAdjust` must be the distance from the leaf's parent to the ROOT
+scan (not to the leaf's scan ancestor). For test 4 (scan → LEFT scan → LEFT
+lookup [leaf]), the leaf's scan ancestor IS the scan intermediate (not the
+root), so `childPtr.p->m_scanAncestorPtrI` in `propagateNullToAggLeaf()` would
+give the wrong anchor.
+
+**Fix**: In `propagateNullToAggLeaf()`, compute `parentLevelAdjust` by walking
+from `current` (the leaf's parent) up to the node whose `.i` matches
+`rowRef.m_src_node_ptrI` (the actual source of the rowRef), instead of walking
+up to the leaf's scan ancestor. This is already correct because the current
+implementation walks until `walkPtr.i == scanAncestorPtr.i`, and for the
+intermediate scan completion the rowRef comes from the scan ancestor that was
+iterated (which IS `scanAncestorPtrI` of the intermediate scan, i.e., the
+root scan). BUT for test 6 with two scan intermediates (root → scan A → scan B
+→ leaf), scan B's m_scanAncestorPtrI is scan A. If scan A's completion handler
+iterates root scan rows and passes rowRef from root scan, then
+`propagateNullToAggLeaf()` would walk to scan B (leaf's parent), then up to the
+leaf's scan ancestor (scan A), and compute levelAdjust = distance to scan A.
+But rowRef is from root scan, not scan A!
+
+**Corrected fix**: `propagateNullToAggLeaf()` should compute `parentLevelAdjust`
+by walking from `current` to `rowRef.m_src_node_ptrI` (the actual row source),
+NOT to `childPtr.p->m_scanAncestorPtrI`. Change the walk loop:
+
+```cpp
+// CURRENT code (walks to leaf's scan ancestor):
+ndbrequire(m_treenode_pool.getPtr(scanAncestorPtr,
+                                   childPtr.p->m_scanAncestorPtrI));
+while (walkPtr.i != scanAncestorPtr.i) { ... }
+
+// FIXED code (walks to the rowRef's source node):
+while (walkPtr.i != rowRef.m_src_node_ptrI) {
+  levelAdjust++;
+  ndbrequire(walkPtr.p->m_parentPtrI != RNIL);
+  ndbrequire(m_treenode_pool.getPtr(walkPtr, walkPtr.p->m_parentPtrI));
+}
+```
+
+This is correct for ALL cases:
+- Lookup intermediates: rowRef from root scan, walks from leaf's parent to root
+- Scan intermediates: rowRef from root scan, walks from leaf's parent to root
+- Nested scan-scan: rowRef from root scan, walks from leaf's parent to root
+
+### Step 4.5: Tests (Already Written)
+
+Tests 4 and 6 in `testMultiOuterJoinAggNdbApi.cpp` already exist and currently
+report KNOWN LIMITATION. After Phase 4 implementation, they should report OK:
+
+- **Test 4**: scan → LEFT scan → LEFT lookup [leaf] (4 groups expected)
+- **Test 6**: scan → LEFT scan → LEFT scan → LEFT lookup [leaf] (3 groups expected)
+
+Update the test output messages from "KNOWN LIMITATION" to "FAILED" once the
+Phase 4 implementation is in place, or better, leave them as KNOWN LIMITATION
+detection and verify they now pass.
+
+### Implementation Order
+
+| Step | Description | Risk |
+|------|-------------|------|
+| 4.4  | Verify TRANSID_AI match tracking for scan children | Low — read/debug only |
+| 4.1  | NULL key path in scanFrag_parent_row | Low — mirrors lookup path |
+| 4.3  | Verify validateAggregateFlags covers scan intermediates | Low — likely no changes |
+| 4.2  | Completion-time null injection in scanFrag_execSCAN_FRAGCONF | Medium — new code path |
+| 4.4* | Fix propagateNullToAggLeaf to walk to rowRef source node | Medium — affects all callers |
+
+**Step 4.4\* (parentLevelAdjust fix)** is the most subtle. The change from
+walking to `childPtr.p->m_scanAncestorPtrI` to walking to
+`rowRef.m_src_node_ptrI` is correct for all existing callers because:
+- Phase 2 lookup intermediates: rowRef always comes from the scan ancestor,
+  and `childPtr.p->m_scanAncestorPtrI` == scan ancestor == `rowRef.m_src_node_ptrI`
+- Phase 4 scan intermediates: same relationship holds when iterating the root
+  scan's rows
+
+However, this needs careful testing with all existing tests (1-3, 5, 7) to
+ensure no regression.
+
+### Risk Assessment
+
+**Low risk**: Steps 4.1 and 4.3 are straightforward — they mirror existing
+patterns from Phase 2.
+
+**Medium risk**: Step 4.2 is new code in the scan completion path. The key
+difference from lookup intermediates is that scan completion fires EXACTLY
+ONCE (no oscillation risk), making it simpler than the lookup case.
+
+**Medium risk**: Step 4.4* (parentLevelAdjust fix) affects the core
+`propagateNullToAggLeaf()` function used by all callers. Must verify with
+all existing passing tests.
+
+**Low risk for multi-batch**: Scan intermediates complete when all fragments
+are done — this is a final state, not a transient one. No risk of
+re-triggering null injection in subsequent batches.
+
+### Verification Checklist
+
+1. Tests 1-3, 5, 7 in testMultiOuterJoinAggNdbApi still pass (no regression)
+2. Tests 1-17 in testOuterJoinAggNdbApi still pass (2-way outer join)
+3. Test 4 passes: scan → LEFT scan → LEFT lookup (4 groups)
+4. Test 6 passes: scan → LEFT scan → LEFT scan → LEFT lookup (3 groups)
+5. Test 7 still passes: scan → LEFT scan → INNER → LEFT (INNER blocks gap)
 
 ---
 
