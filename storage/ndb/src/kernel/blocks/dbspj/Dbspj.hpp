@@ -1648,7 +1648,7 @@ class Dbspj : public SimulatedBlock {
                             Uint32 parentLevelAdjust = 0);
   Uint32 propagateNullToAggLeaf(Signal *, Ptr<Request>, Ptr<TreeNode>,
                                 const RowPtr &);
-  Uint32 handleAggAncestorLookupComplete(Signal *, Ptr<Request>, Ptr<TreeNode>);
+  Uint32 handleAggAncestorComplete(Signal *, Ptr<Request>, Ptr<TreeNode>);
   void lookup_cleanup(Ptr<Request>, Ptr<TreeNode>);
 
   Uint32 handle_special_hash(Uint32 tableId, Uint32 dstHash[4],

@@ -4127,7 +4127,7 @@ void Dbspj::execTRANSID_AI(Signal *signal) {
     jam();
     // Inject null rows for unmatched parents of aggregate ancestor nodes
     if (treeNodePtr.p->isLookup()) {
-      Uint32 err = handleAggAncestorLookupComplete(
+      Uint32 err = handleAggAncestorComplete(
           signal, requestPtr, treeNodePtr);
       if (unlikely(err != 0)) {
         abort(signal, requestPtr, err);
@@ -5475,7 +5475,7 @@ void Dbspj::lookup_execLQHKEYREF(Signal *signal, Ptr<Request> requestPtr,
     jam();
     // Inject null rows for unmatched parents of aggregate ancestor nodes
     if (treeNodePtr.p->isLookup()) {
-      Uint32 err2 = handleAggAncestorLookupComplete(
+      Uint32 err2 = handleAggAncestorComplete(
           signal, requestPtr, treeNodePtr);
       if (unlikely(err2 != 0)) {
         abort(signal, requestPtr, err2);
@@ -5616,7 +5616,7 @@ void Dbspj::lookup_execLQHKEYCONF(Signal *signal, Ptr<Request> requestPtr,
     jam();
     // Inject null rows for unmatched parents of aggregate ancestor nodes
     if (treeNodePtr.p->isLookup()) {
-      Uint32 err = handleAggAncestorLookupComplete(
+      Uint32 err = handleAggAncestorComplete(
           signal, requestPtr, treeNodePtr);
       if (unlikely(err != 0)) {
         abort(signal, requestPtr, err);
@@ -5721,7 +5721,7 @@ void Dbspj::lookup_parent_row(Signal *signal, Ptr<Request> requestPtr,
         /**
          * Chained outer join: intermediate outer join ancestor has no match.
          * Don't inject null row inline - completion-time match tracking
-         * (handleAggAncestorLookupComplete) handles both NULL key and
+         * (handleAggAncestorComplete) handles both NULL key and
          * KEYREF(626) cases uniformly by iterating unmatched parent rows.
          * The match bit for this parent will NOT be set (no TRANSID_AI
          * arrives since no LQHKEYREQ was sent), so completion handler
@@ -5742,7 +5742,7 @@ void Dbspj::lookup_parent_row(Signal *signal, Ptr<Request> requestPtr,
           jam();
           // Inject null rows for unmatched parents of aggregate ancestors
           if (treeNodePtr.p->isLookup()) {
-            Uint32 err2 = handleAggAncestorLookupComplete(
+            Uint32 err2 = handleAggAncestorComplete(
                 signal, requestPtr, treeNodePtr);
             if (unlikely(err2 != 0)) {
               abort(signal, requestPtr, err2);
@@ -6069,7 +6069,7 @@ Uint32 Dbspj::propagateNullToAggLeaf(Signal *signal,
 }
 
 /**
- * handleAggAncestorLookupComplete()
+ * handleAggAncestorComplete()
  *
  * Called when all lookups for an intermediate outer join aggregate ancestor
  * node have completed (m_outstanding == 0). Iterates the scan ancestor's
@@ -6082,7 +6082,7 @@ Uint32 Dbspj::propagateNullToAggLeaf(Signal *signal,
  *
  * @return 0 on success, error code on failure
  */
-Uint32 Dbspj::handleAggAncestorLookupComplete(Signal *signal,
+Uint32 Dbspj::handleAggAncestorComplete(Signal *signal,
                                                Ptr<Request> requestPtr,
                                                Ptr<TreeNode> treeNodePtr) {
   jam();
@@ -6094,7 +6094,7 @@ Uint32 Dbspj::handleAggAncestorLookupComplete(Signal *signal,
     return 0;
   }
 
-  DEB_MATCH(("DBSPJ handleAggAncestorLookupComplete: node=%u",
+  DEB_MATCH(("DBSPJ handleAggAncestorComplete: node=%u",
              treeNodePtr.p->m_node_no));
 
   Ptr<TreeNode> scanAncestorPtr;
@@ -6159,7 +6159,7 @@ Uint32 Dbspj::handleAggAncestorLookupComplete(Signal *signal,
       }
 
       null_rows_sent++;
-      DEB_MATCH(("DBSPJ handleAggAncestorLookupComplete: "
+      DEB_MATCH(("DBSPJ handleAggAncestorComplete: "
                  "unmatched parent corr=0x%x -> propagate null",
                  parentRow.m_src_correlation));
 
@@ -6171,7 +6171,7 @@ Uint32 Dbspj::handleAggAncestorLookupComplete(Signal *signal,
       }
     }
   }
-  DEB_MATCH(("DBSPJ handleAggAncestorLookupComplete: "
+  DEB_MATCH(("DBSPJ handleAggAncestorComplete: "
              "null_rows_sent=%u", null_rows_sent));
   return 0;
 }
@@ -9230,6 +9230,21 @@ void Dbspj::scanFrag_execSCAN_FRAGCONF(Signal *signal, Ptr<Request> requestPtr,
           requestPtr.p->m_outstanding--;
           return;  // Defer completion to execJOIN_AGG_MATCH_CONF
         }
+      }
+    }
+
+    /**
+     * Intermediate outer join scan ancestor: when fully complete,
+     * inject null rows for parent rows that this scan never matched.
+     * Uses inline match tracking (m_matched bits set by TRANSID_AI).
+     */
+    if ((treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_ANCESTOR) &&
+        data.m_frags_complete == data.m_fragCount) {
+      jam();
+      Uint32 err = handleAggAncestorComplete(signal, requestPtr, treeNodePtr);
+      if (unlikely(err != 0)) {
+        abort(signal, requestPtr, err);
+        return;
       }
     }
 
