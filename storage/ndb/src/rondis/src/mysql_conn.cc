@@ -20,12 +20,17 @@
 #include "mysql_conn.h"
 #include "mysql_protocol.h"
 
+#include <cctype>
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <strings.h>
 #include <unistd.h>
 
 using namespace mysql_protocol;
+
+// Global RonSQL handler — set by main.cc
+MysqlRouterRonSQLHandler g_mysql_ronsql_handler = nullptr;
 
 // -----------------------------------------------------------------------
 // MysqlHandle
@@ -42,8 +47,10 @@ int MysqlHandle::CreateWorkerSpecificData(void** data) const {
 // -----------------------------------------------------------------------
 
 MysqlConnFactory::MysqlConnFactory(const char* backend_host,
-                                   uint16_t backend_port)
-    : backend_host_(backend_host), backend_port_(backend_port) {}
+                                   uint16_t backend_port,
+                                   int thread_id_offset)
+    : backend_host_(backend_host), backend_port_(backend_port),
+      thread_id_offset_(thread_id_offset) {}
 
 std::shared_ptr<pink::PinkConn> MysqlConnFactory::NewPinkConn(
     int connfd,
@@ -54,7 +61,8 @@ std::shared_ptr<pink::PinkConn> MysqlConnFactory::NewPinkConn(
   return std::make_shared<MysqlConn>(connfd, ip_port, thread,
                                      worker_specific_data,
                                      backend_host_.c_str(),
-                                     backend_port_);
+                                     backend_port_,
+                                     thread_id_offset_);
 }
 
 // -----------------------------------------------------------------------
@@ -62,8 +70,9 @@ std::shared_ptr<pink::PinkConn> MysqlConnFactory::NewPinkConn(
 // -----------------------------------------------------------------------
 
 MysqlConn::MysqlConn(int fd, const std::string& ip_port,
-                     pink::Thread* thread, void* /*worker_data*/,
-                     const char* backend_host, uint16_t backend_port)
+                     pink::Thread* thread, void* worker_data,
+                     const char* backend_host, uint16_t backend_port,
+                     int thread_id_offset)
     : PinkConn(fd, ip_port, thread),
       backend_fd_(-1),
       write_pos_(0),
@@ -71,7 +80,11 @@ MysqlConn::MysqlConn(int fd, const std::string& ip_port,
       should_close_(false),
       client_capabilities_(0),
       backend_host_(backend_host),
-      backend_port_(backend_port) {
+      backend_port_(backend_port),
+      worker_id_(thread_id_offset) {
+  if (worker_data != nullptr) {
+    worker_id_ = thread_id_offset + *static_cast<int*>(worker_data);
+  }
   if (!do_handshake()) {
     should_close_ = true;
   }
@@ -132,6 +145,49 @@ bool MysqlConn::do_handshake() {
         ((uint32_t)(uint8_t)payload[3] << 24);
   }
 
+  // Extract default database from auth response (HandshakeResponse41):
+  // After capabilities(4) + max_packet_size(4) + charset(1) + reserved(23)
+  // = offset 32 from payload start, then username (NUL-terminated),
+  // then auth data, then database (NUL-terminated, if CLIENT_CONNECT_WITH_DB)
+  static constexpr uint32_t CLIENT_CONNECT_WITH_DB = (1UL << 3);
+  if ((client_capabilities_ & CLIENT_CONNECT_WITH_DB) &&
+      auth_response.size() > HEADER_SIZE + 32) {
+    const char* p = auth_response.data() + HEADER_SIZE + 32;
+    const char* end = auth_response.data() + auth_response.size();
+    // Skip username (NUL-terminated)
+    while (p < end && *p != '\0') p++;
+    if (p < end) p++;  // skip NUL
+    // Skip auth data
+    if (p < end) {
+      // auth-response length depends on CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA
+      // or CLIENT_SECURE_CONNECTION. For simplicity, skip the auth data:
+      static constexpr uint32_t CLIENT_PLUGIN_AUTH_LENENC = (1UL << 21);
+      static constexpr uint32_t CLIENT_SECURE_CONNECTION = (1UL << 15);
+      if (client_capabilities_ & CLIENT_PLUGIN_AUTH_LENENC) {
+        const char* tmp = p;
+        uint64_t auth_len = read_lenenc_int(tmp, end);
+        p = tmp + auth_len;
+      } else if (client_capabilities_ & CLIENT_SECURE_CONNECTION) {
+        if (p < end) {
+          uint8_t auth_len = (uint8_t)*p++;
+          p += auth_len;
+        }
+      } else {
+        // NUL-terminated auth string
+        while (p < end && *p != '\0') p++;
+        if (p < end) p++;
+      }
+      // Now p points to the database name (NUL-terminated)
+      if (p < end) {
+        const char* db_start = p;
+        while (p < end && *p != '\0') p++;
+        if (p > db_start) {
+          current_database_.assign(db_start, p - db_start);
+        }
+      }
+    }
+  }
+
   // Forward auth response to backend
   if (!write_all(backend_fd_, auth_response.data(), auth_response.size())) {
     close(backend_fd_);
@@ -150,7 +206,6 @@ bool MysqlConn::do_handshake() {
 
     uint32_t payload_len = packet_length(pkt.data());
     if (payload_len == 0) {
-      // Empty packet — relay and continue
       write_all(fd(), pkt.data(), pkt.size());
       continue;
     }
@@ -158,7 +213,6 @@ bool MysqlConn::do_handshake() {
     uint8_t marker = (uint8_t)pkt[HEADER_SIZE];
 
     if (marker == OK_MARKER || marker == ERR_MARKER) {
-      // Final auth result — relay to client
       write_all(fd(), pkt.data(), pkt.size());
       if (marker == ERR_MARKER) {
         close(backend_fd_);
@@ -170,7 +224,6 @@ bool MysqlConn::do_handshake() {
     }
 
     // Auth continuation (AuthSwitchRequest, AuthMoreData, etc.)
-    // Relay to client and read client response
     if (!write_all(fd(), pkt.data(), pkt.size())) {
       close(backend_fd_);
       backend_fd_ = -1;
@@ -192,6 +245,76 @@ bool MysqlConn::do_handshake() {
   }
 }
 
+bool MysqlConn::is_select_query(const char* query, size_t query_len) {
+  // Skip leading whitespace
+  size_t i = 0;
+  while (i < query_len && std::isspace((unsigned char)query[i])) i++;
+  size_t remaining = query_len - i;
+  if (remaining < 6) return false;
+  // Case-insensitive check for "SELECT"
+  return (strncasecmp(query + i, "SELECT", 6) == 0 &&
+          (remaining == 6 || std::isspace((unsigned char)query[i + 6]) ||
+           query[i + 6] == '('));
+}
+
+void MysqlConn::track_database_change(uint8_t cmd,
+                                       const char* payload,
+                                       size_t len) {
+  if (cmd == COM_INIT_DB && len > 0) {
+    current_database_.assign(payload, len);
+    return;
+  }
+  if (cmd == COM_QUERY && len > 0) {
+    // Check for "USE <database>" statement
+    size_t i = 0;
+    while (i < len && std::isspace((unsigned char)payload[i])) i++;
+    if (i + 3 < len &&
+        strncasecmp(payload + i, "USE", 3) == 0 &&
+        std::isspace((unsigned char)payload[i + 3])) {
+      i += 4;
+      while (i < len && std::isspace((unsigned char)payload[i])) i++;
+      // Extract database name (may be backtick-quoted)
+      size_t db_start = i;
+      if (i < len && payload[i] == '`') {
+        db_start = ++i;
+        while (i < len && payload[i] != '`') i++;
+        current_database_.assign(payload + db_start, i - db_start);
+      } else {
+        while (i < len && !std::isspace((unsigned char)payload[i]) &&
+               payload[i] != ';') i++;
+        current_database_.assign(payload + db_start, i - db_start);
+      }
+    }
+  }
+}
+
+bool MysqlConn::try_ronsql(const char* query, size_t query_len, uint8_t seq) {
+  if (g_mysql_ronsql_handler == nullptr) {
+    return false;
+  }
+  if (current_database_.empty()) {
+    return false;
+  }
+
+  std::string result_tsv;
+  std::string error_msg;
+
+  bool ok = g_mysql_ronsql_handler(query, query_len,
+                                   current_database_.c_str(),
+                                   worker_id_,
+                                   result_tsv, error_msg);
+  if (!ok) {
+    // RonSQL failed — fall back to backend proxy
+    return false;
+  }
+
+  // Convert TSV result to MySQL wire protocol result set
+  response_buf_.clear();
+  write_pos_ = 0;
+  build_result_set_from_tsv(result_tsv, response_buf_, seq);
+  return true;
+}
+
 pink::ReadStatus MysqlConn::GetRequest() {
   if (should_close_) {
     return pink::kReadClose;
@@ -205,9 +328,7 @@ pink::ReadStatus MysqlConn::GetRequest() {
   char tmp_buf[16384];
   ssize_t n = read(fd(), tmp_buf, sizeof(tmp_buf));
   if (n == 0) {
-    // Client closed connection
     if (backend_fd_ >= 0) {
-      // Send COM_QUIT to backend
       char quit_pkt[5] = {1, 0, 0, 0, (char)COM_QUIT};
       write_all(backend_fd_, quit_pkt, 5);
     }
@@ -232,19 +353,42 @@ pink::ReadStatus MysqlConn::GetRequest() {
     return pink::kReadHalf;
   }
 
-  // Extract command byte
+  // Extract command byte and sequence number
   uint8_t cmd = (uint8_t)request_buf_[HEADER_SIZE];
+  uint8_t seq = (uint8_t)request_buf_[3];
+
+  // Track database changes (USE, COM_INIT_DB) regardless of routing
+  if (cmd == COM_INIT_DB || cmd == COM_QUERY) {
+    const char* payload = request_buf_.data() + HEADER_SIZE + 1;
+    size_t payload_len = pkt_len - 1;
+    track_database_change(cmd, payload, payload_len);
+  }
+
+  // Try RonSQL for SELECT queries
+  if (cmd == COM_QUERY && pkt_len > 1) {
+    const char* query = request_buf_.data() + HEADER_SIZE + 1;
+    size_t query_len = pkt_len - 1;
+
+    if (is_select_query(query, query_len)) {
+      // Response sequence number starts at 1 (after the request seq 0)
+      if (try_ronsql(query, query_len, seq + 1)) {
+        // RonSQL handled it — consume packet and send response
+        request_buf_.erase(0, total_pkt_size);
+        set_is_reply(true);
+        return pink::kReadAll;
+      }
+      // RonSQL failed — fall through to backend proxy
+    }
+  }
 
   // Forward complete packet to backend (synchronous blocking I/O)
   if (backend_fd_ < 0 ||
       !write_all(backend_fd_, request_buf_.data(), total_pkt_size)) {
-    // Remove the consumed packet
     request_buf_.erase(0, total_pkt_size);
     should_close_ = true;
     return pink::kReadClose;
   }
 
-  // Remove the consumed packet (keep any trailing bytes for next packet)
   request_buf_.erase(0, total_pkt_size);
 
   if (cmd == COM_QUIT) {

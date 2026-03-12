@@ -75,5 +75,29 @@ uint64_t read_lenenc_int(const char*& pos, const char* end);
 void build_err_packet(std::string& out, uint8_t seq, uint16_t error_code,
                       const char* sql_state, const char* message);
 
+// Build a MySQL OK packet and append to out.
+void build_ok_packet(std::string& out, uint8_t seq);
+
+// Write a length-encoded integer to out.
+void write_lenenc_int(std::string& out, uint64_t val);
+
+// Write a length-encoded string to out.
+void write_lenenc_string(std::string& out, const char* s, size_t len);
+
+// Write a MySQL packet header at the given position in buf.
+// buf must already have space reserved.
+void write_packet_header(char* buf, uint32_t payload_len, uint8_t seq);
+
+// Build a complete MySQL text result set from TSV data (tab-separated,
+// first line = column headers, subsequent lines = rows).
+// Returns sequence number after last packet written.
+// If tsv is empty, builds an empty result set with zero columns.
+uint8_t build_result_set_from_tsv(const std::string& tsv,
+                                  std::string& out,
+                                  uint8_t start_seq);
+
+// Build an EOF packet and append to out.
+void build_eof_packet(std::string& out, uint8_t seq);
+
 } // namespace mysql_protocol
 #endif

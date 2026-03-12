@@ -25,8 +25,10 @@
 #include <cstring>
 #include <netdb.h>
 #include <netinet/tcp.h>
+#include <string>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <vector>
 
 namespace mysql_protocol {
 
@@ -273,6 +275,224 @@ int connect_to_backend(const char* host, uint16_t port) {
   setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
 
   return fd;
+}
+
+void write_lenenc_int(std::string& out, uint64_t val) {
+  if (val < 251) {
+    out.push_back((char)(uint8_t)val);
+  } else if (val < (1 << 16)) {
+    out.push_back((char)0xFC);
+    out.push_back((char)(val & 0xFF));
+    out.push_back((char)((val >> 8) & 0xFF));
+  } else if (val < (1 << 24)) {
+    out.push_back((char)0xFD);
+    out.push_back((char)(val & 0xFF));
+    out.push_back((char)((val >> 8) & 0xFF));
+    out.push_back((char)((val >> 16) & 0xFF));
+  } else {
+    out.push_back((char)0xFE);
+    for (int i = 0; i < 8; i++) {
+      out.push_back((char)((val >> (i * 8)) & 0xFF));
+    }
+  }
+}
+
+void write_lenenc_string(std::string& out, const char* s, size_t len) {
+  write_lenenc_int(out, len);
+  out.append(s, len);
+}
+
+void write_packet_header(char* buf, uint32_t payload_len, uint8_t seq) {
+  buf[0] = (char)(payload_len & 0xFF);
+  buf[1] = (char)((payload_len >> 8) & 0xFF);
+  buf[2] = (char)((payload_len >> 16) & 0xFF);
+  buf[3] = (char)seq;
+}
+
+void build_ok_packet(std::string& out, uint8_t seq) {
+  // Minimal OK packet: marker(1) + affected_rows(1) + last_insert_id(1)
+  //                    + status_flags(2) + warnings(2) = 7 bytes
+  uint32_t payload_len = 7;
+  char header[HEADER_SIZE];
+  write_packet_header(header, payload_len, seq);
+  out.append(header, HEADER_SIZE);
+  out.push_back((char)OK_MARKER);  // marker
+  out.push_back(0);                // affected_rows = 0
+  out.push_back(0);                // last_insert_id = 0
+  out.push_back(0x02);             // status: SERVER_STATUS_AUTOCOMMIT
+  out.push_back(0);                // status high byte
+  out.push_back(0);                // warnings low
+  out.push_back(0);                // warnings high
+}
+
+void build_eof_packet(std::string& out, uint8_t seq) {
+  // EOF packet: marker(1) + warnings(2) + status_flags(2) = 5 bytes
+  uint32_t payload_len = 5;
+  char header[HEADER_SIZE];
+  write_packet_header(header, payload_len, seq);
+  out.append(header, HEADER_SIZE);
+  out.push_back((char)EOF_MARKER);
+  out.push_back(0);     // warnings low
+  out.push_back(0);     // warnings high
+  out.push_back(0x02);  // status: SERVER_STATUS_AUTOCOMMIT
+  out.push_back(0);     // status high byte
+}
+
+// Build a column definition packet (COM_QUERY response, protocol 41)
+static void build_column_def_packet(std::string& out, uint8_t seq,
+                                    const char* name, size_t name_len) {
+  std::string payload;
+  // catalog "def"
+  write_lenenc_string(payload, "def", 3);
+  // schema (empty)
+  write_lenenc_string(payload, "", 0);
+  // table (empty)
+  write_lenenc_string(payload, "", 0);
+  // org_table (empty)
+  write_lenenc_string(payload, "", 0);
+  // name
+  write_lenenc_string(payload, name, name_len);
+  // org_name (same as name)
+  write_lenenc_string(payload, name, name_len);
+  // length of fixed-length fields [0c]
+  payload.push_back(0x0C);
+  // character_set: utf8_general_ci = 33 (0x21)
+  payload.push_back(0x21);
+  payload.push_back(0x00);
+  // column_length: 255 (arbitrary, for display)
+  payload.push_back((char)0xFF);
+  payload.push_back(0x00);
+  payload.push_back(0x00);
+  payload.push_back(0x00);
+  // column_type: MYSQL_TYPE_VAR_STRING = 253
+  payload.push_back((char)0xFD);
+  // flags: 0
+  payload.push_back(0x00);
+  payload.push_back(0x00);
+  // decimals: 0
+  payload.push_back(0x00);
+  // filler
+  payload.push_back(0x00);
+  payload.push_back(0x00);
+
+  char header[HEADER_SIZE];
+  write_packet_header(header, (uint32_t)payload.size(), seq);
+  out.append(header, HEADER_SIZE);
+  out.append(payload);
+}
+
+// Build a row packet from tab-separated values
+static void build_row_packet(std::string& out, uint8_t seq,
+                             const std::vector<std::string>& values) {
+  std::string payload;
+  for (const auto& val : values) {
+    if (val == "NULL" || val == "null") {
+      payload.push_back((char)0xFB);  // NULL marker
+    } else {
+      write_lenenc_string(payload, val.data(), val.size());
+    }
+  }
+  char header[HEADER_SIZE];
+  write_packet_header(header, (uint32_t)payload.size(), seq);
+  out.append(header, HEADER_SIZE);
+  out.append(payload);
+}
+
+// Split a line by tab character
+static std::vector<std::string> split_tab(const char* start, const char* end) {
+  std::vector<std::string> result;
+  const char* p = start;
+  const char* field_start = p;
+  while (p < end) {
+    if (*p == '\t') {
+      result.emplace_back(field_start, p - field_start);
+      field_start = p + 1;
+    }
+    p++;
+  }
+  result.emplace_back(field_start, p - field_start);
+  return result;
+}
+
+uint8_t build_result_set_from_tsv(const std::string& tsv,
+                                  std::string& out,
+                                  uint8_t start_seq) {
+  uint8_t seq = start_seq;
+
+  if (tsv.empty()) {
+    // Empty result — return OK packet
+    build_ok_packet(out, seq++);
+    return seq;
+  }
+
+  // Parse TSV: first line is headers, rest are rows
+  std::vector<std::vector<std::string>> rows;
+  std::vector<std::string> headers;
+
+  const char* data = tsv.data();
+  size_t data_len = tsv.size();
+  const char* line_start = data;
+
+  for (size_t i = 0; i <= data_len; i++) {
+    if (i == data_len || data[i] == '\n') {
+      if (i > 0 && data[i - 1] == '\r') {
+        // CRLF
+        if (line_start < data + i - 1) {
+          auto fields = split_tab(line_start, data + i - 1);
+          if (headers.empty()) {
+            headers = std::move(fields);
+          } else {
+            rows.push_back(std::move(fields));
+          }
+        }
+      } else {
+        if (line_start < data + i) {
+          auto fields = split_tab(line_start, data + i);
+          if (headers.empty()) {
+            headers = std::move(fields);
+          } else {
+            rows.push_back(std::move(fields));
+          }
+        }
+      }
+      line_start = data + i + 1;
+    }
+  }
+
+  if (headers.empty()) {
+    build_ok_packet(out, seq++);
+    return seq;
+  }
+
+  uint64_t column_count = headers.size();
+
+  // 1. Column count packet
+  {
+    std::string payload;
+    write_lenenc_int(payload, column_count);
+    char header[HEADER_SIZE];
+    write_packet_header(header, (uint32_t)payload.size(), seq++);
+    out.append(header, HEADER_SIZE);
+    out.append(payload);
+  }
+
+  // 2. Column definition packets
+  for (const auto& col_name : headers) {
+    build_column_def_packet(out, seq++, col_name.data(), col_name.size());
+  }
+
+  // 3. EOF after column definitions
+  build_eof_packet(out, seq++);
+
+  // 4. Row packets
+  for (const auto& row : rows) {
+    build_row_packet(out, seq++, row);
+  }
+
+  // 5. Final EOF
+  build_eof_packet(out, seq++);
+
+  return seq;
 }
 
 void build_err_packet(std::string& out, uint8_t seq, uint16_t error_code,

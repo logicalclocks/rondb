@@ -50,9 +50,12 @@ constexpr const char* const usageHelp =
 #include "rondb.h"
 #include "rdrs_rondb_connection_pool.hpp"
 #include "metrics.hpp"
+#include "rdrs_dal.hpp"
+#include "storage/ndb/src/ronsql/RonSQLCommon.hpp"
 
 #include <cstdio>
 #include <iostream>
+#include <sstream>
 #include <sys/errno.h>
 #include <unistd.h>
 #include <csignal>
@@ -170,6 +173,55 @@ static void rondis_end_cmd(void *metrics_ptr) {
   RondisEndPointMetricsUpdater *metricsUpdater =
     (RondisEndPointMetricsUpdater*)metrics_ptr;
   delete metricsUpdater;
+}
+
+// RonSQL handler for MySQL router — called from MysqlConn::try_ronsql()
+static bool mysql_router_ronsql_handler(
+    const char* query, size_t query_len,
+    const char* database, int thread_index,
+    std::string& result_out,
+    std::string& error_out) {
+
+  ArenaMalloc amalloc(RonSQLExecParams::ARENA_MALLOC_PAGE_SIZE);
+  RonSQLExecParams params;
+
+  params.sql_len = query_len;
+  params.sql_buffer = amalloc.alloc<char>(query_len + 2);
+  if (params.sql_buffer == nullptr) {
+    error_out = "Out of memory";
+    return false;
+  }
+  memcpy(params.sql_buffer, query, query_len);
+  params.sql_buffer[params.sql_len++] = '\0';
+  params.sql_buffer[params.sql_len++] = '\0';
+
+  params.amalloc = &amalloc;
+  params.explain_mode = RonSQLExecParams::ExplainMode::ALLOW;
+  params.output_format = RonSQLExecParams::OutputFormat::TEXT;
+
+  std::ostringstream out_stream;
+  std::ostringstream err_stream;
+  params.out_stream = &out_stream;
+  params.err_stream = &err_stream;
+
+  bool do_explain = false;
+  params.do_explain = &do_explain;
+
+  // Use the RDRS thread index offset for MySQL router threads.
+  // The MySQL router threads come after REST + Rondis + purge threads.
+  RS_Status status = ronsql_dal(database, &params,
+                                (unsigned int)thread_index);
+
+  if (status.http_code != SUCCESS) {
+    error_out = err_stream.str();
+    if (error_out.empty()) {
+      error_out = status.message;
+    }
+    return false;
+  }
+
+  result_out = out_stream.str();
+  return true;
 }
 
 static void handle_signal(int signal) {
@@ -332,20 +384,26 @@ int main(int argc, char *argv[]) {
   if (globalConfigs.rondis.enable) {
     num_rondis_threads = globalConfigs.rondis.numThreads;
   }
+  Uint32 num_mysql_router_threads = 0;
+  if (globalConfigs.mysqlRouter.enable) {
+    num_mysql_router_threads = globalConfigs.mysqlRouter.numThreads;
+  }
   Uint32 num_rdrs_threads = globalConfigs.rest.numThreads;
   Uint32 num_purge_threads = RDRSRonDBConnectionPool::kNoTTLPurgeThreads;
   Uint32 tot_num_threads =
-    num_rdrs_threads + num_rondis_threads + num_purge_threads;
+    num_rdrs_threads + num_rondis_threads +
+    num_mysql_router_threads + num_purge_threads;
   /**
-   * The RDRS server, the Rondis server and the TTL purge threads
-   * all share the same cluster connections. The RDRS server can also
-   * use the metadata connection to connect to another cluster.
+   * The RDRS server, the Rondis server, the MySQL router and the
+   * TTL purge threads all share the same cluster connections. The
+   * RDRS server can also use the metadata connection to connect to
+   * another cluster.
    *
    * The threads maintained in g_rondbConnection are using thread
    * ranges to map threads to Ndb objects. The first set of Ndb
    * objects are used by the RDRS server, the next set of Ndb objects
-   * are used by the Rondis server and the last Ndb objects are used
-   * by the TTL purge object.
+   * are used by the Rondis server, then the MySQL router threads,
+   * and the last Ndb objects are used by the TTL purge object.
    */
   // connect to rondb for all services
   g_rondbConnection = new RonDBConnection(globalConfigs.ronDB,
@@ -438,9 +496,19 @@ int main(int argc, char *argv[]) {
 
   // Start MySQL protocol router
   if (globalConfigs.mysqlRouter.enable) {
+    // Set up RonSQL handler for SELECT routing.
+    // MySQL router worker_ids are offset by the number of RDRS + Rondis
+    // threads so they map to distinct NDB objects in the connection pool.
+    g_mysql_ronsql_handler = mysql_router_ronsql_handler;
+
+    // MySQL router threads come after REST + Rondis threads in the
+    // NDB connection pool thread index space.
+    int mysql_router_thread_offset =
+        (int)(num_rdrs_threads + num_rondis_threads);
     g_mysql_router_conn_factory = new MysqlConnFactory(
         globalConfigs.mysqlRouter.backendHost.c_str(),
-        globalConfigs.mysqlRouter.backendPort);
+        globalConfigs.mysqlRouter.backendPort,
+        mysql_router_thread_offset);
     g_mysql_router_handle = new MysqlHandle();
 
     printf("Starting MySQL Router on %s:%u with %u threads "

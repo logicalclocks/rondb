@@ -25,11 +25,24 @@
 #include <string>
 #include <mutex>
 
+// Callback type for executing a RonSQL query.
+// Parameters: query, query_len, database, thread_index, result_out, error_out
+// Returns true on success (result in result_out as TSV), false on error.
+typedef bool (*MysqlRouterRonSQLHandler)(
+    const char* query, size_t query_len,
+    const char* database, int thread_index,
+    std::string& result_out,
+    std::string& error_out);
+
+// Global RonSQL handler — set by main.cc before starting the router.
+extern MysqlRouterRonSQLHandler g_mysql_ronsql_handler;
+
 class MysqlConn : public pink::PinkConn {
 public:
   MysqlConn(int fd, const std::string& ip_port,
             pink::Thread* thread, void* worker_data,
-            const char* backend_host, uint16_t backend_port);
+            const char* backend_host, uint16_t backend_port,
+            int thread_id_offset);
   ~MysqlConn() override;
 
   pink::ReadStatus GetRequest() override;
@@ -45,15 +58,21 @@ private:
   uint32_t client_capabilities_;
   std::string backend_host_;
   uint16_t backend_port_;
+  int worker_id_;
+  std::string current_database_;
 
   bool do_handshake();
   bool forward_and_relay();
   void send_err_to_client(const char* message);
+  bool try_ronsql(const char* query, size_t query_len, uint8_t seq);
+  bool is_select_query(const char* query, size_t query_len);
+  void track_database_change(uint8_t cmd, const char* payload, size_t len);
 };
 
 class MysqlConnFactory : public pink::ConnFactory {
 public:
-  MysqlConnFactory(const char* backend_host, uint16_t backend_port);
+  MysqlConnFactory(const char* backend_host, uint16_t backend_port,
+                   int thread_id_offset);
   std::shared_ptr<pink::PinkConn> NewPinkConn(
       int connfd, const std::string& ip_port,
       pink::Thread* thread, void* worker_specific_data,
@@ -61,6 +80,7 @@ public:
 private:
   std::string backend_host_;
   uint16_t backend_port_;
+  int thread_id_offset_;
 };
 
 class MysqlHandle : public pink::ServerHandle {
