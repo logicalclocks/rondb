@@ -1,0 +1,206 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+============================================================
+= Chained LEFT JOIN aggregation tests for RonSQL
+= These mirror the NDB API tests in testMultiOuterJoinAggNdbApi
+============================================================
+
+
+
+=== Test 1: 3-way LEFT JOIN with COUNT and SUM ===
+== Query ==
+SELECT d.dname, COUNT(*), SUM(t.hours)
+FROM dept3 AS d
+LEFT JOIN emp3 AS e ON e.dept_id = d.id
+LEFT JOIN task3 AS t ON t.emp_id = e.dept_id
+GROUP BY d.dname;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT d.dname, COUNT(*), SUM(t.hours)
+FROM dept3 AS d
+LEFT JOIN emp3 AS e ON e.dept_id = d.id
+LEFT JOIN task3 AS t ON t.emp_id = e.dept_id
+GROUP BY d.dname|
+dname	COUNT(*)	SUM(t.hours)
+10	1	8
+20	1	12
+30	1	NULL
+40	1	NULL
+50	1	NULL
+
+
+=== Test 2: 3-way LEFT JOIN with SUM on intermediate column ===
+== Query ==
+SELECT d.dname, COUNT(*), SUM(e.salary)
+FROM dept3 AS d
+LEFT JOIN emp3 AS e ON e.dept_id = d.id
+LEFT JOIN task3 AS t ON t.emp_id = e.dept_id
+GROUP BY d.dname;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT d.dname, COUNT(*), SUM(e.salary)
+FROM dept3 AS d
+LEFT JOIN emp3 AS e ON e.dept_id = d.id
+LEFT JOIN task3 AS t ON t.emp_id = e.dept_id
+GROUP BY d.dname|
+dname	COUNT(*)	SUM(e.salary)
+10	1	1000
+20	1	2000
+30	1	3000
+40	1	NULL
+50	1	NULL
+
+
+=== Test 3: 3-way LEFT JOIN with multiple aggregates ===
+== Query ==
+SELECT d.dname, COUNT(*), SUM(t.hours), MIN(t.hours), MAX(t.hours)
+FROM dept3 AS d
+LEFT JOIN emp3 AS e ON e.dept_id = d.id
+LEFT JOIN task3 AS t ON t.emp_id = e.dept_id
+GROUP BY d.dname;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT d.dname, COUNT(*), SUM(t.hours), MIN(t.hours), MAX(t.hours)
+FROM dept3 AS d
+LEFT JOIN emp3 AS e ON e.dept_id = d.id
+LEFT JOIN task3 AS t ON t.emp_id = e.dept_id
+GROUP BY d.dname|
+dname	COUNT(*)	SUM(t.hours)	MIN(t.hours)	MAX(t.hours)
+10	1	8	8	8
+20	1	12	12	12
+30	1	NULL	NULL	NULL
+40	1	NULL	NULL	NULL
+50	1	NULL	NULL	NULL
+
+
+=== Test 4: 4-way mixed LEFT+INNER+LEFT join ===
+== Query ==
+SELECT r.area, COUNT(*), SUM(v.rating)
+FROM region4 AS r
+LEFT JOIN store4 AS s ON s.region_id = r.id
+JOIN product4 AS p ON p.store_id = s.region_id
+LEFT JOIN review4 AS v ON v.product_id = p.store_id
+GROUP BY r.area;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT r.area, COUNT(*), SUM(v.rating)
+FROM region4 AS r
+LEFT JOIN store4 AS s ON s.region_id = r.id
+JOIN product4 AS p ON p.store_id = s.region_id
+LEFT JOIN review4 AS v ON v.product_id = p.store_id
+GROUP BY r.area|
+area	COUNT(*)	SUM(v.rating)
+100	1	5
+200	1	3
+300	1	NULL
+
+
+=== Test 5: 5-way deep LEFT JOIN chain ===
+== Query ==
+SELECT r.grp, COUNT(*), SUM(d.hours)
+FROM root5 AS r
+LEFT JOIN a5 AS a ON a.root_id = r.id
+LEFT JOIN b5 AS b ON b.a_id = a.root_id
+LEFT JOIN c5 AS c ON c.b_id = b.a_id
+LEFT JOIN d5 AS d ON d.c_id = c.b_id
+GROUP BY r.grp;
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT r.grp, COUNT(*), SUM(d.hours)
+FROM root5 AS r
+LEFT JOIN a5 AS a ON a.root_id = r.id
+LEFT JOIN b5 AS b ON b.a_id = a.root_id
+LEFT JOIN c5 AS c ON c.b_id = b.a_id
+LEFT JOIN d5 AS d ON d.c_id = c.b_id
+GROUP BY r.grp|
+grp	COUNT(*)	SUM(d.hours)
+10	1	100
+20	1	NULL
+30	1	NULL
+40	1	NULL
+50	1	NULL
+60	1	NULL
+
+
+=== Test 6: 5-way deep LEFT JOIN with multiple aggregates ===
+== Query ==
+SELECT r.grp, COUNT(*), SUM(d.hours), MIN(d.hours), MAX(d.hours)
+FROM root5 AS r
+LEFT JOIN a5 AS a ON a.root_id = r.id
+LEFT JOIN b5 AS b ON b.a_id = a.root_id
+LEFT JOIN c5 AS c ON c.b_id = b.a_id
+LEFT JOIN d5 AS d ON d.c_id = c.b_id
+GROUP BY r.grp;
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT r.grp, COUNT(*), SUM(d.hours), MIN(d.hours), MAX(d.hours)
+FROM root5 AS r
+LEFT JOIN a5 AS a ON a.root_id = r.id
+LEFT JOIN b5 AS b ON b.a_id = a.root_id
+LEFT JOIN c5 AS c ON c.b_id = b.a_id
+LEFT JOIN d5 AS d ON d.c_id = c.b_id
+GROUP BY r.grp|
+grp	COUNT(*)	SUM(d.hours)	MIN(d.hours)	MAX(d.hours)
+10	1	100	100	100
+20	1	NULL	NULL	NULL
+30	1	NULL	NULL	NULL
+40	1	NULL	NULL	NULL
+50	1	NULL	NULL	NULL
+60	1	NULL	NULL	NULL
+
+=== Cleanup ===
+DROP TABLE d5;
+DROP TABLE c5;
+DROP TABLE b5;
+DROP TABLE a5;
+DROP TABLE root5;
+DROP TABLE review4;
+DROP TABLE product4;
+DROP TABLE store4;
+DROP TABLE region4;
+DROP TABLE task3;
+DROP TABLE emp3;
+DROP TABLE dept3;
