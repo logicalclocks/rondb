@@ -61,8 +61,8 @@ private:
   int worker_id_;
   std::string current_database_;
 
-  bool do_handshake();
-  bool forward_and_relay();
+  bool send_server_greeting();
+  bool complete_auth();
   void send_err_to_client(const char* message);
   bool try_ronsql(const char* query, size_t query_len, uint8_t seq);
   bool is_select_query(const char* query, size_t query_len);

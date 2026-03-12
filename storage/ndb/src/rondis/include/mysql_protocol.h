@@ -42,7 +42,10 @@ static constexpr uint8_t EOF_MARKER = 0xFE;
 static constexpr uint8_t LOCAL_INFILE_MARKER = 0xFB;
 
 // CLIENT_DEPRECATE_EOF capability flag (bit 24)
+// Avoid redefining if mysql_com.h is already included (it defines this as a macro)
+#ifndef CLIENT_DEPRECATE_EOF
 static constexpr uint32_t CLIENT_DEPRECATE_EOF = (1UL << 24);
+#endif
 
 // Read exactly `len` bytes from fd into buf. Returns false on error/EOF.
 bool read_exact(int fd, char* buf, size_t len);

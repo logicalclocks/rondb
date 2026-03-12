@@ -47,6 +47,7 @@ constexpr const char* const usageHelp =
 
 #include "rondis_thread.h"
 #include "mysql_conn.h"
+#include "mysql_protocol.h"
 #include "rondb.h"
 #include "rdrs_rondb_connection_pool.hpp"
 #include "metrics.hpp"
@@ -262,11 +263,9 @@ int main(int argc, char *argv[]) {
   ndb_init();
   g_did_ndb_init = true;
   globalConfigsMutex = NdbMutex_Create();
-  APIKeyCache *apiKeyCachePtr = start_api_key_cache();
-  g_did_start_api_key_cache = true;
-
-  start_fs_cache();
-  g_did_start_fs_cache = true;
+  // API key cache and FS cache initialization is deferred until after
+  // config is parsed, so we can skip them when REST is disabled.
+  APIKeyCache *apiKeyCachePtr = nullptr;
 
   /*
     Config is fetched from:
@@ -365,19 +364,28 @@ int main(int argc, char *argv[]) {
     printf("Wrote PID=%d to %s\n", pid, g_pidfile);
   }
 
-  // Initialize Prometheus Metrics
-  rdrs_metrics::initMetrics();
+  // Initialize REST-dependent subsystems only when REST is enabled
+  if (globalConfigs.rest.enable) {
+    apiKeyCachePtr = start_api_key_cache();
+    g_did_start_api_key_cache = true;
 
-  // Initialize Scan Metrics buffer
-  initScanMetrics();
+    start_fs_cache();
+    g_did_start_fs_cache = true;
 
-  // Initialize JSON parsers
-  assert(jsonParsers == nullptr);
-  jsonParsers = new JSONParser[globalConfigs.rest.numThreads];
-  if (jsonParsers == nullptr) {
-    std::cerr << "Failed to allocate memory for JSON parsers.\n";
-    g_exit_code = 1;
-    do_exit();
+    // Initialize Prometheus Metrics
+    rdrs_metrics::initMetrics();
+
+    // Initialize Scan Metrics buffer
+    initScanMetrics();
+
+    // Initialize JSON parsers
+    assert(jsonParsers == nullptr);
+    jsonParsers = new JSONParser[globalConfigs.rest.numThreads];
+    if (jsonParsers == nullptr) {
+      std::cerr << "Failed to allocate memory for JSON parsers.\n";
+      g_exit_code = 1;
+      do_exit();
+    }
   }
 
   Uint32 num_rondis_threads = 0;
@@ -388,8 +396,10 @@ int main(int argc, char *argv[]) {
   if (globalConfigs.mysqlRouter.enable) {
     num_mysql_router_threads = globalConfigs.mysqlRouter.numThreads;
   }
-  Uint32 num_rdrs_threads = globalConfigs.rest.numThreads;
-  Uint32 num_purge_threads = RDRSRonDBConnectionPool::kNoTTLPurgeThreads;
+  Uint32 num_rdrs_threads = globalConfigs.rest.enable ?
+      globalConfigs.rest.numThreads : 0;
+  Uint32 num_purge_threads = globalConfigs.rest.enable ?
+      RDRSRonDBConnectionPool::kNoTTLPurgeThreads : 0;
   Uint32 tot_num_threads =
     num_rdrs_threads + num_rondis_threads +
     num_mysql_router_threads + num_purge_threads;
@@ -415,20 +425,20 @@ int main(int argc, char *argv[]) {
     do_exit();
   }
 
-  // Start TTL purger
-  g_ttl_purger = TTLPurger::CreateTTLPurger();
-  g_ttl_purger->Run();
+  // Start TTL purger, API key cache, and FS cache only when REST is enabled
+  if (globalConfigs.rest.enable) {
+    g_ttl_purger = TTLPurger::CreateTTLPurger();
+    g_ttl_purger->Run();
 
-  // Preload API key cache and start background threads
-  if (globalConfigs.security.apiKey.useHopsworksAPIKeys) {
-    apiKeyCachePtr->preload_all_keys();
-    apiKeyCachePtr->start_background_threads();
-  }
+    if (globalConfigs.security.apiKey.useHopsworksAPIKeys) {
+      apiKeyCachePtr->preload_all_keys();
+      apiKeyCachePtr->start_background_threads();
+    }
 
-  // Preload feature view metadata cache and start event watcher
-  if (g_fs_metadata_cache != nullptr) {
-    g_fs_metadata_cache->preload_all_feature_views();
-    g_fs_metadata_cache->start_event_watcher();
+    if (g_fs_metadata_cache != nullptr) {
+      g_fs_metadata_cache->preload_all_feature_views();
+      g_fs_metadata_cache->start_event_watcher();
+    }
   }
 
   // Start rondis
@@ -519,6 +529,36 @@ int main(int argc, char *argv[]) {
         globalConfigs.mysqlRouter.backendHost.c_str(),
         globalConfigs.mysqlRouter.backendPort);
 
+    // Wait for backend mysqld to be reachable before accepting client
+    // connections. During cluster startup, RDRS may start before mysqld
+    // is ready. Without this check, early client connections would fail.
+    {
+      printf("Waiting for backend mysqld at %s:%u...\n",
+          globalConfigs.mysqlRouter.backendHost.c_str(),
+          globalConfigs.mysqlRouter.backendPort);
+      int backend_fd = -1;
+      for (int attempt = 0; attempt < 120; attempt++) {
+        backend_fd = mysql_protocol::connect_to_backend(
+            globalConfigs.mysqlRouter.backendHost.c_str(),
+            globalConfigs.mysqlRouter.backendPort);
+        if (backend_fd >= 0) {
+          close(backend_fd);
+          break;
+        }
+        usleep(500 * 1000);  // 500ms between retries, up to 60 seconds
+      }
+      if (backend_fd < 0) {
+        printf("Error: backend mysqld at %s:%u not reachable after 60s\n",
+            globalConfigs.mysqlRouter.backendHost.c_str(),
+            globalConfigs.mysqlRouter.backendPort);
+        g_exit_code = 1;
+        do_exit();
+      }
+      printf("Backend mysqld at %s:%u is reachable\n",
+          globalConfigs.mysqlRouter.backendHost.c_str(),
+          globalConfigs.mysqlRouter.backendPort);
+    }
+
     g_mysql_router_thread = NewDispatchThread(
         globalConfigs.mysqlRouter.serverIP,
         globalConfigs.mysqlRouter.serverPort,
@@ -539,44 +579,54 @@ int main(int argc, char *argv[]) {
         globalConfigs.mysqlRouter.serverPort);
   }
 
-  if (globalConfigs.security.tls.enableTLS) {
-    status = GenerateTLSConfig(
-      globalConfigs.security.tls.requireClientCert,
-      globalConfigs.security.tls.rootCACertFile,
-      globalConfigs.security.tls.certificateFile,
-      globalConfigs.security.tls.privateKeyFile);
-    if (status.http_code !=
-        static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
-      std::cerr << "Error while generating TLS configuration.\n"
-                << "HTTP code " << status.http_code << '\n'
-                << status.message << '\n';
-      g_exit_code = 1;
-      do_exit();
+  if (globalConfigs.rest.enable) {
+    if (globalConfigs.security.tls.enableTLS) {
+      status = GenerateTLSConfig(
+        globalConfigs.security.tls.requireClientCert,
+        globalConfigs.security.tls.rootCACertFile,
+        globalConfigs.security.tls.certificateFile,
+        globalConfigs.security.tls.privateKeyFile);
+      if (status.http_code !=
+          static_cast<HTTP_CODE>(drogon::HttpStatusCode::k200OK)) {
+        std::cerr << "Error while generating TLS configuration.\n"
+                  << "HTTP code " << status.http_code << '\n'
+                  << status.message << '\n';
+        g_exit_code = 1;
+        do_exit();
+      }
+    }
+
+    drogon::app().addListener(globalConfigs.rest.serverIP,
+                              globalConfigs.rest.serverPort,
+                              globalConfigs.security.tls.enableTLS,
+                              globalConfigs.security.tls.certificateFile,
+                              globalConfigs.security.tls.privateKeyFile);
+    drogon::app().setThreadNum(globalConfigs.rest.numThreads);
+    drogon::app().setThreadStackSize(8 * 1024 * 1024);
+    drogon::app().disableSession();
+    drogon::app().registerBeginningAdvice([]() {
+      auto addresses = drogon::app().getListeners();
+      for (auto &address : addresses) {
+        printf("RDRS Server running on %s\n", address.toIpPort().c_str());
+      }
+    });
+    drogon::app().setIntSignalHandler([]() {
+      handle_signal(SIGINT);
+    });
+    drogon::app().setTermSignalHandler([]() {
+      handle_signal(SIGTERM);
+    });
+    g_drogon_running = true;
+    drogon::app().run();
+    g_drogon_running = false;
+  } else {
+    // REST is disabled — block until signal received.
+    // MySQL router and/or Rondis are running in their own threads.
+    // The signal() handlers call do_exit() → exit(), terminating the process.
+    printf("REST server disabled, running.\n");
+    for (;;) {
+      sleep(1);
     }
   }
-
-  drogon::app().addListener(globalConfigs.rest.serverIP,
-                            globalConfigs.rest.serverPort,
-                            globalConfigs.security.tls.enableTLS,
-                            globalConfigs.security.tls.certificateFile,
-                            globalConfigs.security.tls.privateKeyFile);
-  drogon::app().setThreadNum(globalConfigs.rest.numThreads);
-  drogon::app().setThreadStackSize(8 * 1024 * 1024);
-  drogon::app().disableSession();
-  drogon::app().registerBeginningAdvice([]() {
-    auto addresses = drogon::app().getListeners();
-    for (auto &address : addresses) {
-      printf("RDRS Server running on %s\n", address.toIpPort().c_str());
-    }
-  });
-  drogon::app().setIntSignalHandler([]() {
-    handle_signal(SIGINT);
-  });
-  drogon::app().setTermSignalHandler([]() {
-    handle_signal(SIGTERM);
-  });
-  g_drogon_running = true;
-  drogon::app().run();
-  g_drogon_running = false;
   do_exit();
 }

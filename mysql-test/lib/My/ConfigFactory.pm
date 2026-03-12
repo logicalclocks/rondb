@@ -111,6 +111,15 @@ sub fix_rondis_port {
   return $self->{HOSTS}->{$hostname}++;
 }
 
+sub fix_myrouter_port {
+  my ($self, $config, $group_name, $group) = @_;
+  if (($group->if_exist('enable-myrouter') // '') ne 'true') {
+    return ''
+  }
+  my $hostname = $group->value('#host');
+  return $self->{HOSTS}->{$hostname}++;
+}
+
 sub fix_admin_port {
   my ($self, $config, $group_name, $group) = @_;
   my $hostname = $group->value('#host');
@@ -393,6 +402,7 @@ my @rdrs_rules = (
   { 'bind-address'  => \&fix_bind_address_rdrs },
   { 'port'          => \&fix_port },
   { 'rondisport'    => \&fix_rondis_port },
+  { 'myrouterport'  => \&fix_myrouter_port },
   { 'std-data'      => \&fix_std_data },
 );
 

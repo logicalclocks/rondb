@@ -85,7 +85,10 @@ MysqlConn::MysqlConn(int fd, const std::string& ip_port,
   if (worker_data != nullptr) {
     worker_id_ = thread_id_offset + *static_cast<int*>(worker_data);
   }
-  if (!do_handshake()) {
+  // Phase 1 of handshake: connect to backend and send server greeting to
+  // client. The client will then send its auth response, which triggers
+  // Pink's epoll → GetRequest() where we complete the auth exchange.
+  if (!send_server_greeting()) {
     should_close_ = true;
   }
 }
@@ -103,15 +106,17 @@ void MysqlConn::send_err_to_client(const char* message) {
   write_all(fd(), err_pkt.data(), err_pkt.size());
 }
 
-bool MysqlConn::do_handshake() {
-  // Connect to backend mysqld
+bool MysqlConn::send_server_greeting() {
+  // Phase 1: connect to backend and relay the server greeting to the client.
+  // Called from constructor before Pink registers the fd with epoll.
+  // After receiving the greeting, the client will send its auth response,
+  // which triggers epoll → GetRequest() → complete_auth().
   backend_fd_ = connect_to_backend(backend_host_.c_str(), backend_port_);
   if (backend_fd_ < 0) {
     send_err_to_client("MySQL router: cannot connect to backend mysqld");
     return false;
   }
 
-  // Read server greeting from backend
   std::string handshake_pkt;
   if (!read_packet(backend_fd_, handshake_pkt)) {
     send_err_to_client("MySQL router: failed to read backend handshake");
@@ -120,18 +125,22 @@ bool MysqlConn::do_handshake() {
     return false;
   }
 
-  // Relay server greeting to client
   if (!write_all(fd(), handshake_pkt.data(), handshake_pkt.size())) {
     close(backend_fd_);
     backend_fd_ = -1;
     return false;
   }
+  return true;
+}
+
+bool MysqlConn::complete_auth() {
+  // Phase 2: complete the auth exchange. Called from GetRequest() when the
+  // client's auth response arrives (epoll-triggered). Uses blocking I/O on
+  // both fds — read_exact/write_all handle EAGAIN for non-blocking client fd.
 
   // Read client auth response
   std::string auth_response;
   if (!read_packet(fd(), auth_response)) {
-    close(backend_fd_);
-    backend_fd_ = -1;
     return false;
   }
 
@@ -154,13 +163,9 @@ bool MysqlConn::do_handshake() {
       auth_response.size() > HEADER_SIZE + 32) {
     const char* p = auth_response.data() + HEADER_SIZE + 32;
     const char* end = auth_response.data() + auth_response.size();
-    // Skip username (NUL-terminated)
     while (p < end && *p != '\0') p++;
-    if (p < end) p++;  // skip NUL
-    // Skip auth data
+    if (p < end) p++;
     if (p < end) {
-      // auth-response length depends on CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA
-      // or CLIENT_SECURE_CONNECTION. For simplicity, skip the auth data:
       static constexpr uint32_t CLIENT_PLUGIN_AUTH_LENENC = (1UL << 21);
       static constexpr uint32_t CLIENT_SECURE_CONNECTION = (1UL << 15);
       if (client_capabilities_ & CLIENT_PLUGIN_AUTH_LENENC) {
@@ -173,11 +178,9 @@ bool MysqlConn::do_handshake() {
           p += auth_len;
         }
       } else {
-        // NUL-terminated auth string
         while (p < end && *p != '\0') p++;
         if (p < end) p++;
       }
-      // Now p points to the database name (NUL-terminated)
       if (p < end) {
         const char* db_start = p;
         while (p < end && *p != '\0') p++;
@@ -190,8 +193,6 @@ bool MysqlConn::do_handshake() {
 
   // Forward auth response to backend
   if (!write_all(backend_fd_, auth_response.data(), auth_response.size())) {
-    close(backend_fd_);
-    backend_fd_ = -1;
     return false;
   }
 
@@ -199,8 +200,6 @@ bool MysqlConn::do_handshake() {
   while (true) {
     std::string pkt;
     if (!read_packet(backend_fd_, pkt)) {
-      close(backend_fd_);
-      backend_fd_ = -1;
       return false;
     }
 
@@ -215,8 +214,6 @@ bool MysqlConn::do_handshake() {
     if (marker == OK_MARKER || marker == ERR_MARKER) {
       write_all(fd(), pkt.data(), pkt.size());
       if (marker == ERR_MARKER) {
-        close(backend_fd_);
-        backend_fd_ = -1;
         return false;
       }
       handshake_done_ = true;
@@ -225,21 +222,15 @@ bool MysqlConn::do_handshake() {
 
     // Auth continuation (AuthSwitchRequest, AuthMoreData, etc.)
     if (!write_all(fd(), pkt.data(), pkt.size())) {
-      close(backend_fd_);
-      backend_fd_ = -1;
       return false;
     }
 
     std::string client_pkt;
     if (!read_packet(fd(), client_pkt)) {
-      close(backend_fd_);
-      backend_fd_ = -1;
       return false;
     }
 
     if (!write_all(backend_fd_, client_pkt.data(), client_pkt.size())) {
-      close(backend_fd_);
-      backend_fd_ = -1;
       return false;
     }
   }
@@ -321,7 +312,13 @@ pink::ReadStatus MysqlConn::GetRequest() {
   }
 
   if (!handshake_done_) {
-    return pink::kReadClose;
+    // First GetRequest() call — client sent auth response after receiving
+    // the server greeting we sent in the constructor.
+    if (!complete_auth()) {
+      should_close_ = true;
+      return pink::kReadClose;
+    }
+    return pink::kReadHalf;
   }
 
   // Read from client (non-blocking, epoll-triggered)

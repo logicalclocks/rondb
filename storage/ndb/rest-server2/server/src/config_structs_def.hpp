@@ -112,8 +112,7 @@ CLASS
     "Set to true to use single transaction for entire batch.")
  CM(bool, userRateLimits, UserRateLimits, false,
     "Set to true to enable rate limits per user")
- PROBLEM(!enable, "REST must be enabled")
- PROBLEM(serverIP.empty(), "REST server IP cannot be empty")
+ PROBLEM(enable && serverIP.empty(), "REST server IP cannot be empty")
  PROBLEM(serverPort == 0, "REST server port cannot be zero")
  PROBLEM(numThreads < RDRS_MIN_NUM_THREADS,
          "Number of REST threads cannot be less than "

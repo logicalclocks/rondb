@@ -41,7 +41,10 @@ bool read_exact(int fd, char* buf, size_t len) {
     } else if (n == 0) {
       return false;
     } else {
-      if (errno == EINTR) continue;
+      if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
+        if (errno != EINTR) usleep(1000);
+        continue;
+      }
       return false;
     }
   }
@@ -72,7 +75,10 @@ bool write_all(int fd, const char* data, size_t len) {
     if (n > 0) {
       total += n;
     } else if (n < 0) {
-      if (errno == EINTR) continue;
+      if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
+        if (errno != EINTR) usleep(1000);
+        continue;
+      }
       return false;
     }
   }
@@ -145,92 +151,53 @@ bool read_response(int fd, std::string& out, uint32_t client_capabilities) {
   const char* first_pkt = out.data() + start_offset;
   uint32_t first_payload_len = packet_length(first_pkt);
 
-  if (first_payload_len == 0) {
-    return true;
-  }
+  if (first_payload_len == 0) return true;
 
-  // Check what type of response this is
   uint8_t first_byte = (uint8_t)first_pkt[HEADER_SIZE];
-
-  // OK packet
-  if (first_byte == OK_MARKER) {
-    return true;
-  }
-
-  // ERR packet
-  if (first_byte == ERR_MARKER) {
-    return true;
-  }
-
-  // EOF packet (standalone)
-  if (first_byte == EOF_MARKER && first_payload_len <= 5) {
-    return true;
-  }
-
-  // LOCAL INFILE request - not supported in proxy, just pass through
-  if (first_byte == LOCAL_INFILE_MARKER) {
-    return true;
-  }
+  if (first_byte == OK_MARKER) return true;
+  if (first_byte == ERR_MARKER) return true;
+  if (first_byte == EOF_MARKER && first_payload_len <= 5) return true;
+  if (first_byte == LOCAL_INFILE_MARKER) return true;
 
   // Result set: first packet is column_count (lenenc int)
   const char* pos = first_pkt + HEADER_SIZE;
   const char* end = first_pkt + HEADER_SIZE + first_payload_len;
   uint64_t column_count = read_lenenc_int(pos, end);
-  (void)column_count;
 
   bool deprecate_eof = (client_capabilities & CLIENT_DEPRECATE_EOF) != 0;
 
   // Read column definition packets
-  // Each column definition is one packet, terminated by EOF (or no EOF if
-  // CLIENT_DEPRECATE_EOF)
   if (!deprecate_eof) {
-    // Read column definitions until EOF
     while (true) {
       size_t pkt_start = out.size();
-      if (!read_packet(fd, out)) {
-        return false;
-      }
+      if (!read_packet(fd, out)) return false;
       uint32_t plen = packet_length(out.data() + pkt_start);
-      if (is_eof_packet(out.data() + pkt_start, plen)) {
-        break;
-      }
-      if (is_err_packet(out.data() + pkt_start, plen)) {
-        return true;
-      }
+      if (is_eof_packet(out.data() + pkt_start, plen)) break;
+      if (is_err_packet(out.data() + pkt_start, plen)) return true;
     }
   } else {
     // With CLIENT_DEPRECATE_EOF, read exactly column_count definition packets
     for (uint64_t i = 0; i < column_count; i++) {
-      if (!read_packet(fd, out)) {
-        return false;
-      }
+      if (!read_packet(fd, out)) return false;
     }
   }
 
   // Read row packets until EOF/OK/ERR
   while (true) {
     size_t pkt_start = out.size();
-    if (!read_packet(fd, out)) {
-      return false;
-    }
+    if (!read_packet(fd, out)) return false;
     uint32_t plen = packet_length(out.data() + pkt_start);
 
-    if (is_err_packet(out.data() + pkt_start, plen)) {
-      return true;
-    }
+    if (is_err_packet(out.data() + pkt_start, plen)) return true;
 
     if (!deprecate_eof) {
-      if (is_eof_packet(out.data() + pkt_start, plen)) {
-        return true;
-      }
+      if (is_eof_packet(out.data() + pkt_start, plen)) return true;
     } else {
-      // With CLIENT_DEPRECATE_EOF, rows end with an OK packet (0x00 or 0xFE)
-      if (is_ok_packet(out.data() + pkt_start, plen)) {
-        return true;
-      }
-      if (is_eof_packet(out.data() + pkt_start, plen)) {
-        return true;
-      }
+      // With CLIENT_DEPRECATE_EOF, the termination packet is an OK_Packet
+      // with header 0x00 or 0xFE (any payload length — not limited to 5).
+      if (is_ok_packet(out.data() + pkt_start, plen)) return true;
+      uint8_t m = (uint8_t)(out.data() + pkt_start)[HEADER_SIZE];
+      if (m == EOF_MARKER) return true;
     }
   }
 }
