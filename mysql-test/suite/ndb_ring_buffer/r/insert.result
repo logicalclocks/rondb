@@ -123,15 +123,15 @@ PRIMARY KEY (pk, ring_idx)
 ) ENGINE = NDB,
 COMMENT="NDB_TABLE=RING_BUFFER=1@ring_idx@ring_meta";
 INSERT INTO test.rb1 (pk, val) VALUES (1, 'first');
-SELECT pk, ring_idx, val FROM test.rb1 WHERE pk = 1 AND ring_idx = 1;
+SELECT pk, ring_idx, val FROM test.rb1 WHERE pk = 1 AND ring_idx > 0 ORDER BY ring_idx;
 pk	ring_idx	val
 1	1	first
 INSERT INTO test.rb1 (pk, val) VALUES (1, 'second');
-SELECT pk, ring_idx, val FROM test.rb1 WHERE pk = 1 AND ring_idx = 1;
+SELECT pk, ring_idx, val FROM test.rb1 WHERE pk = 1 AND ring_idx > 0 ORDER BY ring_idx;
 pk	ring_idx	val
-1	1	first
+1	1	second
 INSERT INTO test.rb1 (pk, val) VALUES (1, 'third');
-SELECT pk, ring_idx, val FROM test.rb1 WHERE pk = 1 AND ring_idx = 1;
+SELECT pk, ring_idx, val FROM test.rb1 WHERE pk = 1 AND ring_idx > 0 ORDER BY ring_idx;
 pk	ring_idx	val
 1	1	third
 DROP TABLE test.rb1;
