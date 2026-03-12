@@ -56,6 +56,15 @@
  * Test 7: scan intermediate + inner blocker (scan -> LEFT scan -> INNER lkp -> LEFT lkp)
  *         GROUP BY grp, COUNT(*), SUM(hours)
  *
+ * Test 8: GROUP BY intermediate column (scan -> LEFT lookup -> LEFT lookup)
+ *         GROUP BY mid.category, COUNT(*), SUM(leaf.value)
+ *
+ * Test 9: GROUP BY root + intermediate (scan -> LEFT lookup -> LEFT lookup)
+ *         GROUP BY root.grp, mid.category, COUNT(*), SUM(leaf.value)
+ *
+ * Test 10: GROUP BY deep intermediate (scan -> LEFT lkp -> LEFT lkp -> LEFT lkp)
+ *          GROUP BY b.b_cat, COUNT(*), SUM(leaf.score)
+ *
  * Usage: testMultiOuterJoinAggNdbApi -c <connect_string> -m <mysql_port> [-v]
  *        [--only N] [--skip N]
  */
@@ -144,6 +153,20 @@ static const char *OJ9_MID       = "oj9_mid";
 static const char *OJ9_MID_IDX   = "ix_oj9_root";
 static const char *OJ9_INNER     = "oj9_inner";
 static const char *OJ9_LEAF      = "oj9_leaf";
+
+/* Test 8: GROUP BY intermediate column (3-way) */
+static const char *OJ10_ROOT = "oj10_root";
+static const char *OJ10_MID  = "oj10_mid";
+static const char *OJ10_LEAF = "oj10_leaf";
+
+/* Test 10: GROUP BY intermediate in 4-way chain */
+static const char *OJ12_ROOT = "oj12_root";
+static const char *OJ12_A    = "oj12_a";
+static const char *OJ12_B    = "oj12_b";
+static const char *OJ12_LEAF = "oj12_leaf";
+
+/* Sentinel for NULL group-by values */
+static const Int32 NULL_GROUP = INT_MIN;
 
 /* ------------------------------------------------------------------ */
 /* MySQL helpers                                                       */
@@ -2499,6 +2522,860 @@ testScanIntermediateInnerBlocker(Ndb *ndb, MYSQL *conn)
   return 0;
 }
 
+/* ================================================================== */
+/* Test 8: GROUP BY intermediate column (3-way LEFT JOIN)              */
+/*                                                                     */
+/* Schema:                                                             */
+/*   oj10_root (id INT PK, grp INT)                                    */
+/*   oj10_mid  (root_id INT PK, category INT)                         */
+/*   oj10_leaf (mid_id INT PK, value BIGINT)                          */
+/*                                                                     */
+/* Data:                                                               */
+/*   root: (1,10),(2,20),(3,30),(4,40)                                 */
+/*   mid:  (1,100),(2,200)  — only roots 1,2 have mid match            */
+/*   leaf: (1,5),(2,15)     — only mids 1,2 have leaf match            */
+/*                                                                     */
+/* SQL: SELECT m.category, COUNT(*), COALESCE(SUM(l.value),0)          */
+/*      FROM oj10_root r LEFT JOIN oj10_mid m ON m.root_id = r.id      */
+/*      LEFT JOIN oj10_leaf l ON l.mid_id = m.root_id                  */
+/*      GROUP BY m.category                                            */
+/*                                                                     */
+/* Expected:                                                           */
+/*   category=100: root 1 → mid(100) → leaf(5)  → COUNT=1, SUM=5     */
+/*   category=200: root 2 → mid(200) → leaf(15) → COUNT=1, SUM=15    */
+/*   category=NULL: roots 3,4 → no mid → COUNT=2, SUM=0              */
+/* ================================================================== */
+
+static int
+createTest8Tables(MYSQL *conn)
+{
+  sqlExec(conn, "DROP TABLE IF EXISTS oj10_leaf");
+  sqlExec(conn, "DROP TABLE IF EXISTS oj10_mid");
+  sqlExec(conn, "DROP TABLE IF EXISTS oj10_root");
+
+  if (sqlExec(conn,
+        "CREATE TABLE oj10_root ("
+        "  id INT NOT NULL PRIMARY KEY,"
+        "  grp INT NOT NULL"
+        ") ENGINE=NDB") != 0) return -1;
+  V("Created table %s\n", OJ10_ROOT);
+
+  if (sqlExec(conn,
+        "CREATE TABLE oj10_mid ("
+        "  root_id INT NOT NULL PRIMARY KEY,"
+        "  category INT NOT NULL"
+        ") ENGINE=NDB") != 0) return -1;
+  V("Created table %s\n", OJ10_MID);
+
+  if (sqlExec(conn,
+        "CREATE TABLE oj10_leaf ("
+        "  mid_id INT NOT NULL PRIMARY KEY,"
+        "  value BIGINT NOT NULL"
+        ") ENGINE=NDB") != 0) return -1;
+  V("Created table %s\n", OJ10_LEAF);
+
+  return 0;
+}
+
+static int
+insertTest8Data(MYSQL *conn)
+{
+  if (sqlExec(conn,
+        "INSERT INTO oj10_root VALUES "
+        "(1,10),(2,20),(3,30),(4,40)") != 0) return -1;
+  V("Inserted 4 root rows\n");
+
+  if (sqlExec(conn,
+        "INSERT INTO oj10_mid VALUES "
+        "(1,100),(2,200)") != 0) return -1;
+  V("Inserted 2 mid rows\n");
+
+  if (sqlExec(conn,
+        "INSERT INTO oj10_leaf VALUES "
+        "(1,5),(2,15)") != 0) return -1;
+  V("Inserted 2 leaf rows\n");
+
+  return 0;
+}
+
+static int
+dropTest8Tables(MYSQL *conn)
+{
+  sqlExec(conn, "DROP TABLE IF EXISTS oj10_leaf");
+  sqlExec(conn, "DROP TABLE IF EXISTS oj10_mid");
+  sqlExec(conn, "DROP TABLE IF EXISTS oj10_root");
+  V("Dropped test 8 tables\n");
+  return 0;
+}
+
+static int
+testGroupByIntermediate(Ndb *ndb, MYSQL *conn)
+{
+  printf("Test 8: GROUP BY intermediate column (scan→LEFT→LEFT) ... ");
+  fflush(stdout);
+
+  /* Expected: 3 groups (category=100, 200, NULL) */
+  /* Use NULL_GROUP sentinel for the NULL group */
+  std::map<Int32, std::pair<Int64, Int64>> expected = {
+    {100, {1, 5}},           /* root 1 → mid(100) → leaf(5) */
+    {200, {1, 15}},          /* root 2 → mid(200) → leaf(15) */
+    {NULL_GROUP, {2, 0}}     /* roots 3,4 → no mid → COUNT=2, SUM=0 */
+  };
+
+  /* Verify with MySQL */
+  if (verifyGroupByWithMysql(conn, "Test 8",
+        "SELECT COALESCE(m.category, -2147483648), COUNT(*), "
+        "COALESCE(SUM(l.value),0) "
+        "FROM oj10_root r "
+        "LEFT JOIN oj10_mid m ON m.root_id = r.id "
+        "LEFT JOIN oj10_leaf l ON l.mid_id = m.root_id "
+        "GROUP BY m.category ORDER BY m.category",
+        expected) != 0) {
+    printf("FAILED (MySQL verification)\n");
+    return -1;
+  }
+
+  /* Build NDB pushdown query */
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(OJ10_ROOT);
+  dict->invalidateTable(OJ10_MID);
+  dict->invalidateTable(OJ10_LEAF);
+  const NdbDictionary::Table *rootTab = dict->getTable(OJ10_ROOT);
+  const NdbDictionary::Table *midTab = dict->getTable(OJ10_MID);
+  const NdbDictionary::Table *leafTab = dict->getTable(OJ10_LEAF);
+  if (rootTab == nullptr || midTab == nullptr || leafTab == nullptr) {
+    printf("FAILED (table lookup: %s)\n", dict->getNdbError().message);
+    return -1;
+  }
+
+  const NdbDictionary::Column *categoryCol = midTab->getColumn("category");
+  if (categoryCol == nullptr) {
+    printf("FAILED (column lookup: category)\n");
+    return -1;
+  }
+
+  /* Aggregation: GROUP BY mid.category, COUNT(*), SUM(leaf.value) */
+  NdbAggregator agg(leafTab);
+  if (!agg.GroupByLinked(0, categoryCol) ||
+      !agg.LoadUint64(1, 0) ||
+      !agg.LoadColumn("value", 1) ||
+      !agg.Count(0, 0) ||
+      !agg.Sum(1, 1) ||
+      !agg.Finalize()) {
+    printf("FAILED (agg program: %s)\n", agg.GetError().err_msg_);
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  if (qb == nullptr) {
+    printf("FAILED (NdbQueryBuilder::create)\n");
+    return -1;
+  }
+
+  /* Node 0: scan oj10_root */
+  const NdbQueryTableScanOperationDef *rootOp = qb->scanTable(rootTab);
+  if (rootOp == nullptr) {
+    printf("FAILED (scanTable: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  /* Node 1: lookup oj10_mid (LEFT JOIN) */
+  const NdbQueryOperand *midKey[] = {
+    qb->linkedValue(rootOp, "id"), nullptr
+  };
+  const NdbQueryLookupOperationDef *midOp =
+      qb->readTuple(midTab, midKey, nullptr);
+  if (midOp == nullptr) {
+    printf("FAILED (readTuple mid: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  /* Node 2: lookup oj10_leaf (LEFT JOIN, aggregate leaf)
+   * Linked projection: mid.category (from intermediate, NOT root!) */
+  const NdbQueryOperand *leafKey[] = {
+    qb->linkedValue(midOp, "root_id"), nullptr
+  };
+  NdbQueryOptions leafOpts;
+  leafOpts.setAggregation(agg);
+  const NdbLinkedOperand *catLink = qb->linkedValue(midOp, "category");
+  if (catLink == nullptr) {
+    printf("FAILED (linkedValue category: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  leafOpts.addLinkedProjection(catLink);
+
+  const NdbQueryLookupOperationDef *leafOp =
+      qb->readTuple(leafTab, leafKey, &leafOpts);
+  if (leafOp == nullptr) {
+    printf("FAILED (readTuple leaf: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  if (trans == nullptr) {
+    printf("FAILED (startTransaction: %s)\n", ndb->getNdbError().message);
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbQuery *query = trans->createQuery(queryDef);
+  if (query == nullptr) {
+    printf("FAILED (createQuery: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    printf("FAILED (execute: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {}
+  if (outcome == NdbQuery::NextResult_error) {
+    printf("FAILED (nextResult: %s)\n", query->getNdbError().message);
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbAggregator *resultAgg = query->getAggregator();
+  if (resultAgg == nullptr) {
+    printf("FAILED (getAggregator returned nullptr)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  std::map<Int32, std::pair<Int64, Int64>> actual;
+  for (;;) {
+    NdbAggregator::ResultRecord rec = resultAgg->FetchResultRecord();
+    if (rec.end()) break;
+    NdbAggregator::Column grpValCol = rec.FetchGroupbyColumn();
+    Int32 grpVal;
+    if (grpValCol.is_null()) {
+      grpVal = NULL_GROUP;
+    } else {
+      grpVal = grpValCol.data_int32();
+    }
+    NdbAggregator::Result countRes = rec.FetchAggregationResult();
+    Int64 countVal = countRes.data_int64();
+    NdbAggregator::Result sumRes = rec.FetchAggregationResult();
+    Int64 sumVal = sumRes.data_int64();
+    actual[grpVal] = {countVal, sumVal};
+    V("  NDB: category=%d COUNT=%lld SUM=%lld%s\n",
+      grpVal, (long long)countVal, (long long)sumVal,
+      grpVal == NULL_GROUP ? " (NULL)" : "");
+  }
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  if (actual.size() != expected.size()) {
+    printf("FAILED (expected %zu groups, got %zu)\n",
+           expected.size(), actual.size());
+    for (const auto &a : actual) {
+      printf("  got: category=%d COUNT=%lld SUM=%lld\n",
+             a.first, (long long)a.second.first, (long long)a.second.second);
+    }
+    for (const auto &e : expected) {
+      if (actual.find(e.first) == actual.end()) {
+        printf("  missing: category=%d COUNT=%lld SUM=%lld\n",
+               e.first, (long long)e.second.first, (long long)e.second.second);
+      }
+    }
+    return -1;
+  }
+
+  for (const auto &e : expected) {
+    auto it = actual.find(e.first);
+    if (it == actual.end() ||
+        it->second.first != e.second.first ||
+        it->second.second != e.second.second) {
+      printf("FAILED (group category=%d mismatch)\n", e.first);
+      return -1;
+    }
+  }
+
+  printf("OK (3 groups)\n");
+  return 0;
+}
+
+/* ================================================================== */
+/* Test 9: GROUP BY root + intermediate columns (3-way LEFT JOIN)      */
+/*                                                                     */
+/* Same schema as Test 8 but GROUP BY both root.grp AND mid.category.  */
+/* This tests that linked projections from BOTH root (via P_PARENT)    */
+/* and intermediate (direct P_ATTRINFO) work correctly in null         */
+/* propagation.                                                        */
+/*                                                                     */
+/* SQL: SELECT r.grp, m.category, COUNT(*), COALESCE(SUM(l.value),0)   */
+/*      FROM oj10_root r LEFT JOIN oj10_mid m ON m.root_id = r.id      */
+/*      LEFT JOIN oj10_leaf l ON l.mid_id = m.root_id                  */
+/*      GROUP BY r.grp, m.category                                     */
+/*                                                                     */
+/* Expected (grp*1000 + COALESCE(category,0) as composite key):        */
+/*   (10,100): root 1 → mid(100) → leaf(5)  → COUNT=1, SUM=5         */
+/*   (20,200): root 2 → mid(200) → leaf(15) → COUNT=1, SUM=15        */
+/*   (30,NULL): root 3 → no mid → COUNT=1, SUM=0                     */
+/*   (40,NULL): root 4 → no mid → COUNT=1, SUM=0                     */
+/* ================================================================== */
+
+static int
+testGroupByRootAndIntermediate(Ndb *ndb, MYSQL *conn)
+{
+  printf("Test 9: GROUP BY root+intermediate (scan→LEFT→LEFT) ... ");
+  fflush(stdout);
+
+  /* Composite key: grp*1000 + COALESCE(category,0) */
+  std::map<Int32, std::pair<Int64, Int64>> expected = {
+    {10*1000+100, {1, 5}},    /* (grp=10,cat=100): leaf(5) */
+    {20*1000+200, {1, 15}},   /* (grp=20,cat=200): leaf(15) */
+    {30*1000+0, {1, 0}},      /* (grp=30,cat=NULL): no mid */
+    {40*1000+0, {1, 0}}       /* (grp=40,cat=NULL): no mid */
+  };
+
+  /* Verify with MySQL */
+  if (verifyGroupByWithMysql(conn, "Test 9",
+        "SELECT r.grp*1000 + COALESCE(m.category,0), COUNT(*), "
+        "COALESCE(SUM(l.value),0) "
+        "FROM oj10_root r "
+        "LEFT JOIN oj10_mid m ON m.root_id = r.id "
+        "LEFT JOIN oj10_leaf l ON l.mid_id = m.root_id "
+        "GROUP BY r.grp, m.category ORDER BY r.grp, m.category",
+        expected) != 0) {
+    printf("FAILED (MySQL verification)\n");
+    return -1;
+  }
+
+  /* Build NDB pushdown query */
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(OJ10_ROOT);
+  dict->invalidateTable(OJ10_MID);
+  dict->invalidateTable(OJ10_LEAF);
+  const NdbDictionary::Table *rootTab = dict->getTable(OJ10_ROOT);
+  const NdbDictionary::Table *midTab = dict->getTable(OJ10_MID);
+  const NdbDictionary::Table *leafTab = dict->getTable(OJ10_LEAF);
+  if (rootTab == nullptr || midTab == nullptr || leafTab == nullptr) {
+    printf("FAILED (table lookup: %s)\n", dict->getNdbError().message);
+    return -1;
+  }
+
+  const NdbDictionary::Column *grpCol = rootTab->getColumn("grp");
+  const NdbDictionary::Column *categoryCol = midTab->getColumn("category");
+  if (grpCol == nullptr || categoryCol == nullptr) {
+    printf("FAILED (column lookup)\n");
+    return -1;
+  }
+
+  /* Aggregation: GROUP BY root.grp, mid.category, COUNT(*), SUM(leaf.value) */
+  NdbAggregator agg(leafTab);
+  if (!agg.GroupByLinked(0, grpCol) ||       /* linked pos 0 = root.grp */
+      !agg.GroupByLinked(1, categoryCol) ||   /* linked pos 1 = mid.category */
+      !agg.LoadUint64(1, 0) ||
+      !agg.LoadColumn("value", 1) ||
+      !agg.Count(0, 0) ||
+      !agg.Sum(1, 1) ||
+      !agg.Finalize()) {
+    printf("FAILED (agg program: %s)\n", agg.GetError().err_msg_);
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  if (qb == nullptr) {
+    printf("FAILED (NdbQueryBuilder::create)\n");
+    return -1;
+  }
+
+  /* Node 0: scan oj10_root */
+  const NdbQueryTableScanOperationDef *rootOp = qb->scanTable(rootTab);
+  if (rootOp == nullptr) {
+    printf("FAILED (scanTable: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  /* Node 1: lookup oj10_mid (LEFT JOIN) */
+  const NdbQueryOperand *midKey[] = {
+    qb->linkedValue(rootOp, "id"), nullptr
+  };
+  const NdbQueryLookupOperationDef *midOp =
+      qb->readTuple(midTab, midKey, nullptr);
+  if (midOp == nullptr) {
+    printf("FAILED (readTuple mid: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  /* Node 2: lookup oj10_leaf (LEFT JOIN, aggregate leaf)
+   * Linked projections: root.grp (pos 0) + mid.category (pos 1) */
+  const NdbQueryOperand *leafKey[] = {
+    qb->linkedValue(midOp, "root_id"), nullptr
+  };
+  NdbQueryOptions leafOpts;
+  leafOpts.setAggregation(agg);
+
+  const NdbLinkedOperand *grpLink = qb->linkedValue(rootOp, "grp");
+  if (grpLink == nullptr) {
+    printf("FAILED (linkedValue grp: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  leafOpts.addLinkedProjection(grpLink);
+
+  const NdbLinkedOperand *catLink = qb->linkedValue(midOp, "category");
+  if (catLink == nullptr) {
+    printf("FAILED (linkedValue category: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  leafOpts.addLinkedProjection(catLink);
+
+  const NdbQueryLookupOperationDef *leafOp =
+      qb->readTuple(leafTab, leafKey, &leafOpts);
+  if (leafOp == nullptr) {
+    printf("FAILED (readTuple leaf: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  if (trans == nullptr) {
+    printf("FAILED (startTransaction: %s)\n", ndb->getNdbError().message);
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbQuery *query = trans->createQuery(queryDef);
+  if (query == nullptr) {
+    printf("FAILED (createQuery: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    printf("FAILED (execute: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {}
+  if (outcome == NdbQuery::NextResult_error) {
+    printf("FAILED (nextResult: %s)\n", query->getNdbError().message);
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbAggregator *resultAgg = query->getAggregator();
+  if (resultAgg == nullptr) {
+    printf("FAILED (getAggregator returned nullptr)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  std::map<Int32, std::pair<Int64, Int64>> actual;
+  for (;;) {
+    NdbAggregator::ResultRecord rec = resultAgg->FetchResultRecord();
+    if (rec.end()) break;
+    NdbAggregator::Column grpValCol = rec.FetchGroupbyColumn();
+    Int32 grpVal = grpValCol.data_int32();
+    NdbAggregator::Column catValCol = rec.FetchGroupbyColumn();
+    Int32 catVal = catValCol.is_null() ? 0 : catValCol.data_int32();
+    /* Composite key: grp*1000 + category */
+    Int32 compositeKey = grpVal * 1000 + catVal;
+
+    NdbAggregator::Result countRes = rec.FetchAggregationResult();
+    Int64 countVal = countRes.data_int64();
+    NdbAggregator::Result sumRes = rec.FetchAggregationResult();
+    Int64 sumVal = sumRes.data_int64();
+    actual[compositeKey] = {countVal, sumVal};
+    V("  NDB: grp=%d category=%d COUNT=%lld SUM=%lld\n",
+      grpVal, catVal, (long long)countVal, (long long)sumVal);
+  }
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  if (actual.size() != expected.size()) {
+    printf("FAILED (expected %zu groups, got %zu)\n",
+           expected.size(), actual.size());
+    for (const auto &a : actual) {
+      printf("  got: key=%d COUNT=%lld SUM=%lld\n",
+             a.first, (long long)a.second.first, (long long)a.second.second);
+    }
+    return -1;
+  }
+
+  for (const auto &e : expected) {
+    auto it = actual.find(e.first);
+    if (it == actual.end() ||
+        it->second.first != e.second.first ||
+        it->second.second != e.second.second) {
+      printf("FAILED (composite key=%d mismatch)\n", e.first);
+      return -1;
+    }
+  }
+
+  printf("OK (4 groups)\n");
+  return 0;
+}
+
+/* ================================================================== */
+/* Test 10: GROUP BY intermediate in 4-way chain                       */
+/*   scan → LEFT lookup → LEFT lookup → LEFT lookup [leaf]             */
+/*   GROUP BY second intermediate (Node 2) column                      */
+/*                                                                     */
+/* Schema:                                                             */
+/*   oj12_root (id INT PK, grp INT)                                    */
+/*   oj12_a    (root_id INT PK, a_val INT)                             */
+/*   oj12_b    (a_id INT PK, b_cat INT)                                */
+/*   oj12_leaf (b_id INT PK, score BIGINT)                             */
+/*                                                                     */
+/* Data:                                                               */
+/*   root: (1,10),(2,20),(3,30)                                        */
+/*   a:    (1,100),(2,200)      — roots 1,2 match                      */
+/*   b:    (1,500)              — only a=1 matches                     */
+/*   leaf: (1,7)                — only b=1 matches                     */
+/*                                                                     */
+/* SQL: SELECT b.b_cat, COUNT(*), COALESCE(SUM(l.score),0)             */
+/*      FROM oj12_root r LEFT JOIN oj12_a a ON a.root_id = r.id        */
+/*      LEFT JOIN oj12_b b ON b.a_id = a.root_id                       */
+/*      LEFT JOIN oj12_leaf l ON l.b_id = b.a_id                       */
+/*      GROUP BY b.b_cat                                               */
+/*                                                                     */
+/* Expected:                                                           */
+/*   b_cat=500:  root 1→a(100)→b(500)→leaf(7) → COUNT=1, SUM=7       */
+/*   b_cat=NULL: root 2→a(200)→no b;                                  */
+/*               root 3→no a → COUNT=2, SUM=0                         */
+/* ================================================================== */
+
+static int
+createTest10Tables(MYSQL *conn)
+{
+  sqlExec(conn, "DROP TABLE IF EXISTS oj12_leaf");
+  sqlExec(conn, "DROP TABLE IF EXISTS oj12_b");
+  sqlExec(conn, "DROP TABLE IF EXISTS oj12_a");
+  sqlExec(conn, "DROP TABLE IF EXISTS oj12_root");
+
+  if (sqlExec(conn,
+        "CREATE TABLE oj12_root ("
+        "  id INT NOT NULL PRIMARY KEY,"
+        "  grp INT NOT NULL"
+        ") ENGINE=NDB") != 0) return -1;
+  V("Created table %s\n", OJ12_ROOT);
+
+  if (sqlExec(conn,
+        "CREATE TABLE oj12_a ("
+        "  root_id INT NOT NULL PRIMARY KEY,"
+        "  a_val INT NOT NULL"
+        ") ENGINE=NDB") != 0) return -1;
+  V("Created table %s\n", OJ12_A);
+
+  if (sqlExec(conn,
+        "CREATE TABLE oj12_b ("
+        "  a_id INT NOT NULL PRIMARY KEY,"
+        "  b_cat INT NOT NULL"
+        ") ENGINE=NDB") != 0) return -1;
+  V("Created table %s\n", OJ12_B);
+
+  if (sqlExec(conn,
+        "CREATE TABLE oj12_leaf ("
+        "  b_id INT NOT NULL PRIMARY KEY,"
+        "  score BIGINT NOT NULL"
+        ") ENGINE=NDB") != 0) return -1;
+  V("Created table %s\n", OJ12_LEAF);
+
+  return 0;
+}
+
+static int
+insertTest10Data(MYSQL *conn)
+{
+  if (sqlExec(conn,
+        "INSERT INTO oj12_root VALUES "
+        "(1,10),(2,20),(3,30)") != 0) return -1;
+  V("Inserted 3 root rows\n");
+
+  if (sqlExec(conn,
+        "INSERT INTO oj12_a VALUES "
+        "(1,100),(2,200)") != 0) return -1;
+  V("Inserted 2 a rows\n");
+
+  if (sqlExec(conn,
+        "INSERT INTO oj12_b VALUES (1,500)") != 0) return -1;
+  V("Inserted 1 b row\n");
+
+  if (sqlExec(conn,
+        "INSERT INTO oj12_leaf VALUES (1,7)") != 0) return -1;
+  V("Inserted 1 leaf row\n");
+
+  return 0;
+}
+
+static int
+dropTest10Tables(MYSQL *conn)
+{
+  sqlExec(conn, "DROP TABLE IF EXISTS oj12_leaf");
+  sqlExec(conn, "DROP TABLE IF EXISTS oj12_b");
+  sqlExec(conn, "DROP TABLE IF EXISTS oj12_a");
+  sqlExec(conn, "DROP TABLE IF EXISTS oj12_root");
+  V("Dropped test 10 tables\n");
+  return 0;
+}
+
+static int
+testGroupByDeepIntermediate(Ndb *ndb, MYSQL *conn)
+{
+  printf("Test 10: GROUP BY deep intermediate (scan→LEFT→LEFT→LEFT) ... ");
+  fflush(stdout);
+
+  /* Expected: 2 groups (b_cat=500, NULL) */
+  std::map<Int32, std::pair<Int64, Int64>> expected = {
+    {500, {1, 7}},           /* root 1 → a → b(500) → leaf(7) */
+    {NULL_GROUP, {2, 0}}     /* roots 2,3 → b unmatched → COUNT=2 */
+  };
+
+  /* Verify with MySQL */
+  if (verifyGroupByWithMysql(conn, "Test 10",
+        "SELECT COALESCE(b.b_cat, -2147483648), COUNT(*), "
+        "COALESCE(SUM(l.score),0) "
+        "FROM oj12_root r "
+        "LEFT JOIN oj12_a a ON a.root_id = r.id "
+        "LEFT JOIN oj12_b b ON b.a_id = a.root_id "
+        "LEFT JOIN oj12_leaf l ON l.b_id = b.a_id "
+        "GROUP BY b.b_cat ORDER BY b.b_cat",
+        expected) != 0) {
+    printf("FAILED (MySQL verification)\n");
+    return -1;
+  }
+
+  /* Build NDB pushdown query */
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(OJ12_ROOT);
+  dict->invalidateTable(OJ12_A);
+  dict->invalidateTable(OJ12_B);
+  dict->invalidateTable(OJ12_LEAF);
+  const NdbDictionary::Table *rootTab = dict->getTable(OJ12_ROOT);
+  const NdbDictionary::Table *aTab = dict->getTable(OJ12_A);
+  const NdbDictionary::Table *bTab = dict->getTable(OJ12_B);
+  const NdbDictionary::Table *leafTab = dict->getTable(OJ12_LEAF);
+  if (rootTab == nullptr || aTab == nullptr ||
+      bTab == nullptr || leafTab == nullptr) {
+    printf("FAILED (table lookup: %s)\n", dict->getNdbError().message);
+    return -1;
+  }
+
+  const NdbDictionary::Column *bCatCol = bTab->getColumn("b_cat");
+  if (bCatCol == nullptr) {
+    printf("FAILED (column lookup: b_cat)\n");
+    return -1;
+  }
+
+  /* Aggregation: GROUP BY b.b_cat, COUNT(*), SUM(leaf.score) */
+  NdbAggregator agg(leafTab);
+  if (!agg.GroupByLinked(0, bCatCol) ||
+      !agg.LoadUint64(1, 0) ||
+      !agg.LoadColumn("score", 1) ||
+      !agg.Count(0, 0) ||
+      !agg.Sum(1, 1) ||
+      !agg.Finalize()) {
+    printf("FAILED (agg program: %s)\n", agg.GetError().err_msg_);
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  if (qb == nullptr) {
+    printf("FAILED (NdbQueryBuilder::create)\n");
+    return -1;
+  }
+
+  /* Node 0: scan oj12_root */
+  const NdbQueryTableScanOperationDef *rootOp = qb->scanTable(rootTab);
+  if (rootOp == nullptr) {
+    printf("FAILED (scanTable: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  /* Node 1: lookup oj12_a (LEFT JOIN) */
+  const NdbQueryOperand *aKey[] = {
+    qb->linkedValue(rootOp, "id"), nullptr
+  };
+  const NdbQueryLookupOperationDef *aOp =
+      qb->readTuple(aTab, aKey, nullptr);
+  if (aOp == nullptr) {
+    printf("FAILED (readTuple a: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  /* Node 2: lookup oj12_b (LEFT JOIN) */
+  const NdbQueryOperand *bKey[] = {
+    qb->linkedValue(aOp, "root_id"), nullptr
+  };
+  const NdbQueryLookupOperationDef *bOp =
+      qb->readTuple(bTab, bKey, nullptr);
+  if (bOp == nullptr) {
+    printf("FAILED (readTuple b: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  /* Node 3: lookup oj12_leaf (LEFT JOIN, aggregate leaf)
+   * Linked projection: b.b_cat (from Node 2, P_PARENT(1) P_ATTRINFO) */
+  const NdbQueryOperand *leafKey[] = {
+    qb->linkedValue(bOp, "a_id"), nullptr
+  };
+  NdbQueryOptions leafOpts;
+  leafOpts.setAggregation(agg);
+  const NdbLinkedOperand *bCatLink = qb->linkedValue(bOp, "b_cat");
+  if (bCatLink == nullptr) {
+    printf("FAILED (linkedValue b_cat: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  leafOpts.addLinkedProjection(bCatLink);
+
+  const NdbQueryLookupOperationDef *leafOp =
+      qb->readTuple(leafTab, leafKey, &leafOpts);
+  if (leafOp == nullptr) {
+    printf("FAILED (readTuple leaf: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  if (trans == nullptr) {
+    printf("FAILED (startTransaction: %s)\n", ndb->getNdbError().message);
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbQuery *query = trans->createQuery(queryDef);
+  if (query == nullptr) {
+    printf("FAILED (createQuery: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    printf("FAILED (execute: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {}
+  if (outcome == NdbQuery::NextResult_error) {
+    printf("FAILED (nextResult: %s)\n", query->getNdbError().message);
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbAggregator *resultAgg = query->getAggregator();
+  if (resultAgg == nullptr) {
+    printf("FAILED (getAggregator returned nullptr)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  std::map<Int32, std::pair<Int64, Int64>> actual;
+  for (;;) {
+    NdbAggregator::ResultRecord rec = resultAgg->FetchResultRecord();
+    if (rec.end()) break;
+    NdbAggregator::Column grpValCol = rec.FetchGroupbyColumn();
+    Int32 grpVal;
+    if (grpValCol.is_null()) {
+      grpVal = NULL_GROUP;
+    } else {
+      grpVal = grpValCol.data_int32();
+    }
+    NdbAggregator::Result countRes = rec.FetchAggregationResult();
+    Int64 countVal = countRes.data_int64();
+    NdbAggregator::Result sumRes = rec.FetchAggregationResult();
+    Int64 sumVal = sumRes.data_int64();
+    actual[grpVal] = {countVal, sumVal};
+    V("  NDB: b_cat=%d COUNT=%lld SUM=%lld%s\n",
+      grpVal, (long long)countVal, (long long)sumVal,
+      grpVal == NULL_GROUP ? " (NULL)" : "");
+  }
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  if (actual.size() != expected.size()) {
+    printf("FAILED (expected %zu groups, got %zu)\n",
+           expected.size(), actual.size());
+    for (const auto &a : actual) {
+      printf("  got: b_cat=%d COUNT=%lld SUM=%lld\n",
+             a.first, (long long)a.second.first, (long long)a.second.second);
+    }
+    return -1;
+  }
+
+  for (const auto &e : expected) {
+    auto it = actual.find(e.first);
+    if (it == actual.end() ||
+        it->second.first != e.second.first ||
+        it->second.second != e.second.second) {
+      printf("FAILED (group b_cat=%d mismatch)\n", e.first);
+      return -1;
+    }
+  }
+
+  printf("OK (2 groups)\n");
+  return 0;
+}
+
 /* ------------------------------------------------------------------ */
 /* Usage and main                                                      */
 /* ------------------------------------------------------------------ */
@@ -2653,6 +3530,36 @@ int main(int argc, char **argv)
               exitCode = 1;
             }
             dropTest7Tables(conn);
+          }
+
+          /* Tests 8-9: GROUP BY intermediate (shared tables) */
+          if (shouldRun(8) || shouldRun(9)) {
+            if (createTest8Tables(conn) == 0 &&
+                insertTest8Data(conn) == 0) {
+              /* Test 8: GROUP BY intermediate column */
+              if (shouldRun(8)) {
+                if (testGroupByIntermediate(&ndb, conn) != 0) exitCode = 1;
+              }
+              /* Test 9: GROUP BY root + intermediate columns */
+              if (shouldRun(9)) {
+                if (testGroupByRootAndIntermediate(&ndb, conn) != 0)
+                  exitCode = 1;
+              }
+            } else {
+              exitCode = 1;
+            }
+            dropTest8Tables(conn);
+          }
+
+          /* Test 10: GROUP BY deep intermediate (4-way chain) */
+          if (shouldRun(10)) {
+            if (createTest10Tables(conn) == 0 &&
+                insertTest10Data(conn) == 0) {
+              if (testGroupByDeepIntermediate(&ndb, conn) != 0) exitCode = 1;
+            } else {
+              exitCode = 1;
+            }
+            dropTest10Tables(conn);
           }
         }
 

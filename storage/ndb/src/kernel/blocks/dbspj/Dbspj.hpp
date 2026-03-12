@@ -1603,10 +1603,12 @@ class Dbspj : public SimulatedBlock {
                           Local_pattern_store::ConstDataBufferIterator &,
                           Uint32 level, const RowPtr &, bool &hasNull,
                           bool addTableMeta = false,
-                          Uint32 parentLevelAdjust = 0);
+                          Uint32 parentLevelAdjust = 0,
+                          Uint64 nullNodes = 0);
   Uint32 expand(Uint32 &ptrI, Local_pattern_store &p, const RowPtr &r,
                 bool &hasNull, bool addTableMeta = false,
-                Uint32 parentLevelAdjust = 0);
+                Uint32 parentLevelAdjust = 0,
+                Uint64 nullNodes = 0);
   Uint32 expand(Uint32 &ptrI, DABuffer &pattern, Uint32 len, DABuffer &param,
                 Uint32 cnt, bool &hasNull);
   Uint32 expand(Local_pattern_store &dst, Ptr<TreeNode> treeNodePtr,
@@ -1645,7 +1647,8 @@ class Dbspj : public SimulatedBlock {
   void lookup_sendLeafCONF(Signal *, Ptr<Request>, Ptr<TreeNode>, Uint32 node);
   Uint32 sendJoinAggNullRow(Signal *, Ptr<Request>, Ptr<TreeNode>,
                             const RowPtr &,
-                            Uint32 parentLevelAdjust = 0);
+                            Uint32 parentLevelAdjust = 0,
+                            Uint64 nullNodes = 0);
   Uint32 propagateNullToAggLeaf(Signal *, Ptr<Request>, Ptr<TreeNode>,
                                 const RowPtr &);
   Uint32 handleAggAncestorComplete(Signal *, Ptr<Request>, Ptr<TreeNode>);

@@ -6004,6 +6004,16 @@ Uint32 Dbspj::propagateNullToAggLeaf(Signal *signal,
    */
   Ptr<TreeNode> current = treeNodePtr;
 
+  /**
+   * Build nullNodes bitmask: set bit for the unmatched node and all
+   * intermediate nodes between it and the leaf. These nodes have no
+   * buffered rows, so linked projections referencing their columns
+   * should produce NULL values.
+   */
+  Uint64 nullNodes = 0;
+  ndbassert(treeNodePtr.p->m_node_no < 64);
+  nullNodes |= (1ULL << treeNodePtr.p->m_node_no);
+
   for (;;) {
     LocalArenaPool<DataBufferSegment<14>> pool(requestPtr.p->m_arena,
                                                m_dependency_map_pool);
@@ -6019,20 +6029,10 @@ Uint32 Dbspj::propagateNullToAggLeaf(Signal *signal,
         jam();
         /**
          * Reached the leaf. Compute parentLevelAdjust by walking from
-         * current (the leaf's parent) up to the scan ancestor.
+         * current (the leaf's parent) up to the rowRef's source node.
          */
         Uint32 levelAdjust = 0;
         Ptr<TreeNode> walkPtr = current;
-        /**
-         * Walk from leaf's parent up to the rowRef's source node.
-         * This gives the correct parentLevelAdjust for ALL cases:
-         * - Lookup intermediates: rowRef from scan ancestor
-         * - Scan intermediates: rowRef from scan ancestor (root scan)
-         * - Nested scan-scan: rowRef from root scan, but leaf's
-         *   m_scanAncestorPtrI may point to an intermediate scan.
-         *   Walking to rowRef.m_src_node_ptrI gives the correct
-         *   distance to the actual row source.
-         */
         while (walkPtr.i != rowRef.m_src_node_ptrI) {
           jam();
           levelAdjust++;
@@ -6041,25 +6041,24 @@ Uint32 Dbspj::propagateNullToAggLeaf(Signal *signal,
                                              walkPtr.p->m_parentPtrI));
         }
         DEB_MATCH(("DBSPJ propagateNullToAggLeaf: reached leaf node=%u "
-                   "levelAdjust=%u",
-                   childPtr.p->m_node_no, levelAdjust));
+                   "levelAdjust=%u nullNodes=0x%llx",
+                   childPtr.p->m_node_no, levelAdjust,
+                   (unsigned long long)nullNodes));
         return sendJoinAggNullRow(signal, requestPtr, childPtr,
-                                  rowRef, levelAdjust);
+                                  rowRef, levelAdjust, nullNodes);
       }
 
       if (childPtr.p->m_bits & TreeNode::T_AGGREGATE_ANCESTOR) {
         jam();
         if (childPtr.p->m_bits & TreeNode::T_INNER_JOIN) {
           jam();
-          /**
-           * INNER JOIN blocks null propagation. This parent row is
-           * correctly filtered out - it should not contribute to results.
-           */
           DEB_MATCH(("DBSPJ propagateNullToAggLeaf: blocked by INNER JOIN "
                      "at node=%u", childPtr.p->m_node_no));
           return 0;
         }
         current = childPtr;
+        ndbassert(current.p->m_node_no < 64);
+        nullNodes |= (1ULL << current.p->m_node_no);
         found = true;
         break;
       }
@@ -6179,7 +6178,8 @@ Uint32 Dbspj::handleAggAncestorComplete(Signal *signal,
 Uint32 Dbspj::sendJoinAggNullRow(Signal *signal, Ptr<Request> requestPtr,
                                  Ptr<TreeNode> treeNodePtr,
                                  const RowPtr &rowRef,
-                                 Uint32 parentLevelAdjust) {
+                                 Uint32 parentLevelAdjust,
+                                 Uint64 nullNodes) {
   jam();
   Uint32 nodeId = getOwnNodeId();
   ndbrequire(requestPtr.p->m_aggNodes.get(nodeId));
@@ -6196,7 +6196,8 @@ Uint32 Dbspj::sendJoinAggNullRow(Signal *signal, Ptr<Request> requestPtr,
     Local_pattern_store pattern(pool, treeNodePtr.p->m_attrParamPattern);
     bool hasNull;
     Uint32 err = expand(linkedPtrI, pattern, rowRef, hasNull,
-                        true /* addTableMeta */, parentLevelAdjust);
+                        true /* addTableMeta */, parentLevelAdjust,
+                        nullNodes);
     if (unlikely(err != 0)) {
       jam();
       releaseSection(linkedPtrI);
@@ -10154,7 +10155,8 @@ Uint32 Dbspj::appendFromParent(Uint32 &dst, Local_pattern_store &pattern,
                                Local_pattern_store::ConstDataBufferIterator &it,
                                Uint32 levels, const RowPtr &rowptr,
                                bool &hasNull, bool addTableMeta,
-                               Uint32 parentLevelAdjust) {
+                               Uint32 parentLevelAdjust,
+                               Uint64 nullNodes) {
   jam();
   Ptr<TreeNode> treeNodePtr;
   ndbrequire(m_treenode_pool.getPtr(treeNodePtr, rowptr.m_src_node_ptrI));
@@ -10167,7 +10169,45 @@ Uint32 Dbspj::appendFromParent(Uint32 &dst, Local_pattern_store &pattern,
    * a null row to the aggregate leaf, the rowRef comes from a higher-level
    * ancestor than the pattern expects. Subtract the adjustment to
    * compensate. If levels becomes 0, read from rowRef directly.
+   *
+   * If levels < parentLevelAdjust, the referenced node is between the
+   * rowRef source and the leaf's parent — in the null zone. The column
+   * should be NULL. We handle this below by emitting a NULL attribute.
    */
+  if (unlikely(nullNodes != 0 && levels < parentLevelAdjust)) {
+    jam();
+    /**
+     * The referenced node is an unmatched or unreachable intermediate.
+     * Skip the trailing P_COL/P_ATTRINFO token and emit NULL.
+     */
+    if (unlikely(it.isNull())) {
+      DEBUG_CRASH();
+      return DbspjErr::InvalidPattern;
+    }
+    Uint32 info = *it.data;
+    Uint32 subType = QueryPattern::getType(info);
+    Uint32 subVal = QueryPattern::getLength(info);
+    pattern.next(it);
+
+    if (subType == QueryPattern::P_ATTRINFO && addTableMeta) {
+      Uint32 meta[2] = {0, 0};
+      if (unlikely(!appendToSection(dst, meta, 2)))
+        return DbspjErr::OutOfSectionMemory;
+    }
+    if (subType == QueryPattern::P_ATTRINFO) {
+      AttributeHeader ah(subVal, 0);
+      if (unlikely(!appendToSection(dst, &ah.m_value, 1)))
+        return DbspjErr::OutOfSectionMemory;
+      hasNull = true;
+      return 0;
+    }
+    if (subType == QueryPattern::P_COL) {
+      hasNull = true;
+      return 0;
+    }
+    DEBUG_CRASH();
+    return DbspjErr::InvalidPattern;
+  }
   ndbassert(levels >= parentLevelAdjust);
   levels -= parentLevelAdjust;
 
@@ -10338,7 +10378,8 @@ Uint32 Dbspj::appendDataToSection(
 Uint32 Dbspj::expand(Uint32 &_dst, Local_pattern_store &pattern,
                      const RowPtr &row, bool &hasNull,
                      bool addTableMeta,
-                     Uint32 parentLevelAdjust) {
+                     Uint32 parentLevelAdjust,
+                     Uint64 nullNodes) {
   Uint32 err;
   Uint32 dst = _dst;
   hasNull = false;
@@ -10360,10 +10401,33 @@ Uint32 Dbspj::expand(Uint32 &_dst, Local_pattern_store &pattern,
         break;
       case QueryPattern::P_ATTRINFO: {
         jam();
-        if (addTableMeta) {
+        if (unlikely(nullNodes != 0 && parentLevelAdjust > 0)) {
+          /**
+           * Null propagation path: direct P_ATTRINFO references the leaf's
+           * parent, but rowRef is from the scan ancestor. The leaf's parent
+           * is an unmatched or unreachable intermediate whose columns
+           * should be NULL. Emit NULL attrinfo with dummy table metadata.
+           * The aggregation engine reads linked attrs by position, not by
+           * tableId, so dummy metadata is safe for NULL columns.
+           */
+          jam();
+          if (addTableMeta) {
+            Uint32 meta[2] = {0, 0};
+            if (unlikely(!appendToSection(dst, meta, 2))) {
+              err = DbspjErr::OutOfSectionMemory;
+              break;
+            }
+          }
+          AttributeHeader ah(val, 0);
+          if (unlikely(!appendToSection(dst, &ah.m_value, 1))) {
+            err = DbspjErr::OutOfSectionMemory;
+          } else {
+            hasNull = true;
+            err = 0;
+          }
+        } else if (addTableMeta) {
           Ptr<TreeNode> srcNode;
           ndbrequire(m_treenode_pool.getPtr(srcNode, row.m_src_node_ptrI));
-          // Use primary table's version (not index table version).
           TableRecordPtr primaryTabRec;
           primaryTabRec.i = srcNode.p->m_primaryTableId;
           ptrAss(primaryTabRec, m_tableRecord);
@@ -10386,7 +10450,8 @@ Uint32 Dbspj::expand(Uint32 &_dst, Local_pattern_store &pattern,
         // that permits code to access rows from earlier than immediate parent
         // val is no of levels to move up the tree
         err = appendFromParent(dst, pattern, it, val, row, hasNull,
-                               addTableMeta, parentLevelAdjust);
+                               addTableMeta, parentLevelAdjust,
+                               nullNodes);
         break;
         // PARAM's was converted to DATA by ::expand(pattern...)
       case QueryPattern::P_PARAM:
