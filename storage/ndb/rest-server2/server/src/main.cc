@@ -515,11 +515,16 @@ int main(int argc, char *argv[]) {
     // NDB connection pool thread index space.
     int mysql_router_thread_offset =
         (int)(num_rdrs_threads + num_rondis_threads);
+    const char* tls_cert = globalConfigs.security.tls.enableTLS
+        ? globalConfigs.security.tls.certificateFile.c_str() : "";
+    const char* tls_key = globalConfigs.security.tls.enableTLS
+        ? globalConfigs.security.tls.privateKeyFile.c_str() : "";
     g_mysql_router_conn_factory = new MysqlConnFactory(
         globalConfigs.mysqlRouter.backendHost.c_str(),
         globalConfigs.mysqlRouter.backendPort,
         mysql_router_thread_offset,
-        globalConfigs.mysqlRouter.debugLogging);
+        globalConfigs.mysqlRouter.debugLogging,
+        tls_cert, tls_key);
     g_mysql_router_handle = new MysqlHandle();
 
     printf("Starting MySQL Router on %s:%u with %u threads "

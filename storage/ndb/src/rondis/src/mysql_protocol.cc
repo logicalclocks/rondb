@@ -29,6 +29,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <vector>
+#include <openssl/err.h>
 
 namespace mysql_protocol {
 
@@ -688,6 +689,121 @@ void build_err_packet(std::string& out, uint8_t seq, uint16_t error_code,
 
   // Message
   out.append(message, msg_len);
+}
+
+// ---------------------------------------------------------------------------
+// SSL I/O functions — shared by MySQL router and Rondis
+// ---------------------------------------------------------------------------
+
+bool ssl_read_exact(SSL* ssl, char* buf, size_t len) {
+  size_t total = 0;
+  while (total < len) {
+    int n = SSL_read(ssl, buf + total, (int)(len - total));
+    if (n > 0) {
+      total += n;
+    } else {
+      int err = SSL_get_error(ssl, n);
+      if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
+        usleep(1000);
+        continue;
+      }
+      return false;
+    }
+  }
+  return true;
+}
+
+bool ssl_read_packet(SSL* ssl, std::string& out) {
+  char header[HEADER_SIZE];
+  if (!ssl_read_exact(ssl, header, HEADER_SIZE)) {
+    return false;
+  }
+  uint32_t payload_len = packet_length(header);
+  out.append(header, HEADER_SIZE);
+  if (payload_len > 0) {
+    size_t old_size = out.size();
+    out.resize(old_size + payload_len);
+    if (!ssl_read_exact(ssl, &out[old_size], payload_len)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool ssl_write_all(SSL* ssl, const char* data, size_t len) {
+  size_t total = 0;
+  while (total < len) {
+    int n = SSL_write(ssl, data + total, (int)(len - total));
+    if (n > 0) {
+      total += n;
+    } else {
+      int err = SSL_get_error(ssl, n);
+      if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
+        usleep(1000);
+        continue;
+      }
+      return false;
+    }
+  }
+  return true;
+}
+
+SSL_CTX* create_server_ssl_ctx(const char* cert_file, const char* key_file) {
+  const SSL_METHOD* method = TLS_server_method();
+  SSL_CTX* ctx = SSL_CTX_new(method);
+  if (!ctx) {
+    fprintf(stderr, "SSL_CTX_new() failed\n");
+    return nullptr;
+  }
+
+  SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
+
+  if (SSL_CTX_use_certificate_chain_file(ctx, cert_file) != 1) {
+    fprintf(stderr, "SSL_CTX_use_certificate_chain_file(%s) failed\n",
+            cert_file);
+    SSL_CTX_free(ctx);
+    return nullptr;
+  }
+
+  if (SSL_CTX_use_PrivateKey_file(ctx, key_file, SSL_FILETYPE_PEM) != 1) {
+    fprintf(stderr, "SSL_CTX_use_PrivateKey_file(%s) failed\n", key_file);
+    SSL_CTX_free(ctx);
+    return nullptr;
+  }
+
+  if (SSL_CTX_check_private_key(ctx) != 1) {
+    fprintf(stderr, "SSL private key does not match certificate\n");
+    SSL_CTX_free(ctx);
+    return nullptr;
+  }
+
+  return ctx;
+}
+
+SSL* ssl_accept(SSL_CTX* ctx, int fd) {
+  SSL* ssl = SSL_new(ctx);
+  if (!ssl) {
+    return nullptr;
+  }
+  if (SSL_set_fd(ssl, fd) == 0) {
+    SSL_free(ssl);
+    return nullptr;
+  }
+  // SSL_accept handles WANT_READ/WANT_WRITE internally for blocking fds.
+  // For non-blocking fds we retry.
+  while (true) {
+    int ret = SSL_accept(ssl);
+    if (ret == 1) {
+      return ssl;
+    }
+    int err = SSL_get_error(ssl, ret);
+    if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
+      usleep(1000);
+      continue;
+    }
+    SSL_free(ssl);
+    return nullptr;
+  }
 }
 
 } // namespace mysql_protocol

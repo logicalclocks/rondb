@@ -49,9 +49,29 @@ int MysqlHandle::CreateWorkerSpecificData(void** data) const {
 MysqlConnFactory::MysqlConnFactory(const char* backend_host,
                                    uint16_t backend_port,
                                    int thread_id_offset,
-                                   bool debug_logging)
+                                   bool debug_logging,
+                                   const char* tls_cert_file,
+                                   const char* tls_key_file)
     : backend_host_(backend_host), backend_port_(backend_port),
-      thread_id_offset_(thread_id_offset), debug_logging_(debug_logging) {}
+      thread_id_offset_(thread_id_offset), debug_logging_(debug_logging),
+      ssl_ctx_(nullptr) {
+  if (tls_cert_file && tls_key_file &&
+      tls_cert_file[0] != '\0' && tls_key_file[0] != '\0') {
+    ssl_ctx_ = create_server_ssl_ctx(tls_cert_file, tls_key_file);
+    if (ssl_ctx_) {
+      printf("MySQL Router TLS enabled\n");
+    } else {
+      fprintf(stderr, "MySQL Router TLS setup failed, running without TLS\n");
+    }
+  }
+}
+
+MysqlConnFactory::~MysqlConnFactory() {
+  if (ssl_ctx_) {
+    SSL_CTX_free(ssl_ctx_);
+    ssl_ctx_ = nullptr;
+  }
+}
 
 std::shared_ptr<pink::PinkConn> MysqlConnFactory::NewPinkConn(
     int connfd,
@@ -64,7 +84,8 @@ std::shared_ptr<pink::PinkConn> MysqlConnFactory::NewPinkConn(
                                      backend_host_.c_str(),
                                      backend_port_,
                                      thread_id_offset_,
-                                     debug_logging_);
+                                     debug_logging_,
+                                     ssl_ctx_);
 }
 
 // -----------------------------------------------------------------------
@@ -74,7 +95,8 @@ std::shared_ptr<pink::PinkConn> MysqlConnFactory::NewPinkConn(
 MysqlConn::MysqlConn(int fd, const std::string& ip_port,
                      pink::Thread* thread, void* worker_data,
                      const char* backend_host, uint16_t backend_port,
-                     int thread_id_offset, bool debug_logging)
+                     int thread_id_offset, bool debug_logging,
+                     SSL_CTX* ssl_ctx)
     : PinkConn(fd, ip_port, thread),
       backend_fd_(-1),
       write_pos_(0),
@@ -85,6 +107,8 @@ MysqlConn::MysqlConn(int fd, const std::string& ip_port,
       backend_host_(backend_host),
       backend_port_(backend_port),
       worker_id_(thread_id_offset),
+      ssl_ctx_(ssl_ctx),
+      client_ssl_(nullptr),
       debug_logging_(debug_logging) {
   if (worker_data != nullptr) {
     worker_id_ = thread_id_offset + *static_cast<int*>(worker_data);
@@ -98,10 +122,25 @@ MysqlConn::MysqlConn(int fd, const std::string& ip_port,
 }
 
 MysqlConn::~MysqlConn() {
+  if (client_ssl_) {
+    SSL_shutdown(client_ssl_);
+    SSL_free(client_ssl_);
+    client_ssl_ = nullptr;
+  }
   if (backend_fd_ >= 0) {
     close(backend_fd_);
     backend_fd_ = -1;
   }
+}
+
+bool MysqlConn::client_read_packet(std::string& out) {
+  return client_ssl_ ? ssl_read_packet(client_ssl_, out)
+                     : read_packet(fd(), out);
+}
+
+bool MysqlConn::client_write_all(const char* data, size_t len) {
+  return client_ssl_ ? ssl_write_all(client_ssl_, data, len)
+                     : write_all(fd(), data, len);
 }
 
 void MysqlConn::send_err_to_client(const char* message) {
@@ -129,27 +168,19 @@ bool MysqlConn::send_server_greeting() {
     return false;
   }
 
-  // Strip CLIENT_SSL from the greeting so clients don't attempt TLS upgrade.
-  // The router doesn't handle TLS — connections are plain TCP.
-  // HandshakeV10 layout after header: protocol_version(1) + server_version
-  // (NUL-terminated) + thread_id(4) + auth_data_1(8) + filler(1) +
-  // capability_flags_lower(2).
-  // capability_flags_upper(2) is 7 bytes after the lower 2 bytes.
-  {
+  // When TLS is not configured, strip CLIENT_SSL from the greeting so
+  // clients don't attempt TLS upgrade. When TLS is configured, keep it
+  // so clients can optionally upgrade.
+  if (!ssl_ctx_) {
     const char* payload = handshake_pkt.data() + HEADER_SIZE;
     size_t payload_len = handshake_pkt.size() - HEADER_SIZE;
     // Find end of server_version (NUL-terminated, starts at offset 1)
     size_t ver_end = 1;
     while (ver_end < payload_len && payload[ver_end] != '\0') ver_end++;
-    // capability_flags_lower is at ver_end + 1 (NUL) + 4 (thread_id) +
-    // 8 (auth_data_1) + 1 (filler) = ver_end + 14
+    // capability_flags_lower at ver_end + 1(NUL) + 4(thread_id) +
+    // 8(auth_data_1) + 1(filler) = ver_end + 14
     size_t caps_lower_offset = HEADER_SIZE + ver_end + 14;
-    // capability_flags_upper is 7 bytes later (charset(1) + status(2) +
-    // upper_caps(2) starts at +4 from caps_lower, but layout is:
-    // caps_lower(2) + charset(1) + status_flags(2) + caps_upper(2)
-    size_t caps_upper_offset = caps_lower_offset + 5;
-    if (caps_upper_offset + 1 < handshake_pkt.size()) {
-      // Clear bit 11 (CLIENT_SSL) — it's in the lower 16 bits
+    if (caps_lower_offset + 1 < handshake_pkt.size()) {
       uint16_t caps_lower =
           (uint16_t)(uint8_t)handshake_pkt[caps_lower_offset] |
           ((uint16_t)(uint8_t)handshake_pkt[caps_lower_offset + 1] << 8);
@@ -172,13 +203,14 @@ bool MysqlConn::complete_auth() {
   // client's auth response arrives (epoll-triggered). Uses blocking I/O on
   // both fds — read_exact/write_all handle EAGAIN for non-blocking client fd.
 
-  // Read client auth response
+  // Read client's first packet (always plain TCP at this point).
+  // This is either an SSLRequest or the full auth response.
   std::string auth_response;
   if (!read_packet(fd(), auth_response)) {
     return false;
   }
 
-  // Extract client capabilities from auth response (first 4 bytes of payload)
+  // Extract client capabilities from first packet
   if (auth_response.size() >= HEADER_SIZE + 4) {
     const char* payload = auth_response.data() + HEADER_SIZE;
     client_capabilities_ =
@@ -186,6 +218,55 @@ bool MysqlConn::complete_auth() {
         ((uint32_t)(uint8_t)payload[1] << 8) |
         ((uint32_t)(uint8_t)payload[2] << 16) |
         ((uint32_t)(uint8_t)payload[3] << 24);
+  }
+
+  // Check for SSLRequest: CLIENT_SSL set and payload is exactly 32 bytes
+  // (capabilities(4) + max_packet_size(4) + charset(1) + reserved(23))
+  uint32_t first_payload_len = packet_length(auth_response.data());
+  bool is_ssl_request = (client_capabilities_ & CLIENT_SSL) &&
+                         first_payload_len == 32 && ssl_ctx_;
+  if (is_ssl_request) {
+    // Client wants TLS — perform server-side TLS handshake
+    client_ssl_ = ssl_accept(ssl_ctx_, fd());
+    if (!client_ssl_) {
+      send_err_to_client("MySQL router: TLS handshake failed");
+      return false;
+    }
+    // Read the actual auth response over TLS
+    auth_response.clear();
+    if (!client_read_packet(auth_response)) {
+      return false;
+    }
+    // Re-extract capabilities from the real auth response
+    if (auth_response.size() >= HEADER_SIZE + 4) {
+      const char* payload = auth_response.data() + HEADER_SIZE;
+      client_capabilities_ =
+          (uint32_t)(uint8_t)payload[0] |
+          ((uint32_t)(uint8_t)payload[1] << 8) |
+          ((uint32_t)(uint8_t)payload[2] << 16) |
+          ((uint32_t)(uint8_t)payload[3] << 24);
+    }
+  }
+
+  // Fix sequence number: if TLS upgrade happened, the auth response has
+  // seq=2 (SSLRequest was seq=1), but backend expects seq=1.
+  if (client_ssl_ && auth_response.size() >= HEADER_SIZE) {
+    auth_response[3] = 1;  // Set sequence to 1
+  }
+
+  // Strip CLIENT_SSL from auth before forwarding to backend (plain connection)
+  if (auth_response.size() >= HEADER_SIZE + 4) {
+    size_t off = HEADER_SIZE;
+    uint32_t caps =
+        (uint32_t)(uint8_t)auth_response[off] |
+        ((uint32_t)(uint8_t)auth_response[off + 1] << 8) |
+        ((uint32_t)(uint8_t)auth_response[off + 2] << 16) |
+        ((uint32_t)(uint8_t)auth_response[off + 3] << 24);
+    caps &= ~CLIENT_SSL;
+    auth_response[off] = (char)(caps & 0xFF);
+    auth_response[off + 1] = (char)((caps >> 8) & 0xFF);
+    auth_response[off + 2] = (char)((caps >> 16) & 0xFF);
+    auth_response[off + 3] = (char)((caps >> 24) & 0xFF);
   }
 
   // Extract default database from auth response (HandshakeResponse41):
@@ -230,23 +311,34 @@ bool MysqlConn::complete_auth() {
     return false;
   }
 
-  // Handle auth exchange: loop until we get OK or ERR from backend
+  // Handle auth exchange: loop until we get OK or ERR from backend.
+  // Client I/O uses client_read_packet/client_write_all for TLS support.
+  // When TLS is active, the backend never saw the SSLRequest (seq=1), so
+  // backend seq numbers are off by 1 relative to the client's expectation.
   while (true) {
     std::string pkt;
     if (!read_packet(backend_fd_, pkt)) {
       return false;
     }
 
+    // Fix seq: backend's seq is off by 1 when TLS is active
+    // (backend didn't see the SSLRequest which consumed seq=1)
+    if (client_ssl_ && pkt.size() >= HEADER_SIZE) {
+      pkt[3] = (uint8_t)pkt[3] + 1;
+    }
+
     uint32_t payload_len = packet_length(pkt.data());
     if (payload_len == 0) {
-      write_all(fd(), pkt.data(), pkt.size());
+      client_write_all(pkt.data(), pkt.size());
       continue;
     }
 
     uint8_t marker = (uint8_t)pkt[HEADER_SIZE];
 
     if (marker == OK_MARKER || marker == ERR_MARKER) {
-      write_all(fd(), pkt.data(), pkt.size());
+      if (!client_write_all(pkt.data(), pkt.size())) {
+        return false;
+      }
       if (marker == ERR_MARKER) {
         return false;
       }
@@ -255,13 +347,18 @@ bool MysqlConn::complete_auth() {
     }
 
     // Auth continuation (AuthSwitchRequest, AuthMoreData, etc.)
-    if (!write_all(fd(), pkt.data(), pkt.size())) {
+    if (!client_write_all(pkt.data(), pkt.size())) {
       return false;
     }
 
     std::string client_pkt;
-    if (!read_packet(fd(), client_pkt)) {
+    if (!client_read_packet(client_pkt)) {
       return false;
+    }
+
+    // Fix seq back: client's seq is 1 ahead of what backend expects
+    if (client_ssl_ && client_pkt.size() >= HEADER_SIZE) {
+      client_pkt[3] = (uint8_t)client_pkt[3] - 1;
     }
 
     if (!write_all(backend_fd_, client_pkt.data(), client_pkt.size())) {
@@ -462,19 +559,38 @@ pink::ReadStatus MysqlConn::GetRequest() {
 
   // Read from client (non-blocking, epoll-triggered)
   char tmp_buf[16384];
-  ssize_t n = read(fd(), tmp_buf, sizeof(tmp_buf));
-  if (n == 0) {
-    if (backend_fd_ >= 0) {
-      char quit_pkt[5] = {1, 0, 0, 0, (char)COM_QUIT};
-      write_all(backend_fd_, quit_pkt, 5);
+  ssize_t n;
+  if (client_ssl_) {
+    n = SSL_read(client_ssl_, tmp_buf, sizeof(tmp_buf));
+    if (n <= 0) {
+      int err = SSL_get_error(client_ssl_, (int)n);
+      if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
+        return pink::kReadHalf;
+      }
+      if (err == SSL_ERROR_ZERO_RETURN || n == 0) {
+        if (backend_fd_ >= 0) {
+          char quit_pkt[5] = {1, 0, 0, 0, (char)COM_QUIT};
+          write_all(backend_fd_, quit_pkt, 5);
+        }
+        return pink::kReadClose;
+      }
+      return pink::kReadError;
     }
-    return pink::kReadClose;
-  }
-  if (n < 0) {
-    if (errno == EAGAIN || errno == EWOULDBLOCK) {
-      return pink::kReadHalf;
+  } else {
+    n = read(fd(), tmp_buf, sizeof(tmp_buf));
+    if (n == 0) {
+      if (backend_fd_ >= 0) {
+        char quit_pkt[5] = {1, 0, 0, 0, (char)COM_QUIT};
+        write_all(backend_fd_, quit_pkt, 5);
+      }
+      return pink::kReadClose;
     }
-    return pink::kReadError;
+    if (n < 0) {
+      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        return pink::kReadHalf;
+      }
+      return pink::kReadError;
+    }
   }
 
   request_buf_.append(tmp_buf, n);
@@ -569,31 +685,33 @@ pink::ReadStatus MysqlConn::GetRequest() {
 
   // Handle LOCAL INFILE: backend asked client to send file data.
   // We must relay the file data from client to backend, then read the
-  // final OK/ERR from backend.
+  // final OK/ERR from backend. Uses SSL-aware client I/O.
   if (response_buf_.size() >= (size_t)HEADER_SIZE + 1 &&
       (uint8_t)response_buf_[HEADER_SIZE] == LOCAL_INFILE_MARKER) {
-    // Send the LOCAL INFILE request to client first
-    if (!write_all(fd(), response_buf_.data(), response_buf_.size())) {
+    // Send the LOCAL INFILE request to client
+    if (!client_write_all(response_buf_.data(), response_buf_.size())) {
       should_close_ = true;
       return pink::kReadClose;
     }
-    // Relay file data from client → backend, then read final response
-    if (!relay_local_infile(fd(), backend_fd_, response_buf_)) {
+    // Relay file data packets from client → backend until empty packet
+    while (true) {
+      std::string pkt;
+      if (!client_read_packet(pkt)) {
+        should_close_ = true;
+        return pink::kReadClose;
+      }
+      if (!write_all(backend_fd_, pkt.data(), pkt.size())) {
+        should_close_ = true;
+        return pink::kReadClose;
+      }
+      if (packet_length(pkt.data()) == 0) break;
+    }
+    // Read final OK/ERR from backend
+    response_buf_.clear();
+    if (!read_packet(backend_fd_, response_buf_)) {
       should_close_ = true;
       return pink::kReadClose;
     }
-    // response_buf_ now has the original LOCAL INFILE packet + final OK/ERR.
-    // The LOCAL INFILE packet was already sent above, so adjust write_pos_
-    // to skip it when SendReply sends the rest.
-    // Actually, simpler: we already wrote the LOCAL INFILE to client.
-    // Now response_buf_ contains LOCAL_INFILE + final_OK/ERR.
-    // We only want to send the final OK/ERR.
-    // Find where relay_local_infile appended the final packet.
-    size_t local_infile_size = (size_t)HEADER_SIZE +
-        packet_length(response_buf_.data());
-    std::string final_response(response_buf_.begin() + local_infile_size,
-                                response_buf_.end());
-    response_buf_ = std::move(final_response);
     write_pos_ = 0;
   }
 
@@ -615,13 +733,26 @@ pink::WriteStatus MysqlConn::SendReply() {
     return pink::kWriteAll;
   }
 
-  ssize_t n = write(fd(), response_buf_.data() + write_pos_,
-                    response_buf_.size() - write_pos_);
-  if (n < 0) {
-    if (errno == EAGAIN || errno == EWOULDBLOCK) {
-      return pink::kWriteHalf;
+  ssize_t n;
+  if (client_ssl_) {
+    n = SSL_write(client_ssl_, response_buf_.data() + write_pos_,
+                  (int)(response_buf_.size() - write_pos_));
+    if (n <= 0) {
+      int err = SSL_get_error(client_ssl_, (int)n);
+      if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
+        return pink::kWriteHalf;
+      }
+      return pink::kWriteError;
     }
-    return pink::kWriteError;
+  } else {
+    n = write(fd(), response_buf_.data() + write_pos_,
+              response_buf_.size() - write_pos_);
+    if (n < 0) {
+      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        return pink::kWriteHalf;
+      }
+      return pink::kWriteError;
+    }
   }
   write_pos_ += n;
   if (write_pos_ >= response_buf_.size()) {

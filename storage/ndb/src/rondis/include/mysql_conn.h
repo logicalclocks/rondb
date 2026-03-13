@@ -22,6 +22,7 @@
 
 #include "pink_conn.h"
 #include "server_thread.h"
+#include <openssl/ssl.h>
 #include <string>
 #include <mutex>
 
@@ -42,7 +43,8 @@ public:
   MysqlConn(int fd, const std::string& ip_port,
             pink::Thread* thread, void* worker_data,
             const char* backend_host, uint16_t backend_port,
-            int thread_id_offset, bool debug_logging);
+            int thread_id_offset, bool debug_logging,
+            SSL_CTX* ssl_ctx);
   ~MysqlConn() override;
 
   pink::ReadStatus GetRequest() override;
@@ -61,6 +63,8 @@ private:
   uint16_t backend_port_;
   int worker_id_;
   std::string current_database_;
+  SSL_CTX* ssl_ctx_;   // shared, not owned — do not free
+  SSL* client_ssl_;    // per-connection, owned
 
   bool send_server_greeting();
   bool complete_auth();
@@ -71,12 +75,18 @@ private:
   bool is_select_query(const char* query, size_t query_len);
   void track_database_change(uint8_t cmd, const char* payload, size_t len);
   void update_transaction_state();
+
+  // SSL-aware client I/O — uses client_ssl_ when set, plain fd otherwise
+  bool client_read_packet(std::string& out);
+  bool client_write_all(const char* data, size_t len);
 };
 
 class MysqlConnFactory : public pink::ConnFactory {
 public:
   MysqlConnFactory(const char* backend_host, uint16_t backend_port,
-                   int thread_id_offset, bool debug_logging);
+                   int thread_id_offset, bool debug_logging,
+                   const char* tls_cert_file, const char* tls_key_file);
+  ~MysqlConnFactory();
   std::shared_ptr<pink::PinkConn> NewPinkConn(
       int connfd, const std::string& ip_port,
       pink::Thread* thread, void* worker_specific_data,
@@ -86,6 +96,7 @@ private:
   uint16_t backend_port_;
   int thread_id_offset_;
   bool debug_logging_;
+  SSL_CTX* ssl_ctx_;  // nullptr when TLS not configured
 };
 
 class MysqlHandle : public pink::ServerHandle {

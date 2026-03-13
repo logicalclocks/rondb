@@ -1,0 +1,9 @@
+!include suite/myrouter/my.cnf
+
+# Override RDRS to enable TLS for MySQL router
+[rdrs.1.1]
+config-json-template=suite/myrouter/myrouter_config_template.json
+EnableTLS=true
+enable-rest=false
+enable-rondis=false
+enable-myrouter=true

@@ -49,6 +49,7 @@ ADD_CONVENIENCE_LIBRARY(rondis
   worker_thread.cc
   LINK_LIBRARIES mysqlclient
 )
+TARGET_COMPILE_DEFINITIONS(rondis PRIVATE __ENABLE_SSL)
 
 NDB_ADD_EXECUTABLE(rondisd rondis.cc)
 TARGET_LINK_LIBRARIES(rondisd rondis)

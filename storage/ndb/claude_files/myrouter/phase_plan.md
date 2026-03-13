@@ -36,15 +36,23 @@ Added join_pushdown_default and join_pushdown_bka from ndb_opt suite.
 - Multi-result sets: loop on SERVER_MORE_RESULTS_EXIST after EOF/OK
 - COM_RESET_CONNECTION / COM_CHANGE_USER: reset in_transaction_ and current_database_
 
+### Phase 11: TLS support
+- Shared SSL implementation between MySQL router and Rondis (mysql_protocol.cc)
+- MySQL standard TLS upgrade: SSLRequest detection → TLS handshake → auth over TLS
+- Sequence number translation (backend never sees SSLRequest, so seq is off by 1)
+- Client I/O wrappers (client_read_packet/client_write_all) for transparent TLS/plain
+- Rondis EnableSecurity updated to use shared create_server_ssl_ctx (OpenSSL 3 compatible)
+- MTR test: myrouter_tls
+
 ## Remaining Phases
 
-### Phase 11: More myrouter_ndb tests
+### Phase 12: More myrouter_ndb tests
 Add more ndb_opt tests to myrouter_ndb: condition_pushdown, ndb_index, ndb_alter_table, subquery tests, etc.
 
-### Phase 12: Prepared statement support for RonSQL
+### Phase 13: Prepared statement support for RonSQL
 Currently all prepared statements proxy to backend. Teach RonSQL to handle COM_STMT_PREPARE/EXECUTE for aggregate queries so they benefit from RonSQL routing.
 
-### Phase 13: Metrics and monitoring
+### Phase 14: Metrics and monitoring
 Expose routing statistics (PROXY/RONSQL/FALLBACK counts, latency percentiles) through the RDRS REST health endpoint.
 
 ## Rejected Ideas

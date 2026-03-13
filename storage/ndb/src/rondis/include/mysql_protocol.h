@@ -22,6 +22,7 @@
 
 #include <cstdint>
 #include <string>
+#include <openssl/ssl.h>
 
 namespace mysql_protocol {
 
@@ -76,6 +77,18 @@ bool read_packet(int fd, std::string& out);
 
 // Write data to fd. Returns false on error.
 bool write_all(int fd, const char* data, size_t len);
+
+// SSL-aware variants — shared by MySQL router and Rondis.
+// These handle SSL_ERROR_WANT_READ/WANT_WRITE internally.
+bool ssl_read_exact(SSL* ssl, char* buf, size_t len);
+bool ssl_read_packet(SSL* ssl, std::string& out);
+bool ssl_write_all(SSL* ssl, const char* data, size_t len);
+
+// Create SSL_CTX for server-side TLS. Returns nullptr on error.
+SSL_CTX* create_server_ssl_ctx(const char* cert_file, const char* key_file);
+
+// Perform server-side TLS handshake on fd. Returns SSL* or nullptr on error.
+SSL* ssl_accept(SSL_CTX* ctx, int fd);
 
 // Read a complete MySQL response from fd (may be multi-packet for result sets).
 // Appends all packets to `out`. Returns false on error.

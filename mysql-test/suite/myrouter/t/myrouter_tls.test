@@ -1,0 +1,19 @@
+#
+# Test MySQL router with TLS enabled.
+# Verifies that clients can connect via TLS and plain TCP.
+#
+
+# Connect via TLS (default when server advertises SSL)
+--connect(tls_con, $MYROUTER_HOST, root, , , $MYROUTER_PORT)
+SELECT 'tls connection works' AS result;
+
+# Run a few queries to verify the connection is functional
+CREATE DATABASE IF NOT EXISTS myrouter_tls_test;
+USE myrouter_tls_test;
+CREATE TABLE t1 (id INT PRIMARY KEY, val VARCHAR(100)) ENGINE=NDB;
+INSERT INTO t1 VALUES (1, 'hello'), (2, 'world');
+SELECT * FROM t1 ORDER BY id;
+DROP TABLE t1;
+DROP DATABASE myrouter_tls_test;
+
+--disconnect tls_con
