@@ -252,6 +252,85 @@ bool MysqlConn::is_select_query(const char* query, size_t query_len) {
            query[i + 6] == '('));
 }
 
+// Check if a word boundary exists at position i (before the keyword).
+// A keyword must be preceded by whitespace, '(' or start-of-string.
+static bool is_word_start(const char* query, size_t i) {
+  if (i == 0) return true;
+  char prev = query[i - 1];
+  return std::isspace((unsigned char)prev) || prev == '(' || prev == ',';
+}
+
+// Check if a word boundary exists after a keyword of given length.
+// A keyword must be followed by whitespace, '(' or end-of-string.
+static bool is_word_end(const char* query, size_t pos, size_t kw_len,
+                        size_t query_len) {
+  size_t after = pos + kw_len;
+  if (after >= query_len) return true;
+  char next = query[after];
+  return std::isspace((unsigned char)next) || next == '(';
+}
+
+// Quick scan for aggregate indicators: COUNT, SUM, AVG, MIN, MAX,
+// GROUP BY. RonSQL only supports aggregate queries, so non-aggregate
+// SELECTs should go straight to the proxy without trying RonSQL.
+// This is a heuristic — false positives (e.g. column named "count")
+// just cause a harmless RonSQL attempt that falls back to proxy.
+static bool may_be_aggregate_query(const char* query, size_t query_len) {
+  for (size_t i = 0; i + 2 < query_len; i++) {
+    unsigned char c = (unsigned char)query[i];
+    // Skip quoted strings (single and double quotes)
+    if (c == '\'' || c == '"') {
+      char quote = (char)c;
+      i++;
+      while (i < query_len && query[i] != quote) {
+        if (query[i] == '\\') i++;  // skip escaped char
+        i++;
+      }
+      continue;
+    }
+    // Skip backtick-quoted identifiers
+    if (c == '`') {
+      i++;
+      while (i < query_len && query[i] != '`') i++;
+      continue;
+    }
+    // Check for aggregate function names and GROUP BY
+    if (!is_word_start(query, i)) continue;
+    char upper = (char)std::toupper(c);
+    if (upper == 'C' && i + 5 <= query_len &&
+        strncasecmp(query + i, "COUNT", 5) == 0 &&
+        is_word_end(query, i, 5, query_len)) {
+      return true;
+    }
+    if (upper == 'S' && i + 3 <= query_len &&
+        strncasecmp(query + i, "SUM", 3) == 0 &&
+        is_word_end(query, i, 3, query_len)) {
+      return true;
+    }
+    if (upper == 'A' && i + 3 <= query_len &&
+        strncasecmp(query + i, "AVG", 3) == 0 &&
+        is_word_end(query, i, 3, query_len)) {
+      return true;
+    }
+    if (upper == 'M' && i + 3 <= query_len) {
+      if (strncasecmp(query + i, "MIN", 3) == 0 &&
+          is_word_end(query, i, 3, query_len)) {
+        return true;
+      }
+      if (strncasecmp(query + i, "MAX", 3) == 0 &&
+          is_word_end(query, i, 3, query_len)) {
+        return true;
+      }
+    }
+    if (upper == 'G' && i + 8 <= query_len &&
+        strncasecmp(query + i, "GROUP BY", 8) == 0 &&
+        is_word_start(query, i)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 void MysqlConn::track_database_change(uint8_t cmd,
                                        const char* payload,
                                        size_t len) {
@@ -397,20 +476,27 @@ pink::ReadStatus MysqlConn::GetRequest() {
     size_t query_len = pkt_len - 1;
 
     if (is_select_query(query, query_len)) {
-      std::string ronsql_error;
-      // Response sequence number starts at 1 (after the request seq 0)
-      if (try_ronsql(query, query_len, seq + 1, ronsql_error)) {
-        // RonSQL handled it — consume packet and send response
+      if (!may_be_aggregate_query(query, query_len)) {
+        // Non-aggregate SELECT — skip RonSQL, go straight to proxy
         if (debug_logging_) {
-          log_route("RONSQL", query, query_len);
+          log_route("PROXY", query, query_len, "non-aggregate SELECT");
         }
-        request_buf_.erase(0, total_pkt_size);
-        set_is_reply(true);
-        return pink::kReadAll;
-      }
-      // RonSQL failed — fall through to backend proxy
-      if (debug_logging_) {
-        log_route("FALLBACK", query, query_len, ronsql_error.c_str());
+      } else {
+        std::string ronsql_error;
+        // Response sequence number starts at 1 (after the request seq 0)
+        if (try_ronsql(query, query_len, seq + 1, ronsql_error)) {
+          // RonSQL handled it — consume packet and send response
+          if (debug_logging_) {
+            log_route("RONSQL", query, query_len);
+          }
+          request_buf_.erase(0, total_pkt_size);
+          set_is_reply(true);
+          return pink::kReadAll;
+        }
+        // RonSQL failed — fall through to backend proxy
+        if (debug_logging_) {
+          log_route("FALLBACK", query, query_len, ronsql_error.c_str());
+        }
       }
     }
   }
