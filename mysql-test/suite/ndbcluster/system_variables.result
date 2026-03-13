@@ -50,6 +50,7 @@ ndb_mgmd_host	#
 ndb_nodeid	#
 ndb_optimization_delay	#
 ndb_optimized_node_selection	#
+ndb_pushdown_aggregate	#
 ndb_read_backup	#
 ndb_recv_thread_activation_threshold	#
 ndb_recv_thread_cpu_mask	#
