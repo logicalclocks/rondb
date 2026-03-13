@@ -1,0 +1,7 @@
+#
+# Test of pushed joins through MySQL router.
+# Same as ndb_opt.join_pushdown_default but routed through myrouter.
+#
+
+--source include/have_ndb.inc
+--source suite/ndb_opt/join_pushdown.inc
