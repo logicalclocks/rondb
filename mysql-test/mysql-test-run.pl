@@ -180,6 +180,7 @@ my $exe_ndb_mgmd;
 my $exe_ndb_waiter;
 my $exe_ndbmtd;
 my $exe_ndbmtd_v2;
+my $exe_rdrs2_v2;
 my $initial_bootstrap_cmd;
 my $mysql_base_version;
 my $mysqlx_baseport;
@@ -2892,6 +2893,20 @@ sub executable_setup () {
       $ENV{'NDBMTD_V2_EXE'} = $exe_ndbmtd_v2;
     } else {
       delete $ENV{'HAVE_NDBMTD_V2'};
+    }
+
+    # Look for rdrs2_v2 (old version of RDRS2 server for upgrade testing)
+    $exe_rdrs2_v2 =
+      my_find_bin($bindir,
+                  [ "runtime_output_directory", "libexec", "sbin", "bin" ],
+                  "rdrs2_v2", NOT_REQUIRED);
+
+    if ($exe_rdrs2_v2 && $ENV{MTR_RONDB_V2}) {
+      mtr_verbose("Found rdrs2_v2 binary");
+      $ENV{'HAVE_RDRS2_V2'} = 1;
+      $ENV{'RDRS2_V2_EXE'} = $exe_rdrs2_v2;
+    } else {
+      delete $ENV{'HAVE_RDRS2_V2'};
     }
   }
 
