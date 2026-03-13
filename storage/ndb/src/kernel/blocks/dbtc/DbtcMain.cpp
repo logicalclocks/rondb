@@ -149,7 +149,7 @@
 //#define DEBUG_SCAN_MANY 1
 //#define DEBUG_RATE_OVERFLOW 1
 //#define DEBUG_CONT_SCAN 1
-#define DEBUG_JOIN_AGG_TRACE 1
+//#define DEBUG_JOIN_AGG_TRACE 1
 #endif
 
 #ifdef DEBUG_JOIN_AGG_TRACE
