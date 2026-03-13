@@ -164,7 +164,105 @@ static bool is_err_packet(const char* pkt_start, uint32_t payload_len) {
   return false;
 }
 
-bool read_response(int fd, std::string& out, uint32_t client_capabilities) {
+// Extract status flags from the last packet in a buffer (EOF or OK packet).
+// Used to check SERVER_MORE_RESULTS_EXIST for multi-result-set support.
+static uint16_t extract_status_flags_from_last_packet(const char* pkt_start,
+                                                       uint32_t payload_len) {
+  if (payload_len < 1) return 0;
+  uint8_t marker = (uint8_t)pkt_start[HEADER_SIZE];
+  if (marker == OK_MARKER) {
+    return extract_ok_status_flags(pkt_start, HEADER_SIZE + payload_len);
+  }
+  if (marker == EOF_MARKER && payload_len >= 5) {
+    // EOF packet: marker(1) + warnings(2) + status_flags(2)
+    return (uint16_t)(uint8_t)pkt_start[HEADER_SIZE + 3] |
+           ((uint16_t)(uint8_t)pkt_start[HEADER_SIZE + 4] << 8);
+  }
+  return 0;
+}
+
+// Read a single result set (column defs + rows) after the initial column_count
+// packet has already been read. Returns true on success.
+// last_pkt_start/last_pkt_payload_len are set to the final EOF/OK packet.
+static bool read_result_set_body(int fd, std::string& out,
+                                  uint32_t client_capabilities,
+                                  uint64_t column_count,
+                                  size_t& last_pkt_start,
+                                  uint32_t& last_pkt_payload_len) {
+  bool deprecate_eof = (client_capabilities & CLIENT_DEPRECATE_EOF) != 0;
+
+  // Read column definition packets
+  if (!deprecate_eof) {
+    while (true) {
+      size_t pkt_start = out.size();
+      if (!read_packet(fd, out)) return false;
+      uint32_t plen = packet_length(out.data() + pkt_start);
+      if (is_eof_packet(out.data() + pkt_start, plen)) break;
+      if (is_err_packet(out.data() + pkt_start, plen)) {
+        last_pkt_start = pkt_start;
+        last_pkt_payload_len = plen;
+        return true;
+      }
+    }
+  } else {
+    for (uint64_t i = 0; i < column_count; i++) {
+      if (!read_packet(fd, out)) return false;
+    }
+  }
+
+  // Read row packets until EOF/OK/ERR
+  while (true) {
+    size_t pkt_start = out.size();
+    if (!read_packet(fd, out)) return false;
+    uint32_t plen = packet_length(out.data() + pkt_start);
+
+    if (is_err_packet(out.data() + pkt_start, plen)) {
+      last_pkt_start = pkt_start;
+      last_pkt_payload_len = plen;
+      return true;
+    }
+
+    if (!deprecate_eof) {
+      if (is_eof_packet(out.data() + pkt_start, plen)) {
+        last_pkt_start = pkt_start;
+        last_pkt_payload_len = plen;
+        return true;
+      }
+    } else {
+      if (is_ok_packet(out.data() + pkt_start, plen)) {
+        last_pkt_start = pkt_start;
+        last_pkt_payload_len = plen;
+        return true;
+      }
+      uint8_t m = (uint8_t)(out.data() + pkt_start)[HEADER_SIZE];
+      if (m == EOF_MARKER) {
+        last_pkt_start = pkt_start;
+        last_pkt_payload_len = plen;
+        return true;
+      }
+    }
+  }
+}
+
+bool relay_local_infile(int client_fd, int backend_fd, std::string& out) {
+  // The LOCAL INFILE response has already been appended to out and sent
+  // to the client. The client will now send file data in packets, ending
+  // with an empty packet. We relay these to the backend, then read the
+  // final OK/ERR from the backend.
+  while (true) {
+    std::string pkt;
+    if (!read_packet(client_fd, pkt)) return false;
+    if (!write_all(backend_fd, pkt.data(), pkt.size())) return false;
+    uint32_t plen = packet_length(pkt.data());
+    if (plen == 0) break;  // Empty packet signals end of file data
+  }
+  // Read final OK/ERR from backend
+  if (!read_packet(backend_fd, out)) return false;
+  return true;
+}
+
+bool read_response(int fd, std::string& out, uint32_t client_capabilities,
+                   uint8_t cmd) {
   // Read the first packet
   size_t start_offset = out.size();
   if (!read_packet(fd, out)) {
@@ -177,52 +275,130 @@ bool read_response(int fd, std::string& out, uint32_t client_capabilities) {
   if (first_payload_len == 0) return true;
 
   uint8_t first_byte = (uint8_t)first_pkt[HEADER_SIZE];
-  if (first_byte == OK_MARKER) return true;
   if (first_byte == ERR_MARKER) return true;
   if (first_byte == EOF_MARKER && first_payload_len <= 5) return true;
   if (first_byte == LOCAL_INFILE_MARKER) return true;
+
+  // COM_STMT_PREPARE has a special response format:
+  // [00] stmt_id(4) num_columns(2) num_params(2) [00] warning_count(2)
+  // followed by param definitions + EOF, then column definitions + EOF
+  if (cmd == COM_STMT_PREPARE && first_byte == OK_MARKER) {
+    if (first_payload_len < 12) return true;  // Minimal prepare OK
+    const char* p = first_pkt + HEADER_SIZE + 1;  // Skip marker
+    // Skip stmt_id (4 bytes)
+    p += 4;
+    uint16_t num_columns = (uint16_t)(uint8_t)p[0] |
+                           ((uint16_t)(uint8_t)p[1] << 8);
+    p += 2;
+    uint16_t num_params = (uint16_t)(uint8_t)p[0] |
+                          ((uint16_t)(uint8_t)p[1] << 8);
+
+    bool deprecate_eof = (client_capabilities & CLIENT_DEPRECATE_EOF) != 0;
+
+    // Read param definition packets
+    if (num_params > 0) {
+      for (uint16_t i = 0; i < num_params; i++) {
+        if (!read_packet(fd, out)) return false;
+      }
+      if (!deprecate_eof) {
+        // EOF after params
+        if (!read_packet(fd, out)) return false;
+      }
+    }
+    // Read column definition packets
+    if (num_columns > 0) {
+      for (uint16_t i = 0; i < num_columns; i++) {
+        if (!read_packet(fd, out)) return false;
+      }
+      if (!deprecate_eof) {
+        // EOF after columns
+        if (!read_packet(fd, out)) return false;
+      }
+    }
+    return true;
+  }
+
+  // Regular OK packet (non-prepare) — but check for multi-result sets
+  if (first_byte == OK_MARKER) {
+    uint16_t status = extract_ok_status_flags(first_pkt,
+                                               HEADER_SIZE + first_payload_len);
+    if (!(status & SERVER_MORE_RESULTS_EXIST)) {
+      return true;
+    }
+    // More results follow — fall through to read them as result sets
+    while (true) {
+      size_t next_start = out.size();
+      if (!read_packet(fd, out)) return false;
+      uint32_t next_plen = packet_length(out.data() + next_start);
+      uint8_t next_byte = (uint8_t)(out.data() + next_start)[HEADER_SIZE];
+
+      if (next_byte == ERR_MARKER) return true;
+
+      if (next_byte == OK_MARKER) {
+        uint16_t st = extract_ok_status_flags(
+            out.data() + next_start, HEADER_SIZE + next_plen);
+        if (!(st & SERVER_MORE_RESULTS_EXIST)) return true;
+        continue;  // More results after this OK
+      }
+
+      // It's a result set column_count packet — read the body
+      const char* p2 = out.data() + next_start + HEADER_SIZE;
+      const char* e2 = p2 + next_plen;
+      uint64_t col_count = read_lenenc_int(p2, e2);
+      size_t last_start = 0;
+      uint32_t last_plen = 0;
+      if (!read_result_set_body(fd, out, client_capabilities,
+                                 col_count, last_start, last_plen)) {
+        return false;
+      }
+      uint16_t st = extract_status_flags_from_last_packet(
+          out.data() + last_start, last_plen);
+      if (!(st & SERVER_MORE_RESULTS_EXIST)) return true;
+    }
+  }
 
   // Result set: first packet is column_count (lenenc int)
   const char* pos = first_pkt + HEADER_SIZE;
   const char* end = first_pkt + HEADER_SIZE + first_payload_len;
   uint64_t column_count = read_lenenc_int(pos, end);
 
-  bool deprecate_eof = (client_capabilities & CLIENT_DEPRECATE_EOF) != 0;
-
-  // Read column definition packets
-  if (!deprecate_eof) {
-    while (true) {
-      size_t pkt_start = out.size();
-      if (!read_packet(fd, out)) return false;
-      uint32_t plen = packet_length(out.data() + pkt_start);
-      if (is_eof_packet(out.data() + pkt_start, plen)) break;
-      if (is_err_packet(out.data() + pkt_start, plen)) return true;
-    }
-  } else {
-    // With CLIENT_DEPRECATE_EOF, read exactly column_count definition packets
-    for (uint64_t i = 0; i < column_count; i++) {
-      if (!read_packet(fd, out)) return false;
-    }
+  size_t last_pkt_start = 0;
+  uint32_t last_pkt_payload_len = 0;
+  if (!read_result_set_body(fd, out, client_capabilities, column_count,
+                             last_pkt_start, last_pkt_payload_len)) {
+    return false;
   }
 
-  // Read row packets until EOF/OK/ERR
-  while (true) {
-    size_t pkt_start = out.size();
+  // Check for multi-result sets
+  uint16_t status = extract_status_flags_from_last_packet(
+      out.data() + last_pkt_start, last_pkt_payload_len);
+  while (status & SERVER_MORE_RESULTS_EXIST) {
+    size_t next_start = out.size();
     if (!read_packet(fd, out)) return false;
-    uint32_t plen = packet_length(out.data() + pkt_start);
+    uint32_t next_plen = packet_length(out.data() + next_start);
+    uint8_t next_byte = (uint8_t)(out.data() + next_start)[HEADER_SIZE];
 
-    if (is_err_packet(out.data() + pkt_start, plen)) return true;
+    if (next_byte == ERR_MARKER) return true;
 
-    if (!deprecate_eof) {
-      if (is_eof_packet(out.data() + pkt_start, plen)) return true;
-    } else {
-      // With CLIENT_DEPRECATE_EOF, the termination packet is an OK_Packet
-      // with header 0x00 or 0xFE (any payload length — not limited to 5).
-      if (is_ok_packet(out.data() + pkt_start, plen)) return true;
-      uint8_t m = (uint8_t)(out.data() + pkt_start)[HEADER_SIZE];
-      if (m == EOF_MARKER) return true;
+    if (next_byte == OK_MARKER) {
+      status = extract_ok_status_flags(
+          out.data() + next_start, HEADER_SIZE + next_plen);
+      continue;
     }
+
+    // Another result set
+    const char* p3 = out.data() + next_start + HEADER_SIZE;
+    const char* e3 = p3 + next_plen;
+    uint64_t col_count = read_lenenc_int(p3, e3);
+    if (!read_result_set_body(fd, out, client_capabilities, col_count,
+                               last_pkt_start, last_pkt_payload_len)) {
+      return false;
+    }
+    status = extract_status_flags_from_last_packet(
+        out.data() + last_pkt_start, last_pkt_payload_len);
   }
+
+  return true;
 }
 
 int connect_to_backend(const char* host, uint16_t port) {

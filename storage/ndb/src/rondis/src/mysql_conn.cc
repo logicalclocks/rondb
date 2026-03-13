@@ -523,12 +523,54 @@ pink::ReadStatus MysqlConn::GetRequest() {
     return pink::kReadClose;
   }
 
+  // COM_STMT_CLOSE has no response from the server
+  if (cmd == COM_STMT_CLOSE) {
+    set_is_reply(false);
+    return pink::kReadHalf;
+  }
+
   // Read complete response from backend (synchronous blocking I/O)
   response_buf_.clear();
   write_pos_ = 0;
-  if (!read_response(backend_fd_, response_buf_, client_capabilities_)) {
+  if (!read_response(backend_fd_, response_buf_, client_capabilities_, cmd)) {
     should_close_ = true;
     return pink::kReadClose;
+  }
+
+  // Handle LOCAL INFILE: backend asked client to send file data.
+  // We must relay the file data from client to backend, then read the
+  // final OK/ERR from backend.
+  if (response_buf_.size() >= (size_t)HEADER_SIZE + 1 &&
+      (uint8_t)response_buf_[HEADER_SIZE] == LOCAL_INFILE_MARKER) {
+    // Send the LOCAL INFILE request to client first
+    if (!write_all(fd(), response_buf_.data(), response_buf_.size())) {
+      should_close_ = true;
+      return pink::kReadClose;
+    }
+    // Relay file data from client → backend, then read final response
+    if (!relay_local_infile(fd(), backend_fd_, response_buf_)) {
+      should_close_ = true;
+      return pink::kReadClose;
+    }
+    // response_buf_ now has the original LOCAL INFILE packet + final OK/ERR.
+    // The LOCAL INFILE packet was already sent above, so adjust write_pos_
+    // to skip it when SendReply sends the rest.
+    // Actually, simpler: we already wrote the LOCAL INFILE to client.
+    // Now response_buf_ contains LOCAL_INFILE + final_OK/ERR.
+    // We only want to send the final OK/ERR.
+    // Find where relay_local_infile appended the final packet.
+    size_t local_infile_size = (size_t)HEADER_SIZE +
+        packet_length(response_buf_.data());
+    std::string final_response(response_buf_.begin() + local_infile_size,
+                                response_buf_.end());
+    response_buf_ = std::move(final_response);
+    write_pos_ = 0;
+  }
+
+  // Reset router state on COM_RESET_CONNECTION / COM_CHANGE_USER
+  if (cmd == COM_RESET_CONNECTION || cmd == COM_CHANGE_USER) {
+    in_transaction_ = false;
+    current_database_.clear();
   }
 
   // Update transaction state from backend OK packet status flags

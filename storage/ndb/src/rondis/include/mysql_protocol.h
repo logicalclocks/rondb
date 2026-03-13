@@ -34,6 +34,12 @@ static constexpr uint8_t COM_QUIT = 0x01;
 static constexpr uint8_t COM_INIT_DB = 0x02;
 static constexpr uint8_t COM_QUERY = 0x03;
 static constexpr uint8_t COM_PING = 0x0E;
+static constexpr uint8_t COM_CHANGE_USER = 0x11;
+static constexpr uint8_t COM_STMT_PREPARE = 0x16;
+static constexpr uint8_t COM_STMT_EXECUTE = 0x17;
+static constexpr uint8_t COM_STMT_CLOSE = 0x19;
+static constexpr uint8_t COM_STMT_RESET = 0x1A;
+static constexpr uint8_t COM_RESET_CONNECTION = 0x1F;
 
 // Response markers
 static constexpr uint8_t OK_MARKER = 0x00;
@@ -50,6 +56,7 @@ static constexpr uint32_t CLIENT_DEPRECATE_EOF = (1UL << 24);
 // Server status flags (from OK packet status_flags field)
 static constexpr uint16_t SERVER_STATUS_IN_TRANS = (1U << 0);
 static constexpr uint16_t SERVER_STATUS_AUTOCOMMIT = (1U << 1);
+static constexpr uint16_t SERVER_MORE_RESULTS_EXIST = (1U << 3);
 
 // Extract server status flags from an OK packet in a response buffer.
 // Returns 0 if the packet is not an OK packet or is too short.
@@ -67,7 +74,15 @@ bool write_all(int fd, const char* data, size_t len);
 
 // Read a complete MySQL response from fd (may be multi-packet for result sets).
 // Appends all packets to `out`. Returns false on error.
-bool read_response(int fd, std::string& out, uint32_t client_capabilities);
+// cmd is the command byte that triggered this response (needed for
+// COM_STMT_PREPARE which has a different response format).
+bool read_response(int fd, std::string& out, uint32_t client_capabilities,
+                   uint8_t cmd = COM_QUERY);
+
+// Handle LOCAL INFILE protocol exchange between client and backend.
+// Called when backend sends a LOCAL_INFILE_MARKER response.
+// Relays file data from client_fd to backend_fd, then reads final OK/ERR.
+bool relay_local_infile(int client_fd, int backend_fd, std::string& out);
 
 // Connect to backend mysqld. Returns fd or -1 on error.
 int connect_to_backend(const char* host, uint16_t port);
