@@ -47,6 +47,14 @@ static constexpr uint8_t LOCAL_INFILE_MARKER = 0xFB;
 static constexpr uint32_t CLIENT_DEPRECATE_EOF = (1UL << 24);
 #endif
 
+// Server status flags (from OK packet status_flags field)
+static constexpr uint16_t SERVER_STATUS_IN_TRANS = (1U << 0);
+static constexpr uint16_t SERVER_STATUS_AUTOCOMMIT = (1U << 1);
+
+// Extract server status flags from an OK packet in a response buffer.
+// Returns 0 if the packet is not an OK packet or is too short.
+uint16_t extract_ok_status_flags(const char* pkt, size_t pkt_len);
+
 // Read exactly `len` bytes from fd into buf. Returns false on error/EOF.
 bool read_exact(int fd, char* buf, size_t len);
 

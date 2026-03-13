@@ -67,5 +67,22 @@ id	name
 cnt
 3
 #
+# Test 14: Transaction awareness - SELECT inside BEGIN sees uncommitted data
+#
+# A SELECT inside an explicit transaction must be proxied to mysqld
+# (not routed to RonSQL) so it can see uncommitted writes.
+name
+TxnTest
+#
+# Test 15: After COMMIT, SELECT routing returns to normal
+#
+name
+CommitTest
+#
+# Test 16: SET autocommit=0 routes SELECTs to mysqld
+#
+name
+AutocommitTest
+#
 # Cleanup
 #

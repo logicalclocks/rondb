@@ -116,6 +116,29 @@ uint64_t read_lenenc_int(const char*& pos, const char* end) {
   return 0;
 }
 
+uint16_t extract_ok_status_flags(const char* pkt, size_t pkt_len) {
+  // OK packet layout (after header):
+  //   marker(1) = 0x00, affected_rows(lenenc), last_insert_id(lenenc),
+  //   status_flags(2), warnings(2), ...
+  if (pkt_len < HEADER_SIZE + 1) return 0;
+  uint8_t marker = (uint8_t)pkt[HEADER_SIZE];
+  if (marker != OK_MARKER) return 0;
+
+  const char* pos = pkt + HEADER_SIZE + 1;
+  const char* end = pkt + pkt_len;
+
+  // Skip affected_rows (lenenc int)
+  read_lenenc_int(pos, end);
+  // Skip last_insert_id (lenenc int)
+  read_lenenc_int(pos, end);
+
+  // Read status_flags (2 bytes, little-endian)
+  if (pos + 2 > end) return 0;
+  uint16_t status_flags = (uint16_t)(uint8_t)pos[0] |
+                           ((uint16_t)(uint8_t)pos[1] << 8);
+  return status_flags;
+}
+
 static bool is_eof_packet(const char* pkt_start, uint32_t payload_len) {
   // EOF packet: marker 0xFE with payload length <= 5 bytes
   if (payload_len >= 1 && payload_len <= 5) {

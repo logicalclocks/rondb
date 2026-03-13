@@ -93,6 +93,28 @@ SELECT * FROM myrouter_test.t1 ORDER BY id;
 --exec $MYSQL_ROUTER -e "SELECT COUNT(*) AS cnt FROM myrouter_test.t1"
 
 --echo #
+--echo # Test 14: Transaction awareness - SELECT inside BEGIN sees uncommitted data
+--echo #
+--echo # A SELECT inside an explicit transaction must be proxied to mysqld
+--echo # (not routed to RonSQL) so it can see uncommitted writes.
+
+--exec $MYSQL_ROUTER -e "BEGIN; INSERT INTO myrouter_test.t1 VALUES (10, 'TxnTest', 1000); SELECT name FROM myrouter_test.t1 WHERE id = 10; ROLLBACK"
+
+--echo #
+--echo # Test 15: After COMMIT, SELECT routing returns to normal
+--echo #
+
+--exec $MYSQL_ROUTER -e "BEGIN; INSERT INTO myrouter_test.t1 VALUES (11, 'CommitTest', 1100); COMMIT"
+--exec $MYSQL_ROUTER -e "SELECT name FROM myrouter_test.t1 WHERE id = 11"
+--exec $MYSQL_ROUTER -e "DELETE FROM myrouter_test.t1 WHERE id = 11"
+
+--echo #
+--echo # Test 16: SET autocommit=0 routes SELECTs to mysqld
+--echo #
+
+--exec $MYSQL_ROUTER -e "SET autocommit=0; INSERT INTO myrouter_test.t1 VALUES (12, 'AutocommitTest', 1200); SELECT name FROM myrouter_test.t1 WHERE id = 12; ROLLBACK; SET autocommit=1"
+
+--echo #
 --echo # Cleanup
 --echo #
 

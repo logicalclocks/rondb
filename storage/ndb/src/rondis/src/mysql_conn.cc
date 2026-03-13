@@ -78,6 +78,7 @@ MysqlConn::MysqlConn(int fd, const std::string& ip_port,
       write_pos_(0),
       handshake_done_(false),
       should_close_(false),
+      in_transaction_(false),
       client_capabilities_(0),
       backend_host_(backend_host),
       backend_port_(backend_port),
@@ -279,6 +280,17 @@ void MysqlConn::track_database_change(uint8_t cmd,
   }
 }
 
+void MysqlConn::update_transaction_state() {
+  // Check the first packet in the response buffer for SERVER_STATUS_IN_TRANS.
+  // This works for OK packets (after DML, SET, BEGIN, COMMIT, ROLLBACK) and
+  // for the final OK/EOF packet in result sets (which also carries status flags).
+  if (response_buf_.size() >= (size_t)HEADER_SIZE + 1) {
+    uint16_t flags = extract_ok_status_flags(
+        response_buf_.data(), response_buf_.size());
+    in_transaction_ = (flags & SERVER_STATUS_IN_TRANS) != 0;
+  }
+}
+
 bool MysqlConn::try_ronsql(const char* query, size_t query_len, uint8_t seq) {
   if (g_mysql_ronsql_handler == nullptr) {
     return false;
@@ -361,8 +373,8 @@ pink::ReadStatus MysqlConn::GetRequest() {
     track_database_change(cmd, payload, payload_len);
   }
 
-  // Try RonSQL for SELECT queries
-  if (cmd == COM_QUERY && pkt_len > 1) {
+  // Try RonSQL for SELECT queries (only outside transactions)
+  if (cmd == COM_QUERY && pkt_len > 1 && !in_transaction_) {
     const char* query = request_buf_.data() + HEADER_SIZE + 1;
     size_t query_len = pkt_len - 1;
 
@@ -400,6 +412,9 @@ pink::ReadStatus MysqlConn::GetRequest() {
     should_close_ = true;
     return pink::kReadClose;
   }
+
+  // Update transaction state from backend OK packet status flags
+  update_transaction_state();
 
   set_is_reply(true);
   return pink::kReadAll;

@@ -55,6 +55,7 @@ private:
   size_t write_pos_;
   bool handshake_done_;
   bool should_close_;
+  bool in_transaction_;
   uint32_t client_capabilities_;
   std::string backend_host_;
   uint16_t backend_port_;
@@ -67,6 +68,7 @@ private:
   bool try_ronsql(const char* query, size_t query_len, uint8_t seq);
   bool is_select_query(const char* query, size_t query_len);
   void track_database_change(uint8_t cmd, const char* payload, size_t len);
+  void update_transaction_state();
 };
 
 class MysqlConnFactory : public pink::ConnFactory {
