@@ -165,12 +165,7 @@ Bob	15
 Charlie	20
 
 
-=== Test 7: Multiple LEFT JOINs (known incorrect — DBSPJ limitation) ===
-# Chained LEFT JOINs produce wrong results with pushdown aggregation.
-# DBSPJ null row injection only handles T_AGGREGATE_LEAF, not intermediate
-# outer join nodes. Unmatched parents from the first LEFT JOIN are lost,
-# and SUM values are inflated. This is aggregation-specific; non-aggregated
-# chained LEFT JOINs work correctly via the MySQL handler layer.
+=== Test 7: Multiple LEFT JOINs ===
 == Query ==
 SELECT p.p_name, SUM(c.c_value), SUM(g.g_qty)
 FROM parent AS p
@@ -181,22 +176,11 @@ GROUP BY p.p_name;
 Number of output lines, including header: 6
 
 == Diff ==
---- mysql.out
-+++ ronsql.out
-@@ -1,6 +1,4 @@
- p_name	SUM(c.c_value)	SUM(g.g_qty)
--Alice	400	15
-+Alice	500	15
- Bob	300	15
--Charlie	900	20
--Diana	NULL	NULL
--Eve	NULL	NULL
-+Charlie	1300	20
 ==========
 
 
 
-== Expected result (MySQL, correct) ==
+== Expected result ==
 SELECT p.p_name, SUM(c.c_value), SUM(g.g_qty)
 FROM parent AS p
 LEFT JOIN child AS c ON c.c_parent_id = p.p_id

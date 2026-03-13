@@ -175,15 +175,8 @@ GROUP BY p.p_name|
 
 --echo
 --echo
---echo === Test 7: Multiple LEFT JOINs (known incorrect — DBSPJ limitation) ===
---echo # Chained LEFT JOINs produce wrong results with pushdown aggregation.
---echo # DBSPJ null row injection only handles T_AGGREGATE_LEAF, not intermediate
---echo # outer join nodes. Unmatched parents from the first LEFT JOIN are lost,
---echo # and SUM values are inflated. This is aggregation-specific; non-aggregated
---echo # chained LEFT JOINs work correctly via the MySQL handler layer.
+--echo === Test 7: Multiple LEFT JOINs ===
 
-# Temporarily disable strict diff — this test documents a known limitation
---let $strict_diff=
 let $QUERY=
 SELECT p.p_name, SUM(c.c_value), SUM(g.g_qty)
 FROM parent AS p
@@ -192,16 +185,13 @@ LEFT JOIN grandchild AS g ON g.g_child_id = c.c_id
 GROUP BY p.p_name;|
 --source suite/ronsql/include/ronsql_compare.inc
 
---echo == Expected result (MySQL, correct) ==
+--echo == Expected result ==
 --sorted_result
 SELECT p.p_name, SUM(c.c_value), SUM(g.g_qty)
 FROM parent AS p
 LEFT JOIN child AS c ON c.c_parent_id = p.p_id
 LEFT JOIN grandchild AS g ON g.g_child_id = c.c_id
 GROUP BY p.p_name|
-
-# Restore strict diff for remaining tests
---let $strict_diff=yes
 
 --echo
 --echo
