@@ -5196,9 +5196,13 @@ sub run_testcase ($) {
                "  " . $mysqld->value('port') . "  " . $mysqld->value('socket'));
     }
     foreach my $rdrs (rdrss()) {
-      mtr_print($rdrs->name() .
+      my $msg = $rdrs->name() .
                "  RDRS port " . $rdrs->value('port') .
-               ", rondis port " . $rdrs->value('rondisport'));
+               ", rondis port " . $rdrs->value('rondisport');
+      if (($rdrs->if_exist('enable-myrouter') // '') eq 'true') {
+        $msg .= ", myrouter port " . $rdrs->value('myrouterport');
+      }
+      mtr_print($msg);
     }
   }
   if ($start_only) {

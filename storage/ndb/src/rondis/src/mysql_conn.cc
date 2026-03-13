@@ -129,6 +129,36 @@ bool MysqlConn::send_server_greeting() {
     return false;
   }
 
+  // Strip CLIENT_SSL from the greeting so clients don't attempt TLS upgrade.
+  // The router doesn't handle TLS — connections are plain TCP.
+  // HandshakeV10 layout after header: protocol_version(1) + server_version
+  // (NUL-terminated) + thread_id(4) + auth_data_1(8) + filler(1) +
+  // capability_flags_lower(2).
+  // capability_flags_upper(2) is 7 bytes after the lower 2 bytes.
+  {
+    const char* payload = handshake_pkt.data() + HEADER_SIZE;
+    size_t payload_len = handshake_pkt.size() - HEADER_SIZE;
+    // Find end of server_version (NUL-terminated, starts at offset 1)
+    size_t ver_end = 1;
+    while (ver_end < payload_len && payload[ver_end] != '\0') ver_end++;
+    // capability_flags_lower is at ver_end + 1 (NUL) + 4 (thread_id) +
+    // 8 (auth_data_1) + 1 (filler) = ver_end + 14
+    size_t caps_lower_offset = HEADER_SIZE + ver_end + 14;
+    // capability_flags_upper is 7 bytes later (charset(1) + status(2) +
+    // upper_caps(2) starts at +4 from caps_lower, but layout is:
+    // caps_lower(2) + charset(1) + status_flags(2) + caps_upper(2)
+    size_t caps_upper_offset = caps_lower_offset + 5;
+    if (caps_upper_offset + 1 < handshake_pkt.size()) {
+      // Clear bit 11 (CLIENT_SSL) — it's in the lower 16 bits
+      uint16_t caps_lower =
+          (uint16_t)(uint8_t)handshake_pkt[caps_lower_offset] |
+          ((uint16_t)(uint8_t)handshake_pkt[caps_lower_offset + 1] << 8);
+      caps_lower &= ~(uint16_t)(CLIENT_SSL & 0xFFFF);
+      handshake_pkt[caps_lower_offset] = (char)(caps_lower & 0xFF);
+      handshake_pkt[caps_lower_offset + 1] = (char)((caps_lower >> 8) & 0xFF);
+    }
+  }
+
   if (!write_all(fd(), handshake_pkt.data(), handshake_pkt.size())) {
     close(backend_fd_);
     backend_fd_ = -1;

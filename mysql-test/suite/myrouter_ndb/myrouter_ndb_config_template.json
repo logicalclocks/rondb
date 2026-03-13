@@ -9,7 +9,8 @@
     "ServerPort": @myrouterport,
     "NumThreads": 4,
     "BackendHost": "127.0.0.1",
-    "BackendPort": @mysqld.1.1.port
+    "BackendPort": @mysqld.1.1.port,
+    "DebugLogging": false
   },
   "RonDB": {
       "Mgmds": [ { "IP": "@cluster_config.ndb_mgmd.1.1.HostName",

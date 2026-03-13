@@ -47,6 +47,11 @@ static constexpr uint8_t ERR_MARKER = 0xFF;
 static constexpr uint8_t EOF_MARKER = 0xFE;
 static constexpr uint8_t LOCAL_INFILE_MARKER = 0xFB;
 
+// CLIENT_SSL capability flag (bit 11)
+#ifndef CLIENT_SSL
+static constexpr uint32_t CLIENT_SSL = (1UL << 11);
+#endif
+
 // CLIENT_DEPRECATE_EOF capability flag (bit 24)
 // Avoid redefining if mysql_com.h is already included (it defines this as a macro)
 #ifndef CLIENT_DEPRECATE_EOF
