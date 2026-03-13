@@ -1,0 +1,145 @@
+#
+# Test: CREATE TABLE through router
+#
+CREATE TABLE t1 (
+pk1 INT NOT NULL PRIMARY KEY,
+attr1 INT NOT NULL,
+attr2 INT,
+attr3 VARCHAR(10)
+) ENGINE=ndbcluster;
+#
+# Test: INSERT through router
+#
+INSERT INTO t1 VALUES (9410,9412, NULL, '9412'), (9411,9413, 17, '9413');
+#
+# Test: SELECT through router
+#
+SELECT pk1 FROM t1 ORDER BY pk1;
+pk1
+9410
+9411
+SELECT * FROM t1 ORDER BY pk1;
+pk1	attr1	attr2	attr3
+9410	9412	NULL	9412
+9411	9413	17	9413
+#
+# Test: UPDATE by primary key through router
+#
+UPDATE t1 SET attr1=1 WHERE pk1=9410;
+SELECT * FROM t1 ORDER BY pk1;
+pk1	attr1	attr2	attr3
+9410	1	NULL	9412
+9411	9413	17	9413
+#
+# Test: UPDATE primary key through router
+#
+UPDATE t1 SET pk1=2 WHERE attr1=1;
+SELECT * FROM t1 ORDER BY pk1;
+pk1	attr1	attr2	attr3
+2	1	NULL	9412
+9411	9413	17	9413
+#
+# Test: DELETE through router
+#
+DELETE FROM t1;
+SELECT * FROM t1;
+pk1	attr1	attr2	attr3
+#
+# Test: Bulk INSERT and UPDATE through router
+#
+INSERT INTO t1 VALUES (1,10, NULL, 'a'), (2,20, NULL, 'b'),
+(3,30, NULL, 'c'), (4,40, NULL, 'd'), (5,50, NULL, 'e');
+UPDATE t1 SET attr1 = 9999;
+SELECT * FROM t1 ORDER BY pk1;
+pk1	attr1	attr2	attr3
+1	9999	NULL	a
+2	9999	NULL	b
+3	9999	NULL	c
+4	9999	NULL	d
+5	9999	NULL	e
+#
+# Test: Conditional UPDATE through router
+#
+UPDATE t1 SET attr1 = 1111 WHERE pk1 < 3;
+SELECT * FROM t1 ORDER BY pk1;
+pk1	attr1	attr2	attr3
+1	1111	NULL	a
+2	1111	NULL	b
+3	9999	NULL	c
+4	9999	NULL	d
+5	9999	NULL	e
+#
+# Test: DELETE with WHERE through router
+#
+DELETE FROM t1 WHERE pk1 > 3;
+SELECT * FROM t1 ORDER BY pk1;
+pk1	attr1	attr2	attr3
+1	1111	NULL	a
+2	1111	NULL	b
+3	9999	NULL	c
+#
+# Test: Aggregation through router
+#
+SELECT COUNT(*) AS cnt FROM t1;
+cnt
+3
+SELECT SUM(attr1) AS total FROM t1;
+total
+12221
+SELECT MIN(pk1) AS min_pk, MAX(pk1) AS max_pk FROM t1;
+min_pk	max_pk
+1	3
+#
+# Test: Transaction through router
+#
+BEGIN;
+INSERT INTO t1 VALUES (10, 100, 1000, 'tx');
+SELECT * FROM t1 WHERE pk1 = 10;
+pk1	attr1	attr2	attr3
+10	100	1000	tx
+COMMIT;
+SELECT * FROM t1 WHERE pk1 = 10;
+pk1	attr1	attr2	attr3
+10	100	1000	tx
+#
+# Test: Rollback through router
+#
+BEGIN;
+INSERT INTO t1 VALUES (20, 200, 2000, 'rb');
+ROLLBACK;
+SELECT COUNT(*) AS cnt FROM t1 WHERE pk1 = 20;
+cnt
+0
+#
+# Test: SHOW and USE through router
+#
+SHOW CREATE TABLE t1;
+Table	Create Table
+t1	CREATE TABLE `t1` (
+  `pk1` int NOT NULL,
+  `attr1` int NOT NULL,
+  `attr2` int DEFAULT NULL,
+  `attr3` varchar(10) DEFAULT NULL,
+  PRIMARY KEY (`pk1`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+USE test;
+SELECT pk1 FROM t1 ORDER BY pk1;
+pk1
+1
+2
+3
+10
+#
+# Test: ALTER TABLE through router
+#
+ALTER TABLE t1 ADD COLUMN attr4 INT DEFAULT 0;
+SELECT pk1, attr4 FROM t1 ORDER BY pk1;
+pk1	attr4
+1	0
+2	0
+3	0
+10	0
+#
+# Cleanup
+#
+DROP TABLE t1;

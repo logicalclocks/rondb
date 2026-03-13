@@ -1,0 +1,124 @@
+--source include/not_parallel.inc
+--source include/have_ndb.inc
+
+#
+# Basic NDB operations through the MySQL router (RONDB-1039 Phase 5)
+# The default connection goes through RDRS MySQL router.
+# All SQL is routed: DDL/DML proxied to mysqld, SELECTs via RonSQL.
+#
+
+--echo #
+--echo # Test: CREATE TABLE through router
+--echo #
+
+CREATE TABLE t1 (
+  pk1 INT NOT NULL PRIMARY KEY,
+  attr1 INT NOT NULL,
+  attr2 INT,
+  attr3 VARCHAR(10)
+) ENGINE=ndbcluster;
+
+--echo #
+--echo # Test: INSERT through router
+--echo #
+
+INSERT INTO t1 VALUES (9410,9412, NULL, '9412'), (9411,9413, 17, '9413');
+
+--echo #
+--echo # Test: SELECT through router
+--echo #
+
+SELECT pk1 FROM t1 ORDER BY pk1;
+SELECT * FROM t1 ORDER BY pk1;
+
+--echo #
+--echo # Test: UPDATE by primary key through router
+--echo #
+
+UPDATE t1 SET attr1=1 WHERE pk1=9410;
+SELECT * FROM t1 ORDER BY pk1;
+
+--echo #
+--echo # Test: UPDATE primary key through router
+--echo #
+
+UPDATE t1 SET pk1=2 WHERE attr1=1;
+SELECT * FROM t1 ORDER BY pk1;
+
+--echo #
+--echo # Test: DELETE through router
+--echo #
+
+DELETE FROM t1;
+SELECT * FROM t1;
+
+--echo #
+--echo # Test: Bulk INSERT and UPDATE through router
+--echo #
+
+INSERT INTO t1 VALUES (1,10, NULL, 'a'), (2,20, NULL, 'b'),
+(3,30, NULL, 'c'), (4,40, NULL, 'd'), (5,50, NULL, 'e');
+UPDATE t1 SET attr1 = 9999;
+SELECT * FROM t1 ORDER BY pk1;
+
+--echo #
+--echo # Test: Conditional UPDATE through router
+--echo #
+
+UPDATE t1 SET attr1 = 1111 WHERE pk1 < 3;
+SELECT * FROM t1 ORDER BY pk1;
+
+--echo #
+--echo # Test: DELETE with WHERE through router
+--echo #
+
+DELETE FROM t1 WHERE pk1 > 3;
+SELECT * FROM t1 ORDER BY pk1;
+
+--echo #
+--echo # Test: Aggregation through router
+--echo #
+
+SELECT COUNT(*) AS cnt FROM t1;
+SELECT SUM(attr1) AS total FROM t1;
+SELECT MIN(pk1) AS min_pk, MAX(pk1) AS max_pk FROM t1;
+
+--echo #
+--echo # Test: Transaction through router
+--echo #
+
+BEGIN;
+INSERT INTO t1 VALUES (10, 100, 1000, 'tx');
+SELECT * FROM t1 WHERE pk1 = 10;
+COMMIT;
+SELECT * FROM t1 WHERE pk1 = 10;
+
+--echo #
+--echo # Test: Rollback through router
+--echo #
+
+BEGIN;
+INSERT INTO t1 VALUES (20, 200, 2000, 'rb');
+ROLLBACK;
+SELECT COUNT(*) AS cnt FROM t1 WHERE pk1 = 20;
+
+--echo #
+--echo # Test: SHOW and USE through router
+--echo #
+
+SHOW CREATE TABLE t1;
+USE test;
+SELECT pk1 FROM t1 ORDER BY pk1;
+
+--echo #
+--echo # Test: ALTER TABLE through router
+--echo #
+
+ALTER TABLE t1 ADD COLUMN attr4 INT DEFAULT 0;
+SELECT pk1, attr4 FROM t1 ORDER BY pk1;
+
+--echo #
+--echo # Cleanup
+--echo #
+
+DROP TABLE t1;
