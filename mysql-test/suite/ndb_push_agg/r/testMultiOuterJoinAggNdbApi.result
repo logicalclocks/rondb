@@ -15,6 +15,8 @@ Test 9: GROUP BY root+intermediate (scan→LEFT→LEFT) ... OK (4 groups)
 Test 10: GROUP BY deep intermediate (scan→LEFT→LEFT→LEFT) ... OK (2 groups)
 Test 11: Sibling branch + aggregation (scan→LEFT+LEFT→LEFT) ... OK (3 groups)
 Test 12: Sibling branch + GROUP BY root (scan→LEFT+LEFT→LEFT) ... OK (4 groups)
+Test 13: 3-scan deferred null row (scan->LEFT scan->LEFT scan) ... OK (4 groups)
+Test 14: 3-scan deferred + inline match (scan->LEFT scan->LEFT scan) ... OK (4 groups)
 
 === ALL TESTS PASSED ===
 PASSED
