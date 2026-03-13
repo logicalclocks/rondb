@@ -518,7 +518,8 @@ int main(int argc, char *argv[]) {
     g_mysql_router_conn_factory = new MysqlConnFactory(
         globalConfigs.mysqlRouter.backendHost.c_str(),
         globalConfigs.mysqlRouter.backendPort,
-        mysql_router_thread_offset);
+        mysql_router_thread_offset,
+        globalConfigs.mysqlRouter.debugLogging);
     g_mysql_router_handle = new MysqlHandle();
 
     printf("Starting MySQL Router on %s:%u with %u threads "

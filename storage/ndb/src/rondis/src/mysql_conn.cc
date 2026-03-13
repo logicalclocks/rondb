@@ -48,9 +48,10 @@ int MysqlHandle::CreateWorkerSpecificData(void** data) const {
 
 MysqlConnFactory::MysqlConnFactory(const char* backend_host,
                                    uint16_t backend_port,
-                                   int thread_id_offset)
+                                   int thread_id_offset,
+                                   bool debug_logging)
     : backend_host_(backend_host), backend_port_(backend_port),
-      thread_id_offset_(thread_id_offset) {}
+      thread_id_offset_(thread_id_offset), debug_logging_(debug_logging) {}
 
 std::shared_ptr<pink::PinkConn> MysqlConnFactory::NewPinkConn(
     int connfd,
@@ -62,7 +63,8 @@ std::shared_ptr<pink::PinkConn> MysqlConnFactory::NewPinkConn(
                                      worker_specific_data,
                                      backend_host_.c_str(),
                                      backend_port_,
-                                     thread_id_offset_);
+                                     thread_id_offset_,
+                                     debug_logging_);
 }
 
 // -----------------------------------------------------------------------
@@ -72,7 +74,7 @@ std::shared_ptr<pink::PinkConn> MysqlConnFactory::NewPinkConn(
 MysqlConn::MysqlConn(int fd, const std::string& ip_port,
                      pink::Thread* thread, void* worker_data,
                      const char* backend_host, uint16_t backend_port,
-                     int thread_id_offset)
+                     int thread_id_offset, bool debug_logging)
     : PinkConn(fd, ip_port, thread),
       backend_fd_(-1),
       write_pos_(0),
@@ -82,7 +84,8 @@ MysqlConn::MysqlConn(int fd, const std::string& ip_port,
       client_capabilities_(0),
       backend_host_(backend_host),
       backend_port_(backend_port),
-      worker_id_(thread_id_offset) {
+      worker_id_(thread_id_offset),
+      debug_logging_(debug_logging) {
   if (worker_data != nullptr) {
     worker_id_ = thread_id_offset + *static_cast<int*>(worker_data);
   }
@@ -291,11 +294,26 @@ void MysqlConn::update_transaction_state() {
   }
 }
 
-bool MysqlConn::try_ronsql(const char* query, size_t query_len, uint8_t seq) {
+static void log_route(const char* tag, const char* query, size_t query_len,
+                      const char* reason = nullptr) {
+  int print_len = (query_len > 200) ? 200 : (int)query_len;
+  if (reason) {
+    printf("MYROUTER %s: %.*s%s (reason: %s)\n",
+           tag, print_len, query, (query_len > 200 ? "..." : ""), reason);
+  } else {
+    printf("MYROUTER %s: %.*s%s\n",
+           tag, print_len, query, (query_len > 200 ? "..." : ""));
+  }
+}
+
+bool MysqlConn::try_ronsql(const char* query, size_t query_len, uint8_t seq,
+                            std::string& error_out) {
   if (g_mysql_ronsql_handler == nullptr) {
+    error_out = "no handler";
     return false;
   }
   if (current_database_.empty()) {
+    error_out = "no database selected";
     return false;
   }
 
@@ -307,7 +325,7 @@ bool MysqlConn::try_ronsql(const char* query, size_t query_len, uint8_t seq) {
                                    worker_id_,
                                    result_tsv, error_msg);
   if (!ok) {
-    // RonSQL failed — fall back to backend proxy
+    error_out = error_msg.empty() ? "handler returned false" : error_msg;
     return false;
   }
 
@@ -379,15 +397,29 @@ pink::ReadStatus MysqlConn::GetRequest() {
     size_t query_len = pkt_len - 1;
 
     if (is_select_query(query, query_len)) {
+      std::string ronsql_error;
       // Response sequence number starts at 1 (after the request seq 0)
-      if (try_ronsql(query, query_len, seq + 1)) {
+      if (try_ronsql(query, query_len, seq + 1, ronsql_error)) {
         // RonSQL handled it — consume packet and send response
+        if (debug_logging_) {
+          log_route("RONSQL", query, query_len);
+        }
         request_buf_.erase(0, total_pkt_size);
         set_is_reply(true);
         return pink::kReadAll;
       }
       // RonSQL failed — fall through to backend proxy
+      if (debug_logging_) {
+        log_route("FALLBACK", query, query_len, ronsql_error.c_str());
+      }
     }
+  }
+
+  // Log COM_QUERY commands forwarded to backend
+  if (debug_logging_ && cmd == COM_QUERY && pkt_len > 1) {
+    const char* query = request_buf_.data() + HEADER_SIZE + 1;
+    size_t query_len = pkt_len - 1;
+    log_route("PROXY", query, query_len);
   }
 
   // Forward complete packet to backend (synchronous blocking I/O)

@@ -438,6 +438,8 @@ CLASS
  CM(unsigned, numThreads, NumThreads, 4, "Number of MySQL router worker threads.")
  CM(std::string, backendHost, BackendHost, "127.0.0.1", "Backend mysqld host.")
  CM(Uint16, backendPort, BackendPort, 3306, "Backend mysqld port.")
+ CM(bool, debugLogging, DebugLogging, false,
+    "Log each SQL statement with its routing decision (PROXY, RONSQL, FALLBACK).")
  PROBLEM(serverIP.empty(), "MySQL router server IP cannot be empty")
  PROBLEM(serverPort == 0, "MySQL router server port cannot be zero.")
  PROBLEM(numThreads == 0, "Number of MySQL router threads cannot be zero.")

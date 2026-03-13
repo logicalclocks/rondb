@@ -42,7 +42,7 @@ public:
   MysqlConn(int fd, const std::string& ip_port,
             pink::Thread* thread, void* worker_data,
             const char* backend_host, uint16_t backend_port,
-            int thread_id_offset);
+            int thread_id_offset, bool debug_logging);
   ~MysqlConn() override;
 
   pink::ReadStatus GetRequest() override;
@@ -65,7 +65,9 @@ private:
   bool send_server_greeting();
   bool complete_auth();
   void send_err_to_client(const char* message);
-  bool try_ronsql(const char* query, size_t query_len, uint8_t seq);
+  bool debug_logging_;
+  bool try_ronsql(const char* query, size_t query_len, uint8_t seq,
+                  std::string& error_out);
   bool is_select_query(const char* query, size_t query_len);
   void track_database_change(uint8_t cmd, const char* payload, size_t len);
   void update_transaction_state();
@@ -74,7 +76,7 @@ private:
 class MysqlConnFactory : public pink::ConnFactory {
 public:
   MysqlConnFactory(const char* backend_host, uint16_t backend_port,
-                   int thread_id_offset);
+                   int thread_id_offset, bool debug_logging);
   std::shared_ptr<pink::PinkConn> NewPinkConn(
       int connfd, const std::string& ip_port,
       pink::Thread* thread, void* worker_specific_data,
@@ -83,6 +85,7 @@ private:
   std::string backend_host_;
   uint16_t backend_port_;
   int thread_id_offset_;
+  bool debug_logging_;
 };
 
 class MysqlHandle : public pink::ServerHandle {
