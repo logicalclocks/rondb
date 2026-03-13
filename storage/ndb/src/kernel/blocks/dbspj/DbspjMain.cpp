@@ -66,7 +66,7 @@
 //#define DEBUG_AGGREGATION 1
 //#define DEBUG_TRANSID_AI 1
 //#define DEBUG_JOIN_AGG_TRACE 1
-//#define DEBUG_MATCH 1
+#define DEBUG_MATCH 1
 #endif
 
 #ifdef DEBUG_TRANSID_AI
@@ -4036,6 +4036,9 @@ void Dbspj::execTRANSID_AI(Signal *signal) {
   jamDebug();
   jamDataDebug(cnt);
   getCorrelationData(row.m_row_data, cnt - 1, row.m_src_correlation);
+  DEB_MATCH(("DBSPJ execTRANSID_AI: node=%u corr=0x%x isScan=%u",
+             treeNodePtr.p->m_node_no, row.m_src_correlation,
+             treeNodePtr.p->isScan()));
 
   do  // Dummy loop to allow 'break' into error handling
   {
@@ -4059,6 +4062,11 @@ void Dbspj::execTRANSID_AI(Signal *signal) {
           break;
         }
 
+        DEB_MATCH(("DBSPJ execTRANSID_AI: set matched bit on "
+                   "scanAncestor node=%u rowId=%u for node=%u",
+                   scanAncestorPtr.p->m_node_no,
+                   (scanAncestorRow.m_src_correlation >> 16),
+                   treeNodePtr.p->m_node_no));
         getBufferedRow(scanAncestorPtr,
                        (scanAncestorRow.m_src_correlation >> 16),
                        &scanAncestorRow);
@@ -6045,6 +6053,30 @@ Uint32 Dbspj::propagateNullToAggLeaf(Signal *signal,
 
       if (childPtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) {
         jam();
+
+        /**
+         * For scan leaves: defer null row injection until the leaf's own
+         * scan has completed. Sending JOIN_AGG_NULL_ROW_REQ to a scan
+         * node before its SCAN_FRAGCONFs have arrived would corrupt the
+         * scan completion tracking (m_completed_tree_nodes) and trigger
+         * assert failures. The leaf's scanFrag_complete will re-run
+         * handleAggAncestorComplete for deferred ancestors.
+         */
+        if (childPtr.p->isScan()) {
+          jam();
+          ScanFragData &sfData = childPtr.p->m_scanFrag_data;
+          jamDataDebug(sfData.m_frags_complete);
+          jamDataDebug(sfData.m_fragCount);
+          if (sfData.m_frags_complete < sfData.m_fragCount) {
+            jam();
+            DEB_MATCH(("DBSPJ propagateNullToAggLeaf: scan leaf node=%u "
+                       "not yet complete (frags %u/%u), deferring",
+                       childPtr.p->m_node_no,
+                       sfData.m_frags_complete, sfData.m_fragCount));
+            return 0;  // Defer — leaf scan completion will handle this
+          }
+        }
+
         /**
          * Reached the leaf. Compute parentLevelAdjust by walking from
          * current (the leaf's parent) up to the rowRef's source node.
@@ -6158,6 +6190,12 @@ Uint32 Dbspj::handleAggAncestorComplete(Signal *signal,
     parentRow.m_src_node_ptrI = scanAncestorPtr.i;
     setupRowPtr(scanAncestorPtr, parentRow, iter.m_base.m_row_ptr);
 
+    DEB_MATCH(("DBSPJ handleAggAncestorComplete: node=%u "
+               "checking parent corr=0x%x matched=%u",
+               treeNodePtr.p->m_node_no,
+               parentRow.m_src_correlation,
+               (parentRow.m_matched != nullptr &&
+                parentRow.m_matched->get(treeNodePtr.p->m_node_no)) ? 1 : 0));
     if (parentRow.m_matched == nullptr ||
         !parentRow.m_matched->get(treeNodePtr.p->m_node_no)) {
       jam();
@@ -6172,6 +6210,9 @@ Uint32 Dbspj::handleAggAncestorComplete(Signal *signal,
           (parentRow.m_matched == nullptr ||
            !parentRow.m_matched->get(parentNodeNo))) {
         jam();
+        DEB_MATCH(("DBSPJ handleAggAncestorComplete: "
+                   "skip corr=0x%x, parent node=%u not matched",
+                   parentRow.m_src_correlation, parentNodeNo));
         continue;  // Parent didn't match - skip, parent handles it
       }
 
@@ -6257,6 +6298,10 @@ Uint32 Dbspj::sendJoinAggNullRow(Signal *signal, Ptr<Request> requestPtr,
   requestPtr.p->m_completed_tree_nodes.clear(treeNodePtr.p->m_node_no);
   if (treeNodePtr.p->isLookup()) {
     treeNodePtr.p->m_lookup_data.m_outstanding++;
+  } else {
+    jamDebug();
+    treeNodePtr.p->m_scanFrag_data.m_null_row_outstanding++;
+    jamDataDebug(treeNodePtr.p->m_scanFrag_data.m_null_row_outstanding);
   }
 
   return 0;
@@ -6286,15 +6331,45 @@ void Dbspj::execJOIN_AGG_NULL_ROW_CONF(Signal *signal) {
     lookup_countSignal(signal, requestPtr, treeNodePtr, 1);
   } else {
     jam();
-    /* Scan node: decrement request-level counters only.
-     * Scan completion is tracked separately via SCAN_FRAGCONF. */
+    /* Scan node: decrement request-level and per-node counters. */
     const Uint32 Tnode = refToNode(signal->getSendersBlockRef());
     ndbassert(requestPtr.p->m_lookup_node_data[Tnode] >= 1);
     requestPtr.p->m_lookup_node_data[Tnode] -= 1;
     ndbassert(requestPtr.p->m_outstanding >= 1);
     requestPtr.p->m_outstanding -= 1;
-    /* Re-set completed bit if scan itself is done and no more outstanding */
-    if (requestPtr.p->m_lookup_node_data[Tnode] == 0) {
+
+    ScanFragData &sfData = treeNodePtr.p->m_scanFrag_data;
+    ndbassert(sfData.m_null_row_outstanding >= 1);
+    sfData.m_null_row_outstanding -= 1;
+    jamDataDebug(sfData.m_null_row_outstanding);
+
+    /**
+     * If scanFrag_parent_batch_complete was deferred because null row
+     * operations were in flight, trigger the restart now that all have
+     * been confirmed. This must happen BEFORE the completed bit check
+     * below: scanFrag_parent_batch_complete -> scanFrag_send sets
+     * TN_ACTIVE and clears the completed bit, preventing premature
+     * completion marking.
+     */
+    if (sfData.m_null_row_outstanding == 0 &&
+        (treeNodePtr.p->m_bits &
+         TreeNode::T_NULL_ROW_DEFERRED_RESTART)) {
+      jam();
+      treeNodePtr.p->m_bits &= ~TreeNode::T_NULL_ROW_DEFERRED_RESTART;
+      scanFrag_parent_batch_complete(signal, requestPtr, treeNodePtr);
+    }
+
+    /**
+     * Re-set the completed bit only if the scan is truly complete
+     * (TN_INACTIVE) and no more null row operations are outstanding
+     * for this data node. After a deferred restart above, the node
+     * is TN_ACTIVE so this correctly does not set the bit.
+     * If the restart produced an empty result (no keys to scan),
+     * the node stays TN_INACTIVE and setting the bit is correct.
+     */
+    if (requestPtr.p->m_lookup_node_data[Tnode] == 0 &&
+        treeNodePtr.p->m_state == TreeNode::TN_INACTIVE) {
+      jam();
       requestPtr.p->m_completed_tree_nodes.set(treeNodePtr.p->m_node_no);
     }
   }
@@ -6380,20 +6455,22 @@ void Dbspj::execJOIN_AGG_MATCH_CONF(Signal *signal) {
     RowIterator iter;
     for (first(scanAncestorPtr.p->m_rows, iter);
          !iter.isNull(); next(iter)) {
+      RowPtr parentRow;
+      parentRow.m_src_node_ptrI = scanAncestorPtr.i;
+      setupRowPtr(scanAncestorPtr, parentRow, iter.m_base.m_row_ptr);
+
       Uint32 word = range_no / 32;
       Uint32 bit = 1u << (range_no % 32);
       bool matched = (treeNodePtr.p->m_agg_match_bitmask != nullptr &&
                       word < bitmask_words &&
                       (treeNodePtr.p->m_agg_match_bitmask[word] & bit));
       DEB_MATCH(("DBSPJ MATCH_CONF: range_no=%u matched=%u "
-                 "word=%u bit=0x%08x",
-                 range_no, (Uint32)matched, word, bit));
+                 "corr=0x%x word=%u bit=0x%08x",
+                 range_no, (Uint32)matched,
+                 parentRow.m_src_correlation, word, bit));
       if (!matched) {
         jam();
         null_rows_sent++;
-        RowPtr parentRow;
-        parentRow.m_src_node_ptrI = scanAncestorPtr.i;
-        setupRowPtr(scanAncestorPtr, parentRow, iter.m_base.m_row_ptr);
         Uint32 err = sendJoinAggNullRow(signal, requestPtr,
                                          treeNodePtr, parentRow);
         if (unlikely(err != 0)) {
@@ -6411,6 +6488,36 @@ void Dbspj::execJOIN_AGG_MATCH_CONF(Signal *signal) {
       ndbd_free(treeNodePtr.p->m_agg_match_bitmask,
                 bitmask_words * sizeof(Uint32));
       treeNodePtr.p->m_agg_match_bitmask = nullptr;
+    }
+
+    /**
+     * Handle deferred null rows from intermediate outer join ancestors.
+     * Same logic as in the inline match path of scanFrag_complete:
+     * walk up through ancestors and re-run handleAggAncestorComplete
+     * for those that already completed but couldn't send null rows
+     * to this scan leaf at that time.
+     */
+    {
+      Ptr<TreeNode> walkPtr;
+      Uint32 ptrI = treeNodePtr.p->m_parentPtrI;
+      while (ptrI != RNIL) {
+        jam();
+        ndbrequire(m_treenode_pool.getPtr(walkPtr, ptrI));
+        if ((walkPtr.p->m_bits & TreeNode::T_AGGREGATE_ANCESTOR) &&
+            !(walkPtr.p->m_bits & TreeNode::T_INNER_JOIN) &&
+            walkPtr.p->m_scanAncestorPtrI != RNIL &&
+            requestPtr.p->m_completed_tree_nodes.get(
+                walkPtr.p->m_node_no)) {
+          jam();
+          Uint32 err = handleAggAncestorComplete(
+              signal, requestPtr, walkPtr);
+          if (unlikely(err != 0)) {
+            abort(signal, requestPtr, err);
+            return;
+          }
+        }
+        ptrI = walkPtr.p->m_parentPtrI;
+      }
     }
 
     // Deferred scan completion
@@ -6919,6 +7026,8 @@ Uint32 Dbspj::scanFrag_build(Build_context &ctx, Ptr<Request> requestPtr,
           (tablePtr.p->m_flags & TableRecord::TR_READ_BACKUP) != 0;
 
       data.m_fragCount = 0;
+      data.m_null_row_outstanding = 0;
+      data.m_agg_range_cnt = 0;
 
       /**
        * As this is the root node, fragId is already contained in the REQuest.
@@ -7377,6 +7486,8 @@ void Dbspj::execDIH_SCAN_TAB_CONF(Signal *signal) {
       pruned = false;
     }
     data.m_frags_complete = data.m_fragCount;
+    data.m_null_row_outstanding = 0;
+    data.m_agg_range_cnt = 0;
 
     if (!pruned) {
       /** Start requesting node info from DIH */
@@ -7721,7 +7832,22 @@ void Dbspj::scanFrag_parent_row(Signal *signal, Ptr<Request> requestPtr,
         }
         return;  // Bailout, SCANREQ would have returned 0 rows anyway
       }
-      scanFrag_fixupBound(keyPtrI, rowRef.m_src_correlation);
+      Uint32 fixupCorr = rowRef.m_src_correlation;
+      // For bitmask exchange outer join agg leaf: use sequential range_no
+      // so match bits stay within the allocated bitmask capacity and align
+      // with the sequential iteration in execJOIN_AGG_MATCH_CONF.
+      if ((treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) &&
+          !(treeNodePtr.p->m_bits & TreeNode::T_INNER_JOIN) &&
+          !(treeNodePtr.p->m_bits & TreeNode::T_AGG_INLINE_MATCH)) {
+        jam();
+        ScanFragData &data = treeNodePtr.p->m_scanFrag_data;
+        fixupCorr = data.m_agg_range_cnt++;
+      }
+      DEB_MATCH(("DBSPJ scanFrag_parent_row: node=%u corrVal=0x%x "
+                 "fixupCorr=0x%x rangeCnt=%u",
+                 treeNodePtr.p->m_node_no, rowRef.m_src_correlation,
+                 fixupCorr, fragPtr.p->m_rangeCnt));
+      scanFrag_fixupBound(keyPtrI, fixupCorr);
 
       SectionReader key(keyPtrI, getSectionSegmentPool());
       err = appendReaderToSection(fragPtr.p->m_rangePtrI, key, key.getSize());
@@ -7829,9 +7955,31 @@ void Dbspj::scanFrag_parent_batch_complete(Signal *signal,
                                            Ptr<TreeNode> treeNodePtr) {
   jam();
   ndbassert(treeNodePtr.p->m_parentPtrI != RNIL);
-  ndbassert(treeNodePtr.p->m_state == TreeNode::TN_INACTIVE);
 
   ScanFragData &data = treeNodePtr.p->m_scanFrag_data;
+
+  /**
+   * If there are outstanding JOIN_AGG_NULL_ROW_REQ operations for this
+   * scan node, defer the restart. Restarting now would reset
+   * m_frags_complete to 0, and when the NULL_ROW_CONFs arrive, the
+   * CONF handler could prematurely re-set the completed_tree_nodes bit,
+   * causing an assert failure when the restarted scan's SCAN_FRAGCONFs
+   * arrive.
+   *
+   * The restart is triggered from execJOIN_AGG_NULL_ROW_CONF when
+   * m_null_row_outstanding reaches 0.
+   */
+  if (data.m_null_row_outstanding > 0) {
+    jam();
+    jamDataDebug(data.m_null_row_outstanding);
+    treeNodePtr.p->m_bits |= TreeNode::T_NULL_ROW_DEFERRED_RESTART;
+    DEB_MATCH(("DBSPJ scanFrag_parent_batch_complete: node=%u "
+               "deferred restart, %u null rows outstanding",
+               treeNodePtr.p->m_node_no, data.m_null_row_outstanding));
+    return;
+  }
+
+  ndbassert(treeNodePtr.p->m_state == TreeNode::TN_INACTIVE);
   ndbassert(data.m_frags_complete == data.m_fragCount);
 
   /**
@@ -9181,6 +9329,39 @@ void Dbspj::scanFrag_execSCAN_FRAGCONF(Signal *signal, Ptr<Request> requestPtr,
             }
           }
         }
+
+        /**
+         * Handle deferred null rows from intermediate outer join ancestors.
+         * When an intermediate ancestor completed before this scan leaf,
+         * propagateNullToAggLeaf deferred the null row injection (returned
+         * 0 because this leaf's scan wasn't done yet). Now that the scan
+         * is complete, re-run handleAggAncestorComplete for those ancestors
+         * so their unmatched parent rows get null rows injected into the
+         * aggregation engine.
+         */
+        {
+          Ptr<TreeNode> walkPtr;
+          Uint32 ptrI = treeNodePtr.p->m_parentPtrI;
+          while (ptrI != RNIL) {
+            jam();
+            ndbrequire(m_treenode_pool.getPtr(walkPtr, ptrI));
+            if ((walkPtr.p->m_bits & TreeNode::T_AGGREGATE_ANCESTOR) &&
+                !(walkPtr.p->m_bits & TreeNode::T_INNER_JOIN) &&
+                walkPtr.p->m_scanAncestorPtrI != RNIL &&
+                requestPtr.p->m_completed_tree_nodes.get(
+                    walkPtr.p->m_node_no)) {
+              jam();
+              Uint32 err = handleAggAncestorComplete(
+                  signal, requestPtr, walkPtr);
+              if (unlikely(err != 0)) {
+                abort(signal, requestPtr, err);
+                return;
+              }
+            }
+            ptrI = walkPtr.p->m_parentPtrI;
+          }
+        }
+
         // Fall through to completion check below
       } else {
         /**
@@ -9260,6 +9441,7 @@ void Dbspj::scanFrag_execSCAN_FRAGCONF(Signal *signal, Ptr<Request> requestPtr,
     if ((treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_ANCESTOR) &&
         data.m_frags_complete == data.m_fragCount) {
       jam();
+      jamDataDebug(treeNodePtr.p->m_node_no);
       Uint32 err = handleAggAncestorComplete(signal, requestPtr, treeNodePtr);
       if (unlikely(err != 0)) {
         abort(signal, requestPtr, err);
@@ -9330,6 +9512,7 @@ void Dbspj::scanFrag_execSCAN_NEXTREQ(Signal *signal, Ptr<Request> requestPtr,
   ndbassert(data.m_frags_outstanding == 0);
 
   data.m_corrIdStart = 0;
+  data.m_agg_range_cnt = 0;
   data.m_totalRows = 0;
   data.m_totalBytes = 0;
   data.m_rows_received = 0;

@@ -18423,12 +18423,11 @@ void Dblqh::execJOIN_AGG_MATCH_REQ(Signal *signal) {
     Uint32 src_pos = rangeStart + i;
     Uint32 src_word = src_pos / 32;
     Uint32 src_bit = 1u << (src_pos % 32);
-    if (src_word < state->m_matched_ranges_words) {
-      Uint32 old = state->m_matched_ranges[src_word].fetch_and(
-          ~src_bit, std::memory_order_relaxed);
-      if (old & src_bit) {
-        buf[i / 32] |= (1u << (i % 32));
-      }
+    ndbrequire(src_word < state->m_matched_ranges_words);
+    Uint32 old = state->m_matched_ranges[src_word].fetch_and(
+        ~src_bit, std::memory_order_relaxed);
+    if (old & src_bit) {
+      buf[i / 32] |= (1u << (i % 32));
     }
   }
 
@@ -20316,7 +20315,19 @@ void Dblqh::scanTupkeyConfLab(Signal* signal,
                  instance(), scanPtr->m_join_agg_state_key,
                  range_no, scanPtr->m_join_agg_range_offset,
                  abs_range, read_len));
-      state->setMatchedRange(abs_range);
+      if (unlikely(!state->setMatchedRange(abs_range))) {
+        jam();
+        ndbassert(false);
+        g_eventLogger->info("setMatchedRange overflow: key=%u range_no=%u "
+                            "offset=%u abs=%u capacity=%u",
+                            scanPtr->m_join_agg_state_key,
+                            range_no, scanPtr->m_join_agg_range_offset,
+                            abs_range,
+                            state->m_matched_ranges_words * 32);
+        regTcPtr->errorCode = ZJOIN_AGG_MATCH_RANGE_OVERFLOW;
+        scanPtr->scanErrorCounter++;
+        scanPtr->scanCompletedStatus = ZTRUE;
+      }
     }
   } else {
     scanPtr->m_exec_direct_batch_size_words += read_len;

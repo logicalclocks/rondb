@@ -71,6 +71,14 @@
  * Test 12: Sibling branch + GROUP BY root (scan -> LEFT lkp + LEFT lkp -> LEFT lkp)
  *          GROUP BY orders.priority, COUNT(*), SUM(shipment.cost)
  *
+ * Test 13: 3-scan deferred null row (scan -> LEFT scan -> LEFT scan)
+ *          GROUP BY grp, COUNT(*), SUM(hours)
+ *          Tests deferred null row injection for scan aggregate leaves.
+ *
+ * Test 14: 3-scan deferred null row + inline match (same tree as 13)
+ *          GROUP BY grp, COUNT(*), SUM(hours)
+ *          Same as Test 13 but with setInlineMatch(true).
+ *
  * Usage: testMultiOuterJoinAggNdbApi -c <connect_string> -m <mysql_port> [-v]
  *        [--only N] [--skip N]
  */
@@ -176,6 +184,13 @@ static const char *OJ13_ORDERS   = "oj13_orders";
 static const char *OJ13_DETAILS  = "oj13_details";
 static const char *OJ13_ITEMS    = "oj13_items";
 static const char *OJ13_SHIPMENT = "oj13_shipment";
+
+/* Tests 13-14: 3-scan deferred null row tables */
+static const char *OJ14_ROOT     = "oj14_root";
+static const char *OJ14_MID      = "oj14_mid";
+static const char *OJ14_MID_IDX  = "ix_oj14_root";
+static const char *OJ14_LEAF     = "oj14_leaf";
+static const char *OJ14_LEAF_IDX = "ix_oj14_mid";
 
 /* Sentinel for NULL group-by values */
 static const Int32 NULL_GROUP = INT_MIN;
@@ -3950,6 +3965,312 @@ testSiblingBranchGroupByRoot(Ndb *ndb, MYSQL *conn)
   return 0;
 }
 
+/* ================================================================== */
+/* Tests 13-14: 3-Scan Deferred Null Row                               */
+/*   scan -> LEFT scanIndex -> LEFT scanIndex [leaf]                    */
+/*                                                                     */
+/* Schema:                                                             */
+/*   oj14_root (pk INT PK, grp INT)                                    */
+/*   oj14_mid  (pk INT PK, root_id INT, mid_val INT,                   */
+/*              INDEX ix_oj14_root(root_id))                            */
+/*   oj14_leaf (pk INT PK, mid_pk INT, hours BIGINT,                   */
+/*              INDEX ix_oj14_mid(mid_pk))                              */
+/*                                                                     */
+/* Data:                                                               */
+/*   root: (1,10),(2,20),(3,30),(4,40)                                  */
+/*   mid:  (1,1,100),(2,1,200),(3,2,300)  -- root 1 has 2, root 2 has 1*/
+/*   leaf: (1,1,5),(2,1,10),(3,3,15)      -- mid 1 has 2, mid 3 has 1  */
+/*                                                                     */
+/* Expected (correct SQL):                                             */
+/*   grp=10: r1->m(1,2)->l: m1->l(5,10), m2->no l -> COUNT=3, SUM=15  */
+/*   grp=20: r2->m(3)->l(15)                       -> COUNT=1, SUM=15  */
+/*   grp=30: r3->no mid                            -> COUNT=1, SUM=0   */
+/*   grp=40: r4->no mid                            -> COUNT=1, SUM=0   */
+/*                                                                     */
+/* Without the deferred null row fix, roots 3 and 4 (which have no mid */
+/* match) would crash the data node or produce wrong results: the      */
+/* intermediate scan's handleAggAncestorComplete sends null rows to     */
+/* the scan leaf before its SCAN_FRAGCONFs arrive, corrupting the      */
+/* completed_tree_nodes tracking.                                      */
+/* ================================================================== */
+
+static int
+createTest13Tables(MYSQL *conn)
+{
+  sqlExec(conn, "DROP TABLE IF EXISTS oj14_leaf");
+  sqlExec(conn, "DROP TABLE IF EXISTS oj14_mid");
+  sqlExec(conn, "DROP TABLE IF EXISTS oj14_root");
+
+  if (sqlExec(conn,
+        "CREATE TABLE oj14_root ("
+        "  pk INT NOT NULL PRIMARY KEY,"
+        "  grp INT NOT NULL"
+        ") ENGINE=NDB") != 0) return -1;
+
+  if (sqlExec(conn,
+        "CREATE TABLE oj14_mid ("
+        "  pk INT NOT NULL PRIMARY KEY,"
+        "  root_id INT NOT NULL,"
+        "  mid_val INT NOT NULL,"
+        "  INDEX ix_oj14_root (root_id)"
+        ") ENGINE=NDB") != 0) return -1;
+
+  if (sqlExec(conn,
+        "CREATE TABLE oj14_leaf ("
+        "  pk INT NOT NULL PRIMARY KEY,"
+        "  mid_pk INT NOT NULL,"
+        "  hours BIGINT NOT NULL,"
+        "  INDEX ix_oj14_mid (mid_pk)"
+        ") ENGINE=NDB") != 0) return -1;
+
+  V("Created test 13/14 tables\n");
+  return 0;
+}
+
+static int
+insertTest13Data(MYSQL *conn)
+{
+  if (sqlExec(conn,
+        "INSERT INTO oj14_root VALUES "
+        "(1,10),(2,20),(3,30),(4,40)") != 0) return -1;
+  if (sqlExec(conn,
+        "INSERT INTO oj14_mid VALUES "
+        "(1,1,100),(2,1,200),(3,2,300)") != 0) return -1;
+  if (sqlExec(conn,
+        "INSERT INTO oj14_leaf VALUES "
+        "(1,1,5),(2,1,10),(3,3,15)") != 0) return -1;
+  V("Inserted test 13/14 data\n");
+  return 0;
+}
+
+static int
+dropTest13Tables(MYSQL *conn)
+{
+  sqlExec(conn, "DROP TABLE IF EXISTS oj14_leaf");
+  sqlExec(conn, "DROP TABLE IF EXISTS oj14_mid");
+  sqlExec(conn, "DROP TABLE IF EXISTS oj14_root");
+  V("Dropped test 13/14 tables\n");
+  return 0;
+}
+
+/**
+ * Helper: build and run 3-scan deferred null row test.
+ * @param useInlineMatch  if true, calls setInlineMatch(true) on the leaf
+ */
+static int
+testThreeScanDeferred(Ndb *ndb, MYSQL *conn, bool useInlineMatch)
+{
+  const char *testLabel = useInlineMatch
+      ? "Test 14: 3-scan deferred + inline match"
+      : "Test 13: 3-scan deferred null row";
+  printf("%s (scan->LEFT scan->LEFT scan) ... ", testLabel);
+  fflush(stdout);
+
+  std::map<Int32, std::pair<Int64, Int64>> expected = {
+    {10, {3, 15}},   /* r1->m(1,2)->l: m1->l(5,10), m2->no l */
+    {20, {1, 15}},   /* r2->m(3)->l(15) */
+    {30, {1, 0}},    /* r3->no mid -> null row */
+    {40, {1, 0}}     /* r4->no mid -> null row */
+  };
+
+  if (verifyGroupByWithMysql(conn, testLabel,
+        "SELECT r.grp, COUNT(*), COALESCE(SUM(l.hours),0) "
+        "FROM oj14_root r "
+        "LEFT JOIN oj14_mid m ON m.root_id = r.pk "
+        "LEFT JOIN oj14_leaf l ON l.mid_pk = m.pk "
+        "GROUP BY r.grp ORDER BY r.grp",
+        expected) != 0) {
+    printf("FAILED (MySQL verification)\n");
+    return -1;
+  }
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(OJ14_ROOT);
+  dict->invalidateTable(OJ14_MID);
+  dict->invalidateTable(OJ14_LEAF);
+  dict->invalidateIndex(OJ14_MID_IDX, OJ14_MID);
+  dict->invalidateIndex(OJ14_LEAF_IDX, OJ14_LEAF);
+  const NdbDictionary::Table *rootTab = dict->getTable(OJ14_ROOT);
+  const NdbDictionary::Table *midTab = dict->getTable(OJ14_MID);
+  const NdbDictionary::Table *leafTab = dict->getTable(OJ14_LEAF);
+  const NdbDictionary::Index *midIdx = dict->getIndex(OJ14_MID_IDX, OJ14_MID);
+  const NdbDictionary::Index *leafIdx = dict->getIndex(OJ14_LEAF_IDX, OJ14_LEAF);
+  if (rootTab == nullptr || midTab == nullptr || leafTab == nullptr ||
+      midIdx == nullptr || leafIdx == nullptr) {
+    printf("FAILED (table/index lookup: %s)\n", dict->getNdbError().message);
+    return -1;
+  }
+
+  const NdbDictionary::Column *grpCol = rootTab->getColumn("grp");
+
+  NdbAggregator agg(leafTab);
+  if (!agg.GroupByLinked(0, grpCol) ||
+      !agg.LoadUint64(1, 0) ||
+      !agg.LoadColumn("hours", 1) ||
+      !agg.Count(0, 0) ||
+      !agg.Sum(1, 1) ||
+      !agg.Finalize()) {
+    printf("FAILED (agg program: %s)\n", agg.GetError().err_msg_);
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  if (qb == nullptr) {
+    printf("FAILED (NdbQueryBuilder::create)\n");
+    return -1;
+  }
+
+  /* Node 0: scan oj14_root */
+  const NdbQueryTableScanOperationDef *rootOp = qb->scanTable(rootTab);
+  if (rootOp == nullptr) {
+    printf("FAILED (scanTable: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  /* Node 1: scanIndex oj14_mid (LEFT JOIN — default MatchAll) */
+  const NdbQueryOperand *midBound[] = {
+    qb->linkedValue(rootOp, "pk"), nullptr
+  };
+  NdbQueryIndexBound midBoundObj(midBound);
+
+  const NdbQueryIndexScanOperationDef *midOp =
+      qb->scanIndex(midIdx, midTab, &midBoundObj, nullptr);
+  if (midOp == nullptr) {
+    printf("FAILED (scanIndex mid: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  /* Node 2: scanIndex oj14_leaf (LEFT JOIN, aggregate leaf) */
+  const NdbQueryOperand *leafBound[] = {
+    qb->linkedValue(midOp, "pk"), nullptr
+  };
+  NdbQueryIndexBound leafBoundObj(leafBound);
+
+  NdbQueryOptions leafOpts;
+  leafOpts.setAggregation(agg);
+  if (useInlineMatch) {
+    leafOpts.setInlineMatch(true);
+  }
+  const NdbLinkedOperand *grpLink = qb->linkedValue(rootOp, "grp");
+  if (grpLink == nullptr) {
+    printf("FAILED (linkedValue grp: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  leafOpts.addLinkedProjection(grpLink);
+
+  const NdbQueryIndexScanOperationDef *leafOp =
+      qb->scanIndex(leafIdx, leafTab, &leafBoundObj, &leafOpts);
+  if (leafOp == nullptr) {
+    printf("FAILED (scanIndex leaf: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  if (trans == nullptr) {
+    printf("FAILED (startTransaction: %s)\n", ndb->getNdbError().message);
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbQuery *query = trans->createQuery(queryDef);
+  if (query == nullptr) {
+    printf("FAILED (createQuery: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    printf("FAILED (execute: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {}
+  if (outcome == NdbQuery::NextResult_error) {
+    printf("FAILED (nextResult: %s)\n", query->getNdbError().message);
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbAggregator *resultAgg = query->getAggregator();
+  if (resultAgg == nullptr) {
+    printf("FAILED (getAggregator returned nullptr)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  std::map<Int32, std::pair<Int64, Int64>> actual;
+  for (;;) {
+    NdbAggregator::ResultRecord rec = resultAgg->FetchResultRecord();
+    if (rec.end()) break;
+    NdbAggregator::Column grpValCol = rec.FetchGroupbyColumn();
+    Int32 grpVal = grpValCol.data_int32();
+    NdbAggregator::Result countRes = rec.FetchAggregationResult();
+    Int64 countVal = countRes.data_int64();
+    NdbAggregator::Result sumRes = rec.FetchAggregationResult();
+    Int64 sumVal = sumRes.data_int64();
+    actual[grpVal] = {countVal, sumVal};
+    V("  NDB: grp=%d COUNT=%lld SUM=%lld\n",
+      grpVal, (long long)countVal, (long long)sumVal);
+  }
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  if (actual.size() != expected.size()) {
+    printf("FAILED (expected %zu groups, got %zu)\n",
+           expected.size(), actual.size());
+    for (const auto &a : actual) {
+      printf("  got: grp=%d COUNT=%lld SUM=%lld\n",
+             a.first, (long long)a.second.first, (long long)a.second.second);
+    }
+    for (const auto &e : expected) {
+      if (actual.find(e.first) == actual.end()) {
+        printf("  missing: grp=%d COUNT=%lld SUM=%lld\n",
+               e.first, (long long)e.second.first, (long long)e.second.second);
+      }
+    }
+    return -1;
+  }
+
+  for (const auto &e : expected) {
+    auto it = actual.find(e.first);
+    if (it == actual.end() ||
+        it->second.first != e.second.first ||
+        it->second.second != e.second.second) {
+      printf("FAILED (group grp=%d: expected COUNT=%lld SUM=%lld, "
+             "got COUNT=%lld SUM=%lld)\n",
+             e.first,
+             (long long)e.second.first, (long long)e.second.second,
+             (long long)it->second.first, (long long)it->second.second);
+      return -1;
+    }
+  }
+
+  printf("OK (4 groups)\n");
+  return 0;
+}
+
 /* ------------------------------------------------------------------ */
 /* Usage and main                                                      */
 /* ------------------------------------------------------------------ */
@@ -4153,6 +4474,28 @@ int main(int argc, char **argv)
               exitCode = 1;
             }
             dropTest11Tables(conn);
+          }
+
+          /* Tests 13-14: 3-scan deferred null row (shared tables) */
+          if (shouldRun(13) || shouldRun(14)) {
+            if (createTest13Tables(conn) == 0 &&
+                insertTest13Data(conn) == 0) {
+              /* Test 13: bitmask exchange path */
+              if (shouldRun(13)) {
+                if (testThreeScanDeferred(&ndb, conn,
+                                          false /* useInlineMatch */) != 0)
+                  exitCode = 1;
+              }
+              /* Test 14: inline match path */
+              if (shouldRun(14)) {
+                if (testThreeScanDeferred(&ndb, conn,
+                                          true /* useInlineMatch */) != 0)
+                  exitCode = 1;
+              }
+            } else {
+              exitCode = 1;
+            }
+            dropTest13Tables(conn);
           }
         }
 

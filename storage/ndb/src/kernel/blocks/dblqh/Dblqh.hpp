@@ -480,6 +480,7 @@ class FsReadWriteReq;
 #define ZJOIN_AGG_TIMEOUT                  1257
 #define ZJOIN_AGG_ALREADY_FINALIZED        1258
 #define ZJOIN_AGG_MUTEX_ERROR              1259
+#define ZJOIN_AGG_MATCH_RANGE_OVERFLOW     1260
 
 /**
  * @class dblqh

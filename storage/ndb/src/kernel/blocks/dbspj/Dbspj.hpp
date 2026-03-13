@@ -722,6 +722,14 @@ class Dbspj : public SimulatedBlock {
      * will eventually do so.
      */
     Uint16 m_frags_not_started;
+    /**
+     * Number of outstanding JOIN_AGG_NULL_ROW_REQ operations for this scan
+     * node. Used to defer scanFrag_parent_batch_complete until all CONFs
+     * have been received, preventing premature restart of the scan while
+     * null row operations are in flight.
+     */
+    Uint16 m_null_row_outstanding;
+    Uint16 m_agg_range_cnt;  // Sequential range counter for bitmask exchange leaf scans
     Uint32 m_rows_received;   // #execTRANSID_AI
     Uint32 m_rows_expecting;  // Sum(ScanFragConf)
     Uint32 m_batch_chunks;    // #SCAN_FRAGREQ + #SCAN_NEXTREQ to retrieve batch
@@ -792,6 +800,8 @@ class Dbspj : public SimulatedBlock {
         : m_frags_complete(0),
           m_frags_outstanding(0),
           m_frags_not_started(0),
+          m_null_row_outstanding(0),
+          m_agg_range_cnt(0),
           m_rows_received(0),
           m_rows_expecting(0),
           m_batch_chunks(0),
@@ -1090,6 +1100,15 @@ class Dbspj : public SimulatedBlock {
        * nodes that need null row propagation for chained outer joins.
        */
       T_AGGREGATE_ANCESTOR = 0x4000000,
+
+      /**
+       * Set on a scan T_AGGREGATE_LEAF node when
+       * scanFrag_parent_batch_complete is deferred because there are
+       * outstanding JOIN_AGG_NULL_ROW_REQ operations. The restart is
+       * triggered from execJOIN_AGG_NULL_ROW_CONF when
+       * m_null_row_outstanding reaches 0.
+       */
+      T_NULL_ROW_DEFERRED_RESTART = 0x8000000,
 
       // End marker...
       T_END = 0

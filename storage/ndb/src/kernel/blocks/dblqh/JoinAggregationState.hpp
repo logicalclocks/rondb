@@ -175,12 +175,14 @@ struct JoinAggregationState {
     return m_range_counter.fetch_add(count, std::memory_order_relaxed);
   }
 
-  void setMatchedRange(Uint32 range_no) {
+  bool setMatchedRange(Uint32 range_no) {
     Uint32 word = range_no / 32;
-    if (word < m_matched_ranges_words) {
-      Uint32 bit = 1u << (range_no % 32);
-      m_matched_ranges[word].fetch_or(bit, std::memory_order_relaxed);
+    if (unlikely(word >= m_matched_ranges_words)) {
+      return false;  // Out of range — caller must handle
     }
+    Uint32 bit = 1u << (range_no % 32);
+    m_matched_ranges[word].fetch_or(bit, std::memory_order_relaxed);
+    return true;
   }
 
   //------------------------------------------------------------------
