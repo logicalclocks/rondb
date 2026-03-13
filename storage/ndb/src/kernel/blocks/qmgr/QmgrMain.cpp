@@ -4028,8 +4028,13 @@ void Qmgr::execDEACTIVATE_REQ(Signal *signal)
     sendDEACTIVATE_REF(signal, senderRef, deactivateNodeId);
     return;
   }
-  g_not_active_nodes.set(deactivateNodeId);
-  globalTransporterRegistry.set_active_node(deactivateNodeId, 0, true);
+  if (getNodeInfo(deactivateNodeId).getType() != NodeInfo::INVALID) {
+    jam();
+    g_not_active_nodes.set(deactivateNodeId);
+    globalTransporterRegistry.set_active_node(deactivateNodeId, 0, true);
+  } else {
+    g_eventLogger->info("Deactivate a node not in our config, we play along");
+  }
 
   m_activate_node_id = deactivateNodeId;
   m_activate_ref = senderRef;
@@ -4625,9 +4630,22 @@ void Qmgr::execAPI_FAILREQ(Signal *signal) {
   // signal->theData[1] == QMGR_REF
   ptrCheckGuard(failedNodePtr, MAX_NODES, nodeRec);
 
-  ndbrequire(getNodeInfo(failedNodePtr.i).getType() != NodeInfo::DB);
+  Uint32 type = getNodeInfo(failedNodePtr.i).getType();
+  ndbrequire(type != NodeInfo::DB);
 
-  api_failed(signal, signal->theData[0]);
+  if (type == NodeInfo::API || type == NodeInfo::MGM) {
+    jam();
+    api_failed(signal, signal->theData[0]);
+  } else {
+    /**
+     * If we have changed the config and removed API node ids from the
+     * configuration, another node might see an API node failing, since
+     * we don't even have it in our configuration we need not do anything.
+     * Should be a very rare event when a config is changed during some
+     * upgrade.
+     */
+    g_eventLogger->info("Failure of an API node which isn't in our config");
+  }
 }
 
 void Qmgr::execAPI_FAILCONF(Signal *signal) {
