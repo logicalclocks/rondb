@@ -6189,6 +6189,9 @@ Uint32 Dbspj::handleAggAncestorComplete(Signal *signal,
     RowPtr parentRow;
     parentRow.m_src_node_ptrI = scanAncestorPtr.i;
     setupRowPtr(scanAncestorPtr, parentRow, iter.m_base.m_row_ptr);
+    getCorrelationData(parentRow.m_row_data,
+                       parentRow.m_row_data.m_header->m_len - 1,
+                       parentRow.m_src_correlation);
 
     DEB_MATCH(("DBSPJ handleAggAncestorComplete: node=%u "
                "checking parent corr=0x%x matched=%u",
@@ -6458,6 +6461,9 @@ void Dbspj::execJOIN_AGG_MATCH_CONF(Signal *signal) {
       RowPtr parentRow;
       parentRow.m_src_node_ptrI = scanAncestorPtr.i;
       setupRowPtr(scanAncestorPtr, parentRow, iter.m_base.m_row_ptr);
+      getCorrelationData(parentRow.m_row_data,
+                         parentRow.m_row_data.m_header->m_len - 1,
+                         parentRow.m_src_correlation);
 
       Uint32 word = range_no / 32;
       Uint32 bit = 1u << (range_no % 32);
@@ -9318,6 +9324,9 @@ void Dbspj::scanFrag_execSCAN_FRAGCONF(Signal *signal, Ptr<Request> requestPtr,
           RowPtr parentRow;
           parentRow.m_src_node_ptrI = scanAncestorPtr.i;
           setupRowPtr(scanAncestorPtr, parentRow, iter.m_base.m_row_ptr);
+          getCorrelationData(parentRow.m_row_data,
+                             parentRow.m_row_data.m_header->m_len - 1,
+                             parentRow.m_src_correlation);
           if (parentRow.m_matched == nullptr ||
               !parentRow.m_matched->get(treeNodePtr.p->m_node_no)) {
             jam();
