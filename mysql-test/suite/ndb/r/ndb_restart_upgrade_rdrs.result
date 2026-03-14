@@ -1,0 +1,96 @@
+CREATE TABLE t1 (
+a INT PRIMARY KEY,
+b INT
+) ENGINE NDB;
+INSERT INTO t1 VALUES (1, 2);
+# Phase 1: old data nodes, start/stop rdrs2_v2
+SELECT * FROM t1;
+a	b
+1	2
+# Phase 2: upgrade node 1
+Node 1 is being restarted
+
+Node 1: NOT_STARTED
+Database node 1 is being started.
+
+Node 1: STARTED
+Node 2: STARTED
+# Phase 2: mixed cluster, start/stop rdrs2_v2
+SELECT * FROM t1;
+a	b
+1	2
+# Phase 3: upgrade node 2
+Node 2 is being restarted
+
+Node 2: NOT_STARTED
+Database node 2 is being started.
+
+Node 1: STARTED
+Node 2: STARTED
+# Phase 3: all upgraded, start/stop rdrs2_v2
+INSERT INTO t1 VALUES (3, 4);
+SELECT * FROM t1;
+a	b
+1	2
+3	4
+# Phase 4: downgrade node 1
+Node 1 is being restarted
+
+Node 1: NOT_STARTED
+Database node 1 is being started.
+
+Node 1: STARTED
+Node 2: STARTED
+# Phase 4: mixed cluster (downgrading), start/stop rdrs2_v2
+SELECT * FROM t1;
+a	b
+1	2
+3	4
+# Phase 5: downgrade node 2
+Node 2 is being restarted
+
+Node 2: NOT_STARTED
+Database node 2 is being started.
+
+Node 1: STARTED
+Node 2: STARTED
+# Phase 5: all downgraded, start/stop rdrs2_v2
+SELECT * FROM t1;
+a	b
+1	2
+3	4
+# Phase 6: cluster restart with ndbmtd_v2
+Executing RESTART on all nodes.
+Starting shutdown. This may take a while. Please wait...
+All DB nodes are being restarted.
+
+Node 1: NOT_STARTED
+Node 2: NOT_STARTED
+RonDB is being started.
+RonDB is being started.
+
+Node 1: STARTED
+Node 2: STARTED
+# Phase 6: after cluster restart with old, start/stop rdrs2_v2
+SELECT * FROM t1;
+a	b
+1	2
+3	4
+# Phase 7: cluster restart with ndbmtd
+Executing RESTART on all nodes.
+Starting shutdown. This may take a while. Please wait...
+All DB nodes are being restarted.
+
+Node 1: NOT_STARTED
+Node 2: NOT_STARTED
+RonDB is being started.
+RonDB is being started.
+
+Node 1: STARTED
+Node 2: STARTED
+# Phase 7: after cluster restart with new, start/stop rdrs2_v2
+SELECT * FROM t1;
+a	b
+1	2
+3	4
+DROP TABLE t1;

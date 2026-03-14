@@ -4508,7 +4508,7 @@ static bool check_node_vs_replicas(Vector<ConfigInfo::ConfigRuleSection> &,
    * Register user supplied values
    */
   Uint8 ng_cnt[MAX_NDB_NODE_GROUPS];
-  Bitmask<(ABS_MAX_NDB_NODES + 31) / 32> nodes_wo_ng;
+  Bitmask<(ABS_MAX_NODES + 31) / 32> nodes_wo_ng;
   std::memset(ng_cnt, 0, sizeof(ng_cnt));
 
   for (i = 0, n = 0; n < n_nodes; i++) {
