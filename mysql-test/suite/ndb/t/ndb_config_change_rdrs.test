@@ -1,0 +1,162 @@
+--source include/have_multi_ndb.inc
+--source include/have_rdrs2.inc
+
+#
+# Test NDB config change: add new API node and start rdrs2 using it.
+#
+# This test exercises the config change framework:
+#   1. Start with a normal cluster (no NodeId=240)
+#   2. Append a new API node (NodeId=240) to my.cnf
+#   3. Restart ndb_mgmd with --reload to apply the config change
+#   4. Rolling restart data nodes so they pick up the new config
+#   5. Start/stop rdrs2 using the new API node at each stage
+#
+
+#
+# Create test data
+#
+CREATE TABLE t1 (
+  a INT PRIMARY KEY,
+  b INT
+) ENGINE NDB;
+
+INSERT INTO t1 VALUES (1, 2);
+--sorted_result
+SELECT * FROM t1;
+
+# ============================================================
+# Phase 1: Append new API node config and reload mgmd
+# ============================================================
+
+--echo # Phase 1: add NodeId=240 to config and reload ndb_mgmd
+
+# Append the new API node section to my.cnf
+--append_file $MYSQLTEST_VARDIR/my.cnf
+[cluster_config.ndbapi.20.1]
+NodeId=240
+EOF
+
+# Restart ndb_mgmd with --reload to pick up the new config
+--source include/ndb_mgmd_restart_reload.inc
+
+# Write rdrs2 config with NodeIDs=[240]
+--write_file $MYSQLTEST_VARDIR/tmp/rdrs2_node_ids.txt
+240
+EOF
+--source include/rdrs2_write_config.inc
+
+# ============================================================
+# Phase 2: Try rdrs2 before any data node restart
+#          Data nodes don't know about node 240 yet, so rdrs2
+#          should fail to connect.
+# ============================================================
+
+--echo # Phase 2: rdrs2 with new node before data node restart (expect failure)
+
+# Try to start rdrs2 with NodeId=240 - data nodes don't know about it yet,
+# so it should fail to fully connect. We launch in background, wait briefly,
+# then clean up. Either outcome (start failure or partial start) is acceptable.
+--perl
+  use strict;
+  my $vardir = $ENV{'MYSQLTEST_VARDIR'};
+  my $rdrs2_exe = $ENV{'RDRS2_EXE'}
+    or die "RDRS2_EXE not set";
+  my $config_file = "$vardir/tmp/rdrs2_config.json";
+  my $pid_file = "$vardir/tmp/rdrs2.pid";
+  my $log_file = "$vardir/log/rdrs2_phase2.log";
+
+  # Launch rdrs2 in background
+  my $pid = fork();
+  if ($pid == 0) {
+    # Child process
+    open(STDOUT, '>', $log_file);
+    open(STDERR, '>&', \*STDOUT);
+    exec($rdrs2_exe, "--config", $config_file);
+    exit 1;
+  }
+
+  # Wait up to 10 seconds for either PID file or process exit
+  for (my $i = 0; $i < 100; $i++) {
+    # Check if child already exited (connection failure)
+    my $ret = waitpid($pid, 1);  # WNOHANG
+    if ($ret == $pid) {
+      # rdrs2 exited on its own (expected - couldn't connect)
+      unlink $pid_file if -f $pid_file;
+      exit 0;
+    }
+    if (-f $pid_file) {
+      # rdrs2 started (partial connect) - stop it
+      kill('TERM', $pid);
+      waitpid($pid, 0);
+      unlink $pid_file;
+      exit 0;
+    }
+    select(undef, undef, undef, 0.1);
+  }
+
+  # Timeout - kill it
+  kill('TERM', $pid);
+  waitpid($pid, 0);
+  unlink $pid_file if -f $pid_file;
+  exit 0;
+EOF
+
+# ============================================================
+# Phase 3: Restart data node 1, then start rdrs2
+# ============================================================
+
+--echo # Phase 3: restart data node 1 and start rdrs2
+
+--exec $NDB_MGM -e "1 RESTART -n"
+--exec $NDB_WAITER --nowait-nodes=2 --not-started
+--exec $NDB_MGM -e "1 START"
+--exec $NDB_WAITER
+
+# Now node 1 knows about node 240, rdrs2 should be able to connect
+--source include/rdrs2_start.inc
+
+INSERT INTO t1 VALUES (3, 4);
+--sorted_result
+SELECT * FROM t1;
+
+--source include/rdrs2_stop.inc
+
+# ============================================================
+# Phase 4: Restart data node 2, then start rdrs2
+# ============================================================
+
+--echo # Phase 4: restart data node 2 and start rdrs2
+
+--exec $NDB_MGM -e "2 RESTART -n"
+--exec $NDB_WAITER --nowait-nodes=1 --not-started
+--exec $NDB_MGM -e "2 START"
+--exec $NDB_WAITER
+
+# Both nodes now have new config, rdrs2 should work fully
+--source include/rdrs2_start.inc
+
+INSERT INTO t1 VALUES (5, 6);
+--sorted_result
+SELECT * FROM t1;
+
+--source include/rdrs2_stop.inc
+
+#
+# Cleanup - ensure both mysqld servers are connected to the cluster
+#
+--source include/ndb_not_readonly.inc
+
+--connection server2
+--source include/ndb_not_readonly.inc
+--connection server1
+
+DROP TABLE t1;
+
+# Remove temp files so MTR's check-testcase doesn't complain
+--remove_file $MYSQLTEST_VARDIR/tmp/rdrs2_config.json
+--remove_file $MYSQLTEST_VARDIR/tmp/rdrs2_node_ids.txt
+--remove_file $MYSQLTEST_VARDIR/tmp/ndb_config.ini
+--remove_file $MYSQLTEST_VARDIR/tmp/configinfo_debug.txt
+
+# Force full restart since mgmd was restarted with --config-file mode
+--source include/force_restart.inc

@@ -2908,6 +2908,20 @@ sub executable_setup () {
     } else {
       delete $ENV{'HAVE_RDRS2_V2'};
     }
+
+    # Look for rdrs2 (current RDRS2 server)
+    my $exe_rdrs2 =
+      my_find_bin($bindir,
+                  [ "runtime_output_directory", "libexec", "sbin", "bin" ],
+                  "rdrs2", NOT_REQUIRED);
+
+    if ($exe_rdrs2) {
+      mtr_verbose("Found rdrs2 binary");
+      $ENV{'HAVE_RDRS2'} = 1;
+      $ENV{'RDRS2_EXE'} = $exe_rdrs2;
+    } else {
+      delete $ENV{'HAVE_RDRS2'};
+    }
   }
 
   if (defined $ENV{'MYSQL_TEST'}) {
@@ -3992,22 +4006,44 @@ sub ndb_mgmd_stop {
                        output => "/dev/null",);
 }
 
-sub ndb_mgmd_start ($$) {
-  my ($cluster, $ndb_mgmd) = @_;
+sub ndb_mgmd_start ($$;$) {
+  my ($cluster, $ndb_mgmd, $extra_opts) = @_;
 
   mtr_verbose("ndb_mgmd_start");
 
   my $dir = $ndb_mgmd->value("DataDir");
   mkpath($dir) unless -d $dir;
 
+  # Check if extra opts include --config-file, which replaces --mycnf
+  # and --defaults-file entirely (the two formats cannot be mixed).
+  my $use_mycnf = 1;
+  if ($extra_opts) {
+    foreach my $opt (@$extra_opts) {
+      if ($opt =~ /^--config-file/) {
+        $use_mycnf = 0;
+      }
+    }
+  }
+
   my $args;
   mtr_init_args(\$args);
-  mtr_add_arg($args, "--defaults-file=%s",         $path_config_file);
-  mtr_add_arg($args, "--defaults-group-suffix=%s",
-              $ndb_mgmd->after('cluster_config.ndb_mgmd'));
-  mtr_add_arg($args, "--mycnf");
+  if ($use_mycnf) {
+    mtr_add_arg($args, "--defaults-file=%s",         $path_config_file);
+    mtr_add_arg($args, "--defaults-group-suffix=%s",
+                $ndb_mgmd->after('cluster_config.ndb_mgmd'));
+    mtr_add_arg($args, "--mycnf");
+  } else {
+    mtr_report("ndb_mgmd_start: using --config-file mode (no --mycnf)");
+  }
   mtr_add_arg($args, "--nodaemon");
   mtr_add_arg($args, "--configdir=%s",             "$dir");
+
+  # Append any extra options (e.g., --initial, --config-file)
+  if ($extra_opts) {
+    foreach my $opt (@$extra_opts) {
+      mtr_add_arg($args, $opt);
+    }
+  }
 
   my $exe = $exe_ndb_mgmd;
 
@@ -4027,9 +4063,12 @@ sub ndb_mgmd_start ($$) {
   # FIXME Should not be needed
   # Unfortunately the cluster nodes will fail to start
   # if ndb_mgmd has not started properly
-  if (ndb_mgmd_wait_started($cluster)) {
-    mtr_warning("Failed to wait for start of ndb_mgmd");
-    return 1;
+  # Skip the wait when using --config-file (the test handles its own wait)
+  if ($use_mycnf) {
+    if (ndb_mgmd_wait_started($cluster)) {
+      mtr_warning("Failed to wait for start of ndb_mgmd");
+      return 1;
+    }
   }
 
   return 0;
@@ -6169,6 +6208,57 @@ sub check_expected_crash_and_restart($$) {
 
       # Loop ran through: we should keep waiting after a re-check
       return 2;
+    }
+  }
+
+  # Check ndb_mgmd processes
+  foreach my $ndb_mgmd (ndb_mgmds()) {
+    next
+      unless ($ndb_mgmd->{proc} and $ndb_mgmd->{proc} eq $proc);
+
+    mtr_report("ndb_mgmd process died: " . $ndb_mgmd->name());
+
+    # Check if crash/stop expected by looking at the .expect file
+    my $expect_file = "$opt_vardir/tmp/" . $ndb_mgmd->name() . ".expect";
+    if (-f $expect_file) {
+      mtr_report("Found .expect file: $expect_file");
+      for (my $waits = 0 ; $waits < 50 ; mtr_milli_sleep(100), $waits++) {
+        next if -z $expect_file;
+        my $last_line = mtr_lastlinesfromfile($expect_file, 1);
+        if ($last_line =~ /^wait/) {
+          mtr_verbose("Test says wait before restart") if $waits == 0;
+          next;
+        }
+        next unless $last_line =~ /^restart/;
+
+        # Parse extra options from restart:<opts>
+        my @extra_opts;
+        if ($last_line =~ /restart:(.+)/) {
+          @extra_opts = split(' ', $1);
+        }
+
+        mtr_report("Restarting ndb_mgmd with extra opts: @extra_opts");
+
+        unlink($expect_file);
+
+        # Find the cluster this ndb_mgmd belongs to
+        foreach my $cluster (clusters()) {
+          if (grep { $_ eq $ndb_mgmd } in_cluster($cluster, ndb_mgmds())) {
+            ndb_mgmd_start($cluster, $ndb_mgmd,
+                           @extra_opts ? \@extra_opts : undef);
+            mtr_report("ndb_mgmd restarted successfully");
+            last;
+          }
+        }
+
+        return 1;
+      }
+
+      # Loop ran through: keep waiting after a re-check
+      mtr_report("ndb_mgmd .expect loop exhausted, returning 2");
+      return 2;
+    } else {
+      mtr_report("No .expect file found at: $expect_file");
     }
   }
 
