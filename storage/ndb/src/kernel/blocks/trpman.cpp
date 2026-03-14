@@ -1423,6 +1423,16 @@ void TrpmanProxy::execROUTE_ORD(Signal *signal) {
     globalTransporterRegistry.lockMultiTransporters();
     globalTransporterRegistry.get_trps_for_node(nodeId, &trp_id, num_ids, 1);
     globalTransporterRegistry.unlockMultiTransporters();
+    if (num_ids == 0) {
+      /**
+       * Node was not part of configuration, not much we can do here.
+       * Make sure to release sections first.
+       */
+      jam();
+      SectionHandle handle(this, signal);
+      releaseSections(handle);
+      return;
+    }
     workerIndex = get_recv_thread_idx(trp_id);
     ndbrequire(workerIndex < globalData.ndbMtReceiveThreads);
   }

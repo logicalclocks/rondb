@@ -1,0 +1,38 @@
+CREATE TABLE t1 (
+a INT PRIMARY KEY,
+b INT
+) ENGINE NDB;
+INSERT INTO t1 VALUES (1, 2);
+SELECT * FROM t1;
+a	b
+1	2
+# Phase 1: add NodeId=240 to config and reload ndb_mgmd
+# Phase 2: rdrs2 with new node before data node restart (expect failure)
+# Phase 3: restart data node 1 and start rdrs2
+Node 1 is being restarted
+
+Node 1: NOT_STARTED
+Database node 1 is being started.
+
+Node 1: STARTED
+Node 2: STARTED
+INSERT INTO t1 VALUES (3, 4);
+SELECT * FROM t1;
+a	b
+1	2
+3	4
+# Phase 4: restart data node 2 and start rdrs2
+Node 2 is being restarted
+
+Node 2: NOT_STARTED
+Database node 2 is being started.
+
+Node 1: STARTED
+Node 2: STARTED
+INSERT INTO t1 VALUES (5, 6);
+SELECT * FROM t1;
+a	b
+1	2
+3	4
+5	6
+DROP TABLE t1;

@@ -57,7 +57,7 @@ static int _single_user = 0;
 static int _timeout = 120;  // Seconds
 static const char *_wait_nodes = 0;
 static const char *_nowait_nodes = 0;
-static NdbNodeBitmask nowait_nodes_bitmask;
+static Bitmask<(ABS_MAX_NODES + 31) / 32> nowait_nodes_bitmask;
 static int _verbose = 1;
 
 static TlsKeyManager tlsKeyManager;
