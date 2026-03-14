@@ -1,0 +1,169 @@
+--source include/have_multi_ndb.inc
+--source include/have_ndbmtd_v2.inc
+--source include/have_rdrs2_v2.inc
+
+#
+# Test upgrade/downgrade with old RDRS2 API node (rdrs2_v2):
+#
+# Cluster starts with ndbmtd_v2 data nodes. An rdrs2_v2 server is started
+# and stopped repeatedly to test connect/disconnect of old API nodes during
+# upgrade and downgrade. The symlink $NDBMTD_LINK initially points to
+# ndbmtd_v2 and is switched between ndbmtd and ndbmtd_v2 as needed.
+#
+# Phases:
+#   1. Both nodes old (ndbmtd_v2)
+#   2. Upgrade node 1 to ndbmtd (mixed)
+#   3. Upgrade node 2 to ndbmtd (all upgraded)
+#   4. Downgrade node 1 to ndbmtd_v2 (mixed again)
+#   5. Downgrade node 2 to ndbmtd_v2 (all old again)
+#   6. Cluster restart with ndbmtd_v2
+#   7. Cluster restart with ndbmtd (full upgrade)
+#
+
+#
+# Write rdrs2_v2 config file
+#
+--source include/rdrs2_v2_write_config.inc
+
+#
+# Create test data
+#
+CREATE TABLE t1 (
+  a INT PRIMARY KEY,
+  b INT
+) ENGINE NDB;
+
+INSERT INTO t1 VALUES (1, 2);
+
+# ============================================================
+# Phase 1: Both data nodes running ndbmtd_v2
+# ============================================================
+
+--echo # Phase 1: old data nodes, start/stop rdrs2_v2
+--source include/rdrs2_v2_start.inc
+--sorted_result
+SELECT * FROM t1;
+--source include/rdrs2_v2_stop.inc
+
+# ============================================================
+# Phase 2: Upgrade node 1 to ndbmtd
+# ============================================================
+
+--echo # Phase 2: upgrade node 1
+--exec ln -sf $NDBMTD_EXE $NDBMTD_LINK
+--exec $NDB_MGM -e "1 RESTART -n"
+--exec $NDB_WAITER --nowait-nodes=2 --not-started
+--exec $NDB_MGM -e "1 START"
+--exec $NDB_WAITER
+
+--echo # Phase 2: mixed cluster, start/stop rdrs2_v2
+--source include/rdrs2_v2_start.inc
+--sorted_result
+SELECT * FROM t1;
+--source include/rdrs2_v2_stop.inc
+
+# ============================================================
+# Phase 3: Upgrade node 2 to ndbmtd (all nodes upgraded)
+# ============================================================
+
+--echo # Phase 3: upgrade node 2
+--exec ln -sf $NDBMTD_EXE $NDBMTD_LINK
+--exec $NDB_MGM -e "2 RESTART -n"
+--exec $NDB_WAITER --nowait-nodes=1 --not-started
+--exec $NDB_MGM -e "2 START"
+--exec $NDB_WAITER
+
+--echo # Phase 3: all upgraded, start/stop rdrs2_v2
+--source include/rdrs2_v2_start.inc
+INSERT INTO t1 VALUES (3, 4);
+--sorted_result
+SELECT * FROM t1;
+--source include/rdrs2_v2_stop.inc
+
+# ============================================================
+# Phase 4: Downgrade node 1 back to ndbmtd_v2
+# ============================================================
+
+--echo # Phase 4: downgrade node 1
+--exec ln -sf $NDBMTD_V2_EXE $NDBMTD_LINK
+--exec $NDB_MGM -e "1 RESTART -n"
+--exec $NDB_WAITER --nowait-nodes=2 --not-started
+--exec $NDB_MGM -e "1 START"
+--exec $NDB_WAITER
+
+--echo # Phase 4: mixed cluster (downgrading), start/stop rdrs2_v2
+--source include/rdrs2_v2_start.inc
+--sorted_result
+SELECT * FROM t1;
+--source include/rdrs2_v2_stop.inc
+
+# ============================================================
+# Phase 5: Downgrade node 2 back to ndbmtd_v2 (all old again)
+# ============================================================
+
+--echo # Phase 5: downgrade node 2
+--exec ln -sf $NDBMTD_V2_EXE $NDBMTD_LINK
+--exec $NDB_MGM -e "2 RESTART -n"
+--exec $NDB_WAITER --nowait-nodes=1 --not-started
+--exec $NDB_MGM -e "2 START"
+--exec $NDB_WAITER
+
+--echo # Phase 5: all downgraded, start/stop rdrs2_v2
+--source include/rdrs2_v2_start.inc
+--sorted_result
+SELECT * FROM t1;
+--source include/rdrs2_v2_stop.inc
+
+# ============================================================
+# Phase 6: Cluster restart with ndbmtd_v2
+# ============================================================
+
+--echo # Phase 6: cluster restart with ndbmtd_v2
+--exec ln -sf $NDBMTD_V2_EXE $NDBMTD_LINK
+--exec $NDB_MGM -e "ALL RESTART -N"
+--exec $NDB_WAITER --not-started
+--exec $NDB_MGM -e "ALL START"
+--exec $NDB_WAITER
+
+--source include/ndb_not_readonly.inc
+
+--connection server2
+--source include/ndb_not_readonly.inc
+--connection server1
+
+--echo # Phase 6: after cluster restart with old, start/stop rdrs2_v2
+--source include/rdrs2_v2_start.inc
+--sorted_result
+SELECT * FROM t1;
+--source include/rdrs2_v2_stop.inc
+
+# ============================================================
+# Phase 7: Cluster restart with ndbmtd (full upgrade)
+# ============================================================
+
+--echo # Phase 7: cluster restart with ndbmtd
+--exec ln -sf $NDBMTD_EXE $NDBMTD_LINK
+--exec $NDB_MGM -e "ALL RESTART -N"
+--exec $NDB_WAITER --not-started
+--exec $NDB_MGM -e "ALL START"
+--exec $NDB_WAITER
+
+--source include/ndb_not_readonly.inc
+
+--connection server2
+--source include/ndb_not_readonly.inc
+--connection server1
+
+--echo # Phase 7: after cluster restart with new, start/stop rdrs2_v2
+--source include/rdrs2_v2_start.inc
+--sorted_result
+SELECT * FROM t1;
+--source include/rdrs2_v2_stop.inc
+
+#
+# Cleanup
+#
+DROP TABLE t1;
+
+# Remove rdrs2_v2 config file so MTR's check-testcase doesn't complain
+--remove_file $MYSQLTEST_VARDIR/tmp/rdrs2_v2_config.json
