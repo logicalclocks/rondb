@@ -156,7 +156,6 @@ DROP TABLE t1;
 --remove_file $MYSQLTEST_VARDIR/tmp/rdrs2_config.json
 --remove_file $MYSQLTEST_VARDIR/tmp/rdrs2_node_ids.txt
 --remove_file $MYSQLTEST_VARDIR/tmp/ndb_config.ini
---remove_file $MYSQLTEST_VARDIR/tmp/configinfo_debug.txt
 
 # Force full restart since mgmd was restarted with --config-file mode
 --source include/force_restart.inc
