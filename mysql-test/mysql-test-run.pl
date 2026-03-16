@@ -180,6 +180,7 @@ my $exe_ndb_mgmd;
 my $exe_ndb_waiter;
 my $exe_ndbmtd;
 my $exe_ndbmtd_v2;
+my $exe_rdrs2_v2;
 my $initial_bootstrap_cmd;
 my $mysql_base_version;
 my $mysqlx_baseport;
@@ -2902,6 +2903,34 @@ sub executable_setup () {
     } else {
       delete $ENV{'HAVE_NDBMTD_V2'};
     }
+
+    # Look for rdrs2_v2 (old version of RDRS2 server for upgrade testing)
+    $exe_rdrs2_v2 =
+      my_find_bin($bindir,
+                  [ "runtime_output_directory", "libexec", "sbin", "bin" ],
+                  "rdrs2_v2", NOT_REQUIRED);
+
+    if ($exe_rdrs2_v2 && $ENV{MTR_RONDB_V2}) {
+      mtr_verbose("Found rdrs2_v2 binary");
+      $ENV{'HAVE_RDRS2_V2'} = 1;
+      $ENV{'RDRS2_V2_EXE'} = $exe_rdrs2_v2;
+    } else {
+      delete $ENV{'HAVE_RDRS2_V2'};
+    }
+
+    # Look for rdrs2 (current RDRS2 server)
+    my $exe_rdrs2 =
+      my_find_bin($bindir,
+                  [ "runtime_output_directory", "libexec", "sbin", "bin" ],
+                  "rdrs2", NOT_REQUIRED);
+
+    if ($exe_rdrs2) {
+      mtr_verbose("Found rdrs2 binary");
+      $ENV{'HAVE_RDRS2'} = 1;
+      $ENV{'RDRS2_EXE'} = $exe_rdrs2;
+    } else {
+      delete $ENV{'HAVE_RDRS2'};
+    }
   }
 
   if (defined $ENV{'MYSQL_TEST'}) {
@@ -3360,6 +3389,9 @@ sub environment_setup {
 
     my $path_ndb_testrun_log = "$opt_vardir/tmp/ndb_testrun.log";
     $ENV{'NDB_TOOLS_OUTPUT'} = $path_ndb_testrun_log;
+
+    # Parse ConfigInfo.cpp once at startup for config change support
+    ndb_parse_config_info();
 
     # We need to extend PATH to ensure we find libcrypto/libssl at runtime
     # (ndbclient.dll depends on them)
@@ -4009,22 +4041,204 @@ sub ndb_mgmd_stop {
                        output => "/dev/null",);
 }
 
-sub ndb_mgmd_start ($$) {
-  my ($cluster, $ndb_mgmd) = @_;
+# Hash mapping NDB config parameter names to their section type
+# (DB, API, MGM, TCP). Built once at startup by ndb_parse_config_info().
+my %ndb_param_sections;
+
+# Parse ConfigInfo.cpp to build the parameter-to-section mapping.
+# Called once from environment_setup() when NDB is enabled.
+sub ndb_parse_config_info {
+  my $config_info_path =
+    "$basedir/storage/ndb/src/common/mgmcommon/ConfigInfo.cpp";
+  unless (-f $config_info_path) {
+    mtr_warning("ConfigInfo.cpp not found at $config_info_path");
+    return;
+  }
+
+  open(my $fh, '<', $config_info_path)
+    or do { mtr_warning("Cannot read $config_info_path: $!"); return; };
+  my $content = do { local $/; <$fh> };
+  close $fh;
+
+  while ($content =~ /\{\s*CFG_\w+\s*,\s*"(\w+)"\s*,\s*(?:"(\w+)"|(\w+_TOKEN))/g) {
+    my $name = $1;
+    my $sec = $2 || $3;
+    next if $sec && ($sec eq 'SCI' || $sec eq 'SHM');
+    $sec = 'DB'  if $sec && $sec eq 'DB_TOKEN';
+    $sec = 'API' if $sec && $sec eq 'API_TOKEN';
+    $sec = 'MGM' if $sec && $sec eq 'MGM_TOKEN';
+    # Keep first match (e.g. TCP before SHM for Checksum)
+    $ndb_param_sections{$name} = $sec if $sec && !$ndb_param_sections{$name};
+  }
+
+  mtr_verbose("Parsed " . scalar(keys %ndb_param_sections) .
+              " NDB params from ConfigInfo.cpp");
+}
+
+# Generate a config.ini file from the my.cnf [cluster_config*] and [api]
+# sections, using %ndb_param_sections to route parameters to the correct
+# config.ini sections (ndbd default, tcp default, api default, etc.).
+sub generate_ndb_config_ini {
+  my ($mycnf_path, $config_ini_path) = @_;
+
+  # Parse my.cnf - extract all sections
+  open(my $fh, '<', $mycnf_path)
+    or die "Cannot read $mycnf_path: $!";
+  my %sections;
+  my @section_order;
+  my $current;
+  while (my $line = <$fh>) {
+    chomp $line;
+    $line =~ s/\r$//;
+    next if $line =~ /^[#;]/ || $line =~ /^\s*$/;
+    if ($line =~ /^\[(.+)\]$/) {
+      $current = $1;
+      if (!exists $sections{$current}) {
+        $sections{$current} = [];
+        push @section_order, $current;
+      }
+      next;
+    }
+    if (defined $current && $line =~ /^(\S+?)\s*=\s*(.*)$/) {
+      my ($key, $val) = ($1, $2);
+      $val =~ s/\s+$//;
+      push @{$sections{$current}}, [$key, $val];
+    }
+  }
+  close $fh;
+
+  # MTR meta-variable names to skip
+  my %skip_key = map { $_ => 1 } qw(ndbd ndb_mgmd mysqld ndbapi);
+
+  # Map my.cnf section type to config.ini header
+  my %type_to_header = (
+    'ndbd'     => 'ndbd',
+    'ndb_mgmd' => 'ndb_mgmd',
+    'mysqld'   => 'mysqld',
+    'ndbapi'   => 'api',
+  );
+
+  open(my $out, '>', $config_ini_path)
+    or die "Cannot write $config_ini_path: $!";
+
+  # 1) Collect defaults from [cluster_config] and [cluster_config.N],
+  #    separating ndbd defaults from tcp/api/mgm defaults
+  {
+    my @ndbd_defaults;
+    my @tcp_defaults;
+    my @api_extra_defaults;
+    my @mgm_defaults;
+    my @all_default_pairs;
+
+    # Collect from [cluster_config] (from default_ndbd.cnf)
+    if (my $opts = $sections{'cluster_config'}) {
+      push @all_default_pairs, @$opts;
+    }
+    # Collect from [cluster_config.N] sections
+    for my $name (@section_order) {
+      next unless $name =~ /^cluster_config\.\d+$/;
+      push @all_default_pairs, @{$sections{$name}};
+    }
+
+    for my $pair (@all_default_pairs) {
+      next if $skip_key{$pair->[0]};
+      next if $pair->[0] =~ /^#/;
+      my $sec = $ndb_param_sections{$pair->[0]} || 'DB';
+      my $entry = "$pair->[0]=$pair->[1]";
+      if    ($sec eq 'TCP' || $sec eq 'SHM') { push @tcp_defaults, $entry; }
+      elsif ($sec eq 'API')                  { push @api_extra_defaults, $entry; }
+      elsif ($sec eq 'MGM')                  { push @mgm_defaults, $entry; }
+      else                                   { push @ndbd_defaults, $entry; }
+    }
+
+    if (@ndbd_defaults) {
+      print $out "[ndbd default]\n";
+      print $out "$_\n" for @ndbd_defaults;
+      print $out "\n";
+    }
+    if (@tcp_defaults) {
+      print $out "[tcp default]\n";
+      print $out "$_\n" for @tcp_defaults;
+      print $out "\n";
+    }
+
+    # 2) [api default] from [api] section plus api-level params from defaults
+    my @api_defaults;
+    if (my $opts = $sections{'api'}) {
+      for my $pair (@$opts) {
+        next if $skip_key{$pair->[0]};
+        next if $pair->[0] =~ /^#/;
+        push @api_defaults, "$pair->[0]=$pair->[1]";
+      }
+    }
+    push @api_defaults, @api_extra_defaults;
+    if (@api_defaults) {
+      print $out "[api default]\n";
+      print $out "$_\n" for @api_defaults;
+      print $out "\n";
+    }
+  }
+
+  # 3) Individual node sections: [cluster_config.TYPE.N.SUFFIX] -> [TYPE]
+  for my $name (@section_order) {
+    next unless $name =~ /^cluster_config\.(\w+)\.\d+\.\d+$/;
+    my $type = $1;
+    my $header = $type_to_header{$type};
+    next unless defined $header;
+
+    my @node_opts;
+    for my $pair (@{$sections{$name}}) {
+      next if $skip_key{$pair->[0]};
+      next if $pair->[0] =~ /^#/;
+      push @node_opts, "$pair->[0]=$pair->[1]";
+    }
+    print $out "[$header]\n";
+    print $out "$_\n" for @node_opts;
+    print $out "\n";
+  }
+
+  close $out;
+  mtr_report("Generated config.ini: $config_ini_path");
+}
+
+sub ndb_mgmd_start ($$;$) {
+  my ($cluster, $ndb_mgmd, $extra_opts) = @_;
 
   mtr_verbose("ndb_mgmd_start");
 
   my $dir = $ndb_mgmd->value("DataDir");
   mkpath($dir) unless -d $dir;
 
+  # Check if extra opts include --config-file, which replaces --mycnf
+  # and --defaults-file entirely (the two formats cannot be mixed).
+  my $use_mycnf = 1;
+  if ($extra_opts) {
+    foreach my $opt (@$extra_opts) {
+      if ($opt =~ /^--config-file/) {
+        $use_mycnf = 0;
+      }
+    }
+  }
+
   my $args;
   mtr_init_args(\$args);
-  mtr_add_arg($args, "--defaults-file=%s",         $path_config_file);
-  mtr_add_arg($args, "--defaults-group-suffix=%s",
-              $ndb_mgmd->after('cluster_config.ndb_mgmd'));
-  mtr_add_arg($args, "--mycnf");
+  if ($use_mycnf) {
+    mtr_add_arg($args, "--defaults-file=%s",         $path_config_file);
+    mtr_add_arg($args, "--defaults-group-suffix=%s",
+                $ndb_mgmd->after('cluster_config.ndb_mgmd'));
+    mtr_add_arg($args, "--mycnf");
+  } else {
+    mtr_report("ndb_mgmd_start: using --config-file mode (no --mycnf)");
+  }
   mtr_add_arg($args, "--nodaemon");
   mtr_add_arg($args, "--configdir=%s",             "$dir");
+
+  # Append any extra options (e.g., --initial, --config-file)
+  if ($extra_opts) {
+    foreach my $opt (@$extra_opts) {
+      mtr_add_arg($args, $opt);
+    }
+  }
 
   my $exe = $exe_ndb_mgmd;
 
@@ -4044,9 +4258,12 @@ sub ndb_mgmd_start ($$) {
   # FIXME Should not be needed
   # Unfortunately the cluster nodes will fail to start
   # if ndb_mgmd has not started properly
-  if (ndb_mgmd_wait_started($cluster)) {
-    mtr_warning("Failed to wait for start of ndb_mgmd");
-    return 1;
+  # Skip the wait when using --config-file (the test handles its own wait)
+  if ($use_mycnf) {
+    if (ndb_mgmd_wait_started($cluster)) {
+      mtr_warning("Failed to wait for start of ndb_mgmd");
+      return 1;
+    }
   }
 
   return 0;
@@ -6161,6 +6378,66 @@ sub check_expected_crash_and_restart($$) {
 
       # Loop ran through: we should keep waiting after a re-check
       return 2;
+    }
+  }
+
+  # Check ndb_mgmd processes
+  foreach my $ndb_mgmd (ndb_mgmds()) {
+    next
+      unless ($ndb_mgmd->{proc} and $ndb_mgmd->{proc} eq $proc);
+
+    mtr_report("ndb_mgmd process died: " . $ndb_mgmd->name());
+
+    # Check if crash/stop expected by looking at the .expect file
+    my $expect_file = "$opt_vardir/tmp/" . $ndb_mgmd->name() . ".expect";
+    if (-f $expect_file) {
+      mtr_report("Found .expect file: $expect_file");
+      for (my $waits = 0 ; $waits < 50 ; mtr_milli_sleep(100), $waits++) {
+        next if -z $expect_file;
+        my $last_line = mtr_lastlinesfromfile($expect_file, 1);
+        if ($last_line =~ /^wait/) {
+          mtr_verbose("Test says wait before restart") if $waits == 0;
+          next;
+        }
+        next unless $last_line =~ /^restart/;
+
+        # Parse extra options from restart:<opts>
+        my @extra_opts;
+        if ($last_line =~ /restart:(.+)/) {
+          @extra_opts = split(' ', $1);
+        }
+
+        # Handle --config-change: generate config.ini from my.cnf and
+        # replace with --reload --config-file=<path>
+        if (grep { $_ eq '--config-change' } @extra_opts) {
+          @extra_opts = grep { $_ ne '--config-change' } @extra_opts;
+          my $config_ini = "$opt_vardir/tmp/ndb_config.ini";
+          generate_ndb_config_ini($path_config_file, $config_ini);
+          push @extra_opts, "--reload", "--config-file=$config_ini";
+        }
+
+        mtr_report("Restarting ndb_mgmd with extra opts: @extra_opts");
+
+        unlink($expect_file);
+
+        # Find the cluster this ndb_mgmd belongs to
+        foreach my $cluster (clusters()) {
+          if (grep { $_ eq $ndb_mgmd } in_cluster($cluster, ndb_mgmds())) {
+            ndb_mgmd_start($cluster, $ndb_mgmd,
+                           @extra_opts ? \@extra_opts : undef);
+            mtr_report("ndb_mgmd restarted successfully");
+            last;
+          }
+        }
+
+        return 1;
+      }
+
+      # Loop ran through: keep waiting after a re-check
+      mtr_report("ndb_mgmd .expect loop exhausted, returning 2");
+      return 2;
+    } else {
+      mtr_report("No .expect file found at: $expect_file");
     }
   }
 
