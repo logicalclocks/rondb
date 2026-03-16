@@ -301,6 +301,12 @@ static MYSQL_THDVAR_BOOL(index_stat_enable, /* name */
                          true     /* default */
 );
 
+static MYSQL_THDVAR_BOOL(
+    ring_buffer_show_meta,
+    PLUGIN_VAR_OPCMDARG,
+    "Show ring buffer meta rows (ring_idx=0) in read results. Default OFF.",
+    nullptr, nullptr, 0);
+
 static MYSQL_THDVAR_BOOL(table_no_logging,                 /* name */
                          PLUGIN_VAR_NOCMDARG, "", nullptr, /* check func. */
                          nullptr,                          /* update func. */
@@ -3583,6 +3589,10 @@ const NdbOperation *ha_ndbcluster::pk_unique_index_read_key(
     options.optionsPresent |= NdbOperation::OperationOptions::OO_TTL_IGNORE;
     poptions = &options;
   }
+  if (THDVAR(current_thd, ring_buffer_show_meta)) {
+    options.optionsPresent |= NdbOperation::OperationOptions::OO_RING_BUFFER_SHOW_META;
+    poptions = &options;
+  }
 
   /*
     We prepared a ScanFilter. However it turns out that we will
@@ -3855,6 +3865,9 @@ int ha_ndbcluster::ordered_index_scan(const key_range *start_key,
     if (m_ttl_ignore) {
       options.optionsPresent |= NdbScanOperation::ScanOptions::SO_TTL_IGNORE;
     }
+    if (THDVAR(current_thd, ring_buffer_show_meta)) {
+      options.optionsPresent |= NdbScanOperation::ScanOptions::SO_RING_BUFFER_SHOW_META;
+    }
 
     NdbInterpretedCode code(m_table);
     generate_scan_filter(&code, &options);
@@ -3977,6 +3990,9 @@ int ha_ndbcluster::full_table_scan(const KEY *key_info,
    */
   if (m_ttl_ignore) {
     options.optionsPresent |= NdbScanOperation::ScanOptions::SO_TTL_IGNORE;
+  }
+  if (THDVAR(current_thd, ring_buffer_show_meta)) {
+    options.optionsPresent |= NdbScanOperation::ScanOptions::SO_RING_BUFFER_SHOW_META;
   }
 
   options.scan_flags =
@@ -14840,6 +14856,9 @@ int ha_ndbcluster::multi_range_start_retrievals(uint starting_range) {
         if (m_ttl_ignore) {
           options.optionsPresent |= NdbScanOperation::ScanOptions::SO_TTL_IGNORE;
         }
+        if (THDVAR(current_thd, ring_buffer_show_meta)) {
+          options.optionsPresent |= NdbScanOperation::ScanOptions::SO_RING_BUFFER_SHOW_META;
+        }
 
         options.scan_flags =
             NdbScanOperation::SF_ReadRangeNo | NdbScanOperation::SF_MultiRange;
@@ -19953,6 +19972,7 @@ static SYS_VAR *system_variables[] = {
     MYSQL_SYSVAR(metadata_check_interval),
     MYSQL_SYSVAR(metadata_sync),
     MYSQL_SYSVAR(applier_allow_skip_epoch),
+    MYSQL_SYSVAR(ring_buffer_show_meta),
     nullptr};
 
 struct st_mysql_storage_engine ndbcluster_storage_engine = {

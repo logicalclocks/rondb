@@ -28,7 +28,6 @@ SELECT client_id, ring_idx, event_data FROM test.rb
 WHERE client_id = 1
 ORDER BY ring_idx;
 client_id	ring_idx	event_data
-1	0	NULL
 1	1	event_A
 1	2	event_B
 1	3	event_C
@@ -42,7 +41,6 @@ SELECT client_id, ring_idx, event_data FROM test.rb
 WHERE client_id = 1
 ORDER BY ring_idx;
 client_id	ring_idx	event_data
-1	0	NULL
 1	1	event_E
 1	2	event_B
 1	3	event_C
@@ -55,7 +53,6 @@ SELECT client_id, ring_idx, event_data FROM test.rb
 WHERE client_id = 1
 ORDER BY ring_idx;
 client_id	ring_idx	event_data
-1	0	NULL
 1	1	event_E
 1	2	event_F
 1	3	event_C
@@ -69,14 +66,12 @@ SELECT client_id, ring_idx, event_data FROM test.rb
 WHERE client_id = 2
 ORDER BY ring_idx;
 client_id	ring_idx	event_data
-2	0	NULL
 2	1	client2_A
 2	2	client2_B
 SELECT client_id, ring_idx, event_data FROM test.rb
 WHERE client_id = 1
 ORDER BY ring_idx;
 client_id	ring_idx	event_data
-1	0	NULL
 1	1	event_E
 1	2	event_F
 1	3	event_C
@@ -106,11 +101,14 @@ ON DUPLICATE KEY UPDATE event_data = 'updated';
 ERROR HY000: Table storage engine for 'INSERT ON DUPLICATE KEY UPDATE is not allowed on ring-buffer tables' doesn't have this option
 #
 # Case 10: Verify meta row is visible via direct PK lookup (ring_idx=0)
+# Requires ndb_ring_buffer_show_meta=ON since meta rows are filtered by default
 #
+SET ndb_ring_buffer_show_meta = ON;
 SELECT client_id, ring_idx, HEX(ring_meta) FROM test.rb
 WHERE client_id = 1 AND ring_idx = 0;
 client_id	ring_idx	HEX(ring_meta)
 1	0	0100000003000000040000000000000006000000000000000000000000000000
+SET ndb_ring_buffer_show_meta = OFF;
 #
 # Case 11: Ring size = 1 (single slot — every insert overwrites)
 #
@@ -156,10 +154,8 @@ VALUES (1, 200, 'r1c200_A');
 SELECT region, client_id, ring_idx, event_data FROM test.rb_multi
 ORDER BY region, client_id, ring_idx;
 region	client_id	ring_idx	event_data
-1	100	0	NULL
 1	100	1	r1c100_A
 1	100	2	r1c100_B
-1	200	0	NULL
 1	200	1	r1c200_A
 DROP TABLE test.rb_multi;
 #
