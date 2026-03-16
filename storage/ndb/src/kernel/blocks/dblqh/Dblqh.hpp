@@ -699,7 +699,8 @@ class Dblqh : public SimulatedBlock {
       m_join_agg_evict_rows(0),
       m_rows_examined(0),
       m_outer_join_agg_scan(0),
-      m_inline_match_scan(0),
+      m_local_matched_ranges(nullptr),
+      m_local_matched_words(0),
       m_ttl_purge_window_size(0)
     {
     }
@@ -848,8 +849,9 @@ class Dblqh : public SimulatedBlock {
     Uint32 m_join_agg_evict_rows;   // Evicted group rows sent to API during this scan batch
     Uint32 m_rows_examined;          // Total rows examined in this scan batch
     Uint8 m_outer_join_agg_scan;     // Set from OuterJoinAggFlag in SCAN_FRAGREQ
-    Uint8 m_inline_match_scan;       // Set from InlineMatchFlag in SCAN_FRAGREQ
-    Uint32 m_join_agg_range_offset;  // Bitmask offset for outer join (from DBSPJ)
+    Uint32 *m_local_matched_ranges;  // Per-ScanRecord local bitmask (allocated per scan)
+    Uint32 m_local_matched_words;    // Size of the local bitmask in words
+    Uint32 m_local_matched_range_count; // Number of ranges to track
     // TTL
     Uint8 m_ttl_ignore;         // ignore set by API
     Uint8 m_ttl_ignore_for_ral; // ignore set by Read after lock
@@ -3323,7 +3325,6 @@ private:
   void execSCAN_FRAGREQ(Signal* signal);
   void execJOIN_AGG_COMPLETE_REQ(Signal* signal);
   void execJOIN_AGG_NULL_ROW_REQ(Signal* signal);
-  void execJOIN_AGG_MATCH_REQ(Signal* signal);
   void execJOIN_AGG_SEND_CONF(Signal* signal);
   bool checkJoinAggNodeFailed(Signal* signal, Uint32 aggStateKey,
                               Uint32 senderRef);

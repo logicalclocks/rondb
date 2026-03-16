@@ -75,10 +75,6 @@
  *          GROUP BY grp, COUNT(*), SUM(hours)
  *          Tests deferred null row injection for scan aggregate leaves.
  *
- * Test 14: 3-scan deferred null row + inline match (same tree as 13)
- *          GROUP BY grp, COUNT(*), SUM(hours)
- *          Same as Test 13 but with setInlineMatch(true).
- *
  * Usage: testMultiOuterJoinAggNdbApi -c <connect_string> -m <mysql_port> [-v]
  *        [--only N] [--skip N]
  */
@@ -4055,14 +4051,11 @@ dropTest13Tables(MYSQL *conn)
 
 /**
  * Helper: build and run 3-scan deferred null row test.
- * @param useInlineMatch  if true, calls setInlineMatch(true) on the leaf
  */
 static int
-testThreeScanDeferred(Ndb *ndb, MYSQL *conn, bool useInlineMatch)
+testThreeScanDeferred(Ndb *ndb, MYSQL *conn)
 {
-  const char *testLabel = useInlineMatch
-      ? "Test 14: 3-scan deferred + inline match"
-      : "Test 13: 3-scan deferred null row";
+  const char *testLabel = "Test 13: 3-scan deferred null row";
   printf("%s (scan->LEFT scan->LEFT scan) ... ", testLabel);
   fflush(stdout);
 
@@ -4150,9 +4143,6 @@ testThreeScanDeferred(Ndb *ndb, MYSQL *conn, bool useInlineMatch)
 
   NdbQueryOptions leafOpts;
   leafOpts.setAggregation(agg);
-  if (useInlineMatch) {
-    leafOpts.setInlineMatch(true);
-  }
   const NdbLinkedOperand *grpLink = qb->linkedValue(rootOp, "grp");
   if (grpLink == nullptr) {
     printf("FAILED (linkedValue grp: %s)\n", qb->getNdbError().message);
@@ -4480,16 +4470,9 @@ int main(int argc, char **argv)
           if (shouldRun(13) || shouldRun(14)) {
             if (createTest13Tables(conn) == 0 &&
                 insertTest13Data(conn) == 0) {
-              /* Test 13: bitmask exchange path */
+              /* Test 13: 3-scan deferred null row */
               if (shouldRun(13)) {
-                if (testThreeScanDeferred(&ndb, conn,
-                                          false /* useInlineMatch */) != 0)
-                  exitCode = 1;
-              }
-              /* Test 14: inline match path */
-              if (shouldRun(14)) {
-                if (testThreeScanDeferred(&ndb, conn,
-                                          true /* useInlineMatch */) != 0)
+                if (testThreeScanDeferred(&ndb, conn) != 0)
                   exitCode = 1;
               }
             } else {

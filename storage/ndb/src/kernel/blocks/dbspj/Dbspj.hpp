@@ -91,7 +91,6 @@ class Dbspj : public SimulatedBlock {
   void execSCAN_HBREP(Signal *signal);
   void execTRANSID_AI(Signal *signal);
   void execJOIN_AGG_NULL_ROW_CONF(Signal *signal);
-  void execJOIN_AGG_MATCH_CONF(Signal *signal);
 
   /**
    * General signals
@@ -861,9 +860,7 @@ class Dbspj : public SimulatedBlock {
           m_resumeEvents(0),
           m_scanAncestorPtrI(RNIL),
           m_agg_match_bitmask(nullptr),
-          m_agg_match_outstanding(0),
-          m_agg_num_ranges(0),
-          m_agg_range_start(0)
+          m_agg_num_ranges(0)
 #ifdef SPJ_TRACE_TIME
           ,m_scan_fragconf_count(0)
           ,m_scan_fragconf_len(0)
@@ -886,9 +883,7 @@ class Dbspj : public SimulatedBlock {
           m_resumeEvents(0),
           m_scanAncestorPtrI(RNIL),
           m_agg_match_bitmask(nullptr),
-          m_agg_match_outstanding(0),
           m_agg_num_ranges(0),
-          m_agg_range_start(0),
           nextList(RNIL),
           prevList(RNIL),
           nextCursor(RNIL)
@@ -1088,13 +1083,6 @@ class Dbspj : public SimulatedBlock {
       T_AGGREGATE_LEAF = 0x1000000,
 
       /**
-       * When set on a T_AGGREGATE_LEAF outer join node, DBLQH sends
-       * inline TRANSID_AI match notifications instead of using the
-       * bitmask exchange protocol (JOIN_AGG_MATCH_REQ/CONF).
-       */
-      T_AGG_INLINE_MATCH = 0x2000000,
-
-      /**
        * Set on every TreeNode that is a proper ancestor of the
        * T_AGGREGATE_LEAF node. Used to detect intermediate outer join
        * nodes that need null row propagation for chained outer joins.
@@ -1219,9 +1207,7 @@ class Dbspj : public SimulatedBlock {
     Uint32 m_scanAncestorPtrI;
 
     Uint32 *m_agg_match_bitmask;     // Combined match bitmask (ndbd_malloc'd)
-    Uint32 m_agg_match_outstanding;  // Pending MATCH_CONFs
     Uint32 m_agg_num_ranges;         // Number of parent rows (= scan ranges)
-    Uint32 m_agg_range_start;        // Range offset for this batch in DBLQH bitmask
 
     union {
       LookupData m_lookup_data;
@@ -1331,7 +1317,6 @@ class Dbspj : public SimulatedBlock {
     Uint16 *m_lookup_node_data;  // Dynamically allocated [MAX_NDB_NODES]
     Uint32 *m_aggStateKeys;      // Dynamically allocated [MAX_NDB_NODES]
     NdbNodeBitmask m_aggNodes;
-    Uint32 m_agg_range_start;    // Outer join bitmask range offset (from DBTC)
     NDB_TICKS m_lastHbrepTicks;  // Last time SCAN_HBREP was sent during JoinAgg bypass
     ArenaHead m_arena;
 

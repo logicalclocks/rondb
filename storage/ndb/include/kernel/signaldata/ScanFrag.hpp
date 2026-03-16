@@ -168,9 +168,6 @@ class ScanFragReq {
 
   static void setOuterJoinAggFlag(Uint32 &requestInfo, Uint32 val);
   static Uint32 getOuterJoinAggFlag(const Uint32 &requestInfo);
-
-  static void setInlineMatchFlag(Uint32 &requestInfo, Uint32 val);
-  static Uint32 getInlineMatchFlag(const Uint32 &requestInfo);
 };
 
 /*
@@ -386,12 +383,11 @@ class ScanFragNextReq {
  * u = User Id flag          - 1  Bit 27
  * J = Join aggregation flag - 1  Bit 28
  * O = Outer join agg flag   - 1  Bit 29
- * M = Inline match flag     - 1  Bit 30
  *
  *           1111111111222222222233
  * 01234567890123456789012345678901
  *  rrcdlxhkrztppppaaaaaaaaaaaaaaaa   Short variant ( < 6.4.0)
- *  rrcdlxhkrztppppCsaimfqgIePuJOM    Long variant (6.4.0 +)
+ *  rrcdlxhkrztppppCsaimfqgIePuJO     Long variant (6.4.0 +)
  */
 #define SF_LOCK_MODE_SHIFT (5)
 #define SF_LOCK_MODE_MASK (1)
@@ -429,7 +425,6 @@ class ScanFragNextReq {
 #define SF_USER_ID_SHIFT (27)
 #define SF_JOIN_AGG_SHIFT (28)
 #define SF_OUTER_JOIN_AGG_SHIFT (29)
-#define SF_INLINE_MATCH_SHIFT (30)
 
 inline Uint32 ScanFragReq::getLockMode(const Uint32 &requestInfo) {
   return (requestInfo >> SF_LOCK_MODE_SHIFT) & SF_LOCK_MODE_MASK;
@@ -699,16 +694,6 @@ inline void ScanFragReq::setOuterJoinAggFlag(Uint32 &requestInfo, UintR val) {
 
 inline Uint32 ScanFragReq::getOuterJoinAggFlag(const Uint32 &requestInfo) {
   return (requestInfo >> SF_OUTER_JOIN_AGG_SHIFT) & 1;
-}
-
-inline void ScanFragReq::setInlineMatchFlag(Uint32 &requestInfo, UintR val) {
-  ASSERT_BOOL(val, "ScanFragReq::setInlineMatchFlag");
-  requestInfo = (requestInfo & ~(1 << SF_INLINE_MATCH_SHIFT)) |
-                (val << SF_INLINE_MATCH_SHIFT);
-}
-
-inline Uint32 ScanFragReq::getInlineMatchFlag(const Uint32 &requestInfo) {
-  return (requestInfo >> SF_INLINE_MATCH_SHIFT) & 1;
 }
 
 /**

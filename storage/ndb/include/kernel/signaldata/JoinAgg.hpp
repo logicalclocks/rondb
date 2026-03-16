@@ -163,29 +163,6 @@ struct JoinAggNullRowConf {
   Uint32 treeNodePtrI;
 };
 
-// DBSPJ → DBLQH instance 1: request match bitmask for outer join null row injection
-struct JoinAggMatchReq {
-  static constexpr Uint32 SignalLength = 8;
-  Uint32 senderRef;
-  Uint32 aggStateKey;
-  Uint32 transId[2];
-  Uint32 requestPtrI;
-  Uint32 treeNodePtrI;
-  Uint32 rangeStart;    // First bit position in shared bitmask
-  Uint32 rangeCount;    // Number of bits to read+clear
-};
-
-// DBLQH instance 1 → DBSPJ: match bitmask response
-// Long section 0: matched_ranges bitmask (ceil(numRanges/32) words)
-struct JoinAggMatchConf {
-  static constexpr Uint32 SignalLength = 5;
-  Uint32 senderRef;
-  Uint32 aggStateKey;
-  Uint32 requestPtrI;
-  Uint32 treeNodePtrI;
-  Uint32 numBitmaskWords;
-};
-
 #undef JAM_FILE_ID
 
 #endif

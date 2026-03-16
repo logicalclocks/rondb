@@ -165,14 +165,6 @@ struct DABits {
      */
     NI_AGGREGATE_LEAF = 0x4000,
 
-    /**
-     * When set on an NI_AGGREGATE_LEAF outer join node, use inline
-     * TRANSID_AI match notification instead of the bitmask exchange
-     * protocol (JOIN_AGG_MATCH_REQ/CONF). Lower latency for small
-     * result sets, but sends O(matching_rows) signals per batch.
-     */
-    NI_AGG_INLINE_MATCH = 0x8000,
-
     NI_END = 0
   };
 

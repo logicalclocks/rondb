@@ -857,8 +857,7 @@ static std::vector<Uint32>
 buildOuterJoinQueryTree_ScanScan(const TableMeta &parent,
                                   const IndexMeta &childIndex,
                                   Uint32 childIndexVersion,
-                                  Uint32 receiverId,
-                                  bool inlineMatch = false)
+                                  Uint32 receiverId)
 {
   std::vector<Uint32> ai;
 
@@ -890,9 +889,6 @@ buildOuterJoinQueryTree_ScanScan(const TableMeta &parent,
   /* NO NI_INNER_JOIN — outer join */
   Uint32 n1_bits = DABits::NI_HAS_PARENT | DABits::NI_KEY_LINKED |
                    DABits::NI_AGGREGATE | DABits::NI_AGGREGATE_LEAF;
-  if (inlineMatch) {
-    n1_bits |= DABits::NI_AGG_INLINE_MATCH;
-  }
   ai.push_back(n1_bits);
   ai.push_back(childIndex.indexId);
   ai.push_back(childIndexVersion);
@@ -1718,19 +1714,17 @@ testScanScanSumCase(Ndb *ndb, SignalSender &ss, Uint32 nodeId, MYSQL *conn)
 }
 
 /* ------------------------------------------------------------------ */
-/* Test 7: Scan-scan partial match — inline match (TRANSID_AI)         */
+/* Test 7: Scan-scan partial match (repeat)                            */
 /* ------------------------------------------------------------------ */
 
 /*
- * Same data and expected results as Test 5, but uses the inline match
- * code path (NI_AGG_INLINE_MATCH). DBLQH sends per-row TRANSID_AI
- * match notifications instead of the bitmask exchange protocol.
+ * Same data and expected results as Test 5 (repeat to verify stability).
  */
 static int
 testScanScanPartialMatch_InlineMatch(Ndb *ndb, SignalSender &ss,
                                       Uint32 nodeId, MYSQL *conn)
 {
-  printf("Test 7: Scan-scan partial match INLINE MATCH COUNT/SUM ... ");
+  printf("Test 7: Scan-scan partial match (repeat) COUNT/SUM ... ");
   fflush(stdout);
 
   ss.unlock();
@@ -1761,8 +1755,7 @@ testScanScanPartialMatch_InlineMatch(Ndb *ndb, SignalSender &ss,
   Uint32 receiverId = 42;
   std::vector<Uint32> queryTree =
     buildOuterJoinQueryTree_ScanScan(parentMeta, indexMeta,
-                                      indexMeta.indexVersion, receiverId,
-                                      true /* inlineMatch */);
+                                      indexMeta.indexVersion, receiverId);
   std::vector<Uint32> aggProgram =
     buildAggProgram_CountSum(childMeta.attrIdCol3);
 
@@ -1815,14 +1808,13 @@ testScanScanPartialMatch_InlineMatch(Ndb *ndb, SignalSender &ss,
 /* ------------------------------------------------------------------ */
 
 /*
- * Same data and expected results as Test 6, but uses the inline match
- * code path (NI_AGG_INLINE_MATCH).
+ * Same data and expected results as Test 6 (repeat to verify stability).
  */
 static int
 testScanScanSumCase_InlineMatch(Ndb *ndb, SignalSender &ss,
                                  Uint32 nodeId, MYSQL *conn)
 {
-  printf("Test 8: Scan-scan SUM(CASE ...) INLINE MATCH ... ");
+  printf("Test 8: Scan-scan SUM(CASE ...) (repeat) ... ");
   fflush(stdout);
 
   ss.unlock();
@@ -1853,8 +1845,7 @@ testScanScanSumCase_InlineMatch(Ndb *ndb, SignalSender &ss,
   Uint32 receiverId = 42;
   std::vector<Uint32> queryTree =
     buildOuterJoinQueryTree_ScanScan(parentMeta, indexMeta,
-                                      indexMeta.indexVersion, receiverId,
-                                      true /* inlineMatch */);
+                                      indexMeta.indexVersion, receiverId);
   std::vector<Uint32> aggProgram =
     buildAggProgram_SumCase(childMeta.attrIdCol3);
 

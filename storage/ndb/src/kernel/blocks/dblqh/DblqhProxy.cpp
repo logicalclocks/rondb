@@ -2319,17 +2319,6 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   state->m_agg_program = nullptr;
   state->m_agg_program_len = 0;
   state->m_outer_join_agg_scan = false;
-  {
-    // Allocate bitmask: 4096 bits (128 words) per SPJ worker.
-    // Support up to 48 concurrent SPJ workers per aggregation.
-    Uint32 bitmask_words = 48 * 128;
-    state->m_matched_ranges = (std::atomic<Uint32> *)
-        lc_ndbd_pool_malloc(bitmask_words * sizeof(Uint32),
-                            RG_QUERY_MEMORY, getThreadId(), true);
-    ndbrequire(state->m_matched_ranges != nullptr);
-    state->m_matched_ranges_words = bitmask_words;
-    state->m_range_counter.store(0, std::memory_order_relaxed);
-  }
 
   // Populate immutable identification fields
   state->m_transid[0] = req->transid[0];
@@ -2510,13 +2499,6 @@ DblqhProxy::execJOIN_AGG_RELEASE_REQ(Signal *signal) {
       lc_ndbd_pool_free(state->m_receiverIds);
       state->m_receiverIds = nullptr;
       state->m_numReceiverIds = 0;
-    }
-
-    // Free matched ranges bitmask
-    if (state->m_matched_ranges != nullptr) {
-      lc_ndbd_pool_free(state->m_matched_ranges);
-      state->m_matched_ranges = nullptr;
-      state->m_matched_ranges_words = 0;
     }
 
     // Free JoinAggInterpreter(s)

@@ -45,6 +45,7 @@
 #include <signaldata/EventReport.hpp>
 #include <signaldata/ExecFragReq.hpp>
 #include <signaldata/GCP.hpp>
+#include <signaldata/DbspjErr.hpp>
 #include <signaldata/JoinAgg.hpp>
 #include "JoinAggregationState.hpp"
 #include <signaldata/LqhFrag.hpp>
@@ -18395,70 +18396,6 @@ retry:
              signal, JoinAggNullRowConf::SignalLength, JBB);
 }
 
-void Dblqh::execJOIN_AGG_MATCH_REQ(Signal *signal) {
-  jamEntry();
-  const JoinAggMatchReq *req =
-    (const JoinAggMatchReq *)signal->getDataPtr();
-  const Uint32 senderRef = req->senderRef;
-  const Uint32 aggStateKey = req->aggStateKey;
-  const Uint32 rangeStart = req->rangeStart;
-  const Uint32 rangeCount = req->rangeCount;
-
-  JoinAggregationState *state = getJoinAggState(aggStateKey);
-  ndbrequire(state != nullptr);
-
-  DEB_MATCH(("(%u) MATCH_REQ: aggStateKey=%u rangeStart=%u rangeCount=%u "
-             "outer_join=%u",
-             instance(), aggStateKey, rangeStart, rangeCount,
-             (Uint32)state->m_outer_join_agg_scan));
-
-  // Extract + clear bits [rangeStart, rangeStart+rangeCount) from shared
-  // bitmask. Output is a compact 0-indexed bitmask for DBSPJ.
-  const Uint32 out_words = (rangeCount + 31) / 32;
-  Uint32 buf[128];
-  ndbrequire(out_words <= 128);
-  memset(buf, 0, out_words * sizeof(Uint32));
-
-  for (Uint32 i = 0; i < rangeCount; i++) {
-    Uint32 src_pos = rangeStart + i;
-    Uint32 src_word = src_pos / 32;
-    Uint32 src_bit = 1u << (src_pos % 32);
-    ndbrequire(src_word < state->m_matched_ranges_words);
-    Uint32 old = state->m_matched_ranges[src_word].fetch_and(
-        ~src_bit, std::memory_order_relaxed);
-    if (old & src_bit) {
-      buf[i / 32] |= (1u << (i % 32));
-    }
-  }
-
-#ifdef DEBUG_MATCH
-  for (Uint32 i = 0; i < out_words; i++) {
-    DEB_MATCH(("(%u) MATCH_REQ: out_bitmask[%u] = 0x%08x",
-               instance(), i, buf[i]));
-  }
-#endif
-
-  SectionHandle handle(this);
-  if (out_words > 0) {
-    SegmentedSectionPtr secPtr;
-    ndbrequire(import(secPtr, buf, out_words));
-    handle.m_ptr[0] = secPtr;
-    handle.m_cnt = 1;
-  }
-
-  JoinAggMatchConf *conf =
-    (JoinAggMatchConf *)signal->getDataPtrSend();
-  conf->senderRef = reference();
-  conf->aggStateKey = aggStateKey;
-  conf->requestPtrI = req->requestPtrI;
-  conf->treeNodePtrI = req->treeNodePtrI;
-  conf->numBitmaskWords = out_words;
-  sendSignal(senderRef, GSN_JOIN_AGG_MATCH_CONF, signal,
-             JoinAggMatchConf::SignalLength, JBB, &handle);
-  DEB_MATCH(("(%u) MATCH_CONF sent: bitmask_words=%u to ref=0x%x",
-             instance(), out_words, senderRef));
-}
-
 void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
                                  Uint32 merge_idx,
                                  Uint32 senderRef, Uint32 senderData,
@@ -20287,46 +20224,24 @@ void Dblqh::scanTupkeyConfLab(Signal* signal,
     if (read_len > 0) {
       scanPtr->m_join_agg_evict_rows++;
     }
-    if (scanPtr->m_inline_match_scan) {
-      /**
-       * Inline match: send lightweight TRANSID_AI to DBSPJ with the
-       * correlation value (m_corrFactorLo). DBSPJ uses this to set
-       * m_matched on the scan ancestor row. Payload is a single word.
-       */
+    if (scanPtr->m_outer_join_agg_scan) {
       jam();
-      Uint32 corrValue = regTcPtr->m_corrFactorLo;
-      TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
-      transIdAI->connectPtr =
-          scanPtr->scanApiOpPtr[scanPtr->scanApiOpPtr_index];
-      transIdAI->transId[0] = regTcPtr->transid[0];
-      transIdAI->transId[1] = regTcPtr->transid[1];
-      LinearSectionPtr ptr[1];
-      ptr[0].p = &corrValue;
-      ptr[0].sz = 1;
-      sendSignal(scanPtr->scanApiBlockref, GSN_TRANSID_AI, signal,
-                 TransIdAI::HeaderLength, JBB, ptr, 1);
-    } else if (scanPtr->m_outer_join_agg_scan) {
-      JoinAggregationState *state =
-        getJoinAggState(scanPtr->m_join_agg_state_key);
       Uint32 range_no = regTcPtr->m_scan_curr_range_no;
-      Uint32 abs_range = range_no + scanPtr->m_join_agg_range_offset;
-      DEB_MATCH(("(%u) setMatchedRange: key=%u range_no=%u offset=%u "
-                 "abs=%u read_len=%u",
-                 instance(), scanPtr->m_join_agg_state_key,
-                 range_no, scanPtr->m_join_agg_range_offset,
-                 abs_range, read_len));
-      if (unlikely(!state->setMatchedRange(abs_range))) {
+      DEB_MATCH(("(%u) setLocalMatchedRange: range_no=%u read_len=%u",
+                 instance(), range_no, read_len));
+      Uint32 word = range_no / 32;
+      if (unlikely(word >= scanPtr->m_local_matched_words)) {
         jam();
         ndbassert(false);
-        g_eventLogger->info("setMatchedRange overflow: key=%u range_no=%u "
-                            "offset=%u abs=%u capacity=%u",
-                            scanPtr->m_join_agg_state_key,
-                            range_no, scanPtr->m_join_agg_range_offset,
-                            abs_range,
-                            state->m_matched_ranges_words * 32);
+        g_eventLogger->info("setLocalMatchedRange overflow: range_no=%u "
+                            "capacity=%u",
+                            range_no,
+                            scanPtr->m_local_matched_words * 32);
         regTcPtr->errorCode = ZJOIN_AGG_MATCH_RANGE_OVERFLOW;
         scanPtr->scanErrorCounter++;
         scanPtr->scanCompletedStatus = ZTRUE;
+      } else {
+        scanPtr->m_local_matched_ranges[word] |= (1u << (range_no % 32));
       }
     }
   } else {
@@ -20863,7 +20778,9 @@ Uint32 Dblqh::initScanrec(const ScanFragReq *scanFragReq,
   // They gate different code paths in DbtupExecQuery — do not set both.
   scanPtr->m_has_pushdown = aggregation;
   scanPtr->m_join_agg_state_key = RNIL;
-  scanPtr->m_join_agg_range_offset = 0;
+  scanPtr->m_local_matched_ranges = nullptr;
+  scanPtr->m_local_matched_words = 0;
+  scanPtr->m_local_matched_range_count = 0;
   scanPtr->m_ttl_ignore = ttl_ignore;
   scanPtr->m_ttl_ignore_for_ral = false;
   scanPtr->m_ttl_only_expired = ttl_only_expired;
@@ -20996,23 +20913,28 @@ Uint32 Dblqh::initScanrec(const ScanFragReq *scanFragReq,
   if (ScanFragReq::getOuterJoinAggFlag(reqinfo)) {
     jam();
     scanPtr->m_outer_join_agg_scan = 1;
-    scanPtr->m_inline_match_scan = 0;
-    scanPtr->m_join_agg_range_offset =
-      scanFragReq->variableData[extra_len_index];
+    Uint32 rangeCount = scanFragReq->variableData[extra_len_index];
     extra_len_index++;
+    ndbrequire(rangeCount > 0);
+    scanPtr->m_local_matched_range_count = rangeCount;
+    Uint32 bitmask_words = (rangeCount + 31) / 32;
+    scanPtr->m_local_matched_words = bitmask_words;
+    scanPtr->m_local_matched_ranges =
+        (Uint32 *)lc_ndbd_pool_malloc(bitmask_words * sizeof(Uint32),
+                                      RG_QUERY_MEMORY,
+                                      getThreadId(), true);
+    if (unlikely(scanPtr->m_local_matched_ranges == nullptr)) {
+      jam();
+      return DbspjErr::OutOfQueryMemory;
+    }
+    memset(scanPtr->m_local_matched_ranges, 0,
+           bitmask_words * sizeof(Uint32));
     DEB_MATCH(("(%u) SCAN_FRAGREQ: OuterJoinAggFlag=1 aggKey=%u "
-               "rangeOffset=%u",
+               "rangeCount=%u bitmask_words=%u",
                instance(), scanPtr->m_join_agg_state_key,
-               scanPtr->m_join_agg_range_offset));
-  } else if (ScanFragReq::getInlineMatchFlag(reqinfo)) {
-    jam();
-    scanPtr->m_outer_join_agg_scan = 0;
-    scanPtr->m_inline_match_scan = 1;
-    DEB_MATCH(("(%u) SCAN_FRAGREQ: InlineMatchFlag=1 aggKey=%u",
-               instance(), scanPtr->m_join_agg_state_key));
+               rangeCount, bitmask_words));
   } else {
     scanPtr->m_outer_join_agg_scan = 0;
-    scanPtr->m_inline_match_scan = 0;
   }
   ndbassert(sig_len == extra_len_index + ScanFragReq::SignalLength);
   (void)sig_len;
@@ -22209,7 +22131,29 @@ void Dblqh::sendScanFragConf(Signal *signal,
     conf->rowsExamined = rows_examined;
     sig_len = ScanFragConf::SignalLength_v2;
   }
-  sendSignal(blockRef, GSN_SCAN_FRAGCONF, signal, sig_len, prio_level);
+  if (scanCompleted == ZSCAN_FRAG_CLOSED &&
+      scanPtr->m_outer_join_agg_scan &&
+      scanPtr->m_local_matched_ranges != nullptr) {
+    jam();
+    /**
+     * Attach local matched-ranges bitmask as a signal section.
+     * DBSPJ will OR all per-fragment bitmasks to determine which
+     * parent rows had matching children.
+     */
+    LinearSectionPtr lsptr[1];
+    lsptr[0].p = scanPtr->m_local_matched_ranges;
+    lsptr[0].sz = scanPtr->m_local_matched_words;
+    DEB_MATCH(("(%u) SCAN_FRAGCONF(close): sending matched bitmask "
+               "words=%u to ref=0x%x",
+               instance(), scanPtr->m_local_matched_words, blockRef));
+    sendSignal(blockRef, GSN_SCAN_FRAGCONF, signal, sig_len,
+               prio_level, lsptr, 1);
+    lc_ndbd_pool_free(scanPtr->m_local_matched_ranges);
+    scanPtr->m_local_matched_ranges = nullptr;
+    scanPtr->m_local_matched_words = 0;
+  } else {
+    sendSignal(blockRef, GSN_SCAN_FRAGCONF, signal, sig_len, prio_level);
+  }
   if (scanPtr->m_par_ordered_scan_flag && !scanCompleted) {
     jam();
     Uint32 new_index = scanPtr->scanApiOpPtr_index + 1;
@@ -39163,6 +39107,10 @@ Dblqh::ScanRecord::~ScanRecord() {
   if (m_vs_interpreter != nullptr) {
     PushdownInterpreter::Destruct(m_vs_interpreter);
     m_vs_interpreter = nullptr;
+  }
+  if (m_local_matched_ranges != nullptr) {
+    lc_ndbd_pool_free(m_local_matched_ranges);
+    m_local_matched_ranges = nullptr;
   }
 }
 

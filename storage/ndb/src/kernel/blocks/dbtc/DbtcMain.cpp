@@ -18610,14 +18610,6 @@ bool Dbtc::sendScanFragReq(Signal *signal, ScanRecordPtr scanptr,
       ScanFragReq::setUserIdFlag(req->requestInfo, 1);
     }
   }
-  // Pass rangeStart for outer join bitmask (right after userId, before TTL/etc.)
-  if (scanP->m_joinAgg) {
-    jam();
-    req->variableData[extra_len] = scanP->m_aggRangeNext;
-    extra_len++;
-    scanP->m_aggRangeNext += 4096;
-  }
-
   // set ttl_purge_window_size if needed;
   if (ScanFragReq::getTTLOnlyExpiredFragFlag(requestInfo)) {
     /*
@@ -28727,7 +28719,6 @@ void Dbtc::execJOIN_AGG_SETUP_CONF(Signal *signal) {
     scanptr.p->m_aggKeysSectionPtrI = RNIL;
     ndbrequire(appendToSection(
         scanptr.p->m_aggKeysSectionPtrI, keyData, idx));
-    scanptr.p->m_aggRangeNext = 0;
 
     scanptr.p->scanState = ScanRecord::RUNNING;
     ApiConnectRecordPtr apiConnectptr;

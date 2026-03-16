@@ -89,8 +89,6 @@ Dbspj::Dbspj(Block_context &ctx, Uint32 instanceNumber)
   addRecSignal(GSN_SCAN_HBREP, &Dbspj::execSCAN_HBREP);
   addRecSignal(GSN_JOIN_AGG_NULL_ROW_CONF,
                &Dbspj::execJOIN_AGG_NULL_ROW_CONF);
-  addRecSignal(GSN_JOIN_AGG_MATCH_CONF,
-               &Dbspj::execJOIN_AGG_MATCH_CONF);
 
 }  // Dbspj::Dbspj()
 

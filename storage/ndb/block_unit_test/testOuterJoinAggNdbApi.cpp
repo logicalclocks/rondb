@@ -822,8 +822,7 @@ runGroupByOuterJoinLookup(Ndb *ndb, const char *testName [[maybe_unused]],
 
 static int
 runScalarOuterJoinScanScan(Ndb *ndb, const char *testName,
-                           Int64 expectedCount, Int64 expectedSum,
-                           bool useInlineMatch)
+                           Int64 expectedCount, Int64 expectedSum)
 {
   NdbDictionary::Dictionary *dict = ndb->getDictionary();
   dict->invalidateTable(OJ_PARENT_SS);
@@ -867,9 +866,7 @@ runScalarOuterJoinScanScan(Ndb *ndb, const char *testName,
 
   NdbQueryOptions opts;
   opts.setAggregation(agg);
-  if (useInlineMatch) {
-    opts.setInlineMatch(true);
-  }
+
 
   const NdbQueryIndexScanOperationDef *childOp =
       qb->scanIndex(childIdx, childTab, &bound, &opts);
@@ -942,8 +939,8 @@ runScalarOuterJoinScanScan(Ndb *ndb, const char *testName,
   NdbAggregator::Result sumRes = rec.FetchAggregationResult();
   Int64 actualSum = sumRes.data_int64();
 
-  V("\n  %s: COUNT=%lld SUM=%lld (inline=%d)\n",
-    testName, (long long)actualCount, (long long)actualSum, useInlineMatch);
+  V("\n  %s: COUNT=%lld SUM=%lld\n",
+    testName, (long long)actualCount, (long long)actualSum);
 
   query->close();
   trans->close();
@@ -1290,24 +1287,23 @@ testPartialMatchScanScan(Ndb *ndb, MYSQL *conn)
     return -1;
   }
 
-  if (runScalarOuterJoinScanScan(ndb, "Test 5", 5, 150,
-                                  false /*bitmask*/) != 0) return -1;
+  if (runScalarOuterJoinScanScan(ndb, "Test 5", 5, 150) != 0) return -1;
 
   printf("OK (count=5, sum=150)\n");
   return 0;
 }
 
 /* ------------------------------------------------------------------ */
-/* Test 6: Scan-scan partial match COUNT/SUM (inline match)            */
+/* Test 6: Scan-scan partial match COUNT/SUM (repeat)                  */
 /*                                                                     */
-/* Same data as Test 5 but uses setInlineMatch(true).                  */
+/* Same data as Test 5 (repeat to verify stability).                   */
 /* Expected: COUNT=5, SUM=150                                          */
 /* ------------------------------------------------------------------ */
 
 static int
 testPartialMatchScanScanInline(Ndb *ndb, MYSQL *conn)
 {
-  printf("Test 6: Scan-scan partial match COUNT/SUM (inline match) ... ");
+  printf("Test 6: Scan-scan partial match COUNT/SUM (repeat) ... ");
   fflush(stdout);
 
   if (verifyScalarWithMysql(conn, "Test 6",
@@ -1319,8 +1315,7 @@ testPartialMatchScanScanInline(Ndb *ndb, MYSQL *conn)
     return -1;
   }
 
-  if (runScalarOuterJoinScanScan(ndb, "Test 6", 5, 150,
-                                  true /*inline match*/) != 0) return -1;
+  if (runScalarOuterJoinScanScan(ndb, "Test 6", 5, 150) != 0) return -1;
 
   printf("OK (count=5, sum=150)\n");
   return 0;
@@ -1353,8 +1348,7 @@ testNoMatchScanScan(Ndb *ndb, MYSQL *conn)
     return -1;
   }
 
-  if (runScalarOuterJoinScanScan(ndb, "Test 7", 0, 0,
-                                  false /*bitmask*/) != 0) return -1;
+  if (runScalarOuterJoinScanScan(ndb, "Test 7", 0, 0) != 0) return -1;
 
   printf("OK (count=0, sum=0)\n");
   return 0;
@@ -1567,8 +1561,7 @@ runCountStarOuterJoinLookup(Ndb *ndb, const char *testName,
 
 static int
 runCountStarOuterJoinScanScan(Ndb *ndb, const char *testName,
-                              Int64 expectedCount, Int64 expectedSum,
-                              bool useInlineMatch)
+                              Int64 expectedCount, Int64 expectedSum)
 {
   NdbDictionary::Dictionary *dict = ndb->getDictionary();
   dict->invalidateTable(OJ_PARENT_SS);
@@ -1613,9 +1606,7 @@ runCountStarOuterJoinScanScan(Ndb *ndb, const char *testName,
 
   NdbQueryOptions opts;
   opts.setAggregation(agg);
-  if (useInlineMatch) {
-    opts.setInlineMatch(true);
-  }
+
 
   const NdbQueryIndexScanOperationDef *childOp =
       qb->scanIndex(childIdx, childTab, &bound, &opts);
@@ -1688,8 +1679,8 @@ runCountStarOuterJoinScanScan(Ndb *ndb, const char *testName,
   NdbAggregator::Result sumRes = rec.FetchAggregationResult();
   Int64 actualSum = sumRes.data_int64();
 
-  V("\n  %s: COUNT(*)=%lld SUM=%lld (inline=%d)\n",
-    testName, (long long)actualCount, (long long)actualSum, useInlineMatch);
+  V("\n  %s: COUNT(*)=%lld SUM=%lld\n",
+    testName, (long long)actualCount, (long long)actualSum);
 
   query->close();
   trans->close();
@@ -1805,8 +1796,7 @@ testCountStarPartialMatchScanScan(Ndb *ndb, MYSQL *conn)
     return -1;
   }
 
-  if (runCountStarOuterJoinScanScan(ndb, "Test 11", 10, 150,
-                                     false /*bitmask*/) != 0) return -1;
+  if (runCountStarOuterJoinScanScan(ndb, "Test 11", 10, 150) != 0) return -1;
 
   printf("OK (count=10, sum=150)\n");
   return 0;
@@ -1838,8 +1828,7 @@ testCountStarNoMatchScanScan(Ndb *ndb, MYSQL *conn)
     return -1;
   }
 
-  if (runCountStarOuterJoinScanScan(ndb, "Test 12", 10, 0,
-                                     false /*bitmask*/) != 0) return -1;
+  if (runCountStarOuterJoinScanScan(ndb, "Test 12", 10, 0) != 0) return -1;
 
   printf("OK (count=10, sum=0)\n");
   return 0;
@@ -1879,8 +1868,7 @@ testMultiBatchConsecutiveScanScan(Ndb *ndb, MYSQL *conn)
     return -1;
   }
 
-  if (runScalarOuterJoinScanScan(ndb, "Test 13", 2500, 31262500,
-                                  false /*bitmask*/) != 0) return -1;
+  if (runScalarOuterJoinScanScan(ndb, "Test 13", 2500, 31262500) != 0) return -1;
 
   printf("OK (count=2500, sum=31262500)\n");
   return 0;
@@ -1912,8 +1900,7 @@ testMultiBatchConsecutiveScanScanInline(Ndb *ndb, MYSQL *conn)
     return -1;
   }
 
-  if (runScalarOuterJoinScanScan(ndb, "Test 14", 2500, 31262500,
-                                  true /*inline match*/) != 0) return -1;
+  if (runScalarOuterJoinScanScan(ndb, "Test 14", 2500, 31262500) != 0) return -1;
 
   printf("OK (count=2500, sum=31262500)\n");
   return 0;
@@ -1945,8 +1932,7 @@ testMultiBatchConsecutiveCountStar(Ndb *ndb, MYSQL *conn)
     return -1;
   }
 
-  if (runCountStarOuterJoinScanScan(ndb, "Test 15", 5000, 31262500,
-                                     false /*bitmask*/) != 0) return -1;
+  if (runCountStarOuterJoinScanScan(ndb, "Test 15", 5000, 31262500) != 0) return -1;
 
   printf("OK (count=5000, sum=31262500)\n");
   return 0;
@@ -1980,8 +1966,7 @@ testMultiBatchAlternatingCountStar(Ndb *ndb, MYSQL *conn)
     return -1;
   }
 
-  if (runCountStarOuterJoinScanScan(ndb, "Test 16", 5000, 62500000,
-                                     false /*bitmask*/) != 0) return -1;
+  if (runCountStarOuterJoinScanScan(ndb, "Test 16", 5000, 62500000) != 0) return -1;
 
   printf("OK (count=5000, sum=62500000)\n");
   return 0;
@@ -2064,8 +2049,7 @@ testMultiBatchOneToManyCountStar(Ndb *ndb, MYSQL *conn)
     return -1;
   }
 
-  if (runCountStarOuterJoinScanScan(ndb, "Test 17", 6000, 50020000,
-                                     false /*bitmask*/) != 0) return -1;
+  if (runCountStarOuterJoinScanScan(ndb, "Test 17", 6000, 50020000) != 0) return -1;
 
   printf("OK (count=6000, sum=50020000)\n");
   return 0;
