@@ -1007,7 +1007,8 @@ struct Operationrec {
     original_op_type(ZREAD),
     ttl_ignore(0),
     ttl_only_expired(0),
-    ring_buffer_op(0)
+    ring_buffer_op(0),
+    ring_buffer_show_meta(0)
   {
     op_struct.bit_field.in_active_list = false;
     op_struct.bit_field.tupVersion = ZNIL;
@@ -1185,6 +1186,7 @@ struct Operationrec {
     Uint8 ttl_ignore;
     Uint8 ttl_only_expired;
     Uint8 ring_buffer_op;
+    Uint8 ring_buffer_show_meta;
   };
 
   Uint32 m_base_header_bits;

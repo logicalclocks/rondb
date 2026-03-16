@@ -1143,7 +1143,8 @@ class NdbOperation {
        * Must be set on all write operations to ring-buffer tables.
        * Without this flag, the kernel rejects writes to ring-buffer tables.
        */
-      OO_RING_BUFFER_OP = 0x400000
+      OO_RING_BUFFER_OP = 0x400000,
+      OO_RING_BUFFER_SHOW_META = 0x800000
     };
 
     /* An operation-specific abort option.
@@ -1593,7 +1594,8 @@ class NdbOperation {
     OF_REPLICA_APPLIER = 0x80,
     OF_TTL_IGNORE = 0x100,
     OF_TTL_ONLY_EXPIRED = 0x200,
-    OF_RING_BUFFER_OP = 0x400
+    OF_RING_BUFFER_OP = 0x400,
+    OF_RING_BUFFER_SHOW_META = 0x800
   };
   /*
    * TTL related

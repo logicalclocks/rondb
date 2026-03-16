@@ -561,6 +561,10 @@ inline int NdbScanOperation::scanImpl(
       (options->optionsPresent & ScanOptions::SO_TTL_ONLY_EXPIRED)) {
     m_flags |= OF_TTL_ONLY_EXPIRED;
   }
+  if (options != nullptr &&
+      (options->optionsPresent & ScanOptions::SO_RING_BUFFER_SHOW_META)) {
+    m_flags |= OF_RING_BUFFER_SHOW_META;
+  }
 
   /* Add interpreted code words to ATTRINFO signal
    * chain as necessary
@@ -2567,6 +2571,8 @@ int NdbScanOperation::prepareSendScan(Uint32 /*aTC_ConnectPtr*/,
    */
   ScanTabReq::setTTLIgnoreFlag(reqInfo, (m_flags & OF_TTL_IGNORE) != 0);
   ScanTabReq::setTTLOnlyExpiredFlag(reqInfo, (m_flags & OF_TTL_ONLY_EXPIRED) != 0);
+  ScanTabReq::setRingBufferShowMetaFlag(reqInfo,
+      (m_flags & OF_RING_BUFFER_SHOW_META) != 0);
 
   req->requestInfo = reqInfo;
   req->distributionKey = theDistributionKey;

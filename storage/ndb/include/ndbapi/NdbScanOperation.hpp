@@ -167,7 +167,8 @@ class NdbScanOperation : public NdbOperation {
                 SO_TTL_IGNORE   = 0x100,
                 SO_TTL_ONLY_EXPIRED = 0x200,
                 SO_SET_INPUT_PARAM = 0x400,
-                SO_USE_STANDARD_SCAN = 0x800
+                SO_USE_STANDARD_SCAN = 0x800,
+                SO_RING_BUFFER_SHOW_META = 0x1000
     };
 
     /* Flags controlling scan behaviour

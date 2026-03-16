@@ -48,8 +48,10 @@ SELECT client_id, ring_idx, event_data FROM test.rb
 --echo # Expected: next_pos=2, count=4, total_inserts=5
 --echo #
 
+SET ndb_ring_buffer_show_meta = ON;
 SELECT client_id, ring_idx, HEX(ring_meta) FROM test.rb
     WHERE client_id = 1 AND ring_idx = 0;
+SET ndb_ring_buffer_show_meta = OFF;
 
 --echo #
 --echo # Case 4: Multi-row INSERT, different PK prefixes — independent rings
@@ -134,8 +136,10 @@ SELECT client_id, ring_idx, event_data FROM test.rb
     ORDER BY ring_idx;
 
 # Meta: next_pos=2, count=4, total_inserts=5
+SET ndb_ring_buffer_show_meta = ON;
 SELECT client_id, ring_idx, HEX(ring_meta) FROM test.rb
     WHERE client_id = 300 AND ring_idx = 0;
+SET ndb_ring_buffer_show_meta = OFF;
 
 --echo #
 --echo # Case 11: Multiple wraps in single statement
@@ -153,8 +157,10 @@ SELECT client_id, ring_idx, event_data FROM test.rb
     WHERE client_id = 400
     ORDER BY ring_idx;
 
+SET ndb_ring_buffer_show_meta = ON;
 SELECT client_id, ring_idx, HEX(ring_meta) FROM test.rb
     WHERE client_id = 400 AND ring_idx = 0;
+SET ndb_ring_buffer_show_meta = OFF;
 
 --echo #
 --echo # Case 12: Mixed same-prefix and different-prefix in one statement
@@ -185,8 +191,10 @@ SELECT client_id, ring_idx, event_data FROM test.rb
     ORDER BY ring_idx;
 
 # Meta: next_pos=1, count=4, total_inserts=4
+SET ndb_ring_buffer_show_meta = ON;
 SELECT client_id, ring_idx, HEX(ring_meta) FROM test.rb
     WHERE client_id = 700 AND ring_idx = 0;
+SET ndb_ring_buffer_show_meta = OFF;
 
 --echo #
 --echo # Case 14: Third bulk statement wraps the ring
@@ -201,8 +209,10 @@ SELECT client_id, ring_idx, event_data FROM test.rb
     ORDER BY ring_idx;
 
 # Meta: next_pos=3, count=4, total_inserts=6
+SET ndb_ring_buffer_show_meta = ON;
 SELECT client_id, ring_idx, HEX(ring_meta) FROM test.rb
     WHERE client_id = 700 AND ring_idx = 0;
+SET ndb_ring_buffer_show_meta = OFF;
 
 DROP TABLE test.rb;
 
@@ -225,8 +235,10 @@ INSERT INTO test.rb1 (pk, val) VALUES (1, 'first'), (1, 'second'), (1, 'third');
 SELECT pk, ring_idx, val FROM test.rb1 WHERE pk = 1 ORDER BY ring_idx;
 
 # Meta: next_pos=1, count=1, total_inserts=3
+SET ndb_ring_buffer_show_meta = ON;
 SELECT pk, ring_idx, HEX(ring_meta) FROM test.rb1
     WHERE pk = 1 AND ring_idx = 0;
+SET ndb_ring_buffer_show_meta = OFF;
 
 # Bulk with different prefixes on ring_size=1
 INSERT INTO test.rb1 (pk, val) VALUES (2, 'a'), (3, 'b'), (2, 'c'), (3, 'd');
@@ -336,8 +348,10 @@ SELECT pk, ring_idx, val FROM test.rb_large
     ORDER BY ring_idx;
 
 # Meta: next_pos=3, count=4, total_inserts=50
+SET ndb_ring_buffer_show_meta = ON;
 SELECT pk, ring_idx, HEX(ring_meta) FROM test.rb_large
     WHERE pk = 1 AND ring_idx = 0;
+SET ndb_ring_buffer_show_meta = OFF;
 
 # Verify with a second large batch on a different prefix
 INSERT INTO test.rb_large (pk, val)

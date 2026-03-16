@@ -1570,6 +1570,7 @@ class Dbtc : public SimulatedBlock {
      * Ring Buffer related
      */
     Uint8 m_ring_buffer_op;
+    Uint8 m_ring_buffer_show_meta;
     /* End of TCKEYREQ/TCINDXREQ only fields */
   };
 

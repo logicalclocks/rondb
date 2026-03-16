@@ -2102,6 +2102,7 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
     }
     regOperPtr->ttl_only_expired = lqhScanPtrP->m_ttl_only_expired;
     regOperPtr->ring_buffer_op = 0; /* Scans never carry ring_buffer_op */
+    regOperPtr->ring_buffer_show_meta = lqhScanPtrP->m_ring_buffer_show_meta;
 
     TTL_RONDB_TRACE(prepare_fragptr.p->fragTableId,
                     "Dbtup::execTUPKEYREQ(), Ignore TTL[%u, %u]: %u, "
@@ -2157,6 +2158,7 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
     regOperPtr->ttl_ignore = lqhOpPtrP->ttl_ignore;
     regOperPtr->ttl_only_expired = lqhOpPtrP->ttl_only_expired;
     regOperPtr->ring_buffer_op = lqhOpPtrP->ring_buffer_op;
+    regOperPtr->ring_buffer_show_meta = lqhOpPtrP->ring_buffer_show_meta;
 #ifdef TTL_DEBUG
     if (regOperPtr->ttl_ignore) {
       TTL_RONDB_TRACE(prepare_fragptr.p->fragTableId,
@@ -3238,6 +3240,27 @@ int Dbtup::handleReadReq(
       jam();
       ndbrequire(err_no < 0);
       terrorCode = Uint32(-err_no);
+      tupkeyErrorLab(req_struct);
+      return -1;
+    }
+  }
+
+  /*
+   * Ring Buffer meta row filtering:
+   * Hide ring_idx=0 meta rows from ALL read operations unless
+   * ring_buffer_op (handler internal) or ring_buffer_show_meta (debug) is set.
+   */
+  if (unlikely(is_ring_buffer_table(regTabPtr)) &&
+      _regOperPtr->ring_buffer_show_meta == 0 &&
+      _regOperPtr->ring_buffer_op == 0) {
+    Uint32 rb_attr_id = AttributeHeader(regTabPtr->m_ring_idx_col_no, 0).m_value;
+    Uint32 rb_buf[2] = {0, 1};
+    int rb_ret = readAttributes(req_struct, &rb_attr_id, 1, rb_buf, 2);
+    /* rb_ret < 0: attribute read failed, fall through and show the row */
+    if (rb_ret >= 0 && rb_buf[1] == 0) {
+      /* ring_idx == 0: this is a meta row, hide it */
+      jam();
+      terrorCode = 626;
       tupkeyErrorLab(req_struct);
       return -1;
     }

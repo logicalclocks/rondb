@@ -114,10 +114,13 @@ INSERT INTO test.rb (client_id, event_data) VALUES (1, 'iodku')
 
 --echo #
 --echo # Case 10: Verify meta row is visible via direct PK lookup (ring_idx=0)
+--echo # Requires ndb_ring_buffer_show_meta=ON since meta rows are filtered by default
 --echo #
 
+SET ndb_ring_buffer_show_meta = ON;
 SELECT client_id, ring_idx, HEX(ring_meta) FROM test.rb
     WHERE client_id = 1 AND ring_idx = 0;
+SET ndb_ring_buffer_show_meta = OFF;
 
 --echo #
 --echo # Case 11: Ring size = 1 (single slot — every insert overwrites)

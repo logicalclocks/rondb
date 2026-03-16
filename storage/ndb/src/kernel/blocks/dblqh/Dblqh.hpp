@@ -803,6 +803,7 @@ class Dblqh : public SimulatedBlock {
     Uint8 m_ttl_ignore_for_ral; // ignore set by Read after lock
     Uint8 m_ttl_only_expired;   // Only be insterested in expired rows
     Uint32 m_ttl_purge_window_size;
+    Uint8 m_ring_buffer_show_meta;
   };
   static constexpr Uint32 DBLQH_SCAN_RECORD_TRANSIENT_POOL_INDEX = 1;
   typedef Ptr<ScanRecord> ScanRecordPtr;
@@ -3065,6 +3066,7 @@ class Dblqh : public SimulatedBlock {
     Uint8 ttl_ignore; /* TTL related, ttl ignore */
     Uint8 ttl_only_expired;
     Uint8 ring_buffer_op; /* Ring Buffer related */
+    Uint8 ring_buffer_show_meta;
   };                 /* p2c: size = 308 bytes */
 
   static constexpr Uint32 DBLQH_OPERATION_RECORD_TRANSIENT_POOL_INDEX = 0;
