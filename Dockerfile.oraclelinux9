@@ -8,7 +8,7 @@ FROM oraclelinux:9 as rondb-build-dependencies
 
 ARG CMAKE_VERSION=3.23.2
 ARG OPEN_SSL_VERSION=3.0.14
-ARG GO_VERSION=1.22.9
+ARG GO_VERSION=1.26.1
 ARG PROMETHEUS_CPP_VERSION=1.3.0
 
 # Default build threads to 1; max is defined in Docker config (run `nproc` in Docker container)
