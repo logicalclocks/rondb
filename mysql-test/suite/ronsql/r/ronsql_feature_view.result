@@ -1,0 +1,1697 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== Create tables for feature view aggregation tests ===
+
+
+
+=== R1: Star join SUM GROUP BY segment ===
+== Query ==
+SELECT c.segment, SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.segment, SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment|
+segment	SUM(t.amount)
+1	950
+2	1675
+3	2250
+
+
+=== R2: Star join COUNT and SUM GROUP BY segment ===
+== Query ==
+SELECT c.segment, COUNT(*), SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.segment, COUNT(*), SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment|
+segment	COUNT(*)	SUM(t.amount)
+1	5	950
+2	5	1675
+3	5	2250
+
+
+=== R3: Star join all aggregate types ===
+== Query ==
+SELECT c.segment, COUNT(*), SUM(t.amount), MIN(t.amount), MAX(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.segment, COUNT(*), SUM(t.amount), MIN(t.amount), MAX(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment|
+segment	COUNT(*)	SUM(t.amount)	MIN(t.amount)	MAX(t.amount)
+1	5	950	100	300
+2	5	1675	175	500
+3	5	2250	125	800
+
+
+=== R4: Snowflake 4-way SUM(price) GROUP BY segment ===
+== Query ==
+SELECT c.segment, SUM(p.price)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+JOIN fv_tx_products AS tp ON tp.tx_id = t.tx_id
+JOIN fv_products AS p ON p.product_id = tp.product_id
+GROUP BY c.segment;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.segment, SUM(p.price)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+JOIN fv_tx_products AS tp ON tp.tx_id = t.tx_id
+JOIN fv_products AS p ON p.product_id = tp.product_id
+GROUP BY c.segment|
+segment	SUM(p.price)
+1	2700
+2	6200
+3	4700
+
+
+=== R5: Snowflake GROUP BY leaf column (product_type) ===
+== Query ==
+SELECT p.product_type, COUNT(*)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+JOIN fv_tx_products AS tp ON tp.tx_id = t.tx_id
+JOIN fv_products AS p ON p.product_id = tp.product_id
+GROUP BY p.product_type;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT p.product_type, COUNT(*)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+JOIN fv_tx_products AS tp ON tp.tx_id = t.tx_id
+JOIN fv_products AS p ON p.product_id = tp.product_id
+GROUP BY p.product_type|
+product_type	COUNT(*)
+1	6
+2	4
+3	2
+
+
+=== R6: Filter on root (region=1) ===
+== Query ==
+SELECT c.segment, SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+WHERE c.region = 1
+GROUP BY c.segment;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.segment, SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+WHERE c.region = 1
+GROUP BY c.segment|
+segment	SUM(t.amount)
+1	950
+2	825
+
+
+=== R7: Filter on child (category=2) ===
+== Query ==
+SELECT c.segment, SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+WHERE t.category = 2
+GROUP BY c.segment;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.segment, SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+WHERE t.category = 2
+GROUP BY c.segment|
+segment	SUM(t.amount)
+1	200
+2	750
+3	925
+
+
+=== R8: Combined filters (region=1 AND category=2) ===
+== Query ==
+SELECT c.segment, COUNT(*), SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+WHERE c.region = 1 AND t.category = 2
+GROUP BY c.segment;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.segment, COUNT(*), SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+WHERE c.region = 1 AND t.category = 2
+GROUP BY c.segment|
+segment	COUNT(*)	SUM(t.amount)
+1	1	200
+2	1	250
+
+
+=== R9: LEFT JOIN sparse features ===
+== Query ==
+SELECT c.segment, COUNT(*), SUM(t.amount)
+FROM fv_customers AS c
+LEFT JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.segment, COUNT(*), SUM(t.amount)
+FROM fv_customers AS c
+LEFT JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment|
+segment	COUNT(*)	SUM(t.amount)
+1	5	950
+2	5	1675
+3	6	2250
+4	1	NULL
+
+
+=== R10: COUNT star vs COUNT column ===
+== Query ==
+SELECT COUNT(*), COUNT(t.tx_id)
+FROM fv_customers AS c
+LEFT JOIN fv_transactions AS t ON t.customer_id = c.customer_id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*), COUNT(t.tx_id)
+FROM fv_customers AS c
+LEFT JOIN fv_transactions AS t ON t.customer_id = c.customer_id|
+COUNT(*)	COUNT(t.tx_id)
+17	15
+
+
+=== R11: Multi-level outer join snowflake ===
+== Query ==
+SELECT c.segment, COUNT(*), SUM(p.price)
+FROM fv_customers AS c
+LEFT JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+LEFT JOIN fv_tx_products AS tp ON tp.tx_id = t.tx_id
+LEFT JOIN fv_products AS p ON p.product_id = tp.product_id
+GROUP BY c.segment;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.segment, COUNT(*), SUM(p.price)
+FROM fv_customers AS c
+LEFT JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+LEFT JOIN fv_tx_products AS tp ON tp.tx_id = t.tx_id
+LEFT JOIN fv_products AS p ON p.product_id = tp.product_id
+GROUP BY c.segment|
+segment	COUNT(*)	SUM(p.price)
+1	5	2700
+2	5	6200
+3	6	4700
+4	1	NULL
+
+
+=== R12: Arithmetic expression SUM(amount * category) ===
+== Query ==
+SELECT c.segment, SUM(t.amount * t.category)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.segment, SUM(t.amount * t.category)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment|
+segment	SUM(t.amount * t.category)
+1	1750
+2	3225
+3	4925
+
+
+=== R13: Multi-level GROUP BY (segment, category) ===
+== Query ==
+SELECT c.segment, t.category, COUNT(*), SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment, t.category;
+
+Number of output lines, including header: 10
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.segment, t.category, COUNT(*), SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment, t.category|
+segment	category	COUNT(*)	SUM(t.amount)
+1	1	3	450
+1	2	1	200
+1	3	1	300
+2	1	2	525
+2	2	2	750
+2	3	1	400
+3	1	1	450
+3	2	2	925
+3	3	2	875
+
+
+=== R14: Global aggregation (no GROUP BY) ===
+== Query ==
+SELECT COUNT(*), SUM(t.amount), MIN(t.amount), MAX(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*), SUM(t.amount), MIN(t.amount), MAX(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id|
+COUNT(*)	SUM(t.amount)	MIN(t.amount)	MAX(t.amount)
+15	4875	100	800
+
+
+=== R15: AVG aggregation ===
+== Query ==
+SELECT c.segment, AVG(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.segment, AVG(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment|
+segment	AVG(t.amount)
+1	190.0000
+2	335.0000
+3	450.0000
+
+
+=== R16: HAVING filter on aggregate ===
+== Query ==
+SELECT c.segment, SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment
+HAVING SUM(t.amount) > 500;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.segment, SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment
+HAVING SUM(t.amount) > 500|
+segment	SUM(t.amount)
+1	950
+2	1675
+3	2250
+
+
+=== R17: ORDER BY aggregate DESC with LIMIT (DISABLED - needs RonSQL alias support) ===
+== Expected result ==
+SELECT c.segment, SUM(t.amount) AS total
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment
+ORDER BY total DESC
+LIMIT 2|
+segment	total
+3	2250
+2	1675
+
+
+=== R18: Empty result (no matching filter) ===
+== Query ==
+SELECT c.segment, SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+WHERE c.region = 999
+GROUP BY c.segment;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.segment, SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+WHERE c.region = 999
+GROUP BY c.segment|
+segment	SUM(t.amount)
+
+
+=== R19: LEFT JOIN with filter on root ===
+== Query ==
+SELECT c.segment, COUNT(*), SUM(t.amount)
+FROM fv_customers AS c
+LEFT JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+WHERE c.region = 1
+GROUP BY c.segment;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.segment, COUNT(*), SUM(t.amount)
+FROM fv_customers AS c
+LEFT JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+WHERE c.region = 1
+GROUP BY c.segment|
+segment	COUNT(*)	SUM(t.amount)
+1	5	950
+2	3	825
+
+
+=== R20: Outer join with HAVING ===
+== Query ==
+SELECT c.segment, COUNT(*)
+FROM fv_customers AS c
+LEFT JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment
+HAVING COUNT(*) > 2;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.segment, COUNT(*)
+FROM fv_customers AS c
+LEFT JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment
+HAVING COUNT(*) > 2|
+segment	COUNT(*)
+1	5
+2	5
+3	6
+
+
+=== R21: Per-customer SUM from transactions ===
+== Query ==
+SELECT c.customer_id, SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.customer_id;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.customer_id, SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.customer_id|
+customer_id	SUM(t.amount)
+1	300
+2	150
+3	500
+4	425
+5	400
+6	850
+7	725
+8	1525
+
+
+=== R22: Star join two fact tables (DISABLED - star join not yet supported) ===
+== Expected result ==
+SELECT c.customer_id, SUM(t.amount), COUNT(e.event_id)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+JOIN fv_events AS e ON e.customer_id = c.customer_id
+GROUP BY c.customer_id|
+customer_id	SUM(t.amount)	COUNT(e.event_id)
+1	900	6
+2	300	2
+3	1500	6
+4	1275	6
+5	800	2
+6	2550	6
+7	2900	8
+
+
+=== R23: Full feature vector per segment (5 agg types) ===
+== Query ==
+SELECT c.segment, COUNT(*), SUM(t.amount), MIN(t.amount), MAX(t.amount), AVG(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.segment, COUNT(*), SUM(t.amount), MIN(t.amount), MAX(t.amount), AVG(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment|
+segment	COUNT(*)	SUM(t.amount)	MIN(t.amount)	MAX(t.amount)	AVG(t.amount)
+1	5	950	100	300	190.0000
+2	5	1675	175	500	335.0000
+3	5	2250	125	800	450.0000
+
+
+=== R24: Multi-column GROUP BY (segment, region) ===
+== Query ==
+SELECT c.segment, c.region, COUNT(*), SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment, c.region;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.segment, c.region, COUNT(*), SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment, c.region|
+segment	region	COUNT(*)	SUM(t.amount)
+1	1	5	950
+2	1	3	825
+2	2	2	850
+3	2	5	2250
+
+
+=== R25: Events in timestamp range per customer ===
+== Query ==
+SELECT c.customer_id, COUNT(*)
+FROM fv_customers AS c
+JOIN fv_events AS e ON e.customer_id = c.customer_id
+WHERE e.ts >= 2000 AND e.ts < 5000
+GROUP BY c.customer_id;
+
+Number of output lines, including header: 8
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.customer_id, COUNT(*)
+FROM fv_customers AS c
+JOIN fv_events AS e ON e.customer_id = c.customer_id
+WHERE e.ts >= 2000 AND e.ts < 5000
+GROUP BY c.customer_id|
+customer_id	COUNT(*)
+1	2
+2	1
+3	1
+4	2
+5	1
+6	1
+7	2
+
+
+=== R26: Recent events only (ts >= 5000) per segment ===
+== Query ==
+SELECT c.segment, COUNT(*)
+FROM fv_customers AS c
+JOIN fv_events AS e ON e.customer_id = c.customer_id
+WHERE e.ts >= 5000
+GROUP BY c.segment;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.segment, COUNT(*)
+FROM fv_customers AS c
+JOIN fv_events AS e ON e.customer_id = c.customer_id
+WHERE e.ts >= 5000
+GROUP BY c.segment|
+segment	COUNT(*)
+1	2
+2	3
+3	2
+
+
+=== R27: Time range + event type filter ===
+== Query ==
+SELECT c.customer_id, COUNT(*)
+FROM fv_customers AS c
+JOIN fv_events AS e ON e.customer_id = c.customer_id
+WHERE e.ts >= 1000 AND e.ts < 4000 AND e.event_type = 1
+GROUP BY c.customer_id;
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.customer_id, COUNT(*)
+FROM fv_customers AS c
+JOIN fv_events AS e ON e.customer_id = c.customer_id
+WHERE e.ts >= 1000 AND e.ts < 4000 AND e.event_type = 1
+GROUP BY c.customer_id|
+customer_id	COUNT(*)
+1	1
+2	1
+3	1
+4	1
+5	1
+7	1
+
+
+=== R28: Date-range filtered transactions ===
+== Query ==
+SELECT c.segment, COUNT(*), SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+WHERE t.tx_date >= 20260201 AND t.tx_date < 20260315
+GROUP BY c.segment;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.segment, COUNT(*), SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+WHERE t.tx_date >= 20260201 AND t.tx_date < 20260315
+GROUP BY c.segment|
+segment	COUNT(*)	SUM(t.amount)
+1	3	650
+2	5	1675
+3	3	1175
+
+
+=== R29: 4-way snowflake per-customer SUM(price) ===
+== Query ==
+SELECT c.customer_id, SUM(p.price)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+JOIN fv_tx_products AS tp ON tp.tx_id = t.tx_id
+JOIN fv_products AS p ON p.product_id = tp.product_id
+GROUP BY c.customer_id;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.customer_id, SUM(p.price)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+JOIN fv_tx_products AS tp ON tp.tx_id = t.tx_id
+JOIN fv_products AS p ON p.product_id = tp.product_id
+GROUP BY c.customer_id|
+customer_id	SUM(p.price)
+1	1200
+2	500
+3	1000
+4	2200
+5	2500
+6	1500
+7	2200
+8	2500
+
+
+=== R30: GROUP BY on middle table (category) in snowflake ===
+== Query ==
+SELECT t.category, SUM(p.price)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+JOIN fv_tx_products AS tp ON tp.tx_id = t.tx_id
+JOIN fv_products AS p ON p.product_id = tp.product_id
+GROUP BY t.category;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT t.category, SUM(p.price)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+JOIN fv_tx_products AS tp ON tp.tx_id = t.tx_id
+JOIN fv_products AS p ON p.product_id = tp.product_id
+GROUP BY t.category|
+category	SUM(p.price)
+1	6000
+2	3400
+3	4200
+
+
+=== R31: 4-way snowflake with filter on leaf (product_type=2) ===
+== Query ==
+SELECT c.segment, COUNT(*), SUM(p.price)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+JOIN fv_tx_products AS tp ON tp.tx_id = t.tx_id
+JOIN fv_products AS p ON p.product_id = tp.product_id
+WHERE p.product_type = 2
+GROUP BY c.segment;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.segment, COUNT(*), SUM(p.price)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+JOIN fv_tx_products AS tp ON tp.tx_id = t.tx_id
+JOIN fv_products AS p ON p.product_id = tp.product_id
+WHERE p.product_type = 2
+GROUP BY c.segment|
+segment	COUNT(*)	SUM(p.price)
+1	1	1000
+2	2	2500
+3	1	1500
+
+
+=== R32: New snowflake customer-order-item-product SUM(qty*price) ===
+== Query ==
+SELECT c.customer_id, SUM(oi.quantity * p.price)
+FROM fv_customers AS c
+JOIN fv_orders AS o ON o.customer_id = c.customer_id
+JOIN fv_order_items AS oi ON oi.order_id = o.order_id
+JOIN fv_products AS p ON p.product_id = oi.product_id
+GROUP BY c.customer_id;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.customer_id, SUM(oi.quantity * p.price)
+FROM fv_customers AS c
+JOIN fv_orders AS o ON o.customer_id = c.customer_id
+JOIN fv_order_items AS oi ON oi.order_id = o.order_id
+JOIN fv_products AS p ON p.product_id = oi.product_id
+GROUP BY c.customer_id|
+customer_id	SUM(oi.quantity * p.price)
+1	4700
+2	500
+3	8900
+4	5200
+5	4500
+6	8600
+7	7400
+8	10700
+
+
+=== R33: Root filter + child timestamp range ===
+== Query ==
+SELECT c.customer_id, COUNT(*), SUM(e.ts)
+FROM fv_customers AS c
+JOIN fv_events AS e ON e.customer_id = c.customer_id
+WHERE c.region = 1 AND e.ts >= 1000 AND e.ts < 4000
+GROUP BY c.customer_id;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.customer_id, COUNT(*), SUM(e.ts)
+FROM fv_customers AS c
+JOIN fv_events AS e ON e.customer_id = c.customer_id
+WHERE c.region = 1 AND e.ts >= 1000 AND e.ts < 4000
+GROUP BY c.customer_id|
+customer_id	COUNT(*)	SUM(e.ts)
+1	3	6000
+2	1	1500
+3	1	2000
+4	2	6000
+5	1	1000
+
+
+=== R34: Dimension filter + fact date range ===
+== Query ==
+SELECT c.customer_id, COUNT(*), SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+WHERE c.segment = 2 AND t.tx_date >= 20260201
+GROUP BY c.customer_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.customer_id, COUNT(*), SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+WHERE c.segment = 2 AND t.tx_date >= 20260201
+GROUP BY c.customer_id|
+customer_id	COUNT(*)	SUM(t.amount)
+4	2	425
+5	1	400
+6	2	850
+
+
+=== R35: Dimension + fact filter + HAVING ===
+== Query ==
+SELECT c.customer_id, SUM(t.amount) AS total
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+WHERE c.region = 2 AND t.category = 2
+GROUP BY c.customer_id
+HAVING SUM(t.amount) > 100;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.customer_id, SUM(t.amount) AS total
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+WHERE c.region = 2 AND t.category = 2
+GROUP BY c.customer_id
+HAVING SUM(t.amount) > 100|
+customer_id	total
+6	500
+7	125
+8	800
+
+
+=== R36: LEFT JOIN per-customer with 0/1/many rows ===
+== Query ==
+SELECT c.customer_id, COUNT(t.tx_id), SUM(t.amount)
+FROM fv_customers AS c
+LEFT JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.customer_id;
+
+Number of output lines, including header: 11
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.customer_id, COUNT(t.tx_id), SUM(t.amount)
+FROM fv_customers AS c
+LEFT JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.customer_id|
+customer_id	COUNT(t.tx_id)	SUM(t.amount)
+1	2	300
+10	0	NULL
+2	1	150
+3	2	500
+4	2	425
+5	1	400
+6	2	850
+7	2	725
+8	3	1525
+9	0	NULL
+
+
+=== R37: Double LEFT JOIN sparse transactions + sparse events (DISABLED - star join not yet supported) ===
+== Expected result ==
+SELECT c.customer_id, COUNT(t.tx_id), COUNT(e.event_id)
+FROM fv_customers AS c
+LEFT JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+LEFT JOIN fv_events AS e ON e.customer_id = c.customer_id
+GROUP BY c.customer_id|
+customer_id	COUNT(t.tx_id)	COUNT(e.event_id)
+1	6	6
+10	0	0
+2	2	2
+3	6	6
+4	6	6
+5	2	2
+6	6	6
+7	8	8
+8	3	0
+9	0	0
+
+
+=== R38: COUNT star vs COUNT column with LEFT JOIN ===
+== Query ==
+SELECT c.segment, COUNT(*), COUNT(t.tx_id)
+FROM fv_customers AS c
+LEFT JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.segment, COUNT(*), COUNT(t.tx_id)
+FROM fv_customers AS c
+LEFT JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment|
+segment	COUNT(*)	COUNT(t.tx_id)
+1	5	5
+2	5	5
+3	6	5
+4	1	0
+
+
+=== R39: Chained 4-way LEFT JOIN snowflake (order chain) ===
+== Query ==
+SELECT c.customer_id, COUNT(*), SUM(p.price)
+FROM fv_customers AS c
+LEFT JOIN fv_orders AS o ON o.customer_id = c.customer_id
+LEFT JOIN fv_order_items AS oi ON oi.order_id = o.order_id
+LEFT JOIN fv_products AS p ON p.product_id = oi.product_id
+GROUP BY c.customer_id;
+
+Number of output lines, including header: 11
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.customer_id, COUNT(*), SUM(p.price)
+FROM fv_customers AS c
+LEFT JOIN fv_orders AS o ON o.customer_id = c.customer_id
+LEFT JOIN fv_order_items AS oi ON oi.order_id = o.order_id
+LEFT JOIN fv_products AS p ON p.product_id = oi.product_id
+GROUP BY c.customer_id|
+customer_id	COUNT(*)	SUM(p.price)
+1	3	2200
+10	1	NULL
+2	1	500
+3	4	5700
+4	3	2700
+5	3	4000
+6	3	4700
+7	4	3700
+8	6	8700
+9	1	NULL
+
+
+=== R40: LEFT JOIN with WHERE on root only ===
+== Query ==
+SELECT c.customer_id, COUNT(*), SUM(t.amount)
+FROM fv_customers AS c
+LEFT JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+WHERE c.segment = 4
+GROUP BY c.customer_id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.customer_id, COUNT(*), SUM(t.amount)
+FROM fv_customers AS c
+LEFT JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+WHERE c.segment = 4
+GROUP BY c.customer_id|
+customer_id	COUNT(*)	SUM(t.amount)
+10	1	NULL
+
+
+=== R41: Cross-table arithmetic SUM(qty * unit_price) ===
+== Query ==
+SELECT c.customer_id, SUM(oi.quantity * oi.unit_price)
+FROM fv_customers AS c
+JOIN fv_orders AS o ON o.customer_id = c.customer_id
+JOIN fv_order_items AS oi ON oi.order_id = o.order_id
+GROUP BY c.customer_id;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.customer_id, SUM(oi.quantity * oi.unit_price)
+FROM fv_customers AS c
+JOIN fv_orders AS o ON o.customer_id = c.customer_id
+JOIN fv_order_items AS oi ON oi.order_id = o.order_id
+GROUP BY c.customer_id|
+customer_id	SUM(oi.quantity * oi.unit_price)
+1	4700
+2	500
+3	8900
+4	5200
+5	4500
+6	8600
+7	7400
+8	10700
+
+
+=== R42: Full feature vector per entity (5 agg types) ===
+== Query ==
+SELECT c.customer_id, COUNT(*), SUM(t.amount), MIN(t.amount), MAX(t.amount), AVG(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.customer_id;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.customer_id, COUNT(*), SUM(t.amount), MIN(t.amount), MAX(t.amount), AVG(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.customer_id|
+customer_id	COUNT(*)	SUM(t.amount)	MIN(t.amount)	MAX(t.amount)	AVG(t.amount)
+1	2	300	100	200	150.0000
+2	1	150	150	150	150.0000
+3	2	500	200	300	250.0000
+4	2	425	175	250	212.5000
+5	1	400	400	400	400.0000
+6	2	850	350	500	425.0000
+7	2	725	125	600	362.5000
+8	3	1525	275	800	508.3333
+
+
+=== R43: Expression SUM(amount * (category - 1)) ===
+== Query ==
+SELECT c.segment, SUM(t.amount * (t.category - 1))
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.segment, SUM(t.amount * (t.category - 1))
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment|
+segment	SUM(t.amount * (t.category - 1))
+1	800
+2	1550
+3	2675
+
+
+=== R44: RFM frequency + monetary ORDER BY + LIMIT (DISABLED - needs RonSQL alias support) ===
+== Expected result ==
+SELECT c.customer_id, COUNT(*) AS frequency, SUM(t.amount) AS monetary
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.customer_id
+ORDER BY monetary DESC
+LIMIT 5|
+customer_id	frequency	monetary
+8	3	1525
+6	2	850
+7	2	725
+3	2	500
+4	2	425
+
+
+=== R45: RFM recency + frequency + monetary ===
+== Query ==
+SELECT c.customer_id, MAX(t.tx_date) AS recency, COUNT(*) AS frequency, SUM(t.amount) AS monetary
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.customer_id;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.customer_id, MAX(t.tx_date) AS recency, COUNT(*) AS frequency, SUM(t.amount) AS monetary
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.customer_id|
+customer_id	recency	frequency	monetary
+1	20260115	2	300
+2	20260201	1	150
+3	20260215	2	500
+4	20260220	2	425
+5	20260301	1	400
+6	20260310	2	850
+7	20260313	2	725
+8	20260315	3	1525
+
+
+=== R46: Customer 360 events by type per customer ===
+== Query ==
+SELECT c.customer_id, e.event_type, COUNT(*)
+FROM fv_customers AS c
+JOIN fv_events AS e ON e.customer_id = c.customer_id
+GROUP BY c.customer_id, e.event_type;
+
+Number of output lines, including header: 20
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.customer_id, e.event_type, COUNT(*)
+FROM fv_customers AS c
+JOIN fv_events AS e ON e.customer_id = c.customer_id
+GROUP BY c.customer_id, e.event_type|
+customer_id	event_type	COUNT(*)
+1	1	1
+1	2	1
+1	3	1
+2	1	1
+2	2	1
+3	1	1
+3	2	1
+3	3	1
+4	1	1
+4	2	1
+4	3	1
+5	1	1
+5	2	1
+6	1	1
+6	2	1
+6	3	1
+7	1	2
+7	2	1
+7	3	1
+
+
+=== R47: CASE-based high/low value indicators (DISABLED - CASE in agg not supported for joins) ===
+== Expected result ==
+SELECT c.customer_id, SUM(CASE WHEN t.amount >= 300 THEN 1 ELSE 0 END) AS high_value_count
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.customer_id|
+customer_id	high_value_count
+1	0
+2	0
+3	1
+4	0
+5	1
+6	2
+7	1
+8	2
+
+
+=== R48: Time-bucketed early vs late events (DISABLED - CASE in agg not supported for joins) ===
+== Expected result ==
+SELECT c.segment,
+SUM(CASE WHEN e.ts < 3000 THEN 1 ELSE 0 END) AS early_events,
+SUM(CASE WHEN e.ts >= 3000 THEN 1 ELSE 0 END) AS late_events
+FROM fv_customers AS c
+JOIN fv_events AS e ON e.customer_id = c.customer_id
+GROUP BY c.segment|
+segment	early_events	late_events
+1	4	4
+2	2	6
+3	1	3
+
+
+=== R49: Global aggregation LEFT JOIN (no GROUP BY) ===
+== Query ==
+SELECT COUNT(*), COUNT(t.tx_id), SUM(t.amount)
+FROM fv_customers AS c
+LEFT JOIN fv_transactions AS t ON t.customer_id = c.customer_id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*), COUNT(t.tx_id), SUM(t.amount)
+FROM fv_customers AS c
+LEFT JOIN fv_transactions AS t ON t.customer_id = c.customer_id|
+COUNT(*)	COUNT(t.tx_id)	SUM(t.amount)
+17	15	4875
+
+
+=== R50: Empty result HAVING eliminates all groups ===
+== Query ==
+SELECT c.segment, SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment
+HAVING SUM(t.amount) > 99999;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.segment, SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment
+HAVING SUM(t.amount) > 99999|
+segment	SUM(t.amount)
+
+
+=== R51: Single-entity lookup WHERE customer_id=8 ===
+== Query ==
+SELECT c.customer_id, COUNT(*), SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+WHERE c.customer_id = 8
+GROUP BY c.customer_id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.customer_id, COUNT(*), SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+WHERE c.customer_id = 8
+GROUP BY c.customer_id|
+customer_id	COUNT(*)	SUM(t.amount)
+8	3	1525
+
+
+=== R52: Entity with exactly one related row ===
+== Query ==
+SELECT c.customer_id, COUNT(*), SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+WHERE c.customer_id = 2
+GROUP BY c.customer_id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.customer_id, COUNT(*), SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+WHERE c.customer_id = 2
+GROUP BY c.customer_id|
+customer_id	COUNT(*)	SUM(t.amount)
+2	1	150
+
+
+=== R53: Scale test 120 customers ===
+== Query ==
+SELECT c.customer_id, COUNT(*), SUM(t.amount)
+FROM fv_customers_large AS c
+JOIN fv_txn_large AS t ON t.customer_id = c.customer_id
+GROUP BY c.customer_id;
+
+Number of output lines, including header: 121
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.customer_id, COUNT(*), SUM(t.amount)
+FROM fv_customers_large AS c
+JOIN fv_txn_large AS t ON t.customer_id = c.customer_id
+GROUP BY c.customer_id|
+customer_id	COUNT(*)	SUM(t.amount)
+1	2	253
+10	2	379
+100	2	1639
+101	2	1653
+102	3	2520
+103	2	1681
+104	2	1695
+105	3	2583
+106	2	1723
+107	2	1737
+108	3	2646
+109	2	1765
+11	2	393
+110	2	1779
+111	3	2709
+112	2	1807
+113	2	1821
+114	3	2772
+115	2	1849
+116	2	1863
+117	3	2835
+118	2	1891
+119	2	1905
+12	3	630
+120	3	2898
+13	2	421
+14	2	435
+15	3	693
+16	2	463
+17	2	477
+18	3	756
+19	2	505
+2	2	267
+20	2	519
+21	3	819
+22	2	547
+23	2	561
+24	3	882
+25	2	589
+26	2	603
+27	3	945
+28	2	631
+29	2	645
+3	3	441
+30	3	1008
+31	2	673
+32	2	687
+33	3	1071
+34	2	715
+35	2	729
+36	3	1134
+37	2	757
+38	2	771
+39	3	1197
+4	2	295
+40	2	799
+41	2	813
+42	3	1260
+43	2	841
+44	2	855
+45	3	1323
+46	2	883
+47	2	897
+48	3	1386
+49	2	925
+5	2	309
+50	2	939
+51	3	1449
+52	2	967
+53	2	981
+54	3	1512
+55	2	1009
+56	2	1023
+57	3	1575
+58	2	1051
+59	2	1065
+6	3	504
+60	3	1638
+61	2	1093
+62	2	1107
+63	3	1701
+64	2	1135
+65	2	1149
+66	3	1764
+67	2	1177
+68	2	1191
+69	3	1827
+7	2	337
+70	2	1219
+71	2	1233
+72	3	1890
+73	2	1261
+74	2	1275
+75	3	1953
+76	2	1303
+77	2	1317
+78	3	2016
+79	2	1345
+8	2	351
+80	2	1359
+81	3	2079
+82	2	1387
+83	2	1401
+84	3	2142
+85	2	1429
+86	2	1443
+87	3	2205
+88	2	1471
+89	2	1485
+9	3	567
+90	3	2268
+91	2	1513
+92	2	1527
+93	3	2331
+94	2	1555
+95	2	1569
+96	3	2394
+97	2	1597
+98	2	1611
+99	3	2457
+
+
+=== R54: Scale test + HAVING + ORDER BY + LIMIT (DISABLED - needs RonSQL alias support) ===
+== Expected result ==
+SELECT c.customer_id, SUM(t.amount) AS total
+FROM fv_customers_large AS c
+JOIN fv_txn_large AS t ON t.customer_id = c.customer_id
+GROUP BY c.customer_id
+HAVING SUM(t.amount) > 500
+ORDER BY total DESC
+LIMIT 10|
+customer_id	total
+120	2898
+117	2835
+114	2772
+111	2709
+108	2646
+105	2583
+102	2520
+99	2457
+96	2394
+93	2331
+
+
+=== R55: LEFT JOIN MIN/MAX with NULL ===
+== Query ==
+SELECT c.customer_id, MIN(t.amount), MAX(t.amount)
+FROM fv_customers AS c
+LEFT JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.customer_id;
+
+Number of output lines, including header: 11
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.customer_id, MIN(t.amount), MAX(t.amount)
+FROM fv_customers AS c
+LEFT JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.customer_id|
+customer_id	MIN(t.amount)	MAX(t.amount)
+1	100	200
+10	NULL	NULL
+2	150	150
+3	200	300
+4	175	250
+5	400	400
+6	350	500
+7	125	600
+8	275	800
+9	NULL	NULL
+
+
+=== R56: Mixed INNER + LEFT JOIN chain ===
+== Query ==
+SELECT c.segment, COUNT(*), SUM(p.price)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+LEFT JOIN fv_tx_products AS tp ON tp.tx_id = t.tx_id
+LEFT JOIN fv_products AS p ON p.product_id = tp.product_id
+GROUP BY c.segment;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.segment, COUNT(*), SUM(p.price)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+LEFT JOIN fv_tx_products AS tp ON tp.tx_id = t.tx_id
+LEFT JOIN fv_products AS p ON p.product_id = tp.product_id
+GROUP BY c.segment|
+segment	COUNT(*)	SUM(p.price)
+1	5	2700
+2	5	6200
+3	5	4700
+
+
+=== R57: 4-way snowflake + ORDER BY agg + LIMIT (DISABLED - needs RonSQL alias support) ===
+== Expected result ==
+SELECT c.customer_id, SUM(p.price) AS total_price
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+JOIN fv_tx_products AS tp ON tp.tx_id = t.tx_id
+JOIN fv_products AS p ON p.product_id = tp.product_id
+GROUP BY c.customer_id
+ORDER BY total_price DESC
+LIMIT 5|
+customer_id	total_price
+5	2500
+8	2500
+7	2200
+4	2200
+6	1500
+
+
+=== R58: 4-way snowflake + HAVING on COUNT ===
+== Query ==
+SELECT c.customer_id, COUNT(*), SUM(p.price)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+JOIN fv_tx_products AS tp ON tp.tx_id = t.tx_id
+JOIN fv_products AS p ON p.product_id = tp.product_id
+GROUP BY c.customer_id
+HAVING COUNT(*) >= 2;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c.customer_id, COUNT(*), SUM(p.price)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+JOIN fv_tx_products AS tp ON tp.tx_id = t.tx_id
+JOIN fv_products AS p ON p.product_id = tp.product_id
+GROUP BY c.customer_id
+HAVING COUNT(*) >= 2|
+customer_id	COUNT(*)	SUM(p.price)
+1	2	1200
+4	2	2200
+6	2	1500
+7	2	2200
+
+
+=== R59: CASE expression in 4-way snowflake (DISABLED - CASE in agg not supported for joins) ===
+== Expected result ==
+SELECT c.segment,
+SUM(CASE WHEN p.product_type = 1 THEN p.price ELSE 0 END) AS type1_spend,
+SUM(CASE WHEN p.product_type = 2 THEN p.price ELSE 0 END) AS type2_spend
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+JOIN fv_tx_products AS tp ON tp.tx_id = t.tx_id
+JOIN fv_products AS p ON p.product_id = tp.product_id
+GROUP BY c.segment|
+segment	type1_spend	type2_spend
+1	1700	1000
+2	1200	2500
+3	700	1500
+
+
+=== R60: Global aggregation through 4-way snowflake ===
+== Query ==
+SELECT COUNT(*), SUM(p.price), MIN(p.price), MAX(p.price)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+JOIN fv_tx_products AS tp ON tp.tx_id = t.tx_id
+JOIN fv_products AS p ON p.product_id = tp.product_id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*), SUM(p.price), MIN(p.price), MAX(p.price)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+JOIN fv_tx_products AS tp ON tp.tx_id = t.tx_id
+JOIN fv_products AS p ON p.product_id = tp.product_id|
+COUNT(*)	SUM(p.price)	MIN(p.price)	MAX(p.price)
+12	13600	500	2500
+
+=== Cleanup ===
+
