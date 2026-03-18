@@ -6227,8 +6227,6 @@ Uint32 Dbspj::handleAggAncestorComplete(Signal *signal,
   ndbrequire(m_treenode_pool.getPtr(scanAncestorPtr,
                                     treeNodePtr.p->m_scanAncestorPtrI));
 
-  ndbrequire(!(scanAncestorPtr.p->m_bits & TreeNode::T_BUFFER_MATCH));
-
   /**
    * For deeper intermediates (not direct children of the scan ancestor),
    * we must check that the parent node matched before injecting a null
