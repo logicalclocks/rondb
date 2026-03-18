@@ -9330,6 +9330,10 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
      * for freeing them when appropriate
      */
     handle.clear();
+    if (totalAttrinfoLen > ZATTR_BUFFER_SIZE) {
+      earlyKeyReqAbort(signal, lqhKeyReq, ZATTRINFO_TOO_LARGE, tcConnectptr);
+      return;
+    }
   } else {
     /**
      * Only node restart copy allowed to send no KeyInfo.
@@ -20267,6 +20271,7 @@ void Dblqh::scanTupkeyConfLab(Signal* signal,
         scanPtr->scanErrorCounter++;
         scanPtr->scanCompletedStatus = ZTRUE;
       } else {
+        jamDebug();
         scanPtr->m_local_matched_ranges[word] |= (1u << (range_no % 32));
       }
     }
@@ -22158,9 +22163,9 @@ void Dblqh::sendScanFragConf(Signal *signal,
     sig_len = ScanFragConf::SignalLength_v2;
   }
   if (scanCompleted == ZSCAN_FRAG_CLOSED &&
-      scanPtr->m_outer_join_agg_scan &&
-      scanPtr->m_local_matched_ranges != nullptr) {
+      scanPtr->m_outer_join_agg_scan) {
     jam();
+    ndbrequire(scanPtr->m_local_matched_ranges != nullptr);
     /**
      * Attach local matched-ranges bitmask as a signal section.
      * DBSPJ will OR all per-fragment bitmasks to determine which

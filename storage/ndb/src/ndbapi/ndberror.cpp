@@ -469,6 +469,8 @@ ErrorBundle ErrorCodes[] = {
   { 1258, DMEC, IE, "Join aggregation already finalized" },
   { 1259, DMEC, IE, "Join aggregation mutex error" },
   { 1260, DMEC, IE, "Join aggregation match range overflow" },
+  { 1261, DMEC, IE, "Join aggregation section count error" },
+  { 1262, DMEC, IE, "Attrinfo too large" },
 
   /**
    * Application error

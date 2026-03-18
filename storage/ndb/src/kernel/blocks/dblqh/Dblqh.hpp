@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2025, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -482,6 +482,7 @@ class FsReadWriteReq;
 #define ZJOIN_AGG_MUTEX_ERROR              1259
 #define ZJOIN_AGG_MATCH_RANGE_OVERFLOW     1260
 #define ZJOIN_AGG_INVALID_SECTION_COUNT    1261
+#define ZATTRINFO_TOO_LARGE                1262
 
 /**
  * @class dblqh
