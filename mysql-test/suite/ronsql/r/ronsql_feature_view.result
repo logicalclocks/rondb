@@ -1611,13 +1611,13 @@ JOIN fv_transactions AS t ON t.customer_id = c.customer_id
 JOIN fv_tx_products AS tp ON tp.tx_id = t.tx_id
 JOIN fv_products AS p ON p.product_id = tp.product_id
 GROUP BY c.customer_id
-ORDER BY total_price DESC
+ORDER BY total_price DESC, c.customer_id
 LIMIT 5|
 customer_id	total_price
 5	2500
 8	2500
-7	2200
 4	2200
+7	2200
 6	1500
 
 

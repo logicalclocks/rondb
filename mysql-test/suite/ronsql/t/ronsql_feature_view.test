@@ -1303,7 +1303,7 @@ GROUP BY c.segment|
 # JOIN fv_tx_products AS tp ON tp.tx_id = t.tx_id
 # JOIN fv_products AS p ON p.product_id = tp.product_id
 # GROUP BY c.customer_id
-# ORDER BY total_price DESC
+# ORDER BY total_price DESC, c.customer_id
 # LIMIT 5;|
 # --source suite/ronsql/include/ronsql_compare.inc
 
@@ -1314,7 +1314,7 @@ JOIN fv_transactions AS t ON t.customer_id = c.customer_id
 JOIN fv_tx_products AS tp ON tp.tx_id = t.tx_id
 JOIN fv_products AS p ON p.product_id = tp.product_id
 GROUP BY c.customer_id
-ORDER BY total_price DESC
+ORDER BY total_price DESC, c.customer_id
 LIMIT 5|
 
 --echo
