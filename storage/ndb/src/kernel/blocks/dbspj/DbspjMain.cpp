@@ -1891,7 +1891,6 @@ Dbspj::validateAggregateFlags(Build_context &ctx, Ptr<Request> requestPtr) {
             TreeNode::T_BUFFER_ROW | TreeNode::T_BUFFER_MAP |
             TreeNode::T_BUFFER_MATCH;
         requestPtr.p->m_bits |= Request::RT_AGG_ANCESTOR_MATCH;
-        break;  // Only need to set this once (all ancestors share scan root)
       }
     }
   } else {
