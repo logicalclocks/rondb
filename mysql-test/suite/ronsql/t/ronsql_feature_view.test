@@ -1,0 +1,1389 @@
+--source include/have_ndb.inc
+
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+# ronsql_cli does not properly refresh NDB dictionary cache for join queries,
+# causing "Invalid schema version (code 1227)" errors. Suppress ronsql_cli
+# and rely on RDRS comparison (which handles schema refresh correctly).
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--echo
+--echo === Create tables for feature view aggregation tests ===
+--echo
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE fv_customers (
+  customer_id INT NOT NULL,
+  segment INT NOT NULL,
+  region INT NOT NULL,
+  PRIMARY KEY USING HASH (customer_id)
+) ENGINE=NDB;
+
+CREATE TABLE fv_transactions (
+  tx_id INT NOT NULL,
+  customer_id INT NOT NULL,
+  amount BIGINT NOT NULL,
+  tx_date INT NOT NULL,
+  category INT NOT NULL,
+  PRIMARY KEY USING HASH (tx_id),
+  INDEX ix_cust (customer_id)
+) ENGINE=NDB;
+
+CREATE TABLE fv_products (
+  product_id INT NOT NULL,
+  product_type INT NOT NULL,
+  price BIGINT NOT NULL,
+  PRIMARY KEY USING HASH (product_id)
+) ENGINE=NDB;
+
+CREATE TABLE fv_tx_products (
+  tx_id INT NOT NULL,
+  product_id INT NOT NULL,
+  PRIMARY KEY USING HASH (tx_id)
+) ENGINE=NDB;
+
+CREATE TABLE fv_events (
+  event_id INT NOT NULL,
+  customer_id INT NOT NULL,
+  event_type INT NOT NULL,
+  ts INT NOT NULL,
+  PRIMARY KEY USING HASH (event_id),
+  INDEX ix_cust_ts (customer_id, ts)
+) ENGINE=NDB;
+
+CREATE TABLE fv_orders (
+  order_id INT NOT NULL,
+  customer_id INT NOT NULL,
+  order_date INT NOT NULL,
+  status INT NOT NULL,
+  PRIMARY KEY USING HASH (order_id),
+  INDEX ix_cust_date (customer_id, order_date)
+) ENGINE=NDB;
+
+CREATE TABLE fv_order_items (
+  item_id INT NOT NULL,
+  order_id INT NOT NULL,
+  product_id INT NOT NULL,
+  quantity INT NOT NULL,
+  unit_price BIGINT NOT NULL,
+  PRIMARY KEY USING HASH (item_id),
+  INDEX ix_order (order_id)
+) ENGINE=NDB;
+
+CREATE TABLE fv_customers_large (
+  customer_id INT NOT NULL,
+  segment INT NOT NULL,
+  region INT NOT NULL,
+  PRIMARY KEY USING HASH (customer_id)
+) ENGINE=NDB;
+
+CREATE TABLE fv_txn_large (
+  tx_id INT NOT NULL,
+  customer_id INT NOT NULL,
+  amount BIGINT NOT NULL,
+  tx_date INT NOT NULL,
+  category INT NOT NULL,
+  PRIMARY KEY USING HASH (tx_id),
+  INDEX ix_cust (customer_id)
+) ENGINE=NDB;
+
+INSERT INTO fv_customers VALUES
+  (1,1,1),(2,1,1),(3,1,1),(4,2,1),(5,2,1),
+  (6,2,2),(7,3,2),(8,3,2),(9,3,2),(10,4,2);
+
+INSERT INTO fv_transactions VALUES
+  (1,1,100,20260101,1),
+  (2,1,200,20260115,2),
+  (3,2,150,20260201,1),
+  (4,3,300,20260210,3),
+  (5,4,250,20260215,2),
+  (6,4,175,20260220,1),
+  (7,5,400,20260301,3),
+  (8,6,500,20260305,2),
+  (9,6,350,20260310,1),
+  (10,7,600,20260312,3),
+  (11,7,125,20260313,2),
+  (12,8,450,20260314,1),
+  (13,8,275,20260315,3),
+  (14,8,800,20260315,2),
+  (15,3,200,20260215,1);
+
+INSERT INTO fv_products VALUES
+  (1,1,500),(2,1,700),(3,2,1000),(4,2,1500),(5,3,2500);
+
+INSERT INTO fv_tx_products VALUES
+  (1,1),(2,2),(3,1),(4,3),(5,2),(6,4),
+  (7,5),(8,1),(9,3),(10,2),(11,4),(12,5);
+
+INSERT INTO fv_events VALUES
+  (1,1,1,1000),(2,1,2,2000),(3,1,3,3000),
+  (4,2,1,1500),(5,2,2,4000),
+  (6,3,1,2000),(7,3,3,5000),(8,3,2,6000),
+  (9,4,2,2500),(10,4,1,3500),(11,4,3,7000),
+  (12,5,1,1000),(13,5,2,4500),
+  (14,6,3,3000),(15,6,1,5500),(16,6,2,8000),
+  (17,7,1,2000),(18,7,3,6000),(19,7,2,9000),
+  (20,7,1,4000);
+
+INSERT INTO fv_orders VALUES
+  (1,1,20260101,1),(2,1,20260115,2),(3,2,20260201,1),
+  (4,3,20260210,1),(5,3,20260220,2),(6,4,20260215,1),
+  (7,4,20260225,1),(8,4,20260301,2),(9,5,20260301,1),
+  (10,5,20260310,2),(11,6,20260305,1),(12,6,20260310,1),
+  (13,6,20260315,2),(14,7,20260312,1),(15,7,20260313,1),
+  (16,7,20260314,2),(17,7,20260315,1),(18,8,20260314,1),
+  (19,8,20260315,2),(20,8,20260316,1);
+
+INSERT INTO fv_order_items VALUES
+  (1,1,1,2,500),(2,1,2,1,700),(3,2,3,3,1000),
+  (4,3,1,1,500),(5,4,2,2,700),(6,4,4,1,1500),
+  (7,5,3,1,1000),(8,5,5,2,2500),(9,6,1,3,500),
+  (10,7,2,1,700),(11,8,4,2,1500),(12,9,5,1,2500),
+  (13,10,1,2,500),(14,10,3,1,1000),(15,11,2,3,700),
+  (16,12,4,1,1500),(17,13,5,2,2500),(18,14,1,1,500),
+  (19,15,2,2,700),(20,16,3,1,1000),(21,17,4,3,1500),
+  (22,18,5,1,2500),(23,19,1,2,500),(24,19,3,1,1000),
+  (25,20,2,1,700),(26,20,4,2,1500),(27,20,5,1,2500);
+
+--perl
+use strict;
+my $dir = $ENV{'MYSQLTEST_VARDIR'};
+open(FILE, ">", "$dir/tmp/gen_scale_data.sql") or die "Cannot open: $!";
+my @cust_vals;
+for my $i (1..120) {
+  my $seg = ($i % 4) + 1;
+  my $reg = ($i % 3) + 1;
+  push @cust_vals, "($i,$seg,$reg)";
+}
+print FILE "INSERT INTO fv_customers_large VALUES " . join(",", @cust_vals) . ";\n";
+my @tx_vals;
+my $tx_id = 1;
+for my $cid (1..120) {
+  my $ntx = ($cid % 3 == 0) ? 3 : 2;
+  for my $j (1..$ntx) {
+    my $amount = 100 + ($cid * 7 + $j * 13) % 900;
+    my $tx_date = 20260101 + int(($cid - 1) / 4);
+    my $cat = ($tx_id % 3) + 1;
+    push @tx_vals, "($tx_id,$cid,$amount,$tx_date,$cat)";
+    $tx_id++;
+  }
+}
+print FILE "INSERT INTO fv_txn_large VALUES " . join(",", @tx_vals) . ";\n";
+close(FILE);
+EOF
+--source $MYSQLTEST_VARDIR/tmp/gen_scale_data.sql
+--remove_file $MYSQLTEST_VARDIR/tmp/gen_scale_data.sql
+
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo
+--echo === R1: Star join SUM GROUP BY segment ===
+
+let $QUERY=
+SELECT c.segment, SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.segment, SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment|
+
+--echo
+--echo
+--echo === R2: Star join COUNT and SUM GROUP BY segment ===
+
+let $QUERY=
+SELECT c.segment, COUNT(*), SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.segment, COUNT(*), SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment|
+
+--echo
+--echo
+--echo === R3: Star join all aggregate types ===
+
+let $QUERY=
+SELECT c.segment, COUNT(*), SUM(t.amount), MIN(t.amount), MAX(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.segment, COUNT(*), SUM(t.amount), MIN(t.amount), MAX(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment|
+
+--echo
+--echo
+--echo === R4: Snowflake 4-way SUM(price) GROUP BY segment ===
+
+let $QUERY=
+SELECT c.segment, SUM(p.price)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+JOIN fv_tx_products AS tp ON tp.tx_id = t.tx_id
+JOIN fv_products AS p ON p.product_id = tp.product_id
+GROUP BY c.segment;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.segment, SUM(p.price)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+JOIN fv_tx_products AS tp ON tp.tx_id = t.tx_id
+JOIN fv_products AS p ON p.product_id = tp.product_id
+GROUP BY c.segment|
+
+--echo
+--echo
+--echo === R5: Snowflake GROUP BY leaf column (product_type) ===
+
+let $QUERY=
+SELECT p.product_type, COUNT(*)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+JOIN fv_tx_products AS tp ON tp.tx_id = t.tx_id
+JOIN fv_products AS p ON p.product_id = tp.product_id
+GROUP BY p.product_type;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT p.product_type, COUNT(*)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+JOIN fv_tx_products AS tp ON tp.tx_id = t.tx_id
+JOIN fv_products AS p ON p.product_id = tp.product_id
+GROUP BY p.product_type|
+
+--echo
+--echo
+--echo === R6: Filter on root (region=1) ===
+
+let $QUERY=
+SELECT c.segment, SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+WHERE c.region = 1
+GROUP BY c.segment;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.segment, SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+WHERE c.region = 1
+GROUP BY c.segment|
+
+--echo
+--echo
+--echo === R7: Filter on child (category=2) ===
+
+let $QUERY=
+SELECT c.segment, SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+WHERE t.category = 2
+GROUP BY c.segment;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.segment, SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+WHERE t.category = 2
+GROUP BY c.segment|
+
+--echo
+--echo
+--echo === R8: Combined filters (region=1 AND category=2) ===
+
+let $QUERY=
+SELECT c.segment, COUNT(*), SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+WHERE c.region = 1 AND t.category = 2
+GROUP BY c.segment;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.segment, COUNT(*), SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+WHERE c.region = 1 AND t.category = 2
+GROUP BY c.segment|
+
+--echo
+--echo
+--echo === R9: LEFT JOIN sparse features ===
+
+let $QUERY=
+SELECT c.segment, COUNT(*), SUM(t.amount)
+FROM fv_customers AS c
+LEFT JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.segment, COUNT(*), SUM(t.amount)
+FROM fv_customers AS c
+LEFT JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment|
+
+--echo
+--echo
+--echo === R10: COUNT star vs COUNT column ===
+
+let $QUERY=
+SELECT COUNT(*), COUNT(t.tx_id)
+FROM fv_customers AS c
+LEFT JOIN fv_transactions AS t ON t.customer_id = c.customer_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+SELECT COUNT(*), COUNT(t.tx_id)
+FROM fv_customers AS c
+LEFT JOIN fv_transactions AS t ON t.customer_id = c.customer_id|
+
+--echo
+--echo
+--echo === R11: Multi-level outer join snowflake ===
+
+let $QUERY=
+SELECT c.segment, COUNT(*), SUM(p.price)
+FROM fv_customers AS c
+LEFT JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+LEFT JOIN fv_tx_products AS tp ON tp.tx_id = t.tx_id
+LEFT JOIN fv_products AS p ON p.product_id = tp.product_id
+GROUP BY c.segment;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.segment, COUNT(*), SUM(p.price)
+FROM fv_customers AS c
+LEFT JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+LEFT JOIN fv_tx_products AS tp ON tp.tx_id = t.tx_id
+LEFT JOIN fv_products AS p ON p.product_id = tp.product_id
+GROUP BY c.segment|
+
+--echo
+--echo
+--echo === R12: Arithmetic expression SUM(amount * category) ===
+
+let $QUERY=
+SELECT c.segment, SUM(t.amount * t.category)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.segment, SUM(t.amount * t.category)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment|
+
+--echo
+--echo
+--echo === R13: Multi-level GROUP BY (segment, category) ===
+
+let $QUERY=
+SELECT c.segment, t.category, COUNT(*), SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment, t.category;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.segment, t.category, COUNT(*), SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment, t.category|
+
+--echo
+--echo
+--echo === R14: Global aggregation (no GROUP BY) ===
+
+let $QUERY=
+SELECT COUNT(*), SUM(t.amount), MIN(t.amount), MAX(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+SELECT COUNT(*), SUM(t.amount), MIN(t.amount), MAX(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id|
+
+--echo
+--echo
+--echo === R15: AVG aggregation ===
+
+let $QUERY=
+SELECT c.segment, AVG(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.segment, AVG(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment|
+
+--echo
+--echo
+--echo === R16: HAVING filter on aggregate ===
+
+let $QUERY=
+SELECT c.segment, SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment
+HAVING SUM(t.amount) > 500;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.segment, SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment
+HAVING SUM(t.amount) > 500|
+
+--echo
+--echo
+--echo === R17: ORDER BY aggregate DESC with LIMIT ===
+
+let $QUERY=
+SELECT c.segment, SUM(t.amount) AS total
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment
+ORDER BY total DESC
+LIMIT 2;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+SELECT c.segment, SUM(t.amount) AS total
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment
+ORDER BY total DESC
+LIMIT 2|
+
+--echo
+--echo
+--echo === R18: Empty result (no matching filter) ===
+
+let $QUERY=
+SELECT c.segment, SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+WHERE c.region = 999
+GROUP BY c.segment;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.segment, SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+WHERE c.region = 999
+GROUP BY c.segment|
+
+--echo
+--echo
+--echo === R19: LEFT JOIN with filter on root ===
+
+let $QUERY=
+SELECT c.segment, COUNT(*), SUM(t.amount)
+FROM fv_customers AS c
+LEFT JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+WHERE c.region = 1
+GROUP BY c.segment;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.segment, COUNT(*), SUM(t.amount)
+FROM fv_customers AS c
+LEFT JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+WHERE c.region = 1
+GROUP BY c.segment|
+
+--echo
+--echo
+--echo === R20: Outer join with HAVING ===
+
+let $QUERY=
+SELECT c.segment, COUNT(*)
+FROM fv_customers AS c
+LEFT JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment
+HAVING COUNT(*) > 2;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.segment, COUNT(*)
+FROM fv_customers AS c
+LEFT JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment
+HAVING COUNT(*) > 2|
+
+--echo
+--echo
+--echo === R21: Per-customer SUM from transactions ===
+
+let $QUERY=
+SELECT c.customer_id, SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.customer_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.customer_id, SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.customer_id|
+
+--echo
+--echo
+--echo === R22: Star join two fact tables (fan-out cross-product) ===
+
+let $QUERY=
+SELECT c.customer_id, SUM(t.amount), COUNT(e.event_id)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+JOIN fv_events AS e ON e.customer_id = c.customer_id
+GROUP BY c.customer_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.customer_id, SUM(t.amount), COUNT(e.event_id)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+JOIN fv_events AS e ON e.customer_id = c.customer_id
+GROUP BY c.customer_id|
+
+--echo
+--echo
+--echo === R23: Full feature vector per segment (5 agg types) ===
+
+let $QUERY=
+SELECT c.segment, COUNT(*), SUM(t.amount), MIN(t.amount), MAX(t.amount), AVG(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.segment, COUNT(*), SUM(t.amount), MIN(t.amount), MAX(t.amount), AVG(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment|
+
+--echo
+--echo
+--echo === R24: Multi-column GROUP BY (segment, region) ===
+
+let $QUERY=
+SELECT c.segment, c.region, COUNT(*), SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment, c.region;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.segment, c.region, COUNT(*), SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment, c.region|
+
+--echo
+--echo
+--echo === R25: Events in timestamp range per customer ===
+
+let $QUERY=
+SELECT c.customer_id, COUNT(*)
+FROM fv_customers AS c
+JOIN fv_events AS e ON e.customer_id = c.customer_id
+WHERE e.ts >= 2000 AND e.ts < 5000
+GROUP BY c.customer_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.customer_id, COUNT(*)
+FROM fv_customers AS c
+JOIN fv_events AS e ON e.customer_id = c.customer_id
+WHERE e.ts >= 2000 AND e.ts < 5000
+GROUP BY c.customer_id|
+
+--echo
+--echo
+--echo === R26: Recent events only (ts >= 5000) per segment ===
+
+let $QUERY=
+SELECT c.segment, COUNT(*)
+FROM fv_customers AS c
+JOIN fv_events AS e ON e.customer_id = c.customer_id
+WHERE e.ts >= 5000
+GROUP BY c.segment;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.segment, COUNT(*)
+FROM fv_customers AS c
+JOIN fv_events AS e ON e.customer_id = c.customer_id
+WHERE e.ts >= 5000
+GROUP BY c.segment|
+
+--echo
+--echo
+--echo === R27: Time range + event type filter ===
+
+let $QUERY=
+SELECT c.customer_id, COUNT(*)
+FROM fv_customers AS c
+JOIN fv_events AS e ON e.customer_id = c.customer_id
+WHERE e.ts >= 1000 AND e.ts < 4000 AND e.event_type = 1
+GROUP BY c.customer_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.customer_id, COUNT(*)
+FROM fv_customers AS c
+JOIN fv_events AS e ON e.customer_id = c.customer_id
+WHERE e.ts >= 1000 AND e.ts < 4000 AND e.event_type = 1
+GROUP BY c.customer_id|
+
+--echo
+--echo
+--echo === R28: Date-range filtered transactions ===
+
+let $QUERY=
+SELECT c.segment, COUNT(*), SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+WHERE t.tx_date >= 20260201 AND t.tx_date < 20260315
+GROUP BY c.segment;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.segment, COUNT(*), SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+WHERE t.tx_date >= 20260201 AND t.tx_date < 20260315
+GROUP BY c.segment|
+
+--echo
+--echo
+--echo === R29: 4-way snowflake per-customer SUM(price) ===
+
+let $QUERY=
+SELECT c.customer_id, SUM(p.price)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+JOIN fv_tx_products AS tp ON tp.tx_id = t.tx_id
+JOIN fv_products AS p ON p.product_id = tp.product_id
+GROUP BY c.customer_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.customer_id, SUM(p.price)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+JOIN fv_tx_products AS tp ON tp.tx_id = t.tx_id
+JOIN fv_products AS p ON p.product_id = tp.product_id
+GROUP BY c.customer_id|
+
+--echo
+--echo
+--echo === R30: GROUP BY on middle table (category) in snowflake ===
+
+let $QUERY=
+SELECT t.category, SUM(p.price)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+JOIN fv_tx_products AS tp ON tp.tx_id = t.tx_id
+JOIN fv_products AS p ON p.product_id = tp.product_id
+GROUP BY t.category;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT t.category, SUM(p.price)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+JOIN fv_tx_products AS tp ON tp.tx_id = t.tx_id
+JOIN fv_products AS p ON p.product_id = tp.product_id
+GROUP BY t.category|
+
+--echo
+--echo
+--echo === R31: 4-way snowflake with filter on leaf (product_type=2) ===
+
+let $QUERY=
+SELECT c.segment, COUNT(*), SUM(p.price)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+JOIN fv_tx_products AS tp ON tp.tx_id = t.tx_id
+JOIN fv_products AS p ON p.product_id = tp.product_id
+WHERE p.product_type = 2
+GROUP BY c.segment;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.segment, COUNT(*), SUM(p.price)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+JOIN fv_tx_products AS tp ON tp.tx_id = t.tx_id
+JOIN fv_products AS p ON p.product_id = tp.product_id
+WHERE p.product_type = 2
+GROUP BY c.segment|
+
+--echo
+--echo
+--echo === R32: New snowflake customer-order-item-product SUM(qty*price) ===
+
+let $QUERY=
+SELECT c.customer_id, SUM(oi.quantity * p.price)
+FROM fv_customers AS c
+JOIN fv_orders AS o ON o.customer_id = c.customer_id
+JOIN fv_order_items AS oi ON oi.order_id = o.order_id
+JOIN fv_products AS p ON p.product_id = oi.product_id
+GROUP BY c.customer_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.customer_id, SUM(oi.quantity * p.price)
+FROM fv_customers AS c
+JOIN fv_orders AS o ON o.customer_id = c.customer_id
+JOIN fv_order_items AS oi ON oi.order_id = o.order_id
+JOIN fv_products AS p ON p.product_id = oi.product_id
+GROUP BY c.customer_id|
+
+--echo
+--echo
+--echo === R33: Root filter + child timestamp range ===
+
+let $QUERY=
+SELECT c.customer_id, COUNT(*), SUM(e.ts)
+FROM fv_customers AS c
+JOIN fv_events AS e ON e.customer_id = c.customer_id
+WHERE c.region = 1 AND e.ts >= 1000 AND e.ts < 4000
+GROUP BY c.customer_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.customer_id, COUNT(*), SUM(e.ts)
+FROM fv_customers AS c
+JOIN fv_events AS e ON e.customer_id = c.customer_id
+WHERE c.region = 1 AND e.ts >= 1000 AND e.ts < 4000
+GROUP BY c.customer_id|
+
+--echo
+--echo
+--echo === R34: Dimension filter + fact date range ===
+
+let $QUERY=
+SELECT c.customer_id, COUNT(*), SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+WHERE c.segment = 2 AND t.tx_date >= 20260201
+GROUP BY c.customer_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.customer_id, COUNT(*), SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+WHERE c.segment = 2 AND t.tx_date >= 20260201
+GROUP BY c.customer_id|
+
+--echo
+--echo
+--echo === R35: Dimension + fact filter + HAVING ===
+
+let $QUERY=
+SELECT c.customer_id, SUM(t.amount) AS total
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+WHERE c.region = 2 AND t.category = 2
+GROUP BY c.customer_id
+HAVING SUM(t.amount) > 100;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.customer_id, SUM(t.amount) AS total
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+WHERE c.region = 2 AND t.category = 2
+GROUP BY c.customer_id
+HAVING SUM(t.amount) > 100|
+
+--echo
+--echo
+--echo === R36: LEFT JOIN per-customer with 0/1/many rows ===
+
+let $QUERY=
+SELECT c.customer_id, COUNT(t.tx_id), SUM(t.amount)
+FROM fv_customers AS c
+LEFT JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.customer_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.customer_id, COUNT(t.tx_id), SUM(t.amount)
+FROM fv_customers AS c
+LEFT JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.customer_id|
+
+--echo
+--echo
+--echo === R37: Double LEFT JOIN sparse transactions + sparse events ===
+
+let $QUERY=
+SELECT c.customer_id, COUNT(t.tx_id), COUNT(e.event_id)
+FROM fv_customers AS c
+LEFT JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+LEFT JOIN fv_events AS e ON e.customer_id = c.customer_id
+GROUP BY c.customer_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.customer_id, COUNT(t.tx_id), COUNT(e.event_id)
+FROM fv_customers AS c
+LEFT JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+LEFT JOIN fv_events AS e ON e.customer_id = c.customer_id
+GROUP BY c.customer_id|
+
+--echo
+--echo
+--echo === R38: COUNT star vs COUNT column with LEFT JOIN ===
+
+let $QUERY=
+SELECT c.segment, COUNT(*), COUNT(t.tx_id)
+FROM fv_customers AS c
+LEFT JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.segment, COUNT(*), COUNT(t.tx_id)
+FROM fv_customers AS c
+LEFT JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment|
+
+--echo
+--echo
+--echo === R39: Chained 4-way LEFT JOIN snowflake (order chain) ===
+
+let $QUERY=
+SELECT c.customer_id, COUNT(*), SUM(p.price)
+FROM fv_customers AS c
+LEFT JOIN fv_orders AS o ON o.customer_id = c.customer_id
+LEFT JOIN fv_order_items AS oi ON oi.order_id = o.order_id
+LEFT JOIN fv_products AS p ON p.product_id = oi.product_id
+GROUP BY c.customer_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.customer_id, COUNT(*), SUM(p.price)
+FROM fv_customers AS c
+LEFT JOIN fv_orders AS o ON o.customer_id = c.customer_id
+LEFT JOIN fv_order_items AS oi ON oi.order_id = o.order_id
+LEFT JOIN fv_products AS p ON p.product_id = oi.product_id
+GROUP BY c.customer_id|
+
+--echo
+--echo
+--echo === R40: LEFT JOIN with WHERE on root only ===
+
+let $QUERY=
+SELECT c.customer_id, COUNT(*), SUM(t.amount)
+FROM fv_customers AS c
+LEFT JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+WHERE c.segment = 4
+GROUP BY c.customer_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.customer_id, COUNT(*), SUM(t.amount)
+FROM fv_customers AS c
+LEFT JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+WHERE c.segment = 4
+GROUP BY c.customer_id|
+
+--echo
+--echo
+--echo === R41: Cross-table arithmetic SUM(qty * unit_price) ===
+
+let $QUERY=
+SELECT c.customer_id, SUM(oi.quantity * oi.unit_price)
+FROM fv_customers AS c
+JOIN fv_orders AS o ON o.customer_id = c.customer_id
+JOIN fv_order_items AS oi ON oi.order_id = o.order_id
+GROUP BY c.customer_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.customer_id, SUM(oi.quantity * oi.unit_price)
+FROM fv_customers AS c
+JOIN fv_orders AS o ON o.customer_id = c.customer_id
+JOIN fv_order_items AS oi ON oi.order_id = o.order_id
+GROUP BY c.customer_id|
+
+--echo
+--echo
+--echo === R42: Full feature vector per entity (5 agg types) ===
+
+let $QUERY=
+SELECT c.customer_id, COUNT(*), SUM(t.amount), MIN(t.amount), MAX(t.amount), AVG(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.customer_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.customer_id, COUNT(*), SUM(t.amount), MIN(t.amount), MAX(t.amount), AVG(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.customer_id|
+
+--echo
+--echo
+--echo === R43: Expression SUM(amount * (category - 1)) ===
+
+let $QUERY=
+SELECT c.segment, SUM(t.amount * (t.category - 1))
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.segment, SUM(t.amount * (t.category - 1))
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment|
+
+--echo
+--echo
+--echo === R44: RFM frequency + monetary ORDER BY + LIMIT ===
+
+let $QUERY=
+SELECT c.customer_id, COUNT(*) AS frequency, SUM(t.amount) AS monetary
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.customer_id
+ORDER BY monetary DESC
+LIMIT 5;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+SELECT c.customer_id, COUNT(*) AS frequency, SUM(t.amount) AS monetary
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.customer_id
+ORDER BY monetary DESC
+LIMIT 5|
+
+--echo
+--echo
+--echo === R45: RFM recency + frequency + monetary ===
+
+let $QUERY=
+SELECT c.customer_id, MAX(t.tx_date) AS recency, COUNT(*) AS frequency, SUM(t.amount) AS monetary
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.customer_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.customer_id, MAX(t.tx_date) AS recency, COUNT(*) AS frequency, SUM(t.amount) AS monetary
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.customer_id|
+
+--echo
+--echo
+--echo === R46: Customer 360 events by type per customer ===
+
+let $QUERY=
+SELECT c.customer_id, e.event_type, COUNT(*)
+FROM fv_customers AS c
+JOIN fv_events AS e ON e.customer_id = c.customer_id
+GROUP BY c.customer_id, e.event_type;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.customer_id, e.event_type, COUNT(*)
+FROM fv_customers AS c
+JOIN fv_events AS e ON e.customer_id = c.customer_id
+GROUP BY c.customer_id, e.event_type|
+
+--echo
+--echo
+--echo === R47: CASE-based high/low value indicators ===
+
+let $QUERY=
+SELECT c.customer_id, SUM(CASE WHEN t.amount >= 300 THEN 1 ELSE 0 END) AS high_value_count
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.customer_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.customer_id, SUM(CASE WHEN t.amount >= 300 THEN 1 ELSE 0 END) AS high_value_count
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.customer_id|
+
+--echo
+--echo
+--echo === R48: Time-bucketed early vs late events ===
+
+let $QUERY=
+SELECT c.segment,
+  SUM(CASE WHEN e.ts < 3000 THEN 1 ELSE 0 END) AS early_events,
+  SUM(CASE WHEN e.ts >= 3000 THEN 1 ELSE 0 END) AS late_events
+FROM fv_customers AS c
+JOIN fv_events AS e ON e.customer_id = c.customer_id
+GROUP BY c.segment;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.segment,
+  SUM(CASE WHEN e.ts < 3000 THEN 1 ELSE 0 END) AS early_events,
+  SUM(CASE WHEN e.ts >= 3000 THEN 1 ELSE 0 END) AS late_events
+FROM fv_customers AS c
+JOIN fv_events AS e ON e.customer_id = c.customer_id
+GROUP BY c.segment|
+
+--echo
+--echo
+--echo === R49: Global aggregation LEFT JOIN (no GROUP BY) ===
+
+let $QUERY=
+SELECT COUNT(*), COUNT(t.tx_id), SUM(t.amount)
+FROM fv_customers AS c
+LEFT JOIN fv_transactions AS t ON t.customer_id = c.customer_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+SELECT COUNT(*), COUNT(t.tx_id), SUM(t.amount)
+FROM fv_customers AS c
+LEFT JOIN fv_transactions AS t ON t.customer_id = c.customer_id|
+
+--echo
+--echo
+--echo === R50: Empty result HAVING eliminates all groups ===
+
+let $QUERY=
+SELECT c.segment, SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment
+HAVING SUM(t.amount) > 99999;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.segment, SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.segment
+HAVING SUM(t.amount) > 99999|
+
+--echo
+--echo
+--echo === R51: Single-entity lookup WHERE customer_id=8 ===
+
+let $QUERY=
+SELECT c.customer_id, COUNT(*), SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+WHERE c.customer_id = 8
+GROUP BY c.customer_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+SELECT c.customer_id, COUNT(*), SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+WHERE c.customer_id = 8
+GROUP BY c.customer_id|
+
+--echo
+--echo
+--echo === R52: Entity with exactly one related row ===
+
+let $QUERY=
+SELECT c.customer_id, COUNT(*), SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+WHERE c.customer_id = 2
+GROUP BY c.customer_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+SELECT c.customer_id, COUNT(*), SUM(t.amount)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+WHERE c.customer_id = 2
+GROUP BY c.customer_id|
+
+--echo
+--echo
+--echo === R53: Scale test 120 customers ===
+
+let $QUERY=
+SELECT c.customer_id, COUNT(*), SUM(t.amount)
+FROM fv_customers_large AS c
+JOIN fv_txn_large AS t ON t.customer_id = c.customer_id
+GROUP BY c.customer_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.customer_id, COUNT(*), SUM(t.amount)
+FROM fv_customers_large AS c
+JOIN fv_txn_large AS t ON t.customer_id = c.customer_id
+GROUP BY c.customer_id|
+
+--echo
+--echo
+--echo === R54: Scale test + HAVING + ORDER BY + LIMIT ===
+
+let $QUERY=
+SELECT c.customer_id, SUM(t.amount) AS total
+FROM fv_customers_large AS c
+JOIN fv_txn_large AS t ON t.customer_id = c.customer_id
+GROUP BY c.customer_id
+HAVING SUM(t.amount) > 500
+ORDER BY total DESC
+LIMIT 10;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+SELECT c.customer_id, SUM(t.amount) AS total
+FROM fv_customers_large AS c
+JOIN fv_txn_large AS t ON t.customer_id = c.customer_id
+GROUP BY c.customer_id
+HAVING SUM(t.amount) > 500
+ORDER BY total DESC
+LIMIT 10|
+
+--echo
+--echo
+--echo === R55: LEFT JOIN MIN/MAX with NULL ===
+
+let $QUERY=
+SELECT c.customer_id, MIN(t.amount), MAX(t.amount)
+FROM fv_customers AS c
+LEFT JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.customer_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.customer_id, MIN(t.amount), MAX(t.amount)
+FROM fv_customers AS c
+LEFT JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+GROUP BY c.customer_id|
+
+--echo
+--echo
+--echo === R56: Mixed INNER + LEFT JOIN chain ===
+
+let $QUERY=
+SELECT c.segment, COUNT(*), SUM(p.price)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+LEFT JOIN fv_tx_products AS tp ON tp.tx_id = t.tx_id
+LEFT JOIN fv_products AS p ON p.product_id = tp.product_id
+GROUP BY c.segment;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.segment, COUNT(*), SUM(p.price)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+LEFT JOIN fv_tx_products AS tp ON tp.tx_id = t.tx_id
+LEFT JOIN fv_products AS p ON p.product_id = tp.product_id
+GROUP BY c.segment|
+
+--echo
+--echo
+--echo === R57: 4-way snowflake + ORDER BY agg + LIMIT ===
+
+let $QUERY=
+SELECT c.customer_id, SUM(p.price) AS total_price
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+JOIN fv_tx_products AS tp ON tp.tx_id = t.tx_id
+JOIN fv_products AS p ON p.product_id = tp.product_id
+GROUP BY c.customer_id
+ORDER BY total_price DESC
+LIMIT 5;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+SELECT c.customer_id, SUM(p.price) AS total_price
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+JOIN fv_tx_products AS tp ON tp.tx_id = t.tx_id
+JOIN fv_products AS p ON p.product_id = tp.product_id
+GROUP BY c.customer_id
+ORDER BY total_price DESC
+LIMIT 5|
+
+--echo
+--echo
+--echo === R58: 4-way snowflake + HAVING on COUNT ===
+
+let $QUERY=
+SELECT c.customer_id, COUNT(*), SUM(p.price)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+JOIN fv_tx_products AS tp ON tp.tx_id = t.tx_id
+JOIN fv_products AS p ON p.product_id = tp.product_id
+GROUP BY c.customer_id
+HAVING COUNT(*) >= 2;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.customer_id, COUNT(*), SUM(p.price)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+JOIN fv_tx_products AS tp ON tp.tx_id = t.tx_id
+JOIN fv_products AS p ON p.product_id = tp.product_id
+GROUP BY c.customer_id
+HAVING COUNT(*) >= 2|
+
+--echo
+--echo
+--echo === R59: CASE expression in 4-way snowflake ===
+
+let $QUERY=
+SELECT c.segment,
+  SUM(CASE WHEN p.product_type = 1 THEN p.price ELSE 0 END) AS type1_spend,
+  SUM(CASE WHEN p.product_type = 2 THEN p.price ELSE 0 END) AS type2_spend
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+JOIN fv_tx_products AS tp ON tp.tx_id = t.tx_id
+JOIN fv_products AS p ON p.product_id = tp.product_id
+GROUP BY c.segment;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT c.segment,
+  SUM(CASE WHEN p.product_type = 1 THEN p.price ELSE 0 END) AS type1_spend,
+  SUM(CASE WHEN p.product_type = 2 THEN p.price ELSE 0 END) AS type2_spend
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+JOIN fv_tx_products AS tp ON tp.tx_id = t.tx_id
+JOIN fv_products AS p ON p.product_id = tp.product_id
+GROUP BY c.segment|
+
+--echo
+--echo
+--echo === R60: Global aggregation through 4-way snowflake ===
+
+let $QUERY=
+SELECT COUNT(*), SUM(p.price), MIN(p.price), MAX(p.price)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+JOIN fv_tx_products AS tp ON tp.tx_id = t.tx_id
+JOIN fv_products AS p ON p.product_id = tp.product_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+SELECT COUNT(*), SUM(p.price), MIN(p.price), MAX(p.price)
+FROM fv_customers AS c
+JOIN fv_transactions AS t ON t.customer_id = c.customer_id
+JOIN fv_tx_products AS tp ON tp.tx_id = t.tx_id
+JOIN fv_products AS p ON p.product_id = tp.product_id|
+
+DELIMITER ;|
+
+--echo
+--echo === Cleanup ===
+--echo
+
+--disable_query_log
+DROP TABLE IF EXISTS fv_txn_large;
+DROP TABLE IF EXISTS fv_customers_large;
+DROP TABLE IF EXISTS fv_order_items;
+DROP TABLE IF EXISTS fv_orders;
+DROP TABLE IF EXISTS fv_events;
+DROP TABLE IF EXISTS fv_tx_products;
+DROP TABLE IF EXISTS fv_products;
+DROP TABLE IF EXISTS fv_transactions;
+DROP TABLE IF EXISTS fv_customers;
+--enable_query_log
